@@ -1,0 +1,14 @@
+# Loopback
+127.0.0.1/32
+::1/128
+
+# This file cannot be used to "enable the whole Internet". For unrestricted egress,
+# disable the filtering policy in `entrypoint.sh` instead of adding a catch-all CIDR here.
+#
+# Add only explicit proxy IPs or narrow CIDRs here when you route Copilot traffic through a proxy.
+# Examples:
+# 10.20.30.40/32
+# 2001:db8:1234::/48
+# Do not use broad catch-all entries such as 0.0.0.0/0 in this file.
+# Do not use broad catch-all entries such as ::/0 in this file.
+
