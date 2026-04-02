@@ -38,6 +38,24 @@ Run in discovery mode to observe destinations before you lock the policy down:
 
 Inside the container, the repository is mounted at `/workspace`.
 
+## Extracting discovery results
+
+After running in discovery mode, reproduce the Copilot interaction you want to observe, then exit the container (`Ctrl+D`). The pcap capture file persists on the host in the `.copilot-discovery` directory inside your workspace.
+
+Extract the DNS and TLS hostname lists:
+
+```bash
+docker run --rm --entrypoint capture-copilot-destinations.sh \
+  -v "/path/to/your/repo:/workspace" copilot-sandbox extract /workspace/.copilot-discovery
+```
+
+The container prints this command with the correct path when discovery mode starts. The output lists:
+
+- DNS queries — hostnames the container attempted to resolve.
+- TLS SNI hostnames — HTTPS endpoints presented during TLS handshakes.
+
+Add the discovered hostnames to `allowlist-domains.txt`, rebuild the image, and switch to restricted mode.
+
 ## Mounting additional repositories
 
 Set `EXTRA_MOUNTS` to a space-separated list of host paths. Append `:ro` or `:rw` to control per-directory access. The default is read-write.
