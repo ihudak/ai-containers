@@ -61,12 +61,9 @@ repo.maven.apache.org
 plugins.gradle.org
 plugins-artifacts.gradle.org
 services.gradle.org
-docs.dynatrace.com
-artifactory.lab.dynatrace.org
-bitbucket.lab.dynatrace.org
 
 # MCP targets
 # Add the concrete endpoints for every MCP server you configure.
-# Example: the Dynatrace Managed environment URLs used by a Dynatrace Managed MCP Server.
+# Example: the concrete environment URLs used by your MCP server.
 # your-managed-environment.example.com
 

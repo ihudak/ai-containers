@@ -26,6 +26,8 @@ Environment variables:
                         EXTRA_MOUNTS="/path/to/repo"              # read-write (default)
                         EXTRA_MOUNTS="/path/to/repo:ro"           # read-only
                         EXTRA_MOUNTS="/path/to/a:ro /path/to/b"  # a=read-only, b=read-write
+  SELF_HEALING_ENABLED  Set to 0 to disable self-healing allowlist (default: 1).
+                        When disabled, blocked traffic is logged but IPs are never auto-allowed.
 EOF
 }
 
@@ -126,6 +128,7 @@ run_container() {
     -e SANDBOX_GID="${SANDBOX_GID:-$(id -g)}" \
     -e SANDBOX_USER="${SANDBOX_USER:-$(id -un)}" \
     -e SANDBOX_GROUP="${SANDBOX_GROUP:-$(id -gn)}" \
+    ${SELF_HEALING_ENABLED:+-e SELF_HEALING_ENABLED="$SELF_HEALING_ENABLED"} \
     -v "$workspace_dir:/workspace" \
     "${extra_mount_flags[@]}" \
     "${config_mount_flags[@]}" \
