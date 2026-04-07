@@ -126,6 +126,7 @@ run_container() {
     -e DISCOVERY_CAPTURE_ENABLED="$capture_enabled" \
     -e DISCOVERY_CAPTURE_DIR="/workspace/$capture_dir_name" \
     -e HOST_WORKSPACE_DIR="$workspace_dir" \
+    -e IMAGE_NAME="$image_name" \
     -e SANDBOX_UID="${SANDBOX_UID:-$(id -u)}" \
     -e SANDBOX_GID="${SANDBOX_GID:-$(id -g)}" \
     -e SANDBOX_USER="${SANDBOX_USER:-$(id -un)}" \

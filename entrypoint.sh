@@ -122,7 +122,7 @@ apply_discovery_firewall() {
     printf 'When done, exit the container (Ctrl+D). The pcap file persists on the host.\n'
     printf 'Then extract DNS and TLS hostname lists with:\n'
     printf '  docker run --rm --entrypoint capture-copilot-destinations.sh \\\n'
-    printf '    -v "%s:/workspace" copilot-sandbox extract %s\n' "$host_workspace" "$capture_dir"
+    printf '    -v "%s:/workspace" %s extract %s\n' "$host_workspace" "${IMAGE_NAME:-copilot-sandbox}" "$capture_dir"
   fi
 }
 

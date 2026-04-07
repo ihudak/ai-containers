@@ -46,7 +46,7 @@ Extract the DNS and TLS hostname lists:
 
 ```bash
 docker run --rm --entrypoint capture-copilot-destinations.sh \
-  -v "/path/to/your/repo:/workspace" copilot-sandbox extract /workspace/.copilot-discovery
+  -v "/path/to/your/repo:/workspace" "${IMAGE_NAME:-copilot-sandbox}" extract /workspace/.copilot-discovery
 ```
 
 The container prints this command with the correct path when discovery mode starts. The output lists:
