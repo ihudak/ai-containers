@@ -6,9 +6,9 @@ domains_file="${ALLOWLIST_DOMAINS_FILE:-/tmp/allowlist-domains.txt}"
 cidrs_file="${ALLOWLIST_CIDRS_FILE:-/tmp/allowlist-cidrs.txt}"
 ipv4_set_name="${ALLOWLIST_IPV4_SET:-allowed_ipv4}"
 ipv6_set_name="${ALLOWLIST_IPV6_SET:-allowed_ipv6}"
-capture_dir="${DISCOVERY_CAPTURE_DIR:-/workspace/.copilot-discovery}"
+capture_dir="${DISCOVERY_CAPTURE_DIR:-/workspace/.agent-discovery}"
 capture_enabled="${DISCOVERY_CAPTURE_ENABLED:-1}"
-blocked_capture_dir="${BLOCKED_CAPTURE_DIR:-/workspace/.copilot-blocked}"
+blocked_capture_dir="${BLOCKED_CAPTURE_DIR:-/workspace/.agent-blocked}"
 blocked_capture_enabled="${BLOCKED_CAPTURE_ENABLED:-1}"
 sandbox_user="${SANDBOX_USER:-user}"
 
@@ -116,13 +116,13 @@ apply_discovery_firewall() {
   ip6tables -P OUTPUT ACCEPT 2>/dev/null || true
 
   if [[ "$capture_enabled" == "1" ]]; then
-    /usr/local/bin/capture-copilot-destinations.sh start "$capture_dir"
+    /usr/local/bin/capture-agent-destinations.sh start "$capture_dir"
     local host_workspace="${HOST_WORKSPACE_DIR:-\$(pwd)}"
     printf 'Discovery capture started in %s\n' "$capture_dir"
     printf 'When done, exit the container (Ctrl+D). The pcap file persists on the host.\n'
     printf 'Then extract DNS and TLS hostname lists with:\n'
-    printf '  docker run --rm --entrypoint capture-copilot-destinations.sh \\\n'
-    printf '    -v "%s:/workspace" %s extract %s\n' "$host_workspace" "${IMAGE_NAME:-copilot-sandbox}" "$capture_dir"
+    printf '  docker run --rm --entrypoint capture-agent-destinations.sh \\\n'
+    printf '    -v "%s:/workspace" %s extract %s\n' "$host_workspace" "${IMAGE_NAME:-ai-sandbox}" "$capture_dir"
   fi
 }
 
@@ -151,7 +151,7 @@ case "$mode" in
     setup_sandbox_user
 
     # Run the interactive shell as the sandbox user so that files created
-    # during discovery (e.g. Copilot sessions in ~/.copilot, ~/.config/gh)
+    # during discovery (e.g. agent sessions in ~/.copilot, ~/.kiro, ~/.config/gh)
     # are owned by the sandbox UID/GID — not root. This prevents permission
     # errors when the container is later run in restricted mode.
     # NET_RAW is kept (not dropped) so the sandbox user can run tcpdump if needed.

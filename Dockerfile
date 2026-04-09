@@ -48,18 +48,27 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | \
   apt update && apt install -y gh && \
   rm -rf /var/lib/apt/lists/*
 
-# Copilot CLI + Angular CLI
+# GitHub Copilot CLI + Angular CLI
 RUN npm install -g @github/copilot @angular/cli
 
+# Kiro CLI (optional — only installed when INSTALL_KIRO=1 is passed at build time)
+ARG INSTALL_KIRO=0
+RUN if [ "$INSTALL_KIRO" = "1" ]; then \
+  curl -fsSL https://cli.kiro.dev/install | bash && \
+  cp /root/.local/bin/kiro-cli /usr/local/bin/kiro-cli && \
+  cp /root/.local/bin/kiro-cli-chat /usr/local/bin/kiro-cli-chat && \
+  cp /root/.local/bin/kiro-cli-term /usr/local/bin/kiro-cli-term; \
+  fi
+
 COPY refresh-ipset-allowlist.sh /usr/local/bin/
-COPY capture-copilot-destinations.sh /usr/local/bin/
+COPY capture-agent-destinations.sh /usr/local/bin/
 COPY capture-blocked-traffic.sh /usr/local/bin/
 COPY allowlist-domains.txt /tmp/
 COPY allowlist-cidrs.txt /tmp/
 COPY allowlist-proxy-domains.txt /tmp/
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /usr/local/bin/refresh-ipset-allowlist.sh \
-  /usr/local/bin/capture-copilot-destinations.sh \
+  /usr/local/bin/capture-agent-destinations.sh \
   /usr/local/bin/capture-blocked-traffic.sh \
   /entrypoint.sh
 

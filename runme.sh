@@ -9,12 +9,12 @@ Usage:
   ./runme.sh discovery [workspace-dir]
 
 Commands:
-  build       Build the dev-container image from this asset directory
+  build       Build the AI sandbox image from this asset directory
   restricted  Run the container with the firewall enabled (agent runs as non-root, NET_ADMIN/NET_RAW dropped)
   discovery   Run the container with unrestricted egress and background capture (runs as sandbox user)
 
 Environment variables:
-  IMAGE_NAME          Image to use or build (default: copilot-sandbox)
+  IMAGE_NAME          Image to use or build (default: ai-sandbox)
   SSH_SCOPE_DIR       Host SSH subdirectory to mount as ~/.ssh (default: ~/.ssh)
   SANDBOX_UID         UID for the container user (default: host user's id -u)
   SANDBOX_GID         GID for the container user (default: host user's id -g)
@@ -33,11 +33,19 @@ EOF
 
 command="${1:-restricted}"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-image_name="${IMAGE_NAME:-copilot-sandbox}"
+image_name="${IMAGE_NAME:-ai-sandbox}"
 
 build_image() {
   local build_image_name="${1:-$image_name}"
-  docker build -t "$build_image_name" "$script_dir"
+  local build_args=()
+
+  # Detect whether Kiro CLI should be installed into the image.
+  # Installs if ~/.kiro exists on the host or kiro.dev is reachable.
+  if [[ -d "$HOME/.kiro" ]] || curl -fsS --max-time 3 -o /dev/null https://kiro.dev 2>/dev/null; then
+    build_args+=(--build-arg INSTALL_KIRO=1)
+  fi
+
+  docker build "${build_args[@]}" -t "$build_image_name" "$script_dir"
 }
 
 
@@ -65,7 +73,7 @@ run_container() {
   local mode="$1"
   local workspace_dir
   workspace_dir="$(resolve_path "${2:-$PWD}")"
-  local capture_dir_name="${DISCOVERY_CAPTURE_DIR_NAME:-.copilot-discovery}"
+  local capture_dir_name="${DISCOVERY_CAPTURE_DIR_NAME:-.agent-discovery}"
   local capture_enabled="0"
   local ssh_scope_dir
   ssh_scope_dir="$(resolve_path "${SSH_SCOPE_DIR:-$HOME/.ssh}")"
@@ -82,7 +90,7 @@ run_container() {
 
   # In restricted mode, config dirs are mounted into the sandbox user's home.
   # In discovery mode, configs also mount into the sandbox user's home so that
-  # files created during discovery (e.g. Copilot sessions) have correct ownership
+  # files created during discovery (e.g. AI agent sessions) have correct ownership
   # when the container is later run in restricted mode.
   local sandbox_username="${SANDBOX_USER:-$(id -un)}"
   local dev_home="/home/$sandbox_username"
@@ -113,6 +121,8 @@ run_container() {
   add_mount_if_exists config_mount_flags "$ssh_scope_dir"     "$dev_home/.ssh"       ro
   add_mount_if_exists config_mount_flags "$HOME/.config/gh"   "$dev_home/.config/gh"
   add_mount_if_exists config_mount_flags "$HOME/.copilot"     "$dev_home/.copilot"
+  add_mount_if_exists config_mount_flags "$HOME/.kiro"        "$dev_home/.kiro"
+  add_mount_if_exists config_mount_flags "$HOME/.local/share/kiro-cli" "$dev_home/.local/share/kiro-cli"
   add_mount_if_exists config_mount_flags "$HOME/.aws"         "$dev_home/.aws"
   add_mount_if_exists config_mount_flags "$HOME/.azure"       "$dev_home/.azure"
   add_mount_if_exists config_mount_flags "$HOME/.kube"        "$dev_home/.kube"

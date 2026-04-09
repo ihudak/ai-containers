@@ -14,10 +14,10 @@ set -euo pipefail
 #   blocked-ips.txt      deduplicated IPs      → copy-paste into allowlist-cidrs.txt
 #
 # Internal state (dns-map, caches) is stored under a root-only directory
-# (/run/copilot-blocked-internal by default) so the sandbox user cannot
+# (/run/agent-blocked-internal by default) so the sandbox user cannot
 # tamper with the self-healing lookup tables.
 
-capture_dir="${1:-/workspace/.copilot-blocked}"
+capture_dir="${1:-/workspace/.agent-blocked}"
 nflog_group="${NFLOG_GROUP:-100}"
 domains_file="${ALLOWLIST_DOMAINS_FILE:-/tmp/allowlist-domains.txt}"
 proxy_domains_file="${ALLOWLIST_PROXY_DOMAINS_FILE:-/tmp/allowlist-proxy-domains.txt}"
@@ -26,7 +26,7 @@ ipv6_set_name="${ALLOWLIST_IPV6_SET:-allowed_ipv6}"
 self_healing="${SELF_HEALING_ENABLED:-1}"
 
 # Internal state directory — root-only, not on the bind-mounted workspace.
-internal_dir="/run/copilot-blocked-internal"
+internal_dir="/run/agent-blocked-internal"
 mkdir -p "$internal_dir"
 chmod 700 "$internal_dir"
 

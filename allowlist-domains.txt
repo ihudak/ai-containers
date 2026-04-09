@@ -27,6 +27,17 @@ githubcopilot.com
 # GitHub Models / multi-model support (required by newer Copilot CLI versions)
 models.inference.ai.azure.com
 
+# Kiro CLI (core endpoints — see https://kiro.dev/docs/cli/privacy-and-security/firewalls/)
+app.kiro.dev
+cli.kiro.dev
+kiro.dev
+prod.us-east-1.auth.desktop.kiro.dev
+prod.us-east-1.telemetry.desktop.kiro.dev
+prod.download.desktop.kiro.dev
+q.us-east-1.amazonaws.com
+q.eu-central-1.amazonaws.com
+desktop-release.q.us-east-1.amazonaws.com
+
 # GitHub content
 raw.githubusercontent.com
 objects.githubusercontent.com
@@ -61,6 +72,11 @@ repo.maven.apache.org
 plugins.gradle.org
 plugins-artifacts.gradle.org
 services.gradle.org
+repo.yarnpkg.com
+cdn.cypress.io
+download.cypress.io
+opencollective.com
+registry.yarnpkg.com
 
 # MCP targets
 # Add the concrete endpoints for every MCP server you configure.
