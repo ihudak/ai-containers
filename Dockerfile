@@ -72,17 +72,17 @@ RUN chmod +x /usr/local/bin/refresh-ipset-allowlist.sh \
   /usr/local/bin/capture-blocked-traffic.sh \
   /entrypoint.sh
 
-# Install dtclt and dtmgd
+# Install dtctl and dtmgd
 RUN set -eux; \
-    if p="$(command -v dtctl 2>/dev/null)"; then \
-      cp -- "$p" /usr/local/bin/dtctl; \
-      chmod +x /usr/local/bin/dtctl; \
-    fi; \
-    if p="$(command -v dtmgd 2>/dev/null)"; then \
-      cp -- "$p" /usr/local/bin/dtmgd; \
-      chmod +x /usr/local/bin/dtmgd; \
-    fi
-
+    ARCH=$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/'); \
+    OS=$(uname -s | tr '[:upper:]' '[:lower:]'); \
+    TAG=$(curl -sI -L https://github.com/dynatrace-oss/dtctl/releases/latest | tr -d '\r' | awk -F/ '/^location:/{print $NF}' | tail -1); \
+    curl -fsSL "https://github.com/dynatrace-oss/dtctl/releases/download/${TAG}/dtctl_${TAG#v}_${OS}_${ARCH}.tar.gz" \
+      | tar xz -C /usr/local/bin dtctl; \
+    TAG=$(curl -sI -L https://github.com/dynatrace-oss/dtmgd/releases/latest | tr -d '\r' | awk -F/ '/^location:/{print $NF}' | tail -1); \
+    curl -fsSL "https://github.com/dynatrace-oss/dtmgd/releases/download/${TAG}/dtmgd_${TAG#v}_${OS}_${ARCH}.tar.gz" \
+      | tar xz -C /usr/local/bin dtmgd; \
+    chmod +x /usr/local/bin/dtctl /usr/local/bin/dtmgd
 
 # The sandbox user is NOT created here.
 # The entrypoint creates it at startup using SANDBOX_UID/SANDBOX_GID env vars.
