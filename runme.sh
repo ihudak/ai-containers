@@ -126,6 +126,8 @@ run_container() {
   add_mount_if_exists config_mount_flags "$HOME/.aws"         "$dev_home/.aws"
   add_mount_if_exists config_mount_flags "$HOME/.azure"       "$dev_home/.azure"
   add_mount_if_exists config_mount_flags "$HOME/.kube"        "$dev_home/.kube"
+  add_mount_if_exists config_mount_flags "$HOME/.config/dtctl" "$dev_home/.config/dtctl"
+  add_mount_if_exists config_mount_flags "$HOME/.config/dtmgd" "$dev_home/.config/dtmgd"
 
   docker run -it --rm \
     "${capabilities[@]}" \

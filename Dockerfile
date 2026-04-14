@@ -55,9 +55,9 @@ RUN npm install -g @github/copilot @angular/cli
 ARG INSTALL_KIRO=0
 RUN if [ "$INSTALL_KIRO" = "1" ]; then \
   curl -fsSL https://cli.kiro.dev/install | bash && \
-  cp /root/.local/bin/kiro-cli /usr/local/bin/kiro-cli && \
-  cp /root/.local/bin/kiro-cli-chat /usr/local/bin/kiro-cli-chat && \
-  cp /root/.local/bin/kiro-cli-term /usr/local/bin/kiro-cli-term; \
+  cp ~/.local/bin/kiro-cli /usr/local/bin/kiro-cli && \
+  cp ~/.local/bin/kiro-cli-chat /usr/local/bin/kiro-cli-chat && \
+  cp ~/.local/bin/kiro-cli-term /usr/local/bin/kiro-cli-term; \
   fi
 
 COPY refresh-ipset-allowlist.sh /usr/local/bin/
@@ -71,6 +71,18 @@ RUN chmod +x /usr/local/bin/refresh-ipset-allowlist.sh \
   /usr/local/bin/capture-agent-destinations.sh \
   /usr/local/bin/capture-blocked-traffic.sh \
   /entrypoint.sh
+
+# Install dtclt and dtmgd
+RUN set -eux; \
+    if p="$(command -v dtctl 2>/dev/null)"; then \
+      cp -- "$p" /usr/local/bin/dtctl; \
+      chmod +x /usr/local/bin/dtctl; \
+    fi; \
+    if p="$(command -v dtmgd 2>/dev/null)"; then \
+      cp -- "$p" /usr/local/bin/dtmgd; \
+      chmod +x /usr/local/bin/dtmgd; \
+    fi
+
 
 # The sandbox user is NOT created here.
 # The entrypoint creates it at startup using SANDBOX_UID/SANDBOX_GID env vars.
