@@ -58,7 +58,7 @@ setup_sandbox_user() {
   mkdir -p "$home_dir"
   cp -rn /etc/skel/. "$home_dir/" 2>/dev/null || true
   chown "$uid:$gid" "$home_dir"
-  find "$home_dir" -maxdepth 1 ! -type d -exec chown "$uid:$gid" {} + 2>/dev/null || true
+  find "$home_dir" -maxdepth 1 -exec chown "$uid:$gid" {} + 2>/dev/null || true
 
   sandbox_user="$(getent passwd "$uid" | cut -d: -f1)"
 }
