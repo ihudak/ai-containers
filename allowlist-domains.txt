@@ -78,6 +78,14 @@ download.cypress.io
 opencollective.com
 registry.yarnpkg.com
 
+# Claude Code (Anthropic)
+api.anthropic.com
+claude.ai
+statsig.anthropic.com
+statsigapi.net
+sentry.io
+o4507156944379904.ingest.sentry.io
+
 # MCP targets
 # Add the concrete endpoints for every MCP server you configure.
 # Example: the concrete environment URLs used by your MCP server.

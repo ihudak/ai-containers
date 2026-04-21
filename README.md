@@ -6,7 +6,7 @@ It packages a CLI-only Docker-based workspace for running AI coding agents (GitH
 
 ## What is included
 
-- `Dockerfile` builds the image with Git, GitHub CLI, GitHub Copilot CLI, Kiro CLI (optional), Java, Node.js, Angular CLI, AWS CLI, Azure CLI, `kubectl`, packet capture tools, and a non-root sandbox user created at runtime.
+- `Dockerfile` builds the image with Git, GitHub CLI, GitHub Copilot CLI, Kiro CLI (optional), Claude Code, Java, Node.js, Angular CLI, AWS CLI, Azure CLI, `kubectl`, packet capture tools, and a non-root sandbox user created at runtime.
 - `entrypoint.sh` applies either a restricted firewall or a discovery mode at container startup. In both modes it creates the sandbox user and drops to it via `capsh`. Restricted mode drops `NET_ADMIN` and `NET_RAW`; discovery mode drops only `NET_ADMIN` (keeping `NET_RAW` for tcpdump).
 - `refresh-ipset-allowlist.sh` resolves the concrete allowlist domains into IPv4 and IPv6 `ipset` sets.
 - `capture-blocked-traffic.sh` runs as a background root daemon in restricted mode, logging every blocked outbound destination to `/workspace/.agent-blocked/`.
@@ -82,6 +82,7 @@ The container automatically mounts the following directories from the host (if t
 | `~/.copilot` | `~/.copilot` | read-write |
 | `~/.kiro` | `~/.kiro` | read-write |
 | `~/.local/share/kiro-cli` | `~/.local/share/kiro-cli` | read-write |
+| `~/.claude` | `~/.claude` | read-write |
 | `~/.aws` | `~/.aws` | read-write |
 | `~/.azure` | `~/.azure` | read-write |
 | `~/.kube` | `~/.kube` | read-write |

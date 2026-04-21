@@ -123,6 +123,7 @@ run_container() {
   add_mount_if_exists config_mount_flags "$HOME/.copilot"     "$dev_home/.copilot"
   add_mount_if_exists config_mount_flags "$HOME/.kiro"        "$dev_home/.kiro"
   add_mount_if_exists config_mount_flags "$HOME/.local/share/kiro-cli" "$dev_home/.local/share/kiro-cli"
+  add_mount_if_exists config_mount_flags "$HOME/.claude"      "$dev_home/.claude"
   add_mount_if_exists config_mount_flags "$HOME/.aws"         "$dev_home/.aws"
   add_mount_if_exists config_mount_flags "$HOME/.azure"       "$dev_home/.azure"
   add_mount_if_exists config_mount_flags "$HOME/.kube"        "$dev_home/.kube"
