@@ -124,7 +124,7 @@ dtctl=0.25.0
 dtmgd=0.0.23
 ```
 
-If the API call fails (rate limit, bad token, or network error), the build prints a clear error message, skips the tool, and **continues successfully**. dtctl/dtmgd can be installed manually later.
+If the API call fails (rate limit, bad token, or network error), the build prints a clear error message, skips the tool, and **continues successfully**. dtctl/dtmgd can be installed manually later. An expired or invalid `GITHUB_TOKEN` is treated the same as a network error — the build does not fail, but the tool is skipped with a warning.
 
 > **Note on token security:** `GITHUB_TOKEN` is passed as a [BuildKit secret](https://docs.docker.com/build/building/secrets/) — it is never written to any image layer or visible in `docker history`. Safe to use even if you plan to publish the image. Requires Docker ≥ 23 (BuildKit default).
 
@@ -148,7 +148,7 @@ Add the discovered hostnames to `allowlist-domains.d/custom.txt`, rebuild the im
 
 ## Mounting additional repositories
 
-Set `EXTRA_MOUNTS` to a space-separated list of host paths. Append `:ro` or `:rw` to control per-directory access. The default is read-write.
+Set `EXTRA_MOUNTS` to a space-separated list of host paths. Append `:ro` or `:rw` to control per-directory access. The default is read-write. **Paths with spaces are not supported** (the variable is split on whitespace).
 
 ```bash
 # backend is the primary workspace; ui is read-write, reference-docs is read-only
@@ -173,6 +173,7 @@ Each directory is only mounted when its corresponding component is enabled in `s
 | `~/.kiro` | `~/.kiro` | read-write | `kiro` |
 | `~/.local/share/kiro-cli` | `~/.local/share/kiro-cli` | read-write | `kiro` |
 | `~/.claude` | `~/.claude` | read-write | `claude-code` |
+| `~/.claude.json` | `~/.claude.json` | read-write | `claude-code` |
 | `~/.codex` | `~/.codex` | read-write | `codex` |
 | `~/.gemini` | `~/.gemini` | read-write | `gemini` |
 | `~/.aws` | `~/.aws` | read-write | `aws-cli` |
@@ -248,6 +249,8 @@ After editing any fragment file, run `./runme.sh build` to regenerate the image.
 
 - Plain `iptables` cannot pre-resolve wildcard domains such as `*.githubcopilot.com` or `*.kiro.dev` into IP addresses. The self-healing daemon handles this reactively by auto-allowing IPs whose resolved domains match wildcard patterns in `allowlist-proxy-domains.d/`. An upstream proxy provides proactive enforcement if available.
 - **DNS is unrestricted.** The firewall allows all outbound DNS (port 53) to any resolver. This is required for domain resolution but means DNS tunneling is theoretically possible. For higher-security deployments, restrict DNS to a specific resolver by adding `--dns 8.8.8.8` to the `docker run` command and tightening the iptables DNS rules in `entrypoint.sh`.
+- **IPv6 firewall may be unavailable.** Some environments (notably WSL2 with the nf_tables backend) lack `ip6table_filter`. When this happens, the IPv4 firewall works normally but IPv6 egress is completely unrestricted. The container prints a prominent warning at startup. Set `ALLOW_IPV6_BYPASS=1` to acknowledge the risk and suppress the hint.
+- **GraalVM Oracle licensing.** The `graalvm` key in `sandbox.conf` installs Oracle GraalVM, which is free for production use under the [GraalVM Free Terms and Conditions (GFTC)](https://www.oracle.com/downloads/licenses/graal-free-license.html) since September 2023. If you distribute images built with `graalvm=<version>`, ensure your use complies with the GFTC. GraalVM Community Edition (`graalvm-ce`) is fully open-source under GPLv2+CE.
 - The per-component domain fragments are a practical baseline, not a guarantee that every future agent endpoint is covered. Use discovery mode to find gaps.
 - The asset set is intentionally CLI-only and does not depend on VS Code dev containers.
 - All optional components — including Kiro CLI — are controlled solely by `sandbox.conf`. There is no runtime auto-detection.

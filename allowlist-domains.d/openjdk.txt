@@ -8,3 +8,6 @@ services.gradle.org
 api.adoptium.net
 
 # GraalVM CE (via SDKMAN) — releases hosted on github.com (already in base.txt)
+
+# GraalVM Oracle (via SDKMAN) — downloads from Oracle CDN
+download.oracle.com

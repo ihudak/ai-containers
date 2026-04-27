@@ -1,6 +1,7 @@
 # rustup + Rust — included when rust toolchain is configured
 sh.rustup.rs
 static.rust-lang.org
+doc.rust-lang.org
 crates.io
 index.crates.io
 static.crates.io

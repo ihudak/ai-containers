@@ -1,0 +1,5 @@
+# Angular CLI — included when angular-cli is enabled
+# ng new / ng add use npm (registry.npmjs.org is in base.txt).
+# These cover Angular-specific CDN and telemetry endpoints.
+unpkg.com
+cdn.jsdelivr.net

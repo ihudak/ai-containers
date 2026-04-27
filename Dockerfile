@@ -1,4 +1,8 @@
 FROM ubuntu:24.04
+LABEL org.opencontainers.image.title="AI Sandbox Container" \
+      org.opencontainers.image.description="Isolated Docker workspace for AI coding agents with deny-by-default firewall" \
+      org.opencontainers.image.source="https://github.com/ihudak/ai-containers" \
+      org.opencontainers.image.licenses="MIT"
 ENV DEBIAN_FRONTEND=noninteractive
 SHELL ["/bin/bash", "-c"]
 
@@ -69,63 +73,58 @@ RUN if [ "$INSTALL_SDKMAN" = "1" ]; then \
     fi
 # Install each requested JVM candidate in a separate RUN so layer caching is useful.
 RUN if [ "$INSTALL_SDKMAN" = "1" ] && [ -n "$OPENJDK_VERSIONS" ]; then \
-      for ver in $OPENJDK_VERSIONS; do \
-        bash -c "source $SDKMAN_DIR/bin/sdkman-init.sh && sdk install java ${ver}-tem"; \
-      done && \
-      # Set the first listed version as default
-      first=$(echo $OPENJDK_VERSIONS | awk '{print $1}') && \
-      bash -c "source $SDKMAN_DIR/bin/sdkman-init.sh && sdk default java ${first}-tem" && \
-      # Symlink java/javac into PATH
-      ln -sf "$SDKMAN_DIR/candidates/java/current/bin/java"  /usr/local/bin/java && \
-      ln -sf "$SDKMAN_DIR/candidates/java/current/bin/javac" /usr/local/bin/javac; \
+      bash -c "source $SDKMAN_DIR/bin/sdkman-init.sh && \
+        for ver in $OPENJDK_VERSIONS; do sdk install java \${ver}-tem; done"; \
     fi
 RUN if [ "$INSTALL_SDKMAN" = "1" ] && [ -n "$GRAALVM_VERSIONS" ]; then \
-      for ver in $GRAALVM_VERSIONS; do \
-        bash -c "source $SDKMAN_DIR/bin/sdkman-init.sh && sdk install java ${ver}-graalce"; \
-      done && \
-      ln -sf "$SDKMAN_DIR/candidates/java/current/bin/native-image" /usr/local/bin/native-image || true && \
-      # Re-set OpenJDK as the default java if it was configured, since GraalVM
-      # install may have changed the 'current' symlink.
-      if [ -n "$OPENJDK_VERSIONS" ]; then \
-        first=$(echo $OPENJDK_VERSIONS | awk '{print $1}') && \
-        bash -c "source $SDKMAN_DIR/bin/sdkman-init.sh && sdk default java ${first}-tem"; \
-      fi; \
+      bash -c "source $SDKMAN_DIR/bin/sdkman-init.sh && \
+        for ver in $GRAALVM_VERSIONS; do sdk install java \${ver}-graalce; done"; \
     fi
 RUN if [ "$INSTALL_SDKMAN" = "1" ] && [ -n "$GRAALVM_ORACLE_VERSIONS" ]; then \
-      for ver in $GRAALVM_ORACLE_VERSIONS; do \
-        bash -c "source $SDKMAN_DIR/bin/sdkman-init.sh && sdk install java ${ver}-graal"; \
-      done && \
-      ln -sf "$SDKMAN_DIR/candidates/java/current/bin/native-image" /usr/local/bin/native-image || true && \
-      # Re-set OpenJDK as the default if configured
+      bash -c "source $SDKMAN_DIR/bin/sdkman-init.sh && \
+        for ver in $GRAALVM_ORACLE_VERSIONS; do sdk install java \${ver}-graal; done"; \
+    fi
+# Set the default JDK once after all JVM installs to avoid race conditions.
+# Priority: first OpenJDK version > first GraalVM CE > first GraalVM Oracle.
+RUN if [ "$INSTALL_SDKMAN" = "1" ]; then \
+      default_id="" && \
       if [ -n "$OPENJDK_VERSIONS" ]; then \
-        first=$(echo $OPENJDK_VERSIONS | awk '{print $1}') && \
-        bash -c "source $SDKMAN_DIR/bin/sdkman-init.sh && sdk default java ${first}-tem"; \
+        default_id="$(echo $OPENJDK_VERSIONS | awk '{print $1}')-tem"; \
+      elif [ -n "$GRAALVM_VERSIONS" ]; then \
+        default_id="$(echo $GRAALVM_VERSIONS | awk '{print $1}')-graalce"; \
+      elif [ -n "$GRAALVM_ORACLE_VERSIONS" ]; then \
+        default_id="$(echo $GRAALVM_ORACLE_VERSIONS | awk '{print $1}')-graal"; \
+      fi && \
+      if [ -n "$default_id" ]; then \
+        bash -c "source $SDKMAN_DIR/bin/sdkman-init.sh && sdk default java $default_id" && \
+        ln -sf "$SDKMAN_DIR/candidates/java/current/bin/java"  /usr/local/bin/java && \
+        ln -sf "$SDKMAN_DIR/candidates/java/current/bin/javac" /usr/local/bin/javac; \
+      fi && \
+      # Symlink native-image if any GraalVM variant is installed
+      if [ -n "$GRAALVM_VERSIONS" ] || [ -n "$GRAALVM_ORACLE_VERSIONS" ]; then \
+        ln -sf "$SDKMAN_DIR/candidates/java/current/bin/native-image" /usr/local/bin/native-image 2>/dev/null || true; \
       fi; \
     fi
 RUN if [ "$INSTALL_SDKMAN" = "1" ] && [ -n "$KOTLIN_VERSIONS" ]; then \
-      for ver in $KOTLIN_VERSIONS; do \
-        bash -c "source $SDKMAN_DIR/bin/sdkman-init.sh && sdk install kotlin $ver"; \
-      done && \
+      bash -c "source $SDKMAN_DIR/bin/sdkman-init.sh && \
+        for ver in $KOTLIN_VERSIONS; do sdk install kotlin \$ver; done" && \
       ln -sf "$SDKMAN_DIR/candidates/kotlin/current/bin/kotlin"  /usr/local/bin/kotlin && \
       ln -sf "$SDKMAN_DIR/candidates/kotlin/current/bin/kotlinc" /usr/local/bin/kotlinc; \
     fi
 RUN if [ "$INSTALL_SDKMAN" = "1" ] && [ -n "$SCALA_VERSIONS" ]; then \
-      for ver in $SCALA_VERSIONS; do \
-        bash -c "source $SDKMAN_DIR/bin/sdkman-init.sh && sdk install scala $ver"; \
-      done && \
+      bash -c "source $SDKMAN_DIR/bin/sdkman-init.sh && \
+        for ver in $SCALA_VERSIONS; do sdk install scala \$ver; done" && \
       ln -sf "$SDKMAN_DIR/candidates/scala/current/bin/scala"  /usr/local/bin/scala && \
       ln -sf "$SDKMAN_DIR/candidates/scala/current/bin/scalac" /usr/local/bin/scalac; \
     fi
 RUN if [ "$INSTALL_SDKMAN" = "1" ] && [ -n "$MAVEN_VERSIONS" ]; then \
-      for ver in $MAVEN_VERSIONS; do \
-        bash -c "source $SDKMAN_DIR/bin/sdkman-init.sh && sdk install maven $ver"; \
-      done && \
+      bash -c "source $SDKMAN_DIR/bin/sdkman-init.sh && \
+        for ver in $MAVEN_VERSIONS; do sdk install maven \$ver; done" && \
       ln -sf "$SDKMAN_DIR/candidates/maven/current/bin/mvn" /usr/local/bin/mvn; \
     fi
 RUN if [ "$INSTALL_SDKMAN" = "1" ] && [ -n "$GRADLE_VERSIONS" ]; then \
-      for ver in $GRADLE_VERSIONS; do \
-        bash -c "source $SDKMAN_DIR/bin/sdkman-init.sh && sdk install gradle $ver"; \
-      done && \
+      bash -c "source $SDKMAN_DIR/bin/sdkman-init.sh && \
+        for ver in $GRADLE_VERSIONS; do sdk install gradle \$ver; done" && \
       ln -sf "$SDKMAN_DIR/candidates/gradle/current/bin/gradle" /usr/local/bin/gradle; \
     fi
 # Make SDKMAN available in all bash shells
@@ -146,8 +145,8 @@ RUN apt-get update && apt-get install -y \
     rm -rf /var/lib/apt/lists/* && \
     curl -fsSL https://pyenv.run | PYENV_ROOT="$PYENV_ROOT" bash && \
     chmod -R a+rX "$PYENV_ROOT" && \
-    # Always install latest stable Python
-    latest=$("$PYENV_ROOT/bin/pyenv" install --list | grep -E '^\s+3\.[0-9]+\.[0-9]+$' | tail -1 | tr -d ' ') && \
+    # Always install latest stable Python (sort -V for correct ordering with 3.20+)
+    latest=$("$PYENV_ROOT/bin/pyenv" install --list | grep -E '^\s+3\.[0-9]+\.[0-9]+$' | tr -d ' ' | sort -V | tail -1) && \
     "$PYENV_ROOT/bin/pyenv" install "$latest" && \
     "$PYENV_ROOT/bin/pyenv" global "$latest" && \
     # Install extra versions
@@ -158,7 +157,14 @@ RUN apt-get update && apt-get install -y \
     fi && \
     # Symlink python3/pip3 into PATH
     ln -sf "$PYENV_ROOT/shims/python3" /usr/local/bin/python3 && \
-    ln -sf "$PYENV_ROOT/shims/pip3"    /usr/local/bin/pip3
+    ln -sf "$PYENV_ROOT/shims/pip3"    /usr/local/bin/pip3 && \
+    # Remove compile-time -dev packages no longer needed after Python is built.
+    # Keep runtime libs (libssl3, zlib1g, etc.) that Python links against.
+    apt-get purge -y --auto-remove \
+      build-essential libssl-dev zlib1g-dev libbz2-dev libreadline-dev \
+      libsqlite3-dev libncursesw5-dev tk-dev libxml2-dev \
+      libxmlsec1-dev libffi-dev liblzma-dev && \
+    rm -rf /var/lib/apt/lists/*
 RUN printf '\nexport PYENV_ROOT=%s\nexport PATH="$PYENV_ROOT/bin:$PYENV_ROOT/shims:$PATH"\n' \
       "$PYENV_ROOT" >> /etc/bash.bashrc
 
@@ -290,7 +296,9 @@ RUN if [ "$INSTALL_KIRO" = "1" ]; then \
       install_dir=$(dirname "$(command -v kiro-cli 2>/dev/null || find /root -name kiro-cli -type f 2>/dev/null | head -1)") && \
       for bin in kiro-cli kiro-cli-chat kiro-cli-term; do \
         [ -f "$install_dir/$bin" ] && cp "$install_dir/$bin" /usr/local/bin/; \
-      done; \
+      done && \
+      # Verify the install succeeded
+      command -v kiro-cli >/dev/null || { echo "ERROR: kiro-cli not found after install"; exit 1; }; \
     fi
 
 # ── Optional: dtctl and dtmgd ───────────────────────────────────────────────────

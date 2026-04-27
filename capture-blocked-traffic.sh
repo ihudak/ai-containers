@@ -31,6 +31,7 @@ mkdir -p "$internal_dir"
 chmod 700 "$internal_dir"
 
 dns_map="$internal_dir/dns-map.txt"
+dns_map_max_lines=10000
 blocked_log="$capture_dir/blocked.log"
 blocked_domains="$capture_dir/blocked-domains.txt"
 blocked_ips="$capture_dir/blocked-ips.txt"
@@ -149,6 +150,10 @@ start_dns_map_builder() {
       # dns.resp.name can return comma-separated duplicates; take the first.
       local name="${raw_name%%,*}"
       [[ -z "$name" ]] && continue
+      # Cap dns_map size to prevent unbounded growth in long-running containers.
+      if [ "$(wc -l < "$dns_map" 2>/dev/null || echo 0)" -ge "$dns_map_max_lines" ]; then
+        tail -n $(( dns_map_max_lines / 2 )) "$dns_map" > "$dns_map.tmp" && mv "$dns_map.tmp" "$dns_map"
+      fi
       for ip in ${a_list//,/ }; do
         [[ -z "$ip" ]] && continue
         grep -qxF "$ip $name" "$dns_map" 2>/dev/null || printf '%s %s\n' "$ip" "$name" >> "$dns_map"

@@ -49,8 +49,9 @@ check_config() {
 }
 
 # Returns 0 if the component is set to ON in sandbox.conf, 1 otherwise.
+# Uses get_versions internally so it tolerates whitespace (e.g. "copilot = ON").
 is_enabled() {
-  grep -q "^${1}=ON$" "$config_file" 2>/dev/null
+  [[ "$(get_versions "$1")" == "ON" ]]
 }
 
 # Returns 0 if at least one of the given components is ON.
@@ -134,6 +135,13 @@ validate_config() {
     printf '       Use a single version, e.g.: rails=8.0.2\n' >&2
     exit 1
   fi
+  # angular-cli only supports a single version (ON, a version number, or OFF)
+  local angular_val; angular_val=$(get_versions angular-cli)
+  if [[ "$angular_val" == *,* ]]; then
+    printf 'ERROR: angular-cli only supports a single version (got: "%s").\n' "$angular_val" >&2
+    printf '       Use ON (latest), a single version number (e.g. 19), or OFF.\n' >&2
+    exit 1
+  fi
 }
 
 # ── Allowlist generation ────────────────────────────────────────────────────────
@@ -192,6 +200,7 @@ generate_allowlists() {
     include_if_has_versions  "$domains_d/rvm.txt"             ruby rails
     include_if_has_versions  "$domains_d/rust.txt"            rust
     include_if_has_versions  "$domains_d/go.txt"              go
+    if is_active angular-cli; then include_fragment "$domains_d/angular-cli.txt"; fi
     include_fragment         "$domains_d/custom.txt"
   } > "${script_dir}/allowlist-domains.txt"
 

@@ -3,3 +3,4 @@ get.sdkman.io
 api.sdkman.io
 vendors.sdkman.io
 dist.sdkman.io
+download.sdkman.io
