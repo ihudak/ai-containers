@@ -1,0 +1,76 @@
+name: Update nvm version
+
+on:
+  schedule:
+    # Run every Monday at 08:00 UTC
+    - cron: '0 8 * * 1'
+  workflow_dispatch:
+
+jobs:
+  update-nvm:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get latest nvm release tag
+        id: latest
+        run: |
+          tag=$(curl -fsSL -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            https://api.github.com/repos/nvm-sh/nvm/releases/latest \
+            | jq -r '.tag_name')
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Read current nvm version
+        id: current
+        run: |
+          # Read from sandbox.conf (nvm-version=vX.Y.Z)
+          conf=$(grep '^nvm-version=' sandbox.conf | cut -d= -f2-)
+          # Read from Dockerfile ARG fallback
+          dockerfile=$(grep '^ARG NVM_VERSION=' Dockerfile | cut -d= -f2-)
+          echo "conf=$conf" >> "$GITHUB_OUTPUT"
+          echo "dockerfile=$dockerfile" >> "$GITHUB_OUTPUT"
+
+      - name: Update files if version changed
+        id: update
+        run: |
+          latest="${{ steps.latest.outputs.tag }}"
+          conf="${{ steps.current.outputs.conf }}"
+          dockerfile="${{ steps.current.outputs.dockerfile }}"
+
+          if [[ "$latest" == "$conf" && "$latest" == "$dockerfile" ]]; then
+            echo "already up to date ($latest)"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Update sandbox.conf
+          sed -i "s/^nvm-version=.*/nvm-version=${latest}/" sandbox.conf
+
+          # Update Dockerfile ARG default
+          sed -i "s/^ARG NVM_VERSION=.*/ARG NVM_VERSION=${latest}/" Dockerfile
+
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "previous=${conf:-$dockerfile}" >> "$GITHUB_OUTPUT"
+
+      - name: Create pull request
+        if: steps.update.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: update/nvm-${{ steps.latest.outputs.tag }}
+          commit-message: "chore: update nvm to ${{ steps.latest.outputs.tag }}"
+          title: "chore: update nvm to ${{ steps.latest.outputs.tag }}"
+          body: |
+            Automated update of nvm from `${{ steps.update.outputs.previous }}` to `${{ steps.latest.outputs.tag }}`.
+
+            **Changed files:**
+            - `sandbox.conf` — `nvm-version` updated
+            - `Dockerfile` — `ARG NVM_VERSION` default updated
+
+            Release notes: https://github.com/nvm-sh/nvm/releases/tag/${{ steps.latest.outputs.tag }}
+          labels: dependencies
+          delete-branch: true
