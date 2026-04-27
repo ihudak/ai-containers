@@ -3,3 +3,6 @@
 # Python source tarballs
 www.python.org
 python.org
+# pip package index (always needed since Python is always installed)
+pypi.org
+files.pythonhosted.org

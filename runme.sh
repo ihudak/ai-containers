@@ -13,6 +13,9 @@ Commands:
   restricted  Run the container with the firewall enabled (agent runs as non-root, NET_ADMIN/NET_RAW dropped)
   discovery   Run the container with unrestricted egress and background capture (runs as sandbox user)
 
+Flags:
+  --no-cache  Pass --no-cache to docker build (also: NO_CACHE=1 ./runme.sh build)
+
 Environment variables:
   IMAGE_NAME          Image to use or build (default: ai-sandbox)
   SSH_SCOPE_DIR       Host SSH subdirectory to mount as ~/.ssh (default: ~/.ssh)
@@ -64,10 +67,9 @@ any_enabled() {
 }
 
 # Returns 0 if a key is ON or has a non-empty version value (i.e. the component is active).
+# Uses get_versions so inline comments are stripped consistently.
 is_active() {
-  local val; val=$(grep "^${1}=" "$config_file" 2>/dev/null | head -1 | cut -d= -f2-)
-  val="${val#"${val%%[![:space:]]*}"}"
-  val="${val%"${val##*[![:space:]]}"}"
+  local val; val=$(get_versions "$1")
   [[ -n "$val" && "$val" != "OFF" ]]
 }
 
@@ -142,8 +144,24 @@ validate_config() {
     printf '       Use ON (latest), a single version number (e.g. 19), or OFF.\n' >&2
     exit 1
   fi
+  # SDKMAN requires full patch versions (e.g. 21.0.5, not 21).
+  # Validate that every version in each JVM key contains at least one dot.
+  local jvm_key jvm_val ver
+  for jvm_key in openjdk graalvm-ce graalvm-oracle kotlin scala maven gradle; do
+    jvm_val=$(get_versions "$jvm_key")
+    [[ -z "$jvm_val" ]] && continue
+    IFS=',' read -ra _vers <<< "$jvm_val"
+    for ver in "${_vers[@]}"; do
+      ver="${ver// /}"
+      if [[ "$ver" != *.* ]]; then
+        printf 'ERROR: %s version "%s" looks like a major version only.\n' "$jvm_key" "$ver" >&2
+        printf '       SDKMAN requires full patch versions, e.g. 21.0.5 not 21.\n' >&2
+        printf '       Run "sdk list java" inside a container to see valid identifiers.\n' >&2
+        exit 1
+      fi
+    done
+  done
 }
-
 # ── Allowlist generation ────────────────────────────────────────────────────────
 
 # Append a fragment file to stdout; silently skip if the file does not exist.
@@ -202,8 +220,8 @@ generate_allowlists() {
     # dtctl/dtmgd use version values (ON, x.y.z) not boolean ON/OFF
     if any_active dtctl dtmgd; then include_fragment "$domains_d/dynatrace.txt"; fi
     # Version-manager fragments
-    include_if_has_versions  "$domains_d/sdkman.txt"          openjdk graalvm-ce graalvm kotlin scala maven gradle
-    include_if_has_versions  "$domains_d/openjdk.txt"         openjdk graalvm-ce graalvm
+    include_if_has_versions  "$domains_d/sdkman.txt"          openjdk graalvm-ce graalvm-oracle kotlin scala maven gradle
+    include_if_has_versions  "$domains_d/openjdk.txt"         openjdk graalvm-ce graalvm-oracle
     include_fragment         "$domains_d/nvm.txt"
     include_fragment         "$domains_d/pyenv.txt"
     include_if_has_versions  "$domains_d/rvm.txt"             ruby rails
@@ -288,7 +306,7 @@ build_args_from_config() {
   fi
 
   # ── SDKMAN: auto-on if any JVM component has versions ─────────────────────
-  local jvm_keys=(openjdk graalvm-ce graalvm kotlin scala maven gradle)
+  local jvm_keys=(openjdk graalvm-ce graalvm-oracle kotlin scala maven gradle)
   if any_has_versions "${jvm_keys[@]}"; then
     _args+=(--build-arg "INSTALL_SDKMAN=1")
   else
@@ -304,7 +322,7 @@ build_args_from_config() {
   ver="$(get_versions graalvm-ce)"
   _args+=(--build-arg "GRAALVM_VERSIONS=$(versions_to_space "$ver")")
 
-  ver="$(get_versions graalvm)"
+  ver="$(get_versions graalvm-oracle)"
   _args+=(--build-arg "GRAALVM_ORACLE_VERSIONS=$(versions_to_space "$ver")")
 
   ver="$(get_versions kotlin)"

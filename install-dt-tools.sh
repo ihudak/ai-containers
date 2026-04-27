@@ -25,6 +25,8 @@ fi
 
 gh_latest_tag() {
   local repo="$1" tag="" i
+  # NOTE: Parses JSON with grep/sed because jq is not available at this build stage.
+  # This is fragile if the GitHub API response format changes.
   for i in 1 2 3; do
     tag=$(curl -fsSL ${AUTH_ARGS[@]+"${AUTH_ARGS[@]}"} "https://api.github.com/repos/${repo}/releases/latest" \
           | grep '"tag_name"' | head -1 \

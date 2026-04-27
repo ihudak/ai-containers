@@ -4,7 +4,7 @@ LABEL org.opencontainers.image.title="AI Sandbox Container" \
       org.opencontainers.image.source="https://github.com/ihudak/ai-containers" \
       org.opencontainers.image.licenses="MIT"
 ENV DEBIAN_FRONTEND=noninteractive
-SHELL ["/bin/bash", "-c"]
+SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 
 # Sandbox user: created at container startup by the entrypoint using
 # the SANDBOX_UID/SANDBOX_GID env vars that runme.sh passes automatically
@@ -13,7 +13,7 @@ SHELL ["/bin/bash", "-c"]
 # team member without rebuilding.
 
 # ── Essential packages ──────────────────────────────────────────────────────────
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
   ca-certificates curl gnupg lsb-release \
   git vim grep mc \
   wget iputils-ping \
@@ -100,9 +100,14 @@ RUN if [ "$INSTALL_SDKMAN" = "1" ]; then \
         ln -sf "$SDKMAN_DIR/candidates/java/current/bin/java"  /usr/local/bin/java && \
         ln -sf "$SDKMAN_DIR/candidates/java/current/bin/javac" /usr/local/bin/javac; \
       fi && \
-      # Symlink native-image if any GraalVM variant is installed
-      if [ -n "$GRAALVM_VERSIONS" ] || [ -n "$GRAALVM_ORACLE_VERSIONS" ]; then \
-        ln -sf "$SDKMAN_DIR/candidates/java/current/bin/native-image" /usr/local/bin/native-image 2>/dev/null || true; \
+      # Symlink native-image from the actual GraalVM installation directory,
+      # not java/current (which may point to a non-GraalVM JDK like Temurin).
+      if [ -n "$GRAALVM_VERSIONS" ]; then \
+        graal_id="$(echo $GRAALVM_VERSIONS | awk '{print $1}')-graalce"; \
+        ln -sf "$SDKMAN_DIR/candidates/java/$graal_id/bin/native-image" /usr/local/bin/native-image 2>/dev/null || true; \
+      elif [ -n "$GRAALVM_ORACLE_VERSIONS" ]; then \
+        graal_id="$(echo $GRAALVM_ORACLE_VERSIONS | awk '{print $1}')-graal"; \
+        ln -sf "$SDKMAN_DIR/candidates/java/$graal_id/bin/native-image" /usr/local/bin/native-image 2>/dev/null || true; \
       fi; \
     fi
 RUN if [ "$INSTALL_SDKMAN" = "1" ] && [ -n "$KOTLIN_VERSIONS" ]; then \
@@ -138,7 +143,7 @@ RUN if [ "$INSTALL_SDKMAN" = "1" ]; then \
 ARG PYTHON_EXTRA_VERSIONS=""
 ENV PYENV_ROOT=/opt/pyenv
 ENV PATH="$PYENV_ROOT/bin:$PYENV_ROOT/shims:$PATH"
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential libssl-dev zlib1g-dev libbz2-dev libreadline-dev \
       libsqlite3-dev libncursesw5-dev xz-utils tk-dev libxml2-dev \
       libxmlsec1-dev libffi-dev liblzma-dev && \
@@ -157,14 +162,7 @@ RUN apt-get update && apt-get install -y \
     fi && \
     # Symlink python3/pip3 into PATH
     ln -sf "$PYENV_ROOT/shims/python3" /usr/local/bin/python3 && \
-    ln -sf "$PYENV_ROOT/shims/pip3"    /usr/local/bin/pip3 && \
-    # Remove compile-time -dev packages no longer needed after Python is built.
-    # Keep runtime libs (libssl3, zlib1g, etc.) that Python links against.
-    apt-get purge -y --auto-remove \
-      build-essential libssl-dev zlib1g-dev libbz2-dev libreadline-dev \
-      libsqlite3-dev libncursesw5-dev tk-dev libxml2-dev \
-      libxmlsec1-dev libffi-dev liblzma-dev && \
-    rm -rf /var/lib/apt/lists/*
+    ln -sf "$PYENV_ROOT/shims/pip3"    /usr/local/bin/pip3
 RUN printf '\nexport PYENV_ROOT=%s\nexport PATH="$PYENV_ROOT/bin:$PYENV_ROOT/shims:$PATH"\n' \
       "$PYENV_ROOT" >> /etc/bash.bashrc
 
@@ -173,7 +171,7 @@ RUN printf '\nexport PYENV_ROOT=%s\nexport PATH="$PYENV_ROOT/bin:$PYENV_ROOT/shi
 ARG RUBY_VERSION=""
 ARG RAILS_VERSION=""
 RUN if [ -n "$RUBY_VERSION" ]; then \
-      apt-get update && apt-get install -y gnupg2 && \
+      apt-get update && apt-get install -y --no-install-recommends gnupg2 && \
       rm -rf /var/lib/apt/lists/* && \
       # Import RVM GPG keys
       gpg2 --keyserver keyserver.ubuntu.com \
@@ -187,8 +185,9 @@ RUN if [ -n "$RUBY_VERSION" ]; then \
         bash -lc "gem install rails -v $RAILS_VERSION --no-document"; \
       fi && \
       # Symlink ruby/gem/bundle into PATH
-      ln -sf /usr/local/rvm/rubies/default/bin/ruby /usr/local/bin/ruby && \
-      ln -sf /usr/local/rvm/rubies/default/bin/gem  /usr/local/bin/gem; \
+      ln -sf /usr/local/rvm/rubies/default/bin/ruby   /usr/local/bin/ruby && \
+      ln -sf /usr/local/rvm/rubies/default/bin/gem    /usr/local/bin/gem && \
+      ln -sf /usr/local/rvm/rubies/default/bin/bundle /usr/local/bin/bundle; \
     fi
 RUN if [ -n "$RUBY_VERSION" ]; then \
       printf '\n[ -s "/usr/local/rvm/scripts/rvm" ] && source "/usr/local/rvm/scripts/rvm"\n' \
@@ -224,9 +223,23 @@ RUN if [ -n "$GO_VERSION" ]; then \
       ln -sf /usr/local/go/bin/go   /usr/local/bin/go && \
       ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt; \
     fi
+# Add ~/go/bin to PATH for all users so `go install` tools are immediately usable.
+RUN if [ -n "$GO_VERSION" ]; then \
+      printf '\n# Go: add go install tools to PATH\nexport PATH="$HOME/go/bin:$PATH"\n' \
+        >> /etc/bash.bashrc; \
+    fi
+
+# ── Cleanup: remove compile-time -dev packages ─────────────────────────────────
+# Deferred from the pyenv layer so that rvm/Ruby and Rust (which need gcc/make)
+# can build successfully. Keep runtime libs (libssl3, zlib1g, etc.).
+RUN apt-get purge -y --auto-remove \
+      build-essential libssl-dev zlib1g-dev libbz2-dev libreadline-dev \
+      libsqlite3-dev libncursesw5-dev tk-dev libxml2-dev \
+      libxmlsec1-dev libffi-dev liblzma-dev 2>/dev/null || true && \
+    rm -rf /var/lib/apt/lists/*
 
 # ── Optional: kubectl ───────────────────────────────────────────────────────────
-ARG INSTALL_KUBECTL=1
+ARG INSTALL_KUBECTL=0
 RUN if [ "$INSTALL_KUBECTL" = "1" ]; then \
       ARCH=$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/') && \
       KUBE_VERSION=$(curl -fsSL https://dl.k8s.io/release/stable.txt) && \
@@ -235,7 +248,7 @@ RUN if [ "$INSTALL_KUBECTL" = "1" ]; then \
     fi
 
 # ── Optional: AWS CLI v2 ────────────────────────────────────────────────────────
-ARG INSTALL_AWS_CLI=1
+ARG INSTALL_AWS_CLI=0
 RUN if [ "$INSTALL_AWS_CLI" = "1" ]; then \
       ARCH=$(uname -m) && \
       curl "https://awscli.amazonaws.com/awscli-exe-linux-${ARCH}.zip" -o awscliv2.zip && \
@@ -249,7 +262,7 @@ RUN if [ "$INSTALL_AZURE_CLI" = "1" ]; then \
     fi
 
 # ── Optional: GitHub CLI ────────────────────────────────────────────────────────
-ARG INSTALL_GITHUB_CLI=1
+ARG INSTALL_GITHUB_CLI=0
 RUN if [ "$INSTALL_GITHUB_CLI" = "1" ]; then \
       curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | \
         dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg && \
@@ -257,16 +270,16 @@ RUN if [ "$INSTALL_GITHUB_CLI" = "1" ]; then \
       echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] \
         https://cli.github.com/packages stable main" \
         > /etc/apt/sources.list.d/github-cli.list && \
-      apt-get update && apt-get install -y gh && \
+      apt-get update && apt-get install -y --no-install-recommends gh && \
       rm -rf /var/lib/apt/lists/*; \
     fi
 
 # ── Optional: npm-based agent tools ────────────────────────────────────────────
 # Each agent gets its own layer so toggling one doesn't invalidate the others.
-ARG INSTALL_COPILOT=1
+ARG INSTALL_COPILOT=0
 RUN if [ "$INSTALL_COPILOT" = "1" ]; then npm install -g @github/copilot; fi
 
-ARG ANGULAR_CLI_VERSION="latest"
+ARG ANGULAR_CLI_VERSION=""
 RUN if [ -n "$ANGULAR_CLI_VERSION" ] && [ "$ANGULAR_CLI_VERSION" != "OFF" ]; then \
       if [ "$ANGULAR_CLI_VERSION" = "latest" ]; then \
         npm install -g @angular/cli; \
@@ -275,7 +288,7 @@ RUN if [ -n "$ANGULAR_CLI_VERSION" ] && [ "$ANGULAR_CLI_VERSION" != "OFF" ]; the
       fi; \
     fi
 
-ARG INSTALL_CLAUDE_CODE=1
+ARG INSTALL_CLAUDE_CODE=0
 RUN if [ "$INSTALL_CLAUDE_CODE" = "1" ]; then npm install -g @anthropic-ai/claude-code; fi
 
 ARG INSTALL_CODEX=0
@@ -294,6 +307,9 @@ RUN if [ "$INSTALL_KIRO" = "1" ]; then \
       # Copy installed binaries to PATH; find them dynamically in case the
       # installer changes its default location.
       install_dir=$(dirname "$(command -v kiro-cli 2>/dev/null || find /root -name kiro-cli -type f 2>/dev/null | head -1)") && \
+      if [ -z "$install_dir" ] || [ "$install_dir" = "." ]; then \
+        echo "ERROR: kiro-cli install location not found"; exit 1; \
+      fi && \
       for bin in kiro-cli kiro-cli-chat kiro-cli-term; do \
         [ -f "$install_dir/$bin" ] && cp "$install_dir/$bin" /usr/local/bin/; \
       done && \
@@ -328,5 +344,5 @@ RUN chmod +x /usr/local/bin/refresh-ipset-allowlist.sh \
   /usr/local/bin/capture-blocked-traffic.sh \
   /entrypoint.sh
 
-ENTRYPOINT ["/entrypoint.sh"]
 WORKDIR /workspace
+ENTRYPOINT ["/entrypoint.sh"]

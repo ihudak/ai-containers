@@ -6,6 +6,9 @@ services.gradle.org
 
 # Adoptium Temurin (OpenJDK via SDKMAN)
 api.adoptium.net
+# Adoptium CDN — actual JDK binary downloads are served via Azure CDN / JFrog
+cdn.azureedge.net
+adoptium.jfrog.io
 
 # GraalVM CE (via SDKMAN) — releases hosted on github.com (already in base.txt)
 

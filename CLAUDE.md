@@ -10,7 +10,7 @@ A CLI-only Docker workspace for running AI coding agents (GitHub Copilot CLI, Ki
 
 `sandbox.conf` is the single source of truth for which optional components are included. Set a component to `ON` or `OFF` and rebuild. The format is strictly `component=ON` or `component=OFF`, one per line; comments start with `#`.
 
-Optional components: `copilot`, `kiro`, `claude-code`, `codex`, `gemini`, `openjdk`, `graalvm-ce`, `graalvm`, `kotlin`, `scala`, `maven`, `gradle`, `kubectl`, `aws-cli`, `azure-cli`, `github-cli`, `angular-cli`, `yarn`, `dtctl`, `dtmgd`.
+Optional components: `copilot`, `kiro`, `claude-code`, `codex`, `gemini`, `openjdk`, `graalvm-ce`, `graalvm-oracle`, `kotlin`, `scala`, `maven`, `gradle`, `kubectl`, `aws-cli`, `azure-cli`, `github-cli`, `angular-cli`, `yarn`, `dtctl`, `dtmgd`.
 
 ## Commands
 
@@ -86,7 +86,7 @@ To add domains not tied to any component (e.g. `google.com`, internal registries
 
 ### Conditional installs in the Dockerfile
 
-Every optional component has a corresponding `ARG INSTALL_<COMPONENT>=0|1` declared immediately before its `RUN` block. The npm-based tools (Copilot, Angular CLI, Claude Code, Codex) are installed in a single `RUN` block that assembles a `$pkgs` string and runs `npm install -g` only if at least one is enabled. The dtctl/dtmgd block skips entirely when both are disabled.
+Every optional component has a corresponding `ARG INSTALL_<COMPONENT>=0|1` declared immediately before its `RUN` block. The npm-based tools (Copilot, Angular CLI, Claude Code, Codex, Gemini, Yarn) each have their own `RUN` layer so toggling one doesn't invalidate the others. The dtctl/dtmgd block skips entirely when both are disabled.
 
 ### Sandbox user identity
 

@@ -98,10 +98,10 @@ apply_restricted_firewall() {
     ip6tables -A OUTPUT -j NFLOG --nflog-prefix "BLOCKED" --nflog-group 100
   else
     printf '╔══════════════════════════════════════════════════════════════════╗\n' >&2
-    printf '║  WARNING: ip6tables not available — IPv6 egress is UNRESTRICTED ║\n' >&2
-    printf '║  The firewall only covers IPv4. Any IPv6-capable destination    ║\n' >&2
-    printf '║  can be reached without restriction.                            ║\n' >&2
-    printf '║  To suppress: set ALLOW_IPV6_BYPASS=1                           ║\n' >&2
+    printf '║  WARNING: ip6tables not available — IPv6 egress is UNRESTRICTED  ║\n' >&2
+    printf '║  The firewall only covers IPv4. Any IPv6-capable destination     ║\n' >&2
+    printf '║  can be reached without restriction.                             ║\n' >&2
+    printf '║  To suppress: set ALLOW_IPV6_BYPASS=1                            ║\n' >&2
     printf '╚══════════════════════════════════════════════════════════════════╝\n' >&2
     if [[ "${ALLOW_IPV6_BYPASS:-0}" != "1" ]]; then
       printf 'Hint: set ALLOW_IPV6_BYPASS=1 to acknowledge this and hide the warning.\n' >&2
