@@ -12,6 +12,11 @@ A CLI-only Docker workspace for running AI coding agents (GitHub Copilot CLI, Ki
 
 Optional components: `copilot`, `kiro`, `claude-code`, `codex`, `gemini`, `openjdk`, `graalvm-ce`, `graalvm-oracle`, `kotlin`, `scala`, `maven`, `gradle`, `kubectl`, `aws-cli`, `azure-cli`, `github-cli`, `angular-cli`, `yarn`, `qmd`, `dtctl`, `dtmgd`.
 
+Version-list components (`node`, `python`, `ruby`, `rails`, `rust`, `go`) accept comma-separated version values instead of `ON`/`OFF` (e.g., `node=22,20`). Constraints:
+- `ruby` and `rails` accept only a **single version** (not a comma-separated list).
+- SDKMAN-managed components (`openjdk`, `graalvm-ce`, `graalvm-oracle`, `kotlin`, `scala`, `maven`, `gradle`) require **full patch versions** (e.g., `openjdk=21.0.11`, not `21`).
+- `dtctl` and `dtmgd` accept `ON` (auto-detect latest from GitHub), `x.y.z` (pinned), or `OFF`.
+
 ## Commands
 
 **Build the image:**
@@ -19,6 +24,8 @@ Optional components: `copilot`, `kiro`, `claude-code`, `codex`, `gemini`, `openj
 ./runme.sh build [image-name]
 ```
 `runme.sh build` reads `sandbox.conf`, assembles `allowlist-domains.txt`, `allowlist-proxy-domains.txt`, and `allowlist-cidrs.txt` from the `*.d/` fragment directories, then calls `docker build` with one `--build-arg` per component. The generated `allowlist-*.txt` files are gitignored; always use `./runme.sh build`, not `docker build` directly.
+
+Set `GITHUB_TOKEN` in the environment before building to avoid GitHub API rate limits (60 req/h unauthenticated). This is required when `dtctl` or `dtmgd` is set to `ON` (auto-detect latest). `runme.sh build` passes it automatically as a BuildKit secret if the env var is set. If rate-limited, `dtctl`/`dtmgd` are silently skipped — the build still succeeds.
 
 **Run the container:**
 ```bash
@@ -61,6 +68,7 @@ Background daemons are forked **before** `exec capsh` so they retain root capabi
 - `refresh-ipset-allowlist.sh` resolves every FQDN in `allowlist-domains.txt` via `getent` and populates two ipset sets (`allowed_ipv4`, `allowed_ipv6`). It runs at startup and loops every 60 s as a background daemon.
 - iptables OUTPUT chain: ESTABLISHED/RELATED → loopback → DNS (port 53) → ipset match → **NFLOG** → default DROP.
 - The NFLOG target (group 100) delivers blocked packets to userspace via netlink, which works reliably in WSL2 / nf_tables environments where the LOG target does not.
+- **WSL2/nf_tables caveat:** `ip6tables` may be unavailable; when it is, IPv6 outbound traffic is unrestricted. The container prints a warning to stderr at startup. IPv4 enforcement is unaffected.
 
 ### Blocked-traffic capture (`capture-blocked-traffic.sh`)
 
@@ -86,6 +94,8 @@ The three `allowlist-*.txt` files baked into the image are assembled at build ti
 Per-component fragments (`github-copilot.txt`, `kiro.txt`, `claude-code.txt`, `codex.txt`, `kubectl.txt`, `aws-cli.txt`, `azure-cli.txt`, `dynatrace.txt`, `openjdk.txt`) are only concatenated when the matching component is `ON` in `sandbox.conf`. The `dynatrace.txt` fragment is included when either `dtctl` or `dtmgd` is enabled; `openjdk.txt` when any JDK variant is enabled.
 
 To add domains not tied to any component (e.g. `google.com`, internal registries, MCP endpoints), edit the appropriate `custom.txt` file in the relevant `*.d/` directory.
+
+**First-time setup:** each `allowlist-*.d/` directory ships a `custom.txt.example`. Copy it to `custom.txt` before adding entries — the `custom.txt` files are gitignored and won't be assembled into the image otherwise.
 
 ### Conditional installs in the Dockerfile
 
