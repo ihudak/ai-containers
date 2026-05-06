@@ -37,6 +37,14 @@ Environment variables:
                       Requires qmd=ON in sandbox.conf for in-container search.
   SELF_HEALING_ENABLED  Set to 0 to disable self-healing allowlist (default: 1).
                         When disabled, blocked traffic is logged but IPs are never auto-allowed.
+  PREVIEW_PORTS       Space-separated list of ports (or host:container pairs) to publish so
+                      your host browser can reach dev servers started inside the container.
+                      Useful for Claude Code's UI preview feature and any other dev server.
+                      Examples:
+                        PREVIEW_PORTS="3000"            # publish container port 3000 → host 3000
+                        PREVIEW_PORTS="3000 5173"       # publish two ports
+                        PREVIEW_PORTS="8080:3000"       # host port 8080 → container port 3000
+                        PREVIEW_PORTS="3000 8080:8080"  # mix of both forms
   NO_CACHE            Set to 1 to pass --no-cache to docker build (default: unset, uses cache).
 
 Configuration:
@@ -534,9 +542,18 @@ run_container() {
     add_mount_if_exists config_mount_flags "$HOME/.config/dtmgd" "$dev_home/.config/dtmgd"
   fi
 
+  # Build -p flags from PREVIEW_PORTS (space-separated port or host:container pairs).
+  local port_flags=()
+  if [[ -n "${PREVIEW_PORTS:-}" ]]; then
+    for p in $PREVIEW_PORTS; do
+      port_flags+=(-p "$p")
+    done
+  fi
+
   docker run -it --rm \
     "${capabilities[@]}" \
     --add-host=host.docker.internal:host-gateway \
+    ${port_flags[@]+"${port_flags[@]}"} \
     --cpus="4.0" \
     --memory="8g" \
     -e DEV_CONTAINER_MODE="$mode" \
