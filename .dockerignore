@@ -16,3 +16,9 @@ allowlist-cidrs.d
 
 # Exclude sandbox.conf — it's only read by runme.sh on the host, not inside the image.
 sandbox.conf
+
+# Exclude project management tooling — host-side only, not needed in the image.
+projects.conf
+projects.conf.example
+project-init.sh
+sync-to-projects.sh

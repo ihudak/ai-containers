@@ -33,6 +33,17 @@ Set `GITHUB_TOKEN` in the environment before building to avoid GitHub API rate l
 ./runme.sh discovery /path/to/workspace    # unrestricted egress + background pcap
 ```
 
+**Initialise a new project** (copies shared files, generates launch script, registers in `projects.conf`):
+```bash
+./project-init.sh /path/to/myproject [optional-name]
+```
+
+**Sync shared files to all registered projects** (after pulling updates to this repo):
+```bash
+./sync-to-projects.sh              # all projects in projects.conf
+./sync-to-projects.sh /path/to/p   # single project
+```
+
 **Extract discovery results** (after exiting a discovery-mode container):
 ```bash
 docker run --rm --entrypoint capture-agent-destinations.sh \
@@ -48,6 +59,7 @@ docker run --rm --entrypoint capture-agent-destinations.sh \
 - `SPECS_PATH` — host directory mounted as `/specs` inside the container
 - `VAULT_PATH` — host Obsidian vault mounted as `/obsidian`; also re-exported as `VAULT_PATH=/obsidian` inside the container so agent skills/workflows resolve to the in-container path. Pair with `qmd=ON` in `sandbox.conf` for in-container markdown search.
 - `SELF_HEALING_ENABLED=0` — disable reactive IP auto-allowing (logging only)
+- `CLAUDE_MEM_WORKER_HOST` — set automatically to `host.docker.internal` when `claude-code=ON`; overrides the default `127.0.0.1` so the claude-mem plugin inside the container reaches the worker running on the host
 
 ## Architecture
 
