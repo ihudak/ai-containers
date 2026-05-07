@@ -14,3 +14,7 @@
 allowlist-domains.d/custom.txt
 allowlist-proxy-domains.d/custom.txt
 allowlist-cidrs.d/custom.txt
+
+# Project registry — populated by project-init.sh. Gitignored to avoid
+# committing personal paths. See projects.conf.example for the format.
+/projects.conf

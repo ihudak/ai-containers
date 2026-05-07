@@ -258,6 +258,56 @@ Three `*.d/` directories hold the source-of-truth fragment files. `runme.sh buil
 
 After editing any fragment file, run `./runme.sh build` to regenerate the image.
 
+## Managing multiple projects
+
+If you use ai-containers across several projects, two scripts help you keep them in sync without manual copying.
+
+### project-init.sh — initialise a project
+
+Copies the shared infrastructure into `<project>/.ai-containers/`, generates a ready-to-edit launch script, and registers the project in `projects.conf`.
+
+```bash
+./project-init.sh /path/to/myproject
+# Optional: override the project name (used for the image name and launch script)
+./project-init.sh /path/to/myproject my-custom-name
+```
+
+What it does:
+
+- Creates `<project>/.ai-containers/` and copies all shared files (Dockerfile, scripts, allowlist fragment files).
+- Copies `sandbox.conf` as a starting point (only if one does not already exist).
+- Generates `<project>/.ai-containers/<project-name>-container.sh` with `IMAGE_NAME`, `SSH_SCOPE_DIR`, and commented hints for `EXTRA_MOUNTS` and `PREVIEW_PORTS`.
+- Registers the project path in `projects.conf` (created from `projects.conf.example` on first run).
+
+After init, edit `sandbox.conf` to choose components, review the launch script, then build:
+
+```bash
+cd <project>/.ai-containers
+./runme.sh build
+./<project-name>-container.sh
+```
+
+### sync-to-projects.sh — propagate updates
+
+After pulling changes to this repo, run this to push the updated shared files to all registered projects:
+
+```bash
+./sync-to-projects.sh              # sync all projects in projects.conf
+./sync-to-projects.sh /path/to/p   # sync a single project
+```
+
+**What is synced:** Dockerfile, all `*.sh` scripts, `.dockerignore`, and the per-component allowlist fragments in `allowlist-*.d/` (excluding `custom.txt`).
+
+**What is never touched:** `sandbox.conf`, `allowlist-*.d/custom.txt`, and the project's launch script.
+
+**sandbox.conf drift warning:** If a project's `sandbox.conf` differs from the one in this repo (e.g. a new component was added), the script prints a warning and the `diff` command to review the changes. You decide whether to adopt them.
+
+### projects.conf
+
+`projects.conf` is the registry of project paths. It is gitignored (to avoid committing personal paths). `projects.conf.example` is the committed template — `project-init.sh` copies it automatically on first use.
+
+You can also edit `projects.conf` manually: one absolute project path per line, blank lines and `#` comments are ignored.
+
 ## Corporate customization points
 
 - Edit `sandbox.conf` to enable only the components your team actually uses.

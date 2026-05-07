@@ -1,0 +1,11 @@
+# projects.conf — registry of projects that use ai-containers
+#
+# Each line is an absolute path to a project root whose .ai-containers/
+# subdirectory should be kept in sync with this repo.
+#
+# Managed by project-init.sh — you can also add/remove lines manually.
+# This file is gitignored; projects.conf.example is the committed template.
+#
+# Example:
+# /home/user/dev/myproject
+# /home/user/dev/another-project
