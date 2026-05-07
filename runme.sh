@@ -513,9 +513,14 @@ run_container() {
     add_mount_if_exists config_mount_flags "$HOME/.kiro" "$dev_home/.kiro"
     add_mount_if_exists config_mount_flags "$HOME/.local/share/kiro-cli" "$dev_home/.local/share/kiro-cli"
   fi
+  local claude_env_args=()
   if is_enabled claude-code; then
     add_mount_if_exists      config_mount_flags "$HOME/.claude"      "$dev_home/.claude"
     add_file_mount_if_exists config_mount_flags "$HOME/.claude.json" "$dev_home/.claude.json"
+    # claude-mem (thedotmack plugin) defaults CLAUDE_MEM_WORKER_HOST to 127.0.0.1.
+    # Inside the container that resolves to the container itself, not the host.
+    # host.docker.internal is already injected via --add-host and points to the host gateway.
+    claude_env_args+=(-e CLAUDE_MEM_WORKER_HOST=host.docker.internal)
   fi
   if is_enabled codex; then
     add_mount_if_exists config_mount_flags "$HOME/.codex" "$dev_home/.codex"
@@ -567,6 +572,7 @@ run_container() {
     -e SANDBOX_GROUP="${SANDBOX_GROUP:-$(id -gn)}" \
     ${SELF_HEALING_ENABLED:+-e SELF_HEALING_ENABLED="$SELF_HEALING_ENABLED"} \
     ${vault_env_args[@]+"${vault_env_args[@]}"} \
+    ${claude_env_args[@]+"${claude_env_args[@]}"} \
     -v "$workspace_dir:/workspace" \
     ${extra_mount_flags[@]+"${extra_mount_flags[@]}"} \
     ${doc_mount_flags[@]+"${doc_mount_flags[@]}"} \
