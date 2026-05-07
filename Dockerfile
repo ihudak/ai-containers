@@ -229,11 +229,6 @@ RUN if [ -n "$GO_VERSION" ]; then \
         >> /etc/bash.bashrc; \
     fi
 
-# Ensure ~/.local/bin is on PATH for all users (needed by claude-mem and other
-# tools that install to the native path rather than /usr/local/bin).
-RUN printf '\n# Add ~/.local/bin to PATH if it exists\n[ -d "$HOME/.local/bin" ] && export PATH="$HOME/.local/bin:$PATH"\n' \
-      >> /etc/bash.bashrc
-
 # ── Cleanup: remove compile-time -dev packages ─────────────────────────────────
 # Deferred from the pyenv layer so that rvm/Ruby and Rust (which need gcc/make)
 # can build successfully. Keep runtime libs (libssl3, zlib1g, etc.).
@@ -300,7 +295,7 @@ RUN if [ "$INSTALL_CLAUDE_CODE" = "1" ]; then \
       # ~/.local/bin/claude. Since we install via npm, create a symlink in /etc/skel
       # so it is copied into every sandbox user's home by setup_sandbox_user().
       mkdir -p /etc/skel/.local/bin && \
-      ln -sf "$(which claude)" /etc/skel/.local/bin/claude; \
+      ln -sf "$(npm bin -g)/claude" /etc/skel/.local/bin/claude; \
     fi
 
 ARG INSTALL_CODEX=0
