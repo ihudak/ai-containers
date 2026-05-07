@@ -160,9 +160,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         "$PYENV_ROOT/bin/pyenv" install "$ver"; \
       done; \
     fi && \
-    # Symlink python3/pip3 into PATH
+    # Symlink python3/pip3/uvx into PATH
     ln -sf "$PYENV_ROOT/shims/python3" /usr/local/bin/python3 && \
-    ln -sf "$PYENV_ROOT/shims/pip3"    /usr/local/bin/pip3
+    ln -sf "$PYENV_ROOT/shims/pip3"    /usr/local/bin/pip3 && \
+    pip3 install uv && \
+    ln -sf "$PYENV_ROOT/shims/uvx" /usr/local/bin/uvx
 RUN printf '\nexport PYENV_ROOT=%s\nexport PATH="$PYENV_ROOT/bin:$PYENV_ROOT/shims:$PATH"\n' \
       "$PYENV_ROOT" >> /etc/bash.bashrc
 
@@ -313,7 +315,8 @@ RUN if [ "$INSTALL_QMD" = "1" ]; then npm install -g @tobilu/qmd; fi
 ARG INSTALL_BUN=0
 RUN if [ "$INSTALL_BUN" = "1" ]; then \
       npm install -g bun && \
-      ln -sf "$(dirname "$(readlink -f /usr/local/bin/npm)")/bun" /usr/local/bin/bun; \
+      BUN_NATIVE=$(find "$(npm root -g)/bun" -name "bun" -executable -type f 2>/dev/null | grep -v musl | head -1) && \
+      [ -n "$BUN_NATIVE" ] && ln -sf "$BUN_NATIVE" /usr/local/bin/bun || true; \
     fi
 
 # ── Optional: Kiro CLI ──────────────────────────────────────────────────────────
