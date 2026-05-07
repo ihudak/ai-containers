@@ -68,6 +68,14 @@ setup_sandbox_user() {
 }
 
 apply_restricted_firewall() {
+  # If the claude-mem worker host is not the default hostname, inject it into the
+  # domains file so startup and every periodic refresh include it in the ipset.
+  # Required for WSL2 where the worker IP is the distro's dynamic IP, not resolvable
+  # via host.docker.internal (which points to the docker-desktop VM bridge instead).
+  if [[ -n "${CLAUDE_MEM_WORKER_HOST:-}" && "$CLAUDE_MEM_WORKER_HOST" != "host.docker.internal" ]]; then
+    printf '%s\n' "$CLAUDE_MEM_WORKER_HOST" >> "$domains_file"
+  fi
+
   /usr/local/bin/refresh-ipset-allowlist.sh \
     "$domains_file" \
     "$cidrs_file" \

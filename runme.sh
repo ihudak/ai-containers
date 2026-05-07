@@ -523,8 +523,15 @@ run_container() {
     add_file_mount_if_exists config_mount_flags "$HOME/.claude.json" "$dev_home/.claude.json"
     # claude-mem (thedotmack plugin) defaults CLAUDE_MEM_WORKER_HOST to 127.0.0.1.
     # Inside the container that resolves to the container itself, not the host.
-    # host.docker.internal is already injected via --add-host and points to the host gateway.
-    claude_env_args+=(-e CLAUDE_MEM_WORKER_HOST=host.docker.internal)
+    # In WSL2 + Docker Desktop, host.docker.internal resolves to the docker-desktop
+    # VM bridge gateway (172.17.x.x), not the WSL2 distro where the worker runs.
+    # Detect WSL2 by the presence of WSLInterop and use the distro's primary IP.
+    if [[ -f /proc/sys/fs/binfmt_misc/WSLInterop ]]; then
+      _claude_mem_host=$(hostname -I | awk '{print $1}')
+    else
+      _claude_mem_host=host.docker.internal
+    fi
+    claude_env_args+=(-e CLAUDE_MEM_WORKER_HOST="${_claude_mem_host:-host.docker.internal}")
   fi
   if is_enabled codex; then
     add_mount_if_exists config_mount_flags "$HOME/.codex" "$dev_home/.codex"
