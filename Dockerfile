@@ -289,7 +289,14 @@ RUN if [ -n "$ANGULAR_CLI_VERSION" ] && [ "$ANGULAR_CLI_VERSION" != "OFF" ]; the
     fi
 
 ARG INSTALL_CLAUDE_CODE=0
-RUN if [ "$INSTALL_CLAUDE_CODE" = "1" ]; then npm install -g @anthropic-ai/claude-code; fi
+RUN if [ "$INSTALL_CLAUDE_CODE" = "1" ]; then \
+      npm install -g @anthropic-ai/claude-code && \
+      # claude-mem (Claude Code's internal worker) expects the native-installer path
+      # ~/.local/bin/claude. Since we install via npm, create a symlink in /etc/skel
+      # so it is copied into every sandbox user's home by setup_sandbox_user().
+      mkdir -p /etc/skel/.local/bin && \
+      ln -sf "$(which claude)" /etc/skel/.local/bin/claude; \
+    fi
 
 ARG INSTALL_CODEX=0
 RUN if [ "$INSTALL_CODEX" = "1" ]; then npm install -g @openai/codex; fi
@@ -304,7 +311,10 @@ ARG INSTALL_QMD=0
 RUN if [ "$INSTALL_QMD" = "1" ]; then npm install -g @tobilu/qmd; fi
 
 ARG INSTALL_BUN=0
-RUN if [ "$INSTALL_BUN" = "1" ]; then npm install -g bun; fi
+RUN if [ "$INSTALL_BUN" = "1" ]; then \
+      npm install -g bun && \
+      ln -sf "$(dirname "$(readlink -f /usr/local/bin/npm)")/bun" /usr/local/bin/bun; \
+    fi
 
 # ── Optional: Kiro CLI ──────────────────────────────────────────────────────────
 ARG INSTALL_KIRO=0
