@@ -288,6 +288,7 @@ build_args_from_config() {
     "github-cli:INSTALL_GITHUB_CLI"
     "yarn:INSTALL_YARN"
     "qmd:INSTALL_QMD"
+    "bun:INSTALL_BUN"
   )
   for mapping in "${bool_mappings[@]}"; do
     component="${mapping%%:*}"

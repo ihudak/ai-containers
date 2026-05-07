@@ -303,6 +303,9 @@ RUN if [ "$INSTALL_YARN" = "1" ]; then npm install -g yarn; fi
 ARG INSTALL_QMD=0
 RUN if [ "$INSTALL_QMD" = "1" ]; then npm install -g @tobilu/qmd; fi
 
+ARG INSTALL_BUN=0
+RUN if [ "$INSTALL_BUN" = "1" ]; then npm install -g bun; fi
+
 # ── Optional: Kiro CLI ──────────────────────────────────────────────────────────
 ARG INSTALL_KIRO=0
 RUN if [ "$INSTALL_KIRO" = "1" ]; then \
