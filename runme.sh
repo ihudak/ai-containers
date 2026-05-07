@@ -36,6 +36,9 @@ Environment variables:
                       container so agent skills/workflows resolve correctly.
                       Requires qmd=ON in sandbox.conf for in-container search.
   SELF_HEALING_ENABLED  Set to 0 to disable self-healing allowlist (default: 1).
+  GITHUB_TOKEN          Passed into the container as GITHUB_TOKEN, GH_TOKEN, and
+                        GITHUB_PERSONAL_ACCESS_TOKEN (for the GitHub MCP server,
+                        gh CLI, and legacy tools). Sourced from the host environment.
                         When disabled, blocked traffic is logged but IPs are never auto-allowed.
   PREVIEW_PORTS       Space-separated list of ports (or host:container pairs) to publish so
                       your host browser can reach dev servers started inside the container.
@@ -572,6 +575,9 @@ run_container() {
     -e SANDBOX_USER="${SANDBOX_USER:-$(id -un)}" \
     -e SANDBOX_GROUP="${SANDBOX_GROUP:-$(id -gn)}" \
     ${SELF_HEALING_ENABLED:+-e SELF_HEALING_ENABLED="$SELF_HEALING_ENABLED"} \
+    ${GITHUB_TOKEN:+-e GITHUB_TOKEN="$GITHUB_TOKEN"} \
+    ${GITHUB_TOKEN:+-e GH_TOKEN="$GITHUB_TOKEN"} \
+    ${GITHUB_TOKEN:+-e GITHUB_PERSONAL_ACCESS_TOKEN="$GITHUB_TOKEN"} \
     ${vault_env_args[@]+"${vault_env_args[@]}"} \
     ${claude_env_args[@]+"${claude_env_args[@]}"} \
     -v "$workspace_dir:/workspace" \

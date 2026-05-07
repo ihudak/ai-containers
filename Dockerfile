@@ -295,7 +295,7 @@ RUN if [ "$INSTALL_CLAUDE_CODE" = "1" ]; then \
       # ~/.local/bin/claude. Since we install via npm, create a symlink in /etc/skel
       # so it is copied into every sandbox user's home by setup_sandbox_user().
       mkdir -p /etc/skel/.local/bin && \
-      ln -sf "$(npm bin -g)/claude" /etc/skel/.local/bin/claude; \
+      ln -sf "$(npm prefix -g)/bin/claude" /etc/skel/.local/bin/claude; \
     fi
 
 ARG INSTALL_CODEX=0
