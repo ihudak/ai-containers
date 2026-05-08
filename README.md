@@ -119,6 +119,8 @@ export GITHUB_TOKEN=ghp_yourtoken
 ./runme.sh build
 ```
 
+`./runme.sh build` also falls back to `GITHUB_PERSONAL_ACCESS_TOKEN` if `GITHUB_TOKEN` is unset, so if you already export the former in your shell profile (recommended — see [GitHub tokens at runtime](#github-tokens-at-runtime) below) the build is authenticated automatically with no extra step.
+
 **Option 2 — pin a specific version** (no API call at all):
 ```bash
 # In sandbox.conf:
@@ -129,6 +131,50 @@ dtmgd=0.0.23
 If the API call fails (rate limit, bad token, or network error), the build prints a clear error message, skips the tool, and **continues successfully**. dtctl/dtmgd can be installed manually later. An expired or invalid `GITHUB_TOKEN` is treated the same as a network error — the build does not fail, but the tool is skipped with a warning.
 
 > **Note on token security:** `GITHUB_TOKEN` is passed as a [BuildKit secret](https://docs.docker.com/build/building/secrets/) — it is never written to any image layer or visible in `docker history`. Safe to use even if you plan to publish the image. Requires Docker ≥ 23 (BuildKit default).
+
+## GitHub tokens at runtime
+
+`runme.sh` deliberately does **not** forward `GITHUB_TOKEN` or `GH_TOKEN` into the running container, even if set on the host. Only `GITHUB_PERSONAL_ACCESS_TOKEN` is forwarded.
+
+| Tool inside the container | Auth source |
+|---|---|
+| Copilot CLI | `~/.copilot/config.json` OAuth (mounted from host) |
+| `gh` CLI | `~/.config/gh/hosts.yml` (mounted from host) |
+| Copilot CLI's built-in GitHub MCP server (`api.business.githubcopilot.com/mcp/*`) | Copilot's OAuth token — no PAT needed |
+| `github/github-mcp-server` / `@modelcontextprotocol/server-github` (stdio) | `GITHUB_PERSONAL_ACCESS_TOKEN` |
+| Claude Code's official `github` plugin (`api.githubcopilot.com/mcp/`) | `GITHUB_PERSONAL_ACCESS_TOKEN` — PAT must include the **Copilot Requests** fine-grained permission |
+| `git` over HTTPS, `curl api.github.com`, skills/scripts | `GITHUB_PERSONAL_ACCESS_TOKEN` |
+
+**Why `GITHUB_TOKEN` / `GH_TOKEN` are blocked at runtime:** when those vars are set, Copilot CLI prefers them over its OAuth login and treats them as a direct Copilot-API bearer. If the PAT lacks the `Copilot Requests` fine-grained permission (currently required by GitHub), every Copilot request fails with `401 "Personal Access Token does not have 'Copilot Requests' permission"`, forcing `/login`. When the host and container each hold their own Copilot CLI, the resulting token rotation ping-pongs between them. Forwarding only `GITHUB_PERSONAL_ACCESS_TOKEN` keeps the PAT available for tools that explicitly consume it, while leaving Copilot CLI and `gh` CLI on their own on-disk credentials.
+
+Recommended host setup — export only the one name nothing auto-picks-up implicitly:
+
+```bash
+# ~/.bashrc
+export GITHUB_PERSONAL_ACCESS_TOKEN=github_pat_...
+# do NOT export GITHUB_TOKEN or GH_TOKEN globally
+```
+
+**Optional — keep `GITHUB_TOKEN`/`GH_TOKEN` exported for third-party tools.** Some tools (e.g. `act`, `pre-commit`, `terraform` module fetches, `brew`) prefer `GITHUB_TOKEN` over `GITHUB_PERSONAL_ACCESS_TOKEN`. If you want the convenience of all three being set globally, add a shell function that shields Copilot CLI from the env-var Copilot-API fallback path:
+
+```bash
+# ~/.bashrc
+export GITHUB_PERSONAL_ACCESS_TOKEN=github_pat_...
+export GITHUB_TOKEN="$GITHUB_PERSONAL_ACCESS_TOKEN"
+export GH_TOKEN="$GITHUB_TOKEN"
+
+# Shield host Copilot CLI from env-var PAT auth (see 'GitHub tokens at runtime' above).
+# The subshell '( ... )' unsets only for the copilot process; parent shell keeps the vars.
+copilot() {
+    ( unset GITHUB_TOKEN GH_TOKEN COPILOT_GITHUB_TOKEN
+      command copilot "$@"
+    )
+}
+```
+
+This keeps every other CLI tool authenticated automatically while preventing Copilot CLI from treating your PAT as a Copilot-API bearer. The container Copilot CLI is already protected because `runme.sh` does not forward `GITHUB_TOKEN`/`GH_TOKEN`.
+
+Build-time rate-limit avoidance: `./runme.sh build` automatically uses `GITHUB_PERSONAL_ACCESS_TOKEN` as the GitHub API token when `GITHUB_TOKEN` is unset, so the recommended setup above is already sufficient for authenticated API calls (5000 req/h). No extra export is needed. If you explicitly want to use a *different* token for the build than the one in your shell profile, set `GITHUB_TOKEN` for that one invocation: `GITHUB_TOKEN=ghp_build_specific ./runme.sh build`. Either way, the value is consumed only by BuildKit and never lands in the image or the running container.
 
 ## Extracting discovery results
 

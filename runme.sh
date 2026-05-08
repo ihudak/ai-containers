@@ -37,9 +37,28 @@ Environment variables:
                       Requires qmd=ON in sandbox.conf for in-container search.
   SELF_HEALING_ENABLED  Set to 0 to disable self-healing allowlist (default: 1).
                         When disabled, blocked traffic is logged but IPs are never auto-allowed.
-  GITHUB_TOKEN          Passed into the container as GITHUB_TOKEN, GH_TOKEN, and
-                        GITHUB_PERSONAL_ACCESS_TOKEN (for the GitHub MCP server,
-                        gh CLI, and legacy tools). Sourced from the host environment.
+  GITHUB_TOKEN          Build-time only. Passed to docker build as a BuildKit secret
+                        (--secret id=github_token) so install-dt-tools.sh can use the
+                        authenticated GitHub API (5000 req/h vs 60 req/h). Never
+                        written into any image layer or visible in `docker history`.
+                        Not forwarded into the running container. If unset,
+                        GITHUB_PERSONAL_ACCESS_TOKEN is used as a fallback so you
+                        don't have to export a second name just for the build.
+  GITHUB_PERSONAL_ACCESS_TOKEN
+                        Runtime: forwarded into the container as-is for tools that
+                        expect this exact variable name (e.g. the
+                        `github/github-mcp-server` / `@modelcontextprotocol/server-github`
+                        stdio MCP servers, and Claude Code's official github plugin).
+                        Build-time fallback: used as the BuildKit github_token secret
+                        when GITHUB_TOKEN is not set. NOT consumed by Copilot CLI or
+                        gh CLI — those authenticate via ~/.copilot/config.json and
+                        ~/.config/gh/hosts.yml respectively, both already mounted.
+                        `GH_TOKEN` and `GITHUB_TOKEN` are deliberately NOT forwarded
+                        into the container, because Copilot CLI would otherwise
+                        prefer them over its OAuth login and fail with
+                        `401 "Personal Access Token does not have 'Copilot Requests'
+                        permission"` whenever the PAT lacks that fine-grained
+                        permission.
   PREVIEW_PORTS       Space-separated list of ports (or host:container pairs) to publish so
                       your host browser can reach dev servers started inside the container.
                       Useful for Claude Code's UI preview feature and any other dev server.
@@ -396,9 +415,13 @@ build_image() {
     build_args+=(--no-cache)
   fi
 
-  # Pass GITHUB_TOKEN as a BuildKit secret (never stored in image layers or history).
-  # Falls back gracefully if unset — install-dt-tools.sh handles the missing token.
-  if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+  # Pass a GitHub token as a BuildKit secret (never stored in image layers or history)
+  # so install-dt-tools.sh can use the authenticated GitHub API (5000 req/h vs 60 req/h
+  # unauthenticated). Prefer GITHUB_TOKEN, fall back to GITHUB_PERSONAL_ACCESS_TOKEN.
+  # Falls back gracefully if neither is set — install-dt-tools.sh handles the missing token.
+  local _gh_build_token="${GITHUB_TOKEN:-${GITHUB_PERSONAL_ACCESS_TOKEN:-}}"
+  if [[ -n "$_gh_build_token" ]]; then
+    export GITHUB_TOKEN="$_gh_build_token"
     build_args+=(--secret id=github_token,env=GITHUB_TOKEN)
   fi
 
@@ -582,9 +605,7 @@ run_container() {
     -e SANDBOX_USER="${SANDBOX_USER:-$(id -un)}" \
     -e SANDBOX_GROUP="${SANDBOX_GROUP:-$(id -gn)}" \
     ${SELF_HEALING_ENABLED:+-e SELF_HEALING_ENABLED="$SELF_HEALING_ENABLED"} \
-    ${GITHUB_TOKEN:+-e GITHUB_TOKEN="$GITHUB_TOKEN"} \
-    ${GITHUB_TOKEN:+-e GH_TOKEN="$GITHUB_TOKEN"} \
-    ${GITHUB_TOKEN:+-e GITHUB_PERSONAL_ACCESS_TOKEN="$GITHUB_TOKEN"} \
+    ${GITHUB_PERSONAL_ACCESS_TOKEN:+-e GITHUB_PERSONAL_ACCESS_TOKEN="$GITHUB_PERSONAL_ACCESS_TOKEN"} \
     ${vault_env_args[@]+"${vault_env_args[@]}"} \
     ${claude_env_args[@]+"${claude_env_args[@]}"} \
     -v "$workspace_dir:/workspace" \
