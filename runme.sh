@@ -529,6 +529,7 @@ run_container() {
   # Mount credential directories for enabled components only.
   local config_mount_flags=()
   add_mount_if_exists config_mount_flags "$ssh_scope_dir" "$dev_home/.ssh" ro
+  add_mount_if_exists config_mount_flags "$HOME/.agents" "$dev_home/.agents"
 
   if any_enabled github-cli copilot; then
     add_mount_if_exists config_mount_flags "$HOME/.config/gh" "$dev_home/.config/gh"

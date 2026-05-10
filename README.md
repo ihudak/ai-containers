@@ -235,6 +235,7 @@ Each directory is only mounted when its corresponding component is enabled in `s
 | Host directory | Container path | Mode | Component |
 |---|---|---|---|
 | `~/.ssh` (or `SSH_SCOPE_DIR`) | `~/.ssh` | read-only | always |
+| `~/.agents` | `~/.agents` | read-write | always |
 | `~/.config/gh` | `~/.config/gh` | read-write | `github-cli` or `copilot` |
 | `~/.copilot` | `~/.copilot` | read-write | `copilot` |
 | `~/.kiro` | `~/.kiro` | read-write | `kiro` |
