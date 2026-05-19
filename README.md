@@ -106,7 +106,7 @@ go=1.24.2
 `graphify` transforms code, docs, and other files into interactive knowledge graphs using Claude AI. It is a Claude Code skill — the binary is installed into the image at build time, but the skill must be registered in `~/.claude/` once at runtime.
 
 ```bash
-graphify=ON    # install the graphify binary (pip install graphifyy)
+graphify=ON    # install the graphify binary (PyPI package graphifyy — double-y)
 graphify=OFF   # skip (default)
 ```
 
@@ -117,6 +117,8 @@ graphify install   # registers the Claude Code skill; persists via the ~/.claude
 ```
 
 Because `~/.claude/` is bind-mounted from the host, running `graphify install` once inside any container makes the skill available in every subsequent container start without reinstalling.
+
+> **Note:** Persistence requires `claude-code=ON` in `sandbox.conf`, which is what provides the `~/.claude/` host bind-mount.
 
 ### Dynatrace CLIs (dtctl / dtmgd)
 
