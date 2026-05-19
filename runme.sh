@@ -533,8 +533,9 @@ run_container() {
 
   # Mount credential directories for enabled components only.
   local config_mount_flags=()
-  add_mount_if_exists config_mount_flags "$ssh_scope_dir" "$dev_home/.ssh" ro
-  add_mount_if_exists config_mount_flags "$HOME/.agents" "$dev_home/.agents"
+  add_mount_if_exists      config_mount_flags "$ssh_scope_dir"       "$dev_home/.ssh"       ro
+  add_mount_if_exists      config_mount_flags "$HOME/.agents"        "$dev_home/.agents"
+  add_file_mount_if_exists config_mount_flags "$HOME/.gitconfig"     "$dev_home/.gitconfig" ro
 
   # ── macOS host: separate dotfile dirs for Keychain-affected tools ───────────
   # On macOS, gh/copilot/claude-code/kiro store OAuth tokens in the system

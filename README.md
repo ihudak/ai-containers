@@ -250,6 +250,7 @@ Each directory is only mounted when its corresponding component is enabled in `s
 |---|---|---|---|
 | `~/.ssh` (or `SSH_SCOPE_DIR`) | `~/.ssh` | read-only | always |
 | `~/.agents` | `~/.agents` | read-write | always |
+| `~/.gitconfig` | `~/.gitconfig` | read-only | always (if file exists) |
 | `~/.config/gh` | `~/.config/gh` | read-write | `github-cli` or `copilot` |
 | `~/.copilot` | `~/.copilot` | read-write | `copilot` |
 | `~/.kiro` | `~/.kiro` | read-write | `kiro` |

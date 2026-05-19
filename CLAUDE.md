@@ -10,10 +10,10 @@ A CLI-only Docker workspace for running AI coding agents (GitHub Copilot CLI, Ki
 
 `sandbox.conf` is the single source of truth for which optional components are included. Set a component to `ON` or `OFF` and rebuild. The format is strictly `component=ON` or `component=OFF`, one per line; comments start with `#`.
 
-Optional components: `copilot`, `kiro`, `claude-code`, `codex`, `gemini`, `openjdk`, `graalvm-ce`, `graalvm-oracle`, `kotlin`, `scala`, `maven`, `gradle`, `kubectl`, `aws-cli`, `azure-cli`, `github-cli`, `angular-cli`, `yarn`, `qmd`, `dtctl`, `dtmgd`.
+Optional components: `copilot`, `kiro`, `claude-code`, `codex`, `gemini`, `openjdk`, `graalvm-ce`, `graalvm-oracle`, `kotlin`, `scala`, `maven`, `gradle`, `kubectl`, `aws-cli`, `azure-cli`, `github-cli`, `angular-cli`, `yarn`, `bun`, `qmd`, `dtctl`, `dtmgd`.
 
 Version-list components (`node`, `python`, `ruby`, `rails`, `rust`, `go`) accept comma-separated version values instead of `ON`/`OFF` (e.g., `node=22,20`). Constraints:
-- `ruby` and `rails` accept only a **single version** (not a comma-separated list).
+- `ruby`, `rails`, and `angular-cli` accept only a **single version** (not a comma-separated list).
 - SDKMAN-managed components (`openjdk`, `graalvm-ce`, `graalvm-oracle`, `kotlin`, `scala`, `maven`, `gradle`) require **full patch versions** (e.g., `openjdk=21.0.11`, not `21`).
 - `dtctl` and `dtmgd` accept `ON` (auto-detect latest from GitHub), `x.y.z` (pinned), or `OFF`.
 
@@ -58,6 +58,10 @@ docker run --rm --entrypoint capture-agent-destinations.sh \
 - `DOCS_PATH` — host directory mounted as `/docs` inside the container
 - `SPECS_PATH` — host directory mounted as `/specs` inside the container
 - `VAULT_PATH` — host Obsidian vault mounted as `/obsidian`; also re-exported as `VAULT_PATH=/obsidian` inside the container so agent skills/workflows resolve to the in-container path. Pair with `qmd=ON` in `sandbox.conf` for in-container markdown search.
+- `PREVIEW_PORTS` — space-separated ports (or `host:container` pairs) to publish for dev servers, e.g. `PREVIEW_PORTS="3000 8080:8080"`
+- `CONTAINER_CPUS` — CPU limit for the running container (default: `4.0`)
+- `CONTAINER_MEMORY` — memory limit for the running container (default: `8g`)
+- `ALLOW_IPV6_BYPASS=1` — suppress the visual warning when `ip6tables` is unavailable (WSL2/nf_tables environments)
 - `SELF_HEALING_ENABLED=0` — disable reactive IP auto-allowing (logging only)
 - `CLAUDE_MEM_WORKER_HOST` — set automatically to `host.docker.internal` when `claude-code=ON`; overrides the default `127.0.0.1` so the claude-mem plugin inside the container reaches the worker running on the host
 
@@ -116,6 +120,35 @@ Every optional component has a corresponding `ARG INSTALL_<COMPONENT>=0|1` decla
 ### Sandbox user identity
 
 No user is baked into the image. `entrypoint.sh` calls `useradd`/`usermod` at runtime using the env vars from `runme.sh`. This means the same image works for any team member without rebuilding.
+
+### Host directory mounts
+
+`runme.sh` always mounts `~/.agents` from the host into the container at `~/.agents` (read-write, created if absent). This is unconditional — no component flag required.
+
+### macOS host notes
+
+On **Linux**, container CLIs share the host's dotfile dirs directly (`~/.claude`, `~/.copilot`, `~/.config/gh`, `~/.kiro`).
+
+On **macOS**, those four tools store OAuth tokens in the macOS Keychain (inaccessible from Linux containers). `runme.sh` detects `Darwin` and transparently redirects their mounts to `~/.ai-containers/` instead:
+
+```
+~/.ai-containers/
+├── .copilot/
+├── .claude/             ← container Claude Code credentials
+├── .claude.json
+├── .config/gh/
+└── .kiro/
+```
+
+The host's own CLI sessions are unaffected. On first use on a new Mac, do a one-time login inside any container:
+
+```bash
+gh auth login
+copilot /login
+claude /login
+```
+
+`runme.sh` auto-creates `~/.ai-containers/` and all required subpaths before starting the container.
 
 ## Corporate customization
 
