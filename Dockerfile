@@ -339,7 +339,8 @@ RUN if [ "$INSTALL_KIRO" = "1" ]; then \
 # ── Optional: graphify ─────────────────────────────────────────────────────────
 ARG INSTALL_GRAPHIFY=0
 RUN if [ "$INSTALL_GRAPHIFY" = "1" ]; then \
-      UV_TOOL_BIN_DIR=/usr/local/bin uv tool install graphifyy && \
+      UV_TOOL_DIR=/opt/uv-tools UV_TOOL_BIN_DIR=/usr/local/bin uv tool install graphifyy && \
+      chmod -R a+rX /opt/uv-tools && \
       command -v graphify >/dev/null 2>&1 || { echo "ERROR: graphify binary not found after install"; exit 1; }; \
     fi
 
