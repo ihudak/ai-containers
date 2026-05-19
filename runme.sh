@@ -68,6 +68,11 @@ Environment variables:
                         PREVIEW_PORTS="8080:3000"       # host port 8080 → container port 3000
                         PREVIEW_PORTS="3000 8080:8080"  # mix of both forms
   NO_CACHE            Set to 1 to pass --no-cache to docker build (default: unset, uses cache).
+  CONTAINER_CPUS      CPU limit for the running container (default: 4.0). Must fit
+                      within the resources allocated to your Docker engine
+                      (e.g. on Colima, set with `colima start --cpu N`).
+  CONTAINER_MEMORY    Memory limit for the running container (default: 8g). Same
+                      sizing rules apply as for CONTAINER_CPUS.
 
 Configuration:
   Edit sandbox.conf to enable or disable optional components before building.
@@ -547,12 +552,15 @@ run_container() {
   # Other tools (aws, azure, kube, yarn, codex, gemini, dtctl, dtmgd) do not
   # use Keychain on macOS and store cross-platform data; they stay shared.
   local container_dotroot="$HOME"
-  if [[ "$(uname -s)" == "Darwin" ]]; then
+  if [[ "$(uname -s)" == "Darwin" ]] && any_enabled copilot kiro claude-code github-cli; then
     container_dotroot="$HOME/.ai-containers"
     mkdir -p "$container_dotroot"
     is_enabled copilot     && mkdir -p "$container_dotroot/.copilot"
     any_enabled github-cli copilot && mkdir -p "$container_dotroot/.config/gh"
-    is_enabled kiro        && mkdir -p "$container_dotroot/.kiro"
+    if is_enabled kiro; then
+      mkdir -p "$container_dotroot/.kiro"
+      mkdir -p "$container_dotroot/.local/share/kiro-cli"
+    fi
     if is_enabled claude-code; then
       mkdir -p "$container_dotroot/.claude"
       [[ -e "$container_dotroot/.claude.json" ]] || printf '{}' > "$container_dotroot/.claude.json"
@@ -568,12 +576,16 @@ run_container() {
   if is_enabled kiro; then
     add_mount_if_exists config_mount_flags "$container_dotroot/.kiro" "$dev_home/.kiro"
     # Kiro CLI data dir: Linux uses XDG (~/.local/share/kiro-cli); macOS uses
-    # ~/Library/Application Support/kiro-cli. The macOS dir contains a per-arch
-    # `bun` binary alongside cross-platform state, so a whole-dir mount across
-    # OSes would put a Mach-O binary where the in-container Linux Kiro expects
-    # a Linux ELF. We deliberately do NOT bridge them; the host and container
-    # Kiros keep independent data dirs.
-    if [[ "$(uname -s)" != "Darwin" ]]; then
+    # ~/Library/Application Support/kiro-cli for the host Kiro. Sharing the
+    # macOS dir directly with the Linux container would conflict because that
+    # dir holds a per-arch Mach-O `bun` runtime; the Linux container expects
+    # an ELF. On macOS we therefore route the container's data dir to a
+    # parallel host path under ~/.ai-containers/, which the host Mac Kiro
+    # never touches. KB indexes and history then persist across container
+    # runs and across projects, identical to the Linux behaviour.
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+      add_mount_if_exists config_mount_flags "$container_dotroot/.local/share/kiro-cli" "$dev_home/.local/share/kiro-cli"
+    else
       add_mount_if_exists config_mount_flags "$HOME/.local/share/kiro-cli" "$dev_home/.local/share/kiro-cli"
     fi
   fi
@@ -630,8 +642,8 @@ run_container() {
     "${capabilities[@]}" \
     --add-host=host.docker.internal:host-gateway \
     ${port_flags[@]+"${port_flags[@]}"} \
-    --cpus="4.0" \
-    --memory="8g" \
+    --cpus="${CONTAINER_CPUS:-4.0}" \
+    --memory="${CONTAINER_MEMORY:-8g}" \
     -e DEV_CONTAINER_MODE="$mode" \
     -e DISCOVERY_CAPTURE_ENABLED="$capture_enabled" \
     -e DISCOVERY_CAPTURE_DIR="/workspace/$capture_dir_name" \
