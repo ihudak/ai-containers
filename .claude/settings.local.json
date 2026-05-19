@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//home/ihudak/.claude/plugins/marketplaces/thedotmack/**)",
+      "Bash(docker exec *)"
+    ]
+  }
+}

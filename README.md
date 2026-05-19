@@ -239,7 +239,7 @@ Each directory is only mounted when its corresponding component is enabled in `s
 | `~/.config/gh` | `~/.config/gh` | read-write | `github-cli` or `copilot` |
 | `~/.copilot` | `~/.copilot` | read-write | `copilot` |
 | `~/.kiro` | `~/.kiro` | read-write | `kiro` |
-| `~/.local/share/kiro-cli` | `~/.local/share/kiro-cli` | read-write | `kiro` |
+| `~/.local/share/kiro-cli` | `~/.local/share/kiro-cli` | read-write | `kiro` (Linux hosts only — see [macOS notes](#macos-host-notes)) |
 | `~/.claude` | `~/.claude` | read-write | `claude-code` |
 | `~/.claude.json` | `~/.claude.json` | read-write | `claude-code` |
 | `~/.codex` | `~/.codex` | read-write | `codex` |
@@ -250,6 +250,58 @@ Each directory is only mounted when its corresponding component is enabled in `s
 | `~/.yarn` | `~/.yarn` | read-write | `yarn` |
 | `~/.config/dtctl` | `~/.config/dtctl` | read-write | `dtctl` |
 | `~/.config/dtmgd` | `~/.config/dtmgd` | read-write | `dtmgd` |
+
+## macOS host notes
+
+Most CLIs (`gh`, `aws`, `azure`, `kubectl`, `yarn`, `codex`, `gemini`, `dtctl`, `dtmgd`) behave identically on Linux and macOS hosts — their config dirs live in the same dotfile paths and contain only cross-platform data, so the host mounts in the table above carry credentials and settings into the container without any extra work.
+
+Three tools need extra care on macOS hosts: **Claude Code**, **Copilot CLI**, and **Kiro CLI**. Each stores its OAuth token in the **macOS Keychain**, not in the dotfile dir (the same applies to **gh CLI**, which is mounted alongside Copilot). The dotfile mount therefore carries no token across the macOS → Linux container boundary, which is why these tools prompt for `/login` inside the container even though they are authenticated on the host.
+
+### Auth fix — one-time login per tool inside the container
+
+The Linux build of each CLI has no Keychain to fall back to, so it writes the token to the mounted dotfile dir. After one login, every future container run on this Mac (any project, any image) reuses the credential file:
+
+```bash
+# Inside the container (any project)
+gh auth login        # writes ~/.config/gh/hosts.yml
+copilot /login       # writes ~/.copilot/config.json
+claude /login        # writes ~/.claude/.credentials.json
+# Kiro: log in on first interactive use; the token is written under ~/.kiro/
+```
+
+Verification on the host after the logins:
+
+```bash
+ls -la ~/.claude/.credentials.json   # now exists
+```
+
+The host's Mac-side Keychain auth is left untouched. Host and container maintain independent OAuth sessions; both work.
+
+### First-run prerequisite — the host dotfile dirs must exist
+
+Mounts are skipped silently when the source path is missing, so a fresh Mac (no host CLI ever run) needs the dotfile dirs created before the container starts. The simplest path is to run each host CLI once — that creates the right files in the right places, including the `~/.claude.json` *file* mount that pre-creation with `touch` cannot reliably populate (see footnote below):
+
+```bash
+gh --version; claude --version; copilot --version; kiro --version
+```
+
+If a tool isn't installed on the host at all, pre-create just its directory — the container CLI will populate it on first `/login`:
+
+```bash
+mkdir -p ~/.copilot ~/.claude ~/.config/gh ~/.kiro
+```
+
+> **Footnote — `~/.claude.json` is a *file* mount.** File bind mounts are tied to an inode at mount time. If the container's Claude Code rewrites `.claude.json` via atomic-rename (write tmp + rename), the new file lives at a different inode, and the mount stops reflecting writes to the host. Auth is unaffected because the OAuth token is written to `~/.claude/.credentials.json` *inside* the `~/.claude/` directory mount, where atomic renames work correctly. Only non-auth state in `~/.claude.json` is subject to this drift.
+
+### Kiro CLI data dir is intentionally not shared between macOS and the container
+
+On Linux Kiro stores data in `~/.local/share/kiro-cli/`; on macOS it uses `~/Library/Application Support/kiro-cli/`. The macOS dir mixes a per-arch `bun` runtime with cross-platform state, so a whole-directory bind-mount across OSes would put a Mach-O binary where the in-container Linux Kiro expects an ELF. `runme.sh` therefore skips the data-dir mount on macOS hosts entirely. `~/.kiro/` (sessions, history, auth) is still shared as usual, which covers the typical use case. The cost: indexed knowledge bases built inside the container do not appear in the host Kiro, and vice versa.
+
+### Concurrent-use caveat — Copilot CLI's SQLite session store
+
+Copilot CLI keeps `session-store.db` (SQLite + WAL) inside `~/.copilot/`. Sharing this file via the host mount works fine for sequential use (host CLI now, container CLI later, or vice versa), but **simultaneous** writes by host Copilot and container Copilot to the same SQLite file across Colima's virtio-fs bridge can cause `database is locked` / `database disk image is malformed`. Practical rule: do not run host Copilot CLI and container Copilot CLI against the shared dir at the same time.
+
+The other tools (`gh`, `claude`, `kiro`) do not keep SQLite state in their mounted dotfile dirs, so they are free of this concern.
 
 ## Reviewing blocked traffic
 

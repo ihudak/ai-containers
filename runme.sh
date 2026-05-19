@@ -531,20 +531,56 @@ run_container() {
   add_mount_if_exists config_mount_flags "$ssh_scope_dir" "$dev_home/.ssh" ro
   add_mount_if_exists config_mount_flags "$HOME/.agents" "$dev_home/.agents"
 
+  # ── macOS host: separate dotfile dirs for Keychain-affected tools ───────────
+  # On macOS, gh/copilot/claude-code/kiro store OAuth tokens in the system
+  # Keychain and use their dotfile dirs only for non-token state. Sharing those
+  # dirs with the Linux container would (a) carry no token across the boundary
+  # anyway, and (b) expose the container's SQLite/state writes to host writes
+  # over virtio-fs (Copilot's session-store.db, Kiro state, etc.).
+  #
+  # Solution: on macOS, back these mounts with parallel host paths under
+  # ~/.ai-containers/<dotname>/ instead of ~/<dotname>/. Every container on
+  # this host (any project, any image) shares the same ~/.ai-containers/ tree,
+  # so a one-time in-container /login persists across all of them. The host's
+  # native CLIs continue to use the original ~/.* paths, untouched.
+  #
+  # Other tools (aws, azure, kube, yarn, codex, gemini, dtctl, dtmgd) do not
+  # use Keychain on macOS and store cross-platform data; they stay shared.
+  local container_dotroot="$HOME"
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    container_dotroot="$HOME/.ai-containers"
+    mkdir -p "$container_dotroot"
+    is_enabled copilot     && mkdir -p "$container_dotroot/.copilot"
+    any_enabled github-cli copilot && mkdir -p "$container_dotroot/.config/gh"
+    is_enabled kiro        && mkdir -p "$container_dotroot/.kiro"
+    if is_enabled claude-code; then
+      mkdir -p "$container_dotroot/.claude"
+      [[ -e "$container_dotroot/.claude.json" ]] || printf '{}' > "$container_dotroot/.claude.json"
+    fi
+  fi
+
   if any_enabled github-cli copilot; then
-    add_mount_if_exists config_mount_flags "$HOME/.config/gh" "$dev_home/.config/gh"
+    add_mount_if_exists config_mount_flags "$container_dotroot/.config/gh" "$dev_home/.config/gh"
   fi
   if is_enabled copilot; then
-    add_mount_if_exists config_mount_flags "$HOME/.copilot" "$dev_home/.copilot"
+    add_mount_if_exists config_mount_flags "$container_dotroot/.copilot" "$dev_home/.copilot"
   fi
   if is_enabled kiro; then
-    add_mount_if_exists config_mount_flags "$HOME/.kiro" "$dev_home/.kiro"
-    add_mount_if_exists config_mount_flags "$HOME/.local/share/kiro-cli" "$dev_home/.local/share/kiro-cli"
+    add_mount_if_exists config_mount_flags "$container_dotroot/.kiro" "$dev_home/.kiro"
+    # Kiro CLI data dir: Linux uses XDG (~/.local/share/kiro-cli); macOS uses
+    # ~/Library/Application Support/kiro-cli. The macOS dir contains a per-arch
+    # `bun` binary alongside cross-platform state, so a whole-dir mount across
+    # OSes would put a Mach-O binary where the in-container Linux Kiro expects
+    # a Linux ELF. We deliberately do NOT bridge them; the host and container
+    # Kiros keep independent data dirs.
+    if [[ "$(uname -s)" != "Darwin" ]]; then
+      add_mount_if_exists config_mount_flags "$HOME/.local/share/kiro-cli" "$dev_home/.local/share/kiro-cli"
+    fi
   fi
   local claude_env_args=()
   if is_enabled claude-code; then
-    add_mount_if_exists      config_mount_flags "$HOME/.claude"      "$dev_home/.claude"
-    add_file_mount_if_exists config_mount_flags "$HOME/.claude.json" "$dev_home/.claude.json"
+    add_mount_if_exists      config_mount_flags "$container_dotroot/.claude"      "$dev_home/.claude"
+    add_file_mount_if_exists config_mount_flags "$container_dotroot/.claude.json" "$dev_home/.claude.json"
     # claude-mem (thedotmack plugin) defaults CLAUDE_MEM_WORKER_HOST to 127.0.0.1.
     # Inside the container that resolves to the container itself, not the host.
     # In WSL2 + Docker Desktop, host.docker.internal resolves to the docker-desktop
