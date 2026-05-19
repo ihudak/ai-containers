@@ -11,7 +11,7 @@ It packages a CLI-only Docker-based workspace for running AI coding agents (GitH
 
 ## What is included
 
-- `Dockerfile` builds the image from a configurable set of optional components: AI agents (GitHub Copilot CLI, Kiro CLI, Claude Code, Codex CLI, Gemini CLI), JVM toolchains (via SDKMAN: OpenJDK, GraalVM CE, Kotlin, Scala, Maven, Gradle), Node.js versions (via nvm), Python versions (via pyenv), Ruby + Rails (via rvm), Rust (via rustup), Go, cloud CLIs (AWS, Azure, kubectl, GitHub CLI), dev tools (Angular CLI, qmd), and Dynatrace CLIs (dtctl, dtmgd). Node.js (latest LTS), Python (latest stable), git, jq, packet-capture tools, and the non-root sandbox user are always included.
+- `Dockerfile` builds the image from a configurable set of optional components: AI agents (GitHub Copilot CLI, Kiro CLI, Claude Code, Codex CLI, Gemini CLI, graphify), JVM toolchains (via SDKMAN: OpenJDK, GraalVM CE, Kotlin, Scala, Maven, Gradle), Node.js versions (via nvm), Python versions (via pyenv), Ruby + Rails (via rvm), Rust (via rustup), Go, cloud CLIs (AWS, Azure, kubectl, GitHub CLI), dev tools (Angular CLI, qmd), and Dynatrace CLIs (dtctl, dtmgd). Node.js (latest LTS), Python (latest stable), git, jq, packet-capture tools, and the non-root sandbox user are always included.
 - `sandbox.conf` controls which optional components are built into the image and which credential directories are mounted at runtime.
 - `install-dt-tools.sh` is a build-time helper script that installs dtctl and dtmgd from GitHub releases, with optional authentication via `GITHUB_TOKEN`.
 - `entrypoint.sh` applies either a restricted firewall or a discovery mode at container startup. In both modes it creates the sandbox user and drops to it via `capsh`. Restricted mode drops `NET_ADMIN` and `NET_RAW`; discovery mode drops only `NET_ADMIN` (keeping `NET_RAW` for tcpdump).
@@ -100,6 +100,23 @@ rust=stable
 # Go (direct tarball from go.dev/dl)
 go=1.24.2
 ```
+
+### graphify — code-to-knowledge-graph tool
+
+`graphify` transforms code, docs, and other files into interactive knowledge graphs using Claude AI. It is a Claude Code skill — the binary is installed into the image at build time, but the skill must be registered in `~/.claude/` once at runtime.
+
+```bash
+graphify=ON    # install the graphify binary (pip install graphifyy)
+graphify=OFF   # skip (default)
+```
+
+**First-time setup** (inside the container, after the first start):
+
+```bash
+graphify install   # registers the Claude Code skill; persists via the ~/.claude bind-mount
+```
+
+Because `~/.claude/` is bind-mounted from the host, running `graphify install` once inside any container makes the skill available in every subsequent container start without reinstalling.
 
 ### Dynatrace CLIs (dtctl / dtmgd)
 
@@ -301,6 +318,7 @@ Because macOS host CLIs cache tokens in Keychain that the container can't read, 
 gh auth login        # writes  ~/.ai-containers/.config/gh/hosts.yml
 copilot /login       # writes  ~/.ai-containers/.copilot/config.json
 claude /login        # writes  ~/.ai-containers/.claude/.credentials.json
+graphify install     # registers the graphify Claude Code skill in ~/.ai-containers/.claude/
 # Kiro: log in on first interactive use; the token is written under ~/.ai-containers/.kiro/
 ```
 
