@@ -28,6 +28,9 @@ cdn.cypress.io
 download.cypress.io
 opencollective.com
 
+# Widely used MCP Servers
+mcp.context7.com
+
 # Docker host gateway — works across all Docker variants (Docker Desktop, Rancher
 # Desktop, Colima, bare Docker Engine on Linux/WSL2). runme.sh injects
 # --add-host=host.docker.internal:host-gateway on every run, so this hostname
