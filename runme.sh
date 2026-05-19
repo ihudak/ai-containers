@@ -254,6 +254,7 @@ generate_allowlists() {
     include_if_enabled       "$domains_d/claude-code.txt"     claude-code
     include_if_enabled       "$domains_d/codex.txt"           codex
     include_if_enabled       "$domains_d/gemini.txt"          gemini
+    include_if_enabled       "$domains_d/graphify.txt"        graphify
     include_if_enabled       "$domains_d/yarn.txt"            yarn
     include_if_enabled       "$domains_d/kubectl.txt"         kubectl
     include_if_enabled       "$domains_d/aws-cli.txt"         aws-cli
@@ -281,6 +282,7 @@ generate_allowlists() {
     include_if_enabled  "$proxy_d/claude-code.txt"     claude-code
     include_if_enabled  "$proxy_d/codex.txt"           codex
     include_if_enabled  "$proxy_d/gemini.txt"          gemini
+    include_if_enabled  "$proxy_d/graphify.txt"        graphify
     if any_active dtctl dtmgd; then include_fragment "$proxy_d/dynatrace.txt"; fi
     include_fragment    "$proxy_d/custom.txt"
   } > "${script_dir}/allowlist-proxy-domains.txt"
@@ -309,6 +311,7 @@ build_args_from_config() {
     "claude-code:INSTALL_CLAUDE_CODE"
     "codex:INSTALL_CODEX"
     "gemini:INSTALL_GEMINI"
+    "graphify:INSTALL_GRAPHIFY"
     "kubectl:INSTALL_KUBECTL"
     "aws-cli:INSTALL_AWS_CLI"
     "azure-cli:INSTALL_AZURE_CLI"

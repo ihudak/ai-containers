@@ -336,6 +336,12 @@ RUN if [ "$INSTALL_KIRO" = "1" ]; then \
       command -v kiro-cli >/dev/null || { echo "ERROR: kiro-cli not found after install"; exit 1; }; \
     fi
 
+# ── Optional: graphify ─────────────────────────────────────────────────────────
+ARG INSTALL_GRAPHIFY=0
+RUN if [ "$INSTALL_GRAPHIFY" = "1" ]; then \
+      UV_TOOL_BIN_DIR=/usr/local/bin uv tool install graphifyy; \
+    fi
+
 # ── Optional: dtctl and dtmgd ───────────────────────────────────────────────────
 # DTCTL_VERSION / DTMGD_VERSION:
 #   "latest"  = auto-detect latest release from GitHub API

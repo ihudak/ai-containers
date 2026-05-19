@@ -1,0 +1,7 @@
+# graphify
+# Source: https://github.com/safishamsi/graphify
+# api.anthropic.com is already listed in claude-code.txt when claude-code=ON,
+# but graphify can be used independently so the domain is listed here too.
+api.anthropic.com
+pypi.org
+files.pythonhosted.org
