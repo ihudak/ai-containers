@@ -1,1 +1,3 @@
+# graphify
+# Wildcard for Anthropic CDN/API hosts — picked up by the self-healing daemon.
 *.anthropic.com
