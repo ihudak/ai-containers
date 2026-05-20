@@ -122,6 +122,41 @@ Because `~/.claude/` is bind-mounted from the host, running `graphify install` o
 
 > **Note:** Only the Anthropic API (`api.anthropic.com`) is allowlisted by default. graphify also supports Google Gemini, OpenAI, DeepSeek, Moonshot/Kimi, AWS Bedrock, and Ollama — if you configure graphify with a non-Anthropic provider, add its API domain to `allowlist-domains.d/custom.txt` and rebuild.
 
+### claude-mem — persistent memory for Claude Code
+
+`claude-mem` is the [thedotmack](https://github.com/thedotmack/claude-mem) memory plugin for Claude Code. The agent container only holds the CLI; the worker daemon runs in a sibling container managed by a separate repo, [`claude-mem-server`](../claude-mem-server), and the two communicate over a private `ai-mem` docker network.
+
+```bash
+claude-mem=ON     # adds `npm install -g claude-mem` to the image AND, at run time,
+                  # attaches the agent to the ai-mem docker network if it exists
+claude-mem=OFF    # default — no install, no network attach
+```
+
+`claude-mem=ON` requires `claude-code=ON` and `bun=ON`; `runme.sh build` fails fast otherwise.
+
+**Setup** (one-time, in this order):
+
+1. Build and start the worker once on the host:
+   ```bash
+   cd ~/dev/ai-tools/claude-mem-server
+   ./build.sh
+   ./start-mem-server.sh    # creates the ai-mem network if missing
+   ```
+   The worker container publishes port `127.0.0.1:37777` (loopback only — not exposed to your LAN) and bind-mounts `~/.ai-containers/.claude-mem` for its data.
+
+2. Set `claude-mem=ON` in `sandbox.conf` and rebuild:
+   ```bash
+   ./runme.sh build
+   ```
+
+3. Inside any sandbox, register the plugin once:
+   ```bash
+   claude-mem install --no-auto-start --provider claude --ide claude-code
+   ```
+   This persists in your container-side `~/.claude` (which on macOS is `~/.ai-containers/.claude`), so subsequent containers see it without re-running.
+
+When the agent container starts, `runme.sh` attaches it to the `ai-mem` network and sets `CLAUDE_MEM_WORKER_HOST=claude-mem`, `CLAUDE_MEM_WORKER_PORT=37777`. If you set `claude-mem=ON` but haven't started the worker (no `ai-mem` network), the container still starts — claude-mem features are simply inactive, and `runme.sh` prints a hint.
+
 ### Dynatrace CLIs (dtctl / dtmgd)
 
 These support three modes:

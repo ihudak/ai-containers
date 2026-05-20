@@ -293,12 +293,21 @@ RUN if [ -n "$ANGULAR_CLI_VERSION" ] && [ "$ANGULAR_CLI_VERSION" != "OFF" ]; the
 ARG INSTALL_CLAUDE_CODE=0
 RUN if [ "$INSTALL_CLAUDE_CODE" = "1" ]; then \
       npm install -g @anthropic-ai/claude-code && \
-      # claude-mem (Claude Code's internal worker) expects the native-installer path
-      # ~/.local/bin/claude. Since we install via npm, create a symlink in /etc/skel
-      # so it is copied into every sandbox user's home by setup_sandbox_user().
+      # claude-mem (the thedotmack memory plugin) expects the native-installer
+      # path ~/.local/bin/claude. Since we install via npm, create a symlink in
+      # /etc/skel so it is copied into every sandbox user's home by
+      # setup_sandbox_user().
       mkdir -p /etc/skel/.local/bin && \
       ln -sf "$(npm prefix -g)/bin/claude" /etc/skel/.local/bin/claude; \
     fi
+
+# Optional: claude-mem (thedotmack memory plugin for Claude Code).
+# Only the CLI is installed here; the worker daemon runs in the sibling
+# claude-mem-server container. The agent connects over TCP to that worker
+# (hostname `claude-mem` on the ai-mem docker network) at runtime.
+# Requires bun=ON (the plugin's runtime uses Bun); runme.sh enforces this.
+ARG INSTALL_CLAUDE_MEM=0
+RUN if [ "$INSTALL_CLAUDE_MEM" = "1" ]; then npm install -g claude-mem; fi
 
 ARG INSTALL_CODEX=0
 RUN if [ "$INSTALL_CODEX" = "1" ]; then npm install -g @openai/codex; fi
