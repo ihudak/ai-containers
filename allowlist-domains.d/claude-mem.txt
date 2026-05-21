@@ -1,8 +1,0 @@
-# Domains required when claude-mem=ON in sandbox.conf.
-#
-# `claude-mem` is the docker hostname of the worker container on the
-# `ai-mem` bridge network (started via the sibling claude-mem-server repo).
-# Docker's embedded DNS (127.0.0.11) resolves it to the worker container's
-# IP; refresh-ipset-allowlist.sh resolves it via getent and adds the IP to
-# the ipset. Self-healing handles any IP churn between refreshes.
-claude-mem

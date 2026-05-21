@@ -10,9 +10,7 @@ A CLI-only Docker workspace for running AI coding agents (GitHub Copilot CLI, Ki
 
 `sandbox.conf` is the single source of truth for which optional components are included. Set a component to `ON` or `OFF` and rebuild. The format is strictly `component=ON` or `component=OFF`, one per line; comments start with `#`.
 
-Optional components: `copilot`, `kiro`, `claude-code`, `claude-mem`, `codex`, `gemini`, `graphify`, `openjdk`, `graalvm-ce`, `graalvm-oracle`, `kotlin`, `scala`, `maven`, `gradle`, `kubectl`, `aws-cli`, `azure-cli`, `github-cli`, `angular-cli`, `yarn`, `bun`, `qmd`, `dtctl`, `dtmgd`.
-
-`claude-mem=ON` requires `claude-code=ON` and `bun=ON`; `runme.sh build` fails fast otherwise. See "Optional memory integration" below.
+Optional components: `copilot`, `kiro`, `claude-code`, `codex`, `gemini`, `graphify`, `openjdk`, `graalvm-ce`, `graalvm-oracle`, `kotlin`, `scala`, `maven`, `gradle`, `kubectl`, `aws-cli`, `azure-cli`, `github-cli`, `angular-cli`, `yarn`, `bun`, `qmd`, `dtctl`, `dtmgd`.
 
 Version-list components (`node`, `python`, `ruby`, `rails`, `rust`, `go`) accept comma-separated version values instead of `ON`/`OFF` (e.g., `node=22,20`). Constraints:
 - `ruby`, `rails`, and `angular-cli` accept only a **single version** (not a comma-separated list).
@@ -65,7 +63,6 @@ docker run --rm --entrypoint capture-agent-destinations.sh \
 - `CONTAINER_MEMORY` — memory limit for the running container (default: `8g`)
 - `ALLOW_IPV6_BYPASS=1` — suppress the visual warning when `ip6tables` is unavailable (WSL2/nf_tables environments)
 - `SELF_HEALING_ENABLED=0` — disable reactive IP auto-allowing (logging only)
-- `CLAUDE_MEM_WORKER_HOST` / `CLAUDE_MEM_WORKER_PORT` — set automatically to `claude-mem` / `37777` when `claude-mem=ON` **and** the `ai-mem` docker network exists. The agent container is also attached to `ai-mem` so it can resolve the worker by hostname. If the network is missing, `runme.sh` prints a hint pointing at `~/dev/ai-tools/claude-mem-server/start-mem-server.sh` and continues without these vars (claude-mem features will be inactive)
 
 ## Architecture
 
@@ -118,19 +115,6 @@ To add domains not tied to any component (e.g. `google.com`, internal registries
 ### Conditional installs in the Dockerfile
 
 Every optional component has a corresponding `ARG INSTALL_<COMPONENT>=0|1` declared immediately before its `RUN` block. The npm-based tools (Copilot, Angular CLI, Claude Code, Codex, Gemini, Yarn) each have their own `RUN` layer so toggling one doesn't invalidate the others. The dtctl/dtmgd block skips entirely when both are disabled.
-
-### Optional memory integration (claude-mem)
-
-When `claude-mem=ON` in `sandbox.conf`:
-
-- The Dockerfile runs `npm install -g claude-mem`, putting the plugin's CLI on the agent's PATH.
-- `runme.sh` validates that `claude-code=ON` and `bun=ON` at build time (claude-mem is a Claude Code plugin and its worker runtime is Bun).
-- At run time, `runme.sh` attaches the agent container to the `ai-mem` docker network and sets `CLAUDE_MEM_WORKER_HOST=claude-mem`, `CLAUDE_MEM_WORKER_PORT=37777`. The hostname resolves via Docker's embedded DNS to a sibling worker container started from `~/dev/ai-tools/claude-mem-server/start-mem-server.sh`.
-- `allowlist-domains.d/claude-mem.txt` adds `claude-mem` to the restricted-mode allowlist.
-
-The worker container is **not** managed by this project — it lives in a separate sibling repo. If the `ai-mem` network is absent at run time, `runme.sh` prints a hint and continues without the env vars; the agent still works, claude-mem features are just inactive.
-
-One-time bootstrap after first build with `claude-mem=ON`: inside any sandbox, run `claude-mem install --no-auto-start --provider claude --ide claude-code` to register the plugin in the container-side `~/.claude` (which on macOS is `~/.ai-containers/.claude` on the host).
 
 ### Sandbox user identity
 

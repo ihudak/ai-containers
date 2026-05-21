@@ -185,17 +185,6 @@ validate_config() {
     printf '       Use ON (latest), a single version number (e.g. 19), or OFF.\n' >&2
     exit 1
   fi
-  # claude-mem requires claude-code (it's a Claude Code plugin) and bun (its runtime).
-  if is_enabled claude-mem; then
-    if ! is_enabled claude-code; then
-      printf 'ERROR: claude-mem=ON requires claude-code=ON in sandbox.conf.\n' >&2
-      exit 1
-    fi
-    if ! is_enabled bun; then
-      printf 'ERROR: claude-mem=ON requires bun=ON in sandbox.conf (the plugin runtime needs Bun).\n' >&2
-      exit 1
-    fi
-  fi
   # SDKMAN requires full patch versions (e.g. 21.0.5, not 21).
   # Validate that every version in each JVM key contains at least one dot.
   local jvm_key jvm_val ver
@@ -263,7 +252,6 @@ generate_allowlists() {
     include_if_enabled       "$domains_d/github-copilot.txt"  copilot
     include_if_enabled       "$domains_d/kiro.txt"            kiro
     include_if_enabled       "$domains_d/claude-code.txt"     claude-code
-    include_if_enabled       "$domains_d/claude-mem.txt"      claude-mem
     include_if_enabled       "$domains_d/codex.txt"           codex
     include_if_enabled       "$domains_d/gemini.txt"          gemini
     include_if_enabled       "$domains_d/graphify.txt"        graphify
@@ -321,7 +309,6 @@ build_args_from_config() {
     "copilot:INSTALL_COPILOT"
     "kiro:INSTALL_KIRO"
     "claude-code:INSTALL_CLAUDE_CODE"
-    "claude-mem:INSTALL_CLAUDE_MEM"
     "codex:INSTALL_CODEX"
     "gemini:INSTALL_GEMINI"
     "graphify:INSTALL_GRAPHIFY"
@@ -606,28 +593,11 @@ run_container() {
       add_mount_if_exists config_mount_flags "$HOME/.local/share/kiro-cli" "$dev_home/.local/share/kiro-cli"
     fi
   fi
-  local claude_env_args=()
   if is_enabled claude-code; then
     add_mount_if_exists      config_mount_flags "$container_dotroot/.claude"      "$dev_home/.claude"
     add_file_mount_if_exists config_mount_flags "$container_dotroot/.claude.json" "$dev_home/.claude.json"
   fi
 
-  # claude-mem: attach to the ai-mem docker network so the in-container claude-mem
-  # client reaches the worker container (sibling repo claude-mem-server) by its
-  # docker hostname `claude-mem`. The worker only exists if the user has started
-  # it; if the network is missing we continue without memory and print a hint.
-  local docker_network_args=()
-  if is_enabled claude-mem; then
-    if docker network inspect ai-mem >/dev/null 2>&1; then
-      docker_network_args+=(--network ai-mem)
-      claude_env_args+=(-e CLAUDE_MEM_WORKER_HOST=claude-mem -e CLAUDE_MEM_WORKER_PORT=37777)
-    else
-      printf '[runme.sh] claude-mem=ON but docker network "ai-mem" is missing.\n' >&2
-      printf '[runme.sh] Start the worker first:\n' >&2
-      printf '[runme.sh]   ~/dev/ai-tools/claude-mem-server/start-mem-server.sh\n' >&2
-      printf '[runme.sh] Continuing without memory (claude-mem features will be inactive).\n' >&2
-    fi
-  fi
   if is_enabled codex; then
     add_mount_if_exists config_mount_flags "$HOME/.codex" "$dev_home/.codex"
   fi
@@ -664,7 +634,6 @@ run_container() {
   docker run -it --rm \
     "${capabilities[@]}" \
     --add-host=host.docker.internal:host-gateway \
-    ${docker_network_args[@]+"${docker_network_args[@]}"} \
     ${port_flags[@]+"${port_flags[@]}"} \
     --cpus="${CONTAINER_CPUS:-4.0}" \
     --memory="${CONTAINER_MEMORY:-8g}" \
@@ -680,7 +649,6 @@ run_container() {
     ${SELF_HEALING_ENABLED:+-e SELF_HEALING_ENABLED="$SELF_HEALING_ENABLED"} \
     ${GITHUB_PERSONAL_ACCESS_TOKEN:+-e GITHUB_PERSONAL_ACCESS_TOKEN="$GITHUB_PERSONAL_ACCESS_TOKEN"} \
     ${vault_env_args[@]+"${vault_env_args[@]}"} \
-    ${claude_env_args[@]+"${claude_env_args[@]}"} \
     -v "$workspace_dir:/workspace" \
     ${extra_mount_flags[@]+"${extra_mount_flags[@]}"} \
     ${doc_mount_flags[@]+"${doc_mount_flags[@]}"} \
