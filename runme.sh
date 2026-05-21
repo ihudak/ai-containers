@@ -18,7 +18,18 @@ Flags:
 
 Environment variables:
   IMAGE_NAME          Image to use or build (default: ai-sandbox)
-  SSH_SCOPE_DIR       Host SSH subdirectory to mount as ~/.ssh (default: ~/.ssh)
+  AI_CONTAINER_GROUP  Group name selecting which dotfile tree to mount (default: default).
+                      Use 'host' to mount directly from $HOME (Linux: same as today;
+                      macOS: requires acknowledgement — tools using Keychain will not work).
+                      Use any lowercase name (a-z, 0-9, dashes; max 32 chars) to select a
+                      group under ~/.ai-containers/<group>/.
+  AI_CONTAINER_GROUP_INIT
+                      Non-interactive override for first-time group bootstrap. Values:
+                        clean          Create an empty group (only .ssh + .agents scaffold).
+                        from:host      Copy group-scoped dotfiles from $HOME.
+                        from:<name>    Copy group-scoped dotfiles from ~/.ai-containers/<name>.
+  AI_CONTAINER_HOST_ACK
+                      Set to 1 to skip the macOS host-group interactive acknowledgement.
   SANDBOX_UID         UID for the container user (default: host user's id -u)
   SANDBOX_GID         GID for the container user (default: host user's id -g)
   SANDBOX_USER        Username for the container user (default: host username from id -un)
@@ -77,6 +88,218 @@ Environment variables:
 Configuration:
   Edit sandbox.conf to enable or disable optional components before building.
 EOF
+}
+
+# ── Group helpers ──────────────────────────────────────────────────────────────
+
+validate_group_name() {
+  local name="$1"
+  [[ "$name" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] || {
+    echo "Invalid AI_CONTAINER_GROUP='$name'. Allowed: lowercase letters, digits, dashes; 1-32 chars; must start with alphanum." >&2
+    exit 1
+  }
+}
+
+print_macos_host_warning() {
+  cat >&2 <<'EOF'
+WARNING: AI_CONTAINER_GROUP=host on macOS
+
+The following tools store OAuth in the macOS Keychain and
+will NOT have working credentials in the container:
+  - Claude Code        (~/.claude)
+  - GitHub Copilot CLI (~/.copilot)
+  - Kiro CLI           (~/.kiro)  [also: per-arch bun binary conflict]
+  - GitHub CLI         (~/.config/gh)
+
+Codex, Gemini, and other dirs are unaffected.
+EOF
+}
+
+require_host_ack() {
+  if [[ "${AI_CONTAINER_HOST_ACK:-0}" == "1" ]]; then
+    return
+  elif [[ -t 0 ]]; then
+    print_macos_host_warning
+    read -r -p "Type 'yes' to continue, anything else to abort: " reply
+    [[ "$reply" == "yes" ]] || { echo "Aborted." >&2; exit 1; }
+  else
+    print_macos_host_warning
+    echo "Aborting: stdin is not a TTY and AI_CONTAINER_HOST_ACK=1 is not set." >&2
+    exit 1
+  fi
+}
+
+ensure_group_scaffold() {
+  local root="$1"
+  install -d -m 700 "$root/.ssh"
+  install -d        "$root/.agents"
+}
+
+# Copy the group-scoped slice of dotfiles from $src into $dst.
+# Only paths that exist in $src are copied.
+_copy_group_slice() {
+  local src="$1" dst="$2"
+  local paths=(.claude .claude.json .copilot .config/gh .kiro ".local/share/kiro-cli" .codex .gemini .agents .ssh)
+  for p in "${paths[@]}"; do
+    local from="$src/$p"
+    if [[ -e "$from" ]]; then
+      mkdir -p "$(dirname "$dst/$p")"
+      cp -a "$from" "$dst/$p"
+    fi
+  done
+}
+
+ensure_group_exists() {
+  local group="$1" root="$2"
+  if [[ -d "$root" ]]; then
+    return
+  fi
+
+  if [[ -n "${AI_CONTAINER_GROUP_INIT:-}" ]]; then
+    case "$AI_CONTAINER_GROUP_INIT" in
+      clean)
+        mkdir -p "$root"
+        ;;
+      from:host)
+        mkdir -p "$root"
+        _copy_group_slice "$HOME" "$root"
+        ;;
+      from:*)
+        local src_name="${AI_CONTAINER_GROUP_INIT#from:}"
+        local src_root="$HOME/.ai-containers/$src_name"
+        if [[ ! -d "$src_root" ]]; then
+          echo "ERROR: AI_CONTAINER_GROUP_INIT=from:$src_name — source group '$src_name' not found at $src_root" >&2
+          exit 1
+        fi
+        mkdir -p "$root"
+        _copy_group_slice "$src_root" "$root"
+        ;;
+      *)
+        echo "ERROR: unknown AI_CONTAINER_GROUP_INIT value '${AI_CONTAINER_GROUP_INIT}'. Expected: clean, from:host, or from:<group>." >&2
+        exit 1
+        ;;
+    esac
+    return
+  fi
+
+  if [[ ! -t 0 ]]; then
+    echo "ERROR: group '$group' not found at $root and stdin is not a TTY." >&2
+    echo "       Set AI_CONTAINER_GROUP_INIT=clean (empty), AI_CONTAINER_GROUP_INIT=from:host, or AI_CONTAINER_GROUP_INIT=from:<existing-group> to bootstrap non-interactively." >&2
+    exit 1
+  fi
+
+  # Interactive prompt: numbered options + 'q' as a non-numeric escape.
+  local options=() option_labels=()
+  local default_exists=0
+  if [[ -d "$HOME/.ai-containers/default" ]]; then
+    options+=("default")
+    option_labels+=("default (recommended)")
+    default_exists=1
+  fi
+  # host is always present; when 'default' is absent, host becomes the recommended fallback
+  options+=("host")
+  if (( default_exists == 0 )); then
+    option_labels+=("host (recommended)")
+  else
+    option_labels+=("host")
+  fi
+  # other custom groups, mtime-sorted descending (exclude 'default' and the new group itself)
+  while IFS= read -r -d '' dir; do
+    local name; name="$(basename "$dir")"
+    [[ "$name" == "default" || "$name" == "$group" ]] && continue
+    options+=("$name")
+    option_labels+=("$name")
+  done < <(find "$HOME/.ai-containers" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null \
+           | xargs -0 ls -dt 2>/dev/null \
+           | while IFS= read -r d; do printf '%s\0' "$d"; done)
+  options+=("<empty>")
+  option_labels+=("<empty>")
+
+  echo "Group '$group' not found. Initialize from:" >&2
+  local i
+  for i in "${!option_labels[@]}"; do
+    printf '  %d) %s\n' "$((i+1))" "${option_labels[$i]}" >&2
+  done
+  echo "  q) cancel" >&2
+
+  local default_idx=1
+  local reply
+  read -r -p "[${default_idx}]: " reply </dev/tty
+  [[ -z "$reply" ]] && reply="$default_idx"
+
+  if [[ "$reply" == "q" ]]; then
+    echo "Aborted." >&2
+    exit 1
+  fi
+  if [[ ! "$reply" =~ ^[0-9]+$ ]]; then
+    echo "Invalid selection '$reply'." >&2
+    exit 1
+  fi
+
+  local choice_idx=$(( reply - 1 ))
+  if (( choice_idx < 0 || choice_idx >= ${#options[@]} )); then
+    echo "Invalid selection '$reply'." >&2
+    exit 1
+  fi
+
+  local chosen="${options[$choice_idx]}"
+
+  case "$chosen" in
+    "<empty>")
+      mkdir -p "$root"
+      ;;
+    host)
+      mkdir -p "$root"
+      _copy_group_slice "$HOME" "$root"
+      ;;
+    *)
+      local src_root="$HOME/.ai-containers/$chosen"
+      if [[ ! -d "$src_root" ]]; then
+        echo "ERROR: source group '$chosen' not found at $src_root" >&2
+        exit 1
+      fi
+      mkdir -p "$root"
+      _copy_group_slice "$src_root" "$root"
+      ;;
+  esac
+}
+
+migrate_macos_pre_grouping_state() {
+  # Only relevant on macOS — Linux never had legacy paths under ~/.ai-containers/
+  [[ "$(uname -s)" == "Darwin" ]] || return 0
+
+  local target="$HOME/.ai-containers/default"
+  # Skip if default/ already exists — migration already done or user started fresh
+  [[ -d "$target" ]] && return 0
+
+  local legacy_paths=(
+    .claude
+    .claude.json
+    .copilot
+    ".config/gh"
+    .kiro
+    ".local/share/kiro-cli"
+  )
+
+  # Check whether any legacy path exists before touching anything
+  local found=0
+  for p in "${legacy_paths[@]}"; do
+    [[ -e "$HOME/.ai-containers/$p" ]] && found=1 && break
+  done
+  [[ "$found" -eq 0 ]] && return 0
+
+  mkdir -p "$target"
+  local moved=0
+  for p in "${legacy_paths[@]}"; do
+    local src="$HOME/.ai-containers/$p"
+    if [[ -e "$src" ]]; then
+      mkdir -p "$(dirname "$target/$p")"
+      mv "$src" "$target/$p"
+      printf 'Moving %-20s → default/%s\n' "$p" "$p" >&2
+      moved=$(( moved + 1 ))
+    fi
+  done
+  printf 'Migration complete: %d path(s) moved to ~/.ai-containers/default/\n' "$moved" >&2
 }
 
 # ── Config helpers ─────────────────────────────────────────────────────────────
@@ -472,8 +695,10 @@ run_container() {
   workspace_dir="$(resolve_path "${2:-$PWD}")"
   local capture_dir_name="${DISCOVERY_CAPTURE_DIR_NAME:-.agent-discovery}"
   local capture_enabled="0"
-  local ssh_scope_dir
-  ssh_scope_dir="$(resolve_path "${SSH_SCOPE_DIR:-$HOME/.ssh}")"
+
+  if [[ -n "${SSH_SCOPE_DIR:-}" ]]; then
+    echo "Note: SSH_SCOPE_DIR is no longer used; .ssh is now part of the group at ~/.ai-containers/<group>/.ssh/. See CHANGELOG." >&2
+  fi
 
   if [[ ! -d "$workspace_dir" ]]; then
     printf 'ERROR: workspace directory does not exist: %s\n' "${2:-$PWD}" >&2
@@ -534,75 +759,69 @@ run_container() {
     fi
   fi
 
+  # ── Group resolution ───────────────────────────────────────────────────────
+  local group="${AI_CONTAINER_GROUP:-default}"
+  validate_group_name "$group"
+
+  local group_root
+  if [[ "$group" == "host" ]]; then
+    [[ "$(uname -s)" == "Darwin" ]] && require_host_ack
+    group_root="$HOME"
+  else
+    # Migration only runs for non-host groups: a 'host' invocation must not
+    # touch ~/.ai-containers/ before the user has acked the warning.
+    mkdir -p "$HOME/.ai-containers"
+    migrate_macos_pre_grouping_state
+    group_root="$HOME/.ai-containers/$group"
+    ensure_group_exists "$group" "$group_root"
+    ensure_group_scaffold "$group_root"
+  fi
+
   # Mount credential directories for enabled components only.
   local config_mount_flags=()
-  add_mount_if_exists      config_mount_flags "$ssh_scope_dir"       "$dev_home/.ssh"       ro
-  add_mount_if_exists      config_mount_flags "$HOME/.agents"        "$dev_home/.agents"
-  add_file_mount_if_exists config_mount_flags "$HOME/.gitconfig"     "$dev_home/.gitconfig" ro
-
-  # ── macOS host: separate dotfile dirs for Keychain-affected tools ───────────
-  # On macOS, gh/copilot/claude-code/kiro store OAuth tokens in the system
-  # Keychain and use their dotfile dirs only for non-token state. Sharing those
-  # dirs with the Linux container would (a) carry no token across the boundary
-  # anyway, and (b) expose the container's SQLite/state writes to host writes
-  # over virtio-fs (Copilot's session-store.db, Kiro state, etc.).
-  #
-  # Solution: on macOS, back these mounts with parallel host paths under
-  # ~/.ai-containers/<dotname>/ instead of ~/<dotname>/. Every container on
-  # this host (any project, any image) shares the same ~/.ai-containers/ tree,
-  # so a one-time in-container /login persists across all of them. The host's
-  # native CLIs continue to use the original ~/.* paths, untouched.
-  #
-  # Other tools (aws, azure, kube, yarn, codex, gemini, dtctl, dtmgd) do not
-  # use Keychain on macOS and store cross-platform data; they stay shared.
-  local container_dotroot="$HOME"
-  if [[ "$(uname -s)" == "Darwin" ]] && any_enabled copilot kiro claude-code github-cli; then
-    container_dotroot="$HOME/.ai-containers"
-    mkdir -p "$container_dotroot"
-    is_enabled copilot     && mkdir -p "$container_dotroot/.copilot"
-    any_enabled github-cli copilot && mkdir -p "$container_dotroot/.config/gh"
-    if is_enabled kiro; then
-      mkdir -p "$container_dotroot/.kiro"
-      mkdir -p "$container_dotroot/.local/share/kiro-cli"
-    fi
-    if is_enabled claude-code; then
-      mkdir -p "$container_dotroot/.claude"
-      [[ -e "$container_dotroot/.claude.json" ]] || printf '{}' > "$container_dotroot/.claude.json"
-    fi
-  fi
+  add_mount_if_exists      config_mount_flags "$group_root/.ssh"         "$dev_home/.ssh"
+  add_mount_if_exists      config_mount_flags "$group_root/.agents"      "$dev_home/.agents"
+  add_file_mount_if_exists config_mount_flags "$HOME/.gitconfig"         "$dev_home/.gitconfig" ro
 
   if any_enabled github-cli copilot; then
-    add_mount_if_exists config_mount_flags "$container_dotroot/.config/gh" "$dev_home/.config/gh"
+    if [[ "$group" != "host" ]]; then
+      install -d "$group_root/.config/gh"
+    fi
+    add_mount_if_exists config_mount_flags "$group_root/.config/gh" "$dev_home/.config/gh"
   fi
   if is_enabled copilot; then
-    add_mount_if_exists config_mount_flags "$container_dotroot/.copilot" "$dev_home/.copilot"
+    if [[ "$group" != "host" ]]; then
+      install -d "$group_root/.copilot"
+    fi
+    add_mount_if_exists config_mount_flags "$group_root/.copilot" "$dev_home/.copilot"
   fi
   if is_enabled kiro; then
-    add_mount_if_exists config_mount_flags "$container_dotroot/.kiro" "$dev_home/.kiro"
-    # Kiro CLI data dir: Linux uses XDG (~/.local/share/kiro-cli); macOS uses
-    # ~/Library/Application Support/kiro-cli for the host Kiro. Sharing the
-    # macOS dir directly with the Linux container would conflict because that
-    # dir holds a per-arch Mach-O `bun` runtime; the Linux container expects
-    # an ELF. On macOS we therefore route the container's data dir to a
-    # parallel host path under ~/.ai-containers/, which the host Mac Kiro
-    # never touches. KB indexes and history then persist across container
-    # runs and across projects, identical to the Linux behaviour.
-    if [[ "$(uname -s)" == "Darwin" ]]; then
-      add_mount_if_exists config_mount_flags "$container_dotroot/.local/share/kiro-cli" "$dev_home/.local/share/kiro-cli"
-    else
-      add_mount_if_exists config_mount_flags "$HOME/.local/share/kiro-cli" "$dev_home/.local/share/kiro-cli"
+    if [[ "$group" != "host" ]]; then
+      install -d "$group_root/.kiro" "$group_root/.local/share/kiro-cli"
     fi
+    add_mount_if_exists config_mount_flags "$group_root/.kiro"                  "$dev_home/.kiro"
+    add_mount_if_exists config_mount_flags "$group_root/.local/share/kiro-cli"  "$dev_home/.local/share/kiro-cli"
   fi
   if is_enabled claude-code; then
-    add_mount_if_exists      config_mount_flags "$container_dotroot/.claude"      "$dev_home/.claude"
-    add_file_mount_if_exists config_mount_flags "$container_dotroot/.claude.json" "$dev_home/.claude.json"
+    if [[ "$group" != "host" ]]; then
+      install -d "$group_root/.claude"
+      [[ -e "$group_root/.claude.json" ]] || printf '{}\n' > "$group_root/.claude.json"
+    fi
+    add_mount_if_exists      config_mount_flags "$group_root/.claude"      "$dev_home/.claude"
+    add_file_mount_if_exists config_mount_flags "$group_root/.claude.json" "$dev_home/.claude.json"
   fi
 
   if is_enabled codex; then
-    add_mount_if_exists config_mount_flags "$HOME/.codex" "$dev_home/.codex"
+    if [[ "$group" != "host" ]]; then
+      install -d "$group_root/.codex"
+    fi
+    add_mount_if_exists config_mount_flags "$group_root/.codex" "$dev_home/.codex"
   fi
   if is_enabled gemini; then
-    add_mount_if_exists config_mount_flags "$HOME/.gemini" "$dev_home/.gemini"
+    if [[ "$group" != "host" ]]; then
+      install -d "$group_root/.gemini"
+    fi
+    add_mount_if_exists config_mount_flags "$group_root/.gemini" "$dev_home/.gemini"
   fi
   if is_enabled yarn; then
     add_mount_if_exists config_mount_flags "$HOME/.yarn" "$dev_home/.yarn"

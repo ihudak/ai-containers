@@ -82,11 +82,12 @@ cd "\$(dirname "\${BASH_SOURCE[0]}")"
 
 export IMAGE_NAME="${project_name}-ai-container"
 
-# SSH directory to mount as ~/.ssh inside the container (read-only).
-# Use a restricted key directory rather than your full ~/.ssh.
-export SSH_SCOPE_DIR="\${HOME}/.ssh/restricted"
-# Create the directory if it does not exist yet:
-mkdir -p "\${SSH_SCOPE_DIR}"
+# Container group: selects which dotfile tree under ~/.ai-containers/ to mount.
+# Uncomment to use a project-specific group (isolated auth state, skills, MCP config).
+# Special values: 'default' (the implicit default), 'host' (mount \$HOME directly).
+# On first use of a new group, runme.sh prompts for how to initialize it (or
+# set AI_CONTAINER_GROUP_INIT=clean|from:host|from:<group> to skip the prompt).
+#export AI_CONTAINER_GROUP="${project_name}"
 
 # Uncomment and set to mount additional repositories inside the container.
 # Paths with spaces are not supported. Append :ro for read-only.

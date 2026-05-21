@@ -157,7 +157,7 @@ If the API call fails (rate limit, bad token, or network error), the build print
 
 `runme.sh` deliberately does **not** forward `GITHUB_TOKEN` or `GH_TOKEN` into the running container, even if set on the host. Only `GITHUB_PERSONAL_ACCESS_TOKEN` is forwarded.
 
-> On **macOS hosts**, the host-side files referenced in this table are mounted from `~/.ai-containers/.copilot/`, `~/.ai-containers/.config/gh/`, etc. — see the [macOS host notes](#macos-host-notes) below for why and how. The container path inside the table is unchanged.
+> Auth files for Copilot CLI and `gh` CLI are sourced from the active container group (`~/.ai-containers/<group>/.copilot/`, `~/.ai-containers/<group>/.config/gh/`, etc. by default). See [Container groups](#container-groups) for details. The container path inside the table is unchanged.
 
 | Tool inside the container | Auth source |
 |---|---|
@@ -235,7 +235,6 @@ Set `EXTRA_MOUNTS` to a space-separated list of host paths. Append `:ro` or `:rw
 
 ```bash
 # backend is the primary workspace; ui is read-write, reference-docs is read-only
-SSH_SCOPE_DIR="$HOME/.ssh/myproject" \
 EXTRA_MOUNTS="/path/to/myproject-ui /path/to/reference-docs:ro" \
 bash ./runme.sh restricted /path/to/myproject-backend
 ```
@@ -267,19 +266,21 @@ The container automatically mounts the following directories from the host (if t
 
 Each directory is only mounted when its corresponding component is enabled in `sandbox.conf`. Missing directories are silently skipped.
 
-| Host directory | Container path | Mode | Component |
+Agent dotfile directories are sourced from the active container group (`~/.ai-containers/<group>/` by default). The group is selected by `AI_CONTAINER_GROUP` — see [Container groups](#container-groups) for details.
+
+| Host source (within group root) | Container path | Mode | Component |
 |---|---|---|---|
-| `~/.ssh` (or `SSH_SCOPE_DIR`) | `~/.ssh` | read-only | always |
-| `~/.agents` | `~/.agents` | read-write | always |
+| `<group>/.ssh/` | `~/.ssh` | read-write | always |
+| `<group>/.agents/` | `~/.agents` | read-write | always |
 | `~/.gitconfig` | `~/.gitconfig` | read-only | always (if file exists) |
-| `~/.config/gh` | `~/.config/gh` | read-write | `github-cli` or `copilot` |
-| `~/.copilot` | `~/.copilot` | read-write | `copilot` |
-| `~/.kiro` | `~/.kiro` | read-write | `kiro` |
-| `~/.local/share/kiro-cli` | `~/.local/share/kiro-cli` | read-write | `kiro` (on macOS the host source is redirected under `~/.ai-containers/` — see [macOS notes](#macos-host-notes)) |
-| `~/.claude` | `~/.claude` | read-write | `claude-code` |
-| `~/.claude.json` | `~/.claude.json` | read-write | `claude-code` |
-| `~/.codex` | `~/.codex` | read-write | `codex` |
-| `~/.gemini` | `~/.gemini` | read-write | `gemini` |
+| `<group>/.config/gh/` | `~/.config/gh` | read-write | `github-cli` or `copilot` |
+| `<group>/.copilot/` | `~/.copilot` | read-write | `copilot` |
+| `<group>/.kiro/` | `~/.kiro` | read-write | `kiro` |
+| `<group>/.local/share/kiro-cli/` | `~/.local/share/kiro-cli` | read-write | `kiro` |
+| `<group>/.claude/` | `~/.claude` | read-write | `claude-code` |
+| `<group>/.claude.json` | `~/.claude.json` | read-write | `claude-code` |
+| `<group>/.codex/` | `~/.codex` | read-write | `codex` |
+| `<group>/.gemini/` | `~/.gemini` | read-write | `gemini` |
 | `~/.aws` | `~/.aws` | read-write | `aws-cli` |
 | `~/.azure` | `~/.azure` | read-write | `azure-cli` |
 | `~/.kube` | `~/.kube` | read-write | `kubectl` |
@@ -287,66 +288,148 @@ Each directory is only mounted when its corresponding component is enabled in `s
 | `~/.config/dtctl` | `~/.config/dtctl` | read-write | `dtctl` |
 | `~/.config/dtmgd` | `~/.config/dtmgd` | read-write | `dtmgd` |
 
-## macOS host notes
+When `AI_CONTAINER_GROUP=host`, all group-scoped paths above are sourced directly from `$HOME` instead.
 
-Most CLIs (`aws`, `azure`, `kubectl`, `yarn`, `codex`, `gemini`, `dtctl`, `dtmgd`) behave identically on Linux and macOS hosts — their config dirs live in the same dotfile paths and contain only cross-platform data, so the host mounts in the table above carry credentials and settings into the container without any extra work.
+## Container groups
 
-Four tools need different handling on macOS: **Claude Code**, **Copilot CLI**, **gh CLI**, and **Kiro CLI**. Each of them stores its OAuth token in the **macOS Keychain**, not in the dotfile dir, and Copilot/Kiro additionally keep SQLite state in those dirs. Sharing the host dotfiles with the Linux container would therefore (a) carry no token across the boundary anyway, and (b) expose the container's SQLite writes to host writes over Colima's virtio-fs bridge, where SQLite locking is more fragile than on a single OS.
+A container group is a named directory under `~/.ai-containers/<name>/` that holds all per-purpose agent dotfile state: auth credentials, skills, MCP config, SSH keys, and per-tool session data. Because each group is self-contained, you can keep completely separate agent profiles for different purposes — for example a `docs` group with Obsidian skills and wiki credentials, a `java-backend` group with infra creds and Dynatrace auth, and a `ui` group with Figma MCP config — and switch between them per invocation.
 
-### How `runme.sh` handles this on macOS
+```bash
+AI_CONTAINER_GROUP=docs ./runme.sh restricted /path/to/workspace
+```
 
-When `runme.sh` detects `Darwin`, it transparently swaps the host source for these four tools' mounts to a parallel tree under `~/.ai-containers/` instead of `~/`. The container still sees its standard paths (`~/.copilot`, `~/.claude`, etc.) — only the host backing dir changes. Every container on this Mac (any project, any image) shares the same `~/.ai-containers/` tree, so a one-time in-container `/login` propagates to all future containers.
+The default group is named `default`. Its directory is `~/.ai-containers/default/`. If `AI_CONTAINER_GROUP` is not set, `default` is used.
+
+### Group layout
 
 ```text
 ~/.ai-containers/
-├── .copilot/                      ← container's Copilot CLI state + SQLite
-├── .claude/                       ← container's Claude Code state + .credentials.json
-├── .claude.json                   ← container's Claude Code app state (file mount)
-├── .config/gh/                    ← container's gh CLI hosts.yml
-├── .kiro/                         ← container's Kiro CLI sessions, history, auth
-└── .local/share/kiro-cli/         ← container's Kiro CLI data, KBs, runtime
+├── default/
+│   ├── .ssh/
+│   ├── .agents/
+│   ├── .claude/
+│   ├── .claude.json
+│   ├── .copilot/
+│   ├── .config/gh/
+│   ├── .kiro/
+│   ├── .local/share/kiro-cli/
+│   ├── .codex/
+│   └── .gemini/
+├── docs/               ← custom group, same shape
+└── java-backend/       ← another custom group
 ```
 
-The host's Mac-side `~/.copilot/`, `~/.claude/`, `~/.config/gh/`, `~/.kiro/`, and `~/Library/Application Support/kiro-cli/` are untouched. Host CLIs continue to use macOS Keychain; container CLIs use the file-based credentials they write inside `~/.ai-containers/`. The two are fully independent OAuth sessions; both work.
+### Group-name rules
 
-> The directory name `~/.ai-containers/` is unrelated to the per-project `<project>/.ai-containers/` asset dirs created by `project-init.sh`. They never collide on disk because one lives under `$HOME` and the other under repo roots.
+- Lowercase letters, digits, and dashes only.
+- 1–32 characters; must start with a letter or digit.
+- Examples of valid names: `default`, `docs`, `java-backend`, `ui2`.
+- Examples of invalid names: `Docs` (uppercase), `_meta` (leading underscore), `my group` (space).
 
-On **Linux hosts**, none of this redirection happens — host and container continue to share `~/.copilot/`, `~/.claude/`, etc. directly, exactly as before.
+### First-time bootstrap
 
-### Auth fix — one-time login per tool inside the container
+When you reference a group that does not yet exist, `runme.sh` asks how to initialize it.
 
-Because macOS host CLIs cache tokens in Keychain that the container can't read, do a single `/login` per tool inside any container. The Linux build of each CLI has no Keychain to fall back to, so it writes the token into the mounted `~/.ai-containers/` subdir on the host:
+**Interactive (TTY):**
+
+```
+Group 'docs' not found. Initialize from:
+  1) default            (recommended, if it exists)
+  2) host
+  3) <other custom groups, mtime-sorted>
+  N) <empty>
+  q) cancel
+[1]: _
+```
+
+Pick `1)` to copy the group-scoped dotfile slice from `default` (or whichever group is listed first). Pick `host` to copy from `$HOME`. Pick `<empty>` to start with an empty group (only `.ssh/` and `.agents/` are scaffolded). Pick `q` to abort.
+
+**Non-interactive (no TTY or scripted use):**
 
 ```bash
-# Inside the container (any project)
-gh auth login        # writes  ~/.ai-containers/.config/gh/hosts.yml
-copilot /login       # writes  ~/.ai-containers/.copilot/config.json
-claude /login        # writes  ~/.ai-containers/.claude/.credentials.json
-# Kiro: log in on first interactive use; the token is written under ~/.ai-containers/.kiro/
+# Start with an empty group
+AI_CONTAINER_GROUP=docs AI_CONTAINER_GROUP_INIT=clean ./runme.sh restricted /path
+
+# Copy dotfiles from the default group
+AI_CONTAINER_GROUP=docs AI_CONTAINER_GROUP_INIT=from:default ./runme.sh restricted /path
+
+# Copy dotfiles from $HOME
+AI_CONTAINER_GROUP=docs AI_CONTAINER_GROUP_INIT=from:host ./runme.sh restricted /path
 ```
 
-Verification on the host after the logins:
+Without `AI_CONTAINER_GROUP_INIT`, a non-TTY invocation for a missing group exits with an error and prints the hint.
+
+### The `host` group
+
+`AI_CONTAINER_GROUP=host` is a special sentinel meaning "mount agent dotfiles directly from `$HOME`". No `~/.ai-containers/host/` directory is created.
+
+**On Linux**, this restores the behavior that was the default before container groups were introduced — no warning, no prompt.
+
+**On macOS**, `runme.sh` prints the following warning and prompts for explicit confirmation before starting the container:
+
+```
+WARNING: AI_CONTAINER_GROUP=host on macOS
+
+The following tools store OAuth in the macOS Keychain and
+will NOT have working credentials in the container:
+  - Claude Code        (~/.claude)
+  - GitHub Copilot CLI (~/.copilot)
+  - Kiro CLI           (~/.kiro)  [also: per-arch bun binary conflict]
+  - GitHub CLI         (~/.config/gh)
+
+Codex, Gemini, and other dirs are unaffected.
+```
+
+Respond `yes` to continue. For non-interactive use, set `AI_CONTAINER_HOST_ACK=1`.
+
+The warning exists because those tools store OAuth tokens in the macOS Keychain rather than in their dotfile dirs. A Linux container cannot access the Keychain, so the container would start with no credentials for those tools. The default `default` group avoids this entirely by storing all credentials in `~/.ai-containers/default/` using file-based auth that works on both platforms.
+
+### One-time login inside a fresh group
+
+After creating a new group, log in to each tool from inside the container once:
 
 ```bash
-ls -la ~/.ai-containers/.claude/.credentials.json   # now exists
+gh auth login
+copilot /login
+claude /login
+# Kiro: log in on first interactive use
 ```
 
-### First-run prerequisite — auto-created on macOS
+The credentials are written into the group directory on the host and persist across all future runs of that group.
 
-`runme.sh` automatically creates `~/.ai-containers/` and the per-tool subpaths for whichever components are enabled in `sandbox.conf`, before evaluating the mounts. It also seeds `~/.ai-containers/.claude.json` with `{}` so the file mount succeeds cleanly on a brand-new Mac. You don't need to pre-create anything by hand.
+### Group maintenance
 
-> **Footnote — `~/.ai-containers/.claude.json` is a *file* mount.** File bind mounts are tied to an inode at mount time. If the container's Claude Code rewrites `.claude.json` via atomic-rename (write tmp + rename), the new file lives at a different inode and host writes stop reflecting through the mount. Auth is unaffected — the OAuth token lives in `~/.ai-containers/.claude/.credentials.json`, *inside* the `~/.ai-containers/.claude/` directory mount, where atomic renames work correctly. Only non-auth state in `.claude.json` is subject to this drift.
-
-### Wiping or backing up container credentials
-
-Because everything container-related is under one root, it's easy to manage:
+Groups are plain directories. Use standard shell tools:
 
 ```bash
-# Reset all container-side credentials and state (host CLIs unaffected)
-rm -rf ~/.ai-containers
-# Backup
-tar czf ai-containers-creds.tgz -C "$HOME" .ai-containers
+# List groups
+ls ~/.ai-containers/
+
+# Back up a group
+tar czf docs-group.tgz -C "$HOME/.ai-containers" docs
+
+# Duplicate a group
+cp -a ~/.ai-containers/default ~/.ai-containers/new-project
+
+# Remove a group (irreversible — deletes all auth state for that group)
+rm -rf ~/.ai-containers/docs
 ```
+
+### Migration notes for upgrading users
+
+**Linux users** will see the bootstrap prompt on first run after upgrade, because `~/.ai-containers/default/` does not exist yet. Choose `host` or another existing source to initialize from. To restore the previous behavior without any prompt, set `AI_CONTAINER_GROUP=host` permanently in your shell profile.
+
+**macOS users** with the pre-grouping `~/.ai-containers/` layout (flat dirs like `~/.ai-containers/.claude`) will see an automatic migration log on first run. `runme.sh` moves those paths into `~/.ai-containers/default/` and prints a line for each moved item. The migration is idempotent and only runs once.
+
+**`SSH_SCOPE_DIR` has been removed.** If you have it set, `runme.sh` prints a deprecation note to stderr and ignores the variable. To migrate: copy your custom SSH keys into `~/.ai-containers/<group>/.ssh/`, or initialize a group with `AI_CONTAINER_GROUP_INIT=from:host` to copy them automatically. See `CHANGELOG.md` for details.
+
+## macOS host notes
+
+The previous platform-specific behavior — where macOS redirected Claude Code, Copilot CLI, Kiro CLI, and GitHub CLI mounts to `~/.ai-containers/` while Linux kept them under `$HOME` — has been replaced by the unified container-group system described above. Both platforms now use the same group-root logic (`~/.ai-containers/<group>/` by default).
+
+The macOS Keychain context is still relevant if you use `AI_CONTAINER_GROUP=host`. Those four tools store OAuth tokens in the Keychain rather than in their dotfile dirs, which is why the `host` group on macOS prints a warning and requires explicit acknowledgement. With the default `default` group, credentials are stored in `~/.ai-containers/default/` as plain files, and there is no Keychain barrier.
+
+> The `~/.ai-containers/` directory name is unrelated to the per-project `<project>/.ai-containers/` asset dirs created by `project-init.sh`. They never collide on disk because one lives under `$HOME` and the other under repo roots.
 
 ## Reviewing blocked traffic
 
@@ -420,7 +503,7 @@ What it does:
 
 - Creates `<project>/.ai-containers/` and copies all shared files (Dockerfile, scripts, allowlist fragment files).
 - Copies `sandbox.conf` as a starting point (only if one does not already exist).
-- Generates `<project>/.ai-containers/<project-name>-container.sh` with `IMAGE_NAME`, `SSH_SCOPE_DIR`, and commented hints for `EXTRA_MOUNTS` and `PREVIEW_PORTS`.
+- Generates `<project>/.ai-containers/<project-name>-container.sh` with `IMAGE_NAME` and commented hints for `AI_CONTAINER_GROUP`, `EXTRA_MOUNTS`, and `PREVIEW_PORTS`.
 - Registers the project path in `projects.conf` (created from `projects.conf.example` on first run).
 
 After init, edit `sandbox.conf` to choose components, review the launch script, then build:
@@ -459,7 +542,7 @@ You can also edit `projects.conf` manually: one absolute project path per line, 
 - If agent traffic must go through a corporate proxy, add wildcard patterns to `allowlist-proxy-domains.d/custom.txt` and allow only the proxy IPs in `allowlist-cidrs.d/custom.txt`.
 - The `custom.txt` files in each `*.d/` directory are **gitignored** to prevent internal hostnames and IPs from being committed. Each directory ships a `custom.txt.example` template; `./runme.sh build` auto-copies it to `custom.txt` on first run.
 - The sandbox user identity (`SANDBOX_UID`, `SANDBOX_GID`, `SANDBOX_USER`, `SANDBOX_GROUP`) is detected automatically from the host user at runtime. No build-time args needed.
-- Review the default values in `runme.sh`, especially `IMAGE_NAME` and `SSH_SCOPE_DIR`, before publishing this into a separate repository.
+- Review the default values in `runme.sh`, especially `IMAGE_NAME`, before publishing this into a separate repository.
 
 ## Important notes
 

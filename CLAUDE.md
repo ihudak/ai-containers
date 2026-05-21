@@ -51,8 +51,10 @@ docker run --rm --entrypoint capture-agent-destinations.sh \
 ```
 
 **Key env vars for `runme.sh`:**
+- `AI_CONTAINER_GROUP` — selects which dotfile tree mounts into the container: `default` (the implicit default), `host` (mount $HOME directly — Linux backward-compatible behavior; macOS shows a warning and requires `yes` or `AI_CONTAINER_HOST_ACK=1`), or a custom name (e.g. `docs`, `java-backend`). Custom groups live at `~/.ai-containers/<name>/`.
+- `AI_CONTAINER_GROUP_INIT` — non-interactive bootstrap override when a group dir doesn't exist yet. Values: `clean` (start empty), `from:host` (copy from $HOME), `from:<existing-group>` (copy from another group). When unset on a TTY, an interactive prompt asks instead.
+- `AI_CONTAINER_HOST_ACK` — set to `1` to silently bypass the macOS warning when `AI_CONTAINER_GROUP=host`. Ignored on Linux. Per-invocation; not persisted.
 - `IMAGE_NAME` — image tag (default: `ai-sandbox`)
-- `SSH_SCOPE_DIR` — host SSH directory to mount read-only as `~/.ssh`
 - `SANDBOX_UID/GID/USER/GROUP` — override the auto-detected host user identity
 - `EXTRA_MOUNTS` — space-separated extra host paths to mount under `/repos/<basename>`, e.g. `EXTRA_MOUNTS="/path/to/a:ro /path/to/b"`
 - `DOCS_PATH` — host directory mounted as `/docs` inside the container
@@ -122,36 +124,23 @@ No user is baked into the image. `entrypoint.sh` calls `useradd`/`usermod` at ru
 
 ### Host directory mounts
 
-`runme.sh` always mounts `~/.agents` from the host into the container at `~/.agents` (read-write, created if absent). This is unconditional — no component flag required.
+Agent dotfile dirs (`.claude`, `.copilot`, `.kiro`, `.codex`, `.gemini`, `.config/gh`, `.agents`, `.ssh`) are mounted from a **container group** — a named directory under `~/.ai-containers/<group>/`. The active group is selected by `AI_CONTAINER_GROUP` (default: `default`). To use a custom group, set the env var before running: `AI_CONTAINER_GROUP=docs ./runme.sh restricted /path/to/workspace`. Each group is a plain directory; use `ls ~/.ai-containers/`, `cp -a`, or `rm -rf` to inspect, duplicate, or delete groups.
+
+`runme.sh` always creates the group directory and its `.ssh/` + `.agents/` scaffold on first run. Per-component dirs (`.claude/`, `.copilot/`, etc.) are created only when the corresponding component is enabled in `sandbox.conf`.
+
+Host-shared paths that are not group-scoped (unchanged): `.gitconfig` (ro), `.aws`, `.azure`, `.kube`, `.config/dtctl`, `.config/dtmgd`, `.yarn`.
 
 ### macOS host notes
 
-On **Linux**, container CLIs share the host's dotfile dirs directly (`~/.claude`, `~/.copilot`, `~/.config/gh`, `~/.kiro`).
+The previous platform-specific redirect (macOS mounted four tools from `~/.ai-containers/` while Linux mounted them from `$HOME`) has been replaced by the unified group system. Both platforms now resolve agent dotfile mounts through the same group root (`~/.ai-containers/<group>/` by default, or `$HOME` when `AI_CONTAINER_GROUP=host`).
 
-On **macOS**, those four tools store OAuth tokens in the macOS Keychain (inaccessible from Linux containers). `runme.sh` detects `Darwin` and transparently redirects their mounts to `~/.ai-containers/` instead:
+The macOS Keychain context remains relevant for the `host` group: Claude Code, GitHub Copilot CLI, Kiro CLI, and GitHub CLI store OAuth tokens in the macOS Keychain rather than in their dotfile dirs. When `AI_CONTAINER_GROUP=host` is set on macOS, a Linux container cannot read those tokens. This is why `runme.sh` prints a warning and requires explicit acknowledgement (`yes` at the prompt, or `AI_CONTAINER_HOST_ACK=1`) before proceeding. The default `default` group avoids this issue entirely — it stores all credentials in `~/.ai-containers/default/` using file-based auth that works on Linux and macOS alike.
 
-```
-~/.ai-containers/
-├── .copilot/
-├── .claude/             ← container Claude Code credentials
-├── .claude.json
-├── .config/gh/
-└── .kiro/
-```
-
-The host's own CLI sessions are unaffected. On first use on a new Mac, do a one-time login inside any container:
-
-```bash
-gh auth login
-copilot /login
-claude /login
-```
-
-`runme.sh` auto-creates `~/.ai-containers/` and all required subpaths before starting the container.
+On macOS, the first run after upgrading from a pre-grouping version automatically moves the legacy flat layout (`~/.ai-containers/.claude`, etc.) into `~/.ai-containers/default/` and prints a verbose log to stderr. The migration is idempotent.
 
 ## Corporate customization
 
 - Edit `sandbox.conf` to enable only the components your team uses.
 - Add environment-specific FQDNs (internal Git, artifact repos, MCP endpoints) to `allowlist-domains.d/custom.txt`.
 - If agent traffic routes through a corporate proxy, add wildcard patterns to `allowlist-proxy-domains.d/custom.txt` and proxy IPs/CIDRs to `allowlist-cidrs.d/custom.txt`.
-- Review `IMAGE_NAME` and `SSH_SCOPE_DIR` defaults in `runme.sh` before publishing.
+- Review the `IMAGE_NAME` default in `runme.sh` before publishing.
