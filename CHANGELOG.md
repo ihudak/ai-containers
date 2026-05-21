@@ -21,11 +21,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - `AI_CONTAINER_GROUP_INIT` — non-interactive bootstrap override when a group directory does not yet exist. Values: `clean` (start empty), `from:host` (copy group-scoped dotfiles from `$HOME`), `from:<existing-group>` (copy from another group under `~/.ai-containers/`).
   - `AI_CONTAINER_HOST_ACK` — set to `1` to silently bypass the macOS warning when `AI_CONTAINER_GROUP=host`. Per-invocation; not persisted.
 
-- **Auto-migration of pre-grouping macOS state.** On macOS, the first run after upgrade automatically moves the legacy flat layout (`~/.ai-containers/.claude`, `~/.ai-containers/.copilot`, etc.) into `~/.ai-containers/default/`. A verbose log is printed to stderr for each moved path. The migration is idempotent: it only runs when `~/.ai-containers/default/` is absent and legacy paths exist.
-
 ### Removed
 
 - `SSH_SCOPE_DIR` env var. See the breaking-change entry above for migration steps.
+
+- Pre-grouping macOS auto-migration code (was an internal one-shot for moving the legacy flat `~/.ai-containers/.claude`-style layout into `~/.ai-containers/default/`). The only host that ever had that layout has been migrated by hand; new installs go straight to the group structure.
 
 ### Changed
 

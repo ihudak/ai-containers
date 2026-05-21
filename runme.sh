@@ -264,44 +264,6 @@ ensure_group_exists() {
   esac
 }
 
-migrate_macos_pre_grouping_state() {
-  # Only relevant on macOS — Linux never had legacy paths under ~/.ai-containers/
-  [[ "$(uname -s)" == "Darwin" ]] || return 0
-
-  local target="$HOME/.ai-containers/default"
-  # Skip if default/ already exists — migration already done or user started fresh
-  [[ -d "$target" ]] && return 0
-
-  local legacy_paths=(
-    .claude
-    .claude.json
-    .copilot
-    ".config/gh"
-    .kiro
-    ".local/share/kiro-cli"
-  )
-
-  # Check whether any legacy path exists before touching anything
-  local found=0
-  for p in "${legacy_paths[@]}"; do
-    [[ -e "$HOME/.ai-containers/$p" ]] && found=1 && break
-  done
-  [[ "$found" -eq 0 ]] && return 0
-
-  mkdir -p "$target"
-  local moved=0
-  for p in "${legacy_paths[@]}"; do
-    local src="$HOME/.ai-containers/$p"
-    if [[ -e "$src" ]]; then
-      mkdir -p "$(dirname "$target/$p")"
-      mv "$src" "$target/$p"
-      printf 'Moving %-20s → default/%s\n' "$p" "$p" >&2
-      moved=$(( moved + 1 ))
-    fi
-  done
-  printf 'Migration complete: %d path(s) moved to ~/.ai-containers/default/\n' "$moved" >&2
-}
-
 # ── Config helpers ─────────────────────────────────────────────────────────────
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -768,10 +730,7 @@ run_container() {
     [[ "$(uname -s)" == "Darwin" ]] && require_host_ack
     group_root="$HOME"
   else
-    # Migration only runs for non-host groups: a 'host' invocation must not
-    # touch ~/.ai-containers/ before the user has acked the warning.
     mkdir -p "$HOME/.ai-containers"
-    migrate_macos_pre_grouping_state
     group_root="$HOME/.ai-containers/$group"
     ensure_group_exists "$group" "$group_root"
     ensure_group_scaffold "$group_root"

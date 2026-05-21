@@ -419,8 +419,6 @@ rm -rf ~/.ai-containers/docs
 
 **Linux users** will see the bootstrap prompt on first run after upgrade, because `~/.ai-containers/default/` does not exist yet. Choose `host` or another existing source to initialize from. To restore the previous behavior without any prompt, set `AI_CONTAINER_GROUP=host` permanently in your shell profile.
 
-**macOS users** with the pre-grouping `~/.ai-containers/` layout (flat dirs like `~/.ai-containers/.claude`) will see an automatic migration log on first run. `runme.sh` moves those paths into `~/.ai-containers/default/` and prints a line for each moved item. The migration is idempotent and only runs once.
-
 **`SSH_SCOPE_DIR` has been removed.** If you have it set, `runme.sh` prints a deprecation note to stderr and ignores the variable. To migrate: copy your custom SSH keys into `~/.ai-containers/<group>/.ssh/`, or initialize a group with `AI_CONTAINER_GROUP_INIT=from:host` to copy them automatically. See `CHANGELOG.md` for details.
 
 ## macOS host notes

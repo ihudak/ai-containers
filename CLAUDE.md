@@ -136,8 +136,6 @@ The previous platform-specific redirect (macOS mounted four tools from `~/.ai-co
 
 The macOS Keychain context remains relevant for the `host` group: Claude Code, GitHub Copilot CLI, Kiro CLI, and GitHub CLI store OAuth tokens in the macOS Keychain rather than in their dotfile dirs. When `AI_CONTAINER_GROUP=host` is set on macOS, a Linux container cannot read those tokens. This is why `runme.sh` prints a warning and requires explicit acknowledgement (`yes` at the prompt, or `AI_CONTAINER_HOST_ACK=1`) before proceeding. The default `default` group avoids this issue entirely — it stores all credentials in `~/.ai-containers/default/` using file-based auth that works on Linux and macOS alike.
 
-On macOS, the first run after upgrading from a pre-grouping version automatically moves the legacy flat layout (`~/.ai-containers/.claude`, etc.) into `~/.ai-containers/default/` and prints a verbose log to stderr. The migration is idempotent.
-
 ## Corporate customization
 
 - Edit `sandbox.conf` to enable only the components your team uses.
