@@ -65,6 +65,7 @@ docker run --rm --entrypoint capture-agent-destinations.sh \
 - `CONTAINER_MEMORY` — memory limit for the running container (default: `8g`)
 - `ALLOW_IPV6_BYPASS=1` — suppress the visual warning when `ip6tables` is unavailable (WSL2/nf_tables environments)
 - `SELF_HEALING_ENABLED=0` — disable reactive IP auto-allowing (logging only)
+- `COPILOT_GITHUB_TOKEN` — forwarded into the container for Copilot CLI authentication (bypasses device-flow OAuth). When not set, auto-extracted from the group's `~/.config/gh/hosts.yml`. Accepts: fine-grained PAT with "Copilot Requests" permission, or gh CLI OAuth token.
 
 ## Architecture
 

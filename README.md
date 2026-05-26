@@ -161,14 +161,23 @@ If the API call fails (rate limit, bad token, or network error), the build print
 
 | Tool inside the container | Auth source |
 |---|---|
-| Copilot CLI | `~/.copilot/config.json` OAuth (mounted from host) |
+| Copilot CLI | `COPILOT_GITHUB_TOKEN` env var (auto-extracted from group's `gh` hosts.yml; or set explicitly) |
 | `gh` CLI | `~/.config/gh/hosts.yml` (mounted from host) |
 | Copilot CLI's built-in GitHub MCP server (`api.business.githubcopilot.com/mcp/*`) | Copilot's OAuth token — no PAT needed |
 | `github/github-mcp-server` / `@modelcontextprotocol/server-github` (stdio) | `GITHUB_PERSONAL_ACCESS_TOKEN` |
 | Claude Code's official `github` plugin (`api.githubcopilot.com/mcp/`) | `GITHUB_PERSONAL_ACCESS_TOKEN` — PAT must include the **Copilot Requests** fine-grained permission |
 | `git` over HTTPS, `curl api.github.com`, skills/scripts | `GITHUB_PERSONAL_ACCESS_TOKEN` |
 
-**Why `GITHUB_TOKEN` / `GH_TOKEN` are blocked at runtime:** when those vars are set, Copilot CLI prefers them over its OAuth login and treats them as a direct Copilot-API bearer. If the PAT lacks the `Copilot Requests` fine-grained permission (currently required by GitHub), every Copilot request fails with `401 "Personal Access Token does not have 'Copilot Requests' permission"`, forcing `/login`. When the host and container each hold their own Copilot CLI, the resulting token rotation ping-pongs between them. Forwarding only `GITHUB_PERSONAL_ACCESS_TOKEN` keeps the PAT available for tools that explicitly consume it, while leaving Copilot CLI and `gh` CLI on their own on-disk credentials.
+**Copilot CLI authentication:** `runme.sh` automatically extracts the OAuth token from the active group's `~/.config/gh/hosts.yml` and forwards it as `COPILOT_GITHUB_TOKEN`. This means:
+- No `/login` is needed inside the container (if `gh auth` is configured in the group)
+- Multiple containers can run simultaneously without revoking each other's sessions (device-flow OAuth is single-session per user; env-var token auth is not)
+- You can override by setting `COPILOT_GITHUB_TOKEN` explicitly on the host
+
+**Token requirements:** The `gh` token must be compatible with Copilot CLI. Supported types:
+- `gho_*` — OAuth token from `gh auth login` (browser flow) — works directly
+- `github_pat_*` — fine-grained PAT — must include the **Copilot Requests** permission
+
+**Why `GITHUB_TOKEN` / `GH_TOKEN` are still blocked at runtime:** forwarding these generic env vars would affect all tools inside the container, not just Copilot CLI. `COPILOT_GITHUB_TOKEN` is scoped specifically to Copilot CLI and does not interfere with `gh` CLI or other tools.
 
 Recommended host setup — export only the one name nothing auto-picks-up implicitly:
 
@@ -389,11 +398,14 @@ The warning exists because those tools store OAuth tokens in the macOS Keychain 
 After creating a new group, log in to each tool from inside the container once:
 
 ```bash
-gh auth login
-copilot /login
+gh auth login          # Required — Copilot CLI token is auto-derived from this
 claude /login
 # Kiro: log in on first interactive use
 ```
+
+Once `gh auth login` completes, Copilot CLI is authenticated automatically (its token is extracted from `hosts.yml` and forwarded as `COPILOT_GITHUB_TOKEN`). No separate `copilot /login` is needed.
+
+> **Note:** If your `gh` token is a fine-grained PAT (`github_pat_*`), it must include the **Copilot Requests** permission. If it's an OAuth token from `gh auth login` browser flow (`gho_*`), it works directly.
 
 The credentials are written into the group directory on the host and persist across all future runs of that group.
 

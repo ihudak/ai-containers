@@ -61,15 +61,16 @@ Environment variables:
                         `github/github-mcp-server` / `@modelcontextprotocol/server-github`
                         stdio MCP servers, and Claude Code's official github plugin).
                         Build-time fallback: used as the BuildKit github_token secret
-                        when GITHUB_TOKEN is not set. NOT consumed by Copilot CLI or
-                        gh CLI — those authenticate via ~/.copilot/config.json and
-                        ~/.config/gh/hosts.yml respectively, both already mounted.
-                        `GH_TOKEN` and `GITHUB_TOKEN` are deliberately NOT forwarded
-                        into the container, because Copilot CLI would otherwise
-                        prefer them over its OAuth login and fail with
-                        `401 "Personal Access Token does not have 'Copilot Requests'
-                        permission"` whenever the PAT lacks that fine-grained
-                        permission.
+                        when GITHUB_TOKEN is not set.
+  COPILOT_GITHUB_TOKEN  Forwarded into the container for Copilot CLI authentication.
+                        Accepts: fine-grained PAT with "Copilot Requests" permission,
+                        gh CLI OAuth token, or Copilot CLI OAuth token.
+                        When NOT set, runme.sh auto-extracts the OAuth token from
+                        the container group's ~/.config/gh/hosts.yml. This bypasses
+                        the device-flow login inside the container and allows multiple
+                        containers to run simultaneously without revoking each other's
+                        Copilot sessions (device-flow OAuth is single-session per user;
+                        token-based auth via this env var is not).
   PREVIEW_PORTS       Space-separated list of ports (or host:container pairs) to publish so
                       your host browser can reach dev servers started inside the container.
                       Useful for Claude Code's UI preview feature and any other dev server.
@@ -344,6 +345,10 @@ versions_to_space() {
 # ── Validation ─────────────────────────────────────────────────────────────────
 
 validate_config() {
+  # copilot implies github-cli (gh auth login provides the token for COPILOT_GITHUB_TOKEN)
+  if is_enabled copilot && ! is_enabled github-cli; then
+    printf 'NOTE: copilot=ON implies github-cli. gh CLI will be installed for authentication.\n' >&2
+  fi
   # rails requires ruby
   if has_versions rails && ! has_versions ruby; then
     printf 'ERROR: rails is set in sandbox.conf but ruby is empty. Rails requires Ruby (via rvm).\n' >&2
@@ -511,6 +516,11 @@ build_args_from_config() {
     if is_enabled "$component"; then value=1; else value=0; fi
     _args+=(--build-arg "${arg}=${value}")
   done
+
+  # copilot implies github-cli (needed for gh auth login inside container)
+  if is_enabled copilot && ! is_enabled github-cli; then
+    _args+=(--build-arg "INSTALL_GITHUB_CLI=1")
+  fi
 
   # ── dtctl / dtmgd: ON = latest, x.y.z = pinned version, OFF = skip ────────
   # These use a separate ARG (DTCTL_VERSION / DTMGD_VERSION) instead of a bool.
@@ -801,6 +811,22 @@ run_container() {
     add_mount_if_exists config_mount_flags "$HOME/.config/dtmgd" "$dev_home/.config/dtmgd"
   fi
 
+  # Resolve COPILOT_GITHUB_TOKEN: if not set explicitly, extract from the
+  # group's gh CLI hosts.yml. This lets Copilot CLI authenticate via env var
+  # (token-based) instead of device-flow OAuth, avoiding the single-session
+  # limitation that causes concurrent containers to revoke each other's auth.
+  local copilot_token="${COPILOT_GITHUB_TOKEN:-}"
+  if is_enabled copilot && [[ -z "$copilot_token" ]]; then
+    local gh_hosts="$group_root/.config/gh/hosts.yml"
+    if [[ -f "$gh_hosts" ]]; then
+      copilot_token="$(awk '/oauth_token:/{print $2; exit}' "$gh_hosts")"
+    fi
+    if [[ -z "$copilot_token" ]]; then
+      printf 'HINT: No gh auth token found for group "%s".\n' "$group" >&2
+      printf '      Run "gh auth login" inside the container to authenticate Copilot CLI.\n' >&2
+    fi
+  fi
+
   # Build -p flags from PREVIEW_PORTS (space-separated port or host:container pairs).
   local port_flags=()
   if [[ -n "${PREVIEW_PORTS:-}" ]]; then
@@ -826,6 +852,7 @@ run_container() {
     -e SANDBOX_GROUP="${SANDBOX_GROUP:-$(id -gn)}" \
     ${SELF_HEALING_ENABLED:+-e SELF_HEALING_ENABLED="$SELF_HEALING_ENABLED"} \
     ${GITHUB_PERSONAL_ACCESS_TOKEN:+-e GITHUB_PERSONAL_ACCESS_TOKEN="$GITHUB_PERSONAL_ACCESS_TOKEN"} \
+    ${copilot_token:+-e COPILOT_GITHUB_TOKEN="$copilot_token"} \
     ${vault_env_args[@]+"${vault_env_args[@]}"} \
     -v "$workspace_dir:/workspace" \
     ${extra_mount_flags[@]+"${extra_mount_flags[@]}"} \
