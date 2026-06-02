@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+### Added
+
+- **GoReleaser component.** New optional `goreleaser` flag in `sandbox.conf` (`ON`/`OFF`, default `OFF`) installs the latest GoReleaser OSS from the official apt repository at build time. It is self-contained and does **not** require `go` to be enabled — the apt package's recommended `golang` dependency is skipped via `--no-install-recommends`. A new `allowlist-domains.d/goreleaser.txt` fragment (`repo.goreleaser.com`, `goreleaser.com`, plus the already-baseline GitHub release hosts) is included when the component is enabled.
+
 ## v0.2.0
 
 ### Breaking

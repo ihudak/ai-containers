@@ -231,6 +231,15 @@ RUN if [ -n "$GO_VERSION" ]; then \
         >> /etc/bash.bashrc; \
     fi
 
+# ── GoReleaser ──────────────────────────────────────────────────────────────────
+ARG INSTALL_GORELEASER=0
+RUN if [ "$INSTALL_GORELEASER" = "1" ]; then \
+      echo 'deb [trusted=yes] https://repo.goreleaser.com/apt/ /' \
+        > /etc/apt/sources.list.d/goreleaser.list && \
+      apt-get update && apt-get install -y --no-install-recommends goreleaser && \
+      rm -rf /var/lib/apt/lists/*; \
+    fi
+
 # ── Cleanup: remove compile-time -dev packages ─────────────────────────────────
 # Deferred from the pyenv layer so that rvm/Ruby and Rust (which need gcc/make)
 # can build successfully. Keep runtime libs (libssl3, zlib1g, etc.).

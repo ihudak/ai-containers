@@ -459,6 +459,7 @@ generate_allowlists() {
     include_if_has_versions  "$domains_d/rvm.txt"             ruby rails
     include_if_has_versions  "$domains_d/rust.txt"            rust
     include_if_has_versions  "$domains_d/go.txt"              go
+    include_if_enabled       "$domains_d/goreleaser.txt"      goreleaser
     if is_active angular-cli; then include_fragment "$domains_d/angular-cli.txt"; fi
     include_fragment         "$domains_d/custom.txt"
   } > "${script_dir}/allowlist-domains.txt"
@@ -507,6 +508,7 @@ build_args_from_config() {
     "azure-cli:INSTALL_AZURE_CLI"
     "github-cli:INSTALL_GITHUB_CLI"
     "yarn:INSTALL_YARN"
+    "goreleaser:INSTALL_GORELEASER"
     "qmd:INSTALL_QMD"
     "bun:INSTALL_BUN"
   )

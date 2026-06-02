@@ -11,7 +11,7 @@ It packages a CLI-only Docker-based workspace for running AI coding agents (GitH
 
 ## What is included
 
-- `Dockerfile` builds the image from a configurable set of optional components: AI agents (GitHub Copilot CLI, Kiro CLI, Claude Code, Codex CLI, Gemini CLI), JVM toolchains (via SDKMAN: OpenJDK, GraalVM CE, Kotlin, Scala, Maven, Gradle), Node.js versions (via nvm), Python versions (via pyenv), Ruby + Rails (via rvm), Rust (via rustup), Go, cloud CLIs (AWS, Azure, kubectl, GitHub CLI), dev tools (Angular CLI, qmd, graphify), and Dynatrace CLIs (dtctl, dtmgd). Node.js (latest LTS), Python (latest stable), git, jq, packet-capture tools, and the non-root sandbox user are always included.
+- `Dockerfile` builds the image from a configurable set of optional components: AI agents (GitHub Copilot CLI, Kiro CLI, Claude Code, Codex CLI, Gemini CLI), JVM toolchains (via SDKMAN: OpenJDK, GraalVM CE, Kotlin, Scala, Maven, Gradle), Node.js versions (via nvm), Python versions (via pyenv), Ruby + Rails (via rvm), Rust (via rustup), Go, cloud CLIs (AWS, Azure, kubectl, GitHub CLI), dev tools (Angular CLI, qmd, graphify, GoReleaser), and Dynatrace CLIs (dtctl, dtmgd). Node.js (latest LTS), Python (latest stable), git, jq, packet-capture tools, and the non-root sandbox user are always included.
 - `sandbox.conf` controls which optional components are built into the image and which credential directories are mounted at runtime.
 - `install-dt-tools.sh` is a build-time helper script that installs dtctl and dtmgd from GitHub releases, with optional authentication via `GITHUB_TOKEN`.
 - `entrypoint.sh` applies either a restricted firewall or a discovery mode at container startup. In both modes it creates the sandbox user and drops to it via `capsh`. Restricted mode drops `NET_ADMIN` and `NET_RAW`; discovery mode drops only `NET_ADMIN` (keeping `NET_RAW` for tcpdump).
@@ -121,6 +121,19 @@ Because `~/.claude/` is bind-mounted from the host, running `graphify install` o
 > **Note:** Persistence requires `claude-code=ON` in `sandbox.conf`, which is what provides the `~/.claude/` host bind-mount.
 
 > **Note:** Only the Anthropic API (`api.anthropic.com`) is allowlisted by default. graphify also supports Google Gemini, OpenAI, DeepSeek, Moonshot/Kimi, AWS Bedrock, and Ollama — if you configure graphify with a non-Anthropic provider, add its API domain to `allowlist-domains.d/custom.txt` and rebuild.
+
+### goreleaser — release automation
+
+`goreleaser` automates building and publishing release artifacts for Go (and other) projects. The latest GoReleaser OSS is installed from the official apt repository at build time.
+
+```bash
+goreleaser=ON    # install the goreleaser binary from repo.goreleaser.com
+goreleaser=OFF   # skip (default)
+```
+
+> **Note:** GoReleaser is self-contained and does **not** require `go` to be enabled — the apt package's recommended `golang` dependency is skipped (`--no-install-recommends`). Enable `go` alongside it only if you also want the Go toolchain for building. The two are independent.
+
+> **Note:** Publishing a release reaches `github.com` (and `objects.githubusercontent.com`), which are allowlisted by default. If you publish to a different host (GitLab, Gitea, a custom registry), add its domain to `allowlist-domains.d/custom.txt` and rebuild.
 
 ### Dynatrace CLIs (dtctl / dtmgd)
 

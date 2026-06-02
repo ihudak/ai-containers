@@ -1,0 +1,5 @@
+# GoReleaser — included when goreleaser=ON
+repo.goreleaser.com
+goreleaser.com
+github.com
+objects.githubusercontent.com
