@@ -310,7 +310,15 @@ ARG INSTALL_YARN=0
 RUN if [ "$INSTALL_YARN" = "1" ]; then npm install -g yarn; fi
 
 ARG INSTALL_QMD=0
-RUN if [ "$INSTALL_QMD" = "1" ]; then npm install -g @tobilu/qmd; fi
+# @tobilu/qmd pulls in tree-sitter, which compiles native addons via node-gyp.
+# build-essential was purged in the cleanup layer above, so reinstall the
+# toolchain just for this layer and purge it again to keep the image lean.
+RUN if [ "$INSTALL_QMD" = "1" ]; then \
+      apt-get update && apt-get install -y --no-install-recommends build-essential && \
+      npm install -g @tobilu/qmd && \
+      apt-get purge -y --auto-remove build-essential && \
+      rm -rf /var/lib/apt/lists/*; \
+    fi
 
 ARG INSTALL_BUN=0
 RUN if [ "$INSTALL_BUN" = "1" ]; then \
