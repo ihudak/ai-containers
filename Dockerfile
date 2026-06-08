@@ -33,7 +33,7 @@ ENV NVM_DIR=/opt/nvm
 # Pin nvm to a release tag for reproducibility and supply-chain safety.
 # Configured via nvm-version in sandbox.conf; this default is the fallback.
 # Check https://github.com/nvm-sh/nvm/releases for newer versions.
-ARG NVM_VERSION=v0.40.4
+ARG NVM_VERSION=v0.40.5
 RUN mkdir -p "$NVM_DIR" && \
     curl -fsSL "https://raw.githubusercontent.com/nvm-sh/nvm/${NVM_VERSION}/install.sh" | \
       PROFILE=/dev/null bash && \
