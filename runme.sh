@@ -80,11 +80,25 @@ Environment variables:
                         PREVIEW_PORTS="8080:3000"       # host port 8080 → container port 3000
                         PREVIEW_PORTS="3000 8080:8080"  # mix of both forms
   NO_CACHE            Set to 1 to pass --no-cache to docker build (default: unset, uses cache).
-  CONTAINER_CPUS      CPU limit for the running container (default: 4.0). Must fit
+  CONTAINER_CPUS      CPU limit for the running container (default: 1.0). Must fit
                       within the resources allocated to your Docker engine
                       (e.g. on Colima, set with `colima start --cpu N`).
-  CONTAINER_MEMORY    Memory limit for the running container (default: 8g). Same
-                      sizing rules apply as for CONTAINER_CPUS.
+  CONTAINER_MEMORY    Hard memory limit for the running container (default: 4g). Same
+                      sizing rules apply as for CONTAINER_CPUS. The container is
+                      OOM-killed if it tries to exceed this.
+  CONTAINER_MEMORY_RESERVATION
+                      Soft memory limit (default: 2g). Under host memory pressure
+                      Docker tries to keep the container at or below this value, but
+                      it may use up to CONTAINER_MEMORY. Must be <= CONTAINER_MEMORY;
+                      runme.sh lowers it to the hard limit (with a warning) if set
+                      higher.
+  CONTAINER_MEMORY_SWAP
+                      Total memory + swap the container may use (default: 4g). The
+                      amount of swap available is CONTAINER_MEMORY_SWAP minus
+                      CONTAINER_MEMORY, so set it EQUAL to CONTAINER_MEMORY to disable
+                      swap (recommended for predictable performance), or to -1 for
+                      unlimited swap. Must be >= CONTAINER_MEMORY; runme.sh raises it
+                      to the hard limit (with a warning) if set lower.
 
 Configuration:
   Edit sandbox.conf to enable or disable optional components before building.
@@ -638,6 +652,67 @@ build_image() {
 # Resolve symlinks to their real path; falls back to the original if not found.
 resolve_path() { readlink -f "$1" 2>/dev/null || printf '%s' "$1"; }
 
+# Parse a docker-style memory string (e.g. 512m, 2g, 1073741824, or -1) into bytes.
+# Echoes the byte count (or "-1") on success and returns 0; returns 1 on parse failure.
+# Docker memory values are positive integers with an optional b/k/m/g suffix.
+mem_to_bytes() {
+  local v="${1,,}"
+  if [[ "$v" == "-1" ]]; then printf '%s' "-1"; return 0; fi
+  if [[ "$v" =~ ^([0-9]+)([bkmg]?)$ ]]; then
+    local num="${BASH_REMATCH[1]}" unit="${BASH_REMATCH[2]}"
+    case "$unit" in
+      b|"") printf '%s' "$num" ;;
+      k)    printf '%s' "$(( num * 1024 ))" ;;
+      m)    printf '%s' "$(( num * 1024 * 1024 ))" ;;
+      g)    printf '%s' "$(( num * 1024 * 1024 * 1024 ))" ;;
+    esac
+    return 0
+  fi
+  return 1
+}
+
+# Validate and reconcile CONTAINER_MEMORY / _RESERVATION / _SWAP before docker run.
+# Assigns the (possibly corrected) values to mem_limit / mem_reservation / mem_swap,
+# which the caller must declare (dynamic scope) so they can be passed to docker run.
+#   - reservation (soft limit) must be <= memory (hard limit); lowered if higher.
+#   - memory-swap is TOTAL memory + swap, so it must be >= memory (or -1 = unlimited);
+#     raised to the hard limit (swap disabled) if lower.
+# Unrecognised values are passed through untouched and left for docker to validate.
+validate_memory_limits() {
+  mem_limit="${CONTAINER_MEMORY:-4g}"
+  mem_reservation="${CONTAINER_MEMORY_RESERVATION:-2g}"
+  mem_swap="${CONTAINER_MEMORY_SWAP:-4g}"
+
+  local lim_b res_b swap_b
+  if ! lim_b="$(mem_to_bytes "$mem_limit")"; then
+    printf 'WARNING: CONTAINER_MEMORY="%s" is not a recognised memory value; skipping memory validation.\n' "$mem_limit" >&2
+    return
+  fi
+  if ! res_b="$(mem_to_bytes "$mem_reservation")"; then
+    printf 'WARNING: CONTAINER_MEMORY_RESERVATION="%s" is not a recognised memory value; skipping memory validation.\n' "$mem_reservation" >&2
+    return
+  fi
+  if ! swap_b="$(mem_to_bytes "$mem_swap")"; then
+    printf 'WARNING: CONTAINER_MEMORY_SWAP="%s" is not a recognised memory value; skipping memory validation.\n' "$mem_swap" >&2
+    return
+  fi
+
+  # Reservation (soft limit) cannot exceed the hard memory limit.
+  if (( res_b > lim_b )); then
+    printf 'WARNING: CONTAINER_MEMORY_RESERVATION (%s) exceeds CONTAINER_MEMORY (%s).\n' "$mem_reservation" "$mem_limit" >&2
+    printf '         Lowering memory reservation to %s (the hard limit).\n' "$mem_limit" >&2
+    mem_reservation="$mem_limit"
+  fi
+
+  # memory-swap is total memory + swap, so it must be >= memory (or -1 for unlimited).
+  # A value below the hard limit is rejected outright by docker run.
+  if [[ "$swap_b" != "-1" ]] && (( swap_b < lim_b )); then
+    printf 'WARNING: CONTAINER_MEMORY_SWAP (%s) is less than CONTAINER_MEMORY (%s); docker would reject this.\n' "$mem_swap" "$mem_limit" >&2
+    printf '         Raising memory-swap to %s (disables swap; container is hard-capped at the memory limit).\n' "$mem_limit" >&2
+    mem_swap="$mem_limit"
+  fi
+}
+
 # Append bind-mount flags to an array only if the resolved source directory exists.
 add_mount_if_exists() {
   local -n _flags=$1
@@ -837,12 +912,25 @@ run_container() {
     done
   fi
 
+  # Validate & reconcile memory limits. Sets mem_limit / mem_reservation / mem_swap.
+  local mem_limit mem_reservation mem_swap
+  validate_memory_limits
+
+  # Nudge once when running at the bare defaults — fine for light work, but a real
+  # build toolchain wants more. Only shown when the user has overridden neither knob.
+  if [[ -z "${CONTAINER_CPUS:-}" && -z "${CONTAINER_MEMORY:-}" ]]; then
+    printf 'HINT: running at default limits (%s CPU / %s RAM) — the minimum for a single agent doing light work.\n' "${CONTAINER_CPUS:-1.0}" "$mem_limit" >&2
+    printf '      For an agent plus a real build toolchain, CONTAINER_CPUS=4 CONTAINER_MEMORY=8g CONTAINER_MEMORY_SWAP=8g is more comfortable.\n' >&2
+  fi
+
   docker run -it --rm \
     "${capabilities[@]}" \
     --add-host=host.docker.internal:host-gateway \
     ${port_flags[@]+"${port_flags[@]}"} \
-    --cpus="${CONTAINER_CPUS:-4.0}" \
-    --memory="${CONTAINER_MEMORY:-8g}" \
+    --cpus="${CONTAINER_CPUS:-1.0}" \
+    --memory="$mem_limit" \
+    --memory-reservation="$mem_reservation" \
+    --memory-swap="$mem_swap" \
     -e DEV_CONTAINER_MODE="$mode" \
     -e DISCOVERY_CAPTURE_ENABLED="$capture_enabled" \
     -e DISCOVERY_CAPTURE_DIR="/workspace/$capture_dir_name" \

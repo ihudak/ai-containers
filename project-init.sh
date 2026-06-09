@@ -30,6 +30,40 @@ valid_group_name() {
   [[ "$1" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]]
 }
 
+# Parse a docker-style memory string (e.g. 512m, 2g, 1073741824, or -1) into bytes.
+# Echoes the byte count (or "-1") and returns 0; returns 1 on parse failure.
+mem_to_bytes() {
+  local v="${1,,}"
+  if [[ "$v" == "-1" ]]; then printf '%s' "-1"; return 0; fi
+  if [[ "$v" =~ ^([0-9]+)([bkmg]?)$ ]]; then
+    local num="${BASH_REMATCH[1]}" unit="${BASH_REMATCH[2]}"
+    case "$unit" in
+      b|"") printf '%s' "$num" ;;
+      k)    printf '%s' "$(( num * 1024 ))" ;;
+      m)    printf '%s' "$(( num * 1024 * 1024 ))" ;;
+      g)    printf '%s' "$(( num * 1024 * 1024 * 1024 ))" ;;
+    esac
+    return 0
+  fi
+  return 1
+}
+
+# mem_le A B → true if both parse and A <= B.
+mem_le() {
+  local a b
+  a="$(mem_to_bytes "$1")" || return 2
+  b="$(mem_to_bytes "$2")" || return 2
+  (( a <= b ))
+}
+
+# mem_ge A B → true if both parse and A >= B.
+mem_ge() {
+  local a b
+  a="$(mem_to_bytes "$1")" || return 2
+  b="$(mem_to_bytes "$2")" || return 2
+  (( a >= b ))
+}
+
 # ── 1. Project path ────────────────────────────────────────────────────────────
 
 while true; do
@@ -60,7 +94,28 @@ prompt_with_default "Container CPUs" "4.0" container_cpus
 
 # ── 5. Memory ──────────────────────────────────────────────────────────────────
 
-prompt_with_default "Container memory" "8g" container_memory
+prompt_with_default "Container memory (hard limit)" "8g" container_memory
+
+# ── 5b. Memory reservation (soft limit, must be <= memory) ─────────────────────
+
+while true; do
+  prompt_with_default "Container memory reservation (soft limit, must be <= memory)" "4g" container_memory_reservation
+  if mem_le "$container_memory_reservation" "$container_memory"; then
+    break
+  fi
+  printf '  Reservation must be a valid memory value (e.g. 2g) and <= memory (%s). Got: %s\n' "$container_memory" "$container_memory_reservation" >&2
+done
+
+# ── 5c. Memory + swap total (must be >= memory, or -1 for unlimited) ───────────
+# Recommended: equal to memory (disables swap) for predictable agent performance.
+
+while true; do
+  prompt_with_default "Container memory+swap total (>= memory; equal to memory disables swap; -1 = unlimited)" "$container_memory" container_memory_swap
+  if [[ "$container_memory_swap" == "-1" ]] || mem_ge "$container_memory_swap" "$container_memory"; then
+    break
+  fi
+  printf '  memory-swap must be a valid memory value >= memory (%s), or -1. Got: %s\n' "$container_memory" "$container_memory_swap" >&2
+done
 
 # ── 6. Group ───────────────────────────────────────────────────────────────────
 
@@ -178,6 +233,8 @@ cd "\$(dirname "\${BASH_SOURCE[0]}")"
 export IMAGE_NAME=${image_name}
 export CONTAINER_CPUS="${container_cpus}"
 export CONTAINER_MEMORY="${container_memory}"
+export CONTAINER_MEMORY_RESERVATION="${container_memory_reservation}"
+export CONTAINER_MEMORY_SWAP="${container_memory_swap}"
 export AI_CONTAINER_GROUP=${group_name}
 EOF
     [[ -n "$group_init"   ]] && printf 'export AI_CONTAINER_GROUP_INIT=%s\n' "$group_init"
