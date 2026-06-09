@@ -253,6 +253,7 @@ CONTAINER_CPUS=2 CONTAINER_MEMORY=8g ./runme.sh restricted /path/to/repo
 | `CONTAINER_MEMORY` | `--memory` | `4g` | **Hard** memory limit. The container is OOM-killed if it tries to exceed this. |
 | `CONTAINER_MEMORY_RESERVATION` | `--memory-reservation` | `2g` | **Soft** limit. Under host memory pressure Docker tries to keep usage at or below this, but the container may still climb to `CONTAINER_MEMORY`. Must be `<= CONTAINER_MEMORY`. |
 | `CONTAINER_MEMORY_SWAP` | `--memory-swap` | `4g` | **Total** memory + swap. Swap available to the container is `CONTAINER_MEMORY_SWAP - CONTAINER_MEMORY`. Must be `>= CONTAINER_MEMORY`, or `-1` for unlimited swap. |
+| `CONTAINER_NOFILE` | `--ulimit nofile` | `1048576:1048576` | Open-file-descriptor limit, in `soft[:hard]` form. Raise/keep high if an agent crashes with `EMFILE: too many open files`. |
 
 The values must fit within the resources allocated to your Docker engine. On Colima the VM-level limits are set when starting Colima — for example `colima start --cpu 6 --memory 12 --disk 100`. If `CONTAINER_CPUS` exceeds the VM's CPU count, `docker run` fails with `range of CPUs is from 0.01 to N` and the container does not start. Resize Colima or lower the limit.
 
@@ -262,6 +263,8 @@ The values must fit within the resources allocated to your Docker engine. On Col
 - If `CONTAINER_MEMORY_SWAP` is less than `CONTAINER_MEMORY`, it is raised to the hard limit (swap disabled) and a warning is printed, because Docker rejects a swap total below the memory limit. This commonly happens when you raise `CONTAINER_MEMORY` (e.g. to `8g`) but leave `CONTAINER_MEMORY_SWAP` at its `4g` default — the reconciliation prevents the otherwise-confusing `Minimum memoryswap limit should be larger than memory limit` error.
 
 A value of `-1` for `CONTAINER_MEMORY_SWAP` (unlimited swap) is left untouched.
+
+**File descriptors vs. memory.** `EMFILE: too many open files` is *not* a memory problem — it means the process hit the open-file-descriptor limit (`ulimit -n`). A container starved of RAM is OOM-killed (exit 137); it does not throw `EMFILE`. On macOS this is also **not** the host's low `launchctl limit maxfiles` (often 256): Docker runs the container inside a Linux VM, so the limit comes from the Docker daemon there, not from the macOS host shell. Agents that scan large repos or doc trees (plus file watchers, where each inotify instance is an fd) can exhaust a low default soft limit. `runme.sh` sets `--ulimit nofile` to a high value (`1048576:1048576`) so this does not happen; override with `CONTAINER_NOFILE` if needed. Inside a container, check the active limit with `ulimit -Sn` (soft) and `ulimit -Hn` (hard).
 
 **Does swap make sense here?** For AI coding agents the answer is usually **no**. Agents and the build tools they invoke (compilers, `npm`/`pip` installs, language servers) are latency-sensitive; if they spill into swap the whole session thrashes and feels frozen, which is worse than a clean OOM. The recommended setup is therefore **no swap** — set `CONTAINER_MEMORY_SWAP` equal to `CONTAINER_MEMORY` so the container is hard-capped and fails fast if it runs out of memory:
 
@@ -570,6 +573,8 @@ What it does:
 - Copies `sandbox.conf` as a starting point (only if one does not already exist).
 - Generates `<project>/.ai-containers/<project-name>-container.sh` with `IMAGE_NAME` and commented hints for `AI_CONTAINER_GROUP`, `EXTRA_MOUNTS`, and `PREVIEW_PORTS`.
 - Registers the project path in `projects.conf` (created from `projects.conf.example` on first run).
+
+> **Note on resource defaults:** the CPU/memory values `project-init.sh` pre-fills in its prompts (`4.0` CPU, `8g` memory, `4g` reservation, swap = memory) reflect the recommended **comfortable** tier from [Resource limits](#resource-limits), not `runme.sh`'s conservative fallback (`1.0` CPU / `4g` / `2g` / `4g`). This is intentional: the generated launch script bakes the comfortable values in as explicit `CONTAINER_*` exports, while `runme.sh`'s fallbacks remain the bare minimum for a single agent doing light work. Edit the generated launch script to lower them if your Docker/Colima VM is smaller.
 
 After init, edit `sandbox.conf` to choose components, review the launch script, then build:
 

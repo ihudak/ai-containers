@@ -99,6 +99,11 @@ Environment variables:
                       swap (recommended for predictable performance), or to -1 for
                       unlimited swap. Must be >= CONTAINER_MEMORY; runme.sh raises it
                       to the hard limit (with a warning) if set lower.
+  CONTAINER_NOFILE    Open-file-descriptor limit (ulimit -n) for the container, in
+                      the form soft[:hard] (default: 1048576:1048576). Raise this if
+                      an agent crashes with "EMFILE: too many open files" while
+                      scanning large repos/doc trees. Passed to docker run as
+                      --ulimit nofile.
 
 Configuration:
   Edit sandbox.conf to enable or disable optional components before building.
@@ -953,6 +958,7 @@ run_container() {
     --memory="$mem_limit" \
     --memory-reservation="$mem_reservation" \
     --memory-swap="$mem_swap" \
+    --ulimit nofile="${CONTAINER_NOFILE:-1048576:1048576}" \
     -e DEV_CONTAINER_MODE="$mode" \
     -e DISCOVERY_CAPTURE_ENABLED="$capture_enabled" \
     -e DISCOVERY_CAPTURE_DIR="/workspace/$capture_dir_name" \
