@@ -649,8 +649,30 @@ build_image() {
 
 # ── Run ────────────────────────────────────────────────────────────────────────
 
-# Resolve symlinks to their real path; falls back to the original if not found.
-resolve_path() { readlink -f "$1" 2>/dev/null || printf '%s' "$1"; }
+# Resolve a path to an ABSOLUTE path, following symlinks where possible.
+# Portable across GNU and BSD/macOS:
+#   - GNU `readlink -f` (or Homebrew `greadlink -f`) resolves symlinks + absolutises.
+#   - macOS BSD `readlink` lacks -f, so fall back to a cd/$PWD absolutiser.
+# This is critical for `docker run -v`: a RELATIVE source is treated by Docker as a
+# named-volume reference, which then fails with "invalid reference format".
+resolve_path() {
+  local p="$1"
+  if command -v greadlink >/dev/null 2>&1; then
+    greadlink -f -- "$p" 2>/dev/null && return 0
+  elif readlink -f -- "$p" >/dev/null 2>&1; then
+    readlink -f -- "$p"
+    return 0
+  fi
+  # Portable fallback (no GNU readlink available).
+  if [[ -d "$p" ]]; then
+    (cd "$p" 2>/dev/null && pwd) && return 0
+  fi
+  # Non-directory or missing: absolutise lexically against $PWD.
+  case "$p" in
+    /*) printf '%s' "$p" ;;
+    *)  printf '%s/%s' "$PWD" "${p#./}" ;;
+  esac
+}
 
 # Parse a docker-style memory string (e.g. 512m, 2g, 1073741824, or -1) into bytes.
 # Echoes the byte count (or "-1") on success and returns 0; returns 1 on parse failure.
