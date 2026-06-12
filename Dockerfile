@@ -17,6 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   ca-certificates curl gnupg lsb-release \
   git vim grep mc jq \
   wget iputils-ping \
+  rsync \
   iptables ipset dnsutils \
   openssh-client \
   libcap2-bin \

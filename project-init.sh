@@ -26,8 +26,32 @@ prompt_with_default() {
 }
 
 valid_group_name() {
-  # Mirrors validate_group_name() in runme.sh.
+  # Mirrors validate_group_name() in sandbox-common.sh.
   [[ "$1" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]]
+}
+
+# Ensure the project's root .gitignore ignores its .ai-containers/ working copy.
+# The per-project .ai-containers/ is a synced copy of the central repo and the
+# launcher embeds machine-specific absolute paths (EXTRA_MOUNTS), so it should
+# not be committed to the project. Idempotent, git-repos only; to keep it under
+# version control instead (e.g. to share sandbox config with a team), remove the
+# added line. Honour AI_CONTAINERS_NO_GITIGNORE=1 to skip entirely.
+ensure_ai_containers_ignored() {
+  local project_path="$1"
+  [[ "${AI_CONTAINERS_NO_GITIGNORE:-0}" == "1" ]] && return 0
+  git -C "$project_path" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+  git -C "$project_path" check-ignore -q .ai-containers 2>/dev/null && return 0
+  local gi="${project_path}/.gitignore"
+  # Guarantee a trailing newline before appending to an existing, non-empty file.
+  if [[ -f "$gi" && -s "$gi" && -n "$(tail -c1 "$gi" 2>/dev/null)" ]]; then
+    printf '\n' >> "$gi"
+  fi
+  {
+    printf '# AI sandbox tooling — local working copy synced from the central ai-containers repo\n'
+    printf '# (the launcher embeds machine-specific paths). Remove this line to version it instead.\n'
+    printf '/.ai-containers/\n'
+  } >> "$gi"
+  printf '  Added /.ai-containers/ to %s/.gitignore\n' "$(basename "$project_path")"
 }
 
 # Parse a docker-style memory string (e.g. 512m, 2g, 1073741824, or -1) into bytes.
@@ -187,7 +211,7 @@ rsync -a --exclude='custom.txt' \
 rsync -a --exclude='custom.txt' \
   "${script_dir}/allowlist-cidrs.d/"         "${dest}/allowlist-cidrs.d/"
 
-for f in Dockerfile .dockerignore runme.sh entrypoint.sh \
+for f in Dockerfile Dockerfile.seed .dockerignore sandbox-common.sh build.sh runme.sh repo.sh entrypoint.sh \
           refresh-ipset-allowlist.sh capture-blocked-traffic.sh \
           capture-agent-destinations.sh install-dt-tools.sh; do
   [[ -f "${script_dir}/${f}" ]] && cp "${script_dir}/${f}" "${dest}/${f}"
@@ -200,6 +224,19 @@ else
   printf '  sandbox.conf already exists — skipping (not overwritten).\n'
 fi
 
+# Persist IMAGE_NAME so sandbox-common.sh resolves the same image (and therefore
+# the same repo-volume names) for build.sh / runme.sh / repo.sh, even when a
+# script is run directly instead of through the launcher below.
+cat > "${dest}/sandbox.env" <<EOF
+# sandbox.env — persisted environment for this project's AI sandbox.
+# Read by sandbox-common.sh so build.sh / runme.sh / repo.sh agree on the image
+# name (hence the repo-volume names) even when run outside the launcher. An
+# exported IMAGE_NAME (e.g. from the generated launcher) takes precedence.
+# Not overwritten by sync-to-projects.sh.
+IMAGE_NAME=${image_name}
+EOF
+printf '  Wrote sandbox.env (IMAGE_NAME=%s).\n' "$image_name"
+
 for dir in allowlist-domains.d allowlist-proxy-domains.d allowlist-cidrs.d; do
   custom="${dest}/${dir}/custom.txt"
   example="${dest}/${dir}/custom.txt.example"
@@ -208,6 +245,17 @@ for dir in allowlist-domains.d allowlist-proxy-domains.d allowlist-cidrs.d; do
     printf '  Created %s/%s/custom.txt from template.\n' "$(basename "$dest")" "$dir"
   fi
 done
+
+# Ensure the project's .ai-containers/.gitignore covers outputs + generated files.
+gi="${dest}/.gitignore"
+for pat in '.agent-blocked/' '.agent-discovery/' \
+           'allowlist-domains.txt' 'allowlist-proxy-domains.txt' 'allowlist-cidrs.txt' \
+           'allowlist-domains.d/custom.txt' 'allowlist-proxy-domains.d/custom.txt' 'allowlist-cidrs.d/custom.txt'; do
+  if [[ ! -f "$gi" ]] || ! grep -qxF "$pat" "$gi" 2>/dev/null; then
+    printf '%s\n' "$pat" >> "$gi"
+  fi
+done
+printf '  Ensured %s/.gitignore covers outputs and generated files.\n' "$(basename "$dest")"
 
 # ── Write launcher ─────────────────────────────────────────────────────────────
 
@@ -241,8 +289,13 @@ EOF
     [[ -n "$extra_mounts" ]] && printf 'export EXTRA_MOUNTS="%s"\n' "$extra_mounts"
     cat <<'EOF'
 
-./runme.sh build
-#./runme.sh --no-cache build
+# Attach shared, native-speed repo volumes (register first with ./repo.sh add):
+#export REPOS="cluster:ro lib:ro app:rw"
+# On macOS, for a FAST primary repo, register it and use it as the working dir:
+#   ./repo.sh add <name> ..   then   ./runme.sh discovery @<name>
+
+./build.sh
+#./build.sh --no-cache
 #./runme.sh restricted ..
 ./runme.sh discovery ..
 EOF
@@ -252,6 +305,9 @@ EOF
 else
   printf '  Kept existing %s.\n' "$(basename "$launch_script")"
 fi
+
+# Keep the project's .ai-containers/ working copy out of the project's own repo.
+ensure_ai_containers_ignored "$project_path"
 
 # ── Register project ───────────────────────────────────────────────────────────
 

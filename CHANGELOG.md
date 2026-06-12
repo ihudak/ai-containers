@@ -4,6 +4,52 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+### Breaking
+
+- **`runme.sh` no longer builds.** The entry point was split into three scripts sharing a `sandbox-common.sh` library: `build.sh` (build only), `runme.sh` (run only — `restricted`/`discovery`), and `repo.sh` (repo-volume manager). `runme.sh build` now prints an error pointing to `./build.sh`. Update any scripts, launchers, or habits that called `runme.sh build`. Generated project launchers and `project-init.sh`/`sync-to-projects.sh` were updated to match.
+
+- **`/workspace` is now an umbrella, not the primary repo.** Everything mounts as a subdirectory under `/workspace`: `REPOS` at `/workspace/<name>`, `EXTRA_MOUNTS` at `/workspace/<basename>`, the Obsidian vault at `/workspace/obsidian`. The `/repos/*` tree is gone — `EXTRA_MOUNTS` now lands under `/workspace/<basename>` instead of `/repos/<basename>`. A host-path positional argument (`runme.sh restricted /path/to/repo`) now mounts at `/workspace/<basename>` (not `/workspace`) and becomes the working directory.
+
+- **`DOCS_PATH` and `SPECS_PATH` removed.** The `/docs` and `/specs` mounts are gone; if either env var is set, `runme.sh` prints a one-line note and ignores it. Keep documentation and specs inside a repo (mounted under `/workspace`) or in the Obsidian vault.
+
+- **Obsidian vault path changed.** `VAULT_PATH` now mounts at `/workspace/obsidian` (was `/obsidian`) and is re-exported as `VAULT_PATH=/workspace/obsidian` inside the container.
+
+- **Agent outputs moved to the launch directory.** `.agent-blocked/` and `.agent-discovery/` are now written to the host directory where `runme.sh` is invoked (surfaced under `/workspace/.agent-*`), instead of inside the workspace repo. They are added to `.gitignore` and `.dockerignore`.
+
+### Added
+
+- **`AGENTS.md` is now the canonical agent-instructions file.** The contents formerly in `CLAUDE.md` were promoted to `AGENTS.md` (the open standard read natively by Codex, GitHub Copilot, Gemini CLI, Cursor, and others). `CLAUDE.md` and `.github/copilot-instructions.md` are now **symlinks** to it, and a new `.kiro/steering/AGENTS.md` symlink exposes the same content to Kiro CLI (which loads `.kiro/steering/**/*.md`, not a root file). Edit `AGENTS.md` only — the rest follow. This also removes the duplicated condensed Copilot instructions, eliminating cross-file drift.
+
+- **`repo.sh reset <name|--all> [--yes]`** — restore a repo volume to a clean state ("start clean"), distinct from `sync` (which fetches latest). Git sources: `git reset --hard` to the upstream (drops uncommitted changes and local commits) + `git clean -ffdx` (removes untracked and git-ignored files) — fully local, no re-clone. Path sources: re-mirror from the host source. Either way it also removes any `:rwcopy` working copies so they re-seed clean. Destructive — prompts for confirmation unless `--yes`. The Linux `bind` backend is left untouched (it prints how to clean the live host checkout).
+
+- **`repo.sh` — shared repo-volume manager** (`add` / `sync` / `reset` / `list` / `rm`; `sync` and `reset` accept `<name | --all>`). Big repositories can be seeded **once** into a Docker named volume living inside the Docker/Colima VM, then attached to any number of containers at native in-VM speed — avoiding the macOS virtio-fs bind-mount penalty (~30–50× slower metadata ops). Repo volumes are global (shared across all container groups) and tracked in a registry at `~/.ai-containers/repos.conf`. Authentication for `git`-URL sources uses the host `~/.ssh` (mounted read-only into a short-lived seeding container); local-path sources need no credentials.
+
+- **`REPOS` env var** — space-separated list of registered repos to attach under `/workspace/<name>`. Modes: `:ro` (shared, read-only; `GIT_OPTIONAL_LOCKS=0` set so read-only git works), `:rw` (shared base volume mounted writable directly, single-writer), `:rwcopy` (isolated per-workspace writable working copy seeded by a fast local copy). Unregistered or missing repos abort before the container starts; a name appearing in both `EXTRA_MOUNTS` and `REPOS` is an error.
+
+- **`REPO_BACKEND` env var** (`auto` | `volume` | `bind`, default `auto`). On macOS `auto` uses named volumes; on Linux it uses direct host bind mounts for `path` repos (already native-speed there), so one `REPOS` line works on both platforms. The backend is decided at `repo.sh add` time and stored in the registry.
+
+- **`@<repo>` positional argument** — selects a registered repo as the working directory at `/workspace/<repo>`, attached writable automatically (errors if explicitly listed `:ro`). This is the fast primary-repo path on macOS.
+
+- **`rsync`** added to the image so `repo.sh sync` mirrors path-sourced repos exactly (with deletions); it falls back to `cp -a` if absent.
+
+- **`repo.sh` honours `SANDBOX_UID`/`SANDBOX_GID`.** It previously hardcoded `id -u`/`id -g` for the `chown` of seeded/synced volume contents, while `runme.sh` creates the sandbox user from `SANDBOX_UID`/`SANDBOX_GID` (defaulting to `id -u`/`id -g`). Overriding those for `runme.sh` therefore left repo volumes owned by the wrong UID and caused in-container permission errors. `repo.sh` now resolves the identity the same way, so the override is symmetric — but you must export the **same** values for both `repo.sh` and `runme.sh` (with no override, the host user is used on both sides automatically). The Linux `bind` backend mounts the host path directly with no `chown` and is unaffected.
+
+- **Dedicated `repo.sh` seed image (`Dockerfile.seed`).** `repo.sh add`/`sync` no longer require the sandbox image to exist. The copy/clone/rsync work runs in a small, shared helper image (`ai-containers-seed`, ~40 MB: Alpine + `git`, `openssh-client`, `rsync`, `bash`), built automatically on first use. Repo volumes can now be seeded **before** `./build.sh` is ever run. The seed image name is fixed and **project-independent** (not derived from `IMAGE_NAME`), so it is built once and reused by every project instead of producing a near-identical copy per project image. Override with `REPO_SEED_IMAGE` to reuse an existing image (e.g. `REPO_SEED_IMAGE="$IMAGE_NAME"`); a named-but-missing `REPO_SEED_IMAGE` errors instead of building. `Dockerfile.seed` is synced to projects by `project-init.sh`/`sync-to-projects.sh` and excluded from the main image build context. Because this helper runs as root while repo volumes are owned by the host UID, `repo.sh sync` of a git-sourced repo sets `git config --global safe.directory /dst` before `git pull --ff-only`, avoiding git's "dubious ownership" refusal.
+
+- **`project-init.sh` ignores `.ai-containers/` in the project's root `.gitignore`.** The per-project `.ai-containers/` is a synced working copy of the central repo whose launcher embeds machine-specific paths (`EXTRA_MOUNTS`) and whose `custom.txt` may hold internal hostnames, so it should not be committed to the project. The rule is added idempotently (git repos only); `sync-to-projects.sh` backfills it for existing projects. Remove the line to version it instead, or set `AI_CONTAINERS_NO_GITIGNORE=1` to skip.
+
+- **`sandbox.env` — persisted per-project `IMAGE_NAME`.** `project-init.sh` now writes `<project>/.ai-containers/sandbox.env` (`IMAGE_NAME=<image>`), and `sandbox-common.sh` sources it (when `IMAGE_NAME` is not already exported) before resolving the image name. This makes `build.sh`, `runme.sh`, and `repo.sh` agree on the image — and therefore the repo-volume names (`<image>-repo-<name>`) — even when a script is run directly instead of through the generated launcher. Previously `repo.sh` run standalone fell back to the default `ai-sandbox`, creating volumes a custom-named project's `runme.sh` could not find. An exported `IMAGE_NAME` still takes precedence. `sync-to-projects.sh` backfills `sandbox.env` for pre-existing projects (from the launcher's `IMAGE_NAME`) and never overwrites it.
+
+- **`sandbox-common.sh`** — shared library (config parsing, container-group helpers, path/volume helpers, repo registry) sourced by `build.sh`, `runme.sh`, and `repo.sh`.
+
+### Removed
+
+- `runme.sh build` subcommand (use `./build.sh`).
+- `DOCS_PATH` / `SPECS_PATH` env vars and the `/docs` / `/specs` mounts.
+- The `/repos/*` mount tree (replaced by `/workspace/*`).
+
 ## v0.2.1
 
 ### Added

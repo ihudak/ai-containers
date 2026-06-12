@@ -13,7 +13,7 @@ blocked_capture_enabled="${BLOCKED_CAPTURE_ENABLED:-1}"
 sandbox_user="${SANDBOX_USER:-user}"
 
 # Create the sandbox user at startup with the host user's name, UID, and GID so
-# that files in bind-mounted volumes (/workspace, /repos/*) are accessible
+# that files in bind-mounted volumes (/workspace and its sub-mounts) are accessible
 # without any chown. useradd -m creates the home directory with correct ownership.
 setup_sandbox_user() {
   local uid="${SANDBOX_UID:-1000}"
@@ -65,6 +65,15 @@ setup_sandbox_user() {
   find "$home_dir" -xdev -exec chown "$uid:$gid" {} + 2>/dev/null || true
 
   sandbox_user="$(getent passwd "$uid" | cut -d: -f1)"
+}
+
+# /workspace is an in-image umbrella directory (root-owned by default) onto which
+# repos, extra mounts, the vault, and the output dirs are mounted as subdirs. Make
+# the umbrella root itself writable by the sandbox user so it can cd/create there;
+# sub-mounts under it carry their own ownership and are untouched (no -R).
+chown_workspace_root() {
+  mkdir -p /workspace
+  chown "${SANDBOX_UID:-1000}:${SANDBOX_GID:-1000}" /workspace 2>/dev/null || true
 }
 
 apply_restricted_firewall() {
@@ -143,6 +152,7 @@ case "$mode" in
   restricted)
     apply_restricted_firewall
     setup_sandbox_user
+    chown_workspace_root
 
     printf '╔══════════════════════════════════════════════════════════════════╗\n'
     printf '║  NOTE: DNS (port 53) is unrestricted — all resolvers reachable. ║\n'
@@ -169,6 +179,7 @@ case "$mode" in
   discovery)
     apply_discovery_firewall
     setup_sandbox_user
+    chown_workspace_root
 
     # Run the interactive shell as the sandbox user so that files created
     # during discovery (e.g. agent sessions in ~/.copilot, ~/.kiro, ~/.config/gh)

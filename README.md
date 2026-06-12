@@ -18,24 +18,28 @@ It packages a CLI-only Docker-based workspace for running AI coding agents (GitH
 - `refresh-ipset-allowlist.sh` resolves the concrete allowlist domains into IPv4 and IPv6 `ipset` sets.
 - `capture-blocked-traffic.sh` runs as a background root daemon in restricted mode, logging every blocked outbound destination to `/workspace/.agent-blocked/`.
 - `capture-agent-destinations.sh` helps you discover additional AI-agent-related DNS and TLS destinations in discovery mode.
-- `allowlist-domains.d/`, `allowlist-proxy-domains.d/`, `allowlist-cidrs.d/` contain per-component allowlist fragments. `runme.sh build` assembles the active fragments into the three `allowlist-*.txt` files that the Dockerfile copies into the image. Each directory also contains a `custom.txt` file that is always included regardless of which components are enabled.
-- `runme.sh` is the entry point for building and running the container.
+- `allowlist-domains.d/`, `allowlist-proxy-domains.d/`, `allowlist-cidrs.d/` contain per-component allowlist fragments. `build.sh` assembles the active fragments into the three `allowlist-*.txt` files that the Dockerfile copies into the image. Each directory also contains a `custom.txt` file that is always included regardless of which components are enabled.
+- `sandbox-common.sh` is a shared library (config parsing, container-group helpers, path/volume helpers, the repo registry) sourced by the three entry-point scripts below.
+- `build.sh` builds the image (reads `sandbox.conf`, regenerates the allowlists).
+- `runme.sh` runs the container (`restricted` / `discovery`).
+- `repo.sh` manages shared, native-speed repo volumes (`add` / `sync` / `reset` / `list` / `rm`).
+- `Dockerfile.seed` builds the small, shared helper image (`ai-containers-seed`: Alpine + `git`, `openssh-client`, `rsync`, `bash`) that `repo.sh` uses to seed and sync repo volumes. It is independent of the main sandbox image (and of `IMAGE_NAME`), so it is built once and reused by every project, and repo volumes can be seeded before `./build.sh` is ever run.
 
 ## Usage
 
 Edit `sandbox.conf` to choose which optional components to include, then build the image:
 
 ```bash
-./runme.sh build
+./build.sh
 ```
 
-`runme.sh build` reads `sandbox.conf`, assembles the three `allowlist-*.txt` files from the matching fragments in `allowlist-*.d/`, and passes a `--build-arg` flag for each component to `docker build`. The generated `allowlist-*.txt` files are gitignored; the `*.d/` fragment directories are the source of truth.
+`build.sh` reads `sandbox.conf`, assembles the three `allowlist-*.txt` files from the matching fragments in `allowlist-*.d/`, and passes a `--build-arg` flag for each component to `docker build`. The generated `allowlist-*.txt` files are gitignored; the `*.d/` fragment directories are the source of truth.
 
 To force a full rebuild from scratch (bypassing Docker's layer cache), pass `--no-cache` or set `NO_CACHE=1`:
 
 ```bash
-./runme.sh build --no-cache
-NO_CACHE=1 ./runme.sh build
+./build.sh --no-cache
+NO_CACHE=1 ./build.sh
 ```
 
 This is useful when you want to pick up newer versions of CLI tools installed via `curl`/`wget` inside the Dockerfile, since Docker cannot detect remote content changes automatically.
@@ -52,7 +56,14 @@ Run in discovery mode to capture outbound destinations before tightening the all
 ./runme.sh discovery /path/to/your/repo
 ```
 
-Inside the container, the repository is mounted at `/workspace`.
+Everything is mounted under a single `/workspace` umbrella: the positional argument
+(a host path here) is bind-mounted at `/workspace/<basename>` and becomes the working
+directory; `REPOS` entries appear at `/workspace/<name>`, `EXTRA_MOUNTS` at
+`/workspace/<basename>`, and the Obsidian vault at `/workspace/obsidian`. The positional
+argument may also be `@<repo>` to use a registered repo volume as the working directory
+(fast on macOS) — see [Shared repo volumes](#shared-repo-volumes-native-speed--reposh-and-repos).
+Agent outputs (`.agent-blocked/`, `.agent-discovery/`) are written to the host directory
+where you launched `runme.sh` (and are git- and docker-ignored).
 
 ## sandbox.conf — component configuration
 
@@ -150,10 +161,10 @@ When set to `ON`, the build calls the GitHub API to find the latest release. The
 **Option 1 — set a GitHub token** (raises limit to 5000 req/h, token never stored in the image):
 ```bash
 export GITHUB_TOKEN=ghp_yourtoken
-./runme.sh build
+./build.sh
 ```
 
-`./runme.sh build` also falls back to `GITHUB_PERSONAL_ACCESS_TOKEN` if `GITHUB_TOKEN` is unset, so if you already export the former in your shell profile (recommended — see [GitHub tokens at runtime](#github-tokens-at-runtime) below) the build is authenticated automatically with no extra step.
+`./build.sh` also falls back to `GITHUB_PERSONAL_ACCESS_TOKEN` if `GITHUB_TOKEN` is unset, so if you already export the former in your shell profile (recommended — see [GitHub tokens at runtime](#github-tokens-at-runtime) below) the build is authenticated automatically with no extra step.
 
 **Option 2 — pin a specific version** (no API call at all):
 ```bash
@@ -219,17 +230,17 @@ copilot() {
 
 This keeps every other CLI tool authenticated automatically while preventing Copilot CLI from treating your PAT as a Copilot-API bearer. The container Copilot CLI is already protected because `runme.sh` does not forward `GITHUB_TOKEN`/`GH_TOKEN`.
 
-Build-time rate-limit avoidance: `./runme.sh build` automatically uses `GITHUB_PERSONAL_ACCESS_TOKEN` as the GitHub API token when `GITHUB_TOKEN` is unset, so the recommended setup above is already sufficient for authenticated API calls (5000 req/h). No extra export is needed. If you explicitly want to use a *different* token for the build than the one in your shell profile, set `GITHUB_TOKEN` for that one invocation: `GITHUB_TOKEN=ghp_build_specific ./runme.sh build`. Either way, the value is consumed only by BuildKit and never lands in the image or the running container.
+Build-time rate-limit avoidance: `./build.sh` automatically uses `GITHUB_PERSONAL_ACCESS_TOKEN` as the GitHub API token when `GITHUB_TOKEN` is unset, so the recommended setup above is already sufficient for authenticated API calls (5000 req/h). No extra export is needed. If you explicitly want to use a *different* token for the build than the one in your shell profile, set `GITHUB_TOKEN` for that one invocation: `GITHUB_TOKEN=ghp_build_specific ./build.sh`. Either way, the value is consumed only by BuildKit and never lands in the image or the running container.
 
 ## Extracting discovery results
 
-After running in discovery mode, reproduce the AI agent interaction you want to observe, then exit the container (`Ctrl+D`). The pcap capture file persists on the host in the `.agent-discovery` directory inside your workspace.
+After running in discovery mode, reproduce the AI agent interaction you want to observe, then exit the container (`Ctrl+D`). The pcap capture file persists on the host in the `.agent-discovery` directory of the **launch directory** (where you ran `runme.sh`).
 
 Extract the DNS and TLS hostname lists:
 
 ```bash
 docker run --rm --entrypoint capture-agent-destinations.sh \
-  -v "/path/to/your/repo:/workspace" "${IMAGE_NAME:-ai-sandbox}" extract /workspace/.agent-discovery
+  -v "/path/to/launch-dir:/workspace" "${IMAGE_NAME:-ai-sandbox}" extract /workspace/.agent-discovery
 ```
 
 The container prints this command with the correct path when discovery mode starts. The output lists:
@@ -237,7 +248,7 @@ The container prints this command with the correct path when discovery mode star
 - DNS queries — hostnames the container attempted to resolve.
 - TLS SNI hostnames — HTTPS endpoints presented during TLS handshakes.
 
-Add the discovered hostnames to `allowlist-domains.d/custom.txt`, rebuild the image with `./runme.sh build`, and switch to restricted mode.
+Add the discovered hostnames to `allowlist-domains.d/custom.txt`, rebuild the image with `./build.sh`, and switch to restricted mode.
 
 ## Resource limits
 
@@ -306,26 +317,86 @@ EXTRA_MOUNTS="/path/to/myproject-ui /path/to/reference-docs:ro" \
 bash ./runme.sh restricted /path/to/myproject-backend
 ```
 
-Each path is mounted at `/repos/<basename>` inside the container.
+Each path is mounted at `/workspace/<basename>` inside the container.
 
-## Mounting docs, specs, and an Obsidian vault
+> **macOS performance note.** `EXTRA_MOUNTS` (and a host-path positional argument) are host **bind mounts**. On macOS, Docker runs inside a Linux VM and host directories are shared over a virtualized filesystem (virtiofs), which adds a large per-syscall penalty — metadata operations can be ~30–50× slower than native in-VM storage. For small or occasionally-read directories this is fine. For **large repositories that agents scan heavily** (reading thousands of files), use **repo volumes** instead — see the next section. On Linux the bind-mount penalty does not apply.
 
-Three host env vars give AI agents convenient, well-known paths for reference material:
+## Shared repo volumes (native speed) — `repo.sh` and `REPOS`
 
-| Env var | Container path | Notes |
-|---------|---------------|-------|
-| `DOCS_PATH`  | `/docs`     | Documentation root (read-write) |
-| `SPECS_PATH` | `/specs`    | Specifications root (read-write) |
-| `VAULT_PATH` | `/obsidian` | Obsidian vault (read-write). Also re-exported as `VAULT_PATH=/obsidian` inside the container so agent skills/workflows that consume the variable resolve to the in-container mount point. |
+For big repositories that AI agents inspect repeatedly, host bind mounts are slow on macOS (see the note above). A **repo volume** is a Docker named volume living *inside* the Docker/Colima VM, so containers read it at native in-VM speed. You seed it **once** and then attach it to any number of containers — there is no re-clone or re-copy on each start.
+
+Repo volumes are **global**: they are shared by containers in *any* container group (they hold code, not credentials), and tracked in a registry at `~/.ai-containers/repos.conf`. The physical bytes live in the VM at `/var/lib/docker/volumes/<image>-repo-<name>/`, not on the host filesystem.
+
+### `repo.sh` — manage repo volumes
 
 ```bash
-DOCS_PATH=/path/to/docs \
-SPECS_PATH=/path/to/specs \
+# Seed a repo volume ONCE, from an existing local checkout (fast, no network):
+./repo.sh add cluster ~/dev/docs/cluster
+# …or by cloning from the remote (authenticates with your host ~/.ssh):
+./repo.sh add cluster ssh://git@example.org/team/cluster.git
+
+./repo.sh sync cluster        # refresh when you choose (git pull, or re-copy a path source); sync --all does every repo
+./repo.sh reset cluster       # discard local changes — clean slate (keeps the repo registered)
+./repo.sh list                # show registered repos (add --sizes for on-disk size)
+./repo.sh rm cluster          # remove the volume + any working copies + registry entry
+```
+
+`reset` is the "start clean" button, distinct from `sync` (which *fetches* the latest): it **discards local state** and removes any `:rwcopy` working copies. For a git source it runs `git reset --hard` to the upstream (dropping uncommitted changes **and** local commits) plus `git clean -ffdx` (removing untracked **and** git-ignored files such as build output / `node_modules`); for a path source it re-mirrors from the host source. It is **destructive and cannot be undone**, so it prompts for confirmation unless you pass `--yes`. Reset every registered repo at once with `./repo.sh reset --all`. (The Linux `bind` backend is left untouched — its "volume" is your live host checkout — and `reset` just prints how to clean it yourself.)
+
+`add` refuses to overwrite an existing repo — use `sync` to refresh or `rm` first. Authentication for `git-url` sources uses your **host `~/.ssh`** (mounted read-only into a short-lived seeding container); local-path sources need no credentials.
+
+> **Seeding does not require the sandbox image.** `repo.sh` does the copy/clone/rsync work in a small dedicated helper image (`ai-containers-seed`, ~40 MB: Alpine + `git`, `openssh-client`, `rsync`, `bash`), built automatically from `Dockerfile.seed` the first time you run `repo.sh add`/`sync`. This means you can seed repo volumes **before** ever running `./build.sh` — you don't need the (large, slow) sandbox image just to populate a volume. The seed image name is **fixed and project-independent**: it is deliberately not derived from `IMAGE_NAME`, so it is built once and reused by every project rather than producing one near-identical copy per project image. Set `REPO_SEED_IMAGE` to reuse a different existing image that already has these tools (for example `REPO_SEED_IMAGE="$IMAGE_NAME"` once the sandbox image is built); if `REPO_SEED_IMAGE` names an image that is not present, `repo.sh` errors instead of building. The seed helper runs as a plain `docker run` (not through `entrypoint.sh`), so the deny-by-default firewall does not apply to it — the `git clone`/`pull` has normal network access.
+
+> **⚠️ Seed and run as the same user identity.** Repo-volume contents are `chown`ed to a numeric **UID/GID** when seeded/synced, and Linux permissions are enforced by those numbers. `repo.sh` and `runme.sh` resolve the identity the **same** way: `SANDBOX_UID`/`SANDBOX_GID` if set, otherwise your host `id -u`/`id -g`. So:
+> - Using the **defaults** (no overrides), seeding and running both use your host identity — ownership always matches, nothing to do.
+> - If you **override** `SANDBOX_UID`/`SANDBOX_GID`, you must export the **same** values for **both** `repo.sh` (at `add`/`sync` time) and `runme.sh` (at run time). Overriding one but not the other — or seeding as one user and running the container as another — leaves the mounted repo owned by the wrong UID, and the in-container agent gets permission errors.
+> - This applies to the **named-volume** backend (notably macOS). The Linux `bind` backend mounts your host path directly with no `chown`, so it is unaffected.
+
+### `REPOS` — attach repo volumes at run time
+
+Set `REPOS` to a space-separated list of **registered** repo names, each mounted at `/workspace/<name>`. Append `:ro` (default), `:rw`, or `:rwcopy`:
+
+```bash
+# cluster + two libs read-only (shared), app writable
+REPOS="cluster:ro lib-a:ro lib-b:ro app:rw" ./runme.sh restricted /path/to/primary
+```
+
+- **`:ro`** — shared, read-only. Many containers can mount the *same* volume simultaneously from a single on-disk copy. `GIT_OPTIONAL_LOCKS=0` is set so read-only git operations (`log`/`blame`/`status`) don't try to write to `.git`. This is the right choice for reference repos you only inspect.
+- **`:rw`** — the shared base volume, mounted **writable directly** (no copy, no extra disk). Intended for a **single writer** at a time — the repo you're actively editing in one container. Two containers writing the *same* repo `:rw` concurrently can wedge git state (lock-file contention, lost edits); the underlying volume/filesystem is not damaged and the state is recoverable (`git reset`, or `repo.sh sync`/`rm`+`add`), but for genuine concurrent writers use `:rwcopy`.
+- **`:rwcopy`** — an **isolated** per-workspace writable working copy, seeded once by a fast local copy from the shared base (no re-clone), keyed by the launch directory so the same project reuses its copy across runs. Each `:rwcopy` is a full copy (~repo size), so it costs disk; use it only when you need two containers writing the *same* repo at once. Volume backend only.
+
+If a `REPOS` entry is not registered (or its volume is missing), `runme.sh` aborts **before** starting the container with a clear hint. A name appearing in **both** `EXTRA_MOUNTS` and `REPOS` is an error, since both mount under `/workspace/<name>`.
+
+> **Repo volumes shadow the host.** A repo volume is *not* synced with any host directory — its contents live only in the VM volume (and persist across runs until you `repo.sh rm` it). Commit and push from inside the container to get work out. This is the intended trade-off for native speed: you give up live host-side editing for the repos you put in volumes.
+
+> **`sync` and `:rwcopy` working copies.** `repo.sh sync` refreshes the shared base volume but does **not** touch existing `:rwcopy` working copies (they may contain uncommitted work). Remove a working copy (`docker volume rm <base>--wc-<tag>`) to have it re-seeded from the refreshed base on the next run. For path-sourced repos, `sync` uses `rsync -a --delete` (exact mirror) when `rsync` is in the image, falling back to `cp -a` (adds/updates only) otherwise; git-sourced repos use `git pull`.
+
+### Cross-platform backend (`REPO_BACKEND`)
+
+The bind-mount penalty only exists on macOS — on Linux, host bind mounts are already native speed. So `REPOS` picks a backend per platform, controlled by `REPO_BACKEND` (default `auto`). **The backend is decided when you run `repo.sh add` and stored in the registry** — changing `REPO_BACKEND` later does not affect already-added repos (remove and re-add to change):
+
+| `REPO_BACKEND` | `path` source | `git` source |
+|----------------|---------------|--------------|
+| `auto` (default) | **macOS:** named volume. **Linux:** direct host bind mount (no volume, no copy). | named volume (both platforms) |
+| `volume` | named volume (both platforms) | named volume |
+| `bind` | direct host bind mount | falls back to named volume (no local path to bind) |
+
+This means **one `REPOS="cluster:ro app:rw"` line works on both platforms** — you get native-speed volumes on macOS and zero-copy bind mounts on Linux without maintaining separate launch scripts. On Linux, `repo.sh add <name> <path>` simply records the name→path mapping in the registry (no volume is seeded); `repo.sh sync` is a no-op for those (the bind mount is always live).
+
+> **One behavioural difference with `auto`/`bind`:** `:rw` on a bind-mounted repo writes **live** to the host source (changes are visible on the host immediately), whereas `:rw` on a volume-backed repo writes to the shared base **inside the VM** (not visible on the host). `:ro` behaves identically either way, and `:rwcopy` (volume backend) is always an isolated in-VM copy. Set `REPO_BACKEND=volume` if you want byte-identical behaviour on every platform.
+
+## Mounting an Obsidian vault
+
+Set `VAULT_PATH` to a host Obsidian vault to mount it at `/workspace/obsidian` (read-write). It is also re-exported as `VAULT_PATH=/workspace/obsidian` inside the container so agent skills/workflows that consume the variable resolve to the in-container mount point.
+
+```bash
 VAULT_PATH=/path/to/obsidian-vault \
 ./runme.sh restricted /path/to/repo
 ```
 
 When `VAULT_PATH` is set, set `qmd=ON` in `sandbox.conf` and rebuild — `runme.sh` warns at startup if the vault is mounted but qmd was not baked into the image. `qmd` is the on-device markdown search engine [@tobilu/qmd](https://github.com/tobi/qmd), installed globally via npm.
+
+> The previous `DOCS_PATH` (`/docs`) and `SPECS_PATH` (`/specs`) mounts have been removed. Keep documentation and specs inside a repo (mounted under `/workspace`) or in the Obsidian vault.
 
 ## Host configuration mounts
 
@@ -501,7 +572,7 @@ The macOS Keychain context is still relevant if you use `AI_CONTAINER_GROUP=host
 
 ## Reviewing blocked traffic
 
-When running in restricted mode, blocked outbound destinations are logged automatically to `/workspace/.agent-blocked/`. These files persist on the host via the workspace mount.
+When running in restricted mode, blocked outbound destinations are logged automatically to `/workspace/.agent-blocked/`. These files persist on the host in the `.agent-blocked` directory of the launch directory (where you ran `runme.sh`).
 
 | File | Purpose |
 |------|---------|
@@ -520,7 +591,7 @@ cat /workspace/.agent-blocked/blocked-ips.txt
 # copy the IP lines → paste into allowlist-cidrs.d/custom.txt
 ```
 
-Then rebuild the image with `./runme.sh build` and restart the container.
+Then rebuild the image with `./build.sh` and restart the container.
 
 ## Security model (restricted mode)
 
@@ -534,7 +605,7 @@ Discovery mode runs as the sandbox user with unrestricted egress and `NET_RAW` r
 
 ## Allowlist structure
 
-Three `*.d/` directories hold the source-of-truth fragment files. `runme.sh build` assembles them into the `allowlist-*.txt` files that get baked into the image.
+Three `*.d/` directories hold the source-of-truth fragment files. `build.sh` assembles them into the `allowlist-*.txt` files that get baked into the image.
 
 | Directory | Controls | Always included | Per-component |
 |-----------|----------|-----------------|---------------|
@@ -551,7 +622,7 @@ Three `*.d/` directories hold the source-of-truth fragment files. `runme.sh buil
 | A wildcard pattern for the self-healing daemon | `allowlist-proxy-domains.d/custom.txt` |
 | A corporate proxy IP or narrow CIDR | `allowlist-cidrs.d/custom.txt` |
 
-After editing any fragment file, run `./runme.sh build` to regenerate the image.
+After editing any fragment file, run `./build.sh` to regenerate the image.
 
 ## Managing multiple projects
 
@@ -571,8 +642,10 @@ What it does:
 
 - Creates `<project>/.ai-containers/` and copies all shared files (Dockerfile, scripts, allowlist fragment files).
 - Copies `sandbox.conf` as a starting point (only if one does not already exist).
-- Generates `<project>/.ai-containers/<project-name>-container.sh` with `IMAGE_NAME` and commented hints for `AI_CONTAINER_GROUP`, `EXTRA_MOUNTS`, and `PREVIEW_PORTS`.
+- Writes `<project>/.ai-containers/sandbox.env` with `IMAGE_NAME=<image>`. This is read by `sandbox-common.sh` so `build.sh`, `runme.sh`, and `repo.sh` all resolve the **same** image name — and therefore the same repo-volume names (`<image>-repo-<name>`) — even when you run a script (notably `repo.sh`) directly instead of through the generated launcher. An exported `IMAGE_NAME` still takes precedence.
+- Generates `<project>/.ai-containers/<project-name>-container.sh` with `IMAGE_NAME` and commented hints for `AI_CONTAINER_GROUP`, `EXTRA_MOUNTS`, `REPOS`, and `PREVIEW_PORTS`.
 - Registers the project path in `projects.conf` (created from `projects.conf.example` on first run).
+- Adds `/.ai-containers/` to the project's **root `.gitignore`** (git repos only, idempotent), so the synced working copy — whose launcher embeds machine-specific paths (`EXTRA_MOUNTS`) and whose `custom.txt` may hold internal hostnames — isn't accidentally committed. To version it instead (e.g. to share sandbox config with a team), remove that line; set `AI_CONTAINERS_NO_GITIGNORE=1` to skip this step entirely. `sync-to-projects.sh` applies the same rule to existing projects (never duplicating an entry already present).
 
 > **Note on resource defaults:** the CPU/memory values `project-init.sh` pre-fills in its prompts (`4.0` CPU, `8g` memory, `4g` reservation, swap = memory) reflect the recommended **comfortable** tier from [Resource limits](#resource-limits), not `runme.sh`'s conservative fallback (`1.0` CPU / `4g` / `2g` / `4g`). This is intentional: the generated launch script bakes the comfortable values in as explicit `CONTAINER_*` exports, while `runme.sh`'s fallbacks remain the bare minimum for a single agent doing light work. Edit the generated launch script to lower them if your Docker/Colima VM is smaller.
 
@@ -580,7 +653,7 @@ After init, edit `sandbox.conf` to choose components, review the launch script, 
 
 ```bash
 cd <project>/.ai-containers
-./runme.sh build
+./build.sh
 ./<project-name>-container.sh
 ```
 
@@ -593,9 +666,9 @@ After pulling changes to this repo, run this to push the updated shared files to
 ./sync-to-projects.sh /path/to/p   # sync a single project
 ```
 
-**What is synced:** Dockerfile, all `*.sh` scripts, `.dockerignore`, and the per-component allowlist fragments in `allowlist-*.d/` (excluding `custom.txt`).
+**What is synced:** Dockerfile, `Dockerfile.seed`, all `*.sh` scripts, `.dockerignore`, and the per-component allowlist fragments in `allowlist-*.d/` (excluding `custom.txt`).
 
-**What is never touched:** `sandbox.conf`, `allowlist-*.d/custom.txt`, and the project's launch script.
+**What is never touched:** `sandbox.conf`, `sandbox.env`, `allowlist-*.d/custom.txt`, and the project's launch script. `sandbox.env` is **backfilled** (created from the launcher's `IMAGE_NAME`) if a project predates it, but an existing one is never overwritten.
 
 **sandbox.conf drift warning:** If a project's `sandbox.conf` differs from the one in this repo (e.g. a new component was added), the script prints a warning and the `diff` command to review the changes. You decide whether to adopt them.
 
@@ -610,8 +683,8 @@ You can also edit `projects.conf` manually: one absolute project path per line, 
 - Edit `sandbox.conf` to enable only the components your team actually uses.
 - Add environment-specific FQDNs (internal Git, artifact repos, MCP endpoints, search engines) to `allowlist-domains.d/custom.txt`.
 - If agent traffic must go through a corporate proxy, add wildcard patterns to `allowlist-proxy-domains.d/custom.txt` and allow only the proxy IPs in `allowlist-cidrs.d/custom.txt`.
-- The `custom.txt` files in each `*.d/` directory are **gitignored** to prevent internal hostnames and IPs from being committed. Each directory ships a `custom.txt.example` template; `./runme.sh build` auto-copies it to `custom.txt` on first run.
-- The sandbox user identity (`SANDBOX_UID`, `SANDBOX_GID`, `SANDBOX_USER`, `SANDBOX_GROUP`) is detected automatically from the host user at runtime. No build-time args needed.
+- The `custom.txt` files in each `*.d/` directory are **gitignored** to prevent internal hostnames and IPs from being committed. Each directory ships a `custom.txt.example` template; `./build.sh` auto-copies it to `custom.txt` on first run.
+- The sandbox user identity (`SANDBOX_UID`, `SANDBOX_GID`, `SANDBOX_USER`, `SANDBOX_GROUP`) is detected automatically from the host user at runtime. No build-time args needed. If you override `SANDBOX_UID`/`SANDBOX_GID`, set the **same** values when running `repo.sh` (it chowns repo-volume contents to that identity) as when running `runme.sh` — see the identity warning under [Shared repo volumes](#shared-repo-volumes-native-speed--reposh-and-repos).
 - Review the default values in `runme.sh`, especially `IMAGE_NAME`, before publishing this into a separate repository.
 
 ## Important notes

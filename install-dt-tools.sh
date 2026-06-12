@@ -18,7 +18,7 @@ if [ -n "${GITHUB_TOKEN:-}" ]; then
   AUTH_ARGS=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
 else
   echo "No GITHUB_TOKEN — using unauthenticated GitHub API (60 req/h limit)."
-  echo "Tip: if this fails, export GITHUB_TOKEN on your host and run: ./runme.sh build"
+  echo "Tip: if this fails, export GITHUB_TOKEN on your host and run: ./build.sh"
   echo "     Or pin a specific version in sandbox.conf, e.g.: dtctl=0.25.0"
   AUTH_ARGS=()
 fi
@@ -37,7 +37,7 @@ gh_latest_tag() {
   if [ -z "$tag" ]; then
     echo "ERROR: Could not fetch latest release tag for ${repo}." >&2
     echo "       GitHub API rate limit may have been exceeded." >&2
-    echo "       Fix: export GITHUB_TOKEN=<token> then run: ./runme.sh build" >&2
+    echo "       Fix: export GITHUB_TOKEN=<token> then run: ./build.sh" >&2
     echo "       Or pin a version in sandbox.conf, e.g.: dtctl=0.25.0" >&2
   fi
   printf '%s' "$tag"

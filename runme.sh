@@ -1,687 +1,110 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# runme.sh — run the AI sandbox container.
+#
+# Build the image with ./build.sh and manage repo volumes with ./repo.sh.
+
+_here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=sandbox-common.sh
+source "${_here}/sandbox-common.sh"
+
 usage() {
   cat <<'EOF'
 Usage:
-  ./runme.sh build [image-name]
-  ./runme.sh restricted [workspace-dir]
-  ./runme.sh discovery [workspace-dir]
+  ./runme.sh restricted [primary]
+  ./runme.sh discovery  [primary]
 
 Commands:
-  build       Build the AI sandbox image (reads sandbox.conf, regenerates allowlists)
   restricted  Run the container with the firewall enabled (agent runs as non-root, NET_ADMIN/NET_RAW dropped)
   discovery   Run the container with unrestricted egress and background capture (runs as sandbox user)
 
-Flags:
-  --no-cache  Pass --no-cache to docker build (also: NO_CACHE=1 ./runme.sh build)
+Positional [primary] — selects the working directory inside the container:
+  @<repo>     A REGISTERED repo (see ./repo.sh) becomes the working dir at
+              /workspace/<repo>. It is attached writable automatically; if you
+              also list it in REPOS it must be :rw or :rwcopy (not :ro).
+  <host-path> A host directory, bind-mounted at /workspace/<basename> (rw) and
+              used as the working dir.
+  (omitted)   The working dir is the /workspace umbrella itself.
+
+Everything is mounted under the /workspace umbrella: REPOS at /workspace/<name>,
+EXTRA_MOUNTS at /workspace/<basename>, the Obsidian vault at /workspace/obsidian.
+Agent outputs (.agent-blocked/, .agent-discovery/) are written to the host
+directory where runme.sh is launched (git- and docker-ignored).
+
+Related scripts:
+  ./build.sh  Build the image (reads sandbox.conf, regenerates allowlists)
+  ./repo.sh   Manage shared repo volumes (add / sync / list / rm)
 
 Environment variables:
-  IMAGE_NAME          Image to use or build (default: ai-sandbox)
+  IMAGE_NAME          Image to run (default: ai-sandbox).
   AI_CONTAINER_GROUP  Group name selecting which dotfile tree to mount (default: default).
-                      Use 'host' to mount directly from $HOME (Linux: same as today;
-                      macOS: requires acknowledgement — tools using Keychain will not work).
-                      Use any lowercase name (a-z, 0-9, dashes; max 32 chars) to select a
-                      group under ~/.ai-containers/<group>/.
+                      Use 'host' to mount directly from $HOME. Use any lowercase name
+                      (a-z, 0-9, dashes; max 32 chars) to select ~/.ai-containers/<group>/.
   AI_CONTAINER_GROUP_INIT
-                      Non-interactive override for first-time group bootstrap. Values:
-                        clean          Create an empty group (only .ssh + .agents scaffold).
-                        from:host      Copy group-scoped dotfiles from $HOME.
-                        from:<name>    Copy group-scoped dotfiles from ~/.ai-containers/<name>.
+                      Non-interactive override for first-time group bootstrap:
+                        clean | from:host | from:<name>
   AI_CONTAINER_HOST_ACK
                       Set to 1 to skip the macOS host-group interactive acknowledgement.
-  SANDBOX_UID         UID for the container user (default: host user's id -u)
-  SANDBOX_GID         GID for the container user (default: host user's id -g)
-  SANDBOX_USER        Username for the container user (default: host username from id -un)
-  SANDBOX_GROUP       Group name for the container user (default: host primary group from id -gn)
-  EXTRA_MOUNTS        Space-separated list of extra host directories to mount under /repos.
-                      Append :ro or :rw to control access per directory (default: rw).
+  SANDBOX_UID / SANDBOX_GID / SANDBOX_USER / SANDBOX_GROUP
+                      Override the container user identity (default: detected from host).
+  REPOS               Space-separated list of REGISTERED repo volumes to attach under
+                      /workspace/<name>, each at native in-VM speed. Append :ro (default),
+                      :rw, or :rwcopy. Register repos first with ./repo.sh add.
+                        :ro      Shared, read-only. Many containers mount the same single
+                                 copy. GIT_OPTIONAL_LOCKS=0 is set so read-only git ops
+                                 (log/blame/status) don't try to write to .git.
+                        :rw      Shared base volume, mounted writable directly (no copy).
+                                 Intended for a SINGLE writer at a time; two containers
+                                 writing one repo concurrently can wedge git state.
+                        :rwcopy  Isolated per-workspace writable working copy, seeded once
+                                 by a fast local copy from the shared base (no re-clone),
+                                 keyed by the launch directory. Use for concurrent writers
+                                 to the same repo. Volume backend only.
                       Examples:
-                        EXTRA_MOUNTS="/path/to/repo"              # read-write (default)
-                        EXTRA_MOUNTS="/path/to/repo:ro"           # read-only
-                        EXTRA_MOUNTS="/path/to/a:ro /path/to/b"  # a=read-only, b=read-write
-  DOCS_PATH           Host directory mounted as /docs inside the container.
-  SPECS_PATH          Host directory mounted as /specs inside the container.
-  VAULT_PATH          Host Obsidian vault mounted as /obsidian inside the container.
-                      When set, VAULT_PATH=/obsidian is also exported into the
-                      container so agent skills/workflows resolve correctly.
+                        REPOS="cluster"                       # cluster, read-only
+                        REPOS="cluster:ro lib-a:ro app:rw"    # read 2, write 1 (shared base)
+  REPO_BACKEND        How a repo is backed; chosen when you run ./repo.sh add and
+                      stored in the registry (changing it later has no effect on
+                      already-added repos — re-add to change). auto (default) | volume | bind.
+                        auto   — volume on macOS; on Linux, a direct host bind mount
+                                 for 'path' repos (already native-speed there), volume
+                                 for 'git' repos. One REPOS line works on both platforms.
+                        volume — always a Docker named volume (identical behaviour
+                                 everywhere; macOS-style :rwcopy isolated working copies).
+                        bind   — bind-mount the host path for 'path' repos (falls back
+                                 to volume for 'git' repos, which have no local path).
+                      Note: with auto/bind, :rw on a bind-mounted repo writes LIVE to
+                      the host source; with volume it writes to the shared in-VM base.
+  EXTRA_MOUNTS        Space-separated list of extra HOST directories to bind-mount under
+                      /workspace/<basename> (virtiofs; slower, but live-visible on the host
+                      and needs no registration). Append :ro or :rw (default: rw).
+                      A name appearing in both EXTRA_MOUNTS and REPOS is an error.
+  VAULT_PATH          Host Obsidian vault mounted at /workspace/obsidian (also re-exported
+                      as VAULT_PATH=/workspace/obsidian inside the container).
                       Requires qmd=ON in sandbox.conf for in-container search.
   SELF_HEALING_ENABLED  Set to 0 to disable self-healing allowlist (default: 1).
-                        When disabled, blocked traffic is logged but IPs are never auto-allowed.
-  GITHUB_TOKEN          Build-time only. Passed to docker build as a BuildKit secret
-                        (--secret id=github_token) so install-dt-tools.sh can use the
-                        authenticated GitHub API (5000 req/h vs 60 req/h). Never
-                        written into any image layer or visible in `docker history`.
-                        Not forwarded into the running container. If unset,
-                        GITHUB_PERSONAL_ACCESS_TOKEN is used as a fallback so you
-                        don't have to export a second name just for the build.
   GITHUB_PERSONAL_ACCESS_TOKEN
-                        Runtime: forwarded into the container as-is for tools that
-                        expect this exact variable name (e.g. the
-                        `github/github-mcp-server` / `@modelcontextprotocol/server-github`
-                        stdio MCP servers, and Claude Code's official github plugin).
-                        Build-time fallback: used as the BuildKit github_token secret
-                        when GITHUB_TOKEN is not set.
-  COPILOT_GITHUB_TOKEN  Forwarded into the container for Copilot CLI authentication.
-                        Accepts: fine-grained PAT with "Copilot Requests" permission,
-                        gh CLI OAuth token, or Copilot CLI OAuth token.
-                        When NOT set, runme.sh auto-extracts the OAuth token from
-                        the container group's ~/.config/gh/hosts.yml. This bypasses
-                        the device-flow login inside the container and allows multiple
-                        containers to run simultaneously without revoking each other's
-                        Copilot sessions (device-flow OAuth is single-session per user;
-                        token-based auth via this env var is not).
-  PREVIEW_PORTS       Space-separated list of ports (or host:container pairs) to publish so
-                      your host browser can reach dev servers started inside the container.
-                      Useful for Claude Code's UI preview feature and any other dev server.
-                      Examples:
-                        PREVIEW_PORTS="3000"            # publish container port 3000 → host 3000
-                        PREVIEW_PORTS="3000 5173"       # publish two ports
-                        PREVIEW_PORTS="8080:3000"       # host port 8080 → container port 3000
-                        PREVIEW_PORTS="3000 8080:8080"  # mix of both forms
-  NO_CACHE            Set to 1 to pass --no-cache to docker build (default: unset, uses cache).
-  CONTAINER_CPUS      CPU limit for the running container (default: 1.0). Must fit
-                      within the resources allocated to your Docker engine
-                      (e.g. on Colima, set with `colima start --cpu N`).
-  CONTAINER_MEMORY    Hard memory limit for the running container (default: 4g). Same
-                      sizing rules apply as for CONTAINER_CPUS. The container is
-                      OOM-killed if it tries to exceed this.
+                        Forwarded into the container as-is for tools that expect this
+                        exact variable name (github MCP servers, Claude Code github plugin).
+  COPILOT_GITHUB_TOKEN  Forwarded for Copilot CLI auth. When unset, auto-extracted from
+                        the group's gh hosts.yml so concurrent containers don't revoke
+                        each other's Copilot sessions.
+  PREVIEW_PORTS       Space-separated list of ports (or host:container pairs) to publish.
+  CONTAINER_CPUS      CPU limit (default: 1.0).
+  CONTAINER_MEMORY    Hard memory limit (default: 4g).
   CONTAINER_MEMORY_RESERVATION
-                      Soft memory limit (default: 2g). Under host memory pressure
-                      Docker tries to keep the container at or below this value, but
-                      it may use up to CONTAINER_MEMORY. Must be <= CONTAINER_MEMORY;
-                      runme.sh lowers it to the hard limit (with a warning) if set
-                      higher.
+                      Soft memory limit (default: 2g). Must be <= CONTAINER_MEMORY.
   CONTAINER_MEMORY_SWAP
-                      Total memory + swap the container may use (default: 4g). The
-                      amount of swap available is CONTAINER_MEMORY_SWAP minus
-                      CONTAINER_MEMORY, so set it EQUAL to CONTAINER_MEMORY to disable
-                      swap (recommended for predictable performance), or to -1 for
-                      unlimited swap. Must be >= CONTAINER_MEMORY; runme.sh raises it
-                      to the hard limit (with a warning) if set lower.
-  CONTAINER_NOFILE    Open-file-descriptor limit (ulimit -n) for the container, in
-                      the form soft[:hard] (default: 1048576:1048576). Raise this if
-                      an agent crashes with "EMFILE: too many open files" while
-                      scanning large repos/doc trees. Passed to docker run as
-                      --ulimit nofile.
-
-Configuration:
-  Edit sandbox.conf to enable or disable optional components before building.
+                      Total memory + swap (default: 4g). Set equal to CONTAINER_MEMORY to
+                      disable swap, or -1 for unlimited. Must be >= CONTAINER_MEMORY.
+  CONTAINER_NOFILE    Open-file-descriptor limit, soft[:hard] (default: 1048576:1048576).
 EOF
 }
 
-# ── Group helpers ──────────────────────────────────────────────────────────────
-
-validate_group_name() {
-  local name="$1"
-  [[ "$name" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] || {
-    echo "Invalid AI_CONTAINER_GROUP='$name'. Allowed: lowercase letters, digits, dashes; 1-32 chars; must start with alphanum." >&2
-    exit 1
-  }
-}
-
-print_macos_host_warning() {
-  cat >&2 <<'EOF'
-WARNING: AI_CONTAINER_GROUP=host on macOS
-
-The following tools store OAuth in the macOS Keychain and
-will NOT have working credentials in the container:
-  - Claude Code        (~/.claude)
-  - GitHub Copilot CLI (~/.copilot)
-  - Kiro CLI           (~/.kiro)  [also: per-arch bun binary conflict]
-  - GitHub CLI         (~/.config/gh)
-
-Codex, Gemini, and other dirs are unaffected.
-EOF
-}
-
-require_host_ack() {
-  if [[ "${AI_CONTAINER_HOST_ACK:-0}" == "1" ]]; then
-    return
-  elif [[ -t 0 ]]; then
-    print_macos_host_warning
-    read -r -p "Type 'yes' to continue, anything else to abort: " reply
-    [[ "$reply" == "yes" ]] || { echo "Aborted." >&2; exit 1; }
-  else
-    print_macos_host_warning
-    echo "Aborting: stdin is not a TTY and AI_CONTAINER_HOST_ACK=1 is not set." >&2
-    exit 1
-  fi
-}
-
-ensure_group_scaffold() {
-  local root="$1"
-  install -d -m 700 "$root/.ssh"
-  install -d        "$root/.agents"
-}
-
-# Copy the group-scoped slice of dotfiles from $src into $dst.
-# Only paths that exist in $src are copied.
-_copy_group_slice() {
-  local src="$1" dst="$2"
-  local paths=(.claude .claude.json .copilot .config/gh .kiro ".local/share/kiro-cli" .codex .gemini .agents .ssh)
-  for p in "${paths[@]}"; do
-    local from="$src/$p"
-    if [[ -e "$from" ]]; then
-      mkdir -p "$(dirname "$dst/$p")"
-      cp -a "$from" "$dst/$p"
-    fi
-  done
-}
-
-ensure_group_exists() {
-  local group="$1" root="$2"
-  if [[ -d "$root" ]]; then
-    return
-  fi
-
-  if [[ -n "${AI_CONTAINER_GROUP_INIT:-}" ]]; then
-    case "$AI_CONTAINER_GROUP_INIT" in
-      clean)
-        mkdir -p "$root"
-        ;;
-      from:host)
-        mkdir -p "$root"
-        _copy_group_slice "$HOME" "$root"
-        ;;
-      from:*)
-        local src_name="${AI_CONTAINER_GROUP_INIT#from:}"
-        local src_root="$HOME/.ai-containers/$src_name"
-        if [[ ! -d "$src_root" ]]; then
-          echo "ERROR: AI_CONTAINER_GROUP_INIT=from:$src_name — source group '$src_name' not found at $src_root" >&2
-          exit 1
-        fi
-        mkdir -p "$root"
-        _copy_group_slice "$src_root" "$root"
-        ;;
-      *)
-        echo "ERROR: unknown AI_CONTAINER_GROUP_INIT value '${AI_CONTAINER_GROUP_INIT}'. Expected: clean, from:host, or from:<group>." >&2
-        exit 1
-        ;;
-    esac
-    return
-  fi
-
-  if [[ ! -t 0 ]]; then
-    echo "ERROR: group '$group' not found at $root and stdin is not a TTY." >&2
-    echo "       Set AI_CONTAINER_GROUP_INIT=clean (empty), AI_CONTAINER_GROUP_INIT=from:host, or AI_CONTAINER_GROUP_INIT=from:<existing-group> to bootstrap non-interactively." >&2
-    exit 1
-  fi
-
-  # Interactive prompt: numbered options + 'q' as a non-numeric escape.
-  local options=() option_labels=()
-  local default_exists=0
-  if [[ -d "$HOME/.ai-containers/default" ]]; then
-    options+=("default")
-    option_labels+=("default (recommended)")
-    default_exists=1
-  fi
-  # host is always present; when 'default' is absent, host becomes the recommended fallback
-  options+=("host")
-  if (( default_exists == 0 )); then
-    option_labels+=("host (recommended)")
-  else
-    option_labels+=("host")
-  fi
-  # other custom groups, mtime-sorted descending (exclude 'default' and the new group itself)
-  while IFS= read -r -d '' dir; do
-    local name; name="$(basename "$dir")"
-    [[ "$name" == "default" || "$name" == "$group" ]] && continue
-    options+=("$name")
-    option_labels+=("$name")
-  done < <(find "$HOME/.ai-containers" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null \
-           | xargs -0 ls -dt 2>/dev/null \
-           | while IFS= read -r d; do printf '%s\0' "$d"; done)
-  options+=("<empty>")
-  option_labels+=("<empty>")
-
-  echo "Group '$group' not found. Initialize from:" >&2
-  local i
-  for i in "${!option_labels[@]}"; do
-    printf '  %d) %s\n' "$((i+1))" "${option_labels[$i]}" >&2
-  done
-  echo "  q) cancel" >&2
-
-  local default_idx=1
-  local reply
-  read -r -p "[${default_idx}]: " reply </dev/tty
-  [[ -z "$reply" ]] && reply="$default_idx"
-
-  if [[ "$reply" == "q" ]]; then
-    echo "Aborted." >&2
-    exit 1
-  fi
-  if [[ ! "$reply" =~ ^[0-9]+$ ]]; then
-    echo "Invalid selection '$reply'." >&2
-    exit 1
-  fi
-
-  local choice_idx=$(( reply - 1 ))
-  if (( choice_idx < 0 || choice_idx >= ${#options[@]} )); then
-    echo "Invalid selection '$reply'." >&2
-    exit 1
-  fi
-
-  local chosen="${options[$choice_idx]}"
-
-  case "$chosen" in
-    "<empty>")
-      mkdir -p "$root"
-      ;;
-    host)
-      mkdir -p "$root"
-      _copy_group_slice "$HOME" "$root"
-      ;;
-    *)
-      local src_root="$HOME/.ai-containers/$chosen"
-      if [[ ! -d "$src_root" ]]; then
-        echo "ERROR: source group '$chosen' not found at $src_root" >&2
-        exit 1
-      fi
-      mkdir -p "$root"
-      _copy_group_slice "$src_root" "$root"
-      ;;
-  esac
-}
-
-# ── Config helpers ─────────────────────────────────────────────────────────────
-
-script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-config_file="${script_dir}/sandbox.conf"
-image_name="${IMAGE_NAME:-ai-sandbox}"
-
-check_config() {
-  if [[ ! -f "$config_file" ]]; then
-    printf 'ERROR: sandbox.conf not found in %s\n' "$script_dir" >&2
-    exit 1
-  fi
-}
-
-# Returns 0 if the component is set to ON in sandbox.conf, 1 otherwise.
-# Uses get_versions internally so it tolerates whitespace (e.g. "copilot = ON").
-is_enabled() {
-  [[ "$(get_versions "$1")" == "ON" ]]
-}
-
-# Returns 0 if at least one of the given components is ON.
-any_enabled() {
-  local c
-  for c in "$@"; do
-    if is_enabled "$c"; then return 0; fi
-  done
-  return 1
-}
-
-# Returns 0 if a key is ON or has a non-empty version value (i.e. the component is active).
-# Uses get_versions so inline comments are stripped consistently.
-is_active() {
-  local val; val=$(get_versions "$1")
-  [[ -n "$val" && "$val" != "OFF" ]]
-}
-
-# Returns 0 if at least one of the given keys is active.
-any_active() {
-  local k
-  for k in "$@"; do
-    if is_active "$k"; then return 0; fi
-  done
-  return 1
-}
-# Returns empty string if the key is absent or has no value.
-get_versions() {
-  local key="$1"
-  local raw
-  raw=$(grep "^${key}=" "$config_file" 2>/dev/null | head -1 | cut -d= -f2-)
-  # Strip inline comments (e.g. "21 # LTS version" → "21")
-  raw="${raw%%#*}"
-  # Trim whitespace
-  raw="${raw#"${raw%%[![:space:]]*}"}"
-  raw="${raw%"${raw##*[![:space:]]}"}"
-  printf '%s' "$raw"
-}
-
-# Returns 0 if the version-list key has at least one version set.
-has_versions() {
-  local val
-  val="$(get_versions "$1")"
-  [[ -n "$val" ]]
-}
-
-# Returns 0 if any of the given version-list keys have at least one version set.
-any_has_versions() {
-  local k
-  for k in "$@"; do
-    if has_versions "$k"; then return 0; fi
-  done
-  return 1
-}
-
-# Convert a comma-separated version list to a space-separated list for build args.
-versions_to_space() {
-  printf '%s' "$1" | tr ',' ' '
-}
-
-# ── Validation ─────────────────────────────────────────────────────────────────
-
-validate_config() {
-  # copilot implies github-cli (gh auth login provides the token for COPILOT_GITHUB_TOKEN)
-  if is_enabled copilot && ! is_enabled github-cli; then
-    printf 'NOTE: copilot=ON implies github-cli. gh CLI will be installed for authentication.\n' >&2
-  fi
-  # rails requires ruby
-  if has_versions rails && ! has_versions ruby; then
-    printf 'ERROR: rails is set in sandbox.conf but ruby is empty. Rails requires Ruby (via rvm).\n' >&2
-    exit 1
-  fi
-  # ruby and rails only support a single version each (rvm can manage multiple
-  # rubies but Rails-on-Ruby pairing is ambiguous with multiple versions)
-  local ruby_val; ruby_val=$(get_versions ruby)
-  if [[ "$ruby_val" == *,* ]]; then
-    printf 'ERROR: ruby only supports a single version (got: "%s").\n' "$ruby_val" >&2
-    printf '       Use a single version, e.g.: ruby=3.4.3\n' >&2
-    exit 1
-  fi
-  local rails_val; rails_val=$(get_versions rails)
-  if [[ "$rails_val" == *,* ]]; then
-    printf 'ERROR: rails only supports a single version (got: "%s").\n' "$rails_val" >&2
-    printf '       Use a single version, e.g.: rails=8.0.2\n' >&2
-    exit 1
-  fi
-  # angular-cli only supports a single version (ON, a version number, or OFF)
-  local angular_val; angular_val=$(get_versions angular-cli)
-  if [[ "$angular_val" == *,* ]]; then
-    printf 'ERROR: angular-cli only supports a single version (got: "%s").\n' "$angular_val" >&2
-    printf '       Use ON (latest), a single version number (e.g. 19), or OFF.\n' >&2
-    exit 1
-  fi
-  # SDKMAN requires full patch versions (e.g. 21.0.5, not 21).
-  # Validate that every version in each JVM key contains at least one dot.
-  local jvm_key jvm_val ver
-  for jvm_key in openjdk graalvm-ce graalvm-oracle kotlin scala maven gradle; do
-    jvm_val=$(get_versions "$jvm_key")
-    [[ -z "$jvm_val" ]] && continue
-    IFS=',' read -ra _vers <<< "$jvm_val"
-    for ver in "${_vers[@]}"; do
-      ver="${ver// /}"
-      if [[ "$ver" != *.* ]]; then
-        printf 'ERROR: %s version "%s" looks like a major version only.\n' "$jvm_key" "$ver" >&2
-        printf '       SDKMAN requires full patch versions, e.g. 21.0.5 not 21.\n' >&2
-        printf '       Run "sdk list java" inside a container to see valid identifiers.\n' >&2
-        exit 1
-      fi
-    done
-  done
-}
-# ── Allowlist generation ────────────────────────────────────────────────────────
-
-# Append a fragment file to stdout; silently skip if the file does not exist.
-include_fragment() {
-  local fragment="$1"
-  if [[ -f "$fragment" ]]; then cat "$fragment"; fi
-}
-
-# Append a fragment only when at least one of the listed boolean components is enabled.
-include_if_enabled() {
-  local fragment="$1"; shift
-  if any_enabled "$@"; then
-    include_fragment "$fragment"
-  fi
-}
-
-# Append a fragment only when at least one of the listed version-list keys has versions.
-include_if_has_versions() {
-  local fragment="$1"; shift
-  if any_has_versions "$@"; then
-    include_fragment "$fragment"
-  fi
-}
-
-generate_allowlists() {
-  local domains_d="${script_dir}/allowlist-domains.d"
-  local proxy_d="${script_dir}/allowlist-proxy-domains.d"
-  local cidrs_d="${script_dir}/allowlist-cidrs.d"
-
-  # Auto-create custom.txt from the .example template if it doesn't exist yet.
-  # This lets new users run ./runme.sh build without any manual setup.
-  for f in "$domains_d/custom.txt" "$proxy_d/custom.txt" "$cidrs_d/custom.txt"; do
-    if [[ ! -f "$f" && -f "${f}.example" ]]; then
-      cp "${f}.example" "$f"
-      printf 'Created %s from template (gitignored — add your own entries there)\n' "$f"
-    fi
-  done
-
-  printf 'Generating allowlists from sandbox.conf...\n'
-
-  # allowlist-domains.txt
-  {
-    printf '# AUTO-GENERATED by runme.sh — do not edit directly.\n'
-    printf '# Edit files in allowlist-domains.d/ and run: ./runme.sh build\n\n'
-    include_fragment         "$domains_d/base.txt"
-    include_if_enabled       "$domains_d/github-cli.txt"      github-cli
-    include_if_enabled       "$domains_d/github-copilot.txt"  copilot
-    include_if_enabled       "$domains_d/kiro.txt"            kiro
-    include_if_enabled       "$domains_d/claude-code.txt"     claude-code
-    include_if_enabled       "$domains_d/codex.txt"           codex
-    include_if_enabled       "$domains_d/gemini.txt"          gemini
-    include_if_enabled       "$domains_d/graphify.txt"        graphify
-    include_if_enabled       "$domains_d/yarn.txt"            yarn
-    include_if_enabled       "$domains_d/kubectl.txt"         kubectl
-    include_if_enabled       "$domains_d/aws-cli.txt"         aws-cli
-    include_if_enabled       "$domains_d/azure-cli.txt"       azure-cli
-    # dtctl/dtmgd use version values (ON, x.y.z) not boolean ON/OFF
-    if any_active dtctl dtmgd; then include_fragment "$domains_d/dynatrace.txt"; fi
-    # Version-manager fragments
-    include_if_has_versions  "$domains_d/sdkman.txt"          openjdk graalvm-ce graalvm-oracle kotlin scala maven gradle
-    include_if_has_versions  "$domains_d/openjdk.txt"         openjdk graalvm-ce graalvm-oracle
-    include_fragment         "$domains_d/nvm.txt"
-    include_fragment         "$domains_d/pyenv.txt"
-    include_if_has_versions  "$domains_d/rvm.txt"             ruby rails
-    include_if_has_versions  "$domains_d/rust.txt"            rust
-    include_if_has_versions  "$domains_d/go.txt"              go
-    include_if_enabled       "$domains_d/goreleaser.txt"      goreleaser
-    if is_active angular-cli; then include_fragment "$domains_d/angular-cli.txt"; fi
-    include_fragment         "$domains_d/custom.txt"
-  } > "${script_dir}/allowlist-domains.txt"
-
-  # allowlist-proxy-domains.txt
-  {
-    printf '# AUTO-GENERATED by runme.sh — do not edit directly.\n'
-    printf '# Edit files in allowlist-proxy-domains.d/ and run: ./runme.sh build\n\n'
-    include_if_enabled  "$proxy_d/github-copilot.txt"  copilot
-    include_if_enabled  "$proxy_d/kiro.txt"            kiro
-    include_if_enabled  "$proxy_d/claude-code.txt"     claude-code
-    include_if_enabled  "$proxy_d/codex.txt"           codex
-    include_if_enabled  "$proxy_d/gemini.txt"          gemini
-    include_if_enabled  "$proxy_d/graphify.txt"        graphify
-    if any_active dtctl dtmgd; then include_fragment "$proxy_d/dynatrace.txt"; fi
-    include_fragment    "$proxy_d/custom.txt"
-  } > "${script_dir}/allowlist-proxy-domains.txt"
-
-  # allowlist-cidrs.txt
-  {
-    printf '# AUTO-GENERATED by runme.sh — do not edit directly.\n'
-    printf '# Edit files in allowlist-cidrs.d/ and run: ./runme.sh build\n\n'
-    include_fragment    "$cidrs_d/base.txt"
-    include_if_enabled  "$cidrs_d/github-copilot.txt"  copilot
-    include_fragment    "$cidrs_d/custom.txt"
-  } > "${script_dir}/allowlist-cidrs.txt"
-}
-
-# ── Build-arg generation ───────────────────────────────────────────────────────
-
-# Populate the named array with --build-arg flags derived from sandbox.conf.
-build_args_from_config() {
-  local -n _args=$1
-
-  # ── Boolean ON/OFF components ──────────────────────────────────────────────
-  local component arg value
-  local bool_mappings=(
-    "copilot:INSTALL_COPILOT"
-    "kiro:INSTALL_KIRO"
-    "claude-code:INSTALL_CLAUDE_CODE"
-    "codex:INSTALL_CODEX"
-    "gemini:INSTALL_GEMINI"
-    "graphify:INSTALL_GRAPHIFY"
-    "kubectl:INSTALL_KUBECTL"
-    "aws-cli:INSTALL_AWS_CLI"
-    "azure-cli:INSTALL_AZURE_CLI"
-    "github-cli:INSTALL_GITHUB_CLI"
-    "yarn:INSTALL_YARN"
-    "goreleaser:INSTALL_GORELEASER"
-    "qmd:INSTALL_QMD"
-    "bun:INSTALL_BUN"
-  )
-  for mapping in "${bool_mappings[@]}"; do
-    component="${mapping%%:*}"
-    arg="${mapping##*:}"
-    if is_enabled "$component"; then value=1; else value=0; fi
-    _args+=(--build-arg "${arg}=${value}")
-  done
-
-  # copilot implies github-cli (needed for gh auth login inside container)
-  if is_enabled copilot && ! is_enabled github-cli; then
-    _args+=(--build-arg "INSTALL_GITHUB_CLI=1")
-  fi
-
-  # ── dtctl / dtmgd: ON = latest, x.y.z = pinned version, OFF = skip ────────
-  # These use a separate ARG (DTCTL_VERSION / DTMGD_VERSION) instead of a bool.
-  for tool in dtctl dtmgd; do
-    local raw; raw=$(get_versions "$tool")
-    local arg_name; arg_name="$(printf '%s' "$tool" | tr '[:lower:]' '[:upper:]')_VERSION"
-    if [[ "$raw" == "ON" ]]; then
-      _args+=(--build-arg "${arg_name}=latest")
-    elif [[ -n "$raw" && "$raw" != "OFF" ]]; then
-      _args+=(--build-arg "${arg_name}=${raw}")
-    else
-      _args+=(--build-arg "${arg_name}=")
-    fi
-  done
-
-  # ── angular-cli: ON = latest, version number = pinned, OFF = skip ─────────
-  local angular_raw; angular_raw=$(get_versions angular-cli)
-  if [[ "$angular_raw" == "ON" ]]; then
-    _args+=(--build-arg "ANGULAR_CLI_VERSION=latest")
-  elif [[ -n "$angular_raw" && "$angular_raw" != "OFF" ]]; then
-    _args+=(--build-arg "ANGULAR_CLI_VERSION=${angular_raw}")
-  else
-    _args+=(--build-arg "ANGULAR_CLI_VERSION=")
-  fi
-
-  # ── SDKMAN: auto-on if any JVM component has versions ─────────────────────
-  local jvm_keys=(openjdk graalvm-ce graalvm-oracle kotlin scala maven gradle)
-  if any_has_versions "${jvm_keys[@]}"; then
-    _args+=(--build-arg "INSTALL_SDKMAN=1")
-  else
-    _args+=(--build-arg "INSTALL_SDKMAN=0")
-  fi
-
-  # ── Version-list components ────────────────────────────────────────────────
-  # Pass space-separated version strings as build args.
-  local ver
-  ver="$(get_versions openjdk)"
-  _args+=(--build-arg "OPENJDK_VERSIONS=$(versions_to_space "$ver")")
-
-  ver="$(get_versions graalvm-ce)"
-  _args+=(--build-arg "GRAALVM_VERSIONS=$(versions_to_space "$ver")")
-
-  ver="$(get_versions graalvm-oracle)"
-  _args+=(--build-arg "GRAALVM_ORACLE_VERSIONS=$(versions_to_space "$ver")")
-
-  ver="$(get_versions kotlin)"
-  _args+=(--build-arg "KOTLIN_VERSIONS=$(versions_to_space "$ver")")
-
-  ver="$(get_versions scala)"
-  _args+=(--build-arg "SCALA_VERSIONS=$(versions_to_space "$ver")")
-
-  ver="$(get_versions maven)"
-  _args+=(--build-arg "MAVEN_VERSIONS=$(versions_to_space "$ver")")
-
-  ver="$(get_versions gradle)"
-  _args+=(--build-arg "GRADLE_VERSIONS=$(versions_to_space "$ver")")
-
-  ver="$(get_versions node)"
-  _args+=(--build-arg "NODE_EXTRA_VERSIONS=$(versions_to_space "$ver")")
-
-  # nvm version pin (optional — falls back to Dockerfile default if empty)
-  ver="$(get_versions nvm-version)"
-  if [[ -n "$ver" ]]; then
-    _args+=(--build-arg "NVM_VERSION=$ver")
-  fi
-
-  ver="$(get_versions python)"
-  _args+=(--build-arg "PYTHON_EXTRA_VERSIONS=$(versions_to_space "$ver")")
-
-  ver="$(get_versions ruby)"
-  _args+=(--build-arg "RUBY_VERSION=$ver")
-
-  ver="$(get_versions rails)"
-  _args+=(--build-arg "RAILS_VERSION=$ver")
-
-  ver="$(get_versions rust)"
-  _args+=(--build-arg "RUST_TOOLCHAIN=$ver")
-
-  ver="$(get_versions go)"
-  _args+=(--build-arg "GO_VERSION=$ver")
-}
-
-# ── Build ──────────────────────────────────────────────────────────────────────
-
-build_image() {
-  check_config
-  validate_config
-  local build_image_name="${1:-$image_name}"
-  local build_args=()
-
-  generate_allowlists
-  build_args_from_config build_args
-
-  if [[ "${NO_CACHE:-0}" == "1" ]]; then
-    build_args+=(--no-cache)
-  fi
-
-  # Pass a GitHub token as a BuildKit secret (never stored in image layers or history)
-  # so install-dt-tools.sh can use the authenticated GitHub API (5000 req/h vs 60 req/h
-  # unauthenticated). Prefer GITHUB_TOKEN, fall back to GITHUB_PERSONAL_ACCESS_TOKEN.
-  # Falls back gracefully if neither is set — install-dt-tools.sh handles the missing token.
-  local _gh_build_token="${GITHUB_TOKEN:-${GITHUB_PERSONAL_ACCESS_TOKEN:-}}"
-  if [[ -n "$_gh_build_token" ]]; then
-    export GITHUB_TOKEN="$_gh_build_token"
-    build_args+=(--secret id=github_token,env=GITHUB_TOKEN)
-  fi
-
-  docker build "${build_args[@]}" -t "$build_image_name" "$script_dir"
-}
-
-# ── Run ────────────────────────────────────────────────────────────────────────
-
-# Resolve a path to an ABSOLUTE path, following symlinks where possible.
-# Portable across GNU and BSD/macOS:
-#   - GNU `readlink -f` (or Homebrew `greadlink -f`) resolves symlinks + absolutises.
-#   - macOS BSD `readlink` lacks -f, so fall back to a cd/$PWD absolutiser.
-# This is critical for `docker run -v`: a RELATIVE source is treated by Docker as a
-# named-volume reference, which then fails with "invalid reference format".
-resolve_path() {
-  local p="$1"
-  if command -v greadlink >/dev/null 2>&1; then
-    greadlink -f -- "$p" 2>/dev/null && return 0
-  elif readlink -f -- "$p" >/dev/null 2>&1; then
-    readlink -f -- "$p"
-    return 0
-  fi
-  # Portable fallback (no GNU readlink available).
-  if [[ -d "$p" ]]; then
-    (cd "$p" 2>/dev/null && pwd) && return 0
-  fi
-  # Non-directory or missing: absolutise lexically against $PWD.
-  case "$p" in
-    /*) printf '%s' "$p" ;;
-    *)  printf '%s/%s' "$PWD" "${p#./}" ;;
-  esac
-}
+# ── Memory reconciliation ────────────────────────────────────────────────────────
 
 # Parse a docker-style memory string (e.g. 512m, 2g, 1073741824, or -1) into bytes.
-# Echoes the byte count (or "-1") on success and returns 0; returns 1 on parse failure.
-# Docker memory values are positive integers with an optional b/k/m/g suffix.
 mem_to_bytes() {
   local v="${1,,}"
   if [[ "$v" == "-1" ]]; then printf '%s' "-1"; return 0; fi
@@ -699,12 +122,6 @@ mem_to_bytes() {
 }
 
 # Validate and reconcile CONTAINER_MEMORY / _RESERVATION / _SWAP before docker run.
-# Assigns the (possibly corrected) values to mem_limit / mem_reservation / mem_swap,
-# which the caller must declare (dynamic scope) so they can be passed to docker run.
-#   - reservation (soft limit) must be <= memory (hard limit); lowered if higher.
-#   - memory-swap is TOTAL memory + swap, so it must be >= memory (or -1 = unlimited);
-#     raised to the hard limit (swap disabled) if lower.
-# Unrecognised values are passed through untouched and left for docker to validate.
 validate_memory_limits() {
   mem_limit="${CONTAINER_MEMORY:-4g}"
   mem_reservation="${CONTAINER_MEMORY_RESERVATION:-2g}"
@@ -724,15 +141,12 @@ validate_memory_limits() {
     return
   fi
 
-  # Reservation (soft limit) cannot exceed the hard memory limit.
   if (( res_b > lim_b )); then
     printf 'WARNING: CONTAINER_MEMORY_RESERVATION (%s) exceeds CONTAINER_MEMORY (%s).\n' "$mem_reservation" "$mem_limit" >&2
     printf '         Lowering memory reservation to %s (the hard limit).\n' "$mem_limit" >&2
     mem_reservation="$mem_limit"
   fi
 
-  # memory-swap is total memory + swap, so it must be >= memory (or -1 for unlimited).
-  # A value below the hard limit is rejected outright by docker run.
   if [[ "$swap_b" != "-1" ]] && (( swap_b < lim_b )); then
     printf 'WARNING: CONTAINER_MEMORY_SWAP (%s) is less than CONTAINER_MEMORY (%s); docker would reject this.\n' "$mem_swap" "$mem_limit" >&2
     printf '         Raising memory-swap to %s (disables swap; container is hard-capped at the memory limit).\n' "$mem_limit" >&2
@@ -740,7 +154,8 @@ validate_memory_limits() {
   fi
 }
 
-# Append bind-mount flags to an array only if the resolved source directory exists.
+# ── Mount helpers ────────────────────────────────────────────────────────────────
+
 add_mount_if_exists() {
   local -n _flags=$1
   local original_src="$2" dst="$3" opts="${4:-rw}"
@@ -753,7 +168,6 @@ add_mount_if_exists() {
   fi
 }
 
-# Same as add_mount_if_exists but for individual files.
 add_file_mount_if_exists() {
   local -n _flags=$1
   local original_src="$2" dst="$3" opts="${4:-rw}"
@@ -764,37 +178,91 @@ add_file_mount_if_exists() {
   fi
 }
 
+# Seed a per-workspace writable working-copy volume from a repo's shared base
+# volume using a fast local copy inside the VM (no network, no re-clone).
+seed_workcopy_volume() {
+  local base_vol="$1" wc_vol="$2"
+  if docker volume inspect "$wc_vol" >/dev/null 2>&1; then
+    return 0
+  fi
+  printf 'Seeding writable working copy "%s" from "%s" (one-time local copy)...\n' "$wc_vol" "$base_vol" >&2
+  docker volume create "$wc_vol" >/dev/null
+  # --entrypoint bash bypasses entrypoint.sh (which ignores args and would run the
+  # firewall/restricted flow). cp -a preserves the ownership set on the base volume.
+  docker run --rm --entrypoint bash \
+    -v "$base_vol":/src:ro \
+    -v "$wc_vol":/dst \
+    "$image_name" -c 'cp -a /src/. /dst/'
+}
+
 run_container() {
   check_config
   local mode="$1"
-  local workspace_dir
-  workspace_dir="$(resolve_path "${2:-$PWD}")"
-  local capture_dir_name="${DISCOVERY_CAPTURE_DIR_NAME:-.agent-discovery}"
+  local primary_arg="${2:-}"
+  # Host directory where runme.sh was invoked. Agent outputs (.agent-blocked,
+  # .agent-discovery) are written here so they persist host-visibly beside the
+  # container files. These dirs are git- and docker-ignored.
+  local launch_dir="$PWD"
   local capture_enabled="0"
 
   if [[ -n "${SSH_SCOPE_DIR:-}" ]]; then
     echo "Note: SSH_SCOPE_DIR is no longer used; .ssh is now part of the group at ~/.ai-containers/<group>/.ssh/. See CHANGELOG." >&2
   fi
-
-  if [[ ! -d "$workspace_dir" ]]; then
-    printf 'ERROR: workspace directory does not exist: %s\n' "${2:-$PWD}" >&2
-    exit 1
+  if [[ -n "${DOCS_PATH:-}" || -n "${SPECS_PATH:-}" ]]; then
+    echo "Note: DOCS_PATH/SPECS_PATH have been removed and are ignored. Keep docs/specs in a repo or the Obsidian vault." >&2
   fi
 
   local capabilities=(--cap-add=NET_ADMIN --cap-add=NET_RAW)
-
   local sandbox_username="${SANDBOX_USER:-$(id -un)}"
   local dev_home="/home/$sandbox_username"
+
+  # Agent outputs → host launch dir, surfaced under the /workspace umbrella.
+  local output_mount_flags=()
   if [[ "$mode" == "discovery" ]]; then
     capture_enabled="1"
-    mkdir -p "$workspace_dir/$capture_dir_name"
+    mkdir -p "$launch_dir/.agent-discovery"
+    output_mount_flags+=(-v "$launch_dir/.agent-discovery:/workspace/.agent-discovery")
+  else
+    mkdir -p "$launch_dir/.agent-blocked"
+    output_mount_flags+=(-v "$launch_dir/.agent-blocked:/workspace/.agent-blocked")
   fi
 
-  # Validate and build EXTRA_MOUNTS flags; abort early if any path is missing.
+  # Names already claimed under the /workspace umbrella (collision detection).
+  local -A repos_used=()
+  local -A repo_mode=()
+
+  # ── Primary working directory (positional arg) ──────────────────────────────
+  #   @name     → registered repo <name> becomes the working dir (must be writable)
+  #   host path → mounted at /workspace/<basename> (rw) and used as the working dir
+  #   (omitted) → the /workspace umbrella itself
+  local workdir="/workspace"
+  local primary_repo="" primary_path=""
+  if [[ -n "$primary_arg" ]]; then
+    if [[ "${primary_arg:0:1}" == "@" ]]; then
+      primary_repo="${primary_arg#@}"
+      validate_repo_name "$primary_repo" || exit 1
+      if ! repo_is_registered "$primary_repo"; then
+        printf "ERROR: primary repo '%s' (selected with @) is not registered.\n" "$primary_repo" >&2
+        printf "       Add it first:   ./repo.sh add %s <host-path-or-git-url>\n" "$primary_repo" >&2
+        printf "       See registered: ./repo.sh list\n" >&2
+        exit 1
+      fi
+      workdir="/workspace/$primary_repo"
+    else
+      primary_path="$(resolve_path "${primary_arg/#\~/$HOME}")"
+      if [[ ! -d "$primary_path" ]]; then
+        printf 'ERROR: primary workspace directory does not exist: %s\n' "$primary_arg" >&2
+        exit 1
+      fi
+      workdir="/workspace/$(basename "$primary_path")"
+    fi
+  fi
+
+  # ── EXTRA_MOUNTS: ad-hoc host bind mounts at /workspace/<basename> ───────────
   local extra_mount_flags=()
   if [[ -n "${EXTRA_MOUNTS:-}" ]]; then
     for entry in $EXTRA_MOUNTS; do
-      local dir opt real_dir
+      local dir opt real_dir base
       dir="${entry%%:*}"
       opt="${entry##*:}"
       [[ "$opt" == "$dir" ]] && opt="rw"
@@ -803,30 +271,151 @@ run_container() {
         printf 'ERROR: EXTRA_MOUNTS path does not exist: %s\n' "$dir" >&2
         exit 1
       fi
-      extra_mount_flags+=(-v "$real_dir:/repos/$(basename "$dir"):$opt")
+      base="$(basename "$dir")"
+      if [[ -n "${repos_used[$base]:-}" ]]; then
+        printf "ERROR: name '%s' (EXTRA_MOUNTS) collides with %s at /workspace/%s.\n" "$base" "${repos_used[$base]}" "$base" >&2
+        exit 1
+      fi
+      repos_used["$base"]="EXTRA_MOUNTS"
+      extra_mount_flags+=(-v "$real_dir:/workspace/$base:$opt")
     done
   fi
 
-  # Optional documentation / spec / vault mounts driven by host env vars.
-  # DOCS_PATH  → /docs        (read-write)
-  # SPECS_PATH → /specs       (read-write)
-  # VAULT_PATH → /obsidian    (read-write); also exports VAULT_PATH=/obsidian
-  #              inside the container so agent skills/workflows that rely on
-  #              the variable resolve to the in-container mount point.
-  local doc_mount_flags=()
+  # Primary given as a host path → bind-mount it (rw) as a /workspace sibling.
+  if [[ -n "$primary_path" ]]; then
+    local pbase; pbase="$(basename "$primary_path")"
+    if [[ -n "${repos_used[$pbase]:-}" ]]; then
+      printf "ERROR: primary path basename '%s' collides with %s at /workspace/%s.\n" "$pbase" "${repos_used[$pbase]}" "$pbase" >&2
+      exit 1
+    fi
+    repos_used["$pbase"]="primary"
+    extra_mount_flags+=(-v "$primary_path:/workspace/$pbase:rw")
+  fi
+
+  # ── REPOS: attach registered repo volumes at /workspace/<name> ───────────────
+  local repo_mount_flags=()
+  local git_optional_locks_env=()
+  # Effective list = REPOS, plus the @primary repo (as :rw) if not already listed.
+  local repos_list=(${REPOS:-})
+  if [[ -n "$primary_repo" ]]; then
+    local _found=0 _e
+    for _e in ${repos_list[@]+"${repos_list[@]}"}; do
+      [[ "${_e%%:*}" == "$primary_repo" ]] && _found=1
+    done
+    (( _found )) || repos_list+=("$primary_repo:rw")
+  fi
+  if [[ ${#repos_list[@]} -gt 0 ]]; then
+    local ws_tag; ws_tag="$(sanitize_volume_token "$(basename "$launch_dir")")_$(printf '%s' "$launch_dir" | cksum | tr -cd '0-9' | cut -c1-8)"
+    for entry in "${repos_list[@]}"; do
+      local rname rmode
+      rname="${entry%%:*}"
+      rmode="${entry##*:}"
+      [[ "$rmode" == "$rname" ]] && rmode="ro"
+
+      if ! validate_repo_name "$rname"; then
+        exit 1
+      fi
+      if [[ "$rmode" != "ro" && "$rmode" != "rw" && "$rmode" != "rwcopy" ]]; then
+        printf "ERROR: REPOS entry '%s' has invalid mode '%s' (expected :ro, :rw, or :rwcopy).\n" "$entry" "$rmode" >&2
+        exit 1
+      fi
+      if [[ -n "${repos_used[$rname]:-}" ]]; then
+        printf "ERROR: name '%s' is used by both %s and REPOS — they both mount at /workspace/%s.\n" \
+          "$rname" "${repos_used[$rname]}" "$rname" >&2
+        exit 1
+      fi
+      if ! repo_is_registered "$rname"; then
+        printf "ERROR: REPOS entry '%s' is not a registered repo.\n" "$rname" >&2
+        printf "       Add it first:   ./repo.sh add %s <host-path-or-git-url>\n" "$rname" >&2
+        printf "       See registered: ./repo.sh list\n" >&2
+        exit 1
+      fi
+
+      repos_used["$rname"]="REPOS"
+      repo_mode["$rname"]="$rmode"
+      local rrecord rtype rsource rbackend
+      rrecord="$(repo_registry_lookup "$rname")"
+      rtype="$(repo_record_field "$rrecord" 2)"
+      rsource="$(repo_record_field "$rrecord" 3)"
+      rbackend="$(repo_record_backend "$rrecord")"
+
+      if [[ "$rbackend" == "bind" ]]; then
+        # Linux + path source: bind-mount the registered host path directly
+        # (native speed here, no volume). :rw is a live host dir.
+        if [[ "$rmode" == "rwcopy" ]]; then
+          printf "ERROR: repo '%s': :rwcopy needs a volume backend, but this host bind-mounts it.\n" "$rname" >&2
+          printf "       Use :rw for a live bind mount, or set REPO_BACKEND=volume for an isolated copy.\n" >&2
+          exit 1
+        fi
+        local rreal; rreal="$(resolve_path "$rsource")"
+        if [[ ! -d "$rreal" ]]; then
+          printf "ERROR: repo '%s' bind source does not exist on this host: %s\n" "$rname" "$rsource" >&2
+          printf "       Re-point it: ./repo.sh rm %s && ./repo.sh add %s <host-path>\n" "$rname" "$rname" >&2
+          exit 1
+        fi
+        repo_mount_flags+=(-v "$rreal:/workspace/$rname:$rmode")
+        printf 'REPO: /workspace/%s  (%s, bind %s)\n' "$rname" "$rmode" "$rreal" >&2
+      else
+        if ! repo_volume_exists "$rname"; then
+          printf "ERROR: repo '%s' is registered but its docker volume (%s) is missing.\n" \
+            "$rname" "$(repo_volume_name "$rname")" >&2
+          printf "       Re-seed it: ./repo.sh sync %s   (or ./repo.sh rm %s && ./repo.sh add ...)\n" "$rname" "$rname" >&2
+          exit 1
+        fi
+        local base_vol; base_vol="$(repo_volume_name "$rname")"
+        case "$rmode" in
+          ro)
+            # Shared, read-only: many containers mount the same single copy.
+            repo_mount_flags+=(-v "$base_vol:/workspace/$rname:ro")
+            printf 'REPO: /workspace/%s  (ro, shared volume %s)\n' "$rname" "$base_vol" >&2
+            ;;
+          rw)
+            # Shared base, writable directly — no copy. Intended for a single
+            # writer; concurrent :rw writers to one repo can wedge git state
+            # (use :rwcopy for isolated concurrent writers).
+            repo_mount_flags+=(-v "$base_vol:/workspace/$rname")
+            printf 'REPO: /workspace/%s  (rw, shared base volume %s)\n' "$rname" "$base_vol" >&2
+            ;;
+          rwcopy)
+            # Isolated, per-workspace writable working copy seeded from the base.
+            local wc_vol; wc_vol="$(repo_workcopy_volume_name "$rname" "$ws_tag")"
+            seed_workcopy_volume "$base_vol" "$wc_vol"
+            repo_mount_flags+=(-v "$wc_vol:/workspace/$rname")
+            printf 'REPO: /workspace/%s  (rwcopy, working copy %s)\n' "$rname" "$wc_vol" >&2
+            ;;
+        esac
+      fi
+    done
+    # Read-only repo mounts can break git operations that want to write .git;
+    # disabling optional locks keeps log/blame/status working read-only.
+    git_optional_locks_env=(-e GIT_OPTIONAL_LOCKS=0)
+  fi
+
+  # The working directory must be writable when a primary repo is selected.
+  if [[ -n "$primary_repo" ]]; then
+    case "${repo_mode[$primary_repo]:-}" in
+      rw|rwcopy) : ;;
+      ro)
+        printf "ERROR: primary repo '%s' is attached :ro, but the working directory must be writable.\n" "$primary_repo" >&2
+        printf "       Use REPOS=\"%s:rw\" (or :rwcopy), or drop it from REPOS to attach it writable automatically.\n" "$primary_repo" >&2
+        exit 1
+        ;;
+    esac
+  fi
+
+  # ── Obsidian vault → /workspace/obsidian ─────────────────────────────────────
+  local vault_mount_flags=()
   local vault_env_args=()
-  if [[ -n "${DOCS_PATH:-}" ]]; then
-    add_mount_if_exists doc_mount_flags "$DOCS_PATH" "/docs"
-  fi
-  if [[ -n "${SPECS_PATH:-}" ]]; then
-    add_mount_if_exists doc_mount_flags "$SPECS_PATH" "/specs"
-  fi
   if [[ -n "${VAULT_PATH:-}" ]]; then
     local vault_real
     vault_real="$(resolve_path "${VAULT_PATH/#\~/$HOME}")"
     if [[ -d "$vault_real" ]]; then
-      doc_mount_flags+=(-v "$vault_real:/obsidian:rw")
-      vault_env_args+=(-e VAULT_PATH=/obsidian)
+      if [[ -n "${repos_used[obsidian]:-}" ]]; then
+        printf "ERROR: name 'obsidian' is used by %s, but VAULT_PATH also mounts at /workspace/obsidian.\n" "${repos_used[obsidian]}" >&2
+        exit 1
+      fi
+      vault_mount_flags+=(-v "$vault_real:/workspace/obsidian:rw")
+      vault_env_args+=(-e VAULT_PATH=/workspace/obsidian)
       if ! is_enabled qmd; then
         printf 'WARNING: VAULT_PATH is set but qmd=OFF in sandbox.conf. Set qmd=ON and rebuild for in-container search.\n' >&2
       fi
@@ -835,7 +424,7 @@ run_container() {
     fi
   fi
 
-  # ── Group resolution ───────────────────────────────────────────────────────
+  # ── Group resolution ─────────────────────────────────────────────────────────
   local group="${AI_CONTAINER_GROUP:-default}"
   validate_group_name "$group"
 
@@ -850,7 +439,7 @@ run_container() {
     ensure_group_scaffold "$group_root"
   fi
 
-  # Mount credential directories for enabled components only.
+  # ── Credential mounts (enabled components only) ──────────────────────────────
   local config_mount_flags=()
   add_mount_if_exists      config_mount_flags "$group_root/.ssh"         "$dev_home/.ssh"
   add_mount_if_exists      config_mount_flags "$group_root/.agents"      "$dev_home/.agents"
@@ -883,7 +472,6 @@ run_container() {
     add_mount_if_exists      config_mount_flags "$group_root/.claude"      "$dev_home/.claude"
     add_file_mount_if_exists config_mount_flags "$group_root/.claude.json" "$dev_home/.claude.json"
   fi
-
   if is_enabled codex; then
     if [[ "$group" != "host" ]]; then
       install -d "$group_root/.codex"
@@ -915,10 +503,7 @@ run_container() {
     add_mount_if_exists config_mount_flags "$HOME/.config/dtmgd" "$dev_home/.config/dtmgd"
   fi
 
-  # Resolve COPILOT_GITHUB_TOKEN: if not set explicitly, extract from the
-  # group's gh CLI hosts.yml. This lets Copilot CLI authenticate via env var
-  # (token-based) instead of device-flow OAuth, avoiding the single-session
-  # limitation that causes concurrent containers to revoke each other's auth.
+  # Resolve COPILOT_GITHUB_TOKEN from the group's gh hosts.yml if not set.
   local copilot_token="${COPILOT_GITHUB_TOKEN:-}"
   if is_enabled copilot && [[ -z "$copilot_token" ]]; then
     local gh_hosts="$group_root/.config/gh/hosts.yml"
@@ -931,7 +516,7 @@ run_container() {
     fi
   fi
 
-  # Build -p flags from PREVIEW_PORTS (space-separated port or host:container pairs).
+  # Build -p flags from PREVIEW_PORTS.
   local port_flags=()
   if [[ -n "${PREVIEW_PORTS:-}" ]]; then
     for p in $PREVIEW_PORTS; do
@@ -939,12 +524,9 @@ run_container() {
     done
   fi
 
-  # Validate & reconcile memory limits. Sets mem_limit / mem_reservation / mem_swap.
   local mem_limit mem_reservation mem_swap
   validate_memory_limits
 
-  # Nudge once when running at the bare defaults — fine for light work, but a real
-  # build toolchain wants more. Only shown when the user has overridden neither knob.
   if [[ -z "${CONTAINER_CPUS:-}" && -z "${CONTAINER_MEMORY:-}" ]]; then
     printf 'HINT: running at default limits (%s CPU / %s RAM) — the minimum for a single agent doing light work.\n' "${CONTAINER_CPUS:-1.0}" "$mem_limit" >&2
     printf '      For an agent plus a real build toolchain, CONTAINER_CPUS=4 CONTAINER_MEMORY=8g CONTAINER_MEMORY_SWAP=8g is more comfortable.\n' >&2
@@ -961,46 +543,39 @@ run_container() {
     --ulimit nofile="${CONTAINER_NOFILE:-1048576:1048576}" \
     -e DEV_CONTAINER_MODE="$mode" \
     -e DISCOVERY_CAPTURE_ENABLED="$capture_enabled" \
-    -e DISCOVERY_CAPTURE_DIR="/workspace/$capture_dir_name" \
-    -e HOST_WORKSPACE_DIR="$workspace_dir" \
+    -e DISCOVERY_CAPTURE_DIR="/workspace/.agent-discovery" \
+    -e BLOCKED_CAPTURE_DIR="/workspace/.agent-blocked" \
+    -e HOST_WORKSPACE_DIR="$launch_dir" \
     -e IMAGE_NAME="$image_name" \
     -e SANDBOX_UID="${SANDBOX_UID:-$(id -u)}" \
     -e SANDBOX_GID="${SANDBOX_GID:-$(id -g)}" \
     -e SANDBOX_USER="${SANDBOX_USER:-$(id -un)}" \
     -e SANDBOX_GROUP="${SANDBOX_GROUP:-$(id -gn)}" \
+    ${git_optional_locks_env[@]+"${git_optional_locks_env[@]}"} \
     ${SELF_HEALING_ENABLED:+-e SELF_HEALING_ENABLED="$SELF_HEALING_ENABLED"} \
     ${GITHUB_PERSONAL_ACCESS_TOKEN:+-e GITHUB_PERSONAL_ACCESS_TOKEN="$GITHUB_PERSONAL_ACCESS_TOKEN"} \
     ${copilot_token:+-e COPILOT_GITHUB_TOKEN="$copilot_token"} \
     ${vault_env_args[@]+"${vault_env_args[@]}"} \
-    -v "$workspace_dir:/workspace" \
+    ${output_mount_flags[@]+"${output_mount_flags[@]}"} \
+    ${repo_mount_flags[@]+"${repo_mount_flags[@]}"} \
     ${extra_mount_flags[@]+"${extra_mount_flags[@]}"} \
-    ${doc_mount_flags[@]+"${doc_mount_flags[@]}"} \
+    ${vault_mount_flags[@]+"${vault_mount_flags[@]}"} \
     ${config_mount_flags[@]+"${config_mount_flags[@]}"} \
-    -w /workspace \
+    -w "$workdir" \
     "$image_name"
 }
 
-# ── Entry point ────────────────────────────────────────────────────────────────
-
-# Parse --no-cache flag (can appear anywhere in args)
-args=()
-for arg in "$@"; do
-  if [[ "$arg" == "--no-cache" ]]; then
-    NO_CACHE=1
-  else
-    args+=("$arg")
-  fi
-done
-set -- "${args[@]+"${args[@]}"}"
+# ── Entry point ──────────────────────────────────────────────────────────────────
 
 command="${1:-usage}"
 
 case "$command" in
-  build)
-    build_image "${2:-$image_name}"
-    ;;
   restricted|discovery)
-    run_container "$command" "${2:-$PWD}"
+    run_container "$command" "${2:-}"
+    ;;
+  build)
+    printf 'ERROR: "runme.sh build" has been removed. Use ./build.sh instead.\n' >&2
+    exit 1
     ;;
   -h|--help|help|usage)
     usage

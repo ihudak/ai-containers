@@ -1,0 +1,17 @@
+# Dockerfile.seed — lightweight helper image used ONLY by repo.sh to seed and
+# sync repo volumes (cp / chown / git clone / git pull / rsync / du).
+#
+# This image is intentionally decoupled from the main sandbox Dockerfile: seeding
+# a repo volume needs only basic POSIX tools plus git/ssh/rsync, and it happens
+# BEFORE the (large, slow) sandbox image is ever built. repo.sh builds this on
+# demand and caches it as "<IMAGE_NAME>-seed" (override with REPO_SEED_IMAGE).
+#
+# NOTE: these seeding containers run as a plain `docker run`, NOT through
+# entrypoint.sh, so the deny-by-default firewall does not apply to them — the
+# git clone/pull over the network behaves exactly as before.
+FROM alpine:3.20
+
+# git + openssh-client: clone/pull over ssh:// and https://
+# rsync: mirror-with-deletes for path-source `repo.sh sync`
+# bash + coreutils: the inline seed scripts use `bash` and GNU `cp -a`/`chown -R`
+RUN apk add --no-cache git openssh-client rsync bash coreutils
