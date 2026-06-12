@@ -1,6 +1,9 @@
 /.idea/
 /.remember/
 
+# Personal/local Claude Code settings (a shared .claude/settings.json may still be committed)
+.claude/settings.local.json
+
 # Editor swap/temp files
 *.swp
 *.swo
