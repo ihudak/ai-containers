@@ -353,6 +353,12 @@ RUN if [ "$INSTALL_GEMINI" = "1" ]; then npm install -g @google/gemini-cli; fi
 ARG INSTALL_YARN=0
 RUN if [ "$INSTALL_YARN" = "1" ]; then npm install -g yarn; fi
 
+# pnpm — installed globally as root at build time (mirrors yarn). corepack ships
+# with Node, but a non-root sandbox user can't `corepack enable` / `npm i -g` at
+# runtime because the nvm Node dir is root-owned, so pnpm is baked in instead.
+ARG INSTALL_PNPM=0
+RUN if [ "$INSTALL_PNPM" = "1" ]; then npm install -g pnpm; fi
+
 ARG INSTALL_QMD=0
 # @tobilu/qmd pulls in tree-sitter, which compiles native addons via node-gyp.
 # build-essential was purged in the cleanup layer above, so reinstall the

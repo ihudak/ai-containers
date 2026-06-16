@@ -193,6 +193,7 @@ build_args_from_config() {
     "azure-cli:INSTALL_AZURE_CLI"
     "github-cli:INSTALL_GITHUB_CLI"
     "yarn:INSTALL_YARN"
+    "pnpm:INSTALL_PNPM"
     "goreleaser:INSTALL_GORELEASER"
     "vale:INSTALL_VALE"
     "qmd:INSTALL_QMD"
