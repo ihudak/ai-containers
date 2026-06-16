@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## v0.4.1 — 2026-06-16
+
 ### Added
 
 - **pnpm component.** New optional `pnpm` flag in `sandbox.conf` (`ON`/`OFF`, default `OFF`) installs the [pnpm](https://pnpm.io) Node package manager globally via `npm install -g pnpm` at build time, mirroring the `yarn` component. Needed for projects whose CONTRIBUTING workflow uses pnpm/corepack: the non-root sandbox user cannot run `corepack enable` or `npm install -g` at runtime because the nvm Node directory is root-owned, so pnpm must be baked into the image. No allowlist change — pnpm fetches from `registry.npmjs.org`, already in `base.txt`.
