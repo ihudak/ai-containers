@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Added
+
+- **Vale component.** New optional `vale` flag in `sandbox.conf` (`ON`/`OFF`, default `OFF`) installs the [Vale](https://vale.sh) prose/style linter — a single self-contained Go binary — from GitHub releases (`vale-cli/vale`) at build time. Installed **unpinned** (latest), with the version resolved from the `releases/latest` redirect (no GitHub API token or rate limit). Useful in docs workspaces whose style-check phase otherwise warns that "Vale isn't installed". A new `allowlist-domains.d/vale.txt` fragment (`vale.sh`) is included when `vale=ON`; the binary download and `vale sync` style packages use GitHub hosts already in `base.txt`.
+
+- **Docker volumes are now the source of truth for repo state, via labels.** Each base repo volume is created with `ai-containers.repo`/`.type`/`.source` labels, and each `:rwcopy` working copy with `ai-containers.repo`/`.workcopy`/`.launch-dir`. `repo.sh list` now reads existence and metadata directly from Docker (union of labeled volumes + registry; a registry entry whose volume is gone shows `MISSING`, and a `WC` column counts working copies). The registry (`repos.conf`) is demoted to a cache — authoritative only for Linux `bind`-backend repos (no volume to label) and the mutable last-synced timestamp (Docker labels are immutable after creation).
+
+- **`repo.sh reindex`** — rebuild `repos.conf` from the base-volume labels. Recovers a lost or stale registry, or adopts repos seeded on another machine/checkout. Additive and non-destructive: it inserts/updates volume-backed repos (preserving known added/synced timestamps) and leaves `bind`-backend entries untouched.
+
+- **`repo.sh gc [--repo <name>] [--unused] [--yes]`** — prune `:rwcopy` working-copy volumes. Removes all by default; `--repo` scopes to one repo, `--unused` keeps copies currently mounted by a running container, `--yes` skips confirmation. Working copies can hold uncommitted work, so it confirms before deleting.
+
+- **`repo.sh list --copies`** — list `:rwcopy` working copies with their parent repo, originating launch directory (from the volume label), whether a running container currently mounts them, and (with `--sizes`) on-disk size.
+
+### Changed
+
+- **Repo volumes are now global (image-independent).** The backing Docker volume name dropped its `IMAGE_NAME` prefix and is now `ai-containers-repo-<name>` (working copies: `ai-containers-repo-<name>--wc-<tag>`). Previously it was `<image>-repo-<name>`, so a single (already global) registry entry resolved to a *different* volume in every project — seeding a repo from one project left it "missing" in another, and sharing one volume across projects required matching `IMAGE_NAME` by hand. Now you register a repo **once** with `./repo.sh add` and attach the same volume to any number of containers across any project or container group, with no `IMAGE_NAME` juggling. Set `REPO_VOLUME_PREFIX` to restore the legacy per-image scoping (e.g. `REPO_VOLUME_PREFIX="$IMAGE_NAME"`).
+
+  **Upgrade note:** existing volumes keep their old `<image>-repo-<name>` names and will appear "missing." Recreate each affected repo: `./repo.sh rm <name>` (then `docker volume rm <old-volume>` if it lingers) and `./repo.sh add <name> <source>`, or re-seed in place with `./repo.sh sync <name>` (which creates the new global volume from source).
+
 ## v0.3.0 — 2026-06-12
 
 ### Breaking

@@ -169,15 +169,91 @@ validate_repo_name() {
   }
 }
 
+# Prefix for repo-volume names. Fixed and project-independent so a repo volume is
+# GLOBAL: one volume per repo name, shared across ALL projects/images and ALL
+# container groups — mount it into any number of containers with no IMAGE_NAME
+# juggling. This matches the repo registry, which has always been global (keyed by
+# name only). It deliberately does NOT embed $image_name (the old scheme made one
+# registry entry resolve to a different, usually missing, volume in every project).
+# Override REPO_VOLUME_PREFIX only if you want the legacy per-image scoping back —
+# e.g. REPO_VOLUME_PREFIX="$IMAGE_NAME".
+repo_volume_prefix="$(sanitize_volume_token "${REPO_VOLUME_PREFIX:-ai-containers}")"
+
 # Docker volume name backing a registered repo (the shared, read base copy).
 repo_volume_name() {
-  printf '%s-repo-%s' "$image_name" "$(sanitize_volume_token "$1")"
+  printf '%s-repo-%s' "$repo_volume_prefix" "$(sanitize_volume_token "$1")"
 }
 
 # Docker volume name for a per-workspace writable working copy of a repo.
 #   $1 = repo name, $2 = working-copy tag (e.g. primary workspace basename)
 repo_workcopy_volume_name() {
-  printf '%s-repo-%s--wc-%s' "$image_name" "$(sanitize_volume_token "$1")" "$(sanitize_volume_token "$2")"
+  printf '%s-repo-%s--wc-%s' "$repo_volume_prefix" "$(sanitize_volume_token "$1")" "$(sanitize_volume_token "$2")"
+}
+
+# ── Repo volume labels (volumes as the source of truth) ──────────────────────────
+#
+# Docker volume labels make repo volumes SELF-DESCRIBING, so `docker volume ls` +
+# `docker volume inspect` can act as the source of truth for which repos exist and
+# their metadata. The registry (repos.conf) is then only authoritative for:
+#   (a) Linux bind-backend repos, which have no volume to label, and
+#   (b) the mutable last-synced timestamp (docker labels are immutable after
+#       creation, so a value that changes on every sync cannot live in a label).
+# `repo.sh reindex` rebuilds the registry from these labels.
+#
+# Label keys:
+#   ai-containers.repo       repo name           (base volumes + working copies)
+#   ai-containers.type       git | path          (base volumes)
+#   ai-containers.source     git URL or host path (base volumes)
+#   ai-containers.workcopy   1                    (working copies only)
+#   ai-containers.launch-dir host launch dir      (working copies only)
+
+# Create the labeled base volume backing a repo (idempotent — docker volume
+# create is a no-op if the volume already exists, but does not update labels).
+repo_base_volume_create() {
+  local name="$1" type="$2" source="$3"
+  docker volume create \
+    --label "ai-containers.repo=${name}" \
+    --label "ai-containers.type=${type}" \
+    --label "ai-containers.source=${source}" \
+    "$(repo_volume_name "$name")" >/dev/null
+}
+
+# Echo a single label value from a docker volume ('' if absent or volume gone).
+docker_volume_label() {
+  local vol="$1" key="$2"
+  docker volume inspect --format "{{if .Labels}}{{index .Labels \"${key}\"}}{{end}}" "$vol" 2>/dev/null || true
+}
+
+# Echo each existing base repo volume name (EXCLUDING working copies), one/line.
+repo_base_volumes() {
+  docker volume ls --quiet --filter "name=${repo_volume_prefix}-repo-" 2>/dev/null \
+    | grep -v -- '--wc-' || true
+}
+
+# Echo existing working-copy volume names, one per line.
+#   $1 (optional) = repo name → only that repo's working copies; else all repos'.
+repo_workcopy_volumes() {
+  local name="${1:-}"
+  if [[ -n "$name" ]]; then
+    docker volume ls --quiet --filter "name=$(repo_volume_name "$name")--wc-" 2>/dev/null || true
+  else
+    docker volume ls --quiet --filter "name=${repo_volume_prefix}-repo-" 2>/dev/null \
+      | grep -- '--wc-' || true
+  fi
+}
+
+# Echo the repo name backing a base volume: prefer the label, fall back to
+# stripping the "<prefix>-repo-" prefix from the volume name.
+repo_name_from_volume() {
+  local vol="$1" n
+  n="$(docker_volume_label "$vol" 'ai-containers.repo')"
+  [[ -z "$n" ]] && n="${vol#"${repo_volume_prefix}"-repo-}"
+  printf '%s' "$n"
+}
+
+# Returns 0 if any running container currently mounts docker volume $1.
+docker_volume_in_use() {
+  [[ -n "$(docker ps --quiet --filter "volume=$1" 2>/dev/null || true)" ]]
 }
 
 # ── Repo registry helpers ───────────────────────────────────────────────────────

@@ -26,6 +26,13 @@ Flags:
 Environment variables:
   IMAGE_NAME   Image to build (default: ai-sandbox).
   NO_CACHE     Set to 1 to pass --no-cache to docker build.
+  AGENTS_CACHE_BUST
+               Opaque token (e.g. a timestamp) that busts the Docker layer cache
+               for the agent install layers ONLY (Copilot/Claude/Codex/Gemini/Kiro
+               and everything after them), reusing the heavy toolchain layers
+               above. Default 0 (cache reused). runme.sh sets a fresh value to
+               refresh stale agents quickly; you can also do it manually:
+               AGENTS_CACHE_BUST=$(date +%s) ./build.sh
   GITHUB_TOKEN Build-time only. Passed to docker build as a BuildKit secret
                (--secret id=github_token) so install-dt-tools.sh can use the
                authenticated GitHub API (5000 req/h vs 60 req/h). Never written
@@ -263,6 +270,12 @@ build_image() {
 
   generate_allowlists
   build_args_from_config build_args
+
+  # Targeted agent-layer cache-bust. Default 0 reuses the cache; runme.sh sets a
+  # fresh timestamp to force-refresh the (unpinned) agent CLIs when the image is
+  # stale, without rebuilding the heavy toolchain layers. See the AGENTS_CACHE_BUST
+  # ARG in the Dockerfile.
+  build_args+=(--build-arg "AGENTS_CACHE_BUST=${AGENTS_CACHE_BUST:-0}")
 
   if [[ "${NO_CACHE:-0}" == "1" ]]; then
     build_args+=(--no-cache)

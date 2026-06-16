@@ -44,6 +44,35 @@ NO_CACHE=1 ./build.sh
 
 This is useful when you want to pick up newer versions of CLI tools installed via `curl`/`wget` inside the Dockerfile, since Docker cannot detect remote content changes automatically.
 
+### Keeping the AI agents up to date
+
+The AI agents (Copilot CLI, Claude Code, Codex CLI, Gemini CLI, Kiro CLI) are installed **unpinned** at build time, and Docker caches those layers. So once an image is built, a plain `./build.sh` will *not* pull newer agent versions — and a long-lived image gradually falls behind, eventually too old to run the latest models.
+
+Two mechanisms keep them fresh:
+
+**1. Targeted agent refresh (fast).** Set the `AGENTS_CACHE_BUST` build-arg to any changing value. It busts only the agent-tier layers (and everything after them) while reusing the heavy toolchain layers above (Node, JVM, Python, Ruby, Rust, Go), so the rebuild takes ~1–2 min instead of a full `--no-cache` rebuild:
+
+```bash
+AGENTS_CACHE_BUST=$(date +%s) ./build.sh
+```
+
+**2. Age-based auto-rebuild (automatic).** When you launch a container, `runme.sh` checks how old the image is. If it is at least `AGENT_REBUILD_MAX_AGE_HOURS` old (**default 72 = 3 days**), it offers to refresh the agents using the targeted rebuild above before starting:
+
+```bash
+# Rebuild agents if the image is 24+ hours old instead of the default 72
+AGENT_REBUILD_MAX_AGE_HOURS=24 ./runme.sh restricted /path/to/repo
+
+# Disable the check entirely for this run
+AGENT_REBUILD_MAX_AGE_HOURS=0 ./runme.sh restricted /path/to/repo
+```
+
+| Env var | Default | Meaning |
+|---------|---------|---------|
+| `AGENT_REBUILD_MAX_AGE_HOURS` | `72` | Rebuild (refresh agents) if the image is at least this many hours old. `0`, `off`, or `never` disables the check. |
+| `AGENT_REBUILD_ACK` | unset | On a **non-TTY** run (CI/scripts), set to `1` to perform the rebuild without prompting. Without it, a non-TTY run with a stale image just warns and continues with the existing image. |
+
+On an interactive terminal, the launcher prompts (`[Y/n]`, default yes) before rebuilding so a slow rebuild never ambushes you. The rebuild reuses the heavy toolchain layers, so in practice it only re-fetches the agent CLIs.
+
 Run in restricted mode with the firewall enabled:
 
 ```bash
@@ -210,6 +239,28 @@ If the API call fails (rate limit, bad token, or network error), the build print
 - Multiple containers can run simultaneously without revoking each other's sessions (device-flow OAuth is single-session per user; env-var token auth is not)
 - You can override by setting `COPILOT_GITHUB_TOKEN` explicitly on the host
 
+> **⚠️ The token is extracted once, at container launch — not while the container runs.**
+> `runme.sh` reads `hosts.yml` and sets `COPILOT_GITHUB_TOKEN` **before** `docker run` starts the
+> container. If the group is **not yet authenticated** when you launch (no `oauth_token` in
+> `hosts.yml`), the env var is **empty for the entire life of that container**, and Copilot CLI
+> falls back to interactive device-flow `/login` every time it starts. Running `gh auth login`
+> **inside** the running container writes the token to `hosts.yml` for *next* time, but it does
+> **not** retroactively inject `COPILOT_GITHUB_TOKEN` into the already-running container's
+> environment.
+>
+> **A Copilot `/restart` does NOT fix this.** `/restart` relaunches only the Copilot process; it
+> inherits the same (empty) container environment, so Copilot still has no token and prompts for
+> `/login` again. Container env vars are fixed at `docker run` time and cannot be changed by an
+> in-container `/restart`.
+>
+> **The fix:** authenticate **first**, then start (or fully restart) the container so `runme.sh`
+> can pick up the freshly written token:
+> 1. `gh auth login` (on the host, or once inside any container of that group — it persists to
+>    `~/.ai-containers/<group>/.config/gh/hosts.yml`).
+> 2. **Exit the container completely** (`Ctrl+D`) and relaunch with `./runme.sh …` — *not* a
+>    Copilot `/restart`. Only a full container relaunch re-runs `runme.sh` and re-extracts the token.
+> 3. Copilot is now authenticated from `COPILOT_GITHUB_TOKEN` with no `/login` prompt.
+
 **Token requirements:** The `gh` token must be compatible with Copilot CLI. Supported types:
 - `gho_*` — OAuth token from `gh auth login` (browser flow) — works directly
 - `github_pat_*` — fine-grained PAT — must include the **Copilot Requests** permission
@@ -338,7 +389,7 @@ Each path is mounted at `/workspace/<basename>` inside the container.
 
 For big repositories that AI agents inspect repeatedly, host bind mounts are slow on macOS (see the note above). A **repo volume** is a Docker named volume living *inside* the Docker/Colima VM, so containers read it at native in-VM speed. You seed it **once** and then attach it to any number of containers — there is no re-clone or re-copy on each start.
 
-Repo volumes are **global**: they are shared by containers in *any* container group (they hold code, not credentials), and tracked in a registry at `~/.ai-containers/repos.conf`. The physical bytes live in the VM at `/var/lib/docker/volumes/<image>-repo-<name>/`, not on the host filesystem.
+Repo volumes are **global**: there is **one volume per repo name**, shared by containers in *any* project/image and *any* container group (they hold code, not credentials), and tracked in a registry at `~/.ai-containers/repos.conf`. The volume name is image-independent (`ai-containers-repo-<name>`), so you register a repo **once** and attach it to as many containers as you like — across different projects too — with no `IMAGE_NAME` juggling. The physical bytes live in the VM at `/var/lib/docker/volumes/ai-containers-repo-<name>/`, not on the host filesystem. (Set `REPO_VOLUME_PREFIX` to restore the legacy per-image scoping if you ever need it.)
 
 ### `repo.sh` — manage repo volumes
 
@@ -350,9 +401,15 @@ Repo volumes are **global**: they are shared by containers in *any* container gr
 
 ./repo.sh sync cluster        # refresh when you choose (git pull, or re-copy a path source); sync --all does every repo
 ./repo.sh reset cluster       # discard local changes — clean slate (keeps the repo registered)
-./repo.sh list                # show registered repos (add --sizes for on-disk size)
+./repo.sh list                # show repos (add --sizes for on-disk size; --copies for :rwcopy working copies)
 ./repo.sh rm cluster          # remove the volume + any working copies + registry entry
+./repo.sh gc                  # prune :rwcopy working copies (--repo <name>, --unused, --yes)
+./repo.sh reindex             # rebuild the registry from volume labels (recover a lost/stale repos.conf)
 ```
+
+> **Docker volumes are the source of truth; the registry is a cache.** Each base volume is labeled with its repo name, type, and source, and each `:rwcopy` working copy with its parent repo and originating launch directory. `list`, `list --copies`, and `gc` read those labels directly from Docker, so what you see reflects the volumes that actually exist (a registry entry whose volume is gone shows as `MISSING`). The registry at `~/.ai-containers/repos.conf` remains authoritative only for two things labels can't cover: **Linux `bind`-backend repos** (which have no volume to label) and the **mutable last-synced timestamp** (Docker labels are immutable after creation). If the registry is ever lost or out of sync, `./repo.sh reindex` rebuilds it from the volume labels.
+
+> **Managing `:rwcopy` working copies.** `./repo.sh list --copies` shows every working-copy volume with its parent repo, the launch directory it was seeded for, whether a running container currently has it mounted, and (with `--sizes`) its on-disk size. `./repo.sh gc` removes them: all of them by default, or `--repo <name>` to scope to one repo, `--unused` to keep any currently mounted by a running container, and `--yes` to skip the confirmation. Working copies can hold uncommitted work, so `gc` confirms before deleting.
 
 `reset` is the "start clean" button, distinct from `sync` (which *fetches* the latest): it **discards local state** and removes any `:rwcopy` working copies. For a git source it runs `git reset --hard` to the upstream (dropping uncommitted changes **and** local commits) plus `git clean -ffdx` (removing untracked **and** git-ignored files such as build output / `node_modules`); for a path source it re-mirrors from the host source. It is **destructive and cannot be undone**, so it prompts for confirmation unless you pass `--yes`. Reset every registered repo at once with `./repo.sh reset --all`. (The Linux `bind` backend is left untouched — its "volume" is your live host checkout — and `reset` just prints how to clean it yourself.)
 
@@ -382,7 +439,7 @@ If a `REPOS` entry is not registered (or its volume is missing), `runme.sh` abor
 
 > **Repo volumes shadow the host.** A repo volume is *not* synced with any host directory — its contents live only in the VM volume (and persist across runs until you `repo.sh rm` it). Commit and push from inside the container to get work out. This is the intended trade-off for native speed: you give up live host-side editing for the repos you put in volumes.
 
-> **`sync` and `:rwcopy` working copies.** `repo.sh sync` refreshes the shared base volume but does **not** touch existing `:rwcopy` working copies (they may contain uncommitted work). Remove a working copy (`docker volume rm <base>--wc-<tag>`) to have it re-seeded from the refreshed base on the next run. For path-sourced repos, `sync` uses `rsync -a --delete` (exact mirror) when `rsync` is in the image, falling back to `cp -a` (adds/updates only) otherwise; git-sourced repos use `git pull`.
+> **`sync` and `:rwcopy` working copies.** `repo.sh sync` refreshes the shared base volume but does **not** touch existing `:rwcopy` working copies (they may contain uncommitted work). List them with `./repo.sh list --copies` and remove the ones you no longer need with `./repo.sh gc` (e.g. `./repo.sh gc --repo <name>`) so they re-seed from the refreshed base on the next run. For path-sourced repos, `sync` uses `rsync -a --delete` (exact mirror) when `rsync` is in the image, falling back to `cp -a` (adds/updates only) otherwise; git-sourced repos use `git pull`.
 
 ### Cross-platform backend (`REPO_BACKEND`)
 
@@ -547,6 +604,15 @@ claude /login
 
 Once `gh auth login` completes, Copilot CLI is authenticated automatically (its token is extracted from `hosts.yml` and forwarded as `COPILOT_GITHUB_TOKEN`). No separate `copilot /login` is needed.
 
+> **⚠️ You must fully restart the container after the *first* `gh auth login`.**
+> `runme.sh` extracts the token from `hosts.yml` **at launch**, so on the very first run of a fresh
+> group — where you authenticate `gh` *inside* the container — `COPILOT_GITHUB_TOKEN` was already
+> set empty when the container started. Copilot will keep prompting for `/login` (and a Copilot
+> `/restart` will **not** help — it reuses the same empty container environment). **Exit the
+> container (`Ctrl+D`) and relaunch with `./runme.sh …`** so `runme.sh` re-reads the now-populated
+> `hosts.yml`. From then on Copilot starts authenticated. See
+> [GitHub tokens at runtime](#github-tokens-at-runtime) for the full explanation.
+
 > **Note:** If your `gh` token is a fine-grained PAT (`github_pat_*`), it must include the **Copilot Requests** permission. If it's an OAuth token from `gh auth login` browser flow (`gho_*`), it works directly.
 
 The credentials are written into the group directory on the host and persist across all future runs of that group.
@@ -655,7 +721,7 @@ What it does:
 
 - Creates `<project>/.ai-containers/` and copies all shared files (Dockerfile, scripts, allowlist fragment files).
 - Copies `sandbox.conf` as a starting point (only if one does not already exist).
-- Writes `<project>/.ai-containers/sandbox.env` with `IMAGE_NAME=<image>`. This is read by `sandbox-common.sh` so `build.sh`, `runme.sh`, and `repo.sh` all resolve the **same** image name — and therefore the same repo-volume names (`<image>-repo-<name>`) — even when you run a script (notably `repo.sh`) directly instead of through the generated launcher. An exported `IMAGE_NAME` still takes precedence.
+- Writes `<project>/.ai-containers/sandbox.env` with `IMAGE_NAME=<image>`. This is read by `sandbox-common.sh` so `build.sh`, `runme.sh`, and `repo.sh` all resolve the **same** image name even when you run a script directly instead of through the generated launcher. An exported `IMAGE_NAME` still takes precedence. (Repo-volume names are global — `ai-containers-repo-<name>`, independent of `IMAGE_NAME` — so they are shared across projects regardless of this value.)
 - Generates `<project>/.ai-containers/<project-name>-container.sh` with `IMAGE_NAME` and commented hints for `AI_CONTAINER_GROUP`, `EXTRA_MOUNTS`, `REPOS`, and `PREVIEW_PORTS`.
 - Registers the project path in `projects.conf` (created from `projects.conf.example` on first run).
 - Adds `/.ai-containers/` to the project's **root `.gitignore`** (git repos only, idempotent), so the synced working copy — whose launcher embeds machine-specific paths (`EXTRA_MOUNTS`) and whose `custom.txt` may hold internal hostnames — isn't accidentally committed. To version it instead (e.g. to share sandbox config with a team), remove that line; set `AI_CONTAINERS_NO_GITIGNORE=1` to skip this step entirely. `sync-to-projects.sh` applies the same rule to existing projects (never duplicating an entry already present).

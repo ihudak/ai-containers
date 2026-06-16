@@ -309,8 +309,21 @@ RUN if [ "$INSTALL_GITHUB_CLI" = "1" ]; then \
 
 # ── Optional: npm-based agent tools ────────────────────────────────────────────
 # Each agent gets its own layer so toggling one doesn't invalidate the others.
+#
+# AGENTS_CACHE_BUST busts the Docker layer cache for the agent install layers
+# below — and, because Docker's cache is linear, every layer after them (kiro,
+# graphify, etc.) — WITHOUT touching the heavy toolchain layers above (Node,
+# JVM, Python, Ruby, Rust, Go). The agent CLIs are installed unpinned
+# (`npm install -g @github/copilot`, the kiro installer, ...), so re-running
+# their layers re-fetches the latest published versions. A normal build leaves
+# this at 0 and reuses the cache; runme.sh passes a fresh timestamp via build.sh
+# when the image is older than AGENT_REBUILD_MAX_AGE_HOURS, making the agent
+# refresh fast (heavy toolchains stay cached). It is referenced once in the
+# first agent layer below — that is sufficient to invalidate every layer after.
+ARG AGENTS_CACHE_BUST=0
 ARG INSTALL_COPILOT=0
-RUN if [ "$INSTALL_COPILOT" = "1" ]; then npm install -g @github/copilot; fi
+RUN echo "agents cache-bust token: ${AGENTS_CACHE_BUST}" >/dev/null && \
+    if [ "$INSTALL_COPILOT" = "1" ]; then npm install -g @github/copilot; fi
 
 ARG ANGULAR_CLI_VERSION=""
 RUN if [ -n "$ANGULAR_CLI_VERSION" ] && [ "$ANGULAR_CLI_VERSION" != "OFF" ]; then \

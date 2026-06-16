@@ -38,6 +38,16 @@ Related scripts:
 
 Environment variables:
   IMAGE_NAME          Image to run (default: ai-sandbox).
+  AGENT_REBUILD_MAX_AGE_HOURS
+                      If the image is at least this many hours old, runme.sh offers
+                      to rebuild it so the bundled AI agents (Copilot/Claude/Codex/
+                      Gemini/Kiro) are refreshed — they are installed unpinned at
+                      build time and otherwise never update. Default 72 (3 days).
+                      Set to 0 (or off/never) to disable the check. The rebuild is a
+                      fast, targeted agent-layer refresh (heavy toolchains are reused).
+  AGENT_REBUILD_ACK   On a non-TTY run, set to 1 to perform the stale-image rebuild
+                      without prompting; otherwise a non-TTY run with a stale image
+                      just warns and continues.
   AI_CONTAINER_GROUP  Group name selecting which dotfile tree to mount (default: default).
                       Use 'host' to mount directly from $HOME. Use any lowercase name
                       (a-z, 0-9, dashes; max 32 chars) to select ~/.ai-containers/<group>/.
@@ -179,14 +189,19 @@ add_file_mount_if_exists() {
 }
 
 # Seed a per-workspace writable working-copy volume from a repo's shared base
-# volume using a fast local copy inside the VM (no network, no re-clone).
+# volume using a fast local copy inside the VM (no network, no re-clone). The
+# working copy is labeled with its parent repo and originating launch dir so
+# `repo.sh list --copies` / `repo.sh gc` can identify and prune it later.
 seed_workcopy_volume() {
-  local base_vol="$1" wc_vol="$2"
+  local base_vol="$1" wc_vol="$2" repo_name="${3:-}" launch="${4:-}"
   if docker volume inspect "$wc_vol" >/dev/null 2>&1; then
     return 0
   fi
   printf 'Seeding writable working copy "%s" from "%s" (one-time local copy)...\n' "$wc_vol" "$base_vol" >&2
-  docker volume create "$wc_vol" >/dev/null
+  local labels=(--label "ai-containers.workcopy=1")
+  [[ -n "$repo_name" ]] && labels+=(--label "ai-containers.repo=${repo_name}")
+  [[ -n "$launch" ]] && labels+=(--label "ai-containers.launch-dir=${launch}")
+  docker volume create "${labels[@]}" "$wc_vol" >/dev/null
   # --entrypoint bash bypasses entrypoint.sh (which ignores args and would run the
   # firewall/restricted flow). cp -a preserves the ownership set on the base volume.
   docker run --rm --entrypoint bash \
@@ -195,8 +210,93 @@ seed_workcopy_volume() {
     "$image_name" -c 'cp -a /src/. /dst/'
 }
 
+# ── Image staleness / agent auto-refresh ─────────────────────────────────────────
+
+# Echo the age of a docker image in whole hours, or return 1 if it can't be
+# determined. Parses docker's RFC3339 .Created timestamp portably across GNU
+# date (Linux) and BSD date (macOS).
+image_age_hours() {
+  local img="$1" created created_epoch now_epoch trunc
+  created="$(docker image inspect --format '{{.Created}}' "$img" 2>/dev/null)" || return 1
+  [[ -n "$created" ]] || return 1
+  # Normalise nanoseconds + 'Z' (2026-06-12T08:30:00.123Z) → seconds + 'Z'
+  # (2026-06-12T08:30:00Z), which BSD date can parse with an explicit format.
+  trunc="${created%.*}"
+  trunc="${trunc%Z}Z"
+  if created_epoch="$(date -u -d "$created" +%s 2>/dev/null)"; then
+    :   # GNU date understands the full RFC3339Nano string directly.
+  elif created_epoch="$(date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$trunc" +%s 2>/dev/null)"; then
+    :   # BSD date (macOS) needs the truncated seconds form + explicit format.
+  else
+    return 1
+  fi
+  now_epoch="$(date -u +%s)"
+  printf '%s' "$(( (now_epoch - created_epoch) / 3600 ))"
+}
+
+# If the image is older than AGENT_REBUILD_MAX_AGE_HOURS (default 72 = 3 days),
+# offer to rebuild it so the bundled AI agents (which are installed unpinned at
+# build time and otherwise never update) are refreshed. The rebuild is a
+# TARGETED agent-layer refresh via AGENTS_CACHE_BUST — heavy toolchain layers
+# are reused.
+#
+#   AGENT_REBUILD_MAX_AGE_HOURS threshold in hours (default 72; 0/off/never/no
+#                               disables the check entirely)
+#   AGENT_REBUILD_ACK=1         on a non-TTY (scripted/CI) run, proceed with the
+#                               rebuild without prompting; otherwise a non-TTY
+#                               run with a stale image just warns and continues.
+maybe_rebuild_stale_image() {
+  local max_age="${AGENT_REBUILD_MAX_AGE_HOURS:-72}"
+  case "${max_age,,}" in
+    0|off|never|no|false|disabled) return 0 ;;
+  esac
+  if ! [[ "$max_age" =~ ^[0-9]+$ ]]; then
+    printf 'WARNING: AGENT_REBUILD_MAX_AGE_HOURS="%s" is not a non-negative integer; skipping staleness check.\n' "$max_age" >&2
+    return 0
+  fi
+
+  if ! docker image inspect "$image_name" >/dev/null 2>&1; then
+    # No image yet — nothing to refresh. The normal flow will surface the build
+    # hint when `docker run` fails.
+    printf 'NOTE: image "%s" not found — build it first with ./build.sh\n' "$image_name" >&2
+    return 0
+  fi
+
+  local age
+  if ! age="$(image_age_hours "$image_name")"; then
+    printf 'WARNING: could not determine age of image "%s"; skipping staleness check.\n' "$image_name" >&2
+    return 0
+  fi
+  (( age < max_age )) && return 0
+
+  printf 'Image "%s" is %d hour(s) old (>= AGENT_REBUILD_MAX_AGE_HOURS=%d). Its bundled AI agents may be outdated.\n' \
+    "$image_name" "$age" "$max_age" >&2
+
+  local do_rebuild=0
+  if [[ -t 0 ]]; then
+    local reply
+    read -r -p "Refresh the agents now (targeted rebuild, heavy layers reused)? [Y/n]: " reply </dev/tty
+    case "${reply:-y}" in
+      y|Y|yes|YES) do_rebuild=1 ;;
+    esac
+  elif [[ "${AGENT_REBUILD_ACK:-0}" == "1" ]]; then
+    do_rebuild=1
+  else
+    printf 'Skipping rebuild (no TTY and AGENT_REBUILD_ACK != 1). Run ./build.sh to refresh, or set AGENT_REBUILD_MAX_AGE_HOURS=0 to silence.\n' >&2
+    return 0
+  fi
+
+  if (( do_rebuild )); then
+    printf 'Refreshing AI agents via targeted rebuild...\n' >&2
+    AGENTS_CACHE_BUST="$(date -u +%s)" "${script_dir}/build.sh" "$image_name"
+  else
+    printf 'Continuing with the existing image. Run ./build.sh (or AGENTS_CACHE_BUST=$(date +%%s) ./build.sh) to refresh later.\n' >&2
+  fi
+}
+
 run_container() {
   check_config
+  maybe_rebuild_stale_image
   local mode="$1"
   local primary_arg="${2:-}"
   # Host directory where runme.sh was invoked. Agent outputs (.agent-blocked,
@@ -379,7 +479,7 @@ run_container() {
           rwcopy)
             # Isolated, per-workspace writable working copy seeded from the base.
             local wc_vol; wc_vol="$(repo_workcopy_volume_name "$rname" "$ws_tag")"
-            seed_workcopy_volume "$base_vol" "$wc_vol"
+            seed_workcopy_volume "$base_vol" "$wc_vol" "$rname" "$launch_dir"
             repo_mount_flags+=(-v "$wc_vol:/workspace/$rname")
             printf 'REPO: /workspace/%s  (rwcopy, working copy %s)\n' "$rname" "$wc_vol" >&2
             ;;

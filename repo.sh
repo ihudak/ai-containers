@@ -21,11 +21,21 @@ Usage:
   ./repo.sh add  <name> <host-path | git-url>   Seed a repo volume and register it
   ./repo.sh sync <name | --all>                  Refresh a repo volume from its source
   ./repo.sh reset <name | --all> [--yes]         Discard local changes (clean slate; keeps the repo)
-  ./repo.sh list [--sizes]                       List registered repos (and on-disk sizes)
+  ./repo.sh list [--sizes] [--copies]            List repos (--copies lists :rwcopy working copies)
   ./repo.sh rm   <name> [--yes]                  Remove a repo volume + its working copies
+  ./repo.sh gc   [--repo <name>] [--unused] [--yes]
+                                                 Prune :rwcopy working-copy volumes
+  ./repo.sh reindex                              Rebuild the registry from volume labels
 
 Notes:
-  - Repo volumes are GLOBAL — shared by containers in any AI_CONTAINER_GROUP.
+  - Repo volumes are GLOBAL — one volume per repo name, shared by containers in
+    ANY project/image and ANY AI_CONTAINER_GROUP. No IMAGE_NAME juggling: register
+    once with 'add', then attach the same volume to as many containers as you like.
+  - Docker volumes are the source of truth. Base volumes are labeled with their
+    repo name/type/source and working copies with their repo + launch dir, so
+    'list'/'gc' read them directly. The registry (repos.conf) is a cache: it is
+    authoritative only for Linux bind-backend repos (no volume) and the mutable
+    last-synced time, and is rebuildable from labels with 'reindex'.
   - Authentication for git-url sources uses your HOST ~/.ssh (mounted read-only).
   - Volume contents are chowned to SANDBOX_UID/SANDBOX_GID (default id -u/id -g),
     the SAME identity runme.sh runs the container as. If you override these, set
@@ -238,7 +248,7 @@ cmd_add() {
     exit 1
   fi
 
-  docker volume create "$vol" >/dev/null
+  repo_base_volume_create "$name" "$type" "$source"
   if [[ "$type" == "git" ]]; then
     seed_from_git "$vol" "$source"
   else
@@ -272,7 +282,7 @@ sync_one() {
   ensure_seed_image
   if ! docker volume inspect "$vol" >/dev/null 2>&1; then
     printf "  %s: base volume missing — re-seeding from source.\n" "$name" >&2
-    docker volume create "$vol" >/dev/null
+    repo_base_volume_create "$name" "$type" "$source"
     if [[ "$type" == "git" ]]; then seed_from_git "$vol" "$source"; else seed_from_path "$vol" "$source"; fi
   else
     if [[ "$type" == "git" ]]; then sync_from_git "$vol"; else sync_from_path "$vol" "$source"; fi
@@ -326,44 +336,96 @@ cmd_sync() {
   printf 'NOTE: :rw / :rwcopy working copies are NOT updated by sync — use ./repo.sh reset <name>, or remove the working-copy volumes to re-seed.\n'
 }
 
+# List working-copy (:rwcopy) volumes with their parent repo, originating launch
+# directory (from labels), in-use state, and optionally size.
+list_copies() {
+  local show_sizes="$1"
+  local copies; copies="$(repo_workcopy_volumes)"
+  if [[ -z "$copies" ]]; then
+    printf 'No :rwcopy working copies exist.\n'
+    return 0
+  fi
+  printf '%-4s %-44s %-14s %-7s %s\n' "USE" "WORKING COPY VOLUME" "REPO" "SIZE" "LAUNCH DIR"
+  local wc repo ldir inuse size
+  while IFS= read -r wc; do
+    [[ -z "$wc" ]] && continue
+    if docker_volume_in_use "$wc"; then inuse="yes"; else inuse="no"; fi
+    repo="$(docker_volume_label "$wc" 'ai-containers.repo')"; [[ -z "$repo" ]] && repo="?"
+    ldir="$(docker_volume_label "$wc" 'ai-containers.launch-dir')"; [[ -z "$ldir" ]] && ldir="(unlabeled)"
+    size="-"
+    (( show_sizes )) && size="$(docker run --rm --entrypoint sh -v "$wc":/v "$seed_image" -c 'du -sh /v 2>/dev/null | cut -f1' 2>/dev/null || echo '?')"
+    printf '%-4s %-44s %-14s %-7s %s\n' "$inuse" "$wc" "$repo" "$size" "$ldir"
+  done <<< "$copies"
+}
+
 cmd_list() {
-  local show_sizes=0
-  [[ "${1:-}" == "--sizes" ]] && show_sizes=1
+  local show_sizes=0 show_copies=0
+  while (( $# )); do
+    case "$1" in
+      --sizes)  show_sizes=1 ;;
+      --copies) show_copies=1 ;;
+      -*)       printf 'ERROR: unknown flag %s\n' "$1" >&2; exit 1 ;;
+      *)        printf 'ERROR: unexpected argument %s\n' "$1" >&2; exit 1 ;;
+    esac
+    shift
+  done
   repo_registry_ensure
   # The size probe runs `du` inside the seed helper image; build it on demand.
   (( show_sizes )) && ensure_seed_image
 
-  local names; names="$(repo_registry_names)"
-  if [[ -z "$names" ]]; then
-    printf 'No repos registered. Add one with: ./repo.sh add <name> <host-path|git-url>\n'
+  if (( show_copies )); then
+    list_copies "$show_sizes"
     return 0
   fi
 
-  printf '%-16s %-5s %-8s %-19s %s\n' "NAME" "TYPE" "BACKEND" "LAST SYNCED" "SOURCE"
-  local name record type source synced vol backend present size
+  # Names = union of base volumes (source of truth for existence, via labels) and
+  # registry entries (covers Linux bind repos, which have no volume, and surfaces
+  # registry/volume drift as MISSING). Volume labels win for type/source.
+  local names; names="$(
+    { repo_registry_names
+      local v
+      while IFS= read -r v; do [[ -n "$v" ]] && repo_name_from_volume "$v"; done < <(repo_base_volumes)
+    } | sort -u
+  )"
+  if [[ -z "$names" ]]; then
+    printf 'No repos found. Add one with: ./repo.sh add <name> <host-path|git-url>\n'
+    return 0
+  fi
+
+  printf '%-16s %-5s %-8s %-19s %-3s %s\n' "NAME" "TYPE" "STATE" "LAST SYNCED" "WC" "SOURCE"
+  local name record type source synced vol backend state size wc_count synced_h size_str
   while IFS= read -r name; do
     [[ -z "$name" ]] && continue
-    record="$(repo_registry_lookup "$name")"
-    type="$(repo_record_field "$record" 2)"
-    source="$(repo_record_field "$record" 3)"
-    synced="$(repo_record_field "$record" 5)"
     vol="$(repo_volume_name "$name")"
-    backend="$(repo_record_backend "$record")"
+    record="$(repo_registry_lookup "$name" || true)"
+    # Prefer self-describing volume labels; fall back to the registry record.
+    type="$(docker_volume_label "$vol" 'ai-containers.type')"
+    source="$(docker_volume_label "$vol" 'ai-containers.source')"
+    if [[ -n "$record" ]]; then
+      [[ -z "$type" ]]   && type="$(repo_record_field "$record" 2)"
+      [[ -z "$source" ]] && source="$(repo_record_field "$record" 3)"
+      synced="$(repo_record_field "$record" 5)"
+      backend="$(repo_record_backend "$record")"
+    else
+      synced=""
+      backend="volume"
+    fi
     if [[ "$backend" == "bind" ]]; then
-      if [[ -d "$source" ]]; then present="bind"; else present="bind!"; fi
+      if [[ -d "$source" ]]; then state="bind"; else state="bind!"; fi
     elif docker volume inspect "$vol" >/dev/null 2>&1; then
-      present="present"
+      state="present"
     else
-      present="MISSING"
+      state="MISSING"
     fi
-    local synced_h="-"
+    synced_h="-"
     [[ "$synced" =~ ^[0-9]+$ ]] && synced_h="$(fmt_epoch "$synced")"
-    if (( show_sizes )) && [[ "$present" == "present" ]]; then
+    wc_count="$(repo_workcopy_volumes "$name" | grep -c . || true)"
+    size_str=""
+    if (( show_sizes )) && [[ "$state" == "present" ]]; then
       size="$(docker run --rm --entrypoint sh -v "$vol":/v "$seed_image" -c 'du -sh /v 2>/dev/null | cut -f1' 2>/dev/null || echo '?')"
-      printf '%-16s %-5s %-8s %-19s %s  (%s)\n' "$name" "$type" "$present" "$synced_h" "$source" "$size"
-    else
-      printf '%-16s %-5s %-8s %-19s %s\n' "$name" "$type" "$present" "$synced_h" "$source"
+      size_str="  (${size})"
     fi
+    printf '%-16s %-5s %-8s %-19s %-3s %s%s\n' "$name" "${type:-?}" "$state" "$synced_h" "$wc_count" "$source" "$size_str"
   done <<< "$names"
 }
 
@@ -444,7 +506,7 @@ reset_one() {
 
   if ! docker volume inspect "$vol" >/dev/null 2>&1; then
     printf '  %s: base volume missing — re-seeding clean from source.\n' "$name"
-    docker volume create "$vol" >/dev/null
+    repo_base_volume_create "$name" "$type" "$source"
     if [[ "$type" == "git" ]]; then seed_from_git "$vol" "$source"; else seed_from_path "$vol" "$source"; fi
   else
     if [[ "$type" == "git" ]]; then reset_git "$vol"; else sync_from_path "$vol" "$source"; fi
@@ -514,6 +576,105 @@ cmd_reset() {
   printf 'OK: reset complete.\n'
 }
 
+# Prune :rwcopy working-copy volumes. By default removes ALL working copies (of
+# all repos); narrow with --repo <name>, and/or restrict to copies not currently
+# mounted by a running container with --unused. Working copies may hold
+# UNCOMMITTED work, so it confirms unless --yes.
+cmd_gc() {
+  local target_repo="" only_unused=0 assume_yes=0
+  while (( $# )); do
+    case "$1" in
+      --repo)   shift; target_repo="${1:-}"; [[ -z "$target_repo" ]] && { printf 'ERROR: --repo needs a name\n' >&2; exit 1; } ;;
+      --unused) only_unused=1 ;;
+      --yes|-y) assume_yes=1 ;;
+      -*)       printf 'ERROR: unknown flag %s\n' "$1" >&2; exit 1 ;;
+      *)        printf 'ERROR: unexpected argument %s\n' "$1" >&2; exit 1 ;;
+    esac
+    shift
+  done
+  [[ -n "$target_repo" ]] && { validate_repo_name "$target_repo" || exit 1; }
+
+  local all; all="$(repo_workcopy_volumes "$target_repo")"
+  if [[ -z "$all" ]]; then
+    printf 'No working copies%s found.\n' "${target_repo:+ for repo \"$target_repo\"}"
+    return 0
+  fi
+
+  local victims=() wc repo ldir inuse
+  printf 'Working copies%s:\n' "${target_repo:+ for \"$target_repo\"}"
+  printf '  %-4s %-44s %-14s %s\n' "USE" "VOLUME" "REPO" "LAUNCH DIR"
+  while IFS= read -r wc; do
+    [[ -z "$wc" ]] && continue
+    if docker_volume_in_use "$wc"; then inuse="yes"; else inuse="no"; fi
+    repo="$(docker_volume_label "$wc" 'ai-containers.repo')"; [[ -z "$repo" ]] && repo="?"
+    ldir="$(docker_volume_label "$wc" 'ai-containers.launch-dir')"; [[ -z "$ldir" ]] && ldir="(unlabeled)"
+    if (( only_unused )) && [[ "$inuse" == "yes" ]]; then
+      printf '  %-4s %-44s %-14s %s  [in use — kept]\n' "$inuse" "$wc" "$repo" "$ldir"
+      continue
+    fi
+    printf '  %-4s %-44s %-14s %s\n' "$inuse" "$wc" "$repo" "$ldir"
+    victims+=("$wc")
+  done <<< "$all"
+
+  if (( ${#victims[@]} == 0 )); then
+    printf 'Nothing to remove.\n'
+    return 0
+  fi
+
+  printf '\nAbout to remove %d working-copy volume(s). These may hold UNCOMMITTED work.\n' "${#victims[@]}"
+  if (( ! assume_yes )); then
+    if [[ -t 0 ]]; then
+      read -r -p "Type 'yes' to confirm: " reply
+      [[ "$reply" == "yes" ]] || { echo "Aborted."; exit 1; }
+    else
+      printf 'ERROR: refusing to remove non-interactively without --yes.\n' >&2
+      exit 1
+    fi
+  fi
+
+  local v removed=0
+  for v in "${victims[@]}"; do
+    if docker volume rm "$v" >/dev/null 2>&1; then
+      printf '  removed %s\n' "$v"; removed=$((removed + 1))
+    else
+      printf '  WARN: could not remove %s (in use?)\n' "$v" >&2
+    fi
+  done
+  printf 'OK: removed %d working-copy volume(s).\n' "$removed"
+}
+
+# Rebuild the registry (repos.conf) from the self-describing base-volume labels.
+# Use this to recover a lost/stale registry, or to adopt repos seeded elsewhere.
+# Additive and healing: it inserts/updates the volume-backed repos found on this
+# machine and preserves their existing added/synced timestamps when known. It does
+# NOT touch Linux bind-backend entries (they have no volume) and does NOT delete
+# anything.
+cmd_reindex() {
+  repo_registry_ensure
+  local now; now="$(date +%s)"
+  local count=0 vol name type source record added synced
+  while IFS= read -r vol; do
+    [[ -z "$vol" ]] && continue
+    name="$(repo_name_from_volume "$vol")"
+    type="$(docker_volume_label "$vol" 'ai-containers.type')"
+    source="$(docker_volume_label "$vol" 'ai-containers.source')"
+    if [[ -z "$type" || -z "$source" ]]; then
+      printf 'skip %s: volume "%s" has no ai-containers labels (seeded by an older version?). Re-seed with: ./repo.sh sync %s\n' "$name" "$vol" "$name" >&2
+      continue
+    fi
+    record="$(repo_registry_lookup "$name" || true)"
+    added="$now"; synced="$now"
+    if [[ -n "$record" ]]; then
+      added="$(repo_record_field "$record" 4)"
+      synced="$(repo_record_field "$record" 5)"
+    fi
+    repo_registry_upsert "$name" "$type" "$source" "$added" "$synced" "volume"
+    printf 'indexed %s (%s) -> %s\n' "$name" "$type" "$source"
+    count=$((count + 1))
+  done < <(repo_base_volumes)
+  printf 'OK: reindex complete (%d volume-backed repo(s)). Bind-backend entries left as-is.\n' "$count"
+}
+
 # ── Entry point ──────────────────────────────────────────────────────────────────
 
 command="${1:-usage}"
@@ -523,8 +684,10 @@ case "$command" in
   add)              cmd_add  "${1:-}" "${2:-}" ;;
   sync)             cmd_sync "$@" ;;
   reset)            cmd_reset "$@" ;;
-  list)             cmd_list "${1:-}" ;;
+  list)             cmd_list "$@" ;;
   rm|remove)        cmd_rm   "${1:-}" "${2:-}" ;;
+  gc)               cmd_gc "$@" ;;
+  reindex)          cmd_reindex ;;
   -h|--help|help|usage) usage ;;
   *)                usage >&2; exit 1 ;;
 esac

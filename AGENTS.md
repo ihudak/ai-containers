@@ -35,6 +35,12 @@ Version-list components (`node`, `python`, `ruby`, `rails`, `rust`, `go`) accept
 ```
 `build.sh` reads `sandbox.conf`, assembles `allowlist-domains.txt`, `allowlist-proxy-domains.txt`, and `allowlist-cidrs.txt` from the `*.d/` fragment directories, then calls `docker build` with one `--build-arg` per component. The generated `allowlist-*.txt` files are gitignored; always use `./build.sh`, not `docker build` directly. (`runme.sh build` was removed — it now errors and points here.)
 
+The AI agents (Copilot/Claude/Codex/Gemini/Kiro) are installed **unpinned** and their layers are cached by Docker, so a normal `./build.sh` will not pick up newer agent versions. To force a fast, **targeted** agent refresh without rebuilding the heavy toolchain layers, set the `AGENTS_CACHE_BUST` build-arg (any changing token busts the agent-tier layers and everything after them, reusing Node/JVM/Python/Ruby/Rust/Go above):
+```bash
+AGENTS_CACHE_BUST=$(date +%s) ./build.sh
+```
+`runme.sh` does this automatically when it detects the image is older than `AGENT_REBUILD_MAX_AGE_HOURS` (see below). A full `--no-cache` rebuild is still available but rebuilds everything.
+
 Set `GITHUB_TOKEN` in the environment before building to avoid GitHub API rate limits (60 req/h unauthenticated). This is required when `dtctl` or `dtmgd` is set to `ON` (auto-detect latest). `build.sh` passes it automatically as a BuildKit secret if the env var is set (falling back to `GITHUB_PERSONAL_ACCESS_TOKEN`). If rate-limited, `dtctl`/`dtmgd` are silently skipped — the build still succeeds.
 
 **Run the container:**
@@ -52,8 +58,10 @@ Everything mounts under a single `/workspace` umbrella. The positional `[primary
 ./repo.sh add  <name> <host-path|git-url>   # seed a repo volume once + register it
 ./repo.sh sync <name|--all>                  # refresh (git pull, or re-copy a path source)
 ./repo.sh reset <name|--all> [--yes]         # discard local changes → clean slate (keeps registry)
-./repo.sh list [--sizes]                     # list registered repos
+./repo.sh list [--sizes] [--copies]          # list repos; --copies lists :rwcopy working copies
 ./repo.sh rm   <name> [--yes]                # remove volume + working copies + registry entry
+./repo.sh gc   [--repo <name>] [--unused] [--yes]   # prune :rwcopy working copies
+./repo.sh reindex                            # rebuild registry from volume labels
 ```
 Attach them at run time with `REPOS="cluster:ro lib:ro app:rw" ./runme.sh restricted @app`.
 
@@ -80,6 +88,8 @@ docker run --rm --entrypoint capture-agent-destinations.sh \
 - `AI_CONTAINER_GROUP_INIT` — non-interactive bootstrap override when a group dir doesn't exist yet. Values: `clean` (start empty), `from:host` (copy from $HOME), `from:<existing-group>` (copy from another group). When unset on a TTY, an interactive prompt asks instead.
 - `AI_CONTAINER_HOST_ACK` — set to `1` to silently bypass the macOS warning when `AI_CONTAINER_GROUP=host`. Ignored on Linux. Per-invocation; not persisted.
 - `IMAGE_NAME` — image tag (default: `ai-sandbox`). Persisted per project in `<project>/.ai-containers/sandbox.env` and sourced by `sandbox-common.sh` when not exported, so `build.sh`/`runme.sh`/`repo.sh` agree on it.
+- `AGENT_REBUILD_MAX_AGE_HOURS` — if the image is at least this many hours old, `runme.sh` offers to rebuild it so the bundled agents (Copilot/Claude/Codex/Gemini/Kiro) are refreshed; they are installed **unpinned** at build time and otherwise never update. Default `72` (3 days). Set `0` (or `off`/`never`) to disable. The rebuild is a **targeted agent-layer refresh** via the `AGENTS_CACHE_BUST` build-arg — heavy toolchain layers (Node/JVM/Python/Ruby/Rust/Go) are reused, so it is fast.
+- `AGENT_REBUILD_ACK` — on a non-TTY run, set `1` to perform the stale-image rebuild without prompting; otherwise a non-TTY run with a stale image just warns and continues.
 - `SANDBOX_UID/GID/USER/GROUP` — override the auto-detected host user identity
 - `REPOS` — space-separated registered repo volumes to attach under `/workspace/<name>`, each `:ro` (default), `:rw`, or `:rwcopy`. Register first with `./repo.sh add`. Unregistered/missing → abort before start.
 - `REPO_BACKEND` — `auto` (default) | `volume` | `bind`. `auto` = named volume on macOS, host bind mount for `path` repos on Linux. Decided at `repo.sh add` time and stored in the registry.
@@ -115,11 +125,11 @@ Background daemons are forked **before** `exec capsh` so they retain root capabi
 - `VAULT_PATH` → `/workspace/obsidian`
 - outputs → `/workspace/.agent-blocked` and `/workspace/.agent-discovery`, bind-mounted from the host **launch directory** (`$PWD` where `runme.sh` ran), so they persist host-visibly and git/docker-ignored.
 
-**Repo volumes** (`repo.sh` + `REPOS`) solve the macOS virtio-fs penalty: a repo is seeded **once** into a Docker named volume inside the VM (`<image>-repo-<name>`), read at native speed, and shared across all container groups. The registry is `~/.ai-containers/repos.conf` (machine-local, pipe-delimited: `name|type|source|added|synced|backend`). `:rwcopy` creates a per-launch-dir working copy volume (`<base>--wc-<tag>`). On Linux, `auto` backend registers `path` repos as bind-mount aliases (no volume seeded); `runme.sh` bind-mounts the host path directly. Source-of-truth helpers live in `sandbox-common.sh`.
+**Repo volumes** (`repo.sh` + `REPOS`) solve the macOS virtio-fs penalty: a repo is seeded **once** into a Docker named volume inside the VM (`ai-containers-repo-<name>`), read at native speed, and shared across all projects/images and container groups. The volume name is **image-independent** (a fixed `ai-containers` prefix, overridable via `REPO_VOLUME_PREFIX`), so one registered repo maps to one global volume that any number of containers — in any project — can mount, with no `IMAGE_NAME` juggling. The registry is `~/.ai-containers/repos.conf` (machine-local, pipe-delimited: `name|type|source|added|synced|backend`). **Docker volumes are the source of truth, not the registry:** each base volume carries `ai-containers.repo`/`.type`/`.source` labels and each working copy carries `ai-containers.repo`/`.workcopy`/`.launch-dir`, so `repo.sh list`/`list --copies`/`gc` read state directly from Docker. The registry is a cache, authoritative only for Linux `bind`-backend repos (no volume to label) and the mutable last-synced time (labels are immutable after creation); `repo.sh reindex` rebuilds it from volume labels. `:rwcopy` creates a per-launch-dir working copy volume (`<base>--wc-<tag>`), prunable via `repo.sh gc`. On Linux, `auto` backend registers `path` repos as bind-mount aliases (no volume seeded); `runme.sh` bind-mounts the host path directly. Source-of-truth helpers live in `sandbox-common.sh`.
 
-Seeding (`repo.sh add`/`sync`) runs in a small, **shared** helper image — `ai-containers-seed` (Alpine + git/openssh-client/rsync/bash), built on demand from `Dockerfile.seed`. It is deliberately independent of the sandbox image and of `IMAGE_NAME` (one image reused by every project, not one per project), so repos can be seeded before `./build.sh` is ever run. Override with `REPO_SEED_IMAGE`. These seeding containers run as a plain `docker run` (not via `entrypoint.sh`), so the firewall does not apply to them. Note the volume name embeds `image_name`, so `repo.sh` and `runme.sh` must agree on it — see `sandbox.env` below.
+Seeding (`repo.sh add`/`sync`) runs in a small, **shared** helper image — `ai-containers-seed` (Alpine + git/openssh-client/rsync/bash), built on demand from `Dockerfile.seed`. It is deliberately independent of the sandbox image and of `IMAGE_NAME` (one image reused by every project, not one per project), so repos can be seeded before `./build.sh` is ever run. Override with `REPO_SEED_IMAGE`. These seeding containers run as a plain `docker run` (not via `entrypoint.sh`), so the firewall does not apply to them.
 
-**`sandbox.env`** (per project, written by `project-init.sh`) persists `IMAGE_NAME`. `sandbox-common.sh` sources it when `IMAGE_NAME` is not already exported, so `build.sh`/`runme.sh`/`repo.sh` resolve the same image (and the same `<image>-repo-<name>` volume names) even when run directly instead of through the launcher. An exported `IMAGE_NAME` wins. `sync-to-projects.sh` backfills it for older projects and never overwrites it.
+**`sandbox.env`** (per project, written by `project-init.sh`) persists `IMAGE_NAME`. `sandbox-common.sh` sources it when `IMAGE_NAME` is not already exported, so `build.sh`/`runme.sh`/`repo.sh` resolve the same image even when run directly instead of through the launcher. An exported `IMAGE_NAME` wins. `sync-to-projects.sh` backfills it for older projects and never overwrites it. (Repo-volume names no longer depend on `IMAGE_NAME` — they use the global `ai-containers-repo-<name>` scheme.)
 
 ### Network enforcement
 
@@ -158,6 +168,8 @@ To add domains not tied to any component (e.g. `google.com`, internal registries
 ### Conditional installs in the Dockerfile
 
 Every optional component has a corresponding `ARG INSTALL_<COMPONENT>=0|1` declared immediately before its `RUN` block. The npm-based tools (Copilot, Angular CLI, Claude Code, Codex, Gemini, Yarn) each have their own `RUN` layer so toggling one doesn't invalidate the others. The dtctl/dtmgd block skips entirely when both are disabled.
+
+`ARG AGENTS_CACHE_BUST=0` is declared immediately before the first agent layer (Copilot) and referenced in it. Because Docker's layer cache is linear, changing its value invalidates every layer from that point down (all agent installs, Kiro, graphify, …) while reusing the heavy toolchain layers above. This is the mechanism behind the fast agent refresh (`AGENTS_CACHE_BUST=$(date +%s) ./build.sh`, used automatically by `runme.sh`'s staleness check).
 
 ### Sandbox user identity
 
