@@ -241,6 +241,27 @@ RUN if [ "$INSTALL_GORELEASER" = "1" ]; then \
       rm -rf /var/lib/apt/lists/*; \
     fi
 
+# ── Vale (prose / style linter) ────────────────────────────────────────────────
+# Single self-contained Go binary from GitHub releases (vale-cli/vale), installed
+# UNPINNED (latest at build time) like goreleaser. The version is resolved from
+# the releases/latest redirect (no GitHub API token or rate limit), then the
+# matching Linux tarball is downloaded and the `vale` binary extracted to
+# /usr/local/bin. Useful in docs workspaces whose style-check phase otherwise
+# warns that "Vale isn't installed". Style packages (`vale sync`) and this
+# download both live on GitHub hosts already in allowlist-domains.d/base.txt.
+ARG INSTALL_VALE=0
+RUN if [ "$INSTALL_VALE" = "1" ]; then \
+      set -eu; \
+      ARCH=$(uname -m | sed 's/x86_64/64-bit/; s/aarch64/arm64/'); \
+      VALE_VERSION=$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
+        https://github.com/vale-cli/vale/releases/latest | sed 's#.*/tag/v##'); \
+      curl -fsSL -o /tmp/vale.tar.gz \
+        "https://github.com/vale-cli/vale/releases/download/v${VALE_VERSION}/vale_${VALE_VERSION}_Linux_${ARCH}.tar.gz"; \
+      tar -xzf /tmp/vale.tar.gz -C /usr/local/bin vale; \
+      rm -f /tmp/vale.tar.gz; \
+      vale --version; \
+    fi
+
 # ── Cleanup: remove compile-time -dev packages ─────────────────────────────────
 # Deferred from the pyenv layer so that rvm/Ruby and Rust (which need gcc/make)
 # can build successfully. Keep runtime libs (libssl3, zlib1g, etc.).

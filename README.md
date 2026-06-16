@@ -11,7 +11,7 @@ It packages a CLI-only Docker-based workspace for running AI coding agents (GitH
 
 ## What is included
 
-- `Dockerfile` builds the image from a configurable set of optional components: AI agents (GitHub Copilot CLI, Kiro CLI, Claude Code, Codex CLI, Gemini CLI), JVM toolchains (via SDKMAN: OpenJDK, GraalVM CE, Kotlin, Scala, Maven, Gradle), Node.js versions (via nvm), Python versions (via pyenv), Ruby + Rails (via rvm), Rust (via rustup), Go, cloud CLIs (AWS, Azure, kubectl, GitHub CLI), dev tools (Angular CLI, qmd, graphify, GoReleaser), and Dynatrace CLIs (dtctl, dtmgd). Node.js (latest LTS), Python (latest stable), git, jq, packet-capture tools, and the non-root sandbox user are always included.
+- `Dockerfile` builds the image from a configurable set of optional components: AI agents (GitHub Copilot CLI, Kiro CLI, Claude Code, Codex CLI, Gemini CLI), JVM toolchains (via SDKMAN: OpenJDK, GraalVM CE, Kotlin, Scala, Maven, Gradle), Node.js versions (via nvm), Python versions (via pyenv), Ruby + Rails (via rvm), Rust (via rustup), Go, cloud CLIs (AWS, Azure, kubectl, GitHub CLI), dev tools (Angular CLI, qmd, graphify, GoReleaser, Vale), and Dynatrace CLIs (dtctl, dtmgd). Node.js (latest LTS), Python (latest stable), git, jq, packet-capture tools, and the non-root sandbox user are always included.
 - `sandbox.conf` controls which optional components are built into the image and which credential directories are mounted at runtime.
 - `install-dt-tools.sh` is a build-time helper script that installs dtctl and dtmgd from GitHub releases, with optional authentication via `GITHUB_TOKEN`.
 - `entrypoint.sh` applies either a restricted firewall or a discovery mode at container startup. In both modes it creates the sandbox user and drops to it via `capsh`. Restricted mode drops `NET_ADMIN` and `NET_RAW`; discovery mode drops only `NET_ADMIN` (keeping `NET_RAW` for tcpdump).
@@ -145,6 +145,19 @@ goreleaser=OFF   # skip (default)
 > **Note:** GoReleaser is self-contained and does **not** require `go` to be enabled — the apt package's recommended `golang` dependency is skipped (`--no-install-recommends`). Enable `go` alongside it only if you also want the Go toolchain for building. The two are independent.
 
 > **Note:** Publishing a release reaches `github.com` (and `objects.githubusercontent.com`), which are allowlisted by default. If you publish to a different host (GitLab, Gitea, a custom registry), add its domain to `allowlist-domains.d/custom.txt` and rebuild.
+
+### vale — prose / style linter
+
+`vale` is a markup-aware linter for prose ([vale.sh](https://vale.sh)). It is commonly run as a "style check" phase in documentation workflows; without it installed, that phase is skipped with a warning. It is a single self-contained Go binary (no extra dependencies), installed from GitHub releases (`vale-cli/vale`) at build time.
+
+```bash
+vale=ON    # install the latest Vale binary from GitHub releases
+vale=OFF   # skip (default)
+```
+
+> **Note:** Like the AI agents and GoReleaser, Vale is installed **unpinned** (latest at build time). The version is resolved from the `releases/latest` redirect, so no GitHub API token is needed and there is no rate-limit concern. Use `./build.sh --no-cache` (or bump a cache-busting build-arg) to pick up a newer Vale later.
+
+> **Note:** The binary download and `vale sync` (which fetches style packages such as `Google`, `Microsoft`, `write-good`) use GitHub hosts (`github.com`, `*.githubusercontent.com`) that are allowlisted by default; `vale.sh` is added when `vale=ON` for package-index lookups. If your `.vale.ini` pulls packages from another host, add it to `allowlist-domains.d/custom.txt` and rebuild. Repos that vendor their `StylesPath` need no network at all.
 
 ### Dynatrace CLIs (dtctl / dtmgd)
 

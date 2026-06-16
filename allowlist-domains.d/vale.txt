@@ -1,0 +1,5 @@
+# Vale prose linter — included when vale=ON.
+# The binary download and `vale sync` style packages are hosted on GitHub
+# (github.com / *.githubusercontent.com), already covered by base.txt. vale.sh
+# is the package index / registry host some `vale sync` lookups resolve through.
+vale.sh
