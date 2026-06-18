@@ -481,6 +481,7 @@ Agent dotfile directories are sourced from the active container group (`~/.ai-co
 | `<group>/.ssh/` | `~/.ssh` | read-write | always |
 | `<group>/.agents/` | `~/.agents` | read-write | always |
 | `~/.gitconfig` | `~/.gitconfig` | read-only | always (if file exists) |
+| `~/.gitignore_global` | `~/.gitignore_global` | read-only | always (if file exists) |
 | `<group>/.config/gh/` | `~/.config/gh` | read-write | `github-cli` or `copilot` |
 | `<group>/.copilot/` | `~/.copilot` | read-write | `copilot` |
 | `<group>/.kiro/` | `~/.kiro` | read-write | `kiro` |

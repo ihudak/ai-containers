@@ -183,7 +183,7 @@ Agent dotfile dirs (`.claude`, `.copilot`, `.kiro`, `.codex`, `.gemini`, `.confi
 
 `runme.sh` always creates the group directory and its `.ssh/` + `.agents/` scaffold on first run. Per-component dirs (`.claude/`, `.copilot/`, etc.) are created only when the corresponding component is enabled in `sandbox.conf`.
 
-Host-shared paths that are not group-scoped (unchanged): `.gitconfig` (ro), `.aws`, `.azure`, `.kube`, `.config/dtctl`, `.config/dtmgd`, `.yarn`.
+Host-shared paths that are not group-scoped (unchanged): `.gitconfig` (ro), `.gitignore_global` (ro), `.aws`, `.azure`, `.kube`, `.config/dtctl`, `.config/dtmgd`, `.yarn`.
 
 ### macOS host notes
 

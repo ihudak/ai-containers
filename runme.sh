@@ -544,6 +544,7 @@ run_container() {
   add_mount_if_exists      config_mount_flags "$group_root/.ssh"         "$dev_home/.ssh"
   add_mount_if_exists      config_mount_flags "$group_root/.agents"      "$dev_home/.agents"
   add_file_mount_if_exists config_mount_flags "$HOME/.gitconfig"         "$dev_home/.gitconfig" ro
+  add_file_mount_if_exists config_mount_flags "$HOME/.gitignore_global"  "$dev_home/.gitignore_global" ro
 
   if any_enabled github-cli copilot; then
     if [[ "$group" != "host" ]]; then
