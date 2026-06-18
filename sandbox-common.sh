@@ -248,7 +248,11 @@ repo_name_from_volume() {
   local vol="$1" n
   n="$(docker_volume_label "$vol" 'ai-containers.repo')"
   [[ -z "$n" ]] && n="${vol#"${repo_volume_prefix}"-repo-}"
-  printf '%s' "$n"
+  # Emit a trailing newline so callers that iterate over multiple volumes
+  # (e.g. cmd_list) get one name per line. Command-substitution callers
+  # (name="$(repo_name_from_volume ...)") strip the trailing newline, so this
+  # is safe for them too.
+  printf '%s\n' "$n"
 }
 
 # Returns 0 if any running container currently mounts docker volume $1.
@@ -309,6 +313,11 @@ repo_registry_upsert() {
   repo_registry_ensure
   local tmp; tmp="$(mktemp)"
   grep -vE "^${name}\|" "$repo_registry_file" > "$tmp" 2>/dev/null || true
+  # Guard against a carried-over final line that lacks a trailing newline (older
+  # writer, hand-edit, or partial/interrupted write). On GNU coreutils (Linux),
+  # grep preserves the missing newline, so appending the new record straight onto
+  # it would glue two records into one line. Add the missing newline first.
+  if [[ -s "$tmp" && -n "$(tail -c1 "$tmp")" ]]; then printf '\n' >> "$tmp"; fi
   printf '%s|%s|%s|%s|%s|%s\n' "$name" "$type" "$source" "$added" "$synced" "$backend" >> "$tmp"
   mv "$tmp" "$repo_registry_file"
 }
@@ -321,11 +330,15 @@ repo_registry_remove() {
   mv "$tmp" "$repo_registry_file"
 }
 
-# Echo each registered repo name (one per line).
+# Echo each registered repo name (one per line). Uses awk (not grep|cut) so the
+# output is always newline-terminated even when repos.conf's final line lacks a
+# trailing newline — on GNU coreutils (Linux) cut would otherwise pass that
+# missing newline through, gluing the last name onto the next token in callers
+# that concatenate sources (e.g. cmd_list).
 repo_registry_names() {
   [[ -f "$repo_registry_file" ]] || return 0
-  # '|| true' so a no-match grep (empty registry) doesn't trip set -e/pipefail.
-  grep -vE '^[[:space:]]*(#|$)' "$repo_registry_file" 2>/dev/null | cut -d'|' -f1 || true
+  # '|| true' so an empty/no-match registry doesn't trip set -e/pipefail.
+  awk -F'|' '!/^[[:space:]]*(#|$)/ && $1 != "" { print $1 }' "$repo_registry_file" 2>/dev/null || true
 }
 
 # Returns 0 if the docker volume backing repo $1 exists.

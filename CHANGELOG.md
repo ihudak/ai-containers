@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Fixed
+
+- **`repo.sh list` no longer shows a phantom concatenated repo.** `repo_name_from_volume` emitted each name without a trailing newline (`printf '%s'`), so `cmd_list`'s per-volume loop ran the names together — with two repos `cluster` and `docs` it produced a bogus `clusterdocs` entry (`TYPE ?`, `MISSING`), and more with additional repos. It now emits one name per line (`printf '%s\n'`). The artifact was display-only — `repos.conf` and the volumes were never affected — so existing setups self-heal on the next `list`.
+
+- **Registry reads/writes are robust to a missing final newline in `repos.conf`.** On GNU coreutils (Linux), `grep`/`cut` preserve a final line that lacks a trailing newline, so a hand-edited or partially written registry could glue two records on the next `repo.sh add`/`sync` (`repo_registry_upsert` now adds the missing newline before appending) or yield an unterminated last name in the `list` union (`repo_registry_names` now uses `awk`, which always newline-terminates its output). No effect on well-formed registries; harmless on macOS/BSD, which already normalize the newline.
+
 ## v0.4.1 — 2026-06-16
 
 ### Added
