@@ -183,7 +183,9 @@ Agent dotfile dirs (`.claude`, `.copilot`, `.kiro`, `.codex`, `.gemini`, `.confi
 
 `runme.sh` always creates the group directory and its `.ssh/` + `.agents/` scaffold on first run. Per-component dirs (`.claude/`, `.copilot/`, etc.) are created only when the corresponding component is enabled in `sandbox.conf`.
 
-Host-shared paths that are not group-scoped (unchanged): `.gitconfig` (ro), `.gitignore_global` (ro), `.aws`, `.azure`, `.kube`, `.config/dtctl`, `.config/dtmgd`, `.yarn`.
+Host-shared paths that are **not** group-scoped: `.aws`, `.azure`, `.kube`, `.config/dtctl`, `.config/dtmgd`, `.yarn`.
+
+`.gitconfig` and `.gitignore_global` are **group-scoped** (non-`host` groups): `runme.sh` copies them from `$HOME` into `~/.ai-containers/<group>/` on every container start, then mounts from the group copy. This prevents a macOS VirtioFS stale-inode issue where atomically replacing a file on the host (as git, editors, and other tools do) causes the bind-mounted view inside the container to show link count 0 and fail all reads. With the `host` group both files are still mounted directly from `$HOME`. If you edit either file while a container is running, restart the container to pick up the changes.
 
 ### macOS host notes
 

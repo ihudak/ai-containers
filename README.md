@@ -480,8 +480,8 @@ Agent dotfile directories are sourced from the active container group (`~/.ai-co
 |---|---|---|---|
 | `<group>/.ssh/` | `~/.ssh` | read-write | always |
 | `<group>/.agents/` | `~/.agents` | read-write | always |
-| `~/.gitconfig` | `~/.gitconfig` | read-only | always (if file exists) |
-| `~/.gitignore_global` | `~/.gitignore_global` | read-only | always (if file exists) |
+| `<group>/.gitconfig` ¹ | `~/.gitconfig` | read-only | always (if file exists) |
+| `<group>/.gitignore_global` ¹ | `~/.gitignore_global` | read-only | always (if file exists) |
 | `<group>/.config/gh/` | `~/.config/gh` | read-write | `github-cli` or `copilot` |
 | `<group>/.copilot/` | `~/.copilot` | read-write | `copilot` |
 | `<group>/.kiro/` | `~/.kiro` | read-write | `kiro` |
@@ -497,7 +497,9 @@ Agent dotfile directories are sourced from the active container group (`~/.ai-co
 | `~/.config/dtctl` | `~/.config/dtctl` | read-write | `dtctl` |
 | `~/.config/dtmgd` | `~/.config/dtmgd` | read-write | `dtmgd` |
 
-When `AI_CONTAINER_GROUP=host`, all group-scoped paths above are sourced directly from `$HOME` instead.
+¹ `runme.sh` copies these files from `$HOME` into the group directory on every container start and mounts from the copy. This avoids a macOS VirtioFS issue where atomically replacing a file on the host (as git and most editors do) causes the bind-mounted view inside the container to become unreadable. If you edit either file while a container is running, restart the container to pick up the changes.
+
+When `AI_CONTAINER_GROUP=host`, all group-scoped paths above are sourced directly from `$HOME` instead (including `.gitconfig` and `.gitignore_global`).
 
 ## Container groups
 

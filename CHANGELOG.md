@@ -12,6 +12,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **Registry reads/writes are robust to a missing final newline in `repos.conf`.** On GNU coreutils (Linux), `grep`/`cut` preserve a final line that lacks a trailing newline, so a hand-edited or partially written registry could glue two records on the next `repo.sh add`/`sync` (`repo_registry_upsert` now adds the missing newline before appending) or yield an unterminated last name in the `list` union (`repo_registry_names` now uses `awk`, which always newline-terminates its output). No effect on well-formed registries; harmless on macOS/BSD, which already normalize the newline.
 
+- **`.gitconfig` and `.gitignore_global` are now group-scoped.** `runme.sh` copies both files from `$HOME` into `~/.ai-containers/<group>/` on every container start and mounts from the group copy instead of directly from `$HOME`. This fixes a macOS VirtioFS stale-inode bug: when git, editors, or any tool atomically replace a file on the host after a container starts, Docker's bind mount still references the old inode (now with link count 0), so the file appears in directory listings but all reads fail with "No such file or directory". Mounting from the group copy — which nothing replaces while a container is running — avoids the issue. The `host` group is unchanged (still mounts directly from `$HOME`). If either file is edited on the host while a container is running, restart the container to pick up the changes.
+
 ## v0.4.1 — 2026-06-16
 
 ### Added

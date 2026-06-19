@@ -540,11 +540,24 @@ run_container() {
   fi
 
   # ── Credential mounts (enabled components only) ──────────────────────────────
+  # Stage git config files into the group directory before mounting. Docker Desktop
+  # on macOS (VirtioFS) bind-mounts a specific inode; if git/editors atomically
+  # replace the file after the container starts the old inode gets link count 0 and
+  # reads fail. Mounting from the group dir (which nothing replaces while running)
+  # avoids this. The copy is refreshed on every container start.
+  local gitconfig_src="$HOME/.gitconfig"
+  local gitignore_src="$HOME/.gitignore_global"
+  if [[ "$group" != "host" ]]; then
+    [[ -f "$HOME/.gitconfig"        ]] && cp "$HOME/.gitconfig"        "$group_root/.gitconfig"        2>/dev/null || true
+    [[ -f "$HOME/.gitignore_global" ]] && cp "$HOME/.gitignore_global" "$group_root/.gitignore_global" 2>/dev/null || true
+    gitconfig_src="$group_root/.gitconfig"
+    gitignore_src="$group_root/.gitignore_global"
+  fi
   local config_mount_flags=()
   add_mount_if_exists      config_mount_flags "$group_root/.ssh"         "$dev_home/.ssh"
   add_mount_if_exists      config_mount_flags "$group_root/.agents"      "$dev_home/.agents"
-  add_file_mount_if_exists config_mount_flags "$HOME/.gitconfig"         "$dev_home/.gitconfig" ro
-  add_file_mount_if_exists config_mount_flags "$HOME/.gitignore_global"  "$dev_home/.gitignore_global" ro
+  add_file_mount_if_exists config_mount_flags "$gitconfig_src"           "$dev_home/.gitconfig" ro
+  add_file_mount_if_exists config_mount_flags "$gitignore_src"           "$dev_home/.gitignore_global" ro
 
   if any_enabled github-cli copilot; then
     if [[ "$group" != "host" ]]; then
