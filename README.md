@@ -6,7 +6,35 @@ It packages a CLI-only Docker-based workspace for running AI coding agents (GitH
 
 ## Requirements
 
-- **Docker ≥ 23** (BuildKit is required and is the default since Docker 23). Verify with `docker --version`.
+- **Docker ≥ 23** with BuildKit (default since Docker 23) and `docker buildx`. Verify with `docker --version` and `docker buildx version`.
+
+  | Platform | Recommended runtime | Notes |
+  |----------|---------------------|-------|
+  | **Linux** | [Docker Engine](https://docs.docker.com/engine/install/) | Socket at `/var/run/docker.sock` by default. |
+  | **macOS** | [Docker Desktop](https://www.docker.com/products/docker-desktop/) or [Colima](https://github.com/abiosoft/colima) | See macOS note below. |
+  | **Windows** | [Docker Desktop](https://www.docker.com/products/docker-desktop/) + WSL2 backend | Run the scripts from inside a WSL2 shell. |
+
+  **macOS with Colima:** Colima is a lightweight, open-source alternative to Docker Desktop. Install it with Homebrew, then follow these one-time setup steps:
+
+  ```bash
+  brew install colima docker docker-buildx
+  ```
+
+  1. **Start Colima before building or running containers.** Size the VM to fit the image you intend to build and the container resources you plan to use (see [Resource limits](#resource-limits)):
+     ```bash
+     colima start --cpu 4 --memory 8 --disk 100
+     ```
+     Check status at any time with `colima status`.
+
+  2. **Set `DOCKER_HOST` to point to Colima's socket.** Colima places its socket at `~/.colima/default/docker.sock`, not `/var/run/docker.sock`. Without this, every `docker` command fails with `dial unix /var/run/docker.sock: connect: no such file or directory`. Add to your shell profile (`~/.zshrc` or `~/.bashrc`) and reload:
+     ```bash
+     export DOCKER_HOST="unix://${HOME}/.colima/default/docker.sock"
+     ```
+
+  3. **Register buildx as the default builder** (suppresses the legacy-builder deprecation warning and is required for BuildKit secrets used by `./build.sh`):
+     ```bash
+     docker buildx install
+     ```
 - **Bash ≥ 4.4** on the host (for `runme.sh`). Linux distributions ship this by default. macOS ships bash 3.2 — install a newer version via `brew install bash` if needed.
 
 ## What is included
