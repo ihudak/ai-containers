@@ -26,6 +26,7 @@ Version-list components (`node`, `python`, `ruby`, `rails`, `rust`, `go`) accept
 - `ruby`, `rails`, and `angular-cli` accept only a **single version** (not a comma-separated list).
 - SDKMAN-managed components (`openjdk`, `graalvm-ce`, `graalvm-oracle`, `kotlin`, `scala`, `maven`, `gradle`) require **full patch versions** (e.g., `openjdk=21.0.11`, not `21`).
 - `dtctl` and `dtmgd` accept `ON` (auto-detect latest from GitHub), `x.y.z` (pinned), or `OFF`.
+- `node` always installs the latest LTS (required by the AI agents); `node=20,22` adds those versions alongside it. `nvm-version` pins the nvm release used to install Node (e.g., `nvm-version=v0.40.5`); leave empty for the Dockerfile default.
 
 ## Commands
 

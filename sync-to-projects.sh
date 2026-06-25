@@ -108,11 +108,15 @@ sync_project() {
   # Shared scripts and build files
   for f in Dockerfile Dockerfile.seed .dockerignore sandbox-common.sh build.sh runme.sh repo.sh entrypoint.sh \
             refresh-ipset-allowlist.sh capture-blocked-traffic.sh \
-            capture-agent-destinations.sh install-dt-tools.sh README.md; do
+            capture-agent-destinations.sh install-dt-tools.sh; do
     if [[ -f "${script_dir}/${f}" ]]; then
       cp "${script_dir}/${f}" "${dest}/${f}"
     fi
   done
+
+  # README documents central-repo orchestration (project-init/sync) that doesn't
+  # exist in a child working copy. Children are leaves: runtime files only.
+  [[ -f "${dest}/README.md" ]] && rm -f "${dest}/README.md"
 
   # sandbox.conf diff warning — never overwrite, just inform
   if [[ -f "${dest}/sandbox.conf" ]]; then
