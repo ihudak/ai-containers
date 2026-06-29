@@ -122,6 +122,57 @@ argument may also be `@<repo>` to use a registered repo volume as the working di
 Agent outputs (`.agent-blocked/`, `.agent-discovery/`) are written to the host directory
 where you launched `runme.sh` (and are git- and docker-ignored).
 
+## Environment variables
+
+These configure `runme.sh` at launch time. Set any of them **inline** for a single run
+(`VAULT_PATH=/path ./runme.sh restricted`) or **export them in your host shell profile**
+(`~/.bash_profile`, `~/.zshrc`) so they become the default for every container you start.
+`VAULT_PATH` and `SPECS_PATH` are designed for the profile-export pattern: point them once at
+host directories and every container mounts them and sees the variable re-exported to its
+in-container path.
+
+The **In container** column says whether the variable is visible to the agents *inside* the
+container:
+
+- **forwarded** — passed through unchanged (`-e VAR=$VAR`).
+- **→ `/path`** — re-exported pointing at the in-container mount path (a host-directory pointer).
+- **mount** — attaches a filesystem mount; not exposed as an environment variable inside.
+- **—** — configures the launcher / `docker run` only; not visible inside the container.
+
+| Variable | Purpose | Default | In container |
+|---|---|---|---|
+| `IMAGE_NAME` | Image tag to run. Persisted per project in `.ai-containers/sandbox.env`. | `ai-sandbox` | forwarded |
+| `AI_CONTAINER_GROUP` | Which dotfile tree (group) to mount: `default`, `host` (mounts `$HOME`), or a custom `~/.ai-containers/<name>/`. | `default` | — |
+| `AI_CONTAINER_GROUP_INIT` | Non-interactive first-time group bootstrap: `clean` \| `from:host` \| `from:<name>`. | interactive prompt | — |
+| `AI_CONTAINER_HOST_ACK` | Set `1` to skip the macOS `host`-group acknowledgement. Ignored on Linux. | `0` | — |
+| `AGENT_REBUILD_MAX_AGE_HOURS` | Offer to refresh the bundled agents when the image is at least this many hours old. `0`/`off`/`never` disables. | `72` | — |
+| `AGENT_REBUILD_ACK` | On a non-TTY run, set `1` to rebuild a stale image without prompting. | `0` | — |
+| `SANDBOX_UID` / `SANDBOX_GID` / `SANDBOX_USER` / `SANDBOX_GROUP` | Override the container user identity. | detected from host (`id`) | forwarded |
+| `REPOS` | Space-separated **registered** repo volumes to attach under `/workspace/<name>`; append `:ro` (default), `:rw`, or `:rwcopy`. Register first with `./repo.sh add`. | none | mount |
+| `REPO_BACKEND` | How a repo is backed: `auto` \| `volume` \| `bind` (chosen at `repo.sh add` time). | `auto` | — |
+| `EXTRA_MOUNTS` | Space-separated extra host directories bind-mounted under `/workspace/<basename>`; append `:ro`/`:rw`. | none | mount |
+| `VAULT_PATH` | Host directory mounted read-write at `/workspace/obsidian`. An Obsidian vault is the typical use, but any markdown corpus works — e.g. imported Jira tickets under `$VAULT_PATH/jira-products` (tickets as markdown with their images, attachments, comments, and linked tickets), which several workflows read heavily. Pair with `qmd=ON` for in-container search. | none | → `/workspace/obsidian` |
+| `SPECS_PATH` | Host repo of AI-ready specifications, design documents, and development plans, mounted read-write at `/workspace/specs`. Consumed by spec-driven workflows (e.g. the dev-workflows plugin). | none | → `/workspace/specs` |
+| `PREVIEW_PORTS` | Space-separated ports (or `host:container` pairs) to publish for dev servers. | none | — |
+| `CONTAINER_CPUS` | CPU limit. | `1.0` | — |
+| `CONTAINER_MEMORY` | Hard memory limit. | `4g` | — |
+| `CONTAINER_MEMORY_RESERVATION` | Soft memory limit (must be ≤ `CONTAINER_MEMORY`). | `2g` | — |
+| `CONTAINER_MEMORY_SWAP` | Memory + swap total (≥ `CONTAINER_MEMORY`; set equal to disable swap, `-1` for unlimited). | `4g` | — |
+| `CONTAINER_NOFILE` | Open-file-descriptor limit, `soft[:hard]`. | `1048576:1048576` | — |
+| `SELF_HEALING_ENABLED` | Set `0` to disable reactive IP auto-allowing (logging only). | `1` | forwarded |
+| `ALLOW_IPV6_BYPASS` | Set `1` to suppress the `ip6tables`-unavailable warning (WSL2/nf_tables). | `0` | see note¹ |
+| `COPILOT_GITHUB_TOKEN` | Copilot CLI auth token; bypasses device-flow OAuth. Auto-extracted from the group's `gh` `hosts.yml` when unset. | auto from `gh` | forwarded |
+| `GITHUB_PERSONAL_ACCESS_TOKEN` | Forwarded as-is for tools expecting this exact name (github MCP servers, Claude Code github plugin). | none | forwarded |
+
+¹ `ALLOW_IPV6_BYPASS` is read by the container's firewall init (`entrypoint.sh`); `runme.sh`
+does not currently forward it from the host, so it takes effect only when present in the
+container's own environment.
+
+See [Mounting an Obsidian vault](#mounting-an-obsidian-vault),
+[Mounting a specs repository](#mounting-a-specs-repository),
+[Mounting additional repositories](#mounting-additional-repositories), and
+[Resource limits](#resource-limits) for the longer treatments.
+
 ## sandbox.conf — component configuration
 
 ### Boolean components (ON / OFF)
@@ -486,6 +537,8 @@ This means **one `REPOS="cluster:ro app:rw"` line works on both platforms** — 
 ## Mounting an Obsidian vault
 
 Set `VAULT_PATH` to a host Obsidian vault to mount it at `/workspace/obsidian` (read-write). It is also re-exported as `VAULT_PATH=/workspace/obsidian` inside the container so agent skills/workflows that consume the variable resolve to the in-container mount point.
+
+An Obsidian vault is the typical source, but `VAULT_PATH` is useful even without Obsidian — it works as a vault for any markdown corpus. A common pattern is imported Jira documents under `$VAULT_PATH/jira-products`: Jira tickets exported as markdown together with their images, attachments, comments, and linked tickets. Several in-container workflows read this tree heavily, so pointing `VAULT_PATH` at such a directory is valuable on its own.
 
 ```bash
 VAULT_PATH=/path/to/obsidian-vault \

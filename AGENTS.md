@@ -84,25 +84,37 @@ docker run --rm --entrypoint capture-agent-destinations.sh \
   -v "/path/to/launch-dir:/workspace" "${IMAGE_NAME:-ai-sandbox}" extract /workspace/.agent-discovery
 ```
 
-**Key env vars for `runme.sh`:**
-- `AI_CONTAINER_GROUP` — selects which dotfile tree mounts into the container: `default` (the implicit default), `host` (mount $HOME directly — Linux backward-compatible behavior; macOS shows a warning and requires `yes` or `AI_CONTAINER_HOST_ACK=1`), or a custom name (e.g. `docs`, `java-backend`). Custom groups live at `~/.ai-containers/<name>/`.
-- `AI_CONTAINER_GROUP_INIT` — non-interactive bootstrap override when a group dir doesn't exist yet. Values: `clean` (start empty), `from:host` (copy from $HOME), `from:<existing-group>` (copy from another group). When unset on a TTY, an interactive prompt asks instead.
-- `AI_CONTAINER_HOST_ACK` — set to `1` to silently bypass the macOS warning when `AI_CONTAINER_GROUP=host`. Ignored on Linux. Per-invocation; not persisted.
-- `IMAGE_NAME` — image tag (default: `ai-sandbox`). Persisted per project in `<project>/.ai-containers/sandbox.env` and sourced by `sandbox-common.sh` when not exported, so `build.sh`/`runme.sh`/`repo.sh` agree on it.
-- `AGENT_REBUILD_MAX_AGE_HOURS` — if the image is at least this many hours old, `runme.sh` offers to rebuild it so the bundled agents (Copilot/Claude/Codex/Gemini/Kiro) are refreshed; they are installed **unpinned** at build time and otherwise never update. Default `72` (3 days). Set `0` (or `off`/`never`) to disable. The rebuild is a **targeted agent-layer refresh** via the `AGENTS_CACHE_BUST` build-arg — heavy toolchain layers (Node/JVM/Python/Ruby/Rust/Go) are reused, so it is fast.
-- `AGENT_REBUILD_ACK` — on a non-TTY run, set `1` to perform the stale-image rebuild without prompting; otherwise a non-TTY run with a stale image just warns and continues.
-- `SANDBOX_UID/GID/USER/GROUP` — override the auto-detected host user identity
-- `REPOS` — space-separated registered repo volumes to attach under `/workspace/<name>`, each `:ro` (default), `:rw`, or `:rwcopy`. Register first with `./repo.sh add`. Unregistered/missing → abort before start.
-- `REPO_BACKEND` — `auto` (default) | `volume` | `bind`. `auto` = named volume on macOS, host bind mount for `path` repos on Linux. Decided at `repo.sh add` time and stored in the registry.
-- `EXTRA_MOUNTS` — space-separated extra host paths bind-mounted under `/workspace/<basename>`, e.g. `EXTRA_MOUNTS="/path/to/a:ro /path/to/b"`. Same-basename collisions with `REPOS` or the positional primary are errors.
-- `VAULT_PATH` — host Obsidian vault mounted at `/workspace/obsidian`; also re-exported as `VAULT_PATH=/workspace/obsidian` inside the container. Pair with `qmd=ON` in `sandbox.conf` for in-container markdown search.
-- `SPECS_PATH` — host repo of AI-ready specifications, design documents, and development plans, mounted read-write at `/workspace/specs`; also re-exported as `SPECS_PATH=/workspace/specs` inside the container. Consumed by spec-driven workflows (e.g. the dev-workflows plugin). Set it once in your host shell profile to make it the default for every container, the same way `VAULT_PATH` works.
-- `PREVIEW_PORTS` — space-separated ports (or `host:container` pairs) to publish for dev servers, e.g. `PREVIEW_PORTS="3000 8080:8080"`
-- `CONTAINER_CPUS` — CPU limit for the running container (default: `1.0`)
-- `CONTAINER_MEMORY` — memory limit for the running container (default: `4g`)
-- `ALLOW_IPV6_BYPASS=1` — suppress the visual warning when `ip6tables` is unavailable (WSL2/nf_tables environments)
-- `SELF_HEALING_ENABLED=0` — disable reactive IP auto-allowing (logging only)
-- `COPILOT_GITHUB_TOKEN` — forwarded into the container for Copilot CLI authentication (bypasses device-flow OAuth). When not set, auto-extracted from the group's `~/.config/gh/hosts.yml`. Accepts: fine-grained PAT with "Copilot Requests" permission, or gh CLI OAuth token.
+**Key env vars for `runme.sh`:** set inline for one run (`VAULT_PATH=/path ./runme.sh restricted`)
+or export in the host shell profile to default for every container. The **In container** column
+marks visibility to agents inside the container: **forwarded** (passed through unchanged),
+**→ `/path`** (re-exported pointing at the in-container mount path), **mount** (filesystem mount,
+no env var inside), **—** (launcher/`docker run` only). `VAULT_PATH`/`SPECS_PATH` are the
+host-directory pointers meant to be exported once in the host profile.
+
+| Variable | Purpose | Default | In container |
+|---|---|---|---|
+| `IMAGE_NAME` | Image tag to run. Persisted per project in `<project>/.ai-containers/sandbox.env` and sourced by `sandbox-common.sh` when not exported. | `ai-sandbox` | forwarded |
+| `AI_CONTAINER_GROUP` | Which dotfile tree (group) to mount: `default`, `host` (mounts `$HOME`), or a custom `~/.ai-containers/<name>/`. | `default` | — |
+| `AI_CONTAINER_GROUP_INIT` | Non-interactive first-time group bootstrap: `clean` \| `from:host` \| `from:<existing-group>`. | interactive prompt | — |
+| `AI_CONTAINER_HOST_ACK` | Set `1` to silently bypass the macOS `host`-group warning. Ignored on Linux; per-invocation. | `0` | — |
+| `AGENT_REBUILD_MAX_AGE_HOURS` | Offer to refresh the bundled agents (targeted `AGENTS_CACHE_BUST` rebuild) when the image is at least this many hours old. `0`/`off`/`never` disables. | `72` | — |
+| `AGENT_REBUILD_ACK` | On a non-TTY run, set `1` to rebuild a stale image without prompting. | `0` | — |
+| `SANDBOX_UID` / `SANDBOX_GID` / `SANDBOX_USER` / `SANDBOX_GROUP` | Override the auto-detected container user identity. | detected from host (`id`) | forwarded |
+| `REPOS` | Space-separated **registered** repo volumes to attach under `/workspace/<name>`, each `:ro` (default), `:rw`, or `:rwcopy`. Register first with `./repo.sh add`; unregistered/missing → abort. | none | mount |
+| `REPO_BACKEND` | How a repo is backed: `auto` \| `volume` \| `bind`. Decided at `repo.sh add` time and stored in the registry. | `auto` | — |
+| `EXTRA_MOUNTS` | Space-separated extra host paths bind-mounted under `/workspace/<basename>`; append `:ro`/`:rw`. Same-basename collisions with `REPOS`/primary are errors. | none | mount |
+| `VAULT_PATH` | Host directory mounted read-write at `/workspace/obsidian`. An Obsidian vault is typical, but any markdown corpus works — e.g. imported Jira tickets under `$VAULT_PATH/jira-products` (tickets as markdown with their images, attachments, comments, and linked tickets), which several workflows read heavily. Pair with `qmd=ON` for in-container search. | none | → `/workspace/obsidian` |
+| `SPECS_PATH` | Host repo of AI-ready specifications, design documents, and development plans, mounted read-write at `/workspace/specs`. Consumed by spec-driven workflows (e.g. the dev-workflows plugin). | none | → `/workspace/specs` |
+| `PREVIEW_PORTS` | Space-separated ports (or `host:container` pairs) to publish for dev servers. | none | — |
+| `CONTAINER_CPUS` | CPU limit for the running container. | `1.0` | — |
+| `CONTAINER_MEMORY` | Hard memory limit. | `4g` | — |
+| `CONTAINER_MEMORY_RESERVATION` | Soft memory limit (must be ≤ `CONTAINER_MEMORY`). | `2g` | — |
+| `CONTAINER_MEMORY_SWAP` | Memory + swap total (≥ `CONTAINER_MEMORY`; set equal to disable swap, `-1` for unlimited). | `4g` | — |
+| `CONTAINER_NOFILE` | Open-file-descriptor limit, `soft[:hard]`. | `1048576:1048576` | — |
+| `SELF_HEALING_ENABLED` | Set `0` to disable reactive IP auto-allowing (logging only). | `1` | forwarded |
+| `ALLOW_IPV6_BYPASS` | Set `1` to suppress the `ip6tables`-unavailable warning (WSL2/nf_tables). Read by the container's firewall init; **not** currently forwarded by `runme.sh`, so it takes effect only when present in the container's own environment. | `0` | see note |
+| `COPILOT_GITHUB_TOKEN` | Copilot CLI auth token; bypasses device-flow OAuth. When unset, auto-extracted from the group's `~/.config/gh/hosts.yml`. Accepts a fine-grained PAT with "Copilot Requests" permission or a `gh` OAuth token. | auto from `gh` | forwarded |
+| `GITHUB_PERSONAL_ACCESS_TOKEN` | Forwarded as-is for tools that expect this exact name (github MCP servers, Claude Code github plugin). | none | forwarded |
 
 ## Architecture
 
