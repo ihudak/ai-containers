@@ -160,13 +160,9 @@ container:
 | `CONTAINER_MEMORY_SWAP` | Memory + swap total (≥ `CONTAINER_MEMORY`; set equal to disable swap, `-1` for unlimited). | `4g` | — |
 | `CONTAINER_NOFILE` | Open-file-descriptor limit, `soft[:hard]`. | `1048576:1048576` | — |
 | `SELF_HEALING_ENABLED` | Set `0` to disable reactive IP auto-allowing (logging only). | `1` | forwarded |
-| `ALLOW_IPV6_BYPASS` | Set `1` to suppress the `ip6tables`-unavailable warning (WSL2/nf_tables). | `0` | see note¹ |
+| `ALLOW_IPV6_BYPASS` | Set `1` to suppress the `ip6tables`-unavailable warning (WSL2/nf_tables). | `0` | forwarded |
 | `COPILOT_GITHUB_TOKEN` | Copilot CLI auth token; bypasses device-flow OAuth. Auto-extracted from the group's `gh` `hosts.yml` when unset. | auto from `gh` | forwarded |
 | `GITHUB_PERSONAL_ACCESS_TOKEN` | Forwarded as-is for tools expecting this exact name (github MCP servers, Claude Code github plugin). | none | forwarded |
-
-¹ `ALLOW_IPV6_BYPASS` is read by the container's firewall init (`entrypoint.sh`); `runme.sh`
-does not currently forward it from the host, so it takes effect only when present in the
-container's own environment.
 
 See [Mounting an Obsidian vault](#mounting-an-obsidian-vault),
 [Mounting a specs repository](#mounting-a-specs-repository),

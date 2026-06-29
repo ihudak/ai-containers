@@ -688,6 +688,7 @@ run_container() {
     -e SANDBOX_GROUP="${SANDBOX_GROUP:-$(id -gn)}" \
     ${git_optional_locks_env[@]+"${git_optional_locks_env[@]}"} \
     ${SELF_HEALING_ENABLED:+-e SELF_HEALING_ENABLED="$SELF_HEALING_ENABLED"} \
+    ${ALLOW_IPV6_BYPASS:+-e ALLOW_IPV6_BYPASS="$ALLOW_IPV6_BYPASS"} \
     ${GITHUB_PERSONAL_ACCESS_TOKEN:+-e GITHUB_PERSONAL_ACCESS_TOKEN="$GITHUB_PERSONAL_ACCESS_TOKEN"} \
     ${copilot_token:+-e COPILOT_GITHUB_TOKEN="$copilot_token"} \
     ${vault_env_args[@]+"${vault_env_args[@]}"} \
