@@ -25,6 +25,12 @@ Because `runme.sh` reads `SPECS_PATH` from the invoking shell environment, an ex
 shell profile (e.g. `.bash_profile`) automatically becomes the container default — exactly as with
 `VAULT_PATH`. No additional defaulting logic is required.
 
+**Note — re-introduction:** `SPECS_PATH` (and `DOCS_PATH`) existed previously, mounted at the
+top-level `/specs`, and were removed on 2026-06-12 during the `/workspace`-umbrella consolidation.
+This re-introduces only `SPECS_PATH`, now under the umbrella at `/workspace/specs` with env
+re-export and a name-collision guard (neither of which the old version had). `DOCS_PATH` stays
+removed; `runme.sh` and `README.md` narrow their removal notes to `DOCS_PATH` only.
+
 ## Behavior (mirrors `VAULT_PATH`)
 
 1. `runme.sh` reads `SPECS_PATH`, expands a leading `~`, and resolves the real path.
@@ -73,11 +79,5 @@ All edits are surgical and match the existing `VAULT_PATH` style.
 - No `qmd` coupling / search warning.
 - No read-only variant.
 - No auto-registration as a `REPOS` volume.
-
-**Note — re-introduction:** `SPECS_PATH` (and `DOCS_PATH`) existed previously, mounted at the
-top-level `/specs`, and were removed on 2026-06-12 during the `/workspace`-umbrella consolidation.
-This re-introduces only `SPECS_PATH`, now under the umbrella at `/workspace/specs` with env
-re-export and a name-collision guard (neither of which the old version had). `DOCS_PATH` stays
-removed; `runme.sh` and `README.md` narrow their removal notes to `DOCS_PATH` only.
 
 `SPECS_PATH` is purely a convenience bind-mount plus env propagation, exactly like `VAULT_PATH`.

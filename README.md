@@ -494,7 +494,7 @@ VAULT_PATH=/path/to/obsidian-vault \
 
 When `VAULT_PATH` is set, set `qmd=ON` in `sandbox.conf` and rebuild — `runme.sh` warns at startup if the vault is mounted but qmd was not baked into the image. `qmd` is the on-device markdown search engine [@tobilu/qmd](https://github.com/tobi/qmd), installed globally via npm.
 
-> The previous `DOCS_PATH` (`/docs`) mount has been removed. Keep documentation inside a repo (mounted under `/workspace`) or in the Obsidian vault. (`SPECS_PATH` now mounts at `/workspace/specs` — see above.)
+> The previous `DOCS_PATH` (`/docs`) mount has been removed. Keep documentation inside a repo (mounted under `/workspace`) or in the Obsidian vault. (`SPECS_PATH` now mounts at `/workspace/specs` — see the next section.)
 
 ## Mounting a specs repository
 
