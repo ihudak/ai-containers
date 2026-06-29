@@ -88,8 +88,9 @@ docker run --rm --entrypoint capture-agent-destinations.sh \
 or export in the host shell profile to default for every container. The **In container** column
 marks visibility to agents inside the container: **forwarded** (passed through unchanged),
 **→ `/path`** (re-exported pointing at the in-container mount path), **mount** (filesystem mount,
-no env var inside), **—** (launcher/`docker run` only). `VAULT_PATH`/`SPECS_PATH` are the
-host-directory pointers meant to be exported once in the host profile.
+no env var inside), **—** (launcher/`docker run` only). `VAULT_PATH`/`SPECS_PATH` are
+host-directory pointers meant to be exported once in the host profile; their effective default is
+the host-exported value (unset → mount skipped; a target directory that doesn't exist warns).
 
 | Variable | Purpose | Default | In container |
 |---|---|---|---|
@@ -103,8 +104,8 @@ host-directory pointers meant to be exported once in the host profile.
 | `REPOS` | Space-separated **registered** repo volumes to attach under `/workspace/<name>`, each `:ro` (default), `:rw`, or `:rwcopy`. Register first with `./repo.sh add`; unregistered/missing → abort. | none | mount |
 | `REPO_BACKEND` | How a repo is backed: `auto` \| `volume` \| `bind`. Decided at `repo.sh add` time and stored in the registry. | `auto` | — |
 | `EXTRA_MOUNTS` | Space-separated extra host paths bind-mounted under `/workspace/<basename>`; append `:ro`/`:rw`. Same-basename collisions with `REPOS`/primary are errors. | none | mount |
-| `VAULT_PATH` | Host directory mounted read-write at `/workspace/obsidian`. An Obsidian vault is typical, but any markdown corpus works — e.g. imported Jira tickets under `$VAULT_PATH/jira-products` (tickets as markdown with their images, attachments, comments, and linked tickets), which several workflows read heavily. Pair with `qmd=ON` for in-container search. | none | → `/workspace/obsidian` |
-| `SPECS_PATH` | Host repo of AI-ready specifications, design documents, and development plans, mounted read-write at `/workspace/specs`. Consumed by spec-driven workflows (e.g. the dev-workflows plugin). | none | → `/workspace/specs` |
+| `VAULT_PATH` | Host directory mounted read-write at `/workspace/obsidian`. An Obsidian vault is typical, but any markdown corpus works — e.g. imported Jira tickets under `$VAULT_PATH/jira-products` (tickets as markdown with their images, attachments, comments, and linked tickets), which several workflows read heavily. Pair with `qmd=ON` for in-container search. | host `$VAULT_PATH` export | → `/workspace/obsidian` |
+| `SPECS_PATH` | Host repo of AI-ready specifications, design documents, and development plans, mounted read-write at `/workspace/specs`. Consumed by spec-driven workflows (e.g. the dev-workflows plugin). | host `$SPECS_PATH` export | → `/workspace/specs` |
 | `PREVIEW_PORTS` | Space-separated ports (or `host:container` pairs) to publish for dev servers. | none | — |
 | `CONTAINER_CPUS` | CPU limit for the running container. | `1.0` | — |
 | `CONTAINER_MEMORY` | Hard memory limit. | `4g` | — |

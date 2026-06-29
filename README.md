@@ -129,7 +129,10 @@ These configure `runme.sh` at launch time. Set any of them **inline** for a sing
 (`~/.bash_profile`, `~/.zshrc`) so they become the default for every container you start.
 `VAULT_PATH` and `SPECS_PATH` are designed for the profile-export pattern: point them once at
 host directories and every container mounts them and sees the variable re-exported to its
-in-container path.
+in-container path. Their effective default is therefore whatever the host environment exports;
+override either inline to point at a different directory for a single run. If the variable is
+unset the mount is simply skipped, and if it points at a directory that does not exist `runme.sh`
+warns and skips it.
 
 The **In container** column says whether the variable is visible to the agents *inside* the
 container:
@@ -151,8 +154,8 @@ container:
 | `REPOS` | Space-separated **registered** repo volumes to attach under `/workspace/<name>`; append `:ro` (default), `:rw`, or `:rwcopy`. Register first with `./repo.sh add`. | none | mount |
 | `REPO_BACKEND` | How a repo is backed: `auto` \| `volume` \| `bind` (chosen at `repo.sh add` time). | `auto` | — |
 | `EXTRA_MOUNTS` | Space-separated extra host directories bind-mounted under `/workspace/<basename>`; append `:ro`/`:rw`. | none | mount |
-| `VAULT_PATH` | Host directory mounted read-write at `/workspace/obsidian`. An Obsidian vault is the typical use, but any markdown corpus works — e.g. imported Jira tickets under `$VAULT_PATH/jira-products` (tickets as markdown with their images, attachments, comments, and linked tickets), which several workflows read heavily. Pair with `qmd=ON` for in-container search. | none | → `/workspace/obsidian` |
-| `SPECS_PATH` | Host repo of AI-ready specifications, design documents, and development plans, mounted read-write at `/workspace/specs`. Consumed by spec-driven workflows (e.g. the dev-workflows plugin). | none | → `/workspace/specs` |
+| `VAULT_PATH` | Host directory mounted read-write at `/workspace/obsidian`. An Obsidian vault is the typical use, but any markdown corpus works — e.g. imported Jira tickets under `$VAULT_PATH/jira-products` (tickets as markdown with their images, attachments, comments, and linked tickets), which several workflows read heavily. Pair with `qmd=ON` for in-container search. | host `$VAULT_PATH` export | → `/workspace/obsidian` |
+| `SPECS_PATH` | Host repo of AI-ready specifications, design documents, and development plans, mounted read-write at `/workspace/specs`. Consumed by spec-driven workflows (e.g. the dev-workflows plugin). | host `$SPECS_PATH` export | → `/workspace/specs` |
 | `PREVIEW_PORTS` | Space-separated ports (or `host:container` pairs) to publish for dev servers. | none | — |
 | `CONTAINER_CPUS` | CPU limit. | `1.0` | — |
 | `CONTAINER_MEMORY` | Hard memory limit. | `4g` | — |
