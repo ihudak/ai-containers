@@ -74,4 +74,10 @@ All edits are surgical and match the existing `VAULT_PATH` style.
 - No read-only variant.
 - No auto-registration as a `REPOS` volume.
 
+**Note — re-introduction:** `SPECS_PATH` (and `DOCS_PATH`) existed previously, mounted at the
+top-level `/specs`, and were removed on 2026-06-12 during the `/workspace`-umbrella consolidation.
+This re-introduces only `SPECS_PATH`, now under the umbrella at `/workspace/specs` with env
+re-export and a name-collision guard (neither of which the old version had). `DOCS_PATH` stays
+removed; `runme.sh` and `README.md` narrow their removal notes to `DOCS_PATH` only.
+
 `SPECS_PATH` is purely a convenience bind-mount plus env propagation, exactly like `VAULT_PATH`.

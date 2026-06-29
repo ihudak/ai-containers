@@ -494,7 +494,18 @@ VAULT_PATH=/path/to/obsidian-vault \
 
 When `VAULT_PATH` is set, set `qmd=ON` in `sandbox.conf` and rebuild — `runme.sh` warns at startup if the vault is mounted but qmd was not baked into the image. `qmd` is the on-device markdown search engine [@tobilu/qmd](https://github.com/tobi/qmd), installed globally via npm.
 
-> The previous `DOCS_PATH` (`/docs`) and `SPECS_PATH` (`/specs`) mounts have been removed. Keep documentation and specs inside a repo (mounted under `/workspace`) or in the Obsidian vault.
+> The previous `DOCS_PATH` (`/docs`) mount has been removed. Keep documentation inside a repo (mounted under `/workspace`) or in the Obsidian vault. (`SPECS_PATH` now mounts at `/workspace/specs` — see above.)
+
+## Mounting a specs repository
+
+Set `SPECS_PATH` to a host repository of AI-ready specifications, design documents, and development plans to mount it at `/workspace/specs` (read-write). It is also re-exported as `SPECS_PATH=/workspace/specs` inside the container so agent skills/workflows that consume the variable — for example the dev-workflows plugin, which reads specs to implement features and writes design docs and plans back — resolve to the in-container mount point.
+
+```bash
+SPECS_PATH=/path/to/specs \
+./runme.sh restricted /path/to/repo
+```
+
+Export `SPECS_PATH` in your host shell profile to make it the default for every container, exactly as with `VAULT_PATH`.
 
 ## Host configuration mounts
 
