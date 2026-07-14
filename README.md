@@ -1,4 +1,4 @@
-# AI Sandbox Container Assets (Public Example)
+# AI Sandbox Container Assets
 
 This directory is the repo-ready asset bundle for the Public-flavored AI sandbox container described in [Wiki: Use dev containers for development with AI agents](https://github.com/ihudak/bookstore/wiki/Use-dev-containers-for-development-with-Copilot).
 
