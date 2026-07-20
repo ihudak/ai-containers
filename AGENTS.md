@@ -88,7 +88,7 @@ docker run --rm --entrypoint capture-agent-destinations.sh \
 or export in the host shell profile to default for every container. The **In container** column
 marks visibility to agents inside the container: **forwarded** (passed through unchanged),
 **→ `/path`** (re-exported pointing at the in-container mount path), **mount** (filesystem mount,
-no env var inside), **—** (launcher/`docker run` only). `VAULT_PATH`/`SPECS_PATH` are
+no env var inside), **—** (launcher/`docker run` only). `VAULT_PATH`/`SPECS_PATH`/`DOCS_PATH` are
 host-directory pointers meant to be exported once in the host profile; their effective default is
 the host-exported value (unset → mount skipped; a target directory that doesn't exist warns).
 
@@ -106,6 +106,7 @@ the host-exported value (unset → mount skipped; a target directory that doesn'
 | `EXTRA_MOUNTS` | Space-separated extra host paths bind-mounted under `/workspace/<basename>`; append `:ro`/`:rw`. Same-basename collisions with `REPOS`/primary are errors. | none | mount |
 | `VAULT_PATH` | Host directory mounted read-write at `/workspace/obsidian`. An Obsidian vault is typical, but any markdown corpus works — e.g. imported Jira tickets under `$VAULT_PATH/jira-products` (tickets as markdown with their images, attachments, comments, and linked tickets), which several workflows read heavily. Pair with `qmd=ON` for in-container search. | host `$VAULT_PATH` export | → `/workspace/obsidian` |
 | `SPECS_PATH` | Host repo of AI-ready specifications, design documents, and development plans, mounted read-write at `/workspace/specs`. Consumed by spec-driven workflows (e.g. the dev-workflows plugin). | host `$SPECS_PATH` export | → `/workspace/specs` |
+| `DOCS_PATH` | Host product-documentation repo mounted **read-only** at `/workspace/docs`, re-exported as `DOCS_PATH=/workspace/docs`. Grounding for plugin workflows (idea / VI / release-notes). To edit docs, mount the repo as the working dir instead; if the working dir *is* this docs repo, unset it (`project-init.sh` does so automatically) to avoid the `/workspace/docs` name collision. | host `$DOCS_PATH` export | → `/workspace/docs` |
 | `PREVIEW_PORTS` | Space-separated ports (or `host:container` pairs) to publish for dev servers. | none | — |
 | `CONTAINER_CPUS` | CPU limit for the running container. | `1.0` | — |
 | `CONTAINER_MEMORY` | Hard memory limit. | `4g` | — |
@@ -139,6 +140,7 @@ Background daemons are forked **before** `exec capsh` so they retain root capabi
 - `EXTRA_MOUNTS` → `/workspace/<basename>` (host binds)
 - `VAULT_PATH` → `/workspace/obsidian`
 - `SPECS_PATH` → `/workspace/specs`
+- `DOCS_PATH` → `/workspace/docs` (read-only)
 - outputs → `/workspace/.agent-blocked` and `/workspace/.agent-discovery`, bind-mounted from the host **launch directory** (`$PWD` where `runme.sh` ran), so they persist host-visibly and git/docker-ignored.
 
 **Repo volumes** (`repo.sh` + `REPOS`) solve the macOS virtio-fs penalty: a repo is seeded **once** into a Docker named volume inside the VM (`ai-containers-repo-<name>`), read at native speed, and shared across all projects/images and container groups. The volume name is **image-independent** (a fixed `ai-containers` prefix, overridable via `REPO_VOLUME_PREFIX`), so one registered repo maps to one global volume that any number of containers — in any project — can mount, with no `IMAGE_NAME` juggling. The registry is `~/.ai-containers/repos.conf` (machine-local, pipe-delimited: `name|type|source|added|synced|backend`). **Docker volumes are the source of truth, not the registry:** each base volume carries `ai-containers.repo`/`.type`/`.source` labels and each working copy carries `ai-containers.repo`/`.workcopy`/`.launch-dir`, so `repo.sh list`/`list --copies`/`gc` read state directly from Docker. The registry is a cache, authoritative only for Linux `bind`-backend repos (no volume to label) and the mutable last-synced time (labels are immutable after creation); `repo.sh reindex` rebuilds it from volume labels. `:rwcopy` creates a per-launch-dir working copy volume (`<base>--wc-<tag>`), prunable via `repo.sh gc`. On Linux, `auto` backend registers `path` repos as bind-mount aliases (no volume seeded); `runme.sh` bind-mounts the host path directly. Source-of-truth helpers live in `sandbox-common.sh`.

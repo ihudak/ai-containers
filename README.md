@@ -127,7 +127,7 @@ where you launched `runme.sh` (and are git- and docker-ignored).
 These configure `runme.sh` at launch time. Set any of them **inline** for a single run
 (`VAULT_PATH=/path ./runme.sh restricted`) or **export them in your host shell profile**
 (`~/.bash_profile`, `~/.zshrc`) so they become the default for every container you start.
-`VAULT_PATH` and `SPECS_PATH` are designed for the profile-export pattern: point them once at
+`VAULT_PATH`, `SPECS_PATH`, and `DOCS_PATH` are designed for the profile-export pattern: point them once at
 host directories and every container mounts them and sees the variable re-exported to its
 in-container path. Their effective default is therefore whatever the host environment exports;
 override either inline to point at a different directory for a single run. If the variable is
@@ -156,6 +156,7 @@ container:
 | `EXTRA_MOUNTS` | Space-separated extra host directories bind-mounted under `/workspace/<basename>`; append `:ro`/`:rw`. | none | mount |
 | `VAULT_PATH` | Host directory mounted read-write at `/workspace/obsidian`. An Obsidian vault is the typical use, but any markdown corpus works — e.g. imported Jira tickets under `$VAULT_PATH/jira-products` (tickets as markdown with their images, attachments, comments, and linked tickets), which several workflows read heavily. Pair with `qmd=ON` for in-container search. | host `$VAULT_PATH` export | → `/workspace/obsidian` |
 | `SPECS_PATH` | Host repo of AI-ready specifications, design documents, and development plans, mounted read-write at `/workspace/specs`. Consumed by spec-driven workflows (e.g. the dev-workflows plugin). | host `$SPECS_PATH` export | → `/workspace/specs` |
+| `DOCS_PATH` | Host product-documentation repo mounted **read-only** at `/workspace/docs`, re-exported as `DOCS_PATH=/workspace/docs`. Grounding for plugin workflows (idea / VI / release-notes). To edit docs, mount the repo as the working dir instead; if the working dir *is* this docs repo, unset it (`project-init.sh` does so automatically) to avoid the `/workspace/docs` name collision. | host `$DOCS_PATH` export | → `/workspace/docs` |
 | `PREVIEW_PORTS` | Space-separated ports (or `host:container` pairs) to publish for dev servers. | none | — |
 | `CONTAINER_CPUS` | CPU limit. | `1.0` | — |
 | `CONTAINER_MEMORY` | Hard memory limit. | `4g` | — |
@@ -544,9 +545,20 @@ VAULT_PATH=/path/to/obsidian-vault \
 ./runme.sh restricted /path/to/repo
 ```
 
-When `VAULT_PATH` is set, set `qmd=ON` in `sandbox.conf` and rebuild — `runme.sh` warns at startup if the vault is mounted but qmd was not baked into the image. `qmd` is the on-device markdown search engine [@tobilu/qmd](https://github.com/tobi/qmd), installed globally via npm.
+When any markdown corpus (`VAULT_PATH`, `SPECS_PATH`, or `DOCS_PATH`) is mounted, set `qmd=ON` in `sandbox.conf` and rebuild — `runme.sh` prints one startup warning naming the mounted corpora if qmd was not baked into the image. `qmd` is the on-device markdown search engine [@tobilu/qmd](https://github.com/tobi/qmd), installed globally via npm.
 
-> The previous `DOCS_PATH` (`/docs`) mount has been removed. Keep documentation inside a repo (mounted under `/workspace`) or in the Obsidian vault. (`SPECS_PATH` now mounts at `/workspace/specs` — see the next section.)
+## Mounting a docs repository (read-only)
+
+Set `DOCS_PATH` to a host product-documentation repo (e.g. `dynatrace-docs`) to mount it **read-only** at `/workspace/docs`. It is re-exported as `DOCS_PATH=/workspace/docs` inside the container, so grounding workflows — creating an idea, creating or updating a Value Increment, writing Release Notes — resolve existing documentation at a stable path without being able to modify it.
+
+```bash
+DOCS_PATH=/path/to/docs \
+./runme.sh restricted /path/to/repo
+```
+
+Export `DOCS_PATH` in your host shell profile to make it the default for every container, exactly as with `VAULT_PATH` / `SPECS_PATH`.
+
+To **edit** the docs instead of reading them, mount the docs repo as the working directory (a host-path primary, or an `@docs` repo volume). It becomes writable at its own mount point, and you write via the working dir — `$DOCS_PATH` stays read-only at `/workspace/docs`. If the working dir *is* the same repo as `$DOCS_PATH`, unset `DOCS_PATH` for that run to avoid the `/workspace/docs` name collision; `project-init.sh` writes `unset DOCS_PATH` into a generated launcher automatically when it detects the project is your `$DOCS_PATH`.
 
 ## Mounting a specs repository
 
