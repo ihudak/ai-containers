@@ -29,7 +29,7 @@ Positional [primary] — selects the working directory inside the container:
 
 Everything is mounted under the /workspace umbrella: REPOS at /workspace/<name>,
 EXTRA_MOUNTS at /workspace/<basename>, the Obsidian vault at /workspace/obsidian,
-the specs repo at /workspace/specs.
+the specs repo at /workspace/specs, the docs repo (read-only) at /workspace/docs.
 Agent outputs (.agent-blocked/, .agent-discovery/) are written to the host
 directory where runme.sh is launched (git- and docker-ignored).
 
@@ -96,6 +96,9 @@ Environment variables:
                       Requires qmd=ON in sandbox.conf for in-container search.
   SPECS_PATH          Host specs/design/plans repo mounted at /workspace/specs (also
                       re-exported as SPECS_PATH=/workspace/specs inside the container).
+  DOCS_PATH           Host product-documentation repo mounted READ-ONLY at /workspace/docs
+                      (also re-exported as DOCS_PATH=/workspace/docs inside the container).
+                      To edit docs, mount the repo as the working dir instead.
   SELF_HEALING_ENABLED  Set to 0 to disable self-healing allowlist (default: 1).
   GITHUB_PERSONAL_ACCESS_TOKEN
                         Forwarded into the container as-is for tools that expect this
@@ -310,9 +313,6 @@ run_container() {
 
   if [[ -n "${SSH_SCOPE_DIR:-}" ]]; then
     echo "Note: SSH_SCOPE_DIR is no longer used; .ssh is now part of the group at ~/.ai-containers/<group>/.ssh/. See CHANGELOG." >&2
-  fi
-  if [[ -n "${DOCS_PATH:-}" ]]; then
-    echo "Note: DOCS_PATH has been removed and is ignored. Keep docs in a repo or the Obsidian vault." >&2
   fi
 
   local capabilities=(--cap-add=NET_ADMIN --cap-add=NET_RAW)
@@ -545,6 +545,24 @@ run_container() {
     fi
   fi
 
+  # ── Docs repo → /workspace/docs (read-only) ──────────────────────────────────
+  local docs_mount_flags=()
+  local docs_env_args=()
+  if [[ -n "${DOCS_PATH:-}" ]]; then
+    local docs_real
+    docs_real="$(resolve_path "${DOCS_PATH/#\~/$HOME}")"
+    if [[ -d "$docs_real" ]]; then
+      if [[ -n "${repos_used[docs]:-}" ]]; then
+        printf "ERROR: name 'docs' is used by %s, but DOCS_PATH also mounts at /workspace/docs.\n" "${repos_used[docs]}" >&2
+        exit 1
+      fi
+      docs_mount_flags+=(-v "$docs_real:/workspace/docs:ro")
+      docs_env_args+=(-e DOCS_PATH=/workspace/docs)
+    else
+      printf 'WARNING: DOCS_PATH is set but directory does not exist: %s\n' "$DOCS_PATH" >&2
+    fi
+  fi
+
   # ── Group resolution ─────────────────────────────────────────────────────────
   local group="${AI_CONTAINER_GROUP:-default}"
   validate_group_name "$group"
@@ -693,11 +711,13 @@ run_container() {
     ${copilot_token:+-e COPILOT_GITHUB_TOKEN="$copilot_token"} \
     ${vault_env_args[@]+"${vault_env_args[@]}"} \
     ${specs_env_args[@]+"${specs_env_args[@]}"} \
+    ${docs_env_args[@]+"${docs_env_args[@]}"} \
     ${output_mount_flags[@]+"${output_mount_flags[@]}"} \
     ${repo_mount_flags[@]+"${repo_mount_flags[@]}"} \
     ${extra_mount_flags[@]+"${extra_mount_flags[@]}"} \
     ${vault_mount_flags[@]+"${vault_mount_flags[@]}"} \
     ${specs_mount_flags[@]+"${specs_mount_flags[@]}"} \
+    ${docs_mount_flags[@]+"${docs_mount_flags[@]}"} \
     ${config_mount_flags[@]+"${config_mount_flags[@]}"} \
     -w "$workdir" \
     "$image_name"
