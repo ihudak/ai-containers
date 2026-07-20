@@ -13,6 +13,10 @@ setup() {
   TMP="$(mktemp -d)"
   export HOME="$TMP/home"; mkdir -p "$HOME"
   export AI_CONTAINER_GROUP_INIT=clean   # non-interactive group bootstrap
+  # Isolate from any VAULT_PATH/SPECS_PATH exported in the invoking shell (e.g.
+  # a host profile, or this very repo's own dev container) so the qmd-warning
+  # cases only ever see the corpora each case sets up itself.
+  unset VAULT_PATH SPECS_PATH
   CAPTURE="$TMP/docker-args.txt"; : > "$CAPTURE"
   mkdir -p "$TMP/bin"
   cat > "$TMP/bin/docker" <<DOCKER
@@ -69,6 +73,35 @@ export DOCS_PATH="$TMP/productdocs"
 run_runme "$TMP/productdocs"
 if grep -q "/workspace/productdocs:rw" "$CAPTURE" && grep -q "/workspace/docs:ro" "$CAPTURE"; then
   pass "primary + DOCS coexist (ro + rw)"; else fail "primary + DOCS coexist (ro + rw)"; fi
+teardown
+
+# Case 5: qmd=OFF (repo default) + DOCS mounted → exactly one warning naming DOCS_PATH.
+setup
+mkdir -p "$TMP/mydocs" "$TMP/app"
+export DOCS_PATH="$TMP/mydocs"
+run_runme "$TMP/app"
+if grep -q "qmd=OFF in sandbox.conf, but markdown corpora are mounted (DOCS_PATH)" "$ERR" \
+   && [[ "$(grep -c 'qmd=OFF' "$ERR")" -eq 1 ]]; then
+  pass "qmd=OFF → one consolidated warning"; else fail "qmd=OFF → one consolidated warning"; fi
+teardown
+
+# Case 6: qmd=ON (via SANDBOX_CONF) + DOCS mounted → no qmd warning.
+setup
+mkdir -p "$TMP/mydocs" "$TMP/app"
+sed 's/^qmd=.*/qmd=ON/' "$REPO_DIR/sandbox.conf" > "$TMP/conf-on"
+export SANDBOX_CONF="$TMP/conf-on"
+export DOCS_PATH="$TMP/mydocs"
+run_runme "$TMP/app"
+if ! grep -q "qmd=OFF" "$ERR"; then
+  pass "qmd=ON → no warning"; else fail "qmd=ON → no warning"; fi
+teardown
+
+# Case 7: no corpus mounted → no qmd warning.
+setup
+mkdir -p "$TMP/app"
+run_runme "$TMP/app"
+if ! grep -q "qmd=OFF" "$ERR"; then
+  pass "no corpus → no warning"; else fail "no corpus → no warning"; fi
 teardown
 
 printf '\n%d failure(s)\n' "$fails"

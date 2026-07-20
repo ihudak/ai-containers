@@ -27,7 +27,7 @@ fi
 
 # Directory containing this library (and the entry-point scripts beside it).
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-config_file="${script_dir}/sandbox.conf"
+config_file="${SANDBOX_CONF:-${script_dir}/sandbox.conf}"
 
 # Persisted per-project environment (written by project-init.sh; one KEY=value
 # per line). It is sourced ONLY to supply IMAGE_NAME when the env var is not

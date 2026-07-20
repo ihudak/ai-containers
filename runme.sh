@@ -93,7 +93,7 @@ Environment variables:
                       A name appearing in both EXTRA_MOUNTS and REPOS is an error.
   VAULT_PATH          Host Obsidian vault mounted at /workspace/obsidian (also re-exported
                       as VAULT_PATH=/workspace/obsidian inside the container).
-                      Requires qmd=ON in sandbox.conf for in-container search.
+                      qmd=ON in sandbox.conf enables in-container search of mounted markdown corpora.
   SPECS_PATH          Host specs/design/plans repo mounted at /workspace/specs (also
                       re-exported as SPECS_PATH=/workspace/specs inside the container).
   DOCS_PATH           Host product-documentation repo mounted READ-ONLY at /workspace/docs
@@ -506,6 +506,9 @@ run_container() {
     esac
   fi
 
+  # Corpus names collected for one consolidated qmd nudge (see below).
+  local qmd_corpora=()
+
   # ── Obsidian vault → /workspace/obsidian ─────────────────────────────────────
   local vault_mount_flags=()
   local vault_env_args=()
@@ -519,9 +522,7 @@ run_container() {
       fi
       vault_mount_flags+=(-v "$vault_real:/workspace/obsidian:rw")
       vault_env_args+=(-e VAULT_PATH=/workspace/obsidian)
-      if ! is_enabled qmd; then
-        printf 'WARNING: VAULT_PATH is set but qmd=OFF in sandbox.conf. Set qmd=ON and rebuild for in-container search.\n' >&2
-      fi
+      qmd_corpora+=("VAULT_PATH")
     else
       printf 'WARNING: VAULT_PATH is set but directory does not exist: %s\n' "$VAULT_PATH" >&2
     fi
@@ -540,6 +541,7 @@ run_container() {
       fi
       specs_mount_flags+=(-v "$specs_real:/workspace/specs:rw")
       specs_env_args+=(-e SPECS_PATH=/workspace/specs)
+      qmd_corpora+=("SPECS_PATH")
     else
       printf 'WARNING: SPECS_PATH is set but directory does not exist: %s\n' "$SPECS_PATH" >&2
     fi
@@ -558,9 +560,22 @@ run_container() {
       fi
       docs_mount_flags+=(-v "$docs_real:/workspace/docs:ro")
       docs_env_args+=(-e DOCS_PATH=/workspace/docs)
+      qmd_corpora+=("DOCS_PATH")
     else
       printf 'WARNING: DOCS_PATH is set but directory does not exist: %s\n' "$DOCS_PATH" >&2
     fi
+  fi
+
+  # ── Consolidated qmd search nudge ────────────────────────────────────────────
+  # qmd is a single global sandbox.conf toggle, not a per-mount capability, so
+  # warn once if any markdown corpus is mounted but in-container search was not
+  # baked into the image.
+  if [[ ${#qmd_corpora[@]} -gt 0 ]] && ! is_enabled qmd; then
+    local qmd_joined
+    printf -v qmd_joined '%s, ' "${qmd_corpora[@]}"
+    qmd_joined="${qmd_joined%, }"
+    printf 'WARNING: qmd=OFF in sandbox.conf, but markdown corpora are mounted (%s). Set qmd=ON and rebuild for in-container search.\n' \
+      "$qmd_joined" >&2
   fi
 
   # ── Group resolution ─────────────────────────────────────────────────────────
