@@ -27,7 +27,7 @@ DOCKER
   chmod +x "$TMP/bin/docker"
   export PATH="$TMP/bin:$PATH"
 }
-teardown() { rm -rf "$TMP"; unset DOCS_PATH EXTRA_MOUNTS SANDBOX_CONF; }
+teardown() { rm -rf "$TMP"; unset DOCS_PATH VAULT_PATH SPECS_PATH EXTRA_MOUNTS SANDBOX_CONF; }
 
 # run runme.sh restricted <primary>; sets RC and writes stderr to $ERR.
 run_runme() {
@@ -104,6 +104,16 @@ mkdir -p "$TMP/app"
 run_runme "$TMP/app"
 if ! grep -q "qmd=OFF" "$ERR"; then
   pass "no corpus → no warning"; else fail "no corpus → no warning"; fi
+teardown
+
+# Case V: VAULT_PATH set → mounted rw at /workspace/vault (not /workspace/obsidian).
+setup
+mkdir -p "$TMP/mykb" "$TMP/app"
+export VAULT_PATH="$TMP/mykb"
+run_runme "$TMP/app"
+if grep -q ":/workspace/vault:rw" "$CAPTURE" && grep -qx "VAULT_PATH=/workspace/vault" "$CAPTURE" \
+   && ! grep -q "obsidian" "$CAPTURE"; then
+  pass "VAULT_PATH → /workspace/vault"; else fail "VAULT_PATH → /workspace/vault"; fi
 teardown
 
 printf '\n%d failure(s)\n' "$fails"

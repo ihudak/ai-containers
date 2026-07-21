@@ -28,7 +28,7 @@ Positional [primary] — selects the working directory inside the container:
   (omitted)   The working dir is the /workspace umbrella itself.
 
 Everything is mounted under the /workspace umbrella: REPOS at /workspace/<name>,
-EXTRA_MOUNTS at /workspace/<basename>, the Obsidian vault at /workspace/obsidian,
+EXTRA_MOUNTS at /workspace/<basename>, the personal vault at /workspace/vault,
 the specs repo at /workspace/specs, the docs repo (read-only) at /workspace/docs.
 Agent outputs (.agent-blocked/, .agent-discovery/) are written to the host
 directory where runme.sh is launched (git- and docker-ignored).
@@ -91,8 +91,8 @@ Environment variables:
                       /workspace/<basename> (virtiofs; slower, but live-visible on the host
                       and needs no registration). Append :ro or :rw (default: rw).
                       A name appearing in both EXTRA_MOUNTS and REPOS is an error.
-  VAULT_PATH          Host Obsidian vault mounted at /workspace/obsidian (also re-exported
-                      as VAULT_PATH=/workspace/obsidian inside the container).
+  VAULT_PATH          Host personal knowledge base (Obsidian vault or any markdown KB) mounted
+                      at /workspace/vault (also re-exported as VAULT_PATH=/workspace/vault).
                       qmd=ON in sandbox.conf enables in-container search of mounted markdown corpora.
   SPECS_PATH          Host specs/design/plans repo mounted at /workspace/specs (also
                       re-exported as SPECS_PATH=/workspace/specs inside the container).
@@ -509,19 +509,19 @@ run_container() {
   # Corpus names collected for one consolidated qmd nudge (see below).
   local qmd_corpora=()
 
-  # ── Obsidian vault → /workspace/obsidian ─────────────────────────────────────
+  # ── Personal vault → /workspace/vault ────────────────────────────────────────
   local vault_mount_flags=()
   local vault_env_args=()
   if [[ -n "${VAULT_PATH:-}" ]]; then
     local vault_real
     vault_real="$(resolve_path "${VAULT_PATH/#\~/$HOME}")"
     if [[ -d "$vault_real" ]]; then
-      if [[ -n "${repos_used[obsidian]:-}" ]]; then
-        printf "ERROR: name 'obsidian' is used by %s, but VAULT_PATH also mounts at /workspace/obsidian.\n" "${repos_used[obsidian]}" >&2
+      if [[ -n "${repos_used[vault]:-}" ]]; then
+        printf "ERROR: name 'vault' is used by %s, but VAULT_PATH also mounts at /workspace/vault.\n" "${repos_used[vault]}" >&2
         exit 1
       fi
-      vault_mount_flags+=(-v "$vault_real:/workspace/obsidian:rw")
-      vault_env_args+=(-e VAULT_PATH=/workspace/obsidian)
+      vault_mount_flags+=(-v "$vault_real:/workspace/vault:rw")
+      vault_env_args+=(-e VAULT_PATH=/workspace/vault)
       qmd_corpora+=("VAULT_PATH")
     else
       printf 'WARNING: VAULT_PATH is set but directory does not exist: %s\n' "$VAULT_PATH" >&2
