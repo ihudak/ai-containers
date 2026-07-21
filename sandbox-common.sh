@@ -27,6 +27,8 @@ fi
 
 # Directory containing this library (and the entry-point scripts beside it).
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# SANDBOX_CONF overrides the component-config path (build.sh/runme.sh/repo.sh);
+# used mainly as a test/override hook — normally unset so sandbox.conf is read.
 config_file="${SANDBOX_CONF:-${script_dir}/sandbox.conf}"
 
 # Persisted per-project environment (written by project-init.sh; one KEY=value

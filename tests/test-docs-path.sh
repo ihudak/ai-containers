@@ -75,9 +75,11 @@ if grep -q "/workspace/productdocs:rw" "$CAPTURE" && grep -q "/workspace/docs:ro
   pass "primary + DOCS coexist (ro + rw)"; else fail "primary + DOCS coexist (ro + rw)"; fi
 teardown
 
-# Case 5: qmd=OFF (repo default) + DOCS mounted → exactly one warning naming DOCS_PATH.
+# Case 5: qmd=OFF + DOCS mounted → exactly one warning naming DOCS_PATH.
 setup
 mkdir -p "$TMP/mydocs" "$TMP/app"
+sed 's/^qmd=.*/qmd=OFF/' "$REPO_DIR/sandbox.conf" > "$TMP/conf-off"
+export SANDBOX_CONF="$TMP/conf-off"   # force qmd=OFF; don't couple to the committed default
 export DOCS_PATH="$TMP/mydocs"
 run_runme "$TMP/app"
 if grep -q "qmd=OFF in sandbox.conf, but markdown corpora are mounted (DOCS_PATH)" "$ERR" \
