@@ -536,7 +536,7 @@ This means **one `REPOS="cluster:ro app:rw"` line works on both platforms** — 
 
 ## Mounting an Obsidian vault
 
-Set `VAULT_PATH` to a host directory — your **personal** knowledge base — to mount it at `/workspace/vault` (read-write). It is also re-exported as `VAULT_PATH=/workspace/vault` inside the container so agent skills/workflows that consume the variable resolve to the in-container mount point. An Obsidian vault is the typical source, but any markdown corpus works.
+Set `VAULT_PATH` to a host directory — your **personal** knowledge base — to mount it at `/workspace/vault` (read-write). It is also re-exported as `VAULT_PATH=/workspace/vault` inside the container so agent skills/workflows that consume the variable resolve to the in-container mount point.
 
 An Obsidian vault is the typical source, but `VAULT_PATH` is useful even without Obsidian — it works as a vault for any markdown corpus. A common pattern is imported Jira documents under `$VAULT_PATH/jira-products`: Jira tickets exported as markdown together with their images, attachments, comments, and linked tickets. Several in-container workflows read this tree heavily, so pointing `VAULT_PATH` at such a directory is valuable on its own.
 
