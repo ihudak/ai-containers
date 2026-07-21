@@ -547,7 +547,7 @@ VAULT_PATH=/path/to/obsidian-vault \
 
 When any markdown corpus (`VAULT_PATH`, `SPECS_PATH`, or `DOCS_PATH`) is mounted, set `qmd=ON` in `sandbox.conf` and rebuild — `runme.sh` prints one startup warning naming the mounted corpora if qmd was not baked into the image. `qmd` is the on-device markdown search engine [@tobilu/qmd](https://github.com/tobi/qmd), installed globally via npm.
 
-## Mounting a docs repository (read-only)
+## Mounting a docs repository (read-only by default)
 
 Set `DOCS_PATH` to a host product-documentation repo (e.g. `dynatrace-docs`) to mount it **read-only** at `/workspace/docs`. It is re-exported as `DOCS_PATH=/workspace/docs` inside the container, so grounding workflows — creating an idea, creating or updating a Value Increment, writing Release Notes — resolve existing documentation at a stable path without being able to modify it.
 
