@@ -116,7 +116,7 @@ Run in discovery mode to capture outbound destinations before tightening the all
 Everything is mounted under a single `/workspace` umbrella: the positional argument
 (a host path here) is bind-mounted at `/workspace/<basename>` and becomes the working
 directory; `REPOS` entries appear at `/workspace/<name>`, `EXTRA_MOUNTS` at
-`/workspace/<basename>`, and the Obsidian vault at `/workspace/obsidian`. The positional
+`/workspace/<basename>`, and the personal vault at `/workspace/vault`. The positional
 argument may also be `@<repo>` to use a registered repo volume as the working directory
 (fast on macOS) — see [Shared repo volumes](#shared-repo-volumes-native-speed--reposh-and-repos).
 Agent outputs (`.agent-blocked/`, `.agent-discovery/`) are written to the host directory
@@ -154,9 +154,9 @@ container:
 | `REPOS` | Space-separated **registered** repo volumes to attach under `/workspace/<name>`; append `:ro` (default), `:rw`, or `:rwcopy`. Register first with `./repo.sh add`. | none | mount |
 | `REPO_BACKEND` | How a repo is backed: `auto` \| `volume` \| `bind` (chosen at `repo.sh add` time). | `auto` | — |
 | `EXTRA_MOUNTS` | Space-separated extra host directories bind-mounted under `/workspace/<basename>`; append `:ro`/`:rw`. | none | mount |
-| `VAULT_PATH` | Host directory mounted read-write at `/workspace/obsidian`. An Obsidian vault is the typical use, but any markdown corpus works — e.g. imported Jira tickets under `$VAULT_PATH/jira-products` (tickets as markdown with their images, attachments, comments, and linked tickets), which several workflows read heavily. Pair with `qmd=ON` for in-container search. | host `$VAULT_PATH` export | → `/workspace/obsidian` |
-| `SPECS_PATH` | Host repo of AI-ready specifications, design documents, and development plans, mounted read-write at `/workspace/specs`. Consumed by spec-driven workflows (e.g. the dev-workflows plugin). | host `$SPECS_PATH` export | → `/workspace/specs` |
-| `DOCS_PATH` | Host product-documentation repo mounted **read-only** at `/workspace/docs`, re-exported as `DOCS_PATH=/workspace/docs`. Grounding for plugin workflows (idea / VI / release-notes). To edit docs, mount the repo as the working dir instead; if the working dir *is* this docs repo, unset it (`project-init.sh` does so automatically) to avoid the `/workspace/docs` name collision. | host `$DOCS_PATH` export | → `/workspace/docs` |
+| `VAULT_PATH` | Host directory mounted read-write at `/workspace/vault` — your **personal** knowledge base (an Obsidian vault is typical, but any markdown corpus works, e.g. imported Jira tickets under `$VAULT_PATH/jira-products`, read heavily by several workflows). Pair with `qmd=ON` for in-container search. | host `$VAULT_PATH` export | → `/workspace/vault` |
+| `SPECS_PATH` | Host repo of AI-ready specifications, design documents, and development plans — the **team/shared** knowledge base — mounted read-write at `/workspace/specs`. Consumed by spec-driven workflows (e.g. the dev-workflows plugin). Accepts `@<name>` for a registered repo volume (mounted at `/workspace/<name>`; fast on macOS). | host `$SPECS_PATH` export | → `/workspace/specs` |
+| `DOCS_PATH` | Host **product-documentation** repo mounted **read-only** by default at `/workspace/docs`, re-exported as `DOCS_PATH=/workspace/docs`. Grounding for plugin workflows (idea / VI / release-notes). Accepts `@<name>` (→ `/workspace/<name>`) and a `:ro`/`:rw` suffix (default `:ro`). When the docs repo is the working dir, `DOCS_PATH` re-points to that writable mount; to edit docs otherwise use `:rw`. | host `$DOCS_PATH` export | → `/workspace/docs` |
 | `PREVIEW_PORTS` | Space-separated ports (or `host:container` pairs) to publish for dev servers. | none | — |
 | `CONTAINER_CPUS` | CPU limit. | `1.0` | — |
 | `CONTAINER_MEMORY` | Hard memory limit. | `4g` | — |
@@ -536,7 +536,7 @@ This means **one `REPOS="cluster:ro app:rw"` line works on both platforms** — 
 
 ## Mounting an Obsidian vault
 
-Set `VAULT_PATH` to a host Obsidian vault to mount it at `/workspace/obsidian` (read-write). It is also re-exported as `VAULT_PATH=/workspace/obsidian` inside the container so agent skills/workflows that consume the variable resolve to the in-container mount point.
+Set `VAULT_PATH` to a host directory — your **personal** knowledge base — to mount it at `/workspace/vault` (read-write). It is also re-exported as `VAULT_PATH=/workspace/vault` inside the container so agent skills/workflows that consume the variable resolve to the in-container mount point. An Obsidian vault is the typical source, but any markdown corpus works.
 
 An Obsidian vault is the typical source, but `VAULT_PATH` is useful even without Obsidian — it works as a vault for any markdown corpus. A common pattern is imported Jira documents under `$VAULT_PATH/jira-products`: Jira tickets exported as markdown together with their images, attachments, comments, and linked tickets. Several in-container workflows read this tree heavily, so pointing `VAULT_PATH` at such a directory is valuable on its own.
 
@@ -558,7 +558,7 @@ DOCS_PATH=/path/to/docs \
 
 Export `DOCS_PATH` in your host shell profile to make it the default for every container, exactly as with `VAULT_PATH` / `SPECS_PATH`.
 
-To **edit** the docs instead of reading them, mount the docs repo as the working directory (a host-path primary, or an `@docs` repo volume). It becomes writable at its own mount point, and you write via the working dir — `$DOCS_PATH` stays read-only at `/workspace/docs`. If the working dir *is* the same repo as `$DOCS_PATH`, unset `DOCS_PATH` for that run to avoid the `/workspace/docs` name collision; `project-init.sh` writes `unset DOCS_PATH` into a generated launcher automatically when it detects the project is your `$DOCS_PATH`.
+`DOCS_PATH` accepts a small grammar: `@<name>` mounts a registered repo volume at `/workspace/<name>` (fast on macOS; see [Shared repo volumes](#shared-repo-volumes-native-speed--reposh-and-repos)), and a trailing `:ro`/`:rw` sets the mount mode (default `:ro`). To **edit** the docs, either mount the docs repo as the working directory or pass `DOCS_PATH=/path:rw`. When the docs repo **is** the working directory, `DOCS_PATH` re-points to that writable mount automatically — nothing to unset.
 
 ## Mounting a specs repository
 
@@ -569,7 +569,7 @@ SPECS_PATH=/path/to/specs \
 ./runme.sh restricted /path/to/repo
 ```
 
-Export `SPECS_PATH` in your host shell profile to make it the default for every container, exactly as with `VAULT_PATH`.
+Export `SPECS_PATH` in your host shell profile to make it the default for every container, exactly as with `VAULT_PATH`. `SPECS_PATH` also accepts `@<name>` to mount a registered repo volume at `/workspace/<name>` instead of a host path — useful on macOS for a large, team-shared specs repo.
 
 ## Host configuration mounts
 
