@@ -49,12 +49,20 @@ Applied per pointer (the **Focused** scope):
 
 Rationale for the asymmetry (all deliberate, none accidental):
 
-- **Fixed mount for host paths, `/workspace/<name>` for named volumes** — by *category*, not by
-  variable. A host path is an anonymous directory, so a fixed well-known point (`/workspace/docs`,
-  `/workspace/specs`, `/workspace/vault`) is the stable choice. A `@name` is a *registered, reusable*
-  volume whose identity **is** its name; mounting it at `/workspace/<name>` keeps it consistent across
-  its `@primary`, `REPOS`, and pointer roles, and lets an already-mounted volume be **reused** instead
-  of double-mounted. Plugins read the *value* of the pointer, so nothing hardcodes the path.
+- **Fixed mount for host paths, `/workspace/<name>` for named volumes** — the deciding question is
+  *"can this source use a stable slot?"*, not host-vs-volume per se. A host path is *anonymous*, so a
+  fixed well-known slot is **available**, and a slot is a feature: stable, portable across
+  projects/machines, and **collision-proof** between the three pointers (`/workspace/vault`,
+  `/workspace/specs`, `/workspace/docs` can never clash). A `@name` volume's identity **is** its name,
+  so `/workspace/<name>` is **forced** — a fixed slot would make the same volume land at
+  `/workspace/<name>` (as `@primary`/`REPOS`) vs the slot (as a pointer), breaking cross-role identity
+  and **reuse** (an already-mounted volume is reused, not double-mounted). The reuse/consistency
+  argument technically applies to host paths too, but there the only leftover double-mount (setting a
+  pointer and `EXTRA_MOUNTS` to the same dir) is a rare, acceptable edge — the important case,
+  docs-dir-as-working-dir, is dissolved by the re-point. Plugins read the *value* of the pointer, so
+  nothing hardcodes the path. (The rejected alternatives: **all-fixed** breaks volume reuse;
+  **all-by-name** drops stable slots, lets pointers collide by basename, and nullifies the
+  `/workspace/vault` rename.)
 - **`DOCS_PATH` gets the `:ro`/`:rw` suffix; `SPECS_PATH`/`VAULT_PATH` do not** — only docs have a
   read-vs-write mode distinction worth overriding. Specs and the vault are always authored (`:rw`).
 - **`VAULT_PATH` stays plain host-path** — a personal knowledge base is small and not a macOS-speed
