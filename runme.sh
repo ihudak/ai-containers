@@ -9,6 +9,44 @@ _here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=sandbox-common.sh
 source "${_here}/sandbox-common.sh"
 
+# Parse a host-pointer value "[@]<source>[:ro|:rw]" into three globals the caller
+# reads immediately: PTR_KIND (volume|path), PTR_SRC (repo name or host path),
+# PTR_MODE (ro|rw — the trailing suffix when $3 is 1, else the $2 default).
+parse_pointer_spec() {  # $1=raw value  $2=default mode  $3=allow_suffix(1|0)
+  local val="$1" default_mode="$2" allow_suffix="$3"
+  PTR_MODE="$default_mode"
+  if [[ "$allow_suffix" == "1" ]]; then
+    case "$val" in
+      *:ro) PTR_MODE="ro"; val="${val%:ro}" ;;
+      *:rw) PTR_MODE="rw"; val="${val%:rw}" ;;
+    esac
+  fi
+  if [[ "${val:0:1}" == "@" ]]; then
+    PTR_KIND="volume"; PTR_SRC="${val#@}"
+  else
+    PTR_KIND="path"; PTR_SRC="$val"
+  fi
+}
+
+# For a @name pointer, echo "name:mode" to append to the repo list — UNLESS 'name'
+# is already listed, in which case echo nothing (the existing REPOS/@primary entry
+# wins) and note a mode divergence on stderr. Pass the current repo list as $3...
+pointer_repo_entry() {  # $1=name  $2=mode  $3..=current repos_list entries
+  local name="$1" mode="$2"; shift 2
+  local e existing_mode
+  for e in "$@"; do
+    if [[ "${e%%:*}" == "$name" ]]; then
+      existing_mode="${e##*:}"; [[ "$existing_mode" == "$name" ]] && existing_mode="ro"
+      if [[ "$existing_mode" != "$mode" ]]; then
+        printf "NOTE: repo '%s' is already mounted (%s); the pointer's :%s is ignored.\n" \
+          "$name" "$existing_mode" "$mode" >&2
+      fi
+      return 0
+    fi
+  done
+  printf '%s:%s' "$name" "$mode"
+}
+
 usage() {
   cat <<'EOF'
 Usage:
@@ -29,7 +67,7 @@ Positional [primary] — selects the working directory inside the container:
 
 Everything is mounted under the /workspace umbrella: REPOS at /workspace/<name>,
 EXTRA_MOUNTS at /workspace/<basename>, the personal vault at /workspace/vault,
-the specs repo at /workspace/specs, the docs repo (read-only) at /workspace/docs.
+the specs repo at /workspace/specs, the docs repo at /workspace/docs (read-only by default).
 Agent outputs (.agent-blocked/, .agent-discovery/) are written to the host
 directory where runme.sh is launched (git- and docker-ignored).
 
@@ -94,11 +132,14 @@ Environment variables:
   VAULT_PATH          Host personal knowledge base (Obsidian vault or any markdown KB) mounted
                       at /workspace/vault (also re-exported as VAULT_PATH=/workspace/vault).
                       qmd=ON in sandbox.conf enables in-container search of mounted markdown corpora.
-  SPECS_PATH          Host specs/design/plans repo mounted at /workspace/specs (also
-                      re-exported as SPECS_PATH=/workspace/specs inside the container).
-  DOCS_PATH           Host product-documentation repo mounted READ-ONLY at /workspace/docs
-                      (also re-exported as DOCS_PATH=/workspace/docs inside the container).
-                      To edit docs, mount the repo as the working dir instead.
+  SPECS_PATH          Host specs/design/plans repo mounted at /workspace/specs (also re-exported
+                      as SPECS_PATH=/workspace/specs). Accepts @<name> for a registered repo
+                      volume (mounted at /workspace/<name> instead).
+  DOCS_PATH           Host product-documentation repo mounted READ-ONLY at /workspace/docs (also
+                      re-exported as DOCS_PATH=/workspace/docs). Accepts @<name> (→ /workspace/<name>)
+                      and a :ro/:rw suffix (default :ro). When the docs repo is the working dir,
+                      DOCS_PATH re-points to that writable mount. To edit docs, use :rw or mount
+                      the repo as the working dir.
   SELF_HEALING_ENABLED  Set to 0 to disable self-healing allowlist (default: 1).
   GITHUB_PERSONAL_ACCESS_TOKEN
                         Forwarded into the container as-is for tools that expect this
@@ -407,6 +448,30 @@ run_container() {
     done
     (( _found )) || repos_list+=("$primary_repo:rw")
   fi
+
+  # ── Host-pointer @name desugar ───────────────────────────────────────────────
+  # DOCS_PATH/SPECS_PATH may name a registered repo volume (@name); treat it like a
+  # REPOS entry so the loop below mounts it at /workspace/<name> (reusing an existing
+  # entry instead of double-mounting). Host-path forms are handled after the loop.
+  local docs_kind="" docs_src="" docs_mode=""
+  local specs_kind="" specs_src="" specs_mode=""
+  local PTR_KIND PTR_SRC PTR_MODE _entry
+  if [[ -n "${DOCS_PATH:-}" ]]; then
+    parse_pointer_spec "$DOCS_PATH" ro 1
+    docs_kind="$PTR_KIND"; docs_src="$PTR_SRC"; docs_mode="$PTR_MODE"
+    if [[ "$docs_kind" == "volume" ]]; then
+      _entry="$(pointer_repo_entry "$docs_src" "$docs_mode" ${repos_list[@]+"${repos_list[@]}"})"
+      [[ -n "$_entry" ]] && repos_list+=("$_entry")
+    fi
+  fi
+  if [[ -n "${SPECS_PATH:-}" ]]; then
+    parse_pointer_spec "$SPECS_PATH" rw 0
+    specs_kind="$PTR_KIND"; specs_src="$PTR_SRC"; specs_mode="$PTR_MODE"
+    if [[ "$specs_kind" == "volume" ]]; then
+      _entry="$(pointer_repo_entry "$specs_src" "$specs_mode" ${repos_list[@]+"${repos_list[@]}"})"
+      [[ -n "$_entry" ]] && repos_list+=("$_entry")
+    fi
+  fi
   if [[ ${#repos_list[@]} -gt 0 ]]; then
     local ws_tag; ws_tag="$(sanitize_volume_token "$(basename "$launch_dir")")_$(printf '%s' "$launch_dir" | cksum | tr -cd '0-9' | cut -c1-8)"
     for entry in "${repos_list[@]}"; do
@@ -528,41 +593,58 @@ run_container() {
     fi
   fi
 
-  # ── Specs repo → /workspace/specs ────────────────────────────────────────────
+  # ── Specs repo → /workspace/specs (host path) or /workspace/<name> (@name) ────
   local specs_mount_flags=()
   local specs_env_args=()
   if [[ -n "${SPECS_PATH:-}" ]]; then
-    local specs_real
-    specs_real="$(resolve_path "${SPECS_PATH/#\~/$HOME}")"
-    if [[ -d "$specs_real" ]]; then
-      if [[ -n "${repos_used[specs]:-}" ]]; then
-        printf "ERROR: name 'specs' is used by %s, but SPECS_PATH also mounts at /workspace/specs.\n" "${repos_used[specs]}" >&2
-        exit 1
-      fi
-      specs_mount_flags+=(-v "$specs_real:/workspace/specs:rw")
-      specs_env_args+=(-e SPECS_PATH=/workspace/specs)
+    if [[ "$specs_kind" == "volume" ]]; then
+      # Mounted by the repo loop at /workspace/<name>; just re-export the pointer.
+      specs_env_args+=(-e "SPECS_PATH=/workspace/$specs_src")
       qmd_corpora+=("SPECS_PATH")
     else
-      printf 'WARNING: SPECS_PATH is set but directory does not exist: %s\n' "$SPECS_PATH" >&2
+      local specs_real
+      specs_real="$(resolve_path "${specs_src/#\~/$HOME}")"
+      if [[ -d "$specs_real" ]]; then
+        if [[ -n "${repos_used[specs]:-}" ]]; then
+          printf "ERROR: name 'specs' is used by %s, but SPECS_PATH also mounts at /workspace/specs.\n" "${repos_used[specs]}" >&2
+          exit 1
+        fi
+        specs_mount_flags+=(-v "$specs_real:/workspace/specs:rw")
+        specs_env_args+=(-e SPECS_PATH=/workspace/specs)
+        qmd_corpora+=("SPECS_PATH")
+      else
+        printf 'WARNING: SPECS_PATH is set but directory does not exist: %s\n' "$specs_src" >&2
+      fi
     fi
   fi
 
-  # ── Docs repo → /workspace/docs (read-only) ──────────────────────────────────
+  # ── Docs repo → /workspace/docs (grounding), /workspace/<name> (@name), or the
+  #    working-dir mount when the docs repo IS the working dir ───────────────────
   local docs_mount_flags=()
   local docs_env_args=()
   if [[ -n "${DOCS_PATH:-}" ]]; then
-    local docs_real
-    docs_real="$(resolve_path "${DOCS_PATH/#\~/$HOME}")"
-    if [[ -d "$docs_real" ]]; then
-      if [[ -n "${repos_used[docs]:-}" ]]; then
-        printf "ERROR: name 'docs' is used by %s, but DOCS_PATH also mounts at /workspace/docs.\n" "${repos_used[docs]}" >&2
-        exit 1
-      fi
-      docs_mount_flags+=(-v "$docs_real:/workspace/docs:ro")
-      docs_env_args+=(-e DOCS_PATH=/workspace/docs)
+    if [[ "$docs_kind" == "volume" ]]; then
+      docs_env_args+=(-e "DOCS_PATH=/workspace/$docs_src")
       qmd_corpora+=("DOCS_PATH")
     else
-      printf 'WARNING: DOCS_PATH is set but directory does not exist: %s\n' "$DOCS_PATH" >&2
+      local docs_real
+      docs_real="$(resolve_path "${docs_src/#\~/$HOME}")"
+      if [[ -n "$primary_path" && "$docs_real" == "$primary_path" ]]; then
+        # Docs repo IS the working dir: already mounted rw by the primary at
+        # $workdir. Re-point DOCS_PATH there; any :ro/:rw suffix is moot.
+        docs_env_args+=(-e "DOCS_PATH=$workdir")
+        qmd_corpora+=("DOCS_PATH")
+      elif [[ -d "$docs_real" ]]; then
+        if [[ -n "${repos_used[docs]:-}" ]]; then
+          printf "ERROR: name 'docs' is used by %s, but DOCS_PATH also mounts at /workspace/docs.\n" "${repos_used[docs]}" >&2
+          exit 1
+        fi
+        docs_mount_flags+=(-v "$docs_real:/workspace/docs:$docs_mode")
+        docs_env_args+=(-e DOCS_PATH=/workspace/docs)
+        qmd_corpora+=("DOCS_PATH")
+      else
+        printf 'WARNING: DOCS_PATH is set but directory does not exist: %s\n' "$docs_src" >&2
+      fi
     fi
   fi
 

@@ -36,6 +36,13 @@ run_runme() {
   RC=$?
 }
 
+# Register a bind-backend 'path' repo in the temp HOME registry (no docker volume
+# needed on Linux: the repo loop bind-mounts the source directly). Call AFTER setup().
+register_repo() {  # $1=name $2=source-dir
+  mkdir -p "$HOME/.ai-containers"
+  printf '%s|path|%s|0|0|bind\n' "$1" "$2" >> "$HOME/.ai-containers/repos.conf"
+}
+
 # Case 1: DOCS_PATH set, dir exists, not primary → :ro mount + env re-export.
 setup
 mkdir -p "$TMP/mydocs" "$TMP/app"
@@ -66,13 +73,15 @@ if [[ $RC -ne 0 ]] && grep -q "name 'docs' is used by" "$ERR"; then
   pass "collision on docs → error"; else fail "collision on docs → error"; fi
 teardown
 
-# Case 4: docs repo passed as primary (non-docs basename) → coexists ro + rw.
+# Case 4: docs repo passed as the primary (== $DOCS_PATH) → re-point, no grounding mount.
 setup
-mkdir -p "$TMP/productdocs"
+mkdir -p "$TMP/productdocs" "$TMP/app"
 export DOCS_PATH="$TMP/productdocs"
 run_runme "$TMP/productdocs"
-if grep -q "/workspace/productdocs:rw" "$CAPTURE" && grep -q "/workspace/docs:ro" "$CAPTURE"; then
-  pass "primary + DOCS coexist (ro + rw)"; else fail "primary + DOCS coexist (ro + rw)"; fi
+if grep -q ":/workspace/productdocs:rw" "$CAPTURE" \
+   && grep -qx "DOCS_PATH=/workspace/productdocs" "$CAPTURE" \
+   && ! grep -q ":/workspace/docs:" "$CAPTURE"; then
+  pass "docs==workdir → re-point, no grounding mount"; else fail "docs==workdir → re-point, no grounding mount"; fi
 teardown
 
 # Case 5: qmd=OFF + DOCS mounted → exactly one warning naming DOCS_PATH.
@@ -114,6 +123,35 @@ run_runme "$TMP/app"
 if grep -q ":/workspace/vault:rw" "$CAPTURE" && grep -qx "VAULT_PATH=/workspace/vault" "$CAPTURE" \
    && ! grep -q "obsidian" "$CAPTURE"; then
   pass "VAULT_PATH → /workspace/vault"; else fail "VAULT_PATH → /workspace/vault"; fi
+teardown
+
+# Case 8: DOCS_PATH=@name (registered) → mount at /workspace/<name> ro + env re-point.
+setup
+mkdir -p "$TMP/docsvol" "$TMP/app"
+register_repo docs2 "$TMP/docsvol"
+export DOCS_PATH="@docs2"
+run_runme "$TMP/app"
+if grep -q ":/workspace/docs2:ro" "$CAPTURE" && grep -qx "DOCS_PATH=/workspace/docs2" "$CAPTURE"; then
+  pass "DOCS_PATH=@name → /workspace/docs2 ro"; else fail "DOCS_PATH=@name → /workspace/docs2 ro"; fi
+teardown
+
+# Case 9: SPECS_PATH=@name (registered) → mount at /workspace/<name> rw + env re-point.
+setup
+mkdir -p "$TMP/specsvol" "$TMP/app"
+register_repo specs2 "$TMP/specsvol"
+export SPECS_PATH="@specs2"
+run_runme "$TMP/app"
+if grep -q ":/workspace/specs2:rw" "$CAPTURE" && grep -qx "SPECS_PATH=/workspace/specs2" "$CAPTURE"; then
+  pass "SPECS_PATH=@name → /workspace/specs2 rw"; else fail "SPECS_PATH=@name → /workspace/specs2 rw"; fi
+teardown
+
+# Case 10: DOCS_PATH=<path>:rw (not primary) → grounding mount is rw.
+setup
+mkdir -p "$TMP/mydocs" "$TMP/app"
+export DOCS_PATH="$TMP/mydocs:rw"
+run_runme "$TMP/app"
+if grep -q ":/workspace/docs:rw" "$CAPTURE" && grep -qx "DOCS_PATH=/workspace/docs" "$CAPTURE"; then
+  pass "DOCS_PATH=path:rw → /workspace/docs rw"; else fail "DOCS_PATH=path:rw → /workspace/docs rw"; fi
 teardown
 
 printf '\n%d failure(s)\n' "$fails"

@@ -287,15 +287,6 @@ export AI_CONTAINER_GROUP=${group_name}
 EOF
     [[ -n "$group_init"   ]] && printf 'export AI_CONTAINER_GROUP_INIT=%s\n' "$group_init"
     [[ -n "$extra_mounts" ]] && printf 'export EXTRA_MOUNTS="%s"\n' "$extra_mounts"
-    # If this project IS the host's $DOCS_PATH docs repo, unset DOCS_PATH so the
-    # read-only /workspace/docs grounding mount does not collide with (or
-    # duplicate) the docs repo mounted here as the working dir.
-    if [[ -n "${DOCS_PATH:-}" ]]; then
-      docs_real="$(cd "${DOCS_PATH/#\~/$HOME}" 2>/dev/null && pwd || true)"
-      if [[ -n "$docs_real" && "$docs_real" == "$project_path" ]]; then
-        printf 'unset DOCS_PATH  # this project IS your $DOCS_PATH docs repo; mounted here as the working dir\n'
-      fi
-    fi
     cat <<'EOF'
 
 # Attach shared, native-speed repo volumes (register first with ./repo.sh add):
