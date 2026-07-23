@@ -131,7 +131,8 @@ Environment variables:
                       A name appearing in both EXTRA_MOUNTS and REPOS is an error.
   VAULT_PATH          Host personal knowledge base (Obsidian vault or any markdown KB) mounted
                       at /workspace/vault (also re-exported as VAULT_PATH=/workspace/vault).
-                      qmd=ON in sandbox.conf enables in-container search of mounted markdown corpora.
+                      qmd=ON in sandbox.conf enables in-container search of mounted markdown corpora;
+                      its index cache (~/.cache/qmd) is group-scoped, persisting across restarts.
   SPECS_PATH          Host specs/design/plans repo mounted at /workspace/specs (also re-exported
                       as SPECS_PATH=/workspace/specs). Accepts @<name> for a registered repo
                       volume (mounted at /workspace/<name> instead).
@@ -751,6 +752,12 @@ run_container() {
   fi
   if is_active dtmgd; then
     add_mount_if_exists config_mount_flags "$HOME/.config/dtmgd" "$dev_home/.config/dtmgd"
+  fi
+  if is_enabled qmd; then
+    if [[ "$group" != "host" ]]; then
+      install -d "$group_root/.cache/qmd"
+    fi
+    add_mount_if_exists config_mount_flags "$group_root/.cache/qmd" "$dev_home/.cache/qmd"
   fi
 
   # Resolve COPILOT_GITHUB_TOKEN from the group's gh hosts.yml if not set.

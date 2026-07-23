@@ -420,7 +420,7 @@ ensure_group_scaffold() {
 # Copy the group-scoped slice of dotfiles from $src into $dst.
 _copy_group_slice() {
   local src="$1" dst="$2"
-  local paths=(.claude .claude.json .copilot .config/gh .kiro ".local/share/kiro-cli" .codex .gemini .agents .ssh)
+  local paths=(.claude .claude.json .copilot .config/gh .kiro ".local/share/kiro-cli" .codex .gemini .agents .ssh .cache/qmd)
   for p in "${paths[@]}"; do
     local from="$src/$p"
     if [[ -e "$from" ]]; then
