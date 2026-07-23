@@ -26,6 +26,8 @@ mkdir -p "$HOME/.agents" 2>/dev/null || true
 map_agent() { case "$1" in claude-code) echo claude ;; *) echo "$1" ;; esac; }
 
 # current_stamp — "name=version" per installed skills tool, sorted (change key).
+# TOOL_* are set by tools_read_descriptor in the sourced tools-lib.sh.
+# shellcheck disable=SC2154
 current_stamp() {
   local name
   while IFS= read -r name; do

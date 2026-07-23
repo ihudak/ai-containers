@@ -53,6 +53,8 @@ install_one() {
   local name="$1" version="$2"
   tools_read_descriptor "$name" || { echo "WARNING: no descriptor for '$name' — skipping." >&2; return 0; }
   [ -n "$version" ] || return 0
+  # TOOL_* are set by tools_read_descriptor in the sourced tools-lib.sh.
+  # shellcheck disable=SC2154
   local private="$TOOL_private" repo="$TOOL_repo" binary="$TOOL_binary"
 
   if [ "$private" = "yes" ] && [ -z "${GITHUB_TOKEN:-}" ]; then

@@ -24,6 +24,9 @@ tools_list_names() {
 
 # tools_read_descriptor <name> — populate TOOL_* globals from <name>.conf.
 # Resets every field first so stale values never leak. Returns 1 if absent.
+# TOOL_* are consumed by the scripts that source this library (install-tools.sh,
+# install-agent-skills.sh, build.sh), not within this file:
+# shellcheck disable=SC2034
 tools_read_descriptor() {
   local name="$1" file="$TOOLS_D_DIR/$1.conf" line key val
   TOOL_name="$name"
