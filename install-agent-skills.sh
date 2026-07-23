@@ -10,8 +10,13 @@
 set -uo pipefail
 
 TOOLS_D_DIR="${TOOLS_D_DIR:-/etc/ai-containers/tools.d}"
+_tools_lib="${TOOLS_LIB:-/etc/ai-containers/tools-lib.sh}"
+if [ ! -r "$_tools_lib" ]; then
+  echo "install-agent-skills: descriptor library not found ($_tools_lib); skipping." >&2
+  exit 0
+fi
 # shellcheck source=/dev/null
-source "${TOOLS_LIB:-/etc/ai-containers/tools-lib.sh}"
+source "$_tools_lib"
 
 export HOME="${HOME:-$(getent passwd "$(id -u)" | cut -d: -f6)}"
 STAMP="$HOME/.agents/.ai-containers-skills-stamp"

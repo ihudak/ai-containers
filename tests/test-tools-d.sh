@@ -100,6 +100,18 @@ tv="$(tool_versions_arg)"
 frags="$(active_tool_fragments | tr '\n' ' ')"
 [[ "$frags" == *"acme"* ]] && pass "active_tool_fragments" || fail "active_tool_fragments ($frags)"
 
+# Dedup: two DISTINCT active tools naming the same fragment must yield it once
+# (the case sort -u exists for — dtctl and dtmgd both use `dynatrace`). Isolated
+# in a subshell with its own TOOLS_D_DIR/SANDBOX_CONF so the main fixture is untouched.
+_ddir="$TMP/dedup.d"; mkdir -p "$_ddir"
+printf 'allowlist_fragment=shared\n' > "$_ddir/aa.conf"
+printf 'allowlist_fragment=shared\n' > "$_ddir/bb.conf"
+printf 'aa=ON\nbb=ON\n' > "$TMP/dedup.conf"
+dedup_out="$(TOOLS_D_DIR="$_ddir" SANDBOX_CONF="$TMP/dedup.conf" bash -c '
+  source "'"$REPO_DIR"'/sandbox-common.sh"; source "'"$REPO_DIR"'/build.sh"
+  active_tool_fragments' | tr '\n' ' ')"
+[[ "$dedup_out" == "shared " ]] && pass "active_tool_fragments dedup" || fail "active_tool_fragments dedup ($dedup_out)"
+
 # foo is private + no token → preflight must warn on stderr, non-fatally.
 ( unset GITHUB_TOKEN GITHUB_PERSONAL_ACCESS_TOKEN; preflight_private_tools ) 2>"$TMP/pf.err"
 grep -q "PRIVATE tool is enabled" "$TMP/pf.err" && pass "preflight warns" || fail "preflight warns"
@@ -132,7 +144,7 @@ chmod +x "$RTMP/bin/docker"
 PATH="$RTMP/bin:$PATH" bash "$REPO_DIR/runme.sh" restricted "$RTMP/app" \
   >/dev/null 2>&1 </dev/null || true
 
-grep -q "/.config/dtctl:" "$CAP" && pass "dtctl config mounted from group" || fail "dtctl config mount"
+grep -q "\.ai-containers/.*/\.config/dtctl:" "$CAP" && pass "dtctl config mounted from group" || fail "dtctl config mount"
 grep -qx "AI_AGENTS_ENABLED=claude-code" "$CAP" && pass "AI_AGENTS_ENABLED passed" || fail "AI_AGENTS_ENABLED"
 # Seed: group copy created from host, containing the host's file.
 GROOT="$HOME/.ai-containers"

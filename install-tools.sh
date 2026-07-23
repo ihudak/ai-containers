@@ -51,16 +51,18 @@ parse_versions() {
 
 install_one() {
   local name="$1" version="$2"
-  tools_read_descriptor "$name" || { echo "WARNING: no descriptor for '$name' — skipping."; return 0; }
+  tools_read_descriptor "$name" || { echo "WARNING: no descriptor for '$name' — skipping." >&2; return 0; }
   [ -n "$version" ] || return 0
   local private="$TOOL_private" repo="$TOOL_repo" binary="$TOOL_binary"
 
   if [ "$private" = "yes" ] && [ -z "${GITHUB_TOKEN:-}" ]; then
-    echo "════════════════════════════════════════════════════════════════"
-    echo "WARNING: '$name' is a PRIVATE repo (${repo}) and requires GITHUB_TOKEN."
-    echo "         No token provided — skipping ${name}."
-    echo "         Set GITHUB_TOKEN on the host and rebuild: ./build.sh"
-    echo "════════════════════════════════════════════════════════════════"
+    {
+      echo "════════════════════════════════════════════════════════════════"
+      echo "WARNING: '$name' is a PRIVATE repo (${repo}) and requires GITHUB_TOKEN."
+      echo "         No token provided — skipping ${name}."
+      echo "         Set GITHUB_TOKEN on the host and rebuild: ./build.sh"
+      echo "════════════════════════════════════════════════════════════════"
+    } >&2
     return 0
   fi
 
@@ -70,24 +72,24 @@ install_one() {
     if [ "$version" = "latest" ]; then release_json=$(api_get "${api}/latest")
     else release_json=$(api_get "${api}/tags/v${version#v}"); fi
     tag=$(printf '%s' "$release_json" | jq -r '.tag_name // empty')
-    [ -n "$tag" ] || { echo "WARNING: could not resolve ${name} release — skipping."; return 0; }
+    [ -n "$tag" ] || { echo "WARNING: could not resolve ${name} release — skipping." >&2; return 0; }
     an=$(asset_name "$binary" "$tag")
     local asset_id
     asset_id=$(printf '%s' "$release_json" | jq -r --arg n "$an" '.assets[] | select(.name==$n) | .id')
-    [ -n "$asset_id" ] || { echo "WARNING: asset ${an} not found for ${name} ${tag} — skipping."; return 0; }
+    [ -n "$asset_id" ] || { echo "WARNING: asset ${an} not found for ${name} ${tag} — skipping." >&2; return 0; }
     echo "Installing ${name} ${tag} (private)..."
     if ! curl -fsSL ${AUTH_ARGS[@]+"${AUTH_ARGS[@]}"} -H "Accept: application/octet-stream" \
            "https://api.github.com/repos/${repo}/releases/assets/${asset_id}" \
          | tar xz -C /usr/local/bin "$binary"; then
-      echo "WARNING: download/extract failed for ${name} ${tag} — skipping."; return 0
+      echo "WARNING: download/extract failed for ${name} ${tag} — skipping." >&2; return 0
     fi
   else
     if [ "$version" = "latest" ]; then
       tag=$(printf '%s' "$(api_get "https://api.github.com/repos/${repo}/releases/latest")" \
               | jq -r '.tag_name // empty')
       if [ -z "$tag" ]; then
-        echo "WARNING: could not resolve latest ${name} (rate limit?) — skipping."
-        echo "         Pin a version in sandbox.conf (e.g. ${name}=0.25.0) or set GITHUB_TOKEN."
+        echo "WARNING: could not resolve latest ${name} (rate limit?) — skipping." >&2
+        echo "         Pin a version in sandbox.conf (e.g. ${name}=0.25.0) or set GITHUB_TOKEN." >&2
         return 0
       fi
     else
@@ -97,8 +99,8 @@ install_one() {
     echo "Installing ${name} ${tag}..."
     if ! curl -fsSL "https://github.com/${repo}/releases/download/${tag}/${an}" \
          | tar xz -C /usr/local/bin "$binary"; then
-      echo "WARNING: download/extract failed for ${name} ${tag} — skipping."
-      echo "         Check that version '${tag#v}' exists at https://github.com/${repo}/releases"
+      echo "WARNING: download/extract failed for ${name} ${tag} — skipping." >&2
+      echo "         Check that version '${tag#v}' exists at https://github.com/${repo}/releases" >&2
       return 0
     fi
   fi
@@ -107,7 +109,7 @@ install_one() {
 }
 
 main() {
-  local line name version
+  local name version
   while IFS=$'\t' read -r name version; do
     install_one "$name" "$version"
   done < <(parse_versions "${TOOL_VERSIONS:-}")

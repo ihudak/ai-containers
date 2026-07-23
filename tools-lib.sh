@@ -13,11 +13,12 @@
 
 # tools_list_names — echo one descriptor name (basename without .conf) per line.
 tools_list_names() {
-  local f
+  local f b
   [[ -d "$TOOLS_D_DIR" ]] || return 0
   for f in "$TOOLS_D_DIR"/*.conf; do
     [[ -e "$f" ]] || continue
-    printf '%s\n' "$(basename "$f" .conf)"
+    b="${f##*/}"                 # strip dir (no basename subshell)
+    printf '%s\n' "${b%.conf}"   # strip .conf suffix
   done
 }
 
