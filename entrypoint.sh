@@ -12,6 +12,15 @@ blocked_capture_dir="${BLOCKED_CAPTURE_DIR:-/workspace/.agent-blocked}"
 blocked_capture_enabled="${BLOCKED_CAPTURE_ENABLED:-1}"
 sandbox_user="${SANDBOX_USER:-user}"
 
+# Install/refresh agent skills for the enabled AI agents, as the sandbox user.
+# Offline and non-fatal — never blocks container start.
+run_agent_skill_install() {
+  [[ -x /usr/local/bin/install-agent-skills.sh ]] || return 0
+  runuser -u "$sandbox_user" -- \
+    env AI_AGENTS_ENABLED="${AI_AGENTS_ENABLED:-}" \
+    bash /usr/local/bin/install-agent-skills.sh || true
+}
+
 # Create the sandbox user at startup with the host user's name, UID, and GID so
 # that files in bind-mounted volumes (/workspace and its sub-mounts) are accessible
 # without any chown. useradd -m creates the home directory with correct ownership.
@@ -171,6 +180,8 @@ case "$mode" in
 
     # Hand control to the sandbox user with dangerous capabilities dropped.
     # Background processes forked above are unaffected by this exec and keep their capabilities.
+    run_agent_skill_install
+
     exec capsh \
       --drop=cap_net_admin,cap_net_raw \
       --user="$sandbox_user" \
@@ -186,6 +197,8 @@ case "$mode" in
     # are owned by the sandbox UID/GID — not root. This prevents permission
     # errors when the container is later run in restricted mode.
     # NET_RAW is kept (not dropped) so the sandbox user can run tcpdump if needed.
+    run_agent_skill_install
+
     exec capsh \
       --drop=cap_net_admin \
       --user="$sandbox_user" \
