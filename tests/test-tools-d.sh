@@ -42,4 +42,16 @@ tools_read_descriptor bar
 
 tools_read_descriptor missing && fail "missing returns 0" || pass "missing returns 1"
 
+# Real descriptors: pin the dtctl/dtmgd cross-client invocations, which differ
+# by a subtle space (--cross-client vs --for cross-client). Field-level, not
+# list-level, so this holds in repos that ship additional descriptors.
+_saved_td="$TOOLS_D_DIR"; export TOOLS_D_DIR="$REPO_DIR/tools.d"
+tools_read_descriptor dtctl
+[[ "$TOOL_repo" == "dynatrace-oss/dtctl" && "$TOOL_skills_crossclient" == "--cross-client" ]] \
+  && pass "dtctl descriptor" || fail "dtctl descriptor ($TOOL_repo / $TOOL_skills_crossclient)"
+tools_read_descriptor dtmgd
+[[ "$TOOL_repo" == "dynatrace-oss/dtmgd" && "$TOOL_skills_crossclient" == "--for cross-client" ]] \
+  && pass "dtmgd descriptor" || fail "dtmgd descriptor ($TOOL_repo / $TOOL_skills_crossclient)"
+export TOOLS_D_DIR="$_saved_td"
+
 [[ "$fails" -eq 0 ]] && { echo "ALL PASS"; exit 0; } || { echo "$fails FAILED"; exit 1; }
