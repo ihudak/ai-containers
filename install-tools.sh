@@ -30,7 +30,7 @@ api_get() {
   for i in 1 2 3; do
     body=$(curl -fsSL ${AUTH_ARGS[@]+"${AUTH_ARGS[@]}"} \
              -H "Accept: application/vnd.github+json" "$url") && [ -n "$body" ] && break
-    echo "  API attempt $i failed, retrying in 5s..." >&2; sleep 5
+    [ "$i" -lt 3 ] && { echo "  API attempt $i failed, retrying in 5s..." >&2; sleep 5; }
   done
   printf '%s' "$body"
 }
@@ -40,7 +40,7 @@ asset_name() { printf '%s_%s_%s_%s.tar.gz' "$1" "${2#v}" "$OS" "$ARCH"; }
 
 # parse_versions <str> — echo "name<TAB>version" per entry (pure; for tests/main).
 parse_versions() {
-  local IFS=';' entry name version
+  local IFS=';' entry name version _e
   read -ra _e <<< "$1"
   for entry in "${_e[@]}"; do
     [ -n "$entry" ] || continue
