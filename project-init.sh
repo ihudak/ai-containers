@@ -210,10 +210,11 @@ rsync -a --exclude='custom.txt' \
   "${script_dir}/allowlist-proxy-domains.d/" "${dest}/allowlist-proxy-domains.d/"
 rsync -a --exclude='custom.txt' \
   "${script_dir}/allowlist-cidrs.d/"         "${dest}/allowlist-cidrs.d/"
+rsync -a "${script_dir}/tools.d/" "${dest}/tools.d/"
 
 for f in Dockerfile Dockerfile.seed .dockerignore sandbox-common.sh build.sh runme.sh repo.sh entrypoint.sh \
           refresh-ipset-allowlist.sh capture-blocked-traffic.sh \
-          capture-agent-destinations.sh install-dt-tools.sh; do
+          capture-agent-destinations.sh install-tools.sh install-agent-skills.sh tools-lib.sh; do
   [[ -f "${script_dir}/${f}" ]] && cp "${script_dir}/${f}" "${dest}/${f}"
 done
 
