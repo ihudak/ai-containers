@@ -34,7 +34,7 @@ Environment variables:
                refresh stale agents quickly; you can also do it manually:
                AGENTS_CACHE_BUST=$(date +%s) ./build.sh
   GITHUB_TOKEN Build-time only. Passed to docker build as a BuildKit secret
-               (--secret id=github_token) so install-dt-tools.sh can use the
+               (--secret id=github_token) so install-tools.sh can use the
                authenticated GitHub API (5000 req/h vs 60 req/h). Never written
                into any image layer or visible in `docker history`. If unset,
                GITHUB_PERSONAL_ACCESS_TOKEN is used as a fallback.
