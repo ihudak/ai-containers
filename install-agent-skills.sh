@@ -34,7 +34,12 @@ current_stamp() {
     tools_read_descriptor "$name" || continue
     [ "$TOOL_skills" = "yes" ] || continue
     command -v "$TOOL_binary" >/dev/null 2>&1 || continue
-    printf '%s=%s\n' "$name" "$("$TOOL_binary" --version 2>/dev/null | head -1)"
+    # dtctl/dtmgd/junoctl (cobra CLIs) expose a `version` subcommand, not a
+    # --version flag; fall back to the flag for tools that use that form.
+    local ver
+    ver="$("$TOOL_binary" version 2>/dev/null | head -1)"
+    [ -n "$ver" ] || ver="$("$TOOL_binary" --version 2>/dev/null | head -1)"
+    printf '%s=%s\n' "$name" "$ver"
   done < <(tools_list_names) | sort
 }
 
