@@ -747,12 +747,27 @@ run_container() {
   if is_enabled kubectl; then
     add_mount_if_exists config_mount_flags "$HOME/.kube" "$dev_home/.kube"
   fi
-  if is_active dtctl; then
-    add_mount_if_exists config_mount_flags "$HOME/.config/dtctl" "$dev_home/.config/dtctl"
-  fi
-  if is_active dtmgd; then
-    add_mount_if_exists config_mount_flags "$HOME/.config/dtmgd" "$dev_home/.config/dtmgd"
-  fi
+  # Tool config dirs (dtctl/dtmgd/junoctl/...) are group-scoped like agent
+  # credentials: created lazily in the group and seeded ONCE from the host home
+  # if present, so a sandboxed agent never writes the developer's real host
+  # config. The seed happens only when the group dir does not yet exist.
+  local _tname
+  while IFS= read -r _tname; do
+    is_active "$_tname" || continue
+    tools_read_descriptor "$_tname" || continue
+    [[ -n "$TOOL_config_dir" ]] || continue
+    if [[ "$group" != "host" ]]; then
+      if [[ ! -e "$group_root/$TOOL_config_dir" && -e "$HOME/$TOOL_config_dir" ]]; then
+        install -d "$(dirname "$group_root/$TOOL_config_dir")"
+        cp -a "$HOME/$TOOL_config_dir" "$group_root/$TOOL_config_dir"
+      else
+        install -d "$group_root/$TOOL_config_dir"
+      fi
+      add_mount_if_exists config_mount_flags "$group_root/$TOOL_config_dir" "$dev_home/$TOOL_config_dir"
+    else
+      add_mount_if_exists config_mount_flags "$HOME/$TOOL_config_dir" "$dev_home/$TOOL_config_dir"
+    fi
+  done < <(tools_list_names)
   if is_enabled qmd; then
     if [[ "$group" != "host" ]]; then
       install -d "$group_root/.cache/qmd"
@@ -808,6 +823,7 @@ run_container() {
     -e SANDBOX_GID="${SANDBOX_GID:-$(id -g)}" \
     -e SANDBOX_USER="${SANDBOX_USER:-$(id -un)}" \
     -e SANDBOX_GROUP="${SANDBOX_GROUP:-$(id -gn)}" \
+    -e AI_AGENTS_ENABLED="$(enabled_agents_csv)" \
     ${git_optional_locks_env[@]+"${git_optional_locks_env[@]}"} \
     ${SELF_HEALING_ENABLED:+-e SELF_HEALING_ENABLED="$SELF_HEALING_ENABLED"} \
     ${ALLOW_IPV6_BYPASS:+-e ALLOW_IPV6_BYPASS="$ALLOW_IPV6_BYPASS"} \

@@ -104,4 +104,48 @@ frags="$(active_tool_fragments | tr '\n' ' ')"
 ( unset GITHUB_TOKEN GITHUB_PERSONAL_ACCESS_TOKEN; preflight_private_tools ) 2>"$TMP/pf.err"
 grep -q "PRIVATE tool is enabled" "$TMP/pf.err" && pass "preflight warns" || fail "preflight warns"
 
+# --- runme.sh group-scoped tool config + AI_AGENTS_ENABLED ---------------------
+RTMP="$(mktemp -d)"
+export HOME="$RTMP/home"; mkdir -p "$HOME/.config/dtctl"; echo hostcfg > "$HOME/.config/dtctl/config"
+export AI_CONTAINER_GROUP_INIT=clean
+unset VAULT_PATH SPECS_PATH DOCS_PATH
+unset TOOLS_D_DIR   # earlier sections in this file point it at a synthetic foo/bar
+                    # dir; runme.sh must resolve the real repo tools.d (dtctl/dtmgd).
+RCONF="$RTMP/sandbox.conf"
+cat > "$RCONF" <<'EOF'
+claude-code=ON
+copilot=OFF
+codex=OFF
+gemini=OFF
+kiro=OFF
+dtctl=0.25.0
+dtmgd=OFF
+EOF
+export SANDBOX_CONF="$RCONF"
+mkdir -p "$RTMP/bin" "$RTMP/app"; CAP="$RTMP/args.txt"
+cat > "$RTMP/bin/docker" <<DOCKER
+#!/usr/bin/env bash
+if [[ "\$1" == "run" ]]; then shift; printf '%s\n' "\$@" > "$CAP"; exit 0; fi
+exit 1
+DOCKER
+chmod +x "$RTMP/bin/docker"
+PATH="$RTMP/bin:$PATH" bash "$REPO_DIR/runme.sh" restricted "$RTMP/app" \
+  >/dev/null 2>&1 </dev/null || true
+
+grep -q "/.config/dtctl:" "$CAP" && pass "dtctl config mounted from group" || fail "dtctl config mount"
+grep -qx "AI_AGENTS_ENABLED=claude-code" "$CAP" && pass "AI_AGENTS_ENABLED passed" || fail "AI_AGENTS_ENABLED"
+# Seed: group copy created from host, containing the host's file.
+GROOT="$HOME/.ai-containers"
+find "$GROOT" -path '*/.config/dtctl/config' | grep -q . && pass "group dtctl seeded from host" || fail "seed from host"
+
+# Second run: group dir already exists → must NOT be re-seeded (group state wins).
+# Prove it by changing the host file and confirming the group copy is untouched.
+echo hostcfg-changed > "$HOME/.config/dtctl/config"
+PATH="$RTMP/bin:$PATH" bash "$REPO_DIR/runme.sh" restricted "$RTMP/app" \
+  >/dev/null 2>&1 </dev/null || true
+GROUP_CFG="$(find "$GROOT" -path '*/.config/dtctl/config' | head -n1)"
+[[ -n "$GROUP_CFG" ]] && [[ "$(cat "$GROUP_CFG")" == "hostcfg" ]] \
+  && pass "group dtctl not re-seeded on second run" || fail "group dtctl not re-seeded on second run"
+rm -rf "$RTMP"
+
 [[ "$fails" -eq 0 ]] && { echo "ALL PASS"; exit 0; } || { echo "$fails FAILED"; exit 1; }
