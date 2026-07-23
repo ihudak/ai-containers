@@ -437,7 +437,7 @@ ensure_group_scaffold() {
 _copy_group_slice() {
   local src="$1" dst="$2"
   local paths=(.claude .claude.json .copilot .config/gh .kiro ".local/share/kiro-cli" .codex .gemini .agents .ssh .cache/qmd)
-  # Tool config dirs (dtctl/dtmgd/junoctl/...) are group-scoped too — pull them
+  # Tool config dirs (dtctl/dtmgd/...) are group-scoped too — pull them
   # from the descriptors so new tools are covered without editing this list.
   local _t
   while IFS= read -r _t; do

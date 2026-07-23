@@ -747,7 +747,7 @@ run_container() {
   if is_enabled kubectl; then
     add_mount_if_exists config_mount_flags "$HOME/.kube" "$dev_home/.kube"
   fi
-  # Tool config dirs (dtctl/dtmgd/junoctl/...) are group-scoped like agent
+  # Tool config dirs (dtctl/dtmgd/...) are group-scoped like agent
   # credentials: created lazily in the group and seeded ONCE from the host home
   # if present, so a sandboxed agent never writes the developer's real host
   # config. The seed happens only when the group dir does not yet exist.

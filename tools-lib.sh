@@ -2,7 +2,7 @@
 # tools-lib.sh — shared parser for tools.d/ descriptor files.
 #
 # A descriptor is KEY=value lines describing one external CLI the container
-# integrates (dtctl, dtmgd, junoctl, ...). Sourced by host scripts (via
+# integrates (dtctl, dtmgd, ...). Sourced by host scripts (via
 # sandbox-common.sh) and by container scripts (install-tools.sh /
 # install-agent-skills.sh, which source it from /etc/ai-containers/tools-lib.sh).
 # Pure functions only — no side effects at source time.

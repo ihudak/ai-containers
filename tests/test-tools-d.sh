@@ -63,8 +63,8 @@ source "$REPO_DIR/install-tools.sh"   # sourced, not executed (guarded main)
 [[ "$(asset_name dtctl v0.25.0)" == "dtctl_0.25.0_linux_amd64.tar.gz" ]] \
   && pass "asset_name" || fail "asset_name ($(asset_name dtctl v0.25.0))"
 
-got="$(parse_versions 'dtctl=0.25.0;junoctl=latest;empty=' | tr '\t' ':' | tr '\n' ' ')"
-[[ "$got" == "dtctl:0.25.0 junoctl:latest empty: " ]] \
+got="$(parse_versions 'dtctl=0.25.0;toolx=latest;empty=' | tr '\t' ':' | tr '\n' ' ')"
+[[ "$got" == "dtctl:0.25.0 toolx:latest empty: " ]] \
   && pass "parse_versions" || fail "parse_versions ($got)"
 
 # --- enabled_agents_csv --------------------------------------------------------
