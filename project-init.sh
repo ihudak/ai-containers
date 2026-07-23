@@ -6,6 +6,13 @@
 # copies the shared .ai-containers infrastructure into the project, registers
 # it in projects.conf, and writes a ready-to-run <project-name>-container.sh
 # launcher modelled on ihudak-claude-plugins/.ai-containers/claude-plugins.sh.
+#
+# Most config vars (project_name, image_name, container_*, group_name, ...) are
+# assigned indirectly via prompt_with_default's `printf -v "$varname"`. That
+# indirect assignment is untraceable by the linter, which then reports them as
+# referenced-but-unassigned; suppress that class file-wide (must precede the
+# first command to apply to the whole file):
+# shellcheck disable=SC2154
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -294,6 +301,15 @@ EOF
 #export REPOS="cluster:ro lib:ro app:rw"
 # On macOS, for a FAST primary repo, register it and use it as the working dir:
 #   ./repo.sh add <name> ..   then   ./runme.sh discovery @<name>
+
+# Build-time GitHub token for private tool downloads (e.g. junoctl). build.sh
+# passes it to docker build as a BuildKit secret; runme.sh does NOT forward it
+# into the running container. Non-clobbering (an already-set token wins) and
+# gh-optional (absence degrades to "no token" → build.sh warns for private tools).
+if command -v gh >/dev/null 2>&1; then
+  : "${GITHUB_TOKEN:=$(gh auth token 2>/dev/null || true)}"
+  export GITHUB_TOKEN
+fi
 
 ./build.sh
 #./build.sh --no-cache
