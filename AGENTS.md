@@ -25,7 +25,7 @@ Optional components: `copilot`, `kiro`, `claude-code`, `codex`, `gemini`, `graph
 Version-list components (`node`, `python`, `ruby`, `rails`, `rust`, `go`) accept comma-separated version values instead of `ON`/`OFF` (e.g., `node=22,20`). Constraints:
 - `ruby`, `rails`, and `angular-cli` accept only a **single version** (not a comma-separated list).
 - SDKMAN-managed components (`openjdk`, `graalvm-ce`, `graalvm-oracle`, `kotlin`, `scala`, `maven`, `gradle`) require **full patch versions** (e.g., `openjdk=21.0.11`, not `21`).
-- `dtctl` and `dtmgd` accept `ON` (auto-detect latest from GitHub), `x.y.z` (pinned), or `OFF`.
+- Any tool described by a `tools.d/*.conf` descriptor (currently `dtctl`, `dtmgd`) accepts `ON` (auto-detect latest from GitHub), `x.y.z` (pinned), or `OFF` — this grammar is independent of the tool, so a future tool added the same way follows it automatically.
 - `node` always installs the latest LTS (required by the AI agents); `node=20,22` adds those versions alongside it. `nvm-version` pins the nvm release used to install Node (e.g., `nvm-version=v0.40.5`); leave empty for the Dockerfile default.
 
 ## Commands
@@ -34,7 +34,7 @@ Version-list components (`node`, `python`, `ruby`, `rails`, `rust`, `go`) accept
 ```bash
 ./build.sh [image-name]
 ```
-`build.sh` reads `sandbox.conf`, assembles `allowlist-domains.txt`, `allowlist-proxy-domains.txt`, and `allowlist-cidrs.txt` from the `*.d/` fragment directories, then calls `docker build` with one `--build-arg` per component. The generated `allowlist-*.txt` files are gitignored; always use `./build.sh`, not `docker build` directly. (`runme.sh build` was removed — it now errors and points here.)
+`build.sh` reads `sandbox.conf`, assembles `allowlist-domains.txt`, `allowlist-proxy-domains.txt`, and `allowlist-cidrs.txt` from the `*.d/` fragment directories, then calls `docker build` with one `--build-arg` per component. External CLI tools described in `tools.d/*.conf` (currently `dtctl`, `dtmgd`) are the one exception: instead of one `--build-arg` each, every active one is folded into a single `--build-arg TOOL_VERSIONS="dtctl=0.25.0;dtmgd=latest"` (see below). The generated `allowlist-*.txt` files are gitignored; always use `./build.sh`, not `docker build` directly. (`runme.sh build` was removed — it now errors and points here.)
 
 The AI agents (Copilot/Claude/Codex/Gemini/Kiro) are installed **unpinned** and their layers are cached by Docker, so a normal `./build.sh` will not pick up newer agent versions. To force a fast, **targeted** agent refresh without rebuilding the heavy toolchain layers, set the `AGENTS_CACHE_BUST` build-arg (any changing token busts the agent-tier layers and everything after them, reusing Node/JVM/Python/Ruby/Rust/Go above):
 ```bash
@@ -42,7 +42,16 @@ AGENTS_CACHE_BUST=$(date +%s) ./build.sh
 ```
 `runme.sh` does this automatically when it detects the image is older than `AGENT_REBUILD_MAX_AGE_HOURS` (see below). A full `--no-cache` rebuild is still available but rebuilds everything.
 
-Set `GITHUB_TOKEN` in the environment before building to avoid GitHub API rate limits (60 req/h unauthenticated). This is required when `dtctl` or `dtmgd` is set to `ON` (auto-detect latest). `build.sh` passes it automatically as a BuildKit secret if the env var is set (falling back to `GITHUB_PERSONAL_ACCESS_TOKEN`). If rate-limited, `dtctl`/`dtmgd` are silently skipped — the build still succeeds.
+**The `tools.d/` descriptor model.** Each external CLI tool the image can install (currently `dtctl`, `dtmgd`) is described by one `tools.d/<name>.conf` file — `repo=` (GitHub `owner/repo`), `binary=` (installed executable name), `private=yes|no`, `config_dir=` (host-seeded, group-scoped config path — see [Host directory mounts](#host-directory-mounts)), `allowlist_fragment=` (which `*.d/<fragment>.txt` to include), `skills=yes|no`, and `skills_crossclient=` (flags for a cross-client Agent Skill). `tools-lib.sh` is the shared parser, sourced by both host scripts (via `sandbox-common.sh`) and container scripts. `build.sh` turns every tool whose `sandbox.conf` key (`dtctl=`, `dtmgd=`) is `ON` or a pinned version into one `name=version` pair and passes them all as a single `--build-arg TOOL_VERSIONS="dtctl=0.25.0;dtmgd=latest"`. `install-tools.sh` reads `TOOL_VERSIONS` at build time and installs each tool from its descriptor's GitHub repo — adding a new tool this way needs only a new `.conf` file, no changes to `build.sh`, the Dockerfile, or the allowlist logic. `TOOL_VERSIONS` is `build.sh`'s internal transport: you only construct its `name=version;...` string by hand when calling `docker build` directly, bypassing `build.sh`.
+
+**`GITHUB_TOKEN` essentiality** depends on the descriptor's `private` field:
+
+| Tool visibility | `GITHUB_TOKEN` | Effect if unset |
+|---|---|---|
+| Public (`private=no` — `dtctl`, `dtmgd`) | Optional | Unauthenticated GitHub API, 60 req/h; pinning a version (e.g. `dtctl=0.25.0`) skips the API call entirely and needs no token at all |
+| Private (`private=yes`) | Required | Tool is skipped with a warning; `build.sh` also prints a non-fatal preflight warning before the build starts if a private tool is enabled with no token set |
+
+This open-source repo ships **no private tool** — both `dtctl` and `dtmgd` are public, so `GITHUB_TOKEN` here is always an optional rate-limit convenience, never a requirement. `build.sh` passes it automatically as a BuildKit secret if the env var is set (falling back to `GITHUB_PERSONAL_ACCESS_TOKEN`). If a public tool hits the rate limit, `install-tools.sh` prints a warning and skips it — the build still succeeds.
 
 **Run the container:**
 ```bash
@@ -134,11 +143,21 @@ The three pointers form a personal / team / product tier:
 
 1. **`setup_sandbox_user`** — creates/renames a user whose UID/GID match `SANDBOX_UID`/`SANDBOX_GID` (passed by `runme.sh` from `id -u`/`id -g`). Files in bind-mounted volumes are then accessible without chown. **`chown_workspace_root`** then chowns the in-image `/workspace` umbrella root to the sandbox user (non-recursive; sub-mounts keep their own ownership) so the agent can use it.
 
-2. **restricted mode**: calls `apply_restricted_firewall` → forks the ipset refresh loop and `capture-blocked-traffic.sh` as root background daemons → `exec capsh --drop=cap_net_admin,cap_net_raw --user=<sandbox>` to drop firewall-modification capabilities from the agent shell.
+2. **restricted mode**: calls `apply_restricted_firewall` → forks the ipset refresh loop and `capture-blocked-traffic.sh` as root background daemons → `run_agent_skill_install` (see below) → `exec capsh --drop=cap_net_admin,cap_net_raw --user=<sandbox>` to drop firewall-modification capabilities from the agent shell.
 
-3. **discovery mode**: calls `apply_discovery_firewall` (iptables OUTPUT ACCEPT) → starts `capture-agent-destinations.sh` for pcap → `exec capsh --drop=cap_net_admin --user=<sandbox>` (NET_RAW kept for tcpdump).
+3. **discovery mode**: calls `apply_discovery_firewall` (iptables OUTPUT ACCEPT) → starts `capture-agent-destinations.sh` for pcap → `run_agent_skill_install` → `exec capsh --drop=cap_net_admin --user=<sandbox>` (NET_RAW kept for tcpdump).
 
-Background daemons are forked **before** `exec capsh` so they retain root capabilities despite the exec.
+Background daemons are forked **before** `exec capsh` so they retain root capabilities despite the exec. `run_agent_skill_install` runs as the sandbox user (via `runuser`) in both modes, right before the `capsh` exec — see [Automatic Agent Skill installation](#automatic-agent-skill-installation) below.
+
+### Automatic Agent Skill installation
+
+`install-agent-skills.sh` (copied to `/usr/local/bin/` at build time) installs each installed `tools.d`-described tool's Agent Skill for every enabled AI agent. `entrypoint.sh` runs it via `runuser -u <sandbox> -- env AI_AGENTS_ENABLED="..." bash /usr/local/bin/install-agent-skills.sh`, non-fatally (`|| true` — it never blocks or fails container start). `AI_CONTAINER_GROUP`-independent: it acts on `$HOME` inside the container, i.e. the sandbox user's home, which is where the tool binaries and `~/.agents/` live regardless of group.
+
+- **Which tools:** any descriptor with `skills=yes` (both `dtctl` and `dtmgd` do) whose binary is present on `PATH` (i.e. the tool was actually installed at build time).
+- **Which agents:** `runme.sh` passes `AI_AGENTS_ENABLED` — a comma-separated list of `sandbox.conf` agent keys that are `ON` (from `sandbox-common.sh`'s `enabled_agents_csv`). `map_agent` translates a `sandbox.conf` key to the tool's `--for` agent name (currently only `claude-code → claude`; everything else passes through unchanged, e.g. `copilot → copilot`).
+- **Cross-client skill:** if the descriptor sets `skills_crossclient=` (both `dtctl` and `dtmgd` do), that flag is passed once (e.g. `dtctl skills install --cross-client --global --force`) in addition to the per-agent installs.
+- **Idempotent via a version stamp:** `current_stamp` builds one `name=$(binary --version)` line per skills-capable installed tool (sorted); if it matches `~/.agents/.ai-containers-skills-stamp` from the last run byte-for-byte, the whole install step is a no-op. This means a normal container start (same image, same tool versions) does the skill install exactly once, not on every start — it only re-runs after a tool's version changes (e.g. after a rebuild that picks up a newer release).
+- **Never fails container start:** each `<tool> skills install ...` call is best-effort (`>/dev/null 2>&1`); a tool with no supported agent, or one that errors, is reported inline (`  <tool> → (no supported agents)`) and does not stop the loop.
 
 ### Mount layout (`/workspace` umbrella) and repo volumes
 
@@ -185,7 +204,7 @@ The three `allowlist-*.txt` files baked into the image are assembled at build ti
 | `allowlist-proxy-domains.d/` | `allowlist-proxy-domains.txt` | `custom.txt` |
 | `allowlist-cidrs.d/` | `allowlist-cidrs.txt` | `base.txt`, `custom.txt` |
 
-Per-component fragments (`github-copilot.txt`, `kiro.txt`, `claude-code.txt`, `codex.txt`, `kubectl.txt`, `aws-cli.txt`, `azure-cli.txt`, `dynatrace.txt`, `openjdk.txt`) are only concatenated when the matching component is `ON` in `sandbox.conf`. The `dynatrace.txt` fragment is included when either `dtctl` or `dtmgd` is enabled; `openjdk.txt` when any JDK variant is enabled.
+Per-component fragments (`github-copilot.txt`, `kiro.txt`, `claude-code.txt`, `codex.txt`, `kubectl.txt`, `aws-cli.txt`, `azure-cli.txt`, `openjdk.txt`) are only concatenated when the matching component is `ON` in `sandbox.conf`; `openjdk.txt` when any JDK variant is enabled. Tools described in `tools.d/` name their fragment via the descriptor's `allowlist_fragment=` field instead of a hardcoded component check: `build.sh` auto-discovers every active tool's fragment name and includes it once. Both `dtctl.conf` and `dtmgd.conf` set `allowlist_fragment=dynatrace`, so `dynatrace.txt` is included whenever either (or both) is active — a future tool can reuse that same fragment or declare its own by setting `allowlist_fragment=<name>` and adding `allowlist-domains.d/<name>.txt` (and the matching proxy-domains fragment if needed), with no change to `build.sh` itself.
 
 To add domains not tied to any component (e.g. `google.com`, internal registries, MCP endpoints), edit the appropriate `custom.txt` file in the relevant `*.d/` directory.
 
@@ -193,7 +212,7 @@ To add domains not tied to any component (e.g. `google.com`, internal registries
 
 ### Conditional installs in the Dockerfile
 
-Every optional component has a corresponding `ARG INSTALL_<COMPONENT>=0|1` declared immediately before its `RUN` block. The npm-based tools (Copilot, Angular CLI, Claude Code, Codex, Gemini, Yarn) each have their own `RUN` layer so toggling one doesn't invalidate the others. The dtctl/dtmgd block skips entirely when both are disabled.
+Every optional component has a corresponding `ARG INSTALL_<COMPONENT>=0|1` declared immediately before its `RUN` block. The npm-based tools (Copilot, Angular CLI, Claude Code, Codex, Gemini, Yarn) each have their own `RUN` layer so toggling one doesn't invalidate the others. `tools.d/`-described tools (`dtctl`, `dtmgd`) are the exception: instead of one `ARG`/`RUN` pair per tool, a single `ARG TOOL_VERSIONS=""` feeds one `RUN` block that copies `tools.d/`, `tools-lib.sh`, and `install-tools.sh` into the image and lets the script loop over every `name=version` pair in `TOOL_VERSIONS`. A tool with no entry in `TOOL_VERSIONS` (its `sandbox.conf` key was `OFF`) is skipped by the script itself, not by a Dockerfile conditional. Private tools additionally mount the `github_token` BuildKit secret for that one `RUN` layer (`--mount=type=secret,id=github_token`); this repo ships no private tool, so the secret mount is present but unused unless `GITHUB_TOKEN` is set. `install-agent-skills.sh` is copied into the image (`/usr/local/bin/install-agent-skills.sh`) alongside the installer but is not run at build time — it runs at container start (see [Container startup flow](#container-startup-flow)).
 
 `ARG AGENTS_CACHE_BUST=0` is declared immediately before the first agent layer (Copilot) and referenced in it. Because Docker's layer cache is linear, changing its value invalidates every layer from that point down (all agent installs, Kiro, graphify, …) while reusing the heavy toolchain layers above. This is the mechanism behind the fast agent refresh (`AGENTS_CACHE_BUST=$(date +%s) ./build.sh`, used automatically by `runme.sh`'s staleness check).
 
@@ -211,7 +230,9 @@ Agent dotfile dirs (`.claude`, `.copilot`, `.kiro`, `.codex`, `.gemini`, `.confi
 
 When `qmd` is enabled, its search index cache (`~/.cache/qmd`, containing `index.sqlite`) is also group-scoped and mounted at `$dev_home/.cache/qmd`, so the index built from `/workspace/vault`, `/workspace/specs`, and `/workspace/docs` persists across container restarts instead of rebuilding from scratch each run. Because the group is reused across projects while `VAULT_PATH`/`SPECS_PATH`/`DOCS_PATH` can point at different host content on each run, the cached index can hold stale or mixed entries for a reused in-container path (e.g. `/workspace/docs` pointed at a different repo than last time) until qmd reindexes it — mounting `DOCS_PATH`/`SPECS_PATH` via `@name` gives each source its own path (e.g. `/workspace/docs2`) and avoids the collision. This is an accepted tradeoff: the extra index size/reindex churn is cheap next to rebuilding the whole corpus every run.
 
-Host-shared paths that are **not** group-scoped: `.aws`, `.azure`, `.kube`, `.config/dtctl`, `.config/dtmgd`, `.yarn`.
+Host-shared paths that are **not** group-scoped: `.aws`, `.azure`, `.kube`, `.yarn`.
+
+Tool config dirs declared via `tools.d/` (`config_dir=`) are group-scoped and seeded once from the host. `dtctl` and `dtmgd` are the two current examples: on first use in a group, `runme.sh` copies the tool's `config_dir` (e.g. `.config/dtctl`) from `$HOME` into the group if it exists there and the group doesn't have it yet, or creates it empty otherwise; every later run mounts the group's copy. This mirrors the agent-credential pattern above, so a sandboxed agent never writes to the developer's real host config.
 
 `.gitconfig` and `.gitignore_global` are **group-scoped** (non-`host` groups): `runme.sh` copies them from `$HOME` into `~/.ai-containers/<group>/` on every container start, then mounts from the group copy. This prevents a macOS VirtioFS stale-inode issue where atomically replacing a file on the host (as git, editors, and other tools do) causes the bind-mounted view inside the container to show link count 0 and fail all reads. With the `host` group both files are still mounted directly from `$HOME`. If you edit either file while a container is running, restart the container to pick up the changes.
 

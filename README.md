@@ -39,9 +39,9 @@ It packages a CLI-only Docker-based workspace for running AI coding agents (GitH
 
 ## What is included
 
-- `Dockerfile` builds the image from a configurable set of optional components: AI agents (GitHub Copilot CLI, Kiro CLI, Claude Code, Codex CLI, Gemini CLI), JVM toolchains (via SDKMAN: OpenJDK, GraalVM CE, Kotlin, Scala, Maven, Gradle), Node.js versions (via nvm), Python versions (via pyenv), Ruby + Rails (via rvm), Rust (via rustup), Go, cloud CLIs (AWS, Azure, kubectl, GitHub CLI), dev tools (Angular CLI, qmd, graphify, GoReleaser, Vale), and Dynatrace CLIs (dtctl, dtmgd). Node.js (latest LTS), Python (latest stable), git, jq, packet-capture tools, and the non-root sandbox user are always included.
+- `Dockerfile` builds the image from a configurable set of optional components: AI agents (GitHub Copilot CLI, Kiro CLI, Claude Code, Codex CLI, Gemini CLI), JVM toolchains (via SDKMAN: OpenJDK, GraalVM CE, Kotlin, Scala, Maven, Gradle), Node.js versions (via nvm), Python versions (via pyenv), Ruby + Rails (via rvm), Rust (via rustup), Go, cloud CLIs (AWS, Azure, kubectl, GitHub CLI), dev tools (Angular CLI, qmd, graphify, GoReleaser, Vale), and external CLI tools described in `tools.d/` (currently Dynatrace's `dtctl` and `dtmgd`). Node.js (latest LTS), Python (latest stable), git, jq, packet-capture tools, and the non-root sandbox user are always included.
 - `sandbox.conf` controls which optional components are built into the image and which credential directories are mounted at runtime.
-- `install-dt-tools.sh` is a build-time helper script that installs dtctl and dtmgd from GitHub releases, with optional authentication via `GITHUB_TOKEN`.
+- `tools.d/` holds one descriptor file per external CLI tool the image can install (currently `dtctl.conf`, `dtmgd.conf`) — its GitHub repo, binary name, whether that repo is private, its config directory, its allowlist fragment, and whether it ships an Agent Skill. `tools-lib.sh` is the shared parser for these descriptors. `install-tools.sh` is the generic build-time installer driven by them, with optional authentication via `GITHUB_TOKEN`. `install-agent-skills.sh` runs at container start and installs each installed tool's Agent Skill for every enabled AI agent — see [Dynatrace CLIs (dtctl / dtmgd)](#dynatrace-clis-dtctl--dtmgd) below.
 - `entrypoint.sh` applies either a restricted firewall or a discovery mode at container startup. In both modes it creates the sandbox user and drops to it via `capsh`. Restricted mode drops `NET_ADMIN` and `NET_RAW`; discovery mode drops only `NET_ADMIN` (keeping `NET_RAW` for tcpdump).
 - `refresh-ipset-allowlist.sh` resolves the concrete allowlist domains into IPv4 and IPv6 `ipset` sets.
 - `capture-blocked-traffic.sh` runs as a background root daemon in restricted mode, logging every blocked outbound destination to `/workspace/.agent-blocked/`.
@@ -269,13 +269,20 @@ vale=OFF   # skip (default)
 
 ### Dynatrace CLIs (dtctl / dtmgd)
 
-These support three modes:
+`dtctl` and `dtmgd` are the two tools currently shipped through the generic `tools.d/` descriptor mechanism (`tools.d/dtctl.conf`, `tools.d/dtmgd.conf` — see `AGENTS.md` for the field reference). Any future external CLI tool added the same way follows the identical `sandbox.conf` grammar, pinning guidance, and token behavior described here.
+
+Each supports three modes:
 
 ```bash
 dtctl=ON        # auto-detect and install the latest release (uses GitHub API)
 dtctl=0.25.0    # install exactly v0.25.0 — no GitHub API call, fully reproducible
 dtctl=OFF       # skip entirely
 ```
+
+**When to pin a version instead of `ON`:**
+- **Reproducibility** — a pinned build always installs the same binary; `ON` tracks upstream, so the same `sandbox.conf` can produce a different image on a later rebuild.
+- **Rate-limit escape hatch** — pinning makes zero GitHub API calls, so it works with no `GITHUB_TOKEN` at all, even past the 60 req/h unauthenticated ceiling.
+- **A broken upstream release** — if the current `latest` release regresses for your use case, pin the last known-good version until it's fixed upstream.
 
 When set to `ON`, the build calls the GitHub API to find the latest release. The unauthenticated rate limit is 60 requests/hour. If you hit it:
 
@@ -294,9 +301,15 @@ dtctl=0.25.0
 dtmgd=0.0.23
 ```
 
-If the API call fails (rate limit, bad token, or network error), the build prints a clear error message, skips the tool, and **continues successfully**. dtctl/dtmgd can be installed manually later. An expired or invalid `GITHUB_TOKEN` is treated the same as a network error — the build does not fail, but the tool is skipped with a warning.
+If the API call fails (rate limit, bad token, or network error), the build prints a clear warning, skips the tool, and **continues successfully**. dtctl/dtmgd can be installed manually later, or by pinning a version and rebuilding. An expired or invalid `GITHUB_TOKEN` is treated the same as a network error — the build does not fail, but the tool is skipped with a warning.
 
 > **Note on token security:** `GITHUB_TOKEN` is passed as a [BuildKit secret](https://docs.docker.com/build/building/secrets/) — it is never written to any image layer or visible in `docker history`. Safe to use even if you plan to publish the image. Requires Docker ≥ 23 (BuildKit default).
+
+> **`GITHUB_TOKEN` is always optional for dtctl/dtmgd.** Both are public GitHub repositories, so the token is purely a rate-limit convenience — it raises the `ON` auto-detect API ceiling from 60 to 5000 req/h and nothing more; it is never *required* to install either tool. Pinning a version (Option 2 above) avoids needing a token at all. The `tools.d/` descriptor format also supports a `private=yes` flag for tools whose GitHub repo is private, which *would* make `GITHUB_TOKEN` required for that tool — but this open-source repo ships no private tool, so the token stays optional here regardless of which mode you use.
+
+> **`TOOL_VERSIONS` is `build.sh`'s internal transport, not something you normally set.** `./build.sh` reads each tool's plain `sandbox.conf` key (`dtctl=`, `dtmgd=`) and generates one `--build-arg TOOL_VERSIONS="dtctl=0.25.0;dtmgd=latest"` (a semicolon-separated `name=version` list covering every active `tools.d`-described tool) passed to `docker build`. You never write `TOOL_VERSIONS=` by hand in normal use — only if you bypass `build.sh` and invoke `docker build` directly does its raw build-arg form matter, and even then you construct it by hand from the same `name=version` syntax.
+
+> **Agent Skills install automatically.** Once `dtctl`/`dtmgd` is built into the image, its Agent Skill is installed for every enabled AI agent the first time a container starts, and refreshed automatically whenever the tool's version changes — no manual registration step, unlike `graphify` above (which needs `graphify install` run once by hand). See `install-agent-skills.sh` / `AGENTS.md` for details.
 
 ## GitHub tokens at runtime
 
@@ -593,16 +606,18 @@ Agent dotfile directories are sourced from the active container group (`~/.ai-co
 | `<group>/.claude.json` | `~/.claude.json` | read-write | `claude-code` |
 | `<group>/.codex/` | `~/.codex` | read-write | `codex` |
 | `<group>/.gemini/` | `~/.gemini` | read-write | `gemini` |
+| `<group>/.config/dtctl/` ² | `~/.config/dtctl` | read-write | `dtctl` |
+| `<group>/.config/dtmgd/` ² | `~/.config/dtmgd` | read-write | `dtmgd` |
 | `~/.aws` | `~/.aws` | read-write | `aws-cli` |
 | `~/.azure` | `~/.azure` | read-write | `azure-cli` |
 | `~/.kube` | `~/.kube` | read-write | `kubectl` |
 | `~/.yarn` | `~/.yarn` | read-write | `yarn` |
-| `~/.config/dtctl` | `~/.config/dtctl` | read-write | `dtctl` |
-| `~/.config/dtmgd` | `~/.config/dtmgd` | read-write | `dtmgd` |
 
 ¹ `runme.sh` copies these files from `$HOME` into the group directory on every container start and mounts from the copy. This avoids a macOS VirtioFS issue where atomically replacing a file on the host (as git and most editors do) causes the bind-mounted view inside the container to become unreadable. If you edit either file while a container is running, restart the container to pick up the changes.
 
-When `AI_CONTAINER_GROUP=host`, all group-scoped paths above are sourced directly from `$HOME` instead (including `.gitconfig` and `.gitignore_global`).
+² Tool config dirs declared via `tools.d/` (`config_dir=` in the tool's descriptor — currently `dtctl`, `dtmgd`) are group-scoped like agent dotfiles, **not** mounted straight from `$HOME` like `.aws`/`.azure`/`.kube`/`.yarn` above. The first time a group needs one, it is seeded once from the host's copy at `$HOME` if one exists (otherwise created empty); every later run mounts the group's copy instead, so a sandboxed agent never writes to your real host config.
+
+When `AI_CONTAINER_GROUP=host`, all group-scoped paths above are sourced directly from `$HOME` instead (including `.gitconfig`, `.gitignore_global`, and the tool config dirs).
 
 ## Container groups
 
@@ -628,7 +643,9 @@ The default group is named `default`. Its directory is `~/.ai-containers/default
 │   ├── .kiro/
 │   ├── .local/share/kiro-cli/
 │   ├── .codex/
-│   └── .gemini/
+│   ├── .gemini/
+│   ├── .config/dtctl/    ← tools.d config dir, seeded once from $HOME if present
+│   └── .config/dtmgd/    ← ditto
 ├── docs/               ← custom group, same shape
 └── java-backend/       ← another custom group
 ```
@@ -851,7 +868,7 @@ After pulling changes to this repo, run this to push the updated shared files to
 ./sync-to-projects.sh /path/to/p   # sync a single project
 ```
 
-**What is synced:** Dockerfile, `Dockerfile.seed`, all `*.sh` scripts, `.dockerignore`, and the per-component allowlist fragments in `allowlist-*.d/` (excluding `custom.txt`).
+**What is synced:** Dockerfile, `Dockerfile.seed`, all `*.sh` scripts, `.dockerignore`, the `tools.d/` tool descriptors, and the per-component allowlist fragments in `allowlist-*.d/` (excluding `custom.txt`).
 
 **What is never touched:** `sandbox.conf`, `sandbox.env`, `allowlist-*.d/custom.txt`, and the project's launch script. `sandbox.env` is **backfilled** (created from the launcher's `IMAGE_NAME`) if a project predates it, but an existing one is never overwritten.
 
