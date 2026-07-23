@@ -139,7 +139,8 @@ generate_allowlists() {
     include_if_enabled       "$domains_d/kubectl.txt"         kubectl
     include_if_enabled       "$domains_d/aws-cli.txt"         aws-cli
     include_if_enabled       "$domains_d/azure-cli.txt"       azure-cli
-    if any_active dtctl dtmgd; then include_fragment "$domains_d/dynatrace.txt"; fi
+    local _frag
+    while IFS= read -r _frag; do include_fragment "$domains_d/${_frag}.txt"; done < <(active_tool_fragments)
     include_if_has_versions  "$domains_d/sdkman.txt"          openjdk graalvm-ce graalvm-oracle kotlin scala maven gradle
     include_if_has_versions  "$domains_d/openjdk.txt"         openjdk graalvm-ce graalvm-oracle
     include_fragment         "$domains_d/nvm.txt"
@@ -162,7 +163,8 @@ generate_allowlists() {
     include_if_enabled  "$proxy_d/codex.txt"           codex
     include_if_enabled  "$proxy_d/gemini.txt"          gemini
     include_if_enabled  "$proxy_d/graphify.txt"        graphify
-    if any_active dtctl dtmgd; then include_fragment "$proxy_d/dynatrace.txt"; fi
+    local _pfrag
+    while IFS= read -r _pfrag; do include_fragment "$proxy_d/${_pfrag}.txt"; done < <(active_tool_fragments)
     include_fragment    "$proxy_d/custom.txt"
   } > "${script_dir}/allowlist-proxy-domains.txt"
 
@@ -210,18 +212,7 @@ build_args_from_config() {
     _args+=(--build-arg "INSTALL_GITHUB_CLI=1")
   fi
 
-  local tool
-  for tool in dtctl dtmgd; do
-    local raw; raw=$(get_versions "$tool")
-    local arg_name; arg_name="$(printf '%s' "$tool" | tr '[:lower:]' '[:upper:]')_VERSION"
-    if [[ "$raw" == "ON" ]]; then
-      _args+=(--build-arg "${arg_name}=latest")
-    elif [[ -n "$raw" && "$raw" != "OFF" ]]; then
-      _args+=(--build-arg "${arg_name}=${raw}")
-    else
-      _args+=(--build-arg "${arg_name}=")
-    fi
-  done
+  _args+=(--build-arg "TOOL_VERSIONS=$(tool_versions_arg)")
 
   local angular_raw; angular_raw=$(get_versions angular-cli)
   if [[ "$angular_raw" == "ON" ]]; then
@@ -261,6 +252,53 @@ build_args_from_config() {
   ver="$(get_versions go)";     _args+=(--build-arg "GO_VERSION=$ver")
 }
 
+# ── Tool descriptor helpers ──────────────────────────────────────────────────────
+
+# tool_versions_arg — "name=version;..." for every active tool (build-arg value).
+tool_versions_arg() {
+  local name raw ver out=""
+  while IFS= read -r name; do
+    raw=$(get_versions "$name")
+    if [[ "$raw" == "ON" ]]; then ver="latest"
+    elif [[ -n "$raw" && "$raw" != "OFF" ]]; then ver="$raw"
+    else continue; fi
+    out+="${name}=${ver};"
+  done < <(tools_list_names)
+  printf '%s' "${out%;}"
+}
+
+# active_tool_fragments — unique allowlist_fragment names of active tools.
+active_tool_fragments() {
+  local name
+  while IFS= read -r name; do
+    is_active "$name" || continue
+    tools_read_descriptor "$name" || continue
+    [[ -n "$TOOL_allowlist_fragment" ]] && printf '%s\n' "$TOOL_allowlist_fragment"
+  done < <(tools_list_names) | sort -u
+}
+
+# preflight_private_tools — warn (non-fatal) when an active private tool has no token.
+preflight_private_tools() {
+  local token="${GITHUB_TOKEN:-${GITHUB_PERSONAL_ACCESS_TOKEN:-}}"
+  [[ -n "$token" ]] && return 0
+  local name warned=0
+  while IFS= read -r name; do
+    is_active "$name" || continue
+    tools_read_descriptor "$name" || continue
+    [[ "$TOOL_private" == "yes" ]] || continue
+    if [[ "$warned" == 0 ]]; then
+      printf '\n════════════════════════════════════════════════════════════════\n' >&2
+      printf 'WARNING: no GITHUB_TOKEN set, but a PRIVATE tool is enabled:\n' >&2
+      warned=1
+    fi
+    printf '  - %s (%s) will be SKIPPED without a token.\n' "$name" "$TOOL_repo" >&2
+  done < <(tools_list_names)
+  if [[ "$warned" == 1 ]]; then
+    printf '  Set GITHUB_TOKEN on the host and rebuild: ./build.sh\n' >&2
+    printf '════════════════════════════════════════════════════════════════\n\n' >&2
+  fi
+}
+
 # ── Build ──────────────────────────────────────────────────────────────────────
 
 build_image() {
@@ -288,8 +326,13 @@ build_image() {
     build_args+=(--secret id=github_token,env=GITHUB_TOKEN)
   fi
 
+  preflight_private_tools
+
   docker build "${build_args[@]}" -t "$build_image_name" "$script_dir"
 }
+
+# Allow tests to source this file for its pure helpers without building.
+[[ "${BASH_SOURCE[0]}" != "${0}" ]] && return 0
 
 # ── Entry point ──────────────────────────────────────────────────────────────────
 

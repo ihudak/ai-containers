@@ -82,4 +82,24 @@ source "$REPO_DIR/sandbox-common.sh"
 [[ "$(enabled_agents_csv)" == "claude-code,copilot" ]] \
   && pass "enabled_agents_csv" || fail "enabled_agents_csv ($(enabled_agents_csv))"
 
+# --- build.sh pure helpers -----------------------------------------------------
+# Reuse the earlier foo(private)/bar descriptors; enable foo (pinned) + bar (ON).
+cat >> "$CONF" <<'EOF'
+foo=1.2.3
+bar=ON
+EOF
+# shellcheck source=/dev/null
+source "$REPO_DIR/build.sh"   # guarded: sourcing must not build
+
+tv="$(tool_versions_arg)"
+[[ "$tv" == *"foo=1.2.3"* && "$tv" == *"bar=latest"* ]] \
+  && pass "tool_versions_arg" || fail "tool_versions_arg ($tv)"
+
+frags="$(active_tool_fragments | tr '\n' ' ')"
+[[ "$frags" == *"acme"* ]] && pass "active_tool_fragments" || fail "active_tool_fragments ($frags)"
+
+# foo is private + no token → preflight must warn on stderr, non-fatally.
+( unset GITHUB_TOKEN GITHUB_PERSONAL_ACCESS_TOKEN; preflight_private_tools ) 2>"$TMP/pf.err"
+grep -q "PRIVATE tool is enabled" "$TMP/pf.err" && pass "preflight warns" || fail "preflight warns"
+
 [[ "$fails" -eq 0 ]] && { echo "ALL PASS"; exit 0; } || { echo "$fails FAILED"; exit 1; }
