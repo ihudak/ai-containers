@@ -90,6 +90,8 @@ bar=ON
 EOF
 # shellcheck source=/dev/null
 source "$REPO_DIR/build.sh"   # guarded: sourcing must not build
+set +e   # build.sh's `set -euo pipefail` leaks into this file via source; restore
+         # this suite's intended mode so later non-idiom lines can't abort it.
 
 tv="$(tool_versions_arg)"
 [[ "$tv" == *"foo=1.2.3"* && "$tv" == *"bar=latest"* ]] \
