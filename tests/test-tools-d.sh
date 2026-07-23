@@ -67,4 +67,19 @@ got="$(parse_versions 'dtctl=0.25.0;junoctl=latest;empty=' | tr '\t' ':' | tr '\
 [[ "$got" == "dtctl:0.25.0 junoctl:latest empty: " ]] \
   && pass "parse_versions" || fail "parse_versions ($got)"
 
+# --- enabled_agents_csv --------------------------------------------------------
+CONF="$TMP/sandbox.conf"
+cat > "$CONF" <<'EOF'
+claude-code=ON
+copilot=ON
+codex=OFF
+gemini=OFF
+kiro=OFF
+EOF
+export SANDBOX_CONF="$CONF"
+# shellcheck source=/dev/null
+source "$REPO_DIR/sandbox-common.sh"
+[[ "$(enabled_agents_csv)" == "claude-code,copilot" ]] \
+  && pass "enabled_agents_csv" || fail "enabled_agents_csv ($(enabled_agents_csv))"
+
 [[ "$fails" -eq 0 ]] && { echo "ALL PASS"; exit 0; } || { echo "$fails FAILED"; exit 1; }

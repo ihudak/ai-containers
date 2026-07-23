@@ -31,6 +31,12 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # used mainly as a test/override hook — normally unset so sandbox.conf is read.
 config_file="${SANDBOX_CONF:-${script_dir}/sandbox.conf}"
 
+# Descriptor library + host-side descriptor directory (container scripts default
+# to /etc/ai-containers/tools.d; on the host we read the repo tree).
+export TOOLS_D_DIR="${TOOLS_D_DIR:-${script_dir}/tools.d}"
+# shellcheck source=/dev/null
+source "${script_dir}/tools-lib.sh"
+
 # Persisted per-project environment (written by project-init.sh; one KEY=value
 # per line). It is sourced ONLY to supply IMAGE_NAME when the env var is not
 # already set, so build.sh / runme.sh / repo.sh all resolve the SAME image name
@@ -122,6 +128,16 @@ any_has_versions() {
     if has_versions "$k"; then return 0; fi
   done
   return 1
+}
+
+# enabled_agents_csv — comma-separated sandbox.conf agent keys that are ON.
+# Consumed by runme.sh to tell the container which agents to install skills for.
+enabled_agents_csv() {
+  local a out=()
+  for a in claude-code copilot codex gemini kiro; do
+    is_enabled "$a" && out+=("$a")
+  done
+  local IFS=,; printf '%s' "${out[*]}"
 }
 
 # Convert a comma-separated version list to a space-separated list for build args.
@@ -421,8 +437,16 @@ ensure_group_scaffold() {
 _copy_group_slice() {
   local src="$1" dst="$2"
   local paths=(.claude .claude.json .copilot .config/gh .kiro ".local/share/kiro-cli" .codex .gemini .agents .ssh .cache/qmd)
+  # Tool config dirs (dtctl/dtmgd/junoctl/...) are group-scoped too — pull them
+  # from the descriptors so new tools are covered without editing this list.
+  local _t
+  while IFS= read -r _t; do
+    tools_read_descriptor "$_t" || continue
+    [[ -n "$TOOL_config_dir" ]] && paths+=("$TOOL_config_dir")
+  done < <(tools_list_names)
+  local p from
   for p in "${paths[@]}"; do
-    local from="$src/$p"
+    from="$src/$p"
     if [[ -e "$from" ]]; then
       mkdir -p "$(dirname "$dst/$p")"
       cp -a "$from" "$dst/$p"
