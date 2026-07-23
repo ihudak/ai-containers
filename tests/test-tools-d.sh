@@ -54,4 +54,17 @@ tools_read_descriptor dtmgd
   && pass "dtmgd descriptor" || fail "dtmgd descriptor ($TOOL_repo / $TOOL_skills_crossclient)"
 export TOOLS_D_DIR="$_saved_td"
 
+# --- install-tools.sh pure helpers ---------------------------------------------
+export TOOLS_LIB="$REPO_DIR/tools-lib.sh"
+OS=linux ARCH=amd64
+# shellcheck source=/dev/null
+source "$REPO_DIR/install-tools.sh"   # sourced, not executed (guarded main)
+
+[[ "$(asset_name dtctl v0.25.0)" == "dtctl_0.25.0_linux_amd64.tar.gz" ]] \
+  && pass "asset_name" || fail "asset_name ($(asset_name dtctl v0.25.0))"
+
+got="$(parse_versions 'dtctl=0.25.0;junoctl=latest;empty=' | tr '\t' ':' | tr '\n' ' ')"
+[[ "$got" == "dtctl:0.25.0 junoctl:latest empty: " ]] \
+  && pass "parse_versions" || fail "parse_versions ($got)"
+
 [[ "$fails" -eq 0 ]] && { echo "ALL PASS"; exit 0; } || { echo "$fails FAILED"; exit 1; }
