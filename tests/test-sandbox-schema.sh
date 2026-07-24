@@ -107,7 +107,20 @@ bash "$REPO_DIR/migrations/002-openjdk-single-key.sh" "$H2_TMP/sandbox.conf"
 [[ "$before2" == "$(cat "$H2_TMP/sandbox.conf")" ]] \
   && pass "002 openjdk hook: idempotent no-op on re-run" \
   || fail "002 openjdk hook: idempotent no-op on re-run"
-rm -rf "$H2_TMP"
+# Regression test: file mode should be preserved across hook invocation.
+H2_MODE_TMP="$(mktemp -d)"
+cat > "$H2_MODE_TMP/sandbox.conf" <<'EOF'
+openjdk-21=ON
+openjdk-25=OFF
+EOF
+chmod 644 "$H2_MODE_TMP/sandbox.conf"  # Ensure standard config permissions
+mode_before="$(stat -c %a "$H2_MODE_TMP/sandbox.conf" 2>/dev/null || stat -f %Lp "$H2_MODE_TMP/sandbox.conf")"
+bash "$REPO_DIR/migrations/002-openjdk-single-key.sh" "$H2_MODE_TMP/sandbox.conf"
+mode_after="$(stat -c %a "$H2_MODE_TMP/sandbox.conf" 2>/dev/null || stat -f %Lp "$H2_MODE_TMP/sandbox.conf")"
+[[ "$mode_before" == "$mode_after" ]] \
+  && pass "002 openjdk hook: preserves file mode (644)" \
+  || fail "002 openjdk hook: preserves file mode (644) — was $mode_before, now $mode_after"
+rm -rf "$H2_TMP" "$H2_MODE_TMP"
 
 # 003: bare graalvm=<val> splits into graalvm-ce=<val> + graalvm-oracle= (empty).
 H3_TMP="$(mktemp -d)"
@@ -129,7 +142,20 @@ bash "$REPO_DIR/migrations/003-graalvm-split.sh" "$H3_TMP/sandbox.conf"
 [[ "$before3" == "$(cat "$H3_TMP/sandbox.conf")" ]] \
   && pass "003 graalvm hook: idempotent no-op on re-run" \
   || fail "003 graalvm hook: idempotent no-op on re-run"
-rm -rf "$H3_TMP"
+# Regression test: file mode should be preserved across hook invocation.
+H3_MODE_TMP="$(mktemp -d)"
+cat > "$H3_MODE_TMP/sandbox.conf" <<'EOF'
+graalvm=22.3.0
+kotlin=
+EOF
+chmod 644 "$H3_MODE_TMP/sandbox.conf"  # Ensure standard config permissions
+mode_before="$(stat -c %a "$H3_MODE_TMP/sandbox.conf" 2>/dev/null || stat -f %Lp "$H3_MODE_TMP/sandbox.conf")"
+bash "$REPO_DIR/migrations/003-graalvm-split.sh" "$H3_MODE_TMP/sandbox.conf"
+mode_after="$(stat -c %a "$H3_MODE_TMP/sandbox.conf" 2>/dev/null || stat -f %Lp "$H3_MODE_TMP/sandbox.conf")"
+[[ "$mode_before" == "$mode_after" ]] \
+  && pass "003 graalvm hook: preserves file mode (644)" \
+  || fail "003 graalvm hook: preserves file mode (644) — was $mode_before, now $mode_after"
+rm -rf "$H3_TMP" "$H3_MODE_TMP"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
