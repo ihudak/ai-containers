@@ -10,7 +10,7 @@
 #   allowlist-*.d/ component fragments and base.txt (custom.txt is never touched).
 #
 # What is NOT synced (project-specific):
-#   sandbox.conf, sandbox.env, allowlist-*.d/custom.txt, <project>-container.sh, projects.conf
+#   sandbox.conf, sandbox.env, allowlist-*.d/custom.txt, runme.sh (launcher), projects.conf
 #   (sandbox.env is created/backfilled if missing, but never overwritten.)
 #
 # sandbox.conf reconcile:
@@ -51,7 +51,7 @@ backfill_sandbox_env() {
 
   cat > "${dest}/sandbox.env" <<EOF
 # sandbox.env — persisted environment for this project's AI sandbox.
-# Read by sandbox-common.sh so build.sh / runme.sh / repo.sh agree on the image
+# Read by sandbox-common.sh so build.sh / sandbox.sh / repo.sh agree on the image
 # name (hence the repo-volume names) even when run outside the launcher. An
 # exported IMAGE_NAME (e.g. from the generated launcher) takes precedence.
 # Not overwritten by sync-to-projects.sh.
@@ -152,6 +152,39 @@ ensure_ai_containers_ignored() {
   printf '  Added /.ai-containers/ to %s/.gitignore\n' "$(basename "$project_path")"
 }
 
+# One-time migration for the runme.sh<->launcher naming swap.
+# Old layout: runme.sh = engine (no IMAGE_NAME marker), <project>-container.sh = launcher.
+# New layout: sandbox.sh = engine,                      runme.sh              = launcher.
+# Discriminator: only a launcher sets `export IMAGE_NAME=<literal>`. Idempotent.
+migrate_launcher_naming() {
+  local dest="$1"
+
+  # 1. Remove a stale old-engine runme.sh (present AND has no IMAGE_NAME marker).
+  if [[ -f "${dest}/runme.sh" ]] \
+     && ! grep -qE '^[[:space:]]*export[[:space:]]+IMAGE_NAME=' "${dest}/runme.sh"; then
+    rm -f "${dest}/runme.sh"
+  fi
+
+  # 2. Rename a legacy <project>-container.sh launcher to runme.sh, unless a
+  #    runme.sh launcher (marker-bearing) already exists (already migrated).
+  if [[ ! -f "${dest}/runme.sh" ]] \
+     || ! grep -qE '^[[:space:]]*export[[:space:]]+IMAGE_NAME=' "${dest}/runme.sh"; then
+    local legacy
+    for legacy in "${dest}"/*-container.sh; do
+      [[ -e "$legacy" ]] || continue
+      if grep -qE '^[[:space:]]*export[[:space:]]+IMAGE_NAME=' "$legacy"; then
+        mv "$legacy" "${dest}/runme.sh"
+        break
+      fi
+    done
+  fi
+
+  # 3. Repoint the launcher's engine call to ./sandbox.sh (idempotent).
+  if [[ -f "${dest}/runme.sh" ]]; then
+    sed -i 's#\./runme\.sh#./sandbox.sh#g' "${dest}/runme.sh"
+  fi
+}
+
 sync_project() {
   local project_path="$1"
   local dest="${project_path}/.ai-containers"
@@ -177,8 +210,11 @@ sync_project() {
     "${script_dir}/allowlist-cidrs.d/"         "${dest}/allowlist-cidrs.d/"
   rsync -a "${script_dir}/tools.d/" "${dest}/tools.d/"
 
+  # Migrate legacy runme.sh<->launcher naming before copying shared files.
+  migrate_launcher_naming "$dest"
+
   # Shared scripts and build files
-  for f in Dockerfile Dockerfile.seed .dockerignore sandbox-common.sh build.sh runme.sh repo.sh entrypoint.sh \
+  for f in Dockerfile Dockerfile.seed .dockerignore sandbox-common.sh build.sh sandbox.sh repo.sh entrypoint.sh \
             refresh-ipset-allowlist.sh capture-blocked-traffic.sh \
             capture-agent-destinations.sh install-tools.sh install-agent-skills.sh tools-lib.sh; do
     if [[ -f "${script_dir}/${f}" ]]; then
