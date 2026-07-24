@@ -10,13 +10,19 @@ proj="$TMP/myproj"; mkdir -p "$proj"
 # tests/test-project-init.sh's isolation rationale).
 export HOME="$TMP/home"; mkdir -p "$HOME"
 
+# Isolated script_dir: run project-init from a throwaway copy of the repo so its
+# projects.conf and shared-file writes land in TMP, never the real tree (mirrors
+# tests/test-project-init.sh).
+SCRIPTS="$TMP/scripts"; mkdir -p "$SCRIPTS"
+rsync -a --exclude='.git' --exclude='tests' --exclude='docs' "$SCRIPT_DIR/"/ "$SCRIPTS/"
+
 # Drive project-init non-interactively: register the project dir, accept
 # defaults for every remaining prompt. Actual prompt order is: path, name,
 # image, cpus, memory, memory-reservation, memory-swap, group, group-init
 # menu (fires because $HOME/.ai-containers/default doesn't exist), extra
 # mounts — i.e. path plus 9 blank/default lines. No overwrite prompt fires
 # on a first run (launcher doesn't exist yet).
-printf '%s\n\n\n\n\n\n\n\n\n\n' "$proj" | ( cd "$SCRIPT_DIR" && ./project-init.sh ) >/dev/null 2>&1 || true
+printf '%s\n\n\n\n\n\n\n\n\n\n' "$proj" | bash "$SCRIPTS/project-init.sh" >/dev/null 2>&1 || true
 
 launcher="$proj/.ai-containers/runme.sh"
 fail=0
