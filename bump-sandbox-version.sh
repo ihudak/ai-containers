@@ -62,8 +62,8 @@ file="$1"
 #     fi
 #     printf '%s\n' "$line" >> "$tmp"
 #   done < "$file"
-#   chmod --reference="$file" "$tmp"
-#   mv "$tmp" "$file"
+#   cat "$tmp" > "$file"
+#   rm -f "$tmp"
 SKEL
 chmod +x "$hook"
 
@@ -71,8 +71,8 @@ chmod +x "$hook"
 if grep -qE '^# schema-version:' "$conf"; then
   tmp="$(mktemp)"
   sed -E "s/^# schema-version:.*/# schema-version: ${next}/" "$conf" > "$tmp"
-  chmod --reference="$conf" "$tmp"
-  mv "$tmp" "$conf"
+  cat "$tmp" > "$conf"
+  rm -f "$tmp"
 else
   printf '# schema-version: %s\n' "$next" >> "$conf"
 fi

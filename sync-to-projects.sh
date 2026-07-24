@@ -75,8 +75,8 @@ conf_set_version() {
   if grep -qE '^# schema-version:' "$f" 2>/dev/null; then
     local tmp; tmp="$(mktemp)"
     sed -E "s/^# schema-version:.*/# schema-version: ${n}/" "$f" > "$tmp"
-    chmod --reference="$f" "$tmp"
-    mv "$tmp" "$f"
+    cat "$tmp" > "$f"
+    rm -f "$tmp"
   else
     printf '# schema-version: %s\n' "$n" >> "$f"
   fi

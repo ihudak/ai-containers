@@ -41,5 +41,5 @@ while IFS= read -r line || [[ -n "$line" ]]; do
   fi
   printf '%s\n' "$line" >> "$tmp"
 done < "$file"
-chmod --reference="$file" "$tmp"
-mv "$tmp" "$file"
+cat "$tmp" > "$file"
+rm -f "$tmp"
