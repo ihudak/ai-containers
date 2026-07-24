@@ -30,7 +30,7 @@ Environment variables:
                Opaque token (e.g. a timestamp) that busts the Docker layer cache
                for the agent install layers ONLY (Copilot/Claude/Codex/Gemini/Kiro
                and everything after them), reusing the heavy toolchain layers
-               above. Default 0 (cache reused). runme.sh sets a fresh value to
+               above. Default 0 (cache reused). sandbox.sh sets a fresh value to
                refresh stale agents quickly; you can also do it manually:
                AGENTS_CACHE_BUST=$(date +%s) ./build.sh
   GITHUB_TOKEN Build-time only. Passed to docker build as a BuildKit secret
@@ -310,7 +310,7 @@ build_image() {
   generate_allowlists
   build_args_from_config build_args
 
-  # Targeted agent-layer cache-bust. Default 0 reuses the cache; runme.sh sets a
+  # Targeted agent-layer cache-bust. Default 0 reuses the cache; sandbox.sh sets a
   # fresh timestamp to force-refresh the (unpinned) agent CLIs when the image is
   # stale, without rebuilding the heavy toolchain layers. See the AGENTS_CACHE_BUST
   # ARG in the Dockerfile.

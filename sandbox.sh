@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# runme.sh — run the AI sandbox container.
+# sandbox.sh — run the AI sandbox container.
 #
 # Build the image with ./build.sh and manage repo volumes with ./repo.sh.
 
@@ -50,8 +50,8 @@ pointer_repo_entry() {  # $1=name  $2=mode  $3..=current repos_list entries
 usage() {
   cat <<'EOF'
 Usage:
-  ./runme.sh restricted [primary]
-  ./runme.sh discovery  [primary]
+  ./sandbox.sh restricted [primary]
+  ./sandbox.sh discovery  [primary]
 
 Commands:
   restricted  Run the container with the firewall enabled (agent runs as non-root, NET_ADMIN/NET_RAW dropped)
@@ -69,7 +69,7 @@ Everything is mounted under the /workspace umbrella: REPOS at /workspace/<name>,
 EXTRA_MOUNTS at /workspace/<basename>, the personal vault at /workspace/vault,
 the specs repo at /workspace/specs, the docs repo at /workspace/docs (read-only by default).
 Agent outputs (.agent-blocked/, .agent-discovery/) are written to the host
-directory where runme.sh is launched (git- and docker-ignored).
+directory where sandbox.sh is launched (git- and docker-ignored).
 
 Related scripts:
   ./build.sh  Build the image (reads sandbox.conf, regenerates allowlists)
@@ -78,7 +78,7 @@ Related scripts:
 Environment variables:
   IMAGE_NAME          Image to run (default: ai-sandbox).
   AGENT_REBUILD_MAX_AGE_HOURS
-                      If the image is at least this many hours old, runme.sh offers
+                      If the image is at least this many hours old, sandbox.sh offers
                       to rebuild it so the bundled AI agents (Copilot/Claude/Codex/
                       Gemini/Kiro) are refreshed — they are installed unpinned at
                       build time and otherwise never update. Default 72 (3 days).
@@ -347,7 +347,7 @@ run_container() {
   maybe_rebuild_stale_image
   local mode="$1"
   local primary_arg="${2:-}"
-  # Host directory where runme.sh was invoked. Agent outputs (.agent-blocked,
+  # Host directory where sandbox.sh was invoked. Agent outputs (.agent-blocked,
   # .agent-discovery) are written here so they persist host-visibly beside the
   # container files. These dirs are git- and docker-ignored.
   local launch_dir="$PWD"
@@ -852,7 +852,7 @@ case "$command" in
     run_container "$command" "${2:-}"
     ;;
   build)
-    printf 'ERROR: "runme.sh build" has been removed. Use ./build.sh instead.\n' >&2
+    printf 'ERROR: "sandbox.sh build" has been removed. Use ./build.sh instead.\n' >&2
     exit 1
     ;;
   -h|--help|help|usage)

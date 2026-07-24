@@ -8,8 +8,8 @@ set -euo pipefail
 # host bind mounts. They are GLOBAL (shared across all container groups) and
 # tracked in a registry at ~/.ai-containers/repos.conf.
 #
-# Seed a repo ONCE, then attach it to any number of containers via the runme.sh
-# REPOS variable:  REPOS="cluster:ro lib:ro app:rw" ./runme.sh restricted /ws
+# Seed a repo ONCE, then attach it to any number of containers via the sandbox.sh
+# REPOS variable:  REPOS="cluster:ro lib:ro app:rw" ./sandbox.sh restricted /ws
 
 _here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=sandbox-common.sh
@@ -38,25 +38,25 @@ Notes:
     last-synced time, and is rebuildable from labels with 'reindex'.
   - Authentication for git-url sources uses your HOST ~/.ssh (mounted read-only).
   - Volume contents are chowned to SANDBOX_UID/SANDBOX_GID (default id -u/id -g),
-    the SAME identity runme.sh runs the container as. If you override these, set
-    the SAME values for both repo.sh and runme.sh or mounted repos get the wrong
+    the SAME identity sandbox.sh runs the container as. If you override these, set
+    the SAME values for both repo.sh and sandbox.sh or mounted repos get the wrong
     owner and the in-container agent hits permission errors.
   - 'add' refuses to overwrite an existing repo; use 'sync' to refresh or 'rm' first.
-  - Attach repos at run time with runme.sh's REPOS variable (default :ro, shared).
+  - Attach repos at run time with sandbox.sh's REPOS variable (default :ro, shared).
   - Seeding does NOT require the sandbox image. A small, shared helper image
     ("ai-containers-seed", built on demand from Dockerfile.seed) does the copy /
     clone / rsync for every project. Override with REPO_SEED_IMAGE.
   - Backend (auto by default): on macOS, 'path' and 'git' repos use Docker named
     volumes (native VM speed). On Linux, 'path' repos are registered as named
     bind-mount aliases — 'add' only updates the registry (no volume, no copy), and
-    runme.sh bind-mounts the host path directly. Override with REPO_BACKEND.
+    sandbox.sh bind-mounts the host path directly. Override with REPO_BACKEND.
 
 Registry: ~/.ai-containers/repos.conf
 EOF
 }
 
 # Numeric owner applied to seeded/synced volume contents. MUST match the identity
-# the main container runs as, since Linux permissions are by UID/GID. runme.sh
+# the main container runs as, since Linux permissions are by UID/GID. sandbox.sh
 # creates the sandbox user with SANDBOX_UID/SANDBOX_GID (defaulting to id -u/id -g),
 # so this resolves them the SAME way — overriding one without the other (or seeding
 # and running as different users) causes ownership mismatches in mounted repos.
@@ -232,11 +232,11 @@ cmd_add() {
 
   if [[ "$backend" == "bind" ]]; then
     # Linux + path source: no volume, no copy. The registry entry is a named
-    # alias; runme.sh bind-mounts the source path directly (native speed here).
+    # alias; sandbox.sh bind-mounts the source path directly (native speed here).
     repo_registry_upsert "$name" "$type" "$source" "$now" "$now" "$backend"
     printf 'OK: repo "%s" registered (bind-mount backend — no volume seeded on this host).\n' "$name"
     printf '    /workspace/%s will bind-mount %s at run time.\n' "$name" "$source"
-    printf '    Attach it:  REPOS="%s:ro" ./runme.sh restricted /path/to/workspace\n' "$name"
+    printf '    Attach it:  REPOS="%s:ro" ./sandbox.sh restricted /path/to/workspace\n' "$name"
     return
   fi
 
@@ -257,7 +257,7 @@ cmd_add() {
 
   repo_registry_upsert "$name" "$type" "$source" "$now" "$now" "$backend"
   printf 'OK: repo "%s" (%s) seeded into volume "%s" and registered.\n' "$name" "$type" "$vol"
-  printf '    Attach it:  REPOS="%s:ro" ./runme.sh restricted /path/to/workspace\n' "$name"
+  printf '    Attach it:  REPOS="%s:ro" ./sandbox.sh restricted /path/to/workspace\n' "$name"
 }
 
 # Sync a single registered repo from its source (used by cmd_sync).

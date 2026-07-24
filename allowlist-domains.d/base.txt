@@ -32,7 +32,7 @@ opencollective.com
 mcp.context7.com
 
 # Docker host gateway — works across all Docker variants (Docker Desktop, Rancher
-# Desktop, Colima, bare Docker Engine on Linux/WSL2). runme.sh injects
+# Desktop, Colima, bare Docker Engine on Linux/WSL2). sandbox.sh injects
 # --add-host=host.docker.internal:host-gateway on every run, so this hostname
 # is always present in /etc/hosts and resolves to the correct host IP.
 host.docker.internal

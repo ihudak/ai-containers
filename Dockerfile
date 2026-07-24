@@ -7,7 +7,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 
 # Sandbox user: created at container startup by the entrypoint using
-# the SANDBOX_UID/SANDBOX_GID env vars that runme.sh passes automatically
+# the SANDBOX_UID/SANDBOX_GID env vars that sandbox.sh passes automatically
 # (defaults to the host user's id -u / id -g).
 # No user is baked into the image so that the same image works for every
 # team member without rebuilding.
@@ -316,7 +316,7 @@ RUN if [ "$INSTALL_GITHUB_CLI" = "1" ]; then \
 # JVM, Python, Ruby, Rust, Go). The agent CLIs are installed unpinned
 # (`npm install -g @github/copilot`, the kiro installer, ...), so re-running
 # their layers re-fetches the latest published versions. A normal build leaves
-# this at 0 and reuses the cache; runme.sh passes a fresh timestamp via build.sh
+# this at 0 and reuses the cache; sandbox.sh passes a fresh timestamp via build.sh
 # when the image is older than AGENT_REBUILD_MAX_AGE_HOURS, making the agent
 # refresh fast (heavy toolchains stay cached). It is referenced once in the
 # first agent layer below — that is sufficient to invalidate every layer after.

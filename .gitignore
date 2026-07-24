@@ -9,7 +9,7 @@
 *.swo
 .DS_Store
 
-# Agent outputs written to the launch directory by runme.sh (restricted/discovery).
+# Agent outputs written to the launch directory by sandbox.sh (restricted/discovery).
 .agent-blocked/
 .agent-discovery/
 

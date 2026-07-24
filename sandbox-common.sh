@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sandbox-common.sh — shared library for build.sh, runme.sh, and repo.sh.
+# sandbox-common.sh — shared library for build.sh, sandbox.sh, and repo.sh.
 #
 # This file is meant to be SOURCED, not executed. It provides:
 #   - configuration parsing for sandbox.conf (get_versions / is_enabled / ...)
@@ -27,7 +27,7 @@ fi
 
 # Directory containing this library (and the entry-point scripts beside it).
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# SANDBOX_CONF overrides the component-config path (build.sh/runme.sh/repo.sh);
+# SANDBOX_CONF overrides the component-config path (build.sh/sandbox.sh/repo.sh);
 # used mainly as a test/override hook — normally unset so sandbox.conf is read.
 config_file="${SANDBOX_CONF:-${script_dir}/sandbox.conf}"
 
@@ -39,7 +39,7 @@ source "${script_dir}/tools-lib.sh"
 
 # Persisted per-project environment (written by project-init.sh; one KEY=value
 # per line). It is sourced ONLY to supply IMAGE_NAME when the env var is not
-# already set, so build.sh / runme.sh / repo.sh all resolve the SAME image name
+# already set, so build.sh / sandbox.sh / repo.sh all resolve the SAME image name
 # — and therefore the same repo-volume names (<image>-repo-<repo>) — even when a
 # script is run directly instead of through the generated launcher. An exported
 # IMAGE_NAME (e.g. from the launcher) always takes precedence.
@@ -147,7 +147,7 @@ any_has_versions() {
 }
 
 # enabled_agents_csv — comma-separated sandbox.conf agent keys that are ON.
-# Consumed by runme.sh to tell the container which agents to install skills for.
+# Consumed by sandbox.sh to tell the container which agents to install skills for.
 enabled_agents_csv() {
   local a out=()
   for a in claude-code copilot codex gemini kiro; do

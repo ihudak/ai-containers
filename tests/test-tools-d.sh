@@ -116,13 +116,13 @@ dedup_out="$(TOOLS_D_DIR="$_ddir" SANDBOX_CONF="$TMP/dedup.conf" bash -c '
 ( unset GITHUB_TOKEN GITHUB_PERSONAL_ACCESS_TOKEN; preflight_private_tools ) 2>"$TMP/pf.err"
 grep -q "PRIVATE tool is enabled" "$TMP/pf.err" && pass "preflight warns" || fail "preflight warns"
 
-# --- runme.sh group-scoped tool config + AI_AGENTS_ENABLED ---------------------
+# --- sandbox.sh group-scoped tool config + AI_AGENTS_ENABLED ---------------------
 RTMP="$(mktemp -d)"
 export HOME="$RTMP/home"; mkdir -p "$HOME/.config/dtctl"; echo hostcfg > "$HOME/.config/dtctl/config"
 export AI_CONTAINER_GROUP_INIT=clean
 unset VAULT_PATH SPECS_PATH DOCS_PATH
 unset TOOLS_D_DIR   # earlier sections in this file point it at a synthetic foo/bar
-                    # dir; runme.sh must resolve the real repo tools.d (dtctl/dtmgd).
+                    # dir; sandbox.sh must resolve the real repo tools.d (dtctl/dtmgd).
 RCONF="$RTMP/sandbox.conf"
 cat > "$RCONF" <<'EOF'
 claude-code=ON
@@ -141,7 +141,7 @@ if [[ "\$1" == "run" ]]; then shift; printf '%s\n' "\$@" > "$CAP"; exit 0; fi
 exit 1
 DOCKER
 chmod +x "$RTMP/bin/docker"
-PATH="$RTMP/bin:$PATH" bash "$REPO_DIR/runme.sh" restricted "$RTMP/app" \
+PATH="$RTMP/bin:$PATH" bash "$REPO_DIR/sandbox.sh" restricted "$RTMP/app" \
   >/dev/null 2>&1 </dev/null || true
 
 grep -q "\.ai-containers/.*/\.config/dtctl:" "$CAP" && pass "dtctl config mounted from group" || fail "dtctl config mount"
@@ -153,7 +153,7 @@ find "$GROOT" -path '*/.config/dtctl/config' | grep -q . && pass "group dtctl se
 # Second run: group dir already exists → must NOT be re-seeded (group state wins).
 # Prove it by changing the host file and confirming the group copy is untouched.
 echo hostcfg-changed > "$HOME/.config/dtctl/config"
-PATH="$RTMP/bin:$PATH" bash "$REPO_DIR/runme.sh" restricted "$RTMP/app" \
+PATH="$RTMP/bin:$PATH" bash "$REPO_DIR/sandbox.sh" restricted "$RTMP/app" \
   >/dev/null 2>&1 </dev/null || true
 GROUP_CFG="$(find "$GROOT" -path '*/.config/dtctl/config' | head -n1)"
 [[ -n "$GROUP_CFG" ]] && [[ "$(cat "$GROUP_CFG")" == "hostcfg" ]] \

@@ -56,7 +56,7 @@ EOF
 rm -rf "$CLEAN_TMP"
 
 # Regression test for zero-match edge case: a file with only comments/blanks.
-# This test runs under set -euo pipefail (like real callers build.sh/runme.sh)
+# This test runs under set -euo pipefail (like real callers build.sh/sandbox.sh)
 # to ensure the guard's pipeline doesn't die silently when grep finds zero matches.
 EMPTY_TMP="$(mktemp -d)"
 cat > "$EMPTY_TMP/sandbox.conf" <<'EOF'

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Integration tests for DOCS_PATH handling in runme.sh.
+# Integration tests for DOCS_PATH handling in sandbox.sh.
 # Uses a fake `docker` on PATH to capture the assembled `docker run` args
 # without launching a container.
 set -uo pipefail
@@ -29,10 +29,10 @@ DOCKER
 }
 teardown() { rm -rf "$TMP"; unset DOCS_PATH VAULT_PATH SPECS_PATH EXTRA_MOUNTS SANDBOX_CONF; }
 
-# run runme.sh restricted <primary>; sets RC and writes stderr to $ERR.
-run_runme() {
+# run sandbox.sh restricted <primary>; sets RC and writes stderr to $ERR.
+run_sandbox() {
   ERR="$TMP/stderr.txt"
-  ( cd "$REPO_DIR" && ./runme.sh restricted "$@" ) >"$TMP/stdout.txt" 2>"$ERR" </dev/null
+  ( cd "$REPO_DIR" && ./sandbox.sh restricted "$@" ) >"$TMP/stdout.txt" 2>"$ERR" </dev/null
   RC=$?
 }
 
@@ -47,7 +47,7 @@ register_repo() {  # $1=name $2=source-dir
 setup
 mkdir -p "$TMP/mydocs" "$TMP/app"
 export DOCS_PATH="$TMP/mydocs"
-run_runme "$TMP/app"
+run_sandbox "$TMP/app"
 if grep -q "/workspace/docs:ro" "$CAPTURE" && grep -qx "DOCS_PATH=/workspace/docs" "$CAPTURE" \
    && ! grep -q "DOCS_PATH has been removed" "$ERR"; then
   pass "ro mount + env re-export"; else fail "ro mount + env re-export"; fi
@@ -57,7 +57,7 @@ teardown
 setup
 mkdir -p "$TMP/app"
 export DOCS_PATH="$TMP/nope"
-run_runme "$TMP/app"
+run_sandbox "$TMP/app"
 if grep -q "WARNING: DOCS_PATH is set but directory does not exist" "$ERR" \
    && ! grep -q "/workspace/docs:ro" "$CAPTURE"; then
   pass "missing dir → warning, no mount"; else fail "missing dir → warning, no mount"; fi
@@ -68,7 +68,7 @@ setup
 mkdir -p "$TMP/docs" "$TMP/mydocs" "$TMP/app"
 export EXTRA_MOUNTS="$TMP/docs"
 export DOCS_PATH="$TMP/mydocs"
-run_runme "$TMP/app"
+run_sandbox "$TMP/app"
 if [[ $RC -ne 0 ]] && grep -q "name 'docs' is used by" "$ERR"; then
   pass "collision on docs → error"; else fail "collision on docs → error"; fi
 teardown
@@ -77,7 +77,7 @@ teardown
 setup
 mkdir -p "$TMP/productdocs" "$TMP/app"
 export DOCS_PATH="$TMP/productdocs"
-run_runme "$TMP/productdocs"
+run_sandbox "$TMP/productdocs"
 if grep -q ":/workspace/productdocs:rw" "$CAPTURE" \
    && grep -qx "DOCS_PATH=/workspace/productdocs" "$CAPTURE" \
    && ! grep -q ":/workspace/docs:" "$CAPTURE"; then
@@ -90,7 +90,7 @@ mkdir -p "$TMP/mydocs" "$TMP/app"
 sed 's/^qmd=.*/qmd=OFF/' "$REPO_DIR/sandbox.conf" > "$TMP/conf-off"
 export SANDBOX_CONF="$TMP/conf-off"   # force qmd=OFF; don't couple to the committed default
 export DOCS_PATH="$TMP/mydocs"
-run_runme "$TMP/app"
+run_sandbox "$TMP/app"
 if grep -q "qmd=OFF in sandbox.conf, but markdown corpora are mounted (DOCS_PATH)" "$ERR" \
    && [[ "$(grep -c 'qmd=OFF' "$ERR")" -eq 1 ]]; then
   pass "qmd=OFF → one consolidated warning"; else fail "qmd=OFF → one consolidated warning"; fi
@@ -102,7 +102,7 @@ mkdir -p "$TMP/mydocs" "$TMP/app"
 sed 's/^qmd=.*/qmd=ON/' "$REPO_DIR/sandbox.conf" > "$TMP/conf-on"
 export SANDBOX_CONF="$TMP/conf-on"
 export DOCS_PATH="$TMP/mydocs"
-run_runme "$TMP/app"
+run_sandbox "$TMP/app"
 if ! grep -q "qmd=OFF" "$ERR"; then
   pass "qmd=ON → no warning"; else fail "qmd=ON → no warning"; fi
 teardown
@@ -110,7 +110,7 @@ teardown
 # Case 7: no corpus mounted → no qmd warning.
 setup
 mkdir -p "$TMP/app"
-run_runme "$TMP/app"
+run_sandbox "$TMP/app"
 if ! grep -q "qmd=OFF" "$ERR"; then
   pass "no corpus → no warning"; else fail "no corpus → no warning"; fi
 teardown
@@ -119,7 +119,7 @@ teardown
 setup
 mkdir -p "$TMP/mykb" "$TMP/app"
 export VAULT_PATH="$TMP/mykb"
-run_runme "$TMP/app"
+run_sandbox "$TMP/app"
 if grep -q ":/workspace/vault:rw" "$CAPTURE" && grep -qx "VAULT_PATH=/workspace/vault" "$CAPTURE" \
    && ! grep -q "obsidian" "$CAPTURE"; then
   pass "VAULT_PATH → /workspace/vault"; else fail "VAULT_PATH → /workspace/vault"; fi
@@ -130,7 +130,7 @@ setup
 mkdir -p "$TMP/docsvol" "$TMP/app"
 register_repo docs2 "$TMP/docsvol"
 export DOCS_PATH="@docs2"
-run_runme "$TMP/app"
+run_sandbox "$TMP/app"
 if grep -q ":/workspace/docs2:ro" "$CAPTURE" && grep -qx "DOCS_PATH=/workspace/docs2" "$CAPTURE"; then
   pass "DOCS_PATH=@name → /workspace/docs2 ro"; else fail "DOCS_PATH=@name → /workspace/docs2 ro"; fi
 teardown
@@ -140,7 +140,7 @@ setup
 mkdir -p "$TMP/specsvol" "$TMP/app"
 register_repo specs2 "$TMP/specsvol"
 export SPECS_PATH="@specs2"
-run_runme "$TMP/app"
+run_sandbox "$TMP/app"
 if grep -q ":/workspace/specs2:rw" "$CAPTURE" && grep -qx "SPECS_PATH=/workspace/specs2" "$CAPTURE"; then
   pass "SPECS_PATH=@name → /workspace/specs2 rw"; else fail "SPECS_PATH=@name → /workspace/specs2 rw"; fi
 teardown
@@ -149,7 +149,7 @@ teardown
 setup
 mkdir -p "$TMP/mydocs" "$TMP/app"
 export DOCS_PATH="$TMP/mydocs:rw"
-run_runme "$TMP/app"
+run_sandbox "$TMP/app"
 if grep -q ":/workspace/docs:rw" "$CAPTURE" && grep -qx "DOCS_PATH=/workspace/docs" "$CAPTURE"; then
   pass "DOCS_PATH=path:rw → /workspace/docs rw"; else fail "DOCS_PATH=path:rw → /workspace/docs rw"; fi
 teardown
