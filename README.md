@@ -35,7 +35,7 @@ It packages a CLI-only Docker-based workspace for running AI coding agents (GitH
      ```bash
      docker buildx install
      ```
-- **Bash ≥ 4.4** on the host (for `runme.sh`). Linux distributions ship this by default. macOS ships bash 3.2 — install a newer version via `brew install bash` if needed.
+- **Bash ≥ 4.4** on the host (for `sandbox.sh`). Linux distributions ship this by default. macOS ships bash 3.2 — install a newer version via `brew install bash` if needed.
 
 ## What is included
 
@@ -49,7 +49,7 @@ It packages a CLI-only Docker-based workspace for running AI coding agents (GitH
 - `allowlist-domains.d/`, `allowlist-proxy-domains.d/`, `allowlist-cidrs.d/` contain per-component allowlist fragments. `build.sh` assembles the active fragments into the three `allowlist-*.txt` files that the Dockerfile copies into the image. Each directory also contains a `custom.txt` file that is always included regardless of which components are enabled.
 - `sandbox-common.sh` is a shared library (config parsing, container-group helpers, path/volume helpers, the repo registry) sourced by the three entry-point scripts below.
 - `build.sh` builds the image (reads `sandbox.conf`, regenerates the allowlists).
-- `runme.sh` runs the container (`restricted` / `discovery`).
+- `sandbox.sh` runs the container engine (`restricted` / `discovery`). In a consumer project you normally invoke it indirectly through the generated `runme.sh` launcher (see project-init below).
 - `repo.sh` manages shared, native-speed repo volumes (`add` / `sync` / `reset` / `list` / `rm`).
 - `Dockerfile.seed` builds the small, shared helper image (`ai-containers-seed`: Alpine + `git`, `openssh-client`, `rsync`, `bash`) that `repo.sh` uses to seed and sync repo volumes. It is independent of the main sandbox image (and of `IMAGE_NAME`), so it is built once and reused by every project, and repo volumes can be seeded before `./build.sh` is ever run.
 
@@ -84,14 +84,14 @@ Two mechanisms keep them fresh:
 AGENTS_CACHE_BUST=$(date +%s) ./build.sh
 ```
 
-**2. Age-based auto-rebuild (automatic).** When you launch a container, `runme.sh` checks how old the image is. If it is at least `AGENT_REBUILD_MAX_AGE_HOURS` old (**default 72 = 3 days**), it offers to refresh the agents using the targeted rebuild above before starting:
+**2. Age-based auto-rebuild (automatic).** When you launch a container, `sandbox.sh` checks how old the image is. If it is at least `AGENT_REBUILD_MAX_AGE_HOURS` old (**default 72 = 3 days**), it offers to refresh the agents using the targeted rebuild above before starting:
 
 ```bash
 # Rebuild agents if the image is 24+ hours old instead of the default 72
-AGENT_REBUILD_MAX_AGE_HOURS=24 ./runme.sh restricted /path/to/repo
+AGENT_REBUILD_MAX_AGE_HOURS=24 ./sandbox.sh restricted /path/to/repo
 
 # Disable the check entirely for this run
-AGENT_REBUILD_MAX_AGE_HOURS=0 ./runme.sh restricted /path/to/repo
+AGENT_REBUILD_MAX_AGE_HOURS=0 ./sandbox.sh restricted /path/to/repo
 ```
 
 | Env var | Default | Meaning |
@@ -104,13 +104,13 @@ On an interactive terminal, the launcher prompts (`[Y/n]`, default yes) before r
 Run in restricted mode with the firewall enabled:
 
 ```bash
-./runme.sh restricted /path/to/your/repo
+./sandbox.sh restricted /path/to/your/repo
 ```
 
 Run in discovery mode to capture outbound destinations before tightening the allowlist:
 
 ```bash
-./runme.sh discovery /path/to/your/repo
+./sandbox.sh discovery /path/to/your/repo
 ```
 
 Everything is mounted under a single `/workspace` umbrella: the positional argument
@@ -120,18 +120,18 @@ directory; `REPOS` entries appear at `/workspace/<name>`, `EXTRA_MOUNTS` at
 argument may also be `@<repo>` to use a registered repo volume as the working directory
 (fast on macOS) — see [Shared repo volumes](#shared-repo-volumes-native-speed--reposh-and-repos).
 Agent outputs (`.agent-blocked/`, `.agent-discovery/`) are written to the host directory
-where you launched `runme.sh` (and are git- and docker-ignored).
+where you launched `sandbox.sh` (and are git- and docker-ignored).
 
 ## Environment variables
 
-These configure `runme.sh` at launch time. Set any of them **inline** for a single run
-(`VAULT_PATH=/path ./runme.sh restricted`) or **export them in your host shell profile**
+These configure `sandbox.sh` at launch time. Set any of them **inline** for a single run
+(`VAULT_PATH=/path ./sandbox.sh restricted`) or **export them in your host shell profile**
 (`~/.bash_profile`, `~/.zshrc`) so they become the default for every container you start.
 `VAULT_PATH`, `SPECS_PATH`, and `DOCS_PATH` are designed for the profile-export pattern: point them once at
 host directories and every container mounts them and sees the variable re-exported to its
 in-container path. Their effective default is therefore whatever the host environment exports;
 override either inline to point at a different directory for a single run. If the variable is
-unset the mount is simply skipped, and if it points at a directory that does not exist `runme.sh`
+unset the mount is simply skipped, and if it points at a directory that does not exist `sandbox.sh`
 warns and skips it.
 
 The **In container** column says whether the variable is visible to the agents *inside* the
@@ -313,7 +313,7 @@ If the API call fails (rate limit, bad token, or network error), the build print
 
 ## GitHub tokens at runtime
 
-`runme.sh` deliberately does **not** forward `GITHUB_TOKEN` or `GH_TOKEN` into the running container, even if set on the host. Only `GITHUB_PERSONAL_ACCESS_TOKEN` is forwarded.
+`sandbox.sh` deliberately does **not** forward `GITHUB_TOKEN` or `GH_TOKEN` into the running container, even if set on the host. Only `GITHUB_PERSONAL_ACCESS_TOKEN` is forwarded.
 
 > Auth files for Copilot CLI and `gh` CLI are sourced from the active container group (`~/.ai-containers/<group>/.copilot/`, `~/.ai-containers/<group>/.config/gh/`, etc. by default). See [Container groups](#container-groups) for details. The container path inside the table is unchanged.
 
@@ -326,13 +326,13 @@ If the API call fails (rate limit, bad token, or network error), the build print
 | Claude Code's official `github` plugin (`api.githubcopilot.com/mcp/`) | `GITHUB_PERSONAL_ACCESS_TOKEN` — PAT must include the **Copilot Requests** fine-grained permission |
 | `git` over HTTPS, `curl api.github.com`, skills/scripts | `GITHUB_PERSONAL_ACCESS_TOKEN` |
 
-**Copilot CLI authentication:** `runme.sh` automatically extracts the OAuth token from the active group's `~/.config/gh/hosts.yml` and forwards it as `COPILOT_GITHUB_TOKEN`. This means:
+**Copilot CLI authentication:** `sandbox.sh` automatically extracts the OAuth token from the active group's `~/.config/gh/hosts.yml` and forwards it as `COPILOT_GITHUB_TOKEN`. This means:
 - No `/login` is needed inside the container (if `gh auth` is configured in the group)
 - Multiple containers can run simultaneously without revoking each other's sessions (device-flow OAuth is single-session per user; env-var token auth is not)
 - You can override by setting `COPILOT_GITHUB_TOKEN` explicitly on the host
 
 > **⚠️ The token is extracted once, at container launch — not while the container runs.**
-> `runme.sh` reads `hosts.yml` and sets `COPILOT_GITHUB_TOKEN` **before** `docker run` starts the
+> `sandbox.sh` reads `hosts.yml` and sets `COPILOT_GITHUB_TOKEN` **before** `docker run` starts the
 > container. If the group is **not yet authenticated** when you launch (no `oauth_token` in
 > `hosts.yml`), the env var is **empty for the entire life of that container**, and Copilot CLI
 > falls back to interactive device-flow `/login` every time it starts. Running `gh auth login`
@@ -345,12 +345,12 @@ If the API call fails (rate limit, bad token, or network error), the build print
 > `/login` again. Container env vars are fixed at `docker run` time and cannot be changed by an
 > in-container `/restart`.
 >
-> **The fix:** authenticate **first**, then start (or fully restart) the container so `runme.sh`
+> **The fix:** authenticate **first**, then start (or fully restart) the container so `sandbox.sh`
 > can pick up the freshly written token:
 > 1. `gh auth login` (on the host, or once inside any container of that group — it persists to
 >    `~/.ai-containers/<group>/.config/gh/hosts.yml`).
-> 2. **Exit the container completely** (`Ctrl+D`) and relaunch with `./runme.sh …` — *not* a
->    Copilot `/restart`. Only a full container relaunch re-runs `runme.sh` and re-extracts the token.
+> 2. **Exit the container completely** (`Ctrl+D`) and relaunch with `./sandbox.sh …` — *not* a
+>    Copilot `/restart`. Only a full container relaunch re-runs `sandbox.sh` and re-extracts the token.
 > 3. Copilot is now authenticated from `COPILOT_GITHUB_TOKEN` with no `/login` prompt.
 
 **Token requirements:** The `gh` token must be compatible with Copilot CLI. Supported types:
@@ -384,13 +384,13 @@ copilot() {
 }
 ```
 
-This keeps every other CLI tool authenticated automatically while preventing Copilot CLI from treating your PAT as a Copilot-API bearer. The container Copilot CLI is already protected because `runme.sh` does not forward `GITHUB_TOKEN`/`GH_TOKEN`.
+This keeps every other CLI tool authenticated automatically while preventing Copilot CLI from treating your PAT as a Copilot-API bearer. The container Copilot CLI is already protected because `sandbox.sh` does not forward `GITHUB_TOKEN`/`GH_TOKEN`.
 
 Build-time rate-limit avoidance: `./build.sh` automatically uses `GITHUB_PERSONAL_ACCESS_TOKEN` as the GitHub API token when `GITHUB_TOKEN` is unset, so the recommended setup above is already sufficient for authenticated API calls (5000 req/h). No extra export is needed. If you explicitly want to use a *different* token for the build than the one in your shell profile, set `GITHUB_TOKEN` for that one invocation: `GITHUB_TOKEN=ghp_build_specific ./build.sh`. Either way, the value is consumed only by BuildKit and never lands in the image or the running container.
 
 ## Extracting discovery results
 
-After running in discovery mode, reproduce the AI agent interaction you want to observe, then exit the container (`Ctrl+D`). The pcap capture file persists on the host in the `.agent-discovery` directory of the **launch directory** (where you ran `runme.sh`).
+After running in discovery mode, reproduce the AI agent interaction you want to observe, then exit the container (`Ctrl+D`). The pcap capture file persists on the host in the `.agent-discovery` directory of the **launch directory** (where you ran `sandbox.sh`).
 
 Extract the DNS and TLS hostname lists:
 
@@ -411,7 +411,7 @@ Add the discovered hostnames to `allowlist-domains.d/custom.txt`, rebuild the im
 By default the container runs with `--cpus=1.0`, `--memory=4g`, `--memory-reservation=2g`, and `--memory-swap=4g`. Override any of them at run time:
 
 ```bash
-CONTAINER_CPUS=2 CONTAINER_MEMORY=8g ./runme.sh restricted /path/to/repo
+CONTAINER_CPUS=2 CONTAINER_MEMORY=8g ./sandbox.sh restricted /path/to/repo
 ```
 
 | Env var | Docker flag | Default | Meaning |
@@ -424,19 +424,19 @@ CONTAINER_CPUS=2 CONTAINER_MEMORY=8g ./runme.sh restricted /path/to/repo
 
 The values must fit within the resources allocated to your Docker engine. On Colima the VM-level limits are set when starting Colima — for example `colima start --cpu 6 --memory 12 --disk 100`. If `CONTAINER_CPUS` exceeds the VM's CPU count, `docker run` fails with `range of CPUs is from 0.01 to N` and the container does not start. Resize Colima or lower the limit.
 
-**Automatic reconciliation.** Before starting the container, `runme.sh` parses the three memory values and fixes inconsistent combinations so `docker run` does not fail mid-launch:
+**Automatic reconciliation.** Before starting the container, `sandbox.sh` parses the three memory values and fixes inconsistent combinations so `docker run` does not fail mid-launch:
 
 - If `CONTAINER_MEMORY_RESERVATION` is greater than `CONTAINER_MEMORY`, it is lowered to the hard limit and a warning is printed (a soft limit above the hard limit is meaningless).
 - If `CONTAINER_MEMORY_SWAP` is less than `CONTAINER_MEMORY`, it is raised to the hard limit (swap disabled) and a warning is printed, because Docker rejects a swap total below the memory limit. This commonly happens when you raise `CONTAINER_MEMORY` (e.g. to `8g`) but leave `CONTAINER_MEMORY_SWAP` at its `4g` default — the reconciliation prevents the otherwise-confusing `Minimum memoryswap limit should be larger than memory limit` error.
 
 A value of `-1` for `CONTAINER_MEMORY_SWAP` (unlimited swap) is left untouched.
 
-**File descriptors vs. memory.** `EMFILE: too many open files` is *not* a memory problem — it means the process hit the open-file-descriptor limit (`ulimit -n`). A container starved of RAM is OOM-killed (exit 137); it does not throw `EMFILE`. On macOS this is also **not** the host's low `launchctl limit maxfiles` (often 256): Docker runs the container inside a Linux VM, so the limit comes from the Docker daemon there, not from the macOS host shell. Agents that scan large repos or doc trees (plus file watchers, where each inotify instance is an fd) can exhaust a low default soft limit. `runme.sh` sets `--ulimit nofile` to a high value (`1048576:1048576`) so this does not happen; override with `CONTAINER_NOFILE` if needed. Inside a container, check the active limit with `ulimit -Sn` (soft) and `ulimit -Hn` (hard).
+**File descriptors vs. memory.** `EMFILE: too many open files` is *not* a memory problem — it means the process hit the open-file-descriptor limit (`ulimit -n`). A container starved of RAM is OOM-killed (exit 137); it does not throw `EMFILE`. On macOS this is also **not** the host's low `launchctl limit maxfiles` (often 256): Docker runs the container inside a Linux VM, so the limit comes from the Docker daemon there, not from the macOS host shell. Agents that scan large repos or doc trees (plus file watchers, where each inotify instance is an fd) can exhaust a low default soft limit. `sandbox.sh` sets `--ulimit nofile` to a high value (`1048576:1048576`) so this does not happen; override with `CONTAINER_NOFILE` if needed. Inside a container, check the active limit with `ulimit -Sn` (soft) and `ulimit -Hn` (hard).
 
 **Does swap make sense here?** For AI coding agents the answer is usually **no**. Agents and the build tools they invoke (compilers, `npm`/`pip` installs, language servers) are latency-sensitive; if they spill into swap the whole session thrashes and feels frozen, which is worse than a clean OOM. The recommended setup is therefore **no swap** — set `CONTAINER_MEMORY_SWAP` equal to `CONTAINER_MEMORY` so the container is hard-capped and fails fast if it runs out of memory:
 
 ```bash
-CONTAINER_MEMORY=8g CONTAINER_MEMORY_SWAP=8g ./runme.sh restricted /path/to/repo
+CONTAINER_MEMORY=8g CONTAINER_MEMORY_SWAP=8g ./sandbox.sh restricted /path/to/repo
 ```
 
 A small amount of swap (e.g. memory `8g`, swap `10g` → 2g of swap) is only worth it if you hit occasional short memory spikes during large builds and would rather absorb a brief slowdown than have the build killed. Unlimited swap (`-1`) is not recommended: it hides genuine memory leaks and can drag the whole host down.
@@ -470,7 +470,7 @@ Set `EXTRA_MOUNTS` to a space-separated list of host paths. Append `:ro` or `:rw
 ```bash
 # backend is the primary workspace; ui is read-write, reference-docs is read-only
 EXTRA_MOUNTS="/path/to/myproject-ui /path/to/reference-docs:ro" \
-bash ./runme.sh restricted /path/to/myproject-backend
+bash ./sandbox.sh restricted /path/to/myproject-backend
 ```
 
 Each path is mounted at `/workspace/<basename>` inside the container.
@@ -509,9 +509,9 @@ Repo volumes are **global**: there is **one volume per repo name**, shared by co
 
 > **Seeding does not require the sandbox image.** `repo.sh` does the copy/clone/rsync work in a small dedicated helper image (`ai-containers-seed`, ~40 MB: Alpine + `git`, `openssh-client`, `rsync`, `bash`), built automatically from `Dockerfile.seed` the first time you run `repo.sh add`/`sync`. This means you can seed repo volumes **before** ever running `./build.sh` — you don't need the (large, slow) sandbox image just to populate a volume. The seed image name is **fixed and project-independent**: it is deliberately not derived from `IMAGE_NAME`, so it is built once and reused by every project rather than producing one near-identical copy per project image. Set `REPO_SEED_IMAGE` to reuse a different existing image that already has these tools (for example `REPO_SEED_IMAGE="$IMAGE_NAME"` once the sandbox image is built); if `REPO_SEED_IMAGE` names an image that is not present, `repo.sh` errors instead of building. The seed helper runs as a plain `docker run` (not through `entrypoint.sh`), so the deny-by-default firewall does not apply to it — the `git clone`/`pull` has normal network access.
 
-> **⚠️ Seed and run as the same user identity.** Repo-volume contents are `chown`ed to a numeric **UID/GID** when seeded/synced, and Linux permissions are enforced by those numbers. `repo.sh` and `runme.sh` resolve the identity the **same** way: `SANDBOX_UID`/`SANDBOX_GID` if set, otherwise your host `id -u`/`id -g`. So:
+> **⚠️ Seed and run as the same user identity.** Repo-volume contents are `chown`ed to a numeric **UID/GID** when seeded/synced, and Linux permissions are enforced by those numbers. `repo.sh` and `sandbox.sh` resolve the identity the **same** way: `SANDBOX_UID`/`SANDBOX_GID` if set, otherwise your host `id -u`/`id -g`. So:
 > - Using the **defaults** (no overrides), seeding and running both use your host identity — ownership always matches, nothing to do.
-> - If you **override** `SANDBOX_UID`/`SANDBOX_GID`, you must export the **same** values for **both** `repo.sh` (at `add`/`sync` time) and `runme.sh` (at run time). Overriding one but not the other — or seeding as one user and running the container as another — leaves the mounted repo owned by the wrong UID, and the in-container agent gets permission errors.
+> - If you **override** `SANDBOX_UID`/`SANDBOX_GID`, you must export the **same** values for **both** `repo.sh` (at `add`/`sync` time) and `sandbox.sh` (at run time). Overriding one but not the other — or seeding as one user and running the container as another — leaves the mounted repo owned by the wrong UID, and the in-container agent gets permission errors.
 > - This applies to the **named-volume** backend (notably macOS). The Linux `bind` backend mounts your host path directly with no `chown`, so it is unaffected.
 
 ### `REPOS` — attach repo volumes at run time
@@ -520,14 +520,14 @@ Set `REPOS` to a space-separated list of **registered** repo names, each mounted
 
 ```bash
 # cluster + two libs read-only (shared), app writable
-REPOS="cluster:ro lib-a:ro lib-b:ro app:rw" ./runme.sh restricted /path/to/primary
+REPOS="cluster:ro lib-a:ro lib-b:ro app:rw" ./sandbox.sh restricted /path/to/primary
 ```
 
 - **`:ro`** — shared, read-only. Many containers can mount the *same* volume simultaneously from a single on-disk copy. `GIT_OPTIONAL_LOCKS=0` is set so read-only git operations (`log`/`blame`/`status`) don't try to write to `.git`. This is the right choice for reference repos you only inspect.
 - **`:rw`** — the shared base volume, mounted **writable directly** (no copy, no extra disk). Intended for a **single writer** at a time — the repo you're actively editing in one container. Two containers writing the *same* repo `:rw` concurrently can wedge git state (lock-file contention, lost edits); the underlying volume/filesystem is not damaged and the state is recoverable (`git reset`, or `repo.sh sync`/`rm`+`add`), but for genuine concurrent writers use `:rwcopy`.
 - **`:rwcopy`** — an **isolated** per-workspace writable working copy, seeded once by a fast local copy from the shared base (no re-clone), keyed by the launch directory so the same project reuses its copy across runs. Each `:rwcopy` is a full copy (~repo size), so it costs disk; use it only when you need two containers writing the *same* repo at once. Volume backend only.
 
-If a `REPOS` entry is not registered (or its volume is missing), `runme.sh` aborts **before** starting the container with a clear hint. A name appearing in **both** `EXTRA_MOUNTS` and `REPOS` is an error, since both mount under `/workspace/<name>`.
+If a `REPOS` entry is not registered (or its volume is missing), `sandbox.sh` aborts **before** starting the container with a clear hint. A name appearing in **both** `EXTRA_MOUNTS` and `REPOS` is an error, since both mount under `/workspace/<name>`.
 
 > **Repo volumes shadow the host.** A repo volume is *not* synced with any host directory — its contents live only in the VM volume (and persist across runs until you `repo.sh rm` it). Commit and push from inside the container to get work out. This is the intended trade-off for native speed: you give up live host-side editing for the repos you put in volumes.
 
@@ -555,10 +555,10 @@ An Obsidian vault is the typical source, but `VAULT_PATH` is useful even without
 
 ```bash
 VAULT_PATH=/path/to/obsidian-vault \
-./runme.sh restricted /path/to/repo
+./sandbox.sh restricted /path/to/repo
 ```
 
-When any markdown corpus (`VAULT_PATH`, `SPECS_PATH`, or `DOCS_PATH`) is mounted, set `qmd=ON` in `sandbox.conf` and rebuild — `runme.sh` prints one startup warning naming the mounted corpora if qmd was not baked into the image. `qmd` is the on-device markdown search engine [@tobilu/qmd](https://github.com/tobi/qmd), installed globally via npm.
+When any markdown corpus (`VAULT_PATH`, `SPECS_PATH`, or `DOCS_PATH`) is mounted, set `qmd=ON` in `sandbox.conf` and rebuild — `sandbox.sh` prints one startup warning naming the mounted corpora if qmd was not baked into the image. `qmd` is the on-device markdown search engine [@tobilu/qmd](https://github.com/tobi/qmd), installed globally via npm.
 
 ## Mounting a docs repository (read-only by default)
 
@@ -566,7 +566,7 @@ Set `DOCS_PATH` to a host product-documentation repo (e.g. `dynatrace-docs`) to 
 
 ```bash
 DOCS_PATH=/path/to/docs \
-./runme.sh restricted /path/to/repo
+./sandbox.sh restricted /path/to/repo
 ```
 
 Export `DOCS_PATH` in your host shell profile to make it the default for every container, exactly as with `VAULT_PATH` / `SPECS_PATH`.
@@ -579,7 +579,7 @@ Set `SPECS_PATH` to a host repository of AI-ready specifications, design documen
 
 ```bash
 SPECS_PATH=/path/to/specs \
-./runme.sh restricted /path/to/repo
+./sandbox.sh restricted /path/to/repo
 ```
 
 Export `SPECS_PATH` in your host shell profile to make it the default for every container, exactly as with `VAULT_PATH`. `SPECS_PATH` also accepts `@<name>` to mount a registered repo volume at `/workspace/<name>` instead of a host path — useful on macOS for a large, team-shared specs repo.
@@ -613,7 +613,7 @@ Agent dotfile directories are sourced from the active container group (`~/.ai-co
 | `~/.kube` | `~/.kube` | read-write | `kubectl` |
 | `~/.yarn` | `~/.yarn` | read-write | `yarn` |
 
-¹ `runme.sh` copies these files from `$HOME` into the group directory on every container start and mounts from the copy. This avoids a macOS VirtioFS issue where atomically replacing a file on the host (as git and most editors do) causes the bind-mounted view inside the container to become unreadable. If you edit either file while a container is running, restart the container to pick up the changes.
+¹ `sandbox.sh` copies these files from `$HOME` into the group directory on every container start and mounts from the copy. This avoids a macOS VirtioFS issue where atomically replacing a file on the host (as git and most editors do) causes the bind-mounted view inside the container to become unreadable. If you edit either file while a container is running, restart the container to pick up the changes.
 
 ² Tool config dirs declared via `tools.d/` (`config_dir=` in the tool's descriptor — currently `dtctl`, `dtmgd`) are group-scoped like agent dotfiles, **not** mounted straight from `$HOME` like `.aws`/`.azure`/`.kube`/`.yarn` above. The first time a group needs one, it is seeded once from the host's copy at `$HOME` if one exists (otherwise created empty); every later run mounts the group's copy instead, so a sandboxed agent never writes to your real host config.
 
@@ -624,7 +624,7 @@ When `AI_CONTAINER_GROUP=host`, all group-scoped paths above are sourced directl
 A container group is a named directory under `~/.ai-containers/<name>/` that holds all per-purpose agent dotfile state: auth credentials, skills, MCP config, SSH keys, and per-tool session data. Because each group is self-contained, you can keep completely separate agent profiles for different purposes — for example a `docs` group with Obsidian skills and wiki credentials, a `java-backend` group with infra creds and Dynatrace auth, and a `ui` group with Figma MCP config — and switch between them per invocation.
 
 ```bash
-AI_CONTAINER_GROUP=docs ./runme.sh restricted /path/to/workspace
+AI_CONTAINER_GROUP=docs ./sandbox.sh restricted /path/to/workspace
 ```
 
 The default group is named `default`. Its directory is `~/.ai-containers/default/`. If `AI_CONTAINER_GROUP` is not set, `default` is used.
@@ -659,7 +659,7 @@ The default group is named `default`. Its directory is `~/.ai-containers/default
 
 ### First-time bootstrap
 
-When you reference a group that does not yet exist, `runme.sh` asks how to initialize it.
+When you reference a group that does not yet exist, `sandbox.sh` asks how to initialize it.
 
 **Interactive (TTY):**
 
@@ -679,13 +679,13 @@ Pick `1)` to copy the group-scoped dotfile slice from `default` (or whichever gr
 
 ```bash
 # Start with an empty group
-AI_CONTAINER_GROUP=docs AI_CONTAINER_GROUP_INIT=clean ./runme.sh restricted /path
+AI_CONTAINER_GROUP=docs AI_CONTAINER_GROUP_INIT=clean ./sandbox.sh restricted /path
 
 # Copy dotfiles from the default group
-AI_CONTAINER_GROUP=docs AI_CONTAINER_GROUP_INIT=from:default ./runme.sh restricted /path
+AI_CONTAINER_GROUP=docs AI_CONTAINER_GROUP_INIT=from:default ./sandbox.sh restricted /path
 
 # Copy dotfiles from $HOME
-AI_CONTAINER_GROUP=docs AI_CONTAINER_GROUP_INIT=from:host ./runme.sh restricted /path
+AI_CONTAINER_GROUP=docs AI_CONTAINER_GROUP_INIT=from:host ./sandbox.sh restricted /path
 ```
 
 Without `AI_CONTAINER_GROUP_INIT`, a non-TTY invocation for a missing group exits with an error and prints the hint.
@@ -696,7 +696,7 @@ Without `AI_CONTAINER_GROUP_INIT`, a non-TTY invocation for a missing group exit
 
 **On Linux**, this restores the behavior that was the default before container groups were introduced — no warning, no prompt.
 
-**On macOS**, `runme.sh` prints the following warning and prompts for explicit confirmation before starting the container:
+**On macOS**, `sandbox.sh` prints the following warning and prompts for explicit confirmation before starting the container:
 
 ```
 WARNING: AI_CONTAINER_GROUP=host on macOS
@@ -728,11 +728,11 @@ claude /login
 Once `gh auth login` completes, Copilot CLI is authenticated automatically (its token is extracted from `hosts.yml` and forwarded as `COPILOT_GITHUB_TOKEN`). No separate `copilot /login` is needed.
 
 > **⚠️ You must fully restart the container after the *first* `gh auth login`.**
-> `runme.sh` extracts the token from `hosts.yml` **at launch**, so on the very first run of a fresh
+> `sandbox.sh` extracts the token from `hosts.yml` **at launch**, so on the very first run of a fresh
 > group — where you authenticate `gh` *inside* the container — `COPILOT_GITHUB_TOKEN` was already
 > set empty when the container started. Copilot will keep prompting for `/login` (and a Copilot
 > `/restart` will **not** help — it reuses the same empty container environment). **Exit the
-> container (`Ctrl+D`) and relaunch with `./runme.sh …`** so `runme.sh` re-reads the now-populated
+> container (`Ctrl+D`) and relaunch with `./sandbox.sh …`** so `sandbox.sh` re-reads the now-populated
 > `hosts.yml`. From then on Copilot starts authenticated. See
 > [GitHub tokens at runtime](#github-tokens-at-runtime) for the full explanation.
 
@@ -762,7 +762,7 @@ rm -rf ~/.ai-containers/docs
 
 **Linux users** will see the bootstrap prompt on first run after upgrade, because `~/.ai-containers/default/` does not exist yet. Choose `host` or another existing source to initialize from. To restore the previous behavior without any prompt, set `AI_CONTAINER_GROUP=host` permanently in your shell profile.
 
-**`SSH_SCOPE_DIR` has been removed.** If you have it set, `runme.sh` prints a deprecation note to stderr and ignores the variable. To migrate: copy your custom SSH keys into `~/.ai-containers/<group>/.ssh/`, or initialize a group with `AI_CONTAINER_GROUP_INIT=from:host` to copy them automatically. See `CHANGELOG.md` for details.
+**`SSH_SCOPE_DIR` has been removed.** If you have it set, `sandbox.sh` prints a deprecation note to stderr and ignores the variable. To migrate: copy your custom SSH keys into `~/.ai-containers/<group>/.ssh/`, or initialize a group with `AI_CONTAINER_GROUP_INIT=from:host` to copy them automatically. See `CHANGELOG.md` for details.
 
 ## macOS host notes
 
@@ -774,7 +774,7 @@ The macOS Keychain context is still relevant if you use `AI_CONTAINER_GROUP=host
 
 ## Reviewing blocked traffic
 
-When running in restricted mode, blocked outbound destinations are logged automatically to `/workspace/.agent-blocked/`. These files persist on the host in the `.agent-blocked` directory of the launch directory (where you ran `runme.sh`).
+When running in restricted mode, blocked outbound destinations are logged automatically to `/workspace/.agent-blocked/`. These files persist on the host in the `.agent-blocked` directory of the launch directory (where you ran `sandbox.sh`).
 
 | File | Purpose |
 |------|---------|
@@ -799,7 +799,7 @@ Then rebuild the image with `./build.sh` and restart the container.
 
 1. **iptables** sets a deny-by-default OUTPUT policy and allows only the allowlisted destinations.
 2. **Capability drop**: after iptables is configured, the agent shell is started via `capsh --drop=cap_net_admin,cap_net_raw`, so it cannot modify firewall rules or create raw sockets regardless of file permissions.
-3. **Non-root user**: the agent runs as a sandbox user whose username, UID, and GID match the host user that started the container (detected automatically by `runme.sh` via `id -u`, `id -g`, `id -un`, `id -gn`). Override by setting `SANDBOX_UID`, `SANDBOX_GID`, `SANDBOX_USER`, `SANDBOX_GROUP` before running.
+3. **Non-root user**: the agent runs as a sandbox user whose username, UID, and GID match the host user that started the container (detected automatically by `sandbox.sh` via `id -u`, `id -g`, `id -un`, `id -gn`). Override by setting `SANDBOX_UID`, `SANDBOX_GID`, `SANDBOX_USER`, `SANDBOX_GROUP` before running.
 4. **Background daemons**: the ipset refresh loop and the blocked-traffic capture daemon are forked before the capability drop and retain their root capabilities to do their jobs.
 5. **Self-healing allowlist**: when a blocked IP maps to a domain that is already in `allowlist-domains.txt` or matches a wildcard pattern from `allowlist-proxy-domains.txt`, the daemon adds the IP to the active ipset on the fly. This cannot be exploited by the sandbox user: the internal lookup tables (DNS map, domain caches) are stored in a root-only directory (`/run/agent-blocked-internal`, mode 700) inaccessible to the sandbox shell, and `CAP_NET_RAW` is dropped so DNS responses cannot be spoofed. Set `SELF_HEALING_ENABLED=0` to disable self-healing entirely and use logging-only mode.
 
@@ -844,19 +844,19 @@ What it does:
 
 - Creates `<project>/.ai-containers/` and copies all shared files (Dockerfile, scripts, allowlist fragment files).
 - Copies `sandbox.conf` as a starting point (only if one does not already exist).
-- Writes `<project>/.ai-containers/sandbox.env` with `IMAGE_NAME=<image>`. This is read by `sandbox-common.sh` so `build.sh`, `runme.sh`, and `repo.sh` all resolve the **same** image name even when you run a script directly instead of through the generated launcher. An exported `IMAGE_NAME` still takes precedence. (Repo-volume names are global — `ai-containers-repo-<name>`, independent of `IMAGE_NAME` — so they are shared across projects regardless of this value.)
-- Generates `<project>/.ai-containers/<project-name>-container.sh` with `IMAGE_NAME` and commented hints for `AI_CONTAINER_GROUP`, `EXTRA_MOUNTS`, `REPOS`, and `PREVIEW_PORTS`.
+- Writes `<project>/.ai-containers/sandbox.env` with `IMAGE_NAME=<image>`. This is read by `sandbox-common.sh` so `build.sh`, `sandbox.sh`, and `repo.sh` all resolve the **same** image name even when you run a script directly instead of through the generated launcher. An exported `IMAGE_NAME` still takes precedence. (Repo-volume names are global — `ai-containers-repo-<name>`, independent of `IMAGE_NAME` — so they are shared across projects regardless of this value.)
+- Generates `<project>/.ai-containers/runme.sh` (the per-project launcher) with `IMAGE_NAME` and commented hints for `AI_CONTAINER_GROUP`, `EXTRA_MOUNTS`, `REPOS`, and `PREVIEW_PORTS`.
 - Registers the project path in `projects.conf` (created from `projects.conf.example` on first run).
 - Adds `/.ai-containers/` to the project's **root `.gitignore`** (git repos only, idempotent), so the synced working copy — whose launcher embeds machine-specific paths (`EXTRA_MOUNTS`) and whose `custom.txt` may hold internal hostnames — isn't accidentally committed. To version it instead (e.g. to share sandbox config with a team), remove that line; set `AI_CONTAINERS_NO_GITIGNORE=1` to skip this step entirely. `sync-to-projects.sh` applies the same rule to existing projects (never duplicating an entry already present).
 
-> **Note on resource defaults:** the CPU/memory values `project-init.sh` pre-fills in its prompts (`4.0` CPU, `8g` memory, `4g` reservation, swap = memory) reflect the recommended **comfortable** tier from [Resource limits](#resource-limits), not `runme.sh`'s conservative fallback (`1.0` CPU / `4g` / `2g` / `4g`). This is intentional: the generated launch script bakes the comfortable values in as explicit `CONTAINER_*` exports, while `runme.sh`'s fallbacks remain the bare minimum for a single agent doing light work. Edit the generated launch script to lower them if your Docker/Colima VM is smaller.
+> **Note on resource defaults:** the CPU/memory values `project-init.sh` pre-fills in its prompts (`4.0` CPU, `8g` memory, `4g` reservation, swap = memory) reflect the recommended **comfortable** tier from [Resource limits](#resource-limits), not `sandbox.sh`'s conservative fallback (`1.0` CPU / `4g` / `2g` / `4g`). This is intentional: the generated launch script bakes the comfortable values in as explicit `CONTAINER_*` exports, while `sandbox.sh`'s fallbacks remain the bare minimum for a single agent doing light work. Edit the generated launch script to lower them if your Docker/Colima VM is smaller.
 
 After init, edit `sandbox.conf` to choose components, review the launch script, then build:
 
 ```bash
 cd <project>/.ai-containers
 ./build.sh
-./<project-name>-container.sh
+./runme.sh
 ```
 
 ### sync-to-projects.sh — propagate updates
@@ -908,8 +908,8 @@ You can also edit `projects.conf` manually: one absolute project path per line, 
 - Add environment-specific FQDNs (internal Git, artifact repos, MCP endpoints, search engines) to `allowlist-domains.d/custom.txt`.
 - If agent traffic must go through a corporate proxy, add wildcard patterns to `allowlist-proxy-domains.d/custom.txt` and allow only the proxy IPs in `allowlist-cidrs.d/custom.txt`.
 - The `custom.txt` files in each `*.d/` directory are **gitignored** to prevent internal hostnames and IPs from being committed. Each directory ships a `custom.txt.example` template; `./build.sh` auto-copies it to `custom.txt` on first run.
-- The sandbox user identity (`SANDBOX_UID`, `SANDBOX_GID`, `SANDBOX_USER`, `SANDBOX_GROUP`) is detected automatically from the host user at runtime. No build-time args needed. If you override `SANDBOX_UID`/`SANDBOX_GID`, set the **same** values when running `repo.sh` (it chowns repo-volume contents to that identity) as when running `runme.sh` — see the identity warning under [Shared repo volumes](#shared-repo-volumes-native-speed--reposh-and-repos).
-- Review the default values in `runme.sh`, especially `IMAGE_NAME`, before publishing this into a separate repository.
+- The sandbox user identity (`SANDBOX_UID`, `SANDBOX_GID`, `SANDBOX_USER`, `SANDBOX_GROUP`) is detected automatically from the host user at runtime. No build-time args needed. If you override `SANDBOX_UID`/`SANDBOX_GID`, set the **same** values when running `repo.sh` (it chowns repo-volume contents to that identity) as when running `sandbox.sh` — see the identity warning under [Shared repo volumes](#shared-repo-volumes-native-speed--reposh-and-repos).
+- Review the default values in `sandbox.sh`, especially `IMAGE_NAME`, before publishing this into a separate repository.
 
 ## Important notes
 
