@@ -272,7 +272,7 @@ for the run-the-script-and-grep pattern).
 - **Idempotency test.** Run reconcile twice on the same project fixture; assert the second run is a
   no-op — no duplicate keys created, marker unchanged.
 - **Duplicate-key guard test.** Fixture file with a deliberately duplicated key; assert
-  `get_versions()` / `is_enabled()` exits non-zero with a clear error message naming the file and key.
+  `check_config()` exits non-zero with a clear error message naming the file and key.
 - **CI gate test.** Fixture before/after central `sandbox.conf` pairs — one purely additive (must pass
   `check-sandbox-version.sh --check` silently), one with a key removed but no new hook / version bump
   (must fail with a clear message naming the missing key).
