@@ -37,6 +37,33 @@ valid_group_name() {
   [[ "$1" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]]
 }
 
+# Expand a user-typed host path: leading ~ / ~user, and $VAR / ${VAR} references.
+# read -r takes input literally, so bash never expands these on its own.
+# Deliberately does NOT eval the input (no command substitution) — this only
+# ever substitutes an existing shell variable's value, so a stray "$(...)" in
+# a pasted path can't execute anything.
+expand_path() {
+  local p="$1"
+
+  if [[ "$p" == "~" || "$p" == "~/"* ]]; then
+    p="${HOME}${p:1}"
+  elif [[ "$p" =~ ^~([^/]+)(.*)$ ]]; then
+    local user="${BASH_REMATCH[1]}" rest="${BASH_REMATCH[2]}" userhome
+    userhome="$(getent passwd "$user" 2>/dev/null | cut -d: -f6)"
+    [[ -n "$userhome" ]] && p="${userhome}${rest}"
+  fi
+
+  local result="" rest="$p" var
+  while [[ "$rest" =~ ^([^$]*)\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?(.*)$ ]]; do
+    var="${BASH_REMATCH[2]}"
+    result+="${BASH_REMATCH[1]}${!var-}"
+    rest="${BASH_REMATCH[3]}"
+  done
+  result+="$rest"
+
+  printf '%s' "$result"
+}
+
 # Ensure the project's root .gitignore ignores its .ai-containers/ working copy.
 # The per-project .ai-containers/ is a synced copy of the central repo and the
 # launcher embeds machine-specific absolute paths (EXTRA_MOUNTS), so it should
@@ -103,10 +130,11 @@ while true; do
     printf '  Path is required.\n' >&2
     continue
   fi
-  if project_path="$(cd "$project_path_input" 2>/dev/null && pwd)"; then
+  expanded_path="$(expand_path "$project_path_input")"
+  if project_path="$(cd "$expanded_path" 2>/dev/null && pwd)"; then
     break
   fi
-  printf '  ERROR: path does not exist: %s\n' "$project_path_input" >&2
+  printf '  ERROR: path does not exist: %s\n' "$expanded_path" >&2
 done
 
 # ── 2. Project name ────────────────────────────────────────────────────────────
@@ -201,7 +229,17 @@ fi
 
 # ── 8. Extra mounts ────────────────────────────────────────────────────────────
 
-prompt_with_default "Extra mounts (space-separated host paths, append :ro for read-only; empty to skip)" "" extra_mounts
+prompt_with_default "Extra mounts (space-separated host paths, append :ro for read-only; empty to skip)" "" extra_mounts_input
+
+# Expand ~ and $VARs in each mount now, so the launcher embeds resolved,
+# machine-absolute paths regardless of how EXTRA_MOUNTS is later consumed.
+extra_mounts=""
+for token in $extra_mounts_input; do
+  suffix="" path_part="$token"
+  [[ "$token" == *:ro ]] && { suffix=":ro"; path_part="${token%:ro}"; }
+  extra_mounts+="$(expand_path "$path_part")${suffix} "
+done
+extra_mounts="${extra_mounts% }"
 
 # ── Copy shared files ──────────────────────────────────────────────────────────
 
