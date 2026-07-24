@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Integration test for project-init.sh's generated <name>-container.sh launcher.
+# Integration test for project-init.sh's generated runme.sh launcher.
 # Drives project-init non-interactively (scripted stdin) inside an isolated copy
 # of the repo so its projects.conf/shared-file writes never touch the real tree,
 # then asserts the generated launcher carries the guarded GITHUB_TOKEN block.
@@ -28,7 +28,7 @@ PROJ="$TMP/proj/myproj"; mkdir -p "$PROJ"; git -C "$PROJ" init -q
 #   extra-mounts(empty). Launcher doesn't exist yet, so no overwrite prompt.
 printf '%s\n\n\n\n\n\n\n\n\n\n' "$PROJ" | bash "$SCRIPTS/project-init.sh" >/dev/null 2>&1
 
-LAUNCHER="$PROJ/.ai-containers/myproj-container.sh"
+LAUNCHER="$PROJ/.ai-containers/runme.sh"
 if [[ -f "$LAUNCHER" ]]; then
   pass "launcher generated"
 else
