@@ -62,6 +62,7 @@ file="$1"
 #     fi
 #     printf '%s\n' "$line" >> "$tmp"
 #   done < "$file"
+#   chmod --reference="$file" "$tmp"
 #   mv "$tmp" "$file"
 SKEL
 chmod +x "$hook"
