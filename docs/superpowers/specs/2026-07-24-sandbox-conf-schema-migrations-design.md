@@ -66,7 +66,7 @@ Five pieces, plus one independent safety guard:
 3. A **reconcile** step that replaces today's WARN-only branch in `sync-to-projects.sh`.
 4. `bump-sandbox-version.sh` — authoring helper that scaffolds a hook and bumps central's marker.
 5. `check-sandbox-version.sh --check` — a CI gate that blocks a silent semantic change.
-6. A duplicate-key guard inside `get_versions()` (independent of the above, but what makes it safe).
+6. A duplicate-key guard inside `check_config()` (independent of the above, but what makes it safe).
 
 ## 1. Schema-version marker
 
@@ -171,19 +171,23 @@ still blocking silent drift on the rare case that actually matters.
 
 ## 6. Duplicate-key defense (independent, but what makes the above safe)
 
-`get_versions()` in `sandbox-common.sh` — the actual runtime parser, reached via `check_config()` and
-directly by `build.sh` and `runme.sh` — gets a guard: if `grep "^${key}="` returns **more than one**
-match for a key, exit immediately with a clear error naming the file and the duplicated key, instead
-of silently taking `head -1`'s first match as it does today.
+`sandbox-common.sh` gets a guard: if `grep "^${key}="` returns **more than one** match for a key,
+exit immediately with a clear error naming the file and the duplicated key, instead of silently
+taking `head -1`'s first match as it does today.
 
 This is a general-purpose guard against any bad manual edit, not specific to the sync mechanism — and
 it is precisely what makes it safe to avoid the rejected conflict-marker approach: no code path is
 left that can silently misparse a duplicated or conflicted key.
 
-The guard belongs **inside `get_versions()` itself**, so it protects every current and future caller.
-`repo.sh` also sources `sandbox-common.sh` but was confirmed (by grep) to call none of
-`get_versions` / `is_enabled` / `any_enabled` — it only manages repo volumes, so it is not a live
-exposure today; putting the guard in the parser covers it regardless.
+> **Corrected during implementation:** this section originally placed the guard **inside
+> `get_versions()` itself**. It was moved to `check_config()` during Task 1's review instead, because
+> `check_config()` is always invoked as a plain statement — so an `exit` there actually terminates the
+> script — whereas `get_versions()` is always called by every real caller inside `$(...)` command
+> substitution, where an `exit` would just end the subshell and be silently swallowed. `repo.sh` also
+> sources `sandbox-common.sh` but was confirmed (by grep) to call none of `get_versions` /
+> `is_enabled` / `any_enabled` — it only manages repo volumes, so it is not a live exposure today;
+> putting the guard in `check_config()` covers it regardless, since `build.sh` and `runme.sh` both
+> call `check_config()` before anything else.
 
 ## 7. Documentation updates
 
@@ -234,14 +238,14 @@ port is mechanical rather than a redesign.
   `AGENTS.md` rule, not by tooling. Stated here explicitly as a known limitation, not glossed over.
 - **Pre-existing duplicate `key=value` lines predating this system.** The reconcile "does this key
   already exist" test is an **existence** check, not a uniqueness check, so it behaves correctly
-  regardless of duplicate count. The `get_versions()` guard (section 6) catches the duplicate at
+  regardless of duplicate count. The `check_config()` guard (section 6) catches the duplicate at
   build / run time; optionally `sync-to-projects.sh` can also warn about it at sync time (section 3).
 
 ## Changed files
 
 - **`sync-to-projects.sh`** — replace the WARN-only `sandbox.conf` branch (~line 122) with the
   reconcile step (sections 3, 1). Resolve `migrations/` relative to `script_dir`.
-- **`sandbox-common.sh`** — add the duplicate-key guard to `get_versions()` (section 6).
+- **`sandbox-common.sh`** — add the duplicate-key guard to `check_config()` (section 6).
 - **`sandbox.conf`** — add the `# schema-version: N` marker line (section 1).
 - **`migrations/`** (new directory) — `002-openjdk-single-key.sh`, `003-graalvm-split.sh`
   (the two real historical semantic changes), each idempotent and key-only (section 2).

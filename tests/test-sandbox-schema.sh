@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Unit tests for the sandbox.conf schema-version + key-aware migration machinery:
-#   - the duplicate-key guard in get_versions() (sandbox-common.sh)
+#   - the duplicate-key guard in check_config() (sandbox-common.sh)
 #   - the migrations/ hooks (Task 2)
 #   - reconcile_sandbox_conf() in sync-to-projects.sh (Task 3)
 #   - bump-sandbox-version.sh (Task 4)
