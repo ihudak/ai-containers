@@ -70,22 +70,25 @@ check_config() {
     printf 'ERROR: sandbox.conf not found in %s\n' "$script_dir" >&2
     exit 1
   fi
-}
 
-# Returns empty string if the key is absent or has no value. Exits with an error
-# if the key appears more than once — a duplicated key=line (from a bad manual
-# edit or an interrupted reconcile) would otherwise resolve silently to whichever
-# occurrence head -1 hits first. This guard makes every caller (build.sh, runme.sh,
-# repo.sh) safe.
-get_versions() {
-  local key="$1"
-  local matches
-  matches=$(grep -c "^${key}=" "$config_file" 2>/dev/null || true)
-  if (( matches > 1 )); then
-    printf 'ERROR: duplicate key "%s" (%d occurrences) in %s — remove the extra line(s).\n' \
-      "$key" "$matches" "$config_file" >&2
+  # One-time whole-file scan for a duplicated key=value line (e.g. from a bad
+  # manual edit or an interrupted reconcile). Deliberately done here rather than
+  # inside get_versions(): check_config is always invoked as a plain statement
+  # (never via $(...) command substitution), so `exit` here actually terminates
+  # the script — inside get_versions(), which every caller wraps in $(...),
+  # `exit` would only kill that subshell and be silently swallowed, which is
+  # exactly the bug this fix corrects.
+  local dups
+  dups="$(grep -oE '^[A-Za-z0-9_-]+=' "$config_file" | sed 's/=$//' | sort | uniq -d)"
+  if [[ -n "$dups" ]]; then
+    printf 'ERROR: duplicate key(s) in %s:\n%s\n' "$config_file" "$dups" >&2
     exit 1
   fi
+}
+
+# Returns empty string if the key is absent or has no value.
+get_versions() {
+  local key="$1"
   local raw
   raw=$(grep "^${key}=" "$config_file" 2>/dev/null | head -1 | cut -d= -f2-)
   # Strip inline comments (e.g. "21 # LTS version" → "21")

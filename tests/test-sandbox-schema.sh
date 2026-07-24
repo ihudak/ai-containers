@@ -10,9 +10,11 @@ fails=0
 pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails+1)); }
 
-# ── Duplicate-key guard ─────────────────────────────────────────────────────────
-# A file with a deliberately duplicated key must make get_versions() exit non-zero
-# with a message naming the file and the duplicated key.
+# ── Duplicate-key guard (in check_config, not get_versions) ────────────────────
+# check_config is always called as a plain statement (never via $(...)), so its
+# exit actually terminates the script; get_versions is always called inside
+# $(...) by every real caller, where exit would be silently swallowed by the
+# subshell — so the guard belongs in check_config, not get_versions.
 DUP_TMP="$(mktemp -d)"
 cat > "$DUP_TMP/sandbox.conf" <<'EOF'
 # schema-version: 3
@@ -25,24 +27,33 @@ dup_err="$DUP_TMP/err.txt"
   export SANDBOX_CONF="$DUP_TMP/sandbox.conf"
   # shellcheck source=/dev/null
   source "$REPO_DIR/sandbox-common.sh"
-  get_versions copilot
+  check_config
 ) >/dev/null 2>"$dup_err"
 dup_rc=$?
-if [[ $dup_rc -ne 0 ]] && grep -q 'duplicate key "copilot"' "$dup_err" \
-   && grep -q "$DUP_TMP/sandbox.conf" "$dup_err"; then
-  pass "duplicate key → get_versions exits non-zero with a clear message"
+if [[ $dup_rc -ne 0 ]] && grep -q 'duplicate key' "$dup_err" \
+   && grep -q 'copilot' "$dup_err" && grep -q "$DUP_TMP/sandbox.conf" "$dup_err"; then
+  pass "duplicate key → check_config exits non-zero with a clear message"
 else
-  fail "duplicate key → get_versions exits non-zero with a clear message (rc=$dup_rc)"
+  fail "duplicate key → check_config exits non-zero with a clear message (rc=$dup_rc)"
 fi
+rm -rf "$DUP_TMP"
 
-# A single (non-duplicated) key must still resolve normally.
+# A clean file (no duplicates) passes check_config, and get_versions (unguarded)
+# still resolves a single key normally.
+CLEAN_TMP="$(mktemp -d)"
+cat > "$CLEAN_TMP/sandbox.conf" <<'EOF'
+# schema-version: 3
+copilot=ON
+kubectl=OFF
+EOF
 (
-  export SANDBOX_CONF="$DUP_TMP/sandbox.conf"
+  export SANDBOX_CONF="$CLEAN_TMP/sandbox.conf"
   # shellcheck source=/dev/null
   source "$REPO_DIR/sandbox-common.sh"
-  [[ "$(get_versions kubectl)" == "OFF" ]]
-) && pass "single key still resolves" || fail "single key still resolves"
-rm -rf "$DUP_TMP"
+  check_config && [[ "$(get_versions kubectl)" == "OFF" ]]
+) && pass "clean file: check_config passes, get_versions still resolves" \
+  || fail "clean file: check_config passes, get_versions still resolves"
+rm -rf "$CLEAN_TMP"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
