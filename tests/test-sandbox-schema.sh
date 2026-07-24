@@ -319,8 +319,12 @@ cat > "$B_NOMARKER_TMP/sandbox.conf" <<'EOF'
 copilot=ON
 EOF
 # Run the script (should succeed and create migrations/001-<slug>.sh, since missing marker = version 0, next = 1)
-( cd "$B_NOMARKER_TMP" && bash ./bump-sandbox-version.sh no-marker-test ) >/dev/null 2>&1
-bug1_rc=$?
+# Wrapped in if to avoid errexit trap (set -e was activated by sourced sync-to-projects.sh)
+if ( cd "$B_NOMARKER_TMP" && bash ./bump-sandbox-version.sh no-marker-test ) >/dev/null 2>&1; then
+  bug1_rc=0
+else
+  bug1_rc=$?
+fi
 # Check: script succeeded (not crashed), hook created, marker appended
 if [[ $bug1_rc -eq 0 ]] \
    && [[ -f "$B_NOMARKER_TMP/migrations/001-no-marker-test.sh" ]] \
@@ -346,8 +350,12 @@ echo "placeholder"
 DUMMY
 chmod +x "$B_SUFFIX_TMP/migrations/004-foo-bar.sh"
 # Try to create a different, non-conflicting slug "bar" (should succeed, not be blocked by foo-bar)
-( cd "$B_SUFFIX_TMP" && bash ./bump-sandbox-version.sh bar ) >/dev/null 2>&1
-bug2_rc=$?
+# Wrapped in if to avoid errexit trap (set -e was activated by sourced sync-to-projects.sh)
+if ( cd "$B_SUFFIX_TMP" && bash ./bump-sandbox-version.sh bar ) >/dev/null 2>&1; then
+  bug2_rc=0
+else
+  bug2_rc=$?
+fi
 if [[ $bug2_rc -eq 0 ]] \
    && [[ -f "$B_SUFFIX_TMP/migrations/004-bar.sh" ]]; then
   pass "bump: suffix-collision fixed (foo-bar doesn't block bar)"
