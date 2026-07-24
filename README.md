@@ -884,7 +884,15 @@ Every project keeps its **own** hand-edited `sandbox.conf` (its tool selection i
 
 **Authoring a semantic change:** run `./bump-sandbox-version.sh <slug>`. It scaffolds the next `migrations/NNN-<slug>.sh` (an idempotent, key-only skeleton) and bumps the marker in one step. Implement the translation in the hook (check a precondition and `exit 0` if already applied; touch only `key=value` lines, never comments), then commit both files.
 
-**CI gate:** `./check-sandbox-version.sh --check` compares the current key set against the previous commit's and **fails** if a key was removed or renamed without both a marker bump and a matching `migrations/` hook. Ordinary additions pass silently. Wire it into CI to block a silent semantic change. `check_config()` also guards against a duplicate `key=` line from a bad manual edit or interrupted reconcile, exiting immediately with a clear error.
+**CI gate:** `./check-sandbox-version.sh --check` compares the working tree's key set against a base ref's (`BASE_REF`, default `HEAD`) and **fails** if a key was removed or renamed without both a marker bump and a matching `migrations/` hook. Ordinary additions pass silently.
+
+> **In CI, `BASE_REF` must be set explicitly to a ref that predates the change under review.** The default `HEAD` only works as a *local, uncommitted* pre-commit check — it compares the working tree against the last commit, so it catches an in-progress edit before you `git commit` it. Once the change is committed (as it always is by the time CI checks out and runs a PR), the working tree *is* `HEAD`, the diff is empty, and the gate silently reports "OK" even for a genuinely uncovered key removal. Point it instead at the merge-base with the target branch, or the PR's base SHA:
+>
+> ```bash
+> BASE_REF="$(git merge-base HEAD origin/main)" ./check-sandbox-version.sh --check
+> ```
+
+`check_config()` also guards against a duplicate `key=` line from a bad manual edit or interrupted reconcile, exiting immediately with a clear error.
 
 > **Never redefine an existing key's meaning in place.** Reconcile assumes a key's semantics never change silently underneath a project that already set it. Always introduce a *new* key name for a semantic change — that is what the marker + hook + CI gate protect. A same-key meaning change is not automatically detectable by the tooling.
 
