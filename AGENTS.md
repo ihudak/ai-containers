@@ -28,6 +28,8 @@ Version-list components (`node`, `python`, `ruby`, `rails`, `rust`, `go`) accept
 - Any tool described by a `tools.d/*.conf` descriptor (currently `dtctl`, `dtmgd`) accepts `ON` (auto-detect latest from GitHub), `x.y.z` (pinned), or `OFF` — this grammar is independent of the tool, so a future tool added the same way follows it automatically.
 - `node` always installs the latest LTS (required by the AI agents); `node=20,22` adds those versions alongside it. `nvm-version` pins the nvm release used to install Node (e.g., `nvm-version=v0.40.5`); leave empty for the Dockerfile default.
 
+**Schema changes to `sandbox.conf`.** Adding a new on/off or version-list key needs nothing extra: no marker bump, no hook. `sync-to-projects.sh` reconciles each project's copy on every sync — it appends new upstream keys and never touches keys a project already set. Renaming a key, splitting it into multiple keys, removing it, or changing what its value means while keeping the same key name requires a `migrations/NNN-*.sh` hook — author it with `./bump-sandbox-version.sh <slug>`, and see the README "sandbox.conf schema versioning" section. Never redefine an existing key's semantics in place; always introduce a new key name for a semantic change. The reconcile mechanism assumes an existing key's meaning never silently changes underneath a project that has already set it — violating this discipline is not automatically detectable by tooling. `check-sandbox-version.sh --check` is the CI gate that blocks a removal/rename lacking a matching hook and marker bump.
+
 ## Commands
 
 **Build the image:**

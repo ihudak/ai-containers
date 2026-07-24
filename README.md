@@ -872,7 +872,21 @@ After pulling changes to this repo, run this to push the updated shared files to
 
 **What is never touched:** `sandbox.conf`, `sandbox.env`, `allowlist-*.d/custom.txt`, and the project's launch script. `sandbox.env` is **backfilled** (created from the launcher's `IMAGE_NAME`) if a project predates it, but an existing one is never overwritten.
 
-**sandbox.conf drift warning:** If a project's `sandbox.conf` differs from the one in this repo (e.g. a new component was added), the script prints a warning and the `diff` command to review the changes. You decide whether to adopt them.
+**sandbox.conf reconcile:** Instead of a bare drift warning, `sync-to-projects.sh` now reconciles each project's `sandbox.conf` against this repo's on every sync — pending `migrations/` hooks run, any new upstream keys are appended under a dated banner, and the `# schema-version:` marker is ensured. A key the project already set is never touched, so per-project tool selections are preserved. See [sandbox.conf schema versioning](#sandboxconf-schema-versioning).
+
+### sandbox.conf schema versioning
+
+Every project keeps its **own** hand-edited `sandbox.conf` (its tool selection is exactly what must not be clobbered), so `sync-to-projects.sh` cannot simply overwrite it the way it does the other shared files. Instead it **reconciles**:
+
+- **A `# schema-version: N` marker** lives inside `sandbox.conf` (a comment line, invisible to the parser). Central's copy and every project's copy carry it; a file missing the line is treated as version `0`.
+- **The vast majority of changes are additive** — one new `newtool=OFF` line. These need **nothing extra**: no marker bump, no hook. On the next sync, reconcile appends the new key to every project (with central's default) under a `# New options synced from upstream (<date>)` banner, and never touches keys a project already has.
+- **A genuinely semantic change** — renaming a key, splitting one key into several, removing a key, or changing what an existing key's value *means* — is rare (twice in this file's entire history). Each one gets a small, idempotent, key-only hook under **`migrations/NNN-*.sh`** (named by the version it migrates *to*), plus a marker bump. Reconcile runs every hook whose `NNN` is above a project's recorded version, in order, before the additive step.
+
+**Authoring a semantic change:** run `./bump-sandbox-version.sh <slug>`. It scaffolds the next `migrations/NNN-<slug>.sh` (an idempotent, key-only skeleton) and bumps the marker in one step. Implement the translation in the hook (check a precondition and `exit 0` if already applied; touch only `key=value` lines, never comments), then commit both files.
+
+**CI gate:** `./check-sandbox-version.sh --check` compares the current key set against the previous commit's and **fails** if a key was removed or renamed without both a marker bump and a matching `migrations/` hook. Ordinary additions pass silently. Wire it into CI to block a silent semantic change.
+
+> **Never redefine an existing key's meaning in place.** Reconcile assumes a key's semantics never change silently underneath a project that already set it. Always introduce a *new* key name for a semantic change — that is what the marker + hook + CI gate protect. A same-key meaning change is not automatically detectable by the tooling.
 
 ### projects.conf
 
