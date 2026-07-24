@@ -13,9 +13,11 @@
 #   sandbox.conf, sandbox.env, allowlist-*.d/custom.txt, <project>-container.sh, projects.conf
 #   (sandbox.env is created/backfilled if missing, but never overwritten.)
 #
-# sandbox.conf diff warning:
-#   If sandbox.conf in a project differs from the one in this repo, a warning is
-#   printed so you can review and merge new options manually.
+# sandbox.conf reconcile:
+#   A project's sandbox.conf is reconciled against this repo's on every sync:
+#   pending migrations/ hooks run, any new upstream keys are appended (a key the
+#   project already set is never touched), and the '# schema-version:' marker is
+#   ensured. See README "sandbox.conf schema versioning".
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -56,6 +58,74 @@ backfill_sandbox_env() {
 IMAGE_NAME=${img}
 EOF
   printf '  Wrote sandbox.env (IMAGE_NAME=%s).\n' "$img"
+}
+
+# Echo the schema-version integer recorded in a sandbox.conf ($1); 0 if absent.
+conf_schema_version() {
+  local f="$1" v
+  v="$(grep -E '^# schema-version:[[:space:]]*[0-9]+' "$f" 2>/dev/null | head -1 \
+        | sed -E 's/^# schema-version:[[:space:]]*([0-9]+).*/\1/')"
+  printf '%s' "${v:-0}"
+}
+
+# Ensure FILE ($1) carries '# schema-version: N' ($2): update in place if the
+# marker exists, else append it. Unconditional — called every reconcile.
+conf_set_version() {
+  local f="$1" n="$2"
+  if grep -qE '^# schema-version:' "$f" 2>/dev/null; then
+    local tmp; tmp="$(mktemp)"
+    sed -E "s/^# schema-version:.*/# schema-version: ${n}/" "$f" > "$tmp"
+    mv "$tmp" "$f"
+  else
+    printf '# schema-version: %s\n' "$n" >> "$f"
+  fi
+}
+
+# Reconcile a project's sandbox.conf ($2) against central ($1) using the hooks in
+# MIGRATIONS_DIR ($3):
+#   1. run every NNN-*.sh whose NNN > the project's recorded version, ascending;
+#   2. additively append any central key the project lacks, under one dated banner
+#      (a key the project already has is NEVER touched, whatever its value);
+#   3. unconditionally ensure the project's marker matches central's version.
+reconcile_sandbox_conf() {
+  local central="$1" project="$2" migrations_dir="$3"
+  local central_version project_version
+  central_version="$(conf_schema_version "$central")"
+  project_version="$(conf_schema_version "$project")"
+
+  # 1. Pending migration hooks, ascending numeric order.
+  if [[ -d "$migrations_dir" ]]; then
+    local hook nnn
+    for hook in "$migrations_dir"/[0-9][0-9][0-9]-*.sh; do
+      [[ -e "$hook" ]] || continue          # no hooks → glob stays literal
+      nnn="$(basename "$hook")"; nnn="${nnn%%-*}"
+      # 10#$nnn forces base-10 (leading zeros must not be read as octal).
+      if (( 10#$nnn > project_version )); then
+        bash "$hook" "$project"
+      fi
+    done
+  fi
+
+  # 2. Additive backfill of central keys the project lacks.
+  local added=() key
+  while IFS= read -r key; do
+    [[ -z "$key" ]] && continue
+    grep -qE "^${key}=" "$project" 2>/dev/null || added+=("$key")
+  done < <(grep -E '^[A-Za-z0-9_-]+=' "$central" | sed -E 's/^([A-Za-z0-9_-]+)=.*/\1/')
+
+  if (( ${#added[@]} > 0 )); then
+    {
+      printf '\n# New options synced from upstream (%s)\n' "$(date +%Y-%m-%d)"
+      for key in "${added[@]}"; do
+        printf '%s=%s\n' "$key" "$(grep -E "^${key}=" "$central" | head -1 | cut -d= -f2-)"
+      done
+    } >> "$project"
+    printf '  Reconciled sandbox.conf: appended %d new key(s): %s\n' \
+      "${#added[@]}" "${added[*]}"
+  fi
+
+  # 3. Ensure the marker, unconditionally (backfills pre-marker/v0 files).
+  conf_set_version "$project" "$central_version"
 }
 
 # Ensure the project's root .gitignore ignores its .ai-containers/ working copy.
@@ -119,13 +189,10 @@ sync_project() {
   # exist in a child working copy. Children are leaves: runtime files only.
   [[ -f "${dest}/README.md" ]] && rm -f "${dest}/README.md"
 
-  # sandbox.conf diff warning — never overwrite, just inform
+  # sandbox.conf reconcile — migrate + additively backfill, never clobber a key
+  # the project already set. Marker is ensured unconditionally (see spec §1, §3).
   if [[ -f "${dest}/sandbox.conf" ]]; then
-    if ! diff -q "${script_dir}/sandbox.conf" "${dest}/sandbox.conf" > /dev/null 2>&1; then
-      printf '  WARN  sandbox.conf differs from upstream. New options may be available.\n'
-      printf '        Review with: diff %s/sandbox.conf %s/sandbox.conf\n' \
-        "$script_dir" "$dest"
-    fi
+    reconcile_sandbox_conf "${script_dir}/sandbox.conf" "${dest}/sandbox.conf" "${script_dir}/migrations"
   fi
 
   # sandbox.env — never overwritten; backfilled from the launcher if missing.
@@ -136,6 +203,9 @@ sync_project() {
 
   printf '  OK\n'
 }
+
+# Allow tests to source this file for its reconcile helpers without running a sync.
+[[ "${BASH_SOURCE[0]}" != "${0}" ]] && return 0
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 

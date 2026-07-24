@@ -157,5 +157,89 @@ mode_after="$(stat -c %a "$H3_MODE_TMP/sandbox.conf" 2>/dev/null || stat -f %Lp 
   || fail "003 graalvm hook: preserves file mode (644) — was $mode_before, now $mode_after"
 rm -rf "$H3_TMP" "$H3_MODE_TMP"
 
+# ── reconcile_sandbox_conf ──────────────────────────────────────────────────────
+# Source the (now guarded) sync-to-projects.sh for its helpers, pointing at a
+# fixture central + migrations dir so the real repo is never touched.
+# shellcheck source=/dev/null
+source "$REPO_DIR/sync-to-projects.sh"
+
+R_TMP="$(mktemp -d)"
+mkdir -p "$R_TMP/migrations"
+# Fixture central: current schema, with a brand-new additive key (bun) and the
+# post-migration graalvm-ce / graalvm-oracle keys.
+cat > "$R_TMP/central.conf" <<'EOF'
+# schema-version: 3
+copilot=ON
+graalvm-ce=
+graalvm-oracle=
+bun=ON
+EOF
+# Fixture migration 003 that the reconcile must run against an old project file.
+cat > "$R_TMP/migrations/003-graalvm-split.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+file="$1"
+grep -qE '^graalvm=' "$file" 2>/dev/null || exit 0
+old="$(grep -E '^graalvm=' "$file" | head -1 | cut -d= -f2-)"
+tmp="$(mktemp)"
+while IFS= read -r line || [[ -n "$line" ]]; do
+  if [[ "$line" =~ ^graalvm= ]]; then
+    printf 'graalvm-ce=%s\n' "$old" >> "$tmp"
+    printf 'graalvm-oracle=\n' >> "$tmp"
+    continue
+  fi
+  printf '%s\n' "$line" >> "$tmp"
+done < "$file"
+mv "$tmp" "$file"
+EOF
+
+# Project fixture: schema-version 2 (below 3, so 003 must run), a bare graalvm=
+# key (to be migrated), a customized copilot value (must be PRESERVED), and no
+# bun key (must be appended additively).
+cat > "$R_TMP/project.conf" <<'EOF'
+# schema-version: 2
+copilot=OFF
+graalvm=22.3.0
+EOF
+
+reconcile_sandbox_conf "$R_TMP/central.conf" "$R_TMP/project.conf" "$R_TMP/migrations" >/dev/null
+
+# Hook ran: graalvm split; project's own copilot value preserved; new bun added;
+# marker advanced to 3.
+if grep -qx 'graalvm-ce=22.3.0' "$R_TMP/project.conf" \
+   && grep -qx 'graalvm-oracle=' "$R_TMP/project.conf" \
+   && ! grep -qE '^graalvm=' "$R_TMP/project.conf" \
+   && grep -qx 'copilot=OFF' "$R_TMP/project.conf" \
+   && grep -qx 'bun=ON' "$R_TMP/project.conf" \
+   && [[ "$(conf_schema_version "$R_TMP/project.conf")" == "3" ]]; then
+  pass "reconcile: hook runs, project keys preserved, new key added, marker → 3"
+else
+  fail "reconcile: hook runs, project keys preserved, new key added, marker → 3"
+fi
+
+# Idempotency: a second reconcile is a no-op — no duplicate keys, marker unchanged.
+snapshot="$(cat "$R_TMP/project.conf")"
+reconcile_sandbox_conf "$R_TMP/central.conf" "$R_TMP/project.conf" "$R_TMP/migrations" >/dev/null
+dup_bun="$(grep -c '^bun=' "$R_TMP/project.conf")"
+if [[ "$snapshot" == "$(cat "$R_TMP/project.conf")" ]] && [[ "$dup_bun" -eq 1 ]]; then
+  pass "reconcile: second run is a no-op (no dup keys, marker unchanged)"
+else
+  fail "reconcile: second run is a no-op (no dup keys, marker unchanged)"
+fi
+
+# Marker backfill: a project file with NO marker is treated as version 0 and
+# gets the marker on reconcile even when it needs no key additions.
+cat > "$R_TMP/nomarker.conf" <<'EOF'
+copilot=ON
+graalvm-ce=
+graalvm-oracle=
+bun=ON
+EOF
+reconcile_sandbox_conf "$R_TMP/central.conf" "$R_TMP/nomarker.conf" "$R_TMP/migrations" >/dev/null
+[[ "$(conf_schema_version "$R_TMP/nomarker.conf")" == "3" ]] \
+  && pass "reconcile: pre-marker file (v0) is backfilled to the current marker" \
+  || fail "reconcile: pre-marker file (v0) is backfilled to the current marker"
+rm -rf "$R_TMP"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
