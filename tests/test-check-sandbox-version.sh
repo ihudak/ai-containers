@@ -54,5 +54,18 @@ printf '#!/usr/bin/env bash\nexit 0\n' > "$d/migrations/004-drop-kubectl.sh"
 [[ $? -eq 0 ]] && pass "covered key removal passes" || fail "covered key removal passes"
 rm -rf "$d"
 
+# Case 4: key removed WITH a marker bump but NO matching hook → fails, exit 1,
+# names both the missing key and the expected hook filename pattern.
+d="$(make_repo)"
+grep -v '^kubectl=' "$d/sandbox.conf" > "$d/tmp" && mv "$d/tmp" "$d/sandbox.conf"
+sed -E 's/^# schema-version:.*/# schema-version: 4/' "$d/sandbox.conf" > "$d/tmp" && mv "$d/tmp" "$d/sandbox.conf"
+err="$(cd "$d" && bash ./check-sandbox-version.sh --check 2>&1 >/dev/null)"; rc=$?
+if [[ $rc -ne 0 ]] && printf '%s' "$err" | grep -q 'kubectl' && printf '%s' "$err" | grep -q '004-\*\.sh'; then
+  pass "bump without matching hook fails and names key + expected hook pattern"
+else
+  fail "bump without matching hook fails and names key + expected hook pattern (rc=$rc)"
+fi
+rm -rf "$d"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
