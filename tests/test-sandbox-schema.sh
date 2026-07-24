@@ -290,10 +290,12 @@ bash -n "$B_TMP/migrations/004-graalvm-retire.sh" \
   && pass "bump: scaffolded hook passes bash -n" \
   || fail "bump: scaffolded hook passes bash -n"
 # Re-running with the same slug refuses to clobber the existing hook.
-( cd "$B_TMP" && bash ./bump-sandbox-version.sh graalvm-retire ) >/dev/null 2>&1
-[[ $? -ne 0 ]] \
-  && pass "bump: refuses to overwrite an existing hook" \
-  || fail "bump: refuses to overwrite an existing hook"
+# Wrapped in if to avoid errexit trap (set -e was activated by sourced sync-to-projects.sh)
+if ( cd "$B_TMP" && bash ./bump-sandbox-version.sh graalvm-retire ) >/dev/null 2>&1; then
+  fail "bump: refuses to overwrite an existing hook"
+else
+  pass "bump: refuses to overwrite an existing hook"
+fi
 # Regression test: file mode should be preserved across script invocation.
 B_MODE_TMP="$(mktemp -d)"
 cp "$REPO_DIR/bump-sandbox-version.sh" "$B_MODE_TMP/"
