@@ -239,6 +239,33 @@ reconcile_sandbox_conf "$R_TMP/central.conf" "$R_TMP/nomarker.conf" "$R_TMP/migr
 [[ "$(conf_schema_version "$R_TMP/nomarker.conf")" == "3" ]] \
   && pass "reconcile: pre-marker file (v0) is backfilled to the current marker" \
   || fail "reconcile: pre-marker file (v0) is backfilled to the current marker"
+
+# Regression test: conf_set_version's update-in-place branch (mktemp + mv) must
+# not silently drop the file's mode from 644 to mktemp's default 600.
+MODE_TMP="$(mktemp -d)"
+cat > "$MODE_TMP/project.conf" <<'EOF'
+# schema-version: 2
+copilot=ON
+EOF
+chmod 644 "$MODE_TMP/project.conf"  # Ensure standard config permissions
+mode_before_csv="$(stat -c %a "$MODE_TMP/project.conf" 2>/dev/null || stat -f %Lp "$MODE_TMP/project.conf")"
+conf_set_version "$MODE_TMP/project.conf" 3
+mode_after_csv="$(stat -c %a "$MODE_TMP/project.conf" 2>/dev/null || stat -f %Lp "$MODE_TMP/project.conf")"
+[[ "$mode_before_csv" == "$mode_after_csv" ]] \
+  && pass "conf_set_version: preserves file mode (644) on update-in-place" \
+  || fail "conf_set_version: preserves file mode (644) on update-in-place — was $mode_before_csv, now $mode_after_csv"
+rm -rf "$MODE_TMP"
+
+# Same regression, exercised through the full reconcile path (update-in-place
+# branch, since project.conf already has a marker from the earlier assertions).
+chmod 644 "$R_TMP/project.conf"  # Ensure standard config permissions regardless of umask
+mode_before_reconcile="$(stat -c %a "$R_TMP/project.conf" 2>/dev/null || stat -f %Lp "$R_TMP/project.conf")"
+reconcile_sandbox_conf "$R_TMP/central.conf" "$R_TMP/project.conf" "$R_TMP/migrations" >/dev/null
+mode_after_reconcile="$(stat -c %a "$R_TMP/project.conf" 2>/dev/null || stat -f %Lp "$R_TMP/project.conf")"
+[[ "$mode_before_reconcile" == "$mode_after_reconcile" ]] \
+  && pass "reconcile_sandbox_conf: preserves file mode across marker update-in-place" \
+  || fail "reconcile_sandbox_conf: preserves file mode across marker update-in-place — was $mode_before_reconcile, now $mode_after_reconcile"
+
 rm -rf "$R_TMP"
 
 printf '\n%d failure(s)\n' "$fails"
