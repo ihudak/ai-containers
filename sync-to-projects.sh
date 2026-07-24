@@ -180,8 +180,10 @@ migrate_launcher_naming() {
   fi
 
   # 3. Repoint the launcher's engine call to ./sandbox.sh (idempotent).
+  #    Portable in-place edit: GNU sed needs no suffix, BSD/macOS sed requires
+  #    one, so pass an explicit `.bak` suffix (works on both) and remove it.
   if [[ -f "${dest}/runme.sh" ]]; then
-    sed -i 's#\./runme\.sh#./sandbox.sh#g' "${dest}/runme.sh"
+    sed -i.bak 's#\./runme\.sh#./sandbox.sh#g' "${dest}/runme.sh" && rm -f "${dest}/runme.sh.bak"
   fi
 }
 
