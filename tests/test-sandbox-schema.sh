@@ -268,5 +268,47 @@ mode_after_reconcile="$(stat -c %a "$R_TMP/project.conf" 2>/dev/null || stat -f 
 
 rm -rf "$R_TMP"
 
+# ── bump-sandbox-version.sh ─────────────────────────────────────────────────────
+# Run the real script inside a temp dir (script_dir resolves to wherever the
+# script lives), so the repo's own sandbox.conf/migrations are never touched.
+B_TMP="$(mktemp -d)"
+cp "$REPO_DIR/bump-sandbox-version.sh" "$B_TMP/"
+cat > "$B_TMP/sandbox.conf" <<'EOF'
+# schema-version: 3
+copilot=ON
+EOF
+( cd "$B_TMP" && bash ./bump-sandbox-version.sh graalvm-retire ) >/dev/null 2>&1
+if [[ -f "$B_TMP/migrations/004-graalvm-retire.sh" ]] \
+   && grep -qx '# schema-version: 4' "$B_TMP/sandbox.conf" \
+   && grep -q 'exit 0' "$B_TMP/migrations/004-graalvm-retire.sh"; then
+  pass "bump: scaffolds migrations/004-<slug>.sh and bumps marker to 4"
+else
+  fail "bump: scaffolds migrations/004-<slug>.sh and bumps marker to 4"
+fi
+# The scaffolded hook is valid bash.
+bash -n "$B_TMP/migrations/004-graalvm-retire.sh" \
+  && pass "bump: scaffolded hook passes bash -n" \
+  || fail "bump: scaffolded hook passes bash -n"
+# Re-running with the same slug refuses to clobber the existing hook.
+( cd "$B_TMP" && bash ./bump-sandbox-version.sh graalvm-retire ) >/dev/null 2>&1
+[[ $? -ne 0 ]] \
+  && pass "bump: refuses to overwrite an existing hook" \
+  || fail "bump: refuses to overwrite an existing hook"
+# Regression test: file mode should be preserved across script invocation.
+B_MODE_TMP="$(mktemp -d)"
+cp "$REPO_DIR/bump-sandbox-version.sh" "$B_MODE_TMP/"
+cat > "$B_MODE_TMP/sandbox.conf" <<'EOF'
+# schema-version: 3
+copilot=ON
+EOF
+chmod 644 "$B_MODE_TMP/sandbox.conf"  # Ensure standard config permissions
+mode_before="$(stat -c %a "$B_MODE_TMP/sandbox.conf" 2>/dev/null || stat -f %Lp "$B_MODE_TMP/sandbox.conf")"
+( cd "$B_MODE_TMP" && bash ./bump-sandbox-version.sh mode-test ) >/dev/null 2>&1
+mode_after="$(stat -c %a "$B_MODE_TMP/sandbox.conf" 2>/dev/null || stat -f %Lp "$B_MODE_TMP/sandbox.conf")"
+[[ "$mode_before" == "$mode_after" ]] \
+  && pass "bump: preserves sandbox.conf file mode (644)" \
+  || fail "bump: preserves sandbox.conf file mode (644) — was $mode_before, now $mode_after"
+rm -rf "$B_TMP" "$B_MODE_TMP"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
