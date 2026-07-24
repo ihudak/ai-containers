@@ -310,5 +310,49 @@ mode_after="$(stat -c %a "$B_MODE_TMP/sandbox.conf" 2>/dev/null || stat -f %Lp "
   || fail "bump: preserves sandbox.conf file mode (644) — was $mode_before, now $mode_after"
 rm -rf "$B_TMP" "$B_MODE_TMP"
 
+# Regression test: Bug 1 — missing-marker path should not crash (grep with no match under set -euo pipefail)
+B_NOMARKER_TMP="$(mktemp -d)"
+cp "$REPO_DIR/bump-sandbox-version.sh" "$B_NOMARKER_TMP/"
+cat > "$B_NOMARKER_TMP/sandbox.conf" <<'EOF'
+copilot=ON
+EOF
+# Run the script (should succeed and create migrations/001-<slug>.sh, since missing marker = version 0, next = 1)
+( cd "$B_NOMARKER_TMP" && bash ./bump-sandbox-version.sh no-marker-test ) >/dev/null 2>&1
+bug1_rc=$?
+# Check: script succeeded (not crashed), hook created, marker appended
+if [[ $bug1_rc -eq 0 ]] \
+   && [[ -f "$B_NOMARKER_TMP/migrations/001-no-marker-test.sh" ]] \
+   && grep -qx '# schema-version: 1' "$B_NOMARKER_TMP/sandbox.conf"; then
+  pass "bump: missing-marker doesn't crash, creates 001-*, appends marker"
+else
+  fail "bump: missing-marker doesn't crash, creates 001-*, appends marker (rc=$bug1_rc)"
+fi
+rm -rf "$B_NOMARKER_TMP"
+
+# Regression test: Bug 2 — suffix-collision false positive (foo-bar shouldn't block bar request)
+B_SUFFIX_TMP="$(mktemp -d)"
+cp "$REPO_DIR/bump-sandbox-version.sh" "$B_SUFFIX_TMP/"
+cat > "$B_SUFFIX_TMP/sandbox.conf" <<'EOF'
+# schema-version: 3
+copilot=ON
+EOF
+mkdir -p "$B_SUFFIX_TMP/migrations"
+# Create an existing hook with slug "foo-bar"
+cat > "$B_SUFFIX_TMP/migrations/004-foo-bar.sh" <<'DUMMY'
+#!/bin/bash
+echo "placeholder"
+DUMMY
+chmod +x "$B_SUFFIX_TMP/migrations/004-foo-bar.sh"
+# Try to create a different, non-conflicting slug "bar" (should succeed, not be blocked by foo-bar)
+( cd "$B_SUFFIX_TMP" && bash ./bump-sandbox-version.sh bar ) >/dev/null 2>&1
+bug2_rc=$?
+if [[ $bug2_rc -eq 0 ]] \
+   && [[ -f "$B_SUFFIX_TMP/migrations/004-bar.sh" ]]; then
+  pass "bump: suffix-collision fixed (foo-bar doesn't block bar)"
+else
+  fail "bump: suffix-collision fixed (foo-bar doesn't block bar) (rc=$bug2_rc)"
+fi
+rm -rf "$B_SUFFIX_TMP"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

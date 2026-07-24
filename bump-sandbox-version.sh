@@ -26,7 +26,7 @@ fi
 [[ -f "$conf" ]] || { echo "ERROR: sandbox.conf not found at $conf" >&2; exit 1; }
 
 cur="$(grep -E '^# schema-version:[[:space:]]*[0-9]+' "$conf" 2>/dev/null | head -1 \
-        | sed -E 's/^# schema-version:[[:space:]]*([0-9]+).*/\1/')"
+        | sed -E 's/^# schema-version:[[:space:]]*([0-9]+).*/\1/' || true)"
 cur="${cur:-0}"
 next=$(( cur + 1 ))
 printf -v nnn '%03d' "$next"
@@ -34,7 +34,8 @@ printf -v nnn '%03d' "$next"
 mkdir -p "$migrations_dir"
 hook="${migrations_dir}/${nnn}-${slug}.sh"
 # Refuse to create a duplicate migration with the same slug, even at a different version.
-if [[ -e "$hook" ]] || [[ -n "$(find "$migrations_dir" -maxdepth 1 -name "*-${slug}.sh" 2>/dev/null)" ]]; then
+# Use [0-9][0-9][0-9]- to anchor the match, preventing false positives like foo-bar vs bar.
+if [[ -e "$hook" ]] || [[ -n "$(find "$migrations_dir" -maxdepth 1 -name "[0-9][0-9][0-9]-${slug}.sh" 2>/dev/null)" ]]; then
   echo "ERROR: a migration with slug '$slug' already exists — pick a different slug." >&2
   exit 1
 fi
