@@ -81,5 +81,55 @@ else
 fi
 rm -rf "$EMPTY_TMP"
 
+# ── Migration hooks ─────────────────────────────────────────────────────────────
+# 002: legacy openjdk-<N>=ON|OFF booleans collapse into one openjdk=<csv> key
+# holding only the versions that were ON, and all legacy keys are removed.
+H2_TMP="$(mktemp -d)"
+cat > "$H2_TMP/sandbox.conf" <<'EOF'
+# ── Java / JVM ──
+openjdk-21=ON
+openjdk-25=OFF
+openjdk-17=ON
+# trailing comment must survive untouched
+node=
+EOF
+bash "$REPO_DIR/migrations/002-openjdk-single-key.sh" "$H2_TMP/sandbox.conf"
+if grep -qx 'openjdk=21,17' "$H2_TMP/sandbox.conf" \
+   && ! grep -qE '^openjdk-[0-9]+=' "$H2_TMP/sandbox.conf" \
+   && grep -qx '# trailing comment must survive untouched' "$H2_TMP/sandbox.conf"; then
+  pass "002 openjdk hook: collapse ON versions, drop legacy keys, keep comments"
+else
+  fail "002 openjdk hook: collapse ON versions, drop legacy keys, keep comments"
+fi
+# Idempotent: a second run (no legacy keys left) is a no-op.
+before2="$(cat "$H2_TMP/sandbox.conf")"
+bash "$REPO_DIR/migrations/002-openjdk-single-key.sh" "$H2_TMP/sandbox.conf"
+[[ "$before2" == "$(cat "$H2_TMP/sandbox.conf")" ]] \
+  && pass "002 openjdk hook: idempotent no-op on re-run" \
+  || fail "002 openjdk hook: idempotent no-op on re-run"
+rm -rf "$H2_TMP"
+
+# 003: bare graalvm=<val> splits into graalvm-ce=<val> + graalvm-oracle= (empty).
+H3_TMP="$(mktemp -d)"
+cat > "$H3_TMP/sandbox.conf" <<'EOF'
+graalvm=22.3.0
+kotlin=
+EOF
+bash "$REPO_DIR/migrations/003-graalvm-split.sh" "$H3_TMP/sandbox.conf"
+if grep -qx 'graalvm-ce=22.3.0' "$H3_TMP/sandbox.conf" \
+   && grep -qx 'graalvm-oracle=' "$H3_TMP/sandbox.conf" \
+   && ! grep -qE '^graalvm=' "$H3_TMP/sandbox.conf"; then
+  pass "003 graalvm hook: split into ce (value) + oracle (empty)"
+else
+  fail "003 graalvm hook: split into ce (value) + oracle (empty)"
+fi
+# Idempotent: a second run (no bare graalvm= left) is a no-op.
+before3="$(cat "$H3_TMP/sandbox.conf")"
+bash "$REPO_DIR/migrations/003-graalvm-split.sh" "$H3_TMP/sandbox.conf"
+[[ "$before3" == "$(cat "$H3_TMP/sandbox.conf")" ]] \
+  && pass "003 graalvm hook: idempotent no-op on re-run" \
+  || fail "003 graalvm hook: idempotent no-op on re-run"
+rm -rf "$H3_TMP"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
