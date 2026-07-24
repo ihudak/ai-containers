@@ -55,5 +55,31 @@ EOF
   || fail "clean file: check_config passes, get_versions still resolves"
 rm -rf "$CLEAN_TMP"
 
+# Regression test for zero-match edge case: a file with only comments/blanks.
+# This test runs under set -euo pipefail (like real callers build.sh/runme.sh)
+# to ensure the guard's pipeline doesn't die silently when grep finds zero matches.
+EMPTY_TMP="$(mktemp -d)"
+cat > "$EMPTY_TMP/sandbox.conf" <<'EOF'
+# Just a comment
+# No actual key=value lines
+
+EOF
+empty_err="$EMPTY_TMP/err.txt"
+# This subshell must run under set -euo pipefail to match production behavior
+(
+  set -euo pipefail
+  export SANDBOX_CONF="$EMPTY_TMP/sandbox.conf"
+  # shellcheck source=/dev/null
+  source "$REPO_DIR/sandbox-common.sh"
+  check_config
+) >/dev/null 2>"$empty_err"
+empty_rc=$?
+if [[ $empty_rc -eq 0 ]]; then
+  pass "zero-match edge case (only comments): check_config exits 0, no silent death"
+else
+  fail "zero-match edge case (only comments): check_config exits 0, no silent death (rc=$empty_rc, stderr: $(cat "$empty_err"))"
+fi
+rm -rf "$EMPTY_TMP"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

@@ -78,8 +78,10 @@ check_config() {
   # the script — inside get_versions(), which every caller wraps in $(...),
   # `exit` would only kill that subshell and be silently swallowed, which is
   # exactly the bug this fix corrects.
+  # Note: grep -oE exits 1 on zero matches; || true prevents that from being
+  # swallowed by set -e when the file contains only comments/blanks.
   local dups
-  dups="$(grep -oE '^[A-Za-z0-9_-]+=' "$config_file" | sed 's/=$//' | sort | uniq -d)"
+  dups="$(grep -oE '^[A-Za-z0-9_-]+=' "$config_file" 2>/dev/null | sed 's/=$//' | sort | uniq -d || true)"
   if [[ -n "$dups" ]]; then
     printf 'ERROR: duplicate key(s) in %s:\n%s\n' "$config_file" "$dups" >&2
     exit 1
