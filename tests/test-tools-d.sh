@@ -141,7 +141,7 @@ if [[ "\$1" == "run" ]]; then shift; printf '%s\n' "\$@" > "$CAP"; exit 0; fi
 exit 1
 DOCKER
 chmod +x "$RTMP/bin/docker"
-PATH="$RTMP/bin:$PATH" bash "$REPO_DIR/sandbox.sh" restricted "$RTMP/app" \
+PATH="$RTMP/bin:$PATH" bash -c 'cd "$1" && shift && exec bash "$@"' _ "$RTMP" "$REPO_DIR/sandbox.sh" restricted "$RTMP/app" \
   >/dev/null 2>&1 </dev/null || true
 
 grep -q "\.ai-containers/.*/\.config/dtctl:" "$CAP" && pass "dtctl config mounted from group" || fail "dtctl config mount"
@@ -153,7 +153,7 @@ find "$GROOT" -path '*/.config/dtctl/config' | grep -q . && pass "group dtctl se
 # Second run: group dir already exists → must NOT be re-seeded (group state wins).
 # Prove it by changing the host file and confirming the group copy is untouched.
 echo hostcfg-changed > "$HOME/.config/dtctl/config"
-PATH="$RTMP/bin:$PATH" bash "$REPO_DIR/sandbox.sh" restricted "$RTMP/app" \
+PATH="$RTMP/bin:$PATH" bash -c 'cd "$1" && shift && exec bash "$@"' _ "$RTMP" "$REPO_DIR/sandbox.sh" restricted "$RTMP/app" \
   >/dev/null 2>&1 </dev/null || true
 GROUP_CFG="$(find "$GROOT" -path '*/.config/dtctl/config' | head -n1)"
 [[ -n "$GROUP_CFG" ]] && [[ "$(cat "$GROUP_CFG")" == "hostcfg" ]] \

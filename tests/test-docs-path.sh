@@ -32,7 +32,10 @@ teardown() { rm -rf "$TMP"; unset DOCS_PATH VAULT_PATH SPECS_PATH EXTRA_MOUNTS S
 # run sandbox.sh restricted <primary>; sets RC and writes stderr to $ERR.
 run_sandbox() {
   ERR="$TMP/stderr.txt"
-  ( cd "$REPO_DIR" && ./sandbox.sh restricted "$@" ) >"$TMP/stdout.txt" 2>"$ERR" </dev/null
+  # Launched from a temp dir: sandbox.sh writes its .agent-blocked/.agent-discovery
+  # output dirs into $PWD, which must not be the repo.
+  mkdir -p "$TMP/launch"
+  ( cd "$TMP/launch" && bash "$REPO_DIR/sandbox.sh" restricted "$@" ) >"$TMP/stdout.txt" 2>"$ERR" </dev/null
   RC=$?
 }
 
