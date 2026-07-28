@@ -17,6 +17,9 @@ source "${TOOLS_LIB:-/etc/ai-containers/tools-lib.sh}"
 
 ARCH="${ARCH:-$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')}"
 OS="${OS:-$(uname -s | tr '[:upper:]' '[:lower:]')}"
+# Where binaries land. Always /usr/local/bin in the image; overridable so the
+# unit tests can exercise the installers without writing outside their tmpdir.
+BIN_DIR="${TOOLS_BIN_DIR:-/usr/local/bin}"
 
 if [ -n "${GITHUB_TOKEN:-}" ]; then
   AUTH_ARGS=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
@@ -37,6 +40,56 @@ api_get() {
 
 # asset_name <binary> <tag> — release asset filename for this OS/ARCH.
 asset_name() { printf '%s_%s_%s_%s.tar.gz' "$1" "${2#v}" "$OS" "$ARCH"; }
+
+# install_repo_file <name> <ref> — install a prebuilt binary COMMITTED IN the
+# repo (install=repo-file), rather than published as a release asset.
+#
+# Used by tools whose artifacts are vendored into a git repo, so there is no
+# release to resolve and nothing to untar: the file at repo_path IS the binary.
+# repo_path may contain ${ARCH}, expanded to this image's amd64/arm64.
+#
+# <ref> is a branch/tag/commit, or "latest" for the repo's default branch. The
+# contents API with the raw media type streams the file itself; for a private
+# repo GITHUB_TOKEN is required (the private=yes guard in install_one covers it).
+install_repo_file() {
+  local name="$1" ref="$2"
+  # shellcheck disable=SC2154
+  local repo="$TOOL_repo" binary="$TOOL_binary" path="$TOOL_repo_path"
+
+  if [ -z "$repo" ] || [ -z "$path" ]; then
+    echo "WARNING: ${name} sets install=repo-file but repo= or repo_path= is empty — skipping." >&2
+    return 0
+  fi
+
+  path="${path//\$\{ARCH\}/$ARCH}"
+  path="${path//\$ARCH/$ARCH}"
+
+  local url="https://api.github.com/repos/${repo}/contents/${path}"
+  # "latest" means the default branch: send no ref and let GitHub decide.
+  if [ "$ref" != "latest" ]; then
+    url="${url}?ref=${ref}"
+  elif [ -n "$TOOL_ref" ]; then
+    url="${url}?ref=${TOOL_ref}"
+  fi
+
+  local dest="${BIN_DIR}/${binary}" tmp="${TMPDIR:-/tmp}/${binary}.download"
+  echo "Installing ${name} from ${repo}:${path}..."
+  if ! curl -fsSL ${AUTH_ARGS[@]+"${AUTH_ARGS[@]}"} \
+         -H "Accept: application/vnd.github.raw" "$url" -o "$tmp"; then
+    echo "WARNING: download failed for ${name} (${repo}:${path}) — skipping." >&2
+    echo "         Check the path exists on that ref and that GITHUB_TOKEN grants access." >&2
+    rm -f "$tmp"
+    return 0
+  fi
+  if [ ! -s "$tmp" ]; then
+    echo "WARNING: ${name} downloaded empty — skipping." >&2
+    rm -f "$tmp"
+    return 0
+  fi
+  mv "$tmp" "$dest"
+  chmod +x "$dest"
+  echo "Installed ${name} (${repo}:${path})"
+}
 
 # parse_versions <str> — echo "name<TAB>version" per entry (pure; for tests/main).
 parse_versions() {
@@ -68,6 +121,13 @@ install_one() {
     return 0
   fi
 
+  # A vendored binary (install=repo-file) is fetched straight from the repo tree;
+  # there is no release to resolve and no archive to unpack.
+  if [ "$TOOL_install" = "repo-file" ]; then
+    install_repo_file "$name" "$version"
+    return 0
+  fi
+
   local tag an
   if [ "$private" = "yes" ]; then
     local api="https://api.github.com/repos/${repo}/releases" release_json
@@ -82,7 +142,7 @@ install_one() {
     echo "Installing ${name} ${tag} (private)..."
     if ! curl -fsSL ${AUTH_ARGS[@]+"${AUTH_ARGS[@]}"} -H "Accept: application/octet-stream" \
            "https://api.github.com/repos/${repo}/releases/assets/${asset_id}" \
-         | tar xz -C /usr/local/bin "$binary"; then
+         | tar xz -C "$BIN_DIR" "$binary"; then
       echo "WARNING: download/extract failed for ${name} ${tag} — skipping." >&2; return 0
     fi
   else
@@ -100,13 +160,13 @@ install_one() {
     an=$(asset_name "$binary" "$tag")
     echo "Installing ${name} ${tag}..."
     if ! curl -fsSL "https://github.com/${repo}/releases/download/${tag}/${an}" \
-         | tar xz -C /usr/local/bin "$binary"; then
+         | tar xz -C "$BIN_DIR" "$binary"; then
       echo "WARNING: download/extract failed for ${name} ${tag} — skipping." >&2
       echo "         Check that version '${tag#v}' exists at https://github.com/${repo}/releases" >&2
       return 0
     fi
   fi
-  chmod +x "/usr/local/bin/${binary}"
+  chmod +x "${BIN_DIR}/${binary}"
   echo "Installed ${name} ${tag}"
 }
 

@@ -6,6 +6,22 @@
 # sandbox-common.sh) and by container scripts (install-tools.sh /
 # install-agent-skills.sh, which source it from /etc/ai-containers/tools-lib.sh).
 # Pure functions only — no side effects at source time.
+#
+# Fields: repo, binary, private, config_dir, allowlist_fragment, skills,
+# skills_crossclient, install, repo_path, ref.
+#
+# config_dir accepts SEVERAL space-separated paths, for a tool that splits its
+# state across more than one directory (e.g. config in one, credentials in
+# another). Every listed path is group-scoped and mounted.
+#
+# install selects how install-tools.sh obtains the binary:
+#   release    (default) a GitHub release asset, <binary>_<version>_<os>_<arch>.tar.gz
+#   repo-file  a prebuilt binary COMMITTED IN the repo, at repo_path
+# repo-file exists for tools whose build artifacts are vendored into a git repo
+# instead of published as releases. repo_path is the path inside the repo and may
+# contain ${ARCH} (expanded to amd64/arm64). ref pins a branch/tag/commit; the
+# sandbox.conf value wins over it, so the key grammar for such a tool is
+# ON | <git-ref> | OFF (there are no release versions to pin).
 
 # Descriptor directory. Host scripts point this at the repo tree; container
 # scripts inherit the default.
@@ -32,6 +48,7 @@ tools_read_descriptor() {
   TOOL_name="$name"
   TOOL_repo="" TOOL_binary="" TOOL_private="no" TOOL_config_dir=""
   TOOL_allowlist_fragment="" TOOL_skills="no" TOOL_skills_crossclient=""
+  TOOL_install="release" TOOL_repo_path="" TOOL_ref=""
   [[ -f "$file" ]] || return 1
   while IFS= read -r line || [[ -n "$line" ]]; do
     line="${line%%#*}"                    # strip comments
@@ -48,6 +65,9 @@ tools_read_descriptor() {
       allowlist_fragment) TOOL_allowlist_fragment="$val" ;;
       skills)             TOOL_skills="$val" ;;
       skills_crossclient) TOOL_skills_crossclient="$val" ;;
+      install)            TOOL_install="$val" ;;
+      repo_path)          TOOL_repo_path="$val" ;;
+      ref)                TOOL_ref="$val" ;;
     esac
   done < "$file"
   [[ -n "$TOOL_binary" ]] || TOOL_binary="$name"

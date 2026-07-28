@@ -755,22 +755,29 @@ run_container() {
   # credentials: created lazily in the group and seeded ONCE from the host home
   # if present, so a sandboxed agent never writes the developer's real host
   # config. The seed happens only when the group dir does not yet exist.
-  local _tname
+  #
+  # A tool may split its state over more than one directory (e.g. config in one,
+  # credentials in another), so config_dir is a space-separated LIST.
+  local _tname _cdir
   while IFS= read -r _tname; do
     is_active "$_tname" || continue
     tools_read_descriptor "$_tname" || continue
     [[ -n "$TOOL_config_dir" ]] || continue
-    if [[ "$group" != "host" ]]; then
-      if [[ ! -e "$group_root/$TOOL_config_dir" && -e "$HOME/$TOOL_config_dir" ]]; then
-        install -d "$(dirname "$group_root/$TOOL_config_dir")"
-        cp -a "$HOME/$TOOL_config_dir" "$group_root/$TOOL_config_dir"
+    # config_dir may list several space-separated paths; deliberately unquoted.
+    # shellcheck disable=SC2086
+    for _cdir in $TOOL_config_dir; do
+      if [[ "$group" != "host" ]]; then
+        if [[ ! -e "$group_root/$_cdir" && -e "$HOME/$_cdir" ]]; then
+          install -d "$(dirname "$group_root/$_cdir")"
+          cp -a "$HOME/$_cdir" "$group_root/$_cdir"
+        else
+          install -d "$group_root/$_cdir"
+        fi
+        add_mount_if_exists config_mount_flags "$group_root/$_cdir" "$dev_home/$_cdir"
       else
-        install -d "$group_root/$TOOL_config_dir"
+        add_mount_if_exists config_mount_flags "$HOME/$_cdir" "$dev_home/$_cdir"
       fi
-      add_mount_if_exists config_mount_flags "$group_root/$TOOL_config_dir" "$dev_home/$TOOL_config_dir"
-    else
-      add_mount_if_exists config_mount_flags "$HOME/$TOOL_config_dir" "$dev_home/$TOOL_config_dir"
-    fi
+    done
   done < <(tools_list_names)
   if is_enabled qmd; then
     if [[ "$group" != "host" ]]; then
