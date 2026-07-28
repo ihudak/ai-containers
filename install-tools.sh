@@ -61,8 +61,7 @@ install_repo_file() {
     return 0
   fi
 
-  path="${path//\$\{ARCH\}/$ARCH}"
-  path="${path//\$ARCH/$ARCH}"
+  path="$(expand_placeholders "$path" "$ref")"
 
   local url="https://api.github.com/repos/${repo}/contents/${path}"
   # "latest" means the default branch: send no ref and let GitHub decide.
@@ -114,6 +113,100 @@ install_repo_file() {
   echo "Installed ${name} (${repo}:${path})"
 }
 
+# expand_placeholders <template> <version> — substitute ${OS}, ${ARCH} and
+# ${VERSION} in a descriptor-supplied template.
+#
+# BRACED FORMS ONLY, deliberately: an unbraced $OS/$ARCH is a plain substring
+# match, so it would also fire inside $OSNAME or $ARCHY and corrupt the result.
+# Any other ${...} is left alone.
+expand_placeholders() {
+  local t="$1" version="$2"
+  t="${t//\$\{ARCH\}/$ARCH}"
+  t="${t//\$\{OS\}/$OS}"
+  t="${t//\$\{VERSION\}/$version}"
+  printf '%s' "$t"
+}
+
+# install_url <name> <version> — install from a vendor-hosted URL (install=url).
+#
+# For tools distributed outside GitHub (Atlassian's acli, for example), so there
+# is no release API to query and no token involved. A .tar.gz/.tgz is unpacked
+# and <binary> is located ANYWHERE inside it — vendors commonly nest it in a
+# version-named directory (acli ships acli_1.3.22-stable_linux_arm64/acli) — and
+# any other URL is treated as the binary itself.
+install_url() {
+  local name="$1" version="$2"
+  # shellcheck disable=SC2154
+  local binary="$TOOL_binary" url
+  url="$(expand_placeholders "$TOOL_url" "$version")"
+
+  if [ -z "$url" ]; then
+    echo "WARNING: ${name} sets install=url but url= is empty — skipping." >&2
+    return 0
+  fi
+
+  # A url= with no ${VERSION} placeholder cannot honour a pinned version (some
+  # vendors publish only a "latest" URL). Say so rather than silently installing
+  # something other than what sandbox.conf asked for.
+  if [ "$version" != "latest" ] && [ "${TOOL_url#*\$\{VERSION\}}" = "$TOOL_url" ]; then
+    echo "NOTE: ${name}=${version} cannot be pinned: its url= has no \${VERSION} placeholder." >&2
+    echo "      Installing whatever that URL currently serves; check with '${binary} --version'." >&2
+  fi
+
+  local work
+  if ! work="$(mktemp -d "${TMPDIR:-/tmp}/${binary}.XXXXXX")"; then
+    echo "WARNING: could not create a temp dir for ${name} — skipping." >&2
+    return 0
+  fi
+
+  echo "Installing ${name} from ${url}..."
+  local payload="$work/download"
+  if ! curl -fsSL --retry 2 "$url" -o "$payload"; then
+    echo "WARNING: download failed for ${name} (${url}) — skipping." >&2
+    rm -rf "$work"; return 0
+  fi
+  if [ ! -s "$payload" ]; then
+    echo "WARNING: ${name} downloaded empty — skipping." >&2
+    rm -rf "$work"; return 0
+  fi
+
+  local found="$payload"
+  # Match on the PATH only: a signed/CDN URL can carry ?query or #fragment after
+  # the extension, and treating such an archive as a bare binary would install
+  # the tarball itself and still report success.
+  case "${url%%[?#]*}" in
+    *.tar.gz|*.tgz)
+      if ! tar xzf "$payload" -C "$work"; then
+        echo "WARNING: could not unpack ${name} (${url}) — skipping." >&2
+        rm -rf "$work"; return 0
+      fi
+      # Sorted, not `-print -quit`: find's traversal order is unspecified, so with
+      # two same-named files the installed one would vary by machine.
+      local candidates count
+      candidates="$(find "$work" -type f -name "$binary" 2>/dev/null | sort)"
+      count="$(printf '%s' "$candidates" | grep -c . || true)"
+      if [ "$count" -eq 0 ]; then
+        echo "WARNING: ${name}: no '${binary}' file inside the archive — skipping." >&2
+        echo "         Set binary= to the executable's name as packaged." >&2
+        rm -rf "$work"; return 0
+      fi
+      if [ "$count" -gt 1 ]; then
+        echo "WARNING: ${name}: the archive holds ${count} files named '${binary}' — refusing to guess." >&2
+        printf '%s\n' "$candidates" | sed "s|^${work}/|           |" >&2
+        rm -rf "$work"; return 0
+      fi
+      found="$candidates"
+      ;;
+  esac
+
+  if ! mv "$found" "${BIN_DIR}/${binary}" || ! chmod +x "${BIN_DIR}/${binary}"; then
+    echo "WARNING: could not install ${name} to ${BIN_DIR}/${binary} — skipping." >&2
+    rm -rf "$work"; return 0
+  fi
+  rm -rf "$work"
+  echo "Installed ${name} (${url})"
+}
+
 # parse_versions <str> — echo "name<TAB>version" per entry (pure; for tests/main).
 parse_versions() {
   local IFS=';' entry name version _e
@@ -148,6 +241,12 @@ install_one() {
   # there is no release to resolve and no archive to unpack.
   if [ "$TOOL_install" = "repo-file" ]; then
     install_repo_file "$name" "$version"
+    return 0
+  fi
+
+  # A vendor-hosted download (install=url) involves no GitHub repo at all.
+  if [ "$TOOL_install" = "url" ]; then
+    install_url "$name" "$version"
     return 0
   fi
 

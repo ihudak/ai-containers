@@ -41,7 +41,7 @@ It packages a CLI-only Docker-based workspace for running AI coding agents (GitH
 
 - `Dockerfile` builds the image from a configurable set of optional components: AI agents (GitHub Copilot CLI, Kiro CLI, Claude Code, Codex CLI, Gemini CLI), JVM toolchains (via SDKMAN: OpenJDK, GraalVM CE, Kotlin, Scala, Maven, Gradle), Node.js versions (via nvm), Python versions (via pyenv), Ruby + Rails (via rvm), Rust (via rustup), Go, cloud CLIs (AWS, Azure, kubectl, GitHub CLI), dev tools (Angular CLI, qmd, graphify, GoReleaser, Vale), and external CLI tools described in `tools.d/` (currently Dynatrace's `dtctl` and `dtmgd`). Node.js (latest LTS), Python (latest stable), git, jq, packet-capture tools, and the non-root sandbox user are always included.
 - `sandbox.conf` controls which optional components are built into the image and which credential directories are mounted at runtime.
-- `tools.d/` holds one descriptor file per external CLI tool the image can install (currently `dtctl.conf`, `dtmgd.conf`) — its GitHub repo, binary name, whether that repo is private, its config directory (one path, or several space-separated), how the binary is fetched (`install=release` from a release asset, or `install=repo-file` for a prebuilt binary committed in the repo at `repo_path=`), its allowlist fragment, and whether it ships an Agent Skill. `tools-lib.sh` is the shared parser for these descriptors. `install-tools.sh` is the generic build-time installer driven by them, with optional authentication via `GITHUB_TOKEN`. `install-agent-skills.sh` runs at container start and installs each installed tool's Agent Skill for every enabled AI agent — see [Dynatrace CLIs (dtctl / dtmgd)](#dynatrace-clis-dtctl--dtmgd) below.
+- `tools.d/` holds one descriptor file per external CLI tool the image can install (currently `dtctl.conf`, `dtmgd.conf`, `acli.conf`) — its GitHub repo, binary name, whether that repo is private, its config directory (one path, or several space-separated), how the binary is fetched (`install=release` from a release asset, `install=repo-file` for a prebuilt binary committed in a repo at `repo_path=`, or `install=url` for a vendor-hosted download at `url=`), its allowlist fragment, and whether it ships an Agent Skill. `tools-lib.sh` is the shared parser for these descriptors. `install-tools.sh` is the generic build-time installer driven by them, with optional authentication via `GITHUB_TOKEN`. `install-agent-skills.sh` runs at container start and installs each installed tool's Agent Skill for every enabled AI agent — see [Dynatrace CLIs (dtctl / dtmgd)](#dynatrace-clis-dtctl--dtmgd) below.
 - `entrypoint.sh` applies either a restricted firewall or a discovery mode at container startup. In both modes it creates the sandbox user and drops to it via `capsh`. Restricted mode drops `NET_ADMIN` and `NET_RAW`; discovery mode drops only `NET_ADMIN` (keeping `NET_RAW` for tcpdump).
 - `refresh-ipset-allowlist.sh` resolves the concrete allowlist domains into IPv4 and IPv6 `ipset` sets.
 - `capture-blocked-traffic.sh` runs as a background root daemon in restricted mode, logging every blocked outbound destination to `/workspace/.agent-blocked/`.
@@ -275,6 +275,26 @@ vale=OFF   # skip (default)
 > **Note:** Like the AI agents and GoReleaser, Vale is installed **unpinned** (latest at build time). The version is resolved from the `releases/latest` redirect, so no GitHub API token is needed and there is no rate-limit concern. Use `./build.sh --no-cache` (or bump a cache-busting build-arg) to pick up a newer Vale later.
 
 > **Note:** The binary download and `vale sync` (which fetches style packages such as `Google`, `Microsoft`, `write-good`) use GitHub hosts (`github.com`, `*.githubusercontent.com`) that are allowlisted by default; `vale.sh` is added when `vale=ON` for package-index lookups. If your `.vale.ini` pulls packages from another host, add it to `allowlist-domains.d/custom.txt` and rebuild. Repos that vendor their `StylesPath` need no network at all.
+
+### Atlassian CLI (acli)
+
+`acli=ON` installs the **official Atlassian CLI** (Jira, Confluence, and the admin/assets/guard namespaces it ships). It is off by default.
+
+Two things differ from the other tools:
+
+- **No version pinning.** Atlassian publishes every package behind a `latest` URL and supports each release for six months, so the grammar is `ON | OFF` and `acli --version` tells you what you got. The regular 72-hour agent refresh re-fetches it, so no full rebuild is needed to update. No `GITHUB_TOKEN` is involved — the download is vendor-hosted.
+- **Authenticate once per container group.** `acli` keeps its profiles *and* credentials in `~/.config/acli`, which is group-scoped, and the binary is static with no OS keyring dependency. So a headless login inside the container persists for every later container in that group:
+
+  ```bash
+  echo "$ATLASSIAN_API_TOKEN" | acli jira auth login \
+    --email you@example.com --site your-org.atlassian.net --token
+  ```
+
+  Confluence shares the same credentials. Create the token at <https://id.atlassian.com/manage-profile/security/api-tokens> (a browser step, on your host). Do **not** put the token in the generated `runme.sh`: `sandbox.sh` forwards only an explicit list of variables, so it would not reach the container anyway, and the group-scoped login makes it unnecessary. The interactive `--web` OAuth flow does not work in a container: it binds a loopback callback and expects a local browser.
+
+Its endpoints are allowlisted through the descriptor's `allowlist_fragment=atlassian` (`api.`/`auth.atlassian.com`, plus `acli.atlassian.com` so you can re-download or upgrade the CLI from inside a container, and the `*.atlassian.net` self-healing wildcard for your per-organisation site host). Attachment/media hosts (`api.media.atlassian.com`, `*.frontend.public.atl-paas.net`) and the `acli admin` namespace's `admin.atlassian.com` are **not** included — add them to `allowlist-domains.d/custom.txt` if you need them.
+
+> **Telemetry:** the acli binary embeds a Segment analytics client (`https://api.segment.io` is compiled in and 1.3.22 exposes no opt-out flag). That host is deliberately left out of the allowlist, so usage telemetry **fails closed** inside a `restricted` container. Add it to `custom.txt` only if you want it to leave the sandbox.
 
 ### Dynatrace CLIs (dtctl / dtmgd)
 

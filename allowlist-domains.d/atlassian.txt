@@ -1,0 +1,35 @@
+# Atlassian CLI (acli) — Jira / Confluence.
+#
+# Fixed hosts, safe to allowlist exactly:
+#   api.atlassian.com   the Atlassian Cloud gateway. OAuth (3LO) Bearer tokens
+#                       are only accepted here, and API-token (Basic) requests
+#                       are routed here too.
+#   auth.atlassian.com  OAuth authorize + token endpoints, including the silent
+#                       refresh of an expired access token.
+#   acli.atlassian.com  where the CLI is downloaded from. Kept so you can
+#                       re-download or upgrade acli from inside a container; it
+#                       is NOT needed for normal Jira/Confluence calls, and acli
+#                       1.3.22 has no self-update subcommand (checked across
+#                       every namespace's --help). Drop it if you want a tighter
+#                       runtime surface.
+api.atlassian.com
+auth.atlassian.com
+acli.atlassian.com
+
+# Per-organisation site hosts (<your-org>.atlassian.net) are matched by the
+# wildcard in allowlist-proxy-domains.d/atlassian.txt and admitted by the
+# self-healing daemon. With self-healing disabled (SELF_HEALING_ENABLED=0), add
+# your site host explicitly here, e.g.:
+#   your-org.atlassian.net
+#
+# NOT allowlisted on purpose:
+#   api.segment.io — acli ships a compiled-in Segment analytics client (the
+#     binary contains https://api.segment.io and offers no opt-out flag), so
+#     usage telemetry fails closed under the restricted firewall. Add it here
+#     only if you deliberately want acli's telemetry to leave the sandbox.
+#   admin.atlassian.com, id.atlassian.com — only the `acli admin` namespace and
+#     browser-side token creation need these.
+#
+# Attachment/media endpoints (api.media.atlassian.com,
+# *.frontend.public.atl-paas.net) are NOT included: they are only needed by some
+# attachment and whiteboard operations. Add them to custom.txt if you hit them.

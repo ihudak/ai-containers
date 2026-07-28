@@ -1,0 +1,5 @@
+# Atlassian Cloud site hosts — one per organisation (<your-org>.atlassian.net),
+# so the exact hostname is not known up front. acli hits the site host for
+# cloud-id discovery and for classic/unscoped API tokens. Handled by the
+# self-healing daemon, like the Dynatrace tenant wildcards.
+*.atlassian.net
