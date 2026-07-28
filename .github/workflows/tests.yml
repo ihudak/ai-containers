@@ -37,5 +37,17 @@ jobs:
       # only detects an UNCOMMITTED edit and silently no-ops in CI.
       - name: sandbox.conf schema gate
         run: |
-          base="${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || 'HEAD^' }}"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="${{ github.event.pull_request.base.sha }}"
+          else
+            # The whole push, not just its last commit: HEAD^ would diff only the
+            # newest commit and miss a key removed earlier in the same push.
+            # event.before is all-zeros for a new branch and stale after a force
+            # push, so fall back to HEAD^ when it is not a reachable commit.
+            base="${{ github.event.before }}"
+            if [ -z "$base" ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+              base="HEAD^"
+            fi
+          fi
+          echo "diffing sandbox.conf against $base"
           BASE_REF="$base" ./check-sandbox-version.sh --check
