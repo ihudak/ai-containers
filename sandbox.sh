@@ -758,14 +758,16 @@ run_container() {
   #
   # A tool may split its state over more than one directory (e.g. config in one,
   # credentials in another), so config_dir is a space-separated LIST.
-  local _tname _cdir
+  local _tname _cdir; local -a _cdirs
   while IFS= read -r _tname; do
     is_active "$_tname" || continue
     tools_read_descriptor "$_tname" || continue
     [[ -n "$TOOL_config_dir" ]] || continue
-    # config_dir may list several space-separated paths; deliberately unquoted.
-    # shellcheck disable=SC2086
-    for _cdir in $TOOL_config_dir; do
+    # config_dir may list several space-separated paths. Split with read -ra
+    # rather than an unquoted expansion: bare word-splitting also GLOBS, so a
+    # descriptor containing a metacharacter would expand against the launch dir.
+    read -ra _cdirs <<< "$TOOL_config_dir"
+    for _cdir in "${_cdirs[@]}"; do
       if [[ "$group" != "host" ]]; then
         if [[ ! -e "$group_root/$_cdir" && -e "$HOME/$_cdir" ]]; then
           install -d "$(dirname "$group_root/$_cdir")"

@@ -72,7 +72,14 @@ install_repo_file() {
     url="${url}?ref=${TOOL_ref}"
   fi
 
-  local dest="${BIN_DIR}/${binary}" tmp="${TMPDIR:-/tmp}/${binary}.download"
+  local dest="${BIN_DIR}/${binary}" tmp
+  # mktemp, not a predictable name: /tmp is shared, and a pre-existing symlink at
+  # a guessable path would otherwise be written through.
+  if ! tmp="$(mktemp "${TMPDIR:-/tmp}/${binary}.XXXXXX")"; then
+    echo "WARNING: could not create a temp file for ${name} — skipping." >&2
+    return 0
+  fi
+
   echo "Installing ${name} from ${repo}:${path}..."
   if ! curl -fsSL ${AUTH_ARGS[@]+"${AUTH_ARGS[@]}"} \
          -H "Accept: application/vnd.github.raw" "$url" -o "$tmp"; then
@@ -86,8 +93,24 @@ install_repo_file() {
     rm -f "$tmp"
     return 0
   fi
-  mv "$tmp" "$dest"
-  chmod +x "$dest"
+  # The contents API answers a DIRECTORY path with 200 and a JSON listing, which
+  # curl -f cannot distinguish from a file. Installing that as the binary would
+  # "succeed" and only fail when the agent runs it.
+  case "$(head -c 1 "$tmp")" in
+    '['|'{')
+      echo "WARNING: ${name}: the API returned JSON, not a file — is repo_path a directory?" >&2
+      echo "         repo_path=${path}" >&2
+      rm -f "$tmp"
+      return 0
+      ;;
+  esac
+  # Failures here are why this is checked: an unwritable BIN_DIR would otherwise
+  # print "Installed" while nothing was installed.
+  if ! mv "$tmp" "$dest" || ! chmod +x "$dest"; then
+    echo "WARNING: could not install ${name} to ${dest} — skipping." >&2
+    rm -f "$tmp"
+    return 0
+  fi
   echo "Installed ${name} (${repo}:${path})"
 }
 

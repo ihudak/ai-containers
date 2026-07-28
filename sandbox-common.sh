@@ -526,12 +526,14 @@ _copy_group_slice() {
   local paths=(.claude .claude.json .copilot .config/gh .kiro ".local/share/kiro-cli" .codex .gemini .agents .ssh .cache/qmd)
   # Tool config dirs (dtctl/dtmgd/...) are group-scoped too — pull them
   # from the descriptors so new tools are covered without editing this list.
-  # config_dir may list several space-separated paths.
-  local _t
+  # config_dir may list several space-separated paths. read -ra, not an unquoted
+  # expansion: bare word-splitting would also glob against the current directory.
+  local _t; local -a _cdirs
   while IFS= read -r _t; do
     tools_read_descriptor "$_t" || continue
-    # shellcheck disable=SC2206,SC2086
-    [[ -n "$TOOL_config_dir" ]] && paths+=($TOOL_config_dir)
+    [[ -n "$TOOL_config_dir" ]] || continue
+    read -ra _cdirs <<< "$TOOL_config_dir"
+    paths+=("${_cdirs[@]}")
   done < <(tools_list_names)
   local p from
   for p in "${paths[@]}"; do
