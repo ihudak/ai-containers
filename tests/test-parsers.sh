@@ -443,6 +443,53 @@ for row in "${MEM_TABLE[@]}"; do
 done
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Cross-check part 2: MAGNITUDES, not just accept/reject.
+#
+# The loop above only classifies each value as accepted or rejected, so a drift
+# that changes a unit MULTIPLIER in one copy (say m = 1000*1000 instead of
+# 1024*1024) while still "accepting" the value is invisible to it. These pairs
+# compare a reservation against a memory limit expressed in a DIFFERENT unit, at
+# the exact boundary, so the accept/reject outcome depends on the multipliers
+# agreeing exactly. sandbox.sh's own byte values are pinned by MEM_TABLE above,
+# so agreement here pins both copies to the same scale.
+# desc:reservation:memory:expect(accept|reject)
+MEM_BOUNDARY_TABLE=(
+  "1g == 1024m:1g:1024m:accept"
+  "1025m > 1g:1025m:1g:reject"
+  "1m == 1024k:1m:1024k:accept"
+  "1025k > 1m:1025k:1m:reject"
+  "1k == 1024b:1k:1024b:accept"
+  "1025b > 1k:1025b:1k:reject"
+  "1024m == 1g:1024m:1g:accept"
+)
+bidx=0
+for row in "${MEM_BOUNDARY_TABLE[@]}"; do
+  desc="${row%%:*}"; rest="${row#*:}"
+  res="${rest%%:*}"; rest="${rest#*:}"
+  mem="${rest%%:*}"; expect="${rest#*:}"
+  bidx=$((bidx + 1))
+  proj="$TMP/xbound-$bidx"
+  mkdir -p "$proj"; git -C "$proj" init -q
+  out="$(printf '%s\n\n\n\n%s\n%s\n%s\n\n\n' "$proj" "$mem" "$res" "$mem" \
+    | bash "$SCRIPTS/project-init.sh" 2>&1 1>/dev/null)"
+  reprompted=0
+  grep -q 'Reservation must be' <<<"$out" && reprompted=1
+  if [[ "$expect" == "accept" ]]; then
+    if [[ $reprompted -eq 0 ]]; then
+      pass "mem_to_bytes magnitude: $desc -> accepted"
+    else
+      fail "mem_to_bytes magnitude: $desc -> accepted (project-init.sh rejected it; its unit multipliers have drifted from sandbox.sh's)"
+    fi
+  else
+    if [[ $reprompted -eq 1 ]]; then
+      pass "mem_to_bytes magnitude: $desc -> rejected"
+    else
+      fail "mem_to_bytes magnitude: $desc -> rejected (project-init.sh accepted it; its unit multipliers have drifted from sandbox.sh's)"
+    fi
+  fi
+done
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Hermeticity
 # ══════════════════════════════════════════════════════════════════════════════
 

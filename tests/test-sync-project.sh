@@ -170,10 +170,24 @@ shared_files_words="$(printf '%s\n' "$shared_files_block" \
 derived_shared_files=()
 for w in $shared_files_words; do derived_shared_files+=("$w"); done
 
-if [[ "${#derived_shared_files[@]}" -ge 10 ]]; then
-  pass "derived shared-file list has a plausible size (${#derived_shared_files[@]} files)"
+# The derived list is only used to assert each file ARRIVES. On its own it cannot
+# notice a file DISAPPEARING from the script (the expectation would shrink with
+# it), so pin the contract independently: an explicit literal list, compared as a
+# set. Adding or removing a shared file is a deliberate act and must update this.
+expected_shared_files=(
+  Dockerfile Dockerfile.seed .dockerignore sandbox-common.sh build.sh
+  sandbox.sh repo.sh entrypoint.sh refresh-ipset-allowlist.sh
+  capture-blocked-traffic.sh capture-agent-destinations.sh
+  install-tools.sh install-agent-skills.sh tools-lib.sh
+)
+derived_sorted="$(printf '%s\n' "${derived_shared_files[@]}" | sort | tr '\n' ' ')"
+expected_sorted="$(printf '%s\n' "${expected_shared_files[@]}" | sort | tr '\n' ' ')"
+if [[ "$derived_sorted" == "$expected_sorted" ]]; then
+  pass "shared-file list matches the pinned contract (${#expected_shared_files[@]} files)"
 else
-  fail "derived shared-file list looks too short (${#derived_shared_files[@]}): ${derived_shared_files[*]}"
+  fail "shared-file list drifted from the pinned contract
+     script:   $derived_sorted
+     expected: $expected_sorted"
 fi
 
 # ── Run the sync ────────────────────────────────────────────────────────────────

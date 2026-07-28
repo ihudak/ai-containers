@@ -166,6 +166,24 @@ if [[ ! -e "$GROUP_ROOT/.config/beta" ]]; then
   pass "inactive tool: host config not copied into the group"; else fail "inactive tool: host config not copied into the group"; fi
 teardown
 
+# ── Case 7b: a glob metacharacter in config_dir is NOT expanded ─────────────────
+# The list used to be split by an unquoted expansion, which also globs: a
+# descriptor like `config_dir=.config/*` would have expanded against the launch
+# directory and mounted whatever happened to match.
+setup
+cat > "$TOOLS_D_DIR/delta.conf" <<'EOF'
+repo=acme/delta
+config_dir=.config/delta-*
+EOF
+printf '# schema-version: 3\nalpha=ON\nbeta=OFF\ngamma=ON\ndelta=ON\n' > "$SANDBOX_CONF"
+mkdir -p "$HOME/.config/delta-one" "$HOME/.config/delta-two"
+( cd "$HOME/.config" && run_sandbox "$TMP/app" )
+if [[ -d "$GROUP_ROOT/.config/delta-*" ]]; then
+  pass "glob in config_dir taken literally, not expanded"; else fail "glob in config_dir taken literally, not expanded"; fi
+if ! grep -q '/.config/delta-one' "$CAPTURE" && ! grep -q '/.config/delta-two' "$CAPTURE"; then
+  pass "glob in config_dir mounts no matching sibling dirs"; else fail "glob in config_dir mounts no matching sibling dirs"; fi
+teardown
+
 # ── Case 8: group bootstrap from the host copies every config_dir ──────────────
 # _copy_group_slice (sandbox-common.sh) pulls each descriptor's config dirs, so a
 # group created with AI_CONTAINER_GROUP_INIT=from:host inherits all of them.

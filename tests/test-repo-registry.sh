@@ -9,10 +9,15 @@
 #      with repos "cluster" and "docs" it produced a phantom "clusterdocs"
 #      entry. It must now emit one name per line (`printf '%s\n'`).
 #   2. repo_registry_upsert / repo_registry_names used to glue two records
-#      together when repos.conf's last line had no trailing newline (GNU
-#      coreutils grep/cut preserve a missing final newline). upsert now pads a
-#      missing newline before appending; repo_registry_names now uses awk,
+#      together when repos.conf's last line had no trailing newline. upsert now
+#      pads a missing newline before appending; repo_registry_names uses awk,
 #      which always newline-terminates its output.
+#      NOTE on reproducing it: GNU grep >= 3 always terminates its own output
+#      with a newline, so on Linux the padding guard is never the thing that
+#      saves you — BSD/macOS grep is, where the missing newline IS preserved.
+#      A Linux-only test therefore passes with the guard deleted. The regression
+#      case below runs upsert against a BSD-behaving fake `grep` so the guard is
+#      actually exercised on every platform.
 #
 # Hermetic: HOME is pointed at a temp dir BEFORE sourcing sandbox-common.sh, so
 # the real ~/.ai-containers/repos.conf is never read or written. No docker
@@ -386,6 +391,46 @@ check "REGRESSION upsert: newly appended 'delta' record is correct and separate"
 names_after_upsert="$(repo_registry_names | tr '\n' '|')"
 check "REGRESSION upsert: repo_registry_names lists both records distinctly (no glued 'gammadelta')" \
   "gamma|delta|" "$names_after_upsert"
+
+# The file must end newline-terminated, whatever it looked like before.
+if [[ -z "$(tail -c1 "$REGISTRY_FILE")" ]]; then
+  pass "REGRESSION upsert: registry is newline-terminated after appending"
+else
+  fail "REGRESSION upsert: registry is newline-terminated after appending"
+fi
+
+# Same case, but with a grep that behaves like BSD/macOS: it PRESERVES a missing
+# final newline instead of adding one. This is what the padding guard in
+# repo_registry_upsert actually defends against; with GNU grep the guard is
+# unreachable, so deleting it would go unnoticed on Linux.
+REAL_GREP="$(command -v grep)"
+cat > "$FAKE_BIN/grep" <<GREPBSD
+#!/usr/bin/env bash
+# Only the "-vE <pattern> <file>" shape used by repo_registry_upsert is emulated.
+if [[ "\$1" == "-vE" && \$# -eq 3 ]]; then
+  pat="\$2"; file="\$3"; out=""
+  while IFS= read -r line || [[ -n "\$line" ]]; do
+    [[ "\$line" =~ \$pat ]] || out+="\$line"\$'\n'
+  done < "\$file"
+  # Preserve the input's missing final newline (the BSD behaviour).
+  if [[ -s "\$file" && -n "\$(tail -c1 "\$file")" ]]; then out="\${out%\$'\n'}"; fi
+  printf '%s' "\$out"
+  exit 0
+fi
+exec "$REAL_GREP" "\$@"
+GREPBSD
+chmod +x "$FAKE_BIN/grep"
+
+rm -f "$REGISTRY_FILE"
+printf '# comment\n\nepsilon|path|/srv/epsilon|1|1|bind' > "$REGISTRY_FILE"
+PATH="$FAKE_BIN:$PATH" repo_registry_upsert "zeta" "git" "https://example.com/zeta.git" "3" "3" "volume"
+check "REGRESSION upsert (BSD-behaving grep): 'epsilon' stays on its own record" \
+  "epsilon|path|/srv/epsilon|1|1|bind" "$(repo_registry_lookup "epsilon")"
+check "REGRESSION upsert (BSD-behaving grep): 'zeta' is appended as a separate record" \
+  "zeta|git|https://example.com/zeta.git|3|3|volume" "$(repo_registry_lookup "zeta")"
+check "REGRESSION upsert (BSD-behaving grep): no glued 'epsilonzeta' record" \
+  "epsilon|zeta|" "$(repo_registry_names | tr '\n' '|')"
+rm -f "$FAKE_BIN/grep"
 
 # Now exercise repo_registry_names directly against a no-trailing-newline file
 # containing comment/blank lines interleaved, with NO upsert involved.

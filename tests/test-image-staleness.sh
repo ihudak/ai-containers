@@ -191,6 +191,72 @@ else
   fail "unparseable garbage -> non-zero (rc=$rc out='$out')"
 fi
 
+# ── BSD/macOS date fallback ────────────────────────────────────────────────────
+# image_age_hours tries GNU `date -u -d` first and falls back to BSD's
+# `date -u -j -f '%Y-%m-%dT%H:%M:%SZ'`, which needs the nanoseconds stripped.
+# On Linux the GNU branch always wins, so the fallback AND the truncation that
+# feeds it are dead code in every other case here — a broken truncation would
+# ship and only fail on macOS. Force the fallback with a fake `date` that
+# rejects -d (like BSD) and implements -j -f.
+reset_docker_state
+BSD_BIN="$TMP/bsdbin"; mkdir -p "$BSD_BIN"
+REAL_DATE="$(command -v date)"
+cat > "$BSD_BIN/date" <<BSDDATE
+#!/usr/bin/env bash
+# BSD-like: no -d, and -j -f <fmt> <value> +%s parses only the exact format.
+if [[ "\$1" == "-u" && "\$2" == "-d" ]]; then exit 1; fi
+if [[ "\$1" == "-u" && "\$2" == "-j" && "\$3" == "-f" ]]; then
+  fmt="\$4"; value="\$5"; out="\$6"
+  [[ "\$fmt" == '%Y-%m-%dT%H:%M:%SZ' ]] || exit 1
+  # Reject anything that is not exactly seconds-precision + Z (no nanoseconds),
+  # which is what BSD date would do.
+  [[ "\$value" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\$ ]] || exit 1
+  [[ "\$out" == "+%s" ]] || exit 1
+  exec "$REAL_DATE" -u -d "\${value}" +%s
+fi
+exec "$REAL_DATE" "\$@"
+BSDDATE
+chmod +x "$BSD_BIN/date"
+
+now_epoch="$("$REAL_DATE" -u +%s)"
+created_epoch=$(( now_epoch - 9 * 3600 ))
+printf '%s\n' "$("$REAL_DATE" -u -d "@${created_epoch}" +'%Y-%m-%dT%H:%M:%S.987654321Z')" > "$CREATED_FILE"
+bsd_age="$( cd "$TMP" && HOME="$HOME" PATH="$BSD_BIN:$FAKE_BIN:$PATH" bash -c '
+    src="$1"; set --
+    source "$src" >/dev/null
+    image_age_hours img:tag
+  ' _ "$REPO_DIR/sandbox.sh" )"
+if [[ "$bsd_age" == "9" ]]; then
+  pass "image_age_hours: BSD date fallback parses a nanosecond timestamp (age 9h)"
+else
+  fail "image_age_hours: BSD date fallback (expected 9, got '$bsd_age')"
+fi
+
+# Same fallback, timestamp already at seconds precision.
+printf '%s\n' "$("$REAL_DATE" -u -d "@$(( now_epoch - 3 * 3600 ))" +'%Y-%m-%dT%H:%M:%SZ')" > "$CREATED_FILE"
+bsd_age2="$( cd "$TMP" && HOME="$HOME" PATH="$BSD_BIN:$FAKE_BIN:$PATH" bash -c '
+    src="$1"; set --
+    source "$src" >/dev/null
+    image_age_hours img:tag
+  ' _ "$REPO_DIR/sandbox.sh" )"
+if [[ "$bsd_age2" == "3" ]]; then
+  pass "image_age_hours: BSD date fallback parses a seconds-precision timestamp (age 3h)"
+else
+  fail "image_age_hours: BSD date fallback, seconds precision (expected 3, got '$bsd_age2')"
+fi
+
+# With BOTH date forms failing, it must report failure rather than a bogus age.
+printf 'not-a-timestamp\n' > "$CREATED_FILE"
+if ( cd "$TMP" && HOME="$HOME" PATH="$BSD_BIN:$FAKE_BIN:$PATH" bash -c '
+      src="$1"; set --
+      source "$src" >/dev/null
+      image_age_hours img:tag
+    ' _ "$REPO_DIR/sandbox.sh" >/dev/null 2>&1 ); then
+  fail "image_age_hours: unparseable under BSD date returns non-zero"
+else
+  pass "image_age_hours: unparseable under BSD date returns non-zero"
+fi
+
 # ══════════════════════════════════════════════════════════════════════════════
 # maybe_rebuild_stale_image
 # ══════════════════════════════════════════════════════════════════════════════

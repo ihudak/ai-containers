@@ -65,7 +65,15 @@ for t in $selected; do
   if [ "$rc" -eq 0 ]; then
     # Surface the assertion count without the noise.
     ok="$(grep -cE '^(PASS|  ok)' "$log")"
-    printf '   PASS  (%s assertion(s))\n' "$ok"
+    if [ "$ok" -eq 0 ]; then
+      # Exiting 0 without asserting anything is not a pass: it is a test that
+      # silently did nothing (bad guard, early return, renamed helper).
+      failed=$((failed + 1))
+      failed_names="${failed_names:+$failed_names }$name"
+      printf '   FAIL  (exited 0 but asserted nothing)\n'
+    else
+      printf '   PASS  (%s assertion(s))\n' "$ok"
+    fi
   else
     failed=$((failed + 1))
     failed_names="${failed_names:+$failed_names }$name"

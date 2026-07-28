@@ -170,6 +170,59 @@ if [[ "$out" == *"requires GITHUB_TOKEN"* ]] && [[ ! -s "$CURL_LOG" ]] && [[ ! -
 else
   fail "repo-file private/no-token guard"; fi
 
+# A failed download must warn and install NOTHING. Until this case existed every
+# fake curl in this file exited 0, so a "report success on failure" bug was
+# invisible by construction.
+printf 'repo=acme/vendored\nbinary=ext-cli\ninstall=repo-file\nrepo_path=utils/ext/ext-cli\n' > "$TOOLS_D_DIR/ext.conf"
+cat > "$FAKEBIN/curl" <<'CURLFAIL'
+#!/usr/bin/env bash
+exit 22   # what curl -f returns for an HTTP 4xx
+CURLFAIL
+chmod +x "$FAKEBIN/curl"
+rm -f "$BIN_DIR/ext-cli"
+out="$(PATH="$FAKEBIN:$PATH" install_one ext latest 2>&1)"
+if [[ "$out" == *"download failed"* ]] && [[ "$out" != *"Installed ext"* ]] && [[ ! -e "$BIN_DIR/ext-cli" ]]; then
+  pass "repo-file: failed download warns and installs nothing"
+else
+  fail "repo-file: failed download ($out)"; fi
+# ... and leaves no temp file behind.
+if ! ls "${TMPDIR:-/tmp}"/ext-cli.* >/dev/null 2>&1; then
+  pass "repo-file: failed download leaves no temp file"; else fail "repo-file: failed download leaves no temp file"; fi
+
+# A JSON payload (what the contents API returns for a DIRECTORY path) must NOT be
+# installed as the binary — curl -f cannot tell it from a file.
+printf 'repo=acme/vendored\nbinary=ext-cli\ninstall=repo-file\nrepo_path=utils/ext\n' > "$TOOLS_D_DIR/ext.conf"
+cat > "$FAKEBIN/curl" <<'CURLJSON'
+#!/usr/bin/env bash
+out=""; prev=""
+for a in "$@"; do [[ "$prev" == "-o" ]] && out="$a"; prev="$a"; done
+[[ -n "$out" ]] && printf '[{"name":"ext-cli-linux-arm64","type":"file"}]\n' > "$out"
+exit 0
+CURLJSON
+chmod +x "$FAKEBIN/curl"
+rm -f "$BIN_DIR/ext-cli"
+out="$(PATH="$FAKEBIN:$PATH" install_one ext latest 2>&1)"
+if [[ "$out" == *"returned JSON"* ]] && [[ ! -e "$BIN_DIR/ext-cli" ]]; then
+  pass "repo-file: JSON payload (directory path) rejected"; else fail "repo-file: JSON payload rejected ($out)"; fi
+
+# An unwritable install dir must warn, not claim success.
+printf 'repo=acme/vendored\nbinary=ext-cli\ninstall=repo-file\nrepo_path=utils/ext/ext-cli\n' > "$TOOLS_D_DIR/ext.conf"
+cat > "$FAKEBIN/curl" <<'CURLOK'
+#!/usr/bin/env bash
+out=""; prev=""
+for a in "$@"; do [[ "$prev" == "-o" ]] && out="$a"; prev="$a"; done
+[[ -n "$out" ]] && printf 'payload\n' > "$out"
+exit 0
+CURLOK
+chmod +x "$FAKEBIN/curl"
+_saved_bin="$BIN_DIR"; BIN_DIR="$TMP/nonexistent-dir/bin"
+out="$(PATH="$FAKEBIN:$PATH" install_one ext latest 2>&1)"
+if [[ "$out" == *"could not install"* ]] && [[ "$out" != *"Installed ext"* ]]; then
+  pass "repo-file: unwritable install dir warns instead of claiming success"
+else
+  fail "repo-file: unwritable install dir ($out)"; fi
+BIN_DIR="$_saved_bin"
+
 # A repo-file descriptor missing repo_path warns instead of building a bad URL.
 printf 'repo=acme/vendored\nbinary=ext-cli\ninstall=repo-file\n' > "$TOOLS_D_DIR/ext.conf"
 : > "$CURL_LOG"
@@ -197,6 +250,24 @@ export SANDBOX_CONF="$CONF"
 source "$REPO_DIR/sandbox-common.sh"
 [[ "$(enabled_agents_csv)" == "claude-code,copilot" ]] \
   && pass "enabled_agents_csv" || fail "enabled_agents_csv ($(enabled_agents_csv))"
+
+# Every agent key must be reachable: with only OFF fixtures, dropping a key from
+# the function's own list would go unnoticed. Flip each one ON in turn.
+for _agent in claude-code copilot codex gemini kiro; do
+  printf 'claude-code=OFF\ncopilot=OFF\ncodex=OFF\ngemini=OFF\nkiro=OFF\n' > "$CONF"
+  conf_set() { sed -i.bak "s/^${1}=OFF/${1}=ON/" "$CONF" && rm -f "$CONF.bak"; }
+  conf_set "$_agent"
+  [[ "$(enabled_agents_csv)" == "$_agent" ]] \
+    && pass "enabled_agents_csv: $_agent alone" \
+    || fail "enabled_agents_csv: $_agent alone ($(enabled_agents_csv))"
+done
+# All five together, to pin the order the container relies on.
+printf 'claude-code=ON\ncopilot=ON\ncodex=ON\ngemini=ON\nkiro=ON\n' > "$CONF"
+[[ "$(enabled_agents_csv)" == "claude-code,copilot,codex,gemini,kiro" ]] \
+  && pass "enabled_agents_csv: all five, stable order" \
+  || fail "enabled_agents_csv: all five ($(enabled_agents_csv))"
+# Restore the fixture the later build.sh assertions append to.
+printf 'claude-code=ON\ncopilot=ON\ncodex=OFF\ngemini=OFF\nkiro=OFF\n' > "$CONF"
 
 # --- build.sh pure helpers -----------------------------------------------------
 # Reuse the earlier foo(private)/bar descriptors; enable foo (pinned) + bar (ON).
