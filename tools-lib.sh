@@ -8,7 +8,7 @@
 # Pure functions only — no side effects at source time.
 #
 # Fields: repo, binary, private, config_dir, allowlist_fragment, skills,
-# skills_crossclient, install, repo_path, ref.
+# skills_crossclient, install, repo_path, ref, url.
 #
 # config_dir accepts SEVERAL space-separated paths, for a tool that splits its
 # state across more than one directory (e.g. config in one, credentials in
@@ -17,11 +17,20 @@
 # install selects how install-tools.sh obtains the binary:
 #   release    (default) a GitHub release asset, <binary>_<version>_<os>_<arch>.tar.gz
 #   repo-file  a prebuilt binary COMMITTED IN the repo, at repo_path
+#   url        a download from an arbitrary URL (url=), for a vendor that ships
+#              outside GitHub
 # repo-file exists for tools whose build artifacts are vendored into a git repo
 # instead of published as releases. repo_path is the path inside the repo and may
 # contain ${ARCH} (expanded to amd64/arm64). ref pins a branch/tag/commit; the
 # sandbox.conf value wins over it, so the key grammar for such a tool is
 # ON | <git-ref> | OFF (there are no release versions to pin).
+#
+# url is for a vendor-hosted download (no GitHub repo, no token). It may contain
+# ${OS}, ${ARCH} and ${VERSION} (the sandbox.conf value; "latest" for ON). A
+# .tar.gz/.tgz URL is unpacked and <binary> is located anywhere inside the
+# archive — vendors commonly nest it in a version-named directory — while any
+# other URL is treated as the binary itself. A tool whose vendor publishes only a
+# "latest" URL cannot be pinned, so its key grammar is ON | OFF.
 
 # Descriptor directory. Host scripts point this at the repo tree; container
 # scripts inherit the default.
@@ -48,10 +57,16 @@ tools_read_descriptor() {
   TOOL_name="$name"
   TOOL_repo="" TOOL_binary="" TOOL_private="no" TOOL_config_dir=""
   TOOL_allowlist_fragment="" TOOL_skills="no" TOOL_skills_crossclient=""
-  TOOL_install="release" TOOL_repo_path="" TOOL_ref=""
+  TOOL_install="release" TOOL_repo_path="" TOOL_ref="" TOOL_url=""
   [[ -f "$file" ]] || return 1
   while IFS= read -r line || [[ -n "$line" ]]; do
-    line="${line%%#*}"                    # strip comments
+    # Strip a trailing comment, but only when the '#' begins the line or follows
+    # whitespace: a value may legitimately contain one (a URL fragment, or a '#'
+    # inside a query string), and a blind ${line%%#*} silently truncated it.
+    case "$line" in
+      '#'*)            line="" ;;
+      *[[:space:]]'#'*) line="${line%%[[:space:]]#*}" ;;
+    esac
     [[ "$line" == *=* ]] || continue
     key="${line%%=*}"; val="${line#*=}"
     key="${key//[[:space:]]/}"            # trim key
@@ -68,6 +83,7 @@ tools_read_descriptor() {
       install)            TOOL_install="$val" ;;
       repo_path)          TOOL_repo_path="$val" ;;
       ref)                TOOL_ref="$val" ;;
+      url)                TOOL_url="$val" ;;
     esac
   done < "$file"
   [[ -n "$TOOL_binary" ]] || TOOL_binary="$name"
