@@ -30,3 +30,7 @@ allowlist-cidrs.d/custom.txt
 # Project registry — populated by project-init.sh. Gitignored to avoid
 # committing personal paths. See projects.conf.example for the format.
 /projects.conf
+
+# Agent-layer cache-bust token, written by build.sh after a successful build so a
+# plain build reproduces the last-built image instead of an older cached one.
+/.agents-cache-bust

@@ -294,7 +294,7 @@ done
 
 # Ensure the project's .ai-containers/.gitignore covers outputs + generated files.
 gi="${dest}/.gitignore"
-for pat in '.agent-blocked/' '.agent-discovery/' \
+for pat in '.agent-blocked/' '.agent-discovery/' '.agents-cache-bust' \
            'allowlist-domains.txt' 'allowlist-proxy-domains.txt' 'allowlist-cidrs.txt' \
            'allowlist-domains.d/custom.txt' 'allowlist-proxy-domains.d/custom.txt' 'allowlist-cidrs.d/custom.txt'; do
   if [[ ! -f "$gi" ]] || ! grep -qxF "$pat" "$gi" 2>/dev/null; then

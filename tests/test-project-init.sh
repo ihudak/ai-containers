@@ -39,6 +39,14 @@ grep -q 'command -v gh' "$LAUNCHER"                    && pass "gh guard present
 grep -q ': "${GITHUB_TOKEN:=$(gh auth token' "$LAUNCHER" && pass "non-clobbering assign" || fail "non-clobbering assign"
 grep -q 'export GITHUB_TOKEN' "$LAUNCHER"              && pass "token exported"          || fail "token exported"
 
+# The persisted agent cache-bust token is per-project build state, never
+# committed even when the project opts into versioning .ai-containers/.
+if grep -qxF '.agents-cache-bust' "$PROJ/.ai-containers/.gitignore" 2>/dev/null; then
+  pass "cache-bust token is gitignored in the project copy"
+else
+  fail "cache-bust token is gitignored in the project copy"
+fi
+
 # The token block must come BEFORE ./build.sh (else the build can't see it).
 tok_line="$(grep -n 'export GITHUB_TOKEN' "$LAUNCHER" | head -1 | cut -d: -f1)"
 build_line="$(grep -n '^\./build\.sh' "$LAUNCHER" | head -1 | cut -d: -f1)"

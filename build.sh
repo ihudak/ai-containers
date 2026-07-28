@@ -30,9 +30,14 @@ Environment variables:
                Opaque token (e.g. a timestamp) that busts the Docker layer cache
                for the agent install layers ONLY (Copilot/Claude/Codex/Gemini/Kiro
                and everything after them), reusing the heavy toolchain layers
-               above. Default 0 (cache reused). sandbox.sh sets a fresh value to
-               refresh stale agents quickly; you can also do it manually:
+               above. sandbox.sh sets a fresh value to refresh stale agents
+               quickly; you can also do it manually:
                AGENTS_CACHE_BUST=$(date +%s) ./build.sh
+               The token used is remembered in .agents-cache-bust and reused by
+               later builds, so a plain ./build.sh reproduces the image that was
+               last built instead of cache-hitting a pre-refresh one and moving
+               the tag back to it. --no-cache mints a fresh token (that build
+               refreshes the agents by definition).
   GITHUB_TOKEN Build-time only. Passed to docker build as a BuildKit secret
                (--secret id=github_token) so install-tools.sh can use the
                authenticated GitHub API (5000 req/h vs 60 req/h). Never written
@@ -310,11 +315,23 @@ build_image() {
   generate_allowlists
   build_args_from_config build_args
 
-  # Targeted agent-layer cache-bust. Default 0 reuses the cache; sandbox.sh sets a
-  # fresh timestamp to force-refresh the (unpinned) agent CLIs when the image is
-  # stale, without rebuilding the heavy toolchain layers. See the AGENTS_CACHE_BUST
-  # ARG in the Dockerfile.
-  build_args+=(--build-arg "AGENTS_CACHE_BUST=${AGENTS_CACHE_BUST:-0}")
+  # Targeted agent-layer cache-bust. The value is PERSISTED in .agents-cache-bust
+  # (see sandbox-common.sh) so a later plain build reproduces the image that was
+  # last built rather than cache-hitting an older one and dragging the tag back.
+  #   - explicit AGENTS_CACHE_BUST wins (sandbox.sh's staleness refresh, manual use)
+  #   - --no-cache rebuilds the agent layers from scratch, so that build IS a
+  #     refresh: mint a fresh token for it, otherwise the next plain build would
+  #     cache-hit the pre-refresh image again
+  #   - otherwise reuse the persisted token (0 on a first build)
+  local agents_bust="${AGENTS_CACHE_BUST:-}"
+  if [[ -z "$agents_bust" ]]; then
+    if [[ "${NO_CACHE:-0}" == "1" ]]; then
+      agents_bust="$(date -u +%s)"
+    else
+      agents_bust="$(read_agents_cache_bust)"
+    fi
+  fi
+  build_args+=(--build-arg "AGENTS_CACHE_BUST=${agents_bust}")
 
   if [[ "${NO_CACHE:-0}" == "1" ]]; then
     build_args+=(--no-cache)
@@ -328,7 +345,19 @@ build_image() {
 
   preflight_private_tools
 
+  # Image this tag pointed at before the build, so the replaced layer set can be
+  # dropped afterwards instead of accumulating as a dangling image.
+  local old_image_id
+  old_image_id="$(docker image inspect --format '{{.Id}}' "$build_image_name" 2>/dev/null || true)"
+
   docker build "${build_args[@]}" -t "$build_image_name" "$script_dir"
+
+  # Only after a successful build: remember the token this image was built with,
+  # then clean up the image it replaced.
+  write_agents_cache_bust "$agents_bust"
+  local new_image_id
+  new_image_id="$(docker image inspect --format '{{.Id}}' "$build_image_name" 2>/dev/null || true)"
+  remove_replaced_image "$old_image_id" "$new_image_id"
 }
 
 # Allow tests to source this file for its pure helpers without building.

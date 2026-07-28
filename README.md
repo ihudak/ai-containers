@@ -84,6 +84,14 @@ Two mechanisms keep them fresh:
 AGENTS_CACHE_BUST=$(date +%s) ./build.sh
 ```
 
+The token used is **remembered** in `.agents-cache-bust` (gitignored, per project) and reused by later builds. This matters because Docker's build cache is keyed by build-arg *value*: without it, the next plain `./build.sh` — which most launchers run on every start — would cache-hit the pre-refresh image, and because that result is bit-identical to the original build, Docker would move the tag back onto it (same image ID, same `.Created`). The refresh would be silently undone, the container would start from the stale image, and the staleness prompt below would reappear on every launch. `--no-cache` mints a fresh token, since such a build refreshes the agents by definition. An image built before this file existed self-heals on its first refresh.
+
+Each rebuild that produces a new image also drops the image it replaced, so dangling layer sets do not accumulate per project. The cleanup is deliberately narrow: one explicit image ID, skipped if that image still carries a tag, and `docker rmi` without `--force` so an image a container still references is kept. Build-cache records are never touched automatically — reclaim them yourself when needed:
+
+```bash
+docker builder prune --filter unused-for=720h
+```
+
 **2. Age-based auto-rebuild (automatic).** When you launch a container, `sandbox.sh` checks how old the image is. If it is at least `AGENT_REBUILD_MAX_AGE_HOURS` old (**default 72 = 3 days**), it offers to refresh the agents using the targeted rebuild above before starting:
 
 ```bash
@@ -99,7 +107,7 @@ AGENT_REBUILD_MAX_AGE_HOURS=0 ./sandbox.sh restricted /path/to/repo
 | `AGENT_REBUILD_MAX_AGE_HOURS` | `72` | Rebuild (refresh agents) if the image is at least this many hours old. `0`, `off`, or `never` disables the check. |
 | `AGENT_REBUILD_ACK` | unset | On a **non-TTY** run (CI/scripts), set to `1` to perform the rebuild without prompting. Without it, a non-TTY run with a stale image just warns and continues with the existing image. |
 
-On an interactive terminal, the launcher prompts (`[Y/n]`, default yes) before rebuilding so a slow rebuild never ambushes you. The rebuild reuses the heavy toolchain layers, so in practice it only re-fetches the agent CLIs.
+On an interactive terminal, the launcher prompts (`[Y/n]`, default yes) before rebuilding so a slow rebuild never ambushes you. The rebuild reuses the heavy toolchain layers, so in practice it only re-fetches the agent CLIs. Because the refresh token is persisted, accepting once is enough: later builds reproduce the refreshed image, so the prompt returns only when it is genuinely stale again.
 
 Run in restricted mode with the firewall enabled:
 
@@ -150,6 +158,7 @@ container:
 | `AI_CONTAINER_HOST_ACK` | Set `1` to skip the macOS `host`-group acknowledgement. Ignored on Linux. | `0` | — |
 | `AGENT_REBUILD_MAX_AGE_HOURS` | Offer to refresh the bundled agents when the image is at least this many hours old. `0`/`off`/`never` disables. | `72` | — |
 | `AGENT_REBUILD_ACK` | On a non-TTY run, set `1` to rebuild a stale image without prompting. | `0` | — |
+| `AGENTS_CACHE_BUST` | Build-arg token that busts the agent-tier layers only. Persisted in `.ai-containers/.agents-cache-bust` and reused by later builds so a plain build cannot revert the tag to a pre-refresh image. `--no-cache` mints a fresh one. | persisted value, else `0` | — |
 | `SANDBOX_UID` / `SANDBOX_GID` / `SANDBOX_USER` / `SANDBOX_GROUP` | Override the container user identity. | detected from host (`id`) | forwarded |
 | `REPOS` | Space-separated **registered** repo volumes to attach under `/workspace/<name>`; append `:ro` (default), `:rw`, or `:rwcopy`. Register first with `./repo.sh add`. | none | mount |
 | `REPO_BACKEND` | How a repo is backed: `auto` \| `volume` \| `bind` (chosen at `repo.sh add` time). | `auto` | — |

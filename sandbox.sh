@@ -286,7 +286,11 @@ image_age_hours() {
 # offer to rebuild it so the bundled AI agents (which are installed unpinned at
 # build time and otherwise never update) are refreshed. The rebuild is a
 # TARGETED agent-layer refresh via AGENTS_CACHE_BUST — heavy toolchain layers
-# are reused.
+# are reused. build.sh persists the token it used (.agents-cache-bust) so the
+# next plain ./build.sh — which most launchers run on every start — reproduces
+# the refreshed image instead of cache-hitting the pre-refresh one and pulling
+# the tag (and its old .Created) back, which would make this prompt reappear on
+# every launch while the container kept starting from the stale image.
 #
 #   AGENT_REBUILD_MAX_AGE_HOURS threshold in hours (default 72; 0/off/never/no
 #                               disables the check entirely)
@@ -330,7 +334,7 @@ maybe_rebuild_stale_image() {
   elif [[ "${AGENT_REBUILD_ACK:-0}" == "1" ]]; then
     do_rebuild=1
   else
-    printf 'Skipping rebuild (no TTY and AGENT_REBUILD_ACK != 1). Run ./build.sh to refresh, or set AGENT_REBUILD_MAX_AGE_HOURS=0 to silence.\n' >&2
+    printf 'Skipping rebuild (no TTY and AGENT_REBUILD_ACK != 1). Run AGENTS_CACHE_BUST=$(date +%%s) ./build.sh to refresh, or set AGENT_REBUILD_MAX_AGE_HOURS=0 to silence.\n' >&2
     return 0
   fi
 
@@ -338,7 +342,7 @@ maybe_rebuild_stale_image() {
     printf 'Refreshing AI agents via targeted rebuild...\n' >&2
     AGENTS_CACHE_BUST="$(date -u +%s)" "${script_dir}/build.sh" "$image_name"
   else
-    printf 'Continuing with the existing image. Run ./build.sh (or AGENTS_CACHE_BUST=$(date +%%s) ./build.sh) to refresh later.\n' >&2
+    printf 'Continuing with the existing image. Run ./build.sh --no-cache, or AGENTS_CACHE_BUST=$(date +%%s) ./build.sh, to refresh later.\n' >&2
   fi
 }
 
