@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# run-all.sh — run the mgd-ai-containers test suite.
+#
+# Usage:
+#   ./tests/run-all.sh                 # run every tests/test-*.sh
+#   ./tests/run-all.sh docs-path       # run tests matching a substring
+#   ./tests/run-all.sh -v              # stream each test's full output
+#
+# Exit status: 0 only if every selected test exits 0.
+#
+# Each test is self-contained (its own temp dirs, isolated HOME, fake docker
+# where needed) and must not touch the real repo or the real projects.conf.
+# Written for bash 3.2 (stock macOS bash).
+
+set -uo pipefail
+
+tests_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+verbose=0
+filters=""
+for arg in "$@"; do
+  case "$arg" in
+    -v|--verbose) verbose=1 ;;
+    -h|--help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -*) printf 'run-all.sh: unknown option: %s\n' "$arg" >&2; exit 2 ;;
+    *) filters="${filters:+$filters }$arg" ;;
+  esac
+done
+
+selected=""
+for t in "$tests_dir"/test-*.sh; do
+  [ -f "$t" ] || continue
+  if [ -n "$filters" ]; then
+    match=0
+    for f in $filters; do
+      case "$(basename "$t")" in *"$f"*) match=1 ;; esac
+    done
+    [ "$match" -eq 1 ] || continue
+  fi
+  selected="${selected:+$selected }$t"
+done
+
+if [ -z "$selected" ]; then
+  printf 'run-all.sh: no tests matched%s\n' "${filters:+ ($filters)}" >&2
+  exit 2
+fi
+
+total=0
+failed=0
+failed_names=""
+log="$(mktemp)"
+trap 'rm -f "$log"' EXIT
+
+for t in $selected; do
+  name="$(basename "$t")"
+  total=$((total + 1))
+  printf '── %s\n' "$name"
+  if [ "$verbose" -eq 1 ]; then
+    bash "$t" 2>&1 | tee "$log"
+    rc=${PIPESTATUS[0]}
+  else
+    bash "$t" >"$log" 2>&1
+    rc=$?
+  fi
+  if [ "$rc" -eq 0 ]; then
+    # Surface the assertion count without the noise.
+    ok="$(grep -cE '^(PASS|  ok)' "$log")"
+    printf '   PASS  (%s assertion(s))\n' "$ok"
+  else
+    failed=$((failed + 1))
+    failed_names="${failed_names:+$failed_names }$name"
+    printf '   FAIL  (exit %s)\n' "$rc"
+    if [ "$verbose" -eq 0 ]; then
+      grep -E '^(FAIL|  FAIL|ERROR)' "$log" | sed 's/^/     /' | head -20
+      printf '     (run with -v for full output)\n'
+    fi
+  fi
+done
+
+printf '\n%s test(s), %s passed, %s failed\n' "$total" "$((total - failed))" "$failed"
+if [ "$failed" -gt 0 ]; then
+  printf 'Failing: %s\n' "$failed_names"
+  exit 1
+fi
