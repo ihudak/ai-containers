@@ -152,6 +152,20 @@ EOF
 printf 'othertool-domain.example\n' > "$REPO/allowlist-domains.d/othertool-frag.txt"
 echo 'othertool=OFF' >> "$CONF"
 
+# A third tools.d tool installed from a vendored repo file (install=repo-file).
+# Fragment inclusion must follow its sandbox.conf key exactly like a release-based
+# tool — the fetch mode has no bearing on the allowlist.
+cat > "$REPO/tools.d/exttool.conf" <<'EOF'
+repo=acme/vendored
+binary=ext-cli
+install=repo-file
+repo_path=utils/ext/ext-cli-linux-${ARCH}
+allowlist_fragment=exttool-frag
+EOF
+printf 'exttool-domain.example\n' > "$REPO/allowlist-domains.d/exttool-frag.txt"
+printf 'exttool-proxy.example\n' > "$REPO/allowlist-proxy-domains.d/exttool-frag.txt"
+echo 'exttool=ON' >> "$CONF"
+
 # ── Generate ─────────────────────────────────────────────────────────────────────
 gen_out="$(cd "$REPO" && SANDBOX_CONF="$CONF" bash -c '
   set -euo pipefail
@@ -226,6 +240,15 @@ grep -qxF 'mytool-proxy.example' "$PROXY" 2>/dev/null \
 grep -qxF 'othertool-domain.example' "$DOMAINS" 2>/dev/null \
   && fail "domains: an INACTIVE tool's allowlist_fragment must NOT be included" \
   || pass "domains: an INACTIVE tool's allowlist_fragment must NOT be included"
+
+# install=repo-file changes only HOW the binary is fetched, never the allowlist:
+# an active repo-file tool's fragment lands in both families.
+grep -qxF 'exttool-domain.example' "$DOMAINS" 2>/dev/null \
+  && pass "domains: active repo-file tool's allowlist_fragment is included" \
+  || fail "domains: active repo-file tool's allowlist_fragment is included"
+grep -qxF 'exttool-proxy.example' "$PROXY" 2>/dev/null \
+  && pass "proxy-domains: active repo-file tool's allowlist_fragment is included" \
+  || fail "proxy-domains: active repo-file tool's allowlist_fragment is included"
 
 # ── Each output file only gets its OWN fragment family (no cross-family leaks) ──
 grep -qxF 'proxy-enabled.example' "$DOMAINS" 2>/dev/null \

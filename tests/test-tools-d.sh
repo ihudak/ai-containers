@@ -42,6 +42,33 @@ tools_read_descriptor bar
 
 tools_read_descriptor missing && fail "missing returns 0" || pass "missing returns 1"
 
+# --- install=repo-file + multi-path config_dir ----------------------------------
+# A descriptor for a tool whose prebuilt binary is COMMITTED IN a repo instead of
+# published as a release asset, and whose state spans two directories.
+cat > "$TOOLS_D_DIR/ext.conf" <<'EOF'
+repo=acme/vendored
+binary=ext-cli
+install=repo-file
+repo_path=utils/ext/ext-cli-linux-${ARCH}
+ref=main
+config_dir=.ext .config/ext-cli
+EOF
+tools_read_descriptor ext
+[[ "$TOOL_install" == "repo-file" ]] && pass "install parsed" || fail "install parsed ($TOOL_install)"
+[[ "$TOOL_repo_path" == 'utils/ext/ext-cli-linux-${ARCH}' ]] \
+  && pass "repo_path parsed verbatim (\${ARCH} not expanded at parse time)" \
+  || fail "repo_path parsed ($TOOL_repo_path)"
+[[ "$TOOL_ref" == "main" ]] && pass "ref parsed" || fail "ref parsed ($TOOL_ref)"
+[[ "$TOOL_config_dir" == ".ext .config/ext-cli" ]] \
+  && pass "config_dir keeps a space-separated list" || fail "config_dir list ($TOOL_config_dir)"
+got="$(set -- $TOOL_config_dir; printf '%s|' "$@")"
+[[ "$got" == ".ext|.config/ext-cli|" ]] \
+  && pass "config_dir splits into 2 paths" || fail "config_dir splits ($got)"
+tools_read_descriptor foo
+[[ "$TOOL_install" == "release" ]] && pass "install defaults to release" || fail "install default ($TOOL_install)"
+[[ -z "$TOOL_repo_path" && -z "$TOOL_ref" ]] && pass "repo_path/ref do not leak" || fail "repo_path/ref leak"
+rm -f "$TOOLS_D_DIR/ext.conf"
+
 # Real descriptors: pin the dtctl/dtmgd cross-client invocations, which differ
 # by a subtle space (--cross-client vs --for cross-client). Field-level, not
 # list-level, so this holds in repos that ship additional descriptors.
@@ -63,9 +90,98 @@ source "$REPO_DIR/install-tools.sh"   # sourced, not executed (guarded main)
 [[ "$(asset_name dtctl v0.25.0)" == "dtctl_0.25.0_linux_amd64.tar.gz" ]] \
   && pass "asset_name" || fail "asset_name ($(asset_name dtctl v0.25.0))"
 
+# --- ARCH resolution --------------------------------------------------------------
+# Both fetch modes key off ARCH: asset_name embeds it, and repo_path may template
+# ${ARCH}. A wrong value installs a binary for the wrong machine and only fails at
+# runtime with "cannot execute binary file", so pin the uname mapping. ARCH comes
+# from `uname -m` INSIDE the build container, i.e. the image's own platform.
+for _pair in "x86_64:amd64" "aarch64:arm64"; do
+  _u="${_pair%%:*}"; _want="${_pair##*:}"
+  mkdir -p "$TMP/un-$_u"
+  printf '#!/usr/bin/env bash\nif [[ "$1" == "-s" ]]; then echo Linux; else echo %s; fi\n' "$_u" \
+    > "$TMP/un-$_u/uname"
+  chmod +x "$TMP/un-$_u/uname"
+  _got="$(PATH="$TMP/un-$_u:$PATH" TOOLS_LIB="$REPO_DIR/tools-lib.sh" \
+    bash -c 'unset ARCH OS; source "$TOOLS_LIB"; source '"$REPO_DIR"'/install-tools.sh; printf "%s/%s" "$OS" "$ARCH"')"
+  [[ "$_got" == "linux/$_want" ]] \
+    && pass "ARCH: uname -m $_u -> $_want" || fail "ARCH: uname -m $_u -> $_got (want linux/$_want)"
+done
+
 got="$(parse_versions 'dtctl=0.25.0;toolx=latest;empty=' | tr '\t' ':' | tr '\n' ' ')"
 [[ "$got" == "dtctl:0.25.0 toolx:latest empty: " ]] \
   && pass "parse_versions" || fail "parse_versions ($got)"
+
+# --- install=repo-file fetch (fake curl; nothing leaves the machine) -----------
+cat > "$TOOLS_D_DIR/ext.conf" <<'EOF'
+repo=acme/vendored
+binary=ext-cli
+install=repo-file
+repo_path=utils/ext/ext-cli-linux-${ARCH}
+EOF
+FAKEBIN="$TMP/fakebin"; mkdir -p "$FAKEBIN"
+CURL_LOG="$TMP/curl.log"
+cat > "$FAKEBIN/curl" <<CURL
+#!/usr/bin/env bash
+printf '%s\n' "\$@" >> "$CURL_LOG"
+out=""; prev=""
+for a in "\$@"; do [[ "\$prev" == "-o" ]] && out="\$a"; prev="\$a"; done
+[[ -n "\$out" ]] && printf 'ELF-ish payload\n' > "\$out"
+exit 0
+CURL
+chmod +x "$FAKEBIN/curl"
+
+# BIN_DIR is resolved from TOOLS_BIN_DIR when install-tools.sh is SOURCED (which
+# already happened above), so set the in-scope variable directly. Belt and braces:
+# also export TOOLS_BIN_DIR for anything that re-reads it.
+export TOOLS_BIN_DIR="$TMP/bin"; mkdir -p "$TOOLS_BIN_DIR"
+BIN_DIR="$TOOLS_BIN_DIR"
+: > "$CURL_LOG"
+out="$(PATH="$FAKEBIN:$PATH" ARCH=arm64 install_one ext latest 2>&1)"
+if grep -q 'https://api.github.com/repos/acme/vendored/contents/utils/ext/ext-cli-linux-arm64$' "$CURL_LOG"; then
+  pass "repo-file: contents API URL built, \${ARCH} expanded, no ref for latest"
+else
+  fail "repo-file URL ($(grep '^https' "$CURL_LOG" | head -1))"; fi
+if grep -qx 'Accept: application/vnd.github.raw' "$CURL_LOG"; then
+  pass "repo-file: raw media type requested"; else fail "repo-file: raw media type requested"; fi
+if [[ -x "$TOOLS_BIN_DIR/ext-cli" ]]; then
+  pass "repo-file: binary installed executable"; else fail "repo-file: binary installed executable"; fi
+
+# An explicit ref (from the sandbox.conf value) must reach the URL.
+: > "$CURL_LOG"; rm -f "$TOOLS_BIN_DIR/ext-cli"
+PATH="$FAKEBIN:$PATH" ARCH=amd64 install_one ext 9f3c1ab >/dev/null 2>&1
+if grep -q 'contents/utils/ext/ext-cli-linux-amd64?ref=9f3c1ab$' "$CURL_LOG"; then
+  pass "repo-file: sandbox.conf value used as git ref"; else fail "repo-file ref ($(grep '^https' "$CURL_LOG" | head -1))"; fi
+
+# The descriptor's own ref= is the default when the key is just ON (latest).
+printf 'repo=acme/vendored\nbinary=ext-cli\ninstall=repo-file\nrepo_path=utils/ext/ext-cli\nref=release-1\n' \
+  > "$TOOLS_D_DIR/ext.conf"
+: > "$CURL_LOG"; rm -f "$TOOLS_BIN_DIR/ext-cli"
+PATH="$FAKEBIN:$PATH" install_one ext latest >/dev/null 2>&1
+if grep -q 'contents/utils/ext/ext-cli?ref=release-1$' "$CURL_LOG"; then
+  pass "repo-file: descriptor ref= is the default for ON"; else fail "repo-file descriptor ref ($(grep '^https' "$CURL_LOG" | head -1))"; fi
+
+# A private repo-file tool with no token must skip BEFORE any curl.
+printf 'repo=acme/vendored\nbinary=ext-cli\ninstall=repo-file\nprivate=yes\nrepo_path=utils/ext/ext-cli\n' \
+  > "$TOOLS_D_DIR/ext.conf"
+: > "$CURL_LOG"; rm -f "$TOOLS_BIN_DIR/ext-cli"
+out="$( unset GITHUB_TOKEN; PATH="$FAKEBIN:$PATH" install_one ext latest 2>&1 )"
+if [[ "$out" == *"requires GITHUB_TOKEN"* ]] && [[ ! -s "$CURL_LOG" ]] && [[ ! -e "$TOOLS_BIN_DIR/ext-cli" ]]; then
+  pass "repo-file: private with no token skips before any fetch"
+else
+  fail "repo-file private/no-token guard"; fi
+
+# A repo-file descriptor missing repo_path warns instead of building a bad URL.
+printf 'repo=acme/vendored\nbinary=ext-cli\ninstall=repo-file\n' > "$TOOLS_D_DIR/ext.conf"
+: > "$CURL_LOG"
+out="$(PATH="$FAKEBIN:$PATH" install_one ext latest 2>&1)"
+if [[ "$out" == *"repo_path"* ]] && [[ ! -s "$CURL_LOG" ]]; then
+  pass "repo-file: missing repo_path warns, no fetch"; else fail "repo-file missing repo_path ($out)"; fi
+# Nothing may have leaked into the image's real install dir.
+[[ ! -e /usr/local/bin/ext-cli ]] \
+  && pass "repo-file: test never wrote to the real /usr/local/bin" \
+  || fail "repo-file: test never wrote to the real /usr/local/bin"
+unset TOOLS_BIN_DIR; BIN_DIR=/usr/local/bin
+rm -f "$TOOLS_D_DIR/ext.conf"
 
 # --- enabled_agents_csv --------------------------------------------------------
 CONF="$TMP/sandbox.conf"
@@ -111,6 +227,7 @@ dedup_out="$(TOOLS_D_DIR="$_ddir" SANDBOX_CONF="$TMP/dedup.conf" bash -c '
   source "'"$REPO_DIR"'/sandbox-common.sh"; source "'"$REPO_DIR"'/build.sh"
   active_tool_fragments' | tr '\n' ' ')"
 [[ "$dedup_out" == "shared " ]] && pass "active_tool_fragments dedup" || fail "active_tool_fragments dedup ($dedup_out)"
+
 
 # foo is private + no token → preflight must warn on stderr, non-fatally.
 ( unset GITHUB_TOKEN GITHUB_PERSONAL_ACCESS_TOKEN; preflight_private_tools ) 2>"$TMP/pf.err"
