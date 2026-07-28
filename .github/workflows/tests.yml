@@ -1,0 +1,41 @@
+name: Tests
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  suite:
+    name: Shell test suite
+    runs-on: ubuntu-latest
+
+    steps:
+      # Full history: check-sandbox-version.sh compares sandbox.conf against a
+      # base ref, so a shallow clone would leave it nothing to diff.
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Show bash version
+        run: bash --version | head -1
+
+      # The suite drives project-init.sh / sync-to-projects.sh, which rsync the
+      # repo into throwaway dirs. Present on GitHub runners, guarded anyway.
+      - name: Ensure rsync is available
+        run: command -v rsync >/dev/null || (sudo apt-get update && sudo apt-get install -y rsync)
+
+      - name: Run tests
+        run: ./tests/run-all.sh
+
+      # The documented CI gate against a SILENT semantic sandbox.conf change.
+      # BASE_REF must predate the change under review: the script's default HEAD
+      # only detects an UNCOMMITTED edit and silently no-ops in CI.
+      - name: sandbox.conf schema gate
+        run: |
+          base="${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || 'HEAD^' }}"
+          BASE_REF="$base" ./check-sandbox-version.sh --check
