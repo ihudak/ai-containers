@@ -204,6 +204,23 @@ case "$mode" in
       --user="$sandbox_user" \
       -- -l
     ;;
+  open)
+    setup_sandbox_user
+    chown_workspace_root
+
+    printf '╔══════════════════════════════════════════════════════════════════╗\n'
+    printf '║  OPEN MODE: outbound network is UNRESTRICTED and NOT captured.   ║\n'
+    printf '║  No firewall, no allowlist, no traffic logging. Use only for    ║\n'
+    printf '║  projects that do not require network isolation.                ║\n'
+    printf '╚══════════════════════════════════════════════════════════════════╝\n'
+
+    run_agent_skill_install
+
+    exec capsh \
+      --drop=cap_net_admin,cap_net_raw \
+      --user="$sandbox_user" \
+      -- -l
+    ;;
   *)
     printf 'Unsupported DEV_CONTAINER_MODE: %s\n' "$mode" >&2
     exit 1

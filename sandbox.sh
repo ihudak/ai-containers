@@ -52,10 +52,12 @@ usage() {
 Usage:
   ./sandbox.sh restricted [primary]
   ./sandbox.sh discovery  [primary]
+  ./sandbox.sh open       [primary]
 
 Commands:
   restricted  Run the container with the firewall enabled (agent runs as non-root, NET_ADMIN/NET_RAW dropped)
   discovery   Run the container with unrestricted egress and background capture (runs as sandbox user)
+  open        Run with UNRESTRICTED egress and NO capture (no firewall, no logging)
 
 Positional [primary] — selects the working directory inside the container:
   @<repo>     A REGISTERED repo (see ./repo.sh) becomes the working dir at
@@ -365,6 +367,7 @@ run_container() {
   fi
 
   local capabilities=(--cap-add=NET_ADMIN --cap-add=NET_RAW)
+  [[ "$mode" == "open" ]] && capabilities=()
   local sandbox_username="${SANDBOX_USER:-$(id -un)}"
   local dev_home="/home/$sandbox_username"
 
@@ -374,10 +377,11 @@ run_container() {
     capture_enabled="1"
     mkdir -p "$launch_dir/.agent-discovery"
     output_mount_flags+=(-v "$launch_dir/.agent-discovery:/workspace/.agent-discovery")
-  else
+  elif [[ "$mode" == "restricted" ]]; then
     mkdir -p "$launch_dir/.agent-blocked"
     output_mount_flags+=(-v "$launch_dir/.agent-blocked:/workspace/.agent-blocked")
   fi
+  # open: no firewall capture, no output mounts.
 
   # Names already claimed under the /workspace umbrella (collision detection).
   local -A repos_used=()
@@ -877,7 +881,7 @@ run_container() {
 command="${1:-usage}"
 
 case "$command" in
-  restricted|discovery)
+  restricted|discovery|open)
     run_container "$command" "${2:-}"
     ;;
   build)
