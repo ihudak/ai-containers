@@ -837,7 +837,7 @@ run_container() {
   fi
 
   docker run -it --rm \
-    "${capabilities[@]}" \
+    ${capabilities[@]+"${capabilities[@]}"} \
     --add-host=host.docker.internal:host-gateway \
     ${env_file_args[@]+"${env_file_args[@]}"} \
     ${port_flags[@]+"${port_flags[@]}"} \
