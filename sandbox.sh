@@ -141,6 +141,9 @@ Environment variables:
                       and a :ro/:rw suffix (default :ro). When the docs repo is the working dir,
                       DOCS_PATH re-points to that writable mount. To edit docs, use :rw or mount
                       the repo as the working dir.
+  SANDBOX_ENV_FILE    Path to a KEY=VALUE env-file injected into the container
+                      (default: <script_dir>/container.env if present). For
+                      in-container app env (DB_HOST, REDIS_URL, ...). Not for secrets.
   SELF_HEALING_ENABLED  Set to 0 to disable self-healing allowlist (default: 1).
   GITHUB_PERSONAL_ACCESS_TOKEN
                         Forwarded into the container as-is for tools that expect this
@@ -809,6 +812,18 @@ run_container() {
     done
   fi
 
+  # Optional project env-file → in-container app env (DB_HOST, REDIS_URL, ...).
+  # Auto-detect container.env beside this script (i.e. <project>/.ai-containers/),
+  # or honour an explicit SANDBOX_ENV_FILE override.
+  local env_file_args=()
+  local _env_file="${SANDBOX_ENV_FILE:-${script_dir}/container.env}"
+  if [[ -n "${SANDBOX_ENV_FILE:-}" && ! -f "$_env_file" ]]; then
+    printf 'WARNING: SANDBOX_ENV_FILE=%s not found — skipping.\n' "$_env_file" >&2
+  elif [[ -f "$_env_file" ]]; then
+    env_file_args+=(--env-file "$_env_file")
+    printf 'Injecting project env-file: %s\n' "$_env_file" >&2
+  fi
+
   local mem_limit mem_reservation mem_swap
   validate_memory_limits
 
@@ -820,6 +835,7 @@ run_container() {
   docker run -it --rm \
     "${capabilities[@]}" \
     --add-host=host.docker.internal:host-gateway \
+    ${env_file_args[@]+"${env_file_args[@]}"} \
     ${port_flags[@]+"${port_flags[@]}"} \
     --cpus="${CONTAINER_CPUS:-1.0}" \
     --memory="$mem_limit" \
