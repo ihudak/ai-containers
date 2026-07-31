@@ -59,5 +59,25 @@ EOF
 grep -q '^FAIL:' "$F2/out.txt" && fails=$((fails+1))
 rm -rf "$F2"
 
+# Allowlist gating: mongo present → mongodb.txt included; absent → excluded.
+F3="$(mktemp -d)"
+cat > "$F3/sandbox.conf" <<'EOF'
+# schema-version: 3
+db-clients=pg
+EOF
+(
+  export SANDBOX_CONF="$F3/sandbox.conf"
+  # shellcheck source=/dev/null
+  source "$REPO_DIR/build.sh"
+  db_clients_has mongo && printf 'FAIL: mongo absent but reported present\n' \
+                       || printf 'PASS: mongo correctly absent (pg-only)\n'
+) | tee "$F3/out.txt"
+grep -q '^FAIL:' "$F3/out.txt" && fails=$((fails+1))
+rm -rf "$F3"
+
+[[ -f "$REPO_DIR/allowlist-domains.d/mongodb.txt" ]] \
+  && printf 'PASS: mongodb.txt fragment exists\n' \
+  || { printf 'FAIL: mongodb.txt fragment missing\n'; fails=$((fails+1)); }
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

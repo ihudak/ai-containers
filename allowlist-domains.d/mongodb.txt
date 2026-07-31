@@ -1,0 +1,6 @@
+# MongoDB Shell (mongosh) — included when db-clients contains mongo.
+# Needed only to (re)fetch mongosh or run apt for mongodb-org inside a
+# RESTRICTED container; connecting to a Mongo DB uses that DB host's CIDR,
+# not these domains.
+repo.mongodb.org
+pgp.mongodb.com

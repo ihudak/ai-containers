@@ -151,6 +151,7 @@ generate_allowlists() {
     include_fragment         "$domains_d/nvm.txt"
     include_fragment         "$domains_d/pyenv.txt"
     include_if_has_versions  "$domains_d/rvm.txt"             ruby rails
+    if db_clients_has mongo; then include_fragment "$domains_d/mongodb.txt"; fi
     include_if_has_versions  "$domains_d/rust.txt"            rust
     include_if_has_versions  "$domains_d/go.txt"              go
     include_if_enabled       "$domains_d/goreleaser.txt"      goreleaser
