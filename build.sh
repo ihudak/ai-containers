@@ -205,6 +205,8 @@ build_args_from_config() {
     "vale:INSTALL_VALE"
     "qmd:INSTALL_QMD"
     "bun:INSTALL_BUN"
+    "imagemagick:INSTALL_IMAGEMAGICK"
+    "wkhtmltopdf:INSTALL_WKHTMLTOPDF"
   )
   for mapping in "${bool_mappings[@]}"; do
     component="${mapping%%:*}"
@@ -255,6 +257,17 @@ build_args_from_config() {
   ver="$(get_versions rails)";  _args+=(--build-arg "RAILS_VERSION=$ver")
   ver="$(get_versions rust)";   _args+=(--build-arg "RUST_TOOLCHAIN=$ver")
   ver="$(get_versions go)";     _args+=(--build-arg "GO_VERSION=$ver")
+
+  # DB client libraries (client/dev libs + CLIs only — never servers).
+  ver="$(get_versions db-clients)"; _args+=(--build-arg "DB_CLIENTS=$(versions_to_space "$ver")")
+
+  # Retain a runtime build toolchain so native extensions compile at runtime.
+  # Needed whenever Ruby is present or a DB driver will be built.
+  if has_versions ruby || has_versions db-clients; then
+    _args+=(--build-arg "KEEP_BUILD_TOOLCHAIN=1")
+  else
+    _args+=(--build-arg "KEEP_BUILD_TOOLCHAIN=0")
+  fi
 }
 
 # ── Tool descriptor helpers ──────────────────────────────────────────────────────

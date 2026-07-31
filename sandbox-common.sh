@@ -232,6 +232,17 @@ versions_to_space() {
   printf '%s' "$1" | tr ',' ' '
 }
 
+# Returns 0 if the db-clients list (comma-separated in sandbox.conf) contains
+# the given client name (pg | mysql | mongo).
+db_clients_has() {
+  local want="$1" c
+  local IFS=,
+  for c in $(get_versions db-clients); do
+    [[ "${c// /}" == "$want" ]] && return 0
+  done
+  return 1
+}
+
 # ── Path + volume-name helpers ──────────────────────────────────────────────────
 
 # Resolve a path to an ABSOLUTE path, following symlinks where possible.
