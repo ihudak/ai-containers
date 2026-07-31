@@ -42,7 +42,7 @@ It packages a CLI-only Docker-based workspace for running AI coding agents (GitH
 - `Dockerfile` builds the image from a configurable set of optional components: AI agents (GitHub Copilot CLI, Kiro CLI, Claude Code, Codex CLI, Gemini CLI), JVM toolchains (via SDKMAN: OpenJDK, GraalVM CE, Kotlin, Scala, Maven, Gradle), Node.js versions (via nvm), Python versions (via pyenv), Ruby + Rails (via rvm), Rust (via rustup), Go, cloud CLIs (AWS, Azure, kubectl, GitHub CLI), dev tools (Angular CLI, qmd, graphify, GoReleaser, Vale), and external CLI tools described in `tools.d/` (currently Dynatrace's `dtctl` and `dtmgd`). Node.js (latest LTS), Python (latest stable), git, jq, packet-capture tools, and the non-root sandbox user are always included.
 - `sandbox.conf` controls which optional components are built into the image and which credential directories are mounted at runtime.
 - `tools.d/` holds one descriptor file per external CLI tool the image can install (currently `dtctl.conf`, `dtmgd.conf`, `acli.conf`) — its GitHub repo, binary name, whether that repo is private, its config directory (one path, or several space-separated), how the binary is fetched (`install=release` from a release asset, `install=repo-file` for a prebuilt binary committed in a repo at `repo_path=`, or `install=url` for a vendor-hosted download at `url=`), its allowlist fragment, and whether it ships an Agent Skill. `tools-lib.sh` is the shared parser for these descriptors. `install-tools.sh` is the generic build-time installer driven by them, with optional authentication via `GITHUB_TOKEN`. `install-agent-skills.sh` runs at container start and installs each installed tool's Agent Skill for every enabled AI agent — see [Dynatrace CLIs (dtctl / dtmgd)](#dynatrace-clis-dtctl--dtmgd) below.
-- `entrypoint.sh` applies either a restricted firewall or a discovery mode at container startup. In both modes it creates the sandbox user and drops to it via `capsh`. Restricted mode drops `NET_ADMIN` and `NET_RAW`; discovery mode drops only `NET_ADMIN` (keeping `NET_RAW` for tcpdump).
+- `entrypoint.sh` applies a restricted firewall, a discovery mode, or an open (unrestricted, uncaptured) mode at container startup. In all three modes it creates the sandbox user and drops to it via `capsh`. Restricted and open modes drop both `NET_ADMIN` and `NET_RAW`; discovery mode drops only `NET_ADMIN` (keeping `NET_RAW` for tcpdump).
 - `refresh-ipset-allowlist.sh` resolves the concrete allowlist domains into IPv4 and IPv6 `ipset` sets.
 - `capture-blocked-traffic.sh` runs as a background root daemon in restricted mode, logging every blocked outbound destination to `/workspace/.agent-blocked/`.
 - `capture-agent-destinations.sh` helps you discover additional AI-agent-related DNS and TLS destinations in discovery mode.
@@ -109,6 +109,19 @@ AGENT_REBUILD_MAX_AGE_HOURS=0 ./sandbox.sh restricted /path/to/repo
 
 On an interactive terminal, the launcher prompts (`[Y/n]`, default yes) before rebuilding so a slow rebuild never ambushes you. The rebuild reuses the heavy toolchain layers, so in practice it only re-fetches the agent CLIs. Because the refresh token is persisted, accepting once is enough: later builds reproduce the refreshed image, so the prompt returns only when it is genuinely stale again.
 
+Three modes are available:
+
+- **restricted** — deny-by-default firewall (only allowlisted destinations reachable),
+  with a background daemon logging blocked outbound destinations. Drops `NET_ADMIN`
+  and `NET_RAW` from the agent shell. The default choice for day-to-day agent use.
+- **discovery** — unrestricted egress **with** capture (pcap + DNS/TLS destination
+  logging), used to observe what an agent actually reaches before writing a
+  restricted allowlist. Drops only `NET_ADMIN` (keeps `NET_RAW` for tcpdump).
+- **open** — unrestricted egress and **no** capture (no firewall, no allowlist, no
+  traffic logging). For projects that do not need network isolation. Drops both
+  `NET_ADMIN` and `NET_RAW`. Equivalent to the historical
+  `DISCOVERY_CAPTURE_ENABLED=0 ./sandbox.sh discovery`, but honestly named.
+
 Run in restricted mode with the firewall enabled:
 
 ```bash
@@ -119,6 +132,12 @@ Run in discovery mode to capture outbound destinations before tightening the all
 
 ```bash
 ./sandbox.sh discovery /path/to/your/repo
+```
+
+Run in open mode for unrestricted egress with no capture:
+
+```bash
+./sandbox.sh open /path/to/your/repo
 ```
 
 Everything is mounted under a single `/workspace` umbrella: the positional argument
@@ -176,6 +195,7 @@ container:
 | `ALLOW_IPV6_BYPASS` | Set `1` to suppress the `ip6tables`-unavailable warning (WSL2/nf_tables). | `0` | forwarded |
 | `COPILOT_GITHUB_TOKEN` | Copilot CLI auth token; bypasses device-flow OAuth. Auto-extracted from the group's `gh` `hosts.yml` when unset. | auto from `gh` | forwarded |
 | `GITHUB_PERSONAL_ACCESS_TOKEN` | Forwarded as-is for tools expecting this exact name (github MCP servers, Claude Code github plugin). | none | forwarded |
+| `SANDBOX_ENV_FILE` | Path to a `KEY=VALUE` env-file injected into the container via `docker run --env-file` — for non-secret in-container **application** env (e.g. `DB_HOST`, `REDIS_URL`), not credentials. | `<project>/.ai-containers/container.env` if present, else unset | — |
 
 See [Mounting an Obsidian vault](#mounting-an-obsidian-vault),
 [Mounting a specs repository](#mounting-a-specs-repository),
@@ -228,6 +248,41 @@ rust=stable
 # Go (direct tarball from go.dev/dl)
 go=1.24.2
 ```
+
+### db-clients — database client tools
+
+`db-clients` installs **client-side** tools only — the shells and dev headers needed to
+connect to, and compile drivers against, external databases. It never installs a
+database *server*, and it is language-agnostic: the same client libraries serve Ruby's
+`pg`/`mysql2`, Python's `psycopg2`/`mysqlclient`, Node's `pg`, etc. The value is a
+comma-separated subset of `pg`, `mysql`, `mongo`:
+
+```bash
+db-clients=pg,mysql,mongo   # any comma-separated subset of: pg, mysql, mongo
+db-clients=                 # empty = skip (default)
+```
+
+| Value | Installs |
+|-------|----------|
+| `pg` | `libpq-dev` (client dev headers) + `postgresql-client` (the `psql` shell) |
+| `mysql` | `default-libmysqlclient-dev` (client dev headers) + `default-mysql-client` (the `mysql` shell) |
+| `mongo` | `mongosh`, installed from MongoDB's own apt repository (not Ubuntu-packaged) |
+
+> **Note:** selecting `mongo` adds `repo.mongodb.org` to the generated domain allowlist automatically (needed to fetch the MongoDB apt repo and the `mongosh` package) — no manual `allowlist-domains.d/custom.txt` edit required.
+
+> **Note — retained runtime build toolchain.** Setting `ruby=` to any version, or `db-clients=` to a non-empty value, makes `build.sh` set `KEEP_BUILD_TOOLCHAIN=1`, which keeps `build-essential`, `libyaml-dev`, `zlib1g-dev`, and `libssl-dev` in the built image instead of stripping them (see [Important notes](#important-notes) below). This lets native extensions — the `pg`/`mysql2` gems, Python source wheels, and similar — compile **at container runtime**, not only at build time.
+
+### ImageMagick and wkhtmltopdf
+
+Two independent `ON`/`OFF` toggles for image and PDF tooling commonly needed at runtime:
+
+```bash
+imagemagick=ON    # install ImageMagick (mini_magick / image_processing / carrierwave)
+wkhtmltopdf=ON    # install wkhtmltopdf runtime libs + the official standalone binary
+```
+
+- **`imagemagick`** — installs the `imagemagick` apt package. Off by default.
+- **`wkhtmltopdf`** — installs the Qt/X11/font runtime libraries the `wkhtmltopdf` binary links against (so a gem-vendored binary, e.g. via `wkhtmltopdf-binary`, can actually run) **and** the official standalone `wkhtmltox` binary from the `wkhtmltopdf/packaging` GitHub releases, so non-Ruby projects get a working `wkhtmltopdf` too. No conflict between the two: a gem like `wicked_pdf` points at its own vendored binary, and the system binary on `PATH` does not override it. Off by default.
 
 ### graphify — code-to-knowledge-graph tool
 
@@ -946,7 +1001,7 @@ You can also edit `projects.conf` manually: one absolute project path per line, 
 - **DNS is unrestricted.** The firewall allows all outbound DNS (port 53) to any resolver. This is required for domain resolution but means DNS tunneling is theoretically possible. For higher-security deployments, restrict DNS to a specific resolver by adding `--dns 8.8.8.8` to the `docker run` command and tightening the iptables DNS rules in `entrypoint.sh`.
 - **IPv6 firewall may be unavailable.** Some environments (notably WSL2 with the nf_tables backend) lack `ip6table_filter`. When this happens, the IPv4 firewall works normally but IPv6 egress is completely unrestricted. The container prints a prominent warning at startup. Set `ALLOW_IPV6_BYPASS=1` to acknowledge the risk and suppress the hint.
 - **GraalVM Oracle licensing.** The `graalvm-oracle` key in `sandbox.conf` installs Oracle GraalVM, which is free for production use under the [GraalVM Free Terms and Conditions (GFTC)](https://www.oracle.com/downloads/licenses/graal-free-license.html) since September 2023. If you distribute images built with `graalvm-oracle=<version>`, ensure your use complies with the GFTC. GraalVM Community Edition (`graalvm-ce`) is fully open-source under GPLv2+CE.
-- **Ruby gem native extensions.** Build tools (`gcc`, `make`, and `-dev` headers) are removed after the image build to reduce image size. Gems with native C extensions (e.g. `nokogiri`, `pg`, `mysql2`) cannot be compiled inside the container with `gem install`. Pre-install them during the build by adding a `RUN` step after the rvm layer, or add `build-essential` back to the Dockerfile if you need to install such gems at runtime.
+- **Ruby gem native extensions.** Build tools (`gcc`, `make`, and `-dev` headers) are removed after the image build to reduce image size **unless** `ruby=` is set to any version or `db-clients=` is non-empty, in which case `build.sh` sets `KEEP_BUILD_TOOLCHAIN=1` and the Dockerfile keeps `build-essential`, `libyaml-dev`, `zlib1g-dev`, and `libssl-dev` (see [db-clients](#db-clients--database-client-tools) above). Without one of those two keys set, gems with native C extensions (e.g. `nokogiri`, `pg`, `mysql2`) cannot be compiled inside the container with `gem install`; pre-install them during the build by adding a `RUN` step after the rvm layer, or add `build-essential` back to the Dockerfile if you need to install such gems at runtime.
 - **Go: `go install` tools require `~/go/bin` on PATH.** `go install github.com/some/tool@latest` places the binary in `~/go/bin`. This directory is added to `PATH` via `/etc/bash.bashrc` when Go is enabled, so it is available in interactive shells. Non-interactive scripts that bypass `.bashrc` must set `export PATH="$HOME/go/bin:$PATH"` explicitly.
 - The per-component domain fragments are a practical baseline, not a guarantee that every future agent endpoint is covered. Use discovery mode to find gaps.
 - The asset set is intentionally CLI-only and does not depend on VS Code dev containers.
