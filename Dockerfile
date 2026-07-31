@@ -307,6 +307,66 @@ RUN if [ "$INSTALL_GITHUB_CLI" = "1" ]; then \
       rm -rf /var/lib/apt/lists/*; \
     fi
 
+# ── DB client libraries + CLIs (general, reusable) ──────────────────────────────
+# DB_CLIENTS: space-separated subset of {pg mysql mongo}. Installs CLIENT/dev
+# libs and shells ONLY — never database servers. libpq/mysql are Ubuntu-main;
+# mongosh comes from MongoDB's official apt repo.
+ARG DB_CLIENTS=""
+RUN if [ -n "$DB_CLIENTS" ]; then \
+      apt-get update; \
+      for c in $DB_CLIENTS; do \
+        case "$c" in \
+          pg) \
+            apt-get install -y --no-install-recommends libpq-dev postgresql-client ;; \
+          mysql) \
+            apt-get install -y --no-install-recommends default-libmysqlclient-dev default-mysql-client ;; \
+          mongo) \
+            curl -fsSL https://pgp.mongodb.com/server-8.0.asc \
+              | gpg --dearmor -o /usr/share/keyrings/mongodb-server-8.0.gpg && \
+            echo "deb [ signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg ] https://repo.mongodb.org/apt/ubuntu noble/mongodb-org/8.0 multiverse" \
+              > /etc/apt/sources.list.d/mongodb-org-8.0.list && \
+            apt-get update && apt-get install -y --no-install-recommends mongodb-mongosh ;; \
+          *) echo "WARNING: unknown db-client '$c' — skipping" >&2 ;; \
+        esac; \
+      done; \
+      rm -rf /var/lib/apt/lists/*; \
+    fi
+
+# ── Retain a runtime build toolchain (native extensions build at runtime) ───────
+# The cleanup layer above purged build-essential. Ruby gems (pg, bcrypt, ...),
+# DB driver gems, and Python source wheels compile at runtime, so put a minimal
+# toolchain back when KEEP_BUILD_TOOLCHAIN=1 (set by build.sh for ruby OR db-clients).
+ARG KEEP_BUILD_TOOLCHAIN=0
+RUN if [ "$KEEP_BUILD_TOOLCHAIN" = "1" ]; then \
+      apt-get update && apt-get install -y --no-install-recommends \
+        build-essential libyaml-dev zlib1g-dev libssl-dev && \
+      rm -rf /var/lib/apt/lists/*; \
+    fi
+
+# ── Optional: ImageMagick ───────────────────────────────────────────────────────
+ARG INSTALL_IMAGEMAGICK=0
+RUN if [ "$INSTALL_IMAGEMAGICK" = "1" ]; then \
+      apt-get update && apt-get install -y --no-install-recommends imagemagick && \
+      rm -rf /var/lib/apt/lists/*; \
+    fi
+
+# ── Optional: wkhtmltopdf runtime libs + standalone binary ───────────────────────
+# Installs the Qt/X11/font libraries the wkhtmltopdf binary links against (so a
+# gem-vendored binary can run) AND the official standalone binary (so non-Ruby
+# projects get a working wkhtmltopdf). No conflict: wicked_pdf points at its own
+# gem binary; a system binary on PATH does not override it.
+ARG INSTALL_WKHTMLTOPDF=0
+RUN if [ "$INSTALL_WKHTMLTOPDF" = "1" ]; then \
+      apt-get update && apt-get install -y --no-install-recommends \
+        libxrender1 libxext6 libx11-6 libfontconfig1 libjpeg-turbo8 \
+        fontconfig xfonts-base xfonts-75dpi && \
+      ARCH="$(dpkg --print-architecture)" && \
+      curl -fsSL -o /tmp/wkhtmltox.deb \
+        "https://github.com/wkhtmltopdf/packaging/releases/download/0.12.6.1-3/wkhtmltox_0.12.6.1-3.jammy_${ARCH}.deb" && \
+      apt-get install -y --no-install-recommends /tmp/wkhtmltox.deb && \
+      rm -f /tmp/wkhtmltox.deb && rm -rf /var/lib/apt/lists/*; \
+    fi
+
 # ── Optional: npm-based agent tools ────────────────────────────────────────────
 # Each agent gets its own layer so toggling one doesn't invalidate the others.
 #
