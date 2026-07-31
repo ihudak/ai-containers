@@ -79,5 +79,29 @@ rm -rf "$F3"
   && printf 'PASS: mongodb.txt fragment exists\n' \
   || { printf 'FAIL: mongodb.txt fragment missing\n'; fails=$((fails+1)); }
 
+# Exercise the ACTUAL gating line in generate_allowlists (build.sh) by running
+# it inside an isolated copy of the repo and grepping the produced allowlist.
+GA_TMP="$(mktemp -d)"
+cp "$REPO_DIR/build.sh" "$REPO_DIR/sandbox-common.sh" "$REPO_DIR/tools-lib.sh" "$GA_TMP/"
+cp -r "$REPO_DIR/allowlist-domains.d" "$REPO_DIR/allowlist-proxy-domains.d" "$REPO_DIR/allowlist-cidrs.d" "$GA_TMP/"
+mkdir -p "$GA_TMP/tools.d"
+
+printf 'db-clients=pg,mongo\n' > "$GA_TMP/sandbox.conf"
+( cd "$GA_TMP" && SANDBOX_CONF="$GA_TMP/sandbox.conf" bash -c 'source ./build.sh; generate_allowlists' ) >/dev/null 2>&1 || true
+if grep -q 'repo.mongodb.org' "$GA_TMP/allowlist-domains.txt" 2>/dev/null; then
+  pass "generate_allowlists includes mongodb.txt when db-clients has mongo"
+else
+  fail "generate_allowlists includes mongodb.txt when db-clients has mongo"
+fi
+
+printf 'db-clients=pg\n' > "$GA_TMP/sandbox.conf"
+( cd "$GA_TMP" && SANDBOX_CONF="$GA_TMP/sandbox.conf" bash -c 'source ./build.sh; generate_allowlists' ) >/dev/null 2>&1 || true
+if grep -q 'repo.mongodb.org' "$GA_TMP/allowlist-domains.txt" 2>/dev/null; then
+  fail "generate_allowlists excludes mongodb.txt when db-clients lacks mongo"
+else
+  pass "generate_allowlists excludes mongodb.txt when db-clients lacks mongo"
+fi
+rm -rf "$GA_TMP"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
