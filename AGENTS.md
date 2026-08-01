@@ -22,8 +22,9 @@ A CLI-only Docker workspace for running AI coding agents (GitHub Copilot CLI, Ki
 
 Optional components: `copilot`, `kiro`, `claude-code`, `codex`, `gemini`, `graphify`, `openjdk`, `graalvm-ce`, `graalvm-oracle`, `kotlin`, `scala`, `maven`, `gradle`, `kubectl`, `aws-cli`, `azure-cli`, `github-cli`, `angular-cli`, `yarn`, `pnpm`, `bun`, `goreleaser`, `vale`, `qmd`, `dtctl`, `dtmgd`, `imagemagick`, `wkhtmltopdf`.
 
-Version-list components (`node`, `python`, `ruby`, `rails`, `rust`, `go`) accept comma-separated version values instead of `ON`/`OFF` (e.g., `node=22,20`). Constraints:
-- `ruby`, `rails`, and `angular-cli` accept only a **single version** (not a comma-separated list).
+Version-list components (`node`, `python`, `ruby`, `rust`, `go`) accept comma-separated version values instead of `ON`/`OFF` (e.g., `node=22,20`). Constraints:
+- `angular-cli` accepts only a **single version** (not a comma-separated list).
+- `ruby` is a comma-separated list too, like `node`/`python` (e.g. `ruby=3.3.6,3.4.5`) — useful for migrating a project between Ruby versions. Nothing Ruby-related is baked into the image: rvm, every configured version, and installed gems live in a per-user `~/.rvm`, group-mounted like the agent dotfile dirs (see [Host directory mounts](#host-directory-mounts)) and installed additively at container start (`rvm-reconcile.sh`, `flock`-guarded against concurrent same-group starts) — a version's first install compiles it then (can take a few minutes), every later start is instant, and rubies/gems persist per group across container runs. The `rails` key has been removed entirely — Rails is an ordinary per-project gem, not a build-time/`sandbox.conf` concern.
 - SDKMAN-managed components (`openjdk`, `graalvm-ce`, `graalvm-oracle`, `kotlin`, `scala`, `maven`, `gradle`) require **full patch versions** (e.g., `openjdk=21.0.11`, not `21`).
 - Any tool described by a `tools.d/*.conf` descriptor (currently `dtctl`, `dtmgd`) accepts `ON` (auto-detect latest from GitHub), `x.y.z` (pinned), or `OFF` — this grammar is independent of the tool, so a future tool added the same way follows it automatically.
 - `node` always installs the latest LTS (required by the AI agents); `node=20,22` adds those versions alongside it. `nvm-version` pins the nvm release used to install Node (e.g., `nvm-version=v0.40.5`); leave empty for the Dockerfile default.
@@ -241,6 +242,8 @@ Agent dotfile dirs (`.claude`, `.copilot`, `.kiro`, `.codex`, `.gemini`, `.confi
 `sandbox.sh` always creates the group directory and its `.ssh/` + `.agents/` scaffold on first run. Per-component dirs (`.claude/`, `.copilot/`, etc.) are created only when the corresponding component is enabled in `sandbox.conf`.
 
 When `qmd` is enabled, its search index cache (`~/.cache/qmd`, containing `index.sqlite`) is also group-scoped and mounted at `$dev_home/.cache/qmd`, so the index built from `/workspace/vault`, `/workspace/specs`, and `/workspace/docs` persists across container restarts instead of rebuilding from scratch each run. Because the group is reused across projects while `VAULT_PATH`/`SPECS_PATH`/`DOCS_PATH` can point at different host content on each run, the cached index can hold stale or mixed entries for a reused in-container path (e.g. `/workspace/docs` pointed at a different repo than last time) until qmd reindexes it — mounting `DOCS_PATH`/`SPECS_PATH` via `@name` gives each source its own path (e.g. `/workspace/docs2`) and avoids the collision. This is an accepted tradeoff: the extra index size/reindex churn is cheap next to rebuilding the whole corpus every run.
+
+When `ruby` has at least one version configured, rvm and every installed Ruby version's gems live in `.rvm/`, also group-scoped and mounted the same way as the agent dotfile dirs above (created empty via `install -d`, not seeded from `$HOME`) — see the README "Ruby (via rvm)" section for the runtime bootstrap/reconcile detail.
 
 Host-shared paths that are **not** group-scoped: `.aws`, `.azure`, `.kube`, `.yarn`.
 

@@ -39,7 +39,7 @@ It packages a CLI-only Docker-based workspace for running AI coding agents (GitH
 
 ## What is included
 
-- `Dockerfile` builds the image from a configurable set of optional components: AI agents (GitHub Copilot CLI, Kiro CLI, Claude Code, Codex CLI, Gemini CLI), JVM toolchains (via SDKMAN: OpenJDK, GraalVM CE, Kotlin, Scala, Maven, Gradle), Node.js versions (via nvm), Python versions (via pyenv), Ruby + Rails (via rvm), Rust (via rustup), Go, cloud CLIs (AWS, Azure, kubectl, GitHub CLI), dev tools (Angular CLI, qmd, graphify, GoReleaser, Vale), and external CLI tools described in `tools.d/` (currently Dynatrace's `dtctl` and `dtmgd`). Node.js (latest LTS), Python (latest stable), git, jq, packet-capture tools, and the non-root sandbox user are always included.
+- `Dockerfile` builds the image from a configurable set of optional components: AI agents (GitHub Copilot CLI, Kiro CLI, Claude Code, Codex CLI, Gemini CLI), JVM toolchains (via SDKMAN: OpenJDK, GraalVM CE, Kotlin, Scala, Maven, Gradle), Node.js versions (via nvm), Python versions (via pyenv), Ruby (via rvm), Rust (via rustup), Go, cloud CLIs (AWS, Azure, kubectl, GitHub CLI), dev tools (Angular CLI, qmd, graphify, GoReleaser, Vale), and external CLI tools described in `tools.d/` (currently Dynatrace's `dtctl` and `dtmgd`). Node.js (latest LTS), Python (latest stable), git, jq, packet-capture tools, and the non-root sandbox user are always included.
 - `sandbox.conf` controls which optional components are built into the image and which credential directories are mounted at runtime.
 - `tools.d/` holds one descriptor file per external CLI tool the image can install (currently `dtctl.conf`, `dtmgd.conf`, `acli.conf`) — its GitHub repo, binary name, whether that repo is private, its config directory (one path, or several space-separated), how the binary is fetched (`install=release` from a release asset, `install=repo-file` for a prebuilt binary committed in a repo at `repo_path=`, or `install=url` for a vendor-hosted download at `url=`), its allowlist fragment, and whether it ships an Agent Skill. `tools-lib.sh` is the shared parser for these descriptors. `install-tools.sh` is the generic build-time installer driven by them, with optional authentication via `GITHUB_TOKEN`. `install-agent-skills.sh` runs at container start and installs each installed tool's Agent Skill for every enabled AI agent — see [Dynatrace CLIs (dtctl / dtmgd)](#dynatrace-clis-dtctl--dtmgd) below.
 - `entrypoint.sh` applies a restricted firewall, a discovery mode, or an open (unrestricted, uncaptured) mode at container startup. In all three modes it creates the sandbox user and drops to it via `capsh`. Restricted and open modes drop both `NET_ADMIN` and `NET_RAW`; discovery mode drops only `NET_ADMIN` (keeping `NET_RAW` for tcpdump).
@@ -236,11 +236,13 @@ nvm-version=v0.40.4
 # Extra Python versions alongside the always-on latest stable
 python=3.12,3.11
 
-# Ruby + Rails (rvm auto-installed when ruby is set; rails requires ruby)
-# SINGLE VERSION ONLY — unlike openjdk/node/python, ruby and rails do not
-# accept comma-separated lists. Specifying multiple versions will fail at build time.
-ruby=3.4.3
-rails=8.0.2
+# Ruby (rvm auto-installed when ruby has a version set)
+# Comma-separated list, like node/python — useful for migrating a project
+# between Ruby versions. See "Ruby (via rvm)" below for the full picture:
+# per-user ~/.rvm (group-mounted, not baked into the image), installed at
+# container start, persists across runs. The rails key has been removed
+# (Rails is an ordinary per-project gem, not a build-time concern).
+ruby=3.4.5,3.3.6
 
 # Rust toolchain: stable | beta | nightly | specific version
 rust=stable
@@ -248,6 +250,56 @@ rust=stable
 # Go (direct tarball from go.dev/dl)
 go=1.24.2
 ```
+
+### Ruby (via rvm)
+
+`ruby` accepts a **comma-separated list** of versions, exactly like `node` and
+`python` — useful for installing more than one Ruby, e.g. while migrating a
+project between versions:
+
+```bash
+ruby=3.4.5,3.3.6
+```
+
+Leave empty (`ruby=`) to skip Ruby entirely.
+
+**Per-user, group-mounted, installed at runtime.** Nothing Ruby-related is
+baked into the image. rvm itself, every version listed in `ruby=`, and all
+installed gems live in `~/.rvm`, mounted from the active container **group**
+— the same mechanism as `~/.claude`/`~/.codex`/`~/.gemini` (see
+[Host configuration mounts](#host-configuration-mounts)) — so state is shared
+by every project that uses that group and survives container restarts and
+rebuilds.
+
+At container start, an additive reconcile (`rvm-reconcile.sh`, run as the
+sandbox user and `flock`-guarded against concurrent same-group container
+starts) installs whichever configured versions are missing from the group's
+`~/.rvm`:
+- **First start after adding a version** — rvm bootstraps (if the group's
+  `~/.rvm` is still empty) and then compiles that Ruby from source, the same
+  one-time cost a local rvm/asdf install pays; this can take several minutes.
+- **Every later start** — the version is already present, so reconcile is a
+  no-op and the container starts instantly.
+
+Reconcile is purely additive: nothing already installed is ever removed, and
+the first version installed becomes the group's rvm default only if the group
+has no default yet — a later container in the same group never re-points an
+existing default.
+
+Because bootstrapping rvm and compiling Ruby pull from the network,
+`restricted` mode allowlists the hosts this needs
+(`allowlist-domains.d/rvm.txt`): `cache.ruby-lang.org` and `www.ruby-lang.org`
+for the Ruby source tarball, alongside the existing RubyGems hosts
+(`rubygems.org`, `api.rubygems.org`, `index.rubygems.org`,
+`rubygems-updates.s3.amazonaws.com`) for `bundle`/`gem install`.
+
+> **The `rails` key has been removed.** Rails is an ordinary per-project gem
+> installed with `bundle install`/`gem install`, like any other — it never
+> needed its own `sandbox.conf` key or a build-time pairing with a single
+> `ruby=` version. A project synced from an older `sandbox.conf` has its
+> `rails` line stripped automatically (schema v4,
+> `migrations/004-drop-rails.sh`); see
+> [sandbox.conf schema versioning](#sandboxconf-schema-versioning).
 
 ### db-clients — database client tools
 
@@ -690,6 +742,7 @@ Agent dotfile directories are sourced from the active container group (`~/.ai-co
 | `<group>/.claude.json` | `~/.claude.json` | read-write | `claude-code` |
 | `<group>/.codex/` | `~/.codex` | read-write | `codex` |
 | `<group>/.gemini/` | `~/.gemini` | read-write | `gemini` |
+| `<group>/.rvm/` | `~/.rvm` | read-write | `ruby` |
 | `<group>/.config/dtctl/` ² | `~/.config/dtctl` | read-write | `dtctl` |
 | `<group>/.config/dtmgd/` ² | `~/.config/dtmgd` | read-write | `dtmgd` |
 | `~/.aws` | `~/.aws` | read-write | `aws-cli` |
@@ -728,6 +781,7 @@ The default group is named `default`. Its directory is `~/.ai-containers/default
 │   ├── .local/share/kiro-cli/
 │   ├── .codex/
 │   ├── .gemini/
+│   ├── .rvm/              ← rvm + Ruby versions/gems (only when ruby= is set)
 │   ├── .config/dtctl/    ← tools.d config dir, seeded once from $HOME if present
 │   └── .config/dtmgd/    ← ditto
 ├── docs/               ← custom group, same shape
@@ -1001,7 +1055,7 @@ You can also edit `projects.conf` manually: one absolute project path per line, 
 - **DNS is unrestricted.** The firewall allows all outbound DNS (port 53) to any resolver. This is required for domain resolution but means DNS tunneling is theoretically possible. For higher-security deployments, restrict DNS to a specific resolver by adding `--dns 8.8.8.8` to the `docker run` command and tightening the iptables DNS rules in `entrypoint.sh`.
 - **IPv6 firewall may be unavailable.** Some environments (notably WSL2 with the nf_tables backend) lack `ip6table_filter`. When this happens, the IPv4 firewall works normally but IPv6 egress is completely unrestricted. The container prints a prominent warning at startup. Set `ALLOW_IPV6_BYPASS=1` to acknowledge the risk and suppress the hint.
 - **GraalVM Oracle licensing.** The `graalvm-oracle` key in `sandbox.conf` installs Oracle GraalVM, which is free for production use under the [GraalVM Free Terms and Conditions (GFTC)](https://www.oracle.com/downloads/licenses/graal-free-license.html) since September 2023. If you distribute images built with `graalvm-oracle=<version>`, ensure your use complies with the GFTC. GraalVM Community Edition (`graalvm-ce`) is fully open-source under GPLv2+CE.
-- **Ruby gem native extensions.** Build tools (`gcc`, `make`, and `-dev` headers) are removed after the image build to reduce image size **unless** `ruby=` is set to any version or `db-clients=` is non-empty, in which case `build.sh` sets `KEEP_BUILD_TOOLCHAIN=1` and the Dockerfile keeps `build-essential`, `libyaml-dev`, `zlib1g-dev`, and `libssl-dev` (see [db-clients](#db-clients--database-client-tools) above). Without one of those two keys set, gems with native C extensions (e.g. `nokogiri`, `pg`, `mysql2`) cannot be compiled inside the container with `gem install`; pre-install them during the build by adding a `RUN` step after the rvm layer, or add `build-essential` back to the Dockerfile if you need to install such gems at runtime.
+- **Ruby gem native extensions.** Build tools (`gcc`, `make`, and `-dev` headers) are removed after the image build to reduce image size **unless** `ruby=` is set to any version or `db-clients=` is non-empty, in which case `build.sh` sets `KEEP_BUILD_TOOLCHAIN=1` and the Dockerfile keeps `build-essential`, `libyaml-dev`, `zlib1g-dev`, and `libssl-dev` (see [db-clients](#db-clients--database-client-tools) above). Without one of those two keys set, gems with native C extensions (e.g. `nokogiri`, `pg`, `mysql2`) cannot be compiled inside the container with `gem install`; add `build-essential` back to the Dockerfile if you need to install such gems at runtime. (Ruby itself is installed at container start, not during the image build — see [Ruby (via rvm)](#ruby-via-rvm) above — so there is no longer a build-time rvm layer to pre-install gems into.)
 - **Go: `go install` tools require `~/go/bin` on PATH.** `go install github.com/some/tool@latest` places the binary in `~/go/bin`. This directory is added to `PATH` via `/etc/bash.bashrc` when Go is enabled, so it is available in interactive shells. Non-interactive scripts that bypass `.bashrc` must set `export PATH="$HOME/go/bin:$PATH"` explicitly.
 - The per-component domain fragments are a practical baseline, not a guarantee that every future agent endpoint is covered. Use discovery mode to find gaps.
 - The asset set is intentionally CLI-only and does not depend on VS Code dev containers.
