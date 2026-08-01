@@ -65,5 +65,12 @@ grep -q 'rvm install 3.4.5' <<<"$log_pfx" \
   && pass "prefix-collision: installs 3.4.5 despite 3.4.50 present" \
   || fail "prefix-collision: installs 3.4.5 despite 3.4.50 present"
 
+# Regression guard: rvm is not nounset-safe, so the reconcile must NOT enable set -u.
+if grep -qE '^set +-[a-z]*u|nounset' "$REPO_DIR/rvm-reconcile.sh"; then
+  fail "rvm-reconcile.sh must NOT enable nounset (breaks real rvm)"
+else
+  pass "rvm-reconcile.sh does not enable nounset"
+fi
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

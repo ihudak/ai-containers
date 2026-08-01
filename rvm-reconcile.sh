@@ -3,7 +3,10 @@
 # per-user rvm into the (group-mounted) ~/.rvm on first use, then additively
 # installs any configured-but-missing Ruby versions. Concurrency-safe via flock
 # on the shared mount; sets the default Ruby only when none exists.
-set -uo pipefail
+# NOTE: no `set -u` — rvm's scripts don't handle unset variables correctly (sourcing
+# rvm under `set -u` dies with "_system_name: unbound variable"). This script is written
+# to be safe without it (uses ${VAR:-} defaults).
+set -o pipefail
 versions="${RUBY_VERSIONS:-}"
 [[ -z "${versions// /}" ]] && exit 0    # no Ruby configured → nothing to do
 
