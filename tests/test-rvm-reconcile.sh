@@ -72,5 +72,12 @@ else
   pass "rvm-reconcile.sh does not enable nounset"
 fi
 
+# Regression guard: rvm install must pass --autolibs=disable (non-root; deps pre-baked).
+if grep -q 'rvm install "$v" --autolibs=disable' "$REPO_DIR/rvm-reconcile.sh"; then
+  pass "reconcile passes --autolibs=disable to rvm install"
+else
+  fail "reconcile passes --autolibs=disable to rvm install"
+fi
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

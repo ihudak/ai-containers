@@ -1,4 +1,4 @@
-# rvm + Ruby + Rails — included when ruby is configured
+# rvm + Ruby — included when ruby is configured
 get.rvm.io
 rvm.io
 rubygems.org
