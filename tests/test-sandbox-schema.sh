@@ -364,5 +364,28 @@ else
 fi
 rm -rf "$B_SUFFIX_TMP"
 
+# 004: drop the removed rails= key; idempotent; comments untouched.
+H4_TMP="$(mktemp -d)"
+cat > "$H4_TMP/sandbox.conf" <<'EOF'
+ruby=3.4.5
+rails=7.1.0
+# keep this comment
+node=
+EOF
+bash "$REPO_DIR/migrations/004-drop-rails.sh" "$H4_TMP/sandbox.conf"
+if ! grep -qE '^rails=' "$H4_TMP/sandbox.conf" \
+   && grep -qx 'ruby=3.4.5' "$H4_TMP/sandbox.conf" \
+   && grep -qx '# keep this comment' "$H4_TMP/sandbox.conf"; then
+  pass "004 drop-rails: removes rails=, keeps ruby= and comments"
+else
+  fail "004 drop-rails: removes rails=, keeps ruby= and comments"
+fi
+before4="$(cat "$H4_TMP/sandbox.conf")"
+bash "$REPO_DIR/migrations/004-drop-rails.sh" "$H4_TMP/sandbox.conf"
+[[ "$before4" == "$(cat "$H4_TMP/sandbox.conf")" ]] \
+  && pass "004 drop-rails: idempotent no-op on re-run" \
+  || fail "004 drop-rails: idempotent no-op on re-run"
+rm -rf "$H4_TMP"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
