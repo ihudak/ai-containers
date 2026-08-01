@@ -5,3 +5,7 @@ rubygems.org
 api.rubygems.org
 rubygems-updates.s3.amazonaws.com
 index.rubygems.org
+# Runtime Ruby install (rvm now bootstraps + compiles Ruby inside the container).
+cache.ruby-lang.org
+www.ruby-lang.org
+keyserver.ubuntu.com

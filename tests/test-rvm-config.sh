@@ -37,5 +37,10 @@ grep -q 'add_mount_if_exists config_mount_flags "\$group_root/.rvm"' "$REPO_DIR/
 grep -q 'RUBY_VERSIONS=' "$REPO_DIR/sandbox.sh" \
   && pass "sandbox.sh passes RUBY_VERSIONS" || fail "sandbox.sh passes RUBY_VERSIONS"
 
+for h in cache.ruby-lang.org keyserver.ubuntu.com; do
+  grep -qx "$h" "$REPO_DIR/allowlist-domains.d/rvm.txt" \
+    && pass "rvm.txt allowlists $h" || fail "rvm.txt allowlists $h"
+done
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
