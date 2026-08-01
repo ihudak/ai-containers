@@ -55,16 +55,6 @@ validate_config() {
   if is_enabled copilot && ! is_enabled github-cli; then
     printf 'NOTE: copilot=ON implies github-cli. gh CLI will be installed for authentication.\n' >&2
   fi
-  if has_versions rails && ! has_versions ruby; then
-    printf 'ERROR: rails is set in sandbox.conf but ruby is empty. Rails requires Ruby (via rvm).\n' >&2
-    exit 1
-  fi
-  local ruby_val; ruby_val=$(get_versions ruby)
-  if [[ "$ruby_val" == *,* ]]; then
-    printf 'ERROR: ruby only supports a single version (got: "%s").\n' "$ruby_val" >&2
-    printf '       Use a single version, e.g.: ruby=3.4.3\n' >&2
-    exit 1
-  fi
   local rails_val; rails_val=$(get_versions rails)
   if [[ "$rails_val" == *,* ]]; then
     printf 'ERROR: rails only supports a single version (got: "%s").\n' "$rails_val" >&2
@@ -254,8 +244,6 @@ build_args_from_config() {
   fi
 
   ver="$(get_versions python)"; _args+=(--build-arg "PYTHON_EXTRA_VERSIONS=$(versions_to_space "$ver")")
-  ver="$(get_versions ruby)";   _args+=(--build-arg "RUBY_VERSION=$ver")
-  ver="$(get_versions rails)";  _args+=(--build-arg "RAILS_VERSION=$ver")
   ver="$(get_versions rust)";   _args+=(--build-arg "RUST_TOOLCHAIN=$ver")
   ver="$(get_versions go)";     _args+=(--build-arg "GO_VERSION=$ver")
 
