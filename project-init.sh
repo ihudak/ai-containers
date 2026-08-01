@@ -351,8 +351,13 @@ fi
 
 ./build.sh
 #./build.sh --no-cache
+# Network mode — pick one:
+#   open       NO firewall, NO capture (unrestricted egress) — the default here.
+#   discovery  unrestricted egress + captures destinations (to build an allowlist).
+#   restricted deny-by-default firewall (allowlist only) — the hardened posture.
 #./sandbox.sh restricted ..
-./sandbox.sh discovery ..
+#./sandbox.sh discovery ..
+./sandbox.sh open ..
 EOF
   } > "$launch_script"
   chmod +x "$launch_script"
