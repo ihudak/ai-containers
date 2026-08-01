@@ -21,6 +21,16 @@ run_agent_skill_install() {
     bash /usr/local/bin/install-agent-skills.sh || true
 }
 
+# Bootstrap/reconcile the per-user rvm (~/.rvm, group-mounted) as the sandbox
+# user. Offline-tolerant, non-fatal — never blocks container start.
+run_ruby_reconcile() {
+  [[ -n "${RUBY_VERSIONS:-}" ]] || return 0
+  [[ -x /usr/local/bin/rvm-reconcile.sh ]] || return 0
+  runuser -u "$sandbox_user" -- \
+    env HOME="/home/$sandbox_user" RUBY_VERSIONS="${RUBY_VERSIONS}" \
+    bash /usr/local/bin/rvm-reconcile.sh || true
+}
+
 # Create the sandbox user at startup with the host user's name, UID, and GID so
 # that files in bind-mounted volumes (/workspace and its sub-mounts) are accessible
 # without any chown. useradd -m creates the home directory with correct ownership.
@@ -180,6 +190,7 @@ case "$mode" in
 
     # Hand control to the sandbox user with dangerous capabilities dropped.
     # Background processes forked above are unaffected by this exec and keep their capabilities.
+    run_ruby_reconcile
     run_agent_skill_install
 
     exec capsh \
@@ -197,6 +208,7 @@ case "$mode" in
     # are owned by the sandbox UID/GID — not root. This prevents permission
     # errors when the container is later run in restricted mode.
     # NET_RAW is kept (not dropped) so the sandbox user can run tcpdump if needed.
+    run_ruby_reconcile
     run_agent_skill_install
 
     exec capsh \
@@ -214,6 +226,7 @@ case "$mode" in
     printf '║  projects that do not require network isolation.                ║\n'
     printf '╚══════════════════════════════════════════════════════════════════╝\n'
 
+    run_ruby_reconcile
     run_agent_skill_install
 
     exec capsh \
