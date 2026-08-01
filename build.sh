@@ -257,6 +257,10 @@ build_args_from_config() {
   else
     _args+=(--build-arg "KEEP_BUILD_TOOLCHAIN=0")
   fi
+
+  # Ruby-build/rvm dependency layer is baked only when Ruby is requested;
+  # rvm itself and the interpreter are installed per-user at runtime.
+  if has_versions ruby; then _args+=(--build-arg "RUBY_RUNTIME=1"); else _args+=(--build-arg "RUBY_RUNTIME=0"); fi
 }
 
 # ── Tool descriptor helpers ──────────────────────────────────────────────────────

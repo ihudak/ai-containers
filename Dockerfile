@@ -169,34 +169,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN printf '\nexport PYENV_ROOT=%s\nexport PATH="$PYENV_ROOT/bin:$PYENV_ROOT/shims:$PATH"\n' \
       "$PYENV_ROOT" >> /etc/bash.bashrc
 
-# ── rvm + Ruby (+ Rails) ────────────────────────────────────────────────────────
-# rvm is only installed when RUBY_VERSION is set.
-ARG RUBY_VERSION=""
-ARG RAILS_VERSION=""
-RUN if [ -n "$RUBY_VERSION" ]; then \
-      apt-get update && apt-get install -y --no-install-recommends gnupg2 && \
-      rm -rf /var/lib/apt/lists/* && \
-      # Import RVM GPG keys
-      gpg2 --keyserver keyserver.ubuntu.com \
-            --recv-keys 409B6B1796C275462A1703113804BB82D39DC0E3 \
-                        7D2BAF1CF37B13E2069D6956105BD0E739499BDB && \
-      curl -fsSL https://get.rvm.io | bash -s stable && \
-      # Install Ruby
-      bash -lc "rvm install $RUBY_VERSION && rvm use $RUBY_VERSION --default" && \
-      # Install Rails if requested
-      if [ -n "$RAILS_VERSION" ]; then \
-        bash -lc "gem install rails -v $RAILS_VERSION --no-document"; \
-      fi && \
-      # Symlink ruby/gem/bundle into PATH
-      ln -sf /usr/local/rvm/rubies/default/bin/ruby   /usr/local/bin/ruby && \
-      ln -sf /usr/local/rvm/rubies/default/bin/gem    /usr/local/bin/gem && \
-      ln -sf /usr/local/rvm/rubies/default/bin/bundle /usr/local/bin/bundle; \
-    fi
-RUN if [ -n "$RUBY_VERSION" ]; then \
-      printf '\n[ -s "/usr/local/rvm/scripts/rvm" ] && source "/usr/local/rvm/scripts/rvm"\n' \
-        >> /etc/bash.bashrc; \
-    fi
-
 # ── rustup + Rust ───────────────────────────────────────────────────────────────
 # RUST_TOOLCHAIN: stable | beta | nightly | specific version, or empty to skip.
 ARG RUST_TOOLCHAIN=""
@@ -366,6 +338,37 @@ RUN if [ "$INSTALL_WKHTMLTOPDF" = "1" ]; then \
       apt-get install -y --no-install-recommends /tmp/wkhtmltox.deb && \
       rm -f /tmp/wkhtmltox.deb && rm -rf /var/lib/apt/lists/*; \
     fi
+
+# ── Ruby runtime prerequisites (rvm is a per-user install at ~/.rvm, done at
+# container start; nothing Ruby is baked). Retain the FULL ruby-build dependency
+# set so `rvm install` compiles Ruby at runtime, pre-seed rvm's GPG keys so the
+# runtime installer needs no keyserver, and bake a $HOME-relative conditional
+# rc-source line (no runtime /etc write needed).
+ARG RUBY_RUNTIME=0
+RUN if [ "$RUBY_RUNTIME" = "1" ]; then \
+      apt-get update && apt-get install -y --no-install-recommends \
+        build-essential gnupg2 ca-certificates procps \
+        autoconf bison patch libssl-dev libyaml-dev zlib1g-dev \
+        libreadline-dev libncurses-dev libffi-dev libgdbm-dev \
+        libsqlite3-dev sqlite3 libgmp-dev libtool && \
+      rm -rf /var/lib/apt/lists/* && \
+      # Pre-seed rvm signing keys into /etc/skel so every sandbox user inherits
+      # them and the runtime `rvm` installer skips the keyserver fetch.
+      install -d -m 700 /etc/skel/.gnupg && \
+      GNUPGHOME=/etc/skel/.gnupg gpg2 --batch --keyserver hkps://keyserver.ubuntu.com \
+        --recv-keys 409B6B1796C275462A1703113804BB82D39DC0E3 \
+                    7D2BAF1CF37B13E2069D6956105BD0E739499BDB && \
+      chmod -R go-rwx /etc/skel/.gnupg && \
+      # Source a per-user rvm when present (login + interactive shells).
+      printf '%s\n' '[ -s "$HOME/.rvm/scripts/rvm" ] && source "$HOME/.rvm/scripts/rvm"' \
+        > /etc/profile.d/rvm.sh && \
+      printf '\n%s\n' '[ -s "$HOME/.rvm/scripts/rvm" ] && source "$HOME/.rvm/scripts/rvm"' \
+        >> /etc/bash.bashrc; \
+    fi
+
+# Ship the runtime rvm reconcile script (invoked by entrypoint as the sandbox user).
+COPY rvm-reconcile.sh /usr/local/bin/rvm-reconcile.sh
+RUN chmod +x /usr/local/bin/rvm-reconcile.sh
 
 # ── Optional: npm-based agent tools ────────────────────────────────────────────
 # Each agent gets its own layer so toggling one doesn't invalidate the others.
