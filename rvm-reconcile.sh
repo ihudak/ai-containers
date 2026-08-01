@@ -28,14 +28,15 @@ fi
 # shellcheck disable=SC1091
 source "$rvm_root/scripts/rvm"
 
+# --autolibs=disable: don't let rvm apt-install requirements (needs root); the image pre-bakes the Ruby-build deps.
 for v in $versions; do
   if rvm list strings 2>/dev/null | grep -qx "ruby-$v"; then
     log "ruby-$v already present"
   else
     log "installing ruby-$v…"
-    if ! rvm install "$v"; then
+    if ! rvm install "$v" --autolibs=disable; then
       log "install failed; refreshing rvm definitions (rvm get stable) and retrying…"
-      rvm get stable && rvm reload && rvm install "$v"
+      rvm get stable && rvm reload && rvm install "$v" --autolibs=disable
     fi
   fi
 done
