@@ -747,7 +747,9 @@ run_container() {
     add_mount_if_exists config_mount_flags "$group_root/.gemini" "$dev_home/.gemini"
   fi
   if is_active ruby; then
-    install -d "$group_root/.rvm"
+    if [[ "$group" != "host" ]]; then
+      install -d "$group_root/.rvm"
+    fi
     add_mount_if_exists config_mount_flags "$group_root/.rvm" "$dev_home/.rvm"
   fi
   if is_enabled yarn; then
