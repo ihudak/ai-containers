@@ -29,5 +29,13 @@ EOF
 grep -q '^FAIL:' "$F1/out.txt" && fails=$((fails+1))
 rm -rf "$F1"
 
+bash -n "$REPO_DIR/sandbox.sh" && pass "sandbox.sh bash -n" || fail "sandbox.sh bash -n"
+grep -q 'install -d "\$group_root/.rvm"' "$REPO_DIR/sandbox.sh" \
+  && pass "sandbox.sh creates the group .rvm dir" || fail "sandbox.sh creates the group .rvm dir"
+grep -q 'add_mount_if_exists config_mount_flags "\$group_root/.rvm"' "$REPO_DIR/sandbox.sh" \
+  && pass "sandbox.sh mounts the group .rvm" || fail "sandbox.sh mounts the group .rvm"
+grep -q 'RUBY_VERSIONS=' "$REPO_DIR/sandbox.sh" \
+  && pass "sandbox.sh passes RUBY_VERSIONS" || fail "sandbox.sh passes RUBY_VERSIONS"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
