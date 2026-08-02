@@ -370,6 +370,11 @@ RUN if [ "$RUBY_RUNTIME" = "1" ]; then \
 COPY rvm-reconcile.sh /usr/local/bin/rvm-reconcile.sh
 RUN chmod +x /usr/local/bin/rvm-reconcile.sh
 
+# Ship the default-Ruby linker (invoked by entrypoint as root, after the reconcile,
+# to expose ruby/gem/bundle on /usr/local/bin for non-interactive shells).
+COPY link-default-ruby.sh /usr/local/bin/link-default-ruby.sh
+RUN chmod +x /usr/local/bin/link-default-ruby.sh
+
 # ── Optional: npm-based agent tools ────────────────────────────────────────────
 # Each agent gets its own layer so toggling one doesn't invalidate the others.
 #

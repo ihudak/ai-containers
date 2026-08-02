@@ -41,11 +41,29 @@ for v in $versions; do
   fi
 done
 
-# Set the default Ruby ONCE: only if rvm has no default alias yet. Never re-point
-# an existing default (so a later container never changes another's default).
+# Verify each requested version actually installed. The install loop above is
+# otherwise silent on total/partial failure — surface a clear FAILED line so a
+# broken container is diagnosable (the entrypoint runs this non-fatally). Collect
+# the versions that are actually present, in requested order.
+present=""
+for v in $versions; do
+  if rvm list strings 2>/dev/null | grep -qx "ruby-$v"; then
+    present="${present:+$present }$v"
+  else
+    log "FAILED: ruby-$v is not installed (all install attempts failed)"
+  fi
+done
+
+# Set the default Ruby ONCE: only if rvm has no default alias yet, and only to a
+# version that is actually present (first in the requested list). Never re-point an
+# existing default, and never point it at a version that failed to install.
 if ! rvm alias list 2>/dev/null | grep -q '^default '; then
-  set -- $versions
-  log "setting default ruby-$1 (first bootstrap)"
-  rvm --default use "$1"
+  if [[ -n "$present" ]]; then
+    set -- $present
+    log "setting default ruby-$1 (first bootstrap)"
+    rvm --default use "$1"
+  else
+    log "no requested Ruby version is installed; not setting a default"
+  fi
 fi
 log "done."

@@ -31,6 +31,16 @@ run_ruby_reconcile() {
     bash /usr/local/bin/rvm-reconcile.sh || true
 }
 
+# Expose the default Ruby on the global PATH (/usr/local/bin) so non-interactive,
+# non-login shells resolve ruby/gem/bundle without sourcing rvm. Runs as ROOT (this
+# writes /usr/local/bin) AFTER run_ruby_reconcile has set the default. Non-fatal.
+link_default_ruby() {
+  [[ -n "${RUBY_VERSIONS:-}" ]] || return 0
+  [[ -x /usr/local/bin/link-default-ruby.sh ]] || return 0
+  env RUBY_VERSIONS="${RUBY_VERSIONS}" \
+    bash /usr/local/bin/link-default-ruby.sh "/home/$sandbox_user" || true
+}
+
 # Create the sandbox user at startup with the host user's name, UID, and GID so
 # that files in bind-mounted volumes (/workspace and its sub-mounts) are accessible
 # without any chown. useradd -m creates the home directory with correct ownership.
@@ -191,6 +201,7 @@ case "$mode" in
     # Hand control to the sandbox user with dangerous capabilities dropped.
     # Background processes forked above are unaffected by this exec and keep their capabilities.
     run_ruby_reconcile
+    link_default_ruby
     run_agent_skill_install
 
     exec capsh \
@@ -209,6 +220,7 @@ case "$mode" in
     # errors when the container is later run in restricted mode.
     # NET_RAW is kept (not dropped) so the sandbox user can run tcpdump if needed.
     run_ruby_reconcile
+    link_default_ruby
     run_agent_skill_install
 
     exec capsh \
@@ -227,6 +239,7 @@ case "$mode" in
     printf '╚══════════════════════════════════════════════════════════════════╝\n'
 
     run_ruby_reconcile
+    link_default_ruby
     run_agent_skill_install
 
     exec capsh \

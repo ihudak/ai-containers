@@ -149,9 +149,9 @@ SENTINEL_DEST_GITIGNORE="$(cat "$DEST/.gitignore")"
 #
 # sync_project's copy loop is:
 #   for f in Dockerfile Dockerfile.seed .dockerignore sandbox-common.sh build.sh \
-#             sandbox.sh repo.sh entrypoint.sh rvm-reconcile.sh refresh-ipset-allowlist.sh \
-#             capture-blocked-traffic.sh capture-agent-destinations.sh \
-#             install-tools.sh install-agent-skills.sh tools-lib.sh; do
+#             sandbox.sh repo.sh entrypoint.sh rvm-reconcile.sh link-default-ruby.sh \
+#             refresh-ipset-allowlist.sh capture-blocked-traffic.sh \
+#             capture-agent-destinations.sh install-tools.sh install-agent-skills.sh tools-lib.sh; do
 # Extract the actual `for f in ... ; do` file list straight out of the function
 # body so this test tracks the script instead of a copy that can go stale.
 shared_files_raw="$(sed -n '/^sync_project()/,/^}/p' "$REPO_DIR/sync-to-projects.sh" \
@@ -176,7 +176,8 @@ for w in $shared_files_words; do derived_shared_files+=("$w"); done
 # set. Adding or removing a shared file is a deliberate act and must update this.
 expected_shared_files=(
   Dockerfile Dockerfile.seed .dockerignore sandbox-common.sh build.sh
-  sandbox.sh repo.sh entrypoint.sh rvm-reconcile.sh refresh-ipset-allowlist.sh
+  sandbox.sh repo.sh entrypoint.sh rvm-reconcile.sh link-default-ruby.sh
+  refresh-ipset-allowlist.sh
   capture-blocked-traffic.sh capture-agent-destinations.sh
   install-tools.sh install-agent-skills.sh tools-lib.sh
 )

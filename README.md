@@ -284,7 +284,22 @@ starts) installs whichever configured versions are missing from the group's
 Reconcile is purely additive: nothing already installed is ever removed, and
 the first version installed becomes the group's rvm default only if the group
 has no default yet — a later container in the same group never re-points an
-existing default.
+existing default. If a requested version fails to install (every attempt,
+including the `rvm get stable` retry), reconcile logs a clear
+`FAILED: ruby-<version>` line and, rather than pointing the default at a
+version that isn't there, sets the default to the first version that *did*
+install (or none, if all failed).
+
+**Non-interactive Ruby.** After the reconcile, the default Ruby's executables
+(`ruby`, `gem`, `bundle`, `bundler`, `rake`, `irb`) are symlinked onto
+`/usr/local/bin` so they resolve in **non-interactive, non-login** shells too —
+e.g. `docker exec -T <container> bash -c "bin/rails runner …"`, which would
+otherwise get `command not found` (login and interactive shells pick up rvm via
+`/etc/profile.d/rvm.sh` and `/etc/bash.bashrc`). These symlinks expose the
+**default** Ruby only; per-project version/gemset selection still comes from a
+project's `.ruby-version`/`.ruby-gemset` when a shell sources rvm, so a
+non-interactive caller that needs a non-default project gemset should run
+through a login shell (`bash -lc "…"`).
 
 Because bootstrapping rvm and compiling Ruby pull from the network,
 `restricted` mode allowlists the hosts this needs
