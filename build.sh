@@ -134,7 +134,7 @@ generate_allowlists() {
     include_if_has_versions  "$domains_d/openjdk.txt"         openjdk graalvm-ce graalvm-oracle
     include_fragment         "$domains_d/nvm.txt"
     include_fragment         "$domains_d/pyenv.txt"
-    include_if_has_versions  "$domains_d/rvm.txt"             ruby rails
+    include_if_has_versions  "$domains_d/rvm.txt"             ruby
     if db_clients_has mongo; then include_fragment "$domains_d/mongodb.txt"; fi
     include_if_has_versions  "$domains_d/rust.txt"            rust
     include_if_has_versions  "$domains_d/go.txt"              go

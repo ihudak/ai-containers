@@ -49,7 +49,7 @@ It packages a CLI-only Docker-based workspace for running AI coding agents (GitH
 - `allowlist-domains.d/`, `allowlist-proxy-domains.d/`, `allowlist-cidrs.d/` contain per-component allowlist fragments. `build.sh` assembles the active fragments into the three `allowlist-*.txt` files that the Dockerfile copies into the image. Each directory also contains a `custom.txt` file that is always included regardless of which components are enabled.
 - `sandbox-common.sh` is a shared library (config parsing, container-group helpers, path/volume helpers, the repo registry) sourced by the three entry-point scripts below.
 - `build.sh` builds the image (reads `sandbox.conf`, regenerates the allowlists).
-- `sandbox.sh` runs the container engine (`restricted` / `discovery`). In a consumer project you normally invoke it indirectly through the generated `runme.sh` launcher (see project-init below).
+- `sandbox.sh` runs the container engine (`restricted` / `discovery` / `open`). In a consumer project you normally invoke it indirectly through the generated `runme.sh` launcher (see project-init below).
 - `repo.sh` manages shared, native-speed repo volumes (`add` / `sync` / `reset` / `list` / `rm`).
 - `Dockerfile.seed` builds the small, shared helper image (`ai-containers-seed`: Alpine + `git`, `openssh-client`, `rsync`, `bash`) that `repo.sh` uses to seed and sync repo volumes. It is independent of the main sandbox image (and of `IMAGE_NAME`), so it is built once and reused by every project, and repo volumes can be seeded before `./build.sh` is ever run.
 
