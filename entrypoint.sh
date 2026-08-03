@@ -41,6 +41,25 @@ link_default_ruby() {
     bash /usr/local/bin/link-default-ruby.sh "/home/$sandbox_user" || true
 }
 
+# Bootstrap/reconcile the enabled agent-tier tools into the group-mounted ~/.ai-tools
+# as the sandbox user. Offline-tolerant, non-fatal — never blocks container start.
+run_agent_tools_reconcile() {
+  [[ -n "${AI_RUNTIME_TOOLS:-}" ]] || return 0
+  [[ -x /usr/local/bin/agent-tools-reconcile.sh ]] || return 0
+  runuser -u "$sandbox_user" -- \
+    env HOME="/home/$sandbox_user" AI_RUNTIME_TOOLS="${AI_RUNTIME_TOOLS}" \
+    bash /usr/local/bin/agent-tools-reconcile.sh || true
+}
+
+# Expose the enabled agent tools on the global PATH (/usr/local/bin) for non-interactive,
+# non-login shells. Runs as ROOT AFTER run_agent_tools_reconcile. Non-fatal.
+link_agent_tools() {
+  [[ -n "${AI_RUNTIME_TOOLS:-}" ]] || return 0
+  [[ -x /usr/local/bin/link-agent-tools.sh ]] || return 0
+  env AI_RUNTIME_TOOLS="${AI_RUNTIME_TOOLS}" \
+    bash /usr/local/bin/link-agent-tools.sh "/home/$sandbox_user" || true
+}
+
 # Create the sandbox user at startup with the host user's name, UID, and GID so
 # that files in bind-mounted volumes (/workspace and its sub-mounts) are accessible
 # without any chown. useradd -m creates the home directory with correct ownership.
@@ -202,6 +221,8 @@ case "$mode" in
     # Background processes forked above are unaffected by this exec and keep their capabilities.
     run_ruby_reconcile
     link_default_ruby
+    run_agent_tools_reconcile
+    link_agent_tools
     run_agent_skill_install
 
     exec capsh \
@@ -221,6 +242,8 @@ case "$mode" in
     # NET_RAW is kept (not dropped) so the sandbox user can run tcpdump if needed.
     run_ruby_reconcile
     link_default_ruby
+    run_agent_tools_reconcile
+    link_agent_tools
     run_agent_skill_install
 
     exec capsh \
@@ -240,6 +263,8 @@ case "$mode" in
 
     run_ruby_reconcile
     link_default_ruby
+    run_agent_tools_reconcile
+    link_agent_tools
     run_agent_skill_install
 
     exec capsh \

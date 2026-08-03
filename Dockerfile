@@ -375,6 +375,25 @@ RUN chmod +x /usr/local/bin/rvm-reconcile.sh
 COPY link-default-ruby.sh /usr/local/bin/link-default-ruby.sh
 RUN chmod +x /usr/local/bin/link-default-ruby.sh
 
+# ── Agent-tier tool home (runtime-installed into the group-mounted ~/.ai-tools) ──
+# Bake only scaffolding: an npm prefix under the tool home, PATH + uv env for login /
+# interactive shells, and the ~/.local/bin dir Claude Code's native path uses. The six
+# tools (Claude Code, Codex, Gemini, Copilot, graphify, Vale) install at container start
+# via agent-tools-reconcile.sh; nothing agent-tier is baked.
+RUN printf 'prefix=${HOME}/.ai-tools/npm\n' > /etc/skel/.npmrc && \
+    install -d /etc/skel/.local/bin && \
+    printf '%s\n' \
+      'export UV_TOOL_DIR="$HOME/.ai-tools/uv"' \
+      'export UV_TOOL_BIN_DIR="$HOME/.ai-tools/uv/bin"' \
+      'export PATH="$HOME/.ai-tools/npm/bin:$HOME/.ai-tools/uv/bin:$HOME/.ai-tools/bin:$HOME/.local/bin:$PATH"' \
+      | tee /etc/profile.d/ai-tools.sh >> /etc/bash.bashrc
+
+# Ship the runtime agent-tool scripts (invoked by entrypoint: reconcile as the sandbox
+# user, linker as root).
+COPY agent-tools-reconcile.sh /usr/local/bin/agent-tools-reconcile.sh
+COPY link-agent-tools.sh /usr/local/bin/link-agent-tools.sh
+RUN chmod +x /usr/local/bin/agent-tools-reconcile.sh /usr/local/bin/link-agent-tools.sh
+
 # ── Optional: npm-based agent tools ────────────────────────────────────────────
 # Each agent gets its own layer so toggling one doesn't invalidate the others.
 #
