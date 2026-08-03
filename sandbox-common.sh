@@ -63,48 +63,6 @@ seed_image="${REPO_SEED_IMAGE:-ai-containers-seed}"
 ai_containers_root="${HOME}/.ai-containers"
 repo_registry_file="${ai_containers_root}/repos.conf"
 
-# ── Agent-layer cache-bust token ────────────────────────────────────────────────
-#
-# The Dockerfile's `ARG AGENTS_CACHE_BUST` keys the agent install layers, so
-# changing its value is what refreshes the (unpinned) agent CLIs. That token must
-# be PERSISTED, because docker's build cache is keyed by build-arg VALUE: after a
-# refresh with a fresh token, a later plain `./build.sh` using the old default
-# (`0`) cache-hits the PRE-refresh image, and since that result is bit-identical
-# to the original build, docker moves the tag back onto it — same image ID, same
-# `.Created`. The refreshed image is left dangling, the container starts from the
-# stale one, and sandbox.sh's staleness check fires again on every launch.
-# Remembering the last token used makes a plain build reproduce the REFRESHED
-# image instead, so the tag and its age stay put until the next refresh.
-# Scope: one token per build CONTEXT (this directory), not per image tag —
-# docker's cache is keyed by context + build args, so two tags built from the
-# same directory share the same cached layers and should share the same token.
-agents_cache_bust_file="${script_dir}/.agents-cache-bust"
-
-# Echo the persisted token, or 0 when there is none (or it is unreadable/invalid
-# — e.g. an image built before this file existed, which self-heals on the first
-# refresh).
-read_agents_cache_bust() {
-  local v=""
-  if [[ -f "$agents_cache_bust_file" ]]; then
-    v="$(tr -d '[:space:]' < "$agents_cache_bust_file" 2>/dev/null || true)"
-  fi
-  [[ "$v" =~ ^[0-9]+$ ]] || v=0
-  printf '%s' "$v"
-}
-
-# Persist the token. Called only AFTER a successful build, so a failed build
-# never leaves a token that no image was actually built with.
-write_agents_cache_bust() {
-  local token="$1"
-  if [[ -f "$agents_cache_bust_file" && "$token" == "$(read_agents_cache_bust)" ]]; then
-    return 0   # unchanged — nothing to rewrite
-  fi
-  if ! printf '%s\n' "$token" > "$agents_cache_bust_file" 2>/dev/null; then
-    printf 'WARNING: could not persist the agent cache-bust token to %s — the next plain build may revert the image tag to the pre-refresh image.\n' \
-      "$agents_cache_bust_file" >&2
-  fi
-}
-
 # Drop the image a rebuild has just replaced, so a dangling layer set does not
 # accumulate per rebuild, per project (a targeted agent refresh leaves a few
 # hundred MB behind; a --no-cache rebuild leaves the whole multi-GB image).
