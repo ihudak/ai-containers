@@ -48,7 +48,8 @@ d=""; prev=""; for a in "\$@"; do [[ "\$prev" == "-C" ]] && d="\$a"; prev="\$a";
 exit 0
 EOF
   printf '#!/usr/bin/env bash\necho amd64\n' > "$bin/dpkg"
-  chmod +x "$bin/npm" "$bin/uv" "$bin/curl" "$bin/tar" "$bin/dpkg"
+  printf '#!/usr/bin/env bash\n[ "$1" = "-m" ] && echo x86_64 || echo Linux\n' > "$bin/uname"
+  chmod +x "$bin/npm" "$bin/uv" "$bin/curl" "$bin/tar" "$bin/dpkg" "$bin/uname"
 }
 
 # run_case WANT [HOME] [NPM_FAIL] -> echoes the home dir it used (caller inspects & cleans).
@@ -71,6 +72,9 @@ grep -q 'npm install -g @openai/codex' "$c"             && pass "installs codex"
 grep -q 'npm install -g @google/gemini-cli' "$c"        && pass "installs gemini"      || fail "installs gemini"
 grep -q 'uv tool install graphifyy' "$c"                && pass "installs graphify"    || fail "installs graphify"
 grep -q 'tar ' "$c"                                     && pass "installs vale (tar)"  || fail "installs vale (tar)"
+{ grep -q 'vale_.*_Linux_64-bit\.tar\.gz' "$c" && ! grep -q 'Linux_amd64' "$c"; } \
+  && pass "vale downloads the correct GoReleaser arch asset (64-bit on x86_64)" \
+  || fail "vale downloads the correct GoReleaser arch asset (64-bit on x86_64)"
 [[ -x "$h/.ai-tools/bin/vale" ]] && pass "vale binary lands at .ai-tools/bin/vale" || fail "vale binary lands at .ai-tools/bin/vale"
 [[ -L "$h/.local/bin/claude" ]] && pass "claude native-path symlink created" || fail "claude native-path symlink created"
 [[ "$(readlink "$h/.local/bin/claude")" == "$h/.ai-tools/npm/bin/claude" ]] && pass "claude symlink points at npm/bin/claude" || fail "claude symlink points at npm/bin/claude"

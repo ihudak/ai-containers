@@ -63,24 +63,24 @@ for t in $selected; do
     rc=$?
   fi
   if [ "$rc" -eq 0 ]; then
-    if grep -qE '^SKIP:' "$log"; then
+    # Surface the assertion count without the noise. PASS takes precedence
+    # over SKIP: a test that both skips part of itself and asserts real
+    # PASS/ok lines is a genuine pass, not a skip.
+    ok="$(grep -cE '^(PASS|  ok)' "$log")"
+    if [ "$ok" -gt 0 ]; then
+      printf '   PASS  (%s assertion(s))\n' "$ok"
+    elif grep -qE '^SKIP:' "$log"; then
       # A test may deliberately skip itself (e.g. a gated real-container smoke
       # test whose enabling env is unset). An explicit SKIP: line is a
       # first-class outcome, not a silent no-op, so it is not a failure and is
       # exempt from the "asserted nothing" guard below.
       printf '   SKIP  (%s)\n' "$(grep -m1 -E '^SKIP:' "$log" | sed 's/^SKIP:[[:space:]]*//')"
     else
-      # Surface the assertion count without the noise.
-      ok="$(grep -cE '^(PASS|  ok)' "$log")"
-      if [ "$ok" -eq 0 ]; then
-        # Exiting 0 without asserting anything is not a pass: it is a test that
-        # silently did nothing (bad guard, early return, renamed helper).
-        failed=$((failed + 1))
-        failed_names="${failed_names:+$failed_names }$name"
-        printf '   FAIL  (exited 0 but asserted nothing)\n'
-      else
-        printf '   PASS  (%s assertion(s))\n' "$ok"
-      fi
+      # Exiting 0 without asserting anything is not a pass: it is a test that
+      # silently did nothing (bad guard, early return, renamed helper).
+      failed=$((failed + 1))
+      failed_names="${failed_names:+$failed_names }$name"
+      printf '   FAIL  (exited 0 but asserted nothing)\n'
     fi
   else
     failed=$((failed + 1))

@@ -64,8 +64,8 @@ ai_containers_root="${HOME}/.ai-containers"
 repo_registry_file="${ai_containers_root}/repos.conf"
 
 # Drop the image a rebuild has just replaced, so a dangling layer set does not
-# accumulate per rebuild, per project (a targeted agent refresh leaves a few
-# hundred MB behind; a --no-cache rebuild leaves the whole multi-GB image).
+# accumulate per rebuild, per project (an ordinary rebuild leaves a few hundred
+# MB behind; a --no-cache rebuild leaves the whole multi-GB image dangling).
 #
 # Deliberately narrow: one explicit image ID, skipped entirely if the image still
 # carries any tag, and `docker rmi` WITHOUT --force so an image a container still

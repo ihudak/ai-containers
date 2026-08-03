@@ -43,7 +43,7 @@ install_vale() {
   if [[ -x "$home_root/bin/vale" ]]; then log "vale already present"; return 0; fi
   log "installing vale…"
   local arch ver
-  arch="$(dpkg --print-architecture 2>/dev/null || echo amd64)"
+  arch="$(uname -m | sed 's/x86_64/64-bit/; s/aarch64/arm64/')"
   ver="$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
         https://github.com/vale-cli/vale/releases/latest 2>/dev/null | sed 's#.*/tag/v##')"
   if [[ -z "$ver" ]]; then log "FAILED: could not resolve latest Vale version (skipped)"; return 0; fi
