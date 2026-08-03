@@ -30,8 +30,10 @@
 **New files:**
 - `agent-tools-reconcile.sh` — runtime reconcile (install-if-missing), run as sandbox user.
 - `link-agent-tools.sh` — root linker; symlinks tool binaries onto `/usr/local/bin`.
+- `tests/test-runtime-tools-csv.sh` — unit test for `runtime_tools_csv()` + wiring greps.
 - `tests/test-agent-tools-reconcile.sh` — stub-based behavioral test (fake npm/uv/curl/tar).
 - `tests/test-link-agent-tools.sh` — stub-based linker test (fake `~/.ai-tools` tree).
+- `tests/test-entrypoint-wiring.sh` — asserts both hooks wired in all 3 entrypoint modes.
 - `tests/test-agent-tools-smoke.sh` — gated real-container restricted-mode smoke test.
 
 **Modified:**
@@ -79,11 +81,9 @@ fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails+1)); }
 ENABLED_SET=""
 is_enabled() { [[ " $ENABLED_SET " == *" $1 "* ]]; }
 
-# Load only the function under test (source the file with its heavy top guarded off is
-# overkill; instead copy the function body via a tiny extraction). Simplest: source and
-# rely on is_enabled being pre-defined so the real one does not clobber ours.
-# runtime_tools_csv is a pure function of is_enabled, so define it inline mirroring source.
-runtime_tools_csv() { local a out=(); for a in claude-code copilot codex gemini graphify vale; do is_enabled "$a" && out+=("$a"); done; local IFS=,; printf '%s' "${out[*]}"; }
+# Load the REAL runtime_tools_csv from sandbox-common.sh — extract just the function so
+# the file's heavy top-level code does not run — and exercise it against our is_enabled stub.
+eval "$(sed -n '/^runtime_tools_csv()/,/^}/p' "$REPO_DIR/sandbox-common.sh")"
 
 ENABLED_SET="claude-code gemini kiro"
 got="$(runtime_tools_csv)"
@@ -262,16 +262,18 @@ h="$(run_case "claude-code,graphify" "" 1)"
 # ── Guards ──
 grep -q 'flock' "$REPO_DIR/agent-tools-reconcile.sh" && pass "flock-guarded" || fail "flock-guarded"
 grep -qE '^set +-[a-z]*u|nounset' "$REPO_DIR/agent-tools-reconcile.sh" && fail "must NOT enable nounset" || pass "does not enable nounset"
-n="$(grep -c 'run_agent_tools_reconcile$' "$REPO_DIR/entrypoint.sh")"; [[ "$n" -ge 3 ]] && pass "entrypoint wires reconcile in 3 modes ($n)" || fail "entrypoint wires reconcile in 3 modes ($n)"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
 ```
 
+> Entrypoint wiring is verified in Task 4 (`tests/test-entrypoint-wiring.sh`), so this
+> test contains no wiring assertion and is fully green at its own commit.
+
 - [ ] **Step 2: Run it — expect FAIL** (`bash -n` fails: script does not exist yet).
 
 Run: `bash tests/test-agent-tools-reconcile.sh`
-Expected: FAIL (missing script; entrypoint-wiring guard also fails).
+Expected: FAIL (missing script).
 
 - [ ] **Step 3: Create `agent-tools-reconcile.sh`:**
 
@@ -357,10 +359,10 @@ fi
 log "done."
 ```
 
-- [ ] **Step 4: `chmod +x agent-tools-reconcile.sh`** and re-run the test. The entrypoint-wiring guard still fails (wired in Task 4) — that is expected; all reconcile-behaviour assertions must pass.
+- [ ] **Step 4: `chmod +x agent-tools-reconcile.sh`** and re-run the test — fully green.
 
 Run: `chmod +x agent-tools-reconcile.sh && bash tests/test-agent-tools-reconcile.sh`
-Expected: only the "entrypoint wires reconcile in 3 modes (0)" line fails; every install/idempotent/no-op/selective/offline/guard assertion PASSES.
+Expected: `0 failure(s)` — every install/idempotent/no-op/selective/offline/guard assertion PASSES.
 
 - [ ] **Step 5: Commit**
 
@@ -429,11 +431,13 @@ rm -rf "$h" "$d"
 
 # ── Guards ──
 grep -qE '^set +-[a-z]*u|nounset' "$REPO_DIR/link-agent-tools.sh" && fail "must NOT enable nounset" || pass "does not enable nounset"
-n="$(grep -c 'link_agent_tools$' "$REPO_DIR/entrypoint.sh")"; [[ "$n" -ge 3 ]] && pass "entrypoint wires linker in 3 modes ($n)" || fail "entrypoint wires linker in 3 modes ($n)"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
 ```
+
+> Entrypoint wiring is verified in Task 4 (`tests/test-entrypoint-wiring.sh`), so this
+> test contains no wiring assertion and is fully green at its own commit.
 
 - [ ] **Step 2: Run it — expect FAIL** (`bash -n` fails: script missing).
 
@@ -481,10 +485,10 @@ done
 log "linked agent tools into $bin_dest: ${linked:-none}"
 ```
 
-- [ ] **Step 4: `chmod +x link-agent-tools.sh`** and re-run the test (entrypoint-wiring guard fails until Task 4 — expected).
+- [ ] **Step 4: `chmod +x link-agent-tools.sh`** and re-run the test — fully green.
 
 Run: `chmod +x link-agent-tools.sh && bash tests/test-link-agent-tools.sh`
-Expected: only "entrypoint wires linker in 3 modes (0)" fails; all linking assertions PASS.
+Expected: `0 failure(s)` — all linking + guard assertions PASS.
 
 - [ ] **Step 5: Commit**
 
@@ -500,6 +504,7 @@ git commit -m "feat: link-agent-tools.sh — expose runtime tools on /usr/local/
 **Files:**
 - Modify: `entrypoint.sh` (add 2 functions after `link_default_ruby` ~`:42`; add 2 calls in each of 3 modes)
 - Modify: `Dockerfile` (skel scaffolding + COPY 2 scripts, near the rvm COPY ~`:369-376`)
+- Test: `tests/test-entrypoint-wiring.sh` (new — verifies both hooks wired in all 3 modes)
 
 **Interfaces:**
 - Consumes: `agent-tools-reconcile.sh`, `link-agent-tools.sh` (Tasks 2-3); `AI_RUNTIME_TOOLS`, `$sandbox_user`.
@@ -561,15 +566,33 @@ RUN chmod +x /usr/local/bin/agent-tools-reconcile.sh /usr/local/bin/link-agent-t
 
 > Note: `printf 'prefix=${HOME}/.ai-tools/npm\n'` is single-quoted so `${HOME}` stays **literal**; npm expands `${VAR}` in npmrc at runtime, per renamed sandbox user.
 
-- [ ] **Step 4: Verify wiring + Dockerfile syntax**
-
-Run: `bash -n entrypoint.sh && bash tests/test-agent-tools-reconcile.sh && bash tests/test-link-agent-tools.sh && docker build --check "$PWD"`
-Expected: `bash -n` clean; both script tests now report `0 failure(s)` (the entrypoint-wiring guards pass — 3 call-sites each); `docker build --check` reports no errors.
-
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: Create the wiring test** — `tests/test-entrypoint-wiring.sh`:
 
 ```bash
-git add entrypoint.sh Dockerfile
+#!/usr/bin/env bash
+# Asserts the runtime agent-tool hooks are defined and wired into entrypoint.sh in all
+# three modes. (grep '<name>$' matches only the call-sites; the '<name>() {' def line
+# ends in '{', not the name, so it is not counted.)
+set -uo pipefail
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+fails=0; pass(){ printf 'PASS: %s\n' "$1"; }; fail(){ printf 'FAIL: %s\n' "$1"; fails=$((fails+1)); }
+bash -n "$REPO_DIR/entrypoint.sh" && pass "entrypoint.sh bash -n" || fail "entrypoint.sh bash -n"
+grep -q 'run_agent_tools_reconcile()' "$REPO_DIR/entrypoint.sh" && pass "defines run_agent_tools_reconcile" || fail "defines run_agent_tools_reconcile"
+grep -q 'link_agent_tools()' "$REPO_DIR/entrypoint.sh" && pass "defines link_agent_tools" || fail "defines link_agent_tools"
+nr="$(grep -c 'run_agent_tools_reconcile$' "$REPO_DIR/entrypoint.sh")"; [[ "$nr" -ge 3 ]] && pass "reconcile wired in 3 modes ($nr)" || fail "reconcile wired in 3 modes ($nr)"
+nl="$(grep -c 'link_agent_tools$' "$REPO_DIR/entrypoint.sh")"; [[ "$nl" -ge 3 ]] && pass "linker wired in 3 modes ($nl)" || fail "linker wired in 3 modes ($nl)"
+printf '\n%d failure(s)\n' "$fails"; exit "$fails"
+```
+
+- [ ] **Step 5: Verify wiring + Dockerfile syntax**
+
+Run: `bash tests/test-entrypoint-wiring.sh && bash tests/test-agent-tools-reconcile.sh && bash tests/test-link-agent-tools.sh && docker build --check "$PWD"`
+Expected: all three test files report `0 failure(s)`; `docker build --check` reports no errors.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add entrypoint.sh Dockerfile tests/test-entrypoint-wiring.sh
 git commit -m "feat: wire agent-tools reconcile + linker into entrypoint; bake tool-home scaffolding"
 ```
 
