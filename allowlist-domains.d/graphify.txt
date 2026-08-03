@@ -8,3 +8,7 @@
 # To use graphify with a different provider, add its API domain to custom.txt
 # (e.g. generativelanguage.googleapis.com, api.openai.com, api.deepseek.com).
 api.anthropic.com
+
+# PyPI — graphify installs at runtime via `uv tool install` (also covered by pyenv.txt).
+pypi.org
+files.pythonhosted.org

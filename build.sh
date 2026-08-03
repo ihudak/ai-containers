@@ -174,12 +174,7 @@ build_args_from_config() {
 
   local component arg mapping
   local bool_mappings=(
-    "copilot:INSTALL_COPILOT"
     "kiro:INSTALL_KIRO"
-    "claude-code:INSTALL_CLAUDE_CODE"
-    "codex:INSTALL_CODEX"
-    "gemini:INSTALL_GEMINI"
-    "graphify:INSTALL_GRAPHIFY"
     "kubectl:INSTALL_KUBECTL"
     "aws-cli:INSTALL_AWS_CLI"
     "azure-cli:INSTALL_AZURE_CLI"
@@ -187,7 +182,6 @@ build_args_from_config() {
     "yarn:INSTALL_YARN"
     "pnpm:INSTALL_PNPM"
     "goreleaser:INSTALL_GORELEASER"
-    "vale:INSTALL_VALE"
     "qmd:INSTALL_QMD"
     "bun:INSTALL_BUN"
     "imagemagick:INSTALL_IMAGEMAGICK"

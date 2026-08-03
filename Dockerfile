@@ -213,27 +213,6 @@ RUN if [ "$INSTALL_GORELEASER" = "1" ]; then \
       rm -rf /var/lib/apt/lists/*; \
     fi
 
-# ── Vale (prose / style linter) ────────────────────────────────────────────────
-# Single self-contained Go binary from GitHub releases (vale-cli/vale), installed
-# UNPINNED (latest at build time) like goreleaser. The version is resolved from
-# the releases/latest redirect (no GitHub API token or rate limit), then the
-# matching Linux tarball is downloaded and the `vale` binary extracted to
-# /usr/local/bin. Useful in docs workspaces whose style-check phase otherwise
-# warns that "Vale isn't installed". Style packages (`vale sync`) and this
-# download both live on GitHub hosts already in allowlist-domains.d/base.txt.
-ARG INSTALL_VALE=0
-RUN if [ "$INSTALL_VALE" = "1" ]; then \
-      set -eu; \
-      ARCH=$(uname -m | sed 's/x86_64/64-bit/; s/aarch64/arm64/'); \
-      VALE_VERSION=$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
-        https://github.com/vale-cli/vale/releases/latest | sed 's#.*/tag/v##'); \
-      curl -fsSL -o /tmp/vale.tar.gz \
-        "https://github.com/vale-cli/vale/releases/download/v${VALE_VERSION}/vale_${VALE_VERSION}_Linux_${ARCH}.tar.gz"; \
-      tar -xzf /tmp/vale.tar.gz -C /usr/local/bin vale; \
-      rm -f /tmp/vale.tar.gz; \
-      vale --version; \
-    fi
-
 # ── Cleanup: remove compile-time -dev packages ─────────────────────────────────
 # Deferred from the pyenv layer so that rvm/Ruby and Rust (which need gcc/make)
 # can build successfully. Keep runtime libs (libssl3, zlib1g, etc.).
@@ -399,18 +378,15 @@ RUN chmod +x /usr/local/bin/agent-tools-reconcile.sh /usr/local/bin/link-agent-t
 #
 # AGENTS_CACHE_BUST busts the Docker layer cache for the agent install layers
 # below — and, because Docker's cache is linear, every layer after them (kiro,
-# graphify, etc.) — WITHOUT touching the heavy toolchain layers above (Node,
-# JVM, Python, Ruby, Rust, Go). The agent CLIs are installed unpinned
-# (`npm install -g @github/copilot`, the kiro installer, ...), so re-running
-# their layers re-fetches the latest published versions. A normal build leaves
+# etc.) — WITHOUT touching the heavy toolchain layers above (Node,
+# JVM, Python, Ruby, Rust, Go). Remaining unpinned installers below (the kiro
+# installer, ...) re-fetch the latest published versions when re-run. A normal build leaves
 # this at 0 and reuses the cache; sandbox.sh passes a fresh timestamp via build.sh
 # when the image is older than AGENT_REBUILD_MAX_AGE_HOURS, making the agent
 # refresh fast (heavy toolchains stay cached). It is referenced once in the
 # first agent layer below — that is sufficient to invalidate every layer after.
 ARG AGENTS_CACHE_BUST=0
-ARG INSTALL_COPILOT=0
-RUN echo "agents cache-bust token: ${AGENTS_CACHE_BUST}" >/dev/null && \
-    if [ "$INSTALL_COPILOT" = "1" ]; then npm install -g @github/copilot; fi
+RUN echo "agents cache-bust token: ${AGENTS_CACHE_BUST}" >/dev/null
 
 ARG ANGULAR_CLI_VERSION=""
 RUN if [ -n "$ANGULAR_CLI_VERSION" ] && [ "$ANGULAR_CLI_VERSION" != "OFF" ]; then \
@@ -420,22 +396,6 @@ RUN if [ -n "$ANGULAR_CLI_VERSION" ] && [ "$ANGULAR_CLI_VERSION" != "OFF" ]; the
         npm install -g "@angular/cli@${ANGULAR_CLI_VERSION}"; \
       fi; \
     fi
-
-ARG INSTALL_CLAUDE_CODE=0
-RUN if [ "$INSTALL_CLAUDE_CODE" = "1" ]; then \
-      npm install -g @anthropic-ai/claude-code && \
-      # Some Claude Code plugins expect the native-installer path
-      # ~/.local/bin/claude. Symlink npm's `claude` into /etc/skel so every
-      # sandbox user picks it up via setup_sandbox_user().
-      mkdir -p /etc/skel/.local/bin && \
-      ln -sf "$(npm prefix -g)/bin/claude" /etc/skel/.local/bin/claude; \
-    fi
-
-ARG INSTALL_CODEX=0
-RUN if [ "$INSTALL_CODEX" = "1" ]; then npm install -g @openai/codex; fi
-
-ARG INSTALL_GEMINI=0
-RUN if [ "$INSTALL_GEMINI" = "1" ]; then npm install -g @google/gemini-cli; fi
 
 ARG INSTALL_YARN=0
 RUN if [ "$INSTALL_YARN" = "1" ]; then npm install -g yarn; fi
@@ -479,14 +439,6 @@ RUN if [ "$INSTALL_KIRO" = "1" ]; then \
       done && \
       # Verify the install succeeded
       command -v kiro-cli >/dev/null || { echo "ERROR: kiro-cli not found after install"; exit 1; }; \
-    fi
-
-# ── Optional: graphify ─────────────────────────────────────────────────────────
-ARG INSTALL_GRAPHIFY=0
-RUN if [ "$INSTALL_GRAPHIFY" = "1" ]; then \
-      UV_TOOL_DIR=/opt/uv-tools UV_TOOL_BIN_DIR=/usr/local/bin uv tool install graphifyy && \
-      chmod -R a+rX /opt/uv-tools && \
-      command -v graphify >/dev/null 2>&1 || { echo "ERROR: graphify binary not found after install"; exit 1; }; \
     fi
 
 # ── Optional external tools (dtctl / dtmgd / …) ─────────────────────────────────
