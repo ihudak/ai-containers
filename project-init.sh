@@ -258,7 +258,7 @@ rsync -a --exclude='custom.txt' \
 rsync -a "${script_dir}/tools.d/" "${dest}/tools.d/"
 
 for f in Dockerfile Dockerfile.seed .dockerignore sandbox-common.sh build.sh sandbox.sh repo.sh entrypoint.sh \
-          rvm-reconcile.sh link-default-ruby.sh \
+          rvm-reconcile.sh link-default-ruby.sh agent-tools-reconcile.sh link-agent-tools.sh \
           refresh-ipset-allowlist.sh capture-blocked-traffic.sh \
           capture-agent-destinations.sh install-tools.sh install-agent-skills.sh tools-lib.sh; do
   [[ -f "${script_dir}/${f}" ]] && cp "${script_dir}/${f}" "${dest}/${f}"
@@ -295,7 +295,7 @@ done
 
 # Ensure the project's .ai-containers/.gitignore covers outputs + generated files.
 gi="${dest}/.gitignore"
-for pat in '.agent-blocked/' '.agent-discovery/' '.agents-cache-bust' \
+for pat in '.agent-blocked/' '.agent-discovery/' \
            'allowlist-domains.txt' 'allowlist-proxy-domains.txt' 'allowlist-cidrs.txt' \
            'allowlist-domains.d/custom.txt' 'allowlist-proxy-domains.d/custom.txt' 'allowlist-cidrs.d/custom.txt'; do
   if [[ ! -f "$gi" ]] || ! grep -qxF "$pat" "$gi" 2>/dev/null; then

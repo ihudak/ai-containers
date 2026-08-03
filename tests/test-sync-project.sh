@@ -113,7 +113,6 @@ EOF
   cat > "$dest/.gitignore" <<'EOF'
 .agent-blocked/
 .agent-discovery/
-.agents-cache-bust
 allowlist-domains.txt
 allowlist-proxy-domains.txt
 allowlist-cidrs.txt
@@ -150,6 +149,7 @@ SENTINEL_DEST_GITIGNORE="$(cat "$DEST/.gitignore")"
 # sync_project's copy loop is:
 #   for f in Dockerfile Dockerfile.seed .dockerignore sandbox-common.sh build.sh \
 #             sandbox.sh repo.sh entrypoint.sh rvm-reconcile.sh link-default-ruby.sh \
+#             agent-tools-reconcile.sh link-agent-tools.sh \
 #             refresh-ipset-allowlist.sh capture-blocked-traffic.sh \
 #             capture-agent-destinations.sh install-tools.sh install-agent-skills.sh tools-lib.sh; do
 # Extract the actual `for f in ... ; do` file list straight out of the function
@@ -177,6 +177,7 @@ for w in $shared_files_words; do derived_shared_files+=("$w"); done
 expected_shared_files=(
   Dockerfile Dockerfile.seed .dockerignore sandbox-common.sh build.sh
   sandbox.sh repo.sh entrypoint.sh rvm-reconcile.sh link-default-ruby.sh
+  agent-tools-reconcile.sh link-agent-tools.sh
   refresh-ipset-allowlist.sh
   capture-blocked-traffic.sh capture-agent-destinations.sh
   install-tools.sh install-agent-skills.sh tools-lib.sh
@@ -312,7 +313,7 @@ AI_CONTAINERS_NO_GITIGNORE=1 ensure_ai_containers_ignored "$NOGI"
   && pass ".ai-containers/.gitignore content is untouched by sync" \
   || fail ".ai-containers/.gitignore content is untouched by sync"
 gi_all_covered=1
-for pat in '.agent-blocked/' '.agent-discovery/' '.agents-cache-bust' \
+for pat in '.agent-blocked/' '.agent-discovery/' \
            'allowlist-domains.txt' 'allowlist-proxy-domains.txt' 'allowlist-cidrs.txt' \
            'allowlist-domains.d/custom.txt' 'allowlist-proxy-domains.d/custom.txt' 'allowlist-cidrs.d/custom.txt'; do
   grep -qxF "$pat" "$DEST/.gitignore" 2>/dev/null || gi_all_covered=0

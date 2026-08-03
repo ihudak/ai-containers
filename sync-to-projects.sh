@@ -217,7 +217,7 @@ sync_project() {
 
   # Shared scripts and build files
   for f in Dockerfile Dockerfile.seed .dockerignore sandbox-common.sh build.sh sandbox.sh repo.sh entrypoint.sh \
-            rvm-reconcile.sh link-default-ruby.sh \
+            rvm-reconcile.sh link-default-ruby.sh agent-tools-reconcile.sh link-agent-tools.sh \
             refresh-ipset-allowlist.sh capture-blocked-traffic.sh \
             capture-agent-destinations.sh install-tools.sh install-agent-skills.sh tools-lib.sh; do
     if [[ -f "${script_dir}/${f}" ]]; then

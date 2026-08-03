@@ -22,8 +22,7 @@
 # Hermetic: HOME is pointed at a temp dir BEFORE sourcing sandbox-common.sh, so
 # the real ~/.ai-containers/repos.conf is never read or written. No docker
 # daemon is required for the pure helpers; the few docker-calling helpers use a
-# fake `docker` on PATH (same pattern as test-agents-cache-bust.sh /
-# test-docs-path.sh).
+# fake `docker` on PATH (same pattern as test-docs-path.sh).
 set -uo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
