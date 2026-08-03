@@ -71,7 +71,10 @@ grep -q 'npm install -g @openai/codex' "$c"             && pass "installs codex"
 grep -q 'npm install -g @google/gemini-cli' "$c"        && pass "installs gemini"      || fail "installs gemini"
 grep -q 'uv tool install graphifyy' "$c"                && pass "installs graphify"    || fail "installs graphify"
 grep -q 'tar ' "$c"                                     && pass "installs vale (tar)"  || fail "installs vale (tar)"
+[[ -x "$h/.ai-tools/bin/vale" ]] && pass "vale binary lands at .ai-tools/bin/vale" || fail "vale binary lands at .ai-tools/bin/vale"
 [[ -L "$h/.local/bin/claude" ]] && pass "claude native-path symlink created" || fail "claude native-path symlink created"
+[[ "$(readlink "$h/.local/bin/claude")" == "$h/.ai-tools/npm/bin/claude" ]] && pass "claude symlink points at npm/bin/claude" || fail "claude symlink points at npm/bin/claude"
+[[ -f "$h/.ai-tools/.reconcile.lock" ]] && pass "reconcile lock file created" || fail "reconcile lock file created"
 rm -rf "$h"
 
 # ── Idempotent: a second run on the SAME home does NOT reinstall ──
@@ -89,8 +92,23 @@ h="$(run_case "codex")"; { grep -q 'npm install -g @openai/codex' "$h/calls.log"
 h="$(run_case "claude-code,graphify" "" 1)"
 { grep -q 'FAILED' "$h/out.log" && grep -q 'uv tool install graphifyy' "$h/calls.log"; } && pass "npm failure is non-fatal; other tools proceed" || fail "npm failure is non-fatal; other tools proceed"; rm -rf "$h"
 
+# ── Exit code: script must exit 0 whether or not an install fails (non-fatal) ──
+h="$(mktemp -d)"; bin="$(mktemp -d)"; mk_stubs "$bin" "$h"
+PATH="$bin:$PATH" HOME="$h" AI_RUNTIME_TOOLS="claude-code,copilot,codex,gemini,graphify,vale" NPM_FAIL=0 \
+  bash "$REPO_DIR/agent-tools-reconcile.sh" >"$h/out.log" 2>&1
+rc=$?
+rm -rf "$bin" "$h"
+[[ "$rc" -eq 0 ]] && pass "exit code 0 when all installs succeed" || fail "exit code 0 when all installs succeed"
+
+h="$(mktemp -d)"; bin="$(mktemp -d)"; mk_stubs "$bin" "$h"
+PATH="$bin:$PATH" HOME="$h" AI_RUNTIME_TOOLS="claude-code,graphify" NPM_FAIL=1 \
+  bash "$REPO_DIR/agent-tools-reconcile.sh" >"$h/out.log" 2>&1
+rc=$?
+rm -rf "$bin" "$h"
+[[ "$rc" -eq 0 ]] && pass "exit code 0 when npm install fails (non-fatal)" || fail "exit code 0 when npm install fails (non-fatal)"
+
 # ── Guards ──
-grep -q 'flock' "$REPO_DIR/agent-tools-reconcile.sh" && pass "flock-guarded" || fail "flock-guarded"
+grep -qE 'flock[[:space:]]+9' "$REPO_DIR/agent-tools-reconcile.sh" && pass "flock-guarded (real call, not just the header comment)" || fail "flock-guarded (real call, not just the header comment)"
 grep -qE '^set +-[a-z]*u|nounset' "$REPO_DIR/agent-tools-reconcile.sh" && fail "must NOT enable nounset" || pass "does not enable nounset"
 
 printf '\n%d failure(s)\n' "$fails"
