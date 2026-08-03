@@ -95,8 +95,12 @@ A single dedicated, group-mounted tree, chosen over wholesale-mounting `~/.local
   installed (replacing today's skel symlink into the nvm global).
 
 Node, npm, and uv remain **baked toolchain** on the global PATH; only the tool packages
-move. (Precondition to verify during planning: `node`/`npm`/`uv` are resolvable on the
-global PATH for a non-login shell run as the sandbox user.)
+move. This precondition is **already satisfied** (confirmed, not an open question):
+`node`/`npm`/`npx` are symlinked into `/usr/local/bin` (`Dockerfile:51-53`) and `uv`
+resolves via `$PYENV_ROOT/shims` on the container-level `ENV PATH` (`Dockerfile:146`);
+`entrypoint.sh` runs the reconcile via `runuser -u … env …` **without `-l`**, preserving
+that PATH. The `${HOME}` in the baked `.npmrc` prefix expands correctly per renamed
+sandbox user (npm expands `${VAR}` in npmrc).
 
 ### 2. Runtime reconcile — `agent-tools-reconcile.sh`
 
@@ -210,24 +214,46 @@ One mount, created lazily like `.rvm`.
   `AGENT_REBUILD_MAX_AGE_HOURS` handling (`:293-350`).
 - **`project-init.sh`:** the `.agents-cache-bust` entry in the gitignore pattern list
   (`:298`) and any project `.gitignore` seeding of it.
+- **Ignore files:** the `.agents-cache-bust` entries in the **repo root** `.gitignore`
+  (`:36`) and `.dockerignore` (`:13`).
 - **Tests:** delete `test-agents-cache-bust.sh` and `test-image-staleness.sh`; drop the
   `.agents-cache-bust` line from `test-sync-project.sh`'s pinned contract (`:116`,
   `:315`); update `test-project-init.sh` (`:42-47`) and the `test-repo-registry.sh`
   comment (`:25`).
 - **Docs:** remove the `AGENTS_CACHE_BUST` / `AGENT_REBUILD_MAX_AGE_HOURS` sections from
-  README (`:81-87`, `:180`, `:397` note), AGENTS.md (`:43-53`, `:127-129`, `:230`), and
-  add a CHANGELOG breaking entry.
+  README (`:81-87`, `:180`), AGENTS.md (`:43-53`, `:127-129`, `:230`), and add a
+  CHANGELOG breaking entry.
+- **`tools.d` refresh docs — correctness sweep (these become *false* post-change, not
+  just stale):** `README.md:407` claims acli is kept current by "The regular 72-hour
+  agent refresh"; the equivalent 72h-refresh note for Vale/GoReleaser at `README.md:397`;
+  and the comment in `tools.d/acli.conf:13` referencing the `AGENTS_CACHE_BUST` marker.
+  Rewrite all three to the post-change reality: baked `tools.d` tools (and Kiro) refresh
+  via `./build.sh --no-cache` (or pin the version); there is no longer a periodic agent
+  refresh to piggyback on. Grep the whole tree for lingering `72-hour`/`72h agent
+  refresh` phrasing as part of this sweep.
 
-### 8. Allowlist change
+### 8. Allowlist — restricted-mode runtime install
 
-Add `pypi.org` and `files.pythonhosted.org` to `allowlist-domains.d/graphify.txt`
-(currently only `api.anthropic.com`; PyPI lives only in `pyenv.txt` today). This is the
-sole allowlist gap for restricted-mode runtime installs:
+The *primary* source hosts for all six tools are already allowlisted at runtime:
 
 - npm agents install from `registry.npmjs.org` — already in `base.txt`.
 - Vale installs from `github.com` + `release-assets/objects.githubusercontent.com` —
   already in `base.txt`.
-- graphify installs from PyPI — **needs the addition above**.
+- graphify installs from PyPI — **already covered**: `build.sh:136` includes
+  `pyenv.txt` **unconditionally** (`include_fragment`, not `include_if_enabled`), and
+  `pyenv.txt` already ships `pypi.org` + `files.pythonhosted.org`. (Adding the same two
+  domains to `graphify.txt` is optional decoupling hygiene so graphify does not depend
+  on pyenv's fragment; it is **not required** and **must not gate** the design.)
+
+**Blocking validation caveat (not a code change — a test gate).** Allowlisting the
+*primary* registry host is necessary but may not be sufficient: an npm package's
+`postinstall` or a transitive dep can fetch a platform binary from a host not in
+`base.txt`, and today those installs happen at build time with **open** egress, so the
+gap has never been exercised. Because the reconcile runs *after* the restricted
+firewall is applied, each of the six tools must be proven to install **behind the
+firewall** — postinstall and transitive fetches included — not merely in open mode. Any
+additional host a tool's install genuinely needs is added to that tool's existing
+allowlist fragment. This is the single most important pre-merge gate (see Testing).
 
 ## Update Policy
 
@@ -273,11 +299,16 @@ rather than re-creating it at runtime. First boot of a fresh group installs late
 - **Update** `test-sync-project.sh` (pinned shared-file contract gains the two new
   scripts, loses `.agents-cache-bust`), `test-project-init.sh`, and the allowlist test
   for the graphify PyPI domains.
-- **Real-container smoke test** (folding in the deferral noted from the rvm work, since
-  this is an image-touching change): build the image with a couple of tools enabled,
-  run a container against a scratch group, assert the tools install into `~/.ai-tools`,
-  persist to a second run (no reinstall), and resolve under `docker exec` (non-login).
-  Gated so the default `tests/run-all.sh` stays fast; documented in the plan.
+- **Real-container smoke test — BLOCKING pre-merge gate** (folds in the deferral from
+  the rvm work; this is an image-touching change). Build the image and run a container
+  **in `restricted` mode** (firewall applied) against a scratch group with **all six**
+  tools enabled. Assert: each tool actually installs into `~/.ai-tools` **behind the
+  firewall** (postinstall/transitive fetches included — this is the §8 correctness gate,
+  the one item that can silently break the primary use case); the tools persist to a
+  second run with **no reinstall**; and each resolves under `docker exec -T` (non-login).
+  If any tool needs a host beyond `base.txt`, add it to that tool's fragment and re-test.
+  Gated so the default `tests/run-all.sh` stays fast; the gate itself is documented in
+  the plan and must pass before merge.
 
 ## Rollout / Migration
 
@@ -293,13 +324,20 @@ rather than re-creating it at runtime. First boot of a fresh group installs late
 
 ## Risks & Mitigations
 
+- **[Highest] Restricted-mode install may need more than the primary host** — an npm
+  `postinstall` or transitive dep can fetch from a host not in `base.txt`, a path never
+  exercised because build-time egress is open. Mitigation: the blocking restricted-mode
+  smoke test (§8, Testing); add any genuinely-needed host to the tool's fragment.
 - **First-boot latency / network dependency** for a fresh group — inherent to the
   model; mitigated by persistence (paid once per group) and offline-tolerant skips.
-- **Node/npm reachability for a non-login reconcile** — verify the global PATH exposes
-  `node`/`npm`/`uv` for the sandbox user during planning; if not, add a minimal PATH
-  shim analogous to the rvm profile.d line.
-- **Dangling `/usr/local/bin` symlinks** after a tool is disabled — cosmetic; resolved
-  on next successful install. Optionally prune in `link-agent-tools.sh` if cheap.
+  Note five of six tools (all but Vale) are useless offline anyway (remote-API clients),
+  so the practical offline regression is essentially one linter.
+- **Stale linking when a tool is set OFF but still present in the group home** — the
+  linker keys off "binary present in `~/.ai-tools`", not `AI_RUNTIME_TOOLS`, so a
+  disabled-but-present tool keeps getting linked onto `/usr/local/bin`. Harmless
+  (`docker run --rm` makes `/usr/local/bin` ephemeral and re-linked each boot; links
+  cannot accumulate across runs). Optionally gate the linker on `AI_RUNTIME_TOOLS` if
+  trivial.
 - **Behavioural-only tests** (stubs) not catching a real install regression — mitigated
   by the gated real-container smoke test.
 
