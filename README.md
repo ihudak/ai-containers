@@ -72,19 +72,17 @@ NO_CACHE=1 ./build.sh
 
 This is useful when you want to pick up newer versions of CLI tools installed via `curl`/`wget` inside the Dockerfile, since Docker cannot detect remote content changes automatically.
 
-### Keeping the AI agents up to date
+### Keeping tools up to date
 
-The AI agents (Copilot CLI, Claude Code, Codex CLI, Gemini CLI, Kiro CLI) are installed **unpinned** at build time, and Docker caches those layers. So once an image is built, a plain `./build.sh` will *not* pull newer agent versions — and a long-lived image gradually falls behind, eventually too old to run the latest models.
+The AI agents (Copilot CLI, Claude Code, Codex CLI, Gemini CLI), `graphify`, and `vale` are **not** baked into the image at all — see [Agent-tier tools (`~/.ai-tools`)](#agent-tier-tools-ai-tools) below for how they stay current without ever rebuilding.
 
-Two mechanisms keep them fresh:
-
-**1. Targeted agent refresh (fast).** Set the `AGENTS_CACHE_BUST` build-arg to any changing value. It busts only the agent-tier layers (and everything after them) while reusing the heavy toolchain layers above (Node, JVM, Python, Ruby, Rust, Go), so the rebuild takes ~1–2 min instead of a full `--no-cache` rebuild:
+**Kiro CLI** and every `tools.d`-described tool (`dtctl`, `dtmgd`, `acli`) *are* baked into the image at build time, and Docker caches those layers — a plain `./build.sh` will *not* pick up a newer release of any of them. To refresh:
 
 ```bash
-AGENTS_CACHE_BUST=$(date +%s) ./build.sh
+./build.sh --no-cache
 ```
 
-The token used is **remembered** in `.agents-cache-bust` (gitignored, per project) and reused by later builds. This matters because Docker's build cache is keyed by build-arg *value*: without it, the next plain `./build.sh` — which most launchers run on every start — would cache-hit the pre-refresh image, and because that result is bit-identical to the original build, Docker would move the tag back onto it (same image ID, same `.Created`). The refresh would be silently undone, the container would start from the stale image, and the staleness prompt below would reappear on every launch. `--no-cache` mints a fresh token, since such a build refreshes the agents by definition. An image built before this file existed self-heals on its first refresh.
+or, for the tools that support it (`dtctl`/`dtmgd` accept an exact `x.y.z` in `sandbox.conf`), bump the pinned version by hand instead of rebuilding everything.
 
 Each rebuild that produces a new image also drops the image it replaced, so dangling layer sets do not accumulate per project. The cleanup is deliberately narrow: one explicit image ID, skipped if that image still carries a tag, and `docker rmi` without `--force` so an image a container still references is kept. Build-cache records are never touched automatically — reclaim them yourself when needed:
 
@@ -92,22 +90,11 @@ Each rebuild that produces a new image also drops the image it replaced, so dang
 docker builder prune --filter unused-for=720h
 ```
 
-**2. Age-based auto-rebuild (automatic).** When you launch a container, `sandbox.sh` checks how old the image is. If it is at least `AGENT_REBUILD_MAX_AGE_HOURS` old (**default 72 = 3 days**), it offers to refresh the agents using the targeted rebuild above before starting:
+### Agent-tier tools (`~/.ai-tools`)
 
-```bash
-# Rebuild agents if the image is 24+ hours old instead of the default 72
-AGENT_REBUILD_MAX_AGE_HOURS=24 ./sandbox.sh restricted /path/to/repo
+Mirroring [Ruby (via rvm)](#ruby-via-rvm): nothing agent-tier is baked into the image. Claude Code, Codex CLI, Gemini CLI, Copilot CLI, `graphify`, and `vale` install at **container start** into a per-user `~/.ai-tools` home (npm prefix `~/.ai-tools/npm`, `graphify`'s `uv` tool dir `~/.ai-tools/uv`, `vale`'s binary in `~/.ai-tools/bin`), mounted from the active container **group** — the same mechanism as `~/.claude`/`~/.codex`/`~/.gemini` (see [Host configuration mounts](#host-configuration-mounts)) — so the install is shared by every project using that group and survives container restarts and rebuilds.
 
-# Disable the check entirely for this run
-AGENT_REBUILD_MAX_AGE_HOURS=0 ./sandbox.sh restricted /path/to/repo
-```
-
-| Env var | Default | Meaning |
-|---------|---------|---------|
-| `AGENT_REBUILD_MAX_AGE_HOURS` | `72` | Rebuild (refresh agents) if the image is at least this many hours old. `0`, `off`, or `never` disables the check. |
-| `AGENT_REBUILD_ACK` | unset | On a **non-TTY** run (CI/scripts), set to `1` to perform the rebuild without prompting. Without it, a non-TTY run with a stale image just warns and continues with the existing image. |
-
-On an interactive terminal, the launcher prompts (`[Y/n]`, default yes) before rebuilding so a slow rebuild never ambushes you. The rebuild reuses the heavy toolchain layers, so in practice it only re-fetches the agent CLIs. Because the refresh token is persisted, accepting once is enough: later builds reproduce the refreshed image, so the prompt returns only when it is genuinely stale again.
+`agent-tools-reconcile.sh` (running as the sandbox user at container start, `flock`-guarded against concurrent same-group container starts) installs whichever enabled tools are missing from the group's `~/.ai-tools` — **install-if-missing only**. Because the install lives in a user-writable directory instead of a root-owned, read-only image layer, each tool can self-update in place using its own updater (e.g. the agent CLI's own `/update` or auto-updater, `npm update -g`, `uv tool upgrade`) — no rebuild required. `link-agent-tools.sh` then symlinks each installed tool's binary onto `/usr/local/bin` so non-interactive, non-login shells (`docker exec -T <container> bash -c "claude …"`) resolve them too, not only login/interactive shells that source `/etc/profile.d/ai-tools.sh`.
 
 Three modes are available:
 
@@ -175,9 +162,6 @@ container:
 | `AI_CONTAINER_GROUP` | Which dotfile tree (group) to mount: `default`, `host` (mounts `$HOME`), or a custom `~/.ai-containers/<name>/`. | `default` | — |
 | `AI_CONTAINER_GROUP_INIT` | Non-interactive first-time group bootstrap: `clean` \| `from:host` \| `from:<name>`. | interactive prompt | — |
 | `AI_CONTAINER_HOST_ACK` | Set `1` to skip the macOS `host`-group acknowledgement. Ignored on Linux. | `0` | — |
-| `AGENT_REBUILD_MAX_AGE_HOURS` | Offer to refresh the bundled agents when the image is at least this many hours old. `0`/`off`/`never` disables. | `72` | — |
-| `AGENT_REBUILD_ACK` | On a non-TTY run, set `1` to rebuild a stale image without prompting. | `0` | — |
-| `AGENTS_CACHE_BUST` | Build-arg token that busts the agent-tier layers only. Persisted in `.ai-containers/.agents-cache-bust` and reused by later builds so a plain build cannot revert the tag to a pre-refresh image. `--no-cache` mints a fresh one. | persisted value, else `0` | — |
 | `SANDBOX_UID` / `SANDBOX_GID` / `SANDBOX_USER` / `SANDBOX_GROUP` | Override the container user identity. | detected from host (`id`) | forwarded |
 | `REPOS` | Space-separated **registered** repo volumes to attach under `/workspace/<name>`; append `:ro` (default), `:rw`, or `:rwcopy`. Register first with `./repo.sh add`. | none | mount |
 | `REPO_BACKEND` | How a repo is backed: `auto` \| `volume` \| `bind` (chosen at `repo.sh add` time). | `auto` | — |
@@ -394,7 +378,7 @@ vale=ON    # install the latest Vale binary from GitHub releases
 vale=OFF   # skip (default)
 ```
 
-> **Note:** Like the AI agents and GoReleaser, Vale is installed **unpinned** (latest at build time). The version is resolved from the `releases/latest` redirect, so no GitHub API token is needed and there is no rate-limit concern. Use `./build.sh --no-cache` (or bump a cache-busting build-arg) to pick up a newer Vale later.
+> **Note:** Vale is not baked into the image — like the other agent-tier tools, it installs **unpinned** at container start into the group-mounted `~/.ai-tools` (see [Agent-tier tools (`~/.ai-tools`)](#agent-tier-tools-ai-tools)) and self-updates in place; there is no build-time step to refresh.
 
 > **Note:** The binary download and `vale sync` (which fetches style packages such as `Google`, `Microsoft`, `write-good`) use GitHub hosts (`github.com`, `*.githubusercontent.com`) that are allowlisted by default; `vale.sh` is added when `vale=ON` for package-index lookups. If your `.vale.ini` pulls packages from another host, add it to `allowlist-domains.d/custom.txt` and rebuild. Repos that vendor their `StylesPath` need no network at all.
 
@@ -404,7 +388,7 @@ vale=OFF   # skip (default)
 
 Two things differ from the other tools:
 
-- **No version pinning.** Atlassian publishes every package behind a `latest` URL and supports each release for six months, so the grammar is `ON | OFF` and `acli --version` tells you what you got. The regular 72-hour agent refresh re-fetches it, so no full rebuild is needed to update. No `GITHUB_TOKEN` is involved — the download is vendor-hosted.
+- **No version pinning.** Atlassian publishes every package behind a `latest` URL and supports each release for six months, so the grammar is `ON | OFF` and `acli --version` tells you what you got. Unlike the agent-tier tools, `acli` is baked into the image at build time, so picking up a newer release means `./build.sh --no-cache` (there is no pinned version to bump instead). No `GITHUB_TOKEN` is involved — the download is vendor-hosted.
 - **Authenticate once per container group.** `acli` keeps its profiles *and* credentials in `~/.config/acli`, which is group-scoped, and the binary is static with no OS keyring dependency. So a headless login inside the container persists for every later container in that group:
 
   ```bash
@@ -758,6 +742,7 @@ Agent dotfile directories are sourced from the active container group (`~/.ai-co
 | `<group>/.codex/` | `~/.codex` | read-write | `codex` |
 | `<group>/.gemini/` | `~/.gemini` | read-write | `gemini` |
 | `<group>/.rvm/` | `~/.rvm` | read-write | `ruby` |
+| `<group>/.ai-tools/` | `~/.ai-tools` | read-write | any of `claude-code`/`copilot`/`codex`/`gemini`/`graphify`/`vale` |
 | `<group>/.config/dtctl/` ² | `~/.config/dtctl` | read-write | `dtctl` |
 | `<group>/.config/dtmgd/` ² | `~/.config/dtmgd` | read-write | `dtmgd` |
 | `~/.aws` | `~/.aws` | read-write | `aws-cli` |

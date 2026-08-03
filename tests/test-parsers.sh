@@ -8,7 +8,7 @@
 # sandbox-common.sh is a pure library (no entry point) and is sourced directly.
 # sandbox.sh has NO source guard but its entry point safely no-ops into the
 # `usage` branch when its positional params are cleared first (see run_fn
-# below) — the same technique used in tests/test-image-staleness.sh.
+# below).
 # project-init.sh has NO source guard AND no safe branch: it runs straight
 # into an unconditional interactive prompt loop after its helper functions are
 # defined, so it is driven purely as a subprocess with scripted stdin (the
