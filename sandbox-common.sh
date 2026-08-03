@@ -227,6 +227,17 @@ enabled_agents_csv() {
   local IFS=,; printf '%s' "${out[*]}"
 }
 
+# runtime_tools_csv — comma-separated sandbox.conf keys for the agent-tier tools
+# installed at container start into the group-mounted ~/.ai-tools (NOT kiro, which
+# stays baked). Consumed by sandbox.sh (-e AI_RUNTIME_TOOLS) and agent-tools-reconcile.sh.
+runtime_tools_csv() {
+  local a out=()
+  for a in claude-code copilot codex gemini graphify vale; do
+    is_enabled "$a" && out+=("$a")
+  done
+  local IFS=,; printf '%s' "${out[*]}"
+}
+
 # Convert a comma-separated version list to a space-separated list for build args.
 versions_to_space() {
   printf '%s' "$1" | tr ',' ' '

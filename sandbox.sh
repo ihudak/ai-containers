@@ -752,6 +752,12 @@ run_container() {
     fi
     add_mount_if_exists config_mount_flags "$group_root/.rvm" "$dev_home/.rvm"
   fi
+  if [[ -n "$(runtime_tools_csv)" ]]; then
+    if [[ "$group" != "host" ]]; then
+      install -d "$group_root/.ai-tools"
+    fi
+    add_mount_if_exists config_mount_flags "$group_root/.ai-tools" "$dev_home/.ai-tools"
+  fi
   if is_enabled yarn; then
     add_mount_if_exists config_mount_flags "$HOME/.yarn" "$dev_home/.yarn"
   fi
@@ -863,6 +869,7 @@ run_container() {
     -e SANDBOX_USER="${SANDBOX_USER:-$(id -un)}" \
     -e SANDBOX_GROUP="${SANDBOX_GROUP:-$(id -gn)}" \
     -e AI_AGENTS_ENABLED="$(enabled_agents_csv)" \
+    -e AI_RUNTIME_TOOLS="$(runtime_tools_csv)" \
     -e RUBY_VERSIONS="$(versions_to_space "$(get_versions ruby)")" \
     ${git_optional_locks_env[@]+"${git_optional_locks_env[@]}"} \
     ${SELF_HEALING_ENABLED:+-e SELF_HEALING_ENABLED="$SELF_HEALING_ENABLED"} \
