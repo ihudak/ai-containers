@@ -26,7 +26,7 @@ rm -rf "$h" "$d"
 # ── Only links what exists (missing gemini is skipped, no dangling link) ──
 h="$(mktemp -d)"; d="$(mktemp -d)"; mk_tool "$h" npm/bin/claude
 AI_RUNTIME_TOOLS="claude-code,gemini" bash "$REPO_DIR/link-agent-tools.sh" "$h" "$d" >/dev/null 2>&1
-[[ -L "$d/claude" && ! -e "$d/gemini" ]] && pass "only links existing binaries (no dangling)" || fail "only links existing binaries"
+[[ -L "$d/claude" && ! -L "$d/gemini" ]] && pass "only links existing binaries (no dangling)" || fail "only links existing binaries"
 rm -rf "$h" "$d"
 
 # ── Empty tool home → clean no-op ──
