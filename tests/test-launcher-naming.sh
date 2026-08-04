@@ -29,5 +29,6 @@ fail=0
 [[ -f "$launcher" ]] || { echo "FAIL: launcher not named runme.sh"; fail=1; }
 [[ ! -f "$proj/.ai-containers/myproj-container.sh" ]] || { echo "FAIL: legacy <project>-container.sh still emitted"; fail=1; }
 grep -q './sandbox.sh' "$launcher" 2>/dev/null || { echo "FAIL: launcher does not call ./sandbox.sh"; fail=1; }
-grep -q 'export IMAGE_NAME=' "$launcher" 2>/dev/null || { echo "FAIL: launcher missing IMAGE_NAME marker"; fail=1; }
+# IMAGE_NAME now lives in the portable sandbox.env (not baked into the thin launcher).
+grep -q '^IMAGE_NAME=' "$proj/.ai-containers/sandbox.env" 2>/dev/null || { echo "FAIL: sandbox.env missing IMAGE_NAME"; fail=1; }
 (( fail == 0 )) && echo "PASS: launcher naming" || exit 1

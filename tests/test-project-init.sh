@@ -51,4 +51,23 @@ fi
 # The generated launcher must be valid bash.
 bash -n "$LAUNCHER" && pass "launcher parses" || fail "launcher parses"
 
+# ── §3: launcher config lives in sandbox.env / sandbox.local.env; runme.sh is thin ──
+SBENV="$PROJ/.ai-containers/sandbox.env"
+grep -q '^IMAGE_NAME='          "$SBENV" && pass "sandbox.env has IMAGE_NAME"      || fail "sandbox.env has IMAGE_NAME"
+grep -q '^SANDBOX_MODE=open'    "$SBENV" && pass "sandbox.env has SANDBOX_MODE"    || fail "sandbox.env has SANDBOX_MODE"
+grep -q '^SANDBOX_WORKDIR=\.\.' "$SBENV" && pass "sandbox.env has SANDBOX_WORKDIR" || fail "sandbox.env has SANDBOX_WORKDIR"
+grep -q '^CONTAINER_CPUS='      "$SBENV" && pass "sandbox.env has CONTAINER_CPUS"  || fail "sandbox.env has CONTAINER_CPUS"
+! grep -qE '^export (IMAGE_NAME|CONTAINER_)' "$LAUNCHER" && pass "runme.sh is thin (no baked config exports)" || fail "runme.sh is thin (no baked config exports)"
+grep -qxF './sandbox.sh' "$LAUNCHER" && pass "runme.sh calls bare ./sandbox.sh" || fail "runme.sh calls bare ./sandbox.sh"
+grep -qxF 'sandbox.local.env' "$PROJ/.ai-containers/.gitignore" && pass "sandbox.local.env is gitignored" || fail "sandbox.local.env is gitignored"
+[[ ! -f "$PROJ/.ai-containers/sandbox.local.env" ]] && pass "no sandbox.local.env without extra mounts" || fail "no sandbox.local.env without extra mounts"
+
+# A second project WITH an extra-mount answer → EXTRA_MOUNTS in sandbox.local.env only.
+PROJ2="$TMP/proj/withmounts"; mkdir -p "$PROJ2"; git -C "$PROJ2" init -q
+printf '%s\n\n\n\n\n\n\n\n\n%s\n' "$PROJ2" "$TMP" | bash "$SCRIPTS/project-init.sh" >/dev/null 2>&1
+SBLOCAL="$PROJ2/.ai-containers/sandbox.local.env"
+{ [[ -f "$SBLOCAL" ]] && grep -q '^EXTRA_MOUNTS=' "$SBLOCAL"; } && pass "extra mounts → sandbox.local.env" || fail "extra mounts → sandbox.local.env"
+! grep -q 'EXTRA_MOUNTS' "$PROJ2/.ai-containers/runme.sh"      && pass "EXTRA_MOUNTS not baked into runme.sh"     || fail "EXTRA_MOUNTS not baked into runme.sh"
+! grep -q '^EXTRA_MOUNTS=' "$PROJ2/.ai-containers/sandbox.env" && pass "EXTRA_MOUNTS not in portable sandbox.env" || fail "EXTRA_MOUNTS not in portable sandbox.env"
+
 [[ "$fails" -eq 0 ]] && { echo "ALL PASS"; exit 0; } || { echo "$fails FAILED"; exit 1; }
