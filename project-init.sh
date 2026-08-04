@@ -286,7 +286,6 @@ CONTAINER_MEMORY_SWAP=${container_memory_swap}
 SANDBOX_MODE=open
 SANDBOX_WORKDIR=..
 EOF
-  [[ -n "$group_init" ]] && printf 'AI_CONTAINER_GROUP_INIT=%s\n' "$group_init"
   cat <<'EOF'
 # Machine-specific settings belong in sandbox.local.env (gitignored), NOT here:
 #   EXTRA_MOUNTS="/abs/path /another:ro"   # host bind mounts (Linux-native; absolute paths)
@@ -296,17 +295,20 @@ EOF
 } > "${dest}/sandbox.env"
 printf '  Wrote sandbox.env (portable config).\n'
 
-# Machine-specific config → sandbox.local.env (gitignored), only when the user gave mounts.
-if [[ -n "$extra_mounts" ]]; then
+# Machine-specific config → sandbox.local.env (gitignored). AI_CONTAINER_GROUP_INIT is a
+# host-referential one-time group-bootstrap directive (e.g. from:host), so it belongs here,
+# not in the shared portable file; EXTRA_MOUNTS holds this machine's absolute bind paths.
+if [[ -n "$extra_mounts" || -n "$group_init" ]]; then
   {
     cat <<'EOF'
 # sandbox.local.env — THIS MACHINE's launcher config (gitignored, not shared).
 # Overrides sandbox.env (loaded at higher precedence). Machine/platform-specific:
-# absolute bind paths, named-volume repos, workdir/resource overrides.
+# absolute bind paths, named-volume repos, the group bootstrap, workdir/resource overrides.
 EOF
-    printf 'EXTRA_MOUNTS="%s"\n' "$extra_mounts"
+    [[ -n "$group_init"   ]] && printf 'AI_CONTAINER_GROUP_INIT=%s\n' "$group_init"
+    [[ -n "$extra_mounts" ]] && printf 'EXTRA_MOUNTS="%s"\n' "$extra_mounts"
   } > "${dest}/sandbox.local.env"
-  printf '  Wrote sandbox.local.env (machine-specific: EXTRA_MOUNTS).\n'
+  printf '  Wrote sandbox.local.env (machine-specific).\n'
 fi
 
 for dir in allowlist-domains.d allowlist-proxy-domains.d allowlist-cidrs.d; do

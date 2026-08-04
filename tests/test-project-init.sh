@@ -60,7 +60,12 @@ grep -q '^CONTAINER_CPUS='      "$SBENV" && pass "sandbox.env has CONTAINER_CPUS
 ! grep -qE '^export (IMAGE_NAME|CONTAINER_)' "$LAUNCHER" && pass "runme.sh is thin (no baked config exports)" || fail "runme.sh is thin (no baked config exports)"
 grep -qxF './sandbox.sh' "$LAUNCHER" && pass "runme.sh calls bare ./sandbox.sh" || fail "runme.sh calls bare ./sandbox.sh"
 grep -qxF 'sandbox.local.env' "$PROJ/.ai-containers/.gitignore" && pass "sandbox.local.env is gitignored" || fail "sandbox.local.env is gitignored"
-[[ ! -f "$PROJ/.ai-containers/sandbox.local.env" ]] && pass "no sandbox.local.env without extra mounts" || fail "no sandbox.local.env without extra mounts"
+# PROJ is a NEW group (isolated HOME) → group_init=from:host, host-referential, so it lands
+# in sandbox.local.env (not the portable file) even without EXTRA_MOUNTS.
+SBLOCAL1="$PROJ/.ai-containers/sandbox.local.env"
+{ [[ -f "$SBLOCAL1" ]] && grep -q '^AI_CONTAINER_GROUP_INIT=' "$SBLOCAL1"; } && pass "GROUP_INIT → sandbox.local.env (new group)" || fail "GROUP_INIT → sandbox.local.env (new group)"
+! grep -q '^AI_CONTAINER_GROUP_INIT=' "$SBENV" && pass "GROUP_INIT not in portable sandbox.env" || fail "GROUP_INIT not in portable sandbox.env"
+! grep -q '^EXTRA_MOUNTS=' "$SBLOCAL1" && pass "no EXTRA_MOUNTS in local without mounts" || fail "no EXTRA_MOUNTS in local without mounts"
 
 # A second project WITH an extra-mount answer → EXTRA_MOUNTS in sandbox.local.env only.
 PROJ2="$TMP/proj/withmounts"; mkdir -p "$PROJ2"; git -C "$PROJ2" init -q
