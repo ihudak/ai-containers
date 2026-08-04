@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# Tests the sandbox.env/sandbox.local.env loader (load_env_defaults, precedence
+# inline > local > portable) and sandbox.sh's SANDBOX_MODE/SANDBOX_WORKDIR defaulting.
+# NOTE: tests/test-env-file.sh covers a DIFFERENT layer (in-container container.env).
+set -uo pipefail
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+fails=0; pass() { printf 'PASS: %s\n' "$1"; }; fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails+1)); }
+
+bash -n "$REPO_DIR/sandbox-common.sh" && pass "sandbox-common.sh bash -n" || fail "sandbox-common.sh bash -n"
+bash -n "$REPO_DIR/sandbox.sh"        && pass "sandbox.sh bash -n"        || fail "sandbox.sh bash -n"
+
+# Load the REAL load_env_defaults (extract just the function so the file's heavy
+# top-level code does not run).
+eval "$(sed -n '/^load_env_defaults()/,/^}/p' "$REPO_DIR/sandbox-common.sh")"
+type load_env_defaults >/dev/null 2>&1 && pass "load_env_defaults defined" || { fail "load_env_defaults defined"; printf '\n%d failure(s)\n' "$fails"; exit "$fails"; }
+
+# Apply exactly as sandbox-common.sh does: local first, then portable.
+apply() { load_env_defaults "$LOCAL"; load_env_defaults "$PORTABLE"; }
+mk() { LOCAL="$(mktemp)"; PORTABLE="$(mktemp)"; }
+rmk() { rm -f "$LOCAL" "$PORTABLE"; }
+
+# precedence: inline > local > portable
+mk; printf 'CONTAINER_MEMORY=2g\n' > "$PORTABLE"; printf 'CONTAINER_MEMORY=4g\n' > "$LOCAL"
+( unset CONTAINER_MEMORY; export CONTAINER_MEMORY=8g; apply; [[ "$CONTAINER_MEMORY" == 8g ]] ) \
+  && pass "inline wins over local + portable" || fail "inline wins over local + portable"
+( unset CONTAINER_MEMORY; apply; [[ "$CONTAINER_MEMORY" == 4g ]] ) \
+  && pass "local wins over portable" || fail "local wins over portable"
+rmk
+
+# portable-only key applied
+mk; printf 'IMAGE_NAME=proj-img\n' > "$PORTABLE"
+( unset IMAGE_NAME; apply; [[ "$IMAGE_NAME" == proj-img ]] ) \
+  && pass "portable-only key applied" || fail "portable-only key applied"
+rmk
+
+# missing local file is a no-op
+mk; rm -f "$LOCAL"; printf 'IMAGE_NAME=x\n' > "$PORTABLE"
+( unset IMAGE_NAME; apply; [[ "$IMAGE_NAME" == x ]] ) \
+  && pass "missing sandbox.local.env is a clean no-op" || fail "missing sandbox.local.env is a clean no-op"
+rm -f "$PORTABLE"
+
+# comments / blank / export prefix / surrounding quotes / non-assignment ignored
+mk
+{ printf '# comment\n'; printf '\n'; printf 'export EXTRA_MOUNTS="/a /b"\n'; printf 'not an assignment\n'; } > "$PORTABLE"
+( unset EXTRA_MOUNTS; apply; [[ "$EXTRA_MOUNTS" == "/a /b" ]] ) \
+  && pass "export prefix + surrounding quotes handled" || fail "export prefix + surrounding quotes handled"
+# a stray command line must NOT execute
+marker="$(mktemp -u)"; printf 'touch %s\n' "$marker" >> "$PORTABLE"
+( apply ) >/dev/null 2>&1
+[[ ! -e "$marker" ]] && pass "non-assignment lines do not execute" || { fail "non-assignment lines do not execute"; rm -f "$marker"; }
+rmk
+
+# load ORDER in sandbox-common.sh: local before portable
+loc_ln=$(grep -n 'load_env_defaults .*sandbox\.local\.env' "$REPO_DIR/sandbox-common.sh" | head -1 | cut -d: -f1)
+por_ln=$(grep -n 'load_env_defaults .*/sandbox\.env' "$REPO_DIR/sandbox-common.sh" | head -1 | cut -d: -f1)
+[[ -n "$loc_ln" && -n "$por_ln" && "$loc_ln" -lt "$por_ln" ]] \
+  && pass "sandbox-common.sh loads local before portable ($loc_ln<$por_ln)" \
+  || fail "sandbox-common.sh loads local before portable (local=$loc_ln portable=$por_ln)"
+
+# sandbox.sh mode/workdir defaulting (structural — matches test-env-file.sh's grep style)
+grep -qF 'command="${1:-${SANDBOX_MODE:-usage}}"' "$REPO_DIR/sandbox.sh" \
+  && pass "mode falls back to SANDBOX_MODE (else usage)" || fail "mode falls back to SANDBOX_MODE"
+grep -qF '${2:-${SANDBOX_WORKDIR:-}}' "$REPO_DIR/sandbox.sh" \
+  && pass "workdir falls back to SANDBOX_WORKDIR" || fail "workdir falls back to SANDBOX_WORKDIR"
+
+printf '\n%d failure(s)\n' "$fails"
+exit "$fails"

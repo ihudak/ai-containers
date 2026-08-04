@@ -67,6 +67,9 @@ Positional [primary] — selects the working directory inside the container:
               used as the working dir.
   (omitted)   The working dir is the /workspace umbrella itself.
 
+With no arguments, mode and working dir default to SANDBOX_MODE / SANDBOX_WORKDIR
+(from sandbox.env / sandbox.local.env); a positional arg or inline env var wins.
+
 Everything is mounted under the /workspace umbrella: REPOS at /workspace/<name>,
 EXTRA_MOUNTS at /workspace/<basename>, the personal vault at /workspace/vault,
 the specs repo at /workspace/specs, the docs repo at /workspace/docs (read-only by default).
@@ -793,11 +796,15 @@ run_container() {
 
 # ── Entry point ──────────────────────────────────────────────────────────────────
 
-command="${1:-usage}"
+# Mode + primary workdir fall back to SANDBOX_MODE / SANDBOX_WORKDIR (loaded from
+# sandbox.env / sandbox.local.env by sandbox-common.sh) when the positional args are
+# omitted — so a bare `./sandbox.sh` launches from config. A positional arg always wins;
+# with no arg and no env value, mode → usage (help) and workdir → the /workspace umbrella.
+command="${1:-${SANDBOX_MODE:-usage}}"
 
 case "$command" in
   restricted|discovery|open)
-    run_container "$command" "${2:-}"
+    run_container "$command" "${2:-${SANDBOX_WORKDIR:-}}"
     ;;
   build)
     printf 'ERROR: "sandbox.sh build" has been removed. Use ./build.sh instead.\n' >&2

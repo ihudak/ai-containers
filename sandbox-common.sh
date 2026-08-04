@@ -37,17 +37,36 @@ export TOOLS_D_DIR="${TOOLS_D_DIR:-${script_dir}/tools.d}"
 # shellcheck source=/dev/null
 source "${script_dir}/tools-lib.sh"
 
-# Persisted per-project environment (written by project-init.sh; one KEY=value
-# per line). It is sourced ONLY to supply IMAGE_NAME when the env var is not
-# already set, so build.sh / sandbox.sh / repo.sh all resolve the SAME image name
-# — and therefore the same repo-volume names (<image>-repo-<repo>) — even when a
-# script is run directly instead of through the generated launcher. An exported
-# IMAGE_NAME (e.g. from the launcher) always takes precedence.
-sandbox_env_file="${script_dir}/sandbox.env"
-if [[ -z "${IMAGE_NAME:-}" && -f "$sandbox_env_file" ]]; then
-  # shellcheck disable=SC1090
-  source "$sandbox_env_file"
-fi
+# Persisted per-project launcher config in two layers (both written by project-init.sh;
+# KEY=value per line):
+#   sandbox.env        — PORTABLE, tracked defaults (IMAGE_NAME, AI_CONTAINER_GROUP,
+#                        CONTAINER_*, SANDBOX_MODE, SANDBOX_WORKDIR).
+#   sandbox.local.env  — THIS MACHINE, gitignored (EXTRA_MOUNTS, REPOS, any override).
+# Every entry point (build.sh / sandbox.sh / repo.sh) loads these, so all resolve the
+# same config even when run directly instead of via the launcher.
+#
+# load_env_defaults sets each KEY only if unset (set-if-unset) → an inline/exported env
+# var always wins. It PARSES (does not source): only KEY=value assignments are honoured,
+# tolerating a leading `export` and stripping one layer of surrounding double quotes; no
+# arbitrary code from the file runs. Precedence inline > local > portable is achieved by
+# loading local BEFORE portable (first writer wins).
+load_env_defaults() {
+  local file="$1" line key val
+  [[ -f "$file" ]] || return 0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line#"${line%%[![:space:]]*}"}"      # strip leading whitespace
+    [[ -z "$line" || "$line" == '#'* ]] && continue
+    line="${line#export }"
+    [[ "$line" == *=* ]] || continue
+    key="${line%%=*}"; val="${line#*=}"
+    [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+    val="${val%\"}"; val="${val#\"}"             # strip one layer of surrounding double quotes
+    [[ -n "${!key:-}" ]] && continue             # already set (inline env or earlier file) wins
+    printf -v "$key" '%s' "$val"; export "$key"
+  done < "$file"
+}
+load_env_defaults "${script_dir}/sandbox.local.env"   # this machine (higher precedence)
+load_env_defaults "${script_dir}/sandbox.env"         # portable defaults
 image_name="${IMAGE_NAME:-ai-sandbox}"
 
 # Fixed, project-independent name for the small repo.sh seeding helper image
