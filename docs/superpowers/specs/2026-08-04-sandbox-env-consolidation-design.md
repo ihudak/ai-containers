@@ -126,12 +126,21 @@ before the loader runs.
 ### 3. `sandbox.sh` mode/workdir from env
 
 `sandbox.sh` takes `<mode> <workdir>` positionally (`./sandbox.sh open ..`,
-`./sandbox.sh discovery @app`). Add env defaults so the positional args become optional:
-when arg 1 is absent, mode defaults to `${SANDBOX_MODE:-open}`; when arg 2 is absent,
-workdir defaults to `${SANDBOX_WORKDIR:-..}`. **Fully backward-compatible** — an explicit
-positional arg still wins, so every existing invocation is unchanged. This is what lets
-`runme.sh` call a bare `./sandbox.sh`. `SANDBOX_MODE`/`SANDBOX_WORKDIR` are populated by
-the loader (§2) from the env files.
+`./sandbox.sh discovery @app`) via its entry point (`command="${1:-usage}"` →
+`run_container "$command" "${2:-}"`). Make the positional args fall back to env: the entry
+point becomes `command="${1:-${SANDBOX_MODE:-usage}}"` and passes
+`"${2:-${SANDBOX_WORKDIR:-}}"` as the workdir. Consequences:
+
+- When the env supplies values — a `project-init.sh`-generated project sets
+  `SANDBOX_MODE=open` and `SANDBOX_WORKDIR=..` in `sandbox.env` — a **bare** `./sandbox.sh`
+  launches with them, which is what lets `runme.sh` call a bare `./sandbox.sh`.
+- When **neither** a positional arg **nor** an env value is present, behavior is
+  **unchanged**: no mode → `usage`/help (not a silent launch); no workdir → the
+  `/workspace` umbrella. The `open`/`..` defaults thus live as **data** in `sandbox.env`
+  (written by `project-init.sh`), *not* as new hard-coded fallbacks — so existing direct
+  `./sandbox.sh restricted` runs and the bare-`./sandbox.sh`-shows-help behavior are fully
+  preserved. Positional args always win. `SANDBOX_MODE`/`SANDBOX_WORKDIR` reach `sandbox.sh`
+  via the loader (§2).
 
 ### 4. `project-init.sh`
 
@@ -190,19 +199,28 @@ For any key, the value comes from the highest-precedence source that defines it:
 
 ## Testing
 
-- **`tests/test-env-file.sh`** (exists) — extend to cover `load_env_defaults`:
+- **New `tests/test-sandbox-env.sh`** — the loader + defaulting live here. (Note:
+  `tests/test-env-file.sh` is a *different* layer — it tests the in-container `container.env`
+  `--env-file` injection — so it is NOT the place for this.) Covers `load_env_defaults`
+  (extracted via `sed`/`eval`, exercised against temp files):
   - precedence: inline > local > portable (set a key in all three, assert inline wins;
     then local-only, assert local; then portable-only, assert portable);
   - a missing `sandbox.local.env` is a clean no-op;
   - comment/blank lines and a leading `export` are handled; surrounding quotes stripped;
-    a non-assignment line is ignored (and does not execute);
-  - an already-exported var is not clobbered.
-- **`sandbox.sh` mode/workdir defaulting** — a focused test (stub/argument-level): no
-  positional args → uses `SANDBOX_MODE`/`SANDBOX_WORKDIR`; an explicit positional arg wins;
-  empty env → `open`/`..` fallback.
-- **`tests/test-sync-project.sh`** — if the shared-file set or the `.ai-containers/.gitignore`
-  pinned patterns change (adding `sandbox.local.env`), update the pinned contract in
-  lockstep.
+    a non-assignment line is ignored (and does not execute); an already-set var is not
+    clobbered;
+  - a grep guard that `sandbox-common.sh` calls the loads in order (local **before**
+    portable), since set-if-unset makes the first-loaded source win.
+  - `sandbox.sh` mode/workdir defaulting (structural, matching `test-env-file.sh`'s
+    grep-based style): the entry point uses `${1:-${SANDBOX_MODE:-usage}}` and passes
+    `${2:-${SANDBOX_WORKDIR:-}}`; `bash -n` clean.
+- **`tests/test-project-init.sh`** (exists) — extend: `sandbox.env` carries the portable
+  keys; the generated `runme.sh` is thin (no `export IMAGE_NAME`/`CONTAINER_*` block); a
+  run WITH an extra-mount answer writes `EXTRA_MOUNTS` to `sandbox.local.env` (and NOT to
+  `runme.sh`); `.ai-containers/.gitignore` lists `sandbox.local.env`.
+- **`tests/test-sync-project.sh`** — no change expected (no shared *script* set change;
+  `sandbox.env`/`sandbox.local.env` are per-project, not sync-copied). Update only if a
+  pinned assertion turns out to reference the changed `.ai-containers/.gitignore`.
 - Full suite stays green; no schema migration involved.
 
 ## Risks & Mitigations
