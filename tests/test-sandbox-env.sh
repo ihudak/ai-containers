@@ -56,6 +56,12 @@ marker="$(mktemp -u)"; printf 'touch %s\n' "$marker" >> "$PORTABLE"
 [[ ! -e "$marker" ]] && pass "non-assignment lines do not execute" || { fail "non-assignment lines do not execute"; rm -f "$marker"; }
 rmk
 
+# tolerant `export` prefix (tab or multiple spaces, not just a single space)
+mk; printf 'export\tCONTAINER_CPUS=3\n' > "$PORTABLE"
+( unset CONTAINER_CPUS; apply; [[ "$CONTAINER_CPUS" == 3 ]] ) \
+  && pass "tolerates 'export<TAB>KEY=val'" || fail "tolerates 'export<TAB>KEY=val'"
+rmk
+
 # load ORDER in sandbox-common.sh: local before portable
 loc_ln=$(grep -n 'load_env_defaults .*sandbox\.local\.env' "$REPO_DIR/sandbox-common.sh" | head -1 | cut -d: -f1)
 por_ln=$(grep -n 'load_env_defaults .*/sandbox\.env' "$REPO_DIR/sandbox-common.sh" | head -1 | cut -d: -f1)
@@ -68,6 +74,13 @@ grep -qF 'command="${1:-${SANDBOX_MODE:-usage}}"' "$REPO_DIR/sandbox.sh" \
   && pass "mode falls back to SANDBOX_MODE (else usage)" || fail "mode falls back to SANDBOX_MODE"
 grep -qF '${2:-${SANDBOX_WORKDIR:-}}' "$REPO_DIR/sandbox.sh" \
   && pass "workdir falls back to SANDBOX_WORKDIR" || fail "workdir falls back to SANDBOX_WORKDIR"
+
+# behavioral: a bare ./sandbox.sh with no SANDBOX_MODE resolves mode → usage (docker-free
+# path — usage() just prints and exits; no run_container/docker is reached).
+sbout="$(mktemp)"
+( unset SANDBOX_MODE SANDBOX_WORKDIR; bash "$REPO_DIR/sandbox.sh" >"$sbout" 2>&1 || true )
+grep -q '^Usage:' "$sbout" && pass "bare ./sandbox.sh (no SANDBOX_MODE) shows usage" || fail "bare ./sandbox.sh (no SANDBOX_MODE) shows usage"
+rm -f "$sbout"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

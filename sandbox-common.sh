@@ -60,7 +60,9 @@ load_env_defaults() {
     line="${line%$'\r'}"                         # tolerate a CRLF-authored file
     line="${line#"${line%%[![:space:]]*}"}"      # strip leading whitespace
     [[ -z "$line" || "$line" == '#'* ]] && continue
-    line="${line#export }"
+    case "$line" in                              # drop an optional `export` + any following whitespace
+      export[[:space:]]*) line="${line#export}"; line="${line#"${line%%[![:space:]]*}"}" ;;
+    esac
     [[ "$line" == *=* ]] || continue
     key="${line%%=*}"; val="${line#*=}"
     [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
