@@ -60,11 +60,14 @@ grep -q 'rvm --default use' <<<"$log_def" \
   && fail "must NOT re-point an existing default" \
   || pass "does not re-point an existing default"
 
-# An install failure triggers the get-stable + reload retry.
+# An install failure triggers the get-stable + reload retry, IN THAT ORDER
+# (reconcile runs `rvm get stable && rvm reload && rvm install`).
 log_fail="$(STUB_INSTALL_FAILS=1 run_case "" "3.4.5")"
-{ grep -q 'rvm get stable' <<<"$log_fail" && grep -q 'rvm reload' <<<"$log_fail"; } \
-  && pass "install failure triggers get-stable+reload retry" \
-  || fail "install failure triggers get-stable+reload retry"
+gs_ln="$(grep -n 'rvm get stable' <<<"$log_fail" | head -1 | cut -d: -f1)"
+rl_ln="$(grep -n 'rvm reload'     <<<"$log_fail" | head -1 | cut -d: -f1)"
+{ [[ -n "$gs_ln" && -n "$rl_ln" && "$gs_ln" -lt "$rl_ln" ]]; } \
+  && pass "install failure triggers get-stable BEFORE reload retry" \
+  || fail "install failure triggers get-stable+reload retry (in order; gs=$gs_ln rl=$rl_ln)"
 
 # Prefix collision: 3.4.50 present must NOT satisfy a request for 3.4.5.
 log_pfx="$(run_case "3.4.50" "3.4.5")"
