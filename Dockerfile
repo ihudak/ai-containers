@@ -328,6 +328,7 @@ ARG RUBY_RUNTIME=0
 # build.sh:231/239), and that earlier layer already installs build-essential / libssl-dev /
 # libyaml-dev / zlib1g-dev — so this layer installs only the ruby-build-specific extras.
 RUN if [ "$RUBY_RUNTIME" = "1" ]; then \
+      if [ "$KEEP_BUILD_TOOLCHAIN" != "1" ]; then echo "ERROR: RUBY_RUNTIME=1 requires KEEP_BUILD_TOOLCHAIN=1 (build.sh co-sets them; this layer relies on that layer's build-essential/libssl-dev/libyaml-dev/zlib1g-dev)" >&2; exit 1; fi; \
       apt-get update && apt-get install -y --no-install-recommends \
         gnupg2 ca-certificates procps \
         autoconf bison patch \
@@ -398,12 +399,14 @@ RUN if [ "$INSTALL_PNPM" = "1" ]; then npm install -g pnpm; fi
 
 ARG INSTALL_QMD=0
 # @tobilu/qmd pulls in tree-sitter, which compiles native addons via node-gyp.
-# build-essential was purged in the cleanup layer above, so reinstall the
-# toolchain just for this layer and purge it again to keep the image lean.
+# build-essential was purged in the cleanup layer above, so reinstall the toolchain
+# just for this layer. Purge it again to keep the image lean — but ONLY when the
+# runtime toolchain isn't needed: ruby/db-clients set KEEP_BUILD_TOOLCHAIN=1 and rely
+# on build-essential surviving for runtime native compilation, so keep it then.
 RUN if [ "$INSTALL_QMD" = "1" ]; then \
       apt-get update && apt-get install -y --no-install-recommends build-essential && \
       npm install -g @tobilu/qmd && \
-      apt-get purge -y --auto-remove build-essential && \
+      if [ "$KEEP_BUILD_TOOLCHAIN" != "1" ]; then apt-get purge -y --auto-remove build-essential; fi && \
       rm -rf /var/lib/apt/lists/*; \
     fi
 

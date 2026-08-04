@@ -76,11 +76,17 @@ grep -qF '${2:-${SANDBOX_WORKDIR:-}}' "$REPO_DIR/sandbox.sh" \
   && pass "workdir falls back to SANDBOX_WORKDIR" || fail "workdir falls back to SANDBOX_WORKDIR"
 
 # behavioral: a bare ./sandbox.sh with no SANDBOX_MODE resolves mode → usage (docker-free
-# path — usage() just prints and exits; no run_container/docker is reached).
-sbout="$(mktemp)"
-( unset SANDBOX_MODE SANDBOX_WORKDIR; bash "$REPO_DIR/sandbox.sh" >"$sbout" 2>&1 || true )
-grep -q '^Usage:' "$sbout" && pass "bare ./sandbox.sh (no SANDBOX_MODE) shows usage" || fail "bare ./sandbox.sh (no SANDBOX_MODE) shows usage"
-rm -f "$sbout"
+# path — usage() just prints and exits; no run_container/docker is reached). Hermetic only
+# when the repo root has no sandbox.env/sandbox.local.env (the loader would read them and
+# could set SANDBOX_MODE, defeating the probe); the committed repo has neither.
+if [[ ! -f "$REPO_DIR/sandbox.env" && ! -f "$REPO_DIR/sandbox.local.env" ]]; then
+  sbout="$(mktemp)"
+  ( unset SANDBOX_MODE SANDBOX_WORKDIR; bash "$REPO_DIR/sandbox.sh" >"$sbout" 2>&1 || true )
+  grep -q '^Usage:' "$sbout" && pass "bare ./sandbox.sh (no SANDBOX_MODE) shows usage" || fail "bare ./sandbox.sh (no SANDBOX_MODE) shows usage"
+  rm -f "$sbout"
+else
+  printf 'NOTE: skipping bare-sandbox.sh usage probe (repo-root sandbox.env/local present)\n'
+fi
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
