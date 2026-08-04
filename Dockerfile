@@ -324,10 +324,13 @@ RUN if [ "$INSTALL_WKHTMLTOPDF" = "1" ]; then \
 # runtime installer needs no keyserver, and bake a $HOME-relative conditional
 # rc-source line (no runtime /etc write needed).
 ARG RUBY_RUNTIME=0
+# build.sh always co-sets KEEP_BUILD_TOOLCHAIN=1 when RUBY_RUNTIME=1 (ruby implies both,
+# build.sh:231/239), and that earlier layer already installs build-essential / libssl-dev /
+# libyaml-dev / zlib1g-dev — so this layer installs only the ruby-build-specific extras.
 RUN if [ "$RUBY_RUNTIME" = "1" ]; then \
       apt-get update && apt-get install -y --no-install-recommends \
-        build-essential gnupg2 ca-certificates procps \
-        autoconf bison patch libssl-dev libyaml-dev zlib1g-dev \
+        gnupg2 ca-certificates procps \
+        autoconf bison patch \
         libreadline-dev libncurses-dev libffi-dev libgdbm-dev \
         libsqlite3-dev sqlite3 libgmp-dev libtool && \
       rm -rf /var/lib/apt/lists/* && \
