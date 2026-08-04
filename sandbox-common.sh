@@ -45,15 +45,19 @@ source "${script_dir}/tools-lib.sh"
 # Every entry point (build.sh / sandbox.sh / repo.sh) loads these, so all resolve the
 # same config even when run directly instead of via the launcher.
 #
-# load_env_defaults sets each KEY only if unset (set-if-unset) → an inline/exported env
-# var always wins. It PARSES (does not source): only KEY=value assignments are honoured,
-# tolerating a leading `export` and stripping one layer of surrounding double quotes; no
-# arbitrary code from the file runs. Precedence inline > local > portable is achieved by
-# loading local BEFORE portable (first writer wins).
+# load_env_defaults sets each KEY only if it is not already SET (even to empty) → an
+# inline/exported env var always wins. It PARSES (does not source): only KEY=value
+# assignments are honoured, tolerating a leading `export` and stripping one layer of
+# surrounding double quotes; no arbitrary code from the file runs. Precedence
+# inline > local > portable is achieved by loading local BEFORE portable (first writer
+# wins). File-format constraints (machine-generated files always satisfy these; noted for
+# hand-editors): values are LITERAL — `$VAR`/`$(...)` are NOT expanded; comments must be on
+# their own line (a `#` after a value is part of the value); use LF line endings.
 load_env_defaults() {
   local file="$1" line key val
   [[ -f "$file" ]] || return 0
   while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"                         # tolerate a CRLF-authored file
     line="${line#"${line%%[![:space:]]*}"}"      # strip leading whitespace
     [[ -z "$line" || "$line" == '#'* ]] && continue
     line="${line#export }"
@@ -61,7 +65,7 @@ load_env_defaults() {
     key="${line%%=*}"; val="${line#*=}"
     [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
     val="${val%\"}"; val="${val#\"}"             # strip one layer of surrounding double quotes
-    [[ -n "${!key:-}" ]] && continue             # already set (inline env or earlier file) wins
+    [[ -n "${!key+x}" ]] && continue             # already SET (inline env or earlier file) wins — even if empty
     printf -v "$key" '%s' "$val"; export "$key"
   done < "$file"
 }

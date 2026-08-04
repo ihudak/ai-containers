@@ -27,6 +27,12 @@ mk; printf 'CONTAINER_MEMORY=2g\n' > "$PORTABLE"; printf 'CONTAINER_MEMORY=4g\n'
   && pass "local wins over portable" || fail "local wins over portable"
 rmk
 
+# an explicitly-empty inline value is respected (set-if-SET, not set-if-nonempty)
+mk; printf 'CONTAINER_MEMORY=2g\n' > "$PORTABLE"
+( export CONTAINER_MEMORY=; apply; [[ -z "$CONTAINER_MEMORY" ]] ) \
+  && pass "explicit empty inline value is not clobbered" || fail "explicit empty inline value is not clobbered"
+rmk
+
 # portable-only key applied
 mk; printf 'IMAGE_NAME=proj-img\n' > "$PORTABLE"
 ( unset IMAGE_NAME; apply; [[ "$IMAGE_NAME" == proj-img ]] ) \
