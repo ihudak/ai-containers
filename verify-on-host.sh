@@ -140,13 +140,18 @@ sed -E 's/^(copilot|claude-code|codex|gemini|graphify|vale|kiro|qmd)=.*/\1=OFF/;
 if SANDBOX_CONF="$RUBY_CONF" IMAGE_NAME=ai-sandbox-ruby "$REPO/build.sh" ai-sandbox-ruby >/tmp/ruby-build.log 2>&1; then
   sub "build OK — starting a restricted container (first Ruby compile takes several minutes)…"
   RVMGROUP="hostverify-ruby-$$"
-  # Deliberately NOT under ~/.ai-containers/: a throwaway group directory there is
-  # indistinguishable from a real one, so every failed run left a "hostverify-ruby-<pid>"
-  # entry in `./group.sh list` for the user to puzzle over. rvm_volume_ensure only
-  # reads this path to look for a legacy ~/.rvm to migrate, so a temp dir does the
-  # job without polluting the real group list. The VOLUME still carries the group
-  # name, so `group.sh rm` can still clean it up.
-  GRPDIR="$(mktemp -d -t hostverify-ruby)"
+  # Under $HOME but NOT under ~/.ai-containers/. Both constraints are load-bearing:
+  #   * not in ~/.ai-containers/ — a throwaway group directory there is
+  #     indistinguishable from a real one, so every failed run left a
+  #     "hostverify-ruby-<pid>" entry in `./group.sh list` to puzzle over;
+  #   * under $HOME — this directory is a BIND-MOUNT SOURCE (the blocked-capture
+  #     output below), and on macOS the VM only shares $HOME. `mktemp -d` lands in
+  #     $TMPDIR (/var/folders/...), which Colima does NOT share: the mount then
+  #     silently resolves inside the VM, the container writes there happily, and the
+  #     host reads an empty directory — which this script reported as
+  #     "capture DID NOT START", a flatly wrong conclusion about a healthy daemon.
+  GRPDIR="$HOME/.cache/ai-containers-verify/hostverify-ruby-$$"
+  mkdir -p "$GRPDIR"
   # Same helper sandbox.sh calls — creates the labeled volume (and would migrate a
   # legacy bind-mounted ~/.rvm, of which a throwaway group has none).
   RVMVOL="$(cd "$REPO" && SANDBOX_CONF="$RUBY_CONF" bash -c \
@@ -162,6 +167,21 @@ if SANDBOX_CONF="$RUBY_CONF" IMAGE_NAME=ai-sandbox-ruby "$REPO/build.sh" ai-sand
   # bootstrap failure gives you "network unreachable" with no idea WHICH host was
   # dropped — which is exactly what happened on the first run of this script.
   BLK="$GRPDIR/blocked"; mkdir -p "$BLK"
+  # Prove the bind mount is actually shared with the VM BEFORE drawing conclusions
+  # from what is (or is not) in it. A host path the VM does not share mounts as a
+  # VM-local directory: writes succeed inside the container and are invisible here,
+  # so an empty $BLK means either "nothing was written" or "we cannot see it" — and
+  # this script confidently reported the second as the first.
+  BLK_VISIBLE=1
+  docker run --rm -v "$BLK:/probe" --entrypoint bash ai-sandbox-ruby \
+    -c 'touch /probe/.mount-check' >/dev/null 2>&1 || true
+  if [[ -f "$BLK/.mount-check" ]]; then
+    rm -f "$BLK/.mount-check"
+  else
+    BLK_VISIBLE=0
+    sub "WARNING: $BLK is not shared with the Docker VM — blocked-capture output"
+    sub "         will be invisible here. Treat capture results below as UNKNOWN."
+  fi
   cid="$(docker run -di --rm --cap-add=NET_ADMIN --cap-add=NET_RAW \
       -e DEV_CONTAINER_MODE=restricted -e RUBY_VERSIONS=3.4.5 \
       -e SANDBOX_UID="$(id -u)" -e SANDBOX_GID="$(id -g)" \
@@ -215,7 +235,9 @@ if SANDBOX_CONF="$RUBY_CONF" IMAGE_NAME=ai-sandbox-ruby "$REPO/build.sh" ai-sand
   # output file with explanatory header comments, so their mere presence proves the
   # daemon got past startup. That is the check that matters — it silently died there
   # for months, taking self-healing with it.
-  if [[ -f "$BLK/blocked.log" ]]; then
+  if [[ "$BLK_VISIBLE" != "1" ]]; then
+    sub "blocked-traffic capture: UNKNOWN — the output mount is not visible from the host"
+  elif [[ -f "$BLK/blocked.log" ]]; then
     sub "blocked-traffic capture: RUNNING (daemon reached init_output_files)"
   else
     sub "blocked-traffic capture: DID NOT START — no output files. Diagnostics:"
@@ -314,11 +336,12 @@ if SANDBOX_CONF="$RUBY_CONF" IMAGE_NAME=ai-sandbox-ruby "$REPO/build.sh" ai-sand
   else
     # Exercise the real cleanup path rather than rm -rf'ing behind its back: if
     # group.sh stops removing the volume, this phase is where it should show up.
-    # GRPDIR is a temp dir, not a group directory, so group.sh only has the volume
-    # to remove — drop the directory here regardless of how that call went.
+    # GRPDIR is scratch under ~/.cache, not a group directory, so group.sh only has
+    # the volume to remove — drop the directory here regardless of how that went.
     (cd "$REPO" && bash ./group.sh rm "$RVMGROUP" --yes >/dev/null 2>&1) \
       || docker volume rm "$RVMVOL" >/dev/null 2>&1 || true
     rm -rf "$GRPDIR"
+    rmdir "$HOME/.cache/ai-containers-verify" 2>/dev/null || true
     if docker volume inspect "$RVMVOL" >/dev/null 2>&1; then
       sub "WARNING: rvm volume $RVMVOL survived cleanup — remove it by hand."
     fi
