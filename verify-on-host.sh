@@ -2,10 +2,13 @@
 # verify-on-host.sh — run the checks that CANNOT run inside a sandbox container
 # (they need a real Docker daemon). Written for macOS + Colima on Apple silicon.
 #
-#   cd ~/dev/ai-tools/ai-containers      # or wherever your ai-containers clone is
-#   bash /path/to/verify-on-host.sh 2>&1 | tee /tmp/ai-containers-host-verify.log
+#   cd ~/dev/ai-tools/ai-containers            # upstream: engine at the repo root
+#   cd ~/dev/dt-utils/mgd-ai-containers/base   # mgd: engine in base/, tests one up
+#   bash ./verify-on-host.sh 2>&1 | tee ./ai-containers-host-verify.log
 #
-# Then paste /tmp/ai-containers-host-verify.log back into the chat.
+# One copy serves both layouts (see TESTS_DIR below). Then paste the log back.
+#
+#   PHASES=3 bash ./verify-on-host.sh          # just the Ruby phase
 #
 # Phases (each independent; a later phase still runs if an earlier one fails):
 #   0  environment sanity (Colima up, buildx, disk)
@@ -25,8 +28,17 @@ sub() { printf '%s   %s\n' "$LOG_PREFIX" "$*"; }
 
 [[ -f "$REPO/build.sh" && -f "$REPO/sandbox.conf" ]] || {
   echo "ERROR: run this from an ai-containers checkout (or set REPO=/path/to/checkout)." >&2
+  echo "       In mgd-ai-containers the engine lives in base/ — run it from there." >&2
   exit 2
 }
+
+# Layout-tolerant tests dir: upstream ai-containers keeps tests/ next to build.sh;
+# mgd-ai-containers keeps the engine in base/ and tests/ one level up, beside it.
+# Resolving it here means ONE copy of this script serves both repos verbatim, which
+# is the same reason Phase 3 resolves ~/.rvm through sandbox-common.sh instead of
+# hardcoding it — a verifier that drifts from what it verifies is worse than none.
+TESTS_DIR="$REPO/tests"
+[[ -d "$TESTS_DIR" ]] || TESTS_DIR="$REPO/../tests"
 
 # Phase selection, so iterating on one failing phase does not re-pay for the others
 # (Phase 1 alone runs a full six-tool network install). Phase 0 is always cheap and
@@ -77,7 +89,7 @@ if SANDBOX_CONF="$SMOKE_CONF" IMAGE_NAME=ai-sandbox-smoke "$REPO/build.sh" ai-sa
   done
   # SMOKE_SKIP_BUILD=1: reuse the image we just built with the right allowlist.
   AGENT_TOOLS_SMOKE=1 SMOKE_IMAGE=ai-sandbox-smoke SMOKE_SKIP_BUILD=1 SMOKE_KEEP=1 \
-    bash "$REPO/tests/test-agent-tools-smoke.sh" 2>&1 | sed "s/^/$LOG_PREFIX   /"
+    bash "$TESTS_DIR/test-agent-tools-smoke.sh" 2>&1 | sed "s/^/$LOG_PREFIX   /"
   sub "PHASE 1 exit: ${PIPESTATUS[0]:-?}"
 else
   sub "BUILD FAILED — last 40 lines:"
@@ -128,7 +140,13 @@ sed -E 's/^(copilot|claude-code|codex|gemini|graphify|vale|kiro|qmd)=.*/\1=OFF/;
 if SANDBOX_CONF="$RUBY_CONF" IMAGE_NAME=ai-sandbox-ruby "$REPO/build.sh" ai-sandbox-ruby >/tmp/ruby-build.log 2>&1; then
   sub "build OK — starting a restricted container (first Ruby compile takes several minutes)…"
   RVMGROUP="hostverify-ruby-$$"
-  GRPDIR="$HOME/.ai-containers/$RVMGROUP"; mkdir -p "$GRPDIR"
+  # Deliberately NOT under ~/.ai-containers/: a throwaway group directory there is
+  # indistinguishable from a real one, so every failed run left a "hostverify-ruby-<pid>"
+  # entry in `./group.sh list` for the user to puzzle over. rvm_volume_ensure only
+  # reads this path to look for a legacy ~/.rvm to migrate, so a temp dir does the
+  # job without polluting the real group list. The VOLUME still carries the group
+  # name, so `group.sh rm` can still clean it up.
+  GRPDIR="$(mktemp -d -t hostverify-ruby)"
   # Same helper sandbox.sh calls — creates the labeled volume (and would migrate a
   # legacy bind-mounted ~/.rvm, of which a throwaway group has none).
   RVMVOL="$(cd "$REPO" && SANDBOX_CONF="$RUBY_CONF" bash -c \
@@ -285,12 +303,15 @@ if SANDBOX_CONF="$RUBY_CONF" IMAGE_NAME=ai-sandbox-ruby "$REPO/build.sh" ai-sand
     sub "Phase 3 FAILED — kept for re-probing:"
     sub "  image:      ai-sandbox-ruby   (docker rmi ai-sandbox-ruby when done)"
     sub "  group dir:  $GRPDIR"
-    sub "  rvm volume: $RVMVOL   (./group.sh rm $RVMGROUP removes both)"
+    sub "  rvm volume: $RVMVOL   (./group.sh rm $RVMGROUP removes it)"
   else
     # Exercise the real cleanup path rather than rm -rf'ing behind its back: if
     # group.sh stops removing the volume, this phase is where it should show up.
+    # GRPDIR is a temp dir, not a group directory, so group.sh only has the volume
+    # to remove — drop the directory here regardless of how that call went.
     (cd "$REPO" && bash ./group.sh rm "$RVMGROUP" --yes >/dev/null 2>&1) \
-      || { rm -rf "$GRPDIR"; docker volume rm "$RVMVOL" >/dev/null 2>&1 || true; }
+      || docker volume rm "$RVMVOL" >/dev/null 2>&1 || true
+    rm -rf "$GRPDIR"
     if docker volume inspect "$RVMVOL" >/dev/null 2>&1; then
       sub "WARNING: rvm volume $RVMVOL survived cleanup — remove it by hand."
     fi
