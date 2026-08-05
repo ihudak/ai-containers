@@ -343,7 +343,19 @@ RUN if [ "$RUBY_RUNTIME" = "1" ]; then \
                     7D2BAF1CF37B13E2069D6956105BD0E739499BDB && \
       chmod -R go-rwx /etc/skel/.gnupg && \
       # Source a per-user rvm when present (login + interactive shells).
-      printf '%s\n' '[ -s "$HOME/.rvm/scripts/rvm" ] && source "$HOME/.rvm/scripts/rvm"' \
+      # The rvm_stored_umask line is what rvm's own modern loader sets, and rvm
+      # checks for it BY NAME: without it, every bootstrap prints "your RVM loading
+      # script /etc/profile.d/rvm.sh is deprecated and causes you to have umask g+w
+      # set in your shell". That warning is a false positive here — it is a pure
+      # heuristic (grep for this variable) and never measures a umask. The `umask
+      # g+w` it describes came from the old SYSTEM-WIDE multi-user rvm loader, which
+      # made a shared /usr/local/rvm group-writable; this is a per-user install and
+      # the line below sets no umask. Capturing the umask before sourcing is also
+      # what rvm expects a loader to do (__rvm_call_with_restored_umask restores it),
+      # so this is the correct loader, not just a way to silence the check.
+      printf '%s\n%s\n' \
+        '[ -n "${rvm_stored_umask:-}" ] || export rvm_stored_umask=$(umask)' \
+        '[ -s "$HOME/.rvm/scripts/rvm" ] && source "$HOME/.rvm/scripts/rvm"' \
         > /etc/profile.d/rvm.sh && \
       printf '\n%s\n' '[ -s "$HOME/.rvm/scripts/rvm" ] && source "$HOME/.rvm/scripts/rvm"' \
         >> /etc/bash.bashrc; \

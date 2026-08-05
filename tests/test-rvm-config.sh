@@ -62,6 +62,16 @@ for h in cache.ruby-lang.org keyserver.ubuntu.com bitbucket.org api.bitbucket.or
     && pass "rvm.txt allowlists $h" || fail "rvm.txt allowlists $h"
 done
 
+# rvm decides whether /etc/profile.d/rvm.sh is the "deprecated" loader by grepping it
+# for rvm_stored_umask — a pure heuristic that never measures a umask. Without the
+# line, every bootstrap prints "…is deprecated and causes you to have umask g+w set
+# in your shell", which is a false positive for a per-user install (the g+w loader was
+# the old SYSTEM-WIDE multi-user one). Capturing the umask before sourcing is also what
+# rvm expects of a loader, so this is the correct script, not just a silenced warning.
+grep -q 'rvm_stored_umask' "$REPO_DIR/Dockerfile" \
+  && pass "profile.d rvm loader stores the umask (no spurious deprecation warning)" \
+  || fail "profile.d rvm loader stores the umask (no spurious deprecation warning)"
+
 # The GitHub hosts the installer downloads rvm itself from live in base.txt (always
 # included), not in rvm.txt — assert them where they actually are, so moving one out
 # of base.txt cannot silently break the Ruby bootstrap.

@@ -195,6 +195,13 @@ if SANDBOX_CONF="$RUBY_CONF" IMAGE_NAME=ai-sandbox-ruby "$REPO/build.sh" ai-sand
         printf "             error:   %s\n" "$out"
       fi
     done' 2>&1 | sed "s/^/$LOG_PREFIX   /"
+  # rvm warns that /etc/profile.d/rvm.sh "causes you to have umask g+w set in your
+  # shell". That check is a heuristic (it greps for rvm_stored_umask) and never
+  # measures anything, so measure it here instead of trusting either side. 0022 is
+  # the expected value; anything group-writable (e.g. 0002) would be a real finding.
+  sub "umask in the container (rvm claims its loader forces g+w — verify, don't trust):"
+  docker exec "$cid" bash -lc 'printf "  login shell:      %s\n" "$(umask)"' 2>&1 | sed "s/^/$LOG_PREFIX   /"
+  docker exec "$cid" bash -c  'printf "  non-login shell:  %s\n" "$(umask)"' 2>&1 | sed "s/^/$LOG_PREFIX   /"
   sub "reconcile log:"
   docker logs "$cid" 2>&1 | grep -i 'rvm-reconcile\|rvm-installer\|link-default-ruby' | tail -30 | sed "s/^/$LOG_PREFIX     /"
   # What the firewall did during the bootstrap. blocked.log is the AUTHORITATIVE
