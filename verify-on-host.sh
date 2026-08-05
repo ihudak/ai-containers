@@ -186,30 +186,53 @@ if SANDBOX_CONF="$RUBY_CONF" IMAGE_NAME=ai-sandbox-ruby "$REPO/build.sh" ai-sand
   # those two therefore reports "blocked nothing" for traffic that WAS dropped and
   # then admitted, which is the difference between "the firewall is innocent" and
   # "the firewall is involved but recovered".
-  if [[ -s "$BLK/blocked-domains.txt" || -s "$BLK/blocked-ips.txt" ]]; then
-    sub "HARD-BLOCKED by the firewall (never admitted) — add these to the allowlist:"
-    cat "$BLK/blocked-domains.txt" "$BLK/blocked-ips.txt" 2>/dev/null \
-      | sort -u | sed "s/^/$LOG_PREFIX     /"
-  fi
-  if [[ -s "$BLK/blocked.log" ]] && grep -q '(auto-allowed)' "$BLK/blocked.log" 2>/dev/null; then
-    sub "dropped then SELF-HEALED (allowlisted, admitted after the first packet):"
-    grep '(auto-allowed)' "$BLK/blocked.log" | awk '{print $NF, $(NF-1)}' \
-      | sort -u | head -20 | sed "s/^/$LOG_PREFIX     /"
-  fi
-  if [[ ! -s "$BLK/blocked.log" ]]; then
-    # "nothing was dropped" and "the capture never ran" print identically, and the
-    # difference decides whether to suspect the firewall at all — so prove which
-    # one it is from tshark's own error logs before trusting the empty result.
-    sub "firewall dropped nothing at all during the bootstrap — capture health:"
+  # Health FIRST, and judged on the files EXISTING: init_output_files seeds each
+  # output file with explanatory header comments, so their mere presence proves the
+  # daemon got past startup. That is the check that matters — it silently died there
+  # for months, taking self-healing with it.
+  if [[ -f "$BLK/blocked.log" ]]; then
+    sub "blocked-traffic capture: RUNNING (daemon reached init_output_files)"
+  else
+    sub "blocked-traffic capture: DID NOT START — no output files. Diagnostics:"
     for f in tshark-nflog-errors.log tshark-dns-errors.log; do
       if [[ -f "$BLK/$f" ]]; then
         printf '%s     %-26s %s\n' "$LOG_PREFIX" "$f" \
-          "$([[ -s "$BLK/$f" ]] && echo "NON-EMPTY (capture may be broken — result NOT trustworthy)" || echo "empty (capture healthy)")"
+          "$([[ -s "$BLK/$f" ]] && echo "NON-EMPTY (tshark failed)" || echo "empty (tshark started)")"
         [[ -s "$BLK/$f" ]] && head -5 "$BLK/$f" | sed "s/^/$LOG_PREFIX       /"
       else
-        printf '%s     %-26s %s\n' "$LOG_PREFIX" "$f" "ABSENT — capture daemon never started"
+        printf '%s     %-26s %s\n' "$LOG_PREFIX" "$f" "ABSENT — died before starting tshark"
       fi
     done
+  fi
+
+  # What it actually recorded. Every output file is seeded with header COMMENTS, so
+  # `-s` (non-empty) is true even when nothing was blocked — that misreported a clean
+  # run as "HARD-BLOCKED" and then listed the headers as if they were destinations.
+  # Count real entries only. blocked.log stays the authoritative record: log_blocked()
+  # returns early after self-healing an allowlisted domain
+  # (capture-blocked-traffic.sh:126-131), writing the "(auto-allowed)" line to
+  # blocked.log ONLY — never to blocked-domains.txt/blocked-ips.txt.
+  entries() { cat "$@" 2>/dev/null | grep -vE '^[[:space:]]*(#|$)' || true; }
+  hard_blocked="$(entries "$BLK/blocked-domains.txt" "$BLK/blocked-ips.txt" | sort -u)"
+  self_healed="$(grep '(auto-allowed)' "$BLK/blocked.log" 2>/dev/null \
+                   | awk '{print $NF, $(NF-1)}' | sort -u | head -20)"
+  if [[ -n "$hard_blocked" ]]; then
+    sub "HARD-BLOCKED by the firewall (never admitted) — add these to the allowlist:"
+    printf '%s\n' "$hard_blocked" | sed "s/^/$LOG_PREFIX     /"
+  fi
+  if [[ -n "$self_healed" ]]; then
+    sub "dropped then SELF-HEALED (allowlisted, admitted after the first packet):"
+    printf '%s\n' "$self_healed" | sed "s/^/$LOG_PREFIX     /"
+  fi
+  if [[ -z "$hard_blocked" && -z "$self_healed" ]]; then
+    # Only a RUNNING capture can license "nothing was dropped". With a dead daemon
+    # the honest answer is that we do not know — conflating the two is what made an
+    # earlier run's "firewall blocked nothing" look like evidence when it was not.
+    if [[ -f "$BLK/blocked.log" ]]; then
+      sub "firewall dropped nothing during the bootstrap"
+    else
+      sub "what the firewall dropped is UNKNOWN — the capture never ran"
+    fi
   fi
 
   # ── Failure diagnostics ───────────────────────────────────────────────────────
