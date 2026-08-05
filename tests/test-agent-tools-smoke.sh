@@ -68,6 +68,15 @@ start() {
     "$IMG"
 }
 
+# Nap between polls. A `sleep` killed by a signal is harmless here — the loop is
+# bounded by $SECONDS, so waking early just polls sooner — but bash announces a
+# signal-killed child on its own stderr:
+#   tests/test-agent-tools-smoke.sh: line 73: 26653 Killed: 9  sleep 10
+# which lands mid-log looking like a failure (observed once during a long Phase 1
+# run). Redirecting the compound command's stderr suppresses the notice; a bare
+# subshell does NOT (verified both ways). `|| true` keeps the loop going regardless.
+nap() { { sleep "$1"; } 2>/dev/null || true; }
+
 # Poll (via NON-LOGIN docker exec) until all six tools resolve on the global PATH, or the
 # container dies, or timeout. Returns 0 only when all six resolve.
 wait_for_tools() { # $1=container  $2=timeout_secs
@@ -80,7 +89,7 @@ wait_for_tools() { # $1=container  $2=timeout_secs
     if docker exec "$c" bash -c "for t in $BINS; do command -v \$t >/dev/null || exit 1; done" 2>/dev/null; then
       return 0
     fi
-    sleep 10
+    nap 10
   done
   return 1
 }
