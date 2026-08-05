@@ -132,14 +132,20 @@ reconcile_sandbox_conf() {
 # Ensure the project's root .gitignore ignores its .ai-containers/ working copy.
 # The per-project .ai-containers/ is a synced copy of the central repo and the
 # launcher embeds machine-specific absolute paths (EXTRA_MOUNTS), so it should
-# not be committed to the project. Idempotent, git-repos only; to keep it under
-# version control instead, remove the added line. AI_CONTAINERS_NO_GITIGNORE=1
-# skips this entirely.
+# not be committed to the project. A project that already TRACKS .ai-containers/
+# (any file under it in the git index) is left untouched — no ignore rule is added,
+# so a deliberately version-controlled working copy keeps working with no override.
+# Idempotent, git-repos only; to keep an untracked copy under version control
+# instead, remove the added line. AI_CONTAINERS_NO_GITIGNORE=1 skips this entirely.
 ensure_ai_containers_ignored() {
   local project_path="$1"
   [[ "${AI_CONTAINERS_NO_GITIGNORE:-0}" == "1" ]] && return 0
   git -C "$project_path" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
   git -C "$project_path" check-ignore -q .ai-containers 2>/dev/null && return 0
+  # If the project intentionally TRACKS .ai-containers/ (any file under it is in the
+  # git index), never add an ignore rule — it would silently hide newly-synced files
+  # from commits. Makes AI_CONTAINERS_NO_GITIGNORE=1 unnecessary for tracked layouts.
+  [[ -n "$(git -C "$project_path" ls-files -- .ai-containers 2>/dev/null | head -1)" ]] && return 0
   local gi="${project_path}/.gitignore"
   if [[ -f "$gi" && -s "$gi" && -n "$(tail -c1 "$gi" 2>/dev/null)" ]]; then
     printf '\n' >> "$gi"

@@ -304,6 +304,25 @@ AI_CONTAINERS_NO_GITIGNORE=1 ensure_ai_containers_ignored "$NOGI"
   && pass "AI_CONTAINERS_NO_GITIGNORE=1 skips the .gitignore edit entirely" \
   || fail "AI_CONTAINERS_NO_GITIGNORE=1 skips the .gitignore edit entirely ($(cat "$NOGI/.gitignore"))"
 
+# ── 6b. A project that TRACKS .ai-containers/ is left alone (no ignore rule) ─────
+# A project can deliberately commit its .ai-containers/ working copy (fip does).
+# Adding /.ai-containers/ to its root .gitignore would then silently hide
+# newly-synced files from commits. When any file under .ai-containers/ is in the
+# git index, ensure_ai_containers_ignored must be a no-op — no override needed.
+TRACKED="$TMP/tracked-proj"; mkdir -p "$TRACKED/.ai-containers"
+git -C "$TRACKED" init -q
+printf 'baked\n' > "$TRACKED/.ai-containers/build.sh"
+printf '*.log\n'  > "$TRACKED/.gitignore"
+git -C "$TRACKED" add .ai-containers/build.sh .gitignore
+git -C "$TRACKED" -c user.email=t@example.com -c user.name=t commit -qm init
+ensure_ai_containers_ignored "$TRACKED"
+grep -qxF '/.ai-containers/' "$TRACKED/.gitignore" 2>/dev/null \
+  && fail "tracked .ai-containers/: must NOT add an ignore rule (would hide synced files)" \
+  || pass "tracked .ai-containers/: no ignore rule added (no override needed)"
+[[ "$(cat "$TRACKED/.gitignore")" == '*.log' ]] \
+  && pass "tracked .ai-containers/: root .gitignore left byte-identical" \
+  || fail "tracked .ai-containers/: root .gitignore left byte-identical ($(cat "$TRACKED/.gitignore"))"
+
 # ── 7. The project's .ai-containers/.gitignore still covers generated/output files ──
 # sync_project's shared-file copy loop does not list `.gitignore`, so the
 # project-owned one (written by project-init.sh) must pass through completely
