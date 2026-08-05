@@ -651,10 +651,23 @@ run_container() {
     add_mount_if_exists config_mount_flags "$group_root/.gemini" "$dev_home/.gemini"
   fi
   if is_active ruby; then
-    if [[ "$group" != "host" ]]; then
-      install -d "$group_root/.rvm"
+    if [[ "$group" == "host" ]]; then
+      # The host group's contract is "mount my real $HOME dirs" — honour it rather
+      # than silently substituting a volume for one of them. Consequence on macOS:
+      # rvm cannot bootstrap in the host group (see the tar/virtiofs note on
+      # rvm_volume_name in sandbox-common.sh); use a named group for Ruby work.
+      add_mount_if_exists config_mount_flags "$group_root/.rvm" "$dev_home/.rvm"
+    else
+      # Named groups get a docker volume, never a bind mount — a bind mount cannot
+      # host an rvm install on macOS at all. rvm_volume_ensure creates it on first
+      # use and migrates a pre-volume ~/.rvm across if one is there.
+      local rvm_vol
+      if rvm_vol="$(rvm_volume_ensure "$group" "$group_root" "$image_name")"; then
+        config_mount_flags+=(-v "$rvm_vol:$dev_home/.rvm")
+      else
+        printf 'WARNING: no rvm volume for group %s — Ruby will be unavailable.\n' "$group" >&2
+      fi
     fi
-    add_mount_if_exists config_mount_flags "$group_root/.rvm" "$dev_home/.rvm"
   fi
   if [[ -n "$(runtime_tools_csv)" ]]; then
     if [[ "$group" != "host" ]]; then
@@ -774,7 +787,7 @@ run_container() {
     -e SANDBOX_GROUP="${SANDBOX_GROUP:-$(id -gn)}" \
     -e AI_AGENTS_ENABLED="$(enabled_agents_csv)" \
     -e AI_RUNTIME_TOOLS="$(runtime_tools_csv)" \
-    -e RUBY_VERSIONS="$(versions_to_space "$(get_versions ruby)")" \
+    -e RUBY_VERSIONS="$(versions_to_space "$(version_list ruby)")" \
     ${git_optional_locks_env[@]+"${git_optional_locks_env[@]}"} \
     ${SELF_HEALING_ENABLED:+-e SELF_HEALING_ENABLED="$SELF_HEALING_ENABLED"} \
     ${ALLOW_IPV6_BYPASS:+-e ALLOW_IPV6_BYPASS="$ALLOW_IPV6_BYPASS"} \

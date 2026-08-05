@@ -15,8 +15,12 @@ home_root="$HOME/.ai-tools"
 mkdir -p "$home_root/npm" "$home_root/uv/bin" "$home_root/bin"
 
 # Serialize concurrent same-group container starts (they share the mounted ~/.ai-tools).
+# Runs before the interactive shell, so report a wait instead of appearing hung.
 exec 9>"$home_root/.reconcile.lock"
-flock 9
+if ! flock -n 9; then
+  printf '[agent-tools-reconcile] another container in this group is installing tools — waiting…\n'
+  flock 9
+fi
 
 log(){ printf '[agent-tools-reconcile] %s\n' "$*"; }
 
@@ -46,7 +50,12 @@ install_vale() {
   arch="$(uname -m | sed 's/x86_64/64-bit/; s/aarch64/arm64/')"
   ver="$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
         https://github.com/vale-cli/vale/releases/latest 2>/dev/null | sed 's#.*/tag/v##')"
-  if [[ -z "$ver" ]]; then log "FAILED: could not resolve latest Vale version (skipped)"; return 0; fi
+  # The sed only strips a `v`-prefixed tag. If upstream ever publishes an unprefixed tag
+  # (or the redirect is intercepted) $ver would be a whole URL — non-empty, so an
+  # emptiness check alone would let it through into the download URL. Require a version.
+  if [[ ! "$ver" =~ ^[0-9]+(\.[0-9]+)*$ ]]; then
+    log "FAILED: could not resolve latest Vale version (got '${ver:-<empty>}') (skipped)"; return 0
+  fi
   if curl -fsSL -o /tmp/vale.tar.gz \
        "https://github.com/vale-cli/vale/releases/download/v${ver}/vale_${ver}_Linux_${arch}.tar.gz" 2>/dev/null; then
     tar -xzf /tmp/vale.tar.gz -C "$home_root/bin" vale 2>/dev/null || log "FAILED: extract Vale (skipped)"

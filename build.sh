@@ -51,7 +51,7 @@ validate_config() {
   fi
   local jvm_key jvm_val ver
   for jvm_key in openjdk graalvm-ce graalvm-oracle kotlin scala maven gradle; do
-    jvm_val=$(get_versions "$jvm_key")
+    jvm_val=$(version_list "$jvm_key")
     [[ -z "$jvm_val" ]] && continue
     IFS=',' read -ra _vers <<< "$jvm_val"
     for ver in "${_vers[@]}"; do
@@ -64,6 +64,26 @@ validate_config() {
       fi
     done
   done
+  # db-clients is a CLOSED set, not free-form versions. Catch a typo here with a clear
+  # error instead of letting it through to a warning buried in the docker build output
+  # (where it would still have flipped KEEP_BUILD_TOOLCHAIN on and grown the image).
+  local db_val db_c
+  db_val=$(version_list db-clients)
+  if [[ -n "$db_val" ]]; then
+    IFS=',' read -ra _dbs <<< "$db_val"
+    for db_c in "${_dbs[@]}"; do
+      db_c="${db_c// /}"
+      [[ -z "$db_c" ]] && continue
+      case "$db_c" in
+        pg|mysql|mongo) ;;
+        *)
+          printf 'ERROR: unknown db-clients entry "%s".\n' "$db_c" >&2
+          printf '       Allowed (comma-separated subset): pg, mysql, mongo. Leave empty to skip.\n' >&2
+          exit 1
+          ;;
+      esac
+    done
+  fi
 }
 
 # ── Allowlist generation ─────────────────────────────────────────────────────────
@@ -205,26 +225,26 @@ build_args_from_config() {
   fi
 
   local ver
-  ver="$(get_versions openjdk)";        _args+=(--build-arg "OPENJDK_VERSIONS=$(versions_to_space "$ver")")
-  ver="$(get_versions graalvm-ce)";     _args+=(--build-arg "GRAALVM_VERSIONS=$(versions_to_space "$ver")")
-  ver="$(get_versions graalvm-oracle)"; _args+=(--build-arg "GRAALVM_ORACLE_VERSIONS=$(versions_to_space "$ver")")
-  ver="$(get_versions kotlin)";         _args+=(--build-arg "KOTLIN_VERSIONS=$(versions_to_space "$ver")")
-  ver="$(get_versions scala)";          _args+=(--build-arg "SCALA_VERSIONS=$(versions_to_space "$ver")")
-  ver="$(get_versions maven)";          _args+=(--build-arg "MAVEN_VERSIONS=$(versions_to_space "$ver")")
-  ver="$(get_versions gradle)";         _args+=(--build-arg "GRADLE_VERSIONS=$(versions_to_space "$ver")")
-  ver="$(get_versions node)";           _args+=(--build-arg "NODE_EXTRA_VERSIONS=$(versions_to_space "$ver")")
+  ver="$(version_list openjdk)";        _args+=(--build-arg "OPENJDK_VERSIONS=$(versions_to_space "$ver")")
+  ver="$(version_list graalvm-ce)";     _args+=(--build-arg "GRAALVM_VERSIONS=$(versions_to_space "$ver")")
+  ver="$(version_list graalvm-oracle)"; _args+=(--build-arg "GRAALVM_ORACLE_VERSIONS=$(versions_to_space "$ver")")
+  ver="$(version_list kotlin)";         _args+=(--build-arg "KOTLIN_VERSIONS=$(versions_to_space "$ver")")
+  ver="$(version_list scala)";          _args+=(--build-arg "SCALA_VERSIONS=$(versions_to_space "$ver")")
+  ver="$(version_list maven)";          _args+=(--build-arg "MAVEN_VERSIONS=$(versions_to_space "$ver")")
+  ver="$(version_list gradle)";         _args+=(--build-arg "GRADLE_VERSIONS=$(versions_to_space "$ver")")
+  ver="$(version_list node)";           _args+=(--build-arg "NODE_EXTRA_VERSIONS=$(versions_to_space "$ver")")
 
   ver="$(get_versions nvm-version)"
   if [[ -n "$ver" ]]; then
     _args+=(--build-arg "NVM_VERSION=$ver")
   fi
 
-  ver="$(get_versions python)"; _args+=(--build-arg "PYTHON_EXTRA_VERSIONS=$(versions_to_space "$ver")")
-  ver="$(get_versions rust)";   _args+=(--build-arg "RUST_TOOLCHAIN=$ver")
-  ver="$(get_versions go)";     _args+=(--build-arg "GO_VERSION=$ver")
+  ver="$(version_list python)"; _args+=(--build-arg "PYTHON_EXTRA_VERSIONS=$(versions_to_space "$ver")")
+  ver="$(version_list rust)";   _args+=(--build-arg "RUST_TOOLCHAIN=$ver")
+  ver="$(version_list go)";     _args+=(--build-arg "GO_VERSION=$ver")
 
   # DB client libraries (client/dev libs + CLIs only — never servers).
-  ver="$(get_versions db-clients)"; _args+=(--build-arg "DB_CLIENTS=$(versions_to_space "$ver")")
+  ver="$(version_list db-clients)"; _args+=(--build-arg "DB_CLIENTS=$(versions_to_space "$ver")")
 
   # Retain a runtime build toolchain so native extensions compile at runtime.
   # Needed whenever Ruby is present or a DB driver will be built.

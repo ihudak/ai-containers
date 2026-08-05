@@ -109,7 +109,11 @@ copilot=OFF
 EOF
 
   # Project-owned .gitignore covering generated/output files (what
-  # project-init.sh writes). sync_project must never touch this file.
+  # project-init.sh writes). NOTE: this fixture deliberately omits
+  # `sandbox.local.env` — it simulates a project initialised BEFORE that pattern
+  # existed, which is exactly the case sync must backfill (see section 7). The
+  # SENTINEL line stands in for a project's own hand-added entry: sync is
+  # append-only and must never drop or reorder it.
   cat > "$dest/.gitignore" <<'EOF'
 .agent-blocked/
 .agent-discovery/
@@ -119,6 +123,7 @@ allowlist-cidrs.txt
 allowlist-domains.d/custom.txt
 allowlist-proxy-domains.d/custom.txt
 allowlist-cidrs.d/custom.txt
+SENTINEL-project-owned-ignore-entry
 EOF
 
   # Project-owned custom.txt overrides (never touched/synced — rsync excludes
@@ -148,7 +153,7 @@ SENTINEL_DEST_GITIGNORE="$(cat "$DEST/.gitignore")"
 #
 # sync_project's copy loop is:
 #   for f in Dockerfile Dockerfile.seed .dockerignore sandbox-common.sh build.sh \
-#             sandbox.sh repo.sh entrypoint.sh rvm-reconcile.sh link-default-ruby.sh \
+#             sandbox.sh repo.sh group.sh entrypoint.sh rvm-reconcile.sh link-default-ruby.sh \
 #             agent-tools-reconcile.sh link-agent-tools.sh \
 #             refresh-ipset-allowlist.sh capture-blocked-traffic.sh \
 #             capture-agent-destinations.sh install-tools.sh install-agent-skills.sh tools-lib.sh; do
@@ -176,7 +181,7 @@ for w in $shared_files_words; do derived_shared_files+=("$w"); done
 # set. Adding or removing a shared file is a deliberate act and must update this.
 expected_shared_files=(
   Dockerfile Dockerfile.seed .dockerignore sandbox-common.sh build.sh
-  sandbox.sh repo.sh entrypoint.sh rvm-reconcile.sh link-default-ruby.sh
+  sandbox.sh repo.sh group.sh entrypoint.sh rvm-reconcile.sh link-default-ruby.sh
   agent-tools-reconcile.sh link-agent-tools.sh
   refresh-ipset-allowlist.sh
   capture-blocked-traffic.sh capture-agent-destinations.sh
@@ -323,16 +328,37 @@ grep -qxF '/.ai-containers/' "$TRACKED/.gitignore" 2>/dev/null \
   && pass "tracked .ai-containers/: root .gitignore left byte-identical" \
   || fail "tracked .ai-containers/: root .gitignore left byte-identical ($(cat "$TRACKED/.gitignore"))"
 
-# ── 7. The project's .ai-containers/.gitignore still covers generated/output files ──
-# sync_project's shared-file copy loop does not list `.gitignore`, so the
-# project-owned one (written by project-init.sh) must pass through completely
-# unmodified — prove both that it is byte-identical to its pre-sync content AND
-# that it still covers every generated/output pattern project-init.sh seeds.
-[[ "$(cat "$DEST/.gitignore" 2>/dev/null)" == "$SENTINEL_DEST_GITIGNORE" ]] \
-  && pass ".ai-containers/.gitignore content is untouched by sync" \
-  || fail ".ai-containers/.gitignore content is untouched by sync"
+# ── 7. The project's .ai-containers/.gitignore is BACKFILLED, append-only ────────
+# sync_project's shared-file copy loop does not list `.gitignore`; instead
+# ensure_inner_gitignore appends any REQUIRED pattern the project is missing. This
+# matters for `sandbox.local.env` (this machine's absolute mount paths): a project
+# initialised before that pattern existed would otherwise have no protection at all —
+# and for a project that deliberately TRACKS .ai-containers/ (section 6b), the root
+# .gitignore protects nothing, so this inner file is the ONLY guard. The fixture omits
+# `sandbox.local.env` on purpose, so sync must add it.
+grep -qxF 'sandbox.local.env' "$DEST/.gitignore" 2>/dev/null \
+  && pass ".ai-containers/.gitignore backfilled with sandbox.local.env" \
+  || fail ".ai-containers/.gitignore backfilled with sandbox.local.env"
+
+# Append-only: every pre-sync line must still be present, in its original order, and
+# the project's own hand-added entry must survive untouched.
+[[ "$(head -n "$(printf '%s\n' "$SENTINEL_DEST_GITIGNORE" | wc -l)" "$DEST/.gitignore")" \
+     == "$SENTINEL_DEST_GITIGNORE" ]] \
+  && pass ".ai-containers/.gitignore backfill is append-only (pre-sync lines intact, in order)" \
+  || fail ".ai-containers/.gitignore backfill is append-only"
+grep -qxF 'SENTINEL-project-owned-ignore-entry' "$DEST/.gitignore" 2>/dev/null \
+  && pass ".ai-containers/.gitignore keeps the project's own entry" \
+  || fail ".ai-containers/.gitignore keeps the project's own entry"
+
+# Idempotent: a second sync must not append the same patterns again.
+GI_AFTER_FIRST="$(cat "$DEST/.gitignore")"
+ensure_inner_gitignore "$DEST" >/dev/null
+[[ "$(cat "$DEST/.gitignore")" == "$GI_AFTER_FIRST" ]] \
+  && pass ".ai-containers/.gitignore backfill is idempotent (no duplicate lines)" \
+  || fail ".ai-containers/.gitignore backfill is idempotent"
+
 gi_all_covered=1
-for pat in '.agent-blocked/' '.agent-discovery/' \
+for pat in '.agent-blocked/' '.agent-discovery/' 'sandbox.local.env' \
            'allowlist-domains.txt' 'allowlist-proxy-domains.txt' 'allowlist-cidrs.txt' \
            'allowlist-domains.d/custom.txt' 'allowlist-proxy-domains.d/custom.txt' 'allowlist-cidrs.d/custom.txt'; do
   grep -qxF "$pat" "$DEST/.gitignore" 2>/dev/null || gi_all_covered=0

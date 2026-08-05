@@ -14,23 +14,69 @@ rvm_root="$HOME/.rvm"
 mkdir -p "$rvm_root"
 
 # Serialize concurrent same-group container starts (they share the mounted ~/.rvm).
+# This runs BEFORE the interactive shell, and a first-run Ruby compile takes minutes, so
+# a silent block would look like a hung container: try without waiting first, and only
+# then say what we are waiting for.
 exec 9>"$rvm_root/.reconcile.lock"
-flock 9
+if ! flock -n 9; then
+  printf '[rvm-reconcile] another container in this group is installing Ruby — waiting for it to finish…\n'
+  flock 9
+fi
 
 log(){ printf '[rvm-reconcile] %s\n' "$*"; }
 
 # First run for a fresh group: user-install rvm into ~/.rvm (keys pre-seeded in
-# ~/.gnupg at build, so no keyserver fetch is needed).
+# ~/.gnupg at build, so no keyserver fetch is needed). A half-written ~/.rvm from an
+# interrupted or offline earlier run must be RE-bootstrapped, not sourced: sourcing a
+# broken rvm makes every later `rvm` call a "command not found" and every version fail,
+# on every subsequent start, with no way out short of deleting the group's ~/.rvm by hand.
 if [[ ! -s "$rvm_root/scripts/rvm" ]]; then
   log "bootstrapping rvm into $rvm_root (first run for this group)…"
-  curl -fsSL https://get.rvm.io | bash -s stable
+  # DOWNLOAD and RUN as two separate steps, not `curl … | bash -s stable`. Under
+  # `set -o pipefail` a piped bootstrap reports ONE status for two very different
+  # failures, and the message blamed the network for all of them — so a GPG,
+  # unpack, or permission error inside the installer was indistinguishable from a
+  # blocked host, and sent debugging after the firewall instead of the real cause.
+  installer="$(mktemp 2>/dev/null)" || installer=""
+  if [[ -z "$installer" ]]; then
+    log "FAILED: rvm bootstrap — could not create a temp file for the installer."
+    log "no Ruby will be available in this container; it will be retried on the next start."
+    exit 0
+  fi
+  if ! curl -fsSL https://get.rvm.io -o "$installer" || [[ ! -s "$installer" ]]; then
+    rm -f "$installer"
+    log "FAILED: rvm bootstrap — could not download the installer from get.rvm.io."
+    log "  get.rvm.io 301-redirects to bitbucket.org, so restricted mode needs BOTH"
+    log "  hosts allowlisted (allowlist-domains.d/rvm.txt), not just get.rvm.io."
+    log "no Ruby will be available in this container; it will be retried on the next start."
+    exit 0
+  fi
+  # The installer's own output is the diagnosis when it fails; prefix it so it is
+  # attributable in the container log rather than looking like reconcile's own.
+  if ! bash "$installer" stable 2>&1 | sed 's/^/[rvm-installer] /'; then
+    rm -f "$installer"
+    log "FAILED: rvm bootstrap — the installer downloaded fine but exited non-zero."
+    log "  This is NOT a blocked host: see the [rvm-installer] lines above for the cause."
+    log "no Ruby will be available in this container; it will be retried on the next start."
+    exit 0
+  fi
+  rm -f "$installer"
+fi
+if [[ ! -s "$rvm_root/scripts/rvm" ]]; then
+  log "FAILED: $rvm_root/scripts/rvm still missing after bootstrap — skipping Ruby setup."
+  exit 0
 fi
 # shellcheck disable=SC1091
-source "$rvm_root/scripts/rvm"
+if ! source "$rvm_root/scripts/rvm"; then
+  log "FAILED: could not source $rvm_root/scripts/rvm — skipping Ruby setup."
+  exit 0
+fi
 
 # --autolibs=disable: don't let rvm apt-install requirements (needs root); the image pre-bakes the Ruby-build deps.
+# grep -Fqx: the version string is matched LITERALLY (its dots are not regex wildcards)
+# and whole-line, so ruby-3.4.5 never matches ruby-3.4.50 or vice versa.
 for v in $versions; do
-  if rvm list strings 2>/dev/null | grep -qx "ruby-$v"; then
+  if rvm list strings 2>/dev/null | grep -Fqx "ruby-$v"; then
     log "ruby-$v already present"
   else
     log "installing ruby-$v…"
@@ -47,7 +93,7 @@ done
 # the versions that are actually present, in requested order.
 present=""
 for v in $versions; do
-  if rvm list strings 2>/dev/null | grep -qx "ruby-$v"; then
+  if rvm list strings 2>/dev/null | grep -Fqx "ruby-$v"; then
     present="${present:+$present }$v"
   else
     log "FAILED: ruby-$v is not installed (all install attempts failed)"

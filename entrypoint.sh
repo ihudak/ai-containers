@@ -21,6 +21,20 @@ run_agent_skill_install() {
     bash /usr/local/bin/install-agent-skills.sh || true
 }
 
+# ~/.rvm is a docker NAMED VOLUME for named groups, and Docker creates a fresh one
+# root-owned: it only copies ownership from the image for a path the image already
+# contains, and /home/<user> is created at runtime. setup_sandbox_user's recursive
+# chown uses -xdev, which by design does not cross into mounts. Without this the
+# sandbox user cannot even open the reconcile lock. Non-recursive on purpose —
+# rvm creates everything beneath as that user, and a seeded volume already carries
+# the right ownership below the root.
+chown_rvm_root() {
+  [[ -n "${RUBY_VERSIONS:-}" ]] || return 0
+  local d="/home/$sandbox_user/.rvm"
+  [[ -d "$d" ]] || return 0
+  chown "${SANDBOX_UID:-1000}:${SANDBOX_GID:-1000}" "$d" 2>/dev/null || true
+}
+
 # Bootstrap/reconcile the per-user rvm (~/.rvm, group-mounted) as the sandbox
 # user. Offline-tolerant, non-fatal — never blocks container start.
 run_ruby_reconcile() {
@@ -219,6 +233,7 @@ case "$mode" in
 
     # Hand control to the sandbox user with dangerous capabilities dropped.
     # Background processes forked above are unaffected by this exec and keep their capabilities.
+    chown_rvm_root
     run_ruby_reconcile
     link_default_ruby
     run_agent_tools_reconcile
@@ -240,6 +255,7 @@ case "$mode" in
     # are owned by the sandbox UID/GID — not root. This prevents permission
     # errors when the container is later run in restricted mode.
     # NET_RAW is kept (not dropped) so the sandbox user can run tcpdump if needed.
+    chown_rvm_root
     run_ruby_reconcile
     link_default_ruby
     run_agent_tools_reconcile
@@ -257,10 +273,11 @@ case "$mode" in
 
     printf '╔══════════════════════════════════════════════════════════════════╗\n'
     printf '║  OPEN MODE: outbound network is UNRESTRICTED and NOT captured.   ║\n'
-    printf '║  No firewall, no allowlist, no traffic logging. Use only for    ║\n'
-    printf '║  projects that do not require network isolation.                ║\n'
+    printf '║  No firewall, no allowlist, no traffic logging. Use only for     ║\n'
+    printf '║  projects that do not require network isolation.                 ║\n'
     printf '╚══════════════════════════════════════════════════════════════════╝\n'
 
+    chown_rvm_root
     run_ruby_reconcile
     link_default_ruby
     run_agent_tools_reconcile

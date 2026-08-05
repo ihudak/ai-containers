@@ -9,10 +9,11 @@ fails=0; pass() { printf 'PASS: %s\n' "$1"; }; fail() { printf 'FAIL: %s\n' "$1"
 bash -n "$REPO_DIR/sandbox-common.sh" && pass "sandbox-common.sh bash -n" || fail "sandbox-common.sh bash -n"
 bash -n "$REPO_DIR/sandbox.sh"        && pass "sandbox.sh bash -n"        || fail "sandbox.sh bash -n"
 
-# Load the REAL load_env_defaults (extract just the function so the file's heavy
-# top-level code does not run).
-eval "$(sed -n '/^load_env_defaults()/,/^}/p' "$REPO_DIR/sandbox-common.sh")"
+# Load the REAL load_env_defaults + its env_key_denied helper (extract just the
+# functions so the file's heavy top-level code does not run).
+eval "$(sed -n '/^env_key_denied()/,/^}/p;/^load_env_defaults()/,/^}/p' "$REPO_DIR/sandbox-common.sh")"
 type load_env_defaults >/dev/null 2>&1 && pass "load_env_defaults defined" || { fail "load_env_defaults defined"; printf '\n%d failure(s)\n' "$fails"; exit "$fails"; }
+type env_key_denied >/dev/null 2>&1 && pass "env_key_denied defined" || { fail "env_key_denied defined"; printf '\n%d failure(s)\n' "$fails"; exit "$fails"; }
 
 # Apply exactly as sandbox-common.sh does: local first, then portable.
 apply() { load_env_defaults "$LOCAL"; load_env_defaults "$PORTABLE"; }
@@ -60,6 +61,40 @@ rmk
 mk; printf 'export\tCONTAINER_CPUS=3\n' > "$PORTABLE"
 ( unset CONTAINER_CPUS; apply; [[ "$CONTAINER_CPUS" == 3 ]] ) \
   && pass "tolerates 'export<TAB>KEY=val'" || fail "tolerates 'export<TAB>KEY=val'"
+rmk
+
+# Keys that hand control of the SHELL to the file are refused. `sandbox.env` is a TRACKED,
+# team-shared file, so a well-formed `BASH_ENV=…` line would otherwise be exported by the
+# loader and then executed by the very next child bash that build.sh/sandbox.sh spawn —
+# arbitrary code out of a file the design promises is inert data.
+mk; evil="$(mktemp)"; marker2="$(mktemp -u)"
+printf 'touch %s\n' "$marker2" > "$evil"
+printf 'BASH_ENV=%s\nIMAGE_NAME=still-parsed\n' "$evil" > "$PORTABLE"
+out_deny="$( ( unset BASH_ENV IMAGE_NAME; apply; printf 'BASH_ENV=[%s] IMAGE_NAME=[%s]\n' "${BASH_ENV:-}" "${IMAGE_NAME:-}"; bash -c 'true' ) 2>&1 )"
+grep -q 'BASH_ENV=\[\]' <<<"$out_deny" \
+  && pass "BASH_ENV in an env file is refused (not exported)" || fail "BASH_ENV in an env file is refused (got: $out_deny)"
+[[ ! -e "$marker2" ]] \
+  && pass "a refused BASH_ENV cannot execute code in a child bash" || { fail "a refused BASH_ENV cannot execute code in a child bash"; rm -f "$marker2"; }
+grep -q 'IMAGE_NAME=\[still-parsed\]' <<<"$out_deny" \
+  && pass "a refused key does not abort parsing of later keys" || fail "a refused key does not abort parsing of later keys"
+grep -qi 'WARNING' <<<"$out_deny" \
+  && pass "a refused key warns on stderr" || fail "a refused key warns on stderr"
+rm -f "$evil"; rmk
+
+# ENV / SHELLOPTS / BASH_FUNC_* are refused for the same reason.
+mk; printf 'ENV=/tmp/x.sh\n' > "$PORTABLE"
+( unset ENV; apply; [[ -z "${ENV:-}" ]] ) 2>/dev/null \
+  && pass "ENV is refused" || fail "ENV is refused"
+printf 'BASH_FUNC_foo%%%%=() { echo hi; }\n' > "$PORTABLE"
+( unset 'BASH_FUNC_foo%%'; apply ) >/dev/null 2>&1
+pass "BASH_FUNC_* line does not crash the loader"
+rmk
+
+# Surrounding double quotes are stripped only as a MATCHED pair, so a value that
+# legitimately contains a single quote character is not silently mangled.
+mk; printf 'EXTRA_MOUNTS=/a"b\n' > "$PORTABLE"
+( unset EXTRA_MOUNTS; apply; [[ "$EXTRA_MOUNTS" == '/a"b' ]] ) \
+  && pass "an unmatched quote inside a value is preserved" || fail "an unmatched quote inside a value is preserved"
 rmk
 
 # load ORDER in sandbox-common.sh: local before portable

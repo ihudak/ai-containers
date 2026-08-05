@@ -660,6 +660,34 @@ one_wc="$(PATH="$FAKE_BIN:$PATH" repo_workcopy_volumes "cluster" | sort | tr '\n
 check "repo_workcopy_volumes <name> scopes to that repo's working copies only" \
   "ai-containers-repo-cluster--wc-projA|" "$one_wc"
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Isolation from rvm volumes
+# ─────────────────────────────────────────────────────────────────────────────
+# A container group's Ruby home is a docker volume too, sharing this same prefix
+# and differing ONLY in the infix: "<prefix>-rvm-<group>" vs "<prefix>-repo-<name>".
+# That one substring is the entire reason `repo.sh sync/reset --all` cannot reach
+# into a group's compiled rubies and wipe them. Assert it directly, so widening the
+# discovery filter (or renaming an infix) fails here rather than in someone's
+# workspace.
+: > "$FAKE_VOLUMES_DIR/ai-containers-rvm-default"
+: > "$FAKE_VOLUMES_DIR/ai-containers-rvm-docs"
+: > "$FAKE_VOLUMES_DIR/ai-containers-rvm-docs--wc-decoy"   # even a --wc--looking one
+
+iso_base="$(PATH="$FAKE_BIN:$PATH" repo_base_volumes | sort | tr '\n' '|')"
+check "repo_base_volumes ignores rvm volumes entirely" \
+  "ai-containers-repo-cluster|ai-containers-repo-docs|" "$iso_base"
+
+iso_wc="$(PATH="$FAKE_BIN:$PATH" repo_workcopy_volumes | sort | tr '\n' '|')"
+check "repo_workcopy_volumes ignores rvm volumes entirely" \
+  "ai-containers-repo-cluster--wc-projA|ai-containers-repo-docs--wc-projB|" "$iso_wc"
+
+# `sync --all` / `reset --all` iterate repo_registry_names, not a volume listing —
+# so an rvm volume cannot become a --all target even by name collision.
+iso_reg="$(repo_registry_names | grep -c 'rvm' || true)"
+check "no rvm volume can appear as a sync/reset --all target" "0" "$iso_reg"
+
+rm -f "$FAKE_VOLUMES_DIR"/ai-containers-rvm-*
+
 : > "$FAKE_RUNNING_VOL"  # nothing running
 PATH="$FAKE_BIN:$PATH" docker_volume_in_use "$base1"
 check_rc "docker_volume_in_use is false when no container mounts the volume" 1 $?

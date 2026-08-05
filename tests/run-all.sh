@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# run-all.sh — run the mgd-ai-containers test suite.
+# run-all.sh — run the ai-containers test suite.
 #
 # Usage:
 #   ./tests/run-all.sh                 # run every tests/test-*.sh

@@ -26,7 +26,10 @@ ipv6_set_name="${ALLOWLIST_IPV6_SET:-allowed_ipv6}"
 self_healing="${SELF_HEALING_ENABLED:-1}"
 
 # Internal state directory — root-only, not on the bind-mounted workspace.
-internal_dir="/run/agent-blocked-internal"
+# BLOCKED_INTERNAL_DIR is an override for TESTS only (the entrypoint never sets it);
+# it keeps the DNS map and allowlist caches out of the sandbox user's reach in
+# production while letting the suite drive this script without root.
+internal_dir="${BLOCKED_INTERNAL_DIR:-/run/agent-blocked-internal}"
 mkdir -p "$internal_dir"
 chmod 700 "$internal_dir"
 
@@ -42,24 +45,37 @@ mkdir -p "$capture_dir"
 
 # Build a flat list of allowlisted domains (comments and blanks stripped) for
 # fast grep lookups in the self-healing path.
+#
+# ONE awk, not `grep -v … | grep -v … | sed`. This script runs `set -euo pipefail`,
+# and the old pipeline's second grep exits 1 when the file has no non-comment,
+# non-blank line — which pipefail propagated and `set -e` turned into a SILENT death
+# of the whole daemon, ~150 lines before init_output_files. The effect was severe and
+# invisible: the firewall still dropped traffic, but nothing was logged, no
+# blocked-domains.txt was written, and self-healing never ran, so dynamic CDN IPs
+# behind an allowlisted wildcard stopped being admitted. An empty allowlist is a
+# perfectly legal configuration (the proxy-domains file is comments-only whenever no
+# proxy-fragment component is enabled), so it must not be fatal. awk exits 0 whether
+# or not it prints anything.
+strip_allowlist() {   # $1 = source file, $2 = destination cache
+  if [[ -f "$1" ]]; then
+    awk '!/^[[:space:]]*#/ && !/^[[:space:]]*$/ {
+           gsub(/^[[:space:]]+|[[:space:]]+$/, ""); print
+         }' "$1" > "$2"
+  else
+    : > "$2"
+  fi
+}
+
 allowed_domains_cache="$internal_dir/allowed-domains-cache"
-if [[ -f "$domains_file" ]]; then
-  grep -v '^\s*#' "$domains_file" | grep -v '^\s*$' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' \
-    > "$allowed_domains_cache"
-else
-  : > "$allowed_domains_cache"
-fi
+strip_allowlist "$domains_file" "$allowed_domains_cache"
 
 # Build a list of wildcard domain patterns from the proxy-domains file.
 # Each line like "*.example.com" becomes a suffix match so that
 # "anything.example.com" or "deep.sub.example.com" is auto-allowed.
+# This is the one that actually fired: with every proxy-fragment component OFF the
+# generated allowlist-proxy-domains.txt is nothing but its two header comments.
 wildcard_patterns_cache="$internal_dir/wildcard-patterns-cache"
-if [[ -f "$proxy_domains_file" ]]; then
-  grep -v '^\s*#' "$proxy_domains_file" | grep -v '^\s*$' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' \
-    > "$wildcard_patterns_cache"
-else
-  : > "$wildcard_patterns_cache"
-fi
+strip_allowlist "$proxy_domains_file" "$wildcard_patterns_cache"
 
 init_output_files() {
   if [[ ! -f "$blocked_domains" ]]; then

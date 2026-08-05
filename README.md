@@ -204,6 +204,8 @@ azure-cli=OFF
 
 Language runtimes accept a comma-separated list of versions to install. The always-on baseline (latest LTS for Node, latest stable for Python) is installed regardless.
 
+Leaving the key empty (`key=`) skips the component. Because this file also holds `ON`/`OFF` boolean keys, an explicit **`key=OFF` is accepted and means exactly the same thing as empty** — so `ruby=OFF` skips Ruby rather than being mistaken for a version named "OFF".
+
 ```bash
 # Install OpenJDK 21 and 25 via SDKMAN (SDKMAN auto-installed when any JVM version is set)
 # IMPORTANT: SDKMAN requires full patch versions (e.g. 21.0.5, not 21).
@@ -249,13 +251,39 @@ ruby=3.4.5,3.3.6
 
 Leave empty (`ruby=`) to skip Ruby entirely.
 
-**Per-user, group-mounted, installed at runtime.** Nothing Ruby-related is
+**Per-user, group-scoped, installed at runtime.** Nothing Ruby-related is
 baked into the image. rvm itself, every version listed in `ruby=`, and all
-installed gems live in `~/.rvm`, mounted from the active container **group**
-— the same mechanism as `~/.claude`/`~/.codex`/`~/.gemini` (see
-[Host configuration mounts](#host-configuration-mounts)) — so state is shared
-by every project that uses that group and survives container restarts and
-rebuilds.
+installed gems live in `~/.rvm`, scoped to the active container **group** —
+so state is shared by every project that uses that group and survives
+container restarts and rebuilds.
+
+Unlike the agent dotfile dirs, `~/.rvm` is backed by a **Docker named volume**
+(`ai-containers-rvm-<group>`), not a host bind mount, on every platform. It has
+to be: rvm bootstraps by extracting its release tarball, and GNU tar defers
+symlinks whose target contains `..` by first writing a mode-000 placeholder
+file — an operation macOS virtiofs (Colima, Docker Desktop) cannot service. tar
+fails on exactly the four such members in the rvm tarball and the installer
+aborts with `Could not extract RVM sources`, so a bind-mounted `~/.rvm` can
+never hold a working rvm on macOS. (Plain symlink creation works there, which
+is why `~/.ai-tools` — npm/uv, direct `symlink()` — is unaffected and stays a
+bind mount.) Linux uses the volume too: one code path is worth more than
+host-inspectability of a tool cache, and a macOS-only branch is exactly the
+kind of divergence that let this go unnoticed.
+
+Practical consequences:
+
+- The volume is created on first use. If the group already had a working
+  bind-mounted `~/.rvm` (from before this change), it is **migrated into the
+  volume once**, so you don't recompile; the old directory is left in place and
+  you're told to remove it. A directory holding only the debris of a failed
+  bootstrap is ignored and the group starts clean.
+- Deleting a group is no longer just `rm -rf` — use
+  [`./group.sh rm <group>`](#container-groups), which removes the directory and
+  the volume together. `./group.sh gc` cleans up volumes orphaned by a manual
+  `rm -rf`.
+- `AI_CONTAINER_GROUP=host` keeps the plain bind mount, because that group's
+  whole contract is "mount my real `$HOME`". On macOS that means rvm cannot
+  bootstrap in the `host` group at all — use a named group for Ruby work.
 
 At container start, an additive reconcile (`rvm-reconcile.sh`, run as the
 sandbox user and `flock`-guarded against concurrent same-group container
@@ -289,10 +317,25 @@ through a login shell (`bash -lc "…"`).
 
 Because bootstrapping rvm and compiling Ruby pull from the network,
 `restricted` mode allowlists the hosts this needs
-(`allowlist-domains.d/rvm.txt`): `cache.ruby-lang.org` and `www.ruby-lang.org`
-for the Ruby source tarball, alongside the existing RubyGems hosts
-(`rubygems.org`, `api.rubygems.org`, `index.rubygems.org`,
-`rubygems-updates.s3.amazonaws.com`) for `bundle`/`gem install`.
+(`allowlist-domains.d/rvm.txt`): `cache.ruby-lang.org` (and rvm's fallback
+`ftp.ruby-lang.org`) plus `www.ruby-lang.org` for the Ruby source tarball,
+alongside the existing RubyGems hosts (`rubygems.org`, `api.rubygems.org`,
+`index.rubygems.org`, `rubygems-updates.s3.amazonaws.com`) for
+`bundle`/`gem install`.
+
+The bootstrap itself needs two hosts that are easy to miss, because they are
+reached by *redirect* and *fallback* rather than by any URL in this repo:
+`https://get.rvm.io` is a permanent redirect to
+`https://bitbucket.org/mpapis/rvm/raw/master/binscripts/rvm-installer`, so
+**`bitbucket.org`** is allowlisted too — `rvm get stable` (reconcile's
+install-failure retry) goes through the same redirect; and the installer
+resolves the `stable` tag from `api.github.com` with **`api.bitbucket.org`** as
+its fallback, which matters because anonymous `api.github.com` is rate-limited
+per public IP and every container behind one NAT shares that budget. rvm is
+then downloaded from GitHub over hosts `base.txt` already covers
+(`github.com`, `codeload.github.com`, `release-assets.githubusercontent.com`)
+and its signature verified against the rvm signing keys pre-seeded into
+`/etc/skel/.gnupg` at build time, so no keyserver fetch happens at run time.
 
 > **The `rails` key has been removed.** Rails is an ordinary per-project gem
 > installed with `bundle install`/`gem install`, like any other — it never
@@ -320,6 +363,8 @@ db-clients=                 # empty = skip (default)
 | `pg` | `libpq-dev` (client dev headers) + `postgresql-client` (the `psql` shell) |
 | `mysql` | `default-libmysqlclient-dev` (client dev headers) + `default-mysql-client` (the `mysql` shell) |
 | `mongo` | `mongosh`, installed from MongoDB's own apt repository (not Ubuntu-packaged) |
+
+> **Note:** the list is a **closed set**. An entry outside `pg`/`mysql`/`mongo` (e.g. `db-clients=postgres`) is rejected by `./build.sh` up front with a clear error, instead of silently doing nothing while still enlarging the image via `KEEP_BUILD_TOOLCHAIN=1`.
 
 > **Note:** selecting `mongo` adds `repo.mongodb.org` to the generated domain allowlist automatically (needed to fetch the MongoDB apt repo and the `mongosh` package) — no manual `allowlist-domains.d/custom.txt` edit required.
 
@@ -882,21 +927,42 @@ The credentials are written into the group directory on the host and persist acr
 
 ### Group maintenance
 
-Groups are plain directories. Use standard shell tools:
+A group is mostly a plain directory, so standard shell tools still work for
+inspecting, backing up, and duplicating one:
 
 ```bash
-# List groups
-ls ~/.ai-containers/
+# List groups (and their rvm volumes)
+./group.sh list
+./group.sh list --sizes
 
-# Back up a group
+# Back up a group's directory
 tar czf docs-group.tgz -C "$HOME/.ai-containers" docs
 
-# Duplicate a group
+# Duplicate a group's directory (credentials, agent config)
 cp -a ~/.ai-containers/default ~/.ai-containers/new-project
-
-# Remove a group (irreversible — deletes all auth state for that group)
-rm -rf ~/.ai-containers/docs
 ```
+
+**Deleting is the exception.** Once you have built with a `ruby=` version, the
+group also owns a Docker volume holding its Ruby home (see
+[Ruby (via rvm)](#ruby-via-rvm) for why it can't be a directory), and a bare
+`rm -rf` would orphan it — potentially several GB with nothing left pointing at
+it. Use `group.sh`, which removes both halves together:
+
+```bash
+# Remove a group: its directory AND its rvm volume (irreversible)
+./group.sh rm docs
+
+# Already deleted directories by hand? Collect the orphaned volumes:
+./group.sh gc
+```
+
+`group.sh rm` refuses while a running container still mounts the group's
+volume, and refuses the `host` group (which is your real `$HOME`, not a managed
+directory). It never touches repo volumes — those are global and shared across
+every group; manage them with [`repo.sh`](#shared-repo-volumes).
+
+`cp -a` duplicates the *directory* only. The copy starts with an empty Ruby
+home and recompiles its configured versions on first use.
 
 ### Migration notes for upgrading users
 
@@ -984,7 +1050,7 @@ What it does:
 
 - Creates `<project>/.ai-containers/` and copies all shared files (Dockerfile, scripts, allowlist fragment files).
 - Copies `sandbox.conf` as a starting point (only if one does not already exist).
-- Writes two launcher-config files. **`sandbox.env`** (tracked, PORTABLE) holds the project-level settings that are the same on any machine — `IMAGE_NAME`, `AI_CONTAINER_GROUP`, the `CONTAINER_*` resource values, `SANDBOX_MODE` (default `open`), `SANDBOX_WORKDIR` (default `..`) — plus commented `EXTRA_MOUNTS`/`REPOS` examples. **`sandbox.local.env`** (gitignored, THIS MACHINE) is written when you supply machine paths at init or when bootstrapping a new group; it holds `AI_CONTAINER_GROUP_INIT` (the host-referential group bootstrap, e.g. `from:host`), `EXTRA_MOUNTS`, and is where `REPOS`, a named-volume `SANDBOX_WORKDIR=@app`, or per-machine resource **overrides** go. Both are read by `sandbox-common.sh`, so `build.sh`, `sandbox.sh`, and `repo.sh` resolve the same config even when run directly. **Precedence: inline env > `sandbox.local.env` > `sandbox.env`** (the highest-precedence source that defines a key wins) — so an exported `IMAGE_NAME`, or a one-off `CONTAINER_MEMORY=8g ./sandbox.sh`, still wins. (Repo-volume names are global — `ai-containers-repo-<name>` — so they are shared across projects regardless of `IMAGE_NAME`.)
+- Writes two launcher-config files. **`sandbox.env`** (tracked, PORTABLE) holds the project-level settings that are the same on any machine — `IMAGE_NAME`, `AI_CONTAINER_GROUP`, the `CONTAINER_*` resource values, `SANDBOX_MODE` (default `open`), `SANDBOX_WORKDIR` (default `..`) — plus commented `EXTRA_MOUNTS`/`REPOS` examples. **`sandbox.local.env`** (gitignored, THIS MACHINE) is written when you supply machine paths at init or when bootstrapping a new group; it holds `AI_CONTAINER_GROUP_INIT` (the host-referential group bootstrap, e.g. `from:host`), `EXTRA_MOUNTS`, and is where `REPOS`, a named-volume `SANDBOX_WORKDIR=@app`, or per-machine resource **overrides** go. Both are read by `sandbox-common.sh`, so `build.sh`, `sandbox.sh`, and `repo.sh` resolve the same config even when run directly. **Precedence: inline env > `sandbox.local.env` > `sandbox.env`** (the highest-precedence source that defines a key wins) — so an exported `IMAGE_NAME`, or a one-off `CONTAINER_MEMORY=8g ./sandbox.sh`, still wins. Both files are **parsed, never sourced** (only `KEY=value` lines; values are literal, `$VAR` is not expanded), and keys that would control the **shell** rather than the launcher — `BASH_ENV`, `ENV`, `SHELLOPTS`, `BASHOPTS`, `CDPATH`, `IFS`, `PS4`, `PATH`, the `LD_*`/`DYLD_*` loader vars, `BASH_FUNC_*` — are refused with a warning, so a committed `sandbox.env` cannot run code on a teammate's machine. (Repo-volume names are global — `ai-containers-repo-<name>` — so they are shared across projects regardless of `IMAGE_NAME`.)
 - Generates a **thin** `<project>/.ai-containers/runme.sh` launcher: it resolves a build-time `GITHUB_TOKEN` via `gh`, runs `./build.sh`, then a bare `./sandbox.sh` (network mode + working dir come from `SANDBOX_MODE`/`SANDBOX_WORKDIR`). No config is baked into the launcher, so re-running `project-init.sh` never clobbers your settings.
   - **Migrating an existing (fat) `runme.sh`:** move the portable `export`s (`IMAGE_NAME`, `CONTAINER_*`, `AI_CONTAINER_GROUP`) into `sandbox.env` as `KEY=value`, move `EXTRA_MOUNTS`/`REPOS` into `sandbox.local.env` (values are **literal** — write absolute paths, not `$HOME/…`, since the loader parses rather than sources), and replace the launch line with `./sandbox.sh` — or just re-run `project-init.sh`. An existing fat launcher keeps working meanwhile (its inline `export`s win, per the precedence above). **Cross-platform:** on macOS put `REPOS`/`SANDBOX_WORKDIR=@app` in `sandbox.local.env`; on Linux put `EXTRA_MOUNTS` there — the shared `sandbox.env` is identical on both.
 - Registers the project path in `projects.conf` (created from `projects.conf.example` on first run).
@@ -1011,7 +1077,7 @@ After pulling changes to this repo, run this to push the updated shared files to
 
 **What is synced:** Dockerfile, `Dockerfile.seed`, all `*.sh` scripts, `.dockerignore`, the `tools.d/` tool descriptors, and the per-component allowlist fragments in `allowlist-*.d/` (excluding `custom.txt`).
 
-**What is never touched:** `sandbox.conf`, `sandbox.env`, `sandbox.local.env`, `allowlist-*.d/custom.txt`, and the project's launch script. `sandbox.env` is **backfilled** (created from the launcher's `IMAGE_NAME`) if a project predates it, but an existing one is never overwritten.
+**What is never touched:** `sandbox.conf`, `sandbox.env`, `sandbox.local.env`, `allowlist-*.d/custom.txt`, and the project's launch script. `sandbox.env` is **backfilled** (created from the launcher's `IMAGE_NAME`) if a project predates it, but an existing one is never overwritten. The project's inner `.ai-containers/.gitignore` is **backfilled append-only** — any required pattern it is missing (notably `sandbox.local.env`) is appended, existing lines and your own additions are never removed or reordered, and re-running sync adds nothing further. This matters for a project that deliberately **tracks** `.ai-containers/`: sync leaves such a project's root `.gitignore` alone, so this inner file is the only thing keeping the machine-specific `sandbox.local.env` out of the shared repo.
 
 **sandbox.conf reconcile:** Instead of a bare drift warning, `sync-to-projects.sh` now reconciles each project's `sandbox.conf` against this repo's on every sync — pending `migrations/` hooks run, any new upstream keys are appended under a dated banner, and the `# schema-version:` marker is ensured. A key the project already set is never touched, so per-project tool selections are preserved. See [sandbox.conf schema versioning](#sandboxconf-schema-versioning).
 

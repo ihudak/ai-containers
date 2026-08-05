@@ -158,6 +158,31 @@ ensure_ai_containers_ignored() {
   printf '  Added /.ai-containers/ to %s/.gitignore\n' "$(basename "$project_path")"
 }
 
+# Ensure the project's INNER .ai-containers/.gitignore covers the generated/local files.
+#
+# project-init.sh seeds this list, but sync must backfill it too: a project initialised
+# before a pattern existed never gets it otherwise. This matters most for
+# `sandbox.local.env`, which holds THIS MACHINE's absolute mount paths and is the one file
+# in the working copy that must never be committed. Its only protection is this inner
+# ignore file — and for the layout ensure_ai_containers_ignored deliberately leaves alone
+# (a project that TRACKS .ai-containers/), the root .gitignore protects nothing at all.
+# Idempotent: appends only patterns that are not already listed verbatim.
+ensure_inner_gitignore() {
+  local dest="$1"
+  local gi="${dest}/.gitignore" pat added=0
+  for pat in '.agent-blocked/' '.agent-discovery/' 'sandbox.local.env' \
+             'allowlist-domains.txt' 'allowlist-proxy-domains.txt' 'allowlist-cidrs.txt' \
+             'allowlist-domains.d/custom.txt' 'allowlist-proxy-domains.d/custom.txt' \
+             'allowlist-cidrs.d/custom.txt'; do
+    if [[ ! -f "$gi" ]] || ! grep -qxF "$pat" "$gi" 2>/dev/null; then
+      printf '%s\n' "$pat" >> "$gi"
+      added=1
+    fi
+  done
+  (( added )) && printf '  Backfilled .ai-containers/.gitignore patterns.\n'
+  return 0
+}
+
 # One-time migration for the runme.sh<->launcher naming swap.
 # Old layout: runme.sh = engine (no IMAGE_NAME marker), <project>-container.sh = launcher.
 # New layout: sandbox.sh = engine,                      runme.sh              = launcher.
@@ -222,7 +247,7 @@ sync_project() {
   migrate_launcher_naming "$dest"
 
   # Shared scripts and build files
-  for f in Dockerfile Dockerfile.seed .dockerignore sandbox-common.sh build.sh sandbox.sh repo.sh entrypoint.sh \
+  for f in Dockerfile Dockerfile.seed .dockerignore sandbox-common.sh build.sh sandbox.sh repo.sh group.sh entrypoint.sh \
             rvm-reconcile.sh link-default-ruby.sh agent-tools-reconcile.sh link-agent-tools.sh \
             refresh-ipset-allowlist.sh capture-blocked-traffic.sh \
             capture-agent-destinations.sh install-tools.sh install-agent-skills.sh tools-lib.sh; do
@@ -243,6 +268,10 @@ sync_project() {
 
   # sandbox.env — never overwritten; backfilled from the launcher if missing.
   backfill_sandbox_env "$dest"
+
+  # Keep sandbox.local.env (this machine's absolute paths) and the generated allowlists
+  # out of git, including for a project that deliberately tracks .ai-containers/.
+  ensure_inner_gitignore "$dest"
 
   # Keep the project's .ai-containers/ working copy out of the project's repo.
   ensure_ai_containers_ignored "$project_path"

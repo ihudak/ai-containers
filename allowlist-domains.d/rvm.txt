@@ -5,7 +5,25 @@ rubygems.org
 api.rubygems.org
 rubygems-updates.s3.amazonaws.com
 index.rubygems.org
+
+# rvm bootstrap redirect target. https://get.rvm.io is a permanent redirect to
+# https://bitbucket.org/mpapis/rvm/raw/master/binscripts/rvm-installer, and
+# rvm-reconcile.sh fetches it with `curl -fsSL` (-L follows the redirect), so
+# allowlisting get.rvm.io alone is not enough — the bootstrap dies on the hop.
+# rvm's own `rvm get stable` (reconcile's install-failure retry) re-fetches
+# through the same redirect and reads its Location: header to build the
+# signature URL, so this host is needed for the retry path too.
+bitbucket.org
+# The installer resolves the "stable" tag from api.github.com first and falls
+# back to api.bitbucket.org. Anonymous api.github.com is rate-limited per public
+# IP — shared by every container behind one NAT — and a 403 with the fallback
+# blocked means "Exhausted all sources trying to fetch version", not a retry.
+api.bitbucket.org
+
 # Runtime Ruby install (rvm now bootstraps + compiles Ruby inside the container).
+# ftp.ruby-lang.org is rvm's ruby_url_fallback_1 (config/db), used when
+# cache.ruby-lang.org fails to serve the source tarball.
 cache.ruby-lang.org
+ftp.ruby-lang.org
 www.ruby-lang.org
 keyserver.ubuntu.com

@@ -116,5 +116,106 @@ else
   fail "reconcile passes --autolibs=disable to rvm install"
 fi
 
+# ── Bootstrap failure + broken-~/.rvm repair ────────────────────────────────────
+# run_case above pre-creates a working ~/.rvm/scripts/rvm, so it never exercises the
+# bootstrap path. These cases do. The reconcile must (a) notice a failed bootstrap
+# instead of sourcing nothing and then reporting every `rvm` call as not-found, and
+# (b) RE-bootstrap a half-written ~/.rvm rather than sourcing it forever — a group left
+# with a broken ~/.rvm by an interrupted/offline first run would otherwise fail on every
+# later start with no recovery short of deleting the group's ~/.rvm by hand.
+boot_case() {   # $1=curl exit code  $2=the installer body the fake curl delivers
+  local curl_rc="$1" payload="$2"
+  local home bin; home="$(mktemp -d)"; bin="$(mktemp -d)"
+  # Only curl is stubbed (stubbing bash would shadow the reconcile's own
+  # interpreter). The reconcile downloads the installer to a file with `curl -o`
+  # and runs it as a SEPARATE step, so the stub honours -o; a stub that only ever
+  # wrote to stdout would make every case look like a failed download.
+  cat > "$bin/curl" <<EOF
+#!/usr/bin/env bash
+echo "curl \$*" >> "$home/calls.log"
+__out=""; __prev=""
+for __a in "\$@"; do
+  [[ "\$__prev" == "-o" ]] && __out="\$__a"
+  __prev="\$__a"
+done
+if [[ -n "\$__out" ]]; then printf '%s' '$payload' > "\$__out"; else printf '%s' '$payload'; fi
+exit $curl_rc
+EOF
+  chmod +x "$bin/curl"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$bin/rvm"; chmod +x "$bin/rvm"
+  PATH="$bin:$PATH" HOME="$home" RUBY_VERSIONS="3.4.5" \
+    bash "$REPO_DIR/rvm-reconcile.sh" >"$home/out.log" 2>&1
+  printf '%s\n---CALLS---\n%s\n' "$(cat "$home/out.log" 2>/dev/null)" "$(cat "$home/calls.log" 2>/dev/null)"
+  rm -rf "$home" "$bin"
+}
+
+# curl fails → a clear FAILED line, and no attempt to source a nonexistent rvm.
+boot_fail="$(boot_case 1 "")"
+grep -q 'FAILED: rvm bootstrap' <<<"$boot_fail" \
+  && pass "failed bootstrap logs 'FAILED: rvm bootstrap'" \
+  || fail "failed bootstrap logs 'FAILED: rvm bootstrap' (got: $boot_fail)"
+grep -qE 'command not found|No such file' <<<"$boot_fail" \
+  && fail "failed bootstrap must not fall through into not-found errors" \
+  || pass "failed bootstrap exits cleanly (no not-found fallthrough)"
+
+# curl succeeds but the installer writes no scripts/rvm (aborted mid-way) → still caught,
+# and still no attempt to source a file that is not there.
+boot_partial="$(boot_case 0 'true')"
+grep -q 'FAILED:.*still missing after bootstrap' <<<"$boot_partial" \
+  && pass "bootstrap that produces no scripts/rvm is caught" \
+  || fail "bootstrap that produces no scripts/rvm is caught (got: $boot_partial)"
+
+# An installer that DOWNLOADS fine but exits non-zero (GPG failure, bad unpack,
+# unwritable target) must not be reported as a network/allowlist problem. Piping
+# curl into bash under `set -o pipefail` collapsed both into one message that
+# blamed the firewall, which sent a real investigation after the wrong component.
+boot_inst_fail="$(boot_case 0 'echo "gpg: Cannot check signature: No public key" >&2; exit 2')"
+grep -q 'installer downloaded fine but exited non-zero' <<<"$boot_inst_fail" \
+  && pass "installer failure is reported as an installer failure" \
+  || fail "installer failure is reported as an installer failure (got: $boot_inst_fail)"
+grep -q 'could not download the installer' <<<"$boot_inst_fail" \
+  && fail "installer failure must NOT be reported as a download failure" \
+  || pass "installer failure is not reported as a download failure"
+# The installer's own output is the diagnosis — it must reach the container log,
+# attributed, including anything it wrote to stderr.
+grep -q '\[rvm-installer\] gpg: Cannot check signature' <<<"$boot_inst_fail" \
+  && pass "installer output (incl. stderr) is surfaced with an [rvm-installer] prefix" \
+  || fail "installer output (incl. stderr) is surfaced with an [rvm-installer] prefix (got: $boot_inst_fail)"
+
+# Regression guard on the property that caused the misdiagnosis: download and run
+# must stay separate, never `curl … | bash`. Comment lines are stripped first —
+# the code documents the pipe it deliberately avoids, and matching that prose
+# would make this guard fire on a correct script.
+grep -vE '^[[:space:]]*#' "$REPO_DIR/rvm-reconcile.sh" \
+  | grep -qE 'curl[^|]*\|[[:space:]]*bash' \
+  && fail "reconcile must NOT pipe curl straight into bash (collapses two failures into one)" \
+  || pass "reconcile downloads the installer and runs it as separate steps"
+
+# An EMPTY (zero-byte) ~/.rvm/scripts/rvm must trigger a re-bootstrap, not be sourced.
+rebootstrap_home="$(mktemp -d)"; rebootstrap_bin="$(mktemp -d)"
+install -d "$rebootstrap_home/.rvm/scripts"; : > "$rebootstrap_home/.rvm/scripts/rvm"   # zero bytes
+printf '#!/usr/bin/env bash\necho "curl $*" >> %s/calls.log\nexit 1\n' "$rebootstrap_home" > "$rebootstrap_bin/curl"
+chmod +x "$rebootstrap_bin/curl"
+PATH="$rebootstrap_bin:$PATH" HOME="$rebootstrap_home" RUBY_VERSIONS="3.4.5" \
+  bash "$REPO_DIR/rvm-reconcile.sh" >"$rebootstrap_home/out.log" 2>&1
+grep -q 'bootstrapping rvm' "$rebootstrap_home/out.log" \
+  && pass "a zero-byte ~/.rvm/scripts/rvm triggers a re-bootstrap" \
+  || fail "a zero-byte ~/.rvm/scripts/rvm triggers a re-bootstrap ($(cat "$rebootstrap_home/out.log"))"
+rm -rf "$rebootstrap_home" "$rebootstrap_bin"
+
+# Version matching must be LITERAL (grep -F), so a version's dots are not regex wildcards.
+grep -q 'grep -Fqx "ruby-\$v"' "$REPO_DIR/rvm-reconcile.sh" \
+  && pass "version match uses grep -Fqx (dots are literal)" \
+  || fail "version match uses grep -Fqx (dots are literal)"
+
+# The flock wait must be reported, not silent: a first-run Ruby compile takes minutes and
+# this runs BEFORE the shell, so a silent block is indistinguishable from a hung container.
+grep -q 'flock -n 9' "$REPO_DIR/rvm-reconcile.sh" \
+  && pass "reconcile tries a non-blocking flock first" \
+  || fail "reconcile tries a non-blocking flock first"
+grep -q 'waiting for it to finish' "$REPO_DIR/rvm-reconcile.sh" \
+  && pass "reconcile announces that it is waiting on another container" \
+  || fail "reconcile announces that it is waiting on another container"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

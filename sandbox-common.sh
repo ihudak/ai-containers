@@ -53,6 +53,23 @@ source "${script_dir}/tools-lib.sh"
 # wins). File-format constraints (machine-generated files always satisfy these; noted for
 # hand-editors): values are LITERAL — `$VAR`/`$(...)` are NOT expanded; comments must be on
 # their own line (a `#` after a value is part of the value); use LF line endings.
+#
+# Keys that would hand control of the SHELL to the file are refused (env_key_denied).
+# Parsing alone is not enough for that: `sandbox.env` is designed to be COMMITTED and
+# shared with a team, and a perfectly well-formed `BASH_ENV=./x.sh` line would be
+# exported and then executed by every child `bash` that build.sh / sandbox.sh / repo.sh
+# spawn — arbitrary code from a "data" file, which is exactly what parsing is meant to
+# prevent. These files configure the launcher, never the shell, so refusing the whole
+# class costs nothing.
+env_key_denied() {
+  case "$1" in
+    BASH_ENV|ENV|SHELLOPTS|BASHOPTS|CDPATH|IFS|PS4|PATH|\
+    LD_PRELOAD|LD_LIBRARY_PATH|LD_AUDIT|DYLD_INSERT_LIBRARIES|DYLD_LIBRARY_PATH) return 0 ;;
+    BASH_FUNC_*) return 0 ;;   # exported-function smuggling
+  esac
+  return 1
+}
+
 load_env_defaults() {
   local file="$1" line key val
   [[ -f "$file" ]] || return 0
@@ -66,7 +83,14 @@ load_env_defaults() {
     [[ "$line" == *=* ]] || continue
     key="${line%%=*}"; val="${line#*=}"
     [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
-    val="${val%\"}"; val="${val#\"}"             # strip one layer of surrounding double quotes
+    if env_key_denied "$key"; then
+      printf 'WARNING: ignoring %s=... in %s — that key controls the shell, not the launcher.\n' \
+        "$key" "$file" >&2
+      continue
+    fi
+    # Strip surrounding double quotes only as a MATCHED pair, so a value that legitimately
+    # contains one quote (or is a bare `"`) is not silently mangled.
+    if [[ ${#val} -ge 2 && "$val" == '"'*'"' ]]; then val="${val:1:${#val}-2}"; fi
     [[ -n "${!key+x}" ]] && continue             # already SET (inline env or earlier file) wins — even if empty
     printf -v "$key" '%s' "$val"; export "$key"
   done < "$file"
@@ -185,10 +209,31 @@ any_active() {
 }
 
 # Returns 0 if the version-list key has at least one version set.
+#
+# An explicit `OFF` counts as NOT set. Version-list keys document "leave empty to skip",
+# but `OFF` is the skip value for every boolean key in the same file, so writing
+# `ruby=OFF` / `db-clients=OFF` is a natural mistake — and the Dockerfile already treats
+# it as "skip" for angular-cli (`[ "$ANGULAR_CLI_VERSION" != "OFF" ]`). Without this,
+# `ruby=OFF` would bake the whole Ruby build toolchain AND ship RUBY_VERSIONS="OFF" into
+# the container, making rvm-reconcile.sh bootstrap rvm and fail `rvm install OFF` on
+# every single container start. Keeps has_versions consistent with is_active.
 has_versions() {
   local val
   val="$(get_versions "$1")"
-  [[ -n "$val" ]]
+  [[ -n "$val" && "$val" != "OFF" ]]
+}
+
+# Echo a version-list key's VALUE with an explicit `OFF` normalised to EMPTY, so
+# `ruby=OFF` / `rust=OFF` / `db-clients=OFF` behave like the documented `key=` skip
+# instead of being passed downstream as the literal string "OFF" — which would reach a
+# build arg or the container env and be treated as a version (`rvm install OFF`,
+# `rustup toolchain install OFF`, an unknown db-client). Use this — not get_versions —
+# wherever a version-list value is EMITTED; get_versions must keep returning "OFF"
+# verbatim because boolean keys legitimately hold it.
+version_list() {
+  local val; val="$(get_versions "$1")"
+  [[ "$val" == "OFF" ]] && val=""
+  printf '%s' "$val"
 }
 
 # Returns 0 if any of the given version-list keys have at least one version set.
@@ -231,7 +276,7 @@ versions_to_space() {
 db_clients_has() {
   local want="$1" c
   local IFS=,
-  for c in $(get_versions db-clients); do
+  for c in $(version_list db-clients); do
     [[ "${c// /}" == "$want" ]] && return 0
   done
   return 1
@@ -363,6 +408,82 @@ repo_name_from_volume() {
   # (name="$(repo_name_from_volume ...)") strip the trailing newline, so this
   # is safe for them too.
   printf '%s\n' "$n"
+}
+
+# ── Ruby home (~/.rvm) volume ───────────────────────────────────────────────────
+#
+# ~/.rvm is backed by a Docker NAMED VOLUME, not a host bind mount, on EVERY
+# platform. rvm bootstraps by extracting its release tarball, and GNU tar defers
+# symlinks whose target contains '..' — it first writes a mode-000 placeholder file
+# and swaps in the real symlink at the end. macOS virtiofs (Colima / Docker Desktop)
+# cannot service that, so tar fails on exactly the four such members in the rvm
+# tarball, exits non-zero, and the installer aborts with "Could not extract RVM
+# sources". Plain symlink creation works there — verified — which is why ~/.ai-tools
+# (npm/uv, direct symlink()) is unaffected and stays a bind mount. Volume-backed on
+# Linux too: one code path is worth more than host-inspectability of a tool cache,
+# and a macOS-only branch is exactly what let this sit undetected.
+#
+# Named "<prefix>-rvm-<group>" — a DIFFERENT infix from repo volumes' "-repo-", so
+# repo.sh's discovery (filter name=<prefix>-repo-) and its registry-driven `--all`
+# can never see, sync, or reset an rvm volume. tests/test-repo-registry.sh asserts
+# that isolation so a future prefix change cannot silently break it.
+#
+# Label:  ai-containers.rvm-group   the container group this Ruby home belongs to
+
+rvm_volume_name() {
+  printf '%s-rvm-%s' "$repo_volume_prefix" "$(sanitize_volume_token "$1")"
+}
+
+# Echo every existing rvm volume name, one per line.
+rvm_volumes() {
+  docker volume ls --quiet --filter "name=${repo_volume_prefix}-rvm-" 2>/dev/null || true
+}
+
+# Echo the group backing an rvm volume: prefer the label, fall back to stripping
+# the "<prefix>-rvm-" prefix (mirrors repo_name_from_volume).
+rvm_group_from_volume() {
+  local vol="$1" n
+  n="$(docker_volume_label "$vol" 'ai-containers.rvm-group')"
+  [[ -z "$n" ]] && n="${vol#"${repo_volume_prefix}"-rvm-}"
+  printf '%s\n' "$n"
+}
+
+# Ensure the group's rvm volume exists; echo its name on stdout (diagnostics go to
+# stderr so callers can capture it). Seeds ONCE from a pre-existing bind-mounted
+# "$root/.rvm" left by a group created before rvm moved to a volume, so upgrading
+# does not silently discard already-compiled rubies (minutes per version to rebuild).
+#   $1 = group name   $2 = group root dir   $3 = image to run the copy in
+rvm_volume_ensure() {
+  local group="$1" root="$2" image="$3"
+  local vol; vol="$(rvm_volume_name "$group")"
+
+  if docker volume inspect "$vol" >/dev/null 2>&1; then
+    printf '%s\n' "$vol"; return 0
+  fi
+  if ! docker volume create --label "ai-containers.rvm-group=${group}" "$vol" >/dev/null 2>&1; then
+    printf 'ERROR: could not create the rvm volume %s\n' "$vol" >&2
+    return 1
+  fi
+
+  # Migrate ONLY a healthy legacy rvm. "$root/.rvm" may instead hold the debris of a
+  # bootstrap that failed on this very bug (a half-extracted src/ and no scripts/rvm);
+  # copying that in would leave a broken tree that rvm-reconcile.sh would try to
+  # source forever. -s scripts/rvm is the same predicate the reconcile itself uses.
+  local legacy="$root/.rvm"
+  if [[ -s "$legacy/scripts/rvm" ]]; then
+    printf 'Migrating this group'"'"'s ~/.rvm into docker volume %s (one time)…\n' "$vol" >&2
+    if docker run --rm -v "$legacy:/src:ro" -v "$vol:/dst" \
+         --entrypoint bash "$image" -c 'cp -a /src/. /dst/' >/dev/null 2>&1; then
+      printf 'Migrated. The old directory is now unused; remove it when satisfied:\n  rm -rf %s\n' "$legacy" >&2
+    else
+      printf 'WARNING: migrating %s failed — this group starts with an empty Ruby home\n' "$legacy" >&2
+      printf '         and will recompile its configured versions on first use.\n' >&2
+    fi
+  elif [[ -d "$legacy" ]]; then
+    printf 'Note: %s holds no working rvm (an earlier failed bootstrap); starting clean.\n' "$legacy" >&2
+  fi
+
+  printf '%s\n' "$vol"
 }
 
 # Returns 0 if any running container currently mounts docker volume $1.

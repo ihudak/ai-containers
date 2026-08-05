@@ -93,5 +93,73 @@ n_link="$(grep -c 'link_default_ruby$' "$REPO_DIR/entrypoint.sh")"
 [[ "$n_link" -ge 3 ]] && pass "link_default_ruby wired in all three modes ($n_link call-sites)" \
   || fail "link_default_ruby wired in all three modes ($n_link call-sites)"
 
+# ── ruby_executable_hooks + wrapper fallback ────────────────────────────────────
+# rvm rewrites gem binstub shebangs to `#!/usr/bin/env ruby_executable_hooks` (the
+# executable-hooks gem in the @global gemset). Linking the binstub alone left a
+# `bundle` that resolved but died with "env: 'ruby_executable_hooks': No such file
+# or directory", while `ruby`/`gem` (no rewritten shebang) worked — so the breakage
+# was invisible until the bootstrap itself started succeeding.
+
+# The hook is found in the @global gemset and linked alongside the binstubs.
+h="$(mktemp -d)"; d="$(mktemp -d)"
+mk_rvm "$h" "3.4.5" "ruby gem bundle"
+install -d "$h/.rvm/gems/ruby-3.4.5@global/bin"
+printf '#!/bin/sh\n' > "$h/.rvm/gems/ruby-3.4.5@global/bin/ruby_executable_hooks"
+chmod +x "$h/.rvm/gems/ruby-3.4.5@global/bin/ruby_executable_hooks"
+RUBY_VERSIONS="3.4.5" bash "$REPO_DIR/link-default-ruby.sh" "$h" "$d" >/dev/null 2>&1
+[[ -L "$d/ruby_executable_hooks" \
+   && "$(readlink "$d/ruby_executable_hooks")" == "$h/.rvm/gems/ruby-3.4.5@global/bin/ruby_executable_hooks" ]] \
+  && pass "links ruby_executable_hooks from the @global gemset" \
+  || fail "links ruby_executable_hooks from the @global gemset"
+rm -rf "$h" "$d"
+
+# …and from ~/.rvm/bin when rvm put it there instead.
+h="$(mktemp -d)"; d="$(mktemp -d)"
+mk_rvm "$h" "3.4.5" "ruby gem bundle"
+install -d "$h/.rvm/bin"
+printf '#!/bin/sh\n' > "$h/.rvm/bin/ruby_executable_hooks"; chmod +x "$h/.rvm/bin/ruby_executable_hooks"
+RUBY_VERSIONS="3.4.5" bash "$REPO_DIR/link-default-ruby.sh" "$h" "$d" >/dev/null 2>&1
+[[ -L "$d/ruby_executable_hooks" ]] \
+  && pass "links ruby_executable_hooks from ~/.rvm/bin" \
+  || fail "links ruby_executable_hooks from ~/.rvm/bin"
+rm -rf "$h" "$d"
+
+# No hook anywhere → no dangling link (the glob must not be linked literally).
+h="$(mktemp -d)"; d="$(mktemp -d)"
+mk_rvm "$h" "3.4.5" "ruby gem bundle"
+RUBY_VERSIONS="3.4.5" bash "$REPO_DIR/link-default-ruby.sh" "$h" "$d" >/dev/null 2>&1
+[[ ! -e "$d/ruby_executable_hooks" && -z "$(find "$d" -name '*ruby_executable_hooks*' 2>/dev/null)" ]] \
+  && pass "no hook present → no ruby_executable_hooks link created" \
+  || fail "no hook present → no ruby_executable_hooks link created"
+rm -rf "$h" "$d"
+
+# A binstub that does NOT run is re-pointed at rvm's wrapper…
+h="$(mktemp -d)"; d="$(mktemp -d)"
+mk_rvm "$h" "3.4.5" "ruby gem"
+printf '#!/usr/bin/env definitely_not_on_path\n' > "$h/.rvm/rubies/ruby-3.4.5/bin/bundle"
+chmod +x "$h/.rvm/rubies/ruby-3.4.5/bin/bundle"
+install -d "$h/.rvm/wrappers/default"
+printf '#!/bin/sh\n' > "$h/.rvm/wrappers/default/bundle"; chmod +x "$h/.rvm/wrappers/default/bundle"
+RUBY_VERSIONS="3.4.5" bash "$REPO_DIR/link-default-ruby.sh" "$h" "$d" >/dev/null 2>&1
+[[ "$(readlink "$d/bundle")" == "$h/.rvm/wrappers/default/bundle" ]] \
+  && pass "a non-running binstub falls back to the rvm wrapper" \
+  || fail "a non-running binstub falls back to the rvm wrapper (got: $(readlink "$d/bundle"))"
+# …while a binstub that DOES run keeps the direct link (wrappers cost a bash exec).
+[[ "$(readlink "$d/ruby")" == "$h/.rvm/rubies/ruby-3.4.5/bin/ruby" ]] \
+  && pass "a working binstub keeps its direct link" \
+  || fail "a working binstub keeps its direct link (got: $(readlink "$d/ruby"))"
+rm -rf "$h" "$d"
+
+# No wrappers dir at all → the broken binstub is reported, not silently left as OK.
+h="$(mktemp -d)"; d="$(mktemp -d)"
+mk_rvm "$h" "3.4.5" "ruby gem"
+printf '#!/usr/bin/env definitely_not_on_path\n' > "$h/.rvm/rubies/ruby-3.4.5/bin/bundle"
+chmod +x "$h/.rvm/rubies/ruby-3.4.5/bin/bundle"
+out="$(RUBY_VERSIONS="3.4.5" bash "$REPO_DIR/link-default-ruby.sh" "$h" "$d" 2>&1)"
+[[ -L "$d/bundle" ]] \
+  && pass "with no wrappers dir the direct link is still made (no worse than before)" \
+  || fail "with no wrappers dir the direct link is still made"
+rm -rf "$h" "$d"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
