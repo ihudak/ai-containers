@@ -60,6 +60,44 @@ jobs:
       - name: Case corpus
         run: ./tests/integration/run.sh --list
 
+      - name: Pull base image (with retry)
+        run: |
+          # Run 31108437390 died before a single case ran: `docker build`'s
+          # first layer is a `docker pull` from Docker Hub, and Hub timed out
+          # resolving ubuntu:24.04's manifest ("dial tcp …: i/o timeout"). That
+          # is a registry flake, not a test failure, but it still cost a full
+          # ~6-minute round trip and read as a red build someone had to
+          # diagnose before dismissing. Pre-pulling the base image HERE, with
+          # its own short retry, is cheap and isolates the flake from the
+          # build: if this step is the one that fails, the cause is obviously
+          # "the registry", never "something in this suite or the Dockerfile".
+          # Deliberately NOT wrapping `docker build` itself in a retry (see
+          # build_image() in run.sh) — that would just as happily hide a
+          # genuine Dockerfile break behind "flaky, try again".
+          #
+          # Parsed from the Dockerfile's own FROM line, not hardcoded: a
+          # hardcoded tag keeps "succeeding" even after the real base image
+          # changes, silently pre-warming the wrong image.
+          base_image="$(grep -m1 '^FROM' Dockerfile | awk '{print $2}')"
+          if [ -z "$base_image" ]; then
+            echo "::error::could not parse a FROM line out of Dockerfile — nothing to pre-pull"
+            exit 1
+          fi
+          echo "pre-pulling base image: $base_image"
+          ok=0
+          for attempt in 1 2 3; do
+            if docker pull "$base_image"; then
+              ok=1
+              break
+            fi
+            echo "pull attempt $attempt/3 failed for $base_image"
+            [ "$attempt" -lt 3 ] && sleep 10
+          done
+          if [ "$ok" -ne 1 ]; then
+            echo "::error::failed to pull $base_image after 3 attempts — this is a registry availability problem (Docker Hub), not a failure in this test suite. Re-run the job once the registry recovers."
+            exit 1
+          fi
+
       - name: Run
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
