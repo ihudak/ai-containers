@@ -92,24 +92,77 @@ check "IT_SETTLE above the floor is left alone (a caller may ask for MORE)" "90"
 out="$(bash -c ". '$LIB'; printf '%s' \"\$IT_SETTLE\"")"
 check "IT_SETTLE defaults to 60 when unset entirely" "60" "$out"
 
+# A raise is never silent: a user who set IT_SETTLE=30 to speed up a local run
+# deserves to know their run is actually waiting 60s, not just get it silently
+# doubled. Swap stdout/stderr so the command substitution captures ONLY stderr
+# (the classic `2>&1 1>/dev/null` trick — fd2 is duplicated to fd1's CURRENT
+# target, a pipe, before fd1 is reassigned to /dev/null).
+notice="$(IT_SETTLE=10 bash -c ". '$LIB'" 2>&1 1>/dev/null)"
+case "$notice" in
+  *IT_SETTLE*10*60*) pass "raising IT_SETTLE below the floor prints a stderr notice" ;;
+  *) fail "raising IT_SETTLE below the floor prints a stderr notice (got: '$notice')" ;;
+esac
+notice="$(IT_SETTLE=90 bash -c ". '$LIB'" 2>&1 1>/dev/null)"
+[[ -z "$notice" ]] \
+  && pass "no notice when IT_SETTLE is already at/above the floor" \
+  || fail "no notice when IT_SETTLE is already at/above the floor (got: '$notice')"
+
 # ── capture_ready / sandbox_wait_capture exist ─────────────────────────────────
-# Both are docker-backed (docker exec against a real container) so they are
-# proven for real by a later task's case, exactly like sidecar_up/sandbox_up
-# above them. Here we only prove lib.sh actually defines them — a typo'd name
-# would otherwise surface only when a later task's case calls it.
+# Both are docker-backed (docker exec against a real container) so their FULL
+# behaviour is proven for real by a later task's case, exactly like
+# sidecar_up/sandbox_up above them. Here we only prove lib.sh actually defines
+# them — a typo'd name would otherwise surface only when a later task's case
+# calls it.
 declare -f capture_ready >/dev/null 2>&1 \
   && pass "capture_ready is defined" || fail "capture_ready is defined"
 declare -f sandbox_wait_capture >/dev/null 2>&1 \
   && pass "sandbox_wait_capture is defined" || fail "sandbox_wait_capture is defined"
 
-# The predicate itself, independent of docker exec: tshark's real startup
-# banner looks like `Capturing on 'nflog:100'` (task-0 CI probe). Prove the
-# grep pattern capture_ready uses actually matches that shape, not a string we
-# invented for the test.
-printf 'Running as user "root" and group "root".\nCapturing on '"'"'nflog:100'"'"'\n' > "$TMP/tshark.log"
-grep -q 'Capturing on' "$TMP/tshark.log" \
-  && pass "capture_ready's predicate matches tshark's real startup banner shape" \
-  || fail "capture_ready's predicate matches tshark's real startup banner shape"
+# ── capture_ready's REAL grep, exercised through a fake docker ─────────────────
+# A bare `grep -q 'Capturing on' <string-we-wrote>` (the previous version of
+# this test) proves the PATTERN is plausible; it would not catch a typo in
+# capture_ready's own grep at lib.sh. A fake `docker` on PATH whose `exec` arm
+# redirects the grep to a fixture file lets the test call the actual
+# capture_ready() function — same fake-docker-on-PATH pattern already used by
+# tests/test-integration-runner.sh.
+FAKE_BIN="$TMP/bin"; mkdir -p "$FAKE_BIN"
+cat > "$FAKE_BIN/docker" <<'FAKE'
+#!/usr/bin/env bash
+# capture_ready's only call shape: docker exec <cid> grep -q 'Capturing on' <path>
+# <path> is meaningless here (there is no real container to read it from) —
+# redirect that SAME grep to $FAKE_TSHARK_LOG so the test can flip between
+# "attached" and "not yet attached" without touching lib.sh at all.
+case "$1" in
+  exec)
+    shift 2   # drop "exec" and <cid>
+    if [[ "$1 $2" == "grep -q" ]]; then
+      shift 2
+      grep -q "$1" "${FAKE_TSHARK_LOG:?FAKE_TSHARK_LOG not set}"
+      exit $?
+    fi
+    printf 'fake docker: unexpected exec call: %s\n' "$*" >&2; exit 99 ;;
+  *) printf 'fake docker: unexpected call: %s\n' "$*" >&2; exit 99 ;;
+esac
+FAKE
+chmod +x "$FAKE_BIN/docker"
+
+printf 'Running as user "root" and group "root". This could be dangerous.\nCapturing on '"'"'nflog:100'"'"'\n' \
+  > "$TMP/tshark-attached.log"
+# The real PRE-attach state — tshark's setuid warning IS already present
+# before it has attached — is the negative case that actually matters, not an
+# empty file or an unrelated string.
+printf 'Running as user "root" and group "root". This could be dangerous.\n' \
+  > "$TMP/tshark-notyet.log"
+
+FAKE_TSHARK_LOG="$TMP/tshark-attached.log" PATH="$FAKE_BIN:$PATH" \
+  bash -c ". '$LIB'; capture_ready fake-cid" \
+  && pass "capture_ready returns 0 once tshark's 'Capturing on' line is present" \
+  || fail "capture_ready returns 0 once tshark's 'Capturing on' line is present"
+
+FAKE_TSHARK_LOG="$TMP/tshark-notyet.log" PATH="$FAKE_BIN:$PATH" \
+  bash -c ". '$LIB'; capture_ready fake-cid" \
+  && fail "capture_ready returns non-zero before tshark has attached (setuid warning only)" \
+  || pass "capture_ready returns non-zero before tshark has attached (setuid warning only)"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

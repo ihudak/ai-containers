@@ -32,7 +32,14 @@ IT_IMAGE="${IT_IMAGE:-ai-sandbox-it}"
 IT_NET="${IT_NET:-ai-containers-it-$IT_RUN_ID}"
 IT_DNS_IMAGE="${IT_DNS_IMAGE:-coredns/coredns:1.11.3}"
 IT_CONNECT_TIMEOUT="${IT_CONNECT_TIMEOUT:-5}"
-IT_SETTLE="${IT_SETTLE:-45}"
+# No numeric default here on purpose: tests/integration/lib.sh (sourced by
+# every case) owns this value — it applies a floor (currently 60, driven by a
+# measured ~22s tshark-attach cost) and prints a stderr notice if it has to
+# raise whatever arrives here. Bash's "${IT_SETTLE:-}" treats unset and empty
+# alike, so leaving this blank still lets lib.sh's own default/floor apply
+# unchanged. Do not reintroduce a number here — it would just be a second,
+# driftable source of truth for the same setting.
+IT_SETTLE="${IT_SETTLE:-}"
 IT_GENERATED_ALLOWLIST_DIR="$IT_SCRATCH/generated-allowlists"
 
 want_tags=""; excl_tags=""; req_tags=""

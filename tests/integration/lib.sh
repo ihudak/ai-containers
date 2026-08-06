@@ -47,8 +47,19 @@ IT_CONNECT_TIMEOUT="${IT_CONNECT_TIMEOUT:-5}"
 # A caller may still ask for MORE than 60 (e.g. a slower CI runner) by
 # exporting IT_SETTLE explicitly; this only raises a too-low value, it never
 # lowers a deliberately larger one.
+#
+# lib.sh is the SINGLE SOURCE of this number — run.sh (Task 1) deliberately
+# carries no numeric default of its own (just "${IT_SETTLE:-}", still
+# exported); see the comment there. Silently discarding an explicit low value
+# would be its own decorative-check bug (a user who set IT_SETTLE=30 to speed
+# up a local run deserves to know their run is actually waiting 60s), so a
+# raise is never silent.
 IT_SETTLE="${IT_SETTLE:-60}"
-[[ "$IT_SETTLE" -lt 60 ]] && IT_SETTLE=60
+if [[ "$IT_SETTLE" -lt 60 ]]; then
+  printf 'lib.sh: IT_SETTLE=%s is below the tshark-attach floor — raising to 60 (see lib.sh IT_SETTLE comment)\n' \
+    "$IT_SETTLE" >&2
+  IT_SETTLE=60
+fi
 
 IT_SIDECAR=""; IT_SIDECAR_IP=""; IT_CID=""; IT_DNS=""; IT_DNS_IP=""
 
@@ -141,7 +152,7 @@ sidecar_down() { docker rm -f "${1:-$IT_SIDECAR}" >/dev/null 2>&1 || true; }
 # sniffing real port-53 RESPONSES. --add-host produces no DNS traffic at all, so
 # without a real resolver the map stays empty and self-healing can never fire.
 dns_up() {  # <fqdn> <ip> [<fqdn> <ip>…]
-  local d name="it-dns-$$-$RANDOM"
+  local d name="it-dns-$$-$RANDOM" first_fqdn="$1"
   d="$(it_scratch)"
   { printf '.:53 {\n    hosts {\n'
     while [[ $# -ge 2 ]]; do printf '        %s %s\n' "$2" "$1"; shift 2; done
@@ -155,8 +166,33 @@ dns_up() {  # <fqdn> <ip> [<fqdn> <ip>…]
   IT_DNS="$name"
   IT_DNS_IP="$(docker inspect -f "{{ (index .NetworkSettings.Networks \"$IT_NET\").IPAddress }}" "$name" 2>/dev/null)"
   [[ -n "$IT_DNS_IP" ]] || { fail "dns_up: no IP on network $IT_NET"; return 1; }
-  it_wait "$IT_SETTLE" docker logs "$name" 2>&1 >/dev/null || true
+  # Functional readiness, not a log grep. `docker logs <name>` returns 0 the
+  # INSTANT the container exists, whether or not CoreDNS has parsed its
+  # Corefile or bound port 53 — the previous `it_wait … docker logs … || true`
+  # succeeded on its first check (~0s) and then threw even that result away
+  # with `|| true`. It measured nothing. Cases 080/085 take dns_up's success
+  # as proof the resolver is ANSWERING and fire the whole self-healing chain
+  # through it; a CoreDNS that hasn't finished binding yet would surface
+  # there as "the destination is unreachable" — indistinguishable from a real
+  # firewall bug, sending someone hunting in the wrong place entirely.
+  #
+  # So: actually resolve the first registered name against $IT_DNS_IP, using
+  # a throwaway container (dnsutils' nslookup ships in $IT_IMAGE). Spawning a
+  # container per poll iteration is heavier than a log grep, but it converges
+  # in one or two iterations in practice, and it is the difference between a
+  # real check and a decorative one. dns_up now genuinely FAILS (returns 1)
+  # if the resolver never answers — it no longer swallows that with `|| true`.
+  if ! it_wait "$IT_SETTLE" _it_dns_answers "$first_fqdn"; then
+    fail "dns_up: $IT_DNS_IP never answered $first_fqdn after ${IT_SETTLE}s"
+    docker logs "$name" 2>&1 | tail -20 | sed 's/^/     /'
+    return 1
+  fi
   return 0
+}
+_it_dns_answers() {  # $1=fqdn — 0 iff $IT_DNS_IP actually resolves it
+  docker run --rm --network "$IT_NET" --label "$IT_LABEL" \
+    --entrypoint nslookup "$IT_IMAGE" -timeout=2 -retry=1 "$1" "$IT_DNS_IP" \
+    >/dev/null 2>&1
 }
 
 # ── The sandbox under test ──────────────────────────────────────────────────────
