@@ -2761,3 +2761,70 @@ proved `node` **runs** (`node --version` → `v24.19.0`), whereas it only proved
 `python3` **resolves** — `command -v` finds the pyenv shim without ever executing
 it, and a shim with no configured version exits non-zero when invoked. Rewrite
 correction 1 to say that; do not repeat the "no python3" claim.
+
+---
+
+## Task 0 result — NFLOG re-probe
+
+Run `31100617473`, branch `it-nflog-probe`. Two experiments; the second printed
+`NFLOG CAPTURE DID NOT RECORD`, and **that printed verdict is wrong**. The first
+experiment explains why.
+
+### A — raw tshark on `nflog:100`, with a real settle and repeated traffic
+
+```
+tshark attached after 22s: [Running as user "root" and group "root". …]
+── nflog captured ──
+10.99.0.99	80      (×9)
+── line count: 9 ──
+```
+
+**NFLOG works on `ubuntu-latest`.** Nine dropped packets delivered to userspace.
+The first probe's empty result was entirely its own 3-second sleep.
+
+### B — the real entrypoint (printed a false negative)
+
+```
+agent shell up after 2s
+blocked (expected)
+── real (non-comment) entries ──      ← empty
+NFLOG CAPTURE DID NOT RECORD
+```
+
+Same race, one layer up. Experiment A measured the thing that matters:
+**tshark takes ~22 seconds to attach to the NFLOG group.** Experiment B waited
+only for the agent shell (2 s), fired its one blocked flow at t≈3 s, slept 8 s
+and read the file at t≈13 s — nine seconds before the watcher was listening.
+The packet was dropped and logged by the kernel; nobody was reading yet.
+
+### The finding this yields, which the plan did not have
+
+`capture-blocked-traffic.sh`'s NFLOG watcher is **not effective for roughly the
+first 20+ seconds** of a container's life. On a developer's machine this is
+invisible — containers live for hours. In a test it decides the result.
+
+Therefore **`sandbox_up` must be able to wait for capture readiness, not merely
+for the agent shell**, and every case that generates traffic it expects to see
+recorded (`040`, `060`, `080`, `085`) must use that wait before generating it.
+Waiting on the *output files* is not sufficient: `init_output_files` creates them
+early, long before tshark attaches — which is exactly the trap `050` is designed
+around and a traffic-generating case must not fall into.
+
+The readiness predicate, proven by experiment A, is tshark's own announcement:
+
+```bash
+grep -q 'Capturing on' /workspace/.agent-blocked/tshark-nflog-errors.log
+```
+
+**Amendments to Task 2 (`lib.sh`):** add a `capture_ready <cid>` verb polling
+that predicate, and give `sandbox_up` an opt-in wait for it. Raise `IT_SETTLE`
+to at least 60 s. **Amendments to Tasks 5 and 9:** call it before generating
+traffic. Without this the capture cases fail intermittently on fast machines and
+reliably in CI — and would have been misread as "NFLOG does not work in CI".
+
+### Verdict
+
+**Outcome 1 of Task 0 step 4 applies: everything works; no plan changes to the
+CI job list.** The capture tier gates PRs. `ip_set`, `nfnetlink_log`, `xt_NFLOG`,
+`-m set --match-set`, `-j NFLOG`, and `nflog:` capture are all available on
+`ubuntu-latest`.
