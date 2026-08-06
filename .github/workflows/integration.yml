@@ -62,11 +62,27 @@ jobs:
 
       - name: Run
         run: |
-          args=""
-          [ -n "${{ inputs.tags }}" ]    && args="$args --tags ${{ inputs.tags }}"
-          [ -n "${{ inputs.exclude }}" ] && args="$args --exclude ${{ inputs.exclude }}"
-          [ -n "${{ inputs.require }}" ] && args="$args --require ${{ inputs.require }}"
-          [ "${{ inputs.verbose }}" = "true" ] && args="$args -v"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            args=""
+            [ -n "${{ inputs.tags }}" ]    && args="$args --tags ${{ inputs.tags }}"
+            [ -n "${{ inputs.exclude }}" ] && args="$args --exclude ${{ inputs.exclude }}"
+            [ -n "${{ inputs.require }}" ] && args="$args --require ${{ inputs.require }}"
+            [ "${{ inputs.verbose }}" = "true" ] && args="$args -v"
+          else
+            # push/pull_request do NOT populate the `inputs` context — it is
+            # only set for workflow_dispatch — so `${{ inputs.exclude }}` and
+            # `${{ inputs.require }}` are empty strings here, NOT the declared
+            # defaults ("needs-external,needs-dns" / "security"). Relying on
+            # those defaults on this branch silently drops --require security
+            # the moment a security-tagged case exists: a SKIPped security
+            # case would pass the build instead of failing it. push is also
+            # currently the ONLY trigger that fires here (see the temporary-
+            # trigger note above), so this is not a future concern — it is
+            # today's gate. Spell the gate arguments out explicitly instead of
+            # trusting the workflow_dispatch defaults to carry over; do not
+            # "simplify" this back to reading inputs.* unconditionally.
+            args="--tags fast --exclude needs-external,needs-dns --require security"
+          fi
           echo "run.sh $args"
           ./tests/integration/run.sh $args
 

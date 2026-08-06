@@ -23,7 +23,7 @@ assert_reachable "$IT_CID" "$IT_SIDECAR_IP"
 
 # The image must actually carry the sidecar runtime; if node ever stops being
 # unconditional, every network case silently loses its destination.
-if docker run --rm --entrypoint node "$IT_IMAGE" --version >/dev/null 2>&1; then
+if docker run --rm --label "$IT_LABEL" --entrypoint node "$IT_IMAGE" --version >/dev/null 2>&1; then
   pass "the image ships node (the sidecar runtime)"
 else
   fail "the image ships node (the sidecar runtime)"
