@@ -159,6 +159,19 @@ fi
 # build.sh regenerates allowlist-*.txt IN THE REPO from sandbox.conf. Building
 # from a minimal config would otherwise leave the developer's real allowlists
 # replaced by a stripped-down set, silently, until their next ./build.sh.
+#
+# Both functions below are only ever CALLED when a build is about to happen
+# (guarded by `[[ "$reuse_image" -eq 0 ]]` at each call site, not here — see
+# those sites). This is not an optimisation to skip redundant I/O: with
+# --reuse-image, build_image() never runs, so the real allowlist-*.txt files
+# are never modified in the first place, and there is nothing to protect. Do
+# NOT "simplify" the call sites back to unconditional — that would make every
+# --reuse-image run (i.e. every hermetic unit-test invocation in
+# tests/test-integration-runner.sh) read and then rewrite the real repo's
+# allowlist-*.txt on every call, rewriting their mtimes even though content is
+# byte-identical, and would race destructively against a concurrent, real
+# (reuse_image=0) run that is mid-build_image(): that run's freshly generated
+# allowlists would get clobbered by this run's stale snapshot on exit.
 saved_allowlists="$IT_SCRATCH/saved-allowlists"
 snapshot_real_allowlists() {
   mkdir -p "$saved_allowlists"
@@ -201,7 +214,10 @@ build_image() {
 
 # ── Teardown ────────────────────────────────────────────────────────────────────
 sweep() {
-  restore_real_allowlists
+  # Gated on reuse_image: see the comment above snapshot_real_allowlists(). No
+  # build ran, so nothing was snapshotted, and restoring here would still
+  # touch the real repo for no reason (rewrite-with-identical-content).
+  [[ "$reuse_image" -eq 0 ]] && restore_real_allowlists
   docker ps -aq --filter "label=$IT_LABEL" 2>/dev/null | while read -r c; do
     [[ -n "$c" ]] && docker rm -f "$c" >/dev/null 2>&1
   done
@@ -219,9 +235,12 @@ sweep() {
 trap 'sweep' EXIT
 
 mkdir -p "$IT_SCRATCH/logs"
-snapshot_real_allowlists
-
+# Gated on reuse_image: see the comment above snapshot_real_allowlists(). Only
+# take (and later restore) a snapshot when build_image() is actually about to
+# regenerate the real files — this is what keeps a --reuse-image run (every
+# hermetic unit-test invocation) from touching the real repo at all.
 if [[ "$reuse_image" -eq 0 ]]; then
+  snapshot_real_allowlists
   build_image || exit 1
 fi
 docker network create --label "$IT_LABEL" "$IT_NET" >/dev/null 2>&1 || true
