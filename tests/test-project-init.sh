@@ -90,4 +90,15 @@ grep -q 'restricted  firewall enabled' "$SBLOCAL3" && pass "sandbox.local.env do
 ! grep -q '^AI_CONTAINER_GROUP_INIT=' "$SBLOCAL3" && pass "no stray GROUP_INIT when not answered" || fail "no stray GROUP_INIT when not answered"
 ! grep -q '^EXTRA_MOUNTS=' "$SBLOCAL3" && pass "no stray EXTRA_MOUNTS when not answered" || fail "no stray EXTRA_MOUNTS when not answered"
 
+# Regression test (final-review finding): re-running project-init.sh on an existing
+# project must back up rather than silently destroy hand-edited sandbox.local.env
+# content — nothing in it (REPOS, SANDBOX_WORKDIR, SANDBOX_MODE, ...) is ever re-prompted.
+printf 'REPOS="handedited:ro"\n' >> "$SBLOCAL3"
+printf '%s\n\n\n\n\n\n\n\n\n\n\n' "$PROJ3" | bash "$SCRIPTS/project-init.sh" >/dev/null 2>&1
+BACKUP3="$PROJ3/.ai-containers/sandbox.local.env.pre-init"
+[[ -f "$BACKUP3" ]] && pass "sandbox.local.env backed up before re-init overwrite" || fail "sandbox.local.env backed up before re-init overwrite"
+grep -q '^REPOS="handedited:ro"' "$BACKUP3" && pass "backup preserves hand-edited content" || fail "backup preserves hand-edited content"
+! grep -q '^REPOS="handedited:ro"' "$SBLOCAL3" && pass "fresh sandbox.local.env does not carry stale hand-edit forward" || fail "fresh sandbox.local.env does not carry stale hand-edit forward"
+grep -qxF 'sandbox.local.env.pre-init' "$PROJ3/.ai-containers/.gitignore" && pass "sandbox.local.env.pre-init is gitignored" || fail "sandbox.local.env.pre-init is gitignored"
+
 [[ "$fails" -eq 0 ]] && { echo "ALL PASS"; exit 0; } || { echo "$fails FAILED"; exit 1; }

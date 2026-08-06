@@ -300,6 +300,14 @@ printf '  Wrote sandbox.env (portable config).\n'
 # machine-local overrides. AI_CONTAINER_GROUP_INIT is a host-referential one-time
 # group-bootstrap directive (e.g. from:host), so it belongs here, not in the shared
 # portable file; EXTRA_MOUNTS holds this machine's absolute bind paths.
+#
+# Back up an existing file first: this write is unconditional, and unlike sandbox.env
+# (whose values are all re-prompted), nothing here is ever re-asked — a hand-added
+# REPOS=/SANDBOX_WORKDIR=@app/SANDBOX_MODE= would otherwise be silently lost.
+if [[ -f "${dest}/sandbox.local.env" ]]; then
+  cp "${dest}/sandbox.local.env" "${dest}/sandbox.local.env.pre-init"
+  printf '  Backed up existing sandbox.local.env → sandbox.local.env.pre-init.\n'
+fi
 {
   cat <<'EOF'
 # sandbox.local.env — THIS MACHINE's launcher config (gitignored, not shared).
@@ -332,7 +340,7 @@ done
 
 # Ensure the project's .ai-containers/.gitignore covers outputs + generated files.
 gi="${dest}/.gitignore"
-for pat in '.agent-blocked/' '.agent-discovery/' 'sandbox.local.env' \
+for pat in '.agent-blocked/' '.agent-discovery/' 'sandbox.local.env' 'sandbox.local.env.pre-init' \
            'allowlist-domains.txt' 'allowlist-proxy-domains.txt' 'allowlist-cidrs.txt' \
            'allowlist-domains.d/custom.txt' 'allowlist-proxy-domains.d/custom.txt' 'allowlist-cidrs.d/custom.txt'; do
   if [[ ! -f "$gi" ]] || ! grep -qxF "$pat" "$gi" 2>/dev/null; then
