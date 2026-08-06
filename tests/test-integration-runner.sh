@@ -154,6 +154,61 @@ has "$out" '090-hang.*FAIL.*timed out' \
   || fail "a hanging case is killed and reported as timed out"
 rm -f "$CASES/090-hang.sh"
 
+# ── A failing case's own FAIL: line survives a long diagnostics tail ──────────
+# Pins the fix in cf0a870: run.sh's failed-case dump used to pipe the whole
+# case log through a bare `tail -40`. lib.sh's it_diagnose appends the
+# case's diagnostics AFTER its own PASS:/FAIL: lines, and that tail alone
+# commonly exceeds 40 lines, so the plain `tail -40` kept only the
+# diagnostics and silently dropped the line that said why the case failed.
+# The 60 filler lines below are the whole point of this test: with only a
+# handful of trailing lines, a reverted fix would still happen to pass this
+# assertion (the FAIL: line would still fall inside a 40-line tail) and the
+# test would be decorative. 60 lines guarantees the marker falls OUTSIDE a
+# raw last-40-lines window, so this test can only pass if the fix's
+# "print PASS:/FAIL:/SKIP: lines first, unconditionally" behaviour is
+# actually there.
+mkcase 100-loud-fail "fast" "docker" \
+  'echo "FAIL: distinctive-marker-loud-fail"; for i in $(seq 1 60); do echo "noise line $i"; done; exit 1'
+out="$(IT_FORCE_CAPS="docker" run_it --tags fast)"
+has "$out" 'FAIL: distinctive-marker-loud-fail' \
+  && pass "a failing case's FAIL: line survives 60 lines of trailing output" \
+  || fail "a failing case's FAIL: line survives 60 lines of trailing output"
+rm -f "$CASES/100-loud-fail.sh"
+
+# ── $IT_SCRATCH survives a run with failures, is removed after a clean one ────
+# Pins the other half of cf0a870: sweep() (run.sh's own EXIT trap) used to
+# unconditionally `rm -rf $IT_SCRATCH` unless --keep was passed. CI's
+# "Collect diagnostics" step copies $IT_SCRATCH into an uploaded artifact,
+# but that step runs AFTER run.sh has already exited and sweep() has already
+# deleted it — a red run shipped an empty diagnostics artifact. Both
+# directions matter: keeping scratch forever (even on a clean run) would
+# just leak disk on every green run.
+#
+# Deliberately NOT using run_it()'s shared $TMP/scratch here — that path is
+# reused by every call above, so whether it "survives" or "is removed" at
+# this point in the file would depend on which earlier call last touched
+# it, not on THIS invocation's own outcome. Each scenario below gets its own
+# scratch dir so the assertion is unambiguous.
+SCRATCH_HAD_FAILURE="$TMP/scratch-had-failure"
+SCRATCH_ALL_CLEAN="$TMP/scratch-all-clean"
+
+# --tags fast always includes 060-zeta, a permanent fixture that fails by
+# construction, so this run has n_fail > 0 without needing a dedicated case.
+PATH="$FAKE_BIN:$PATH" IT_CASES_DIR="$CASES" IT_SCRATCH="$SCRATCH_HAD_FAILURE" \
+  bash "$RUN" --reuse-image --image fake-img --tags fast >/dev/null 2>&1
+[[ -d "$SCRATCH_HAD_FAILURE" ]] \
+  && pass "\$IT_SCRATCH survives a run that had a failing case" \
+  || fail "\$IT_SCRATCH survives a run that had a failing case"
+
+# --tags network-mode selects only 020-beta and 040-delta — the only two
+# cases carrying that tag — both of which genuinely pass, so this run has
+# n_fail == 0 without needing a dedicated case.
+PATH="$FAKE_BIN:$PATH" IT_CASES_DIR="$CASES" IT_SCRATCH="$SCRATCH_ALL_CLEAN" \
+  bash "$RUN" --reuse-image --image fake-img --tags network-mode >/dev/null 2>&1
+[[ ! -d "$SCRATCH_ALL_CLEAN" ]] \
+  && pass "\$IT_SCRATCH is removed after a run with no failures" \
+  || fail "\$IT_SCRATCH is removed after a run with no failures"
+
 # ── A forced capability set is never silent ───────────────────────────────────
 out="$(IT_FORCE_CAPS="docker" run_it --list-caps)"
 has "$out" 'FORCED' \
