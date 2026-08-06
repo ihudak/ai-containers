@@ -35,6 +35,31 @@ before="$(blocked_entries "$IT_CID" blocked-ips.txt)"
 # failing when it is fast — for a reason with nothing to do with the product.
 sandbox_wait_capture "$IT_CID" || it_finish
 
+# ── TEMP DEBUG (task-5 root-cause, remove before landing) ──────────────────────
+# The retry-fire fix below still saw ZERO captures over 30 retries / ~180s in
+# CI run 31111498241 — far past anything a residual attach-race could explain.
+# This independent raw tshark listener (decoupled from capture-blocked-
+# traffic.sh's own parsing) plus the kernel's own OUTPUT rule counters will
+# show whether the NFLOG event is generated at all, isolating "kernel never
+# delivers it" from "capture-blocked-traffic.sh's read loop drops it".
+docker exec -d "$IT_CID" bash -c \
+  'timeout 20 tshark -i nflog:100 -l -n -T fields -e frame.number -e ip.dst -e tcp.dstport -e udp.dstport \
+     > /tmp/dbg-raw.txt 2>/tmp/dbg-raw-err.txt'
+sleep 2
+for _ in 1 2 3 4 5 6 7 8; do reach "$IT_CID" "$IT_SIDECAR_IP" || true; done
+sleep 3
+printf 'DEBUG iptables -L OUTPUT -v -n:\n'
+docker exec "$IT_CID" iptables -L OUTPUT -v -n
+printf 'DEBUG /tmp/dbg-raw.txt (independent nflog:100 capture):\n'
+docker exec "$IT_CID" cat /tmp/dbg-raw.txt
+printf 'DEBUG /tmp/dbg-raw-err.txt:\n'
+docker exec "$IT_CID" cat /tmp/dbg-raw-err.txt
+printf 'DEBUG /proc/net/netfilter/nfnetlink_log:\n'
+docker exec "$IT_CID" bash -c 'cat /proc/net/netfilter/nfnetlink_log 2>&1 || true'
+printf 'DEBUG conntrack state / nf_conntrack count:\n'
+docker exec "$IT_CID" bash -c 'cat /proc/sys/net/netfilter/nf_conntrack_count 2>&1 || true'
+# ── END TEMP DEBUG ──────────────────────────────────────────────────────────────
+
 # A SINGLE `reach` fired the instant sandbox_wait_capture returns is not a
 # reliable traffic generator, even though the readiness wait above is
 # correct. tshark's "Capturing on" line proves start_blocked_watcher() ran,
