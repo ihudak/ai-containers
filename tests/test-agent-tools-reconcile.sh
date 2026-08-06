@@ -16,12 +16,17 @@ mk_stubs() {
 #!/usr/bin/env bash
 echo "npm \$*" >> "$home/calls.log"
 [[ "\${NPM_FAIL:-0}" == "1" ]] && exit 1
-if [[ "\$1 \$2" == "install -g" ]]; then
-  case "\$3" in
-    @anthropic-ai/claude-code) b=claude ;; @github/copilot) b=copilot ;;
-    @openai/codex) b=codex ;; @google/gemini-cli) b=gemini ;; *) b="" ;;
-  esac
-  [[ -n "\$b" ]] && { install -d "$home/.ai-tools/npm/bin"; printf '#!/bin/sh\n' > "$home/.ai-tools/npm/bin/\$b"; chmod +x "$home/.ai-tools/npm/bin/\$b"; }
+# Match the package name anywhere in the argv rather than at a fixed position:
+# the real invocation is "install -g --prefix <dir> <pkg>", i.e. the package is
+# the LAST arg, not \$3 — a fixed-position check would silently stop detecting
+# installs the moment --prefix was inserted, hiding a regression instead of
+# catching it.
+case "\$*" in
+  *@anthropic-ai/claude-code*) b=claude ;; *@github/copilot*) b=copilot ;;
+  *@openai/codex*) b=codex ;; *@google/gemini-cli*) b=gemini ;; *) b="" ;;
+esac
+if [[ "\$1" == "install" && -n "\$b" ]]; then
+  install -d "$home/.ai-tools/npm/bin"; printf '#!/bin/sh\n' > "$home/.ai-tools/npm/bin/\$b"; chmod +x "$home/.ai-tools/npm/bin/\$b"
 fi
 exit 0
 EOF
@@ -66,10 +71,10 @@ run_case() {
 # ── All six install on a fresh home ──
 h="$(run_case "claude-code,copilot,codex,gemini,graphify,vale")"
 c="$h/calls.log"
-grep -q 'npm install -g @anthropic-ai/claude-code' "$c" && pass "installs claude-code" || fail "installs claude-code"
-grep -q 'npm install -g @github/copilot' "$c"           && pass "installs copilot"     || fail "installs copilot"
-grep -q 'npm install -g @openai/codex' "$c"             && pass "installs codex"       || fail "installs codex"
-grep -q 'npm install -g @google/gemini-cli' "$c"        && pass "installs gemini"      || fail "installs gemini"
+grep -q 'npm install -g --prefix .*@anthropic-ai/claude-code' "$c" && pass "installs claude-code" || fail "installs claude-code"
+grep -q 'npm install -g --prefix .*@github/copilot' "$c"           && pass "installs copilot"     || fail "installs copilot"
+grep -q 'npm install -g --prefix .*@openai/codex' "$c"             && pass "installs codex"       || fail "installs codex"
+grep -q 'npm install -g --prefix .*@google/gemini-cli' "$c"        && pass "installs gemini"      || fail "installs gemini"
 grep -q 'uv tool install graphifyy' "$c"                && pass "installs graphify"    || fail "installs graphify"
 grep -q 'tar ' "$c"                                     && pass "installs vale (tar)"  || fail "installs vale (tar)"
 { grep -q 'vale_.*_Linux_64-bit\.tar\.gz' "$c" && ! grep -q 'Linux_amd64' "$c"; } \
@@ -79,6 +84,13 @@ grep -q 'tar ' "$c"                                     && pass "installs vale (
 [[ -L "$h/.local/bin/claude" ]] && pass "claude native-path symlink created" || fail "claude native-path symlink created"
 [[ "$(readlink "$h/.local/bin/claude")" == "$h/.ai-tools/npm/bin/claude" ]] && pass "claude symlink points at npm/bin/claude" || fail "claude symlink points at npm/bin/claude"
 [[ -f "$h/.ai-tools/.reconcile.lock" ]] && pass "reconcile lock file created" || fail "reconcile lock file created"
+
+# Bug 1: every npm install must target ~/.ai-tools/npm via an explicit --prefix flag,
+# NOT a baked ~/.npmrc — a baked prefix makes nvm's nvm_die_on_prefix fail `nvm use
+# <version>` outright (see agent-tools-reconcile.sh / AGENTS.md "Agent-tier tools").
+n_prefix_calls="$(grep -cE -- '--prefix[[:space:]]+[^[:space:]]*/\.ai-tools/npm([[:space:]]|$)' "$c")"
+[[ "$n_prefix_calls" -eq 4 ]] && pass "all 4 npm installs pass --prefix .../.ai-tools/npm explicitly ($n_prefix_calls)" \
+  || fail "all 4 npm installs pass --prefix .../.ai-tools/npm explicitly (got $n_prefix_calls, want 4)"
 rm -rf "$h"
 
 # ── Idempotent: a second run on the SAME home does NOT reinstall ──
@@ -90,7 +102,7 @@ rm -rf "$h"
 h="$(run_case "")"; [[ ! -s "$h/calls.log" ]] && pass "empty AI_RUNTIME_TOOLS is a no-op" || fail "empty AI_RUNTIME_TOOLS is a no-op"; rm -rf "$h"
 
 # ── Selective: only codex requested → only codex installed ──
-h="$(run_case "codex")"; { grep -q 'npm install -g @openai/codex' "$h/calls.log" && ! grep -q '@google/gemini-cli' "$h/calls.log"; } && pass "installs only requested tools" || fail "installs only requested tools"; rm -rf "$h"
+h="$(run_case "codex")"; { grep -q 'npm install -g --prefix .*@openai/codex' "$h/calls.log" && ! grep -q '@google/gemini-cli' "$h/calls.log"; } && pass "installs only requested tools" || fail "installs only requested tools"; rm -rf "$h"
 
 # ── Offline npm: FAILED logged, non-fatal, other tools still attempted ──
 h="$(run_case "claude-code,graphify" "" 1)"
@@ -114,6 +126,28 @@ rm -rf "$bin" "$h"
 # ── Guards ──
 grep -qE 'flock[[:space:]]+9' "$REPO_DIR/agent-tools-reconcile.sh" && pass "flock-guarded (real call, not just the header comment)" || fail "flock-guarded (real call, not just the header comment)"
 grep -qE '^set +-[a-z]*u|nounset' "$REPO_DIR/agent-tools-reconcile.sh" && fail "must NOT enable nounset" || pass "does not enable nounset"
+
+# ── Bug 1 static guards: no baked npm global prefix; reconcile targets ~/.ai-tools/npm ──
+# A $HOME/.npmrc `prefix=` (or `globalconfig=`) line is what makes nvm's
+# nvm_die_on_prefix fail `nvm use <version>` outright (verified against nvm's
+# upstream source, not assumed) — so nothing baked into the image may write one.
+if grep -q '/etc/skel/.npmrc' "$REPO_DIR/Dockerfile"; then
+  fail "Dockerfile no longer bakes a global npm prefix via /etc/skel/.npmrc (breaks nvm use <version>)"
+else
+  pass "Dockerfile bakes no /etc/skel/.npmrc (no global npm prefix)"
+fi
+grep -qE "printf[^|]*(^|[^A-Za-z_])(prefix|globalconfig)=" "$REPO_DIR/Dockerfile" \
+  && fail "Dockerfile must not bake a prefix=/globalconfig= line anywhere" \
+  || pass "Dockerfile bakes no prefix=/globalconfig= line anywhere"
+grep -qF 'npm-agent-tools() { npm --prefix "$HOME/.ai-tools/npm" "$@"; }' "$REPO_DIR/Dockerfile" \
+  && pass "Dockerfile bakes an npm-agent-tools wrapper targeting ~/.ai-tools/npm (preserves 'npm update -g' workflow)" \
+  || fail "Dockerfile bakes an npm-agent-tools wrapper targeting ~/.ai-tools/npm (preserves 'npm update -g' workflow)"
+grep -qE 'npm install -g --prefix "\$npm_prefix"' "$REPO_DIR/agent-tools-reconcile.sh" \
+  && pass "reconcile passes --prefix explicitly per npm invocation (not via a baked .npmrc)" \
+  || fail "reconcile passes --prefix explicitly per npm invocation (not via a baked .npmrc)"
+grep -qF 'npm_prefix="$home_root/npm"' "$REPO_DIR/agent-tools-reconcile.sh" \
+  && pass "reconcile's npm_prefix resolves to \$home_root/npm (~/.ai-tools/npm)" \
+  || fail "reconcile's npm_prefix resolves to \$home_root/npm (~/.ai-tools/npm)"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

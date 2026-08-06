@@ -371,16 +371,24 @@ COPY link-default-ruby.sh /usr/local/bin/link-default-ruby.sh
 RUN chmod +x /usr/local/bin/link-default-ruby.sh
 
 # ── Agent-tier tool home (runtime-installed into the group-mounted ~/.ai-tools) ──
-# Bake only scaffolding: an npm prefix under the tool home, PATH + uv env for login /
-# interactive shells, and the ~/.local/bin dir Claude Code's native path uses. The six
-# tools (Claude Code, Codex, Gemini, Copilot, graphify, Vale) install at container start
-# via agent-tools-reconcile.sh; nothing agent-tier is baked.
-RUN printf 'prefix=${HOME}/.ai-tools/npm\n' > /etc/skel/.npmrc && \
-    install -d /etc/skel/.local/bin && \
+# Bake only scaffolding: PATH + uv env for login/interactive shells, the ~/.local/bin
+# dir Claude Code's native path uses, and a tiny `npm-agent-tools` wrapper function
+# (below). No baked npm prefix/globalconfig here on purpose: a $HOME/.npmrc `prefix=`
+# line makes nvm's `nvm_die_on_prefix` check fail `nvm use <version>` outright (not
+# just print a warning), breaking the node= multi-version workflow sandbox.conf
+# advertises. agent-tools-reconcile.sh instead passes `--prefix` per npm invocation,
+# which nvm does not object to — it inspects .npmrc/$PREFIX/$NPM_CONFIG_PREFIX, never
+# a command's own flags. `npm-agent-tools` is a shell function, not an exported env
+# var, so it preserves the `npm update -g` self-update workflow (see AGENTS.md)
+# without exporting NPM_CONFIG_PREFIX globally, which would trip that same nvm check.
+# The six tools (Claude Code, Codex, Gemini, Copilot, graphify, Vale) install at
+# container start via agent-tools-reconcile.sh; nothing agent-tier is baked.
+RUN install -d /etc/skel/.local/bin && \
     printf '%s\n' \
       'export UV_TOOL_DIR="$HOME/.ai-tools/uv"' \
       'export UV_TOOL_BIN_DIR="$HOME/.ai-tools/uv/bin"' \
       'export PATH="$HOME/.ai-tools/npm/bin:$HOME/.ai-tools/uv/bin:$HOME/.ai-tools/bin:$HOME/.local/bin:$PATH"' \
+      'npm-agent-tools() { npm --prefix "$HOME/.ai-tools/npm" "$@"; }' \
       | tee /etc/profile.d/ai-tools.sh >> /etc/bash.bashrc
 
 # Ship the runtime agent-tool scripts (invoked by entrypoint: reconcile as the sandbox
