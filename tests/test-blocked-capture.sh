@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Tests that capture-blocked-traffic.sh actually STARTS — the daemon that gives
-# restricted mode its only record of what the firewall dropped.
+# restricted mode its only record of what the firewall dropped — AND that it can
+# actually RECORD a blocked packet once started. Those are two separate bugs,
+# both pinned here.
 #
-# The bug this pins: the script runs `set -euo pipefail`, and its allowlist-cache
+# Bug 1 (startup): the script runs `set -euo pipefail`, and its allowlist-cache
 # build used `grep -v '^\s*#' F | grep -v '^\s*$' | sed …`. When F has no
 # non-comment, non-blank line the second grep exits 1, pipefail propagates, and
 # `set -e` killed the whole daemon ~150 lines before init_output_files. Nothing was
@@ -12,6 +14,18 @@
 # allowlist-proxy-domains.txt is nothing but its two header comments whenever no
 # proxy-fragment component is enabled, which is why this was invisible to anyone
 # running with copilot/claude-code ON.
+#
+# Bug 2 (parsing, task-5 2026-08-06): even past startup, the NFLOG/DNS read loops
+# used `IFS=$'\t' read`. Tab is IFS WHITESPACE, and bash's `read` collapses RUNS
+# of it and strips it from a line's edges. Every real IPv4 packet leaves tshark's
+# ipv6.dst field empty, so the true field-output for a blocked TCP packet was
+# shaped like "IP\t\tPORT\t" — the doubled tab collapsed to one delimiter, the
+# trailing one was stripped, the port landed in the wrong variable, and
+# `[[ -z "$dst" || -z "$port" ]] && continue` silently discarded the packet —
+# every single one, forever, while the daemon kept announcing itself and creating
+# its output files normally. The first regression's own fake tshark (below) exits
+# immediately and proves nothing about this path; it survived undetected because
+# nothing before task-5 asserted that a real blocked packet produces a real row.
 #
 # Hermetic: fake tshark/ipset on PATH, temp capture + internal dirs, no root.
 set -uo pipefail
@@ -97,6 +111,82 @@ got="$(tr '\n' '|' < "$cache_internal/allowed-domains-cache" 2>/dev/null)"
 [[ "$got" == "spaced.example.com|*.wild.example.com|" ]] \
   && pass "cache still strips comments/blanks and trims whitespace" \
   || fail "cache still strips comments/blanks and trims whitespace (got '$got')"
+
+# ── Bug 2: a real blocked packet must become a real row ────────────────────────
+# The fake tshark above (`exit 0`, no output) can only prove the daemon SURVIVES
+# startup — exactly the blind spot that hid Bug 2 for as long as it shipped. This
+# fake tshark instead EMITS one realistic line per invocation and — critically —
+# actually honours the `-i <iface>` and `-E separator=<val>` arguments
+# capture-blocked-traffic.sh passes, so this test exercises the REAL field
+# separator/read pairing rather than a separately-maintained assumption about it.
+# Each emitted line deliberately leaves ONE field empty (ipv6.dst / dns.aaaa) —
+# exactly the shape a real IPv4-only packet or A-only DNS response produces, and
+# exactly the shape that exposed Bug 2: a stub that never leaves a field empty
+# could never catch it.
+FAKE_BIN2="$TMP/bin2"; mkdir -p "$FAKE_BIN2"
+cat > "$FAKE_BIN2/tshark" <<'FAKETSHARK'
+#!/usr/bin/env bash
+# Parses just enough of its own argv to mimic real tshark's -T fields output:
+# which interface was opened (-i) and which field separator was requested
+# (-E separator=...), defaulting to tshark's real default (tab) if none was
+# given — that default is exactly Bug 2's trigger, so this stub stays faithful
+# to it instead of hardcoding the fix's separator.
+sep=$'\t'; iface=""; prev=""
+for a in "$@"; do
+  case "$prev" in
+    -i) iface="$a" ;;
+    -E) [[ "$a" == separator=* ]] && sep="${a#separator=}" ;;
+  esac
+  prev="$a"
+done
+case "$sep" in /t) sep=$'\t' ;; /s) sep=' ' ;; esac
+join() {
+  local out="" first=1 f
+  for f in "$@"; do
+    if [[ "$first" -eq 1 ]]; then out="$f"; first=0; else out="$out$sep$f"; fi
+  done
+  printf '%s\n' "$out"
+}
+case "$iface" in
+  # ip.dst  ipv6.dst(EMPTY: real for any IPv4 packet)  tcp.dstport  udp.dstport
+  nflog:*) join "203.0.113.9" "" "8080" "" ;;
+  # dns.resp.name  dns.a  dns.aaaa(EMPTY: real for an A-only response) — a
+  # DIFFERENT address than the nflog line above, so this test's own DNS-map
+  # traffic cannot accidentally self-heal/rename the packet it is checking.
+  any)     join "dns-blocked.example.test" "203.0.113.50" "" ;;
+esac
+exit 0
+FAKETSHARK
+chmod +x "$FAKE_BIN2/tshark"
+cp "$FAKE_BIN/ipset" "$FAKE_BIN2/ipset"
+
+run_capture2() {
+  local cap="$TMP/cap2.$RANDOM" internal="$TMP/int2.$RANDOM" i
+  mkdir -p "$cap" "$internal"
+  PATH="$FAKE_BIN2:$PATH" BLOCKED_INTERNAL_DIR="$internal" \
+    ALLOWLIST_DOMAINS_FILE="$populated" ALLOWLIST_PROXY_DOMAINS_FILE="$comments_only" \
+    bash "$REPO_DIR/capture-blocked-traffic.sh" "$cap" >/dev/null 2>&1
+  # The daemon backgrounds its read loops and returns almost immediately;
+  # give the piped `while read` a brief, bounded window to process the one
+  # line the fake tshark already wrote to its stdout before exiting.
+  for i in $(seq 1 20); do
+    grep -qF '203.0.113.9' "$cap/blocked-ips.txt" 2>/dev/null && break
+    sleep 0.1
+  done
+  printf '%s' "$cap"
+}
+
+capdir2="$(run_capture2)"
+if grep -qxF '203.0.113.9' "$capdir2/blocked-ips.txt" 2>/dev/null; then
+  pass "a real blocked packet becomes a real row in blocked-ips.txt"
+else
+  fail "a real blocked packet becomes a real row in blocked-ips.txt — got: $(cat "$capdir2/blocked-ips.txt" 2>/dev/null | tr '\n' '|')"
+fi
+if grep -qF '203.0.113.9' "$capdir2/blocked.log" 2>/dev/null; then
+  pass "the same packet is recorded in blocked.log"
+else
+  fail "the same packet is recorded in blocked.log — got: $(cat "$capdir2/blocked.log" 2>/dev/null | tr '\n' '|')"
+fi
 
 # ── Regression guard on the construct itself ────────────────────────────────────
 # Any `grep … | grep …` here is one empty allowlist away from killing the daemon

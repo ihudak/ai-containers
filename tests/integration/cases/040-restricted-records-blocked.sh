@@ -35,51 +35,29 @@ before="$(blocked_entries "$IT_CID" blocked-ips.txt)"
 # failing when it is fast — for a reason with nothing to do with the product.
 sandbox_wait_capture "$IT_CID" || it_finish
 
-# ── TEMP DEBUG (task-5 root-cause, remove before landing) ──────────────────────
-# The retry-fire fix below still saw ZERO captures over 30 retries / ~180s in
-# CI run 31111498241 — far past anything a residual attach-race could explain.
-# This independent raw tshark listener (decoupled from capture-blocked-
-# traffic.sh's own parsing) plus the kernel's own OUTPUT rule counters will
-# show whether the NFLOG event is generated at all, isolating "kernel never
-# delivers it" from "capture-blocked-traffic.sh's read loop drops it".
-docker exec -d "$IT_CID" bash -c \
-  'timeout 20 tshark -i nflog:100 -l -n -T fields -e frame.number -e ip.dst -e tcp.dstport -e udp.dstport \
-     > /tmp/dbg-raw.txt 2>/tmp/dbg-raw-err.txt'
-sleep 2
-for _ in 1 2 3 4 5 6 7 8; do reach "$IT_CID" "$IT_SIDECAR_IP" || true; done
-sleep 3
-printf 'DEBUG iptables -L OUTPUT -v -n:\n'
-docker exec "$IT_CID" iptables -L OUTPUT -v -n
-printf 'DEBUG /tmp/dbg-raw.txt (independent nflog:100 capture):\n'
-docker exec "$IT_CID" cat /tmp/dbg-raw.txt
-printf 'DEBUG /tmp/dbg-raw-err.txt:\n'
-docker exec "$IT_CID" cat /tmp/dbg-raw-err.txt
-printf 'DEBUG /proc/net/netfilter/nfnetlink_log:\n'
-docker exec "$IT_CID" bash -c 'cat /proc/net/netfilter/nfnetlink_log 2>&1 || true'
-printf 'DEBUG conntrack state / nf_conntrack count:\n'
-docker exec "$IT_CID" bash -c 'cat /proc/sys/net/netfilter/nf_conntrack_count 2>&1 || true'
-# ── END TEMP DEBUG ──────────────────────────────────────────────────────────────
+reach "$IT_CID" "$IT_SIDECAR_IP" || true    # generate exactly one blocked flow
 
-# A SINGLE `reach` fired the instant sandbox_wait_capture returns is not a
-# reliable traffic generator, even though the readiness wait above is
-# correct. tshark's "Capturing on" line proves start_blocked_watcher() ran,
-# but a real CI run of exactly this case (task-5, 2026-08-06) showed it is not
-# a perfectly tight bound: the firewall correctly dropped the one packet
-# (ipset stayed at 0 entries — 010 already proves the drop works), yet
-# blocked-ips.txt/blocked.log stayed untouched for the full wait below, with
-# nothing left to retry because curl had already given up. That is the
-# "second failure mode" this tier exists to catch that a hermetic fake-tshark
-# test cannot: a hermetic test controls when tshark "arrives"; this one only
-# controls when the case ASKS whether it has, and a real capture pipeline can
-# still have a residual gap after that answer turns "yes". Keep firing the
-# blocked flow on every poll iteration instead of once — this is a test
-# robustness fix, not a product bug: 010/020/030 (open/allowed-listed traffic)
-# never depend on capture and were unaffected.
-fire_and_check_entry() {
-  reach "$IT_CID" "$IT_SIDECAR_IP" || true
-  blocked_entries "$IT_CID" blocked-ips.txt | grep -qxF "$IT_SIDECAR_IP"
-}
-if it_wait 30 fire_and_check_entry; then
+# This single fire is exactly what caught the real bug that shipped:
+# capture-blocked-traffic.sh's NFLOG read loop used `IFS=$'\t' read`, and tab
+# is IFS WHITESPACE — bash's `read` collapses RUNS of it and strips it from
+# the line's edges. Every IPv4 packet leaves tshark's ipv6.dst field empty,
+# so the real output was shaped like "172.18.0.2\t\t8080\t"; the doubled tab
+# collapsed to one delimiter and the trailing one was stripped, landing the
+# PORT in the ipv6.dst variable and leaving tcp_port empty, which the next
+# line's `[[ -z "$dst" || -z "$port" ]] && continue` then silently discarded
+# — every single blocked packet, forever, while the daemon kept announcing
+# itself and creating its output files normally. It shipped and was found
+# ONLY because this case asserts a real ROW appears, not merely that the
+# files exist (that weaker property is exactly what 050 checks, and it
+# stayed green throughout). Fixed by using a field separator ("|") that is
+# not IFS whitespace; see capture-blocked-traffic.sh for the full comment.
+# An earlier draft of this case retried `reach` on every poll iteration to
+# compensate — that was chasing the wrong cause (a tshark-attach race) and
+# masked this real one by resending until the daemon's parser got lucky on
+# some other field shape. It is deliberately not restored: the single fire,
+# once past sandbox_wait_capture, is not just sufficient but the point.
+entry_recorded() { blocked_entries "$1" blocked-ips.txt | grep -qxF "$2"; }
+if it_wait 45 entry_recorded "$IT_CID" "$IT_SIDECAR_IP"; then
   pass "blocked-ips.txt records $IT_SIDECAR_IP as a real entry"
 else
   fail "blocked-ips.txt records $IT_SIDECAR_IP as a real entry"
@@ -88,15 +66,9 @@ fi
 # blocked.log is the authoritative record: log_blocked returns early after
 # self-healing an allowlisted domain and writes the "(auto-allowed)" line to
 # blocked.log ONLY. Reading just the two copy-paste files therefore reports
-# "blocked nothing" for traffic that WAS dropped and then admitted. By the
-# time the loop above succeeds, blocked.log already has the same entry
-# (log_blocked writes it before blocked-ips.txt), so this converges
-# immediately in practice; it keeps firing too, for the same reason as above.
-fire_and_check_log() {
-  reach "$IT_CID" "$IT_SIDECAR_IP" || true
-  docker exec "$IT_CID" grep -qF "$IT_SIDECAR_IP" /workspace/.agent-blocked/blocked.log
-}
-if it_wait 10 fire_and_check_log; then
+# "blocked nothing" for traffic that WAS dropped and then admitted.
+logged() { docker exec "$1" grep -qF "$2" /workspace/.agent-blocked/blocked.log; }
+if it_wait 20 logged "$IT_CID" "$IT_SIDECAR_IP"; then
   pass "blocked.log records the destination with a timestamp"
 else
   fail "blocked.log records the destination with a timestamp"

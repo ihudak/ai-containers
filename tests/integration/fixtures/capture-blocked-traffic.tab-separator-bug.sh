@@ -1,6 +1,33 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# ═══════════════════════════════════════════════════════════════════════════
+# KNOWN-BAD FIXTURE — a byte-for-byte copy of capture-blocked-traffic.sh taken
+# from the repo BEFORE the tab/IFS-whitespace field-separator fix (task-5,
+# 2026-08-06), kept ONLY so
+# tests/integration/cases/040-restricted-records-blocked.sh can be
+# demonstrated FAILING against the REAL daemon that REALLY shipped — not a
+# synthetic mutation. Do NOT "fix" this file: fixing it defeats its only
+# purpose, and it must keep differing from the shipped script.
+#
+# The bug: `while IFS=$'\t' read -r dst4 dst6 tcp_port udp_port` (below, in
+# start_blocked_watcher) treats tab as IFS WHITESPACE, which bash's `read`
+# collapses in RUNS and strips from the line's edges. tshark's -T fields
+# output for any IPv4 packet always leaves ipv6.dst empty, producing a line
+# shaped like "172.18.0.2\t\t8080\t" — the doubled tab collapses to one
+# delimiter and the trailing tab is stripped, so dst4=172.18.0.2,
+# dst6=8080 (the PORT, misplaced), tcp_port="", udp_port="". The very next
+# line's `[[ -z "$dst" || -z "$port" ]] && continue` then discards the
+# packet — EVERY blocked packet, always. The daemon still starts, still
+# announces itself, still creates blocked.log/blocked-domains.txt/
+# blocked-ips.txt (which is why the earlier grep|grep startup-death fix and
+# a plain file-existence check both looked completely healthy) — it just
+# never gains a row. start_dns_map_builder has the identical defect for
+# dns.resp.name/dns.a/dns.aaaa, so self-healing's DNS map is unreliable too.
+# See capture-blocked-traffic.sh (the real, fixed script) for the fix
+# itself: a field separator that is not IFS whitespace.
+# ═══════════════════════════════════════════════════════════════════════════
+
 # Background daemon: captures outbound traffic that is blocked in restricted mode.
 # Must be started as a root process before exec capsh so it retains CAP_NET_RAW.
 # Reads blocked packets via tshark on the NFLOG netlink group that entrypoint.sh
@@ -157,21 +184,13 @@ log_blocked() {
 
 start_dns_map_builder() {
   # Captures DNS responses and builds a live IP → FQDN map.
-  #
-  # Field separator is "|", NOT tshark's default tab — see start_blocked_watcher
-  # below for the full explanation of why tab is unusable with `read` (the
-  # same `-E separator=`/IFS pairing is used there). It bites here too: an
-  # A-only response leaves dns.aaaa empty,
-  # an AAAA-only response leaves dns.a empty, and either shape is exactly the
-  # "one field missing" case that a tab/IFS-whitespace read collapses into
-  # the wrong variable, silently corrupting the self-healing DNS map.
   (
     tshark -i any -n -l \
       -f "port 53" \
       -Y "dns.flags.response == 1 and (dns.a or dns.aaaa)" \
-      -T fields -E "separator=|" -e dns.resp.name -e dns.a -e dns.aaaa \
+      -T fields -e dns.resp.name -e dns.a -e dns.aaaa \
       2>"$capture_dir/tshark-dns-errors.log" | \
-    while IFS='|' read -r raw_name a_list aaaa_list; do
+    while IFS=$'\t' read -r raw_name a_list aaaa_list; do
       # dns.resp.name can return comma-separated duplicates; take the first.
       local name="${raw_name%%,*}"
       [[ -z "$name" ]] && continue
@@ -213,28 +232,11 @@ start_blocked_watcher() {
   #
   # Both ip.dst (IPv4) and ipv6.dst (IPv6) are captured so blocked IPv6
   # destinations are logged and self-healed just like IPv4 ones.
-  #
-  # Field separator is "|", NOT tshark's default tab. Tab is IFS WHITESPACE
-  # (with space and newline), and bash's `read` COLLAPSES RUNS of IFS
-  # whitespace into a single delimiter and strips it from the line's edges.
-  # ipv6.dst is ALWAYS empty for an IPv4 packet (and ip.dst always empty for
-  # an IPv6 one), so tshark's real tab-separated output for a blocked IPv4
-  # TCP packet is shaped like "172.18.0.2\t\t8080\t" — read with
-  # IFS=$'\t' collapses the doubled tab into ONE delimiter and drops the
-  # trailing one, yielding dst4=172.18.0.2 dst6=8080 (the PORT, misplaced)
-  # tcp_port="" udp_port="". The next line's `[[ -z "$dst" || -z "$port" ]]
-  # && continue` then silently discarded EVERY blocked packet, always — this
-  # shipped and was only found by tests/integration/cases/040-*.sh asserting
-  # a real row, not by any check of whether the daemon merely started. "|"
-  # cannot occur in an IP literal, a port number, or a DNS label, so it is
-  # not IFS whitespace and empty fields are preserved as empty positions
-  # instead of being collapsed away. Do NOT revert this to a tab separator —
-  # it looks like a harmless cosmetic choice and is actually load-bearing.
   (
     tshark -i "nflog:$nflog_group" -l -n \
-      -T fields -E "separator=|" -e ip.dst -e ipv6.dst -e tcp.dstport -e udp.dstport \
+      -T fields -e ip.dst -e ipv6.dst -e tcp.dstport -e udp.dstport \
       2>"$capture_dir/tshark-nflog-errors.log" | \
-    while IFS='|' read -r dst4 dst6 tcp_port udp_port; do
+    while IFS=$'\t' read -r dst4 dst6 tcp_port udp_port; do
       local dst="${dst4:-$dst6}"
       local port="${tcp_port:-$udp_port}"
       [[ -z "$dst" || -z "$port" ]] && continue
