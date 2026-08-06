@@ -45,12 +45,23 @@ assert_log_contains "$IT_CID" 'Blocked traffic capture started'
 # IT_SETTLE comment for why that substitution is unsound and must not be made),
 # so reaching a pass here proves start_blocked_watcher() itself ran.
 if sandbox_wait_capture "$IT_CID"; then
-  # Effect, not just liveness: with the watcher demonstrably attached, fire one
+  # Effect, not just liveness: with the watcher demonstrably attached, fire the
   # blocked flow through it and confirm the comments-only allowlist did not
   # ALSO silently disable recording for it.
-  reach "$IT_CID" "$IT_SIDECAR_IP" || true
-  entry_recorded() { blocked_entries "$1" blocked-ips.txt | grep -qxF "$2"; }
-  if it_wait 45 entry_recorded "$IT_CID" "$IT_SIDECAR_IP"; then
+  #
+  # Fire on every poll iteration, not once: a real CI run of the sibling case
+  # 040 (task-5, 2026-08-06) showed that tshark's "Capturing on" announcement,
+  # while a correct and necessary readiness signal, is not a perfectly tight
+  # bound on when the FIRST packet after it is actually captured. A single
+  # `reach` fired the instant this branch is entered can still race that
+  # residual gap, with nothing left to retry once curl's own timeout expires.
+  # This is exactly the "second failure mode" a hermetic fake-tshark test
+  # cannot surface — it only appears against the real capture pipeline.
+  fire_and_check_entry() {
+    reach "$IT_CID" "$IT_SIDECAR_IP" || true
+    blocked_entries "$IT_CID" blocked-ips.txt | grep -qxF "$IT_SIDECAR_IP"
+  }
+  if it_wait 30 fire_and_check_entry; then
     pass "blocked-ips.txt records $IT_SIDECAR_IP despite the comments-only allowlist"
   else
     fail "blocked-ips.txt records $IT_SIDECAR_IP despite the comments-only allowlist"
