@@ -295,21 +295,31 @@ EOF
 } > "${dest}/sandbox.env"
 printf '  Wrote sandbox.env (portable config).\n'
 
-# Machine-specific config → sandbox.local.env (gitignored). AI_CONTAINER_GROUP_INIT is a
-# host-referential one-time group-bootstrap directive (e.g. from:host), so it belongs here,
-# not in the shared portable file; EXTRA_MOUNTS holds this machine's absolute bind paths.
-if [[ -n "$extra_mounts" || -n "$group_init" ]]; then
-  {
-    cat <<'EOF'
+# Machine-specific config → sandbox.local.env (gitignored). Always written (even with
+# no EXTRA_MOUNTS/group-init answered) so every project has a documented place for
+# machine-local overrides. AI_CONTAINER_GROUP_INIT is a host-referential one-time
+# group-bootstrap directive (e.g. from:host), so it belongs here, not in the shared
+# portable file; EXTRA_MOUNTS holds this machine's absolute bind paths.
+{
+  cat <<'EOF'
 # sandbox.local.env — THIS MACHINE's launcher config (gitignored, not shared).
-# Overrides sandbox.env (loaded at higher precedence). Machine/platform-specific:
-# absolute bind paths, named-volume repos, the group bootstrap, workdir/resource overrides.
+# Overrides sandbox.env (loaded at higher precedence: inline env > sandbox.local.env > sandbox.env).
+# Uncomment/add only what this machine or this one-off run needs:
+#   EXTRA_MOUNTS="/abs/path /another:ro"   # host bind mounts (Linux-native; absolute paths)
+#   REPOS="app:rw lib:ro"                  # named-volume repos (./repo.sh add; macOS perf)
+#   SANDBOX_WORKDIR=@app                   # named-volume working dir (macOS)
+#   AI_CONTAINER_GROUP_INIT=from:host      # one-time group bootstrap: clean|from:host|from:<group>
+#
+# SANDBOX_MODE overrides the portable default (currently "open" in sandbox.env). Options:
+#   restricted  firewall enabled, NET_ADMIN/NET_RAW dropped from the agent shell
+#   discovery   unrestricted egress + background pcap capture
+#   open        unrestricted egress, no capture
+#SANDBOX_MODE=open
 EOF
-    [[ -n "$group_init"   ]] && printf 'AI_CONTAINER_GROUP_INIT=%s\n' "$group_init"
-    [[ -n "$extra_mounts" ]] && printf 'EXTRA_MOUNTS="%s"\n' "$extra_mounts"
-  } > "${dest}/sandbox.local.env"
-  printf '  Wrote sandbox.local.env (machine-specific).\n'
-fi
+  [[ -n "$group_init"   ]] && printf 'AI_CONTAINER_GROUP_INIT=%s\n' "$group_init"
+  [[ -n "$extra_mounts" ]] && printf 'EXTRA_MOUNTS="%s"\n' "$extra_mounts"
+} > "${dest}/sandbox.local.env"
+printf '  Wrote sandbox.local.env (machine-specific).\n'
 
 for dir in allowlist-domains.d allowlist-proxy-domains.d allowlist-cidrs.d; do
   custom="${dest}/${dir}/custom.txt"
