@@ -2,10 +2,11 @@
 set -euo pipefail
 
 # ═══════════════════════════════════════════════════════════════════════════
-# KNOWN-BAD FIXTURE — a byte-for-byte copy of capture-blocked-traffic.sh taken
-# from the repo BEFORE the tab/IFS-whitespace field-separator fix (task-5,
-# 2026-08-06), kept ONLY so
-# tests/integration/cases/040-restricted-records-blocked.sh can be
+# KNOWN-BAD FIXTURE #2 of 2 — BUG: SILENT PARSE FAILURE (tab is IFS whitespace).
+#
+# A byte-for-byte copy of capture-blocked-traffic.sh taken from the repo
+# BEFORE the tab/IFS-whitespace field-separator fix (task-5, 2026-08-06), kept
+# ONLY so tests/integration/cases/040-restricted-records-blocked.sh can be
 # demonstrated FAILING against the REAL daemon that REALLY shipped — not a
 # synthetic mutation. Do NOT "fix" this file: fixing it defeats its only
 # purpose, and it must keep differing from the shipped script.
@@ -26,6 +27,15 @@ set -euo pipefail
 # dns.resp.name/dns.a/dns.aaaa, so self-healing's DNS map is unreliable too.
 # See capture-blocked-traffic.sh (the real, fixed script) for the fix
 # itself: a field separator that is not IFS whitespace.
+#
+# NOT to be confused with its sibling, capture-blocked-traffic.prefix.sh
+# (used by case 060) — that one is a COMPLETELY DIFFERENT, EARLIER bug: its
+# daemon dies under `set -e` before it ever reaches init_output_files, so NONE
+# of the three output files exist at all. This fixture's daemon, by contrast,
+# runs to completion and creates every file normally — the failure is purely
+# in whether a row is ever added to them. Two distinct bugs, two distinct
+# fixtures — do not consolidate them into one "the daemon is broken" fixture;
+# each demonstrates a different failure a different case exists to catch.
 # ═══════════════════════════════════════════════════════════════════════════
 
 # Background daemon: captures outbound traffic that is blocked in restricted mode.

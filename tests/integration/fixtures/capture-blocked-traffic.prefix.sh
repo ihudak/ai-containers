@@ -2,7 +2,9 @@
 set -euo pipefail
 
 # ═══════════════════════════════════════════════════════════════════════════
-# KNOWN-BAD FIXTURE — deliberately reverted, kept ONLY so
+# KNOWN-BAD FIXTURE #1 of 2 — BUG: STARTUP DEATH (grep|grep under set -e).
+#
+# Deliberately reverted, kept ONLY so
 # tests/integration/cases/060-restricted-empty-allowlist-still-captures.sh can
 # be demonstrated FAILING against a real pre-fix daemon (real tshark, real
 # NFLOG, real NET_ADMIN — not the hermetic fake tshark that
@@ -15,8 +17,21 @@ set -euo pipefail
 # This is a byte-for-byte copy of capture-blocked-traffic.sh with ONLY
 # strip_allowlist() reverted to the original grep|grep|sed pipeline (and its
 # two call sites adapted to match) — the construct that actually caused the
-# outage this whole capture tier (040/050/060) exists to catch. See the
-# KNOWN-BAD block below for the mechanism.
+# ORIGINAL outage this whole capture tier (040/050/060) exists to catch. With
+# a comments-only allowlist, this daemon dies under `set -e` BEFORE
+# init_output_files ever runs: no blocked.log, no blocked-domains.txt, no
+# blocked-ips.txt, no watcher at all. See the KNOWN-BAD block below for the
+# mechanism.
+#
+# NOT to be confused with its sibling,
+# capture-blocked-traffic.tab-separator-bug.sh (used by case 040) — that one
+# is a COMPLETELY DIFFERENT, LATER bug: its daemon starts and announces itself
+# FINE, creates all three output files FINE, and then silently drops every
+# blocked packet's RECORD due to a tab/IFS-whitespace field-separator defect
+# in the read loops, unrelated to allowlist parsing. Two distinct bugs, two
+# distinct fixtures — do not consolidate them into one "the daemon is broken"
+# fixture; each demonstrates a different failure a different case exists to
+# catch.
 # ═══════════════════════════════════════════════════════════════════════════
 
 # Background daemon: captures outbound traffic that is blocked in restricted mode.
