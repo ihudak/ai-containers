@@ -45,6 +45,11 @@ IT_GENERATED_ALLOWLIST_DIR="$IT_SCRATCH/generated-allowlists"
 want_tags=""; excl_tags=""; req_tags=""
 do_list=0; do_list_caps=0; reuse_image=0; keep=0; verbose=0
 timeout_secs=300
+# Declared here, not just in the "Execution" section below, so it is defined
+# under `set -u` for EVERY exit path — including one that exits before the
+# execution loop ever runs (e.g. build_image failing) — because sweep()'s
+# EXIT trap reads it to decide whether to keep $IT_SCRATCH.
+n_fail=0
 
 usage() {
   cat <<'EOF'
@@ -231,11 +236,26 @@ sweep() {
   docker network ls -q --filter "label=$IT_LABEL" 2>/dev/null | while read -r n; do
     [[ -n "$n" ]] && docker network rm "$n" >/dev/null 2>&1
   done
-  if [[ "$keep" -eq 0 ]]; then
-    [[ "$reuse_image" -eq 0 ]] && docker rmi "$IT_IMAGE" >/dev/null 2>&1
-    rm -rf "$IT_SCRATCH"
-  else
+  # Image cleanup is independent of failures; only --keep preserves it.
+  if [[ "$keep" -eq 0 && "$reuse_image" -eq 0 ]]; then
+    docker rmi "$IT_IMAGE" >/dev/null 2>&1
+  fi
+  # $IT_SCRATCH/logs is the ONLY record of why a case failed. CI's "Collect
+  # diagnostics" step copies $IT_SCRATCH into an upload artifact, but that
+  # step runs AFTER run.sh has already exited and this EXIT trap has already
+  # fired — an unconditional `rm -rf` here deleted the logs before the copy
+  # ever ran, which is how a red run shipped a 198-byte (empty) diagnostics
+  # artifact: the exact "harness must never make a human ask for the next
+  # round of output" failure this suite exists to prevent (see lib.sh's
+  # it_diagnose). Keep scratch whenever this run had a failure, exactly as
+  # --keep does, and say so on stderr so the path is discoverable without a
+  # re-run.
+  if [[ "$keep" -eq 1 ]]; then
     say "── kept: image $IT_IMAGE, scratch $IT_SCRATCH"
+  elif [[ "$n_fail" -gt 0 ]]; then
+    warn "── kept scratch ($n_fail failing case(s) — logs are the evidence): $IT_SCRATCH"
+  else
+    rm -rf "$IT_SCRATCH"
   fi
   return 0
 }
@@ -324,6 +344,17 @@ for f in $selected; do
   fi
 
   if [[ "$rc" -ne 0 && "$verbose" -eq 0 ]]; then
+    # A failing case's log holds its own PASS:/FAIL: assertion lines FIRST,
+    # then lib.sh's EXIT trap appends it_diagnose's diagnostics (docker
+    # logs, iptables -S, ipset counts, capture-dir listings) — which by
+    # itself easily runs past 40 lines. A plain `tail -40` therefore showed
+    # only the tail of the DIAGNOSTICS and silently discarded the assertion
+    # that explains WHY the case failed, leaving a human with iptables rules
+    # and no statement of the failure. Print the assertions unconditionally
+    # and first — they must never be the thing that gets truncated — then a
+    # bounded diagnostics tail for context.
+    grep -E '^(PASS|FAIL|SKIP):' "$log" | sed 's/^/     /'
+    printf '     ── diagnostics (last 40 lines of case output) ──\n'
     sed 's/^/     /' "$log" | tail -40
   fi
 done
