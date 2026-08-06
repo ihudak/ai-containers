@@ -188,36 +188,17 @@ ensure_inner_gitignore() {
   return 0
 }
 
-# One-time migration for the runme.sh<->launcher naming swap.
-# Old layout: runme.sh = engine (no IMAGE_NAME marker), <project>-container.sh = launcher.
-# New layout: sandbox.sh = engine,                      runme.sh              = launcher.
-# Discriminator: only a launcher sets `export IMAGE_NAME=<literal>`. Idempotent.
+# Repoint a launcher's stale ./runme.sh self-call to ./sandbox.sh (idempotent, safe: only
+# rewrites in place, never deletes or renames anything). An earlier revision of this
+# function also auto-deleted any runme.sh lacking an `export IMAGE_NAME=` marker,
+# treating that as proof of a stale pre-migration "engine" file — but the CURRENT thin
+# runme.sh (see the launcher heredoc in project-init.sh) never carries that marker
+# either; only the now-retired "fat launcher" era did. That discriminator could no
+# longer tell "current, correct" apart from "genuinely stale" and was silently deleting
+# every project's real launcher on the very next sync. Removed rather than patched — the
+# migration window it served has long closed.
 migrate_launcher_naming() {
   local dest="$1"
-
-  # 1. Remove a stale old-engine runme.sh (present AND has no IMAGE_NAME marker).
-  if [[ -f "${dest}/runme.sh" ]] \
-     && ! grep -qE '^[[:space:]]*export[[:space:]]+IMAGE_NAME=' "${dest}/runme.sh"; then
-    rm -f "${dest}/runme.sh"
-  fi
-
-  # 2. Rename a legacy <project>-container.sh launcher to runme.sh, unless a
-  #    runme.sh launcher (marker-bearing) already exists (already migrated).
-  if [[ ! -f "${dest}/runme.sh" ]] \
-     || ! grep -qE '^[[:space:]]*export[[:space:]]+IMAGE_NAME=' "${dest}/runme.sh"; then
-    local legacy
-    for legacy in "${dest}"/*-container.sh; do
-      [[ -e "$legacy" ]] || continue
-      if grep -qE '^[[:space:]]*export[[:space:]]+IMAGE_NAME=' "$legacy"; then
-        mv "$legacy" "${dest}/runme.sh"
-        break
-      fi
-    done
-  fi
-
-  # 3. Repoint the launcher's engine call to ./sandbox.sh (idempotent).
-  #    Portable in-place edit: GNU sed needs no suffix, BSD/macOS sed requires
-  #    one, so pass an explicit `.bak` suffix (works on both) and remove it.
   if [[ -f "${dest}/runme.sh" ]]; then
     sed -i.bak 's#\./runme\.sh#./sandbox.sh#g' "${dest}/runme.sh" && rm -f "${dest}/runme.sh.bak"
   fi
