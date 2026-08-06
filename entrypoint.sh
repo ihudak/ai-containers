@@ -250,6 +250,17 @@ case "$mode" in
     setup_sandbox_user
     chown_workspace_root
 
+    # This is the only mode combining unrestricted egress with a pcap that
+    # persists on the host after the container exits — say so plainly, the
+    # same way restricted/open state their own risk, so a user cannot land
+    # here without knowing traffic is both unfiltered and being recorded.
+    printf '╔══════════════════════════════════════════════════════════════════╗\n'
+    printf '║  DISCOVERY MODE: outbound network is UNRESTRICTED (no firewall,  ║\n'
+    printf '║  no allowlist). ALL traffic is being captured to a pcap that     ║\n'
+    printf '║  persists on the host after this container exits — a pcap can    ║\n'
+    printf '║  contain sensitive material from this session.                   ║\n'
+    printf '╚══════════════════════════════════════════════════════════════════╝\n'
+
     # Run the interactive shell as the sandbox user so that files created
     # during discovery (e.g. agent sessions in ~/.copilot, ~/.kiro, ~/.config/gh)
     # are owned by the sandbox UID/GID — not root. This prevents permission
