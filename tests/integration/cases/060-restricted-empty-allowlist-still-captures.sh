@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# summary:  a comments-only allowlist does not kill the capture daemon
+# tags:     security network-mode restricted fast
+# requires: docker netadmin sidecar
+#
+# THE regression, and the most important case in this suite. capture-blocked-
+# traffic.sh runs `set -euo pipefail`, and its allowlist cache was once built
+# with `grep -v '^\s*#' F | grep -v '^\s*$' | sed …`. When F has no non-comment,
+# non-blank line the SECOND grep exits 1, pipefail propagates it, and set -e
+# killed the daemon ~150 lines before init_output_files. Nothing was logged: no
+# blocked.log, no blocked-domains.txt, no NFLOG watcher, and — worst — no
+# SELF-HEALING, so dynamic CDN IPs behind an allowlisted wildcard silently
+# stopped being admitted.
+#
+# A comments-only allowlist is a LEGAL configuration: the generated
+# allowlist-proxy-domains.txt is nothing but its two header comments whenever no
+# proxy-fragment component is enabled, which is why this was invisible to anyone
+# running with copilot/claude-code ON — they had a populated allowlist. 050
+# pins that populated-allowlist shape; this pins the degenerate one that broke.
+#
+# tests/test-blocked-capture.sh already pins this hermetically with a fake tshark
+# and no root. This case is the same property against REAL tshark, REAL NFLOG and
+# REAL NET_ADMIN, where a second failure mode could hide.
+. "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
+
+sidecar_up || it_finish
+adir="$(it_scratch)"
+allowlist_write "$adir" "" "" ""     # all three comments-only — the degenerate legal config
+sandbox_up restricted "$adir" || it_finish
+
+# Weaker property first, same one 050 checks: did the daemon survive startup at
+# all? A comments-only allowlist must not regress even this far.
+for f in blocked.log blocked-domains.txt blocked-ips.txt; do
+  it_wait 30 docker exec "$IT_CID" test -f "/workspace/.agent-blocked/$f" || true
+  assert_file_exists "$IT_CID" "/workspace/.agent-blocked/$f"
+done
+assert_log_contains "$IT_CID" 'Blocked traffic capture started'
+
+# Sharper property: the files existing only proves the daemon got past
+# init_output_files — it says nothing about whether the NFLOG watcher it starts
+# a few lines later ever actually attached. That watcher is what self-healing
+# depends on, and self-healing is what actually died in the outage while
+# enforcement kept working silently. sandbox_wait_capture blocks on tshark's
+# own "Capturing on" announcement (NOT on the output files above — see lib.sh's
+# IT_SETTLE comment for why that substitution is unsound and must not be made),
+# so reaching a pass here proves start_blocked_watcher() itself ran.
+if sandbox_wait_capture "$IT_CID"; then
+  # Effect, not just liveness: with the watcher demonstrably attached, fire one
+  # blocked flow through it and confirm the comments-only allowlist did not
+  # ALSO silently disable recording for it.
+  reach "$IT_CID" "$IT_SIDECAR_IP" || true
+  entry_recorded() { blocked_entries "$1" blocked-ips.txt | grep -qxF "$2"; }
+  if it_wait 45 entry_recorded "$IT_CID" "$IT_SIDECAR_IP"; then
+    pass "blocked-ips.txt records $IT_SIDECAR_IP despite the comments-only allowlist"
+  else
+    fail "blocked-ips.txt records $IT_SIDECAR_IP despite the comments-only allowlist"
+  fi
+else
+  fail "blocked-ips.txt records $IT_SIDECAR_IP despite the comments-only allowlist"
+fi
+it_finish
