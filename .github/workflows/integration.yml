@@ -1,0 +1,92 @@
+name: Integration
+
+# TEMPORARY: `push: branches: [integration-suite]` exists only so Task 3 can
+# iterate — this repo's gh identity (ivan-gudak) is not a collaborator on
+# ihudak/ai-containers, so `gh workflow run` / `gh pr create` both fail with
+# "must be a collaborator". A plain `git push` over SSH (a different,
+# authorized identity) DOES trigger workflows, so the push trigger is the only
+# available iteration mechanism until this lands as a PR. Task 11 narrows this
+# trigger to `pull_request` + `push` on `main` once the corpus is green — if
+# you are reading this on `main`, that narrowing did not happen; fix it.
+on:
+  push:
+    branches:
+      - integration-suite
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      tags:
+        description: 'Comma-separated tags to select (blank = all)'
+        required: false
+        default: 'fast'
+      exclude:
+        description: 'Comma-separated tags to exclude'
+        required: false
+        default: 'needs-external,needs-dns'
+      require:
+        description: 'Comma-separated tags whose skip fails the run'
+        required: false
+        default: 'security'
+      verbose:
+        description: 'Stream each case output'
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    name: Integration cases
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Environment
+        run: |
+          uname -a
+          docker --version
+          df -h / | tail -1
+          # The security tier rests on these two being loadable.
+          sudo modprobe ip_set        && echo "ip_set OK"        || echo "ip_set UNAVAILABLE"
+          sudo modprobe nfnetlink_log && echo "nfnetlink_log OK" || echo "nfnetlink_log UNAVAILABLE"
+
+      - name: Detected capabilities
+        run: ./tests/integration/run.sh --list-caps
+
+      - name: Case corpus
+        run: ./tests/integration/run.sh --list
+
+      - name: Run
+        run: |
+          args=""
+          [ -n "${{ inputs.tags }}" ]    && args="$args --tags ${{ inputs.tags }}"
+          [ -n "${{ inputs.exclude }}" ] && args="$args --exclude ${{ inputs.exclude }}"
+          [ -n "${{ inputs.require }}" ] && args="$args --require ${{ inputs.require }}"
+          [ "${{ inputs.verbose }}" = "true" ] && args="$args -v"
+          echo "run.sh $args"
+          ./tests/integration/run.sh $args
+
+      - name: Collect diagnostics
+        if: failure()
+        run: |
+          mkdir -p /tmp/it-diag
+          cp -r "$HOME/.cache/ai-containers-it" /tmp/it-diag/ 2>/dev/null || true
+          docker ps -a --filter 'label=ai-containers.it-run' > /tmp/it-diag/containers.txt 2>&1 || true
+
+      - name: Upload diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: it-diagnostics-${{ github.run_id }}
+          path: /tmp/it-diag
+          retention-days: 7
+
+      - name: Sweep
+        if: always()
+        run: |
+          docker ps -aq  --filter 'label=ai-containers.it-run' | xargs -r docker rm -f
+          docker network ls -q --filter 'label=ai-containers.it-run' | xargs -r docker network rm
