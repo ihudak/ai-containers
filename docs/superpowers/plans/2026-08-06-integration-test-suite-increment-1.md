@@ -2693,3 +2693,71 @@ Same two checks: `Integration cases`, `Shell test suite`.
 **Type/name consistency:** verbs used in Tasks 3–9 (`sidecar_up`, `dns_up`, `sandbox_up`, `reach`, `blocked_entries`, `pid1_caps`, `assert_reachable`, `assert_blocked`, `assert_file_exists`, `assert_file_absent`, `assert_log_contains`, `assert_no_capability`, `it_wait`, `it_scratch`, `it_finish`, `skip`, `allowlist_write`) all match the Task 2 signature table. Globals `$IT_CID`, `$IT_SIDECAR`, `$IT_SIDECAR_IP`, `$IT_DNS`, `$IT_DNS_IP`, `$IT_REPO_DIR`, `$IT_GENERATED_ALLOWLIST_DIR` are set where the table says and read only after the setting call returns 0.
 
 **Placeholder scan:** none. Every step names exact files, exact commands, and exact expected output.
+
+---
+
+## Task 0 result
+
+Recorded from GitHub Actions run `31086302463` on `ubuntu-latest`.
+
+### Runner kernel modules — all available
+
+```
+ip_set                 61440  1 xt_set      (already loaded)
+nfnetlink              20480  6 nft_compat,nf_tables,ip_set
+ip_set OK
+nfnetlink_log OK
+xt_NFLOG OK
+```
+
+### In-container netfilter — every operation succeeded
+
+All seven printed `rc=0`: `ipset create` (inet and inet6), `ipset add`,
+`iptables -P OUTPUT DROP`, `-m set --match-set … -j ACCEPT`,
+`-j NFLOG --nflog-group 100`, `ip6tables -P OUTPUT DROP`.
+
+`curl` to a non-allowlisted destination returned **`rc=124`** — it timed out,
+i.e. the packet was dropped. Enforcement works on `ubuntu-latest`.
+
+### NFLOG capture — first probe INCONCLUSIVE, re-probed
+
+```
+nflog stdout: []
+nflog stderr: [Running as user "root" and group "root". This could be dangerous.]
+```
+
+stderr carries only the harmless setuid notice — tshark **opened** the handle
+without error and then captured nothing. This is not the "capture session could
+not be initiated" signature the plan predicted, and it is very likely a defect in
+the probe rather than in the runner: the probe backgrounded `tshark -c 1`, slept
+3 s, and fired a single `curl`. tshark spends several seconds loading dissectors
+before it attaches, and the timestamps show it exiting at exactly its 10 s
+timeout having matched nothing.
+
+Treating that as "NFLOG unavailable" would move five capture cases to local-only
+on the strength of a race in the test harness. Re-probed against the **real
+image and the real entrypoint** (restricted mode, synthetic allowlist, a sidecar
+absent from it, then read `blocked-ips.txt`), which is the property the suite
+actually depends on. See `## Task 0 result — NFLOG re-probe` below.
+
+### Minimal image
+
+| Metric | Value |
+|---|---|
+| Build time | **194 s** — no BuildKit layer caching needed |
+| Size | **1.42 GB** |
+| `node --version` | **v24.19.0** — the sidecar runtime is present |
+| `command -v python3` | **`/opt/pyenv/shims/python3`** |
+
+### Correction to spec correction 1
+
+**`python3` IS present in a minimal image**, at `/opt/pyenv/shims/python3` —
+pyenv is installed unconditionally because the AI agents need Python. The spec's
+`python3 -m http.server` sidecar would therefore work, and the reason given in
+spec correction 1 ("a minimal image has no python3") is **wrong**.
+
+The sidecar still uses `node`, for a different and narrower reason: the probe
+proved `node` **runs** (`node --version` → `v24.19.0`), whereas it only proved
+`python3` **resolves** — `command -v` finds the pyenv shim without ever executing
+it, and a shim with no configured version exits non-zero when invoked. Rewrite
+correction 1 to say that; do not repeat the "no python3" claim.
