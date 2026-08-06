@@ -31,3 +31,6 @@ allowlist-cidrs.d/custom.txt
 # committing personal paths. See projects.conf.example for the format.
 /projects.conf
 
+
+# subagent-driven-development scratch (ledger, briefs, review packages)
+.superpowers/
