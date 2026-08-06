@@ -340,6 +340,11 @@ done
 
 # Ensure the project's .ai-containers/.gitignore covers outputs + generated files.
 gi="${dest}/.gitignore"
+# Guarantee a trailing newline before appending to an existing, non-empty file
+# (otherwise the first appended pattern gets glued onto the file's last line).
+if [[ -f "$gi" && -s "$gi" && -n "$(tail -c1 "$gi" 2>/dev/null)" ]]; then
+  printf '\n' >> "$gi"
+fi
 for pat in '.agent-blocked/' '.agent-discovery/' 'sandbox.local.env' 'sandbox.local.env.pre-init' \
            'allowlist-domains.txt' 'allowlist-proxy-domains.txt' 'allowlist-cidrs.txt' \
            'allowlist-domains.d/custom.txt' 'allowlist-proxy-domains.d/custom.txt' 'allowlist-cidrs.d/custom.txt'; do

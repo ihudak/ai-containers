@@ -170,6 +170,11 @@ ensure_ai_containers_ignored() {
 ensure_inner_gitignore() {
   local dest="$1"
   local gi="${dest}/.gitignore" pat added=0
+  # Guarantee a trailing newline before appending to an existing, non-empty file
+  # (otherwise the first appended pattern gets glued onto the file's last line).
+  if [[ -f "$gi" && -s "$gi" && -n "$(tail -c1 "$gi" 2>/dev/null)" ]]; then
+    printf '\n' >> "$gi"
+  fi
   for pat in '.agent-blocked/' '.agent-discovery/' 'sandbox.local.env' 'sandbox.local.env.pre-init' \
              'allowlist-domains.txt' 'allowlist-proxy-domains.txt' 'allowlist-cidrs.txt' \
              'allowlist-domains.d/custom.txt' 'allowlist-proxy-domains.d/custom.txt' \
