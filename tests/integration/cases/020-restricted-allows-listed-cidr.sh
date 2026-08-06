@@ -10,7 +10,7 @@
 
 sidecar_up || it_finish
 adir="$(it_scratch)"
-allowlist_write "$adir" "" "" ""   # TEMP known-bad: nothing allowlisted
+allowlist_write "$adir" "" "$IT_SIDECAR_IP" ""
 sandbox_up restricted "$adir" || it_finish
 assert_reachable "$IT_CID" "$IT_SIDECAR_IP"
 it_finish

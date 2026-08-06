@@ -12,7 +12,7 @@
 sidecar_up || it_finish
 adir="$(it_scratch)"
 allowlist_write "$adir" "it-sidecar.test" "" ""
-sandbox_up restricted "$adir" || it_finish   # TEMP known-bad: --add-host dropped
+sandbox_up restricted "$adir" --add-host "it-sidecar.test:$IT_SIDECAR_IP" || it_finish
 assert_reachable "$IT_CID" "it-sidecar.test"
 # The name resolved AND the resolved address reached the ipset — assert the
 # second half explicitly, or a case that fails for a DNS reason reads as a
