@@ -79,10 +79,21 @@ into — or is omitted from — the synthetic allowlist. "Blocked" and "allowed"
 deterministic and offline, so the security cases carry no `needs-external` tag and
 run on every PR.
 
-**`verify-on-host.sh` becomes a thin macOS entry point** that preflights Colima and
-calls the same runner. One definition of the integration tests; the drift that made
-it keep bind-mounting `~/.rvm` after the volume fix landed becomes structurally
-impossible.
+**`verify-on-host.sh` becomes a thin, platform-adaptive host entry point** — *not* a
+macOS one. "Host" means "a machine with a real Docker daemon", as opposed to inside
+the dev container. The same command runs on macOS + Colima and on a Linux
+workstation with native Docker; the only platform-specific part is the preflight
+*hints*, which is already conditional today (`if command -v colima`) and stays that
+way. There is deliberately no `verify-on-linux-host.sh`: a second entry point would
+reintroduce, at the wrapper level, exactly the duplication this design removes at
+the case level.
+
+It keeps three jobs and no test logic: the environment banner (daemon reachable,
+disk, Colima/native), a sensible default selection (everything, since a human
+running it locally wants full coverage), and platform-specific remediation hints on
+failure. Everything else delegates to `tests/integration/run.sh`. One definition of
+the integration tests; the drift that made the old script keep bind-mounting
+`~/.rvm` after the volume fix landed becomes structurally impossible.
 
 ## Layout
 
@@ -287,5 +298,5 @@ immediately rather than after three increments of investment.
 4. Each security case has been demonstrated failing against its known-bad
    configuration.
 5. `tests.yml` is a required check on both repos.
-6. `verify-on-host.sh` contains no test logic of its own — only Colima preflight
+6. `verify-on-host.sh` contains no test logic of its own — only a platform-adaptive host preflight
    and a call into the shared runner.
