@@ -170,7 +170,7 @@ ensure_ai_containers_ignored() {
 ensure_inner_gitignore() {
   local dest="$1"
   local gi="${dest}/.gitignore" pat added=0
-  for pat in '.agent-blocked/' '.agent-discovery/' 'sandbox.local.env' \
+  for pat in '.agent-blocked/' '.agent-discovery/' 'sandbox.local.env' 'sandbox.local.env.pre-init' \
              'allowlist-domains.txt' 'allowlist-proxy-domains.txt' 'allowlist-cidrs.txt' \
              'allowlist-domains.d/custom.txt' 'allowlist-proxy-domains.d/custom.txt' \
              'allowlist-cidrs.d/custom.txt'; do
