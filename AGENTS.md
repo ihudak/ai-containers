@@ -105,6 +105,23 @@ The per-project `.ai-containers/` is a synced working copy; its `sandbox.local.e
 ./sync-to-projects.sh /path/to/p   # single project
 ```
 
+**Run the runtime integration tests** (needs a real Docker daemon — a host, not a sandbox container):
+```bash
+./tests/integration/run.sh                       # the whole corpus
+./tests/integration/run.sh --list                # cases with their tags/requires
+./tests/integration/run.sh --list-caps           # what this machine can actually do
+./tests/integration/run.sh --tags fast --exclude needs-dns --require security
+```
+Cases live in `tests/integration/cases/` and declare `tags:` and `requires:` in header comments; the runner detects capabilities and selects. **Selection and skipping are different outcomes and are reported separately** — `--tags`/`--exclude` choose what runs, a SKIP is a selected case whose requirement was unmet, and `--require <tag>` makes any such skip fail the run. A case that cannot run is never counted as a pass.
+
+The suite asserts **effect, not configuration**: it observes from outside the container whether the packet arrived, the file exists, the log line is present. `tests/test-entrypoint-wiring.sh` asserts the capture daemon is *wired into* `entrypoint.sh` and passed every day of a months-long outage, because the wiring was correct and the daemon died after being started.
+
+Two known-bad daemons are kept in `tests/integration/fixtures/`, each preserving a *different* real bug that shipped, so the cases that catch them can be demonstrated failing. Do not "consolidate" or repair them.
+
+`bash ./verify-on-host.sh` runs the same corpus (Phase 4) plus the package/Ruby phases that have no case coverage yet. It is a platform-adaptive **host** entry point: the identical command on macOS + Colima and on Linux.
+
+CI runs the `fast` tier on every PR (`.github/workflows/integration.yml`) and the **whole** corpus nightly (`.github/workflows/nightly.yml`), including the `slow` and `needs-dns` cases the gate excludes on cost — so a case excluded on cost is still a case that runs. `nightly.yml` also checks that every domain in `allowlist-domains.d/` still resolves; fragments rot silently, and the only symptom is a tool that mysteriously cannot install behind the firewall.
+
 **Extract discovery results** (after exiting a discovery-mode container — the pcap is in `.agent-discovery/` of the launch directory):
 ```bash
 docker run --rm --entrypoint capture-agent-destinations.sh \
