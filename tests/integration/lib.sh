@@ -314,15 +314,22 @@ assert_log_contains() {  # $1=cid $2=ERE
 # the case cheerfully reports the capability dropped. A fully privileged
 # container produced the most reassuring possible result.
 #
-# So require the value to look like an enumeration before trusting a negative.
-# `capsh --decode` (what pid1_caps actually uses) always enumerates, so this
-# never rejects a legitimate reading; it only refuses to draw a conclusion from
-# a form it cannot interpret.
+# So validate the FORMAT before trusting a negative — and validate the format,
+# not the content. `capsh --decode` always answers `0x<hex>=<comma-list>`, and
+# the list is EMPTY exactly when the process holds no capabilities:
+#   all dropped   0x0000000000000000=
+#   some held     0x00000000a80425fb=cap_chown,cap_dac_override,…
+#   the shorthand =ep                     (capsh --print, never --decode)
+# An earlier version of this guard required the string to contain "cap_", which
+# rejected the first line above — i.e. it refused to verify the one case the
+# assertion exists to confirm, failing every correctly-hardened container (CI run
+# 31153628047). Testing for the `0x…=` envelope accepts the empty enumeration as
+# the meaningful answer it is, while still rejecting `=ep` and an empty string.
 assert_no_capability() {  # $1=cid $2=cap name, e.g. cap_net_admin
   local caps; caps="$(pid1_caps "$1")"
   case "$caps" in
-    *cap_*) : ;;   # an enumerated list — safe to search
-    *) fail "cannot verify $2: capability set is not an enumerated list [${caps:-<empty>}]"
+    0x*=*) : ;;   # the capsh --decode envelope — safe to search
+    *) fail "cannot verify $2: capability set is not in capsh --decode form [${caps:-<empty>}]"
        return ;;
   esac
   case "$caps" in
