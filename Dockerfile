@@ -473,7 +473,7 @@ COPY refresh-ipset-allowlist.sh /usr/local/bin/
 COPY capture-agent-destinations.sh /usr/local/bin/
 COPY capture-blocked-traffic.sh /usr/local/bin/
 COPY allowlist-domains.txt /tmp/
-COPY allowlist-cidrs.txt /tmp/allowlist-cidrs.txt.bak
+COPY allowlist-cidrs.txt /tmp/
 COPY allowlist-proxy-domains.txt /tmp/
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /usr/local/bin/refresh-ipset-allowlist.sh \
