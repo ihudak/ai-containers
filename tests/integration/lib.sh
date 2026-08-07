@@ -270,8 +270,9 @@ reach() {  # $1=cid $2=host-or-ip [$3=port]
 # from `exec capsh --drop=…`, so asking it directly would report NET_ADMIN
 # present in a container that correctly dropped it.
 pid1_caps() {  # $1=cid
-  docker exec "$1" bash -c \
-    'capsh --decode=$(sed -n "s/^CapEff:[[:space:]]*//p" /proc/1/status) 2>/dev/null' 2>/dev/null
+  # TEMP MUTATION (task 6 demonstration): ask a FRESH `docker exec` instead of
+  # reading /proc/1/status. This is the plausible-looking wrong implementation.
+  docker exec "$1" bash -c 'capsh --print 2>/dev/null | sed -n "s/^Current: //p"' 2>/dev/null
 }
 
 blocked_entries() {  # $1=cid [$2=file basename]
