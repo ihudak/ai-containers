@@ -24,7 +24,7 @@
 
 adir="$(it_scratch)"
 allowlist_write "$adir" "" "" ""
-sandbox_up restricted "$adir" || it_finish
+sandbox_up restricted "$adir" --privileged || it_finish
 
 # Read it once and assert we got something: an empty capability string would make
 # both assertions below pass vacuously (a substring search in "" never matches),

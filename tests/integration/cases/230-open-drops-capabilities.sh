@@ -21,7 +21,7 @@
 
 adir="$(it_scratch)"
 allowlist_write "$adir" "" "" ""
-sandbox_up open "$adir" || it_finish
+sandbox_up discovery "$adir" -e DISCOVERY_CAPTURE_ENABLED=0 || it_finish
 
 caps="$(pid1_caps "$IT_CID")"
 if [[ -n "$caps" ]]; then
