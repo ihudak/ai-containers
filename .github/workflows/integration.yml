@@ -81,6 +81,17 @@ jobs:
           # hardcoded tag keeps "succeeding" even after the real base image
           # changes, silently pre-warming the wrong image.
           base_image="$(grep -m1 '^FROM' Dockerfile | awk '{print $2}')"
+          # An ARG-substituted FROM (e.g. `FROM ${BASE_IMAGE}`) parses to the
+          # LITERAL, unexpanded token — non-empty, so a plain -z check passes it
+          # through, and `docker pull '${BASE_IMAGE}'` then fails three times and
+          # gets reported as "a REGISTRY problem", which is exactly wrong. Refuse
+          # a value we cannot pull rather than misattributing the failure.
+          case "$base_image" in
+            *'$'*|*'{'*)
+              echo "::error::the Dockerfile's FROM line is variable-substituted ($base_image) — this step cannot resolve it; teach it the ARG default or drop the pre-pull"
+              exit 1
+              ;;
+          esac
           if [ -z "$base_image" ]; then
             echo "::error::could not parse a FROM line out of Dockerfile — nothing to pre-pull"
             exit 1

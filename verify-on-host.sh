@@ -17,6 +17,15 @@
 #
 #   PHASES=3 bash ./verify-on-host.sh          # just the Ruby phase
 #
+#   IT_EXTRA_ARGS='--tags fast' PHASES=4 bash ./verify-on-host.sh
+#                                              # extra flags for Phase 4's runner
+#
+# IT_EXTRA_ARGS is forwarded verbatim to tests/integration/run.sh in Phase 4, on
+# top of the --require security this script always passes. Phase 4 deliberately
+# runs the WHOLE corpus by default (a human running locally wants full coverage,
+# including the slow and needs-dns tiers CI excludes on cost), so this is the
+# hook for narrowing that when iterating — e.g. --tags fast, or -v.
+#
 # Phases (each independent; a later phase still runs if an earlier one fails):
 #   0  environment sanity (daemon reachable, buildx, disk; Colima status on macOS)
 #   1  BLOCKING GATE: all six agent-tier tools install BEHIND the restricted firewall
