@@ -1,13 +1,8 @@
 name: Integration
 
-# TEMPORARY: `push: branches: [integration-suite]` exists only so Task 3 can
-# iterate — this repo's gh identity (ivan-gudak) is not a collaborator on
-# ihudak/ai-containers, so `gh workflow run` / `gh pr create` both fail with
-# "must be a collaborator". A plain `git push` over SSH (a different,
-# authorized identity) DOES trigger workflows, so the push trigger is the only
-# available iteration mechanism until this lands as a PR. Task 11 narrows this
-# trigger to `pull_request` + `push` on `main` once the corpus is green — if
-# you are reading this on `main`, that narrowing did not happen; fix it.
+# Runs the `fast` tier on every PR and on pushes to main. The whole corpus —
+# including the `slow` and `needs-dns` cases excluded here on cost — runs
+# nightly, so a case excluded on cost is still a case that runs.
 # `pull_request` + `push: main`, deliberately — NOT a branch-specific push
 # trigger. During development this ran on `push: integration-suite`, which was
 # the only way to exercise CI before a PR existed (this session's gh identity is
