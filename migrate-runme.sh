@@ -31,7 +31,10 @@ own_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Sourcing (not executing) project-init.sh pulls in its helpers — emit_launcher,
 # valid_group_name — and its own `script_dir`/`projects_conf` globals, without
-# running the interactive wizard (it returns early when sourced).
+# running the interactive wizard: project-init.sh returns early when sourced via
+# a BASH_SOURCE guard. That guard and emit_launcher() are BOTH real now; this
+# comment previously described both as existing when neither did, and every run
+# of this script died at the source line with no output at all.
 # shellcheck disable=SC1091
 source "${own_dir}/project-init.sh"
 default_projects_conf="$projects_conf"
@@ -217,7 +220,9 @@ EOF
     rm -f "${dest}/sandbox.local.env"
   fi
 
-  emit_launcher "$old_runme"
+  # emit_launcher <dest-path> <project-name>. This previously passed a single
+  # argument to a function that did not exist at all — see the header note.
+  emit_launcher "${dest}/runme.sh" "$project_name"
 
   printf '  Wrote sandbox.env, %s, and a thin runme.sh (old files backed up as *.pre-migrate).\n' \
     "$([[ -f "${dest}/sandbox.local.env" ]] && echo sandbox.local.env || echo '(no sandbox.local.env needed)')"
