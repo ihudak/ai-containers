@@ -18,17 +18,7 @@
 adir="$(it_scratch)"
 # A populated, ordinary configuration — the shape a real user runs.
 allowlist_write "$adir" "example.test other.test" "10.250.0.0/24" "*.proxy.test"
-# TEMP MUTATION (task-5 demonstration, reverted in the next commit): bind-mount
-# the SAME grep|grep pre-fix daemon that 060 uses
-# (capture-blocked-traffic.prefix.sh), paired here with a POPULATED allowlist
-# instead of 060's comments-only one. This is the asymmetry that let the
-# original incident survive for months: one daemon binary, two allowlists —
-# with a populated one (this case) it starts, announces itself, and writes
-# its files completely normally; with a comments-only one (060) it dies under
-# `set -e` before init_output_files ever runs. Only the allowlist differs
-# between this case and 060; expect this one to still PASS.
-bad="$IT_REPO_DIR/tests/integration/fixtures/capture-blocked-traffic.prefix.sh"
-sandbox_up restricted "$adir" -v "$bad:/usr/local/bin/capture-blocked-traffic.sh:ro" || it_finish
+sandbox_up restricted "$adir" || it_finish
 
 for f in blocked.log blocked-domains.txt blocked-ips.txt; do
   it_wait 30 docker exec "$IT_CID" test -f "/workspace/.agent-blocked/$f" || true

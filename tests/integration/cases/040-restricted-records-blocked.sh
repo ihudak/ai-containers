@@ -16,14 +16,7 @@
 sidecar_up || it_finish
 adir="$(it_scratch)"
 allowlist_write "$adir" "" "" ""
-# TEMP MUTATION (task-5 demonstration, reverted in the next commit): bind-mount
-# the REAL pre-fix daemon (tests/integration/fixtures/capture-blocked-traffic.
-# tab-separator-bug.sh — a byte-for-byte copy of what actually shipped, before
-# the tab/IFS-whitespace field-separator fix) over the fixed one, so this case
-# is shown catching the bug that genuinely ran in production, not a synthetic
-# config change.
-bad="$IT_REPO_DIR/tests/integration/fixtures/capture-blocked-traffic.tab-separator-bug.sh"
-sandbox_up restricted "$adir" -v "$bad:/usr/local/bin/capture-blocked-traffic.sh:ro" || it_finish
+sandbox_up restricted "$adir" || it_finish
 
 # Before: the file exists and is non-empty, yet holds no real entries.
 before="$(blocked_entries "$IT_CID" blocked-ips.txt)"

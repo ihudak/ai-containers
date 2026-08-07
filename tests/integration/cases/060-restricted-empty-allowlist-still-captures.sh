@@ -26,13 +26,7 @@
 sidecar_up || it_finish
 adir="$(it_scratch)"
 allowlist_write "$adir" "" "" ""     # all three comments-only — the degenerate legal config
-# TEMP MUTATION (task-5 demonstration, reverted in the next commit): bind-mount
-# the grep|grep pre-fix daemon (tests/integration/fixtures/capture-blocked-
-# traffic.prefix.sh — the ORIGINAL incident this case pins, a DIFFERENT bug
-# from 040's tab-separator-bug.sh fixture; see each fixture's own header) over
-# the fixed one.
-bad="$IT_REPO_DIR/tests/integration/fixtures/capture-blocked-traffic.prefix.sh"
-sandbox_up restricted "$adir" -v "$bad:/usr/local/bin/capture-blocked-traffic.sh:ro" || it_finish
+sandbox_up restricted "$adir" || it_finish
 
 # Weaker property first, same one 050 checks: did the daemon survive startup at
 # all? A comments-only allowlist must not regress even this far.
