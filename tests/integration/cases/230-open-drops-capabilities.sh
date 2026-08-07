@@ -9,10 +9,16 @@
 # AND sandbox.sh passes no --cap-add at all, so this asserts both belts: even if
 # the drop regressed, the capabilities were never granted to begin with.
 #
-# Contrast discovery mode, which deliberately KEEPS NET_RAW so the sandbox user
-# can run tcpdump — that asymmetry is what this case's demonstrated failure
-# exploits (running it against discovery makes cap_net_raw fail, and only that
-# one).
+# NOTE: discovery mode is NOT a useful contrast here, though it looks like one.
+# entrypoint.sh drops only cap_net_admin there and used to claim NET_RAW was
+# "kept for tcpdump" — but running this case against discovery mode PASSES, which
+# is how that claim was discovered to be false: `capsh --user=` setuids from root
+# and the kernel clears the permitted and effective sets on that transition unless
+# PR_SET_KEEPCAPS is set (capsh --keep=1, never used). So discovery's agent shell
+# holds no capabilities either, and --drop=cap_net_admin is equivalent to dropping
+# both. entrypoint.sh and AGENTS.md were corrected; this comment is corrected with
+# them. The only known-bad config that makes this case fail is pointing pid1_caps
+# at a fresh `docker exec` — see the demonstration in the plan.
 #
 # Same /proc/1/status rule as 070: a fresh `docker exec` starts from the
 # container's capability BOUNDING SET and does not inherit capsh's drops, so

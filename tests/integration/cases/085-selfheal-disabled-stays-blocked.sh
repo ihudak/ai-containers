@@ -33,12 +33,28 @@ assert_log_contains "$IT_CID" 'self-healing: OFF'
 
 sandbox_wait_capture "$IT_CID" || it_finish
 
-reach "$IT_CID" "$fqdn" || true
+
+# ONE readiness signal, TWO tshark instances. sandbox_wait_capture polls only
+# tshark-nflog-errors.log — the blocked-packet watcher. The self-heal chain also
+# needs start_dns_map_builder's SEPARATE `tshark -i any -f "port 53"` instance
+# (capture-blocked-traffic.sh:158-202) to be attached when the DNS response comes
+# back, and nothing waits for that one. `-i any` enumerates every interface, so it
+# can plausibly attach LATER than `-i nflog:100`.
+#
+# Firing one unretried request the moment sandbox_wait_capture returns therefore
+# risks the response never being recorded, lookup_domain finding nothing, and
+# self-healing looking broken for a timing reason indistinguishable from a real
+# regression. 120-discovery-collects learned exactly this ("a readiness signal
+# tells you a process started, not that it is yet seeing packets") and retries its
+# probe on every poll iteration; do the same here rather than trusting the wait.
 
 # With healing off, the drop must be recorded as a HARD block — the domain is
 # known (the DNS map was built), so it lands in blocked-domains.txt rather than
 # blocked-ips.txt.
-recorded() { blocked_entries "$1" blocked-domains.txt | grep -qxF "$2"; }
+recorded() {
+  reach "$IT_CID" "$fqdn" >/dev/null 2>&1 || true
+  blocked_entries "$1" blocked-domains.txt | grep -qxF "$2"
+}
 if it_wait 60 recorded "$IT_CID" "$fqdn"; then
   pass "the drop is recorded in blocked-domains.txt as a HARD block"
 else

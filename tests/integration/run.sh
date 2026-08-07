@@ -388,6 +388,30 @@ for f in $selected; do
 done
 
 # ── Report ──────────────────────────────────────────────────────────────────────
+# A run that selected NOTHING is not a pass. Without this, an empty cases/ dir, a
+# mistyped --tags, a bad IT_CASES_DIR, or a list_intersects regression all print
+# "selected 0 of 0   passed 0  failed 0  skipped 0" and exit 0 — a green build
+# that means "we did not look", which is the precise failure this whole suite
+# exists to make impossible. It would be absurd for the runner to be the thing
+# that reintroduces it one layer up.
+#
+# Deliberately fatal rather than a warning: asking for a tag that matches no case
+# is a mistake worth stopping for, and "run nothing successfully" is not a useful
+# outcome for any caller.
+if [[ "$n_sel" -eq 0 ]]; then
+  printf '\n%s\n' "────────────────────────────────────────────────────────────"
+  printf 'selected 0 of %s   NOTHING RAN\n' "$total" >&2
+  printf 'ERROR: no case was selected. A run that checked nothing is not a pass.\n' >&2
+  if [[ -n "$want_tags$excl_tags" ]]; then
+    printf '       selection was --tags "%s" --exclude "%s" — check for a typo\n' \
+      "$want_tags" "$excl_tags" >&2
+  fi
+  if [[ "$total" -eq 0 ]]; then
+    printf '       no case files found in %s\n' "$CASES_DIR" >&2
+  fi
+  exit 1
+fi
+
 printf '\n%s\n' "────────────────────────────────────────────────────────────"
 printf 'selected %s of %s   passed %s  failed %s  skipped %s\n' \
   "$n_sel" "$total" "$n_pass" "$n_fail" "$n_skip"

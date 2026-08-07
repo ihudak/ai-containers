@@ -65,9 +65,19 @@ jobs:
       - name: bash -n over every script
         run: |
           rc=0
+          n=0
           while IFS= read -r f; do
+            n=$((n + 1))
             bash -n "$f" || { echo "PARSE ERROR: $f"; rc=1; }
           done < <(git ls-files '*.sh')
+          # A lint job that parsed nothing must not report success: a changed
+          # pathspec or a repo reorganisation would silently turn this into a
+          # no-op that still goes green.
+          if [ "$n" -eq 0 ]; then
+            echo "::error::git ls-files '*.sh' matched no files — nothing was parsed"
+            exit 1
+          fi
+          echo "parsed $n script(s)"
           exit $rc
 
       - name: shellcheck

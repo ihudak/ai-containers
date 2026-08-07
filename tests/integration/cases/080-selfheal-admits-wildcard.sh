@@ -48,11 +48,26 @@ sandbox_wait_capture "$IT_CID" || it_finish
 
 # First attempt must be dropped — the ipset cannot contain an address nobody has
 # resolved yet — and that drop is what triggers the auto-allow.
-reach "$IT_CID" "$fqdn" || true
 
-healed() {
-  docker exec "$1" grep -qE "$2.*\(auto-allowed\)" /workspace/.agent-blocked/blocked.log
+# ONE readiness signal, TWO tshark instances. sandbox_wait_capture polls only
+# tshark-nflog-errors.log — the blocked-packet watcher. The self-heal chain also
+# needs start_dns_map_builder's SEPARATE `tshark -i any -f "port 53"` instance
+# (capture-blocked-traffic.sh:158-202) to be attached when the DNS response comes
+# back, and nothing waits for that one. `-i any` enumerates every interface, so it
+# can plausibly attach LATER than `-i nflog:100`.
+#
+# Firing one unretried request the moment sandbox_wait_capture returns therefore
+# risks the response never being recorded, lookup_domain finding nothing, and
+# self-healing looking broken for a timing reason indistinguishable from a real
+# regression. 120-discovery-collects learned exactly this ("a readiness signal
+# tells you a process started, not that it is yet seeing packets") and retries its
+# probe on every poll iteration; do the same here rather than trusting the wait.
+
+fire_and_check_healed() {
+  reach "$IT_CID" "$fqdn" >/dev/null 2>&1 || true
+  docker exec "$IT_CID" grep -qE "$1.*\(auto-allowed\)" /workspace/.agent-blocked/blocked.log
 }
+healed() { fire_and_check_healed "$2"; }
 if it_wait 60 healed "$IT_CID" "$IT_SIDECAR_IP"; then
   pass "blocked.log records $IT_SIDECAR_IP as (auto-allowed)"
 else

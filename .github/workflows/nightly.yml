@@ -104,7 +104,19 @@ jobs:
       - name: Every resolved domain still resolves
         run: |
           command -v dig >/dev/null || sudo apt-get install -y -qq bind9-dnsutils
+          # A job that scanned NOTHING must not report success. Without this, a
+          # renamed directory or a moved fragment set makes the glob match zero
+          # files, every loop below is skipped, rc stays 0, and the job goes green
+          # having checked nothing — the same "we did not look" false green this
+          # suite exists to eliminate, relocated into CI plumbing.
+          n_files=$(ls -1 allowlist-domains.d/*.txt 2>/dev/null | wc -l)
+          if [ "$n_files" -eq 0 ]; then
+            echo "::error::no fragments found in allowlist-domains.d/ — nothing was checked"
+            exit 1
+          fi
+          echo "scanning $n_files fragment file(s)"
           rc=0
+          n_hosts=0
           for f in allowlist-domains.d/*.txt; do
             [ -f "$f" ] || continue
             while IFS= read -r host; do
@@ -115,9 +127,40 @@ jobs:
               # NXDOMAIN means the name is GONE. A name that exists without an A
               # record at the apex is not rot, and getent cannot tell the two
               # apart — which is why this uses dig's status rather than getent.
+              n_hosts=$((n_hosts + 1))
               if dig +noall +comment "$host" 2>/dev/null | grep -q 'status: NXDOMAIN'; then
                 echo "NXDOMAIN: $host  ($f)"; rc=1
               fi
             done < "$f"
           done
+          # Same reasoning one level down: files present but every one empty or
+          # comments-only would also mean nothing was actually resolved.
+          if [ "$n_hosts" -eq 0 ]; then
+            echo "::error::found $n_files fragment file(s) but zero hostnames — nothing was checked"
+            exit 1
+          fi
+          echo "checked $n_hosts hostname(s)"
           exit $rc
+
+  packages:
+    name: Package installs (real allowlist, per-component images)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+
+      # verify-on-host.sh Phases 1-3: the agent-tier tool installs, the
+      # db-clients/imagemagick/wkhtmltopdf native builds, and the Ruby/rvm
+      # bootstrap. These are REAL installs through the REAL allowlist, which is
+      # why they are nightly and not on the PR gate.
+      #
+      # This job is the reason Task 10 could justify keeping those phases alive
+      # rather than deleting them to satisfy a "no test logic" criterion. Without
+      # it they are reachable only by a human remembering to run the script by
+      # hand — which is the "green because we did not look" state this suite
+      # exists to prevent, just relocated from a case to a habit.
+      #
+      # Phase 4 is deliberately EXCLUDED: integration-full above already runs the
+      # whole corpus, and running it twice per night buys nothing.
+      - name: Phases 1-3
+        run: PHASES="1 2 3" bash ./verify-on-host.sh
