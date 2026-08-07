@@ -37,8 +37,7 @@ adir="$(it_scratch)"
 # is the wildcard in the proxy-domains file, matched by the self-healing path —
 # so a successful retry below cannot be explained any other way.
 allowlist_write "$adir" "" "" "*.wild.test"
-bad="$IT_REPO_DIR/tests/integration/fixtures/capture-blocked-traffic.tab-separator-bug.sh"
-sandbox_up restricted "$adir" --dns "$IT_DNS_IP" -v "$bad:/usr/local/bin/capture-blocked-traffic.sh:ro" || it_finish
+sandbox_up restricted "$adir" --dns "$IT_DNS_IP" || it_finish
 
 # Self-healing lives in the NFLOG watcher, and tshark takes ~22s to attach.
 # Firing traffic before then means the drop is never seen, nothing is looked up,

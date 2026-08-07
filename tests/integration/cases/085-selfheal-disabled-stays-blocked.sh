@@ -22,7 +22,7 @@ dns_up "$fqdn" "$IT_SIDECAR_IP" || it_finish
 
 adir="$(it_scratch)"
 allowlist_write "$adir" "" "" "*.wild.test"
-sandbox_up restricted "$adir" --dns "$IT_DNS_IP" || it_finish
+sandbox_up restricted "$adir" --dns "$IT_DNS_IP" -e SELF_HEALING_ENABLED=0 || it_finish
 
 # Prove the switch is actually off before asserting on its consequences. Without
 # this, a typo'd env var name would make the case assert "stays blocked" against
