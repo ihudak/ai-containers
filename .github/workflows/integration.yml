@@ -119,7 +119,7 @@ jobs:
             # today's gate. Spell the gate arguments out explicitly instead of
             # trusting the workflow_dispatch defaults to carry over; do not
             # "simplify" this back to reading inputs.* unconditionally.
-            args="--tags fast --exclude needs-external,needs-dns --require security"
+            args="--exclude needs-external --require security"   # TEMP: needs-dns + slow included so 080/085 execute
           fi
           echo "run.sh $args"
           ./tests/integration/run.sh $args

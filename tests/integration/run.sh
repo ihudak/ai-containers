@@ -127,7 +127,16 @@ detect_caps() {
     if [[ "$reuse_image" -eq 1 ]] || docker image inspect "$IT_IMAGE" >/dev/null 2>&1; then
       probe_netadmin && c="$c netadmin"
     fi
-    docker image inspect "$IT_DNS_IMAGE" >/dev/null 2>&1 && c="$c dns"
+    # "Can this machine run a DNS-backed case?" — not "is the image already
+    # cached". `docker image inspect` alone answers the second, and on a fresh CI
+    # runner the answer is always no, so the needs-dns cases would SKIP forever
+    # while looking like a deliberate capability gap. Try the cache first (fast,
+    # offline-safe), then a bounded pull. A machine with no registry access still
+    # correctly reports no dns capability rather than hanging.
+    if docker image inspect "$IT_DNS_IMAGE" >/dev/null 2>&1 \
+       || timeout 120 docker pull "$IT_DNS_IMAGE" >/dev/null 2>&1; then
+      c="$c dns"
+    fi
   fi
   curl -fsS --max-time 8 -o /dev/null https://example.com 2>/dev/null && c="$c external"
   _caps=" $c "
