@@ -92,21 +92,34 @@ jobs:
       # forever, and the only symptom is a tool that mysteriously cannot install
       # behind the firewall — diagnosed, if ever, as "the network is flaky".
       #
-      # This job is deliberately NOT on the PR gate: it depends on the public
-      # internet, so a DNS blip would block unrelated work. Here a red run is a
-      # prompt to look, not a stop sign.
-      - name: Every domain in every fragment still resolves
+      # NOT on the PR gate: it depends on the public internet, so a DNS blip must
+      # not block unrelated work. Here a red run is a prompt to look.
+      #
+      # SCOPE — allowlist-domains.d ONLY, deliberately. An earlier version also
+      # checked allowlist-proxy-domains.d by stripping the "*." and resolving the
+      # parent, which is a category error: refresh-ipset-allowlist.sh never reads
+      # the proxy file at all (grep it — zero references). Those entries are
+      # SUFFIX PATTERNS consumed by matches_wildcard_domain() in
+      # capture-blocked-traffic.sh, and an apex like dynalabs.io is legitimately
+      # NXDOMAIN while *.dynalabs.io hosts resolve fine. That version reported 3
+      # false alarms out of 7, and a health check that cries wolf gets ignored —
+      # which fails the same way as a check that never fires.
+      - name: Every resolved domain still resolves
         run: |
+          command -v dig >/dev/null || sudo apt-get install -y -qq bind9-dnsutils
           rc=0
-          for f in allowlist-domains.d/*.txt allowlist-proxy-domains.d/*.txt; do
+          for f in allowlist-domains.d/*.txt; do
             [ -f "$f" ] || continue
-            while IFS= read -r line; do
-              case "$line" in ''|'#'*) continue ;; esac
-              # A proxy fragment's "*.example.com" cannot be resolved as written;
-              # strip the wildcard label and check the parent domain instead.
-              host="${line#\*.}"
-              if ! getent ahosts "$host" >/dev/null 2>&1; then
-                echo "UNRESOLVABLE: $host  ($f)"; rc=1
+            while IFS= read -r host; do
+              case "$host" in ''|'#'*) continue ;; esac
+              # Docker injects this via --add-host=host.docker.internal:host-gateway,
+              # so it resolves inside a container and nowhere else. Not rot.
+              [ "$host" = "host.docker.internal" ] && continue
+              # NXDOMAIN means the name is GONE. A name that exists without an A
+              # record at the apex is not rot, and getent cannot tell the two
+              # apart — which is why this uses dig's status rather than getent.
+              if dig +noall +comment "$host" 2>/dev/null | grep -q 'status: NXDOMAIN'; then
+                echo "NXDOMAIN: $host  ($f)"; rc=1
               fi
             done < "$f"
           done
