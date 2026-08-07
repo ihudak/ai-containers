@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # summary:  the allowlists build.sh generated are the ones inside the image
-# tags:     delivery fast
+# tags:     security delivery fast
 # requires: docker
 #
 # ASSEMBLY vs DELIVERY. tests/test-allowlists.sh already covers assembly with 44
@@ -26,6 +26,13 @@
 # is a legitimate reason not to run, and SKIP (exit 77) says so explicitly rather
 # than passing vacuously — the runner counts skips separately from passes for
 # exactly this reason.
+#
+# This case carries the `security` tag for that skip's sake. A wrong allowlist in
+# the image is a security failure, not a cosmetic one, and CI runs with
+# `--require security` — so if a future workflow ever adds --reuse-image, this
+# case going quiet FAILS the run instead of silently disappearing from the count.
+# Without the tag, the one case that can detect a wrong firewall would be the one
+# case allowed to skip unnoticed.
 [[ -d "$IT_GENERATED_ALLOWLIST_DIR" ]] \
   || skip "no generated-allowlist snapshot (run.sh was invoked with --reuse-image)"
 

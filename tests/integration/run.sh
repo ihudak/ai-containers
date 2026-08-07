@@ -330,6 +330,7 @@ for f in $selected; do
     continue
   fi
 
+  case_failed=0
   started=$SECONDS
   if [[ "$verbose" -eq 1 ]]; then
     timeout "$timeout_secs" bash "$f" 2>&1 | tee "$log"; rc=${PIPESTATUS[0]}
@@ -357,21 +358,30 @@ for f in $selected; do
     skipped_tags="${skipped_tags}|${name}:${tags}"
   elif [[ "$rc" -eq 124 ]]; then
     printf '%-46s  FAIL  (timed out after %ss)\n' "$name" "$timeout_secs"
+    case_failed=1
     n_fail=$((n_fail + 1)); failed_names="${failed_names:+$failed_names }$name"
   elif [[ "$rc" -ne 0 ]]; then
     printf '%-46s  FAIL  (exit %s, %ss)\n' "$name" "$rc" "$took"
+    case_failed=1
     n_fail=$((n_fail + 1)); failed_names="${failed_names:+$failed_names }$name"
   elif [[ "$n_ok" -eq 0 ]]; then
     # Exiting 0 without asserting anything is not a pass: it is a case that
     # silently did nothing (bad guard, early return, renamed helper).
     printf '%-46s  FAIL  (exited 0 but asserted nothing)\n' "$name"
+    case_failed=1
     n_fail=$((n_fail + 1)); failed_names="${failed_names:+$failed_names }$name"
   else
     printf '%-46s  PASS  (%s assertion(s), %ss)\n' "$name" "$n_ok" "$took"
     n_pass=$((n_pass + 1))
   fi
 
-  if [[ "$rc" -ne 0 && "$verbose" -eq 0 ]]; then
+  # `rc -ne 0` is not the whole set of failures: a case that exits 0 having
+  # printed no PASS: line is ALSO reported FAIL above ("asserted nothing"), and
+  # it is the hardest failure to diagnose — nothing in the summary says why the
+  # case did nothing (a bad guard, an early return, a renamed helper). Excluding
+  # it from the dump left the least informative failure with the least
+  # information. Gate on the FAIL having been counted, not on the exit code.
+  if [[ "$case_failed" -eq 1 && "$verbose" -eq 0 ]]; then
     # A failing case's log holds its own PASS:/FAIL: assertion lines FIRST,
     # then lib.sh's EXIT trap appends it_diagnose's diagnostics (docker
     # logs, iptables -S, ipset counts, capture-dir listings) — which by
