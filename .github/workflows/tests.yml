@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - integration-suite   # TEMP: verify the lint job before the PR exists
   pull_request:
 
 permissions:
