@@ -17,7 +17,7 @@
 
 adir="$(it_scratch)"
 allowlist_write "$adir" "" "" ""
-sandbox_up restricted "$adir" || it_finish
+sandbox_up open "$adir" || it_finish
 
 assert_file_absent "$IT_CID" /workspace/.agent-blocked/blocked.log
 assert_file_absent "$IT_CID" /workspace/.agent-discovery/agent-traffic.pcap

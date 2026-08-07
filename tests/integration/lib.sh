@@ -270,9 +270,8 @@ reach() {  # $1=cid $2=host-or-ip [$3=port]
 # from `exec capsh --drop=…`, so asking it directly would report NET_ADMIN
 # present in a container that correctly dropped it.
 pid1_caps() {  # $1=cid
-  # TEMP MUTATION (task 6 demonstration): ask a FRESH `docker exec` instead of
-  # reading /proc/1/status. This is the plausible-looking wrong implementation.
-  docker exec "$1" bash -c 'capsh --print 2>/dev/null | sed -n "s/^Current: //p"' 2>/dev/null
+  docker exec "$1" bash -c \
+    'capsh --decode=$(sed -n "s/^CapEff:[[:space:]]*//p" /proc/1/status) 2>/dev/null' 2>/dev/null
 }
 
 blocked_entries() {  # $1=cid [$2=file basename]
@@ -301,8 +300,31 @@ assert_log_contains() {  # $1=cid $2=ERE
   if docker logs "$1" 2>&1 | grep -qE "$2"; then pass "container log matches: $2"
   else fail "container log matches: $2"; fi
 }
+# A "capability is absent" claim is a NEGATIVE assertion, and a negative built on
+# a substring search passes for two very different reasons: the capability really
+# is gone, or the string we searched was never a capability list at all. The
+# second reading must be rejected explicitly, because it FAILS OPEN — and it does
+# so in exactly the worst case.
+#
+# Observed, not theorised (CI run 31153258705): with `pid1_caps` pointed at
+# `capsh --print` in a `--privileged` container, the value came back as the
+# shorthand `=ep` — libcap prints that instead of enumerating when a process
+# holds EVERY capability. `=ep` is non-empty, so an emptiness check passes it,
+# and it contains no "cap_net_admin" substring, so the search finds nothing and
+# the case cheerfully reports the capability dropped. A fully privileged
+# container produced the most reassuring possible result.
+#
+# So require the value to look like an enumeration before trusting a negative.
+# `capsh --decode` (what pid1_caps actually uses) always enumerates, so this
+# never rejects a legitimate reading; it only refuses to draw a conclusion from
+# a form it cannot interpret.
 assert_no_capability() {  # $1=cid $2=cap name, e.g. cap_net_admin
   local caps; caps="$(pid1_caps "$1")"
+  case "$caps" in
+    *cap_*) : ;;   # an enumerated list — safe to search
+    *) fail "cannot verify $2: capability set is not an enumerated list [${caps:-<empty>}]"
+       return ;;
+  esac
   case "$caps" in
     *"$2"*) fail "agent shell dropped $2 — still present in [$caps]" ;;
     *)      pass "agent shell dropped $2" ;;
