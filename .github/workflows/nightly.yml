@@ -12,9 +12,6 @@ name: Nightly
 # becoming "never checked" is the same failure this whole suite exists to close,
 # relocated from a case to a schedule.
 on:
-  push:
-    branches:
-      - integration-suite   # TEMP: a schedule-only workflow is unverifiable
   schedule:
     - cron: '17 3 * * *'
   workflow_dispatch:
