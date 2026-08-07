@@ -270,8 +270,11 @@ reach() {  # $1=cid $2=host-or-ip [$3=port]
 # from `exec capsh --drop=…`, so asking it directly would report NET_ADMIN
 # present in a container that correctly dropped it.
 pid1_caps() {  # $1=cid
-  docker exec "$1" bash -c \
-    'capsh --decode=$(sed -n "s/^CapEff:[[:space:]]*//p" /proc/1/status) 2>/dev/null' 2>/dev/null
+  # TEMP MUTATION (task 6 demonstration, reverted next commit): ask a FRESH
+  # `docker exec` instead of reading PID 1. This is the plausible WRONG
+  # implementation — exec starts from the container's capability BOUNDING SET
+  # and does not inherit capsh's drops.
+  docker exec "$1" bash -c 'capsh --decode=$(sed -n "s/^CapEff:[[:space:]]*//p" /proc/self/status) 2>/dev/null' 2>/dev/null
 }
 
 blocked_entries() {  # $1=cid [$2=file basename]
