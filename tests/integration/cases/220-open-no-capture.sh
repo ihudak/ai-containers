@@ -23,12 +23,30 @@ assert_file_absent "$IT_CID" /workspace/.agent-blocked/blocked.log
 assert_file_absent "$IT_CID" /workspace/.agent-discovery/agent-traffic.pcap
 
 # The files being absent is not the same as no daemon running: a capture process
-# could be alive and writing somewhere else entirely. Check for the process too.
-# The grep pattern deliberately covers BOTH daemons (capture-blocked-traffic.sh
-# and capture-agent-destinations.sh) — open mode must start neither.
-if docker exec "$IT_CID" bash -c \
-     'grep -l "capture-" /proc/[0-9]*/cmdline >/dev/null 2>&1'; then
-  fail "no capture process is running in open mode"
+# could be alive and writing somewhere else entirely. Check for the process too,
+# covering BOTH daemons (capture-blocked-traffic.sh and
+# capture-agent-destinations.sh) — open mode must start neither.
+#
+# THE SEARCH MUST EXCLUDE ITSELF. The obvious one-liner,
+#   grep -l "capture-" /proc/[0-9]*/cmdline
+# always matches, in every container, even with no daemon at all: the `bash -c`
+# running it has "capture-" in its OWN cmdline and its own /proc entry. This case
+# failed on exactly that in CI run 31152633295. The usual `[c]apture-` bracket
+# idiom does NOT help here — that trick works against `ps` output, but grep is
+# reading /proc files, so the pattern still matches the shell's own cmdline file.
+# Skipping $$ and $PPID is the fix; verified both ways (silent with no daemon,
+# still detects a real one).
+if docker exec "$IT_CID" bash -c '
+      found=""
+      for f in /proc/[0-9]*/cmdline; do
+        p="${f#/proc/}"; p="${p%/cmdline}"
+        [ "$p" = "$$" ] && continue
+        [ "$p" = "$PPID" ] && continue
+        grep -q "capture-" "$f" 2>/dev/null && found="$found $p"
+      done
+      [ -n "$found" ] && { printf "%s\n" "$found"; exit 0; }
+      exit 1' >/dev/null 2>&1; then
+  fail "no capture process is running in open mode — one IS running"
 else
   pass "no capture process is running in open mode"
 fi
