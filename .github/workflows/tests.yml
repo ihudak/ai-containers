@@ -51,3 +51,30 @@ jobs:
           fi
           echo "diffing sandbox.conf against $base"
           BASE_REF="$base" ./check-sandbox-version.sh --check
+
+  lint:
+    name: Shell lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      # Parse every script, including the integration harness and its cases. A
+      # syntax error in a case would otherwise surface minutes into a container
+      # run as a mysterious runtime failure, after paying for an image build.
+      - name: bash -n over every script
+        run: |
+          rc=0
+          while IFS= read -r f; do
+            bash -n "$f" || { echo "PARSE ERROR: $f"; rc=1; }
+          done < <(git ls-files '*.sh')
+          exit $rc
+
+      - name: shellcheck
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          # -e SC1091: sourced paths are resolved at runtime, not by the linter.
+          # ADVISORY, not a gate: the existing corpus predates this job, so
+          # failures are surfaced without blocking. Tightening it to a gate is a
+          # deliberate follow-up, not something to do by accident here.
+          git ls-files '*.sh' | xargs shellcheck -S warning -e SC1091 || true
