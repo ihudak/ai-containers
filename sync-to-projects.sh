@@ -175,7 +175,8 @@ ensure_inner_gitignore() {
   if [[ -f "$gi" && -s "$gi" && -n "$(tail -c1 "$gi" 2>/dev/null)" ]]; then
     printf '\n' >> "$gi"
   fi
-  for pat in '.agent-blocked/' '.agent-discovery/' 'sandbox.local.env' 'sandbox.local.env.pre-init' \
+  for pat in '.agent-blocked/' '.agent-discovery/' 'sandbox.local.env' 'sandbox.local.env.pre-init*' \
+             '*.pre-migrate' \
              'allowlist-domains.txt' 'allowlist-proxy-domains.txt' 'allowlist-cidrs.txt' \
              'allowlist-domains.d/custom.txt' 'allowlist-proxy-domains.d/custom.txt' \
              'allowlist-cidrs.d/custom.txt'; do

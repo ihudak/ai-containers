@@ -354,9 +354,18 @@ printf '  Wrote sandbox.env (portable config).\n'
 # Back up an existing file first: this write is unconditional, and unlike sandbox.env
 # (whose values are all re-prompted), nothing here is ever re-asked — a hand-added
 # REPOS=/SANDBOX_WORKDIR=@app/SANDBOX_MODE= would otherwise be silently lost.
+# NEVER clobber an existing backup. A fixed backup filename plus a plain `cp`
+# means the SECOND re-init overwrites the first backup, and the original
+# hand-edited EXTRA_MOUNTS/REPOS from before the first re-init is gone with no
+# warning printed either time. Fall back to a timestamped name, which is both
+# non-destructive and self-documenting about when it was taken.
 if [[ -f "${dest}/sandbox.local.env" ]]; then
-  cp "${dest}/sandbox.local.env" "${dest}/sandbox.local.env.pre-init"
-  printf '  Backed up existing sandbox.local.env → sandbox.local.env.pre-init.\n'
+  backup="${dest}/sandbox.local.env.pre-init"
+  if [[ -e "$backup" ]]; then
+    backup="${dest}/sandbox.local.env.pre-init.$(date -u +%Y%m%dT%H%M%SZ)"
+  fi
+  cp "${dest}/sandbox.local.env" "$backup"
+  printf '  Backed up existing sandbox.local.env → %s\n' "$(basename "$backup")"
 fi
 {
   cat <<'EOF'
@@ -395,7 +404,8 @@ gi="${dest}/.gitignore"
 if [[ -f "$gi" && -s "$gi" && -n "$(tail -c1 "$gi" 2>/dev/null)" ]]; then
   printf '\n' >> "$gi"
 fi
-for pat in '.agent-blocked/' '.agent-discovery/' 'sandbox.local.env' 'sandbox.local.env.pre-init' \
+for pat in '.agent-blocked/' '.agent-discovery/' 'sandbox.local.env' 'sandbox.local.env.pre-init*' \
+           '*.pre-migrate' \
            'allowlist-domains.txt' 'allowlist-proxy-domains.txt' 'allowlist-cidrs.txt' \
            'allowlist-domains.d/custom.txt' 'allowlist-proxy-domains.d/custom.txt' 'allowlist-cidrs.d/custom.txt'; do
   if [[ ! -f "$gi" ]] || ! grep -qxF "$pat" "$gi" 2>/dev/null; then

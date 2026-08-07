@@ -99,6 +99,26 @@ BACKUP3="$PROJ3/.ai-containers/sandbox.local.env.pre-init"
 [[ -f "$BACKUP3" ]] && pass "sandbox.local.env backed up before re-init overwrite" || fail "sandbox.local.env backed up before re-init overwrite"
 grep -q '^REPOS="handedited:ro"' "$BACKUP3" && pass "backup preserves hand-edited content" || fail "backup preserves hand-edited content"
 ! grep -q '^REPOS="handedited:ro"' "$SBLOCAL3" && pass "fresh sandbox.local.env does not carry stale hand-edit forward" || fail "fresh sandbox.local.env does not carry stale hand-edit forward"
-grep -qxF 'sandbox.local.env.pre-init' "$PROJ3/.ai-containers/.gitignore" && pass "sandbox.local.env.pre-init is gitignored" || fail "sandbox.local.env.pre-init is gitignored"
+# Assert the EFFECT (git actually ignores the file), not the literal pattern
+# string. The pattern is now a glob — `sandbox.local.env.pre-init*` — because
+# repeated re-inits produce timestamped backups, and a `grep -qxF` for the exact
+# old string failed against a strictly BROADER pattern that ignores strictly
+# more. A test that breaks when the code gets more correct is testing the wrong
+# thing.
+(
+  cd "$PROJ3" || exit 1
+  : > .ai-containers/sandbox.local.env.pre-init
+  : > ".ai-containers/sandbox.local.env.pre-init.20260101T000000Z"
+  : > .ai-containers/runme.sh.pre-migrate
+)
+for f in sandbox.local.env.pre-init \
+         sandbox.local.env.pre-init.20260101T000000Z \
+         runme.sh.pre-migrate; do
+  if (cd "$PROJ3" && git check-ignore -q ".ai-containers/$f"); then
+    pass "git ignores $f"
+  else
+    fail "git ignores $f"
+  fi
+done
 
 [[ "$fails" -eq 0 ]] && { echo "ALL PASS"; exit 0; } || { echo "$fails FAILED"; exit 1; }

@@ -183,7 +183,14 @@ process_project() {
 
   local f
   for f in "${dest}/sandbox.env" "${dest}/sandbox.local.env" "$old_runme"; do
-    [[ -f "$f" ]] && cp "$f" "${f}.pre-migrate"
+    # Same no-clobber rule as project-init.sh's .pre-init backup: a second
+    # migration of the same project must not overwrite the first backup, which
+    # is the only copy of the original launcher.
+    if [[ -f "$f" ]]; then
+      bk="${f}.pre-migrate"
+      [[ -e "$bk" ]] && bk="${f}.pre-migrate.$(date -u +%Y%m%dT%H%M%SZ)"
+      cp "$f" "$bk"
+    fi
   done
 
   {

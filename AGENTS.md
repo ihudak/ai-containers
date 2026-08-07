@@ -99,6 +99,14 @@ A group owns a directory (`~/.ai-containers/<group>/`) **and**, once `ruby=` is 
 ```
 The per-project `.ai-containers/` is a synced working copy; its `sandbox.local.env` holds machine-specific `EXTRA_MOUNTS`/`REPOS` paths, so it is git-ignored in the project by default — idempotent, git repos only, and `sync-to-projects.sh` backfills it for existing projects. Remove the line to version the **portable** config (`sandbox.env`/`sandbox.conf`/thin `runme.sh`) with a team — `sandbox.local.env` stays gitignored on its own — or set `AI_CONTAINERS_NO_GITIGNORE=1` to skip.
 
+**Migrate a project off the old fat `runme.sh`** (one-off; only for projects provisioned before the thin-launcher split):
+```bash
+./migrate-runme.sh --dry-run /path/to/project   # inspect what would change
+./migrate-runme.sh /path/to/project             # migrate
+./migrate-runme.sh                              # every project in projects.conf
+```
+Parses the old launcher's `export` lines into a portable `sandbox.env` plus a machine-local `sandbox.local.env`, then replaces it with the thin `runme.sh` that `project-init.sh` generates — the same `emit_launcher()` function, so the two cannot drift. Old files are copied to `*.pre-migrate` (timestamped if a backup already exists) and never deleted. `--dry-run` writes nothing. Non-interactive: it needs no stdin and prompts for nothing.
+
 **Sync shared files to all registered projects** (after pulling updates to this repo):
 ```bash
 ./sync-to-projects.sh              # all projects in projects.conf
