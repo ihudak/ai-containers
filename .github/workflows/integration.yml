@@ -8,10 +8,17 @@ name: Integration
 # available iteration mechanism until this lands as a PR. Task 11 narrows this
 # trigger to `pull_request` + `push` on `main` once the corpus is green — if
 # you are reading this on `main`, that narrowing did not happen; fix it.
+# `pull_request` + `push: main`, deliberately — NOT a branch-specific push
+# trigger. During development this ran on `push: integration-suite`, which was
+# the only way to exercise CI before a PR existed (this session's gh identity is
+# not a collaborator, so `gh workflow run` and `gh pr create` both fail). Once a
+# PR is open, `pull_request` covers the same commits, and keeping both would
+# double-fire every push for identical coverage — and would leave dead config on
+# main naming a branch that no longer exists.
 on:
   push:
     branches:
-      - integration-suite
+      - main
   pull_request:
   workflow_dispatch:
     inputs:
