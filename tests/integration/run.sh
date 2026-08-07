@@ -74,6 +74,20 @@ EOF
 }
 
 while [[ $# -gt 0 ]]; do
+  # A value-taking option with no value must be a usage error, not a crash.
+  # Without this guard `run.sh --tags` aborts with "line NN: 2: unbound variable"
+  # under set -u — a message that names neither the option nor the problem, from a
+  # script whose whole purpose is making failures legible.
+  case "$1" in
+    --tags|--exclude|--require|--timeout|--image)
+      if [[ $# -lt 2 ]]; then
+        printf 'run.sh: %s requires a value\n' "$1" >&2
+        usage >&2
+        exit 2
+      fi
+      ;;
+  esac
+
   case "$1" in
     --tags)     want_tags="${2//,/ }"; shift 2 ;;
     --exclude)  excl_tags="${2//,/ }"; shift 2 ;;
@@ -327,6 +341,11 @@ for f in $selected; do
   # play here, but the `|| echo 0` fallback some drafts use) that "0 || echo 0"
   # shape yields the two-line string "0\n0", not the integer 0. Force a single
   # scalar by pulling the last line, which is "0" whichever path produced it.
+  # Deliberately narrower than tests/run-all.sh's '^(PASS|  ok)': that pattern
+  # also accepts the '  ok' form some older hermetic tests emit, but no
+  # integration case uses it — lib.sh's pass() prints exactly 'PASS: <msg>' and
+  # is the only way a case can assert. Accepting a form nothing produces would
+  # let a case that printed '  ok' by accident count as having asserted.
   n_ok="$(grep -c '^PASS:' "$log" 2>/dev/null | tail -1)"
   n_ok="${n_ok:-0}"
 
