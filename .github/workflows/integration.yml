@@ -19,6 +19,7 @@ on:
   push:
     branches:
       - main
+      - integration-suite   # TEMP: verify the zero-selection guard; reverted next commit
   pull_request:
   workflow_dispatch:
     inputs:
@@ -126,7 +127,7 @@ jobs:
             # today's gate. Spell the gate arguments out explicitly instead of
             # trusting the workflow_dispatch defaults to carry over; do not
             # "simplify" this back to reading inputs.* unconditionally.
-            args="--tags fast --exclude needs-external,needs-dns --require security"
+            args="--exclude needs-external --require security"   # TEMP: full corpus, verifies 080/085 retry
           fi
           echo "run.sh $args"
           ./tests/integration/run.sh $args
