@@ -1,5 +1,21 @@
 # Java build tools — included when any JDK variant is enabled
 repo.maven.apache.org
+# Maven Central's OTHER published hostname, on the SAME Cloudflare addresses:
+#
+#   repo.maven.apache.org -> repo.apache.maven.org
+#                         -> repo.apache.maven.org.cdn.cloudflare.net
+#                         -> 104.18.18.12, 104.18.19.12
+#   repo1.maven.org       -> 104.18.18.12, 104.18.19.12
+#
+# Two names, one service, one address pair. Listing only the first is not
+# enough, and the reason is the same as for the rvm Fastly host in rvm.txt: the
+# ipset would be right either way (identical IPs), but the blocked-traffic
+# daemon self-heals by reverse-mapping a dropped packet's IP to a name and
+# matching THAT against this list. When the sniffed DNS map happens to hold
+# "repo1.maven.org" for the shared address, the match fails, the packet is
+# never admitted, and the run reports a domain that looks like it has no
+# business being there. Observed exactly that in a Phase 3 verification.
+repo1.maven.org
 plugins.gradle.org
 plugins-artifacts.gradle.org
 services.gradle.org
