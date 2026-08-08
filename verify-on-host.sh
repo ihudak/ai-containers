@@ -350,6 +350,28 @@ if SANDBOX_CONF="$RUBY_CONF" IMAGE_NAME=ai-sandbox-ruby "$REPO/build.sh" ai-sand
         printf '%s     %-38s %s\n' "$LOG_PREFIX" "  names resolved to $ip:" \
           "${names:-(none — the container never resolved this address)}"
       done
+
+      # WHICH FILE IN THE IMAGE KNOWS THIS NAME. Everything above establishes
+      # that a name was resolved and connected to; none of it says what asked.
+      # A hostname a program contacts is almost always a literal in that program
+      # or its config, so grepping the image for the string names the culprit
+      # directly — and grepping the IMAGE (not the host) is what makes the answer
+      # trustworthy: it is the same filesystem the connection came from.
+      #
+      # Bounded deliberately: a timeout, a handful of paths rather than /, and
+      # only the first few hits. This is a diagnostic on an already-failing
+      # entry, not something that should be able to hang the phase.
+      [[ "$what" =~ ^[0-9.]+$ ]] && continue      # bare IP: nothing to grep for
+      owner="$(docker exec "$cid" timeout 90 grep -rlsF "$what" \
+                 /usr/local /opt /etc /home /usr/lib/node_modules /usr/share \
+                 2>/dev/null | head -5)"
+      if [[ -n "$owner" ]]; then
+        sub "    files in the image containing this name:"
+        printf '%s\n' "$owner" | sed "s|^|$LOG_PREFIX       |"
+      else
+        sub "    no file under /usr/local /opt /etc /home /usr/share mentions this"
+        sub "    name — so nothing baked into the image asked for it by literal."
+      fi
     done <<< "$hard_blocked"
     sub "  ^ the NAME is reverse-mapped from the IP via the sniffed DNS map and can"
     sub "    be wrong on a shared CDN address; the IP and port above cannot. Confirm"
@@ -362,8 +384,26 @@ if SANDBOX_CONF="$RUBY_CONF" IMAGE_NAME=ai-sandbox-ruby "$REPO/build.sh" ai-sand
     # everything else the container looked up in the same window.
     if [[ -n "$dns_map_dump" ]]; then
       resolved="$(printf '%s\n' "$dns_map_dump" | awk '{print $2}' | sort -u)"
-      sub "every name this container resolved during the run ($(printf '%s\n' "$resolved" | wc -l | tr -d ' ')):"
-      printf '%s\n' "$resolved" | sed "s/^/$LOG_PREFIX     /"
+      # SPLIT BY ALLOWLIST MEMBERSHIP, because the raw list mixes two completely
+      # different populations and reading it as one is misleading. The firewall
+      # refresher resolves EVERY allowlisted domain every 60 seconds and makes no
+      # TCP connection at all, so most of this list is the allowlist itself, not
+      # evidence of traffic. A 49-name list once looked like a container talking
+      # to 49 hosts; 47 of them were simply the allowlist being re-resolved.
+      #
+      # The short list below is the one that matters: names this container looked
+      # up that it was never authorised to reach.
+      unlisted="$(comm -23 <(printf '%s\n' "$resolved") \
+                           <(printf '%s\n' "$baked_allow" | sed 's/[[:space:]]*$//' | sort -u))"
+      n_all="$(printf '%s\n' "$resolved" | grep -c . || true)"
+      n_un="$(printf '%s\n' "$unlisted" | grep -c . || true)"
+      sub "names resolved during the run: $n_all total, $n_un NOT allowlisted"
+      if [[ "$n_un" -gt 0 ]]; then
+        sub "  resolved but NOT allowlisted (what the container reached for uninvited):"
+        printf '%s\n' "$unlisted" | grep . | sed "s/^/$LOG_PREFIX       /"
+      fi
+      sub "  all $n_all (the rest are the allowlist itself, re-resolved every 60s):"
+      printf '%s\n' "$resolved" | sed "s/^/$LOG_PREFIX       /"
     else
       sub "the container's DNS map is empty or unreadable — cannot say what it resolved"
     fi
