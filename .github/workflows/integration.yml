@@ -80,7 +80,19 @@ jobs:
           # Parsed from the Dockerfile's own FROM line, not hardcoded: a
           # hardcoded tag keeps "succeeding" even after the real base image
           # changes, silently pre-warming the wrong image.
-          base_image="$(grep -m1 '^FROM' Dockerfile | awk '{print $2}')"
+          # Layout-tolerant, exactly like run.sh/lib.sh: ai-containers keeps the
+          # engine at the repo root, mgd-ai-containers keeps it in base/. This
+          # step hardcoded `Dockerfile` and so died before anything ran in the
+          # base/ layout — "grep: Dockerfile: No such file or directory". One
+          # workflow file must serve both repos or it drifts, which is the same
+          # reasoning that made run.sh resolve IT_REPO_DIR with a fallback.
+          dockerfile=Dockerfile
+          [ -f "$dockerfile" ] || dockerfile=base/Dockerfile
+          if [ ! -f "$dockerfile" ]; then
+            echo "::error::no Dockerfile at the repo root or in base/"
+            exit 1
+          fi
+          base_image="$(grep -m1 '^FROM' "$dockerfile" | awk '{print $2}')"
           # An ARG-substituted FROM (e.g. `FROM ${BASE_IMAGE}`) parses to the
           # LITERAL, unexpanded token — non-empty, so a plain -z check passes it
           # through, and `docker pull '${BASE_IMAGE}'` then fails three times and

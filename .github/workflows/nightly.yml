@@ -32,7 +32,19 @@ jobs:
       # diagnose before dismissing. Isolate the flake from the build.
       - name: Pull base image (with retry)
         run: |
-          img="$(grep -m1 '^FROM' Dockerfile | awk '{print $2}')"
+          # Layout-tolerant, exactly like run.sh/lib.sh: ai-containers keeps the
+          # engine at the repo root, mgd-ai-containers keeps it in base/. This
+          # step hardcoded `Dockerfile` and so died before anything ran in the
+          # base/ layout — "grep: Dockerfile: No such file or directory". One
+          # workflow file must serve both repos or it drifts, which is the same
+          # reasoning that made run.sh resolve IT_REPO_DIR with a fallback.
+          dockerfile=Dockerfile
+          [ -f "$dockerfile" ] || dockerfile=base/Dockerfile
+          if [ ! -f "$dockerfile" ]; then
+            echo "::error::no Dockerfile at the repo root or in base/"
+            exit 1
+          fi
+          img="$(grep -m1 '^FROM' "$dockerfile" | awk '{print $2}')"
           # An ARG-substituted FROM (e.g. `FROM ${BASE_IMAGE}`) parses to the
           # LITERAL, unexpanded token — non-empty, so a plain -z check passes it
           # through, and `docker pull '${BASE_IMAGE}'` then fails three times and
