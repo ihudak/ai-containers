@@ -42,7 +42,15 @@ if docker exec "$IT_CID" bash -c '
         p="${f#/proc/}"; p="${p%/cmdline}"
         [ "$p" = "$$" ] && continue
         [ "$p" = "$PPID" ] && continue
-        grep -q "capture-" "$f" 2>/dev/null && found="$found $p"
+        # NOTE: no apostrophes below — this whole block is a single-quoted
+        # bash -c string, and one would terminate it (caught by bash -n).
+        # "capture-" alone matches only the two wrapper SCRIPTS:
+        # capture-blocked-traffic.sh forks tshark as a child rather than
+        # exec-ing into it, so the sniffer cmdline never contains "capture-".
+        # A regression invoking tshark/tcpdump directly would evade a
+        # wrapper-name-only search while capturing exactly the traffic that
+        # open mode promises not to capture. Match the sniffers too.
+        grep -qE "capture-|tshark|tcpdump" "$f" 2>/dev/null && found="$found $p"
       done
       [ -n "$found" ] && { printf "%s\n" "$found"; exit 0; }
       exit 1' >/dev/null 2>&1; then

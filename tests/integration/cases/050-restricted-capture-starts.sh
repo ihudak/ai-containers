@@ -25,5 +25,12 @@ for f in blocked.log blocked-domains.txt blocked-ips.txt; do
   assert_file_exists "$IT_CID" "/workspace/.agent-blocked/$f"
 done
 assert_log_contains "$IT_CID" 'Blocked traffic capture started'
+
+# Restricted mode's own banner. 110/210/220 assert the discovery and open banners
+# by content; restricted had only tests/test-entrypoint-wiring.sh's structural
+# check that SOME boxed banner exists in its branch — which would still pass if
+# the text were swapped for another mode's. This is the mode whose banner carries
+# the DNS-tunnelling caveat, so wrong text here misinforms about a real limit.
+assert_log_contains "$IT_CID" 'DNS \(port 53\) is unrestricted'
 assert_log_contains "$IT_CID" 'self-healing: ON'
 it_finish
