@@ -433,7 +433,18 @@ req_violation=0
 for t in $req_tags; do
   hit=""
   # skipped_tags entries look like |<name>:<tag> <tag>…
-  printf '%s' "$skipped_tags" | tr '|' '\n' | while IFS= read -r entry; do
+  #
+  # `|| [[ -n "$entry" ]]` is LOAD-BEARING, not defensive noise. printf writes no
+  # trailing newline, so the final entry reaches `read` unterminated: read returns
+  # non-zero and a plain `while IFS= read -r entry` DISCARDS it. With two or more
+  # skips that merely lost the last one; with exactly ONE skip — the common CI
+  # case — it lost the only one, so --require saw nothing and the run exited 0
+  # while a required case had silently not run. That is precisely the failure this
+  # entire suite exists to prevent, inside the mechanism built to prevent it.
+  # Found by making the runner's own --require test discriminating: the previous
+  # version asserted rc != 0 on a corpus where other cases failed anyway, so it
+  # passed against a --require that did nothing.
+  printf '%s' "$skipped_tags" | tr '|' '\n' | while IFS= read -r entry || [[ -n "$entry" ]]; do
     [[ -n "$entry" ]] || continue
     ename="${entry%%:*}"; etags="${entry#*:}"
     list_intersects "$etags" "$t" && printf '%s\n' "$ename"

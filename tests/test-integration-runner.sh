@@ -113,10 +113,34 @@ has "$out" '080-theta.*SKIP.*no fixture' \
   || fail "a case-declared skip (exit 77) reports its own reason"
 
 # ── --require turns a skip inside the selected set into a failure ──────────────
+# The DISCRIMINATING form. An earlier version ran `--tags security --require
+# security` and asserted rc != 0 — but 060-zeta and 070-eta fail unconditionally
+# in that selection, so the run was red whether --require worked or not. The
+# assertion would have passed against a --require that did nothing at all.
+#
+# Select a set where the ONLY possible cause of failure is --require: 030-gamma
+# skips (needs netadmin, which IT_FORCE_CAPS withholds) and nothing else in the
+# selection can fail. Then run it twice, with and without the flag, and require
+# the exit codes to DIFFER. That is the only shape that isolates the flag.
+mkcase 035-passes "security fast" "docker" 'echo "PASS: passes"; exit 0'
+out_without="$(IT_FORCE_CAPS="docker" run_it --tags security --exclude needs-dns \
+                 --timeout 20 --tags security)"
+# Narrow to just the skipping case plus a passing one, so nothing else is red.
+mkcase 036-skips  "reqtest" "docker netadmin" 'echo "PASS: never runs"; exit 0'
+mkcase 037-passes "reqtest" "docker"          'echo "PASS: runs fine"; exit 0'
+no_flag="$(IT_FORCE_CAPS="docker" run_it --tags reqtest)"
+with_flag="$(IT_FORCE_CAPS="docker" run_it --tags reqtest --require reqtest)"
+rm -f "$CASES/035-passes.sh"
+
+[[ "$(rc_of "$no_flag")" == "0" ]] \
+  && pass "without --require, a skipped case does not fail the run" \
+  || fail "without --require, a skipped case does not fail the run (rc=$(rc_of "$no_flag"))"
+[[ "$(rc_of "$with_flag")" != "0" ]] \
+  && pass "with --require, the SAME skip fails the run (isolates the flag)" \
+  || fail "with --require, the SAME skip fails the run (rc=$(rc_of "$with_flag"))"
+rm -f "$CASES/036-skips.sh" "$CASES/037-passes.sh"
+
 out="$(IT_FORCE_CAPS="docker" run_it --tags security --require security)"
-[[ "$(rc_of "$out")" != "0" ]] \
-  && pass "--require security fails the run when a security case skipped" \
-  || fail "--require security fails the run when a security case skipped"
 has "$out" 'required tag .security.' \
   && pass "--require failure names the tag and the skipped cases" \
   || fail "--require failure names the tag and the skipped cases"
