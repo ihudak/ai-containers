@@ -75,4 +75,50 @@ SBLOCAL="$PROJ2/.ai-containers/sandbox.local.env"
 ! grep -q 'EXTRA_MOUNTS' "$PROJ2/.ai-containers/runme.sh"      && pass "EXTRA_MOUNTS not baked into runme.sh"     || fail "EXTRA_MOUNTS not baked into runme.sh"
 ! grep -q '^EXTRA_MOUNTS=' "$PROJ2/.ai-containers/sandbox.env" && pass "EXTRA_MOUNTS not in portable sandbox.env" || fail "EXTRA_MOUNTS not in portable sandbox.env"
 
+# A third project reusing the already-bootstrapped "default" group, with no extra
+# mounts either → group_init AND extra_mounts are both empty. sandbox.local.env must
+# still be written (previously it was skipped entirely in this case), and its header
+# must document the SANDBOX_MODE override as a commented example.
+mkdir -p "$HOME/.ai-containers/default"  # Simulate group being bootstrapped by PROJ
+PROJ3="$TMP/proj/plain"; mkdir -p "$PROJ3"; git -C "$PROJ3" init -q
+printf '%s\n\n\n\n\n\n\n\n\n\n\n' "$PROJ3" | bash "$SCRIPTS/project-init.sh" >/dev/null 2>&1
+SBLOCAL3="$PROJ3/.ai-containers/sandbox.local.env"
+[[ -f "$SBLOCAL3" ]] && pass "sandbox.local.env always written (no mounts, no group-init)" || fail "sandbox.local.env always written (no mounts, no group-init)"
+grep -q '^#SANDBOX_MODE=open' "$SBLOCAL3" && pass "sandbox.local.env documents SANDBOX_MODE example" || fail "sandbox.local.env documents SANDBOX_MODE example"
+grep -q 'restricted  firewall enabled' "$SBLOCAL3" && pass "sandbox.local.env documents restricted mode" || fail "sandbox.local.env documents restricted mode"
+! grep -q '^SANDBOX_MODE=' "$SBLOCAL3" && pass "SANDBOX_MODE stays commented (no live duplicate)" || fail "SANDBOX_MODE stays commented (no live duplicate)"
+! grep -q '^AI_CONTAINER_GROUP_INIT=' "$SBLOCAL3" && pass "no stray GROUP_INIT when not answered" || fail "no stray GROUP_INIT when not answered"
+! grep -q '^EXTRA_MOUNTS=' "$SBLOCAL3" && pass "no stray EXTRA_MOUNTS when not answered" || fail "no stray EXTRA_MOUNTS when not answered"
+
+# Regression test (final-review finding): re-running project-init.sh on an existing
+# project must back up rather than silently destroy hand-edited sandbox.local.env
+# content — nothing in it (REPOS, SANDBOX_WORKDIR, SANDBOX_MODE, ...) is ever re-prompted.
+printf 'REPOS="handedited:ro"\n' >> "$SBLOCAL3"
+printf '%s\n\n\n\n\n\n\n\n\n\n\n' "$PROJ3" | bash "$SCRIPTS/project-init.sh" >/dev/null 2>&1
+BACKUP3="$PROJ3/.ai-containers/sandbox.local.env.pre-init"
+[[ -f "$BACKUP3" ]] && pass "sandbox.local.env backed up before re-init overwrite" || fail "sandbox.local.env backed up before re-init overwrite"
+grep -q '^REPOS="handedited:ro"' "$BACKUP3" && pass "backup preserves hand-edited content" || fail "backup preserves hand-edited content"
+! grep -q '^REPOS="handedited:ro"' "$SBLOCAL3" && pass "fresh sandbox.local.env does not carry stale hand-edit forward" || fail "fresh sandbox.local.env does not carry stale hand-edit forward"
+# Assert the EFFECT (git actually ignores the file), not the literal pattern
+# string. The pattern is now a glob — `sandbox.local.env.pre-init*` — because
+# repeated re-inits produce timestamped backups, and a `grep -qxF` for the exact
+# old string failed against a strictly BROADER pattern that ignores strictly
+# more. A test that breaks when the code gets more correct is testing the wrong
+# thing.
+(
+  cd "$PROJ3" || exit 1
+  : > .ai-containers/sandbox.local.env.pre-init
+  : > ".ai-containers/sandbox.local.env.pre-init.20260101T000000Z"
+  : > .ai-containers/runme.sh.pre-migrate
+)
+for f in sandbox.local.env.pre-init \
+         sandbox.local.env.pre-init.20260101T000000Z \
+         runme.sh.pre-migrate; do
+  if (cd "$PROJ3" && git check-ignore -q ".ai-containers/$f"); then
+    pass "git ignores $f"
+  else
+    fail "git ignores $f"
+  fi
+done
+
 [[ "$fails" -eq 0 ]] && { echo "ALL PASS"; exit 0; } || { echo "$fails FAILED"; exit 1; }

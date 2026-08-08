@@ -24,16 +24,20 @@ fi
 
 log(){ printf '[agent-tools-reconcile] %s\n' "$*"; }
 
-# npm prefix comes from the baked ~/.npmrc; uv is pointed at the group-mounted tool dir.
+# uv is pointed at the group-mounted tool dir. npm gets NO env-var/.npmrc prefix here
+# (see Dockerfile) — install_npm passes --prefix per invocation instead, which nvm's
+# nvm_die_on_prefix does not object to (it only inspects .npmrc/$PREFIX/
+# $NPM_CONFIG_PREFIX, never a command's own flags).
 export UV_TOOL_DIR="$home_root/uv"
 export UV_TOOL_BIN_DIR="$home_root/uv/bin"
-npm_bin="$home_root/npm/bin"
+npm_prefix="$home_root/npm"
+npm_bin="$npm_prefix/bin"
 
 install_npm() {   # $1=binary  $2=package
   local bin="$1" pkg="$2"
   if [[ -x "$npm_bin/$bin" ]]; then log "$bin already present"; return 0; fi
   log "installing $pkg…"
-  npm install -g "$pkg" || log "FAILED: npm install -g $pkg (skipped)"
+  npm install -g --prefix "$npm_prefix" "$pkg" || log "FAILED: npm install -g --prefix $npm_prefix $pkg (skipped)"
 }
 
 install_uv() {    # $1=binary  $2=package

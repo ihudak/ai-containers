@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 # verify-on-host.sh — run the checks that CANNOT run inside a sandbox container
-# (they need a real Docker daemon). Written for macOS + Colima on Apple silicon.
+# (they need a real Docker daemon).
+#
+# PLATFORM-ADAPTIVE HOST ENTRY POINT, not a macOS one. "Host" means "a machine
+# with a real Docker daemon", as opposed to inside the dev container. The same
+# command runs on macOS + Colima and on a Linux workstation with native Docker;
+# the only platform-specific part is the preflight hints below. There is
+# deliberately no verify-on-linux-host.sh — a second entry point would
+# reintroduce, at the wrapper level, the duplication this delegation removes.
 #
 #   cd ~/dev/ai-tools/ai-containers            # upstream: engine at the repo root
 #   cd ~/dev/dt-utils/mgd-ai-containers/base   # mgd: engine in base/, tests one up
@@ -10,12 +17,23 @@
 #
 #   PHASES=3 bash ./verify-on-host.sh          # just the Ruby phase
 #
+#   IT_EXTRA_ARGS='--tags fast' PHASES=4 bash ./verify-on-host.sh
+#                                              # extra flags for Phase 4's runner
+#
+# IT_EXTRA_ARGS is forwarded verbatim to tests/integration/run.sh in Phase 4, on
+# top of the --require security this script always passes. Phase 4 deliberately
+# runs the WHOLE corpus by default (a human running locally wants full coverage,
+# including the slow and needs-dns tiers CI excludes on cost), so this is the
+# hook for narrowing that when iterating — e.g. --tags fast, or -v.
+#
 # Phases (each independent; a later phase still runs if an earlier one fails):
-#   0  environment sanity (Colima up, buildx, disk)
+#   0  environment sanity (daemon reachable, buildx, disk; Colima status on macOS)
 #   1  BLOCKING GATE: all six agent-tier tools install BEHIND the restricted firewall
 #   2  db-clients (pg+mysql+mongo) + imagemagick + wkhtmltopdf actually BUILD on noble
 #   3  Ruby runtime reconcile: rvm bootstraps, compiles, persists, and resolves
 #      in a NON-login shell
+#   4  the runtime integration corpus — delegated in full to
+#      tests/integration/run.sh. No test logic lives here.
 #
 # Nothing here touches your real container groups, your images, or your projects:
 # every phase uses a throwaway image tag and a throwaway group directory.
@@ -43,7 +61,7 @@ TESTS_DIR="$REPO/tests"
 # Phase selection, so iterating on one failing phase does not re-pay for the others
 # (Phase 1 alone runs a full six-tool network install). Phase 0 is always cheap and
 # always runs.  PHASES="3" bash verify-on-host.sh
-PHASES="${PHASES:-1 2 3}"
+PHASES="${PHASES:-1 2 3 4}"
 want_phase() { case " $PHASES " in (*" $1 "*) return 0 ;; (*) return 1 ;; esac; }
 
 # ── Phase 0: environment ────────────────────────────────────────────────────────
@@ -350,6 +368,47 @@ if SANDBOX_CONF="$RUBY_CONF" IMAGE_NAME=ai-sandbox-ruby "$REPO/build.sh" ai-sand
 else
   sub "BUILD FAILED — last 40 lines:"
   tail -40 /tmp/ruby-build.log | sed "s/^/$LOG_PREFIX     /"
+fi
+fi
+
+# ── Phase 4: the runtime integration corpus ─────────────────────────────────────
+# Delegation, not duplication. This script owns three jobs and no test logic: the
+# environment banner (Phase 0), a sensible default selection (everything — a
+# human running locally wants full coverage), and platform-specific remediation
+# hints on failure. The cases themselves live in tests/integration/cases/ and are
+# the SAME ones CI runs; CI simply selects a cheaper subset by tag.
+#
+# The old Phase 3 is why this matters: it kept bind-mounting ~/.rvm for two full
+# rounds after the volume fix landed, because it re-implemented what sandbox.sh
+# does instead of calling it. A verifier that drifts from what it verifies is
+# worse than no verifier.
+if want_phase 4; then
+say "PHASE 4 — runtime integration corpus (tests/integration/run.sh)"
+IT_RUNNER="$TESTS_DIR/integration/run.sh"
+if [[ ! -x "$IT_RUNNER" && ! -f "$IT_RUNNER" ]]; then
+  sub "SKIP: $IT_RUNNER not found — nothing to delegate to."
+else
+  sub "capabilities detected on this host:"
+  bash "$IT_RUNNER" --list-caps 2>&1 | sed "s/^/$LOG_PREFIX     /"
+  # No --tags: a human running this locally wants the whole corpus, including
+  # the slow and needs-dns cases CI excludes on cost.
+  bash "$IT_RUNNER" --require security ${IT_EXTRA_ARGS:-} 2>&1 | sed "s/^/$LOG_PREFIX   /"
+  it_rc="${PIPESTATUS[0]:-1}"
+  sub "PHASE 4 exit: $it_rc"
+  if [[ "$it_rc" -ne 0 ]]; then
+    sub "remediation hints for this platform:"
+    if command -v colima >/dev/null 2>&1; then
+      sub "  * ipset/NFLOG need the Colima VM's kernel modules. If the security"
+      sub "    cases report 'requires: netadmin', restart with more headroom:"
+      sub "      colima stop && colima start --cpu 6 --memory 12 --disk 120"
+      sub "  * a bind-mount source outside \$HOME is NOT shared with the VM."
+    else
+      sub "  * ipset/NFLOG need ip_set and nfnetlink_log on this kernel:"
+      sub "      sudo modprobe ip_set nfnetlink_log"
+      sub "  * a rootless daemon cannot grant NET_ADMIN; the security cases will"
+      sub "    report 'requires: netadmin' rather than silently passing."
+    fi
+  fi
 fi
 fi
 

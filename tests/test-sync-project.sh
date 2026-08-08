@@ -367,6 +367,20 @@ done
   && pass ".ai-containers/.gitignore still covers all generated/output patterns after sync" \
   || fail ".ai-containers/.gitignore still covers all generated/output patterns after sync"
 
+# Regression: a .gitignore whose last line lacks a trailing newline must not have
+# the first appended pattern glued onto it (real projects hit this — the file's
+# last line and the first appended pattern merged into one unmatchable line,
+# e.g. "/projects.conf.agent-blocked/" instead of two separate lines).
+NOEOL_DEST="$TMP/noeol-proj/.ai-containers"; mkdir -p "$NOEOL_DEST"
+printf '/projects.conf' > "$NOEOL_DEST/.gitignore"   # deliberately no trailing newline
+ensure_inner_gitignore "$NOEOL_DEST" >/dev/null
+grep -qxF '/projects.conf' "$NOEOL_DEST/.gitignore" \
+  && pass "no-trailing-newline .gitignore: pre-existing line stays intact, unglued" \
+  || fail "no-trailing-newline .gitignore: pre-existing line stays intact, unglued"
+grep -qxF '.agent-blocked/' "$NOEOL_DEST/.gitignore" \
+  && pass "no-trailing-newline .gitignore: first appended pattern lands as its own line" \
+  || fail "no-trailing-newline .gitignore: first appended pattern lands as its own line"
+
 # ── 8. `./sync-to-projects.sh <path>` supports an unregistered single project ──
 # Verified in the code: when $# -ge 1 the main block resolves $1 and calls
 # sync_project directly, WITHOUT ever reading projects.conf. Exercise the actual

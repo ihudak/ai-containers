@@ -1,0 +1,177 @@
+name: Nightly
+
+# Non-blocking but LOUD. Everything too slow, too external, or too expensive for
+# the PR gate runs here — so a case excluded on cost is still a case that RUNS.
+#
+# This workflow is not a nicety. The PR gate selects `--tags fast`, which today
+# excludes 3 of the 16 integration cases: 120-discovery-collects (slow), and
+# 080/085-selfheal-* (needs-dns). All three are verified, but until this file
+# exists they are verified ONCE and never again — any later change to
+# capture-agent-destinations.sh, its tcpdump filter, or the self-healing path in
+# capture-blocked-traffic.sh would be unguarded. "Excluded on cost" quietly
+# becoming "never checked" is the same failure this whole suite exists to close,
+# relocated from a case to a schedule.
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  integration-full:
+    name: Integration — everything
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+
+      # Same rationale as integration.yml: `docker build`'s first layer is a pull
+      # from Docker Hub, and Hub timing out reads as a red build someone has to
+      # diagnose before dismissing. Isolate the flake from the build.
+      - name: Pull base image (with retry)
+        run: |
+          img="$(grep -m1 '^FROM' Dockerfile | awk '{print $2}')"
+          # An ARG-substituted FROM (e.g. `FROM ${BASE_IMAGE}`) parses to the
+          # LITERAL, unexpanded token — non-empty, so a plain -z check passes it
+          # through, and `docker pull '${BASE_IMAGE}'` then fails three times and
+          # gets reported as "a REGISTRY problem", which is exactly wrong. Refuse
+          # a value we cannot pull rather than misattributing the failure.
+          case "$img" in
+            *'$'*|*'{'*)
+              echo "::error::the Dockerfile's FROM line is variable-substituted ($img) — this step cannot resolve it; teach it the ARG default or drop the pre-pull"
+              exit 1
+              ;;
+          esac
+          if [ -z "$img" ]; then
+            echo "::error::could not parse a base image from the Dockerfile's FROM line"
+            exit 1
+          fi
+          for i in 1 2 3; do
+            docker pull "$img" && exit 0
+            echo "pull attempt $i failed; retrying in 10s"
+            sleep 10
+          done
+          echo "::error::could not pull $img after 3 attempts — this is a REGISTRY problem, not a test failure"
+          exit 1
+
+      - name: Detected capabilities
+        run: ./tests/integration/run.sh --list-caps
+
+      - name: Case corpus
+        run: ./tests/integration/run.sh --list
+
+      # No --tags: the whole corpus, including slow and needs-dns.
+      # --require security still applies, so a security case that cannot run here
+      # fails the job rather than quietly disappearing from the count.
+      - name: Run the whole corpus
+        run: ./tests/integration/run.sh --require security
+
+      - name: Collect diagnostics
+        if: failure()
+        run: |
+          mkdir -p /tmp/it-diag
+          cp -r "$HOME/.cache/ai-containers-it" /tmp/it-diag/ 2>/dev/null || true
+          docker ps -a --filter 'label=ai-containers.it-run' > /tmp/it-diag/containers.txt 2>&1 || true
+
+      - name: Upload diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-diagnostics-${{ github.run_id }}
+          path: /tmp/it-diag
+          retention-days: 7
+
+      - name: Sweep
+        if: always()
+        run: |
+          docker ps -aq  --filter 'label=ai-containers.it-run' | xargs -r docker rm -f
+          docker network ls -q --filter 'label=ai-containers.it-run' | xargs -r docker network rm
+
+  allowlist-health:
+    name: Allowlist fragment health
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      # Fragments rot silently. A domain that stops resolving stays in the file
+      # forever, and the only symptom is a tool that mysteriously cannot install
+      # behind the firewall — diagnosed, if ever, as "the network is flaky".
+      #
+      # NOT on the PR gate: it depends on the public internet, so a DNS blip must
+      # not block unrelated work. Here a red run is a prompt to look.
+      #
+      # SCOPE — allowlist-domains.d ONLY, deliberately. An earlier version also
+      # checked allowlist-proxy-domains.d by stripping the "*." and resolving the
+      # parent, which is a category error: refresh-ipset-allowlist.sh never reads
+      # the proxy file at all (grep it — zero references). Those entries are
+      # SUFFIX PATTERNS consumed by matches_wildcard_domain() in
+      # capture-blocked-traffic.sh, and an apex like dynalabs.io is legitimately
+      # NXDOMAIN while *.dynalabs.io hosts resolve fine. That version reported 3
+      # false alarms out of 7, and a health check that cries wolf gets ignored —
+      # which fails the same way as a check that never fires.
+      - name: Every resolved domain still resolves
+        run: |
+          command -v dig >/dev/null || sudo apt-get install -y -qq bind9-dnsutils
+          # A job that scanned NOTHING must not report success. Without this, a
+          # renamed directory or a moved fragment set makes the glob match zero
+          # files, every loop below is skipped, rc stays 0, and the job goes green
+          # having checked nothing — the same "we did not look" false green this
+          # suite exists to eliminate, relocated into CI plumbing.
+          n_files=$(ls -1 allowlist-domains.d/*.txt 2>/dev/null | wc -l)
+          if [ "$n_files" -eq 0 ]; then
+            echo "::error::no fragments found in allowlist-domains.d/ — nothing was checked"
+            exit 1
+          fi
+          echo "scanning $n_files fragment file(s)"
+          rc=0
+          n_hosts=0
+          for f in allowlist-domains.d/*.txt; do
+            [ -f "$f" ] || continue
+            while IFS= read -r host; do
+              case "$host" in ''|'#'*) continue ;; esac
+              # Docker injects this via --add-host=host.docker.internal:host-gateway,
+              # so it resolves inside a container and nowhere else. Not rot.
+              [ "$host" = "host.docker.internal" ] && continue
+              # NXDOMAIN means the name is GONE. A name that exists without an A
+              # record at the apex is not rot, and getent cannot tell the two
+              # apart — which is why this uses dig's status rather than getent.
+              n_hosts=$((n_hosts + 1))
+              if dig +noall +comment "$host" 2>/dev/null | grep -q 'status: NXDOMAIN'; then
+                echo "NXDOMAIN: $host  ($f)"; rc=1
+              fi
+            done < "$f"
+          done
+          # Same reasoning one level down: files present but every one empty or
+          # comments-only would also mean nothing was actually resolved.
+          if [ "$n_hosts" -eq 0 ]; then
+            echo "::error::found $n_files fragment file(s) but zero hostnames — nothing was checked"
+            exit 1
+          fi
+          echo "checked $n_hosts hostname(s)"
+          exit $rc
+
+  packages:
+    name: Package installs (real allowlist, per-component images)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+
+      # verify-on-host.sh Phases 1-3: the agent-tier tool installs, the
+      # db-clients/imagemagick/wkhtmltopdf native builds, and the Ruby/rvm
+      # bootstrap. These are REAL installs through the REAL allowlist, which is
+      # why they are nightly and not on the PR gate.
+      #
+      # This job is the reason Task 10 could justify keeping those phases alive
+      # rather than deleting them to satisfy a "no test logic" criterion. Without
+      # it they are reachable only by a human remembering to run the script by
+      # hand — which is the "green because we did not look" state this suite
+      # exists to prevent, just relocated from a case to a habit.
+      #
+      # Phase 4 is deliberately EXCLUDED: integration-full above already runs the
+      # whole corpus, and running it twice per night buys nothing.
+      - name: Phases 1-3
+        run: PHASES="1 2 3" bash ./verify-on-host.sh

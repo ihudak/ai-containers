@@ -250,11 +250,34 @@ case "$mode" in
     setup_sandbox_user
     chown_workspace_root
 
+    # This is the only mode combining unrestricted egress with a pcap that
+    # persists on the host after the container exits — say so plainly, the
+    # same way restricted/open state their own risk, so a user cannot land
+    # here without knowing traffic is both unfiltered and being recorded.
+    printf '╔══════════════════════════════════════════════════════════════════╗\n'
+    printf '║  DISCOVERY MODE: outbound network is UNRESTRICTED (no firewall,  ║\n'
+    printf '║  no allowlist). ALL traffic is being captured to a pcap that     ║\n'
+    printf '║  persists on the host after this container exits — a pcap can    ║\n'
+    printf '║  contain sensitive material from this session.                   ║\n'
+    printf '╚══════════════════════════════════════════════════════════════════╝\n'
+
     # Run the interactive shell as the sandbox user so that files created
     # during discovery (e.g. agent sessions in ~/.copilot, ~/.kiro, ~/.config/gh)
     # are owned by the sandbox UID/GID — not root. This prevents permission
     # errors when the container is later run in restricted mode.
-    # NET_RAW is kept (not dropped) so the sandbox user can run tcpdump if needed.
+    # The --drop below names only cap_net_admin, but the agent shell ends up with
+    # NO capabilities at all: capsh --user= setuids from root, and the kernel
+    # clears the permitted and effective sets on that transition unless
+    # PR_SET_KEEPCAPS is set (capsh --keep=1, which is not used here). So
+    # --drop=cap_net_admin and --drop=cap_net_admin,cap_net_raw are equivalent.
+    #
+    # This comment used to claim "NET_RAW is kept so the sandbox user can run
+    # tcpdump if needed". That never worked, and keeping it would be the wrong
+    # fix: the pcap daemon is started as ROOT at line 203, before the exec below,
+    # so it retains its own capabilities and needs nothing from the agent shell.
+    # Granting the agent raw-socket access to satisfy a comment would widen its
+    # capability surface for a convenience nobody has asked for, in a mode that
+    # already captures everything automatically. Case 230 asserts the drop.
     chown_rvm_root
     run_ruby_reconcile
     link_default_ruby

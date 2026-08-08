@@ -67,17 +67,28 @@ later is a filter change, not a port.
 
 **One image per run.** Every firewall knob is already runtime-overridable:
 `ALLOWLIST_DOMAINS_FILE`, `ALLOWLIST_PROXY_DOMAINS_FILE`, `ALLOWLIST_CIDRS_FILE`,
-`ALLOWLIST_IPV4_SET`, `DEV_CONTAINER_MODE`, `SELF_HEALING_ENABLED`, `NFLOG_GROUP`,
+`ALLOWLIST_IPV4_SET`, `DEV_CONTAINER_MODE`, `SELF_HEALING_ENABLED`,
 `BLOCKED_CAPTURE_DIR`, `DISCOVERY_CAPTURE_DIR`. A scenario is therefore *env vars +
-a bind-mounted synthetic allowlist* — seconds, not a rebuild. The image is built
+a bind-mounted synthetic allowlist* — seconds, not a rebuild.
+(`NFLOG_GROUP` is *not* among them: `capture-blocked-traffic.sh` reads it, but
+`entrypoint.sh:159` hardcodes `--nflog-group 100` in the iptables rule, so
+overriding it would silently detach the watcher from the rule it reads.) The image is built
 from a minimal `sandbox.conf` (all optional components OFF).
 
 **Sidecar destinations, not the real internet.** A controllable responder runs on a
 user-defined Docker network using the sandbox image itself
-(`--entrypoint python3 … -m http.server`), so no extra image is pulled. Its IP goes
-into — or is omitted from — the synthetic allowlist. "Blocked" and "allowed" become
-deterministic and offline, so the security cases carry no `needs-external` tag and
-run on every PR.
+(`--entrypoint node … -e '<http server>'`), so no extra image is pulled. Its IP
+goes into — or is omitted from — the synthetic allowlist. "Blocked" and "allowed"
+become deterministic and offline, so the security cases carry no `needs-external`
+tag and run on every PR.
+
+**`node`, not `python3`** — and not for the reason first assumed. The CI probe
+found `python3` present even in a minimal image (pyenv installs unconditionally;
+the agents need it), so the original wording would have worked. But the probe only
+proved `python3` *resolves*: `command -v` finds the pyenv shim without ever
+executing it, and a shim with no configured version exits non-zero when invoked.
+It proved `node` *runs* (`node --version` → v24.19.0). Proven-to-run beats
+proven-to-resolve for a dependency every network case rests on.
 
 **`verify-on-host.sh` becomes a thin, platform-adaptive host entry point** — *not* a
 macOS one. "Host" means "a machine with a real Docker daemon", as opposed to inside
@@ -186,7 +197,14 @@ with every existing test green.
 | Case | Asserts | Tags |
 |---|---|---|
 | `080-admits-wildcard` | dnsmasq sidecar + `*.wild.test` in proxy-domains → first packet dropped and logged, then auto-allowed and reachable | security, needs-dns |
-| `085-disabled-stays-blocked` | `SELF_HEALING_ENABLED=0` → stays blocked, recorded as a hard block | security, fast |
+| `085-disabled-stays-blocked` | `SELF_HEALING_ENABLED=0` → stays blocked, recorded as a hard block | security, **needs-dns** |
+
+`085` cannot be `fast`. Self-healing is domain-mediated: `log_blocked` looks the
+blocked IP up in a map built by sniffing real port-53 *responses*. `--add-host`
+generates no DNS traffic, so with no resolver the map stays empty and
+`SELF_HEALING_ENABLED=0` and `=1` produce byte-identical output — the case would
+assert that a disabled feature does nothing, in a configuration where the enabled
+feature also does nothing.
 
 ### Discovery
 
@@ -292,11 +310,18 @@ immediately rather than after three increments of investment.
 1. `run.sh` runs unchanged on macOS, Linux and GitHub Actions, selecting by tag.
 2. All fifteen increment-1 cases pass in a full local run (`run.sh` with no
    filters) on both Linux and macOS.
-3. The CI-selected subset — the 13 `fast` cases, `needs-dns` and `slow`
+3. The CI-selected subset — the 13 `fast` cases (of 16 total: `120` is `slow`,
+   `080`/`085` are `needs-dns`), with `needs-dns` and `slow`
    excluded by deliberate selection — passes on Linux CI, or fails loudly with a
    named unmet requirement. No selected case ever skips silently.
 4. Each security case has been demonstrated failing against its known-bad
    configuration.
 5. `tests.yml` is a required check on both repos.
-6. `verify-on-host.sh` contains no test logic of its own — only a platform-adaptive host preflight
-   and a call into the shared runner.
+6. `verify-on-host.sh` contains no **network-mode** test logic of its own — only
+   a platform-adaptive host preflight and a call into the shared runner.
+   Rescoped from the original "no test logic of its own": Phases 1-3 are the only
+   coverage of agent-tier tool installs, native-package builds and the Ruby/rvm
+   bootstrap, and the packages tier that would absorb them is explicitly out of
+   scope for this increment. Deleting them to satisfy a criterion would be
+   precisely the "green because we did not look" failure this suite exists to
+   prevent. Full criterion 6 lands with that tier.

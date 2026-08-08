@@ -1,6 +1,39 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# ═══════════════════════════════════════════════════════════════════════════
+# KNOWN-BAD FIXTURE #1 of 2 — BUG: STARTUP DEATH (grep|grep under set -e).
+#
+# Deliberately reverted, kept ONLY so
+# tests/integration/cases/060-restricted-empty-allowlist-still-captures.sh can
+# be demonstrated FAILING against a real pre-fix daemon (real tshark, real
+# NFLOG, real NET_ADMIN — not the hermetic fake tshark that
+# tests/test-blocked-capture.sh uses). Do NOT "fix" this file: fixing it
+# defeats its only purpose. Do NOT let this file drift from
+# ../../../capture-blocked-traffic.sh except in the one function called out
+# below — its evidentiary value depends on differing from the shipped script
+# in exactly that one respect.
+#
+# This is a byte-for-byte copy of capture-blocked-traffic.sh with ONLY
+# strip_allowlist() reverted to the original grep|grep|sed pipeline (and its
+# two call sites adapted to match) — the construct that actually caused the
+# ORIGINAL outage this whole capture tier (040/050/060) exists to catch. With
+# a comments-only allowlist, this daemon dies under `set -e` BEFORE
+# init_output_files ever runs: no blocked.log, no blocked-domains.txt, no
+# blocked-ips.txt, no watcher at all. See the KNOWN-BAD block below for the
+# mechanism.
+#
+# NOT to be confused with its sibling,
+# capture-blocked-traffic.tab-separator-bug.sh (used by case 040) — that one
+# is a COMPLETELY DIFFERENT, LATER bug: its daemon starts and announces itself
+# FINE, creates all three output files FINE, and then silently drops every
+# blocked packet's RECORD due to a tab/IFS-whitespace field-separator defect
+# in the read loops, unrelated to allowlist parsing. Two distinct bugs, two
+# distinct fixtures — do not consolidate them into one "the daemon is broken"
+# fixture; each demonstrates a different failure a different case exists to
+# catch.
+# ═══════════════════════════════════════════════════════════════════════════
+
 # Background daemon: captures outbound traffic that is blocked in restricted mode.
 # Must be started as a root process before exec capsh so it retains CAP_NET_RAW.
 # Reads blocked packets via tshark on the NFLOG netlink group that entrypoint.sh
@@ -43,39 +76,54 @@ blocked_ips="$capture_dir/blocked-ips.txt"
 mkdir -p "$capture_dir"
 : > "$dns_map"
 
-# Build a flat list of allowlisted domains (comments and blanks stripped) for
-# fast grep lookups in the self-healing path.
+# ═══════════════════════════════════════════════════════════════════════════
+# KNOWN-BAD: this is the ORIGINAL construct, deliberately reintroduced here.
+# The shipped capture-blocked-traffic.sh replaced this whole block with a
+# single awk pass specifically BECAUSE of the bug reproduced below. Do not
+# "fix" it — see the file banner.
 #
-# ONE awk, not `grep -v … | grep -v … | sed`. This script runs `set -euo pipefail`,
-# and the old pipeline's second grep exits 1 when the file has no non-comment,
-# non-blank line — which pipefail propagated and `set -e` turned into a SILENT death
-# of the whole daemon, ~150 lines before init_output_files. The effect was severe and
-# invisible: the firewall still dropped traffic, but nothing was logged, no
-# blocked-domains.txt was written, and self-healing never ran, so dynamic CDN IPs
-# behind an allowlisted wildcard stopped being admitted. An empty allowlist is a
-# perfectly legal configuration (the proxy-domains file is comments-only whenever no
-# proxy-fragment component is enabled), so it must not be fatal. awk exits 0 whether
-# or not it prints anything.
-strip_allowlist() {   # $1 = source file, $2 = destination cache
-  if [[ -f "$1" ]]; then
-    awk '!/^[[:space:]]*#/ && !/^[[:space:]]*$/ {
-           gsub(/^[[:space:]]+|[[:space:]]+$/, ""); print
-         }' "$1" > "$2"
-  else
-    : > "$2"
-  fi
-}
-
+# Under `set -euo pipefail`, `grep -v PATTERN FILE` exits 1 (not an error —
+# just "no lines matched") whenever FILE has no line matching PATTERN to
+# invert, i.e. whenever every line already fails PATTERN. The SECOND grep in
+# this pipeline (`grep -v '^[[:space:]]*$'`, dropping blank lines) exits 1
+# exactly when its input — already comment-stripped by the first grep — has
+# no non-blank line left, which is precisely a comments-only allowlist file.
+# `pipefail` propagates that exit 1 as the pipeline's status, and `set -e`
+# then kills this entire script on the spot — ~150 lines before
+# init_output_files ever runs. Nothing is logged, no blocked.log, no
+# blocked-domains.txt, no NFLOG watcher, and no self-healing, while the
+# firewall keeps dropping traffic just as correctly and silently as before.
+#
+# A comments-only allowlist is a LEGAL configuration: allowlist-domains.txt
+# and allowlist-proxy-domains.txt are nothing but their header comments
+# whenever the corresponding component/fragment is OFF, which is exactly the
+# case tests/integration/cases/060-*.sh drives.
+# ═══════════════════════════════════════════════════════════════════════════
 allowed_domains_cache="$internal_dir/allowed-domains-cache"
-strip_allowlist "$domains_file" "$allowed_domains_cache"
+if [[ -f "$domains_file" ]]; then
+  grep -v '^[[:space:]]*#' "$domains_file" \
+    | grep -v '^[[:space:]]*$' \
+    | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' > "$allowed_domains_cache"
+else
+  : > "$allowed_domains_cache"
+fi
 
 # Build a list of wildcard domain patterns from the proxy-domains file.
 # Each line like "*.example.com" becomes a suffix match so that
 # "anything.example.com" or "deep.sub.example.com" is auto-allowed.
-# This is the one that actually fired: with every proxy-fragment component OFF the
-# generated allowlist-proxy-domains.txt is nothing but its two header comments.
+# KNOWN-BAD — see the block comment above allowed_domains_cache. This is the
+# call site that actually fired in the original outage: with every
+# proxy-fragment component OFF, the generated allowlist-proxy-domains.txt is
+# nothing but its two header comments, so this second grep is the one that
+# exits 1 and kills the script.
 wildcard_patterns_cache="$internal_dir/wildcard-patterns-cache"
-strip_allowlist "$proxy_domains_file" "$wildcard_patterns_cache"
+if [[ -f "$proxy_domains_file" ]]; then
+  grep -v '^[[:space:]]*#' "$proxy_domains_file" \
+    | grep -v '^[[:space:]]*$' \
+    | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' > "$wildcard_patterns_cache"
+else
+  : > "$wildcard_patterns_cache"
+fi
 
 init_output_files() {
   if [[ ! -f "$blocked_domains" ]]; then
@@ -157,21 +205,13 @@ log_blocked() {
 
 start_dns_map_builder() {
   # Captures DNS responses and builds a live IP → FQDN map.
-  #
-  # Field separator is "|", NOT tshark's default tab — see start_blocked_watcher
-  # below for the full explanation of why tab is unusable with `read` (the
-  # same `-E separator=`/IFS pairing is used there). It bites here too: an
-  # A-only response leaves dns.aaaa empty,
-  # an AAAA-only response leaves dns.a empty, and either shape is exactly the
-  # "one field missing" case that a tab/IFS-whitespace read collapses into
-  # the wrong variable, silently corrupting the self-healing DNS map.
   (
     tshark -i any -n -l \
       -f "port 53" \
       -Y "dns.flags.response == 1 and (dns.a or dns.aaaa)" \
-      -T fields -E "separator=|" -e dns.resp.name -e dns.a -e dns.aaaa \
+      -T fields -e dns.resp.name -e dns.a -e dns.aaaa \
       2>"$capture_dir/tshark-dns-errors.log" | \
-    while IFS='|' read -r raw_name a_list aaaa_list; do
+    while IFS=$'\t' read -r raw_name a_list aaaa_list; do
       # dns.resp.name can return comma-separated duplicates; take the first.
       local name="${raw_name%%,*}"
       [[ -z "$name" ]] && continue
@@ -213,28 +253,11 @@ start_blocked_watcher() {
   #
   # Both ip.dst (IPv4) and ipv6.dst (IPv6) are captured so blocked IPv6
   # destinations are logged and self-healed just like IPv4 ones.
-  #
-  # Field separator is "|", NOT tshark's default tab. Tab is IFS WHITESPACE
-  # (with space and newline), and bash's `read` COLLAPSES RUNS of IFS
-  # whitespace into a single delimiter and strips it from the line's edges.
-  # ipv6.dst is ALWAYS empty for an IPv4 packet (and ip.dst always empty for
-  # an IPv6 one), so tshark's real tab-separated output for a blocked IPv4
-  # TCP packet is shaped like "172.18.0.2\t\t8080\t" — read with
-  # IFS=$'\t' collapses the doubled tab into ONE delimiter and drops the
-  # trailing one, yielding dst4=172.18.0.2 dst6=8080 (the PORT, misplaced)
-  # tcp_port="" udp_port="". The next line's `[[ -z "$dst" || -z "$port" ]]
-  # && continue` then silently discarded EVERY blocked packet, always — this
-  # shipped and was only found by tests/integration/cases/040-*.sh asserting
-  # a real row, not by any check of whether the daemon merely started. "|"
-  # cannot occur in an IP literal, a port number, or a DNS label, so it is
-  # not IFS whitespace and empty fields are preserved as empty positions
-  # instead of being collapsed away. Do NOT revert this to a tab separator —
-  # it looks like a harmless cosmetic choice and is actually load-bearing.
   (
     tshark -i "nflog:$nflog_group" -l -n \
-      -T fields -E "separator=|" -e ip.dst -e ipv6.dst -e tcp.dstport -e udp.dstport \
+      -T fields -e ip.dst -e ipv6.dst -e tcp.dstport -e udp.dstport \
       2>"$capture_dir/tshark-nflog-errors.log" | \
-    while IFS='|' read -r dst4 dst6 tcp_port udp_port; do
+    while IFS=$'\t' read -r dst4 dst6 tcp_port udp_port; do
       local dst="${dst4:-$dst6}"
       local port="${tcp_port:-$udp_port}"
       [[ -z "$dst" || -z "$port" ]] && continue
