@@ -282,8 +282,42 @@ if SANDBOX_CONF="$RUBY_CONF" IMAGE_NAME=ai-sandbox-ruby "$REPO/build.sh" ai-sand
   self_healed="$(grep '(auto-allowed)' "$BLK/blocked.log" 2>/dev/null \
                    | awk '{print $NF, $(NF-1)}' | sort -u | head -20)"
   if [[ -n "$hard_blocked" ]]; then
-    sub "HARD-BLOCKED by the firewall (never admitted) — add these to the allowlist:"
-    printf '%s\n' "$hard_blocked" | sed "s/^/$LOG_PREFIX     /"
+    # Cite the EVIDENCE, not just the name. blocked-domains.txt holds bare
+    # domains, and a bare domain is unfalsifiable: a run once reported
+    # repo1.maven.org blocked inside a Ruby-only container with no JVM component
+    # enabled and nothing that would ever fetch from Maven Central, and there was
+    # no way to tell a real connection attempt from a mis-attribution — the
+    # entry was simply unexplainable, and the only record that could have settled
+    # it was deleted by this phase's own cleanup.
+    #
+    # The name comes from lookup_domain(), which reverse-maps the destination IP
+    # through the sniffed DNS map. That map is IP → first-seen name, so a CDN IP
+    # shared by several zones can be labelled with a domain nothing ever
+    # contacted. blocked.log records the IP and port the packet actually carried,
+    # which is the part that cannot be mis-attributed — so print that alongside.
+    sub "HARD-BLOCKED by the firewall (never admitted):"
+    while IFS= read -r what; do
+      [[ -z "$what" ]] && continue
+      # Match on the domain column ($4) or the IP column ($3) — blocked-ips.txt
+      # entries are bare IPs with no domain. Timestamps carry no space
+      # (%Y-%m-%dT%H:%M:%S), so the columns are stable at 4 fields.
+      awk -v want="$what" -v pfx="$LOG_PREFIX" '
+        $3 == want || $4 == want {
+          key = $3 " " $2
+          if (!(key in seen)) { first[key] = $1; order[++n] = key }
+          seen[key]++
+        }
+        END {
+          if (n == 0) { printf "%s     %-38s (no matching line in blocked.log)\n", pfx, want; exit }
+          for (i = 1; i <= n; i++) {
+            k = order[i]
+            printf "%s     %-38s %-24s x%-4d first %s\n", pfx, want, k, seen[k], first[k]
+          }
+        }' "$BLK/blocked.log" 2>/dev/null
+    done <<< "$hard_blocked"
+    sub "  ^ the NAME is reverse-mapped from the IP via the sniffed DNS map and can"
+    sub "    be wrong on a shared CDN address; the IP and port above cannot. Confirm"
+    sub "    a name against the IP before allowlisting it."
   fi
   if [[ -n "$self_healed" ]]; then
     sub "dropped then SELF-HEALED (allowlisted, admitted after the first packet):"
@@ -358,6 +392,19 @@ if SANDBOX_CONF="$RUBY_CONF" IMAGE_NAME=ai-sandbox-ruby "$REPO/build.sh" ai-sand
     # the volume to remove — drop the directory here regardless of how that went.
     (cd "$REPO" && bash ./group.sh rm "$RVMGROUP" --yes >/dev/null 2>&1) \
       || docker volume rm "$RVMVOL" >/dev/null 2>&1 || true
+    # Keep the firewall's record even when the phase SUCCEEDS. $GRPDIR is named
+    # after this run's PID, so `rm -rf` below destroyed the only copy of
+    # blocked.log — and a phase can pass (Ruby installs, everything green) while
+    # the capture recorded a destination nobody can account for. That is exactly
+    # the state worth investigating later, and it was the state that made
+    # repo1.maven.org unexplainable: by the time the report was read, the
+    # evidence no longer existed. Cheap to keep (a few KB), overwritten each run.
+    if [[ -f "$BLK/blocked.log" ]]; then
+      keep="$HOME/.cache/ai-containers-verify/last-blocked"
+      rm -rf "$keep" && mkdir -p "$keep" \
+        && cp "$BLK"/blocked*.txt "$BLK/blocked.log" "$keep/" 2>/dev/null
+      sub "kept the blocked-traffic record: $keep/blocked.log"
+    fi
     rm -rf "$GRPDIR"
     rmdir "$HOME/.cache/ai-containers-verify" 2>/dev/null || true
     if docker volume inspect "$RVMVOL" >/dev/null 2>&1; then

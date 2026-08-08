@@ -23,6 +23,12 @@
 set -uo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Layout-tolerant, like verify-on-host.sh's TESTS_DIR and the integration runner:
+# upstream keeps the engine at the repo root, mgd-ai-containers keeps it in
+# base/. One copy serves both verbatim — a second copy is how mgd's harness
+# silently fell 117 lines behind.
+ENGINE_DIR="$REPO_DIR"
+[[ -f "$ENGINE_DIR/migrate-runme.sh" ]] || ENGINE_DIR="$REPO_DIR/base"
 fails=0
 pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails + 1)); }
@@ -30,15 +36,15 @@ fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails + 1)); }
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-bash -n "$REPO_DIR/migrate-runme.sh" && pass "migrate-runme.sh bash -n" \
+bash -n "$ENGINE_DIR/migrate-runme.sh" && pass "migrate-runme.sh bash -n" \
   || fail "migrate-runme.sh bash -n"
-bash -n "$REPO_DIR/project-init.sh" && pass "project-init.sh bash -n" \
+bash -n "$ENGINE_DIR/project-init.sh" && pass "project-init.sh bash -n" \
   || fail "project-init.sh bash -n"
 
 # ── The contract migrate-runme.sh depends on ────────────────────────────────────
 # Sourcing project-init.sh must be SILENT (no wizard) and must define the helpers
 # and globals the caller needs. Each of these was false before the fix.
-src_out="$(cd "$REPO_DIR" && bash -c '
+src_out="$(cd "$ENGINE_DIR" && bash -c '
     source ./project-init.sh </dev/null 2>&1
     printf "rc=%s\n" "$?"
     declare -F emit_launcher    >/dev/null && printf "emit_launcher=yes\n"
@@ -85,7 +91,7 @@ export EXTRA_MOUNTS="/some/path:ro"
 OLD
 chmod +x "$proj/.ai-containers/runme.sh"
 
-out="$(cd "$REPO_DIR" && bash ./migrate-runme.sh \
+out="$(cd "$ENGINE_DIR" && bash ./migrate-runme.sh \
         --projects-conf "$TMP/projects.conf" "$proj" </dev/null 2>&1)"
 rc=$?
 
@@ -122,7 +128,7 @@ proj2="$TMP/proj2"
 mkdir -p "$proj2/.ai-containers"
 cp "$proj/.ai-containers/runme.sh.pre-migrate" "$proj2/.ai-containers/runme.sh"
 before="$(ls "$proj2/.ai-containers" | sort | tr '\n' ' ')"
-(cd "$REPO_DIR" && bash ./migrate-runme.sh --dry-run \
+(cd "$ENGINE_DIR" && bash ./migrate-runme.sh --dry-run \
    --projects-conf "$TMP/projects.conf2" "$proj2" </dev/null >/dev/null 2>&1)
 after="$(ls "$proj2/.ai-containers" | sort | tr '\n' ' ')"
 [[ "$before" == "$after" ]] \

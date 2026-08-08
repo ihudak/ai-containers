@@ -27,3 +27,23 @@ cache.ruby-lang.org
 ftp.ruby-lang.org
 www.ruby-lang.org
 keyserver.ubuntu.com
+
+# rvm's PREBUILT-BINARY mirrors, named verbatim in its config/db:
+#   rvm_remote_server_url=https://rvm-io.global.ssl.fastly.net/binaries
+#   rvm_remote_server_url2=https://rubies.travis-ci.org
+# Both were observed HARD-BLOCKED during a real Phase 3 bootstrap. Blocking them
+# is not fatal — rvm falls back to compiling from source, which is why Ruby
+# installs worked anyway — but it turns every first install into a multi-minute
+# compile and leaves two permanent entries in blocked-domains.txt that read like
+# a misconfiguration. Admitting them lets rvm take the binary path when one
+# exists for the requested version.
+#
+# BOTH spellings of the Fastly host are listed on purpose. Fastly's legacy
+# <service>.global.ssl.fastly.net form treats "-" and "_" interchangeably, and
+# the two resolve to an identical A-record set; rvm's config/db requests the
+# HYPHEN form while the blocked-capture DNS map recorded the UNDERSCORE one. The
+# ipset would be correct with either (same IPs), but self-healing matches by
+# NAME, so listing only one leaves the other reported as blocked forever.
+rvm-io.global.ssl.fastly.net
+rvm_io.global.ssl.fastly.net
+rubies.travis-ci.org

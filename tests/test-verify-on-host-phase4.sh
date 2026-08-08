@@ -12,7 +12,12 @@
 # Phase 4 would be that same regression at the network-mode tier.
 set -uo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Layout-tolerant, like verify-on-host.sh's own TESTS_DIR and the integration
+# runner: upstream keeps the engine at the repo root, mgd-ai-containers keeps it
+# in base/. One copy serves both verbatim — a second copy is how mgd's harness
+# silently fell 117 lines behind.
 VOH="$REPO_DIR/verify-on-host.sh"
+[[ -f "$VOH" ]] || VOH="$REPO_DIR/base/verify-on-host.sh"
 fails=0
 pass(){ printf 'PASS: %s\n' "$1"; }
 fail(){ printf 'FAIL: %s\n' "$1"; fails=$((fails+1)); }
