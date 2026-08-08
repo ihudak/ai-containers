@@ -239,5 +239,31 @@ has "$out" 'FORCED' \
   && pass "IT_FORCE_CAPS is reported in the banner, never applied silently" \
   || fail "IT_FORCE_CAPS is reported in the banner, never applied silently"
 
+# ── Portability: no GNU coreutils ───────────────────────────────────────────────
+# macOS ships neither `timeout` nor a BSD equivalent. Before the it_timeout shim,
+# every case on a Mac exited 127 and the runner reported 14 of 16 FAILED in 0s —
+# and detect_caps's `timeout 120 docker pull` died the same way, so the dns
+# capability went undetected and looked convincingly like a Colima limitation.
+# CI never saw any of it: ubuntu-latest has coreutils.
+grep -q 'command -v gtimeout' "$RUN" \
+  && pass "run.sh falls back to gtimeout when GNU timeout is absent" \
+  || fail "run.sh falls back to gtimeout when GNU timeout is absent"
+grep -q 'return 124' "$RUN" \
+  && pass "the pure-bash timeout fallback returns 124 like GNU timeout" \
+  || fail "the pure-bash timeout fallback returns 124 like GNU timeout"
+# The fallback must be REACHABLE — a shim that only ever resolves to GNU timeout
+# is untested on the platform it exists for.
+if grep -q 'elif command -v gtimeout' "$RUN" && grep -q '^else$' "$RUN"; then
+  pass "the shim has all three branches (timeout / gtimeout / bash fallback)"
+else
+  fail "the shim has all three branches (timeout / gtimeout / bash fallback)"
+fi
+# No bare `timeout ` call sites may remain — that is the bug itself.
+if grep -nE '^\s+timeout [0-9"$]' "$RUN" | grep -v it_timeout | grep -q .; then
+  fail "no bare GNU timeout call sites remain in run.sh"
+else
+  pass "no bare GNU timeout call sites remain in run.sh"
+fi
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

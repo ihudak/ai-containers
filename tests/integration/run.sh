@@ -104,6 +104,49 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+
+# ── Portable timeout ────────────────────────────────────────────────────────────
+# `timeout` is GNU coreutils. macOS ships NEITHER it nor a BSD equivalent, so on a
+# Mac every `timeout ... bash "$case"` exited 127 ("command not found") and the
+# runner reported all 14 selected cases as FAILED in 0s. The `timeout 120 docker
+# pull` in detect_caps died the same way, which is why the dns capability was
+# never detected there either — two symptoms, one cause, and the second looked
+# convincingly like "Colima cannot do DNS".
+#
+# CI never saw this: ubuntu-latest has coreutils. It took the first real macOS run
+# (host verification, 2026-08-08) to surface it, which is precisely the class of
+# gap that run exists to catch — the plan's Global Constraints checked bash 3.2
+# SYNTAX (no declare -A, no mapfile) but never GNU-only COMMANDS.
+#
+# Resolution order: GNU timeout, then Homebrew coreutils' gtimeout, then a pure
+# bash fallback. The fallback runs the command in the background, polls for its
+# exit, and kills it past the deadline — returning 124 like the real thing, so the
+# caller's "timed out" branch is identical on every platform.
+if command -v timeout >/dev/null 2>&1; then
+  it_timeout() { timeout "$@"; }
+elif command -v gtimeout >/dev/null 2>&1; then
+  it_timeout() { gtimeout "$@"; }
+else
+  it_timeout() {  # $1=seconds, $2… = command
+    local secs="$1"; shift
+    "$@" &
+    local cmd_pid=$!
+    local waited=0
+    while kill -0 "$cmd_pid" 2>/dev/null; do
+      if [[ "$waited" -ge "$secs" ]]; then
+        kill -TERM "$cmd_pid" 2>/dev/null
+        sleep 2
+        kill -KILL "$cmd_pid" 2>/dev/null
+        wait "$cmd_pid" 2>/dev/null
+        return 124        # same code GNU timeout uses, so callers need no branch
+      fi
+      sleep 1
+      waited=$((waited + 1))
+    done
+    wait "$cmd_pid"
+  }
+fi
+
 say()  { printf '%s\n' "$*"; }
 warn() { printf '%s\n' "$*" >&2; }
 
@@ -148,7 +191,7 @@ detect_caps() {
     # offline-safe), then a bounded pull. A machine with no registry access still
     # correctly reports no dns capability rather than hanging.
     if docker image inspect "$IT_DNS_IMAGE" >/dev/null 2>&1 \
-       || timeout 120 docker pull "$IT_DNS_IMAGE" >/dev/null 2>&1; then
+       || it_timeout 120 docker pull "$IT_DNS_IMAGE" >/dev/null 2>&1; then
       c="$c dns"
     fi
   fi
@@ -333,9 +376,9 @@ for f in $selected; do
   case_failed=0
   started=$SECONDS
   if [[ "$verbose" -eq 1 ]]; then
-    timeout "$timeout_secs" bash "$f" 2>&1 | tee "$log"; rc=${PIPESTATUS[0]}
+    it_timeout "$timeout_secs" bash "$f" 2>&1 | tee "$log"; rc=${PIPESTATUS[0]}
   else
-    timeout "$timeout_secs" bash "$f" > "$log" 2>&1; rc=$?
+    it_timeout "$timeout_secs" bash "$f" > "$log" 2>&1; rc=$?
   fi
   took=$((SECONDS - started))
   # grep -c prints "0" AND exits 1 on no match; under `set -o pipefail` (not in
