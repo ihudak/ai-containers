@@ -295,6 +295,19 @@ if SANDBOX_CONF="$RUBY_CONF" IMAGE_NAME=ai-sandbox-ruby "$REPO/build.sh" ai-sand
     # shared by several zones can be labelled with a domain nothing ever
     # contacted. blocked.log records the IP and port the packet actually carried,
     # which is the part that cannot be mis-attributed — so print that alongside.
+    # Pull the container's OWN two lookup tables while it is still running. Both
+    # die with it: the DNS map lives in a root-only tmpfs directory (/run) and the
+    # baked allowlist is an image file, so once the phase stops the container the
+    # only remaining artifact is a name with no provenance. That is what made a
+    # repeatable observation unexplainable across two full verification rounds:
+    # the report could say WHICH address was dropped but not whether the container
+    # had ever resolved that name, nor whether the name was allowlisted here.
+    #
+    # `docker exec` runs as root, which is what makes /run readable.
+    dns_map_dump="$(docker exec "$cid" cat /run/agent-blocked-internal/dns-map.txt 2>/dev/null || true)"
+    baked_allow="$(docker exec "$cid" cat /tmp/allowlist-domains.txt 2>/dev/null \
+                     | grep -vE '^[[:space:]]*(#|$)' || true)"
+
     sub "HARD-BLOCKED by the firewall (never admitted):"
     while IFS= read -r what; do
       [[ -z "$what" ]] && continue
@@ -314,10 +327,46 @@ if SANDBOX_CONF="$RUBY_CONF" IMAGE_NAME=ai-sandbox-ruby "$REPO/build.sh" ai-sand
             printf "%s     %-38s %-24s x%-4d first %s\n", pfx, want, k, seen[k], first[k]
           }
         }' "$BLK/blocked.log" 2>/dev/null
+
+      # Was this name allowlisted in THIS image? "no" rules out the whole family
+      # of "an allowlisted host under an alias the self-healer could not match",
+      # which is otherwise the first thing to suspect and takes a round trip to
+      # exclude.
+      if printf '%s\n' "$baked_allow" | grep -qxF "$what" 2>/dev/null; then
+        sub "    allowlisted in this image: YES — so the drop is a self-healing or"
+        sub "                                    refresh-timing failure, not policy"
+      else
+        sub "    allowlisted in this image: no"
+      fi
+
+      # Every name the container's DNS map holds for the addresses this entry was
+      # dropped on. More than one means the label above is a coin flip between
+      # them; exactly one means the container really did resolve that name, and
+      # the question becomes WHAT asked for it.
+      for ip in $(awk -v want="$what" '$3 == want || $4 == want {print $3}' \
+                    "$BLK/blocked.log" 2>/dev/null | sort -u); do
+        names="$(printf '%s\n' "$dns_map_dump" | awk -v ip="$ip" '$1 == ip {print $2}' \
+                   | sort -u | tr '\n' ' ')"
+        printf '%s     %-38s %s\n' "$LOG_PREFIX" "  names resolved to $ip:" \
+          "${names:-(none — the container never resolved this address)}"
+      done
     done <<< "$hard_blocked"
     sub "  ^ the NAME is reverse-mapped from the IP via the sniffed DNS map and can"
     sub "    be wrong on a shared CDN address; the IP and port above cannot. Confirm"
     sub "    a name against the IP before allowlisting it."
+
+    # The full resolved-name list. This is the artifact that answers "what in this
+    # container would even ask for that?", and it exists only while the container
+    # does. Cheap to print (one line per name) and it is the whole population the
+    # reverse mapping draws from, so an unexplained label can be checked against
+    # everything else the container looked up in the same window.
+    if [[ -n "$dns_map_dump" ]]; then
+      resolved="$(printf '%s\n' "$dns_map_dump" | awk '{print $2}' | sort -u)"
+      sub "every name this container resolved during the run ($(printf '%s\n' "$resolved" | wc -l | tr -d ' ')):"
+      printf '%s\n' "$resolved" | sed "s/^/$LOG_PREFIX     /"
+    else
+      sub "the container's DNS map is empty or unreadable — cannot say what it resolved"
+    fi
   fi
   if [[ -n "$self_healed" ]]; then
     sub "dropped then SELF-HEALED (allowlisted, admitted after the first packet):"
