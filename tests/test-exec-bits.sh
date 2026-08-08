@@ -68,15 +68,60 @@ assert_executable() {   # $1 = repo-relative path, $2 = why it must be executabl
   fi
 }
 
-# ── Class A: scripts a CI workflow invokes by bare path ─────────────────────────
-# Matches a literal "./path/to/x.sh". The path class excludes "." so that
-# "${{ github.event.pull_request.base.sha }}" cannot yield a phantom "./…sh"
-# match, and \b after .sh keeps ".sha" from matching as ".sh".
+# ── Class A: scripts a CI workflow references ──────────────────────────────────
+# Two different assertions, and the distinction matters:
 #
-# A match preceded by an interpreter (bash/sh/source/.) is SKIPPED: the exec bit
-# genuinely does not matter there, and flagging it would be a false positive
-# that trains people to ignore this test.
-workflow_scripts=""
+#   EVERY referenced script must EXIST where the step would look for it. A
+#     `run: bash ./verify-on-host.sh` in a repo that keeps the engine in base/
+#     is a job that cannot work, and it fails only when the schedule fires —
+#     which for a nightly that has never fired is never. Found exactly that in
+#     mgd-ai-containers.
+#   Only BARE-PATH invocations must be executable. `bash ./x.sh` does not care
+#     about the mode, and flagging it would be a false positive that trains
+#     people to ignore this test.
+#
+# Paths resolve against the step's `working-directory:` when it declares one,
+# repo root otherwise. A `cd` inside a `run:` block is NOT tracked — use
+# `working-directory:` so the path a reader sees is the path that runs.
+#
+# The path class excludes "." so "${{ github.event.pull_request.base.sha }}"
+# cannot yield a phantom match, and a following alphanumeric is rejected so
+# ".sha" is not read as ".sh".
+scan_workflow() {   # emits "<working-dir>|<./path>|<0=bare,1=interpreted>"
+  awk '
+    function flush(   s, tmp, m, rest, pre, interp) {
+      if (block == "") return
+      wd = "."
+      if (match(block, /working-directory:[ \t]*[^ \t\n]+/)) {
+        s = substr(block, RSTART, RLENGTH)
+        sub(/working-directory:[ \t]*/, "", s)
+        gsub(/["'"'"']/, "", s)
+        wd = s
+      }
+      tmp = block
+      while (match(tmp, /\.\/[A-Za-z0-9_\/-]+\.sh/)) {
+        m    = substr(tmp, RSTART, RLENGTH)
+        pre  = substr(tmp, 1, RSTART - 1)
+        rest = substr(tmp, RSTART + RLENGTH)
+        if (rest !~ /^[A-Za-z0-9_.-]/) {
+          interp = (pre ~ /(bash|sh|source|\.)[ \t]+$/) ? 1 : 0
+          printf "%s|%s|%d\n", wd, m, interp
+        }
+        tmp = rest
+      }
+    }
+    # Comments are not invocations. A full-line comment MENTIONING a script
+    # (explaining why a step is written the way it is — this repo does that a
+    # lot) would otherwise be scanned as a reference, and it inherits the
+    # PREVIOUS step block, so it gets checked against the wrong
+    # working-directory too. Both a false positive and a misleading one.
+    /^[[:space:]]*#/ { next }
+    /^[[:space:]]*-[[:space:]]/ { flush(); block = "" }
+    { block = block $0 "\n" }
+    END { flush() }
+  ' "$1"
+}
+
 shopt -s nullglob
 workflows=(.github/workflows/*.yml .github/workflows/*.yaml)
 shopt -u nullglob
@@ -87,33 +132,32 @@ else
   pass "found ${#workflows[@]} workflow file(s)"
 fi
 
+refs=""
 for wf in "${workflows[@]}"; do
-  while IFS= read -r line; do
-    for m in $(printf '%s\n' "$line" | grep -oE '\./[A-Za-z0-9_/-]+\.sh\b' || true); do
-      # Interpreter-prefixed? Then the mode is irrelevant — skip it.
-      case "$line" in
-        *"bash $m"*|*"sh $m"*|*"source $m"*|*". $m"*) continue ;;
-      esac
-      workflow_scripts="${workflow_scripts}${m#./}"$'\n'
-    done
-  done < "$wf"
+  refs="${refs}$(scan_workflow "$wf")"$'\n'
 done
+refs="$(printf '%s' "$refs" | grep -v '^$' | sort -u || true)"
 
-workflow_scripts="$(printf '%s' "$workflow_scripts" | grep -v '^$' | sort -u || true)"
-
-if [[ -z "$workflow_scripts" ]]; then
-  # A scan that finds nothing must not read as a pass. The workflows DO invoke
-  # scripts by bare path; finding none means the scanner broke, not that the
-  # repo got safer — the same "selected 0 cases" trap the integration runner
-  # already guards against.
-  fail "the workflow scan found at least one bare-path .sh invocation (found none — scanner is broken)"
+if [[ -z "$refs" ]]; then
+  # A scan that finds nothing must not read as a pass. The workflows DO
+  # reference scripts; finding none means the scanner broke, not that the repo
+  # got safer — the same "selected 0 cases" trap the integration runner guards.
+  fail "the workflow scan found at least one .sh reference (found none — scanner is broken)"
 else
-  n="$(printf '%s\n' "$workflow_scripts" | wc -l | tr -d ' ')"
-  pass "workflow scan found $n bare-path .sh invocation(s)"
-  while IFS= read -r rel; do
-    [[ -z "$rel" ]] && continue
-    assert_executable "$rel" "invoked by bare path in a workflow"
-  done <<< "$workflow_scripts"
+  n="$(printf '%s\n' "$refs" | wc -l | tr -d ' ')"
+  pass "workflow scan found $n .sh reference(s)"
+  while IFS='|' read -r wd ref interp; do
+    [[ -z "$ref" ]] && continue
+    rel="${ref#./}"
+    [[ "$wd" != "." ]] && rel="${wd%/}/$rel"
+    if [[ -e "$rel" ]]; then
+      pass "$rel exists where its workflow step would look for it"
+    else
+      fail "$rel exists where its workflow step would look for it — referenced as '$ref'$([[ "$wd" != "." ]] && printf ' in %s' "$wd" || printf ' from the repo root') but not there"
+      continue
+    fi
+    [[ "$interp" == "0" ]] && assert_executable "$rel" "invoked by bare path in a workflow"
+  done <<< "$refs"
 fi
 
 # ── Class B: Dockerfile COPYs into /usr/local/bin (and /entrypoint.sh) ──────────
@@ -122,10 +166,20 @@ fi
 # (COPY preserves it, but a later `RUN chmod +x` is what the Dockerfile relies
 # on), so what matters here is that SOME chmod in the Dockerfile names each
 # destination path.
-if [[ ! -f Dockerfile ]]; then
-  fail "Dockerfile exists"
+#
+# Layout-tolerant, like tests/integration/run.sh: upstream keeps the engine at
+# the repo root, mgd-ai-containers keeps it in base/. One file serves both, so
+# the two copies cannot drift — which is how the harness fell 117 lines behind
+# once already.
+dockerfile=""
+for cand in Dockerfile base/Dockerfile; do
+  [[ -f "$cand" ]] && { dockerfile="$cand"; break; }
+done
+
+if [[ -z "$dockerfile" ]]; then
+  fail "a Dockerfile exists (looked for ./Dockerfile and ./base/Dockerfile)"
 else
-  pass "Dockerfile exists"
+  pass "found the Dockerfile at $dockerfile"
 
   # COPY <src>.sh <dst>   →   resolve <dst> to a full in-image path.
   copied_bins="$(awk '
@@ -137,7 +191,7 @@ else
         dst = dst parts[n]
       }
       if (dst ~ /^\/usr\/local\/bin\// || dst == "/entrypoint.sh") print dst
-    }' Dockerfile | sort -u)"
+    }' "$dockerfile" | sort -u)"
 
   if [[ -z "$copied_bins" ]]; then
     fail "the Dockerfile scan found at least one .sh COPY into /usr/local/bin or /entrypoint.sh (found none — scanner is broken)"
@@ -152,7 +206,7 @@ else
       grab {
         for (i = 1; i <= NF; i++) if ($i ~ /^\/[A-Za-z0-9_\/.-]+$/) print $i
         if ($0 !~ /\\[[:space:]]*$/) grab = 0
-      }' Dockerfile | sort -u)"
+      }' "$dockerfile" | sort -u)"
 
     while IFS= read -r bin; do
       [[ -z "$bin" ]] && continue
