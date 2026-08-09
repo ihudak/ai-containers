@@ -7,10 +7,27 @@
 #   with a primary path → /workspace/<basename>, bind-mounted rw
 #   with none           → the /workspace umbrella itself, usable
 #
-# READ /proc/1/cwd, NOT `docker inspect .Config.WorkingDir`. The inspect field is
-# the argument we passed; echoing it back proves only that docker stored it. PID
-# 1 IS the agent shell (entrypoint.sh execs into it), so its cwd is where a human
-# typing at that prompt actually is — which is the claim.
+# HOW THE CWD IS OBSERVED, and why not the obvious way.
+#
+# `docker inspect .Config.WorkingDir` is out: that field is the argument we
+# passed, and echoing it back proves only that docker stored it.
+#
+# Reading /proc/1/cwd is out too, though it took a CI run to learn why. PID 1 IS
+# the agent shell, but entrypoint.sh reaches it through `capsh --user=`, which
+# setuids away from root — and the kernel clears the process's DUMPABLE flag on
+# that transition. /proc/1 then becomes root-owned, and reading its `cwd`
+# symlink requires CAP_SYS_PTRACE, which Docker's default capability set does
+# not include. So the read fails as root AND as the sandbox user, and reports
+# '<unreadable>' rather than anything about the working directory.
+# (/proc/1/status stays world-readable, which is why lib.sh's pid-1 handover
+# check works and this did not.)
+#
+# What is left is the real thing anyway: a process started in this container
+# lands in the working directory, and a RELATIVE write from there arrives at the
+# expected place on the host. That is the mechanism docker applies to PID 1 and
+# to every exec alike, and it is what a human at the prompt experiences. The
+# relative path is the point — an absolute one would prove the mount and say
+# nothing about where the shell started.
 #
 # The umbrella half is the one with a real bug behind it. /workspace is an
 # in-image directory, not a mount, so it belongs to root until
@@ -33,20 +50,22 @@ mkdir -p "$proj"
 launcher_up open "$proj" || it_finish
 first="$IT_CID"
 
-cwd="$(docker exec "$first" readlink /proc/1/cwd 2>/dev/null)"
+cwd="$(agent_exec "$first" 'pwd' 2>/dev/null | tr -d '\r\n')"
 if [[ "$cwd" == "/workspace/myproject" ]]; then
-  pass "agent shell cwd is /workspace/myproject"
+  pass "a shell in the container starts in /workspace/myproject"
 else
-  fail "agent shell cwd is /workspace/myproject — got '${cwd:-<unreadable>}'"
+  fail "a shell in the container starts in /workspace/myproject — got '${cwd:-<nothing>}'"
 fi
 assert_writable "$first" /workspace/myproject
 
-agent_exec "$first" "printf 'from-the-agent\n' > /workspace/myproject/AGENT_WROTE" >/dev/null 2>&1 || true
+# Relative, deliberately: this resolves against the working directory, so its
+# arrival on the host proves the workdir and the bind mount together.
+agent_exec "$first" "printf 'from-the-agent\n' > AGENT_WROTE" >/dev/null 2>&1 || true
 assert_host_file_exists "$proj/AGENT_WROTE"
 if [[ "$(cat "$proj/AGENT_WROTE" 2>/dev/null)" == "from-the-agent" ]]; then
-  pass "what the agent wrote is visible on the host"
+  pass "a relative write from the working directory lands on the host"
 else
-  fail "what the agent wrote is visible on the host — content mismatch"
+  fail "a relative write from the working directory lands on the host — content mismatch"
 fi
 
 sandbox_down "$first"
@@ -54,11 +73,11 @@ sandbox_down "$first"
 # ── With no primary: the umbrella itself ───────────────────────────────────────
 launcher_up open || it_finish
 
-cwd="$(docker exec "$IT_CID" readlink /proc/1/cwd 2>/dev/null)"
+cwd="$(agent_exec "$IT_CID" 'pwd' 2>/dev/null | tr -d '\r\n')"
 if [[ "$cwd" == "/workspace" ]]; then
-  pass "with no primary, agent shell cwd is the /workspace umbrella"
+  pass "with no primary, a shell starts in the /workspace umbrella"
 else
-  fail "with no primary, agent shell cwd is the /workspace umbrella — got '${cwd:-<unreadable>}'"
+  fail "with no primary, a shell starts in the /workspace umbrella — got '${cwd:-<nothing>}'"
 fi
 assert_writable "$IT_CID" /workspace
 

@@ -395,6 +395,12 @@ launcher_up() {  # $1=mode [$2=primary] → IT_CID
   IT_CID="$IT_LAUNCH_NAME"
   return 0
 }
+# /proc/1/status, and only status. `capsh --user=` setuids away from root, which
+# clears the process's DUMPABLE flag, so /proc/1 becomes ROOT-OWNED and most of
+# what is under it — notably `cwd`, `exe`, `environ` — needs CAP_SYS_PTRACE,
+# which Docker's default capability set does not grant. `status` is
+# world-readable regardless, which is why this check works where a
+# `readlink /proc/1/cwd` returns nothing useful (see case 410).
 _it_pid1_is_uid() {  # $1=cid $2=expected uid
   [[ "$(docker exec "$1" awk '/^Uid:/{print $2; exit}' /proc/1/status 2>/dev/null | tr -dc '0-9')" == "$2" ]]
 }
