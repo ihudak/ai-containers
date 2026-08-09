@@ -1,0 +1,18 @@
+# case: 420-collision-launches-nothing
+# what: the collision check loses BOTH its message and its exit, so the launcher proceeds and the user meets docker's bare "Duplicate mount point" instead
+#
+diff --git a/sandbox.sh b/sandbox.sh
+index ded2e31..0a111c6 100755
+--- a/sandbox.sh
++++ b/sandbox.sh
+@@ -404,9 +404,7 @@ run_container() {
+         exit 1
+       fi
+       if [[ -n "${repos_used[$rname]:-}" ]]; then
+-        printf "ERROR: name '%s' is used by both %s and REPOS — they both mount at /workspace/%s.\n" \
+-          "$rname" "${repos_used[$rname]}" "$rname" >&2
+-        exit 1
++        : # MUTATION: collision refusal and its message both removed
+       fi
+       if ! repo_is_registered "$rname"; then
+         printf "ERROR: REPOS entry '%s' is not a registered repo.\n" "$rname" >&2
