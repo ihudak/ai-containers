@@ -259,6 +259,108 @@ sandbox_wait_capture() {  # $1=cid
   return 0
 }
 
+# ── The real launcher under test (mounts / groups / volumes tiers) ─────────────
+#
+# sandbox_up above composes its OWN `docker run`. That is right for the network
+# tier — it isolates the entrypoint from the launcher — and exactly wrong for
+# mounts, groups and volumes, where every decision belongs to sandbox.sh.
+# Reproducing that logic here would test the reproduction.
+#
+# So launcher_* drives the REAL sandbox.sh, through tests/integration/docker-shim.sh
+# (read its header for how the container under test is identified). The two verbs
+# answer different questions and the split is deliberate:
+#
+#   sandbox_up   — does the IMAGE honour this configuration?
+#   launcher_up  — does SANDBOX.SH produce that configuration from this env?
+#
+# Resolved BEFORE any shim reaches PATH, and passed down explicitly: the shim
+# refuses to run without it rather than risk recursing into itself.
+IT_REAL_DOCKER="${IT_REAL_DOCKER:-$(command -v docker 2>/dev/null)}"
+
+IT_LAUNCH_HOME=""; IT_LAUNCH_DIR=""; IT_SHIM_DIR=""
+IT_LAUNCH_NAME=""; IT_LAUNCH_RC=0; IT_LAUNCH_OUT=""; IT_LAUNCH_ERR=""
+# The identity sandbox.sh will hand the container. Not a hardcoded 1000: the
+# launcher passes `id -u`/`id -g` (or the SANDBOX_UID/GID override), so a CI
+# runner whose user is 1001 must be waited for, and written as, at 1001.
+IT_LAUNCH_UID="${SANDBOX_UID:-$(id -u)}"
+IT_LAUNCH_GID="${SANDBOX_GID:-$(id -g)}"
+
+# Creates the scratch $HOME, launch dir and shim dir this case's launcher runs
+# in. Idempotent — a case that needs to seed the group tree calls it first, then
+# writes under $IT_LAUNCH_HOME, then calls launcher_up.
+launcher_prepare() {
+  [[ -n "$IT_SHIM_DIR" ]] && return 0
+  if [[ -z "$IT_REAL_DOCKER" || ! -x "$IT_REAL_DOCKER" ]]; then
+    fail "launcher_prepare: cannot resolve the real docker binary [${IT_REAL_DOCKER:-<empty>}]"
+    return 1
+  fi
+  local d; d="$(it_scratch)"
+  IT_LAUNCH_HOME="$d/home"; IT_LAUNCH_DIR="$d/launch"; IT_SHIM_DIR="$d/bin"
+  mkdir -p "$IT_LAUNCH_HOME/.ai-containers" "$IT_LAUNCH_DIR" "$IT_SHIM_DIR"
+  ln -sf "$IT_LIB_DIR/docker-shim.sh" "$IT_SHIM_DIR/docker"
+  return 0
+}
+
+# Run sandbox.sh once. Sets IT_LAUNCH_RC / _OUT / _ERR / _NAME. Does NOT require
+# the launch to succeed — case 420 asserts a REFUSED launch, and needs the rc.
+launcher_run() {  # $1=mode [$2=primary]
+  launcher_prepare || return 1
+  local mode="$1" primary="${2:-}" k
+  # A developer's exported EXTRA_MOUNTS, or a sandbox.env sitting in the repo,
+  # must not perturb a case. sandbox-common.sh's load_env_defaults treats
+  # SET-BUT-EMPTY as set (`[[ -n "${!key+x}" ]] && continue`), so exporting
+  # empty is precisely the neutraliser it already honours — and only for keys
+  # this case did not set itself.
+  for k in EXTRA_MOUNTS REPOS VAULT_PATH SPECS_PATH DOCS_PATH PREVIEW_PORTS \
+           SANDBOX_MODE SANDBOX_WORKDIR SANDBOX_ENV_FILE SELF_HEALING_ENABLED; do
+    [[ -n "${!k+x}" ]] || export "$k="
+  done
+  IT_LAUNCH_NAME="it-launch-$$-$RANDOM"
+  IT_LAUNCH_OUT="$IT_SCRATCH/$IT_LAUNCH_NAME.out"
+  IT_LAUNCH_ERR="$IT_SCRATCH/$IT_LAUNCH_NAME.err"
+  (
+    cd "$IT_LAUNCH_DIR" || exit 1
+    export PATH="$IT_SHIM_DIR:$PATH"
+    export HOME="$IT_LAUNCH_HOME"
+    export IT_REAL_DOCKER IT_LAUNCH_NAME IT_LABEL
+    export IMAGE_NAME="$IT_IMAGE"
+    export AI_CONTAINER_GROUP_INIT="${AI_CONTAINER_GROUP_INIT:-clean}"
+    exec bash "$IT_REPO_DIR/sandbox.sh" "$mode" ${primary:+"$primary"}
+  ) >"$IT_LAUNCH_OUT" 2>"$IT_LAUNCH_ERR" </dev/null
+  IT_LAUNCH_RC=$?
+  return 0
+}
+
+launcher_up() {  # $1=mode [$2=primary] → IT_CID
+  launcher_run "$@" || return 1
+  if [[ "$IT_LAUNCH_RC" -ne 0 ]]; then
+    fail "launcher_up($1): sandbox.sh exited $IT_LAUNCH_RC"
+    tail -20 "$IT_LAUNCH_ERR" | sed 's/^/     /'
+    return 1
+  fi
+  it_track "container:$IT_LAUNCH_NAME"
+  if ! it_wait "$IT_SETTLE" _it_pid1_is_uid "$IT_LAUNCH_NAME" "$IT_LAUNCH_UID"; then
+    fail "launcher_up($1): entrypoint never handed over to the agent shell (uid $IT_LAUNCH_UID)"
+    docker logs "$IT_LAUNCH_NAME" 2>&1 | tail -40 | sed 's/^/     /'
+    return 1
+  fi
+  IT_CID="$IT_LAUNCH_NAME"
+  return 0
+}
+_it_pid1_is_uid() {  # $1=cid $2=expected uid
+  [[ "$(docker exec "$1" awk '/^Uid:/{print $2; exit}' /proc/1/status 2>/dev/null | tr -dc '0-9')" == "$2" ]]
+}
+
+# Runs as the AGENT user, never root — and every writability assertion depends
+# on that. `docker exec` defaults to root, and root writes straight through an
+# ownership mistake, so a :rw mount left owned by root would look perfectly
+# healthy. (A :ro mount refuses even root with EROFS, so that half would pass
+# either way; using one primitive for both removes the asymmetry rather than
+# leaving a reader to work out which assertions are trustworthy.)
+agent_exec() {  # $1=cid $2=command
+  docker exec -u "$IT_LAUNCH_UID:$IT_LAUNCH_GID" "$1" bash -c "$2"
+}
+
 # ── The primitive most network cases reduce to ─────────────────────────────────
 reach() {  # $1=cid $2=host-or-ip [$3=port]
   docker exec "$1" curl -fsS --connect-timeout "$IT_CONNECT_TIMEOUT" \
@@ -295,6 +397,54 @@ assert_file_exists() {  # $1=cid $2=path
 assert_file_absent() {
   if docker exec "$1" test -e "$2" 2>/dev/null; then fail "absent in container: $2 — it EXISTS"
   else pass "absent in container: $2"; fi
+}
+
+# ── Mounts / groups / volumes assertions ───────────────────────────────────────
+# Writability is probed as the agent user (see agent_exec) and always in PAIRS
+# in the cases that use it: "the :ro mount refuses a write" is also satisfied by
+# a container whose whole /workspace is broken, so a :rw sibling proving the
+# write path works is what turns it into evidence of ENFORCEMENT.
+assert_writable() {  # $1=cid $2=dir
+  if agent_exec "$1" "touch '$2/.it-write-probe' && rm -f '$2/.it-write-probe'" >/dev/null 2>&1
+  then pass "agent can write: $2"
+  else fail "agent can write: $2 — the write was REFUSED"; fi
+}
+assert_not_writable() {  # $1=cid $2=dir
+  if agent_exec "$1" "touch '$2/.it-write-probe'" >/dev/null 2>&1; then
+    fail "agent cannot write: $2 — the write SUCCEEDED"
+    agent_exec "$1" "rm -f '$2/.it-write-probe'" >/dev/null 2>&1 || true
+  else
+    pass "agent cannot write: $2"
+  fi
+}
+# HOST-side, not in-container: the whole point of several cases is that a file
+# the container produced reaches the host directory a human actually reads.
+# Asserting it inside the container proves only that the container wrote it.
+assert_host_file_exists() {  # $1=path
+  if [[ -f "$1" ]]; then pass "exists on host: $1"; else fail "exists on host: $1"; fi
+}
+assert_host_file_absent() {  # $1=path
+  if [[ -e "$1" ]]; then fail "absent on host: $1 — it EXISTS"; else pass "absent on host: $1"; fi
+}
+assert_host_readable() {  # $1=path
+  if [[ -r "$1" ]]; then pass "readable by the invoking user: $1"
+  else fail "readable by the invoking user: $1"; fi
+}
+# The launcher refused, and refused BEFORE creating anything. A collision check
+# that printed an error and started the container anyway would satisfy a bare
+# exit-code assertion.
+assert_launcher_refused() {  # $1=expected stderr ERE
+  if [[ "$IT_LAUNCH_RC" -ne 0 ]]; then pass "launcher exited non-zero ($IT_LAUNCH_RC)"
+  else fail "launcher exited 0 — it should have refused"; fi
+  if grep -qE "$1" "$IT_LAUNCH_ERR" 2>/dev/null; then pass "launcher stderr matches: $1"
+  else
+    fail "launcher stderr matches: $1"
+    tail -20 "$IT_LAUNCH_ERR" 2>/dev/null | sed 's/^/     /'
+  fi
+  local found
+  found="$(docker ps -aq --filter "name=^${IT_LAUNCH_NAME}\$" 2>/dev/null | tr -d '[:space:]')"
+  if [[ -z "$found" ]]; then pass "no container was created"
+  else fail "no container was created — found $found"; fi
 }
 assert_log_contains() {  # $1=cid $2=ERE
   if docker logs "$1" 2>&1 | grep -qE "$2"; then pass "container log matches: $2"

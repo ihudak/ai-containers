@@ -41,6 +41,10 @@ IT_CONNECT_TIMEOUT="${IT_CONNECT_TIMEOUT:-5}"
 # driftable source of truth for the same setting.
 IT_SETTLE="${IT_SETTLE:-}"
 IT_GENERATED_ALLOWLIST_DIR="$IT_SCRATCH/generated-allowlists"
+# Resolved once, here, while PATH is still clean: the mounts/groups/volumes
+# cases put tests/integration/docker-shim.sh on PATH as `docker`, and the shim
+# refuses to run without an explicit real binary rather than recurse into itself.
+IT_REAL_DOCKER="${IT_REAL_DOCKER:-$(command -v docker 2>/dev/null)}"
 
 want_tags=""; excl_tags=""; req_tags=""
 do_list=0; do_list_caps=0; reuse_image=0; keep=0; verbose=0
@@ -69,7 +73,7 @@ Usage: tests/integration/run.sh [options]
 
 Tags: network-mode mounts volumes groups packages | security | fast slow |
       needs-external needs-netadmin needs-dns | harness
-Requires: docker netadmin sidecar dns external
+Requires: docker netadmin sidecar dns external launcher
 EOF
 }
 
@@ -183,6 +187,7 @@ detect_caps() {
     fi
     if [[ "$reuse_image" -eq 1 ]] || docker image inspect "$IT_IMAGE" >/dev/null 2>&1; then
       probe_netadmin && c="$c netadmin"
+      probe_launcher && c="$c launcher"
     fi
     # "Can this machine run a DNS-backed case?" — not "is the image already
     # cached". `docker image inspect` alone answers the second, and on a fresh CI
@@ -208,6 +213,35 @@ probe_netadmin() {
       iptables -A OUTPUT -m set --match-set it_probe dst -j ACCEPT >/dev/null 2>&1 || exit 1
       iptables -A OUTPUT -j NFLOG --nflog-group 100 >/dev/null 2>&1 || exit 1
     ' >/dev/null 2>&1
+}
+
+# Can this machine drive the REAL sandbox.sh through the docker shim?
+#
+# Without this probe, a daemon that rejected the rewritten invocation would make
+# every mounts/groups/volumes case fail at its assertions, looking exactly like a
+# mount bug — the harness sending a human to hunt in the wrong file. Detect it
+# instead, so those cases SKIP naming `launcher`, and --require can make that
+# fatal. A case that cannot run is not a pass.
+#
+# The probe issues the SAME SHAPE sandbox.sh:768 does — `docker run -it --rm`
+# with no name and no label — so it exercises the actual `-it` → `-d -i` rewrite
+# rather than a simplified stand-in that could pass while the real thing fails.
+probe_launcher() {
+  [[ -n "$IT_REAL_DOCKER" && -x "$IT_REAL_DOCKER" ]] || return 1
+  [[ -x "$INT_DIR/docker-shim.sh" ]] || return 1
+  local d="$IT_SCRATCH/launcher-probe" name="it-probe-launcher-$IT_RUN_ID" rc=1
+  mkdir -p "$d" || return 1
+  ln -sf "$INT_DIR/docker-shim.sh" "$d/docker" || return 1
+  (
+    export PATH="$d:$PATH" IT_REAL_DOCKER IT_LAUNCH_NAME="$name" IT_LABEL
+    docker run -it --rm --entrypoint sleep --label "$IT_LABEL" "$IT_IMAGE" 120
+  ) >/dev/null 2>&1
+  if [[ "$($IT_REAL_DOCKER inspect -f '{{.State.Running}}' "$name" 2>/dev/null)" == "true" ]]; then
+    rc=0
+  fi
+  "$IT_REAL_DOCKER" rm -f "$name" >/dev/null 2>&1
+  rm -rf "$d"
+  return "$rc"
 }
 
 have_cap() { detect_caps; case "$_caps" in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
@@ -299,6 +333,19 @@ sweep() {
   docker ps -aq --filter "label=$IT_LABEL" 2>/dev/null | while read -r c; do
     [[ -n "$c" ]] && docker rm -f "$c" >/dev/null 2>&1
   done
+  # Volumes, after the containers that hold them. The launcher creates some on
+  # its own — a group's rvm volume, a :rwcopy working copy — and those are
+  # multi-GB-capable debris if left behind.
+  #
+  # Label-scoped, and that is the whole safety argument: a volume only carries
+  # this run's label if it was created THROUGH the shim, i.e. by a case. A real
+  # `ai-containers-repo-<name>` or a developer's group volume was created by a
+  # normal docker and cannot match, so this can never reach outside the run —
+  # unlike a name-prefix filter, which is exactly how a sweep starts eating
+  # production volumes.
+  docker volume ls -q --filter "label=$IT_LABEL" 2>/dev/null | while read -r v; do
+    [[ -n "$v" ]] && docker volume rm "$v" >/dev/null 2>&1
+  done
   docker network ls -q --filter "label=$IT_LABEL" 2>/dev/null | while read -r n; do
     [[ -n "$n" ]] && docker network rm "$n" >/dev/null 2>&1
   done
@@ -339,7 +386,7 @@ fi
 docker network create --label "$IT_LABEL" "$IT_NET" >/dev/null 2>&1 || true
 
 export IT_RUN_ID IT_LABEL IT_SCRATCH IT_IMAGE IT_NET IT_DNS_IMAGE \
-       IT_CONNECT_TIMEOUT IT_SETTLE IT_GENERATED_ALLOWLIST_DIR
+       IT_CONNECT_TIMEOUT IT_SETTLE IT_GENERATED_ALLOWLIST_DIR IT_REAL_DOCKER
 
 # ── Selection ───────────────────────────────────────────────────────────────────
 total=0; selected=""
