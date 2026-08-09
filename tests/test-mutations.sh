@@ -58,7 +58,10 @@ for p in "$MUT_DIR"/*.patch; do
   [[ -f "$p" ]] || continue
   id="$(basename "$p" .patch)"
 
-  if ( cd "$REPO_DIR" && git apply --check "$p" ) 2>/dev/null; then
+  # Through mutate.sh, not a local `git apply`: the base/-layout resolution lives
+  # there, and a second copy here would be right in this repo and quietly wrong
+  # in the fork — reporting every patch stale, or worse, every patch fine.
+  if bash "$MUTATE" check "$id" >/dev/null 2>&1; then
     pass "$id still applies"
   else
     fail "$id still applies — the code it breaks has changed; regenerate the patch"

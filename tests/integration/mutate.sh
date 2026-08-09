@@ -33,6 +33,22 @@ REPO_DIR="$(cd "$INT_DIR/../.." && pwd)"
 MUT_DIR="$INT_DIR/mutations"
 STATE="$MUT_DIR/.applied"
 
+# The patches carry upstream ai-containers paths (a/sandbox.sh), but
+# mgd-ai-containers keeps the engine in base/ — the same layout split run.sh and
+# lib.sh already resolve. Rather than maintain a second set of patches per repo
+# (two copies of the same known-bad configuration, guaranteed to drift), apply
+# them with `--directory=base` there. One mutation set serves both layouts, and
+# the shared files stay byte-identical, which is the property that lets a fix in
+# one repo be a straight copy into the other.
+GIT_ROOT="$( cd "$REPO_DIR" && git rev-parse --show-toplevel 2>/dev/null )" || GIT_ROOT="$REPO_DIR"
+APPLY_PREFIX=""
+if [[ "$REPO_DIR" != "$GIT_ROOT" ]]; then
+  APPLY_PREFIX="${REPO_DIR#"$GIT_ROOT"/}"
+fi
+git_apply() {  # $@ = git apply args (patch last)
+  ( cd "$GIT_ROOT" && git apply ${APPLY_PREFIX:+--directory="$APPLY_PREFIX"} "$@" )
+}
+
 usage() {
   cat <<'EOF'
 Usage: tests/integration/mutate.sh <command>
@@ -65,7 +81,7 @@ cmd_verify() {
   local p bad=0
   for p in "$MUT_DIR"/*.patch; do
     [[ -f "$p" ]] || continue
-    if ( cd "$REPO_DIR" && git apply --check "$p" ) 2>/dev/null; then
+    if git_apply --check "$p" 2>/dev/null; then
       printf 'ok      %s\n' "$(basename "$p" .patch)"
     else
       printf 'STALE   %s — the code it patches has changed\n' "$(basename "$p" .patch)" >&2
@@ -73,6 +89,16 @@ cmd_verify() {
     fi
   done
   return "$bad"
+}
+
+# One patch, exit 0 if it still applies. Exists so tests/test-mutations.sh does
+# not carry a second copy of the layout resolution above — a copy that would be
+# correct in this repo and silently wrong in the base/ one.
+cmd_check() {
+  local id="${1:-}"
+  [[ -n "$id" ]] || { printf 'mutate.sh: check needs a mutation id\n' >&2; exit 2; }
+  [[ -f "$MUT_DIR/$id.patch" ]] || { printf 'mutate.sh: no such mutation: %s\n' "$id" >&2; exit 2; }
+  git_apply --check "$MUT_DIR/$id.patch" 2>/dev/null
 }
 
 cmd_apply() {
@@ -85,12 +111,12 @@ cmd_apply() {
     exit 1
   fi
   # A dirty tree makes revert ambiguous and risks discarding real work.
-  if ! ( cd "$REPO_DIR" && git diff --quiet ); then
+  if ! ( cd "$GIT_ROOT" && git diff --quiet ); then
     printf 'mutate.sh: the working tree has unstaged changes — commit or stash first.\n' >&2
     printf '           A mutation must be the only difference, or reverting it is a guess.\n' >&2
     exit 1
   fi
-  ( cd "$REPO_DIR" && git apply "$p" ) || {
+  git_apply "$p" || {
     printf 'mutate.sh: %s no longer applies. The code it breaks has changed; regenerate it.\n' "$id" >&2
     exit 1
   }
@@ -104,7 +130,7 @@ cmd_apply() {
 cmd_revert() {
   [[ -f "$STATE" ]] || { printf 'mutate.sh: nothing applied.\n'; return 0; }
   local id; id="$(cat "$STATE")"
-  ( cd "$REPO_DIR" && git apply -R "$MUT_DIR/$id.patch" ) || {
+  git_apply -R "$MUT_DIR/$id.patch" || {
     printf 'mutate.sh: could not reverse %s cleanly. Recover with: git checkout -- <file>\n' "$id" >&2
     exit 1
   }
@@ -115,6 +141,7 @@ cmd_revert() {
 case "${1:-}" in
   list)   cmd_list ;;
   verify) cmd_verify ;;
+  check)  shift; cmd_check "${1:-}" ;;
   apply)  shift; cmd_apply "${1:-}" ;;
   revert) cmd_revert ;;
   -h|--help|help|"") usage ;;
