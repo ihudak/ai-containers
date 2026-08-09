@@ -128,13 +128,24 @@ check "main run without IT_LAUNCH_NAME: still detached, no --name" \
 # Comments are stripped first. A comment mentioning `docker run -it` — this
 # file's own header does exactly that — is prose, not an invocation, and a
 # scanner that cannot tell the difference flags the text explaining the rule.
+# Layout-tolerant, like run.sh and lib.sh: upstream keeps the engine beside
+# tests/, mgd-ai-containers keeps it in base/. Hits are reported by BARE
+# filename so the expected value is one string in both repos — the shared files
+# are byte-identical, so the line number is too.
+ENGINE_DIR="$REPO_DIR"
+[[ -f "$ENGINE_DIR/sandbox.sh" ]] || ENGINE_DIR="$REPO_DIR/base"
+if [[ ! -f "$ENGINE_DIR/sandbox.sh" ]]; then
+  fail "cannot locate sandbox.sh at the repo root or in base/ — the premise scan checked nothing"
+  printf '\n%d failure(s)\n' "$fails"
+  exit "$fails"
+fi
 reachable=(sandbox.sh sandbox-common.sh repo.sh group.sh tools-lib.sh)
 hits=""
 for f in "${reachable[@]}"; do
-  [[ -f "$REPO_DIR/$f" ]] || continue
+  [[ -f "$ENGINE_DIR/$f" ]] || continue
   while IFS= read -r n; do
     hits="${hits:+$hits }$f:$n"
-  done < <(awk '!/^[[:space:]]*#/ && /(^|[[:space:]])-(it|ti)([[:space:]]|$)/ { print NR }' "$REPO_DIR/$f")
+  done < <(awk '!/^[[:space:]]*#/ && /(^|[[:space:]])-(it|ti)([[:space:]]|$)/ { print NR }' "$ENGINE_DIR/$f")
 done
 check "exactly one -it/-ti in the scripts a launcher run reaches" "sandbox.sh:768" "$hits"
 if [[ "$hits" != "sandbox.sh:768" ]]; then
