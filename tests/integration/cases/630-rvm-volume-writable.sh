@@ -15,11 +15,22 @@
 #    the machine of whoever writes it — this asserts the mount TYPE for that
 #    reason.
 #
-# 2. The agent can write there. A fresh docker volume mounts ROOT-OWNED (docker
+# 2. The agent can write there. A fresh docker volume mounts ROOT-OWNED: docker
 #    only copies ownership from the image for a path the image already contains,
-#    and /home/<user> is created at runtime), and setup_sandbox_user's recursive
-#    chown uses -xdev, which by design does not cross into mounts. Without
-#    chown_rvm_root the sandbox user cannot even open the reconcile lock.
+#    and /home/<user> is created at runtime.
+#
+#    THE EFFECT HAS TWO PROVIDERS, which a mutation run established rather than
+#    reasoning. Disabling chown_rvm_root alone changed nothing — the case still
+#    passed — because setup_sandbox_user's `find "$home_dir" -xdev -exec chown`
+#    also reaches this directory: -xdev stops find DESCENDING into another
+#    filesystem, but the mount point itself is still visited and chowned. So on
+#    Linux + Docker, chown_rvm_root is currently redundant.
+#
+#    It is kept, and this case asserts the EFFECT rather than either mechanism,
+#    which is the right shape for a claim two things provide: it fails when the
+#    agent cannot write, whichever provider was lost. The known-bad patch removes
+#    both, because a mutation that leaves a second provider standing
+#    demonstrates nothing.
 #
 # WHY THIS DOES NOT DEPEND ON RVM INSTALLING ANYTHING. RUBY_VERSIONS is set to a
 # version that cannot exist, so rvm-reconcile.sh bootstraps, fails that install

@@ -188,19 +188,41 @@ applies is a loud failure, so a refactor that moves the code being broken
 reports itself. A `sed` that matches nothing reports success — the decorative
 check this project keeps rediscovering.
 
-| Case | Known-bad mutation |
-|---|---|
-| `400` | drop the `:ro` suffix in `sandbox.sh`'s repo loop |
-| `410` | remove `chown_workspace_root` from the entrypoint |
-| `420` | make the collision check a warning instead of `exit 1` |
-| `430` | point `BLOCKED_CAPTURE_DIR` at a container-local path (no host mount) |
-| `440` | drop the `-p` flags from the `docker run` |
-| `500` | mount `$HOME/.claude` instead of the group's |
-| `510` | mount the group dir `:ro` |
-| `600` | mount the base volume instead of the working copy |
-| `610` | remove the volume-removal half of `group.sh rm` |
-| `620` | make `gc`'s discovery filter match repo volumes too |
-| `630` | remove `chown_rvm_root` |
+| Case | Known-bad mutation | Demonstrated |
+|---|---|---|
+| `400` | drop the `:ro` suffix in `sandbox.sh`'s repo loop | ✅ batch A |
+| `410` | remove `chown_workspace_root` from the entrypoint | ✅ batch A |
+| `420` | remove the collision refusal **and its message** | ✅ batch B |
+| `430` | remove the `.agent-blocked` host bind | ✅ batch A |
+| `440` | drop the `-p` flags from the `docker run` | ✅ batch A |
+| `500` | mount `$HOME/.claude` instead of the group's | ✅ batch A |
+| `510` | mount the group dir `:ro` | ✅ batch B |
+| `600` | mount the base volume instead of the working copy | ✅ batch A |
+| `610` | remove the volume-removal half of `group.sh rm` | ✅ batch A |
+| `620` | make `gc`'s discovery filter match repo volumes too | ✅ batch A |
+| `630` | remove **both** providers of the rvm mount-root chown | ✅ batch B |
+
+Run on CI (2026-08-09) in two batches, because `500` and `510` patch the same
+line and cannot coexist. Batch A broke eight cases and left the other three
+passing; batch B broke the remaining three and left the other eight passing —
+which is the second half of the demonstration, since a mutation that breaks
+everything proves only that the harness notices breakage.
+
+Two mutations had to be strengthened after the first run, and both taught
+something the design had asserted without checking:
+
+- **`420`** passed under its original mutation. Docker does not silently let the
+  later `-v` win, as the design assumed: it refuses a duplicate destination
+  outright (`Duplicate mount point: /workspace/app`, exit 125). The collision
+  check's value is therefore the *diagnosis*, not the prevention — and the
+  original mutation left the message in place, so the case had nothing to miss.
+- **`630`** passed under its original mutation because the effect has two
+  providers. `setup_sandbox_user`'s `find "$home_dir" -xdev -exec chown` reaches
+  the rvm mount root: `-xdev` stops find *descending* into another filesystem,
+  but the mount point itself is still visited. `chown_rvm_root` is redundant on
+  Linux + Docker today. It is kept — removing production code on one platform's
+  evidence is the wrong direction — and the mutation now removes both, because a
+  mutation that leaves a second provider standing demonstrates nothing.
 
 ## CI
 
