@@ -304,10 +304,17 @@ restore_real_allowlists() {
 build_image() {
   local conf="$IT_SCRATCH/minimal-sandbox.conf"
   # Everything optional OFF: the firewall does not know which fragment a domain
-  # came from, so proving admit/drop once proves it for every fragment. Version
-  # lists are emptied; boolean keys are turned OFF.
-  sed -E 's/^([a-z0-9-]+)=ON$/\1=OFF/; s/^(node|python|ruby|rust|go|openjdk|graalvm-ce|graalvm-oracle|kotlin|scala|maven|gradle|db-clients|angular-cli)=.*/\1=/' \
-    "$REPO_DIR/sandbox.conf" > "$conf"
+  # came from, so proving admit/drop once proves it for every fragment.
+  #
+  # The rule lives in minimal-conf.sh because lib.sh's launcher_up needs the
+  # SAME one — a case drives the real sandbox.sh, which re-reads sandbox.conf at
+  # launch time. Two copies of this sed drifted apart once already; the image
+  # then carried a component the launcher did not mount, and the case failed on
+  # a missing directory that was correct behaviour.
+  bash "$INT_DIR/minimal-conf.sh" "$REPO_DIR/sandbox.conf" > "$conf" || {
+    warn "run.sh: could not derive a minimal sandbox.conf"
+    return 1
+  }
   say "── building $IT_IMAGE from a minimal sandbox.conf…"
   ( cd "$REPO_DIR" && SANDBOX_CONF="$conf" IMAGE_NAME="$IT_IMAGE" ./build.sh "$IT_IMAGE" ) \
     > "$IT_SCRATCH/build.log" 2>&1 || {

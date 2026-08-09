@@ -1,0 +1,16 @@
+# case: 610-group-rm-removes-both
+# what: group.sh rm deletes the directory but skips the volume, orphaning it
+#
+diff --git a/group.sh b/group.sh
+index db18220..151b066 100755
+--- a/group.sh
++++ b/group.sh
+@@ -167,7 +167,7 @@ cmd_rm() {
+   confirm "Remove it?" || { printf 'Aborted.\n'; exit 1; }
+ 
+   if [[ "$has_vol" == "1" ]]; then
+-    if docker volume rm "$vol" >/dev/null 2>&1; then
++    if true; then # MUTATION: volume removal skipped
+       printf 'Removed volume %s\n' "$vol"
+     else
+       printf 'WARNING: could not remove volume %s — leaving the directory in place.\n' "$vol" >&2

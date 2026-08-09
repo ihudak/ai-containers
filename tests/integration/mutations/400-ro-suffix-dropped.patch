@@ -1,0 +1,25 @@
+# case: 400-ro-repo-not-writable
+# what: the :ro suffix is dropped from both repo mount arms, so a read-only repo is mounted writable
+#
+diff --git a/sandbox.sh b/sandbox.sh
+index ded2e31..09bd169 100755
+--- a/sandbox.sh
++++ b/sandbox.sh
+@@ -437,7 +437,7 @@ run_container() {
+           printf "       Re-point it: ./repo.sh rm %s && ./repo.sh add %s <host-path>\n" "$rname" "$rname" >&2
+           exit 1
+         fi
+-        repo_mount_flags+=(-v "$rreal:/workspace/$rname:$rmode")
++        repo_mount_flags+=(-v "$rreal:/workspace/$rname:rw")
+         printf 'REPO: /workspace/%s  (%s, bind %s)\n' "$rname" "$rmode" "$rreal" >&2
+       else
+         if ! repo_volume_exists "$rname"; then
+@@ -450,7 +450,7 @@ run_container() {
+         case "$rmode" in
+           ro)
+             # Shared, read-only: many containers mount the same single copy.
+-            repo_mount_flags+=(-v "$base_vol:/workspace/$rname:ro")
++            repo_mount_flags+=(-v "$base_vol:/workspace/$rname")
+             printf 'REPO: /workspace/%s  (ro, shared volume %s)\n' "$rname" "$base_vol" >&2
+             ;;
+           rw)

@@ -1,0 +1,16 @@
+# case: 630-rvm-volume-writable
+# what: chown_rvm_root no longer chowns, leaving the fresh named volume root-owned
+#
+diff --git a/entrypoint.sh b/entrypoint.sh
+index 25b5795..d982bcd 100755
+--- a/entrypoint.sh
++++ b/entrypoint.sh
+@@ -32,7 +32,7 @@ chown_rvm_root() {
+   [[ -n "${RUBY_VERSIONS:-}" ]] || return 0
+   local d="/home/$sandbox_user/.rvm"
+   [[ -d "$d" ]] || return 0
+-  chown "${SANDBOX_UID:-1000}:${SANDBOX_GID:-1000}" "$d" 2>/dev/null || true
++  : # MUTATION: chown_rvm_root no longer chowns
+ }
+ 
+ # Bootstrap/reconcile the per-user rvm (~/.rvm, group-mounted) as the sandbox

@@ -1,0 +1,16 @@
+# case: 600-rwcopy-isolated
+# what: :rwcopy mounts the shared base volume instead of the per-workspace working copy
+#
+diff --git a/sandbox.sh b/sandbox.sh
+index ded2e31..f493248 100755
+--- a/sandbox.sh
++++ b/sandbox.sh
+@@ -464,7 +464,7 @@ run_container() {
+             # Isolated, per-workspace writable working copy seeded from the base.
+             local wc_vol; wc_vol="$(repo_workcopy_volume_name "$rname" "$ws_tag")"
+             seed_workcopy_volume "$base_vol" "$wc_vol" "$rname" "$launch_dir"
+-            repo_mount_flags+=(-v "$wc_vol:/workspace/$rname")
++            repo_mount_flags+=(-v "$base_vol:/workspace/$rname")
+             printf 'REPO: /workspace/%s  (rwcopy, working copy %s)\n' "$rname" "$wc_vol" >&2
+             ;;
+         esac

@@ -1,0 +1,16 @@
+# case: 430-blocked-output-reaches-host
+# what: the .agent-blocked host bind is removed, so capture output is written only inside the container
+#
+diff --git a/sandbox.sh b/sandbox.sh
+index ded2e31..eddac10 100755
+--- a/sandbox.sh
++++ b/sandbox.sh
+@@ -283,7 +283,7 @@ run_container() {
+     output_mount_flags+=(-v "$launch_dir/.agent-discovery:/workspace/.agent-discovery")
+   elif [[ "$mode" == "restricted" ]]; then
+     mkdir -p "$launch_dir/.agent-blocked"
+-    output_mount_flags+=(-v "$launch_dir/.agent-blocked:/workspace/.agent-blocked")
++    : # MUTATION: host bind for .agent-blocked removed
+   fi
+   # open: no firewall capture, no output mounts.
+ 

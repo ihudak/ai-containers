@@ -284,6 +284,9 @@ IT_LAUNCH_NAME=""; IT_LAUNCH_RC=0; IT_LAUNCH_OUT=""; IT_LAUNCH_ERR=""
 # runner whose user is 1001 must be waited for, and written as, at 1001.
 IT_LAUNCH_UID="${SANDBOX_UID:-$(id -u)}"
 IT_LAUNCH_GID="${SANDBOX_GID:-$(id -g)}"
+# Where the group's dotfile dirs land inside the container. The same expression
+# sandbox.sh uses for dev_home, so a case never hardcodes a username.
+IT_LAUNCH_HOME_IN="/home/${SANDBOX_USER:-$(id -un)}"
 
 # Creates the scratch $HOME, launch dir and shim dir this case's launcher runs
 # in. Idempotent — a case that needs to seed the group tree calls it first, then
@@ -298,6 +301,19 @@ launcher_prepare() {
   IT_LAUNCH_HOME="$d/home"; IT_LAUNCH_DIR="$d/launch"; IT_SHIM_DIR="$d/bin"
   mkdir -p "$IT_LAUNCH_HOME/.ai-containers" "$IT_LAUNCH_DIR" "$IT_SHIM_DIR"
   ln -sf "$IT_LIB_DIR/docker-shim.sh" "$IT_SHIM_DIR/docker"
+  launcher_conf || return 1
+  return 0
+}
+
+# The sandbox.conf the launcher will read. Minimal by default — see
+# minimal-conf.sh for why a case must never inherit the developer's own conf.
+# Call again with overrides to switch one component back on:
+#     launcher_conf claude-code=ON
+launcher_conf() {  # $*=key=value overrides
+  local f="$IT_LAUNCH_HOME/sandbox.conf"
+  bash "$IT_LIB_DIR/minimal-conf.sh" "$IT_REPO_DIR/sandbox.conf" "$@" > "$f" \
+    || { fail "launcher_conf: could not derive a minimal sandbox.conf"; return 1; }
+  export SANDBOX_CONF="$f"
   return 0
 }
 
@@ -331,6 +347,38 @@ launcher_run() {  # $1=mode [$2=primary]
   return 0
 }
 
+# Run one of the repo's OTHER host scripts (group.sh, repo.sh) in the same
+# sandboxed environment a launcher run gets: scratch HOME, run-scoped volume
+# prefix, shim on PATH. Sets IT_SCRIPT_RC / IT_SCRIPT_OUT.
+#
+# IT_LAUNCH_NAME is deliberately NOT exported here — these scripts start no
+# container under test, and a stray --name would collide the moment two of them
+# ran in one case.
+IT_SCRIPT_RC=0; IT_SCRIPT_OUT=""
+launcher_script() {  # $1=script basename $2…=args
+  launcher_prepare || return 1
+  local s="$1"; shift
+  IT_SCRIPT_OUT="$IT_SCRATCH/script-$$-$RANDOM.out"
+  (
+    cd "$IT_LAUNCH_DIR" || exit 1
+    export PATH="$IT_SHIM_DIR:$PATH"
+    export HOME="$IT_LAUNCH_HOME"
+    export IT_REAL_DOCKER IT_LABEL
+    export IMAGE_NAME="$IT_IMAGE"
+    exec bash "$IT_REPO_DIR/$s" "$@"
+  ) >"$IT_SCRIPT_OUT" 2>&1 </dev/null
+  IT_SCRIPT_RC=$?
+  return 0
+}
+docker_volume_exists() { docker volume inspect "$1" >/dev/null 2>&1; }
+assert_volume_exists() {  # $1=volume
+  if docker_volume_exists "$1"; then pass "volume exists: $1"; else fail "volume exists: $1"; fi
+}
+assert_volume_absent() {  # $1=volume
+  if docker_volume_exists "$1"; then fail "volume removed: $1 — it STILL EXISTS"
+  else pass "volume removed: $1"; fi
+}
+
 launcher_up() {  # $1=mode [$2=primary] → IT_CID
   launcher_run "$@" || return 1
   if [[ "$IT_LAUNCH_RC" -ne 0 ]]; then
@@ -360,6 +408,51 @@ _it_pid1_is_uid() {  # $1=cid $2=expected uid
 agent_exec() {  # $1=cid $2=command
   docker exec -u "$IT_LAUNCH_UID:$IT_LAUNCH_GID" "$1" bash -c "$2"
 }
+
+# ── Repo registry fixtures (mounts / volumes tiers) ────────────────────────────
+#
+# Cases write registry records directly instead of calling `repo.sh add`, which
+# would build the ai-containers-seed image and clone over the network for what
+# is, at this level, one line of registry and one volume. The records are the
+# exact shape repo.sh writes (name|type|source|added|synced|backend), so
+# sandbox.sh cannot tell the difference — repo.sh's own seeding path is covered
+# by tests/test-repo-registry.sh.
+#
+# REPO_VOLUME_PREFIX is scoped to the run, and that is a SAFETY property, not
+# tidiness: without it a fixture named "app" would be `ai-containers-repo-app`
+# — the same volume as the "app" a developer has been working in all week, which
+# the runner's sweep would then delete. With it, the fixture is
+# `it-<run-id>-repo-app` and cannot collide with anything real.
+fixture_scope_init() {
+  export REPO_VOLUME_PREFIX="it-$IT_RUN_ID"
+  launcher_prepare || return 1
+  : > "$IT_LAUNCH_HOME/.ai-containers/repos.conf"
+  return 0
+}
+repo_registry_add() {  # $1=name $2=source $3=backend
+  printf '%s|path|%s|0|0|%s\n' "$1" "$2" "$3" >> "$IT_LAUNCH_HOME/.ai-containers/repos.conf"
+}
+# A bind-backed repo: what `auto` resolves to on Linux for a path source.
+repo_register_bind() {  # $1=name → creates the dir, seeds MARKER, registers it
+  local d="$IT_LAUNCH_HOME/repos/$1"
+  mkdir -p "$d" && printf '%s\n' "marker-$1" > "$d/MARKER" || { fail "repo_register_bind($1): setup"; return 1; }
+  repo_registry_add "$1" "$d" bind
+}
+# A volume-backed repo: what macOS always uses, and what :rwcopy requires.
+# Seeded and chowned to the launch identity exactly as repo.sh's seeding step
+# does — a root-owned volume would make every write assertion fail for an
+# unrelated reason and send someone hunting for a mount bug.
+repo_register_volume() {  # $1=name
+  local vol="it-$IT_RUN_ID-repo-$1"
+  docker volume create --label "$IT_LABEL" "$vol" >/dev/null 2>&1 \
+    || { fail "repo_register_volume($1): docker volume create failed"; return 1; }
+  docker run --rm --label "$IT_LABEL" -v "$vol:/v" --entrypoint bash "$IT_IMAGE" \
+    -c "printf 'marker-%s\n' '$1' > /v/MARKER && chown -R $IT_LAUNCH_UID:$IT_LAUNCH_GID /v" \
+    >/dev/null 2>&1 \
+    || { fail "repo_register_volume($1): seeding the volume failed"; return 1; }
+  repo_registry_add "$1" "/fixture/$1" volume
+}
+repo_fixture_volume_name() { printf 'it-%s-repo-%s' "$IT_RUN_ID" "$1"; }
 
 # ── The primitive most network cases reduce to ─────────────────────────────────
 reach() {  # $1=cid $2=host-or-ip [$3=port]
@@ -408,6 +501,14 @@ assert_writable() {  # $1=cid $2=dir
   if agent_exec "$1" "touch '$2/.it-write-probe' && rm -f '$2/.it-write-probe'" >/dev/null 2>&1
   then pass "agent can write: $2"
   else fail "agent can write: $2 — the write was REFUSED"; fi
+}
+# The mount happened at all. Pairs with assert_not_writable: an empty directory
+# where a mount should be is also not writable, and would satisfy the :ro
+# assertion on its own.
+assert_agent_reads() {  # $1=cid $2=file $3=expected content
+  local got; got="$(agent_exec "$1" "cat '$2' 2>/dev/null" 2>/dev/null | tr -d '\r\n')"
+  if [[ "$got" == "$3" ]]; then pass "agent reads $2 [$3]"
+  else fail "agent reads $2 — expected '$3', got '${got:-<nothing>}'"; fi
 }
 assert_not_writable() {  # $1=cid $2=dir
   if agent_exec "$1" "touch '$2/.it-write-probe'" >/dev/null 2>&1; then
