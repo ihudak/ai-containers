@@ -16,6 +16,12 @@
 # One copy serves both layouts (see TESTS_DIR below). Then paste the log back.
 #
 #   PHASES=3 bash ./verify-on-host.sh          # just the Ruby phase
+#   KEEP_RUBY_IMAGE=1 PHASES=3 bash ./verify-on-host.sh
+#                                              # keep ai-sandbox-ruby, its group
+#                                              # dir and its rvm volume after a
+#                                              # PASSING run, to probe them by
+#                                              # hand. A failing run keeps them
+#                                              # anyway.
 #
 #   IT_EXTRA_ARGS='--tags fast' PHASES=4 bash ./verify-on-host.sh
 #                                              # extra flags for Phase 4's runner
@@ -455,7 +461,7 @@ if SANDBOX_CONF="$RUBY_CONF" IMAGE_NAME=ai-sandbox-ruby "$REPO/build.sh" ai-sand
       echo "--- disk (a full VM disk fails the unpack, not the download) ---"
       df -h "$HOME/.rvm" / 2>&1 | sed "s/^/  /"
     ' 2>&1 | sed "s/^/$LOG_PREFIX     /"
-    KEEP_RUBY_IMAGE=1
+    RUBY_PHASE_FAILED=1
   fi
   docker stop "$cid" >/dev/null 2>&1 || true
   sub "second run (must be instant, no recompile):"
@@ -468,9 +474,23 @@ if SANDBOX_CONF="$RUBY_CONF" IMAGE_NAME=ai-sandbox-ruby "$REPO/build.sh" ai-sand
   docker logs "$cid2" 2>&1 | grep -i 'rvm-reconcile' | tail -8 | sed "s/^/$LOG_PREFIX     /"
   docker stop "$cid2" >/dev/null 2>&1 || true
   # Keep the image, group dir AND volume when Phase 3 failed: re-probing a deleted
-  # image costs a rebuild, and a half-written ~/.rvm is itself evidence.
-  if [[ "${KEEP_RUBY_IMAGE:-0}" == "1" ]]; then
-    sub "Phase 3 FAILED — kept for re-probing:"
+  # image costs a rebuild, and a half-written ~/.rvm is itself evidence. A human
+  # can ask for the same thing with KEEP_RUBY_IMAGE=1 in order to probe a
+  # SUCCESSFUL run's image.
+  #
+  # Those two reasons are tracked separately on purpose. They used to share one
+  # variable, so `KEEP_RUBY_IMAGE=1` on a perfectly good run printed
+  # "Phase 3 FAILED" under a log showing Ruby installed, every binary resolving,
+  # and the second run reusing the volume with no recompile. A verifier that
+  # reports the opposite of what it just measured is worse than one that reports
+  # nothing: it is exactly the "green because we did not look" failure inverted,
+  # and it teaches you to distrust the line that matters.
+  if [[ "${RUBY_PHASE_FAILED:-0}" == "1" || "${KEEP_RUBY_IMAGE:-0}" == "1" ]]; then
+    if [[ "${RUBY_PHASE_FAILED:-0}" == "1" ]]; then
+      sub "Phase 3 FAILED — kept for re-probing:"
+    else
+      sub "Phase 3 PASSED — kept at your request (KEEP_RUBY_IMAGE=1):"
+    fi
     sub "  image:      ai-sandbox-ruby   (docker rmi ai-sandbox-ruby when done)"
     sub "  group dir:  $GRPDIR"
     sub "  rvm volume: $RVMVOL   (./group.sh rm $RVMGROUP removes it)"
