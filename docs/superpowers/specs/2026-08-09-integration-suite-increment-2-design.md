@@ -147,7 +147,7 @@ also passes when the mount is broken in both.
 | `600-rwcopy-isolated` | a write inside a `:rwcopy` repo does **not** appear in the base volume; a later `:ro` attach of the base does not see it | volumes, fast |
 | `610-group-rm-removes-both` | `group.sh rm` removes the group directory **and** its rvm volume against a real daemon; refuses while a running container mounts the volume | volumes, fast |
 | `620-group-gc-collects-orphan` | after a manual `rm -rf` of the directory, `group.sh gc` removes the orphaned volume and leaves repo volumes untouched | volumes, fast |
-| `630-rvm-volume-writable-by-agent` | a fresh (root-owned) named volume at `~/.rvm` is writable by the agent user after `chown_rvm_root` | volumes, slow, needs-external |
+| `630-rvm-volume-writable` | `~/.rvm` is a named **volume** (not a bind) and is writable by the agent user after `chown_rvm_root` | volumes, slow |
 
 `610`/`620` have hermetic counterparts in `tests/test-group-lifecycle.sh` that
 run against a fake `docker`. Those stay; they pin the argument construction. The
@@ -155,18 +155,38 @@ integration versions add what a fake cannot: real `docker volume` semantics, and
 the in-use refusal, which depends on `docker ps --filter volume=` actually
 matching — a fake `docker` will agree with whatever the script asks it.
 
-`630` is `slow` and `needs-external` because `chown_rvm_root` is gated on
-`RUBY_VERSIONS` being non-empty (`entrypoint.sh:32`), and setting it also runs
-`rvm-reconcile.sh`, which bootstraps rvm over the network. The case requests a
-version that cannot exist so the install fails fast after the bootstrap instead
-of compiling a Ruby. Nightly, not the gate.
+`630` is `slow` because `chown_rvm_root` is gated on `RUBY_VERSIONS` being
+non-empty (`entrypoint.sh:32`), and setting it also runs `rvm-reconcile.sh`,
+which bootstraps rvm before the agent shell appears. The case requests a version
+that cannot exist, so the install fails fast instead of compiling a Ruby.
+
+It is **not** `needs-external`, which the first draft assumed. The assertion does
+not depend on the bootstrap succeeding at all: the volume is mounted at
+`~/.rvm`, so the directory exists whatever rvm does, and both `chown_rvm_root`
+and the mount happen before `run_ruby_reconcile` is called. Offline the
+bootstrap simply fails and the case still measures exactly what it claims to.
+The case raises `IT_SETTLE` locally to cover the reconcile's retry path rather
+than tagging a dependency it does not have.
 
 ## Authoring rule
 
 Unchanged from the umbrella design, and it binds every case above, not only the
 ones tagged `security`: **a case is not accepted until it has been demonstrated
-failing against the known-bad configuration.** Concretely, each case names its
-mutation and the run that produced the failure:
+failing against the known-bad configuration.**
+
+Increment 1 satisfied this by hand, plus two preserved fixtures. That does not
+scale and it does not survive: nothing anywhere could distinguish a case proven
+discriminating from one nobody ever broke on purpose. Increment 2's known-bad
+configurations live in **production files** — a dropped `:ro`, a missing chown,
+a refusal downgraded to a warning — so they cannot be fixture copies. They are
+kept as patches in `tests/integration/mutations/`, applied and reverted by
+`tests/integration/mutate.sh`, and `tests/test-mutations.sh` enforces that every
+patch still applies **and** that every launcher-tier case has one.
+
+Patches rather than `sed` expressions for one reason: a patch that no longer
+applies is a loud failure, so a refactor that moves the code being broken
+reports itself. A `sed` that matches nothing reports success — the decorative
+check this project keeps rediscovering.
 
 | Case | Known-bad mutation |
 |---|---|

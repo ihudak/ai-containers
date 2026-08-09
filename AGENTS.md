@@ -124,7 +124,18 @@ Cases live in `tests/integration/cases/` and declare `tags:` and `requires:` in 
 
 The suite asserts **effect, not configuration**: it observes from outside the container whether the packet arrived, the file exists, the log line is present. `tests/test-entrypoint-wiring.sh` asserts the capture daemon is *wired into* `entrypoint.sh` and passed every day of a months-long outage, because the wiring was correct and the daemon died after being started.
 
-Two known-bad daemons are kept in `tests/integration/fixtures/`, each preserving a *different* real bug that shipped, so the cases that catch them can be demonstrated failing. Do not "consolidate" or repair them.
+**Two tiers, two verbs.** Network cases call `sandbox_up`, which composes its own `docker run` — that isolates the image and the entrypoint from the launcher. Mounts, groups and volumes cases call `launcher_up`, which drives **the real `sandbox.sh`**, because every mount decision lives there and reproducing it in the harness would test the reproduction. `launcher_up` works through `tests/integration/docker-shim.sh`, a pass-through `docker` on `PATH` that rewrites the launcher's `-it` to `-d -i` and adds a `--name`/`--label` so a case can exec into the container and the runner can sweep it. `sandbox.sh:768` is the only `docker run -it` a launcher run can reach, which is what makes that identification sound; `tests/test-integration-shim.sh` pins the premise by file:line so a second one fails at its cause. These cases carry `requires: launcher`, a probed capability — a machine that cannot drive the shim SKIPs them by name rather than failing them as if mounts were broken. A launcher case never inherits the developer's `sandbox.conf` (`tests/integration/minimal-conf.sh`, shared with `run.sh`'s image build): a `ruby=` there would bootstrap rvm before the agent shell appeared.
+
+**Every case must have been seen failing.** A case never observed failing is green because its primitive works, not because the product does. Two mechanisms hold that rule up, by era:
+
+- Two known-bad daemons are kept in `tests/integration/fixtures/`, each preserving a *different* real bug that shipped, so the increment-1 cases that catch them can be demonstrated failing. Do not "consolidate" or repair them.
+- Increment 2's known-bad configurations live in **production** files, so they are kept as patches under `tests/integration/mutations/` and driven by `tests/integration/mutate.sh` (`list` / `apply <id>` / `revert` / `verify`). Patches rather than `sed`, deliberately: a patch that no longer applies is a loud failure, whereas a stale `sed` matches nothing and reports success. `tests/test-mutations.sh` enforces both directions — every patch still applies, **and** every `mounts`/`groups`/`volumes` case has one, so a new case with no mutation fails at review time.
+
+```bash
+tests/integration/mutate.sh apply 400-ro-suffix-dropped
+tests/integration/run.sh --reuse-image --tags mounts     # expect 400 to FAIL
+tests/integration/mutate.sh revert
+```
 
 `bash ./verify-on-host.sh` runs the same corpus (Phase 4) plus the package/Ruby phases that have no case coverage yet. It is a platform-adaptive **host** entry point: the identical command on macOS + Colima and on Linux.
 
