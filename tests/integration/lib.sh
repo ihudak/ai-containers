@@ -496,7 +496,25 @@ _ruby_reconcile_done() { grep -qE '\[rvm-reconcile\] (done\.|FAILED:)'; }
 # _ruby_reconcile_ok: GIVEN a terminal line, was it the successful one. "done."
 # and "FAILED:" both END the wait but mean opposite things, so success has to be
 # asked as a question separate from "is the wait over".
-_ruby_reconcile_ok()   { grep -q '\[rvm-reconcile\] done\.'; }
+#
+# NOT just "does done. appear": rvm-reconcile.sh's per-version verification
+# failure (log "FAILED: ruby-$v is not installed …") does NOT exit — it falls
+# through to the default-setting block and unconditionally logs "done." at the
+# end regardless. So a reconcile where one requested version compiled and
+# another did not produces a log with BOTH a FAILED: line and a later done.
+# line, and a predicate that only checks for done. reports that partial failure
+# as success. Requires done. present AND no FAILED: line anywhere.
+#
+# Read stdin ONCE into a variable and test the captured text twice — two greps
+# chained on the SAME pipe (`grep -q done. && ! grep -q FAILED:`) would have the
+# first grep consume stdin, leaving the second nothing to read, so it would
+# always report no match regardless of the input.
+_ruby_reconcile_ok() {
+  local logs; logs="$(cat)"
+  grep -q   '\[rvm-reconcile\] done\.'   <<< "$logs" || return 1
+  grep -q   '\[rvm-reconcile\] FAILED:'  <<< "$logs" && return 1
+  return 0
+}
 
 ruby_wait_ready() {  # $1=cid $2=timeout seconds (default 1800 — a cold compile is slow)
   local cid="$1" deadline=$(( SECONDS + ${2:-1800} )) logs

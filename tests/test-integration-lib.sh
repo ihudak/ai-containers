@@ -439,6 +439,47 @@ _ruby_reconcile_ok <<< '[rvm-reconcile] FAILED: ruby-3.4.5' \
   && t_fail "FAILED must not be reported as success" \
   || t_pass "FAILED is not reported as success"
 
+# Empty input: no terminal line at all means "not yet ready" and "not ok",
+# never a false positive from an unset grep matching nothing.
+_ruby_reconcile_done <<< '' \
+  && t_fail "empty input must not be reported as a terminated reconcile" \
+  || t_pass "empty input is not a terminated reconcile"
+_ruby_reconcile_ok <<< '' \
+  && t_fail "empty input must not be reported as a successful reconcile" \
+  || t_pass "empty input is not a successful reconcile"
+
+# ── The PARTIAL-failure vector: the one that actually ships ────────────────────
+# The brief's single-line vectors test `done.` and `FAILED:` as MUTUALLY
+# EXCLUSIVE isolated lines. Real rvm-reconcile.sh is not that shape: its
+# per-version failure at line 99 (`log "FAILED: ruby-$v is not installed …"`)
+# does NOT exit — it falls through to the default-setting block and
+# unconditionally logs "done." at line 115. So a reconcile where ONE requested
+# version fails to compile and another succeeds produces a log with BOTH a
+# FAILED: line and a later done. line — exactly the multi-line shape a
+# single-line vector can never represent. The `native` image variant this
+# increment introduces is configured `ruby=3.3.6,3.4.5` (two versions), so this
+# is not a hypothetical: it is the exact log shape that variant can produce.
+# Reconstructed from rvm-reconcile.sh's real control flow (lines 78-115), not
+# invented: version A's install loop fails both attempts (no "already present"
+# / no success line for it), version B installs cleanly, the verification loop
+# emits FAILED: only for A, and the default-setting block unconditionally logs
+# done. regardless.
+partial_log="$(cat <<'LOG'
+[rvm-reconcile] installing ruby-3.3.6…
+[rvm-reconcile] install failed; refreshing rvm definitions (rvm get stable) and retrying…
+[rvm-reconcile] installing ruby-3.4.5…
+[rvm-reconcile] FAILED: ruby-3.3.6 is not installed (all install attempts failed)
+[rvm-reconcile] setting default ruby-3.4.5 (first bootstrap)
+[rvm-reconcile] done.
+LOG
+)"
+_ruby_reconcile_done <<< "$partial_log" \
+  && t_pass "a partial-failure reconcile IS recognised as terminated (it reached done.)" \
+  || t_fail "a partial-failure reconcile is recognised as terminated"
+_ruby_reconcile_ok <<< "$partial_log" \
+  && t_fail "a PARTIAL failure (one version FAILED, reconcile still logs done.) must NOT be reported as success" \
+  || t_pass "a partial-failure reconcile is correctly NOT reported as success"
+
 declare -f ruby_wait_ready >/dev/null 2>&1 \
   && t_pass "ruby_wait_ready is defined" || t_fail "ruby_wait_ready is defined"
 declare -f assert_runs >/dev/null 2>&1 \
