@@ -160,6 +160,87 @@ else
   done <<< "$refs"
 fi
 
+# ── Class A2: the *.d/ fragment directories a workflow globs ───────────────────
+# Same failure as Class A's existence check, on the other kind of path — and it
+# shipped for exactly the same reason.
+#
+# mgd-ai-containers' nightly `allowlist-health` job globbed `allowlist-domains.d/*.txt`
+# from the repo root, but that repo keeps the engine in base/. The job could
+# never have matched a file. It did not fail silently — the step's own zero-scan
+# guard caught it and went red, which is the guard working exactly as designed —
+# but it went red at 03:17 UTC on a schedule-only workflow, twice, before anyone
+# looked. Class A already checks that a referenced SCRIPT exists where its step
+# would look; nothing checked the same for a referenced DIRECTORY, and the
+# layout difference is handled per job, so the next job to be added inherits the
+# same trap.
+#
+# Scope is `<name>.d/` deliberately, not "any directory-looking token". That is
+# this project's fragment-directory convention — allowlist-domains.d,
+# allowlist-cidrs.d, allowlist-proxy-domains.d, tools.d — so the pattern is
+# specific enough to carry no false positives, and every match is a real
+# repo directory a step expects to find. A general path scanner would flag
+# in-container paths, URLs and `${{ }}` expressions, and a check that cries wolf
+# gets ignored.
+scan_workflow_dirs() {   # emits "<working-dir>|<name.d>"
+  awk '
+    function flush(   s, tmp, m, rest) {
+      if (block == "") return
+      wd = "."
+      if (match(block, /working-directory:[ \t]*[^ \t\n]+/)) {
+        s = substr(block, RSTART, RLENGTH)
+        sub(/working-directory:[ \t]*/, "", s)
+        gsub(/["'"'"']/, "", s)
+        wd = s
+      }
+      tmp = block
+      while (match(tmp, /[A-Za-z0-9_-]+\.d\//)) {
+        m    = substr(tmp, RSTART, RLENGTH)
+        rest = substr(tmp, RSTART + RLENGTH)
+        sub(/\/$/, "", m)
+        printf "%s|%s\n", wd, m
+        tmp = rest
+      }
+    }
+    # Comments are not references — same reasoning as scan_workflow above, and
+    # it matters more here: the allowlist-health step explains itself at length
+    # and names allowlist-proxy-domains.d in prose to say why it is deliberately
+    # NOT checked. Scanning that would demand the very directory the comment
+    # exists to exclude.
+    /^[[:space:]]*#/ { next }
+    /^[[:space:]]*-[[:space:]]/ { flush(); block = "" }
+    { block = block $0 "\n" }
+    END { flush() }
+  ' "$1"
+}
+
+dir_refs=""
+for wf in "${workflows[@]}"; do
+  dir_refs="${dir_refs}$(scan_workflow_dirs "$wf")"$'\n'
+done
+dir_refs="$(printf '%s' "$dir_refs" | grep -v '^$' | sort -u || true)"
+
+if [[ -z "$dir_refs" ]]; then
+  # Unlike Class A, finding none is legitimate: a repo whose workflows glob no
+  # fragment directory has nothing to check. Say so rather than passing
+  # silently, so "0 checked" is never mistaken for "0 problems".
+  pass "no *.d/ fragment directory is referenced by any workflow (nothing to check)"
+else
+  n="$(printf '%s\n' "$dir_refs" | wc -l | tr -d ' ')"
+  pass "workflow scan found $n *.d/ directory reference(s)"
+  while IFS='|' read -r wd ref; do
+    [[ -z "$ref" ]] && continue
+    rel="$ref"
+    [[ "$wd" != "." ]] && rel="${wd%/}/$ref"
+    if [[ -d "$rel" ]]; then
+      pass "$rel exists where its workflow step would look for it"
+    else
+      fail "$rel exists where its workflow step would look for it — globbed as '$ref'$([[ "$wd" != "." ]] && printf ' in %s' "$wd" || printf ' from the repo root') but not there"
+      printf '       Declare the location with `working-directory:` on that step.\n'
+      printf '       A `cd` inside the run block is deliberately not tracked.\n'
+    fi
+  done <<< "$dir_refs"
+fi
+
 # ── Class B: Dockerfile COPYs into /usr/local/bin (and /entrypoint.sh) ──────────
 # These are executed inside the image — directly by entrypoint.sh, or gated on
 # [[ -x ]] before a bash call. The repo-side mode does not carry into the image
