@@ -4,6 +4,15 @@
 # tags:     packages needs-external
 # requires: docker launcher netadmin external
 # image:    agents
+# timeout:  2000
+#
+# 2000s: same launcher_up(≤900) + redundant post-wait(≤900) shape as case 700
+# (≈1800s worst case — see that case's header for why), but this case does
+# NOT exit early when that wait fails (`|| fail`, not `|| { fail; it_finish; }`)
+# — it falls through into the nvm-use loop and the npmrc check regardless, so
+# the worst case is ~1800s plus that tail rather than capped at it. Those two
+# extra checks are each a single bounded agent_exec call (no polling loop), so
+# a couple hundred seconds of headroom above 1800 is generous, not padding.
 #
 # The regression this exists for shipped: /etc/skel/.npmrc carried
 # `prefix=${HOME}/.ai-tools/npm`, and nvm's nvm_die_on_prefix check FAILS

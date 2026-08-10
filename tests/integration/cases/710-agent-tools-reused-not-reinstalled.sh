@@ -4,6 +4,19 @@
 # tags:     packages slow needs-external
 # requires: docker launcher netadmin external
 # image:    agents
+# timeout:  2400
+#
+# 2400s: TWO launcher_up calls, each internally bounded by IT_SETTLE=900 below
+# (same reasoning as case 700). If the first container never gets a working
+# `claude`, the case fails and exits immediately after ~1800s (900 + the
+# redundant post-wait) — bounded, and the second phase is never reached. The
+# path that actually needs the larger budget is the one where reuse itself is
+# BROKEN: the first container succeeds in well under 900s (real install time,
+# not the ceiling), but the second — meant to be near-instant — instead pays
+# its own full cold install, up to its own 900s IT_SETTLE ceiling, plus its
+# smaller 120s confirmation wait. ~900 (first) + ~900 (second, broken-reuse
+# case) + modest log/grep/assert_runs overhead ≈ 1900-2000s worst case;
+# 2400s leaves real margin rather than sitting on the exact estimate.
 #
 # The whole reason ~/.ai-tools is group-mounted rather than baked. If reuse
 # breaks, nothing FAILS — every container just pays a full six-tool network

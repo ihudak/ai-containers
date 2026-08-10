@@ -206,6 +206,34 @@ case_variant() {  # $1=case file → its variant, or `default`
   printf '%s' "${v:-default}"
 }
 
+# Per-case override for the corpus-wide --timeout/300s default. Added for the
+# packages tier: 700/710/720 budget an agent-tier install (four npm global
+# installs, a uv tool install, a vale download) at up to 30 minutes, which
+# the 300s default was never sized for — and nightly.yml runs with no
+# --timeout flag at all, the only CI path those cases take. Raising the
+# global default would weaken every fast case's protection against a hang;
+# a per-case number is the only one that can be right, since a 10-second
+# network case and a slow install do not share a sensible ceiling.
+#
+# Empty header → the run's own $timeout_secs (--timeout, or its 300s
+# literal default) — NOT a second hardcoded 300 here, which would silently
+# drift from the CLI flag the moment someone changed one but not the other.
+# A non-numeric header returns 1 rather than falling back: a case author's
+# typo must fail the run loudly, not silently revert to the exact 300s
+# ceiling this key exists to let a case opt out of.
+case_timeout() {  # $1=case file → seconds; rc 1 if the header exists but is not a positive integer
+  local t; t="$(case_meta "$1" timeout)"
+  if [[ -z "$t" ]]; then
+    printf '%s' "$timeout_secs"
+    return 0
+  fi
+  if [[ "$t" =~ ^[0-9]+$ ]] && [[ "$t" -gt 0 ]]; then
+    printf '%s' "$t"
+    return 0
+  fi
+  return 1
+}
+
 list_intersects() {  # $1, $2 = space-separated lists → 0 if they share a member
   local a b
   for a in $1; do for b in $2; do [[ "$a" == "$b" ]] && return 0; done; done
@@ -498,6 +526,20 @@ for f in $(all_cases); do
   selected="${selected:+$selected }$f"
 done
 
+# Validated for the WHOLE selected set up front, before any image build or
+# capability probe: a malformed `timeout:` header is an authoring bug, and
+# letting it surface only once that case's own it_timeout call is reached
+# would mean discovering it after paying for a multi-GB build — the same
+# fail-fast reasoning variant_overrides applies to an unrecognised `image:`
+# header just below. Loud and fatal, not a silent revert to 300s.
+for f in $selected; do
+  case_timeout "$f" >/dev/null || {
+    printf 'ERROR: %s declares a non-numeric timeout: header value "%s"\n' \
+      "$(basename "$f" .sh)" "$(case_meta "$f" timeout)" >&2
+    exit 2
+  }
+done
+
 detect_caps
 printf 'capabilities:%s%s\n\n' "$_caps" \
   "$([[ "$_caps_forced" -eq 1 ]] && printf ' (FORCED via IT_FORCE_CAPS)')"
@@ -551,6 +593,11 @@ for v in $(selected_variants $selected); do
   tags="$(case_meta "$f" tags)"
   reqs="$(case_meta "$f" requires)"
   log="$IT_SCRATCH/logs/$name.log"
+  # Already validated in the Selection section above (every selected case's
+  # header was checked before the first image build), so this cannot fail
+  # here — just resolves the same value again for THIS case's own it_timeout
+  # call and its "timed out after Ns" report below.
+  case_to="$(case_timeout "$f")"
 
   if missing="$(unmet_requirement "$reqs")"; then
     printf '%-46s  SKIP  (requires: %s)\n' "$name" "$missing"
@@ -568,9 +615,9 @@ for v in $(selected_variants $selected); do
   # then reverts — the parent shell's own $IT_IMAGE is never touched. See the
   # comment above the loop for why that matters.
   if [[ "$verbose" -eq 1 ]]; then
-    IT_IMAGE="$variant_img" it_timeout "$timeout_secs" bash "$f" 2>&1 | tee "$log"; rc=${PIPESTATUS[0]}
+    IT_IMAGE="$variant_img" it_timeout "$case_to" bash "$f" 2>&1 | tee "$log"; rc=${PIPESTATUS[0]}
   else
-    IT_IMAGE="$variant_img" it_timeout "$timeout_secs" bash "$f" > "$log" 2>&1; rc=$?
+    IT_IMAGE="$variant_img" it_timeout "$case_to" bash "$f" > "$log" 2>&1; rc=$?
   fi
   took=$((SECONDS - started))
   # grep -c prints "0" AND exits 1 on no match; under `set -o pipefail` (not in
@@ -596,7 +643,7 @@ for v in $(selected_variants $selected); do
     skipped_names="${skipped_names:+$skipped_names }$name"
     skipped_tags="${skipped_tags}|${name}:${tags}"
   elif [[ "$rc" -eq 124 ]]; then
-    printf '%-46s  FAIL  (timed out after %ss)\n' "$name" "$timeout_secs"
+    printf '%-46s  FAIL  (timed out after %ss)\n' "$name" "$case_to"
     case_failed=1
     n_fail=$((n_fail + 1)); failed_names="${failed_names:+$failed_names }$name"
   elif [[ "$rc" -ne 0 ]]; then

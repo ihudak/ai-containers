@@ -222,6 +222,74 @@ has "$out" '090-hang.*FAIL.*timed out' \
   || fail "a hanging case is killed and reported as timed out"
 rm -f "$CASES/090-hang.sh"
 
+# ── A case's own `# timeout:` header overrides the run's --timeout/default ────
+# Added for the packages tier: 700/710/720 budget an agent-tier install (four
+# npm global installs, a uv tool install, a vale download) at up to 30
+# minutes, which the corpus-wide 300s default was never sized for, and
+# nightly.yml runs with no --timeout flag at all — the only CI path these
+# cases take. Three scenarios, matching the three ways this can go wrong:
+# the header is ignored, the fallback silently reapplies 300 instead of
+# genuinely inheriting $timeout_secs, or a malformed value is swallowed
+# instead of failing loudly.
+#
+# Header PRESENT: a short per-case budget must be honoured even when the
+# run's own --timeout is much larger — proves the header, not just $timeout_secs,
+# reached it_timeout. Checking the reported NUMBER (not just "timed out") is
+# what makes this discriminating: a run.sh that read the header but still
+# reported $timeout_secs in the failure line would pass a weaker assertion.
+cat > "$CASES/096-timeout-header.sh" <<'EOF'
+#!/usr/bin/env bash
+# tags: timeoutheader
+# requires: docker
+# timeout: 2
+echo "PASS: started"
+sleep 30
+EOF
+out="$(IT_FORCE_CAPS="docker" run_it --tags timeoutheader --timeout 300)"
+has "$out" '096-timeout-header.*FAIL.*timed out after 2s' \
+  && pass "a case's own timeout: header overrides a larger --timeout default" \
+  || fail "a case's own timeout: header overrides a larger --timeout default -- got: $out"
+rm -f "$CASES/096-timeout-header.sh"
+
+# Header ABSENT: falls back to the run's own $timeout_secs (--timeout, or its
+# 300s default) — asserted against a DELIBERATELY non-default value (3, not
+# 300) so this cannot pass by coincidence against the hardcoded default.
+cat > "$CASES/097-timeout-default.sh" <<'EOF'
+#!/usr/bin/env bash
+# tags: timeoutdefault
+# requires: docker
+echo "PASS: started"
+sleep 30
+EOF
+out="$(IT_FORCE_CAPS="docker" run_it --tags timeoutdefault --timeout 3)"
+has "$out" '097-timeout-default.*FAIL.*timed out after 3s' \
+  && pass "a case with no timeout: header falls back to the run's own --timeout/default" \
+  || fail "a case with no timeout: header falls back to the run's own --timeout/default -- got: $out"
+rm -f "$CASES/097-timeout-default.sh"
+
+# Header MALFORMED: a loud, run-aborting error — never a silent revert to 300.
+# A silent fallback here is exactly the failure this key exists to prevent
+# from recurring under a different name: a case author who mistypes the
+# value would otherwise get 300s back with no signal at all, the same gap
+# that let 700/710/720 go unbudgeted in the first place.
+cat > "$CASES/098-timeout-bad.sh" <<'EOF'
+#!/usr/bin/env bash
+# tags: timeoutbad
+# requires: docker
+# timeout: notanumber
+echo "PASS: should never run"
+exit 0
+EOF
+out="$(IT_FORCE_CAPS="docker" run_it --tags timeoutbad)"
+rc="$(rc_of "$out")"
+[[ "$rc" -ne 0 ]] \
+  && pass "a non-numeric timeout: header fails the run loudly" \
+  || fail "a non-numeric timeout: header fails the run loudly (rc=$rc)"
+has "$out" '098-timeout-bad' \
+  && pass "the error names the offending case" \
+  || fail "the error names the offending case -- got: $out"
+rm -f "$CASES/098-timeout-bad.sh"
+
 # ── A failing case's own FAIL: line survives a long diagnostics tail ──────────
 # Pins the fix in cf0a870: run.sh's failed-case dump used to pipe the whole
 # case log through a bare `tail -40`. lib.sh's it_diagnose appends the
@@ -353,6 +421,31 @@ check "case_variant reads the image header" \
   "agents" "$(bash "$TMP/callfn.sh" case_variant "$TMP/c-with.sh")"
 check "case_variant defaults when the header is absent" \
   "default" "$(bash "$TMP/callfn.sh" case_variant "$TMP/c-without.sh")"
+
+# case_timeout, as a pure function (see the full run_it() scenarios above for
+# the end-to-end "it actually changes what it_timeout kills at" proof — these
+# three pin the parsing/validation contract in isolation).
+printf '#!/usr/bin/env bash\n# tags: t\n# timeout: 1800\n' > "$TMP/to-with.sh"
+printf '#!/usr/bin/env bash\n# tags: t\n'                  > "$TMP/to-without.sh"
+printf '#!/usr/bin/env bash\n# tags: t\n# timeout: notanumber\n' > "$TMP/to-bad.sh"
+
+check "case_timeout reads the timeout header" \
+  "1800" "$(bash "$TMP/callfn.sh" case_timeout "$TMP/to-with.sh")"
+
+# $timeout_secs is run.sh's own literal default (300, set before the
+# CLI-option loop the IT_SOURCE_ONLY early return skips), never CLI input —
+# callfn.sh passes no --timeout, so this can only read back 300 if
+# case_timeout genuinely falls through to the script's own variable rather
+# than a hardcoded literal of its own.
+check "case_timeout defaults to \$timeout_secs when the header is absent" \
+  "300" "$(bash "$TMP/callfn.sh" case_timeout "$TMP/to-without.sh")"
+
+bash "$TMP/callfn.sh" case_timeout "$TMP/to-bad.sh" >/dev/null 2>&1
+if [[ "$?" -ne 0 ]]; then
+  pass "case_timeout rejects a non-numeric header instead of silently defaulting"
+else
+  fail "case_timeout rejects a non-numeric header instead of silently defaulting"
+fi
 
 # ── Variant scheduling ─────────────────────────────────────────────────────────
 # Grouping matters for DISK, not tidiness: a GitHub runner has ~14 GB free and
