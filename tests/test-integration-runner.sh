@@ -40,17 +40,7 @@ cat > "$TMP/callfn.sh" <<EOF
 #!/usr/bin/env bash
 export IT_SOURCE_ONLY=1
 export IT_IMAGE="\${IT_IMAGE:-ai-sandbox-it}"
-# run.sh's own top-level default (IT_RUBY_VERSIONS="\${IT_RUBY_VERSIONS:-3.3.6,3.4.5}")
-# runs as a side effect of sourcing below, and — being the SAME \`:-\` operator a
-# probe under test may branch on — silently clobbers a caller's deliberately
-# EMPTY value with that default before the requested function ever sees it.
-# Restore the caller's literal value afterward, but ONLY when the caller
-# actually set it: an omitted IT_RUBY_VERSIONS must still observe run.sh's
-# real default, which every OTHER caller of this helper relies on.
-_it_ruby_versions_was_set="\${IT_RUBY_VERSIONS+1}"
-_it_ruby_versions_literal="\${IT_RUBY_VERSIONS-}"
 source "$RUNNER"
-[[ -n "\$_it_ruby_versions_was_set" ]] && IT_RUBY_VERSIONS="\$_it_ruby_versions_literal"
 "\$@"
 EOF
 chmod +x "$TMP/callfn.sh"
@@ -475,28 +465,66 @@ probe_out="$(IT_RUBY_VERSIONS=3.4.5 bash "$TMP/callfn.sh" probe_multiruby; echo 
 case "$probe_out" in *rc=1*) pass "multiruby is absent with one version" ;;
                      *)      fail "multiruby is absent with one version ($probe_out)" ;; esac
 
-# An explicitly empty IT_RUBY_VERSIONS collides with run.sh's OWN top-level
-# default (line ~185: IT_RUBY_VERSIONS="${IT_RUBY_VERSIONS:-3.3.6,3.4.5}"),
-# which fires on empty exactly as it fires on unset and would otherwise
-# silently replace "" with the two-version default before probe_multiruby
-# ever ran — passing this assertion for the wrong reason (the default, not
-# probe_multiruby's own empty-list branch). callfn.sh restores the caller's
-# literal value after sourcing for exactly this reason; see its definition.
-probe_out="$(IT_RUBY_VERSIONS= bash "$TMP/callfn.sh" probe_multiruby; echo "rc=$?")"
-case "$probe_out" in *rc=1*) pass "multiruby is absent with an empty version list" ;;
-                     *)      fail "multiruby is absent with an empty version list ($probe_out)" ;; esac
+# An empty IT_RUBY_VERSIONS is not a reachable state to probe here: run.sh's own
+# top-level `IT_RUBY_VERSIONS="${IT_RUBY_VERSIONS:-3.3.6,3.4.5}"` normalises it at
+# source time — which runs whether run.sh is executed OR sourced, since the
+# IT_SOURCE_ONLY early return sits far below that line — and probe_multiruby is
+# only ever reached via detect_caps, after that normalisation (or after
+# IT_FORCE_CAPS short-circuits detect_caps entirely). An empty case has no
+# distinct branch anyway: probe_multiruby's `case` falls "" and "3.4.5" through
+# the SAME `*)` arm, so it is already covered by "absent with one version" above.
+# No third assertion here on purpose — manufacturing the empty state would test
+# something that cannot occur, not add coverage.
 
 # The brief's own draft of this fourth assertion grepped run.sh's SOURCE TEXT for
 # the literal registration line `probe_multiruby && c="$c multiruby"`. That proves
 # the string exists, not that detect_caps ever executes it — exactly the kind of
 # decorative check this suite exists to eliminate. --list-caps is the real
 # observation point: it prints the capability list detect_caps actually produced.
-# Confirmed separately that it completes with no Docker daemon at all on this
-# machine (`docker info` here is rc=127, command not found), so this is hermetic
-# without needing IT_FORCE_CAPS or a fake docker on PATH.
-out="$(IT_RUBY_VERSIONS=3.3.6,3.4.5 bash "$RUN" --list-caps 2>&1)"
+#
+# It must run through a docker stub that FAILS `docker info`, not merely rely on
+# this machine having no `docker` binary at all (this file's own header line 15:
+# "fake docker on PATH so nothing can reach a real daemon" — every other real-run.sh
+# invocation in this file honors that; this is the one that didn't). On a CI
+# runner with a live daemon, an unguarded `--list-caps` call would take the `if
+# docker info` branch in detect_caps, run a real `docker network create`/`rm`,
+# and then — since `docker image inspect "$IT_DNS_IMAGE"` fails on a machine that
+# never pulled it — fall through to `it_timeout 120 docker pull
+# coredns/coredns:1.11.3`, a real network pull inside what is supposed to be a
+# hermetic unit test. FAKE_BIN/docker above cannot be reused for this: it answers
+# `info` and `image inspect` with success, which would route into
+# probe_netadmin/probe_launcher and hit their `docker run` calls, which that stub
+# does not handle (see its own header comment) and would abort with "unexpected
+# call". This stub instead fails `info` outright, so the ENTIRE docker block is
+# skipped deterministically regardless of host, while still exercising
+# detect_caps's real control flow. It also logs every subcommand it is asked to
+# run, so the test can prove the block was genuinely skipped — not merely that
+# its output happened to omit multiruby by coincidence.
+NOINFO_BIN="$TMP/bin-noinfo"; mkdir -p "$NOINFO_BIN"
+NOINFO_LOG="$TMP/noinfo-docker.log"
+: > "$NOINFO_LOG"
+cat > "$NOINFO_BIN/docker" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$NOINFO_LOG"
+exit 1
+EOF
+chmod +x "$NOINFO_BIN/docker"
+
+out="$(IT_RUBY_VERSIONS=3.3.6,3.4.5 PATH="$NOINFO_BIN:$PATH" bash "$RUN" --list-caps 2>&1)"
 case "$out" in *multiruby*) pass "detect_caps reports multiruby when two versions are configured" ;;
                *)           fail "detect_caps reports multiruby when two versions are configured ($out)" ;; esac
+
+# The positive check above could pass even if the docker block silently ran and
+# just happened not to break anything on this host, so it does not by itself
+# prove the block was skipped. Two independent confirmations that it was:
+case "$out" in *" docker "*) fail "docker capability must not appear once \`docker info\` fails ($out)" ;;
+               *)            pass "docker capability is absent once \`docker info\` fails, confirming the gate held" ;; esac
+
+log_contents="$(cat "$NOINFO_LOG")"
+case "$log_contents" in
+  info) pass "the docker stub saw exactly one call (info) and detect_caps stopped there" ;;
+  *)    fail "the docker stub saw exactly one call (info) and detect_caps stopped there -- got: $log_contents" ;;
+esac
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
