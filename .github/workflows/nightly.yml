@@ -41,6 +41,25 @@ jobs:
     name: Integration — everything
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    # Skip ONLY the one input shape the baked `--exclude packages` below turns
+    # into a guaranteed-empty selection: a dispatch of tags=packages exactly.
+    # With that exclude baked in, `--tags packages --exclude packages` selects
+    # ZERO cases, and run.sh treats zero selection as FATAL BY DESIGN — the
+    # same guard that stops a mistyped --tags from passing silently (see
+    # run.sh's own "A run that selected NOTHING is not a pass" comment). That
+    # guard firing here would not mean anything is broken; it would mean this
+    # job and the dispatcher agreed to select nothing, and the failure would
+    # read as a broken corpus rather than as the redundant-request it is —
+    # packages-agents and packages-native already run exactly that selection,
+    # in full, every night. Skipping is not `continue-on-error`: the job
+    # simply never claims to have checked anything, which is the honest
+    # report for "coverage lives in the two dedicated jobs instead".
+    # Unaffected by schedule/push triggers or any other dispatch value:
+    # `inputs.tags` there is empty (falsy), never the literal string
+    # 'packages', so this condition is true and the job runs normally — same
+    # evaluates-to-empty behaviour Task 10 already verified for the tags/
+    # exclude expressions below.
+    if: ${{ inputs.tags != 'packages' }}
     steps:
       - uses: actions/checkout@v5
 
@@ -91,17 +110,25 @@ jobs:
       - name: Case corpus
         run: ./tests/integration/run.sh --list
 
-      # No --tags/--exclude on a scheduled run (both inputs render empty): the
-      # whole corpus, including slow and needs-dns. --require security still
-      # applies, so a security case that cannot run here fails the job rather
-      # than quietly disappearing from the count. A manual dispatch narrowing
-      # `tags`/`exclude` is for demonstrating a mutation against one tier
-      # without also paying for integration-full's full run.
+      # `--exclude packages` is BAKED IN, always, not left to inputs.exclude:
+      # the packages tier (7 cases, two image variants) is now owned by the
+      # packages-agents/packages-native jobs below, which run it in parallel
+      # beside this one. Without this exclusion, a scheduled run (no inputs at
+      # all) would select those seven cases HERE too, build both new variant
+      # images inside this single serial job, and very likely blow
+      # `timeout-minutes: 90` on their own — killing the whole corpus run and
+      # reporting nothing about the network/mounts/groups/volumes cases this
+      # job exists for. `inputs.exclude` still composes ON TOP of the baked
+      # exclusion (comma-joined) rather than replacing it, so a dispatcher can
+      # still narrow further; they cannot accidentally widen this job back
+      # into re-running the packages tier by leaving `exclude` at its default.
+      # --require security still applies, so a security case that cannot run
+      # here fails the job rather than quietly disappearing from the count.
       - name: Run the whole corpus
         run: >-
           ./tests/integration/run.sh --require security
           ${{ inputs.tags && format('--tags {0}', inputs.tags) || '' }}
-          ${{ inputs.exclude && format('--exclude {0}', inputs.exclude) || '' }}
+          --exclude packages${{ inputs.exclude && format(',{0}', inputs.exclude) || '' }}
 
       - name: Collect diagnostics
         if: failure()
