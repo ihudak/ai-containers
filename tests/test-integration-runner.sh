@@ -695,5 +695,157 @@ case "$log_contents" in
   *)    fail "the docker stub saw exactly one call (info) and detect_caps stopped there -- got: $log_contents" ;;
 esac
 
+# ── Task 13b: capability probes must not go blind when only a --variant
+#    image was built ────────────────────────────────────────────────────────
+# The real CI regression: a per-variant job builds ai-sandbox-it-agents and
+# NEVER builds the default ai-sandbox-it tag detect_caps used to hardcode.
+# The netadmin/launcher gate's `docker image inspect "$IT_IMAGE"` was always
+# false, so both probes were skipped entirely — reporting netadmin/launcher
+# ABSENT when the truth was "nothing was ever built to probe with". Every
+# launcher/netadmin case then SKIPPED, and --require turned that into a
+# confusing red run (see task 13b's brief).
+#
+# Reproduced and fixed with NO real docker daemon: a fake `docker image
+# inspect` that succeeds ONLY for the variant tag (never the default), plus
+# fake probe_netadmin/probe_launcher (the REAL ones start actual containers,
+# which needs a daemon and is covered by the runtime integration suite, not
+# this hermetic one — see AGENTS.md's "Two tiers, two verbs").
+CAPS_BIN="$TMP/bin-caps"; mkdir -p "$CAPS_BIN"
+cat > "$CAPS_BIN/docker" <<'EOF'
+#!/usr/bin/env bash
+case "$1 $2" in
+  info*)             exit 0 ;;
+  "network create")  echo "it-net-fake"; exit 0 ;;
+  "network rm")       exit 0 ;;
+  "image inspect")
+    # $3 is the tag under test -- only the AGENTS VARIANT's tag "exists".
+    # The default ai-sandbox-it tag is deliberately never built in this
+    # scenario, matching the CI job that only builds ai-sandbox-it-agents.
+    [[ "$3" == "ai-sandbox-it-agents" ]] && exit 0
+    exit 1 ;;
+  pull*)              exit 1 ;;  # offline-safe: never really reach a registry
+  *) exit 1 ;;
+esac
+EOF
+chmod +x "$CAPS_BIN/docker"
+
+cat > "$TMP/caps-case.sh" <<'EOF'
+#!/usr/bin/env bash
+# tags: caps13b
+# requires: docker netadmin launcher
+# image: agents
+echo "PASS: never actually executed by this test"
+EOF
+
+CAPS_BUILD_LOG="$TMP/caps-build.log"
+cat > "$TMP/caps-probe.sh" <<EOF
+#!/usr/bin/env bash
+export IT_SOURCE_ONLY=1
+export IT_IMAGE="ai-sandbox-it"
+source "$RUNNER"
+# Stand in for a real build: just record which variant was asked for. This
+# test is about WHICH image detect_caps ends up pointed at, not about
+# build.sh/docker build itself.
+build_image() { printf '%s\n' "\$1" >> "$CAPS_BUILD_LOG"; return 0; }
+probe_netadmin() { return 0; }
+probe_launcher() { return 0; }
+ensure_caps_image "\$1"
+detect_caps
+printf 'IT_CAPS_IMAGE=%s\n' "\$IT_CAPS_IMAGE"
+printf 'caps=%s\n' "\$_caps"
+EOF
+chmod +x "$TMP/caps-probe.sh"
+
+: > "$CAPS_BUILD_LOG"
+out="$(PATH="$CAPS_BIN:$PATH" bash "$TMP/caps-probe.sh" "$TMP/caps-case.sh" 2>&1)"
+
+has "$out" 'IT_CAPS_IMAGE=ai-sandbox-it-agents' \
+  && pass "capability detection probes the variant that actually got built, not the unbuilt default tag" \
+  || fail "capability detection probes the variant that actually got built -- got: $out"
+has "$out" 'caps=.*netadmin' \
+  && pass "netadmin is detected once a variant image exists, even though the default tag was never built" \
+  || fail "netadmin is detected once a variant image exists -- got: $out"
+has "$out" 'caps=.*launcher' \
+  && pass "launcher is detected once a variant image exists, even though the default tag was never built" \
+  || fail "launcher is detected once a variant image exists -- got: $out"
+[[ "$(cat "$CAPS_BUILD_LOG")" == "agents" ]] \
+  && pass "capability detection builds only the one variant it needs, exactly once" \
+  || fail "capability detection builds only the one variant it needs, exactly once -- got: $(cat "$CAPS_BUILD_LOG" | tr '\n' ' ')"
+
+# ── --list-caps must never report "undetermined" as "absent" ──────────────────
+# --list-caps deliberately never builds (see the runner's own comment on that
+# flag): probing accurately can require a build, and --list-caps must not
+# perform one just to answer a question. But it also must not let "we never
+# checked" read as "checked, and no" -- that collapse is the exact defect
+# class task 13b exists to eliminate, and it's what made this failure
+# confusing instead of obvious in the first place.
+LISTCAPS_BIN="$TMP/bin-listcaps"; mkdir -p "$LISTCAPS_BIN"
+cat > "$LISTCAPS_BIN/docker" <<'EOF'
+#!/usr/bin/env bash
+case "$1 $2" in
+  info*)             exit 0 ;;
+  "network create")  echo "it-net-fake"; exit 0 ;;
+  "network rm")       exit 0 ;;
+  "image inspect")    exit 1 ;;   # nothing has ever been built, not even the default
+  pull*)              exit 1 ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod +x "$LISTCAPS_BIN/docker"
+
+out="$(PATH="$LISTCAPS_BIN:$PATH" bash "$RUN" --list-caps 2>&1)"
+cap_line="$(printf '%s\n' "$out" | grep '^capabilities:')"
+
+has "$cap_line" ' docker ' \
+  && pass "--list-caps: docker is still detected (proves the docker-info block engaged, not skipped)" \
+  || fail "--list-caps: docker is still detected -- got: $cap_line"
+has "$cap_line" 'netadmin' \
+  && fail "--list-caps must not claim netadmin is a known capability when it was never probed -- got: $cap_line" \
+  || pass "--list-caps: netadmin does not appear in the plain capabilities line when unprobed"
+has "$out" 'undetermined' \
+  && pass "--list-caps reports an explicit undetermined state distinct from absent" \
+  || fail "--list-caps reports an explicit undetermined state distinct from absent -- got: $out"
+has "$out" 'undetermined.*netadmin' \
+  && pass "the undetermined line names netadmin" \
+  || fail "the undetermined line names netadmin -- got: $out"
+has "$out" 'undetermined.*launcher' \
+  && pass "the undetermined line names launcher" \
+  || fail "the undetermined line names launcher -- got: $out"
+
+# ── --reuse-image must keep short-circuiting unchanged ─────────────────────────
+# The pre-existing behaviour this fix must not disturb: with --reuse-image, no
+# build ever happens (a developer's own pre-built image is trusted as-is), and
+# capability probing still runs directly against $IT_IMAGE, exactly as it did
+# before --variant/ensure_caps_image existed.
+CAPS_BUILD_LOG2="$TMP/caps-build-reuse.log"
+cat > "$TMP/caps-reuse-probe.sh" <<EOF
+#!/usr/bin/env bash
+export IT_SOURCE_ONLY=1
+export IT_IMAGE="ai-sandbox-it"
+source "$RUNNER"
+reuse_image=1
+build_image() { printf '%s\n' "\$1" >> "$CAPS_BUILD_LOG2"; return 0; }
+probe_netadmin() { return 0; }
+probe_launcher() { return 0; }
+ensure_caps_image "\$1"
+detect_caps
+printf 'IT_CAPS_IMAGE=%s\n' "\$IT_CAPS_IMAGE"
+printf 'caps=%s\n' "\$_caps"
+EOF
+chmod +x "$TMP/caps-reuse-probe.sh"
+
+: > "$CAPS_BUILD_LOG2"
+out="$(PATH="$CAPS_BIN:$PATH" bash "$TMP/caps-reuse-probe.sh" "$TMP/caps-case.sh" 2>&1)"
+
+[[ ! -s "$CAPS_BUILD_LOG2" ]] \
+  && pass "--reuse-image never triggers a build, even to determine capabilities" \
+  || fail "--reuse-image never triggers a build, even to determine capabilities -- got: $(cat "$CAPS_BUILD_LOG2" | tr '\n' ' ')"
+has "$out" 'IT_CAPS_IMAGE=ai-sandbox-it' \
+  && pass "--reuse-image probes the plain --image tag, unchanged from before this fix" \
+  || fail "--reuse-image probes the plain --image tag, unchanged from before this fix -- got: $out"
+has "$out" 'caps=.*netadmin' \
+  && pass "--reuse-image's short-circuit still lets netadmin be detected (gate bypassed, not blocked)" \
+  || fail "--reuse-image's short-circuit still lets netadmin be detected -- got: $out"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

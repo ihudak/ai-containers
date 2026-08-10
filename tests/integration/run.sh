@@ -282,22 +282,42 @@ all_cases() {
 
 # ── Capability detection ────────────────────────────────────────────────────────
 # Memoised, and lazy: --list must work on a machine with no daemon at all.
-_caps=""; _caps_forced=0
+_caps=""; _caps_forced=0; _caps_unknown=""
+# Which image tag detect_caps's netadmin/launcher probes start a container
+# FROM. Defaults to $IT_IMAGE (the default variant's tag) — the ONLY thing
+# this ever pointed at before --variant existed, so --list-caps and
+# --reuse-image (neither of which builds anything here) keep exactly their
+# old behaviour. A real (non-reuse) run overwrites this via ensure_caps_image
+# (defined below build_image), once a variant's image has actually been
+# built — see that function's comment for why $IT_IMAGE alone stopped being a
+# safe assumption the day a per-variant CI job stopped building it at all.
+IT_CAPS_IMAGE="$IT_IMAGE"
 detect_caps() {
   [[ -n "$_caps" ]] && return 0
   if [[ -n "${IT_FORCE_CAPS:-}" ]]; then
     _caps=" ${IT_FORCE_CAPS} "; _caps_forced=1; return 0
   fi
-  local c=""
+  local c="" u=""
   if docker info >/dev/null 2>&1; then
     c="$c docker"
     if docker network create --label "$IT_LABEL" "${IT_NET}-probe" >/dev/null 2>&1; then
       c="$c sidecar"
       docker network rm "${IT_NET}-probe" >/dev/null 2>&1 || true
     fi
-    if [[ "$reuse_image" -eq 1 ]] || docker image inspect "$IT_IMAGE" >/dev/null 2>&1; then
+    if [[ "$reuse_image" -eq 1 ]] || docker image inspect "$IT_CAPS_IMAGE" >/dev/null 2>&1; then
       probe_netadmin && c="$c netadmin"
       probe_launcher && c="$c launcher"
+    else
+      # No image exists yet to start a container FROM — e.g. --list-caps
+      # before any build, or every selected variant failed to build (see
+      # ensure_caps_image). netadmin/launcher are HOST properties (kernel
+      # modules, the docker-shim); the image is only the vehicle the probe
+      # needs to start a container with. "No vehicle available" is not the
+      # same fact as "probed it and the host genuinely can't do this" —
+      # collapsing the two is the exact defect class this fix exists to
+      # eliminate, so record it in a visibly separate list rather than just
+      # leaving both capabilities out of $c indistinguishably from absent.
+      u="$u netadmin launcher"
     fi
     # "Can this machine run a DNS-backed case?" — not "is the image already
     # cached". `docker image inspect` alone answers the second, and on a fresh CI
@@ -320,13 +340,14 @@ detect_caps() {
   # has nothing to do with Ruby.
   probe_multiruby && c="$c multiruby"
   _caps=" $c "
+  _caps_unknown=" $u "
 }
 
 # Can a container here create an ipset and install match-set + NFLOG rules?
 # This is the single question the whole security tier rests on (see Task 0).
 probe_netadmin() {
   docker run --rm --cap-add=NET_ADMIN --cap-add=NET_RAW --label "$IT_LABEL" \
-    --entrypoint bash "$IT_IMAGE" -c '
+    --entrypoint bash "$IT_CAPS_IMAGE" -c '
       ipset create it_probe hash:net family inet   >/dev/null 2>&1 || exit 1
       iptables -A OUTPUT -m set --match-set it_probe dst -j ACCEPT >/dev/null 2>&1 || exit 1
       iptables -A OUTPUT -j NFLOG --nflog-group 100 >/dev/null 2>&1 || exit 1
@@ -352,7 +373,7 @@ probe_launcher() {
   ln -sf "$INT_DIR/docker-shim.sh" "$d/docker" || return 1
   (
     export PATH="$d:$PATH" IT_REAL_DOCKER IT_LAUNCH_NAME="$name" IT_LABEL
-    docker run -it --rm --entrypoint sleep --label "$IT_LABEL" "$IT_IMAGE" 120
+    docker run -it --rm --entrypoint sleep --label "$IT_LABEL" "$IT_CAPS_IMAGE" 120
   ) >/dev/null 2>&1
   if [[ "$($IT_REAL_DOCKER inspect -f '{{.State.Running}}' "$name" 2>/dev/null)" == "true" ]]; then
     rc=0
@@ -389,9 +410,23 @@ if [[ "$do_list" -eq 1 ]]; then
   exit 0
 fi
 if [[ "$do_list_caps" -eq 1 ]]; then
+  # Deliberately does NOT build anything (see ensure_caps_image's comment for
+  # why probing accurately can require a build): IT_CAPS_IMAGE is still just
+  # its $IT_IMAGE default here, so this reports exactly what --reuse-image
+  # would find (an image built by an earlier, separate run/build) and
+  # nothing more.
   detect_caps
   printf 'capabilities:%s%s\n' "$_caps" \
     "$([[ "$_caps_forced" -eq 1 ]] && printf ' (FORCED via IT_FORCE_CAPS)')"
+  # A capability detect_caps could not PROBE (no image to start a container
+  # from) is reported here, distinctly from the list above — never silently
+  # folded into "absent". That collapse is the exact defect class task 13b
+  # exists to eliminate: it is what made a genuinely present capability read
+  # as a missing one, and made the failure confusing instead of obvious.
+  if [[ -n "${_caps_unknown// /}" ]]; then
+    printf 'undetermined (no built image to probe with — build one first, or pass --reuse-image against an existing tag):%s\n' \
+      "$_caps_unknown"
+  fi
   exit 0
 fi
 
@@ -465,6 +500,69 @@ build_image() {  # $1=variant
     done
   fi
   say "   build OK"
+}
+
+# ── Capability-probe image selection ────────────────────────────────────────────
+# Per-variant build cache: a variant is built AT MOST ONCE per run. Without
+# this, ensure_caps_image (below) building the first selected variant just to
+# have something for detect_caps to probe would pay for that variant's build
+# TWICE — once here, once again when the execution loop reaches it — on every
+# real (non ---reuse-image) run.
+built_ok_variants=""; built_failed_variants=""
+
+ensure_variant_built() {  # $1=variant → 0 once its image exists, 1 if the build failed
+  local v="$1"
+  [[ "$reuse_image" -eq 1 ]] && return 0
+  case " $built_ok_variants " in *" $v "*) return 0 ;; esac
+  case " $built_failed_variants " in *" $v "*) return 1 ;; esac
+  if build_image "$v"; then
+    built_ok_variants="${built_ok_variants:+$built_ok_variants }$v"
+    return 0
+  fi
+  built_failed_variants="${built_failed_variants:+$built_failed_variants }$v"
+  return 1
+}
+
+# detect_caps's netadmin/launcher probes need a real image to start a
+# container FROM. Before --variant existed that was always $IT_IMAGE, the
+# default variant's tag — but a per-variant CI job (this fix's actual
+# trigger: the packages tier's `agents`/`native` jobs) never builds the
+# default tag at all, so the old hardcoded assumption left detect_caps with
+# nothing to probe and both capabilities silently read as absent.
+#
+# netadmin/launcher are HOST properties (kernel modules, the docker-shim, the
+# daemon itself), not properties of any one image — the image is only the
+# vehicle a probe needs to start a container with. So any ONE successfully
+# built selected variant is exactly as good as another for this purpose;
+# there is no reason it has to be the default. Walk selected_variants in its
+# first-seen order and point IT_CAPS_IMAGE at the first one that builds. A
+# variant whose build genuinely fails is not retried here — it is recorded
+# (ensure_variant_built's own cache) so the execution loop below reports that
+# failure by name exactly once, and this function simply moves on to try the
+# next selected variant instead of giving up on capability detection
+# entirely because of one unrelated variant's build problem.
+#
+# If EVERY selected variant fails to build, IT_CAPS_IMAGE is left at its
+# $IT_IMAGE default (nothing exists to probe), detect_caps's gate correctly
+# reports netadmin/launcher UNDETERMINED rather than absent, and it does not
+# matter operationally: every one of those variants' cases already failed at
+# the build step above, so none of them ever reaches a requirement check
+# that would consult netadmin/launcher's value at all.
+#
+# A no-op under --reuse-image, by design (a hard constraint on this fix:
+# that flag's short circuit must keep working unchanged) — IT_CAPS_IMAGE
+# stays at its $IT_IMAGE default, exactly what detect_caps always probed for
+# a --reuse-image run before this function existed.
+ensure_caps_image() {  # $@=selected case files
+  [[ "$reuse_image" -eq 1 ]] && return 0
+  local v
+  for v in $(selected_variants "$@"); do
+    if ensure_variant_built "$v"; then
+      IT_CAPS_IMAGE="$(variant_image "$v")"
+      return 0
+    fi
+  done
+  return 1
 }
 
 # ── Teardown ────────────────────────────────────────────────────────────────────
@@ -594,9 +692,22 @@ for f in $selected; do
   }
 done
 
+# Build at least one usable image BEFORE detecting capabilities: netadmin and
+# launcher both need to start a real container to probe the host, and a run
+# that only ever builds a --variant image (every packages-tier CI job) left
+# nothing for detect_caps to probe if it still hardcoded $IT_IMAGE, the
+# DEFAULT variant's tag (see ensure_caps_image's own comment for the full
+# story). Capabilities are a HOST property, so detecting ONCE — against
+# whichever selected variant's image builds first — is correct for every
+# variant's cases in the loop below, not just that first one's.
+ensure_caps_image $selected
 detect_caps
-printf 'capabilities:%s%s\n\n' "$_caps" \
+printf 'capabilities:%s%s\n' "$_caps" \
   "$([[ "$_caps_forced" -eq 1 ]] && printf ' (FORCED via IT_FORCE_CAPS)')"
+if [[ -n "${_caps_unknown// /}" ]]; then
+  printf 'undetermined (no image built successfully to probe with):%s\n' "$_caps_unknown"
+fi
+printf '\n'
 
 # ── Execution ───────────────────────────────────────────────────────────────────
 n_pass=0; n_fail=0; n_skip=0; n_sel=0
@@ -624,21 +735,25 @@ for v in $(selected_variants $selected); do
   export IT_VARIANT_OVERRIDES
   variant_img="$(variant_image "$v")"
 
-  if [[ "$reuse_image" -eq 0 ]]; then
-    build_image "$v" || {
-      # A variant that will not build fails ITS cases by name rather than
-      # aborting the run: the other variants' cases are unaffected and their
-      # result is worth having. Reporting them as passed, or not reporting them
-      # at all, is the failure this suite exists to prevent.
-      for f in $selected; do
-        [[ "$(case_variant "$f")" == "$v" ]] || continue
-        printf '%-46s  FAIL  (image variant %s failed to build)\n' "$(basename "$f" .sh)" "$v"
-        n_sel=$((n_sel + 1)); n_fail=$((n_fail + 1))
-        failed_names="${failed_names:+$failed_names }$(basename "$f" .sh)"
-      done
-      continue
-    }
-  fi
+  # ensure_variant_built, not a bare build_image call: ensure_caps_image
+  # (above the capabilities banner) may already have built THIS variant — the
+  # first selected one — purely to have something for detect_caps to probe
+  # with. The shared cache makes that case a no-op here rather than a second,
+  # redundant build; every other variant still gets its normal first (and
+  # only) build right here, and --reuse-image still skips building entirely.
+  ensure_variant_built "$v" || {
+    # A variant that will not build fails ITS cases by name rather than
+    # aborting the run: the other variants' cases are unaffected and their
+    # result is worth having. Reporting them as passed, or not reporting them
+    # at all, is the failure this suite exists to prevent.
+    for f in $selected; do
+      [[ "$(case_variant "$f")" == "$v" ]] || continue
+      printf '%-46s  FAIL  (image variant %s failed to build)\n' "$(basename "$f" .sh)" "$v"
+      n_sel=$((n_sel + 1)); n_fail=$((n_fail + 1))
+      failed_names="${failed_names:+$failed_names }$(basename "$f" .sh)"
+    done
+    continue
+  }
 
   for f in $selected; do
   [[ "$(case_variant "$f")" == "$v" ]] || continue
