@@ -487,23 +487,28 @@ printf 'capabilities:%s%s\n\n' "$_caps" \
 # ── Execution ───────────────────────────────────────────────────────────────────
 n_pass=0; n_fail=0; n_skip=0; n_sel=0
 failed_names=""; skipped_names=""; skipped_tags=""
-# sweep() (the EXIT trap) reads $IT_IMAGE to decide what to `docker rmi` / name
-# in its "kept: image" message, and the loop below reassigns that SAME global
-# on every iteration so each variant's cases see their own image. Remembered
-# here, before the first reassignment, and restored after the loop so sweep()
-# still finds the default image regardless of which variant ran last — a real
-# corpus processes variants in file order, and packages-tier cases (the only
-# ones with a non-default `image:` header) sort after the rest, so "the last
-# variant is `default`" is not a safe assumption to leave implicit.
-it_image_default="$IT_IMAGE"
+# sweep() (the EXIT trap) reads the GLOBAL $IT_IMAGE — exported once, above,
+# with the default/CLI value — to decide what to `docker rmi` / name in its
+# "kept: image" message. An earlier version of this loop reassigned that same
+# global per variant and restored it after the loop; that missed the loop's
+# OTHER exit (the unknown-variant `exit 1` a few lines down), which left
+# whatever the previous iteration had set behind for sweep() to misreport.
+# Save/restore has as many failure points as the loop has exits, and a loop
+# gains exits over time. Not mutating the global at all closes the whole
+# class structurally: each case gets ITS variant's image via a per-invocation
+# prefix assignment on the `it_timeout` call below (verified to reach the
+# child through all three it_timeout implementations — GNU timeout, gtimeout,
+# and the pure-bash background-job fallback — and through the --verbose
+# pipeline, none of which is otherwise obvious from reading the call site).
+# $IT_IMAGE itself never changes for the life of the script, so sweep() is
+# correct no matter which of the loop's exits fires.
 for v in $(selected_variants $selected); do
   IT_VARIANT_OVERRIDES="$(variant_overrides "$v")" || {
     printf 'ERROR: case declares unknown image variant: %s\n' "$v" >&2
     exit 1
   }
-  IT_IMAGE_ACTIVE="$(variant_image "$v")"
   export IT_VARIANT_OVERRIDES
-  export IT_IMAGE="$IT_IMAGE_ACTIVE"
+  variant_img="$(variant_image "$v")"
 
   if [[ "$reuse_image" -eq 0 ]]; then
     build_image "$v" || {
@@ -539,10 +544,15 @@ for v in $(selected_variants $selected); do
 
   case_failed=0
   started=$SECONDS
+  # IT_IMAGE="$variant_img" here is a per-command prefix assignment, not an
+  # `export`: it reaches this case's own process (and lib.sh's `set -u`
+  # IT_IMAGE check) through the environment bash builds for THIS command only,
+  # then reverts — the parent shell's own $IT_IMAGE is never touched. See the
+  # comment above the loop for why that matters.
   if [[ "$verbose" -eq 1 ]]; then
-    it_timeout "$timeout_secs" bash "$f" 2>&1 | tee "$log"; rc=${PIPESTATUS[0]}
+    IT_IMAGE="$variant_img" it_timeout "$timeout_secs" bash "$f" 2>&1 | tee "$log"; rc=${PIPESTATUS[0]}
   else
-    it_timeout "$timeout_secs" bash "$f" > "$log" 2>&1; rc=$?
+    IT_IMAGE="$variant_img" it_timeout "$timeout_secs" bash "$f" > "$log" 2>&1; rc=$?
   fi
   took=$((SECONDS - started))
   # grep -c prints "0" AND exits 1 on no match; under `set -o pipefail` (not in
@@ -605,17 +615,13 @@ for v in $(selected_variants $selected); do
   done
 
   # Reclaim the disk before the next variant. Never the default variant: --keep
-  # and the existing sweep() own that one, and removing it here would break
-  # a --reuse-image workflow the next run depends on.
+  # and the existing sweep() own that one — sweep() targets $IT_IMAGE, which
+  # (per the comment above the loop) is always still the default here, so
+  # this variant-scoped rmi and sweep()'s own never collide or double up.
   if [[ "$v" != "default" && "$reuse_image" -eq 0 && "$keep" -eq 0 ]]; then
-    docker rmi "$(variant_image "$v")" >/dev/null 2>&1 || true
+    docker rmi "$variant_img" >/dev/null 2>&1 || true
   fi
 done
-# See it_image_default's comment above: put the default's tag back so sweep()
-# (EXIT trap, runs after this script falls through to exit below) cleans up —
-# or reports as kept — the right image regardless of iteration order.
-IT_IMAGE="$it_image_default"
-export IT_IMAGE
 
 # ── Report ──────────────────────────────────────────────────────────────────────
 # A run that selected NOTHING is not a pass. Without this, an empty cases/ dir, a

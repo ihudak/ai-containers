@@ -391,5 +391,43 @@ has "$out" 'kept: image fake-img,' \
   && pass "sweep() still names the default image after a later variant ran" \
   || fail "sweep() still names the default image after a later variant ran -- got: $(printf '%s' "$out" | grep 'kept:')"
 
+# ── The unknown-variant `exit 1` must not bypass that same protection ─────────
+# Code review on the fix above found the gap in it: the save/restore only
+# covered the loop's NORMAL exit (falling through past `done`). The loop's
+# OTHER exit — an unrecognized `image:` header hits `exit 1` straight out of
+# the middle of the loop — skips the restore entirely, so the bug reproduces
+# whenever that hard error fires after at least one non-default variant has
+# already run. Same file-ordering trick as above (agents sorts first, so
+# IT_IMAGE is already pointing at the agents tag by the time the bogus-header
+# case is reached), but the second case carries an unrecognized `image:`
+# value instead of a valid one.
+cat > "$CASES/avariantexit-agents.sh" <<'EOF'
+#!/usr/bin/env bash
+# tags: variantexit
+# requires: docker
+# image: agents
+echo "PASS: agents-variant case"
+exit 0
+EOF
+cat > "$CASES/zvariantexit-bogus.sh" <<'EOF'
+#!/usr/bin/env bash
+# tags: variantexit
+# requires: docker
+# image: totally-bogus-variant
+echo "PASS: never runs -- unknown variant aborts first"
+exit 0
+EOF
+out="$(IT_FORCE_CAPS="docker" PATH="$FAKE_BIN:$PATH" IT_CASES_DIR="$CASES" \
+      IT_SCRATCH="$TMP/scratch-variant-exit" \
+      bash "$RUN" --reuse-image --image fake-img --keep --tags variantexit 2>&1)"
+rc="$?"
+rm -f "$CASES/avariantexit-agents.sh" "$CASES/zvariantexit-bogus.sh"
+[[ "$rc" -ne 0 ]] \
+  && pass "an unrecognized image: header still fails the run" \
+  || fail "an unrecognized image: header still fails the run (rc=$rc)"
+has "$out" 'kept: image fake-img,' \
+  && pass "sweep() names the default image even when the loop exits via the unknown-variant error" \
+  || fail "sweep() names the default image even when the loop exits via the unknown-variant error -- got: $(printf '%s' "$out" | grep 'kept:')"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
