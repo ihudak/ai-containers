@@ -34,10 +34,11 @@
 | `tests/integration/run.sh` | variant table, `image:` header, per-variant scheduling, `multiruby` capability | 1, 2, 4 |
 | `tests/integration/lib.sh` | `launcher_conf` variant fold-in, Ruby group constant + readiness wait, `dump_blocked_forensics`, `assert_runs` | 3, 5, 6 |
 | `tests/integration/cases/700..760-*.sh` | the seven cases | 7, 8, 9 |
-| `tests/integration/mutations/*.patch` | seven known-bad demonstrations | 10 |
+| `tests/integration/mutate.sh` | multi-apply for batched demonstrations | 10 |
+| `tests/integration/mutations/*.patch` | seven known-bad demonstrations | 11 |
 | `tests/test-integration-runner.sh` | hermetic tests for run.sh variant logic | 1, 2, 4 |
 | `tests/test-integration-lib.sh` | hermetic tests for lib.sh additions | 3, 5, 6 |
-| `tests/test-mutations.sh` | tag list gains `packages` | 10 |
+| `tests/test-mutations.sh` | multi-apply tests; tag list gains `packages` | 10, 11 |
 | `verify-on-host.sh` | Phases 1-3 deleted | 11 |
 | `tests/test-verify-exit-code.sh` | phase 1/2/3 assertions removed | 11 |
 | `tests/test-verify-on-host-keep.sh` | **deleted** (tests Phase 3's keep logic) | 11 |
@@ -242,18 +243,12 @@ check "selected_variants of a default-only selection does not name a packages va
   "default" "$(bash "$TMP/callfn.sh" selected_variants "$TMP/v-d1.sh")"
 ```
 
-Then a test that the runner never builds a variant nothing selected — the property that keeps a `--tags mounts` run from paying for a Ruby image:
-
-```bash
-# A stub build.sh records which image tags were requested. --tags mounts must
-# request exactly one.
-out="$(grep -c 'build_image "\$v"' "$RUNNER")"
-if [[ "$out" -ge 1 ]]; then
-  pass "the execution loop builds per selected variant, not unconditionally"
-else
-  fail "the execution loop builds per selected variant — build_image is not called with a variant"
-fi
-```
+`selected_variants` is the whole testable surface here. Do **not** add an
+assertion that greps `run.sh` for a literal call like `build_image "$v"`: the
+Global Constraints require asserting effect rather than configuration, and a
+grep for a code string fails on refactors that are entirely correct. That the
+runner never builds a variant nothing selected is verified for real by the CI
+run in Task 13, where a `--tags mounts` run must build exactly one image.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -1278,7 +1273,189 @@ git commit -m "test(integration): Ruby bootstrap, multi-version selection and pe
 
 ---
 
-### Task 10: Seven mutations, and extend the coverage assertion
+### Task 10: Batched mutation demonstrations — `mutate.sh` multi-apply and a nightly `tags` input
+
+**Files:**
+- Modify: `tests/integration/mutate.sh`
+- Modify: `tests/test-mutations.sh`
+- Modify: `.github/workflows/nightly.yml`
+
+**Interfaces:**
+- Produces: `mutate.sh apply <id> [<id>…]` — applies several patches in one go; `.applied` holds one id per line; `revert` reverses them in **reverse order**.
+- Produces: `nightly.yml` `workflow_dispatch` inputs `tags` and `exclude`, both defaulting to today's behaviour.
+
+**Why this task exists.** Seven mutations demonstrated one-per-run costs seven
+full nightly dispatches of up to two hours each, and the existing workflow has
+no input to narrow what runs, so each demo would also re-run
+`integration-full` and `allowlist-health` for nothing. Increment 2 demonstrated
+its eleven mutations in **two batches** — batch A broke eight cases and left
+three passing, batch B the inverse. Both halves matter: a batch that breaks
+everything proves nothing about which case catches what. `mutate.sh` currently
+refuses a second `apply` while one is active, so batching needs the state file
+to become a list.
+
+- [ ] **Step 1: Write the failing tests for multi-apply**
+
+Append to `tests/test-mutations.sh`, before its final summary:
+
+```bash
+# ── Multi-apply ────────────────────────────────────────────────────────────────
+# Batched demonstrations need several known-bad patches applied at once. The
+# state file becomes a LIST, and revert must reverse in the opposite order —
+# two patches touching the same file apply cleanly forwards and conflict
+# backwards if reversed in the order they were applied.
+out="$(bash "$MUTATE" apply 400-ro-suffix-dropped no-such-mutation 2>&1)"; rc=$?
+if [[ "$rc" -ne 0 ]] && grep -q 'no such mutation' <<< "$out"; then
+  pass "multi-apply rejects the whole batch when any id is unknown"
+else
+  fail "multi-apply rejects the whole batch when any id is unknown (rc=$rc)"
+fi
+if [[ ! -f "$MUT_DIR/.applied" ]]; then
+  pass "a rejected batch applies nothing (no state file left behind)"
+else
+  fail "a rejected batch applies nothing — .applied exists after a refused batch"
+  bash "$MUTATE" revert >/dev/null 2>&1
+fi
+
+grep -q 'apply <id>\.\.\.' "$MUTATE" || grep -q 'apply.*\[<id>' "$MUTATE" \
+  && pass "usage documents multi-apply" \
+  || fail "usage documents multi-apply"
+```
+
+- [ ] **Step 2: Run to verify they fail**
+
+Run: `bash tests/test-mutations.sh`
+Expected: FAIL on the batch-rejection assertions — today `cmd_apply` reads only
+`$1` and silently ignores the rest, so a batch with a bad id applies the good
+one and reports success.
+
+- [ ] **Step 3: Implement multi-apply**
+
+Rewrite `cmd_apply` and `cmd_revert` in `tests/integration/mutate.sh`:
+
+```bash
+cmd_apply() {  # $@ = one or more mutation ids
+  [[ "$#" -gt 0 ]] || { printf 'mutate.sh: apply needs at least one mutation id (see `list`)\n' >&2; exit 2; }
+  local id
+  # Validate the WHOLE batch before touching the tree. A batch that applies
+  # three patches and then rejects the fourth leaves a state no one asked for,
+  # and the demonstration it was meant to produce is silently a different one.
+  for id in "$@"; do
+    [[ -f "$MUT_DIR/$id.patch" ]] || { printf 'mutate.sh: no such mutation: %s\n' "$id" >&2; exit 2; }
+  done
+  if [[ -f "$STATE" ]]; then
+    printf 'mutate.sh: still applied — revert first:\n' >&2
+    sed 's/^/  /' "$STATE" >&2
+    exit 1
+  fi
+  if ! ( cd "$GIT_ROOT" && git diff --quiet ); then
+    printf 'mutate.sh: the working tree has unstaged changes — commit or stash first.\n' >&2
+    printf '           A mutation must be the only difference, or reverting it is a guess.\n' >&2
+    exit 1
+  fi
+  for id in "$@"; do
+    git_apply "$MUT_DIR/$id.patch" || {
+      printf 'mutate.sh: %s no longer applies. The code it breaks has changed; regenerate it.\n' "$id" >&2
+      # Roll back what this batch already applied, newest first, so the tree is
+      # left exactly as found rather than half-mutated.
+      if [[ -f "$STATE" ]]; then
+        local done_id
+        while IFS= read -r done_id; do
+          [[ -n "$done_id" ]] && git_apply -R "$MUT_DIR/$done_id.patch" 2>/dev/null
+        done < <(tac "$STATE" 2>/dev/null || sed '1!G;h;$!d' "$STATE")
+        rm -f "$STATE"
+      fi
+      exit 1
+    }
+    printf '%s\n' "$id" >> "$STATE"
+    printf 'Applied %s — %s\n' "$id" "$(patch_field "$MUT_DIR/$id.patch" what)"
+  done
+  printf '\nNow run:  tests/integration/run.sh --reuse-image --tags <tier>\n'
+  printf 'Expect these cases to FAIL, and every other case to still PASS:\n'
+  for id in "$@"; do printf '  %s\n' "$(patch_field "$MUT_DIR/$id.patch" case)"; done
+  printf 'Then:     tests/integration/mutate.sh revert\n'
+}
+
+cmd_revert() {
+  [[ -f "$STATE" ]] || { printf 'mutate.sh: nothing applied.\n'; return 0; }
+  local id
+  # Reverse order. Two patches touching the same file apply cleanly forwards and
+  # conflict backwards if reversed in the order they were applied.
+  while IFS= read -r id; do
+    [[ -n "$id" ]] || continue
+    git_apply -R "$MUT_DIR/$id.patch" || {
+      printf 'mutate.sh: could not reverse %s cleanly. Recover with: git checkout -- <file>\n' "$id" >&2
+      exit 1
+    }
+    printf 'Reverted %s\n' "$id"
+  done < <(tac "$STATE" 2>/dev/null || sed '1!G;h;$!d' "$STATE")
+  rm -f "$STATE"
+}
+```
+
+`tac` is GNU-only; the `sed '1!G;h;$!d'` fallback covers stock macOS, where this
+suite also runs. Update the `usage()` heredoc: `apply <id>...   apply one or
+more mutations (refuses unless the tree is clean)`.
+
+Change the dispatch arm to pass every argument:
+
+```bash
+  apply)  shift; cmd_apply "$@" ;;
+```
+
+- [ ] **Step 4: Run to verify they pass**
+
+Run: `bash tests/test-mutations.sh`
+Expected: 0 failures, including the pre-existing single-id assertions — a
+single id is just a one-element batch and must keep working unchanged.
+
+- [ ] **Step 5: Add the nightly dispatch inputs**
+
+In `.github/workflows/nightly.yml`:
+
+```yaml
+  workflow_dispatch:
+    inputs:
+      tags:
+        description: 'run.sh --tags for the integration jobs (empty = the whole corpus)'
+        required: false
+        default: ''
+      exclude:
+        description: 'run.sh --exclude for the integration jobs'
+        required: false
+        default: ''
+```
+
+Thread them into the integration and packages steps as
+`${{ inputs.tags && format('--tags {0}', inputs.tags) || '' }}` and the
+equivalent for `--exclude`. A scheduled run supplies neither, so its behaviour
+is byte-for-byte what it is today — verify that by reading the rendered command
+in a scheduled run's log, not by assuming it.
+
+The reason this input exists belongs in a comment above it: a mutation
+demonstration needs to run ONE tier against a deliberately broken tree, and
+without it every demonstration also re-runs `integration-full` and
+`allowlist-health` for no benefit.
+
+- [ ] **Step 6: Verify the workflow still parses**
+
+```bash
+python3 -c "import yaml; yaml.safe_load(open('.github/workflows/nightly.yml'))" && echo "YAML OK"
+bash tests/run-all.sh
+```
+
+Expected: `YAML OK`, and the hermetic suite green.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add tests/integration/mutate.sh tests/test-mutations.sh .github/workflows/nightly.yml
+git commit -m "test(mutations): batched demonstrations — multi-apply and a nightly tags input"
+```
+
+---
+
+### Task 11: Seven mutations, and extend the coverage assertion
 
 **Files:**
 - Create: `tests/integration/mutations/700-agent-tools-not-linked.patch`
@@ -1344,20 +1521,55 @@ Expected: `ok` for all eighteen (eleven existing plus seven new). A `STALE` line
 Run: `bash tests/test-mutations.sh`
 Expected: 0 failures.
 
-- [ ] **Step 6: Demonstrate each case failing, in CI**
+- [ ] **Step 6: Demonstrate the cases failing, in CI, in two batches**
 
-There is no local Docker daemon, so the demonstration runs on CI. For each mutation, in batches:
+There is no local Docker daemon, so the demonstration runs on CI. Two batches,
+not seven runs — and **both halves of each batch matter**: the mutated cases
+must FAIL and every other packages case must still PASS. A batch that breaks
+everything proves nothing about which case catches what.
+
+Batch A — the `agents` variant plus one native:
 
 ```bash
-bash tests/integration/mutate.sh apply 700-agent-tools-not-linked
-git commit -am "TEMP: mutation demo 700 — DO NOT MERGE"
-git push origin HEAD:mutation-demo
-gh workflow run nightly.yml --ref mutation-demo
+bash tests/integration/mutate.sh apply \
+  700-agent-tools-not-linked 710-ai-tools-not-group-mounted \
+  720-npmrc-prefix-restored 730-toolchain-stripped
+git commit -am "TEMP: mutation demo batch A — DO NOT MERGE"
+git push -f origin HEAD:mutation-demo
+gh workflow run nightly.yml --ref mutation-demo -f tags=packages
 ```
 
-Read the run: the mutated case must **FAIL** and the others must still **PASS**. Both halves matter — a mutation that breaks everything proves nothing about which case catches what. Record the run URL and the observed pass/fail split for each mutation in the commit message of the final task.
+Expected: 700, 710, 720, 730 FAIL; 740, 750, 760 PASS.
 
-Then `bash tests/integration/mutate.sh revert`, delete the branch, and confirm `git status` is clean before continuing. **The demo commits must never reach the PR branch** — a previous increment lost two regenerated patches exactly this way, by committing them onto a throwaway branch and deleting it while the transcript still claimed they were applied.
+Batch B — the Ruby mutations:
+
+```bash
+bash tests/integration/mutate.sh revert
+bash tests/integration/mutate.sh apply \
+  740-rvm-bind-mount-restored 750-only-default-ruby-installed 760-rvm-volume-not-reused
+git commit -am "TEMP: mutation demo batch B — DO NOT MERGE"
+git push -f origin HEAD:mutation-demo
+gh workflow run nightly.yml --ref mutation-demo -f tags=packages
+```
+
+Expected: 740, 750, 760 FAIL; 700, 710, 720, 730 PASS.
+
+Record each batch's run URL and the observed pass/fail split — they go in the
+Task 11 commit message. Then:
+
+```bash
+bash tests/integration/mutate.sh revert
+git reset --hard HEAD~1          # drop the TEMP commit
+git push -d origin mutation-demo
+git status --short               # MUST be clean before continuing
+```
+
+**The demo commits must never reach the PR branch.** A previous increment lost
+two regenerated patches exactly this way — committed onto a throwaway branch,
+deleted with it, while the transcript still claimed they were applied. Confirm
+with `git log --oneline -1` that HEAD is the Step 5 commit, and with
+`bash tests/integration/mutate.sh verify` that all eighteen patches still apply
+to a clean tree.
 
 - [ ] **Step 7: Commit**
 
@@ -1368,7 +1580,7 @@ git commit -m "test(mutations): known-bad demonstrations for all seven packages 
 
 ---
 
-### Task 11: Delete Phases 1-3 from `verify-on-host.sh`
+### Task 12: Delete Phases 1-3 from `verify-on-host.sh`
 
 **Files:**
 - Modify: `verify-on-host.sh`
@@ -1379,7 +1591,7 @@ git commit -m "test(mutations): known-bad demonstrations for all seven packages 
 **Interfaces:**
 - Produces: `verify-on-host.sh` with Phase 0 and Phase 4 only; `PHASES="${PHASES:-4}"`; the `phase_fail` ledger retained.
 
-**Do this task only after Task 10 confirms every case passes in CI.** Deleting the old coverage before the new coverage is proven is the one ordering mistake with no cheap recovery.
+**Do this task only after Task 11 confirms every case passes in CI.** Deleting the old coverage before the new coverage is proven is the one ordering mistake with no cheap recovery.
 
 - [ ] **Step 1: Delete the phase bodies**
 
@@ -1428,7 +1640,7 @@ git commit -m "refactor(verify): delete Phases 1-3, now covered by the packages 
 
 ---
 
-### Task 12: The nightly `packages` job
+### Task 13: The nightly `packages` job
 
 **Files:**
 - Modify: `.github/workflows/nightly.yml`
@@ -1505,7 +1717,7 @@ gh workflow run nightly.yml --ref "$(git branch --show-current)"
 gh run watch "$(gh run list --workflow=nightly.yml --limit 1 --json databaseId -q '.[0].databaseId')"
 ```
 
-Expected: the `packages` job passes, all seven cases PASS, none SKIP. Record the job's wall-clock and the Budget step's disk figures — they decide the `IT_RUBY_VERSIONS` question. If either threshold is exceeded, throw the cost switch in Step 2 and note it in the CHANGELOG in Task 13.
+Expected: the `packages` job passes, all seven cases PASS, none SKIP. Record the job's wall-clock and the Budget step's disk figures — they decide the `IT_RUBY_VERSIONS` question. If either threshold is exceeded, throw the cost switch in Step 2 and note it in the CHANGELOG in Task 14.
 
 - [ ] **Step 5: Commit**
 
@@ -1516,7 +1728,7 @@ git commit -m "ci(nightly): run the packages tier through run.sh with --require 
 
 ---
 
-### Task 13: Documentation
+### Task 14: Documentation
 
 **Files:**
 - Modify: `AGENTS.md`
@@ -1532,7 +1744,7 @@ Three edits:
 
 - [ ] **Step 2: Update `CHANGELOG.md`**
 
-Add under `## Unreleased` → `### Added`, naming what is now covered that was not, and — if the cost switch was thrown in Task 12 — the named gap.
+Add under `## Unreleased` → `### Added`, naming what is now covered that was not, and — if the cost switch was thrown in Task 13 — the named gap.
 
 - [ ] **Step 3: Verify the doc symlinks still resolve**
 
@@ -1551,7 +1763,7 @@ git commit -m "docs: the packages tier, image variants and IT_RUBY_VERSIONS"
 
 ---
 
-### Task 14: Port to `mgd-ai-containers`
+### Task 15: Port to `mgd-ai-containers`
 
 **Files:** the same set, at that repo's paths — engine files under `base/`, `tests/` at the repo root.
 
@@ -1613,7 +1825,7 @@ Report both PR URLs, the measured packages-job wall-clock and peak disk from eac
 
 ## Self-Review
 
-**Spec coverage.** Image variants → Tasks 1-2. `image:` header → Task 1. Variant scheduling and one-image peak disk → Task 2. `IT_VARIANT_OVERRIDES` / `launcher_conf` fold-in → Task 3. `IT_RUBY_VERSIONS` and `multiruby` → Tasks 1, 4. `dump_blocked_forensics` → Task 5. The Ruby group helper → Task 6 (reduced from the spec's `ruby_group_warm`, with the reason recorded in the task). Seven cases → Tasks 7-9. Mutations and the extended coverage assertion → Task 10. Deleting Phases 1-3 and criterion 6 → Task 11. Nightly job, `--require packages`, the cost switch and its named gap → Task 12. Docs → Task 13. mgd port → Task 14. Platform reach is covered by Global Constraints (layout tolerance) and by capability probing, which already skips by name.
+**Spec coverage.** Batched mutation demonstrations (`mutate.sh` multi-apply, nightly `tags` input) → Task 10, added pre-flight after the plan as first written would have cost seven full nightly dispatches. Image variants → Tasks 1-2. `image:` header → Task 1. Variant scheduling and one-image peak disk → Task 2. `IT_VARIANT_OVERRIDES` / `launcher_conf` fold-in → Task 3. `IT_RUBY_VERSIONS` and `multiruby` → Tasks 1, 4. `dump_blocked_forensics` → Task 5. The Ruby group helper → Task 6 (reduced from the spec's `ruby_group_warm`, with the reason recorded in the task). Seven cases → Tasks 7-9. Mutations and the extended coverage assertion → Task 11. Deleting Phases 1-3 and criterion 6 → Task 12. Nightly job, `--require packages`, the cost switch and its named gap → Task 13. Docs → Task 14. mgd port → Task 15. Platform reach is covered by Global Constraints (layout tolerance) and by capability probing, which already skips by name.
 
 **Deviations from the spec, both deliberate and recorded in-task:**
 - `ruby_group_warm` reduced to a shared group constant plus `ruby_wait_ready`. The rvm volume is already run-scoped and shared, and `run.sh` runs cases serially, so the `flock` guards nothing.
