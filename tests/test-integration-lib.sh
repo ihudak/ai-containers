@@ -250,5 +250,73 @@ grep -qx 'ruby=' "$conf" \
   && t_pass "an unset variant leaves the version lists empty" \
   || t_fail "an unset variant leaves the version lists empty"
 
+
+# ── forensics_report ────────────────────────────────────────────────────────────
+# The reverse-mapped NAME can be wrong on a shared CDN address; the IP and port
+# cannot. A report that prints only the name is unfalsifiable — that is what made
+# repo1.maven.org unexplainable across two verification rounds and three PRs
+# before the evidence (which dies with the container) was captured on purpose.
+#
+# The fixture below is built from log_blocked()'s OWN printf format strings
+# (capture-blocked-traffic.sh), not a hand-typed guess at its output. That is
+# deliberate: a fixture that encodes an assumption about the format rather than
+# the writer's real output would make this test pass against a format nothing
+# produces — which is the exact defect this task exists to guard against. If
+# log_blocked()'s printf ever changes, this fixture changes with it and the
+# mismatch becomes visible instead of silently drifting.
+fx="$TMP/forensics"; mkdir -p "$fx"
+{
+  printf '# blocked destinations\n'
+  # HARD-BLOCKED: same domain, two packets, one address.
+  printf '%-25s  %-10s  %-42s  %s\n' \
+    "2026-08-10T04:00:01" "tcp:443" "203.0.113.9" "repo1.maven.org"
+  printf '%-25s  %-10s  %-42s  %s\n' \
+    "2026-08-10T04:00:03" "tcp:443" "203.0.113.9" "repo1.maven.org"
+  # SELF-HEALED: log_blocked()'s other printf arm, "(auto-allowed)" appended
+  # after the domain — a fifth field, not a fourth.
+  printf '%-25s  %-10s  %-42s  %s (auto-allowed)\n' \
+    "2026-08-10T04:00:09" "tcp:443" "198.51.100.4" "api.anthropic.com"
+} > "$fx/blocked.log"
+printf 'repo1.maven.org\n' > "$fx/blocked-domains.txt"
+printf '203.0.113.9 repo1.maven.org\n203.0.113.9 jruby.example\n' > "$fx/dns-map.txt"
+printf 'api.anthropic.com\nregistry.npmjs.org\n' > "$fx/allowlist.txt"
+
+out="$(forensics_report "$fx/blocked.log" "$fx/blocked-domains.txt" \
+        "$fx/dns-map.txt" "$fx/allowlist.txt" 2>&1)"
+
+grep -q '203\.0\.113\.9' <<< "$out" \
+  && t_pass "forensics prints the destination IP, which cannot be mis-attributed" \
+  || t_fail "forensics prints the destination IP"
+grep -qE 'x2' <<< "$out" \
+  && t_pass "forensics prints the hit count" \
+  || t_fail "forensics prints the hit count"
+grep -qi 'allowlisted in this image: no' <<< "$out" \
+  && t_pass "forensics states the allowlist verdict for the blocked name" \
+  || t_fail "forensics states the allowlist verdict"
+grep -q 'jruby.example' <<< "$out" \
+  && t_pass "forensics lists EVERY name mapped to the address, so a CDN collision is visible" \
+  || t_fail "forensics lists every name mapped to the address"
+grep -q 'api.anthropic.com' <<< "$out" \
+  && t_pass "forensics reports the self-healed entry separately from the hard block" \
+  || t_fail "forensics reports the self-healed entry"
+
+# The header comments in every output file are NOT entries. init_output_files
+# seeds them, and counting them as destinations once reported a clean run as
+# HARD-BLOCKED and listed the headers as the addresses.
+printf '# blocked destinations\n#\n' > "$fx/empty-domains.txt"
+out="$(forensics_report "$fx/blocked.log" "$fx/empty-domains.txt" \
+        "$fx/dns-map.txt" "$fx/allowlist.txt" 2>&1)"
+grep -qi 'hard-blocked' <<< "$out" \
+  && t_fail "a comments-only blocked-domains.txt must not report a hard block" \
+  || t_pass "a comments-only blocked-domains.txt reports no hard block"
+
+declare -f dump_blocked_forensics >/dev/null 2>&1 \
+  && t_pass "dump_blocked_forensics is defined" || t_fail "dump_blocked_forensics is defined"
+# dump_blocked_forensics itself needs a live container (it reads a root-only
+# tmpfs and an image file via docker exec) and is not unit-testable here — see
+# lib.sh's comment on it. Its own body is deliberately thin (docker exec
+# plumbing feeding forensics_report), so proving forensics_report above is
+# proving the only part with logic in it.
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

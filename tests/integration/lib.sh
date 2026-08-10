@@ -600,6 +600,119 @@ assert_no_capability() {  # $1=cid $2=cap name, e.g. cap_net_admin
   esac
 }
 
+# ── Blocked-traffic forensics ───────────────────────────────────────────────────
+# Lifted from verify-on-host.sh's Phase 3 (its HARD-BLOCKED block), which is being
+# deleted once every case gets this for free. That phase carries the only tooling
+# that can settle the repo1.maven.org class of question: a blocked destination was
+# reported by NAME, the name comes from a reverse lookup through a sniffed DNS map,
+# and on a shared CDN address that name can be wrong. Working that out took two
+# full verification rounds and three intermediate PRs, because the two tables that
+# could have settled it on the spot — the DNS map and the baked allowlist — both
+# die with the container, and by the time anyone went looking they were already
+# gone. This function exists so the read happens while the evidence still does.
+#
+# forensics_report is the PURE half: four file paths in, a text report out, no
+# docker anywhere in it — so it is unit-tested directly against fixtures in
+# tests/test-integration-lib.sh, with no daemon required. dump_blocked_forensics
+# below is the thin wrapper that pulls those four files out of a live container.
+#
+# Column layout, verified against the ACTUAL writer (capture-blocked-traffic.sh's
+# log_blocked()), not assumed: `printf '%-25s  %-10s  %-42s  %s\n' "$timestamp"
+# "$proto:$dst_port" "$dst_ip" "${domain:-(no domain)}"`. Field-split by awk that
+# is timestamp($1), "proto:port" COMBINED as one field($2), destination IP($3),
+# domain($4) — never five separate columns, and proto/port are never split apart.
+# A self-healed line appends " (auto-allowed)" after the domain as a further
+# field($5). blocked-ips.txt entries are bare IPs with no domain at all, which is
+# why the match below tests both the IP column and the domain column.
+forensics_report() {  # $1=blocked.log $2=blocked-domains/ips $3=dns-map $4=baked allowlist
+  local blog="$1" bdom="$2" dmap="$3" allow="$4"
+  local hard; hard="$(it_strip_comments < "$bdom" 2>/dev/null | sort -u)"
+  local healed
+  healed="$(grep '(auto-allowed)' "$blog" 2>/dev/null | awk '{print $NF, $(NF-1)}' | sort -u | head -20)"
+
+  if [[ -n "$hard" ]]; then
+    printf '   HARD-BLOCKED by the firewall (never admitted):\n'
+    local what
+    while IFS= read -r what; do
+      [[ -z "$what" ]] && continue
+      # Match the domain column ($4) or the IP column ($3): blocked-ips.txt
+      # entries are bare IPs with no domain. Timestamps carry no space
+      # (%Y-%m-%dT%H:%M:%S) and proto:port is one field, so the columns are
+      # stable at 4 fields for a hard-blocked line.
+      awk -v want="$what" '
+        $3 == want || $4 == want {
+          key = $3 " " $2
+          if (!(key in seen)) { first[key] = $1; order[++n] = key }
+          seen[key]++
+        }
+        END {
+          if (n == 0) { printf "     %-38s (no matching line in blocked.log)\n", want; exit }
+          for (i = 1; i <= n; i++) {
+            k = order[i]
+            printf "     %-38s %-24s x%-4d first %s\n", want, k, seen[k], first[k]
+          }
+        }' "$blog" 2>/dev/null
+
+      # Was this name allowlisted in THIS image? "no" rules out the whole family
+      # of "an allowlisted host under an alias the self-healer could not match",
+      # which is otherwise the first thing to suspect and takes a round trip to
+      # exclude.
+      if grep -qxF "$what" "$allow" 2>/dev/null; then
+        printf '       allowlisted in this image: YES — a self-healing or refresh-timing\n'
+        printf '                                       failure, not policy\n'
+      else
+        printf '       allowlisted in this image: no\n'
+      fi
+
+      # Every name the DNS map holds for the addresses this entry was dropped
+      # on. More than one means the label above is a coin flip between them;
+      # exactly one means the container really did resolve that name.
+      local ip names
+      for ip in $(awk -v want="$what" '$3 == want || $4 == want {print $3}' "$blog" 2>/dev/null | sort -u); do
+        names="$(awk -v ip="$ip" '$1 == ip {print $2}' "$dmap" 2>/dev/null | sort -u | tr '\n' ' ')"
+        printf '       names resolved to %-18s %s\n' "$ip" \
+          "${names:-(none — the container never resolved this address)}"
+      done
+    done <<< "$hard"
+    printf '   ^ the NAME is reverse-mapped from the IP and can be wrong on a shared\n'
+    printf '     CDN address; the IP and port cannot. Confirm before allowlisting.\n'
+  fi
+
+  if [[ -n "$healed" ]]; then
+    printf '   dropped then SELF-HEALED (allowlisted, admitted after the first packet):\n'
+    printf '%s\n' "$healed" | sed 's/^/     /'
+  fi
+
+  if [[ -z "$hard" && -z "$healed" ]]; then
+    # Only a RUNNING capture licenses "nothing was dropped". With a dead daemon
+    # the honest answer is that we do not know.
+    if [[ -f "$blog" ]]; then
+      printf '   firewall dropped nothing\n'
+    else
+      printf '   what the firewall dropped is UNKNOWN — the capture never ran\n'
+    fi
+  fi
+}
+
+dump_blocked_forensics() {  # $1=cid — MUST run while the container is alive
+  local cid="$1" d; d="$(it_scratch)"
+  # Both tables die with the container: the DNS map lives in a root-only tmpfs
+  # (/run/agent-blocked-internal) and the baked allowlist is an image file. Read
+  # them now, while docker exec can still reach them, or lose the only evidence
+  # that can settle a mis-attributed name.
+  docker exec "$cid" cat /run/agent-blocked-internal/dns-map.txt > "$d/dns-map.txt" 2>/dev/null \
+    || : > "$d/dns-map.txt"
+  docker exec "$cid" cat /tmp/allowlist-domains.txt 2>/dev/null \
+    | it_strip_comments > "$d/allowlist.txt" || : > "$d/allowlist.txt"
+  local f
+  for f in blocked.log blocked-domains.txt blocked-ips.txt; do
+    docker exec "$cid" cat "/workspace/.agent-blocked/$f" > "$d/$f" 2>/dev/null || : > "$d/$f"
+  done
+  cat "$d/blocked-ips.txt" >> "$d/blocked-domains.txt" 2>/dev/null || true
+  printf '   ── blocked-traffic forensics ──\n'
+  forensics_report "$d/blocked.log" "$d/blocked-domains.txt" "$d/dns-map.txt" "$d/allowlist.txt"
+}
+
 # ── Diagnostics, printed automatically by it_cleanup when a case failed ────────
 it_diagnose() {  # $1=cid
   printf '── DIAGNOSTICS %s ──\n' "$1"
@@ -616,4 +729,5 @@ it_diagnose() {  # $1=cid
     'ls -la /workspace/.agent-blocked /workspace/.agent-discovery 2>&1;
      for f in /workspace/.agent-blocked/*; do [ -f "$f" ] && { echo "--- $f"; head -20 "$f"; }; done' \
     2>&1 | sed 's/^/     /'
+  dump_blocked_forensics "$1"
 }
