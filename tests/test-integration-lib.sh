@@ -348,15 +348,63 @@ grep -q 'allowed-one.example' <<< "$out" \
   && t_pass "the full resolved-name list is still printed underneath the split" \
   || t_fail "the full resolved-name list is still printed underneath the split"
 
+# ── "dropped nothing" vs UNKNOWN vs a real report — three DISTINCT states ──────
+# forensics_report tells these apart purely by whether $blog (blocked.log) is
+# present on disk. That is only trustworthy if the CALLER (dump_blocked_forensics)
+# preserves real absence rather than fabricating an empty stand-in on a failed
+# read — this repo's capture daemon died silently for months once, and during
+# that outage "the firewall dropped nothing" read as evidence when the honest
+# answer was "we don't know". These three assertions pin the file-presence
+# contract forensics_report is built on, so a regression here (e.g. dump_blocked_
+# forensics going back to `: > "$d/$f"` on a failed read) is caught even though
+# dump_blocked_forensics itself needs a live container to exercise directly.
+#
+# State 1: $blog is MISSING — the honest "we do not know" branch.
+out="$(forensics_report "$fx/no-such-blocked.log" "$fx/empty-domains.txt" \
+        "$fx/dns-map.txt" "$fx/allowlist.txt" 2>&1)"
+grep -q 'UNKNOWN — the capture never ran' <<< "$out" \
+  && t_pass "a MISSING blocked.log reports UNKNOWN, not a clean run" \
+  || t_fail "a MISSING blocked.log reports UNKNOWN, not a clean run (got: $out)"
+grep -q 'dropped nothing' <<< "$out" \
+  && t_fail "a MISSING blocked.log must never claim a clean run" \
+  || t_pass "a MISSING blocked.log does not claim a clean run"
+
+# State 2: $blog is PRESENT but holds no real entries (header comments only) —
+# the capture genuinely ran and genuinely saw nothing.
+printf '# blocked destinations\n#\n' > "$fx/present-empty.log"
+out="$(forensics_report "$fx/present-empty.log" "$fx/empty-domains.txt" \
+        "$fx/dns-map.txt" "$fx/allowlist.txt" 2>&1)"
+grep -q 'firewall dropped nothing' <<< "$out" \
+  && t_pass "a PRESENT-but-empty blocked.log reports a clean run" \
+  || t_fail "a PRESENT-but-empty blocked.log reports a clean run (got: $out)"
+grep -q 'UNKNOWN' <<< "$out" \
+  && t_fail "a PRESENT-but-empty blocked.log must never claim UNKNOWN" \
+  || t_pass "a PRESENT-but-empty blocked.log does not claim UNKNOWN"
+
+# State 3: $blog is PRESENT WITH entries — the real report, and it must not ALSO
+# hedge with either of the other two claims.
+out="$(forensics_report "$fx/blocked.log" "$fx/blocked-domains.txt" \
+        "$fx/dns-map.txt" "$fx/allowlist.txt" 2>&1)"
+case "$out" in
+  *'firewall dropped nothing'*|*'UNKNOWN'*)
+    t_fail "a PRESENT-with-entries report must not also hedge as clean-run or UNKNOWN" ;;
+  *)
+    t_pass "a PRESENT-with-entries report does not hedge as clean-run or UNKNOWN" ;;
+esac
+
 declare -f dump_blocked_forensics >/dev/null 2>&1 \
   && t_pass "dump_blocked_forensics is defined" || t_fail "dump_blocked_forensics is defined"
-# dump_blocked_forensics itself needs a live container (it reads a root-only
-# tmpfs and an image file via docker exec, and the image-grep below runs
-# `docker exec … grep` against the live filesystem) and is not unit-testable
-# here — see lib.sh's comment on it. Its own body is deliberately thin (docker
-# exec plumbing feeding forensics_report, plus one bounded docker-exec grep),
-# so proving forensics_report above proves the only part with logic in it that
-# CAN be proven without a daemon.
+# dump_blocked_forensics itself needs a live container (a `docker inspect`
+# liveness probe, `docker exec` reads of a root-only tmpfs and an image file,
+# and the image-grep's own `docker exec … grep` against the live filesystem)
+# and is not unit-testable here — see lib.sh's comment on it. Its own body is
+# deliberately thin (docker-exec plumbing feeding forensics_report, plus one
+# bounded, N-capped docker-exec grep loop), so proving forensics_report's
+# three file-presence states above — MISSING / present-but-empty /
+# present-with-entries — proves the contract dump_blocked_forensics must not
+# violate (no fabricated files on a failed read, no masking a dead container
+# as "the capture never ran"), even though the wrapper's own plumbing can only
+# be verified by inspection.
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

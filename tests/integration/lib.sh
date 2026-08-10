@@ -714,7 +714,15 @@ forensics_report() {  # $1=blocked.log $2=blocked-domains/ips $3=dns-map $4=bake
 
   if [[ -z "$hard" && -z "$healed" ]]; then
     # Only a RUNNING capture licenses "nothing was dropped". With a dead daemon
-    # the honest answer is that we do not know.
+    # the honest answer is that we do not know — and that distinction is only
+    # as trustworthy as the caller's file-presence semantics: `-f "$blog"` must
+    # mean "the container really had this file", never "a local scratch file
+    # exists because something touched it". dump_blocked_forensics below is
+    # the only thing standing between this branch and a false "clean run": if
+    # it ever fabricates an empty $blog on a failed read, this reports "nothing
+    # was dropped" for a capture that never ran at all — precisely the false
+    # negative that let this repo's capture daemon die silently for months
+    # while "nothing was blocked" read as evidence instead of as ignorance.
     if [[ -f "$blog" ]]; then
       printf '   firewall dropped nothing\n'
     else
@@ -725,20 +733,40 @@ forensics_report() {  # $1=blocked.log $2=blocked-domains/ips $3=dns-map $4=bake
 
 dump_blocked_forensics() {  # $1=cid — MUST run while the container is alive
   local cid="$1" d; d="$(it_scratch)"
+  printf '   ── blocked-traffic forensics ──\n'
+
+  # A container that has already exited tells us NOTHING about whether the
+  # capture ran: every docker exec below would fail identically whether the
+  # daemon crashed before writing a single line or was never started, and
+  # letting that collapse into forensics_report's "the capture never ran"
+  # branch would assert an absence we cannot actually vouch for. Probe once,
+  # up front, and say so plainly — "we could not check" is a different claim
+  # from "we checked and it was empty", and only the second is
+  # forensics_report's file-presence logic entitled to make.
+  if [[ "$(docker inspect -f '{{.State.Running}}' "$cid" 2>/dev/null)" != "true" ]]; then
+    printf '     could not read the capture output — the container is no longer\n'
+    printf '     running, so capture state is UNKNOWN (this is NOT "nothing was blocked")\n'
+    return
+  fi
+
   # Both tables die with the container: the DNS map lives in a root-only tmpfs
   # (/run/agent-blocked-internal) and the baked allowlist is an image file. Read
   # them now, while docker exec can still reach them, or lose the only evidence
   # that can settle a mis-attributed name.
+  #
+  # A failed read must leave the local file ABSENT (`rm -f`), never a fabricated
+  # empty stand-in (`: > file`) — forensics_report tells "the capture never ran"
+  # apart from "it ran and saw nothing" purely by whether the file exists, and
+  # this wrapper is the only place that distinction can be preserved or lost.
   docker exec "$cid" cat /run/agent-blocked-internal/dns-map.txt > "$d/dns-map.txt" 2>/dev/null \
-    || : > "$d/dns-map.txt"
+    || rm -f "$d/dns-map.txt"
   docker exec "$cid" cat /tmp/allowlist-domains.txt 2>/dev/null \
-    | it_strip_comments > "$d/allowlist.txt" || : > "$d/allowlist.txt"
+    | it_strip_comments > "$d/allowlist.txt" || rm -f "$d/allowlist.txt"
   local f
   for f in blocked.log blocked-domains.txt blocked-ips.txt; do
-    docker exec "$cid" cat "/workspace/.agent-blocked/$f" > "$d/$f" 2>/dev/null || : > "$d/$f"
+    docker exec "$cid" cat "/workspace/.agent-blocked/$f" > "$d/$f" 2>/dev/null || rm -f "$d/$f"
   done
   cat "$d/blocked-ips.txt" >> "$d/blocked-domains.txt" 2>/dev/null || true
-  printf '   ── blocked-traffic forensics ──\n'
   forensics_report "$d/blocked.log" "$d/blocked-domains.txt" "$d/dns-map.txt" "$d/allowlist.txt"
 
   # WHICH FILE IN THE IMAGE KNOWS THIS NAME. Everything forensics_report prints
@@ -750,14 +778,29 @@ dump_blocked_forensics() {  # $1=cid — MUST run while the container is alive
   # needs a live container (docker exec), which is the one thing forensics_report
   # is deliberately kept free of, so it lives here instead.
   #
-  # Bounded deliberately: a timeout, a handful of paths rather than /, and only
-  # the first few hits. This is a diagnostic on an already-failing case, not
-  # something that should be able to hang a run.
-  local hard what owner
+  # Bounded in TWO dimensions, deliberately. Each grep is bounded on its own —
+  # timeout, a handful of paths rather than /, first 5 hits — exactly as Phase 3
+  # ran it. But Phase 3 ran this ONCE, in one controlled phase; it_diagnose now
+  # runs it on every failing restricted-mode case, so a broadly-broken case that
+  # blocks dozens of hostnames would otherwise cost N × 90s and look like a hang
+  # in CI. Cap the NAME count too (first 10, mirroring the existing 5-hit-per-name
+  # cap), and say how many were skipped — a silent truncation is its own small lie.
+  local hard what owner n=0 max=10 skipped=0
   hard="$(it_strip_comments < "$d/blocked-domains.txt" 2>/dev/null | sort -u)"
   while IFS= read -r what; do
     [[ -z "$what" ]] && continue
-    [[ "$what" =~ ^[0-9.]+$ ]] && continue      # bare IP: nothing to grep for
+    # Bare IPv4 literal: nothing to grep the image for. Phase 3's own check,
+    # inherited as-is: it does not match a bare IPv6 literal (this repo's
+    # WSL2/nf_tables caveat means IPv6 enforcement can be degraded, so
+    # blocked-ips.txt could in principle hold one). Harmless here — an IPv6
+    # literal just falls through to the grep below instead of being skipped,
+    # and the grep stays bounded either way.
+    [[ "$what" =~ ^[0-9.]+$ ]] && continue
+    if [[ "$n" -ge "$max" ]]; then
+      skipped=$((skipped + 1))
+      continue
+    fi
+    n=$((n + 1))
     owner="$(docker exec "$cid" timeout 90 grep -rlsF "$what" \
                /usr/local /opt /etc /home /usr/lib/node_modules /usr/share \
                2>/dev/null | head -5)"
@@ -769,6 +812,9 @@ dump_blocked_forensics() {  # $1=cid — MUST run while the container is alive
       printf '       — so nothing baked into the image asked for it by literal.\n'
     fi
   done <<< "$hard"
+  if [[ "$skipped" -gt 0 ]]; then
+    printf '     … %d more hard-blocked name(s) skipped (image-grep capped at %d)\n' "$skipped" "$max"
+  fi
 }
 
 # ── Diagnostics, printed automatically by it_cleanup when a case failed ────────
