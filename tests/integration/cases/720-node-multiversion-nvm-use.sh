@@ -6,13 +6,21 @@
 # image:    agents
 # timeout:  2000
 #
-# 2000s: same launcher_up(≤900) + redundant post-wait(≤900) shape as case 700
-# (≈1800s worst case — see that case's header for why), but this case does
-# NOT exit early when that wait fails (`|| fail`, not `|| { fail; it_finish; }`)
-# — it falls through into the nvm-use loop and the npmrc check regardless, so
-# the worst case is ~1800s plus that tail rather than capped at it. Those two
-# extra checks are each a single bounded agent_exec call (no polling loop), so
-# a couple hundred seconds of headroom above 1800 is generous, not padding.
+# 2000s. Same launcher_up(≤900) shape as case 700, and the same non-additive
+# reasoning applies: the reconcile finishes BEFORE PID 1 hands over, so a
+# genuinely broken/hung install shows up as launcher_up itself failing near
+# its own 900s ceiling — the dominant, realistic worst case is ~900+tail, not
+# 900+900. The narrower compound case (reconcile genuinely finished, but
+# `claude` specifically stayed missing) is what the redundant it_wait below
+# can still spend its own full 900s on, since that condition is already
+# fixed by then and nothing makes it_wait give up early. Unlike case 700
+# (which still runs a tail after either outcome) and unlike 710's phase 1
+# (which exits immediately on this wait's failure), THIS case also does not
+# exit early (`|| fail`, not `|| { fail; it_finish; }`) — it falls through
+# into the nvm-use loop and the npmrc check regardless. True bound:
+# ~900 (launcher_up) + ~900 (compound case, redundant wait) + ~10s (three
+# single, non-polling agent_exec calls) ≈ 1810s. 2000s leaves ~190s of real
+# margin over that, not over the smaller "typical" case.
 #
 # The regression this exists for shipped: /etc/skel/.npmrc carried
 # `prefix=${HOME}/.ai-tools/npm`, and nvm's nvm_die_on_prefix check FAILS

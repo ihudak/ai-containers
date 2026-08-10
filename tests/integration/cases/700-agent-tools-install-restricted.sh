@@ -4,17 +4,32 @@
 # tags:     packages security slow needs-external
 # requires: docker launcher netadmin external
 # image:    agents
-# timeout:  1800
+# timeout:  2100
 #
-# 1800s, not the 300s corpus default: launcher_up's own readiness wait is
-# bounded by IT_SETTLE=900 below. If the reconcile script itself finishes
-# (pid 1 flips) but ONE tool specifically failed to install — the exact
-# failure this case exists to catch, e.g. a missing allowlist fragment for
-# just @anthropic-ai/claude-code — the redundant post-launcher_up it_wait
-# below re-polls the same now-permanently-false condition for its own full
-# 900s before reporting it (nothing installs asynchronously after PID 1
-# hands over; see the comment on that wait). 900+900 is the real worst case
-# a correct run can hit; the two six-tool loops add well under a minute.
+# 2100s, not the 300s corpus default — and not the naive 900+900=1800 sum
+# either (that number was tried first and rejected on review: it equalled
+# this case's own wait budget with NOTHING left for the loops that still run
+# afterward, so in exactly the scenario this case exists to diagnose cleanly,
+# the OUTER it_timeout could kill it before it_finish, downgrading a named
+# assertion failure into an ambiguous "timed out after Ns").
+#
+# The two waits below are NOT two independent 900s risks stacked on top of
+# each other. entrypoint.sh runs the whole agent-tools reconcile BEFORE the
+# exec that hands PID 1 to the sandbox user, so by the time launcher_up
+# RETURNS SUCCESSFULLY the install has already finished — the realistic
+# dominant failure mode is launcher_up itself failing around its own 900s
+# IT_SETTLE ceiling (a badly broken/hung reconcile), which exits this case
+# via `|| it_finish` at roughly that ceiling, never reaching the second wait
+# at all. The narrower case the second wait exists for is different: the
+# reconcile genuinely FINISHED (pid 1 flipped, launcher_up succeeded) but one
+# specific tool never got installed — nothing installs asynchronously after
+# the handover, so that condition is already permanently decided, and
+# it_wait has no way to know that; it will poll its own full 900s before
+# giving up. That compound case — launcher_up completing near its own
+# ceiling AND the specific-tool wait separately exhausting its own — is the
+# true (rare, not the expected) upper bound: ~900+900 ≈ 1800s, plus the two
+# six-tool loops afterward (12 bounded docker execs total, ~30-40s). 2100s
+# gives that bound real margin instead of sitting exactly on it.
 #
 # THIS IS THE BLOCKING GATE. Nothing agent-tier is baked into the image: Copilot,
 # Claude Code, Codex, Gemini, graphify and vale install at container start into a

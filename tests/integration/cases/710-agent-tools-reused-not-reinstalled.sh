@@ -6,17 +6,33 @@
 # image:    agents
 # timeout:  2400
 #
-# 2400s: TWO launcher_up calls, each internally bounded by IT_SETTLE=900 below
-# (same reasoning as case 700). If the first container never gets a working
-# `claude`, the case fails and exits immediately after ~1800s (900 + the
-# redundant post-wait) — bounded, and the second phase is never reached. The
-# path that actually needs the larger budget is the one where reuse itself is
-# BROKEN: the first container succeeds in well under 900s (real install time,
-# not the ceiling), but the second — meant to be near-instant — instead pays
-# its own full cold install, up to its own 900s IT_SETTLE ceiling, plus its
-# smaller 120s confirmation wait. ~900 (first) + ~900 (second, broken-reuse
-# case) + modest log/grep/assert_runs overhead ≈ 1900-2000s worst case;
-# 2400s leaves real margin rather than sitting on the exact estimate.
+# 2400s: TWO launcher_up calls, each internally bounded by IT_SETTLE=900
+# below — but the two waits below are not independent 900s risks that stack
+# freely (see case 700's header for the full mechanism: the reconcile
+# finishes BEFORE PID 1 hands over, so launcher_up succeeding already means
+# the install is done, and a genuinely broken/hung reconcile shows up as
+# launcher_up itself failing near its own ceiling, not as a slow success).
+# Two distinct paths through this case, bounded differently:
+#
+#   - PHASE 1 NEVER RESOLVES `claude`: `|| { fail; it_finish }` exits right
+#     there — bounded at ~900 (launcher_up) + ~900 (the redundant wait, only
+#     if launcher_up DID succeed but claude specifically stayed missing) with
+#     NO tail after it (the log grep, rm -f, and phase 2 never run). ≤1800s,
+#     self-contained.
+#   - PHASE 1 SUCCEEDS (the only way to reach phase 2 at all): its own
+#     redundant wait resolved near-instantly, because reaching this branch
+#     means the condition was already true — so phase 1's real cost is just
+#     launcher_up's own completion time, realistically well under its 900s
+#     ceiling. Phase 2 then runs the SAME launcher_up(≤900) gate, followed by
+#     a SMALLER 120s confirmation wait that — unlike phase 1's — does NOT
+#     exit early on failure, so the reuse-log-grep and final assert_runs
+#     still run afterward regardless. Bound: ≤900 (phase 1, typically much
+#     less) + ~900 (phase 2 launcher_up, only near its ceiling if reuse is
+#     genuinely broken and a full reinstall is needed) + ≤120 (phase 2's own
+#     wait) + ~10s tail ≈ 1930s.
+#
+# The second path is the binding one (≈1930s), not the first (≤1800s) —
+# 2400s leaves ~470s of real margin over it, not an arithmetic coincidence.
 #
 # The whole reason ~/.ai-tools is group-mounted rather than baked. If reuse
 # breaks, nothing FAILS — every container just pays a full six-tool network
