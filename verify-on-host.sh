@@ -41,6 +41,20 @@
 #   4  the runtime integration corpus — delegated in full to
 #      tests/integration/run.sh. No test logic lives here.
 #
+# EXIT STATUS: 0 only if every selected phase passed. A phase that fails does not
+# stop the others — each is independent and a full report is worth more than an
+# early abort — but every failure is recorded and reprinted in a summary at the
+# end, and the script exits 1.
+#
+# That is a correction, not a feature. This script was born (08ea799) as a
+# human-read DIAGNOSTIC: something you run, read, and paste back. Increment 1
+# then wired it into nightly CI as a GATE. A report says what it saw; a gate has
+# to be able to say no. The conversion was never made, so `PHASES="1 2 3" bash
+# ./verify-on-host.sh` printed "BUILD FAILED" and exited 0 — the packages job in
+# both repos passed unconditionally and could not have done otherwise. Adding a
+# phase below without a phase_fail call recreates exactly that.
+# tests/test-verify-exit-code.sh holds the line, and fails if it stops holding.
+#
 # Nothing here touches your real container groups, your images, or your projects:
 # every phase uses a throwaway image tag and a throwaway group directory.
 set -uo pipefail
@@ -49,6 +63,14 @@ REPO="${REPO:-$PWD}"
 LOG_PREFIX="[host-verify]"
 say() { printf '\n%s %s\n' "$LOG_PREFIX" "$*"; }
 sub() { printf '%s   %s\n' "$LOG_PREFIX" "$*"; }
+
+# Failure ledger. Phases record into it rather than exiting, so one broken phase
+# never hides the state of the other three.
+FAILED_PHASES=""
+phase_fail() {  # $1=phase number  $2=one-line reason
+  FAILED_PHASES="${FAILED_PHASES}${FAILED_PHASES:+$'\n'}$1|$2"
+  printf '%s   ** PHASE %s FAILED: %s\n' "$LOG_PREFIX" "$1" "$2"
+}
 
 [[ -f "$REPO/build.sh" && -f "$REPO/sandbox.conf" ]] || {
   echo "ERROR: run this from an ai-containers checkout (or set REPO=/path/to/checkout)." >&2
@@ -114,10 +136,13 @@ if SANDBOX_CONF="$SMOKE_CONF" IMAGE_NAME=ai-sandbox-smoke "$REPO/build.sh" ai-sa
   # SMOKE_SKIP_BUILD=1: reuse the image we just built with the right allowlist.
   AGENT_TOOLS_SMOKE=1 SMOKE_IMAGE=ai-sandbox-smoke SMOKE_SKIP_BUILD=1 SMOKE_KEEP=1 \
     bash "$TESTS_DIR/test-agent-tools-smoke.sh" 2>&1 | sed "s/^/$LOG_PREFIX   /"
-  sub "PHASE 1 exit: ${PIPESTATUS[0]:-?}"
+  smoke_rc="${PIPESTATUS[0]:-1}"
+  sub "PHASE 1 exit: $smoke_rc"
+  [[ "$smoke_rc" -eq 0 ]] || phase_fail 1 "agent-tier tool smoke test exited $smoke_rc"
 else
   sub "BUILD FAILED — last 40 lines:"
   tail -40 /tmp/smoke-build.log | sed "s/^/$LOG_PREFIX     /"
+  phase_fail 1 "ai-sandbox-smoke build failed (see /tmp/smoke-build.log)"
 fi
 fi
 
@@ -134,14 +159,30 @@ sed -E 's/^(copilot|claude-code|codex|gemini|graphify|vale|kiro|qmd)=.*/\1=OFF/;
         s/^wkhtmltopdf=.*/wkhtmltopdf=ON/' "$REPO/sandbox.conf" > "$NATIVE_CONF"
 if SANDBOX_CONF="$NATIVE_CONF" IMAGE_NAME=ai-sandbox-native "$REPO/build.sh" ai-sandbox-native >/tmp/native-build.log 2>&1; then
   sub "build OK — verifying the tools actually run:"
+  # `exit $rc`, not just printed lines: MISSING used to be reported to the reader
+  # and to nobody else, so a build that produced none of these tools finished the
+  # phase silently. Same distinction Phase 3 draws below — present is not the same
+  # as runnable, and calling a broken binary "MISSING" sends you hunting for an
+  # install step that already ran.
   docker run --rm --entrypoint bash ai-sandbox-native -lc '
+    rc=0
     for c in psql mysql mongosh convert wkhtmltopdf gcc; do
-      printf "  %-12s " "$c"; command -v "$c" >/dev/null && "$c" --version 2>&1 | head -1 || echo MISSING
-    done' 2>&1 | sed "s/^/$LOG_PREFIX   /"
+      printf "  %-12s " "$c"
+      if ! command -v "$c" >/dev/null 2>&1; then echo "MISSING"; rc=1; continue; fi
+      if out="$("$c" --version 2>&1)"; then
+        printf "%s\n" "$out" | head -1
+      else
+        printf "PRESENT BUT FAILED TO RUN: %s\n" "$(printf "%s\n" "$out" | head -1)"; rc=1
+      fi
+    done
+    exit $rc' 2>&1 | sed "s/^/$LOG_PREFIX   /"
+  native_rc="${PIPESTATUS[0]:-1}"
+  [[ "$native_rc" -eq 0 ]] || phase_fail 2 "a native tool is absent or will not run (exit $native_rc)"
   docker rmi ai-sandbox-native >/dev/null 2>&1 || true
 else
   sub "BUILD FAILED — last 40 lines (this is the jammy-deb-on-noble risk):"
   tail -40 /tmp/native-build.log | sed "s/^/$LOG_PREFIX     /"
+  phase_fail 2 "ai-sandbox-native build failed (see /tmp/native-build.log)"
 fi
 fi
 
@@ -181,10 +222,15 @@ if SANDBOX_CONF="$RUBY_CONF" IMAGE_NAME=ai-sandbox-ruby "$REPO/build.sh" ai-sand
   RVMVOL="$(cd "$REPO" && SANDBOX_CONF="$RUBY_CONF" bash -c \
       'source ./sandbox-common.sh; rvm_volume_ensure "$1" "$2" ai-sandbox-ruby' \
       _ "$RVMGROUP" "$GRPDIR" 2>/dev/null)"
+  # "aborting" used to be a claim, not an action: the code fell through and ran
+  # `docker run -v :/home/<user>/.rvm`, which docker rejects — so the phase died
+  # further down for a reason unrelated to the one just printed. Guard the rest of
+  # the body instead. Deliberately NOT re-indented, per this file's convention for
+  # phase guards: a two-line diff beats reflowing 250 lines.
   if [[ -z "$RVMVOL" ]]; then
     sub "ERROR: could not resolve/create the rvm volume — aborting phase 3."
-    RVMVOL=""
-  fi
+    phase_fail 3 "rvm_volume_ensure produced no volume name"
+  else
   sub "rvm home: docker volume $RVMVOL (NOT a bind mount — that is the fix)"
   # Bind-mount the blocked-traffic capture dir out to the host. Without it the
   # restricted firewall's blocked-domains.txt dies with the --rm container, and a
@@ -225,20 +271,37 @@ if SANDBOX_CONF="$RUBY_CONF" IMAGE_NAME=ai-sandbox-ruby "$REPO/build.sh" ai-sand
   # `#!/usr/bin/env ruby_executable_hooks`, so `bundle` can be perfectly linked and
   # still die on exec. On any failure, dump the link target and the shebang — that
   # is the whole diagnosis, and printing MISSING alone hid it once already.
+  #
+  # Capture first, `head` afterwards. `if out="$(cmd | head -1)"` tests HEAD's
+  # status, not the tool's, and head succeeds on the empty output of a binary that
+  # just died — so this branch, written precisely to catch a `bundle` that will not
+  # exec, could never be reached. The whole diagnostic was decorative.
+  # `bundler` is reported but never required: link-default-ruby.sh links
+  # ruby/gem/bundle/rake/irb, and `bundler` is not in that set — failing on its
+  # absence would report a bug against a contract nothing makes.
   docker exec "$cid" bash -c '
+    rc=0
     for c in ruby gem bundle bundler rake; do
+      required=1; [ "$c" = bundler ] && required=0
       printf "  %-8s " "$c"
-      if ! command -v "$c" >/dev/null 2>&1; then echo "NOT ON PATH"; continue; fi
-      if out="$("$c" --version 2>&1 | head -1)"; then
-        echo "$out"
+      if ! command -v "$c" >/dev/null 2>&1; then
+        echo "NOT ON PATH"; [ "$required" = 1 ] && rc=1
+        continue
+      fi
+      if out="$("$c" --version 2>&1)"; then
+        printf "%s\n" "$out" | head -1
       else
+        out="$(printf "%s\n" "$out" | head -1)"
         p="$(command -v "$c")"
         echo "PRESENT BUT FAILED TO RUN"
         printf "             path:    %s -> %s\n" "$p" "$(readlink -f "$p" 2>/dev/null)"
         printf "             shebang: %s\n" "$(head -1 "$(readlink -f "$p")" 2>/dev/null)"
         printf "             error:   %s\n" "$out"
+        [ "$required" = 1 ] && rc=1
       fi
-    done' 2>&1 | sed "s/^/$LOG_PREFIX   /"
+    done
+    exit $rc' 2>&1 | sed "s/^/$LOG_PREFIX   /"
+  resolve_rc="${PIPESTATUS[0]:-1}"
   # rvm warns that /etc/profile.d/rvm.sh "causes you to have umask g+w set in your
   # shell". That check is a heuristic (it greps for rvm_stored_umask) and never
   # measures anything, so measure it here instead of trusting either side. 0022 is
@@ -433,6 +496,13 @@ if SANDBOX_CONF="$RUBY_CONF" IMAGE_NAME=ai-sandbox-ruby "$REPO/build.sh" ai-sand
   # Only on failure, and only here: the greps above are a summary, and a summary is
   # exactly what hid the real error last time. Dump the raw log and probe each
   # boundary the bootstrap crosses, so one run identifies the failing component.
+  #
+  # Two separate signals, deliberately. resolve_rc covers the whole linked set
+  # (a working `ruby` with a `bundle` that will not exec is still a failed phase —
+  # that is the bug link-default-ruby.sh exists for); the probe below fires only
+  # when `ruby` itself is absent, because its boundary dump is about a bootstrap
+  # that never produced an interpreter.
+  [[ "${resolve_rc:-1}" -eq 0 ]] || RUBY_PHASE_FAILED=1
   if ! docker exec "$cid" bash -c 'command -v ruby >/dev/null' 2>/dev/null; then
     sub "RUBY MISSING — raw container log (unfiltered, last 60 lines):"
     docker logs "$cid" 2>&1 | tail -60 | sed "s/^/$LOG_PREFIX     /"
@@ -521,9 +591,15 @@ if SANDBOX_CONF="$RUBY_CONF" IMAGE_NAME=ai-sandbox-ruby "$REPO/build.sh" ai-sand
     fi
     docker rmi ai-sandbox-ruby >/dev/null 2>&1 || true
   fi
+  # Recorded here rather than at each RUBY_PHASE_FAILED assignment, so the ledger
+  # gets exactly one line per phase however many sub-checks tripped.
+  [[ "${RUBY_PHASE_FAILED:-0}" == "1" ]] \
+    && phase_fail 3 "rvm bootstrap, compile or non-login resolve failed"
+  fi   # RVMVOL guard
 else
   sub "BUILD FAILED — last 40 lines:"
   tail -40 /tmp/ruby-build.log | sed "s/^/$LOG_PREFIX     /"
+  phase_fail 3 "ai-sandbox-ruby build failed (see /tmp/ruby-build.log)"
 fi
 fi
 
@@ -543,6 +619,7 @@ say "PHASE 4 — runtime integration corpus (tests/integration/run.sh)"
 IT_RUNNER="$TESTS_DIR/integration/run.sh"
 if [[ ! -x "$IT_RUNNER" && ! -f "$IT_RUNNER" ]]; then
   sub "SKIP: $IT_RUNNER not found — nothing to delegate to."
+  phase_fail 4 "$IT_RUNNER not found — the corpus did not run"
 else
   sub "capabilities detected on this host:"
   bash "$IT_RUNNER" --list-caps 2>&1 | sed "s/^/$LOG_PREFIX     /"
@@ -552,6 +629,7 @@ else
   it_rc="${PIPESTATUS[0]:-1}"
   sub "PHASE 4 exit: $it_rc"
   if [[ "$it_rc" -ne 0 ]]; then
+    phase_fail 4 "integration corpus exited $it_rc"
     sub "remediation hints for this platform:"
     if command -v colima >/dev/null 2>&1; then
       sub "  * ipset/NFLOG need the Colima VM's kernel modules. If the security"
@@ -573,3 +651,15 @@ fi
 rm -f "${SMOKE_CONF:-}" "${NATIVE_CONF:-}" "${RUBY_CONF:-}" 2>/dev/null || true
 say "DONE. Regenerate your real allowlists before your next normal build:  ./build.sh"
 say "Leftover throwaway image (kept for re-runs):  docker rmi ai-sandbox-smoke"
+
+# ── Verdict ─────────────────────────────────────────────────────────────────────
+# Reprinted here because the per-phase failures scrolled past thousands of lines
+# of build output, and because a CI log is read from the bottom.
+if [[ -n "$FAILED_PHASES" ]]; then
+  say "RESULT: FAILED — $(printf '%s\n' "$FAILED_PHASES" | grep -c .) phase(s) of [$PHASES]"
+  while IFS='|' read -r n why; do
+    [[ -n "$n" ]] && sub "phase $n: $why"
+  done <<< "$FAILED_PHASES"
+  exit 1
+fi
+say "RESULT: PASSED — phases [$PHASES]"
