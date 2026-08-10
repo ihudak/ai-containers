@@ -626,7 +626,15 @@ assert_no_capability() {  # $1=cid $2=cap name, e.g. cap_net_admin
 # why the match below tests both the IP column and the domain column.
 forensics_report() {  # $1=blocked.log $2=blocked-domains/ips $3=dns-map $4=baked allowlist
   local blog="$1" bdom="$2" dmap="$3" allow="$4"
-  local hard; hard="$(it_strip_comments < "$bdom" 2>/dev/null | sort -u)"
+  # `cat … | it_strip_comments`, not `it_strip_comments < "$bdom"`: a bare `<`
+  # on a file that legitimately doesn't exist (dump_blocked_forensics leaves it
+  # absent on a failed read, by design) is a SHELL-level open failure — bash
+  # reports it on stderr itself, before the command even starts, so the
+  # trailing `2>/dev/null` never gets the chance to catch it. Piping through
+  # `cat` instead makes the missing-file case an ordinary command failure that
+  # `2>/dev/null` on `cat` actually suppresses, leaving `hard` correctly empty
+  # with no stray "No such file or directory" in a case's diagnostics.
+  local hard; hard="$(cat "$bdom" 2>/dev/null | it_strip_comments | sort -u)"
   local healed
   healed="$(grep '(auto-allowed)' "$blog" 2>/dev/null | awk '{print $NF, $(NF-1)}' | sort -u | head -20)"
 
@@ -639,7 +647,15 @@ forensics_report() {  # $1=blocked.log $2=blocked-domains/ips $3=dns-map $4=bake
       # entries are bare IPs with no domain. Timestamps carry no space
       # (%Y-%m-%dT%H:%M:%S) and proto:port is one field, so the columns are
       # stable at 4 fields for a hard-blocked line.
-      awk -v want="$what" '
+      #
+      # Piped through `cat`, not handed to awk as a bare filename argument:
+      # when awk cannot OPEN a named file at all it skips the whole program,
+      # including END — so on a legitimately-absent $blog this would print
+      # NOTHING for the entry, not even the "(no matching line)" fallback
+      # below, silently degrading the report instead of stating the honest
+      # answer. Reading from stdin instead makes an absent/empty $blog just
+      # zero input records, and END still runs.
+      cat "$blog" 2>/dev/null | awk -v want="$what" '
         $3 == want || $4 == want {
           key = $3 " " $2
           if (!(key in seen)) { first[key] = $1; order[++n] = key }
@@ -651,7 +667,7 @@ forensics_report() {  # $1=blocked.log $2=blocked-domains/ips $3=dns-map $4=bake
             k = order[i]
             printf "     %-38s %-24s x%-4d first %s\n", want, k, seen[k], first[k]
           }
-        }' "$blog" 2>/dev/null
+        }'
 
       # Was this name allowlisted in THIS image? "no" rules out the whole family
       # of "an allowlisted host under an alias the self-healer could not match",
@@ -668,7 +684,11 @@ forensics_report() {  # $1=blocked.log $2=blocked-domains/ips $3=dns-map $4=bake
       # on. More than one means the label above is a coin flip between them;
       # exactly one means the container really did resolve that name.
       local ip names
-      for ip in $(awk -v want="$what" '$3 == want || $4 == want {print $3}' "$blog" 2>/dev/null | sort -u); do
+      # Same `cat |` reasoning as above, for consistency — this particular awk
+      # has no END block so a missing $blog isn't currently observable here,
+      # but a bare filename argument is the wrong default to leave lying
+      # around in a function that now routinely receives absent files.
+      for ip in $(cat "$blog" 2>/dev/null | awk -v want="$what" '$3 == want || $4 == want {print $3}' | sort -u); do
         names="$(awk -v ip="$ip" '$1 == ip {print $2}' "$dmap" 2>/dev/null | sort -u | tr '\n' ' ')"
         printf '       names resolved to %-18s %s\n' "$ip" \
           "${names:-(none — the container never resolved this address)}"
@@ -778,7 +798,21 @@ dump_blocked_forensics() {  # $1=cid — MUST run while the container is alive
   for f in blocked.log blocked-domains.txt blocked-ips.txt; do
     docker exec "$cid" cat "/workspace/.agent-blocked/$f" > "$d/$f" 2>/dev/null || rm -f "$d/$f"
   done
-  cat "$d/blocked-ips.txt" >> "$d/blocked-domains.txt" 2>/dev/null || true
+  # Merge blocked-ips.txt into blocked-domains.txt so forensics_report's single
+  # "hard-blocked" parameter covers both bare-IP and named entries. Guarded on
+  # the SOURCE existing, not on the target: `>>` creates its target before `cat`
+  # even runs, so an unguarded merge re-fabricates blocked-domains.txt as an
+  # empty file whenever both reads above already failed and were correctly
+  # rm -f'd — the identical redirection-on-a-failure-path defect this whole
+  # function was just cleared of, one line after the loop that cleared it.
+  # `>>` legitimately creating blocked-domains.txt when it was absent but
+  # blocked-ips.txt is PRESENT is fine and must keep working — a bare-IP entry
+  # is a real hard-blocked destination with no domain, and that is the only
+  # copy of it. What must never happen is creating the target when there is
+  # nothing to append.
+  if [[ -f "$d/blocked-ips.txt" ]]; then
+    cat "$d/blocked-ips.txt" >> "$d/blocked-domains.txt"
+  fi
   forensics_report "$d/blocked.log" "$d/blocked-domains.txt" "$d/dns-map.txt" "$d/allowlist.txt"
 
   # WHICH FILE IN THE IMAGE KNOWS THIS NAME. Everything forensics_report prints
@@ -798,7 +832,12 @@ dump_blocked_forensics() {  # $1=cid — MUST run while the container is alive
   # in CI. Cap the NAME count too (first 10, mirroring the existing 5-hit-per-name
   # cap), and say how many were skipped — a silent truncation is its own small lie.
   local hard what owner n=0 max=10 skipped=0
-  hard="$(it_strip_comments < "$d/blocked-domains.txt" 2>/dev/null | sort -u)"
+  # `cat | it_strip_comments`, not a bare `<` — see the matching comment in
+  # forensics_report. blocked-domains.txt can now legitimately be absent (both
+  # source reads failed and were correctly left un-fabricated), and a bare `<`
+  # on that would leak a shell-level "No such file or directory" past this
+  # command's own `2>/dev/null`.
+  hard="$(cat "$d/blocked-domains.txt" 2>/dev/null | it_strip_comments | sort -u)"
   while IFS= read -r what; do
     [[ -z "$what" ]] && continue
     # Bare IPv4 literal: nothing to grep the image for. Phase 3's own check,
