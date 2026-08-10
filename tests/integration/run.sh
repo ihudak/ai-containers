@@ -566,6 +566,10 @@ for v in $(selected_variants $selected); do
   # let a case that printed '  ok' by accident count as having asserted.
   n_ok="$(grep -c '^PASS:' "$log" 2>/dev/null | tail -1)"
   n_ok="${n_ok:-0}"
+  # Same narrowness reasoning as n_ok above: lib.sh's fail() prints exactly
+  # 'FAIL: <msg>', so this is the one form a case can genuinely fail through.
+  n_fail_lines="$(grep -c '^FAIL:' "$log" 2>/dev/null | tail -1)"
+  n_fail_lines="${n_fail_lines:-0}"
 
   if [[ "$rc" -eq 77 ]]; then
     printf '%-46s  SKIP  (%s)\n' "$name" \
@@ -579,6 +583,18 @@ for v in $(selected_variants $selected); do
     n_fail=$((n_fail + 1)); failed_names="${failed_names:+$failed_names }$name"
   elif [[ "$rc" -ne 0 ]]; then
     printf '%-46s  FAIL  (exit %s, %ss)\n' "$name" "$rc" "$took"
+    case_failed=1
+    n_fail=$((n_fail + 1)); failed_names="${failed_names:+$failed_names }$name"
+  elif [[ "$n_fail_lines" -gt 0 ]]; then
+    # rc==0 here (the branches above already claimed every nonzero exit), yet
+    # the log holds real FAIL: lines. The normal exit path is lib.sh's
+    # it_finish, which `exit`s "$it_fails" — so rc==0 with a FAIL: present
+    # means the case never reached it_finish (an early return, a forgotten
+    # call at the end of a hand-rolled case) and whatever ran last happened to
+    # exit 0, silently swallowing the failure. Gate on the printed evidence,
+    # not the exit code the case forgot to set.
+    printf '%-46s  FAIL  (exited 0 but printed %s FAIL: line(s) — case never reached it_finish)\n' \
+      "$name" "$n_fail_lines"
     case_failed=1
     n_fail=$((n_fail + 1)); failed_names="${failed_names:+$failed_names }$name"
   elif [[ "$n_ok" -eq 0 ]]; then

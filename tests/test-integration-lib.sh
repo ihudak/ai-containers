@@ -12,20 +12,34 @@ set -uo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LIB="$REPO_DIR/tests/integration/lib.sh"
 fails=0
-pass() { printf 'PASS: %s\n' "$1"; }
-fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails + 1)); }
-check() { if [[ "$2" == "$3" ]]; then pass "$1"; else fail "$1 (expected '$2', got '$3')"; fi; }
+# t_pass/t_fail/t_check — NOT pass/fail/check — is deliberate, not decorative.
+# `. "$LIB"` below REDEFINES pass()/fail() (lib.sh:67-68) to increment lib.sh's
+# own $it_fails, not this file's $fails. Bash resolves a function name at CALL
+# time, not at definition time, so if this file's own assertions used plain
+# pass()/fail() they would silently start tallying into the wrong counter the
+# moment lib.sh is sourced — $fails would stay 0 no matter how many assertions
+# actually failed, and the final `exit "$fails"` would always report success.
+# Giving this file's own helpers names lib.sh does not define sidesteps the
+# collision instead of fighting sourcing order. The "pass/fail accounting
+# drives the case exit code" block further down is the one deliberate
+# exception: it calls the REAL (lib.sh) `fail` on purpose, to test lib.sh's
+# own behavior — do not "fix" that call to t_fail. Anyone who sources lib.sh
+# from another hermetic test should give their own helpers non-colliding
+# names too, for the same reason.
+t_pass() { printf 'PASS: %s\n' "$1"; }
+t_fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails + 1)); }
+t_check() { if [[ "$2" == "$3" ]]; then t_pass "$1"; else t_fail "$1 (expected '$2', got '$3')"; fi; }
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-bash -n "$LIB" && pass "lib.sh bash -n" || fail "lib.sh bash -n"
+bash -n "$LIB" && t_pass "lib.sh bash -n" || t_fail "lib.sh bash -n"
 
 # lib.sh refuses to load without the runner's environment — a case run by hand
 # would otherwise inherit whatever IT_IMAGE happened to be lying around.
 out="$(env -u IT_RUN_ID -u IT_IMAGE -u IT_NET bash -c ". '$LIB'" 2>&1)"; rc=$?
-[[ "$rc" -ne 0 ]] && pass "lib.sh refuses to load outside the runner" \
-                  || fail "lib.sh refuses to load outside the runner"
+[[ "$rc" -ne 0 ]] && t_pass "lib.sh refuses to load outside the runner" \
+                  || t_fail "lib.sh refuses to load outside the runner"
 
 export IT_RUN_ID=unit IT_IMAGE=unit-img IT_NET=unit-net IT_SCRATCH="$TMP/scratch"
 export IT_LABEL="ai-containers.it-run=unit" IT_DNS_IMAGE=unit-dns
@@ -40,42 +54,45 @@ for f in allowlist-domains.txt allowlist-cidrs.txt allowlist-proxy-domains.txt; 
   # ALL THREE always, even when empty: refresh-ipset-allowlist.sh exits 1 on a
   # missing CIDR file and set -e in entrypoint.sh turns that into a dead
   # container with an error that points nowhere near the real cause.
-  [[ -f "$d/$f" ]] && pass "allowlist_write always creates $f" \
-                   || fail "allowlist_write always creates $f"
+  [[ -f "$d/$f" ]] && t_pass "allowlist_write always creates $f" \
+                   || t_fail "allowlist_write always creates $f"
 done
-check "domains file holds both entries" \
+t_check "domains file holds both entries" \
   "a.example|b.example|" "$(grep -vE '^[[:space:]]*(#|$)' "$d/allowlist-domains.txt" | tr '\n' '|')"
-check "cidrs file holds the IP" \
+t_check "cidrs file holds the IP" \
   "10.1.2.3|" "$(grep -vE '^[[:space:]]*(#|$)' "$d/allowlist-cidrs.txt" | tr '\n' '|')"
-check "an empty list yields a comments-only file (the legal degenerate config)" \
+t_check "an empty list yields a comments-only file (the legal degenerate config)" \
   "" "$(grep -vE '^[[:space:]]*(#|$)' "$d/allowlist-proxy-domains.txt" | tr '\n' '|')"
 [[ -s "$d/allowlist-proxy-domains.txt" ]] \
-  && pass "a comments-only allowlist is still NON-EMPTY (why -s is the wrong check)" \
-  || fail "a comments-only allowlist is still NON-EMPTY"
+  && t_pass "a comments-only allowlist is still NON-EMPTY (why -s is the wrong check)" \
+  || t_fail "a comments-only allowlist is still NON-EMPTY"
 
 # ── it_wait polls a condition instead of sleeping a guess ──────────────────────
 touch_later() { ( sleep 1; touch "$TMP/flag" ) & }
 rm -f "$TMP/flag"; touch_later
-it_wait 10 test -f "$TMP/flag" && pass "it_wait returns as soon as the condition holds" \
-                                || fail "it_wait returns as soon as the condition holds"
-it_wait 2 test -f "$TMP/never" && fail "it_wait times out on a condition that never holds" \
-                               || pass "it_wait times out on a condition that never holds"
+it_wait 10 test -f "$TMP/flag" && t_pass "it_wait returns as soon as the condition holds" \
+                                || t_fail "it_wait returns as soon as the condition holds"
+it_wait 2 test -f "$TMP/never" && t_fail "it_wait times out on a condition that never holds" \
+                               || t_pass "it_wait times out on a condition that never holds"
 
 # ── The comment filter used by blocked_entries ────────────────────────────────
 printf '# header one\n# header two\n\n10.9.9.9\n  \n#trailing\n' > "$TMP/blocked-ips.txt"
-check "it_strip_comments keeps only real entries" \
+t_check "it_strip_comments keeps only real entries" \
   "10.9.9.9|" "$(it_strip_comments < "$TMP/blocked-ips.txt" | tr '\n' '|')"
-check "it_strip_comments on a comments-only file yields nothing" \
+t_check "it_strip_comments on a comments-only file yields nothing" \
   "" "$(printf '# only\n\n' | it_strip_comments | tr '\n' '|')"
 
 # ── pass/fail accounting drives the case exit code ────────────────────────────
+# The inner `fail "x"` deliberately calls the REAL lib.sh fail() (in scope
+# since sourcing at the top of this file, never redefined again) to prove ITS
+# accounting works — this is testing lib.sh, not this file's own t_fail.
 ( it_fails=0; fail "x" >/dev/null; [[ "$it_fails" -eq 1 ]] ) \
-  && pass "fail increments it_fails" || fail "fail increments it_fails"
+  && t_pass "fail increments it_fails" || t_fail "fail increments it_fails"
 
 # ── The repo-dir resolver tolerates both layouts ──────────────────────────────
 [[ -f "$IT_REPO_DIR/build.sh" ]] \
-  && pass "IT_REPO_DIR resolves to the engine directory ($IT_REPO_DIR)" \
-  || fail "IT_REPO_DIR resolves to the engine directory (got $IT_REPO_DIR)"
+  && t_pass "IT_REPO_DIR resolves to the engine directory ($IT_REPO_DIR)" \
+  || t_fail "IT_REPO_DIR resolves to the engine directory (got $IT_REPO_DIR)"
 
 # ── IT_SETTLE is a FLOOR, not a plain default ──────────────────────────────────
 # run.sh (Task 1) always exports its own default of 45 before a case process
@@ -86,11 +103,11 @@ check "it_strip_comments on a comments-only file yields nothing" \
 # sub-shells re-source lib.sh with a controlled starting value, independent of
 # whatever this test file's own top-level sourcing already did.
 out="$(IT_SETTLE=10 bash -c ". '$LIB'; printf '%s' \"\$IT_SETTLE\"")"
-check "IT_SETTLE is floored to 60 when the caller set it lower" "60" "$out"
+t_check "IT_SETTLE is floored to 60 when the caller set it lower" "60" "$out"
 out="$(IT_SETTLE=90 bash -c ". '$LIB'; printf '%s' \"\$IT_SETTLE\"")"
-check "IT_SETTLE above the floor is left alone (a caller may ask for MORE)" "90" "$out"
+t_check "IT_SETTLE above the floor is left alone (a caller may ask for MORE)" "90" "$out"
 out="$(bash -c ". '$LIB'; printf '%s' \"\$IT_SETTLE\"")"
-check "IT_SETTLE defaults to 60 when unset entirely" "60" "$out"
+t_check "IT_SETTLE defaults to 60 when unset entirely" "60" "$out"
 
 # A raise is never silent: a user who set IT_SETTLE=30 to speed up a local run
 # deserves to know their run is actually waiting 60s, not just get it silently
@@ -99,13 +116,13 @@ check "IT_SETTLE defaults to 60 when unset entirely" "60" "$out"
 # target, a pipe, before fd1 is reassigned to /dev/null).
 notice="$(IT_SETTLE=10 bash -c ". '$LIB'" 2>&1 1>/dev/null)"
 case "$notice" in
-  *IT_SETTLE*10*60*) pass "raising IT_SETTLE below the floor prints a stderr notice" ;;
-  *) fail "raising IT_SETTLE below the floor prints a stderr notice (got: '$notice')" ;;
+  *IT_SETTLE*10*60*) t_pass "raising IT_SETTLE below the floor prints a stderr notice" ;;
+  *) t_fail "raising IT_SETTLE below the floor prints a stderr notice (got: '$notice')" ;;
 esac
 notice="$(IT_SETTLE=90 bash -c ". '$LIB'" 2>&1 1>/dev/null)"
 [[ -z "$notice" ]] \
-  && pass "no notice when IT_SETTLE is already at/above the floor" \
-  || fail "no notice when IT_SETTLE is already at/above the floor (got: '$notice')"
+  && t_pass "no notice when IT_SETTLE is already at/above the floor" \
+  || t_fail "no notice when IT_SETTLE is already at/above the floor (got: '$notice')"
 
 # ── capture_ready / sandbox_wait_capture exist ─────────────────────────────────
 # Both are docker-backed (docker exec against a real container) so their FULL
@@ -114,9 +131,9 @@ notice="$(IT_SETTLE=90 bash -c ". '$LIB'" 2>&1 1>/dev/null)"
 # them — a typo'd name would otherwise surface only when a later task's case
 # calls it.
 declare -f capture_ready >/dev/null 2>&1 \
-  && pass "capture_ready is defined" || fail "capture_ready is defined"
+  && t_pass "capture_ready is defined" || t_fail "capture_ready is defined"
 declare -f sandbox_wait_capture >/dev/null 2>&1 \
-  && pass "sandbox_wait_capture is defined" || fail "sandbox_wait_capture is defined"
+  && t_pass "sandbox_wait_capture is defined" || t_fail "sandbox_wait_capture is defined"
 
 # ── capture_ready's REAL grep, exercised through a fake docker ─────────────────
 # A bare `grep -q 'Capturing on' <string-we-wrote>` (the previous version of
@@ -156,19 +173,19 @@ printf 'Running as user "root" and group "root". This could be dangerous.\n' \
 
 FAKE_TSHARK_LOG="$TMP/tshark-attached.log" PATH="$FAKE_BIN:$PATH" \
   bash -c ". '$LIB'; capture_ready fake-cid" \
-  && pass "capture_ready returns 0 once tshark's 'Capturing on' line is present" \
-  || fail "capture_ready returns 0 once tshark's 'Capturing on' line is present"
+  && t_pass "capture_ready returns 0 once tshark's 'Capturing on' line is present" \
+  || t_fail "capture_ready returns 0 once tshark's 'Capturing on' line is present"
 
 FAKE_TSHARK_LOG="$TMP/tshark-notyet.log" PATH="$FAKE_BIN:$PATH" \
   bash -c ". '$LIB'; capture_ready fake-cid" \
-  && fail "capture_ready returns non-zero before tshark has attached (setuid warning only)" \
-  || pass "capture_ready returns non-zero before tshark has attached (setuid warning only)"
+  && t_fail "capture_ready returns non-zero before tshark has attached (setuid warning only)" \
+  || t_pass "capture_ready returns non-zero before tshark has attached (setuid warning only)"
 
 # ── The launcher verbs' pure parts ─────────────────────────────────────────────
 for v in launcher_prepare launcher_run launcher_up agent_exec \
          assert_writable assert_not_writable assert_host_file_exists \
          assert_host_file_absent assert_launcher_refused; do
-  declare -F "$v" >/dev/null && pass "lib.sh defines $v" || fail "lib.sh defines $v"
+  declare -F "$v" >/dev/null && t_pass "lib.sh defines $v" || t_fail "lib.sh defines $v"
 done
 
 # agent_exec MUST run as the sandbox user. This is a FAIL-OPEN check: `docker
@@ -177,25 +194,25 @@ done
 # reason — a :rw mount left owned by root would look perfectly healthy. Grep the
 # mechanism (the -u flag carrying the launch identity), not the outcome.
 if grep -qE 'docker exec -u "\$IT_LAUNCH_UID:\$IT_LAUNCH_GID"' "$LIB"; then
-  pass "agent_exec runs as the sandbox user, not root"
+  t_pass "agent_exec runs as the sandbox user, not root"
 else
-  fail "agent_exec runs as the sandbox user, not root — writability assertions would fail open"
+  t_fail "agent_exec runs as the sandbox user, not root — writability assertions would fail open"
 fi
 
 # The launch identity must track what sandbox.sh actually passes (id -u/-g, or
 # the SANDBOX_UID/GID override). A hardcoded 1000 waits forever for a pid-1
 # handover that never comes on a CI runner whose user is 1001.
-check "IT_LAUNCH_UID follows the invoking user" "$(id -u)" "$IT_LAUNCH_UID"
-check "IT_LAUNCH_GID follows the invoking group" "$(id -g)" "$IT_LAUNCH_GID"
+t_check "IT_LAUNCH_UID follows the invoking user" "$(id -u)" "$IT_LAUNCH_UID"
+t_check "IT_LAUNCH_GID follows the invoking group" "$(id -g)" "$IT_LAUNCH_GID"
 
 # launcher_prepare must REFUSE, not silently continue, when the real docker
 # cannot be resolved — otherwise the shim it installs would exit 127 on every
 # call and the case would report a mount failure.
 out="$(IT_REAL_DOCKER="" bash -c ". '$LIB'; launcher_prepare" 2>&1)"; rc=$?
 if [[ "$rc" -ne 0 ]] && grep -q 'cannot resolve the real docker' <<< "$out"; then
-  pass "launcher_prepare refuses when the real docker cannot be resolved"
+  t_pass "launcher_prepare refuses when the real docker cannot be resolved"
 else
-  fail "launcher_prepare refuses when the real docker cannot be resolved (rc=$rc, out=$out)"
+  t_fail "launcher_prepare refuses when the real docker cannot be resolved (rc=$rc, out=$out)"
 fi
 
 # ── launcher_conf folds in the variant's overrides ─────────────────────────────
@@ -210,28 +227,28 @@ launcher_prepare >/dev/null 2>&1
 launcher_conf >/dev/null 2>&1
 conf="$IT_LAUNCH_HOME/sandbox.conf"
 grep -qx 'ruby=3.3.6,3.4.5' "$conf" \
-  && pass "launcher_conf applies the variant's overrides with no case arguments" \
-  || fail "launcher_conf applies the variant's overrides with no case arguments"
+  && t_pass "launcher_conf applies the variant's overrides with no case arguments" \
+  || t_fail "launcher_conf applies the variant's overrides with no case arguments"
 grep -qx 'imagemagick=ON' "$conf" \
-  && pass "launcher_conf applies every variant override, not just the first" \
-  || fail "launcher_conf applies every variant override, not just the first"
+  && t_pass "launcher_conf applies every variant override, not just the first" \
+  || t_fail "launcher_conf applies every variant override, not just the first"
 
 # A case's own argument must win over the variant's value for the same key,
 # so a case can narrow the variant deliberately.
 launcher_conf ruby=3.4.5 >/dev/null 2>&1
 grep -qx 'ruby=3.4.5' "$conf" \
-  && pass "a case argument overrides the variant's value for the same key" \
-  || fail "a case argument overrides the variant's value for the same key"
+  && t_pass "a case argument overrides the variant's value for the same key" \
+  || t_fail "a case argument overrides the variant's value for the same key"
 
 # And with no variant set, behaviour is exactly as before.
 unset IT_VARIANT_OVERRIDES
 launcher_conf claude-code=ON >/dev/null 2>&1
 grep -qx 'claude-code=ON' "$conf" \
-  && pass "launcher_conf still works with no variant overrides set" \
-  || fail "launcher_conf still works with no variant overrides set"
+  && t_pass "launcher_conf still works with no variant overrides set" \
+  || t_fail "launcher_conf still works with no variant overrides set"
 grep -qx 'ruby=' "$conf" \
-  && pass "an unset variant leaves the version lists empty" \
-  || fail "an unset variant leaves the version lists empty"
+  && t_pass "an unset variant leaves the version lists empty" \
+  || t_fail "an unset variant leaves the version lists empty"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

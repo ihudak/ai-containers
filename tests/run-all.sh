@@ -63,6 +63,29 @@ for t in $selected; do
     rc=$?
   fi
   if [ "$rc" -eq 0 ]; then
+    # A printed FAIL: line is a failure regardless of the exit code, checked
+    # BEFORE the assertion count below. The exit code is exactly the signal
+    # that can rot: a shadowed counter variable, a forgotten `exit "$fails"`,
+    # a helper redefined after the fact — any of these leaves a test printing
+    # real FAIL: lines while still exiting 0. That already happened for real:
+    # tests/test-integration-lib.sh sourced tests/integration/lib.sh, which
+    # redefines pass()/fail() to increment ITS OWN $it_fails, so every
+    # assertion after the source line tallied into a variable the file's own
+    # `exit "$fails"` never read — two genuine FAIL:s printed, exit 0 anyway.
+    # Gating purely on exit code, as this loop did before, reported that file
+    # as a clean pass; a test that cannot report the thing it was written to
+    # report is worse than no test.
+    fail_lines="$(grep -cE '^FAIL:' "$log")"
+    if [ "$fail_lines" -gt 0 ]; then
+      failed=$((failed + 1))
+      failed_names="${failed_names:+$failed_names }$name"
+      printf '   FAIL  (exited 0 but printed %s FAIL: line(s))\n' "$fail_lines"
+      if [ "$verbose" -eq 0 ]; then
+        grep -E '^FAIL:' "$log" | sed 's/^/     /' | head -20
+        printf '     (run with -v for full output)\n'
+      fi
+      continue
+    fi
     # Surface the assertion count without the noise. PASS takes precedence
     # over SKIP: a test that both skips part of itself and asserts real
     # PASS/ok lines is a genuine pass, not a skip.

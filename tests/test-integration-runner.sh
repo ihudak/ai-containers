@@ -191,6 +191,29 @@ has "$out" '070-eta.*FAIL.*asserted nothing' \
   && pass "exit 0 with no PASS line is FAIL, not a silent pass" \
   || fail "exit 0 with no PASS line is FAIL, not a silent pass"
 
+# ── A case that prints FAIL: but never reaches it_finish is not a pass ────────
+# The sibling of the asserted-nothing guard above, and the fix for a real gap:
+# a case's normal exit path is lib.sh's it_finish, which `exit`s "$it_fails".
+# A case that calls fail() (so a real FAIL: line lands in the log) but then
+# hits an early return, a forgotten trailing call, or any other path that
+# skips it_finish falls through to whatever its last command happened to
+# return — here, an explicit `exit 0` standing in for that mistake. Before
+# this guard, rc==0 with n_ok>0 was reported PASS regardless of any FAIL:
+# lines also present, exactly the shape of tests/test-integration-lib.sh's
+# pass()/fail() collision with this same lib.sh (see that file's header
+# comment): the log holds real, load-bearing evidence of failure and the
+# summary says PASS anyway.
+mkcase 071-forgot-finish "forgotfinish" "docker" \
+  'echo "PASS: something real happened first"; echo "FAIL: a real assertion failed here"; exit 0'
+out="$(IT_FORCE_CAPS="docker" run_it --tags forgotfinish)"
+has "$out" '071-forgot-finish.*FAIL.*printed 1 FAIL.*never reached it_finish' \
+  && pass "a case with a FAIL: line but rc=0 is reported FAIL, not PASS" \
+  || fail "a case with a FAIL: line but rc=0 is reported FAIL, not PASS -- got: $out"
+[[ "$(rc_of "$out")" != "0" ]] \
+  && pass "that same case fails the run's own exit code" \
+  || fail "that same case fails the run's own exit code (rc=$(rc_of "$out"))"
+rm -f "$CASES/071-forgot-finish.sh"
+
 # ── Timeout is enforced per case, not per run ─────────────────────────────────
 mkcase 090-hang "fast" "docker" 'echo "PASS: started"; sleep 60'
 out="$(IT_FORCE_CAPS="docker" run_it --tags fast --timeout 2)"
