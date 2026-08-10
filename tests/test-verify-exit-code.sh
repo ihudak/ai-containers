@@ -128,6 +128,35 @@ else
   sed -n '/RESULT:/,$p' "$TMP/out.log" | sed 's/^/       /'
 fi
 
+# ── A stale PHASES selection must fail loudly, not verify nothing and exit 0 ───
+# The founding defect of this whole file, reachable now through phase SELECTION
+# instead of phase REPORTING: PHASES="1 2 3" names only phases this script no
+# longer has (they moved into the packages tier in Increment 3). want_phase()
+# is a bare substring match with no validation, so nothing matched, nothing
+# called phase_fail, and the script declared success having run zero checks —
+# exactly what the failure ledger above exists to prevent, and exactly what
+# AGENTS.md's own `PHASES="1 2 3" bash ./verify-on-host.sh` example still
+# invites a reader to do.
+r="$(mk_repo 0)"
+expect_rc "a stale PHASES=1 selection fails loudly, not exits 0" 1 "$(run_verify "$r" 1)"
+grep -q 'RESULT: FAILED' "$TMP/out.log" \
+  && pass "PHASES=1: verdict line says FAILED" \
+  || fail "PHASES=1: verdict line says FAILED"
+
+r="$(mk_repo 0)"
+expect_rc "a stale PHASES=\"1 2 3\" selection fails loudly, not exits 0" 1 "$(run_verify "$r" "1 2 3")"
+grep -q 'RESULT: FAILED' "$TMP/out.log" \
+  && pass "PHASES=\"1 2 3\": verdict line says FAILED" \
+  || fail "PHASES=\"1 2 3\": verdict line says FAILED"
+
+# The empty case is NOT affected — ${PHASES:-4} must still default cleanly to
+# the one real phase, with no phase_fail firing for a selection nobody made.
+r="$(mk_repo 0)"
+expect_rc "an empty/unset PHASES still defaults to 4 and passes" 0 "$(run_verify "$r" "")"
+grep -q 'RESULT: PASSED' "$TMP/out.log" \
+  && pass "PHASES=\"\": verdict line says PASSED (default still works)" \
+  || fail "PHASES=\"\": verdict line says PASSED (default still works)"
+
 # ── THE DEMONSTRATION ──────────────────────────────────────────────────────────
 # Strip the verdict block and require the failing scenario to exit 0 again. That
 # reproduces the exact defect this file was written for, and proves the

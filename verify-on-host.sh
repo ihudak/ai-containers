@@ -83,6 +83,24 @@ TESTS_DIR="$REPO/tests"
 PHASES="${PHASES:-4}"
 want_phase() { case " $PHASES " in (*" $1 "*) return 0 ;; (*) return 1 ;; esac; }
 
+# A PHASES value naming only phases this script does not have must not verify
+# nothing and exit 0 — that is the founding defect the failure ledger above
+# exists to prevent (see the header), reachable here through phase SELECTION
+# rather than phase REPORTING: `PHASES="1 2 3"` names phases removed by
+# Increment 3, want_phase() matched nothing for any of them, no phase_fail
+# call ever fired, and the script declared success having run zero checks.
+# Same standard as the IT_RUNNER-not-found branch below (an unresolvable
+# request is a recorded failure, not a silent skip) applied to the request
+# itself. Phase 0 is exempt — it always runs regardless of $PHASES.
+VALID_PHASES="0 4"
+for _requested_phase in $PHASES; do
+  case " $VALID_PHASES " in
+    (*" $_requested_phase "*) : ;;
+    (*) phase_fail "$_requested_phase" \
+          "PHASES=\"$PHASES\" names phase $_requested_phase, which this script does not have (valid: $VALID_PHASES)" ;;
+  esac
+done
+
 # ── Phase 0: environment ────────────────────────────────────────────────────────
 say "PHASE 0 — environment"
 sub "uname:            $(uname -sm)"
