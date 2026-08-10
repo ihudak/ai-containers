@@ -277,6 +277,65 @@ sandbox_wait_capture() {  # $1=cid
 # refuses to run without it rather than risk recursing into itself.
 IT_REAL_DOCKER="${IT_REAL_DOCKER:-$(command -v docker 2>/dev/null)}"
 
+# The docker ENDPOINT, resolved the same way and for the same reason: launcher_run
+# and launcher_script (below) redirect HOME to a per-case scratch directory to
+# isolate group state, but the docker CLI resolves which daemon to talk to from
+# $HOME/.docker/config.json's currentContext (and $HOME/.docker/contexts/) —
+# redirecting HOME throws that away. On a host where the daemon really does sit
+# at the CLI's built-in default (unix:///var/run/docker.sock) this is invisible;
+# on macOS + Colima, which supplies its endpoint ONLY through the active
+# context, every docker call made from inside a HOME-redirected subshell —
+# sandbox.sh's/group.sh's/repo.sh's own, and the shim's `exec $IT_REAL_DOCKER`
+# — fails to connect. Linux CI never sees this because /var/run/docker.sock
+# genuinely exists there.
+#
+# DOCKER_HOST, not DOCKER_CONFIG. Pointing DOCKER_CONFIG at the developer's
+# real ~/.docker instead would also fix this, and would additionally carry TLS
+# material and credential-helper config for an endpoint that needs them — but
+# it reintroduces the developer's real state into a harness whose whole point
+# is per-case HOME isolation (a case's sandbox.sh run should not see the
+# developer's own docker config any more than it should see their real
+# ~/.claude). Colima's endpoint is a plain unix socket: no TLS, no stored
+# credentials. DOCKER_HOST — one string, carrying nothing sensitive — covers
+# that, and is the narrowest fix that does. A future endpoint that genuinely
+# needs client certs or a credential helper would need DOCKER_CONFIG (or an
+# explicit cert/key triplet); nothing this suite targets today does.
+#
+# An already-exported DOCKER_HOST wins outright: a caller who set it on
+# purpose (e.g. pointing at a remote daemon) knows better than a context
+# lookup. Resolution failure — no `docker context` subcommand, docker missing
+# entirely, or a template result of "<no value>" (Go's own empty-field
+# marker) — must leave IT_DOCKER_HOST EMPTY, never a fabricated string: the
+# call sites below only ever export DOCKER_HOST when this is non-empty, so an
+# empty value here means "do not touch DOCKER_HOST at all", the honest
+# fallback. Exporting an empty DOCKER_HOST would be worse than exporting
+# nothing — it overrides the CLI's own built-in default just as effectively as
+# a wrong one.
+#
+# Resolved ONCE per run, not once per case: run.sh resolves this exact block
+# itself (near its own execution loop, deliberately AFTER its --list/
+# --list-caps early-exit paths — see the comment there for why) and exports
+# IT_DOCKER_HOST — even to an empty string when resolution finds nothing, so
+# `${IT_DOCKER_HOST+x}` below reads it as already-decided. `docker context
+# inspect` is a real subprocess call, unlike IT_REAL_DOCKER's cheap `command
+# -v`, so a run through run.sh must reach this block AT MOST once, not once
+# per case's `bash "$f"`. The `[[ -z "${IT_DOCKER_HOST+x}" ]]` guard is what
+# makes that true: it tests IS-SET, not IS-NON-EMPTY (the same "set-but-empty
+# still counts as set" convention sandbox-common.sh's load_env_defaults uses),
+# so run.sh's export short-circuits this whole block — no docker subprocess,
+# even a failed one — for every case in the run. The fallback here only fires
+# for a case executed standalone, outside run.sh. A developer who switches
+# docker context mid-run gets a stale value until their next run — accepted,
+# the same tradeoff IT_REAL_DOCKER already makes for the docker binary path.
+if [[ -z "${IT_DOCKER_HOST+x}" ]]; then
+  if [[ -n "${DOCKER_HOST:-}" ]]; then
+    IT_DOCKER_HOST="$DOCKER_HOST"
+  else
+    IT_DOCKER_HOST="$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null)"
+    case "$IT_DOCKER_HOST" in *'<no value>'*) IT_DOCKER_HOST="" ;; esac
+  fi
+fi
+
 IT_LAUNCH_HOME=""; IT_LAUNCH_DIR=""; IT_SHIM_DIR=""
 IT_LAUNCH_NAME=""; IT_LAUNCH_RC=0; IT_LAUNCH_OUT=""; IT_LAUNCH_ERR=""
 # The identity sandbox.sh will hand the container. Not a hardcoded 1000: the
@@ -343,6 +402,12 @@ launcher_run() {  # $1=mode [$2=primary]
     cd "$IT_LAUNCH_DIR" || exit 1
     export PATH="$IT_SHIM_DIR:$PATH"
     export HOME="$IT_LAUNCH_HOME"
+    # See the IT_DOCKER_HOST comment above (by IT_REAL_DOCKER) for the full
+    # reasoning. Conditional on purpose: an empty IT_DOCKER_HOST means
+    # resolution failed or found nothing to say, and exporting DOCKER_HOST=""
+    # in that case would override the docker CLI's own built-in default —
+    # worse than leaving DOCKER_HOST unexported entirely.
+    [[ -n "$IT_DOCKER_HOST" ]] && export DOCKER_HOST="$IT_DOCKER_HOST"
     export IT_REAL_DOCKER IT_LAUNCH_NAME IT_LABEL
     export IMAGE_NAME="$IT_IMAGE"
     export AI_CONTAINER_GROUP_INIT="${AI_CONTAINER_GROUP_INIT:-clean}"
@@ -368,6 +433,9 @@ launcher_script() {  # $1=script basename $2…=args
     cd "$IT_LAUNCH_DIR" || exit 1
     export PATH="$IT_SHIM_DIR:$PATH"
     export HOME="$IT_LAUNCH_HOME"
+    # Same reasoning as launcher_run above: group.sh/repo.sh shell out to
+    # docker too, and lose the real context the instant HOME is redirected.
+    [[ -n "$IT_DOCKER_HOST" ]] && export DOCKER_HOST="$IT_DOCKER_HOST"
     export IT_REAL_DOCKER IT_LABEL
     export IMAGE_NAME="$IT_IMAGE"
     exec bash "$IT_REPO_DIR/$s" "$@"

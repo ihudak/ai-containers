@@ -263,6 +263,189 @@ grep -qx 'ruby=' "$conf" \
   && t_pass "an unset variant leaves the version lists empty" \
   || t_fail "an unset variant leaves the version lists empty"
 
+# ── DOCKER_HOST reaches a HOME-redirected launcher subshell (task-14b) ─────────
+# launcher_run/launcher_script redirect HOME to per-case scratch to isolate
+# group state — but the docker CLI resolves which daemon to talk to from
+# $HOME/.docker/config.json's currentContext, which the redirect throws away.
+# On a plain unix:///var/run/docker.sock host (Linux CI) that is invisible; on
+# macOS + Colima, which supplies its endpoint ONLY through the active context,
+# every docker call made from inside the redirected subshell loses the
+# daemon. See lib.sh's IT_DOCKER_HOST comment for the full story.
+#
+# These assertions drive the REAL launcher_run/launcher_script — HOME
+# redirection, PATH shim setup, launcher_conf/minimal-conf.sh, docker-shim.sh
+# — all genuine, unmodified production code. Only the process each ultimately
+# execs (sandbox.sh / group.sh) is faked, and only to answer one question: did
+# DOCKER_HOST arrive in ITS environment. There is no other way to observe that
+# without actually starting a container.
+#
+# A single directory symlink, not per-file: bash's `cd`/`pwd` resolve ".."
+# LEXICALLY against the given path (proven empirically — a physical resolve
+# would instead land back in the real repo), so IT_LIB_DIR/../.. below still
+# computes to $DH_FAKE_REPO even though tests/integration is itself a symlink
+# to the real one. That is what lets docker-shim.sh and minimal-conf.sh run
+# unmodified while only the repo-root scripts are replaced.
+DH_FAKE_REPO="$TMP/dh-fakerepo"
+mkdir -p "$DH_FAKE_REPO/tests"
+ln -sf "$IT_LIB_DIR" "$DH_FAKE_REPO/tests/integration"
+: > "$DH_FAKE_REPO/build.sh"        # satisfies launcher_prepare's IT_REPO_DIR check
+: > "$DH_FAKE_REPO/sandbox.conf"    # minimal-conf.sh only requires the file to exist
+cat > "$DH_FAKE_REPO/sandbox.sh" <<'DHEOF'
+#!/usr/bin/env bash
+# Stands in for the real sandbox.sh for exactly one purpose: reveal whether
+# DOCKER_HOST reached this process, and how (unset vs a real value vs empty).
+printf 'DOCKER_HOST=%s\n' "${DOCKER_HOST-<unset>}"
+DHEOF
+chmod +x "$DH_FAKE_REPO/sandbox.sh"
+cat > "$DH_FAKE_REPO/group.sh" <<'DHEOF'
+#!/usr/bin/env bash
+printf 'DOCKER_HOST=%s\n' "${DOCKER_HOST-<unset>}"
+DHEOF
+chmod +x "$DH_FAKE_REPO/group.sh"
+
+# A stub `docker` answering ONLY `context inspect` — the one subcommand
+# IT_DOCKER_HOST resolution calls — same fake-docker-on-PATH idiom as
+# capture_ready's FAKE_BIN above.
+DH_BIN_OK="$TMP/dh-bin-ok"; mkdir -p "$DH_BIN_OK"
+cat > "$DH_BIN_OK/docker" <<'FAKE'
+#!/usr/bin/env bash
+if [[ "$1 $2" == "context inspect" ]]; then
+  printf 'tcp://127.0.0.1:9999\n'
+  exit 0
+fi
+printf 'dh-bin-ok fake docker: unexpected call: %s\n' "$*" >&2
+exit 99
+FAKE
+chmod +x "$DH_BIN_OK/docker"
+
+# A stub `docker` whose `context inspect` genuinely fails — no context
+# configured, or a docker too old to have the subcommand at all.
+DH_BIN_FAIL="$TMP/dh-bin-fail"; mkdir -p "$DH_BIN_FAIL"
+cat > "$DH_BIN_FAIL/docker" <<'FAKE'
+#!/usr/bin/env bash
+if [[ "$1 $2" == "context inspect" ]]; then
+  exit 1
+fi
+printf 'dh-bin-fail fake docker: unexpected call: %s\n' "$*" >&2
+exit 99
+FAKE
+chmod +x "$DH_BIN_FAIL/docker"
+
+# A stub `docker` that must NEVER be called at all — used to prove an
+# already-set IT_DOCKER_HOST (what run.sh exports for every case) short-
+# circuits the whole resolution block, subprocess and all.
+DH_BIN_POISON="$TMP/dh-bin-poison"; mkdir -p "$DH_BIN_POISON"
+cat > "$DH_BIN_POISON/docker" <<'FAKE'
+#!/usr/bin/env bash
+printf 'dh-bin-poison: docker was called but should not have been: %s\n' "$*" >&2
+exit 98
+FAKE
+chmod +x "$DH_BIN_POISON/docker"
+
+# The bash -c body both helpers run — identical either way, only how
+# IT_DOCKER_HOST arrives in THEIR OWN environment differs between them.
+DH_LAUNCHER_BODY='
+  . "$DH_LIB"
+  if [[ "$DH_VERB" == "sandbox" ]]; then
+    launcher_run open >/dev/null 2>&1
+    cat "$IT_LAUNCH_OUT"
+  else
+    launcher_script group.sh rm somegroup --yes >/dev/null 2>&1
+    cat "$IT_SCRIPT_OUT"
+  fi
+'
+
+# $1=docker-stub-dir $2=sandbox|group — IT_DOCKER_HOST starts UNSET, exactly
+# like a case run standalone outside run.sh; resolution must run for real.
+dh_run_launcher() {
+  env -u IT_DOCKER_HOST -u DOCKER_HOST \
+    PATH="$1:$PATH" \
+    IT_RUN_ID="unit-dh-$RANDOM" IT_IMAGE=unit-img IT_NET=unit-net \
+    IT_SCRATCH="$TMP/scratch-dh-$RANDOM" \
+    IT_LABEL="ai-containers.it-run=unit-dh" \
+    IT_REAL_DOCKER=/bin/true \
+    DH_LIB="$DH_FAKE_REPO/tests/integration/lib.sh" \
+    DH_VERB="$2" \
+    bash -c "$DH_LAUNCHER_BODY"
+}
+
+# $1=docker-stub-dir $2=sandbox|group $3=value to PRE-EXPORT as IT_DOCKER_HOST
+# — may be empty. `env VAR="$3" cmd` exports VAR="" as a genuinely SET (not
+# absent) variable even when $3 is the empty string, which is the one thing
+# dh_run_launcher's optional-arg approach cannot express (a bash `${3:+…}`
+# guard treats empty and unset identically) — exactly the distinction
+# `${IT_DOCKER_HOST+x}` in lib.sh exists to make, so the test needs the same
+# precision the code under test does.
+dh_run_launcher_preset() {
+  env -u DOCKER_HOST \
+    PATH="$1:$PATH" \
+    IT_RUN_ID="unit-dh-$RANDOM" IT_IMAGE=unit-img IT_NET=unit-net \
+    IT_SCRATCH="$TMP/scratch-dh-$RANDOM" \
+    IT_LABEL="ai-containers.it-run=unit-dh" \
+    IT_REAL_DOCKER=/bin/true \
+    DH_LIB="$DH_FAKE_REPO/tests/integration/lib.sh" \
+    DH_VERB="$2" \
+    IT_DOCKER_HOST="$3" \
+    bash -c "$DH_LAUNCHER_BODY"
+}
+
+out="$(dh_run_launcher "$DH_BIN_OK" sandbox)"
+case "$out" in
+  *'DOCKER_HOST=tcp://127.0.0.1:9999'*)
+    t_pass "launcher_run's subshell receives a DOCKER_HOST matching the outer resolution" ;;
+  *)
+    t_fail "launcher_run's subshell receives a DOCKER_HOST matching the outer resolution (got: '$out')" ;;
+esac
+
+out="$(dh_run_launcher "$DH_BIN_FAIL" sandbox)"
+case "$out" in
+  *'DOCKER_HOST=<unset>'*)
+    t_pass "an unresolvable docker context leaves DOCKER_HOST UNEXPORTED, not empty" ;;
+  *)
+    t_fail "an unresolvable docker context leaves DOCKER_HOST unexported, not empty (got: '$out')" ;;
+esac
+
+out="$(dh_run_launcher "$DH_BIN_OK" group)"
+case "$out" in
+  *'DOCKER_HOST=tcp://127.0.0.1:9999'*)
+    t_pass "launcher_script's subshell (group.sh/repo.sh) also receives the resolved DOCKER_HOST" ;;
+  *)
+    t_fail "launcher_script's subshell also receives the resolved DOCKER_HOST (got: '$out')" ;;
+esac
+
+# An ALREADY-EXPORTED IT_DOCKER_HOST (what run.sh hands down to every case)
+# must win outright — no docker subprocess at all, not even one that would
+# have succeeded. DH_BIN_POISON fails loudly (exit 98, stderr message) if
+# resolution is attempted despite this, which would otherwise be invisible:
+# a re-resolution landing on the SAME value looks identical to short-
+# circuiting from the subshell's stdout alone.
+out="$(dh_run_launcher_preset "$DH_BIN_POISON" sandbox "tcp://pre-resolved:2375" 2>"$TMP/dh-poison.err")"
+case "$out" in
+  *'DOCKER_HOST=tcp://pre-resolved:2375'*)
+    t_pass "an already-exported IT_DOCKER_HOST is used as-is" ;;
+  *)
+    t_fail "an already-exported IT_DOCKER_HOST is used as-is (got: '$out')" ;;
+esac
+if [[ -s "$TMP/dh-poison.err" ]]; then
+  t_fail "an already-exported IT_DOCKER_HOST must not trigger a docker subprocess (stderr: $(cat "$TMP/dh-poison.err"))"
+else
+  t_pass "an already-exported IT_DOCKER_HOST skips the docker subprocess entirely"
+fi
+
+# An already-exported EMPTY IT_DOCKER_HOST (run.sh's own resolution genuinely
+# found nothing) is the same "already decided" case — must ALSO skip
+# resolution, and must ALSO leave DOCKER_HOST unexported down in sandbox.sh.
+out="$(dh_run_launcher_preset "$DH_BIN_POISON" sandbox "" 2>"$TMP/dh-poison2.err")"
+case "$out" in
+  *'DOCKER_HOST=<unset>'*)
+    t_pass "an already-exported EMPTY IT_DOCKER_HOST is honoured, not re-resolved" ;;
+  *)
+    t_fail "an already-exported EMPTY IT_DOCKER_HOST is honoured, not re-resolved (got: '$out')" ;;
+esac
+[[ -s "$TMP/dh-poison2.err" ]] \
+  && t_fail "an already-exported empty IT_DOCKER_HOST must not trigger a docker subprocess (stderr: $(cat "$TMP/dh-poison2.err"))" \
+  || t_pass "an already-exported empty IT_DOCKER_HOST skips the docker subprocess entirely"
+
 
 # ── forensics_report ────────────────────────────────────────────────────────────
 # The reverse-mapped NAME can be wrong on a shared CDN address; the IP and port

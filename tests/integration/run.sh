@@ -45,6 +45,20 @@ IT_GENERATED_ALLOWLIST_DIR="$IT_SCRATCH/generated-allowlists"
 # cases put tests/integration/docker-shim.sh on PATH as `docker`, and the shim
 # refuses to run without an explicit real binary rather than recurse into itself.
 IT_REAL_DOCKER="${IT_REAL_DOCKER:-$(command -v docker 2>/dev/null)}"
+# IT_DOCKER_HOST (the docker ENDPOINT) is NOT resolved here despite the
+# parallel to IT_REAL_DOCKER just above — deliberately. `command -v docker`
+# never executes the docker binary, so IT_REAL_DOCKER is invisible to anything
+# watching docker's own invocations; `docker context inspect` genuinely runs
+# it. --list/--list-caps both exit long before the execution loop that
+# actually needs IT_DOCKER_HOST, and detect_caps's own hermetic tests
+# (tests/test-integration-runner.sh) run this script for real against a
+# call-counting stub docker and assert on the EXACT sequence of calls it
+# makes — an unconditional resolution up here would show up in that log
+# before detect_caps's own first call and break an assertion that has nothing
+# to do with this fix. It is resolved instead right before the export list
+# further down, which every real (non---list/-caps) run reaches exactly once,
+# after every early-exit path has already returned. See that site for the
+# full DOCKER_HOST-vs-DOCKER_CONFIG / resolution-failure reasoning.
 
 want_tags=""; excl_tags=""; req_tags=""; want_variant=""
 do_list=0; do_list_caps=0; reuse_image=0; keep=0; verbose=0
@@ -641,6 +655,60 @@ if [[ "$reuse_image" -eq 0 ]]; then
 fi
 docker network create --label "$IT_LABEL" "$IT_NET" >/dev/null 2>&1 || true
 
+# The docker ENDPOINT, resolved once here — the reasoning for WHY (not just
+# where) lives beside IT_REAL_DOCKER near the top of this file, which explains
+# the placement; this is the substance.
+#
+# launcher_run and launcher_script (tests/integration/lib.sh) redirect HOME to
+# a per-case scratch directory to isolate group state, but the docker CLI
+# resolves which daemon to talk to from $HOME/.docker/config.json's
+# currentContext (and $HOME/.docker/contexts/) — redirecting HOME throws that
+# away. On a host where the daemon sits at the CLI's built-in default
+# (unix:///var/run/docker.sock) this is invisible; on macOS + Colima, which
+# supplies its endpoint ONLY through the active context, every docker call
+# made from inside a HOME-redirected subshell — sandbox.sh's/group.sh's/
+# repo.sh's own, and the shim's `exec $IT_REAL_DOCKER` — fails to connect.
+# Linux CI never sees this because /var/run/docker.sock genuinely exists
+# there.
+#
+# DOCKER_HOST, not DOCKER_CONFIG. Pointing DOCKER_CONFIG at the developer's
+# real ~/.docker instead would also fix this, and would additionally carry
+# TLS material and credential-helper config for an endpoint that needs them —
+# but it reintroduces the developer's real state into a harness whose whole
+# point is per-case HOME isolation. Colima's endpoint is a plain unix socket:
+# no TLS, no stored credentials. DOCKER_HOST — one string, carrying nothing
+# sensitive — covers that, and is the narrowest fix that does. A future
+# endpoint that genuinely needs client certs or a credential helper would
+# need DOCKER_CONFIG (or an explicit cert/key triplet); nothing this suite
+# targets today does.
+#
+# An already-exported DOCKER_HOST wins outright: a caller who set it on
+# purpose (e.g. pointing at a remote daemon) knows better than a context
+# lookup — checked first, so a genuine override skips the subprocess too.
+# Resolution failure — no `docker context` subcommand, docker missing
+# entirely, or a template result of "<no value>" (Go's own empty-field
+# marker) — leaves IT_DOCKER_HOST EMPTY, never a fabricated string: the
+# export sites in lib.sh only ever set DOCKER_HOST when this is non-empty, so
+# empty means "do not touch DOCKER_HOST at all" — the honest fallback.
+# Exporting an empty DOCKER_HOST would be worse than exporting nothing at all
+# — it overrides the CLI's own built-in default just as effectively as a
+# wrong one.
+#
+# The `[[ -z "${IT_DOCKER_HOST+x}" ]]` guard (IS-SET, not IS-NON-EMPTY — the
+# same "set-but-empty still counts as set" convention sandbox-common.sh's
+# load_env_defaults uses) exists for a caller that pre-exports IT_DOCKER_HOST
+# itself (e.g. a nested/manual invocation), so this block is idempotent
+# rather than blindly re-shelling-out. In the ordinary case it is always
+# unset on entry here, since nothing sets it earlier in this file.
+if [[ -z "${IT_DOCKER_HOST+x}" ]]; then
+  if [[ -n "${DOCKER_HOST:-}" ]]; then
+    IT_DOCKER_HOST="$DOCKER_HOST"
+  else
+    IT_DOCKER_HOST="$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null)"
+    case "$IT_DOCKER_HOST" in *'<no value>'*) IT_DOCKER_HOST="" ;; esac
+  fi
+fi
+
 # IT_RUBY_VERSIONS: resolved above (with everything else in this block) purely
 # for run.sh's OWN use — variant_overrides()/probe_multiruby() read it while
 # still inside this process. Without exporting it here too, it never reaches a
@@ -654,7 +722,7 @@ docker network create --label "$IT_LABEL" "$IT_NET" >/dev/null 2>&1 || true
 # (task 9), never exercised until then because no earlier case read the var.
 export IT_RUN_ID IT_LABEL IT_SCRATCH IT_IMAGE IT_NET IT_DNS_IMAGE \
        IT_CONNECT_TIMEOUT IT_SETTLE IT_GENERATED_ALLOWLIST_DIR IT_REAL_DOCKER \
-       IT_RUBY_VERSIONS
+       IT_DOCKER_HOST IT_RUBY_VERSIONS
 
 # --variant is validated HERE, once, rather than left to fall through to the
 # "selected 0" fatal check below: a bad name would otherwise just match zero
