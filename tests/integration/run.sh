@@ -513,8 +513,20 @@ if [[ "$reuse_image" -eq 0 ]]; then
 fi
 docker network create --label "$IT_LABEL" "$IT_NET" >/dev/null 2>&1 || true
 
+# IT_RUBY_VERSIONS: resolved above (with everything else in this block) purely
+# for run.sh's OWN use — variant_overrides()/probe_multiruby() read it while
+# still inside this process. Without exporting it here too, it never reaches a
+# case's process at all: `bash "$f"` (the execution loop, below) starts a CHILD
+# bash, which inherits only the environment, not this script's plain variable
+# assignments. The packages-tier Ruby cases (740/750) read $IT_RUBY_VERSIONS
+# directly under `set -u`, so a case that lost this value would not silently
+# assert nothing against an empty list — it would abort immediately with bash's
+# own "unbound variable" error, reported by run.sh as a bare nonzero exit with
+# no case-specific diagnosis. Found and fixed while writing those cases
+# (task 9), never exercised until then because no earlier case read the var.
 export IT_RUN_ID IT_LABEL IT_SCRATCH IT_IMAGE IT_NET IT_DNS_IMAGE \
-       IT_CONNECT_TIMEOUT IT_SETTLE IT_GENERATED_ALLOWLIST_DIR IT_REAL_DOCKER
+       IT_CONNECT_TIMEOUT IT_SETTLE IT_GENERATED_ALLOWLIST_DIR IT_REAL_DOCKER \
+       IT_RUBY_VERSIONS
 
 # ── Selection ───────────────────────────────────────────────────────────────────
 total=0; selected=""
