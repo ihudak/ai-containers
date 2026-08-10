@@ -420,6 +420,27 @@ agent_exec() {  # $1=cid $2=command
   docker exec -u "$IT_LAUNCH_UID:$IT_LAUNCH_GID" "$1" bash -c "$2"
 }
 
+# Same identity as agent_exec, but a LOGIN shell (`-l`), for the one class of
+# check that genuinely needs one: anything that depends on /etc/profile.d
+# being sourced — rvm above all (its scripts/cd hook, which is what makes
+# `.ruby-version` selection work, is only registered by a login shell; see
+# case 750's header for the live-reproduced trace). Plain agent_exec is
+# deliberately non-login (see its own comment / case 700), so this is a
+# separate helper rather than a flag on agent_exec, to keep that non-login
+# contract obviously true by reading the function body alone.
+#
+# Root cause of the bug this helper exists to prevent (see task-14a report):
+# a bare `docker exec` — no `-u` — runs as ROOT, whose $HOME (e.g. /root) has
+# no .rvm, so /etc/profile.d/rvm.sh's own `[ -s "$HOME/.rvm/scripts/rvm" ]`
+# guard is false and the rvm function is never defined at all. rvm lives in
+# the SANDBOX USER's $HOME/.rvm (rvm-reconcile.sh runs via `runuser -u
+# "$sandbox_user"`, never as root), so only a login shell running AS that uid
+# sources a working rvm. Root is not "missing a login shell" here — it is the
+# wrong user entirely, and no amount of `-l` fixes that on its own.
+agent_exec_login() {  # $1=cid $2=command
+  docker exec -u "$IT_LAUNCH_UID:$IT_LAUNCH_GID" "$1" bash -lc "$2"
+}
+
 # ── Repo registry fixtures (mounts / volumes tiers) ────────────────────────────
 #
 # Cases write registry records directly instead of calling `repo.sh add`, which

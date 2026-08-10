@@ -33,7 +33,7 @@
 # claims it in prose). Rather than trust that claim, it was reproduced live: a
 # throwaway rvm bootstrapped into a scratch $HOME here, a `.ruby-version` file
 # dropped into a test directory, and `bash -lc 'cd "$dir" && rvm current'` (no
-# `-i`, matching agent_exec/docker-exec's shape exactly) DID select the
+# `-i`, matching agent_exec_login/docker-exec's shape exactly) DID select the
 # version named in the file. The mechanism is rvm's `scripts/cd`: sourcing rvm
 # — which happens on every login shell here via /etc/profile.d/rvm.sh, not
 # something this case's own `-lc` invocation does itself — replaces the `cd`
@@ -43,6 +43,26 @@
 # confirmation of the selection MECHANISM, not of this exact case end-to-end
 # (that still needs a real two-version compile only CI can pay for) — see the
 # task report for the precise boundary of what was and was not verified.
+#
+# BOTH `rvm list strings` below and the `.ruby-version` probe run as the
+# SANDBOX USER via agent_exec_login, never a bare `docker exec`. A bare
+# `docker exec ... bash -lc` runs as ROOT, and root's $HOME (e.g. /root) has
+# no .rvm — rvm lives in the sandbox user's $HOME/.rvm (rvm-reconcile.sh runs
+# via `runuser -u "$sandbox_user"`, never as root) — so /etc/profile.d/rvm.sh's
+# `[ -s "$HOME/.rvm/scripts/rvm" ]` guard is false for root and the rvm
+# function is never even defined. That is CI's actual failure mode this case
+# shipped with: `rvm list strings` returned empty (rvm: command not found,
+# swallowed by `2>/dev/null`) and `.ruby-version` selection silently fell back
+# to the already-linked default (ruby-3.3.6), which is why the case reported
+# "selected 3.3.6, expected 3.4.5" — a wrong-USER bug, not a broken selection
+# mechanism. Verified against link-default-ruby.sh and rvm-reconcile.sh (both
+# run the reconcile/link steps against the sandbox user's home, never root's)
+# before this fix, not assumed. See the task report for the full trace,
+# including why case 760's own root-run `docker exec ... stat` does NOT share
+# this bug: it stats an explicit absolute path
+# ($IT_LAUNCH_HOME_IN/.rvm/rubies/...), which root can read regardless of
+# ownership, and never invokes `rvm` or depends on $HOME resolving to
+# anything — there is no user-identity-sensitive step in a bare `stat`.
 #
 # IT_SETTLE=3600 / timeout=3900: reused from case 730's precedent for
 # $IT_RUBY_GROUP, and NOT weakened just because this case usually runs after
@@ -87,7 +107,7 @@ ruby_wait_ready "$IT_CID" 1800 || { it_diagnose "$IT_CID"; it_finish; }
 # here in practice; the guarded expansion is defense in depth against a FUTURE
 # regression in either of those, consistent with this codebase's existing
 # convention, not evidence that an empty case was observed.
-installed="$(docker exec "$IT_CID" bash -lc 'rvm list strings 2>/dev/null' | tr -d '\r')"
+installed="$(agent_exec_login "$IT_CID" 'rvm list strings 2>/dev/null' | tr -d '\r')"
 IFS=',' read -r -a want <<< "$IT_RUBY_VERSIONS"
 
 # The multiruby gate implies 2+ elements; assert it explicitly rather than
@@ -125,9 +145,14 @@ done
 # vacuously: it would prove nothing about .ruby-version actually switching
 # anything, which is precisely the shape of defect this suite exists to
 # eliminate.
+# Written and read as the SAME user throughout (the sandbox uid, via
+# agent_exec/agent_exec_login) rather than root-writes-then-agent-reads: it
+# removes a second, unrelated variable (a permissions mismatch) from a case
+# whose whole point is the .ruby-version SELECTION mechanism, not file
+# ownership across users.
 other="${IT_RUBY_VERSIONS##*,}"
-docker exec "$IT_CID" bash -c "mkdir -p /tmp/proj && printf '%s\n' '$other' > /tmp/proj/.ruby-version"
-if out="$(docker exec "$IT_CID" bash -lc 'cd /tmp/proj && ruby -e "print RUBY_VERSION"' 2>&1)"; then
+agent_exec "$IT_CID" "mkdir -p /tmp/proj && printf '%s\n' '$other' > /tmp/proj/.ruby-version"
+if out="$(agent_exec_login "$IT_CID" 'cd /tmp/proj && ruby -e "print RUBY_VERSION"' 2>&1)"; then
   if [[ "$out" == "$other" ]]; then
     pass ".ruby-version selects the non-default version ($other)"
   else

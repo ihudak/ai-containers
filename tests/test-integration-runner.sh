@@ -311,6 +311,38 @@ has "$out" 'FAIL: distinctive-marker-loud-fail' \
   || fail "a failing case's FAIL: line survives 60 lines of trailing output"
 rm -f "$CASES/100-loud-fail.sh"
 
+# ── A failing case's CONTAINER LOGS survive the diagnostics tail too ──────────
+# Task 14a (Finding 3): the case above pins that the assertion lines survive —
+# they are printed unconditionally, ahead of any tail. This one pins the
+# SEPARATE fix one layer down, inside the diagnostics tail itself. A real
+# failing case's log is: its own PASS:/FAIL: lines, then (if it called
+# it_diagnose, directly or via lib.sh's EXIT trap) "── DIAGNOSTICS … ──"
+# followed by "── docker logs (last 60) ──" FIRST and iptables -S/ipset/
+# capture-dir output AFTER it — and that trailing material routinely exceeds
+# 40 lines on its own. A plain `tail -40` therefore kept only the LATER
+# sections and silently dropped the container logs — the actual record of
+# what the entrypoint/reconcile/agent did, and (per the task's real CI
+# failure) the one part a human needed to diagnose the bug. This synthetic
+# case reproduces that exact shape: one container-log line, then 60 lines of
+# iptables-style noise AFTER it — enough to push the container-log line
+# outside a raw last-40-lines window with margin, the same 60-line sizing
+# 100-loud-fail already established above for the identical reason. This can
+# only pass if run.sh extracts and prints the "docker logs" section
+# separately and unconditionally, not by luck of the tail's position.
+mkcase 101-diag-container-logs "fast" "docker" \
+  'echo "FAIL: distinctive-marker-diag-fail";
+   printf "%s\n" "── DIAGNOSTICS fake-cid-101 ──";
+   printf "%s\n" "   ── docker logs (last 60) ──";
+   printf "%s\n" "     distinctive-container-log-line-101";
+   printf "%s\n" "   ── iptables -S OUTPUT ──";
+   for i in $(seq 1 60); do printf "     iptables-noise-line-%s\n" "$i"; done;
+   exit 1'
+out="$(IT_FORCE_CAPS="docker" run_it --tags fast)"
+has "$out" 'distinctive-container-log-line-101' \
+  && pass "a failing case's container-log line survives the diagnostics tail" \
+  || fail "a failing case's container-log line survives the diagnostics tail"
+rm -f "$CASES/101-diag-container-logs.sh"
+
 # ── $IT_SCRATCH survives a run with failures, is removed after a clean one ────
 # Pins the other half of cf0a870: sweep() (run.sh's own EXIT trap) used to
 # unconditionally `rm -rf $IT_SCRATCH` unless --keep was passed. CI's

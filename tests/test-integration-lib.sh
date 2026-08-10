@@ -182,7 +182,7 @@ FAKE_TSHARK_LOG="$TMP/tshark-notyet.log" PATH="$FAKE_BIN:$PATH" \
   || t_pass "capture_ready returns non-zero before tshark has attached (setuid warning only)"
 
 # ── The launcher verbs' pure parts ─────────────────────────────────────────────
-for v in launcher_prepare launcher_run launcher_up agent_exec \
+for v in launcher_prepare launcher_run launcher_up agent_exec agent_exec_login \
          assert_writable assert_not_writable assert_host_file_exists \
          assert_host_file_absent assert_launcher_refused; do
   declare -F "$v" >/dev/null && t_pass "lib.sh defines $v" || t_fail "lib.sh defines $v"
@@ -197,6 +197,19 @@ if grep -qE 'docker exec -u "\$IT_LAUNCH_UID:\$IT_LAUNCH_GID"' "$LIB"; then
   t_pass "agent_exec runs as the sandbox user, not root"
 else
   t_fail "agent_exec runs as the sandbox user, not root — writability assertions would fail open"
+fi
+
+# agent_exec_login (task 14a / Finding 1): same identity, but a LOGIN shell.
+# Grep the mechanism, not the outcome — same discipline as agent_exec above.
+# Without `-l` here, a case that needs rvm's scripts/cd hook (registered only
+# by a login shell sourcing /etc/profile.d/rvm.sh) would silently see no rvm
+# function at all, exactly the case-750 bug this helper exists to prevent from
+# being reintroduced by a future non-login `docker exec ... bash -c`.
+if awk '/^agent_exec_login\(\)/,/^}/' "$LIB" \
+   | grep -qE 'docker exec -u "\$IT_LAUNCH_UID:\$IT_LAUNCH_GID" "\$1" bash -lc "\$2"'; then
+  t_pass "agent_exec_login runs as the sandbox user, in a LOGIN shell"
+else
+  t_fail "agent_exec_login runs as the sandbox user, in a LOGIN shell — rvm-dependent checks would silently see no rvm"
 fi
 
 # The launch identity must track what sandbox.sh actually passes (id -u/-g, or

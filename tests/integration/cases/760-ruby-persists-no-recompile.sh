@@ -91,6 +91,14 @@ IT_SETTLE=3600
 # source line above, not before it.
 default="${IT_RUBY_VERSIONS%%,*}"
 ruby_bin="$IT_LAUNCH_HOME_IN/.rvm/rubies/ruby-$default/bin/ruby"
+# Plain (root) `docker exec`, deliberately NOT agent_exec_login — and this does
+# NOT share case 750's wrong-user bug (task-14a report). 750 broke because it
+# ran `rvm` itself, which resolves through $HOME (root's, when unqualified) and
+# needs a login shell to have sourced /etc/profile.d/rvm.sh in the first place.
+# This is a bare `stat` on an explicit ABSOLUTE path built from
+# $IT_LAUNCH_HOME_IN, not $HOME — no shell function, no rvm sourcing, no
+# per-user $HOME expansion at all. Root can stat any world-readable path
+# regardless of ownership, so the uid doing the asking is irrelevant here.
 mtime_of() { docker exec "$1" bash -c "stat -c %Y '$ruby_bin' 2>/dev/null"; }
 
 fixture_scope_init || it_finish

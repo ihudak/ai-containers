@@ -865,6 +865,37 @@ for v in $(selected_variants $selected); do
     # and first — they must never be the thing that gets truncated — then a
     # bounded diagnostics tail for context.
     grep -E '^(PASS|FAIL|SKIP):' "$log" | sed 's/^/     /'
+    # The SAME truncation defect applies one layer down, to it_diagnose's own
+    # dump: it prints "── docker logs (last 60) ──" FIRST, then iptables -S,
+    # ipset counts and capture-dir listings AFTER it (lib.sh's it_diagnose,
+    # unchanged here — reordering it would ripple to every other caller that
+    # reads its output directly, e.g. a case's own `it_diagnose "$IT_CID"`
+    # mid-script). Those later sections routinely push the combined log past
+    # 40 lines on their own, so the plain `tail -40` below reliably showed
+    # ONLY iptables/ipset/`ls` output and discarded the container logs
+    # entirely — the actual record of what the entrypoint/reconcile/agent did,
+    # and the single most useful thing here (task-14a: a real failure's
+    # diagnostics were 100% iptables/ipset/capture-dir noise, zero lines of
+    # what the container had actually printed). Extract and print that section
+    # unconditionally and first, the same way the assertions above already
+    # are, rather than hoping a fixed-size tail happens to land on it.
+    #
+    # Bounded by construction, not just by luck: it_diagnose itself caps this
+    # section at 60 lines (`docker logs | tail -60`), so pulling it out whole
+    # cannot turn into the unbounded dump the plain tail below is deliberately
+    # sized against. Captured to a variable rather than piped straight to
+    # sed/printf so an empty result (no it_diagnose ran — e.g. a case failed
+    # before IT_CID was ever set) prints nothing at all instead of a
+    # container-logs header over an empty section.
+    container_logs="$(awk '
+      /── docker logs \(last 60\) ──/ { f=1; next }
+      /── iptables -S OUTPUT ──/      { f=0 }
+      f
+    ' "$log")"
+    if [[ -n "$container_logs" ]]; then
+      printf '     ── container logs (from it_diagnose, unbounded by the tail below) ──\n'
+      printf '%s\n' "$container_logs" | sed 's/^/     /'
+    fi
     printf '     ── diagnostics (last 40 lines of case output) ──\n'
     sed 's/^/     /' "$log" | tail -40
   fi
