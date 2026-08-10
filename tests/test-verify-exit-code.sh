@@ -21,7 +21,12 @@
 set -uo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERIFY="$REPO_DIR/verify-on-host.sh"
+# Layout-tolerant, like run.sh, lib.sh and the script under test: upstream keeps
+# the engine beside tests/, mgd-ai-containers keeps it in base/. One copy of this
+# file serves both, which is the property that lets the two stay byte-identical.
+ENGINE_DIR="$REPO_DIR"
+[[ -f "$ENGINE_DIR/verify-on-host.sh" ]] || ENGINE_DIR="$REPO_DIR/base"
+VERIFY="$ENGINE_DIR/verify-on-host.sh"
 fails=0
 pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails + 1)); }
