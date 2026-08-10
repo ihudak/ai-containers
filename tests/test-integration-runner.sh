@@ -847,5 +847,165 @@ has "$out" 'caps=.*netadmin' \
   && pass "--reuse-image's short-circuit still lets netadmin be detected (gate bypassed, not blocked)" \
   || fail "--reuse-image's short-circuit still lets netadmin be detected -- got: $out"
 
+# ── Task 13c: the PLAIN default-variant run must not freeze netadmin/launcher
+#    absent ───────────────────────────────────────────────────────────────────
+# Task 13b's tests above cover only three shapes: a --variant-mismatched image
+# (agents built, default never built), --list-caps before any build, and
+# --reuse-image. None of those is the shape that actually runs in CI's PR gate
+# (.github/workflows/integration.yml: --tags fast --exclude … --require
+# security) or verify-on-host.sh (--require security, no --variant at all): no
+# --variant flag, nothing built yet, a selection needing netadmin/launcher.
+# c3b66de fixed the GENERAL case (ensure_caps_image before detect_caps), but
+# nothing pinned this specific shape — a reviewer found the gap after the fix
+# landed.
+#
+# This drives the REAL script end-to-end, not IT_SOURCE_ONLY + a direct
+# function call (which would skip straight past the actual question — does
+# ensure_caps_image's build genuinely run before detect_caps in the real
+# top-to-bottom flow?) and not --reuse-image (which bypasses build_image()
+# entirely, i.e. bypasses the very code this gap is about). run.sh forks its
+# own build.sh and, inside probe_launcher, docker-shim.sh — so the script
+# under test is copied into a throwaway REPO_DIR alongside stand-ins for both,
+# with a stub `docker` on PATH whose `image inspect` succeeds only once the
+# stub build.sh has actually touched a marker for that tag: the same
+# build-marker idiom task-13b's fake docker uses above (there, a hardcoded
+# tag), just earned here by a REAL build_image() call instead of asserted by
+# fiat. No real docker daemon anywhere.
+#
+# Demonstrated failing against e4d62f5 (the commit before c3b66de) before
+# being confirmed against the current file — see task-13c-report.md for the
+# verbatim red output this produced there.
+CAPS13C_REPO="$TMP/caps13c-repo"
+mkdir -p "$CAPS13C_REPO/tests/integration/cases"
+cp "$RUN" "$CAPS13C_REPO/tests/integration/run.sh"
+cp "$REPO_DIR/tests/integration/minimal-conf.sh" "$CAPS13C_REPO/tests/integration/minimal-conf.sh"
+cp "$REPO_DIR/tests/integration/docker-shim.sh" "$CAPS13C_REPO/tests/integration/docker-shim.sh"
+chmod +x "$CAPS13C_REPO/tests/integration/run.sh" \
+         "$CAPS13C_REPO/tests/integration/minimal-conf.sh" \
+         "$CAPS13C_REPO/tests/integration/docker-shim.sh"
+
+# Content is irrelevant beyond being valid key=VALUE lines: minimal-conf.sh
+# only strips ON/list keys down to OFF/empty; nothing here is ever built for
+# real.
+cat > "$CAPS13C_REPO/sandbox.conf" <<'EOF'
+copilot=ON
+node=22
+ruby=
+EOF
+
+CAPS13C_MARKERS="$TMP/caps13c-built-images"
+mkdir -p "$CAPS13C_MARKERS"
+
+# Stand-in for the real build.sh: records that IMAGE_NAME was "built" — so a
+# later `docker image inspect` on that tag succeeds — without a real docker
+# build (there is no daemon here to run one). Mirrors run.sh's own contract:
+# build_image() calls `IMAGE_NAME="$img" ./build.sh "$img"`.
+cat > "$CAPS13C_REPO/build.sh" <<EOF
+#!/usr/bin/env bash
+set -u
+img="\${1:-\$IMAGE_NAME}"
+mkdir -p "$CAPS13C_MARKERS"
+touch "$CAPS13C_MARKERS/\$img"
+# build.sh also (re)generates allowlist-*.txt in the repo; run.sh's
+# build_image() snapshots/restores those and (for the default variant) copies
+# them into IT_GENERATED_ALLOWLIST_DIR — give it real files to copy.
+: > "\$(dirname "\$0")/allowlist-domains.txt"
+: > "\$(dirname "\$0")/allowlist-cidrs.txt"
+: > "\$(dirname "\$0")/allowlist-proxy-domains.txt"
+exit 0
+EOF
+chmod +x "$CAPS13C_REPO/build.sh"
+
+# Two synthetic cases, both the DEFAULT variant (no `image:` header) — the
+# exact shape of the real regression: a plain run, no --variant anywhere.
+# Tags mirror the real corpus's 010 (security) and 400 (security+mounts) so a
+# single --require security run makes both cases' skip fail the run, exactly
+# as it would have for the real PR gate.
+cat > "$CAPS13C_REPO/tests/integration/cases/690-caps13c-netadmin.sh" <<'EOF'
+#!/usr/bin/env bash
+# tags: security fast
+# requires: docker netadmin
+echo "PASS: netadmin case attempted"
+exit 0
+EOF
+cat > "$CAPS13C_REPO/tests/integration/cases/695-caps13c-launcher.sh" <<'EOF'
+#!/usr/bin/env bash
+# tags: security mounts fast
+# requires: docker launcher
+echo "PASS: launcher case attempted"
+exit 0
+EOF
+chmod +x "$CAPS13C_REPO/tests/integration/cases/"*.sh
+
+CAPS13C_BIN="$TMP/caps13c-bin"
+mkdir -p "$CAPS13C_BIN"
+cat > "$CAPS13C_BIN/docker" <<EOF
+#!/usr/bin/env bash
+# No real daemon anywhere. \`image inspect\` is gated on a BUILD MARKER file —
+# task-13b's fake docker above gates on a hardcoded tag; this one gates on
+# whatever the stub build.sh actually touched, so "nothing has been built yet
+# when detect_caps first runs" is a real, earned state, not asserted by fiat.
+CAPS13C_MARKERS="$CAPS13C_MARKERS"
+case "\$1 \$2" in
+  info*)              exit 0 ;;
+  "network create")   echo "it-net-fake"; exit 0 ;;
+  "network rm")        exit 0 ;;
+  "network ls")        exit 0 ;;
+  "image inspect")
+    [[ -f "\$CAPS13C_MARKERS/\$3" ]] && exit 0 || exit 1 ;;
+  "ps -aq")            exit 0 ;;
+  "volume ls")          exit 0 ;;
+  rmi\ *)               exit 0 ;;
+  "rm -f")              exit 0 ;;
+  pull*)                exit 1 ;;   # offline-safe; dns capability is irrelevant here
+  "inspect -f")
+    echo "true"; exit 0 ;;          # probe_launcher's own liveness check
+  run*)
+    # Covers both probe_netadmin's --cap-add=NET_ADMIN call and
+    # probe_launcher's shimmed -d -i run: a successful exit is all either
+    # needs here, not a real container.
+    exit 0 ;;
+  *) echo "fake docker (task-13c): unexpected call: \$*" >&2; exit 99 ;;
+esac
+EOF
+chmod +x "$CAPS13C_BIN/docker"
+
+cat > "$CAPS13C_BIN/curl" <<'EOF'
+#!/usr/bin/env bash
+# The "external" capability probe is irrelevant here; fail fast rather than
+# let a real network attempt slow the run or succeed unpredictably.
+exit 1
+EOF
+chmod +x "$CAPS13C_BIN/curl"
+
+out="$(PATH="$CAPS13C_BIN:$PATH" \
+       IT_CASES_DIR="$CAPS13C_REPO/tests/integration/cases" \
+       IT_SCRATCH="$TMP/caps13c-scratch" \
+       IT_IMAGE="task13c-image" \
+       bash "$CAPS13C_REPO/tests/integration/run.sh" --require security 2>&1)"
+rc=$?
+
+has "$out" 'capabilities:.*netadmin' \
+  && pass "a plain run (no --variant, nothing built yet) still detects netadmin" \
+  || fail "a plain run (no --variant, nothing built yet) still detects netadmin -- got: $out"
+has "$out" 'capabilities:.*launcher' \
+  && pass "a plain run (no --variant, nothing built yet) still detects launcher" \
+  || fail "a plain run (no --variant, nothing built yet) still detects launcher -- got: $out"
+has "$out" '690-caps13c-netadmin.*PASS' \
+  && pass "the netadmin-requiring case is SELECTED and ATTEMPTED, not skipped" \
+  || fail "the netadmin-requiring case is SELECTED and ATTEMPTED, not skipped -- got: $out"
+has "$out" '695-caps13c-launcher.*PASS' \
+  && pass "the launcher-requiring case is SELECTED and ATTEMPTED, not skipped" \
+  || fail "the launcher-requiring case is SELECTED and ATTEMPTED, not skipped -- got: $out"
+has "$out" 'SKIP' \
+  && fail "no case should SKIP once its capability was actually detected -- got: $out" \
+  || pass "neither case SKIPped (both capabilities were detected, not frozen absent)"
+has "$out" 'undetermined' \
+  && fail "a successful build must leave nothing undetermined -- got: $out" \
+  || pass "a successful build leaves nothing undetermined (both probes actually ran)"
+[[ "$rc" -eq 0 ]] \
+  && pass "the PR-gate shape (--require security) exits clean once caps are actually probed" \
+  || fail "the PR-gate shape (--require security) exits clean once caps are actually probed -- got rc=$rc"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

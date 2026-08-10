@@ -304,6 +304,12 @@ detect_caps() {
       c="$c sidecar"
       docker network rm "${IT_NET}-probe" >/dev/null 2>&1 || true
     fi
+    # Pre-existing, not a regression: this gate is keyed to whatever
+    # IT_CAPS_IMAGE currently holds, which defaults to $IT_IMAGE. If every
+    # selected variant fails to build (ensure_caps_image leaves IT_CAPS_IMAGE
+    # at that default) AND a stale image happens to already exist under the
+    # default tag from an unrelated earlier build, the probes below run
+    # against an image that has nothing to do with this run.
     if [[ "$reuse_image" -eq 1 ]] || docker image inspect "$IT_CAPS_IMAGE" >/dev/null 2>&1; then
       probe_netadmin && c="$c netadmin"
       probe_launcher && c="$c launcher"
@@ -424,7 +430,7 @@ if [[ "$do_list_caps" -eq 1 ]]; then
   # exists to eliminate: it is what made a genuinely present capability read
   # as a missing one, and made the failure confusing instead of obvious.
   if [[ -n "${_caps_unknown// /}" ]]; then
-    printf 'undetermined (no built image to probe with — build one first, or pass --reuse-image against an existing tag):%s\n' \
+    printf 'undetermined (no image built successfully to probe with — build one first, or pass --reuse-image against an existing tag):%s\n' \
       "$_caps_unknown"
   fi
   exit 0
@@ -705,7 +711,7 @@ detect_caps
 printf 'capabilities:%s%s\n' "$_caps" \
   "$([[ "$_caps_forced" -eq 1 ]] && printf ' (FORCED via IT_FORCE_CAPS)')"
 if [[ -n "${_caps_unknown// /}" ]]; then
-  printf 'undetermined (no image built successfully to probe with):%s\n' "$_caps_unknown"
+  printf 'undetermined (no image built successfully to probe with — build one first, or pass --reuse-image against an existing tag):%s\n' "$_caps_unknown"
 fi
 printf '\n'
 
