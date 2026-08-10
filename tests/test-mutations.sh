@@ -92,7 +92,7 @@ for c in "$CASES_DIR"/*.sh; do
   [[ -f "$c" ]] || continue
   tags="$(sed -n 's/^#[[:space:]]*tags:[[:space:]]*//p' "$c" | head -1)"
   case " $tags " in
-    *" mounts "*|*" groups "*|*" volumes "*) : ;;
+    *" mounts "*|*" groups "*|*" volumes "*|*" packages "*) : ;;
     *) continue ;;
   esac
   name="$(basename "$c" .sh)"

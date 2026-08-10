@@ -1,0 +1,24 @@
+# case: 750-ruby-multiversion-selection
+# what: rvm-reconcile.sh's install loop iterates only "${versions##* }" (the LAST
+#       configured RUBY_VERSIONS element) instead of every element, so every
+#       version except the last is never installed. IT_RUBY_VERSIONS is shared
+#       with cases 730/740/760 too, so this has real blast radius beyond 750: the
+#       first-configured version's own rvm/gem/bundle checks (case 740) and its
+#       compiled-binary mtime (case 760) also depend on that same first element
+#       actually being installed, and will fail alongside 750 if this patch is
+#       applied in the same run as theirs. See task-11-report.md for the batching
+#       chosen to keep 750 and 760's own demonstrations separately attributable.
+#
+diff --git a/rvm-reconcile.sh b/rvm-reconcile.sh
+index bcc220c..586090a 100755
+--- a/rvm-reconcile.sh
++++ b/rvm-reconcile.sh
+@@ -75,7 +75,7 @@ fi
+ # --autolibs=disable: don't let rvm apt-install requirements (needs root); the image pre-bakes the Ruby-build deps.
+ # grep -Fqx: the version string is matched LITERALLY (its dots are not regex wildcards)
+ # and whole-line, so ruby-3.4.5 never matches ruby-3.4.50 or vice versa.
+-for v in $versions; do
++for v in "${versions##* }"; do  # MUTATION: only the last configured version installs
+   if rvm list strings 2>/dev/null | grep -Fqx "ruby-$v"; then
+     log "ruby-$v already present"
+   else

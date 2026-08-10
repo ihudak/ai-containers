@@ -1,0 +1,25 @@
+# case: 760-ruby-persists-no-recompile
+# what: rvm_volume_name folds in $$ (the CURRENT sandbox.sh process's own PID), so
+#       every separate launcher_up invocation for the SAME group computes a
+#       DIFFERENT docker volume name. Case 760 makes two launcher_up calls within
+#       one script -- each spawns its own sandbox.sh subprocess with its own PID --
+#       so launch 2 mounts a brand-new, empty volume instead of the one launch 1
+#       populated, forcing a full recompile the case's 300s second-launch wait
+#       cannot clear.
+#
+diff --git a/sandbox-common.sh b/sandbox-common.sh
+index 05e8ae8..2e720fd 100644
+--- a/sandbox-common.sh
++++ b/sandbox-common.sh
+@@ -431,7 +431,10 @@ repo_name_from_volume() {
+ # Label:  ai-containers.rvm-group   the container group this Ruby home belongs to
+ 
+ rvm_volume_name() {
+-  printf '%s-rvm-%s' "$repo_volume_prefix" "$(sanitize_volume_token "$1")"
++  # MUTATION: $$ (this sandbox.sh process's own PID) is folded into the name, so
++  # every separate launcher_up invocation computes a DIFFERENT volume name for the
++  # SAME group — no two launches ever land on the same volume again.
++  printf '%s-rvm-%s-%s' "$repo_volume_prefix" "$(sanitize_volume_token "$1")" "$$"
+ }
+ 
+ # Echo every existing rvm volume name, one per line.

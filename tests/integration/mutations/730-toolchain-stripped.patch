@@ -1,0 +1,23 @@
+# case: 730-native-clients-run
+# what: build.sh emits DB_CLIENTS as the raw comma-joined sandbox.conf value (e.g.
+#       "pg,mysql,mongo") instead of converting it to space-separated with
+#       versions_to_space. The Dockerfile's `for c in $DB_CLIENTS` loop word-splits
+#       on whitespace only, so the whole string becomes ONE unrecognized token, its
+#       case statement falls to the *) "unknown db-client" warning branch, and
+#       postgresql-client/mysql-client/mongosh are never installed -- psql, mysql and
+#       mongosh all disappear from PATH while gcc/convert/wkhtmltopdf (unrelated to
+#       DB_CLIENTS) are untouched.
+#
+diff --git a/build.sh b/build.sh
+index c8265e4..82c7d6f 100755
+--- a/build.sh
++++ b/build.sh
+@@ -244,7 +244,7 @@ build_args_from_config() {
+   ver="$(version_list go)";     _args+=(--build-arg "GO_VERSION=$ver")
+ 
+   # DB client libraries (client/dev libs + CLIs only — never servers).
+-  ver="$(version_list db-clients)"; _args+=(--build-arg "DB_CLIENTS=$(versions_to_space "$ver")")
++  ver="$(version_list db-clients)"; _args+=(--build-arg "DB_CLIENTS=$ver")
+ 
+   # Retain a runtime build toolchain so native extensions compile at runtime.
+   # Needed whenever Ruby is present or a DB driver will be built.
