@@ -198,5 +198,40 @@ else
   fail "launcher_prepare refuses when the real docker cannot be resolved (rc=$rc, out=$out)"
 fi
 
+# ── launcher_conf folds in the variant's overrides ─────────────────────────────
+# launcher_up drives the REAL sandbox.sh, which re-reads sandbox.conf at LAUNCH
+# time. If the launcher config and the image config disagree, the launcher does
+# not mount what the image contains and the case fails on correct behaviour.
+# That already happened once. The fix is that a case never states the variant's
+# overrides, so it cannot forget them.
+export IT_VARIANT_OVERRIDES='ruby=3.3.6,3.4.5 imagemagick=ON'
+export IT_REAL_DOCKER="${IT_REAL_DOCKER:-/bin/true}"  # launcher_prepare checks this
+launcher_prepare >/dev/null 2>&1
+launcher_conf >/dev/null 2>&1
+conf="$IT_LAUNCH_HOME/sandbox.conf"
+grep -qx 'ruby=3.3.6,3.4.5' "$conf" \
+  && pass "launcher_conf applies the variant's overrides with no case arguments" \
+  || fail "launcher_conf applies the variant's overrides with no case arguments"
+grep -qx 'imagemagick=ON' "$conf" \
+  && pass "launcher_conf applies every variant override, not just the first" \
+  || fail "launcher_conf applies every variant override, not just the first"
+
+# A case's own argument must win over the variant's value for the same key,
+# so a case can narrow the variant deliberately.
+launcher_conf ruby=3.4.5 >/dev/null 2>&1
+grep -qx 'ruby=3.4.5' "$conf" \
+  && pass "a case argument overrides the variant's value for the same key" \
+  || fail "a case argument overrides the variant's value for the same key"
+
+# And with no variant set, behaviour is exactly as before.
+unset IT_VARIANT_OVERRIDES
+launcher_conf claude-code=ON >/dev/null 2>&1
+grep -qx 'claude-code=ON' "$conf" \
+  && pass "launcher_conf still works with no variant overrides set" \
+  || fail "launcher_conf still works with no variant overrides set"
+grep -qx 'ruby=' "$conf" \
+  && pass "an unset variant leaves the version lists empty" \
+  || fail "an unset variant leaves the version lists empty"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

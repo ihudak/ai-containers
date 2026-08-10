@@ -309,9 +309,14 @@ launcher_prepare() {
 # minimal-conf.sh for why a case must never inherit the developer's own conf.
 # Call again with overrides to switch one component back on:
 #     launcher_conf claude-code=ON
-launcher_conf() {  # $*=key=value overrides
+launcher_conf() {  # $*=key=value overrides (the variant's are added first, automatically)
   local f="$IT_LAUNCH_HOME/sandbox.conf"
-  bash "$IT_LIB_DIR/minimal-conf.sh" "$IT_REPO_DIR/sandbox.conf" "$@" > "$f" \
+  # $IT_VARIANT_OVERRIDES comes FIRST so a case's own argument for the same key
+  # wins — minimal-conf.sh applies overrides in order. A case never has to state
+  # the variant's overrides, which is the point: it cannot forget them, and the
+  # image config and the launcher config cannot drift apart.
+  bash "$IT_LIB_DIR/minimal-conf.sh" "$IT_REPO_DIR/sandbox.conf" \
+      ${IT_VARIANT_OVERRIDES:-} "$@" > "$f" \
     || { fail "launcher_conf: could not derive a minimal sandbox.conf"; return 1; }
   export SANDBOX_CONF="$f"
   return 0
