@@ -89,7 +89,39 @@ IT_SETTLE=3600
 fixture_scope_init || it_finish
 export AI_CONTAINER_GROUP="$IT_RUBY_GROUP"
 launcher_up restricted || it_finish
-ruby_wait_ready "$IT_CID" 1800 || { it_diagnose "$IT_CID"; it_finish; }
+
+# Deliberately NOT `ruby_wait_ready ... || { it_diagnose "$IT_CID"; it_finish; }`
+# the way 740/760 correctly do for their own single-assertion shape. This
+# case's whole point is the version-presence loop and the .ruby-version
+# selection check below — ending the case here on a readiness failure would
+# report ONLY "the reconcile reported FAILED", with no indication of WHICH
+# version is missing, even though the next lines exist to say exactly that.
+# ruby_wait_ready already calls fail() on every one of its three failure
+# paths (see lib.sh), so it_fails is already nonzero by the time this line
+# returns and the case is already guaranteed to end non-zero at it_finish
+# below — nothing here needs to fail() again on its behalf; just keep going.
+#
+# Safe to fall through unconditionally, for all three of ruby_wait_ready's
+# failure paths: "the reconcile reported FAILED" (this case's own mutation
+# demonstration — only the LAST configured version installs) leaves the
+# container fully up, because a per-version FAILED: line does not stop
+# rvm-reconcile.sh from reaching its own "done." and letting entrypoint.sh
+# hand over to the agent shell (lib.sh's _ruby_reconcile_ok comment traces
+# this). "container exited" and "timed out" leave a container that is not
+# usably running, but every call below is a `docker exec`, which fails FAST
+# against a dead or missing container rather than hanging — so this case
+# degrades to clearly-labeled per-version failures instead of compounding
+# into a stuck run.
+#
+# it_diagnose is deliberately NOT called here. it_cleanup already dumps it
+# automatically, exactly once, for any case that ends with it_fails > 0
+# (lib.sh:79, the EXIT trap) — calling it again here would duplicate several
+# dozen lines of firewall/ipset/capture diagnostics that have nothing to do
+# with Ruby, and interleave them BETWEEN this failure and the
+# version-presence loop that follows, burying the one piece of information
+# (which version is missing) this report exists to surface. The automatic
+# dump still runs, once, at the very end.
+ruby_wait_ready "$IT_CID" 1800
 
 # ruby= is a comma-separated LIST precisely so a project can migrate between
 # versions, and per-project selection comes from .ruby-version via a login
@@ -151,15 +183,43 @@ done
 # whose whole point is the .ruby-version SELECTION mechanism, not file
 # ownership across users.
 other="${IT_RUBY_VERSIONS##*,}"
-agent_exec "$IT_CID" "mkdir -p /tmp/proj && printf '%s\n' '$other' > /tmp/proj/.ruby-version"
-if out="$(agent_exec_login "$IT_CID" 'cd /tmp/proj && ruby -e "print RUBY_VERSION"' 2>&1)"; then
-  if [[ "$out" == "$other" ]]; then
-    pass ".ruby-version selects the non-default version ($other)"
+
+# Gated on $other actually having installed (already known from the loop
+# above via $installed) rather than run unconditionally. If $other never
+# installed, `ruby -e ...` under /tmp/proj would either fail outright or
+# silently fall back to whatever default IS present — either way the
+# resulting failure would be ABOUT the missing install the loop above
+# already reported, not about .ruby-version's selection mechanism, and
+# running it anyway would only produce a second, confusing failure for the
+# same root cause. Gating on presence, rather than skipping unconditionally
+# whenever the reconcile failed at all, keeps this check live for the common
+# partial-failure shape where the LAST version (the one this check targets)
+# is exactly the one that DID install — this case's own mutation
+# demonstration is that shape (only the last configured version installs).
+#
+# One known limitation, not solved here: if $other is the ONLY version that
+# installed, it is also — by the same rvm-reconcile.sh default-setting logic
+# cited above — the version rvm falls back to as the default, so a pass
+# below does not distinguish "the .ruby-version mechanism worked" from
+# "there was only one ruby to fall back to anyway". That is the same
+# vacuous-pass risk the element-choice comment above already exists to avoid
+# in the NORMAL case; here it can recur as a side effect of a partial
+# reconcile failure. Accepted rather than special-cased further: the
+# version-presence loop above is what actually catches a partial-failure
+# defect, and already does so unambiguously.
+if grep -Fqx "ruby-$other" <<< "$installed"; then
+  agent_exec "$IT_CID" "mkdir -p /tmp/proj && printf '%s\n' '$other' > /tmp/proj/.ruby-version"
+  if out="$(agent_exec_login "$IT_CID" 'cd /tmp/proj && ruby -e "print RUBY_VERSION"' 2>&1)"; then
+    if [[ "$out" == "$other" ]]; then
+      pass ".ruby-version selects the non-default version ($other)"
+    else
+      fail ".ruby-version selected $out, expected $other"
+    fi
   else
-    fail ".ruby-version selected $out, expected $other"
+    fail "ruby failed to run under .ruby-version: $out"
   fi
 else
-  fail "ruby failed to run under .ruby-version: $out"
+  printf 'NOTE: skipping the .ruby-version selection check — ruby-%s was never installed (see the version-presence loop above); the check would only restate that failure, not test selection\n' "$other"
 fi
 
 it_finish
