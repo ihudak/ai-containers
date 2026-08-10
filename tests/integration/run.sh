@@ -72,8 +72,8 @@ Usage: tests/integration/run.sh [options]
   -h, --help         this text
 
 Tags: network-mode mounts volumes groups packages | security | fast slow |
-      needs-external needs-netadmin needs-dns | harness
-Requires: docker netadmin sidecar dns external launcher
+      needs-external needs-netadmin needs-dns needs-multiruby | harness
+Requires: docker netadmin sidecar dns external launcher multiruby
 EOF
 }
 

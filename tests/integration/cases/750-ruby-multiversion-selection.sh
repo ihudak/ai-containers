@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # summary:  every configured Ruby version is installed, and .ruby-version selects
 #           a non-default one
-# tags:     packages slow needs-multiruby
+# tags:     packages slow needs-multiruby needs-external
 # requires: docker launcher netadmin multiruby
 # image:    native
 # timeout:  3900
@@ -13,10 +13,19 @@
 # rvm bug rather than the missing capability it actually is (case 730 sets the
 # same precedent for the same reason).
 #
-# requires: multiruby — with one version configured there is nothing to select
-# between, and this case must SKIP BY NAME rather than pass against a
-# one-element list. The nightly may drop to a single version on cost; see
-# nightly.yml.
+# The `multiruby` entry in requires: above exists because with one version
+# configured there is nothing to select between, and this case must SKIP BY
+# NAME rather than pass against a one-element list. The nightly may drop to a
+# single version on cost; see nightly.yml. (Reworded off a leading "requires:"
+# so a future header reorder can't be misread as a second requires: line by
+# anything less forgiving than case_meta's current head -1.)
+#
+# needs-external: this case's group can reach it cold (see the IT_SETTLE
+# comment below), which means the same real rvm/rubygems/ruby-lang.org network
+# calls case 730 makes for the same reason — the tag has to be here too, or
+# `--tags packages --exclude needs-external` would drop 730 (which correctly
+# carries the tag) while still admitting this case into a cold bootstrap,
+# defeating the point of that exclusion.
 #
 # The mechanism this case leans on — a LOGIN, non-interactive shell picking up
 # a directory's .ruby-version — is asserted nowhere else in this repo
@@ -80,8 +89,23 @@ ruby_wait_ready "$IT_CID" 1800 || { it_diagnose "$IT_CID"; it_finish; }
 # convention, not evidence that an empty case was observed.
 installed="$(docker exec "$IT_CID" bash -lc 'rvm list strings 2>/dev/null' | tr -d '\r')"
 IFS=',' read -r -a want <<< "$IT_RUBY_VERSIONS"
+
+# The multiruby gate implies 2+ elements; assert it explicitly rather than
+# only inheriting it, so a gate regression fails LOUDLY here instead of this
+# loop quietly running once (or zero times) and everything downstream still
+# reporting green.
+if [[ "${#want[@]}" -lt 2 ]]; then
+  fail "IT_RUBY_VERSIONS has ${#want[@]} element(s) despite the multiruby gate — nothing to select between: [$IT_RUBY_VERSIONS]"
+fi
+
 for v in ${want[@]+"${want[@]}"}; do
-  if grep -q "ruby-$v" <<< "$installed"; then
+  # -F: the version string is matched LITERALLY, its dots are not regex
+  # wildcards. -x: whole-line, not substring. Both matter for the same reason
+  # rvm-reconcile.sh:74-76 already grep this way — without them "ruby-3.4.5"
+  # also matches "ruby-3.4.50", and a plain `grep -q` here would reproduce the
+  # exact anti-pattern the product hardened against, on the line whose only
+  # job is confirming which versions actually installed.
+  if grep -Fqx "ruby-$v" <<< "$installed"; then
     pass "ruby-$v is installed"
   else
     fail "ruby-$v is installed — rvm list: $(tr '\n' ' ' <<< "$installed")"

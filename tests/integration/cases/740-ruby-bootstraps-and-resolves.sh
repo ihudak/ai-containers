@@ -49,15 +49,19 @@ export AI_CONTAINER_GROUP="itruby-cold-$$"
 launcher_up restricted || it_finish
 ruby_wait_ready "$IT_CID" 1800 || { it_diagnose "$IT_CID"; it_finish; }
 
-# link-default-ruby.sh's contract, verbatim: ruby/gem/bundle/rake/irb onto
-# /usr/local/bin so a NON-login shell resolves them. `bundler` is deliberately
-# absent from this list — it is not in that set, and requiring it would report
-# a bug against a contract nothing makes. `bundle` executing is a separate
-# assertion from `bundle` resolving: rvm rewrites gem binstub shebangs to
-# `#!/usr/bin/env ruby_executable_hooks`, so a correctly-linked `bundle` can
-# still die on exec — assert_runs (lib.sh) checks both and distinguishes them
-# in its failure output.
-for b in ruby gem bundle rake irb; do
+# link-default-ruby.sh's contract, verbatim (`link-default-ruby.sh:46`: `for b
+# in ruby gem bundle bundler rake irb erb`) — all SEVEN onto /usr/local/bin so
+# a NON-login shell resolves them. Corrected from an earlier draft that
+# claimed `bundler` was deliberately excluded from this set (it was not — that
+# claim was checked against the wrong list) and dropped `erb` entirely. Both
+# matter on the exact axis this case exists for: `bundle` executing is a
+# separate assertion from `bundle` resolving, because rvm rewrites gem binstub
+# shebangs to `#!/usr/bin/env ruby_executable_hooks`, and `bundle`/`bundler`
+# are precisely the pair most likely to diverge on that rewrite — a regression
+# that broke linking `bundler` while `bundle` kept working would pass a loop
+# that only checked five of the seven. assert_runs (lib.sh) checks PATH
+# presence AND execution, and distinguishes the two in its failure output.
+for b in ruby gem bundle bundler rake irb erb; do
   assert_runs "$IT_CID" "$b"
 done
 

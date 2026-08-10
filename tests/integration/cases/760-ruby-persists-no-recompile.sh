@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # summary:  a second launch in the same group reuses the compiled rubies instead
 #           of recompiling
-# tags:     packages slow
+# tags:     packages slow needs-external
 # requires: docker launcher netadmin
 # image:    native
 # timeout:  7600
@@ -12,6 +12,13 @@
 # dies before PID 1 ever hands over, which would look exactly like a broken
 # rvm volume rather than the missing capability it actually is (case 730 sets
 # the same precedent for the same reason).
+#
+# needs-external: like 750, $IT_RUBY_GROUP can reach this case cold (nothing
+# guarantees 730 warmed it first — see the IT_SETTLE reasoning below), which
+# means launch1 can make the same real rvm/rubygems/ruby-lang.org calls 730
+# makes. Without the tag, `--tags packages --exclude needs-external` would
+# drop 730 but still admit this case into a cold bootstrap — the opposite of
+# what that exclusion means to do.
 #
 # IT_SETTLE=3600 / timeout=7600: TWO launcher_up calls, each its own
 # cold-two-version-compile ceiling (the same 3600 case 730/740/750 already
@@ -40,7 +47,8 @@
 #
 # Sum: 3600 (launch1, cold) + 3600 (launch2, "only near ceiling if reuse is
 # genuinely broken") + ~40s (two near-instant ruby_wait_ready confirmations,
-# the docker rm) + ~20s (log grep + final assert_runs) ≈ 7260s. 7600 leaves
+# two near-instant mtime probes, the docker rm) + ~10s (final assert_runs)
+# ≈ 7250s. 7600 leaves
 # ~340s of margin over that — the same flat-margin sizing 730 uses, scaled to
 # a two-launch case. This is reasoned from the product's own code, the same
 # as every number in the 700-series before its own baseline run: CI is first
@@ -56,11 +64,46 @@ set -uo pipefail
 
 IT_SETTLE=3600
 
+# The evidence is the compiled ruby BINARY'S MTIME, not a log grep — this
+# case shipped first with a log grep for 'Installing Ruby from source|rvm
+# install', dropped on review. The mechanism trace behind that grep was
+# correct as far as it went (rvm_log is an unredirected printf, and
+# entrypoint.sh runs the reconcile with no redirection either, so the text
+# does reach `docker logs`) but incomplete: `rvm install <v>` HEAD-probes
+# THREE precompiled-binary mirrors before falling through to
+# __rvm_install_source's "Installing Ruby from source" — and if a mirror ever
+# served a binary, a genuine reinstall would print NEITHER pattern, and this
+# case would report a false "reused". allowlist-domains.d/rvm.txt already
+# allowlists (and documents) all three mirrors — rvm-io.global.ssl.fastly.net
+# (both spellings), rubies.travis-ci.org, repo1.maven.org — and explains
+# exactly why the probe reliably 404s anyway for the CRuby versions this repo
+# installs (repo1.maven.org's path is JRuby's; the other two are legacy and
+# defunct), which is a real, environment-specific reason the grep would have
+# stayed correct here — but it is still a second file's behavior this case
+# would have depended on without saying so, and it stops being true the
+# moment a mirror starts serving a matching binary or IT_RUBY_VERSIONS names
+# a version one of them actually has. The mtime of
+# ~/.rvm/rubies/ruby-<default>/bin/ruby is insensitive to which path rvm
+# takes to get there: reused means UNCHANGED, recompiled (source OR binary)
+# means REWRITTEN, and the file is on the same persistent group volume across
+# both launches (docker rm -f only removes the CONTAINER between them).
+# $IT_LAUNCH_HOME_IN comes from lib.sh, so this block has to sit after the
+# source line above, not before it.
+default="${IT_RUBY_VERSIONS%%,*}"
+ruby_bin="$IT_LAUNCH_HOME_IN/.rvm/rubies/ruby-$default/bin/ruby"
+mtime_of() { docker exec "$1" bash -c "stat -c %Y '$ruby_bin' 2>/dev/null"; }
+
 fixture_scope_init || it_finish
 export AI_CONTAINER_GROUP="$IT_RUBY_GROUP"
 
 launcher_up restricted || it_finish
 ruby_wait_ready "$IT_CID" 1800 || { it_diagnose "$IT_CID"; it_finish; }
+first_mtime="$(mtime_of "$IT_CID")"
+if [[ -z "$first_mtime" ]]; then
+  fail "the compiled ruby binary is missing after the first launch: $ruby_bin"
+  it_diagnose "$IT_CID"
+  it_finish
+fi
 first="$IT_CID"
 docker rm -f "$first" >/dev/null 2>&1 || true
 
@@ -68,29 +111,15 @@ launcher_up restricted || it_finish
 ruby_wait_ready "$IT_CID" 300 \
   || { fail "the second launch did not settle within 300s — it is recompiling"; it_diagnose "$IT_CID"; it_finish; }
 
-# rvm prints its install banner only when it actually installs. Its absence is
-# the evidence; asserting on elapsed time would be a flaky proxy for it.
-# "Installing Ruby from source to: ..." is verified against rvm's own upstream
-# source (scripts/functions/manage/base_install, via rvm_log — plain stdout,
-# gated only on rvm_quiet_flag, which nothing here sets), not assumed: it is
-# the message __rvm_install_source prints immediately before compiling, and
-# base_install is the generic MRI install path `rvm install <version>` takes
-# (confirmed by reading rvm/rvm's scripts/functions/manage/base, which sources
-# base_install and is what every plain `ruby-x.y.z` install goes through).
-# rvm-reconcile.sh does not redirect rvm's output, and entrypoint.sh runs the
-# whole reconcile synchronously with no redirection either (same reasoning
-# case 710 verified for agent-tools-reconcile.sh's npm output) — so this
-# reaches the container's own stdout, which `docker logs` captures. The bare
-# `rvm install` alternative is a secondary, harmless net: it appears in rvm's
-# OWN "not installed, run this" advice (scripts/functions/selector), which
-# fires only when `rvm use` is asked for a version that genuinely is not
-# present — never on the warm/already-installed path this second launch is
-# expected to take — so it adds no false-positive risk on a correct run.
-if docker logs "$IT_CID" 2>&1 | grep -qE 'Installing Ruby from source|rvm install'; then
-  fail "the second launch RECOMPILED — the group's rvm volume was not reused"
-  docker logs "$IT_CID" 2>&1 | grep -iE 'rvm-reconcile|Installing Ruby' | tail -10 | sed 's/^/     /'
+second_mtime="$(mtime_of "$IT_CID")"
+if [[ -z "$second_mtime" ]]; then
+  fail "the compiled ruby binary is missing after the second launch: $ruby_bin"
+  it_diagnose "$IT_CID"
+elif [[ "$second_mtime" == "$first_mtime" ]]; then
+  pass "the second launch reused the group's compiled ruby-$default (mtime unchanged: $first_mtime)"
 else
-  pass "the second launch reused the group's compiled rubies"
+  fail "the second launch RECOMPILED ruby-$default — the group's rvm volume was not reused (mtime $first_mtime -> $second_mtime)"
+  docker logs "$IT_CID" 2>&1 | grep -iE 'rvm-reconcile|Installing Ruby' | tail -10 | sed 's/^/     /'
 fi
 assert_runs "$IT_CID" ruby
 
