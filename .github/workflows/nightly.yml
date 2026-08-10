@@ -14,7 +14,24 @@ name: Nightly
 on:
   schedule:
     - cron: '17 3 * * *'
+  # tags/exclude exist for mutation demonstrations: proving a new case actually
+  # fails against the known-bad configuration it targets needs ONE tier run
+  # against a deliberately broken tree, not the whole corpus. Without a filter
+  # here, every demonstration also re-runs integration-full and
+  # allowlist-health for no benefit — up to two hours each, times as many
+  # dispatches as there are mutations to demonstrate. Both inputs default to
+  # empty, which is exactly what the scheduled run supplies, so a scheduled
+  # run's rendered command is unchanged.
   workflow_dispatch:
+    inputs:
+      tags:
+        description: 'run.sh --tags for the integration jobs (empty = the whole corpus)'
+        required: false
+        default: ''
+      exclude:
+        description: 'run.sh --exclude for the integration jobs'
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -74,11 +91,17 @@ jobs:
       - name: Case corpus
         run: ./tests/integration/run.sh --list
 
-      # No --tags: the whole corpus, including slow and needs-dns.
-      # --require security still applies, so a security case that cannot run here
-      # fails the job rather than quietly disappearing from the count.
+      # No --tags/--exclude on a scheduled run (both inputs render empty): the
+      # whole corpus, including slow and needs-dns. --require security still
+      # applies, so a security case that cannot run here fails the job rather
+      # than quietly disappearing from the count. A manual dispatch narrowing
+      # `tags`/`exclude` is for demonstrating a mutation against one tier
+      # without also paying for integration-full's full run.
       - name: Run the whole corpus
-        run: ./tests/integration/run.sh --require security
+        run: >-
+          ./tests/integration/run.sh --require security
+          ${{ inputs.tags && format('--tags {0}', inputs.tags) || '' }}
+          ${{ inputs.exclude && format('--exclude {0}', inputs.exclude) || '' }}
 
       - name: Collect diagnostics
         if: failure()
@@ -188,6 +211,12 @@ jobs:
       # exists to prevent, just relocated from a case to a habit.
       #
       # Phase 4 is deliberately EXCLUDED: integration-full above already runs the
-      # whole corpus, and running it twice per night buys nothing.
+      # whole corpus, and running it twice per night buys nothing. tags/exclude
+      # are still threaded through as IT_EXTRA_ARGS — the variable Phase 4 reads
+      # — so this step's behaviour does not silently diverge from a later task
+      # that widens PHASES to include it; with Phase 4 excluded and both inputs
+      # empty on a scheduled run, IT_EXTRA_ARGS is unused today either way.
       - name: Phases 1-3
-        run: PHASES="1 2 3" bash ./verify-on-host.sh
+        run: >-
+          PHASES="1 2 3" IT_EXTRA_ARGS="${{ inputs.tags && format('--tags {0}', inputs.tags) || '' }} ${{ inputs.exclude && format('--exclude {0}', inputs.exclude) || '' }}"
+          bash ./verify-on-host.sh

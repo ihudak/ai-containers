@@ -154,5 +154,27 @@ else
   printf '%s\n' "$out" | sed 's/^/       /'
 fi
 
+# ── Multi-apply ────────────────────────────────────────────────────────────────
+# Batched demonstrations need several known-bad patches applied at once. The
+# state file becomes a LIST, and revert must reverse in the opposite order —
+# two patches touching the same file apply cleanly forwards and conflict
+# backwards if reversed in the order they were applied.
+out="$(bash "$MUTATE" apply 400-ro-suffix-dropped no-such-mutation 2>&1)"; rc=$?
+if [[ "$rc" -ne 0 ]] && grep -q 'no such mutation' <<< "$out"; then
+  pass "multi-apply rejects the whole batch when any id is unknown"
+else
+  fail "multi-apply rejects the whole batch when any id is unknown (rc=$rc)"
+fi
+if [[ ! -f "$MUT_DIR/.applied" ]]; then
+  pass "a rejected batch applies nothing (no state file left behind)"
+else
+  fail "a rejected batch applies nothing — .applied exists after a refused batch"
+  bash "$MUTATE" revert >/dev/null 2>&1
+fi
+
+grep -q 'apply <id>\.\.\.' "$MUTATE" || grep -q 'apply.*\[<id>' "$MUTATE" \
+  && pass "usage documents multi-apply" \
+  || fail "usage documents multi-apply"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
