@@ -758,10 +758,22 @@ dump_blocked_forensics() {  # $1=cid — MUST run while the container is alive
   # empty stand-in (`: > file`) — forensics_report tells "the capture never ran"
   # apart from "it ran and saw nothing" purely by whether the file exists, and
   # this wrapper is the only place that distinction can be preserved or lost.
+  # Every read below MUST let `docker exec`'s own exit status govern the
+  # fallback — never pipe its output through another command first. A pipeline's
+  # `$?` is its LAST stage's, not `docker exec`'s: `cmd | it_strip_comments`
+  # exits 0 on empty input regardless of whether `cmd` itself failed, so a
+  # piped `|| rm -f` never fires on a failed exec and silently reverts to the
+  # fabricated-empty-file defect this block exists to eliminate. (Nothing in
+  # the production call chain sets `pipefail` — cases run as a fresh `bash "$f"`
+  # with no inherited shell options — so this is not merely a style nit.)
   docker exec "$cid" cat /run/agent-blocked-internal/dns-map.txt > "$d/dns-map.txt" 2>/dev/null \
     || rm -f "$d/dns-map.txt"
-  docker exec "$cid" cat /tmp/allowlist-domains.txt 2>/dev/null \
-    | it_strip_comments > "$d/allowlist.txt" || rm -f "$d/allowlist.txt"
+  if docker exec "$cid" cat /tmp/allowlist-domains.txt > "$d/allowlist.raw" 2>/dev/null; then
+    it_strip_comments < "$d/allowlist.raw" > "$d/allowlist.txt"
+  else
+    rm -f "$d/allowlist.txt"
+  fi
+  rm -f "$d/allowlist.raw"
   local f
   for f in blocked.log blocked-domains.txt blocked-ips.txt; do
     docker exec "$cid" cat "/workspace/.agent-blocked/$f" > "$d/$f" 2>/dev/null || rm -f "$d/$f"
