@@ -47,9 +47,12 @@ fi
 
 # No network-mode test logic of its own: Phase 4's body must delegate to
 # tests/integration/run.sh rather than drive docker directly. Extract the
-# block between Phase 4's header comment and the pre-cleanup comment that
-# already anchored the end of the phase list before this test existed.
-phase4_block="$(sed -n '/# ── Phase 4: the runtime integration corpus/,/# :- defaults: a skipped phase/p' "$VOH")"
+# block between Phase 4's header comment and the Verdict section's header
+# comment, which anchors the end of the phase list. (Task 12 deleted the
+# SMOKE_CONF/NATIVE_CONF/RUBY_CONF cleanup comment this used to anchor on —
+# the Verdict marker is the next stable landmark after it, and the same one
+# tests/test-verify-exit-code.sh's own demonstration anchors on.)
+phase4_block="$(sed -n '/# ── Phase 4: the runtime integration corpus/,/# ── Verdict/p' "$VOH")"
 if [[ -z "$phase4_block" ]]; then
   fail "could not extract the Phase 4 block (anchors moved?)"
 else
