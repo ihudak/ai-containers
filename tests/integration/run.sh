@@ -55,15 +55,29 @@ timeout_secs=300
 # EXIT trap reads it to decide whether to keep $IT_SCRATCH.
 n_fail=0
 
+# Single source of truth for valid --variant NAMES, consumed by usage() below
+# and by the unknown-variant error message further down — so those two
+# user-facing strings can never drift apart from each other. Assigned here,
+# ahead of the option-parsing loop, because usage() can be invoked as early as
+# a bare `-h`/`--help`, before variant_overrides() (which is the actual
+# authority on what a valid variant IS, not just its name) has even been
+# defined as a function yet. variant_overrides()'s own case arms, near its
+# definition below, carry a comment pointing back here: its per-variant
+# override bodies can't be derived from a flat name list without contorting
+# that function, so the two are kept in sync by hand plus that pointer.
+KNOWN_VARIANTS="default agents native"
+
 usage() {
-  cat <<'EOF'
+  cat <<EOF
 Usage: tests/integration/run.sh [options]
 
   --tags T[,T…]      run only cases carrying at least one of these tags
   --exclude T[,T…]   drop cases carrying any of these tags
-  --variant NAME     run only cases whose image variant is NAME (default,
-                      agents, native) — composes with --tags/--exclude, it
-                      narrows rather than replaces that selection
+  --variant NAME     run only cases whose image variant is NAME ($KNOWN_VARIANTS)
+                      — composes with --tags/--exclude, it narrows rather than
+                      replaces that selection. Like --tags/--exclude, it has
+                      no effect on --list, which always catalogues the whole
+                      corpus regardless of any selection flag.
   --require T[,T…]   fail the run if any SELECTED case with this tag SKIPPED
   --timeout N        per-case timeout in seconds (default 300)
   --image NAME       image tag to build/use (default ai-sandbox-it)
@@ -188,6 +202,12 @@ case_meta() {  # $1=file $2=key → the header value, or empty
 # top-of-file variable block this would otherwise sit in.
 IT_RUBY_VERSIONS="${IT_RUBY_VERSIONS:-3.3.6,3.4.5}"
 
+# This function is the actual authority on which variant names are valid —
+# KNOWN_VARIANTS (top of file) is a flat name list for two user-facing
+# strings (usage(), the unknown-variant error) that run before this function
+# even exists yet; it can't be derived FROM this function's case arms without
+# contorting them, since each arm carries a different override body, not just
+# a name. If a variant is ever added/removed here, update KNOWN_VARIANTS too.
 variant_overrides() {  # $1=variant → space-separated key=value; rc 1 if unknown
   case "$1" in
     default) printf '' ;;
@@ -542,7 +562,7 @@ export IT_RUN_ID IT_LABEL IT_SCRATCH IT_IMAGE IT_NET IT_DNS_IMAGE \
 # itself would accept.
 if [[ -n "$want_variant" ]]; then
   variant_overrides "$want_variant" >/dev/null || {
-    printf 'run.sh: unknown variant: %s (known: default, agents, native)\n' "$want_variant" >&2
+    printf 'run.sh: unknown variant: %s (known: %s)\n' "$want_variant" "$KNOWN_VARIANTS" >&2
     exit 2
   }
 fi

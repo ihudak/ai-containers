@@ -244,8 +244,22 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
           df -h / | tail -1
 
-      - name: Start timer
-        run: echo "PACKAGES_START=$(date +%s)" >> "$GITHUB_ENV"
+      # Wall-clock timer, plus a background disk-usage sampler — both started
+      # right before the tier step, not measured after it. run.sh's own
+      # sweep() EXIT trap and its per-variant `docker rmi` both run INSIDE the
+      # "Packages tier" step below, before that step returns, so anything a
+      # LATER step reads with `df`/`docker system df` only ever sees what is
+      # left AFTER that cleanup — a post-cleanup floor, never the multi-GB
+      # high-water mark while the image was still on disk. The sampler polls
+      # `df`'s used-on-/ figure every 5s into a log for as long as the tier
+      # step runs; it is cheap (one `df` + a 5s sleep) and self-limiting (the
+      # log holds a handful of KB even over a 90-minute job).
+      - name: Start timer and disk-peak sampler
+        run: |
+          echo "PACKAGES_START=$(date +%s)" >> "$GITHUB_ENV"
+          rm -f /tmp/disk-peak.log
+          ( while :; do df --output=used -BM / | tail -1 | tr -d ' ' >> /tmp/disk-peak.log; sleep 5; done ) &
+          echo "DISK_SAMPLER_PID=$!" >> "$GITHUB_ENV"
 
       # --require packages: a selected case whose requirement is unmet FAILS the
       # job rather than skipping quietly. A case that cannot run is never a
@@ -257,14 +271,30 @@ jobs:
 
       # The two numbers that decide whether this half of the tier stays this
       # shape. Recorded every night: an unmeasured budget is how a tier
-      # silently outgrows its runner.
+      # silently outgrows its runner. `if: always()` so a failing tier step
+      # still gets measured — the sampler must survive that and this step must
+      # never fail ON TOP of a failing tier, so killing it is best-effort.
       - name: Budget
         if: always()
         run: |
+          if [ -n "${DISK_SAMPLER_PID:-}" ]; then
+            kill "$DISK_SAMPLER_PID" 2>/dev/null || true
+          fi
           end=$(date +%s)
           start="${PACKAGES_START:-$end}"
           elapsed=$((end - start))
           echo "packages-agents wall-clock: $((elapsed / 60))m $((elapsed % 60))s"
+          # PEAK used-on-/ WHILE THE TIER STEP RAN (sampled every 5s) — this is
+          # the figure the COST SWITCH comment's ~11 GB threshold refers to.
+          if [ -s /tmp/disk-peak.log ]; then
+            peak="$(sort -n /tmp/disk-peak.log | tail -1)"
+            echo "packages-agents peak disk used on / during the tier: $peak"
+          else
+            echo "packages-agents peak disk used on / during the tier: NO SAMPLES (sampler did not run)"
+          fi
+          # For comparison only — this is the POST-CLEANUP snapshot, not the
+          # peak; run.sh's sweep()/rmi have already reclaimed the image by now.
+          echo "-- post-cleanup snapshot --"
           df -h / | tail -1
           docker system df
 
@@ -285,15 +315,23 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
           df -h / | tail -1
 
-      - name: Start timer
-        run: echo "PACKAGES_START=$(date +%s)" >> "$GITHUB_ENV"
+      # See the identical step in packages-agents above for why the sampler
+      # exists: run.sh's own cleanup runs INSIDE the tier step, so a df taken
+      # afterward is a post-cleanup floor, not the peak.
+      - name: Start timer and disk-peak sampler
+        run: |
+          echo "PACKAGES_START=$(date +%s)" >> "$GITHUB_ENV"
+          rm -f /tmp/disk-peak.log
+          ( while :; do df --output=used -BM / | tail -1 | tr -d ' ' >> /tmp/disk-peak.log; sleep 5; done ) &
+          echo "DISK_SAMPLER_PID=$!" >> "$GITHUB_ENV"
 
       # COST SWITCH. IT_RUBY_VERSIONS (tests/integration/run.sh) defaults to
       # 3.3.6,3.4.5, and the native variant compiles BOTH at container start —
       # every one of 740/750/760 pays for this; 760's own 7600s budget is the
       # two-version cold-compile precedent (case 730) applied twice. If this job
-      # routinely runs past ~75 minutes, or the Budget step below shows the
-      # runner peaking above ~11 GB, the lever is to set, on this job:
+      # routinely runs past ~75 minutes, or the Budget step below shows PEAK
+      # disk used on / during the tier (not the post-cleanup snapshot) above
+      # ~11 GB, the lever is to set, on this job:
       #   env:
       #     IT_RUBY_VERSIONS: "3.4.5"
       # and add `--exclude needs-multiruby` to the step below.
@@ -311,9 +349,23 @@ jobs:
       - name: Budget
         if: always()
         run: |
+          if [ -n "${DISK_SAMPLER_PID:-}" ]; then
+            kill "$DISK_SAMPLER_PID" 2>/dev/null || true
+          fi
           end=$(date +%s)
           start="${PACKAGES_START:-$end}"
           elapsed=$((end - start))
           echo "packages-native wall-clock: $((elapsed / 60))m $((elapsed % 60))s"
+          # PEAK used-on-/ WHILE THE TIER STEP RAN (sampled every 5s) — this is
+          # the figure the COST SWITCH comment above refers to.
+          if [ -s /tmp/disk-peak.log ]; then
+            peak="$(sort -n /tmp/disk-peak.log | tail -1)"
+            echo "packages-native peak disk used on / during the tier: $peak"
+          else
+            echo "packages-native peak disk used on / during the tier: NO SAMPLES (sampler did not run)"
+          fi
+          # For comparison only — this is the POST-CLEANUP snapshot, not the
+          # peak; run.sh's sweep()/rmi have already reclaimed the image by now.
+          echo "-- post-cleanup snapshot --"
           df -h / | tail -1
           docker system df
