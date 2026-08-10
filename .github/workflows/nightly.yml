@@ -48,6 +48,20 @@ on:
         description: 'run.sh --cases for the packages-agents/packages-native jobs (e.g. 760-ruby-persists-no-recompile) — empty = every packages case for that variant'
         required: false
         default: ''
+      # Task 11c: this ONE value is threaded into BOTH jobs below, unfiltered —
+      # neither has (or needs) a job-level `if:` naming which case belongs to
+      # which variant. A dispatch plan built around one variant's case names
+      # (e.g. cases=700-agent-tools-install-restricted, an agents-tier case)
+      # therefore also reaches packages-native as
+      # `--variant native --cases 700-agent-tools-install-restricted`. run.sh
+      # itself resolves that: the name is real (case_variant() knows it), it
+      # just belongs to the sibling job's variant, so that job exits 0 with an
+      # explicit "nothing to run here, a sibling job covers it" message rather
+      # than the FATAL zero-selection guard a typo or bad tag would still hit.
+      # Encoding "which case belongs to which variant" here in YAML instead
+      # would duplicate the one place that already knows it — run.sh's own
+      # case_variant() — and would drift the moment a case's `image:` header
+      # changed without this file being touched.
 
 permissions:
   contents: read

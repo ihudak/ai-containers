@@ -769,21 +769,83 @@ if [[ -n "$want_cases" ]]; then
 fi
 
 # ── Selection ───────────────────────────────────────────────────────────────────
-total=0; selected=""
+# --cases is applied BEFORE --variant here (the reverse of the two flags'
+# narrative order in the comments below), so $selected_pre_variant can capture
+# "everything --tags/--exclude/--cases agreed on" at the exact point before the
+# variant cut is made. That set is what the task-11c diagnostic immediately
+# below this loop (well before the fatal zero-selection guard near the bottom
+# of the file) uses to tell "you named real cases, but they all belong to a
+# different --variant" (a deliberate no-op — a sibling job covers them) apart
+# from an actual typo or a --tags/--exclude mismatch (still fatal).
+# The final $selected membership is identical either way; only the bookkeeping
+# moved.
+total=0; selected=""; selected_pre_variant=""
 for f in $(all_cases); do
   total=$((total + 1))
   tags="$(case_meta "$f" tags)"
   [[ -n "$want_tags" ]] && { list_intersects "$tags" "$want_tags" || continue; }
   [[ -n "$excl_tags" ]] && { list_intersects "$tags" "$excl_tags" && continue; }
-  # Composes with --tags/--exclude above rather than replacing them: narrows
-  # whatever they already selected down to one image variant.
-  [[ -n "$want_variant" ]] && { [[ "$(case_variant "$f")" == "$want_variant" ]] || continue; }
-  # Composes the same way: narrows further to an explicit set of case
-  # basenames, exactly the "run just this one mutated case plus its controls"
-  # shape a mutation demonstration needs.
+  # Narrows to an explicit set of case basenames, exactly the "run just this
+  # one mutated case plus its controls" shape a mutation demonstration needs.
   [[ -n "$want_cases" ]] && { list_intersects "$(basename "$f" .sh)" "$want_cases" || continue; }
+  selected_pre_variant="${selected_pre_variant:+$selected_pre_variant }$f"
+  # Composes with --tags/--exclude/--cases above rather than replacing them:
+  # narrows whatever they already selected down to one image variant.
+  [[ -n "$want_variant" ]] && { [[ "$(case_variant "$f")" == "$want_variant" ]] || continue; }
   selected="${selected:+$selected }$f"
 done
+
+# ── Legitimate empty selection: known --cases naming a sibling job's variant ───
+# Task 11c: nightly.yml's packages-agents/packages-native jobs both thread the
+# SAME workflow_dispatch `cases` input into `--tags packages --variant <name>
+# ${cases:+--cases <cases>}`. A dispatch plan built around one variant's case
+# names (e.g. `--cases 700-agent-tools-install-restricted`, an agents-tier
+# case) therefore also reaches the OTHER job as
+# `--variant native --cases 700-agent-tools-install-restricted`. That name is
+# real — it already survived the unknown-name check earlier in this file — it
+# simply belongs to the sibling job's variant, not this one's. Treating that
+# the same as a typo (falling through to the FATAL guard near the bottom of
+# this file)
+# would fail a job for doing exactly what it was asked: nothing, because its
+# sibling covers these cases.
+#
+# $selected_pre_variant is the selection loop just above with every filter but
+# --variant already applied. If it is non-empty while $selected (--variant
+# applied) is empty, --tags/--exclude/--cases were all satisfied and the ONLY
+# remaining cause is the variant cut itself — provable from data already
+# computed here, not inferred from the flags. Exit 0 (not the FATAL 1 below)
+# with a message naming the variant(s) the requested cases actually belong to,
+# so a reader of a green log can tell "this job deliberately did nothing"
+# apart from "this job silently checked nothing" — the exact ambiguity the
+# FATAL guard exists to prevent for every OTHER cause of an empty selection.
+# A --cases name that fails --tags/--exclude for a reason OTHER than variant
+# leaves $selected_pre_variant empty too, so it still falls through to FATAL,
+# unchanged.
+#
+# -n "$want_cases" is NOT redundant with -n "$selected_pre_variant": without
+# --cases, $selected_pre_variant is just "every case that passed
+# --tags/--exclude" (the ordinary --variant-only selection pool), which is
+# routinely non-empty even when THIS variant's cut of it is empty — e.g.
+# `--tags fast --variant native` when no fast-tagged case is native. That is
+# the plain "this variant has none of the tag-selected cases" outcome the
+# FATAL guard has always correctly caught; it has nothing to do with --cases
+# naming a real case in a sibling variant, and must keep failing exactly as
+# before.
+if [[ -z "$selected" && -n "$want_cases" && -n "$want_variant" && -n "$selected_pre_variant" ]]; then
+  owning_variants=""
+  for f in $selected_pre_variant; do
+    v="$(case_variant "$f")"
+    case " $owning_variants " in
+      *" $v "*) ;;
+      *) owning_variants="${owning_variants:+$owning_variants }$v" ;;
+    esac
+  done
+  printf 'run.sh: --cases "%s" named known case(s) belonging to variant "%s" -- not this job'"'"'s --variant "%s".\n' \
+    "$want_cases" "$owning_variants" "$want_variant" >&2
+  printf '        Nothing to run here; a sibling job with --variant "%s" covers them. Exiting 0 (deliberate no-op, not an error).\n' \
+    "$owning_variants" >&2
+  exit 0
+fi
 
 # Validated for the WHOLE selected set up front, before any image build or
 # capability probe: a malformed `timeout:` header is an authoring bug, and

@@ -591,6 +591,97 @@ has "$out" 'no case was selected' \
   && fail "the unknown-cases error must be distinct from the generic zero-selection message -- got: $out" \
   || pass "the unknown-cases error is distinct from the generic zero-selection message"
 
+# ── --cases + --variant: known names, wrong variant (task 11c) ─────────────────
+# nightly.yml's packages-agents/packages-native jobs both thread the SAME
+# `cases` workflow_dispatch input into `--tags packages --variant <name>
+# ${cases:+--cases <cases>}`. A dispatch plan built for one variant's cases
+# (e.g. `--cases 700-agent-tools-install-restricted`, an agents-tier case)
+# therefore ALSO reaches the sibling job as
+# `--variant native --cases 700-agent-tools-install-restricted` — a real,
+# known name that simply belongs to the other variant. That must be a clean,
+# deliberate no-op (rc 0, explicit message), never conflated with an unknown
+# name (rc 2, tested above) or the generic zero-selection FATAL (rc 1).
+#
+# Numbers picked well outside every other block's range in this file so there
+# is no collision regardless of execution order.
+cat > "$CASES/160-cv-agents.sh" <<'EOF'
+#!/usr/bin/env bash
+# tags: cvsel cvagentsonly
+# requires: docker
+# image: agents
+echo "PASS: cv-agents case"
+exit 0
+EOF
+cat > "$CASES/161-cv-native.sh" <<'EOF'
+#!/usr/bin/env bash
+# tags: cvsel
+# requires: docker
+# image: native
+echo "PASS: cv-native case"
+exit 0
+EOF
+
+# KNOWN NAME, WRONG VARIANT: --cases names a real, agents-tier case; --variant
+# asks for native. Must exit 0 (not 1, not 2) with a message naming BOTH the
+# variant the case actually belongs to (agents) and the variant that was
+# asked for (native) — never the generic zero-selection text, and never the
+# unknown-name text (this name is real).
+out="$(IT_FORCE_CAPS="docker" run_it --tags cvsel --variant native --cases 160-cv-agents)"
+rc="$(rc_of "$out")"
+[[ "$rc" -eq 0 ]] \
+  && pass "--cases naming a known case in the WRONG --variant exits 0, not fatal" \
+  || fail "--cases naming a known case in the WRONG --variant exits 0, not fatal (rc=$rc) -- got: $out"
+has "$out" 'belonging to variant "agents"' \
+  && pass "the wrong-variant message names the variant the case actually belongs to" \
+  || fail "the wrong-variant message names the variant the case actually belongs to -- got: $out"
+has "$out" 'variant "native"' \
+  && pass "the wrong-variant message names the --variant that was asked for" \
+  || fail "the wrong-variant message names the --variant that was asked for -- got: $out"
+has "$out" 'no case was selected' \
+  && fail "the wrong-variant no-op must be distinct from the generic zero-selection FATAL -- got: $out" \
+  || pass "the wrong-variant no-op is distinct from the generic zero-selection FATAL"
+has "$out" 'unknown case' \
+  && fail "the wrong-variant no-op must be distinct from the unknown-cases error -- got: $out" \
+  || pass "the wrong-variant no-op is distinct from the unknown-cases error"
+has "$out" '160-cv-agents.*PASS' \
+  && fail "the wrong-variant no-op must not actually run the case -- got: $out" \
+  || pass "the wrong-variant no-op does not run the case"
+
+# KNOWN NAME, RIGHT VARIANT: same case, same tag, --variant now matches its
+# OWN image header — runs exactly that one case, unchanged from ordinary
+# --cases + --variant composition (the packages-agents job's own shape).
+out="$(IT_FORCE_CAPS="docker" run_it --tags cvsel --variant agents --cases 160-cv-agents)"
+has "$out" 'selected 1 of' \
+  && pass "--cases naming a known case in the RIGHT --variant selects exactly it" \
+  || fail "--cases naming a known case in the RIGHT --variant selects exactly it -- got: $(printf '%s' "$out" | grep selected)"
+has "$out" '160-cv-agents.*PASS' \
+  && pass "--cases + matching --variant runs the named case" \
+  || fail "--cases + matching --variant runs the named case -- got: $out"
+
+# UNCHANGED (ordinary case): a scheduled run supplies no --cases at all, so
+# --variant alone still selects normally across a variant that DOES have a
+# matching case.
+out="$(IT_FORCE_CAPS="docker" run_it --tags cvsel --variant native)"
+has "$out" '161-cv-native.*PASS' \
+  && pass "--tags + --variant alone (no --cases) still selects normally across the variant" \
+  || fail "--tags + --variant alone (no --cases) still selects normally across the variant -- got: $out"
+
+# UNCHANGED (gating proof): this is the case the new diagnostic must NOT
+# soften. --tags cvagentsonly matches ONLY the agents-tier case, so
+# --variant native --without --cases zeroes the selection exactly as it did
+# before this fix -- proving the new exit-0 path is --cases-gated, not a
+# general --variant/--tags mismatch becoming non-fatal.
+out="$(IT_FORCE_CAPS="docker" run_it --tags cvagentsonly --variant native)"
+rc="$(rc_of "$out")"
+[[ "$rc" -ne 0 ]] \
+  && pass "--tags + --variant alone (no --cases) still FAILS on a real zero intersection" \
+  || fail "--tags + --variant alone (no --cases) still FAILS on a real zero intersection (rc=$rc) -- got: $out"
+has "$out" 'no case was selected' \
+  && pass "the no-op fast path never fires without --cases -- ordinary FATAL message still appears" \
+  || fail "the no-op fast path never fires without --cases -- got: $out"
+
+rm -f "$CASES/160-cv-agents.sh" "$CASES/161-cv-native.sh"
+
 # case_timeout, as a pure function (see the full run_it() scenarios above for
 # the end-to-end "it actually changes what it_timeout kills at" proof — these
 # three pin the parsing/validation contract in isolation).
