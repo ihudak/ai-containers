@@ -192,31 +192,128 @@ jobs:
           echo "checked $n_hosts hostname(s)"
           exit $rc
 
-  packages:
-    name: Package installs (real allowlist, per-component images)
+  # The packages tier verifies that components INSTALL — the seven cases at
+  # tests/integration/cases/7[0-6]0-*.sh — through the REAL allowlist, which is
+  # why it is nightly and not on the PR gate. It replaces the old verify-on-host.sh
+  # Phases 1-3 job: run.sh now drives the same real installs as ordinary
+  # integration cases, with named PASS/FAIL/SKIP assertions instead of a
+  # pass/fail script. verify-on-host.sh itself is untouched here — a later task
+  # in this increment removes its now-redundant Phases 1-3, and this job is what
+  # makes that removal safe rather than a coverage loss.
+  #
+  # TWO jobs, one per image variant (agents: 700/710/720, native:
+  # 730/740/750/760), not one job running both. run.sh executes cases SERIALLY
+  # within a single job step, and the seven cases' own `timeout:` headers sum to
+  # 430 minutes worst case — 2100+2400+2000s (agents) + 3900+3900+3900+7600s
+  # (native) — against any single reasonable job timeout. Realistic totals are
+  # far lower (roughly 15-30 min agents, 25-50 min native: within one run the
+  # rvm/agent-tools volume is shared by group name, so only a COLD group pays a
+  # compile/install), but the ceilings are what a job timeout must respect: if a
+  # slow-but-healthy run ever approaches the outer GitHub Actions job timeout,
+  # the JOB dies before any per-case timeout or named assertion can fire, and CI
+  # reports an ambiguous kill instead of a named failure — exactly the failure
+  # mode the per-case timeouts were added to prevent, recreated one layer up by
+  # an outer number that is too tight. Splitting by variant also caps peak disk
+  # at one multi-GB image per RUNNER (each job builds only its own), which is
+  # the same constraint that drove run.sh's serial build-then-rmi design in the
+  # first place, and lets the two halves run in parallel instead of stacking
+  # their wall-clock into one job.
+  packages-agents:
+    name: Package installs — agents variant (real allowlist)
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    # Real headroom over the realistic 15-30 min estimate, but comfortably below
+    # the 700+710+720 worst-case sum (2100+2400+2000s = 108 min). That gap is
+    # deliberate: a job that runs long past 60 min is a signal worth catching
+    # (something is genuinely slow, or hanging in a way no per-case timeout
+    # caught), while a job killed at or near the WORST-CASE ceiling reports
+    # nothing about anything — no named failure, no diagnostics, just "the job
+    # died" — which is precisely the ambiguous-timeout failure this split
+    # exists to avoid recreating one layer up.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
 
-      # verify-on-host.sh Phases 1-3: the agent-tier tool installs, the
-      # db-clients/imagemagick/wkhtmltopdf native builds, and the Ruby/rvm
-      # bootstrap. These are REAL installs through the REAL allowlist, which is
-      # why they are nightly and not on the PR gate.
+      # Disk headroom before anything builds. Each job now builds exactly ONE
+      # variant image on its own runner (the per-variant split above), so the
+      # peak here is one multi-GB image — but a runner that starts near full
+      # still fails that build with an error that looks nothing like "out of
+      # space".
+      - name: Free disk
+        run: |
+          df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          df -h / | tail -1
+
+      - name: Start timer
+        run: echo "PACKAGES_START=$(date +%s)" >> "$GITHUB_ENV"
+
+      # --require packages: a selected case whose requirement is unmet FAILS the
+      # job rather than skipping quietly. A case that cannot run is never a
+      # pass. --variant agents narrows run.sh's own --tags packages selection to
+      # this job's three agents-variant cases (700/710/720); the native
+      # variant's four cases run in the sibling job below.
+      - name: Packages tier (agents variant)
+        run: ./tests/integration/run.sh --tags packages --variant agents --require packages
+
+      # The two numbers that decide whether this half of the tier stays this
+      # shape. Recorded every night: an unmeasured budget is how a tier
+      # silently outgrows its runner.
+      - name: Budget
+        if: always()
+        run: |
+          end=$(date +%s)
+          start="${PACKAGES_START:-$end}"
+          elapsed=$((end - start))
+          echo "packages-agents wall-clock: $((elapsed / 60))m $((elapsed % 60))s"
+          df -h / | tail -1
+          docker system df
+
+  packages-native:
+    name: Package installs — native variant (real allowlist)
+    runs-on: ubuntu-latest
+    # Real headroom over the realistic 25-50 min estimate, but comfortably below
+    # the 730+740+750+760 worst-case sum (3900+3900+3900+7600s = 322 min). Same
+    # trade as the agents job above: a long-but-alive job is a signal, a job
+    # killed at the outer timeout is silence.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Free disk
+        run: |
+          df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          df -h / | tail -1
+
+      - name: Start timer
+        run: echo "PACKAGES_START=$(date +%s)" >> "$GITHUB_ENV"
+
+      # COST SWITCH. IT_RUBY_VERSIONS (tests/integration/run.sh) defaults to
+      # 3.3.6,3.4.5, and the native variant compiles BOTH at container start —
+      # every one of 740/750/760 pays for this; 760's own 7600s budget is the
+      # two-version cold-compile precedent (case 730) applied twice. If this job
+      # routinely runs past ~75 minutes, or the Budget step below shows the
+      # runner peaking above ~11 GB, the lever is to set, on this job:
+      #   env:
+      #     IT_RUBY_VERSIONS: "3.4.5"
+      # and add `--exclude needs-multiruby` to the step below.
       #
-      # This job is the reason Task 10 could justify keeping those phases alive
-      # rather than deleting them to satisfy a "no test logic" criterion. Without
-      # it they are reachable only by a human remembering to run the script by
-      # hand — which is the "green because we did not look" state this suite
-      # exists to prevent, just relocated from a case to a habit.
-      #
-      # Phase 4 is deliberately EXCLUDED: integration-full above already runs the
-      # whole corpus, and running it twice per night buys nothing. tags/exclude
-      # are still threaded through as IT_EXTRA_ARGS — the variable Phase 4 reads
-      # — so this step's behaviour does not silently diverge from a later task
-      # that widens PHASES to include it; with Phase 4 excluded and both inputs
-      # empty on a scheduled run, IT_EXTRA_ARGS is unused today either way.
-      - name: Phases 1-3
-        run: >-
-          PHASES="1 2 3" IT_EXTRA_ARGS="${{ inputs.tags && format('--tags {0}', inputs.tags) || '' }} ${{ inputs.exclude && format('--exclude {0}', inputs.exclude) || '' }}"
-          bash ./verify-on-host.sh
+      # If that switch is ever thrown: 750-ruby-multiversion-selection has
+      # nothing left to select between (run.sh's probe_multiruby requires a
+      # comma in IT_RUBY_VERSIONS to report the `multiruby` capability at all),
+      # so it becomes a LOCAL-ONLY case — exercised by verify-on-host.sh on a
+      # workstation and by NOTHING in CI. That is a real coverage gap, not a
+      # hypothetical one, and this comment is where it must be recorded: a
+      # trade-off written only in a design doc is a trade-off nobody will find.
+      - name: Packages tier (native variant)
+        run: ./tests/integration/run.sh --tags packages --variant native --require packages
+
+      - name: Budget
+        if: always()
+        run: |
+          end=$(date +%s)
+          start="${PACKAGES_START:-$end}"
+          elapsed=$((end - start))
+          echo "packages-native wall-clock: $((elapsed / 60))m $((elapsed % 60))s"
+          df -h / | tail -1
+          docker system df

@@ -422,6 +422,82 @@ check "case_variant reads the image header" \
 check "case_variant defaults when the header is absent" \
   "default" "$(bash "$TMP/callfn.sh" case_variant "$TMP/c-without.sh")"
 
+# ── --variant CLI selector ─────────────────────────────────────────────────────
+# Task 13: the nightly `packages` job is split into one job per variant, each
+# calling run.sh with `--variant <name>` so it only runs ITS half of the tier.
+# --variant must COMPOSE with --tags/--exclude (narrow a tag-selected set to one
+# image), not replace them — and an unrecognised name must fail loudly, naming
+# itself as the cause, rather than silently falling through to the generic
+# "selected 0 cases" message a mistyped --tags gets (that message is true but
+# does not say WHICH thing was wrong).
+#
+# Numbers picked well outside every range mkcase()/other blocks in this file
+# use (010-100, plus the string-prefixed avariant*/zvariant* names) so there is
+# no collision regardless of execution order.
+cat > "$CASES/150-variant-agents.sh" <<'EOF'
+#!/usr/bin/env bash
+# tags: varsel
+# requires: docker
+# image: agents
+echo "PASS: agents-variant case"
+exit 0
+EOF
+cat > "$CASES/151-variant-native.sh" <<'EOF'
+#!/usr/bin/env bash
+# tags: varsel
+# requires: docker
+# image: native
+echo "PASS: native-variant case"
+exit 0
+EOF
+cat > "$CASES/152-variant-default.sh" <<'EOF'
+#!/usr/bin/env bash
+# tags: varsel
+# requires: docker
+echo "PASS: default-variant case"
+exit 0
+EOF
+
+# PRESENT: --variant agents, combined with --tags varsel, selects ONLY the
+# agents-variant case out of the three that share the tag.
+out="$(IT_FORCE_CAPS="docker" run_it --tags varsel --variant agents)"
+has "$out" 'selected 1 of' \
+  && pass "--tags + --variant agents narrows a tag-selected set to just that variant" \
+  || fail "--tags + --variant agents narrows a tag-selected set to just that variant -- got: $(printf '%s' "$out" | grep selected)"
+has "$out" '150-variant-agents.*PASS' \
+  && pass "--variant agents selects the agents-variant case" \
+  || fail "--variant agents selects the agents-variant case -- got: $out"
+has "$out" '151-variant-native' \
+  && fail "--variant agents must not select the native-variant case -- got: $out" \
+  || pass "--variant agents excludes the native-variant case"
+has "$out" '152-variant-default' \
+  && fail "--variant agents must not select the default-variant case -- got: $out" \
+  || pass "--variant agents excludes the default-variant case"
+
+# ABSENT: omitting --variant is unchanged behaviour — --tags alone still
+# selects across every variant, exactly as it did before this flag existed.
+out="$(IT_FORCE_CAPS="docker" run_it --tags varsel)"
+has "$out" 'selected 3 of' \
+  && pass "omitting --variant selects across all variants (pre-existing behaviour preserved)" \
+  || fail "omitting --variant selects across all variants -- got: $(printf '%s' "$out" | grep selected)"
+
+# UNKNOWN NAME: a typo must be a loud, SPECIFIC error — not the generic
+# zero-selection message a mistyped --tags produces, which never says the
+# variant name itself is the problem.
+out="$(IT_FORCE_CAPS="docker" run_it --tags varsel --variant no-such-variant)"
+rc="$(rc_of "$out")"
+[[ "$rc" -ne 0 ]] \
+  && pass "an unknown --variant name fails the run" \
+  || fail "an unknown --variant name fails the run (rc=$rc)"
+has "$out" 'unknown variant' \
+  && pass "the unknown-variant error names the real cause" \
+  || fail "the unknown-variant error names the real cause -- got: $out"
+has "$out" 'no case was selected' \
+  && fail "the unknown-variant error must be distinct from the generic zero-selection message -- got: $out" \
+  || pass "the unknown-variant error is distinct from the generic zero-selection message"
+
+rm -f "$CASES/150-variant-agents.sh" "$CASES/151-variant-native.sh" "$CASES/152-variant-default.sh"
+
 # case_timeout, as a pure function (see the full run_it() scenarios above for
 # the end-to-end "it actually changes what it_timeout kills at" proof — these
 # three pin the parsing/validation contract in isolation).

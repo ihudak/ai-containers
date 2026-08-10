@@ -46,7 +46,7 @@ IT_GENERATED_ALLOWLIST_DIR="$IT_SCRATCH/generated-allowlists"
 # refuses to run without an explicit real binary rather than recurse into itself.
 IT_REAL_DOCKER="${IT_REAL_DOCKER:-$(command -v docker 2>/dev/null)}"
 
-want_tags=""; excl_tags=""; req_tags=""
+want_tags=""; excl_tags=""; req_tags=""; want_variant=""
 do_list=0; do_list_caps=0; reuse_image=0; keep=0; verbose=0
 timeout_secs=300
 # Declared here, not just in the "Execution" section below, so it is defined
@@ -61,6 +61,9 @@ Usage: tests/integration/run.sh [options]
 
   --tags T[,T…]      run only cases carrying at least one of these tags
   --exclude T[,T…]   drop cases carrying any of these tags
+  --variant NAME     run only cases whose image variant is NAME (default,
+                      agents, native) — composes with --tags/--exclude, it
+                      narrows rather than replaces that selection
   --require T[,T…]   fail the run if any SELECTED case with this tag SKIPPED
   --timeout N        per-case timeout in seconds (default 300)
   --image NAME       image tag to build/use (default ai-sandbox-it)
@@ -90,7 +93,7 @@ while [[ -z "${IT_SOURCE_ONLY:-}" && $# -gt 0 ]]; do
   # under set -u — a message that names neither the option nor the problem, from a
   # script whose whole purpose is making failures legible.
   case "$1" in
-    --tags|--exclude|--require|--timeout|--image)
+    --tags|--exclude|--variant|--require|--timeout|--image)
       if [[ $# -lt 2 ]]; then
         printf 'run.sh: %s requires a value\n' "$1" >&2
         usage >&2
@@ -102,6 +105,7 @@ while [[ -z "${IT_SOURCE_ONLY:-}" && $# -gt 0 ]]; do
   case "$1" in
     --tags)     want_tags="${2//,/ }"; shift 2 ;;
     --exclude)  excl_tags="${2//,/ }"; shift 2 ;;
+    --variant)  want_variant="$2";     shift 2 ;;
     --require)  req_tags="${2//,/ }";  shift 2 ;;
     --timeout)  timeout_secs="$2";     shift 2 ;;
     --image)    IT_IMAGE="$2";         shift 2 ;;
@@ -528,6 +532,21 @@ export IT_RUN_ID IT_LABEL IT_SCRATCH IT_IMAGE IT_NET IT_DNS_IMAGE \
        IT_CONNECT_TIMEOUT IT_SETTLE IT_GENERATED_ALLOWLIST_DIR IT_REAL_DOCKER \
        IT_RUBY_VERSIONS
 
+# --variant is validated HERE, once, rather than left to fall through to the
+# "selected 0" fatal check below: a bad name would otherwise just match zero
+# cases in the loop right below and get the SAME message a mistyped --tags
+# gets ("no case was selected... check for a typo"), which is true but not
+# specific — it never says the NAME itself is unrecognised. variant_overrides()
+# is the single source of truth for valid names (build_image() trusts the
+# exact same call), so this can never drift from what the execution loop
+# itself would accept.
+if [[ -n "$want_variant" ]]; then
+  variant_overrides "$want_variant" >/dev/null || {
+    printf 'run.sh: unknown variant: %s (known: default, agents, native)\n' "$want_variant" >&2
+    exit 2
+  }
+fi
+
 # ── Selection ───────────────────────────────────────────────────────────────────
 total=0; selected=""
 for f in $(all_cases); do
@@ -535,6 +554,9 @@ for f in $(all_cases); do
   tags="$(case_meta "$f" tags)"
   [[ -n "$want_tags" ]] && { list_intersects "$tags" "$want_tags" || continue; }
   [[ -n "$excl_tags" ]] && { list_intersects "$tags" "$excl_tags" && continue; }
+  # Composes with --tags/--exclude above rather than replacing them: narrows
+  # whatever they already selected down to one image variant.
+  [[ -n "$want_variant" ]] && { [[ "$(case_variant "$f")" == "$want_variant" ]] || continue; }
   selected="${selected:+$selected }$f"
 done
 
@@ -734,6 +756,13 @@ if [[ "$n_sel" -eq 0 ]]; then
   if [[ -n "$want_tags$excl_tags" ]]; then
     printf '       selection was --tags "%s" --exclude "%s" — check for a typo\n' \
       "$want_tags" "$excl_tags" >&2
+  fi
+  # An unknown --variant name never reaches here — it is validated (and exits)
+  # before selection runs, above. This is the LEGITIMATE empty intersection: a
+  # recognised variant that just has no case matching --tags/--exclude.
+  if [[ -n "$want_variant" ]]; then
+    printf '       --variant "%s" narrowed it further — check the variant matches a selected case\n' \
+      "$want_variant" >&2
   fi
   if [[ "$total" -eq 0 ]]; then
     printf '       no case files found in %s\n' "$CASES_DIR" >&2
