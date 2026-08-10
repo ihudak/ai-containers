@@ -1,0 +1,34 @@
+# case: 410-workdir-and-umbrella
+# what: chown_workspace_root is never called, so /workspace stays root-owned and the agent cannot write in its own working directory
+#
+diff --git a/entrypoint.sh b/entrypoint.sh
+index 25b5795..64bedb4 100755
+--- a/entrypoint.sh
++++ b/entrypoint.sh
+@@ -214,7 +214,7 @@ case "$mode" in
+   restricted)
+     apply_restricted_firewall
+     setup_sandbox_user
+-    chown_workspace_root
++    : # MUTATION: chown_workspace_root removed
+ 
+     printf '╔══════════════════════════════════════════════════════════════════╗\n'
+     printf '║  NOTE: DNS (port 53) is unrestricted — all resolvers reachable. ║\n'
+@@ -248,7 +248,7 @@ case "$mode" in
+   discovery)
+     apply_discovery_firewall
+     setup_sandbox_user
+-    chown_workspace_root
++    : # MUTATION: chown_workspace_root removed
+ 
+     # This is the only mode combining unrestricted egress with a pcap that
+     # persists on the host after the container exits — say so plainly, the
+@@ -292,7 +292,7 @@ case "$mode" in
+     ;;
+   open)
+     setup_sandbox_user
+-    chown_workspace_root
++    : # MUTATION: chown_workspace_root removed
+ 
+     printf '╔══════════════════════════════════════════════════════════════════╗\n'
+     printf '║  OPEN MODE: outbound network is UNRESTRICTED and NOT captured.   ║\n'

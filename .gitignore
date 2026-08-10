@@ -43,3 +43,6 @@ allowlist-cidrs.d/custom.txt
 
 # subagent-driven-development scratch (ledger, briefs, review packages)
 .superpowers/
+
+# mutate.sh state marker (which known-bad patch is currently applied)
+/tests/integration/mutations/.applied

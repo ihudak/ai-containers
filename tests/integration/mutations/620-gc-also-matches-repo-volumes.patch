@@ -1,0 +1,16 @@
+# case: 620-group-gc-collects-orphan
+# what: rvm_volumes' filter loses its -rvm- infix, so gc also sees — and collects — repo volumes
+#
+diff --git a/sandbox-common.sh b/sandbox-common.sh
+index 05e8ae8..e0952d3 100644
+--- a/sandbox-common.sh
++++ b/sandbox-common.sh
+@@ -436,7 +436,7 @@ rvm_volume_name() {
+ 
+ # Echo every existing rvm volume name, one per line.
+ rvm_volumes() {
+-  docker volume ls --quiet --filter "name=${repo_volume_prefix}-rvm-" 2>/dev/null || true
++  docker volume ls --quiet --filter "name=${repo_volume_prefix}-" 2>/dev/null || true
+ }
+ 
+ # Echo the group backing an rvm volume: prefer the label, fall back to stripping

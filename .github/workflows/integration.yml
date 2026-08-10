@@ -168,4 +168,8 @@ jobs:
         if: always()
         run: |
           docker ps -aq  --filter 'label=ai-containers.it-run' | xargs -r docker rm -f
+          # Volumes too: the launcher tier creates them on its own (a group's rvm
+          # volume, a :rwcopy working copy) and they are the only leaked resource
+          # here measured in GB. Label-scoped, so nothing outside this run matches.
+          docker volume ls -q --filter 'label=ai-containers.it-run' | xargs -r docker volume rm
           docker network ls -q --filter 'label=ai-containers.it-run' | xargs -r docker network rm

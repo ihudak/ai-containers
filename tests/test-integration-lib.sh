@@ -164,5 +164,39 @@ FAKE_TSHARK_LOG="$TMP/tshark-notyet.log" PATH="$FAKE_BIN:$PATH" \
   && fail "capture_ready returns non-zero before tshark has attached (setuid warning only)" \
   || pass "capture_ready returns non-zero before tshark has attached (setuid warning only)"
 
+# ── The launcher verbs' pure parts ─────────────────────────────────────────────
+for v in launcher_prepare launcher_run launcher_up agent_exec \
+         assert_writable assert_not_writable assert_host_file_exists \
+         assert_host_file_absent assert_launcher_refused; do
+  declare -F "$v" >/dev/null && pass "lib.sh defines $v" || fail "lib.sh defines $v"
+done
+
+# agent_exec MUST run as the sandbox user. This is a FAIL-OPEN check: `docker
+# exec` defaults to root, root writes through any ownership mistake, and every
+# assert_writable in the mounts and groups tiers would then pass for the wrong
+# reason — a :rw mount left owned by root would look perfectly healthy. Grep the
+# mechanism (the -u flag carrying the launch identity), not the outcome.
+if grep -qE 'docker exec -u "\$IT_LAUNCH_UID:\$IT_LAUNCH_GID"' "$LIB"; then
+  pass "agent_exec runs as the sandbox user, not root"
+else
+  fail "agent_exec runs as the sandbox user, not root — writability assertions would fail open"
+fi
+
+# The launch identity must track what sandbox.sh actually passes (id -u/-g, or
+# the SANDBOX_UID/GID override). A hardcoded 1000 waits forever for a pid-1
+# handover that never comes on a CI runner whose user is 1001.
+check "IT_LAUNCH_UID follows the invoking user" "$(id -u)" "$IT_LAUNCH_UID"
+check "IT_LAUNCH_GID follows the invoking group" "$(id -g)" "$IT_LAUNCH_GID"
+
+# launcher_prepare must REFUSE, not silently continue, when the real docker
+# cannot be resolved — otherwise the shim it installs would exit 127 on every
+# call and the case would report a mount failure.
+out="$(IT_REAL_DOCKER="" bash -c ". '$LIB'; launcher_prepare" 2>&1)"; rc=$?
+if [[ "$rc" -ne 0 ]] && grep -q 'cannot resolve the real docker' <<< "$out"; then
+  pass "launcher_prepare refuses when the real docker cannot be resolved"
+else
+  fail "launcher_prepare refuses when the real docker cannot be resolved (rc=$rc, out=$out)"
+fi
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

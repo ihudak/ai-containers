@@ -1,0 +1,16 @@
+# case: 510-credentials-persist-to-host
+# what: the group's .claude is mounted read-only, so a credential the agent obtains cannot persist
+#
+diff --git a/sandbox.sh b/sandbox.sh
+index ded2e31..b7cb582 100755
+--- a/sandbox.sh
++++ b/sandbox.sh
+@@ -635,7 +635,7 @@ run_container() {
+       install -d "$group_root/.claude"
+       [[ -e "$group_root/.claude.json" ]] || printf '{}\n' > "$group_root/.claude.json"
+     fi
+-    add_mount_if_exists      config_mount_flags "$group_root/.claude"      "$dev_home/.claude"
++    add_mount_if_exists      config_mount_flags "$group_root/.claude"      "$dev_home/.claude" ro
+     add_file_mount_if_exists config_mount_flags "$group_root/.claude.json" "$dev_home/.claude.json"
+   fi
+   if is_enabled codex; then
