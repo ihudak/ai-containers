@@ -406,5 +406,55 @@ declare -f dump_blocked_forensics >/dev/null 2>&1 \
 # as "the capture never ran"), even though the wrapper's own plumbing can only
 # be verified by inspection.
 
+# ── Ruby-case helpers ───────────────────────────────────────────────────────────
+# ruby_wait_ready and assert_runs both take a live container id and are not
+# unit-testable here — same reason capture_ready/sandbox_wait_capture above are
+# only proven to be DEFINED, not exercised: there is no docker daemon in this
+# environment. What the brief deliberately factored OUT into pure predicates —
+# _ruby_reconcile_done / _ruby_reconcile_ok, decided from captured log text on
+# stdin — IS hermetically testable, and that split is the point: it is what
+# lets ruby_wait_ready's decision logic be proven correct without a container.
+t_check "IT_RUBY_GROUP is a stable name shared across cases in one run" \
+  "itruby" "$IT_RUBY_GROUP"
+
+# A failed rvm bootstrap exits in SECONDS; polling only for `ruby` on PATH once
+# burned a full 30-minute timeout on a compile that never started. That is why
+# the reconcile's own terminal log lines are part of the condition.
+_ruby_reconcile_done <<< '[rvm-reconcile] done.' \
+  && t_pass "ruby readiness recognises a completed reconcile" \
+  || t_fail "ruby readiness recognises a completed reconcile"
+_ruby_reconcile_done <<< '[rvm-reconcile] FAILED: ruby-3.4.5' \
+  && t_pass "ruby readiness recognises a FAILED reconcile (does not wait out the timeout)" \
+  || t_fail "ruby readiness recognises a FAILED reconcile"
+_ruby_reconcile_done <<< '[rvm-reconcile] installing ruby-3.4.5…' \
+  && t_fail "an in-progress reconcile must not be reported ready" \
+  || t_pass "an in-progress reconcile is not reported ready"
+
+# `done.` and `FAILED:` both END the wait but are opposite OUTCOMES — that is
+# why termination and success are two separate predicates, not one.
+_ruby_reconcile_ok <<< '[rvm-reconcile] done.' \
+  && t_pass "a completed reconcile is distinguished from a failed one" \
+  || t_fail "a completed reconcile is distinguished from a failed one"
+_ruby_reconcile_ok <<< '[rvm-reconcile] FAILED: ruby-3.4.5' \
+  && t_fail "FAILED must not be reported as success" \
+  || t_pass "FAILED is not reported as success"
+
+declare -f ruby_wait_ready >/dev/null 2>&1 \
+  && t_pass "ruby_wait_ready is defined" || t_fail "ruby_wait_ready is defined"
+declare -f assert_runs >/dev/null 2>&1 \
+  && t_pass "assert_runs is defined" || t_fail "assert_runs is defined"
+
+# assert_runs must capture the command's output BEFORE piping it through head.
+# `if out="$(cmd | head -1)"` reports HEAD's exit status, and head succeeds on
+# the empty output of a binary that just died — the exact mistake that made the
+# equivalent check in verify-on-host.sh unreachable for its whole existence.
+# Grep the mechanism, not the outcome: an out="$(... 2>&1)" assignment as the
+# if-condition, not a pipeline ending in head.
+if grep -qE 'if out="\$\(docker exec "\$1" bash -c "\$2 --version 2>&1"\)"' "$LIB"; then
+  t_pass "assert_runs captures output before piping through head, not after"
+else
+  t_fail "assert_runs captures output before piping through head — the head-exit-status bug would be unreachable"
+fi
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

@@ -465,6 +465,87 @@ repo_register_volume() {  # $1=name
 }
 repo_fixture_volume_name() { printf 'it-%s-repo-%s' "$IT_RUN_ID" "$1"; }
 
+# ── Ruby-case helpers (packages tier) ───────────────────────────────────────────
+# rvm_volume_name (sandbox-common.sh) derives the rvm volume from
+# $REPO_VOLUME_PREFIX, which fixture_scope_init above already scopes to
+# it-$IT_RUN_ID — so the rvm volume for a given AI_CONTAINER_GROUP name is
+# ALREADY shared across every case in one run, and the volume does the warming
+# implicitly: the first case to launch this group pays the rvm bootstrap and
+# compile, every later one in the same run reuses it instantly. run.sh runs
+# cases serially, so there is no concurrency for a flock to guard — a lock with
+# nothing to guard against is a lock that gets maintained forever for no reason.
+#
+# 740-ruby-bootstraps-and-resolves deliberately uses its OWN group instead of
+# this one: bootstrapping from cold is the thing IT tests, and a warm shared
+# volume would make it assert nothing.
+IT_RUBY_GROUP="${IT_RUBY_GROUP:-itruby}"
+
+# The two halves of readiness, kept as SEPARATE predicates on purpose. Both are
+# decided from captured log text (stdin), never from a live container, which is
+# what makes them hermetically testable in tests/test-integration-lib.sh with no
+# daemon involved — ruby_wait_ready below is the only piece that actually needs
+# docker, and it is a thin polling shell around these two.
+#
+# _ruby_reconcile_done: has the reconcile REACHED A TERMINAL LINE at all. A
+# failed bootstrap exits in seconds; if readiness polled only for `ruby` landing
+# on PATH, a failed compile would never satisfy it and the wait would burn its
+# entire timeout (up to 30 minutes) on a reconcile that died at second 10.
+# rvm-reconcile.sh's own terminal lines — "done." on success, "FAILED: ruby-<v>"
+# on failure — are therefore part of the condition, not just the eventual binary.
+_ruby_reconcile_done() { grep -qE '\[rvm-reconcile\] (done\.|FAILED:)'; }
+# _ruby_reconcile_ok: GIVEN a terminal line, was it the successful one. "done."
+# and "FAILED:" both END the wait but mean opposite things, so success has to be
+# asked as a question separate from "is the wait over".
+_ruby_reconcile_ok()   { grep -q '\[rvm-reconcile\] done\.'; }
+
+ruby_wait_ready() {  # $1=cid $2=timeout seconds (default 1800 — a cold compile is slow)
+  local cid="$1" deadline=$(( SECONDS + ${2:-1800} )) logs
+  while [[ "$SECONDS" -lt "$deadline" ]]; do
+    logs="$(docker logs "$cid" 2>&1)"
+    if _ruby_reconcile_done <<< "$logs"; then
+      _ruby_reconcile_ok <<< "$logs" && return 0
+      fail "ruby_wait_ready: the reconcile reported FAILED"
+      printf '%s\n' "$logs" | grep -i 'rvm-reconcile' | tail -20 | sed 's/^/     /'
+      return 1
+    fi
+    # A dead container will never print a terminal reconcile line, so the loop
+    # above would otherwise spin silently until the timeout. Catch that early
+    # and say so, rather than reporting a generic timeout for a different cause.
+    docker inspect -f '{{.State.Running}}' "$cid" 2>/dev/null | grep -q true || {
+      fail "ruby_wait_ready: the container exited before the reconcile finished"
+      return 1
+    }
+    sleep 10
+  done
+  fail "ruby_wait_ready: timed out after ${2:-1800}s"
+  return 1
+}
+
+assert_runs() {  # $1=cid $2=binary — asserts the binary is on PATH AND EXECUTES
+  local out
+  if ! docker exec "$1" bash -c "command -v $2 >/dev/null 2>&1"; then
+    fail "$2 is on PATH"
+    return 1
+  fi
+  # Capture the command's output FIRST, `head` it afterwards. `if out="$(cmd |
+  # head -1)"` tests HEAD's exit status, and head succeeds on the empty output
+  # of a binary that just died — that exact mistake made the equivalent check in
+  # verify-on-host.sh unreachable for its entire existence. rvm rewrites gem
+  # binstub shebangs to `#!/usr/bin/env ruby_executable_hooks`, so a correctly
+  # linked `bundle` can still die on exec; "on PATH" and "runs" are genuinely
+  # different failures and need different diagnostics.
+  if out="$(docker exec "$1" bash -c "$2 --version 2>&1")"; then
+    pass "$2 runs: $(printf '%s\n' "$out" | head -1)"
+    return 0
+  fi
+  fail "$2 is present but FAILED TO RUN"
+  docker exec "$1" bash -c \
+    "p=\$(command -v $2); printf '     path:    %s -> %s\n' \"\$p\" \"\$(readlink -f \"\$p\")\";
+     printf '     shebang: %s\n' \"\$(head -1 \"\$(readlink -f \"\$p\")\" 2>/dev/null)\"" 2>&1
+  printf '     error:   %s\n' "$(printf '%s\n' "$out" | head -1)"
+  return 1
+}
+
 # ── The primitive most network cases reduce to ─────────────────────────────────
 reach() {  # $1=cid $2=host-or-ip [$3=port]
   docker exec "$1" curl -fsS --connect-timeout "$IT_CONNECT_TIMEOUT" \
