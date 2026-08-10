@@ -61,7 +61,7 @@ tier needs different images. It gains a variant table:
 |---|---|---|
 | *(default)* | everything OFF | today's corpus image, unchanged |
 | `agents` | six agent-tier keys `ON`, `node=22,20` | `KEEP_BUILD_TOOLCHAIN` **unset** — the configuration most users ship. Multi-version Node lives here because the regression it guards is npm-prefix × `nvm use`, which needs a second version to switch to. |
-| `native` | `db-clients=pg,mysql,mongo`, `imagemagick=ON`, `wkhtmltopdf=ON`, `ruby=3.3.6,3.4.5` | everything that makes `build.sh` set `KEEP_BUILD_TOOLCHAIN=1` |
+| `native` | `db-clients=pg,mysql,mongo`, `imagemagick=ON`, `wkhtmltopdf=ON`, `ruby=$IT_RUBY_VERSIONS` (default `3.3.6,3.4.5`) | everything that makes `build.sh` set `KEEP_BUILD_TOOLCHAIN=1` |
 
 **Two variants, not three.** The split is a distinction the Dockerfile itself
 makes, not a convenience. A single kitchen-sink image could only ever exercise
@@ -121,6 +121,51 @@ alone.
 `740-ruby-bootstraps-and-resolves` deliberately does **not** call it. Bootstrapping
 from cold is the thing it tests.
 
+### `IT_RUBY_VERSIONS`, and the CI-cost escape hatch
+
+The `native` variant takes its Ruby list from `IT_RUBY_VERSIONS`, default
+`3.3.6,3.4.5`. One env var, one code path — not a `$CI` branch inside `run.sh`.
+A platform-conditional hidden in the runner is the divergence that hid the
+virtiofs bug; a value set visibly in a workflow file is not.
+
+**The cost of a second Ruby is compile wall-clock and runner disk, not API rate
+limits.** The limit that does bite is `install-tools.sh`'s unauthenticated
+60 req/h against `api.github.com` at *build* time, plus rvm's tag resolution
+during bootstrap — both are per-run and unchanged by how many versions are
+installed. The decision must be made on time and disk, or it will be made
+against the wrong number.
+
+**Ship with two, then measure.** The nightly `packages` job has
+`timeout-minutes: 120`. It is unknown today whether two compiles fit, partly
+because rvm may fetch a prebuilt binary rather than compile now that its three
+mirrors are allowlisted — a difference of minutes versus tens of minutes, and
+one nobody has measured. Degrading CI coverage in advance of that measurement
+would be a guess.
+
+The plan therefore carries an explicit measurement task: record the packages
+job's wall-clock and peak disk on the first full nightly. **If the job exceeds
+75 minutes or peaks above 11 GB**, set `IT_RUBY_VERSIONS=3.4.5` in
+`nightly.yml` and add `--exclude needs-multiruby` to the run.
+
+If that switch is thrown, `750-ruby-multiversion-selection` becomes a
+**local-only case, and that is a named gap, not a rounding error.** It would be
+covered by `verify-on-host.sh` on a workstation and by nothing in CI —
+materially weaker than every other case in the corpus. Two rules keep it
+honest:
+
+- **Exclusion by selection, never by skip.** `750` carries its own
+  `needs-multiruby` tag so the nightly drops it deliberately, the way the PR gate
+  drops `slow` and `needs-dns`. Tag `needs-multiruby`, capability `multiruby` —
+  the same two-sided naming the suite already uses for `needs-dns`/`dns`, and
+  deliberately Ruby-specific: `720-node-multiversion-nvm-use` must NOT be dropped
+  by this switch, because Node's second version is baked at build time and costs
+  no compile. A SKIP under `--require packages` would fail the
+  job, which is correct — a requirement that cannot be met is not a pass.
+- **The gap is written where it is incurred.** `nightly.yml`'s comment must
+  state that multi-version Ruby selection is untested in CI and name the
+  measurement that caused it. A trade-off recorded only in a spec is a trade-off
+  nobody will find.
+
 ### Failure forensics must survive the deletion
 
 Phase 3 carries the blocked-traffic correlation that finally settled the
@@ -153,13 +198,20 @@ the log into the summary line.
 | `720-node-multiversion-nvm-use` | agents | `nvm use 20` **and** `nvm use 22` both succeed with `~/.ai-tools` populated | `packages needs-external` | `docker` |
 | `730-native-clients-run` | native | `psql`, `mysql`, `mongosh`, `convert`, `wkhtmltopdf`, `gcc` present **and runnable** | `packages slow needs-external` | `docker` |
 | `740-ruby-bootstraps-and-resolves` | native | via `launcher_up`: rvm bootstraps and compiles behind the firewall; the default Ruby resolves non-login; `bundle` **executes** | `packages security slow needs-external` | `docker netadmin launcher` |
-| `750-ruby-multiversion-selection` | native | both configured versions present; `.ruby-version` selects the non-default one | `packages slow` | `docker launcher` |
+| `750-ruby-multiversion-selection` | native | both configured versions present; `.ruby-version` selects the non-default one | `packages slow needs-multiruby` | `docker launcher multiruby` |
 | `760-ruby-persists-no-recompile` | native | a second launch reuses the group volume with no recompile | `packages slow` | `docker launcher` |
 
 `needs-external` is a **tag**, not a requirement: the PR gate excludes it by
 selection, and there is no capability probe for "the internet works". A packages
 run that cannot reach the network fails loudly, which is correct — that is what
 the tier measures.
+
+`multiruby` is a real probed capability, read from the resolved
+`IT_RUBY_VERSIONS` rather than assumed: with a single version configured, `750`
+has nothing to select between and must SKIP **by name**. Deriving it from the
+variant's own config is the point — a hardcoded `true` would make the case pass
+by testing a one-element list, which is the decorative-check pattern this suite
+exists to eliminate.
 
 ### Assertion rules these cases inherit from the three defects found
 
@@ -234,8 +286,9 @@ pass.
   component-agnostic; building N images to re-prove it per fragment costs a great
   deal and adds nothing. The two variants exist because they differ in a *build
   path*, not because they differ in components.
-- **A third Ruby version, or Python/Rust/Go version lists.** `ruby=3.3.6,3.4.5`
-  covers the multi-version mechanism; the mechanism is shared.
+- **A third Ruby version, or Python/Rust/Go version lists.** Two versions cover
+  the multi-version mechanism, and the mechanism is shared across the version-list
+  keys.
 - **SDKMAN components** (`openjdk`, `graalvm-*`, `kotlin`, `scala`, `maven`,
   `gradle`). Baked, allowlist-covered, and no runtime reconcile — nothing the
   packages tier would assert that the build succeeding does not already.
@@ -252,7 +305,10 @@ pass.
    design, in full.
 4. The nightly `packages` job runs the tier through `run.sh --require packages`,
    and an unmet requirement fails it rather than skipping quietly.
-5. Peak disk during a packages run is one image, verified on a GitHub runner.
+5. Peak disk during a packages run is one image, **measured** on a GitHub runner
+   and recorded alongside the job's wall-clock — the two numbers that decide
+   whether `IT_RUBY_VERSIONS` stays at two versions in CI. An unmeasured budget
+   is how a tier silently outgrows its runner.
 6. `dump_blocked_forensics` is reachable from every restricted-mode case, and the
    `repo1.maven.org` class of question — which name, which IP, was it allowlisted
    here, what resolved it — is answerable from a single failing run's output.
