@@ -676,6 +676,35 @@ forensics_report() {  # $1=blocked.log $2=blocked-domains/ips $3=dns-map $4=bake
     done <<< "$hard"
     printf '   ^ the NAME is reverse-mapped from the IP and can be wrong on a shared\n'
     printf '     CDN address; the IP and port cannot. Confirm before allowlisting.\n'
+
+    # The full resolved-name list, SPLIT BY ALLOWLIST MEMBERSHIP. Both file
+    # paths are already parameters, so this stays in the pure half.
+    #
+    # A raw "every name this container resolved" list mixes two completely
+    # different populations and reading it as one is misleading: the ipset
+    # refresh loop re-resolves EVERY allowlisted domain every 60 seconds and
+    # makes no TCP connection at all, so most of a resolved-name list is just
+    # the allowlist echoing itself back, not evidence of traffic. Phase 3's own
+    # history: a 49-name list once looked like a container talking to 49 hosts;
+    # 47 of them were simply the allowlist being re-resolved. The short list
+    # that actually matters is the complement: names this container looked up
+    # that it was never authorised to reach.
+    if [[ -s "$dmap" ]]; then
+      local resolved unlisted n_all n_un
+      resolved="$(awk '{print $2}' "$dmap" 2>/dev/null | sort -u)"
+      unlisted="$(comm -23 <(printf '%s\n' "$resolved") <(sort -u "$allow" 2>/dev/null))"
+      n_all="$(printf '%s\n' "$resolved" | grep -c . || true)"
+      n_un="$(printf '%s\n' "$unlisted" | grep -c . || true)"
+      printf '   names resolved during the run: %s total, %s NOT allowlisted\n' "$n_all" "$n_un"
+      if [[ "$n_un" -gt 0 ]]; then
+        printf '     resolved but NOT allowlisted (what the container reached for uninvited):\n'
+        printf '%s\n' "$unlisted" | grep . | sed 's/^/       /'
+      fi
+      printf '     all %s (the rest are the allowlist itself, re-resolved every 60s):\n' "$n_all"
+      printf '%s\n' "$resolved" | sed 's/^/       /'
+    else
+      printf "   the container's DNS map is empty or unreadable — cannot say what it resolved\n"
+    fi
   fi
 
   if [[ -n "$healed" ]]; then
@@ -711,6 +740,35 @@ dump_blocked_forensics() {  # $1=cid — MUST run while the container is alive
   cat "$d/blocked-ips.txt" >> "$d/blocked-domains.txt" 2>/dev/null || true
   printf '   ── blocked-traffic forensics ──\n'
   forensics_report "$d/blocked.log" "$d/blocked-domains.txt" "$d/dns-map.txt" "$d/allowlist.txt"
+
+  # WHICH FILE IN THE IMAGE KNOWS THIS NAME. Everything forensics_report prints
+  # above establishes that a name was resolved and connected to; none of it says
+  # what asked. A hostname a program contacts is almost always a literal in that
+  # program or its config, so grepping the image for the string names the
+  # culprit directly — and grepping the IMAGE (not the host) is what makes the
+  # answer trustworthy: it is the same filesystem the connection came from. This
+  # needs a live container (docker exec), which is the one thing forensics_report
+  # is deliberately kept free of, so it lives here instead.
+  #
+  # Bounded deliberately: a timeout, a handful of paths rather than /, and only
+  # the first few hits. This is a diagnostic on an already-failing case, not
+  # something that should be able to hang a run.
+  local hard what owner
+  hard="$(it_strip_comments < "$d/blocked-domains.txt" 2>/dev/null | sort -u)"
+  while IFS= read -r what; do
+    [[ -z "$what" ]] && continue
+    [[ "$what" =~ ^[0-9.]+$ ]] && continue      # bare IP: nothing to grep for
+    owner="$(docker exec "$cid" timeout 90 grep -rlsF "$what" \
+               /usr/local /opt /etc /home /usr/lib/node_modules /usr/share \
+               2>/dev/null | head -5)"
+    if [[ -n "$owner" ]]; then
+      printf '     files in the image containing %s:\n' "$what"
+      printf '%s\n' "$owner" | sed 's/^/       /'
+    else
+      printf '     no file under /usr/local /opt /etc /home /usr/share mentions %s\n' "$what"
+      printf '       — so nothing baked into the image asked for it by literal.\n'
+    fi
+  done <<< "$hard"
 }
 
 # ── Diagnostics, printed automatically by it_cleanup when a case failed ────────

@@ -309,14 +309,54 @@ out="$(forensics_report "$fx/blocked.log" "$fx/empty-domains.txt" \
 grep -qi 'hard-blocked' <<< "$out" \
   && t_fail "a comments-only blocked-domains.txt must not report a hard block" \
   || t_pass "a comments-only blocked-domains.txt reports no hard block"
+grep -q 'NOT allowlisted' <<< "$out" \
+  && t_fail "the resolved-names split must not print when there was no hard block either" \
+  || t_pass "the resolved-names split stays nested under a real hard block"
+
+# ── resolved-names split by allowlist membership ───────────────────────────────
+# Ported from verify-on-host.sh's Phase 3. The firewall's ipset refresher
+# resolves EVERY allowlisted domain every 60 seconds and makes no TCP connection
+# at all, so a raw "names this container resolved" list is mostly the allowlist
+# re-resolving itself. Phase 3's own history: a 49-name list once looked like a
+# container talking to 49 hosts when 47 of them were just that. The short list
+# that actually matters — names resolved but never authorised — is what this
+# split exists to surface, so it has to isolate that ONE name, not just mention
+# it somewhere in a 3-name soup.
+printf '10.0.0.1 allowed-one.example\n10.0.0.2 allowed-two.example\n10.0.0.3 not-allowed.example\n' \
+  > "$fx/dns-map-mixed.txt"
+printf 'allowed-one.example\nallowed-two.example\n' > "$fx/allowlist-mixed.txt"
+out="$(forensics_report "$fx/blocked.log" "$fx/blocked-domains.txt" \
+        "$fx/dns-map-mixed.txt" "$fx/allowlist-mixed.txt" 2>&1)"
+
+grep -q '3 total, 1 NOT allowlisted' <<< "$out" \
+  && t_pass "forensics counts resolved names and splits by allowlist membership precisely" \
+  || t_fail "forensics counts resolved names and splits by allowlist membership precisely"
+grep -q 'not-allowed.example' <<< "$out" \
+  && t_pass "the unlisted name is named" \
+  || t_fail "the unlisted name is named"
+# Extract just the "resolved but NOT allowlisted" section (up to the next "all N
+# (" line) and prove it holds ONLY the one unlisted name — not a pass that merely
+# tolerates the allowlisted names leaking in from the full-list section below it.
+unlisted_block="$(awk '/resolved but NOT allowlisted/{f=1;next} /all [0-9]+ \(the rest/{f=0} f' <<< "$out")"
+if grep -q 'not-allowed.example' <<< "$unlisted_block" \
+   && ! grep -qE 'allowed-one.example|allowed-two.example' <<< "$unlisted_block"; then
+  t_pass "the unlisted section holds exactly the one unlisted name, not the allowlisted ones"
+else
+  t_fail "the unlisted section holds exactly the one unlisted name (got: '$unlisted_block')"
+fi
+grep -q 'allowed-one.example' <<< "$out" \
+  && t_pass "the full resolved-name list is still printed underneath the split" \
+  || t_fail "the full resolved-name list is still printed underneath the split"
 
 declare -f dump_blocked_forensics >/dev/null 2>&1 \
   && t_pass "dump_blocked_forensics is defined" || t_fail "dump_blocked_forensics is defined"
 # dump_blocked_forensics itself needs a live container (it reads a root-only
-# tmpfs and an image file via docker exec) and is not unit-testable here — see
-# lib.sh's comment on it. Its own body is deliberately thin (docker exec
-# plumbing feeding forensics_report), so proving forensics_report above is
-# proving the only part with logic in it.
+# tmpfs and an image file via docker exec, and the image-grep below runs
+# `docker exec … grep` against the live filesystem) and is not unit-testable
+# here — see lib.sh's comment on it. Its own body is deliberately thin (docker
+# exec plumbing feeding forensics_report, plus one bounded docker-exec grep),
+# so proving forensics_report above proves the only part with logic in it that
+# CAN be proven without a daemon.
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
