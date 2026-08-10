@@ -40,7 +40,17 @@ cat > "$TMP/callfn.sh" <<EOF
 #!/usr/bin/env bash
 export IT_SOURCE_ONLY=1
 export IT_IMAGE="\${IT_IMAGE:-ai-sandbox-it}"
+# run.sh's own top-level default (IT_RUBY_VERSIONS="\${IT_RUBY_VERSIONS:-3.3.6,3.4.5}")
+# runs as a side effect of sourcing below, and — being the SAME \`:-\` operator a
+# probe under test may branch on — silently clobbers a caller's deliberately
+# EMPTY value with that default before the requested function ever sees it.
+# Restore the caller's literal value afterward, but ONLY when the caller
+# actually set it: an omitted IT_RUBY_VERSIONS must still observe run.sh's
+# real default, which every OTHER caller of this helper relies on.
+_it_ruby_versions_was_set="\${IT_RUBY_VERSIONS+1}"
+_it_ruby_versions_literal="\${IT_RUBY_VERSIONS-}"
 source "$RUNNER"
+[[ -n "\$_it_ruby_versions_was_set" ]] && IT_RUBY_VERSIONS="\$_it_ruby_versions_literal"
 "\$@"
 EOF
 chmod +x "$TMP/callfn.sh"
@@ -451,6 +461,42 @@ rm -f "$CASES/avariantexit-agents.sh" "$CASES/zvariantexit-bogus.sh"
 has "$out" 'kept: image fake-img,' \
   && pass "sweep() names the default image even when the loop exits via the unknown-variant error" \
   || fail "sweep() names the default image even when the loop exits via the unknown-variant error -- got: $(printf '%s' "$out" | grep 'kept:')"
+
+# ── multiruby capability ────────────────────────────────────────────────────────
+# 750 has nothing to select between when one version is configured, so it must
+# SKIP BY NAME rather than pass by testing a one-element list. Derived from the
+# resolved IT_RUBY_VERSIONS — a hardcoded `true` here would be exactly the
+# decorative check this suite exists to eliminate.
+probe_out="$(IT_RUBY_VERSIONS=3.3.6,3.4.5 bash "$TMP/callfn.sh" probe_multiruby; echo "rc=$?")"
+case "$probe_out" in *rc=0*) pass "multiruby is present with two versions" ;;
+                     *)      fail "multiruby is present with two versions ($probe_out)" ;; esac
+
+probe_out="$(IT_RUBY_VERSIONS=3.4.5 bash "$TMP/callfn.sh" probe_multiruby; echo "rc=$?")"
+case "$probe_out" in *rc=1*) pass "multiruby is absent with one version" ;;
+                     *)      fail "multiruby is absent with one version ($probe_out)" ;; esac
+
+# An explicitly empty IT_RUBY_VERSIONS collides with run.sh's OWN top-level
+# default (line ~185: IT_RUBY_VERSIONS="${IT_RUBY_VERSIONS:-3.3.6,3.4.5}"),
+# which fires on empty exactly as it fires on unset and would otherwise
+# silently replace "" with the two-version default before probe_multiruby
+# ever ran — passing this assertion for the wrong reason (the default, not
+# probe_multiruby's own empty-list branch). callfn.sh restores the caller's
+# literal value after sourcing for exactly this reason; see its definition.
+probe_out="$(IT_RUBY_VERSIONS= bash "$TMP/callfn.sh" probe_multiruby; echo "rc=$?")"
+case "$probe_out" in *rc=1*) pass "multiruby is absent with an empty version list" ;;
+                     *)      fail "multiruby is absent with an empty version list ($probe_out)" ;; esac
+
+# The brief's own draft of this fourth assertion grepped run.sh's SOURCE TEXT for
+# the literal registration line `probe_multiruby && c="$c multiruby"`. That proves
+# the string exists, not that detect_caps ever executes it — exactly the kind of
+# decorative check this suite exists to eliminate. --list-caps is the real
+# observation point: it prints the capability list detect_caps actually produced.
+# Confirmed separately that it completes with no Docker daemon at all on this
+# machine (`docker info` here is rc=127, command not found), so this is hermetic
+# without needing IT_FORCE_CAPS or a fake docker on PATH.
+out="$(IT_RUBY_VERSIONS=3.3.6,3.4.5 bash "$RUN" --list-caps 2>&1)"
+case "$out" in *multiruby*) pass "detect_caps reports multiruby when two versions are configured" ;;
+               *)           fail "detect_caps reports multiruby when two versions are configured ($out)" ;; esac
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

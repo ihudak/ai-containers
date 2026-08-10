@@ -259,6 +259,14 @@ detect_caps() {
     fi
   fi
   curl -fsS --max-time 8 -o /dev/null https://example.com 2>/dev/null && c="$c external"
+  # Deliberately OUTSIDE the `docker info` block above, not just outside the
+  # `docker image inspect` gate that wraps netadmin/launcher: this probe reads a
+  # resolved variable, not a live daemon or a built image, so it must still be
+  # reported on a machine with no Docker at all — the exact shape this test
+  # suite runs on. Nesting it inside either gate would make `multiruby` vanish
+  # wherever `docker`/`sidecar` do, and 750 would then SKIP for a reason that
+  # has nothing to do with Ruby.
+  probe_multiruby && c="$c multiruby"
   _caps=" $c "
 }
 
@@ -300,6 +308,16 @@ probe_launcher() {
   "$IT_REAL_DOCKER" rm -f "$name" >/dev/null 2>&1
   rm -rf "$d"
   return "$rc"
+}
+
+# Can 750-ruby-multiversion-selection select between two Rubies? With only one
+# version configured there is nothing to select — the case would either have to
+# skip for an unrelated reason or "pass" against a single-element list, which
+# tests nothing. Read from the resolved IT_RUBY_VERSIONS, never assumed: a probe
+# that always returned 0 would be exactly the decorative check this suite exists
+# to eliminate.
+probe_multiruby() {
+  case "$IT_RUBY_VERSIONS" in *,*) return 0 ;; *) return 1 ;; esac
 }
 
 have_cap() { detect_caps; case "$_caps" in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
