@@ -331,5 +331,65 @@ check "case_variant reads the image header" \
 check "case_variant defaults when the header is absent" \
   "default" "$(bash "$TMP/callfn.sh" case_variant "$TMP/c-without.sh")"
 
+# ── Variant scheduling ─────────────────────────────────────────────────────────
+# Grouping matters for DISK, not tidiness: a GitHub runner has ~14 GB free and
+# these images are multi-GB. Building all variants up front and removing them at
+# the end would peak at the sum. Build → run that variant's cases → rmi → next
+# peaks at one.
+printf '#!/usr/bin/env bash\n# image: agents\n'  > "$TMP/v-a1.sh"
+printf '#!/usr/bin/env bash\n# image: native\n'  > "$TMP/v-n1.sh"
+printf '#!/usr/bin/env bash\n# tags: mounts\n'   > "$TMP/v-d1.sh"
+printf '#!/usr/bin/env bash\n# image: agents\n'  > "$TMP/v-a2.sh"
+
+check "selected_variants lists each variant once, in first-seen order" \
+  "agents native default" \
+  "$(bash "$TMP/callfn.sh" selected_variants "$TMP/v-a1.sh" "$TMP/v-n1.sh" "$TMP/v-d1.sh" "$TMP/v-a2.sh")"
+
+check "selected_variants of a default-only selection does not name a packages variant" \
+  "default" "$(bash "$TMP/callfn.sh" selected_variants "$TMP/v-d1.sh")"
+
+# ── sweep() must still target the DEFAULT image after the variant loop ────────
+# The loop exports IT_IMAGE afresh on every iteration (variant_image "$v"), and
+# sweep() — run.sh's own EXIT trap — reads that SAME global to decide what to
+# `docker rmi` / report as kept. If the last variant processed is not `default`
+# (the common case in a real corpus, where packages-tier cases sort after the
+# rest), IT_IMAGE is left pointing at that last variant's tag, not the
+# default's. sweep()'s per-variant rmi already excludes `default` deliberately
+# (see the loop's own `[[ "$v" != "default" ]]` guard) — but that guard is
+# pointless if sweep() itself can no longer find the default image to remove
+# EITHER, once IT_IMAGE has drifted. That is a silent multi-GB leak on every
+# real (non-"--reuse-image") run, not a hermetic-test artifact: --keep's own
+# "kept: image …" message is the one place this is observable without a real
+# daemon, since the actual `docker rmi` calls are gated off entirely under
+# --reuse-image (both the per-variant one and sweep()'s).
+#
+# Two cases sharing one tag, filenames chosen so the default-variant case
+# sorts BEFORE the agents-variant case in all_cases()'s glob order — the
+# ordering a real corpus has today (packages-tier cases are numbered after
+# the existing tiers), so this reproduces the failure mode rather than a
+# contrived one.
+cat > "$CASES/avariantsweep-default.sh" <<'EOF'
+#!/usr/bin/env bash
+# tags: variantsweep
+# requires: docker
+echo "PASS: default-variant case"
+exit 0
+EOF
+cat > "$CASES/zvariantsweep-agents.sh" <<'EOF'
+#!/usr/bin/env bash
+# tags: variantsweep
+# requires: docker
+# image: agents
+echo "PASS: agents-variant case"
+exit 0
+EOF
+out="$(IT_FORCE_CAPS="docker" PATH="$FAKE_BIN:$PATH" IT_CASES_DIR="$CASES" \
+      IT_SCRATCH="$TMP/scratch-variant-sweep" \
+      bash "$RUN" --reuse-image --image fake-img --keep --tags variantsweep 2>&1)"
+rm -f "$CASES/avariantsweep-default.sh" "$CASES/zvariantsweep-agents.sh"
+has "$out" 'kept: image fake-img,' \
+  && pass "sweep() still names the default image after a later variant ran" \
+  || fail "sweep() still names the default image after a later variant ran -- got: $(printf '%s' "$out" | grep 'kept:')"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

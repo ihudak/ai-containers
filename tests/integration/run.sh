@@ -212,6 +212,17 @@ list_intersects() {  # $1, $2 = space-separated lists → 0 if they share a memb
   return 1
 }
 
+selected_variants() {  # $@=case files → distinct variants, first-seen order
+  # bash 3.2: no associative arrays. Space-padded membership test, the same
+  # shape have_cap() and list_intersects() already use.
+  local f v seen=""
+  for f in "$@"; do
+    v="$(case_variant "$f")"
+    case " $seen " in *" $v "*) ;; *) seen="${seen:+$seen }$v" ;; esac
+  done
+  printf '%s' "$seen"
+}
+
 all_cases() {
   local f
   for f in "$CASES_DIR"/*.sh; do [[ -f "$f" ]] && printf '%s\n' "$f"; done
@@ -348,33 +359,41 @@ restore_real_allowlists() {
   return 0
 }
 
-build_image() {
-  local conf="$IT_SCRATCH/minimal-sandbox.conf"
-  # Everything optional OFF: the firewall does not know which fragment a domain
-  # came from, so proving admit/drop once proves it for every fragment.
-  #
-  # The rule lives in minimal-conf.sh because lib.sh's launcher_up needs the
-  # SAME one — a case drives the real sandbox.sh, which re-reads sandbox.conf at
-  # launch time. Two copies of this sed drifted apart once already; the image
-  # then carried a component the launcher did not mount, and the case failed on
-  # a missing directory that was correct behaviour.
-  bash "$INT_DIR/minimal-conf.sh" "$REPO_DIR/sandbox.conf" > "$conf" || {
-    warn "run.sh: could not derive a minimal sandbox.conf"
+build_image() {  # $1=variant
+  local variant="${1:-default}"
+  local img; img="$(variant_image "$variant")"
+  local overrides; overrides="$(variant_overrides "$variant")" || {
+    warn "run.sh: unknown image variant '$variant'"
     return 1
   }
-  say "── building $IT_IMAGE from a minimal sandbox.conf…"
-  ( cd "$REPO_DIR" && SANDBOX_CONF="$conf" IMAGE_NAME="$IT_IMAGE" ./build.sh "$IT_IMAGE" ) \
-    > "$IT_SCRATCH/build.log" 2>&1 || {
-      warn "run.sh: image build FAILED — last 40 lines of $IT_SCRATCH/build.log:"
-      tail -40 "$IT_SCRATCH/build.log" >&2
+  local conf="$IT_SCRATCH/minimal-sandbox-$variant.conf"
+  # Everything optional OFF, then the variant's overrides applied on top. The
+  # rule lives in minimal-conf.sh because lib.sh's launcher_conf needs the SAME
+  # one — a case drives the real sandbox.sh, which re-reads sandbox.conf at
+  # launch time. Two copies of this derivation drifted apart once already; the
+  # image then carried a component the launcher did not mount, and the case
+  # failed on a missing directory that was correct behaviour.
+  bash "$INT_DIR/minimal-conf.sh" "$REPO_DIR/sandbox.conf" $overrides > "$conf" || {
+    warn "run.sh: could not derive a minimal sandbox.conf for variant '$variant'"
+    return 1
+  }
+  say "── building $img (variant: $variant)…"
+  ( cd "$REPO_DIR" && SANDBOX_CONF="$conf" IMAGE_NAME="$img" ./build.sh "$img" ) \
+    > "$IT_SCRATCH/build-$variant.log" 2>&1 || {
+      warn "run.sh: image build FAILED for variant '$variant' — last 40 lines of $IT_SCRATCH/build-$variant.log:"
+      tail -40 "$IT_SCRATCH/build-$variant.log" >&2
       return 1
     }
-  # Snapshot what build.sh generated, for the delivery case (300).
-  mkdir -p "$IT_GENERATED_ALLOWLIST_DIR"
-  local f
-  for f in allowlist-domains.txt allowlist-cidrs.txt allowlist-proxy-domains.txt; do
-    cp "$REPO_DIR/$f" "$IT_GENERATED_ALLOWLIST_DIR/$f"
-  done
+  # Snapshot what build.sh generated, for the delivery case (300). Only the
+  # default variant: 300 asserts the corpus image's allowlist, and a later
+  # variant's build would overwrite the snapshot with a different one.
+  if [[ "$variant" == "default" ]]; then
+    mkdir -p "$IT_GENERATED_ALLOWLIST_DIR"
+    local f
+    for f in allowlist-domains.txt allowlist-cidrs.txt allowlist-proxy-domains.txt; do
+      cp "$REPO_DIR/$f" "$IT_GENERATED_ALLOWLIST_DIR/$f"
+    done
+  fi
   say "   build OK"
 }
 
@@ -445,7 +464,6 @@ mkdir -p "$IT_SCRATCH/logs"
 # hermetic unit-test invocation) from touching the real repo at all.
 if [[ "$reuse_image" -eq 0 ]]; then
   snapshot_real_allowlists
-  build_image || exit 1
 fi
 docker network create --label "$IT_LABEL" "$IT_NET" >/dev/null 2>&1 || true
 
@@ -469,7 +487,42 @@ printf 'capabilities:%s%s\n\n' "$_caps" \
 # ── Execution ───────────────────────────────────────────────────────────────────
 n_pass=0; n_fail=0; n_skip=0; n_sel=0
 failed_names=""; skipped_names=""; skipped_tags=""
-for f in $selected; do
+# sweep() (the EXIT trap) reads $IT_IMAGE to decide what to `docker rmi` / name
+# in its "kept: image" message, and the loop below reassigns that SAME global
+# on every iteration so each variant's cases see their own image. Remembered
+# here, before the first reassignment, and restored after the loop so sweep()
+# still finds the default image regardless of which variant ran last — a real
+# corpus processes variants in file order, and packages-tier cases (the only
+# ones with a non-default `image:` header) sort after the rest, so "the last
+# variant is `default`" is not a safe assumption to leave implicit.
+it_image_default="$IT_IMAGE"
+for v in $(selected_variants $selected); do
+  IT_VARIANT_OVERRIDES="$(variant_overrides "$v")" || {
+    printf 'ERROR: case declares unknown image variant: %s\n' "$v" >&2
+    exit 1
+  }
+  IT_IMAGE_ACTIVE="$(variant_image "$v")"
+  export IT_VARIANT_OVERRIDES
+  export IT_IMAGE="$IT_IMAGE_ACTIVE"
+
+  if [[ "$reuse_image" -eq 0 ]]; then
+    build_image "$v" || {
+      # A variant that will not build fails ITS cases by name rather than
+      # aborting the run: the other variants' cases are unaffected and their
+      # result is worth having. Reporting them as passed, or not reporting them
+      # at all, is the failure this suite exists to prevent.
+      for f in $selected; do
+        [[ "$(case_variant "$f")" == "$v" ]] || continue
+        printf '%-46s  FAIL  (image variant %s failed to build)\n' "$(basename "$f" .sh)" "$v"
+        n_sel=$((n_sel + 1)); n_fail=$((n_fail + 1))
+        failed_names="${failed_names:+$failed_names }$(basename "$f" .sh)"
+      done
+      continue
+    }
+  fi
+
+  for f in $selected; do
+  [[ "$(case_variant "$f")" == "$v" ]] || continue
   name="$(basename "$f" .sh)"
   n_sel=$((n_sel + 1))
   tags="$(case_meta "$f" tags)"
@@ -549,7 +602,20 @@ for f in $selected; do
     printf '     ── diagnostics (last 40 lines of case output) ──\n'
     sed 's/^/     /' "$log" | tail -40
   fi
+  done
+
+  # Reclaim the disk before the next variant. Never the default variant: --keep
+  # and the existing sweep() own that one, and removing it here would break
+  # a --reuse-image workflow the next run depends on.
+  if [[ "$v" != "default" && "$reuse_image" -eq 0 && "$keep" -eq 0 ]]; then
+    docker rmi "$(variant_image "$v")" >/dev/null 2>&1 || true
+  fi
 done
+# See it_image_default's comment above: put the default's tag back so sweep()
+# (EXIT trap, runs after this script falls through to exit below) cleans up —
+# or reports as kept — the right image regardless of iteration order.
+IT_IMAGE="$it_image_default"
+export IT_IMAGE
 
 # ── Report ──────────────────────────────────────────────────────────────────────
 # A run that selected NOTHING is not a pass. Without this, an empty cases/ dir, a
