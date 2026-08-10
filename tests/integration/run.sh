@@ -60,7 +60,7 @@ IT_REAL_DOCKER="${IT_REAL_DOCKER:-$(command -v docker 2>/dev/null)}"
 # after every early-exit path has already returned. See that site for the
 # full DOCKER_HOST-vs-DOCKER_CONFIG / resolution-failure reasoning.
 
-want_tags=""; excl_tags=""; req_tags=""; want_variant=""
+want_tags=""; excl_tags=""; req_tags=""; want_variant=""; want_cases=""
 do_list=0; do_list_caps=0; reuse_image=0; keep=0; verbose=0
 timeout_secs=300
 # Declared here, not just in the "Execution" section below, so it is defined
@@ -92,6 +92,11 @@ Usage: tests/integration/run.sh [options]
                       replaces that selection. Like --tags/--exclude, it has
                       no effect on --list, which always catalogues the whole
                       corpus regardless of any selection flag.
+  --cases C[,C…]     run only these case basenames (e.g.
+                      760-ruby-persists-no-recompile) — composes with
+                      --tags/--exclude/--variant, narrowing further just like
+                      --variant does. An unrecognised name fails loudly rather
+                      than silently selecting zero cases.
   --require T[,T…]   fail the run if any SELECTED case with this tag SKIPPED
   --timeout N        per-case timeout in seconds (default 300)
   --image NAME       image tag to build/use (default ai-sandbox-it)
@@ -121,7 +126,7 @@ while [[ -z "${IT_SOURCE_ONLY:-}" && $# -gt 0 ]]; do
   # under set -u — a message that names neither the option nor the problem, from a
   # script whose whole purpose is making failures legible.
   case "$1" in
-    --tags|--exclude|--variant|--require|--timeout|--image)
+    --tags|--exclude|--variant|--cases|--require|--timeout|--image)
       if [[ $# -lt 2 ]]; then
         printf 'run.sh: %s requires a value\n' "$1" >&2
         usage >&2
@@ -134,6 +139,7 @@ while [[ -z "${IT_SOURCE_ONLY:-}" && $# -gt 0 ]]; do
     --tags)     want_tags="${2//,/ }"; shift 2 ;;
     --exclude)  excl_tags="${2//,/ }"; shift 2 ;;
     --variant)  want_variant="$2";     shift 2 ;;
+    --cases)    want_cases="${2//,/ }"; shift 2 ;;
     --require)  req_tags="${2//,/ }";  shift 2 ;;
     --timeout)  timeout_secs="$2";     shift 2 ;;
     --image)    IT_IMAGE="$2";         shift 2 ;;
@@ -739,6 +745,29 @@ if [[ -n "$want_variant" ]]; then
   }
 fi
 
+# --cases is validated HERE, the same way --variant is just above: a mistyped
+# name would otherwise just intersect to zero cases in the loop below and hit
+# the generic "no case was selected" message further down, which is true but
+# does not say WHICH name was the problem — same reasoning as --variant's
+# dedicated check, applied per-name since --cases can name several at once.
+if [[ -n "$want_cases" ]]; then
+  known_case_names=""
+  for f in $(all_cases); do
+    known_case_names="${known_case_names:+$known_case_names }$(basename "$f" .sh)"
+  done
+  unknown_cases=""
+  for c in $want_cases; do
+    case " $known_case_names " in
+      *" $c "*) ;;
+      *) unknown_cases="${unknown_cases:+$unknown_cases }$c" ;;
+    esac
+  done
+  if [[ -n "$unknown_cases" ]]; then
+    printf 'run.sh: unknown case name(s): %s\n' "$unknown_cases" >&2
+    exit 2
+  fi
+fi
+
 # ── Selection ───────────────────────────────────────────────────────────────────
 total=0; selected=""
 for f in $(all_cases); do
@@ -749,6 +778,10 @@ for f in $(all_cases); do
   # Composes with --tags/--exclude above rather than replacing them: narrows
   # whatever they already selected down to one image variant.
   [[ -n "$want_variant" ]] && { [[ "$(case_variant "$f")" == "$want_variant" ]] || continue; }
+  # Composes the same way: narrows further to an explicit set of case
+  # basenames, exactly the "run just this one mutated case plus its controls"
+  # shape a mutation demonstration needs.
+  [[ -n "$want_cases" ]] && { list_intersects "$(basename "$f" .sh)" "$want_cases" || continue; }
   selected="${selected:+$selected }$f"
 done
 

@@ -530,6 +530,67 @@ has "$out" 'no case was selected' \
 
 rm -f "$CASES/150-variant-agents.sh" "$CASES/151-variant-native.sh" "$CASES/152-variant-default.sh"
 
+# ── --cases CLI selector ────────────────────────────────────────────────────────
+# Task 11b: nightly.yml's packages-agents/packages-native jobs hardcode `--tags
+# packages --variant <name> --require packages` and never read any
+# workflow_dispatch input, so a mutation demonstration cannot select just the
+# ONE case a patch targets — every other case sharing that variant runs
+# alongside it regardless of which patch is applied. --cases composes with
+# --tags/--exclude/--variant (narrows further, exactly like --variant already
+# does), so a demonstration can ask for e.g. `--tags packages --variant native
+# --cases 760-ruby-persists-no-recompile` and skip the other three
+# native-variant cases entirely. That is not just about keeping a
+# demonstration's output attributable to one patch — at least one of the seven
+# mutations this flag exists to isolate (760's rvm_volume_name change) breaks
+# every launcher_up call for its group, not just its own two, so running it
+# alongside 730/740/750 risks the whole job blowing its outer timeout before
+# any per-case result is even reported.
+out="$(IT_FORCE_CAPS="docker netadmin dns" run_it --cases 010-alpha)"
+has "$out" 'selected 1 of' \
+  && pass "--cases alone selects exactly the named case" \
+  || fail "--cases alone selects exactly the named case -- got: $(printf '%s' "$out" | grep selected)"
+has "$out" '010-alpha.*PASS' \
+  && pass "--cases 010-alpha selects and runs 010-alpha" \
+  || fail "--cases 010-alpha selects and runs 010-alpha -- got: $out"
+has "$out" '020-beta' \
+  && fail "--cases 010-alpha must not select an unnamed case -- got: $out" \
+  || pass "--cases 010-alpha excludes every other case"
+
+out="$(IT_FORCE_CAPS="docker netadmin dns" run_it --cases 010-alpha,030-gamma)"
+has "$out" 'selected 2 of' \
+  && pass "--cases accepts a comma-separated list" \
+  || fail "--cases accepts a comma-separated list -- got: $(printf '%s' "$out" | grep selected)"
+if has "$out" '010-alpha.*PASS' && has "$out" '030-gamma.*PASS'; then
+  pass "--cases with two names selects and runs both"
+else
+  fail "--cases with two names selects and runs both -- got: $out"
+fi
+
+# COMPOSES with --tags, narrowing rather than replacing: --tags security alone
+# selects several cases (010/030/050/060/070/080); --cases narrows that down
+# to exactly one, the same relationship --variant already has to --tags.
+out="$(IT_FORCE_CAPS="docker netadmin dns" run_it --tags security --cases 010-alpha)"
+has "$out" 'selected 1 of' \
+  && pass "--tags + --cases narrows a tag-selected set to just the named case" \
+  || fail "--tags + --cases narrows a tag-selected set to just the named case -- got: $(printf '%s' "$out" | grep selected)"
+has "$out" '060-zeta' \
+  && fail "--tags + --cases must not admit a same-tag case outside the --cases list -- got: $out" \
+  || pass "--tags + --cases excludes a same-tag case outside the --cases list"
+
+# UNKNOWN NAME: loud and specific, the same precedent --variant already sets —
+# not the generic zero-selection message, which never names the bad value.
+out="$(IT_FORCE_CAPS="docker" run_it --cases no-such-case)"
+rc="$(rc_of "$out")"
+[[ "$rc" -ne 0 ]] \
+  && pass "an unknown --cases name fails the run" \
+  || fail "an unknown --cases name fails the run (rc=$rc)"
+has "$out" 'unknown case' \
+  && pass "the unknown-cases error names the real cause" \
+  || fail "the unknown-cases error names the real cause -- got: $out"
+has "$out" 'no case was selected' \
+  && fail "the unknown-cases error must be distinct from the generic zero-selection message -- got: $out" \
+  || pass "the unknown-cases error is distinct from the generic zero-selection message"
+
 # case_timeout, as a pure function (see the full run_it() scenarios above for
 # the end-to-end "it actually changes what it_timeout kills at" proof — these
 # three pin the parsing/validation contract in isolation).

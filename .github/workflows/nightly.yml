@@ -32,6 +32,22 @@ on:
         description: 'run.sh --exclude for the integration jobs'
         required: false
         default: ''
+      # Unlike tags/exclude above (integration-full only), this feeds the
+      # packages-agents/packages-native jobs, whose own selection is otherwise
+      # hardcoded (`--tags packages --variant <name>`) and reads no input at
+      # all — every case sharing that variant runs on every dispatch,
+      # regardless of which mutation.patch is applied to the tree. A mutation
+      # demonstration needs to isolate the ONE case its patch targets: some of
+      # these patches are global (e.g. entrypoint.sh's link_agent_tools /
+      # link_default_ruby, sandbox-common.sh's rvm_volume_name) and their
+      # effect on a co-running, unpatched neighbour must be either avoided or
+      # deliberately controlled for, not left to chance. Empty (the default)
+      # is a no-op — both jobs render their existing hardcoded command
+      # unchanged, exactly like tags/exclude above.
+      cases:
+        description: 'run.sh --cases for the packages-agents/packages-native jobs (e.g. 760-ruby-persists-no-recompile) — empty = every packages case for that variant'
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -294,7 +310,9 @@ jobs:
       # this job's three agents-variant cases (700/710/720); the native
       # variant's four cases run in the sibling job below.
       - name: Packages tier (agents variant)
-        run: ./tests/integration/run.sh --tags packages --variant agents --require packages
+        run: >-
+          ./tests/integration/run.sh --tags packages --variant agents --require packages
+          ${{ inputs.cases && format('--cases {0}', inputs.cases) || '' }}
 
       # The two numbers that decide whether this half of the tier stays this
       # shape. Recorded every night: an unmeasured budget is how a tier
@@ -371,7 +389,9 @@ jobs:
       # hypothetical one, and this comment is where it must be recorded: a
       # trade-off written only in a design doc is a trade-off nobody will find.
       - name: Packages tier (native variant)
-        run: ./tests/integration/run.sh --tags packages --variant native --require packages
+        run: >-
+          ./tests/integration/run.sh --tags packages --variant native --require packages
+          ${{ inputs.cases && format('--cases {0}', inputs.cases) || '' }}
 
       - name: Budget
         if: always()
