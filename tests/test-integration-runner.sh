@@ -20,9 +20,30 @@ RUN="$REPO_DIR/tests/integration/run.sh"
 fails=0
 pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails + 1)); }
+check() { if [[ "$2" == "$3" ]]; then pass "$1"; else fail "$1"$'\n'"       expected: $2"$'\n'"       got:      $3"; fi; }
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+
+# tests/integration/run.sh's own path is not layout-sensitive (tests/ sits at
+# the same place in both layouts; only sandbox.sh et al. move into base/ in
+# the mgd-ai-containers fork), so RUN already resolves it correctly above.
+# RUNNER is just that same value under the name the callfn.sh helper below
+# (and the brief this file implements) uses.
+RUNNER="$RUN"
+
+# run.sh is a script, not a library. Sourcing it with IT_SOURCE_ONLY=1 stops it
+# before the selection/execution phase so its pure functions can be unit-tested.
+# Without this the only way to test variant resolution would be a full run,
+# which needs a Docker daemon this suite does not have.
+cat > "$TMP/callfn.sh" <<EOF
+#!/usr/bin/env bash
+export IT_SOURCE_ONLY=1
+export IT_IMAGE="\${IT_IMAGE:-ai-sandbox-it}"
+source "$RUNNER"
+"\$@"
+EOF
+chmod +x "$TMP/callfn.sh"
 
 bash -n "$RUN" && pass "run.sh bash -n" || fail "run.sh bash -n"
 
@@ -264,6 +285,51 @@ if grep -nE '^\s+timeout [0-9"$]' "$RUN" | grep -v it_timeout | grep -q .; then
 else
   pass "no bare GNU timeout call sites remain in run.sh"
 fi
+
+# ── Image variants ─────────────────────────────────────────────────────────────
+# The packages tier needs images the default minimal one cannot provide. A typo
+# in an `image:` header must be a hard error: silently falling back to `default`
+# would run a Ruby case against an image with no Ruby and report the product
+# broken.
+out="$(RUNNER_FUNC=variant_overrides bash "$TMP/callfn.sh" variant_overrides agents)"
+case "$out" in
+  *copilot=ON*claude-code=ON*codex=ON*gemini=ON*graphify=ON*vale=ON*node=22,20*)
+    pass "variant agents turns on all six agent-tier keys and multi-version node" ;;
+  *) fail "variant agents overrides — got: $out" ;;
+esac
+
+out="$(bash "$TMP/callfn.sh" variant_overrides native)"
+case "$out" in
+  *db-clients=pg,mysql,mongo*imagemagick=ON*wkhtmltopdf=ON*ruby=3.3.6,3.4.5*)
+    pass "variant native carries the KEEP_BUILD_TOOLCHAIN components and both rubies" ;;
+  *) fail "variant native overrides — got: $out" ;;
+esac
+
+out="$(IT_RUBY_VERSIONS=3.4.5 bash "$TMP/callfn.sh" variant_overrides native)"
+case "$out" in
+  *ruby=3.4.5*) pass "IT_RUBY_VERSIONS overrides the native variant's ruby list" ;;
+  *)            fail "IT_RUBY_VERSIONS override — got: $out" ;;
+esac
+
+bash "$TMP/callfn.sh" variant_overrides no-such-variant >/dev/null 2>&1
+if [[ "$?" -ne 0 ]]; then
+  pass "an unknown variant is rejected, not silently treated as default"
+else
+  fail "an unknown variant is rejected — a typo would run a case on the wrong image"
+fi
+
+check "variant_image default is the plain image tag" \
+  "ai-sandbox-it" "$(bash "$TMP/callfn.sh" variant_image default)"
+check "variant_image agents is suffixed" \
+  "ai-sandbox-it-agents" "$(bash "$TMP/callfn.sh" variant_image agents)"
+
+# case_variant: header present, header absent, header with extra spacing
+printf '#!/usr/bin/env bash\n# tags:  packages\n# image:    agents\n' > "$TMP/c-with.sh"
+printf '#!/usr/bin/env bash\n# tags:  mounts\n' > "$TMP/c-without.sh"
+check "case_variant reads the image header" \
+  "agents" "$(bash "$TMP/callfn.sh" case_variant "$TMP/c-with.sh")"
+check "case_variant defaults when the header is absent" \
+  "default" "$(bash "$TMP/callfn.sh" case_variant "$TMP/c-without.sh")"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

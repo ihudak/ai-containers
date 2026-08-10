@@ -77,7 +77,14 @@ Requires: docker netadmin sidecar dns external launcher
 EOF
 }
 
-while [[ $# -gt 0 ]]; do
+# IT_SOURCE_ONLY (see the early return before the sweep EXIT trap, below) means
+# run.sh is being sourced by tests/test-integration-runner.sh's callfn.sh
+# helper, which reuses "$@" as a FUNCTION NAME plus its arguments, not CLI
+# flags — `source` shares positional parameters with its caller, so parsing
+# them here would read e.g. "variant_overrides" as an unrecognised option and
+# `exit 2`, which kills the whole sourcing process (not just this loop) before
+# the requested function is ever called.
+while [[ -z "${IT_SOURCE_ONLY:-}" && $# -gt 0 ]]; do
   # A value-taking option with no value must be a usage error, not a crash.
   # Without this guard `run.sh --tags` aborts with "line NN: 2: unbound variable"
   # under set -u — a message that names neither the option nor the problem, from a
@@ -157,6 +164,46 @@ warn() { printf '%s\n' "$*" >&2; }
 # ── Case metadata ───────────────────────────────────────────────────────────────
 case_meta() {  # $1=file $2=key → the header value, or empty
   sed -n "s/^#[[:space:]]*$2:[[:space:]]*//p" "$1" | head -1
+}
+
+# ── Image variants ──────────────────────────────────────────────────────────────
+# The corpus ran on ONE image until the packages tier: the firewall does not know
+# which fragment a domain came from, so proving admit/drop once proves it for
+# every fragment, and N per-component images bought nothing. The packages tier is
+# the exception — it asserts that components INSTALL, which is per-component by
+# construction.
+#
+# Two variants, not three. The split is KEEP_BUILD_TOOLCHAIN, a distinction the
+# Dockerfile itself makes: `agents` has it unset (the configuration most users
+# ship), `native` has it set by ruby=/db-clients=. A single kitchen-sink image
+# could only ever exercise the toolchain-kept path, so the agent-tier tools would
+# never be tested in the configuration they actually ship in.
+#
+# Grouped with case_meta and placed after it, not up near IT_IMAGE: case_variant
+# calls case_meta, and keeping producer and consumer together beats matching the
+# top-of-file variable block this would otherwise sit in.
+IT_RUBY_VERSIONS="${IT_RUBY_VERSIONS:-3.3.6,3.4.5}"
+
+variant_overrides() {  # $1=variant → space-separated key=value; rc 1 if unknown
+  case "$1" in
+    default) printf '' ;;
+    agents)  printf 'copilot=ON claude-code=ON codex=ON gemini=ON graphify=ON vale=ON node=22,20' ;;
+    native)  printf 'db-clients=pg,mysql,mongo imagemagick=ON wkhtmltopdf=ON ruby=%s' "$IT_RUBY_VERSIONS" ;;
+    *)       return 1 ;;
+  esac
+  return 0
+}
+
+variant_image() {  # $1=variant → the image tag to build/run
+  case "$1" in
+    default) printf '%s' "$IT_IMAGE" ;;
+    *)       printf '%s-%s' "$IT_IMAGE" "$1" ;;
+  esac
+}
+
+case_variant() {  # $1=case file → its variant, or `default`
+  local v; v="$(case_meta "$1" image)"
+  printf '%s' "${v:-default}"
 }
 
 list_intersects() {  # $1, $2 = space-separated lists → 0 if they share a member
@@ -379,6 +426,16 @@ sweep() {
   fi
   return 0
 }
+
+# Sourced by tests/test-integration-runner.sh (via its callfn.sh helper) to
+# unit-test the pure functions above without a Docker daemon. Cut here, not at
+# the "── Selection ───" banner below: `trap 'sweep' EXIT` would otherwise fire
+# sweep()'s real `docker` calls when callfn.sh's process exits, and the
+# build_image()/mkdir/`docker network create` block right after it would try a
+# real image build. Every line from here down performs real I/O — that is what
+# a hermetic test must never reach, not just the selection/execution loop.
+[[ -n "${IT_SOURCE_ONLY:-}" ]] && return 0 2>/dev/null
+
 trap 'sweep' EXIT
 
 mkdir -p "$IT_SCRATCH/logs"
