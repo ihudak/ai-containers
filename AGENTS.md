@@ -137,7 +137,7 @@ tests/integration/run.sh --reuse-image --tags mounts     # expect 400 to FAIL
 tests/integration/mutate.sh revert
 ```
 
-`bash ./verify-on-host.sh` runs the same corpus (Phase 4) plus the package/Ruby phases that have no case coverage yet. It is a platform-adaptive **host** entry point: the identical command on macOS + Colima and on Linux.
+`bash ./verify-on-host.sh` runs the same corpus (Phase 4) plus the package/Ruby phases that have no case coverage yet. It is a platform-adaptive **host** entry point: the identical command on macOS + Colima and on Linux. It **exits non-zero if any selected phase failed**, printing a `RESULT:` verdict that names each one; a failed phase does not stop the others, because the phases are independent and a full report beats an early abort. That is load-bearing, not cosmetic — `nightly.yml`'s `packages` job is nothing but `PHASES="1 2 3" bash ./verify-on-host.sh`, and while the script only *printed* its failures that job passed unconditionally. A new phase that records nothing through `phase_fail` recreates the hole; `tests/test-verify-exit-code.sh` is the guard, and it demonstrates itself failing by stripping the verdict block out and requiring the old always-zero behaviour to come back.
 
 CI runs the `fast` tier on every PR (`.github/workflows/integration.yml`) and the **whole** corpus nightly (`.github/workflows/nightly.yml`), including the `slow` and `needs-dns` cases the gate excludes on cost — so a case excluded on cost is still a case that runs. `nightly.yml` also checks that every domain in `allowlist-domains.d/` still resolves; fragments rot silently, and the only symptom is a tool that mysteriously cannot install behind the firewall.
 
