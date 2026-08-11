@@ -128,7 +128,7 @@ order.
 |---|---|---|---|
 | 0 | environment banner | — | existing |
 | 4 | integration corpus (whole, no `--tags`) | `integration.yml` | existing |
-| **5** | hermetic suite (`tests/run-all.sh`) + `sandbox.conf` schema gate | `tests.yml` job `suite` | new |
+| **5** | hermetic suite (`tests/run-all.sh`) + `sandbox.conf` schema gate + the same suite at the declared floor, in an `ubuntu:22.04` container | `tests.yml` jobs `suite` and `suite-floor` | new |
 | **7** | `bash -n` over every script + dialect linter + `shellcheck` **as a gate** | `tests.yml` job `lint` | new |
 
 Each new phase mirrors one whole CI job rather than a hand-picked step. That is
@@ -217,6 +217,23 @@ What the floor buys, beyond ending the three-way contradiction: `${var@Q}` for
 safe requoting, `EPOCHSECONDS`/`EPOCHREALTIME` for timing without forking
 `date` — which matters when increment 5 times thousands of mutants — and it
 retires the `"${arr[@]+"${arr[@]}"}"` empty-array ceremony for new code.
+
+**The floor is tested, not asserted.** A declared floor that no layer exercises
+is precisely the defect this increment exists to remove — the 3.2 claim survived
+for months because nothing ran it. CI's `ubuntu-latest` ships bash 5.2, so
+without help the 5.1 claim would be untested, and `ubuntu-latest` is a *moving
+target*: when GitHub rolls it to 26.04 the tested version silently becomes 5.3
+and the gap widens with nobody deciding anything.
+
+So a second CI job, `suite-floor`, runs the hermetic suite inside an
+`ubuntu:22.04` container — bash 5.1.16 with GNU coreutils — pinning the floor to
+something exercised on every PR. Phase 5 runs the same containerised check
+locally, so the invariant holds without an exception carved out for it.
+
+Raising the floor to 5.2 to match CI was considered and rejected: it would drop
+RHEL·Rocky 9 (bash 5.1.8, supported to 2032), Ubuntu 22.04 LTS (5.1.16) and
+Debian 11 (5.1.4) — a far larger exclusion than RHEL 8, and it would leave the
+floor drifting with the runner image anyway.
 
 `README.md`'s 4.4 is corrected to 5.1. A sourced guard is sufficient because
 every construct in question (`local -A`, `local -n`, `mapfile`) fails at

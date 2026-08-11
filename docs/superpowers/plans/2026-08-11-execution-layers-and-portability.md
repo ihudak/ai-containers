@@ -30,7 +30,7 @@
 | `tests/portability.sh` *(new)* | `p_stat_mode`, `p_sha1`, `p_md5` — GNU/BSD-neutral helpers for tests. |
 | `tests/integration/run.sh` | Adds `--dry-run`. |
 | `verify-on-host.sh` | Adds Phases 5 and 7; `VALID_PHASES="0 4 5 7"`; default `PHASES` becomes `4 5 7`. |
-| `.github/workflows/tests.yml` | Adds the dialect linter step to the `lint` job. |
+| `.github/workflows/tests.yml` | Adds the `suite-floor` job (`ubuntu:22.04`, bash 5.1) and the dialect linter step in `lint`. |
 | `tests/test-bash-floor.sh` *(new)* | Every host entry point reaches the floor guard. |
 | `tests/test-layer-containment.sh` *(new)* | `local ⊇ nightly ⊇ PR`, plus the step-count ratchet. |
 | `tests/test-verify-exit-code.sh` | Updated for the new default and phases. |
@@ -174,22 +174,75 @@ in the file — put the source line after `REPO` is resolved and use
 
 Change `**Bash ≥ 4.4** on the host` to `**Bash ≥ 5.1** on the host`, and update the sentence to read: `Linux distributions from Ubuntu 22.04 / Debian 11 / RHEL 9 onward ship this. macOS ships bash 3.2 — install a newer one via `brew install bash`.`
 
-- [ ] **Step 7: Run the test and the suite**
+- [ ] **Step 7: Add the `suite-floor` CI job, so the floor is tested rather than asserted**
+
+A declared floor no layer exercises is the defect this increment removes — the
+3.2 claim survived for months because nothing ran it. CI's `ubuntu-latest` is
+bash 5.2 **and is a moving target**: when GitHub rolls it to 26.04 the tested
+version silently becomes 5.3.
+
+Add to `.github/workflows/tests.yml`, as a sibling of `suite`:
+
+```yaml
+  suite-floor:
+    name: Shell test suite (bash floor)
+    runs-on: ubuntu-latest
+    # ubuntu:22.04 ships bash 5.1.16 — the declared floor — with GNU coreutils.
+    # `suite` above runs on whatever bash ubuntu-latest happens to ship, which
+    # drifts upward with the runner image; this job pins the CLAIM. Raising the
+    # floor means changing this image and bash-floor.sh together.
+    container: ubuntu:22.04
+
+    steps:
+      # BEFORE checkout: actions/checkout needs git inside the container, and
+      # without it silently falls back to a REST download with no .git — which
+      # tests/test-mutations.sh detects and fails on (it needs a git work tree
+      # for `git apply --check`). rsync is needed by the project-init tests.
+      - name: Install git and rsync
+        run: apt-get update -qq && apt-get install -y -qq git rsync ca-certificates
+
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Show bash version
+        run: bash --version | head -1
+
+      - name: Run tests at the declared floor
+        run: ./tests/run-all.sh
+```
+
+- [ ] **Step 8: Verify the job would actually run at 5.1**
+
+Reproduce it locally to confirm the image ships the expected bash and the suite
+passes there — a job that silently runs the wrong version proves nothing:
+
+```bash
+docker run --rm -v "$PWD:/w" -w /w ubuntu:22.04 bash -c \
+  'apt-get update -qq && apt-get install -y -qq git rsync >/dev/null && \
+   bash --version | head -1 && ./tests/run-all.sh'
+```
+
+Expected: `GNU bash, version 5.1.16(1)-release`, and the suite green. Record the
+version line in the commit message.
+
+- [ ] **Step 9: Run the test and the suite**
 
 Run: `bash tests/test-bash-floor.sh && bash tests/run-all.sh`
 Expected: `tests/test-bash-floor.sh` PASSes; the full suite stays green.
 
-- [ ] **Step 8: Demonstrate the guard failing**
+- [ ] **Step 10: Demonstrate the guard failing**
 
 Remove the `source` line from `migrate-runme.sh`, run `bash tests/test-bash-floor.sh`, confirm it FAILs naming `migrate-runme.sh`, then restore the line. Record the observed output in the commit message.
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 11: Commit**
 
 ```bash
 git add bash-floor.sh sandbox-common.sh migrate-runme.sh project-init.sh \
         sync-to-projects.sh bump-sandbox-version.sh check-sandbox-version.sh \
-        verify-on-host.sh README.md tests/test-bash-floor.sh
-git commit -m "feat: declare the bash floor once, at 5.1, and guard every entry point"
+        verify-on-host.sh README.md tests/test-bash-floor.sh \
+        .github/workflows/tests.yml
+git commit -m "feat: declare the bash floor once, at 5.1, and test it rather than assert it"
 ```
 
 ---
@@ -754,9 +807,29 @@ else
   else
     phase_fail 5 "check-sandbox-version.sh not found — the schema gate did not run"
   fi
+
+  # The same suite at the DECLARED FLOOR, mirroring tests.yml's suite-floor job.
+  # This host runs whatever bash the developer installed (5.3 via Homebrew is
+  # typical); the floor is 5.1, and a floor nothing exercises is the defect this
+  # increment exists to remove. Docker is guaranteed here — Phase 0 hard-exits
+  # without a reachable daemon.
+  floor_img="ubuntu:22.04"
+  sub "running the suite at the declared floor ($floor_img, bash 5.1)"
+  docker run --rm -v "$REPO_ROOT_FOR_MOUNT:/w" -w /w "$floor_img" bash -c \
+    'apt-get update -qq && apt-get install -y -qq git rsync >/dev/null 2>&1 && \
+     bash --version | head -1 && ./tests/run-all.sh' 2>&1 | sed "s/^/$LOG_PREFIX   /"
+  f_rc="${PIPESTATUS[0]:-1}"
+  sub "floor suite exit: $f_rc"
+  [[ "$f_rc" -eq 0 ]] || phase_fail 5 "hermetic suite at the declared floor exited $f_rc"
 fi
 fi
 ```
+
+`REPO_ROOT_FOR_MOUNT` is the directory that must be mounted for `tests/` to
+resolve: `$REPO` in ai-containers, `$REPO/..` in mgd where the engine lives in
+`base/`. Derive it from `TESTS_DIR` rather than branching on repo name —
+`REPO_ROOT_FOR_MOUNT="$(cd "$TESTS_DIR/.." && pwd)"` — so one copy of this
+script serves both layouts, which is the standing rule for this file.
 
 - [ ] **Step 5: Add Phase 7, after Phase 5**
 
@@ -864,6 +937,7 @@ done
 # name|regex matching its invocation in tests.yml|regex matching it in verify-on-host.sh
 CHECKS='hermetic suite|run-all\.sh|run-all\.sh
 schema gate|check-sandbox-version\.sh|check-sandbox-version\.sh
+floor suite|container: ubuntu:22\.04|ubuntu:22\.04
 bash -n|bash -n|bash -n
 dialect lint|bash-dialect-lint\.sh|bash-dialect-lint\.sh
 shellcheck|shellcheck|shellcheck'
@@ -887,8 +961,9 @@ done <<< "$CHECKS"
 # the mgd port shipped, where the byte-identity gate iterated the same list it
 # was meant to police. So pin the STEP COUNT per job: a new CI step must be
 # given a layer, and cannot widen the PR gate past the local one unnoticed.
-#   suite: checkout, bash version, rsync, run tests, schema gate  = 5
-#   lint:  checkout, bash -n, dialect lint, shellcheck            = 4
+#   suite:       checkout, bash version, rsync, run tests, schema gate  = 5
+#   suite-floor: install git+rsync, checkout, bash version, run tests   = 4
+#   lint:        checkout, bash -n, dialect lint, shellcheck            = 4
 expect_steps() {  # $1=job $2=expected count
   local got
   got="$(awk -v j="$1" '
@@ -903,7 +978,27 @@ expect_steps() {  # $1=job $2=expected count
   fi
 }
 expect_steps suite 5
+expect_steps suite-floor 4
 expect_steps lint 4
+
+# The floor job must run the image matching the DECLARED floor. If bash-floor.sh
+# says 5.1 and the job runs ubuntu:24.04 (bash 5.2), the floor is untested again
+# and nothing else would notice.
+# shellcheck source=../bash-floor.sh
+source "$REPO_DIR/bash-floor.sh"
+floor="${AI_CONTAINERS_BASH_FLOOR_MAJOR}.${AI_CONTAINERS_BASH_FLOOR_MINOR}"
+case "$floor" in
+  5.1) want_img="ubuntu:22.04" ;;
+  5.2) want_img="ubuntu:24.04" ;;
+  *)   want_img="" ;;
+esac
+if [[ -z "$want_img" ]]; then
+  fail "no container image is mapped to floor $floor — suite-floor cannot test the claim"
+elif grep -qF "container: $want_img" "$TESTS_YML"; then
+  pass "suite-floor runs $want_img, matching the declared floor $floor"
+else
+  fail "suite-floor does not run $want_img — the declared floor $floor is untested"
+fi
 
 # ── Integration-case containment, asked of run.sh rather than reimplemented ────
 sel() { bash "$RUN" --dry-run "$@" 2>/dev/null | grep -E '^[0-9]{3}-' | sort; }
@@ -945,17 +1040,24 @@ Add a trivial step (`- name: noop` / `run: 'true'`) to the `lint` job in
 `tests.yml`, run the test, confirm the step-count assertion FAILs naming the
 job, then remove the step.
 
-- [ ] **Step 5: Demonstrate it failing — the set-comparison half**
+- [ ] **Step 5: Demonstrate it failing — the floor-image half**
+
+Change `bash-floor.sh` to `AI_CONTAINERS_BASH_FLOOR_MINOR=2` without touching
+`tests.yml`, run the test, confirm `suite-floor does not run ubuntu:24.04 — the
+declared floor 5.2 is untested` FAILs, then revert. This is the assertion that
+stops the floor and the image it is tested at from drifting apart.
+
+- [ ] **Step 6: Demonstrate it failing — the set-comparison half**
 
 Temporarily add `--exclude fast` to the `nightly_set` computation, confirm
 `PR selection ⊆ nightly selection` FAILs listing the missing cases, then revert.
 
-- [ ] **Step 6: Run the full suite**
+- [ ] **Step 7: Run the full suite**
 
 Run: `bash tests/run-all.sh`
 Expected: all tests pass, including the three new files.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add tests/test-layer-containment.sh
