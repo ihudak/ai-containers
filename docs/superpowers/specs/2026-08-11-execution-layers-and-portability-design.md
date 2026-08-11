@@ -51,9 +51,9 @@ Meanwhile `migrate-runme.sh:133` uses `local -A` and never reaches the guard,
 so a 3.2 user gets `local: -A: invalid option` mid-migration instead of the
 message. Six entry points skip the guard entirely.
 
-Nothing newer than 4.3 is in use today, but CI runs bash 5.x and cannot see the
-difference. A `${var@Q}` or `EPOCHSECONDS` would pass every check and break
-every 4.3/4.4 user.
+Nothing above the floor is in use today, but nothing prevents it either: CI, the
+container and a developer's Mac all run different bash versions, and no check
+compares any of them against what the product claims to support.
 
 **A selection cannot be previewed.** `run.sh --list` ignores `--tags`,
 `--exclude`, `--cases` and `--variant`; it prints all 34 cases whatever you
@@ -73,9 +73,17 @@ another's.
 ## Non-goals
 
 - **No rewrite of existing bash-3.2-style workarounds.** Space-padded
-  membership tests (`case " $list " in *" $x "*`) stay exactly as they are.
-  Raising the floor permits new code to use `declare -A`; it does not licence
-  churning working code.
+  membership tests (`case " $list " in *" $x "*`) and the
+  `"${arr[@]+"${arr[@]}"}"` empty-array ceremony stay exactly as they are.
+  Raising the floor permits new code to use `declare -A` and a bare
+  `"${arr[@]}"`; it does not licence churning working code.
+
+  One exception, and it is a documentation fix rather than churn:
+  `tests/test-open-mode.sh` *asserts* the empty-array ceremony is present and
+  explains it with a comment citing bash 4.3. At a 5.1 floor that comment is
+  false. The assertion stays — the guarded form is still correct — and the
+  comment is corrected to say the ceremony is belt-and-braces below the floor.
+  A live file must not document a constraint that no longer exists.
 - **No change to the historical plan documents** under
   `docs/superpowers/plans/`. Those record the constraint that applied when they
   were written and are not live claims.
@@ -165,39 +173,65 @@ A small sourced file carrying the `BASH_VERSINFO` check currently inlined at
 `sandbox-common.sh:19-22`, with the floor stated once:
 
 ```sh
-AI_CONTAINERS_BASH_FLOOR_MAJOR=4
-AI_CONTAINERS_BASH_FLOOR_MINOR=3
+AI_CONTAINERS_BASH_FLOOR_MAJOR=5
+AI_CONTAINERS_BASH_FLOOR_MINOR=1
 ```
 
-`sandbox-common.sh` sources it, so the four already-guarded entry points are
-unchanged in behaviour. The six unguarded ones source it directly rather than
-pulling in all of `sandbox-common.sh` for a version check.
+`sandbox-common.sh` sources it, so the four already-guarded entry points keep
+their behaviour and gain the new floor. The six unguarded ones source it
+directly rather than pulling in all of `sandbox-common.sh` for a version check.
 
-The floor is **4.3** — what the code actually requires (`local -n`, bash 4.3).
-`README.md`'s 4.4 is corrected to match. Raising the floor later is a two-line
-change here plus one entry in the dialect linter.
+**The floor is 5.1**, raised from the 4.3 the guard enforces today. macOS
+requires a Homebrew bash at any floor above 3.2, so the raise costs macOS users
+nothing, and every current Linux target clears it:
 
-A sourced guard is sufficient because every construct in question
-(`local -A`, `local -n`, `mapfile`) fails at *runtime*, not at parse time; the
-guard runs first and exits before reaching them.
+| Platform | bash | ≥ 5.1 |
+|---|---|---|
+| Ubuntu 26.04 / 24.04 (the container base) | 5.3 / 5.2.21 | yes |
+| Ubuntu 22.04, Debian 12/11, RHEL·Rocky 9 | 5.1.16 / 5.2.15 / 5.1.4 / 5.1.8 | yes |
+| macOS + Homebrew | 5.3 | yes |
+| Ubuntu 20.04 | 5.0.17 | no — ESM-only since April 2025 |
+| RHEL·Rocky 8 | 4.4.20 | no — supported to 2029 |
+
+A RHEL 8 workstation is the only realistic exclusion, and it is a host-script
+concern only: the container is `ubuntu:24.04` (bash 5.2.21), so every
+in-container script clears the floor regardless of the host.
+
+What the floor buys, beyond ending the three-way contradiction: `${var@Q}` for
+safe requoting, `EPOCHSECONDS`/`EPOCHREALTIME` for timing without forking
+`date` — which matters when increment 5 times thousands of mutants — and it
+retires the `"${arr[@]+"${arr[@]}"}"` empty-array ceremony for new code.
+
+`README.md`'s 4.4 is corrected to 5.1. A sourced guard is sufficient because
+every construct in question (`local -A`, `local -n`, `mapfile`) fails at
+*runtime*, not at parse time; the guard runs first and exits before reaching
+them.
 
 ### 3. The dialect linter
 
 A check that no script uses a construct newer than the declared floor. Runs in
-the **PR layer** — static, deterministic, needs no exotic bash. It is the only
-thing standing between a CI runner on bash 5.x and a user on 4.3.
+the **PR layer** — static, deterministic, needs no exotic bash.
 
-Flagged constructs (all post-4.3):
+At a 5.1 floor the three bash versions in play are all *different*, which is
+exactly why the check is needed: the container and CI run 5.2, a developer's Mac
+runs 5.3, and the floor is 5.1. Nothing else compares them.
+
+Flagged constructs (post-5.1):
 
 | Construct | Introduced |
 |---|---|
-| `${var@Q}` `@E` `@P` `@A` `@a` | 4.4 |
-| `mapfile -d` / `readarray -d` | 4.4 |
-| `EPOCHSECONDS`, `EPOCHREALTIME`, `BASH_ARGV0`, `wait -f`, `localvar_inherit` | 5.0 |
-| `SRANDOM`, `${var@U}` `@u` `@L` `@K` `@k` | 5.1 |
+| `${ command; }` value substitution | 5.3 |
+| `BASH_MONOSECONDS`, `BASH_TRAPSIG`, `GLOBSORT` | 5.3 |
+| `shopt -s globskipdots`, `noexpand_translation`, `varredir_close` | 5.2 |
 
-The linter reads the floor from `bash-floor.sh`, so raising the floor updates
-what it permits rather than requiring a second edit in a second place.
+The Mac's 5.3 being *ahead* of CI's 5.2 makes this concrete rather than
+theoretical: a `${ cmd; }` written comfortably on the host would fail in CI and
+in the container. The linter catches it at authoring time with a message naming
+the floor, instead of at container start.
+
+The linter reads the floor from `bash-floor.sh`, so raising or lowering the
+floor updates what it permits rather than requiring a second edit in a second
+place.
 
 ### 4. `tests/test-bash-floor.sh`
 
@@ -270,19 +304,56 @@ The acceptance evidence for the whole increment is one command on macOS:
 `bash ./verify-on-host.sh` reporting `RESULT: PASSED — phases [0 4 5 7]`, having
 run the hermetic suite on BSD userland for the first time.
 
-## Risks
+## Risks and mitigations
 
-**The macOS run will surface defects beyond the four known sites.** Phase 5 runs
-39 test files against BSD userland for the first time; the static scan finds
-GNU-only *utilities*, but not behavioural differences (BSD `sed -i` argument
-handling, `date`, `du` output shape, locale-dependent `sort`). Unknown until it
-runs. Per the standing rule, everything found is fixed — one before merge, the
-rest in a follow-up merge, none dropped.
+Each risk carries a mitigation that makes it *measured* rather than discovered
+late. Where a number could be obtained now, it was.
 
-**Phase 7 may produce a large shellcheck backlog.** The advisory has been
-accumulating since it was added. If the count is large it lands as a
-classified baseline rather than a wall of failures, using the same
-classify-or-fail discipline chosen for increment 5's survivor ledger.
+### R1 — the macOS run surfaces defects beyond the four known sites
+
+Phase 5 runs 39 test files against BSD userland for the first time. The static
+scan finds GNU-only *utilities*; it cannot find behavioural differences (BSD
+`sed -i` argument handling, `date`, `du` output shape, locale-dependent `sort`).
+
+**Mitigation — measure before committing to the work, in one scheduled
+hand-off.** The plan front-loads the portability helpers and the four known
+fixes, then reaches a single measurement point: `bash tests/run-all.sh` is run
+once on macOS and its output recorded. This session runs on Linux and cannot
+perform that step, so it is an explicit hand-off to the human partner at a
+planned moment — one round trip, not a discovery loop spread across the
+increment. Every dependent task is planned *after* the list exists.
+
+If the list is long, the standing rule applies unchanged: a subset is fixed
+before merge and the remainder is carried in a follow-up merge with a ledger
+entry each. Nothing is dropped.
+
+### R2 — the shellcheck backlog blocks Phase 7
+
+**Measured, 2026-08-11, shellcheck 0.11.0: 75 findings across 25 files.** No
+longer an unknown. The shape matters more than the count:
+
+| Code | Count | Character |
+|---|---|---|
+| `SC2178` / `SC2128` | 31 | nameref false positives — shellcheck does not model `local -n`; 23 of them in `tests/test-parsers.sh` alone |
+| `SC2034` | 24 | unused variable, mostly in sourced libraries where the consumer is another file |
+| `SC2154` | 10 | referenced-but-not-assigned, same sourcing cause |
+| others | 10 | genuinely worth reading |
+
+**Mitigation — triage, not a baseline file.** Roughly 10-20 findings are
+actionable; the rest are structural false positives for a codebase built on
+namerefs and sourced libraries. They are handled as (a) real fixes, (b) inline
+`# shellcheck disable=SCxxxx` carrying a one-line reason at the nameref sites,
+(c) a documented `-e` list for codes that are categorically wrong here. The gate
+lands green within this increment. At 75 findings a classified baseline file
+would be more machinery than the problem justifies.
+
+### R3 — the step-count ratchet adds friction to every future CI edit
+
+**Mitigation — make updating it a one-line deliberate act.** The baseline is one
+number per job with a comment naming the steps it counts, and the failure
+message states exactly what changed and what to do. The friction is the point —
+a new CI step must be given a layer — but it must cost seconds, not an
+investigation.
 
 ## Port
 

@@ -163,16 +163,54 @@ six of these, including two written inside the fixes for the others.
 from the existing `tests/integration/mutations/` and would be conflated within a
 week. The name states the property being measured rather than the technique.
 
-## Risks
+## Risks and mitigations
 
-**Survivor count is unknown until the generator first runs.** At 935 mutants and
-a plausible 8-20% survival rate that is roughly 75-190 entries to classify, and
-it cannot be sized more tightly in advance. The classified-ledger policy is what
-bounds it: every survivor is *classified* in this increment; `GAP` entries are
-owed assertions and may be paid down in a follow-up.
+### R1 — survivor count is unknown until the generator first runs
 
-**`stmt-delete` triage could still flood.** Mitigated by the measured per-target
-entry criterion above, which is why that criterion exists.
+At 935 mutants and a plausible 8-20% survival rate that is roughly 75-190
+entries to classify. It cannot be sized more tightly by inspection.
+
+**Mitigation — a pilot before the commitment.** The harness runs against one
+cheap target first: `mutate.sh`, 53 mutants against a 0.4 s oracle, about
+**20 seconds** end to end. That yields a real survival rate on real code, from
+which 935 extrapolates with confidence. If the rate lands far above 20%, the
+operator set or the target list is re-scoped *before* the classification work
+rather than after it. The pilot is the first task that produces a number, not
+the last.
+
+**Second mitigation — shared rationales.** Survivors from one underlying cause
+are common (one unasserted stream, one uncovered function). The ledger format
+permits one classification to cover a named group, so N survivors from a single
+gap cost one entry, not N. This is what keeps the count from becoming the work.
+
+### R2 — `stmt-delete` triage floods the ledger
+
+**Mitigation — the measured per-target entry criterion**, which exists for this
+reason: a target earns `stmt-delete` only once its mutation score under the five
+PR operators clears a threshold, so the operator is only ever enabled where the
+oracle is already strong enough to kill most of it.
+
+### R3 — `EQUIVALENT` classifications degrade into rubber-stamping
+
+The gate can require a non-empty reason; it cannot detect a lazy one. A ledger
+whose entries nobody reads stops protecting anything, and it would be protecting
+the whole hermetic tier.
+
+**Mitigation — make the reason answer a specific question, and keep the corpus
+small enough to review.** An `EQUIVALENT` entry must state *why no test could
+ever kill this mutant*, not merely that none does — those are different claims,
+and the second one is a `GAP`. Dropping `num-bump` (655 near-noise mutants)
+exists partly to serve this: the ledger stays at a size a reviewer will actually
+read. This mitigation is review discipline, not machinery, and is stated as such
+rather than pretending the gate enforces it.
+
+## Bash floor
+
+Increment 4 sets the repository floor at **5.1**, so this harness may use
+`declare -A` for the mutant→verdict map, `wait -n` for the worker pool, and
+`EPOCHREALTIME` for per-mutant timing without forking `date` — the last of which
+matters across thousands of mutants. None of the bash-3.2 workarounds apply to
+new code here.
 
 ## Non-goals
 
