@@ -409,6 +409,82 @@ else
   pass "no bare GNU timeout call sites remain in run.sh"
 fi
 
+# ── `external` is probed LAZILY, and at most once ──────────────────────────────
+# Every other capability probe reads local state; this one makes a real outbound
+# HTTPS request to a third party. It used to run inside detect_caps' up-front
+# batch, so EVERY run paid it — including the PR gate, which selects
+# `--tags fast --exclude needs-external` and contains no case that requires it.
+# A run that has explicitly declared it does not need the network must not then
+# reach for it. These assertions pin the WHEN; the four behaviour assertions
+# below pin that deferring it changed no answer.
+#
+# The stub records each invocation instead of counting exit codes, so "how many
+# outbound calls did this run make" is answered by the filesystem rather than by
+# trusting the code under test to say.
+EXT_BIN="$TMP/extbin"; mkdir -p "$EXT_BIN"
+EXT_LOG="$TMP/curl-calls.log"
+ext_stub() {  # $1 = exit code the fake curl should return
+  cat > "$EXT_BIN/curl" <<STUB
+#!/bin/sh
+echo "call" >> "$EXT_LOG"
+exit $1
+STUB
+  chmod +x "$EXT_BIN/curl"
+  : > "$EXT_LOG"
+}
+ext_calls() { [ -f "$EXT_LOG" ] && wc -l < "$EXT_LOG" | tr -d ' ' || echo 0; }
+
+ext_stub 0
+PATH="$EXT_BIN:$PATH" bash "$TMP/callfn.sh" have_cap docker >/dev/null 2>&1
+if [ "$(ext_calls)" = "0" ]; then
+  pass "a run that never asks for external makes NO outbound request"
+else
+  fail "a run that never asks for external makes NO outbound request (made $(ext_calls))"
+fi
+
+ext_stub 0
+PATH="$EXT_BIN:$PATH" bash "$TMP/callfn.sh" bash -c 'have_cap external; have_cap external; have_cap external' >/dev/null 2>&1 || true
+PATH="$EXT_BIN:$PATH" bash -c "export IT_SOURCE_ONLY=1 IT_IMAGE=ai-sandbox-it; . '$RUNNER'; have_cap external; have_cap external; have_cap external" >/dev/null 2>&1
+if [ "$(ext_calls)" = "1" ]; then
+  pass "three asks for external cost exactly ONE outbound request (memoised)"
+else
+  fail "three asks for external cost exactly ONE outbound request (made $(ext_calls))"
+fi
+
+# Deferring must not change the ANSWER. Reachable, unreachable, and no-curl —
+# the last is the fail-safe direction: absent, never a false "available".
+ext_stub 0
+if PATH="$EXT_BIN:$PATH" bash -c "export IT_SOURCE_ONLY=1 IT_IMAGE=ai-sandbox-it; . '$RUNNER'; have_cap external" >/dev/null 2>&1; then
+  pass "external is AVAILABLE when the probe succeeds"
+else
+  fail "external is AVAILABLE when the probe succeeds"
+fi
+ext_stub 7
+if PATH="$EXT_BIN:$PATH" bash -c "export IT_SOURCE_ONLY=1 IT_IMAGE=ai-sandbox-it; . '$RUNNER'; have_cap external" >/dev/null 2>&1; then
+  fail "external is ABSENT when the probe fails"
+else
+  pass "external is ABSENT when the probe fails"
+fi
+NOCURL="$TMP/nocurl"; mkdir -p "$NOCURL"
+for b in bash sh sed awk grep cat date id printf; do
+  p="$(command -v $b 2>/dev/null)" && ln -sf "$p" "$NOCURL/$b"
+done
+if PATH="$NOCURL" bash -c "export IT_SOURCE_ONLY=1 IT_IMAGE=ai-sandbox-it; . '$RUNNER'; have_cap external" >/dev/null 2>&1; then
+  fail "a host with NO curl reports external ABSENT, never a false available"
+else
+  pass "a host with NO curl reports external ABSENT, never a false available"
+fi
+
+# IT_FORCE_CAPS is an operator who knows their own situation (air-gapped,
+# proxied). Honour it without reaching for the network behind their back.
+ext_stub 0
+PATH="$EXT_BIN:$PATH" bash -c "export IT_SOURCE_ONLY=1 IT_IMAGE=ai-sandbox-it IT_FORCE_CAPS='docker external'; . '$RUNNER'; have_cap external" >/dev/null 2>&1
+if [ "$(ext_calls)" = "0" ]; then
+  pass "IT_FORCE_CAPS answers for external without any outbound request"
+else
+  fail "IT_FORCE_CAPS answers for external without any outbound request (made $(ext_calls))"
+fi
+
 # ── Image variants ─────────────────────────────────────────────────────────────
 # The packages tier needs images the default minimal one cannot provide. A typo
 # in an `image:` header must be a hard error: silently falling back to `default`

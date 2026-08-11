@@ -394,7 +394,7 @@ detect_caps() {
   # external (rc 127) even with a working network. It fails SAFE — a skip,
   # never a false "available" — and --require makes it loud rather than
   # silent.
-  curl -fsS --max-time 8 -o /dev/null https://example.com 2>/dev/null && c="$c external"
+  # `external` is deliberately NOT probed here — see probe_external() below.
   # Deliberately OUTSIDE the `docker info` block above, not just outside the
   # `docker image inspect` gate that wraps netadmin/launcher: this probe reads a
   # resolved variable, not a live daemon or a built image, so it must still be
@@ -457,7 +457,47 @@ probe_multiruby() {
   case "$IT_RUBY_VERSIONS" in *,*) return 0 ;; *) return 1 ;; esac
 }
 
-have_cap() { detect_caps; case "$_caps" in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+# `external` is the one capability probed LAZILY — only when something actually
+# asks for it — rather than in detect_caps' up-front batch. Every other probe
+# reads local state (a resolved variable, `docker info`, a container this run
+# was going to start anyway); this one makes a real outbound HTTPS request to a
+# third party. Running it unconditionally meant the PR gate paid it on every
+# push while explicitly selecting `--tags fast --exclude needs-external`, and no
+# `fast` case requires it — a network call in a run that had already declared it
+# does not need the network. A hermetic run should make no outbound request at
+# all, and now does not.
+#
+# The probe ITSELF is unchanged and stays unchanged on purpose: `external` means
+# "this host can reach the public internet", and a cheaper probe either answers
+# a narrower question or risks a false negative that `--require packages` turns
+# into a red nightly blaming the wrong thing. The fix is WHEN it runs, not what
+# it does. IT_FORCE_CAPS still bypasses it entirely.
+_ext_probed=0; _ext_rc=1
+probe_external() {
+  # Memoised, so a corpus of 34 cases each declaring `external` still pays for
+  # exactly one request — the same at-most-once contract detect_caps gives the
+  # rest, just deferred to first use instead of paid up front.
+  if [[ "$_ext_probed" -eq 0 ]]; then
+    _ext_probed=1
+    # Known, accepted imprecision, unchanged: a host with no `curl` at all
+    # reports no external (rc 127) even with a working network. It fails SAFE —
+    # a skip, never a false "available" — and --require makes it loud.
+    curl -fsS --max-time 8 -o /dev/null https://example.com 2>/dev/null
+    _ext_rc=$?
+  fi
+  return "$_ext_rc"
+}
+
+have_cap() {
+  detect_caps
+  # IT_FORCE_CAPS is an explicit answer from a host that knows its own
+  # situation (air-gapped, proxied); honour it for `external` too rather than
+  # reaching for the network behind the operator's back.
+  if [[ "$1" == "external" && "$_caps_forced" -eq 0 ]]; then
+    probe_external && return 0 || return 1
+  fi
+  case "$_caps" in *" $1 "*) return 0 ;; *) return 1 ;; esac
+}
 
 unmet_requirement() {  # $1 = space-separated requires → prints the FIRST unmet one
   local r
@@ -480,6 +520,11 @@ if [[ "$do_list_caps" -eq 1 ]]; then
   # would find (an image built by an earlier, separate run/build) and
   # nothing more.
   detect_caps
+  # --list-caps exists to answer "what can this machine do", so it asks for
+  # `external` explicitly — the one question a lazy probe would otherwise leave
+  # unanswered here. Reporting a capability as absent because nothing happened
+  # to ask is the same collapse the "undetermined" block below exists to stop.
+  have_cap external && _caps="${_caps}external "
   printf 'capabilities:%s%s\n' "$_caps" \
     "$([[ "$_caps_forced" -eq 1 ]] && printf ' (FORCED via IT_FORCE_CAPS)')"
   # A capability detect_caps could not PROBE (no image to start a container
