@@ -58,7 +58,11 @@ say() { printf '\n%s %s\n' "$LOG_PREFIX" "$*"; }
 sub() { printf '%s   %s\n' "$LOG_PREFIX" "$*"; }
 
 # Failure ledger. Phases record into it rather than exiting, so one broken phase
-# never hides the state of the other three.
+# never hides the state of any other. Increment 3 left only Phase 4 recording
+# here — Phase 0 is an environment banner that hard-exits on a missing daemon
+# rather than recording — but the ledger is not thereby redundant: it is what
+# makes a phase's failure survive to the verdict at the bottom, and what a new
+# phase must record into. The guard for both is tests/test-verify-exit-code.sh.
 FAILED_PHASES=""
 phase_fail() {  # $1=phase number  $2=one-line reason
   FAILED_PHASES="${FAILED_PHASES}${FAILED_PHASES:+$'\n'}$1|$2"
@@ -162,7 +166,15 @@ else
 fi
 fi
 
-say "DONE. Regenerate your real allowlists before your next normal build:  ./build.sh"
+# No "regenerate your allowlists" advice here any more, deliberately. Phases 1-3
+# were what clobbered the developer's generated allowlist-*.txt — they invoked
+# build.sh with their own SMOKE_CONF/NATIVE_CONF/RUBY_CONF and never put the real
+# ones back. The only remaining phase delegates to tests/integration/run.sh, which
+# snapshots those files before it builds and restores them in its own EXIT trap
+# (`snapshot_real_allowlists`/`restore_real_allowlists`, skipped entirely under
+# --reuse-image because no build ran). Telling the operator to repair something
+# that was not broken teaches them to ignore the line that matters.
+say "DONE."
 
 # ── Verdict ─────────────────────────────────────────────────────────────────────
 # Reprinted here because the per-phase failures scrolled past thousands of lines

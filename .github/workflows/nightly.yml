@@ -254,9 +254,10 @@ jobs:
   # why it is nightly and not on the PR gate. It replaces the old verify-on-host.sh
   # Phases 1-3 job: run.sh now drives the same real installs as ordinary
   # integration cases, with named PASS/FAIL/SKIP assertions instead of a
-  # pass/fail script. verify-on-host.sh itself is untouched here — a later task
-  # in this increment removes its now-redundant Phases 1-3, and this job is what
-  # makes that removal safe rather than a coverage loss.
+  # pass/fail script. These two jobs are what made removing those phases safe
+  # rather than a coverage loss, and the removal has since landed on this branch
+  # (eb91065): verify-on-host.sh is now Phase 0 plus Phase 4, and this job's
+  # selection is the only place the packages tier runs in CI.
   #
   # TWO jobs, one per image variant (agents: 700/710/720, native:
   # 730/740/750/760), not one job running both. run.sh executes cases SERIALLY

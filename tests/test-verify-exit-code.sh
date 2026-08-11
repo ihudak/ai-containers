@@ -134,9 +134,12 @@ fi
 # longer has (they moved into the packages tier in Increment 3). want_phase()
 # is a bare substring match with no validation, so nothing matched, nothing
 # called phase_fail, and the script declared success having run zero checks —
-# exactly what the failure ledger above exists to prevent, and exactly what
-# AGENTS.md's own `PHASES="1 2 3" bash ./verify-on-host.sh` example still
-# invites a reader to do.
+# exactly what the failure ledger above exists to prevent. The string is not
+# hypothetical: `PHASES="1 2 3" bash ./verify-on-host.sh` was the literal
+# command in nightly.yml's packages job, in AGENTS.md, and in every note anyone
+# wrote about this script for two increments. It survives in muscle memory and
+# in the sibling repo's checkouts long after the phases themselves are gone,
+# which is why the selection must reject it rather than quietly match nothing.
 r="$(mk_repo 0)"
 expect_rc "a stale PHASES=1 selection fails loudly, not exits 0" 1 "$(run_verify "$r" 1)"
 grep -q 'RESULT: FAILED' "$TMP/out.log" \
