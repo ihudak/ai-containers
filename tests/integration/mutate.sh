@@ -139,7 +139,12 @@ cmd_apply() {  # $@ = one or more mutation ids
         while IFS= read -r done_id; do
           [[ -n "$done_id" ]] || continue
           if git_apply -R "$MUT_DIR/$done_id.patch"; then
-            printf 'Reverted %s\n' "$done_id" >&2
+            # stdout, matching cmd_revert's identical line. Both report the same
+            # fact — "this mutation is no longer in the tree" — and splitting one
+            # to stderr made `mutate.sh apply a b c > log` record a partial
+            # rollback in two places that a reader has to reassemble. The
+            # ROLLBACK FAILED line below stays on stderr: that one is an error.
+            printf 'Reverted %s\n' "$done_id"
           else
             printf 'mutate.sh: ROLLBACK FAILED for %s — it is STILL APPLIED.\n' "$done_id" >&2
             # Oldest-first, matching the order apply wrote them: this loop runs

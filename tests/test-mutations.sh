@@ -259,6 +259,23 @@ out="$(mt apply p-good p-stale)"; rc=$?
 grep -q 'Reverted p-good' <<< "$out" \
   && pass "the mid-batch rollback names what it undid" \
   || fail "the mid-batch rollback names what it undid (out: $out)"
+# ...on STDOUT, the same stream cmd_revert uses for the identical line. This
+# assertion captures stdout ALONE — the one above merges both streams and so
+# cannot tell the two apart, which is how the rollback's copy sat on stderr
+# while cmd_revert's sat on stdout. `mutate.sh apply a b c > log` then recorded
+# a partial rollback in two places a reader has to reassemble. The ROLLBACK
+# FAILED line is deliberately NOT included here: that one is an error and
+# belongs on stderr.
+# NOT through mt(): that helper folds stderr into stdout INSIDE its own
+# subshell (`... 2>&1` at :228), so an outer 2>/dev/null suppresses nothing and
+# this assertion could not fail — verified by putting the line back on stderr
+# and watching it still pass. Call mutate.sh directly, capturing stdout alone.
+out_stdout="$( ( cd "$MT_REPO" && bash "$MT_REPO/tests/integration/mutate.sh" apply p-good p-stale 2>/dev/null ) )"
+grep -q 'Reverted p-good' <<< "$out_stdout" \
+  && pass "the mid-batch rollback reports on stdout, like cmd_revert's identical line" \
+  || fail "the mid-batch rollback reports on stdout (stdout alone was: $out_stdout)"
+mt_clean
+out="$(mt apply p-good p-stale)"; rc=$?
 mt_dirty \
   && fail "a rolled-back batch leaves the tree mutated (out: $out)" \
   || pass "a successful rollback leaves the tree exactly as found"
