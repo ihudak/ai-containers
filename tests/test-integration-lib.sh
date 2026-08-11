@@ -712,17 +712,148 @@ declare -f ruby_wait_ready >/dev/null 2>&1 \
 declare -f assert_runs >/dev/null 2>&1 \
   && t_pass "assert_runs is defined" || t_fail "assert_runs is defined"
 
-# assert_runs must capture the command's output BEFORE piping it through head.
-# `if out="$(cmd | head -1)"` reports HEAD's exit status, and head succeeds on
-# the empty output of a binary that just died — the exact mistake that made the
-# equivalent check in verify-on-host.sh unreachable for its whole existence.
-# Grep the mechanism, not the outcome: an out="$(... 2>&1)" assignment as the
-# if-condition, not a pipeline ending in head.
-if grep -qE 'if out="\$\(docker exec "\$1" bash -c "\$2 --version 2>&1"\)"' "$LIB"; then
-  t_pass "assert_runs captures output before piping through head, not after"
+# ── assert_runs' three outcomes, exercised through a fake docker ───────────────
+# assert_runs backs 21 assertions across the packages tier and exists for ONE
+# outcome its own comment names: a binary that is correctly on PATH and still
+# dies on exec. rvm rewrites gem binstub shebangs to
+# `#!/usr/bin/env ruby_executable_hooks`, so a correctly linked `bundle` can
+# resolve and then fail to run — "on PATH" and "runs" are genuinely different
+# failures. Its predecessor in verify-on-host.sh was UNREACHABLE for its entire
+# existence because it tested `head`'s exit status: `if out="$(cmd | head -1)"`
+# reports HEAD's status, and head succeeds on the empty output of a binary that
+# just died.
+#
+# These four vectors REPLACE a `grep -qE` for the exact characters of the one
+# line that fixed that (`if out="$(docker exec "$1" bash -c "$2 --version
+# 2>&1")"`). The grep never called the function: a pure refactor — naming the
+# positional parameters — turned it red without changing behaviour, and a
+# regression anywhere else in assert_runs left it green. It is subsumed rather
+# than merely deleted: the empty-output/non-zero-exit vector below is exactly
+# the shape the head-exit-status bug cannot distinguish, so under that bug it
+# reports PASS and this file goes red. Nothing about the grep's stated property
+# survives unasserted.
+#
+# Same fake-docker-on-PATH idiom as capture_ready's test above, with one
+# deliberate difference: this fake does not pattern-match the script assert_runs
+# builds, it RUNS it against a controlled PATH standing in for the container's.
+# So `command -v`, the exit status of `<bin> --version` and the diagnostic dump
+# are all produced by real bash semantics, not by a fake agreeing with the
+# test's expectations.
+AR_BIN="$TMP/ar-docker"; mkdir -p "$AR_BIN"
+cat > "$AR_BIN/docker" <<'FAKE'
+#!/usr/bin/env bash
+# assert_runs' only call shape: docker exec <cid> bash -c "<script>" (three
+# times: the command -v probe, the --version run, the failure diagnostics).
+case "$1" in
+  exec)
+    shift 2   # drop "exec" and <cid>
+    if [[ "$1" == "bash" && "$2" == "-c" ]]; then
+      # $FAKE_CONTAINER_BIN stands in for the container's PATH; /usr/bin:/bin
+      # keep printf/head/readlink resolvable for assert_runs' own diagnostics.
+      PATH="${FAKE_CONTAINER_BIN:?FAKE_CONTAINER_BIN not set}:/usr/bin:/bin" bash -c "$3"
+      exit $?
+    fi
+    printf 'fake docker: unexpected exec call: %s\n' "$*" >&2; exit 99 ;;
+  *) printf 'fake docker: unexpected call: %s\n' "$*" >&2; exit 99 ;;
+esac
+FAKE
+chmod +x "$AR_BIN/docker"
+
+AR_TOOL=it-fake-tool
+AR_ABSENT="$TMP/ar-absent"; mkdir -p "$AR_ABSENT"    # nothing on the container PATH
+AR_BROKEN="$TMP/ar-broken"; mkdir -p "$AR_BROKEN"    # exits non-zero, prints NOTHING
+AR_SHEBANG="$TMP/ar-shebang"; mkdir -p "$AR_SHEBANG" # the real binstub shape
+AR_OK="$TMP/ar-ok"; mkdir -p "$AR_OK"                # answers --version and exits 0
+
+# Silent AND non-zero: the head-exit-status bug's blind spot exactly. `head`
+# succeeds on this binary's empty output, so the buggy form reports it as a
+# working binary.
+printf '#!/bin/sh\nexit 3\n' > "$AR_BROKEN/$AR_TOOL"
+# The shipped defect, reproduced rather than described: an interpreter that
+# does not exist. The kernel execs /usr/bin/env, env fails to find the
+# interpreter, exit 127 with a message on stderr — which assert_runs' own
+# `2>&1` folds into the captured output.
+printf '#!/usr/bin/env it-fake-missing-interp\nprint 1\n' > "$AR_SHEBANG/$AR_TOOL"
+# Two lines on purpose: the PASS line must carry only the first.
+printf '#!/bin/sh\nprintf "%%s\\n" "it-fake-tool 1.2.3" "SECOND-LINE-MUST-NOT-APPEAR"\n' > "$AR_OK/$AR_TOOL"
+chmod +x "$AR_BROKEN/$AR_TOOL" "$AR_SHEBANG/$AR_TOOL" "$AR_OK/$AR_TOOL"
+
+# IT_DOCKER_HOST is pinned (to empty) so lib.sh's source-time resolution block
+# short-circuits instead of reaching the fake docker with a `context inspect`
+# it has no arm for. rc is printed rather than inferred from the subshell's
+# status: `return 1` vs `return 0` is part of assert_runs' contract.
+ar_run() {  # $1=directory standing in for the container's PATH
+  FAKE_CONTAINER_BIN="$1" IT_DOCKER_HOST="" PATH="$AR_BIN:$PATH" \
+    bash -c ". '$LIB'; assert_runs fake-cid $AR_TOOL; printf 'rc=%s\n' \"\$?\"" 2>&1
+}
+ar_has() { case "$1" in *"$2"*) return 0 ;; *) return 1 ;; esac; }
+
+# 1. Absent from PATH → the PATH failure, and NOT the exec one.
+out="$(ar_run "$AR_ABSENT")"
+ar_has "$out" "FAIL: $AR_TOOL is on PATH" \
+  && t_pass "assert_runs fails a binary that is absent from PATH" \
+  || t_fail "assert_runs fails a binary that is absent from PATH (got: $out)"
+ar_has "$out" 'FAILED TO RUN' \
+  && t_fail "an absent binary must not be reported as present-but-broken (got: $out)" \
+  || t_pass "an absent binary is not reported as present-but-broken"
+ar_has "$out" 'rc=1' \
+  && t_pass "assert_runs returns non-zero for an absent binary" \
+  || t_fail "assert_runs returns non-zero for an absent binary (got: $out)"
+
+# 2. Present, exits non-zero, prints NOTHING → the branch this whole block
+#    exists for. Under `if out="$(cmd | head -1)"` this vector reports PASS.
+out="$(ar_run "$AR_BROKEN")"
+ar_has "$out" "FAIL: $AR_TOOL is present but FAILED TO RUN" \
+  && t_pass "a binary that exits non-zero with EMPTY output is reported as present but FAILED TO RUN" \
+  || t_fail "a binary that exits non-zero with EMPTY output is reported as present but FAILED TO RUN (got: $out)"
+ar_has "$out" 'PASS:' \
+  && t_fail "a silently-failing binary must not also report PASS (got: $out)" \
+  || t_pass "a silently-failing binary reports no PASS"
+ar_has "$out" "FAIL: $AR_TOOL is on PATH" \
+  && t_fail "a present-but-broken binary must not be reported as missing from PATH (got: $out)" \
+  || t_pass "a present-but-broken binary is not reported as missing from PATH"
+ar_has "$out" 'rc=1' \
+  && t_pass "assert_runs returns non-zero for a present-but-broken binary" \
+  || t_fail "assert_runs returns non-zero for a present-but-broken binary (got: $out)"
+
+# 3. The real binstub shape: on PATH, unresolvable interpreter. Same verdict,
+#    plus the diagnostics that make it actionable — without them the report
+#    says only "FAILED TO RUN" and the next step is a container round trip.
+out="$(ar_run "$AR_SHEBANG")"
+ar_has "$out" "FAIL: $AR_TOOL is present but FAILED TO RUN" \
+  && t_pass "a binary with an unresolvable interpreter is reported as present but FAILED TO RUN" \
+  || t_fail "a binary with an unresolvable interpreter is reported as present but FAILED TO RUN (got: $out)"
+ar_has "$out" "path:    $AR_SHEBANG/$AR_TOOL" \
+  && t_pass "the failure dump names the resolved path of the binary that died" \
+  || t_fail "the failure dump names the resolved path of the binary that died (got: $out)"
+ar_has "$out" 'error:   ' && ar_has "$out" 'it-fake-missing-interp' \
+  && t_pass "the failure dump carries the exec error itself, not just the verdict" \
+  || t_fail "the failure dump carries the exec error itself (got: $out)"
+# The shebang line is the one diagnostic that depends on `readlink -f`, which
+# stock readlink lacked before macOS 12.3 — assert it only where the platform
+# can produce it, rather than failing a correct lib.sh on an old host.
+if readlink -f / >/dev/null 2>&1; then
+  ar_has "$out" 'shebang: #!/usr/bin/env it-fake-missing-interp' \
+    && t_pass "the failure dump shows the rewritten shebang (the rvm binstub signature)" \
+    || t_fail "the failure dump shows the rewritten shebang (got: $out)"
 else
-  t_fail "assert_runs captures output before piping through head — the head-exit-status bug would be unreachable"
+  printf 'NOTE: skipping the shebang-dump assertion — this readlink has no -f\n'
 fi
+
+# 4. Present and working → PASS, rc 0, and only the FIRST line of --version.
+out="$(ar_run "$AR_OK")"
+ar_has "$out" "PASS: $AR_TOOL runs: it-fake-tool 1.2.3" \
+  && t_pass "a working binary reports PASS with its version line" \
+  || t_fail "a working binary reports PASS with its version line (got: $out)"
+ar_has "$out" 'FAIL:' \
+  && t_fail "a working binary must not report any FAIL (got: $out)" \
+  || t_pass "a working binary reports no FAIL"
+ar_has "$out" 'SECOND-LINE-MUST-NOT-APPEAR' \
+  && t_fail "the PASS line must carry only the first line of --version output (got: $out)" \
+  || t_pass "the PASS line carries only the first line of --version output"
+ar_has "$out" 'rc=0' \
+  && t_pass "assert_runs returns zero for a working binary" \
+  || t_fail "assert_runs returns zero for a working binary (got: $out)"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
