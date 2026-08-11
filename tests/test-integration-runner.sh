@@ -1316,5 +1316,58 @@ bash "$TMP/callfn.sh" true >/dev/null 2>&1
   && pass "sourcing run.sh with IT_SOURCE_ONLY still returns 0 (the guard's supported mode)" \
   || fail "sourcing run.sh with IT_SOURCE_ONLY still returns 0"
 
+# ── --dry-run previews a selection; --list deliberately does not ──────────────
+# The containment guard (tests/test-layer-containment.sh) compares one layer's
+# selection against another's. It asks run.sh what it WOULD select rather than
+# reimplementing the selection logic, because a second copy would be right in
+# this repo and quietly wrong in the fork.
+#
+# By this point in the file $CASES holds exactly its original 8 synthetic
+# cases (010/020/030/040/050/060/070/080 — every case created later in this
+# file was matched by its own `rm -f` before this point), of which 6 carry
+# `fast`: a real proper subset, not an edge case of 0 or all.
+all_n="$(IT_CASES_DIR="$CASES" bash "$RUN" --list 2>/dev/null | grep -cE '^[0-9]{3}-')"
+dry_n="$(IT_CASES_DIR="$CASES" bash "$RUN" --dry-run --tags fast 2>/dev/null | grep -cE '^[0-9]{3}-')"
+if [[ "$dry_n" -gt 0 && "$dry_n" -lt "$all_n" ]]; then
+  pass "--dry-run --tags fast selects a proper subset ($dry_n of $all_n)"
+else
+  fail "--dry-run --tags fast selects a proper subset — got $dry_n of $all_n"
+fi
+
+# --list must NOT have changed: its whole-corpus contract is documented in usage().
+list_tagged="$(IT_CASES_DIR="$CASES" bash "$RUN" --list --tags fast 2>/dev/null | grep -cE '^[0-9]{3}-')"
+check "--list still ignores --tags (documented contract)" "$all_n" "$list_tagged"
+
+# An empty selection is fatal, exactly as in a real run — the SAME guard
+# (fatal_no_selection in run.sh), not a second copy of its "nothing ran" logic.
+if IT_CASES_DIR="$CASES" bash "$RUN" --dry-run --tags no-such-tag >/dev/null 2>&1; then
+  fail "--dry-run with an empty selection exits non-zero"
+else
+  pass "--dry-run with an empty selection exits non-zero"
+fi
+
+# ── A docker stub that fails EVERY call, unconditionally ──────────────────────
+# Unlike $FAKE_BIN above (an allowlist that permits the specific calls a real
+# --reuse-image run legitimately makes and only rejects the unexpected rest),
+# this one must reject literally everything — network create, context
+# inspect, build, the sweep EXIT trap's cleanup calls. --dry-run's contract is
+# "touches no docker AT ALL", and an allowlist stub could let a real leak
+# through silently if the leaked call happened to be one it permits.
+DH_BIN_FAIL="$TMP/dh-bin-fail"; mkdir -p "$DH_BIN_FAIL"
+cat > "$DH_BIN_FAIL/docker" <<'FAKE'
+#!/usr/bin/env bash
+printf 'dh-bin-fail: docker must not be called at all, got: %s\n' "$*" >&2
+exit 1
+FAKE
+chmod +x "$DH_BIN_FAIL/docker"
+
+# --dry-run must not build an image or start a container: with a docker that
+# fails on every call, it must still succeed.
+if PATH="$DH_BIN_FAIL:$PATH" IT_CASES_DIR="$CASES" bash "$RUN" --dry-run --tags fast >/dev/null 2>&1; then
+  pass "--dry-run touches no docker"
+else
+  fail "--dry-run touches no docker — it invoked the daemon"
+fi
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

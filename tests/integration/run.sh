@@ -61,7 +61,7 @@ IT_REAL_DOCKER="${IT_REAL_DOCKER:-$(command -v docker 2>/dev/null)}"
 # full DOCKER_HOST-vs-DOCKER_CONFIG / resolution-failure reasoning.
 
 want_tags=""; excl_tags=""; req_tags=""; want_variant=""; want_cases=""
-do_list=0; do_list_caps=0; reuse_image=0; keep=0; verbose=0
+do_list=0; do_dry_run=0; do_list_caps=0; reuse_image=0; keep=0; verbose=0
 timeout_secs=300
 # Declared here, not just in the "Execution" section below, so it is defined
 # under `set -u` for EVERY exit path — including one that exits before the
@@ -112,6 +112,9 @@ Usage: tests/integration/run.sh [options]
   --reuse-image      do not build; use the existing --image
   --keep             keep the image, network and scratch dir after the run
   --list             list cases with their tags/requires and exit
+  --dry-run          print the cases the current selection WOULD run, one per
+                      line, and exit — no image build, no container. Unlike
+                      --list, it honours --tags/--exclude/--cases/--variant.
   --list-caps        print detected capabilities and exit
   -v, --verbose      stream each case's full output
   -h, --help         this text
@@ -155,6 +158,7 @@ while [[ -z "${IT_SOURCE_ONLY:-}" && $# -gt 0 ]]; do
     --reuse-image) reuse_image=1; shift ;;
     --keep)     keep=1;    shift ;;
     --list)     do_list=1; shift ;;
+    --dry-run)  do_dry_run=1; shift ;;
     --list-caps) do_list_caps=1; shift ;;
     -v|--verbose) verbose=1; shift ;;
     -h|--help)  usage; exit 0 ;;
@@ -505,6 +509,41 @@ unmet_requirement() {  # $1 = space-separated requires → prints the FIRST unme
   return 1
 }
 
+# A run that selected NOTHING is not a pass. Without this, an empty cases/ dir, a
+# mistyped --tags, a bad IT_CASES_DIR, or a list_intersects regression all print
+# "selected 0 of 0   passed 0  failed 0  skipped 0" and exit 0 — a green build
+# that means "we did not look", which is the precise failure this whole suite
+# exists to make impossible.
+#
+# One function, two call sites: the real end-of-run report (whose $n_sel is,
+# by construction of the execution loop below, always exactly the count of
+# $selected — every case in $selected increments it exactly once, whether it
+# runs, skips, or fails because its variant's image would not build) and
+# --dry-run's own early exit, which checks $selected directly because it never
+# reaches the execution loop that would otherwise populate $n_sel. A second,
+# hand-copied version of this message at the early call site is exactly the
+# kind of drift this function exists to prevent.
+fatal_no_selection() {
+  printf '\n%s\n' "────────────────────────────────────────────────────────────"
+  printf 'selected 0 of %s   NOTHING RAN\n' "$total" >&2
+  printf 'ERROR: no case was selected. A run that checked nothing is not a pass.\n' >&2
+  if [[ -n "$want_tags$excl_tags" ]]; then
+    printf '       selection was --tags "%s" --exclude "%s" — check for a typo\n' \
+      "$want_tags" "$excl_tags" >&2
+  fi
+  # An unknown --variant name never reaches here — it is validated (and exits)
+  # before selection runs, above. This is the LEGITIMATE empty intersection: a
+  # recognised variant that just has no case matching --tags/--exclude.
+  if [[ -n "$want_variant" ]]; then
+    printf '       --variant "%s" narrowed it further — check the variant matches a selected case\n' \
+      "$want_variant" >&2
+  fi
+  if [[ "$total" -eq 0 ]]; then
+    printf '       no case files found in %s\n' "$CASES_DIR" >&2
+  fi
+  exit 1
+}
+
 # ── --list / --list-caps ────────────────────────────────────────────────────────
 if [[ "$do_list" -eq 1 ]]; then
   for f in $(all_cases); do
@@ -752,86 +791,98 @@ if [[ -n "${IT_SOURCE_ONLY:-}" ]]; then
   exit 2
 fi
 
-trap 'sweep' EXIT
+# Everything from here through the IT_RUBY_VERSIONS export just below is real
+# I/O — the sweep EXIT trap's own `docker` cleanup calls, the allowlist
+# snapshot, `docker network create`, and (further down) a `docker context
+# inspect` to resolve IT_DOCKER_HOST. --dry-run's whole contract is "no image
+# build, no container, no docker call at all", and that includes cleanup calls
+# a trap would fire on this script's own exit — so this entire block is
+# skipped outright for --dry-run, which reaches its own print-and-exit inside
+# the Selection section below without ever setting the trap that would
+# otherwise touch docker on the way out. See the comment on the IT_SOURCE_ONLY
+# guard just above, which cuts at this exact same line for the same reason.
+if [[ "$do_dry_run" -eq 0 ]]; then
+  trap 'sweep' EXIT
 
-mkdir -p "$IT_SCRATCH/logs"
-# Gated on reuse_image: see the comment above snapshot_real_allowlists(). Only
-# take (and later restore) a snapshot when build_image() is actually about to
-# regenerate the real files — this is what keeps a --reuse-image run (every
-# hermetic unit-test invocation) from touching the real repo at all.
-if [[ "$reuse_image" -eq 0 ]]; then
-  snapshot_real_allowlists
-fi
-docker network create --label "$IT_LABEL" "$IT_NET" >/dev/null 2>&1 || true
-
-# The docker ENDPOINT, resolved once here — the reasoning for WHY (not just
-# where) lives beside IT_REAL_DOCKER near the top of this file, which explains
-# the placement; this is the substance.
-#
-# launcher_run and launcher_script (tests/integration/lib.sh) redirect HOME to
-# a per-case scratch directory to isolate group state, but the docker CLI
-# resolves which daemon to talk to from $HOME/.docker/config.json's
-# currentContext (and $HOME/.docker/contexts/) — redirecting HOME throws that
-# away. On a host where the daemon sits at the CLI's built-in default
-# (unix:///var/run/docker.sock) this is invisible; on macOS + Colima, which
-# supplies its endpoint ONLY through the active context, every docker call
-# made from inside a HOME-redirected subshell — sandbox.sh's/group.sh's/
-# repo.sh's own, and the shim's `exec $IT_REAL_DOCKER` — fails to connect.
-# Linux CI never sees this because /var/run/docker.sock genuinely exists
-# there.
-#
-# DOCKER_HOST, not DOCKER_CONFIG. Pointing DOCKER_CONFIG at the developer's
-# real ~/.docker instead would also fix this, and would additionally carry
-# TLS material and credential-helper config for an endpoint that needs them —
-# but it reintroduces the developer's real state into a harness whose whole
-# point is per-case HOME isolation. Colima's endpoint is a plain unix socket:
-# no TLS, no stored credentials. DOCKER_HOST — one string, carrying nothing
-# sensitive — covers that, and is the narrowest fix that does. A future
-# endpoint that genuinely needs client certs or a credential helper would
-# need DOCKER_CONFIG (or an explicit cert/key triplet); nothing this suite
-# targets today does.
-#
-# An already-exported DOCKER_HOST wins outright: a caller who set it on
-# purpose (e.g. pointing at a remote daemon) knows better than a context
-# lookup — checked first, so a genuine override skips the subprocess too.
-# Resolution failure — no `docker context` subcommand, docker missing
-# entirely, or a template result of "<no value>" (Go's own empty-field
-# marker) — leaves IT_DOCKER_HOST EMPTY, never a fabricated string: the
-# export sites in lib.sh only ever set DOCKER_HOST when this is non-empty, so
-# empty means "do not touch DOCKER_HOST at all" — the honest fallback.
-# Exporting an empty DOCKER_HOST would be worse than exporting nothing at all
-# — it overrides the CLI's own built-in default just as effectively as a
-# wrong one.
-#
-# The `[[ -z "${IT_DOCKER_HOST+x}" ]]` guard (IS-SET, not IS-NON-EMPTY — the
-# same "set-but-empty still counts as set" convention sandbox-common.sh's
-# load_env_defaults uses) exists for a caller that pre-exports IT_DOCKER_HOST
-# itself (e.g. a nested/manual invocation), so this block is idempotent
-# rather than blindly re-shelling-out. In the ordinary case it is always
-# unset on entry here, since nothing sets it earlier in this file.
-if [[ -z "${IT_DOCKER_HOST+x}" ]]; then
-  if [[ -n "${DOCKER_HOST:-}" ]]; then
-    IT_DOCKER_HOST="$DOCKER_HOST"
-  else
-    IT_DOCKER_HOST="$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null)"
-    case "$IT_DOCKER_HOST" in *'<no value>'*) IT_DOCKER_HOST="" ;; esac
+  mkdir -p "$IT_SCRATCH/logs"
+  # Gated on reuse_image: see the comment above snapshot_real_allowlists(). Only
+  # take (and later restore) a snapshot when build_image() is actually about to
+  # regenerate the real files — this is what keeps a --reuse-image run (every
+  # hermetic unit-test invocation) from touching the real repo at all.
+  if [[ "$reuse_image" -eq 0 ]]; then
+    snapshot_real_allowlists
   fi
-fi
+  docker network create --label "$IT_LABEL" "$IT_NET" >/dev/null 2>&1 || true
 
-# IT_RUBY_VERSIONS: resolved above (with everything else in this block) purely
-# for run.sh's OWN use — variant_overrides()/probe_multiruby() read it while
-# still inside this process. Without exporting it here too, it never reaches a
-# case's process at all: `bash "$f"` (the execution loop, below) starts a CHILD
-# bash, which inherits only the environment, not this script's plain variable
-# assignments. The packages-tier Ruby cases (740/750) read $IT_RUBY_VERSIONS
-# directly under `set -u`, so a case that lost this value would not silently
-# assert nothing against an empty list — it would abort immediately with bash's
-# own "unbound variable" error, reported by run.sh as a bare nonzero exit with
-# no case-specific diagnosis. Found and fixed while writing those cases
-# (task 9), never exercised until then because no earlier case read the var.
-export IT_RUN_ID IT_LABEL IT_SCRATCH IT_IMAGE IT_NET IT_DNS_IMAGE \
-       IT_CONNECT_TIMEOUT IT_SETTLE IT_GENERATED_ALLOWLIST_DIR IT_REAL_DOCKER \
-       IT_DOCKER_HOST IT_RUBY_VERSIONS
+  # The docker ENDPOINT, resolved once here — the reasoning for WHY (not just
+  # where) lives beside IT_REAL_DOCKER near the top of this file, which explains
+  # the placement; this is the substance.
+  #
+  # launcher_run and launcher_script (tests/integration/lib.sh) redirect HOME to
+  # a per-case scratch directory to isolate group state, but the docker CLI
+  # resolves which daemon to talk to from $HOME/.docker/config.json's
+  # currentContext (and $HOME/.docker/contexts/) — redirecting HOME throws that
+  # away. On a host where the daemon sits at the CLI's built-in default
+  # (unix:///var/run/docker.sock) this is invisible; on macOS + Colima, which
+  # supplies its endpoint ONLY through the active context, every docker call
+  # made from inside a HOME-redirected subshell — sandbox.sh's/group.sh's/
+  # repo.sh's own, and the shim's `exec $IT_REAL_DOCKER` — fails to connect.
+  # Linux CI never sees this because /var/run/docker.sock genuinely exists
+  # there.
+  #
+  # DOCKER_HOST, not DOCKER_CONFIG. Pointing DOCKER_CONFIG at the developer's
+  # real ~/.docker instead would also fix this, and would additionally carry
+  # TLS material and credential-helper config for an endpoint that needs them —
+  # but it reintroduces the developer's real state into a harness whose whole
+  # point is per-case HOME isolation. Colima's endpoint is a plain unix socket:
+  # no TLS, no stored credentials. DOCKER_HOST — one string, carrying nothing
+  # sensitive — covers that, and is the narrowest fix that does. A future
+  # endpoint that genuinely needs client certs or a credential helper would
+  # need DOCKER_CONFIG (or an explicit cert/key triplet); nothing this suite
+  # targets today does.
+  #
+  # An already-exported DOCKER_HOST wins outright: a caller who set it on
+  # purpose (e.g. pointing at a remote daemon) knows better than a context
+  # lookup — checked first, so a genuine override skips the subprocess too.
+  # Resolution failure — no `docker context` subcommand, docker missing
+  # entirely, or a template result of "<no value>" (Go's own empty-field
+  # marker) — leaves IT_DOCKER_HOST EMPTY, never a fabricated string: the
+  # export sites in lib.sh only ever set DOCKER_HOST when this is non-empty, so
+  # empty means "do not touch DOCKER_HOST at all" — the honest fallback.
+  # Exporting an empty DOCKER_HOST would be worse than exporting nothing at all
+  # — it overrides the CLI's own built-in default just as effectively as a
+  # wrong one.
+  #
+  # The `[[ -z "${IT_DOCKER_HOST+x}" ]]` guard (IS-SET, not IS-NON-EMPTY — the
+  # same "set-but-empty still counts as set" convention sandbox-common.sh's
+  # load_env_defaults uses) exists for a caller that pre-exports IT_DOCKER_HOST
+  # itself (e.g. a nested/manual invocation), so this block is idempotent
+  # rather than blindly re-shelling-out. In the ordinary case it is always
+  # unset on entry here, since nothing sets it earlier in this file.
+  if [[ -z "${IT_DOCKER_HOST+x}" ]]; then
+    if [[ -n "${DOCKER_HOST:-}" ]]; then
+      IT_DOCKER_HOST="$DOCKER_HOST"
+    else
+      IT_DOCKER_HOST="$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null)"
+      case "$IT_DOCKER_HOST" in *'<no value>'*) IT_DOCKER_HOST="" ;; esac
+    fi
+  fi
+
+  # IT_RUBY_VERSIONS: resolved above (with everything else in this block) purely
+  # for run.sh's OWN use — variant_overrides()/probe_multiruby() read it while
+  # still inside this process. Without exporting it here too, it never reaches a
+  # case's process at all: `bash "$f"` (the execution loop, below) starts a CHILD
+  # bash, which inherits only the environment, not this script's plain variable
+  # assignments. The packages-tier Ruby cases (740/750) read $IT_RUBY_VERSIONS
+  # directly under `set -u`, so a case that lost this value would not silently
+  # assert nothing against an empty list — it would abort immediately with bash's
+  # own "unbound variable" error, reported by run.sh as a bare nonzero exit with
+  # no case-specific diagnosis. Found and fixed while writing those cases
+  # (task 9), never exercised until then because no earlier case read the var.
+  export IT_RUN_ID IT_LABEL IT_SCRATCH IT_IMAGE IT_NET IT_DNS_IMAGE \
+         IT_CONNECT_TIMEOUT IT_SETTLE IT_GENERATED_ALLOWLIST_DIR IT_REAL_DOCKER \
+         IT_DOCKER_HOST IT_RUBY_VERSIONS
+fi  # do_dry_run -eq 0
 
 # --variant is validated HERE, once, rather than left to fall through to the
 # "selected 0" fatal check below: a bad name would otherwise just match zero
@@ -963,6 +1014,32 @@ for f in $selected; do
     exit 2
   }
 done
+
+# ── --dry-run ────────────────────────────────────────────────────────────────────
+# $selected is final here: every filter above (--tags/--exclude/--cases,
+# --variant, the sibling-job legitimate-no-op exit, the per-case timeout-header
+# validation) has already run. Nothing below this point is selection — it is
+# the first byte of real execution (image build, capability probe, containers)
+# — so this is the last point at which printing the selection and exiting is
+# still honest, and the earliest point at which $selected can be trusted.
+#
+# Placed here, not merely "after `--list`" as a first instinct might suggest:
+# `--list` (above) exits long before the docker/trap setup this file performs
+# unconditionally on the way to Selection (see the `do_dry_run -eq 0` guard
+# around that setup, above) — a print-and-exit dropped in after that setup
+# would still have fired `trap 'sweep' EXIT`, `docker network create`, and a
+# `docker context inspect`, i.e. it would already have touched docker before
+# ever reaching here. That guard is what makes the "no docker call at all"
+# claim below true, not this exit by itself.
+if [[ "$do_dry_run" -eq 1 ]]; then
+  [[ -z "$selected" ]] && fatal_no_selection
+  # basename … .sh, matching --list and --cases: every other place in this
+  # file names a case without its extension, and Task 6's containment check
+  # compares --dry-run's output across layers as a set of names — a stray
+  # ".sh" here would silently make every one of those comparisons a mismatch.
+  for f in $selected; do basename "$f" .sh; done
+  exit 0
+fi
 
 # Build at least one usable image BEFORE detecting capabilities: netadmin and
 # launcher both need to start a real container to probe the host, and a run
@@ -1177,36 +1254,15 @@ for v in $(selected_variants $selected); do
 done
 
 # ── Report ──────────────────────────────────────────────────────────────────────
-# A run that selected NOTHING is not a pass. Without this, an empty cases/ dir, a
-# mistyped --tags, a bad IT_CASES_DIR, or a list_intersects regression all print
-# "selected 0 of 0   passed 0  failed 0  skipped 0" and exit 0 — a green build
-# that means "we did not look", which is the precise failure this whole suite
-# exists to make impossible. It would be absurd for the runner to be the thing
-# that reintroduces it one layer up.
-#
-# Deliberately fatal rather than a warning: asking for a tag that matches no case
-# is a mistake worth stopping for, and "run nothing successfully" is not a useful
-# outcome for any caller.
-if [[ "$n_sel" -eq 0 ]]; then
-  printf '\n%s\n' "────────────────────────────────────────────────────────────"
-  printf 'selected 0 of %s   NOTHING RAN\n' "$total" >&2
-  printf 'ERROR: no case was selected. A run that checked nothing is not a pass.\n' >&2
-  if [[ -n "$want_tags$excl_tags" ]]; then
-    printf '       selection was --tags "%s" --exclude "%s" — check for a typo\n' \
-      "$want_tags" "$excl_tags" >&2
-  fi
-  # An unknown --variant name never reaches here — it is validated (and exits)
-  # before selection runs, above. This is the LEGITIMATE empty intersection: a
-  # recognised variant that just has no case matching --tags/--exclude.
-  if [[ -n "$want_variant" ]]; then
-    printf '       --variant "%s" narrowed it further — check the variant matches a selected case\n' \
-      "$want_variant" >&2
-  fi
-  if [[ "$total" -eq 0 ]]; then
-    printf '       no case files found in %s\n' "$CASES_DIR" >&2
-  fi
-  exit 1
-fi
+# A run that selected NOTHING is not a pass — see fatal_no_selection (defined
+# above, beside unmet_requirement) for why, and for the --dry-run call site
+# that shares this exact check rather than a second copy of it. $n_sel is, by
+# construction of the execution loop above, always exactly the count of
+# $selected (every case in it increments n_sel once, whether it ran, skipped,
+# or failed because its variant's image would not build), so this is the same
+# condition --dry-run checks directly on $selected, just observed the other
+# way — through what actually got attempted instead of the pre-execution list.
+[[ "$n_sel" -eq 0 ]] && fatal_no_selection
 
 printf '\n%s\n' "────────────────────────────────────────────────────────────"
 printf 'selected %s of %s   passed %s  failed %s  skipped %s\n' \
