@@ -202,9 +202,31 @@ the log into the summary line.
 | `760-ruby-persists-no-recompile` | native | a second launch reuses the group volume with no recompile | `packages slow` | `docker launcher` |
 
 `needs-external` is a **tag**, not a requirement: the PR gate excludes it by
-selection, and there is no capability probe for "the internet works". A packages
-run that cannot reach the network fails loudly, which is correct — that is what
-the tier measures.
+selection. This paragraph originally continued *"and there is no capability
+probe for 'the internet works'. A packages run that cannot reach the network
+fails loudly, which is correct — that is what the tier measures."*
+
+**Both halves of that turned out to be wrong, and the `requires:` column above
+is superseded by the implementation.** There *is* an `external` probe
+(`run.sh`'s `probe_external`), it predates this increment, and every case in
+this tier carries it in `requires:` except `730`. The reasoning that changed:
+
+- "Fails loudly, which is correct" conflates two different loud failures. A
+  packages case cannot produce its *subject* without the network — rvm has
+  nothing to download and compile — so what a dead network yields is not a
+  measurement of the tier, it is three red cases naming rvm, missing rubies and
+  the group volume. That is a missing capability reported as a broken product,
+  which is the one thing this suite is built to never do. The correct outcome is
+  the same one the `multiruby` paragraph below argues for: SKIP **by name**.
+- `730` is the genuine exception and keeps omitting `external`: its six binaries
+  are Dockerfile RUN-layer artifacts baked before the case starts, so no dead
+  network can make its assertions fail.
+
+Caught by the final whole-branch review (finding I1), which noted that
+`700`/`710`/`720` already declared the capability while `740`/`750`/`760`
+declared only the tag — the tier was internally inconsistent on exactly this
+axis. The `requires:` column above is left as written to keep the record of what
+was designed; read the case headers for what shipped.
 
 `multiruby` is a real probed capability, read from the resolved
 `IT_RUBY_VERSIONS` rather than assumed: with a single version configured, `750`

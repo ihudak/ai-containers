@@ -826,18 +826,36 @@ ar_has "$out" "FAIL: $AR_TOOL is present but FAILED TO RUN" \
 ar_has "$out" "path:    $AR_SHEBANG/$AR_TOOL" \
   && t_pass "the failure dump names the resolved path of the binary that died" \
   || t_fail "the failure dump names the resolved path of the binary that died (got: $out)"
-ar_has "$out" 'error:   ' && ar_has "$out" 'it-fake-missing-interp' \
+# Both halves on ONE line, deliberately. As two separate `ar_has` conjuncts this
+# could not fail for the property it names: `error:   ` is an unconditional
+# label lib.sh prints whatever the value, and `it-fake-missing-interp` is
+# independently satisfied by the `shebang:` line two lines above it. Emptying
+# the error value in lib.sh left this file at 0 failure(s) — an assertion that
+# cannot fail, inside the test written to close exactly that defect class.
+printf '%s\n' "$out" | grep -q 'error:.*it-fake-missing-interp' \
   && t_pass "the failure dump carries the exec error itself, not just the verdict" \
   || t_fail "the failure dump carries the exec error itself (got: $out)"
 # The shebang line is the one diagnostic that depends on `readlink -f`, which
 # stock readlink lacked before macOS 12.3 — assert it only where the platform
 # can produce it, rather than failing a correct lib.sh on an old host.
-if readlink -f / >/dev/null 2>&1; then
+#
+# The probe runs under the SAME PATH the dump ran under, not the ambient one.
+# The fake pins the dump to "$FAKE_CONTAINER_BIN:/usr/bin:/bin", so an ambient
+# probe on a pre-12.3 mac with Homebrew coreutils on PATH would find a working
+# `readlink -f`, take the assert branch, and then fail against a dump produced
+# by /usr/bin/readlink, which has none — a red against a correct lib.sh, for a
+# difference the test itself introduced.
+if PATH="/usr/bin:/bin" readlink -f / >/dev/null 2>&1; then
   ar_has "$out" 'shebang: #!/usr/bin/env it-fake-missing-interp' \
     && t_pass "the failure dump shows the rewritten shebang (the rvm binstub signature)" \
     || t_fail "the failure dump shows the rewritten shebang (got: $out)"
 else
-  printf 'NOTE: skipping the shebang-dump assertion — this readlink has no -f\n'
+  # SKIP:, not NOTE: — run-all.sh recognises a column-0 SKIP: as a first-class
+  # outcome and greps for it. It will still be masked in run-all.sh's one-line
+  # summary, because PASS takes precedence over SKIP for a file that also
+  # asserted real passes, and that precedence is right: this file IS a pass.
+  # The line is for whoever reads the file's own output, and for a grep.
+  printf 'SKIP: the shebang-dump assertion — /usr/bin/readlink here has no -f (macOS < 12.3)\n'
 fi
 
 # 4. Present and working → PASS, rc 0, and only the FIRST line of --version.

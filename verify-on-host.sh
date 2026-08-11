@@ -58,11 +58,14 @@ say() { printf '\n%s %s\n' "$LOG_PREFIX" "$*"; }
 sub() { printf '%s   %s\n' "$LOG_PREFIX" "$*"; }
 
 # Failure ledger. Phases record into it rather than exiting, so one broken phase
-# never hides the state of any other. Increment 3 left only Phase 4 recording
-# here — Phase 0 is an environment banner that hard-exits on a missing daemon
-# rather than recording — but the ledger is not thereby redundant: it is what
-# makes a phase's failure survive to the verdict at the bottom, and what a new
-# phase must record into. The guard for both is tests/test-verify-exit-code.sh.
+# never hides the state of any other. Two call sites remain after increment 3:
+# Phase 4, and the VALID_PHASES selection check below — which records against
+# the phase NUMBER the caller asked for, so a stale `PHASES="1 2 3"` reports
+# three named failures rather than matching nothing and exiting 0. Phase 0 is
+# the exception: it is an environment banner that hard-exits on a missing
+# daemon rather than recording. The ledger is what makes any of those survive
+# to the verdict at the bottom, and what a new phase must record into. The
+# guard for both halves is tests/test-verify-exit-code.sh.
 FAILED_PHASES=""
 phase_fail() {  # $1=phase number  $2=one-line reason
   FAILED_PHASES="${FAILED_PHASES}${FAILED_PHASES:+$'\n'}$1|$2"
