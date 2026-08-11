@@ -5,31 +5,36 @@
 #       build.sh correctly passed KEEP_BUILD_TOOLCHAIN=1. This is the state that
 #       shipped before that layer existed, and the reason it was added.
 #
-#       This targets 730's `gcc` assertion specifically, which until now had NO
-#       demonstration: 730-db-clients-not-space-split (the patch formerly misnamed
-#       730-toolchain-stripped) removes psql/mysql/mongosh and leaves gcc untouched,
-#       so the header's stated reason for asserting gcc -- "if the Dockerfile ever
-#       stripped the toolchain again despite the flag" -- was an unbacked claim
-#       sitting next to a patch whose NAME implied it was backed.
+#       This targets the yaml.h assertion, NOT gcc. The first version of this
+#       patch was written to target gcc and DID NOT DEMONSTRATE: run 31466356415
+#       applied exactly this Dockerfile change and case 730 still passed all six
+#       assertions. gcc survives the Dockerfile:219 `apt-get purge --auto-remove
+#       build-essential` independently — build-essential is a metapackage and
+#       --auto-remove keeps what other installed packages still need. So 730's
+#       stated reason for asserting gcc ("if the Dockerfile ever stripped the
+#       toolchain again despite the flag") was unfalsifiable, and a patch named
+#       730-toolchain-stripped sitting beside it implied otherwise. 730 now also
+#       asserts /usr/include/yaml.h, which libyaml-dev provides and which nothing
+#       else in the Dockerfile installs — present if and only if this layer ran.
 #
 #       Mutating the Dockerfile rather than build.sh is deliberate. build.sh sets
 #       KEEP_BUILD_TOOLCHAIN=1 whenever ruby OR db-clients is set, and the native
 #       variant sets both, so no build.sh edit can produce KEEP_BUILD_TOOLCHAIN=0
 #       there. Forcing the ARG to 0 directly is also not it: Dockerfile:331 fails
 #       the build outright on RUBY_RUNTIME=1 with KEEP_BUILD_TOOLCHAIN!=1, so the
-#       image would never build and 730 would fail as "image did not build" -- a
+#       image would never build and 730 would fail as "image did not build" — a
 #       named failure, but not this one. Defeating the restore layer while leaving
 #       the flag truthful reproduces the actual defect: the flag says keep, the
 #       image does not have it.
 #
-#       MUST BE DEMONSTRATED ALONE (--cases 730-native-clients-run). rvm compiles
-#       Ruby from source at container start and needs gcc, so 740/750/760 would
-#       fail for this mutation's reason before reaching their own assertions --
-#       the masking that cost three extra dispatches last increment.
+#       MUST BE DEMONSTRATED ALONE (--cases 730-native-clients-run). rvm needs
+#       this layer's headers to build psych, so 740/750/760 would fail for this
+#       mutation's reason before reaching their own assertions — the masking that
+#       cost three extra dispatches last increment.
 #
-#       Expected: 730's gcc assertion FAILS ("gcc is on PATH"), while psql, mysql,
-#       mongosh, convert and wkhtmltopdf all still PASS -- they are ordinary apt
-#       packages installed by other layers and are untouched by this.
+#       Expected: 730's yaml.h assertion FAILS ("libyaml-dev's header is
+#       MISSING"), while all six binaries -- INCLUDING gcc, for the reason above
+#       -- still PASS. A run where gcc also fails means something else changed.
 #
 diff --git a/Dockerfile b/Dockerfile
 index ee36aec..6c1ffe6 100644
