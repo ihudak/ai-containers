@@ -575,14 +575,19 @@ IT_RUBY_GROUP="${IT_RUBY_GROUP:-itruby}"
 # daemon involved — ruby_wait_ready below is the only piece that actually needs
 # docker, and it is a thin polling shell around these two.
 #
-# _ruby_reconcile_done: has the reconcile REACHED A TERMINAL LINE at all. A
+# `_it_` prefix, like every other internal helper in this file (_it_alist,
+# _it_dns_answers, _it_pid1_is_uid, _it_is_bare_ip). A case sources this whole
+# file into its own shell, so an unprefixed `_ruby_…` was one collision away
+# from a case's own local helper.
+#
+# _it_ruby_reconcile_done: has the reconcile REACHED A TERMINAL LINE at all. A
 # failed bootstrap exits in seconds; if readiness polled only for `ruby` landing
 # on PATH, a failed compile would never satisfy it and the wait would burn its
 # entire timeout (up to 30 minutes) on a reconcile that died at second 10.
 # rvm-reconcile.sh's own terminal lines — "done." on success, "FAILED: ruby-<v>"
 # on failure — are therefore part of the condition, not just the eventual binary.
-_ruby_reconcile_done() { grep -qE '\[rvm-reconcile\] (done\.|FAILED:)'; }
-# _ruby_reconcile_ok: GIVEN a terminal line, was it the successful one. "done."
+_it_ruby_reconcile_done() { grep -qE '\[rvm-reconcile\] (done\.|FAILED:)'; }
+# _it_ruby_reconcile_ok: GIVEN a terminal line, was it the successful one. "done."
 # and "FAILED:" both END the wait but mean opposite things, so success has to be
 # asked as a question separate from "is the wait over".
 #
@@ -598,7 +603,7 @@ _ruby_reconcile_done() { grep -qE '\[rvm-reconcile\] (done\.|FAILED:)'; }
 # chained on the SAME pipe (`grep -q done. && ! grep -q FAILED:`) would have the
 # first grep consume stdin, leaving the second nothing to read, so it would
 # always report no match regardless of the input.
-_ruby_reconcile_ok() {
+_it_ruby_reconcile_ok() {
   local logs; logs="$(cat)"
   grep -q   '\[rvm-reconcile\] done\.'   <<< "$logs" || return 1
   grep -q   '\[rvm-reconcile\] FAILED:'  <<< "$logs" && return 1
@@ -609,8 +614,8 @@ ruby_wait_ready() {  # $1=cid $2=timeout seconds (default 1800 — a cold compil
   local cid="$1" deadline=$(( SECONDS + ${2:-1800} )) logs
   while [[ "$SECONDS" -lt "$deadline" ]]; do
     logs="$(docker logs "$cid" 2>&1)"
-    if _ruby_reconcile_done <<< "$logs"; then
-      _ruby_reconcile_ok <<< "$logs" && return 0
+    if _it_ruby_reconcile_done <<< "$logs"; then
+      _it_ruby_reconcile_ok <<< "$logs" && return 0
       fail "ruby_wait_ready: the reconcile reported FAILED"
       printf '%s\n' "$logs" | grep -i 'rvm-reconcile' | tail -20 | sed 's/^/     /'
       return 1
@@ -812,6 +817,28 @@ assert_no_capability() {  # $1=cid $2=cap name, e.g. cap_net_admin
 # A self-healed line appends " (auto-allowed)" after the domain as a further
 # field($5). blocked-ips.txt entries are bare IPs with no domain at all, which is
 # why the match below tests both the IP column and the domain column.
+# Is this hard-blocked entry a bare IP LITERAL rather than a name? Pure, so it
+# is unit-tested directly in tests/test-integration-lib.sh.
+#
+# Both families, not just IPv4. The predicate this replaces was `^[0-9.]+$`,
+# which matches a v4 literal only, so an IPv6 literal was treated as a DOMAIN
+# NAME: it consumed one of the ten capped image-grep slots and a bounded-but-
+# real 90s `docker exec … grep -r` over /usr/local /opt /etc /home /usr/share,
+# pushing a genuine hostname out of the report that the cap exists to keep
+# useful. Not hypothetical for this repo: the WSL2/nf_tables caveat leaves IPv6
+# egress unenforced on some hosts, and blocked-ips.txt records whatever the
+# capture saw dropped, address family included.
+#
+# A hostname can never contain a colon, so the colon arm is safe: `foo:bar`
+# fails the hex/colon/dot test and is still treated as a name. The dot is
+# allowed in the v6 arm for the IPv4-mapped form (::ffff:203.0.113.9).
+_it_is_bare_ip() {  # $1=entry → 0 if it is a bare IPv4 or IPv6 literal
+  case "$1" in
+    *:*) [[ "$1" =~ ^[0-9A-Fa-f:.]+$ ]] ;;
+    *)   [[ "$1" =~ ^[0-9.]+$ ]] ;;
+  esac
+}
+
 forensics_report() {  # $1=blocked.log $2=blocked-domains/ips $3=dns-map $4=baked allowlist
   local blog="$1" bdom="$2" dmap="$3" allow="$4"
   # `cat … | it_strip_comments`, not `it_strip_comments < "$bdom"`: a bare `<`
@@ -994,11 +1021,19 @@ dump_blocked_forensics() {  # $1=cid — MUST run while the container is alive
   # rm -f'd — the identical redirection-on-a-failure-path defect this whole
   # function was just cleared of, one line after the loop that cleared it.
   # `>>` legitimately creating blocked-domains.txt when it was absent but
-  # blocked-ips.txt is PRESENT is fine and must keep working — a bare-IP entry
+  # blocked-ips.txt HAS CONTENT is fine and must keep working — a bare-IP entry
   # is a real hard-blocked destination with no domain, and that is the only
   # copy of it. What must never happen is creating the target when there is
   # nothing to append.
-  if [[ -f "$d/blocked-ips.txt" ]]; then
+  #
+  # `-s`, not `-f`: a zero-byte blocked-ips.txt satisfies `-f` and then appends
+  # nothing, so the merge fabricates blocked-domains.txt out of an empty source
+  # — the exact "target created with nothing to append" this guard names, one
+  # test away from being invisible because appending nothing and appending
+  # something both look like success. And an empty source is not a corner case:
+  # `docker exec cat` SUCCEEDS on a file the capture daemon created and never
+  # wrote to, which is what a clean run looks like.
+  if [[ -s "$d/blocked-ips.txt" ]]; then
     cat "$d/blocked-ips.txt" >> "$d/blocked-domains.txt"
   fi
   forensics_report "$d/blocked.log" "$d/blocked-domains.txt" "$d/dns-map.txt" "$d/allowlist.txt"
@@ -1028,13 +1063,12 @@ dump_blocked_forensics() {  # $1=cid — MUST run while the container is alive
   hard="$(cat "$d/blocked-domains.txt" 2>/dev/null | it_strip_comments | sort -u)"
   while IFS= read -r what; do
     [[ -z "$what" ]] && continue
-    # Bare IPv4 literal: nothing to grep the image for. Phase 3's own check,
-    # inherited as-is: it does not match a bare IPv6 literal (this repo's
-    # WSL2/nf_tables caveat means IPv6 enforcement can be degraded, so
-    # blocked-ips.txt could in principle hold one). Harmless here — an IPv6
-    # literal just falls through to the grep below instead of being skipped,
-    # and the grep stays bounded either way.
-    [[ "$what" =~ ^[0-9.]+$ ]] && continue
+    # Bare IP literal (either family): nothing to grep the image for — no
+    # program carries a raw address the way it carries a hostname, and this
+    # entry is in blocked-ips.txt precisely because no name was ever resolved
+    # for it. See _it_is_bare_ip for why v6 had to be added to Phase 3's
+    # inherited v4-only check.
+    _it_is_bare_ip "$what" && continue
     if [[ "$n" -ge "$max" ]]; then
       skipped=$((skipped + 1))
       continue

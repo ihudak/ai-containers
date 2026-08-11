@@ -271,7 +271,28 @@ fi
 # That already happened once. The fix is that a case never states the variant's
 # overrides, so it cannot forget them.
 export IT_VARIANT_OVERRIDES='ruby=3.3.6,3.4.5 imagemagick=ON'
-export IT_REAL_DOCKER="${IT_REAL_DOCKER:-/bin/true}"  # launcher_prepare checks this
+# Scoped to THIS block (restored at its end), and NOT exported.
+#
+# Not exported because nothing needs it exported: launcher_prepare reads it as
+# a plain shell variable, and launcher_run/launcher_script export it themselves
+# inside their own subshells. `export` here instead pushed a value THIS block
+# picked for its own convenience into every later child in the file —
+# including ar_run's `bash -c ". $LIB"`, where lib.sh's own
+# `IT_REAL_DOCKER="${IT_REAL_DOCKER:-$(command -v docker)}"` resolution would
+# then never run. Nothing downstream reads the value today, which is exactly
+# why the leak was invisible rather than harmless: the next assertion about
+# that resolution would have inherited an answer chosen three hundred lines
+# earlier for an unrelated reason, and on a host WITH docker it would have
+# inherited a different one than on a host without.
+#
+# Restored, not unset: lib.sh assigned it at source time and `set -u` is in
+# force, so unsetting would break the next reader instead of the leak. The
+# refusal assertions just above are unaffected either way — they run in child
+# shells that assign AFTER sourcing, which is the whole point of the long
+# comment above them; do not "simplify" them to a command-prefix assignment on
+# the strength of this variable now being local.
+IT_REAL_DOCKER_OUTER="${IT_REAL_DOCKER:-}"
+IT_REAL_DOCKER="${IT_REAL_DOCKER:-/bin/true}"  # launcher_prepare checks this
 launcher_prepare >/dev/null 2>&1
 launcher_conf >/dev/null 2>&1
 conf="$IT_LAUNCH_HOME/sandbox.conf"
@@ -298,6 +319,9 @@ grep -qx 'claude-code=ON' "$conf" \
 grep -qx 'ruby=' "$conf" \
   && t_pass "an unset variant leaves the version lists empty" \
   || t_fail "an unset variant leaves the version lists empty"
+# End of the launcher_conf block — hand IT_REAL_DOCKER back to whatever lib.sh
+# resolved at source time (see the comment where it is overridden above).
+IT_REAL_DOCKER="$IT_REAL_DOCKER_OUTER"; unset IT_REAL_DOCKER_OUTER
 
 # ── DOCKER_HOST reaches a HOME-redirected launcher subshell (task-14b) ─────────
 # launcher_run/launcher_script redirect HOME to per-case scratch to isolate
@@ -669,12 +693,129 @@ declare -f dump_blocked_forensics >/dev/null 2>&1 \
 # as "the capture never ran"), even though the wrapper's own plumbing can only
 # be verified by inspection.
 
+# ── _it_is_bare_ip: BOTH address families, or the report loses a real name ─────
+# The image-grep loop in dump_blocked_forensics skips bare IP literals — no
+# program carries a raw address the way it carries a hostname, and the entry is
+# in blocked-ips.txt precisely because nothing resolved a name for it. The
+# predicate it inherited from verify-on-host.sh's Phase 3 was `^[0-9.]+$`, IPv4
+# only, so an IPv6 literal was treated as a name: it burned one of the ten
+# capped grep slots and a bounded 90s `docker exec grep -r`, evicting a REAL
+# hostname from a report whose cap exists to keep it readable. This repo can
+# genuinely produce one — the WSL2/nf_tables caveat leaves IPv6 egress
+# unenforced on some hosts and the capture logs whatever it saw dropped.
+_it_is_bare_ip '203.0.113.9' \
+  && t_pass "a bare IPv4 literal is recognised as an address, not a name" \
+  || t_fail "a bare IPv4 literal is recognised as an address, not a name"
+_it_is_bare_ip '2606:4700::1111' \
+  && t_pass "a bare IPv6 literal is recognised as an address, not a name" \
+  || t_fail "a bare IPv6 literal is recognised as an address, not a name"
+_it_is_bare_ip '::1' \
+  && t_pass "the compressed IPv6 loopback is recognised as an address" \
+  || t_fail "the compressed IPv6 loopback is recognised as an address"
+_it_is_bare_ip '::ffff:203.0.113.9' \
+  && t_pass "an IPv4-mapped IPv6 literal (digits, dots AND colons) is recognised as an address" \
+  || t_fail "an IPv4-mapped IPv6 literal is recognised as an address"
+# The complement: the predicate must not swallow NAMES, or the image grep — the
+# one step that says which file in the image asked for a host — never runs at
+# all. A hostname cannot contain a colon, so the colon arm has to reject one
+# that somehow does rather than assume anything with a colon is an address.
+_it_is_bare_ip 'repo1.maven.org' \
+  && t_fail "a hostname must not be mistaken for a bare address" \
+  || t_pass "a hostname is not mistaken for a bare address"
+_it_is_bare_ip 'ipv6.test-hosts.example' \
+  && t_fail "a hostname with digits must not be mistaken for a bare address" \
+  || t_pass "a hostname with digits is not mistaken for a bare address"
+_it_is_bare_ip 'not-an-address:8080' \
+  && t_fail "a colon alone must not make something an address" \
+  || t_pass "a colon alone does not make something an address"
+
+# ── the blocked-ips → blocked-domains merge must not FABRICATE its target ──────
+# dump_blocked_forensics needs a live container, so it is driven here through a
+# fake `docker` on PATH serving exactly its call shapes — the same idiom the
+# assert_runs block below uses. The merge is the one line of it that can decide
+# a file's EXISTENCE, and forensics_report reads existence as the difference
+# between "the capture ran and saw nothing" and "we do not know".
+#
+# The vector is a clean run whose other reads failed: blocked-ips.txt is
+# PRESENT AND EMPTY (a `docker exec cat` of a file the capture daemon created
+# and never wrote to SUCCEEDS — this is what a clean run looks like, not a
+# corner case), blocked.log and blocked-domains.txt absent. Guarded with `-f`
+# the merge appends nothing and creates blocked-domains.txt anyway; appending
+# nothing and appending something are indistinguishable from the exit status,
+# which is why this needs a test rather than a reading.
+MB_BIN="$TMP/mb-bin"; mkdir -p "$MB_BIN"
+cat > "$MB_BIN/docker" <<'FAKE'
+#!/usr/bin/env bash
+# dump_blocked_forensics' call shapes, and only those:
+#   inspect -f '{{.State.Running}}' <cid>   → the liveness probe
+#   exec <cid> cat <abs-path>               → the four evidence reads
+# A read is served iff $MB_CONTAINER holds a file of that basename; otherwise it
+# fails exactly as `docker exec cat` does for a path the container lacks.
+case "$1" in
+  inspect) printf 'true\n'; exit 0 ;;
+  exec)
+    shift 2
+    if [[ "$1" == "cat" ]]; then
+      f="${2##*/}"
+      [[ -f "$MB_CONTAINER/$f" ]] || exit 1
+      cat "$MB_CONTAINER/$f"; exit 0
+    fi
+    printf 'mb fake docker: unexpected exec: %s\n' "$*" >&2; exit 99 ;;
+esac
+printf 'mb fake docker: unexpected call: %s\n' "$*" >&2; exit 99
+FAKE
+chmod +x "$MB_BIN/docker"
+
+# $1=directory standing in for the container's /workspace/.agent-blocked →
+# prints the per-run scratch dir dump_blocked_forensics wrote into, so the
+# caller can assert on which files exist. IT_DOCKER_HOST is pinned empty so
+# lib.sh's source-time resolution never reaches the fake with a `context
+# inspect` it has no arm for (same reason ar_run below does it).
+mb_run() {
+  local scratch="$TMP/mb-scratch-$RANDOM"
+  mkdir -p "$scratch"
+  MB_CONTAINER="$1" IT_DOCKER_HOST="" PATH="$MB_BIN:$PATH" IT_SCRATCH="$scratch" \
+    bash -c ". '$LIB'; dump_blocked_forensics fake-cid" >"$TMP/mb-report.txt" 2>&1
+  printf '%s' "$(ls -d "$scratch"/case-* 2>/dev/null | head -1)"
+}
+
+MB_EMPTY="$TMP/mb-container-empty"; mkdir -p "$MB_EMPTY"
+: > "$MB_EMPTY/blocked-ips.txt"           # present, zero bytes — the clean run
+mb_d="$(mb_run "$MB_EMPTY")"
+if [[ -n "$mb_d" ]]; then
+  t_pass "dump_blocked_forensics ran against the fake docker and made a scratch dir"
+else
+  t_fail "dump_blocked_forensics ran against the fake docker (no scratch dir: $(cat "$TMP/mb-report.txt"))"
+fi
+[[ ! -e "$mb_d/blocked-domains.txt" ]] \
+  && t_pass "an EMPTY blocked-ips.txt does not fabricate blocked-domains.txt" \
+  || t_fail "an EMPTY blocked-ips.txt fabricated blocked-domains.txt ($(wc -c < "$mb_d/blocked-domains.txt") bytes) — the merge created a target with nothing to append"
+grep -q 'UNKNOWN — the capture never ran' "$TMP/mb-report.txt" \
+  && t_pass "with every read failed, the report still says UNKNOWN rather than clean" \
+  || t_fail "with every read failed, the report says UNKNOWN (got: $(cat "$TMP/mb-report.txt"))"
+
+# The complement, so the assertion above cannot be satisfied by a merge that
+# simply stopped working: a blocked-ips.txt WITH a bare IP in it is still
+# merged, and that IP is still the only copy of a real hard-blocked destination.
+MB_FULL="$TMP/mb-container-full"; mkdir -p "$MB_FULL"
+printf '203.0.113.77\n' > "$MB_FULL/blocked-ips.txt"
+printf '# blocked destinations\n' > "$MB_FULL/blocked.log"
+mb_d="$(mb_run "$MB_FULL")"
+if [[ -f "$mb_d/blocked-domains.txt" ]] && grep -qx '203.0.113.77' "$mb_d/blocked-domains.txt"; then
+  t_pass "a NON-empty blocked-ips.txt is still merged into blocked-domains.txt"
+else
+  t_fail "a NON-empty blocked-ips.txt is still merged into blocked-domains.txt (got: $(cat "$mb_d/blocked-domains.txt" 2>/dev/null))"
+fi
+grep -q '203.0.113.77' "$TMP/mb-report.txt" \
+  && t_pass "the merged bare IP reaches the forensics report as a hard-blocked entry" \
+  || t_fail "the merged bare IP reaches the forensics report (got: $(cat "$TMP/mb-report.txt"))"
+
 # ── Ruby-case helpers ───────────────────────────────────────────────────────────
 # ruby_wait_ready and assert_runs both take a live container id and are not
 # unit-testable here — same reason capture_ready/sandbox_wait_capture above are
 # only proven to be DEFINED, not exercised: there is no docker daemon in this
 # environment. What the brief deliberately factored OUT into pure predicates —
-# _ruby_reconcile_done / _ruby_reconcile_ok, decided from captured log text on
+# _it_ruby_reconcile_done / _it_ruby_reconcile_ok, decided from captured log text on
 # stdin — IS hermetically testable, and that split is the point: it is what
 # lets ruby_wait_ready's decision logic be proven correct without a container.
 t_check "IT_RUBY_GROUP is a stable name shared across cases in one run" \
@@ -683,31 +824,31 @@ t_check "IT_RUBY_GROUP is a stable name shared across cases in one run" \
 # A failed rvm bootstrap exits in SECONDS; polling only for `ruby` on PATH once
 # burned a full 30-minute timeout on a compile that never started. That is why
 # the reconcile's own terminal log lines are part of the condition.
-_ruby_reconcile_done <<< '[rvm-reconcile] done.' \
+_it_ruby_reconcile_done <<< '[rvm-reconcile] done.' \
   && t_pass "ruby readiness recognises a completed reconcile" \
   || t_fail "ruby readiness recognises a completed reconcile"
-_ruby_reconcile_done <<< '[rvm-reconcile] FAILED: ruby-3.4.5' \
+_it_ruby_reconcile_done <<< '[rvm-reconcile] FAILED: ruby-3.4.5' \
   && t_pass "ruby readiness recognises a FAILED reconcile (does not wait out the timeout)" \
   || t_fail "ruby readiness recognises a FAILED reconcile"
-_ruby_reconcile_done <<< '[rvm-reconcile] installing ruby-3.4.5…' \
+_it_ruby_reconcile_done <<< '[rvm-reconcile] installing ruby-3.4.5…' \
   && t_fail "an in-progress reconcile must not be reported ready" \
   || t_pass "an in-progress reconcile is not reported ready"
 
 # `done.` and `FAILED:` both END the wait but are opposite OUTCOMES — that is
 # why termination and success are two separate predicates, not one.
-_ruby_reconcile_ok <<< '[rvm-reconcile] done.' \
+_it_ruby_reconcile_ok <<< '[rvm-reconcile] done.' \
   && t_pass "a completed reconcile is distinguished from a failed one" \
   || t_fail "a completed reconcile is distinguished from a failed one"
-_ruby_reconcile_ok <<< '[rvm-reconcile] FAILED: ruby-3.4.5' \
+_it_ruby_reconcile_ok <<< '[rvm-reconcile] FAILED: ruby-3.4.5' \
   && t_fail "FAILED must not be reported as success" \
   || t_pass "FAILED is not reported as success"
 
 # Empty input: no terminal line at all means "not yet ready" and "not ok",
 # never a false positive from an unset grep matching nothing.
-_ruby_reconcile_done <<< '' \
+_it_ruby_reconcile_done <<< '' \
   && t_fail "empty input must not be reported as a terminated reconcile" \
   || t_pass "empty input is not a terminated reconcile"
-_ruby_reconcile_ok <<< '' \
+_it_ruby_reconcile_ok <<< '' \
   && t_fail "empty input must not be reported as a successful reconcile" \
   || t_pass "empty input is not a successful reconcile"
 
@@ -736,10 +877,10 @@ partial_log="$(cat <<'LOG'
 [rvm-reconcile] done.
 LOG
 )"
-_ruby_reconcile_done <<< "$partial_log" \
+_it_ruby_reconcile_done <<< "$partial_log" \
   && t_pass "a partial-failure reconcile IS recognised as terminated (it reached done.)" \
   || t_fail "a partial-failure reconcile is recognised as terminated"
-_ruby_reconcile_ok <<< "$partial_log" \
+_it_ruby_reconcile_ok <<< "$partial_log" \
   && t_fail "a PARTIAL failure (one version FAILED, reconcile still logs done.) must NOT be reported as success" \
   || t_pass "a partial-failure reconcile is correctly NOT reported as success"
 
