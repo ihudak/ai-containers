@@ -34,9 +34,12 @@
 # status (`head`'s, not the tool's) — never about any of the six not
 # supporting the flag. assert_runs is used unmodified.
 #
-# requires: docker launcher netadmin — and deliberately NOT external, checked
-# rather than assumed, though narrower than "a network-less machine finishes
-# faster": psql/mysql/mongosh/convert/wkhtmltopdf/gcc are every one of them
+# The requires line above lists docker, launcher and netadmin — and
+# deliberately NOT external, checked rather than assumed, though narrower than
+# "a network-less machine finishes faster" (reworded off a leading "requires:"
+# at column 0, which parses as a second header key and is saved only by
+# case_meta's head -1; case 750's header records the same hazard):
+# psql/mysql/mongosh/convert/wkhtmltopdf/gcc are every one of them
 # installed by a Dockerfile RUN layer (DB_CLIENTS, INSTALL_IMAGEMAGICK,
 # INSTALL_WKHTMLTOPDF, KEEP_BUILD_TOOLCHAIN) at IMAGE BUILD time, so this
 # case's own SIX ASSERTIONS never touch the network at container run time —
@@ -57,8 +60,11 @@
 # calls, which is what the tag exists to flag for PR-gate exclusion, but this
 # case's six assertions never depend on those calls succeeding.
 #
-# timeout: 3900 / IT_SETTLE: 3600 — the real cost this case pays, and it has
-# NOTHING to do with the six binaries above. entrypoint.sh runs
+# The 3900s ceiling above, and IT_SETTLE=3600 below, are the real cost this
+# case pays, and it has NOTHING to do with the six binaries above. (Reworded
+# off a leading "timeout:" at column 0 for the same reason as the requires
+# paragraph: a header reorder would make case_timeout read "3900 / IT_SETTLE:
+# 3600 — …", return 1, and abort the WHOLE run with exit 2.) entrypoint.sh runs
 # run_ruby_reconcile BEFORE the exec that hands PID 1 to the sandbox user (the
 # same position case 630 and the 700-series document), and the `native` variant
 # sets ruby=$IT_RUBY_VERSIONS (default 3.3.6,3.4.5 — TWO versions) via
