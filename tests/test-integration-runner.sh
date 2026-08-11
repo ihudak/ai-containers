@@ -414,7 +414,7 @@ fi
 # in an `image:` header must be a hard error: silently falling back to `default`
 # would run a Ruby case against an image with no Ruby and report the product
 # broken.
-out="$(RUNNER_FUNC=variant_overrides bash "$TMP/callfn.sh" variant_overrides agents)"
+out="$(bash "$TMP/callfn.sh" variant_overrides agents)"
 case "$out" in
   *copilot=ON*claude-code=ON*codex=ON*gemini=ON*graphify=ON*vale=ON*node=22,20*)
     pass "variant agents turns on all six agent-tier keys and multi-version node" ;;
@@ -1190,6 +1190,55 @@ has "$out" 'undetermined' \
 [[ "$rc" -eq 0 ]] \
   && pass "the PR-gate shape (--require security) exits clean once caps are actually probed" \
   || fail "the PR-gate shape (--require security) exits clean once caps are actually probed -- got rc=$rc"
+
+# ── IT_SOURCE_ONLY halts an EXECUTED run.sh too, not only a sourced one ────────
+# The guard is a bare `return`, which only halts a SOURCED script. Executed, it
+# fails and the old one-line form fell straight through into the sweep EXIT
+# trap, the allowlist snapshot and a real image build — the I/O the guard's own
+# comment says it exists to prevent — with the option-parsing loop skipped too,
+# so the run would silently ignore every flag it was handed and still exit 0.
+#
+# No production path executes run.sh with the variable set. That is a
+# convention, and this file's whole subject is the difference between a
+# convention and a mechanism.
+#
+# Driven against the caps13c throwaway repo above (its own copy of run.sh, a
+# stub build.sh that records what it "built", a stub docker) precisely BECAUSE
+# the old behaviour is destructive: falling through touches the repo's
+# allowlist files and forks build.sh, so the red demonstration has to happen
+# somewhere disposable.
+SO_MARKER_TAG="sourceonly-image"
+out="$(PATH="$CAPS13C_BIN:$PATH" \
+       IT_SOURCE_ONLY=1 \
+       IT_CASES_DIR="$CAPS13C_REPO/tests/integration/cases" \
+       IT_SCRATCH="$TMP/sourceonly-scratch" \
+       IT_IMAGE="$SO_MARKER_TAG" \
+       bash "$CAPS13C_REPO/tests/integration/run.sh" --require security 2>&1)"
+rc=$?
+
+[[ "$rc" -eq 2 ]] \
+  && pass "an EXECUTED run.sh with IT_SOURCE_ONLY set exits 2, not 0" \
+  || fail "an EXECUTED run.sh with IT_SOURCE_ONLY set exits 2, not 0 -- got rc=$rc, out: $out"
+has "$out" 'IT_SOURCE_ONLY' \
+  && pass "the refusal names IT_SOURCE_ONLY as the cause" \
+  || fail "the refusal names IT_SOURCE_ONLY as the cause -- got: $out"
+# The load-bearing one: a build marker proves the fall-through reached
+# build_image() for real. Under the old guard this file exists.
+[[ ! -e "$CAPS13C_MARKERS/$SO_MARKER_TAG" ]] \
+  && pass "an executed IT_SOURCE_ONLY run builds no image (the guard's whole purpose)" \
+  || fail "an executed IT_SOURCE_ONLY run builds no image -- build.sh ran for $SO_MARKER_TAG"
+# Second, independent witness that execution stopped at the guard rather than
+# merely failing later: detect_caps never printed its banner.
+has "$out" 'capabilities:' \
+  && fail "an executed IT_SOURCE_ONLY run must not reach capability detection -- got: $out" \
+  || pass "an executed IT_SOURCE_ONLY run never reaches capability detection"
+
+# And the other invocation mode is untouched: sourcing still returns cleanly,
+# which is what every callfn.sh assertion above depends on.
+bash "$TMP/callfn.sh" true >/dev/null 2>&1
+[[ "$?" -eq 0 ]] \
+  && pass "sourcing run.sh with IT_SOURCE_ONLY still returns 0 (the guard's supported mode)" \
+  || fail "sourcing run.sh with IT_SOURCE_ONLY still returns 0"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
