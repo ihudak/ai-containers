@@ -496,6 +496,37 @@ grep -q 'api.anthropic.com' <<< "$out" \
   && t_pass "forensics reports the self-healed entry separately from the hard block" \
   || t_fail "forensics reports the self-healed entry"
 
+# ── an entry with NO line in blocked.log says so, rather than vanishing ────────
+# The awk END block's `n == 0` arm. blocked-domains.txt and blocked.log are two
+# separate files written by two separate code paths in capture-blocked-traffic.sh,
+# so they can legitimately disagree: a name deduplicated into blocked-domains.txt
+# whose blocked.log line is missing (truncated read, a rotation, a field layout
+# that stopped matching $3/$4). Without this arm the per-entry loop prints the
+# heading, prints NOTHING for that entry, and then prints its allowlist verdict —
+# a report that silently drops the one entry it was asked about while looking
+# complete. That is the same "a check that cannot report what it claims" defect
+# this increment exists to close, so it gets a test rather than an argument.
+#
+# $blog is PRESENT here, deliberately: an absent blocked.log is the separate
+# UNKNOWN branch tested further down, and awk handed an unopenable file skips
+# END entirely — which is exactly why lib.sh pipes it through `cat`.
+printf 'repo1.maven.org\nghost.example\n' > "$fx/domains-with-ghost.txt"
+out="$(forensics_report "$fx/blocked.log" "$fx/domains-with-ghost.txt" \
+        "$fx/dns-map.txt" "$fx/allowlist.txt" 2>&1)"
+grep -q 'ghost.example .*no matching line in blocked.log' <<< "$out" \
+  && t_pass "an entry with no line in blocked.log is named and stated as unmatched" \
+  || t_fail "an entry with no line in blocked.log is named and stated as unmatched (got: $out)"
+# The fallback must be per-entry, not a whole-report bail-out: the entry that DOES
+# have lines is still aggregated with its count.
+grep -qE '203\.0\.113\.9.*x2' <<< "$out" \
+  && t_pass "the matched entry is still aggregated alongside the unmatched one" \
+  || t_fail "the matched entry is still aggregated alongside the unmatched one"
+# And the unmatched entry still gets its allowlist verdict — proof the loop
+# continued past the fallback instead of `exit`-ing the enclosing awk for good.
+grep -c 'allowlisted in this image' <<< "$out" | grep -qx '2' \
+  && t_pass "both entries get an allowlist verdict, so the loop did not stop at the unmatched one" \
+  || t_fail "both entries get an allowlist verdict (got: $out)"
+
 # The header comments in every output file are NOT entries. init_output_files
 # seeds them, and counting them as destinations once reported a clean run as
 # HARD-BLOCKED and listed the headers as the addresses.

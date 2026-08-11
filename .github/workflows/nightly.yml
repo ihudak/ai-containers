@@ -308,14 +308,17 @@ jobs:
       # LATER step reads with `df`/`docker system df` only ever sees what is
       # left AFTER that cleanup — a post-cleanup floor, never the multi-GB
       # high-water mark while the image was still on disk. The sampler polls
-      # `df`'s used-on-/ figure every 5s into a log for as long as the tier
-      # step runs; it is cheap (one `df` + a 5s sleep) and self-limiting (the
-      # log holds a handful of KB even over a 90-minute job).
+      # BOTH used and available on / every 5s into a log for as long as the
+      # tier step runs; it is cheap (one `df` + a 5s sleep) and self-limiting
+      # (the log holds a handful of KB even over a 90-minute job). Available is
+      # sampled alongside used because used ALONE is not comparable to any
+      # threshold — a GitHub runner boots with tens of GB already occupied, so
+      # peak-used mostly measures the runner image, not this tier.
       - name: Start timer and disk-peak sampler
         run: |
           echo "PACKAGES_START=$(date +%s)" >> "$GITHUB_ENV"
-          rm -f /tmp/disk-peak.log
-          ( while :; do df --output=used -BM / | tail -1 | tr -d ' ' >> /tmp/disk-peak.log; sleep 5; done ) &
+          rm -f /tmp/disk-samples.log
+          ( while :; do df --output=used,avail -BM / | awk 'NR==2 { gsub(/M/,""); print $1, $2 }' >> /tmp/disk-samples.log; sleep 5; done ) &
           echo "DISK_SAMPLER_PID=$!" >> "$GITHUB_ENV"
 
       # --require packages: a selected case whose requirement is unmet FAILS the
@@ -343,13 +346,22 @@ jobs:
           start="${PACKAGES_START:-$end}"
           elapsed=$((end - start))
           echo "packages-agents wall-clock: $((elapsed / 60))m $((elapsed % 60))s"
-          # PEAK used-on-/ WHILE THE TIER STEP RAN (sampled every 5s) — this is
-          # the figure the COST SWITCH comment's ~11 GB threshold refers to.
-          if [ -s /tmp/disk-peak.log ]; then
-            peak="$(sort -n /tmp/disk-peak.log | tail -1)"
-            echo "packages-agents peak disk used on / during the tier: $peak"
+          # Sampled every 5s WHILE THE TIER STEP RAN. Four figures, not one,
+          # because peak-used ALONE is not comparable to any threshold: a
+          # GitHub runner boots with tens of GB already occupied, so a peak of
+          # ~48000M says almost nothing about what this tier cost.
+          #   baseline / peak — absolute, for the record
+          #   +delta          — what THIS tier actually consumed
+          #   min available   — the headroom that predicts an out-of-space build
+          # The COST SWITCH comment states its threshold against MIN AVAILABLE,
+          # the one figure here that is directly comparable to a limit.
+          if [ -s /tmp/disk-samples.log ]; then
+            base="$(head -1 /tmp/disk-samples.log | awk '{print $1}')"
+            peak="$(awk '{print $1}' /tmp/disk-samples.log | sort -n | tail -1)"
+            mina="$(awk '{print $2}' /tmp/disk-samples.log | sort -n | head -1)"
+            echo "packages-agents disk on /: baseline used ${base}M, peak used ${peak}M, this tier +$((peak - base))M, MIN AVAILABLE ${mina}M"
           else
-            echo "packages-agents peak disk used on / during the tier: NO SAMPLES (sampler did not run)"
+            echo "packages-agents disk on /: NO SAMPLES (sampler did not run)"
           fi
           # For comparison only — this is the POST-CLEANUP snapshot, not the
           # peak; run.sh's sweep()/rmi have already reclaimed the image by now.
@@ -380,20 +392,29 @@ jobs:
       - name: Start timer and disk-peak sampler
         run: |
           echo "PACKAGES_START=$(date +%s)" >> "$GITHUB_ENV"
-          rm -f /tmp/disk-peak.log
-          ( while :; do df --output=used -BM / | tail -1 | tr -d ' ' >> /tmp/disk-peak.log; sleep 5; done ) &
+          rm -f /tmp/disk-samples.log
+          ( while :; do df --output=used,avail -BM / | awk 'NR==2 { gsub(/M/,""); print $1, $2 }' >> /tmp/disk-samples.log; sleep 5; done ) &
           echo "DISK_SAMPLER_PID=$!" >> "$GITHUB_ENV"
 
       # COST SWITCH. IT_RUBY_VERSIONS (tests/integration/run.sh) defaults to
       # 3.3.6,3.4.5, and the native variant compiles BOTH at container start —
       # every one of 740/750/760 pays for this; 760's own 7600s budget is the
       # two-version cold-compile precedent (case 730) applied twice. If this job
-      # routinely runs past ~75 minutes, or the Budget step below shows PEAK
-      # disk used on / during the tier (not the post-cleanup snapshot) above
-      # ~11 GB, the lever is to set, on this job:
+      # routinely runs past ~75 minutes, or the Budget step below reports MIN
+      # AVAILABLE on / during the tier below ~10000M, the lever is to set, on
+      # this job:
       #   env:
       #     IT_RUBY_VERSIONS: "3.4.5"
       # and add `--exclude needs-multiruby` to the step below.
+      #
+      # The threshold names MIN AVAILABLE deliberately, and that is the figure
+      # the Budget step prints under that exact name. An earlier revision stated
+      # it as "peak disk used above ~11 GB" while the instrument reported TOTAL
+      # used on / — measured at 46784M (native) and 49180M (agents), dominated
+      # by what the runner image already occupies. So the threshold was
+      # permanently exceeded and meant nothing. A limit expressed in units its
+      # instrument does not report is a limit nobody can act on; if either side
+      # changes, change both.
       #
       # If that switch is ever thrown: 750-ruby-multiversion-selection has
       # nothing left to select between (run.sh's probe_multiruby requires a
@@ -417,13 +438,22 @@ jobs:
           start="${PACKAGES_START:-$end}"
           elapsed=$((end - start))
           echo "packages-native wall-clock: $((elapsed / 60))m $((elapsed % 60))s"
-          # PEAK used-on-/ WHILE THE TIER STEP RAN (sampled every 5s) — this is
-          # the figure the COST SWITCH comment above refers to.
-          if [ -s /tmp/disk-peak.log ]; then
-            peak="$(sort -n /tmp/disk-peak.log | tail -1)"
-            echo "packages-native peak disk used on / during the tier: $peak"
+          # Sampled every 5s WHILE THE TIER STEP RAN. Four figures, not one,
+          # because peak-used ALONE is not comparable to any threshold: a
+          # GitHub runner boots with tens of GB already occupied, so a peak of
+          # ~48000M says almost nothing about what this tier cost.
+          #   baseline / peak — absolute, for the record
+          #   +delta          — what THIS tier actually consumed
+          #   min available   — the headroom that predicts an out-of-space build
+          # The COST SWITCH comment states its threshold against MIN AVAILABLE,
+          # the one figure here that is directly comparable to a limit.
+          if [ -s /tmp/disk-samples.log ]; then
+            base="$(head -1 /tmp/disk-samples.log | awk '{print $1}')"
+            peak="$(awk '{print $1}' /tmp/disk-samples.log | sort -n | tail -1)"
+            mina="$(awk '{print $2}' /tmp/disk-samples.log | sort -n | head -1)"
+            echo "packages-native disk on /: baseline used ${base}M, peak used ${peak}M, this tier +$((peak - base))M, MIN AVAILABLE ${mina}M"
           else
-            echo "packages-native peak disk used on / during the tier: NO SAMPLES (sampler did not run)"
+            echo "packages-native disk on /: NO SAMPLES (sampler did not run)"
           fi
           # For comparison only — this is the POST-CLEANUP snapshot, not the
           # peak; run.sh's sweep()/rmi have already reclaimed the image by now.
