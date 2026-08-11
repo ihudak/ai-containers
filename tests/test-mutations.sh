@@ -176,5 +176,163 @@ grep -q 'apply <id>\.\.\.' "$MUTATE" || grep -q 'apply.*\[<id>' "$MUTATE" \
   && pass "usage documents multi-apply" \
   || fail "usage documents multi-apply"
 
+# ── apply/revert state handling, driven in a THROWAWAY git repo ────────────────
+# Everything below mutates a tree and inspects what is left behind, so it runs
+# against a disposable repo with disposable patches — never this one. mutate.sh
+# resolves its repo from its own location (the directory holding build.sh), so a
+# copy of the script plus an empty build.sh is a complete, self-contained
+# instance of it.
+#
+# The state file is the subject. A mutation is a deliberately WRONG production
+# file; if .applied and the tree ever disagree, the next demonstration runs
+# against a tree nobody described — which is how a "known-bad" demonstration
+# silently becomes a demonstration of something else.
+MT_REPO="$tmp/mutrepo"
+MT_MUT="$MT_REPO/tests/integration/mutations"
+MT_STATE="$MT_MUT/.applied"
+mkdir -p "$MT_MUT"
+cp "$MUTATE" "$MT_REPO/tests/integration/mutate.sh"
+: > "$MT_REPO/build.sh"          # marks this as the engine dir, like the real repo
+printf 'alpha\nbeta\ngamma\n' > "$MT_REPO/target.txt"
+( cd "$MT_REPO" && git init -q -b main . >/dev/null 2>&1 || git init -q . >/dev/null 2>&1
+  git add -A && git -c user.email=t@example -c user.name=t commit -qm init ) >/dev/null 2>&1
+
+cat > "$MT_MUT/p-good.patch" <<'EOF'
+# case: 400-ro-suffix-dropped
+# what: flips beta to BETA
+diff --git a/target.txt b/target.txt
+--- a/target.txt
++++ b/target.txt
+@@ -1,3 +1,3 @@
+ alpha
+-beta
++BETA
+ gamma
+EOF
+# Deliberately unappliable: stands in for the real "the code it breaks has
+# changed" case, which is the only thing that triggers a mid-batch rollback.
+cat > "$MT_MUT/p-stale.patch" <<'EOF'
+# case: 400-ro-suffix-dropped
+# what: patches a line that does not exist
+diff --git a/target.txt b/target.txt
+--- a/target.txt
++++ b/target.txt
+@@ -1,3 +1,3 @@
+ alpha
+-this line is not in target.txt
++neither is this one
+ gamma
+EOF
+
+mt() {  # run the throwaway instance; $@ = mutate.sh args
+  ( cd "$MT_REPO" && bash "$MT_REPO/tests/integration/mutate.sh" "$@" 2>&1 )
+}
+mt_clean() {  # tree back to committed state, no state file
+  ( cd "$MT_REPO" && git checkout -- . >/dev/null 2>&1 ); rm -f "$MT_STATE"
+}
+mt_dirty() { ! ( cd "$MT_REPO" && git diff --quiet ); }
+
+# Sanity: the fixture itself works, or every assertion below is vacuous.
+out="$(mt apply p-good)"; rc=$?
+if [[ "$rc" -eq 0 ]] && mt_dirty && [[ -f "$MT_STATE" ]]; then
+  pass "fixture: applying a good patch mutates the tree and records it"
+else
+  fail "fixture: applying a good patch mutates the tree and records it (rc=$rc, out=$out)"
+fi
+out="$(mt revert)"; rc=$?
+if [[ "$rc" -eq 0 ]] && ! mt_dirty && [[ ! -f "$MT_STATE" ]] && grep -q 'Reverted p-good' <<< "$out"; then
+  pass "fixture: revert undoes it, says so, and clears the state file"
+else
+  fail "fixture: revert undoes it, says so, and clears the state file (rc=$rc, out=$out)"
+fi
+mt_clean
+
+# ── A mid-batch rollback ACCOUNTS for what it undid ────────────────────────────
+# The batch applies p-good, then p-stale fails and the rollback runs. It printed
+# nothing at all, so a batch that half-applied and then unwound left no record
+# of what had been touched — the reader could not tell an unwound tree from an
+# untouched one without running git diff themselves.
+out="$(mt apply p-good p-stale)"; rc=$?
+[[ "$rc" -ne 0 ]] \
+  && pass "a batch containing a stale patch fails" \
+  || fail "a batch containing a stale patch fails (rc=$rc)"
+grep -q 'Reverted p-good' <<< "$out" \
+  && pass "the mid-batch rollback names what it undid" \
+  || fail "the mid-batch rollback names what it undid (out: $out)"
+mt_dirty \
+  && fail "a rolled-back batch leaves the tree mutated (out: $out)" \
+  || pass "a successful rollback leaves the tree exactly as found"
+[[ ! -f "$MT_STATE" ]] \
+  && pass "a successful rollback removes the state file" \
+  || fail "a successful rollback removes the state file"
+mt_clean
+
+# ── A rollback that FAILS is loud, and the state file keeps tracking ───────────
+# The reversal used to run as `git_apply -R … 2>/dev/null` with its status
+# discarded and $STATE deleted regardless, so a failed rollback was
+# indistinguishable from a successful one: a mutated production file left in the
+# tree, no message, and nothing recording that it was still applied. The next
+# apply then started from a tree it believed was clean.
+#
+# A fake `git` that refuses REVERSE applies (and passes everything else through
+# to the real one) is the only deterministic way in: git apply is atomic, so a
+# patch that applied forward a moment ago always reverses cleanly.
+MT_BIN="$tmp/mut-bin"; mkdir -p "$MT_BIN"
+REAL_GIT="$(command -v git)"
+cat > "$MT_BIN/git" <<EOF
+#!/usr/bin/env bash
+for a in "\$@"; do
+  [[ "\$a" == "-R" ]] && { printf 'fake git: refusing to reverse (test fixture)\n' >&2; exit 1; }
+done
+exec "$REAL_GIT" "\$@"
+EOF
+chmod +x "$MT_BIN/git"
+
+out="$( cd "$MT_REPO" && PATH="$MT_BIN:$PATH" bash "$MT_REPO/tests/integration/mutate.sh" apply p-good p-stale 2>&1 )"; rc=$?
+[[ "$rc" -ne 0 ]] \
+  && pass "a batch whose rollback fails still exits non-zero" \
+  || fail "a batch whose rollback fails still exits non-zero (rc=$rc)"
+grep -q 'ROLLBACK FAILED for p-good' <<< "$out" \
+  && pass "a failed rollback says so, naming the mutation still applied" \
+  || fail "a failed rollback says so, naming the mutation still applied (out: $out)"
+if [[ -f "$MT_STATE" ]] && grep -qx 'p-good' "$MT_STATE"; then
+  pass "a failed rollback keeps the state file, still recording the applied mutation"
+else
+  fail "a failed rollback keeps the state file recording p-good (state: $(cat "$MT_STATE" 2>/dev/null || printf '<absent>'))"
+fi
+mt_dirty \
+  && pass "the tree really is still mutated (so the state file above is the truth, not a guess)" \
+  || fail "the tree really is still mutated — the fixture did not reproduce a failed rollback"
+mt_clean
+
+# ── revert distinguishes "undid it" from "it was already absent" ───────────────
+# .applied is gitignored, so it survives a branch switch or a `git checkout --`
+# — ordinary things to do between demonstrations. The recorded patch is then no
+# longer in the tree, `git apply -R` fails, and revert used to exit 1 leaving
+# .applied behind, which made the NEXT apply refuse ("still applied") against a
+# pristine tree. That cost a wasted CI dispatch during increment 3.
+out="$(mt apply p-good)"; rc=$?
+[[ "$rc" -eq 0 ]] || fail "fixture: could not apply p-good for the already-absent case (out: $out)"
+( cd "$MT_REPO" && git checkout -- target.txt )    # stands in for the branch switch
+out="$(mt revert)"; rc=$?
+[[ "$rc" -eq 0 ]] \
+  && pass "revert succeeds when the recorded patch is not in the tree" \
+  || fail "revert succeeds when the recorded patch is not in the tree (rc=$rc, out: $out)"
+grep -q 'Already absent: p-good' <<< "$out" \
+  && pass "revert states 'already absent' rather than claiming it reverted something" \
+  || fail "revert states 'already absent' rather than claiming it reverted something (out: $out)"
+grep -q 'Reverted p-good' <<< "$out" \
+  && fail "revert must not report 'Reverted' for a patch it did not undo (out: $out)" \
+  || pass "revert does not report 'Reverted' for a patch it did not undo"
+[[ ! -f "$MT_STATE" ]] \
+  && pass "an already-absent revert clears the state file" \
+  || fail "an already-absent revert clears the state file"
+# The consequence that actually cost the dispatch: the next demonstration runs.
+out="$(mt apply p-good)"; rc=$?
+[[ "$rc" -eq 0 ]] \
+  && pass "the next apply is not blocked by the cleared state" \
+  || fail "the next apply is not blocked by the cleared state (rc=$rc, out: $out)"
+mt_clean
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

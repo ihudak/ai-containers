@@ -125,12 +125,40 @@ cmd_apply() {  # $@ = one or more mutation ids
       printf 'mutate.sh: %s no longer applies. The code it breaks has changed; regenerate it.\n' "$id" >&2
       # Roll back what this batch already applied, newest first, so the tree is
       # left exactly as found rather than half-mutated.
+      #
+      # The reversal is NOT silenced and its status IS checked. It used to be
+      # `git_apply -R … 2>/dev/null` with the result discarded and $STATE
+      # deleted unconditionally, so a rollback that failed reported exactly
+      # like one that worked: a mutated production file left in the tree, no
+      # message, and no state file recording that it was still applied. The
+      # next `apply` then started from a tree it believed was clean. A
+      # mutation is a deliberately WRONG product file; losing track of one is
+      # the worst outcome this script has.
       if [[ -f "$STATE" ]]; then
-        local done_id
+        local done_id still=""
         while IFS= read -r done_id; do
-          [[ -n "$done_id" ]] && git_apply -R "$MUT_DIR/$done_id.patch" 2>/dev/null
+          [[ -n "$done_id" ]] || continue
+          if git_apply -R "$MUT_DIR/$done_id.patch"; then
+            printf 'Reverted %s\n' "$done_id" >&2
+          else
+            printf 'mutate.sh: ROLLBACK FAILED for %s — it is STILL APPLIED.\n' "$done_id" >&2
+            # Oldest-first, matching the order apply wrote them: this loop runs
+            # newest-first, so prepend.
+            still="$done_id${still:+ $still}"
+          fi
         done < <(tac "$STATE" 2>/dev/null || sed '1!G;h;$!d' "$STATE")
-        rm -f "$STATE"
+        # $STATE must describe the TREE, not the intention. Rewrite it with
+        # exactly what is still applied so the next `apply` refuses (correctly)
+        # and `revert` has something to retry; remove it only when the tree is
+        # genuinely back to where it started.
+        if [[ -n "$still" ]]; then
+          : > "$STATE"
+          for done_id in $still; do printf '%s\n' "$done_id" >> "$STATE"; done
+          printf 'mutate.sh: the tree is still mutated. %s records what is applied.\n' "$STATE" >&2
+          printf '           Recover with: git checkout -- <file>, then rm %s\n' "$STATE" >&2
+        else
+          rm -f "$STATE"
+        fi
       fi
       exit 1
     }
@@ -145,17 +173,43 @@ cmd_apply() {  # $@ = one or more mutation ids
 
 cmd_revert() {
   [[ -f "$STATE" ]] || { printf 'mutate.sh: nothing applied.\n'; return 0; }
-  local id
+  local id still=""
   # Reverse order. Two patches touching the same file apply cleanly forwards and
   # conflict backwards if reversed in the order they were applied.
   while IFS= read -r id; do
     [[ -n "$id" ]] || continue
-    git_apply -R "$MUT_DIR/$id.patch" || {
-      printf 'mutate.sh: could not reverse %s cleanly. Recover with: git checkout -- <file>\n' "$id" >&2
-      exit 1
-    }
-    printf 'Reverted %s\n' "$id"
+    if git_apply -R "$MUT_DIR/$id.patch" 2>/dev/null; then
+      printf 'Reverted %s\n' "$id"
+    elif git_apply --check "$MUT_DIR/$id.patch" 2>/dev/null; then
+      # The FORWARD patch applies cleanly, so the mutation is not in the tree at
+      # all and there is nothing to undo — only a stale state file. .applied is
+      # gitignored and therefore SURVIVES a branch switch or a `git checkout --`,
+      # both entirely ordinary things to do between demonstrations; before this
+      # branch that combination made `git apply -R` fail, `revert` exit 1 with
+      # the state file still on disk, and the next `apply` refuse ("still
+      # applied") against a pristine tree. That cost a wasted CI dispatch.
+      #
+      # Said as its own outcome, not folded into "Reverted": "I undid it" and
+      # "it was already gone" are different facts about the tree, and a script
+      # whose job is keeping the tree honest must not blur them.
+      printf 'Already absent: %s — the tree does not carry it (state cleared, nothing undone)\n' "$id"
+    else
+      # Neither direction applies: the file matches neither the mutated nor the
+      # clean text, so a human has to decide. Recorded, not exited on — the ids
+      # not yet processed would otherwise be dropped from $STATE, losing track
+      # of mutations that ARE still in the tree.
+      printf 'mutate.sh: could not reverse %s, and the tree does not match the unmutated\n' "$id" >&2
+      printf '           file either. Recover with: git checkout -- <file>\n' >&2
+      still="$id${still:+ $still}"   # oldest-first; this loop runs newest-first
+    fi
   done < <(tac "$STATE" 2>/dev/null || sed '1!G;h;$!d' "$STATE")
+  # Same rule as cmd_apply's rollback: the state file describes the TREE.
+  if [[ -n "$still" ]]; then
+    : > "$STATE"
+    for id in $still; do printf '%s\n' "$id" >> "$STATE"; done
+    printf 'mutate.sh: %s still records what could not be reverted.\n' "$STATE" >&2
+    exit 1
+  fi
   rm -f "$STATE"
 }
 
