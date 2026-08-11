@@ -107,6 +107,12 @@ jobs:
           echo "parsed $n script(s)"
           exit $rc
 
+      # The floor is 5.1 while CI runs 5.2 and a developer's Mac runs 5.3.
+      # Nothing else compares them, so this is the only thing standing between
+      # a comfortable ${ cmd; } on the host and a container that will not start.
+      - name: bash dialect (nothing newer than the declared floor)
+        run: ./tests/bash-dialect-lint.sh
+
       - name: shellcheck
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
