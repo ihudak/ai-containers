@@ -221,11 +221,47 @@ t_check "IT_LAUNCH_GID follows the invoking group" "$(id -g)" "$IT_LAUNCH_GID"
 # launcher_prepare must REFUSE, not silently continue, when the real docker
 # cannot be resolved — otherwise the shim it installs would exit 127 on every
 # call and the case would report a mount failure.
-out="$(IT_REAL_DOCKER="" bash -c ". '$LIB'; launcher_prepare" 2>&1)"; rc=$?
+#
+# Both halves of lib.sh's guard (`-z` OR `! -x`) are driven, and both set the
+# variable AFTER sourcing. This is the whole point, not a style choice. The
+# original form was:
+#
+#     out="$(IT_REAL_DOCKER="" bash -c ". '$LIB'; launcher_prepare" 2>&1)"
+#
+# and it could not express the condition it named. A command-prefix assignment
+# puts IT_REAL_DOCKER="" in the child's environment, lib.sh then resolves
+# `IT_REAL_DOCKER="${IT_REAL_DOCKER:-$(command -v docker)}"`, and `:-` treats
+# EMPTY exactly like unset — so on any machine that has docker the fallback
+# succeeds, launcher_prepare correctly proceeds, and the assertion fails. It
+# passed only where docker is absent, which is every developer sandbox and no
+# CI runner. It had been failing on every CI run since 3bf3aae and reporting
+# nothing, because it called lib.sh's fail() (tallying into $it_fails, which
+# this file's `exit "$fails"` never reads) and run-all.sh had no ^FAIL: guard
+# yet. Both of those are fixed on this branch, which is what made it visible.
+#
+# Assigning after the source bypasses the fallback and reaches the guard
+# directly, on any host, with or without docker installed.
+out="$(bash -c ". '$LIB'; IT_REAL_DOCKER=''; launcher_prepare" 2>&1)"; rc=$?
 if [[ "$rc" -ne 0 ]] && grep -q 'cannot resolve the real docker' <<< "$out"; then
-  t_pass "launcher_prepare refuses when the real docker cannot be resolved"
+  t_pass "launcher_prepare refuses when the real docker resolves to nothing"
 else
-  t_fail "launcher_prepare refuses when the real docker cannot be resolved (rc=$rc, out=$out)"
+  t_fail "launcher_prepare refuses when the real docker resolves to nothing (rc=$rc, out=$out)"
+fi
+# The other half: a path that is set but not executable — a stale IT_REAL_DOCKER
+# pointing at a removed or non-executable binary, which `-z` alone would admit.
+out="$(bash -c ". '$LIB'; IT_REAL_DOCKER=/nonexistent/docker; launcher_prepare" 2>&1)"; rc=$?
+if [[ "$rc" -ne 0 ]] && grep -q 'cannot resolve the real docker' <<< "$out"; then
+  t_pass "launcher_prepare refuses a set-but-not-executable IT_REAL_DOCKER"
+else
+  t_fail "launcher_prepare refuses a set-but-not-executable IT_REAL_DOCKER (rc=$rc, out=$out)"
+fi
+# And the negative: a resolvable docker must NOT be refused, so the two above
+# are not passing merely because launcher_prepare refuses everything.
+out="$(bash -c ". '$LIB'; IT_REAL_DOCKER=/bin/true; launcher_prepare" 2>&1)"; rc=$?
+if [[ "$rc" -eq 0 ]] && ! grep -q 'cannot resolve the real docker' <<< "$out"; then
+  t_pass "launcher_prepare accepts an executable IT_REAL_DOCKER"
+else
+  t_fail "launcher_prepare accepts an executable IT_REAL_DOCKER (rc=$rc, out=$out)"
 fi
 
 # ── launcher_conf folds in the variant's overrides ─────────────────────────────
