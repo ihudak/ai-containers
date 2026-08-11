@@ -126,9 +126,28 @@ jobs:
       - name: Run
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            # `packages` is excluded UNCONDITIONALLY here, appended to whatever
+            # the caller typed rather than replacing it — a user-supplied
+            # exclude must never be silently dropped, and neither must this one.
+            #
+            # The packages tier does not belong to this job at all: it is
+            # nightly.yml's, which runs it as two dedicated jobs
+            # (packages-agents / packages-native) with their own multi-hour
+            # timeouts, precisely because the tier's own declared budgets are
+            # ~108 min (agents) + ~322 min (native). This job is capped at
+            # timeout-minutes: 45. Blanking the `tags` input — a perfectly
+            # ordinary thing to do, since blank is documented as "all" —
+            # otherwise selects all 34 cases and builds all three variant
+            # images here, and the job dies at the OUTER timeout reporting
+            # nothing about the fast tier it exists for: exactly the ambiguous
+            # kill the per-case `timeout:` headers were added to prevent,
+            # recreated one layer up. nightly.yml's own integration-full job
+            # bakes the same exclusion for the same reason.
+            excl="packages"
+            [ -n "${{ inputs.exclude }}" ] && excl="${{ inputs.exclude }},packages"
             args=""
             [ -n "${{ inputs.tags }}" ]    && args="$args --tags ${{ inputs.tags }}"
-            [ -n "${{ inputs.exclude }}" ] && args="$args --exclude ${{ inputs.exclude }}"
+            args="$args --exclude $excl"
             [ -n "${{ inputs.require }}" ] && args="$args --require ${{ inputs.require }}"
             [ "${{ inputs.verbose }}" = "true" ] && args="$args -v"
           else

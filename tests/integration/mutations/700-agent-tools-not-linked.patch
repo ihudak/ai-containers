@@ -1,0 +1,23 @@
+# case: 700-agent-tools-install-restricted
+# what: entrypoint.sh no longer runs link-agent-tools.sh (link_agent_tools becomes a
+#       no-op), so the six agent-tier tools still install into ~/.ai-tools but never
+#       get symlinked onto /usr/local/bin -- a docker exec (non-login, non-interactive,
+#       root OR the agent uid) cannot resolve claude/codex/gemini/copilot/graphify/vale
+#       at all, only a login shell sourcing /etc/profile.d/ai-tools.sh could.
+#
+diff --git a/entrypoint.sh b/entrypoint.sh
+index 25b5795..ae553dd 100755
+--- a/entrypoint.sh
++++ b/entrypoint.sh
+@@ -68,10 +68,7 @@ run_agent_tools_reconcile() {
+ # Expose the enabled agent tools on the global PATH (/usr/local/bin) for non-interactive,
+ # non-login shells. Runs as ROOT AFTER run_agent_tools_reconcile. Non-fatal.
+ link_agent_tools() {
+-  [[ -n "${AI_RUNTIME_TOOLS:-}" ]] || return 0
+-  [[ -x /usr/local/bin/link-agent-tools.sh ]] || return 0
+-  env AI_RUNTIME_TOOLS="${AI_RUNTIME_TOOLS}" \
+-    bash /usr/local/bin/link-agent-tools.sh "/home/$sandbox_user" || true
++  : # MUTATION: link-agent-tools.sh is never invoked
+ }
+ 
+ # Create the sandbox user at startup with the host user's name, UID, and GID so

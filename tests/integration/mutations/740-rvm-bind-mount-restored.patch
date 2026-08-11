@@ -1,0 +1,30 @@
+# case: 740-ruby-bootstraps-and-resolves
+# what: entrypoint.sh no longer runs link-default-ruby.sh (link_default_ruby becomes
+#       a no-op), so rvm compiles the configured Ruby versions but ruby/gem/bundle/
+#       bundler/rake/irb/erb never get symlinked onto /usr/local/bin -- a non-login
+#       `docker exec` cannot resolve any of them, and the default-version check
+#       (`docker exec ... ruby -e ...`, also non-login) fails the same way.
+#       DEVIATION FROM THE TASK BRIEF, documented in task-11-report.md: the brief's
+#       suggested mutation (sandbox.sh, bind-mount ~/.rvm instead of
+#       rvm_volume_ensure) does not break this case on Linux CI. GNU tar's deferred-
+#       symlink handling only fails on macOS virtiofs (per AGENTS.md); on Linux a
+#       bind mount extracts and compiles rvm/Ruby exactly as a volume would, and this
+#       case is a single cold bootstrap with no persistence assertion of its own, so
+#       there is nothing for a bind-mount-vs-volume swap to make observably fail here.
+#
+diff --git a/entrypoint.sh b/entrypoint.sh
+index 25b5795..3aedb61 100755
+--- a/entrypoint.sh
++++ b/entrypoint.sh
+@@ -49,10 +49,7 @@ run_ruby_reconcile() {
+ # non-login shells resolve ruby/gem/bundle without sourcing rvm. Runs as ROOT (this
+ # writes /usr/local/bin) AFTER run_ruby_reconcile has set the default. Non-fatal.
+ link_default_ruby() {
+-  [[ -n "${RUBY_VERSIONS:-}" ]] || return 0
+-  [[ -x /usr/local/bin/link-default-ruby.sh ]] || return 0
+-  env RUBY_VERSIONS="${RUBY_VERSIONS}" \
+-    bash /usr/local/bin/link-default-ruby.sh "/home/$sandbox_user" || true
++  : # MUTATION: link-default-ruby.sh is never invoked
+ }
+ 
+ # Bootstrap/reconcile the enabled agent-tier tools into the group-mounted ~/.ai-tools

@@ -45,8 +45,22 @@ IT_GENERATED_ALLOWLIST_DIR="$IT_SCRATCH/generated-allowlists"
 # cases put tests/integration/docker-shim.sh on PATH as `docker`, and the shim
 # refuses to run without an explicit real binary rather than recurse into itself.
 IT_REAL_DOCKER="${IT_REAL_DOCKER:-$(command -v docker 2>/dev/null)}"
+# IT_DOCKER_HOST (the docker ENDPOINT) is NOT resolved here despite the
+# parallel to IT_REAL_DOCKER just above — deliberately. `command -v docker`
+# never executes the docker binary, so IT_REAL_DOCKER is invisible to anything
+# watching docker's own invocations; `docker context inspect` genuinely runs
+# it. --list/--list-caps both exit long before the execution loop that
+# actually needs IT_DOCKER_HOST, and detect_caps's own hermetic tests
+# (tests/test-integration-runner.sh) run this script for real against a
+# call-counting stub docker and assert on the EXACT sequence of calls it
+# makes — an unconditional resolution up here would show up in that log
+# before detect_caps's own first call and break an assertion that has nothing
+# to do with this fix. It is resolved instead right before the export list
+# further down, which every real (non---list/-caps) run reaches exactly once,
+# after every early-exit path has already returned. See that site for the
+# full DOCKER_HOST-vs-DOCKER_CONFIG / resolution-failure reasoning.
 
-want_tags=""; excl_tags=""; req_tags=""
+want_tags=""; excl_tags=""; req_tags=""; want_variant=""; want_cases=""
 do_list=0; do_list_caps=0; reuse_image=0; keep=0; verbose=0
 timeout_secs=300
 # Declared here, not just in the "Execution" section below, so it is defined
@@ -55,12 +69,34 @@ timeout_secs=300
 # EXIT trap reads it to decide whether to keep $IT_SCRATCH.
 n_fail=0
 
+# Single source of truth for valid --variant NAMES, consumed by usage() below
+# and by the unknown-variant error message further down — so those two
+# user-facing strings can never drift apart from each other. Assigned here,
+# ahead of the option-parsing loop, because usage() can be invoked as early as
+# a bare `-h`/`--help`, before variant_overrides() (which is the actual
+# authority on what a valid variant IS, not just its name) has even been
+# defined as a function yet. variant_overrides()'s own case arms, near its
+# definition below, carry a comment pointing back here: its per-variant
+# override bodies can't be derived from a flat name list without contorting
+# that function, so the two are kept in sync by hand plus that pointer.
+KNOWN_VARIANTS="default agents native"
+
 usage() {
-  cat <<'EOF'
+  cat <<EOF
 Usage: tests/integration/run.sh [options]
 
   --tags T[,T…]      run only cases carrying at least one of these tags
   --exclude T[,T…]   drop cases carrying any of these tags
+  --variant NAME     run only cases whose image variant is NAME ($KNOWN_VARIANTS)
+                      — composes with --tags/--exclude, it narrows rather than
+                      replaces that selection. Like --tags/--exclude, it has
+                      no effect on --list, which always catalogues the whole
+                      corpus regardless of any selection flag.
+  --cases C[,C…]     run only these case basenames (e.g.
+                      760-ruby-persists-no-recompile) — composes with
+                      --tags/--exclude/--variant, narrowing further just like
+                      --variant does. An unrecognised name fails loudly rather
+                      than silently selecting zero cases.
   --require T[,T…]   fail the run if any SELECTED case with this tag SKIPPED
   --timeout N        per-case timeout in seconds (default 300)
   --image NAME       image tag to build/use (default ai-sandbox-it)
@@ -72,18 +108,25 @@ Usage: tests/integration/run.sh [options]
   -h, --help         this text
 
 Tags: network-mode mounts volumes groups packages | security | fast slow |
-      needs-external needs-netadmin needs-dns | harness
-Requires: docker netadmin sidecar dns external launcher
+      needs-external needs-netadmin needs-dns needs-multiruby | harness
+Requires: docker netadmin sidecar dns external launcher multiruby
 EOF
 }
 
-while [[ $# -gt 0 ]]; do
+# IT_SOURCE_ONLY (see the early return before the sweep EXIT trap, below) means
+# run.sh is being sourced by tests/test-integration-runner.sh's callfn.sh
+# helper, which reuses "$@" as a FUNCTION NAME plus its arguments, not CLI
+# flags — `source` shares positional parameters with its caller, so parsing
+# them here would read e.g. "variant_overrides" as an unrecognised option and
+# `exit 2`, which kills the whole sourcing process (not just this loop) before
+# the requested function is ever called.
+while [[ -z "${IT_SOURCE_ONLY:-}" && $# -gt 0 ]]; do
   # A value-taking option with no value must be a usage error, not a crash.
   # Without this guard `run.sh --tags` aborts with "line NN: 2: unbound variable"
   # under set -u — a message that names neither the option nor the problem, from a
   # script whose whole purpose is making failures legible.
   case "$1" in
-    --tags|--exclude|--require|--timeout|--image)
+    --tags|--exclude|--variant|--cases|--require|--timeout|--image)
       if [[ $# -lt 2 ]]; then
         printf 'run.sh: %s requires a value\n' "$1" >&2
         usage >&2
@@ -95,6 +138,8 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --tags)     want_tags="${2//,/ }"; shift 2 ;;
     --exclude)  excl_tags="${2//,/ }"; shift 2 ;;
+    --variant)  want_variant="$2";     shift 2 ;;
+    --cases)    want_cases="${2//,/ }"; shift 2 ;;
     --require)  req_tags="${2//,/ }";  shift 2 ;;
     --timeout)  timeout_secs="$2";     shift 2 ;;
     --image)    IT_IMAGE="$2";         shift 2 ;;
@@ -159,10 +204,95 @@ case_meta() {  # $1=file $2=key → the header value, or empty
   sed -n "s/^#[[:space:]]*$2:[[:space:]]*//p" "$1" | head -1
 }
 
+# ── Image variants ──────────────────────────────────────────────────────────────
+# The corpus ran on ONE image until the packages tier: the firewall does not know
+# which fragment a domain came from, so proving admit/drop once proves it for
+# every fragment, and N per-component images bought nothing. The packages tier is
+# the exception — it asserts that components INSTALL, which is per-component by
+# construction.
+#
+# Two variants, not three. The split is KEEP_BUILD_TOOLCHAIN, a distinction the
+# Dockerfile itself makes: `agents` has it unset (the configuration most users
+# ship), `native` has it set by ruby=/db-clients=. A single kitchen-sink image
+# could only ever exercise the toolchain-kept path, so the agent-tier tools would
+# never be tested in the configuration they actually ship in.
+#
+# Grouped with case_meta and placed after it, not up near IT_IMAGE: case_variant
+# calls case_meta, and keeping producer and consumer together beats matching the
+# top-of-file variable block this would otherwise sit in.
+IT_RUBY_VERSIONS="${IT_RUBY_VERSIONS:-3.3.6,3.4.5}"
+
+# This function is the actual authority on which variant names are valid —
+# KNOWN_VARIANTS (top of file) is a flat name list for two user-facing
+# strings (usage(), the unknown-variant error) that run before this function
+# even exists yet; it can't be derived FROM this function's case arms without
+# contorting them, since each arm carries a different override body, not just
+# a name. If a variant is ever added/removed here, update KNOWN_VARIANTS too.
+variant_overrides() {  # $1=variant → space-separated key=value; rc 1 if unknown
+  case "$1" in
+    default) printf '' ;;
+    agents)  printf 'copilot=ON claude-code=ON codex=ON gemini=ON graphify=ON vale=ON node=22,20' ;;
+    native)  printf 'db-clients=pg,mysql,mongo imagemagick=ON wkhtmltopdf=ON ruby=%s' "$IT_RUBY_VERSIONS" ;;
+    *)       return 1 ;;
+  esac
+  return 0
+}
+
+variant_image() {  # $1=variant → the image tag to build/run
+  case "$1" in
+    default) printf '%s' "$IT_IMAGE" ;;
+    *)       printf '%s-%s' "$IT_IMAGE" "$1" ;;
+  esac
+}
+
+case_variant() {  # $1=case file → its variant, or `default`
+  local v; v="$(case_meta "$1" image)"
+  printf '%s' "${v:-default}"
+}
+
+# Per-case override for the corpus-wide --timeout/300s default. Added for the
+# packages tier: 700/710/720 budget an agent-tier install (four npm global
+# installs, a uv tool install, a vale download) at up to 30 minutes, which
+# the 300s default was never sized for — and nightly.yml runs with no
+# --timeout flag at all, the only CI path those cases take. Raising the
+# global default would weaken every fast case's protection against a hang;
+# a per-case number is the only one that can be right, since a 10-second
+# network case and a slow install do not share a sensible ceiling.
+#
+# Empty header → the run's own $timeout_secs (--timeout, or its 300s
+# literal default) — NOT a second hardcoded 300 here, which would silently
+# drift from the CLI flag the moment someone changed one but not the other.
+# A non-numeric header returns 1 rather than falling back: a case author's
+# typo must fail the run loudly, not silently revert to the exact 300s
+# ceiling this key exists to let a case opt out of.
+case_timeout() {  # $1=case file → seconds; rc 1 if the header exists but is not a positive integer
+  local t; t="$(case_meta "$1" timeout)"
+  if [[ -z "$t" ]]; then
+    printf '%s' "$timeout_secs"
+    return 0
+  fi
+  if [[ "$t" =~ ^[0-9]+$ ]] && [[ "$t" -gt 0 ]]; then
+    printf '%s' "$t"
+    return 0
+  fi
+  return 1
+}
+
 list_intersects() {  # $1, $2 = space-separated lists → 0 if they share a member
   local a b
   for a in $1; do for b in $2; do [[ "$a" == "$b" ]] && return 0; done; done
   return 1
+}
+
+selected_variants() {  # $@=case files → distinct variants, first-seen order
+  # bash 3.2: no associative arrays. Space-padded membership test, the same
+  # shape have_cap() and list_intersects() already use.
+  local f v seen=""
+  for f in "$@"; do
+    v="$(case_variant "$f")"
+    case " $seen " in *" $v "*) ;; *) seen="${seen:+$seen }$v" ;; esac
+  done
+  printf '%s' "$seen"
 }
 
 all_cases() {
@@ -172,22 +302,48 @@ all_cases() {
 
 # ── Capability detection ────────────────────────────────────────────────────────
 # Memoised, and lazy: --list must work on a machine with no daemon at all.
-_caps=""; _caps_forced=0
+_caps=""; _caps_forced=0; _caps_unknown=""
+# Which image tag detect_caps's netadmin/launcher probes start a container
+# FROM. Defaults to $IT_IMAGE (the default variant's tag) — the ONLY thing
+# this ever pointed at before --variant existed, so --list-caps and
+# --reuse-image (neither of which builds anything here) keep exactly their
+# old behaviour. A real (non-reuse) run overwrites this via ensure_caps_image
+# (defined below build_image), once a variant's image has actually been
+# built — see that function's comment for why $IT_IMAGE alone stopped being a
+# safe assumption the day a per-variant CI job stopped building it at all.
+IT_CAPS_IMAGE="$IT_IMAGE"
 detect_caps() {
   [[ -n "$_caps" ]] && return 0
   if [[ -n "${IT_FORCE_CAPS:-}" ]]; then
     _caps=" ${IT_FORCE_CAPS} "; _caps_forced=1; return 0
   fi
-  local c=""
+  local c="" u=""
   if docker info >/dev/null 2>&1; then
     c="$c docker"
     if docker network create --label "$IT_LABEL" "${IT_NET}-probe" >/dev/null 2>&1; then
       c="$c sidecar"
       docker network rm "${IT_NET}-probe" >/dev/null 2>&1 || true
     fi
-    if [[ "$reuse_image" -eq 1 ]] || docker image inspect "$IT_IMAGE" >/dev/null 2>&1; then
+    # Pre-existing, not a regression: this gate is keyed to whatever
+    # IT_CAPS_IMAGE currently holds, which defaults to $IT_IMAGE. If every
+    # selected variant fails to build (ensure_caps_image leaves IT_CAPS_IMAGE
+    # at that default) AND a stale image happens to already exist under the
+    # default tag from an unrelated earlier build, the probes below run
+    # against an image that has nothing to do with this run.
+    if [[ "$reuse_image" -eq 1 ]] || docker image inspect "$IT_CAPS_IMAGE" >/dev/null 2>&1; then
       probe_netadmin && c="$c netadmin"
       probe_launcher && c="$c launcher"
+    else
+      # No image exists yet to start a container FROM — e.g. --list-caps
+      # before any build, or every selected variant failed to build (see
+      # ensure_caps_image). netadmin/launcher are HOST properties (kernel
+      # modules, the docker-shim); the image is only the vehicle the probe
+      # needs to start a container with. "No vehicle available" is not the
+      # same fact as "probed it and the host genuinely can't do this" —
+      # collapsing the two is the exact defect class this fix exists to
+      # eliminate, so record it in a visibly separate list rather than just
+      # leaving both capabilities out of $c indistinguishably from absent.
+      u="$u netadmin launcher"
     fi
     # "Can this machine run a DNS-backed case?" — not "is the image already
     # cached". `docker image inspect` alone answers the second, and on a fresh CI
@@ -201,14 +357,23 @@ detect_caps() {
     fi
   fi
   curl -fsS --max-time 8 -o /dev/null https://example.com 2>/dev/null && c="$c external"
+  # Deliberately OUTSIDE the `docker info` block above, not just outside the
+  # `docker image inspect` gate that wraps netadmin/launcher: this probe reads a
+  # resolved variable, not a live daemon or a built image, so it must still be
+  # reported on a machine with no Docker at all — the exact shape this test
+  # suite runs on. Nesting it inside either gate would make `multiruby` vanish
+  # wherever `docker`/`sidecar` do, and 750 would then SKIP for a reason that
+  # has nothing to do with Ruby.
+  probe_multiruby && c="$c multiruby"
   _caps=" $c "
+  _caps_unknown=" $u "
 }
 
 # Can a container here create an ipset and install match-set + NFLOG rules?
 # This is the single question the whole security tier rests on (see Task 0).
 probe_netadmin() {
   docker run --rm --cap-add=NET_ADMIN --cap-add=NET_RAW --label "$IT_LABEL" \
-    --entrypoint bash "$IT_IMAGE" -c '
+    --entrypoint bash "$IT_CAPS_IMAGE" -c '
       ipset create it_probe hash:net family inet   >/dev/null 2>&1 || exit 1
       iptables -A OUTPUT -m set --match-set it_probe dst -j ACCEPT >/dev/null 2>&1 || exit 1
       iptables -A OUTPUT -j NFLOG --nflog-group 100 >/dev/null 2>&1 || exit 1
@@ -234,7 +399,7 @@ probe_launcher() {
   ln -sf "$INT_DIR/docker-shim.sh" "$d/docker" || return 1
   (
     export PATH="$d:$PATH" IT_REAL_DOCKER IT_LAUNCH_NAME="$name" IT_LABEL
-    docker run -it --rm --entrypoint sleep --label "$IT_LABEL" "$IT_IMAGE" 120
+    docker run -it --rm --entrypoint sleep --label "$IT_LABEL" "$IT_CAPS_IMAGE" 120
   ) >/dev/null 2>&1
   if [[ "$($IT_REAL_DOCKER inspect -f '{{.State.Running}}' "$name" 2>/dev/null)" == "true" ]]; then
     rc=0
@@ -242,6 +407,16 @@ probe_launcher() {
   "$IT_REAL_DOCKER" rm -f "$name" >/dev/null 2>&1
   rm -rf "$d"
   return "$rc"
+}
+
+# Can 750-ruby-multiversion-selection select between two Rubies? With only one
+# version configured there is nothing to select — the case would either have to
+# skip for an unrelated reason or "pass" against a single-element list, which
+# tests nothing. Read from the resolved IT_RUBY_VERSIONS, never assumed: a probe
+# that always returned 0 would be exactly the decorative check this suite exists
+# to eliminate.
+probe_multiruby() {
+  case "$IT_RUBY_VERSIONS" in *,*) return 0 ;; *) return 1 ;; esac
 }
 
 have_cap() { detect_caps; case "$_caps" in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
@@ -261,9 +436,23 @@ if [[ "$do_list" -eq 1 ]]; then
   exit 0
 fi
 if [[ "$do_list_caps" -eq 1 ]]; then
+  # Deliberately does NOT build anything (see ensure_caps_image's comment for
+  # why probing accurately can require a build): IT_CAPS_IMAGE is still just
+  # its $IT_IMAGE default here, so this reports exactly what --reuse-image
+  # would find (an image built by an earlier, separate run/build) and
+  # nothing more.
   detect_caps
   printf 'capabilities:%s%s\n' "$_caps" \
     "$([[ "$_caps_forced" -eq 1 ]] && printf ' (FORCED via IT_FORCE_CAPS)')"
+  # A capability detect_caps could not PROBE (no image to start a container
+  # from) is reported here, distinctly from the list above — never silently
+  # folded into "absent". That collapse is the exact defect class task 13b
+  # exists to eliminate: it is what made a genuinely present capability read
+  # as a missing one, and made the failure confusing instead of obvious.
+  if [[ -n "${_caps_unknown// /}" ]]; then
+    printf 'undetermined (no image built successfully to probe with — build one first, or pass --reuse-image against an existing tag):%s\n' \
+      "$_caps_unknown"
+  fi
   exit 0
 fi
 
@@ -301,34 +490,105 @@ restore_real_allowlists() {
   return 0
 }
 
-build_image() {
-  local conf="$IT_SCRATCH/minimal-sandbox.conf"
-  # Everything optional OFF: the firewall does not know which fragment a domain
-  # came from, so proving admit/drop once proves it for every fragment.
-  #
-  # The rule lives in minimal-conf.sh because lib.sh's launcher_up needs the
-  # SAME one — a case drives the real sandbox.sh, which re-reads sandbox.conf at
-  # launch time. Two copies of this sed drifted apart once already; the image
-  # then carried a component the launcher did not mount, and the case failed on
-  # a missing directory that was correct behaviour.
-  bash "$INT_DIR/minimal-conf.sh" "$REPO_DIR/sandbox.conf" > "$conf" || {
-    warn "run.sh: could not derive a minimal sandbox.conf"
+build_image() {  # $1=variant
+  local variant="${1:-default}"
+  local img; img="$(variant_image "$variant")"
+  local overrides; overrides="$(variant_overrides "$variant")" || {
+    warn "run.sh: unknown image variant '$variant'"
     return 1
   }
-  say "── building $IT_IMAGE from a minimal sandbox.conf…"
-  ( cd "$REPO_DIR" && SANDBOX_CONF="$conf" IMAGE_NAME="$IT_IMAGE" ./build.sh "$IT_IMAGE" ) \
-    > "$IT_SCRATCH/build.log" 2>&1 || {
-      warn "run.sh: image build FAILED — last 40 lines of $IT_SCRATCH/build.log:"
-      tail -40 "$IT_SCRATCH/build.log" >&2
+  local conf="$IT_SCRATCH/minimal-sandbox-$variant.conf"
+  # Everything optional OFF, then the variant's overrides applied on top. The
+  # rule lives in minimal-conf.sh because lib.sh's launcher_conf needs the SAME
+  # one — a case drives the real sandbox.sh, which re-reads sandbox.conf at
+  # launch time. Two copies of this derivation drifted apart once already; the
+  # image then carried a component the launcher did not mount, and the case
+  # failed on a missing directory that was correct behaviour.
+  bash "$INT_DIR/minimal-conf.sh" "$REPO_DIR/sandbox.conf" $overrides > "$conf" || {
+    warn "run.sh: could not derive a minimal sandbox.conf for variant '$variant'"
+    return 1
+  }
+  say "── building $img (variant: $variant)…"
+  ( cd "$REPO_DIR" && SANDBOX_CONF="$conf" IMAGE_NAME="$img" ./build.sh "$img" ) \
+    > "$IT_SCRATCH/build-$variant.log" 2>&1 || {
+      warn "run.sh: image build FAILED for variant '$variant' — last 40 lines of $IT_SCRATCH/build-$variant.log:"
+      tail -40 "$IT_SCRATCH/build-$variant.log" >&2
       return 1
     }
-  # Snapshot what build.sh generated, for the delivery case (300).
-  mkdir -p "$IT_GENERATED_ALLOWLIST_DIR"
-  local f
-  for f in allowlist-domains.txt allowlist-cidrs.txt allowlist-proxy-domains.txt; do
-    cp "$REPO_DIR/$f" "$IT_GENERATED_ALLOWLIST_DIR/$f"
-  done
+  # Snapshot what build.sh generated, for the delivery case (300). Only the
+  # default variant: 300 asserts the corpus image's allowlist, and a later
+  # variant's build would overwrite the snapshot with a different one.
+  if [[ "$variant" == "default" ]]; then
+    mkdir -p "$IT_GENERATED_ALLOWLIST_DIR"
+    local f
+    for f in allowlist-domains.txt allowlist-cidrs.txt allowlist-proxy-domains.txt; do
+      cp "$REPO_DIR/$f" "$IT_GENERATED_ALLOWLIST_DIR/$f"
+    done
+  fi
   say "   build OK"
+}
+
+# ── Capability-probe image selection ────────────────────────────────────────────
+# Per-variant build cache: a variant is built AT MOST ONCE per run. Without
+# this, ensure_caps_image (below) building the first selected variant just to
+# have something for detect_caps to probe would pay for that variant's build
+# TWICE — once here, once again when the execution loop reaches it — on every
+# real (non ---reuse-image) run.
+built_ok_variants=""; built_failed_variants=""
+
+ensure_variant_built() {  # $1=variant → 0 once its image exists, 1 if the build failed
+  local v="$1"
+  [[ "$reuse_image" -eq 1 ]] && return 0
+  case " $built_ok_variants " in *" $v "*) return 0 ;; esac
+  case " $built_failed_variants " in *" $v "*) return 1 ;; esac
+  if build_image "$v"; then
+    built_ok_variants="${built_ok_variants:+$built_ok_variants }$v"
+    return 0
+  fi
+  built_failed_variants="${built_failed_variants:+$built_failed_variants }$v"
+  return 1
+}
+
+# detect_caps's netadmin/launcher probes need a real image to start a
+# container FROM. Before --variant existed that was always $IT_IMAGE, the
+# default variant's tag — but a per-variant CI job (this fix's actual
+# trigger: the packages tier's `agents`/`native` jobs) never builds the
+# default tag at all, so the old hardcoded assumption left detect_caps with
+# nothing to probe and both capabilities silently read as absent.
+#
+# netadmin/launcher are HOST properties (kernel modules, the docker-shim, the
+# daemon itself), not properties of any one image — the image is only the
+# vehicle a probe needs to start a container with. So any ONE successfully
+# built selected variant is exactly as good as another for this purpose;
+# there is no reason it has to be the default. Walk selected_variants in its
+# first-seen order and point IT_CAPS_IMAGE at the first one that builds. A
+# variant whose build genuinely fails is not retried here — it is recorded
+# (ensure_variant_built's own cache) so the execution loop below reports that
+# failure by name exactly once, and this function simply moves on to try the
+# next selected variant instead of giving up on capability detection
+# entirely because of one unrelated variant's build problem.
+#
+# If EVERY selected variant fails to build, IT_CAPS_IMAGE is left at its
+# $IT_IMAGE default (nothing exists to probe), detect_caps's gate correctly
+# reports netadmin/launcher UNDETERMINED rather than absent, and it does not
+# matter operationally: every one of those variants' cases already failed at
+# the build step above, so none of them ever reaches a requirement check
+# that would consult netadmin/launcher's value at all.
+#
+# A no-op under --reuse-image, by design (a hard constraint on this fix:
+# that flag's short circuit must keep working unchanged) — IT_CAPS_IMAGE
+# stays at its $IT_IMAGE default, exactly what detect_caps always probed for
+# a --reuse-image run before this function existed.
+ensure_caps_image() {  # $@=selected case files
+  [[ "$reuse_image" -eq 1 ]] && return 0
+  local v
+  for v in $(selected_variants "$@"); do
+    if ensure_variant_built "$v"; then
+      IT_CAPS_IMAGE="$(variant_image "$v")"
+      return 0
+    fi
+  done
+  return 1
 }
 
 # ── Teardown ────────────────────────────────────────────────────────────────────
@@ -379,6 +639,16 @@ sweep() {
   fi
   return 0
 }
+
+# Sourced by tests/test-integration-runner.sh (via its callfn.sh helper) to
+# unit-test the pure functions above without a Docker daemon. Cut here, not at
+# the "── Selection ───" banner below: `trap 'sweep' EXIT` would otherwise fire
+# sweep()'s real `docker` calls when callfn.sh's process exits, and the
+# build_image()/mkdir/`docker network create` block right after it would try a
+# real image build. Every line from here down performs real I/O — that is what
+# a hermetic test must never reach, not just the selection/execution loop.
+[[ -n "${IT_SOURCE_ONLY:-}" ]] && return 0 2>/dev/null
+
 trap 'sweep' EXIT
 
 mkdir -p "$IT_SCRATCH/logs"
@@ -388,36 +658,284 @@ mkdir -p "$IT_SCRATCH/logs"
 # hermetic unit-test invocation) from touching the real repo at all.
 if [[ "$reuse_image" -eq 0 ]]; then
   snapshot_real_allowlists
-  build_image || exit 1
 fi
 docker network create --label "$IT_LABEL" "$IT_NET" >/dev/null 2>&1 || true
 
+# The docker ENDPOINT, resolved once here — the reasoning for WHY (not just
+# where) lives beside IT_REAL_DOCKER near the top of this file, which explains
+# the placement; this is the substance.
+#
+# launcher_run and launcher_script (tests/integration/lib.sh) redirect HOME to
+# a per-case scratch directory to isolate group state, but the docker CLI
+# resolves which daemon to talk to from $HOME/.docker/config.json's
+# currentContext (and $HOME/.docker/contexts/) — redirecting HOME throws that
+# away. On a host where the daemon sits at the CLI's built-in default
+# (unix:///var/run/docker.sock) this is invisible; on macOS + Colima, which
+# supplies its endpoint ONLY through the active context, every docker call
+# made from inside a HOME-redirected subshell — sandbox.sh's/group.sh's/
+# repo.sh's own, and the shim's `exec $IT_REAL_DOCKER` — fails to connect.
+# Linux CI never sees this because /var/run/docker.sock genuinely exists
+# there.
+#
+# DOCKER_HOST, not DOCKER_CONFIG. Pointing DOCKER_CONFIG at the developer's
+# real ~/.docker instead would also fix this, and would additionally carry
+# TLS material and credential-helper config for an endpoint that needs them —
+# but it reintroduces the developer's real state into a harness whose whole
+# point is per-case HOME isolation. Colima's endpoint is a plain unix socket:
+# no TLS, no stored credentials. DOCKER_HOST — one string, carrying nothing
+# sensitive — covers that, and is the narrowest fix that does. A future
+# endpoint that genuinely needs client certs or a credential helper would
+# need DOCKER_CONFIG (or an explicit cert/key triplet); nothing this suite
+# targets today does.
+#
+# An already-exported DOCKER_HOST wins outright: a caller who set it on
+# purpose (e.g. pointing at a remote daemon) knows better than a context
+# lookup — checked first, so a genuine override skips the subprocess too.
+# Resolution failure — no `docker context` subcommand, docker missing
+# entirely, or a template result of "<no value>" (Go's own empty-field
+# marker) — leaves IT_DOCKER_HOST EMPTY, never a fabricated string: the
+# export sites in lib.sh only ever set DOCKER_HOST when this is non-empty, so
+# empty means "do not touch DOCKER_HOST at all" — the honest fallback.
+# Exporting an empty DOCKER_HOST would be worse than exporting nothing at all
+# — it overrides the CLI's own built-in default just as effectively as a
+# wrong one.
+#
+# The `[[ -z "${IT_DOCKER_HOST+x}" ]]` guard (IS-SET, not IS-NON-EMPTY — the
+# same "set-but-empty still counts as set" convention sandbox-common.sh's
+# load_env_defaults uses) exists for a caller that pre-exports IT_DOCKER_HOST
+# itself (e.g. a nested/manual invocation), so this block is idempotent
+# rather than blindly re-shelling-out. In the ordinary case it is always
+# unset on entry here, since nothing sets it earlier in this file.
+if [[ -z "${IT_DOCKER_HOST+x}" ]]; then
+  if [[ -n "${DOCKER_HOST:-}" ]]; then
+    IT_DOCKER_HOST="$DOCKER_HOST"
+  else
+    IT_DOCKER_HOST="$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null)"
+    case "$IT_DOCKER_HOST" in *'<no value>'*) IT_DOCKER_HOST="" ;; esac
+  fi
+fi
+
+# IT_RUBY_VERSIONS: resolved above (with everything else in this block) purely
+# for run.sh's OWN use — variant_overrides()/probe_multiruby() read it while
+# still inside this process. Without exporting it here too, it never reaches a
+# case's process at all: `bash "$f"` (the execution loop, below) starts a CHILD
+# bash, which inherits only the environment, not this script's plain variable
+# assignments. The packages-tier Ruby cases (740/750) read $IT_RUBY_VERSIONS
+# directly under `set -u`, so a case that lost this value would not silently
+# assert nothing against an empty list — it would abort immediately with bash's
+# own "unbound variable" error, reported by run.sh as a bare nonzero exit with
+# no case-specific diagnosis. Found and fixed while writing those cases
+# (task 9), never exercised until then because no earlier case read the var.
 export IT_RUN_ID IT_LABEL IT_SCRATCH IT_IMAGE IT_NET IT_DNS_IMAGE \
-       IT_CONNECT_TIMEOUT IT_SETTLE IT_GENERATED_ALLOWLIST_DIR IT_REAL_DOCKER
+       IT_CONNECT_TIMEOUT IT_SETTLE IT_GENERATED_ALLOWLIST_DIR IT_REAL_DOCKER \
+       IT_DOCKER_HOST IT_RUBY_VERSIONS
+
+# --variant is validated HERE, once, rather than left to fall through to the
+# "selected 0" fatal check below: a bad name would otherwise just match zero
+# cases in the loop right below and get the SAME message a mistyped --tags
+# gets ("no case was selected... check for a typo"), which is true but not
+# specific — it never says the NAME itself is unrecognised. variant_overrides()
+# is the single source of truth for valid names (build_image() trusts the
+# exact same call), so this can never drift from what the execution loop
+# itself would accept.
+if [[ -n "$want_variant" ]]; then
+  variant_overrides "$want_variant" >/dev/null || {
+    printf 'run.sh: unknown variant: %s (known: %s)\n' "$want_variant" "$KNOWN_VARIANTS" >&2
+    exit 2
+  }
+fi
+
+# --cases is validated HERE, the same way --variant is just above: a mistyped
+# name would otherwise just intersect to zero cases in the loop below and hit
+# the generic "no case was selected" message further down, which is true but
+# does not say WHICH name was the problem — same reasoning as --variant's
+# dedicated check, applied per-name since --cases can name several at once.
+if [[ -n "$want_cases" ]]; then
+  known_case_names=""
+  for f in $(all_cases); do
+    known_case_names="${known_case_names:+$known_case_names }$(basename "$f" .sh)"
+  done
+  unknown_cases=""
+  for c in $want_cases; do
+    case " $known_case_names " in
+      *" $c "*) ;;
+      *) unknown_cases="${unknown_cases:+$unknown_cases }$c" ;;
+    esac
+  done
+  if [[ -n "$unknown_cases" ]]; then
+    printf 'run.sh: unknown case name(s): %s\n' "$unknown_cases" >&2
+    exit 2
+  fi
+fi
 
 # ── Selection ───────────────────────────────────────────────────────────────────
-total=0; selected=""
+# --cases is applied BEFORE --variant here (the reverse of the two flags'
+# narrative order in the comments below), so $selected_pre_variant can capture
+# "everything --tags/--exclude/--cases agreed on" at the exact point before the
+# variant cut is made. That set is what the task-11c diagnostic immediately
+# below this loop (well before the fatal zero-selection guard near the bottom
+# of the file) uses to tell "you named real cases, but they all belong to a
+# different --variant" (a deliberate no-op — a sibling job covers them) apart
+# from an actual typo or a --tags/--exclude mismatch (still fatal).
+# The final $selected membership is identical either way; only the bookkeeping
+# moved.
+total=0; selected=""; selected_pre_variant=""
 for f in $(all_cases); do
   total=$((total + 1))
   tags="$(case_meta "$f" tags)"
   [[ -n "$want_tags" ]] && { list_intersects "$tags" "$want_tags" || continue; }
   [[ -n "$excl_tags" ]] && { list_intersects "$tags" "$excl_tags" && continue; }
+  # Narrows to an explicit set of case basenames, exactly the "run just this
+  # one mutated case plus its controls" shape a mutation demonstration needs.
+  [[ -n "$want_cases" ]] && { list_intersects "$(basename "$f" .sh)" "$want_cases" || continue; }
+  selected_pre_variant="${selected_pre_variant:+$selected_pre_variant }$f"
+  # Composes with --tags/--exclude/--cases above rather than replacing them:
+  # narrows whatever they already selected down to one image variant.
+  [[ -n "$want_variant" ]] && { [[ "$(case_variant "$f")" == "$want_variant" ]] || continue; }
   selected="${selected:+$selected }$f"
 done
 
+# ── Legitimate empty selection: known --cases naming a sibling job's variant ───
+# Task 11c: nightly.yml's packages-agents/packages-native jobs both thread the
+# SAME workflow_dispatch `cases` input into `--tags packages --variant <name>
+# ${cases:+--cases <cases>}`. A dispatch plan built around one variant's case
+# names (e.g. `--cases 700-agent-tools-install-restricted`, an agents-tier
+# case) therefore also reaches the OTHER job as
+# `--variant native --cases 700-agent-tools-install-restricted`. That name is
+# real — it already survived the unknown-name check earlier in this file — it
+# simply belongs to the sibling job's variant, not this one's. Treating that
+# the same as a typo (falling through to the FATAL guard near the bottom of
+# this file)
+# would fail a job for doing exactly what it was asked: nothing, because its
+# sibling covers these cases.
+#
+# $selected_pre_variant is the selection loop just above with every filter but
+# --variant already applied. If it is non-empty while $selected (--variant
+# applied) is empty, --tags/--exclude/--cases were all satisfied and the ONLY
+# remaining cause is the variant cut itself — provable from data already
+# computed here, not inferred from the flags. Exit 0 (not the FATAL 1 below)
+# with a message naming the variant(s) the requested cases actually belong to,
+# so a reader of a green log can tell "this job deliberately did nothing"
+# apart from "this job silently checked nothing" — the exact ambiguity the
+# FATAL guard exists to prevent for every OTHER cause of an empty selection.
+# A --cases name that fails --tags/--exclude for a reason OTHER than variant
+# leaves $selected_pre_variant empty too, so it still falls through to FATAL,
+# unchanged.
+#
+# -n "$want_cases" is NOT redundant with -n "$selected_pre_variant": without
+# --cases, $selected_pre_variant is just "every case that passed
+# --tags/--exclude" (the ordinary --variant-only selection pool), which is
+# routinely non-empty even when THIS variant's cut of it is empty — e.g.
+# `--tags fast --variant native` when no fast-tagged case is native. That is
+# the plain "this variant has none of the tag-selected cases" outcome the
+# FATAL guard has always correctly caught; it has nothing to do with --cases
+# naming a real case in a sibling variant, and must keep failing exactly as
+# before.
+if [[ -z "$selected" && -n "$want_cases" && -n "$want_variant" && -n "$selected_pre_variant" ]]; then
+  owning_variants=""
+  for f in $selected_pre_variant; do
+    v="$(case_variant "$f")"
+    case " $owning_variants " in
+      *" $v "*) ;;
+      *) owning_variants="${owning_variants:+$owning_variants }$v" ;;
+    esac
+  done
+  printf 'run.sh: --cases "%s" named known case(s) belonging to variant "%s" -- not this job'"'"'s --variant "%s".\n' \
+    "$want_cases" "$owning_variants" "$want_variant" >&2
+  printf '        Nothing to run here; a sibling job with --variant "%s" covers them. Exiting 0 (deliberate no-op, not an error).\n' \
+    "$owning_variants" >&2
+  exit 0
+fi
+
+# Validated for the WHOLE selected set up front, before any image build or
+# capability probe: a malformed `timeout:` header is an authoring bug, and
+# letting it surface only once that case's own it_timeout call is reached
+# would mean discovering it after paying for a multi-GB build — the same
+# fail-fast reasoning variant_overrides applies to an unrecognised `image:`
+# header just below. Loud and fatal, not a silent revert to 300s.
+for f in $selected; do
+  case_timeout "$f" >/dev/null || {
+    printf 'ERROR: %s declares a non-numeric timeout: header value "%s"\n' \
+      "$(basename "$f" .sh)" "$(case_meta "$f" timeout)" >&2
+    exit 2
+  }
+done
+
+# Build at least one usable image BEFORE detecting capabilities: netadmin and
+# launcher both need to start a real container to probe the host, and a run
+# that only ever builds a --variant image (every packages-tier CI job) left
+# nothing for detect_caps to probe if it still hardcoded $IT_IMAGE, the
+# DEFAULT variant's tag (see ensure_caps_image's own comment for the full
+# story). Capabilities are a HOST property, so detecting ONCE — against
+# whichever selected variant's image builds first — is correct for every
+# variant's cases in the loop below, not just that first one's.
+ensure_caps_image $selected
 detect_caps
-printf 'capabilities:%s%s\n\n' "$_caps" \
+printf 'capabilities:%s%s\n' "$_caps" \
   "$([[ "$_caps_forced" -eq 1 ]] && printf ' (FORCED via IT_FORCE_CAPS)')"
+if [[ -n "${_caps_unknown// /}" ]]; then
+  printf 'undetermined (no image built successfully to probe with — build one first, or pass --reuse-image against an existing tag):%s\n' "$_caps_unknown"
+fi
+printf '\n'
 
 # ── Execution ───────────────────────────────────────────────────────────────────
 n_pass=0; n_fail=0; n_skip=0; n_sel=0
 failed_names=""; skipped_names=""; skipped_tags=""
-for f in $selected; do
+# sweep() (the EXIT trap) reads the GLOBAL $IT_IMAGE — exported once, above,
+# with the default/CLI value — to decide what to `docker rmi` / name in its
+# "kept: image" message. An earlier version of this loop reassigned that same
+# global per variant and restored it after the loop; that missed the loop's
+# OTHER exit (the unknown-variant `exit 1` a few lines down), which left
+# whatever the previous iteration had set behind for sweep() to misreport.
+# Save/restore has as many failure points as the loop has exits, and a loop
+# gains exits over time. Not mutating the global at all closes the whole
+# class structurally: each case gets ITS variant's image via a per-invocation
+# prefix assignment on the `it_timeout` call below (verified to reach the
+# child through all three it_timeout implementations — GNU timeout, gtimeout,
+# and the pure-bash background-job fallback — and through the --verbose
+# pipeline, none of which is otherwise obvious from reading the call site).
+# $IT_IMAGE itself never changes for the life of the script, so sweep() is
+# correct no matter which of the loop's exits fires.
+for v in $(selected_variants $selected); do
+  IT_VARIANT_OVERRIDES="$(variant_overrides "$v")" || {
+    printf 'ERROR: case declares unknown image variant: %s\n' "$v" >&2
+    exit 1
+  }
+  export IT_VARIANT_OVERRIDES
+  variant_img="$(variant_image "$v")"
+
+  # ensure_variant_built, not a bare build_image call: ensure_caps_image
+  # (above the capabilities banner) may already have built THIS variant — the
+  # first selected one — purely to have something for detect_caps to probe
+  # with. The shared cache makes that case a no-op here rather than a second,
+  # redundant build; every other variant still gets its normal first (and
+  # only) build right here, and --reuse-image still skips building entirely.
+  ensure_variant_built "$v" || {
+    # A variant that will not build fails ITS cases by name rather than
+    # aborting the run: the other variants' cases are unaffected and their
+    # result is worth having. Reporting them as passed, or not reporting them
+    # at all, is the failure this suite exists to prevent.
+    for f in $selected; do
+      [[ "$(case_variant "$f")" == "$v" ]] || continue
+      printf '%-46s  FAIL  (image variant %s failed to build)\n' "$(basename "$f" .sh)" "$v"
+      n_sel=$((n_sel + 1)); n_fail=$((n_fail + 1))
+      failed_names="${failed_names:+$failed_names }$(basename "$f" .sh)"
+    done
+    continue
+  }
+
+  for f in $selected; do
+  [[ "$(case_variant "$f")" == "$v" ]] || continue
   name="$(basename "$f" .sh)"
   n_sel=$((n_sel + 1))
   tags="$(case_meta "$f" tags)"
   reqs="$(case_meta "$f" requires)"
   log="$IT_SCRATCH/logs/$name.log"
+  # Already validated in the Selection section above (every selected case's
+  # header was checked before the first image build), so this cannot fail
+  # here — just resolves the same value again for THIS case's own it_timeout
+  # call and its "timed out after Ns" report below.
+  case_to="$(case_timeout "$f")"
 
   if missing="$(unmet_requirement "$reqs")"; then
     printf '%-46s  SKIP  (requires: %s)\n' "$name" "$missing"
@@ -429,10 +947,15 @@ for f in $selected; do
 
   case_failed=0
   started=$SECONDS
+  # IT_IMAGE="$variant_img" here is a per-command prefix assignment, not an
+  # `export`: it reaches this case's own process (and lib.sh's `set -u`
+  # IT_IMAGE check) through the environment bash builds for THIS command only,
+  # then reverts — the parent shell's own $IT_IMAGE is never touched. See the
+  # comment above the loop for why that matters.
   if [[ "$verbose" -eq 1 ]]; then
-    it_timeout "$timeout_secs" bash "$f" 2>&1 | tee "$log"; rc=${PIPESTATUS[0]}
+    IT_IMAGE="$variant_img" it_timeout "$case_to" bash "$f" 2>&1 | tee "$log"; rc=${PIPESTATUS[0]}
   else
-    it_timeout "$timeout_secs" bash "$f" > "$log" 2>&1; rc=$?
+    IT_IMAGE="$variant_img" it_timeout "$case_to" bash "$f" > "$log" 2>&1; rc=$?
   fi
   took=$((SECONDS - started))
   # grep -c prints "0" AND exits 1 on no match; under `set -o pipefail` (not in
@@ -446,6 +969,10 @@ for f in $selected; do
   # let a case that printed '  ok' by accident count as having asserted.
   n_ok="$(grep -c '^PASS:' "$log" 2>/dev/null | tail -1)"
   n_ok="${n_ok:-0}"
+  # Same narrowness reasoning as n_ok above: lib.sh's fail() prints exactly
+  # 'FAIL: <msg>', so this is the one form a case can genuinely fail through.
+  n_fail_lines="$(grep -c '^FAIL:' "$log" 2>/dev/null | tail -1)"
+  n_fail_lines="${n_fail_lines:-0}"
 
   if [[ "$rc" -eq 77 ]]; then
     printf '%-46s  SKIP  (%s)\n' "$name" \
@@ -454,11 +981,23 @@ for f in $selected; do
     skipped_names="${skipped_names:+$skipped_names }$name"
     skipped_tags="${skipped_tags}|${name}:${tags}"
   elif [[ "$rc" -eq 124 ]]; then
-    printf '%-46s  FAIL  (timed out after %ss)\n' "$name" "$timeout_secs"
+    printf '%-46s  FAIL  (timed out after %ss)\n' "$name" "$case_to"
     case_failed=1
     n_fail=$((n_fail + 1)); failed_names="${failed_names:+$failed_names }$name"
   elif [[ "$rc" -ne 0 ]]; then
     printf '%-46s  FAIL  (exit %s, %ss)\n' "$name" "$rc" "$took"
+    case_failed=1
+    n_fail=$((n_fail + 1)); failed_names="${failed_names:+$failed_names }$name"
+  elif [[ "$n_fail_lines" -gt 0 ]]; then
+    # rc==0 here (the branches above already claimed every nonzero exit), yet
+    # the log holds real FAIL: lines. The normal exit path is lib.sh's
+    # it_finish, which `exit`s "$it_fails" — so rc==0 with a FAIL: present
+    # means the case never reached it_finish (an early return, a forgotten
+    # call at the end of a hand-rolled case) and whatever ran last happened to
+    # exit 0, silently swallowing the failure. Gate on the printed evidence,
+    # not the exit code the case forgot to set.
+    printf '%-46s  FAIL  (exited 0 but printed %s FAIL: line(s) — case never reached it_finish)\n' \
+      "$name" "$n_fail_lines"
     case_failed=1
     n_fail=$((n_fail + 1)); failed_names="${failed_names:+$failed_names }$name"
   elif [[ "$n_ok" -eq 0 ]]; then
@@ -489,8 +1028,48 @@ for f in $selected; do
     # and first — they must never be the thing that gets truncated — then a
     # bounded diagnostics tail for context.
     grep -E '^(PASS|FAIL|SKIP):' "$log" | sed 's/^/     /'
+    # The SAME truncation defect applies one layer down, to it_diagnose's own
+    # dump: it prints "── docker logs (last 60) ──" FIRST, then iptables -S,
+    # ipset counts and capture-dir listings AFTER it (lib.sh's it_diagnose,
+    # unchanged here — reordering it would ripple to every other caller that
+    # reads its output directly, e.g. a case's own `it_diagnose "$IT_CID"`
+    # mid-script). Those later sections routinely push the combined log past
+    # 40 lines on their own, so the plain `tail -40` below reliably showed
+    # ONLY iptables/ipset/`ls` output and discarded the container logs
+    # entirely — the actual record of what the entrypoint/reconcile/agent did,
+    # and the single most useful thing here (task-14a: a real failure's
+    # diagnostics were 100% iptables/ipset/capture-dir noise, zero lines of
+    # what the container had actually printed). Extract and print that section
+    # unconditionally and first, the same way the assertions above already
+    # are, rather than hoping a fixed-size tail happens to land on it.
+    #
+    # Bounded by construction, not just by luck: it_diagnose itself caps this
+    # section at 60 lines (`docker logs | tail -60`), so pulling it out whole
+    # cannot turn into the unbounded dump the plain tail below is deliberately
+    # sized against. Captured to a variable rather than piped straight to
+    # sed/printf so an empty result (no it_diagnose ran — e.g. a case failed
+    # before IT_CID was ever set) prints nothing at all instead of a
+    # container-logs header over an empty section.
+    container_logs="$(awk '
+      /── docker logs \(last 60\) ──/ { f=1; next }
+      /── iptables -S OUTPUT ──/      { f=0 }
+      f
+    ' "$log")"
+    if [[ -n "$container_logs" ]]; then
+      printf '     ── container logs (from it_diagnose, unbounded by the tail below) ──\n'
+      printf '%s\n' "$container_logs" | sed 's/^/     /'
+    fi
     printf '     ── diagnostics (last 40 lines of case output) ──\n'
     sed 's/^/     /' "$log" | tail -40
+  fi
+  done
+
+  # Reclaim the disk before the next variant. Never the default variant: --keep
+  # and the existing sweep() own that one — sweep() targets $IT_IMAGE, which
+  # (per the comment above the loop) is always still the default here, so
+  # this variant-scoped rmi and sweep()'s own never collide or double up.
+  if [[ "$v" != "default" && "$reuse_image" -eq 0 && "$keep" -eq 0 ]]; then
+    docker rmi "$variant_img" >/dev/null 2>&1 || true
   fi
 done
 
@@ -512,6 +1091,13 @@ if [[ "$n_sel" -eq 0 ]]; then
   if [[ -n "$want_tags$excl_tags" ]]; then
     printf '       selection was --tags "%s" --exclude "%s" — check for a typo\n' \
       "$want_tags" "$excl_tags" >&2
+  fi
+  # An unknown --variant name never reaches here — it is validated (and exits)
+  # before selection runs, above. This is the LEGITIMATE empty intersection: a
+  # recognised variant that just has no case matching --tags/--exclude.
+  if [[ -n "$want_variant" ]]; then
+    printf '       --variant "%s" narrowed it further — check the variant matches a selected case\n' \
+      "$want_variant" >&2
   fi
   if [[ "$total" -eq 0 ]]; then
     printf '       no case files found in %s\n' "$CASES_DIR" >&2

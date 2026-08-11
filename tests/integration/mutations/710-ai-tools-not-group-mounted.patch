@@ -1,0 +1,24 @@
+# case: 710-agent-tools-reused-not-reinstalled
+# what: sandbox.sh drops the ~/.ai-tools mount entirely, so the group's npm/uv/vale
+#       tool home is never bind-mounted into the container -- every launch installs
+#       the six agent-tier tools into an ephemeral, per-container ~/.ai-tools instead
+#       of reusing the group's persisted one, so a second container in the same
+#       group re-downloads everything rather than finding claude already there.
+#
+diff --git a/sandbox.sh b/sandbox.sh
+index ded2e31..42a9e8a 100755
+--- a/sandbox.sh
++++ b/sandbox.sh
+@@ -670,10 +670,8 @@ run_container() {
+     fi
+   fi
+   if [[ -n "$(runtime_tools_csv)" ]]; then
+-    if [[ "$group" != "host" ]]; then
+-      install -d "$group_root/.ai-tools"
+-    fi
+-    add_mount_if_exists config_mount_flags "$group_root/.ai-tools" "$dev_home/.ai-tools"
++    : # MUTATION: ~/.ai-tools is never mounted from the group — every container
++      # installs the agent-tier tools from scratch instead of reusing them.
+   fi
+   if is_enabled yarn; then
+     add_mount_if_exists config_mount_flags "$HOME/.yarn" "$dev_home/.yarn"

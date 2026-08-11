@@ -1,0 +1,20 @@
+# case: 720-node-multiversion-nvm-use
+# what: /etc/skel/.npmrc is re-baked with prefix=${HOME}/.ai-tools/npm -- the exact
+#       regression that broke `nvm use`. nvm's nvm_die_on_prefix check fails `nvm use
+#       <version>` outright (not a warning) whenever $HOME/.npmrc sets a prefix, so the
+#       node=22,20 multi-version workflow breaks the instant ~/.ai-tools is populated.
+#
+diff --git a/Dockerfile b/Dockerfile
+index ee36aec..c5bb71e 100644
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -383,7 +383,8 @@ RUN chmod +x /usr/local/bin/link-default-ruby.sh
+ # without exporting NPM_CONFIG_PREFIX globally, which would trip that same nvm check.
+ # The six tools (Claude Code, Codex, Gemini, Copilot, graphify, Vale) install at
+ # container start via agent-tools-reconcile.sh; nothing agent-tier is baked.
+-RUN install -d /etc/skel/.local/bin && \
++RUN printf 'prefix=${HOME}/.ai-tools/npm\n' > /etc/skel/.npmrc && \
++    install -d /etc/skel/.local/bin && \
+     printf '%s\n' \
+       'export UV_TOOL_DIR="$HOME/.ai-tools/uv"' \
+       'export UV_TOOL_BIN_DIR="$HOME/.ai-tools/uv/bin"' \
