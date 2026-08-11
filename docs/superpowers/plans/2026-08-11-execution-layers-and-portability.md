@@ -719,9 +719,16 @@ Expected: PASS, including the four new assertions.
 
 - [ ] **Step 7: Demonstrate the assertion can fail**
 
-Temporarily make `--dry-run` ignore `want_tags` (print all of `$selected_pre_variant`
-regardless), confirm `--dry-run --tags fast selects a proper subset` FAILs, then
-revert. Record the output in the commit message.
+Temporarily make `--dry-run` print `$(all_cases)` instead of `$selected`, confirm
+`--dry-run --tags fast selects a proper subset` FAILs (it will report the full
+corpus count on both sides), then revert. Record the output in the commit message.
+
+> **Corrected 2026-08-11.** This step originally said to swap in
+> `$selected_pre_variant`. That would have demonstrated **nothing**: that variable
+> is populated *after* `--tags` filtering (`run.sh:945`), so the "break" changes
+> no observable behaviour and the assertion passes — recording a successful
+> demonstration of a guard nobody tested. Caught only because the implementer was
+> required to actually run it. The break must bypass the filter entirely.
 
 - [ ] **Step 8: Commit**
 
@@ -1030,9 +1037,20 @@ Expected: PASS on every assertion (Tasks 2, 4 and 5 have landed the pieces).
 
 - [ ] **Step 3: Demonstrate it failing — the containment half**
 
-Comment out the Phase 5 block's `run-all.sh` invocation in `verify-on-host.sh`,
-run the test, confirm `hermetic suite runs in CI but NOT in verify-on-host.sh`
-FAILs, then restore.
+Neuter the Phase 5 block's real `run-all.sh` invocation in `verify-on-host.sh`
+(replace the `bash "$TESTS_DIR/run-all.sh" …` call with `h_rc=0; true`, leaving a
+comment that still names the file), run the test, confirm the hermetic-suite row
+FAILs, then restore. Repeat for a second row — the schema gate — because the
+weakness this guards against is systemic, not per-row.
+
+> **Corrected 2026-08-11.** This step originally said to comment out the
+> invocation and expect a failure. It does not fail: `verify-on-host.sh` mentions
+> the literal string `run-all.sh` six times (existence guard, `phase_fail`
+> message, header phase table, floor-container invocation), so a whole-file
+> `grep` still matches. That non-failure was the *symptom of a Critical design
+> defect* — the check proved a string existed rather than that the check ran —
+> and the fix was to assert by effect via a witness log, not to find a bigger
+> hammer for the demonstration. See the CHECKS table's current implementation.
 
 - [ ] **Step 4: Demonstrate it failing — the ratchet half**
 
@@ -1049,8 +1067,15 @@ stops the floor and the image it is tested at from drifting apart.
 
 - [ ] **Step 6: Demonstrate it failing — the set-comparison half**
 
-Temporarily add `--exclude fast` to the `nightly_set` computation, confirm
-`PR selection ⊆ nightly selection` FAILs listing the missing cases, then revert.
+Temporarily merge `fast` into the existing exclude of the `nightly_set`
+computation — `sel --exclude packages,fast` — confirm `PR selection ⊆ nightly
+selection` FAILs listing the missing cases, then revert.
+
+> **Corrected 2026-08-11.** This step originally said to "add `--exclude fast`".
+> Read as a separate `sel --exclude fast` union branch that is a true no-op:
+> `run.sh:152` **assigns** `excl_tags` rather than accumulating, and the union
+> with `--tags packages` re-admits everything, so the demonstration proves
+> nothing. The exclusion must be merged into the one call to actually widen it.
 
 - [ ] **Step 7: Run the full suite**
 
