@@ -7,6 +7,23 @@
 # verify-on-host.sh ran the integration corpus and NOTHING else, so a developer
 # verifying locally checked less than CI would — the local layer was a SUBSET of
 # the PR gate.
+#
+# FIX ROUND 1 (review finding, Critical): the first version of the "every
+# PR-layer check also runs locally" section proved a STRING exists in
+# verify-on-host.sh's source text, not that the check it names actually runs.
+# `grep -qE "run-all\.sh" "$VERIFY"` still matches after the real invocation is
+# commented out, because the filename also appears in the existence-check
+# guard, the phase_fail message, the header's phase table, and the
+# floor-container invocation — five other non-comment sites carrying the same
+# string. Five of the six original rows had this shape. Replaced with EFFECT
+# checks, per this project's own doctrine (see AGENTS.md: "the suite asserts
+# effect, not configuration ... whether the file exists, whether the log line
+# is present"): build a stub repo with tests/lib-verify-repo.sh's instrumented
+# stubs (each records its own invocation to WITNESS_LOG, or in bash -n's case —
+# no external tool to stub — a genuinely broken tracked file that only
+# produces a PARSE ERROR line if bash -n truly runs against it), run the REAL,
+# CURRENT verify-on-host.sh against it, and assert each check's OWN witness
+# line, not a substring anywhere in the script's source.
 set -uo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Layout-tolerant, like run.sh, lib.sh and verify-on-host.sh itself: upstream
@@ -21,35 +38,88 @@ ENGINE_DIR="$REPO_DIR"
 TESTS_YML="$REPO_DIR/.github/workflows/tests.yml"
 VERIFY="$ENGINE_DIR/verify-on-host.sh"
 RUN="$REPO_DIR/tests/integration/run.sh"
+LIB_VERIFY_REPO="$REPO_DIR/tests/lib-verify-repo.sh"
 fails=0
 pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails+1)); }
 
-for f in "$TESTS_YML" "$VERIFY" "$RUN"; do
-  [[ -f "$f" ]] || { fail "$(basename "$f") not found — nothing below is checked"; \
-    printf '\n%d failure(s)\n' "$fails"; exit "$fails"; }
+# Report EVERY missing required file, not just the first — a preflight that
+# bails on the first miss can hide the other two from whoever is reading the
+# output trying to fix it.
+missing_required=0
+for f in "$TESTS_YML" "$VERIFY" "$RUN" "$LIB_VERIFY_REPO"; do
+  if [[ ! -f "$f" ]]; then
+    fail "$(basename "$f") not found at $f"
+    missing_required=1
+  fi
 done
+if [[ "$missing_required" -eq 1 ]]; then
+  fail "one or more required files are missing — nothing below is checked"
+  printf '\n%d failure(s)\n' "$fails"
+  exit "$fails"
+fi
 
-# ── Every PR-layer check also runs locally ─────────────────────────────────────
-# name|regex matching its invocation in tests.yml|regex matching it in verify-on-host.sh
-CHECKS='hermetic suite|run-all\.sh|run-all\.sh
-schema gate|check-sandbox-version\.sh|check-sandbox-version\.sh
-floor suite|container: ubuntu:22\.04|ubuntu:22\.04
-bash -n|bash -n|bash -n
-dialect lint|bash-dialect-lint\.sh|bash-dialect-lint\.sh
-shellcheck|shellcheck|shellcheck'
+# ── Build a stub repo and run the REAL verify-on-host.sh against it ────────────
+# tests/lib-verify-repo.sh (shared with tests/test-verify-exit-code.sh — see
+# its own header for why this is one copy, not two) gives us mk_repo(),
+# run_verify() and $WITNESS_LOG. mk_repo() copies $VERIFY as-is, so this picks
+# up whatever is on disk right now, local edits included — the same property
+# that lets Step 3-style demonstrations (comment out a real invocation, keep
+# the naming comment) actually exercise this file.
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+# shellcheck source=lib-verify-repo.sh
+source "$LIB_VERIFY_REPO"
+
+r="$(mk_repo 0)"
+# bash -n has no external tool of its own to stub, so its effect proof is
+# different in kind: a tracked file with a REAL syntax error. Phase 7 can only
+# print "PARSE ERROR: <path>" for it if `bash -n` genuinely runs against this
+# file's actual content — a comment that merely names "bash -n" could never
+# produce this line, unlike a plain substring match against the script text.
+printf '#!/usr/bin/env bash\nif [ 1 -eq\n' > "$r/tests/broken-syntax-probe.sh"
+( cd "$r" && git add -A \
+    && git -c user.email=t@example -c user.name=t commit -q -m broken-probe ) >/dev/null 2>&1
+
+# PHASES="5 7" covers every check named in CHECKS below in one hermetic run.
+# The deliberately broken probe file makes Phase 7 report FAILED — expected
+# and irrelevant here: this run's purpose is the WITNESS/log content it
+# leaves behind, not its own exit code.
+run_verify "$r" "5 7" >/dev/null
+
+# ── Every PR-layer check also runs locally — EFFECT, not text presence ─────────
+# name|regex matching its invocation in tests.yml|witness or log|regex matching
+# a witness/log line that only appears if the check GENUINELY ran
+#
+#   witness → grep against $WITNESS_LOG (each stub's OWN "STUB:<name>" line;
+#             see lib-verify-repo.sh's header for why the docker-run line uses
+#             a different prefix than tests/run-all.sh's own line, even though
+#             the floor invocation's argv also embeds the string "run-all.sh")
+#   log     → grep against $TMP/out.log (verify-on-host.sh's own stdout/stderr)
+CHECKS='hermetic suite|run-all\.sh|witness|^STUB:run-all\.sh$
+schema gate|check-sandbox-version\.sh|witness|^STUB:check-sandbox-version\.sh$
+floor suite|container: ubuntu:22\.04|witness|^STUB:docker-run.*ubuntu:22\.04
+bash -n|bash -n|log|PARSE ERROR: .*broken-syntax-probe\.sh
+dialect lint|bash-dialect-lint\.sh|witness|^STUB:bash-dialect-lint\.sh$
+shellcheck|shellcheck|witness|^STUB:shellcheck$'
 while IFS= read -r row; do
   [[ -n "$row" ]] || continue
   name="${row%%|*}"; rest="${row#*|}"
-  ci_re="${rest%%|*}"; local_re="${rest#*|}"
+  ci_re="${rest%%|*}"; rest2="${rest#*|}"
+  target="${rest2%%|*}"; expect_re="${rest2#*|}"
   if ! grep -qE "$ci_re" "$TESTS_YML"; then
     fail "$name is invoked by tests.yml — it is not, so this row is stale"
     continue
   fi
-  if grep -qE "$local_re" "$VERIFY"; then
-    pass "$name runs in the local layer too"
+  case "$target" in
+    witness) hay="$WITNESS_LOG" ;;
+    log)     hay="$TMP/out.log" ;;
+    *) fail "$name: unrecognised CHECKS target '$target' — this row is broken"; continue ;;
+  esac
+  if grep -qE "$expect_re" "$hay"; then
+    pass "$name runs in the local layer too (observed actually running)"
   else
-    fail "$name runs in CI but NOT in verify-on-host.sh — local is not a superset"
+    fail "$name runs in CI but was NOT OBSERVED RUNNING in verify-on-host.sh (no witness — local is not a superset)"
   fi
 done <<< "$CHECKS"
 

@@ -68,86 +68,16 @@ for p in 5 7; do
   fi
 done
 
-# ── Stub docker ────────────────────────────────────────────────────────────────
-# Phase 0's environment banner calls docker directly (--version, buildx version,
-# info, system df) and must always see success, or every test here would die at
-# Phase 0 regardless of which phase it means to exercise. Phase 5's
-# declared-floor step is the one real `docker run` in the surviving script; this
-# stub does not execute its payload (that would mean apt-get and a real image
-# pull inside a "hermetic" test) — it exits $DOCKER_RUN_RC instead, so that
-# sub-step's pass/fail path is independently testable via a canned code, same
-# idiom as CORPUS_RC below for tests/integration/run.sh. Phase 4 has no direct
-# `docker run`/`exec` of its own — it delegates entirely to the stub
-# tests/integration/run.sh.
-mkdir -p "$TMP/bin"
-cat > "$TMP/bin/docker" <<'EOF'
-#!/usr/bin/env bash
-case "${1:-}" in
-  run) exit "${DOCKER_RUN_RC:-0}" ;;
-  *) exit 0 ;;
-esac
-EOF
-chmod +x "$TMP/bin/docker"
-
-# ── Stub shellcheck ────────────────────────────────────────────────────────────
-# Phase 7 gates on shellcheck's exit code. A real shellcheck is not guaranteed
-# on whatever machine runs this suite, and this repo currently carries a real
-# pre-existing shellcheck backlog (Task 9 of this increment clears it) — neither
-# fact may leak into a hermetic test's result, so the stub always wins over PATH.
-cat > "$TMP/bin/shellcheck" <<'EOF'
-#!/usr/bin/env bash
-exit "${SHELLCHECK_RC:-0}"
-EOF
-chmod +x "$TMP/bin/shellcheck"
-
-# ── Stub repo ──────────────────────────────────────────────────────────────────
-# $1=build.sh exit code. Nothing in the surviving script (Phase 0, Phase 4)
-# actually executes build.sh any more — only the preflight `[[ -f
-# "$REPO/build.sh" ]]` existence check does — but that check still requires the
-# file to exist, so mk_repo keeps writing it.
-#
-# Phases 5 and 7 need their own stub targets (tests/run-all.sh,
-# check-sandbox-version.sh, tests/bash-dialect-lint.sh) and, for Phase 7's
-# `git ls-files`, a real git repository with at least one tracked file — an
-# empty/non-git stub dir would make Phase 7 fail with "parsed no files"
-# regardless of what a given test is trying to isolate, which is a different
-# assertion (covered on its own below). Each stub's exit code is independently
-# configurable (SUITE_RC / SCHEMA_RC / DIALECT_RC, alongside the existing
-# CORPUS_RC and DOCKER_RUN_RC), so a test can make exactly one phase — or two at
-# once — fail without touching the others.
-mk_repo() {  # $1=build.sh exit code
-  local r="$TMP/repo"
-  rm -rf "$r"; mkdir -p "$r/tests/integration"
-  cp "$VERIFY" "$r/verify-on-host.sh"
-  # verify-on-host.sh sources bash-floor.sh once $REPO is confirmed to be the
-  # engine dir. Without this copy the source silently fails (set -uo pipefail
-  # has no -e), printing "bash-floor.sh: No such file or directory" into every
-  # captured log without affecting the exit code this file asserts on.
-  cp "$ENGINE_DIR/bash-floor.sh" "$r/bash-floor.sh"
-  printf '#!/usr/bin/env bash\necho "stub build (rc=%s)" >&2\nexit %s\n' "$1" "$1" > "$r/build.sh"
-  chmod +x "$r/build.sh"
-  printf 'db-clients=\nimagemagick=OFF\nwkhtmltopdf=OFF\nruby=\ncopilot=OFF\n' > "$r/sandbox.conf"
-  printf '#!/usr/bin/env bash\ncase "${1:-}" in --list-caps) exit 0 ;; esac\nexit %s\n' \
-    "${CORPUS_RC:-0}" > "$r/tests/integration/run.sh"
-  chmod +x "$r/tests/integration/run.sh"
-  printf '#!/usr/bin/env bash\nexit %s\n' "${SUITE_RC:-0}" > "$r/tests/run-all.sh"
-  chmod +x "$r/tests/run-all.sh"
-  printf '#!/usr/bin/env bash\nexit %s\n' "${SCHEMA_RC:-0}" > "$r/check-sandbox-version.sh"
-  chmod +x "$r/check-sandbox-version.sh"
-  printf '#!/usr/bin/env bash\nexit %s\n' "${DIALECT_RC:-0}" > "$r/tests/bash-dialect-lint.sh"
-  chmod +x "$r/tests/bash-dialect-lint.sh"
-  ( cd "$r" && { git init -q -b main . >/dev/null 2>&1 || git init -q . >/dev/null 2>&1; } \
-      && git add -A \
-      && git -c user.email=t@example -c user.name=t commit -q -m stub ) >/dev/null 2>&1
-  printf '%s' "$r"
-}
-
-# Run a phase selection against a stub repo. Prints the exit code.
-run_verify() {  # $1=repo $2=phases  → exit code, log in $TMP/out.log
-  PATH="$TMP/bin:$PATH" REPO="$1" PHASES="$2" \
-    bash "$1/verify-on-host.sh" > "$TMP/out.log" 2>&1
-  printf '%s' "$?"
-}
+# ── Shared stub-repo machinery ───────────────────────────────────────────────
+# tests/lib-verify-repo.sh builds the stub docker/shellcheck binaries and the
+# mk_repo()/run_verify() functions used by every test below. It is also used
+# by tests/test-layer-containment.sh's effect-based local-layer containment
+# check (Task 6 fix round 1) — one shared copy of the stub repo, not two
+# independently-maintained ones. That file's header documents the WITNESS_LOG
+# contract added for that use; nothing below in THIS file reads WITNESS_LOG,
+# but every stub still writes to it as a side effect.
+# shellcheck source=lib-verify-repo.sh
+source "$REPO_DIR/tests/lib-verify-repo.sh"
 
 expect_rc() {  # $1=label $2=expected $3=actual
   if [[ "$3" == "$2" ]]; then
