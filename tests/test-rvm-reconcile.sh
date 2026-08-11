@@ -172,7 +172,26 @@ boot_fail="$(boot_case 1 "")"
 grep -q 'FAILED: rvm bootstrap' <<<"$boot_fail" \
   && pass "failed bootstrap logs 'FAILED: rvm bootstrap'" \
   || fail "failed bootstrap logs 'FAILED: rvm bootstrap' (got: $boot_fail)"
-grep -qE 'command not found|No such file' <<<"$boot_fail" \
+# This must match ONLY an rvm-attributable not-found — the defect it guards is
+# the reconcile falling through past its early `exit 0`s and calling `rvm`
+# (or `source`ing scripts/rvm) after bootstrap failed, which surfaces as bash's
+# own "rvm: command not found" or ".../scripts/rvm: No such file or directory"
+# (confirmed by reproducing the historical defect: neutering every early
+# `exit 0` produces exactly `rvm-reconcile.sh: line 70:
+# .../.rvm/scripts/rvm: No such file or directory`). A bare `command not
+# found|No such file` used to match ANY leaked shell error in the captured
+# output, attributable or not — it happened to be flock's (fixed by stubbing
+# flock above), but the same looseness would false-fail on the next missing
+# PATH tool too, masquerading as this guarded defect. Anchoring on the token
+# immediately before the colon being `rvm` (bare, or path-suffixed via a
+# preceding `/`, e.g. `scripts/rvm:`) rules that out: it cannot match
+# `rvm-reconcile.sh: line N: <anything-else>: ...` (the script's own name has
+# more than "rvm" before that colon) or an unrelated tool's bare name.
+# Filtering out every bash "<script>: line N: ..." shaped line instead (the
+# alternative considered) was rejected: the real defect's own error is in
+# that exact shape, so that filter would discard the very signal being
+# checked for, not just the noise.
+grep -qE '(^|[[:space:]/])rvm: (command not found|No such file)' <<<"$boot_fail" \
   && fail "failed bootstrap must not fall through into not-found errors" \
   || pass "failed bootstrap exits cleanly (no not-found fallthrough)"
 
