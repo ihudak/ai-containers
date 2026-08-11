@@ -2,7 +2,7 @@
 # summary:  a second launch in the same group reuses the compiled rubies instead
 #           of recompiling
 # tags:     packages slow needs-external
-# requires: docker launcher netadmin
+# requires: docker launcher netadmin external
 # image:    native
 # timeout:  7600
 #
@@ -19,6 +19,15 @@
 # makes. Without the tag, `--tags packages --exclude needs-external` would
 # drop 730 but still admit this case into a cold bootstrap — the opposite of
 # what that exclusion means to do.
+#
+# The external CAPABILITY in the requires line above is the separate half of
+# that, and was missing at first. The tag only lets a caller exclude this case;
+# the whole reuse comparison needs launch1 to have actually compiled a ruby.
+# With no outbound HTTPS the reconcile logs FAILED: and exits 0, the container
+# still comes up, and this case goes red on "the compiled ruby binary is
+# missing after the first launch" — a product accusation for a missing network.
+# The capability turns that into a SKIP by name. 730 omits it correctly: its
+# six binaries come from Dockerfile RUN layers a dead network cannot affect.
 #
 # IT_SETTLE=3600 / timeout=7600: TWO launcher_up calls, each its own
 # cold-two-version-compile ceiling (the same 3600 case 730/740/750 already

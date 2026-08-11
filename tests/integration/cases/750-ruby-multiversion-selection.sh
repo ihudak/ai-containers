@@ -2,7 +2,7 @@
 # summary:  every configured Ruby version is installed, and .ruby-version selects
 #           a non-default one
 # tags:     packages slow needs-multiruby needs-external
-# requires: docker launcher netadmin multiruby
+# requires: docker launcher netadmin multiruby external
 # image:    native
 # timeout:  3900
 #
@@ -26,6 +26,15 @@
 # `--tags packages --exclude needs-external` would drop 730 (which correctly
 # carries the tag) while still admitting this case into a cold bootstrap,
 # defeating the point of that exclusion.
+#
+# The external CAPABILITY (in the requires line above) is a second, separate
+# thing from that tag, and was missing at first: the tag only lets a caller
+# EXCLUDE this case, whereas every assertion below needs a Ruby downloaded and
+# compiled at container start. On a host with no outbound HTTPS the reconcile
+# logs FAILED: and exits 0, the container comes up, and this case reports three
+# named failures about missing rubies as if the product were broken. With the
+# capability it SKIPs by name instead. 730 correctly omits it — its six
+# binaries are Dockerfile RUN-layer artifacts, unreachable by a dead network.
 #
 # The mechanism this case leans on — a LOGIN, non-interactive shell picking up
 # a directory's .ruby-version — is asserted nowhere else in this repo

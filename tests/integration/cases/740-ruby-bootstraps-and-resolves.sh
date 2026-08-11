@@ -2,9 +2,18 @@
 # summary:  rvm bootstraps and compiles behind the restricted firewall, and the
 #           default Ruby's binstubs EXECUTE in a non-login shell
 # tags:     packages security slow needs-external
-# requires: docker netadmin launcher
+# requires: docker netadmin launcher external
 # image:    native
 # timeout:  3900
+#
+# The external entry is a CAPABILITY here, not only the needs-external tag,
+# and the two are not interchangeable: every assertion below needs a Ruby that
+# was downloaded and compiled at container start, and this case's group is
+# cold by construction (see below), so with no outbound HTTPS rvm-reconcile.sh
+# logs FAILED: and exits 0, the container comes up fine, and the case reports a
+# product failure pointing at rvm. It must SKIP BY NAME instead. Case 730 is
+# the deliberate counter-example and stays without it — its six binaries are
+# Dockerfile RUN-layer artifacts a dead network cannot touch.
 #
 # IT_SETTLE=3600 / timeout=3900: the SAME cold two-version-compile precedent
 # case 730 already established for $IT_RUBY_GROUP, reused verbatim here on

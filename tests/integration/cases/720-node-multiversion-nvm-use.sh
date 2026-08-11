@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # summary:  nvm can still switch Node versions once ~/.ai-tools holds the
 #           agent-tier npm packages
-# tags:     packages needs-external
+# tags:     packages slow needs-external
 # requires: docker launcher netadmin external
 # image:    agents
 # timeout:  2000
@@ -21,6 +21,12 @@
 # ~900 (launcher_up) + ~900 (compound case, redundant wait) + ~10s (three
 # single, non-polling agent_exec calls) ≈ 1810s. 2000s leaves ~190s of real
 # margin over that, not over the smaller "typical" case.
+#
+# The slow tag follows from that budget, and was missing while every other
+# packages case carried it: this case pays the same cold six-tool agent-tier
+# install case 700 does, so `--exclude slow` — the natural local narrowing —
+# has to drop it too, or the one flag a developer reaches for to keep a local
+# run short still admits a ~30-minute case.
 #
 # The regression this exists for shipped: /etc/skel/.npmrc carried
 # `prefix=${HOME}/.ai-tools/npm`, and nvm's nvm_die_on_prefix check FAILS
