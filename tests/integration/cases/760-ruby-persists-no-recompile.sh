@@ -125,8 +125,16 @@ first="$IT_CID"
 docker rm -f "$first" >/dev/null 2>&1 || true
 
 launcher_up restricted || it_finish
-ruby_wait_ready "$IT_CID" 300 \
-  || { fail "the second launch did not settle within 300s — it is recompiling"; it_diagnose "$IT_CID"; it_finish; }
+# No second fail() of this case's own here, on purpose. ruby_wait_ready already
+# fail()s with the ACCURATE one of its three reasons (the reconcile reported
+# FAILED / the container exited / timed out after Ns) — the same reasoning case
+# 750's header spells out. This line previously added a fail() reading "it is
+# recompiling" on top of that, which both double-counted the failure and named
+# a cause this call cannot distinguish: given the entrypoint ordering this
+# case's header relies on (the reconcile completes before PID 1 hands over, and
+# launcher_up has already waited for that handover), a recompile is close to the
+# one thing a timeout here would NOT be. Diagnose and end; the reason is above.
+ruby_wait_ready "$IT_CID" 300 || { it_diagnose "$IT_CID"; it_finish; }
 
 second_mtime="$(mtime_of "$IT_CID")"
 if [[ -z "$second_mtime" ]]; then
