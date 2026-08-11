@@ -14,6 +14,8 @@
 # first command to apply to the whole file):
 # shellcheck disable=SC2154
 set -euo pipefail
+# shellcheck source=bash-floor.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bash-floor.sh"
 
 # emit_launcher <path> <project-name> — write the thin runme.sh launcher.
 #

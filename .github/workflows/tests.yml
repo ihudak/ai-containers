@@ -52,6 +52,33 @@ jobs:
           echo "diffing sandbox.conf against $base"
           BASE_REF="$base" ./check-sandbox-version.sh --check
 
+  suite-floor:
+    name: Shell test suite (bash floor)
+    runs-on: ubuntu-latest
+    # ubuntu:22.04 ships bash 5.1.16 — the declared floor — with GNU coreutils.
+    # `suite` above runs on whatever bash ubuntu-latest happens to ship, which
+    # drifts upward with the runner image; this job pins the CLAIM. Raising the
+    # floor means changing this image and bash-floor.sh together.
+    container: ubuntu:22.04
+
+    steps:
+      # BEFORE checkout: actions/checkout needs git inside the container, and
+      # without it silently falls back to a REST download with no .git — which
+      # tests/test-mutations.sh detects and fails on (it needs a git work tree
+      # for `git apply --check`). rsync is needed by the project-init tests.
+      - name: Install git and rsync
+        run: apt-get update -qq && apt-get install -y -qq git rsync ca-certificates
+
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Show bash version
+        run: bash --version | head -1
+
+      - name: Run tests at the declared floor
+        run: ./tests/run-all.sh
+
   lint:
     name: Shell lint
     runs-on: ubuntu-latest

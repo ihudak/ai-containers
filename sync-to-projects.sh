@@ -19,6 +19,8 @@
 #   project already set is never touched), and the '# schema-version:' marker is
 #   ensured. See README "sandbox.conf schema versioning".
 set -euo pipefail
+# shellcheck source=bash-floor.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bash-floor.sh"
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 projects_conf="${script_dir}/projects.conf"

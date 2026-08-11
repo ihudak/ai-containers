@@ -26,6 +26,8 @@
 # are copied to *.pre-migrate — the per-project .ai-containers/ tree is
 # gitignored in its own repo, so these backups are the only safety net.
 set -euo pipefail
+# shellcheck source=bash-floor.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bash-floor.sh"
 
 own_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 

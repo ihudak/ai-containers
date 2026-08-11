@@ -12,7 +12,7 @@ fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails+1)); }
 # sandbox.conf, and a migrations/ dir. Echoes the repo path.
 make_repo() {
   local d; d="$(mktemp -d)"
-  cp "$REPO_DIR/check-sandbox-version.sh" "$d/"
+  cp "$REPO_DIR/check-sandbox-version.sh" "$REPO_DIR/bash-floor.sh" "$d/"
   mkdir -p "$d/migrations"
   cat > "$d/sandbox.conf" <<'EOF'
 # schema-version: 3

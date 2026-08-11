@@ -322,6 +322,7 @@ fails=$(( fails + $(grep -c '^FAIL' "$TMP/common.out") ))
 SCRIPTS="$TMP/scripts"; mkdir -p "$SCRIPTS"
 for f in project-init.sh projects.conf.example sandbox-common.sh sandbox.sh build.sh \
          repo.sh entrypoint.sh tools-lib.sh install-tools.sh install-agent-skills.sh \
+         bash-floor.sh \
          Dockerfile Dockerfile.seed .dockerignore sandbox.conf \
          refresh-ipset-allowlist.sh capture-blocked-traffic.sh capture-agent-destinations.sh; do
   [[ -f "$REPO_DIR/$f" ]] && cp "$REPO_DIR/$f" "$SCRIPTS/$f"

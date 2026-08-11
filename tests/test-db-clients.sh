@@ -82,7 +82,7 @@ rm -rf "$F3"
 # Exercise the ACTUAL gating line in generate_allowlists (build.sh) by running
 # it inside an isolated copy of the repo and grepping the produced allowlist.
 GA_TMP="$(mktemp -d)"
-cp "$REPO_DIR/build.sh" "$REPO_DIR/sandbox-common.sh" "$REPO_DIR/tools-lib.sh" "$GA_TMP/"
+cp "$REPO_DIR/build.sh" "$REPO_DIR/sandbox-common.sh" "$REPO_DIR/tools-lib.sh" "$REPO_DIR/bash-floor.sh" "$GA_TMP/"
 cp -r "$REPO_DIR/allowlist-domains.d" "$REPO_DIR/allowlist-proxy-domains.d" "$REPO_DIR/allowlist-cidrs.d" "$GA_TMP/"
 mkdir -p "$GA_TMP/tools.d"
 

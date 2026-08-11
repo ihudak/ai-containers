@@ -15,13 +15,10 @@ if [[ -n "${_SANDBOX_COMMON_SOURCED:-}" ]]; then
 fi
 _SANDBOX_COMMON_SOURCED=1
 
-# Require bash >= 4.3 (associative arrays + namerefs are used throughout).
-# macOS ships bash 3.2 — `brew install bash` provides a newer one.
-if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 3) )); then
-  echo "ERROR: bash >= 4.3 is required (running ${BASH_VERSION:-unknown})." >&2
-  echo "       On macOS: brew install bash, then run the scripts with the newer bash." >&2
-  exit 1
-fi
+# The bash floor is declared once, in bash-floor.sh, and sourced here so the
+# three entry points that source this library inherit it.
+# shellcheck source=bash-floor.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bash-floor.sh"
 
 # ── Shared constants ────────────────────────────────────────────────────────────
 

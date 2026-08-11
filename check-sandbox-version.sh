@@ -9,6 +9,8 @@
 # Ordinary key ADDITIONS pass silently. Expected to fire ~twice in the whole
 # history of the file — near-zero day-to-day friction.
 set -euo pipefail
+# shellcheck source=bash-floor.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bash-floor.sh"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 conf="${script_dir}/sandbox.conf"
 migrations_dir="${script_dir}/migrations"
