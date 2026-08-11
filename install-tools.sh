@@ -136,7 +136,7 @@ expand_placeholders() {
 # any other URL is treated as the binary itself.
 install_url() {
   local name="$1" version="$2"
-  # shellcheck disable=SC2154  # TOOL_binary/TOOL_url: set by tools_read_descriptor() in tools-lib.sh (sourced)
+  # shellcheck disable=SC2154  # TOOL_binary: set by tools_read_descriptor() in tools-lib.sh (sourced)
   local binary="$TOOL_binary" url
   # shellcheck disable=SC2154  # TOOL_url: set by tools_read_descriptor() in tools-lib.sh (sourced)
   url="$(expand_placeholders "$TOOL_url" "$version")"

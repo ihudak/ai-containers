@@ -145,13 +145,22 @@ grep -q 'Skipping ai-containers-rvm-busy' <<<"$out" \
 run_group gc --yes >/dev/null
 
 # ── rm ──────────────────────────────────────────────────────────────────────────
+# group.sh has TWO independent exit-1 paths a "host" run could hit: the host-guard
+# (group.sh:142-145) and the generic "no such group" fallback (group.sh:152-155),
+# which fires whenever a name has neither a directory nor a volume. Without a real
+# ~/.ai-containers/host directory, "host" would satisfy the fallback too, and an
+# rc-only assertion could pass for the WRONG reason (the fallback, not the guard it
+# is meant to cover). Pre-create the directory so has_dir=1 and the fallback's
+# `has_dir == 0 && has_vol == 0` can never be true for this case — the only
+# remaining source of a non-zero exit is the host-guard itself.
+mkdir -p "$FAKE_HOME/.ai-containers/host"
 out="$(run_group rm host --yes)"; rc=$?
 grep -q 'refusing' <<<"$out" \
   && pass "rm refuses the 'host' group" \
   || fail "rm refuses the 'host' group (got: $out)"
-[[ "$rc" -ne 0 ]] \
-  && pass "rm refuses the 'host' group with a non-zero exit" \
-  || fail "rm refuses the 'host' group with a non-zero exit (rc=$rc)"
+[[ "$rc" -ne 0 && "$out" != *'no such group'* ]] \
+  && pass "rm refuses the 'host' group with a non-zero exit (the host-guard, not the unrelated 'no such group' fallback)" \
+  || fail "rm refuses the 'host' group with a non-zero exit (the host-guard, not the unrelated 'no such group' fallback) (rc=$rc, out: $out)"
 
 out="$(run_group rm nosuchgroup --yes)"
 grep -q 'no such group' <<<"$out" \
