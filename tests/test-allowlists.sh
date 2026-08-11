@@ -20,6 +20,8 @@
 set -uo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=portability.sh
+source "$REPO_DIR/tests/portability.sh"
 fails=0
 pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails+1)); }
@@ -52,7 +54,7 @@ mkdir -p "$REPO/allowlist-domains.d" "$REPO/allowlist-proxy-domains.d" "$REPO/al
 real_txt_fingerprint() {
   for f in allowlist-domains.txt allowlist-proxy-domains.txt allowlist-cidrs.txt; do
     if [[ -f "$REPO_DIR/$f" ]]; then
-      stat -c '%n %s %Y' "$REPO_DIR/$f"
+      p_stat_meta "$REPO_DIR/$f"
     else
       printf '%s ABSENT\n' "$f"
     fi

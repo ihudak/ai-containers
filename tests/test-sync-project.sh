@@ -13,6 +13,8 @@
 set -uo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=portability.sh
+source "$REPO_DIR/tests/portability.sh"
 fails=0
 pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails+1)); }
@@ -31,7 +33,7 @@ export GIT_CONFIG_NOSYSTEM=1
 # prove at the end that this suite never touched any of them.
 REAL_PROJECTS_CONF="$REPO_DIR/projects.conf"
 REAL_CONF_MD5_BEFORE=""
-[[ -f "$REAL_PROJECTS_CONF" ]] && REAL_CONF_MD5_BEFORE="$(md5sum "$REAL_PROJECTS_CONF" | cut -d' ' -f1)"
+[[ -f "$REAL_PROJECTS_CONF" ]] && REAL_CONF_MD5_BEFORE="$(p_md5 "$REAL_PROJECTS_CONF")"
 
 REAL_PROJECT_SNAPSHOTS="$TMP/real-project-snapshots"; mkdir -p "$REAL_PROJECT_SNAPSHOTS"
 real_project_paths=()
@@ -49,7 +51,10 @@ snapshot_real_projects() {
   for p in "${real_project_paths[@]}"; do
     i=$((i+1))
     if [[ -d "$p/.ai-containers" ]]; then
-      find "$p/.ai-containers" -exec stat -c '%n %s %Y' {} \; 2>/dev/null | sort >> "$out"
+      # p_stat_meta is a shell function, so it cannot be reached by -exec.
+      while IFS= read -r _entry; do
+        p_stat_meta "$_entry"
+      done < <(find "$p/.ai-containers" 2>/dev/null) | sort >> "$out"
     fi
   done
 }
@@ -263,7 +268,7 @@ grep -qxF "$SENTINEL_SANDBOX_CONF_KEY_LINE" "$DEST/sandbox.conf" 2>/dev/null \
   && pass "allowlist-cidrs.d/custom.txt untouched" \
   || fail "allowlist-cidrs.d/custom.txt untouched"
 
-[[ "$(md5sum "$REAL_PROJECTS_CONF" 2>/dev/null | cut -d' ' -f1)" == "$REAL_CONF_MD5_BEFORE" ]] \
+[[ "$(p_md5 "$REAL_PROJECTS_CONF" 2>/dev/null)" == "$REAL_CONF_MD5_BEFORE" ]] \
   && pass "real ./projects.conf is untouched by the sync" \
   || fail "real ./projects.conf is untouched by the sync"
 [[ ! -f "$DEST/projects.conf" ]] \
@@ -417,7 +422,7 @@ grep -q 'projects.conf not found\|No projects registered' <<<"$cli_out" \
   || pass "CLI single-path invocation never consults projects.conf"
 
 # ── 9. Hermeticity: real projects.conf and real registered project dirs untouched ──
-[[ "$(md5sum "$REAL_PROJECTS_CONF" 2>/dev/null | cut -d' ' -f1)" == "$REAL_CONF_MD5_BEFORE" ]] \
+[[ "$(p_md5 "$REAL_PROJECTS_CONF" 2>/dev/null)" == "$REAL_CONF_MD5_BEFORE" ]] \
   && pass "real ./projects.conf md5sum unchanged after the full suite" \
   || fail "real ./projects.conf md5sum unchanged after the full suite"
 

@@ -12,6 +12,8 @@
 # real against them. This file's first case is that exact regression, pinned down.
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=portability.sh
+source "$SCRIPT_DIR/tests/portability.sh"
 # Source sync-to-projects.sh for its helpers without running a sync.
 # shellcheck disable=SC1090
 source "$SCRIPT_DIR/sync-to-projects.sh"
@@ -30,9 +32,9 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 ./build.sh
 ./sandbox.sh
 EOF
-before1="$(sha1sum "$dest1/runme.sh")"
+before1="$(p_sha1 "$dest1/runme.sh")"
 migrate_launcher_naming "$dest1"
-after1="$(sha1sum "$dest1/runme.sh")"
+after1="$(p_sha1 "$dest1/runme.sh")"
 [[ -f "$dest1/runme.sh" ]]        || { echo "FAIL: current-format runme.sh was deleted"; fail=1; }
 [[ "$before1" == "$after1" ]]     || { echo "FAIL: current-format runme.sh was mutated"; fail=1; }
 
@@ -44,9 +46,9 @@ grep -q './sandbox.sh' "$dest2/runme.sh" 2>/dev/null            || { echo "FAIL:
 ! grep -q '\./runme\.sh discovery' "$dest2/runme.sh" 2>/dev/null || { echo "FAIL: old self-call string still present"; fail=1; }
 
 # Idempotency: a second run must not change anything further.
-before2="$(sha1sum "$dest2/runme.sh")"
+before2="$(p_sha1 "$dest2/runme.sh")"
 migrate_launcher_naming "$dest2"
-after2="$(sha1sum "$dest2/runme.sh")"
+after2="$(p_sha1 "$dest2/runme.sh")"
 [[ "$before2" == "$after2" ]] || { echo "FAIL: second run mutated an already-repointed launcher"; fail=1; }
 
 # ── 3. Genuinely old artifacts (pre-fat-launcher engine + legacy container.sh) are ──
