@@ -25,6 +25,9 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bash-floor.sh"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 projects_conf="${script_dir}/projects.conf"
 
+# shellcheck source=shared-files.sh
+source "${script_dir}/shared-files.sh"
+
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 # Backfill sandbox.env (persisted IMAGE_NAME) for projects initialised before
@@ -235,11 +238,9 @@ sync_project() {
   # Migrate legacy runme.sh<->launcher naming before copying shared files.
   migrate_launcher_naming "$dest"
 
-  # Shared scripts and build files
-  for f in Dockerfile Dockerfile.seed .dockerignore sandbox-common.sh build.sh sandbox.sh repo.sh group.sh entrypoint.sh \
-            rvm-reconcile.sh link-default-ruby.sh agent-tools-reconcile.sh link-agent-tools.sh \
-            refresh-ipset-allowlist.sh capture-blocked-traffic.sh \
-            capture-agent-destinations.sh install-tools.sh install-agent-skills.sh tools-lib.sh; do
+  # Shared scripts and build files — the list lives in shared-files.sh, the
+  # single definition project-init.sh also sources (see there).
+  for f in "${AI_CONTAINERS_SHARED_FILES[@]}"; do
     if [[ -f "${script_dir}/${f}" ]]; then
       cp "${script_dir}/${f}" "${dest}/${f}"
     fi

@@ -309,10 +309,15 @@ rsync -a --exclude='custom.txt' \
   "${script_dir}/allowlist-cidrs.d/"         "${dest}/allowlist-cidrs.d/"
 rsync -a "${script_dir}/tools.d/" "${dest}/tools.d/"
 
-for f in Dockerfile Dockerfile.seed .dockerignore sandbox-common.sh build.sh sandbox.sh repo.sh entrypoint.sh \
-          rvm-reconcile.sh link-default-ruby.sh agent-tools-reconcile.sh link-agent-tools.sh \
-          refresh-ipset-allowlist.sh capture-blocked-traffic.sh \
-          capture-agent-destinations.sh install-tools.sh install-agent-skills.sh tools-lib.sh; do
+# Shared scripts and build files — the list lives in shared-files.sh, the
+# single definition sync-to-projects.sh also sources (see there). These were
+# two independent hand-written lists until this fixed them: sync-to-projects.sh
+# copied group.sh and this script did not, so a freshly-initialised project had
+# no group.sh until its first sync, and nothing compared the two lists to
+# notice. See shared-files.sh's header.
+# shellcheck source=shared-files.sh
+source "${script_dir}/shared-files.sh"
+for f in "${AI_CONTAINERS_SHARED_FILES[@]}"; do
   [[ -f "${script_dir}/${f}" ]] && cp "${script_dir}/${f}" "${dest}/${f}"
 done
 

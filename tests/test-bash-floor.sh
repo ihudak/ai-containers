@@ -43,7 +43,7 @@ in_container="entrypoint.sh rvm-reconcile.sh agent-tools-reconcile.sh
   link-agent-tools.sh link-default-ruby.sh install-tools.sh
   refresh-ipset-allowlist.sh capture-blocked-traffic.sh
   install-agent-skills.sh capture-agent-destinations.sh bash-floor.sh
-  sandbox-common.sh tools-lib.sh"
+  sandbox-common.sh tools-lib.sh shared-files.sh"
 # The multi-line string above embeds literal newlines; normalize them to spaces
 # before substring-matching, otherwise an entry at the end of a physical line
 # (immediately before its embedded \n, not a space) never matches " $base ".

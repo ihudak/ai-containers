@@ -65,6 +65,11 @@ mk_repo() {  # $1=build.sh exit code
   local r="$TMP/repo"
   rm -rf "$r"; mkdir -p "$r/tests/integration"
   cp "$VERIFY" "$r/verify-on-host.sh"
+  # verify-on-host.sh sources bash-floor.sh once $REPO is confirmed to be the
+  # engine dir. Without this copy the source silently fails (set -uo pipefail
+  # has no -e), printing "bash-floor.sh: No such file or directory" into every
+  # captured log without affecting the exit code this file asserts on.
+  cp "$ENGINE_DIR/bash-floor.sh" "$r/bash-floor.sh"
   printf '#!/usr/bin/env bash\necho "stub build (rc=%s)" >&2\nexit %s\n' "$1" "$1" > "$r/build.sh"
   chmod +x "$r/build.sh"
   printf 'db-clients=\nimagemagick=OFF\nwkhtmltopdf=OFF\nruby=\ncopilot=OFF\n' > "$r/sandbox.conf"

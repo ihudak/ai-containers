@@ -149,43 +149,55 @@ SENTINEL_CUSTOM_PROXY="$(cat "$DEST/allowlist-proxy-domains.d/custom.txt")"
 SENTINEL_CUSTOM_CIDRS="$(cat "$DEST/allowlist-cidrs.d/custom.txt")"
 SENTINEL_DEST_GITIGNORE="$(cat "$DEST/.gitignore")"
 
-# ── Derive the shared-file list from the script's OWN loop (do not hardcode) ──
+# ── Derive the shared-file list from shared-files.sh (do not hardcode) ─────────
 #
-# sync_project's copy loop is:
-#   for f in Dockerfile Dockerfile.seed .dockerignore sandbox-common.sh build.sh \
-#             sandbox.sh repo.sh group.sh entrypoint.sh rvm-reconcile.sh link-default-ruby.sh \
-#             agent-tools-reconcile.sh link-agent-tools.sh \
-#             refresh-ipset-allowlist.sh capture-blocked-traffic.sh \
-#             capture-agent-destinations.sh install-tools.sh install-agent-skills.sh tools-lib.sh; do
-# Extract the actual `for f in ... ; do` file list straight out of the function
-# body so this test tracks the script instead of a copy that can go stale.
-shared_files_raw="$(sed -n '/^sync_project()/,/^}/p' "$REPO_DIR/sync-to-projects.sh" \
-  | grep -A2 '# Shared scripts and build files' | grep -E '^\s*for f in ')"
-if [[ -z "$shared_files_raw" ]]; then
-  fail "could not locate the shared-file copy loop in sync-to-projects.sh (script shape changed?)"
+# The list used to be hand-written INLINE in sync_project's `for f in ...; do`
+# loop, and this test extracted it by scraping that loop's text out of the
+# function body. It now lives in shared-files.sh — a single array both
+# project-init.sh and sync-to-projects.sh source — added specifically because
+# the two scripts' independent inline lists had already silently diverged
+# (sync-to-projects.sh copied group.sh; project-init.sh did not, so a freshly
+# initialised project had no group.sh until its first sync). Sourcing the
+# array here still derives from the actual runtime source of truth rather than
+# hand-copying it — the property this section always meant to preserve — it
+# just no longer needs to scrape loop syntax to get it, because the loop no
+# longer embeds the list as text.
+if [[ -f "$REPO_DIR/shared-files.sh" ]]; then
+  pass "shared-files.sh exists"
+  # shellcheck disable=SC1091
+  source "$REPO_DIR/shared-files.sh"
+  derived_shared_files=("${AI_CONTAINERS_SHARED_FILES[@]}")
 else
-  pass "located the shared-file copy loop in sync-to-projects.sh"
+  fail "shared-files.sh exists"
+  derived_shared_files=()
 fi
-# Reconstruct the exact word list `for f in <words>; do` iterates over. The loop
-# spans two physical lines (continued with a trailing backslash); read both.
-shared_files_block="$(sed -n '/^sync_project()/,/^}/p' "$REPO_DIR/sync-to-projects.sh" \
-  | awk '/for f in/{p=1} p{print} p && /do$/{exit}')"
-shared_files_words="$(printf '%s\n' "$shared_files_block" \
-  | sed -e 's/^\s*for f in //' -e 's/;\s*do$//' -e 's/\\$//')"
-derived_shared_files=()
-for w in $shared_files_words; do derived_shared_files+=("$w"); done
+
+# sync_project's copy loop must actually iterate the sourced array, not a
+# reintroduced hardcoded list — the exact regression that let group.sh diverge
+# in the first place, and the reason shared-files.sh exists. (See
+# tests/test-shared-files-parity.sh for the equivalent check against
+# project-init.sh, and for the end-to-end proof that both scripts really do
+# copy the identical set at runtime, not just that they cite the same array.)
+if grep -qE '^\s*for f in "\$\{AI_CONTAINERS_SHARED_FILES\[@\]\}"; do' "$REPO_DIR/sync-to-projects.sh"; then
+  pass "sync-to-projects.sh's copy loop iterates the shared AI_CONTAINERS_SHARED_FILES array"
+else
+  fail "sync-to-projects.sh's copy loop iterates the shared AI_CONTAINERS_SHARED_FILES array — it may have reverted to an independent hardcoded list"
+fi
 
 # The derived list is only used to assert each file ARRIVES. On its own it cannot
-# notice a file DISAPPEARING from the script (the expectation would shrink with
-# it), so pin the contract independently: an explicit literal list, compared as a
-# set. Adding or removing a shared file is a deliberate act and must update this.
+# notice a file DISAPPEARING from shared-files.sh (the expectation would shrink
+# with it), so pin the contract independently: an explicit literal list,
+# compared as a set. Adding or removing a shared file is a deliberate act and
+# must update this literal too.
 expected_shared_files=(
-  Dockerfile Dockerfile.seed .dockerignore sandbox-common.sh build.sh
-  sandbox.sh repo.sh group.sh entrypoint.sh rvm-reconcile.sh link-default-ruby.sh
+  Dockerfile Dockerfile.seed .dockerignore
+  bash-floor.sh sandbox-common.sh tools-lib.sh
+  build.sh sandbox.sh repo.sh group.sh entrypoint.sh
+  rvm-reconcile.sh link-default-ruby.sh
   agent-tools-reconcile.sh link-agent-tools.sh
   refresh-ipset-allowlist.sh
   capture-blocked-traffic.sh capture-agent-destinations.sh
-  install-tools.sh install-agent-skills.sh tools-lib.sh
+  install-tools.sh install-agent-skills.sh
 )
 derived_sorted="$(printf '%s\n' "${derived_shared_files[@]}" | sort | tr '\n' ' ')"
 expected_sorted="$(printf '%s\n' "${expected_shared_files[@]}" | sort | tr '\n' ' ')"
