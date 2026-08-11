@@ -1,0 +1,46 @@
+# case: 730-native-clients-run
+# what: the Dockerfile layer that RESTORES the build toolchain never fires -- its
+#       condition is changed to a value KEEP_BUILD_TOOLCHAIN can never hold, so
+#       build-essential/libyaml-dev/zlib1g-dev/libssl-dev stay stripped even though
+#       build.sh correctly passed KEEP_BUILD_TOOLCHAIN=1. This is the state that
+#       shipped before that layer existed, and the reason it was added.
+#
+#       This targets 730's `gcc` assertion specifically, which until now had NO
+#       demonstration: 730-db-clients-not-space-split (the patch formerly misnamed
+#       730-toolchain-stripped) removes psql/mysql/mongosh and leaves gcc untouched,
+#       so the header's stated reason for asserting gcc -- "if the Dockerfile ever
+#       stripped the toolchain again despite the flag" -- was an unbacked claim
+#       sitting next to a patch whose NAME implied it was backed.
+#
+#       Mutating the Dockerfile rather than build.sh is deliberate. build.sh sets
+#       KEEP_BUILD_TOOLCHAIN=1 whenever ruby OR db-clients is set, and the native
+#       variant sets both, so no build.sh edit can produce KEEP_BUILD_TOOLCHAIN=0
+#       there. Forcing the ARG to 0 directly is also not it: Dockerfile:331 fails
+#       the build outright on RUBY_RUNTIME=1 with KEEP_BUILD_TOOLCHAIN!=1, so the
+#       image would never build and 730 would fail as "image did not build" -- a
+#       named failure, but not this one. Defeating the restore layer while leaving
+#       the flag truthful reproduces the actual defect: the flag says keep, the
+#       image does not have it.
+#
+#       MUST BE DEMONSTRATED ALONE (--cases 730-native-clients-run). rvm compiles
+#       Ruby from source at container start and needs gcc, so 740/750/760 would
+#       fail for this mutation's reason before reaching their own assertions --
+#       the masking that cost three extra dispatches last increment.
+#
+#       Expected: 730's gcc assertion FAILS ("gcc is on PATH"), while psql, mysql,
+#       mongosh, convert and wkhtmltopdf all still PASS -- they are ordinary apt
+#       packages installed by other layers and are untouched by this.
+#
+diff --git a/Dockerfile b/Dockerfile
+index ee36aec..6c1ffe6 100644
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -288,7 +288,7 @@ RUN if [ -n "$DB_CLIENTS" ]; then \
+ # DB driver gems, and Python source wheels compile at runtime, so put a minimal
+ # toolchain back when KEEP_BUILD_TOOLCHAIN=1 (set by build.sh for ruby OR db-clients).
+ ARG KEEP_BUILD_TOOLCHAIN=0
+-RUN if [ "$KEEP_BUILD_TOOLCHAIN" = "1" ]; then \
++RUN if [ "$KEEP_BUILD_TOOLCHAIN" = "NEVER" ]; then \
+       apt-get update && apt-get install -y --no-install-recommends \
+         build-essential libyaml-dev zlib1g-dev libssl-dev && \
+       rm -rf /var/lib/apt/lists/*; \
