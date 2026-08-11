@@ -31,7 +31,7 @@
 # wait (which genuinely can burn its own full ceiling — a specific tool can
 # stay missing forever after the reconcile ends, and a plain PATH probe has no
 # way to tell "still pending" from "permanently decided"). ruby_wait_ready is
-# built differently (lib.sh's _ruby_reconcile_done/_ruby_reconcile_ok): it
+# built differently (lib.sh's _it_ruby_reconcile_done/_it_ruby_reconcile_ok): it
 # polls for rvm-reconcile.sh's own TERMINAL log lines ("done." or a "FAILED:"
 # line), and rvm-reconcile.sh (verified by reading it, not assumed) logs one
 # of those two on EVERY exit path before returning — the early bootstrap

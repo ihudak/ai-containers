@@ -115,7 +115,7 @@ launcher_up restricted || it_finish
 # demonstration — only the LAST configured version installs) leaves the
 # container fully up, because a per-version FAILED: line does not stop
 # rvm-reconcile.sh from reaching its own "done." and letting entrypoint.sh
-# hand over to the agent shell (lib.sh's _ruby_reconcile_ok comment traces
+# hand over to the agent shell (lib.sh's _it_ruby_reconcile_ok comment traces
 # this). "container exited" and "timed out" leave a container that is not
 # usably running, but every call below is a `docker exec`, which fails FAST
 # against a dead or missing container rather than hanging — so this case

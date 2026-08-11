@@ -80,6 +80,15 @@ n_fail=0
 # override bodies can't be derived from a flat name list without contorting
 # that function, so the two are kept in sync by hand plus that pointer.
 KNOWN_VARIANTS="default agents native"
+# The DISPLAY form of the same list, derived rather than duplicated. The
+# variable itself stays space-separated because that is its machine form — a
+# `for v in $KNOWN_VARIANTS` word-split, and the `case " $KNOWN_VARIANTS " in
+# *" $v "*)` membership idiom this file uses elsewhere — while every other
+# user-facing list in this file (--tags, --exclude, --cases, --require) is
+# comma-formatted, so a bare "(default agents native)" reads as three separate
+# things rather than one list of three. Derived, so adding a variant cannot
+# update one and miss the other.
+KNOWN_VARIANTS_DISPLAY="${KNOWN_VARIANTS// /, }"
 
 usage() {
   cat <<EOF
@@ -87,7 +96,7 @@ Usage: tests/integration/run.sh [options]
 
   --tags T[,T…]      run only cases carrying at least one of these tags
   --exclude T[,T…]   drop cases carrying any of these tags
-  --variant NAME     run only cases whose image variant is NAME ($KNOWN_VARIANTS)
+  --variant NAME     run only cases whose image variant is NAME ($KNOWN_VARIANTS_DISPLAY)
                       — composes with --tags/--exclude, it narrows rather than
                       replaces that selection. Like --tags/--exclude, it has
                       no effect on --list, which always catalogues the whole
@@ -356,6 +365,35 @@ detect_caps() {
       c="$c dns"
     fi
   fi
+  # A REAL outbound HTTPS request, deliberately — reviewed and kept as-is.
+  # `external` means "this host can reach the public internet", and the six
+  # packages-tier cases that require it spend up to 35 minutes each installing
+  # from npm/rvm/apt through the restricted firewall. Any probe that cannot
+  # fail would report the capability present on an air-gapped runner and turn
+  # those into 35-minute timeouts with a misleading cause, which is strictly
+  # worse than one handshake. So the cheaper options were all rejected:
+  #
+  #   - a shorter --max-time: 8s is a FLOOR, not fat to trim. A high-latency
+  #     or captive-portal-throttled link that needs 6s would start reporting
+  #     no external, and nightly's `--require packages` turns that skip into a
+  #     red run blaming the wrong thing.
+  #   - probing a host the suite actually depends on (registry.npmjs.org,
+  #     get.rvm.io, deb.debian.org): each case needs a DIFFERENT one, so any
+  #     single pick answers a narrower question than the capability claims,
+  #     and when that one host is down the case fails either way — skip or
+  #     fail, both red, no information gained for the extra coupling.
+  #   - dropping the probe and inferring reachability from the docker pull
+  #     above: that answers "can this host reach the registry", which is a
+  #     different question and already has its own capability (`dns`).
+  #
+  # Cost is bounded and paid at most once per run: detect_caps memoises into
+  # $_caps, and IT_FORCE_CAPS bypasses the whole function for a host that
+  # knows its own answer (an air-gapped or proxied runner).
+  #
+  # Known, accepted imprecision: a host with no `curl` at all reports no
+  # external (rc 127) even with a working network. It fails SAFE — a skip,
+  # never a false "available" — and --require makes it loud rather than
+  # silent.
   curl -fsS --max-time 8 -o /dev/null https://example.com 2>/dev/null && c="$c external"
   # Deliberately OUTSIDE the `docker info` block above, not just outside the
   # `docker image inspect` gate that wraps netadmin/launcher: this probe reads a
@@ -647,7 +685,27 @@ sweep() {
 # build_image()/mkdir/`docker network create` block right after it would try a
 # real image build. Every line from here down performs real I/O — that is what
 # a hermetic test must never reach, not just the selection/execution loop.
-[[ -n "${IT_SOURCE_ONLY:-}" ]] && return 0 2>/dev/null
+#
+# `return` halts a SOURCED script only. Executed, it fails ("can only `return'
+# from a function or sourced script", rc 1) and the old one-line form
+# `[[ -n … ]] && return 0 2>/dev/null` then FELL THROUGH into exactly the I/O
+# it names — the sweep EXIT trap, the allowlist snapshot, a real image build —
+# with no option parsing having run either, so the run would also silently
+# ignore every flag it was given. Nothing executes run.sh with this variable
+# set today; that is a convention, and a convention is not a guard. So: return
+# for the sourcing path, and a hard, LOUD exit for the executed one.
+#
+# Exit 2 (a usage error), never 0: an executed run.sh that runs no case is not
+# a green run — the same rule the "selected 0 … NOTHING RAN" check at the
+# bottom of this file enforces, applied to the one path that could reach the
+# bottom having done nothing at all.
+if [[ -n "${IT_SOURCE_ONLY:-}" ]]; then
+  return 0 2>/dev/null
+  printf 'run.sh: IT_SOURCE_ONLY is set but run.sh was EXECUTED, not sourced.\n' >&2
+  printf '        That variable exists for `source run.sh` (hermetic function tests);\n' >&2
+  printf '        executing with it set would run NOTHING and report success.\n' >&2
+  exit 2
+fi
 
 trap 'sweep' EXIT
 
@@ -740,7 +798,7 @@ export IT_RUN_ID IT_LABEL IT_SCRATCH IT_IMAGE IT_NET IT_DNS_IMAGE \
 # itself would accept.
 if [[ -n "$want_variant" ]]; then
   variant_overrides "$want_variant" >/dev/null || {
-    printf 'run.sh: unknown variant: %s (known: %s)\n' "$want_variant" "$KNOWN_VARIANTS" >&2
+    printf 'run.sh: unknown variant: %s (known: %s)\n' "$want_variant" "$KNOWN_VARIANTS_DISPLAY" >&2
     exit 2
   }
 fi
@@ -925,143 +983,143 @@ for v in $(selected_variants $selected); do
   }
 
   for f in $selected; do
-  [[ "$(case_variant "$f")" == "$v" ]] || continue
-  name="$(basename "$f" .sh)"
-  n_sel=$((n_sel + 1))
-  tags="$(case_meta "$f" tags)"
-  reqs="$(case_meta "$f" requires)"
-  log="$IT_SCRATCH/logs/$name.log"
-  # Already validated in the Selection section above (every selected case's
-  # header was checked before the first image build), so this cannot fail
-  # here — just resolves the same value again for THIS case's own it_timeout
-  # call and its "timed out after Ns" report below.
-  case_to="$(case_timeout "$f")"
+    [[ "$(case_variant "$f")" == "$v" ]] || continue
+    name="$(basename "$f" .sh)"
+    n_sel=$((n_sel + 1))
+    tags="$(case_meta "$f" tags)"
+    reqs="$(case_meta "$f" requires)"
+    log="$IT_SCRATCH/logs/$name.log"
+    # Already validated in the Selection section above (every selected case's
+    # header was checked before the first image build), so this cannot fail
+    # here — just resolves the same value again for THIS case's own it_timeout
+    # call and its "timed out after Ns" report below.
+    case_to="$(case_timeout "$f")"
 
-  if missing="$(unmet_requirement "$reqs")"; then
-    printf '%-46s  SKIP  (requires: %s)\n' "$name" "$missing"
-    n_skip=$((n_skip + 1))
-    skipped_names="${skipped_names:+$skipped_names }$name"
-    skipped_tags="${skipped_tags}|${name}:${tags}"
-    continue
-  fi
-
-  case_failed=0
-  started=$SECONDS
-  # IT_IMAGE="$variant_img" here is a per-command prefix assignment, not an
-  # `export`: it reaches this case's own process (and lib.sh's `set -u`
-  # IT_IMAGE check) through the environment bash builds for THIS command only,
-  # then reverts — the parent shell's own $IT_IMAGE is never touched. See the
-  # comment above the loop for why that matters.
-  if [[ "$verbose" -eq 1 ]]; then
-    IT_IMAGE="$variant_img" it_timeout "$case_to" bash "$f" 2>&1 | tee "$log"; rc=${PIPESTATUS[0]}
-  else
-    IT_IMAGE="$variant_img" it_timeout "$case_to" bash "$f" > "$log" 2>&1; rc=$?
-  fi
-  took=$((SECONDS - started))
-  # grep -c prints "0" AND exits 1 on no match; under `set -o pipefail` (not in
-  # play here, but the `|| echo 0` fallback some drafts use) that "0 || echo 0"
-  # shape yields the two-line string "0\n0", not the integer 0. Force a single
-  # scalar by pulling the last line, which is "0" whichever path produced it.
-  # Deliberately narrower than tests/run-all.sh's '^(PASS|  ok)': that pattern
-  # also accepts the '  ok' form some older hermetic tests emit, but no
-  # integration case uses it — lib.sh's pass() prints exactly 'PASS: <msg>' and
-  # is the only way a case can assert. Accepting a form nothing produces would
-  # let a case that printed '  ok' by accident count as having asserted.
-  n_ok="$(grep -c '^PASS:' "$log" 2>/dev/null | tail -1)"
-  n_ok="${n_ok:-0}"
-  # Same narrowness reasoning as n_ok above: lib.sh's fail() prints exactly
-  # 'FAIL: <msg>', so this is the one form a case can genuinely fail through.
-  n_fail_lines="$(grep -c '^FAIL:' "$log" 2>/dev/null | tail -1)"
-  n_fail_lines="${n_fail_lines:-0}"
-
-  if [[ "$rc" -eq 77 ]]; then
-    printf '%-46s  SKIP  (%s)\n' "$name" \
-      "$(grep -m1 '^SKIP:' "$log" | sed 's/^SKIP:[[:space:]]*//')"
-    n_skip=$((n_skip + 1))
-    skipped_names="${skipped_names:+$skipped_names }$name"
-    skipped_tags="${skipped_tags}|${name}:${tags}"
-  elif [[ "$rc" -eq 124 ]]; then
-    printf '%-46s  FAIL  (timed out after %ss)\n' "$name" "$case_to"
-    case_failed=1
-    n_fail=$((n_fail + 1)); failed_names="${failed_names:+$failed_names }$name"
-  elif [[ "$rc" -ne 0 ]]; then
-    printf '%-46s  FAIL  (exit %s, %ss)\n' "$name" "$rc" "$took"
-    case_failed=1
-    n_fail=$((n_fail + 1)); failed_names="${failed_names:+$failed_names }$name"
-  elif [[ "$n_fail_lines" -gt 0 ]]; then
-    # rc==0 here (the branches above already claimed every nonzero exit), yet
-    # the log holds real FAIL: lines. The normal exit path is lib.sh's
-    # it_finish, which `exit`s "$it_fails" — so rc==0 with a FAIL: present
-    # means the case never reached it_finish (an early return, a forgotten
-    # call at the end of a hand-rolled case) and whatever ran last happened to
-    # exit 0, silently swallowing the failure. Gate on the printed evidence,
-    # not the exit code the case forgot to set.
-    printf '%-46s  FAIL  (exited 0 but printed %s FAIL: line(s) — case never reached it_finish)\n' \
-      "$name" "$n_fail_lines"
-    case_failed=1
-    n_fail=$((n_fail + 1)); failed_names="${failed_names:+$failed_names }$name"
-  elif [[ "$n_ok" -eq 0 ]]; then
-    # Exiting 0 without asserting anything is not a pass: it is a case that
-    # silently did nothing (bad guard, early return, renamed helper).
-    printf '%-46s  FAIL  (exited 0 but asserted nothing)\n' "$name"
-    case_failed=1
-    n_fail=$((n_fail + 1)); failed_names="${failed_names:+$failed_names }$name"
-  else
-    printf '%-46s  PASS  (%s assertion(s), %ss)\n' "$name" "$n_ok" "$took"
-    n_pass=$((n_pass + 1))
-  fi
-
-  # `rc -ne 0` is not the whole set of failures: a case that exits 0 having
-  # printed no PASS: line is ALSO reported FAIL above ("asserted nothing"), and
-  # it is the hardest failure to diagnose — nothing in the summary says why the
-  # case did nothing (a bad guard, an early return, a renamed helper). Excluding
-  # it from the dump left the least informative failure with the least
-  # information. Gate on the FAIL having been counted, not on the exit code.
-  if [[ "$case_failed" -eq 1 && "$verbose" -eq 0 ]]; then
-    # A failing case's log holds its own PASS:/FAIL: assertion lines FIRST,
-    # then lib.sh's EXIT trap appends it_diagnose's diagnostics (docker
-    # logs, iptables -S, ipset counts, capture-dir listings) — which by
-    # itself easily runs past 40 lines. A plain `tail -40` therefore showed
-    # only the tail of the DIAGNOSTICS and silently discarded the assertion
-    # that explains WHY the case failed, leaving a human with iptables rules
-    # and no statement of the failure. Print the assertions unconditionally
-    # and first — they must never be the thing that gets truncated — then a
-    # bounded diagnostics tail for context.
-    grep -E '^(PASS|FAIL|SKIP):' "$log" | sed 's/^/     /'
-    # The SAME truncation defect applies one layer down, to it_diagnose's own
-    # dump: it prints "── docker logs (last 60) ──" FIRST, then iptables -S,
-    # ipset counts and capture-dir listings AFTER it (lib.sh's it_diagnose,
-    # unchanged here — reordering it would ripple to every other caller that
-    # reads its output directly, e.g. a case's own `it_diagnose "$IT_CID"`
-    # mid-script). Those later sections routinely push the combined log past
-    # 40 lines on their own, so the plain `tail -40` below reliably showed
-    # ONLY iptables/ipset/`ls` output and discarded the container logs
-    # entirely — the actual record of what the entrypoint/reconcile/agent did,
-    # and the single most useful thing here (task-14a: a real failure's
-    # diagnostics were 100% iptables/ipset/capture-dir noise, zero lines of
-    # what the container had actually printed). Extract and print that section
-    # unconditionally and first, the same way the assertions above already
-    # are, rather than hoping a fixed-size tail happens to land on it.
-    #
-    # Bounded by construction, not just by luck: it_diagnose itself caps this
-    # section at 60 lines (`docker logs | tail -60`), so pulling it out whole
-    # cannot turn into the unbounded dump the plain tail below is deliberately
-    # sized against. Captured to a variable rather than piped straight to
-    # sed/printf so an empty result (no it_diagnose ran — e.g. a case failed
-    # before IT_CID was ever set) prints nothing at all instead of a
-    # container-logs header over an empty section.
-    container_logs="$(awk '
-      /── docker logs \(last 60\) ──/ { f=1; next }
-      /── iptables -S OUTPUT ──/      { f=0 }
-      f
-    ' "$log")"
-    if [[ -n "$container_logs" ]]; then
-      printf '     ── container logs (from it_diagnose, unbounded by the tail below) ──\n'
-      printf '%s\n' "$container_logs" | sed 's/^/     /'
+    if missing="$(unmet_requirement "$reqs")"; then
+      printf '%-46s  SKIP  (requires: %s)\n' "$name" "$missing"
+      n_skip=$((n_skip + 1))
+      skipped_names="${skipped_names:+$skipped_names }$name"
+      skipped_tags="${skipped_tags}|${name}:${tags}"
+      continue
     fi
-    printf '     ── diagnostics (last 40 lines of case output) ──\n'
-    sed 's/^/     /' "$log" | tail -40
-  fi
+
+    case_failed=0
+    started=$SECONDS
+    # IT_IMAGE="$variant_img" here is a per-command prefix assignment, not an
+    # `export`: it reaches this case's own process (and lib.sh's `set -u`
+    # IT_IMAGE check) through the environment bash builds for THIS command only,
+    # then reverts — the parent shell's own $IT_IMAGE is never touched. See the
+    # comment above the loop for why that matters.
+    if [[ "$verbose" -eq 1 ]]; then
+      IT_IMAGE="$variant_img" it_timeout "$case_to" bash "$f" 2>&1 | tee "$log"; rc=${PIPESTATUS[0]}
+    else
+      IT_IMAGE="$variant_img" it_timeout "$case_to" bash "$f" > "$log" 2>&1; rc=$?
+    fi
+    took=$((SECONDS - started))
+    # grep -c prints "0" AND exits 1 on no match; under `set -o pipefail` (not in
+    # play here, but the `|| echo 0` fallback some drafts use) that "0 || echo 0"
+    # shape yields the two-line string "0\n0", not the integer 0. Force a single
+    # scalar by pulling the last line, which is "0" whichever path produced it.
+    # Deliberately narrower than tests/run-all.sh's '^(PASS|  ok)': that pattern
+    # also accepts the '  ok' form some older hermetic tests emit, but no
+    # integration case uses it — lib.sh's pass() prints exactly 'PASS: <msg>' and
+    # is the only way a case can assert. Accepting a form nothing produces would
+    # let a case that printed '  ok' by accident count as having asserted.
+    n_ok="$(grep -c '^PASS:' "$log" 2>/dev/null | tail -1)"
+    n_ok="${n_ok:-0}"
+    # Same narrowness reasoning as n_ok above: lib.sh's fail() prints exactly
+    # 'FAIL: <msg>', so this is the one form a case can genuinely fail through.
+    n_fail_lines="$(grep -c '^FAIL:' "$log" 2>/dev/null | tail -1)"
+    n_fail_lines="${n_fail_lines:-0}"
+
+    if [[ "$rc" -eq 77 ]]; then
+      printf '%-46s  SKIP  (%s)\n' "$name" \
+        "$(grep -m1 '^SKIP:' "$log" | sed 's/^SKIP:[[:space:]]*//')"
+      n_skip=$((n_skip + 1))
+      skipped_names="${skipped_names:+$skipped_names }$name"
+      skipped_tags="${skipped_tags}|${name}:${tags}"
+    elif [[ "$rc" -eq 124 ]]; then
+      printf '%-46s  FAIL  (timed out after %ss)\n' "$name" "$case_to"
+      case_failed=1
+      n_fail=$((n_fail + 1)); failed_names="${failed_names:+$failed_names }$name"
+    elif [[ "$rc" -ne 0 ]]; then
+      printf '%-46s  FAIL  (exit %s, %ss)\n' "$name" "$rc" "$took"
+      case_failed=1
+      n_fail=$((n_fail + 1)); failed_names="${failed_names:+$failed_names }$name"
+    elif [[ "$n_fail_lines" -gt 0 ]]; then
+      # rc==0 here (the branches above already claimed every nonzero exit), yet
+      # the log holds real FAIL: lines. The normal exit path is lib.sh's
+      # it_finish, which `exit`s "$it_fails" — so rc==0 with a FAIL: present
+      # means the case never reached it_finish (an early return, a forgotten
+      # call at the end of a hand-rolled case) and whatever ran last happened to
+      # exit 0, silently swallowing the failure. Gate on the printed evidence,
+      # not the exit code the case forgot to set.
+      printf '%-46s  FAIL  (exited 0 but printed %s FAIL: line(s) — case never reached it_finish)\n' \
+        "$name" "$n_fail_lines"
+      case_failed=1
+      n_fail=$((n_fail + 1)); failed_names="${failed_names:+$failed_names }$name"
+    elif [[ "$n_ok" -eq 0 ]]; then
+      # Exiting 0 without asserting anything is not a pass: it is a case that
+      # silently did nothing (bad guard, early return, renamed helper).
+      printf '%-46s  FAIL  (exited 0 but asserted nothing)\n' "$name"
+      case_failed=1
+      n_fail=$((n_fail + 1)); failed_names="${failed_names:+$failed_names }$name"
+    else
+      printf '%-46s  PASS  (%s assertion(s), %ss)\n' "$name" "$n_ok" "$took"
+      n_pass=$((n_pass + 1))
+    fi
+
+    # `rc -ne 0` is not the whole set of failures: a case that exits 0 having
+    # printed no PASS: line is ALSO reported FAIL above ("asserted nothing"), and
+    # it is the hardest failure to diagnose — nothing in the summary says why the
+    # case did nothing (a bad guard, an early return, a renamed helper). Excluding
+    # it from the dump left the least informative failure with the least
+    # information. Gate on the FAIL having been counted, not on the exit code.
+    if [[ "$case_failed" -eq 1 && "$verbose" -eq 0 ]]; then
+      # A failing case's log holds its own PASS:/FAIL: assertion lines FIRST,
+      # then lib.sh's EXIT trap appends it_diagnose's diagnostics (docker
+      # logs, iptables -S, ipset counts, capture-dir listings) — which by
+      # itself easily runs past 40 lines. A plain `tail -40` therefore showed
+      # only the tail of the DIAGNOSTICS and silently discarded the assertion
+      # that explains WHY the case failed, leaving a human with iptables rules
+      # and no statement of the failure. Print the assertions unconditionally
+      # and first — they must never be the thing that gets truncated — then a
+      # bounded diagnostics tail for context.
+      grep -E '^(PASS|FAIL|SKIP):' "$log" | sed 's/^/     /'
+      # The SAME truncation defect applies one layer down, to it_diagnose's own
+      # dump: it prints "── docker logs (last 60) ──" FIRST, then iptables -S,
+      # ipset counts and capture-dir listings AFTER it (lib.sh's it_diagnose,
+      # unchanged here — reordering it would ripple to every other caller that
+      # reads its output directly, e.g. a case's own `it_diagnose "$IT_CID"`
+      # mid-script). Those later sections routinely push the combined log past
+      # 40 lines on their own, so the plain `tail -40` below reliably showed
+      # ONLY iptables/ipset/`ls` output and discarded the container logs
+      # entirely — the actual record of what the entrypoint/reconcile/agent did,
+      # and the single most useful thing here (task-14a: a real failure's
+      # diagnostics were 100% iptables/ipset/capture-dir noise, zero lines of
+      # what the container had actually printed). Extract and print that section
+      # unconditionally and first, the same way the assertions above already
+      # are, rather than hoping a fixed-size tail happens to land on it.
+      #
+      # Bounded by construction, not just by luck: it_diagnose itself caps this
+      # section at 60 lines (`docker logs | tail -60`), so pulling it out whole
+      # cannot turn into the unbounded dump the plain tail below is deliberately
+      # sized against. Captured to a variable rather than piped straight to
+      # sed/printf so an empty result (no it_diagnose ran — e.g. a case failed
+      # before IT_CID was ever set) prints nothing at all instead of a
+      # container-logs header over an empty section.
+      container_logs="$(awk '
+        /── docker logs \(last 60\) ──/ { f=1; next }
+        /── iptables -S OUTPUT ──/      { f=0 }
+        f
+      ' "$log")"
+      if [[ -n "$container_logs" ]]; then
+        printf '     ── container logs (from it_diagnose, unbounded by the tail below) ──\n'
+        printf '%s\n' "$container_logs" | sed 's/^/     /'
+      fi
+      printf '     ── diagnostics (last 40 lines of case output) ──\n'
+      sed 's/^/     /' "$log" | tail -40
+    fi
   done
 
   # Reclaim the disk before the next variant. Never the default variant: --keep

@@ -1,0 +1,51 @@
+# case: 730-native-clients-run
+# what: the Dockerfile layer that RESTORES the build toolchain never fires -- its
+#       condition is changed to a value KEEP_BUILD_TOOLCHAIN can never hold, so
+#       build-essential/libyaml-dev/zlib1g-dev/libssl-dev stay stripped even though
+#       build.sh correctly passed KEEP_BUILD_TOOLCHAIN=1. This is the state that
+#       shipped before that layer existed, and the reason it was added.
+#
+#       This targets the yaml.h assertion, NOT gcc. The first version of this
+#       patch was written to target gcc and DID NOT DEMONSTRATE: run 31466356415
+#       applied exactly this Dockerfile change and case 730 still passed all six
+#       assertions. gcc survives the Dockerfile:219 `apt-get purge --auto-remove
+#       build-essential` independently — build-essential is a metapackage and
+#       --auto-remove keeps what other installed packages still need. So 730's
+#       stated reason for asserting gcc ("if the Dockerfile ever stripped the
+#       toolchain again despite the flag") was unfalsifiable, and a patch named
+#       730-toolchain-stripped sitting beside it implied otherwise. 730 now also
+#       asserts /usr/include/yaml.h, which libyaml-dev provides and which nothing
+#       else in the Dockerfile installs — present if and only if this layer ran.
+#
+#       Mutating the Dockerfile rather than build.sh is deliberate. build.sh sets
+#       KEEP_BUILD_TOOLCHAIN=1 whenever ruby OR db-clients is set, and the native
+#       variant sets both, so no build.sh edit can produce KEEP_BUILD_TOOLCHAIN=0
+#       there. Forcing the ARG to 0 directly is also not it: Dockerfile:331 fails
+#       the build outright on RUBY_RUNTIME=1 with KEEP_BUILD_TOOLCHAIN!=1, so the
+#       image would never build and 730 would fail as "image did not build" — a
+#       named failure, but not this one. Defeating the restore layer while leaving
+#       the flag truthful reproduces the actual defect: the flag says keep, the
+#       image does not have it.
+#
+#       MUST BE DEMONSTRATED ALONE (--cases 730-native-clients-run). rvm needs
+#       this layer's headers to build psych, so 740/750/760 would fail for this
+#       mutation's reason before reaching their own assertions — the masking that
+#       cost three extra dispatches last increment.
+#
+#       Expected: 730's yaml.h assertion FAILS ("libyaml-dev's header is
+#       MISSING"), while all six binaries -- INCLUDING gcc, for the reason above
+#       -- still PASS. A run where gcc also fails means something else changed.
+#
+diff --git a/Dockerfile b/Dockerfile
+index ee36aec..6c1ffe6 100644
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -288,7 +288,7 @@ RUN if [ -n "$DB_CLIENTS" ]; then \
+ # DB driver gems, and Python source wheels compile at runtime, so put a minimal
+ # toolchain back when KEEP_BUILD_TOOLCHAIN=1 (set by build.sh for ruby OR db-clients).
+ ARG KEEP_BUILD_TOOLCHAIN=0
+-RUN if [ "$KEEP_BUILD_TOOLCHAIN" = "1" ]; then \
++RUN if [ "$KEEP_BUILD_TOOLCHAIN" = "NEVER" ]; then \
+       apt-get update && apt-get install -y --no-install-recommends \
+         build-essential libyaml-dev zlib1g-dev libssl-dev && \
+       rm -rf /var/lib/apt/lists/*; \

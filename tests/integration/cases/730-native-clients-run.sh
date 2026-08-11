@@ -15,13 +15,25 @@
 # check tested `head`'s exit status instead of the tool's, so "PRESENT BUT
 # FAILED TO RUN" was unreachable for its entire existence.
 #
-# gcc is in the list because KEEP_BUILD_TOOLCHAIN=1 is what keeps it
-# (sandbox-common.sh: db-clients and ruby both set it), and native extensions —
-# the pg/mysql2 gems, Python source wheels — compile at container RUNTIME, not
-# at image build time. If the Dockerfile ever stripped the toolchain again
-# despite the flag, every gem with a C extension would break at container start
-# and nothing else in this corpus would notice; db-clients/imagemagick/
-# wkhtmltopdf are otherwise unrelated to gcc.
+# gcc is in the list because native extensions — the pg/mysql2 gems, Python
+# source wheels — compile at container RUNTIME, not at image build time, so a
+# missing compiler breaks every gem with a C extension at container start and
+# nothing else in this corpus would notice.
+#
+# gcc is NOT, however, evidence that KEEP_BUILD_TOOLCHAIN's restore layer fired,
+# and this comment used to claim it was. Measured, not reasoned: mutation
+# 735-toolchain-not-restored makes that layer unreachable while build.sh still
+# passes KEEP_BUILD_TOOLCHAIN=1, and this case still PASSED all six assertions
+# (run 31466356415). gcc survives the Dockerfile:219 `apt-get purge
+# --auto-remove build-essential` on its own — build-essential is a metapackage,
+# and --auto-remove keeps anything another installed package still needs. So the
+# gcc assertion could not fail for the reason it was written down for.
+#
+# The yaml.h check below is the discriminating one. libyaml-dev appears exactly
+# once in the Dockerfile — in that restore layer (line 293) — so /usr/include/
+# yaml.h is present if and only if the layer ran. It is also the header rvm
+# needs to build psych, which is why a stripped toolchain shows up as a Ruby
+# bootstrap failure rather than a missing compiler.
 #
 # All six answer --version cleanly per the per-binary conventions checked while
 # writing this case (psql, mysql, mongosh, convert, wkhtmltopdf and gcc all
@@ -111,5 +123,14 @@ launcher_up restricted || it_finish
 for b in psql mysql mongosh convert wkhtmltopdf gcc; do
   assert_runs "$IT_CID" "$b"
 done
+
+# The toolchain-restore layer's own fingerprint — see the header. A compiler on
+# PATH does not imply this layer ran; this header does, because nothing else in
+# the Dockerfile installs libyaml-dev.
+if docker exec "$IT_CID" test -f /usr/include/yaml.h; then
+  pass "libyaml-dev's header is present — KEEP_BUILD_TOOLCHAIN's restore layer ran"
+else
+  fail "libyaml-dev's header is MISSING — the toolchain restore layer did not run, so runtime native compilation (psych, pg, mysql2) will fail"
+fi
 
 it_finish
