@@ -44,6 +44,7 @@
 # The pid-1 handover waits behind the whole reconcile, which the 60s network
 # floor was never sized for. Raised here rather than globally: no other case
 # pays this.
+# shellcheck disable=SC2034  # consumed by tests/integration/lib.sh's it_wait/run.sh, which read it after this case is sourced
 IT_SETTLE=300
 
 fixture_scope_init || it_finish
@@ -61,6 +62,7 @@ assert_volume_exists "$vol"
 mtype="$(docker inspect -f \
   "{{range .Mounts}}{{if eq .Destination \"$IT_LAUNCH_HOME_IN/.rvm\"}}{{.Type}}{{end}}{{end}}" \
   "$IT_CID" 2>/dev/null)"
+# shellcheck disable=SC2088  # descriptive message text, not a path — the real path uses $IT_LAUNCH_HOME_IN above
 if [[ "$mtype" == "volume" ]]; then
   pass "~/.rvm is mounted as a named volume"
 else

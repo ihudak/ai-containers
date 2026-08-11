@@ -61,7 +61,7 @@ if [[ "$IT_SETTLE" -lt 60 ]]; then
   IT_SETTLE=60
 fi
 
-IT_SIDECAR=""; IT_SIDECAR_IP=""; IT_CID=""; IT_DNS=""; IT_DNS_IP=""
+IT_SIDECAR=""; IT_SIDECAR_IP=""; IT_CID=""; IT_DNS_IP=""
 
 it_fails=0
 pass() { printf 'PASS: %s\n' "$1"; }
@@ -163,7 +163,6 @@ dns_up() {  # <fqdn> <ip> [<fqdn> <ip>…]
     -v "$d/Corefile:/Corefile:ro" "$IT_DNS_IMAGE" -conf /Corefile \
     >/dev/null 2>&1 || { fail "dns_up: docker run failed"; return 1; }
   it_track "container:$name"
-  IT_DNS="$name"
   IT_DNS_IP="$(docker inspect -f "{{ (index .NetworkSettings.Networks \"$IT_NET\").IPAddress }}" "$name" 2>/dev/null)"
   [[ -n "$IT_DNS_IP" ]] || { fail "dns_up: no IP on network $IT_NET"; return 1; }
   # Functional readiness, not a log grep. `docker logs <name>` returns 0 the
@@ -345,6 +344,7 @@ IT_LAUNCH_UID="${SANDBOX_UID:-$(id -u)}"
 IT_LAUNCH_GID="${SANDBOX_GID:-$(id -g)}"
 # Where the group's dotfile dirs land inside the container. The same expression
 # sandbox.sh uses for dev_home, so a case never hardcodes a username.
+# shellcheck disable=SC2034  # consumed by cases under tests/integration/cases/, which read it after lib.sh is sourced
 IT_LAUNCH_HOME_IN="/home/${SANDBOX_USER:-$(id -un)}"
 
 # Creates the scratch $HOME, launch dir and shim dir this case's launcher runs
@@ -368,6 +368,7 @@ launcher_prepare() {
 # minimal-conf.sh for why a case must never inherit the developer's own conf.
 # Call again with overrides to switch one component back on:
 #     launcher_conf claude-code=ON
+# shellcheck disable=SC2120  # called with overrides from case files and test-integration-lib.sh (different files); the argument-less call here (launcher_prepare) is only one caller
 launcher_conf() {  # $*=key=value overrides (the variant's are added first, automatically)
   local f="$IT_LAUNCH_HOME/sandbox.conf"
   # $IT_VARIANT_OVERRIDES comes FIRST so a case's own argument for the same key
@@ -440,6 +441,7 @@ launcher_script() {  # $1=script basename $2…=args
     export IMAGE_NAME="$IT_IMAGE"
     exec bash "$IT_REPO_DIR/$s" "$@"
   ) >"$IT_SCRIPT_OUT" 2>&1 </dev/null
+  # shellcheck disable=SC2034  # IT_SCRIPT_RC: consumed by cases under tests/integration/cases/, which read it after lib.sh is sourced
   IT_SCRIPT_RC=$?
   return 0
 }

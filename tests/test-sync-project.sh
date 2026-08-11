@@ -302,6 +302,13 @@ grep -qxF '/.ai-containers/' "$PROJ/.gitignore" 2>/dev/null \
 grep -qxF '*.log' "$PROJ/.gitignore" 2>/dev/null \
   && pass "ensure_ai_containers_ignored preserves pre-existing .gitignore content" \
   || fail "ensure_ai_containers_ignored preserves pre-existing .gitignore content"
+# Stronger form of the same claim, using the BEFORE sentinel: the pre-existing
+# content must survive byte-for-byte, in order, as the file's prefix — not just
+# "present somewhere" (mirrors the DEST-gitignore append-only check below).
+[[ "$(head -n "$(printf '%s\n' "$SENTINEL_ROOT_GITIGNORE_BEFORE" | wc -l)" "$PROJ/.gitignore")" \
+   == "$SENTINEL_ROOT_GITIGNORE_BEFORE" ]] \
+  && pass "root .gitignore: pre-existing content is an intact, in-order prefix" \
+  || fail "root .gitignore: pre-existing content is an intact, in-order prefix"
 
 # Idempotency: calling again must not duplicate the line.
 ensure_ai_containers_ignored "$PROJ"

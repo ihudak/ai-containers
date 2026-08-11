@@ -43,6 +43,7 @@ set -uo pipefail
 
 # See case 700's comment: run_agent_tools_reconcile runs before entrypoint.sh's
 # exec to the sandbox user, so the pid-1 wait is gated behind the whole install.
+# shellcheck disable=SC2034  # consumed by tests/integration/lib.sh's it_wait/run.sh, which read it after this case is sourced
 IT_SETTLE=900
 
 fixture_scope_init || it_finish
@@ -81,9 +82,11 @@ done
 # on Docker resolving $HOME from /etc/passwd for that form (case 630 took the
 # same position for the rvm mount path, for the same reason) — the known,
 # lib.sh-derived path is unambiguous either way.
+# shellcheck disable=SC2088  # descriptive message text, not a path — the real path uses $IT_LAUNCH_HOME_IN above
 if agent_exec "$IT_CID" "test -f '$IT_LAUNCH_HOME_IN/.npmrc' && grep -q '^prefix=' '$IT_LAUNCH_HOME_IN/.npmrc'"; then
   fail "~/.npmrc sets a prefix — this is exactly what trips nvm_die_on_prefix"
 else
+  # shellcheck disable=SC2088  # descriptive message text, not a path
   pass "~/.npmrc sets no prefix"
 fi
 

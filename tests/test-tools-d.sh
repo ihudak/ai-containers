@@ -29,13 +29,16 @@ names="$(tools_list_names | sort | tr '\n' ' ')"
 
 tools_read_descriptor foo
 [[ "$TOOL_repo" == "acme/foo" ]] && pass "repo" || fail "repo ($TOOL_repo)"
+# shellcheck disable=SC2154  # TOOL_private: set by tools_read_descriptor() in tools-lib.sh (sourced with source=/dev/null above, so shellcheck can't see it)
 [[ "$TOOL_private" == "yes" ]] && pass "private" || fail "private"
 [[ "$TOOL_config_dir" == ".config/foo" ]] && pass "config_dir" || fail "config_dir"
+# shellcheck disable=SC2154  # TOOL_skills_crossclient: set by tools_read_descriptor() in tools-lib.sh (sourced with source=/dev/null above, so shellcheck can't see it)
 [[ "$TOOL_skills_crossclient" == "--for cross-client" ]] && pass "crossclient trims comment" || fail "crossclient ($TOOL_skills_crossclient)"
 
 # Defaults + reset: bar omits everything; binary defaults to name, private to no,
 # and foo's values must not leak.
 tools_read_descriptor bar
+# shellcheck disable=SC2154  # TOOL_binary: set by tools_read_descriptor() in tools-lib.sh (sourced with source=/dev/null above, so shellcheck can't see it)
 [[ "$TOOL_binary" == "bar" ]] && pass "binary default" || fail "binary default ($TOOL_binary)"
 [[ "$TOOL_private" == "no" ]] && pass "private default" || fail "private default"
 [[ -z "$TOOL_config_dir" ]] && pass "no leak" || fail "no leak ($TOOL_config_dir)"
@@ -48,6 +51,7 @@ url=https://vendor.example/dl?token=abc#frag&arch=${ARCH}
 binary=hashy   # this trailing comment IS stripped
 EOF
 tools_read_descriptor hashy
+# shellcheck disable=SC2154  # TOOL_url: set by tools_read_descriptor() in tools-lib.sh (sourced with source=/dev/null above, so shellcheck can't see it)
 [[ "$TOOL_url" == 'https://vendor.example/dl?token=abc#frag&arch=${ARCH}' ]] \
   && pass "a '#' inside a value survives (URL fragment / query)" \
   || fail "'#' inside a value ($TOOL_url)"
@@ -69,6 +73,7 @@ ref=main
 config_dir=.ext .config/ext-cli
 EOF
 tools_read_descriptor ext
+# shellcheck disable=SC2154  # TOOL_install: set by tools_read_descriptor() in tools-lib.sh (sourced with source=/dev/null above, so shellcheck can't see it)
 [[ "$TOOL_install" == "repo-file" ]] && pass "install parsed" || fail "install parsed ($TOOL_install)"
 [[ "$TOOL_repo_path" == 'utils/ext/ext-cli-linux-${ARCH}' ]] \
   && pass "repo_path parsed verbatim (\${ARCH} not expanded at parse time)" \
@@ -95,6 +100,7 @@ tools_read_descriptor dtmgd
 [[ "$TOOL_repo" == "dynatrace-oss/dtmgd" && "$TOOL_skills_crossclient" == "--for cross-client" ]] \
   && pass "dtmgd descriptor" || fail "dtmgd descriptor ($TOOL_repo / $TOOL_skills_crossclient)"
 tools_read_descriptor acli
+# shellcheck disable=SC2154  # TOOL_allowlist_fragment: set by tools_read_descriptor() in tools-lib.sh (sourced with source=/dev/null above, so shellcheck can't see it)
 [[ "$TOOL_install" == "url" && "$TOOL_binary" == "acli" && -z "$TOOL_repo" \
    && "$TOOL_url" == 'https://acli.atlassian.com/${OS}/latest/acli_${OS}_${ARCH}.tar.gz' \
    && "$TOOL_config_dir" == ".config/acli" && "$TOOL_allowlist_fragment" == "atlassian" ]] \
@@ -122,6 +128,7 @@ export TOOLS_D_DIR="$_saved_td"
 
 # --- install-tools.sh pure helpers ---------------------------------------------
 export TOOLS_LIB="$REPO_DIR/tools-lib.sh"
+# shellcheck disable=SC2034  # OS/ARCH: pin install-tools.sh's `${OS:-...}`/`${ARCH:-...}` defaults deterministically; consumed via that expansion once sourced below (source=/dev/null hides it from shellcheck)
 OS=linux ARCH=amd64
 # shellcheck source=/dev/null
 source "$REPO_DIR/install-tools.sh"   # sourced, not executed (guarded main)

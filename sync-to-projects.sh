@@ -174,7 +174,11 @@ ensure_ai_containers_ignored() {
 # Idempotent: appends only patterns that are not already listed verbatim.
 ensure_inner_gitignore() {
   local dest="$1"
-  local gi="${dest}/.gitignore" pat added=0
+  # did_add, not added: reconcile_sandbox_conf's `local added=()` (an array,
+  # different function above) makes shellcheck's array/scalar tracking — which
+  # isn't scope-aware — falsely flag this unrelated scalar as SC2178/SC2128.
+  # Renaming sidesteps the collision instead of suppressing a real pattern.
+  local gi="${dest}/.gitignore" pat did_add=0
   # Guarantee a trailing newline before appending to an existing, non-empty file
   # (otherwise the first appended pattern gets glued onto the file's last line).
   if [[ -f "$gi" && -s "$gi" && -n "$(tail -c1 "$gi" 2>/dev/null)" ]]; then
@@ -187,10 +191,10 @@ ensure_inner_gitignore() {
              'allowlist-cidrs.d/custom.txt'; do
     if [[ ! -f "$gi" ]] || ! grep -qxF "$pat" "$gi" 2>/dev/null; then
       printf '%s\n' "$pat" >> "$gi"
-      added=1
+      did_add=1
     fi
   done
-  (( added )) && printf '  Backfilled .ai-containers/.gitignore patterns.\n'
+  (( did_add )) && printf '  Backfilled .ai-containers/.gitignore patterns.\n'
   return 0
 }
 

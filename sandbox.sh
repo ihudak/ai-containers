@@ -225,6 +225,7 @@ add_mount_if_exists() {
 }
 
 add_file_mount_if_exists() {
+  # shellcheck disable=SC2178,SC2128  # nameref: shellcheck does not model `local -n`
   local -n _flags=$1
   local original_src="$2" dst="$3" opts="${4:-rw}"
   local src
@@ -356,7 +357,10 @@ run_container() {
   local repo_mount_flags=()
   local git_optional_locks_env=()
   # Effective list = REPOS, plus the @primary repo (as :rw) if not already listed.
-  local repos_list=(${REPOS:-})
+  # read -a splits on IFS like the old unquoted `(${REPOS:-})` did, but without
+  # also subjecting each word to pathname (glob) expansion.
+  local repos_list=()
+  IFS=' ' read -r -a repos_list <<< "${REPOS:-}"
   if [[ -n "$primary_repo" ]]; then
     local _found=0 _e
     for _e in ${repos_list[@]+"${repos_list[@]}"}; do
@@ -417,9 +421,8 @@ run_container() {
 
       repos_used["$rname"]="REPOS"
       repo_mode["$rname"]="$rmode"
-      local rrecord rtype rsource rbackend
+      local rrecord rsource rbackend
       rrecord="$(repo_registry_lookup "$rname")"
-      rtype="$(repo_record_field "$rrecord" 2)"
       rsource="$(repo_record_field "$rrecord" 3)"
       rbackend="$(repo_record_backend "$rrecord")"
 

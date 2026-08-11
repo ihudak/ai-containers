@@ -89,11 +89,14 @@ load_env_defaults() {
     # contains one quote (or is a bare `"`) is not silently mangled.
     if [[ ${#val} -ge 2 && "$val" == '"'*'"' ]]; then val="${val:1:${#val}-2}"; fi
     [[ -n "${!key+x}" ]] && continue             # already SET (inline env or earlier file) wins — even if empty
-    printf -v "$key" '%s' "$val"; export "$key"
+    printf -v "$key" '%s' "$val"
+    # shellcheck disable=SC2163  # intentional dynamic export by name: $key holds the identifier just set via printf -v above
+    export "$key"
   done < "$file"
 }
 load_env_defaults "${script_dir}/sandbox.local.env"   # this machine (higher precedence)
 load_env_defaults "${script_dir}/sandbox.env"         # portable defaults
+# shellcheck disable=SC2034  # consumed by sandbox.sh/build.sh, which source this file
 image_name="${IMAGE_NAME:-ai-sandbox}"
 
 # Fixed, project-independent name for the small repo.sh seeding helper image
@@ -101,6 +104,7 @@ image_name="${IMAGE_NAME:-ai-sandbox}"
 # IMAGE_NAME: the helper is generic, so one shared image is built once and reused
 # by every project instead of one near-identical copy per project image.
 # Override with REPO_SEED_IMAGE to reuse an existing image.
+# shellcheck disable=SC2034  # consumed by repo.sh, which sources this file
 seed_image="${REPO_SEED_IMAGE:-ai-containers-seed}"
 
 # Global (group-independent) repo registry. Repo volumes are code, not

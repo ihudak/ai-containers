@@ -47,6 +47,7 @@
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 
+# shellcheck disable=SC2034  # consumed by tests/integration/lib.sh's it_wait/run.sh, which read it after this case is sourced
 IT_SETTLE=3600
 
 fixture_scope_init || it_finish

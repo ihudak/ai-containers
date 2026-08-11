@@ -29,6 +29,7 @@ if [[ -n "${_AI_CONTAINERS_SHARED_FILES_SOURCED:-}" ]]; then
 fi
 _AI_CONTAINERS_SHARED_FILES_SOURCED=1
 
+# shellcheck disable=SC2034  # consumed by project-init.sh and sync-to-projects.sh, which source this file
 AI_CONTAINERS_SHARED_FILES=(
   Dockerfile Dockerfile.seed .dockerignore
   bash-floor.sh sandbox-common.sh tools-lib.sh

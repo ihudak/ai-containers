@@ -226,6 +226,11 @@ grep -q "is already mounted (ro); the pointer's :rw is ignored" "$TMP/entry2.err
 # sandbox-common.sh helpers — safe to source directly (pure library, no entry point)
 # ══════════════════════════════════════════════════════════════════════════════
 
+# shellcheck disable=SC2178,SC2128  # not a nameref here: sandbox-common.sh's enabled_agents_csv-like
+# helpers declare their OWN unrelated local `out` array; shellcheck's array/scalar
+# tracking isn't scope-aware, so it conflates that with this block's plain string
+# `out`/`rc` once sourced. Covers the whole subshell (shellcheck directives apply
+# to the following compound block).
 ( set --
   source "$REPO_DIR/sandbox-common.sh"
 

@@ -149,6 +149,9 @@ out="$(run_group rm host --yes)"; rc=$?
 grep -q 'refusing' <<<"$out" \
   && pass "rm refuses the 'host' group" \
   || fail "rm refuses the 'host' group (got: $out)"
+[[ "$rc" -ne 0 ]] \
+  && pass "rm refuses the 'host' group with a non-zero exit" \
+  || fail "rm refuses the 'host' group with a non-zero exit (rc=$rc)"
 
 out="$(run_group rm nosuchgroup --yes)"
 grep -q 'no such group' <<<"$out" \

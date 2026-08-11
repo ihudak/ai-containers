@@ -49,6 +49,7 @@ set -uo pipefail
 # second is expected to clear it almost immediately, because install_npm/
 # install_uv/install_vale each short-circuit on an already-present binary — but
 # the ceiling has to cover the first, cold one.
+# shellcheck disable=SC2034  # consumed by tests/integration/lib.sh's it_wait/run.sh, which read it after this case is sourced
 IT_SETTLE=900
 
 # The evidence is the NPM-INSTALLED BINARY'S MTIME, not a log grep — this case

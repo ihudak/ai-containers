@@ -125,8 +125,8 @@ check "repo registry is unaffected by existing rvm volumes" \
 
 # ── Labels + group round-trip ───────────────────────────────────────────────────
 rm -f "$FAKE_VOLUMES_DIR"/*
-out="$(rvm_volume_ensure "docs" "$TMP/nonexistent-group-root" "ai-sandbox" 2>/dev/null)"
-check "rvm_volume_ensure echoes the volume name" "ai-containers-rvm-docs" "$out"
+vol_out="$(rvm_volume_ensure "docs" "$TMP/nonexistent-group-root" "ai-sandbox" 2>/dev/null)"
+check "rvm_volume_ensure echoes the volume name" "ai-containers-rvm-docs" "$vol_out"
 check "rvm_volume_ensure labels the volume with its group" \
   "docs" "$(docker_volume_label ai-containers-rvm-docs 'ai-containers.rvm-group')"
 check "rvm_group_from_volume round-trips via the label" \
@@ -139,8 +139,8 @@ check "rvm_group_from_volume falls back to the name when unlabeled" \
 
 # ── Idempotence: an existing volume is never re-created or re-seeded ────────────
 : > "$FAKE_RUN_LOG"
-out="$(rvm_volume_ensure "docs" "$TMP/nonexistent-group-root" "ai-sandbox" 2>/dev/null)"
-check "rvm_volume_ensure is idempotent for an existing volume" "ai-containers-rvm-docs" "$out"
+vol_out="$(rvm_volume_ensure "docs" "$TMP/nonexistent-group-root" "ai-sandbox" 2>/dev/null)"
+check "rvm_volume_ensure is idempotent for an existing volume" "ai-containers-rvm-docs" "$vol_out"
 check "no docker run (seed copy) for an already-existing volume" "" "$(cat "$FAKE_RUN_LOG")"
 
 # ── Migration predicate: only a HEALTHY legacy ~/.rvm is copied in ──────────────

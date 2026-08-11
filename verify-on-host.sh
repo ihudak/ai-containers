@@ -33,8 +33,7 @@
 #      the same suite again inside a container pinned to the declared bash floor.
 #      Mirrors tests.yml's `suite` + `suite-floor` jobs.
 #   7  lint: bash -n over every tracked script, the bash-dialect floor check, and
-#      a shellcheck run. Mirrors tests.yml's `lint` job, with one deliberate
-#      difference — see Phase 7 below.
+#      a shellcheck run. Mirrors tests.yml's `lint` job — same commands, same gate.
 #   4  the runtime integration corpus — delegated in full to
 #      tests/integration/run.sh. No test logic lives here.
 #
@@ -203,15 +202,11 @@ fi
 fi
 
 # ── Phase 7: lint ────────────────────────────────────────────────────────────────
-# Mirrors .github/workflows/tests.yml's `lint` job, with one difference that is
-# the whole point: shellcheck runs as a GATE here, not `|| true`. That advisory
-# carried a comment calling a gate "a deliberate follow-up" — a follow-up nobody
-# scheduled. The layer model gives it a home: advisory in CI, gating locally,
-# where a human is present to act on it. (Increment 4 leaves this repo's own
-# pre-existing shellcheck backlog uncleared — Task 9 clears it and promotes
-# CI's own check from advisory to a gate; until then this phase can legitimately
-# fail here even with no new code changes, which is the honest state, not a bug
-# in the gate.)
+# Mirrors .github/workflows/tests.yml's `lint` job. shellcheck runs as a GATE
+# both here and in CI: Task 9 (increment 4) cleared the pre-existing findings
+# backlog — real defects fixed, everything else suppressed at the site with a
+# reason — and dropped tests.yml's `|| true`, so the two now agree instead of
+# this phase being the only one that gates.
 if want_phase 7; then
 say "PHASE 7 — lint (bash -n, dialect floor, shellcheck)"
 n_parsed=0; parse_rc=0

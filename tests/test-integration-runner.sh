@@ -143,15 +143,11 @@ has "$out" '080-theta.*SKIP.*no fixture' \
 # skips (needs netadmin, which IT_FORCE_CAPS withholds) and nothing else in the
 # selection can fail. Then run it twice, with and without the flag, and require
 # the exit codes to DIFFER. That is the only shape that isolates the flag.
-mkcase 035-passes "security fast" "docker" 'echo "PASS: passes"; exit 0'
-out_without="$(IT_FORCE_CAPS="docker" run_it --tags security --exclude needs-dns \
-                 --timeout 20 --tags security)"
 # Narrow to just the skipping case plus a passing one, so nothing else is red.
 mkcase 036-skips  "reqtest" "docker netadmin" 'echo "PASS: never runs"; exit 0'
 mkcase 037-passes "reqtest" "docker"          'echo "PASS: runs fine"; exit 0'
 no_flag="$(IT_FORCE_CAPS="docker" run_it --tags reqtest)"
 with_flag="$(IT_FORCE_CAPS="docker" run_it --tags reqtest --require reqtest)"
-rm -f "$CASES/035-passes.sh"
 
 [[ "$(rc_of "$no_flag")" == "0" ]] \
   && pass "without --require, a skipped case does not fail the run" \

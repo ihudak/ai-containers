@@ -97,6 +97,7 @@ prompt_with_default() {
 expand_path() {
   local p="$1"
 
+  # shellcheck disable=SC2088  # intentional: matching a literal leading ~ in the unexpanded input, not expanding it
   if [[ "$p" == "~" || "$p" == "~/"* ]]; then
     p="${HOME}${p:1}"
   elif [[ "$p" =~ ^~([^/]+)(.*)$ ]]; then

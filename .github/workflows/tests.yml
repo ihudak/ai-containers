@@ -117,7 +117,9 @@ jobs:
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
           # -e SC1091: sourced paths are resolved at runtime, not by the linter.
-          # ADVISORY, not a gate: the existing corpus predates this job, so
-          # failures are surfaced without blocking. Tightening it to a gate is a
-          # deliberate follow-up, not something to do by accident here.
-          git ls-files '*.sh' | xargs shellcheck -S warning -e SC1091 || true
+          # GATE: increment 4 cleared the pre-existing findings backlog (fixed
+          # the real defects, suppressed the rest at the site with a reason —
+          # see git history for "clear the shellcheck backlog and gate on it")
+          # and promoted this from advisory to blocking. verify-on-host.sh
+          # Phase 7 runs this identical command locally.
+          git ls-files '*.sh' | xargs shellcheck -S warning -e SC1091

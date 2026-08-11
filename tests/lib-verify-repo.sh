@@ -70,10 +70,10 @@ chmod +x "$TMP/bin/docker"
 
 # ── Stub shellcheck ──────────────────────────────────────────────────────────
 # Phase 7 gates on shellcheck's exit code. A real shellcheck is not guaranteed
-# on whatever machine runs this suite, and this repo currently carries a real
-# pre-existing shellcheck backlog (Task 9 of this increment clears it) —
-# neither fact may leak into a hermetic test's result, so the stub always
-# wins over PATH.
+# on whatever machine runs this suite, and this repo's own findings backlog
+# (cleared by Task 9 of this increment) is a fact about the repo's current
+# tree, not about the phase-selection logic under test here — neither fact
+# may leak into a hermetic test's result, so the stub always wins over PATH.
 cat > "$TMP/bin/shellcheck" <<EOF
 #!/usr/bin/env bash
 printf 'STUB:shellcheck\n' >> "$WITNESS_LOG"

@@ -288,6 +288,9 @@ gen_out2="$(cd "$REPO" && SANDBOX_CONF="$CONF" bash -c '
   source ./build.sh
   generate_allowlists
 ' 2>&1)"
+gen_rc2=$?
+[[ "$gen_rc2" -eq 0 ]] && pass "generate_allowlists (shared fragment) runs to completion" \
+                        || fail "generate_allowlists (shared fragment) runs to completion (rc=$gen_rc2): $gen_out2"
 count="$(grep -cxF 'mytool-domain.example' "$DOMAINS" 2>/dev/null)"
 [[ "$count" -eq 1 ]] \
   && pass "domains: a fragment shared by two active tools is included exactly once" \
