@@ -284,3 +284,32 @@ scaffolding's assumptions about its host.
 Finding 4 also exposes a second-order fact: that guard has never fired on CI
 because the Linux box has no registered projects, so it has been effectively
 inert there since it was written.
+
+---
+
+# Task 8 resolution
+
+All six findings fixed. `bash tests/run-all.sh` → 43/43 on Linux (unchanged).
+`bash tests/bash-dialect-lint.sh` → clean. `git ls-files '*.sh' | xargs
+shellcheck -S warning -e SC1091` → clean. Full detail, including the
+discrimination proof for every fix, is in
+`.superpowers/sdd/2026-08-11-execution-layers-and-portability/task-8-report.md`.
+
+| # | File | Class | Fix | Verified how |
+|---|---|---|---|---|
+| 1 | `test-parsers.sh` | portability (test) | Independent canonicalisation via a new `p_realdir` helper (`cd` + `pwd -P`, not `readlink -f`) in `tests/portability.sh` | Reproduced the exact failure on Linux with a symlinked `TMPDIR` (mimicking `/var`→`/private/var`); fixed version passes under it |
+| 2 | `test-mutations.sh` | portability (test, but in `mutate.sh` itself, not a test-file assertion) | `tests/integration/mutate.sh` resolved `REPO_DIR` with logical `pwd`, which never matched `git rev-parse --show-toplevel`'s physical resolution once the temp root passed through a symlink — `APPLY_PREFIX` became the whole bogus absolute `REPO_DIR` and `git apply --directory=<absolute path>` rejected every target. Fixed by resolving `INT_DIR`/`REPO_DIR` with `pwd -P` so they agree with `git`'s own resolution | Reproduced on Linux with a symlinked ancestor directory: `error: invalid path '/tmp/symbase/target.txt'` before the fix, clean apply/revert after |
+| 3 | `test-integration-lib.sh` | portability (test) | Replaced four `/bin/true` hardcodes with one fabricated `$TRUE_STUB` executable in the test's own `$TMP` | Reproduced the exact error text (`cannot resolve the real docker binary [...]`) by pointing `IT_REAL_DOCKER` at a nonexistent path; `$TRUE_STUB` resolves clean |
+| 4 | `test-sync-project.sh` | robustness (test), NOT a product defect | `snapshot_real_projects` now prunes `.agent-discovery/` and `.agent-blocked/` (git-ignored container OUTPUT dirs) from the `find` walk over `$p/.ai-containers` | Manually demonstrated both directions on Linux: an append to a pruned output file no longer trips the guard; a rewrite of the project's `sandbox.conf` still does |
+| 5 | `test-tool-config-mounts.sh` | portability (test) | Same root cause as #1 (`add_mount_if_exists` calls `resolve_path` before composing `-v`). Fixed by canonicalising `$HOME` once via `p_realdir` right after creating it, so every path built from it downstream already matches what `resolve_path` will produce | Reproduced on Linux with a symlinked `TMPDIR`: the same 4 assertions fail pre-fix with the exact names from the macOS report, pass post-fix |
+| 6 | `test-rvm-reconcile.sh` | environment (test host dependency), NOT the shipped defect the assertion was written to guard | `rvm-reconcile.sh` takes its group-serialization `flock` unconditionally, before the bootstrap logic under test even runs. `flock(1)` is a Linux util-linux tool, not part of a base macOS install; bash's own `flock: command not found` text leaked into the captured output and satisfied the assertion's `command not found|No such file` failure pattern — coincidentally, not because the guarded fallthrough bug reproduced. Fixed by stubbing `flock` alongside the existing `curl`/`rvm` stubs in both `run_case` and `boot_case`, matching the file's own hermetic-fixture idiom | Reproduced the false failure on Linux by hiding `flock` from PATH entirely (curated PATH with every other coreutil symlinked in) — leaked "command not found" text, matched the fail pattern; with the stub added, same PATH produces no leak. Separately confirmed the fix still catches the REAL guarded defect: neutered every early `exit 0` in `rvm-reconcile.sh`'s bootstrap-failure branches (forcing an actual not-sourced-rvm fallthrough) and the assertion correctly failed; restored, it passes again |
+
+Finding 6's diagnosis (flock absent on the macOS host, not a product regression)
+is **predicted from documented BSD/macOS behaviour and confirmed by exact
+mechanism reproduction on Linux**, not by an actual macOS run — see the task
+report for the full reasoning chain and the one open item (finding 1's fifth
+assertion, "real repo has no unexpected working-tree changes": static analysis
+found no code path in `test-parsers.sh` that writes into the repo, so it is
+very likely independent noise rather than a consequence of the other four —
+unconfirmed either way; the test's own diff-on-FAIL output is the diagnostic
+to read if it recurs).

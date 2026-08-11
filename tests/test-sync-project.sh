@@ -45,6 +45,17 @@ if [[ -f "$REAL_PROJECTS_CONF" ]]; then
 fi
 # Record an mtime+size fingerprint of each real project's .ai-containers (if it
 # exists on this machine) BEFORE running anything, to diff against AFTER.
+#
+# .agent-discovery/ and .agent-blocked/ are pruned from the walk: they are
+# git-ignored OUTPUT directories (see the project .gitignore section below),
+# bind-mounted from the host launch directory a running container writes to —
+# and a project's generated .ai-containers/runme.sh cds INTO .ai-containers/
+# before running sandbox.sh, so that IS the launch directory, putting these
+# two dirs directly under $p/.ai-containers. This guard exists to prove the
+# suite never writes a project's CONFIG; a live container legitimately
+# appending to its own pcap/log output while the suite happens to run is not
+# that, and fingerprinting it turned an idle developer machine with a running
+# discovery-mode container into a false failure here.
 snapshot_real_projects() {
   local out="$1" p i=0
   : > "$out"
@@ -54,7 +65,7 @@ snapshot_real_projects() {
       # p_stat_meta is a shell function, so it cannot be reached by -exec.
       while IFS= read -r _entry; do
         p_stat_meta "$_entry"
-      done < <(find "$p/.ai-containers" 2>/dev/null) | sort >> "$out"
+      done < <(find "$p/.ai-containers" \( -name .agent-discovery -o -name .agent-blocked \) -prune -o -print 2>/dev/null) | sort >> "$out"
     fi
   done
 }

@@ -17,6 +17,8 @@
 set -uo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=portability.sh
+source "$REPO_DIR/tests/portability.sh"
 fails=0
 pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails + 1)); }
@@ -236,29 +238,37 @@ grep -q "is already mounted (ro); the pointer's :rw is ignored" "$TMP/entry2.err
 
   # ── resolve_path ────────────────────────────────────────────────────────
   mkdir -p "$TMP/somedir"
+  # The expected answer is canonicalised INDEPENDENTLY of resolve_path itself
+  # (p_realdir uses cd + pwd -P, not readlink -f), so this stays a real
+  # assertion rather than `assert resolve_path(x) == resolve_path(x)`. On a
+  # host where the temp root is itself reached through a symlink (macOS's
+  # /var -> /private/var), $TMP/somedir and its canonical form legitimately
+  # differ, and comparing against the raw, uncanonicalised $TMP/somedir (as
+  # this file used to) fails there even though resolve_path is correct.
+  somedir_canon="$(p_realdir "$TMP/somedir")"
   out="$(resolve_path "$TMP/somedir")"
-  [[ "$out" == "$TMP/somedir" ]] \
+  [[ "$out" == "$somedir_canon" ]] \
     && printf 'PASS: resolve_path: absolute existing dir resolves to itself\n' \
-    || printf "FAIL: resolve_path: absolute existing dir resolves to itself (got '%s')\n" "$out"
+    || printf "FAIL: resolve_path: absolute existing dir resolves to itself (got '%s', want '%s')\n" "$out" "$somedir_canon"
 
   # A path with a trailing slash / './' segments still resolves to the clean absolute form.
   out="$(resolve_path "$TMP/somedir/./")"
-  [[ "$out" == "$TMP/somedir" ]] \
+  [[ "$out" == "$somedir_canon" ]] \
     && printf 'PASS: resolve_path: normalises ./ and trailing slash\n' \
-    || printf "FAIL: resolve_path: normalises ./ and trailing slash (got '%s')\n" "$out"
+    || printf "FAIL: resolve_path: normalises ./ and trailing slash (got '%s', want '%s')\n" "$out" "$somedir_canon"
 
   # A relative path (cwd = $TMP) resolves against the CURRENT directory.
   out="$(cd "$TMP" && resolve_path "somedir")"
-  [[ "$out" == "$TMP/somedir" ]] \
+  [[ "$out" == "$somedir_canon" ]] \
     && printf 'PASS: resolve_path: relative path resolves against cwd\n' \
-    || printf "FAIL: resolve_path: relative path resolves against cwd (got '%s')\n" "$out"
+    || printf "FAIL: resolve_path: relative path resolves against cwd (got '%s', want '%s')\n" "$out" "$somedir_canon"
 
   # A symlink resolves to its target (readlink -f follows symlinks).
   ln -s "$TMP/somedir" "$TMP/symlink-to-somedir"
   out="$(resolve_path "$TMP/symlink-to-somedir")"
-  [[ "$out" == "$TMP/somedir" ]] \
+  [[ "$out" == "$somedir_canon" ]] \
     && printf 'PASS: resolve_path: symlink resolves to its target\n' \
-    || printf "FAIL: resolve_path: symlink resolves to its target (got '%s')\n" "$out"
+    || printf "FAIL: resolve_path: symlink resolves to its target (got '%s', want '%s')\n" "$out" "$somedir_canon"
 
   # ── sanitize_volume_token ────────────────────────────────────────────────
   out="$(sanitize_volume_token "my repo!!/name")"

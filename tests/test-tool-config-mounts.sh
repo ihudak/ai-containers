@@ -19,6 +19,8 @@
 set -uo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=portability.sh
+source "$REPO_DIR/tests/portability.sh"
 fails=0
 pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails+1)); }
@@ -28,6 +30,18 @@ REAL_HOME="$HOME"
 setup() {
   TMP="$(mktemp -d)"
   export HOME="$TMP/home"; mkdir -p "$HOME"
+  # Canonicalise HOME up front, independently of resolve_path (the function
+  # under test) — p_realdir uses cd + pwd -P, not readlink -f. sandbox.sh's
+  # add_mount_if_exists resolve_path()s every mount source before composing
+  # `docker run -v`, so on a host where the temp root is itself reached
+  # through a symlink (macOS's /var -> /private/var, universal for mktemp -d
+  # output), the composed -v argument comes back canonicalised while
+  # $GROUP_ROOT-built expectations below stayed in the raw, uncanonicalised
+  # form — a mismatch that looked like a missing mount but wasn't one. With
+  # HOME itself already physical, every path built from it (GROUP_ROOT, the
+  # host-group mounts) is already in the same form resolve_path will produce,
+  # so no further divergence is possible.
+  HOME="$(p_realdir "$HOME")"; export HOME
   export AI_CONTAINER_GROUP_INIT=clean   # non-interactive group bootstrap
   # Pin the in-container username so the expected mount targets are stable
   # (sandbox.sh derives dev_home from SANDBOX_USER, defaulting to `id -un`).

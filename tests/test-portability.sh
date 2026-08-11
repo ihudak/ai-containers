@@ -39,6 +39,24 @@ m="$(p_md5 "$TMP/f")"
 meta="$(p_stat_meta "$TMP/f")"
 [[ -n "$meta" ]] && pass "p_stat_meta returns something" || fail "p_stat_meta returns something"
 
+# p_realdir: independent (cd + pwd -P, not readlink -f) directory canonicalisation.
+mkdir -p "$TMP/dirA" "$TMP/dirB"
+rA="$(p_realdir "$TMP/dirA")"; rA2="$(p_realdir "$TMP/dirA")"
+[[ -n "$rA" && "$rA" == "$rA2" ]] \
+  && pass "p_realdir is non-empty and stable" \
+  || fail "p_realdir is non-empty and stable (got '$rA' then '$rA2')"
+
+rB="$(p_realdir "$TMP/dirB")"
+[[ -n "$rB" && "$rA" != "$rB" ]] \
+  && pass "p_realdir distinguishes different directories" \
+  || fail "p_realdir distinguishes different directories (rA='$rA' rB='$rB')"
+
+# A trailing-slash / './' form of the SAME directory must canonicalise identically.
+rA3="$(p_realdir "$TMP/dirA/./")"
+[[ "$rA3" == "$rA" ]] \
+  && pass "p_realdir normalises ./ and a trailing slash to the same answer" \
+  || fail "p_realdir normalises ./ and a trailing slash to the same answer (got '$rA3', want '$rA')"
+
 # No helper may leave the caller with an empty answer on THIS platform: an empty
 # string compares equal to another empty string, which is how a portability bug
 # turns into a test that passes by accident.

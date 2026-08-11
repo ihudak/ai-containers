@@ -27,9 +27,18 @@
 # project keeps finding.
 set -uo pipefail
 
-INT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="$(cd "$INT_DIR/../.." && pwd)"
-[[ -f "$REPO_DIR/build.sh" ]] || REPO_DIR="$(cd "$INT_DIR/../../base" && pwd)"
+# -P (physical): resolve symlinks in the path, e.g. macOS's /var -> /private/var
+# under a mktemp -d tree. `git rev-parse --show-toplevel` below always returns a
+# physically-resolved path (git resolves symlinks when walking up to find
+# .git), so REPO_DIR must be resolved the same way or the string comparison
+# against GIT_ROOT further down never matches on a host where the temp root is
+# itself reached through a symlink — turning APPLY_PREFIX into the whole
+# (bogus, absolute) REPO_DIR instead of an empty string, which `git apply
+# --directory=` then treats as a path prefix and rejects every target path as
+# invalid.
+INT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+REPO_DIR="$(cd "$INT_DIR/../.." && pwd -P)"
+[[ -f "$REPO_DIR/build.sh" ]] || REPO_DIR="$(cd "$INT_DIR/../../base" && pwd -P)"
 MUT_DIR="$INT_DIR/mutations"
 STATE="$MUT_DIR/.applied"
 
