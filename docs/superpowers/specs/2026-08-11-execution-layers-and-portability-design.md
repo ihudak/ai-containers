@@ -55,12 +55,12 @@ Nothing above the floor is in use today, but nothing prevents it either: CI, the
 container and a developer's Mac all run different bash versions, and no check
 compares any of them against what the product claims to support.
 
-**A selection cannot be previewed.** `run.sh --list` ignores `--tags`,
-`--exclude`, `--cases` and `--variant`; it prints all 34 cases whatever you
-pass. For a suite whose central discipline is that *selection and skipping are
-different outcomes*, there is no way to ask what a given selection would run
-short of running it — and no way to check one layer's selection against
-another's.
+**A selection cannot be previewed.** No flag answers "what would this selection
+run?". `--list` deliberately catalogues the whole corpus and documents itself as
+ignoring every selection flag, and nothing else offers the answer. For a suite
+whose central discipline is that *selection and skipping are different
+outcomes*, there is no way to see a selection short of running it — and no way
+to check one layer's selection against another's.
 
 ## Goals
 
@@ -142,7 +142,14 @@ Phase 6 is reserved for increment 5's mutation tier and is not created here.
 
 Execution order is 0, 5, 7, 4 — cheap checks first, so a broken hermetic suite
 is reported in seconds rather than after an hour of image builds. `VALID_PHASES`
-becomes `0 4 5 7`, and `PHASES` continues to default to every valid phase.
+becomes `0 4 5 7`.
+
+`PHASES` today defaults to `4` (`PHASES="${PHASES:-4}"`), which would leave the
+new phases off unless asked for — and a local layer nobody selects is not a
+local layer. The default becomes `4 5 7`; Phase 0 continues to run
+unconditionally, outside `want_phase`. `tests/test-verify-exit-code.sh:155-156`
+pins the current default explicitly and must be updated in the same task — it is
+a guard doing its job, not an obstacle.
 
 Phase 7 promotes an existing parked item. `.github/workflows/tests.yml:90` runs
 `shellcheck … || true` with a comment stating that tightening it to a gate is
@@ -152,20 +159,29 @@ it.
 
 ## Components
 
-### 1. `run.sh --list` honours the selection flags
+### 1. `run.sh --dry-run` — selection preview
 
-`--list` gains the filtering that `--tags`, `--exclude`, `--cases` and
-`--variant` already apply to a real run, and prints the cases that selection
-would run. With no selection flags the output is byte-identical to today's, so
-the existing `Case corpus` steps in both workflows are unaffected.
+A new flag that applies the same `--tags` / `--exclude` / `--cases` /
+`--variant` filtering a real run applies, prints the selected case basenames in
+run order, and exits without building an image or starting a container.
+
+**`--list` is deliberately left alone.** Its whole-corpus catalogue behaviour is
+not incidental — `usage()` states it outright: *"it has no effect on `--list`,
+which always catalogues the whole corpus regardless of any selection flag."*
+Redefining a documented contract in place is the failure mode this project
+refuses everywhere else (see AGENTS.md on never changing what a `sandbox.conf`
+key means while keeping its name). A new flag costs one `case` arm and breaks
+nothing.
+
+Zero selection stays fatal, exactly as in a real run: `--dry-run` with a
+selection that matches nothing exits non-zero rather than printing an empty
+list. That is the same guard that stops a mistyped `--tags` from passing
+silently.
 
 This is what makes containment checkable as a set comparison instead of a
 reimplementation of the selection logic — the guard asks `run.sh` what it would
 select, rather than deciding for itself and being right in one repo and quietly
 wrong in the fork.
-
-Zero-selection stays fatal, exactly as in a real run: `--list` with a selection
-that matches nothing exits non-zero rather than printing an empty list.
 
 ### 2. `bash-floor.sh` — the extracted version guard
 
@@ -249,7 +265,7 @@ Enforces the invariant by reading the three definitions directly:
   gate, `bash -n`, the dialect linter, `shellcheck` — is also invoked by
   `verify-on-host.sh`
 - the PR gate's selected case set ⊆ the nightly jobs' union, computed by asking
-  `run.sh --list` with each layer's actual arguments
+  `run.sh --dry-run` with each layer's actual arguments
 - the nightly union ⊆ the local layer's selection
 - `VALID_PHASES` names exactly the phases `verify-on-host.sh` defines — extended
   from the existing check to cover both directions
@@ -289,7 +305,7 @@ so it applies to this increment's own work without exception.
 
 | Guard | Demonstrated by |
 |---|---|
-| `--list` filtering | a selection whose expected set differs from the corpus; unfiltered `--list` must produce the wrong answer |
+| `--dry-run` filtering | a selection whose expected set differs from the whole corpus, so an unfiltered answer fails; plus an empty selection, which must exit non-zero |
 | bash floor guard | an entry point stripped of its `source` line must fail `test-bash-floor.sh` |
 | dialect linter | a script carrying `${var@Q}` must be rejected |
 | layer containment | removing the Phase 5 step from `verify-on-host.sh` must fail the test |
