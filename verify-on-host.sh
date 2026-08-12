@@ -202,7 +202,21 @@ else
   # wildcard: this container is single-purpose and throwaway (--rm) and never
   # touches any other directory, so the wildcard would trust more than this
   # invocation could ever use.
-  docker run --rm -v "$REPO_ROOT_FOR_MOUNT:/w" -w /w "$floor_img" bash -c \
+  #
+  # The mount itself is :ro — DO NOT drop this suffix, even if a future test
+  # needs scratch space; give it a mktemp dir instead. This is root, against
+  # the developer's real working tree, possibly holding uncommitted work.
+  # Nothing in this sequence needs write access: apt-get writes only to the
+  # container's own package DB; `git config --global` writes to $HOME/.gitconfig
+  # (root's own home, never redirected here); every test file's scratch output
+  # goes through mktemp/mktemp -d (confirmed by grepping every output
+  # redirect in tests/*.sh for one that ISN'T $TMP-scoped — none are). Getting
+  # this wrong fails LOUD: the very next write attempt errors immediately with
+  # "Read-only file system" on the next run. The alternative — staying :rw and
+  # being wrong about something above — is silent corruption of a real
+  # checkout, discovered whenever someone next looks. That asymmetry is why
+  # :ro wins even without a Docker-based end-to-end run to confirm it here.
+  docker run --rm -v "$REPO_ROOT_FOR_MOUNT:/w:ro" -w /w "$floor_img" bash -c \
     'apt-get update -qq && apt-get install -y -qq git rsync >/dev/null 2>&1 && \
      git config --global --add safe.directory /w && \
      bash --version | head -1 && ./tests/run-all.sh' 2>&1 | sed "s/^/$LOG_PREFIX   /"

@@ -52,6 +52,21 @@ HOME="$REAL_HOME" git -C "$REPO_DIR" rev-parse --git-dir >/dev/null 2>&1 || GIT_
 # moment another test file is added.
 REPO_STATUS_BEFORE="$(HOME="$REAL_HOME" git -C "$REPO_DIR" status --porcelain 2>/dev/null || true)"
 
+# projects.conf is deliberately GITIGNORED (.gitignore: "/projects.conf" — it
+# holds personal absolute paths, see project-init.sh), so no git-based check —
+# neither `git diff --quiet` nor the REPO_STATUS_BEFORE/AFTER comparison above
+# — can ever observe an edit to it: appending to it, creating it, or deleting
+# it produces no diff and no status line, with git working perfectly. Hash the
+# file directly instead (same p_md5 + before/after pattern as
+# tests/test-sync-project.sh:34, which guards this exact file for this exact
+# reason). The empty string doubles as "absent": unset when the file doesn't
+# exist before/after, so absent→absent compares equal (unchanged) while
+# either direction of absent↔present compares unequal (a real change) with no
+# separate existence flag needed.
+PROJECTS_CONF="$REPO_DIR/projects.conf"
+PROJECTS_CONF_MD5_BEFORE=""
+[[ -f "$PROJECTS_CONF" ]] && PROJECTS_CONF_MD5_BEFORE="$(p_md5 "$PROJECTS_CONF")"
+
 # Isolated HOME throughout: sandbox-common.sh reads ~/.ai-containers.
 export HOME="$TMP/home"; mkdir -p "$HOME"
 
@@ -521,23 +536,32 @@ done
 # Hermeticity
 # ══════════════════════════════════════════════════════════════════════════════
 
-# `git diff --quiet` exits non-zero BOTH when the file differs and when git
-# cannot run at all (e.g. dubious ownership on a bind-mounted repo) — and the
-# `2>/dev/null` above hides which. Check git usability first so a git failure
-# is its own loud, distinctly-worded failure, never read as "the file changed".
-if [[ "$GIT_USABLE" -ne 1 ]]; then
-  fail "real repo's projects.conf untouched — git is unusable against $REPO_DIR (ownership mismatch, unreadable, or not a repository) — nothing was verified"
-elif [[ -e "$REPO_DIR/projects.conf.bak" ]] || ! HOME="$REAL_HOME" git -C "$REPO_DIR" diff --quiet -- projects.conf 2>/dev/null; then
+# Hashed directly (see PROJECTS_CONF_MD5_BEFORE above) rather than asked of
+# git, because git is structurally blind to this file — it is gitignored, so
+# `git diff`/`git status` report no change no matter what actually happened to
+# it. This assertion is therefore independent of GIT_USABLE entirely: hashing
+# does not involve git at all, so it verifies just as well whether or not git
+# can run.
+PROJECTS_CONF_MD5_AFTER=""
+[[ -f "$PROJECTS_CONF" ]] && PROJECTS_CONF_MD5_AFTER="$(p_md5 "$PROJECTS_CONF")"
+if [[ -e "$REPO_DIR/projects.conf.bak" ]] || [[ "$PROJECTS_CONF_MD5_BEFORE" != "$PROJECTS_CONF_MD5_AFTER" ]]; then
   fail "real repo's projects.conf untouched"
 else
   pass "real repo's projects.conf untouched"
 fi
 
 REPO_STATUS_AFTER="$(HOME="$REAL_HOME" git -C "$REPO_DIR" status --porcelain 2>/dev/null || true)"
-# Same conflation as above: a git failure makes BOTH snapshots capture empty
-# output, which would compare equal and read as "no changes" — a false pass
-# that verified nothing. Gate on the same GIT_USABLE check rather than trust
-# an equality that a git failure can satisfy for free.
+# Complementary to the hash check above, not redundant with it: `git status`
+# covers every TRACKED file in the repo (everything except projects.conf,
+# which git is blind to by design), so the two together are what make "the
+# real repo" — tracked files here, the one gitignored file that matters
+# there — cover the whole hermeticity claim.
+#
+# Same conflation as the projects.conf check used to have: a git failure
+# makes BOTH snapshots capture empty output, which would compare equal and
+# read as "no changes" — a false pass that verified nothing. Gate on
+# GIT_USABLE rather than trust an equality that a git failure can satisfy for
+# free.
 if [[ "$GIT_USABLE" -ne 1 ]]; then
   fail "real repo has no unexpected working-tree changes — git is unusable against $REPO_DIR (ownership mismatch, unreadable, or not a repository) — nothing was verified"
 elif [[ "$REPO_STATUS_BEFORE" == "$REPO_STATUS_AFTER" ]]; then
