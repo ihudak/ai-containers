@@ -5,7 +5,14 @@
 # glob skips it (same reason as tests/lib-verify-repo.sh).
 #
 # CONTRACT: the sourcing file sets LAYER_CHECKS_CONF to the registry path before
-# sourcing. Provides lc_rows(), wf_jobs(), wf_steps(), wf_job_key().
+# sourcing. Provides lc_rows(), wf_jobs(), wf_steps(), wf_job_key(),
+# wf_triggers_on().
+#
+# lc_rows is generic over the registry's row TYPE — it already serves `check`
+# and `setup` rows; the `workflow` row type (added to close the containment
+# guard's fourth finding — a brand-new pull_request-triggered workflow was
+# invisible to a hardcoded two-file classification list) needs no change here,
+# only new rows in tests/layer-checks.conf.
 #
 # EVERY function here fails loudly and non-zero on an empty result. That is the
 # whole point: a parser returning nothing quietly would make its consumer
@@ -134,4 +141,32 @@ wf_job_key() {  # $1=yaml  $2=job id  $3=job-level key (e.g. uses, if) → value
     return 1
   }
   printf '%s\n' "$out"
+}
+
+# wf_triggers_on is a PREDICATE, unlike every function above it — "the trigger
+# is absent" is an ordinary, expected outcome (most workflows do not trigger on
+# pull_request), not an empty-result error, so it does not follow this file's
+# fail-loudly-on-empty convention. Only a missing file/arg is a loud failure;
+# a genuine "no" is a quiet rc=1.
+#
+# Added for tests/test-layer-containment.sh to VERIFY a `workflow` row's
+# `coverage=exempt` claim against the file's own `on:` block, rather than
+# trusting its <why> prose — the same effect-over-text-presence standard this
+# project applies everywhere else (see AGENTS.md: "the suite asserts effect,
+# not configuration"). Narrow reader, like _wf_awk: matches only the BLOCK form
+# `on:\n  <trigger>:`, which is the shape every workflow in this repo uses, not
+# flow-style `on: [push, pull_request]`. A line inside a step's `run:` script
+# that merely mentions the trigger name (e.g. a comment) must NOT count — the
+# scan is bounded to the on: block by column-0 lines ending it, same rule
+# wf_jobs/wf_steps use to bound the jobs: block.
+wf_triggers_on() {  # $1=yaml  $2=trigger name (e.g. pull_request) → rc 0 present, rc 1 absent
+  local f="${1:?wf_triggers_on: workflow path required}"
+  local trig="${2:?wf_triggers_on: trigger name required}"
+  [[ -f "$f" ]] || { echo "lib-layer-checks: no such workflow: $f" >&2; return 1; }
+  awk -v trig="$trig" '
+    /^on:[[:space:]]*$/ { ion = 1; next }
+    ion && /^[^[:space:]#]/ { ion = 0 }
+    ion && $0 ~ ("^  " trig ":") { found = 1 }
+    END { exit !found }
+  ' "$f"
 }

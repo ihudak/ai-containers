@@ -101,6 +101,82 @@ fi
 # shellcheck source=lib-layer-checks.sh
 source "$LIB_LAYER_CHECKS"
 
+# ── Every workflow file is enumerated from disk — not named ────────────────────
+# FIX ROUND 3 (re-review of the branch after FIX ROUND 2 landed, the fourth and
+# final finding in this file's own recurring defect: a check that cannot fail).
+# The classification loop further down used to walk a hardcoded, literal
+# {$HERMETIC_YML, $TESTS_YML} — two names typed into this file. A brand-new
+# workflow that triggers on pull_request was invisible to it: demonstrated by
+# planting .github/workflows/zz-extra-pr-gate.yml, whose only job ran
+# ./tests/run-all.sh (a genuine hermetic check) on every pull_request, and
+# watching this file still print "0 failure(s)". It was benign today only by
+# accident — the other real pull_request workflow, integration.yml, happens to
+# be covered by the separate case-containment section further down; a third
+# workflow would have bypassed both mechanisms.
+#
+# The fix is the same SHAPE as the registry itself: enumerate
+# .github/workflows/*.yml from the FILESYSTEM, so a new file is caught the day
+# it lands rather than the day someone remembers to add it here; require a
+# `workflow` row in tests/layer-checks.conf for every one of them; and drive
+# the classification loop below from the rows marked `coverage=classified`
+# instead of the two-name literal. A `coverage=exempt` row's claim ("this
+# workflow never runs on pull_request, so the containment invariant does not
+# apply") is not merely trusted — it is VERIFIED against the file's own `on:`
+# block via wf_triggers_on(), the same effect-over-text-presence standard this
+# file applies everywhere else (its stub-repo section above, its job-level-key
+# reads instead of whole-file greps).
+wf_dir="$REPO_DIR/.github/workflows"
+workflow_files=()
+while IFS= read -r f; do
+  workflow_files+=("$(basename "$f")")
+done < <(find "$wf_dir" -maxdepth 1 -type f -name '*.yml' | sort)
+
+if [[ "${#workflow_files[@]}" -eq 0 ]]; then
+  fail "no *.yml files found under $wf_dir — nothing was enumerated"
+else
+  pass "enumerated ${#workflow_files[@]} workflow file(s) from $wf_dir"
+fi
+
+declare -A wf_row_file=()
+while IFS='|' read -r wfile coverage why; do
+  wf_row_file["$wfile"]=1
+  wf_target="$wf_dir/$wfile"
+
+  if [[ ! -f "$wf_target" ]]; then
+    fail "workflow row '$wfile' (tests/layer-checks.conf) names a file that does not exist at $wf_target — this registry row is stale"
+    continue
+  fi
+
+  if [[ -z "$why" ]]; then
+    fail "workflow row '$wfile' (tests/layer-checks.conf) has an empty <why> field — classify it meaningfully, the same standard setup rows are held to"
+    continue
+  fi
+
+  case "$coverage" in
+    classified|cases)
+      pass "workflow row '$wfile' declares coverage=$coverage"
+      ;;
+    exempt)
+      if wf_triggers_on "$wf_target" pull_request; then
+        fail "workflow row '$wfile' claims coverage=exempt but $wfile DOES trigger on pull_request — it is part of the PR gate and needs coverage=classified or coverage=cases, not exempt"
+      else
+        pass "workflow row '$wfile' claims coverage=exempt and $wfile is verified NOT pull_request-triggered"
+      fi
+      ;;
+    *)
+      fail "workflow row '$wfile' (tests/layer-checks.conf) has unrecognised coverage '$coverage' (want classified, cases, or exempt)"
+      ;;
+  esac
+done < <(lc_rows workflow)
+
+for wfile in "${workflow_files[@]}"; do
+  if [[ -z "${wf_row_file[$wfile]:-}" ]]; then
+    fail "$wfile has no 'workflow' row in tests/layer-checks.conf — classify it there (classified|cases|exempt) or its coverage stays silently unclassified"
+  else
+    pass "$wfile has a workflow row in tests/layer-checks.conf"
+  fi
+done
+
 # ── Nightly's hermetic caller — a JOB-LEVEL KEY, not a text grep ───────────────
 # The reusable workflow only makes `nightly ⊇ PR` true over checks if nightly
 # actually calls it, gated the right way. FIX ROUND 2: `grep -qF` against the
@@ -219,7 +295,7 @@ done < <(lc_rows check)
 # declare what the step is: calling it a check forces a registry row, which
 # forces a stub and a local invocation, or the witness assertion above fails.
 #
-# FIX ROUND 2 walks {hermetic-checks.yml, tests.yml}, not hermetic-checks.yml
+# FIX ROUND 2 walked {hermetic-checks.yml, tests.yml}, not hermetic-checks.yml
 # alone — a job added directly to tests.yml (the real PR gate) is otherwise
 # invisible here even though it runs on every PR. Deliberately NOT extended to
 # nightly.yml: its integration-* jobs legitimately carry many non-hermetic
@@ -232,12 +308,21 @@ done < <(lc_rows check)
 # with no approved `uses:` (wf_steps fails loudly) used to leave `classified`
 # unchanged and slip through as an invisible bypass instead of a named failure.
 #
+# FIX ROUND 3: that {hermetic-checks.yml, tests.yml} list was still a literal
+# written into this file — a THIRD hermetic-shaped workflow needed only its own
+# new name typed here, and nothing forced that. The list below is now DERIVED
+# from tests/layer-checks.conf's `workflow` rows marked coverage=classified
+# (asserted to exist, above), which is the same two files today by construction
+# but requires an explicit registry row — checked against the filesystem
+# enumeration above — for a third one to ever join it.
+#
 # This subsumes the count assertion rather than dropping it: if every step
 # classifies and every registry row finds its step (above), the counts agree by
 # construction.
 classified=0
-for wf in "$HERMETIC_YML" "$TESTS_YML"; do
-  wfname="$(basename "$wf")"
+while IFS= read -r wfile; do
+  wf="$wf_dir/$wfile"
+  wfname="$wfile"
   if ! jobs_out="$(wf_jobs "$wf")"; then
     fail "$wfname: could not enumerate jobs — nothing in this workflow is classified (see stderr above)"
     continue
@@ -266,7 +351,7 @@ for wf in "$HERMETIC_YML" "$TESTS_YML"; do
       fi
     done <<< "$steps_out"
   done <<< "$jobs_out"
-done
+done < <(lc_rows workflow | awk -F'|' '$2 == "classified" { print $1 }')
 
 # A classification pass that classified NOTHING must not report success: a
 # parser change or a workflow reorganisation would otherwise turn this whole

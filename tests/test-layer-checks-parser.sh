@@ -138,6 +138,75 @@ else
   pass "wf_job_key fails loudly for a commented-out job header (never becomes a job)"
 fi
 
+# ── wf_triggers_on: the on: block predicate, and its false-positive traps ──────
+# Added for the containment guard's `workflow` row `coverage=exempt` claim: a
+# row saying "this workflow never runs on pull_request" must be VERIFIED
+# against the file, not trusted. wf3.yml carries a REAL pull_request trigger
+# plus a decoy mention of the same word inside a step's run: script/comment —
+# proving the function reads the on: block, not the whole file. wf4.yml is the
+# mirror case: NO pull_request trigger, but the word appears in a step name and
+# a run: comment anyway — the exact shape a whole-file grep would wrongly match.
+cat > "$TMP/wf3.yml" <<'YAML'
+name: Fixture3 - real trigger plus a same-word decoy
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  x:
+    runs-on: ubuntu-latest
+    steps:
+      - name: mentions pull_request again, harmlessly
+        run: |
+          # pull_request should not need to be found HERE for the trigger to count
+          echo done
+YAML
+
+cat > "$TMP/wf4.yml" <<'YAML'
+name: Fixture4 - decoy only, no real trigger
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  x:
+    runs-on: ubuntu-latest
+    steps:
+      - name: "this step just talks about pull_request in its name"
+        run: |
+          # pull_request is mentioned here too, as a decoy
+          echo pull_request
+YAML
+
+if wf_triggers_on "$TMP/wf3.yml" pull_request; then
+  pass "wf_triggers_on finds a real pull_request trigger in the on: block"
+else
+  fail "wf_triggers_on missed a real pull_request trigger declared in the on: block"
+fi
+
+if wf_triggers_on "$TMP/wf3.yml" workflow_call; then
+  fail "wf_triggers_on false-positived on workflow_call, which wf3.yml does not declare"
+else
+  pass "wf_triggers_on correctly reports an absent trigger (workflow_call not in wf3.yml)"
+fi
+
+if wf_triggers_on "$TMP/wf4.yml" pull_request; then
+  fail "wf_triggers_on false-positived: wf4.yml mentions pull_request only OUTSIDE the on: block (a step name and a run: comment), never as a real trigger"
+else
+  pass "wf_triggers_on ignores a trigger name mentioned outside the on: block"
+fi
+
+if wf_triggers_on "$TMP/nosuchworkflow.yml" pull_request >/dev/null 2>&1; then
+  fail "wf_triggers_on reported success for a workflow file that does not exist"
+else
+  pass "wf_triggers_on fails for a workflow file that does not exist"
+fi
+
 # ── The registry ──────────────────────────────────────────────────────────────
 n_check="$(lc_rows check | grep -c .)"
 [[ "$n_check" -ge 1 ]] \
@@ -148,6 +217,21 @@ n_setup="$(lc_rows setup | grep -c .)"
 [[ "$n_setup" -ge 1 ]] \
   && pass "lc_rows setup returns $n_setup row(s)" \
   || fail "lc_rows setup returned nothing"
+
+n_workflow="$(lc_rows workflow | grep -c .)"
+[[ "$n_workflow" -ge 1 ]] \
+  && pass "lc_rows workflow returns $n_workflow row(s)" \
+  || fail "lc_rows workflow returned nothing"
+
+# Every enumerated .github/workflows/*.yml file must have exactly one
+# `workflow` row — the property tests/test-layer-containment.sh relies on to
+# catch a brand-new workflow the day it is added. Checked here against the
+# REAL registry and the REAL directory, not a fixture, because this is the
+# actual contract the containment guard depends on.
+n_wf_files="$(find "$REPO_DIR/.github/workflows" -maxdepth 1 -type f -name '*.yml' | wc -l | tr -d ' ')"
+[[ "$n_wf_files" -eq "$n_workflow" ]] \
+  && pass "tests/layer-checks.conf has exactly one workflow row per .github/workflows/*.yml file ($n_workflow)" \
+  || fail "tests/layer-checks.conf has $n_workflow workflow row(s) but .github/workflows/ has $n_wf_files file(s) — they have drifted apart"
 
 lc_rows check | grep -q '^#' \
   && fail "lc_rows returned a comment line" \
