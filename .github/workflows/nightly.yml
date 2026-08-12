@@ -67,6 +67,21 @@ permissions:
   contents: read
 
 jobs:
+  # The same hermetic checks the PR gate runs, so `local ⊇ nightly ⊇ PR` holds
+  # over CHECKS and not only over integration cases. ~2¼ runner-minutes.
+  #
+  # Schedule only. The workflow_dispatch inputs above exist for MUTATION
+  # DEMONSTRATIONS, which deliberately break production files to prove a case
+  # fails against a known-bad tree; run-all.sh would go red there for reasons
+  # that have nothing to do with what the demonstration is proving, burying the
+  # signal the dispatch was run to produce. The containment invariant concerns
+  # the SCHEDULED nightly layer, so gating this costs the invariant nothing.
+  # tests/test-layer-containment.sh pins this exact condition — `if: false`
+  # cannot be substituted for it.
+  hermetic:
+    if: github.event_name == 'schedule'
+    uses: ./.github/workflows/hermetic-checks.yml
+
   integration-full:
     name: Integration — everything
     runs-on: ubuntu-latest

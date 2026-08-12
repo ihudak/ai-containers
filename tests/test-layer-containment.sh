@@ -35,7 +35,7 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # tests/ is always beside it), so only the engine files need the fallback.
 ENGINE_DIR="$REPO_DIR"
 [[ -f "$ENGINE_DIR/verify-on-host.sh" ]] || ENGINE_DIR="$REPO_DIR/base"
-TESTS_YML="$REPO_DIR/.github/workflows/tests.yml"
+TESTS_YML="$REPO_DIR/.github/workflows/hermetic-checks.yml"
 VERIFY="$ENGINE_DIR/verify-on-host.sh"
 RUN="$REPO_DIR/tests/integration/run.sh"
 LIB_VERIFY_REPO="$REPO_DIR/tests/lib-verify-repo.sh"
