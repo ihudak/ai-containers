@@ -257,6 +257,32 @@ seed_workcopy_volume() {
     "$image_name" -c 'cp -a /src/. /dst/'
 }
 
+# Split a REPOS-style value on IFS whitespace (space, tab, newline) — the same
+# split an unquoted `(${value})` performs — but with pathname (glob)
+# expansion disabled, so a literal value like "*.txt" stays literal instead
+# of matching files in the current directory. Prints one entry per line;
+# prints nothing for an empty/unset value. An intermediate fix used
+# `read -r -a … <<<` instead, which only splits WITHIN a single line: `read`
+# stops at the first newline regardless of $IFS, so REPOS=$'x\ny' silently
+# mounted only "x" and dropped "y" with no warning. The prior noglob state is
+# saved and restored exactly (not unconditionally turned back off), in case
+# it was already on for some other reason.
+split_repos_env() {  # $1=raw value (e.g. "$REPOS")
+  local raw="${1:-}"
+  [[ -n "$raw" ]] || return 0
+  local -a entries=()
+  local noglob=0
+  case "$-" in *f*) noglob=1 ;; esac
+  set -f
+  # shellcheck disable=SC2206  # intentional unquoted word-split; set -f above blocks pathname expansion
+  entries=($raw)
+  (( noglob )) || set +f
+  local e
+  for e in "${entries[@]}"; do
+    printf '%s\n' "$e"
+  done
+}
+
 run_container() {
   check_config
   local mode="$1"
@@ -356,11 +382,15 @@ run_container() {
   # ── REPOS: attach registered repo volumes at /workspace/<name> ───────────────
   local repo_mount_flags=()
   local git_optional_locks_env=()
-  # Effective list = REPOS, plus the @primary repo (as :rw) if not already listed.
-  # read -a splits on IFS like the old unquoted `(${REPOS:-})` did, but without
-  # also subjecting each word to pathname (glob) expansion.
-  local repos_list=()
-  IFS=' ' read -r -a repos_list <<< "${REPOS:-}"
+  # Effective list = REPOS, plus the @primary repo (as :rw) if not already
+  # listed. split_repos_env (defined above) does the actual splitting; see
+  # its own header for why this is not `read -r -a … <<<` any more.
+  local repos_list=() _repos_entry
+  if [[ -n "${REPOS:-}" ]]; then
+    while IFS= read -r _repos_entry; do
+      repos_list+=("$_repos_entry")
+    done < <(split_repos_env "$REPOS")
+  fi
   if [[ -n "$primary_repo" ]]; then
     local _found=0 _e
     for _e in ${repos_list[@]+"${repos_list[@]}"}; do

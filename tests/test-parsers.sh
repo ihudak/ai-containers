@@ -251,6 +251,48 @@ grep -q "is already mounted (ro); the pointer's :rw is ignored" "$TMP/entry2.err
   && pass "pointer_repo_entry: bare existing entry defaults to ro in the note" \
   || fail "pointer_repo_entry: bare existing entry defaults to ro in the note (got '$(cat "$TMP/entry2.err")')"
 
+# ── sandbox.sh: split_repos_env (REPOS parsing) ──────────────────────────────
+# Regression this branch fixes: `IFS=' ' read -r -a repos_list <<< "$REPOS"`
+# splits only WITHIN one line, so a newline embedded in REPOS silently dropped
+# every entry after it — `read` stops at the first newline regardless of
+# $IFS. split_repos_env restores full whitespace splitting (space, tab,
+# newline, matching the ORIGINAL unquoted `(${REPOS})`) while keeping
+# pathname (glob) expansion disabled, which was the reason `read -a` was
+# introduced in the first place. Four shapes, none of them tested before this.
+out="$(run_fn split_repos_env "cluster:ro lib:ro app:rw")"
+check "split_repos_env: space-separated entries" \
+  "$(printf 'cluster:ro\nlib:ro\napp:rw')" "$out"
+
+out="$(run_fn split_repos_env "$(printf 'cluster:ro\nlib:ro\napp:rw')")"
+check "split_repos_env: newline-separated entries are NOT dropped" \
+  "$(printf 'cluster:ro\nlib:ro\napp:rw')" "$out"
+
+out="$(run_fn split_repos_env "$(printf 'cluster:ro\tlib:ro')")"
+check "split_repos_env: tab-separated entries" \
+  "$(printf 'cluster:ro\nlib:ro')" "$out"
+
+# A glob-looking value must stay literal — the ORIGINAL bug behind the
+# `read -a` fix: a bare `(${REPOS})` word-split ALSO pathname-expanded, so
+# REPOS="*.txt" silently became whatever *.txt matched in the launch
+# directory. Run from a directory that genuinely HAS a *.txt file: with no
+# match, bash's own no-match default leaves the pattern literal even with
+# globbing ON, which would prove nothing about whether set -f is doing its job.
+mkdir -p "$TMP/globdir"; touch "$TMP/globdir/a.txt" "$TMP/globdir/b.txt"
+out="$( ( cd "$TMP/globdir" && HOME="$HOME" bash -c '
+      src="$1"; val="$2"
+      set --
+      source "$src" >/dev/null
+      split_repos_env "$val"
+    ' _ "$REPO_DIR/sandbox.sh" "*.txt"
+  ) )"
+check "split_repos_env: a glob-looking value stays literal, not expanded" "*.txt" "$out"
+
+out="$(run_fn split_repos_env "")"
+check "split_repos_env: an empty value produces no entries" "" "$out"
+
+out="$(run_fn split_repos_env)"   # $1 entirely omitted, not just empty
+check "split_repos_env: an unset value produces no entries" "" "$out"
+
 # ══════════════════════════════════════════════════════════════════════════════
 # sandbox-common.sh helpers — safe to source directly (pure library, no entry point)
 # ══════════════════════════════════════════════════════════════════════════════
