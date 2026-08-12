@@ -1030,6 +1030,35 @@ missing="$(comm -23 <(printf '%s\n' "$nightly_set") <(printf '%s\n' "$local_set"
 printf '\n%d failure(s)\n' "$fails"; exit "$fails"
 ```
 
+> **Design deviation (recorded 2026-08-12, task 12 of increment 4's review).** The
+> design (`docs/superpowers/specs/2026-08-11-execution-layers-and-portability-design.md:292-294`)
+> asked for the PR/nightly/local selections to be "extracted from the YAML
+> rather than duplicated, so a change to a workflow's selection is seen by the
+> guard instead of being shadowed by a stale copy." What Step 1 above actually
+> writes — `pr_set="$(sel --tags fast --exclude needs-external,needs-dns)"` and
+> `nightly_set="$( { sel --exclude packages; sel --tags packages; } | sort -u )"`,
+> landed verbatim at `tests/test-layer-containment.sh:172-174` — hardcodes
+> those same arguments as a second copy, matching `integration.yml`'s
+> `--tags fast` selection and `nightly.yml`'s two `packages`-tier jobs by
+> having a human read their `run:` lines once, not by the guard reading them
+> itself. This is a known gap, not an oversight missed at implementation time:
+> it was written into the plan this way from the start (nothing in Step 1
+> above ever parsed YAML), and no deviation note was filed when the design's
+> own words said otherwise. Extracting the true argument list for real would
+> mean parsing YAML `run:` blocks — no YAML parser exists anywhere else in
+> this bash-only suite — or a regex over free-form shell embedded in them,
+> which is exactly the brittle text-matching this same file's Step 1 header
+> comment (and `AGENTS.md`'s "the suite asserts effect, not configuration")
+> warns against. What shipped instead as the mitigation: the `CHECKS`
+> name|regex table just above (for the *checks* leg) and the step-count
+> ratchet (`expect_steps`, below) — together they catch a workflow step or
+> job being added, removed, or renamed without a matching local check, even
+> though neither one catches `pr_set`/`nightly_set`'s *arguments* drifting
+> from what `integration.yml`/`nightly.yml` actually pass. Fixing this for
+> real (teaching the guard to read `--tags`/`--exclude` out of the workflow
+> YAML instead of a maintained-by-hand copy) is real follow-up work, not
+> silently accepted as done.
+
 - [ ] **Step 2: Run it**
 
 Run: `bash tests/test-layer-containment.sh`
