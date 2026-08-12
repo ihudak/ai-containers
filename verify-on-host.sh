@@ -31,9 +31,9 @@
 #   0  environment sanity (daemon reachable, buildx, disk; Colima status on macOS)
 #   5  the hermetic suite (tests/run-all.sh) + the sandbox.conf schema gate — and
 #      the same suite again inside a container pinned to the declared bash floor.
-#      Mirrors tests.yml's `suite` + `suite-floor` jobs.
+#      Mirrors hermetic-checks.yml's `suite` + `suite-floor` jobs.
 #   7  lint: bash -n over every tracked script, the bash-dialect floor check, and
-#      a shellcheck run. Mirrors tests.yml's `lint` job — same commands, same gate.
+#      a shellcheck run. Mirrors hermetic-checks.yml's `lint` job — same commands, same gate.
 #   4  the runtime integration corpus — delegated in full to
 #      tests/integration/run.sh. No test logic lives here.
 #
@@ -171,7 +171,7 @@ fi
 sub "docker disk:      $(docker system df --format '{{.Type}}={{.Size}}' 2>/dev/null | tr '\n' ' ')"
 
 # ── Phase 5: the hermetic suite ──────────────────────────────────────────────────
-# Mirrors .github/workflows/tests.yml's `suite` job. It exists because the local
+# Mirrors .github/workflows/hermetic-checks.yml's `suite` job. It exists because the local
 # layer was a SUBSET of the PR gate: this script ran the integration corpus and
 # nothing else, so a developer verifying locally checked LESS than CI would.
 #
@@ -193,8 +193,8 @@ else
     # once a change is committed, those are the same content, so the gate
     # reports "OK, nothing removed" having compared a commit to itself. This
     # is a silent no-op, precisely the failure mode AGENTS.md's "sandbox.conf
-    # schema versioning" section warns about, and tests.yml never falls into
-    # it because its schema-gate step always exports a real BASE_REF (the PR
+    # schema versioning" section warns about, and hermetic-checks.yml never falls
+    # into it because its schema-gate step always exports a real BASE_REF (the PR
     # base SHA, or event.before/HEAD^ for a push) before invoking the script.
     # Mirror that here: merge-base against origin/main is the common case for
     # a normal checkout; a fresh clone or the mgd base/ layout may have no
@@ -221,7 +221,7 @@ else
     phase_fail 5 "check-sandbox-version.sh not found — the schema gate did not run"
   fi
 
-  # The same suite at the DECLARED FLOOR, mirroring tests.yml's suite-floor job.
+  # The same suite at the DECLARED FLOOR, mirroring hermetic-checks.yml's suite-floor job.
   # This host runs whatever bash the developer installed (5.3 via Homebrew is
   # typical); the floor is 5.1, and a floor nothing exercises is the defect this
   # increment exists to remove. Docker is guaranteed here — Phase 0 hard-exits
@@ -271,10 +271,10 @@ fi
 fi
 
 # ── Phase 7: lint ────────────────────────────────────────────────────────────────
-# Mirrors .github/workflows/tests.yml's `lint` job. shellcheck runs as a GATE
+# Mirrors .github/workflows/hermetic-checks.yml's `lint` job. shellcheck runs as a GATE
 # both here and in CI: Task 9 (increment 4) cleared the pre-existing findings
 # backlog — real defects fixed, everything else suppressed at the site with a
-# reason — and dropped tests.yml's `|| true`, so the two now agree instead of
+# reason — and dropped hermetic-checks.yml's `|| true`, so the two now agree instead of
 # this phase being the only one that gates.
 if want_phase 7; then
 say "PHASE 7 — lint (bash -n, dialect floor, shellcheck)"
