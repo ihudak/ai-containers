@@ -65,4 +65,21 @@ done < <(cd "$ENGINE_DIR" && git ls-files '*.sh' | grep -v '/')
   && pass "checked $n_checked entry point(s)" \
   || fail "checked 0 entry points — the derivation matched nothing"
 
+# ── The floor→image map ───────────────────────────────────────────────────────
+# The image that TESTS the floor is part of declaring the floor. Kept as a map
+# rather than a free variable so a floor bumped without a matching image yields
+# empty (a hard failure downstream) instead of silently testing the wrong bash.
+( source "$ENGINE_DIR/bash-floor.sh"
+  [[ -n "${AI_CONTAINERS_BASH_FLOOR_IMAGE:-}" ]] ) \
+  && pass "bash-floor.sh maps the declared floor to a container image" \
+  || fail "bash-floor.sh maps no image to the declared floor — suite-floor cannot test the claim"
+
+# Bumping the floor without extending the map must yield EMPTY, not a stale image.
+out="$( AI_CONTAINERS_BASH_FLOOR_MAJOR=9 AI_CONTAINERS_BASH_FLOOR_MINOR=9 \
+        bash -c 'source "$1" >/dev/null 2>&1; printf "%s" "${AI_CONTAINERS_BASH_FLOOR_IMAGE:-}"' \
+             _ "$ENGINE_DIR/bash-floor.sh" )"
+[[ -z "$out" ]] \
+  && pass "an unmapped floor yields an empty image rather than a stale one" \
+  || fail "an unmapped floor yielded '$out' — the map is not keyed on the declared floor"
+
 printf '\n%d failure(s)\n' "$fails"; exit "$fails"

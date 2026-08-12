@@ -20,8 +20,28 @@ if [[ -n "${_AI_CONTAINERS_BASH_FLOOR_SOURCED:-}" ]]; then
 fi
 _AI_CONTAINERS_BASH_FLOOR_SOURCED=1
 
-AI_CONTAINERS_BASH_FLOOR_MAJOR=5
-AI_CONTAINERS_BASH_FLOOR_MINOR=1
+# Default-if-unset (not a hard overwrite): this is what lets
+# tests/test-bash-floor.sh simulate "the floor gets bumped" by exporting these
+# two vars before sourcing this file, to prove the image map below is keyed on
+# the declared floor rather than hardcoded to 5.1. No real entry point ever
+# sets these first, so production behavior is unchanged -- every real
+# invocation still gets exactly 5.1.
+AI_CONTAINERS_BASH_FLOOR_MAJOR="${AI_CONTAINERS_BASH_FLOOR_MAJOR:-5}"
+AI_CONTAINERS_BASH_FLOOR_MINOR="${AI_CONTAINERS_BASH_FLOOR_MINOR:-1}"
+
+# The container image whose bash IS the declared floor, used by
+# .github/workflows/hermetic-checks.yml's suite-floor job and by
+# verify-on-host.sh's Phase 5. Declared as a MAP keyed on the floor above, not
+# as a free variable: a floor raised without a matching image would silently
+# return the floor to ASSERTED rather than TESTED — the exact defect suite-floor
+# exists to prevent. An unmapped floor yields the empty string, and every
+# consumer treats that as a hard failure rather than a default.
+# shellcheck disable=SC2034  # consumed by verify-on-host.sh and tests/test-bash-floor.sh, which source this file
+case "${AI_CONTAINERS_BASH_FLOOR_MAJOR}.${AI_CONTAINERS_BASH_FLOOR_MINOR}" in
+  5.1) AI_CONTAINERS_BASH_FLOOR_IMAGE="ubuntu:22.04" ;;
+  5.2) AI_CONTAINERS_BASH_FLOOR_IMAGE="ubuntu:24.04" ;;
+  *)   AI_CONTAINERS_BASH_FLOOR_IMAGE="" ;;
+esac
 
 if (( BASH_VERSINFO[0] < AI_CONTAINERS_BASH_FLOOR_MAJOR \
    || (BASH_VERSINFO[0] == AI_CONTAINERS_BASH_FLOOR_MAJOR \

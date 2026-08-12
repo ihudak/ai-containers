@@ -226,39 +226,47 @@ else
   # typical); the floor is 5.1, and a floor nothing exercises is the defect this
   # increment exists to remove. Docker is guaranteed here — Phase 0 hard-exits
   # without a reachable daemon.
-  floor_img="ubuntu:22.04"
-  sub "running the suite at the declared floor ($floor_img, bash 5.1)"
-  # This container runs as root (the image's default user) against a repo
-  # bind-mount owned by the HOST user, so git >= 2.35.2's ownership check
-  # refuses every operation in here ("detected dubious ownership") unless the
-  # mount is explicitly trusted first. CI's suite-floor job does not need
-  # this: actions/checkout clones INSIDE that container, as root, so the
-  # clone and the container user already match. Scoped to the literal mount
-  # point (/w — always this exact path, never the host's), not the `*`
-  # wildcard: this container is single-purpose and throwaway (--rm) and never
-  # touches any other directory, so the wildcard would trust more than this
-  # invocation could ever use.
-  #
-  # The mount itself is :ro — DO NOT drop this suffix, even if a future test
-  # needs scratch space; give it a mktemp dir instead. This is root, against
-  # the developer's real working tree, possibly holding uncommitted work.
-  # Nothing in this sequence needs write access: apt-get writes only to the
-  # container's own package DB; `git config --global` writes to $HOME/.gitconfig
-  # (root's own home, never redirected here); every test file's scratch output
-  # goes through mktemp/mktemp -d (confirmed by grepping every output
-  # redirect in tests/*.sh for one that ISN'T $TMP-scoped — none are). Getting
-  # this wrong fails LOUD: the very next write attempt errors immediately with
-  # "Read-only file system" on the next run. The alternative — staying :rw and
-  # being wrong about something above — is silent corruption of a real
-  # checkout, discovered whenever someone next looks. That asymmetry is why
-  # :ro wins even without a Docker-based end-to-end run to confirm it here.
-  docker run --rm -v "$REPO_ROOT_FOR_MOUNT:/w:ro" -w /w "$floor_img" bash -c \
-    'apt-get update -qq && apt-get install -y -qq git rsync >/dev/null 2>&1 && \
-     git config --global --add safe.directory /w && \
-     bash --version | head -1 && ./tests/run-all.sh' 2>&1 | sed "s/^/$LOG_PREFIX   /"
-  f_rc="${PIPESTATUS[0]:-1}"
-  sub "floor suite exit: $f_rc"
-  [[ "$f_rc" -eq 0 ]] || phase_fail 5 "hermetic suite at the declared floor exited $f_rc"
+  # From bash-floor.sh's map — see its comment for why the image is declared
+  # alongside the floor rather than duplicated here. Empty means the declared
+  # floor has no mapped image, which must fail loudly: running the "floor" suite
+  # in whatever image `docker run ""` resolves to would verify nothing.
+  floor_img="${AI_CONTAINERS_BASH_FLOOR_IMAGE:-}"
+  if [[ -z "$floor_img" ]]; then
+    phase_fail 5 "bash-floor.sh maps no container image to the declared floor — the floor suite did not run"
+  else
+    sub "running the suite at the declared floor ($floor_img, bash 5.1)"
+    # This container runs as root (the image's default user) against a repo
+    # bind-mount owned by the HOST user, so git >= 2.35.2's ownership check
+    # refuses every operation in here ("detected dubious ownership") unless the
+    # mount is explicitly trusted first. CI's suite-floor job does not need
+    # this: actions/checkout clones INSIDE that container, as root, so the
+    # clone and the container user already match. Scoped to the literal mount
+    # point (/w — always this exact path, never the host's), not the `*`
+    # wildcard: this container is single-purpose and throwaway (--rm) and never
+    # touches any other directory, so the wildcard would trust more than this
+    # invocation could ever use.
+    #
+    # The mount itself is :ro — DO NOT drop this suffix, even if a future test
+    # needs scratch space; give it a mktemp dir instead. This is root, against
+    # the developer's real working tree, possibly holding uncommitted work.
+    # Nothing in this sequence needs write access: apt-get writes only to the
+    # container's own package DB; `git config --global` writes to $HOME/.gitconfig
+    # (root's own home, never redirected here); every test file's scratch output
+    # goes through mktemp/mktemp -d (confirmed by grepping every output
+    # redirect in tests/*.sh for one that ISN'T $TMP-scoped — none are). Getting
+    # this wrong fails LOUD: the very next write attempt errors immediately with
+    # "Read-only file system" on the next run. The alternative — staying :rw and
+    # being wrong about something above — is silent corruption of a real
+    # checkout, discovered whenever someone next looks. That asymmetry is why
+    # :ro wins even without a Docker-based end-to-end run to confirm it here.
+    docker run --rm -v "$REPO_ROOT_FOR_MOUNT:/w:ro" -w /w "$floor_img" bash -c \
+      'apt-get update -qq && apt-get install -y -qq git rsync >/dev/null 2>&1 && \
+       git config --global --add safe.directory /w && \
+       bash --version | head -1 && ./tests/run-all.sh' 2>&1 | sed "s/^/$LOG_PREFIX   /"
+    f_rc="${PIPESTATUS[0]:-1}"
+    sub "floor suite exit: $f_rc"
+    [[ "$f_rc" -eq 0 ]] || phase_fail 5 "hermetic suite at the declared floor exited $f_rc"
+  fi
 fi
 fi
 
