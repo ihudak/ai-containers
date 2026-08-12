@@ -98,8 +98,16 @@ chmod +x "$TMP/bin/shellcheck"
 # without touching the others. Each of these three also appends its own
 # "STUB:<name>" line to WITNESS_LOG before exiting — see the header comment
 # above for why that is a distinct mechanism from the RC-based tests.
-mk_repo() {  # $1=build.sh exit code
+mk_repo() {  # $1=build.sh exit code  $2=1 to stamp a refs/remotes/origin/main
+             #    ref at HEAD (default 1). Pass 0 for a repo with NO usable
+             #    schema-gate base at all — no origin/main ref, and the single
+             #    "stub" commit below is also HEAD's only commit, so HEAD^
+             #    does not resolve either. That combination is what
+             #    verify-on-host.sh's BASE_REF fallback (merge-base against
+             #    origin/main, else HEAD^) is meant to fail loudly against —
+             #    see tests/test-verify-exit-code.sh's "no usable base" cases.
   local r="$TMP/repo"
+  local add_origin="${2:-1}"
   rm -rf "$r"; mkdir -p "$r/tests/integration"
   cp "$VERIFY" "$r/verify-on-host.sh"
   # verify-on-host.sh sources bash-floor.sh once $REPO is confirmed to be the
@@ -124,7 +132,9 @@ mk_repo() {  # $1=build.sh exit code
   chmod +x "$r/tests/bash-dialect-lint.sh"
   ( cd "$r" && { git init -q -b main . >/dev/null 2>&1 || git init -q . >/dev/null 2>&1; } \
       && git add -A \
-      && git -c user.email=t@example -c user.name=t commit -q -m stub ) >/dev/null 2>&1
+      && git -c user.email=t@example -c user.name=t commit -q -m stub \
+      && { [[ "$add_origin" != "1" ]] || git update-ref refs/remotes/origin/main HEAD; } \
+  ) >/dev/null 2>&1
   printf '%s' "$r"
 }
 

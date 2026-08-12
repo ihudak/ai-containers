@@ -183,6 +183,41 @@ grep -q 'shellcheck not installed' "$TMP/out.log" \
   && pass "names the reason: shellcheck not installed" \
   || fail "names the reason: shellcheck not installed"
 
+# ── Phase 5's schema gate must fail loudly with no usable BASE_REF ─────────────
+# The gate's own default (BASE_REF=HEAD) is a silent no-op once a change is
+# committed: the working tree and HEAD are then identical, so nothing looks
+# removed. verify-on-host.sh must resolve a REAL base (merge-base against
+# origin/main, else HEAD^) before invoking the gate, and phase_fail loudly if
+# NEITHER resolves — handing the gate an unusable ref instead would not fail
+# either: check-sandbox-version.sh itself treats an unresolvable ref as "no
+# sandbox.conf at that ref, nothing to compare" and exits 0, which is the
+# exact silent pass this relocates the risk of, one level down.
+#
+# mk_repo's second argument (0) skips stamping refs/remotes/origin/main, and
+# the stub repo's single "stub" commit has no parent, so HEAD^ does not
+# resolve either — the "no usable base at all" case.
+r="$(mk_repo 0 0)"
+: > "$WITNESS_LOG"
+rc="$(run_verify "$r" 5)"
+expect_rc "phase 5 fails when the schema gate has no usable BASE_REF" 1 "$rc"
+grep -q 'no usable BASE_REF' "$TMP/out.log" \
+  && pass "names the reason: no usable BASE_REF" \
+  || fail "names the reason: no usable BASE_REF"
+grep -q 'STUB:check-sandbox-version\.sh' "$WITNESS_LOG" \
+  && fail "check-sandbox-version.sh ran despite no usable BASE_REF — should have been skipped, not handed an unusable ref" \
+  || pass "check-sandbox-version.sh is never invoked without a usable BASE_REF"
+
+# The other half: mk_repo's DEFAULT repo (add_origin=1, the origin/main ref
+# stamped at HEAD) DOES have a usable base, so the gate still genuinely runs
+# and phase 5 still passes — this file must not have become impossible to pass.
+r="$(mk_repo 0)"
+: > "$WITNESS_LOG"
+rc="$(run_verify "$r" 5)"
+expect_rc "phase 5 passes when a usable BASE_REF exists (origin/main)" 0 "$rc"
+grep -q 'STUB:check-sandbox-version\.sh' "$WITNESS_LOG" \
+  && pass "schema gate genuinely ran with a usable BASE_REF" \
+  || fail "schema gate genuinely ran with a usable BASE_REF"
+
 # ── A stale PHASES selection must fail loudly, not verify nothing and exit 0 ───
 # The founding defect of this whole file, reachable now through phase SELECTION
 # instead of phase REPORTING: PHASES="1 2 3" names only phases this script no

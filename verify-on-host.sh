@@ -178,9 +178,35 @@ else
   sub "hermetic suite exit: $h_rc"
   [[ "$h_rc" -eq 0 ]] || phase_fail 5 "hermetic suite exited $h_rc"
   if [[ -f "$REPO/check-sandbox-version.sh" ]]; then
-    bash "$REPO/check-sandbox-version.sh" --check 2>&1 | sed "s/^/$LOG_PREFIX   /"
-    s_rc="${PIPESTATUS[0]:-1}"
-    [[ "$s_rc" -eq 0 ]] || phase_fail 5 "sandbox.conf schema gate exited $s_rc"
+    # BASE_REF must predate the change under review. The script's own default
+    # (BASE_REF=HEAD) diffs the WORKING TREE's sandbox.conf against HEAD's —
+    # once a change is committed, those are the same content, so the gate
+    # reports "OK, nothing removed" having compared a commit to itself. This
+    # is a silent no-op, precisely the failure mode AGENTS.md's "sandbox.conf
+    # schema versioning" section warns about, and tests.yml never falls into
+    # it because its schema-gate step always exports a real BASE_REF (the PR
+    # base SHA, or event.before/HEAD^ for a push) before invoking the script.
+    # Mirror that here: merge-base against origin/main is the common case for
+    # a normal checkout; a fresh clone or the mgd base/ layout may have no
+    # origin/main fetched at all, so fall back to HEAD^ — but only if THAT
+    # resolves to a real commit. If neither resolves, this must fail loudly
+    # rather than hand check-sandbox-version.sh an unusable ref: an
+    # unresolvable BASE_REF makes `git show $BASE_REF:sandbox.conf` fail,
+    # which the script itself treats as "no sandbox.conf at that ref — nothing
+    # to compare" and exits 0 — the exact silent-pass this phase exists to
+    # prevent, just relocated one level down.
+    gate_base_ref="$(git -C "$REPO" merge-base HEAD origin/main 2>/dev/null || true)"
+    if [[ -z "$gate_base_ref" ]]; then
+      gate_base_ref="$(git -C "$REPO" rev-parse --verify -q HEAD^ 2>/dev/null || true)"
+    fi
+    if [[ -z "$gate_base_ref" ]]; then
+      phase_fail 5 "no usable BASE_REF for the schema gate (no origin/main, no HEAD^) — refusing to run it against the default HEAD, which would silently verify nothing"
+    else
+      sub "schema gate diffing sandbox.conf against $gate_base_ref"
+      BASE_REF="$gate_base_ref" bash "$REPO/check-sandbox-version.sh" --check 2>&1 | sed "s/^/$LOG_PREFIX   /"
+      s_rc="${PIPESTATUS[0]:-1}"
+      [[ "$s_rc" -eq 0 ]] || phase_fail 5 "sandbox.conf schema gate exited $s_rc"
+    fi
   else
     phase_fail 5 "check-sandbox-version.sh not found — the schema gate did not run"
   fi
