@@ -20,14 +20,8 @@ if [[ -n "${_AI_CONTAINERS_BASH_FLOOR_SOURCED:-}" ]]; then
 fi
 _AI_CONTAINERS_BASH_FLOOR_SOURCED=1
 
-# Default-if-unset (not a hard overwrite): this is what lets
-# tests/test-bash-floor.sh simulate "the floor gets bumped" by exporting these
-# two vars before sourcing this file, to prove the image map below is keyed on
-# the declared floor rather than hardcoded to 5.1. No real entry point ever
-# sets these first, so production behavior is unchanged -- every real
-# invocation still gets exactly 5.1.
-AI_CONTAINERS_BASH_FLOOR_MAJOR="${AI_CONTAINERS_BASH_FLOOR_MAJOR:-5}"
-AI_CONTAINERS_BASH_FLOOR_MINOR="${AI_CONTAINERS_BASH_FLOOR_MINOR:-1}"
+AI_CONTAINERS_BASH_FLOOR_MAJOR=5
+AI_CONTAINERS_BASH_FLOOR_MINOR=1
 
 # The container image whose bash IS the declared floor, used by
 # .github/workflows/hermetic-checks.yml's suite-floor job and by

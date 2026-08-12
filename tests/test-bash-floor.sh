@@ -17,6 +17,9 @@ if [[ ! -f "$ENGINE_DIR/build.sh" || ! -f "$ENGINE_DIR/sandbox.conf" ]]; then
   ENGINE_DIR="$(cd "$TESTS_DIR/../base" && pwd)"
 fi
 
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+
 fails=0
 pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails+1)); }
@@ -74,10 +77,26 @@ done < <(cd "$ENGINE_DIR" && git ls-files '*.sh' | grep -v '/')
   && pass "bash-floor.sh maps the declared floor to a container image" \
   || fail "bash-floor.sh maps no image to the declared floor — suite-floor cannot test the claim"
 
-# Bumping the floor without extending the map must yield EMPTY, not a stale image.
-out="$( AI_CONTAINERS_BASH_FLOOR_MAJOR=9 AI_CONTAINERS_BASH_FLOOR_MINOR=9 \
-        bash -c 'source "$1" >/dev/null 2>&1; printf "%s" "${AI_CONTAINERS_BASH_FLOOR_IMAGE:-}"' \
-             _ "$ENGINE_DIR/bash-floor.sh" )"
+# Bumping the floor without extending the map must yield EMPTY, not a stale
+# image. Tested against a COPY with rewritten floor numbers, NOT an env
+# override: bash-floor.sh is the single declaration of the floor and six entry
+# points source it as a guard, so making its assignments env-overridable to suit
+# this test would let any stray AI_CONTAINERS_BASH_FLOOR_MAJOR silently lower
+# that guard. Fix the test's assumption, never the product.
+#
+# 5.0 rather than a high number: sourcing the copy runs the version guard too,
+# and a floor ABOVE the running bash would exit before reaching the map. 5.0 is
+# below every bash this suite can run on (the real floor is 5.1) and is absent
+# from the map, which is exactly the condition under test.
+sed -e 's/^AI_CONTAINERS_BASH_FLOOR_MAJOR=.*/AI_CONTAINERS_BASH_FLOOR_MAJOR=5/' \
+    -e 's/^AI_CONTAINERS_BASH_FLOOR_MINOR=.*/AI_CONTAINERS_BASH_FLOOR_MINOR=0/' \
+    "$ENGINE_DIR/bash-floor.sh" > "$TMP/floor-unmapped.sh"
+# A sed that matched nothing would leave the real floor in place and make the
+# assertion below pass for the wrong reason.
+grep -q '^AI_CONTAINERS_BASH_FLOOR_MINOR=0$' "$TMP/floor-unmapped.sh" \
+  || fail "the unmapped-floor fixture was not rewritten — the assertion below would be vacuous"
+out="$(bash -c 'source "$1" >/dev/null 2>&1; printf "%s" "${AI_CONTAINERS_BASH_FLOOR_IMAGE:-}"' \
+         _ "$TMP/floor-unmapped.sh")"
 [[ -z "$out" ]] \
   && pass "an unmapped floor yields an empty image rather than a stale one" \
   || fail "an unmapped floor yielded '$out' — the map is not keyed on the declared floor"
