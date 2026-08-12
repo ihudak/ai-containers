@@ -6,7 +6,7 @@ set -euo pipefail
 # Build the image with ./build.sh and manage repo volumes with ./repo.sh.
 
 _here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=sandbox-common.sh
+# shellcheck source=SCRIPTDIR/sandbox-common.sh
 source "${_here}/sandbox-common.sh"
 
 # Parse a host-pointer value "[@]<source>[:ro|:rw]" into three globals the caller

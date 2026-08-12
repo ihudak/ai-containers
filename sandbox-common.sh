@@ -17,7 +17,7 @@ _SANDBOX_COMMON_SOURCED=1
 
 # The bash floor is declared once, in bash-floor.sh, and sourced here so the
 # three entry points that source this library inherit it.
-# shellcheck source=bash-floor.sh
+# shellcheck source=SCRIPTDIR/bash-floor.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bash-floor.sh"
 
 # ── Shared constants ────────────────────────────────────────────────────────────

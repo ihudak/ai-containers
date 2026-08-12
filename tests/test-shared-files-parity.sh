@@ -23,7 +23,16 @@
 # .ai-containers/build.sh --help.
 set -uo pipefail
 
+# Layout-tolerant, like verify-on-host.sh / test-layer-containment.sh /
+# test-bash-floor.sh: upstream ai-containers keeps shared-files.sh (and
+# project-init.sh, sync-to-projects.sh, build.sh) beside tests/;
+# mgd-ai-containers keeps them in base/ with tests/ one level up. Every path
+# built from REPO_DIR below — including the rsync source tree further down —
+# must resolve to wherever those files actually live, or this fails at the
+# very first check with a plain "No such file or directory" that says
+# nothing about the layout mismatch.
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+[[ -f "$REPO_DIR/shared-files.sh" ]] || REPO_DIR="$REPO_DIR/base"
 fails=0
 pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails+1)); }

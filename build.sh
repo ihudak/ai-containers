@@ -7,7 +7,7 @@ set -euo pipefail
 # fragment directories, and passes a --build-arg per component to docker build.
 
 _here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=sandbox-common.sh
+# shellcheck source=SCRIPTDIR/sandbox-common.sh
 source "${_here}/sandbox-common.sh"
 
 usage() {

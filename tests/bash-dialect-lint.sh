@@ -33,8 +33,18 @@
 # with no reason after the colon does not suppress anything.
 set -uo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Layout-tolerant, like verify-on-host.sh / test-layer-containment.sh /
+# test-bash-floor.sh: upstream ai-containers keeps bash-floor.sh beside
+# tests/, mgd-ai-containers keeps it in base/ with tests/ one level up. This
+# file is invoked directly by BOTH repos' tests.yml lint job and by
+# verify-on-host.sh Phase 7, so it needs the same fallback those already
+# have — without it, REPO_DIR/bash-floor.sh resolves to the mgd repo ROOT,
+# where the file does not exist (it is in base/), and this script dies with
+# "No such file or directory" the moment it is run there.
+ENGINE_DIR="$REPO_DIR"
+[[ -f "$ENGINE_DIR/bash-floor.sh" ]] || ENGINE_DIR="$REPO_DIR/base"
 # shellcheck source=../bash-floor.sh
-[[ -n "${AI_CONTAINERS_BASH_FLOOR_MAJOR:-}" ]] || source "$REPO_DIR/bash-floor.sh"
+[[ -n "${AI_CONTAINERS_BASH_FLOOR_MAJOR:-}" ]] || source "$ENGINE_DIR/bash-floor.sh"
 FLOOR_MAJOR="$AI_CONTAINERS_BASH_FLOOR_MAJOR"
 FLOOR_MINOR="$AI_CONTAINERS_BASH_FLOOR_MINOR"
 

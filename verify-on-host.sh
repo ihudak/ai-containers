@@ -97,7 +97,7 @@ phase_fail() {  # $1=phase number  $2=one-line reason
 # The bash floor is declared once, in bash-floor.sh. $REPO is now confirmed to
 # be the engine directory (build.sh + sandbox.conf found above), so this works
 # in both the upstream (repo root) and mgd (base/) layouts.
-# shellcheck source=bash-floor.sh
+# shellcheck source=SCRIPTDIR/bash-floor.sh
 source "$REPO/bash-floor.sh"
 
 # Layout-tolerant tests dir: upstream ai-containers keeps tests/ next to build.sh;
