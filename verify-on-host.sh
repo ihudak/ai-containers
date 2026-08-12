@@ -304,12 +304,13 @@ else
 fi
 
 if command -v shellcheck >/dev/null 2>&1; then
-  # -r/--no-run-if-empty: GNU xargs runs the command ONCE with no arguments when
-  # its input is empty, so shellcheck would lint the whole tree from stdin and
-  # this phase would record a SECOND phase_fail for the one root cause already
-  # reported by the bash -n branch above ("RESULT: FAILED — 2 phase(s)" for a
-  # single problem). BSD xargs is no-run-if-empty by default and does not accept
-  # -r before macOS 13, so probe for it rather than assuming.
+  # -r/--no-run-if-empty: GNU xargs runs the command ONCE even when its input is
+  # empty. shellcheck with zero file arguments does not read stdin — it prints
+  # "No files specified." and exits 3, which xargs reports as 123 — so this
+  # phase would record a SECOND phase_fail for the one root cause the bash -n
+  # branch above already reported ("RESULT: FAILED — 2 phase(s)" for a single
+  # problem). BSD xargs is no-run-if-empty by default and does not accept -r
+  # before macOS 13, so probe for it rather than assuming.
   xargs_r=()
   printf '' | xargs -r true >/dev/null 2>&1 && xargs_r=(-r)
   ( cd "$REPO" && git ls-files '*.sh' | xargs "${xargs_r[@]}" shellcheck -S warning -e SC1091 ) \
