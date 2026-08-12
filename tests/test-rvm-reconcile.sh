@@ -204,19 +204,39 @@ grep -qE '(^|[[:space:]/])rvm: (command not found|No such file)' <<<"$boot_fail"
 # rvm absent from PATH entirely → the reconcile must still report an
 # rvm-attributable failure, not crash or silently succeed. This is the branch
 # the fixture could not reach while it always stubbed rvm as a real binary.
-boot_nocmd="$(boot_case 0 'echo installing' 1)"
-# The payload here ('echo installing') never writes scripts/rvm, so the
-# reconcile's own "still missing after bootstrap" guard (line 65) fires and
-# exits before the code ever reaches a point that would invoke the `rvm`
-# binary — the omitted stub therefore makes no observable difference for
-# THIS payload (verified: no_rvm=0 and no_rvm=1 produce byte-identical
-# output here). The three alternatives below are kept broad on purpose: they
-# still match today's actual "still missing after bootstrap" diagnostic, and
-# would also match a genuine "rvm: command not found"/"No such file" leak if
-# a future change to the bootstrap logic ever let this payload reach that far.
-grep -qE 'FAILED: rvm bootstrap|rvm: command not found|not found|still missing after bootstrap' <<<"$boot_nocmd" \
-  && pass "a missing rvm binary is reported, not silently ignored" \
+# The payload MUST create a working (non-empty, sourceable) scripts/rvm —
+# unlike boot_partial's 'true' or a bare 'echo installing', which leave
+# scripts/rvm missing and trip the "still missing after bootstrap" guard
+# (line 65) before the code ever reaches a live `rvm` call. Do not
+# "simplify" this back to one of those: a first version of this case did
+# exactly that and produced BYTE-IDENTICAL output for no_rvm=0 and
+# no_rvm=1 — proof the parameter was doing nothing. Real rvm defines `rvm`
+# as a shell FUNCTION when scripts/rvm is sourced, so a sourceable stub
+# that defines no such function models "rvm bootstrapped, but the loader
+# gave us no usable rvm": with the binary stub also omitted (no_rvm=1),
+# the first live call (`rvm list strings`, line 79) hits a genuine bash
+# "command not found", not a synthetic one.
+# Quoting constraint: boot_case splices $payload, UNescaped, inside a
+# single-quoted `printf` argument in a generated heredoc script, so the
+# payload itself must contain NO single quotes — and $HOME must stay
+# literal here (it is expanded later, when `bash "$installer" stable`
+# actually runs, with HOME already pointing at this case's own temp home).
+boot_nocmd="$(boot_case 0 'mkdir -p "$HOME/.rvm/scripts"; printf ": # sourceable stub, defines no rvm function\n" > "$HOME/.rvm/scripts/rvm"' 1)"
+grep -qE '(^|[[:space:]/])rvm: command not found' <<<"$boot_nocmd" \
+  && pass "a missing rvm binary produces a genuine 'command not found', reaching rvm's first live call" \
   || fail "a missing rvm binary produced no diagnostic (got: $boot_nocmd)"
+grep -q 'still missing after bootstrap' <<<"$boot_nocmd" \
+  && fail "this case must reach past the bootstrap-missing guard, not re-trip it (got: $boot_nocmd)" \
+  || pass "the case reaches past the bootstrap-missing guard (distinct from boot_partial's branch)"
+
+# Same payload, rvm binary PRESENT (no_rvm=0 — the default): output must
+# DIFFER from the no_rvm=1 case above. Identical output in both modes would
+# mean the parameter does nothing — exactly the defect this case exists to
+# rule out, verified directly rather than assumed.
+boot_withcmd="$(boot_case 0 'mkdir -p "$HOME/.rvm/scripts"; printf ": # sourceable stub, defines no rvm function\n" > "$HOME/.rvm/scripts/rvm"' 0)"
+grep -qE '(^|[[:space:]/])rvm: command not found' <<<"$boot_withcmd" \
+  && fail "an rvm binary IS present here; must not report command not found (got: $boot_withcmd)" \
+  || pass "with the rvm binary present, the same payload does not report command not found"
 
 # curl succeeds but the installer writes no scripts/rvm (aborted mid-way) → still caught,
 # and still no attempt to source a file that is not there.
