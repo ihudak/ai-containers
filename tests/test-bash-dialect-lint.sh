@@ -80,11 +80,17 @@ vector "a marker with a reason suppresses that line" \
   'GLOBSORT=name  # dialect-lint: allow GLOBSORT: legacy shim retained for bash 5.3 compatibility, version-guarded' 0
 
 # A marker with NO reason does not suppress anything — the throwaway file's
-# marker below is deliberately reason-less and must still be flagged. The
-# outer marker (after the expected-rc `1`) is the real one, needed only so
-# this source line itself passes the whole-tree self-scan.
+# marker below is deliberately reason-less (it has the required trailing `:`
+# but nothing after it) and must still be flagged. Without the trailing `:`
+# this vector would fail the marker regex on syntax alone — missing the
+# rule-id separator, not missing a reason — and would keep passing even if
+# the reason requirement itself were deleted from marker_allows(), which is
+# exactly what happened: the requirement was removed and this vector still
+# reported 0 failures. The outer marker (after the expected-rc `1`) is the
+# real one, needed only so this source line itself passes the whole-tree
+# self-scan.
 vector "a marker with no reason does not suppress" \
-  'GLOBSORT=name  # dialect-lint: allow GLOBSORT' 1  # dialect-lint: allow GLOBSORT: intentional bad-marker test vector, not real usage
+  'GLOBSORT=name  # dialect-lint: allow GLOBSORT:' 1  # dialect-lint: allow GLOBSORT: intentional bad-marker test vector, not real usage
 
 # The linter must read the floor rather than hardcoding it: with the floor
 # lowered to 4.4, a 5.0 construct becomes a violation.
