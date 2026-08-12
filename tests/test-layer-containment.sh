@@ -68,6 +68,10 @@ fi
 # the naming comment) actually exercise this file.
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+# shellcheck disable=SC2034  # consumed by lib-layer-checks.sh, which reads it after this file sources it
+LAYER_CHECKS_CONF="$REPO_DIR/tests/layer-checks.conf"
+# shellcheck source=lib-layer-checks.sh
+source "$REPO_DIR/tests/lib-layer-checks.sh"
 # shellcheck source=lib-verify-repo.sh
 source "$LIB_VERIFY_REPO"
 
