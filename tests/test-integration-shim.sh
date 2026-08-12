@@ -9,7 +9,7 @@
 #
 # The load-bearing test in this file is the LAST one — the single-`-it` premise.
 # The shim identifies the container under test by the `-it` flag, which is sound
-# only while sandbox.sh:801 is the only `docker run -it` a launcher run can
+# only while sandbox.sh:796 is the only `docker run -it` a launcher run can
 # reach. If that stops being true, the shim silently renames and detaches
 # somebody else's container and the affected case fails somewhere far away. This
 # test makes the premise itself the thing that breaks.
@@ -147,8 +147,8 @@ for f in "${reachable[@]}"; do
     hits="${hits:+$hits }$f:$n"
   done < <(awk '!/^[[:space:]]*#/ && /(^|[[:space:]])-(it|ti)([[:space:]]|$)/ { print NR }' "$ENGINE_DIR/$f")
 done
-check "exactly one -it/-ti in the scripts a launcher run reaches" "sandbox.sh:801" "$hits"
-if [[ "$hits" != "sandbox.sh:801" ]]; then
+check "exactly one -it/-ti in the scripts a launcher run reaches" "sandbox.sh:796" "$hits"
+if [[ "$hits" != "sandbox.sh:796" ]]; then
   printf '       The shim identifies the container under test by the -it flag.\n'
   printf '       If a second one now exists, either give the new call a distinct\n'
   printf '       marker or teach docker-shim.sh to tell them apart — and update\n'

@@ -2,15 +2,15 @@
 # what: PREVIEW_PORTS produces no -p flags, so nothing is published to the host
 #
 diff --git a/sandbox.sh b/sandbox.sh
-index ded2e31..3ee8df5 100755
+index 0c06aaf..f43b781 100755
 --- a/sandbox.sh
 +++ b/sandbox.sh
-@@ -741,7 +741,7 @@ run_container() {
+@@ -769,7 +769,7 @@ run_container() {
    local port_flags=()
    if [[ -n "${PREVIEW_PORTS:-}" ]]; then
-     for p in $PREVIEW_PORTS; do
+     while IFS= read -r p; do
 -      port_flags+=(-p "$p")
 +      : # MUTATION: -p flag dropped
-     done
+     done < <(split_env_list "$PREVIEW_PORTS")
    fi
  

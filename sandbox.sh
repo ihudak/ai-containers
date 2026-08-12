@@ -257,17 +257,12 @@ seed_workcopy_volume() {
     "$image_name" -c 'cp -a /src/. /dst/'
 }
 
-# Split a REPOS-style value on IFS whitespace (space, tab, newline) — the same
-# split an unquoted `(${value})` performs — but with pathname (glob)
-# expansion disabled, so a literal value like "*.txt" stays literal instead
-# of matching files in the current directory. Prints one entry per line;
-# prints nothing for an empty/unset value. An intermediate fix used
-# `read -r -a … <<<` instead, which only splits WITHIN a single line: `read`
-# stops at the first newline regardless of $IFS, so REPOS=$'x\ny' silently
-# mounted only "x" and dropped "y" with no warning. The prior noglob state is
-# saved and restored exactly (not unconditionally turned back off), in case
-# it was already on for some other reason.
-split_repos_env() {  # $1=raw value (e.g. "$REPOS")
+split_env_list() {  # $1=raw value (e.g. "$REPOS", "$EXTRA_MOUNTS", "$PREVIEW_PORTS")
+  # Word-split a whitespace-separated env list WITHOUT pathname expansion.
+  # Unquoted `for x in $VAR` splits on $IFS but also globs, so a value like
+  # "*.txt" silently becomes whatever the launch directory happens to contain.
+  # `set -f` blocks that; the prior state is captured and restored so this never
+  # leaks noglob into the caller.
   local raw="${1:-}"
   [[ -n "$raw" ]] || return 0
   local -a entries=()
@@ -348,7 +343,7 @@ run_container() {
   # ── EXTRA_MOUNTS: ad-hoc host bind mounts at /workspace/<basename> ───────────
   local extra_mount_flags=()
   if [[ -n "${EXTRA_MOUNTS:-}" ]]; then
-    for entry in $EXTRA_MOUNTS; do
+    while IFS= read -r entry; do
       local dir opt real_dir base
       dir="${entry%%:*}"
       opt="${entry##*:}"
@@ -365,7 +360,7 @@ run_container() {
       fi
       repos_used["$base"]="EXTRA_MOUNTS"
       extra_mount_flags+=(-v "$real_dir:/workspace/$base:$opt")
-    done
+    done < <(split_env_list "$EXTRA_MOUNTS")
   fi
 
   # Primary given as a host path → bind-mount it (rw) as a /workspace sibling.
@@ -383,13 +378,13 @@ run_container() {
   local repo_mount_flags=()
   local git_optional_locks_env=()
   # Effective list = REPOS, plus the @primary repo (as :rw) if not already
-  # listed. split_repos_env (defined above) does the actual splitting; see
+  # listed. split_env_list (defined above) does the actual splitting; see
   # its own header for why this is not `read -r -a … <<<` any more.
   local repos_list=() _repos_entry
   if [[ -n "${REPOS:-}" ]]; then
     while IFS= read -r _repos_entry; do
       repos_list+=("$_repos_entry")
-    done < <(split_repos_env "$REPOS")
+    done < <(split_env_list "$REPOS")
   fi
   if [[ -n "$primary_repo" ]]; then
     local _found=0 _e
@@ -773,9 +768,9 @@ run_container() {
   # Build -p flags from PREVIEW_PORTS.
   local port_flags=()
   if [[ -n "${PREVIEW_PORTS:-}" ]]; then
-    for p in $PREVIEW_PORTS; do
+    while IFS= read -r p; do
       port_flags+=(-p "$p")
-    done
+    done < <(split_env_list "$PREVIEW_PORTS")
   fi
 
   # Optional project env-file → in-container app env (DB_HOST, REDIS_URL, ...).

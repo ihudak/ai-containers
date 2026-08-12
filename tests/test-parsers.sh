@@ -251,24 +251,24 @@ grep -q "is already mounted (ro); the pointer's :rw is ignored" "$TMP/entry2.err
   && pass "pointer_repo_entry: bare existing entry defaults to ro in the note" \
   || fail "pointer_repo_entry: bare existing entry defaults to ro in the note (got '$(cat "$TMP/entry2.err")')"
 
-# ── sandbox.sh: split_repos_env (REPOS parsing) ──────────────────────────────
+# ── sandbox.sh: split_env_list (REPOS parsing) ──────────────────────────────
 # Regression this branch fixes: `IFS=' ' read -r -a repos_list <<< "$REPOS"`
 # splits only WITHIN one line, so a newline embedded in REPOS silently dropped
 # every entry after it — `read` stops at the first newline regardless of
-# $IFS. split_repos_env restores full whitespace splitting (space, tab,
+# $IFS. split_env_list restores full whitespace splitting (space, tab,
 # newline, matching the ORIGINAL unquoted `(${REPOS})`) while keeping
 # pathname (glob) expansion disabled, which was the reason `read -a` was
 # introduced in the first place. Four shapes, none of them tested before this.
-out="$(run_fn split_repos_env "cluster:ro lib:ro app:rw")"
-check "split_repos_env: space-separated entries" \
+out="$(run_fn split_env_list "cluster:ro lib:ro app:rw")"
+check "split_env_list: space-separated entries" \
   "$(printf 'cluster:ro\nlib:ro\napp:rw')" "$out"
 
-out="$(run_fn split_repos_env "$(printf 'cluster:ro\nlib:ro\napp:rw')")"
-check "split_repos_env: newline-separated entries are NOT dropped" \
+out="$(run_fn split_env_list "$(printf 'cluster:ro\nlib:ro\napp:rw')")"
+check "split_env_list: newline-separated entries are NOT dropped" \
   "$(printf 'cluster:ro\nlib:ro\napp:rw')" "$out"
 
-out="$(run_fn split_repos_env "$(printf 'cluster:ro\tlib:ro')")"
-check "split_repos_env: tab-separated entries" \
+out="$(run_fn split_env_list "$(printf 'cluster:ro\tlib:ro')")"
+check "split_env_list: tab-separated entries" \
   "$(printf 'cluster:ro\nlib:ro')" "$out"
 
 # A glob-looking value must stay literal — the ORIGINAL bug behind the
@@ -282,16 +282,25 @@ out="$( ( cd "$TMP/globdir" && HOME="$HOME" bash -c '
       src="$1"; val="$2"
       set --
       source "$src" >/dev/null
-      split_repos_env "$val"
+      split_env_list "$val"
     ' _ "$REPO_DIR/sandbox.sh" "*.txt"
   ) )"
-check "split_repos_env: a glob-looking value stays literal, not expanded" "*.txt" "$out"
+check "split_env_list: a glob-looking value stays literal, not expanded" "*.txt" "$out"
 
-out="$(run_fn split_repos_env "")"
-check "split_repos_env: an empty value produces no entries" "" "$out"
+out="$(run_fn split_env_list "")"
+check "split_env_list: an empty value produces no entries" "" "$out"
 
-out="$(run_fn split_repos_env)"   # $1 entirely omitted, not just empty
-check "split_repos_env: an unset value produces no entries" "" "$out"
+out="$(run_fn split_env_list)"   # $1 entirely omitted, not just empty
+check "split_env_list: an unset value produces no entries" "" "$out"
+
+# The same protection for the other two whitespace-separated env lists. REPOS
+# got it in increment 4; these two were explicitly left for the follow-up and
+# still expanded against the launch directory.
+out="$(cd "$TMP" && touch a.txt b.txt && run_fn split_env_list "*.txt")"
+check "split_env_list: a glob-looking value stays literal for EXTRA_MOUNTS shape" "*.txt" "$out"
+
+out="$(cd "$TMP" && run_fn split_env_list "$(printf '8080\n3000')")"
+check "split_env_list: newline-separated ports are NOT dropped" "$(printf '8080\n3000')" "$out"
 
 # ══════════════════════════════════════════════════════════════════════════════
 # sandbox-common.sh helpers — safe to source directly (pure library, no entry point)
