@@ -20,6 +20,8 @@
 set -uo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=portability.sh
+source "$REPO_DIR/tests/portability.sh"
 fails=0
 pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails+1)); }
@@ -52,7 +54,7 @@ mkdir -p "$REPO/allowlist-domains.d" "$REPO/allowlist-proxy-domains.d" "$REPO/al
 real_txt_fingerprint() {
   for f in allowlist-domains.txt allowlist-proxy-domains.txt allowlist-cidrs.txt; do
     if [[ -f "$REPO_DIR/$f" ]]; then
-      stat -c '%n %s %Y' "$REPO_DIR/$f"
+      p_stat_meta "$REPO_DIR/$f"
     else
       printf '%s ABSENT\n' "$f"
     fi
@@ -286,6 +288,9 @@ gen_out2="$(cd "$REPO" && SANDBOX_CONF="$CONF" bash -c '
   source ./build.sh
   generate_allowlists
 ' 2>&1)"
+gen_rc2=$?
+[[ "$gen_rc2" -eq 0 ]] && pass "generate_allowlists (shared fragment) runs to completion" \
+                        || fail "generate_allowlists (shared fragment) runs to completion (rc=$gen_rc2): $gen_out2"
 count="$(grep -cxF 'mytool-domain.example' "$DOMAINS" 2>/dev/null)"
 [[ "$count" -eq 1 ]] \
   && pass "domains: a fragment shared by two active tools is included exactly once" \

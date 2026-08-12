@@ -114,6 +114,7 @@ set -uo pipefail
 # WHOLE synchronous entrypoint sequence, dominated here by a cold, two-version
 # rvm bootstrap+compile that this case does not otherwise care about — and
 # which this case may or may not be the one paying, depending on run order.
+# shellcheck disable=SC2034  # consumed by tests/integration/lib.sh's it_wait/run.sh, which read it after this case is sourced
 IT_SETTLE=3600
 
 fixture_scope_init || it_finish

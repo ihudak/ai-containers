@@ -90,6 +90,8 @@ fi
 n_reconcile="$(grep -c 'run_ruby_reconcile$' "$REPO_DIR/entrypoint.sh")"
 n_link="$(grep -c 'link_default_ruby$' "$REPO_DIR/entrypoint.sh")"
 # 3 mode call-sites for each (definitions end in '()' so don't match the '$' anchor).
+[[ "$n_reconcile" -ge 3 ]] && pass "run_ruby_reconcile wired in all three modes ($n_reconcile call-sites)" \
+  || fail "run_ruby_reconcile wired in all three modes ($n_reconcile call-sites)"
 [[ "$n_link" -ge 3 ]] && pass "link_default_ruby wired in all three modes ($n_link call-sites)" \
   || fail "link_default_ruby wired in all three modes ($n_link call-sites)"
 
@@ -159,6 +161,9 @@ out="$(RUBY_VERSIONS="3.4.5" bash "$REPO_DIR/link-default-ruby.sh" "$h" "$d" 2>&
 [[ -L "$d/bundle" ]] \
   && pass "with no wrappers dir the direct link is still made (no worse than before)" \
   || fail "with no wrappers dir the direct link is still made"
+grep -q 'WARNING: bundle does not run' <<<"$out" \
+  && pass "with no wrappers dir the broken binstub is still reported" \
+  || fail "with no wrappers dir the broken binstub is still reported (got: $out)"
 rm -rf "$h" "$d"
 
 printf '\n%d failure(s)\n' "$fails"

@@ -13,6 +13,8 @@
 set -uo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=portability.sh
+source "$REPO_DIR/tests/portability.sh"
 fails=0
 pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails+1)); }
@@ -31,7 +33,7 @@ export GIT_CONFIG_NOSYSTEM=1
 # prove at the end that this suite never touched any of them.
 REAL_PROJECTS_CONF="$REPO_DIR/projects.conf"
 REAL_CONF_MD5_BEFORE=""
-[[ -f "$REAL_PROJECTS_CONF" ]] && REAL_CONF_MD5_BEFORE="$(md5sum "$REAL_PROJECTS_CONF" | cut -d' ' -f1)"
+[[ -f "$REAL_PROJECTS_CONF" ]] && REAL_CONF_MD5_BEFORE="$(p_md5 "$REAL_PROJECTS_CONF")"
 
 REAL_PROJECT_SNAPSHOTS="$TMP/real-project-snapshots"; mkdir -p "$REAL_PROJECT_SNAPSHOTS"
 real_project_paths=()
@@ -43,13 +45,27 @@ if [[ -f "$REAL_PROJECTS_CONF" ]]; then
 fi
 # Record an mtime+size fingerprint of each real project's .ai-containers (if it
 # exists on this machine) BEFORE running anything, to diff against AFTER.
+#
+# .agent-discovery/ and .agent-blocked/ are pruned from the walk: they are
+# git-ignored OUTPUT directories (see the project .gitignore section below),
+# bind-mounted from the host launch directory a running container writes to —
+# and a project's generated .ai-containers/runme.sh cds INTO .ai-containers/
+# before running sandbox.sh, so that IS the launch directory, putting these
+# two dirs directly under $p/.ai-containers. This guard exists to prove the
+# suite never writes a project's CONFIG; a live container legitimately
+# appending to its own pcap/log output while the suite happens to run is not
+# that, and fingerprinting it turned an idle developer machine with a running
+# discovery-mode container into a false failure here.
 snapshot_real_projects() {
   local out="$1" p i=0
   : > "$out"
   for p in "${real_project_paths[@]}"; do
     i=$((i+1))
     if [[ -d "$p/.ai-containers" ]]; then
-      find "$p/.ai-containers" -exec stat -c '%n %s %Y' {} \; 2>/dev/null | sort >> "$out"
+      # p_stat_meta is a shell function, so it cannot be reached by -exec.
+      while IFS= read -r _entry; do
+        p_stat_meta "$_entry"
+      done < <(find "$p/.ai-containers" \( -name .agent-discovery -o -name .agent-blocked \) -prune -o -print 2>/dev/null) | sort >> "$out"
     fi
   done
 }
@@ -149,43 +165,55 @@ SENTINEL_CUSTOM_PROXY="$(cat "$DEST/allowlist-proxy-domains.d/custom.txt")"
 SENTINEL_CUSTOM_CIDRS="$(cat "$DEST/allowlist-cidrs.d/custom.txt")"
 SENTINEL_DEST_GITIGNORE="$(cat "$DEST/.gitignore")"
 
-# ── Derive the shared-file list from the script's OWN loop (do not hardcode) ──
+# ── Derive the shared-file list from shared-files.sh (do not hardcode) ─────────
 #
-# sync_project's copy loop is:
-#   for f in Dockerfile Dockerfile.seed .dockerignore sandbox-common.sh build.sh \
-#             sandbox.sh repo.sh group.sh entrypoint.sh rvm-reconcile.sh link-default-ruby.sh \
-#             agent-tools-reconcile.sh link-agent-tools.sh \
-#             refresh-ipset-allowlist.sh capture-blocked-traffic.sh \
-#             capture-agent-destinations.sh install-tools.sh install-agent-skills.sh tools-lib.sh; do
-# Extract the actual `for f in ... ; do` file list straight out of the function
-# body so this test tracks the script instead of a copy that can go stale.
-shared_files_raw="$(sed -n '/^sync_project()/,/^}/p' "$REPO_DIR/sync-to-projects.sh" \
-  | grep -A2 '# Shared scripts and build files' | grep -E '^\s*for f in ')"
-if [[ -z "$shared_files_raw" ]]; then
-  fail "could not locate the shared-file copy loop in sync-to-projects.sh (script shape changed?)"
+# The list used to be hand-written INLINE in sync_project's `for f in ...; do`
+# loop, and this test extracted it by scraping that loop's text out of the
+# function body. It now lives in shared-files.sh — a single array both
+# project-init.sh and sync-to-projects.sh source — added specifically because
+# the two scripts' independent inline lists had already silently diverged
+# (sync-to-projects.sh copied group.sh; project-init.sh did not, so a freshly
+# initialised project had no group.sh until its first sync). Sourcing the
+# array here still derives from the actual runtime source of truth rather than
+# hand-copying it — the property this section always meant to preserve — it
+# just no longer needs to scrape loop syntax to get it, because the loop no
+# longer embeds the list as text.
+if [[ -f "$REPO_DIR/shared-files.sh" ]]; then
+  pass "shared-files.sh exists"
+  # shellcheck disable=SC1091
+  source "$REPO_DIR/shared-files.sh"
+  derived_shared_files=("${AI_CONTAINERS_SHARED_FILES[@]}")
 else
-  pass "located the shared-file copy loop in sync-to-projects.sh"
+  fail "shared-files.sh exists"
+  derived_shared_files=()
 fi
-# Reconstruct the exact word list `for f in <words>; do` iterates over. The loop
-# spans two physical lines (continued with a trailing backslash); read both.
-shared_files_block="$(sed -n '/^sync_project()/,/^}/p' "$REPO_DIR/sync-to-projects.sh" \
-  | awk '/for f in/{p=1} p{print} p && /do$/{exit}')"
-shared_files_words="$(printf '%s\n' "$shared_files_block" \
-  | sed -e 's/^\s*for f in //' -e 's/;\s*do$//' -e 's/\\$//')"
-derived_shared_files=()
-for w in $shared_files_words; do derived_shared_files+=("$w"); done
+
+# sync_project's copy loop must actually iterate the sourced array, not a
+# reintroduced hardcoded list — the exact regression that let group.sh diverge
+# in the first place, and the reason shared-files.sh exists. (See
+# tests/test-shared-files-parity.sh for the equivalent check against
+# project-init.sh, and for the end-to-end proof that both scripts really do
+# copy the identical set at runtime, not just that they cite the same array.)
+if grep -qE '^\s*for f in "\$\{AI_CONTAINERS_SHARED_FILES\[@\]\}"; do' "$REPO_DIR/sync-to-projects.sh"; then
+  pass "sync-to-projects.sh's copy loop iterates the shared AI_CONTAINERS_SHARED_FILES array"
+else
+  fail "sync-to-projects.sh's copy loop iterates the shared AI_CONTAINERS_SHARED_FILES array — it may have reverted to an independent hardcoded list"
+fi
 
 # The derived list is only used to assert each file ARRIVES. On its own it cannot
-# notice a file DISAPPEARING from the script (the expectation would shrink with
-# it), so pin the contract independently: an explicit literal list, compared as a
-# set. Adding or removing a shared file is a deliberate act and must update this.
+# notice a file DISAPPEARING from shared-files.sh (the expectation would shrink
+# with it), so pin the contract independently: an explicit literal list,
+# compared as a set. Adding or removing a shared file is a deliberate act and
+# must update this literal too.
 expected_shared_files=(
-  Dockerfile Dockerfile.seed .dockerignore sandbox-common.sh build.sh
-  sandbox.sh repo.sh group.sh entrypoint.sh rvm-reconcile.sh link-default-ruby.sh
+  Dockerfile Dockerfile.seed .dockerignore
+  bash-floor.sh sandbox-common.sh tools-lib.sh
+  build.sh sandbox.sh repo.sh group.sh entrypoint.sh
+  rvm-reconcile.sh link-default-ruby.sh
   agent-tools-reconcile.sh link-agent-tools.sh
   refresh-ipset-allowlist.sh
   capture-blocked-traffic.sh capture-agent-destinations.sh
-  install-tools.sh install-agent-skills.sh tools-lib.sh
+  install-tools.sh install-agent-skills.sh
 )
 derived_sorted="$(printf '%s\n' "${derived_shared_files[@]}" | sort | tr '\n' ' ')"
 expected_sorted="$(printf '%s\n' "${expected_shared_files[@]}" | sort | tr '\n' ' ')"
@@ -251,7 +279,7 @@ grep -qxF "$SENTINEL_SANDBOX_CONF_KEY_LINE" "$DEST/sandbox.conf" 2>/dev/null \
   && pass "allowlist-cidrs.d/custom.txt untouched" \
   || fail "allowlist-cidrs.d/custom.txt untouched"
 
-[[ "$(md5sum "$REAL_PROJECTS_CONF" 2>/dev/null | cut -d' ' -f1)" == "$REAL_CONF_MD5_BEFORE" ]] \
+[[ "$(p_md5 "$REAL_PROJECTS_CONF" 2>/dev/null)" == "$REAL_CONF_MD5_BEFORE" ]] \
   && pass "real ./projects.conf is untouched by the sync" \
   || fail "real ./projects.conf is untouched by the sync"
 [[ ! -f "$DEST/projects.conf" ]] \
@@ -285,6 +313,13 @@ grep -qxF '/.ai-containers/' "$PROJ/.gitignore" 2>/dev/null \
 grep -qxF '*.log' "$PROJ/.gitignore" 2>/dev/null \
   && pass "ensure_ai_containers_ignored preserves pre-existing .gitignore content" \
   || fail "ensure_ai_containers_ignored preserves pre-existing .gitignore content"
+# Stronger form of the same claim, using the BEFORE sentinel: the pre-existing
+# content must survive byte-for-byte, in order, as the file's prefix — not just
+# "present somewhere" (mirrors the DEST-gitignore append-only check below).
+[[ "$(head -n "$(printf '%s\n' "$SENTINEL_ROOT_GITIGNORE_BEFORE" | wc -l)" "$PROJ/.gitignore")" \
+   == "$SENTINEL_ROOT_GITIGNORE_BEFORE" ]] \
+  && pass "root .gitignore: pre-existing content is an intact, in-order prefix" \
+  || fail "root .gitignore: pre-existing content is an intact, in-order prefix"
 
 # Idempotency: calling again must not duplicate the line.
 ensure_ai_containers_ignored "$PROJ"
@@ -405,7 +440,7 @@ grep -q 'projects.conf not found\|No projects registered' <<<"$cli_out" \
   || pass "CLI single-path invocation never consults projects.conf"
 
 # ── 9. Hermeticity: real projects.conf and real registered project dirs untouched ──
-[[ "$(md5sum "$REAL_PROJECTS_CONF" 2>/dev/null | cut -d' ' -f1)" == "$REAL_CONF_MD5_BEFORE" ]] \
+[[ "$(p_md5 "$REAL_PROJECTS_CONF" 2>/dev/null)" == "$REAL_CONF_MD5_BEFORE" ]] \
   && pass "real ./projects.conf md5sum unchanged after the full suite" \
   || fail "real ./projects.conf md5sum unchanged after the full suite"
 

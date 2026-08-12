@@ -12,7 +12,7 @@ fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails+1)); }
 # sandbox.conf, and a migrations/ dir. Echoes the repo path.
 make_repo() {
   local d; d="$(mktemp -d)"
-  cp "$REPO_DIR/check-sandbox-version.sh" "$d/"
+  cp "$REPO_DIR/check-sandbox-version.sh" "$REPO_DIR/bash-floor.sh" "$d/"
   mkdir -p "$d/migrations"
   cat > "$d/sandbox.conf" <<'EOF'
 # schema-version: 3
@@ -64,6 +64,24 @@ if [[ $rc -ne 0 ]] && printf '%s' "$err" | grep -q 'kubectl' && printf '%s' "$er
   pass "bump without matching hook fails and names key + expected hook pattern"
 else
   fail "bump without matching hook fails and names key + expected hook pattern (rc=$rc)"
+fi
+rm -rf "$d"
+
+# Case 5: git is unusable against the repo (a bind-mounted repo owned by a
+# different UID — the exact scenario Increment 4's containerised floor run
+# hit — is stood in for here by deleting .git, which makes every git call
+# fail the same way: nonzero, no output). Before the fix, `git show
+# base_ref:sandbox.conf` failing for THIS reason was indistinguishable from
+# "no sandbox.conf at that ref" and the gate silently exited 0 — the exact
+# defect this case guards: a real key removal would sail through unflagged in
+# any environment where git cannot run. Must now fail LOUDLY instead.
+d="$(make_repo)"
+rm -rf "$d/.git"
+err="$(cd "$d" && bash ./check-sandbox-version.sh --check 2>&1 >/dev/null)"; rc=$?
+if [[ $rc -ne 0 ]] && printf '%s' "$err" | grep -qi 'git is unusable'; then
+  pass "git-unusable repo fails loudly, not silently 'nothing to compare'"
+else
+  fail "git-unusable repo fails loudly, not silently 'nothing to compare' (rc=$rc, err=$err)"
 fi
 rm -rf "$d"
 

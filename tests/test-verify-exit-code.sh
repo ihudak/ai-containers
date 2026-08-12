@@ -11,15 +11,20 @@
 #
 # That history is why the failure ledger (phase_fail/FAILED_PHASES/RESULT:/exit 1)
 # exists and why this file exists to hold the line on it. The phases that history
-# refers to (1, 2, 3) are gone — Increment 3 moved what they checked into the
-# packages tier of the runtime integration corpus — so this file now tests only
-# what verify-on-host.sh still has: Phase 4 and the verdict mechanism itself.
+# refers to (1, 2, 3) are gone for good — Increment 3 moved what they checked
+# into the packages tier of the runtime integration corpus, and those numbers
+# must never be reused (see verify-on-host.sh's own header). Increment 4 added
+# phases 5 (the hermetic suite + schema gate) and 7 (lint, shellcheck gating), so
+# this file now tests Phase 4, Phase 5, Phase 7 and the verdict mechanism itself
+# — including, again, whether one failing phase can hide another, which phases 5
+# and 7 make possible to demonstrate again (see the dedicated block below).
 #
-# Everything here is fake: a stub repo, a stub `docker`, a stub
-# tests/integration/run.sh. No daemon, no image, no network. The stub `docker
-# run` EXECUTES the in-container script locally instead of discarding it, so
-# the real per-phase check logic is what runs — a stub that merely returned 0
-# would test the stub.
+# Everything here is fake: a stub repo, a stub `docker`, a stub `shellcheck`, and
+# stubs for tests/integration/run.sh, tests/run-all.sh, check-sandbox-version.sh
+# and tests/bash-dialect-lint.sh. No daemon, no image, no network — none of the
+# stubs literally executes the command it stands in for; each is a canned exit
+# code so the pass/fail PATH through verify-on-host.sh is what gets exercised,
+# not a real build or a real container.
 #
 # The last test is the load-bearing one. It strips the verdict block back out and
 # requires the SAME failing scenario to exit 0, which is the only way to know the
@@ -44,41 +49,35 @@ trap 'rm -rf "$TMP"' EXIT
 [[ -f "$VERIFY" ]] || { fail "verify-on-host.sh not found at $VERIFY"; exit 1; }
 bash -n "$VERIFY" && pass "verify-on-host.sh bash -n" || fail "verify-on-host.sh bash -n"
 
-# ── Stub docker ────────────────────────────────────────────────────────────────
-# Only Phase 0's environment banner still calls docker directly (--version,
-# buildx version, info, system df), so a plain "always succeed" stub is enough
-# — the surviving script has no `docker run`/`exec` of its own for this stub to
-# intercept; Phase 4 delegates entirely to the stub tests/integration/run.sh.
-mkdir -p "$TMP/bin"
-cat > "$TMP/bin/docker" <<'EOF'
-#!/usr/bin/env bash
-exit 0
-EOF
-chmod +x "$TMP/bin/docker"
+# ── Static checks: the phase 5/7 selection wiring ───────────────────────────────
+# The default selection must name every phase this script has. A local layer
+# nobody selects is not a local layer.
+grep -qE 'PHASES="\$\{PHASES:-4 5 7\}"' "$VERIFY" \
+  && pass "PHASES defaults to every phase (4 5 7)" \
+  || fail "PHASES defaults to every phase (4 5 7)"
+grep -qE '^VALID_PHASES="0 4 5 7"' "$VERIFY" \
+  && pass "VALID_PHASES names 0 4 5 7" || fail "VALID_PHASES names 0 4 5 7"
 
-# ── Stub repo ──────────────────────────────────────────────────────────────────
-# $1=build.sh exit code. Nothing in the surviving script (Phase 0, Phase 4)
-# actually executes build.sh any more — only the preflight `[[ -f
-# "$REPO/build.sh" ]]` existence check does — but that check still requires the
-# file to exist, so mk_repo keeps writing it.
-mk_repo() {  # $1=build.sh exit code
-  local r="$TMP/repo"
-  rm -rf "$r"; mkdir -p "$r/tests/integration"
-  cp "$VERIFY" "$r/verify-on-host.sh"
-  printf '#!/usr/bin/env bash\necho "stub build (rc=%s)" >&2\nexit %s\n' "$1" "$1" > "$r/build.sh"
-  chmod +x "$r/build.sh"
-  printf 'db-clients=\nimagemagick=OFF\nwkhtmltopdf=OFF\nruby=\ncopilot=OFF\n' > "$r/sandbox.conf"
-  printf '#!/usr/bin/env bash\ncase "${1:-}" in --list-caps) exit 0 ;; esac\nexit %s\n' \
-    "${CORPUS_RC:-0}" > "$r/tests/integration/run.sh"
-  printf '%s' "$r"
-}
+# Every phase must record through phase_fail — the founding defect was a phase
+# that failed while the script exited 0.
+for p in 5 7; do
+  if awk -v p="$p" '$0 ~ "PHASE "p" —" {g=1} g && /phase_fail '"$p"'/ {found=1} END{exit !found}' "$VERIFY"; then
+    pass "phase $p records through phase_fail"
+  else
+    fail "phase $p records through phase_fail — a failure there would exit 0"
+  fi
+done
 
-# Run a phase selection against a stub repo. Prints the exit code.
-run_verify() {  # $1=repo $2=phases  → exit code, log in $TMP/out.log
-  PATH="$TMP/bin:$PATH" REPO="$1" PHASES="$2" \
-    bash "$1/verify-on-host.sh" > "$TMP/out.log" 2>&1
-  printf '%s' "$?"
-}
+# ── Shared stub-repo machinery ───────────────────────────────────────────────
+# tests/lib-verify-repo.sh builds the stub docker/shellcheck binaries and the
+# mk_repo()/run_verify() functions used by every test below. It is also used
+# by tests/test-layer-containment.sh's effect-based local-layer containment
+# check (Task 6 fix round 1) — one shared copy of the stub repo, not two
+# independently-maintained ones. That file's header documents the WITNESS_LOG
+# contract added for that use; nothing below in THIS file reads WITNESS_LOG,
+# but every stub still writes to it as a side effect.
+# shellcheck source=lib-verify-repo.sh
+source "$REPO_DIR/tests/lib-verify-repo.sh"
 
 expect_rc() {  # $1=label $2=expected $3=actual
   if [[ "$3" == "$2" ]]; then
@@ -110,13 +109,15 @@ grep -q 'RESULT: PASSED' "$TMP/out.log" \
 
 # ── A failure is recorded and reported by the verdict, not just by exiting ─────
 # The ledger existed to report every failure instead of stopping at the first.
-# Phase 4 is now the only selectable, ledger-tracked phase left in the script
-# (Phase 0 always runs and hard-exits on its own fatal condition rather than
-# recording into the ledger), so the cross-phase "none stops the others"
-# property this used to demonstrate with phases 1-4 together no longer has a
-# second phase to demonstrate it against. What's left to check is the
-# mechanism itself: a recorded failure reaches the summary with its phase
-# number, under the same $PHASES default the script ships with.
+# HISTORICAL NOTE, corrected: this comment used to say Phase 4 was "the only
+# selectable, ledger-tracked phase left in the script", so the cross-phase "one
+# broken phase never hides another" property — the ledger's FOUNDING purpose —
+# had no second phase left to demonstrate it against, and this block could only
+# re-check the single-phase mechanism (a recorded failure reaches the summary
+# with its phase number). That was true only because Increment 3 had removed
+# phases 1-3 and left just one. Increment 4 added phases 5 and 7, so the
+# cross-phase demonstration is possible again — restored in the dedicated block
+# immediately below, not folded in here, so each keeps testing one thing.
 r="$(CORPUS_RC=1 mk_repo 0)"
 rc="$(run_verify "$r" 4)"
 expect_rc "phase 4 fails: still exits 1" 1 "$rc"
@@ -127,6 +128,116 @@ else
   fail "the failure reaches the summary with its phase number — got $n"
   sed -n '/RESULT:/,$p' "$TMP/out.log" | sed 's/^/       /'
 fi
+
+# ── RESTORED: two phases failing in the same run must BOTH be named ────────────
+# This is the demonstration the comment above used to say was lost. Phase 5
+# (via SUITE_RC) and Phase 7 (via DIALECT_RC) are made to fail independently,
+# together, so the founding property — one broken phase does not hide another —
+# has a real cross-phase case again, not just the single-phase mechanism check
+# above. PHASES="5 7" deliberately excludes Phase 4, so CORPUS_RC is irrelevant
+# here and only these two are in play.
+r="$(SUITE_RC=1 DIALECT_RC=1 mk_repo 0)"
+rc="$(run_verify "$r" "5 7")"
+expect_rc "phase 5 and phase 7 can fail in the same run" 1 "$rc"
+grep -q 'PHASE 5 FAILED' "$TMP/out.log" \
+  && pass "both-failing run: names phase 5" \
+  || fail "both-failing run: names phase 5"
+grep -q 'PHASE 7 FAILED' "$TMP/out.log" \
+  && pass "both-failing run: names phase 7" \
+  || fail "both-failing run: names phase 7"
+n5="$(grep -c '^\[host-verify\]   phase 5:' "$TMP/out.log")"
+n7="$(grep -c '^\[host-verify\]   phase 7:' "$TMP/out.log")"
+if [[ "$n5" -eq 1 && "$n7" -eq 1 ]]; then
+  pass "RESULT: FAILED summary names BOTH phase 5 and phase 7, not just the first"
+else
+  fail "RESULT: FAILED summary names BOTH phase 5 and phase 7 — got phase5=$n5 phase7=$n7"
+  sed -n '/RESULT:/,$p' "$TMP/out.log" | sed 's/^/       /'
+fi
+grep -q 'RESULT: FAILED — 2 phase(s)' "$TMP/out.log" \
+  && pass "verdict counts exactly 2 failed phases, not 1" \
+  || fail "verdict counts exactly 2 failed phases, not 1"
+
+# ── shellcheck missing from PATH must fail the phase, not silently skip it ─────
+# Phase 7's shellcheck sub-check is gated on `command -v shellcheck`. Bypasses
+# run_verify()'s PATH (which always prepends the stub shellcheck) with a
+# PATH built from scratch, so this exercises the ELSE branch none of the
+# tests above ever reach.
+#
+# CAUGHT BUG, second version: an earlier version of this block prepended a
+# no-shellcheck dir but left the rest of the inherited $PATH attached, so a
+# real shellcheck later in $PATH was still reachable — passed the exit-code
+# assertion but failed the message assertion. The FIX for that (filtering out
+# every PATH component that resolves a real shellcheck) was itself wrong in a
+# way only CI exposed: GitHub Actions' ubuntu-latest runner ships shellcheck
+# pre-installed in /usr/bin, the SAME directory as bash/git/coreutils, so
+# filtering out "any dir containing shellcheck" also filtered out bash, git,
+# sed and everything else those directories provide. With PATH left holding
+# only the docker stub's directory, `docker`'s own `#!/usr/bin/env bash`
+# shebang could not resolve "bash" via env's PATH lookup, and the whole run
+# died with exit 127 ("bash: command not found") — a PATH self-inflicted
+# wound, not a signal about shellcheck, and it never reproduced on a host
+# (this repo's dev machines, macOS) where shellcheck lives in its own
+# directory (e.g. Homebrew's, or a lone ~/.local/bin) separate from
+# coreutils. Reproduced locally by copying git/bash/sed/shellcheck into one
+# shared directory and confirming the same exit 127.
+#
+# The fix: stop filtering the INHERITED PATH by directory at all — build a
+# hermetic PATH from scratch, symlinking in exactly the external tools
+# verify-on-host.sh's phases 0 and 7 need (resolved via `command -v` against
+# whatever PATH this test itself is running under), and never linking the
+# checker binary in. This is correct regardless of whether the host has a
+# real shellcheck, and regardless of which directory it lives in: shellcheck
+# is excluded by simply never being one of the tools copied in, not by
+# guessing at and excising directories.
+mkdir -p "$TMP/bin-no-shellcheck" "$TMP/hermetic-tools"
+cp "$TMP/bin/docker" "$TMP/bin-no-shellcheck/docker"
+for _tool in bash git sed grep awk cut tr head wc uname xargs printf cat mkdir rm chmod mktemp; do
+  _real_tool_path="$(command -v "$_tool" 2>/dev/null)" || continue
+  ln -sf "$_real_tool_path" "$TMP/hermetic-tools/$_tool"
+done
+no_sc_path="$TMP/bin-no-shellcheck:$TMP/hermetic-tools"
+r="$(mk_repo 0)"
+PATH="$no_sc_path" REPO="$r" PHASES=7 bash "$r/verify-on-host.sh" \
+  > "$TMP/out.log" 2>&1
+expect_rc "shellcheck missing from PATH fails phase 7, not a silent skip" 1 "$?"
+grep -q 'shellcheck not installed' "$TMP/out.log" \
+  && pass "names the reason: shellcheck not installed" \
+  || fail "names the reason: shellcheck not installed"
+
+# ── Phase 5's schema gate must fail loudly with no usable BASE_REF ─────────────
+# The gate's own default (BASE_REF=HEAD) is a silent no-op once a change is
+# committed: the working tree and HEAD are then identical, so nothing looks
+# removed. verify-on-host.sh must resolve a REAL base (merge-base against
+# origin/main, else HEAD^) before invoking the gate, and phase_fail loudly if
+# NEITHER resolves — handing the gate an unusable ref instead would not fail
+# either: check-sandbox-version.sh itself treats an unresolvable ref as "no
+# sandbox.conf at that ref, nothing to compare" and exits 0, which is the
+# exact silent pass this relocates the risk of, one level down.
+#
+# mk_repo's second argument (0) skips stamping refs/remotes/origin/main, and
+# the stub repo's single "stub" commit has no parent, so HEAD^ does not
+# resolve either — the "no usable base at all" case.
+r="$(mk_repo 0 0)"
+: > "$WITNESS_LOG"
+rc="$(run_verify "$r" 5)"
+expect_rc "phase 5 fails when the schema gate has no usable BASE_REF" 1 "$rc"
+grep -q 'no usable BASE_REF' "$TMP/out.log" \
+  && pass "names the reason: no usable BASE_REF" \
+  || fail "names the reason: no usable BASE_REF"
+grep -q 'STUB:check-sandbox-version\.sh' "$WITNESS_LOG" \
+  && fail "check-sandbox-version.sh ran despite no usable BASE_REF — should have been skipped, not handed an unusable ref" \
+  || pass "check-sandbox-version.sh is never invoked without a usable BASE_REF"
+
+# The other half: mk_repo's DEFAULT repo (add_origin=1, the origin/main ref
+# stamped at HEAD) DOES have a usable base, so the gate still genuinely runs
+# and phase 5 still passes — this file must not have become impossible to pass.
+r="$(mk_repo 0)"
+: > "$WITNESS_LOG"
+rc="$(run_verify "$r" 5)"
+expect_rc "phase 5 passes when a usable BASE_REF exists (origin/main)" 0 "$rc"
+grep -q 'STUB:check-sandbox-version\.sh' "$WITNESS_LOG" \
+  && pass "schema gate genuinely ran with a usable BASE_REF" \
+  || fail "schema gate genuinely ran with a usable BASE_REF"
 
 # ── A stale PHASES selection must fail loudly, not verify nothing and exit 0 ───
 # The founding defect of this whole file, reachable now through phase SELECTION
@@ -140,6 +251,8 @@ fi
 # wrote about this script for two increments. It survives in muscle memory and
 # in the sibling repo's checkouts long after the phases themselves are gone,
 # which is why the selection must reject it rather than quietly match nothing.
+# This guard must SURVIVE the addition of phases 5 and 7 — VALID_PHASES grew to
+# "0 4 5 7", and 1/2/3 must still be rejected, not accidentally re-admitted.
 r="$(mk_repo 0)"
 expect_rc "a stale PHASES=1 selection fails loudly, not exits 0" 1 "$(run_verify "$r" 1)"
 grep -q 'RESULT: FAILED' "$TMP/out.log" \
@@ -147,15 +260,19 @@ grep -q 'RESULT: FAILED' "$TMP/out.log" \
   || fail "PHASES=1: verdict line says FAILED"
 
 r="$(mk_repo 0)"
-expect_rc "a stale PHASES=\"1 2 3\" selection fails loudly, not exits 0" 1 "$(run_verify "$r" "1 2 3")"
+expect_rc "a stale PHASES=\"1 2 3\" selection still fails after 5 and 7 exist" 1 \
+  "$(run_verify "$r" "1 2 3")"
 grep -q 'RESULT: FAILED' "$TMP/out.log" \
   && pass "PHASES=\"1 2 3\": verdict line says FAILED" \
   || fail "PHASES=\"1 2 3\": verdict line says FAILED"
 
-# The empty case is NOT affected — ${PHASES:-4} must still default cleanly to
-# the one real phase, with no phase_fail firing for a selection nobody made.
+# The empty case is NOT affected — ${PHASES:-4 5 7} must still default cleanly
+# to every real phase this script has, with no phase_fail firing for a
+# selection nobody made. This is also the one test that exercises ALL of
+# phases 4, 5 and 7 (and every one of their sub-checks) passing together in a
+# single hermetic run, since mk_repo's stubs all default their *_RC to 0.
 r="$(mk_repo 0)"
-expect_rc "an empty/unset PHASES still defaults to 4 and passes" 0 "$(run_verify "$r" "")"
+expect_rc "an empty/unset PHASES still defaults to 4 5 7 and passes" 0 "$(run_verify "$r" "")"
 grep -q 'RESULT: PASSED' "$TMP/out.log" \
   && pass "PHASES=\"\": verdict line says PASSED (default still works)" \
   || fail "PHASES=\"\": verdict line says PASSED (default still works)"

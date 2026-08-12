@@ -9,6 +9,8 @@
 # Ordinary key ADDITIONS pass silently. Expected to fire ~twice in the whole
 # history of the file — near-zero day-to-day friction.
 set -euo pipefail
+# shellcheck source=bash-floor.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bash-floor.sh"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 conf="${script_dir}/sandbox.conf"
 migrations_dir="${script_dir}/migrations"
@@ -30,6 +32,18 @@ _ver()  { grep -E '^# schema-version:[[:space:]]*[0-9]+' | head -1 \
 
 cur_keys="$(_keys < "$conf")"
 cur_ver="$(_ver < "$conf")"; cur_ver="${cur_ver:-0}"
+
+# Git must be usable at all before "no sandbox.conf at base_ref" can be told
+# apart from "git could not check". `git show <ref>:<path>` fails identically
+# either way (nonzero exit, no output), and this is a CI GATE — silently
+# treating "git is broken" the same as "nothing to compare" would let a real
+# key removal through unflagged. Checked with a call that does not depend on
+# base_ref at all, so a genuinely absent/first-commit ref (the case the next
+# check below exists for) is never misclassified as a git failure.
+if ! git -C "$script_dir" rev-parse --git-dir >/dev/null 2>&1; then
+  echo "ERROR: git is unusable against ${script_dir} (ownership mismatch, unreadable, or not a repository) — nothing was verified." >&2
+  exit 1
+fi
 
 # Previous committed sandbox.conf. If the base ref has none (first commit), skip.
 if ! prev_conf="$(git -C "$script_dir" show "${base_ref}:sandbox.conf" 2>/dev/null)"; then

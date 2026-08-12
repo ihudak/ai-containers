@@ -27,9 +27,18 @@
 # project keeps finding.
 set -uo pipefail
 
-INT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="$(cd "$INT_DIR/../.." && pwd)"
-[[ -f "$REPO_DIR/build.sh" ]] || REPO_DIR="$(cd "$INT_DIR/../../base" && pwd)"
+# -P (physical): resolve symlinks in the path, e.g. macOS's /var -> /private/var
+# under a mktemp -d tree. `git rev-parse --show-toplevel` below always returns a
+# physically-resolved path (git resolves symlinks when walking up to find
+# .git), so REPO_DIR must be resolved the same way or the string comparison
+# against GIT_ROOT further down never matches on a host where the temp root is
+# itself reached through a symlink — turning APPLY_PREFIX into the whole
+# (bogus, absolute) REPO_DIR instead of an empty string, which `git apply
+# --directory=` then treats as a path prefix and rejects every target path as
+# invalid.
+INT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+REPO_DIR="$(cd "$INT_DIR/../.." && pwd -P)"
+[[ -f "$REPO_DIR/build.sh" ]] || REPO_DIR="$(cd "$INT_DIR/../../base" && pwd -P)"
 MUT_DIR="$INT_DIR/mutations"
 STATE="$MUT_DIR/.applied"
 
@@ -47,6 +56,22 @@ if [[ "$REPO_DIR" != "$GIT_ROOT" ]]; then
 fi
 git_apply() {  # $@ = git apply args (patch last)
   ( cd "$GIT_ROOT" && git apply ${APPLY_PREFIX:+--directory="$APPLY_PREFIX"} "$@" )
+}
+
+# NOT needed before every git_apply call: `git apply [--check|-R]` on a plain
+# (non --index) patch, as all of ours are, needs no repository at all — verified
+# empirically, it succeeds unchanged even run outside any git work tree, and
+# under a simulated ownership-mismatch failure (GIT_TEST_ASSUME_DIFFERENT_OWNER=1).
+# So cmd_verify/cmd_check/cmd_revert, which only ever call git_apply, stay
+# correct in a git-unusable environment with no gate at all — adding one there
+# would convert a check that still works into a spurious failure.
+# cmd_apply is different: its OWN cleanliness gate (`git diff --quiet`, below)
+# DOES need real repository access and fails the same way for "git is broken"
+# and "there are unstaged changes" alike, so that one call site needs this.
+require_git_usable() {
+  git -C "$GIT_ROOT" rev-parse --git-dir >/dev/null 2>&1 && return 0
+  printf 'mutate.sh: git is unusable against %s (ownership mismatch, unreadable, or not a repository) — nothing was verified.\n' "$GIT_ROOT" >&2
+  return 1
 }
 
 usage() {
@@ -115,6 +140,7 @@ cmd_apply() {  # $@ = one or more mutation ids
     sed 's/^/  /' "$STATE" >&2
     exit 1
   fi
+  require_git_usable || exit 1
   if ! ( cd "$GIT_ROOT" && git diff --quiet ); then
     printf 'mutate.sh: the working tree has unstaged changes — commit or stash first.\n' >&2
     printf '           A mutation must be the only difference, or reverting it is a guess.\n' >&2

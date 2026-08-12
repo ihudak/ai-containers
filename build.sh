@@ -7,7 +7,7 @@ set -euo pipefail
 # fragment directories, and passes a --build-arg per component to docker build.
 
 _here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=sandbox-common.sh
+# shellcheck source=SCRIPTDIR/sandbox-common.sh
 source "${_here}/sandbox-common.sh"
 
 usage() {
@@ -263,15 +263,20 @@ build_args_from_config() {
 
 # tool_versions_arg — "name=version;..." for every active tool (build-arg value).
 tool_versions_arg() {
-  local name raw ver out=""
+  # Named "pairs", not "out": sandbox-common.sh's enabled_agents_csv/-like
+  # helpers use a local array ALSO named `out` — shellcheck's array/scalar
+  # type tracking isn't scope-aware, so a plain string `out` here reads as
+  # the same variable and falsely triggers SC2178/SC2179. Renaming sidesteps
+  # the collision instead of suppressing a real pattern.
+  local name raw ver pairs=""
   while IFS= read -r name; do
     raw=$(get_versions "$name")
     if [[ "$raw" == "ON" ]]; then ver="latest"
     elif [[ -n "$raw" && "$raw" != "OFF" ]]; then ver="$raw"
     else continue; fi
-    out+="${name}=${ver};"
+    pairs+="${name}=${ver};"
   done < <(tools_list_names)
-  printf '%s' "${out%;}"
+  printf '%s' "${pairs%;}"
 }
 
 # active_tool_fragments — unique allowlist_fragment names of active tools.
@@ -292,12 +297,14 @@ preflight_private_tools() {
   while IFS= read -r name; do
     is_active "$name" || continue
     tools_read_descriptor "$name" || continue
+    # shellcheck disable=SC2154  # TOOL_private: set by tools_read_descriptor() in tools-lib.sh (sourced)
     [[ "$TOOL_private" == "yes" ]] || continue
     if [[ "$warned" == 0 ]]; then
       printf '\n════════════════════════════════════════════════════════════════\n' >&2
       printf 'WARNING: no GITHUB_TOKEN set, but a PRIVATE tool is enabled:\n' >&2
       warned=1
     fi
+    # shellcheck disable=SC2154  # TOOL_repo: set by tools_read_descriptor() in tools-lib.sh (sourced)
     printf '  - %s (%s) will be SKIPPED without a token.\n' "$name" "$TOOL_repo" >&2
   done < <(tools_list_names)
   if [[ "$warned" == 1 ]]; then
@@ -324,6 +331,7 @@ build_image() {
   local _gh_build_token="${GITHUB_TOKEN:-${GITHUB_PERSONAL_ACCESS_TOKEN:-}}"
   if [[ -n "$_gh_build_token" ]]; then
     export GITHUB_TOKEN="$_gh_build_token"
+    # shellcheck disable=SC2054  # one --secret flag value; the comma is docker's id=...,env=... syntax, not an array separator
     build_args+=(--secret id=github_token,env=GITHUB_TOKEN)
   fi
 

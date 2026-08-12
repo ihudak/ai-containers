@@ -161,7 +161,7 @@ chmod +x "$FAKE_BIN2/tshark"
 cp "$FAKE_BIN/ipset" "$FAKE_BIN2/ipset"
 
 run_capture2() {
-  local cap="$TMP/cap2.$RANDOM" internal="$TMP/int2.$RANDOM" i
+  local cap="$TMP/cap2.$RANDOM" internal="$TMP/int2.$RANDOM"
   mkdir -p "$cap" "$internal"
   PATH="$FAKE_BIN2:$PATH" BLOCKED_INTERNAL_DIR="$internal" \
     ALLOWLIST_DOMAINS_FILE="$populated" ALLOWLIST_PROXY_DOMAINS_FILE="$comments_only" \
@@ -169,7 +169,7 @@ run_capture2() {
   # The daemon backgrounds its read loops and returns almost immediately;
   # give the piped `while read` a brief, bounded window to process the one
   # line the fake tshark already wrote to its stdout before exiting.
-  for i in $(seq 1 20); do
+  for _ in $(seq 1 20); do
     grep -qF '203.0.113.9' "$cap/blocked-ips.txt" 2>/dev/null && break
     sleep 0.1
   done

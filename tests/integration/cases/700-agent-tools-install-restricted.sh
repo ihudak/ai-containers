@@ -60,6 +60,7 @@ set -uo pipefail
 # and a vale download; raised here to the same 900s budget the
 # reconcile-completion wait below uses, so launcher_up does not fail-fast for a
 # reason that has nothing to do with whether the tools actually installed.
+# shellcheck disable=SC2034  # consumed by tests/integration/lib.sh's it_wait/run.sh, which read it after this case is sourced
 IT_SETTLE=900
 
 fixture_scope_init || it_finish

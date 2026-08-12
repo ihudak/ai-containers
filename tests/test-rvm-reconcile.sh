@@ -29,6 +29,18 @@ esac
 exit 0
 EOF
   chmod +x "$bin/rvm"
+  # A no-op flock: rvm-reconcile.sh takes the group-serialization lock
+  # unconditionally, on every invocation, before anything else — this test
+  # never exercises real cross-process contention (it is a single hermetic
+  # process), so lock acquisition always trivially "succeeds". Stubbed for the
+  # same reason curl and rvm are: real flock(1) is a Linux util-linux tool
+  # that is not part of a base macOS install, so a hermetic test that
+  # incidentally shells out to the HOST's flock (rather than a fixture of its
+  # own) is not actually hermetic — it silently depends on a tool this suite
+  # never declared it needed, and its absence surfaces as bash's own
+  # "flock: command not found" text leaking into captured output instead of a
+  # clear, attributable failure.
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$bin/flock"; chmod +x "$bin/flock"
   # Fake curl (bootstrap) + a pre-existing rvm script so no bootstrap fetch runs.
   install -d "$home/.rvm/scripts"; printf 'true\n' > "$home/.rvm/scripts/rvm"
   PATH="$bin:$PATH" HOME="$home" RUBY_VERSIONS="$want" \
@@ -143,6 +155,12 @@ exit $curl_rc
 EOF
   chmod +x "$bin/curl"
   printf '#!/usr/bin/env bash\nexit 0\n' > "$bin/rvm"; chmod +x "$bin/rvm"
+  # A no-op flock (see the identical stub + comment in run_case above): the
+  # group-serialization lock at the top of rvm-reconcile.sh runs before the
+  # bootstrap logic under test even begins, unconditionally, on every
+  # platform — without this stub the case would silently depend on the HOST
+  # having a real flock(1), which a base macOS install does not.
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$bin/flock"; chmod +x "$bin/flock"
   PATH="$bin:$PATH" HOME="$home" RUBY_VERSIONS="3.4.5" \
     bash "$REPO_DIR/rvm-reconcile.sh" >"$home/out.log" 2>&1
   printf '%s\n---CALLS---\n%s\n' "$(cat "$home/out.log" 2>/dev/null)" "$(cat "$home/calls.log" 2>/dev/null)"
@@ -154,7 +172,26 @@ boot_fail="$(boot_case 1 "")"
 grep -q 'FAILED: rvm bootstrap' <<<"$boot_fail" \
   && pass "failed bootstrap logs 'FAILED: rvm bootstrap'" \
   || fail "failed bootstrap logs 'FAILED: rvm bootstrap' (got: $boot_fail)"
-grep -qE 'command not found|No such file' <<<"$boot_fail" \
+# This must match ONLY an rvm-attributable not-found — the defect it guards is
+# the reconcile falling through past its early `exit 0`s and calling `rvm`
+# (or `source`ing scripts/rvm) after bootstrap failed, which surfaces as bash's
+# own "rvm: command not found" or ".../scripts/rvm: No such file or directory"
+# (confirmed by reproducing the historical defect: neutering every early
+# `exit 0` produces exactly `rvm-reconcile.sh: line 70:
+# .../.rvm/scripts/rvm: No such file or directory`). A bare `command not
+# found|No such file` used to match ANY leaked shell error in the captured
+# output, attributable or not — it happened to be flock's (fixed by stubbing
+# flock above), but the same looseness would false-fail on the next missing
+# PATH tool too, masquerading as this guarded defect. Anchoring on the token
+# immediately before the colon being `rvm` (bare, or path-suffixed via a
+# preceding `/`, e.g. `scripts/rvm:`) rules that out: it cannot match
+# `rvm-reconcile.sh: line N: <anything-else>: ...` (the script's own name has
+# more than "rvm" before that colon) or an unrelated tool's bare name.
+# Filtering out every bash "<script>: line N: ..." shaped line instead (the
+# alternative considered) was rejected: the real defect's own error is in
+# that exact shape, so that filter would discard the very signal being
+# checked for, not just the noise.
+grep -qE '(^|[[:space:]/])rvm: (command not found|No such file)' <<<"$boot_fail" \
   && fail "failed bootstrap must not fall through into not-found errors" \
   || pass "failed bootstrap exits cleanly (no not-found fallthrough)"
 

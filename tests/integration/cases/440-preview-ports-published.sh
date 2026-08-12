@@ -18,8 +18,8 @@
 # A port nothing is listening on right now. Connecting SUCCEEDS when something
 # already holds it, which is the case to reject.
 pick_free_port() {
-  local p i
-  for i in 1 2 3 4 5 6 7 8; do
+  local p
+  for _ in 1 2 3 4 5 6 7 8; do
     p=$(( 20000 + RANDOM % 20000 ))
     if ! (exec 3<>"/dev/tcp/127.0.0.1/$p") 2>/dev/null; then printf '%s' "$p"; return 0; fi
     exec 3<&- 2>/dev/null || true

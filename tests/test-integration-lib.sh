@@ -33,6 +33,18 @@ t_check() { if [[ "$2" == "$3" ]]; then t_pass "$1"; else t_fail "$1 (expected '
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
+# A fabricated stand-in for a "resolvable, executable docker binary" — the
+# assertions below only need a PATH that IS an executable file; they never run
+# it. `/bin/true` is not that path on every platform (macOS ships `true` at
+# `/usr/bin/true`; there is no `/bin/true`), so hardcoding it hardcodes a
+# Linux filesystem layout instead of the actual requirement. `command -v true`
+# is NOT a substitute — `true` is a shell builtin, so that returns the string
+# "true", not a path. Fabricating our own executable is portable by
+# construction and states the intent precisely.
+TRUE_STUB="$TMP/true-stub"
+printf '#!/bin/sh\nexit 0\n' > "$TRUE_STUB"
+chmod +x "$TRUE_STUB"
+
 bash -n "$LIB" && t_pass "lib.sh bash -n" || t_fail "lib.sh bash -n"
 
 # lib.sh refuses to load without the runner's environment — a case run by hand
@@ -257,7 +269,7 @@ else
 fi
 # And the negative: a resolvable docker must NOT be refused, so the two above
 # are not passing merely because launcher_prepare refuses everything.
-out="$(bash -c ". '$LIB'; IT_REAL_DOCKER=/bin/true; launcher_prepare" 2>&1)"; rc=$?
+out="$(bash -c ". '$LIB'; IT_REAL_DOCKER='$TRUE_STUB'; launcher_prepare" 2>&1)"; rc=$?
 if [[ "$rc" -eq 0 ]] && ! grep -q 'cannot resolve the real docker' <<< "$out"; then
   t_pass "launcher_prepare accepts an executable IT_REAL_DOCKER"
 else
@@ -292,7 +304,7 @@ export IT_VARIANT_OVERRIDES='ruby=3.3.6,3.4.5 imagemagick=ON'
 # comment above them; do not "simplify" them to a command-prefix assignment on
 # the strength of this variable now being local.
 IT_REAL_DOCKER_OUTER="${IT_REAL_DOCKER:-}"
-IT_REAL_DOCKER="${IT_REAL_DOCKER:-/bin/true}"  # launcher_prepare checks this
+IT_REAL_DOCKER="${IT_REAL_DOCKER:-$TRUE_STUB}"  # launcher_prepare checks this
 launcher_prepare >/dev/null 2>&1
 launcher_conf >/dev/null 2>&1
 conf="$IT_LAUNCH_HOME/sandbox.conf"
@@ -423,7 +435,7 @@ dh_run_launcher() {
     IT_RUN_ID="unit-dh-$RANDOM" IT_IMAGE=unit-img IT_NET=unit-net \
     IT_SCRATCH="$TMP/scratch-dh-$RANDOM" \
     IT_LABEL="ai-containers.it-run=unit-dh" \
-    IT_REAL_DOCKER=/bin/true \
+    IT_REAL_DOCKER="$TRUE_STUB" \
     DH_LIB="$DH_FAKE_REPO/tests/integration/lib.sh" \
     DH_VERB="$2" \
     bash -c "$DH_LAUNCHER_BODY"
@@ -442,7 +454,7 @@ dh_run_launcher_preset() {
     IT_RUN_ID="unit-dh-$RANDOM" IT_IMAGE=unit-img IT_NET=unit-net \
     IT_SCRATCH="$TMP/scratch-dh-$RANDOM" \
     IT_LABEL="ai-containers.it-run=unit-dh" \
-    IT_REAL_DOCKER=/bin/true \
+    IT_REAL_DOCKER="$TRUE_STUB" \
     DH_LIB="$DH_FAKE_REPO/tests/integration/lib.sh" \
     DH_VERB="$2" \
     IT_DOCKER_HOST="$3" \

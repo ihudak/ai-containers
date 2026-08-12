@@ -52,6 +52,48 @@ jobs:
           echo "diffing sandbox.conf against $base"
           BASE_REF="$base" ./check-sandbox-version.sh --check
 
+  suite-floor:
+    name: Shell test suite (bash floor)
+    runs-on: ubuntu-latest
+    # ubuntu:22.04 ships bash 5.1.16 — the declared floor — with GNU coreutils.
+    # `suite` above runs on whatever bash ubuntu-latest happens to ship, which
+    # drifts upward with the runner image; this job pins the CLAIM. Raising the
+    # floor means changing this image and bash-floor.sh together.
+    container: ubuntu:22.04
+
+    steps:
+      # BEFORE checkout: actions/checkout needs git inside the container, and
+      # without it silently falls back to a REST download with no .git — which
+      # tests/test-mutations.sh detects and fails on (it needs a git work tree
+      # for `git apply --check`). rsync is needed by the project-init tests.
+      - name: Install git and rsync
+        run: apt-get update -qq && apt-get install -y -qq git rsync ca-certificates
+
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      # A container job's workspace is prepared by the RUNNER process on the
+      # host (uid 1001), then bind-mounted into this container, where every
+      # step (including this one) runs as root (uid 0, ubuntu:22.04's default
+      # user) — the same "same UID for the clone and the process" assumption
+      # verify-on-host.sh's floor container already had to solve for the
+      # bind-mounted host repo (see its Phase 5 comment), except here it's
+      # git >= 2.35.2's dubious-ownership check tripping over the runner/root
+      # UID mismatch instead of a macOS virtiofs one. Scoped to
+      # $GITHUB_WORKSPACE (this job's actual checkout path, e.g.
+      # /__w/ai-containers/ai-containers) rather than `*`: this container is
+      # single-purpose for this job, but a wildcard would still trust more
+      # than this step could ever need.
+      - name: "Trust the checkout: container job's workspace is owned by the runner, not this container's root"
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Show bash version
+        run: bash --version | head -1
+
+      - name: Run tests at the declared floor
+        run: ./tests/run-all.sh
+
   lint:
     name: Shell lint
     runs-on: ubuntu-latest
@@ -80,11 +122,19 @@ jobs:
           echo "parsed $n script(s)"
           exit $rc
 
+      # The floor is 5.1 while CI runs 5.2 and a developer's Mac runs 5.3.
+      # Nothing else compares them, so this is the only thing standing between
+      # a comfortable ${ cmd; } on the host and a container that will not start.
+      - name: bash dialect (nothing newer than the declared floor)
+        run: ./tests/bash-dialect-lint.sh
+
       - name: shellcheck
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
           # -e SC1091: sourced paths are resolved at runtime, not by the linter.
-          # ADVISORY, not a gate: the existing corpus predates this job, so
-          # failures are surfaced without blocking. Tightening it to a gate is a
-          # deliberate follow-up, not something to do by accident here.
-          git ls-files '*.sh' | xargs shellcheck -S warning -e SC1091 || true
+          # GATE: increment 4 cleared the pre-existing findings backlog (fixed
+          # the real defects, suppressed the rest at the site with a reason —
+          # see git history for "clear the shellcheck backlog and gate on it")
+          # and promoted this from advisory to blocking. verify-on-host.sh
+          # Phase 7 runs this identical command locally.
+          git ls-files '*.sh' | xargs shellcheck -S warning -e SC1091

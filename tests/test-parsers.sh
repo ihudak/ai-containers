@@ -17,6 +17,8 @@
 set -uo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=portability.sh
+source "$REPO_DIR/tests/portability.sh"
 fails=0
 pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails + 1)); }
@@ -32,11 +34,38 @@ TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 # ~/.gitignore_global-based ignore of .ai-containers/ that doesn't exist once
 # HOME is redirected to a temp dir).
 REAL_HOME="$HOME"
+
+# Whether git is usable against $REPO_DIR at all. A repo bind-mounted into a
+# container as a different UID (root running against a host-owned checkout —
+# exactly what the containerised floor run does) makes EVERY git call in this
+# section fail identically to "unchanged"/"untouched": `git status
+# --porcelain` prints nothing (captured via `|| true` below) and `git diff
+# --quiet` exits non-zero for the same reason a real diff would. Checked once
+# so the hermeticity assertions further down can tell "verified clean" apart
+# from "could not verify" instead of reporting the latter as the former.
+GIT_USABLE=1
+HOME="$REAL_HOME" git -C "$REPO_DIR" rev-parse --git-dir >/dev/null 2>&1 || GIT_USABLE=0
+
 # Snapshot the repo's git state up front. Comparing a before/after snapshot is
 # self-maintaining: it catches anything THIS test writes into the repo without
 # hardcoding a whitelist of unrelated untracked files, which goes stale the
 # moment another test file is added.
 REPO_STATUS_BEFORE="$(HOME="$REAL_HOME" git -C "$REPO_DIR" status --porcelain 2>/dev/null || true)"
+
+# projects.conf is deliberately GITIGNORED (.gitignore: "/projects.conf" — it
+# holds personal absolute paths, see project-init.sh), so no git-based check —
+# neither `git diff --quiet` nor the REPO_STATUS_BEFORE/AFTER comparison above
+# — can ever observe an edit to it: appending to it, creating it, or deleting
+# it produces no diff and no status line, with git working perfectly. Hash the
+# file directly instead (same p_md5 + before/after pattern as
+# tests/test-sync-project.sh:34, which guards this exact file for this exact
+# reason). The empty string doubles as "absent": unset when the file doesn't
+# exist before/after, so absent→absent compares equal (unchanged) while
+# either direction of absent↔present compares unequal (a real change) with no
+# separate existence flag needed.
+PROJECTS_CONF="$REPO_DIR/projects.conf"
+PROJECTS_CONF_MD5_BEFORE=""
+[[ -f "$PROJECTS_CONF" ]] && PROJECTS_CONF_MD5_BEFORE="$(p_md5 "$PROJECTS_CONF")"
 
 # Isolated HOME throughout: sandbox-common.sh reads ~/.ai-containers.
 export HOME="$TMP/home"; mkdir -p "$HOME"
@@ -222,38 +251,93 @@ grep -q "is already mounted (ro); the pointer's :rw is ignored" "$TMP/entry2.err
   && pass "pointer_repo_entry: bare existing entry defaults to ro in the note" \
   || fail "pointer_repo_entry: bare existing entry defaults to ro in the note (got '$(cat "$TMP/entry2.err")')"
 
+# ── sandbox.sh: split_repos_env (REPOS parsing) ──────────────────────────────
+# Regression this branch fixes: `IFS=' ' read -r -a repos_list <<< "$REPOS"`
+# splits only WITHIN one line, so a newline embedded in REPOS silently dropped
+# every entry after it — `read` stops at the first newline regardless of
+# $IFS. split_repos_env restores full whitespace splitting (space, tab,
+# newline, matching the ORIGINAL unquoted `(${REPOS})`) while keeping
+# pathname (glob) expansion disabled, which was the reason `read -a` was
+# introduced in the first place. Four shapes, none of them tested before this.
+out="$(run_fn split_repos_env "cluster:ro lib:ro app:rw")"
+check "split_repos_env: space-separated entries" \
+  "$(printf 'cluster:ro\nlib:ro\napp:rw')" "$out"
+
+out="$(run_fn split_repos_env "$(printf 'cluster:ro\nlib:ro\napp:rw')")"
+check "split_repos_env: newline-separated entries are NOT dropped" \
+  "$(printf 'cluster:ro\nlib:ro\napp:rw')" "$out"
+
+out="$(run_fn split_repos_env "$(printf 'cluster:ro\tlib:ro')")"
+check "split_repos_env: tab-separated entries" \
+  "$(printf 'cluster:ro\nlib:ro')" "$out"
+
+# A glob-looking value must stay literal — the ORIGINAL bug behind the
+# `read -a` fix: a bare `(${REPOS})` word-split ALSO pathname-expanded, so
+# REPOS="*.txt" silently became whatever *.txt matched in the launch
+# directory. Run from a directory that genuinely HAS a *.txt file: with no
+# match, bash's own no-match default leaves the pattern literal even with
+# globbing ON, which would prove nothing about whether set -f is doing its job.
+mkdir -p "$TMP/globdir"; touch "$TMP/globdir/a.txt" "$TMP/globdir/b.txt"
+out="$( ( cd "$TMP/globdir" && HOME="$HOME" bash -c '
+      src="$1"; val="$2"
+      set --
+      source "$src" >/dev/null
+      split_repos_env "$val"
+    ' _ "$REPO_DIR/sandbox.sh" "*.txt"
+  ) )"
+check "split_repos_env: a glob-looking value stays literal, not expanded" "*.txt" "$out"
+
+out="$(run_fn split_repos_env "")"
+check "split_repos_env: an empty value produces no entries" "" "$out"
+
+out="$(run_fn split_repos_env)"   # $1 entirely omitted, not just empty
+check "split_repos_env: an unset value produces no entries" "" "$out"
+
 # ══════════════════════════════════════════════════════════════════════════════
 # sandbox-common.sh helpers — safe to source directly (pure library, no entry point)
 # ══════════════════════════════════════════════════════════════════════════════
 
+# shellcheck disable=SC2178,SC2128  # not a nameref here: sandbox-common.sh's enabled_agents_csv-like
+# helpers declare their OWN unrelated local `out` array; shellcheck's array/scalar
+# tracking isn't scope-aware, so it conflates that with this block's plain string
+# `out`/`rc` once sourced. Covers the whole subshell (shellcheck directives apply
+# to the following compound block).
 ( set --
   source "$REPO_DIR/sandbox-common.sh"
 
   # ── resolve_path ────────────────────────────────────────────────────────
   mkdir -p "$TMP/somedir"
+  # The expected answer is canonicalised INDEPENDENTLY of resolve_path itself
+  # (p_realdir uses cd + pwd -P, not readlink -f), so this stays a real
+  # assertion rather than `assert resolve_path(x) == resolve_path(x)`. On a
+  # host where the temp root is itself reached through a symlink (macOS's
+  # /var -> /private/var), $TMP/somedir and its canonical form legitimately
+  # differ, and comparing against the raw, uncanonicalised $TMP/somedir (as
+  # this file used to) fails there even though resolve_path is correct.
+  somedir_canon="$(p_realdir "$TMP/somedir")"
   out="$(resolve_path "$TMP/somedir")"
-  [[ "$out" == "$TMP/somedir" ]] \
+  [[ "$out" == "$somedir_canon" ]] \
     && printf 'PASS: resolve_path: absolute existing dir resolves to itself\n' \
-    || printf "FAIL: resolve_path: absolute existing dir resolves to itself (got '%s')\n" "$out"
+    || printf "FAIL: resolve_path: absolute existing dir resolves to itself (got '%s', want '%s')\n" "$out" "$somedir_canon"
 
   # A path with a trailing slash / './' segments still resolves to the clean absolute form.
   out="$(resolve_path "$TMP/somedir/./")"
-  [[ "$out" == "$TMP/somedir" ]] \
+  [[ "$out" == "$somedir_canon" ]] \
     && printf 'PASS: resolve_path: normalises ./ and trailing slash\n' \
-    || printf "FAIL: resolve_path: normalises ./ and trailing slash (got '%s')\n" "$out"
+    || printf "FAIL: resolve_path: normalises ./ and trailing slash (got '%s', want '%s')\n" "$out" "$somedir_canon"
 
   # A relative path (cwd = $TMP) resolves against the CURRENT directory.
   out="$(cd "$TMP" && resolve_path "somedir")"
-  [[ "$out" == "$TMP/somedir" ]] \
+  [[ "$out" == "$somedir_canon" ]] \
     && printf 'PASS: resolve_path: relative path resolves against cwd\n' \
-    || printf "FAIL: resolve_path: relative path resolves against cwd (got '%s')\n" "$out"
+    || printf "FAIL: resolve_path: relative path resolves against cwd (got '%s', want '%s')\n" "$out" "$somedir_canon"
 
   # A symlink resolves to its target (readlink -f follows symlinks).
   ln -s "$TMP/somedir" "$TMP/symlink-to-somedir"
   out="$(resolve_path "$TMP/symlink-to-somedir")"
-  [[ "$out" == "$TMP/somedir" ]] \
+  [[ "$out" == "$somedir_canon" ]] \
     && printf 'PASS: resolve_path: symlink resolves to its target\n' \
-    || printf "FAIL: resolve_path: symlink resolves to its target (got '%s')\n" "$out"
+    || printf "FAIL: resolve_path: symlink resolves to its target (got '%s', want '%s')\n" "$out" "$somedir_canon"
 
   # ── sanitize_volume_token ────────────────────────────────────────────────
   out="$(sanitize_volume_token "my repo!!/name")"
@@ -321,7 +405,8 @@ fails=$(( fails + $(grep -c '^FAIL' "$TMP/common.out") ))
 # writes never touch the real tree (mirrors tests/test-project-init.sh).
 SCRIPTS="$TMP/scripts"; mkdir -p "$SCRIPTS"
 for f in project-init.sh projects.conf.example sandbox-common.sh sandbox.sh build.sh \
-         repo.sh entrypoint.sh tools-lib.sh install-tools.sh install-agent-skills.sh \
+         repo.sh group.sh entrypoint.sh tools-lib.sh install-tools.sh install-agent-skills.sh \
+         bash-floor.sh shared-files.sh \
          Dockerfile Dockerfile.seed .dockerignore sandbox.conf \
          refresh-ipset-allowlist.sh capture-blocked-traffic.sh capture-agent-destinations.sh; do
   [[ -f "$REPO_DIR/$f" ]] && cp "$REPO_DIR/$f" "$SCRIPTS/$f"
@@ -493,14 +578,35 @@ done
 # Hermeticity
 # ══════════════════════════════════════════════════════════════════════════════
 
-if [[ -e "$REPO_DIR/projects.conf.bak" ]] || ! HOME="$REAL_HOME" git -C "$REPO_DIR" diff --quiet -- projects.conf 2>/dev/null; then
+# Hashed directly (see PROJECTS_CONF_MD5_BEFORE above) rather than asked of
+# git, because git is structurally blind to this file — it is gitignored, so
+# `git diff`/`git status` report no change no matter what actually happened to
+# it. This assertion is therefore independent of GIT_USABLE entirely: hashing
+# does not involve git at all, so it verifies just as well whether or not git
+# can run.
+PROJECTS_CONF_MD5_AFTER=""
+[[ -f "$PROJECTS_CONF" ]] && PROJECTS_CONF_MD5_AFTER="$(p_md5 "$PROJECTS_CONF")"
+if [[ -e "$REPO_DIR/projects.conf.bak" ]] || [[ "$PROJECTS_CONF_MD5_BEFORE" != "$PROJECTS_CONF_MD5_AFTER" ]]; then
   fail "real repo's projects.conf untouched"
 else
   pass "real repo's projects.conf untouched"
 fi
 
 REPO_STATUS_AFTER="$(HOME="$REAL_HOME" git -C "$REPO_DIR" status --porcelain 2>/dev/null || true)"
-if [[ "$REPO_STATUS_BEFORE" == "$REPO_STATUS_AFTER" ]]; then
+# Complementary to the hash check above, not redundant with it: `git status`
+# covers every TRACKED file in the repo (everything except projects.conf,
+# which git is blind to by design), so the two together are what make "the
+# real repo" — tracked files here, the one gitignored file that matters
+# there — cover the whole hermeticity claim.
+#
+# Same conflation as the projects.conf check used to have: a git failure
+# makes BOTH snapshots capture empty output, which would compare equal and
+# read as "no changes" — a false pass that verified nothing. Gate on
+# GIT_USABLE rather than trust an equality that a git failure can satisfy for
+# free.
+if [[ "$GIT_USABLE" -ne 1 ]]; then
+  fail "real repo has no unexpected working-tree changes — git is unusable against $REPO_DIR (ownership mismatch, unreadable, or not a repository) — nothing was verified"
+elif [[ "$REPO_STATUS_BEFORE" == "$REPO_STATUS_AFTER" ]]; then
   pass "real repo has no unexpected working-tree changes"
 else
   fail "real repo has no unexpected working-tree changes"

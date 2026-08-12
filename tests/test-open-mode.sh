@@ -15,8 +15,10 @@ grep -q 'restricted|discovery|open' "$REPO_DIR/sandbox.sh" \
   && pass "sandbox.sh command case accepts open" || fail "sandbox.sh command case accepts open"
 
 # Regression guard: capabilities can be empty (open mode), so its docker-run
-# expansion MUST use the ${arr[@]+...} guard, else `set -u` on bash <4.4 crashes
-# open mode with "unbound variable".
+# expansion uses the ${arr[@]+...} guard. The guarded form is retained as
+# belt-and-braces: it is correct at any version, and rewriting working code for
+# a version we no longer support would be churn. The floor (bash-floor.sh) is
+# 5.1, where a bare expansion is safe.
 if grep -qF '${capabilities[@]+"${capabilities[@]}"}' "$REPO_DIR/sandbox.sh"; then
   pass "capabilities uses the guarded empty-array expansion"
 else

@@ -35,7 +35,7 @@ It packages a CLI-only Docker-based workspace for running AI coding agents (GitH
      ```bash
      docker buildx install
      ```
-- **Bash ≥ 4.4** on the host (for `sandbox.sh`). Linux distributions ship this by default. macOS ships bash 3.2 — install a newer version via `brew install bash` if needed.
+- **Bash ≥ 5.1** on the host (for `sandbox.sh`). Linux distributions from Ubuntu 22.04 / Debian 11 / RHEL 9 onward ship this. macOS ships bash 3.2 — install a newer one via `brew install bash`.
 
 ## What is included
 

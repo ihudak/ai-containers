@@ -19,9 +19,14 @@
 #   project already set is never touched), and the '# schema-version:' marker is
 #   ensured. See README "sandbox.conf schema versioning".
 set -euo pipefail
+# shellcheck source=bash-floor.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bash-floor.sh"
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 projects_conf="${script_dir}/projects.conf"
+
+# shellcheck source=shared-files.sh
+source "${script_dir}/shared-files.sh"
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -169,7 +174,11 @@ ensure_ai_containers_ignored() {
 # Idempotent: appends only patterns that are not already listed verbatim.
 ensure_inner_gitignore() {
   local dest="$1"
-  local gi="${dest}/.gitignore" pat added=0
+  # did_add, not added: reconcile_sandbox_conf's `local added=()` (an array,
+  # different function above) makes shellcheck's array/scalar tracking — which
+  # isn't scope-aware — falsely flag this unrelated scalar as SC2178/SC2128.
+  # Renaming sidesteps the collision instead of suppressing a real pattern.
+  local gi="${dest}/.gitignore" pat did_add=0
   # Guarantee a trailing newline before appending to an existing, non-empty file
   # (otherwise the first appended pattern gets glued onto the file's last line).
   if [[ -f "$gi" && -s "$gi" && -n "$(tail -c1 "$gi" 2>/dev/null)" ]]; then
@@ -182,10 +191,10 @@ ensure_inner_gitignore() {
              'allowlist-cidrs.d/custom.txt'; do
     if [[ ! -f "$gi" ]] || ! grep -qxF "$pat" "$gi" 2>/dev/null; then
       printf '%s\n' "$pat" >> "$gi"
-      added=1
+      did_add=1
     fi
   done
-  (( added )) && printf '  Backfilled .ai-containers/.gitignore patterns.\n'
+  (( did_add )) && printf '  Backfilled .ai-containers/.gitignore patterns.\n'
   return 0
 }
 
@@ -233,11 +242,9 @@ sync_project() {
   # Migrate legacy runme.sh<->launcher naming before copying shared files.
   migrate_launcher_naming "$dest"
 
-  # Shared scripts and build files
-  for f in Dockerfile Dockerfile.seed .dockerignore sandbox-common.sh build.sh sandbox.sh repo.sh group.sh entrypoint.sh \
-            rvm-reconcile.sh link-default-ruby.sh agent-tools-reconcile.sh link-agent-tools.sh \
-            refresh-ipset-allowlist.sh capture-blocked-traffic.sh \
-            capture-agent-destinations.sh install-tools.sh install-agent-skills.sh tools-lib.sh; do
+  # Shared scripts and build files — the list lives in shared-files.sh, the
+  # single definition project-init.sh also sources (see there).
+  for f in "${AI_CONTAINERS_SHARED_FILES[@]}"; do
     if [[ -f "${script_dir}/${f}" ]]; then
       cp "${script_dir}/${f}" "${dest}/${f}"
     fi

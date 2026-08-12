@@ -10,6 +10,8 @@
 #
 # Usage: ./bump-sandbox-version.sh <slug>      (e.g. graalvm-split)
 set -euo pipefail
+# shellcheck source=bash-floor.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bash-floor.sh"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 conf="${script_dir}/sandbox.conf"
 migrations_dir="${script_dir}/migrations"

@@ -272,7 +272,7 @@ rm -rf "$R_TMP"
 # Run the real script inside a temp dir (script_dir resolves to wherever the
 # script lives), so the repo's own sandbox.conf/migrations are never touched.
 B_TMP="$(mktemp -d)"
-cp "$REPO_DIR/bump-sandbox-version.sh" "$B_TMP/"
+cp "$REPO_DIR/bump-sandbox-version.sh" "$REPO_DIR/bash-floor.sh" "$B_TMP/"
 cat > "$B_TMP/sandbox.conf" <<'EOF'
 # schema-version: 3
 copilot=ON
@@ -298,7 +298,7 @@ else
 fi
 # Regression test: file mode should be preserved across script invocation.
 B_MODE_TMP="$(mktemp -d)"
-cp "$REPO_DIR/bump-sandbox-version.sh" "$B_MODE_TMP/"
+cp "$REPO_DIR/bump-sandbox-version.sh" "$REPO_DIR/bash-floor.sh" "$B_MODE_TMP/"
 cat > "$B_MODE_TMP/sandbox.conf" <<'EOF'
 # schema-version: 3
 copilot=ON
@@ -314,7 +314,7 @@ rm -rf "$B_TMP" "$B_MODE_TMP"
 
 # Regression test: Bug 1 — missing-marker path should not crash (grep with no match under set -euo pipefail)
 B_NOMARKER_TMP="$(mktemp -d)"
-cp "$REPO_DIR/bump-sandbox-version.sh" "$B_NOMARKER_TMP/"
+cp "$REPO_DIR/bump-sandbox-version.sh" "$REPO_DIR/bash-floor.sh" "$B_NOMARKER_TMP/"
 cat > "$B_NOMARKER_TMP/sandbox.conf" <<'EOF'
 copilot=ON
 EOF
@@ -337,7 +337,7 @@ rm -rf "$B_NOMARKER_TMP"
 
 # Regression test: Bug 2 — suffix-collision false positive (foo-bar shouldn't block bar request)
 B_SUFFIX_TMP="$(mktemp -d)"
-cp "$REPO_DIR/bump-sandbox-version.sh" "$B_SUFFIX_TMP/"
+cp "$REPO_DIR/bump-sandbox-version.sh" "$REPO_DIR/bash-floor.sh" "$B_SUFFIX_TMP/"
 cat > "$B_SUFFIX_TMP/sandbox.conf" <<'EOF'
 # schema-version: 3
 copilot=ON

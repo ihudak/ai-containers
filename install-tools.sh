@@ -136,8 +136,9 @@ expand_placeholders() {
 # any other URL is treated as the binary itself.
 install_url() {
   local name="$1" version="$2"
-  # shellcheck disable=SC2154
+  # shellcheck disable=SC2154  # TOOL_binary: set by tools_read_descriptor() in tools-lib.sh (sourced)
   local binary="$TOOL_binary" url
+  # shellcheck disable=SC2154  # TOOL_url: set by tools_read_descriptor() in tools-lib.sh (sourced)
   url="$(expand_placeholders "$TOOL_url" "$version")"
 
   if [ -z "$url" ]; then
@@ -239,6 +240,7 @@ install_one() {
 
   # A vendored binary (install=repo-file) is fetched straight from the repo tree;
   # there is no release to resolve and no archive to unpack.
+  # shellcheck disable=SC2154  # TOOL_install: set by tools_read_descriptor() in tools-lib.sh (sourced)
   if [ "$TOOL_install" = "repo-file" ]; then
     install_repo_file "$name" "$version"
     return 0

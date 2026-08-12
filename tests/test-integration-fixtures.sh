@@ -38,6 +38,14 @@ if [[ ! -d "$FIXTURES_DIR" ]]; then
 fi
 pass "fixtures directory exists: tests/integration/fixtures"
 
+# Whether git is usable against $REPO_DIR at all. A repo bind-mounted into a
+# container as a different UID makes `git ls-files` fail exactly like "path
+# not tracked" — empty output either way — so the per-fixture loop below must
+# tell a git FAILURE apart from a real "not tracked", checked once rather than
+# re-derived from an empty result per fixture.
+GIT_USABLE=1
+git -C "$REPO_DIR" rev-parse --git-dir >/dev/null 2>&1 || GIT_USABLE=0
+
 shopt -s nullglob
 fixtures=("$FIXTURES_DIR"/*.sh)
 shopt -u nullglob
@@ -68,7 +76,11 @@ for f in "${fixtures[@]}"; do
   if [[ "$mode" == "100755" ]]; then
     pass "$name is committed as 100755 (git ls-files -s)"
   elif [[ -z "$mode" ]]; then
-    fail "$name is committed as 100755 (git ls-files -s) — not tracked by git"
+    if [[ "$GIT_USABLE" -eq 1 ]]; then
+      fail "$name is committed as 100755 (git ls-files -s) — not tracked by git"
+    else
+      fail "$name is committed as 100755 (git ls-files -s) — git is unusable here (ownership mismatch, unreadable, or not a repository) — nothing was verified"
+    fi
   else
     fail "$name is committed as 100755 (git ls-files -s) — got $mode"
   fi

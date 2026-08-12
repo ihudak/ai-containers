@@ -74,20 +74,22 @@ fi
 # without rvm being sourced, at the cost of a bash process per call. Preferring the
 # direct binstub and falling back only on failure keeps the fast path fast and stops
 # a silently broken `bundle` from reaching a caller.
+#
+# The verify-and-warn step runs regardless of whether a wrapper dir exists: a
+# broken binstub with nothing to fall back to is exactly the case most worth
+# surfacing, not a reason to skip the check silently (see tests/test-ruby-wrapper.sh).
 wrapdir=""
 for cand in "$rvm_root/wrappers/default" "$rvm_root"/wrappers/ruby-*; do
   if [[ -d "$cand" ]]; then wrapdir="$cand"; break; fi
 done
-if [[ -n "$wrapdir" ]]; then
-  repaired=""
-  for b in $linked; do
-    "$bin_dest/$b" --version >/dev/null 2>&1 && continue
-    if [[ -x "$wrapdir/$b" ]]; then
-      ln -sf "$wrapdir/$b" "$bin_dest/$b"
-      repaired="${repaired:+$repaired }$b"
-    else
-      log "WARNING: $b does not run and $wrapdir/$b is not available to fall back to"
-    fi
-  done
-  [[ -n "$repaired" ]] && log "re-pointed at rvm wrappers (direct binstub would not run): $repaired"
-fi
+repaired=""
+for b in $linked; do
+  "$bin_dest/$b" --version >/dev/null 2>&1 && continue
+  if [[ -n "$wrapdir" && -x "$wrapdir/$b" ]]; then
+    ln -sf "$wrapdir/$b" "$bin_dest/$b"
+    repaired="${repaired:+$repaired }$b"
+  else
+    log "WARNING: $b does not run and no rvm wrapper is available to fall back to"
+  fi
+done
+[[ -n "$repaired" ]] && log "re-pointed at rvm wrappers (direct binstub would not run): $repaired"
