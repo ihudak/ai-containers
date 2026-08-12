@@ -73,6 +73,21 @@ jobs:
         with:
           fetch-depth: 0
 
+      # A container job's workspace is prepared by the RUNNER process on the
+      # host (uid 1001), then bind-mounted into this container, where every
+      # step (including this one) runs as root (uid 0, ubuntu:22.04's default
+      # user) — the same "same UID for the clone and the process" assumption
+      # verify-on-host.sh's floor container already had to solve for the
+      # bind-mounted host repo (see its Phase 5 comment), except here it's
+      # git >= 2.35.2's dubious-ownership check tripping over the runner/root
+      # UID mismatch instead of a macOS virtiofs one. Scoped to
+      # $GITHUB_WORKSPACE (this job's actual checkout path, e.g.
+      # /__w/ai-containers/ai-containers) rather than `*`: this container is
+      # single-purpose for this job, but a wildcard would still trust more
+      # than this step could ever need.
+      - name: "Trust the checkout: container job's workspace is owned by the runner, not this container's root"
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
       - name: Show bash version
         run: bash --version | head -1
 

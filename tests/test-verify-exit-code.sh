@@ -160,21 +160,42 @@ grep -q 'RESULT: FAILED — 2 phase(s)' "$TMP/out.log" \
 # ── shellcheck missing from PATH must fail the phase, not silently skip it ─────
 # Phase 7's shellcheck sub-check is gated on `command -v shellcheck`. Bypasses
 # run_verify()'s PATH (which always prepends the stub shellcheck) with a
-# second bin dir carrying only the stub docker, so this exercises the ELSE
-# branch none of the tests above ever reach. Must ALSO strip any PATH component
-# that resolves a REAL shellcheck (a caught bug: an earlier version of this test
-# merely prepended the no-shellcheck dir, leaving a real shellcheck reachable
-# later in the inherited $PATH on any host that has one installed — it passed
-# the exit-code assertion but failed the message assertion, which is exactly
-# why both are checked).
-mkdir -p "$TMP/bin-no-shellcheck"
+# PATH built from scratch, so this exercises the ELSE branch none of the
+# tests above ever reach.
+#
+# CAUGHT BUG, second version: an earlier version of this block prepended a
+# no-shellcheck dir but left the rest of the inherited $PATH attached, so a
+# real shellcheck later in $PATH was still reachable — passed the exit-code
+# assertion but failed the message assertion. The FIX for that (filtering out
+# every PATH component that resolves a real shellcheck) was itself wrong in a
+# way only CI exposed: GitHub Actions' ubuntu-latest runner ships shellcheck
+# pre-installed in /usr/bin, the SAME directory as bash/git/coreutils, so
+# filtering out "any dir containing shellcheck" also filtered out bash, git,
+# sed and everything else those directories provide. With PATH left holding
+# only the docker stub's directory, `docker`'s own `#!/usr/bin/env bash`
+# shebang could not resolve "bash" via env's PATH lookup, and the whole run
+# died with exit 127 ("bash: command not found") — a PATH self-inflicted
+# wound, not a signal about shellcheck, and it never reproduced on a host
+# (this repo's dev machines, macOS) where shellcheck lives in its own
+# directory (e.g. Homebrew's, or a lone ~/.local/bin) separate from
+# coreutils. Reproduced locally by copying git/bash/sed/shellcheck into one
+# shared directory and confirming the same exit 127.
+#
+# The fix: stop filtering the INHERITED PATH by directory at all — build a
+# hermetic PATH from scratch, symlinking in exactly the external tools
+# verify-on-host.sh's phases 0 and 7 need (resolved via `command -v` against
+# whatever PATH this test itself is running under), and never linking the
+# checker binary in. This is correct regardless of whether the host has a
+# real shellcheck, and regardless of which directory it lives in: shellcheck
+# is excluded by simply never being one of the tools copied in, not by
+# guessing at and excising directories.
+mkdir -p "$TMP/bin-no-shellcheck" "$TMP/hermetic-tools"
 cp "$TMP/bin/docker" "$TMP/bin-no-shellcheck/docker"
-no_sc_path="$TMP/bin-no-shellcheck"
-IFS=':' read -ra _path_parts <<< "$PATH"
-for _p in "${_path_parts[@]}"; do
-  [[ -x "$_p/shellcheck" ]] && continue
-  no_sc_path="$no_sc_path:$_p"
+for _tool in bash git sed grep awk cut tr head wc uname xargs printf cat mkdir rm chmod mktemp; do
+  _real_tool_path="$(command -v "$_tool" 2>/dev/null)" || continue
+  ln -sf "$_real_tool_path" "$TMP/hermetic-tools/$_tool"
 done
+no_sc_path="$TMP/bin-no-shellcheck:$TMP/hermetic-tools"
 r="$(mk_repo 0)"
 PATH="$no_sc_path" REPO="$r" PHASES=7 bash "$r/verify-on-host.sh" \
   > "$TMP/out.log" 2>&1

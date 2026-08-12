@@ -129,7 +129,8 @@ done <<< "$CHECKS"
 # was meant to police. So pin the STEP COUNT per job: a new CI step must be
 # given a layer, and cannot widen the PR gate past the local one unnoticed.
 #   suite:       checkout, bash version, rsync, run tests, schema gate  = 5
-#   suite-floor: install git+rsync, checkout, bash version, run tests   = 4
+#   suite-floor: install git+rsync, checkout, trust checkout (safe.directory),
+#                bash version, run tests                                = 5
 #   lint:        checkout, bash -n, dialect lint, shellcheck            = 4
 expect_steps() {  # $1=job $2=expected count
   local got
@@ -145,7 +146,7 @@ expect_steps() {  # $1=job $2=expected count
   fi
 }
 expect_steps suite 5
-expect_steps suite-floor 4
+expect_steps suite-floor 5
 expect_steps lint 4
 
 # The floor job must run the image matching the DECLARED floor. If bash-floor.sh
