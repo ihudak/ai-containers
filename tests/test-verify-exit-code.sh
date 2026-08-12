@@ -322,5 +322,21 @@ else
   fi
 fi
 
+# ── Phase 7's "parsed no files" branch, exercised ─────────────────────────────
+# This branch existed unexercised: no fixture ever produced an empty
+# `git ls-files '*.sh'`, so replacing its phase_fail with a no-op changed
+# nothing. MK_REPO_UNTRACK_SH drops *.sh from the index while leaving the files
+# on disk, so every existence check still passes and this is the ONLY thing that
+# fails — which is what makes both assertions below meaningful.
+r="$(MK_REPO_UNTRACK_SH=1 mk_repo 0)"
+[[ -n "$r" ]] || { echo "FAIL: mk_repo produced no repo path"; exit 1; }
+rc="$(run_verify "$r" "7")"
+[[ "$rc" != "0" ]] \
+  && pass "a run whose bash -n matched no files exits non-zero" \
+  || fail "a run whose bash -n matched no files exited 0 — it verified nothing and said so with a zero"
+grep -q "bash -n parsed no files" "$TMP/out.log" \
+  && pass "the empty-pathspec run names 'bash -n parsed no files'" \
+  || fail "the empty-pathspec run did not report 'bash -n parsed no files' (got: $(tail -3 "$TMP/out.log" | tr '\n' ' '))"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

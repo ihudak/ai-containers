@@ -294,15 +294,29 @@ if [[ -f "$TESTS_DIR/bash-dialect-lint.sh" ]]; then
   bash "$TESTS_DIR/bash-dialect-lint.sh" 2>&1 | sed "s/^/$LOG_PREFIX   /"
   d_rc="${PIPESTATUS[0]:-1}"
   [[ "$d_rc" -eq 0 ]] || phase_fail 7 "bash dialect lint exited $d_rc"
+  # Both of these are silent when clean, so a phase that ran them and a phase
+  # that skipped them looked identical in the log. In a project whose recurring
+  # bug is checks reporting success without doing anything, "passed silently" is
+  # not good enough evidence — say what ran and over how much.
+  sub "dialect lint exit: $d_rc"
 else
   phase_fail 7 "bash-dialect-lint.sh not found — the dialect floor was not checked"
 fi
 
 if command -v shellcheck >/dev/null 2>&1; then
-  ( cd "$REPO" && git ls-files '*.sh' | xargs shellcheck -S warning -e SC1091 ) \
+  # -r/--no-run-if-empty: GNU xargs runs the command ONCE with no arguments when
+  # its input is empty, so shellcheck would lint the whole tree from stdin and
+  # this phase would record a SECOND phase_fail for the one root cause already
+  # reported by the bash -n branch above ("RESULT: FAILED — 2 phase(s)" for a
+  # single problem). BSD xargs is no-run-if-empty by default and does not accept
+  # -r before macOS 13, so probe for it rather than assuming.
+  xargs_r=()
+  printf '' | xargs -r true >/dev/null 2>&1 && xargs_r=(-r)
+  ( cd "$REPO" && git ls-files '*.sh' | xargs "${xargs_r[@]}" shellcheck -S warning -e SC1091 ) \
     2>&1 | sed "s/^/$LOG_PREFIX   /"
   sc_rc="${PIPESTATUS[0]:-1}"
   [[ "$sc_rc" -eq 0 ]] || phase_fail 7 "shellcheck exited $sc_rc"
+  sub "shellcheck exit: $sc_rc over $( ( cd "$REPO" && git ls-files '*.sh' ) | grep -c . ) script(s)"
 else
   phase_fail 7 "shellcheck not installed — install it (brew install shellcheck) or deselect phase 7"
 fi
@@ -354,7 +368,8 @@ fi
 # No "regenerate your allowlists" advice here any more, deliberately. Phases 1-3
 # were what clobbered the developer's generated allowlist-*.txt — they invoked
 # build.sh with their own SMOKE_CONF/NATIVE_CONF/RUBY_CONF and never put the real
-# ones back. The only remaining phase delegates to tests/integration/run.sh, which
+# ones back. Phase 4 — the only phase that invokes build.sh — delegates to
+# tests/integration/run.sh, which
 # snapshots those files before it builds and restores them in its own EXIT trap
 # (`snapshot_real_allowlists`/`restore_real_allowlists`, skipped entirely under
 # --reuse-image because no build ran). Telling the operator to repair something
