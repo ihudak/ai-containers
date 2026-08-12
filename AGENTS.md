@@ -302,6 +302,71 @@ The previous platform-specific redirect (macOS mounted four tools from `~/.ai-co
 
 The macOS Keychain context remains relevant for the `host` group: Claude Code, GitHub Copilot CLI, Kiro CLI, and GitHub CLI store OAuth tokens in the macOS Keychain rather than in their dotfile dirs. When `AI_CONTAINER_GROUP=host` is set on macOS, a Linux container cannot read those tokens. This is why `sandbox.sh` prints a warning and requires explicit acknowledgement (`yes` at the prompt, or `AI_CONTAINER_HOST_ACK=1`) before proceeding. The default `default` group avoids this issue entirely — it stores all credentials in `~/.ai-containers/default/` using file-based auth that works on Linux and macOS alike.
 
+## Execution layers
+
+The suite that guards this repo runs in three places, and each has a different job:
+
+| Layer | Trigger | Contract |
+|---|---|---|
+| **PR** | every pull request (`.github/workflows/tests.yml`, `integration.yml`'s `fast` tier) | fast and cheap; blocks merge |
+| **Nightly** | schedule (`.github/workflows/nightly.yml`) | everything PR runs **+** whatever is too slow or costly for a PR (the `slow`/`needs-dns` integration tiers, the `packages` tier's image builds, the allowlist-domain health check) |
+| **Local** — `bash ./verify-on-host.sh` | a human, on a real host | everything nightly runs **+** what CI structurally cannot do: macOS, BSD userland, Colima, real unrestricted network, no cost cap |
+
+The invariant is **`local ⊇ nightly ⊇ PR`**, over both *checks* and *selected integration cases*. A check that is too expensive for one layer moves outward to a cheaper cadence — it never quietly disappears, and a check with no layer at all does not exist. `tests/test-layer-containment.sh` enforces this mechanically rather than leaving it as prose someone has to remember to keep true.
+
+**That guard checks by *effect*, not by grepping for a filename, and the reason is load-bearing.** An earlier version asked "does `verify-on-host.sh`'s source text contain the string `run-all.sh`?" — and a reviewer defeated it by commenting out the real invocation while leaving a comment that still named it: the check still passed, having verified nothing. Five of its six original rows had the same shape, because the filename each one searched for also appears in an existence guard, a `phase_fail` message, and the phase-table comment, all of which are non-comment text that satisfies a substring match with nothing actually running. The fix (`tests/lib-verify-repo.sh`) builds a stub repo with instrumented fakes — each records `STUB:<name>` to a witness log only when it is genuinely invoked — runs the real, current `verify-on-host.sh` against that stub repo, and asserts the witness line, not the source text. `bash -n` has no external command to stub, so its row instead plants a tracked file with a real syntax error and asserts the specific `PARSE ERROR: <path>` line that only appears if `bash -n` truly ran against it. Do not "simplify" this back to a text search — a comment mentioning a check's name is exactly the kind of edit that looks harmless and would silently re-break the guard. The same test also pins the **step count** of each `tests.yml` job against a recorded baseline (a named list can only police what it names — a new CI step needs no matching local entry to go green otherwise), and pins the `suite-floor` job's container image against the floor `bash-floor.sh` declares, so the two cannot drift apart unnoticed.
+
+### The phase table
+
+`verify-on-host.sh` runs numbered, independent phases (a later phase still runs if an earlier one failed — a full report beats an early abort):
+
+| Phase | Content | Mirrors |
+|---|---|---|
+| 0 | environment banner (daemon reachable, buildx, disk; Colima status on macOS) | — |
+| **5** | the hermetic suite (`tests/run-all.sh`) + the `sandbox.conf` schema gate, then the same suite again inside a container pinned to the declared bash floor | `tests.yml` jobs `suite` + `suite-floor` |
+| **7** | `bash -n` over every tracked script, the bash-dialect floor linter, and `shellcheck` as a gate | `tests.yml` job `lint` |
+| 4 | the runtime integration corpus, delegated whole to `tests/integration/run.sh` | `integration.yml` / `nightly.yml` |
+
+**Phase numbers are identifiers, not execution order** — the script actually runs them **0, 5, 7, 4**: cheap checks first, so a broken hermetic suite is reported in seconds rather than after an hour of image builds.
+
+**1, 2 and 3 are permanently burned and must never be reused.** Increment 3 removed those phases (agent-tier tool install, native package builds, the rvm/Ruby reconcile — all now covered by the integration corpus's `packages` tier instead) and left `VALID_PHASES` so that a stale `PHASES="1 2 3"` fails loudly, naming each phase as unrecognised, instead of `want_phase` matching nothing and the script declaring success having verified zero checks. Reusing 1, 2 or 3 for new content would make that stale value valid again and silently defeat the exact guard this paragraph describes. **Phase 6 is reserved for increment 5's mutation tier** and must stay absent from `VALID_PHASES` until that increment defines it — filling it in early would be the same mistake in the other direction, a phase existing before anything requires it to.
+
+`PHASES` defaults to `"4 5 7"` (Phase 0 always runs, unconditionally, outside `want_phase`) — a local layer nobody selects by default is not a local layer. `tests/test-verify-exit-code.sh` pins this default explicitly.
+
+### The bash floor
+
+The floor is **5.1**, declared exactly once, in `bash-floor.sh` — a small sourced file, not asserted redundantly wherever it matters. `sandbox-common.sh` sources it (so the entry points that already pulled in the whole library inherit it for free); six other entry points that don't need the rest of `sandbox-common.sh` source it directly. Raised from the 4.3 this guard enforced before increment 4, because 4.3 was one of three mutually contradictory claims in the repo (`sandbox-common.sh` said ≥4.3, `README.md` said ≥4.4, and three test files claimed to be "written for bash 3.2" while using `local -A`/`local -n` that fails outright below 4.3 — a claim nothing exercised or could exercise, since the product itself refuses to start below 4.3).
+
+5.1 excludes exactly two realistic platforms: **Ubuntu 20.04** (bash 5.0.17, ESM-only since April 2025) and **RHEL/Rocky 8** (bash 4.4.20, supported to 2029, a host-script concern only — the container itself is `ubuntu:24.04`, bash 5.2.21, which clears the floor regardless of the host running it). Raising the floor further, to 5.2 to match what CI's `ubuntu-latest` and the container both happen to ship, was considered and rejected: it would additionally drop **RHEL/Rocky 9** (bash 5.1.8, supported to 2032), **Ubuntu 22.04 LTS** (5.1.16), and **Debian 11** (5.1.4) — a far larger exclusion for a floor that would keep drifting upward with the runner image anyway, deciding nothing.
+
+**The floor is tested, not asserted.** A declared floor that no layer exercises is exactly the defect that produced the three-way contradiction above — it survived for months because nothing ran under it. CI's `suite-floor` job and `verify-on-host.sh`'s Phase 5 both run the full hermetic suite inside `ubuntu:22.04` (bash 5.1.16, GNU coreutils) rather than trusting whatever bash the runner or the developer's Mac happens to have. `tests/test-layer-containment.sh` fails if the floor `bash-floor.sh` declares and the image `suite-floor` actually runs ever drift apart — the floor cannot silently become untested again the way 3.2 did.
+
+**`tests/bash-dialect-lint.sh`** is the complementary check in the other direction: no script may use a construct *newer* than the declared floor. It matches raw, unstripped lines (an earlier version stripped comments first, which is unsound — a `#` opening a real comment cannot be told apart from one inside a quoted string or a parameter-expansion prefix by regex alone, and stripping either hid a real violation or created a false one) against a table of post-floor constructs read from `bash-floor.sh`'s declared numbers, so raising or lowering the floor changes what the linter permits with no second edit. A line that must legitimately contain a flagged construct — the rule's own definition, or a test vector whose entire job is to contain the bad code the rule detects — carries a per-line opt-out in the same idiom as this repo's `# shellcheck disable=SCxxxx` comments:
+
+```
+# dialect-lint: allow RULE-ID: reason
+```
+
+The reason is required and checked for, not merely documented by convention — a marker with nothing after the colon suppresses nothing. This exists because the three bash versions actually in play here are all *different*: the container and CI run 5.2, a developer's Mac typically runs 5.3 via Homebrew, and the floor is 5.1 — a construct written comfortably on the host (e.g. `${ cmd; }` value substitution, 5.3-only) would sail through review and die at container start with nothing else comparing the three.
+
+### `run.sh --dry-run` vs `--list`
+
+`tests/integration/run.sh --dry-run` applies the current `--tags`/`--exclude`/`--cases`/`--variant` selection and prints the case basenames that selection would run, one per line, then exits — no image build, no container, no docker call of any kind. An empty selection is fatal here exactly as in a real run, not a silently empty list. **`--list` is deliberately unchanged**: it catalogues the *whole* corpus regardless of any selection flag, a documented contract stated outright in its own `usage()` text, and redefining what an existing flag means while keeping its name is the failure mode this project refuses everywhere (see the `sandbox.conf` schema-versioning rule above — a key's meaning never silently changes underneath a value already relying on it). `--dry-run` is what makes the containment invariant checkable as a set comparison in the first place: `tests/test-layer-containment.sh` asks `run.sh --dry-run` what the PR layer's flags would select and what the nightly layer's flags would select, rather than reimplementing that selection logic a second time and being right in this repo while silently drifting wrong in the mgd port.
+
+### Portability helpers (`tests/portability.sh`)
+
+GNU coreutils and BSD/macOS userland disagree on several flags the hermetic suite depends on, and `tests/portability.sh` is the one place that difference is resolved: `p_stat_mode`/`p_stat_meta` (`stat -c` vs `stat -f`), `p_sha1`/`p_md5` (`sha1sum`/`md5sum` vs `shasum -a 1`/`md5 -q`), and `p_realdir` (symlink-free absolute path via `cd` + `pwd -P`, deliberately *not* `readlink -f` — a test that canonicalises its expected value with the same primitive as the code it is checking is `assert f(x) == f(x)`, not a test). New tests that shell out to coreutils for one of these facts use these helpers rather than open-coding a fallback per call site.
+
+They exist because Increment 4's local layer ran the hermetic suite on BSD userland for the first time ever — CI is ubuntu-only — and it found two classes of failure a static scan for GNU-only *commands* could never catch, because both are *path-shape* facts: **macOS canonicalises `/var/folders/…` to `/private/var/folders/…`** (`/var` is itself a symlink to `/private/var`), which broke 19 assertions across `test-parsers.sh`, `test-mutations.sh`, and `test-tool-config-mounts.sh` — every one of them compared a resolved path against an unresolved expectation, not a product defect; and **`/bin/true` does not exist on macOS** (it ships at `/usr/bin/true`), which broke all 8 `test-integration-lib.sh` assertions that hardcoded it as a stand-in executable. Both classes were fixed at the *test's* assumption, never the product: `p_realdir` supplies an independently-derived canonical path instead of comparing against the raw `mktemp -d` output, and the stand-in executable is now fabricated in the test's own scratch dir instead of assumed to exist at a fixed path.
+
+### `shared-files.sh`
+
+The single definition of which engine files `project-init.sh` and `sync-to-projects.sh` copy into a project's `.ai-containers/` working copy — an array (`AI_CONTAINERS_SHARED_FILES`), sourced by both, replacing what had been two independently hand-maintained lists that had *already* diverged before this increment: `sync-to-projects.sh` copied `group.sh`, `project-init.sh` did not, and nothing compared the two to notice, so a freshly-initialised project had no `group.sh` until its first sync. `tests/test-shared-files-parity.sh` guards the two callers against drifting apart again. `bash-floor.sh` is a hard, load-bearing member of that list: `sandbox-common.sh` (also in the list) sources it unconditionally, so a project copy missing it fails on its very first `build.sh`/`sandbox.sh`/`repo.sh` invocation.
+
+### shellcheck gates
+
+`shellcheck` runs as a **gate**, not an advisory, both in CI (`tests.yml`'s `lint` job) and locally (Phase 7) — the `|| true` that made it advisory-only is gone. Increment 4 cleared the pre-existing findings backlog first (measured at 75 findings across 25 files: real defects fixed, structural false positives from `local -n` namerefs and sourced-library patterns suppressed at the site with a reason, in the same `# shellcheck disable=SCxxxx: reason` idiom as everywhere else) so the gate lands green rather than red on day one.
+
 ## Corporate customization
 
 - Edit `sandbox.conf` to enable only the components your team uses.
