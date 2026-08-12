@@ -228,10 +228,22 @@ n_workflow="$(lc_rows workflow | grep -c .)"
 # catch a brand-new workflow the day it is added. Checked here against the
 # REAL registry and the REAL directory, not a fixture, because this is the
 # actual contract the containment guard depends on.
+#
+# The comparison is against rows whose file EXISTS here, not the raw row
+# count: tests/layer-checks.conf is shared byte-identically with a sibling
+# repo whose .github/workflows/ holds a different file set, so a
+# coverage=exempt row is allowed to name a file that does not exist in THIS
+# repo (see the asymmetry note in tests/layer-checks.conf's `workflow`
+# row-type block) — that row is inert here, not a drift, and must not be
+# counted against this file-set parity check either.
 n_wf_files="$(find "$REPO_DIR/.github/workflows" -maxdepth 1 -type f -name '*.yml' | wc -l | tr -d ' ')"
-[[ "$n_wf_files" -eq "$n_workflow" ]] \
-  && pass "tests/layer-checks.conf has exactly one workflow row per .github/workflows/*.yml file ($n_workflow)" \
-  || fail "tests/layer-checks.conf has $n_workflow workflow row(s) but .github/workflows/ has $n_wf_files file(s) — they have drifted apart"
+n_wf_rows_present=0
+while IFS='|' read -r wf_row_file _wf_row_coverage _wf_row_why; do
+  [[ -f "$REPO_DIR/.github/workflows/$wf_row_file" ]] && n_wf_rows_present=$((n_wf_rows_present+1))
+done < <(lc_rows workflow)
+[[ "$n_wf_files" -eq "$n_wf_rows_present" ]] \
+  && pass "tests/layer-checks.conf has exactly one workflow row per .github/workflows/*.yml file that exists here ($n_wf_rows_present of $n_workflow row(s))" \
+  || fail "tests/layer-checks.conf has $n_wf_rows_present workflow row(s) naming a file that exists here, but .github/workflows/ has $n_wf_files file(s) — they have drifted apart"
 
 lc_rows check | grep -q '^#' \
   && fail "lc_rows returned a comment line" \

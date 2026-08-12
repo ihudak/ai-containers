@@ -143,6 +143,18 @@ while IFS='|' read -r wfile coverage why; do
   wf_target="$wf_dir/$wfile"
 
   if [[ ! -f "$wf_target" ]]; then
+    # `classified`/`cases` assert the guard DEPENDS on this file (the
+    # classification loop or the integration-case section relies on it
+    # existing), so a missing file there is a genuine defect. `exempt` asserts
+    # a NEGATIVE — "this file, if present, is not part of the PR gate" — and
+    # with no file to make that claim about, the row is inert, not stale: skip
+    # it silently rather than failing. See the `workflow` row-type block in
+    # tests/layer-checks.conf for why this asymmetry exists (this file is
+    # shared byte-identically with a sibling repo holding a different
+    # workflow set).
+    if [[ "$coverage" == "exempt" ]]; then
+      continue
+    fi
     fail "workflow row '$wfile' (tests/layer-checks.conf) names a file that does not exist at $wf_target — this registry row is stale"
     continue
   fi
