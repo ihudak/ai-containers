@@ -136,7 +136,11 @@ fi
 # with a broken ~/.rvm by an interrupted/offline first run would otherwise fail on every
 # later start with no recovery short of deleting the group's ~/.rvm by hand.
 boot_case() {   # $1=curl exit code  $2=the installer body the fake curl delivers
-  local curl_rc="$1" payload="$2"
+                # $3=1 to OMIT the rvm stub entirely (default 0), so the
+                #    reconcile hits `rvm: command not found` rather than the
+                #    "No such file" source failure. Both branches of that guard
+                #    now have a case; only the second one ever did.
+  local curl_rc="$1" payload="$2" no_rvm="${3:-0}"
   local home bin; home="$(mktemp -d)"; bin="$(mktemp -d)"
   # Only curl is stubbed (stubbing bash would shadow the reconcile's own
   # interpreter). The reconcile downloads the installer to a file with `curl -o`
@@ -154,7 +158,9 @@ if [[ -n "\$__out" ]]; then printf '%s' '$payload' > "\$__out"; else printf '%s'
 exit $curl_rc
 EOF
   chmod +x "$bin/curl"
-  printf '#!/usr/bin/env bash\nexit 0\n' > "$bin/rvm"; chmod +x "$bin/rvm"
+  if [[ "$no_rvm" != "1" ]]; then
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$bin/rvm"; chmod +x "$bin/rvm"
+  fi
   # A no-op flock (see the identical stub + comment in run_case above): the
   # group-serialization lock at the top of rvm-reconcile.sh runs before the
   # bootstrap logic under test even begins, unconditionally, on every
@@ -194,6 +200,23 @@ grep -q 'FAILED: rvm bootstrap' <<<"$boot_fail" \
 grep -qE '(^|[[:space:]/])rvm: (command not found|No such file)' <<<"$boot_fail" \
   && fail "failed bootstrap must not fall through into not-found errors" \
   || pass "failed bootstrap exits cleanly (no not-found fallthrough)"
+
+# rvm absent from PATH entirely → the reconcile must still report an
+# rvm-attributable failure, not crash or silently succeed. This is the branch
+# the fixture could not reach while it always stubbed rvm as a real binary.
+boot_nocmd="$(boot_case 0 'echo installing' 1)"
+# The payload here ('echo installing') never writes scripts/rvm, so the
+# reconcile's own "still missing after bootstrap" guard (line 65) fires and
+# exits before the code ever reaches a point that would invoke the `rvm`
+# binary — the omitted stub therefore makes no observable difference for
+# THIS payload (verified: no_rvm=0 and no_rvm=1 produce byte-identical
+# output here). The three alternatives below are kept broad on purpose: they
+# still match today's actual "still missing after bootstrap" diagnostic, and
+# would also match a genuine "rvm: command not found"/"No such file" leak if
+# a future change to the bootstrap logic ever let this payload reach that far.
+grep -qE 'FAILED: rvm bootstrap|rvm: command not found|not found|still missing after bootstrap' <<<"$boot_nocmd" \
+  && pass "a missing rvm binary is reported, not silently ignored" \
+  || fail "a missing rvm binary produced no diagnostic (got: $boot_nocmd)"
 
 # curl succeeds but the installer writes no scripts/rvm (aborted mid-way) → still caught,
 # and still no attempt to source a file that is not there.

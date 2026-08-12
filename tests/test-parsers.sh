@@ -412,10 +412,15 @@ fails=$(( fails + $(grep -c '^FAIL' "$TMP/common.out") ))
 
 # A throwaway copy of the repo so project-init.sh's file copies / projects.conf
 # writes never touch the real tree (mirrors tests/test-project-init.sh).
+# This is a FIXTURE, not a second definition of shared-files.sh's list — the
+# test drives project-init.sh in isolation and does not depend on the runtime
+# reconcile scripts. It is kept aligned anyway: a fixture that silently diverges
+# from the thing it fixtures stops resembling the case it claims to reproduce.
 SCRIPTS="$TMP/scripts"; mkdir -p "$SCRIPTS"
 for f in project-init.sh projects.conf.example sandbox-common.sh sandbox.sh build.sh \
          repo.sh group.sh entrypoint.sh tools-lib.sh install-tools.sh install-agent-skills.sh \
          bash-floor.sh shared-files.sh \
+         rvm-reconcile.sh link-default-ruby.sh agent-tools-reconcile.sh link-agent-tools.sh \
          Dockerfile Dockerfile.seed .dockerignore sandbox.conf \
          refresh-ipset-allowlist.sh capture-blocked-traffic.sh capture-agent-destinations.sh; do
   [[ -f "$REPO_DIR/$f" ]] && cp "$REPO_DIR/$f" "$SCRIPTS/$f"

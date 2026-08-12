@@ -132,6 +132,9 @@ EOF
 # them here would read e.g. "variant_overrides" as an unrecognised option and
 # `exit 2`, which kills the whole sourcing process (not just this loop) before
 # the requested function is ever called.
+# Same IT_SOURCE_ONLY cut is explained from the other two sides at
+# tests/integration/run.sh:785 and tests/test-integration-runner.sh:35 — an edit
+# to any of the three should check the other two have not drifted.
 while [[ -z "${IT_SOURCE_ONLY:-}" && $# -gt 0 ]]; do
   # A value-taking option with no value must be a usage error, not a crash.
   # Without this guard `run.sh --tags` aborts with "line NN: 2: unbound variable"
@@ -783,6 +786,9 @@ sweep() {
 # a green run — the same rule the "selected 0 … NOTHING RAN" check at the
 # bottom of this file enforces, applied to the one path that could reach the
 # bottom having done nothing at all.
+# Same IT_SOURCE_ONLY cut is explained from the other two sides at
+# tests/integration/run.sh:128 and tests/test-integration-runner.sh:35 — an edit
+# to any of the three should check the other two have not drifted.
 if [[ -n "${IT_SOURCE_ONLY:-}" ]]; then
   return 0 2>/dev/null
   printf 'run.sh: IT_SOURCE_ONLY is set but run.sh was EXECUTED, not sourced.\n' >&2
