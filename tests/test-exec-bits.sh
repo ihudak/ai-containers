@@ -38,6 +38,14 @@ fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails + 1)); }
 
 cd "$REPO_DIR" || { printf 'FAIL: cannot cd to %s\n' "$REPO_DIR"; exit 1; }
 
+# Whether git is usable here at all. A repo bind-mounted into a container as a
+# different UID makes `git ls-files` fail exactly like "path not tracked" —
+# empty output either way — so assert_executable below must tell a git
+# FAILURE apart from a real "not tracked", checked once rather than re-derived
+# from an empty result per call.
+GIT_USABLE=1
+git rev-parse --git-dir >/dev/null 2>&1 || GIT_USABLE=0
+
 # Asserts both modes for one repo-relative path. The working tree and the git
 # index diverge silently: `git update-index --chmod=+x` flips the index without
 # touching the working tree, and a later `git add` of the same path re-reads the
@@ -62,7 +70,11 @@ assert_executable() {   # $1 = repo-relative path, $2 = why it must be executabl
   if [[ "$mode" == "100755" ]]; then
     pass "$rel is committed as 100755"
   elif [[ -z "$mode" ]]; then
-    fail "$rel is committed as 100755 — not tracked by git"
+    if [[ "$GIT_USABLE" -eq 1 ]]; then
+      fail "$rel is committed as 100755 — not tracked by git"
+    else
+      fail "$rel is committed as 100755 — git is unusable here (ownership mismatch, unreadable, or not a repository) — nothing was verified"
+    fi
   else
     fail "$rel is committed as 100755 — got $mode"
   fi

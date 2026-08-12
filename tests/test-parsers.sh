@@ -34,6 +34,18 @@ TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 # ~/.gitignore_global-based ignore of .ai-containers/ that doesn't exist once
 # HOME is redirected to a temp dir).
 REAL_HOME="$HOME"
+
+# Whether git is usable against $REPO_DIR at all. A repo bind-mounted into a
+# container as a different UID (root running against a host-owned checkout —
+# exactly what the containerised floor run does) makes EVERY git call in this
+# section fail identically to "unchanged"/"untouched": `git status
+# --porcelain` prints nothing (captured via `|| true` below) and `git diff
+# --quiet` exits non-zero for the same reason a real diff would. Checked once
+# so the hermeticity assertions further down can tell "verified clean" apart
+# from "could not verify" instead of reporting the latter as the former.
+GIT_USABLE=1
+HOME="$REAL_HOME" git -C "$REPO_DIR" rev-parse --git-dir >/dev/null 2>&1 || GIT_USABLE=0
+
 # Snapshot the repo's git state up front. Comparing a before/after snapshot is
 # self-maintaining: it catches anything THIS test writes into the repo without
 # hardcoding a whitelist of unrelated untracked files, which goes stale the
@@ -509,14 +521,26 @@ done
 # Hermeticity
 # ══════════════════════════════════════════════════════════════════════════════
 
-if [[ -e "$REPO_DIR/projects.conf.bak" ]] || ! HOME="$REAL_HOME" git -C "$REPO_DIR" diff --quiet -- projects.conf 2>/dev/null; then
+# `git diff --quiet` exits non-zero BOTH when the file differs and when git
+# cannot run at all (e.g. dubious ownership on a bind-mounted repo) — and the
+# `2>/dev/null` above hides which. Check git usability first so a git failure
+# is its own loud, distinctly-worded failure, never read as "the file changed".
+if [[ "$GIT_USABLE" -ne 1 ]]; then
+  fail "real repo's projects.conf untouched — git is unusable against $REPO_DIR (ownership mismatch, unreadable, or not a repository) — nothing was verified"
+elif [[ -e "$REPO_DIR/projects.conf.bak" ]] || ! HOME="$REAL_HOME" git -C "$REPO_DIR" diff --quiet -- projects.conf 2>/dev/null; then
   fail "real repo's projects.conf untouched"
 else
   pass "real repo's projects.conf untouched"
 fi
 
 REPO_STATUS_AFTER="$(HOME="$REAL_HOME" git -C "$REPO_DIR" status --porcelain 2>/dev/null || true)"
-if [[ "$REPO_STATUS_BEFORE" == "$REPO_STATUS_AFTER" ]]; then
+# Same conflation as above: a git failure makes BOTH snapshots capture empty
+# output, which would compare equal and read as "no changes" — a false pass
+# that verified nothing. Gate on the same GIT_USABLE check rather than trust
+# an equality that a git failure can satisfy for free.
+if [[ "$GIT_USABLE" -ne 1 ]]; then
+  fail "real repo has no unexpected working-tree changes — git is unusable against $REPO_DIR (ownership mismatch, unreadable, or not a repository) — nothing was verified"
+elif [[ "$REPO_STATUS_BEFORE" == "$REPO_STATUS_AFTER" ]]; then
   pass "real repo has no unexpected working-tree changes"
 else
   fail "real repo has no unexpected working-tree changes"

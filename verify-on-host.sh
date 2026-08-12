@@ -192,8 +192,19 @@ else
   # without a reachable daemon.
   floor_img="ubuntu:22.04"
   sub "running the suite at the declared floor ($floor_img, bash 5.1)"
+  # This container runs as root (the image's default user) against a repo
+  # bind-mount owned by the HOST user, so git >= 2.35.2's ownership check
+  # refuses every operation in here ("detected dubious ownership") unless the
+  # mount is explicitly trusted first. CI's suite-floor job does not need
+  # this: actions/checkout clones INSIDE that container, as root, so the
+  # clone and the container user already match. Scoped to the literal mount
+  # point (/w — always this exact path, never the host's), not the `*`
+  # wildcard: this container is single-purpose and throwaway (--rm) and never
+  # touches any other directory, so the wildcard would trust more than this
+  # invocation could ever use.
   docker run --rm -v "$REPO_ROOT_FOR_MOUNT:/w" -w /w "$floor_img" bash -c \
     'apt-get update -qq && apt-get install -y -qq git rsync >/dev/null 2>&1 && \
+     git config --global --add safe.directory /w && \
      bash --version | head -1 && ./tests/run-all.sh' 2>&1 | sed "s/^/$LOG_PREFIX   /"
   f_rc="${PIPESTATUS[0]:-1}"
   sub "floor suite exit: $f_rc"
