@@ -165,5 +165,20 @@ printf '# docker run -it --rm x\n' > "$TMP/commented.sh"
 found="$(awk '!/^[[:space:]]*#/ && /(^|[[:space:]])-(it|ti)([[:space:]]|$)/ { print NR }' "$TMP/commented.sh")"
 check "the -it scan ignores a commented-out occurrence" "" "$found"
 
+# ── Every reference to the pinned line agrees with reality ────────────────────
+# This file already pins sandbox.sh:<N> for its OWN two references, which is why
+# a shift breaks it loudly. It knew nothing about the other references to the
+# same line, and two of them (docker-shim.sh, run.sh) sat 30 lines stale until
+# an unrelated comment edit exposed them. A named list can only police what it
+# names — so derive the list instead.
+want_line="$(grep -n 'docker run -it' "$REPO_DIR/sandbox.sh" | cut -d: -f1)"
+[[ -n "$want_line" ]] \
+  || fail "no 'docker run -it' found in sandbox.sh — this whole file's premise is gone"
+bad="$(cd "$REPO_DIR" && git grep -hoE 'sandbox\.sh:[0-9]+' -- '*.sh' \
+         | sort -u | grep -v "^sandbox\.sh:${want_line}$" || true)"
+[[ -z "$bad" ]] \
+  && pass "every sandbox.sh:<line> reference in tracked scripts points at $want_line" \
+  || fail "stale sandbox.sh line reference(s): $(printf '%s' "$bad" | tr '\n' ' ')(actual: $want_line)"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
