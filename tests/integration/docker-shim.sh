@@ -4,7 +4,7 @@
 #
 # WHY THIS EXISTS
 #
-# sandbox.sh:796 runs `docker run -it --rm …`: foreground, interactive, with no
+# sandbox.sh:805 runs `docker run -it --rm …`: foreground, interactive, with no
 # --name and no label. There is nothing for a case to exec into and nothing for
 # the runner to sweep afterwards. The alternative was a test-only detach knob
 # inside a security-relevant launcher; this keeps sandbox.sh exactly as users

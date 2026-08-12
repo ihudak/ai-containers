@@ -5,7 +5,7 @@
 # glob skips it (same reason as tests/lib-verify-repo.sh).
 #
 # CONTRACT: the sourcing file sets LAYER_CHECKS_CONF to the registry path before
-# sourcing. Provides lc_rows(), wf_jobs(), wf_steps().
+# sourcing. Provides lc_rows(), wf_jobs(), wf_steps(), wf_job_key().
 #
 # EVERY function here fails loudly and non-zero on an empty result. That is the
 # whole point: a parser returning nothing quietly would make its consumer
@@ -89,5 +89,49 @@ wf_steps() {  # $1=workflow yaml  $2=job id → step identities, one per line
   [[ -f "$f" ]] || { echo "lib-layer-checks: no such workflow: $f" >&2; return 1; }
   out="$(_wf_awk "$f" "$j")"
   [[ -n "$out" ]] || { echo "lib-layer-checks: job '$j' in $f has no steps" >&2; return 1; }
+  printf '%s\n' "$out"
+}
+
+# wf_job_key reads a JOB-LEVEL key (4-space indented, directly under a named
+# job — e.g. a reusable-workflow caller's `uses:`, or its `if:` gate), as
+# opposed to wf_steps' 8-space step keys. Added for the containment guard's
+# nightly/PR assertions, which used to `grep -qF` a pattern against the WHOLE
+# workflow file — passing on a job commented out in place (the comment still
+# contains the string being grepped for). This reuses the same block-aware
+# state machine as wf_jobs/wf_steps: a commented-out job's header line
+# ("  # hermetic:") does not match the job-start pattern, so it never becomes
+# `injob`, and a key read against it fails loudly at its actual cause instead
+# of matching stale text.
+wf_job_key() {  # $1=yaml  $2=job id  $3=job-level key (e.g. uses, if) → value
+  local f="${1:?wf_job_key: workflow path required}"
+  local j="${2:?wf_job_key: job id required}"
+  local k="${3:?wf_job_key: key required}" out
+  [[ -f "$f" ]] || { echo "lib-layer-checks: no such workflow: $f" >&2; return 1; }
+  out="$(awk -v job="$j" -v key="$k" '
+    function val(s) {
+      sub(/^[A-Za-z][A-Za-z0-9_-]*:[[:space:]]*/, "", s)
+      sub(/^"/, "", s); sub(/"$/, "", s)
+      return s
+    }
+    BEGIN { inj = 0; injob = 0 }
+    /^jobs:[[:space:]]*$/ { inj = 1; next }
+    # Any column-0 key ends the jobs block, same as _wf_awk.
+    inj && /^[^[:space:]#]/ { inj = 0; injob = 0 }
+    inj && /^  [A-Za-z0-9_-]+:[[:space:]]*$/ {
+      cur = $0; sub(/^  /, "", cur); sub(/:[[:space:]]*$/, "", cur)
+      injob = (cur == job)
+      next
+    }
+    injob && /^    [A-Za-z0-9_-]+:/ {
+      line = $0; sub(/^    /, "", line)
+      k2 = line; sub(/:.*/, "", k2)
+      if (k2 == key) { print val(line); exit }
+      next
+    }
+    ' "$f")"
+  [[ -n "$out" ]] || {
+    echo "lib-layer-checks: job '$j' has no '$k:' key in $f (job absent, key absent, or job commented out)" >&2
+    return 1
+  }
   printf '%s\n' "$out"
 }

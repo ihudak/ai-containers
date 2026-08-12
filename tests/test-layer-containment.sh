@@ -32,6 +32,31 @@
 # failures, because the job list was hardcoded as three names. All three are now
 # tests/layer-checks.conf, the job list is derived from the workflow, and every
 # step must classify as a registry check or declared setup.
+#
+# FIX ROUND 2 (final review, three findings, all reproduced against this file
+# printing "0 failure(s)" before the fix): the registry/derivation above closed
+# the ORIGINAL defect but reintroduced the same SHAPE of bug three ways.
+#   1. The classification loop below consumed `wf_steps` only as
+#      `done < <(wf_steps …)` — a step-less job (e.g. a second reusable-workflow
+#      `uses:` appended to hermetic-checks.yml) makes wf_steps print an error
+#      and return 1, and the loop never looked: `classified` stayed positive
+#      from the OTHER jobs and the run stayed green.
+#   2. The nightly⊇PR assertions were `grep -qF` against the WHOLE FILE — the
+#      exact historical defeat this header already documents for verify-on-host.sh
+#      above, reintroduced here: commenting out nightly's `hermetic:` job (condition
+#      and `uses:` both, as a comment that still names them) left both greps
+#      matching non-executable text.
+#   3. The classification loop walked only hermetic-checks.yml. A fourth job
+#      added directly to tests.yml — the actual PR gate, not the reusable
+#      workflow — with real inline steps was never visited at all.
+# Fixed together: wf_job_key() (tests/lib-layer-checks.sh) reads a job-level
+# `uses:`/`if:` through the same block-aware awk state machine wf_jobs/wf_steps
+# use, so a commented-out job never enters it and the nightly assertions fail at
+# their cause. The classification loop now walks {hermetic-checks.yml,
+# tests.yml}: a job with its own job-level `uses:` must point at
+# hermetic-checks.yml (anything else, including no steps and no such `uses:`, is
+# an unclassified bypass); every other job's steps must classify — and its own
+# wf_steps call is now checked, not discarded.
 set -uo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Layout-tolerant, like run.sh, lib.sh and verify-on-host.sh itself: upstream
@@ -71,27 +96,41 @@ if [[ "$missing_required" -eq 1 ]]; then
   exit "$fails"
 fi
 
-# ── Both layers call the one definition ───────────────────────────────────────
-# The reusable workflow only makes `nightly ⊇ PR` true over checks if BOTH
-# workflows actually call it. Extracting the jobs and forgetting to wire nightly
-# would leave the invariant exactly as false as before, with a file present that
-# makes it LOOK addressed.
-for wf in "$TESTS_YML" "$NIGHTLY_YML"; do
-  if grep -qF 'uses: ./.github/workflows/hermetic-checks.yml' "$wf"; then
-    pass "$(basename "$wf") calls hermetic-checks.yml"
-  else
-    fail "$(basename "$wf") does not call hermetic-checks.yml — the hermetic checks do not run in that layer"
-  fi
-done
+# Sourced early (before the stub-repo machinery needs it) so wf_job_key is
+# available to the nightly assertions right below.
+# shellcheck source=lib-layer-checks.sh
+source "$LIB_LAYER_CHECKS"
 
-# Nightly's caller is schedule-gated ON PURPOSE (mutation dispatches break the
-# tree deliberately). Pin the exact condition so `if: false` — which would
-# silently remove nightly's hermetic leg while leaving the `uses:` above intact,
-# passing the assertion right before this one — cannot be substituted for it.
-if grep -qF "if: github.event_name == 'schedule'" "$NIGHTLY_YML"; then
+# ── Nightly's hermetic caller — a JOB-LEVEL KEY, not a text grep ───────────────
+# The reusable workflow only makes `nightly ⊇ PR` true over checks if nightly
+# actually calls it, gated the right way. FIX ROUND 2: `grep -qF` against the
+# WHOLE FILE passes on a commented-out job — commenting out
+#   # hermetic:
+#   #   if: github.event_name == 'schedule'
+#   #   uses: ./.github/workflows/hermetic-checks.yml
+# leaves both old patterns matching text that is no longer executable YAML.
+# wf_job_key (tests/lib-layer-checks.sh) reads the value under the NAMED JOB
+# through the same block-aware awk state machine wf_jobs/wf_steps already use —
+# a commented-out job never enters that state machine's `jobs:` block as a job
+# at all (its header line does not match the job-start pattern), so this fails
+# at its cause instead of at a stale substring match. tests.yml's own "calls
+# hermetic-checks.yml" is asserted the same way, folded into the classification
+# loop below (its `hermetic` job is one of the jobs that loop walks).
+val="$(wf_job_key "$NIGHTLY_YML" hermetic uses 2>&1)"; rc=$?
+if [[ "$rc" -eq 0 && "$val" == "./.github/workflows/hermetic-checks.yml" ]]; then
+  pass "nightly.yml job 'hermetic' has uses: ./.github/workflows/hermetic-checks.yml"
+else
+  fail "nightly.yml job 'hermetic' does not resolve uses: ./.github/workflows/hermetic-checks.yml (job/key absent, or commented out) — $val"
+fi
+
+# Schedule-gated ON PURPOSE (mutation dispatches break the tree deliberately).
+# Pinning the exact condition means `if: false` cannot be substituted for it —
+# and, as above, a commented-out job cannot satisfy it either.
+val="$(wf_job_key "$NIGHTLY_YML" hermetic if 2>&1)"; rc=$?
+if [[ "$rc" -eq 0 && "$val" == "github.event_name == 'schedule'" ]]; then
   pass "nightly's hermetic caller is gated on the schedule event, not disabled"
 else
-  fail "nightly's hermetic caller does not carry the expected schedule condition — it may have been disabled rather than gated"
+  fail "nightly's hermetic caller does not resolve if: github.event_name == 'schedule' (job/key absent, or commented out) — $val"
 fi
 
 # ── Build a stub repo and run the REAL verify-on-host.sh against it ────────────
@@ -103,8 +142,6 @@ fi
 # the naming comment) actually exercise this file.
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
-# shellcheck source=lib-layer-checks.sh
-source "$LIB_LAYER_CHECKS"
 # shellcheck source=lib-verify-repo.sh
 source "$LIB_VERIFY_REPO"
 
@@ -116,7 +153,15 @@ source "$LIB_VERIFY_REPO"
 # failing loudly. The guard below is the fix for the case mk_repo's own return
 # does not cover: empty output without a non-zero exit status.
 r="$(MK_REPO_PROBE=1 mk_repo 0)"
-[[ -n "$r" ]] || { fail "mk_repo produced no repo path — the registry is unreadable"; printf '\n%d failure(s)\n' "$fails"; exit "$fails"; }
+# M9: the reproducible trigger for this guard is NOT "the registry is
+# unreadable" (that would make lc_rows itself fail loudly, with its own
+# message, well before this line) — it is lib-verify-repo.sh's path-bin stub
+# loop building zero path-bin stubs (e.g. every `check` row's stub_kind
+# changed away from `path-bin`), which `return 1`s DURING sourcing, before
+# mk_repo() is even defined. `mk_repo` then resolves to no command, prints
+# nothing, and `$r` comes back empty — this message used to blame the wrong
+# stage.
+[[ -n "$r" ]] || { fail "mk_repo produced no repo path — no path-bin stubs were built while sourcing lib-verify-repo.sh (see its stderr above), so mk_repo was likely never defined"; printf '\n%d failure(s)\n' "$fails"; exit "$fails"; }
 
 # PHASES="5 7" covers every check named in the registry in one hermetic run.
 # The deliberately broken probe file makes Phase 7 report FAILED — expected
@@ -165,38 +210,71 @@ while IFS='|' read -r id job step kind target rc_var wtgt wre; do
   fi
 done < <(lc_rows check)
 
-# ── Every step is classified: a check with a witness, or declared setup ────────
-# A hand-written list can only police what it names. The previous version pinned
+# ── Every job is accounted for: a hermetic-checks.yml caller, or classified ────
+# A hand-written list can only police what it names. An earlier version pinned
 # a STEP COUNT per job against a baseline, with a hardcoded list of three job
 # names — so a fourth CI job was entirely invisible (no row, no count, no
 # witness), and even for a named job the remedy for a new step was "change 5 to
-# 6". Here the job list is DERIVED from the workflow, and the remedy is to
+# 6". The job list here is DERIVED from the workflow, and the remedy is to
 # declare what the step is: calling it a check forces a registry row, which
 # forces a stub and a local invocation, or the witness assertion above fails.
+#
+# FIX ROUND 2 walks {hermetic-checks.yml, tests.yml}, not hermetic-checks.yml
+# alone — a job added directly to tests.yml (the real PR gate) is otherwise
+# invisible here even though it runs on every PR. Deliberately NOT extended to
+# nightly.yml: its integration-* jobs legitimately carry many non-hermetic
+# steps, and its one in-scope job (`hermetic`) is already asserted above via
+# wf_job_key. A job in either walked workflow either declares its OWN job-level
+# `uses:` — which must point at hermetic-checks.yml, or it is an unclassified
+# bypass, whether or not it has any steps of its own — or every one of its
+# steps must classify as a registry check or declared setup. wf_jobs/wf_steps
+# calls are now CHECKED, not merely consumed via `done < <(…)`: a step-less job
+# with no approved `uses:` (wf_steps fails loudly) used to leave `classified`
+# unchanged and slip through as an invisible bypass instead of a named failure.
 #
 # This subsumes the count assertion rather than dropping it: if every step
 # classifies and every registry row finds its step (above), the counts agree by
 # construction.
 classified=0
-while IFS= read -r job; do
-  while IFS= read -r step; do
-    if lc_rows check | awk -F'|' -v j="$job" -v s="$step" '$2==j && $3==s {found=1} END{exit !found}'; then
-      classified=$((classified+1))
-    elif lc_rows setup | awk -F'|' -v j="$job" -v s="$step" '$1==j && $2==s {found=1} END{exit !found}'; then
-      classified=$((classified+1))
-    else
-      fail "step '$step' in job '$job' is neither a registry check nor declared setup — classify it in tests/layer-checks.conf"
+for wf in "$HERMETIC_YML" "$TESTS_YML"; do
+  wfname="$(basename "$wf")"
+  if ! jobs_out="$(wf_jobs "$wf")"; then
+    fail "$wfname: could not enumerate jobs — nothing in this workflow is classified (see stderr above)"
+    continue
+  fi
+  while IFS= read -r job; do
+    if uses_val="$(wf_job_key "$wf" "$job" uses 2>/dev/null)"; then
+      if [[ "$uses_val" == "./.github/workflows/hermetic-checks.yml" ]]; then
+        pass "$wfname job '$job' calls hermetic-checks.yml (its steps are classified there)"
+        classified=$((classified+1))
+      else
+        fail "$wfname job '$job' has a job-level uses: '$uses_val', not hermetic-checks.yml — its steps are never classified or run locally"
+      fi
+      continue
     fi
-  done < <(wf_steps "$HERMETIC_YML" "$job")
-done < <(wf_jobs "$HERMETIC_YML")
+    if ! steps_out="$(wf_steps "$wf" "$job")"; then
+      fail "$wfname job '$job' has no steps and no job-level uses: pointing at hermetic-checks.yml — nothing classifies it (see stderr above)"
+      continue
+    fi
+    while IFS= read -r step; do
+      if lc_rows check | awk -F'|' -v j="$job" -v s="$step" '$2==j && $3==s {found=1} END{exit !found}'; then
+        classified=$((classified+1))
+      elif lc_rows setup | awk -F'|' -v j="$job" -v s="$step" '$1==j && $2==s {found=1} END{exit !found}'; then
+        classified=$((classified+1))
+      else
+        fail "step '$step' in job '$job' ($wfname) is neither a registry check nor declared setup — classify it in tests/layer-checks.conf"
+      fi
+    done <<< "$steps_out"
+  done <<< "$jobs_out"
+done
 
 # A classification pass that classified NOTHING must not report success: a
 # parser change or a workflow reorganisation would otherwise turn this whole
 # section into a silent no-op that still goes green.
 if [[ "$classified" -gt 0 ]]; then
-  pass "every step in hermetic-checks.yml is classified ($classified step(s))"
+  pass "every job/step in hermetic-checks.yml and tests.yml is accounted for ($classified item(s))"
 else
-  fail "classified no steps at all — the workflow parse returned nothing"
+  fail "classified no jobs or steps at all — the workflow parse returned nothing"
 fi
 
 # The floor job must run the image matching the DECLARED floor. The map lives in

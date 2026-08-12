@@ -433,7 +433,7 @@ probe_netadmin() {
 # instead, so those cases SKIP naming `launcher`, and --require can make that
 # fatal. A case that cannot run is not a pass.
 #
-# The probe issues the SAME SHAPE sandbox.sh:796 does — `docker run -it --rm`
+# The probe issues the SAME SHAPE sandbox.sh:805 does — `docker run -it --rm`
 # with no name and no label — so it exercises the actual `-it` → `-d -i` rewrite
 # rather than a simplified stand-in that could pass while the real thing fails.
 probe_launcher() {

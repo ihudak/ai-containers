@@ -262,7 +262,16 @@ split_env_list() {  # $1=raw value (e.g. "$REPOS", "$EXTRA_MOUNTS", "$PREVIEW_PO
   # Unquoted `for x in $VAR` splits on $IFS but also globs, so a value like
   # "*.txt" silently becomes whatever the launch directory happens to contain.
   # `set -f` blocks that; the prior state is captured and restored so this never
-  # leaks noglob into the caller.
+  # leaks noglob into the caller. Prints one entry per line; prints NOTHING for
+  # an empty/unset value — callers rely on that (`while IFS= read -r … done < <(…)`
+  # correctly iterates zero times, rather than once over an empty string).
+  #
+  # An intermediate fix used `IFS=' ' read -r -a … <<< "$raw"` instead: `read`
+  # only splits WITHIN a single line and stops at the first newline regardless
+  # of $IFS, so a value like $'x\ny' silently kept "x" and dropped "y" with no
+  # warning. This word-splits on $IFS (space/tab/newline) the same way the old
+  # unquoted `(${value})` did, matching what `set -f` alone is missing from that
+  # original form.
   local raw="${1:-}"
   [[ -n "$raw" ]] || return 0
   local -a entries=()

@@ -85,6 +85,59 @@ else
   pass "wf_steps fails loudly for a job that does not exist"
 fi
 
+# ── wf_job_key: job-level uses:/if:, and its failure paths ────────────────────
+# Mirrors the shape of nightly.yml's real `hermetic` job (a reusable-workflow
+# caller with an `if:` gate) plus a plain job with neither, and a job whose
+# header is commented out — the exact real-world defeat this function exists
+# to close (a `grep -qF` against the whole file still matches a comment).
+cat > "$TMP/wf2.yml" <<'YAML'
+name: Fixture2
+on:
+  workflow_call:
+
+jobs:
+  caller:
+    if: github.event_name == 'schedule'
+    uses: ./.github/workflows/hermetic-checks.yml
+
+  plain:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Only step
+        run: echo solo
+
+  # commented:
+  #   if: github.event_name == 'schedule'
+  #   uses: ./.github/workflows/hermetic-checks.yml
+YAML
+
+check "wf_job_key resolves a job-level uses:" \
+  "./.github/workflows/hermetic-checks.yml" "$(wf_job_key "$TMP/wf2.yml" caller uses)"
+
+check "wf_job_key resolves a job-level if: (quotes inside the value untouched)" \
+  "github.event_name == 'schedule'" "$(wf_job_key "$TMP/wf2.yml" caller if)"
+
+if wf_job_key "$TMP/wf2.yml" plain uses >/dev/null 2>&1; then
+  fail "wf_job_key reported success for a key absent from an existing job"
+else
+  pass "wf_job_key fails loudly when the job exists but the key does not (absent-key)"
+fi
+
+if wf_job_key "$TMP/wf2.yml" nosuchjob uses >/dev/null 2>&1; then
+  fail "wf_job_key reported success for a job that does not exist"
+else
+  pass "wf_job_key fails loudly for a job that does not exist (absent-job)"
+fi
+
+# The commented-out job must not be readable AT ALL — not "readable with the
+# wrong value". A regression back to a whole-file text grep would still see
+# these lines; the block-aware parser must not enter them as job "commented".
+if wf_job_key "$TMP/wf2.yml" commented uses >/dev/null 2>&1; then
+  fail "wf_job_key reported success for a job whose header is commented out"
+else
+  pass "wf_job_key fails loudly for a commented-out job header (never becomes a job)"
+fi
+
 # ── The registry ──────────────────────────────────────────────────────────────
 n_check="$(lc_rows check | grep -c .)"
 [[ "$n_check" -ge 1 ]] \
