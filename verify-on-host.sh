@@ -114,6 +114,16 @@ TESTS_DIR="$REPO/tests"
 # one copy that serves both layouts.
 REPO_ROOT_FOR_MOUNT="$(cd "$TESTS_DIR/.." && pwd)"
 
+# Same base/-vs-repo-root duality as TESTS_DIR above, for the schema-gate
+# script: upstream ai-containers keeps check-sandbox-version.sh next to
+# build.sh; mgd-ai-containers keeps it at the repo root, one level above the
+# base/ engine directory this script runs from. Without this fallback, $REPO
+# (= base/ in real mgd usage) never finds it, the schema gate always hits the
+# "not found" branch below, and the BASE_REF-resolution fix just above never
+# actually runs against a real mgd checkout.
+CHECK_SANDBOX_VERSION_SH="$REPO/check-sandbox-version.sh"
+[[ -f "$CHECK_SANDBOX_VERSION_SH" ]] || CHECK_SANDBOX_VERSION_SH="$REPO/../check-sandbox-version.sh"
+
 # Phase selection. Phase 0 is always cheap and always runs. Everything else
 # defaults to selected — a local layer nobody selects is not a local layer.
 #   PHASES=0 bash verify-on-host.sh      # environment banner only
@@ -177,7 +187,7 @@ else
   h_rc="${PIPESTATUS[0]:-1}"
   sub "hermetic suite exit: $h_rc"
   [[ "$h_rc" -eq 0 ]] || phase_fail 5 "hermetic suite exited $h_rc"
-  if [[ -f "$REPO/check-sandbox-version.sh" ]]; then
+  if [[ -f "$CHECK_SANDBOX_VERSION_SH" ]]; then
     # BASE_REF must predate the change under review. The script's own default
     # (BASE_REF=HEAD) diffs the WORKING TREE's sandbox.conf against HEAD's —
     # once a change is committed, those are the same content, so the gate
@@ -203,7 +213,7 @@ else
       phase_fail 5 "no usable BASE_REF for the schema gate (no origin/main, no HEAD^) — refusing to run it against the default HEAD, which would silently verify nothing"
     else
       sub "schema gate diffing sandbox.conf against $gate_base_ref"
-      BASE_REF="$gate_base_ref" bash "$REPO/check-sandbox-version.sh" --check 2>&1 | sed "s/^/$LOG_PREFIX   /"
+      BASE_REF="$gate_base_ref" bash "$CHECK_SANDBOX_VERSION_SH" --check 2>&1 | sed "s/^/$LOG_PREFIX   /"
       s_rc="${PIPESTATUS[0]:-1}"
       [[ "$s_rc" -eq 0 ]] || phase_fail 5 "sandbox.conf schema gate exited $s_rc"
     fi
