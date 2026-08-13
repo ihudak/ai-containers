@@ -10,12 +10,20 @@
 # platform: an empty string compares equal to another empty string, which turns
 # a portability failure into a test that passes vacuously.
 
+# GNU `stat -f` is NOT an invalid option that falls through — it means
+# --file-system, so on GNU the old `stat -c … || stat -f …` fallback did not
+# error, it printed filesystem information to stdout. Harmless at today's call
+# sites (all pre-check existence) and silently wrong for anyone reusing the
+# idiom for a new field. Probe the platform once instead of relying on one
+# invocation failing.
+if stat -c '%a' . >/dev/null 2>&1; then _P_STAT_GNU=1; else _P_STAT_GNU=0; fi
+
 p_stat_mode() {  # $1=file → octal mode, e.g. 644
-  stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null
+  if [[ "$_P_STAT_GNU" == "1" ]]; then stat -c '%a' "$1"; else stat -f '%Lp' "$1"; fi
 }
 
 p_stat_meta() {  # $1=file → "name size mtime", for change detection
-  stat -c '%n %s %Y' "$1" 2>/dev/null || stat -f '%N %z %m' "$1" 2>/dev/null
+  if [[ "$_P_STAT_GNU" == "1" ]]; then stat -c '%n %s %Y' "$1"; else stat -f '%N %z %m' "$1"; fi
 }
 
 p_sha1() {  # $1=file → hex digest only

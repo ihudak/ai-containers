@@ -136,7 +136,11 @@ fi
 # with a broken ~/.rvm by an interrupted/offline first run would otherwise fail on every
 # later start with no recovery short of deleting the group's ~/.rvm by hand.
 boot_case() {   # $1=curl exit code  $2=the installer body the fake curl delivers
-  local curl_rc="$1" payload="$2"
+                # $3=1 to OMIT the rvm stub entirely (default 0), so the
+                #    reconcile hits `rvm: command not found` rather than the
+                #    "No such file" source failure. Both branches of that guard
+                #    now have a case; only the second one ever did.
+  local curl_rc="$1" payload="$2" no_rvm="${3:-0}"
   local home bin; home="$(mktemp -d)"; bin="$(mktemp -d)"
   # Only curl is stubbed (stubbing bash would shadow the reconcile's own
   # interpreter). The reconcile downloads the installer to a file with `curl -o`
@@ -154,7 +158,9 @@ if [[ -n "\$__out" ]]; then printf '%s' '$payload' > "\$__out"; else printf '%s'
 exit $curl_rc
 EOF
   chmod +x "$bin/curl"
-  printf '#!/usr/bin/env bash\nexit 0\n' > "$bin/rvm"; chmod +x "$bin/rvm"
+  if [[ "$no_rvm" != "1" ]]; then
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$bin/rvm"; chmod +x "$bin/rvm"
+  fi
   # A no-op flock (see the identical stub + comment in run_case above): the
   # group-serialization lock at the top of rvm-reconcile.sh runs before the
   # bootstrap logic under test even begins, unconditionally, on every
@@ -194,6 +200,43 @@ grep -q 'FAILED: rvm bootstrap' <<<"$boot_fail" \
 grep -qE '(^|[[:space:]/])rvm: (command not found|No such file)' <<<"$boot_fail" \
   && fail "failed bootstrap must not fall through into not-found errors" \
   || pass "failed bootstrap exits cleanly (no not-found fallthrough)"
+
+# rvm absent from PATH entirely → the reconcile must still report an
+# rvm-attributable failure, not crash or silently succeed. This is the branch
+# the fixture could not reach while it always stubbed rvm as a real binary.
+# The payload MUST create a working (non-empty, sourceable) scripts/rvm —
+# unlike boot_partial's 'true' or a bare 'echo installing', which leave
+# scripts/rvm missing and trip the "still missing after bootstrap" guard
+# (line 65) before the code ever reaches a live `rvm` call. Do not
+# "simplify" this back to one of those: a first version of this case did
+# exactly that and produced BYTE-IDENTICAL output for no_rvm=0 and
+# no_rvm=1 — proof the parameter was doing nothing. Real rvm defines `rvm`
+# as a shell FUNCTION when scripts/rvm is sourced, so a sourceable stub
+# that defines no such function models "rvm bootstrapped, but the loader
+# gave us no usable rvm": with the binary stub also omitted (no_rvm=1),
+# the first live call (`rvm list strings`, line 79) hits a genuine bash
+# "command not found", not a synthetic one.
+# Quoting constraint: boot_case splices $payload, UNescaped, inside a
+# single-quoted `printf` argument in a generated heredoc script, so the
+# payload itself must contain NO single quotes — and $HOME must stay
+# literal here (it is expanded later, when `bash "$installer" stable`
+# actually runs, with HOME already pointing at this case's own temp home).
+boot_nocmd="$(boot_case 0 'mkdir -p "$HOME/.rvm/scripts"; printf ": # sourceable stub, defines no rvm function\n" > "$HOME/.rvm/scripts/rvm"' 1)"
+grep -qE '(^|[[:space:]/])rvm: command not found' <<<"$boot_nocmd" \
+  && pass "a missing rvm binary produces a genuine 'command not found', reaching rvm's first live call" \
+  || fail "a missing rvm binary produced no diagnostic (got: $boot_nocmd)"
+grep -q 'still missing after bootstrap' <<<"$boot_nocmd" \
+  && fail "this case must reach past the bootstrap-missing guard, not re-trip it (got: $boot_nocmd)" \
+  || pass "the case reaches past the bootstrap-missing guard (distinct from boot_partial's branch)"
+
+# Same payload, rvm binary PRESENT (no_rvm=0 — the default): output must
+# DIFFER from the no_rvm=1 case above. Identical output in both modes would
+# mean the parameter does nothing — exactly the defect this case exists to
+# rule out, verified directly rather than assumed.
+boot_withcmd="$(boot_case 0 'mkdir -p "$HOME/.rvm/scripts"; printf ": # sourceable stub, defines no rvm function\n" > "$HOME/.rvm/scripts/rvm"' 0)"
+grep -qE '(^|[[:space:]/])rvm: command not found' <<<"$boot_withcmd" \
+  && fail "an rvm binary IS present here; must not report command not found (got: $boot_withcmd)" \
+  || pass "with the rvm binary present, the same payload does not report command not found"
 
 # curl succeeds but the installer writes no scripts/rvm (aborted mid-way) → still caught,
 # and still no attempt to source a file that is not there.

@@ -12,8 +12,19 @@
 # CONTRACT: the sourcing file must set TMP (a scratch dir it owns and tears
 # down via its own EXIT trap), VERIFY (path to the real verify-on-host.sh
 # under test) and ENGINE_DIR (dir containing the real bash-floor.sh) BEFORE
-# sourcing this file. Provides: mk_repo(), run_verify(), stub binaries at
-# $TMP/bin/{docker,shellcheck}, and $WITNESS_LOG.
+# sourcing this file, and must have already set LAYER_CHECKS_CONF and sourced
+# tests/lib-layer-checks.sh (this file calls lc_rows). Provides: mk_repo(),
+# run_verify(), stub binaries at $TMP/bin/{docker,shellcheck}, and $WITNESS_LOG.
+#
+# Two opt-in modes, both default OFF because test-verify-exit-code.sh shares
+# mk_repo() and asserts canned exit codes:
+#   MK_REPO_PROBE=1       plant each `probe` row's target holding a REAL syntax
+#                         error, tracked, so Phase 7's bash -n emits a
+#                         "PARSE ERROR: <path>" line. Always-on would make that
+#                         file's Phase 7 fail independently of the RC under test.
+#   MK_REPO_UNTRACK_SH=1  after the commit, drop every *.sh from the index so
+#                         `git ls-files '*.sh'` is empty while the files remain
+#                         on disk. Exercises the "parsed no files" branch.
 #
 # WITNESS_LOG ($TMP/witness.log): every stub this file creates — docker (its
 # `run` subcommand only), shellcheck, tests/run-all.sh,
@@ -39,6 +50,11 @@
 
 [[ -n "${TMP:-}" && -n "${VERIFY:-}" && -n "${ENGINE_DIR:-}" ]] || {
   echo "lib-verify-repo.sh: TMP, VERIFY and ENGINE_DIR must be set before sourcing" >&2
+  return 1 2>/dev/null || exit 1
+}
+
+declare -F lc_rows >/dev/null 2>&1 || {
+  echo "lib-verify-repo.sh: source tests/lib-layer-checks.sh (with LAYER_CHECKS_CONF set) first" >&2
   return 1 2>/dev/null || exit 1
 }
 
@@ -74,12 +90,28 @@ chmod +x "$TMP/bin/docker"
 # (cleared by Task 9 of this increment) is a fact about the repo's current
 # tree, not about the phase-selection logic under test here — neither fact
 # may leak into a hermetic test's result, so the stub always wins over PATH.
-cat > "$TMP/bin/shellcheck" <<EOF
+mkdir -p "$TMP/bin"
+_n_pathbin=0
+while IFS='|' read -r id job step kind target rc_var wtgt wre; do
+  [[ "$kind" == "path-bin" ]] || continue
+  cat > "$TMP/bin/$target" <<EOF
 #!/usr/bin/env bash
-printf 'STUB:shellcheck\n' >> "$WITNESS_LOG"
-exit "\${SHELLCHECK_RC:-0}"
+printf 'STUB:%s\n' "$target" >> "$WITNESS_LOG"
+exit "\${${rc_var}:-0}"
 EOF
-chmod +x "$TMP/bin/shellcheck"
+  chmod +x "$TMP/bin/$target"
+  _n_pathbin=$((_n_pathbin+1))
+done < <(lc_rows check)
+# A registry read that produced no path-bin stub means the registry is empty,
+# malformed, or lc_rows failed — all of which would otherwise leave the real
+# on-PATH shellcheck binary in play, letting this "hermetic" library depend on
+# the host. (Line deliberately does not start with "# shellcheck" — that
+# prefix is parsed as a shellcheck directive, not a comment, and breaks SC1072/
+# SC1073.)
+(( _n_pathbin > 0 )) || {
+  echo "lib-verify-repo.sh: no path-bin stubs built from $LAYER_CHECKS_CONF" >&2
+  return 1 2>/dev/null || exit 1
+}
 
 # ── Stub repo ────────────────────────────────────────────────────────────────
 # $1=build.sh exit code. Nothing in the surviving script (Phase 0, Phase 4)
@@ -121,19 +153,50 @@ mk_repo() {  # $1=build.sh exit code  $2=1 to stamp a refs/remotes/origin/main
   printf '#!/usr/bin/env bash\ncase "${1:-}" in --list-caps) exit 0 ;; esac\nexit %s\n' \
     "${CORPUS_RC:-0}" > "$r/tests/integration/run.sh"
   chmod +x "$r/tests/integration/run.sh"
-  printf '#!/usr/bin/env bash\nprintf "STUB:run-all.sh\\n" >> "%s"\nexit %s\n' \
-    "$WITNESS_LOG" "${SUITE_RC:-0}" > "$r/tests/run-all.sh"
-  chmod +x "$r/tests/run-all.sh"
-  printf '#!/usr/bin/env bash\nprintf "STUB:check-sandbox-version.sh\\n" >> "%s"\nexit %s\n' \
-    "$WITNESS_LOG" "${SCHEMA_RC:-0}" > "$r/check-sandbox-version.sh"
-  chmod +x "$r/check-sandbox-version.sh"
-  printf '#!/usr/bin/env bash\nprintf "STUB:bash-dialect-lint.sh\\n" >> "%s"\nexit %s\n' \
-    "$WITNESS_LOG" "${DIALECT_RC:-0}" > "$r/tests/bash-dialect-lint.sh"
-  chmod +x "$r/tests/bash-dialect-lint.sh"
+  # Stubs from the registry (tests/layer-checks.conf) rather than one hardcoded
+  # printf per check. The two lists used to be maintained separately and nothing
+  # made them agree.
+  local id job step kind target rc_var wtgt wre rc_val
+  local n_repo=0
+  # shellcheck disable=SC2034  # id/job/step/wtgt/wre are positional registry columns (tests/lib-layer-checks.sh); only kind/target/rc_var drive this loop, but `read` needs every field named to consume the row
+  while IFS='|' read -r id job step kind target rc_var wtgt wre; do
+    case "$kind" in
+      repo-script)
+        mkdir -p "$r/$(dirname "$target")"
+        # Indirect expansion, not eval: the registry supplies the VARIABLE NAME
+        # (SUITE_RC, SCHEMA_RC, …) and the caller may have set it to a canned
+        # exit code. eval here would execute registry content as shell.
+        rc_val="${!rc_var:-0}"
+        printf '#!/usr/bin/env bash\nprintf "STUB:%s\\n" >> "%s"\nexit %s\n' \
+          "$(basename "$target")" "$WITNESS_LOG" "$rc_val" > "$r/$target"
+        chmod +x "$r/$target"
+        n_repo=$((n_repo+1))
+        ;;
+      probe)
+        [[ "${MK_REPO_PROBE:-0}" == "1" ]] || continue
+        mkdir -p "$r/$(dirname "$target")"
+        # A REAL syntax error: Phase 7 can only print "PARSE ERROR: <path>" for
+        # this if bash -n genuinely ran against its content. A comment merely
+        # naming "bash -n" could never produce that line.
+        printf '#!/usr/bin/env bash\nif [ 1 -eq\n' > "$r/$target"
+        ;;
+    esac
+  done < <(lc_rows check)
+  # Same reasoning as the path-bin guard above: a stub repo built from an empty
+  # or unreadable registry would still look like a valid repo, and every witness
+  # assertion downstream would fail with a misleading cause.
+  (( n_repo > 0 )) || {
+    echo "mk_repo: no repo-script stubs built from $LAYER_CHECKS_CONF" >&2
+    return 1
+  }
   ( cd "$r" && { git init -q -b main . >/dev/null 2>&1 || git init -q . >/dev/null 2>&1; } \
       && git add -A \
       && git -c user.email=t@example -c user.name=t commit -q -m stub \
       && { [[ "$add_origin" != "1" ]] || git update-ref refs/remotes/origin/main HEAD; } \
+      && { [[ "${MK_REPO_UNTRACK_SH:-0}" != "1" ]] || {
+             git rm -q --cached -- '*.sh' >/dev/null 2>&1
+             git -c user.email=t@example -c user.name=t commit -q -m untrack-sh
+           }; } \
   ) >/dev/null 2>&1
   printf '%s' "$r"
 }

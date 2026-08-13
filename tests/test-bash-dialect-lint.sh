@@ -110,4 +110,27 @@ bash "$LINT" >/dev/null 2>&1 \
   && pass "the repository is clean at the current floor" \
   || fail "the repository is clean at the current floor"
 
+# ── The "examined no files" guard, exercised ──────────────────────────────────
+# bash-dialect-lint.sh:84-87 refuses to report success when it examined nothing
+# — the same rule the bash -n CI step applies to itself. It had never run:
+# replacing its `exit 1` with `exit 0` produced zero test failures. A scratch git
+# repo whose only tracked file is not a .sh, with the linter copied in UNTRACKED,
+# makes `git ls-files '*.sh'` empty for real.
+empty_repo="$TMP/emptyrepo"; mkdir -p "$empty_repo/tests"
+( cd "$empty_repo" \
+    && { git init -q -b main . >/dev/null 2>&1 || git init -q . >/dev/null 2>&1; } \
+    && printf 'placeholder\n' > README.md && git add README.md \
+    && git -c user.email=t@example -c user.name=t commit -q -m init ) >/dev/null 2>&1
+cp "$LINT" "$empty_repo/tests/bash-dialect-lint.sh"   # deliberately NOT git-added
+# The floor is passed in so the copy needs no bash-floor.sh beside it (the
+# linter skips its own source when both vars are already set).
+if AI_CONTAINERS_BASH_FLOOR_MAJOR=5 AI_CONTAINERS_BASH_FLOOR_MINOR=1 \
+     bash "$empty_repo/tests/bash-dialect-lint.sh" > "$TMP/empty.out" 2>&1; then
+  fail "a lint run that examined no files reported SUCCESS"
+elif grep -q 'examined no files' "$TMP/empty.out"; then
+  pass "a lint run that examined no files fails, and says why"
+else
+  fail "the empty run failed, but not with the 'examined no files' message (got: $(head -2 "$TMP/empty.out" | tr '\n' ' '))"
+fi
+
 printf '\n%d failure(s)\n' "$fails"; exit "$fails"

@@ -9,7 +9,7 @@
 #
 # The load-bearing test in this file is the LAST one — the single-`-it` premise.
 # The shim identifies the container under test by the `-it` flag, which is sound
-# only while sandbox.sh:801 is the only `docker run -it` a launcher run can
+# only while sandbox.sh:805 is the only `docker run -it` a launcher run can
 # reach. If that stops being true, the shim silently renames and detaches
 # somebody else's container and the affected case fails somewhere far away. This
 # test makes the premise itself the thing that breaks.
@@ -147,8 +147,8 @@ for f in "${reachable[@]}"; do
     hits="${hits:+$hits }$f:$n"
   done < <(awk '!/^[[:space:]]*#/ && /(^|[[:space:]])-(it|ti)([[:space:]]|$)/ { print NR }' "$ENGINE_DIR/$f")
 done
-check "exactly one -it/-ti in the scripts a launcher run reaches" "sandbox.sh:801" "$hits"
-if [[ "$hits" != "sandbox.sh:801" ]]; then
+check "exactly one -it/-ti in the scripts a launcher run reaches" "sandbox.sh:805" "$hits"
+if [[ "$hits" != "sandbox.sh:805" ]]; then
   printf '       The shim identifies the container under test by the -it flag.\n'
   printf '       If a second one now exists, either give the new call a distinct\n'
   printf '       marker or teach docker-shim.sh to tell them apart — and update\n'
@@ -164,6 +164,32 @@ check "the -it scan actually detects a violation" "1" "$found"
 printf '# docker run -it --rm x\n' > "$TMP/commented.sh"
 found="$(awk '!/^[[:space:]]*#/ && /(^|[[:space:]])-(it|ti)([[:space:]]|$)/ { print NR }' "$TMP/commented.sh")"
 check "the -it scan ignores a commented-out occurrence" "" "$found"
+
+# ── Every reference to the pinned line agrees with reality ────────────────────
+# This file already pins sandbox.sh:<N> for its OWN two references, which is why
+# a shift breaks it loudly. It knew nothing about the other references to the
+# same line, and two of them (docker-shim.sh, run.sh) sat 30 lines stale until
+# an unrelated comment edit exposed them. A named list can only police what it
+# names — so derive the list instead.
+want_line="$(grep -n 'docker run -it' "$REPO_DIR/sandbox.sh" | cut -d: -f1)"
+[[ -n "$want_line" ]] \
+  || fail "no 'docker run -it' found in sandbox.sh — this whole file's premise is gone"
+# AGENTS.md (M4): the canonical doc names this same line (sandbox.sh:805, in its
+# "Two tiers, two verbs" section) and had to be hand-fixed once already when the
+# line moved — scoping this scan to '*.sh' alone let it rot again with nothing
+# catching it. Verified: a literal 'AGENTS.md' pathspec (no wildcard) matches
+# ONLY the exact root-relative path, so this reaches the canonical file but not
+# its symlinked copies (.github/copilot-instructions.md,
+# .kiro/steering/AGENTS.md — same bytes, so nothing is lost) and not anything
+# under docs/superpowers/**, which stays excluded on purpose — those are
+# historical records of what was true when written, like CHANGELOG.md (also not
+# scanned here), not live documentation that must track the current line
+# number.
+bad="$(cd "$REPO_DIR" && git grep -hoE 'sandbox\.sh:[0-9]+' -- '*.sh' 'AGENTS.md' \
+         | sort -u | grep -v "^sandbox\.sh:${want_line}$" || true)"
+[[ -z "$bad" ]] \
+  && pass "every sandbox.sh:<line> reference in tracked scripts points at $want_line" \
+  || fail "stale sandbox.sh line reference(s): $(printf '%s' "$bad" | tr '\n' ' ')(actual: $want_line)"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

@@ -31,9 +31,9 @@
 #   0  environment sanity (daemon reachable, buildx, disk; Colima status on macOS)
 #   5  the hermetic suite (tests/run-all.sh) + the sandbox.conf schema gate — and
 #      the same suite again inside a container pinned to the declared bash floor.
-#      Mirrors tests.yml's `suite` + `suite-floor` jobs.
+#      Mirrors hermetic-checks.yml's `suite` + `suite-floor` jobs.
 #   7  lint: bash -n over every tracked script, the bash-dialect floor check, and
-#      a shellcheck run. Mirrors tests.yml's `lint` job — same commands, same gate.
+#      a shellcheck run. Mirrors hermetic-checks.yml's `lint` job — same commands, same gate.
 #   4  the runtime integration corpus — delegated in full to
 #      tests/integration/run.sh. No test logic lives here.
 #
@@ -171,7 +171,7 @@ fi
 sub "docker disk:      $(docker system df --format '{{.Type}}={{.Size}}' 2>/dev/null | tr '\n' ' ')"
 
 # ── Phase 5: the hermetic suite ──────────────────────────────────────────────────
-# Mirrors .github/workflows/tests.yml's `suite` job. It exists because the local
+# Mirrors .github/workflows/hermetic-checks.yml's `suite` job. It exists because the local
 # layer was a SUBSET of the PR gate: this script ran the integration corpus and
 # nothing else, so a developer verifying locally checked LESS than CI would.
 #
@@ -193,8 +193,8 @@ else
     # once a change is committed, those are the same content, so the gate
     # reports "OK, nothing removed" having compared a commit to itself. This
     # is a silent no-op, precisely the failure mode AGENTS.md's "sandbox.conf
-    # schema versioning" section warns about, and tests.yml never falls into
-    # it because its schema-gate step always exports a real BASE_REF (the PR
+    # schema versioning" section warns about, and hermetic-checks.yml never falls
+    # into it because its schema-gate step always exports a real BASE_REF (the PR
     # base SHA, or event.before/HEAD^ for a push) before invoking the script.
     # Mirror that here: merge-base against origin/main is the common case for
     # a normal checkout; a fresh clone or the mgd base/ layout may have no
@@ -221,52 +221,60 @@ else
     phase_fail 5 "check-sandbox-version.sh not found — the schema gate did not run"
   fi
 
-  # The same suite at the DECLARED FLOOR, mirroring tests.yml's suite-floor job.
+  # The same suite at the DECLARED FLOOR, mirroring hermetic-checks.yml's suite-floor job.
   # This host runs whatever bash the developer installed (5.3 via Homebrew is
   # typical); the floor is 5.1, and a floor nothing exercises is the defect this
   # increment exists to remove. Docker is guaranteed here — Phase 0 hard-exits
   # without a reachable daemon.
-  floor_img="ubuntu:22.04"
-  sub "running the suite at the declared floor ($floor_img, bash 5.1)"
-  # This container runs as root (the image's default user) against a repo
-  # bind-mount owned by the HOST user, so git >= 2.35.2's ownership check
-  # refuses every operation in here ("detected dubious ownership") unless the
-  # mount is explicitly trusted first. CI's suite-floor job does not need
-  # this: actions/checkout clones INSIDE that container, as root, so the
-  # clone and the container user already match. Scoped to the literal mount
-  # point (/w — always this exact path, never the host's), not the `*`
-  # wildcard: this container is single-purpose and throwaway (--rm) and never
-  # touches any other directory, so the wildcard would trust more than this
-  # invocation could ever use.
-  #
-  # The mount itself is :ro — DO NOT drop this suffix, even if a future test
-  # needs scratch space; give it a mktemp dir instead. This is root, against
-  # the developer's real working tree, possibly holding uncommitted work.
-  # Nothing in this sequence needs write access: apt-get writes only to the
-  # container's own package DB; `git config --global` writes to $HOME/.gitconfig
-  # (root's own home, never redirected here); every test file's scratch output
-  # goes through mktemp/mktemp -d (confirmed by grepping every output
-  # redirect in tests/*.sh for one that ISN'T $TMP-scoped — none are). Getting
-  # this wrong fails LOUD: the very next write attempt errors immediately with
-  # "Read-only file system" on the next run. The alternative — staying :rw and
-  # being wrong about something above — is silent corruption of a real
-  # checkout, discovered whenever someone next looks. That asymmetry is why
-  # :ro wins even without a Docker-based end-to-end run to confirm it here.
-  docker run --rm -v "$REPO_ROOT_FOR_MOUNT:/w:ro" -w /w "$floor_img" bash -c \
-    'apt-get update -qq && apt-get install -y -qq git rsync >/dev/null 2>&1 && \
-     git config --global --add safe.directory /w && \
-     bash --version | head -1 && ./tests/run-all.sh' 2>&1 | sed "s/^/$LOG_PREFIX   /"
-  f_rc="${PIPESTATUS[0]:-1}"
-  sub "floor suite exit: $f_rc"
-  [[ "$f_rc" -eq 0 ]] || phase_fail 5 "hermetic suite at the declared floor exited $f_rc"
+  # From bash-floor.sh's map — see its comment for why the image is declared
+  # alongside the floor rather than duplicated here. Empty means the declared
+  # floor has no mapped image, which must fail loudly: running the "floor" suite
+  # in whatever image `docker run ""` resolves to would verify nothing.
+  floor_img="${AI_CONTAINERS_BASH_FLOOR_IMAGE:-}"
+  if [[ -z "$floor_img" ]]; then
+    phase_fail 5 "bash-floor.sh maps no container image to the declared floor — the floor suite did not run"
+  else
+    sub "running the suite at the declared floor ($floor_img, bash 5.1)"
+    # This container runs as root (the image's default user) against a repo
+    # bind-mount owned by the HOST user, so git >= 2.35.2's ownership check
+    # refuses every operation in here ("detected dubious ownership") unless the
+    # mount is explicitly trusted first. CI's suite-floor job does not need
+    # this: actions/checkout clones INSIDE that container, as root, so the
+    # clone and the container user already match. Scoped to the literal mount
+    # point (/w — always this exact path, never the host's), not the `*`
+    # wildcard: this container is single-purpose and throwaway (--rm) and never
+    # touches any other directory, so the wildcard would trust more than this
+    # invocation could ever use.
+    #
+    # The mount itself is :ro — DO NOT drop this suffix, even if a future test
+    # needs scratch space; give it a mktemp dir instead. This is root, against
+    # the developer's real working tree, possibly holding uncommitted work.
+    # Nothing in this sequence needs write access: apt-get writes only to the
+    # container's own package DB; `git config --global` writes to $HOME/.gitconfig
+    # (root's own home, never redirected here); every test file's scratch output
+    # goes through mktemp/mktemp -d (confirmed by grepping every output
+    # redirect in tests/*.sh for one that ISN'T $TMP-scoped — none are). Getting
+    # this wrong fails LOUD: the very next write attempt errors immediately with
+    # "Read-only file system" on the next run. The alternative — staying :rw and
+    # being wrong about something above — is silent corruption of a real
+    # checkout, discovered whenever someone next looks. That asymmetry is why
+    # :ro wins even without a Docker-based end-to-end run to confirm it here.
+    docker run --rm -v "$REPO_ROOT_FOR_MOUNT:/w:ro" -w /w "$floor_img" bash -c \
+      'apt-get update -qq && apt-get install -y -qq git rsync >/dev/null 2>&1 && \
+       git config --global --add safe.directory /w && \
+       bash --version | head -1 && ./tests/run-all.sh' 2>&1 | sed "s/^/$LOG_PREFIX   /"
+    f_rc="${PIPESTATUS[0]:-1}"
+    sub "floor suite exit: $f_rc"
+    [[ "$f_rc" -eq 0 ]] || phase_fail 5 "hermetic suite at the declared floor exited $f_rc"
+  fi
 fi
 fi
 
 # ── Phase 7: lint ────────────────────────────────────────────────────────────────
-# Mirrors .github/workflows/tests.yml's `lint` job. shellcheck runs as a GATE
+# Mirrors .github/workflows/hermetic-checks.yml's `lint` job. shellcheck runs as a GATE
 # both here and in CI: Task 9 (increment 4) cleared the pre-existing findings
 # backlog — real defects fixed, everything else suppressed at the site with a
-# reason — and dropped tests.yml's `|| true`, so the two now agree instead of
+# reason — and dropped hermetic-checks.yml's `|| true`, so the two now agree instead of
 # this phase being the only one that gates.
 if want_phase 7; then
 say "PHASE 7 — lint (bash -n, dialect floor, shellcheck)"
@@ -286,15 +294,30 @@ if [[ -f "$TESTS_DIR/bash-dialect-lint.sh" ]]; then
   bash "$TESTS_DIR/bash-dialect-lint.sh" 2>&1 | sed "s/^/$LOG_PREFIX   /"
   d_rc="${PIPESTATUS[0]:-1}"
   [[ "$d_rc" -eq 0 ]] || phase_fail 7 "bash dialect lint exited $d_rc"
+  # Both of these are silent when clean, so a phase that ran them and a phase
+  # that skipped them looked identical in the log. In a project whose recurring
+  # bug is checks reporting success without doing anything, "passed silently" is
+  # not good enough evidence — say what ran and over how much.
+  sub "dialect lint exit: $d_rc"
 else
   phase_fail 7 "bash-dialect-lint.sh not found — the dialect floor was not checked"
 fi
 
 if command -v shellcheck >/dev/null 2>&1; then
-  ( cd "$REPO" && git ls-files '*.sh' | xargs shellcheck -S warning -e SC1091 ) \
+  # -r/--no-run-if-empty: GNU xargs runs the command ONCE even when its input is
+  # empty. shellcheck with zero file arguments does not read stdin — it prints
+  # "No files specified." and exits 3, which xargs reports as 123 — so this
+  # phase would record a SECOND phase_fail for the one root cause the bash -n
+  # branch above already reported ("RESULT: FAILED — 2 phase(s)" for a single
+  # problem). BSD xargs is no-run-if-empty by default and does not accept -r
+  # before macOS 13, so probe for it rather than assuming.
+  xargs_r=()
+  printf '' | xargs -r true >/dev/null 2>&1 && xargs_r=(-r)
+  ( cd "$REPO" && git ls-files '*.sh' | xargs "${xargs_r[@]}" shellcheck -S warning -e SC1091 ) \
     2>&1 | sed "s/^/$LOG_PREFIX   /"
   sc_rc="${PIPESTATUS[0]:-1}"
   [[ "$sc_rc" -eq 0 ]] || phase_fail 7 "shellcheck exited $sc_rc"
+  sub "shellcheck exit: $sc_rc over $( ( cd "$REPO" && git ls-files '*.sh' ) | grep -c . ) script(s)"
 else
   phase_fail 7 "shellcheck not installed — install it (brew install shellcheck) or deselect phase 7"
 fi
@@ -346,7 +369,8 @@ fi
 # No "regenerate your allowlists" advice here any more, deliberately. Phases 1-3
 # were what clobbered the developer's generated allowlist-*.txt — they invoked
 # build.sh with their own SMOKE_CONF/NATIVE_CONF/RUBY_CONF and never put the real
-# ones back. The only remaining phase delegates to tests/integration/run.sh, which
+# ones back. Phase 4 — the only phase that invokes build.sh — delegates to
+# tests/integration/run.sh, which
 # snapshots those files before it builds and restores them in its own EXIT trap
 # (`snapshot_real_allowlists`/`restore_real_allowlists`, skipped entirely under
 # --reuse-image because no build ran). Telling the operator to repair something

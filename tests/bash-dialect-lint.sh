@@ -36,7 +36,7 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Layout-tolerant, like verify-on-host.sh / test-layer-containment.sh /
 # test-bash-floor.sh: upstream ai-containers keeps bash-floor.sh beside
 # tests/, mgd-ai-containers keeps it in base/ with tests/ one level up. This
-# file is invoked directly by BOTH repos' tests.yml lint job and by
+# file is invoked directly by BOTH repos' hermetic-checks.yml lint job and by
 # verify-on-host.sh Phase 7, so it needs the same fallback those already
 # have — without it, REPO_DIR/bash-floor.sh resolves to the mgd repo ROOT,
 # where the file does not exist (it is in base/), and this script dies with
