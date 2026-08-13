@@ -238,18 +238,27 @@ source "$LIB_VERIFY_REPO"
 # stdout) previously fed a bare `cd "$r"` with an empty string. `cd ""`
 # SUCCEEDS and stays in the current directory, so that failure mode used to
 # silently commit the whole real working tree under a fake identity instead of
-# failing loudly. The guard below is the fix for the case mk_repo's own return
-# does not cover: empty output without a non-zero exit status.
+# failing loudly. Planting it inside mk_repo is the fix for that: mk_repo no
+# longer has a `return` at all, and the conditions that could once make it hand
+# back an empty $r are now removed or checked at source time — see the comment
+# below, and the one above mk_repo in tests/lib-verify-repo.sh.
 r="$(MK_REPO_PROBE=1 mk_repo 0)"
-# M9: the reproducible trigger for this guard is NOT "the registry is
-# unreadable" (that would make lc_rows itself fail loudly, with its own
-# message, well before this line) — it is lib-verify-repo.sh's path-bin stub
-# loop building zero path-bin stubs (e.g. every `check` row's stub_kind
-# changed away from `path-bin`), which `return 1`s DURING sourcing, before
-# mk_repo() is even defined. `mk_repo` then resolves to no command, prints
-# nothing, and `$r` comes back empty — this message used to blame the wrong
-# stage.
-[[ -n "$r" ]] || { fail "mk_repo produced no repo path — no path-bin stubs were built while sourcing lib-verify-repo.sh (see its stderr above), so mk_repo was likely never defined"; printf '\n%d failure(s)\n' "$fails"; exit "$fails"; }
+# No guard follows: sourcing tests/lib-verify-repo.sh aborts the sourcing
+# script outright if any of its source-time checks fail (TMP/VERIFY/ENGINE_DIR,
+# lc_rows sourced, the registry's path-bin AND repo-script stub rows, git able
+# to init/add/commit), so control never reaches this line with a registry that
+# would yield an empty $r; and mk_repo's own parameters carry defaults, so even
+# an arg-less call cannot kill the command substitution under `set -u` — mk_repo
+# cannot return non-zero or print an empty path (for a caller that, like this
+# one, leaves TMP set and does not run `set -e` with `shopt -s
+# inherit_errexit`; see tests/lib-verify-repo.sh for both caveats).
+# That is NOT a guarantee that every operation inside mk_repo succeeded
+# (see the comment above mk_repo in tests/lib-verify-repo.sh for the narrow
+# residual that stays unchecked); it is only the guarantee this guard used to
+# re-detect. The guard this replaces existed because that failure used to
+# arrive as a discarded `return` — and an empty $r once fed a bare `cd "$r"`,
+# which SUCCEEDS and stays put, committing the whole real working tree under a
+# fake identity.
 
 # PHASES="5 7" covers every check named in the registry in one hermetic run.
 # The deliberately broken probe file makes Phase 7 report FAILED — expected

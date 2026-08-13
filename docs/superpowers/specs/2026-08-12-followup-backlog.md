@@ -1,6 +1,10 @@
 # Follow-up backlog — after the layer-containment registry, before increment 5
 
-**Status:** open
+**Status:** CLOSED 2026-08-13. All three items resolved in
+`docs/superpowers/specs/2026-08-13-lib-verify-repo-signalling-design.md`; see the
+per-item resolutions below. This file is kept rather than deleted so the ruling
+and the reasoning survive alongside the outcome.
+
 **Ruling (2026-08-12):** these are scheduled work, not open-ended follow-up. They
 are done **after** the layer-containment registry merges and **before** increment 5
 (`tests/falsify`) begins. Bugs first.
@@ -19,7 +23,20 @@ decision rather than a mechanical edit.
 
 ---
 
-## 1. The `mk_repo` caller guards are a hand-maintained set
+## 1. The `mk_repo` caller guards are a hand-maintained set — CLOSED
+
+**Resolution (2026-08-13).** None of the three options below was taken, because
+two do not survive contact: `exit` inside `mk_repo` kills only the
+command-substitution subshell, and enumerating call sites from source is a
+pattern match defeated by reformatting. The framing was also wrong — the guards
+are a symptom of the library signalling four unrecoverable conditions with a
+discardable status. Every such check moved to **source time**, where a plain
+`exit 1` from a sourced file terminates the sourcing script; `mk_repo` was left
+with no failure path; all 13 guards were deleted rather than policed. A further
+finding fell out of it: the existing `return 1 2>/dev/null || exit 1` idiom never
+reached its `exit` at all when sourced.
+
+
 
 **Where:** `tests/test-verify-exit-code.sh` (12 sites), `tests/test-layer-containment.sh` (1 site).
 
@@ -52,7 +69,19 @@ put, it committed the entire real working tree under a fake identity. That happe
 on 2026-08-12 (commit `e462318`, since unwound). The structural fix landed, but the
 class is still reachable at a new call site.
 
-## 2. The `floor-suite` registry row is coupled to a hand-written stub in two places
+## 2. The `floor-suite` registry row is coupled to a hand-written stub in two places — CLOSED
+
+**Resolution (2026-08-13).** Neither option below was taken. The measurement was
+sharper than the item recorded: `DOCKER_RUN_RC` appeared in exactly two places —
+the stub's default and the registry row — and **no test set it**, so
+`verify-on-host.sh`'s "hermetic suite at the declared floor exited" branch had
+never run. The fix is the missing test, reading the variable's *name* from the
+registry row, which makes the column load-bearing by effect rather than by a
+string comparison: rename it in the stub and the assertion goes red at its cause.
+`witness_re` needed no work — its `STUB:docker-run` prefix was already
+self-policing via the existing witness assertion.
+
+
 
 **Where:** `tests/layer-checks.conf` (`floor-suite` row), `tests/lib-verify-repo.sh` (the `docker` stub).
 
@@ -68,12 +97,14 @@ into the registry loop would make the registry responsible for infrastructure it
 does not own. The alternatives — have the `none` kind assert its columns match the
 stub, or drop the inert columns and note the coupling — are both defensible.
 
-## 3. `mkdir -p "$TMP/bin"` appears twice in `tests/lib-verify-repo.sh`
+## 3. `mkdir -p "$TMP/bin"` appears twice in `tests/lib-verify-repo.sh` — CLOSED
 
 **Where:** `tests/lib-verify-repo.sh:74` and `:93`.
 
 Idempotent and harmless; cosmetic only. Listed so the set is complete rather than
 "the two interesting ones plus something nobody wrote down."
+
+**Resolution (2026-08-13).** The second occurrence deleted.
 
 ---
 

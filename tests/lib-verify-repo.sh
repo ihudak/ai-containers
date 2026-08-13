@@ -48,14 +48,29 @@
 # care about exit codes (the *_RC canned-exit-code tests in
 # test-verify-exit-code.sh) can ignore it entirely.
 
-[[ -n "${TMP:-}" && -n "${VERIFY:-}" && -n "${ENGINE_DIR:-}" ]] || {
-  echo "lib-verify-repo.sh: TMP, VERIFY and ENGINE_DIR must be set before sourcing" >&2
-  return 1 2>/dev/null || exit 1
+# Every failure below is UNRECOVERABLE and identical for every caller, and this
+# file is sourced, never executed (see the header). `exit` from a sourced file
+# terminates the sourcing script and cannot be discarded; the usual
+# `return 1 2>/dev/null || exit 1` idiom exists to support both invocation
+# modes, and returning here would hand the caller a status nothing reads —
+# which is precisely what made 13 hand-written caller guards necessary.
+# TMP is asserted -n only (not -d): it is a directory the CALLER owns and
+# creates via its own `mktemp -d`/EXIT trap, so by the time this file is
+# sourced it necessarily already exists — asserting -n here is asserting the
+# contract was followed, not probing the filesystem. VERIFY and
+# ENGINE_DIR/bash-floor.sh are different: they name paths this file itself
+# reads from later (mk_repo's two `cp` calls), so a merely non-empty path that
+# does not exist would source cleanly and fail much later, at a `cp`, with no
+# `set -e` to stop it and a misleading cause downstream — the same shape the
+# git probe below exists to close. Hence -f, not -n, for those two.
+[[ -n "${TMP:-}" && -f "${VERIFY:-}" && -f "${ENGINE_DIR:-}/bash-floor.sh" ]] || {
+  echo "lib-verify-repo.sh: TMP must be set, VERIFY must be an existing file, and ENGINE_DIR/bash-floor.sh must be an existing file, before sourcing" >&2
+  exit 1
 }
 
 declare -F lc_rows >/dev/null 2>&1 || {
   echo "lib-verify-repo.sh: source tests/lib-layer-checks.sh (with LAYER_CHECKS_CONF set) first" >&2
-  return 1 2>/dev/null || exit 1
+  exit 1
 }
 
 WITNESS_LOG="$TMP/witness.log"
@@ -90,9 +105,10 @@ chmod +x "$TMP/bin/docker"
 # (cleared by Task 9 of this increment) is a fact about the repo's current
 # tree, not about the phase-selection logic under test here — neither fact
 # may leak into a hermetic test's result, so the stub always wins over PATH.
-mkdir -p "$TMP/bin"
 _n_pathbin=0
+_n_reposcript=0
 while IFS='|' read -r id job step kind target rc_var wtgt wre; do
+  [[ "$kind" != "repo-script" ]] || _n_reposcript=$((_n_reposcript+1))
   [[ "$kind" == "path-bin" ]] || continue
   cat > "$TMP/bin/$target" <<EOF
 #!/usr/bin/env bash
@@ -110,8 +126,37 @@ done < <(lc_rows check)
 # SC1073.)
 (( _n_pathbin > 0 )) || {
   echo "lib-verify-repo.sh: no path-bin stubs built from $LAYER_CHECKS_CONF" >&2
-  return 1 2>/dev/null || exit 1
+  exit 1
 }
+# Counted HERE rather than inside mk_repo, which is invoked as
+# `r="$(mk_repo 0)"` — a command-substitution subshell, where neither `return`
+# nor `exit` can reach the caller. Both read the same lc_rows output, fixed at
+# source time, so nothing is lost by checking it once, early, where a failure
+# can actually stop the run.
+(( _n_reposcript > 0 )) || {
+  echo "lib-verify-repo.sh: no repo-script stubs declared in $LAYER_CHECKS_CONF" >&2
+  exit 1
+}
+
+# ── git probe ────────────────────────────────────────────────────────────────
+# mk_repo's stub repo must be a real git repository with at least one tracked
+# file: Phase 7 runs `git ls-files '*.sh'` against it. If git cannot deliver
+# that, Phase 7 fails with "bash -n parsed no files" — a DIFFERENT failure that
+# still satisfies every assertion merely expecting the phase under test to
+# fail, turning a real test into a vacuous one. Probe once, here, where a
+# failure can stop the run; mk_repo itself cannot signal one.
+_gitprobe="$TMP/.gitprobe"
+rm -rf "$_gitprobe"; mkdir -p "$_gitprobe"
+(
+  cd "$_gitprobe" \
+    && { git init -q -b main . || git init -q .; } \
+    && : > f && git add f \
+    && git -c user.email=t@example -c user.name=t commit -q -m probe
+) >/dev/null 2>&1 || {
+  echo "lib-verify-repo.sh: git cannot create a repo and commit under $TMP — mk_repo's stub repo would have no tracked files, and Phase 7 would fail with 'parsed no files' instead of the condition under test" >&2
+  exit 1
+}
+rm -rf "$_gitprobe"
 
 # ── Stub repo ────────────────────────────────────────────────────────────────
 # $1=build.sh exit code. Nothing in the surviving script (Phase 0, Phase 4)
@@ -130,15 +175,77 @@ done < <(lc_rows check)
 # without touching the others. Each of these three also appends its own
 # "STUB:<name>" line to WITNESS_LOG before exiting — see the header comment
 # above for why that is a distinct mechanism from the RC-based tests.
-mk_repo() {  # $1=build.sh exit code  $2=1 to stamp a refs/remotes/origin/main
-             #    ref at HEAD (default 1). Pass 0 for a repo with NO usable
-             #    schema-gate base at all — no origin/main ref, and the single
-             #    "stub" commit below is also HEAD's only commit, so HEAD^
-             #    does not resolve either. That combination is what
-             #    verify-on-host.sh's BASE_REF fallback (merge-base against
-             #    origin/main, else HEAD^) is meant to fail loudly against —
-             #    see tests/test-verify-exit-code.sh's "no usable base" cases.
+#
+# mk_repo cannot return a non-zero status, and cannot print an empty path. Its
+# output is always `$TMP/repo`, `$TMP` is checked non-empty at source time
+# above, and its final command is the unconditional `printf '%s' "$r"`. What
+# makes the second half hold is that nothing it expands can kill the
+# `r="$(mk_repo 0)"` command-substitution subshell before that printf: `$1` and
+# `$2` carry defaults (see mk_repo's own header), every environment variable it
+# reads is `${…:-default}`-guarded, and the rest are either locals it assigns
+# itself or the TMP/VERIFY/ENGINE_DIR/WITNESS_LOG the source-time checks above
+# have already proven set. The other source-time checks (the registry's
+# path-bin and repo-script counts, git's ability to init/add/commit) close the
+# routes to a *useless* repo, for the same reason: a `return`/`exit` from
+# inside that command substitution cannot reach the caller, so this file
+# front-loads every check that could.
+#
+# Two caveats a future caller can reintroduce, neither true of the two callers
+# today: unsetting TMP after sourcing (the check above runs once, at source
+# time), and `set -e` COMBINED WITH `shopt -s inherit_errexit` — errexit alone
+# does not reach inside a command substitution, so a failing `cp`/`mkdir` there
+# still falls through to the printf. Both callers run `set -uo pipefail` and
+# neither sets that shopt.
+#
+# That guarantee is what the 13 `[[ -n "$r" ]]` guards that used to follow
+# `mk_repo`'s 13 call sites — 12 in tests/test-verify-exit-code.sh, 1 in
+# tests/test-layer-containment.sh, all now deleted — were re-detecting one
+# level down, and it is what lets a call site carry no guard at all. The 14th
+# call site (the floor-suite block at the end of tests/test-verify-exit-code.sh)
+# was added with no guard and needs none: that is the property, demonstrated by
+# tests/test-lib-verify-repo.sh's unguarded-call-site control.
+#
+# It is NOT a guarantee that everything mk_repo does succeeds. NOTHING inside
+# mk_repo has its status checked: the whole `( cd "$r" && git init … && git
+# add -A && git commit … && git update-ref … && … )` subshell's status is
+# discarded by its own `>/dev/null 2>&1` (below), and so are both `cp`s, every
+# `printf >` redirection, every `mkdir -p` and every `chmod`. What the
+# source-time checks buy is not that those operations succeed but that their
+# PRECONDITIONS hold — TMP set, both `cp` sources existing, this git able to
+# init/add/commit under $TMP — leaving a residual of write failures under a
+# $TMP the caller created and owns, on the SAME git binary the probe just
+# validated. That is narrow, and it is not the "different failure" class the
+# probe exists to close. If any of it did fail, `$r` would still be non-empty
+# and mk_repo would still return 0; only the *contents* of the stub repo would
+# be wrong — e.g. origin/main silently absent — which is a downstream
+# test-correctness concern for whichever assertion depends on it, not a
+# failure mk_repo itself could signal or that a caller guard on `$r` would
+# ever have caught.
+mk_repo() {  # $1=build.sh exit code (default 0)  $2=1 to stamp a
+             #    refs/remotes/origin/main ref at HEAD (default 1). Pass 0 for
+             #    a repo with NO usable schema-gate base at all — no
+             #    origin/main ref, and the single "stub" commit below is also
+             #    HEAD's only commit, so HEAD^ does not resolve either. That
+             #    combination is what verify-on-host.sh's BASE_REF fallback
+             #    (merge-base against origin/main, else HEAD^) is meant to fail
+             #    loudly against — see tests/test-verify-exit-code.sh's "no
+             #    usable base" cases.
+             #
+             # $1 CARRIES A DEFAULT rather than being required. Both callers
+             # run `set -u`, under which a bare `$1` in an arg-less
+             # `r="$(mk_repo)"` kills the command-substitution subshell and
+             # hands the caller an EMPTY `$r` — the one route to an empty path
+             # that no source-time check above can close, and (with the caller
+             # guards gone) one nothing downstream would catch. `${1:?…}` would
+             # not help: it fires inside that same subshell, so `$r` still
+             # comes back empty; it improves attribution, not signalling. A
+             # default removes the failure instead of policing it. 0 is the
+             # right value — it means "build.sh succeeds", which is what all
+             # 14 current call sites pass, and nothing in the surviving
+             # verify-on-host.sh executes build.sh at all: only the preflight
+             # `[[ -f "$REPO/build.sh" ]]` existence check reads it.
   local r="$TMP/repo"
+  local build_rc="${1:-0}"
   local add_origin="${2:-1}"
   rm -rf "$r"; mkdir -p "$r/tests/integration"
   cp "$VERIFY" "$r/verify-on-host.sh"
@@ -147,7 +254,8 @@ mk_repo() {  # $1=build.sh exit code  $2=1 to stamp a refs/remotes/origin/main
   # has no -e), printing "bash-floor.sh: No such file or directory" into every
   # captured log without affecting the exit code this file asserts on.
   cp "$ENGINE_DIR/bash-floor.sh" "$r/bash-floor.sh"
-  printf '#!/usr/bin/env bash\necho "stub build (rc=%s)" >&2\nexit %s\n' "$1" "$1" > "$r/build.sh"
+  printf '#!/usr/bin/env bash\necho "stub build (rc=%s)" >&2\nexit %s\n' \
+    "$build_rc" "$build_rc" > "$r/build.sh"
   chmod +x "$r/build.sh"
   printf 'db-clients=\nimagemagick=OFF\nwkhtmltopdf=OFF\nruby=\ncopilot=OFF\n' > "$r/sandbox.conf"
   printf '#!/usr/bin/env bash\ncase "${1:-}" in --list-caps) exit 0 ;; esac\nexit %s\n' \
@@ -157,7 +265,6 @@ mk_repo() {  # $1=build.sh exit code  $2=1 to stamp a refs/remotes/origin/main
   # printf per check. The two lists used to be maintained separately and nothing
   # made them agree.
   local id job step kind target rc_var wtgt wre rc_val
-  local n_repo=0
   # shellcheck disable=SC2034  # id/job/step/wtgt/wre are positional registry columns (tests/lib-layer-checks.sh); only kind/target/rc_var drive this loop, but `read` needs every field named to consume the row
   while IFS='|' read -r id job step kind target rc_var wtgt wre; do
     case "$kind" in
@@ -170,7 +277,6 @@ mk_repo() {  # $1=build.sh exit code  $2=1 to stamp a refs/remotes/origin/main
         printf '#!/usr/bin/env bash\nprintf "STUB:%s\\n" >> "%s"\nexit %s\n' \
           "$(basename "$target")" "$WITNESS_LOG" "$rc_val" > "$r/$target"
         chmod +x "$r/$target"
-        n_repo=$((n_repo+1))
         ;;
       probe)
         [[ "${MK_REPO_PROBE:-0}" == "1" ]] || continue
@@ -182,13 +288,6 @@ mk_repo() {  # $1=build.sh exit code  $2=1 to stamp a refs/remotes/origin/main
         ;;
     esac
   done < <(lc_rows check)
-  # Same reasoning as the path-bin guard above: a stub repo built from an empty
-  # or unreadable registry would still look like a valid repo, and every witness
-  # assertion downstream would fail with a misleading cause.
-  (( n_repo > 0 )) || {
-    echo "mk_repo: no repo-script stubs built from $LAYER_CHECKS_CONF" >&2
-    return 1
-  }
   ( cd "$r" && { git init -q -b main . >/dev/null 2>&1 || git init -q . >/dev/null 2>&1; } \
       && git add -A \
       && git -c user.email=t@example -c user.name=t commit -q -m stub \
