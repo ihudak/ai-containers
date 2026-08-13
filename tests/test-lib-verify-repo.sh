@@ -270,5 +270,43 @@ else
   sed 's/^/       /' "$TMP/harness.out" | tail -8
 fi
 
+# ── The registry's `-` rc_var sentinel never reaches an expansion ─────────────
+# `${-}` is not an undefined variable — it is the shell's own option flags — so
+# a naive `${rc_var:-0}` / `${!rc_var:-0}` turns a row that asked for "no canned
+# exit code" into `exit huB`, which dies with "numeric argument required" and
+# reports 2. The registry exists so a new row can be added without reading
+# lib-verify-repo.sh, and `rc_var=-` on a repo-script or path-bin row is the
+# natural thing to write, so this is closed by construction rather than left to
+# the fact that no such row exists today.
+#
+# Asserted by EFFECT, on both stub kinds, because they resolve the value at
+# different times: the path-bin stub is written at source time and reads the
+# variable when it runs; the repo-script stub is written inside mk_repo with the
+# value already resolved. A fix to one form would not fix the other.
+conf_dash_rc="$TMP/dash-rc.conf"
+awk -F'|' -v OFS='|' \
+  '/^check\|/ { if ($5 == "repo-script" || $5 == "path-bin") $7 = "-" } { print }' \
+  "$REAL_CONF" > "$conf_dash_rc"
+if grep -qE '^check\|[^|]*\|[^|]*\|[^|]*\|(repo-script|path-bin)\|[^|]*\|-\|' "$conf_dash_rc"; then
+  pass "fixture: dash-rc.conf gives a repo-script/path-bin row rc_var=-"
+else
+  fail "fixture: dash-rc.conf gives a repo-script/path-bin row rc_var=-"
+fi
+h="$(mk_harness "$conf_dash_rc" "" "" '
+r="$(mk_repo 0)"
+bash "$r/tests/run-all.sh" >/dev/null 2>&1; echo "REPO-SCRIPT-RC=$?"
+bash "$TMP/bin/shellcheck" >/dev/null 2>&1; echo "PATH-BIN-RC=$?"')"
+rc="$(run_harness "$h")"
+missing=""
+[[ "$rc" == "0" ]] || missing="${missing}harness-rc=$rc "
+grep -q '^REPO-SCRIPT-RC=0$' "$TMP/harness.out" || missing="${missing}repo-script-stub "
+grep -q '^PATH-BIN-RC=0$' "$TMP/harness.out" || missing="${missing}path-bin-stub "
+if [[ -z "$missing" ]]; then
+  pass "an rc_var of '-' yields a stub that exits 0, not the shell's option flags"
+else
+  fail "an rc_var of '-' yields a stub that exits 0, not the shell's option flags — bad: ${missing% }"
+  sed 's/^/       /' "$TMP/harness.out" | tail -8
+fi
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
