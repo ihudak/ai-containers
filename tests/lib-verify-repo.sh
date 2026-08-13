@@ -54,8 +54,17 @@
 # `return 1 2>/dev/null || exit 1` idiom exists to support both invocation
 # modes, and returning here would hand the caller a status nothing reads —
 # which is precisely what made 13 hand-written caller guards necessary.
-[[ -n "${TMP:-}" && -n "${VERIFY:-}" && -n "${ENGINE_DIR:-}" ]] || {
-  echo "lib-verify-repo.sh: TMP, VERIFY and ENGINE_DIR must be set before sourcing" >&2
+# TMP is asserted -n only (not -d): it is a directory the CALLER owns and
+# creates via its own `mktemp -d`/EXIT trap, so by the time this file is
+# sourced it necessarily already exists — asserting -n here is asserting the
+# contract was followed, not probing the filesystem. VERIFY and
+# ENGINE_DIR/bash-floor.sh are different: they name paths this file itself
+# reads from later (mk_repo's two `cp` calls), so a merely non-empty path that
+# does not exist would source cleanly and fail much later, at a `cp`, with no
+# `set -e` to stop it and a misleading cause downstream — the same shape the
+# git probe below exists to close. Hence -f, not -n, for those two.
+[[ -n "${TMP:-}" && -f "${VERIFY:-}" && -f "${ENGINE_DIR:-}/bash-floor.sh" ]] || {
+  echo "lib-verify-repo.sh: TMP must be set, VERIFY must be an existing file, and ENGINE_DIR/bash-floor.sh must be an existing file, before sourcing" >&2
   exit 1
 }
 
@@ -167,10 +176,28 @@ rm -rf "$_gitprobe"
 # "STUB:<name>" line to WITNESS_LOG before exiting — see the header comment
 # above for why that is a distinct mechanism from the RC-based tests.
 #
-# mk_repo has NO failure path: every condition that could make it fail is
-# checked at source time above, because a `return`/`exit` from inside the
-# `r="$(mk_repo 0)"` command substitution its callers use cannot reach them.
-# That is what lets its call sites carry no guard.
+# mk_repo cannot return a non-zero status, and cannot print an empty path:
+# TMP's non-emptiness, VERIFY's and ENGINE_DIR/bash-floor.sh's existence, the
+# registry's path-bin and repo-script counts, and git's basic ability to
+# init/add/commit are all checked at source time above — because a
+# `return`/`exit` from inside the `r="$(mk_repo 0)"` command substitution its
+# callers use cannot reach them, this file front-loads every check that could
+# make that true. That is the exact guarantee the 13 caller guards below
+# (`[[ -n "$r" ]]`) were re-detecting, and it is what lets them carry no guard.
+#
+# It is NOT a guarantee that everything mk_repo does succeeds. Two operations
+# inside it remain unchecked: `git update-ref refs/remotes/origin/main HEAD`
+# (below) and the MK_REPO_UNTRACK_SH re-commit. Both run inside the same
+# `( … ) >/dev/null 2>&1` subshell as the git probe already validated
+# init/add/commit against, on the SAME git binary, against a repo mk_repo just
+# created — so this is a narrow residual, not the "different failure" class
+# the probe exists to close. If either one did fail, `$r` would still be
+# non-empty and mk_repo would still return 0 (its final command is always the
+# unconditional `printf '%s' "$r"`); only the *contents* of the stub repo
+# would be wrong — e.g. origin/main silently absent — which is a downstream
+# test-correctness concern for whichever assertion depends on it, not a
+# failure mk_repo itself could signal or that a caller guard on `$r` would
+# ever have caught.
 mk_repo() {  # $1=build.sh exit code  $2=1 to stamp a refs/remotes/origin/main
              #    ref at HEAD (default 1). Pass 0 for a repo with NO usable
              #    schema-gate base at all — no origin/main ref, and the single
