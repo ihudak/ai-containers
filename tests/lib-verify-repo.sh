@@ -176,37 +176,76 @@ rm -rf "$_gitprobe"
 # "STUB:<name>" line to WITNESS_LOG before exiting — see the header comment
 # above for why that is a distinct mechanism from the RC-based tests.
 #
-# mk_repo cannot return a non-zero status, and cannot print an empty path:
-# TMP's non-emptiness, VERIFY's and ENGINE_DIR/bash-floor.sh's existence, the
-# registry's path-bin and repo-script counts, and git's basic ability to
-# init/add/commit are all checked at source time above — because a
-# `return`/`exit` from inside the `r="$(mk_repo 0)"` command substitution its
-# callers use cannot reach them, this file front-loads every check that could
-# make that true. That is the exact guarantee the 13 caller guards below
-# (`[[ -n "$r" ]]`) were re-detecting, and it is what lets them carry no guard.
+# mk_repo cannot return a non-zero status, and cannot print an empty path. Its
+# output is always `$TMP/repo`, `$TMP` is checked non-empty at source time
+# above, and its final command is the unconditional `printf '%s' "$r"`. What
+# makes the second half hold is that nothing it expands can kill the
+# `r="$(mk_repo 0)"` command-substitution subshell before that printf: `$1` and
+# `$2` carry defaults (see mk_repo's own header), every environment variable it
+# reads is `${…:-default}`-guarded, and the rest are either locals it assigns
+# itself or the TMP/VERIFY/ENGINE_DIR/WITNESS_LOG the source-time checks above
+# have already proven set. The other source-time checks (the registry's
+# path-bin and repo-script counts, git's ability to init/add/commit) close the
+# routes to a *useless* repo, for the same reason: a `return`/`exit` from
+# inside that command substitution cannot reach the caller, so this file
+# front-loads every check that could.
 #
-# It is NOT a guarantee that everything mk_repo does succeeds. Two operations
-# inside it remain unchecked: `git update-ref refs/remotes/origin/main HEAD`
-# (below) and the MK_REPO_UNTRACK_SH re-commit. Both run inside the same
-# `( … ) >/dev/null 2>&1` subshell as the git probe already validated
-# init/add/commit against, on the SAME git binary, against a repo mk_repo just
-# created — so this is a narrow residual, not the "different failure" class
-# the probe exists to close. If either one did fail, `$r` would still be
-# non-empty and mk_repo would still return 0 (its final command is always the
-# unconditional `printf '%s' "$r"`); only the *contents* of the stub repo
-# would be wrong — e.g. origin/main silently absent — which is a downstream
+# Two caveats a future caller can reintroduce, neither true of the two callers
+# today: unsetting TMP after sourcing (the check above runs once, at source
+# time), and `set -e` COMBINED WITH `shopt -s inherit_errexit` — errexit alone
+# does not reach inside a command substitution, so a failing `cp`/`mkdir` there
+# still falls through to the printf. Both callers run `set -uo pipefail` and
+# neither sets that shopt.
+#
+# That guarantee is what the 13 `[[ -n "$r" ]]` guards that used to follow
+# `mk_repo`'s 13 call sites — 12 in tests/test-verify-exit-code.sh, 1 in
+# tests/test-layer-containment.sh, all now deleted — were re-detecting one
+# level down, and it is what lets a call site carry no guard at all. The 14th
+# call site (the floor-suite block at the end of tests/test-verify-exit-code.sh)
+# was added with no guard and needs none: that is the property, demonstrated by
+# tests/test-lib-verify-repo.sh's unguarded-call-site control.
+#
+# It is NOT a guarantee that everything mk_repo does succeeds. NOTHING inside
+# mk_repo has its status checked: the whole `( cd "$r" && git init … && git
+# add -A && git commit … && git update-ref … && … )` subshell's status is
+# discarded by its own `>/dev/null 2>&1` (below), and so are both `cp`s, every
+# `printf >` redirection, every `mkdir -p` and every `chmod`. What the
+# source-time checks buy is not that those operations succeed but that their
+# PRECONDITIONS hold — TMP set, both `cp` sources existing, this git able to
+# init/add/commit under $TMP — leaving a residual of write failures under a
+# $TMP the caller created and owns, on the SAME git binary the probe just
+# validated. That is narrow, and it is not the "different failure" class the
+# probe exists to close. If any of it did fail, `$r` would still be non-empty
+# and mk_repo would still return 0; only the *contents* of the stub repo would
+# be wrong — e.g. origin/main silently absent — which is a downstream
 # test-correctness concern for whichever assertion depends on it, not a
 # failure mk_repo itself could signal or that a caller guard on `$r` would
 # ever have caught.
-mk_repo() {  # $1=build.sh exit code  $2=1 to stamp a refs/remotes/origin/main
-             #    ref at HEAD (default 1). Pass 0 for a repo with NO usable
-             #    schema-gate base at all — no origin/main ref, and the single
-             #    "stub" commit below is also HEAD's only commit, so HEAD^
-             #    does not resolve either. That combination is what
-             #    verify-on-host.sh's BASE_REF fallback (merge-base against
-             #    origin/main, else HEAD^) is meant to fail loudly against —
-             #    see tests/test-verify-exit-code.sh's "no usable base" cases.
+mk_repo() {  # $1=build.sh exit code (default 0)  $2=1 to stamp a
+             #    refs/remotes/origin/main ref at HEAD (default 1). Pass 0 for
+             #    a repo with NO usable schema-gate base at all — no
+             #    origin/main ref, and the single "stub" commit below is also
+             #    HEAD's only commit, so HEAD^ does not resolve either. That
+             #    combination is what verify-on-host.sh's BASE_REF fallback
+             #    (merge-base against origin/main, else HEAD^) is meant to fail
+             #    loudly against — see tests/test-verify-exit-code.sh's "no
+             #    usable base" cases.
+             #
+             # $1 CARRIES A DEFAULT rather than being required. Both callers
+             # run `set -u`, under which a bare `$1` in an arg-less
+             # `r="$(mk_repo)"` kills the command-substitution subshell and
+             # hands the caller an EMPTY `$r` — the one route to an empty path
+             # that no source-time check above can close, and (with the caller
+             # guards gone) one nothing downstream would catch. `${1:?…}` would
+             # not help: it fires inside that same subshell, so `$r` still
+             # comes back empty; it improves attribution, not signalling. A
+             # default removes the failure instead of policing it. 0 is the
+             # right value — it means "build.sh succeeds", which is what all
+             # 14 current call sites pass, and nothing in the surviving
+             # verify-on-host.sh executes build.sh at all: only the preflight
+             # `[[ -f "$REPO/build.sh" ]]` existence check reads it.
   local r="$TMP/repo"
+  local build_rc="${1:-0}"
   local add_origin="${2:-1}"
   rm -rf "$r"; mkdir -p "$r/tests/integration"
   cp "$VERIFY" "$r/verify-on-host.sh"
@@ -215,7 +254,8 @@ mk_repo() {  # $1=build.sh exit code  $2=1 to stamp a refs/remotes/origin/main
   # has no -e), printing "bash-floor.sh: No such file or directory" into every
   # captured log without affecting the exit code this file asserts on.
   cp "$ENGINE_DIR/bash-floor.sh" "$r/bash-floor.sh"
-  printf '#!/usr/bin/env bash\necho "stub build (rc=%s)" >&2\nexit %s\n' "$1" "$1" > "$r/build.sh"
+  printf '#!/usr/bin/env bash\necho "stub build (rc=%s)" >&2\nexit %s\n' \
+    "$build_rc" "$build_rc" > "$r/build.sh"
   chmod +x "$r/build.sh"
   printf 'db-clients=\nimagemagick=OFF\nwkhtmltopdf=OFF\nruby=\ncopilot=OFF\n' > "$r/sandbox.conf"
   printf '#!/usr/bin/env bash\ncase "${1:-}" in --list-caps) exit 0 ;; esac\nexit %s\n' \

@@ -7,11 +7,13 @@
 # whose entire subject is guards that cannot fail.
 #
 # Every case here asserts by EFFECT: it writes a small harness script, runs it,
-# and reads the harness's exit code and stdout. Specifically it asserts that a
-# sentinel line placed AFTER the `source` never printed. Inspecting the
-# library's source text would prove only that an `exit` is written somewhere in
-# it, not that execution actually stopped — and "the string is present" is the
-# exact false negative this repo's suite exists to close.
+# and reads the harness's exit code and stdout. Each NEGATIVE case asserts that
+# the harness exited non-zero with that guard's own message AND that a sentinel
+# line placed AFTER the `source` never printed; the two positive controls assert
+# the exact opposite — rc=0 and the post-`source` sentinels all present.
+# Inspecting the library's source text would prove only that an `exit` is
+# written somewhere in it, not that execution actually stopped — and "the string
+# is present" is the exact false negative this repo's suite exists to close.
 #
 # The two positive controls are load-bearing, not padding: without them a
 # library hard-wired to exit 1 unconditionally would satisfy every negative
@@ -52,15 +54,19 @@ hn=0
 # $5 = VERIFY override — a path used in place of the real $VERIFY; empty/absent
 #      uses the real one. Exists to exercise the source-time -f "$VERIFY"
 #      check with a path that does not exist (task-1-review.md finding 2).
+# $6 = ENGINE_DIR override — same idea for the third clause of that same
+#      contract check, -f "$ENGINE_DIR/bash-floor.sh" (final-review.md
+#      finding 1).
 mk_harness() {
   hn=$((hn + 1))
   local h="$TMP/harness-$hn.sh"
   local verify_val="${5:-$VERIFY}"
+  local engine_val="${6:-$ENGINE_DIR}"
   cat > "$h" <<EOF
 #!/usr/bin/env bash
 set -uo pipefail
 VERIFY=$(printf '%q' "$verify_val")
-ENGINE_DIR=$(printf '%q' "$ENGINE_DIR")
+ENGINE_DIR=$(printf '%q' "$engine_val")
 LAYER_CHECKS_CONF=$(printf '%q' "$1")
 EOF
   # The library's contract check reads TMP; the "no-tmp" mode leaves it unset.
@@ -141,6 +147,36 @@ h="$(mk_harness "$REAL_CONF" "" "" "" "$TMP/no-such-verify-on-host.sh")"
 expect_aborted "a nonexistent VERIFY path aborts the sourcing script" "$(run_harness "$h")" \
   "VERIFY must be an existing file, and ENGINE_DIR/bash-floor.sh must be an existing file"
 
+# ── ENGINE_DIR has verify-on-host.sh but no bash-floor.sh ─────────────────────
+# final-review.md finding 1: the third clause of that same contract check,
+# -f "$ENGINE_DIR/bash-floor.sh", had no case — deleting it left this file,
+# test-verify-exit-code.sh and test-layer-containment.sh all at 0 failure(s).
+# The scenario is real, not hypothetical: a partially-synced project copy
+# (AGENTS.md calls bash-floor.sh "a hard, load-bearing member" of
+# shared-files.sh), and the mgd port, which picks ENGINE_DIR by probing for
+# verify-on-host.sh and never for bash-floor.sh. Without the clause the source
+# succeeds, mk_repo's second `cp` fails silently (no `set -e`), and every
+# captured log carries "bash-floor.sh: No such file or directory" WITHOUT
+# changing the exit code these tests assert on.
+#
+# The fixture assertion below is load-bearing, not decoration: all three clauses
+# of that compound emit ONE message, so the ERE cannot tell which clause fired.
+# Asserting the directory really does hold verify-on-host.sh (so the -f VERIFY
+# clause is satisfied) and really does lack bash-floor.sh is what pins the abort
+# to the clause this case names. VERIFY is pointed INTO that directory too,
+# which is how the mgd port would reach this state.
+engine_nofloor="$TMP/engine-nofloor"
+mkdir -p "$engine_nofloor"
+cp "$VERIFY" "$engine_nofloor/verify-on-host.sh"
+if [[ -f "$engine_nofloor/verify-on-host.sh" && ! -e "$engine_nofloor/bash-floor.sh" ]]; then
+  pass "fixture: engine-nofloor holds verify-on-host.sh and no bash-floor.sh"
+else
+  fail "fixture is wrong: engine-nofloor must hold verify-on-host.sh and no bash-floor.sh"
+fi
+h="$(mk_harness "$REAL_CONF" "" "" "" "$engine_nofloor/verify-on-host.sh" "$engine_nofloor")"
+expect_aborted "an ENGINE_DIR with no bash-floor.sh aborts the sourcing script" "$(run_harness "$h")" \
+  "VERIFY must be an existing file, and ENGINE_DIR/bash-floor.sh must be an existing file"
+
 # ── lib-layer-checks.sh not sourced ───────────────────────────────────────────
 h="$(mk_harness "$REAL_CONF" "skip-lc" "" "")"
 expect_aborted "lc_rows undefined aborts the sourcing script" "$(run_harness "$h")" \
@@ -204,15 +240,25 @@ expect_aborted "an unusable git aborts the sourcing script" "$(run_harness "$h" 
 # (`git rev-parse HEAD`, not `git log`, whose output would then need parsing),
 # the files mk_repo copies in actually present, and at least one tracked
 # `*.sh` file — the exact input Phase 7's `git ls-files '*.sh'` reads.
+#
+# final-review.md finding 6: `$r` non-emptiness is its own sub-condition, and
+# both git probes are gated on it. `git -C ""` has been a NO-OP since Git 2.9,
+# so an empty `$r` would let the AMBIENT repository — the developer's real
+# checkout, when the suite runs from the repo root — answer two of the three
+# conditions. That is the same shape as `cd ""` succeeding and staying put,
+# which in this repo once committed the whole real working tree under a fake
+# identity (see tests/test-layer-containment.sh's mk_repo call site).
 h="$(mk_harness "$REAL_CONF" "" "" '
 r="$(mk_repo 0)"
-git -C "$r" rev-parse HEAD >/dev/null 2>&1 && echo "SENTINEL-COMMIT-OK"
+[[ -n "$r" ]] && echo "SENTINEL-PATH-OK"
+[[ -n "$r" ]] && git -C "$r" rev-parse HEAD >/dev/null 2>&1 && echo "SENTINEL-COMMIT-OK"
 [[ -f "$r/verify-on-host.sh" ]] && echo "SENTINEL-FILE-OK"
-[[ -n "$(git -C "$r" ls-files "*.sh")" ]] && echo "SENTINEL-TRACKED-OK"
+[[ -n "$r" ]] && [[ -n "$(git -C "$r" ls-files "*.sh")" ]] && echo "SENTINEL-TRACKED-OK"
 echo "SENTINEL-AFTER-MKREPO"')"
 rc="$(run_harness "$h")"
 missing=""
 [[ "$rc" == "0" ]] || missing="${missing}rc=$rc "
+grep -q '^SENTINEL-PATH-OK$' "$TMP/harness.out" || missing="${missing}empty-repo-path "
 grep -q '^SENTINEL-COMMIT-OK$' "$TMP/harness.out" || missing="${missing}no-commit "
 grep -q '^SENTINEL-FILE-OK$' "$TMP/harness.out" || missing="${missing}verify-on-host.sh-not-copied "
 grep -q '^SENTINEL-TRACKED-OK$' "$TMP/harness.out" || missing="${missing}no-tracked-sh-files "

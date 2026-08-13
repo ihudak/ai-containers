@@ -326,7 +326,6 @@ grep -q "bash -n parsed no files" "$TMP/out.log" \
   && pass "the empty-pathspec run names 'bash -n parsed no files'" \
   || fail "the empty-pathspec run did not report 'bash -n parsed no files' (got: $(tail -3 "$TMP/out.log" | tr '\n' ' '))"
 
-
 # ── The floor-suite container's exit code must reach the verdict ──────────────
 # The registry's floor-suite row declares WHICH env var carries that exit code;
 # read it from there rather than hardcoding the name, so a rename in

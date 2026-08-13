@@ -238,15 +238,21 @@ source "$LIB_VERIFY_REPO"
 # stdout) previously fed a bare `cd "$r"` with an empty string. `cd ""`
 # SUCCEEDS and stays in the current directory, so that failure mode used to
 # silently commit the whole real working tree under a fake identity instead of
-# failing loudly. The guard below is the fix for the case mk_repo's own return
-# does not cover: empty output without a non-zero exit status.
+# failing loudly. Planting it inside mk_repo is the fix for that: mk_repo no
+# longer has a `return` at all, and the conditions that could once make it hand
+# back an empty $r are now removed or checked at source time — see the comment
+# below, and the one above mk_repo in tests/lib-verify-repo.sh.
 r="$(MK_REPO_PROBE=1 mk_repo 0)"
 # No guard follows: sourcing tests/lib-verify-repo.sh aborts the sourcing
 # script outright if any of its source-time checks fail (TMP/VERIFY/ENGINE_DIR,
 # lc_rows sourced, the registry's path-bin AND repo-script stub rows, git able
 # to init/add/commit), so control never reaches this line with a registry that
-# would yield an empty $r — mk_repo cannot return non-zero or print an empty
-# path. That is NOT a guarantee that every operation inside mk_repo succeeded
+# would yield an empty $r; and mk_repo's own parameters carry defaults, so even
+# an arg-less call cannot kill the command substitution under `set -u` — mk_repo
+# cannot return non-zero or print an empty path (for a caller that, like this
+# one, leaves TMP set and does not run `set -e` with `shopt -s
+# inherit_errexit`; see tests/lib-verify-repo.sh for both caveats).
+# That is NOT a guarantee that every operation inside mk_repo succeeded
 # (see the comment above mk_repo in tests/lib-verify-repo.sh for the narrow
 # residual that stays unchecked); it is only the guarantee this guard used to
 # re-detect. The guard this replaces existed because that failure used to
