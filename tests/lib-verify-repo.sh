@@ -105,15 +105,44 @@ chmod +x "$TMP/bin/docker"
 # (cleared by Task 9 of this increment) is a fact about the repo's current
 # tree, not about the phase-selection logic under test here — neither fact
 # may leak into a hermetic test's result, so the stub always wins over PATH.
+# ── The registry's `-` rc_var sentinel ───────────────────────────────────────
+# A check row whose stub takes no canned exit code writes `-` in the rc_var
+# column. That string must never reach a parameter expansion: `${-}` is not an
+# undefined variable, it is the SHELL'S OWN OPTION FLAGS, so `${-:-0}` expands
+# to something like `huB` and `${!rc_var:-0}` does the same by indirection. The
+# stub would then be asked to `exit huB` and die with "numeric argument
+# required" (exit 2) — loud, but attributed to the stub rather than to the row.
+# Unreachable at the time of writing (the only `-` row is `kind=probe`, which
+# neither stub loop touches) and deliberately closed anyway: the registry exists
+# so a new row can be added without reading this file, and `rc_var=-` on a
+# repo-script or path-bin row is the natural thing to write.
+#
+# Two forms, because the two stub kinds resolve the value at different times.
+# path-bin stubs are written at SOURCE time, before a test has set its canned
+# code, so the stub must read the variable when it RUNS: rc_stub_expr emits the
+# literal text `${NAME:-0}`. repo-script stubs are written inside mk_repo, by
+# which point the caller's `SUITE_RC=1 mk_repo 0` prefix is already in effect,
+# so rc_value_now resolves it immediately.
+rc_stub_expr() {  # $1=rc_var → deferred expansion text for a generated stub
+  if [[ "$1" == "-" ]]; then printf '0'; else printf '${%s:-0}' "$1"; fi
+}
+rc_value_now() {  # $1=rc_var → the canned exit code, resolved now
+  if [[ "$1" == "-" ]]; then printf '0'; else printf '%s' "${!1:-0}"; fi
+}
+
 _n_pathbin=0
 _n_reposcript=0
 while IFS='|' read -r id job step kind target rc_var wtgt wre; do
   [[ "$kind" != "repo-script" ]] || _n_reposcript=$((_n_reposcript+1))
   [[ "$kind" == "path-bin" ]] || continue
+  # `-` is the registry's "no rc var" sentinel, and it must NOT reach an
+  # expansion: `${-:-0}` indirects through `$-`, the shell's own option flags,
+  # so the stub would be written as `exit "huB"` and die with "numeric argument
+  # required" (exit 2) instead of the 0 the row asked for. See rc_stub_expr.
   cat > "$TMP/bin/$target" <<EOF
 #!/usr/bin/env bash
 printf 'STUB:%s\n' "$target" >> "$WITNESS_LOG"
-exit "\${${rc_var}:-0}"
+exit "$(rc_stub_expr "$rc_var")"
 EOF
   chmod +x "$TMP/bin/$target"
   _n_pathbin=$((_n_pathbin+1))
@@ -273,7 +302,9 @@ mk_repo() {  # $1=build.sh exit code (default 0)  $2=1 to stamp a
         # Indirect expansion, not eval: the registry supplies the VARIABLE NAME
         # (SUITE_RC, SCHEMA_RC, …) and the caller may have set it to a canned
         # exit code. eval here would execute registry content as shell.
-        rc_val="${!rc_var:-0}"
+        # rc_value_now, not a bare "${!rc_var:-0}", so the registry's `-`
+        # sentinel cannot indirect through the shell's `$-` option flags.
+        rc_val="$(rc_value_now "$rc_var")"
         printf '#!/usr/bin/env bash\nprintf "STUB:%s\\n" >> "%s"\nexit %s\n' \
           "$(basename "$target")" "$WITNESS_LOG" "$rc_val" > "$r/$target"
         chmod +x "$r/$target"
