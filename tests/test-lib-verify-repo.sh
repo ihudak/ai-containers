@@ -2,8 +2,8 @@
 # tests/test-lib-verify-repo.sh — the first test of tests/lib-verify-repo.sh
 # itself.
 #
-# That library has four unrecoverable conditions, and until this file none of
-# them had ever been seen failing — four unfalsified guards inside the one file
+# That library has five unrecoverable conditions, and until this file none of
+# them had ever been seen failing — five unfalsified guards inside the one file
 # whose entire subject is guards that cannot fail.
 #
 # Every case here asserts by EFFECT: it writes a small harness script, runs it,
@@ -15,7 +15,12 @@
 #
 # The two positive controls are load-bearing, not padding: without them a
 # library hard-wired to exit 1 unconditionally would satisfy every negative
-# case in this file.
+# case in this file. The first proves a GOOD registry sources cleanly and
+# continues; the second proves the bare, UNGUARDED `r="$(mk_repo 0)"` form —
+# the way all 13 real call sites now read, with no `[[ -n "$r" ]] ||` guard
+# after it — yields a usable repo and continues too. (The two `fixture: …`
+# assertions further down are neither: they check this file's own doctored
+# `.conf` inputs, not the library under test.)
 set -uo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -184,6 +189,26 @@ chmod +x "$TMP/badgit/git"
 h="$(mk_harness "$REAL_CONF" "" "" "")"
 expect_aborted "an unusable git aborts the sourcing script" "$(run_harness "$h" "$TMP/badgit")" \
   "git cannot create a repo and commit under"
+
+# ── An unguarded call site is safe ────────────────────────────────────────────
+# The point of Task 1, stated as a test. Against a GOOD registry, the bare
+# `r="$(mk_repo 0)"` form — no `[[ -n "$r" ]] ||` guard after it, which is how
+# all 13 call sites now read — produces a usable path and execution continues.
+# Its other half is the no-repo-script case above: with a bad registry, control
+# never reaches this line at all, because the source aborted.
+h="$(mk_harness "$REAL_CONF" "" "" '
+r="$(mk_repo 0)"
+[[ -d "$r/.git" ]] && echo "SENTINEL-REPO-OK"
+echo "SENTINEL-AFTER-MKREPO"')"
+rc="$(run_harness "$h")"
+if [[ "$rc" == "0" ]] \
+   && grep -q '^SENTINEL-REPO-OK$' "$TMP/harness.out" \
+   && grep -q '^SENTINEL-AFTER-MKREPO$' "$TMP/harness.out"; then
+  pass "control: an unguarded mk_repo call site yields a usable repo and continues"
+else
+  fail "control: an unguarded mk_repo call site yields a usable repo and continues — rc=$rc"
+  sed 's/^/       /' "$TMP/harness.out" | tail -8
+fi
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

@@ -94,7 +94,6 @@ expect_rc() {  # $1=label $2=expected $3=actual
 
 # ── A phase that fails must make the script fail ───────────────────────────────
 r="$(CORPUS_RC=1 mk_repo 0)"
-[[ -n "$r" ]] || { echo "FAIL: mk_repo produced no repo path"; exit 1; }
 expect_rc "phase 4: a failing corpus exits non-zero" 1 "$(run_verify "$r" 4)"
 grep -q 'RESULT: FAILED' "$TMP/out.log" \
   && pass "phase 4: verdict line says FAILED" \
@@ -107,7 +106,6 @@ grep -q 'PHASE 4 FAILED' "$TMP/out.log" \
 # The other half of the property. A script hard-wired to exit 1 would satisfy
 # every assertion above and be just as useless.
 r="$(mk_repo 0)"
-[[ -n "$r" ]] || { echo "FAIL: mk_repo produced no repo path"; exit 1; }
 expect_rc "phase 4: a passing corpus exits 0" 0 "$(run_verify "$r" 4)"
 grep -q 'RESULT: PASSED' "$TMP/out.log" \
   && pass "phase 4: verdict line says PASSED" \
@@ -125,7 +123,6 @@ grep -q 'RESULT: PASSED' "$TMP/out.log" \
 # cross-phase demonstration is possible again — restored in the dedicated block
 # immediately below, not folded in here, so each keeps testing one thing.
 r="$(CORPUS_RC=1 mk_repo 0)"
-[[ -n "$r" ]] || { echo "FAIL: mk_repo produced no repo path"; exit 1; }
 rc="$(run_verify "$r" 4)"
 expect_rc "phase 4 fails: still exits 1" 1 "$rc"
 n="$(grep -c '^\[host-verify\]   phase 4:' "$TMP/out.log")"
@@ -144,7 +141,6 @@ fi
 # above. PHASES="5 7" deliberately excludes Phase 4, so CORPUS_RC is irrelevant
 # here and only these two are in play.
 r="$(SUITE_RC=1 DIALECT_RC=1 mk_repo 0)"
-[[ -n "$r" ]] || { echo "FAIL: mk_repo produced no repo path"; exit 1; }
 rc="$(run_verify "$r" "5 7")"
 expect_rc "phase 5 and phase 7 can fail in the same run" 1 "$rc"
 grep -q 'PHASE 5 FAILED' "$TMP/out.log" \
@@ -205,7 +201,6 @@ for _tool in bash git sed grep awk cut tr head wc uname xargs printf cat mkdir r
 done
 no_sc_path="$TMP/bin-no-shellcheck:$TMP/hermetic-tools"
 r="$(mk_repo 0)"
-[[ -n "$r" ]] || { echo "FAIL: mk_repo produced no repo path"; exit 1; }
 PATH="$no_sc_path" REPO="$r" PHASES=7 bash "$r/verify-on-host.sh" \
   > "$TMP/out.log" 2>&1
 expect_rc "shellcheck missing from PATH fails phase 7, not a silent skip" 1 "$?"
@@ -227,7 +222,6 @@ grep -q 'shellcheck not installed' "$TMP/out.log" \
 # the stub repo's single "stub" commit has no parent, so HEAD^ does not
 # resolve either — the "no usable base at all" case.
 r="$(mk_repo 0 0)"
-[[ -n "$r" ]] || { echo "FAIL: mk_repo produced no repo path"; exit 1; }
 : > "$WITNESS_LOG"
 rc="$(run_verify "$r" 5)"
 expect_rc "phase 5 fails when the schema gate has no usable BASE_REF" 1 "$rc"
@@ -242,7 +236,6 @@ grep -q 'STUB:check-sandbox-version\.sh' "$WITNESS_LOG" \
 # stamped at HEAD) DOES have a usable base, so the gate still genuinely runs
 # and phase 5 still passes — this file must not have become impossible to pass.
 r="$(mk_repo 0)"
-[[ -n "$r" ]] || { echo "FAIL: mk_repo produced no repo path"; exit 1; }
 : > "$WITNESS_LOG"
 rc="$(run_verify "$r" 5)"
 expect_rc "phase 5 passes when a usable BASE_REF exists (origin/main)" 0 "$rc"
@@ -265,14 +258,12 @@ grep -q 'STUB:check-sandbox-version\.sh' "$WITNESS_LOG" \
 # This guard must SURVIVE the addition of phases 5 and 7 — VALID_PHASES grew to
 # "0 4 5 7", and 1/2/3 must still be rejected, not accidentally re-admitted.
 r="$(mk_repo 0)"
-[[ -n "$r" ]] || { echo "FAIL: mk_repo produced no repo path"; exit 1; }
 expect_rc "a stale PHASES=1 selection fails loudly, not exits 0" 1 "$(run_verify "$r" 1)"
 grep -q 'RESULT: FAILED' "$TMP/out.log" \
   && pass "PHASES=1: verdict line says FAILED" \
   || fail "PHASES=1: verdict line says FAILED"
 
 r="$(mk_repo 0)"
-[[ -n "$r" ]] || { echo "FAIL: mk_repo produced no repo path"; exit 1; }
 expect_rc "a stale PHASES=\"1 2 3\" selection still fails after 5 and 7 exist" 1 \
   "$(run_verify "$r" "1 2 3")"
 grep -q 'RESULT: FAILED' "$TMP/out.log" \
@@ -285,7 +276,6 @@ grep -q 'RESULT: FAILED' "$TMP/out.log" \
 # phases 4, 5 and 7 (and every one of their sub-checks) passing together in a
 # single hermetic run, since mk_repo's stubs all default their *_RC to 0.
 r="$(mk_repo 0)"
-[[ -n "$r" ]] || { echo "FAIL: mk_repo produced no repo path"; exit 1; }
 expect_rc "an empty/unset PHASES still defaults to 4 5 7 and passes" 0 "$(run_verify "$r" "")"
 grep -q 'RESULT: PASSED' "$TMP/out.log" \
   && pass "PHASES=\"\": verdict line says PASSED (default still works)" \
@@ -299,7 +289,6 @@ grep -q 'RESULT: PASSED' "$TMP/out.log" \
 # nothing would leave the script intact and report a clean pass — the decorative
 # check this project keeps finding.
 r="$(CORPUS_RC=1 mk_repo 0)"
-[[ -n "$r" ]] || { echo "FAIL: mk_repo produced no repo path"; exit 1; }
 marker='# ── Verdict ─'
 if ! grep -qF "$marker" "$r/verify-on-host.sh"; then
   fail "the verdict marker moved — this demonstration verified NOTHING; update it"
@@ -329,7 +318,6 @@ fi
 # on disk, so every existence check still passes and this is the ONLY thing that
 # fails — which is what makes both assertions below meaningful.
 r="$(MK_REPO_UNTRACK_SH=1 mk_repo 0)"
-[[ -n "$r" ]] || { echo "FAIL: mk_repo produced no repo path"; exit 1; }
 rc="$(run_verify "$r" "7")"
 [[ "$rc" != "0" ]] \
   && pass "a run whose bash -n matched no files exits non-zero" \
