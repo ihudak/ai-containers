@@ -326,5 +326,27 @@ grep -q "bash -n parsed no files" "$TMP/out.log" \
   && pass "the empty-pathspec run names 'bash -n parsed no files'" \
   || fail "the empty-pathspec run did not report 'bash -n parsed no files' (got: $(tail -3 "$TMP/out.log" | tr '\n' ' '))"
 
+
+# ── The floor-suite container's exit code must reach the verdict ──────────────
+# The registry's floor-suite row declares WHICH env var carries that exit code;
+# read it from there rather than hardcoding the name, so a rename in
+# lib-verify-repo.sh's docker stub makes this assertion red at its cause
+# instead of leaving an inert column nobody reads. That row's stub_kind is
+# `none` — the docker stub is Phase-0 infrastructure the library writes by hand
+# rather than something the registry loop builds — so this is the only thing
+# that ties the two together.
+floor_rc_var="$(lc_rows check | awk -F'|' '$1 == "floor-suite" { print $6 }')"
+if [[ -z "$floor_rc_var" || "$floor_rc_var" == "-" ]]; then
+  fail "the registry's floor-suite row names an rc_var"
+else
+  pass "the registry's floor-suite row names an rc_var ($floor_rc_var)"
+  r="$(mk_repo 0)"
+  rc="$( export "${floor_rc_var}=1"; run_verify "$r" 5 )"
+  expect_rc "phase 5: a failing floor-suite container exits non-zero" 1 "$rc"
+  grep -q 'hermetic suite at the declared floor exited 1' "$TMP/out.log" \
+    && pass "phase 5: the verdict names the floor suite as what failed" \
+    || fail "phase 5: the verdict names the floor suite as what failed"
+fi
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
