@@ -193,20 +193,34 @@ expect_aborted "an unusable git aborts the sourcing script" "$(run_harness "$h" 
 # ── An unguarded call site is safe ────────────────────────────────────────────
 # The point of Task 1, stated as a test. Against a GOOD registry, the bare
 # `r="$(mk_repo 0)"` form — no `[[ -n "$r" ]] ||` guard after it, which is how
-# all 13 call sites now read — produces a usable path and execution continues.
+# all 13 call sites now read — produces a USABLE repo and execution continues.
 # Its other half is the no-repo-script case above: with a bad registry, control
 # never reaches this line at all, because the source aborted.
+#
+# task-2-review.md finding (Important): `-d "$r/.git"` alone is satisfied
+# immediately after `git init`, before any `add`/`commit` — it does not prove
+# the "usable repo" the label claims. "Usable" is pinned to the three things
+# the real call sites' downstream phases actually consume: a real commit
+# (`git rev-parse HEAD`, not `git log`, whose output would then need parsing),
+# the files mk_repo copies in actually present, and at least one tracked
+# `*.sh` file — the exact input Phase 7's `git ls-files '*.sh'` reads.
 h="$(mk_harness "$REAL_CONF" "" "" '
 r="$(mk_repo 0)"
-[[ -d "$r/.git" ]] && echo "SENTINEL-REPO-OK"
+git -C "$r" rev-parse HEAD >/dev/null 2>&1 && echo "SENTINEL-COMMIT-OK"
+[[ -f "$r/verify-on-host.sh" ]] && echo "SENTINEL-FILE-OK"
+[[ -n "$(git -C "$r" ls-files "*.sh")" ]] && echo "SENTINEL-TRACKED-OK"
 echo "SENTINEL-AFTER-MKREPO"')"
 rc="$(run_harness "$h")"
-if [[ "$rc" == "0" ]] \
-   && grep -q '^SENTINEL-REPO-OK$' "$TMP/harness.out" \
-   && grep -q '^SENTINEL-AFTER-MKREPO$' "$TMP/harness.out"; then
+missing=""
+[[ "$rc" == "0" ]] || missing="${missing}rc=$rc "
+grep -q '^SENTINEL-COMMIT-OK$' "$TMP/harness.out" || missing="${missing}no-commit "
+grep -q '^SENTINEL-FILE-OK$' "$TMP/harness.out" || missing="${missing}verify-on-host.sh-not-copied "
+grep -q '^SENTINEL-TRACKED-OK$' "$TMP/harness.out" || missing="${missing}no-tracked-sh-files "
+grep -q '^SENTINEL-AFTER-MKREPO$' "$TMP/harness.out" || missing="${missing}did-not-continue "
+if [[ -z "$missing" ]]; then
   pass "control: an unguarded mk_repo call site yields a usable repo and continues"
 else
-  fail "control: an unguarded mk_repo call site yields a usable repo and continues — rc=$rc"
+  fail "control: an unguarded mk_repo call site yields a usable repo and continues — missing: ${missing% }"
   sed 's/^/       /' "$TMP/harness.out" | tail -8
 fi
 
