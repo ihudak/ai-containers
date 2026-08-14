@@ -26,7 +26,15 @@ yield survivors that measure the absence of a harness, not the quality of an
 assertion — the failure mode the ledger exists to keep out. It needs coverage
 first, then entry to the mutation tier.
 
-## F2 — `sandbox.sh`'s discovery and open modes are never executed hermetically
+## F2 — `sandbox.sh`'s discovery and open modes are never executed hermetically — **PARTLY CLOSED 2026-08-14**
+
+`tests/test-mode-capabilities.sh` now runs `sandbox.sh` in **all three** modes
+against a fake `docker`, so the argv-parsing and mode-dispatch paths of discovery
+and open are executed. What remains unexecuted is everything the three modes do
+*differently* beyond the capability array — notably discovery's
+`output_mount_flags` branch. The entry stays open for that remainder.
+
+### Original finding
 
 `sandbox.sh` runs as a real subprocess (only `docker` faked) in
 `test-docs-path.sh`, `test-tool-config-mounts.sh` and `test-tools-d.sh` — but
@@ -98,7 +106,11 @@ than changed here, because renaming or re-basing `it_wait`'s parameter touches
 every caller in the corpus and belongs in its own change. Candidate fixes: rename
 the parameter to `max_polls`, or make it a real deadline with `EPOCHREALTIME`.
 
-## F7 — `230-open-drops-capabilities` is named and documented for open mode but launches discovery
+## F7 — `230-open-drops-capabilities` is named and tagged for open mode but launches discovery
+
+**Partly addressed 2026-08-14:** the header's false "both belts" claim is
+corrected in place, because a comment asserting something demonstrably untrue
+misleads the next reader more than no comment would. The rename remains.
 
 Its code is `sandbox_up discovery "$adir" -e DISCOVERY_CAPTURE_ENABLED=0`, which
 is a deliberate and correct strengthening (discovery *grants* NET_ADMIN/NET_RAW,
