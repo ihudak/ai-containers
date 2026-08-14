@@ -231,3 +231,46 @@ error, so the status is contractual, and no test exercises a missing
 
 Both are the first entries the tier produced on real code rather than on its own
 fixtures, which is the evidence Task 9's ship gate is aimed at.
+
+## F12 — a timeout counts as a KILL, so `TOTAL`'s killed column overstates the kill signal
+
+`run.sh` counts a per-mutant timeout as KILLED and flags it — deliberate, and its
+header says why: an oracle that hung "was not observed asserting anything". But
+the `TOTAL` line's killed column folds those in, so a reader sees a kill rate
+that is partly hangs.
+
+Measured on `tools-lib.sh` (`TOTAL|1|17|15|2|5|11|…`), the 15 kills are three
+different things:
+
+| Signal | Count | What it means |
+|---|---|---|
+| `exit+failline` | 10 | clean kill — the oracle ran and an assertion failed |
+| `timeout+exit+failline` | 3 | asserted a failure, *then* ran long — a real kill, slow |
+| `timeout+exit` | **2** | hung with no `FAIL:` line — **no assertion was observed** |
+
+So the proven signal is 13/17, not 15/17, with 2 unproven — not the 10/17 first
+reported, since three of the five timeouts did assert before hanging.
+
+Both unproven mutants are the same line, `tools-lib.sh:62`'s `while IFS= read -r
+line || [[ -n "$line" ]]`, negated. That makes the read loop never terminate, so
+the mutant is "detected" only in the sense that CI would eventually time out.
+That is a real property of the test — it would hang rather than report — but it
+is not evidence that an assertion exists, which is the only thing this tier
+measures.
+
+**For Task 10:** do not read `TOTAL`'s killed column as the kill rate. Split it
+by the `signal` field and treat `timeout` without `failline` as UNPROVEN — a
+third verdict beside KILLED and SURVIVED. An unproven mutant deserves the same
+ledger treatment as a survivor: it names a place where the suite does not
+demonstrably assert anything.
+
+## F13 — nothing yet runs the ledger gate
+
+`check-ledger.sh` exists and is tested against fixtures, but no CI job and no
+`verify-on-host.sh` phase feeds it a real corpus run. Until Task 11 wires it, the
+ratchet protects nothing in practice.
+
+It must be wired to a **full-corpus** run: under a partial selection the scope
+rule makes the stale and obsolete checks vacuous for unselected files. And
+`run.sh`'s exit status is a separate signal from its stdout, so a naive
+`run.sh | check-ledger.sh -` discards it — capture to a file and check both.
