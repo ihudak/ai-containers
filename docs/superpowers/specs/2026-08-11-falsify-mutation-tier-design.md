@@ -3,13 +3,32 @@
 **Increment 5.** Designed and approved in substance on 2026-08-11, then
 deferred behind increment 4 (`2026-08-11-execution-layers-and-portability-design.md`),
 which settles the bash floor this harness is written against and creates the
-layer model its work is assigned to. Not yet planned.
+layer model its work is assigned to.
+
+**Revised 2026-08-14**, before planning, after re-reading the spec against the
+tree and running the R1 pilot the spec itself required. Four things changed, and
+each is recorded at the section it affects:
+
+1. **The boundary rule rested on a false premise** — `sandbox.sh` has been
+   *executed* by the hermetic suite since 2026-07-28, two weeks before this spec
+   excluded it on the grounds that nothing runs it. A third category exists now.
+2. **R1's re-scope trigger fired.** The pilot measured a 49.4 % survival rate
+   against an assumed 8-20 %, projecting 814-1002 survivors against an assumed
+   75-190. Both authorised levers are pulled: `stream-flip` is dropped and the
+   target list is staged.
+3. **The suite grew** from 39 files to 45, and from the ~635 `pass` call sites
+   this spec counted to 1267 assertions actually executed.
+4. **The network/security tier is in scope now** — its "demonstrated failing"
+   guarantee turned out to be prose in a plan file that nothing executes.
 
 ## Problem
 
 `tests/test-mutations.sh` makes the *"a case is not accepted until it has been
-seen failing"* rule mechanical for the integration corpus. Nothing enforces it
-for the 39 hermetic test files in `tests/*.sh` — ~635 assertion sites.
+seen failing"* rule mechanical for the **launcher** tier of the integration
+corpus. Nothing enforces it for the 45 hermetic test files in `tests/*.sh` —
+1267 executed assertions — and, as increment 5's re-read discovered, nothing
+enforces it for the integration corpus's **network/security** tier either
+(see "The network/security tier" below).
 
 That is where the holes actually are. Six checks that could not fail have been
 found so far; **four were hermetic**, all four in tests that test the test
@@ -48,20 +67,38 @@ demonstration executed, not a demonstration recorded in prose.
 
 > **Mutate only what the hermetic suite executes. Never what it merely greps.**
 
-`entrypoint.sh` and `sandbox.sh` are only grepped by hermetic tests — nothing
-runs them, so nearly every mutant would survive as noise. They belong to the
-integration tier. Eleven files qualify:
+The rule stands. Its original application did not: this spec excluded
+`sandbox.sh` because "nothing runs them", and that was **already false when
+written**. `tests/test-parsers.sh` has sourced `sandbox.sh` since commit
+`5e7d4ee` (2026-07-28) — in a subshell with positional parameters cleared, so
+it lands in the `usage` branch — and then calls `mem_to_bytes`,
+`validate_memory_limits`, `parse_pointer_spec`, `pointer_repo_entry` and
+`split_env_list` directly. Excluding the largest product script on a premise
+contradicted by a two-week-old commit is exactly the kind of unchecked claim
+this repo's guards exist to catch, so the rule now has **three** outcomes, not
+two:
 
-| Group | Files |
-|---|---|
-| harness | `tests/integration/{lib,run,mutate,docker-shim,minimal-conf}.sh` |
-| product | `sandbox-common.sh`, `repo.sh`, `build.sh`, `install-tools.sh`, `sync-to-projects.sh`, `tools-lib.sh` |
+| Category | Meaning | Mutation unit |
+|---|---|---|
+| `EXECUTED-WHOLE` | sourced or run such that essentially all its code can run | the **file** |
+| `EXECUTED-PARTIAL` | reached only in an identifiable region — e.g. `sandbox.sh` via `test-parsers.sh`'s `run_fn` | the **named functions**, listed explicitly |
+| `GREPPED-ONLY` | every reference is a text search, existence check, `bash -n`, or line-number assertion | not mutated |
 
-`targets.conf` maps each target to its oracle tests. It is **derived, then
-checked**: the candidate list comes from grepping the tests for what they
-source, and an executed file missing from the map fails the gate. Excluding one
-requires an explicit `EXCLUDED: <reason>`. A hand-written list can only validate
-what someone remembered.
+`EXECUTED-PARTIAL` is what keeps the correction from swinging too far the other
+way: most of `sandbox.sh` genuinely is grep-only, and mutating the file whole
+would flood the ledger for the same reason the original exclusion was reaching
+for. Mutating only the five functions the suite actually calls is both sound and
+cheap. A `bash -n` or `shellcheck` invocation is **not** execution, and a stub
+fake inside `tests/lib-verify-repo.sh`'s scratch repo is not the real script.
+
+`targets.conf` maps each target to its oracle tests, carrying the category and —
+for `EXECUTED-PARTIAL` — the function list. It is **derived, then checked**: the
+candidate list comes from resolving what the tests source and run (including
+through path variables such as `LIB=`, `RUNNER=`, `VERIFY=`, `src=`), and an
+executed file missing from the map fails the gate. Excluding one requires an
+explicit `EXCLUDED: <reason>`. A hand-written list can only validate what
+someone remembered — and, as the `sandbox.sh` error shows, a hand-written
+*premise* is no better.
 
 ### The oracle
 
@@ -70,27 +107,59 @@ the killed/survived verdict is literally the same code path as the suite's own
 (`FAIL:` line present, or non-zero exit, or asserted nothing). The two cannot
 drift apart. Measured overhead: 55 ms.
 
+Two properties of that entry point are **relied upon**, and the harness must not
+be rewritten in a way that gives them up:
+
+- **`run-all.sh` exits 2 when no test matches its filter.** A target whose
+  oracle name is misspelled in `targets.conf` therefore fails loudly, rather
+  than running zero tests and reporting every mutant as killed — which is the
+  silent-success shape this whole tier exists to eliminate.
+- **A dirty working tree does not, by itself, change the verdict.** Verified by
+  control during the pilot: with a no-op comment appended, the oracle still
+  passes. Without that property every "killed" would be suspect, because
+  `mutate.sh`'s own `cmd_apply` carries a `git diff --quiet` gate.
+
 A mutant that exceeds a per-mutant timeout counts as killed and is flagged.
 A mutant that fails `bash -n` is discarded, not counted — a syntax error proves
 nothing about any assertion.
 
 ### Operators and layers
 
-Measured against the eleven targets. The full seven-operator set produces 4,742
-mutants; `num-bump` alone is 655 of near-pure noise (array indices, `2>&1`, exit
-codes) hiding perhaps five real thresholds.
+**Measured 2026-08-14**, one mutant per applicable *token occurrence* (the
+2026-08-11 estimates counted per line, which is why the totals moved — it is a
+methodology difference, not drift). Across the 19 candidate files: **2028 valid
+mutants, 0 discarded by `bash -n`** — all five operators are syntax-preserving
+token substitutions by construction, confirmed by planting three malformed
+candidates through the same gate and watching 3/3 be discarded.
 
-| Operators | Layer | Mutants | Cost |
+| Operator | Mutants | Pilot survival | Layer |
 |---|---|---|---|
-| `cond-negate`, `logic-flip`, `stream-flip`, `return-flip`, `cmp-flip` | **PR** | 935 | ~7 min at 8-way |
-| `threshold` — explicit hand-listed sites | **PR** | ~5 | negligible |
-| `stmt-delete`, enabled per-target | **Nightly** | ≤ 3,068 | ~32 min at 8-way |
-| full matrix, on the host | **Local** (Phase 6) | — | 30-60 min |
+| `cond-negate` | 608 | 4.5 % | **PR** |
+| `logic-flip` | 471 | 27.3 % | **PR** |
+| `return-flip` | 289 | 75.0 % | **PR** |
+| `cmp-flip` | 219 | 0 % | **PR** |
+| ~~`stream-flip`~~ | ~~441~~ | **100 %** | **dropped** |
+| `stmt-delete`, enabled per-target on a measured score | — | — | **Nightly** |
+| full matrix, on the host | — | — | **Local** (Phase 6) |
 
-`num-bump` is dropped rather than deferred: its problem is signal, and a longer
-schedule does not fix signal. Rubber-stamping 400 `EQUIVALENT` entries is how a
-ledger stops being read, which would undermine the gate protecting everything
-else.
+`num-bump` was dropped in the original design because "its problem is signal,
+and a longer schedule does not fix signal." **`stream-flip` is dropped on that
+same criterion, applied to new data**: 441 mutants at a measured 100 % survival
+is strictly worse than `num-bump` ever was. Dropping it takes projected
+survivors from 814 to 373 — over half the adjudication cost of the whole tier,
+for a handful of genuine finds.
+
+This is a real loss and is recorded as one: `stream-flip` is the only operator
+whose shape matches historical hole #6 (stream confusion). It may return as an
+**opt-in per-target operator gated on a measured score**, exactly as
+`stmt-delete` is.
+
+It cannot be gated on anything cheaper, and one appealing idea was tried and
+**refuted**: "enable it only where the oracle captures stdout and stderr
+separately" does not work. `tests/test-mutations.sh` captures stderr separately
+in nine places and still let all 27 `stream-flip` mutants survive. Whether a
+stream flip is killable is not statically predictable from the oracle's capture
+idiom, so measurement is the only gate available.
 
 `stmt-delete` is the operator whose shape matches holes #3 and #4 most directly
 — a behaviour silently missing — so it is enabled per target by a **measured**
@@ -100,6 +169,46 @@ gated mutants will kill most deletions too, yielding few and sharp survivors. A
 file whose oracle kills 60% would flood the ledger with the same underlying gap
 restated two hundred times. Fix the gap first, then deepen. The threshold is set
 from the first full run's numbers.
+
+### Staging the target list
+
+The second lever R1 authorises. Even with `stream-flip` gone the full corpus
+projects 373 survivors, and every `GAP` among them is owed a killing assertion
+under this project's "none dropped" rule. Committing to 373 IOUs in one
+increment is how that rule stops being true.
+
+A target enters the tier when it has a **dedicated 1:1 oracle test** — a
+mechanical criterion, checkable by the same derivation that builds
+`targets.conf`, not a judgement call about which files feel important. Nine
+targets qualify today:
+
+| Target | Oracle | Mutants |
+|---|---|---|
+| `tests/integration/mutate.sh` | `test-mutations.sh` | 81 |
+| `tests/lib-layer-checks.sh` | `test-layer-checks-parser.sh` | 60 |
+| `tests/lib-verify-repo.sh` | `test-lib-verify-repo.sh` | 60 |
+| `tests/bash-dialect-lint.sh` | `test-bash-dialect-lint.sh` | 27 |
+| `tests/integration/docker-shim.sh` | `test-integration-shim.sh` | 26 |
+| `tools-lib.sh` | `test-tools-d.sh` | 17 |
+| `bash-floor.sh` | `test-bash-floor.sh` | 12 |
+| `tests/portability.sh` | `test-portability.sh` | 12 |
+| `shared-files.sh` | `test-shared-files-parity.sh` | 5 |
+| | **total** | **300** |
+
+Less the 62 `stream-flip` mutants, that is **238**, projecting **~57
+survivors** — a corpus a reviewer will actually read, which is the whole point
+of R3's mitigation.
+
+`tests/integration/minimal-conf.sh` is the near miss that shows the criterion
+has teeth: its coverage is split across `test-integration-lib.sh` and
+`test-integration-runner.sh`, so it waits. The large diffuse targets
+(`sandbox.sh`, `tests/integration/{lib,run}.sh`, `repo.sh`,
+`sandbox-common.sh` — 1329 mutants between them) are precisely the ones that
+would flood, and they enter in later increments, one at a time, each with its
+own `GAP`-fixing work.
+
+Staging is not deferral. The machine — generator, oracle, ledger, gate — ships
+whole in this increment; only the target list grows.
 
 ### Mutant identity
 
@@ -118,6 +227,10 @@ the oracle, and restores from a pristine cache. This is the opposite choice from
 `tests/integration/mutate.sh`, which mutates the real tree deliberately for
 hand-driven demonstrations. Both are correct for their purpose; the README must
 say so, or someone will unify them.
+
+Re-checked 2026-08-14: `mutate.sh` changed twice since this section was written
+(`5c43b6a`, `d1970f6`), but for unrelated reasons — pathname expansion and git
+usability in the floor run. The contrast this section rests on is intact.
 
 ### The survivor ledger
 
@@ -152,10 +265,102 @@ six of these, including two written inside the fixes for the others.
   known-killable and one known-surviving mutant, and demonstrates each of the
   four gate failures by breaking the mechanism, never by asserting the expected
   answer.
-- **Validation against the four historical holes.** All four are recoverable
-  from git history. Each unfalsifiable assertion is reconstructed, the
-  corresponding mutant is run, and the harness must report `SURVIVED`. A tool
-  that cannot catch the bugs that motivated it does not ship.
+- **Validation against the four historical holes.** All four are recoverable,
+  and the commits are named here so the task does not begin with a search:
+
+  | Hole | Fixed in | Defective test | Mutation target |
+  |---|---|---|---|
+  | #2 tallied into a counter its `exit` never read | `44676f5` | `tests/test-integration-lib.sh` | `tests/integration/lib.sh` |
+  | #3 `launcher_prepare` — variable reset by a later `source` | `421d25d` | `tests/test-integration-lib.sh` | `tests/integration/lib.sh` |
+  | #4 conjunct satisfied by an unrelated line | `9b64bd3` | `tests/test-integration-lib.sh` | `tests/integration/lib.sh` |
+  | #6 stdout assertion whose helper folded stderr in | `7d1970f` | `tests/test-mutations.sh` | `tests/integration/mutate.sh` |
+
+  The structure is what makes this validation sound: in each case the defect
+  lived in a **test** whose **target** is on the mutation list, so an
+  unfalsifiable assertion is precisely a surviving mutant. Restore the pre-fix
+  test with `git show <sha>^:<file>`, run the corresponding mutant, and the
+  harness must report `SURVIVED`. A tool that cannot catch the bugs that
+  motivated it does not ship.
+
+  **Hole #6 is the honest exception and must be run as one.** Its shape is
+  `stream-flip`, the operator this revision drops — so with the default operator
+  set it will report `KILLED`-by-absence, not `SURVIVED`. The validation runs it
+  with `stream-flip` explicitly enabled for that one target, which demonstrates
+  two things at once: that the harness catches it, and exactly what dropping the
+  operator costs. Silently letting hole #6 pass because its operator is gone
+  would be the same "verified nothing" failure this suite keeps finding.
+
+## The network/security tier
+
+**Added to scope 2026-08-14.** Not mutation testing, and not hermetic — it is
+the same rule this increment exists to mechanise, applied to the one tier that
+never got it.
+
+`tests/test-mutations.sh` asserts two directions for the launcher tier: every
+patch still applies, **and** every case has one. Its coverage loop filters on
+`mounts|groups|volumes|packages`. All 14 network/security cases carry
+`network-mode`, so **none of them is checked** — and that set is every
+restricted-mode assertion the product has: `010-restricted-blocks-unlisted`,
+`070-restricted-drops-capabilities`, `230-open-drops-capabilities`, and the
+self-heal pair.
+
+`AGENTS.md` states these cases "keep their fixture-based demonstrations under
+`tests/integration/fixtures/`". Two findings against that:
+
+- **Only two cases have a fixture at all** — the known-bad daemons name `040`
+  and `060` specifically. The other twelve have none.
+- **No case mounts either fixture.** Every reference to them in
+  `tests/integration/cases/` is a comment; `tests/test-integration-fixtures.sh`
+  only guards their executable bit. The demonstration was a manual, one-time
+  procedure — the increment-1 plan ends it with
+  `git checkout -- tests/integration/cases/`.
+
+So the guarantee is prose in a plan file that nothing executes: the exact
+distinction this spec draws when it contrasts "a demonstration executed" with
+"a demonstration recorded in prose". A new restricted-mode case can ship today
+with no demonstration whatever, and nothing anywhere reports it.
+
+The existing justification — that the fixtures are "copies of code that no
+longer exists, so there is nothing for a patch to apply to" — is true of the two
+*fixtures* and does not extend to the other twelve cases, whose recorded
+mutations are ordinary edits to case files that still exist.
+
+**The work is a conversion, not an invention.** Every mutation was recorded in
+the increment-1 plan's four "Known-bad mutation" tables:
+
+| Case | Recorded mutation |
+|---|---|
+| `010` | allowlist the sidecar |
+| `020` | allowlist nothing |
+| `030` | drop the `--add-host` argument |
+| `040` | `allowlist_write "$adir" "" "$IT_SIDECAR_IP" ""` |
+| `060` | bind-mount fixture #1 (`…prefix.sh`) |
+| `070` | `pid1_caps` reads a fresh exec; and `--privileged` with no drop |
+| `080` | `SELF_HEALING_ENABLED=0`; and bind-mount the known-bad daemon |
+| `085` | remove `SELF_HEALING_ENABLED=0` |
+| `110` | `sandbox_up restricted` |
+| `120` | `-e DISCOVERY_CAPTURE_ENABLED=0` |
+| `220` | `sandbox_up restricted` |
+| `230` | `sandbox_up discovery` |
+
+Three deliverables:
+
+1. Convert those twelve into `tests/integration/mutations/NNN-*.patch`, the same
+   mechanism and `# case:` header the launcher tier already uses — a patch that
+   stops applying fails loudly, which prose cannot.
+2. **Author the two that were never demonstrated.** `050` has only a "must still
+   PASS against the known-bad daemon with a populated allowlist" observation —
+   which is a real and valuable asymmetry, but it is not a failing
+   demonstration; and `210-open-no-firewall` has nothing recorded at all.
+   (`000-harness-selftest` is tagged `harness`, not `network-mode`, and is out
+   of this set.)
+3. Extend the coverage loop's tag filter to include `network-mode`, so the
+   assertion that has protected the launcher tier since increment 2 protects the
+   security tier too.
+
+Step 3 is the ratchet and must land **with** steps 1 and 2, never before: turned
+on early it fails 14 cases at once, and turned on late it is one more thing
+nothing enforces.
 
 ## Naming
 
@@ -165,18 +370,42 @@ week. The name states the property being measured rather than the technique.
 
 ## Risks and mitigations
 
-### R1 — survivor count is unknown until the generator first runs
+### R1 — survivor count is unknown until the generator first runs — **RESOLVED 2026-08-14, trigger fired**
 
-At 935 mutants and a plausible 8-20% survival rate that is roughly 75-190
-entries to classify. It cannot be sized more tightly by inspection.
+The pilot ran, exactly as this section required, and its number was bad enough
+to re-scope the increment. Recording both the prediction and the outcome,
+because the gap between them is the finding:
 
-**Mitigation — a pilot before the commitment.** The harness runs against one
-cheap target first: `mutate.sh`, 53 mutants against a 0.4 s oracle, about
-**20 seconds** end to end. That yields a real survival rate on real code, from
-which 935 extrapolates with confidence. If the rate lands far above 20%, the
-operator set or the target list is re-scoped *before* the classification work
-rather than after it. The pilot is the first task that produces a number, not
-the last.
+| | Predicted 2026-08-11 | Measured 2026-08-14 |
+|---|---|---|
+| Mutants | 935 | 2028 |
+| Survival rate | 8-20 % | **49.4 %** (24.1 % without `stream-flip`) |
+| Survivors to classify | 75-190 | **814-1002**, and that is a floor |
+| Wall clock | ~7 min | 1.5 h at 8× — *not* the constraint |
+
+Pilot: `tests/integration/mutate.sh` × `tests/run-all.sh test-mutations`,
+81 mutants, 41 killed, 40 survived, 25.0 s total at 0.309 s/mutant. The baseline
+was confirmed passing before any mutant ran, and confirmed insensitive to a
+dirty tree, so neither could manufacture a kill.
+
+The projection is a **floor**, not a midpoint: the pilot target is the
+best-covered file in the set (123 assertions over 256 lines), and `cmp-flip`'s
+rate rests on n=2 while `return-flip`'s rests on n=8. Targets with only
+indirect coverage will survive more.
+
+**Compute was never the risk; adjudication was.** Both authorised levers are
+therefore pulled — `stream-flip` dropped (see "Operators and layers") and the
+target list staged (see "Staging the target list") — taking this increment's
+classification load from 814-1002 to **~57**.
+
+**The pilot also justified the tier on its first target.** Independently
+re-verified, not taken on report: mutating `mutate.sh:144` from
+`( cd "$GIT_ROOT" && git diff --quiet )` to `||` **disables the clean-tree gate
+entirely** — `cd` succeeds, `||` short-circuits, the negation is false — and the
+hermetic suite stays green. That gate is the guarantee that a mutation is the
+only difference in the tree, which is what makes reverting one safe rather than
+a guess. It is a real hole, in a file with a dedicated 123-assertion test, found
+in the first 25 seconds of running the machine.
 
 **Second mitigation — shared rationales.** Survivors from one underlying cause
 are common (one unasserted stream, one uncovered function). The ledger format
@@ -199,10 +428,12 @@ the whole hermetic tier.
 **Mitigation — make the reason answer a specific question, and keep the corpus
 small enough to review.** An `EQUIVALENT` entry must state *why no test could
 ever kill this mutant*, not merely that none does — those are different claims,
-and the second one is a `GAP`. Dropping `num-bump` (655 near-noise mutants)
-exists partly to serve this: the ledger stays at a size a reviewer will actually
-read. This mitigation is review discipline, not machinery, and is stated as such
-rather than pretending the gate enforces it.
+and the second one is a `GAP`. Dropping `num-bump` (655 near-noise mutants) and,
+after measurement, `stream-flip` (441 more) exists partly to serve this, as does
+staging the target list: together they take this increment's ledger from
+814-1002 entries to ~57 — the difference between a corpus a reviewer reads and
+one they scroll past. This mitigation is review discipline, not machinery, and
+is stated as such rather than pretending the gate enforces it.
 
 ## Bash floor
 
