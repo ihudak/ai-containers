@@ -1,11 +1,29 @@
 # case: 080-selfheal-admits-wildcard
-# what: SELF_HEALING_ENABLED=0 turns off the path this case exists to prove alive — no (auto-allowed) line, no ipset add, retry still blocked
+# what: SELF_HEALING_ENABLED=0 turns off the path this case exists to prove
+#       alive — no (auto-allowed) line, no ipset add, retry still blocked
+#
+# The timeout bump is part of the mutation, not incidental. it_wait 60 is
+# SIXTY ITERATIONS, not sixty seconds, and each one runs a curl that blocks
+# for IT_CONNECT_TIMEOUT (5s) plus a 1s sleep. When self-healing works the
+# wait returns on the first or second poll, so the 300s default is ample and
+# nobody ever measured the exhausted path. With self-healing OFF all three
+# waits run to exhaustion: ~360-420s for the first alone, ~210s for the other
+# two. Without this header the case times out at 300s, and a timeout is NOT a
+# demonstration — it shows the case is slow, not that the assertion can fail.
 #
 diff --git a/tests/integration/cases/080-selfheal-admits-wildcard.sh b/tests/integration/cases/080-selfheal-admits-wildcard.sh
-index f714af7..b455091 100755
+index f714af7..6c2fe10 100755
 --- a/tests/integration/cases/080-selfheal-admits-wildcard.sh
 +++ b/tests/integration/cases/080-selfheal-admits-wildcard.sh
-@@ -37,7 +37,7 @@ adir="$(it_scratch)"
+@@ -3,6 +3,7 @@
+ #           auto-allowed on the spot, without waiting for the 60s refresh
+ # tags:     security network-mode restricted needs-dns
+ # requires: docker netadmin sidecar dns
++# timeout:  900
+ #
+ # THIS IS THE PROPERTY THAT SILENTLY DIED WITH THE CAPTURE DAEMON. Enforcement
+ # kept working throughout the original outage, so nothing looked wrong — but
+@@ -37,7 +38,7 @@ adir="$(it_scratch)"
  # is the wildcard in the proxy-domains file, matched by the self-healing path —
  # so a successful retry below cannot be explained any other way.
  allowlist_write "$adir" "" "" "*.wild.test"
