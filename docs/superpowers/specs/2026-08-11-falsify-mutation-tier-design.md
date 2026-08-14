@@ -180,6 +180,23 @@ candidates through the same gate and watching 3/3 be discarded.
 | `return-flip` | 289 | 75.0 % | **PR** |
 | `cmp-flip` | 219 | 0 % | **PR** |
 | ~~`stream-flip`~~ | ~~441~~ | **100 %** | **dropped** |
+
+**Correction, 2026-08-14 (second measurement).** The counts above came from an
+exploratory generator whose `stream-flip` had **two** sub-forms: `>&2` → `>&1`,
+*and* removing a `2>/dev/null` / `2>&1` suppression. This spec's operator table
+defines only the first — deliberately, since the pilot measured the suppression-
+removal form at 4/4 `EQUIVALENT` and recommended dropping it by name. But the
+per-target counts were copied from the wide version, making the arithmetic
+internally inconsistent, and the implementation caught it: `tests/portability.sh`
+was credited with 4 `stream-flip` mutants while containing **zero** `>&2` (it has
+exactly 4 `2>/dev/null`/`2>&1`), and the claimed 62 stage-1 `stream-flip` mutants
+exceeded the 41 `>&2` occurrences that exist. Both verified directly.
+
+Authoritative numbers are now the ones `tests/falsify/generate.sh` produces,
+because that is the code that will run: **288** stage-1 mutants, 0 discarded by
+`bash -n`, of which **41** are `stream-flip` — so **247** under the default set,
+projecting ~60 survivors at the pilot's 24.1 % ex-`stream-flip` rate. Do not
+"restore" the 300/62 figures; they describe an operator this spec does not have.
 | `stmt-delete`, enabled per-target on a measured score | — | — | **Nightly** |
 | full matrix, on the host | — | — | **Local** (Phase 6) |
 
@@ -236,9 +253,12 @@ targets qualify today:
 | `shared-files.sh` | `test-shared-files-parity.sh` | 5 |
 | | **total** | **300** |
 
-Less the 62 `stream-flip` mutants, that is **238**, projecting **~57
-survivors** — a corpus a reviewer will actually read, which is the whole point
-of R3's mitigation.
+The per-file figures in that table are the exploratory generator's. The
+implementation measures **288** across the nine, less **41** `stream-flip`, so
+**247** under the default set — projecting **~60 survivors** at the pilot's
+24.1 % ex-`stream-flip` rate. A corpus a reviewer will actually read, which is
+the whole point of R3's mitigation. See the correction under "Operators and
+layers" for why the two counts differ.
 
 `tests/integration/minimal-conf.sh` is the near miss that shows the criterion
 has teeth: its coverage is split across `test-integration-lib.sh` and

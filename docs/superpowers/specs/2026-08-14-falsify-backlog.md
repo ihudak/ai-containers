@@ -152,3 +152,40 @@ Kept as a backlog entry rather than fixed inline because the falsify tier's own
 ledger is the right home for survivor accounting, and these three are its first
 entries — recorded here so Task 10 starts from a known state instead of
 rediscovering them and treating them as new.
+
+## F9 — the generator cannot reach a comparison inside a backslash-continued `(( ))`
+
+`tests/falsify/generate.sh` scans `[[ ]]`/`(( ))` spans **per line**, with no
+continuation tracking, so `<`/`>` inside a multi-line arithmetic condition is
+never mutated. The span restriction itself is necessary — without it the operator
+mangles redirections — but the per-line implementation under-generates silently,
+which is the worse failure direction for a tool whose whole job is finding gaps.
+
+The instance that exposed it is not incidental: `bash-floor.sh:40-42` is the
+**bash floor check itself**, the comparison that decides whether this repo
+refuses to run at all, and it holds **two** unmutatable `<` operators:
+
+```
+if (( BASH_VERSINFO[0] < AI_CONTAINERS_BASH_FLOOR_MAJOR \
+   || (BASH_VERSINFO[0] == AI_CONTAINERS_BASH_FLOOR_MAJOR \
+       && BASH_VERSINFO[1] < AI_CONTAINERS_BASH_FLOOR_MINOR) )); then
+```
+
+`tests/test-bash-floor.sh` may well assert the floor correctly — the gap is that
+the mutation tier cannot *check* whether it does, so this comparison is outside
+the guarantee the tier exists to provide.
+
+Fixing it moves `bash-floor.sh`'s pinned count from 12 to at least 13, so the
+pinned-count assertions in `tests/test-falsify-generate.sh` must be updated in
+the same change — deliberately, so the count cannot drift silently. Joining
+continuation lines before the span scan is the obvious approach; the mutated
+output must still be written back to the correct single physical line.
+
+## F10 — a single-clause `if [[ X ]];` yields two semantically identical mutants
+
+`cond-negate` produces two distinct mutants that damage the condition the same
+way, so any survivor among them is double-counted in the ledger. Harmless to
+correctness, wasteful to review, and it inflates the survivor count that R1's
+re-scope trigger reads. Dedupe survivors by mutated text when the ledger is built
+(Task 7), rather than by suppressing generation — two mutants that happen to
+coincide today may diverge if the operator changes.
