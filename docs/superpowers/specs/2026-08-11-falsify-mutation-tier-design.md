@@ -69,14 +69,28 @@ demonstration executed, not a demonstration recorded in prose.
 
 The rule stands. Its original application did not: this spec excluded
 `sandbox.sh` because "nothing runs them", and that was **already false when
-written**. `tests/test-parsers.sh` has sourced `sandbox.sh` since commit
-`5e7d4ee` (2026-07-28) — in a subshell with positional parameters cleared, so
-it lands in the `usage` branch — and then calls `mem_to_bytes`,
-`validate_memory_limits`, `parse_pointer_spec`, `pointer_repo_entry` and
-`split_env_list` directly. Excluding the largest product script on a premise
-contradicted by a two-week-old commit is exactly the kind of unchecked claim
-this repo's guards exist to catch, so the rule now has **three** outcomes, not
-two:
+written** — by a wider margin than the first pass of this revision recorded.
+Two independent routes execute it:
+
+- `tests/test-parsers.sh` has sourced it since commit `5e7d4ee` (2026-07-28),
+  in a subshell with positional parameters cleared so it lands in the `usage`
+  branch, then calls `mem_to_bytes`, `validate_memory_limits`,
+  `parse_pointer_spec`, `pointer_repo_entry` and `split_env_list`.
+- **`tests/test-docs-path.sh`, `tests/test-tool-config-mounts.sh` and
+  `tests/test-tools-d.sh` run it as a real, un-neutered subprocess** — `bash
+  "$REPO_DIR/sandbox.sh" restricted …` with only `docker` faked on `PATH`.
+  That reaches argv parsing, mode dispatch, group bootstrap, the whole of mount
+  resolution, the `tools.d` `config_dir` logic, and `docker run` argument
+  assembly.
+
+So the excluded file is one of the *best*-executed scripts in the repo along its
+restricted-mode path. **Discovery mode and open mode are the genuinely
+grep-only parts** (`tests/test-open-mode.sh` only greps and `bash -n`s them),
+which is the real boundary — a per-mode one, not a per-file one.
+
+Excluding the largest product script on a premise contradicted by a two-week-old
+commit is exactly the kind of unchecked claim this repo's guards exist to catch.
+The rule now has **three** outcomes, not two:
 
 | Category | Meaning | Mutation unit |
 |---|---|---|
@@ -90,6 +104,33 @@ would flood the ledger for the same reason the original exclusion was reaching
 for. Mutating only the five functions the suite actually calls is both sound and
 cheap. A `bash -n` or `shellcheck` invocation is **not** execution, and a stub
 fake inside `tests/lib-verify-repo.sh`'s scratch repo is not the real script.
+
+**Measured 2026-08-14** across the 19 candidates: 14 `EXECUTED-WHOLE`, 5
+`EXECUTED-PARTIAL`, 0 `GREPPED-ONLY`. The five partials, with what is *not*
+reached — which is the half that matters, because it is where a mutant would
+survive for reasons that have nothing to do with assertion quality:
+
+| Target | Reached | Not reached |
+|---|---|---|
+| `sandbox.sh` | restricted-mode path, whole; 5 parser fns | **discovery and open modes** |
+| `repo.sh` | `is_git_url`, `fmt_epoch` — **2 of 19** | every `cmd_*` subcommand, `seed_from_*`, `sync_from_*` |
+| `tests/integration/lib.sh` | 15 fns incl. the `launcher_*` family | `sidecar_up`, `sandbox_up`, `agent_exec*`, 5 asserts — existence-checked only |
+| `build.sh` | 10 of 11 | `build_image` (needs a real `docker build`) |
+| `install-tools.sh` | `asset_name`, `parse_versions`, `install_one` + transitive | `api_get`, `main` |
+
+Zero `GREPPED-ONLY` is not evidence the category is unnecessary — these 19 were
+pre-filtered as plausible candidates. It is the verdict `entrypoint.sh`,
+`group.sh` and the capture daemons would receive, and the gate must still be
+able to express it.
+
+Two of those rows are coverage findings in their own right, independent of
+mutation testing, and are recorded in the backlog rather than silently
+absorbed: **`repo.sh` executes 2 of 19 functions** — every user-facing
+subcommand is unexercised hermetically — and **`sandbox.sh`'s discovery and open
+modes are never executed** by the hermetic suite (they are covered by
+integration cases `110`/`120`/`210`/`220`/`230`, so this is a tier gap, not an
+absence of coverage). Mutating either area today would produce survivors that
+say nothing about assertion quality, which is why both wait for a later stage.
 
 `targets.conf` maps each target to its oracle tests, carrying the category and —
 for `EXECUTED-PARTIAL` — the function list. It is **derived, then checked**: the
