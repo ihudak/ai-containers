@@ -189,3 +189,35 @@ correctness, wasteful to review, and it inflates the survivor count that R1's
 re-scope trigger reads. Dedupe survivors by mutated text when the ledger is built
 (Task 7), rather than by suppressing generation — two mutants that happen to
 coincide today may diverge if the operator changes.
+
+## F11 — two survivors in `tools-lib.sh`, the tier's first real output
+
+`tests/falsify/run.sh --target tools-lib.sh` — 17 mutants, 15 killed, 2 survived
+(11.8 %, better than the pilot's 24.1 % ex-`stream-flip` projection). Both are
+`GAP`, not `EQUIVALENT`, and the second is a live product risk.
+
+**`tools-lib.sh:62` `logic-flip` (`e46b949d`) — GAP, product-relevant.**
+
+    while IFS= read -r line || [[ -n "$line" ]]; do     ->  && 
+
+The `||` is the standard idiom for reading a final line that carries no trailing
+newline. With `&&` the loop stops at the first EMPTY line instead. Verified by
+running both against a descriptor holding a blank line between two keys:
+
+    pristine:  repo=[a/b] binary=[x]        <- correct
+    mutated:   repo=[]    binary=[blank]    <- silently wrong
+
+Nothing in the suite notices, so a `tools.d/*.conf` with a blank line — or one
+whose last line lacks a newline — could parse wrong with every test green. The
+killing assertion is a fixture descriptor containing both shapes.
+
+**`tools-lib.sh:42` `return-flip` (`f128fd8d`) — GAP, narrow.**
+
+    [[ -d "$TOOLS_D_DIR" ]] || return 0     ->  return 1
+
+`tools_list_names`'s "no descriptor directory" path. Callers treat non-zero as an
+error, so the status is contractual, and no test exercises a missing
+`TOOLS_D_DIR` at all.
+
+Both are the first entries the tier produced on real code rather than on its own
+fixtures, which is the evidence Task 9's ship gate is aimed at.
