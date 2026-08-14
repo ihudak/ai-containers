@@ -1,0 +1,16 @@
+# case: 030-restricted-allows-listed-domain
+# what: --add-host is dropped, so it-sidecar.test resolves nowhere and the getent->ipset path never admits it
+#
+diff --git a/tests/integration/cases/030-restricted-allows-listed-domain.sh b/tests/integration/cases/030-restricted-allows-listed-domain.sh
+index 804dcae..27a7e58 100644
+--- a/tests/integration/cases/030-restricted-allows-listed-domain.sh
++++ b/tests/integration/cases/030-restricted-allows-listed-domain.sh
+@@ -12,7 +12,7 @@
+ sidecar_up || it_finish
+ adir="$(it_scratch)"
+ allowlist_write "$adir" "it-sidecar.test" "" ""
+-sandbox_up restricted "$adir" --add-host "it-sidecar.test:$IT_SIDECAR_IP" || it_finish
++sandbox_up restricted "$adir" || it_finish   # KNOWN-BAD: --add-host dropped
+ assert_reachable "$IT_CID" "it-sidecar.test"
+ # This is a MECHANISM check, not a second independent property: in
+ # entrypoint.sh's restricted-mode OUTPUT chain, the ipset match-set rule is

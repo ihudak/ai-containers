@@ -1,0 +1,16 @@
+# case: 085-selfheal-disabled-stays-blocked
+# what: the -e SELF_HEALING_ENABLED=0 this case is about is removed, so the wildcard heals the drop and the destination becomes reachable
+#
+diff --git a/tests/integration/cases/085-selfheal-disabled-stays-blocked.sh b/tests/integration/cases/085-selfheal-disabled-stays-blocked.sh
+index 0952ecf..7b92213 100755
+--- a/tests/integration/cases/085-selfheal-disabled-stays-blocked.sh
++++ b/tests/integration/cases/085-selfheal-disabled-stays-blocked.sh
+@@ -22,7 +22,7 @@ dns_up "$fqdn" "$IT_SIDECAR_IP" || it_finish
+ 
+ adir="$(it_scratch)"
+ allowlist_write "$adir" "" "" "*.wild.test"
+-sandbox_up restricted "$adir" --dns "$IT_DNS_IP" -e SELF_HEALING_ENABLED=0 || it_finish
++sandbox_up restricted "$adir" --dns "$IT_DNS_IP" || it_finish   # KNOWN-BAD: the off switch is gone
+ 
+ # Prove the switch is actually off before asserting on its consequences. Without
+ # this, a typo'd env var name would make the case assert "stays blocked" against

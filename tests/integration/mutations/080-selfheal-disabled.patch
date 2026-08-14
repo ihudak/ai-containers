@@ -1,0 +1,16 @@
+# case: 080-selfheal-admits-wildcard
+# what: SELF_HEALING_ENABLED=0 turns off the path this case exists to prove alive — no (auto-allowed) line, no ipset add, retry still blocked
+#
+diff --git a/tests/integration/cases/080-selfheal-admits-wildcard.sh b/tests/integration/cases/080-selfheal-admits-wildcard.sh
+index f714af7..b455091 100755
+--- a/tests/integration/cases/080-selfheal-admits-wildcard.sh
++++ b/tests/integration/cases/080-selfheal-admits-wildcard.sh
+@@ -37,7 +37,7 @@ adir="$(it_scratch)"
+ # is the wildcard in the proxy-domains file, matched by the self-healing path —
+ # so a successful retry below cannot be explained any other way.
+ allowlist_write "$adir" "" "" "*.wild.test"
+-sandbox_up restricted "$adir" --dns "$IT_DNS_IP" || it_finish
++sandbox_up restricted "$adir" --dns "$IT_DNS_IP" -e SELF_HEALING_ENABLED=0 || it_finish   # KNOWN-BAD
+ 
+ # Self-healing lives in the NFLOG watcher, and tshark takes ~22s to attach.
+ # Firing traffic before then means the drop is never seen, nothing is looked up,

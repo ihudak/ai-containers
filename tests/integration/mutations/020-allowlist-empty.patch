@@ -1,0 +1,16 @@
+# case: 020-restricted-allows-listed-cidr
+# what: nothing is allowlisted, so the literal-IP admission branch this case exercises never runs
+#
+diff --git a/tests/integration/cases/020-restricted-allows-listed-cidr.sh b/tests/integration/cases/020-restricted-allows-listed-cidr.sh
+index a4a48ea..56edb9f 100644
+--- a/tests/integration/cases/020-restricted-allows-listed-cidr.sh
++++ b/tests/integration/cases/020-restricted-allows-listed-cidr.sh
+@@ -18,7 +18,7 @@
+ 
+ sidecar_up || it_finish
+ adir="$(it_scratch)"
+-allowlist_write "$adir" "" "$IT_SIDECAR_IP" ""
++allowlist_write "$adir" "" "" ""          # KNOWN-BAD: nothing is allowlisted at all
+ sandbox_up restricted "$adir" || it_finish
+ assert_reachable "$IT_CID" "$IT_SIDECAR_IP"
+ it_finish

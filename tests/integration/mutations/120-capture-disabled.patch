@@ -1,0 +1,16 @@
+# case: 120-discovery-collects
+# what: DISCOVERY_CAPTURE_ENABLED=0 stops the pcap daemon, so no agent-traffic.pcap is ever written and extraction has nothing to list
+#
+diff --git a/tests/integration/cases/120-discovery-collects.sh b/tests/integration/cases/120-discovery-collects.sh
+index 67f536f..f427e14 100755
+--- a/tests/integration/cases/120-discovery-collects.sh
++++ b/tests/integration/cases/120-discovery-collects.sh
+@@ -21,7 +21,7 @@ dead_resolver="10.253.0.53"       # nothing listens; only the outbound query mat
+ 
+ adir="$(it_scratch)"
+ allowlist_write "$adir" "" "" ""
+-sandbox_up discovery "$adir" || it_finish     # capture ENABLED (the default)
++sandbox_up discovery "$adir" -e DISCOVERY_CAPTURE_ENABLED=0 || it_finish   # KNOWN-BAD: capture OFF
+ assert_log_contains "$IT_CID" 'Discovery capture started'
+ 
+ it_wait 30 docker exec "$IT_CID" test -f /workspace/.agent-discovery/agent-traffic.pcap || true

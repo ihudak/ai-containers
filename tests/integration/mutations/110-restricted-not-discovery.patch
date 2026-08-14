@@ -1,0 +1,16 @@
+# case: 110-discovery-does-not-block
+# what: restricted mode instead of discovery, so the identical empty allowlist blocks the sidecar and the discovery banner never appears
+#
+diff --git a/tests/integration/cases/110-discovery-does-not-block.sh b/tests/integration/cases/110-discovery-does-not-block.sh
+index d82154d..5b5623a 100755
+--- a/tests/integration/cases/110-discovery-does-not-block.sh
++++ b/tests/integration/cases/110-discovery-does-not-block.sh
+@@ -17,7 +17,7 @@
+ sidecar_up || it_finish
+ adir="$(it_scratch)"
+ allowlist_write "$adir" "" "" ""          # byte-identical to 010's allowlist
+-sandbox_up discovery "$adir" -e DISCOVERY_CAPTURE_ENABLED=0 || it_finish
++sandbox_up restricted "$adir" -e DISCOVERY_CAPTURE_ENABLED=0 || it_finish   # KNOWN-BAD: not discovery
+ 
+ assert_reachable "$IT_CID" "$IT_SIDECAR_IP"
+ 
