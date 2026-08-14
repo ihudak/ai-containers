@@ -22,6 +22,13 @@
 # ERROR is a third, distinct outcome and is NOT a pass: a case whose container
 # never started tells us the harness broke, not that the assertion can fail.
 #
+# INCONCLUSIVE is the fourth, and it exists because the first run of this script
+# reported a case as demonstrated on the strength of run.sh's FAIL verdict
+# alone. run.sh reports "FAIL (exited 0 but asserted nothing)" for a case that
+# bailed before asserting — a correct verdict, and the exact opposite of a
+# demonstration. A real demonstration must produce a `FAIL:` assertion line;
+# anything else is reported as INCONCLUSIVE and fails the run.
+#
 # Usage:
 #   bash tests/integration/demonstrate-network-tier.sh            # every network patch
 #   bash tests/integration/demonstrate-network-tier.sh 050 210    # only these
@@ -59,20 +66,27 @@ patches=()
 for p in "$MUT_DIR"/*.patch; do
   [[ -f "$p" ]] || continue
   id="$(basename "$p" .patch)"
-  case_name="$(sed -n 's/^#[[:space:]]*case:[[:space:]]*//p' "$p" | head -1)"
-  [[ -n "$case_name" ]] || continue
-  cf="$CASES_DIR/$case_name.sh"
-  [[ -f "$cf" ]] || continue
-  # network tier only — the launcher tier is a different economics and is not
-  # what this script is for.
-  tags="$(sed -n 's/^#[[:space:]]*tags:[[:space:]]*//p' "$cf" | head -1)"
-  case " $tags " in *" network-mode "*) : ;; *) continue ;; esac
-  if [[ ${#wanted[@]} -gt 0 ]]; then
-    match=0
-    for w in "${wanted[@]}"; do [[ "$id" == "$w"* || "$case_name" == "$w"* ]] && match=1; done
-    [[ "$match" -eq 1 ]] || continue
-  fi
-  patches+=("$id|$case_name")
+  # EVERY declared case, not `head -1`. A patch may name more than one — the
+  # 070/230 pair share one edit to tests/integration/lib.sh — and reading only
+  # the first silently leaves the others never run while the report still says
+  # "demonstrated". This is the same defect tests/test-mutations.sh carried in
+  # its own validation loop; do not reintroduce it here.
+  mapfile -t pcases < <(sed -n 's/^#[[:space:]]*case:[[:space:]]*//p' "$p")
+  [[ ${#pcases[@]} -gt 0 ]] || continue
+  for case_name in "${pcases[@]}"; do
+    cf="$CASES_DIR/$case_name.sh"
+    [[ -f "$cf" ]] || continue
+    # network tier only — the launcher tier is a different economics and is not
+    # what this script is for.
+    tags="$(sed -n 's/^#[[:space:]]*tags:[[:space:]]*//p' "$cf" | head -1)"
+    case " $tags " in *" network-mode "*) : ;; *) continue ;; esac
+    if [[ ${#wanted[@]} -gt 0 ]]; then
+      match=0
+      for w in "${wanted[@]}"; do [[ "$id" == "$w"* || "$case_name" == "$w"* ]] && match=1; done
+      [[ "$match" -eq 1 ]] || continue
+    fi
+    patches+=("$id|$case_name")
+  done
 done
 
 if [[ ${#patches[@]} -eq 0 ]]; then
@@ -93,7 +107,7 @@ if ! bash "$RUN" --cases 000-harness-selftest --keep >/dev/null 2>&1; then
 fi
 printf '   image ready, harness selftest green on a clean tree.\n\n'
 
-demonstrated=0; undemonstrated=0; errored=0
+demonstrated=0; undemonstrated=0; errored=0; inconclusive=0
 results=""
 
 for entry in "${patches[@]}"; do
@@ -109,9 +123,24 @@ for entry in "${patches[@]}"; do
   bash "$MUT" revert >/dev/null 2>&1
 
   if grep -qE "^${case_name}[[:space:]]+FAIL|${case_name}.*  FAIL" <<<"$out"; then
-    printf 'FAIL  ← demonstrated\n'
+    # A FAIL verdict is NOT sufficient. run.sh reports
+    # "FAIL (exited 0 but asserted nothing)" for a case that bailed before
+    # asserting — a correct verdict, but the opposite of a demonstration: it
+    # says the case did nothing, not that its assertion can be false. Requiring
+    # a real `FAIL:` assertion line separates the two. run.sh prints every
+    # PASS/FAIL/SKIP line first and unbounded (run.sh:1216), so a missing line
+    # here is a genuine absence and never truncation.
     line="$(grep -E '^ *FAIL:' <<<"$out" | head -1 | sed 's/^ *//')"
-    results="${results}DEMONSTRATED $id\n               ${line}\n"
+    if [[ -z "$line" ]]; then
+      printf 'FAIL  ← INCONCLUSIVE (no assertion failed)\n'
+      results="${results}INCONCLUSIVE $id → $case_name — reported FAIL but no 'FAIL:' assertion line;\n"
+      results="${results}               the case bailed before asserting, so nothing was demonstrated\n"
+      inconclusive=$((inconclusive + 1))
+      sed 's/^/       /' <<<"$out" | grep -E 'FAIL|SKIP|asserted nothing' | head -6
+      continue
+    fi
+    printf 'FAIL  ← demonstrated\n'
+    results="${results}DEMONSTRATED $id → $case_name\n               ${line}\n"
     demonstrated=$((demonstrated + 1))
   elif grep -qE "${case_name}.*  PASS" <<<"$out"; then
     printf 'PASS  ← UNDEMONSTRATED\n'
@@ -128,11 +157,11 @@ done
 printf '\n────────────────────────────────────────────────────────────\n'
 printf '%b' "$results"
 printf '────────────────────────────────────────────────────────────\n'
-printf 'demonstrated %s   UNDEMONSTRATED %s   errored %s\n' \
-  "$demonstrated" "$undemonstrated" "$errored"
+printf 'demonstrated %s   UNDEMONSTRATED %s   INCONCLUSIVE %s   errored %s\n' \
+  "$demonstrated" "$undemonstrated" "$inconclusive" "$errored"
 
 git -C "$REPO_DIR" diff --quiet \
   && printf 'tree clean.\n' \
   || printf 'WARNING: tree is NOT clean — inspect before committing.\n'
 
-[[ "$undemonstrated" -eq 0 && "$errored" -eq 0 ]]
+[[ "$undemonstrated" -eq 0 && "$errored" -eq 0 && "$inconclusive" -eq 0 ]]
