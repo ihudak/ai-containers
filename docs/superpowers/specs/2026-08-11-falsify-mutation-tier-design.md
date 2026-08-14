@@ -235,10 +235,25 @@ projects 373 survivors, and every `GAP` among them is owed a killing assertion
 under this project's "none dropped" rule. Committing to 373 IOUs in one
 increment is how that rule stops being true.
 
-A target enters the tier when it has a **dedicated 1:1 oracle test** — a
-mechanical criterion, checkable by the same derivation that builds
-`targets.conf`, not a judgement call about which files feel important. Nine
-targets qualify today:
+Entry has **two** conditions, and only the first is mechanical. Stating this
+precisely matters, because an earlier draft of this section claimed the criterion
+alone was "mechanical … not a judgement call about which files feel important",
+and the implementation disproved it: the rule as written admits **at least
+eighteen** targets, not nine. Strict 1:1 name-matching selects only four of the
+nine below; the other five (`mutate.sh` → `test-mutations.sh`, `tools-lib.sh` →
+`test-tools-d.sh`, `lib-layer-checks.sh` → `test-layer-checks-parser.sh`,
+`docker-shim.sh` → `test-integration-shim.sh`, `shared-files.sh` →
+`test-shared-files-parity.sh`) were judgement calls dressed as derivation.
+
+1. **Necessary and mechanical:** the target is `EXECUTED-WHOLE` and has an
+   identifiable primary oracle. `derive-targets.sh` checks this and gates it.
+2. **A stage-1 budget cap, which is a decision:** of the targets meeting (1),
+   these nine are activated first — the smallest set that exercises every part of
+   the machine while keeping the ledger reviewable. `targets.conf` records the
+   rest as `#DEFERRED|` **with this reason stated in its header**, so nobody
+   later mistakes the active set for the rule's output.
+
+Nine active targets:
 
 | Target | Oracle | Mutants |
 |---|---|---|
@@ -260,9 +275,16 @@ implementation measures **288** across the nine, less **41** `stream-flip`, so
 the whole point of R3's mitigation. See the correction under "Operators and
 layers" for why the two counts differ.
 
-`tests/integration/minimal-conf.sh` is the near miss that shows the criterion
-has teeth: its coverage is split across `test-integration-lib.sh` and
-`test-integration-runner.sh`, so it waits. The large diffuse targets
+`tests/integration/minimal-conf.sh` waits because its coverage is split across
+**three** tests rather than one, so it has no primary oracle. That is condition
+(1) doing real work — but it is the only near miss of its kind, which is exactly
+why condition (2) has to exist and be named as a decision.
+
+The nine that meet (1) and await a later stage are named in `targets.conf`:
+`check-sandbox-version.sh`, `group.sh`, `migrate-runme.sh`,
+`capture-blocked-traffic.sh`, `link-agent-tools.sh`, `link-default-ruby.sh`,
+`agent-tools-reconcile.sh`, `rvm-reconcile.sh`, `install-agent-skills.sh`. They
+are the obvious stage 2 and roughly double the corpus. The large diffuse targets
 (`sandbox.sh`, `tests/integration/{lib,run}.sh`, `repo.sh`,
 `sandbox-common.sh` — 1329 mutants between them) are precisely the ones that
 would flood, and they enter in later increments, one at a time, each with its
