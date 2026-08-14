@@ -18,7 +18,7 @@
 #                   through `ln -sf "$SHIM" "$TMP/bin/docker"`)
 #                transitively: what an executed file itself executes
 #   never        bash -n <file>             (parses; runs nothing)
-#                shellcheck/grep/sed/awk/cat <file>  (reads text)
+#                a grep/sed/awk/cat/shellcheck read of <file>  (text, not code)
 #                a heredoc BODY that happens to contain shell syntax
 #                a stub fake written into a scratch repo under a repo file's
 #                  name — see OPAQUE below
@@ -42,6 +42,7 @@
 #   derive-targets.sh --all           # ... plus the out-of-scope candidates
 #   derive-targets.sh --evidence      # every resolved reference, with file:line
 #   derive-targets.sh --scope         # the scope rules and their reasons
+#   derive-targets.sh --rows [conf]   # targets.conf parsed into uniform records
 #   derive-targets.sh --check [conf]  # gate targets.conf against the derivation
 #
 # Env overrides (used by tests/test-falsify-targets.sh to drive the derivation
@@ -49,6 +50,7 @@
 #   FALSIFY_REPO        repo root to derive over          (default: this repo)
 #   FALSIFY_TESTS_DIR   directory holding test-*.sh       (default: $REPO/tests)
 #   FALSIFY_CONF        default conf for --check
+#   FALSIFY_DERIVED     reuse a derivation already computed (test accelerator)
 set -uo pipefail
 
 _ft_here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -392,8 +394,38 @@ _ft_walk_file() {  # $1=absolute file, $2=map key, $3=oracle, $4=depth
   done < <(_ft_refs "$f")
 }
 
+# A derivation costs a few seconds (it walks every hermetic test). FALSIFY_DERIVED
+# lets a caller supply one already computed, in this file's own default output
+# format, so tests/test-falsify-targets.sh can drive a dozen negative fixtures
+# against ONE derivation. It is an accelerator, never the gate: the test also
+# runs --check with no cache at all, and CI only ever runs it that way.
+_ft_load_derived() {  # $1 = a file of <target>|EXECUTED|<oracles> lines
+  local f="$1" target verdict oracles b
+  while IFS='|' read -r target verdict oracles; do
+    [[ -n "$target" ]] || continue
+    [[ "$verdict" == "OUT-OF-SCOPE" ]] && continue
+    FT_CANDIDATES+=("$target")
+    D_ISCAND["$target"]=1
+    b="${target##*/}"
+    if [[ -n "${D_BASENAME[$b]:-}" ]]; then D_BASENAME["$b"]="AMBIGUOUS"; else D_BASENAME["$b"]="$target"; fi
+    [[ "$verdict" == "EXECUTED" ]] && D_HITS["$target"]="${oracles//,/ }"
+  done < "$f"
+  if [[ "${#FT_CANDIDATES[@]}" -eq 0 ]]; then
+    echo "derive-targets.sh: FALSIFY_DERIVED=$f held no verdict rows" >&2
+    return 1
+  fi
+}
+
 ft_derive() {
   local t base
+  if [[ -n "${FALSIFY_DERIVED:-}" ]]; then
+    if [[ ! -s "${FALSIFY_DERIVED}" ]]; then
+      echo "derive-targets.sh: FALSIFY_DERIVED=$FALSIFY_DERIVED is missing or empty" >&2
+      return 1
+    fi
+    _ft_load_derived "$FALSIFY_DERIVED"
+    return
+  fi
   _ft_load_candidates || return 1
   local -a tests=()
   while IFS= read -r t; do [[ -n "$t" ]] && tests+=("$t"); done \
@@ -450,7 +482,7 @@ ft_conf_rows() {  # $1=conf
       '#EXCLUDED|'*)
         rest="${line#\#EXCLUDED|}"
         IFS='|' read -r target reason <<<"$rest"
-        printf 'EXCLUDED|%s|%s|||%s\n' "$n" "$target" "$reason"
+        printf 'EXCLUDED|%s|%s||||%s\n' "$n" "$target" "$reason"
         ;;
       '#'*) continue ;;
       *)
@@ -474,7 +506,7 @@ _ft_oracle_matches() {  # $1=oracle filter → count of tests/test-*.sh it selec
 ft_check() {  # $1=conf
   local conf="${1:-$FT_CONF_DEFAULT}"
   local kind lineno target category oracle funcs reason
-  local problems=0 rows=0 executed=0 active=0 fn
+  local problems=0 rows=0 executed=0 active=0 grepped=0 deferred=0 excluded=0 fn
   declare -A seen=()
   declare -A mapped=()
 
@@ -513,6 +545,7 @@ ft_check() {  # $1=conf
         problems=$((problems + 1)); continue
       fi
       mapped["$target"]="EXCLUDED"
+      excluded=$((excluded + 1))
       continue
     fi
 
@@ -531,7 +564,13 @@ ft_check() {  # $1=conf
         ;;
     esac
     mapped["$target"]="$category"
-    [[ "$kind" == "ACTIVE" ]] && active=$((active + 1))
+    if [[ "$kind" == "DEFERRED" ]]; then
+      deferred=$((deferred + 1))
+    elif [[ "$category" == "GREPPED-ONLY" ]]; then
+      grepped=$((grepped + 1))
+    else
+      active=$((active + 1))
+    fi
 
     # ── Gate: a mutation target the suite never executes is unkillable noise ──
     if [[ "$category" == EXECUTED-* && -z "${D_HITS[$target]:-}" ]]; then
@@ -607,15 +646,17 @@ ft_check() {  # $1=conf
     fi
   done
 
-  printf '%s: %s row(s), %s active target(s), %s of %s candidate(s) EXECUTED, %s problem(s)\n' \
-    "${conf#"$FT_REPO"/}" "$rows" "$active" "$executed" "${#FT_CANDIDATES[@]}" "$problems"
+  printf '%s: %s row(s) = %s active + %s grepped-only + %s deferred + %s excluded; %s of %s candidate(s) EXECUTED; %s problem(s)\n' \
+    "${conf#"$FT_REPO"/}" "$rows" "$active" "$grepped" "$deferred" "$excluded" \
+    "$executed" "${#FT_CANDIDATES[@]}" "$problems"
   [[ "$problems" -eq 0 ]]
 }
 
 ft_main() {
   case "${1:-}" in
-    --scope) ft_scope_rules ;;
+    --scope) ft_scope_rules; printf 'opaque|%s|%s\n' "$FT_OPAQUE" "$FT_OPAQUE_WHY" ;;
     --check) shift; ft_check "${1:-$FT_CONF_DEFAULT}" ;;
+    --rows) shift; ft_conf_rows "${1:-$FT_CONF_DEFAULT}" ;;
     --evidence) ft_derive && ft_print_evidence ;;
     --all) ft_derive && ft_print_verdicts all ;;
     ''|--list) ft_derive && ft_print_verdicts ;;
