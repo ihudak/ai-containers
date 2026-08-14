@@ -125,3 +125,30 @@ remains is to make `230` say what it does: rename it (e.g.
 "both belts" sentence, which `240` now owns. A rename touches its mutation
 patch's `# case:` header and `AGENTS.md`'s reference to "case 230", so it is a
 small coordinated change rather than a one-liner.
+
+## F8 — three surviving mutants in `tests/integration/mutate.sh`'s guard cluster
+
+The falsify pilot found five survivors around `mutate.sh`'s entry guards. The
+clean-tree gate is **fixed** (`tests/test-mutations.sh` now asserts `apply`
+refuses a dirty tree, says why, and records no state), and that one assertion
+kills two of the five — `L144 && -> ||` and `L147 exit 1 -> exit 0`. Measured,
+both directions, not assumed.
+
+Three still survive, each a genuinely separate gap:
+
+| Mutant | What it disables | Why nothing notices |
+|---|---|---|
+| `L141 exit 1 -> exit 0` | the already-applied guard's refusal | the suite asserts `apply` is *not* blocked once state clears; never that it *is* blocked while state exists |
+| `L143 require_git_usable \|\| exit 1 -> exit 0` | the git-unusable path's status | that path is never exercised |
+| `L74 return 1 -> return 0` | `require_git_usable`'s own verdict | same — no test makes git unusable |
+
+`L141` needs one assertion in the existing `MT_REPO` fixture: apply, then apply
+again without reverting, and require a non-zero exit naming the applied mutation.
+`L143`/`L74` need a fixture where git is genuinely unusable — the ownership-
+mismatch shape `require_git_usable` was written for. `tests/test-mutations.sh`
+already fakes `git` on `PATH` for the rollback test, so the technique exists.
+
+Kept as a backlog entry rather than fixed inline because the falsify tier's own
+ledger is the right home for survivor accounting, and these three are its first
+entries — recorded here so Task 10 starts from a known state instead of
+rediscovering them and treating them as new.

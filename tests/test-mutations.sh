@@ -339,6 +339,41 @@ mt_dirty \
   || fail "a successful rollback removes the state file"
 mt_clean
 
+# ── apply REFUSES a dirty tree ─────────────────────────────────────────────────
+# mutate.sh's clean-tree gate is the guarantee that a mutation is the only
+# difference in the tree, which is what makes `revert` a reversal rather than a
+# guess. Nothing asserted it, and the consequence was measured, not supposed:
+# mutating that line from
+#     if ! ( cd "$GIT_ROOT" && git diff --quiet ); then
+# to `||` disables the gate COMPLETELY — `cd` succeeds, `||` short-circuits, the
+# negation is false, so a dirty tree sails straight through — and the whole
+# hermetic suite stayed green. It was the first survivor the falsify pilot found,
+# in the best-covered file in the corpus (123 assertions over 256 lines).
+#
+# Asserted through the throwaway instance, never the real repo: this test must be
+# able to run while the developer's own tree is dirty.
+printf 'delta\n' >> "$MT_REPO/target.txt"          # dirty, but NOT via a mutation
+out="$(mt apply p-good)"; rc=$?
+if [[ "$rc" -ne 0 ]]; then
+  pass "apply refuses a dirty tree"
+else
+  fail "apply refuses a dirty tree (rc=$rc) — a mutation is no longer the only difference"
+fi
+if grep -q 'unstaged changes' <<< "$out"; then
+  pass "apply says WHY it refused a dirty tree"
+else
+  fail "apply says WHY it refused a dirty tree (out: $out)"
+fi
+# And it must not have half-applied: refusing then mutating anyway would be worse
+# than not refusing, because $STATE would not record it.
+if [[ ! -f "$MT_STATE" ]]; then
+  pass "a refused apply records no state"
+else
+  fail "a refused apply records no state (state: $(cat "$MT_STATE" 2>/dev/null))"
+fi
+( cd "$MT_REPO" && git checkout -- . >/dev/null 2>&1 )
+mt_clean
+
 # ── A rollback that FAILS is loud, and the state file keeps tracking ───────────
 # The reversal used to run as `git_apply -R … 2>/dev/null` with its status
 # discarded and $STATE deleted regardless, so a failed rollback was
