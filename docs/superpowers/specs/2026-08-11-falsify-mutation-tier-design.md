@@ -193,8 +193,9 @@ exactly 4 `2>/dev/null`/`2>&1`), and the claimed 62 stage-1 `stream-flip` mutant
 exceeded the 41 `>&2` occurrences that exist. Both verified directly.
 
 Authoritative numbers are now the ones `tests/falsify/generate.sh` produces,
-because that is the code that will run: **288** stage-1 mutants, 0 discarded by
-`bash -n`, of which **41** are `stream-flip` — so **247** under the default set,
+because that is the code that will run: **290** stage-1 mutants, 0 discarded by
+`bash -n`, of which **41** are `stream-flip` — so **249** under the default set
+(288/247 before backlog F9's continuation fix added two),
 projecting ~60 survivors at the pilot's 24.1 % ex-`stream-flip` rate. Do not
 "restore" the 300/62 figures; they describe an operator this spec does not have.
 | `stmt-delete`, enabled per-target on a measured score | — | — | **Nightly** |
@@ -269,8 +270,8 @@ Nine active targets:
 | | **total** | **300** |
 
 The per-file figures in that table are the exploratory generator's. The
-implementation measures **288** across the nine, less **41** `stream-flip`, so
-**247** under the default set — projecting **~60 survivors** at the pilot's
+implementation measures **290** across the nine, less **41** `stream-flip`, so
+**249** under the default set — projecting **~60 survivors** at the pilot's
 24.1 % ex-`stream-flip` rate. A corpus a reviewer will actually read, which is
 the whole point of R3's mitigation. See the correction under "Operators and
 layers" for why the two counts differ.

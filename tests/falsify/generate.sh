@@ -217,11 +217,11 @@ _falsify_word_after() {    # <line> <pos-just-past-the-token>
   return 1
 }
 
-falsify_scan_line() {   # $1 = raw line text
+falsify_scan_line() {   # $1 = raw line text, $2 = incoming span depth (default 0)
   _FALSIFY_LINE="$1"
   SCAN_OPS=(); SCAN_TEXTS=(); SCAN_HEREDOC=()
   local line="$1"
-  local n=${#line} i=0 sq=0 dq=0 depth=0 code_end=${#line}
+  local n=${#line} i=0 sq=0 dq=0 depth="${2:-0}" code_end=${#line}
   local c t2 t3 rep len kw ws val dash delim code head_len
 
   while (( i < n )); do
@@ -342,6 +342,10 @@ falsify_scan_line() {   # $1 = raw line text
       esac
     fi
   fi
+
+  # The span depth this line ENDS at, for a caller continuing onto the next
+  # physical line. See the continuation note at the call site.
+  SCAN_DEPTH_END="$depth"
 }
 
 # ── the generator ─────────────────────────────────────────────────────────────
@@ -366,6 +370,7 @@ falsify_generate() {   # <file>
   mapfile -t lines < "$file" || return 2
 
   local idx lineno line trimmed sha k h dash delim cand
+  local carry_depth=0
   FALSIFY_MUTANTS=0
   FALSIFY_DISCARDED=0
 
@@ -389,7 +394,21 @@ falsify_generate() {   # <file>
     [[ "$line" =~ ^[[:space:]]*$ ]] && continue
     [[ "$line" =~ ^[[:space:]]*# ]] && continue
 
-    falsify_scan_line "$line"
+    # A `[[ … ]]` / `(( … ))` span may run across a backslash continuation, and
+    # `<`/`>` are only ever mutated INSIDE such a span. Scanning each physical
+    # line from depth 0 therefore made every comparison on a continued line
+    # invisible — silently under-generating, which is the worse failure
+    # direction for a tool whose whole job is finding gaps.
+    #
+    # The instance that exposed it is not incidental: bash-floor.sh:40-42 is the
+    # bash floor check ITSELF, the comparison deciding whether this repo refuses
+    # to run at all, and it holds two `<` that no mutant could reach.
+    #
+    # Carrying the depth forward is sound because the continuation is part of the
+    # SAME shell command; each mutant is still written back to its own physical
+    # line, so identity and line numbers are unaffected.
+    falsify_scan_line "$line" "$carry_depth"
+    if [[ "$line" == *\\ ]]; then carry_depth="$SCAN_DEPTH_END"; else carry_depth=0; fi
 
     for h in "${SCAN_HEREDOC[@]}"; do heredoc_q+=("$h"); done
 

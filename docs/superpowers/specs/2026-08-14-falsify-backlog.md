@@ -153,7 +153,17 @@ ledger is the right home for survivor accounting, and these three are its first
 entries — recorded here so Task 10 starts from a known state instead of
 rediscovering them and treating them as new.
 
-## F9 — the generator cannot reach a comparison inside a backslash-continued `(( ))`
+## F9 — the generator cannot reach a comparison inside a backslash-continued `(( ))` — **FIXED 2026-08-14**
+
+`falsify_scan_line` now takes an incoming span depth and publishes the depth it
+ends at; the caller carries that forward whenever a line ends in a backslash.
+Measured strictly additive — exactly one mutant gained on `bash-floor.sh`, none
+lost — and two across the stage-1 corpus (247 -> 249). The pinned count moved
+12 -> 13, and the `34` total that duplicated it is now derived from `PINNED`
+rather than hardcoded a second time, since raising one left the other stale.
+Demonstrated: reverting the carry fails both assertions by name.
+
+### Original finding
 
 `tests/falsify/generate.sh` scans `[[ ]]`/`(( ))` spans **per line**, with no
 continuation tracking, so `<`/`>` inside a multi-line arithmetic condition is

@@ -299,9 +299,15 @@ fi
 # changes, the number moves legitimately and is updated here. What must NOT
 # happen quietly is an operator that stops matching: that shows up as a smaller
 # count here instead of as "the suite kills everything".
+#
+# bash-floor.sh moved 12 -> 13 when the span scanner learned to carry `[[`/`((`
+# depth across a backslash continuation (backlog F9). Before that, the `<` on
+# bash-floor.sh:42 — inside the multi-line arithmetic condition that IS this
+# repo's bash floor check — was unreachable by any mutant. The fix is strictly
+# additive: measured before/after, exactly one mutant gained, none lost.
 declare -A PINNED=(
   ["$ENGINE_DIR/tools-lib.sh"]=17
-  ["$ENGINE_DIR/bash-floor.sh"]=12
+  ["$ENGINE_DIR/bash-floor.sh"]=13
   ["$ENGINE_DIR/shared-files.sh"]=5
 )
 for target in "$ENGINE_DIR/tools-lib.sh" "$ENGINE_DIR/bash-floor.sh" "$ENGINE_DIR/shared-files.sh"; do
@@ -351,9 +357,14 @@ for src in "$ENGINE_DIR/tools-lib.sh" "$ENGINE_DIR/bash-floor.sh" "$ENGINE_DIR/s
     mut_checked=$((mut_checked + 1))
   done < <(FALSIFY_OPERATORS="$ALL_OPS" gen "$src")
 done
-[[ "$mut_checked" == "34" ]] \
-  && pass "independently re-applied all 34 mutants of the three pinned targets" \
-  || fail "independently re-applied 34 mutants — walked $mut_checked instead"
+# Derived from PINNED, not a second hardcoded total: 34 and 12 were two
+# statements of the same fact, and raising the pinned count left this one
+# stale — the exact drift this repo removes wherever it finds it.
+mut_expected=0
+for _t in "${!PINNED[@]}"; do mut_expected=$(( mut_expected + PINNED[$_t] )); done
+[[ "$mut_checked" == "$mut_expected" ]] \
+  && pass "independently re-applied all $mut_expected mutants of the three pinned targets" \
+  || fail "independently re-applied $mut_expected mutants — walked $mut_checked instead"
 [[ "$mut_bad" == "0" ]] \
   && pass "every emitted mutant parses when applied to the real file" \
   || fail "every emitted mutant parses when applied to the real file — $mut_bad did not"
