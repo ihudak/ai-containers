@@ -25,7 +25,33 @@
 
 ---
 
-# Part A — the network/security tier (no new machinery)
+# Part A — the network/security tier (no new machinery) — **COMPLETE 2026-08-14**
+
+All 14 network cases carry a mutation demonstrated FAILING on a real host with a
+real assertion line. Deviations from this plan, each with its reason:
+
+- **Tasks 1-3 as written, plus two the plan did not anticipate.** The mutations
+  recorded for `070` and `230` were already the shipped configuration
+  (`ef78b62` records both having been run as mutations and both PASSING), so the
+  other recorded mutation for that pair was used; it damages
+  `tests/integration/lib.sh`, which both cases consume, so it is **one patch
+  declaring two cases**. `test-mutations.sh` validates every declared name now,
+  not `head -1`.
+- **Task 3's ratchet needed more than the tag filter.** With only the filter,
+  narrowing it back made 15 coverage assertions *vanish* rather than fail. Every
+  case is now classified tier-covered or explicitly exempt with a reason.
+- **`080` needed `# timeout: 900`** as part of its mutation: `it_wait` counts
+  iterations, not seconds, and its predicate blocks for 5s per poll.
+- **A case was written, demonstrated, and withdrawn as a false positive.** It
+  tried to cover `sandbox.sh`'s open-mode capability suppression through
+  `sandbox_up`, which composes its own `docker run` and never invokes
+  `sandbox.sh` — so it failed for an unrelated reason while reporting
+  "demonstrated". Replaced by `tests/test-mode-capabilities.sh` (hermetic, fake
+  `docker`). **If you are adding coverage for a launcher decision, it cannot go
+  in a network case.**
+- Open at merge, in `docs/superpowers/specs/2026-08-14-falsify-backlog.md`: F5
+  (`300` needs a Dockerfile mutation + image rebuild), F6 (`it_wait`'s
+  contract), F7 (rename `230`).
 
 ### Task 1: Convert the twelve recorded mutations into patches
 
