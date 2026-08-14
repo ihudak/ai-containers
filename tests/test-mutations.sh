@@ -67,17 +67,29 @@ for p in "$MUT_DIR"/*.patch; do
     fail "$id still applies — the code it breaks has changed; regenerate the patch"
   fi
 
-  case_name="$(sed -n 's/^# case:[[:space:]]*//p' "$p" | head -1)"
-  if [[ -n "$case_name" ]]; then
+  # A patch may declare MORE THAN ONE case, and 070-230-pid1-caps-fresh-exec
+  # does: its damage is a single edit to tests/integration/lib.sh, which both
+  # cases consume. Splitting that into two patches duplicated the diff body
+  # verbatim, and two copies of one body drift.
+  #
+  # Every declared name is validated, not just the first. Reading `head -1`
+  # here while the coverage assertion below greps for ANY matching `# case:`
+  # line would let a second, misspelled name satisfy coverage without ever
+  # being checked for existence — a patch could claim a case that does not
+  # exist and report itself green.
+  mapfile -t case_names < <(sed -n 's/^# case:[[:space:]]*//p' "$p")
+  if [[ ${#case_names[@]} -gt 0 ]]; then
     pass "$id names the case it breaks"
   else
     fail "$id names the case it breaks — no '# case:' header"
   fi
-  if [[ -n "$case_name" && -f "$CASES_DIR/$case_name.sh" ]]; then
-    pass "$id → $case_name exists"
-  else
-    fail "$id → case '$case_name' does not exist in cases/"
-  fi
+  for cn in "${case_names[@]}"; do
+    if [[ -f "$CASES_DIR/$cn.sh" ]]; then
+      pass "$id → $cn exists"
+    else
+      fail "$id → $cn does not exist in cases/"
+    fi
+  done
   if sed -n 's/^# what:[[:space:]]*//p' "$p" | head -1 | grep -q .; then
     pass "$id says what it changes"
   else

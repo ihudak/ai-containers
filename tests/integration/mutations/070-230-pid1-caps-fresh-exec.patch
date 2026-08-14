@@ -1,5 +1,12 @@
+# case: 070-restricted-drops-capabilities
 # case: 230-open-drops-capabilities
-# what: pid1_caps reads the fresh exec own /proc/self/status instead of PID 1, so open mode reports the docker-default cap_net_raw as still held
+# what: pid1_caps reads a fresh exec own /proc/self/status instead of PID 1,
+#       so 070 reports BOTH dropped capabilities present and 230 reports the
+#       docker-default cap_net_raw still held. One mutation, two cases: the
+#       damage is in tests/integration/lib.sh, which both cases consume, so
+#       splitting it into two patches would duplicate the body verbatim and
+#       let the copies drift. Evidence: c858e48, CI run 31158808969.
+#
 #
 diff --git a/tests/integration/lib.sh b/tests/integration/lib.sh
 index 604c9d5..35b0212 100644
