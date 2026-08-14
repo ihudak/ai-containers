@@ -1,0 +1,24 @@
+# case: 050-restricted-capture-starts
+# what: a stub daemon that exits before init_output_files replaces the real
+#       one, so neither the three output files nor the startup banner appears
+#
+diff --git a/tests/integration/cases/050-restricted-capture-starts.sh b/tests/integration/cases/050-restricted-capture-starts.sh
+index c143351..99eec4d 100644
+--- a/tests/integration/cases/050-restricted-capture-starts.sh
++++ b/tests/integration/cases/050-restricted-capture-starts.sh
+@@ -18,7 +18,14 @@
+ adir="$(it_scratch)"
+ # A populated, ordinary configuration — the shape a real user runs.
+ allowlist_write "$adir" "example.test other.test" "10.250.0.0/24" "*.proxy.test"
+-sandbox_up restricted "$adir" || it_finish
++# KNOWN-BAD: a stub daemon that exits before init_output_files, so neither the
++# three output files nor the startup banner is ever produced. Not the prefix
++# fixture: that one kills the daemon only under 060's comments-only allowlist
++# and SURVIVES 050's populated one — the asymmetry the two cases exist to split.
++stub="$adir/fake-capture.sh"
++printf '#!/usr/bin/env bash\nexit 0\n' > "$stub"; chmod 755 "$stub"
++sandbox_up restricted "$adir" \
++  -v "$stub:/usr/local/bin/capture-blocked-traffic.sh:ro" || it_finish
+ 
+ for f in blocked.log blocked-domains.txt blocked-ips.txt; do
+   it_wait 30 docker exec "$IT_CID" test -f "/workspace/.agent-blocked/$f" || true

@@ -1,0 +1,17 @@
+# case: 210-open-no-firewall
+# what: the container is launched in restricted mode, so the empty allowlist
+#       (byte-identical to 010) blocks the sidecar the case expects to reach
+#
+diff --git a/tests/integration/cases/210-open-no-firewall.sh b/tests/integration/cases/210-open-no-firewall.sh
+index 5edade2..04a96a7 100755
+--- a/tests/integration/cases/210-open-no-firewall.sh
++++ b/tests/integration/cases/210-open-no-firewall.sh
+@@ -19,7 +19,7 @@
+ sidecar_up || it_finish
+ adir="$(it_scratch)"
+ allowlist_write "$adir" "" "" ""          # byte-identical to 010's allowlist
+-sandbox_up open "$adir" || it_finish
++sandbox_up restricted "$adir" || it_finish
+ 
+ assert_reachable "$IT_CID" "$IT_SIDECAR_IP"
+ 
