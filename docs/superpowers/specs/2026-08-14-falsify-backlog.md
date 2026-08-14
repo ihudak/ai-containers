@@ -52,3 +52,64 @@ The release-type branch's GitHub API call. Confirmed unexercised within the 45
 hermetic tests; not chased beyond that scope. Its siblings `install_repo_file`,
 `install_url` and `expand_placeholders` all execute transitively via
 `install_one`, so this is a single gap in an otherwise well-covered file.
+
+---
+
+# Found by running the demonstrations on a real host (2026-08-14)
+
+## F5 — `300-allowlist-delivered` has no known-bad mutation, and its honest one needs an image rebuild
+
+The case asserts the allowlists inside the image are the ones `build.sh`
+generated. Its own header explains the stake: `refresh-ipset-allowlist.sh` reads
+those exact paths to build the ipset that **is** the firewall, so a mismatch is
+"a silently wrong firewall" that `010` and `020` would both still pass.
+
+It carries a `security` tag but not a tier tag, so the coverage ratchet does not
+reach it. It is currently exempted **explicitly, as a tracked gap** in
+`tests/test-mutations.sh`'s `case_exempt()`, with a pointer to this entry — not
+silently skipped.
+
+**Why it is not simply fixed:** the honest mutation breaks delivery, i.e. the
+`COPY allowlist-*.txt /tmp/` lines in the Dockerfile. Every other demonstration
+mutates a case file or a host script and runs against a **pre-built, reused**
+image; a Dockerfile mutation only takes effect on a rebuild, which
+`demonstrate-network-tier.sh --reuse-image` deliberately avoids. Closing this
+needs either a rebuild path in that script for Dockerfile-touching patches, or a
+mutation that breaks delivery without touching the image build. Do not "solve"
+it by mutating the case instead of the product — that tests the test.
+
+## F6 — `it_wait`'s first parameter is documented as seconds but counts iterations
+
+`tests/integration/lib.sh:95` — `it_wait() { # $1=timeout seconds …` — and the
+body is `while i < t; do "$@"; i++; sleep 1; done`. When the polled predicate is
+cheap, iterations ≈ seconds and the name is harmless. When the predicate blocks,
+wall-clock is `t × (predicate cost + 1s)`: `080`'s predicate calls `reach()`, a
+`curl` with `--connect-timeout/--max-time IT_CONNECT_TIMEOUT` (5s), so
+`it_wait 60` can cost 360-420s against a nominal 60.
+
+**Why it went unnoticed:** on the success path the predicate returns true on the
+first or second poll, so the loop never approaches its bound. Only the
+*exhausted* path — which nothing exercised until these demonstrations — pays the
+multiplied cost. `080`'s mutated run hit the 300s case timeout during the first
+of three waits.
+
+Worked around at the call site (`080`'s patch carries `# timeout: 900`) rather
+than changed here, because renaming or re-basing `it_wait`'s parameter touches
+every caller in the corpus and belongs in its own change. Candidate fixes: rename
+the parameter to `max_polls`, or make it a real deadline with `EPOCHREALTIME`.
+
+## F7 — `230-open-drops-capabilities` is named and documented for open mode but launches discovery
+
+Its code is `sandbox_up discovery "$adir" -e DISCOVERY_CAPTURE_ENABLED=0`, which
+is a deliberate and correct strengthening (discovery *grants* NET_ADMIN/NET_RAW,
+so proving the agent shell holds neither there is stronger than proving it where
+nothing was granted). But the case's basename, its `tags: … open`, its
+`summary:` line, and the header sentence claiming it asserts "both belts" all
+describe a case that no longer exists.
+
+The missing belt is now covered by `240-open-grants-no-capabilities`. What
+remains is to make `230` say what it does: rename it (e.g.
+`230-discovery-drops-capabilities`), fix its tags and summary, and delete the
+"both belts" sentence, which `240` now owns. A rename touches its mutation
+patch's `# case:` header and `AGENTS.md`'s reference to "case 230", so it is a
+small coordinated change rather than a one-liner.

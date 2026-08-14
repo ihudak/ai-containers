@@ -97,17 +97,60 @@ for p in "$MUT_DIR"/*.patch; do
   fi
 done
 
-# ── Every launcher-tier case has a mutation. THE coverage assertion. ───────────
+# ── Every launcher- AND network-tier case has a mutation. THE coverage assertion.
 # Without this the file only audits the mutations that happen to exist, and a
 # case added with none would be invisible to it.
+#
+# `network-mode` was added late, in increment 5, and the reason is worth keeping:
+# the network/security cases were believed covered because AGENTS.md said they
+# "keep their fixture-based demonstrations under tests/integration/fixtures/".
+# They did not. Only two cases (040, 060) have a fixture at all, NO case mounted
+# either one — every reference to them in cases/ was a comment — and the actual
+# demonstrations lived as prose in the increment-1 plan, ending with
+# `git checkout -- tests/integration/cases/`. So the tier with every
+# restricted-mode assertion in it (010 blocks-unlisted, 070 drops-capabilities,
+# the self-heal pair) had no enforced demonstration of any kind, and a new case
+# could ship with none while nothing reported it.
+#
+# Do not narrow this filter back to the launcher tags. The two fixtures remain
+# under fixtures/ and are still not patches — they preserve code that no longer
+# exists, so nothing could apply to them — but every network case now carries a
+# patch like the launcher tier.
+#
+# EVERY case is classified — tier-covered, or explicitly exempt with a reason.
+# The tag filter alone cannot protect itself: narrowing it back to the launcher
+# tags makes 15 coverage assertions VANISH rather than fail, which is silent
+# success, the shape this suite refuses everywhere. Requiring every case to land
+# in one bucket or the other turns that narrowing into a failure, because the
+# cases it stops checking then match no bucket at all.
+#
+# Same idiom as tests/layer-checks.conf's `setup` rows and falsify's
+# `EXCLUDED:` — an exemption is allowed, an unexplained omission is not.
+case_exempt() {  # $1=case basename → prints the reason, or nothing
+  case "$1" in
+    000-harness-selftest)
+      printf 'the harness own smoke test: if it breaks, every other case is uninterpretable, so it has no meaningful known-bad configuration of its own' ;;
+    300-allowlist-delivered)
+      printf 'TRACKED GAP, not a clean exemption — see docs/superpowers/specs/2026-08-14-falsify-backlog.md F5. Its honest mutation breaks Dockerfile delivery, which needs an image REBUILD, so it cannot ride the --reuse-image path the other demonstrations use' ;;
+  esac
+}
+
 for c in "$CASES_DIR"/*.sh; do
   [[ -f "$c" ]] || continue
+  name="$(basename "$c" .sh)"
   tags="$(sed -n 's/^#[[:space:]]*tags:[[:space:]]*//p' "$c" | head -1)"
   case " $tags " in
-    *" mounts "*|*" groups "*|*" volumes "*|*" packages "*) : ;;
-    *) continue ;;
+    *" mounts "*|*" groups "*|*" volumes "*|*" packages "*|*" network-mode "*) : ;;
+    *)
+      reason="$(case_exempt "$name")"
+      if [[ -n "$reason" ]]; then
+        pass "$name is exempt from the mutation rule ($reason)"
+      else
+        fail "$name is neither tier-covered nor exempt — add a mutation, or an exemption with a reason in case_exempt()"
+        printf '       A case in no bucket is a case nobody decided about.\n'
+      fi
+      continue ;;
   esac
-  name="$(basename "$c" .sh)"
   if grep -lqs "^# case:[[:space:]]*$name\$" "$MUT_DIR"/*.patch 2>/dev/null; then
     pass "$name has a known-bad mutation"
   else

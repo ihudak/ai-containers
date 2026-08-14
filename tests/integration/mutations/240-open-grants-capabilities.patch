@@ -1,0 +1,20 @@
+# case: 240-open-grants-no-capabilities
+# what: open mode stops suppressing the capability array, so its containers
+#       are launched WITH --cap-add=NET_ADMIN --cap-add=NET_RAW
+#
+# This is the deletion that was measured passing all 45 hermetic tests and
+# every integration case before 240 existed — the gap 240 closes.
+#
+diff --git a/sandbox.sh b/sandbox.sh
+index 59b9a8a..3e240b6 100755
+--- a/sandbox.sh
++++ b/sandbox.sh
+@@ -302,7 +302,7 @@ run_container() {
+   fi
+ 
+   local capabilities=(--cap-add=NET_ADMIN --cap-add=NET_RAW)
+-  [[ "$mode" == "open" ]] && capabilities=()
++  # KNOWN-BAD: open mode no longer suppresses the capability grants
+   local sandbox_username="${SANDBOX_USER:-$(id -un)}"
+   local dev_home="/home/$sandbox_username"
+ 
