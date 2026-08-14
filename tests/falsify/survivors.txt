@@ -1,0 +1,79 @@
+# tests/falsify/survivors.txt — the SURVIVOR LEDGER.
+#
+# A mutant that nothing noticed is evidence that an assertion is missing or
+# cannot fail. Every one of them is written down here and classified, and
+# tests/falsify/check-ledger.sh is the ratchet: a survivor with no entry, an
+# entry with no classification, an entry for a mutant that no longer exists, and
+# an entry for a mutant that is now KILLED each fail the gate. That is what
+# stops a new hole landing silently, and what stops an amnesty outliving its
+# reason.
+#
+# ── GRAMMAR ───────────────────────────────────────────────────────────────────
+# Column 0 opens an entry; indentation continues it. Blank lines and `#`
+# comments are ignored anywhere.
+#
+#   GROUP: <name>            optional — names the entry that follows
+#   <identity>               column 0; several CONSECUTIVE lines share one entry
+#     <context>              indented free text: the original line, the damage
+#     GAP: <reason>          indented; or EQUIVALENT: <reason>
+#     <more reason>          indented continuation
+#
+# ── GAP vs EQUIVALENT ─────────────────────────────────────────────────────────
+# These are DIFFERENT CLAIMS and the difference is the point of the file.
+#
+#   GAP:         no test kills this mutant, and one could. The suite is weaker
+#                than it should be here. An entry that stays a GAP is a debt.
+#   EQUIVALENT:  NO test could ever kill it — the mutated program is observably
+#                the same program, or the only observer lies outside this tier.
+#                The reason must say WHY no test could, not that none does.
+#
+# "Nothing currently asserts it" is a GAP written as an EQUIVALENT, and it is
+# the way this file would rot. The gate can only check that a marker is present
+# and its reason non-empty (an empty reason suppresses nothing, exactly as with
+# `# dialect-lint: allow RULE-ID: reason`); the GAP/EQUIVALENT distinction is a
+# review obligation, enforced by a human reading the reason.
+#
+# ── IDENTITY ──────────────────────────────────────────────────────────────────
+# `<file>:<operator>:<sha1-of-the-trimmed-original-line>`, the full 40-hex
+# digest exactly as tests/falsify/run.sh prints it. Never `file:line` — a line
+# number is invalidated by any edit above it, while the line's own hash is not.
+#
+# IDENTITY IS NOT UNIQUE, deliberately: one line with two `&&` yields two
+# logic-flip mutants sharing operator and sha1, and `seq`/`lineno` — both
+# run-local — are the only things telling them apart. ONE ENTRY THEREFORE COVERS
+# EVERY MUTANT SHARING ITS IDENTITY: colliding mutants damage the same line with
+# the same operator, so they share what this file records — which line no
+# assertion is watching. Where the collision is between genuinely different
+# damages, the entry's prose must account for all of them.
+#
+# Survivors are deduplicated by (identity, mutated line) before being counted,
+# so a single-clause `if [[ X ]];` — whose two cond-negate mutants produce
+# byte-identical damage — is one survivor here rather than two.
+#
+# ── SCOPE ─────────────────────────────────────────────────────────────────────
+# An entry is only checked against a run that measured its file. `run.sh
+# --target tools-lib.sh` leaves every other entry unmeasured, not stale. The
+# ledger is only fully verified by a run over the whole active target set.
+
+tools-lib.sh:logic-flip:e46b949d2a1807e12ab8711e203a737dc2f8c961
+  tools-lib.sh:62  while IFS= read -r line || [[ -n "$line" ]]; do
+  the damage:      ... read -r line && [[ -n "$line" ]] ...
+  GAP: the `||` is the standard idiom for reading a final line that carries no
+  trailing newline; with `&&` the loop stops at the first EMPTY line instead.
+  Verified by running both against a descriptor holding a blank line between two
+  keys — pristine parsed `repo=[a/b] binary=[x]`, mutated parsed `repo=[]
+  binary=[blank]`, silently wrong. Nothing in the suite notices, so a
+  `tools.d/*.conf` with a blank line, or one whose last line lacks a newline,
+  could parse wrong with every test green. This is a live product risk, not a
+  cosmetic gap. The killing assertion is a fixture descriptor containing both
+  shapes: a blank line between keys, and a final key with no trailing newline.
+
+tools-lib.sh:return-flip:f128fd8d7318dc079eeec1117ae9a4525988fac4
+  tools-lib.sh:42  [[ -d "$TOOLS_D_DIR" ]] || return 0
+  the damage:      ... || return 1
+  GAP: `tools_list_names`'s "no descriptor directory" path. Callers treat a
+  non-zero status as an error, so the status is contractual — and no hermetic
+  test exercises a missing TOOLS_D_DIR at all, which is why flipping the
+  successful empty-listing return to a failure goes unnoticed. The killing
+  assertion is a case that points TOOLS_D_DIR at a directory that does not
+  exist and requires status 0 with no names printed.
