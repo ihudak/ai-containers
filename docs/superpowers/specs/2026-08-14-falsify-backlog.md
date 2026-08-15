@@ -200,7 +200,16 @@ re-scope trigger reads. Dedupe survivors by mutated text when the ledger is buil
 (Task 7), rather than by suppressing generation — two mutants that happen to
 coincide today may diverge if the operator changes.
 
-## F11 — two survivors in `tools-lib.sh`, the tier's first real output
+## F11 — two survivors in `tools-lib.sh`, the tier's first real output — **ONE FIXED 2026-08-14**
+
+`tools-lib.sh:62` is killed: `tests/test-tools-d.sh` now parses a descriptor with a
+blank line mid-file and a final line carrying no trailing newline. Re-measured
+through the tier: 17 mutants, **16 killed, 1 survived** (was 15/2).
+
+The `tools-lib.sh:42` return-flip survivor remains — `tools_list_names`'s
+"no descriptor directory" path, still unexercised.
+
+### Original finding
 
 `tests/falsify/run.sh --target tools-lib.sh` — 17 mutants, 15 killed, 2 survived
 (11.8 %, better than the pilot's 24.1 % ex-`stream-flip` projection). Both are
