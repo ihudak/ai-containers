@@ -671,3 +671,36 @@ a stricter host simply requires MORE entries, which is always satisfiable.
 Verified across the full matrix: Linux `--strict` 0 problems, macOS-equivalent
 default 0 problems, and a plain `GAP` entry for a killed mutant still fails
 under `--strict` while an `ENV-DEPENDENT` one does not.
+
+## F28 — the tier measures materially less on macOS, and the shortfall is variable
+
+Phase 6 passes on macOS, but it should not be read as measuring what it measures
+on Linux. Same 249 mutants, same commit:
+
+| run | killed | survived | unproven | timeouts | wall |
+|---|---|---|---|---|---|
+| Linux | 209 | 36 | 4 | 11 | 3.4 min |
+| macOS #1 | 211 | 24 | 14 | 63 | 16 min |
+| macOS #2 | 192 | 22 | **35** | 71 | 16 min |
+
+**14 % of the corpus produced no verdict** on the second run, and the number
+moved 4 → 14 → 35 across runs of the same code, so `--timeout 120` sits right at
+the edge there rather than comfortably above it. The shortfall concentrates in
+the two most fork-heavy oracles: `test-bash-dialect-lint.sh` (11 of 27
+unmeasured) and `test-mutations.sh` (17 of 55) — both spawn many subprocesses
+per assertion, and process creation is markedly slower on macOS.
+
+This is correctly NOT a gate failure (F27: an unproven mutant is machine state,
+not a property of the code). The risk is subtler: a green Phase 6 on macOS can be
+green partly because a third of the interesting mutants were never scored, and
+19 stderr notes are not where a reader looks. Phase 6 now prints the measured
+fraction and warns above 10 %.
+
+**Not fixed, and the options all cost something.** A higher `--timeout` extends a
+run already at 16 minutes; fewer jobs may or may not help, since the host has
+more cores than the workers can saturate and the bottleneck looks like process
+creation rather than CPU. Worth measuring before choosing: run Phase 6 with
+`--timeout 300` and with `--jobs 6` and compare the unproven count against the
+wall clock. **CI (ubuntu-latest) is the reference environment and does not have
+this problem**, so the ratchet's strength is unaffected; what degrades is the
+local layer's ability to add information beyond CI.
