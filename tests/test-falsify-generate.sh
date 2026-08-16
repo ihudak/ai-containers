@@ -82,7 +82,12 @@ bad="$(printf '%s\n' "$out" | awk -F'\t' 'NF != 4 { n++ } END { print n+0 }')"
 shape_bad="$(printf '%s\n' "$out" | awk -F'\t' '
   $1 !~ /^(cond-negate|logic-flip|return-flip|cmp-flip|stream-flip)$/ { n++; next }
   $2 !~ /^[0-9]+$/ { n++; next }
-  $3 !~ /^[0-9a-f]{40}$/ { n++ }
+  # length()+[0-9a-f]+ rather than {40}: mawk 1.3.4-20200120, which ubuntu:22.04
+  # ships and the bash-floor container therefore runs, has interval quantifiers
+  # DISABLED by default, so /^[0-9a-f]{40}$/ matches no sha1 at all there and
+  # every well-formed line counts as malformed. Found by the local layer floor
+  # run: green on the 24.04 mawk here and on macOS, red at the floor.
+  (length($3) != 40 || $3 !~ /^[0-9a-f]+$/) { n++ }
   END { print n+0 }')"
 [[ "$shape_bad" == "0" ]] \
   && pass "field 1 is a known operator, field 2 a line number, field 3 a sha1" \

@@ -283,3 +283,20 @@ It must be wired to a **full-corpus** run: under a partial selection the scope
 rule makes the stale and obsolete checks vacuous for unselected files. And
 `run.sh`'s exit status is a separate signal from its stdout, so a naive
 `run.sh | check-ledger.sh -` discards it — capture to a file and check both.
+
+## F14 — no mechanical guard against awk interval quantifiers
+
+The floor run caught `/^[0-9a-f]{40}$/` in `tests/test-falsify-generate.sh`:
+ubuntu:22.04's mawk has intervals disabled, so the pattern matched no sha1 and
+every well-formed line was counted malformed. Fixed at the site, and the trap is
+documented in `tests/portability.sh`'s header.
+
+What does NOT exist is a check. `tests/bash-dialect-lint.sh` is version-gated for
+*bash* constructs against a declared bash floor; there is no declared awk floor,
+and detecting an interval inside an awk program string by regex is unreliable
+because those programs span lines and are quoted several ways.
+
+So the guard here is prose plus one worked example — weaker than this repo's
+norm, recorded as such rather than pretended otherwise. The floor run does catch
+it, which is how this one was found; the gap is that it catches it late rather
+than at lint time.
