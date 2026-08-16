@@ -296,6 +296,21 @@ fl_jobs="$( (command -v nproc >/dev/null && nproc) || sysctl -n hw.ncpu 2>/dev/n
 sub "running the corpus (jobs=$fl_jobs, timeout=120) — a few minutes"
 if bash "$REPO/tests/falsify/run.sh" --jobs "$fl_jobs" --timeout 120 > "$fl_run" 2>&1; then
   grep -E '^(TARGET|TOTAL)\|' "$fl_run" | sed 's/^/  /' | while IFS= read -r l; do sub "$l"; done
+  # HOW MUCH WAS ACTUALLY MEASURED. An UNPROVEN mutant produced no verdict at
+  # all, so a run with many of them is measuring less than its pass suggests —
+  # and the pass is honest only if that is said out loud rather than left in
+  # stderr notes. Measured on macOS: 4 unproven on Linux against 14 and then 35
+  # on the same commit, i.e. the number moves with machine load, not with code.
+  fl_tot="$(awk -F'|' '$1=="TOTAL" {print $3; exit}' "$fl_run")"
+  fl_unp="$(awk -F'|' '$1=="TOTAL" {print $6; exit}' "$fl_run")"
+  if [[ -n "$fl_tot" && -n "$fl_unp" && "$fl_tot" -gt 0 ]]; then
+    sub "verdicts obtained for $(( fl_tot - fl_unp ))/$fl_tot mutants ($(( (fl_tot - fl_unp) * 100 / fl_tot ))%)"
+    if (( fl_unp * 100 / fl_tot >= 10 )); then
+      sub "NOTE: $fl_unp mutant(s) timed out and were not measured — raise --timeout or"
+      sub "      reduce load for a fuller measurement. Not a failure: an unproven"
+      sub "      mutant is machine state, not a property of the code."
+    fi
+  fi
   # The ratchet is a SEPARATE step, as in CI: run.sh's stdout is the record and
   # its exit status is an independent signal, and a pipeline would discard one.
   if bash "$REPO/tests/falsify/check-ledger.sh" \
