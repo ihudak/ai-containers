@@ -270,10 +270,10 @@ grep -qE '^RUN\|repo=.*\|jobs=2\|.*\|targets=1\|mutants=4$' <<< "$FX_OUT" \
 check "BASELINE| records the pristine oracle as PASS" "1" \
   "$(grep -c '^BASELINE|fixture-lib.sh|test-fx-a.sh|PASS|' <<< "$FX_OUT")"
 check "one MUTANT| line per generated mutant" "4" "$(grep -c '^MUTANT|' <<< "$FX_OUT")"
-check "TARGET| tallies the target: 4 = 3 killed + 1 survived" "1" \
-  "$(grep -c '^TARGET|fixture-lib.sh|test-fx-a.sh|4|3|1|0|' <<< "$FX_OUT")"
-check "TOTAL| closes the run with the survival percentage" "1" \
-  "$(grep -c '^TOTAL|1|4|3|1|0|25|' <<< "$FX_OUT")"
+check "TARGET| tallies the target: 4 = 3 killed + 1 survived + 0 unproven" "1" \
+  "$(grep -c '^TARGET|fixture-lib.sh|test-fx-a.sh|4|3|1|0|0|' <<< "$FX_OUT")"
+check "TOTAL| closes the run with the UNRESOLVED percentage" "1" \
+  "$(grep -c '^TOTAL|1|4|3|1|0|0|25|' <<< "$FX_OUT")"
 
 ident="$(fx_ident "$FX_OUT" "$KILLABLE")"
 if [[ "$ident" =~ ^fixture-lib\.sh:cmp-flip:[0-9a-f]{40}$ ]]; then
@@ -416,18 +416,22 @@ if fx_break 's|^fr_slot_tree() {.*|fr_slot_tree() { printf "%s" "$FR_REPO"; }|' 
 fi
 check "the real fixture repo is still clean after that" "$porc_fx_before" "$(git -C "$FX" status --porcelain)"
 
-# ── 11. The per-mutant timeout counts as KILLED, and is flagged ───────────────
+# ── 11. The per-mutant timeout is UNPROVEN, never KILLED ──────────────────────
+# It used to be reported KILLED, and that inverted the tool: a merely SLOW
+# oracle then reclassified a real survivor as killed, hiding the one thing this
+# tier produces. Observed on a real host — the fixture mutant in a function
+# NOTHING CALLS, which cannot hang, timed out under load and was called KILLED.
 fx_run "$RUN" "$CONF_SLOW" "$FX" "$TMP/wit-slow" --jobs 1 --timeout 1
-check "a hung oracle is KILLED, not left hanging" "KILLED" "$(fx_verdict "$FX_OUT" 'return 1')"
+check "a hung oracle is UNPROVEN, not KILLED" "UNPROVEN" "$(fx_verdict "$FX_OUT" 'return 1')"
 sig="$(fx_signal "$FX_OUT" 'return 1')"
 [[ "$sig" == *timeout* ]] \
   && pass "  … with the timeout named in its signal field ($sig)" \
   || fail "  … with the timeout named in its signal field (got '$sig')"
-grep -q 'TIMEOUT after 1s (counted as KILLED)' <<< "$FX_ERR" \
-  && pass "  … and flagged on stderr" \
-  || fail "  … and flagged on stderr: $FX_ERR"
-check "  … and counted in TOTAL's timeout column" "1" \
-  "$(grep -c '^TOTAL|1|1|1|0|1|0|' <<< "$FX_OUT")"
+grep -q 'TIMEOUT after 1s (UNPROVEN — nothing was observed asserting)' <<< "$FX_ERR" \
+  && pass "  … and flagged on stderr as UNPROVEN, not as a kill" \
+  || fail "  … and flagged on stderr as UNPROVEN: $FX_ERR"
+check "  … counted as unproven, NOT as a kill, in TOTAL" "1" \
+  "$(grep -c '^TOTAL|1|1|0|0|1|1|100|' <<< "$FX_OUT")"
 
 # ── 12. Selections that must fail loudly rather than verify nothing ───────────
 fx_run "$RUN" "$CONF_GREPPED" "$FX" "$TMP/wit-g" --jobs 1

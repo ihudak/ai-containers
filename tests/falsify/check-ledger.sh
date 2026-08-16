@@ -261,6 +261,7 @@ cl_check_classification() {   # <ledger file>
 
 # ── the run output ────────────────────────────────────────────────────────────
 declare -A CL_SURVIVED=()    # identity → count of DISTINCT surviving damages
+declare -A CL_UNPROVEN=()    # identity → 1 when at least one record was UNPROVEN
 declare -A CL_SEEN=()        # identity → 1 when the run generated it at all
 declare -A CL_SURV_TEXT=()   # "identity|text" → 1, the F10 dedupe key
 declare -A CL_SCOPE=()       # target file → 1
@@ -269,6 +270,7 @@ CL_MUTANTS=0
 cl_read_run() {   # <run output file or ->
   local src="$1" line rest verdict ident text target
   CL_SURVIVED=(); CL_SEEN=(); CL_SURV_TEXT=(); CL_SCOPE=(); CL_MUTANTS=0
+  CL_UNPROVEN=()
   while IFS= read -r line || [[ -n "$line" ]]; do
     case "$line" in
       'TARGET|'*)
@@ -292,11 +294,22 @@ cl_read_run() {   # <run output file or ->
         [[ -n "$ident" ]] || continue
         CL_MUTANTS=$(( CL_MUTANTS + 1 ))
         CL_SEEN["$ident"]=1
-        if [[ "$verdict" == "SURVIVED" ]]; then
+        # UNPROVEN is treated exactly like SURVIVED here, and that is the whole
+        # point of the verdict existing. Both name a place where NOTHING was
+        # observed asserting — a survivor because no assertion fired, an
+        # unproven because the oracle never finished. Letting UNPROVEN through
+        # unclassified would reopen the hole the verdict was added to close: a
+        # slow oracle quietly retiring a mutant nobody ever demonstrated a test
+        # against. See run.sh's falsify_verdict note.
+        if [[ "$verdict" == "SURVIVED" || "$verdict" == "UNPROVEN" ]]; then
           if [[ -z "${CL_SURV_TEXT["$ident|$text"]:-}" ]]; then
             CL_SURV_TEXT["$ident|$text"]=1
             CL_SURVIVED["$ident"]=$(( ${CL_SURVIVED[$ident]:-0} + 1 ))
           fi
+          # Remember WHICH it was, so the finding names what actually happened.
+          # "SURVIVED" on an unproven mutant would send a reader hunting for a
+          # missing assertion when the truth is that the oracle never finished.
+          [[ "$verdict" == "UNPROVEN" ]] && CL_UNPROVEN["$ident"]=1
         fi
         ;;
     esac
@@ -316,7 +329,10 @@ cl_check_run() {   # <ledger file>
   while IFS= read -r ident; do
     [[ -n "$ident" ]] || continue
     if [[ -z "${CL_IDENT_ENTRY[$ident]:-}" ]]; then
-      cl_err "$ident SURVIVED (${CL_SURVIVED[$ident]} distinct mutant(s)) but has no entry in $1 — every survivor must be classified GAP: or EQUIVALENT:"
+      local what="SURVIVED"
+    [[ -n "${CL_UNPROVEN[$ident]:-}" ]] \
+      && what="UNPROVEN (the oracle never finished; nothing was observed asserting)"
+    cl_err "$ident $what (${CL_SURVIVED[$ident]} distinct mutant(s)) but has no entry in $1 — every survivor must be classified GAP: or EQUIVALENT:"
     fi
   done < <(printf '%s\n' "${!CL_SURVIVED[@]}" | sort)
   # C and D: every in-scope entry still describes a live, still-surviving mutant.

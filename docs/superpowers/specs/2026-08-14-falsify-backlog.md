@@ -241,7 +241,24 @@ error, so the status is contractual, and no test exercises a missing
 Both are the first entries the tier produced on real code rather than on its own
 fixtures, which is the evidence Task 9's ship gate is aimed at.
 
-## F12 — a timeout counts as a KILL, so `TOTAL`'s killed column overstates the kill signal
+## F12 — a timeout counts as a KILL — **FIXED 2026-08-16, after it fired for real**
+
+A timeout is now its own verdict, `UNPROVEN`, and `check-ledger.sh` demands a
+classification for it exactly as for a survivor. A timeout that ALSO produced a
+`FAIL:` line stays a kill — the assertion was observed failing before the clock
+ran out.
+
+This was upgraded from a prediction to a demonstrated defect by a macOS host
+run: the fixture mutant in a function **nothing calls** — which cannot hang —
+timed out under load and was reported KILLED. A slow oracle was silently
+reclassifying a real survivor as killed, which is the one failure direction this
+tier cannot tolerate: it hides the only output it exists to produce.
+
+(The load was self-inflicted — a background agent was seeding scratch trees in
+the same working tree. That explains the trigger, not the defect: the verdict
+logic was wrong either way, and a busy CI runner would have done the same.)
+
+### Original finding
 
 `run.sh` counts a per-mutant timeout as KILLED and flags it — deliberate, and its
 header says why: an oracle that hung "was not observed asserting anything". But

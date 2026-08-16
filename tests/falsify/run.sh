@@ -15,22 +15,25 @@
 #   BASELINE|<target>|<oracle>|PASS|<ms>
 #   MUTANT|<verdict>|<identity>|<oracle>|<seq>|<lineno>|<signal>|<ms>|<mutated-line>
 #   NOTE|<what>|<identity>|<detail>
-#   TARGET|<target>|<oracle>|<total>|<killed>|<survived>|<timeouts>|<ms>
-#   TOTAL|<targets>|<total>|<killed>|<survived>|<timeouts>|<survival-pct>|<ms>
+#   TARGET|<target>|<oracle>|<total>|<killed>|<survived>|<unproven>|<timeouts>|<ms>
+#   TOTAL|<targets>|<total>|<killed>|<survived>|<unproven>|<timeouts>|<unresolved-pct>|<ms>
 #
 #   identity   <file>:<operator>:<sha1-of-trimmed-original-line> — the ledger
 #              identity, NEVER file:line, because a line number changes on every
 #              edit above it while the sha1 of the line does not.
-#   verdict    KILLED | SURVIVED
+#   verdict    KILLED | SURVIVED | UNPROVEN. UNPROVEN means the oracle timed out
+#              WITHOUT ever printing a FAIL: line, so nothing was observed
+#              asserting. It is not a kill and must not be read as one — see the
+#              note on falsify_verdict. It is owed a ledger entry like a survivor.
 #   seq        1-based index of this mutant within its target's generated list.
 #              Identity is NOT unique on its own: a line holding two `&&` yields
 #              two logic-flip mutants that share operator AND sha1. seq (with
 #              lineno) is what tells those two apart; identity is what survives
 #              an unrelated edit elsewhere in the file.
-#   signal     what killed it: `exit`, `failline`, `timeout`, joined by `+`, or
-#              `none` for a survivor. A timeout is a KILL and is flagged here
-#              (and on stderr) rather than being reported as an ordinary kill:
-#              an oracle that hung was not observed asserting anything.
+#   signal     what happened: `exit`, `failline`, `timeout`, joined by `+`, or
+#              `none` for a survivor. `timeout` WITHOUT `failline` yields
+#              UNPROVEN, never KILLED; `timeout+failline` is a genuine kill that
+#              merely ran long.
 #   <mutated-line> is LAST because a shell line may itself contain a `|`. A
 #              parser reads the first 8 fields and takes the rest verbatim.
 #
@@ -75,8 +78,8 @@
 #     dirtiness alone failed an oracle (mutate.sh's `cmd_apply` does carry a
 #     `git diff --quiet` gate), every kill would be spurious.
 #
-# KILLED = the oracle exited non-zero, OR its output carries a `FAIL:` line, OR
-# it exceeded the timeout. The disjunction is not redundant. The exit code is
+# KILLED = the oracle exited non-zero, OR its output carries a `FAIL:` line. A
+# TIMEOUT alone is UNPROVEN, not KILLED. The disjunction is not redundant. The exit code is
 # exactly the signal that rots — run-all.sh's own header records a real case of
 # a test printing FAIL: lines and exiting 0 anyway — and the driver's own gate
 # for that is anchored at `^FAIL:`, so an INDENTED `  FAIL:` still slips past it
@@ -247,14 +250,35 @@ falsify_run_oracle() {   # <tree> <oracle> <outfile> <timeout-seconds>
 FALSIFY_VERDICT=""
 FALSIFY_SIGNAL=""
 falsify_verdict() {   # <rc> <outfile> <timed-out 0|1>
-  local sig=""
-  (( $3 == 1 )) && sig="timeout"
+  local sig="" timed_out=0
+  (( $3 == 1 )) && { sig="timeout"; timed_out=1; }
   falsify_exit_kills "$1" && sig="${sig:+$sig+}exit"
   falsify_has_fail_line "$2" && sig="${sig:+$sig+}failline"
-  if [[ -n "$sig" ]]; then
-    FALSIFY_VERDICT="KILLED"; FALSIFY_SIGNAL="$sig"
-  else
+  if [[ -z "$sig" ]]; then
     FALSIFY_VERDICT="SURVIVED"; FALSIFY_SIGNAL="none"
+    return 0
+  fi
+  # A TIMEOUT IS NOT A KILL, and folding it into one inverted this whole tool.
+  #
+  # A kill means an assertion was observed failing. A timeout means the oracle
+  # never finished, so nothing was observed at all — and the two were reported
+  # identically. That is not a cosmetic mislabel: a SLOW oracle then silently
+  # reclassifies a real SURVIVOR as killed, and a survivor is the only output
+  # this tier exists to produce. It hides exactly what it was built to find.
+  #
+  # Demonstrated on a real host (2026-08-16), not theorised: the fixture mutant
+  # in a function NOTHING CALLS — which cannot hang — timed out under load and
+  # was reported KILLED. Backlog F12 predicted the shape from the tools-lib.sh
+  # run; that host run produced it.
+  #
+  # UNPROVEN is therefore its own verdict. A timeout that ALSO produced a
+  # `FAIL:` line is still a kill: the assertion was observed failing before the
+  # clock ran out, and the run was merely slow. Everything else that timed out
+  # is unproven and owed a ledger entry exactly like a survivor.
+  if (( timed_out )) && ! falsify_has_fail_line "$2"; then
+    FALSIFY_VERDICT="UNPROVEN"; FALSIFY_SIGNAL="$sig"
+  else
+    FALSIFY_VERDICT="KILLED"; FALSIFY_SIGNAL="$sig"
   fi
 }
 
@@ -327,10 +351,12 @@ declare -A FR_PID_RESULT=()
 FR_FREE_SLOTS=()
 FR_KILLED=0
 FR_SURVIVED=0
+FR_UNPROVEN=0
 FR_TIMEOUTS=0
 FR_BROKEN=0
 FR_T_KILLED=0
 FR_T_SURVIVED=0
+FR_T_UNPROVEN=0
 FR_T_TIMEOUTS=0
 
 fr_harvest() {   # <pid> — print that mutant's records and tally them
@@ -353,11 +379,18 @@ fr_harvest() {   # <pid> — print that mutant's records and tally them
         case "$f2" in
           KILLED)   FR_KILLED=$(( FR_KILLED + 1 ));   FR_T_KILLED=$(( FR_T_KILLED + 1 )) ;;
           SURVIVED) FR_SURVIVED=$(( FR_SURVIVED + 1 )); FR_T_SURVIVED=$(( FR_T_SURVIVED + 1 )) ;;
+          UNPROVEN) FR_UNPROVEN=$(( FR_UNPROVEN + 1 )); FR_T_UNPROVEN=$(( FR_T_UNPROVEN + 1 )) ;;
         esac
         case "$f7" in
           *timeout*)
             FR_TIMEOUTS=$(( FR_TIMEOUTS + 1 )); FR_T_TIMEOUTS=$(( FR_T_TIMEOUTS + 1 ))
-            fr_warn "TIMEOUT after ${FR_TIMEOUT}s (counted as KILLED): $f3" ;;
+            # A timeout WITH a failline is still a kill — the assertion was seen
+            # failing before the clock ran out. Say which happened.
+            if [[ "$f2" == "UNPROVEN" ]]; then
+              fr_warn "TIMEOUT after ${FR_TIMEOUT}s (UNPROVEN — nothing was observed asserting): $f3"
+            else
+              fr_warn "TIMEOUT after ${FR_TIMEOUT}s (killed before the clock ran out): $f3"
+            fi ;;
         esac ;;
       'NOTE|write-failed|'*) FR_BROKEN=$(( FR_BROKEN + 1 )) ;;
     esac
@@ -517,7 +550,7 @@ falsify_main() {
     target="${FR_TARGETS[i]}"
     oracle="${FR_ORACLES[i]}"
     mutants="$FR_OUT/mutants.$i.tsv"
-    FR_KILLED=0; FR_SURVIVED=0; FR_TIMEOUTS=0
+    FR_KILLED=0; FR_SURVIVED=0; FR_UNPROVEN=0; FR_TIMEOUTS=0
     t_target="$(fr_now_us)"
 
     # ── the pristine baseline ───────────────────────────────────────────────
@@ -553,18 +586,21 @@ falsify_main() {
     done < "$mutants"
     fr_drain
 
-    printf 'TARGET|%s|%s|%s|%s|%s|%s|%s\n' "$target" "$oracle" \
-      "$(( FR_KILLED + FR_SURVIVED ))" "$FR_KILLED" "$FR_SURVIVED" "$FR_TIMEOUTS" \
-      "$(fr_ms_since "$t_target")"
+    printf 'TARGET|%s|%s|%s|%s|%s|%s|%s|%s\n' "$target" "$oracle" \
+      "$(( FR_KILLED + FR_SURVIVED + FR_UNPROVEN ))" "$FR_KILLED" "$FR_SURVIVED" \
+      "$FR_UNPROVEN" "$FR_TIMEOUTS" "$(fr_ms_since "$t_target")"
   done
 
   local done_total pct
-  done_total=$(( FR_T_KILLED + FR_T_SURVIVED ))
+  done_total=$(( FR_T_KILLED + FR_T_SURVIVED + FR_T_UNPROVEN ))
   pct=0
-  (( done_total > 0 )) && pct=$(( FR_T_SURVIVED * 100 / done_total ))
-  printf 'TOTAL|%s|%s|%s|%s|%s|%s|%s\n' \
-    "${#FR_TARGETS[@]}" "$done_total" "$FR_T_KILLED" "$FR_T_SURVIVED" "$FR_T_TIMEOUTS" \
-    "$pct" "$(fr_ms_since "$t_run")"
+  # UNPROVEN counts toward the numerator: it names a place where nothing was
+  # observed asserting, which is what a survivor names too. Reporting it inside
+  # the kill rate is what made a slow oracle look like a working assertion.
+  (( done_total > 0 )) && pct=$(( ( FR_T_SURVIVED + FR_T_UNPROVEN ) * 100 / done_total ))
+  printf 'TOTAL|%s|%s|%s|%s|%s|%s|%s|%s\n' \
+    "${#FR_TARGETS[@]}" "$done_total" "$FR_T_KILLED" "$FR_T_SURVIVED" "$FR_T_UNPROVEN" \
+    "$FR_T_TIMEOUTS" "$pct" "$(fr_ms_since "$t_run")"
 
   if (( FR_BROKEN > 0 )); then
     fr_err "$FR_BROKEN mutant(s) produced no verdict — they are NOT counted as kills"
