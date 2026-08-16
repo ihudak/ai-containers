@@ -601,3 +601,32 @@ prevent.
 
 **Fix:** assert `p_stat_meta`'s VALUE like its sibling — three
 whitespace-separated fields, the middle one the file's real byte size.
+
+## F26 — `test-falsify-run.sh` was timing-sensitive on macOS — **FIXED 2026-08-16**
+
+Three consecutive macOS host runs failed this file at three DIFFERENT
+assertions, and all three were one cause: the fixture oracles inherited
+`run.sh`'s 60s per-mutant default, and on that host it was reachable.
+
+The worst shape is worth recording because it reads like a different bug. When
+the **baseline** times out, `run.sh` skips the whole target — correctly, since
+an oracle that is not green on the pristine tree cannot distinguish anything —
+so no `MUTANT` line is emitted and every later verdict lookup returns `MISSING`.
+That looks like a broken runner, not a slow host, and the runner's own
+explanation was on stderr where no assertion read it.
+
+Fixed in `fx_run`, one place rather than twelve call sites: a generous default
+`--timeout 300` (every fixture oracle is sub-second, so any timeout at all means
+the machine was slow), overridable via `FX_TIMEOUT`, and skipped entirely when
+the caller passes its own `--timeout` — case 11 uses `--timeout 1` deliberately
+to exercise the timeout path and must not be overridden. `fx_run` now also
+prints the runner's stderr when a run emits no `MUTANT` line at all.
+
+Verified both halves: case 11 still reports `UNPROVEN` with `timeout+exit`, and
+forcing `FX_TIMEOUT=1` produces the diagnostic naming `oracle … is not green on
+the PRISTINE tree`.
+
+**This is a test-fragility fix, not a product fix**, and the distinction matters
+for the ledger: no mutation-tier verdict changes, and nothing about `run.sh`'s
+behaviour changed. What changed is that a slow host now fails honestly or not at
+all, instead of failing somewhere unrelated.

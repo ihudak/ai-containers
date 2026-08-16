@@ -191,12 +191,34 @@ PRISTINE_CK="$(cksum < "$FX/fixture-lib.sh" | tr -d ' ')"
 FX_OUT=""; FX_ERR=""; FX_RC=0
 fx_run() {   # <runner> <conf> <repo> <witness> [args…]
   local runner="$1" cnf="$2" repo="$3" wit="$4"; shift 4
+  # A GENEROUS DEFAULT TIMEOUT, because every fixture oracle here is
+  # sub-second and any timeout at all means the MACHINE was slow, never that
+  # the fixture hung. Without this the runner's own 60s default applied, and on
+  # macOS it was reached — three host runs failed at three DIFFERENT assertions
+  # for the one underlying reason. The worst shape was a timed-out BASELINE:
+  # run.sh then skips the whole target (correctly — an oracle that is not green
+  # on the pristine tree cannot distinguish anything), so no MUTANT line is
+  # emitted at all and every verdict lookup returns MISSING, which reads like a
+  # broken runner rather than a slow host.
+  #
+  # A caller that passes its own --timeout wins: case 11 deliberately uses
+  # --timeout 1 to exercise the timeout path, and must not be overridden here.
+  local has_timeout=0 a
+  for a in "$@"; do [[ "$a" == "--timeout" ]] && has_timeout=1; done
+  (( has_timeout )) || set -- "$@" --timeout "${FX_TIMEOUT:-300}"
   FALSIFY_REPO="$repo" FALSIFY_CONF="$cnf" \
   FX_WITNESS="$wit" FX_ORIGIN="$repo/fixture-lib.sh" \
     bash "$runner" "$@" > "$TMP/stdout" 2> "$TMP/stderr"
   FX_RC=$?
   FX_OUT="$(cat "$TMP/stdout")"
   FX_ERR="$(cat "$TMP/stderr")"
+  # A run that emitted no MUTANT line at all produced no verdicts, so every
+  # later lookup says MISSING and none of them says why. Surface the runner's
+  # own diagnosis once, here, where the cause is still in hand.
+  if ! grep -q '^MUTANT|' <<< "$FX_OUT"; then
+    printf '       fx_run: NO MUTANT lines (rc=%s). runner stderr:\n' "$FX_RC" >&2
+    sed 's/^/       | /' <<< "$FX_ERR" | tail -8 >&2
+  fi
 }
 
 fx_field() {   # <runner output> <needle in the mutated line> <field no>
