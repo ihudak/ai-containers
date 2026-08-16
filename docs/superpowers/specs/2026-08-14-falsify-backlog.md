@@ -317,3 +317,29 @@ So the guard here is prose plus one worked example — weaker than this repo's
 norm, recorded as such rather than pretended otherwise. The floor run does catch
 it, which is how this one was found; the gap is that it catches it late rather
 than at lint time.
+
+## F15 — `bash-floor.sh`'s re-entry guard: 3 survivors on one line
+
+`bash-floor.sh:19` — `return 0 2>/dev/null || exit 0`, the guard that makes the
+file a no-op on a second source. Three mutants of that one line survive:
+
+| Mutant | Effect |
+|---|---|
+| `return 1 … \|\| exit 0` | a re-source returns 1 instead of 0 |
+| `return 0 … && exit 0` | when EXECUTED, `return` fails, `&&` short-circuits, and execution falls THROUGH the guard into the rest of the file |
+| `return 0 … \|\| exit 1` | when EXECUTED, exits 1 instead of 0 |
+
+All three concern what happens when `bash-floor.sh` is **executed directly**
+rather than sourced, and nothing exercises that. The idiom is subtle in exactly
+the way this repo has already been bitten by: `return` SUCCEEDS when sourced and
+returns immediately, so the `||` half is never evaluated; it is only reached when
+the file is executed, where `return` fails. A guard written as "fail loudly"
+under this idiom can therefore never have failed at all — that is a defect this
+project found once already, in `tests/lib-verify-repo.sh`.
+
+`GAP`, all three, one shared cause. The killing assertion is to execute
+`bash-floor.sh` directly — once plainly, once with
+`_AI_CONTAINERS_BASH_FLOOR_SOURCED=1` preset — and assert the exit status and
+that it does not fall through. Not fixed here because this increment's
+bugs-first slot went to the floor COMPARISON above, which was the graver of the
+two: it inverted the guard rather than mis-reporting its status.
