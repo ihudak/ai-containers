@@ -305,7 +305,14 @@ third verdict beside KILLED and SURVIVED. An unproven mutant deserves the same
 ledger treatment as a survivor: it names a place where the suite does not
 demonstrably assert anything.
 
-## F13 — nothing yet runs the ledger gate
+## F13 — nothing yet runs the ledger gate — **FIXED 2026-08-16**
+
+The `falsify` job in `hermetic-checks.yml` (so both PR and nightly inherit it
+from one definition) and Phase 6 in `verify-on-host.sh`. Both run the whole
+corpus and then the ratchet, as one operation. Two registry rows in
+`tests/layer-checks.conf`; `local ⊇ nightly ⊇ PR` re-verified.
+
+### Original finding
 
 `check-ledger.sh` exists and is tested against fixtures, but no CI job and no
 `verify-on-host.sh` phase feeds it a real corpus run. Until Task 11 wires it, the
@@ -552,7 +559,7 @@ host carrying both.
 and require a correct digest (and the mirror on a BSD host with `sha1sum`
 absent), so the helper is asserted to pick the tool the platform actually has.
 
-## F24 — a fix and its ledger entry cannot land in the same commit as the run that justified them
+## F24 — **RESOLVED 2026-08-16.** The run and the check are one operation on the commit under review, in CI and Phase 6 alike, so re-scoring every entry is the normal case rather than an accident to avoid — and the only circumstance in which the ledger is actually true. A fix and its ledger edit land in one commit: forget the edit and check D (obsolete amnesty) fails; make the edit without the fix and check B (survivor with no entry) fails. Original finding: a fix and its ledger entry cannot land in the same commit as the run that justified them
 
 Structural, found while deciding whether to close a GAP here.
 `check-ledger.sh --run-output <file>` checks the ledger against **one** recorded

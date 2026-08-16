@@ -49,14 +49,19 @@ trap 'rm -rf "$TMP"' EXIT
 [[ -f "$VERIFY" ]] || { fail "verify-on-host.sh not found at $VERIFY"; exit 1; }
 bash -n "$VERIFY" && pass "verify-on-host.sh bash -n" || fail "verify-on-host.sh bash -n"
 
-# ── Static checks: the phase 5/7 selection wiring ───────────────────────────────
+# ── Static checks: the phase selection wiring ───────────────────────────────────
 # The default selection must name every phase this script has. A local layer
-# nobody selects is not a local layer.
-grep -qE 'PHASES="\$\{PHASES:-4 5 7\}"' "$VERIFY" \
-  && pass "PHASES defaults to every phase (4 5 7)" \
-  || fail "PHASES defaults to every phase (4 5 7)"
-grep -qE '^VALID_PHASES="0 4 5 7"' "$VERIFY" \
-  && pass "VALID_PHASES names 0 4 5 7" || fail "VALID_PHASES names 0 4 5 7"
+# nobody selects is not a local layer — which is why Phase 6 joined the default
+# the moment it existed rather than being opt-in.
+#
+# Both literals are pinned, and that is the point: 6 was RESERVED and kept out
+# of VALID_PHASES so that naming it early failed loudly. Adding the phase had to
+# fail here first, and it did — these two assertions are the ones that caught it.
+grep -qE 'PHASES="\$\{PHASES:-4 5 6 7\}"' "$VERIFY" \
+  && pass "PHASES defaults to every phase (4 5 6 7)" \
+  || fail "PHASES defaults to every phase (4 5 6 7)"
+grep -qE '^VALID_PHASES="0 4 5 6 7"' "$VERIFY" \
+  && pass "VALID_PHASES names 0 4 5 6 7" || fail "VALID_PHASES names 0 4 5 6 7"
 
 # Every phase must record through phase_fail — the founding defect was a phase
 # that failed while the script exited 0.

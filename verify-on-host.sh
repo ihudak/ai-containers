@@ -34,6 +34,9 @@
 #      Mirrors hermetic-checks.yml's `suite` + `suite-floor` jobs.
 #   7  lint: bash -n over every tracked script, the bash-dialect floor check, and
 #      a shellcheck run. Mirrors hermetic-checks.yml's `lint` job — same commands, same gate.
+#   6  the falsify mutation tier: the WHOLE corpus, then the survivor-ledger
+#      ratchet scored against that same fresh run. Mirrors hermetic-checks.yml's
+#      `falsify` job. Needs no Docker; costs minutes, not seconds.
 #   4  the runtime integration corpus — delegated in full to
 #      tests/integration/run.sh. No test logic lives here.
 #
@@ -128,7 +131,7 @@ CHECK_SANDBOX_VERSION_SH="$REPO/check-sandbox-version.sh"
 # defaults to selected — a local layer nobody selects is not a local layer.
 #   PHASES=0 bash verify-on-host.sh      # environment banner only
 #   PHASES="5 7" bash verify-on-host.sh  # skip the phases that need Docker
-PHASES="${PHASES:-4 5 7}"
+PHASES="${PHASES:-4 5 6 7}"
 want_phase() { case " $PHASES " in (*" $1 "*) return 0 ;; (*) return 1 ;; esac; }
 
 # A PHASES value naming only phases this script does not have must not verify
@@ -143,7 +146,7 @@ want_phase() { case " $PHASES " in (*" $1 "*) return 0 ;; (*) return 1 ;; esac; 
 # are retired for good (see the header) and must never reappear here; 6 is
 # reserved for a later increment and must stay absent until that increment
 # defines it.
-VALID_PHASES="0 4 5 7"
+VALID_PHASES="0 4 5 6 7"
 for _requested_phase in $PHASES; do
   case " $VALID_PHASES " in
     (*" $_requested_phase "*) : ;;
@@ -268,6 +271,45 @@ else
     [[ "$f_rc" -eq 0 ]] || phase_fail 5 "hermetic suite at the declared floor exited $f_rc"
   fi
 fi
+fi
+
+# ── Phase 6: the falsify mutation tier ───────────────────────────────────────────
+# Mirrors .github/workflows/hermetic-checks.yml's `falsify` job. Phase 6 was
+# RESERVED for this increment and deliberately kept out of VALID_PHASES until it
+# existed, so that naming it early would fail rather than silently verify nothing.
+#
+# The corpus run and the ledger check are ONE operation, for the reason spelled
+# out at length in that CI job: check-ledger.sh scores the ledger against a
+# single run, so a fix and its ledger edit must be re-derived together on the
+# tree under test. Freezing a run artefact and checking against it would make
+# this a historical measurement of a tree that no longer exists.
+#
+# --timeout 120 matches CI, and for the same reason: UNPROVEN means "the oracle
+# timed out without printing FAIL:", so a slow machine turns a kill into an
+# unclassified survivor and fails the ratchet for a reason that has nothing to
+# do with the tree. A developer's laptop is exactly the loaded machine that
+# happens on — measured on macOS during increment 5 (backlog F26).
+if want_phase 6; then
+say "PHASE 6 — falsify mutation tier + survivor-ledger ratchet"
+fl_run="$(mktemp)"
+fl_jobs="$( (command -v nproc >/dev/null && nproc) || sysctl -n hw.ncpu 2>/dev/null || echo 4 )"
+sub "running the corpus (jobs=$fl_jobs, timeout=120) — a few minutes"
+if bash "$REPO/tests/falsify/run.sh" --jobs "$fl_jobs" --timeout 120 > "$fl_run" 2>&1; then
+  grep -E '^(TARGET|TOTAL)\|' "$fl_run" | sed 's/^/  /' | while IFS= read -r l; do sub "$l"; done
+  # The ratchet is a SEPARATE step, as in CI: run.sh's stdout is the record and
+  # its exit status is an independent signal, and a pipeline would discard one.
+  if bash "$REPO/tests/falsify/check-ledger.sh" \
+       --run-output "$fl_run" --ledger "$REPO/tests/falsify/survivors.txt"; then
+    sub "survivor ledger: OK"
+  else
+    phase_fail 6 "the survivor-ledger ratchet rejected tests/falsify/survivors.txt"
+  fi
+else
+  sub "corpus exit: non-zero"
+  grep -E '^(ERROR|falsify):' "$fl_run" | sed 's/^/  /' | tail -10
+  phase_fail 6 "the falsify corpus did not complete — the ledger was not scored"
+fi
+rm -f "$fl_run"
 fi
 
 # ── Phase 7: lint ────────────────────────────────────────────────────────────────
