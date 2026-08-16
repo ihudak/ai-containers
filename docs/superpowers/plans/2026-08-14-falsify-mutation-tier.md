@@ -513,6 +513,25 @@ Default is `"4 5 7"`. `tests/test-verify-exit-code.sh` pins it explicitly, so th
 
 ### Task 12: Port to `mgd-ai-containers`
 
+**Port hazard found in advance, 2026-08-16 — do not rediscover it.**
+`tests/falsify/targets.conf` names its targets by repo-relative path, and three
+ACTIVE ones sit at the engine root here but under `base/` in mgd:
+`tools-lib.sh`, `bash-floor.sh`, `shared-files.sh` (plus several DEFERRED rows:
+`entrypoint.sh`, `capture-agent-destinations.sh`, `refresh-ipset-allowlist.sh`).
+Nothing resolves this automatically — `run.sh` makes only the *driver* path
+(`FR_DRIVER_REL`) layout-tolerant, deliberately and with a comment saying so;
+target paths are not covered.
+
+That is legitimate: `targets.conf` is per-repo configuration — it lists that
+repo's targets, its oracles, and its own DEFERRED reasons — so mgd's copy is
+*expected* to differ, exactly as `sandbox.conf` does. Prefix the moved rows with
+`base/` rather than teaching the runner a second layout rule.
+
+Two consequences to verify there, not assume: `derive-targets.sh`'s gate must
+still classify correctly under `base/`, and the mgd corpus will have DIFFERENT
+survivor counts, so its `survivors.txt` is its own artifact and must be
+generated from an mgd run — never copied from here.
+
 - [ ] **Step 1: Derive the file list from `git diff --name-only main...HEAD`** — never hand-written.
 - [ ] **Step 2: Apply to the sibling repo's `base/` layout.** `ENGINE_DIR` resolves differently there; anything path-sensitive needs checking, not assuming.
 - [ ] **Step 3: Run the full hermetic suite and the falsify tier there.** Numbers will differ — that is expected, and the ledger is per-repo.
