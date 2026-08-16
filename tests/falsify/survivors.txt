@@ -369,3 +369,24 @@ tests/portability.sh:cond-negate:d468fd361cfd9ae5d0e8d33a6b76f098cd0db7ae
   The killing assertion is the sibling's: assert p_stat_meta's VALUE, not its
   emptiness — three whitespace-separated fields, the middle one the file's real
   byte size. Recorded as backlog F25.
+
+# ── 14 ────────────────────────────────────────────────────────────────────────
+GROUP: p_md5's branch inversion — the verdict depends on which digest tools exist
+tests/portability.sh:cond-negate:4fcb6275d979c49c1b9fe171b6e97b319b8e6c10
+  if command -v md5sum >/dev/null 2>&1; then md5sum "$1" | cut -d' ' -f1
+  ENV-DEPENDENT: this mutant is KILLED on Linux and SURVIVES on a mac that has
+  both digest tools, and neither verdict is wrong — the difference is the
+  machine, not the code.
+  p_md5 picks `md5sum` when it exists and `md5 -q` otherwise. Inverting that
+  test makes it pick the OTHER branch. On Linux only md5sum exists, so the
+  flipped branch reaches a missing `md5` and the oracle sees it. On a developer
+  mac carrying GNU coreutils alongside the native `md5`, BOTH branches produce a
+  correct digest, so no assertion anywhere can distinguish them — there, it is
+  genuinely EQUIVALENT.
+  Measured, both hosts, same commit: KILLED `exit+failline` on Linux;
+  SURVIVED `none` on macOS (Phase 6's first host run, 2026-08-16).
+  This is exactly why the ENV-DEPENDENT classification exists. Filing it GAP
+  would demand an assertion that cannot exist on the mac; filing it EQUIVALENT
+  would be false on Linux; and leaving it unfiled fails check B on the mac while
+  filing it fails check D in CI. It is exempt from check D only, and still
+  required to survive check A's reason test.

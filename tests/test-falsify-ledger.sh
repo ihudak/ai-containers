@@ -73,14 +73,19 @@ CLEAN="$(mk_ledger clean "$ID_S
 
 out=""; rc=0
 run_gate() {   # $1=ledger $2=run-output → sets out/rc
-  out="$(bash "$CHECK" --ledger "$1" --run-output "$2" 2>/dev/null)"; rc=$?
+  # --strict, because these demonstrations are of the REFERENCE-environment
+  # contract: obsolete amnesty is fatal there and advisory on a developer host,
+  # and a test of "the obsolete check fires" must run where it fires. Check B
+  # (a survivor with no entry) is fatal in BOTH modes, so the other
+  # demonstrations are unaffected by this flag.
+  out="$(bash "$CHECK" --ledger "$1" --run-output "$2" --strict 2>/dev/null)"; rc=$?
 }
 
 # The five signatures. Every demonstration asserts exactly one of them present
 # and the other four absent, which is what makes it a demonstration OF THAT
 # CHECK rather than of the gate in general.
 SIG_MISSING='but has no entry in'
-SIG_NOCLASS='has no GAP:/EQUIVALENT: classification'
+SIG_NOCLASS='has no GAP:/EQUIVALENT:/ENV-DEPENDENT: classification'
 SIG_EMPTY='an empty reason suppresses nothing'
 SIG_STALE='for a mutant that no longer exists — stale, delete it'
 SIG_OBSOLETE='for a mutant that is now KILLED — obsolete amnesty, delete it'

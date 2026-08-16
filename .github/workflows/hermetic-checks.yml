@@ -166,9 +166,15 @@ jobs:
 
       - name: Survivor-ledger ratchet
         run: |
+          # --strict here and NOT in Phase 6: ubuntu-latest is the REFERENCE
+          # environment, so obsolete entries cannot accumulate. A developer host
+          # legitimately produces different verdicts — measured on macOS, 63
+          # timeouts against 11 — and failing there would mean no single ledger
+          # could be correct in both places. See check D's note in
+          # tests/falsify/check-ledger.sh.
           bash tests/falsify/check-ledger.sh \
             --run-output "$RUNNER_TEMP/falsify-run.txt" \
-            --ledger tests/falsify/survivors.txt
+            --ledger tests/falsify/survivors.txt --strict
 
   lint:
     name: Shell lint

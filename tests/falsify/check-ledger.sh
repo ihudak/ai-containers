@@ -100,12 +100,28 @@ CL_HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CL_LEDGER="$CL_HERE/survivors.txt"
 CL_GENERATE="$CL_HERE/generate.sh"
 
-CL_MARKERS="GAP EQUIVALENT"
+# ENV-DEPENDENT is the third classification, added after Phase 6's first real
+# host run. GAP and EQUIVALENT both assert something about the CODE; this one
+# asserts that the VERDICT ITSELF varies by environment, which neither of the
+# other two can express and which the obsolete-amnesty check would otherwise
+# make unsatisfiable. The worked case: tests/portability.sh's p_md5 branch
+# inversion is KILLED on Linux (only md5sum exists, so the flipped branch
+# reaches a missing `md5`) and SURVIVES on a mac carrying both md5sum and md5,
+# where either branch works. Requiring an entry there and forbidding it here is
+# a contradiction no ledger can satisfy.
+#
+# It is exempt from check D (obsolete amnesty) EVEN UNDER --strict, and only
+# from that one. It must still say why the verdict varies, in the same words a
+# reader can check.
+CL_MARKERS="GAP EQUIVALENT ENV-DEPENDENT"
 
 # Findings are counted BY cl_err itself rather than returned up a call chain: a
 # check that both prints its findings and hands back a count has to be invoked
 # in a `$(…)`, which captures the very ERROR: lines the caller exists to show.
 CL_FINDINGS=0
+CL_STRICT="${CL_STRICT:-0}"          # --strict: obsolete amnesty is fatal
+CL_UNPROVEN_UNCLASSIFIED=0
+CL_OBSOLETE_SOFT=0
 cl_err() { printf 'ERROR: %s\n' "$*"; CL_FINDINGS=$(( CL_FINDINGS + 1 )); }
 cl_note() { printf 'check-ledger: %s\n' "$*" >&2; }
 
@@ -252,7 +268,7 @@ cl_check_classification() {   # <ledger file>
   for ident in "${CL_IDENTS[@]}"; do
     idx=$(( ${CL_IDENT_ENTRY[$ident]} - 1 ))
     if [[ -z "${CL_ENTRY_CLASS[idx]}" ]]; then
-      cl_err "$ident ($1:${CL_IDENT_LINE[$ident]}) has no GAP:/EQUIVALENT: classification — a survivor recorded without one is a hole landing silently"
+      cl_err "$ident ($1:${CL_IDENT_LINE[$ident]}) has no GAP:/EQUIVALENT:/ENV-DEPENDENT: classification — a survivor recorded without one is a hole landing silently"
     elif [[ -z "${CL_ENTRY_REASON[idx]}" ]]; then
       cl_err "$ident ($1:${CL_IDENT_LINE[$ident]}) has an empty ${CL_ENTRY_CLASS[idx]}: reason — an empty reason suppresses nothing"
     fi
@@ -329,10 +345,24 @@ cl_check_run() {   # <ledger file>
   while IFS= read -r ident; do
     [[ -n "$ident" ]] || continue
     if [[ -z "${CL_IDENT_ENTRY[$ident]:-}" ]]; then
-      local what="SURVIVED"
-    [[ -n "${CL_UNPROVEN[$ident]:-}" ]] \
-      && what="UNPROVEN (the oracle never finished; nothing was observed asserting)"
-    cl_err "$ident $what (${CL_SURVIVED[$ident]} distinct mutant(s)) but has no entry in $1 — every survivor must be classified GAP: or EQUIVALENT:"
+      # An UNPROVEN identity is NOT required to be classified, and that is a
+      # correction made after Phase 6 ran on a real host for the first time.
+      #
+      # UNPROVEN means the oracle timed out — a property of the MACHINE, not of
+      # the code. Measured: the same 249 mutants gave 4 unproven / 11 timeouts
+      # on Linux and 14 unproven / 63 timeouts on macOS, 3.4 min against 16.
+      # Requiring an entry for each made the ledger say different things on
+      # different hosts, so a ledger correct in CI was wrong locally and vice
+      # versa — a ratchet that cannot be satisfied everywhere at once is not a
+      # ratchet. It is still REPORTED, loudly, and an entry for one is still
+      # ACCEPTED, so a mutant that hangs everywhere can be classified
+      # deliberately; it is only the REQUIREMENT that is dropped.
+      if [[ -n "${CL_UNPROVEN[$ident]:-}" ]]; then
+        cl_note "UNPROVEN, not required to be classified: $ident (the oracle timed out; machine-dependent)"
+        CL_UNPROVEN_UNCLASSIFIED=$(( CL_UNPROVEN_UNCLASSIFIED + 1 ))
+      else
+        cl_err "$ident SURVIVED (${CL_SURVIVED[$ident]} distinct mutant(s)) but has no entry in $1 — every survivor must be classified GAP: or EQUIVALENT:"
+      fi
     fi
   done < <(printf '%s\n' "${!CL_SURVIVED[@]}" | sort)
   # C and D: every in-scope entry still describes a live, still-surviving mutant.
@@ -345,7 +375,28 @@ cl_check_run() {   # <ledger file>
     if [[ -z "${CL_SEEN[$ident]:-}" ]]; then
       cl_err "$ident is a ledger entry ($1:${CL_IDENT_LINE[$ident]}) for a mutant that no longer exists — stale, delete it"
     elif [[ -z "${CL_SURVIVED[$ident]:-}" ]]; then
-      cl_err "$ident is a ledger entry ($1:${CL_IDENT_LINE[$ident]}) for a mutant that is now KILLED — obsolete amnesty, delete it"
+      # OBSOLETE AMNESTY is hygiene, not safety, and it is environment-dependent
+      # in a way check B is not. A mutant killed HERE may survive elsewhere:
+      # tests/portability.sh's p_md5 branch inversion is KILLED on Linux (only
+      # md5sum exists, so the flipped branch reaches a missing `md5`) and
+      # SURVIVES on a mac carrying both md5sum and md5, where either branch
+      # works. Failing on it would mean the ledger could not be simultaneously
+      # correct in CI and on a developer host.
+      #
+      # So it is fatal only under --strict, which the REFERENCE environment (CI,
+      # ubuntu-latest) uses; elsewhere it is a warning. Check B stays fatal
+      # everywhere, because that is the safety half — a new survivor must never
+      # land unclassified, and a stricter host simply requires MORE entries,
+      # which is always satisfiable.
+      # CL_IDENT_ENTRY stores index+1 (so 0 can mean "absent"), hence the -1.
+      if [[ "${CL_ENTRY_CLASS[$(( ${CL_IDENT_ENTRY[$ident]} - 1 ))]:-}" == "ENV-DEPENDENT" ]]; then
+        cl_note "ENV-DEPENDENT, killed in this environment and expected to survive elsewhere: $ident"
+      elif (( CL_STRICT )); then
+        cl_err "$ident is a ledger entry ($1:${CL_IDENT_LINE[$ident]}) for a mutant that is now KILLED — obsolete amnesty, delete it"
+      else
+        cl_note "obsolete here (killed in this environment), not fatal without --strict: $ident"
+        CL_OBSOLETE_SOFT=$(( CL_OBSOLETE_SOFT + 1 ))
+      fi
     fi
   done
   (( skipped > 0 )) && cl_note "$skipped ledger entr(y/ies) skipped: outside this run's ${#CL_SCOPE[@]} target(s)"
@@ -369,6 +420,10 @@ cl_main() {
     case "$1" in
       --ledger) CL_LEDGER="${2:-}"; shift 2 || return 2 ;;
       --run-output) run_output="${2:-}"; shift 2 || return 2 ;;
+      # The REFERENCE environment (CI, ubuntu-latest) runs --strict so obsolete
+      # entries cannot accumulate. A developer host does not, because a verdict
+      # can legitimately differ there — see the note on check D.
+      --strict) CL_STRICT=1; shift ;;
       --lint) mode="lint"; shift ;;
       --list) mode="list"; shift ;;
       -h|--help) cl_usage; return 0 ;;
@@ -404,6 +459,13 @@ cl_main() {
   if (( CL_FINDINGS > 0 )); then
     printf '%s problem(s)\n' "$CL_FINDINGS"
     return 1
+  fi
+  # Report the two tolerated categories in the SUCCESS line too. A soft finding
+  # that only ever appears on stderr is a finding nobody reads.
+  if (( CL_UNPROVEN_UNCLASSIFIED > 0 || CL_OBSOLETE_SOFT > 0 )); then
+    printf 'OK: 0 problem(s) — %s ledger entr(y/ies); %s unproven unclassified, %s obsolete-here (not fatal without --strict)\n' \
+      "${#CL_IDENTS[@]}" "$CL_UNPROVEN_UNCLASSIFIED" "$CL_OBSOLETE_SOFT"
+    return 0
   fi
   printf 'OK: 0 problem(s) — %s ledger entr(y/ies)\n' "${#CL_IDENTS[@]}"
   return 0

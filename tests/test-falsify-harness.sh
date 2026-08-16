@@ -134,7 +134,7 @@ sed_for() {   # $1=predicate → the sed expression that disables it
 signature_for() {   # $1=predicate → the exact text its ERROR: line carries
   case "$1" in
     missing)  printf '%s' 'but has no entry in' ;;
-    noclass)  printf '%s' 'has no GAP:/EQUIVALENT: classification' ;;
+    noclass)  printf '%s' 'has no GAP:/EQUIVALENT:/ENV-DEPENDENT: classification' ;;
     empty)    printf '%s' 'an empty reason suppresses nothing' ;;
     stale)    printf '%s' 'for a mutant that no longer exists — stale, delete it' ;;
     obsolete) printf '%s' 'for a mutant that is now KILLED — obsolete amnesty, delete it' ;;
@@ -143,7 +143,10 @@ signature_for() {   # $1=predicate → the exact text its ERROR: line carries
 
 out=""; rc=0
 run_gate() {   # $1=the check-ledger.sh to run $2=predicate whose ledger to feed
-  out="$(bash "$1" --ledger "$TMP/led-$2.txt" --run-output "$RUN" 2>/dev/null)"; rc=$?
+  # --strict: see the note on the same helper in tests/test-falsify-ledger.sh.
+  # The obsolete-amnesty predicate is only fatal in the reference environment,
+  # so a demonstration that it can fail has to ask for that environment.
+  out="$(bash "$1" --ledger "$TMP/led-$2.txt" --run-output "$RUN" --strict 2>/dev/null)"; rc=$?
 }
 
 # ── CONTROLS ──────────────────────────────────────────────────────────────────

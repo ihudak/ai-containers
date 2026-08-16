@@ -637,3 +637,37 @@ the PRISTINE tree`.
 for the ledger: no mutation-tier verdict changes, and nothing about `run.sh`'s
 behaviour changed. What changed is that a slow host now fails honestly or not at
 all, instead of failing somewhere unrelated.
+
+## F27 — mutation verdicts are environment-dependent, so the ledger could not be satisfied everywhere at once
+
+Phase 6's first real host run (macOS, 2026-08-16) failed with 12 findings, and
+none of them was a code defect. The same 249 mutants on the same commit:
+
+| | Linux | macOS |
+|---|---|---|
+| killed / survived / unproven | 209 / 36 / 4 | 211 / 24 / 14 |
+| timeouts | 11 | **63** |
+| wall clock | 3.4 min | **16 min** |
+
+Two distinct causes, both now handled rather than tuned around.
+
+**Timeouts are machine speed, not code.** Requiring a ledger entry per UNPROVEN
+identity made the ledger say different things on different hosts. UNPROVEN is
+now REPORTED and may be classified, but is no longer REQUIRED to be.
+
+**Some verdicts genuinely differ by environment.** `tests/portability.sh`'s
+`p_md5` branch inversion is KILLED on Linux — only `md5sum` exists, so the
+flipped branch reaches a missing `md5` — and SURVIVES on a mac carrying both,
+where either branch works. Filing it `GAP` demands an assertion that cannot
+exist there; `EQUIVALENT` is false on Linux; leaving it unfiled fails check B on
+the mac while filing it fails check D in CI. Hence a third classification,
+`ENV-DEPENDENT`, exempt from check D only and still required to give a reason.
+
+**And obsolete amnesty is hygiene, not safety**, so it is fatal only under
+`--strict`, which the reference environment (CI, ubuntu-latest) uses. Check B —
+a survivor with no entry — stays fatal everywhere, because that is the ratchet:
+a stricter host simply requires MORE entries, which is always satisfiable.
+
+Verified across the full matrix: Linux `--strict` 0 problems, macOS-equivalent
+default 0 problems, and a plain `GAP` entry for a killed mutant still fails
+under `--strict` while an `ENV-DEPENDENT` one does not.
