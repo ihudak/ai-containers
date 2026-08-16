@@ -88,6 +88,7 @@ tools_read_descriptor blankie
   || fail "a non-default value after a blank line survives (private=$TOOL_private)"
 # The LAST line carries no trailing newline: only the `||` half of the read
 # condition delivers it at EOF.
+# shellcheck disable=SC2154  # TOOL_skills: set by tools_read_descriptor() in tools-lib.sh
 [[ "$TOOL_skills" == "yes" ]] \
   && pass "a final line with NO trailing newline is read" \
   || fail "a final line with no trailing newline is read (skills=$TOOL_skills)"

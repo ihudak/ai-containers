@@ -300,13 +300,17 @@ fi
 # happen quietly is an operator that stops matching: that shows up as a smaller
 # count here instead of as "the suite kills everything".
 #
+# tools-lib.sh moved 17 -> 18 when `stream-flip` gained its reverse direction
+# (stdout -> `>&2`), which the tier needed to reach historical hole #6. The
+# default four-operator corpus is unchanged at 249 — stream-flip is opt-in.
+#
 # bash-floor.sh moved 12 -> 13 when the span scanner learned to carry `[[`/`((`
 # depth across a backslash continuation (backlog F9). Before that, the `<` on
 # bash-floor.sh:42 — inside the multi-line arithmetic condition that IS this
 # repo's bash floor check — was unreachable by any mutant. The fix is strictly
 # additive: measured before/after, exactly one mutant gained, none lost.
 declare -A PINNED=(
-  ["$ENGINE_DIR/tools-lib.sh"]=17
+  ["$ENGINE_DIR/tools-lib.sh"]=18
   ["$ENGINE_DIR/bash-floor.sh"]=13
   ["$ENGINE_DIR/shared-files.sh"]=5
 )

@@ -343,6 +343,32 @@ falsify_scan_line() {   # $1 = raw line text, $2 = incoming span depth (default 
     fi
   fi
 
+  # ── stream-flip, the OTHER direction: stdout → stderr ────────────────────────
+  # `>&2` → `>&1` alone is one-directional, and that made the tier blind to the
+  # exact shape of historical hole #6 (7d1970f): a `printf` whose output belongs
+  # on STDOUT, asserted by a test helper that folded stderr INTO stdout, so the
+  # assertion could not fail either way. Catching that needs the reverse move —
+  # push a stdout line to stderr and see whether anything notices.
+  #
+  # Line-level, not token-level: there is no token to rewrite, only a redirect to
+  # append. Deliberately narrow — a bare `printf`/`echo` whose code region holds
+  # no redirection of any kind and does not end in a pipe, `&&`, `||`, `\` or a
+  # `;`-chained continuation. Anything more ambitious would append a redirect
+  # into the middle of a compound command; the bash -n gate is the backstop, but
+  # a discarded candidate is wasted work, not a caught bug.
+  case "$_FALSIFY_ENABLED" in
+    *' stream-flip '*)
+      code="${line:0:code_end}"
+      code="${code%"${code##*[![:space:]]}"}"          # rstrip
+      if [[ "$code" =~ ^[[:space:]]*(printf|echo)[[:space:]] ]] \
+         && [[ "$code" != *'>'* ]] && [[ "$code" != *'|'* ]] \
+         && [[ "$code" != *'&&'* ]] && [[ "$code" != *'||'* ]] \
+         && [[ "$code" != *';'* ]] && [[ "$code" != *'\' ]]; then
+        SCAN_OPS+=(stream-flip)
+        SCAN_TEXTS+=("$code >&2${line:code_end}")
+      fi ;;
+  esac
+
   # The span depth this line ENDS at, for a caller continuing onto the next
   # physical line. See the continuation note at the call site.
   SCAN_DEPTH_END="$depth"
