@@ -103,6 +103,79 @@ jobs:
       - name: Run tests at the declared floor
         run: ./tests/run-all.sh
 
+  falsify:
+    name: Mutation tier (falsify) + survivor-ledger ratchet
+    runs-on: ubuntu-latest
+    # 249 mutants over 9 targets: ~3.4 min at --jobs 6 / --timeout 60 on a
+    # 12-core machine. Eleven of those mutants time out BY CONSTRUCTION (they
+    # damage a read loop into never terminating), so --timeout is a straight
+    # multiplier on wall clock rather than a ceiling nothing reaches: at
+    # --timeout 120 those eleven alone cost 1320 worker-seconds. 45 minutes is
+    # headroom over a slow 2-4 vCPU runner, not an estimate of the run.
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v5
+
+      # test-shared-files-parity.sh — the oracle for the shared-files.sh target
+      # — drives sync-to-projects.sh, which rsyncs into a throwaway dir. Present
+      # on GitHub runners, guarded anyway, exactly as the `suite` job does.
+      - name: Ensure rsync is available
+        run: command -v rsync >/dev/null || (sudo apt-get update && sudo apt-get install -y rsync)
+
+      # ── WHY THIS RUNS THE CORPUS INSTEAD OF CHECKING A COMMITTED RUN ────────
+      # check-ledger.sh scores the ledger against ONE run output, and that is
+      # the whole difficulty (backlog F24). Adding the assertion that kills a
+      # survivor does not change a RECORDED run, so the entry excusing it would
+      # stay "required" while describing a closed gap; and regenerating the
+      # record to drop that one entry re-scores every OTHER entry at the same
+      # time. Freezing a run artefact in the repo would make the gate check a
+      # historical measurement of a tree that no longer exists — the
+      # assert-configuration-not-effect failure this repo keeps closing.
+      #
+      # So the run and the check are ONE operation on the commit under review.
+      # Re-scoring every entry is then not an accident to be avoided but the
+      # normal case, on every run, which is the only circumstance in which the
+      # ledger is ever actually true. A fix and its ledger edit land in one
+      # commit and CI re-derives both halves: forget to delete the entry and
+      # check D (obsolete amnesty) fails; delete it without the fix and check B
+      # (a survivor with no entry) fails.
+      #
+      # --timeout 120, not the 60 default: UNPROVEN is "the oracle timed out
+      # without ever printing FAIL:", so a machine slow enough turns a KILL into
+      # an unclassified survivor and fails this gate for a reason that is not
+      # about the tree. The slowest legitimate mutant measured 14.1 s, so 120
+      # leaves ~8x for a loaded shared runner. No --target, no --operators: the
+      # scope rule makes the stale/obsolete checks vacuous for any file a
+      # partial run did not measure, so this gate is only honest over the whole
+      # corpus.
+      - name: Run the falsify mutation corpus
+        run: |
+          rc=0
+          bash tests/falsify/run.sh --jobs "$(nproc)" --timeout 120 \
+            > "$RUNNER_TEMP/falsify-run.txt" || rc=$?
+          # run.sh's STDOUT is the record the ratchet reads; its EXIT STATUS is
+          # a separate signal (an oracle not green on the pristine tree, a
+          # worker that produced no verdict) that a `run.sh | check-ledger.sh -`
+          # pipeline would discard. Both are honoured: the summary is echoed for
+          # a human reading the log, and a non-zero corpus fails this step
+          # before the ratchet is given output it cannot be trusted to score.
+          grep -E '^(TARGET|TOTAL)\|' "$RUNNER_TEMP/falsify-run.txt" || true
+          echo "corpus exit: $rc"
+          exit "$rc"
+
+      - name: Survivor-ledger ratchet
+        run: |
+          # --strict here and NOT in Phase 6: ubuntu-latest is the REFERENCE
+          # environment, so obsolete entries cannot accumulate. A developer host
+          # legitimately produces different verdicts — measured on macOS, 63
+          # timeouts against 11 — and failing there would mean no single ledger
+          # could be correct in both places. See check D's note in
+          # tests/falsify/check-ledger.sh.
+          bash tests/falsify/check-ledger.sh \
+            --run-output "$RUNNER_TEMP/falsify-run.txt" \
+            --ledger tests/falsify/survivors.txt --strict
+
   lint:
     name: Shell lint
     runs-on: ubuntu-latest

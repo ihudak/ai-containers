@@ -1,0 +1,20 @@
+# case: 060-restricted-empty-allowlist-still-captures
+# what: the pre-fix capture daemon (fixtures/capture-blocked-traffic.prefix.sh) is bind-mounted over the fixed one, so a comments-only allowlist kills it at startup
+#
+diff --git a/tests/integration/cases/060-restricted-empty-allowlist-still-captures.sh b/tests/integration/cases/060-restricted-empty-allowlist-still-captures.sh
+index 0c95e08..2fc4f11 100644
+--- a/tests/integration/cases/060-restricted-empty-allowlist-still-captures.sh
++++ b/tests/integration/cases/060-restricted-empty-allowlist-still-captures.sh
+@@ -26,7 +26,11 @@
+ sidecar_up || it_finish
+ adir="$(it_scratch)"
+ allowlist_write "$adir" "" "" ""     # all three comments-only — the degenerate legal config
+-sandbox_up restricted "$adir" || it_finish
++# KNOWN-BAD: the pre-fix daemon (grep|grep|sed strip_allowlist under `set -euo
++# pipefail`) bind-mounted over the fixed one. This is the original outage, kept
++# in tests/integration/fixtures/ precisely so it can be replayed.
++bad="$IT_REPO_DIR/tests/integration/fixtures/capture-blocked-traffic.prefix.sh"
++sandbox_up restricted "$adir" -v "$bad:/usr/local/bin/capture-blocked-traffic.sh:ro" || it_finish
+ 
+ # Weaker property first, same one 050 checks: did the daemon survive startup at
+ # all? A comments-only allowlist must not regress even this far.

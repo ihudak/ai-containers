@@ -1,0 +1,16 @@
+# case: 010-restricted-blocks-unlisted
+# what: the sidecar is allowlisted, so the destination this case exists to see BLOCKED is reachable
+#
+diff --git a/tests/integration/cases/010-restricted-blocks-unlisted.sh b/tests/integration/cases/010-restricted-blocks-unlisted.sh
+index a268579..43893cd 100644
+--- a/tests/integration/cases/010-restricted-blocks-unlisted.sh
++++ b/tests/integration/cases/010-restricted-blocks-unlisted.sh
+@@ -10,7 +10,7 @@
+ 
+ sidecar_up || it_finish
+ adir="$(it_scratch)"
+-allowlist_write "$adir" "" "" ""          # nothing allowed at all
++allowlist_write "$adir" "" "$IT_SIDECAR_IP" ""   # KNOWN-BAD: the sidecar IS allowlisted
+ sandbox_up restricted "$adir" || it_finish
+ assert_blocked "$IT_CID" "$IT_SIDECAR_IP"
+ it_finish

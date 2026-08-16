@@ -59,6 +59,41 @@ tools_read_descriptor hashy
   && pass "a whitespace-preceded '#' is still a comment" || fail "trailing comment ($TOOL_binary)"
 rm -f "$TOOLS_D_DIR/hashy.conf"
 
+# A BLANK LINE mid-descriptor, and a LAST LINE with no trailing newline. Both are
+# read by `while IFS= read -r line || [[ -n "$line" ]]`, whose `||` exists purely
+# to deliver that final newline-less line. Nothing exercised either shape, and
+# the falsify mutation tier found it (backlog F11): flipping that `||` to `&&`
+# makes the loop stop at the FIRST BLANK LINE, so every key after one is lost —
+# and the whole hermetic suite stayed green. A descriptor is an ordinary config
+# file a human edits, so a blank line between keys is not exotic.
+#
+# EVERY ASSERTED VALUE HERE MUST DIFFER FROM ITS DEFAULT, and that is not
+# pedantry — the first version of this fixture used `binary=<the descriptor's own
+# name>` and `private=no`, which are exactly what tools_read_descriptor falls
+# back to (line 58's initialiser and line 89's `TOOL_binary="$name"`). Both
+# assertions therefore passed on the defaults with the loop broken: vacuous, and
+# the mutant still survived. Measured, pristine vs mutated:
+#   binary  zzz -> probe   private  yes -> no   skills  yes -> no
+printf 'repo=a/b\n\nbinary=zzz\nprivate=yes\nskills=yes' > "$TOOLS_D_DIR/blankie.conf"
+tools_read_descriptor blankie
+# shellcheck disable=SC2154  # TOOL_repo: set by tools_read_descriptor() in tools-lib.sh
+[[ "$TOOL_repo" == "a/b" ]] \
+  && pass "a key BEFORE the blank line is read" \
+  || fail "a key before the blank line is read (repo=$TOOL_repo)"
+[[ "$TOOL_binary" == "zzz" ]] \
+  && pass "a key AFTER a blank line is read (not the name fallback)" \
+  || fail "a key after a blank line is read — got the '$TOOL_binary' fallback, so the parse stopped at the blank line"
+[[ "$TOOL_private" == "yes" ]] \
+  && pass "a non-default value after a blank line survives" \
+  || fail "a non-default value after a blank line survives (private=$TOOL_private)"
+# The LAST line carries no trailing newline: only the `||` half of the read
+# condition delivers it at EOF.
+# shellcheck disable=SC2154  # TOOL_skills: set by tools_read_descriptor() in tools-lib.sh
+[[ "$TOOL_skills" == "yes" ]] \
+  && pass "a final line with NO trailing newline is read" \
+  || fail "a final line with no trailing newline is read (skills=$TOOL_skills)"
+rm -f "$TOOLS_D_DIR/blankie.conf"
+
 tools_read_descriptor missing && fail "missing returns 0" || pass "missing returns 1"
 
 # --- install=repo-file + multi-path config_dir ----------------------------------

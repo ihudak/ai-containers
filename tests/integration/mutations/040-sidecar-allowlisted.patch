@@ -1,0 +1,16 @@
+# case: 040-restricted-records-blocked
+# what: the sidecar is allowlisted, so nothing is ever blocked and nothing is ever recorded
+#
+diff --git a/tests/integration/cases/040-restricted-records-blocked.sh b/tests/integration/cases/040-restricted-records-blocked.sh
+index 7a5ac93..457f886 100644
+--- a/tests/integration/cases/040-restricted-records-blocked.sh
++++ b/tests/integration/cases/040-restricted-records-blocked.sh
+@@ -15,7 +15,7 @@
+ 
+ sidecar_up || it_finish
+ adir="$(it_scratch)"
+-allowlist_write "$adir" "" "" ""
++allowlist_write "$adir" "" "$IT_SIDECAR_IP" ""   # KNOWN-BAD: the sidecar IS allowlisted
+ sandbox_up restricted "$adir" || it_finish
+ 
+ # Before: the file exists and is non-empty, yet holds no real entries.

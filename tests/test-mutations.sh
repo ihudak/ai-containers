@@ -67,17 +67,29 @@ for p in "$MUT_DIR"/*.patch; do
     fail "$id still applies — the code it breaks has changed; regenerate the patch"
   fi
 
-  case_name="$(sed -n 's/^# case:[[:space:]]*//p' "$p" | head -1)"
-  if [[ -n "$case_name" ]]; then
+  # A patch may declare MORE THAN ONE case, and 070-230-pid1-caps-fresh-exec
+  # does: its damage is a single edit to tests/integration/lib.sh, which both
+  # cases consume. Splitting that into two patches duplicated the diff body
+  # verbatim, and two copies of one body drift.
+  #
+  # Every declared name is validated, not just the first. Reading `head -1`
+  # here while the coverage assertion below greps for ANY matching `# case:`
+  # line would let a second, misspelled name satisfy coverage without ever
+  # being checked for existence — a patch could claim a case that does not
+  # exist and report itself green.
+  mapfile -t case_names < <(sed -n 's/^# case:[[:space:]]*//p' "$p")
+  if [[ ${#case_names[@]} -gt 0 ]]; then
     pass "$id names the case it breaks"
   else
     fail "$id names the case it breaks — no '# case:' header"
   fi
-  if [[ -n "$case_name" && -f "$CASES_DIR/$case_name.sh" ]]; then
-    pass "$id → $case_name exists"
-  else
-    fail "$id → case '$case_name' does not exist in cases/"
-  fi
+  for cn in "${case_names[@]}"; do
+    if [[ -f "$CASES_DIR/$cn.sh" ]]; then
+      pass "$id → $cn exists"
+    else
+      fail "$id → $cn does not exist in cases/"
+    fi
+  done
   if sed -n 's/^# what:[[:space:]]*//p' "$p" | head -1 | grep -q .; then
     pass "$id says what it changes"
   else
@@ -85,17 +97,60 @@ for p in "$MUT_DIR"/*.patch; do
   fi
 done
 
-# ── Every launcher-tier case has a mutation. THE coverage assertion. ───────────
+# ── Every launcher- AND network-tier case has a mutation. THE coverage assertion.
 # Without this the file only audits the mutations that happen to exist, and a
 # case added with none would be invisible to it.
+#
+# `network-mode` was added late, in increment 5, and the reason is worth keeping:
+# the network/security cases were believed covered because AGENTS.md said they
+# "keep their fixture-based demonstrations under tests/integration/fixtures/".
+# They did not. Only two cases (040, 060) have a fixture at all, NO case mounted
+# either one — every reference to them in cases/ was a comment — and the actual
+# demonstrations lived as prose in the increment-1 plan, ending with
+# `git checkout -- tests/integration/cases/`. So the tier with every
+# restricted-mode assertion in it (010 blocks-unlisted, 070 drops-capabilities,
+# the self-heal pair) had no enforced demonstration of any kind, and a new case
+# could ship with none while nothing reported it.
+#
+# Do not narrow this filter back to the launcher tags. The two fixtures remain
+# under fixtures/ and are still not patches — they preserve code that no longer
+# exists, so nothing could apply to them — but every network case now carries a
+# patch like the launcher tier.
+#
+# EVERY case is classified — tier-covered, or explicitly exempt with a reason.
+# The tag filter alone cannot protect itself: narrowing it back to the launcher
+# tags makes 15 coverage assertions VANISH rather than fail, which is silent
+# success, the shape this suite refuses everywhere. Requiring every case to land
+# in one bucket or the other turns that narrowing into a failure, because the
+# cases it stops checking then match no bucket at all.
+#
+# Same idiom as tests/layer-checks.conf's `setup` rows and falsify's
+# `EXCLUDED:` — an exemption is allowed, an unexplained omission is not.
+case_exempt() {  # $1=case basename → prints the reason, or nothing
+  case "$1" in
+    000-harness-selftest)
+      printf 'the harness own smoke test: if it breaks, every other case is uninterpretable, so it has no meaningful known-bad configuration of its own' ;;
+    300-allowlist-delivered)
+      printf 'TRACKED GAP, not a clean exemption — see docs/superpowers/specs/2026-08-14-falsify-backlog.md F5. Its honest mutation breaks Dockerfile delivery, which needs an image REBUILD, so it cannot ride the --reuse-image path the other demonstrations use' ;;
+  esac
+}
+
 for c in "$CASES_DIR"/*.sh; do
   [[ -f "$c" ]] || continue
+  name="$(basename "$c" .sh)"
   tags="$(sed -n 's/^#[[:space:]]*tags:[[:space:]]*//p' "$c" | head -1)"
   case " $tags " in
-    *" mounts "*|*" groups "*|*" volumes "*|*" packages "*) : ;;
-    *) continue ;;
+    *" mounts "*|*" groups "*|*" volumes "*|*" packages "*|*" network-mode "*) : ;;
+    *)
+      reason="$(case_exempt "$name")"
+      if [[ -n "$reason" ]]; then
+        pass "$name is exempt from the mutation rule ($reason)"
+      else
+        fail "$name is neither tier-covered nor exempt — add a mutation, or an exemption with a reason in case_exempt()"
+        printf '       A case in no bucket is a case nobody decided about.\n'
+      fi
+      continue ;;
   esac
-  name="$(basename "$c" .sh)"
   if grep -lqs "^# case:[[:space:]]*$name\$" "$MUT_DIR"/*.patch 2>/dev/null; then
     pass "$name has a known-bad mutation"
   else
@@ -282,6 +337,41 @@ mt_dirty \
 [[ ! -f "$MT_STATE" ]] \
   && pass "a successful rollback removes the state file" \
   || fail "a successful rollback removes the state file"
+mt_clean
+
+# ── apply REFUSES a dirty tree ─────────────────────────────────────────────────
+# mutate.sh's clean-tree gate is the guarantee that a mutation is the only
+# difference in the tree, which is what makes `revert` a reversal rather than a
+# guess. Nothing asserted it, and the consequence was measured, not supposed:
+# mutating that line from
+#     if ! ( cd "$GIT_ROOT" && git diff --quiet ); then
+# to `||` disables the gate COMPLETELY — `cd` succeeds, `||` short-circuits, the
+# negation is false, so a dirty tree sails straight through — and the whole
+# hermetic suite stayed green. It was the first survivor the falsify pilot found,
+# in the best-covered file in the corpus (123 assertions over 256 lines).
+#
+# Asserted through the throwaway instance, never the real repo: this test must be
+# able to run while the developer's own tree is dirty.
+printf 'delta\n' >> "$MT_REPO/target.txt"          # dirty, but NOT via a mutation
+out="$(mt apply p-good)"; rc=$?
+if [[ "$rc" -ne 0 ]]; then
+  pass "apply refuses a dirty tree"
+else
+  fail "apply refuses a dirty tree (rc=$rc) — a mutation is no longer the only difference"
+fi
+if grep -q 'unstaged changes' <<< "$out"; then
+  pass "apply says WHY it refused a dirty tree"
+else
+  fail "apply says WHY it refused a dirty tree (out: $out)"
+fi
+# And it must not have half-applied: refusing then mutating anyway would be worse
+# than not refusing, because $STATE would not record it.
+if [[ ! -f "$MT_STATE" ]]; then
+  pass "a refused apply records no state"
+else
+  fail "a refused apply records no state (state: $(cat "$MT_STATE" 2>/dev/null))"
+fi
+( cd "$MT_REPO" && git checkout -- . >/dev/null 2>&1 )
 mt_clean
 
 # ── A rollback that FAILS is loud, and the state file keeps tracking ───────────

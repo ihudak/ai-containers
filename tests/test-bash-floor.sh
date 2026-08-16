@@ -101,4 +101,48 @@ out="$(bash -c 'source "$1" >/dev/null 2>&1; printf "%s" "${AI_CONTAINERS_BASH_F
   && pass "an unmapped floor yields an empty image rather than a stale one" \
   || fail "an unmapped floor yielded '$out' — the map is not keyed on the declared floor"
 
+# ── The comparison ITSELF refuses and accepts. ────────────────────────────────
+# Everything above this point checks that the guard is WIRED IN — that it exists,
+# that the floor is stated once, that every entry point sources it. None of it
+# checks that the comparison WORKS, and the mutation tier proved the difference
+# is not academic: flipping `BASH_VERSINFO[0] <` to `>` left the whole suite
+# green while inverting the guard, so bash 3.2 would be ACCEPTED and bash 6
+# REFUSED. That is the same failure this repo already records for the capture
+# daemon — "the wiring was correct and the daemon died".
+#
+# BASH_VERSINFO is readonly, so the running bash cannot be faked. The floor is
+# varied instead, against a COPY that differs from the shipped file in exactly
+# the two constants: a floor above the running bash must REFUSE, one below must
+# ACCEPT. Both directions are needed — the mutant inverts both, and either
+# alone would still pass on one of them.
+bf_with_floor() {   # $1=major $2=minor → rc of bash-floor.sh under that floor
+  sed -E "s/^(AI_CONTAINERS_BASH_FLOOR_MAJOR)=.*/\1=$1/; \
+          s/^(AI_CONTAINERS_BASH_FLOOR_MINOR)=.*/\1=$2/" \
+      "$ENGINE_DIR/bash-floor.sh" > "$TMP/bf-probe.sh"
+  # The substitution must have APPLIED, or both probes below run the shipped
+  # floor and agree for the wrong reason.
+  if ! grep -q "^AI_CONTAINERS_BASH_FLOOR_MAJOR=$1\$" "$TMP/bf-probe.sh"; then
+    fail "bf_with_floor could not set the floor to $1.$2 — the probe is meaningless"
+    return 2
+  fi
+  bash "$TMP/bf-probe.sh" >/dev/null 2>&1
+}
+
+bf_with_floor 99 0; rc=$?
+[[ "$rc" -eq 1 ]] \
+  && pass "a floor ABOVE the running bash is refused (rc=1)" \
+  || fail "a floor above the running bash is refused — got rc=$rc, so the guard does not actually compare"
+
+bf_with_floor 3 0; rc=$?
+[[ "$rc" -eq 0 ]] \
+  && pass "a floor BELOW the running bash is accepted (rc=0)" \
+  || fail "a floor below the running bash is accepted — got rc=$rc"
+
+# The MINOR half of the comparison, which the major-only probes above cannot
+# reach: a floor with the same major and a higher minor must still refuse.
+bf_with_floor "${BASH_VERSINFO[0]}" "$(( BASH_VERSINFO[1] + 1 ))"; rc=$?
+[[ "$rc" -eq 1 ]] \
+  && pass "same major, higher minor is refused (the minor comparison is live)" \
+  || fail "same major, higher minor is refused — got rc=$rc"
+
 printf '\n%d failure(s)\n' "$fails"; exit "$fails"

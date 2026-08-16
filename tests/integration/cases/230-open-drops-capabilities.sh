@@ -5,9 +5,24 @@
 #
 # Open mode is "no firewall", NOT "no isolation" — a distinction worth pinning,
 # because the name invites the opposite reading. It gets the same capability drop
-# as restricted mode (entrypoint.sh: exec capsh --drop=cap_net_admin,cap_net_raw)
-# AND sandbox.sh passes no --cap-add at all, so this asserts both belts: even if
-# the drop regressed, the capabilities were never granted to begin with.
+# as restricted mode (entrypoint.sh: exec capsh --drop=cap_net_admin,cap_net_raw).
+#
+# THIS CASE ASSERTS ONE BELT, NOT TWO. An earlier version of this comment claimed
+# it also asserted that "sandbox.sh passes no --cap-add at all, so the
+# capabilities were never granted to begin with". That was wrong twice over, and
+# both errors matter:
+#
+#   1. This case cannot observe sandbox.sh at all. lib.sh's sandbox_up composes
+#      its OWN docker run with its own per-mode capability logic (lib.sh:202-203)
+#      and never invokes the launcher. What sandbox.sh requests is asserted
+#      hermetically instead, in tests/test-mode-capabilities.sh.
+#   2. "Never granted" is false for cap_net_raw regardless of mode. Docker's
+#      default bounding set includes it (for ping) and sandbox.sh issues no
+#      --cap-drop anywhere, so an open-mode CONTAINER holds cap_net_raw whatever
+#      that line does. Only cap_net_admin is genuinely never granted.
+#
+# What this case does assert is the drop, and it asserts it under the strongest
+# available conditions — see the discovery-mode note below.
 #
 # NOTE: discovery mode is NOT a useful contrast here, though it looks like one.
 # entrypoint.sh drops only cap_net_admin there and used to claim NET_RAW was

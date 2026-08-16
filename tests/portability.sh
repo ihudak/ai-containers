@@ -9,6 +9,16 @@
 # Every helper prints to stdout and must NEVER print empty on a supported
 # platform: an empty string compares equal to another empty string, which turns
 # a portability failure into a test that passes vacuously.
+#
+# NO HELPER FOR AWK, BUT ONE TRAP WORTH KNOWING, because it cost a floor-run
+# failure: **do not use {n} interval quantifiers in an awk regex.** ubuntu:22.04
+# — which is the bash-floor container the local layer and CI both run — ships
+# mawk 1.3.4-20200120, where intervals are DISABLED by default, so
+# /^[0-9a-f]{40}$/ matches NOTHING there. It silently inverts the assertion
+# rather than erroring. ubuntu:24.04 mawk and macOS awk both support intervals,
+# so this is invisible everywhere except the floor. Write
+# `length($3) == 40 && $3 ~ /^[0-9a-f]+$/` instead. `grep -E` and bash `[[ =~ ]]`
+# are unaffected — both honour intervals reliably.
 
 # GNU `stat -f` is NOT an invalid option that falls through — it means
 # --file-system, so on GNU the old `stat -c … || stat -f …` fallback did not

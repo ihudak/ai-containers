@@ -260,11 +260,16 @@ r="$(MK_REPO_PROBE=1 mk_repo 0)"
 # which SUCCEEDS and stays put, committing the whole real working tree under a
 # fake identity.
 
-# PHASES="5 7" covers every check named in the registry in one hermetic run.
+# PHASES="5 6 7" covers every check named in the registry in one hermetic run.
+# 6 joined the list when the falsify tier gained its phase: the registry rows
+# come from hermetic-checks.yml, so a job added there with no local phase to
+# match is precisely the `local ⊉ PR` breach this file exists to catch — and
+# leaving 6 out here would have hidden it behind a harness that never selected
+# the phase, which is the same silent-success shape one layer down.
 # The deliberately broken probe file makes Phase 7 report FAILED — expected
 # and irrelevant here: this run's purpose is the WITNESS/log content it
 # leaves behind, not its own exit code.
-run_verify "$r" "5 7" >/dev/null
+run_verify "$r" "5 6 7" >/dev/null
 
 # floor_img/floor feed both the registry loop below (which expands the
 # @FLOOR_IMAGE@ placeholder) and the suite-floor image assertion further down,

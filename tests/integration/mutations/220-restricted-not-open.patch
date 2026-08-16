@@ -1,0 +1,16 @@
+# case: 220-open-no-capture
+# what: restricted mode instead of open, where the blocked-traffic daemon genuinely runs and blocked.log genuinely exists
+#
+diff --git a/tests/integration/cases/220-open-no-capture.sh b/tests/integration/cases/220-open-no-capture.sh
+index 132519d..6107150 100755
+--- a/tests/integration/cases/220-open-no-capture.sh
++++ b/tests/integration/cases/220-open-no-capture.sh
+@@ -17,7 +17,7 @@
+ 
+ adir="$(it_scratch)"
+ allowlist_write "$adir" "" "" ""
+-sandbox_up open "$adir" || it_finish
++sandbox_up restricted "$adir" || it_finish   # KNOWN-BAD: not open mode
+ 
+ assert_file_absent "$IT_CID" /workspace/.agent-blocked/blocked.log
+ assert_file_absent "$IT_CID" /workspace/.agent-discovery/agent-traffic.pcap

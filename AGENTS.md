@@ -136,6 +136,19 @@ The suite asserts **effect, not configuration**: it observes from outside the co
 - Two known-bad daemons are kept in `tests/integration/fixtures/`, each preserving a *different* real bug that shipped, so the increment-1 cases that catch them can be demonstrated failing. Do not "consolidate" or repair them.
 - Increment 2's known-bad configurations live in **production** files, so they are kept as patches under `tests/integration/mutations/` and driven by `tests/integration/mutate.sh` (`list` / `apply <id>` / `revert` / `verify`). Patches rather than `sed`, deliberately: a patch that no longer applies is a loud failure, whereas a stale `sed` matches nothing and reports success. `tests/test-mutations.sh` enforces both directions — every patch still applies, **and** every `mounts`/`groups`/`volumes` case has one, so a new case with no mutation fails at review time.
 
+**The `falsify` tier (`tests/falsify/`) is a different thing from `tests/integration/mutations/`, and the two must not be unified.** Both damage code on purpose; everything else about them differs:
+
+| | `tests/integration/mutations/` | `tests/falsify/` |
+|---|---|---|
+| What is damaged | a case file or the launcher, by a **hand-written patch** | any line of a target, by a **generated** mutant |
+| The tree | the **real** working tree, deliberately, for a human demonstration | a **scratch** tree per worker; the working tree is never touched |
+| What is checked | that the patch still **applies** | that the oracle **notices** — killed, survived or unproven |
+| Cadence | hand-driven | every CI run, ~3.4 min over 249 mutants |
+
+A mutant nothing noticed is a **survivor**, and every survivor is owed an entry in `tests/falsify/survivors.txt` classified `GAP:` (no test kills it today) or `EQUIVALENT:` (no test *could*). Those are different claims and conflating them is how the ledger stops protecting anything. `UNPROVEN` — the oracle timed out without ever printing `FAIL:` — is owed an entry too: nothing was observed asserting, which is what a survivor means.
+
+The corpus run and the ratchet are **one operation**, in CI and in Phase 6 alike. `check-ledger.sh` scores the ledger against a single run, so a killing assertion and its ledger edit have to be re-derived together on the tree under review; checking against a frozen artefact would measure a tree that no longer exists.
+
 ```bash
 tests/integration/mutate.sh apply 400-ro-suffix-dropped
 tests/integration/run.sh --reuse-image --tags mounts     # expect 400 to FAIL
@@ -325,13 +338,14 @@ The chain **`local ⊇ nightly ⊇ PR`** holds over both integration *cases* and
 | 0 | environment banner (daemon reachable, buildx, disk; Colima status on macOS) | — |
 | **5** | the hermetic suite (`tests/run-all.sh`) + the `sandbox.conf` schema gate, then the same suite again inside a container pinned to the declared bash floor | `hermetic-checks.yml` jobs `suite` + `suite-floor` |
 | **7** | `bash -n` over every tracked script, the bash-dialect floor linter, and `shellcheck` as a gate | `hermetic-checks.yml` job `lint` |
+| **6** | the `falsify` mutation tier: the whole corpus, then the survivor-ledger ratchet | `hermetic-checks.yml` job `falsify` |
 | 4 | the runtime integration corpus, delegated whole to `tests/integration/run.sh` | `integration.yml` / `nightly.yml` |
 
 **Phase numbers are identifiers, not execution order** — the script actually runs them **0, 5, 7, 4**: cheap checks first, so a broken hermetic suite is reported in seconds rather than after an hour of image builds.
 
-**1, 2 and 3 are permanently burned and must never be reused.** Increment 3 removed those phases (agent-tier tool install, native package builds, the rvm/Ruby reconcile — all now covered by the integration corpus's `packages` tier instead) and left `VALID_PHASES` so that a stale `PHASES="1 2 3"` fails loudly, naming each phase as unrecognised, instead of `want_phase` matching nothing and the script declaring success having verified zero checks. Reusing 1, 2 or 3 for new content would make that stale value valid again and silently defeat the exact guard this paragraph describes. **Phase 6 is reserved for increment 5's mutation tier** and must stay absent from `VALID_PHASES` until that increment defines it — filling it in early would be the same mistake in the other direction, a phase existing before anything requires it to.
+**1, 2 and 3 are permanently burned and must never be reused.** Increment 3 removed those phases (agent-tier tool install, native package builds, the rvm/Ruby reconcile — all now covered by the integration corpus's `packages` tier instead) and left `VALID_PHASES` so that a stale `PHASES="1 2 3"` fails loudly, naming each phase as unrecognised, instead of `want_phase` matching nothing and the script declaring success having verified zero checks. Reusing 1, 2 or 3 for new content would make that stale value valid again and silently defeat the exact guard this paragraph describes. **Phase 6 was reserved for increment 5's mutation tier and is now defined** — it runs `tests/falsify/run.sh` over the whole corpus and then `tests/falsify/check-ledger.sh` against the result. Keeping it out of `VALID_PHASES` until the tier existed did its job: naming it early failed loudly instead of silently verifying nothing.
 
-`PHASES` defaults to `"4 5 7"` (Phase 0 always runs, unconditionally, outside `want_phase`) — a local layer nobody selects by default is not a local layer. `tests/test-verify-exit-code.sh` pins this default explicitly.
+`PHASES` defaults to `"4 5 6 7"` (Phase 0 always runs, unconditionally, outside `want_phase`) — a local layer nobody selects by default is not a local layer. `tests/test-verify-exit-code.sh` pins this default explicitly.
 
 ### The bash floor
 
