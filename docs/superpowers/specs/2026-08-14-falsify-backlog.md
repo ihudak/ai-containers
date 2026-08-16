@@ -148,6 +148,13 @@ again without reverting, and require a non-zero exit naming the applied mutation
 mismatch shape `require_git_usable` was written for. `tests/test-mutations.sh`
 already fakes `git` on `PATH` for the rollback test, so the technique exists.
 
+**Corrected 2026-08-16 (Task 10).** Three was an undercount, from a partial pilot
+run. The full corpus finds **five** damages in this cause, and F20 supersedes
+this entry: `L242 exit 1 -> exit 0` (`cmd_revert`'s "still records what could not
+be reverted") and `L206 return 0 -> return 1` (`cmd_revert` with nothing applied)
+are the two this table missed. `L141` and `L242` are the same trimmed line, so
+they share one ledger identity and one entry must speak for both.
+
 Kept as a backlog entry rather than fixed inline because the falsify tier's own
 ledger is the right home for survivor accounting, and these three are its first
 entries — recorded here so Task 10 starts from a known state instead of
@@ -208,6 +215,14 @@ through the tier: 17 mutants, **16 killed, 1 survived** (was 15/2).
 
 The `tools-lib.sh:42` return-flip survivor remains — `tools_list_names`'s
 "no descriptor directory" path, still unexercised.
+
+**Re-measured 2026-08-16 (Task 10):** `17|14|1|2` — 14 killed, 1 survived, **2
+unproven**. The "16 killed" above was counted before the `UNPROVEN` verdict
+existed (F12, fixed 2026-08-16): the two `tools-lib.sh:62` **cond-negate**
+damages hang rather than assert and are now recorded honestly as unproven, in
+F22. The **logic-flip** on that line — the `||` -> `&&` this entry's fix was
+aimed at — is genuinely killed, so the fix stands; only the accounting moved.
+The `tools-lib.sh:42` survivor is unchanged and is entry 12 of the ledger.
 
 ### Original finding
 
@@ -329,6 +344,21 @@ file a no-op on a second source. Three mutants of that one line survive:
 | `return 0 … && exit 0` | when EXECUTED, `return` fails, `&&` short-circuits, and execution falls THROUGH the guard into the rest of the file |
 | `return 0 … \|\| exit 1` | when EXECUTED, exits 1 instead of 0 |
 
+**Corrected 2026-08-16 (Task 10): the sentence below is wrong for one of the
+three.** `return 1 … || exit 0` is NOT direct-execution-only — a plain SECOND
+SOURCE then returns 1 and the `source` command's status becomes 1. Measured, that
+damage IS killed by a hermetic test: `tests/test-migrate-runme.sh`, whose
+`source ./project-init.sh; printf "rc=%s" "$?"` assertion sees it
+(`project-init.sh:18` sources `bash-floor.sh`, `sandbox-common.sh` sources it
+again). It survives the tier only because `test-bash-floor.sh` — the oracle
+`targets.conf` names for this target — is not that test, which makes it an
+instance of F16 rather than of this entry. The other two are direct-execution
+only, as stated. `shared-files.sh:28` carries the identical guard and the
+identical three mutants; its `return 1` damage is killed by its OWN oracle
+(`test-shared-files-parity.sh`, and `test-sync-project.sh`), so only two of its
+three survive. Both files' surviving direct-execution damages are entries 1-2 of
+`tests/falsify/survivors.txt`.
+
 All three concern what happens when `bash-floor.sh` is **executed directly**
 rather than sourced, and nothing exercises that. The idiom is subtle in exactly
 the way this repo has already been bitten by: `return` SUCCEEDS when sourced and
@@ -343,3 +373,198 @@ project found once already, in `tests/lib-verify-repo.sh`.
 that it does not fall through. Not fixed here because this increment's
 bugs-first slot went to the floor COMPARISON above, which was the graver of the
 two: it inverted the guard rather than mis-reporting its status.
+
+---
+
+# Found by classifying the first full corpus run (Task 10, 2026-08-16)
+
+`tests/falsify/survivors.txt` now carries all 32 identities (36 SURVIVED + 4
+UNPROVEN = 40 records) as **12 entries**: 31 GAP, 1 EQUIVALENT. Every entry below
+states a **measured** fact — each surviving damage was applied to a throwaway
+copy of the tree and the **whole 52-test suite** run against it, so "no test
+kills this" is an observation, not a reading of the source. That measurement
+overturned three classifications that a static read would have got wrong (see
+the F8, F11 and F15 corrections above, and F16 below).
+
+## F16 — the tier's oracle map is 1:1, but three targets are driven by several tests
+
+**Nine of the 32 ledger identities (11 distinct damages) are killed by a
+hermetic test that is not the oracle `targets.conf` names for their target.**
+Measured one damage at a time against the full suite:
+
+| Target · line | Damages | Killed by | Declared oracle |
+|---|---|---|---|
+| `tests/lib-verify-repo.sh:325` (`add_origin`) | 4 | `test-verify-exit-code.sh`, `test-layer-containment.sh` | `test-lib-verify-repo.sh` |
+| `tests/lib-verify-repo.sh:313` (`MK_REPO_PROBE`) | 3 | both of the above | same |
+| `tests/lib-verify-repo.sh:326` (`MK_REPO_UNTRACK_SH`) | 1 | `test-verify-exit-code.sh` | same |
+| `tests/portability.sh:36` (`p_stat_meta`) | 3 | `test-allowlists.sh`, `test-falsify-generate.sh` | `test-portability.sh` |
+| `bash-floor.sh:19` (`return 1` half) | 1 | `test-migrate-runme.sh` | `test-bash-floor.sh` |
+
+This is `targets.conf`'s own documented failure mode arriving from the opposite
+direction. That file guards against a target whose code the oracle never
+executes (the GREPPED-ONLY rows); it has no defence against a target whose code
+**three** tests drive while the row format allows one name. The tier then reports
+eleven kills as survivors, and a reader who trusts the ledger goes looking for
+assertions that already exist.
+
+`tests/lib-verify-repo.sh` is the clear case: it is a shared harness library, and
+its `mk_repo` knobs exist *for* the other two tests — `test-verify-exit-code.sh`
+asserts both directions of `add_origin` (`mk_repo 0 0` must make Phase 5 fail
+with "no usable BASE_REF", `mk_repo 0` must make it pass) and
+`test-layer-containment.sh` owns `MK_REPO_PROBE`. `tests/portability.sh` is the
+subtler one: `test-portability.sh` only requires `p_stat_meta` non-empty, and on
+GNU `stat -f '%N %z %m' F` is not an invalid option — it means `--file-system`
+and prints filesystem information, non-empty — so its own oracle structurally
+cannot see the branch swap, while two other tests that fingerprint files with it
+catch it by effect.
+
+**Fix:** the multi-oracle row type already named as a prerequisite on the
+DEFERRED `sandbox-common.sh` row. With it, these eleven damages become kills with
+no new assertion written. **Do not** "fix" this by adding duplicate assertions to
+the declared oracles — that would test the same fact twice to satisfy a mapping
+defect. Until it lands, `verify-on-host.sh`'s and CI's survivor count is
+overstated by nine identities.
+
+## F17 — `tests/lib-verify-repo.sh`'s git bootstrap and probe are never run under a failing git
+
+Three surviving logic-flips, no test anywhere kills them (measured):
+
+| Line | Damage | What it disables |
+|---|---|---|
+| `181` | `git init -b main \|\| git init` -> `&&` | the git < 2.28 fallback in the probe |
+| `322` | same, in `mk_repo` | the same fallback in the stub repo |
+| `183` | `git add f && git commit` -> `\|\|` | the probe's commit step, silently skipped |
+
+On any modern git the second `init` is an idempotent re-init, so the `&&` form is
+indistinguishable; the damage appears only where `git init -b` FAILS, leaving a
+repo with no commit — which is the "Phase 7 parsed no files" vacuous pass the
+probe above them exists to prevent. `183` is worse in kind: `git add f || git
+commit` skips the commit whenever `git add` succeeds, so the probe stops proving
+git can commit while still reporting success — a guard that cannot fail, the
+defect class this file was rewritten to remove.
+
+**Killing assertion:** a faked `git` on `PATH` (the technique
+`tests/test-mutations.sh` already uses) in two shapes — one that rejects `-b`,
+requiring `mk_repo` to still yield a repo with a tracked committed file; one
+whose `commit` fails, requiring the source of `lib-verify-repo.sh` to abort with
+its named probe message.
+
+## F18 — `lib-layer-checks.sh`'s missing-file and unset-registry paths return the wrong status
+
+`wf_jobs:87`, `wf_steps:96`, `wf_job_key:116` all carry
+`[[ -f "$f" ]] || { echo "no such workflow: $f" >&2; return 1; }`; flipping the
+status to 0 keeps the message and tells the caller it succeeded. Same for
+`lc_rows:33`, the `LAYER_CHECKS_CONF` unset/missing branch. Nothing kills any of
+them (measured).
+
+The file's header promises "EVERY function here fails loudly and non-zero on an
+empty result", and `test-layer-checks-parser.sh` does exercise that for every
+EMPTY-RESULT path — but for the MISSING-FILE path only in `wf_triggers_on`, whose
+identical `return 1` at `:165` is killed for exactly that reason. The three
+functions the containment guard actually calls are unprotected.
+
+**Killing assertion:** four more calls in the idiom already in that file —
+`wf_jobs`/`wf_steps`/`wf_job_key` against a nonexistent path, and `lc_rows check`
+with `LAYER_CHECKS_CONF` pointing at an absent file — each required to fail.
+
+## F19 — `mutate.sh`'s sibling-layout resolution is unexercised, and survives by accident
+
+`:41`'s `base/` fallback and `:52`'s `GIT_ROOT` resolution exist for
+mgd-ai-containers, where the engine lives under `base/` and `APPLY_PREFIX` must
+become `base` so one patch set serves both repos. In this repo the fallback never
+fires, and inverting it is nearly harmless **by accident**: `cd` into a
+nonexistent `base/` fails, the substitution yields the empty string, `cd ""`
+succeeds without moving, `GIT_ROOT` resolves from the caller's own directory, and
+`${REPO_DIR#"$GIT_ROOT"/}` on an empty `REPO_DIR` is empty, so
+`${APPLY_PREFIX:+…}` expands to nothing and every patch still applies. Verified
+each step in a shell.
+
+The accident is the finding: a resolution that is load-bearing for the port
+depends on the CWD to come out right here.
+
+**Killing assertion:** two fixture trees — `build.sh` at the root, and the engine
+under `base/` — asserting the `REPO_DIR`/`GIT_ROOT`/`APPLY_PREFIX` triple derived
+for each, from a CWD outside both.
+
+## F20 — five `mutate.sh` refusal paths report success (supersedes F8)
+
+`:141` and `:242` (`exit 1` -> `exit 0`, one shared ledger identity), `:143`
+(`require_git_usable || exit 1` -> `exit 0`), `:74` (`return 1` -> `return 0`),
+`:206` (`revert` with nothing applied, `return 0` -> `return 1`). None killed
+(measured). Every one is a STATUS, and `mutate.sh` is driven by CI
+demonstrations and by a human's shell, both of which branch on `$?`.
+
+**Killing assertions:** apply twice without reverting, requiring a non-zero exit
+that names the applied mutation; a faked `git` that cannot resolve `--git-dir`,
+requiring `apply` to refuse non-zero; and `revert` with no state file, requiring
+exit 0.
+
+## F21 — `mutate.sh revert` reverses twice on any host with `tac`
+
+`:236`'s `done < <(tac "$STATE" 2>/dev/null || sed '1!G;h;$!d' "$STATE")` picks
+ONE reverser. With `&&`, on any host that has `tac` BOTH run, so every applied id
+is fed to the loop twice; the second pass finds the patch already gone, takes the
+`git apply --check` branch, prints "Already absent", and `revert` still exits 0
+with the state file removed. The two facts that block comment insists on —
+reverse order, and "I undid it" vs "it was already gone" being different outcomes
+— are both violated with the suite green. Not killed (measured).
+
+**Killing assertion:** apply two mutations and require `revert` to print exactly
+one `Reverted <id>` line per id, in reverse order, and no "Already absent" line.
+
+## F22 — four damages hang the oracle instead of failing it; no oracle is time-bounded
+
+The 4 UNPROVEN records. `tools-lib.sh:62` (two cond-negate damages) and
+`tests/bash-dialect-lint.sh:105` (one) negate a `while read` condition, which at
+EOF stays true forever; `tests/integration/docker-shim.sh:60`'s `cmp-flip` makes
+the self-reference guard reject a REAL docker and accept the shim, so the shim
+re-execs itself. In all four the per-mutant clock expires with no `FAIL:` line —
+nothing was observed asserting.
+
+**This is a GAP, not equivalence-by-hang.** The mutated program is observably
+different (it does not terminate), the difference is cheap to observe, and
+`docker-shim.sh`'s own header records this exact hang being hit by hand on
+2026-08-09 — which is why that guard exits 127 rather than warning. What is
+missing is a BOUND.
+
+**Killing assertion:** run the damaged path under an explicit `timeout` and fail
+by name when it expires — parse a descriptor under `timeout 10` requiring both
+completion and the parsed values; run `bash-dialect-lint.sh` over a fixture under
+`timeout 10` requiring its exit status; invoke the shim with a self-referencing
+`IT_REAL_DOCKER` under `timeout 10` requiring exit 127. Note that three siblings
+of the docker-shim damage on the same line DID print a `FAIL:` before their clock
+ran out and are recorded as kills, so the distinction is real rather than an
+artefact of load.
+
+## F23 — `p_sha1`'s platform probe can be inverted with every test green
+
+`tests/portability.sh:40`. Not killed by anything (measured), and the only
+portability survivor of which that is true — the `p_stat_meta` ones belong to
+F16. This machine has BOTH `sha1sum` and `shasum` and they print the same digest
+for the same file (verified), so no assertion on `p_sha1`'s OUTPUT can
+distinguish the branches. Its `p_md5` sibling is killed only by an accident of
+tool population: `md5 -q` does not exist on Linux, so the inverted probe prints
+empty and the non-empty assertion catches it — a kill that measures the platform,
+not an assertion aimed at branch selection, and one that would stop working on a
+host carrying both.
+
+**Killing assertion:** run `p_sha1` with a `PATH` from which `shasum` is absent
+and require a correct digest (and the mirror on a BSD host with `sha1sum`
+absent), so the helper is asserted to pick the tool the platform actually has.
+
+## F24 — a fix and its ledger entry cannot land in the same commit as the run that justified them
+
+Structural, found while deciding whether to close a GAP here.
+`check-ledger.sh --run-output <file>` checks the ledger against **one** recorded
+run. Adding the assertion that kills a survivor does not change that file, so the
+entry must STAY (check B: a survivor with no entry fails) while now describing a
+closed gap; and re-running the corpus to remove it invalidates every other entry
+that the new run happens to score differently — the UNPROVEN verdicts especially,
+since they are timing-dependent. So "fix a GAP" and "update the ledger" are one
+atomic operation gated on a fresh full-corpus run, not two edits.
+
+Task 11 wires the gate, and this is the constraint it has to design for: either
+the run output becomes a committed artefact regenerated with the ledger, or the
+gate runs the corpus itself. It also means the bugs-first policy cannot be
+satisfied *inside* a classification task without re-baselining — which is why
+Task 10 records eight causes and closes none.

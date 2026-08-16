@@ -55,25 +55,297 @@
 # --target tools-lib.sh` leaves every other entry unmeasured, not stale. The
 # ledger is only fully verified by a run over the whole active target set.
 
-tools-lib.sh:logic-flip:e46b949d2a1807e12ab8711e203a737dc2f8c961
-  tools-lib.sh:62  while IFS= read -r line || [[ -n "$line" ]]; do
-  the damage:      ... read -r line && [[ -n "$line" ]] ...
-  GAP: the `||` is the standard idiom for reading a final line that carries no
-  trailing newline; with `&&` the loop stops at the first EMPTY line instead.
-  Verified by running both against a descriptor holding a blank line between two
-  keys — pristine parsed `repo=[a/b] binary=[x]`, mutated parsed `repo=[]
-  binary=[blank]`, silently wrong. Nothing in the suite notices, so a
-  `tools.d/*.conf` with a blank line, or one whose last line lacks a newline,
-  could parse wrong with every test green. This is a live product risk, not a
-  cosmetic gap. The killing assertion is a fixture descriptor containing both
-  shapes: a blank line between keys, and a final key with no trailing newline.
+# ══ HOW THE ENTRIES BELOW WERE CLASSIFIED ═════════════════════════════════════
+# Every entry states whether ANY hermetic test kills the mutant, and that is a
+# MEASURED fact, not a reading of the source: each surviving damage was applied
+# to a throwaway copy of the tree and the WHOLE 52-test suite run against it.
+# That measurement changed three classifications outright — one damage the
+# backlog recorded as "nothing exercises it" is killed by test-migrate-runme.sh,
+# and the three tests/portability.sh p_stat_meta damages are killed by
+# test-allowlists.sh and test-falsify-generate.sh — so the difference between
+# "no test kills it" and "the DECLARED ORACLE does not kill it" is written into
+# the entries rather than assumed away.
+#
+# Corpus: tests/falsify/run.sh --jobs 6 over the nine active targets,
+# TOTAL|9|249|209|36|4|11|16 — 36 SURVIVED + 4 UNPROVEN = 40 records, 32
+# identities, 12 entries.
 
+# ── 1 ─────────────────────────────────────────────────────────────────────────
+GROUP: re-entry guard, the half that only runs when the file is EXECUTED
+bash-floor.sh:logic-flip:7bfb00108eb7e7856c69ee914697141e5ea8086d
+shared-files.sh:logic-flip:7bfb00108eb7e7856c69ee914697141e5ea8086d
+shared-files.sh:return-flip:7bfb00108eb7e7856c69ee914697141e5ea8086d
+  bash-floor.sh:19 / shared-files.sh:28   return 0 2>/dev/null || exit 0
+  the damages:  ... return 0 ... && exit 0     (both files)
+                ... return 0 ... || exit 1     (shared-files.sh)
+  GAP: `return` SUCCEEDS when the file is sourced and transfers control out of
+  it immediately, so the right-hand side of the `||` is never evaluated on a
+  source — first or second. Both damages therefore change nothing on any source
+  and change everything on a direct `bash bash-floor.sh` / `bash
+  shared-files.sh`: with `&&`, `return` fails when executed, the `&&`
+  short-circuits, and execution falls THROUGH the guard into the rest of the
+  file; with `|| exit 1` an executed re-entry exits 1 instead of 0. Measured:
+  the full 52-test suite passes against all three. Nothing in the repo ever
+  executes either file, which is exactly the shape this project has been bitten
+  by before (tests/lib-verify-repo.sh's "fail loudly" guard that could never
+  have failed). The killing assertion is to RUN each file directly — once
+  plainly, once with its `_AI_CONTAINERS_*_SOURCED` variable preset — and
+  require exit 0 with no fall-through (e.g. no floor error on a bash below the
+  floor, no array defined). Recorded as F15 in
+  docs/superpowers/specs/2026-08-14-falsify-backlog.md.
+
+# ── 2 ─────────────────────────────────────────────────────────────────────────
+bash-floor.sh:return-flip:7bfb00108eb7e7856c69ee914697141e5ea8086d
+  bash-floor.sh:19  return 0 2>/dev/null || exit 0
+  the damages:      ... return 1 ... || exit 0   (2 mutants share this identity)
+                    ... return 0 ... || exit 1
+  GAP: the two damages carried by this identity have DIFFERENT causes, so
+  both are stated. `return 0 -> return 1` is NOT direct-execution-only, which
+  is what F15 claims: a plain SECOND SOURCE then returns 1, and the `source`
+  command's status becomes 1. Measured, that damage IS killed — by
+  test-migrate-runme.sh, whose `source ./project-init.sh; printf "rc=%s" "$?"`
+  assertion sees it (project-init.sh:18 sources bash-floor.sh, sandbox-common.sh
+  sources it again) — but NOT by bash-floor.sh's declared oracle
+  test-bash-floor.sh, so the tier records it as a survivor. That half belongs to
+  entry 3's cause: the target's oracle is not the test that notices. Note the
+  asymmetry with entry 1: shared-files.sh's identical `return 1` damage IS
+  killed by its own oracle (test-shared-files-parity.sh, and test-sync-project.sh
+  too), which is why only two of its three damages survive. The second damage,
+  `|| exit 1`, is the direct-execution one and nothing anywhere kills it —
+  entry 1's assertion covers it. The killing assertion for the first: source
+  bash-floor.sh twice in one shell and require the second source's status to be
+  0, in test-bash-floor.sh itself rather than by accident three files away.
+
+# ── 3 ─────────────────────────────────────────────────────────────────────────
+GROUP: killed by a hermetic test that is not this target's declared oracle
+tests/lib-verify-repo.sh:cmp-flip:85d1c24af1f4f5a0766c988353eedd6b742d33c6
+tests/lib-verify-repo.sh:cond-negate:85d1c24af1f4f5a0766c988353eedd6b742d33c6
+tests/lib-verify-repo.sh:logic-flip:85d1c24af1f4f5a0766c988353eedd6b742d33c6
+tests/lib-verify-repo.sh:cmp-flip:efadbbed5b43d93c1f431cf3df97f4ccce295897
+tests/lib-verify-repo.sh:cond-negate:efadbbed5b43d93c1f431cf3df97f4ccce295897
+tests/lib-verify-repo.sh:logic-flip:efadbbed5b43d93c1f431cf3df97f4ccce295897
+tests/lib-verify-repo.sh:logic-flip:50b22d355911db1f282df2f2944fe48ace59b2ac
+tests/portability.sh:cmp-flip:d468fd361cfd9ae5d0e8d33a6b76f098cd0db7ae
+tests/portability.sh:cond-negate:d468fd361cfd9ae5d0e8d33a6b76f098cd0db7ae
+  lib-verify-repo.sh:325  && { [[ "$add_origin" != "1" ]] || git update-ref … }
+  lib-verify-repo.sh:313  [[ "${MK_REPO_PROBE:-0}" == "1" ]] || continue
+  lib-verify-repo.sh:326  && { [[ "${MK_REPO_UNTRACK_SH:-0}" != "1" ]] || { …
+  portability.sh:36       p_stat_meta's GNU/BSD branch selection
+  9 identities, 11 distinct damages, one cause.
+  GAP: and the gap is in the TIER'S TARGET MAP, not in the suite. Measured, one
+  damage at a time, against the whole 52-test suite: every one of these is
+  killed by a hermetic test, and none of them by the oracle targets.conf names.
+  lib-verify-repo.sh's three mk_repo knobs are driven by test-verify-exit-code.sh
+  (add_origin: `mk_repo 0 0` must make Phase 5 fail with "no usable BASE_REF" and
+  `mk_repo 0` must make it pass; MK_REPO_UNTRACK_SH; MK_REPO_PROBE) and by
+  test-layer-containment.sh (MK_REPO_PROBE, add_origin) — never by
+  test-lib-verify-repo.sh. p_stat_meta is asserted by EFFECT in test-allowlists.sh
+  and test-falsify-generate.sh, which fingerprint files with it for change
+  detection; test-portability.sh only requires it non-empty, and on GNU `stat -f
+  '%N %z %m' F` is not an invalid option — it means --file-system and prints
+  filesystem information, non-empty, so the oracle's own assertion cannot see
+  the swap (its p_stat_mode sibling has a VALUE assertion and all three of that
+  line's mutants are killed). This is the failure mode targets.conf's header
+  warns about, arriving from the other direction: not a target whose code the
+  oracle never executes, but a target whose code THREE tests drive while the
+  map allows one. The fix is a multi-oracle row type — already named as a
+  prerequisite on the DEFERRED sandbox-common.sh row — after which these eleven
+  damages become kills with no new assertion written. Until then, do not read
+  them as missing assertions. Recorded as F16.
+
+# ── 4 ─────────────────────────────────────────────────────────────────────────
+GROUP: mk_repo's git bootstrap and the git probe, under a git that fails
+tests/lib-verify-repo.sh:logic-flip:92ed532aafed74e646c15c0df0633d3abb85b30c
+tests/lib-verify-repo.sh:logic-flip:ccda9c7af6c7a0360e50fa49e47626fc9b322014
+tests/lib-verify-repo.sh:logic-flip:060509e398684d1eb6e58489169fec025def96c9
+  :181  && { git init -q -b main . || git init -q .; } \
+  :183  && git -c user.email=… -c user.name=… commit -q -m probe
+  :322  ( cd "$r" && { git init -q -b main . >/dev/null 2>&1 || git init -q . … }
+  the damages: each `||` -> `&&`, and :183's `&&` -> `||`
+  GAP: measured — the whole 52-test suite passes against each of the three, so
+  unlike entry 3 no test anywhere notices. Two of them are the git < 2.28
+  fallback (`git init -b main` predates no branch flag): on any modern git the
+  first init succeeds, the second is an idempotent re-init that also succeeds,
+  and the mutated `&&` form is indistinguishable — the damage only appears when
+  `git init -b` FAILS, where `&&` short-circuits and leaves a repo with no
+  commit, which is precisely the "Phase 7 parsed no files" vacuous-pass the
+  probe above them exists to prevent. :183 is the probe's own commit step:
+  `git add f || git commit` skips the commit whenever `git add` succeeds, so the
+  probe stops proving that git can commit while still reporting success. The
+  killing assertion is a faked `git` on PATH — the technique tests/test-mutations.sh
+  already uses — in two shapes: one that rejects `-b`, requiring mk_repo to
+  still yield a repo with a tracked, committed file; and one whose `commit`
+  fails, requiring sourcing tests/lib-verify-repo.sh to abort with its named
+  probe message. Recorded as F17.
+
+# ── 5 ─────────────────────────────────────────────────────────────────────────
+GROUP: lib-layer-checks.sh's loud-failure paths return the wrong status
+tests/lib-layer-checks.sh:return-flip:53938df655edfac708a3076155665464b6d02c67
+tests/lib-layer-checks.sh:return-flip:e0e1f9fabfc9d4800c877a703b823ac0578ff8db
+  :87 / :96 / :116  [[ -f "$f" ]] || { echo "no such workflow: $f" >&2; return 1; }
+  :33               lc_rows' LAYER_CHECKS_CONF-unset branch's `return 1`
+  the damage: `return 1` -> `return 0` — the message is still printed, the
+  caller is told it succeeded. The first identity carries three surviving
+  mutants (wf_jobs, wf_steps, wf_job_key) that dedupe to one damage.
+  GAP: measured — the whole suite passes against each. This file's own header
+  says "EVERY function here fails loudly and non-zero on an empty result … a
+  parser returning nothing quietly would make its consumer iterate zero rows and
+  report success having verified nothing", and test-layer-checks-parser.sh
+  exercises that for every EMPTY-RESULT path — but for the MISSING-FILE path
+  only in wf_triggers_on (line 204 of the test), whose identical `return 1` at
+  :165 is killed for exactly that reason. The three functions the containment
+  guard actually calls are unprotected, and so is lc_rows' unset-registry
+  branch: the test only ever points LAYER_CHECKS_CONF at a file that exists.
+  The killing assertion is four more calls in the same idiom as the ones already
+  there: `wf_jobs $TMP/nosuchworkflow.yml`, the same for wf_steps and
+  wf_job_key, and `LAYER_CHECKS_CONF=$TMP/absent.conf lc_rows check`, each
+  required to fail. Recorded as F18.
+
+# ── 6 ─────────────────────────────────────────────────────────────────────────
+tests/lib-layer-checks.sh:logic-flip:b6554f5a51c19c07a987509d2872c86e54d554ea
+  :78  insteps && started && /^        [A-Za-z]/ {
+  the damages:  insteps || started && /^        [A-Za-z]/ {
+                insteps && started || /^        [A-Za-z]/ {
+  EQUIVALENT: no test can kill either, because the mutated awk program produces
+  the same output as the pristine one on every input. The reason is an INVARIANT
+  of the reader, established by enumerating every assignment in the program
+  rather than by sampling: `started = 1` happens only in the `/^      - /` rule,
+  which is itself guarded by `insteps`; `started = 0` happens only in flush();
+  and every one of the three places that clears `insteps` (the column-0 rule,
+  the job-start rule, the 4-space-key rule) calls flush() first. So `started`
+  implies `insteps`, which makes the `started` conjunct redundant and both
+  re-associations reduce to the same predicate wherever it can matter. The
+  extra firings the mutants add are inert for a second, independent reason:
+  grab() only reacts to a line that, after `sub(/^        /, "")`, begins
+  `name: ` or `uses: `, and any such line necessarily matched the 8-space regex
+  already — while a ghost grab performed with `started == 0` is erased by the
+  flush() that must precede any print. Checked empirically as well as argued:
+  6000 randomly generated structured workflow files x 3 job filters (18000
+  evaluations) produced zero differing outputs, against a control variant that
+  disables the rule outright and is caught within 300 files — the harness was
+  demonstrated able to see a difference before its silence was believed. This
+  is the only EQUIVALENT in this file; the claim is that the two programs are
+  observably identical, not that nobody has written the test.
+
+# ── 7 ─────────────────────────────────────────────────────────────────────────
+GROUP: mutate.sh's sibling-repo layout resolution is never exercised
+tests/integration/mutate.sh:cond-negate:ef7c3a50f480650ccc145bf259730b47647e0999
+tests/integration/mutate.sh:logic-flip:ef7c3a50f480650ccc145bf259730b47647e0999
+tests/integration/mutate.sh:logic-flip:01d39d9f40d7aa9e9db77c3214a208825b96c29e
+  :41  [[ -f "$REPO_DIR/build.sh" ]] || REPO_DIR="$(cd "$INT_DIR/../../base" && pwd -P)"
+  :52  GIT_ROOT="$( cd "$REPO_DIR" && git rev-parse --show-toplevel 2>/dev/null )" || GIT_ROOT="$REPO_DIR"
+  GAP: measured — the whole suite passes against each of the three. These two
+  lines exist for the mgd-ai-containers layout, where the engine lives under
+  base/ and APPLY_PREFIX must become "base" so one patch set serves both repos.
+  In THIS repo the fallback never fires, and inverting it is close to harmless
+  by accident: `cd` into a non-existent base/ fails, the command substitution
+  yields the empty string, `cd ""` then succeeds without moving, GIT_ROOT
+  resolves from the caller's own directory, and `${REPO_DIR#"$GIT_ROOT"/}` on an
+  empty REPO_DIR is empty, so `${APPLY_PREFIX:+…}` still expands to nothing and
+  every patch applies. That accident is itself the finding: the resolution is
+  load-bearing for the port and depends on the CWD to come out right here.
+  The killing assertion is two fixture trees — one with build.sh at the root,
+  one with the engine under base/ — asserting the REPO_DIR/GIT_ROOT/APPLY_PREFIX
+  triple mutate.sh derives for each, from a CWD outside both. Recorded as F19.
+
+# ── 8 ─────────────────────────────────────────────────────────────────────────
+GROUP: mutate.sh's refusal paths report success
+tests/integration/mutate.sh:return-flip:7efad11ba695484504de3ae094a48e9b0f2d9a66
+tests/integration/mutate.sh:return-flip:552493d90efb75a9ac1f2c6b3bc7dd5402662598
+tests/integration/mutate.sh:return-flip:e0e1f9fabfc9d4800c877a703b823ac0578ff8db
+tests/integration/mutate.sh:return-flip:70d8100e1e74617db85ccff387ba29d4a568adc6
+  :141  exit 1   -> exit 0   the already-applied guard's refusal
+  :242  exit 1   -> exit 0   revert's "still records what could not be reverted"
+        (:141 and :242 are the same trimmed line, so ONE identity carries both)
+  :143  require_git_usable || exit 1 -> exit 0
+  :74   return 1 -> return 0          require_git_usable's own verdict
+  :206  [[ -f "$STATE" ]] || { printf 'nothing applied.'; return 0; } -> return 1
+  GAP: measured — the whole suite passes against each of the five damages. Every
+  one is a STATUS, and a status is what a caller branches on: mutate.sh is
+  driven from CI demonstrations and from a human's shell, both of which read
+  `$?`. The suite asserts that `apply` is not blocked once state clears, never
+  that it IS blocked while state exists; nothing makes git unusable, so neither
+  require_git_usable's verdict nor its call site is exercised; and nothing runs
+  `revert` against a clean slate to see that "nothing applied" is a success.
+  The killing assertions: apply twice without reverting and require a non-zero
+  exit naming the applied mutation; a faked `git` that cannot resolve
+  --git-dir, requiring `apply` to refuse non-zero; and `revert` with no state
+  file, requiring exit 0. Extends F8, which recorded three of these five —
+  :242 and :206 were not in it. Recorded as F20.
+
+# ── 9 ─────────────────────────────────────────────────────────────────────────
+tests/integration/mutate.sh:logic-flip:89c6a2517145cc6dbd3da79ad24e0b42298f87c0
+  :236  done < <(tac "$STATE" 2>/dev/null || sed '1!G;h;$!d' "$STATE")
+  the damage:  ... tac ... && sed ...
+  GAP: measured — the whole suite passes against it. The `||` picks ONE reverser
+  — GNU tac where it exists, the BSD/macOS sed idiom where it does not. With
+  `&&`, on any host that has tac BOTH run, so every applied id is fed to the
+  revert loop twice; the second pass finds the patch already gone, takes the
+  `git apply --check` branch and prints "Already absent", and the command still
+  exits 0 with the state file removed. The two facts that comment insists on —
+  reverse order, and "I undid it" versus "it was already gone" being different
+  outcomes — are both silently violated with the suite green. The killing
+  assertion is to apply two mutations and require `revert` to print exactly one
+  "Reverted <id>" line per id, in reverse order, and no "Already absent" line.
+  Recorded as F21.
+
+# ── 10 ────────────────────────────────────────────────────────────────────────
+GROUP: the damage does not fail the oracle, it stops it terminating (UNPROVEN)
+tools-lib.sh:cond-negate:e46b949d2a1807e12ab8711e203a737dc2f8c961
+tests/bash-dialect-lint.sh:cond-negate:677e9cc352fc27f2621197eaee7b1bf39adaf9d4
+tests/integration/docker-shim.sh:cmp-flip:5a19451b4bc784bc1a7b629182186fd2c91d2153
+  tools-lib.sh:62          while IFS= read -r line || [[ -n "$line" ]]; do
+    damages: `while ! IFS= read … || [[ -n … ]]` and `while IFS= read … || [[ ! -n … ]]`
+  bash-dialect-lint.sh:105 while IFS=: read -r lineno linetext; do
+    damage:  `while ! IFS=: read …`
+  docker-shim.sh:60        … && "$(dirname "$real")" == "$(cd "$(dirname "$0")" && pwd)" …
+    damage:  `!=` — the self-reference guard now rejects a REAL docker and
+             accepts the shim, so the shim re-execs itself
+  GAP: not EQUIVALENT-by-hang. All four damages make the oracle NON-TERMINATING
+  — at EOF a negated read condition stays true forever, and an accepted
+  self-reference recurses — so run.sh's per-mutant clock expires with no `FAIL:`
+  line ever printed and the verdict is UNPROVEN: nothing was observed asserting.
+  That is not the same as unkillable. The mutated program is observably
+  different (it does not terminate), the difference is cheap to observe, and
+  docker-shim.sh's own header records this exact hang being hit by hand on
+  2026-08-09 — which is why the guard exits 127 rather than warning. What is
+  missing is a BOUND: an oracle that runs the damaged path under an explicit
+  `timeout` and fails by name when it expires turns all four into ordinary
+  kills. Concretely: parse a descriptor under `timeout 10` and require both
+  completion and the parsed values; run bash-dialect-lint.sh over a fixture
+  under `timeout 10` and require its exit status; and invoke the shim with a
+  self-referencing IT_REAL_DOCKER under `timeout 10` requiring exit 127. Note
+  the three siblings of the docker-shim damage on the same line DID print a
+  FAIL: before their clock ran out and are recorded as kills — the distinction
+  is real, not an artefact of load. Recorded as F22.
+
+# ── 11 ────────────────────────────────────────────────────────────────────────
+tests/portability.sh:cond-negate:1a936c2f8ebc17823eea575e31d47b54b30b0f73
+  :40  if command -v sha1sum >/dev/null 2>&1; then sha1sum "$1" | cut -d' ' -f1
+  the damage:  `if ! command -v sha1sum …` — the platform probe is inverted, so
+               a GNU host takes the BSD branch and calls `shasum -a 1`
+  GAP: measured — the whole suite passes against it, and it is the ONE portability
+  survivor that no test anywhere kills (entry 3 covers the p_stat_meta ones).
+  The reason is that this machine has BOTH tools and they agree byte for byte —
+  verified: `shasum -a 1` and `sha1sum` print the same digest for the same file,
+  so no assertion on p_sha1's OUTPUT can distinguish the branches. Its p_md5
+  sibling is killed only by an accident of tool population: `md5 -q` does not
+  exist on Linux, so the inverted probe prints empty and the non-empty
+  assertion catches it. That kill measures the platform, not an assertion aimed
+  at branch selection, and it would stop working on a host carrying both.
+  The killing assertion has to remove the non-native tool rather than compare
+  digests: run p_sha1 with a PATH from which `shasum` is absent and require a
+  correct digest (and the mirror on a BSD host with `sha1sum` absent), so the
+  helper is asserted to pick the tool the platform actually has. Recorded as F23.
+
+# ── 12 ────────────────────────────────────────────────────────────────────────
 tools-lib.sh:return-flip:f128fd8d7318dc079eeec1117ae9a4525988fac4
   tools-lib.sh:42  [[ -d "$TOOLS_D_DIR" ]] || return 0
   the damage:      ... || return 1
   GAP: `tools_list_names`'s "no descriptor directory" path. Callers treat a
   non-zero status as an error, so the status is contractual — and no hermetic
   test exercises a missing TOOLS_D_DIR at all, which is why flipping the
-  successful empty-listing return to a failure goes unnoticed. The killing
-  assertion is a case that points TOOLS_D_DIR at a directory that does not
-  exist and requires status 0 with no names printed.
+  successful empty-listing return to a failure goes unnoticed. Measured: the
+  whole 52-test suite passes against it. The killing assertion is a case that
+  points TOOLS_D_DIR at a directory that does not exist and requires status 0
+  with no names printed. Recorded as F11.

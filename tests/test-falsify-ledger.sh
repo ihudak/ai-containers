@@ -332,19 +332,33 @@ done < <(printf '%s\n' "$real_list")
   && pass "every real ledger entry names an ACTIVE target in targets.conf" \
   || fail "$bad_files ledger entr(y/ies) name a file the tier does not mutate"
 
-# The two tools-lib.sh survivors the tier measured are recorded, and recorded as
-# GAPs — both are assertion holes, not equivalences.
-for want in \
-  "tools-lib.sh:logic-flip:e46b949d2a1807e12ab8711e203a737dc2f8c961" \
-  "tools-lib.sh:return-flip:f128fd8d7318dc079eeec1117ae9a4525988fac4"; do
-  line="$(printf '%s\n' "$real_list" | grep -F "$want|" || true)"
-  if [[ -z "$line" ]]; then
-    fail "the measured survivor $want is missing from the ledger"
-  elif [[ "$line" != "$want|GAP|"* ]]; then
-    fail "$want is recorded as ${line#"$want|"}, not a GAP"
-  else
-    pass "the measured survivor ${want##*:} is recorded as a GAP with a reason"
-  fi
-done
+# The tools-lib.sh survivor the tier measured is recorded, and recorded as a GAP
+# — an assertion hole, not an equivalence.
+#
+# There WAS a second identity pinned here,
+# tools-lib.sh:logic-flip:e46b949d…, the `while IFS= read … ||` line. It was
+# removed on 2026-08-16 because it is no longer a survivor: F11's fix
+# (test-tools-d.sh now parses a descriptor with a blank line mid-file and a final
+# line with no trailing newline) kills it, and check-ledger.sh's obsolete-amnesty
+# check rejects a ledger entry for a mutant that is now KILLED. It had been stale
+# since that fix landed on 2026-08-14 and this loop was what held it in place —
+# nothing noticed, because the gate's stale/obsolete checks need a real
+# --run-output and nothing yet feeds it one (F13).
+#
+# THE LESSON, not just the correction: a survivor identity written down in a test
+# is the ledger's content stated a second time, and this repo's own rule is that
+# a fact stated twice eventually disagrees with itself. Do not re-grow this list.
+# One pin is kept deliberately — the tier's oldest continuously-measured survivor,
+# as a canary that the ledger is real output rather than a fixture — and the
+# pin's justification has to be re-measured, not assumed, whenever it fails.
+want="tools-lib.sh:return-flip:f128fd8d7318dc079eeec1117ae9a4525988fac4"
+line="$(printf '%s\n' "$real_list" | grep -F "$want|" || true)"
+if [[ -z "$line" ]]; then
+  fail "the measured survivor $want is missing from the ledger"
+elif [[ "$line" != "$want|GAP|"* ]]; then
+  fail "$want is recorded as ${line#"$want|"}, not a GAP"
+else
+  pass "the measured survivor ${want##*:} is recorded as a GAP with a reason"
+fi
 
 printf '\n%d failure(s)\n' "$fails"; exit "$fails"
