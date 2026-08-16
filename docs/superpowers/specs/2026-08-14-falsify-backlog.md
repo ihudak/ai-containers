@@ -568,3 +568,36 @@ the run output becomes a committed artefact regenerated with the ledger, or the
 gate runs the corpus itself. It also means the bugs-first policy cannot be
 satisfied *inside* a classification task without re-baselining — which is why
 Task 10 records eight causes and closes none.
+
+## F25 — `p_stat_meta`'s GNU/BSD branch swap survives the entire suite
+
+`tests/portability.sh:36`. Both mutants of that line — `cmp-flip` and
+`cond-negate` of `[[ "$_P_STAT_GNU" == "1" ]]` — swap the GNU and BSD branches,
+and **nothing in the 52-test suite notices**. Measured one damage at a time
+against the whole suite in a scratch tree, not inferred.
+
+The damage is real. On GNU, `stat -f '%N %z %m' F` is not an invalid option —
+it means `--file-system` — so the swapped branch emits filesystem information
+plus an error instead of `path size mtime`:
+
+```
+pristine: tests/portability.sh 3074 1786868760
+mutated:  stat: cannot read file system information for '%N %z %m' …
+```
+
+`test-portability.sh` asserts only that `p_stat_meta` is NON-EMPTY, and that
+garbage is non-empty. `p_stat_mode` one line up has a VALUE assertion and all
+three of its mutants die — which is why the meta line looked covered by
+association, and why Task 10 initially filed these two under F16 ("killed by a
+non-declared oracle"). They are not; they are a plain missing assertion, and I
+moved them out of that group.
+
+Worth stating why this one matters beyond its size: F16's thesis is that eleven
+damages are a target-map defect rather than absent coverage, i.e. *do not read
+these as missing assertions*. That thesis is right for the rest of the group and
+was wrong for these two, and applying it uniformly would have retired a genuine
+gap with no coverage written — the exact failure mode the ledger exists to
+prevent.
+
+**Fix:** assert `p_stat_meta`'s VALUE like its sibling — three
+whitespace-separated fields, the middle one the file's real byte size.

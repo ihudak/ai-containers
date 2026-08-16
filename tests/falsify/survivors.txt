@@ -125,8 +125,6 @@ tests/lib-verify-repo.sh:cmp-flip:efadbbed5b43d93c1f431cf3df97f4ccce295897
 tests/lib-verify-repo.sh:cond-negate:efadbbed5b43d93c1f431cf3df97f4ccce295897
 tests/lib-verify-repo.sh:logic-flip:efadbbed5b43d93c1f431cf3df97f4ccce295897
 tests/lib-verify-repo.sh:logic-flip:50b22d355911db1f282df2f2944fe48ace59b2ac
-tests/portability.sh:cmp-flip:d468fd361cfd9ae5d0e8d33a6b76f098cd0db7ae
-tests/portability.sh:cond-negate:d468fd361cfd9ae5d0e8d33a6b76f098cd0db7ae
   lib-verify-repo.sh:325  && { [[ "$add_origin" != "1" ]] || git update-ref … }
   lib-verify-repo.sh:313  [[ "${MK_REPO_PROBE:-0}" == "1" ]] || continue
   lib-verify-repo.sh:326  && { [[ "${MK_REPO_UNTRACK_SH:-0}" != "1" ]] || { …
@@ -139,13 +137,10 @@ tests/portability.sh:cond-negate:d468fd361cfd9ae5d0e8d33a6b76f098cd0db7ae
   (add_origin: `mk_repo 0 0` must make Phase 5 fail with "no usable BASE_REF" and
   `mk_repo 0` must make it pass; MK_REPO_UNTRACK_SH; MK_REPO_PROBE) and by
   test-layer-containment.sh (MK_REPO_PROBE, add_origin) — never by
-  test-lib-verify-repo.sh. p_stat_meta is asserted by EFFECT in test-allowlists.sh
-  and test-falsify-generate.sh, which fingerprint files with it for change
-  detection; test-portability.sh only requires it non-empty, and on GNU `stat -f
-  '%N %z %m' F` is not an invalid option — it means --file-system and prints
-  filesystem information, non-empty, so the oracle's own assertion cannot see
-  the swap (its p_stat_mode sibling has a VALUE assertion and all three of that
-  line's mutants are killed). This is the failure mode targets.conf's header
+  test-lib-verify-repo.sh. (p_stat_meta was in this group and has been REMOVED
+  from it — see the entry below. Its p_stat_mode sibling does have a VALUE
+  assertion and all three of that line's mutants are killed, which is what made
+  the meta line look covered too.) This is the failure mode targets.conf's header
   warns about, arriving from the other direction: not a target whose code the
   oracle never executes, but a target whose code THREE tests drive while the
   map allows one. The fix is a multi-oracle row type — already named as a
@@ -349,3 +344,28 @@ tools-lib.sh:return-flip:f128fd8d7318dc079eeec1117ae9a4525988fac4
   whole 52-test suite passes against it. The killing assertion is a case that
   points TOOLS_D_DIR at a directory that does not exist and requires status 0
   with no names printed. Recorded as F11.
+
+# ── 13 ────────────────────────────────────────────────────────────────────────
+GROUP: p_stat_meta's GNU/BSD branch can be swapped and nothing anywhere notices
+tests/portability.sh:cmp-flip:d468fd361cfd9ae5d0e8d33a6b76f098cd0db7ae
+tests/portability.sh:cond-negate:d468fd361cfd9ae5d0e8d33a6b76f098cd0db7ae
+  if [[ "$_P_STAT_GNU" == "1" ]]; then stat -c '%n %s %Y' "$1"; else stat -f '%N %z %m' "$1"; fi
+  GAP: MOVED HERE from the F16 "killed by a non-declared oracle" group, which
+  was wrong about these two. Re-measured one damage at a time against the WHOLE
+  52-test suite in a scratch tree: both SURVIVE it. Nothing kills them — not
+  test-portability.sh, not test-allowlists.sh, not test-falsify-generate.sh.
+  So this is a missing assertion, not a target-map defect, and it is the one
+  place where reading F16's thesis onto every member would have retired a real
+  gap without a line of coverage being written.
+  The damage is not cosmetic: on GNU, `stat -f '%N %z %m' F` is NOT an invalid
+  option — it means --file-system — so the swapped branch prints filesystem
+  information plus an error rather than `path size mtime`. Measured:
+      pristine: tests/portability.sh 3074 1786868760
+      mutated:  stat: cannot read file system information for '%N %z %m' …
+  test-portability.sh only requires p_stat_meta to be NON-EMPTY, and that
+  garbage is non-empty, so its own oracle cannot see the swap. p_stat_mode, one
+  line up, has a VALUE assertion and all three of its mutants die — which is
+  exactly why this line looked covered by association.
+  The killing assertion is the sibling's: assert p_stat_meta's VALUE, not its
+  emptiness — three whitespace-separated fields, the middle one the file's real
+  byte size. Recorded as backlog F25.
