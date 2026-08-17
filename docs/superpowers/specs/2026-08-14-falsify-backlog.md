@@ -671,3 +671,66 @@ a stricter host simply requires MORE entries, which is always satisfiable.
 Verified across the full matrix: Linux `--strict` 0 problems, macOS-equivalent
 default 0 problems, and a plain `GAP` entry for a killed mutant still fails
 under `--strict` while an `ENV-DEPENDENT` one does not.
+
+## F28 — the tier measures materially less on macOS, and the shortfall is variable
+
+Phase 6 passes on macOS, but it should not be read as measuring what it measures
+on Linux. Same 249 mutants, same commit:
+
+| run | killed | survived | unproven | timeouts | wall |
+|---|---|---|---|---|---|
+| Linux | 209 | 36 | 4 | 11 | 3.4 min |
+| macOS #1 | 211 | 24 | 14 | 63 | 16 min |
+| macOS #2 | 192 | 22 | **35** | 71 | 16 min |
+
+**14 % of the corpus produced no verdict** on the second run, and the number
+moved 4 → 14 → 35 across runs of the same code, so `--timeout 120` sits right at
+the edge there rather than comfortably above it. The shortfall concentrates in
+the two most fork-heavy oracles: `test-bash-dialect-lint.sh` (11 of 27
+unmeasured) and `test-mutations.sh` (17 of 55) — both spawn many subprocesses
+per assertion, and process creation is markedly slower on macOS.
+
+This is correctly NOT a gate failure (F27: an unproven mutant is machine state,
+not a property of the code). The risk is subtler: a green Phase 6 on macOS can be
+green partly because a third of the interesting mutants were never scored, and
+19 stderr notes are not where a reader looks. Phase 6 now prints the measured
+fraction and warns above 10 %.
+
+**Not fixed, and the options all cost something.** A higher `--timeout` extends a
+run already at 16 minutes; fewer jobs may or may not help, since the host has
+more cores than the workers can saturate and the bottleneck looks like process
+creation rather than CPU. Worth measuring before choosing: run Phase 6 with
+`--timeout 300` and with `--jobs 6` and compare the unproven count against the
+wall clock. **CI (ubuntu-latest) is the reference environment and does not have
+this problem**, so the ratchet's strength is unaffected; what degrades is the
+local layer's ability to add information beyond CI.
+
+## F29 — CI killed a mutant the sandbox container could not, because the product installs itself at the default path
+
+The `falsify` job's first CI run failed with one finding:
+`tools-lib.sh:return-flip:f128fd8d` was a ledger entry for a mutant CI reports
+KILLED. It survives in the authoring container. Root-caused rather than
+reclassified on suspicion:
+
+`tools-lib.sh:37` defaults `TOOLS_D_DIR` to `/etc/ai-containers/tools.d`.
+
+- On `ubuntu-latest` that path is **absent**, so `[[ -d … ]] || return 0` fires,
+  the mutated `return 1` reaches a caller, and the oracle sees it → **KILLED**.
+- Inside a **built ai-containers sandbox** the product installs its own
+  descriptors there (`dtctl.conf`, `dtmgd.conf`, …), the guard passes, the
+  mutated return is never evaluated → **SURVIVED**, against the whole 52-test
+  suite.
+
+That single mutant is the entire difference between CI's `210/35/4` and the
+container's `209/36/4` on the same commit.
+
+Reclassified `ENV-DEPENDENT`, which is exactly the case that classification was
+added for. **The underlying gap (F11) is still real and still worth closing** —
+no test points `TOOLS_D_DIR` at a missing directory deliberately. Writing that
+assertion makes the verdict KILLED everywhere, at which point the entry should
+be **deleted**, not downgraded.
+
+Worth noting for anyone running the tier: **a repo whose product is installed
+system-wide can mask its own mutants.** The authoring environment here is a
+sandbox built from this very repo, which is convenient and, for this one line,
+made the environment part of the measurement.

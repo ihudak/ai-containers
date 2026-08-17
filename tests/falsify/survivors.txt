@@ -337,13 +337,25 @@ tests/portability.sh:cond-negate:1a936c2f8ebc17823eea575e31d47b54b30b0f73
 tools-lib.sh:return-flip:f128fd8d7318dc079eeec1117ae9a4525988fac4
   tools-lib.sh:42  [[ -d "$TOOLS_D_DIR" ]] || return 0
   the damage:      ... || return 1
-  GAP: `tools_list_names`'s "no descriptor directory" path. Callers treat a
-  non-zero status as an error, so the status is contractual — and no hermetic
-  test exercises a missing TOOLS_D_DIR at all, which is why flipping the
-  successful empty-listing return to a failure goes unnoticed. Measured: the
-  whole 52-test suite passes against it. The killing assertion is a case that
-  points TOOLS_D_DIR at a directory that does not exist and requires status 0
-  with no names printed. Recorded as F11.
+  ENV-DEPENDENT: whether this is reachable at all depends on one directory
+  existing on the machine, and CI and a sandbox container disagree about it.
+  tools-lib.sh:37 defaults TOOLS_D_DIR to /etc/ai-containers/tools.d. On a
+  runner that path is ABSENT, so the guard fires, the mutated `return 1`
+  reaches a caller, and the oracle sees it — CI kills this mutant. Inside a
+  BUILT ai-containers sandbox the product installs its own descriptors there,
+  the guard passes, the mutated return is never evaluated, and the mutant
+  survives the whole 52-test suite.
+  Measured both ways, same commit: KILLED on ubuntu-latest (hermetic-checks
+  run 31993348741, corpus 210/35/4); SURVIVED in a sandbox container where
+  `ls -d /etc/ai-containers/tools.d` succeeds (corpus 209/36/4 — this one
+  mutant is the entire difference between those two totals).
+  So the underlying coverage gap recorded as F11 is REAL — no test points
+  TOOLS_D_DIR at a missing directory deliberately — but it is masked or exposed
+  by the ambient filesystem rather than by anything in the tree, which is what
+  this classification is for. The killing assertion is unchanged and still
+  worth writing: point TOOLS_D_DIR at a path that does not exist and require
+  status 0 with no names printed. Doing so would make the verdict KILLED
+  everywhere and this entry should then be deleted, not downgraded.
 
 # ── 13 ────────────────────────────────────────────────────────────────────────
 GROUP: p_stat_meta's GNU/BSD branch can be swapped and nothing anywhere notices
