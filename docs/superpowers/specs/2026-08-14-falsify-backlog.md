@@ -734,3 +734,41 @@ Worth noting for anyone running the tier: **a repo whose product is installed
 system-wide can mask its own mutants.** The authoring environment here is a
 sandbox built from this very repo, which is convenient and, for this one line,
 made the environment part of the measurement.
+
+---
+
+### CORRECTION, 2026-08-17 (same day): the diagnosis above is wrong
+
+The `/etc/ai-containers/tools.d` explanation does not survive contact with the
+oracle. **`test-tools-d.sh` never leaves `TOOLS_D_DIR` unset or pointing at a
+missing path** — it exports it to a directory it creates under its own
+`mktemp -d`, and the one place it repoints it (`"$REPO_DIR/tools.d"`, to read
+the real descriptors) names a directory that is checked in. So
+`tools-lib.sh:37`'s default is never consulted, the guard is unreachable in
+*every* environment, and the mutant survives everywhere.
+
+**What actually caused the divergence:** the shared-`/tmp` race in
+`test-tools-d.sh`'s "failed download leaves no temp file" assertion, which
+globbed `"${TMPDIR:-/tmp}"/ext-cli.*` — a name every copy of that test uses.
+`tests/falsify/run.sh` drives up to `nproc` copies of that oracle at once
+(it is `tools-lib.sh`'s declared oracle), so before the fix they could fail each
+other and a mutant could be scored KILLED on a sibling worker's temp file. A
+4-core runner and a 12-core container do not have the same timing, which is why
+it showed up as a place-to-place difference. Fixed 2026-08-17; with the fix in,
+CI reproduces the container's totals exactly (`209/36/4` both), and the entry is
+back to **`GAP`**, which is what F11 said all along.
+
+**The lesson, which is bigger than this line.** Two machines disagreeing is a
+fact. *Which* difference between them is operative is a **hypothesis**, and the
+most visible difference was not it. This project's rule is root cause before
+mitigation; re-measuring satisfied the letter of it while the causal claim went
+unchecked. The check that would have caught it costs one grep: the proposed
+mechanism said a default was consulted, and the oracle never lets it be.
+
+**A second lesson about the tier itself:** its parallelism is part of its
+measurement apparatus, so any oracle that is not isolated from a concurrent copy
+of itself can make the tier report coverage that does not exist. That is a
+sharper reason to keep tests hermetic than tidiness, and it is worth scanning
+for the pattern (shared paths, fixed ports, global state) in any test named as
+an oracle in `targets.conf`. Scanned on 2026-08-17: `test-tools-d.sh` was the
+only test in the suite globbing a shared directory.
