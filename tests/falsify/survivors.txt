@@ -67,8 +67,15 @@
 # the entries rather than assumed away.
 #
 # Corpus: tests/falsify/run.sh --jobs 6 over the nine active targets,
-# TOTAL|9|249|209|36|4|11|16 — 36 SURVIVED + 4 UNPROVEN = 40 records, 32
-# identities, 12 entries.
+# TOTAL|9|249|209|36|4|11|16 — 36 SURVIVED + 4 UNPROVEN = 40 records.
+#
+# That line is provenance: the TOTAL of one dated run, which does not move when
+# this file is edited. It deliberately no longer tallies identities or entries.
+# It used to ("32 identities, 12 entries") and both had gone stale — there are
+# 14 numbered entries below and 33 identity lines — because splitting one entry
+# in two changes a count nothing recomputes. check-ledger.sh prints both numbers
+# on every run, derived from the file it is scoring, so stating them here was a
+# second copy of a fact that could only ever drift away from the first.
 
 # ── 1 ─────────────────────────────────────────────────────────────────────────
 GROUP: re-entry guard, the half that only runs when the file is EXECUTED
@@ -337,25 +344,34 @@ tests/portability.sh:cond-negate:1a936c2f8ebc17823eea575e31d47b54b30b0f73
 tools-lib.sh:return-flip:f128fd8d7318dc079eeec1117ae9a4525988fac4
   tools-lib.sh:42  [[ -d "$TOOLS_D_DIR" ]] || return 0
   the damage:      ... || return 1
-  ENV-DEPENDENT: whether this is reachable at all depends on one directory
-  existing on the machine, and CI and a sandbox container disagree about it.
-  tools-lib.sh:37 defaults TOOLS_D_DIR to /etc/ai-containers/tools.d. On a
-  runner that path is ABSENT, so the guard fires, the mutated `return 1`
-  reaches a caller, and the oracle sees it — CI kills this mutant. Inside a
-  BUILT ai-containers sandbox the product installs its own descriptors there,
-  the guard passes, the mutated return is never evaluated, and the mutant
-  survives the whole 52-test suite.
-  Measured both ways, same commit: KILLED on ubuntu-latest (hermetic-checks
-  run 31993348741, corpus 210/35/4); SURVIVED in a sandbox container where
-  `ls -d /etc/ai-containers/tools.d` succeeds (corpus 209/36/4 — this one
-  mutant is the entire difference between those two totals).
-  So the underlying coverage gap recorded as F11 is REAL — no test points
-  TOOLS_D_DIR at a missing directory deliberately — but it is masked or exposed
-  by the ambient filesystem rather than by anything in the tree, which is what
-  this classification is for. The killing assertion is unchanged and still
-  worth writing: point TOOLS_D_DIR at a path that does not exist and require
-  status 0 with no names printed. Doing so would make the verdict KILLED
-  everywhere and this entry should then be deleted, not downgraded.
+  GAP: the guard is UNREACHABLE by this oracle in any environment, so the
+  mutated `return 1` is never evaluated and nothing can see it.
+  test-tools-d.sh exports TOOLS_D_DIR to a directory it creates under its own
+  mktemp -d, and the one place it repoints it — `TOOLS_D_DIR="$REPO_DIR/tools.d"`,
+  to read the real descriptors — names a directory that is checked in. There is
+  no moment in the test where TOOLS_D_DIR is unset or points at a missing path,
+  so tools-lib.sh:37's /etc/ai-containers/tools.d default is never consulted and
+  the ambient filesystem never enters into it.
+  THIS ENTRY SAID ENV-DEPENDENT UNTIL 2026-08-17, AND THAT WAS A MISDIAGNOSIS.
+  It was written when hermetic-checks run 31993348741 reported this mutant
+  KILLED (corpus 210/35/4) while a sandbox container reported it SURVIVED
+  (209/36/4), and the /etc directory was the visible difference between the two
+  machines. It was not the operative one. The real cause was the shared-/tmp
+  race in test-tools-d.sh's "leaves no temp file" assertion, fixed in the same
+  commit that corrects this entry: run.sh drives up to `nproc` copies of that
+  oracle at once and, before the fix, they could fail each other, so a mutant
+  could be scored KILLED on a sibling worker's temp file. That is a timing
+  accident, and a runner and a 12-core container do not have the same timing.
+  Re-measured on the fixed tree, in both environments that would have to
+  disagree for ENV-DEPENDENT to be right: SURVIVED on ubuntu-latest (this
+  branch's falsify job, corpus 209/36/4 — CI now reproduces the container's
+  totals exactly), and SURVIVED in the container. The absence of a
+  "killed in this environment" note for this identity is evidence rather than
+  silence: that note was reproduced against a synthesised run output in which
+  the mutant is KILLED.
+  The coverage gap F11 recorded is real and unchanged, and the killing assertion
+  is still the one it named: point TOOLS_D_DIR at a path that does not exist and
+  require status 0 with no names printed.
 
 # ── 13 ────────────────────────────────────────────────────────────────────────
 GROUP: p_stat_meta's GNU/BSD branch can be swapped and nothing anywhere notices

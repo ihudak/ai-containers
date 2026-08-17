@@ -360,23 +360,28 @@ want="tools-lib.sh:return-flip:f128fd8d7318dc079eeec1117ae9a4525988fac4"
 line="$(printf '%s\n' "$real_list" | grep -F "$want|" || true)"
 if [[ -z "$line" ]]; then
   fail "the measured survivor $want is missing from the ledger"
-# Re-measured 2026-08-17, per the instruction above, when this pin failed:
-# the classification moved GAP -> ENV-DEPENDENT for a reason that is about the
-# MACHINE, not the ledger. tools-lib.sh:37 defaults TOOLS_D_DIR to
-# /etc/ai-containers/tools.d. On a CI runner that path is absent, the guard
-# fires, and the mutant is KILLED; inside a built ai-containers sandbox the
-# product installs descriptors there, the guard passes, and it SURVIVES. That
-# one mutant is the whole difference between CI's 210/35/4 and a container's
-# 209/36/4 on the same commit.
+# RE-MEASURED TWICE ON 2026-08-17, and the second re-measurement undid the
+# first. The pin failed in the morning; the classification was moved
+# GAP -> ENV-DEPENDENT on the reading that /etc/ai-containers/tools.d exists in
+# a sandbox and not on a runner. That reading was wrong: test-tools-d.sh never
+# leaves TOOLS_D_DIR unset or pointing at a missing path, so tools-lib.sh's
+# /etc default is never consulted and the guard is unreachable everywhere. The
+# CI kill that prompted the move came from the shared-/tmp race this branch
+# fixes — concurrent copies of this very oracle failing each other — and with
+# that fixed, CI and the container agree again (209/36/4 both).
+#
+# The lesson the instruction above was aiming at, sharpened: re-measuring is not
+# enough on its own. Two machines disagreeing is a fact; WHICH difference
+# between them is operative is a hypothesis, and the visible one was not it.
 #
 # The pin stays sharp rather than being loosened to "any classification": if
 # the killing assertion F11 describes is ever written, this becomes KILLED
 # everywhere, the entry should be DELETED, and this assertion fires again to
 # make someone re-measure. That is the canary doing its job, not noise.
-elif [[ "$line" != "$want|ENV-DEPENDENT|"* ]]; then
-  fail "$want is recorded as ${line#"$want|"}, not ENV-DEPENDENT — re-measure before changing this pin"
+elif [[ "$line" != "$want|GAP|"* ]]; then
+  fail "$want is recorded as ${line#"$want|"}, not a GAP — re-measure before changing this pin"
 else
-  pass "the measured survivor ${want##*:} is recorded as ENV-DEPENDENT with a reason"
+  pass "the measured survivor ${want##*:} is recorded as a GAP with a reason"
 fi
 
 printf '\n%d failure(s)\n' "$fails"; exit "$fails"

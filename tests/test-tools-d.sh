@@ -261,13 +261,29 @@ exit 22   # what curl -f returns for an HTTP 4xx
 CURLFAIL
 chmod +x "$FAKEBIN/curl"
 rm -f "$BIN_DIR/ext-cli"
-out="$(PATH="$FAKEBIN:$PATH" install_one ext latest 2>&1)"
+# A PRIVATE TMPDIR for this one call, because the leak assertion below globs the
+# directory install-tools.sh writes into, for a name every copy of this test
+# uses. Pointed at the shared /tmp it answered "did ANY process leave an
+# ext-cli.* here", not "did THIS install leave one" — so a second copy of the
+# suite running concurrently failed it, with nothing wrong in either tree.
+# That is not hypothetical: tests/falsify/run.sh runs up to `nproc` oracles at
+# once and test-tools-d.sh is tools-lib.sh's declared oracle, so the tier could
+# score a mutant KILLED on another worker's temp file — a survivor recorded as
+# covered, which is the one outcome that tier exists to prevent. Demonstrated at
+# its narrowest: `touch /tmp/ext-cli.ZZZZZZ` alone turns this suite red.
+# install-tools.sh honours ${TMPDIR:-/tmp} at both of its mktemp calls, so this
+# steers the code under test through the knob it already has rather than
+# weakening what is asserted.
+DL_TMP="$TMP/failed-download-tmp"; mkdir -p "$DL_TMP"
+out="$(TMPDIR="$DL_TMP" PATH="$FAKEBIN:$PATH" install_one ext latest 2>&1)"
 if [[ "$out" == *"download failed"* ]] && [[ "$out" != *"Installed ext"* ]] && [[ ! -e "$BIN_DIR/ext-cli" ]]; then
   pass "repo-file: failed download warns and installs nothing"
 else
   fail "repo-file: failed download ($out)"; fi
-# ... and leaves no temp file behind.
-if ! ls "${TMPDIR:-/tmp}"/ext-cli.* >/dev/null 2>&1; then
+# ... and leaves no temp file behind. Demonstrated able to fail by deleting the
+# `rm -f "$tmp"` on install-tools.sh's download-failure path: the temp file then
+# stays in $DL_TMP and this fires.
+if ! ls "$DL_TMP"/ext-cli.* >/dev/null 2>&1; then
   pass "repo-file: failed download leaves no temp file"; else fail "repo-file: failed download leaves no temp file"; fi
 
 # A JSON payload (what the contents API returns for a DIRECTORY path) must NOT be
