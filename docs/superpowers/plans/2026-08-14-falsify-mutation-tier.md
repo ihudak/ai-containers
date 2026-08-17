@@ -532,10 +532,32 @@ still classify correctly under `base/`, and the mgd corpus will have DIFFERENT
 survivor counts, so its `survivors.txt` is its own artifact and must be
 generated from an mgd run — never copied from here.
 
-- [ ] **Step 1: Derive the file list from `git diff --name-only main...HEAD`** — never hand-written.
-- [ ] **Step 2: Apply to the sibling repo's `base/` layout.** `ENGINE_DIR` resolves differently there; anything path-sensitive needs checking, not assuming.
-- [ ] **Step 3: Run the full hermetic suite and the falsify tier there.** Numbers will differ — that is expected, and the ledger is per-repo.
-- [ ] **Step 4: Open the parallel PR.**
+- [x] **Step 1: Derive the file list from `git diff --name-only main...HEAD`** — never hand-written.
+- [x] **Step 2: Apply to the sibling repo's `base/` layout.** `ENGINE_DIR` resolves differently there; anything path-sensitive needs checking, not assuming.
+- [x] **Step 3: Run the full hermetic suite and the falsify tier there.** Numbers will differ — that is expected, and the ledger is per-repo.
+- [x] **Step 4: Open the parallel PR.**
+
+**COMPLETE, 2026-08-17 — mgd-ai-containers PR #20.** 38 files (the 41-path range
+minus this repo's three `docs/superpowers/` artifacts, which mgd does not carry).
+Four adaptations, each forced rather than chosen: the `base/` prefix on
+`targets.conf`'s engine rows; a layout *probe* rather than a typed path for
+`test-falsify-ledger.sh`'s survivor pin; this repo's own commit id for
+`test-falsify-historical.sh`'s hole #6, whose control restores a pre-fix file
+whole from git and would otherwise restore nothing; and `lib-paths.sh` for
+`test-mode-capabilities.sh`'s `REPO_DIR`.
+
+mgd's corpus is **253 mutants / 215 killed / 34 survived / 4 unproven** against
+this repo's 249/209/36/4 — its `survivors.txt` was measured there, not copied,
+and every surviving damage was re-run against mgd's whole 53-test suite (twice:
+six-at-a-time, then one at a time, because the parallel pass produces false
+kills).
+
+**That port found a bug in a file both repos share**, which is why the two-way
+verification exists: `test-tools-d.sh`'s "leaves no temp file" assertion globbed
+the shared `/tmp`, so any concurrent copy of the suite failed it — and
+`tests/falsify/run.sh` runs up to `nproc` oracles at once with that test as
+`tools-lib.sh`'s declared oracle, so the tier could have scored a mutant KILLED
+on another worker's temp file. Fixed in both repos (this one: PR #24).
 
 ---
 
