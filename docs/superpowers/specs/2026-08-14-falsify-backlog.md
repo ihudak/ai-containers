@@ -704,3 +704,33 @@ creation rather than CPU. Worth measuring before choosing: run Phase 6 with
 wall clock. **CI (ubuntu-latest) is the reference environment and does not have
 this problem**, so the ratchet's strength is unaffected; what degrades is the
 local layer's ability to add information beyond CI.
+
+## F29 — CI killed a mutant the sandbox container could not, because the product installs itself at the default path
+
+The `falsify` job's first CI run failed with one finding:
+`tools-lib.sh:return-flip:f128fd8d` was a ledger entry for a mutant CI reports
+KILLED. It survives in the authoring container. Root-caused rather than
+reclassified on suspicion:
+
+`tools-lib.sh:37` defaults `TOOLS_D_DIR` to `/etc/ai-containers/tools.d`.
+
+- On `ubuntu-latest` that path is **absent**, so `[[ -d … ]] || return 0` fires,
+  the mutated `return 1` reaches a caller, and the oracle sees it → **KILLED**.
+- Inside a **built ai-containers sandbox** the product installs its own
+  descriptors there (`dtctl.conf`, `dtmgd.conf`, …), the guard passes, the
+  mutated return is never evaluated → **SURVIVED**, against the whole 52-test
+  suite.
+
+That single mutant is the entire difference between CI's `210/35/4` and the
+container's `209/36/4` on the same commit.
+
+Reclassified `ENV-DEPENDENT`, which is exactly the case that classification was
+added for. **The underlying gap (F11) is still real and still worth closing** —
+no test points `TOOLS_D_DIR` at a missing directory deliberately. Writing that
+assertion makes the verdict KILLED everywhere, at which point the entry should
+be **deleted**, not downgraded.
+
+Worth noting for anyone running the tier: **a repo whose product is installed
+system-wide can mask its own mutants.** The authoring environment here is a
+sandbox built from this very repo, which is convenient and, for this one line,
+made the environment part of the measurement.
