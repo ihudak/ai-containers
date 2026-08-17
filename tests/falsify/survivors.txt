@@ -67,8 +67,15 @@
 # the entries rather than assumed away.
 #
 # Corpus: tests/falsify/run.sh --jobs 6 over the nine active targets,
-# TOTAL|9|249|209|36|4|11|16 — 36 SURVIVED + 4 UNPROVEN = 40 records, 32
-# identities, 12 entries.
+# TOTAL|9|249|209|36|4|11|16 — 36 SURVIVED + 4 UNPROVEN = 40 records.
+#
+# That line is provenance: the TOTAL of one dated run, which does not move when
+# this file is edited. It deliberately no longer tallies identities or entries.
+# It used to ("32 identities, 12 entries") and both had gone stale — there are
+# 14 numbered entries below and 33 identity lines — because splitting one entry
+# in two changes a count nothing recomputes. check-ledger.sh prints both numbers
+# on every run, derived from the file it is scoring, so stating them here was a
+# second copy of a fact that could only ever drift away from the first.
 
 # ── 1 ─────────────────────────────────────────────────────────────────────────
 GROUP: re-entry guard, the half that only runs when the file is EXECUTED
