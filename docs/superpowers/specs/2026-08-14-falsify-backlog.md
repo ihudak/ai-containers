@@ -772,3 +772,93 @@ sharper reason to keep tests hermetic than tidiness, and it is worth scanning
 for the pattern (shared paths, fixed ports, global state) in any test named as
 an oracle in `targets.conf`. Scanned on 2026-08-17: `test-tools-d.sh` was the
 only test in the suite globbing a shared directory.
+
+---
+
+## F30 — a KILL is only trustworthy if the oracle would have passed under the same load
+
+`tests/falsify/run.sh` scores a mutant KILLED when the oracle exits non-zero or
+prints a `FAIL:` line, and a `timeout` that *also* carried a `FAIL:` line is
+still a kill (`falsify_verdict`, and the long comment above it explaining why a
+bare timeout must NOT be). That is right as far as it goes, and it fixed F12.
+It rests on one unstated assumption:
+
+> the `FAIL:` line was caused by the mutation.
+
+Under contention that assumption can be false. An oracle can fail because the
+machine is loaded — and the tier itself is what loads it, running up to `nproc`
+oracles at once.
+
+**How it surfaced.** A macOS Phase 6 host run (2026-08-17, `jobs=18` on a
+machine also hosting Colima) scored `tools-lib.sh:return-flip:f128fd8d` KILLED
+and reported it as *obsolete amnesty* — i.e. "your ledger excuses a mutant that
+is now covered". Re-run on the same host and the same tree at
+`--jobs 2 --timeout 300`, the same mutant SURVIVED with signal `none` in ~10 s,
+**in both repos independently**. Nothing about the code changed between those two
+readings; only the concurrency did. That run reported **80 timeouts and 13
+unproven** against the reference environment's 11 and 4.
+
+**Why this is the tier's own failure mode, not a nuisance.** The whole point of
+the tier is that a survivor is evidence of a missing assertion. A false KILL
+deletes that evidence: the mutant never appears in the run's survivor set, so
+`check-ledger.sh` never demands an entry, and the gap it represents becomes
+invisible. It is the exact inversion F12 closed, arriving through a different
+door — F12 was "a slow oracle is reported as a kill", this is "a *failing-because-
+slow* oracle is reported as a kill", and only the first is currently caught.
+
+**Why the existing baseline does not cover it.** `run.sh` does run each target's
+oracle on the pristine tree and requires PASS before mutating — but once, at the
+start, with no workers running. It establishes that the oracle is green on a
+quiet machine, which is not the condition the mutants are measured under.
+
+**MEASURED, 2026-08-17, before proposing anything.** The mechanism was
+reproduced end to end on Linux rather than inferred from the macOS report:
+
+| tree | `--jobs 24 --timeout 120` on 12 cores | verdict for `f128fd8d` |
+|---|---|---|
+| pre-fix (`74b8b20`) | run 1 | **KILLED**, signal `exit+failline`, 2.5 s |
+| pre-fix (`74b8b20`) | runs 2-3 | SURVIVED, `none` |
+| post-fix (`6586acb`) | runs 1-2 | SURVIVED, `none` |
+
+So it is intermittent, it is the shared-`/tmp` race, and it is gone on the fixed
+tree. The deterministic half of the demonstration is in that fix's own commit:
+`touch /tmp/ext-cli.ZZZZZZ` and nothing else turns the suite red.
+
+**THE MEASUREMENT CORRECTED THE FIX LIST, WHICH IS WHY IT CAME FIRST.** The
+signal was `exit+failline` at **2.5 seconds** — no timeout at all. The obvious
+remedy ("re-verify any kill that also timed out") would have missed this case
+completely: a contaminated oracle can fail *fast*. Slowness is a symptom of the
+load, not the vector.
+
+**Candidate fixes, in the order they should be considered:**
+
+1. **Control runs (detection, cheap, catches the fast case).** Interleave a
+   handful of PRISTINE oracle runs among the mutants, in real worker slots,
+   under the same load. A control that FAILs proves the run's kills are
+   contaminated; say so loudly with a `NOTE|` line and a non-zero exit rather
+   than reporting a clean corpus. This is the only proposal here that would have
+   caught the measured case, because it asks the right question — *is this
+   oracle green under these conditions?* — instead of guessing at a proxy for it.
+2. **Re-verify suspicious kills (correction, bounded).** Re-run alone, and
+   record the second verdict. Scoping it to `timeout`-signalled mutants is
+   tempting and, per the table above, **wrong**; the honest scope is "every kill
+   in a run whose control failed", which makes it a follow-on to fix 1 rather
+   than an alternative to it.
+3. **A jobs knob for Phase 6 (mitigation, trivial).** Phase 6 derives its job
+   count from `nproc`/`hw.ncpu` with no override, which is how a developer's Mac
+   ended up at 18 while also hosting Colima. Worth having regardless, but it is
+   a mitigation: it lowers the chance of the condition without making it
+   detectable, so it must not land alone.
+
+**Still open on the macOS reading specifically.** The host run that surfaced this
+was made from a tree whose exact commit is not recorded, so whether it already
+carried the `/tmp` fix is unknown. If it did, there is a second contamination
+path here that has not been identified. Re-running Phase 6 on current `main` and
+checking whether `tools-lib.sh:return-flip:f128fd8d` still appears in the
+"obsolete here" list settles it in one run.
+
+**Do not read a kill from a run with a high unresolved fraction as evidence that
+a gap has closed.** `verify-on-host.sh` Phase 6 already prints the measured
+fraction (94% in that run) — that number is the signal, and until fix 1 exists it
+is the only one.
+

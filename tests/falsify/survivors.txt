@@ -15,23 +15,49 @@
 #   GROUP: <name>            optional — names the entry that follows
 #   <identity>               column 0; several CONSECUTIVE lines share one entry
 #     <context>              indented free text: the original line, the damage
-#     GAP: <reason>          indented; or EQUIVALENT: <reason>
+#     GAP: <reason>          indented; or EQUIVALENT: / ENV-DEPENDENT:
 #     <more reason>          indented continuation
 #
-# ── GAP vs EQUIVALENT ─────────────────────────────────────────────────────────
+# ── GAP vs EQUIVALENT vs ENV-DEPENDENT ────────────────────────────────────────
 # These are DIFFERENT CLAIMS and the difference is the point of the file.
 #
-#   GAP:         no test kills this mutant, and one could. The suite is weaker
-#                than it should be here. An entry that stays a GAP is a debt.
-#   EQUIVALENT:  NO test could ever kill it — the mutated program is observably
-#                the same program, or the only observer lies outside this tier.
-#                The reason must say WHY no test could, not that none does.
+#   GAP:            no test kills this mutant, and one could. The suite is
+#                   weaker than it should be here. A GAP that stays is a debt.
+#   EQUIVALENT:     NO test could ever kill it — the mutated program is
+#                   observably the same program, or the only observer lies
+#                   outside this tier. The reason must say WHY no test COULD,
+#                   not that none does.
+#   ENV-DEPENDENT:  the VERDICT itself moves with the machine, and neither
+#                   reading is wrong. Exempt from check D (obsolete amnesty) so
+#                   one ledger can be correct in CI and on a developer host at
+#                   once; still required to carry a non-empty reason.
 #
 # "Nothing currently asserts it" is a GAP written as an EQUIVALENT, and it is
 # the way this file would rot. The gate can only check that a marker is present
 # and its reason non-empty (an empty reason suppresses nothing, exactly as with
-# `# dialect-lint: allow RULE-ID: reason`); the GAP/EQUIVALENT distinction is a
-# review obligation, enforced by a human reading the reason.
+# `# dialect-lint: allow RULE-ID: reason`); the distinction between the three is
+# a review obligation, enforced by a human reading the reason.
+#
+# ── ENV-DEPENDENT IS NOT SYMMETRIC, AND THAT IS DELIBERATE ────────────────────
+# It is tempting to reach for it whenever two machines disagree. Which way they
+# disagree decides whether it is the right marker, because the two failures it
+# has to avoid are not the same failure.
+#
+#   SURVIVES somewhere other than CI, killed in CI  ->  ENV-DEPENDENT.
+#     An unfiled survivor fails check B on that host, and a GAP filed for it
+#     fails check D in CI. Only ENV-DEPENDENT can be true in both places.
+#     Entry 14 (p_md5) is this shape.
+#   KILLED somewhere other than CI, survives in CI   ->  STAYS A GAP.
+#     Filing it ENV-DEPENDENT would buy nothing — check D is not fatal outside
+#     CI, so the GAP is already safe there — and would cost the ratchet its
+#     teeth: when the real assertion is finally written and the mutant dies in
+#     CI too, check D is what forces the entry out, and ENV-DEPENDENT is exempt
+#     from check D. The debt would then be invisible instead of retired.
+#     Entries 9 and 13 are this shape (both die on macOS, on platform accidents
+#     rather than on an assertion aimed at the branch) and are GAPs on purpose.
+#
+# Stated the short way: classify by the REFERENCE environment; record the other
+# one in the prose.
 #
 # ── IDENTITY ──────────────────────────────────────────────────────────────────
 # `<file>:<operator>:<sha1-of-the-trimmed-original-line>`, the full 40-hex
@@ -290,6 +316,13 @@ tests/integration/mutate.sh:logic-flip:89c6a2517145cc6dbd3da79ad24e0b42298f87c0
   assertion is to apply two mutations and require `revert` to print exactly one
   "Reverted <id>" line per id, in reverse order, and no "Already absent" line.
   Recorded as F21.
+  MEASURED KILLED ON macOS (Phase 6 host run, 2026-08-17) and still a GAP, per
+  the asymmetry rule in the header. macOS ships no `tac`, so the mutated
+  `tac && sed` short-circuits on the missing command, the revert loop reads
+  NOTHING, and test-mutations.sh sees it. That kill is the platform, not an
+  assertion aimed at this line: it disappears on any host with GNU coreutils,
+  which is every environment the reference gate runs in. The killing assertion
+  above is still unwritten and still the thing to write.
 
 # ── 10 ────────────────────────────────────────────────────────────────────────
 GROUP: the damage does not fail the oracle, it stops it terminating (UNPROVEN)
@@ -320,6 +353,14 @@ tests/integration/docker-shim.sh:cmp-flip:5a19451b4bc784bc1a7b629182186fd2c91d21
   the three siblings of the docker-shim damage on the same line DID print a
   FAIL: before their clock ran out and are recorded as kills — the distinction
   is real, not an artefact of load. Recorded as F22.
+  THE docker-shim MEMBER WAS MEASURED KILLED ON macOS (Phase 6 host run,
+  2026-08-17): there the oracle printed its FAIL: inside the clock, so the same
+  damage that is UNPROVEN here is an ordinary kill there. That is the argument
+  for the BOUND above restated as a measurement — the assertion exists and can
+  fail; whether the tier SEES it fail is currently a function of how fast the
+  machine is, which is not a property of the code. It stays in this entry rather
+  than moving to a killed-elsewhere classification, per the header's asymmetry
+  rule.
 
 # ── 11 ────────────────────────────────────────────────────────────────────────
 tests/portability.sh:cond-negate:1a936c2f8ebc17823eea575e31d47b54b30b0f73
@@ -372,6 +413,21 @@ tools-lib.sh:return-flip:f128fd8d7318dc079eeec1117ae9a4525988fac4
   The coverage gap F11 recorded is real and unchanged, and the killing assertion
   is still the one it named: point TOOLS_D_DIR at a path that does not exist and
   require status 0 with no names printed.
+  A THIRD ENVIRONMENT, ADDED 2026-08-17 BECAUSE IT LOOKED LIKE A COUNTEREXAMPLE:
+  a macOS Phase 6 host run scored this mutant KILLED. Re-run on the same host and
+  the same tree at `--jobs 2 --timeout 300`, it SURVIVED with signal `none` in
+  ~10 s — in BOTH repos, independently. So that is not a fourth reading of the
+  guard; it is the run's own concurrency showing up in the verdict. That host
+  run took `jobs=18` on a machine also hosting Colima and reported 80 timeouts
+  and 13 unproven against this environment's 11 and 4.
+  The mechanism was then reproduced on Linux rather than left as an inference:
+  on the PRE-fix tree at `--jobs 24` on 12 cores, one run in three scored this
+  exact mutant KILLED with signal `exit+failline` in 2.5 s — the shared-/tmp
+  race in its own declared oracle, firing fast rather than slowly — and the
+  post-fix tree does not reproduce it. Backlog F30 carries the general finding:
+  a KILL is only trustworthy if the oracle would have passed under the same
+  load, and the tier cannot currently tell. Do not read a kill from a run with a
+  high unresolved fraction as evidence that this gap has closed.
 
 # ── 13 ────────────────────────────────────────────────────────────────────────
 GROUP: p_stat_meta's GNU/BSD branch can be swapped and nothing anywhere notices
@@ -397,6 +453,12 @@ tests/portability.sh:cond-negate:d468fd361cfd9ae5d0e8d33a6b76f098cd0db7ae
   The killing assertion is the sibling's: assert p_stat_meta's VALUE, not its
   emptiness — three whitespace-separated fields, the middle one the file's real
   byte size. Recorded as backlog F25.
+  MEASURED KILLED ON macOS (Phase 6 host run, 2026-08-17) and still a GAP, per
+  the asymmetry rule in the header. There `_P_STAT_GNU` is 0, so the swapped
+  branch calls `stat -c`, which BSD stat rejects outright — the mirror of the
+  GNU reading above, and just as incidental: it is the platform refusing an
+  option, not test-portability.sh watching this branch. On the reference
+  environment it survives, so the debt stands and the entry stays a GAP.
 
 # ── 14 ────────────────────────────────────────────────────────────────────────
 GROUP: p_md5's branch inversion — the verdict depends on which digest tools exist
