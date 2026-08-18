@@ -62,10 +62,13 @@ FT_MAXDEPTH=3
 FT_CATEGORIES="EXECUTED-WHOLE EXECUTED-PARTIAL GREPPED-ONLY"
 
 # The shape of a well-formed oracle field: one or more test basenames separated
-# by single commas, with no whitespace anywhere. Held as a variable because a
-# regex written inline at the `=~` would have to survive quoting rules that
-# differ between bash versions.
-FT_ORACLE_RE='^[^,[:space:]]+(,[^,[:space:]]+)*$'
+# by single commas. The character class is a WHITELIST rather than "anything but
+# a comma or a space", so a glob metacharacter cannot reach the field at all —
+# the split below is an array read for the same reason, and a rule that holds
+# structurally beats one that holds because of how the value happens to be
+# consumed. Held as a variable because a regex written inline at the `=~` would
+# have to survive quoting rules that differ between bash versions.
+FT_ORACLE_RE='^[A-Za-z0-9._+-]+(,[A-Za-z0-9._+-]+)*$'
 
 # Nodes whose outbound references are stubbed out by the harness that runs them.
 FT_OPAQUE="verify-on-host.sh"
@@ -609,12 +612,14 @@ ft_check() {  # $1=conf
           "$conf" "$lineno" "$target" "$category" >&2
         problems=$((problems + 1))
       elif [[ ! "$oracle" =~ $FT_ORACLE_RE ]]; then
-        printf 'ERROR: %s:%s: %s has a malformed oracle field "%s" — comma-separated test basenames, with no spaces, no empty members and no leading or trailing comma\n' \
+        printf 'ERROR: %s:%s: %s has a malformed oracle field "%s" — comma-separated test basenames drawn from [A-Za-z0-9._+-], with no spaces, no glob characters, no empty members and no leading or trailing comma\n' \
           "$conf" "$lineno" "$target" "$oracle" >&2
         problems=$((problems + 1))
       else
         local o nmatch seen_o=""
-        for o in ${oracle//,/ }; do
+        local -a onames=()
+        IFS=',' read -r -a onames <<<"$oracle"
+        for o in "${onames[@]}"; do
           case " $seen_o " in
             *" $o "*)
               printf 'ERROR: %s:%s: %s names oracle %s twice — run-all.sh selects a test once however many filters match it, so the repetition buys no coverage and hides a typo for the oracle that was meant\n' \

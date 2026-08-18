@@ -270,6 +270,19 @@ printf '%s' "$gate_out" | grep -q 'has a malformed oracle field' \
   && pass "gate 3 (set): a space after the comma fails the gate" \
   || fail "gate 3 (set): a space after the comma passed the gate (output: $gate_out)"
 
+# A GLOB in the field is refused by the same shape check, and that is why the
+# character class is a whitelist rather than "anything but a comma or a space".
+# `test-*.sh` would otherwise reach the per-member loop, where an unquoted split
+# expands it against the working directory — so what the row asked for and what
+# the runner ran would depend on where the runner was invoked from.
+set_gate "test-one.sh,test-*.sh"
+[[ "$gate_rc" -ne 0 ]] \
+  && pass "gate 3 (set): a glob in the oracle field fails the gate" \
+  || fail "gate 3 (set): a glob in the oracle field passed the gate (output: $gate_out)"
+printf '%s' "$gate_out" | grep -q 'has a malformed oracle field' \
+  && pass "gate 3 (set): the glob is refused by shape, before anything expands it" \
+  || fail "gate 3 (set): the glob was not refused by the shape check (output: $gate_out)"
+
 # ── 6. GATE 4: EXECUTED-PARTIAL with an empty 4th field ──────────────────────
 f4="$TMP/gate4.conf"
 { cat "$CONF"; printf '%s|EXECUTED-PARTIAL|test-parsers.sh|\n' "$T_SBCOMMON"; } \
