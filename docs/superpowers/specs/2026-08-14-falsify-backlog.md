@@ -987,3 +987,108 @@ identical picture. The guard is the instrument that settles it: with it in
 place, a host re-run either aborts naming `mktemp` (confirmed) or reproduces the
 old picture (something else empties `$TMP`, and the search continues). It is
 correct to add either way, which is why it is not blocked on the answer.
+
+---
+
+## F31 ADDENDUM — ENOSPC is a proven mechanism and an unproven trigger
+
+Measured on the affected host, 2026-08-18. **`mktemp -d` was never the cause**;
+the guard built to confirm it eliminated it instead, which is the guard working.
+
+**The real class is "the artefact exists but is wrong".** Injected into an
+UNMUTATED tree, each of these scored `KILLED | exit+failline` — the tier scoring
+an environmental failure as a kill with no mutation present at all:
+
+| injected damage | observed | matches the field report |
+|---|---|---|
+| `foo.conf` written but empty | 6 × `FAIL:`, KILLED | `FAIL: repo ()` |
+| `ext.conf` written but empty | `repos//releases/latest`, 7.9 s → 16.3 s | the exact URL, and the slowdown |
+| `amb.tar.gz` non-empty but truncated | exactly one `FAIL:`, ambiguous archive | "one copy failed ONLY at ambiguous archive" |
+| fake `curl` present, not executable | PATH resolves to `/usr/bin/curl` | drives the code under test at the real network |
+
+Every one passes `-e` and `-r`, which is why the first guard never fired.
+
+**The filesystem decides the shape, and only one of them matches the field:**
+
+| | ENOSPC failure shape |
+|---|---|
+| HFS+ | fails at `open()` → artefacts absent |
+| **APFS** (what `/var/folders` is) | `cat > f` leaves the file **created and empty** — 17 of 30 measured |
+
+**`df` cannot be used as the probe.** APFS still reported ~1.8 MB free while
+writes were already coming back empty. A `df`-based check would have read
+healthy throughout and become the next wrong hypothesis. The probe has to
+attempt a real write and read it back for content.
+
+**It also has to sample at the moment of failure.** An end-of-run probe passes
+because `rm -rf "$RTMP"` frees the exhausted space two lines earlier — measured,
+and the run is scored KILLED anyway (6 of 16).
+
+### Closing the path the guards could not see
+
+Out of disk, `sandbox.sh` never reaches `docker run`, `$CAP` is empty, and the
+launcher assertions fail with every scaffolding artefact intact. Guarding `$CAP`
+is not the answer: it *is* the artefact under assertion. The write probe in
+`fail()` is. Measured across 40 onsets, no mutation anywhere:
+
+| tree | KILLED |
+|---|---|
+| `-e`/`-r` guards | 6 of 18 |
+| + per-step content guards | 3 of 40 — all the launcher path |
+| + at-failure write probe | **0 of 40** (those three → UNPROVEN) |
+
+### What is still open, stated as open
+
+**ENOSPC is a sufficient mechanism, not the demonstrated trigger on that host.**
+Free space there never moves: 199 samples over three 18-way rounds, 665.3–665.6 GB,
+a 321 MB swing. ~350 concurrent runs and 11 falsify runs produced zero natural
+collapses; the ledgered survivor stayed SURVIVED 11 of 11.
+
+So this entry deliberately does **not** say "the trigger is ENOSPC". What closes
+it is one datum from a failing run: the write probe's result at the moment it
+trips, which `capture-on-host.sh` now records along with `df`, `tmutil
+listlocalsnapshots /` and the APFS snapshot context. Per the measurement above
+the write probe is the load-bearing half — `df` reads healthy while writes fail.
+
+The clock is no longer evidence, either: the 03:19–04:09 clustering is when the
+tier was *run*, not when the machine is vulnerable. The APFS-local-snapshot
+hypothesis (pinned space that `df` still reports free) stands on its own and is
+untested — current baseline is zero local snapshots.
+
+Also newly ruled out by measurement: the EXIT trap firing in a `( )`/`$( )`/
+failing subshell (it does not, bash 5.3); `mktemp -d` collision (BSD mktemp, 10
+random chars); inode exhaustion.
+
+**Correction to an earlier figure in this file:** "0.3 s standalone" was measured
+in a Linux container, not on the affected host, where the same test takes 7.9 s.
+The 44–57 s under load is a ~6× slowdown, not 150×.
+
+---
+
+## F32 — three load-sensitive oracles, and the tier reads slowness as coverage
+
+Distinct from F31 and unfixed. Three separate oracles have now been observed
+failing or timing out purely under concurrent load, on trees that are green when
+run alone:
+
+1. `tests/test-falsify-run.sh` — fails roughly 1 full-suite run in 4 under load.
+   The inner fixture run produces no verdict at all (`FR_BROKEN`), so its
+   FAIL:-line-detection case reads `expected 'SURVIVED', got 'MISSING'`. A test
+   *about* verdict detection silently stops testing it.
+2. `tests/test-integration-shim.sh` — blew the 120 s budget on the PRISTINE tree
+   under 18-way load (4.7 s standalone, and it passed twice in Phase 5 of the
+   same run). `run.sh` handled it correctly, refusing to measure that target
+   rather than reporting every mutant killed.
+3. `tests/test-tools-d.sh` — F31, now guarded.
+
+The pattern is the tier's own concurrency turning healthy oracles unhealthy, and
+the two remaining cases are not scaffolding failures, so the F31 channel does
+not catch them. `run.sh`'s per-target pristine baseline catches the case where
+the oracle is *already* red when the target starts; it cannot catch an oracle
+that goes red partway through a target's mutants.
+
+Options, unranked and unbuilt: re-check the baseline mid-target rather than only
+at its start; or scale `--timeout` from a measured per-oracle baseline instead
+of one global number; or cap concurrency below `nproc` on hosts where the tier
+competes with a VM for cores (Phase 6 chose 18 on an 18-core Mac also running
+Colima).
