@@ -393,7 +393,59 @@ kills this" is an observation, not a reading of the source. That measurement
 overturned three classifications that a static read would have got wrong (see
 the F8, F11 and F15 corrections above, and F16 below).
 
-## F16 — the tier's oracle map is 1:1, but three targets are driven by several tests
+## F16 — **RESOLVED 2026-08-18.** The oracle field is a SET, and the eight real kills it was hiding are kills again
+
+`tests/falsify/targets.conf`'s oracle field now takes several comma-separated
+test basenames, run as ONE `run-all.sh -v a.sh b.sh` invocation: run-all.sh
+OR-combines its filters and reports one aggregate status, so a `FAIL:` from any
+member is that target's kill and the baseline requires every member green.
+`derive-targets.sh` checks each member on its own — exists, selected uniquely,
+not repeated — and checks the field's SHAPE before splitting it, because
+`IFS=, read -a` silently drops a trailing empty member and `a.sh,` would
+otherwise pass as `a.sh` with the author's second oracle gone without a word.
+
+Two rows changed, and the ledger with them:
+
+| Row | Oracle set now | Effect |
+|---|---|---|
+| `tests/lib-verify-repo.sh` | `+ test-verify-exit-code.sh, test-layer-containment.sh` | 11 survivors → 3; ledger entry 3 retired outright |
+| `bash-floor.sh` | `+ test-migrate-runme.sh` | the `return 1` half of entry 2's identity is now killed |
+
+Measured at `--jobs 1` as well as `--jobs 6`, and the two agree.
+
+### The third row in the original table was wrong, and its correction is the
+### more useful half of this entry
+
+The table below claimed `tests/portability.sh:36` (`p_stat_meta`) was killed by
+`test-allowlists.sh` and `test-falsify-generate.sh`. **It is not**, and the row
+stays 1:1 deliberately. Ledger entry 13 had already re-measured it and moved it
+out of this group; what was still missing was WHY it ever looked killed, and
+that turns out to be a reproducible instance of F30 rather than a slip:
+
+* The damage makes `p_stat_meta` run `stat -f '%N %z %m' F`. On GNU, `-f` means
+  `--file-system` — so the format string is taken as a filename, and the call
+  prints the FILESYSTEM's block counts plus an error, not the file's metadata.
+* `test-falsify-generate.sh` compares two `p_stat_meta` samples taken either
+  side of a generator run, to assert the generator left the targets untouched.
+* Sequentially the free-block count does not move between the samples, the two
+  garbage strings match, and the mutant survives — correctly, because nothing
+  is watching that branch.
+* Under concurrent workers the free-block count DOES move, the strings differ,
+  and the assertion fails **on disk jitter**. The tier records a kill.
+
+Reproduced deterministically: six concurrent copies of the damaged tree, six
+identical `FAIL: generating mutants leaves the target files byte-identical`.
+Run alone, the same tree passes all three tests. At `--jobs 6` the tier reported
+3 of 10 portability mutants KILLED; at `--jobs 1`, 0 of them.
+
+**So the rule that came out of this is written into `targets.conf`'s header: an
+extra oracle is not free and not automatically right — name one only when it is
+measured to kill something the others do not, and measure that at `--jobs 1`.**
+Adding `test-falsify-generate.sh` here would have retired a real, documented gap
+(entry 13, backlog F25) on the strength of machine load.
+
+### Original finding
+
 
 **Nine of the 32 ledger identities (11 distinct damages) are killed by a
 hermetic test that is not the oracle `targets.conf` names for their target.**
@@ -865,6 +917,33 @@ is the only one.
 
 ---
 
+### ADDENDUM 2026-08-18 — the mechanism, reproducible on demand
+
+F30's original instance could not be reproduced deliberately: it was a mutant
+that scored KILLED once under `jobs=18` and SURVIVED on re-run, with the cause
+inferred. There is now a case that reproduces **every time**, which makes the
+finding demonstrable rather than argued.
+
+`tests/portability.sh`'s `p_stat_meta` branch swap makes the function print
+FILESYSTEM block counts instead of file metadata (`stat -f` on GNU means
+`--file-system`). `tests/test-falsify-generate.sh` fingerprints its target files
+with `p_stat_meta` before and after a generator run and requires the two samples
+to match. Sequentially the free-block count is stable between the samples and
+the mutant survives. With other workers writing, it is not, and the assertion
+fails — on **disk jitter**, with nothing having observed the damaged branch.
+
+Six concurrent copies of the damaged tree: six identical failures. The same
+tree run alone: green. At `--jobs 6` the tier scored 3 of `tests/portability.sh`'s
+10 mutants KILLED; at `--jobs 1`, none of them.
+
+Two things follow. First, the false kill is not confined to scaffolding
+collapse, so the F31 marker channel cannot catch it — the oracle set itself up
+fine and asserted something true about a world that moved underneath it. Second,
+it is a *specific* shape worth looking for elsewhere: **an assertion that
+compares two samples of an environment-derived value**. Under mutation, a
+damaged accessor can turn such an assertion into a load detector. That is what
+made `tests/portability.sh` stay a 1:1 row (see F16).
+
 ## F31 — every test's `mktemp -d` is unchecked, and a failed one is scored as a KILL
 
 **This is the cause of F30's macOS false kills.** Root-caused 2026-08-18, after
@@ -1092,3 +1171,38 @@ at its start; or scale `--timeout` from a measured per-oracle baseline instead
 of one global number; or cap concurrency below `nproc` on hosts where the tier
 competes with a VM for cores (Phase 6 chose 18 on an 18-core Mac also running
 Colima).
+
+## F33 — the gate cannot yet require that a row's oracle actually executes its target
+
+`derive-targets.sh --check` gates the oracle field on three things: the test
+exists, `run-all.sh` selects it uniquely, and it is not named twice. It does
+**not** check the one thing that would matter most — that the named test is
+among the tests the derivation observed EXECUTING that target.
+
+The consequence is asymmetric, which is why this is a gap rather than a hole: a
+bogus oracle produces false SURVIVORS, never false kills, so it inflates the
+ledger's debt instead of hiding it. Every survivor still has to be classified by
+hand, and a reviewer classifying eleven survivors of a target whose oracle never
+touches it would notice. But it is checkable and is not checked.
+
+**Why it cannot simply be switched on.** The derivation resolves execution
+statically, and it misses at least one real shape: `tests/lib-verify-repo.sh` is
+executed by its own dedicated oracle `tests/test-lib-verify-repo.sh`, which
+builds a harness script with
+
+```bash
+printf 'source %q\n' "$REPO_DIR/tests/lib-verify-repo.sh" >> "$h"
+```
+
+and then runs it. The scan sees no `source` at a command position, so
+`--list` reports that file as executed by `test-layer-containment.sh` and
+`test-verify-exit-code.sh` only. Turning the gate on today would reject a row
+that is correct. Note the derivation is UNDER-reporting here, so `--evidence`
+understates what drives a target — which is the same blind spot F16 was about,
+one level down.
+
+**Shape of the fix:** teach the derivation to recognise a target path written
+into a file that is later executed (the `printf … >> "$h"; bash "$h"` idiom),
+then add the `oracle ∈ executors` gate with its own demonstration. Both halves
+are needed: the gate without the derivation fix is a false alarm, and the
+derivation fix without the gate buys only a more honest `--evidence`.

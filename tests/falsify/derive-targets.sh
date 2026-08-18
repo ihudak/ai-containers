@@ -61,6 +61,12 @@ FT_MAXDEPTH=3
 
 FT_CATEGORIES="EXECUTED-WHOLE EXECUTED-PARTIAL GREPPED-ONLY"
 
+# The shape of a well-formed oracle field: one or more test basenames separated
+# by single commas, with no whitespace anywhere. Held as a variable because a
+# regex written inline at the `=~` would have to survive quoting rules that
+# differ between bash versions.
+FT_ORACLE_RE='^[^,[:space:]]+(,[^,[:space:]]+)*$'
+
 # Nodes whose outbound references are stubbed out by the harness that runs them.
 FT_OPAQUE="verify-on-host.sh"
 FT_OPAQUE_WHY="tests/lib-verify-repo.sh runs the real script against a scratch repo whose checks are instrumented stubs, so its outbound references execute fakes, not repo files"
@@ -584,26 +590,51 @@ ft_check() {  # $1=conf
       problems=$((problems + 1))
     fi
 
-    # ── Gate: the oracle must exist AND select exactly one test ───────────────
+    # ── Gate: EVERY oracle named must exist AND select exactly one test ───────
     # tests/run-all.sh exits 2 when its filter matches nothing, so a typo'd
     # oracle would run ZERO tests and report every mutant killed.
+    #
+    # The field is a SET, comma-separated: `a.sh,b.sh` is ONE oracle invocation
+    # running both, because a target's code can be driven by several hermetic
+    # tests while only one of them is its dedicated 1:1 test. Each member is
+    # checked ON ITS OWN — a gate that validated only the first would let a typo
+    # in a later one contribute nothing while the row still claimed its coverage,
+    # which is the same quiet success this gate exists to refuse. The shape check
+    # comes first because the split silently DROPS a trailing empty member
+    # (`IFS=, read -a` on `a,` yields one element), so `a,` would otherwise pass
+    # as `a` and the author's second oracle would vanish without a word.
     if [[ "$category" == EXECUTED-* || ( -n "$oracle" && "$oracle" != "-" ) ]]; then
       if [[ -z "$oracle" || "$oracle" == "-" ]]; then
         printf 'ERROR: %s:%s: %s is classified %s with no oracle test\n' \
           "$conf" "$lineno" "$target" "$category" >&2
         problems=$((problems + 1))
-      elif [[ ! -f "$FT_TESTS_DIR/$oracle" ]]; then
-        printf 'ERROR: %s:%s: %s names oracle %s, which does not exist at %s/%s — run-all.sh would exit 2 (no tests matched) and report every mutant killed\n' \
-          "$conf" "$lineno" "$target" "$oracle" "${FT_TESTS_DIR#"$FT_REPO"/}" "$oracle" >&2
+      elif [[ ! "$oracle" =~ $FT_ORACLE_RE ]]; then
+        printf 'ERROR: %s:%s: %s has a malformed oracle field "%s" — comma-separated test basenames, with no spaces, no empty members and no leading or trailing comma\n' \
+          "$conf" "$lineno" "$target" "$oracle" >&2
         problems=$((problems + 1))
       else
-        local nmatch
-        nmatch="$(_ft_oracle_matches "$oracle")"
-        if [[ "$nmatch" -ne 1 ]]; then
-          printf 'ERROR: %s:%s: %s names oracle %s, which run-all.sh selects %s test(s) for — an oracle must select exactly one\n' \
-            "$conf" "$lineno" "$target" "$oracle" "$nmatch" >&2
-          problems=$((problems + 1))
-        fi
+        local o nmatch seen_o=""
+        for o in ${oracle//,/ }; do
+          case " $seen_o " in
+            *" $o "*)
+              printf 'ERROR: %s:%s: %s names oracle %s twice — run-all.sh selects a test once however many filters match it, so the repetition buys no coverage and hides a typo for the oracle that was meant\n' \
+                "$conf" "$lineno" "$target" "$o" >&2
+              problems=$((problems + 1)); continue ;;
+          esac
+          seen_o="$seen_o $o"
+          if [[ ! -f "$FT_TESTS_DIR/$o" ]]; then
+            printf 'ERROR: %s:%s: %s names oracle %s, which does not exist at %s/%s — run-all.sh would exit 2 (no tests matched) and report every mutant killed\n' \
+              "$conf" "$lineno" "$target" "$o" "${FT_TESTS_DIR#"$FT_REPO"/}" "$o" >&2
+            problems=$((problems + 1))
+            continue
+          fi
+          nmatch="$(_ft_oracle_matches "$o")"
+          if [[ "$nmatch" -ne 1 ]]; then
+            printf 'ERROR: %s:%s: %s names oracle %s, which run-all.sh selects %s test(s) for — an oracle must select exactly one\n' \
+              "$conf" "$lineno" "$target" "$o" "$nmatch" >&2
+            problems=$((problems + 1))
+          fi
+        done
       fi
     fi
 

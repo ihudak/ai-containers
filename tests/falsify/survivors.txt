@@ -85,23 +85,32 @@
 # Every entry states whether ANY hermetic test kills the mutant, and that is a
 # MEASURED fact, not a reading of the source: each surviving damage was applied
 # to a throwaway copy of the tree and the WHOLE 52-test suite run against it.
-# That measurement changed three classifications outright — one damage the
-# backlog recorded as "nothing exercises it" is killed by test-migrate-runme.sh,
-# and the three tests/portability.sh p_stat_meta damages are killed by
-# test-allowlists.sh and test-falsify-generate.sh — so the difference between
-# "no test kills it" and "the DECLARED ORACLE does not kill it" is written into
-# the entries rather than assumed away.
+# That measurement changed classifications outright — one damage the backlog
+# recorded as "nothing exercises it" is killed by test-migrate-runme.sh — so the
+# difference between "no test kills it" and "the DECLARED ORACLE does not kill
+# it" is written into the entries rather than assumed away.
 #
-# Corpus: tests/falsify/run.sh --jobs 6 over the nine active targets,
-# TOTAL|9|249|209|36|4|11|16 — 36 SURVIVED + 4 UNPROVEN = 40 records.
+# It also produced one reading that was WRONG and is corrected here rather than
+# quietly dropped: the three tests/portability.sh p_stat_meta damages were
+# recorded as killed by test-allowlists.sh and test-falsify-generate.sh. They are
+# not. That verdict only appears when the tier runs several workers at once, and
+# it is the free-block count moving between two samples, not an assertion
+# watching the branch — see entry 13 and backlog F30's addendum. RE-MEASURE AT
+# --jobs 1. A verdict taken under load can be a property of the machine.
+#
+# Corpus (2026-08-18): tests/falsify/run.sh --jobs 6 over the nine active
+# targets, TOTAL|9|249|218|27|4|7|12 — 27 SURVIVED + 4 UNPROVEN = 31 records.
+# The previous reading was TOTAL|9|249|209|36|4|11|16: nine more kills, from
+# targets.conf's oracle field becoming a SET rather than from any new assertion
+# (backlog F16, ledger entries 2 and 3).
 #
 # That line is provenance: the TOTAL of one dated run, which does not move when
 # this file is edited. It deliberately no longer tallies identities or entries.
-# It used to ("32 identities, 12 entries") and both had gone stale — there are
-# 14 numbered entries below and 33 identity lines — because splitting one entry
-# in two changes a count nothing recomputes. check-ledger.sh prints both numbers
-# on every run, derived from the file it is scoring, so stating them here was a
-# second copy of a fact that could only ever drift away from the first.
+# It used to ("32 identities, 12 entries") and both had gone stale, because
+# splitting one entry in two — or retiring one, as F16 did to entry 3 — changes
+# a count nothing recomputes. check-ledger.sh prints both numbers on every run,
+# derived from the file it is scoring, so stating them here was a second copy of
+# a fact that could only ever drift away from the first.
 
 # ── 1 ─────────────────────────────────────────────────────────────────────────
 GROUP: re-entry guard, the half that only runs when the file is EXECUTED
@@ -130,56 +139,48 @@ shared-files.sh:return-flip:7bfb00108eb7e7856c69ee914697141e5ea8086d
 # ── 2 ─────────────────────────────────────────────────────────────────────────
 bash-floor.sh:return-flip:7bfb00108eb7e7856c69ee914697141e5ea8086d
   bash-floor.sh:19  return 0 2>/dev/null || exit 0
-  the damages:      ... return 1 ... || exit 0   (2 mutants share this identity)
-                    ... return 0 ... || exit 1
-  GAP: the two damages carried by this identity have DIFFERENT causes, so
-  both are stated. `return 0 -> return 1` is NOT direct-execution-only, which
-  is what F15 claims: a plain SECOND SOURCE then returns 1, and the `source`
-  command's status becomes 1. Measured, that damage IS killed — by
+  the damages:      ... return 1 ... || exit 0   (KILLED since 2026-08-18)
+                    ... return 0 ... || exit 1   (survives — this entry)
+  GAP: the two damages carried by this identity have DIFFERENT causes, and only
+  one of them is still a survivor. `return 0 -> return 1` is NOT
+  direct-execution-only, which is what F15 claims: a plain SECOND SOURCE then
+  returns 1, and the `source` command's status becomes 1. That is seen by
   test-migrate-runme.sh, whose `source ./project-init.sh; printf "rc=%s" "$?"`
-  assertion sees it (project-init.sh:18 sources bash-floor.sh, sandbox-common.sh
-  sources it again) — but NOT by bash-floor.sh's declared oracle
-  test-bash-floor.sh, so the tier records it as a survivor. That half belongs to
-  entry 3's cause: the target's oracle is not the test that notices. Note the
-  asymmetry with entry 1: shared-files.sh's identical `return 1` damage IS
-  killed by its own oracle (test-shared-files-parity.sh, and test-sync-project.sh
-  too), which is why only two of its three damages survive. The second damage,
-  `|| exit 1`, is the direct-execution one and nothing anywhere kills it —
-  entry 1's assertion covers it. The killing assertion for the first: source
-  bash-floor.sh twice in one shell and require the second source's status to be
-  0, in test-bash-floor.sh itself rather than by accident three files away.
+  assertion catches it (project-init.sh:18 sources bash-floor.sh,
+  sandbox-common.sh sources it again) — and since test-migrate-runme.sh joined
+  this target's ORACLE SET (backlog F16), the tier records that damage as the
+  kill it always was. It is no longer a survivor and no longer owed a fix.
+  Note the asymmetry with entry 1: shared-files.sh's identical `return 1` damage
+  is killed by its own oracle (test-shared-files-parity.sh, and
+  test-sync-project.sh too), which is why only two of its three damages survive.
+  WHAT REMAINS is the second damage, `|| exit 1`: the direct-execution one, which
+  nothing anywhere kills, and which entry 1's assertion covers — RUN bash-floor.sh
+  directly, once plainly and once with its `_AI_CONTAINERS_*_SOURCED` variable
+  preset, and require exit 0 with no fall-through. The entry stays because the
+  identity stays: one of its two mutants is still unobserved, and identity is
+  what this ledger keys on.
+  A second assertion is still worth having and is NOT covered by entry 1 —
+  source bash-floor.sh twice in one shell and require the second source's status
+  to be 0, in test-bash-floor.sh itself rather than by accident three files away.
+  Without it the `return 1` half is killed only incidentally, by a test about
+  launcher migration.
 
 # ── 3 ─────────────────────────────────────────────────────────────────────────
-GROUP: killed by a hermetic test that is not this target's declared oracle
-tests/lib-verify-repo.sh:cmp-flip:85d1c24af1f4f5a0766c988353eedd6b742d33c6
-tests/lib-verify-repo.sh:cond-negate:85d1c24af1f4f5a0766c988353eedd6b742d33c6
-tests/lib-verify-repo.sh:logic-flip:85d1c24af1f4f5a0766c988353eedd6b742d33c6
-tests/lib-verify-repo.sh:cmp-flip:efadbbed5b43d93c1f431cf3df97f4ccce295897
-tests/lib-verify-repo.sh:cond-negate:efadbbed5b43d93c1f431cf3df97f4ccce295897
-tests/lib-verify-repo.sh:logic-flip:efadbbed5b43d93c1f431cf3df97f4ccce295897
-tests/lib-verify-repo.sh:logic-flip:50b22d355911db1f282df2f2944fe48ace59b2ac
-  lib-verify-repo.sh:325  && { [[ "$add_origin" != "1" ]] || git update-ref … }
-  lib-verify-repo.sh:313  [[ "${MK_REPO_PROBE:-0}" == "1" ]] || continue
-  lib-verify-repo.sh:326  && { [[ "${MK_REPO_UNTRACK_SH:-0}" != "1" ]] || { …
-  portability.sh:36       p_stat_meta's GNU/BSD branch selection
-  9 identities, 11 distinct damages, one cause.
-  GAP: and the gap is in the TIER'S TARGET MAP, not in the suite. Measured, one
-  damage at a time, against the whole 52-test suite: every one of these is
-  killed by a hermetic test, and none of them by the oracle targets.conf names.
-  lib-verify-repo.sh's three mk_repo knobs are driven by test-verify-exit-code.sh
-  (add_origin: `mk_repo 0 0` must make Phase 5 fail with "no usable BASE_REF" and
-  `mk_repo 0` must make it pass; MK_REPO_UNTRACK_SH; MK_REPO_PROBE) and by
-  test-layer-containment.sh (MK_REPO_PROBE, add_origin) — never by
-  test-lib-verify-repo.sh. (p_stat_meta was in this group and has been REMOVED
-  from it — see the entry below. Its p_stat_mode sibling does have a VALUE
-  assertion and all three of that line's mutants are killed, which is what made
-  the meta line look covered too.) This is the failure mode targets.conf's header
-  warns about, arriving from the other direction: not a target whose code the
-  oracle never executes, but a target whose code THREE tests drive while the
-  map allows one. The fix is a multi-oracle row type — already named as a
-  prerequisite on the DEFERRED sandbox-common.sh row — after which these eleven
-  damages become kills with no new assertion written. Until then, do not read
-  them as missing assertions. Recorded as F16.
+# RETIRED 2026-08-18. Seven identities / eight damages in tests/lib-verify-repo.sh
+# used to sit here under "GROUP: killed by a hermetic test that is not this
+# target's declared oracle" — mk_repo's add_origin, MK_REPO_PROBE and
+# MK_REPO_UNTRACK_SH knobs, every one of them driven by test-verify-exit-code.sh
+# and test-layer-containment.sh and none of them by test-lib-verify-repo.sh.
+# The defect was in the tier's TARGET MAP, not in the suite: the oracle field
+# allowed one test name while three tests drove the code. targets.conf's oracle
+# field is now a SET, that row names all three, and the eight damages are
+# recorded as the kills they always were (backlog F16). No assertion was written
+# to retire them and none was needed.
+#
+# The number is left occupied rather than reused. An entry number in this file
+# is cited from the backlog, from targets.conf's header and from entry 2 above;
+# renumbering to close the gap would silently re-point every one of those
+# citations at different content.
 
 # ── 4 ─────────────────────────────────────────────────────────────────────────
 GROUP: mk_repo's git bootstrap and the git probe, under a git that fails
@@ -477,6 +478,18 @@ tests/portability.sh:cond-negate:d468fd361cfd9ae5d0e8d33a6b76f098cd0db7ae
   GNU reading above, and just as incidental: it is the platform refusing an
   option, not test-portability.sh watching this branch. On the reference
   environment it survives, so the debt stands and the entry stays a GAP.
+  MEASURED KILLED UNDER LOAD, on Linux, and still a GAP — for a reason worth
+  writing down, because it is what makes this entry easy to retire by accident.
+  Adding test-falsify-generate.sh to this target's oracle set (which backlog F16
+  did for two other rows) reports all three of these mutants KILLED at --jobs 6
+  and none of them at --jobs 1. The kill is disk jitter, not coverage: that test
+  compares two p_stat_meta samples taken either side of a generator run, the
+  damaged branch makes p_stat_meta print the FILESYSTEM's free-block count, and
+  concurrent workers move that count between the two samples. Six concurrent
+  copies of the damaged tree produce six identical
+  `FAIL: generating mutants leaves the target files byte-identical`; the same
+  tree alone is green. So this row stays 1:1 deliberately, and anyone
+  re-measuring this entry must do it at --jobs 1. Recorded as F30's addendum.
 
 # ── 14 ────────────────────────────────────────────────────────────────────────
 GROUP: p_md5's branch inversion — the verdict depends on which digest tools exist
