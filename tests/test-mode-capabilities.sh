@@ -41,7 +41,7 @@ fails=0
 pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails + 1)); }
 
-TMP="$(mktemp -d)"; REAL_HOME="$HOME"
+TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; REAL_HOME="$HOME"
 trap 'rm -rf "$TMP"; export HOME="$REAL_HOME"' EXIT
 
 export HOME="$TMP/home"; mkdir -p "$HOME"

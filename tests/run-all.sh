@@ -105,6 +105,18 @@ for t in $selected; do
       failed_names="${failed_names:+$failed_names }$name"
       printf '   FAIL  (exited 0 but asserted nothing)\n'
     fi
+  elif grep -qE '^SCAFFOLD-FAILED:' "$log"; then
+    # THE TEST COULD NOT BUILD ITS OWN WORKSPACE, which is a different event
+    # from an assertion failing and is reported as one. A test that cannot
+    # `mktemp -d` measures nothing; saying "FAIL (exit 1)" over the top of that
+    # sends a reader hunting for a defect in the code under test. Still a
+    # failure — it counts and the suite exits non-zero — but named for what it
+    # is, and its own line is surfaced rather than the assertion greps below,
+    # which a collapsed test fills with true-but-irrelevant noise.
+    failed=$((failed + 1))
+    failed_names="${failed_names:+$failed_names }$name"
+    printf '   FAIL  (could not set itself up — the environment, not the code)\n'
+    grep -E '^SCAFFOLD-FAILED:' "$log" | sed 's/^/     /' | head -5
   else
     failed=$((failed + 1))
     failed_names="${failed_names:+$failed_names }$name"

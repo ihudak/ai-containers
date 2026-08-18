@@ -93,7 +93,7 @@ fi
 # its list internally). This is what would have caught the ORIGINAL group.sh
 # divergence, which predates shared-files.sh entirely. ────────────────────────
 
-TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; trap 'rm -rf "$TMP"' EXIT
 export HOME="$TMP/home"; mkdir -p "$HOME"
 
 # A throwaway copy of the whole repo, so project-init.sh's projects.conf

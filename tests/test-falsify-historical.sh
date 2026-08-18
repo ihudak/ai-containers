@@ -89,7 +89,7 @@ source "$RUN"
 # shellcheck source=./falsify/generate.sh
 source "$GEN"
 
-TMP="$(mktemp -d)"
+TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 trap 'rm -rf "$TMP"' EXIT
 
 HEAD_BEFORE="$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null)"

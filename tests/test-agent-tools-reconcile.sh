@@ -60,7 +60,7 @@ EOF
 # run_case WANT [HOME] [NPM_FAIL] -> echoes the home dir it used (caller inspects & cleans).
 run_case() {
   local want="$1" home="${2:-$(mktemp -d)}" npm_fail="${3:-0}"
-  local bin; bin="$(mktemp -d)"
+  local bin; bin="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
   mk_stubs "$bin" "$home"
   PATH="$bin:$PATH" HOME="$home" AI_RUNTIME_TOOLS="$want" NPM_FAIL="$npm_fail" \
     bash "$REPO_DIR/agent-tools-reconcile.sh" >"$home/out.log" 2>&1
@@ -94,7 +94,7 @@ n_prefix_calls="$(grep -cE -- '--prefix[[:space:]]+[^[:space:]]*/\.ai-tools/npm(
 rm -rf "$h"
 
 # ── Idempotent: a second run on the SAME home does NOT reinstall ──
-h="$(mktemp -d)"; run_case "claude-code,graphify,vale" "$h" >/dev/null; : > "$h/calls.log"; run_case "claude-code,graphify,vale" "$h" >/dev/null
+h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; run_case "claude-code,graphify,vale" "$h" >/dev/null; : > "$h/calls.log"; run_case "claude-code,graphify,vale" "$h" >/dev/null
 [[ ! -s "$h/calls.log" || -z "$(grep -E 'install' "$h/calls.log")" ]] && pass "idempotent: present tools not reinstalled" || fail "idempotent: present tools not reinstalled"
 rm -rf "$h"
 
@@ -109,14 +109,14 @@ h="$(run_case "claude-code,graphify" "" 1)"
 { grep -q 'FAILED' "$h/out.log" && grep -q 'uv tool install graphifyy' "$h/calls.log"; } && pass "npm failure is non-fatal; other tools proceed" || fail "npm failure is non-fatal; other tools proceed"; rm -rf "$h"
 
 # ── Exit code: script must exit 0 whether or not an install fails (non-fatal) ──
-h="$(mktemp -d)"; bin="$(mktemp -d)"; mk_stubs "$bin" "$h"
+h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; bin="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; mk_stubs "$bin" "$h"
 PATH="$bin:$PATH" HOME="$h" AI_RUNTIME_TOOLS="claude-code,copilot,codex,gemini,graphify,vale" NPM_FAIL=0 \
   bash "$REPO_DIR/agent-tools-reconcile.sh" >"$h/out.log" 2>&1
 rc=$?
 rm -rf "$bin" "$h"
 [[ "$rc" -eq 0 ]] && pass "exit code 0 when all installs succeed" || fail "exit code 0 when all installs succeed"
 
-h="$(mktemp -d)"; bin="$(mktemp -d)"; mk_stubs "$bin" "$h"
+h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; bin="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; mk_stubs "$bin" "$h"
 PATH="$bin:$PATH" HOME="$h" AI_RUNTIME_TOOLS="claude-code,graphify" NPM_FAIL=1 \
   bash "$REPO_DIR/agent-tools-reconcile.sh" >"$h/out.log" 2>&1
 rc=$?

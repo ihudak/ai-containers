@@ -8,7 +8,7 @@ fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails+1)); }
 
 # A multi-version ruby= must pass validate_config (no single-version error) and
 # must NOT emit RUBY_VERSION/RAILS_VERSION build-args; KEEP_BUILD_TOOLCHAIN stays 1.
-F1="$(mktemp -d)"
+F1="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 cat > "$F1/sandbox.conf" <<'EOF'
 # schema-version: 4
 ruby=3.3.6,3.4.5

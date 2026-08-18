@@ -18,7 +18,7 @@ source "$SCRIPT_DIR/tests/portability.sh"
 # shellcheck disable=SC1090
 source "$SCRIPT_DIR/sync-to-projects.sh"
 
-TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; trap 'rm -rf "$TMP"' EXIT
 fail=0
 
 # ── 1. A current-format (marker-less, thin-wrapper) runme.sh must survive untouched ──

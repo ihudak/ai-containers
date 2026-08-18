@@ -10,7 +10,7 @@ pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails+1)); }
 
 setup() {
-  TMP="$(mktemp -d)"
+  TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
   export HOME="$TMP/home"; mkdir -p "$HOME"
   export AI_CONTAINER_GROUP_INIT=clean   # non-interactive group bootstrap
   # Isolate from any VAULT_PATH/SPECS_PATH exported in the invoking shell (e.g.

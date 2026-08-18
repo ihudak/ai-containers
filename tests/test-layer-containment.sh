@@ -228,7 +228,7 @@ fi
 # up whatever is on disk right now, local edits included — the same property
 # that lets Step 3-style demonstrations (comment out a real invocation, keep
 # the naming comment) actually exercise this file.
-TMP="$(mktemp -d)"
+TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 trap 'rm -rf "$TMP"' EXIT
 # shellcheck source=lib-verify-repo.sh
 source "$LIB_VERIFY_REPO"

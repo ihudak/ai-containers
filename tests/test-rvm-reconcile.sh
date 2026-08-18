@@ -10,8 +10,8 @@ bash -n "$REPO_DIR/rvm-reconcile.sh" && pass "rvm-reconcile.sh bash -n" || fail 
 
 run_case() {           # $1=preinstalled  $2=RUBY_VERSIONS  [$3=out sink: calls|out (default calls)]
   local pre="$1" want="$2" sink="${3:-calls}"
-  local home; home="$(mktemp -d)"
-  local bin; bin="$(mktemp -d)"
+  local home; home="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
+  local bin; bin="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
   # Fake rvm: records calls; 'list strings' prints preinstalled PLUS anything a prior
   # 'install' recorded (so a successful install becomes visible, like real rvm); an
   # install fails when STUB_INSTALL_FAILS=1 or the version is in STUB_FAIL_VERSIONS.
@@ -141,7 +141,7 @@ boot_case() {   # $1=curl exit code  $2=the installer body the fake curl deliver
                 #    "No such file" source failure. Both branches of that guard
                 #    now have a case; only the second one ever did.
   local curl_rc="$1" payload="$2" no_rvm="${3:-0}"
-  local home bin; home="$(mktemp -d)"; bin="$(mktemp -d)"
+  local home bin; home="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; bin="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
   # Only curl is stubbed (stubbing bash would shadow the reconcile's own
   # interpreter). The reconcile downloads the installer to a file with `curl -o`
   # and runs it as a SEPARATE step, so the stub honours -o; a stub that only ever
@@ -272,7 +272,7 @@ grep -vE '^[[:space:]]*#' "$REPO_DIR/rvm-reconcile.sh" \
   || pass "reconcile downloads the installer and runs it as separate steps"
 
 # An EMPTY (zero-byte) ~/.rvm/scripts/rvm must trigger a re-bootstrap, not be sourced.
-rebootstrap_home="$(mktemp -d)"; rebootstrap_bin="$(mktemp -d)"
+rebootstrap_home="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; rebootstrap_bin="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 install -d "$rebootstrap_home/.rvm/scripts"; : > "$rebootstrap_home/.rvm/scripts/rvm"   # zero bytes
 printf '#!/usr/bin/env bash\necho "curl $*" >> %s/calls.log\nexit 1\n' "$rebootstrap_home" > "$rebootstrap_bin/curl"
 chmod +x "$rebootstrap_bin/curl"

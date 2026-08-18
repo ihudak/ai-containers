@@ -2,7 +2,7 @@
 # Verifies project-init.sh emits a runme.sh launcher that calls ./sandbox.sh.
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; trap 'rm -rf "$TMP"' EXIT
 proj="$TMP/myproj"; mkdir -p "$proj"
 
 # Isolated HOME so the group-init prompt fires deterministically regardless of

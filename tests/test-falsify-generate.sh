@@ -26,7 +26,7 @@ TAB=$'\t'
 # shellcheck source=portability.sh
 source "$TESTS_DIR/portability.sh"
 
-TMP="$(mktemp -d)"
+TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 trap 'rm -rf "$TMP"' EXIT
 
 fails=0

@@ -28,7 +28,7 @@ fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails+1)); }
 REAL_HOME="$HOME"
 
 setup() {
-  TMP="$(mktemp -d)"
+  TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
   export HOME="$TMP/home"; mkdir -p "$HOME"
   # Canonicalise HOME up front, independently of resolve_path (the function
   # under test) — p_realdir uses cd + pwd -P, not readlink -f. sandbox.sh's

@@ -19,7 +19,7 @@ fails=0
 pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails+1)); }
 
-TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; trap 'rm -rf "$TMP"' EXIT
 
 # Isolated HOME: sandbox-common.sh (sourced transitively via build.sh, if ever)
 # reads ~/.ai-containers. sync-to-projects.sh itself doesn't source it, but keep

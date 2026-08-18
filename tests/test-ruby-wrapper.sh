@@ -21,7 +21,7 @@ mk_rvm() {
 }
 
 # ── Case 1: links the first requested present version's execs into the dest dir ──
-h="$(mktemp -d)"; d="$(mktemp -d)"
+h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; d="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 mk_rvm "$h" "3.4.5" "ruby gem bundle bundler rake irb erb"
 RUBY_VERSIONS="3.4.5" bash "$REPO_DIR/link-default-ruby.sh" "$h" "$d" >/dev/null 2>&1
 ok=1
@@ -32,7 +32,7 @@ done
 rm -rf "$h" "$d"
 
 # ── Case 2: prefers rvm's own rubies/default symlink when present ──
-h="$(mktemp -d)"; d="$(mktemp -d)"
+h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; d="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 mk_rvm "$h" "3.4.5" "ruby gem bundle"
 ln -s "ruby-3.4.5" "$h/.rvm/rubies/default"
 RUBY_VERSIONS="3.4.5" bash "$REPO_DIR/link-default-ruby.sh" "$h" "$d" >/dev/null 2>&1
@@ -43,7 +43,7 @@ rm -rf "$h" "$d"
 
 # ── Case 3: falls back to the FIRST requested version that is actually installed ──
 # 3.3.6 requested first but NOT installed; 3.4.5 requested second and installed.
-h="$(mktemp -d)"; d="$(mktemp -d)"
+h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; d="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 mk_rvm "$h" "3.4.5" "ruby gem bundle"
 RUBY_VERSIONS="3.3.6 3.4.5" bash "$REPO_DIR/link-default-ruby.sh" "$h" "$d" >/dev/null 2>&1
 [[ -L "$d/ruby" && "$(readlink "$d/ruby")" == "$h/.rvm/rubies/ruby-3.4.5/bin/ruby" ]] \
@@ -52,21 +52,21 @@ RUBY_VERSIONS="3.3.6 3.4.5" bash "$REPO_DIR/link-default-ruby.sh" "$h" "$d" >/de
 rm -rf "$h" "$d"
 
 # ── Case 4: no RUBY_VERSIONS → no-op (creates nothing) ──
-h="$(mktemp -d)"; d="$(mktemp -d)"
+h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; d="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 mk_rvm "$h" "3.4.5" "ruby gem bundle"
 ( unset RUBY_VERSIONS; bash "$REPO_DIR/link-default-ruby.sh" "$h" "$d" ) >/dev/null 2>&1
 [[ -z "$(ls -A "$d")" ]] && pass "no RUBY_VERSIONS is a no-op (dest dir stays empty)" || fail "no RUBY_VERSIONS is a no-op (dest dir stays empty)"
 rm -rf "$h" "$d"
 
 # ── Case 5: RUBY_VERSIONS set but no ruby installed → no-op, no crash ──
-h="$(mktemp -d)"; d="$(mktemp -d)"   # empty ~/.rvm (nothing installed yet)
+h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; d="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }   # empty ~/.rvm (nothing installed yet)
 RUBY_VERSIONS="3.4.5" bash "$REPO_DIR/link-default-ruby.sh" "$h" "$d" >/dev/null 2>&1
 rc=$?
 [[ $rc -eq 0 && -z "$(ls -A "$d")" ]] && pass "no installed Ruby → clean no-op (exit 0, dest empty)" || fail "no installed Ruby → clean no-op (exit 0, dest empty)"
 rm -rf "$h" "$d"
 
 # ── Case 6: only links execs that exist (missing erb is skipped, not dangling) ──
-h="$(mktemp -d)"; d="$(mktemp -d)"
+h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; d="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 mk_rvm "$h" "3.4.5" "ruby gem bundle"   # no rake/irb/erb
 RUBY_VERSIONS="3.4.5" bash "$REPO_DIR/link-default-ruby.sh" "$h" "$d" >/dev/null 2>&1
 [[ -L "$d/ruby" && ! -e "$d/erb" ]] \
@@ -103,7 +103,7 @@ n_link="$(grep -c 'link_default_ruby$' "$REPO_DIR/entrypoint.sh")"
 # was invisible until the bootstrap itself started succeeding.
 
 # The hook is found in the @global gemset and linked alongside the binstubs.
-h="$(mktemp -d)"; d="$(mktemp -d)"
+h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; d="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 mk_rvm "$h" "3.4.5" "ruby gem bundle"
 install -d "$h/.rvm/gems/ruby-3.4.5@global/bin"
 printf '#!/bin/sh\n' > "$h/.rvm/gems/ruby-3.4.5@global/bin/ruby_executable_hooks"
@@ -116,7 +116,7 @@ RUBY_VERSIONS="3.4.5" bash "$REPO_DIR/link-default-ruby.sh" "$h" "$d" >/dev/null
 rm -rf "$h" "$d"
 
 # …and from ~/.rvm/bin when rvm put it there instead.
-h="$(mktemp -d)"; d="$(mktemp -d)"
+h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; d="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 mk_rvm "$h" "3.4.5" "ruby gem bundle"
 install -d "$h/.rvm/bin"
 printf '#!/bin/sh\n' > "$h/.rvm/bin/ruby_executable_hooks"; chmod +x "$h/.rvm/bin/ruby_executable_hooks"
@@ -127,7 +127,7 @@ RUBY_VERSIONS="3.4.5" bash "$REPO_DIR/link-default-ruby.sh" "$h" "$d" >/dev/null
 rm -rf "$h" "$d"
 
 # No hook anywhere → no dangling link (the glob must not be linked literally).
-h="$(mktemp -d)"; d="$(mktemp -d)"
+h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; d="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 mk_rvm "$h" "3.4.5" "ruby gem bundle"
 RUBY_VERSIONS="3.4.5" bash "$REPO_DIR/link-default-ruby.sh" "$h" "$d" >/dev/null 2>&1
 [[ ! -e "$d/ruby_executable_hooks" && -z "$(find "$d" -name '*ruby_executable_hooks*' 2>/dev/null)" ]] \
@@ -136,7 +136,7 @@ RUBY_VERSIONS="3.4.5" bash "$REPO_DIR/link-default-ruby.sh" "$h" "$d" >/dev/null
 rm -rf "$h" "$d"
 
 # A binstub that does NOT run is re-pointed at rvm's wrapper…
-h="$(mktemp -d)"; d="$(mktemp -d)"
+h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; d="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 mk_rvm "$h" "3.4.5" "ruby gem"
 printf '#!/usr/bin/env definitely_not_on_path\n' > "$h/.rvm/rubies/ruby-3.4.5/bin/bundle"
 chmod +x "$h/.rvm/rubies/ruby-3.4.5/bin/bundle"
@@ -153,7 +153,7 @@ RUBY_VERSIONS="3.4.5" bash "$REPO_DIR/link-default-ruby.sh" "$h" "$d" >/dev/null
 rm -rf "$h" "$d"
 
 # No wrappers dir at all → the broken binstub is reported, not silently left as OK.
-h="$(mktemp -d)"; d="$(mktemp -d)"
+h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; d="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 mk_rvm "$h" "3.4.5" "ruby gem"
 printf '#!/usr/bin/env definitely_not_on_path\n' > "$h/.rvm/rubies/ruby-3.4.5/bin/bundle"
 chmod +x "$h/.rvm/rubies/ruby-3.4.5/bin/bundle"

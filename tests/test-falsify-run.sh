@@ -34,7 +34,7 @@ TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$TESTS_DIR/.." && pwd)"
 RUN="$TESTS_DIR/falsify/run.sh"
 
-TMP="$(mktemp -d)"
+TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 trap 'rm -rf "$TMP"' EXIT
 
 fails=0
@@ -163,6 +163,40 @@ else
 fi
 EOF
 
+# Oracle F — its workspace collapses when its target is mutated. Green on the
+# pristine tree (it must be: run.sh refuses to measure a target whose baseline
+# is red, correctly, so an always-failing fixture would produce no verdicts at
+# all), and on a mutant it reproduces the SIGNATURE backlog F31 measured in the
+# field — the marker line, a real FAIL: line, and a non-zero exit together.
+# All three, because a verdict that only holds for the tidy case is not the
+# guard that was needed: without the scaffold branch, `failline` alone carries
+# this to KILLED.
+cat > "$FX/tests/test-fx-scaffold.sh" <<'EOF'
+#!/usr/bin/env bash
+set -uo pipefail
+FX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=/dev/null
+source "$FX_DIR/fixture-lib.sh"
+if [[ "$(fx_bigger 5 3)" == "yes" ]]; then
+  printf 'PASS: fx_bigger orders its arguments\n'
+  exit 0
+fi
+printf 'SCAFFOLD-FAILED: mktemp -d\n'
+printf 'FAIL: everything downstream of a collapsed workspace\n'
+exit 1
+EOF
+
+# Oracle G — always collapses, and exists only for the DRIVER assertion in case
+# 14. run.sh never selects it: it names its oracle as a filter, and no
+# targets.conf row here names this file.
+cat > "$FX/tests/test-fx-collapse.sh" <<'EOF'
+#!/usr/bin/env bash
+set -uo pipefail
+printf 'SCAFFOLD-FAILED: mktemp -d\n'
+printf 'FAIL: everything downstream of a collapsed workspace\n'
+exit 1
+EOF
+
 # THE REAL DRIVER, copied: the oracle contract is `tests/run-all.sh <name>`, so a
 # fixture with a hand-written stand-in driver would be testing the stand-in.
 cp "$TESTS_DIR/run-all.sh" "$FX/tests/run-all.sh"
@@ -182,6 +216,7 @@ CONF_C="$(conf c 'fixture-lib.sh|EXECUTED-WHOLE|test-fx-c.sh')"
 CONF_SILENT="$(conf silent 'fixture-lib.sh|EXECUTED-WHOLE|test-fx-silent.sh')"
 CONF_SLOW="$(conf slow 'fixture-slow.sh|EXECUTED-WHOLE|test-fx-slow.sh')"
 CONF_TYPO="$(conf typo 'fixture-lib.sh|EXECUTED-WHOLE|test-fx-nosuchtest.sh')"
+CONF_SCAFFOLD="$(conf scaffold 'fixture-lib.sh|EXECUTED-WHOLE|test-fx-scaffold.sh')"
 CONF_PARTIAL="$(conf partial 'fixture-lib.sh|EXECUTED-PARTIAL|test-fx-a.sh|fx_bigger')"
 CONF_GREPPED="$(conf grepped 'fixture-lib.sh|GREPPED-ONLY|test-fx-a.sh')"
 
@@ -488,5 +523,41 @@ if [[ "$n_active" -ge 1 ]]; then
 else
   fail "the real map still has active EXECUTED-WHOLE targets — the tier would mutate nothing"
 fi
+
+# ── 14. A COLLAPSED ORACLE IS UNPROVEN, NEVER KILLED ─────────────────────────
+# The oracle reports that it could not set ITSELF up. Everything it printed
+# afterwards — including a real FAIL: line and a non-zero exit, both present in
+# this fixture — is evidence about the machine, not about the mutation. Scoring
+# that as a kill is how a real GAP goes invisible: the mutant leaves the
+# survivor set, check-ledger.sh stops demanding an entry, and the hole is
+# reported as covered. Measured in the field before it was fixed (backlog F31).
+#
+# Demonstrated failing by deleting the falsify_has_scaffold_failure branch from
+# falsify_verdict: the verdict becomes KILLED and both assertions below fire.
+fx_run "$RUN" "$CONF_SCAFFOLD" "$FX" "$TMP/wit-scaffold"
+check "a collapsed oracle is UNPROVEN, not KILLED" \
+  "UNPROVEN" "$(fx_verdict "$FX_OUT" "$KILLABLE")"
+fx_sig="$(fx_signal "$FX_OUT" "$KILLABLE")"
+case "$fx_sig" in
+  *scaffold*) pass "  … and the signal names the scaffold ($fx_sig)" ;;
+  *)          fail "  … and the signal names the scaffold (got '$fx_sig')" ;;
+esac
+
+# THE OTHER HALF, in the driver rather than the tier: a human running the suite
+# must be told the workspace collapsed, not handed "FAIL (exit 1)" over the top
+# of it. That is what sent this investigation after a defect in the code under
+# test for two days. The driver under test is the REAL tests/run-all.sh, copied
+# into the fixture above.
+#
+# Demonstrated failing by removing the SCAFFOLD-FAILED branch from run-all.sh:
+# the line becomes "FAIL  (exit 1)" and the marker is never surfaced, because
+# the branch below it greps only for FAIL:/ERROR lines.
+drv="$( cd "$FX" && bash tests/run-all.sh fx-collapse 2>&1 )"
+grep -q 'could not set itself up' <<< "$drv" \
+  && pass "the driver names a collapsed workspace as such" \
+  || fail "the driver names a collapsed workspace as such (got: $(grep -E '^ +FAIL' <<< "$drv" | head -1))"
+grep -q 'SCAFFOLD-FAILED: mktemp -d' <<< "$drv" \
+  && pass "  … and surfaces the marker line itself" \
+  || fail "  … and surfaces the marker line itself"
 
 printf '\n%d failure(s)\n' "$fails"; exit "$fails"

@@ -30,10 +30,13 @@
 #              two logic-flip mutants that share operator AND sha1. seq (with
 #              lineno) is what tells those two apart; identity is what survives
 #              an unrelated edit elsewhere in the file.
-#   signal     what happened: `exit`, `failline`, `timeout`, joined by `+`, or
-#              `none` for a survivor. `timeout` WITHOUT `failline` yields
-#              UNPROVEN, never KILLED; `timeout+failline` is a genuine kill that
-#              merely ran long.
+#   signal     what happened: `exit`, `failline`, `timeout`, `scaffold`, joined
+#              by `+`, or `none` for a survivor. `timeout` WITHOUT `failline`
+#              yields UNPROVEN, never KILLED; `timeout+failline` is a genuine
+#              kill that merely ran long. `scaffold` means the oracle said it
+#              could not set ITSELF up — it outranks every other signal and
+#              always yields UNPROVEN, because a test that never ran cannot have
+#              noticed anything (see falsify_has_scaffold_failure).
 #   <mutated-line> is LAST because a shell line may itself contain a `|`. A
 #              parser reads the first 8 fields and takes the rest verbatim.
 #
@@ -149,6 +152,27 @@ falsify_has_fail_line() {   # <oracle output file> → 0 when it carries a FAIL:
   grep -qE '(^|[[:space:]])FAIL:' "$1"
 }
 
+# THE ORACLE'S OWN SCAFFOLDING BROKE, which is not the same event as an
+# assertion failing and must never be scored as one.
+#
+# A test builds itself a workspace before it can assert anything — `mktemp -d`,
+# the dirs and fixtures under it, its fake binaries. If that fails, everything
+# afterwards measures the wreckage: reads come back empty, assertions compare
+# defaults to expectations, and the test prints a wall of FAIL: lines that are
+# all true and all about the environment. To this tier that is indistinguishable
+# from "the mutation was noticed" — and worse, a collapsed workspace can make an
+# otherwise UNREACHABLE guard reachable, so the mutation really is detected, in a
+# state no honest run is ever in. Measured: backlog F31, where a failed
+# `mktemp -d` inside test-tools-d.sh scored tools-lib.sh's TOOLS_D_DIR guard
+# KILLED on macOS and turned a real GAP invisible.
+#
+# The channel is a MARKER LINE, not an exit status, because the oracle is
+# `tests/run-all.sh <name>` and that driver reports its own aggregate status —
+# a reserved exit code from one test would never reach this function.
+falsify_has_scaffold_failure() {   # <oracle output file> → 0 when the oracle could not set itself up
+  grep -qE '(^|[[:space:]])SCAFFOLD-FAILED:' "$1"
+}
+
 # ── seeding a tree ────────────────────────────────────────────────────────────
 _fr_flush_batch() {   # <dest-dir> <src-file>...
   local dir="$1"; shift
@@ -254,6 +278,15 @@ falsify_verdict() {   # <rc> <outfile> <timed-out 0|1>
   (( $3 == 1 )) && { sig="timeout"; timed_out=1; }
   falsify_exit_kills "$1" && sig="${sig:+$sig+}exit"
   falsify_has_fail_line "$2" && sig="${sig:+$sig+}failline"
+  # Checked BEFORE the survived branch, not only before the kill branch: a
+  # collapsed oracle that happens to exit 0 without printing FAIL: would
+  # otherwise be recorded SURVIVED, which is the worse error of the two. A
+  # survivor is a claim that the suite ran and noticed nothing; this oracle
+  # never ran.
+  if falsify_has_scaffold_failure "$2"; then
+    FALSIFY_VERDICT="UNPROVEN"; FALSIFY_SIGNAL="${sig:+$sig+}scaffold"
+    return 0
+  fi
   if [[ -z "$sig" ]]; then
     FALSIFY_VERDICT="SURVIVED"; FALSIFY_SIGNAL="none"
     return 0

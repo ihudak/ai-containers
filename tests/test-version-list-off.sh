@@ -18,7 +18,7 @@ pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails+1)); }
 
 # ── 1. has_versions / is_active / version_list agree on OFF ─────────────────────
-F1="$(mktemp -d)"
+F1="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 cat > "$F1/sandbox.conf" <<'EOF'
 # schema-version: 4
 ruby=OFF
@@ -92,7 +92,7 @@ rm -rf "$F1"
 # validate_config calls `exit 1`, and build.sh is sourced WITH `set -e`, so the
 # assignment must tolerate a non-zero status explicitly or the subshell dies here
 # before asserting anything.
-F2="$(mktemp -d)"
+F2="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 printf '# schema-version: 4\ndb-clients=postgres\n' > "$F2/sandbox.conf"
 (
   export SANDBOX_CONF="$F2/sandbox.conf"

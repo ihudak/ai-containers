@@ -184,7 +184,7 @@ fi
 # `verify` must be able to FAIL. Point it at a mutations dir holding a patch
 # that cannot apply, and require a non-zero exit — otherwise "all patches apply"
 # above is being reported by a command incapable of saying otherwise.
-tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+tmp="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/tests/integration/mutations"
 cp "$MUTATE" "$tmp/tests/integration/mutate.sh"
 cat > "$tmp/tests/integration/mutations/bogus.patch" <<'EOF'

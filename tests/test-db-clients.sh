@@ -8,7 +8,7 @@ pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails+1)); }
 
 # Fixture 1: ruby + db-clients=pg,mongo + imagemagick/wkhtmltopdf ON
-F1="$(mktemp -d)"
+F1="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 cat > "$F1/sandbox.conf" <<'EOF'
 # schema-version: 3
 ruby=3.4.5
@@ -40,7 +40,7 @@ grep -q '^FAIL:' "$F1/out.txt" && fails=$((fails+1))
 rm -rf "$F1"
 
 # Fixture 2: no ruby, no db-clients → KEEP_BUILD_TOOLCHAIN=0
-F2="$(mktemp -d)"
+F2="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 cat > "$F2/sandbox.conf" <<'EOF'
 # schema-version: 3
 ruby=
@@ -60,7 +60,7 @@ grep -q '^FAIL:' "$F2/out.txt" && fails=$((fails+1))
 rm -rf "$F2"
 
 # Allowlist gating: mongo present → mongodb.txt included; absent → excluded.
-F3="$(mktemp -d)"
+F3="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 cat > "$F3/sandbox.conf" <<'EOF'
 # schema-version: 3
 db-clients=pg
@@ -81,7 +81,7 @@ rm -rf "$F3"
 
 # Exercise the ACTUAL gating line in generate_allowlists (build.sh) by running
 # it inside an isolated copy of the repo and grepping the produced allowlist.
-GA_TMP="$(mktemp -d)"
+GA_TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 cp "$REPO_DIR/build.sh" "$REPO_DIR/sandbox-common.sh" "$REPO_DIR/tools-lib.sh" "$REPO_DIR/bash-floor.sh" "$GA_TMP/"
 cp -r "$REPO_DIR/allowlist-domains.d" "$REPO_DIR/allowlist-proxy-domains.d" "$REPO_DIR/allowlist-cidrs.d" "$GA_TMP/"
 mkdir -p "$GA_TMP/tools.d"
