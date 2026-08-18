@@ -275,6 +275,24 @@ tests/integration/mutate.sh:logic-flip:01d39d9f40d7aa9e9db77c3214a208825b96c29e
   The killing assertion is two fixture trees — one with build.sh at the root,
   one with the engine under base/ — asserting the REPO_DIR/GIT_ROOT/APPLY_PREFIX
   triple mutate.sh derives for each, from a CWD outside both. Recorded as F19.
+  THE TWO ef7c3a50 MEMBERS WERE MEASURED KILLED ON macOS (2026-08-18) and are
+  still a GAP, per the asymmetry rule in the header. The cause is the SHELL
+  VERSION, not the OS, and it is worth naming precisely because the whole
+  survival argument above rests on one primitive — `cd ""` being a silent no-op
+  — and that changed above the declared floor. Measured, same tree, one damage
+  at a time:
+      bash 5.1.16  (ubuntu:22.04, the declared floor)   cd "" -> rc 0, no-op
+      bash 5.2.21  (ubuntu:24.04, CI and the container) cd "" -> rc 0, no-op
+      bash 5.3.15  (Homebrew, a developer's Mac)        cd "" -> rc 1, "null directory"
+  Either damage forces REPO_DIR empty, GIT_ROOT then comes out empty too, and on
+  5.3 git_apply's `( cd "$GIT_ROOT" && git apply … )` FAILS outright instead of
+  applying from the caller's own directory — so test-mutations.sh sees it. That
+  kill is the shell, not an assertion aimed at this line: it disappears on every
+  environment the reference gate runs in, all of which are at or below 5.2. The
+  killing assertion above is still unwritten and still the thing to write.
+  Worth noting beyond this entry: tests/bash-dialect-lint.sh guards against
+  constructs NEWER than the floor. This is the other direction — a construct
+  whose SEMANTICS changed above it — which nothing currently detects.
 
 # ── 8 ─────────────────────────────────────────────────────────────────────────
 GROUP: mutate.sh's refusal paths report success
