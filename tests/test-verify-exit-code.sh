@@ -352,5 +352,29 @@ else
     || fail "phase 5: the verdict names the floor suite as what failed"
 fi
 
+# ── A FAILED CORPUS MUST SAY WHY, NOT SHOW THE LAST TEN PROGRESS NOTES ────────
+# run.sh has two stderr channels and they are not equal: `falsify:` is routine
+# progress (one note per timed-out mutant — a loaded machine emits dozens) and
+# `ERROR:` is the reason it gave up. Phase 6 used to match both in one grep and
+# `tail -10` the result, so on any run with ten or more timeouts the cause was
+# pushed off the end and the operator was told only "the corpus did not
+# complete". Measured on macOS, 2026-08-17, which is why this assertion exists.
+#
+# Demonstrated failing by restoring that form:
+#   grep -E '^(ERROR|falsify):' "$fl_run" | sed 's/^/  /' | tail -10
+# with which the ERROR line below is absent from the output and this fails.
+r="$(mk_repo 0)"
+cat > "$r/tests/falsify/run.sh" <<'STUB'
+#!/usr/bin/env bash
+printf 'ERROR: the pristine oracle is not green — refusing to measure\n'
+i=0; while [[ "$i" -lt 20 ]]; do printf 'falsify: TIMEOUT after 120s: mutant-%s\n' "$i"; i=$((i+1)); done
+exit 1
+STUB
+rc="$(run_verify "$r" 6)"
+expect_rc "phase 6: a corpus that does not complete exits non-zero" 1 "$rc"
+grep -q 'refusing to measure' "$TMP/out.log" \
+  && pass "phase 6: a failed corpus surfaces run.sh's ERROR line, not just its notes" \
+  || fail "phase 6: a failed corpus surfaces run.sh's ERROR line, not just its notes (got: $(grep -c '^.*falsify: TIMEOUT' "$TMP/out.log") note line(s), no ERROR)"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
