@@ -862,3 +862,91 @@ a gap has closed.** `verify-on-host.sh` Phase 6 already prints the measured
 fraction (94% in that run) — that number is the signal, and until fix 1 exists it
 is the only one.
 
+
+---
+
+## F31 — every test's `mktemp -d` is unchecked, and a failed one is scored as a KILL
+
+**This is the cause of F30's macOS false kills.** Root-caused 2026-08-18, after
+three wrong hypotheses (the `/etc/ai-containers/tools.d` default, the
+shared-`/tmp` glob, and a timeout-based reading — all measured and discarded).
+
+`tests/test-tools-d.sh:9` is the whole of it:
+
+```bash
+TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+```
+
+No status check, and the suite runs under `set -uo pipefail` — no `-e`. If
+`mktemp -d` fails, `$TMP` is the EMPTY STRING and the test carries on: it writes
+its descriptors to `/tools.d`, its fake `curl` to `/fakebin`, its install dir to
+`/bin`. None of that works, so every descriptor read returns defaults, URLs get
+built with an empty repo (`https://api.github.com/repos//releases/latest`), and
+`install-tools.sh:36` retries three times with `sleep 5` — which is why the
+oracle took **44-57 s** on the host against 0.3 s standalone.
+
+**And `$TOOLS_D_DIR` then does not exist, which makes the mutated guard
+REACHABLE.** `tools-lib.sh:42`'s `[[ -d "$TOOLS_D_DIR" ]] || return 0` is
+unreachable in a healthy run — that is exactly why the mutant is a GAP — but a
+collapsed scaffold reaches it, the mutated `return 1` propagates, assertions
+differ, and the tier records **KILLED**. The false kill is not noise landing on
+an unrelated assertion; it is the mutation being genuinely detected in a state
+no real run is ever in.
+
+**The evidence is a signature match, not an argument.** Stubbing `mktemp -d` to
+fail on Linux reproduces the host's failure list line for line — `list names ()`,
+`repo ()`, `private`, `config_dir`, `crossclient ()`, `binary default ()`,
+`'#' inside a value ()`, `trailing comment ()`, `a key before the blank line is
+read (repo=)`, `a key after a blank line is read — got the '' fallback`, `a
+non-default value after a blank line survives (private=no)`, `a final line with
+no trailing newline is read (skills=no)` — every one of which appears verbatim
+in the macOS worker logs.
+
+It also explains what nothing else did: macOS-only (`ulimit -n` 256 there
+against 1048576 on the container), intermittent (1 in 3), absent at `--jobs 2`,
+and reproducible **without the falsify runner at all** — 18 concurrent copies of
+`tests/run-all.sh test-tools-d.sh` on the host reproduce it; the same 18 on
+Linux do not.
+
+**Scale: 87 call sites across 45 files, and NOT ONE checks the status.** Only 9
+of those files source `tests/portability.sh`, so there is no existing shared
+home for the guard.
+
+### Why the obvious guard is not sufficient on its own
+
+```bash
+TMP="$(mktemp -d)" || { echo "FAIL: mktemp -d failed" >&2; exit 1; }
+```
+
+turns sixty misleading assertion failures into one true line — worth having —
+but it does **not** fix the false kill, because `run.sh` scores KILLED on any
+`FAIL:` line or any non-zero exit. A test that correctly reports its own
+scaffolding is broken would still be read as "the assertion noticed the
+mutation". The tier cannot currently tell *the oracle failed* from *the oracle
+failed BECAUSE OF THE MUTATION*, and that distinction is the whole tier.
+
+### The fix, in two halves
+
+1. **A scaffolding-failure channel the tier understands.** A test whose own
+   setup fails emits a distinct marker (not `FAIL:`) and a reserved exit status;
+   `run.sh` maps that to a verdict that is *never* KILLED, reported like
+   UNPROVEN and owed a ledger entry the same way. Then a collapsed oracle
+   subtracts from what was measured instead of adding a phantom kill.
+2. **The guard itself, at all 87 sites**, emitting that marker.
+
+Note that `run.sh` ALREADY has the right check in the right shape for the other
+half of F30 — it verifies each oracle on the pristine tree and refuses to
+measure a target whose baseline is not green (this is what aborted the host's
+Phase 6, correctly). It simply runs once, at the start of a target, so
+contamination arriving later is invisible. Re-checking that baseline during or
+after a target's mutants is a much smaller change than the control-run design
+F30 proposed, and subsumes it.
+
+### One thing still unproven
+
+That `mktemp -d` is what fails on the host, rather than `$TMP` being emptied by
+something else afterwards, is inferred from the signature — both produce an
+identical picture. The guard is the instrument that settles it: with it in
+place, a host re-run either aborts naming `mktemp` (confirmed) or reproduces the
+old picture (something else empties `$TMP`, and the search continues). It is
+correct to add either way, which is why it is not blocked on the answer.
