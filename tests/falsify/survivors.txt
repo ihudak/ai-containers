@@ -99,10 +99,12 @@
 # --jobs 1. A verdict taken under load can be a property of the machine.
 #
 # Corpus (2026-08-18): tests/falsify/run.sh --jobs 6 over the nine active
-# targets, TOTAL|9|249|218|27|4|7|12 — 27 SURVIVED + 4 UNPROVEN = 31 records.
+# targets, TOTAL|9|251|220|27|4|7|12 — 27 SURVIVED + 4 UNPROVEN = 31 records.
 # The previous reading was TOTAL|9|249|209|36|4|11|16: nine more kills, from
 # targets.conf's oracle field becoming a SET rather than from any new assertion
-# (backlog F16, ledger entries 2 and 3).
+# (backlog F16, ledger entries 2 and 3). The mutant count rose 249 -> 251
+# because tests/lib-layer-checks.sh gained wf_has_step (backlog F34); both of
+# its mutants are killed, so no entry is owed for them.
 #
 # That line is provenance: the TOTAL of one dated run, which does not move when
 # this file is edited. It deliberately no longer tallies identities or entries.
