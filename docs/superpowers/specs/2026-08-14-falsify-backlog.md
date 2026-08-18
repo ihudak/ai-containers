@@ -1159,6 +1159,12 @@ run alone:
    same run). `run.sh` handled it correctly, refusing to measure that target
    rather than reporting every mutant killed.
 3. `tests/test-tools-d.sh` — F31, now guarded.
+4. `tests/test-layer-containment.sh` — **cause found and fixed, see F34.** It was
+   not slowness at all: a `producer | grep -q` pipeline under `pipefail`, whose
+   status flips to the producer's SIGPIPE whenever grep's early exit wins the
+   race. Worth stating plainly because it changes what this entry is: at least
+   one of these "load-sensitive oracles" had a specific, fixable defect rather
+   than a need for more time. Look for a mechanism before adding a timeout.
 
 The pattern is the tier's own concurrency turning healthy oracles unhealthy, and
 the two remaining cases are not scaffolding failures, so the F31 channel does
@@ -1206,3 +1212,68 @@ into a file that is later executed (the `printf … >> "$h"; bash "$h"` idiom),
 then add the `oracle ∈ executors` gate with its own demonstration. Both halves
 are needed: the gate without the derivation fix is a false alarm, and the
 derivation fix without the gate buys only a more honest `--evidence`.
+
+## F34 — `producer | grep -q` under `pipefail` reports absence for something present
+
+**Found by the falsify tier, in a test the tier had just started running several
+copies of at once.** `tests/test-layer-containment.sh` failed with
+`hermetic-checks.yml job 'suite' has NO step named 'Run tests' — this registry
+row is stale` on a machine where nothing was stale, and passed on the next run.
+
+The mechanism, measured rather than argued:
+
+```bash
+set -o pipefail
+wf_steps "$f" "$job" | grep -qxF "$step"      # says "no" about a step that is there
+```
+
+`grep -q` exits the instant it matches. The producer, still writing, takes the
+broken pipe and dies 141 — and `pipefail` promotes that over grep's success, so
+the pipeline reports failure for a successful match. Reproduced two ways:
+
+* **Deterministically, by size.** A producer larger than the pipe buffer with the
+  match on its FIRST line: **200 false negatives out of 200**. A five-line
+  producer: 0 out of 2000, because the whole output lands in the pipe buffer
+  before grep runs.
+* **Under load, at four lines.** On a 4-core CI runner with four concurrent
+  copies, 2 of 4 PRISTINE trees failed. Instrumented at the failure point, a
+  captured call made microseconds earlier returned rc=0 with the step present,
+  while the piped call on the next line said no.
+
+That second reading is the dangerous one: the guard's failure mode is a LOUD,
+plausible, wrong message about a registry being stale, arriving only on a busy
+machine — and, through the falsify tier, arriving as a KILLED verdict for a
+mutant nothing had actually noticed.
+
+**Fixed here:** `wf_has_step()` in `tests/lib-layer-checks.sh` captures the
+producer's output and status first, then matches; `tests/test-layer-containment.sh`
+uses it. `tests/test-layer-checks-parser.sh` pins it with an 8000-step fixture
+that loses the race 100% of the time, plus a control asserting the piped
+spelling really does fail on that fixture — so the assertion measures the fix
+and not a fixture that never raced. Two more early-matching sites inside falsify
+ORACLES were fixed the same way: `tests/test-tools-d.sh`'s
+`find … | grep -q .` and `tests/test-mutations.sh`'s `sed … | head -1 | grep -q .`.
+
+### What is left — the survey
+
+67 `| grep -q` sites in tracked shell, **60 of them under `set -o pipefail`**.
+The hazard needs BOTH of:
+
+1. the pipeline runs under `pipefail`, and
+2. `grep -q` can match EARLY, i.e. the assertion expects a match.
+
+A site asserting ABSENCE is safe by construction: grep consumes the whole input,
+never exits early, and its own 1 is the correct status. That is why, for example,
+`lc_rows check | grep -q '^#'` (which must NOT match) needs no change.
+
+23 of the 60 have a command — rather than a small `printf "$var"` — as producer,
+and those are where an early match can outrun the writer. The three highest-risk
+ones are fixed above because they sit inside falsify oracles, which the tier
+multiplies by `--jobs`. The rest are one- or two-line producers in
+non-concurrent contexts; they are a latent, not an observed, defect.
+
+**The sweep is the follow-up:** classify each of the remaining sites
+match-expected vs absence-expected, convert the match-expected ones, and add a
+dialect-lint rule for the shape so it cannot come back. A lint rule is the right
+end state — the correct spelling is not obvious, and this is the second time a
+pipeline's status has silently decided a guard's verdict in this repo.

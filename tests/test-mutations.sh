@@ -90,7 +90,12 @@ for p in "$MUT_DIR"/*.patch; do
       fail "$id → $cn does not exist in cases/"
     fi
   done
-  if sed -n 's/^# what:[[:space:]]*//p' "$p" | head -1 | grep -q .; then
+  # Captured rather than `sed … | head -1 | grep -q .`: head exits after one
+  # line, sed keeps reading into a closed pipe, and pipefail promotes sed's 141
+  # over grep's success — failing this assertion for a patch that does say what
+  # it changes. Same hazard as wf_has_step in tests/lib-layer-checks.sh.
+  _what="$(sed -n 's/^# what:[[:space:]]*//p' "$p")"
+  if [[ -n "${_what%%$'\n'*}" ]]; then
     pass "$id says what it changes"
   else
     fail "$id says what it changes — no '# what:' header"
