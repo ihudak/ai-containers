@@ -321,7 +321,23 @@ if bash "$REPO/tests/falsify/run.sh" --jobs "$fl_jobs" --timeout 120 > "$fl_run"
   fi
 else
   sub "corpus exit: non-zero"
-  grep -E '^(ERROR|falsify):' "$fl_run" | sed 's/^/  /' | tail -10
+  # THE `ERROR:` LINES FIRST, AND UNCONDITIONALLY. `falsify:` is run.sh's
+  # ROUTINE progress channel — one note per timed-out mutant, and a loaded
+  # machine produces dozens — while `ERROR:` is the reason it gave up. Matching
+  # both in one grep and taking `tail -10` therefore shows ten timeout notes and
+  # DROPS the only line that says what went wrong. Not hypothetical: a macOS
+  # Phase 6 run on 2026-08-17 reported "the corpus did not complete" above
+  # exactly ten TIMEOUT notes, with the cause nowhere on screen — the same
+  # shape as the `head -1` truncation this project has now fixed three times.
+  # The two channels are read separately: every ERROR line, then a tail of the
+  # notes for context.
+  fl_errs="$(grep -E '^ERROR:' "$fl_run" || true)"
+  if [[ -n "$fl_errs" ]]; then
+    while IFS= read -r l; do sub "$l"; done <<< "$fl_errs"
+  else
+    sub "(run.sh printed no ERROR: line — the notes below are all it said)"
+  fi
+  grep -E '^falsify:' "$fl_run" | tail -6 | while IFS= read -r l; do sub "$l"; done
   phase_fail 6 "the falsify corpus did not complete — the ledger was not scored"
 fi
 rm -f "$fl_run"
