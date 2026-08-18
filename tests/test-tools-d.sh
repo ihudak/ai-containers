@@ -6,7 +6,7 @@ fails=0
 pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails+1)); }
 
-TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; trap 'rm -rf "$TMP"' EXIT
 export TOOLS_D_DIR="$TMP/tools.d"; mkdir -p "$TOOLS_D_DIR"
 cat > "$TOOLS_D_DIR/foo.conf" <<'EOF'
 repo=acme/foo
@@ -551,7 +551,7 @@ dedup_out="$(TOOLS_D_DIR="$_ddir" SANDBOX_CONF="$TMP/dedup.conf" bash -c '
 grep -q "PRIVATE tool is enabled" "$TMP/pf.err" && pass "preflight warns" || fail "preflight warns"
 
 # --- sandbox.sh group-scoped tool config + AI_AGENTS_ENABLED ---------------------
-RTMP="$(mktemp -d)"
+RTMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 export HOME="$RTMP/home"; mkdir -p "$HOME/.config/dtctl"; echo hostcfg > "$HOME/.config/dtctl/config"
 export AI_CONTAINER_GROUP_INIT=clean
 unset VAULT_PATH SPECS_PATH DOCS_PATH

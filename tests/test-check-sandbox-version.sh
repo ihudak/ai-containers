@@ -11,7 +11,7 @@ fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails+1)); }
 # Stand up a temp git repo containing the script, a committed baseline
 # sandbox.conf, and a migrations/ dir. Echoes the repo path.
 make_repo() {
-  local d; d="$(mktemp -d)"
+  local d; d="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
   cp "$REPO_DIR/check-sandbox-version.sh" "$REPO_DIR/bash-floor.sh" "$d/"
   mkdir -p "$d/migrations"
   cat > "$d/sandbox.conf" <<'EOF'

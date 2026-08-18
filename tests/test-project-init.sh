@@ -9,7 +9,7 @@ fails=0
 pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails+1)); }
 
-TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; trap 'rm -rf "$TMP"' EXIT
 
 # Isolated script_dir: a copy of the repo so projects.conf and shared-file copies
 # land in TMP, not the working tree. Exclude heavy/irrelevant dirs.

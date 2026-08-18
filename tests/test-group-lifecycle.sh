@@ -19,7 +19,7 @@ pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails + 1)); }
 check() { if [[ "$2" == "$3" ]]; then pass "$1"; else fail "$1 (expected '$2', got '$3')"; fi; }
 
-TMP="$(mktemp -d)"
+TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 trap 'rm -rf "$TMP"' EXIT
 FAKE_HOME="$TMP/home"; mkdir -p "$FAKE_HOME/.ai-containers"
 

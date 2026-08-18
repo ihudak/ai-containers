@@ -17,7 +17,7 @@ if [[ ! -f "$ENGINE_DIR/build.sh" || ! -f "$ENGINE_DIR/sandbox.conf" ]]; then
   ENGINE_DIR="$(cd "$TESTS_DIR/../base" && pwd)"
 fi
 
-TMP="$(mktemp -d)"
+TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 trap 'rm -rf "$TMP"' EXIT
 
 fails=0

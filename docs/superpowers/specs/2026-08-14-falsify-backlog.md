@@ -942,6 +942,43 @@ contamination arriving later is invisible. Re-checking that baseline during or
 after a target's mutants is a much smaller change than the control-run design
 F30 proposed, and subsumes it.
 
+### STATUS: fixed 2026-08-18, in two halves, with one part deferred
+
+**Both mechanisms are in.** A test whose own setup fails prints
+`SCAFFOLD-FAILED: <what>` and exits non-zero; `tests/run-all.sh` reports that as
+*"could not set itself up — the environment, not the code"* and surfaces the
+marker instead of the assertion greps a collapsed test fills with noise; and
+`falsify_verdict` maps the marker to **UNPROVEN**, with `scaffold` in the signal,
+ahead of every other signal.
+
+UNPROVEN rather than a fourth verdict, deliberately: "nothing was observed
+asserting" is exactly what a collapsed oracle is, and reusing it leaves the
+ledger grammar and `check-ledger.sh` untouched — an UNPROVEN identity is already
+reported and already not required to be classified.
+
+The scaffold check runs BEFORE the SURVIVED branch, not merely before the kill
+branch: a collapsed oracle that happened to exit 0 quietly would otherwise be
+recorded as a survivor, which is the worse of the two errors. A survivor is a
+claim that the suite ran and noticed nothing; that oracle never ran.
+
+Demonstrated failing in both halves, against a fixture that reproduces the field
+signature — marker line, real `FAIL:` line and non-zero exit together. Without
+the verdict branch the mutant is `KILLED signal=exit+failline`; with it,
+`UNPROVEN signal=exit+failline+scaffold`. Without the driver branch the operator
+gets `FAIL (exit 1)` and never sees the marker.
+
+**100 guard sites across 43 `tests/test-*.sh` files.** The corpus is unchanged by
+them (`TOTAL|9|249|209|36|4|11|16`, ledger clean under `--strict`), which is the
+check that they touched no target.
+
+**DEFERRED, and this is the remaining debt:** two `mktemp -d` sites live in
+falsify TARGETS — `tests/integration/mutate.sh` and `tests/lib-verify-repo.sh`.
+Guarding them is equally correct and equally needed (a library whose temp dir
+fails corrupts its oracle in exactly the same way), but the guard's `||` and
+`exit 1` generate new mutants, which changes the corpus and forces the ledger to
+be re-derived and the new survivors classified. A self-contained follow-up, not
+a reason to leave it undone.
+
 ### One thing still unproven
 
 That `mktemp -d` is what fails on the host, rather than `$TMP` being emptied by

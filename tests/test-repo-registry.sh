@@ -45,7 +45,7 @@ check_rc() { # check_rc <desc> <expected-rc> <actual-rc>
   if [[ "$2" == "$3" ]]; then pass "$1"; else fail "$1 (expected rc=$2, got rc=$3)"; fi
 }
 
-TMP="$(mktemp -d)"
+TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 trap 'rm -rf "$TMP"' EXIT
 
 # Point HOME at a temp dir BEFORE sourcing, so repo_registry_file (computed at

@@ -37,7 +37,7 @@ fails=0
 pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails + 1)); }
 
-TMP="$(mktemp -d)"
+TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 trap 'rm -rf "$TMP"' EXIT
 
 for f in "$VERIFY" "$REAL_CONF" "$REPO_DIR/tests/lib-verify-repo.sh" \
@@ -72,7 +72,7 @@ EOF
   # The library's contract check reads TMP; the "no-tmp" mode leaves it unset.
   # Quoted heredoc: $TMP here belongs to the harness at run time, not to us.
   [[ "$3" == "no-tmp" ]] || cat >> "$h" <<'EOF'
-TMP="$(mktemp -d)"
+TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 trap 'rm -rf "$TMP"' EXIT
 EOF
   [[ "$2" == "skip-lc" ]] || printf 'source %q\n' "$REPO_DIR/tests/lib-layer-checks.sh" >> "$h"

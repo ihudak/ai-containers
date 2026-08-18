@@ -15,7 +15,7 @@ fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails+1)); }
 # exit actually terminates the script; get_versions is always called inside
 # $(...) by every real caller, where exit would be silently swallowed by the
 # subshell — so the guard belongs in check_config, not get_versions.
-DUP_TMP="$(mktemp -d)"
+DUP_TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 cat > "$DUP_TMP/sandbox.conf" <<'EOF'
 # schema-version: 3
 copilot=ON
@@ -40,7 +40,7 @@ rm -rf "$DUP_TMP"
 
 # A clean file (no duplicates) passes check_config, and get_versions (unguarded)
 # still resolves a single key normally.
-CLEAN_TMP="$(mktemp -d)"
+CLEAN_TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 cat > "$CLEAN_TMP/sandbox.conf" <<'EOF'
 # schema-version: 3
 copilot=ON
@@ -58,7 +58,7 @@ rm -rf "$CLEAN_TMP"
 # Regression test for zero-match edge case: a file with only comments/blanks.
 # This test runs under set -euo pipefail (like real callers build.sh/sandbox.sh)
 # to ensure the guard's pipeline doesn't die silently when grep finds zero matches.
-EMPTY_TMP="$(mktemp -d)"
+EMPTY_TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 cat > "$EMPTY_TMP/sandbox.conf" <<'EOF'
 # Just a comment
 # No actual key=value lines
@@ -84,7 +84,7 @@ rm -rf "$EMPTY_TMP"
 # ── Migration hooks ─────────────────────────────────────────────────────────────
 # 002: legacy openjdk-<N>=ON|OFF booleans collapse into one openjdk=<csv> key
 # holding only the versions that were ON, and all legacy keys are removed.
-H2_TMP="$(mktemp -d)"
+H2_TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 cat > "$H2_TMP/sandbox.conf" <<'EOF'
 # ── Java / JVM ──
 openjdk-21=ON
@@ -108,7 +108,7 @@ bash "$REPO_DIR/migrations/002-openjdk-single-key.sh" "$H2_TMP/sandbox.conf"
   && pass "002 openjdk hook: idempotent no-op on re-run" \
   || fail "002 openjdk hook: idempotent no-op on re-run"
 # Regression test: file mode should be preserved across hook invocation.
-H2_MODE_TMP="$(mktemp -d)"
+H2_MODE_TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 cat > "$H2_MODE_TMP/sandbox.conf" <<'EOF'
 openjdk-21=ON
 openjdk-25=OFF
@@ -123,7 +123,7 @@ mode_after="$(stat -c %a "$H2_MODE_TMP/sandbox.conf" 2>/dev/null || stat -f %Lp 
 rm -rf "$H2_TMP" "$H2_MODE_TMP"
 
 # 003: bare graalvm=<val> splits into graalvm-ce=<val> + graalvm-oracle= (empty).
-H3_TMP="$(mktemp -d)"
+H3_TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 cat > "$H3_TMP/sandbox.conf" <<'EOF'
 graalvm=22.3.0
 kotlin=
@@ -143,7 +143,7 @@ bash "$REPO_DIR/migrations/003-graalvm-split.sh" "$H3_TMP/sandbox.conf"
   && pass "003 graalvm hook: idempotent no-op on re-run" \
   || fail "003 graalvm hook: idempotent no-op on re-run"
 # Regression test: file mode should be preserved across hook invocation.
-H3_MODE_TMP="$(mktemp -d)"
+H3_MODE_TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 cat > "$H3_MODE_TMP/sandbox.conf" <<'EOF'
 graalvm=22.3.0
 kotlin=
@@ -163,7 +163,7 @@ rm -rf "$H3_TMP" "$H3_MODE_TMP"
 # shellcheck source=/dev/null
 source "$REPO_DIR/sync-to-projects.sh"
 
-R_TMP="$(mktemp -d)"
+R_TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 mkdir -p "$R_TMP/migrations"
 # Fixture central: current schema, with a brand-new additive key (bun) and the
 # post-migration graalvm-ce / graalvm-oracle keys.
@@ -242,7 +242,7 @@ reconcile_sandbox_conf "$R_TMP/central.conf" "$R_TMP/nomarker.conf" "$R_TMP/migr
 
 # Regression test: conf_set_version's update-in-place branch (mktemp + mv) must
 # not silently drop the file's mode from 644 to mktemp's default 600.
-MODE_TMP="$(mktemp -d)"
+MODE_TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 cat > "$MODE_TMP/project.conf" <<'EOF'
 # schema-version: 2
 copilot=ON
@@ -271,7 +271,7 @@ rm -rf "$R_TMP"
 # ── bump-sandbox-version.sh ─────────────────────────────────────────────────────
 # Run the real script inside a temp dir (script_dir resolves to wherever the
 # script lives), so the repo's own sandbox.conf/migrations are never touched.
-B_TMP="$(mktemp -d)"
+B_TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 cp "$REPO_DIR/bump-sandbox-version.sh" "$REPO_DIR/bash-floor.sh" "$B_TMP/"
 cat > "$B_TMP/sandbox.conf" <<'EOF'
 # schema-version: 3
@@ -297,7 +297,7 @@ else
   pass "bump: refuses to overwrite an existing hook"
 fi
 # Regression test: file mode should be preserved across script invocation.
-B_MODE_TMP="$(mktemp -d)"
+B_MODE_TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 cp "$REPO_DIR/bump-sandbox-version.sh" "$REPO_DIR/bash-floor.sh" "$B_MODE_TMP/"
 cat > "$B_MODE_TMP/sandbox.conf" <<'EOF'
 # schema-version: 3
@@ -313,7 +313,7 @@ mode_after="$(stat -c %a "$B_MODE_TMP/sandbox.conf" 2>/dev/null || stat -f %Lp "
 rm -rf "$B_TMP" "$B_MODE_TMP"
 
 # Regression test: Bug 1 — missing-marker path should not crash (grep with no match under set -euo pipefail)
-B_NOMARKER_TMP="$(mktemp -d)"
+B_NOMARKER_TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 cp "$REPO_DIR/bump-sandbox-version.sh" "$REPO_DIR/bash-floor.sh" "$B_NOMARKER_TMP/"
 cat > "$B_NOMARKER_TMP/sandbox.conf" <<'EOF'
 copilot=ON
@@ -336,7 +336,7 @@ fi
 rm -rf "$B_NOMARKER_TMP"
 
 # Regression test: Bug 2 — suffix-collision false positive (foo-bar shouldn't block bar request)
-B_SUFFIX_TMP="$(mktemp -d)"
+B_SUFFIX_TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 cp "$REPO_DIR/bump-sandbox-version.sh" "$REPO_DIR/bash-floor.sh" "$B_SUFFIX_TMP/"
 cat > "$B_SUFFIX_TMP/sandbox.conf" <<'EOF'
 # schema-version: 3
@@ -365,7 +365,7 @@ fi
 rm -rf "$B_SUFFIX_TMP"
 
 # 004: drop the removed rails= key; idempotent; comments untouched.
-H4_TMP="$(mktemp -d)"
+H4_TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 cat > "$H4_TMP/sandbox.conf" <<'EOF'
 ruby=3.4.5
 rails=7.1.0

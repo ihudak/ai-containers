@@ -26,7 +26,7 @@ check() { # check <desc> <expected> <actual>
   if [[ "$2" == "$3" ]]; then pass "$1"; else fail "$1 (expected '$2', got '$3')"; fi
 }
 
-TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; trap 'rm -rf "$TMP"' EXIT
 
 # Capture the real HOME BEFORE overriding it, so the final hermeticity check
 # can run `git status` the same way the invoking user's shell would (global
