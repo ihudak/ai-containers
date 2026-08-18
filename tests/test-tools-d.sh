@@ -7,7 +7,38 @@ pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails+1)); }
 
 TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; trap 'rm -rf "$TMP"' EXIT
+# EVERY SCAFFOLDING STEP IS CHECKED, not just the first one.
+#
+# This test builds a workspace before it can assert anything, and when that
+# build fails it does not stop — it measures the wreckage, and the whole file
+# prints true-but-irrelevant FAIL: lines about empty descriptors. The falsify
+# tier then reads those as "the mutation was noticed" and records a KILL, which
+# is how a real coverage gap disappears (backlog F30/F31).
+#
+# The `mktemp -d` guard alone was not enough: measured on macOS at 18-way
+# concurrency, the collapse still happens with $TMP created successfully, so
+# whatever fails is one of the steps AFTER it. Hence a check per step, including
+# late ones — if the workspace vanishes mid-run rather than failing to build,
+# only a later check can see it.
+#
+# SCAFFOLD-FAILED: is a channel, not just a message. tests/run-all.sh reports it
+# as "could not set itself up" instead of an assertion failure, and
+# falsify_verdict maps it to UNPROVEN — never KILLED — so a collapsed oracle
+# subtracts from what was measured instead of inventing a kill.
+scaffold() {   # <step> <path…> — each path must exist and be readable
+  local step="$1" p; shift
+  for p in "$@"; do
+    if [[ ! -e "$p" ]]; then
+      printf 'SCAFFOLD-FAILED: %s — missing: %s\n' "$step" "$p"; exit 1
+    fi
+    if [[ ! -r "$p" ]]; then
+      printf 'SCAFFOLD-FAILED: %s — unreadable: %s\n' "$step" "$p"; exit 1
+    fi
+  done
+}
+
 export TOOLS_D_DIR="$TMP/tools.d"; mkdir -p "$TOOLS_D_DIR"
+scaffold "mkdir TOOLS_D_DIR" "$TMP" "$TOOLS_D_DIR"
 cat > "$TOOLS_D_DIR/foo.conf" <<'EOF'
 repo=acme/foo
 binary=foo
@@ -200,6 +231,7 @@ install=repo-file
 repo_path=utils/ext/ext-cli-linux-${ARCH}
 EOF
 FAKEBIN="$TMP/fakebin"; mkdir -p "$FAKEBIN"
+scaffold "mkdir FAKEBIN" "$FAKEBIN"
 CURL_LOG="$TMP/curl.log"
 cat > "$FAKEBIN/curl" <<CURL
 #!/usr/bin/env bash
@@ -216,6 +248,7 @@ chmod +x "$FAKEBIN/curl"
 # also export TOOLS_BIN_DIR for anything that re-reads it.
 export TOOLS_BIN_DIR="$TMP/bin"; mkdir -p "$TOOLS_BIN_DIR"
 BIN_DIR="$TOOLS_BIN_DIR"
+scaffold "mkdir TOOLS_BIN_DIR" "$TOOLS_BIN_DIR" "$TOOLS_D_DIR"
 : > "$CURL_LOG"
 out="$(PATH="$FAKEBIN:$PATH" ARCH=arm64 install_one ext latest 2>&1)"
 if grep -q 'https://api.github.com/repos/acme/vendored/contents/utils/ext/ext-cli-linux-arm64$' "$CURL_LOG"; then
@@ -347,11 +380,13 @@ export TOOLS_BIN_DIR="$TMP/bin"; mkdir -p "$TOOLS_BIN_DIR"; BIN_DIR="$TOOLS_BIN_
 # Point the installer's mktemp at our own dir: asserting on a shared /tmp glob
 # would make the cleanup check depend on unrelated leftovers.
 export TMPDIR="$TMP/work"; mkdir -p "$TMPDIR"
+scaffold "mkdir installer TMPDIR" "$TMPDIR"
 NEST="$TMP/nest/vend_1.2.3-stable_linux_arm64"; mkdir -p "$NEST"
 # NOT executable in the archive: the installer's own chmod +x must be what makes
 # it runnable, otherwise tar preserving the bit would mask a missing chmod.
 printf '#!/bin/sh\necho vend 1.2.3\n' > "$NEST/vend-cli"; chmod 644 "$NEST/vend-cli"
 ( cd "$TMP/nest" && tar czf "$TMP/vend.tar.gz" . )
+scaffold "tar the nested fixture" "$TMP/vend.tar.gz" "$FAKEBIN/curl"
 cat > "$FAKEBIN/curl" <<CURLURL
 #!/usr/bin/env bash
 printf '%s\n' "\$@" >> "$CURL_LOG"
@@ -446,6 +481,7 @@ else
 AMB="$TMP/amb"; mkdir -p "$AMB/a" "$AMB/b"
 printf '#!/bin/sh\necho A\n' > "$AMB/a/vend-cli"; printf '#!/bin/sh\necho B\n' > "$AMB/b/vend-cli"
 ( cd "$AMB" && tar czf "$TMP/amb.tar.gz" . )
+scaffold "tar the ambiguous fixture" "$TMP/amb.tar.gz" "$AMB/a/vend-cli" "$AMB/b/vend-cli"
 printf 'binary=vend-cli\ninstall=url\nurl=https://vendor.example/amb.tar.gz\n' > "$TOOLS_D_DIR/vend.conf"
 cat > "$FAKEBIN/curl" <<CURLAMB
 #!/usr/bin/env bash
@@ -553,6 +589,7 @@ grep -q "PRIVATE tool is enabled" "$TMP/pf.err" && pass "preflight warns" || fai
 # --- sandbox.sh group-scoped tool config + AI_AGENTS_ENABLED ---------------------
 RTMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 export HOME="$RTMP/home"; mkdir -p "$HOME/.config/dtctl"; echo hostcfg > "$HOME/.config/dtctl/config"
+scaffold "seed the fake HOME" "$RTMP" "$HOME/.config/dtctl/config"
 export AI_CONTAINER_GROUP_INIT=clean
 unset VAULT_PATH SPECS_PATH DOCS_PATH
 unset TOOLS_D_DIR   # earlier sections in this file point it at a synthetic foo/bar
