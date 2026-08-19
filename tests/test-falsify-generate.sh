@@ -68,7 +68,7 @@ if grep -q '^stream-flip' <<<"$out"; then
 else
   pass "stream-flip is off by default"
 fi
-if FALSIFY_OPERATORS="$ALL_OPS" gen "$TMP/t.sh" | grep -q '^stream-flip'; then
+if grep -q '^stream-flip' < <(FALSIFY_OPERATORS="$ALL_OPS" gen "$TMP/t.sh"); then
   pass "stream-flip fires on the same fixture when FALSIFY_OPERATORS names it"
 else
   fail "stream-flip fires on the same fixture when FALSIFY_OPERATORS names it — the assertion above was vacuous"
@@ -98,7 +98,7 @@ err="$(bash "$GEN" "$TMP/t.sh" 2>&1 >/dev/null)"
 grep -q 'mutant(s)' <<<"$err" \
   && pass "the mutant/discard tally goes to stderr" \
   || fail "the mutant/discard tally goes to stderr"
-if printf '%s\n' "$out" | grep -qvE "^[a-z-]+${TAB}[0-9]+${TAB}[0-9a-f]{40}${TAB}"; then
+if grep -qvE "^[a-z-]+${TAB}[0-9]+${TAB}[0-9a-f]{40}${TAB}" <<<"$out"; then
   fail "stdout carries mutants and nothing else"
 else
   pass "stdout carries mutants and nothing else"

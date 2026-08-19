@@ -266,8 +266,8 @@ grep -q '\[rvm-installer\] gpg: Cannot check signature' <<<"$boot_inst_fail" \
 # must stay separate, never `curl … | bash`. Comment lines are stripped first —
 # the code documents the pipe it deliberately avoids, and matching that prose
 # would make this guard fire on a correct script.
-grep -vE '^[[:space:]]*#' "$REPO_DIR/rvm-reconcile.sh" \
-  | grep -qE 'curl[^|]*\|[[:space:]]*bash' \
+grep -qE 'curl[^|]*\|[[:space:]]*bash' \
+  < <(grep -vE '^[[:space:]]*#' "$REPO_DIR/rvm-reconcile.sh") \
   && fail "reconcile must NOT pipe curl straight into bash (collapses two failures into one)" \
   || pass "reconcile downloads the installer and runs it as separate steps"
 

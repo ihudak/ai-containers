@@ -100,7 +100,7 @@ run_it() {  # args… → combined output; exit code appended as a marker line
   printf '%s\nRC=%s\n' "$out" "$rc"
 }
 
-has() { printf '%s' "$1" | grep -qE "$2"; }
+has() { grep -qE "$2" <<<"$1"; }
 rc_of() { printf '%s' "$1" | sed -n 's/^RC=//p' | tail -1; }
 
 # ── --list needs no capabilities and no daemon ─────────────────────────────────
@@ -402,7 +402,12 @@ else
   fail "the shim has all three branches (timeout / gtimeout / bash fallback)"
 fi
 # No bare `timeout ` call sites may remain — that is the bug itself.
-if grep -nE '^\s+timeout [0-9"$]' "$RUN" | grep -v it_timeout | grep -q .; then
+# Captured rather than `… | grep -q .`: that grep matches the FIRST bare call
+# site and exits, and under pipefail the upstream greps' broken-pipe status
+# becomes the pipeline's — so this guard would report "no bare call sites"
+# exactly when one comes back. See tests/test-grep-q-pipelines.sh.
+_bare_timeouts="$(grep -nE '^\s+timeout [0-9"$]' "$RUN" | grep -v it_timeout)"
+if [[ -n "$_bare_timeouts" ]]; then
   fail "no bare GNU timeout call sites remain in run.sh"
 else
   pass "no bare GNU timeout call sites remain in run.sh"

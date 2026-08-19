@@ -80,7 +80,7 @@ if [[ "$real_rc" -eq 0 ]]; then
 else
   fail "the real targets.conf fails --check: $real_out"
 fi
-printf '%s' "$real_out" | grep -q '0 problem(s)' \
+grep -q '0 problem(s)' <<<"$real_out" \
   && pass "--check reports 0 problem(s) for the real map, counted not implied" \
   || fail "--check did not report 0 problem(s) for the real map (output: $real_out)"
 
@@ -110,7 +110,7 @@ gate() {  # $1=conf → sets gate_out and gate_rc from a cached --check
 # checking something the real gate does not.
 gate "$CONF"; cached_out="$gate_out"
 check "the cached derivation reaches the same verdict as the real one" "0" "$gate_rc"
-printf '%s' "$cached_out" | grep -q '0 problem(s)' \
+grep -q '0 problem(s)' <<<"$cached_out" \
   && pass "the cached --check reports the same 0 problem(s)" \
   || fail "the cached --check disagreed with the uncached one: $cached_out"
 
@@ -134,7 +134,7 @@ gate "$f1"; out="$gate_out"
 [[ "$gate_rc" -ne 0 ]] \
   && pass "gate 1: a dropped row for an executed target fails the gate" \
   || fail "gate 1: a dropped row for an executed target passed the gate"
-printf '%s' "$out" | grep -q "^ERROR: $T_TOOLSLIB is EXECUTED by the hermetic suite" \
+grep -q "^ERROR: $T_TOOLSLIB is EXECUTED by the hermetic suite" <<<"$out" \
   && pass "gate 1: the failure NAMES the missing file" \
   || fail "gate 1: the failure did not name $T_TOOLSLIB (output: $out)"
 
@@ -148,7 +148,7 @@ gate "$f2"; out="$gate_out"
 [[ "$gate_rc" -ne 0 ]] \
   && pass "gate 2: a GREPPED-ONLY file registered as a mutation target fails the gate" \
   || fail "gate 2: a GREPPED-ONLY file registered as a mutation target passed the gate"
-printf '%s' "$out" | grep -q "$T_ENTRYPOINT is classified EXECUTED-WHOLE but the hermetic suite never EXECUTES it" \
+grep -q "$T_ENTRYPOINT is classified EXECUTED-WHOLE but the hermetic suite never EXECUTES it" <<<"$out" \
   && pass "gate 2: the failure names the file and says why (never executed)" \
   || fail "gate 2: the failure did not explain the misclassification (output: $out)"
 
@@ -157,7 +157,7 @@ printf '%s' "$out" | grep -q "$T_ENTRYPOINT is classified EXECUTED-WHOLE but the
 f2b="$TMP/gate2b.conf"
 sed "s@^${RE_TOOLSLIB}|EXECUTED-WHOLE|test-tools-d\\.sh\$@${T_TOOLSLIB}|GREPPED-ONLY|test-tools-d.sh@" "$CONF" > "$f2b"
 gate "$f2b"; out="$gate_out"
-printf '%s' "$out" | grep -q "$T_TOOLSLIB is classified GREPPED-ONLY but the hermetic suite EXECUTES it" \
+grep -q "$T_TOOLSLIB is classified GREPPED-ONLY but the hermetic suite EXECUTES it" <<<"$out" \
   && pass "gate 2 (mirror): demoting an executed target to GREPPED-ONLY fails the gate" \
   || fail "gate 2 (mirror): demoting an executed target to GREPPED-ONLY passed (output: $out)"
 
@@ -180,7 +180,7 @@ gate "$f3"; out="$gate_out"
 [[ "$gate_rc" -ne 0 ]] \
   && pass "gate 3: a misspelled oracle fails the gate" \
   || fail "gate 3: a misspelled oracle passed the gate"
-printf '%s' "$out" | grep -q 'names oracle test-tools-dd.sh, which does not exist' \
+grep -q 'names oracle test-tools-dd.sh, which does not exist' <<<"$out" \
   && pass "gate 3: the failure names the missing oracle and the run-all.sh exit-2 consequence" \
   || fail "gate 3: the failure did not name the missing oracle (output: $out)"
 
@@ -201,7 +201,7 @@ out="$(FALSIFY_REPO="$AMB" FALSIFY_TESTS_DIR="$AMB/tests" FALSIFY_DERIVED="$AMB/
 [[ "$amb_rc" -ne 0 ]] \
   && pass "gate 3 (ambiguity): an oracle whose name selects several tests fails the gate" \
   || fail "gate 3 (ambiguity): a multi-selecting oracle passed the gate (output: $out)"
-printf '%s' "$out" | grep -qE 'names oracle test-alpha.sh, which run-all.sh selects 2 test\(s\) for' \
+grep -qE 'names oracle test-alpha.sh, which run-all.sh selects 2 test\(s\) for' <<<"$out" \
   && pass "gate 3 (ambiguity): the failure reports how many tests the oracle selects" \
   || fail "gate 3 (ambiguity): the failure did not report the selection count (output: $out)"
 
@@ -236,7 +236,7 @@ set_gate "test-one.sh,test-zzz.sh"
 [[ "$gate_rc" -ne 0 ]] \
   && pass "gate 3 (set): a nonexistent SECOND oracle fails the gate" \
   || fail "gate 3 (set): a nonexistent second oracle passed the gate (output: $gate_out)"
-printf '%s' "$gate_out" | grep -q 'names oracle test-zzz.sh, which does not exist' \
+grep -q 'names oracle test-zzz.sh, which does not exist' <<<"$gate_out" \
   && pass "gate 3 (set): the failure names the second oracle, not the first" \
   || fail "gate 3 (set): the failure did not name test-zzz.sh (output: $gate_out)"
 
@@ -244,7 +244,7 @@ set_gate "test-one.sh,test-one.sh"
 [[ "$gate_rc" -ne 0 ]] \
   && pass "gate 3 (set): the same oracle named twice fails the gate" \
   || fail "gate 3 (set): a repeated oracle passed the gate (output: $gate_out)"
-printf '%s' "$gate_out" | grep -q 'names oracle test-one.sh twice' \
+grep -q 'names oracle test-one.sh twice' <<<"$gate_out" \
   && pass "gate 3 (set): the failure says the repetition buys no coverage" \
   || fail "gate 3 (set): the failure did not report the repetition (output: $gate_out)"
 
@@ -257,7 +257,7 @@ set_gate "test-one.sh,"
 [[ "$gate_rc" -ne 0 ]] \
   && pass "gate 3 (set): a trailing comma fails the gate" \
   || fail "gate 3 (set): a trailing comma passed the gate (output: $gate_out)"
-printf '%s' "$gate_out" | grep -q 'has a malformed oracle field' \
+grep -q 'has a malformed oracle field' <<<"$gate_out" \
   && pass "gate 3 (set): the failure names the field shape, not a missing test" \
   || fail "gate 3 (set): the trailing comma was not reported as a shape error (output: $gate_out)"
 # The premise that makes the shape check load-bearing, asserted rather than
@@ -266,7 +266,7 @@ IFS=',' read -r -a _drop <<<"test-one.sh,"
 check "premise: IFS=, read -a silently drops a trailing empty member" "1" "${#_drop[@]}"
 
 set_gate "test-one.sh, test-two.sh"
-printf '%s' "$gate_out" | grep -q 'has a malformed oracle field' \
+grep -q 'has a malformed oracle field' <<<"$gate_out" \
   && pass "gate 3 (set): a space after the comma fails the gate" \
   || fail "gate 3 (set): a space after the comma passed the gate (output: $gate_out)"
 
@@ -279,7 +279,7 @@ set_gate "test-one.sh,test-*.sh"
 [[ "$gate_rc" -ne 0 ]] \
   && pass "gate 3 (set): a glob in the oracle field fails the gate" \
   || fail "gate 3 (set): a glob in the oracle field passed the gate (output: $gate_out)"
-printf '%s' "$gate_out" | grep -q 'has a malformed oracle field' \
+grep -q 'has a malformed oracle field' <<<"$gate_out" \
   && pass "gate 3 (set): the glob is refused by shape, before anything expands it" \
   || fail "gate 3 (set): the glob was not refused by the shape check (output: $gate_out)"
 
@@ -291,7 +291,7 @@ gate "$f4"; out="$gate_out"
 [[ "$gate_rc" -ne 0 ]] \
   && pass "gate 4: an EXECUTED-PARTIAL row with an empty function list fails the gate" \
   || fail "gate 4: an EXECUTED-PARTIAL row with an empty function list passed the gate"
-printf '%s' "$out" | grep -q "$T_SBCOMMON is EXECUTED-PARTIAL with an empty function list" \
+grep -q "$T_SBCOMMON is EXECUTED-PARTIAL with an empty function list" <<<"$out" \
   && pass "gate 4: the failure names the file and the missing 4th field" \
   || fail "gate 4: the failure did not name the empty function list (output: $out)"
 
@@ -301,7 +301,7 @@ f4b="$TMP/gate4b.conf"
 { cat "$CONF"; printf '%s|EXECUTED-PARTIAL|test-parsers.sh|-\n' "$T_SBCOMMON"; } \
   | grep -v "^#DEFERRED|${RE_SBCOMMON}|" > "$f4b"
 gate "$f4b"; out="$gate_out"
-printf '%s' "$out" | grep -q "$T_SBCOMMON is EXECUTED-PARTIAL with an empty function list" \
+grep -q "$T_SBCOMMON is EXECUTED-PARTIAL with an empty function list" <<<"$out" \
   && pass "gate 4: a '-' function list counts as empty" \
   || fail "gate 4: a '-' function list was accepted (output: $out)"
 
@@ -309,7 +309,7 @@ printf '%s' "$out" | grep -q "$T_SBCOMMON is EXECUTED-PARTIAL with an empty func
 f4c="$TMP/gate4c.conf"
 sed "s@^#DEFERRED|${RE_REPOSH}|EXECUTED-PARTIAL|test-repo-registry\\.sh|is_git_url,fmt_epoch@#DEFERRED|${T_REPOSH}|EXECUTED-PARTIAL|test-repo-registry.sh|is_git_url,no_such_function@" "$CONF" > "$f4c"
 gate "$f4c"; out="$gate_out"
-printf '%s' "$out" | grep -q "naming function no_such_function, which is not defined in $T_REPOSH" \
+grep -q "naming function no_such_function, which is not defined in $T_REPOSH" <<<"$out" \
   && pass "gate 4: a named function that is not defined in the target fails the gate" \
   || fail "gate 4: an undefined function name was accepted (output: $out)"
 
@@ -323,10 +323,10 @@ gate "$f5"; out="$gate_out"
 [[ "$gate_rc" -ne 0 ]] \
   && pass "an #EXCLUDED| row with an empty reason fails the gate" \
   || fail "an #EXCLUDED| row with an empty reason passed the gate"
-printf '%s' "$out" | grep -q 'has an empty reason — an empty reason suppresses nothing' \
+grep -q 'has an empty reason — an empty reason suppresses nothing' <<<"$out" \
   && pass "the empty-reason failure says the reason is required" \
   || fail "the empty-reason failure was not reported (output: $out)"
-printf '%s' "$out" | grep -qE '^ERROR: tests/run-all\.sh .*has no row' \
+grep -qE '^ERROR: tests/run-all\.sh .*has no row' <<<"$out" \
   && pass "an empty reason leaves the target UNMAPPED, not excluded" \
   || fail "an empty reason still suppressed the target (output: $out)"
 
@@ -334,7 +334,7 @@ printf '%s' "$out" | grep -qE '^ERROR: tests/run-all\.sh .*has no row' \
 f5b="$TMP/defer-empty.conf"
 sed "s@^#DEFERRED|${RE_GROUPSH}|EXECUTED-WHOLE|test-group-lifecycle\\.sh|-|.*\$@#DEFERRED|${T_GROUPSH}|EXECUTED-WHOLE|test-group-lifecycle.sh|-|@" "$CONF" > "$f5b"
 gate "$f5b"; out="$gate_out"
-printf '%s' "$out" | grep -q "#DEFERRED| for $T_GROUPSH has an empty reason" \
+grep -q "#DEFERRED| for $T_GROUPSH has an empty reason" <<<"$out" \
   && pass "a #DEFERRED| row with an empty reason fails the gate" \
   || fail "a #DEFERRED| row with an empty reason passed the gate (output: $out)"
 
@@ -342,21 +342,21 @@ printf '%s' "$out" | grep -q "#DEFERRED| for $T_GROUPSH has an empty reason" \
 f6="$TMP/dup.conf"
 { cat "$CONF"; printf '%s|EXECUTED-WHOLE|test-tools-d.sh\n' "$T_TOOLSLIB"; } > "$f6"
 gate "$f6"; out="$gate_out"
-printf '%s' "$out" | grep -q "duplicate row for $T_TOOLSLIB" \
+grep -q "duplicate row for $T_TOOLSLIB" <<<"$out" \
   && pass "a duplicate row for the same target fails the gate" \
   || fail "a duplicate row for the same target passed the gate (output: $out)"
 
 f7="$TMP/badcat.conf"
 sed "s@^${RE_TOOLSLIB}|EXECUTED-WHOLE|test-tools-d\\.sh\$@${T_TOOLSLIB}|EXECUTED|test-tools-d.sh@" "$CONF" > "$f7"
 gate "$f7"; out="$gate_out"
-printf '%s' "$out" | grep -q "$T_TOOLSLIB has unknown category EXECUTED " \
+grep -q "$T_TOOLSLIB has unknown category EXECUTED " <<<"$out" \
   && pass "an unknown category fails the gate" \
   || fail "an unknown category passed the gate (output: $out)"
 
 f8="$TMP/phantom.conf"
 { cat "$CONF"; printf 'no-such-script.sh|EXECUTED-WHOLE|test-tools-d.sh\n'; } > "$f8"
 gate "$f8"; out="$gate_out"
-printf '%s' "$out" | grep -q 'no-such-script.sh is not an in-scope candidate' \
+grep -q 'no-such-script.sh is not an in-scope candidate' <<<"$out" \
   && pass "a row naming a file that is not a candidate fails the gate" \
   || fail "a row naming a phantom target passed the gate (output: $out)"
 
@@ -365,7 +365,7 @@ printf '%s' "$out" | grep -q 'no-such-script.sh is not an in-scope candidate' \
 f9="$TMP/funcs-on-whole.conf"
 sed "s@^${RE_TOOLSLIB}|EXECUTED-WHOLE|test-tools-d\\.sh\$@${T_TOOLSLIB}|EXECUTED-WHOLE|test-tools-d.sh|tools_list_names@" "$CONF" > "$f9"
 gate "$f9"; out="$gate_out"
-printf '%s' "$out" | grep -q "$T_TOOLSLIB is EXECUTED-WHOLE but lists functions" \
+grep -q "$T_TOOLSLIB is EXECUTED-WHOLE but lists functions" <<<"$out" \
   && pass "a function list on a non-EXECUTED-PARTIAL row fails the gate" \
   || fail "a function list on an EXECUTED-WHOLE row was accepted (output: $out)"
 

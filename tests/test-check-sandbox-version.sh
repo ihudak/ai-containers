@@ -38,7 +38,7 @@ rm -rf "$d"
 d="$(make_repo)"
 grep -v '^kubectl=' "$d/sandbox.conf" > "$d/tmp" && mv "$d/tmp" "$d/sandbox.conf"
 err="$(cd "$d" && bash ./check-sandbox-version.sh --check 2>&1 >/dev/null)"; rc=$?
-if [[ $rc -ne 0 ]] && printf '%s' "$err" | grep -q 'kubectl'; then
+if [[ $rc -ne 0 ]] && grep -q 'kubectl' <<<"$err"; then
   pass "silent key removal fails and names the key"
 else
   fail "silent key removal fails and names the key (rc=$rc)"
@@ -60,7 +60,7 @@ d="$(make_repo)"
 grep -v '^kubectl=' "$d/sandbox.conf" > "$d/tmp" && mv "$d/tmp" "$d/sandbox.conf"
 sed -E 's/^# schema-version:.*/# schema-version: 4/' "$d/sandbox.conf" > "$d/tmp" && mv "$d/tmp" "$d/sandbox.conf"
 err="$(cd "$d" && bash ./check-sandbox-version.sh --check 2>&1 >/dev/null)"; rc=$?
-if [[ $rc -ne 0 ]] && printf '%s' "$err" | grep -q 'kubectl' && printf '%s' "$err" | grep -q '004-\*\.sh'; then
+if [[ $rc -ne 0 ]] && grep -q 'kubectl' <<<"$err" && grep -q '004-\*\.sh' <<<"$err"; then
   pass "bump without matching hook fails and names key + expected hook pattern"
 else
   fail "bump without matching hook fails and names key + expected hook pattern (rc=$rc)"
@@ -78,7 +78,7 @@ rm -rf "$d"
 d="$(make_repo)"
 rm -rf "$d/.git"
 err="$(cd "$d" && bash ./check-sandbox-version.sh --check 2>&1 >/dev/null)"; rc=$?
-if [[ $rc -ne 0 ]] && printf '%s' "$err" | grep -qi 'git is unusable'; then
+if [[ $rc -ne 0 ]] && grep -qi 'git is unusable' <<<"$err"; then
   pass "git-unusable repo fails loudly, not silently 'nothing to compare'"
 else
   fail "git-unusable repo fails loudly, not silently 'nothing to compare' (rc=$rc, err=$err)"

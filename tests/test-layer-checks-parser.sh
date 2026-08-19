@@ -96,6 +96,7 @@ else
 fi
 # The control: the piped spelling really does fail on this fixture, so the
 # assertion above is measuring the fix and not a fixture that never raced.
+# grep-q-ok: this line IS the hazard — the control's whole job is to be the piped spelling and lose the race
 if wf_steps "$TMP/big.yml" big 2>/dev/null | grep -qxF "the first step"; then
   fail "control: the piped spelling passed here, so this fixture does not exercise the hazard"
 else
@@ -294,11 +295,11 @@ done < <(lc_rows workflow)
   && pass "tests/layer-checks.conf has exactly one workflow row per .github/workflows/*.yml file that exists here ($n_wf_rows_present of $n_workflow row(s))" \
   || fail "tests/layer-checks.conf has $n_wf_rows_present workflow row(s) naming a file that exists here, but .github/workflows/ has $n_wf_files file(s) — they have drifted apart"
 
-lc_rows check | grep -q '^#' \
+grep -q '^#' < <(lc_rows check) \
   && fail "lc_rows returned a comment line" \
   || pass "lc_rows strips comments and blank lines"
 
-lc_rows check | grep -q '^check|' \
+grep -q '^check|' < <(lc_rows check) \
   && fail "lc_rows left the type field on the row" \
   || pass "lc_rows strips the leading type field"
 

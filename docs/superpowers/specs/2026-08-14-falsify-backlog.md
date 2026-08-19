@@ -1254,26 +1254,60 @@ and not a fixture that never raced. Two more early-matching sites inside falsify
 ORACLES were fixed the same way: `tests/test-tools-d.sh`'s
 `find … | grep -q .` and `tests/test-mutations.sh`'s `sed … | head -1 | grep -q .`.
 
-### What is left — the survey
+### CORRECTION 2026-08-19 — "a site asserting ABSENCE is safe" was WRONG
 
-67 `| grep -q` sites in tracked shell, **60 of them under `set -o pipefail`**.
-The hazard needs BOTH of:
+This entry originally said:
 
-1. the pipeline runs under `pipefail`, and
-2. `grep -q` can match EARLY, i.e. the assertion expects a match.
+> A site asserting ABSENCE is safe by construction: grep consumes the whole
+> input, never exits early, and its own 1 is the correct status.
 
-A site asserting ABSENCE is safe by construction: grep consumes the whole input,
-never exits early, and its own 1 is the correct status. That is why, for example,
-`lc_rows check | grep -q '^#'` (which must NOT match) needs no change.
+That is true only while nothing matches — i.e. only while the guarded defect is
+absent. **The moment the defect appears, grep matches, exits early, and the
+producer's broken pipe becomes the pipeline's status under `pipefail` — so the
+`if … then fail; else pass` guard takes the `else` branch and reports NO
+DEFECT.** Measured on the same fixture as the original finding: **50/50 runs
+silently reported no defect while the defect was present.**
 
-23 of the 60 have a command — rather than a small `printf "$var"` — as producer,
-and those are where an early match can outrun the writer. The three highest-risk
-ones are fixed above because they sit inside falsify oracles, which the tier
-multiplies by `--jobs`. The rest are one- or two-line producers in
-non-concurrent contexts; they are a latent, not an observed, defect.
+That is the worse of the two directions, and the reason is exactly why it slipped
+past: a match-expected site fails loudly and gets noticed, while an
+absence-expected site is green on a healthy tree and lies only in the one moment
+it exists to speak up. Four real guards were in that shape — the `grep|grep`
+regression guard in `test-blocked-capture.sh`, the `curl | bash` one in
+`test-rvm-reconcile.sh`, the bare-`timeout` one in `test-integration-runner.sh`,
+and two `lc_rows` checks in `test-layer-checks-parser.sh`.
 
-**The sweep is the follow-up:** classify each of the remaining sites
-match-expected vs absence-expected, convert the match-expected ones, and add a
-dialect-lint rule for the shape so it cannot come back. A lint rule is the right
-end state — the correct spelling is not obvious, and this is the second time a
-pipeline's status has silently decided a guard's verdict in this repo.
+**So the rule is unconditional: no `producer | grep -q` under `pipefail`, either
+direction.** Two correct spellings, both verified against the same input:
+
+```bash
+grep -q X < <(producer)          # producer is not in the pipeline; use when only the match matters
+out="$(producer)" || return 1    # keeps the producer's status, which some callers need
+grep -q X <<<"$out"
+```
+
+### RESOLVED 2026-08-19 — swept, and guarded
+
+All 53 sites converted (37 mechanically, 16 by hand); one deliberate fixture —
+the control in `tests/test-layer-checks-parser.sh` whose job is to BE the piped
+spelling — carries the opt-out `# grep-q-ok: <reason>`, and the reason is
+checked, exactly like `# dialect-lint: allow`.
+
+`tests/test-grep-q-pipelines.sh` is the guard. It does not merely grep for the
+shape: it first **measures the hazard on the machine it is running on**, in both
+directions, and asserts that both replacement spellings work — so a reader who
+doubts the rule sees it reproduced rather than asserted. It then scans every
+tracked `*.sh` that sets `pipefail`, and fails when it scanned nothing at all
+(the vacuous-pass case that this repo keeps rediscovering).
+
+Demonstrated failing four ways: reintroducing one piped `grep -q` in product
+code; blanking an opt-out's reason; removing the repo's `.git` so the scan finds
+no files; and — found BY the guard rather than by review — the guard's own two
+`printf … | grep -q` lines, which were invisible while the file was still
+untracked. That last one is the `capture-on-host.sh` trap again: `git ls-files`
+cannot see a file you have not added, so a new checker's verdict changes at
+`git add` time.
+
+A `bash-dialect-lint.sh` rule was considered and rejected: that linter's subject
+is "no construct newer than the declared bash floor", and this is a correctness
+idiom available in every bash version. Mixing them would blur what a
+dialect-lint failure means.

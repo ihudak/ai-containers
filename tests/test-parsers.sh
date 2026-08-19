@@ -380,7 +380,7 @@ check "split_env_list: newline-separated ports are NOT dropped" "$(printf '8080\
   # so it must be driven in its OWN subshell to observe the exit without
   # terminating this whole block.
   out="$( (validate_group_name "Invalid_Name") 2>&1 )"; rc=$?
-  [[ $rc -eq 1 ]] && echo "$out" | grep -q 'Invalid AI_CONTAINER_GROUP' \
+  [[ $rc -eq 1 ]] && grep -q 'Invalid AI_CONTAINER_GROUP' <<<"$out" \
     && printf 'PASS: validate_group_name: uppercase/underscore name exits 1 with a message\n' \
     || printf "FAIL: validate_group_name: uppercase/underscore name exits 1 with a message (rc=%s out='%s')\n" "$rc" "$out"
 

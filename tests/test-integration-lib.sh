@@ -217,8 +217,8 @@ fi
 # by a login shell sourcing /etc/profile.d/rvm.sh) would silently see no rvm
 # function at all, exactly the case-750 bug this helper exists to prevent from
 # being reintroduced by a future non-login `docker exec ... bash -c`.
-if awk '/^agent_exec_login\(\)/,/^}/' "$LIB" \
-   | grep -qE 'docker exec -u "\$IT_LAUNCH_UID:\$IT_LAUNCH_GID" "\$1" bash -lc "\$2"'; then
+if grep -qE 'docker exec -u "\$IT_LAUNCH_UID:\$IT_LAUNCH_GID" "\$1" bash -lc "\$2"' \
+   < <(awk '/^agent_exec_login\(\)/,/^}/' "$LIB"); then
   t_pass "agent_exec_login runs as the sandbox user, in a LOGIN shell"
 else
   t_fail "agent_exec_login runs as the sandbox user, in a LOGIN shell — rvm-dependent checks would silently see no rvm"
@@ -595,7 +595,7 @@ grep -qE '203\.0\.113\.9.*x2' <<< "$out" \
   || t_fail "the matched entry is still aggregated alongside the unmatched one"
 # And the unmatched entry still gets its allowlist verdict — proof the loop
 # continued past the fallback instead of `exit`-ing the enclosing awk for good.
-grep -c 'allowlisted in this image' <<< "$out" | grep -qx '2' \
+[[ "$(grep -c 'allowlisted in this image' <<<"$out")" == "2" ]] \
   && t_pass "both entries get an allowlist verdict, so the loop did not stop at the unmatched one" \
   || t_fail "both entries get an allowlist verdict (got: $out)"
 
@@ -1021,7 +1021,7 @@ ar_has "$out" "path:    $AR_SHEBANG/$AR_TOOL" \
 # independently satisfied by the `shebang:` line two lines above it. Emptying
 # the error value in lib.sh left this file at 0 failure(s) — an assertion that
 # cannot fail, inside the test written to close exactly that defect class.
-printf '%s\n' "$out" | grep -q 'error:.*it-fake-missing-interp' \
+grep -q 'error:.*it-fake-missing-interp' <<<"$out" \
   && t_pass "the failure dump carries the exec error itself, not just the verdict" \
   || t_fail "the failure dump carries the exec error itself (got: $out)"
 # The shebang line is the one diagnostic that depends on `readlink -f`, which

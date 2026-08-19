@@ -60,7 +60,7 @@ check() {  # $1=label $2=expected $3=actual
   else fail "$1 (expected '$2', got '$3')"; fi
 }
 assert_has() {  # $1=label $2=needle $3=haystack
-  if printf '%s' "$3" | grep -qF -- "$2"; then pass "$1"
+  if grep -qF -- "$2" <<<"$3"; then pass "$1"
   else fail "$1 — not in output: $3"; fi
 }
 
