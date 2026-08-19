@@ -684,10 +684,16 @@ cg() {   # <name> <layout> <content…> → a FALSIFY_CGROUP root
   printf '%s' "$root"
 }
 budget() {   # <cgroup root> → "<quota>|<budget>" as run.sh computes them
-  ( set +u; FALSIFY_CGROUP="$1"; source "$RUN" >/dev/null 2>&1
+  # export, not a bare assignment: the value is consumed by the file loaded on
+  # the NEXT line, which is exactly what SC2034 asks a reader to verify.
+  ( set +u; export FALSIFY_CGROUP="$1"
+    # shellcheck source=/dev/null
+    source "$RUN" >/dev/null 2>&1
     printf '%s|%s' "$(fr_quota_cpus)" "$(fr_cpu_budget)" )
 }
-host_cpus="$( ( set +u; source "$RUN" >/dev/null 2>&1; fr_host_cpus ) )"
+host_cpus="$( ( set +u
+                # shellcheck source=/dev/null
+                source "$RUN" >/dev/null 2>&1; fr_host_cpus ) )"
 [[ "$host_cpus" =~ ^[1-9][0-9]*$ ]] \
   && pass "fr_host_cpus reports a positive integer ($host_cpus)" \
   || fail "fr_host_cpus reported '$host_cpus'"
