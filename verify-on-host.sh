@@ -292,9 +292,18 @@ fi
 if want_phase 6; then
 say "PHASE 6 — falsify mutation tier + survivor-ledger ratchet"
 fl_run="$(mktemp)"
-fl_jobs="$( (command -v nproc >/dev/null && nproc) || sysctl -n hw.ncpu 2>/dev/null || echo 4 )"
-sub "running the corpus (jobs=$fl_jobs, timeout=120) — a few minutes"
-if bash "$REPO/tests/falsify/run.sh" --jobs "$fl_jobs" --timeout 120 > "$fl_run" 2>&1; then
+# --jobs auto, NOT $(nproc). nproc reads the affinity MASK and does not see a
+# `--cpus` cgroup quota, so inside a container — including one this repo's own
+# sandbox.sh started, where CONTAINER_CPUS defaults to 1.0 — it reports the
+# host's count and the tier oversubscribes. That lands on the per-mutant clock
+# --timeout is measured against, and a mutant that trips it is scored UNPROVEN,
+# which is not owed a ledger entry: a mutant that WAS killed leaves the measured
+# set in silence. run.sh resolves the number and names both; surfaced here
+# rather than left buried in $fl_run.
+sub "running the corpus (jobs=auto, timeout=120) — a few minutes"
+if bash "$REPO/tests/falsify/run.sh" --jobs auto --timeout 120 > "$fl_run" 2>&1; then
+  { grep -E '^falsify: --jobs auto ' "$fl_run" || true; } \
+    | sed 's/^falsify: //' | while IFS= read -r l; do sub "$l"; done
   grep -E '^(TARGET|TOTAL)\|' "$fl_run" | sed 's/^/  /' | while IFS= read -r l; do sub "$l"; done
   # HOW MUCH WAS ACTUALLY MEASURED. An UNPROVEN mutant produced no verdict at
   # all, so a run with many of them is measuring less than its pass suggests —
@@ -305,10 +314,15 @@ if bash "$REPO/tests/falsify/run.sh" --jobs "$fl_jobs" --timeout 120 > "$fl_run"
   fl_unp="$(awk -F'|' '$1=="TOTAL" {print $6; exit}' "$fl_run")"
   if [[ -n "$fl_tot" && -n "$fl_unp" && "$fl_tot" -gt 0 ]]; then
     sub "verdicts obtained for $(( fl_tot - fl_unp ))/$fl_tot mutants ($(( (fl_tot - fl_unp) * 100 / fl_tot ))%)"
+    # ADVISORY HERE, A GATE IN CI, and the asymmetry is the same one --strict
+    # already draws: ubuntu-latest is the REFERENCE environment and passes
+    # --max-unproven-pct 10 (the same 10 as below, one concept with one number),
+    # while a developer host legitimately times out and failing it here would be
+    # the everywhere-at-once mistake backlog F27 records.
     if (( fl_unp * 100 / fl_tot >= 10 )); then
       sub "NOTE: $fl_unp mutant(s) timed out and were not measured — raise --timeout or"
-      sub "      reduce load for a fuller measurement. Not a failure: an unproven"
-      sub "      mutant is machine state, not a property of the code."
+      sub "      reduce load for a fuller measurement. Not a failure HERE: an unproven"
+      sub "      mutant is machine state, not a property of the code. CI gates on it."
     fi
   fi
   # The ratchet is a SEPARATE step, as in CI: run.sh's stdout is the record and

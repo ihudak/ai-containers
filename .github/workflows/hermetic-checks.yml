@@ -152,7 +152,22 @@ jobs:
       - name: Run the falsify mutation corpus
         run: |
           rc=0
-          bash tests/falsify/run.sh --jobs "$(nproc)" --timeout 120 \
+          # --jobs auto, NOT $(nproc): nproc reads the affinity MASK and does
+          # not see a `--cpus` cgroup quota, so it over-reports wherever one is
+          # in force and the tier oversubscribes itself. Measured on a quota'd
+          # host: past the quota, wall-clock stops improving while the
+          # per-mutant clock — the one --timeout is measured against — climbs to
+          # 10.9x. On a runner with no quota this resolves to exactly $(nproc),
+          # so nothing here changes; it stops being a lie elsewhere.
+          #
+          # --max-unproven-pct 10: an UNPROVEN mutant is deliberately NOT owed a
+          # ledger entry (check B's note; backlog F27), so without a bound an
+          # unlimited number of mutants can drop out of the measured set and the
+          # ratchet still passes. Measured, same commit and same day, two
+          # machines: 223 killed / 4 unproven here against 210 / 26 there, both
+          # scoring green. THIS is the reference environment, so this is where
+          # that gets a floor. 10 is the same number Phase 6 warns at.
+          bash tests/falsify/run.sh --jobs auto --timeout 120 --max-unproven-pct 10 \
             > "$RUNNER_TEMP/falsify-run.txt" || rc=$?
           # run.sh's STDOUT is the record the ratchet reads; its EXIT STATUS is
           # a separate signal (an oracle not green on the pristine tree, a
