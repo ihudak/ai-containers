@@ -65,26 +65,64 @@ hermetic tests; not chased beyond that scope. Its siblings `install_repo_file`,
 
 # Found by running the demonstrations on a real host (2026-08-14)
 
-## F5 — `300-allowlist-delivered` has no known-bad mutation, and its honest one needs an image rebuild
+## F5 — `300-allowlist-delivered` has no known-bad mutation, and its honest one needs an image rebuild — **RESOLVED 2026-08-19**
 
-The case asserts the allowlists inside the image are the ones `build.sh`
-generated. Its own header explains the stake: `refresh-ipset-allowlist.sh` reads
-those exact paths to build the ipset that **is** the firewall, so a mismatch is
-"a silently wrong firewall" that `010` and `020` would both still pass.
+**Closed by giving the demonstrator a rebuild path**, which was the option that
+did not weaken anything. The alternative on the table — find a delivery-breaking
+mutation that needs no rebuild — turned out not to exist: the case compares the
+image's `/tmp/allowlist-*.txt` against the snapshot `run.sh` takes from the same
+build, so the only way to make the two diverge is to change what that build
+delivers, and nothing outside the build can do that.
 
-It carries a `security` tag but not a tier tag, so the coverage ratchet does not
-reach it. It is currently exempted **explicitly, as a tracked gap** in
-`tests/test-mutations.sh`'s `case_exempt()`, with a pointer to this entry — not
-silently skipped.
+**The mutation** is `300-allowlist-not-delivered.patch`, and it ships
+`allowlist-cidrs.txt` under the name `/tmp/allowlist-domains.txt` rather than
+dropping the `COPY`. The choice is the finding: an ABSENT allowlist empties the
+ipset and the container blocks everything, which is loud, whereas a **non-empty
+allowlist nobody generated is silent** — every network case mounts its own over
+`/it-allowlists` and never reads `/tmp` at all, so 010 still blocks, 020 still
+admits, and only 300 can see it. Three adjacent, near-identical `COPY` lines are
+exactly what invites that slip.
 
-**Why it is not simply fixed:** the honest mutation breaks delivery, i.e. the
-`COPY allowlist-*.txt /tmp/` lines in the Dockerfile. Every other demonstration
-mutates a case file or a host script and runs against a **pre-built, reused**
-image; a Dockerfile mutation only takes effect on a rebuild, which
-`demonstrate-network-tier.sh --reuse-image` deliberately avoids. Closing this
-needs either a rebuild path in that script for Dockerfile-touching patches, or a
-mutation that breaks delivery without touching the image build. Do not "solve"
-it by mutating the case instead of the product — that tests the test.
+**The rebuild path.** `demonstrate-network-tier.sh` derives the build-input set
+from the Dockerfile — itself, every path it `COPY`s, plus `build.sh`, which
+produces both the build args and the `allowlist-*.txt` files it copies — and for
+a patch against any of them drops `--reuse-image`, builds WITH the mutation,
+then rebuilds clean from the reverted tree *before* classifying the result. Its
+EXIT trap `docker rmi`s the image if that restore never happens: reverting the
+tree does not un-build an image, and a deliberately wrong one left under the
+`ai-sandbox-it` tag would be picked up silently by the next `--reuse-image` run.
+
+Derived rather than listed because a missing entry fails **misleadingly** rather
+than loudly: the case runs against an image that never contained the mutation,
+passes, and is reported UNDEMONSTRATED — which reads as "this mutation no longer
+damages its case" when the truth is "this mutation was never applied to
+anything".
+
+**Cost, measured:** the mutated build and the clean restore are both cache-warm
+— the allowlist `COPY`s are the last layers in the Dockerfile — so the pair adds
+about 18s. The whole `300` demonstration, including the initial image build, ran
+in 27.6s.
+
+**Demonstrated, all three directions:**
+
+| break | what the run reads |
+|---|---|
+| the patch removed | `test-mutations.sh`: `FAIL: 300-allowlist-delivered has a known-bad mutation` |
+| `patch_needs_rebuild` neutered | `ERROR (case did not run)`, exit 1 — the case SKIPs, see below |
+| the clean restore made to fail | `ERROR-REBUILD`, exit 1, and `ai-sandbox-it` removed on the way out |
+
+and positively: `FAIL: /tmp/allowlist-domains.txt differs from what build.sh
+generated` with the mutation applied, `PASS (3 assertions)` without it.
+
+**One measured detail worth not over-generalising.** With the detection neutered,
+300 does not pass quietly — it SKIPs, because `--reuse-image` also suppresses the
+generated-allowlist snapshot the case compares against, so the wrong path is loud
+*for this case*. A mutation to another build input (say `entrypoint.sh`) has
+nothing to skip on and would pass. That is the quiet failure the derivation
+exists for, and it is the subject of F36, at the end of this file.
+
+`delivery` is now a covered tier in `test-mutations.sh`, `run.sh --help` and
+`AGENTS.md`, and the `case_exempt()` entry is gone.
 
 ## F6 — `it_wait`'s first parameter is documented as seconds but counts iterations
 
@@ -1471,3 +1509,63 @@ That trade is the whole point.
 (F32's third option). The tier no longer LIES under memory pressure, which is
 the half that mattered; how much pressure to allow is a tuning decision with
 its own measurement.
+
+---
+
+## F36 — the launcher tier's hand procedure cannot demonstrate a mutation that lives in the image
+
+Found by the F5 work, from the same derivation. `AGENTS.md` documents the
+launcher-tier demonstration as:
+
+```bash
+tests/integration/mutate.sh apply 400-ro-suffix-dropped
+tests/integration/run.sh --reuse-image --tags mounts     # expect 400 to FAIL
+```
+
+`--reuse-image` is correct for `400`: `sandbox.sh` is a host script, read from
+the working tree at launch time. It is **wrong** for every patch whose target is
+baked into the image, and running `patch_needs_rebuild` over the whole mutation
+set names them:
+
+| patch | target | tier |
+|---|---|---|
+| `410-workspace-root-not-chowned` | `entrypoint.sh` | mounts |
+| `630-rvm-root-not-chowned` | `entrypoint.sh` | volumes |
+| `700-agent-tools-not-linked` | `entrypoint.sh` | packages |
+| `740-default-ruby-not-linked` | `entrypoint.sh` | packages |
+| `745-ruby-hooks-not-exposed` | `link-default-ruby.sh` | packages |
+| `750-only-default-ruby-installed` | `rvm-reconcile.sh` | packages |
+| `720-npmrc-prefix-restored` | `Dockerfile` | packages |
+| `735-toolchain-not-restored` | `Dockerfile` | packages |
+| `730-db-clients-not-space-split` | `build.sh` | packages |
+
+Nine patches whose documented demonstration procedure applies the mutation to a
+file the container never reads. Each would report its case PASSING, i.e. the
+mutation dead, having tested an image built before the patch existed.
+
+**Not the same defect as F5, and not closed by it.** F5 was one case with no
+mutation at all; this is nine mutations with a demonstration procedure that
+cannot exercise them. Nothing here is known to be broken — the patches may well
+be perfectly good — which is precisely the point: nobody can currently tell,
+because the only procedure on offer answers a different question.
+
+`patch_needs_rebuild()` and `build_clean_image()` in
+`demonstrate-network-tier.sh` are the mechanism; what is missing is a
+launcher/packages-tier demonstrator that uses them. Parked rather than done
+because the packages tier's cases cost tens of minutes each and budgeting that
+run is its own decision.
+
+## F37 — `demonstrate-network-tier.sh` now covers two tiers and its name says one
+
+It selects `network-mode` **and** `delivery` as of F5. The filename, its usage
+text, and its own error messages still say "network tier". Same shape as F7 —
+a name describing a script that no longer exists — and recorded the same way
+rather than fixed inline, because renaming it touches
+`tests/falsify/targets.conf`, `AGENTS.md`, and the identically-named file in
+`mgd-ai-containers`, which is a coordinated change rather than a `git mv`.
+
+The honest name is awkward on purpose: the set is "every mutation whose case
+must be run against a real image", which is the complement of the hand-driven
+launcher tier and the expensive packages tier. If F36 lands first, the
+complement collapses and the script becomes the demonstrator for everything,
+at which point `demonstrate-mutations.sh` is simply correct.

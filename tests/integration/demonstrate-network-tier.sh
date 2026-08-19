@@ -64,6 +64,21 @@ RUN="$REPO_DIR/tests/integration/run.sh"
 # The same default run.sh resolves (run.sh:31), and the same env var, so an
 # `IT_IMAGE=… bash demonstrate-network-tier.sh` names one image in both.
 IT_IMAGE="${IT_IMAGE:-ai-sandbox-it}"
+# Everything above is repo-root-relative and identical in both layouts, because
+# tests/ sits at the root in both. The ENGINE is not: upstream keeps build.sh and
+# the Dockerfile beside tests/, mgd-ai-containers keeps them in base/. Same
+# resolution mutate.sh makes, for the same reason — one copy of this file serves
+# both repos, so it must not assume either layout.
+ENGINE_DIR="$REPO_DIR"
+[[ -f "$ENGINE_DIR/build.sh" ]] || ENGINE_DIR="$REPO_DIR/base"
+# Read loudly rather than derive quietly from nothing: with no Dockerfile,
+# build_time_inputs() below would still emit its two literals, silently stop
+# recognising every COPY source, and send those patches down the --reuse-image
+# path — the misleading UNDEMONSTRATED this whole mechanism exists to prevent.
+[[ -f "$ENGINE_DIR/Dockerfile" ]] || {
+  printf 'demonstrate-network-tier.sh: no Dockerfile under %s — cannot tell which patches need a rebuild.\n' "$ENGINE_DIR" >&2
+  exit 1
+}
 
 # ── Refuse to start on a dirty tree ───────────────────────────────────────────
 # mutate.sh has its own clean-tree gate, but reaching it one mutation in would
@@ -110,13 +125,18 @@ trap cleanup EXIT INT TERM
 # the build args AND the allowlist-*.txt files the Dockerfile then COPYs, so a
 # mutation there changes the image as surely as one in the Dockerfile.
 #
+# The names emitted here are UNPREFIXED even where the engine lives in base/,
+# because they are compared against the patch's own `+++ b/…` paths, and one
+# mutation set serves both repos with upstream paths in it. Only the Dockerfile
+# is READ through $ENGINE_DIR.
+#
 # The KNOWN LIMIT is what build.sh READS — an allowlist-*.d fragment,
 # sandbox-common.sh — which no patch touches today. If one ever does, the
 # symptom is the misleading UNDEMONSTRATED above, so extend this function rather
 # than the case.
 build_time_inputs() {
   printf 'Dockerfile\nbuild.sh\n'
-  sed -n 's/^COPY[[:space:]]\{1,\}\([^[:space:]]\{1,\}\)[[:space:]].*/\1/p' "$REPO_DIR/Dockerfile"
+  sed -n 's/^COPY[[:space:]]\{1,\}\([^[:space:]]\{1,\}\)[[:space:]].*/\1/p' "$ENGINE_DIR/Dockerfile"
 }
 patch_needs_rebuild() {  # $1=patch → 0 if it changes something the image is built FROM
   local changed input
