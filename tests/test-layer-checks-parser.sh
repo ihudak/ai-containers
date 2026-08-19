@@ -16,6 +16,26 @@ check() {  # $1=label $2=expected $3=actual
   else fail "$1 (expected '$2', got '$3')"; fi
 }
 
+# fails_naming checks BOTH halves of a loud failure: a non-zero status AND the
+# message that names the cause. Status alone is not enough for the guards below.
+# Delete wf_jobs' missing-file guard outright and wf_jobs still fails on a
+# missing file -- one branch later, at "no jobs found", because the awk it feeds
+# produced nothing -- so a status-only assertion goes on passing over a guard
+# that is no longer there. Reading the message is what binds the assertion to
+# the guard under test. (Backlog F18: these guards' `return 1` -> `return 0`
+# mutants survived the entire suite.)
+fails_naming() {  # $1=label  $2=required stderr substring  $3.. = the command
+  local label="$1" want="$2" err rc; shift 2
+  err="$("$@" 2>&1 >/dev/null)"; rc=$?
+  if (( rc == 0 )); then
+    fail "$label (reported success, rc 0)"
+  elif [[ "$err" != *"$want"* ]]; then
+    fail "$label (failed, but stderr never named the cause: wanted '*$want*', got '$err')"
+  else
+    pass "$label"
+  fi
+}
+
 LAYER_CHECKS_CONF="$REPO_DIR/tests/layer-checks.conf"
 # shellcheck source=lib-layer-checks.sh
 source "$REPO_DIR/tests/lib-layer-checks.sh"
@@ -115,6 +135,24 @@ else
 fi
 
 # ── The failure paths, exercised ──────────────────────────────────────────────
+# The missing-file guard, in all three functions tests/test-layer-containment.sh
+# calls. wf_triggers_on's identical guard (further down) was the only one any
+# test reached, which left these three free to report success on a workflow file
+# that is not there -- and the containment guard would then iterate zero jobs,
+# zero steps, and pass having checked nothing. $TMP/nosuchworkflow.yml is never
+# created, here or anywhere below.
+fails_naming "wf_jobs fails loudly for a workflow file that does not exist" \
+  "no such workflow: $TMP/nosuchworkflow.yml" \
+  wf_jobs "$TMP/nosuchworkflow.yml"
+
+fails_naming "wf_steps fails loudly for a workflow file that does not exist" \
+  "no such workflow: $TMP/nosuchworkflow.yml" \
+  wf_steps "$TMP/nosuchworkflow.yml" anyjob
+
+fails_naming "wf_job_key fails loudly for a workflow file that does not exist" \
+  "no such workflow: $TMP/nosuchworkflow.yml" \
+  wf_job_key "$TMP/nosuchworkflow.yml" anyjob uses
+
 printf 'name: NoJobs\non:\n  push:\n' > "$TMP/nojobs.yml"
 if wf_jobs "$TMP/nojobs.yml" >/dev/null 2>&1; then
   fail "wf_jobs reported success on a file with no jobs"
@@ -309,6 +347,24 @@ if lc_rows check >/dev/null 2>&1; then
 else
   pass "lc_rows fails loudly on a registry with no rows"
 fi
+
+# The registry guard is separate from the no-rows one above: it fires before any
+# parsing, and its own `return 1` was unreached because every case up to here
+# pointed LAYER_CHECKS_CONF at a file that exists. Both spellings of "no
+# registry" go through it.
+LAYER_CHECKS_CONF="$TMP/absent.conf"
+fails_naming "lc_rows fails loudly when LAYER_CHECKS_CONF names a file that is not there" \
+  "LAYER_CHECKS_CONF is unset or missing: $TMP/absent.conf" \
+  lc_rows check
+
+# Unset, not merely wrong: lc_rows reads the variable as ${LAYER_CHECKS_CONF:-},
+# and this suite runs under `set -u`. Drop that default and the read aborts the
+# shell instead of reporting the cause -- which the message assertion catches,
+# because an "unbound variable" abort names nothing.
+unset LAYER_CHECKS_CONF
+fails_naming "lc_rows fails loudly, and still diagnoses, when LAYER_CHECKS_CONF is unset entirely" \
+  "LAYER_CHECKS_CONF is unset or missing: <unset>" \
+  lc_rows check
 LAYER_CHECKS_CONF="$REPO_DIR/tests/layer-checks.conf"
 
 printf '\n%d failure(s)\n' "$fails"; exit "$fails"
