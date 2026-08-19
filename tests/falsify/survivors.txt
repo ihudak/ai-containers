@@ -98,9 +98,14 @@
 # watching the branch — see entry 13 and backlog F30's addendum. RE-MEASURE AT
 # --jobs 1. A verdict taken under load can be a property of the machine.
 #
-# Corpus (2026-08-18): tests/falsify/run.sh --jobs 6 over the nine active
-# targets, TOTAL|9|251|220|27|4|7|12 — 27 SURVIVED + 4 UNPROVEN = 31 records.
-# The previous reading was TOTAL|9|249|209|36|4|11|16: nine more kills, from
+# Corpus (2026-08-19): tests/falsify/run.sh --jobs 10 over the nine active
+# targets, TOTAL|9|251|223|24|4|11|11 — 24 SURVIVED + 4 UNPROVEN = 28 records.
+# The previous reading was TOTAL|9|251|220|27|4|7|12. Three more kills, and
+# unlike the reading before THAT they came from a WRITTEN ASSERTION rather than
+# from a map correction: tests/lib-verify-repo.sh's git-bootstrap group, entry 4,
+# now retired (backlog F17). That target is 49/49.
+#
+# The reading before it was TOTAL|9|249|209|36|4|11|16: nine more kills, from
 # targets.conf's oracle field becoming a SET rather than from any new assertion
 # (backlog F16, ledger entries 2 and 3). The mutant count rose 249 -> 251
 # because tests/lib-layer-checks.sh gained wf_has_step (backlog F34); both of
@@ -185,29 +190,26 @@ bash-floor.sh:return-flip:7bfb00108eb7e7856c69ee914697141e5ea8086d
 # citations at different content.
 
 # ── 4 ─────────────────────────────────────────────────────────────────────────
-GROUP: mk_repo's git bootstrap and the git probe, under a git that fails
-tests/lib-verify-repo.sh:logic-flip:92ed532aafed74e646c15c0df0633d3abb85b30c
-tests/lib-verify-repo.sh:logic-flip:ccda9c7af6c7a0360e50fa49e47626fc9b322014
-tests/lib-verify-repo.sh:logic-flip:060509e398684d1eb6e58489169fec025def96c9
-  :181  && { git init -q -b main . || git init -q .; } \
-  :183  && git -c user.email=… -c user.name=… commit -q -m probe
-  :322  ( cd "$r" && { git init -q -b main . >/dev/null 2>&1 || git init -q . … }
-  the damages: each `||` -> `&&`, and :183's `&&` -> `||`
-  GAP: measured — the whole 52-test suite passes against each of the three, so
-  unlike entry 3 no test anywhere notices. Two of them are the git < 2.28
-  fallback (`git init -b main` predates no branch flag): on any modern git the
-  first init succeeds, the second is an idempotent re-init that also succeeds,
-  and the mutated `&&` form is indistinguishable — the damage only appears when
-  `git init -b` FAILS, where `&&` short-circuits and leaves a repo with no
-  commit, which is precisely the "Phase 7 parsed no files" vacuous-pass the
-  probe above them exists to prevent. :183 is the probe's own commit step:
-  `git add f || git commit` skips the commit whenever `git add` succeeds, so the
-  probe stops proving that git can commit while still reporting success. The
-  killing assertion is a faked `git` on PATH — the technique tests/test-mutations.sh
-  already uses — in two shapes: one that rejects `-b`, requiring mk_repo to
-  still yield a repo with a tracked, committed file; and one whose `commit`
-  fails, requiring sourcing tests/lib-verify-repo.sh to abort with its named
-  probe message. Recorded as F17.
+# RETIRED 2026-08-19. Three logic-flips in tests/lib-verify-repo.sh used to sit
+# here under "GROUP: mk_repo's git bootstrap and the git probe, under a git that
+# fails" — :181 and :322's `git init -b main . || git init .` fallback, and
+# :183's `git add f && git commit`. All three are now KILLED, and the target
+# went from 46/3 to 49 killed / 0 survived.
+#
+# UNLIKE ENTRY 3, this one was retired by WRITING THE ASSERTION, which is what
+# the entry itself specified (backlog F17): two fakes on PATH, each delegating
+# to the real git for everything it does not deliberately break. One rejects
+# `git init -b` the way git < 2.28 does, and the fallback is then load-bearing
+# — sourcing must still pass its probe, and mk_repo must still yield a
+# committed repo with tracked *.sh. The other adds fine and refuses to commit,
+# which is the only condition under which :183's damage is visible at all: `git
+# add f || git commit` skips the commit whenever `add` succeeds, so the probe
+# stopped proving git can commit while still reporting success. Each fake is
+# itself checked, in both directions, before either case relies on it — a fake
+# that silently delegated everything would make all three cases pass for no
+# reason.
+#
+# The number is left occupied, for the reason entry 3 records.
 
 # ── 5 ─────────────────────────────────────────────────────────────────────────
 GROUP: lib-layer-checks.sh's loud-failure paths return the wrong status

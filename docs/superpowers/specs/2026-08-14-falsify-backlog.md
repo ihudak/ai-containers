@@ -484,7 +484,31 @@ the declared oracles — that would test the same fact twice to satisfy a mappin
 defect. Until it lands, `verify-on-host.sh`'s and CI's survivor count is
 overstated by nine identities.
 
-## F17 — `tests/lib-verify-repo.sh`'s git bootstrap and probe are never run under a failing git
+## F17 — `tests/lib-verify-repo.sh`'s git bootstrap and probe are never run under a failing git — **FIXED 2026-08-19**
+
+Fixed exactly as this entry specified, and the entry's analysis held on
+re-derivation — all three flips still survived, and the killing assertion it
+named is the one that works. Two fakes on `PATH`, each **delegating to the real
+git** for everything it does not deliberately break (a fake that answered
+everything itself would be testing the fake): one rejects `git init -b` the way
+git < 2.28 does, one adds fine and refuses to `commit`. Each fake is checked in
+both directions before any case relies on it.
+
+Applying the three exact mutants, each new case fails and names the right thing:
+
+| mutant | what goes red |
+|---|---|
+| `:181` `\|\|` → `&&` | the probe now aborts under a `-b`-rejecting git (rc=1) |
+| `:322` `\|\|` → `&&` | `mk_repo` yields no commit and no tracked `*.sh` |
+| `:183` `&&` → `\|\|` | sourcing does NOT abort under a commit-refusing git, and the harness body runs on |
+
+`tests/lib-verify-repo.sh` went from **46 killed / 3 survived to 49 / 0**, and
+the corpus from `220|27` to `223|24`. Ledger entry 4 is retired — and unlike
+entry 3, which F16 retired by fixing the target map, this one was retired by
+writing the assertion.
+
+Original finding:
+
 
 Three surviving logic-flips, no test anywhere kills them (measured):
 
