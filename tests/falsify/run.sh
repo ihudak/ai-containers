@@ -21,10 +21,12 @@
 #   identity   <file>:<operator>:<sha1-of-trimmed-original-line> — the ledger
 #              identity, NEVER file:line, because a line number changes on every
 #              edit above it while the sha1 of the line does not.
-#   verdict    KILLED | SURVIVED | UNPROVEN. UNPROVEN means the oracle timed out
-#              WITHOUT ever printing a FAIL: line, so nothing was observed
-#              asserting. It is not a kill and must not be read as one — see the
-#              note on falsify_verdict. It is owed a ledger entry like a survivor.
+#   verdict    KILLED | SURVIVED | UNPROVEN. UNPROVEN means nothing was observed
+#              asserting — the oracle timed out, said it could not set ITSELF
+#              up, or was killed by a SIGNAL — in every case without ever
+#              printing a FAIL: line. It is not a kill and must not be read as
+#              one — see the note on falsify_verdict. It is owed a ledger entry
+#              like a survivor.
 #   oracle     the row's oracle field verbatim, which may name SEVERAL tests
 #              separated by commas. They are one invocation, not several: a
 #              target's code can be driven by more tests than the single one
@@ -35,13 +37,18 @@
 #              two logic-flip mutants that share operator AND sha1. seq (with
 #              lineno) is what tells those two apart; identity is what survives
 #              an unrelated edit elsewhere in the file.
-#   signal     what happened: `exit`, `failline`, `timeout`, `scaffold`, joined
-#              by `+`, or `none` for a survivor. `timeout` WITHOUT `failline`
-#              yields UNPROVEN, never KILLED; `timeout+failline` is a genuine
-#              kill that merely ran long. `scaffold` means the oracle said it
-#              could not set ITSELF up — it outranks every other signal and
-#              always yields UNPROVEN, because a test that never ran cannot have
-#              noticed anything (see falsify_has_scaffold_failure).
+#   signal     what happened: `exit`, `failline`, `timeout`, `scaffold`,
+#              `signal`, joined by `+`, or `none` for a survivor. `timeout`
+#              WITHOUT `failline` yields UNPROVEN, never KILLED;
+#              `timeout+failline` is a genuine kill that merely ran long.
+#              `scaffold` means the oracle said it could not set ITSELF up — it
+#              outranks every other signal and always yields UNPROVEN, because a
+#              test that never ran cannot have noticed anything (see
+#              falsify_has_scaffold_failure). `signal` means the oracle was
+#              TERMINATED rather than having exited: `wait` returned 128+N, the
+#              signature the OOM killer leaves on a memory-capped host running
+#              $(nproc) workers. It is never combined with `exit`, because the
+#              driver did not choose that status (see falsify_died_of_signal).
 #   <mutated-line> is LAST because a shell line may itself contain a `|`. A
 #              parser reads the first 8 fields and takes the rest verbatim.
 #
@@ -86,8 +93,9 @@
 #     dirtiness alone failed an oracle (mutate.sh's `cmd_apply` does carry a
 #     `git diff --quiet` gate), every kill would be spurious.
 #
-# KILLED = the oracle exited non-zero, OR its output carries a `FAIL:` line. A
-# TIMEOUT alone is UNPROVEN, not KILLED. The disjunction is not redundant. The exit code is
+# KILLED = the oracle exited non-zero OF ITS OWN ACCORD, OR its output carries a
+# `FAIL:` line. A TIMEOUT alone is UNPROVEN, not KILLED, and so is a SIGNAL
+# DEATH — 128+N is the process being shot, not the driver reporting failures. The disjunction is not redundant. The exit code is
 # exactly the signal that rots — run-all.sh's own header records a real case of
 # a test printing FAIL: lines and exiting 0 anyway — and the driver's own gate
 # for that is anchored at `^FAIL:`, so an INDENTED `  FAIL:` still slips past it
@@ -150,7 +158,30 @@ fr_err()  { printf 'ERROR: %s\n' "$*" >&2; }
 # `return 1`) and requires a known-killable mutant to flip to SURVIVED, which is
 # only a proof if each signal can be disabled on its own.
 falsify_exit_kills() {   # <oracle exit status> → 0 when that status is a kill
-  [[ "$1" -ne 0 ]]
+  [[ "$1" -ne 0 ]] && ! falsify_died_of_signal "$1"
+}
+
+# THE ORACLE DID NOT EXIT — IT WAS TERMINATED BY A SIGNAL, and `wait` reports
+# that as 128+N. That is not the driver counting failures; it is the process
+# being shot, and the two were indistinguishable to falsify_exit_kills above.
+#
+# The trigger is not hypothetical. The tier runs `--jobs $(nproc)` workers, each
+# running a WHOLE `run-all.sh`, and on a memory-capped host the kernel picks one
+# and SIGKILLs it: this container's own cgroup reports `oom_kill 7` against an
+# 8 GiB `memory.max`. `wait` then returns 137, no FAIL: line was ever printed,
+# no watchdog flag was set — and the mutant was recorded KILLED, signal `exit`.
+# A mutant nothing asserted about, counted as caught. That is the same inversion
+# backlog F12 found in the timeout path and F31 found in the scaffold path,
+# arriving through a third channel, and it is the one direction this tier must
+# never fail in: it removes a survivor the ledger was owed, so the coverage
+# claim grows while the coverage does not.
+#
+# The boundary is sound rather than conventional: tests/run-all.sh exits 0, 1 or
+# 2 and nothing else — never a failure COUNT — so no honest driver status can
+# reach 128. tests/test-falsify-run.sh pins that premise by running the real
+# driver all three ways, rather than trusting this sentence.
+falsify_died_of_signal() {   # <oracle exit status> → 0 when a signal ended it
+  [[ "$1" -ge 128 ]]
 }
 
 falsify_has_fail_line() {   # <oracle output file> → 0 when it carries a FAIL: line
@@ -300,6 +331,16 @@ falsify_verdict() {   # <rc> <outfile> <timed-out 0|1>
     FALSIFY_VERDICT="UNPROVEN"; FALSIFY_SIGNAL="${sig:+$sig+}scaffold"
     return 0
   fi
+  # Same reasoning, third channel: an oracle killed by a signal observed
+  # nothing either. Ordered AFTER scaffold (a collapsed workspace is the more
+  # specific diagnosis) and BEFORE the survived branch, because SURVIVED is a
+  # claim that the suite ran and noticed nothing — this one never finished
+  # running. A FAIL: line printed before the signal still wins: the assertion
+  # WAS observed failing, and the process dying afterwards does not unsee it.
+  if falsify_died_of_signal "$1" && (( timed_out == 0 )) && ! falsify_has_fail_line "$2"; then
+    FALSIFY_VERDICT="UNPROVEN"; FALSIFY_SIGNAL="${sig:+$sig+}signal"
+    return 0
+  fi
   if [[ -z "$sig" ]]; then
     FALSIFY_VERDICT="SURVIVED"; FALSIFY_SIGNAL="none"
     return 0
@@ -437,6 +478,13 @@ fr_harvest() {   # <pid> — print that mutant's records and tally them
             else
               fr_warn "TIMEOUT after ${FR_TIMEOUT}s (killed before the clock ran out): $f3"
             fi ;;
+        esac
+        # A signal death is UNPROVEN, and silently so it would look like an
+        # ordinary assertion gap in the ledger. Name the likely cause where the
+        # reader can act on it: --jobs workers each run a whole run-all.sh, and
+        # on a memory-capped host the kernel picks one.
+        case "$f7" in
+          *signal*) fr_warn "ORACLE KILLED BY A SIGNAL (UNPROVEN — nothing was observed asserting; check the host's memory cap against --jobs $FR_JOBS): $f3" ;;
         esac ;;
       'NOTE|write-failed|'*) FR_BROKEN=$(( FR_BROKEN + 1 )) ;;
     esac

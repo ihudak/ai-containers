@@ -1166,6 +1166,18 @@ run alone:
    one of these "load-sensitive oracles" had a specific, fixable defect rather
    than a need for more time. Look for a mechanism before adding a timeout.
 
+**2026-08-19: a second one of these had a mechanism too — see F35.** Chasing
+case 1 rather than adding time found that the tier's own concurrency is a
+MEMORY problem before it is a timing one: this container's cgroup reports
+`oom_kill 7` against an 8 GiB `memory.max`, and `--jobs $(nproc)` workers each
+run a whole `run-all.sh`. The kernel picks one and SIGKILLs it. When it picks
+the WORKER, the result file is empty and run.sh reports FR_BROKEN — which is
+exactly case 1's symptom, honestly reported. When it picks the ORACLE, the
+verdict was `KILLED`, which was not honest at all. F35 fixes the second and
+explains the first. That is now two of the four items in this entry whose cause
+was a specific defect rather than a need for more time; read the remaining one
+the same way before reaching for `--timeout`.
+
 The pattern is the tier's own concurrency turning healthy oracles unhealthy, and
 the two remaining cases are not scaffolding failures, so the F31 channel does
 not catch them. `run.sh`'s per-target pristine baseline catches the case where
@@ -1366,3 +1378,72 @@ A `bash-dialect-lint.sh` rule was considered and rejected: that linter's subject
 is "no construct newer than the declared bash floor", and this is a correctness
 idiom available in every bash version. Mixing them would blur what a
 dialect-lint failure means.
+
+## F35 — an oracle KILLED BY A SIGNAL was scored as a KILL — **FIXED 2026-08-19**
+
+**Found by chasing F32 case 1 for a mechanism instead of raising a timeout.**
+
+`falsify_exit_kills()` was `[[ "$1" -ne 0 ]]`. `wait` reports a signal death as
+128+N, so 137 (SIGKILL) satisfied it, and with no `FAIL:` line and no watchdog
+flag the verdict was **`KILLED`, signal `exit`** — a mutant nothing asserted
+about, recorded as caught.
+
+Measured, not theorised:
+
+```
+oracle rc=0   → SURVIVED  none        oracle rc=137 → KILLED  exit
+oracle rc=1   → KILLED    exit        oracle rc=143 → KILLED  exit
+oracle rc=2   → KILLED    exit        oracle rc=139 → KILLED  exit
+```
+
+**The trigger is present, not hypothetical.** The tier runs `--jobs $(nproc)`
+workers, each running a WHOLE `run-all.sh`; the container this was found in
+reports `oom_kill 7` and `max 82844` against an 8 GiB `memory.max`. The kernel
+picks a process and SIGKILLs it. Which one it picks decides the symptom:
+
+| kernel picks | result file | what the tier reported | honest? |
+|---|---|---|---|
+| the **worker** | empty | `FR_BROKEN`, `rc=1`, named on stderr | yes — this is F32 case 1's symptom |
+| the **oracle** | a `MUTANT\|KILLED\|…\|exit` line | a kill | **no** |
+
+This is the same inversion F12 found in the timeout path and F31 found in the
+scaffold path, arriving through a third channel. It fails in the one direction
+this tier must never fail in: it REMOVES a survivor the ledger was owed, so
+`check-ledger.sh` stops demanding an entry and the coverage claim grows while
+the coverage does not.
+
+**The fix.** `falsify_died_of_signal()` (`rc >= 128`); `falsify_exit_kills()`
+excludes it; and `falsify_verdict()` gains a third "the oracle never observed
+anything" branch, ordered after `scaffold` and before `SURVIVED`, yielding
+`UNPROVEN` with signal `signal`. A `FAIL:` line printed before the signal still
+wins — the assertion WAS observed failing, and the process dying afterwards
+does not unsee it. A timeout still owns its own branch, because "raise
+`--timeout`" and "the host ran out of memory" send a reader to different
+places; the runner now warns on stderr naming `--jobs` and the memory cap.
+
+**The 128 boundary is sound, and pinned by effect.** `tests/run-all.sh` returns
+0, 1 or 2 and never a failure COUNT, so no honest driver status can reach 128.
+`tests/test-falsify-run.sh` runs the real driver all four reachable ways and
+records what it returns, rather than trusting that sentence.
+
+**Demonstrated failing**, with a fixture oracle (I) that SIGKILLs its own
+`$PPID` — which IS the driver, since `falsify_run_oracle` `exec`s it in the
+subshell it waits on:
+
+| break | what the case reads |
+|---|---|
+| the boundary moved to 256 | `KILLED`, signal `exit` — the original bug, exactly |
+| the verdict branch deleted | `SURVIVED`, signal `none` — the other wrong answer |
+| `falsify_exit_kills` reverted | signal `exit+signal`, claiming the driver chose 137 |
+| the stderr warning suppressed | no actionable diagnosis on the run |
+
+Corpus after the fix: `251|220|27|4`, byte-identical — the change is inert on a
+healthy run and only fires when the environment shoots an oracle. That is
+deliberate: it converts a silent over-count into a loud, ledger-visible
+failure, which will turn a transiently OOM-killed CI run red rather than green.
+That trade is the whole point.
+
+**Not fixed here:** capping `--jobs` below `$(nproc)` on a memory-capped host
+(F32's third option). The tier no longer LIES under memory pressure, which is
+the half that mattered; how much pressure to allow is a tuning decision with
+its own measurement.
