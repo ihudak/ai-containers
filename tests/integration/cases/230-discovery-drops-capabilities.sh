@@ -43,7 +43,11 @@
 # a fresh `docker exec` — mutations/070-230-pid1-caps-fresh-exec.patch. Note what
 # that implies, and what 240's patch exploits: because the drop is equivalent to
 # the setuid, deleting --drop from entrypoint.sh does NOT make a capability case
-# fail. Only a mutation that stops the setuid clearing the sets does.
+# fail. Nor does `capsh --keep=1`, which preserves PERMITTED and not EFFECTIVE.
+# The one measured path that puts a capability back into the agent shell's
+# EFFECTIVE set is the ambient set (`--inh=` plus `--addamb=`, which need the
+# `--keep=1` to have kept the capability permitted past the `--user=`). See
+# mutations/240-open-keeps-capabilities.patch for the measurements.
 #
 # Same /proc/1/status rule as 070: a fresh `docker exec` starts from the
 # container's capability BOUNDING SET and does not inherit capsh's drops, so

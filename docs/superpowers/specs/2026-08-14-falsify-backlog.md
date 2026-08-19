@@ -241,18 +241,41 @@ nearly free there (never granted); `cap_net_raw` is the load-bearing one, since
 Docker's default bounding set includes it and nothing issues `--cap-drop`, so
 only the handover to the sandbox user removes it.
 
-Its known-bad needed real thought, and the obvious one is wrong. **Deleting
-`--drop=` from the open branch is an EQUIVALENT mutation** — `capsh --user=`
-setuids from root and the kernel clears the permitted and effective sets on that
-transition, which `230`'s own note records, so an open-mode case still passes
-with no drop at all. `240-open-keeps-capabilities.patch` therefore adds the flag
-that suppresses the clearing, `--keep=1` (`PR_SET_KEEPCAPS`) — the one `230`'s
-note names as "never used". PID 1 still becomes the sandbox user, so
-`sandbox_up`'s handover wait still succeeds and the break reaches `240`'s own
-assertion instead of dying in setup; a demonstration that kills the container
-before the assertion runs proves nothing about the assertion. `230` shares
-`pid1_caps` but not that branch, so it is untouched and still passes — which is
-precisely the coverage `240` adds.
+Its known-bad took three attempts, and the two failures are the interesting
+part. **Deleting `--drop=` from the open branch is an EQUIVALENT mutation** —
+`capsh --user=` setuids from root and the kernel clears the permitted and
+effective sets on that transition, which `230`'s own note records, so an
+open-mode case still passes with no drop at all. The first patch therefore added
+`--keep=1` (`PR_SET_KEEPCAPS`), reasoning that it suppresses the clearing. **It
+was demonstrated on the host and came back UNDEMONSTRATED** — the case still
+passed. `PR_SET_KEEPCAPS` preserves the *permitted* set across the UID change;
+the *effective* set is zeroed regardless, and `pid1_caps` reads `CapEff`.
+
+Measured directly in the integration image rather than reasoned about again —
+`CapEff` of the process `capsh` execs:
+
+| capsh options | CapEff |
+|---|---|
+| root, no setuid | `a80425fb` |
+| `--drop=cap_net_admin,cap_net_raw --user=probe` | `00000000` |
+| `--keep=1 --user=probe` | `00000000` |
+| `--keep=1 --user=probe --inh=cap_net_raw --addamb=cap_net_raw` | **`00002000`** (`cap_net_raw`) |
+
+**The finding underneath, worth more than the patch:** three plausible mutations
+are equivalent — deleting `--drop=`, adding `--keep=1`, and granting `--cap-add`
+to open mode in `sandbox_up`. None changes `CapEff`. The agent shell's empty
+capability set is guaranteed by `capsh --user=`, **not** by the `--drop=` flag
+every reader's eye goes to; the flag is belt-and-braces over a guarantee the
+setuid already gives. Any future reviewer who "tightens" or "loosens" that flag
+should know it moves nothing.
+
+The shipped known-bad uses the ambient set (`--keep=1 … --inh= --addamb=`), the
+one measured path that survives a root→non-root setuid and lands in `CapEff`.
+PID 1 still becomes the sandbox user, so `sandbox_up`'s handover wait still
+succeeds and the break reaches `240`'s own assertion instead of dying in setup —
+a demonstration that kills the container before the assertion runs proves nothing
+about the assertion. `230` shares `pid1_caps` but not that branch, so it is
+untouched and still passes, which is precisely the coverage `240` adds.
 
 Hermetic state: full suite green, all 35 mutation patches apply, and
 `test-mutations.sh`'s coverage rule (every `network-mode` case must be named by
@@ -268,21 +291,16 @@ selects both cases:
 (upstream run 32297181648, mgd run 32297210600). So the case is real, launches,
 and its assertions hold against a live container — not merely authored.
 
-**What is still not demonstrated: the known-bad.** No workflow runs
-`demonstrate-network-tier.sh`, so the `--keep=1` hypothesis has not been executed
-anywhere. It rests on documented capsh/kernel behaviour plus this repo's own
-recorded finding that Docker's default set carries `cap_net_raw`. Two claims
-remain to confirm, and both need a host with Docker:
+**The known-bad still needs its demonstration re-run.** The `--keep=1` version
+was demonstrated on the host and rejected (UNDEMONSTRATED); the ambient version
+that replaced it is backed by the measurement above but has not itself been put
+through `demonstrate-network-tier.sh`, which no workflow runs. Two claims remain:
 
   - with `240-open-keeps-capabilities` applied, `240` **fails naming
     `cap_net_raw`** — failing in `sandbox_up` instead would mean the damage never
     reached the assertion, and the demonstration would prove nothing;
   - `230` still **passes** with that same patch applied, which is the whole
     point: it is the coverage `230` could never provide.
-
-If `240` passes with the patch applied, the `--keep=1` hypothesis is wrong and
-the known-bad needs replacing — the mutation would be equivalent, and `240`
-would join the unfalsifiable-guard cluster rather than closing this entry.
 
 ## F8 — three surviving mutants in `tests/integration/mutate.sh`'s guard cluster — **CLOSED 2026-08-19, superseded by F20**
 

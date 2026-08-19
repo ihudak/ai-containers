@@ -25,13 +25,24 @@
 # does. Only the handover to the sandbox user takes it away from the agent shell.
 # Both are asserted; cap_net_raw is the one with something to prove.
 #
-# KNOWN-BAD: mutations/240-open-keeps-capabilities.patch. Deleting `--drop=` from
-# the open branch would NOT fail this case — as 230's note records, `capsh
-# --user=` setuids from root and the kernel clears the permitted and effective
-# sets on that transition, so the drop is equivalent to the setuid and removing
-# it is an equivalent mutation. The patch therefore adds the one flag that stops
-# the setuid clearing them: `--keep=1` (PR_SET_KEEPCAPS), which 230's note names
-# as "never used". PID 1 still becomes the sandbox user, so sandbox_up's handover
+# KNOWN-BAD: mutations/240-open-keeps-capabilities.patch, which keeps
+# cap_net_raw across the handover through the AMBIENT set. Three more obvious
+# mutations were tried first and all three are equivalent — measured CapEff of
+# the process capsh execs, in the integration image:
+#
+#     root, no setuid                                     a80425fb
+#     --drop=cap_net_admin,cap_net_raw --user=probe        00000000
+#     --keep=1 --user=probe                                00000000
+#     --keep=1 --user=probe --inh=… --addamb=…             00002000  (cap_net_raw)
+#
+# So deleting `--drop=` does not fail this case; nor does `--keep=1` alone (it
+# preserves PERMITTED, not EFFECTIVE); nor would granting `--cap-add` to open
+# mode in sandbox_up. None of them changes CapEff, because the drop is not what
+# empties the agent shell — `capsh --user=` is, exactly as 230's note records.
+# `--drop=` is belt-and-braces over a guarantee the setuid already gives.
+#
+# The ambient set is the one path that survives a root→non-root setuid and lands
+# in EFFECTIVE. PID 1 still becomes the sandbox user, so sandbox_up's handover
 # wait still succeeds and the break reaches THIS case's assertion instead of
 # dying in the harness first — assert_no_capability reports cap_net_raw still
 # present. 230 is untouched by that patch and still passes, which is exactly the
