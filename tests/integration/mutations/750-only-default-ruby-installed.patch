@@ -19,6 +19,6 @@ index bcc220c..586090a 100755
  # and whole-line, so ruby-3.4.5 never matches ruby-3.4.50 or vice versa.
 -for v in $versions; do
 +for v in "${versions##* }"; do  # MUTATION: only the last configured version installs
-   if rvm list strings 2>/dev/null | grep -Fqx "ruby-$v"; then
+   if grep -Fqx "ruby-$v" < <(rvm list strings 2>/dev/null); then
      log "ruby-$v already present"
    else

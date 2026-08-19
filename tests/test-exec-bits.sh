@@ -303,7 +303,7 @@ else
 
     while IFS= read -r bin; do
       [[ -z "$bin" ]] && continue
-      if printf '%s\n' "$chmodded" | grep -qxF "$bin"; then
+      if grep -qxF "$bin" <<<"$chmodded"; then
         pass "$bin is made executable by a chmod in the Dockerfile"
       else
         fail "$bin is made executable by a chmod in the Dockerfile — COPYed but never chmodded"

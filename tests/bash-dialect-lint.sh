@@ -88,7 +88,7 @@ fi
 
 # $1 = a matched line's raw text, $2 = the rule id being checked against it.
 marker_allows() {
-  printf '%s' "$1" | grep -qE "#[[:space:]]*dialect-lint:[[:space:]]*allow[[:space:]]+${2}:[[:space:]]*[^[:space:]]"
+  grep -qE "#[[:space:]]*dialect-lint:[[:space:]]*allow[[:space:]]+${2}:[[:space:]]*[^[:space:]]" <<<"$1"
 }
 
 rc=0

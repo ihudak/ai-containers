@@ -112,6 +112,11 @@ wf_steps() {  # $1=workflow yaml  $2=job id → step identities, one per line
 # arriving only on a loaded machine. It reached this repo through the falsify
 # tier, which runs several copies of test-layer-containment.sh at once.
 #
+# The mirror case is worse and is why the rule is unconditional: a guard written
+# `if producer | grep -q BAD; then fail; else pass; fi` reports NO DEFECT at the
+# moment BAD appears, because that is the moment grep exits early. Measured
+# 50/50. tests/test-grep-q-pipelines.sh enforces the rule repo-wide.
+#
 # Capturing first cannot race: the producer's status is read directly, and the
 # match runs against a value that is already complete.
 wf_has_step() {  # $1=yaml  $2=job id  $3=step name → 0 when the job has it

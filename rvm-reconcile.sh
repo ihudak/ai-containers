@@ -76,7 +76,7 @@ fi
 # grep -Fqx: the version string is matched LITERALLY (its dots are not regex wildcards)
 # and whole-line, so ruby-3.4.5 never matches ruby-3.4.50 or vice versa.
 for v in $versions; do
-  if rvm list strings 2>/dev/null | grep -Fqx "ruby-$v"; then
+  if grep -Fqx "ruby-$v" < <(rvm list strings 2>/dev/null); then
     log "ruby-$v already present"
   else
     log "installing ruby-$v…"
@@ -93,7 +93,7 @@ done
 # the versions that are actually present, in requested order.
 present=""
 for v in $versions; do
-  if rvm list strings 2>/dev/null | grep -Fqx "ruby-$v"; then
+  if grep -Fqx "ruby-$v" < <(rvm list strings 2>/dev/null); then
     present="${present:+$present }$v"
   else
     log "FAILED: ruby-$v is not installed (all install attempts failed)"
@@ -103,7 +103,7 @@ done
 # Set the default Ruby ONCE: only if rvm has no default alias yet, and only to a
 # version that is actually present (first in the requested list). Never re-point an
 # existing default, and never point it at a version that failed to install.
-if ! rvm alias list 2>/dev/null | grep -q '^default '; then
+if ! grep -q '^default ' < <(rvm alias list 2>/dev/null); then
   if [[ -n "$present" ]]; then
     set -- $present
     log "setting default ruby-$1 (first bootstrap)"

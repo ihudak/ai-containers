@@ -22,7 +22,7 @@ for m in restricted discovery open; do
     grab && /;;/ {grab=0}
     grab {print}
   ' "$REPO_DIR/entrypoint.sh")"
-  if printf '%s' "$block" | grep -q '╔'; then
+  if grep -q '╔' <<<"$block"; then
     pass "$m mode prints a network-posture banner"
   else
     fail "$m mode prints a network-posture banner"

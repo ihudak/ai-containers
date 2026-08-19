@@ -56,12 +56,12 @@ phase4_block="$(sed -n '/# ── Phase 4: the runtime integration corpus/,/# �
 if [[ -z "$phase4_block" ]]; then
   fail "could not extract the Phase 4 block (anchors moved?)"
 else
-  if printf '%s\n' "$phase4_block" | grep -qE '\$\(TESTS_DIR\)?/integration/run\.sh|IT_RUNNER='; then
+  if grep -qE '\$\(TESTS_DIR\)?/integration/run\.sh|IT_RUNNER=' <<<"$phase4_block"; then
     pass "Phase 4 resolves tests/integration/run.sh as its runner"
   else
     fail "Phase 4 resolves tests/integration/run.sh as its runner"
   fi
-  if printf '%s\n' "$phase4_block" | grep -qE 'bash "\$IT_RUNNER"'; then
+  if grep -qE 'bash "\$IT_RUNNER"' <<<"$phase4_block"; then
     pass "Phase 4 invokes the runner via bash \"\$IT_RUNNER\""
   else
     fail "Phase 4 invokes the runner via bash \"\$IT_RUNNER\""
@@ -71,7 +71,7 @@ else
   # comment-only lines first so the header comment's prose about the
   # regression itself doesn't trip the check.
   code_only="$(printf '%s\n' "$phase4_block" | grep -vE '^[[:space:]]*#')"
-  if printf '%s\n' "$code_only" | grep -qE 'docker[[:space:]]+(run|build|exec)\b'; then
+  if grep -qE 'docker[[:space:]]+(run|build|exec)\b' <<<"$code_only"; then
     fail "Phase 4 contains no direct docker run/build/exec (found one)"
   else
     pass "Phase 4 contains no direct docker run/build/exec"

@@ -562,7 +562,7 @@ if grep -qx 'https://vendor.example/linux/latest/vend_linux_arm64.tar.gz' "$CURL
   pass "install=url: \${OS}/\${ARCH} expanded in the URL"
 else
   fail "install=url URL ($(grep '^https' "$CURL_LOG" | head -1))"; fi
-if [[ -x "$BIN_DIR/vend-cli" ]] && "$BIN_DIR/vend-cli" | grep -q 'vend 1.2.3'; then
+if [[ -x "$BIN_DIR/vend-cli" ]] && grep -q 'vend 1.2.3' < <("$BIN_DIR/vend-cli"); then
   pass "install=url: binary found inside a version-named directory and installed"
 else
   fail "install=url: nested binary install ($out)"; fi
@@ -592,7 +592,7 @@ chmod +x "$FAKEBIN/curl"
 scaffold_exec "fake curl (bare binary)" "$FAKEBIN/curl"
 rm -f "$BIN_DIR/vend-cli"
 PATH="$FAKEBIN:$PATH" install_one vend latest >/dev/null 2>&1
-if [[ -x "$BIN_DIR/vend-cli" ]] && "$BIN_DIR/vend-cli" | grep -q 'bare-binary'; then
+if [[ -x "$BIN_DIR/vend-cli" ]] && grep -q 'bare-binary' < <("$BIN_DIR/vend-cli"); then
   pass "install=url: a non-archive URL is installed as the binary"; else fail "install=url: bare binary"; fi
 
 # ${VERSION} comes from the sandbox.conf value.
@@ -638,7 +638,7 @@ chmod +x "$FAKEBIN/curl"
 scaffold_exec "fake curl (query-string archive)" "$FAKEBIN/curl"
 rm -f "$BIN_DIR/vend-cli"
 PATH="$FAKEBIN:$PATH" OS=linux ARCH=arm64 install_one vend latest >/dev/null 2>&1
-if [[ -x "$BIN_DIR/vend-cli" ]] && "$BIN_DIR/vend-cli" 2>/dev/null | grep -q 'vend 1.2.3'; then
+if [[ -x "$BIN_DIR/vend-cli" ]] && grep -q 'vend 1.2.3' < <("$BIN_DIR/vend-cli" 2>/dev/null); then
   pass "install=url: .tar.gz?query is still unpacked, not installed raw"
 else
   fail "install=url: .tar.gz?query unpacked (got $(head -c4 "$BIN_DIR/vend-cli" 2>/dev/null | od -An -c | tr -s ' '))"; fi

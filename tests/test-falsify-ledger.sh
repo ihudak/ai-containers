@@ -38,7 +38,7 @@ check() {  # $1=label $2=expected $3=actual
   if [[ "$2" == "$3" ]]; then pass "$1"
   else fail "$1 (expected '$2', got '$3')"; fi
 }
-has()    { printf '%s' "$2" | grep -qF -- "$1"; }
+has()    { grep -qF -- "$1" <<<"$2"; }
 assert_has()  { has "$2" "$3" && pass "$1" || fail "$1 — not in output: $3"; }
 assert_lacks() { has "$2" "$3" && fail "$1 — output also carried '$2'" || pass "$1"; }
 

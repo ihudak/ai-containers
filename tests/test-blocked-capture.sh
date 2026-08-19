@@ -76,7 +76,7 @@ capdir="$(printf '%s' "$res" | sed -n '/---DIR---/{n;p;}')"
 [[ "$rc" == "0" ]] \
   && pass "survives a comments-only proxy-domains file (exit 0)" \
   || fail "survives a comments-only proxy-domains file (exit $rc)"
-printf '%s' "$res" | grep -q 'Blocked traffic capture started' \
+grep -q 'Blocked traffic capture started' <<<"$res" \
   && pass "announces itself (reached the end of startup)" \
   || fail "announces itself (reached the end of startup) — got: $res"
 for f in blocked.log blocked-domains.txt blocked-ips.txt; do
@@ -191,8 +191,8 @@ fi
 # ── Regression guard on the construct itself ────────────────────────────────────
 # Any `grep … | grep …` here is one empty allowlist away from killing the daemon
 # again. Comments are stripped first so prose describing the old pipeline is fine.
-if grep -vE '^[[:space:]]*#' "$REPO_DIR/capture-blocked-traffic.sh" \
-     | grep -qE 'grep[^|]*\|[[:space:]]*grep'; then
+if grep -qE 'grep[^|]*\|[[:space:]]*grep' \
+     < <(grep -vE '^[[:space:]]*#' "$REPO_DIR/capture-blocked-traffic.sh"); then
   fail "allowlist parsing must not use a grep|grep pipeline under set -e"
 else
   pass "allowlist parsing uses no fail-prone grep|grep pipeline"
