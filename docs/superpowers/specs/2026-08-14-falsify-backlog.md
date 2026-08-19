@@ -626,7 +626,39 @@ functions the containment guard actually calls are unprotected.
 `wf_jobs`/`wf_steps`/`wf_job_key` against a nonexistent path, and `lc_rows check`
 with `LAYER_CHECKS_CONF` pointing at an absent file — each required to fail.
 
-## F19 — `mutate.sh`'s sibling-layout resolution is unexercised, and survives by accident
+## F19 — `mutate.sh`'s sibling-layout resolution is unexercised, and survives by accident — **FIXED 2026-08-19**
+
+Fixed as this entry specified: two fixture trees, both driven from a CWD
+**outside** them. One is mgd-shaped — `build.sh` under `base/`, a git root above
+it — plus a **decoy** `target.txt` at that root with the same content as
+`base/target.txt`. The decoy is what turns a status into an observation: without
+it a lost `APPLY_PREFIX` only makes `apply` fail, with it the patch has somewhere
+wrong to land and the assertion reads *which file changed*. The second tree is
+not a git repository at all, which is where `:52`'s fallback is load-bearing —
+`mutate.sh`'s own header promises `check` still works there, and it only does if
+`GIT_ROOT` falls back to the engine directory.
+
+**One prediction in this entry was wrong, and the fixture corrected it.** `:52`'s
+damage was expected to leave the patch landing in `base/` regardless, making the
+mgd fixture blind to it. It does not: `git apply` resolves its paths against the
+**repository root**, not the current directory, so cd-ing into `base/` with an
+empty prefix patches the file at the git root — the decoy. Both fixtures kill
+`:52`.
+
+| damage | what goes red |
+|---|---|
+| `:41` `-f` → `! -f` | the patch lands at the git root, not `base/`; and `check` dies in the no-git tree |
+| `:41` `\|\|` → `&&` | identical |
+| `:52` `\|\|` → `&&` | the patch lands at the git root; `check` in the no-git tree exits 1 with empty output — `GIT_ROOT` was the empty string and `cd ""` never moved |
+
+The bash-version fact this entry established is kept in the ledger tombstone,
+because it is about the repo rather than these three mutants: `cd ""` is a silent
+no-op on bash 5.1.16 and 5.2.21 and an **error** on 5.3.15, so a primitive's
+semantics changed above the declared floor. The new assertions do not depend on
+it in either direction — the undamaged script never runs `cd ""`.
+
+Original finding:
+
 
 `:41`'s `base/` fallback and `:52`'s `GIT_ROOT` resolution exist for
 mgd-ai-containers, where the engine lives under `base/` and `APPLY_PREFIX` must
@@ -645,7 +677,31 @@ depends on the CWD to come out right here.
 under `base/` — asserting the `REPO_DIR`/`GIT_ROOT`/`APPLY_PREFIX` triple derived
 for each, from a CWD outside both.
 
-## F20 — five `mutate.sh` refusal paths report success (supersedes F8)
+## F20 — five `mutate.sh` refusal paths report success (supersedes F8) — **FIXED 2026-08-19**
+
+Fixed as this entry specified, with one thing the entry did not say. **`:74` and
+`:143` are two damages to the same refusal, and the message cannot tell them
+apart** — `require_git_usable` prints its diagnosis *before* returning, so "git
+is unusable" appears whichever one is damaged. What separates them is the tree:
+`:143` exits 0 having applied nothing, while `:74` lets the apply proceed and the
+mutation **lands**, on a tree whose cleanliness was never established. So the
+git-unusable case reads the status, the message and the tree, and it is the tree
+assertion that catches `:74`.
+
+| damage | what goes red |
+|---|---|
+| `:141` `exit 1` → `exit 0` | `apply refuses while a mutation is still applied (rc=0)` |
+| `:143` `\|\| exit 1` → `\|\| exit 0` | `apply refuses when git is unusable (rc=0)` |
+| `:74` `return 1` → `return 0` | the same case, plus `applied nothing (state: p-good, dirty: yes)` |
+| `:206` `return 0` → `return 1` | `revert with nothing applied succeeds (rc=1)` |
+| `:242` `exit 1` → `exit 0` | `revert fails when a recorded patch reverses in neither direction (rc=0)` |
+
+The fake `git` is scoped to `--git-dir` alone and delegates everything else to
+the real one, so the script's own `rev-parse --show-toplevel` still resolves; it
+is checked in both directions before anything relies on it.
+
+Original finding:
+
 
 `:141` and `:242` (`exit 1` -> `exit 0`, one shared ledger identity), `:143`
 (`require_git_usable || exit 1` -> `exit 0`), `:74` (`return 1` -> `return 0`),
@@ -658,7 +714,35 @@ that names the applied mutation; a faked `git` that cannot resolve `--git-dir`,
 requiring `apply` to refuse non-zero; and `revert` with no state file, requiring
 exit 0.
 
-## F21 — `mutate.sh revert` reverses twice on any host with `tac`
+## F21 — `mutate.sh revert` reverses twice on any host with `tac` — **FIXED 2026-08-19**
+
+Fixed as this entry specified: two patches, the second **generated against the
+tree the first leaves behind**, so its context carries the first patch's change
+and reversing them in the order they were applied cannot work. That is what makes
+the reverse-order invariant testable rather than decorative. The assertions are
+exactly one `Reverted <id>` line per id, newest first, and no `Already absent`
+line.
+
+**This entry's prediction — "revert still exits 0" — is confirmed for ONE applied
+patch and is not what happens with two dependent ones.** Worth writing down,
+because the difference is instructive rather than a correction. Measured with the
+`&&` damage in place:
+
+| applied | what `revert` does under the damage |
+|---|---|
+| one patch | `Reverted p-good`, then `Already absent: p-good`, **exit 0** |
+| two patches | both `Reverted`, then the second pass finds `p-second` reversible in **neither** direction (`p-good` is already undone, so its context no longer matches), **exit 1** |
+
+Either way both invariants that block's own comment insists on are violated. The
+fixture uses the two-patch form because it pins the order as well as the
+double-read.
+
+This also retires a kill that was never an assertion: the mutant read KILLED on
+macOS only because macOS ships no `tac`, so `tac && sed` short-circuited and the
+loop read nothing. It is now killed on every host.
+
+Original finding:
+
 
 `:236`'s `done < <(tac "$STATE" 2>/dev/null || sed '1!G;h;$!d' "$STATE")` picks
 ONE reverser. With `&&`, on any host that has `tac` BOTH run, so every applied id
@@ -1706,3 +1790,57 @@ The first version shipped two defects that a 12-CPU host cannot see, and a
 
 Corpus unchanged: `251|223|24|4`, ledger clean under `--strict`.
 
+
+## F39 — `mutate.sh` has diverged between the two repos, and the file itself says it must not — **FIXED 2026-08-19, in the increment that found it**
+
+Found while porting F19/F20/F21. `tests/integration/mutate.sh` is no longer
+byte-identical across `ai-containers` and `mgd-ai-containers`. mgd's copy carries
+a `patch_prefix()` function — roughly sixty lines — that upstream does not, and
+mgd's own comment on it says:
+
+> Upstream's copy of this file carries the same latent defect; it is invisible
+> there for exactly that reason. Deciding the prefix from the PATCH rather than
+> from the repo is the fix in both, and leaves the upstream behaviour
+> bit-for-bit unchanged.
+
+So the fix was written, its author noted that upstream needs it too, and it never
+travelled. The defect: `APPLY_PREFIX` was decided **per repo** rather than **per
+patch**, which is correct only while every patch damages an engine file. The
+network-tier mutations damage `tests/integration/cases/*.sh` and
+`tests/integration/lib.sh`, which live at the repo root in **both** layouts —
+`tests/` is never under `base/` — so a blanket `--directory=base` turns them into
+`base/tests/integration/…`, a path that exists nowhere.
+
+**This is not a live defect upstream** — with an empty `APPLY_PREFIX` the
+short-circuit fires before anything is inspected, so today upstream behaves
+identically either way. What is live is the divergence itself, and `mutate.sh`'s
+own header is the thing it contradicts:
+
+> One mutation set serves both layouts, and the shared files stay
+> byte-identical, which is the property that lets a fix in one repo be a
+> straight copy into the other.
+
+That property is now false for this file. The next fix to `mutate.sh` in either
+repo is a merge, not a copy, and the falsify tier already reads the difference:
+mgd measures 59 mutants on this target where upstream measures 55.
+
+**The fix:** port `patch_prefix()` upstream, restoring byte-identity. Behaviour
+upstream is unchanged by construction, so the assertion that it landed correctly
+is the corpus itself — upstream's mutant count rises 55 → 59 and every one of the
+four new mutants must be KILLED by `test-mutations.sh`, which is what mgd already
+measures. `tests/test-shared-files-parity.sh` guards a different list (the files
+`project-init.sh`/`sync-to-projects.sh` copy into a project) and would not have
+caught this; whether a cross-repo parity check is worth building is a separate
+question from making these two files equal again.
+
+**Fixed in the same commit.** `patch_prefix()` was copied upstream verbatim and
+the two files are byte-identical again. The corpus is the check, exactly as
+stated above: upstream's mutant count on this target rose **55 → 59**, all four
+new mutants are KILLED by `test-mutations.sh`, and upstream's whole-corpus TOTAL
+is now `9|255|240|11|4|11|5` — the same reading mgd measures, line for line.
+`mutate.sh verify` still reports every one of the 33 real mutations applying.
+
+Left open deliberately: whether a mechanical cross-repo parity check is worth
+building. `tests/test-shared-files-parity.sh` guards a different list and could
+not have caught this; nothing today compares the two repos' copies of a shared
+file, and this divergence was found by a human reading a diff during a port.

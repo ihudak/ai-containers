@@ -451,5 +451,231 @@ out="$(mt apply p-good)"; rc=$?
   || fail "the next apply is not blocked by the cleared state (rc=$rc, out: $out)"
 mt_clean
 
+# ── mutate.sh's refusal paths are REFUSALS, not quiet successes ────────────────
+# Five status-carrying paths reported success when damaged, and nothing anywhere
+# noticed (backlog F20). Every one of them is a STATUS, and mutate.sh is driven
+# by CI demonstrations and by a human's shell — both branch on $?. A refusal that
+# exits 0 is a demonstration that quietly did not happen.
+
+# apply, while something is already applied. The refusal is what stops a second
+# demonstration stacking on top of the first one's mutated tree.
+mt_clean
+out="$(mt apply p-good)"; rc=$?
+[[ "$rc" -eq 0 ]] || fail "fixture: could not apply p-good for the double-apply case (out: $out)"
+out="$(mt apply p-good)"; rc=$?
+[[ "$rc" -ne 0 ]] \
+  && pass "apply refuses while a mutation is still applied" \
+  || fail "apply refuses while a mutation is still applied (rc=$rc, out: $out)"
+grep -q 'still applied' <<< "$out" \
+  && pass "...and says why it refused" \
+  || fail "...and says why it refused (out: $out)"
+grep -q 'p-good' <<< "$out" \
+  && pass "...and names what is already applied, so the reader can revert it" \
+  || fail "...and names what is already applied (out: $out)"
+mt_clean
+
+# apply, under a git that cannot answer `rev-parse --git-dir`. TWO damages hide
+# here and they are not the same defect: the gate's own `|| exit 1` becoming
+# `exit 0` (the refusal reports success, nothing applied), and
+# require_git_usable's `return 1` becoming `return 0` (the gate is gone, the
+# message is still printed, and the mutation IS applied to a tree whose
+# cleanliness was never established). The MESSAGE cannot tell them apart — it is
+# printed either way — so the status and the tree are both read.
+MT_BIN_NOGITDIR="$tmp/mut-bin-nogitdir"; mkdir -p "$MT_BIN_NOGITDIR"
+cat > "$MT_BIN_NOGITDIR/git" <<EOF
+#!/usr/bin/env bash
+for a in "\$@"; do
+  [[ "\$a" == "--git-dir" ]] && { printf 'fake git: refusing rev-parse --git-dir (test fixture)\n' >&2; exit 1; }
+done
+exec "$REAL_GIT" "\$@"
+EOF
+chmod +x "$MT_BIN_NOGITDIR/git"
+# Checked in BOTH directions before anything relies on it: a fake that refused
+# everything would make the assertions below pass for the wrong reason, and one
+# that refused nothing would make them vacuous.
+if PATH="$MT_BIN_NOGITDIR:$PATH" git -C "$MT_REPO" rev-parse --git-dir >/dev/null 2>&1; then
+  fail "fixture: the --git-dir-refusing git answered --git-dir anyway"
+else
+  pass "fixture: the --git-dir-refusing git refuses --git-dir"
+fi
+if [[ "$(PATH="$MT_BIN_NOGITDIR:$PATH" git -C "$MT_REPO" rev-parse --show-toplevel 2>/dev/null)" \
+      == "$(git -C "$MT_REPO" rev-parse --show-toplevel 2>/dev/null)" ]]; then
+  pass "fixture: ...and delegates every other git invocation to the real one"
+else
+  fail "fixture: ...and delegates every other git invocation to the real one"
+fi
+
+mt_clean
+out="$( cd "$MT_REPO" && PATH="$MT_BIN_NOGITDIR:$PATH" bash "$MT_REPO/tests/integration/mutate.sh" apply p-good 2>&1 )"; rc=$?
+[[ "$rc" -ne 0 ]] \
+  && pass "apply refuses when git is unusable" \
+  || fail "apply refuses when git is unusable (rc=$rc, out: $out)"
+grep -q 'git is unusable' <<< "$out" \
+  && pass "...and names git as the reason, not the working tree" \
+  || fail "...and names git as the reason, not the working tree (out: $out)"
+if [[ ! -f "$MT_STATE" ]] && ! mt_dirty; then
+  pass "...and applied nothing: no state file, tree unchanged"
+else
+  fail "...and applied nothing (state: $(cat "$MT_STATE" 2>/dev/null || printf '<absent>'), dirty: $(mt_dirty && printf yes || printf no))"
+fi
+mt_clean
+
+# revert, with nothing applied. "There is nothing to undo" is a SUCCESS: a
+# demonstration ends with an unconditional `mutate.sh revert`, and a non-zero
+# exit there fails a job that did nothing wrong.
+mt_clean
+out="$(mt revert)"; rc=$?
+[[ "$rc" -eq 0 ]] \
+  && pass "revert with nothing applied succeeds" \
+  || fail "revert with nothing applied succeeds (rc=$rc, out: $out)"
+grep -q 'nothing applied' <<< "$out" \
+  && pass "...and says so" \
+  || fail "...and says so (out: $out)"
+
+# revert, when the recorded patch matches the tree in NEITHER direction — the
+# branch that must not clear the state file and must not report success. The
+# tree is rewritten to text no version of the patch describes, which is what a
+# half-finished manual edit on top of a mutation looks like.
+mt_clean
+out="$(mt apply p-good)"; rc=$?
+[[ "$rc" -eq 0 ]] || fail "fixture: could not apply p-good for the neither-direction case (out: $out)"
+printf 'alpha\nWHATEVER\ngamma\n' > "$MT_REPO/target.txt"
+out="$(mt revert)"; rc=$?
+[[ "$rc" -ne 0 ]] \
+  && pass "revert fails when a recorded patch reverses in neither direction" \
+  || fail "revert fails when a recorded patch reverses in neither direction (rc=$rc, out: $out)"
+grep -q 'could not reverse p-good' <<< "$out" \
+  && pass "...and names the mutation it could not account for" \
+  || fail "...and names the mutation it could not account for (out: $out)"
+if [[ -f "$MT_STATE" ]] && grep -qx 'p-good' "$MT_STATE"; then
+  pass "...and keeps the state file recording it, so the mutation is not lost"
+else
+  fail "...and keeps the state file recording it (state: $(cat "$MT_STATE" 2>/dev/null || printf '<absent>'))"
+fi
+mt_clean
+
+# ── revert reads the state file ONCE, newest first ─────────────────────────────
+# `done < <(tac "$STATE" 2>/dev/null || sed '1!G;h;$!d' "$STATE")` picks ONE
+# reverser: tac where it exists, the sed idiom where it does not. Under `&&`, a
+# host that HAS tac runs both, so every applied id reaches the loop twice — the
+# second pass finds the patch already gone, takes the "Already absent" branch,
+# and revert still exits 0 with the state file removed (backlog F21). Both facts
+# that block's own comment insists on are then false at once: the reverse order,
+# and "I undid it" being a different outcome from "it was already gone".
+#
+# Two patches, because one cannot show order. p-second is generated against the
+# tree p-good leaves behind — its context carries BETA — so reversing p-good
+# FIRST cannot work. Reverse order is load-bearing here, not decorative.
+cat > "$MT_MUT/p-second.patch" <<'EOF'
+# case: 400-ro-suffix-dropped
+# what: flips gamma to GAMMA, on top of p-good
+diff --git a/target.txt b/target.txt
+--- a/target.txt
++++ b/target.txt
+@@ -1,3 +1,3 @@
+ alpha
+ BETA
+-gamma
++GAMMA
+EOF
+mt_clean
+out="$(mt apply p-good p-second)"; rc=$?
+[[ "$rc" -eq 0 ]] || fail "fixture: could not apply the two-patch batch (out: $out)"
+out="$(mt revert)"; rc=$?
+[[ "$rc" -eq 0 ]] \
+  && pass "revert of a two-patch batch succeeds" \
+  || fail "revert of a two-patch batch succeeds (rc=$rc, out: $out)"
+mapfile -t mt_reverted < <(grep '^Reverted ' <<< "$out")
+if [[ "${#mt_reverted[@]}" -eq 2 ]]; then
+  pass "revert reports exactly one Reverted line per applied mutation"
+else
+  fail "revert reports exactly one Reverted line per applied mutation (got ${#mt_reverted[@]}: ${mt_reverted[*]:-none})"
+fi
+if [[ "${mt_reverted[0]:-}" == "Reverted p-second" && "${mt_reverted[1]:-}" == "Reverted p-good" ]]; then
+  pass "...newest first, the only order in which two patches on one file reverse at all"
+else
+  fail "...newest first (got: ${mt_reverted[*]:-none})"
+fi
+grep -q 'Already absent' <<< "$out" \
+  && fail "revert reported 'Already absent' for a mutation it had just undone — the state file was read twice (out: $out)" \
+  || pass "...with no 'Already absent' for a mutation it undid: the state file was read once"
+if ! mt_dirty && [[ ! -f "$MT_STATE" ]]; then
+  pass "...and the tree is back to committed state with the state file cleared"
+else
+  fail "...and the tree is back to committed state with the state file cleared (dirty: $(mt_dirty && printf yes || printf no))"
+fi
+mt_clean
+
+# ── The sibling base/ layout, and a tree with no git at all ────────────────────
+# mutate.sh resolves three things before it does anything: REPO_DIR (the engine
+# directory), GIT_ROOT, and APPLY_PREFIX — the `--directory=` that lets ONE patch
+# set serve both this repo and mgd-ai-containers, where the engine lives under
+# base/. None of it was exercised, and inverting it is nearly harmless HERE by
+# ACCIDENT: `cd` into a missing base/ fails, the substitution yields the empty
+# string, `cd ""` succeeds without moving, and the prefix comes out empty again,
+# so every patch still applies (backlog F19). The accident is the finding — a
+# resolution that is load-bearing for the port came out right because of the
+# caller's working directory.
+#
+# So both fixtures are driven from a CWD OUTSIDE them, and the assertion is
+# WHICH FILE the patch landed in, not merely that apply exited 0.
+MG_REPO="$tmp/mgdlayout"
+mkdir -p "$MG_REPO/base" "$MG_REPO/tests/integration/mutations"
+cp "$MUTATE" "$MG_REPO/tests/integration/mutate.sh"
+cp "$MT_MUT/p-good.patch" "$MG_REPO/tests/integration/mutations/p-good.patch"
+: > "$MG_REPO/base/build.sh"                            # the engine dir, one level down
+printf 'alpha\nbeta\ngamma\n' > "$MG_REPO/base/target.txt"
+# A DECOY with the same content at the git root. Without it, a lost APPLY_PREFIX
+# only makes apply fail; with it, the patch has somewhere wrong to land, and the
+# assertion can read which file actually changed instead of only a status.
+printf 'alpha\nbeta\ngamma\n' > "$MG_REPO/target.txt"
+( cd "$MG_REPO" && git init -q -b main . >/dev/null 2>&1 || git init -q . >/dev/null 2>&1
+  git add -A && git -c user.email=t@example -c user.name=t commit -qm init ) >/dev/null 2>&1
+
+if [[ ! -f "$MG_REPO/build.sh" && -f "$MG_REPO/base/build.sh" ]]; then
+  pass "fixture: the sibling-layout tree carries build.sh under base/, not at the root"
+else
+  fail "fixture: the sibling-layout tree carries build.sh under base/, not at the root"
+fi
+out="$( cd "$tmp" && bash "$MG_REPO/tests/integration/mutate.sh" apply p-good 2>&1 )"; rc=$?
+[[ "$rc" -eq 0 ]] \
+  && pass "apply works in the sibling base/ layout, driven from outside the tree" \
+  || fail "apply works in the sibling base/ layout, driven from outside the tree (rc=$rc, out: $out)"
+grep -q 'BETA' "$MG_REPO/base/target.txt" \
+  && pass "...and the patch landed in base/target.txt: APPLY_PREFIX resolved to base" \
+  || fail "...and the patch landed in base/target.txt (content: $(cat "$MG_REPO/base/target.txt"))"
+grep -q 'BETA' "$MG_REPO/target.txt" \
+  && fail "the patch landed at the GIT ROOT instead of base/ — APPLY_PREFIX was not applied" \
+  || pass "...and not at the git root, where an unprefixed apply would have put it"
+
+# The other half of the same resolution: GIT_ROOT's fallback for a tree that is
+# not in a git repository at all. mutate.sh's header states outright that check
+# and verify stay correct there, because `git apply --check` on a plain patch
+# needs no repository — but only if GIT_ROOT falls back to the engine directory.
+# Without the fallback it is the empty string, `cd ""` leaves the process in the
+# CALLER's directory, and the check silently runs against whatever is there.
+NG_REPO="$tmp/nogitlayout"
+mkdir -p "$NG_REPO/tests/integration/mutations"
+cp "$MUTATE" "$NG_REPO/tests/integration/mutate.sh"
+cp "$MT_MUT/p-good.patch" "$NG_REPO/tests/integration/mutations/p-good.patch"
+: > "$NG_REPO/build.sh"
+printf 'alpha\nbeta\ngamma\n' > "$NG_REPO/target.txt"
+# deliberately NOT a git repository
+
+if ( cd "$NG_REPO" && git rev-parse --git-dir >/dev/null 2>&1 ); then
+  fail "fixture: the no-git tree turned out to be inside a git repository — the check below would prove nothing"
+else
+  pass "fixture: the no-git tree is not inside any git repository"
+fi
+if [[ ! -e "$tmp/target.txt" ]]; then
+  pass "fixture: the outside CWD holds no target.txt for a mis-resolved GIT_ROOT to hit by luck"
+else
+  fail "fixture: the outside CWD holds a target.txt — a mis-resolved GIT_ROOT would patch it and look correct"
+fi
+out="$( cd "$tmp" && bash "$NG_REPO/tests/integration/mutate.sh" check p-good 2>&1 )"; rc=$?
+[[ "$rc" -eq 0 ]] \
+  && pass "check works with no git repository at all, driven from outside the tree" \
+  || fail "check works with no git repository at all (rc=$rc, out: $out) — GIT_ROOT did not fall back to the engine directory"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
