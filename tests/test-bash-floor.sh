@@ -179,7 +179,10 @@ bf_with_floor "${BASH_VERSINFO[0]}" "$(( BASH_VERSINFO[1] + 1 ))"; rc=$?
 # same vacuity this whole entry is about.
 #
 # Every one of these runs its subject as the CONDITION of an `if` rather than as
-# a bare statement. This file does not run under errexit today, but the file beside it does and the idiom must not depend on which. A non-zero bare command under errexit
+# a bare statement. This file does not run under errexit today, but its sibling
+# tests/test-shared-files-parity.sh does — it sources a product script that
+# sets `-euo pipefail` — and the idiom must not depend on which. A bare
+# non-zero command under errexit
 # aborts the test where it stands — no FAIL line, no failure count, just exit 1
 # — and the falsify tier scores that abort as KILLED, so the mutant would look
 # caught while nothing had asserted anything.
