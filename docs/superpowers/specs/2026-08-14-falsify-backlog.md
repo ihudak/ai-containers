@@ -258,12 +258,31 @@ Hermetic state: full suite green, all 35 mutation patches apply, and
 `test-mutations.sh`'s coverage rule (every `network-mode` case must be named by
 a patch) is satisfied for both the renamed `230` and the new `240`.
 
-**Not yet verified against Docker.** `240` has never been run, and the `--keep=1`
-hypothesis rests on documented capsh/kernel behaviour plus this repo's own
-recorded finding that Docker's default set carries `cap_net_raw`. The host run
-must confirm three things: `240` passes clean; with the patch applied `240` fails
-naming `cap_net_raw`; and `230` still passes with that same patch applied. Until
-that runs, F7's fix is authored, not demonstrated.
+**Verified against real Docker, in CI, in both repos.** PR CI's integration job
+runs `--tags fast --exclude needs-external,needs-dns --require security`, which
+selects both cases:
+
+    230-discovery-drops-capabilities   PASS  (3 assertions)
+    240-open-drops-capabilities        PASS  (3 assertions)
+
+(upstream run 32297181648, mgd run 32297210600). So the case is real, launches,
+and its assertions hold against a live container — not merely authored.
+
+**What is still not demonstrated: the known-bad.** No workflow runs
+`demonstrate-network-tier.sh`, so the `--keep=1` hypothesis has not been executed
+anywhere. It rests on documented capsh/kernel behaviour plus this repo's own
+recorded finding that Docker's default set carries `cap_net_raw`. Two claims
+remain to confirm, and both need a host with Docker:
+
+  - with `240-open-keeps-capabilities` applied, `240` **fails naming
+    `cap_net_raw`** — failing in `sandbox_up` instead would mean the damage never
+    reached the assertion, and the demonstration would prove nothing;
+  - `230` still **passes** with that same patch applied, which is the whole
+    point: it is the coverage `230` could never provide.
+
+If `240` passes with the patch applied, the `--keep=1` hypothesis is wrong and
+the known-bad needs replacing — the mutation would be equivalent, and `240`
+would join the unfalsifiable-guard cluster rather than closing this entry.
 
 ## F8 — three surviving mutants in `tests/integration/mutate.sh`'s guard cluster — **CLOSED 2026-08-19, superseded by F20**
 
