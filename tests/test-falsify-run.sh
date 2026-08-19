@@ -217,6 +217,28 @@ printf 'FAIL: fx_never_called succeeds\n'
 exit 1
 EOF
 
+# Oracle I — the DRIVER dies from a SIGNAL when its target is mutated. Green on
+# the pristine tree, exactly like oracle F, so the baseline passes and the
+# target is actually measured. On a mutant it SIGKILLs its parent, which IS the
+# driver: falsify_run_oracle `exec`s `bash run-all.sh` in the subshell it waits
+# on, so the test's $PPID is that very process. Nothing prints `FAIL:` and no
+# watchdog fires — 137 is the ONLY thing that reaches the runner, which is the
+# signature the OOM killer leaves when it picks one of $(nproc) workers on a
+# memory-capped host.
+cat > "$FX/tests/test-fx-signal.sh" <<'EOF'
+#!/usr/bin/env bash
+set -uo pipefail
+FX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=/dev/null
+source "$FX_DIR/fixture-lib.sh"
+if [[ "$(fx_bigger 5 3)" == "yes" ]]; then
+  printf 'PASS: fx_bigger orders its arguments\n'
+  exit 0
+fi
+kill -KILL "$PPID"
+exit 0
+EOF
+
 # THE REAL DRIVER, copied: the oracle contract is `tests/run-all.sh <name>`, so a
 # fixture with a hand-written stand-in driver would be testing the stand-in.
 cp "$TESTS_DIR/run-all.sh" "$FX/tests/run-all.sh"
@@ -238,6 +260,7 @@ CONF_SLOW="$(conf slow 'fixture-slow.sh|EXECUTED-WHOLE|test-fx-slow.sh')"
 CONF_TYPO="$(conf typo 'fixture-lib.sh|EXECUTED-WHOLE|test-fx-nosuchtest.sh')"
 CONF_SCAFFOLD="$(conf scaffold 'fixture-lib.sh|EXECUTED-WHOLE|test-fx-scaffold.sh')"
 CONF_BLIND="$(conf blind 'fixture-lib.sh|EXECUTED-WHOLE|test-fx-blind.sh')"
+CONF_SIGNAL="$(conf signal 'fixture-lib.sh|EXECUTED-WHOLE|test-fx-signal.sh')"
 # The blind oracle is FIRST deliberately: a runner that ran only the first name
 # would report the fx_bigger mutant SURVIVED, which is exactly the regression
 # this row type exists to make impossible.
@@ -584,6 +607,59 @@ grep -q 'could not set itself up' <<< "$drv" \
 grep -q 'SCAFFOLD-FAILED: mktemp -d' <<< "$drv" \
   && pass "  … and surfaces the marker line itself" \
   || fail "  … and surfaces the marker line itself"
+
+# ── 14b. AN ORACLE KILLED BY A SIGNAL IS UNPROVEN, NEVER KILLED ──────────────
+# The third channel through which "the oracle never observed anything" was
+# being scored as "the oracle observed the mutation": the process was SHOT.
+# `wait` reports 128+N and falsify_exit_kills read that as simply non-zero, so
+# the mutant left the survivor set, check-ledger.sh stopped demanding an entry,
+# and the hole was reported as covered — the same inversion as the timeout
+# (case 11) and the collapsed workspace (case 14), which is why it belongs
+# beside them.
+#
+# NOT hypothetical: the tier runs $(nproc) workers each running a whole
+# run-all.sh, and the container this was found in reports `oom_kill 7` against
+# an 8 GiB `memory.max`. The kernel picks a worker's driver and SIGKILLs it.
+#
+# The PREMISE first, by effect rather than by reading the source: 128 is only a
+# sound boundary because the real driver never returns a failure COUNT. Run it
+# all three reachable ways and record what it actually returns.
+( cd "$FX" && bash tests/run-all.sh fx-a >/dev/null 2>&1 ); drv_pass=$?
+( cd "$FX" && bash tests/run-all.sh fx-collapse >/dev/null 2>&1 ); drv_fail=$?
+( cd "$FX" && bash tests/run-all.sh fx-silent >/dev/null 2>&1 ); drv_silent=$?
+( cd "$FX" && bash tests/run-all.sh no-such-test-zzz >/dev/null 2>&1 ); drv_none=$?
+check "premise: the driver returns 0 when everything passes" "0" "$drv_pass"
+check "premise: the driver returns 1 for a failing test, not a failure count" "1" "$drv_fail"
+check "premise: the driver returns 1 for a test that asserted nothing" "1" "$drv_silent"
+check "premise: the driver returns 2 when its filter selects nothing" "2" "$drv_none"
+
+fx_run "$RUN" "$CONF_SIGNAL" "$FX" "$TMP/wit-signal" --jobs 1
+check "an oracle killed by a signal is UNPROVEN, not KILLED" \
+  "UNPROVEN" "$(fx_verdict "$FX_OUT" "$KILLABLE")"
+fx_sig="$(fx_signal "$FX_OUT" "$KILLABLE")"
+case "$fx_sig" in
+  *signal*) pass "  … and the signal field says so ($fx_sig)" ;;
+  *)        fail "  … and the signal field says so (got '$fx_sig')" ;;
+esac
+# `exit` would be the OLD, wrong reading of 137 — name it, so a regression that
+# reinstates it cannot hide behind a signal field that merely contains
+# something.
+case "$fx_sig" in
+  *exit*) fail "  … and does NOT claim the driver exited non-zero of its own accord (got '$fx_sig')" ;;
+  *)      pass "  … and does not claim the driver exited non-zero of its own accord" ;;
+esac
+# A signal death is not a timeout either, and conflating them would send a
+# reader to raise --timeout for a memory problem.
+case "$fx_sig" in
+  *timeout*) fail "  … and is not reported as a timeout (got '$fx_sig')" ;;
+  *)         pass "  … and is not reported as a timeout" ;;
+esac
+# And the runner says so where a human will see it, with the lever named. A
+# verdict a reader cannot act on sends them classifying an environment failure
+# as an assertion gap in the ledger.
+grep -q 'ORACLE KILLED BY A SIGNAL (UNPROVEN' <<< "$FX_ERR" \
+  && pass "  … and the runner warns on stderr, naming --jobs and the memory cap" \
+  || fail "  … and the runner warns on stderr, naming --jobs and the memory cap (stderr: $FX_ERR)"
 
 # ── 15. AN ORACLE FIELD NAMING SEVERAL TESTS RUNS ALL OF THEM ────────────────
 # The row's oracle field is a SET, and a runner that honoured only the first
