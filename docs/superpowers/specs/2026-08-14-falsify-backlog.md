@@ -1569,3 +1569,84 @@ must be run against a real image", which is the complement of the hand-driven
 launcher tier and the expensive packages tier. If F36 lands first, the
 complement collapses and the script becomes the demonstrator for everything,
 at which point `demonstrate-mutations.sh` is simply correct.
+
+## F38 — `--jobs $(nproc)` oversubscribes a CPU quota, and nothing bounded how much a run left unmeasured — **FIXED 2026-08-19**
+
+**Found by two machines disagreeing about the same commit on the same day.**
+A host run of the merged tree reported `251|210|15|26`; the same commit here
+reported `251|223|24|4`. Thirteen mutants that are killed moved to UNPROVEN,
+nine survivors moved with them — and **both runs scored green**.
+
+### 1. `nproc` is not the number of CPUs you may burn
+
+`nproc` reads the affinity MASK. `docker run --cpus=N` sets a CFS QUOTA and
+leaves the mask alone, so inside such a container `nproc` reports the HOST's
+count. This repo's own `sandbox.sh:810` starts every container with
+`--cpus="${CONTAINER_CPUS:-1.0}"`, and both callers sized the tier with
+`$(nproc)` — `verify-on-host.sh` and `hermetic-checks.yml`.
+
+Measured here, one target (`tests/lib-verify-repo.sh`, 49 mutants, no
+structural timeouts), `nproc` 12, quota 8, **verdicts identical on every row**:
+
+| `--jobs` | 1 | 2 | 4 | **8** (quota) | 12 (`nproc`) | 16 | 32 | 48 |
+|---|---|---|---|---|---|---|---|---|
+| wall | 55 s | 31 s | 20 s | **16 s** | 15 s | 15 s | 17 s | 18 s |
+| ms/mutant | 1041 | 1124 | 1351 | **1901** | 2881 | 3539 | 7541 | 11294 |
+| slowdown | 1.00× | 1.08× | 1.30× | **1.83×** | 2.77× | 3.40× | 7.24× | 10.85× |
+
+Wall-clock stops improving AT the quota and then gets worse; the per-mutant
+clock keeps climbing. Going from the quota to `nproc`'s 12 buys **one second**
+and spends **52%** of every mutant's timeout budget — and that budget is what
+decides KILLED versus UNPROVEN.
+
+**Fixed:** `run.sh --jobs auto` = `min(what the OS reports, the cgroup quota)`,
+reading cgroup v2 `cpu.max` and v1 `cpu.cfs_quota_us`/`cfs_period_us`. Both
+callers pass `auto`. On a runner with no quota it resolves to exactly
+`$(nproc)`, so CI's numbers do not move; it stops being a lie elsewhere. The
+runner prints BOTH numbers, because `jobs=8` alone leaves a reader unable to
+tell a quota from a small machine and that gap is the whole finding.
+
+One design correction made mid-work: `fr_quota_cpus` first had THREE separate
+rejections (v2's literal `max`, v1's `-1`, a regex) and the test could not
+break any of them individually — each was covered by the others. **An assertion
+no single change can falsify is not a guard**, which is F17's lesson arriving
+from the other side. Collapsed to one.
+
+### 2. Nothing bounded how much a run left unmeasured
+
+An UNPROVEN mutant is deliberately NOT owed a ledger entry (F27: the timeout is
+machine state, and a ratchet that cannot be satisfied everywhere at once is not
+a ratchet). That exemption is right. Its price was never paid: **an unbounded
+number of mutants could drop out of the measured set with nothing failing.**
+`verify-on-host.sh` already said so out loud at ≥10% — but only advisorily, and
+CI, the REFERENCE environment that runs `--strict`, had no such check at all.
+The strict environment was the one with no floor on how much it measured.
+
+**Fixed:** `run.sh --max-unproven-pct N`, opt-in, judged where the run's
+trustworthiness already is. CI passes 10 — the same number Phase 6 warns at,
+one concept with one number. Phase 6 stays advisory, the same asymmetry
+`--strict` already draws.
+
+### 3. Three places said UNPROVEN is owed a ledger entry. The gate says otherwise
+
+`run.sh`'s header ("It is owed a ledger entry like a survivor"), its
+`falsify_verdict` note, and `AGENTS.md` all claimed the requirement that
+`check-ledger.sh`'s check B explicitly declines to impose. **The AGENTS.md
+sentence was made worse by F35's edit**, which expanded it while keeping the
+wrong claim. A reader hitting a red ledger would have gone looking for an entry
+the gate never wanted. All three now state the actual contract — accepted, not
+required — and name what bounds it instead.
+
+### Demonstrated failing
+
+| break | what goes red |
+|---|---|
+| `fr_cpu_budget` returns the host count | every quota case, and `--jobs auto` resolves to 12 |
+| cgroup v1 layout not read | the v1 case only |
+| the single rejection guard removed | `max`, `-1` and garbage all become a quota of 1 |
+| the fractional floor removed | a half-CPU quota yields **0** workers |
+| the unproven budget never fires | a 100%-unproven run passes a budget of 50 |
+| the budget's validation removed | `--max-unproven-pct banana` exits 1, not 2 |
+
+Corpus unchanged: `251|223|24|4`, ledger clean under `--strict`.
+

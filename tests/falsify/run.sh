@@ -4,8 +4,16 @@
 # noticed. A mutant nothing noticed — a SURVIVOR — is evidence that an assertion
 # is missing or cannot fail.
 #
-#   bash tests/falsify/run.sh [--target <file>] [--jobs N] [--timeout S]
-#                            [--operators <list>]
+#   bash tests/falsify/run.sh [--target <file>] [--jobs N|auto] [--timeout S]
+#                            [--operators <list>] [--max-unproven-pct N]
+#
+#   --jobs auto             workers = min(what the OS reports, the cgroup CPU
+#                           quota). `nproc` reads the affinity mask and does not
+#                           see a `--cpus` quota, so it over-reports inside a
+#                           container — see fr_cpu_budget for the measurement.
+#   --max-unproven-pct N    fail the run when more than N% of mutants produced
+#                           no verdict. Opt-in: an UNPROVEN mutant is machine
+#                           state, so only the REFERENCE environment sets it.
 #
 # ── THE OUTPUT FORMAT (the survivor ledger's input; parse THIS, not stderr) ────
 # Every machine-readable record goes to STDOUT, pipe-delimited, one per line.
@@ -25,8 +33,13 @@
 #              asserting — the oracle timed out, said it could not set ITSELF
 #              up, or was killed by a SIGNAL — in every case without ever
 #              printing a FAIL: line. It is not a kill and must not be read as
-#              one — see the note on falsify_verdict. It is owed a ledger entry
-#              like a survivor.
+#              one — see the note on falsify_verdict. It is ACCEPTED in the
+#              ledger like a survivor but NOT REQUIRED there: the timeout that
+#              produced it is a property of the machine, and a ratchet that
+#              cannot be satisfied everywhere at once is not a ratchet (backlog
+#              F27; check-ledger.sh's check B carries the same note). The price
+#              of that exemption is that unproven mutants leave the measured set
+#              silently, which is what --max-unproven-pct bounds.
 #   oracle     the row's oracle field verbatim, which may name SEVERAL tests
 #              separated by commas. They are one invocation, not several: a
 #              target's code can be driven by more tests than the single one
@@ -134,6 +147,76 @@ FR_DERIVE="$FR_HERE/derive-targets.sh"
 
 FR_REPO="${FALSIFY_REPO:-$(cd "$FR_TESTS_DIR/.." && pwd)}"
 FR_CONF="${FALSIFY_CONF:-$FR_HERE/targets.conf}"
+# ── the effective CPU budget ──────────────────────────────────────────────────
+# `nproc` IS NOT THE NUMBER OF CPUS THIS PROCESS MAY BURN. It reads the affinity
+# MASK, while `docker run --cpus=N` — which is how this repo's own sandbox.sh
+# starts every container, defaulting to 1.0 — imposes a CFS QUOTA and leaves the
+# mask alone. Inside such a container nproc reports the HOST's count, and
+# `--jobs $(nproc)` oversubscribes the quota by whatever the ratio happens to be.
+#
+# That is a correctness question, not a throughput one. Every worker runs a
+# whole run-all.sh, so the oversubscription lands on the per-mutant clock that
+# --timeout is measured against — and a mutant that trips it is scored UNPROVEN,
+# which check-ledger.sh deliberately does not require an entry for. A mutant
+# that WAS killed therefore leaves the measured set with nothing failing.
+#
+# Measured here, one target (tests/lib-verify-repo.sh: 49 mutants, no structural
+# timeouts), nproc 12, cgroup quota 8, verdicts identical on every row:
+#
+#   --jobs        1     2     4     8*    12    16    32     48
+#   wall        55s   31s   20s   16s   15s   15s   17s    18s
+#   ms/mutant  1041  1124  1351  1901  2881  3539  7541  11294
+#                                ^quota  ^nproc
+#
+# Wall-clock stops improving AT the quota and then gets worse, while the
+# per-mutant clock climbs to 10.9x. Going from the quota to nproc's 12 buys one
+# second of wall-clock and spends 52% of every mutant's timeout budget.
+FR_MAX_UNPROVEN_PCT="${FALSIFY_MAX_UNPROVEN_PCT:-}"
+FR_CGROUP="${FALSIFY_CGROUP:-/sys/fs/cgroup}"
+
+fr_host_cpus() {   # what the OS reports, before any quota is applied
+  local n
+  n="$( (command -v nproc >/dev/null 2>&1 && nproc) || sysctl -n hw.ncpu 2>/dev/null || echo 4 )"
+  [[ "$n" =~ ^[1-9][0-9]*$ ]] || n=4
+  printf '%s' "$n"
+}
+
+# The cgroup CPU quota in whole CPUs, or NOTHING when there is no quota. Both
+# layouts are read because both are in service: v2 states it in one file as
+# "<quota> <period>" (or the literal `max`), v1 in two files where -1 means
+# unlimited. Anything unparseable is treated as "no quota" — this must never
+# invent a limit that is not there.
+fr_quota_cpus() {
+  local q p n
+  if [[ -r "$FR_CGROUP/cpu.max" ]]; then
+    read -r q p < "$FR_CGROUP/cpu.max" || return 0
+  elif [[ -r "$FR_CGROUP/cpu/cpu.cfs_quota_us" && -r "$FR_CGROUP/cpu/cpu.cfs_period_us" ]]; then
+    read -r q < "$FR_CGROUP/cpu/cpu.cfs_quota_us" || return 0
+    read -r p < "$FR_CGROUP/cpu/cpu.cfs_period_us" || return 0
+  else
+    return 0
+  fi
+  # ONE rejection, deliberately. v2 spells "no quota" as the literal `max`, v1
+  # spells it -1, and a layout nobody has met yet will spell it a third way —
+  # all three are the same answer, and one guard that states it (a positive
+  # integer pair, or no quota) is worth more than three that each catch one
+  # spelling. Three DID exist here, and the test could not break any of them
+  # individually: an assertion no single change can falsify is not a guard.
+  [[ "$q" =~ ^[1-9][0-9]*$ && "$p" =~ ^[1-9][0-9]*$ ]] || return 0
+  # FLOOR, and never zero: half a CPU of quota still gets one worker, because
+  # zero workers is not a smaller measurement, it is no measurement.
+  n=$(( q / p ))
+  (( n < 1 )) && n=1
+  printf '%s' "$n"
+}
+
+fr_cpu_budget() {   # workers this host can actually run: min(reported, quota)
+  local host quota
+  host="$(fr_host_cpus)"
+  quota="$(fr_quota_cpus)"
+  if [[ -n "$quota" ]] && (( quota < host )); then printf '%s' "$quota"; else printf '%s' "$host"; fi
+}
+
 FR_JOBS="${FALSIFY_JOBS:-1}"
 FR_TIMEOUT="${FALSIFY_TIMEOUT:-60}"
 FR_TARGET=""
@@ -361,7 +444,10 @@ falsify_verdict() {   # <rc> <outfile> <timed-out 0|1>
   # UNPROVEN is therefore its own verdict. A timeout that ALSO produced a
   # `FAIL:` line is still a kill: the assertion was observed failing before the
   # clock ran out, and the run was merely slow. Everything else that timed out
-  # is unproven and owed a ledger entry exactly like a survivor.
+  # is unproven — accepted in the ledger like a survivor, but NOT required
+  # there, because the timeout is machine state (check-ledger.sh's check B,
+  # backlog F27). What bounds that exemption is --max-unproven-pct, not the
+  # ledger.
   if (( timed_out )) && ! falsify_has_fail_line "$2"; then
     FALSIFY_VERDICT="UNPROVEN"; FALSIFY_SIGNAL="$sig"
   else
@@ -574,14 +660,30 @@ falsify_main() {
     case "$1" in
       --target) FR_TARGET="${2:-}"; shift 2 || return 2 ;;
       --jobs) FR_JOBS="${2:-}"; shift 2 || return 2 ;;
+      --max-unproven-pct) FR_MAX_UNPROVEN_PCT="${2:-}"; shift 2 || return 2 ;;
       --timeout) FR_TIMEOUT="${2:-}"; shift 2 || return 2 ;;
       --operators) FALSIFY_OPERATORS="${2:-}"; export FALSIFY_OPERATORS; shift 2 || return 2 ;;
       -h|--help) fr_usage; return 0 ;;
       *) fr_err "unknown option: $1"; fr_usage >&2; return 2 ;;
     esac
   done
+  if [[ "$FR_JOBS" == "auto" ]]; then
+    local _host _quota
+    _host="$(fr_host_cpus)"; _quota="$(fr_quota_cpus)"
+    FR_JOBS="$(fr_cpu_budget)"
+    # Said out loud, with BOTH numbers: "jobs=8" alone leaves a reader unable to
+    # tell a quota from a small machine, and the gap is the whole finding.
+    if [[ -n "$_quota" ]] && (( _quota < _host )); then
+      fr_warn "--jobs auto -> $FR_JOBS (the OS reports $_host CPU(s), the cgroup quota allows $_quota; nproc does not see the quota)"
+    else
+      fr_warn "--jobs auto -> $FR_JOBS (the OS reports $_host CPU(s), no cgroup CPU quota in effect)"
+    fi
+  fi
   if [[ ! "$FR_JOBS" =~ ^[1-9][0-9]*$ ]]; then
-    fr_err "--jobs must be a positive integer, got '${FR_JOBS}'"; return 2
+    fr_err "--jobs must be a positive integer or 'auto', got '${FR_JOBS}'"; return 2
+  fi
+  if [[ -n "$FR_MAX_UNPROVEN_PCT" && ! "$FR_MAX_UNPROVEN_PCT" =~ ^[0-9]+$ ]]; then
+    fr_err "--max-unproven-pct must be a non-negative integer, got '${FR_MAX_UNPROVEN_PCT}'"; return 2
   fi
   if [[ ! "$FR_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
     fr_err "--timeout must be a positive integer (seconds), got '${FR_TIMEOUT}'"; return 2
@@ -699,6 +801,26 @@ falsify_main() {
   if (( FR_BROKEN > 0 )); then
     fr_err "$FR_BROKEN mutant(s) produced no verdict — they are NOT counted as kills"
     rc=1
+  fi
+  # ── HOW MUCH THIS RUN ACTUALLY MEASURED ──────────────────────────────────────
+  # An UNPROVEN mutant is not owed a ledger entry — deliberately, because the
+  # timeout that produced it is a property of the MACHINE and a ratchet that
+  # cannot be satisfied everywhere at once is not a ratchet (backlog F27). The
+  # cost of that exemption is that an UNBOUNDED number of mutants can drop out
+  # of the measured set with nothing failing: a run reporting 210 killed where
+  # the reference reports 223 scores exactly as green.
+  #
+  # So the fraction is bounded HERE, where the run's own trustworthiness is
+  # already judged, and only when a caller asks for it. Opt-in, because a
+  # developer host legitimately times out and failing there would be the same
+  # everywhere-at-once mistake; the REFERENCE environment (CI) is what passes
+  # a value.
+  if [[ -n "$FR_MAX_UNPROVEN_PCT" ]] && (( done_total > 0 )); then
+    local unp_pct=$(( FR_T_UNPROVEN * 100 / done_total ))
+    if (( unp_pct > FR_MAX_UNPROVEN_PCT )); then
+      fr_err "$FR_T_UNPROVEN of $done_total mutant(s) (${unp_pct}%) produced no verdict, over the --max-unproven-pct ${FR_MAX_UNPROVEN_PCT} budget — this run measured materially less than it appears to. Check --jobs against the CPU quota (try --jobs auto) and --timeout before trusting the kill count"
+      rc=1
+    fi
   fi
   return "$rc"
 }
