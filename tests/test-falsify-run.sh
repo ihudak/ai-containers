@@ -683,13 +683,23 @@ cg() {   # <name> <layout> <content…> → a FALSIFY_CGROUP root
   esac
   printf '%s' "$root"
 }
-budget() {   # <cgroup root> → "<quota>|<budget>" as run.sh computes them
-  # export, not a bare assignment: the value is consumed by the file loaded on
-  # the NEXT line, which is exactly what SC2034 asks a reader to verify.
+# Split deliberately: what was READ from the file is a machine-independent
+# fact, while the budget depends on the machine. Asserting "quota 3 -> budget 3"
+# hard-codes a host with at least 3 CPUs — which is how this block first shipped,
+# and a 2-CPU CI runner caught it. And a helper that recomputed min(quota, host)
+# to build the expectation would just be the implementation written twice,
+# agreeing with itself however wrong it was.
+quota_of() {   # <cgroup root> → what fr_quota_cpus reads, or "" for no quota
   ( set +u; export FALSIFY_CGROUP="$1"
     # shellcheck source=/dev/null
     source "$RUN" >/dev/null 2>&1
-    printf '%s|%s' "$(fr_quota_cpus)" "$(fr_cpu_budget)" )
+    fr_quota_cpus )
+}
+budget_of() {  # <cgroup root> → the worker count run.sh would use
+  ( set +u; export FALSIFY_CGROUP="$1"
+    # shellcheck source=/dev/null
+    source "$RUN" >/dev/null 2>&1
+    fr_cpu_budget )
 }
 host_cpus="$( ( set +u
                 # shellcheck source=/dev/null
@@ -698,35 +708,42 @@ host_cpus="$( ( set +u
   && pass "fr_host_cpus reports a positive integer ($host_cpus)" \
   || fail "fr_host_cpus reported '$host_cpus'"
 
-check "cgroup v2: a 2-CPU quota is read as 2, and caps the budget" \
-  "2|2" "$(budget "$(cg v2quota v2 '200000 100000')")"
-check "cgroup v2: a fractional quota floors to 1 rather than to 0 workers" \
-  "1|1" "$(budget "$(cg v2half v2 '50000 100000')")"
-check "cgroup v2: \`max\` is NO quota, so the budget is what the OS reports" \
-  "|$host_cpus" "$(budget "$(cg v2max v2 'max 100000')")"
-check "cgroup v1: quota/period is read the same way" \
-  "3|3" "$(budget "$(cg v1quota v1 '300000' '100000')")"
-check "cgroup v1: -1 is unlimited, not a quota of zero" \
-  "|$host_cpus" "$(budget "$(cg v1unl v1 '-1' '100000')")"
-check "no cgroup files at all: no quota is INVENTED" \
-  "|$host_cpus" "$(budget "$(cg nocg none)")"
-check "an unparseable quota is treated as no quota, never as a limit" \
-  "|$host_cpus" "$(budget "$(cg junk v2 'banana 100000')")"
-# A quota LARGER than the machine must not inflate the budget past the CPUs
-# that actually exist — min(), not the quota alone.
-check "a quota larger than the machine does not inflate the budget" \
-  "999|$host_cpus" "$(budget "$(cg v2big v2 '99900000 100000')")"
+# What each layout is READ as — the same answer on every machine.
+check "cgroup v2: a 2-CPU quota is read as 2" "2" "$(quota_of "$(cg v2quota v2 '200000 100000')")"
+check "cgroup v2: a fractional quota floors to 1, not to 0" "1" "$(quota_of "$(cg v2half v2 '50000 100000')")"
+check "cgroup v2: \`max\` is NO quota" "" "$(quota_of "$(cg v2max v2 'max 100000')")"
+check "cgroup v1: quota/period is read the same way" "3" "$(quota_of "$(cg v1quota v1 '300000' '100000')")"
+check "cgroup v1: -1 is unlimited, not a quota of zero" "" "$(quota_of "$(cg v1unl v1 '-1' '100000')")"
+check "no cgroup files at all: no quota is INVENTED" "" "$(quota_of "$(cg nocg none)")"
+check "an unparseable quota is treated as no quota, never as a limit" "" "$(quota_of "$(cg junk v2 'banana 100000')")"
 
-# End to end: the runner resolves it, and SAYS BOTH NUMBERS. "jobs=2" alone
-# leaves a reader unable to tell a quota from a small machine, and that gap is
-# the entire finding.
-FALSIFY_CGROUP="$(cg v2run v2 '200000 100000')" fx_run "$RUN" "$CONF_A" "$FX" "$TMP/wit-auto" --jobs auto
-grep -qE 'jobs=2\|' <<< "$FX_OUT" \
+# And what it becomes. A quota of 1 binds on ANY machine, so this pins the
+# capping without assuming anything about the host; the other two pin the
+# directions that must NOT cap.
+check "a 1-CPU quota caps the budget at 1, on any machine" "1" "$(budget_of "$(cg v2one v2 '100000 100000')")"
+check "no quota: the budget is what the OS reports" "$host_cpus" "$(budget_of "$(cg v2max v2 'max 100000')")"
+check "a quota larger than the machine does not inflate the budget" \
+  "$host_cpus" "$(budget_of "$(cg v2big v2 '99900000 100000')")"
+
+# End to end, with a 1-CPU quota so the expectation holds on any runner: the
+# runner resolves it and SAYS BOTH NUMBERS. "jobs=1" alone leaves a reader
+# unable to tell a quota from a small machine, and that gap is the finding.
+FALSIFY_CGROUP="$(cg v2run v2 '100000 100000')" fx_run "$RUN" "$CONF_A" "$FX" "$TMP/wit-auto" --jobs auto
+grep -qE 'jobs=1\|' <<< "$FX_OUT" \
   && pass "--jobs auto resolves to the quota, and the RUN record carries it" \
-  || fail "--jobs auto did not resolve to 2 (RUN record: $(grep -m1 '^RUN|' <<< "$FX_OUT"))"
-grep -q "the cgroup quota allows 2" <<< "$FX_ERR" \
+  || fail "--jobs auto did not resolve to 1 (RUN record: $(grep -m1 '^RUN|' <<< "$FX_OUT"))"
+grep -q "the cgroup quota allows 1" <<< "$FX_ERR" \
   && pass "  … and the note names the quota alongside what the OS reports" \
   || fail "  … and the note names the quota alongside what the OS reports (stderr: $FX_ERR)"
+
+# A quota EQUAL to the machine is still a quota, and the note must say so. This
+# is the case a 2-CPU runner produced against a 2-CPU fixture, where the note
+# claimed "no cgroup CPU quota in effect" — the opposite of the truth, and
+# invisible on any host with more CPUs than the fixture.
+FALSIFY_CGROUP="$(cg v2eq v2 "$((host_cpus * 100000)) 100000")" fx_run "$RUN" "$CONF_A" "$FX" "$TMP/wit-eq" --jobs auto
+grep -q "the cgroup quota allows $host_cpus" <<< "$FX_ERR" \
+  && pass "a quota equal to the machine is still reported as a quota" \
+  || fail "a quota equal to the machine was reported as no quota at all (stderr: $FX_ERR)"
 
 # ── 14d. --max-unproven-pct BOUNDS HOW MUCH A RUN MAY LEAVE UNMEASURED ────────
 # An UNPROVEN mutant is deliberately NOT owed a ledger entry (backlog F27: the

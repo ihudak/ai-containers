@@ -1648,5 +1648,23 @@ required — and name what bounds it instead.
 | the unproven budget never fires | a 100%-unproven run passes a budget of 50 |
 | the budget's validation removed | `--max-unproven-pct banana` exits 1, not 2 |
 
+### A correction CI made, on a machine smaller than this one
+
+The first version shipped two defects that a 12-CPU host cannot see, and a
+**2-CPU runner caught both**:
+
+- the resolution note branched on whether the quota **binds** (`quota < host`)
+  rather than on whether one **exists**. Against a 2-CPU quota on a 2-CPU
+  runner it printed "no cgroup CPU quota in effect" — the opposite of the
+  truth, and precisely the fact a reader came for. It now branches on
+  existence, and a case plants a quota equal to `fr_host_cpus` so the
+  regression is visible on ANY machine.
+- the cases asserted "quota 3 → budget 3", which hard-codes a host with at
+  least 3 CPUs. Now what is READ from each layout (a machine-independent fact)
+  and what it BECOMES are checked separately, and the capping is pinned with a
+  1-CPU quota, which binds everywhere. A helper that recomputed
+  `min(quota, host)` to build the expectation was considered and rejected: that
+  is the implementation written twice, agreeing with itself however wrong it is.
+
 Corpus unchanged: `251|223|24|4`, ledger clean under `--strict`.
 

@@ -673,7 +673,13 @@ falsify_main() {
     FR_JOBS="$(fr_cpu_budget)"
     # Said out loud, with BOTH numbers: "jobs=8" alone leaves a reader unable to
     # tell a quota from a small machine, and the gap is the whole finding.
-    if [[ -n "$_quota" ]] && (( _quota < _host )); then
+    # Branch on whether a quota EXISTS, never on whether it currently BINDS.
+    # A quota equal to the machine's CPU count is still a quota, and saying "no
+    # cgroup CPU quota in effect" there is a lie that costs a reader the one
+    # fact they came for. Caught by a 2-CPU CI runner against a planted 2-CPU
+    # quota, where `quota < host` is false and the message said the opposite of
+    # the truth.
+    if [[ -n "$_quota" ]]; then
       fr_warn "--jobs auto -> $FR_JOBS (the OS reports $_host CPU(s), the cgroup quota allows $_quota; nproc does not see the quota)"
     else
       fr_warn "--jobs auto -> $FR_JOBS (the OS reports $_host CPU(s), no cgroup CPU quota in effect)"
