@@ -19,9 +19,12 @@
 # WHY IT WAS WORTH WRITING AT ALL. Measured before it existed: deleting that line
 # outright, so open mode launches WITH --cap-add=NET_ADMIN --cap-add=NET_RAW,
 # passed all 45 hermetic tests and every integration case. 210 asserts
-# reachability, 220 asserts no capture, and 230 — despite its name and its header
-# claiming to assert that capabilities "were never granted to begin with" — runs
-# in DISCOVERY mode. The only check that mentioned the array
+# reachability, 220 asserts no capture, and 230 — despite its then-name
+# (230-open-drops-capabilities), its `open` tag and its header claiming to assert
+# that capabilities "were never granted to begin with" — runs in DISCOVERY mode.
+# That mismatch is backlog F7: 230 has since been renamed to what it does, and
+# 240-open-drops-capabilities was written to be the open-mode case the suite had
+# only appeared to have. The only check that mentioned the array
 # (tests/test-open-mode.sh) asserts its guarded empty-array EXPANSION idiom, a
 # bash-4.3 crash guard, not its contents.
 #
@@ -31,7 +34,9 @@
 # this line. The precise property is narrower and is the one asserted here:
 # sandbox.sh REQUESTS no capabilities in open mode, and requests both in
 # restricted and discovery. The agent shell holding nothing in every mode is a
-# separate belt, enforced by entrypoint.sh's capsh and covered by cases 070/230.
+# separate belt, enforced by entrypoint.sh's capsh and covered by cases 070
+# (restricted), 230 (discovery) and 240 (open) — one per mode, because each mode
+# reaches a different `exec capsh` and a case cannot cover a branch it never runs.
 #
 # Hermetic: fake `docker`, no daemon, no root.
 set -uo pipefail

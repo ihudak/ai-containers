@@ -1,5 +1,5 @@
 # case: 070-restricted-drops-capabilities
-# case: 230-open-drops-capabilities
+# case: 230-discovery-drops-capabilities
 # what: pid1_caps reads a fresh exec own /proc/self/status instead of PID 1,
 #       so 070 reports BOTH dropped capabilities present and 230 reports the
 #       docker-default cap_net_raw still held. One mutation, two cases: the

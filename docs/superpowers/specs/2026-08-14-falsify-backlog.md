@@ -185,7 +185,7 @@ is dominated by docker verbs with no hermetic oracle — but the pure verbs
 `test-integration-lib.sh` already covers are a real candidate, and this defect
 lived in one of them. Recorded as a coverage question, not scheduled.
 
-## F7 — `230-open-drops-capabilities` is named and tagged for open mode but launches discovery
+## F7 — `230-open-drops-capabilities` is named and tagged for open mode but launches discovery — **FIXED 2026-08-19**
 
 **Partly addressed 2026-08-14:** the header's false "both belts" claim is
 corrected in place, because a comment asserting something demonstrably untrue
@@ -204,6 +204,117 @@ remains is to make `230` say what it does: rename it (e.g.
 "both belts" sentence, which `240` now owns. A rename touches its mutation
 patch's `# case:` header and `AGENTS.md`'s reference to "case 230", so it is a
 small coordinated change rather than a one-liner.
+
+**Correction 2026-08-19 — the sentence above was false, and it was the load-
+bearing one.** There was no `240-open-grants-no-capabilities`. There never had
+been: a repo-wide search found exactly one occurrence of that name, the sentence
+in this entry asserting it existed. The case list goes `230` → `300`.
+
+So F7 was not a naming defect with the coverage already handled. It was a
+coverage hole that this entry had talked itself out of. Only two cases call
+`pid1_caps`, and the three modes reach three different `exec capsh` calls:
+
+| entrypoint.sh | mode | asserted by |
+|---|---|---|
+| `:243` | restricted | `070` |
+| `:289` | discovery | `230` — the case tagged `open` |
+| `:311` | **open** | **nothing** |
+
+`210` and `220` do launch open mode, but they assert reachability and the
+absence of a capture daemon; neither looks at capabilities. So `--tags open`
+and `--tags security` both returned a green capability case for a mode nothing
+exercised — the exact shape of "believing you are covered", and the reason this
+correction is recorded rather than quietly fixed.
+
+**Fixed 2026-08-19, in two parts.**
+
+`230` renamed to `230-discovery-drops-capabilities`, with its `open` tag, its
+summary and its header corrected to describe the discovery case it has always
+been. Launching discovery stays deliberate: `sandbox_up` grants
+`--cap-add=NET_ADMIN --cap-add=NET_RAW` to restricted and discovery
+(`lib.sh:202`) and nothing to open (`lib.sh:203`), so it is the mode where the
+drop has the most to take away.
+
+`240-open-drops-capabilities` written — the case this entry had claimed. It
+launches open mode and asserts the same two capabilities. `cap_net_admin` is
+nearly free there (never granted); `cap_net_raw` is the load-bearing one, since
+Docker's default bounding set includes it and nothing issues `--cap-drop`, so
+only the handover to the sandbox user removes it.
+
+Its known-bad took three attempts, and the two failures are the interesting
+part. **Deleting `--drop=` from the open branch is an EQUIVALENT mutation** —
+`capsh --user=` setuids from root and the kernel clears the permitted and
+effective sets on that transition, which `230`'s own note records, so an
+open-mode case still passes with no drop at all. The first patch therefore added
+`--keep=1` (`PR_SET_KEEPCAPS`), reasoning that it suppresses the clearing. **It
+was demonstrated on the host and came back UNDEMONSTRATED** — the case still
+passed. `PR_SET_KEEPCAPS` preserves the *permitted* set across the UID change;
+the *effective* set is zeroed regardless, and `pid1_caps` reads `CapEff`.
+
+Measured directly in the integration image rather than reasoned about again —
+`CapEff` of the process `capsh` execs:
+
+| capsh options | CapEff |
+|---|---|
+| root, no setuid | `a80425fb` |
+| `--drop=cap_net_admin,cap_net_raw --user=probe` | `00000000` |
+| `--keep=1 --user=probe` | `00000000` |
+| `--keep=1 --user=probe --inh=cap_net_raw --addamb=cap_net_raw` | **`00002000`** (`cap_net_raw`) |
+
+**The finding underneath, worth more than the patch:** three plausible mutations
+are equivalent — deleting `--drop=`, adding `--keep=1`, and granting `--cap-add`
+to open mode in `sandbox_up`. None changes `CapEff`. The agent shell's empty
+capability set is guaranteed by `capsh --user=`, **not** by the `--drop=` flag
+every reader's eye goes to; the flag is belt-and-braces over a guarantee the
+setuid already gives. Any future reviewer who "tightens" or "loosens" that flag
+should know it moves nothing.
+
+The shipped known-bad uses the ambient set (`--keep=1 … --inh= --addamb=`), the
+one measured path that survives a root→non-root setuid and lands in `CapEff`.
+PID 1 still becomes the sandbox user, so `sandbox_up`'s handover wait still
+succeeds and the break reaches `240`'s own assertion instead of dying in setup —
+a demonstration that kills the container before the assertion runs proves nothing
+about the assertion. `230` shares `pid1_caps` but not that branch, so it is
+untouched and still passes, which is precisely the coverage `240` adds.
+
+Hermetic state: full suite green, all 35 mutation patches apply, and
+`test-mutations.sh`'s coverage rule (every `network-mode` case must be named by
+a patch) is satisfied for both the renamed `230` and the new `240`.
+
+**Verified against real Docker, in CI, in both repos.** PR CI's integration job
+runs `--tags fast --exclude needs-external,needs-dns --require security`, which
+selects both cases:
+
+    230-discovery-drops-capabilities   PASS  (3 assertions)
+    240-open-drops-capabilities        PASS  (3 assertions)
+
+(upstream run 32297181648, mgd run 32297210600). So the case is real, launches,
+and its assertions hold against a live container — not merely authored.
+
+**Demonstrated on the host, 2026-08-19. F7 is closed.**
+
+    ── 240-open-keeps-capabilities   (rebuild) FAIL  ← demonstrated
+    DEMONSTRATED 240-open-keeps-capabilities → 240-open-drops-capabilities
+       FAIL: agent shell dropped cap_net_raw — still present in [0x0000000000002000=cap_net_raw]
+
+The differential, both cases in one run with that same patch applied:
+
+| case | verdict | agent shell's CapEff |
+|---|---|---|
+| `230-discovery-drops-capabilities` | **PASS** (3 assertions) | `0x0000000000000000=` |
+| `240-open-drops-capabilities` | **FAIL** | `0x0000000000002000=cap_net_raw` |
+
+That table is the entry's whole point in two rows: one patch, `230` unaffected,
+`240` red. It is the coverage `230` could never provide, and it is what nothing
+in the suite had before.
+
+Three details make it a demonstration rather than a red mark. The break landed on
+`240`'s own `assert_no_capability`, not on `sandbox_up`'s handover wait — the
+container came up, PID 1 became the sandbox user, and the case reached its
+assertions. `cap_net_admin` still **passed** in the mutated run, so exactly one
+assertion failed, the load-bearing one. And the first assertion — "read the agent
+shell's effective capabilities" — passed in both runs, so neither verdict was
+vacuous. Tree clean after `mutate.sh revert`.
 
 ## F8 — three surviving mutants in `tests/integration/mutate.sh`'s guard cluster — **CLOSED 2026-08-19, superseded by F20**
 
