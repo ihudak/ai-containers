@@ -1844,3 +1844,98 @@ Left open deliberately: whether a mechanical cross-repo parity check is worth
 building. `tests/test-shared-files-parity.sh` guards a different list and could
 not have caught this; nothing today compares the two repos' copies of a shared
 file, and this divergence was found by a human reading a diff during a port.
+
+## F40 — Phase 7 lints only the engine directory, and reports PASSED over the rest — **FIXED 2026-08-19**
+
+Found by running Phase 7 on the Mac to verify F-nothing-in-particular — the
+version-reporting change from the previous increment. The verification found a
+defect the change had nothing to do with.
+
+`verify-on-host.sh` Phase 7 built its file list with
+`( cd "$REPO" && git ls-files '*.sh' )`. **`git ls-files` run from a
+subdirectory lists only what is under that subdirectory.** `$REPO` is the
+ENGINE directory — the repo root in ai-containers, `base/` in
+mgd-ai-containers, which is why the script's own startup error tells you to run
+it from there. So in mgd, Phase 7 checked `base/**` and nothing else.
+
+Measured on macOS, 2026-08-19, the same command in each repo:
+
+| | scripts Phase 7 checked | scripts CI's `lint` job checks |
+|---|---|---|
+| ai-containers | 133 | 133 |
+| mgd-ai-containers | **23** | **136** |
+
+The 113 it skipped were the entire hermetic suite, the whole falsify engine and
+every integration case — the code every guard in this project lives in.
+
+**Why "CI catches it anyway" is not the answer.** CI does, so nothing merges
+unlinted. But the local layer exists to cover what CI *structurally cannot*:
+BSD userland, macOS, a real network. A macOS-only parse or shellcheck finding
+in those 113 files was invisible in **both** layers at once — CI is Linux, and
+local skipped the files. `local ⊇ nightly ⊇ PR` was false for the lint leg,
+with local a strict SUBSET.
+
+Two of Phase 7's three checks were affected. The dialect lint was not: it is
+invoked through `$TESTS_DIR`, which already carries a `$REPO/../tests` fallback
+for this exact layout, and it resolves its own root. So one of the three call
+sites had already been fixed for the sibling layout and the other two had not.
+
+**The fix** reuses the derivation the file already had. `REPO_ROOT_FOR_MOUNT`
+(`$(cd "$TESTS_DIR/.." && pwd)`) is *the repo root in both layouts* and had
+exactly one consumer, Phase 5's container mount. Renamed to `REPO_ROOT` and
+given its second consumer. A no-op in ai-containers, where `$REPO` is already
+the root.
+
+**The guard**, `tests/test-verify-lint-scope.sh`, was written first and watched
+failing. It drives the real `verify-on-host.sh` against stub repos in BOTH
+layouts, with a tracked script carrying a real syntax error planted OUTSIDE the
+engine directory, and requires Phase 7 to report it. The witness is `bash -n`'s
+own `PARSE ERROR: <path>` line — it cannot appear unless `bash -n` genuinely
+read that file. Against the unfixed tree:
+
+```
+PASS: upstream: Phase 7 parsed every tracked script (5 of 5)
+PASS: upstream: the parse error fails the phase (rc=1)
+FAIL: sibling: Phase 7 never parsed outside-engine-broken.sh … (parsed 3 script, repo has 5)
+FAIL: sibling: Phase 7 exited 0 despite a syntax error in a tracked script
+```
+
+The upstream layout is a control: without it, a fixture that silently built
+nothing would look like a pass in both directions. The sibling layout is the
+first fixture in this repo to build one at all — every existing stub repo puts
+the engine at the git root, which is precisely why nothing saw this.
+
+## F41 — `verify-on-host.sh` had drifted between the repos, in three places — **FIXED 2026-08-19**
+
+F39's pattern, in a second file, found the same way: by diffing the two copies
+while porting F40. This file states the invariant it was breaking, in its own
+words:
+
+> Resolving it here means ONE copy of this script serves both repos verbatim —
+> a verifier that drifts from what it verifies is worse than none.
+
+Three differences, all of them mgd corrections that never travelled upstream:
+
+1. **Stale Phase 6 comments.** Upstream said "6 is reserved for a later
+   increment; do not fill it in ahead of that increment defining it" and "6 …
+   must stay absent until that increment defines it" — while the same file
+   carried `VALID_PHASES="0 4 5 6 7"`, `PHASES` defaulting to `"4 5 6 7"`, and a
+   fully implemented `PHASE 6 — falsify mutation tier`. A maintainer following
+   the comment would delete a working phase. `AGENTS.md` had the correct account
+   the whole time.
+2. **`$REPO/tests/falsify/...`** in Phase 6's two invocations, where mgd used
+   `$TESTS_DIR`. Correct upstream, resolves to a nonexistent path in mgd —
+   *the same defect class as F40*, in the same file, already fixed once locally
+   without being fixed at the source.
+3. Repo-relative prose ("here", "this repo", "measured upstream").
+
+All three are resolved and the two copies are now **byte-identical**. The prose
+was made repo-neutral rather than picking a side, so the claim above is true as
+written and a future fix in either repo is a straight copy.
+
+**Third data point for F39's open question.** Two shared files have now drifted,
+both times hiding something: `mutate.sh` hid a latent prefix defect, this one hid
+a live coverage defect. Both are byte-identical again, so a mechanical cross-repo
+parity check now has concrete files to compare. Still not built, and still
+recorded rather than assumed worth building — but "found by a human reading a
+diff during a port" has happened twice in one day.

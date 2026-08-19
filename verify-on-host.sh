@@ -27,7 +27,10 @@
 #
 # Phases (each independent; a later phase still runs if an earlier one fails).
 # Numbers are IDENTIFIERS, not execution order — the script actually runs them
-# 0, 5, 7, 4: cheap checks first, the Docker-hungry corpus last.
+# 0, 5, 6, 7, 4: cheap checks first, the Docker-hungry corpus last. (6 sits
+# between 5 and 7 in execution because it needs no Docker either; it is minutes
+# rather than seconds, so it is listed after 7 in the table below, where the
+# order is by cost of reading.)
 #   0  environment sanity (daemon reachable, buildx, disk; Colima status on macOS)
 #   5  the hermetic suite (tests/run-all.sh) + the sandbox.conf schema gate — and
 #      the same suite again inside a container pinned to the declared bash floor.
@@ -61,8 +64,8 @@
 # integration corpus and retired 1, 2 and 3 — PERMANENTLY: those numbers must
 # never be reused, because reusing one would make a stale `PHASES="1 2 3"` valid
 # again and silence the exact guard this paragraph describes. Increment 4 then
-# added phases 5 and 7 (6 is reserved for a later increment; do not fill it in
-# ahead of that increment defining it) — adding a phase below without a
+# added phases 5 and 7, and increment 5 defined the phase 6 those two left
+# reserved (the falsify mutation tier) — adding a phase below without a
 # phase_fail call recreates exactly the original defect.
 # tests/test-verify-exit-code.sh holds the line, and fails if it stops holding.
 #
@@ -110,12 +113,23 @@ source "$REPO/bash-floor.sh"
 TESTS_DIR="$REPO/tests"
 [[ -d "$TESTS_DIR" ]] || TESTS_DIR="$REPO/../tests"
 
-# The directory that must be mounted for `tests/` to resolve inside Phase 5's
-# bash-floor container: $REPO in ai-containers (tests/ is right there), $REPO/..
-# in mgd where the engine lives in base/ and tests/ sits one level up beside it.
-# Derived from TESTS_DIR rather than branched on repo name, so this stays the
-# one copy that serves both layouts.
-REPO_ROOT_FOR_MOUNT="$(cd "$TESTS_DIR/.." && pwd)"
+# The repo root, as opposed to $REPO which is the ENGINE directory: the same in
+# ai-containers (tests/ sits right there), one level up in mgd where the engine
+# lives in base/. Derived from TESTS_DIR rather than branched on repo name, so
+# this stays the one copy that serves both layouts.
+#
+# TWO consumers, and the second one was missing. Phase 5's bash-floor container
+# mounts this so `tests/` resolves inside it. Phase 7's lint file list needs it
+# for a sharper reason: `git ls-files` run from a subdirectory lists ONLY what
+# is under that subdirectory, so building the list from $REPO linted the engine
+# directory alone. In ai-containers $REPO is the repo root and the defect is
+# invisible; in mgd-ai-containers it meant 23 of 136 tracked scripts checked,
+# and a PASSED verdict over the rest — including, measured, a tracked script
+# carrying a syntax error. The CI job Phase 7 claims to mirror runs from the
+# checkout root and lints all of them, so the local layer was a strict SUBSET
+# of the PR layer for the one leg where local is meant to be the superset.
+# tests/test-verify-lint-scope.sh drives both layouts.
+REPO_ROOT="$(cd "$TESTS_DIR/.." && pwd)"
 
 # Same base/-vs-repo-root duality as TESTS_DIR above, for the schema-gate
 # script: upstream ai-containers keeps check-sandbox-version.sh next to
@@ -143,9 +157,10 @@ want_phase() { case " $PHASES " in (*" $1 "*) return 0 ;; (*) return 1 ;; esac; 
 # Same standard as the IT_RUNNER-not-found branch below (an unresolvable
 # request is a recorded failure, not a silent skip) applied to the request
 # itself. Phase 0 is exempt — it always runs regardless of $PHASES. 1, 2 and 3
-# are retired for good (see the header) and must never reappear here; 6 is
-# reserved for a later increment and must stay absent until that increment
-# defines it.
+# are retired for good (see the header) and must never reappear here. 6 was
+# reserved and is now DEFINED (increment 5's falsify mutation tier); keeping it
+# out until the tier existed did its job — naming it early failed loudly
+# instead of silently verifying nothing.
 VALID_PHASES="0 4 5 6 7"
 for _requested_phase in $PHASES; do
   case " $VALID_PHASES " in
@@ -262,7 +277,7 @@ else
     # being wrong about something above — is silent corruption of a real
     # checkout, discovered whenever someone next looks. That asymmetry is why
     # :ro wins even without a Docker-based end-to-end run to confirm it here.
-    docker run --rm -v "$REPO_ROOT_FOR_MOUNT:/w:ro" -w /w "$floor_img" bash -c \
+    docker run --rm -v "$REPO_ROOT:/w:ro" -w /w "$floor_img" bash -c \
       'apt-get update -qq && apt-get install -y -qq git rsync >/dev/null 2>&1 && \
        git config --global --add safe.directory /w && \
        bash --version | head -1 && ./tests/run-all.sh' 2>&1 | sed "s/^/$LOG_PREFIX   /"
@@ -288,7 +303,15 @@ fi
 # timed out without printing FAIL:", so a slow machine turns a kill into an
 # unclassified survivor and fails the ratchet for a reason that has nothing to
 # do with the tree. A developer's laptop is exactly the loaded machine that
-# happens on — measured on macOS during increment 5 (backlog F26).
+# happens on — measured on macOS during increment 5 (upstream backlog F26).
+#
+# $TESTS_DIR, not "$REPO/tests": $REPO is the ENGINE dir, and in
+# mgd-ai-containers tests/ sits one level up beside it, so the "$REPO/tests"
+# form resolves to a path that does not exist there. TESTS_DIR is the
+# layout-tolerant handle this file already derives for exactly that reason (see
+# its definition above), and using it keeps this ONE copy serving both layouts —
+# the property the rest of the script is built around, and one this file had
+# quietly stopped honouring in two places.
 if want_phase 6; then
 say "PHASE 6 — falsify mutation tier + survivor-ledger ratchet"
 fl_run="$(mktemp)"
@@ -301,15 +324,16 @@ fl_run="$(mktemp)"
 # set in silence. run.sh resolves the number and names both; surfaced here
 # rather than left buried in $fl_run.
 sub "running the corpus (jobs=auto, timeout=120) — a few minutes"
-if bash "$REPO/tests/falsify/run.sh" --jobs auto --timeout 120 > "$fl_run" 2>&1; then
+if bash "$TESTS_DIR/falsify/run.sh" --jobs auto --timeout 120 > "$fl_run" 2>&1; then
   { grep -E '^falsify: --jobs auto ' "$fl_run" || true; } \
     | sed 's/^falsify: //' | while IFS= read -r l; do sub "$l"; done
   grep -E '^(TARGET|TOTAL)\|' "$fl_run" | sed 's/^/  /' | while IFS= read -r l; do sub "$l"; done
   # HOW MUCH WAS ACTUALLY MEASURED. An UNPROVEN mutant produced no verdict at
   # all, so a run with many of them is measuring less than its pass suggests —
   # and the pass is honest only if that is said out loud rather than left in
-  # stderr notes. Measured on macOS: 4 unproven on Linux against 14 and then 35
-  # on the same commit, i.e. the number moves with machine load, not with code.
+  # stderr notes. Measured on macOS (upstream tree, same corpus): 4 unproven on
+  # Linux against 14 and then 35 on the same commit, i.e. the number moves with
+  # machine load, not with code.
   fl_tot="$(awk -F'|' '$1=="TOTAL" {print $3; exit}' "$fl_run")"
   fl_unp="$(awk -F'|' '$1=="TOTAL" {print $6; exit}' "$fl_run")"
   if [[ -n "$fl_tot" && -n "$fl_unp" && "$fl_tot" -gt 0 ]]; then
@@ -327,8 +351,8 @@ if bash "$REPO/tests/falsify/run.sh" --jobs auto --timeout 120 > "$fl_run" 2>&1;
   fi
   # The ratchet is a SEPARATE step, as in CI: run.sh's stdout is the record and
   # its exit status is an independent signal, and a pipeline would discard one.
-  if bash "$REPO/tests/falsify/check-ledger.sh" \
-       --run-output "$fl_run" --ledger "$REPO/tests/falsify/survivors.txt"; then
+  if bash "$TESTS_DIR/falsify/check-ledger.sh" \
+       --run-output "$fl_run" --ledger "$TESTS_DIR/falsify/survivors.txt"; then
     sub "survivor ledger: OK"
   else
     phase_fail 6 "the survivor-ledger ratchet rejected tests/falsify/survivors.txt"
@@ -340,11 +364,11 @@ else
   # machine produces dozens — while `ERROR:` is the reason it gave up. Matching
   # both in one grep and taking `tail -10` therefore shows ten timeout notes and
   # DROPS the only line that says what went wrong. Not hypothetical: a macOS
-  # Phase 6 run on 2026-08-17 reported "the corpus did not complete" above
-  # exactly ten TIMEOUT notes, with the cause nowhere on screen — the same
-  # shape as the `head -1` truncation this project has now fixed three times.
-  # The two channels are read separately: every ERROR line, then a tail of the
-  # notes for context.
+  # A Phase 6 run in mgd-ai-containers on 2026-08-17 reported "the corpus did
+  # not complete" above exactly ten TIMEOUT notes, with the cause nowhere on
+  # screen — the same shape as the `head -1` truncation this project has now
+  # fixed three times. The two channels are read separately: every ERROR line,
+  # then a tail of the notes for context.
   fl_errs="$(grep -E '^ERROR:' "$fl_run" || true)"
   if [[ -n "$fl_errs" ]]; then
     while IFS= read -r l; do sub "$l"; done <<< "$fl_errs"
@@ -368,8 +392,8 @@ say "PHASE 7 — lint (bash -n, dialect floor, shellcheck)"
 n_parsed=0; parse_rc=0
 while IFS= read -r f; do
   n_parsed=$((n_parsed + 1))
-  bash -n "$REPO/$f" 2>/dev/null || { sub "PARSE ERROR: $f"; parse_rc=1; }
-done < <(cd "$REPO" && git ls-files '*.sh' 2>/dev/null)
+  bash -n "$REPO_ROOT/$f" 2>/dev/null || { sub "PARSE ERROR: $f"; parse_rc=1; }
+done < <(cd "$REPO_ROOT" && git ls-files '*.sh' 2>/dev/null)
 if [[ "$n_parsed" -eq 0 ]]; then
   phase_fail 7 "bash -n parsed no files — the pathspec matched nothing"
 else
@@ -400,7 +424,7 @@ if command -v shellcheck >/dev/null 2>&1; then
   # before macOS 13, so probe for it rather than assuming.
   xargs_r=()
   printf '' | xargs -r true >/dev/null 2>&1 && xargs_r=(-r)
-  ( cd "$REPO" && git ls-files '*.sh' | xargs "${xargs_r[@]}" shellcheck -S warning -e SC1091 ) \
+  ( cd "$REPO_ROOT" && git ls-files '*.sh' | xargs "${xargs_r[@]}" shellcheck -S warning -e SC1091 ) \
     2>&1 | sed "s/^/$LOG_PREFIX   /"
   sc_rc="${PIPESTATUS[0]:-1}"
   [[ "$sc_rc" -eq 0 ]] || phase_fail 7 "shellcheck exited $sc_rc"
@@ -413,7 +437,7 @@ if command -v shellcheck >/dev/null 2>&1; then
   # Reported, not asserted: pinning a number here would be a claim that drifts
   # from the runner image, and failing on a mismatch would break every Mac.
   sc_ver="$(shellcheck --version 2>/dev/null | awk '/^version:/ { print $2 }')"
-  sub "shellcheck exit: $sc_rc over $( ( cd "$REPO" && git ls-files '*.sh' ) | grep -c . ) script(s), version ${sc_ver:-unknown}"
+  sub "shellcheck exit: $sc_rc over $( ( cd "$REPO_ROOT" && git ls-files '*.sh' ) | grep -c . ) script(s), version ${sc_ver:-unknown}"
 else
   phase_fail 7 "shellcheck not installed — install it (brew install shellcheck) or deselect phase 7"
 fi
