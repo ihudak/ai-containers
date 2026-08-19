@@ -109,7 +109,10 @@ fi
 # been asserted.
 #
 # Every one of these runs its subject as the CONDITION of an `if` rather than as
-# a bare statement. This file sources the PRODUCT script sync-to-projects.sh above, which sets `-euo pipefail`, so everything from that line onward runs under errexit whether it means to or not. A non-zero bare command under errexit
+# a bare statement. This file sources the PRODUCT script sync-to-projects.sh
+# BELOW, which sets `-euo pipefail`, so every line from there to the end of
+# the file runs under errexit whether it means to or not. A bare non-zero
+# command under errexit
 # aborts the test where it stands — no FAIL line, no failure count, just exit 1
 # — and the falsify tier scores that abort as KILLED, so the mutant would look
 # caught while nothing had asserted anything.
