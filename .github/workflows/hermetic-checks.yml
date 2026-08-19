@@ -21,7 +21,7 @@ permissions:
 jobs:
   suite:
     name: Shell test suite
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       # Full history: check-sandbox-version.sh compares sandbox.conf against a
@@ -63,7 +63,7 @@ jobs:
 
   suite-floor:
     name: Shell test suite (bash floor)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # ubuntu:22.04 ships bash 5.1.16 — the declared floor — with GNU coreutils.
     # `suite` above runs on whatever bash ubuntu-latest happens to ship, which
     # drifts upward with the runner image; this job pins the CLAIM. Raising the
@@ -105,7 +105,7 @@ jobs:
 
   falsify:
     name: Mutation tier (falsify) + survivor-ledger ratchet
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # 249 mutants over 9 targets: ~3.4 min at --jobs 6 / --timeout 60 on a
     # 12-core machine. Eleven of those mutants time out BY CONSTRUCTION (they
     # damage a read loop into never terminating), so --timeout is a straight
@@ -193,7 +193,7 @@ jobs:
 
   lint:
     name: Shell lint
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - uses: actions/checkout@v5
@@ -227,7 +227,35 @@ jobs:
 
       - name: shellcheck
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          # apt is the only network operation in this gate, and it HUNG: on
+          # 2026-08-19 a mirror stall left this job in_progress for 72 minutes
+          # against a normal 40 seconds, on two repos at once, with nothing to
+          # stop it short of GitHub's 6-hour ceiling. It cannot fail a PR
+          # wrongly, but it can hold one hostage, so it is bounded and retried.
+          # The analysis itself is ~13s over ~130 scripts; anything past a few
+          # minutes here is the network, not shellcheck.
+          ok=0
+          for attempt in 1 2 3; do
+            if timeout 300 sudo apt-get update -qq \
+               && timeout 300 sudo apt-get install -y -qq shellcheck; then
+              ok=1; break
+            fi
+            echo "apt attempt $attempt failed or timed out"
+            sleep 15
+          done
+          if [ "$ok" -ne 1 ]; then
+            echo "::error::apt could not install shellcheck in 3 bounded attempts"
+            exit 1
+          fi
+          # Which shellcheck this gate actually is. The version comes from the
+          # PINNED runner image (ubuntu-24.04 ships 0.9.0), so it moves only
+          # when someone edits `runs-on:` — but a gate that does not say what it
+          # is cannot be compared with the same gate run somewhere else, and
+          # verify-on-host.sh Phase 7 runs whatever the developer's host has
+          # (Homebrew ships current). Both layers print it; neither asserts a
+          # number, because a number written here is a second claim that can
+          # drift from the image.
+          shellcheck --version
           # -e SC1091: sourced paths are resolved at runtime, not by the linter.
           # GATE: increment 4 cleared the pre-existing findings backlog (fixed
           # the real defects, suppressed the rest at the site with a reason —

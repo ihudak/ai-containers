@@ -84,7 +84,7 @@ jobs:
 
   integration-full:
     name: Integration — everything
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     # Skip ONLY the one input shape the baked `--exclude packages` below turns
     # into a guaranteed-empty selection: a dispatch of tags=packages exactly.
@@ -202,7 +202,7 @@ jobs:
 
   allowlist-health:
     name: Allowlist fragment health
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
@@ -293,7 +293,7 @@ jobs:
   # their wall-clock into one job.
   packages-agents:
     name: Package installs — agents variant (real allowlist)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Real headroom over the realistic 15-30 min estimate, but comfortably below
     # the 700+710+720 worst-case sum (2100+2400+2000s = 108 min). That gap is
     # deliberate: a job that runs long past 60 min is a signal worth catching
@@ -387,7 +387,7 @@ jobs:
 
   packages-native:
     name: Package installs — native variant (real allowlist)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Real headroom over the realistic 25-50 min estimate, but comfortably below
     # the 730+740+750+760 worst-case sum (3900+3900+3900+7600s = 322 min). Same
     # trade as the agents job above: a long-but-alive job is a signal, a job
