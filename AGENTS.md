@@ -143,7 +143,7 @@ The suite asserts **effect, not configuration**: it observes from outside the co
 | What is damaged | a case file or the launcher, by a **hand-written patch** | any line of a target, by a **generated** mutant |
 | The tree | the **real** working tree, deliberately, for a human demonstration | a **scratch** tree per worker; the working tree is never touched |
 | What is checked | that the patch still **applies** | that the oracle **notices** — killed, survived or unproven |
-| Which oracle | n/a | the target's row names it; the field is a **set**, comma-separated, run as one invocation |
+| Which oracle | n/a | the target's row names it; the field is a **set**, comma-separated, run as one invocation, and every member must be a test the derivation observes EXECUTING that target |
 | Cadence | hand-driven | every CI run, ~10 min over 251 mutants (`--jobs $(nproc)`, `--timeout 120`) |
 
 A mutant nothing noticed is a **survivor**, and every survivor is owed an entry in `tests/falsify/survivors.txt` classified `GAP:` (no test kills it today), `EQUIVALENT:` (no test *could*), or `ENV-DEPENDENT:` (the verdict moves with the machine, and neither reading is wrong). Those are different claims and conflating them is how the ledger stops protecting anything. `UNPROVEN` — the oracle timed out without ever printing `FAIL:` — is owed an entry too: nothing was observed asserting, which is what a survivor means.

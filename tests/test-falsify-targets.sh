@@ -45,6 +45,11 @@ RUNALL="$REPO_DIR/tests/run-all.sh"
 ENGINE_REL=""
 [[ -f "$REPO_DIR/build.sh" ]] || ENGINE_REL="base/"
 T_TOOLSLIB="${ENGINE_REL}tools-lib.sh"
+# tests/ is unprefixed in BOTH layouts (only the ENGINE moves under base/), so
+# this one needs no probe — but it still joins the row-existence loop below,
+# because "unprefixed in both" is a claim about the other repo that this repo
+# cannot check any other way.
+T_LIBVERIFY="tests/lib-verify-repo.sh"
 T_ENTRYPOINT="${ENGINE_REL}entrypoint.sh"
 T_SBCOMMON="${ENGINE_REL}sandbox-common.sh"
 T_REPOSH="${ENGINE_REL}repo.sh"
@@ -56,7 +61,7 @@ RE_REPOSH="${T_REPOSH//./\\.}"
 RE_GROUPSH="${T_GROUPSH//./\\.}"
 # The probe must have resolved to a path that really is in the map, or every
 # fixture below silently degrades to "no change" exactly as described above.
-for _t in "$T_TOOLSLIB" "$T_ENTRYPOINT" "$T_SBCOMMON" "$T_REPOSH" "$T_GROUPSH"; do
+for _t in "$T_TOOLSLIB" "$T_ENTRYPOINT" "$T_SBCOMMON" "$T_REPOSH" "$T_GROUPSH" "$T_LIBVERIFY"; do
   grep -q "|${_t}|\|^${_t}|" "$CONF" \
     || { printf 'FAIL: %s\n' "the layout probe resolved $_t, which has no row in targets.conf — every fixture below would edit nothing"; exit 1; }
 done
@@ -124,6 +129,24 @@ check "docker-shim.sh is EXECUTED (resolved through the symlink, not the name)" 
 ep_verdict="$(awk -F'|' -v f="$T_ENTRYPOINT" '$1 == f { print $2 }' "$DERIVED")"
 check "$T_ENTRYPOINT is NOT-EXECUTED (bash -n and grep are not execution)" \
   "NOT-EXECUTED" "$ep_verdict"
+
+# The two run-time shapes, asserted where they actually bite. Both were blind
+# spots until 2026-08-19 (backlog F33), and both hid the ONE test whose whole
+# purpose is the target: tests/lib-verify-repo.sh is reached by its dedicated
+# oracle only through `printf 'source %q\n' … >> "$h"`, and sandbox.sh is
+# reached by tests/test-parsers.sh only as the argument of a `bash -c` body
+# that sources "$1". Named as ORACLES, not just as verdicts: the file was
+# already EXECUTED by other tests, so a verdict check would have stayed green
+# through the whole blind spot.
+executors() { awk -F'|' -v f="$1" '$1 == f { print $3 }' "$DERIVED"; }
+case ",$(executors "$T_LIBVERIFY")," in
+  *,test-lib-verify-repo.sh,*) pass "$T_LIBVERIFY names its dedicated oracle (reached only via printf-into-a-harness)" ;;
+  *) fail "$T_LIBVERIFY does not name test-lib-verify-repo.sh among its executors (got: $(executors "$T_LIBVERIFY"))" ;;
+esac
+case ",$(executors "${ENGINE_REL}sandbox.sh")," in
+  *,test-parsers.sh,*) pass "${ENGINE_REL}sandbox.sh names test-parsers.sh (reached only as a bash -c argument)" ;;
+  *) fail "${ENGINE_REL}sandbox.sh does not name test-parsers.sh among its executors (got: $(executors "${ENGINE_REL}sandbox.sh"))" ;;
+esac
 
 # ── 3. GATE 1: an executed file with no row fails, BY NAME ────────────────────
 f1="$TMP/gate1.conf"
@@ -220,7 +243,9 @@ mkdir -p "$SET/tests"
 printf '#!/usr/bin/env bash\n' > "$SET/tests/test-one.sh"
 printf '#!/usr/bin/env bash\n' > "$SET/tests/test-two.sh"
 printf '#!/usr/bin/env bash\n' > "$SET/target.sh"
-printf 'target.sh|EXECUTED|test-one.sh\n' > "$SET/set.derived"
+# Both members are executors here, so the control below isolates the SET
+# grammar. Gate 5 further down is where a non-executing member is the subject.
+printf 'target.sh|EXECUTED|test-one.sh,test-two.sh\n' > "$SET/set.derived"
 set_gate() {  # $1=oracle field → sets gate_out/gate_rc against the synthetic repo
   printf 'target.sh|EXECUTED-WHOLE|%s\n' "$1" > "$SET/set.conf"
   gate_out="$(FALSIFY_REPO="$SET" FALSIFY_TESTS_DIR="$SET/tests" FALSIFY_DERIVED="$SET/set.derived" \
@@ -282,6 +307,57 @@ set_gate "test-one.sh,test-*.sh"
 grep -q 'has a malformed oracle field' <<<"$gate_out" \
   && pass "gate 3 (set): the glob is refused by shape, before anything expands it" \
   || fail "gate 3 (set): the glob was not refused by the shape check (output: $gate_out)"
+
+# ── 5c. GATE 5: an oracle that never EXECUTES the target ─────────────────────
+# The quiet failure this closes: a real, uniquely-selecting test that simply
+# does not run the file. Gate 3 passes it — the test exists — and the tier then
+# mutates the target and watches every mutant SURVIVE, because nothing ran the
+# mutated code. Each survivor is then owed a ledger entry classified GAP, and
+# the ledger fills up with debt for coverage the row never had.
+#
+# Synthetic first, so the rule is stated with nothing else in the picture: two
+# real tests, one of which the derivation records as an executor and one of
+# which it does not.
+set_gate "test-two.sh"
+[[ "$gate_rc" -ne 0 ]] \
+  && fail "gate 5: test-two.sh IS a recorded executor here, so this must pass — the fixture is wrong (output: $gate_out)" \
+  || pass "gate 5 (control): an oracle the derivation DOES observe executing the target passes"
+printf 'target.sh|EXECUTED|test-one.sh\n' > "$SET/set.derived"
+set_gate "test-two.sh"
+[[ "$gate_rc" -ne 0 ]] \
+  && pass "gate 5: an existing, uniquely-selecting oracle that never executes the target fails the gate" \
+  || fail "gate 5: a non-executing oracle passed the gate (output: $gate_out)"
+grep -q 'never observes EXECUTING it' <<<"$gate_out" \
+  && pass "gate 5: the failure says the oracle never executes the target" \
+  || fail "gate 5: the failure did not say the oracle never executes the target (output: $gate_out)"
+grep -q 'it is executed by: test-one.sh' <<<"$gate_out" \
+  && pass "gate 5: the failure names who DOES execute it, so the row can be repaired" \
+  || fail "gate 5: the failure did not name the real executors (output: $gate_out)"
+printf 'target.sh|EXECUTED|test-one.sh,test-two.sh\n' > "$SET/set.derived"
+
+# And on the REAL map, because the synthetic repo cannot show the rule catching
+# a plausible mistake. tests/lib-verify-repo.sh's oracle is swapped for
+# tests/test-portability.sh: a real test, selecting exactly one, that this
+# target's derivation does not list — precisely the row a tired author writes.
+f5="$TMP/gate5.conf"
+sed "s@^${T_LIBVERIFY//./\\.}|EXECUTED-WHOLE|test-lib-verify-repo\\.sh@${T_LIBVERIFY}|EXECUTED-WHOLE|test-portability.sh@" "$CONF" > "$f5"
+grep -q "^${T_LIBVERIFY//./\\.}|EXECUTED-WHOLE|test-portability\\.sh" "$f5" \
+  && pass "fixture: gate5.conf points $T_LIBVERIFY at test-portability.sh" \
+  || fail "fixture: gate5.conf was not rewritten — the assertion below would be vacuous"
+[[ -f "$REPO_DIR/tests/test-portability.sh" ]] \
+  && pass "fixture: tests/test-portability.sh is a REAL test, so gate 3 cannot be what fires" \
+  || fail "fixture: tests/test-portability.sh does not exist, so this would fire gate 3 instead"
+case ",$(executors "$T_LIBVERIFY")," in
+  *,test-portability.sh,*) fail "fixture: test-portability.sh IS an executor of $T_LIBVERIFY, so the case proves nothing" ;;
+  *) pass "fixture: test-portability.sh is not among $T_LIBVERIFY's executors" ;;
+esac
+gate "$f5"; out="$gate_out"
+[[ "$gate_rc" -ne 0 ]] \
+  && pass "gate 5: the real map fails when a row names a real but non-executing oracle" \
+  || fail "gate 5: the real map accepted a non-executing oracle (output: $out)"
+grep -q "names oracle test-portability.sh, which the derivation never observes EXECUTING it" <<<"$out" \
+  && pass "gate 5: the real-map failure names the row's target and the useless oracle" \
+  || fail "gate 5: the real-map failure did not name test-portability.sh (output: $out)"
 
 # ── 6. GATE 4: EXECUTED-PARTIAL with an empty 4th field ──────────────────────
 f4="$TMP/gate4.conf"
@@ -378,7 +454,8 @@ grep -q "$T_TOOLSLIB is EXECUTED-WHOLE but lists functions" <<<"$out" \
 FIX="$TMP/fixrepo"
 mkdir -p "$FIX/tests" "$FIX/bin"
 for f in sourced.sh parsed-only.sh shellchecked.sh grepped.sh heredoc-named.sh \
-         aliased.sh var-path.sh transitive.sh never-mentioned.sh; do
+         aliased.sh var-path.sh transitive.sh never-mentioned.sh \
+         printf-sourced.sh printf-prose.sh argv-sourced.sh argv-not-dragged.sh; do
   printf '#!/usr/bin/env bash\n: %s\n' "$f" > "$FIX/$f"
 done
 cat > "$FIX/sourced.sh" <<'FIXEOF'
@@ -398,6 +475,11 @@ grep -q needle "$REPO_DIR/grepped.sh"
 bash "$VAR" --flag
 ln -sf "$REPO_DIR/aliased.sh" "$BIN/dockerish"
 "$BIN/dockerish" run --rm
+printf 'source %q\n' "$REPO_DIR/printf-sourced.sh" >> "$BIN/harness.sh"
+bash "$BIN/harness.sh"
+printf 'source %s is where it lives\n' "$REPO_DIR/printf-prose.sh" >&2
+bash -c 'src="$1"; source "$src"' _ "$REPO_DIR/argv-sourced.sh"
+bash -c 'source /nowhere/fixed.sh' _ "$REPO_DIR/argv-not-dragged.sh"
 cat > "$REPO_DIR/written-stub.sh" <<'INNER'
 bash /elsewhere/heredoc-named.sh
 source /elsewhere/heredoc-named.sh
@@ -408,10 +490,14 @@ git -C "$FIX" add -A 2>/dev/null
 
 synth_want="$(cat <<'WANT'
 aliased.sh|EXECUTED
+argv-not-dragged.sh|NOT-EXECUTED
+argv-sourced.sh|EXECUTED
 grepped.sh|NOT-EXECUTED
 heredoc-named.sh|NOT-EXECUTED
 never-mentioned.sh|NOT-EXECUTED
 parsed-only.sh|NOT-EXECUTED
+printf-prose.sh|NOT-EXECUTED
+printf-sourced.sh|EXECUTED
 shellchecked.sh|NOT-EXECUTED
 sourced.sh|EXECUTED
 transitive.sh|EXECUTED
@@ -434,6 +520,21 @@ check "  bash -n is not execution" "NOT-EXECUTED" "$(synth_verdict parsed-only.s
 check "  shellcheck is not execution" "NOT-EXECUTED" "$(synth_verdict shellchecked.sh)"
 check "  a heredoc body is not code this file runs" \
   "NOT-EXECUTED" "$(synth_verdict heredoc-named.sh)"
+# The two run-time shapes. Each is paired with the negative that says what the
+# rule is keyed on, because a rule that fires on everything would satisfy the
+# positive alone: the printf rule is keyed on the REDIRECT (the prose line
+# writes the identical `source <path>` text to stderr and must not count), and
+# the argv rule is keyed on the body naming its target through a VARIABLE (the
+# not-dragged body names a literal path, so its own argument is just an
+# argument).
+check "  a path printf'd into a file as a source line is executed" \
+  "EXECUTED" "$(synth_verdict printf-sourced.sh)"
+check "  the same text printf'd to stderr is prose, not a script" \
+  "NOT-EXECUTED" "$(synth_verdict printf-prose.sh)"
+check "  an argument a bash -c body runs as \"\$1\" is executed" \
+  "EXECUTED" "$(synth_verdict argv-sourced.sh)"
+check "  a bash -c body that names its target literally does not drag its arguments in" \
+  "NOT-EXECUTED" "$(synth_verdict argv-not-dragged.sh)"
 
 # ── 10. The map is the tier inventory: every in-scope candidate has a row ─────
 n_cand="$(grep -c . "$DERIVED")"

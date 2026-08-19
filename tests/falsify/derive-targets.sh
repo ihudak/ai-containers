@@ -16,6 +16,13 @@
 #                a symlink or copy of a repo file, invoked under its new name
 #                  (tests/test-integration-shim.sh reaches docker-shim.sh ONLY
 #                   through `ln -sf "$SHIM" "$TMP/bin/docker"`)
+#                a path printf'd INTO A FILE as a source/bash line
+#                  (tests/test-lib-verify-repo.sh:79 builds its harness with
+#                   `printf 'source %q\n' "$REPO_DIR/tests/lib-verify-repo.sh"
+#                   >> "$h"`, which is that library's ONLY dedicated oracle)
+#                a path handed to `bash -c BODY _ <path>` whose body runs it as
+#                  "$1"/"$@" (tests/test-parsers.sh and tests/test-tools-d.sh
+#                   reach sandbox.sh only this way)
 #                transitively: what an executed file itself executes
 #   never        bash -n <file>             (parses; runs nothing)
 #                a grep/sed/awk/cat/shellcheck read of <file>  (text, not code)
@@ -36,6 +43,17 @@
 # positive would be dangerous instead of merely noisy: `bash -n` is vetoed per
 # TOKEN, not per line, because a `bash -n "$X"`-only reference wrongly read as
 # execution would let a grepped-only file in as an active mutation target.
+#
+# The two run-time shapes above are read COARSELY for that same reason. The
+# printf rule does not verify that the file written is later executed, and the
+# argv rule hands every argument of a `bash -c` to the body rather than binding
+# the positionals. Binding them properly was tried on paper and still misses
+# both shapes this repo actually contains — a body that copies "$1" into a
+# local before sourcing it, and one that `shift`s before `exec bash "$@"` — so
+# the coarse rule is not a shortcut to the precise one; it is the one that
+# works. What keeps it honest is the direction of the error: it can only ever
+# ADD an executor, and an added executor shows up as an evidence line naming
+# the exact file:line that produced it.
 #
 # Usage:
 #   derive-targets.sh                 # <target>|EXECUTED|<oracles>  per candidate
@@ -200,6 +218,76 @@ _ft_refs() {  # $1 = absolute file
     function isassign(t) { return t ~ /^[A-Za-z_][A-Za-z0-9_]*=/ }
     function ispath(t)   { return (t ~ /\// || t ~ /\$/) }
 
+    # Every reference is printed through here, so DOLLARSEEN records the one
+    # fact the argv rule below turns on: the walker met a command whose target
+    # it cannot name literally.
+    function emitref(ln, kind, a) {
+      print ln "\t" kind "\t" a "\t"
+      if (a ~ /\$/) DOLLARSEEN = 1
+    }
+
+    # `bash -c BODY _ ARG…` — the body names its input as "$1" or "$@", so the
+    # only place the real path is written is ARG. Emitted as kind `argv`, and
+    # deliberately COARSE: binding the positionals properly would still miss
+    # both shapes this repo actually uses — a body that copies "$1" into a
+    # local before sourcing it (tests/test-parsers.sh:79) and a body that
+    # shifts before `exec bash "$@"` (tests/test-tools-d.sh:806) — while a
+    # rule that simply reads the arguments catches both. Guarded by
+    # DOLLARSEEN, so a `bash -c` body that names its target literally does not
+    # also drag its arguments in.
+    function emit_argv(T, from, n, ln,    k) {
+      for (k = from; k <= n; k++) {
+        if (T[k] == ";") return
+        if (T[k] ~ /^[0-9]*[<>]/ || T[k] ~ /^-/) continue
+        if (ispath(T[k])) print ln "\t" "argv" "\t" T[k] "\t"
+      }
+    }
+
+    # A file redirect is what separates a printf that WRITES A SCRIPT from the
+    # hundreds whose text is prose for a human. `>&2` and `2>&1` tokenise as a
+    # bare `>`/`2>` followed by the `&` separator, so neither counts.
+    function has_file_redirect(T, from, n,    k) {
+      for (k = from; k <= n; k++) {
+        if (T[k] == ";") return 0
+        if (T[k] ~ /^[0-9]*>>?$/) { if (k < n && T[k + 1] != ";") return 1; continue }
+        if (T[k] ~ /^[0-9]*>>?./) return 1
+      }
+      return 0
+    }
+
+    # Rebuild what a `printf FMT ARG…`/`echo` would actually write: %-directives
+    # consume the arguments in order, `\n` becomes a command separator so each
+    # emitted line lands at a command position, and the format repeats while
+    # arguments remain, exactly as printf does. The result is walked as code.
+    function printf_synth(T, from, n,    k, na, A, ai, prev, out, i2, c, L, fmt) {
+      na = 0
+      for (k = from; k <= n; k++) {
+        if (T[k] == ";") break
+        if (T[k] ~ /^[0-9]*[<>]/) break
+        if (na == 0 && T[k] ~ /^-/) continue
+        A[++na] = T[k]
+      }
+      if (na == 0) return ""
+      fmt = A[1]; L = length(fmt); out = ""; ai = 1
+      do {
+        prev = ai
+        for (i2 = 1; i2 <= L; i2++) {
+          c = substr(fmt, i2, 1)
+          if (c == "\\") { i2++; c = substr(fmt, i2, 1); out = out ((c == "n") ? " ; " : " "); continue }
+          if (c == "%") {
+            if (substr(fmt, i2 + 1, 1) == "%") { i2++; out = out "%"; continue }
+            i2++
+            while (i2 <= L && substr(fmt, i2, 1) ~ /[-+ #0-9.*]/) i2++
+            out = out (++ai <= na ? A[ai] : "")
+            continue
+          }
+          out = out c
+        }
+        if (ai == prev) break
+      } while (ai < na)
+      return out
+    }
+
     function walk(T, n, ln, depth, cmd0,    i, t, j, k, veto, m, cmd, U, S, ns) {
       i = 1; cmd = (cmd0 ? 0 : 1)
       while (i <= n) {
@@ -215,7 +303,7 @@ _ft_refs() {  # $1 = absolute file
         if (t == "source" || t == ".") {
           j = i + 1
           while (j <= n && T[j] ~ /^-/) j++
-          if (j <= n && T[j] != ";") { print ln "\t" "source" "\t" T[j] "\t" }
+          if (j <= n && T[j] != ";") { emitref(ln, "source", T[j]) }
           cmd = 0; i = j + 1; continue
         }
         if (t == "bash" || t == "sh") {
@@ -224,13 +312,17 @@ _ft_refs() {  # $1 = absolute file
             # -n parses without running: NOT an execution, vetoed per token.
             if (T[j] ~ /^-[A-Za-z]*n/) veto = 1
             if (T[j] == "-c") {
-              if (!veto && j + 1 <= n && depth < 2) { m = tokenize(T[j + 1], U); walk(U, m, ln, depth + 1, 0); delete U }
+              if (!veto && j + 1 <= n && depth < 2) {
+                DOLLARSEEN = 0
+                m = tokenize(T[j + 1], U); walk(U, m, ln, depth + 1, 0); delete U
+                if (DOLLARSEEN) emit_argv(T, j + 2, n, ln)
+              }
               veto = 1; j = j + 2
               break
             }
             j++
           }
-          if (!veto && j <= n && T[j] != ";") { print ln "\t" "bash" "\t" T[j] "\t" }
+          if (!veto && j <= n && T[j] != ";") { emitref(ln, "bash", T[j]) }
           cmd = 0; i = j + 1; continue
         }
         if (t == "ln" || t == "cp" || t == "install" || t == "rsync") {
@@ -240,7 +332,14 @@ _ft_refs() {  # $1 = absolute file
           delete S
           cmd = 0; i = j; continue
         }
-        if (ispath(t)) { print ln "\t" "exec" "\t" t "\t"; cmd = 0; i++; continue }
+        if (t == "printf" || t == "echo") {
+          if (depth < 2 && has_file_redirect(T, i + 1, n)) {
+            S2 = printf_synth(T, i + 1, n)
+            if (S2 != "") { m = tokenize(S2, U); walk(U, m, ln, depth + 1, 0); delete U }
+          }
+          cmd = 0; i++; continue
+        }
+        if (ispath(t)) { emitref(ln, "exec", t); cmd = 0; i++; continue }
         cmd = 0; i++
       }
     }
@@ -278,6 +377,9 @@ _ft_refs() {  # $1 = absolute file
         }
         if (p == 0) next
         raw = substr(raw, p + 1)
+        # A `bash -c` body that spans lines puts its ARGUMENTS after the closing
+        # quote; same rule as the single-line form, just reached from here.
+        if (insq_code && DOLLARSEEN) { na = tokenize(raw, A); emit_argv(A, 1, na, start); delete A }
         insq = 0
         # Text after a closing quote continues the arguments of the SAME
         # command; it is not a fresh command position.
@@ -388,7 +490,7 @@ _ft_walk_file() {  # $1=absolute file, $2=map key, $3=oracle, $4=depth
     D_ALIAS["$key|$dest/${src##*/}"]="$src"
   done < <(_ft_refs "$f")
   while IFS=$'\t' read -r lineno kind a1 a2; do
-    case "$kind" in source|bash|exec) ;; *) continue ;; esac
+    case "$kind" in source|bash|exec|argv) ;; *) continue ;; esac
     exp="$(_ft_expand "$key" "$a1")"
     hit="$(_ft_match "$key" "$exp")"
     [[ -n "$hit" ]] || continue
@@ -638,6 +740,30 @@ ft_check() {  # $1=conf
             printf 'ERROR: %s:%s: %s names oracle %s, which run-all.sh selects %s test(s) for — an oracle must select exactly one\n' \
               "$conf" "$lineno" "$target" "$o" "$nmatch" >&2
             problems=$((problems + 1))
+            continue
+          fi
+          # ── Gate: the oracle must actually EXECUTE the target ──────────────
+          # A real test that never runs this file kills nothing, so every
+          # mutant SURVIVES and each one is owed a ledger entry it does not
+          # deserve — the tier's debt grows while its coverage does not. This
+          # is checked only for EXECUTED-* rows: a GREPPED-ONLY target is by
+          # definition executed by nobody, and its oracle asserts about the
+          # file's text instead.
+          #
+          # There is deliberately NO per-row escape hatch. If a genuine oracle
+          # is invisible here the derivation is wrong, and this file is the
+          # place that gets fixed — the whole design is that the map is derived
+          # and checked against, never trusted. `--evidence` shows what the
+          # derivation did see.
+          if [[ "$category" == EXECUTED-* && -n "${D_HITS[$target]:-}" ]]; then
+            case " ${D_HITS[$target]} " in
+              *" $o "*) ;;
+              *)
+                printf 'ERROR: %s:%s: %s names oracle %s, which the derivation never observes EXECUTING it (it is executed by: %s) — that oracle can kill no mutant of this target, so every one survives and is owed a ledger entry it did not earn. Fix the row, or fix the derivation if the execution is real but unseen (see --evidence)\n' \
+                  "$conf" "$lineno" "$target" "$o" "${D_HITS[$target]}" >&2
+                problems=$((problems + 1))
+                ;;
+            esac
           fi
         done
       fi

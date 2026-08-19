@@ -1178,7 +1178,62 @@ of one global number; or cap concurrency below `nproc` on hosts where the tier
 competes with a VM for cores (Phase 6 chose 18 on an 18-core Mac also running
 Colima).
 
-## F33 — the gate cannot yet require that a row's oracle actually executes its target
+## F33 — the gate cannot yet require that a row's oracle actually executes its target — **RESOLVED 2026-08-19**
+
+**Both halves landed together, as this entry said they had to.** The derivation
+learned the two run-time shapes and `derive-targets.sh --check` gained the
+`oracle ∈ executors` gate, in one commit — the gate alone rejects correct rows
+and the derivation alone buys only a more honest `--evidence`.
+
+**The entry was right about the mechanism and wrong about the count.** It named
+one blind shape (`printf 'source %q\n' … >> "$h"`). Running the gate against the
+old derivation found **two** rows failing, not one:
+
+| row | oracle it names | why the derivation could not see it |
+|---|---|---|
+| `tests/lib-verify-repo.sh` | `test-lib-verify-repo.sh` | the path is printf'd into a harness that is then run |
+| `sandbox.sh` | `test-parsers.sh` | the path is the ARGUMENT of `bash -c 'src="$1"; … source "$src"' _ "$REPO_DIR/sandbox.sh"` |
+
+The second shape also hides `tests/test-tools-d.sh:806`, which reaches
+`sandbox.sh` through `bash -c 'cd "$1" && shift && exec bash "$@"' _ …`. Both
+were invisible for the same underlying reason and neither is exotic: they are
+how a test drives a file it must not source into its own shell.
+
+**The rules are deliberately coarse, and that is the finding.** Binding the
+positional parameters properly — the obvious fix — was worked through and
+**misses both real shapes**: one body copies `"$1"` into a local before
+sourcing it, the other `shift`s before `exec bash "$@"`, and a textual
+substitution of `$1`/`$@` resolves neither. What works is simpler: a printf
+whose output is REDIRECTED INTO A FILE is walked as code, and a `bash -c` body
+that runs something it cannot name literally has its arguments read as
+candidates. Each rule is paired in the fixture with the negative that says what
+it is keyed on — the same `source <path>` text sent to stderr must stay
+NOT-EXECUTED, and a body naming a literal path must not drag its own arguments
+in — because the positive alone would be satisfied by a rule that fires on
+everything.
+
+Evidence stayed exact: the whole-repo `--evidence` diff is **11 added lines and
+zero removed**, every one a real execution, and no candidate changed its
+EXECUTED/NOT-EXECUTED verdict.
+
+**What the gate refuses, and what it deliberately does not offer.** There is no
+per-row escape hatch. If a genuine oracle is invisible, `derive-targets.sh` is
+what gets fixed — the doctrine is that the map is derived and checked against,
+never trusted, and a hand-written "trust me" marker is precisely the way a
+bogus oracle would get in. The gate applies to `EXECUTED-*` rows only: a
+GREPPED-ONLY target is by definition executed by nobody, and its oracle asserts
+about the file's text.
+
+**A coverage question the fix opened, and closed by measuring.**
+`tests/lib-layer-checks.sh` gained three newly-visible executors, which is
+exactly the shape that made the oracle field a SET in F16. Each was run against
+that target at `--jobs 1`: 48 mutants, 42 killed, **the same 6 survived** in all
+three. They execute the file without asserting on anything the six damage, so
+the row stays 1:1 and the measurement is recorded beside it, so nobody re-derives
+the answer from the executor list.
+
+Original finding:
+
 
 `derive-targets.sh --check` gates the oracle field on three things: the test
 exists, `run-all.sh` selects it uniquely, and it is not named twice. It does
