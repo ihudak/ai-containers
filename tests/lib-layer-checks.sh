@@ -5,8 +5,8 @@
 # glob skips it (same reason as tests/lib-verify-repo.sh).
 #
 # CONTRACT: the sourcing file sets LAYER_CHECKS_CONF to the registry path before
-# sourcing. Provides lc_rows(), wf_jobs(), wf_steps(), wf_job_key(),
-# wf_triggers_on().
+# sourcing. Provides lc_rows(), wf_jobs(), wf_steps(), wf_has_step(),
+# wf_job_key(), wf_triggers_on().
 #
 # lc_rows is generic over the registry's row TYPE — it already serves `check`
 # and `setup` rows; the `workflow` row type (added to close the containment
@@ -97,6 +97,29 @@ wf_steps() {  # $1=workflow yaml  $2=job id → step identities, one per line
   out="$(_wf_awk "$f" "$j")"
   [[ -n "$out" ]] || { echo "lib-layer-checks: job '$j' in $f has no steps" >&2; return 1; }
   printf '%s\n' "$out"
+}
+
+# wf_has_step is the ONLY safe way to ask "does this job have this step".
+#
+# The obvious form — `wf_steps "$f" "$j" | grep -qxF "$step"` — is WRONG under
+# `set -o pipefail`, which every consumer here uses. `grep -q` exits the instant
+# it matches, and the producer left mid-write takes the broken pipe; pipefail
+# then promotes the producer's status over grep's success, so the pipeline
+# reports "no such step" for a step that is right there. Measured: with a
+# producer larger than the pipe buffer the false negative is 200/200, and with
+# a four-line producer it appeared under CPU contention only — which is worse,
+# because it makes a REGISTRY-ROW-IS-STALE failure that nothing is stale about,
+# arriving only on a loaded machine. It reached this repo through the falsify
+# tier, which runs several copies of test-layer-containment.sh at once.
+#
+# Capturing first cannot race: the producer's status is read directly, and the
+# match runs against a value that is already complete.
+wf_has_step() {  # $1=yaml  $2=job id  $3=step name → 0 when the job has it
+  local f="${1:?wf_has_step: workflow path required}"
+  local j="${2:?wf_has_step: job id required}"
+  local step="${3:?wf_has_step: step name required}" out
+  out="$(wf_steps "$f" "$j" 2>/dev/null)" || return 1
+  grep -qxF -- "$step" <<<"$out"
 }
 
 # wf_job_key reads a JOB-LEVEL key (4-space indented, directly under a named

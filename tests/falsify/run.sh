@@ -25,6 +25,11 @@
 #              WITHOUT ever printing a FAIL: line, so nothing was observed
 #              asserting. It is not a kill and must not be read as one — see the
 #              note on falsify_verdict. It is owed a ledger entry like a survivor.
+#   oracle     the row's oracle field verbatim, which may name SEVERAL tests
+#              separated by commas. They are one invocation, not several: a
+#              target's code can be driven by more tests than the single one
+#              that is dedicated to it, and naming only that one made real kills
+#              read as survivors. A FAIL: from any member is this target's kill.
 #   seq        1-based index of this mutant within its target's generated list.
 #              Identity is NOT unique on its own: a line holding two `&&` yields
 #              two logic-flip mutants that share operator AND sha1. seq (with
@@ -240,16 +245,24 @@ falsify_write_mutant() {   # <pristine-file> <dest-file> <lineno> <text>
 FALSIFY_RC=0
 FALSIFY_TIMED_OUT=0
 FALSIFY_MS=0
-falsify_run_oracle() {   # <tree> <oracle> <outfile> <timeout-seconds>
+falsify_run_oracle() {   # <tree> <oracle-set> <outfile> <timeout-seconds>
   local tree="$1" oracle="$2" out="$3" limit="$4"
   local flag="$out.timedout" pid dog t0
+  # The oracle field is a SET: `a.sh,b.sh` names ONE invocation running both,
+  # because run-all.sh OR-combines its filters and reports one aggregate status
+  # — so a FAIL: from any member is this target's kill signal, and the baseline
+  # requires every member green. Split into an array rather than relying on word
+  # splitting: an unquoted `${oracle//,/ }` at the command position would also
+  # glob, and a `*` reaching run-all.sh as a filter would select the whole suite.
+  local -a onames=()
+  IFS=',' read -r -a onames <<<"$oracle"
   rm -f "$flag"
   t0="$(fr_now_us)"
   # Monitor mode so each background job leads its own process group and a
   # timeout can kill the oracle's WHOLE tree of children (run-all.sh forks a
   # bash per test), not just the driver.
   set -m
-  ( cd "$tree" && exec bash "$FR_DRIVER_REL" -v "$oracle" ) >"$out" 2>&1 &
+  ( cd "$tree" && exec bash "$FR_DRIVER_REL" -v "${onames[@]}" ) >"$out" 2>&1 &
   pid=$!
   ( sleep "$limit"
     : > "$flag"

@@ -64,6 +64,55 @@ check "wf_steps resolves name:, falls back to uses:, and keeps colons in quoted 
 check "wf_steps does not leak steps across job boundaries" \
   "Only step" "$(wf_steps "$TMP/wf.yml" beta)"
 
+# ── wf_has_step, and the pipeline hazard it exists to remove ─────────────────
+# `wf_steps "$f" "$j" | grep -qxF "$step"` is the obvious spelling and it is
+# WRONG under `set -o pipefail`: grep -q exits on the match, the producer left
+# mid-write takes the broken pipe, and pipefail promotes the producer's status
+# over grep's success — so the pipeline says "no such step" about a step that
+# is present. It shipped that way and produced a "this registry row is stale"
+# failure with nothing stale, on a machine loaded by the falsify tier.
+#
+# The fixture makes that race DETERMINISTIC rather than waiting for a loaded
+# machine: several thousand steps, far more than a pipe buffer holds, with the
+# sought step FIRST so grep exits while the producer is still writing. Measured
+# on the piped spelling: 200 false negatives out of 200. Reimplement
+# wf_has_step with a pipe and the first assertion below fails every time.
+{
+  printf 'jobs:\n  big:\n    runs-on: x\n    steps:\n'
+  printf '      - name: the first step\n'
+  for _i in $(seq 1 8000); do printf '      - name: filler step %s\n' "$_i"; done
+} > "$TMP/big.yml"
+big_bytes="$(wc -c < "$TMP/big.yml")"
+if [[ "$big_bytes" -gt 65536 ]]; then
+  pass "fixture: the big-job step list is $big_bytes bytes, past any pipe buffer"
+else
+  fail "fixture: the big-job step list is only $big_bytes bytes — too small to lose the race, so the assertion below proves nothing"
+fi
+
+if wf_has_step "$TMP/big.yml" big "the first step"; then
+  pass "wf_has_step finds a step that a grep -q pipeline would race past"
+else
+  fail "wf_has_step finds a step that a grep -q pipeline would race past"
+fi
+# The control: the piped spelling really does fail on this fixture, so the
+# assertion above is measuring the fix and not a fixture that never raced.
+if wf_steps "$TMP/big.yml" big 2>/dev/null | grep -qxF "the first step"; then
+  fail "control: the piped spelling passed here, so this fixture does not exercise the hazard"
+else
+  pass "control: the piped spelling DOES lose the race on this fixture"
+fi
+# Still says no when the step is genuinely absent, and when the job is.
+if wf_has_step "$TMP/wf.yml" alpha "no such step"; then
+  fail "wf_has_step reported a step that is not there"
+else
+  pass "wf_has_step reports absence for a step that is not there"
+fi
+if wf_has_step "$TMP/wf.yml" nosuchjob "Plain step"; then
+  fail "wf_has_step reported a step in a job that does not exist"
+else
+  pass "wf_has_step reports absence for a job that does not exist"
+fi
+
 # ── The failure paths, exercised ──────────────────────────────────────────────
 printf 'name: NoJobs\non:\n  push:\n' > "$TMP/nojobs.yml"
 if wf_jobs "$TMP/nojobs.yml" >/dev/null 2>&1; then

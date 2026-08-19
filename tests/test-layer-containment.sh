@@ -291,7 +291,11 @@ fi
 # shellcheck disable=SC2034  # kind/target/rc_var are positional registry columns (tests/lib-layer-checks.sh) consumed by lib-verify-repo.sh's stub-builder; only id/job/step/wtgt/wre drive this assertion loop, but `read` needs every field named to consume the row
 while IFS='|' read -r id job step kind target rc_var wtgt wre; do
   # Exact step-name match within the named job.
-  if wf_steps "$HERMETIC_YML" "$job" 2>/dev/null | grep -qxF "$step"; then
+  # wf_has_step, never `wf_steps | grep -q`: under pipefail that pipeline
+  # reports "no such step" for a step that is present whenever grep's early
+  # exit beats the producer, which on a loaded machine it does. See the note
+  # above wf_has_step in tests/lib-layer-checks.sh.
+  if wf_has_step "$HERMETIC_YML" "$job" "$step"; then
     pass "$id: hermetic-checks.yml job '$job' has step '$step'"
   else
     fail "$id: hermetic-checks.yml job '$job' has NO step named '$step' — this registry row is stale"

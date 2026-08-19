@@ -810,7 +810,13 @@ grep -q "\.ai-containers/.*/\.config/dtctl:" "$CAP" && pass "dtctl config mounte
 grep -qx "AI_AGENTS_ENABLED=claude-code" "$CAP" && pass "AI_AGENTS_ENABLED passed" || fail "AI_AGENTS_ENABLED"
 # Seed: group copy created from host, containing the host's file.
 GROOT="$HOME/.ai-containers"
-find "$GROOT" -path '*/.config/dtctl/config' | grep -q . && pass "group dtctl seeded from host" || fail "seed from host"
+# Captured, not piped into `grep -q .`: that pipeline matches on find's FIRST
+# line and exits, leaving find walking the tree into a closed pipe — and under
+# `set -o pipefail` find's 141 becomes the pipeline's status, failing an
+# assertion whose subject is right there. See wf_has_step in
+# tests/lib-layer-checks.sh for the measured version of this hazard.
+_seeded="$(find "$GROOT" -path '*/.config/dtctl/config')"
+[[ -n "$_seeded" ]] && pass "group dtctl seeded from host" || fail "seed from host"
 
 # Second run: group dir already exists → must NOT be re-seeded (group state wins).
 # Prove it by changing the host file and confirming the group copy is untouched.

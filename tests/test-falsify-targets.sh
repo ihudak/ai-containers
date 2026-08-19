@@ -28,6 +28,38 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DERIVE="$REPO_DIR/tests/falsify/derive-targets.sh"
 CONF="$REPO_DIR/tests/falsify/targets.conf"
 RUNALL="$REPO_DIR/tests/run-all.sh"
+
+# ── ENGINE PATHS ARE LAYOUT-DEPENDENT, SO THEY ARE RESOLVED, NOT TYPED ────────
+# Every fixture below edits a REAL row of targets.conf, and targets.conf names
+# its targets by repo-relative path — which differs between the two repos:
+# upstream ai-containers keeps the engine at the repo root, mgd-ai-containers
+# keeps it under base/. Typing `tools-lib.sh` into a sed pattern makes the
+# pattern match nothing in one of them, and a sed that matches nothing writes an
+# UNCHANGED fixture: the gate then passes, the assertion reports the gate
+# working, and nothing was tested. That is the silent-success shape this whole
+# tier exists to remove, so the paths are derived from the layout instead —
+# the same `[[ -f build.sh ]] || base/` probe tests/integration/mutate.sh and
+# tests/test-lib-verify-repo.sh already use. One copy of this file serves both.
+#
+# The `RE_` twins are the same strings with `.` escaped, for use inside a regex.
+ENGINE_REL=""
+[[ -f "$REPO_DIR/build.sh" ]] || ENGINE_REL="base/"
+T_TOOLSLIB="${ENGINE_REL}tools-lib.sh"
+T_ENTRYPOINT="${ENGINE_REL}entrypoint.sh"
+T_SBCOMMON="${ENGINE_REL}sandbox-common.sh"
+T_REPOSH="${ENGINE_REL}repo.sh"
+T_GROUPSH="${ENGINE_REL}group.sh"
+RE_TOOLSLIB="${T_TOOLSLIB//./\\.}"
+RE_ENTRYPOINT="${T_ENTRYPOINT//./\\.}"
+RE_SBCOMMON="${T_SBCOMMON//./\\.}"
+RE_REPOSH="${T_REPOSH//./\\.}"
+RE_GROUPSH="${T_GROUPSH//./\\.}"
+# The probe must have resolved to a path that really is in the map, or every
+# fixture below silently degrades to "no change" exactly as described above.
+for _t in "$T_TOOLSLIB" "$T_ENTRYPOINT" "$T_SBCOMMON" "$T_REPOSH" "$T_GROUPSH"; do
+  grep -q "|${_t}|\|^${_t}|" "$CONF" \
+    || { printf 'FAIL: %s\n' "the layout probe resolved $_t, which has no row in targets.conf — every fixture below would edit nothing"; exit 1; }
+done
 TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; trap 'rm -rf "$TMP"' EXIT
 fails=0
 pass() { printf 'PASS: %s\n' "$1"; }
@@ -89,43 +121,43 @@ printf '%s' "$cached_out" | grep -q '0 problem(s)' \
 shim_verdict="$(awk -F'|' '$1 == "tests/integration/docker-shim.sh" { print $2 }' "$DERIVED")"
 check "docker-shim.sh is EXECUTED (resolved through the symlink, not the name)" \
   "EXECUTED" "$shim_verdict"
-ep_verdict="$(awk -F'|' '$1 == "entrypoint.sh" { print $2 }' "$DERIVED")"
-check "entrypoint.sh is NOT-EXECUTED (bash -n and grep are not execution)" \
+ep_verdict="$(awk -F'|' -v f="$T_ENTRYPOINT" '$1 == f { print $2 }' "$DERIVED")"
+check "$T_ENTRYPOINT is NOT-EXECUTED (bash -n and grep are not execution)" \
   "NOT-EXECUTED" "$ep_verdict"
 
 # ── 3. GATE 1: an executed file with no row fails, BY NAME ────────────────────
 f1="$TMP/gate1.conf"
-grep -v '^tools-lib\.sh|' "$CONF" > "$f1"
-check "fixture: gate1.conf drops the tools-lib.sh row" \
+grep -v "^${RE_TOOLSLIB}|" "$CONF" > "$f1"
+check "fixture: gate1.conf drops the $T_TOOLSLIB row" \
   "$(( $(grep -c . "$CONF") - 1 ))" "$(grep -c . "$f1")"
 gate "$f1"; out="$gate_out"
 [[ "$gate_rc" -ne 0 ]] \
   && pass "gate 1: a dropped row for an executed target fails the gate" \
   || fail "gate 1: a dropped row for an executed target passed the gate"
-printf '%s' "$out" | grep -q '^ERROR: tools-lib.sh is EXECUTED by the hermetic suite' \
+printf '%s' "$out" | grep -q "^ERROR: $T_TOOLSLIB is EXECUTED by the hermetic suite" \
   && pass "gate 1: the failure NAMES the missing file" \
-  || fail "gate 1: the failure did not name tools-lib.sh (output: $out)"
+  || fail "gate 1: the failure did not name $T_TOOLSLIB (output: $out)"
 
 # ── 4. GATE 2: a GREPPED-ONLY file registered as an active target is rejected ──
 f2="$TMP/gate2.conf"
-sed 's@^entrypoint\.sh|GREPPED-ONLY|test-entrypoint-wiring\.sh$@entrypoint.sh|EXECUTED-WHOLE|test-entrypoint-wiring.sh@' "$CONF" > "$f2"
-grep -q '^entrypoint\.sh|EXECUTED-WHOLE|' "$f2" \
-  && pass "fixture: gate2.conf promotes entrypoint.sh to an active mutation target" \
-  || fail "fixture: gate2.conf did not promote entrypoint.sh"
+sed "s@^${RE_ENTRYPOINT}|GREPPED-ONLY|test-entrypoint-wiring\\.sh\$@${T_ENTRYPOINT}|EXECUTED-WHOLE|test-entrypoint-wiring.sh@" "$CONF" > "$f2"
+grep -q "^${RE_ENTRYPOINT}|EXECUTED-WHOLE|" "$f2" \
+  && pass "fixture: gate2.conf promotes $T_ENTRYPOINT to an active mutation target" \
+  || fail "fixture: gate2.conf did not promote $T_ENTRYPOINT"
 gate "$f2"; out="$gate_out"
 [[ "$gate_rc" -ne 0 ]] \
   && pass "gate 2: a GREPPED-ONLY file registered as a mutation target fails the gate" \
   || fail "gate 2: a GREPPED-ONLY file registered as a mutation target passed the gate"
-printf '%s' "$out" | grep -q 'entrypoint.sh is classified EXECUTED-WHOLE but the hermetic suite never EXECUTES it' \
+printf '%s' "$out" | grep -q "$T_ENTRYPOINT is classified EXECUTED-WHOLE but the hermetic suite never EXECUTES it" \
   && pass "gate 2: the failure names the file and says why (never executed)" \
   || fail "gate 2: the failure did not explain the misclassification (output: $out)"
 
 # The mirror: an executed file mislabelled GREPPED-ONLY is also caught, or the
 # map could hide a target by demoting it instead of deleting its row.
 f2b="$TMP/gate2b.conf"
-sed 's@^tools-lib\.sh|EXECUTED-WHOLE|test-tools-d\.sh$@tools-lib.sh|GREPPED-ONLY|test-tools-d.sh@' "$CONF" > "$f2b"
+sed "s@^${RE_TOOLSLIB}|EXECUTED-WHOLE|test-tools-d\\.sh\$@${T_TOOLSLIB}|GREPPED-ONLY|test-tools-d.sh@" "$CONF" > "$f2b"
 gate "$f2b"; out="$gate_out"
-printf '%s' "$out" | grep -q 'tools-lib.sh is classified GREPPED-ONLY but the hermetic suite EXECUTES it' \
+printf '%s' "$out" | grep -q "$T_TOOLSLIB is classified GREPPED-ONLY but the hermetic suite EXECUTES it" \
   && pass "gate 2 (mirror): demoting an executed target to GREPPED-ONLY fails the gate" \
   || fail "gate 2 (mirror): demoting an executed target to GREPPED-ONLY passed (output: $out)"
 
@@ -137,8 +169,8 @@ bash "$RUNALL" no-such-oracle-zzz >/dev/null 2>&1
 check "premise: run-all.sh exits 2 when its filter selects no test" "2" "$?"
 
 f3="$TMP/gate3.conf"
-sed 's@^tools-lib\.sh|EXECUTED-WHOLE|test-tools-d\.sh$@tools-lib.sh|EXECUTED-WHOLE|test-tools-dd.sh@' "$CONF" > "$f3"
-grep -q '^tools-lib\.sh|EXECUTED-WHOLE|test-tools-dd\.sh$' "$f3" \
+sed "s@^${RE_TOOLSLIB}|EXECUTED-WHOLE|test-tools-d\\.sh\$@${T_TOOLSLIB}|EXECUTED-WHOLE|test-tools-dd.sh@" "$CONF" > "$f3"
+grep -q "^${RE_TOOLSLIB}|EXECUTED-WHOLE|test-tools-dd\\.sh\$" "$f3" \
   && pass "fixture: gate3.conf misspells the oracle as test-tools-dd.sh" \
   || fail "fixture: gate3.conf did not misspell the oracle"
 [[ ! -f "$REPO_DIR/tests/test-tools-dd.sh" ]] \
@@ -173,33 +205,111 @@ printf '%s' "$out" | grep -qE 'names oracle test-alpha.sh, which run-all.sh sele
   && pass "gate 3 (ambiguity): the failure reports how many tests the oracle selects" \
   || fail "gate 3 (ambiguity): the failure did not report the selection count (output: $out)"
 
+# ── 5b. GATE 3 over a SET: every member is checked, not just the first ───────
+# The oracle field names one or more tests. Each of the three failures below is
+# demonstrated with the flaw in the SECOND member: a gate that validated only
+# the first would pass all three, and the row would then claim coverage from a
+# test that contributes nothing. The synthetic tests/ dir is reused so the
+# fixtures differ only in the conf.
+# Its OWN synthetic repo, not $AMB's: that one deliberately holds a
+# name-collision pair so `test-alpha.sh` selects two tests, which would make
+# every case below fail for the wrong reason. Here no name is a substring of
+# another.
+SET="$TMP/oracleset"
+mkdir -p "$SET/tests"
+printf '#!/usr/bin/env bash\n' > "$SET/tests/test-one.sh"
+printf '#!/usr/bin/env bash\n' > "$SET/tests/test-two.sh"
+printf '#!/usr/bin/env bash\n' > "$SET/target.sh"
+printf 'target.sh|EXECUTED|test-one.sh\n' > "$SET/set.derived"
+set_gate() {  # $1=oracle field → sets gate_out/gate_rc against the synthetic repo
+  printf 'target.sh|EXECUTED-WHOLE|%s\n' "$1" > "$SET/set.conf"
+  gate_out="$(FALSIFY_REPO="$SET" FALSIFY_TESTS_DIR="$SET/tests" FALSIFY_DERIVED="$SET/set.derived" \
+              bash "$DERIVE" --check "$SET/set.conf" 2>&1)"; gate_rc=$?
+}
+
+# The control FIRST: a well-formed two-member set must PASS, or every failure
+# below could be the gate rejecting the comma rather than the flaw.
+set_gate "test-one.sh,test-two.sh"
+check "gate 3 (set): a well-formed two-oracle row passes" "0" "$gate_rc"
+
+set_gate "test-one.sh,test-zzz.sh"
+[[ "$gate_rc" -ne 0 ]] \
+  && pass "gate 3 (set): a nonexistent SECOND oracle fails the gate" \
+  || fail "gate 3 (set): a nonexistent second oracle passed the gate (output: $gate_out)"
+printf '%s' "$gate_out" | grep -q 'names oracle test-zzz.sh, which does not exist' \
+  && pass "gate 3 (set): the failure names the second oracle, not the first" \
+  || fail "gate 3 (set): the failure did not name test-zzz.sh (output: $gate_out)"
+
+set_gate "test-one.sh,test-one.sh"
+[[ "$gate_rc" -ne 0 ]] \
+  && pass "gate 3 (set): the same oracle named twice fails the gate" \
+  || fail "gate 3 (set): a repeated oracle passed the gate (output: $gate_out)"
+printf '%s' "$gate_out" | grep -q 'names oracle test-one.sh twice' \
+  && pass "gate 3 (set): the failure says the repetition buys no coverage" \
+  || fail "gate 3 (set): the failure did not report the repetition (output: $gate_out)"
+
+# A TRAILING COMMA is the one malformed shape that would otherwise pass
+# SILENTLY: `IFS=, read -a` drops a trailing empty member, so `a.sh,` splits to
+# one element and the author's second oracle disappears with no complaint. That
+# is why the field's shape is checked before it is split, and why this case is
+# here rather than left to the per-member loop.
+set_gate "test-one.sh,"
+[[ "$gate_rc" -ne 0 ]] \
+  && pass "gate 3 (set): a trailing comma fails the gate" \
+  || fail "gate 3 (set): a trailing comma passed the gate (output: $gate_out)"
+printf '%s' "$gate_out" | grep -q 'has a malformed oracle field' \
+  && pass "gate 3 (set): the failure names the field shape, not a missing test" \
+  || fail "gate 3 (set): the trailing comma was not reported as a shape error (output: $gate_out)"
+# The premise that makes the shape check load-bearing, asserted rather than
+# asserted-about: the split really does drop the empty member.
+IFS=',' read -r -a _drop <<<"test-one.sh,"
+check "premise: IFS=, read -a silently drops a trailing empty member" "1" "${#_drop[@]}"
+
+set_gate "test-one.sh, test-two.sh"
+printf '%s' "$gate_out" | grep -q 'has a malformed oracle field' \
+  && pass "gate 3 (set): a space after the comma fails the gate" \
+  || fail "gate 3 (set): a space after the comma passed the gate (output: $gate_out)"
+
+# A GLOB in the field is refused by the same shape check, and that is why the
+# character class is a whitelist rather than "anything but a comma or a space".
+# `test-*.sh` would otherwise reach the per-member loop, where an unquoted split
+# expands it against the working directory — so what the row asked for and what
+# the runner ran would depend on where the runner was invoked from.
+set_gate "test-one.sh,test-*.sh"
+[[ "$gate_rc" -ne 0 ]] \
+  && pass "gate 3 (set): a glob in the oracle field fails the gate" \
+  || fail "gate 3 (set): a glob in the oracle field passed the gate (output: $gate_out)"
+printf '%s' "$gate_out" | grep -q 'has a malformed oracle field' \
+  && pass "gate 3 (set): the glob is refused by shape, before anything expands it" \
+  || fail "gate 3 (set): the glob was not refused by the shape check (output: $gate_out)"
+
 # ── 6. GATE 4: EXECUTED-PARTIAL with an empty 4th field ──────────────────────
 f4="$TMP/gate4.conf"
-{ cat "$CONF"; printf 'sandbox-common.sh|EXECUTED-PARTIAL|test-parsers.sh|\n'; } \
-  | grep -v '^#DEFERRED|sandbox-common\.sh|' > "$f4"
+{ cat "$CONF"; printf '%s|EXECUTED-PARTIAL|test-parsers.sh|\n' "$T_SBCOMMON"; } \
+  | grep -v "^#DEFERRED|${RE_SBCOMMON}|" > "$f4"
 gate "$f4"; out="$gate_out"
 [[ "$gate_rc" -ne 0 ]] \
   && pass "gate 4: an EXECUTED-PARTIAL row with an empty function list fails the gate" \
   || fail "gate 4: an EXECUTED-PARTIAL row with an empty function list passed the gate"
-printf '%s' "$out" | grep -q 'sandbox-common.sh is EXECUTED-PARTIAL with an empty function list' \
+printf '%s' "$out" | grep -q "$T_SBCOMMON is EXECUTED-PARTIAL with an empty function list" \
   && pass "gate 4: the failure names the file and the missing 4th field" \
   || fail "gate 4: the failure did not name the empty function list (output: $out)"
 
 # A `-` placeholder is empty too — the deferred rows use it for EXECUTED-WHOLE,
 # so a copy-paste into an EXECUTED-PARTIAL row must not slip through.
 f4b="$TMP/gate4b.conf"
-{ cat "$CONF"; printf 'sandbox-common.sh|EXECUTED-PARTIAL|test-parsers.sh|-\n'; } \
-  | grep -v '^#DEFERRED|sandbox-common\.sh|' > "$f4b"
+{ cat "$CONF"; printf '%s|EXECUTED-PARTIAL|test-parsers.sh|-\n' "$T_SBCOMMON"; } \
+  | grep -v "^#DEFERRED|${RE_SBCOMMON}|" > "$f4b"
 gate "$f4b"; out="$gate_out"
-printf '%s' "$out" | grep -q 'sandbox-common.sh is EXECUTED-PARTIAL with an empty function list' \
+printf '%s' "$out" | grep -q "$T_SBCOMMON is EXECUTED-PARTIAL with an empty function list" \
   && pass "gate 4: a '-' function list counts as empty" \
   || fail "gate 4: a '-' function list was accepted (output: $out)"
 
 # Naming functions is only meaningful if the names are real.
 f4c="$TMP/gate4c.conf"
-sed 's@^#DEFERRED|repo\.sh|EXECUTED-PARTIAL|test-repo-registry\.sh|is_git_url,fmt_epoch@#DEFERRED|repo.sh|EXECUTED-PARTIAL|test-repo-registry.sh|is_git_url,no_such_function@' "$CONF" > "$f4c"
+sed "s@^#DEFERRED|${RE_REPOSH}|EXECUTED-PARTIAL|test-repo-registry\\.sh|is_git_url,fmt_epoch@#DEFERRED|${T_REPOSH}|EXECUTED-PARTIAL|test-repo-registry.sh|is_git_url,no_such_function@" "$CONF" > "$f4c"
 gate "$f4c"; out="$gate_out"
-printf '%s' "$out" | grep -q 'naming function no_such_function, which is not defined in repo.sh' \
+printf '%s' "$out" | grep -q "naming function no_such_function, which is not defined in $T_REPOSH" \
   && pass "gate 4: a named function that is not defined in the target fails the gate" \
   || fail "gate 4: an undefined function name was accepted (output: $out)"
 
@@ -222,24 +332,24 @@ printf '%s' "$out" | grep -qE '^ERROR: tests/run-all\.sh .*has no row' \
 
 # A deferral must state why, for the same reason.
 f5b="$TMP/defer-empty.conf"
-sed 's@^#DEFERRED|group\.sh|EXECUTED-WHOLE|test-group-lifecycle\.sh|-|.*$@#DEFERRED|group.sh|EXECUTED-WHOLE|test-group-lifecycle.sh|-|@' "$CONF" > "$f5b"
+sed "s@^#DEFERRED|${RE_GROUPSH}|EXECUTED-WHOLE|test-group-lifecycle\\.sh|-|.*\$@#DEFERRED|${T_GROUPSH}|EXECUTED-WHOLE|test-group-lifecycle.sh|-|@" "$CONF" > "$f5b"
 gate "$f5b"; out="$gate_out"
-printf '%s' "$out" | grep -q '#DEFERRED| for group.sh has an empty reason' \
+printf '%s' "$out" | grep -q "#DEFERRED| for $T_GROUPSH has an empty reason" \
   && pass "a #DEFERRED| row with an empty reason fails the gate" \
   || fail "a #DEFERRED| row with an empty reason passed the gate (output: $out)"
 
 # ── 8. Structural gates: duplicates, unknown categories, phantom targets ──────
 f6="$TMP/dup.conf"
-{ cat "$CONF"; printf 'tools-lib.sh|EXECUTED-WHOLE|test-tools-d.sh\n'; } > "$f6"
+{ cat "$CONF"; printf '%s|EXECUTED-WHOLE|test-tools-d.sh\n' "$T_TOOLSLIB"; } > "$f6"
 gate "$f6"; out="$gate_out"
-printf '%s' "$out" | grep -q 'duplicate row for tools-lib.sh' \
+printf '%s' "$out" | grep -q "duplicate row for $T_TOOLSLIB" \
   && pass "a duplicate row for the same target fails the gate" \
   || fail "a duplicate row for the same target passed the gate (output: $out)"
 
 f7="$TMP/badcat.conf"
-sed 's@^tools-lib\.sh|EXECUTED-WHOLE|test-tools-d\.sh$@tools-lib.sh|EXECUTED|test-tools-d.sh@' "$CONF" > "$f7"
+sed "s@^${RE_TOOLSLIB}|EXECUTED-WHOLE|test-tools-d\\.sh\$@${T_TOOLSLIB}|EXECUTED|test-tools-d.sh@" "$CONF" > "$f7"
 gate "$f7"; out="$gate_out"
-printf '%s' "$out" | grep -q 'tools-lib.sh has unknown category EXECUTED ' \
+printf '%s' "$out" | grep -q "$T_TOOLSLIB has unknown category EXECUTED " \
   && pass "an unknown category fails the gate" \
   || fail "an unknown category passed the gate (output: $out)"
 
@@ -253,9 +363,9 @@ printf '%s' "$out" | grep -q 'no-such-script.sh is not an in-scope candidate' \
 # A GREPPED-ONLY row must not carry a function list either — the mutation unit
 # only shrinks below the file for EXECUTED-PARTIAL.
 f9="$TMP/funcs-on-whole.conf"
-sed 's@^tools-lib\.sh|EXECUTED-WHOLE|test-tools-d\.sh$@tools-lib.sh|EXECUTED-WHOLE|test-tools-d.sh|tools_list_names@' "$CONF" > "$f9"
+sed "s@^${RE_TOOLSLIB}|EXECUTED-WHOLE|test-tools-d\\.sh\$@${T_TOOLSLIB}|EXECUTED-WHOLE|test-tools-d.sh|tools_list_names@" "$CONF" > "$f9"
 gate "$f9"; out="$gate_out"
-printf '%s' "$out" | grep -q 'tools-lib.sh is EXECUTED-WHOLE but lists functions' \
+printf '%s' "$out" | grep -q "$T_TOOLSLIB is EXECUTED-WHOLE but lists functions" \
   && pass "a function list on a non-EXECUTED-PARTIAL row fails the gate" \
   || fail "a function list on an EXECUTED-WHOLE row was accepted (output: $out)"
 

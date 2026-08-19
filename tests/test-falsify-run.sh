@@ -197,6 +197,26 @@ printf 'FAIL: everything downstream of a collapsed workspace\n'
 exit 1
 EOF
 
+# Oracle H — BLIND to the mutant oracle A catches, and the only thing that
+# catches the one oracle A misses. It calls fx_never_called and nothing else, so
+# the cmp-flip inside fx_bigger's asserted `if` is invisible to it while
+# fx_never_called's return-flip is not. Paired with oracle A in one row, the two
+# cover the union — which is the whole point of the oracle SET, and is only
+# demonstrable with a member that is genuinely blind on its own.
+cat > "$FX/tests/test-fx-blind.sh" <<'EOF'
+#!/usr/bin/env bash
+set -uo pipefail
+FX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=/dev/null
+source "$FX_DIR/fixture-lib.sh"
+if fx_never_called; then
+  printf 'PASS: fx_never_called succeeds\n'
+  exit 0
+fi
+printf 'FAIL: fx_never_called succeeds\n'
+exit 1
+EOF
+
 # THE REAL DRIVER, copied: the oracle contract is `tests/run-all.sh <name>`, so a
 # fixture with a hand-written stand-in driver would be testing the stand-in.
 cp "$TESTS_DIR/run-all.sh" "$FX/tests/run-all.sh"
@@ -217,6 +237,11 @@ CONF_SILENT="$(conf silent 'fixture-lib.sh|EXECUTED-WHOLE|test-fx-silent.sh')"
 CONF_SLOW="$(conf slow 'fixture-slow.sh|EXECUTED-WHOLE|test-fx-slow.sh')"
 CONF_TYPO="$(conf typo 'fixture-lib.sh|EXECUTED-WHOLE|test-fx-nosuchtest.sh')"
 CONF_SCAFFOLD="$(conf scaffold 'fixture-lib.sh|EXECUTED-WHOLE|test-fx-scaffold.sh')"
+CONF_BLIND="$(conf blind 'fixture-lib.sh|EXECUTED-WHOLE|test-fx-blind.sh')"
+# The blind oracle is FIRST deliberately: a runner that ran only the first name
+# would report the fx_bigger mutant SURVIVED, which is exactly the regression
+# this row type exists to make impossible.
+CONF_SET="$(conf set 'fixture-lib.sh|EXECUTED-WHOLE|test-fx-blind.sh,test-fx-a.sh')"
 CONF_PARTIAL="$(conf partial 'fixture-lib.sh|EXECUTED-PARTIAL|test-fx-a.sh|fx_bigger')"
 CONF_GREPPED="$(conf grepped 'fixture-lib.sh|GREPPED-ONLY|test-fx-a.sh')"
 
@@ -559,5 +584,43 @@ grep -q 'could not set itself up' <<< "$drv" \
 grep -q 'SCAFFOLD-FAILED: mktemp -d' <<< "$drv" \
   && pass "  … and surfaces the marker line itself" \
   || fail "  … and surfaces the marker line itself"
+
+# ── 15. AN ORACLE FIELD NAMING SEVERAL TESTS RUNS ALL OF THEM ────────────────
+# The row's oracle field is a SET, and a runner that honoured only the first
+# name would report every mutant the later members catch as a SURVIVOR. That is
+# not hypothetical: it is what the tier did before the set existed, and eight
+# real kills of tests/lib-verify-repo.sh sat in the survivor ledger because of
+# it. So the claim is proved by DIFFERENCE, on one unchanged fixture repo:
+#
+#   run 1  test-fx-blind.sh              → the fx_bigger mutant SURVIVES
+#   run 2  test-fx-blind.sh,test-fx-a.sh → the same mutant is KILLED
+#
+# The first run is the control that makes the second mean something: without it
+# a runner that silently ignored the field entirely and always ran the whole
+# fixture suite would also pass. And the two runs disagree on ONE input only —
+# the second name in the field.
+fx_run "$RUN" "$CONF_BLIND" "$FX" "$TMP/wit-blind"
+check "control: the blind oracle does not notice the fx_bigger mutant" \
+  "SURVIVED" "$(fx_verdict "$FX_OUT" "$KILLABLE")"
+check "control: the blind oracle DOES notice the fx_never_called mutant" \
+  "KILLED" "$(fx_verdict "$FX_OUT" "$SURVIVOR")"
+
+fx_run "$RUN" "$CONF_SET" "$FX" "$TMP/wit-set"
+check "a second oracle in the field kills what the first is blind to" \
+  "KILLED" "$(fx_verdict "$FX_OUT" "$KILLABLE")"
+# Both members ran, not just the last: each of these two mutants is invisible to
+# one member and fatal to the other, so only a run that invoked BOTH kills both.
+check "  … and the first oracle still kills what the second is blind to" \
+  "KILLED" "$(fx_verdict "$FX_OUT" "$SURVIVOR")"
+# The record carries the whole set, so a ledger reader can see which tests were
+# asked. A runner that split the field and reported only one name would leave
+# the ledger blaming an oracle that never had the chance to notice.
+check "the MUTANT record reports the oracle field verbatim" \
+  "test-fx-blind.sh,test-fx-a.sh" "$(fx_field "$FX_OUT" "$KILLABLE" 4)"
+# And the baseline is the SET's baseline: run.sh refuses a target whose oracle
+# is not green on the pristine tree, so a second member that was red there must
+# stop the target rather than be quietly dropped.
+check "the BASELINE record names the whole set too" \
+  "1" "$(grep -c '^BASELINE|fixture-lib.sh|test-fx-blind.sh,test-fx-a.sh|PASS|' <<< "$FX_OUT")"
 
 printf '\n%d failure(s)\n' "$fails"; exit "$fails"
