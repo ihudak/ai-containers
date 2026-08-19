@@ -36,12 +36,18 @@
 # rebuilt WITH the mutation, and rebuilt again from the reverted tree afterwards.
 # Every other patch here mutates a case file or the harness library, which the
 # case reads from the working tree at run time, so a pre-built image is correct
-# for those and --reuse-image keeps the run affordable. A Dockerfile change is
+# for those and --reuse-image keeps the run affordable. A build-input change is
 # invisible to a pre-built image: the case would run against an image built
 # before the patch existed, PASS, and be reported as UNDEMONSTRATED — a mutation
 # declared dead that was never applied to anything. That was backlog entry F5,
 # and it is why 300-allowlist-delivered had no known-bad mutation for an
 # increment.
+#
+# (300 itself is the loud member of that class: --reuse-image also suppresses the
+# generated-allowlist snapshot it compares against, so the case SKIPs and this
+# script reports ERROR rather than a false pass. Measured with the detection
+# below neutered. Do not generalise from it — a mutation to entrypoint.sh has
+# nothing to skip on and would pass quietly.)
 #
 # Usage:
 #   bash tests/integration/demonstrate-network-tier.sh            # every selected patch

@@ -7,10 +7,15 @@
 # COPY. Mutating the case instead would test the test.
 #
 # The consequence is that this mutation does nothing until the image is rebuilt,
-# which is why demonstrate-network-tier.sh detects a Dockerfile-touching patch
-# and drops --reuse-image for it. With --reuse-image the case runs against an
-# image built before the patch existed and PASSES, i.e. reports the mutation
-# dead when it was never applied to anything.
+# which is why demonstrate-network-tier.sh detects a patch against a build input
+# and drops --reuse-image for it. Measured, with that detection neutered: the run
+# reports `ERROR (case did not run)` and the case SKIPs — "no generated-allowlist
+# snapshot (run.sh was invoked with --reuse-image)" — because the thing this case
+# compares against is produced BY the build it just skipped. So here the wrong
+# path is loud. It is loud for this case only: a mutation to another build input,
+# say entrypoint.sh, has nothing to skip on and would simply PASS against an
+# image built before the patch existed, i.e. be reported UNDEMONSTRATED for a
+# mutation that was never applied to anything.
 #
 # A wrong file rather than a dropped COPY, deliberately: an ABSENT allowlist
 # makes the ipset empty and the container blocks everything, which is loud. A
