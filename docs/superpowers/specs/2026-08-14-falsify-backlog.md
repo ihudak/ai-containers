@@ -164,7 +164,15 @@ remains is to make `230` say what it does: rename it (e.g.
 patch's `# case:` header and `AGENTS.md`'s reference to "case 230", so it is a
 small coordinated change rather than a one-liner.
 
-## F8 — three surviving mutants in `tests/integration/mutate.sh`'s guard cluster
+## F8 — three surviving mutants in `tests/integration/mutate.sh`'s guard cluster — **CLOSED 2026-08-19, superseded by F20**
+
+Superseded and closed by F20, which recorded five refusal paths (these three plus
+`:242` and `:206`) and was fixed on 2026-08-19. `tests/integration/mutate.sh` now
+measures **59 killed / 0 survived**. The heading said "open" for a while after the
+mutants were dead; corrected here rather than left to mislead the next inventory.
+
+Original finding:
+
 
 The falsify pilot found five survivors around `mutate.sh`'s entry guards. The
 clean-tree gate is **fixed** (`tests/test-mutations.sh` now asserts `apply`
@@ -236,7 +244,16 @@ the same change — deliberately, so the count cannot drift silently. Joining
 continuation lines before the span scan is the obvious approach; the mutated
 output must still be written back to the correct single physical line.
 
-## F10 — a single-clause `if [[ X ]];` yields two semantically identical mutants
+## F10 — a single-clause `if [[ X ]];` yields two semantically identical mutants — **FIXED**
+
+Implemented as specified: `tests/falsify/check-ledger.sh:282` carries
+`CL_SURV_TEXT`, keyed on `identity|mutated-text` and commented "the F10 dedupe
+key", and `tests/falsify/survivors.txt`'s header states the rule — survivors are
+deduplicated by (identity, mutated line) before being counted. Dedupe at ledger
+build time, not by suppressing generation, exactly as the entry asked.
+
+Original finding:
+
 
 `cond-negate` produces two distinct mutants that damage the condition the same
 way, so any survivor among them is double-counted in the ledger. Harmless to
@@ -1464,7 +1481,15 @@ then add the `oracle ∈ executors` gate with its own demonstration. Both halves
 are needed: the gate without the derivation fix is a false alarm, and the
 derivation fix without the gate buys only a more honest `--evidence`.
 
-## F34 — `producer | grep -q` under `pipefail` reports absence for something present
+## F34 — `producer | grep -q` under `pipefail` reports absence for something present — **FIXED**
+
+Closed by `wf_has_step()` in `tests/lib-layer-checks.sh` (capture first, match
+against a complete value — the producer's status is then read directly and cannot
+race) and by `tests/test-grep-q-pipelines.sh`, which enforces the rule repo-wide
+and passes. Verified 2026-08-19.
+
+Original finding:
+
 
 **Found by the falsify tier, in a test the tier had just started running several
 copies of at once.** `tests/test-layer-containment.sh` failed with
