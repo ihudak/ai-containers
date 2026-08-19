@@ -185,6 +185,27 @@ source "$REPO_DIR/tools-lib.sh"
 names="$(tools_list_names | sort | tr '\n' ' ')"
 [[ "$names" == "bar foo " ]] && pass "list names" || fail "list names ($names)"
 
+# tools_list_names' "no descriptor directory" path: `[[ -d "$TOOLS_D_DIR" ]] ||
+# return 0`. Callers treat a non-zero status as an error, so the 0 is
+# contractual — an absent tools.d means "no tools", not "listing failed" — and
+# until this assertion existed nothing exercised a missing TOOLS_D_DIR at all,
+# leaving the `return 0 -> return 1` mutant alive against the whole suite
+# (falsify backlog F11). The output is empty either way, so the STATUS is the
+# only thing that separates them and the only thing worth asserting.
+_saved_td_missing="$TOOLS_D_DIR"
+export TOOLS_D_DIR="$TMP/tools.d-absent"
+[[ ! -d "$TOOLS_D_DIR" ]] \
+  && pass "the missing-descriptor-directory fixture really is absent" \
+  || fail "the missing-descriptor-directory fixture really is absent — $TOOLS_D_DIR exists, so the assertion below would measure the normal path"
+missing_out="$(tools_list_names)"; missing_rc=$?
+[[ "$missing_rc" -eq 0 ]] \
+  && pass "tools_list_names returns 0 when TOOLS_D_DIR does not exist" \
+  || fail "tools_list_names returns 0 when TOOLS_D_DIR does not exist — got $missing_rc, which every caller reads as a listing failure rather than as an empty list"
+[[ -z "$missing_out" ]] \
+  && pass "tools_list_names prints nothing when TOOLS_D_DIR does not exist" \
+  || fail "tools_list_names prints nothing when TOOLS_D_DIR does not exist — got '$missing_out'"
+export TOOLS_D_DIR="$_saved_td_missing"
+
 tools_read_descriptor foo
 [[ "$TOOL_repo" == "acme/foo" ]] && pass "repo" || fail "repo ($TOOL_repo)"
 # shellcheck disable=SC2154  # TOOL_private: set by tools_read_descriptor() in tools-lib.sh (sourced with source=/dev/null above, so shellcheck can't see it)

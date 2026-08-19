@@ -53,8 +53,13 @@
 #     teeth: when the real assertion is finally written and the mutant dies in
 #     CI too, check D is what forces the entry out, and ENV-DEPENDENT is exempt
 #     from check D. The debt would then be invisible instead of retired.
-#     Entries 9 and 13 are this shape (both die on macOS, on platform accidents
-#     rather than on an assertion aimed at the branch) and are GAPs on purpose.
+#     Entries 9 and 13 were this shape (both died on macOS, on platform
+#     accidents rather than on an assertion aimed at the branch) and were GAPs
+#     on purpose. BOTH HAVE SINCE BEEN RETIRED by writing the assertion, which
+#     is exactly the outcome this rule exists to keep reachable: check D is what
+#     forces a GAP out once the mutant dies everywhere, and an ENV-DEPENDENT
+#     marker — being exempt from check D — would have left the debt invisible
+#     instead. No live entry has this shape today.
 #
 # Stated the short way: classify by the REFERENCE environment; record the other
 # one in the prose.
@@ -95,12 +100,37 @@
 # recorded as killed by test-allowlists.sh and test-falsify-generate.sh. They are
 # not. That verdict only appears when the tier runs several workers at once, and
 # it is the free-block count moving between two samples, not an assertion
-# watching the branch — see entry 13 and backlog F30's addendum. RE-MEASURE AT
-# --jobs 1. A verdict taken under load can be a property of the machine.
+# watching the branch — see entry 13's retirement note and backlog F30's
+# ADDENDUM. RE-MEASURE AT --jobs 1. A verdict taken under load can be a
+# property of the machine.
 #
-# Corpus (2026-08-19): tests/falsify/run.sh --jobs auto over the nine active
-# targets, TOTAL|9|255|240|11|4|11|5 — 11 SURVIVED + 4 UNPROVEN = 15 records.
-# The previous reading was TOTAL|9|251|227|20|4|11|9. THIRTEEN more kills and
+# Corpus (2026-08-19, later the same day): tests/falsify/run.sh --jobs auto over
+# the nine active targets, TOTAL|9|255|249|2|4|11|2 — 2 SURVIVED + 4 UNPROVEN =
+# 6 records. NINE more kills, every one from a WRITTEN ASSERTION, retiring five
+# entries at once (1, 2, 11, 12, 13 — backlog F15, F23, F25, F11):
+#   * bash-floor.sh 9/2 -> 11/11 and shared-files.sh 3/2 -> 5/5: the re-entry
+#     guard is now exercised on the two paths sourcing never reaches.
+#   * tests/portability.sh 6/4 -> 10/10: p_stat_meta gained the VALUE assertion
+#     its p_stat_mode sibling always had, and p_sha1's platform probe is now
+#     asserted with one digest tool at a time on PATH.
+#   * tools-lib.sh 14/1 -> 15/0 (its 2 UNPROVEN unchanged): tools_list_names is
+#     called with TOOLS_D_DIR pointing at a path that does not exist.
+#
+# THE TWO SURVIVORS THAT REMAIN ARE ENTRY 6'S EQUIVALENT PAIR — one identity no
+# test COULD kill. Stated precisely, because the short version of this is easy to
+# get wrong: every GAP filed against a SURVIVING mutant is now closed. Three GAP
+# entries do remain (entry 10, backlog F22), and they are a different kind — they
+# cover UNPROVEN records, where the damage does not fail the oracle but stops it
+# terminating, so nothing was OBSERVED asserting either way. Those are still owed
+# a fix, and the fix is a BOUND rather than an assertion.
+#
+# This is the state the file was built to reach, and also the state in which it is
+# easiest to let a new GAP in unnoticed: with nothing left to look at, nobody
+# looks. check B — a survivor with no entry — is what stops that, and it only
+# runs when something feeds check-ledger.sh a real --run-output.
+#
+# The previous reading was TOTAL|9|255|240|11|4|11|5 — 11 SURVIVED + 4 UNPROVEN
+# = 15 records. The one before it was TOTAL|9|251|227|20|4|11|9. THIRTEEN more kills and
 # four more mutants, in one increment, all on tests/integration/mutate.sh:
 #   * nine from WRITTEN ASSERTIONS — entries 7, 8 and 9, the sibling base/
 #     layout, the five refusal paths and the doubled reverser (backlog F19, F20,
@@ -141,57 +171,56 @@
 # a fact that could only ever drift away from the first.
 
 # ── 1 ─────────────────────────────────────────────────────────────────────────
-GROUP: re-entry guard, the half that only runs when the file is EXECUTED
-bash-floor.sh:logic-flip:7bfb00108eb7e7856c69ee914697141e5ea8086d
-shared-files.sh:logic-flip:7bfb00108eb7e7856c69ee914697141e5ea8086d
-shared-files.sh:return-flip:7bfb00108eb7e7856c69ee914697141e5ea8086d
-  bash-floor.sh:19 / shared-files.sh:28   return 0 2>/dev/null || exit 0
-  the damages:  ... return 0 ... && exit 0     (both files)
-                ... return 0 ... || exit 1     (shared-files.sh)
-  GAP: `return` SUCCEEDS when the file is sourced and transfers control out of
-  it immediately, so the right-hand side of the `||` is never evaluated on a
-  source — first or second. Both damages therefore change nothing on any source
-  and change everything on a direct `bash bash-floor.sh` / `bash
-  shared-files.sh`: with `&&`, `return` fails when executed, the `&&`
-  short-circuits, and execution falls THROUGH the guard into the rest of the
-  file; with `|| exit 1` an executed re-entry exits 1 instead of 0. Measured:
-  the full 52-test suite passes against all three. Nothing in the repo ever
-  executes either file, which is exactly the shape this project has been bitten
-  by before (tests/lib-verify-repo.sh's "fail loudly" guard that could never
-  have failed). The killing assertion is to RUN each file directly — once
-  plainly, once with its `_AI_CONTAINERS_*_SOURCED` variable preset — and
-  require exit 0 with no fall-through (e.g. no floor error on a bash below the
-  floor, no array defined). Recorded as F15 in
-  docs/superpowers/specs/2026-08-14-falsify-backlog.md.
+# RETIRED 2026-08-19. Three identities in bash-floor.sh and shared-files.sh used
+# to sit here under "GROUP: re-entry guard, the half that only runs when the file
+# is EXECUTED" — the `&& exit 0` fall-through in both files, and shared-files.sh's
+# `|| exit 1`. All are now KILLED. bash-floor.sh went from 9/2 to 11/11 and
+# shared-files.sh from 3/2 to 5/5.
+#
+# Retired by WRITING THE ASSERTION, as the entry specified (backlog F15): each
+# file is now RUN directly by its own oracle, once plainly and once with its
+# `_AI_CONTAINERS_*_SOURCED` variable preset, and a third observation sources it
+# twice in a child shell.
+#
+# Three observations, because no one of them separates all three damages. `|| exit
+# 1` moves the EXECUTED status; `return 1` moves the SOURCED status; `&& exit 0`
+# moves NEITHER — it short-circuits, falls through the guard and re-runs the whole
+# file, which on a bash at or above the floor still ends in status 0. The third is
+# read from an xtrace: the first statement past the guard is the sentinel
+# assignment, so its trace line appears if and only if the guard failed to stop
+# the file. The plain run is kept as the CONTROL for that detector and must report
+# that it DID run on — without it, a mistyped marker would make the fall-through
+# assertion pass for the wrong reason.
+#
+# One thing found while retiring this, which the entry did not know and which cost
+# a rewrite: tests/test-shared-files-parity.sh SOURCES the product script
+# sync-to-projects.sh, and that script sets `-euo pipefail`, so every line of the
+# test after it runs under errexit. A bare non-zero command there aborts the test
+# with no FAIL line and no failure count — and the tier scores that abort as
+# KILLED. Two of shared-files.sh's mutants were being "killed" exactly that way,
+# with nothing asserted. So these assertions run their subject as the CONDITION of
+# an `if`, and the whole block is placed ABOVE that source rather than at the end
+# of the file. Backlog F43 carries the general finding.
+#
+# The number is left occupied, for the reason entry 3 records.
+
 
 # ── 2 ─────────────────────────────────────────────────────────────────────────
-bash-floor.sh:return-flip:7bfb00108eb7e7856c69ee914697141e5ea8086d
-  bash-floor.sh:19  return 0 2>/dev/null || exit 0
-  the damages:      ... return 1 ... || exit 0   (KILLED since 2026-08-18)
-                    ... return 0 ... || exit 1   (survives — this entry)
-  GAP: the two damages carried by this identity have DIFFERENT causes, and only
-  one of them is still a survivor. `return 0 -> return 1` is NOT
-  direct-execution-only, which is what F15 claims: a plain SECOND SOURCE then
-  returns 1, and the `source` command's status becomes 1. That is seen by
-  test-migrate-runme.sh, whose `source ./project-init.sh; printf "rc=%s" "$?"`
-  assertion catches it (project-init.sh:18 sources bash-floor.sh,
-  sandbox-common.sh sources it again) — and since test-migrate-runme.sh joined
-  this target's ORACLE SET (backlog F16), the tier records that damage as the
-  kill it always was. It is no longer a survivor and no longer owed a fix.
-  Note the asymmetry with entry 1: shared-files.sh's identical `return 1` damage
-  is killed by its own oracle (test-shared-files-parity.sh, and
-  test-sync-project.sh too), which is why only two of its three damages survive.
-  WHAT REMAINS is the second damage, `|| exit 1`: the direct-execution one, which
-  nothing anywhere kills, and which entry 1's assertion covers — RUN bash-floor.sh
-  directly, once plainly and once with its `_AI_CONTAINERS_*_SOURCED` variable
-  preset, and require exit 0 with no fall-through. The entry stays because the
-  identity stays: one of its two mutants is still unobserved, and identity is
-  what this ledger keys on.
-  A second assertion is still worth having and is NOT covered by entry 1 —
-  source bash-floor.sh twice in one shell and require the second source's status
-  to be 0, in test-bash-floor.sh itself rather than by accident three files away.
-  Without it the `return 1` half is killed only incidentally, by a test about
-  launcher migration.
+# RETIRED 2026-08-19. bash-floor.sh's `return-flip` identity used to sit here. Its
+# two damages had different causes and only one was still a survivor: `return 1 …
+# || exit 0` was already killed by test-migrate-runme.sh once that joined the
+# oracle set (backlog F16), while `return 0 … || exit 1` — the direct-execution
+# one — was killed by nothing.
+#
+# Retired by WRITING BOTH ASSERTIONS the entry asked for, in test-bash-floor.sh
+# itself rather than by accident three files away: executing the file with the
+# sentinel preset must exit 0 (this kills `|| exit 1`), and sourcing it twice in
+# one child shell must return 0 the second time (this kills `return 1`, on an
+# assertion aimed at the line instead of incidentally, inside a test about
+# launcher migration).
+#
+# The number is left occupied, for the reason entry 3 records.
+
 
 # ── 3 ─────────────────────────────────────────────────────────────────────────
 # RETIRED 2026-08-18. Seven identities / eight damages in tests/lib-verify-repo.sh
@@ -397,114 +426,80 @@ tests/integration/docker-shim.sh:cmp-flip:5a19451b4bc784bc1a7b629182186fd2c91d21
   rule.
 
 # ── 11 ────────────────────────────────────────────────────────────────────────
-tests/portability.sh:cond-negate:1a936c2f8ebc17823eea575e31d47b54b30b0f73
-  :40  if command -v sha1sum >/dev/null 2>&1; then sha1sum "$1" | cut -d' ' -f1
-  the damage:  `if ! command -v sha1sum …` — the platform probe is inverted, so
-               a GNU host takes the BSD branch and calls `shasum -a 1`
-  GAP: measured — the whole suite passes against it, and it is the ONE portability
-  survivor that no test anywhere kills (entry 3 covers the p_stat_meta ones).
-  The reason is that this machine has BOTH tools and they agree byte for byte —
-  verified: `shasum -a 1` and `sha1sum` print the same digest for the same file,
-  so no assertion on p_sha1's OUTPUT can distinguish the branches. Its p_md5
-  sibling is killed only by an accident of tool population: `md5 -q` does not
-  exist on Linux, so the inverted probe prints empty and the non-empty
-  assertion catches it. That kill measures the platform, not an assertion aimed
-  at branch selection, and it would stop working on a host carrying both.
-  The killing assertion has to remove the non-native tool rather than compare
-  digests: run p_sha1 with a PATH from which `shasum` is absent and require a
-  correct digest (and the mirror on a BSD host with `sha1sum` absent), so the
-  helper is asserted to pick the tool the platform actually has. Recorded as F23.
+# RETIRED 2026-08-19. tests/portability.sh's p_sha1 platform probe used to sit
+# here — the one portability survivor that nothing anywhere killed, because this
+# machine carries BOTH sha1sum and shasum and they print the same digest, so no
+# assertion on the OUTPUT could distinguish the branches. It is now KILLED, and
+# the target went from 6/4 to 10/10.
+#
+# Retired by WRITING THE ASSERTION, as the entry specified (backlog F23): p_sha1
+# is run with a PATH holding exactly ONE of the two tools, built as symlinks in
+# the test's own scratch dir, and required to produce a literal expected digest.
+# Whichever half runs, the inverted probe reaches for the tool that is absent and
+# yields an empty digest — so the assertion kills the mutant on a GNU host and on
+# a BSD one, without either needing to be the reference. Both halves run here and
+# both fail against the damage; a host with only one tool runs one of them, and a
+# host with neither fails a guard that says so rather than asserting zero times.
+#
+# The expected digest is a literal, not a second call to p_sha1: checking a helper
+# against itself is `assert f(x) == f(x)`, which is how this branch went
+# unasserted in the first place.
+#
+# The number is left occupied, for the reason entry 3 records.
+
 
 # ── 12 ────────────────────────────────────────────────────────────────────────
-tools-lib.sh:return-flip:f128fd8d7318dc079eeec1117ae9a4525988fac4
-  tools-lib.sh:42  [[ -d "$TOOLS_D_DIR" ]] || return 0
-  the damage:      ... || return 1
-  GAP: the guard is UNREACHABLE by this oracle in any environment, so the
-  mutated `return 1` is never evaluated and nothing can see it.
-  test-tools-d.sh exports TOOLS_D_DIR to a directory it creates under its own
-  mktemp -d, and the one place it repoints it — `TOOLS_D_DIR="$REPO_DIR/tools.d"`,
-  to read the real descriptors — names a directory that is checked in. There is
-  no moment in the test where TOOLS_D_DIR is unset or points at a missing path,
-  so tools-lib.sh:37's /etc/ai-containers/tools.d default is never consulted and
-  the ambient filesystem never enters into it.
-  THIS ENTRY SAID ENV-DEPENDENT UNTIL 2026-08-17, AND THAT WAS A MISDIAGNOSIS.
-  It was written when hermetic-checks run 31993348741 reported this mutant
-  KILLED (corpus 210/35/4) while a sandbox container reported it SURVIVED
-  (209/36/4), and the /etc directory was the visible difference between the two
-  machines. It was not the operative one. The real cause was the shared-/tmp
-  race in test-tools-d.sh's "leaves no temp file" assertion, fixed in the same
-  commit that corrects this entry: run.sh drives up to `nproc` copies of that
-  oracle at once and, before the fix, they could fail each other, so a mutant
-  could be scored KILLED on a sibling worker's temp file. That is a timing
-  accident, and a runner and a 12-core container do not have the same timing.
-  Re-measured on the fixed tree, in both environments that would have to
-  disagree for ENV-DEPENDENT to be right: SURVIVED on ubuntu-latest (this
-  branch's falsify job, corpus 209/36/4 — CI now reproduces the container's
-  totals exactly), and SURVIVED in the container. The absence of a
-  "killed in this environment" note for this identity is evidence rather than
-  silence: that note was reproduced against a synthesised run output in which
-  the mutant is KILLED.
-  The coverage gap F11 recorded is real and unchanged, and the killing assertion
-  is still the one it named: point TOOLS_D_DIR at a path that does not exist and
-  require status 0 with no names printed.
-  A THIRD ENVIRONMENT, ADDED 2026-08-17 BECAUSE IT LOOKED LIKE A COUNTEREXAMPLE:
-  a macOS Phase 6 host run scored this mutant KILLED. Re-run on the same host and
-  the same tree at `--jobs 2 --timeout 300`, it SURVIVED with signal `none` in
-  ~10 s — in BOTH repos, independently. So that is not a fourth reading of the
-  guard; it is the run's own concurrency showing up in the verdict. That host
-  run took `jobs=18` on a machine also hosting Colima and reported 80 timeouts
-  and 13 unproven against this environment's 11 and 4.
-  The mechanism was then reproduced on Linux rather than left as an inference:
-  on the PRE-fix tree at `--jobs 24` on 12 cores, one run in three scored this
-  exact mutant KILLED with signal `exit+failline` in 2.5 s — the shared-/tmp
-  race in its own declared oracle, firing fast rather than slowly — and the
-  post-fix tree does not reproduce it. Backlog F30 carries the general finding:
-  a KILL is only trustworthy if the oracle would have passed under the same
-  load, and the tier cannot currently tell. Do not read a kill from a run with a
-  high unresolved fraction as evidence that this gap has closed.
+# RETIRED 2026-08-19. tools-lib.sh's `tools_list_names` missing-directory guard
+# used to sit here — unreachable by its oracle in any environment, because
+# test-tools-d.sh never had a moment where TOOLS_D_DIR pointed at a path that does
+# not exist. The target went from 14 killed / 1 survived to 15 killed / 0
+# survived; its two UNPROVEN mutants are unchanged and stay in entry 10.
+#
+# Retired by WRITING THE ASSERTION, as the entry specified (backlog F11): point
+# TOOLS_D_DIR at a path under the test's own scratch dir that does not exist, and
+# require status 0 with no names printed. The STATUS is the whole assertion — the
+# output is empty either way — and the 0 is contractual: callers read non-zero as
+# a listing failure, so `return 1` turns "no tools are configured" into "listing
+# the tools failed". A guard asserting the fixture really is absent runs first, so
+# the assertion cannot quietly measure the normal path instead.
+#
+# This entry's long history of misdiagnosis (ENV-DEPENDENT until 2026-08-17, then
+# three environments and a concurrency race) is preserved in git; the general
+# finding it produced — that a KILL is only trustworthy if the oracle would have
+# passed under the same load — is backlog F30 and is unaffected by this retirement.
+#
+# The number is left occupied, for the reason entry 3 records.
+
 
 # ── 13 ────────────────────────────────────────────────────────────────────────
-GROUP: p_stat_meta's GNU/BSD branch can be swapped and nothing anywhere notices
-tests/portability.sh:cmp-flip:d468fd361cfd9ae5d0e8d33a6b76f098cd0db7ae
-tests/portability.sh:cond-negate:d468fd361cfd9ae5d0e8d33a6b76f098cd0db7ae
-  if [[ "$_P_STAT_GNU" == "1" ]]; then stat -c '%n %s %Y' "$1"; else stat -f '%N %z %m' "$1"; fi
-  GAP: MOVED HERE from the F16 "killed by a non-declared oracle" group, which
-  was wrong about these two. Re-measured one damage at a time against the WHOLE
-  52-test suite in a scratch tree: both SURVIVE it. Nothing kills them — not
-  test-portability.sh, not test-allowlists.sh, not test-falsify-generate.sh.
-  So this is a missing assertion, not a target-map defect, and it is the one
-  place where reading F16's thesis onto every member would have retired a real
-  gap without a line of coverage being written.
-  The damage is not cosmetic: on GNU, `stat -f '%N %z %m' F` is NOT an invalid
-  option — it means --file-system — so the swapped branch prints filesystem
-  information plus an error rather than `path size mtime`. Measured:
-      pristine: tests/portability.sh 3074 1786868760
-      mutated:  stat: cannot read file system information for '%N %z %m' …
-  test-portability.sh only requires p_stat_meta to be NON-EMPTY, and that
-  garbage is non-empty, so its own oracle cannot see the swap. p_stat_mode, one
-  line up, has a VALUE assertion and all three of its mutants die — which is
-  exactly why this line looked covered by association.
-  The killing assertion is the sibling's: assert p_stat_meta's VALUE, not its
-  emptiness — three whitespace-separated fields, the middle one the file's real
-  byte size. Recorded as backlog F25.
-  MEASURED KILLED ON macOS (Phase 6 host run, 2026-08-17) and still a GAP, per
-  the asymmetry rule in the header. There `_P_STAT_GNU` is 0, so the swapped
-  branch calls `stat -c`, which BSD stat rejects outright — the mirror of the
-  GNU reading above, and just as incidental: it is the platform refusing an
-  option, not test-portability.sh watching this branch. On the reference
-  environment it survives, so the debt stands and the entry stays a GAP.
-  MEASURED KILLED UNDER LOAD, on Linux, and still a GAP — for a reason worth
-  writing down, because it is what makes this entry easy to retire by accident.
-  Adding test-falsify-generate.sh to this target's oracle set (which backlog F16
-  did for two other rows) reports all three of these mutants KILLED at --jobs 6
-  and none of them at --jobs 1. The kill is disk jitter, not coverage: that test
-  compares two p_stat_meta samples taken either side of a generator run, the
-  damaged branch makes p_stat_meta print the FILESYSTEM's free-block count, and
-  concurrent workers move that count between the two samples. Six concurrent
-  copies of the damaged tree produce six identical
-  `FAIL: generating mutants leaves the target files byte-identical`; the same
-  tree alone is green. So this row stays 1:1 deliberately, and anyone
-  re-measuring this entry must do it at --jobs 1. Recorded as F30's addendum.
+# RETIRED 2026-08-19. Two identities in tests/portability.sh used to sit here
+# under "GROUP: p_stat_meta's GNU/BSD branch can be swapped and nothing anywhere
+# notices" — the `cmp-flip` and the `cond-negate` of the same branch selector.
+# Both are now KILLED.
+#
+# Retired by WRITING THE ASSERTION, as the entry specified (backlog F25): assert
+# p_stat_meta's VALUE the way its p_stat_mode sibling one line up always did —
+# exactly three whitespace-separated fields, the middle one the file's real byte
+# size, the last one numeric. The helper is called from inside the scratch dir
+# with a bare filename, so "exactly three fields" is a property of the helper
+# rather than of whether TMPDIR happens to contain a space.
+#
+# The old `[[ -n "$meta" ]]` check is kept and still passes against both damages
+# — which is the point of this entry, and was measured while retiring it. On GNU,
+# `stat -f` is not an invalid option that falls through: it means --file-system,
+# so the swapped branch prints a multi-line filesystem report plus an error, and
+# that garbage is non-empty. A non-emptiness assertion cannot ever have caught it.
+#
+# STILL LIVE, AND THE REASON THIS ENTRY WAS EASY TO RETIRE BY ACCIDENT: do NOT
+# add test-falsify-generate.sh to this target's oracle set. It reports all of
+# these mutants KILLED at --jobs 6 and none at --jobs 1, because it compares two
+# p_stat_meta samples either side of a generator run and the damaged branch makes
+# p_stat_meta print the FILESYSTEM's free-block count, which concurrent workers
+# move between the samples. That is disk jitter, not coverage. Backlog F30's
+# ADDENDUM carries the mechanism and how to reproduce it.
+#
+# The number is left occupied, for the reason entry 3 records.
+
 
 # ── 14 ────────────────────────────────────────────────────────────────────────
 GROUP: p_md5's branch inversion — the verdict depends on which digest tools exist

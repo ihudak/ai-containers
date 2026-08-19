@@ -414,7 +414,32 @@ re-scope trigger reads. Dedupe survivors by mutated text when the ledger is buil
 (Task 7), rather than by suppressing generation — two mutants that happen to
 coincide today may diverge if the operator changes.
 
-## F11 — two survivors in `tools-lib.sh`, the tier's first real output — **ONE FIXED 2026-08-14**
+## F11 — two survivors in `tools-lib.sh`, the tier's first real output — **FIXED 2026-08-19**
+
+**FIXED 2026-08-19.** The second survivor — `tools-lib.sh:42`'s
+`[[ -d "$TOOLS_D_DIR" ]] || return 0` — is now killed. `tools-lib.sh` went from
+`17|14|1|2` to `17|15|0|2`; its two UNPROVEN records are unchanged and remain
+F22's.
+
+The killing assertion is the one this entry named: point `TOOLS_D_DIR` at a path
+under the test's own scratch dir that does not exist, and require status 0 with
+no names printed. The **status** is the whole assertion — the output is empty
+either way — and the 0 is contractual: callers read non-zero as a listing
+failure, so `return 1` turns "no tools are configured" into "listing the tools
+failed". A guard asserting the fixture really is absent runs first, so the
+assertion cannot quietly measure the normal path instead.
+
+Demonstrated against the damage, by hand, in `tests/test-tools-d.sh`:
+
+```
+FAIL: tools_list_names returns 0 when TOOLS_D_DIR does not exist — got 1, which
+      every caller reads as a listing failure rather than as an empty list
+```
+
+Ledger entry 12 is retired. That retirement fired the deliberate canary in
+`tests/test-falsify-ledger.sh`, exactly as that file said it would ("this
+assertion fires again to make someone re-measure — the canary doing its job, not
+noise"); the pin has been re-measured and moved. See F43.
 
 `tools-lib.sh:62` is killed: `tests/test-tools-d.sh` now parses a descriptor with a
 blank line mid-file and a final line carrying no trailing newline. Re-measured
@@ -547,7 +572,50 @@ norm, recorded as such rather than pretended otherwise. The floor run does catch
 it, which is how this one was found; the gap is that it catches it late rather
 than at lint time.
 
-## F15 — `bash-floor.sh`'s re-entry guard: 3 survivors on one line
+## F15 — `bash-floor.sh`'s re-entry guard: 3 survivors on one line — **FIXED 2026-08-19**
+
+**FIXED 2026-08-19.** All the direct-execution survivors are killed.
+`bash-floor.sh` went from `11|9|2` to `11|11|0` and `shared-files.sh` from
+`5|3|2` to `5|5|0`.
+
+Each file is now RUN directly by its own oracle — once plainly, once with its
+`_AI_CONTAINERS_*_SOURCED` variable preset — and sourced twice in a child shell.
+**Three observations, because no one of them separates all three damages:**
+
+| line 19 / line 28 | re-source rc | exec rc (sentinel) | ran on past the guard |
+|---|---|---|---|
+| pristine `… \|\| exit 0` | 0 | 0 | no |
+| damage A `… \|\| exit 1` | 0 | **1** | no |
+| damage B `… && exit 0` | 0 | 0 | **YES** |
+| damage C `return 1 \|\| exit 0` | **1** | 0 | no |
+
+B moves neither status: it short-circuits, falls through the guard and re-runs
+the whole file, which on a bash at or above the floor still ends in status 0. So
+"ran on past the guard" is read from an **xtrace** — the first statement after
+the guard is the sentinel assignment, so its trace line appears if and only if
+the guard failed to stop the file. The plain run is kept as the **control** for
+that detector and must report that it DID run on; without it a mistyped marker
+would make the fall-through assertion pass for the wrong reason, which is the
+same vacuity this entry is about.
+
+All six damages (three per file) were demonstrated by hand, each failing on a
+named assertion with the test running through to its failure count — for example:
+
+```
+FAIL: executing bash-floor.sh with the sentinel already set stops AT the guard —
+      the xtrace shows '_AI_CONTAINERS_BASH_FLOOR_SOURCED=1' running, so
+      execution fell through and re-ran the whole file
+```
+
+**One thing this entry did not know, found while fixing it, and it cost a
+rewrite:** `tests/test-shared-files-parity.sh` sources the PRODUCT script
+`sync-to-projects.sh`, which sets `-euo pipefail`, so every line of that test
+after it runs under errexit. Two of `shared-files.sh`'s mutants were being
+"killed" by a silent abort rather than by an assertion. That is F43.
+
+Ledger entries 1 and 2 are retired. Entry 2's second request — assert the
+re-source status in `test-bash-floor.sh` itself "rather than by accident three
+files away" — is included rather than deferred.
 
 `bash-floor.sh:19` — `return 0 2>/dev/null || exit 0`, the guard that makes the
 file a no-op on a second source. Three mutants of that one line survive:
@@ -948,7 +1016,42 @@ of the docker-shim damage on the same line DID print a `FAIL:` before their cloc
 ran out and are recorded as kills, so the distinction is real rather than an
 artefact of load.
 
-## F23 — `p_sha1`'s platform probe can be inverted with every test green
+## F23 — `p_sha1`'s platform probe can be inverted with every test green — **FIXED 2026-08-19**
+
+**FIXED 2026-08-19.** Killed by the assertion this entry named.
+`tests/portability.sh` went from `10|6|4` to `10|10|0` (with F25).
+
+`p_sha1` is now run with a `PATH` holding exactly ONE of the two digest tools —
+symlinks built in the test's own scratch dir — and required to produce a literal
+expected digest. Whichever half runs, the inverted probe reaches for the tool
+that is **absent** and yields an empty digest, so the assertion kills the mutant
+on a GNU host and on a BSD one without either having to be the reference:
+
+| PATH holds | pristine picks | mutated picks |
+|---|---|---|
+| `sha1sum` only | `sha1sum` (correct) | `shasum` (absent → empty) |
+| `shasum` only | `shasum` (correct) | `sha1sum` (absent → empty) |
+
+Both halves run on this machine and both fail against the damage; a host with
+one tool runs one of them, and a host with neither fails a guard that says so
+rather than asserting zero times. `shasum` is a perl script with an absolute
+shebang, so restricting `PATH` does not break it (verified).
+
+The expected digest is a **literal**, not a second call to `p_sha1`: checking a
+helper against itself is `assert f(x) == f(x)`, which is how this branch went
+unasserted in the first place. A guard checks the fixture still holds the bytes
+that digest was computed for.
+
+Demonstrated against the damage:
+
+```
+FAIL: p_sha1 digests correctly when sha1sum is the only digest tool on PATH —
+      want '7fe70820e08a1aac0ef224d9c66ab66831cc4ab1', got ''
+FAIL: p_sha1 digests correctly when shasum is the only digest tool on PATH —
+      want '7fe70820e08a1aac0ef224d9c66ab66831cc4ab1', got ''
+```
+
+Ledger entry 11 is retired.
 
 `tests/portability.sh:40`. Not killed by anything (measured), and the only
 portability survivor of which that is true — the `p_stat_meta` ones belong to
@@ -981,7 +1084,45 @@ gate runs the corpus itself. It also means the bugs-first policy cannot be
 satisfied *inside* a classification task without re-baselining — which is why
 Task 10 records eight causes and closes none.
 
-## F25 — `p_stat_meta`'s GNU/BSD branch swap survives the entire suite
+## F25 — `p_stat_meta`'s GNU/BSD branch swap survives the entire suite — **FIXED 2026-08-19**
+
+**FIXED 2026-08-19.** Both mutants killed, by the fix this entry specified:
+assert `p_stat_meta`'s VALUE the way its `p_stat_mode` sibling one line up always
+did — exactly three whitespace-separated fields, the middle one the file's real
+byte size, the last one numeric.
+
+The helper is called from inside the scratch dir with a bare filename, so
+"exactly three fields" is a property of the helper rather than of whether
+`TMPDIR` happens to contain a space.
+
+**The old `[[ -n "$meta" ]]` check is kept, and it still PASSES against both
+damages** — measured while fixing this, and it is the whole point of the entry.
+On GNU, `stat -f` is not an invalid option that falls through: it means
+`--file-system`, so the swapped branch prints a multi-line filesystem report plus
+an error, and that garbage is non-empty. A non-emptiness assertion could never
+have caught it. Measured:
+
+```
+pristine: f 8 1787174058
+mutated:  stat: cannot read file system information for '%N %z %m': ...
+            File: "f"
+              ID: 622806a99446626e Namelen: 255     Type: overlayfs
+          (and four more lines)
+```
+
+Demonstrated against both damages (`cmp-flip` and `cond-negate` of the same
+selector), each failing on the new assertions while the non-emptiness one passes:
+
+```
+FAIL: p_stat_meta returns exactly three fields — got 27 in '  File: "f"
+FAIL: p_stat_meta's second field is the file's byte size — want '8', got '"f"'
+FAIL: p_stat_meta's third field is a numeric mtime — got 'ID:'
+```
+
+Ledger entry 13 is retired. Its live instruction is carried into the retirement
+note: **do not** add `test-falsify-generate.sh` to this target's oracle set — it
+reports these mutants KILLED at `--jobs 6` and none at `--jobs 1`, which is disk
+jitter, not coverage (F30's addendum).
 
 `tests/portability.sh:36`. Both mutants of that line — `cmp-flip` and
 `cond-negate` of `[[ "$_P_STAT_GNU" == "1" ]]` — swap the GNU and BSD branches,
@@ -2148,3 +2289,92 @@ weighing: add `-o --exclude-standard` only in Phase 7 (local, where a dirty tree
 is normal) and leave CI on tracked-only; or have Phase 7 simply SAY when the
 working tree holds untracked `*.sh` it did not check, which costs nothing and
 removes the surprise. Recorded rather than guessed at.
+
+## F43 — a test that sources a product script inherits its `set -e`, and an abort scores as a KILL
+
+**Found 2026-08-19 while closing F15, by a demonstration that produced no
+`FAIL:` line.** The mutant was scored KILLED by the tier and the oracle exited
+1, but nothing had asserted anything.
+
+`tests/test-shared-files-parity.sh:129` sources the **product** script
+`sync-to-projects.sh` in order to call its `sync_project()` function.
+`sync-to-projects.sh:21` is `set -euo pipefail`. `set -e` is a shell option, not
+a property of the sourced file, so **every line of the test after line 129 runs
+under errexit** — which that test never asks for and its own `set -uo pipefail`
+on line 24 says it did not want. Measured: `$-` reads `ehuB` at the end of the
+file.
+
+The consequence is specific and bad. Under errexit a bare command that returns
+non-zero ends the test **where it stands**: no `FAIL:` line, no failure count,
+just exit 1. And exit 1 is precisely what the falsify tier reads as a kill. So a
+mutant that makes any post-line-129 command fail is recorded as caught by an
+oracle that never reached its assertion.
+
+Two of `shared-files.sh`'s three re-entry-guard damages were being "killed"
+exactly that way. The tier's own evidence column had been saying so all along
+and nobody had read it — a real assertion failure is logged `exit+failline`,
+these were logged plain `exit`:
+
+```
+MUTANT|KILLED|shared-files.sh:return-flip:7bfb0010…|test-shared-files-parity.sh|3|28|exit|278|  return 1 2>/dev/null || exit 0
+MUTANT|KILLED|shared-files.sh:return-flip:7bfb0010…|test-shared-files-parity.sh|5|28|exit|412|  return 0 2>/dev/null || exit 1
+MUTANT|KILLED|shared-files.sh:cond-negate:9684484e…|test-shared-files-parity.sh|1|27|exit+failline|439|…
+```
+
+### What was done here, and what was not
+
+F15's new assertions are written to survive it: each runs its subject as the
+CONDITION of an `if` rather than as a bare statement, and the whole block is
+placed **above** line 129 rather than at the end of the file — which is what
+lets damage C fail on a named assertion instead of aborting the run before the
+assertion is reached. That is a local fix for the assertions this increment
+added. **It is not a fix for the file, and it is not a fix for the class.**
+
+Three things remain open, in order of value:
+
+1. **`exit` versus `exit+failline` is already the evidence and nothing uses
+   it.** `run.sh` records which channel produced a kill. A kill with no
+   `failline` means the oracle exited non-zero without printing an assertion
+   failure — sometimes legitimate (a test whose contract IS its exit status),
+   often a scaffold abort. A report, or a ratchet, over that column would have
+   surfaced this without anyone stumbling into it. This is the cheapest of the
+   three and the one that generalises.
+2. **`test-shared-files-parity.sh` should not silently run under errexit.** The
+   honest options are to restore the file's own options after the source
+   (`set +e` immediately after, with a comment saying why), or to call
+   `sync_project()` in a subshell. Restoring is a one-line change; the reason it
+   is not made blind is that eleven existing assertions have been running under
+   errexit and are green, and turning it off could change what they do. Measure
+   before changing.
+3. **Any other test that sources a product script has the same exposure.**
+   **Swept 2026-08-19, by measurement rather than by reading.** Thirteen test
+   files source a product script that carries `set -e`; `$-` was sampled at the
+   end of each actual run, and **four** of the thirteen end under errexit — all
+   four through `sync-to-projects.sh`:
+
+   | test | `$-` at end | a falsify oracle? |
+   |---|---|---|
+   | `test-launcher-migration.sh` | `ehuB` | no |
+   | `test-sandbox-schema.sh` | `ehuB` | no |
+   | `test-shared-files-parity.sh` | `ehuB` | **yes — `shared-files.sh`** |
+   | `test-sync-project.sh` | `ehuB` | no |
+
+   The other nine (sourcing `build.sh`, `repo.sh`, `project-init.sh`) end
+   `huB` — they source in a subshell or never reach the `set -e`. So the tier's
+   exposure today is exactly one target, the one this increment already
+   handled; the other three are ordinary suite tests where an abort costs a
+   silent partial run rather than a false kill. Static reading would have put
+   thirteen files on this list and been wrong about nine of them.
+
+### Why this is a finding and not a footnote
+
+It is the mutation tier's own failure mode: the tier measures "did the oracle
+notice", and it infers that from an exit status, so any mechanism that makes an
+oracle exit non-zero *without noticing* inflates the coverage claim. That is the
+same family as F35 (a signal death scored as a kill) and F30 (a load-induced
+kill), and it is the third member found. Each one was found by hand, on one
+mutant, by someone looking closely; none was found by the gate.
+
+The three together are the argument for item 1 above: the tier should be able to
+say how many of its kills came with an assertion attached, the way it already
+says how many mutants it left unmeasured (F38).
