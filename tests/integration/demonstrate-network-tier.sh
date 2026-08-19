@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# Demonstrate every network/security case failing against its known-bad mutation.
+# Demonstrate every network-mode and delivery case failing against its known-bad
+# mutation. (The filename still says network-tier; the delivery tier joined in
+# increment 5. Renaming it touches tests/falsify/targets.conf and this repo's
+# fork, so it is recorded in the backlog rather than done inline.)
 #
 # WHY THIS EXISTS, AND WHY IT IS NOT PART OF run-all.sh OR run.sh:
 #
@@ -29,8 +32,25 @@
 # demonstration. A real demonstration must produce a `FAIL:` assertion line;
 # anything else is reported as INCONCLUSIVE and fails the run.
 #
+# A patch that changes an IMAGE BUILD INPUT is run differently: the image is
+# rebuilt WITH the mutation, and rebuilt again from the reverted tree afterwards.
+# Every other patch here mutates a case file or the harness library, which the
+# case reads from the working tree at run time, so a pre-built image is correct
+# for those and --reuse-image keeps the run affordable. A build-input change is
+# invisible to a pre-built image: the case would run against an image built
+# before the patch existed, PASS, and be reported as UNDEMONSTRATED — a mutation
+# declared dead that was never applied to anything. That was backlog entry F5,
+# and it is why 300-allowlist-delivered had no known-bad mutation for an
+# increment.
+#
+# (300 itself is the loud member of that class: --reuse-image also suppresses the
+# generated-allowlist snapshot it compares against, so the case SKIPs and this
+# script reports ERROR rather than a false pass. Measured with the detection
+# below neutered. Do not generalise from it — a mutation to entrypoint.sh has
+# nothing to skip on and would pass quietly.)
+#
 # Usage:
-#   bash tests/integration/demonstrate-network-tier.sh            # every network patch
+#   bash tests/integration/demonstrate-network-tier.sh            # every selected patch
 #   bash tests/integration/demonstrate-network-tier.sh 050 210    # only these
 set -uo pipefail
 
@@ -41,6 +61,24 @@ MUT="$REPO_DIR/tests/integration/mutate.sh"
 MUT_DIR="$REPO_DIR/tests/integration/mutations"
 CASES_DIR="$REPO_DIR/tests/integration/cases"
 RUN="$REPO_DIR/tests/integration/run.sh"
+# The same default run.sh resolves (run.sh:31), and the same env var, so an
+# `IT_IMAGE=… bash demonstrate-network-tier.sh` names one image in both.
+IT_IMAGE="${IT_IMAGE:-ai-sandbox-it}"
+# Everything above is repo-root-relative and identical in both layouts, because
+# tests/ sits at the root in both. The ENGINE is not: upstream keeps build.sh and
+# the Dockerfile beside tests/, mgd-ai-containers keeps them in base/. Same
+# resolution mutate.sh makes, for the same reason — one copy of this file serves
+# both repos, so it must not assume either layout.
+ENGINE_DIR="$REPO_DIR"
+[[ -f "$ENGINE_DIR/build.sh" ]] || ENGINE_DIR="$REPO_DIR/base"
+# Read loudly rather than derive quietly from nothing: with no Dockerfile,
+# build_time_inputs() below would still emit its two literals, silently stop
+# recognising every COPY source, and send those patches down the --reuse-image
+# path — the misleading UNDEMONSTRATED this whole mechanism exists to prevent.
+[[ -f "$ENGINE_DIR/Dockerfile" ]] || {
+  printf 'demonstrate-network-tier.sh: no Dockerfile under %s — cannot tell which patches need a rebuild.\n' "$ENGINE_DIR" >&2
+  exit 1
+}
 
 # ── Refuse to start on a dirty tree ───────────────────────────────────────────
 # mutate.sh has its own clean-tree gate, but reaching it one mutation in would
@@ -54,11 +92,70 @@ fi
 # ── Always revert, however we leave ───────────────────────────────────────────
 # Without this an interrupted run (Ctrl-C during a 3-minute case) leaves the
 # repo mutated, and the next thing anyone runs tests damaged code.
+#
+# The image needs the same treatment and does not get it from a revert: an
+# interrupt during a rebuild demonstration leaves $IT_IMAGE built from a
+# deliberately WRONG Dockerfile, and reverting the tree does not un-build it.
+# The next --reuse-image run — here, in run.sh, or by hand — would then test that
+# image and report on a product nobody wrote. Remove it instead: it is disposable
+# by design (run.sh rebuilds it, and only --keep preserves it), and a missing
+# image costs a rebuild whereas a wrong one costs a wrong answer.
+image_is_mutated=0
 cleanup() {
   bash "$MUT" revert >/dev/null 2>&1
   git -C "$REPO_DIR" checkout -- "$CASES_DIR" 2>/dev/null
+  if [[ "$image_is_mutated" -eq 1 ]]; then
+    printf '\nLeaving no mutated image behind: removing %s.\n' "$IT_IMAGE" >&2
+    docker rmi -f "$IT_IMAGE" >/dev/null 2>&1
+  fi
 }
 trap cleanup EXIT INT TERM
+
+# ── Which patches only take effect on a rebuild ───────────────────────────────
+# DERIVED from the Dockerfile — itself, plus every path it COPYs out of the build
+# context — rather than kept as a list here. A missing entry does not fail
+# silently, but it fails MISLEADINGLY: the case runs against an image that never
+# contained the mutation, passes, and is reported as UNDEMONSTRATED, which reads
+# as "this mutation no longer damages its case" when the truth is "this mutation
+# was never applied to anything". Deriving it means a patch that starts touching
+# entrypoint.sh or install-tools.sh is rebuilt without anyone remembering to say
+# so.
+#
+# build.sh is in the set although nothing COPYs it: run.sh invokes it to produce
+# the build args AND the allowlist-*.txt files the Dockerfile then COPYs, so a
+# mutation there changes the image as surely as one in the Dockerfile.
+#
+# The names emitted here are UNPREFIXED even where the engine lives in base/,
+# because they are compared against the patch's own `+++ b/…` paths, and one
+# mutation set serves both repos with upstream paths in it. Only the Dockerfile
+# is READ through $ENGINE_DIR.
+#
+# The KNOWN LIMIT is what build.sh READS — an allowlist-*.d fragment,
+# sandbox-common.sh — which no patch touches today. If one ever does, the
+# symptom is the misleading UNDEMONSTRATED above, so extend this function rather
+# than the case.
+build_time_inputs() {
+  printf 'Dockerfile\nbuild.sh\n'
+  sed -n 's/^COPY[[:space:]]\{1,\}\([^[:space:]]\{1,\}\)[[:space:]].*/\1/p' "$ENGINE_DIR/Dockerfile"
+}
+patch_needs_rebuild() {  # $1=patch → 0 if it changes something the image is built FROM
+  local changed input
+  while IFS= read -r changed; do
+    while IFS= read -r input; do
+      # The exact file, or anything beneath a directory the Dockerfile COPYs
+      # whole: tools.d/dtctl.conf is as much a build input as tools-lib.sh.
+      [[ "$changed" == "$input" || "$changed" == "$input/"* ]] && return 0
+    done < <(build_time_inputs)
+  done < <(sed -n 's|^+++ b/||p' "$1")
+  return 1
+}
+
+# (Re)build $IT_IMAGE from the tree AS IT IS NOW and prove it works. Used for the
+# initial clean image and, after a rebuild demonstration, to restore one — the
+# harness selftest is what makes the restore verified rather than assumed.
+build_clean_image() {
+  bash "$RUN" --cases 000-harness-selftest --keep >/dev/null 2>&1
+}
 
 # ── Select the patches to demonstrate ─────────────────────────────────────────
 wanted=("$@")
@@ -76,10 +173,15 @@ for p in "$MUT_DIR"/*.patch; do
   for case_name in "${pcases[@]}"; do
     cf="$CASES_DIR/$case_name.sh"
     [[ -f "$cf" ]] || continue
-    # network tier only — the launcher tier is a different economics and is not
-    # what this script is for.
+    # network-mode and delivery: the two tiers whose known-bad configuration can
+    # only be shown by running the case against a real image. The launcher tier
+    # (mounts/groups/volumes) is hand-driven per AGENTS.md and the packages tier
+    # costs tens of minutes a case; neither is what this script is for.
+    #
+    # `delivery` joined in increment 5 with 300-allowlist-delivered, whose
+    # mutation is the first here to change the image build rather than the case.
     tags="$(sed -n 's/^#[[:space:]]*tags:[[:space:]]*//p' "$cf" | head -1)"
-    case " $tags " in *" network-mode "*) : ;; *) continue ;; esac
+    case " $tags " in *" network-mode "*|*" delivery "*) : ;; *) continue ;; esac
     if [[ ${#wanted[@]} -gt 0 ]]; then
       match=0
       for w in "${wanted[@]}"; do [[ "$id" == "$w"* || "$case_name" == "$w"* ]] && match=1; done
@@ -90,17 +192,17 @@ for p in "$MUT_DIR"/*.patch; do
 done
 
 if [[ ${#patches[@]} -eq 0 ]]; then
-  printf 'demonstrate-network-tier.sh: no network-tier mutations selected%s\n' \
+  printf 'demonstrate-network-tier.sh: no image-tier mutations selected%s\n' \
     "${wanted[*]:+ (${wanted[*]})}" >&2
   exit 2
 fi
 
-printf 'Demonstrating %s network-tier mutation(s).\n' "${#patches[@]}"
+printf 'Demonstrating %s image-tier mutation(s).\n' "${#patches[@]}"
 printf 'A case that FAILs is the pass condition. PASS means the mutation is dead.\n\n'
 
 # ── Build the image once ──────────────────────────────────────────────────────
 printf '── building the integration image (once) …\n'
-if ! bash "$RUN" --cases 000-harness-selftest --keep >/dev/null 2>&1; then
+if ! build_clean_image; then
   printf 'demonstrate-network-tier.sh: the harness selftest failed on a CLEAN tree.\n' >&2
   printf '  Fix that first — nothing below would be interpretable.\n' >&2
   exit 1
@@ -119,8 +221,29 @@ for entry in "${patches[@]}"; do
     results="${results}ERROR-APPLY  $id\n"; errored=$((errored + 1)); continue
   fi
 
-  out="$(bash "$RUN" --reuse-image --keep --cases "$case_name" 2>&1)"
-  bash "$MUT" revert >/dev/null 2>&1
+  if patch_needs_rebuild "$MUT_DIR/$id.patch"; then
+    # Both builds are cache-warm — the allowlist COPYs are the last few layers in
+    # the Dockerfile — so the pair costs seconds, not the minutes the first build
+    # cost. The clean rebuild happens BEFORE this case is classified, so nothing
+    # downstream can reach the mutated image even on the failure paths below.
+    printf '(rebuild) '
+    image_is_mutated=1
+    out="$(bash "$RUN" --keep --cases "$case_name" 2>&1)"
+    bash "$MUT" revert >/dev/null 2>&1
+    if build_clean_image; then
+      image_is_mutated=0
+    else
+      printf 'ERROR (no clean image could be rebuilt afterwards)\n'
+      results="${results}ERROR-REBUILD $id — the mutation ran, but $IT_IMAGE could not be rebuilt clean\n"
+      errored=$((errored + 1))
+      # Everything after this would run against the mutated image, so stop.
+      # cleanup() removes it on the way out.
+      break
+    fi
+  else
+    out="$(bash "$RUN" --reuse-image --keep --cases "$case_name" 2>&1)"
+    bash "$MUT" revert >/dev/null 2>&1
+  fi
 
   if grep -qE "^${case_name}[[:space:]]+FAIL|${case_name}.*  FAIL" <<<"$out"; then
     # A FAIL verdict is NOT sufficient. run.sh reports

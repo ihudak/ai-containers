@@ -106,6 +106,13 @@ done
 # Without this the file only audits the mutations that happen to exist, and a
 # case added with none would be invisible to it.
 #
+# `delivery` was added later still, when 300-allowlist-delivered stopped being a
+# tracked gap. Its known-bad configuration is the only one here that lives in the
+# image BUILD — a COPY line — rather than in a case file or a host script, which
+# is why it was exempt for an increment: the demonstrator ran every mutation
+# under --reuse-image, and a Dockerfile change is invisible to an image built
+# before it. demonstrate-network-tier.sh now rebuilds for such a patch.
+#
 # `network-mode` was added late, in increment 5, and the reason is worth keeping:
 # the network/security cases were believed covered because AGENTS.md said they
 # "keep their fixture-based demonstrations under tests/integration/fixtures/".
@@ -135,8 +142,6 @@ case_exempt() {  # $1=case basename → prints the reason, or nothing
   case "$1" in
     000-harness-selftest)
       printf 'the harness own smoke test: if it breaks, every other case is uninterpretable, so it has no meaningful known-bad configuration of its own' ;;
-    300-allowlist-delivered)
-      printf 'TRACKED GAP, not a clean exemption — see docs/superpowers/specs/2026-08-14-falsify-backlog.md F5. Its honest mutation breaks Dockerfile delivery, which needs an image REBUILD, so it cannot ride the --reuse-image path the other demonstrations use' ;;
   esac
 }
 
@@ -145,7 +150,7 @@ for c in "$CASES_DIR"/*.sh; do
   name="$(basename "$c" .sh)"
   tags="$(sed -n 's/^#[[:space:]]*tags:[[:space:]]*//p' "$c" | head -1)"
   case " $tags " in
-    *" mounts "*|*" groups "*|*" volumes "*|*" packages "*|*" network-mode "*) : ;;
+    *" mounts "*|*" groups "*|*" volumes "*|*" packages "*|*" network-mode "*|*" delivery "*) : ;;
     *)
       reason="$(case_exempt "$name")"
       if [[ -n "$reason" ]]; then

@@ -119,7 +119,8 @@ Usage: tests/integration/run.sh [options]
   -v, --verbose      stream each case's full output
   -h, --help         this text
 
-Tags: network-mode mounts volumes groups packages | security | fast slow |
+Tags: network-mode delivery mounts volumes groups packages | security |
+      fast slow |
       needs-external needs-netadmin needs-dns needs-multiruby | harness
 Requires: docker netadmin sidecar dns external launcher multiruby
 EOF

@@ -1,0 +1,39 @@
+# case: 300-allowlist-delivered
+# what: the image ships allowlist-cidrs.txt under the name /tmp/allowlist-domains.txt, so the firewall is built from an allowlist nobody wrote
+#
+# UNLIKE EVERY OTHER PATCH HERE, THIS ONE MUTATES THE PRODUCT'S IMAGE BUILD.
+# The case asserts DELIVERY — that what build.sh generated is what reached
+# /tmp/ inside the image — so the only honest way to break it is to break the
+# COPY. Mutating the case instead would test the test.
+#
+# The consequence is that this mutation does nothing until the image is rebuilt,
+# which is why demonstrate-network-tier.sh detects a patch against a build input
+# and drops --reuse-image for it. Measured, with that detection neutered: the run
+# reports `ERROR (case did not run)` and the case SKIPs — "no generated-allowlist
+# snapshot (run.sh was invoked with --reuse-image)" — because the thing this case
+# compares against is produced BY the build it just skipped. So here the wrong
+# path is loud. It is loud for this case only: a mutation to another build input,
+# say entrypoint.sh, has nothing to skip on and would simply PASS against an
+# image built before the patch existed, i.e. be reported UNDEMONSTRATED for a
+# mutation that was never applied to anything.
+#
+# A wrong file rather than a dropped COPY, deliberately: an ABSENT allowlist
+# makes the ipset empty and the container blocks everything, which is loud. A
+# non-empty allowlist that nobody generated is silent — every network case still
+# passes, because they mount their own allowlist over /it-allowlists and never
+# read /tmp at all. That silence is the failure mode case 300 exists for.
+diff --git a/Dockerfile b/Dockerfile
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -472,7 +472,10 @@ RUN chmod +x /usr/local/bin/install-agent-skills.sh
+ COPY refresh-ipset-allowlist.sh /usr/local/bin/
+ COPY capture-agent-destinations.sh /usr/local/bin/
+ COPY capture-blocked-traffic.sh /usr/local/bin/
+-COPY allowlist-domains.txt /tmp/
++# KNOWN-BAD: the domain allowlist is not delivered — the CIDR list is shipped
++# under its name instead. Three adjacent, near-identical COPY lines; this is
++# the slip they invite. Non-empty and plausible, so nothing crashes.
++COPY allowlist-cidrs.txt /tmp/allowlist-domains.txt
+ COPY allowlist-cidrs.txt /tmp/
+ COPY allowlist-proxy-domains.txt /tmp/
+ COPY entrypoint.sh /entrypoint.sh
