@@ -92,14 +92,41 @@ it_scratch() {
 }
 
 # Poll a condition rather than sleeping a guess.
-it_wait() {  # $1=timeout seconds, $2… = command
+#
+# The bound is WALL-CLOCK SECONDS. It used to be a poll COUNT: the body counted
+# iterations and slept 1s between them, so a predicate costing C seconds made
+# `it_wait T` run for T x (C+1). Nothing said so, and three separate things had
+# already been written on the assumption that it did not happen:
+#
+#   - this function's own `# $1=timeout seconds` comment;
+#   - the five `after ${IT_SETTLE}s` failure messages below, which named a
+#     duration the harness had not actually waited;
+#   - 700/710/720's `# timeout:` headers, each derived as 900 + 900 + tail.
+#
+# The last of those was not cosmetic. Those cases set IT_SETTLE=900 and poll a
+# `docker exec`, so two exhausted waits cost ~2700-3600s against case timeouts
+# of 2100/2400/2000 — the margin each header reasons about did not exist, and an
+# exhausted run was killed by the runner instead of failing with its own
+# message. 080 was worse: three waits whose predicate fires a `reach()` (curl,
+# IT_CONNECT_TIMEOUT=5s) cost ~756s against the 300s default, so its exhausted
+# path could not reach its second assertion at all. Backlog F6.
+#
+# Every caller already wrote its argument meaning seconds, so seconds is what it
+# now is, and no call site changed. Success paths are unaffected — they return
+# on the first or second poll, far inside any of these bounds.
+#
+# The predicate is evaluated at least once, whatever the deadline: a wait that
+# reported failure without ever looking would be worse than a slow one. An
+# in-flight predicate is never interrupted, so the true bound is T plus at most
+# one predicate evaluation, at 1s (EPOCHSECONDS) granularity.
+it_wait() {  # $1=timeout in wall-clock seconds, $2… = command
   local t="$1"; shift
-  local i=0
-  while [[ "$i" -lt "$t" ]]; do
+  local deadline=$(( EPOCHSECONDS + t ))
+  while :; do
     "$@" >/dev/null 2>&1 && return 0
-    i=$((i + 1)); sleep 1
+    (( EPOCHSECONDS >= deadline )) && return 1
+    sleep 1
   done
-  return 1
 }
 
 it_strip_comments() { awk '!/^[[:space:]]*#/ && !/^[[:space:]]*$/ { gsub(/^[[:space:]]+|[[:space:]]+$/, ""); print }'; }
