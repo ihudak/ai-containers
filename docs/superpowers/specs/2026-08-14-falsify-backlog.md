@@ -179,6 +179,28 @@ evaluate-at-least-once property. Demonstrated against the old body on a copied
 tree (control run isolating the 8 failures the copy itself causes): 18s not 8s,
 6 polls not 3, and 0 evaluations for `it_wait 0`. Full hermetic suite 55/55.
 
+**The one unverified consequence, now measured on the host (2026-08-19).** The
+fix was merged with a known open risk, stated at the time rather than discovered
+later: `launcher_up`'s wait in `700`/`710`/`720` is the one caller that
+legitimately polls for a long time — a cold agent-tools install — and its budget
+went from `900 x (1s + docker-exec cost)` (roughly 1170-1800s) down to **exactly
+900s**. Nothing in the hermetic suite or the PR gate covers those cases; only the
+nightly `packages` tier does.
+
+Run directly on the host, `./tests/integration/run.sh --tags packages --variant
+agents --require packages`:
+
+| case | result | wall |
+|---|---|---|
+| `700-agent-tools-install-restricted` | PASS (12 assertions) | **91s** |
+| `710-agent-tools-reused-not-reinstalled` | PASS (3 assertions) | **86s** |
+| `720-node-multiversion-nvm-use` | PASS (3 assertions) | **78s** |
+
+`selected 3 of 35, passed 3, failed 0, skipped 0`. The real requirement is ~91s
+against a 900s budget — an order of magnitude of headroom, so the reduction was
+never close to biting. **This entry is now closed on measurement rather than on
+argument**, which is the distinction the risk was flagged for in the first place.
+
 `tests/integration/lib.sh` is **not** in the falsify corpus (`targets.conf`), so
 this fix moves no corpus number. Adding it would mostly yield UNPROVEN — the file
 is dominated by docker verbs with no hermetic oracle — but the pure verbs
@@ -1684,6 +1706,33 @@ of one global number; or cap concurrency below `nproc` on hosts where the tier
 competes with a VM for cores (Phase 6 chose 18 on an 18-core Mac also running
 Colima).
 
+### Data point, 2026-08-19 — the same commit, two machines, 86% against 100%
+
+Worth recording because it is the widest spread measured so far on a tree where
+every GAP is closed, and because it shows the degradation is not uniform:
+
+| | container (8 CPUs, cgroup quota) | Mac host (`--jobs auto` -> 18) |
+|---|---|---|
+| TOTAL | `255\|249\|2\|4` | `255\|218\|3\|34` |
+| measured | 100% | **86%** |
+| wall | 6m33s | 26m41s |
+
+The 30 extra UNPROVEN are concentrated entirely in the two heaviest targets —
+`tests/lib-verify-repo.sh` 49/49 -> 29 killed with 20 unproven, and
+`tests/integration/mutate.sh` 59/59 -> 52 with 7 — while the six light targets
+were fully measured on both. **The four targets the guard-cluster increment
+touched had ZERO unproven on both machines**, which is the only reason its nine
+kills could be confirmed on macOS at all: a partial reading of those targets
+would have been indistinguishable from a coverage regression.
+
+That is the practical shape of this finding. The tier does not degrade evenly;
+it degrades where a single oracle is expensive, so whether a given conclusion
+survives a loaded run depends on which target it rests on. F38's measured-fraction
+line is what makes that visible at all — without it this run reports a plain
+PASSED. Note also that `--jobs auto` picked 18 on an 18-core Mac: F38 taught it
+to respect a cgroup quota, and with no quota present it takes every core, which
+by F38's own table is already past the point where wall-clock stops improving.
+
 ## F33 — the gate cannot yet require that a row's oracle actually executes its target — **RESOLVED 2026-08-19**
 
 **Both halves landed together, as this entry said they had to.** The derivation
@@ -2378,3 +2427,95 @@ mutant, by someone looking closely; none was found by the gate.
 The three together are the argument for item 1 above: the tier should be able to
 say how many of its kills came with an assertion attached, the way it already
 says how many mutants it left unmeasured (F38).
+
+## F44 — Phase 5's schema gate compared a commit to itself and reported OK — **FIXED 2026-08-19**
+
+**Found by reading the code to answer a question about it, and confirmed on the
+host the same evening.** `verify-on-host.sh`'s Phase 5 resolves a `BASE_REF` for
+`check-sandbox-version.sh`, guarded by a twenty-line comment explaining that the
+script's own default (`BASE_REF=HEAD`) is a silent no-op once a change is
+committed. The guard it built checks that the resolved ref is **non-empty**:
+
+```bash
+gate_base_ref="$(git merge-base HEAD origin/main)"          # empty?
+[[ -n "$gate_base_ref" ]] || gate_base_ref="$(git rev-parse HEAD^)"
+[[ -n "$gate_base_ref" ]] || phase_fail 5 "no usable BASE_REF …"
+```
+
+On `main` — the most ordinary place to run Phase 5, right after a merge —
+`origin/main` **is** HEAD, so `merge-base` returns HEAD. Non-empty, so both
+guards pass, and `BASE_REF=HEAD` is exactly the default the comment warns about.
+The gate then diffs HEAD's `sandbox.conf` against a working tree identical to it,
+finds nothing removed, and prints OK.
+
+Observed live, not inferred, on a host run of `PHASES="5"`:
+
+```
+schema gate diffing sandbox.conf against aeb1421c1cc89e625435a294f4c71ff468ee5c11
+check-sandbox-version: OK (no key removed/renamed; additions are always allowed).
+```
+
+`aeb1421` was HEAD. CI is unaffected: `hermetic-checks.yml` always exports a real
+PR base SHA.
+
+### The test agreed with the defect
+
+`tests/test-verify-exit-code.sh` had two blocks here. One asserted the loud
+failure when NO base resolves — correct, and still passes. The other said:
+
+> mk_repo's DEFAULT repo (add_origin=1, the origin/main ref stamped at HEAD)
+> **DOES have a usable base**, so the gate still genuinely runs
+
+It does not have a usable base; `origin/main == HEAD` is the defect. The
+assertion under that sentence only grepped the witness log for `STUB:` — proof
+the gate **ran**, which was never in doubt. Running and checking are different
+things, and nothing could see the difference because nothing recorded the one
+input that decides it.
+
+### Fix
+
+1. **`verify-on-host.sh`** — a resolved base equal to HEAD is treated as
+   unusable, exactly like an empty one, and falls through to `HEAD^`. That is the
+   right answer rather than an error: on main, "this change" is the last commit,
+   and for a merge commit `HEAD^` is the previous main — the same push semantics
+   CI uses when there is no PR base. If `HEAD^` also fails to resolve, the
+   existing `phase_fail` fires with a message that now names the real condition.
+2. **`tests/lib-verify-repo.sh`** — every `repo-script` stub writes a second
+   witness line, `STUB-BASEREF:<name> <ref>`, recording the `BASE_REF` it was
+   handed. The existing anchored `^STUB:<name>$` regex is untouched. Silent when
+   `BASE_REF` is unset, so no other stub is affected.
+3. **`mk_repo`** — the `add_origin=1` repo gets a **second commit** before the
+   ref is stamped, so it models a normal checkout on main: `origin/main == HEAD`
+   *and* `HEAD^` resolves. With only a root commit, "origin/main is HEAD" and "no
+   base at all" are indistinguishable, and the fixture could not tell a gate that
+   falls back to `HEAD^` from one that hands the gate HEAD. `add_origin=0` keeps
+   its single commit — that IS the no-base case.
+4. Four assertions replace the one that agreed with the defect: the fixture's own
+   premise (HEAD and HEAD^ exist and differ, so the rest cannot pass vacuously),
+   that a `BASE_REF` was recorded at all, that it is not HEAD, and that it is
+   `HEAD^`.
+
+Demonstrated by reverting only the resolution logic to its pre-fix form and
+leaving the new assertions in place:
+
+```
+FAIL: the schema gate was handed BASE_REF=HEAD (da95516d…) — it compared HEAD's
+      sandbox.conf against an identical working tree and reported OK, verifying nothing
+FAIL: the schema gate fell back to HEAD^ when origin/main is HEAD —
+      want '25a4f0d5…', got 'da95516d…'
+```
+
+### Why it is worth an entry rather than a one-line fix
+
+This is the same shape as F43, four hours apart, and the shape the whole file
+exists for: **a check that runs is not a check that checked.** F43's oracle
+exited non-zero without asserting; this gate exited zero without comparing. Both
+were invisible because the observable everyone looked at — did it run, what was
+its status — is one level away from the thing that decides whether it means
+anything. The generalisable move is the one used here: make the deciding INPUT
+observable to the test, not just the outcome.
+
+Worth noting that the emptiness guard was not careless. It was written
+deliberately, with the failure mode named in the comment above it, by someone
+looking straight at the problem — and it still missed the case where the wrong
+answer is non-empty. Reading the warning does not transfer it to the code.

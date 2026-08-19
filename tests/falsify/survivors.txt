@@ -104,7 +104,23 @@
 # ADDENDUM. RE-MEASURE AT --jobs 1. A verdict taken under load can be a
 # property of the machine.
 #
-# Corpus (2026-08-19, later the same day): tests/falsify/run.sh --jobs auto over
+# Corpus (2026-08-19, the F44 fix): TOTAL|9|261|255|2|4|11|2. The mutant count
+# rose 255 -> 261 because tests/lib-verify-repo.sh's mk_repo gained a second
+# commit for its add_origin=1 stub (backlog F44) — 49 mutants -> 55, all killed.
+# Three of the six were NOT killed on first measurement, and they were not new
+# code: the richer fixture removed what had been killing the PRE-EXISTING
+# update-ref line. Inverting that line used to leave the stub with neither
+# origin/main nor a resolvable HEAD^, so Phase 5 failed loudly and
+# test-verify-exit-code.sh saw it; with a parent commit present the schema gate
+# quietly falls back to HEAD^ and passes. The ratchet failed on all three. They
+# are killed now by asserting mk_repo's contract directly — origin/main stamped
+# at HEAD, a parent commit present, and neither of those true for add_origin=0.
+# Worth keeping as its own lesson: **a fixture made richer to support a NEW
+# assertion can take away what an OLD assertion was resting on, and nothing
+# about that edit looks like a coverage change.** The tier is what noticed.
+#
+# The reading before it, and the increment the rest of this block describes:
+# tests/falsify/run.sh --jobs auto over
 # the nine active targets, TOTAL|9|255|249|2|4|11|2 — 2 SURVIVED + 4 UNPROVEN =
 # 6 records. NINE more kills, every one from a WRITTEN ASSERTION, retiring five
 # entries at once (1, 2, 11, 12, 13 — backlog F15, F23, F25, F11):
