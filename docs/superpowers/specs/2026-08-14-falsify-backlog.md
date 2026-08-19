@@ -217,8 +217,8 @@ coverage hole that this entry had talked itself out of. Only two cases call
 | entrypoint.sh | mode | asserted by |
 |---|---|---|
 | `:243` | restricted | `070` |
-| `:288` | discovery | `230` — the case tagged `open` |
-| `:310` | **open** | **nothing** |
+| `:289` | discovery | `230` — the case tagged `open` |
+| `:311` | **open** | **nothing** |
 
 `210` and `220` do launch open mode, but they assert reachability and the
 absence of a capture daemon; neither looks at capabilities. So `--tags open`
