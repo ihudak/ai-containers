@@ -87,6 +87,45 @@ it_wait 10 test -f "$TMP/flag" && t_pass "it_wait returns as soon as the conditi
 it_wait 2 test -f "$TMP/never" && t_fail "it_wait times out on a condition that never holds" \
                                || t_pass "it_wait times out on a condition that never holds"
 
+# ── it_wait's bound is wall-clock seconds, not a poll count (F6) ──────────────
+# The two assertions above only ever poll a predicate that costs nothing, and
+# for a free predicate iterations and seconds coincide — which is exactly why a
+# body that counted iterations sat here looking correct. This predicate costs 2s
+# per evaluation, so the two readings of `it_wait 6` separate: 6 wall-clock
+# seconds plus at most one in-flight predicate (~8s, 3 polls) against 6 polls of
+# 2s+1s (~18s, 6 polls). Both are asserted — the elapsed time is the defect, the
+# poll count is its mechanism — and the 12s threshold sits between the readings
+# with 50% margin over the correct one.
+t_polls=0
+t_slow_false() { t_polls=$((t_polls + 1)); sleep 2; return 1; }
+t_start=$EPOCHSECONDS
+it_wait 6 t_slow_false && t_fail "it_wait reports failure on a never-true slow predicate" \
+                       || t_pass "it_wait reports failure on a never-true slow predicate"
+t_elapsed=$(( EPOCHSECONDS - t_start ))
+if (( t_elapsed <= 12 )); then
+  t_pass "it_wait 6 is bounded by ~6 wall-clock seconds, not 6 polls (took ${t_elapsed}s)"
+else
+  t_fail "it_wait 6 is bounded by ~6 wall-clock seconds, not 6 polls — took ${t_elapsed}s, the poll-count reading of 6 x (2s predicate + 1s sleep)"
+fi
+if (( t_polls < 6 )); then
+  t_pass "the deadline cuts polling short of the iteration count ($t_polls polls, not 6)"
+else
+  t_fail "the deadline cuts polling short of the iteration count — got $t_polls polls, exactly the iteration-counting body's count"
+fi
+
+# A deadline that has already passed still evaluates the predicate once: a wait
+# that reported failure without ever looking would be worse than a slow one.
+t_polls=0
+t_never() { t_polls=$((t_polls + 1)); return 1; }
+it_wait 0 t_never
+if (( t_polls == 1 )); then
+  t_pass "it_wait 0 still evaluates the predicate exactly once"
+else
+  t_fail "it_wait 0 still evaluates the predicate exactly once — got $t_polls evaluation(s)"
+fi
+it_wait 0 true && t_pass "it_wait 0 succeeds when the condition already holds" \
+               || t_fail "it_wait 0 succeeds when the condition already holds"
+
 # ── The comment filter used by blocked_entries ────────────────────────────────
 printf '# header one\n# header two\n\n10.9.9.9\n  \n#trailing\n' > "$TMP/blocked-ips.txt"
 t_check "it_strip_comments keeps only real entries" \

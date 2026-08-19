@@ -124,7 +124,7 @@ exists for, and it is the subject of F36, at the end of this file.
 `delivery` is now a covered tier in `test-mutations.sh`, `run.sh --help` and
 `AGENTS.md`, and the `case_exempt()` entry is gone.
 
-## F6 — `it_wait`'s first parameter is documented as seconds but counts iterations
+## F6 — `it_wait`'s first parameter is documented as seconds but counts iterations — **FIXED 2026-08-19**
 
 `tests/integration/lib.sh:95` — `it_wait() { # $1=timeout seconds …` — and the
 body is `while i < t; do "$@"; i++; sleep 1; done`. When the polled predicate is
@@ -143,6 +143,47 @@ Worked around at the call site (`080`'s patch carries `# timeout: 900`) rather
 than changed here, because renaming or re-basing `it_wait`'s parameter touches
 every caller in the corpus and belongs in its own change. Candidate fixes: rename
 the parameter to `max_polls`, or make it a real deadline with `EPOCHREALTIME`.
+
+**Fixed 2026-08-19 — a real deadline, and no call site changed.** `it_wait` now
+computes `deadline=$(( EPOCHSECONDS + t ))` and returns 1 once the clock passes
+it. Every caller already wrote its argument meaning seconds, so all 22 call
+sites (17 in cases, 5 in `lib.sh`) keep their numbers and simply start being
+honest.
+
+Re-deriving the entry before fixing it turned up two things it had not recorded,
+both worse than the original framing:
+
+  - **The declared case timeouts were unachievable.** `700`/`710`/`720` set
+    `IT_SETTLE=900` and poll a `docker exec`, so two exhausted waits cost
+    ~2700-3600s against headers of 2100/2400/2000. `720`'s header reasons
+    explicitly about "~1810s … 2000s leaves ~190s of real margin" — that margin
+    did not exist, and an exhausted run was killed by the runner instead of
+    failing with its own message. Same shape at `080`: three waits whose
+    predicate fires a `reach()` (curl, `IT_CONNECT_TIMEOUT`=5s) cost ~756s
+    against the 300s default, so its exhausted path could never reach its second
+    assertion. The fix makes all four headers correct as written.
+  - **`it_wait 0` never evaluated its predicate.** `while i < 0` is entered zero
+    times, so the old body reported failure without ever looking. Not reachable
+    today (`IT_SETTLE` is floored at 60 and every other caller passes a
+    literal), but it is now a guaranteed property rather than an accident.
+
+Five `after ${IT_SETTLE}s` failure messages in `lib.sh` had also been naming a
+duration the harness never waited; they are correct now without being touched.
+
+Guarded by four new assertions in `tests/test-integration-lib.sh`. The two that
+were already there poll a *free* predicate, and for a free predicate iterations
+and seconds coincide — which is why an iteration-counting body sat here looking
+correct. The new ones poll a 2s predicate so the two readings of `it_wait 6`
+separate, and assert elapsed wall clock, poll count, and the
+evaluate-at-least-once property. Demonstrated against the old body on a copied
+tree (control run isolating the 8 failures the copy itself causes): 18s not 8s,
+6 polls not 3, and 0 evaluations for `it_wait 0`. Full hermetic suite 55/55.
+
+`tests/integration/lib.sh` is **not** in the falsify corpus (`targets.conf`), so
+this fix moves no corpus number. Adding it would mostly yield UNPROVEN — the file
+is dominated by docker verbs with no hermetic oracle — but the pure verbs
+`test-integration-lib.sh` already covers are a real candidate, and this defect
+lived in one of them. Recorded as a coverage question, not scheduled.
 
 ## F7 — `230-open-drops-capabilities` is named and tagged for open mode but launches discovery
 
@@ -164,7 +205,15 @@ remains is to make `230` say what it does: rename it (e.g.
 patch's `# case:` header and `AGENTS.md`'s reference to "case 230", so it is a
 small coordinated change rather than a one-liner.
 
-## F8 — three surviving mutants in `tests/integration/mutate.sh`'s guard cluster
+## F8 — three surviving mutants in `tests/integration/mutate.sh`'s guard cluster — **CLOSED 2026-08-19, superseded by F20**
+
+Superseded and closed by F20, which recorded five refusal paths (these three plus
+`:242` and `:206`) and was fixed on 2026-08-19. `tests/integration/mutate.sh` now
+measures **59 killed / 0 survived**. The heading said "open" for a while after the
+mutants were dead; corrected here rather than left to mislead the next inventory.
+
+Original finding:
+
 
 The falsify pilot found five survivors around `mutate.sh`'s entry guards. The
 clean-tree gate is **fixed** (`tests/test-mutations.sh` now asserts `apply`
@@ -236,7 +285,16 @@ the same change — deliberately, so the count cannot drift silently. Joining
 continuation lines before the span scan is the obvious approach; the mutated
 output must still be written back to the correct single physical line.
 
-## F10 — a single-clause `if [[ X ]];` yields two semantically identical mutants
+## F10 — a single-clause `if [[ X ]];` yields two semantically identical mutants — **FIXED**
+
+Implemented as specified: `tests/falsify/check-ledger.sh:282` carries
+`CL_SURV_TEXT`, keyed on `identity|mutated-text` and commented "the F10 dedupe
+key", and `tests/falsify/survivors.txt`'s header states the rule — survivors are
+deduplicated by (identity, mutated line) before being counted. Dedupe at ledger
+build time, not by suppressing generation, exactly as the entry asked.
+
+Original finding:
+
 
 `cond-negate` produces two distinct mutants that damage the condition the same
 way, so any survivor among them is double-counted in the ledger. Harmless to
@@ -1464,7 +1522,15 @@ then add the `oracle ∈ executors` gate with its own demonstration. Both halves
 are needed: the gate without the derivation fix is a false alarm, and the
 derivation fix without the gate buys only a more honest `--evidence`.
 
-## F34 — `producer | grep -q` under `pipefail` reports absence for something present
+## F34 — `producer | grep -q` under `pipefail` reports absence for something present — **FIXED**
+
+Closed by `wf_has_step()` in `tests/lib-layer-checks.sh` (capture first, match
+against a complete value — the producer's status is then read directly and cannot
+race) and by `tests/test-grep-q-pipelines.sh`, which enforces the rule repo-wide
+and passes. Verified 2026-08-19.
+
+Original finding:
+
 
 **Found by the falsify tier, in a test the tier had just started running several
 copies of at once.** `tests/test-layer-containment.sh` failed with
