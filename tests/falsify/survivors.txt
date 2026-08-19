@@ -99,13 +99,29 @@
 # --jobs 1. A verdict taken under load can be a property of the machine.
 #
 # Corpus (2026-08-19): tests/falsify/run.sh --jobs auto over the nine active
-# targets, TOTAL|9|251|227|20|4|11|9 — 20 SURVIVED + 4 UNPROVEN = 24 records.
-# The previous reading was TOTAL|9|251|223|24|4|11|11. Four more kills, from a
+# targets, TOTAL|9|255|240|11|4|11|5 — 11 SURVIVED + 4 UNPROVEN = 15 records.
+# The previous reading was TOTAL|9|251|227|20|4|11|9. THIRTEEN more kills and
+# four more mutants, in one increment, all on tests/integration/mutate.sh:
+#   * nine from WRITTEN ASSERTIONS — entries 7, 8 and 9, the sibling base/
+#     layout, the five refusal paths and the doubled reverser (backlog F19, F20,
+#     F21), all now retired. Two of the nine had previously read KILLED only by
+#     accident of platform (macOS ships no tac) or of shell version (`cd ""`
+#     errors on bash 5.3); both are now killed by an assertion aimed at the
+#     line, everywhere.
+#   * four from the mutant count rising 251 -> 255, because mutate.sh's
+#     patch_prefix() was ported back from mgd-ai-containers, where it had been
+#     written and left (backlog F39). Upstream behaviour is unchanged by
+#     construction — an empty APPLY_PREFIX short-circuits before anything is
+#     inspected — so the corpus is how the port is checked: all four new mutants
+#     are KILLED by test-mutations.sh, and this TOTAL is now byte-for-byte the
+#     one mgd-ai-containers measures. The file is byte-identical again.
+#
+# The reading before it was TOTAL|9|251|223|24|4|11|11. Four more kills, from a
 # WRITTEN ASSERTION: tests/lib-layer-checks.sh's loud-failure group, entry 5,
 # now retired (backlog F18). That target is 46 killed / 2 survived, and the two
 # that remain are entry 6's EQUIVALENT pair.
 #
-# The reading before it was TOTAL|9|251|220|27|4|7|12. Three more kills, and
+# The reading before THAT was TOTAL|9|251|220|27|4|7|12. Three more kills, and
 # unlike the reading before THAT they came from a WRITTEN ASSERTION rather than
 # from a map correction: tests/lib-verify-repo.sh's git-bootstrap group, entry 4,
 # now retired (backlog F17). That target is 49/49.
@@ -264,91 +280,83 @@ tests/lib-layer-checks.sh:logic-flip:b6554f5a51c19c07a987509d2872c86e54d554ea
   observably identical, not that nobody has written the test.
 
 # ── 7 ─────────────────────────────────────────────────────────────────────────
-GROUP: mutate.sh's sibling-repo layout resolution is never exercised
-tests/integration/mutate.sh:cond-negate:ef7c3a50f480650ccc145bf259730b47647e0999
-tests/integration/mutate.sh:logic-flip:ef7c3a50f480650ccc145bf259730b47647e0999
-tests/integration/mutate.sh:logic-flip:01d39d9f40d7aa9e9db77c3214a208825b96c29e
-  :41  [[ -f "$REPO_DIR/build.sh" ]] || REPO_DIR="$(cd "$INT_DIR/../../base" && pwd -P)"
-  :52  GIT_ROOT="$( cd "$REPO_DIR" && git rev-parse --show-toplevel 2>/dev/null )" || GIT_ROOT="$REPO_DIR"
-  GAP: measured — the whole suite passes against each of the three. These two
-  lines exist for the mgd-ai-containers layout, where the engine lives under
-  base/ and APPLY_PREFIX must become "base" so one patch set serves both repos.
-  In THIS repo the fallback never fires, and inverting it is close to harmless
-  by accident: `cd` into a non-existent base/ fails, the command substitution
-  yields the empty string, `cd ""` then succeeds without moving, GIT_ROOT
-  resolves from the caller's own directory, and `${REPO_DIR#"$GIT_ROOT"/}` on an
-  empty REPO_DIR is empty, so `${APPLY_PREFIX:+…}` still expands to nothing and
-  every patch applies. That accident is itself the finding: the resolution is
-  load-bearing for the port and depends on the CWD to come out right here.
-  The killing assertion is two fixture trees — one with build.sh at the root,
-  one with the engine under base/ — asserting the REPO_DIR/GIT_ROOT/APPLY_PREFIX
-  triple mutate.sh derives for each, from a CWD outside both. Recorded as F19.
-  THE TWO ef7c3a50 MEMBERS WERE MEASURED KILLED ON macOS (2026-08-18) and are
-  still a GAP, per the asymmetry rule in the header. The cause is the SHELL
-  VERSION, not the OS, and it is worth naming precisely because the whole
-  survival argument above rests on one primitive — `cd ""` being a silent no-op
-  — and that changed above the declared floor. Measured, same tree, one damage
-  at a time:
-      bash 5.1.16  (ubuntu:22.04, the declared floor)   cd "" -> rc 0, no-op
-      bash 5.2.21  (ubuntu:24.04, CI and the container) cd "" -> rc 0, no-op
-      bash 5.3.15  (Homebrew, a developer's Mac)        cd "" -> rc 1, "null directory"
-  Either damage forces REPO_DIR empty, GIT_ROOT then comes out empty too, and on
-  5.3 git_apply's `( cd "$GIT_ROOT" && git apply … )` FAILS outright instead of
-  applying from the caller's own directory — so test-mutations.sh sees it. That
-  kill is the shell, not an assertion aimed at this line: it disappears on every
-  environment the reference gate runs in, all of which are at or below 5.2. The
-  killing assertion above is still unwritten and still the thing to write.
-  Worth noting beyond this entry: tests/bash-dialect-lint.sh guards against
-  constructs NEWER than the floor. This is the other direction — a construct
-  whose SEMANTICS changed above it — which nothing currently detects.
+# RETIRED 2026-08-19. Three mutants in tests/integration/mutate.sh used to sit
+# here under "GROUP: mutate.sh's sibling-repo layout resolution is never
+# exercised" — :41's `base/` fallback (cond-negate and logic-flip) and :52's
+# GIT_ROOT fallback. All three are now KILLED on every shell, by assertions
+# aimed at the line rather than by the 5.3 accident this entry recorded.
+#
+# Retired by WRITING THE ASSERTION, as the entry specified: two fixture trees,
+# both driven from a CWD OUTSIDE them. One is mgd-shaped — build.sh under base/,
+# a git root above it, and a DECOY target.txt at that root carrying the same
+# content as base/target.txt. The decoy is what turns a status into an
+# observation: without it a lost APPLY_PREFIX only makes `apply` fail, with it
+# the patch has somewhere wrong to land and the assertion reads WHICH FILE
+# changed. The other tree is not a git repository at all, which is where :52's
+# fallback is load-bearing: mutate.sh's own header promises `check` still works
+# there, and it only does if GIT_ROOT falls back to the engine directory.
+#
+# One prediction in the original entry was wrong and the fixture corrected it.
+# :52's damage was expected to leave the patch landing in base/ anyway; it does
+# not. `git apply` resolves its paths against the REPOSITORY ROOT, not the
+# current directory, so cd-ing into base/ with an empty prefix patches the file
+# at the git root — the decoy — and the mgd fixture kills :52 as well.
+#
+# The bash-version fact this entry established is kept, because it is about the
+# repo and not about these three mutants. `cd ""` is a silent no-op on bash
+# 5.1.16 and 5.2.21 and an ERROR ("null directory", rc 1) on 5.3.15, so a
+# primitive's semantics changed above the declared floor of 5.1.
+# tests/bash-dialect-lint.sh guards the other direction — constructs NEWER than
+# the floor — and nothing detects this one. The new assertions do not depend on
+# it either way: the undamaged script never runs `cd ""`.
+#
+# The number is left occupied, for the reason entry 3 records.
 
 # ── 8 ─────────────────────────────────────────────────────────────────────────
-GROUP: mutate.sh's refusal paths report success
-tests/integration/mutate.sh:return-flip:7efad11ba695484504de3ae094a48e9b0f2d9a66
-tests/integration/mutate.sh:return-flip:552493d90efb75a9ac1f2c6b3bc7dd5402662598
-tests/integration/mutate.sh:return-flip:e0e1f9fabfc9d4800c877a703b823ac0578ff8db
-tests/integration/mutate.sh:return-flip:70d8100e1e74617db85ccff387ba29d4a568adc6
-  :141  exit 1   -> exit 0   the already-applied guard's refusal
-  :242  exit 1   -> exit 0   revert's "still records what could not be reverted"
-        (:141 and :242 are the same trimmed line, so ONE identity carries both)
-  :143  require_git_usable || exit 1 -> exit 0
-  :74   return 1 -> return 0          require_git_usable's own verdict
-  :206  [[ -f "$STATE" ]] || { printf 'nothing applied.'; return 0; } -> return 1
-  GAP: measured — the whole suite passes against each of the five damages. Every
-  one is a STATUS, and a status is what a caller branches on: mutate.sh is
-  driven from CI demonstrations and from a human's shell, both of which read
-  `$?`. The suite asserts that `apply` is not blocked once state clears, never
-  that it IS blocked while state exists; nothing makes git unusable, so neither
-  require_git_usable's verdict nor its call site is exercised; and nothing runs
-  `revert` against a clean slate to see that "nothing applied" is a success.
-  The killing assertions: apply twice without reverting and require a non-zero
-  exit naming the applied mutation; a faked `git` that cannot resolve
-  --git-dir, requiring `apply` to refuse non-zero; and `revert` with no state
-  file, requiring exit 0. Extends F8, which recorded three of these five —
-  :242 and :206 were not in it. Recorded as F20.
+# RETIRED 2026-08-19. Four return-flip identities in tests/integration/mutate.sh
+# used to sit here under "GROUP: mutate.sh's refusal paths report success" —
+# :141/:242 (one identity, two occurrences), :143, :74 and :206. All are now
+# KILLED.
+#
+# Retired by WRITING THE ASSERTION, as the entry specified, with one thing the
+# entry did not say. :74 and :143 are damages to the SAME refusal and the
+# message cannot tell them apart: require_git_usable prints its diagnosis before
+# returning, so "git is unusable" appears whichever of the two is damaged. What
+# separates them is the tree — :143 exits 0 having applied nothing, :74 lets the
+# apply proceed and the mutation LANDS, on a tree whose cleanliness was never
+# established. So the git-unusable case reads the status, the message and the
+# tree, and it is the tree assertion that catches :74.
+#
+# The fake git is scoped to `--git-dir` alone and delegates everything else to
+# the real one, so the script's own `rev-parse --show-toplevel` still resolves;
+# it is checked in both directions before anything relies on it.
+#
+# The number is left occupied, for the reason entry 3 records.
 
 # ── 9 ─────────────────────────────────────────────────────────────────────────
-tests/integration/mutate.sh:logic-flip:89c6a2517145cc6dbd3da79ad24e0b42298f87c0
-  :236  done < <(tac "$STATE" 2>/dev/null || sed '1!G;h;$!d' "$STATE")
-  the damage:  ... tac ... && sed ...
-  GAP: measured — the whole suite passes against it. The `||` picks ONE reverser
-  — GNU tac where it exists, the BSD/macOS sed idiom where it does not. With
-  `&&`, on any host that has tac BOTH run, so every applied id is fed to the
-  revert loop twice; the second pass finds the patch already gone, takes the
-  `git apply --check` branch and prints "Already absent", and the command still
-  exits 0 with the state file removed. The two facts that comment insists on —
-  reverse order, and "I undid it" versus "it was already gone" being different
-  outcomes — are both silently violated with the suite green. The killing
-  assertion is to apply two mutations and require `revert` to print exactly one
-  "Reverted <id>" line per id, in reverse order, and no "Already absent" line.
-  Recorded as F21.
-  MEASURED KILLED ON macOS (Phase 6 host run, 2026-08-17) and still a GAP, per
-  the asymmetry rule in the header. macOS ships no `tac`, so the mutated
-  `tac && sed` short-circuits on the missing command, the revert loop reads
-  NOTHING, and test-mutations.sh sees it. That kill is the platform, not an
-  assertion aimed at this line: it disappears on any host with GNU coreutils,
-  which is every environment the reference gate runs in. The killing assertion
-  above is still unwritten and still the thing to write.
+# RETIRED 2026-08-19. :236's `tac … || sed …` reverser used to sit here. It is
+# now KILLED on every host, by an assertion aimed at the line rather than by
+# macOS's missing tac.
+#
+# Retired by WRITING THE ASSERTION, as the entry specified: two patches, the
+# second GENERATED AGAINST THE TREE THE FIRST LEAVES BEHIND, so its context
+# carries the first patch's change and reversing them in the order they were
+# applied cannot work. That is what makes the reverse-order invariant testable
+# instead of decorative. The assertions are exactly one `Reverted <id>` line per
+# id, newest first, and no "Already absent" line.
+#
+# The entry's prediction — "revert still exits 0" — is confirmed for ONE applied
+# patch and is not what happens with two dependent ones, which is worth writing
+# down because the difference is instructive rather than a correction. Measured,
+# with the `&&` damage in place:
+#     one patch    Reverted p-good, then "Already absent: p-good", exit 0
+#     two patches  both Reverted, then the second pass finds p-second reversible
+#                  in NEITHER direction (p-good is already undone, so its
+#                  context no longer matches), exit 1
+# Either way both invariants the block's comment insists on are violated. The
+# fixture uses the two-patch form because it pins the order as well.
+#
+# The number is left occupied, for the reason entry 3 records.
 
 # ── 10 ────────────────────────────────────────────────────────────────────────
 GROUP: the damage does not fail the oracle, it stops it terminating (UNPROVEN)

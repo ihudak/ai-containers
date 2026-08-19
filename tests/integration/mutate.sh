@@ -54,8 +54,70 @@ APPLY_PREFIX=""
 if [[ "$REPO_DIR" != "$GIT_ROOT" ]]; then
   APPLY_PREFIX="${REPO_DIR#"$GIT_ROOT"/}"
 fi
+# ── THE PREFIX IS PER PATCH, NOT PER REPO ────────────────────────────────────
+# It was per repo until increment 5, and that was correct only while EVERY patch
+# damaged an engine file. The network-tier mutations broke the assumption: they
+# damage tests/integration/cases/*.sh and tests/integration/lib.sh, which sit at
+# the REPO ROOT in both layouts — tests/ is never under base/. A blanket
+# `--directory=base` turns those into base/tests/integration/... , which exists
+# nowhere, so all thirteen were reported "no longer applies" here while passing
+# upstream, where APPLY_PREFIX is empty and the bug cannot show.
+#
+# Upstream's copy of this file carries the same latent defect; it is invisible
+# there for exactly that reason. Deciding the prefix from the PATCH rather than
+# from the repo is the fix in both, and leaves the upstream behaviour bit-for-bit
+# unchanged (an empty APPLY_PREFIX short-circuits before anything is inspected).
+#
+# The decision is made by ASKING THE FILESYSTEM where the patch's targets live,
+# not by pattern-matching `tests/` — a rule keyed on a directory name would need
+# editing the next time a patch damages something new, which is the same
+# maintenance trap the blanket prefix already sprang once. The prefixed location
+# is tried first, so every pre-existing engine patch resolves exactly as before.
+_patch_targets() {   # <patch file> → its a/<path> targets, one per line
+  sed -n 's|^--- a/||p' "$1"
+}
+
+# EVERY LINE OF THIS FUNCTION IS OBSERVABLE, and that is deliberate rather than
+# incidental — the falsify tier measured the first draft and three of its mutants
+# survived, all for the same reason: state nothing reads. It counted targets that
+# resolved at the repo root into an `n_root` no decision used, and it carried two
+# `return` statements whose status the only caller discards inside a `$(…)`. A
+# line no assertion can watch is a line no assertion is watching, so they are
+# gone rather than excused in the ledger. What is left is one printf whose
+# presence or absence every damage above it changes:
+#   * negate the APPLY_PREFIX test  → engine patches lose their prefix
+#   * flip the `&&` before n_pref   → nothing counts as resolved, same result
+#   * flip either comparison, or the final `&&` → the prefix is emitted always
+#                                     or never, and one half of the patch set
+#                                     stops applying either way
+# tests/test-mutations.sh drives `mutate.sh check` over BOTH halves of the real
+# mutation set — twenty engine patches under base/ and thirteen tests/ ones at
+# the root — so each of those damages fails it by name.
+#
+# mapfile + a `for`, not a `while read`: a `while` head is one cond-negate away
+# from never terminating, which the tier can only report as UNPROVEN (nothing
+# was observed asserting) after burning the whole per-mutant timeout. A `for`
+# over an array has no condition to negate.
+patch_prefix() {   # <patch file> → the --directory value to use, or empty
+  local patch="$1" path n_pref=0
+  local -a paths=()
+  if [[ -n "$APPLY_PREFIX" ]]; then
+    mapfile -t paths < <(_patch_targets "$patch")
+    for path in "${paths[@]}"; do
+      [[ -e "$GIT_ROOT/$APPLY_PREFIX/$path" ]] && n_pref=$(( n_pref + 1 ))
+    done
+    # Unanimity or nothing. A patch whose targets straddle both roots cannot be
+    # applied in one `git apply` at all, and a patch whose targets resolve
+    # nowhere is stale — both must reach `git apply` and be REFUSED there,
+    # loudly, rather than be silently applied against whichever half matched.
+    (( ${#paths[@]} > 0 && n_pref == ${#paths[@]} )) && printf '%s' "$APPLY_PREFIX"
+  fi
+}
+
 git_apply() {  # $@ = git apply args (patch last)
-  ( cd "$GIT_ROOT" && git apply ${APPLY_PREFIX:+--directory="$APPLY_PREFIX"} "$@" )
+  local prefix
+  prefix="$(patch_prefix "${*: -1}")"
+  ( cd "$GIT_ROOT" && git apply ${prefix:+--directory="$prefix"} "$@" )
 }
 
 # NOT needed before every git_apply call: `git apply [--check|-R]` on a plain
