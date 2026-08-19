@@ -14,10 +14,19 @@
 # invisible to a hardcoded two-file classification list) needs no change here,
 # only new rows in tests/layer-checks.conf.
 #
-# EVERY function here fails loudly and non-zero on an empty result. That is the
-# whole point: a parser returning nothing quietly would make its consumer
-# iterate zero rows and report success having verified nothing -- the exact
-# defect the guard this feeds was written to catch.
+# EVERY function here fails loudly and non-zero on an empty result, AND on an
+# input file that is not there. That is the whole point: a parser returning
+# nothing quietly would make its consumer iterate zero rows and report success
+# having verified nothing -- the exact defect the guard this feeds was written
+# to catch.
+#
+# Both halves are named because for a long time only the first one was. The
+# missing-file guards sat outside the promise, the test followed the promise,
+# and `return 1` -> `return 0` in wf_jobs, wf_steps, wf_job_key and lc_rows
+# survived the whole suite (backlog F18). test-layer-checks-parser.sh now
+# exercises both classes, and asserts the MESSAGE as well as the status: delete
+# a missing-file guard outright and the function still fails, one branch later
+# and for a different reason, so status alone cannot tell the guard is gone.
 #
 # The YAML handling is a narrow awk reader for the shape these workflow files
 # use (2-space job ids, 4-space `steps:`, 6-space `- ` step starts, 8-space step

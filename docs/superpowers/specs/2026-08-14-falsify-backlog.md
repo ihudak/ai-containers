@@ -570,7 +570,45 @@ requiring `mk_repo` to still yield a repo with a tracked committed file; one
 whose `commit` fails, requiring the source of `lib-verify-repo.sh` to abort with
 its named probe message.
 
-## F18 — `lib-layer-checks.sh`'s missing-file and unset-registry paths return the wrong status
+## F18 — `lib-layer-checks.sh`'s missing-file and unset-registry paths return the wrong status — **FIXED 2026-08-19**
+
+Fixed as this entry specified, and the entry's analysis held on re-derivation:
+all four flips still survived, the count was right, and the killing assertion it
+named is the one that works. The entry's LINE NUMBERS had drifted (`:116` is now
+`:144`, the killed wf_triggers_on twin `:165` is now `:193`) — which is the case
+for identity-by-sha1 rather than by `file:line`, made once more.
+
+One thing the entry did not say, and the fix turns on it: **status alone does
+not kill the deletion of these guards.** Remove the `[[ -f "$f" ]]` line
+outright and every function still exits non-zero on a missing file — `awk:
+cannot open ...` from wf_jobs/wf_steps/wf_job_key, `grep: ... No such file` from
+lc_rows, and an `unbound variable` abort from the unset case under `set -u`. So
+each new assertion reads BOTH halves of a loud failure, through a `fails_naming`
+helper: non-zero status **and** the message that names the cause. Measured in
+both directions before the ledger entry was retired.
+
+| damage | what goes red |
+|---|---|
+| `lc_rows` `:33` `return 1` → `return 0` | both lc_rows registry cases: "reported success, rc 0" |
+| `wf_jobs` `:87` same | "wf_jobs fails loudly for a workflow file that does not exist (reported success, rc 0)" |
+| `wf_steps` `:96` same | the wf_steps twin |
+| `wf_job_key` `:144` same | the wf_job_key twin |
+| any of the four guards **deleted** | the same case, at the other half: "failed, but stderr never named the cause" |
+
+Each mutant makes exactly its own case fail and no other — no collateral, which
+is what says the assertion is aimed rather than incidental.
+
+`tests/lib-layer-checks.sh` went from **42 killed / 6 survived to 46 / 2**, and
+the corpus from `223|24` to `227|20`. The two that remain are ledger entry 6's
+EQUIVALENT pair, which no test could kill. Ledger entry 5 is retired.
+
+The library header is corrected at the same time, because it is where the gap
+came from: it promised loud failure "on an empty result" only, the test followed
+the promise, and the missing-file guards sat outside it. It now names both
+classes.
+
+Original finding:
+
 
 `wf_jobs:87`, `wf_steps:96`, `wf_job_key:116` all carry
 `[[ -f "$f" ]] || { echo "no such workflow: $f" >&2; return 1; }`; flipping the

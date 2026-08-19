@@ -98,14 +98,19 @@
 # watching the branch — see entry 13 and backlog F30's addendum. RE-MEASURE AT
 # --jobs 1. A verdict taken under load can be a property of the machine.
 #
-# Corpus (2026-08-19): tests/falsify/run.sh --jobs 10 over the nine active
-# targets, TOTAL|9|251|223|24|4|11|11 — 24 SURVIVED + 4 UNPROVEN = 28 records.
-# The previous reading was TOTAL|9|251|220|27|4|7|12. Three more kills, and
+# Corpus (2026-08-19): tests/falsify/run.sh --jobs auto over the nine active
+# targets, TOTAL|9|251|227|20|4|11|9 — 20 SURVIVED + 4 UNPROVEN = 24 records.
+# The previous reading was TOTAL|9|251|223|24|4|11|11. Four more kills, from a
+# WRITTEN ASSERTION: tests/lib-layer-checks.sh's loud-failure group, entry 5,
+# now retired (backlog F18). That target is 46 killed / 2 survived, and the two
+# that remain are entry 6's EQUIVALENT pair.
+#
+# The reading before it was TOTAL|9|251|220|27|4|7|12. Three more kills, and
 # unlike the reading before THAT they came from a WRITTEN ASSERTION rather than
 # from a map correction: tests/lib-verify-repo.sh's git-bootstrap group, entry 4,
 # now retired (backlog F17). That target is 49/49.
 #
-# The reading before it was TOTAL|9|249|209|36|4|11|16: nine more kills, from
+# The reading before THAT was TOTAL|9|249|209|36|4|11|16: nine more kills, from
 # targets.conf's oracle field becoming a SET rather than from any new assertion
 # (backlog F16, ledger entries 2 and 3). The mutant count rose 249 -> 251
 # because tests/lib-layer-checks.sh gained wf_has_step (backlog F34); both of
@@ -212,27 +217,25 @@ bash-floor.sh:return-flip:7bfb00108eb7e7856c69ee914697141e5ea8086d
 # The number is left occupied, for the reason entry 3 records.
 
 # ── 5 ─────────────────────────────────────────────────────────────────────────
-GROUP: lib-layer-checks.sh's loud-failure paths return the wrong status
-tests/lib-layer-checks.sh:return-flip:53938df655edfac708a3076155665464b6d02c67
-tests/lib-layer-checks.sh:return-flip:e0e1f9fabfc9d4800c877a703b823ac0578ff8db
-  :87 / :96 / :116  [[ -f "$f" ]] || { echo "no such workflow: $f" >&2; return 1; }
-  :33               lc_rows' LAYER_CHECKS_CONF-unset branch's `return 1`
-  the damage: `return 1` -> `return 0` — the message is still printed, the
-  caller is told it succeeded. The first identity carries three surviving
-  mutants (wf_jobs, wf_steps, wf_job_key) that dedupe to one damage.
-  GAP: measured — the whole suite passes against each. This file's own header
-  says "EVERY function here fails loudly and non-zero on an empty result … a
-  parser returning nothing quietly would make its consumer iterate zero rows and
-  report success having verified nothing", and test-layer-checks-parser.sh
-  exercises that for every EMPTY-RESULT path — but for the MISSING-FILE path
-  only in wf_triggers_on (line 204 of the test), whose identical `return 1` at
-  :165 is killed for exactly that reason. The three functions the containment
-  guard actually calls are unprotected, and so is lc_rows' unset-registry
-  branch: the test only ever points LAYER_CHECKS_CONF at a file that exists.
-  The killing assertion is four more calls in the same idiom as the ones already
-  there: `wf_jobs $TMP/nosuchworkflow.yml`, the same for wf_steps and
-  wf_job_key, and `LAYER_CHECKS_CONF=$TMP/absent.conf lc_rows check`, each
-  required to fail. Recorded as F18.
+# RETIRED 2026-08-19. Two return-flip identities in tests/lib-layer-checks.sh
+# used to sit here under "GROUP: lib-layer-checks.sh's loud-failure paths return
+# the wrong status" — the missing-file guard shared by wf_jobs/wf_steps/
+# wf_job_key (three surviving mutants on one identity), and lc_rows' absent-
+# registry branch. All are now KILLED, and the target went from 42/6 to 46
+# killed / 2 survived — the two that remain are entry 6's EQUIVALENT pair.
+#
+# Retired by WRITING THE ASSERTION, as the entry specified (backlog F18): four
+# calls against a path that is not there, plus a fifth with LAYER_CHECKS_CONF
+# unset entirely. Each asserts BOTH halves of a loud failure — non-zero status
+# AND the message that names the cause — through a new fails_naming helper in
+# test-layer-checks-parser.sh. The message half is not decoration: with the
+# guard DELETED rather than flipped, every one of these functions still exits
+# non-zero (awk and grep fail on the missing file themselves, and the unset
+# case aborts on `set -u`), so a status-only assertion would have gone on
+# passing over a guard that was no longer there. Measured in both directions,
+# guard-flipped and guard-deleted, before the entry was retired.
+#
+# The number is left occupied, for the reason entry 3 records.
 
 # ── 6 ─────────────────────────────────────────────────────────────────────────
 tests/lib-layer-checks.sh:logic-flip:b6554f5a51c19c07a987509d2872c86e54d554ea
