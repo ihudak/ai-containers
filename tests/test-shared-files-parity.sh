@@ -68,6 +68,87 @@ else
   pass "AI_CONTAINERS_SHARED_FILES excludes shared-files.sh"
 fi
 
+# ── The re-entry guard, on the paths that sourcing alone never reaches ───────
+# `return 0 2>/dev/null || exit 0` behaves differently depending on how the file
+# is entered, and the ordinary path exercises only one of the two ways. SOURCED
+# a second time, `return` succeeds and returns immediately, so the `|| exit 0`
+# half is never evaluated at all. EXECUTED, `return` fails ("can only `return'
+# from a function or sourced script", swallowed by the 2>/dev/null) and the
+# `|| exit 0` is what ends the run.
+#
+# That asymmetry is a defect this project has already been bitten by once, in
+# tests/lib-verify-repo.sh: three guards written to "fail loudly" had never
+# failed, because the half that fails is the half nothing ran. Here it left
+# mutants of this one line alive against the entire suite (falsify backlog
+# F15). Measured, all three damages of the line:
+#
+#   line                        re-source rc   exec rc (sentinel)   ran on past guard
+#   pristine  `... || exit 0`         0                0                    no
+#   damage A  `... || exit 1`         0                1                    no
+#   damage B  `... && exit 0`         0                0                   YES
+#   damage C  `return 1 || exit 0`    1                0                    no
+#
+# Three different observations are needed because no one of them separates all
+# three: C only moves the SOURCED status, A only moves the EXECUTED status, and
+# B moves neither — it short-circuits, falls THROUGH the guard and re-runs the
+# whole file, which on a bash at or above the floor still ends in status 0.
+#
+# "Ran on past the guard" is read from an xtrace of the run: the first statement
+# after the guard is the sentinel assignment, so its trace line appears if and
+# only if the guard failed to stop the file. The no-sentinel run below is the
+# CONTROL for that detector — it must report YES. Without it a mistyped marker
+# would make the fall-through assertion pass for the wrong reason, which is the
+# same vacuity this whole entry is about.
+#
+# Placed HERE, above the point where this file sources the PRODUCT script
+# sync-to-projects.sh, and not at the end with the other late assertions.
+# That script sets `-euo pipefail`, so from its source line onward this test
+# runs under errexit — and damage C makes a re-source return 1, which under
+# errexit aborts the run right there. Assertions placed after it would never
+# execute, and the tier would score the abort as a kill with nothing having
+# been asserted.
+#
+# Every one of these runs its subject as the CONDITION of an `if` rather than as
+# a bare statement. This file sources the PRODUCT script sync-to-projects.sh above, which sets `-euo pipefail`, so everything from that line onward runs under errexit whether it means to or not. A non-zero bare command under errexit
+# aborts the test where it stands — no FAIL line, no failure count, just exit 1
+# — and the falsify tier scores that abort as KILLED, so the mutant would look
+# caught while nothing had asserted anything.
+GUARD_TARGET="$REPO_DIR/shared-files.sh"
+GUARD_SENTINEL="_AI_CONTAINERS_SHARED_FILES_SOURCED"
+guard_exec() {  # $1 = preset|plain ; sets guard_rc and guard_ran_on
+  local trace
+  if [[ "$1" == "preset" ]]; then
+    if trace="$(env "$GUARD_SENTINEL=1" bash -x "$GUARD_TARGET" 2>&1 >/dev/null)"; then guard_rc=0; else guard_rc=$?; fi
+  else
+    if trace="$(bash -x "$GUARD_TARGET" 2>&1 >/dev/null)"; then guard_rc=0; else guard_rc=$?; fi
+  fi
+  if [[ "$trace" == *"$GUARD_SENTINEL=1"* ]]; then guard_ran_on=yes; else guard_ran_on=no; fi
+}
+
+# Sourced twice: the second source must report success. Callers source this file
+# unconditionally and read the status; a re-entry that returns 1 makes a
+# perfectly healthy second source look like a failed one.
+if bash -c 'source "$1"; source "$1"' _ "$GUARD_TARGET" >/dev/null 2>&1; then guard_resource_rc=0; else guard_resource_rc=$?; fi
+[[ "$guard_resource_rc" -eq 0 ]] \
+  && pass "sourcing shared-files.sh a second time returns 0" \
+  || fail "sourcing shared-files.sh a second time returns 0 — got $guard_resource_rc, so the re-entry guard reports a healthy re-source as a failure"
+
+guard_exec plain
+[[ "$guard_ran_on" == "yes" ]] \
+  && pass "executing shared-files.sh with no sentinel set runs the body (the fall-through detector is live)" \
+  || fail "executing shared-files.sh with no sentinel set runs the body — saw no '$GUARD_SENTINEL=1' in the xtrace, so the fall-through assertion below cannot fail and proves nothing"
+[[ "$guard_rc" -eq 0 ]] \
+  && pass "executing shared-files.sh with no sentinel set exits 0" \
+  || fail "executing shared-files.sh with no sentinel set exits 0 — got $guard_rc"
+
+guard_exec preset
+[[ "$guard_rc" -eq 0 ]] \
+  && pass "executing shared-files.sh with the sentinel already set exits 0" \
+  || fail "executing shared-files.sh with the sentinel already set exits 0 — got $guard_rc; the re-entry guard's '|| exit' half reports the wrong status"
+[[ "$guard_ran_on" == "no" ]] \
+  && pass "executing shared-files.sh with the sentinel already set stops AT the guard" \
+  || fail "executing shared-files.sh with the sentinel already set stops AT the guard — the xtrace shows '$GUARD_SENTINEL=1' running, so execution fell through and re-ran the whole file"
+
 # ── Structural guard: both callers must iterate the SAME sourced array, not a
 # reintroduced independent list — the exact shape of the original bug ────────
 

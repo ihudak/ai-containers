@@ -353,35 +353,48 @@ done < <(printf '%s\n' "$real_list")
 # THE LESSON, not just the correction: a survivor identity written down in a test
 # is the ledger's content stated a second time, and this repo's own rule is that
 # a fact stated twice eventually disagrees with itself. Do not re-grow this list.
-# One pin is kept deliberately — the tier's oldest continuously-measured survivor,
-# as a canary that the ledger is real output rather than a fixture — and the
-# pin's justification has to be re-measured, not assumed, whenever it fails.
-want="tools-lib.sh:return-flip:f128fd8d7318dc079eeec1117ae9a4525988fac4"
+# One pin is kept deliberately — a measured survivor, as a canary that the ledger
+# is real output rather than a fixture — and the pin's justification has to be
+# re-measured, not assumed, whenever it fails.
+#
+# THE PIN MOVED ON 2026-08-19, AND IT MOVED BY DOING EXACTLY WHAT IT PROMISED.
+# It used to name tools-lib.sh:return-flip:f128fd8d…, F11's `[[ -d "$TOOLS_D_DIR"
+# ]] || return 0` guard, with this instruction attached: "if the killing assertion
+# F11 describes is ever written, this becomes KILLED everywhere, the entry should
+# be DELETED, and this assertion fires again to make someone re-measure. That is
+# the canary doing its job, not noise." The assertion was written
+# (test-tools-d.sh now calls tools_list_names with TOOLS_D_DIR pointing at a path
+# that does not exist), the mutant is KILLED, ledger entry 12 is retired, and this
+# pin fired. Re-measured rather than assumed: the whole corpus reports
+# TOTAL|9|255|249|2|4 and check-ledger.sh --strict is clean.
+#
+# WHAT IT POINTS AT NOW, and why that is a weaker canary than the one it replaces.
+# There is no GAP left to pin: every GAP filed against a surviving mutant has been
+# closed, and the only identity the tier still reports as SURVIVED is
+# tests/lib-layer-checks.sh's EQUIVALENT pair. So the pin names that, and requires
+# the EQUIVALENT classification.
+#
+# Be honest about what that can detect. An EQUIVALENT mutant can never become
+# KILLED, so this pin will not fire on a coverage change the way its predecessor
+# did. It fires on two things only: the mutated LINE being edited (the identity is
+# a hash of that line, so any edit invalidates the pin and forces someone to
+# re-derive the equivalence argument rather than inherit it), and the
+# classification being weakened to GAP or ENV-DEPENDENT without that argument
+# being withdrawn. Catching a NEW survivor is check B's job in
+# tests/falsify/check-ledger.sh, which needs a real --run-output and therefore
+# runs in CI and in Phase 6, not here.
+#
+# Do not re-grow this into a list. A survivor identity written down in a test is
+# the ledger's content stated a second time, and this repo's rule is that a fact
+# stated twice eventually disagrees with itself.
+want="tests/lib-layer-checks.sh:logic-flip:b6554f5a51c19c07a987509d2872c86e54d554ea"
 line="$(printf '%s\n' "$real_list" | grep -F "$want|" || true)"
 if [[ -z "$line" ]]; then
-  fail "the measured survivor $want is missing from the ledger"
-# RE-MEASURED TWICE ON 2026-08-17, and the second re-measurement undid the
-# first. The pin failed in the morning; the classification was moved
-# GAP -> ENV-DEPENDENT on the reading that /etc/ai-containers/tools.d exists in
-# a sandbox and not on a runner. That reading was wrong: test-tools-d.sh never
-# leaves TOOLS_D_DIR unset or pointing at a missing path, so tools-lib.sh's
-# /etc default is never consulted and the guard is unreachable everywhere. The
-# CI kill that prompted the move came from the shared-/tmp race this branch
-# fixes — concurrent copies of this very oracle failing each other — and with
-# that fixed, CI and the container agree again (209/36/4 both).
-#
-# The lesson the instruction above was aiming at, sharpened: re-measuring is not
-# enough on its own. Two machines disagreeing is a fact; WHICH difference
-# between them is operative is a hypothesis, and the visible one was not it.
-#
-# The pin stays sharp rather than being loosened to "any classification": if
-# the killing assertion F11 describes is ever written, this becomes KILLED
-# everywhere, the entry should be DELETED, and this assertion fires again to
-# make someone re-measure. That is the canary doing its job, not noise.
-elif [[ "$line" != "$want|GAP|"* ]]; then
-  fail "$want is recorded as ${line#"$want|"}, not a GAP — re-measure before changing this pin"
+  fail "the measured survivor $want is missing from the ledger — re-measure the corpus before changing this pin, and read the comment above it first"
+elif [[ "$line" != "$want|EQUIVALENT|"* ]]; then
+  fail "$want is recorded as ${line#"$want|"}, not an EQUIVALENT — this identity's entry claims no test COULD kill it; re-measure before weakening that claim"
 else
-  pass "the measured survivor ${want##*:} is recorded as a GAP with a reason"
+  pass "the measured survivor ${want##*:} is recorded as an EQUIVALENT with a reason"
 fi
 
 printf '\n%d failure(s)\n' "$fails"; exit "$fails"
