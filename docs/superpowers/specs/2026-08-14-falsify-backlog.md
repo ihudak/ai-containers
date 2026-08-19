@@ -1939,3 +1939,35 @@ a live coverage defect. Both are byte-identical again, so a mechanical cross-rep
 parity check now has concrete files to compare. Still not built, and still
 recorded rather than assumed worth building — but "found by a human reading a
 diff during a port" has happened twice in one day.
+
+## F42 — the local lint cannot see a script you have just written
+
+Found the hard way, in the increment that fixed F40: CI failed the very PR whose
+subject was *"the lint gate's file list silently omits files"*, on an SC2034 in
+the new test file, after the local gate had reported clean over all 133 scripts.
+
+Both layers build the list with `git ls-files '*.sh'`, which lists **tracked**
+files. A brand-new script is untracked until `git add`, so the local run skips
+it and says nothing — the author's first feedback is a red CI job. CI is
+unaffected: it checks out a branch where the file is committed.
+
+This is the same failure shape as F40 — a gate reporting success over a file it
+never read — reached by a different route: not the wrong directory, but the
+wrong side of the index. And it bit while fixing F40, which is the strongest
+argument that "the file list is complete" deserves to be checked rather than
+assumed.
+
+**Mitigation in the meantime** (used to re-verify this increment):
+
+```bash
+git add -N .          # intent-to-add: makes new files visible to git ls-files
+git ls-files '*.sh' | xargs shellcheck -S warning -e SC1091
+```
+
+**Not yet decided.** `git ls-files` meaning "what is in the repo" is defensible,
+and `--others --exclude-standard` would pull in every stray scratch file in a
+developer's tree, which is its own false-positive problem. Options worth
+weighing: add `-o --exclude-standard` only in Phase 7 (local, where a dirty tree
+is normal) and leave CI on tracked-only; or have Phase 7 simply SAY when the
+working tree holds untracked `*.sh` it did not check, which costs nothing and
+removes the surprise. Recorded rather than guessed at.

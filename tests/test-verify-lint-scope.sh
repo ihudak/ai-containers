@@ -32,6 +32,7 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 ENGINE_DIR="$REPO_DIR"
 [[ -f "$ENGINE_DIR/verify-on-host.sh" ]] || ENGINE_DIR="$REPO_DIR/base"
 VERIFY="$ENGINE_DIR/verify-on-host.sh"
+# shellcheck disable=SC2034  # read by lc_rows() in the sourced lib-layer-checks.sh, which lib-verify-repo.sh calls at SOURCE time to build its stubs — shellcheck cannot see through the source
 LAYER_CHECKS_CONF="$REPO_DIR/tests/layer-checks.conf"
 
 fails=0
