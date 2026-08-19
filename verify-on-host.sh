@@ -404,7 +404,16 @@ if command -v shellcheck >/dev/null 2>&1; then
     2>&1 | sed "s/^/$LOG_PREFIX   /"
   sc_rc="${PIPESTATUS[0]:-1}"
   [[ "$sc_rc" -eq 0 ]] || phase_fail 7 "shellcheck exited $sc_rc"
-  sub "shellcheck exit: $sc_rc over $( ( cd "$REPO" && git ls-files '*.sh' ) | grep -c . ) script(s)"
+  # Say WHICH shellcheck, for the same reason the CI step does. This is the one
+  # place the two layers genuinely differ: CI takes the version its pinned
+  # runner image ships (ubuntu-24.04 -> 0.9.0), and this host takes whatever is
+  # installed (Homebrew ships current). Measured 2026-08-19 over the same 132
+  # scripts, 0.9.0 and 0.11.0 both returned 0 — so they agree on this tree, and
+  # the exposure is a finding that exists in one layer and not the other.
+  # Reported, not asserted: pinning a number here would be a claim that drifts
+  # from the runner image, and failing on a mismatch would break every Mac.
+  sc_ver="$(shellcheck --version 2>/dev/null | awk '/^version:/ { print $2 }')"
+  sub "shellcheck exit: $sc_rc over $( ( cd "$REPO" && git ls-files '*.sh' ) | grep -c . ) script(s), version ${sc_ver:-unknown}"
 else
   phase_fail 7 "shellcheck not installed — install it (brew install shellcheck) or deselect phase 7"
 fi
