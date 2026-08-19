@@ -291,16 +291,30 @@ selects both cases:
 (upstream run 32297181648, mgd run 32297210600). So the case is real, launches,
 and its assertions hold against a live container — not merely authored.
 
-**The known-bad still needs its demonstration re-run.** The `--keep=1` version
-was demonstrated on the host and rejected (UNDEMONSTRATED); the ambient version
-that replaced it is backed by the measurement above but has not itself been put
-through `demonstrate-network-tier.sh`, which no workflow runs. Two claims remain:
+**Demonstrated on the host, 2026-08-19. F7 is closed.**
 
-  - with `240-open-keeps-capabilities` applied, `240` **fails naming
-    `cap_net_raw`** — failing in `sandbox_up` instead would mean the damage never
-    reached the assertion, and the demonstration would prove nothing;
-  - `230` still **passes** with that same patch applied, which is the whole
-    point: it is the coverage `230` could never provide.
+    ── 240-open-keeps-capabilities   (rebuild) FAIL  ← demonstrated
+    DEMONSTRATED 240-open-keeps-capabilities → 240-open-drops-capabilities
+       FAIL: agent shell dropped cap_net_raw — still present in [0x0000000000002000=cap_net_raw]
+
+The differential, both cases in one run with that same patch applied:
+
+| case | verdict | agent shell's CapEff |
+|---|---|---|
+| `230-discovery-drops-capabilities` | **PASS** (3 assertions) | `0x0000000000000000=` |
+| `240-open-drops-capabilities` | **FAIL** | `0x0000000000002000=cap_net_raw` |
+
+That table is the entry's whole point in two rows: one patch, `230` unaffected,
+`240` red. It is the coverage `230` could never provide, and it is what nothing
+in the suite had before.
+
+Three details make it a demonstration rather than a red mark. The break landed on
+`240`'s own `assert_no_capability`, not on `sandbox_up`'s handover wait — the
+container came up, PID 1 became the sandbox user, and the case reached its
+assertions. `cap_net_admin` still **passed** in the mutated run, so exactly one
+assertion failed, the load-bearing one. And the first assertion — "read the agent
+shell's effective capabilities" — passed in both runs, so neither verdict was
+vacuous. Tree clean after `mutate.sh revert`.
 
 ## F8 — three surviving mutants in `tests/integration/mutate.sh`'s guard cluster — **CLOSED 2026-08-19, superseded by F20**
 
