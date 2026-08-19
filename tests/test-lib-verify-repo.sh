@@ -226,6 +226,107 @@ h="$(mk_harness "$REAL_CONF" "" "" "")"
 expect_aborted "an unusable git aborts the sourcing script" "$(run_harness "$h" "$TMP/badgit")" \
   "git cannot create a repo and commit under"
 
+# ── git WITHOUT `init -b`, and git that cannot commit ─────────────────────────
+# The `git init -b main . || git init .` fallback and the probe's `add &&
+# commit` are unfalsifiable against a healthy modern git: the second `init` is
+# an idempotent re-init, so flipping `||` to `&&` changes nothing, and flipping
+# `add && commit` to `add || commit` merely skips a commit whose success nobody
+# was checking. All three flips survived the entire suite (backlog F17), and
+# the third is the worse kind: `git add f || git commit` stops proving git can
+# commit while still reporting success — a guard that cannot fail, which is the
+# defect class this library was rewritten to remove.
+#
+# So the fallback is exercised where it is REACHABLE: against a git that
+# rejects `init -b`, exactly as git < 2.28 does. Both fakes delegate to the
+# real git for everything else, because a fake that answers everything itself
+# would be testing the fake.
+REAL_GIT="$(command -v git)"
+[[ -x "$REAL_GIT" ]] \
+  || { printf 'SCAFFOLD-FAILED: no git on PATH to delegate to\n'; exit 1; }
+
+mkdir -p "$TMP/nobgit"
+{ printf '#!/usr/bin/env bash\n'
+  printf 'if [[ "${1:-}" == "init" ]]; then\n'
+  printf '  for a in "$@"; do [[ "$a" == "-b" ]] && { printf "error: unknown switch \\`b'"'"'\\n" >&2; exit 129; }; done\n'
+  printf 'fi\n'
+  printf 'exec %q "$@"\n' "$REAL_GIT"
+} > "$TMP/nobgit/git"
+chmod +x "$TMP/nobgit/git"
+# The fake must actually reject what it claims to, and still work otherwise —
+# a fake that silently delegated everything would make both cases below pass
+# for no reason at all.
+( cd "$TMP" && rm -rf .fakeprobe && mkdir .fakeprobe && cd .fakeprobe \
+    && PATH="$TMP/nobgit:$PATH" git init -q -b main . ) >/dev/null 2>&1 \
+  && fail "fixture: the -b-rejecting git accepted \`init -b\` — both cases below would prove nothing" \
+  || pass "fixture: the -b-rejecting git refuses \`init -b\`"
+( cd "$TMP/.fakeprobe" && PATH="$TMP/nobgit:$PATH" git init -q . ) >/dev/null 2>&1 \
+  && pass "fixture: … and still delegates a plain \`git init\` to the real git" \
+  || fail "fixture: the -b-rejecting git broke plain \`git init\` too — the cases below would fail for the wrong reason"
+rm -rf "$TMP/.fakeprobe"
+
+mkdir -p "$TMP/nocommitgit"
+{ printf '#!/usr/bin/env bash\n'
+  printf 'for a in "$@"; do [[ "$a" == "commit" ]] && exit 1; done\n'
+  printf 'exec %q "$@"\n' "$REAL_GIT"
+} > "$TMP/nocommitgit/git"
+chmod +x "$TMP/nocommitgit/git"
+( cd "$TMP" && rm -rf .fakeprobe2 && mkdir .fakeprobe2 && cd .fakeprobe2 \
+    && PATH="$TMP/nocommitgit:$PATH" git init -q . && : > f \
+    && PATH="$TMP/nocommitgit:$PATH" git add f ) >/dev/null 2>&1 \
+  && pass "fixture: the commit-refusing git still inits and adds" \
+  || fail "fixture: the commit-refusing git broke init/add — the case below would abort for the wrong reason"
+( cd "$TMP/.fakeprobe2" \
+    && PATH="$TMP/nocommitgit:$PATH" git -c user.email=t@example -c user.name=t commit -q -m x ) >/dev/null 2>&1 \
+  && fail "fixture: the commit-refusing git accepted a commit — the case below would prove nothing" \
+  || pass "fixture: … and refuses \`commit\` even behind -c options"
+rm -rf "$TMP/.fakeprobe2"
+
+# 1. The probe's fallback (line ~181). Sourcing must SUCCEED: `git init -b`
+#    fails, `git init` succeeds, the probe commits. Under the `&&` mutant the
+#    first failure ends the chain and the source aborts with its own message —
+#    which the assertion below reads as a failure, by rc AND by sentinel.
+h="$(mk_harness "$REAL_CONF" "" "" 'echo SENTINEL-PROBE-SURVIVED-NOB')"
+rc="$(run_harness "$h" "$TMP/nobgit")"
+if [[ "$rc" == "0" ]] && grep -q '^SENTINEL-PROBE-SURVIVED-NOB$' "$TMP/harness.out"; then
+  pass "a git without \`init -b\` still passes the source-time probe (the || fallback is reached)"
+else
+  fail "a git without \`init -b\` still passes the source-time probe (rc=$rc)"
+  sed 's/^/       /' "$TMP/harness.out" | tail -4
+fi
+
+# 2. mk_repo's own fallback (line ~322). mk_repo swallows its subshell's status
+#    by design, so "it worked" cannot be read from an exit code — it is read
+#    from the three things the real call sites consume, the same trio the
+#    control case below pins.
+h="$(mk_harness "$REAL_CONF" "" "" '
+r="$(mk_repo 0)"
+[[ -n "$r" ]] && git -C "$r" rev-parse HEAD >/dev/null 2>&1 && echo "SENTINEL-NOB-COMMIT-OK"
+[[ -n "$r" ]] && [[ -n "$(git -C "$r" ls-files "*.sh")" ]] && echo "SENTINEL-NOB-TRACKED-OK"')"
+rc="$(run_harness "$h" "$TMP/nobgit")"
+missing=""
+[[ "$rc" == "0" ]] || missing="${missing}rc=$rc "
+grep -q '^SENTINEL-NOB-COMMIT-OK$' "$TMP/harness.out" || missing="${missing}no-commit "
+grep -q '^SENTINEL-NOB-TRACKED-OK$' "$TMP/harness.out" || missing="${missing}no-tracked-sh-files "
+if [[ -z "$missing" ]]; then
+  pass "mk_repo still yields a committed repo with tracked *.sh under a git without \`init -b\`"
+else
+  fail "mk_repo still yields a committed repo with tracked *.sh under a git without \`init -b\` — missing: ${missing% }"
+  sed 's/^/       /' "$TMP/harness.out" | tail -6
+fi
+
+# 3. The probe's commit step (line ~183). `add && commit` flipped to `add ||
+#    commit` skips the commit whenever `add` succeeds — so the probe stops
+#    proving git can commit and reports success anyway. The only way to see
+#    that is a git that adds fine and refuses to commit: pristine ABORTS,
+#    mutant carries on.
+h="$(mk_harness "$REAL_CONF" "" "" 'echo SENTINEL-SHOULD-NOT-REACH')"
+out_rc="$(run_harness "$h" "$TMP/nocommitgit")"
+expect_aborted "a git that cannot COMMIT aborts the sourcing script" "$out_rc" \
+  "git cannot create a repo and commit under"
+grep -q '^SENTINEL-SHOULD-NOT-REACH$' "$TMP/harness.out" \
+  && fail "  … and execution stopped there (the harness body ran anyway)" \
+  || pass "  … and execution stopped there"
+
 # ── An unguarded call site is safe ────────────────────────────────────────────
 # The point of Task 1, stated as a test. Against a GOOD registry, the bare
 # `r="$(mk_repo 0)"` form — no `[[ -n "$r" ]] ||` guard after it, which is how
