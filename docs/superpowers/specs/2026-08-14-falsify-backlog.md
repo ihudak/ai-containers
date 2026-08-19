@@ -185,7 +185,7 @@ is dominated by docker verbs with no hermetic oracle — but the pure verbs
 `test-integration-lib.sh` already covers are a real candidate, and this defect
 lived in one of them. Recorded as a coverage question, not scheduled.
 
-## F7 — `230-open-drops-capabilities` is named and tagged for open mode but launches discovery
+## F7 — `230-open-drops-capabilities` is named and tagged for open mode but launches discovery — **FIXED 2026-08-19**
 
 **Partly addressed 2026-08-14:** the header's false "both belts" claim is
 corrected in place, because a comment asserting something demonstrably untrue
@@ -204,6 +204,66 @@ remains is to make `230` say what it does: rename it (e.g.
 "both belts" sentence, which `240` now owns. A rename touches its mutation
 patch's `# case:` header and `AGENTS.md`'s reference to "case 230", so it is a
 small coordinated change rather than a one-liner.
+
+**Correction 2026-08-19 — the sentence above was false, and it was the load-
+bearing one.** There was no `240-open-grants-no-capabilities`. There never had
+been: a repo-wide search found exactly one occurrence of that name, the sentence
+in this entry asserting it existed. The case list goes `230` → `300`.
+
+So F7 was not a naming defect with the coverage already handled. It was a
+coverage hole that this entry had talked itself out of. Only two cases call
+`pid1_caps`, and the three modes reach three different `exec capsh` calls:
+
+| entrypoint.sh | mode | asserted by |
+|---|---|---|
+| `:243` | restricted | `070` |
+| `:288` | discovery | `230` — the case tagged `open` |
+| `:310` | **open** | **nothing** |
+
+`210` and `220` do launch open mode, but they assert reachability and the
+absence of a capture daemon; neither looks at capabilities. So `--tags open`
+and `--tags security` both returned a green capability case for a mode nothing
+exercised — the exact shape of "believing you are covered", and the reason this
+correction is recorded rather than quietly fixed.
+
+**Fixed 2026-08-19, in two parts.**
+
+`230` renamed to `230-discovery-drops-capabilities`, with its `open` tag, its
+summary and its header corrected to describe the discovery case it has always
+been. Launching discovery stays deliberate: `sandbox_up` grants
+`--cap-add=NET_ADMIN --cap-add=NET_RAW` to restricted and discovery
+(`lib.sh:202`) and nothing to open (`lib.sh:203`), so it is the mode where the
+drop has the most to take away.
+
+`240-open-drops-capabilities` written — the case this entry had claimed. It
+launches open mode and asserts the same two capabilities. `cap_net_admin` is
+nearly free there (never granted); `cap_net_raw` is the load-bearing one, since
+Docker's default bounding set includes it and nothing issues `--cap-drop`, so
+only the handover to the sandbox user removes it.
+
+Its known-bad needed real thought, and the obvious one is wrong. **Deleting
+`--drop=` from the open branch is an EQUIVALENT mutation** — `capsh --user=`
+setuids from root and the kernel clears the permitted and effective sets on that
+transition, which `230`'s own note records, so an open-mode case still passes
+with no drop at all. `240-open-keeps-capabilities.patch` therefore adds the flag
+that suppresses the clearing, `--keep=1` (`PR_SET_KEEPCAPS`) — the one `230`'s
+note names as "never used". PID 1 still becomes the sandbox user, so
+`sandbox_up`'s handover wait still succeeds and the break reaches `240`'s own
+assertion instead of dying in setup; a demonstration that kills the container
+before the assertion runs proves nothing about the assertion. `230` shares
+`pid1_caps` but not that branch, so it is untouched and still passes — which is
+precisely the coverage `240` adds.
+
+Hermetic state: full suite green, all 35 mutation patches apply, and
+`test-mutations.sh`'s coverage rule (every `network-mode` case must be named by
+a patch) is satisfied for both the renamed `230` and the new `240`.
+
+**Not yet verified against Docker.** `240` has never been run, and the `--keep=1`
+hypothesis rests on documented capsh/kernel behaviour plus this repo's own
+recorded finding that Docker's default set carries `cap_net_raw`. The host run
+must confirm three things: `240` passes clean; with the patch applied `240` fails
+naming `cap_net_raw`; and `230` still passes with that same patch applied. Until
+that runs, F7's fix is authored, not demonstrated.
 
 ## F8 — three surviving mutants in `tests/integration/mutate.sh`'s guard cluster — **CLOSED 2026-08-19, superseded by F20**
 

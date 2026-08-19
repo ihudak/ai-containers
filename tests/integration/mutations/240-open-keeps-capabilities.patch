@@ -1,0 +1,43 @@
+# case: 240-open-drops-capabilities
+# what: open mode keeps its capabilities across the handover. --drop= is replaced
+#       by --keep=1 (PR_SET_KEEPCAPS), so `capsh --user=` no longer clears the
+#       permitted and effective sets and the agent shell keeps the cap_net_raw
+#       Docker grants every container by default. 240 then reports it still
+#       present.
+#
+#       Why --keep=1 and not simply deleting --drop: deleting it is an EQUIVALENT
+#       mutation. The setuid clears the sets by itself (230's note records how
+#       that was discovered), so an open-mode case would still pass with no drop
+#       at all. Adding the flag that suppresses the clearing is the only damage
+#       that reaches the assertion.
+#
+#       And it reaches the ASSERTION, not the harness: PID 1 still becomes the
+#       sandbox user, so sandbox_up's handover wait still succeeds and the case
+#       fails on assert_no_capability rather than dying in setup. A demonstration
+#       that kills the container before the assertion runs proves nothing about
+#       the assertion.
+#
+#       230 (discovery) shares pid1_caps but not this branch, so it is untouched
+#       and still passes — which is the coverage 240 adds and 230 could never
+#       provide. Needs a rebuild: entrypoint.sh is COPYed by the Dockerfile, and
+#       demonstrate-network-tier.sh derives that automatically.
+#
+diff --git a/entrypoint.sh b/entrypoint.sh
+index 25b5795..c053417 100755
+--- a/entrypoint.sh
++++ b/entrypoint.sh
+@@ -305,13 +305,13 @@ case "$mode" in
+     link_default_ruby
+     run_agent_tools_reconcile
+     link_agent_tools
+     run_agent_skill_install
+ 
+     exec capsh \
+-      --drop=cap_net_admin,cap_net_raw \
++      --keep=1 \
+       --user="$sandbox_user" \
+       -- -l
+     ;;
+   *)
+     printf 'Unsupported DEV_CONTAINER_MODE: %s\n' "$mode" >&2
+     exit 1

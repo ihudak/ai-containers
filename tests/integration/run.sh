@@ -482,7 +482,7 @@ probe_multiruby() {
 # it does. IT_FORCE_CAPS still bypasses it entirely.
 _ext_probed=0; _ext_rc=1
 probe_external() {
-  # Memoised, so a corpus of 34 cases each declaring `external` still pays for
+  # Memoised, so a corpus in which every case declares `external` still pays for
   # exactly one request — the same at-most-once contract detect_caps gives the
   # rest, just deferred to first use instead of paid up front.
   if [[ "$_ext_probed" -eq 0 ]]; then

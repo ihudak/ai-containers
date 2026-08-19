@@ -277,7 +277,8 @@ case "$mode" in
     # so it retains its own capabilities and needs nothing from the agent shell.
     # Granting the agent raw-socket access to satisfy a comment would widen its
     # capability surface for a convenience nobody has asked for, in a mode that
-    # already captures everything automatically. Case 230 asserts the drop.
+    # already captures everything automatically. Case 230-discovery-drops-
+    # capabilities asserts the drop.
     chown_rvm_root
     run_ruby_reconcile
     link_default_ruby
