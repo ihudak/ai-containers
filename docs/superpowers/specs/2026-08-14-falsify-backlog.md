@@ -3025,7 +3025,7 @@ asked — and that any future knob must be — is *"which existing test now depe
 on this being unset?"*
 
 
-## F50 — a stale watchdog's flag was read as this run's timeout, and it took two survivors out of the ledger — **FIXED 2026-08-20**
+## F50 — a stale watchdog forged a timeout flag and truncated other workers' oracles — **FIXED 2026-08-20**
 
 **Proven by the host run of 2026-08-20, `--jobs 8 --timeout 600`.** Every mutant
 carrying a `timeout` signal, with its own measured elapsed:
@@ -3038,80 +3038,121 @@ carrying a `timeout` signal, with its own measured elapsed:
 12780ms UNPROVEN  timeout                tests/bash-dialect-lint.sh:logic-flip:b3f102dc
 ```
 
-Not one of them ran a tenth of its 600-second clock. **All five timeouts were
-false.**
+Not one ran a tenth of its 600-second clock. **All five timeouts were false.**
 
-**What wrote the flag, established from the last two.** A *bare* `timeout` signal
-— no `exit`, no `failline` — means the oracle exited with a non-killing status
-and printed no FAIL: line: it ran to completion and **passed**. A watchdog that
-had actually fired would have TERMed it, and the record would read
-`timeout+signal`. So the flag was armed by a watchdog that was not watching this
-oracle — a stale one from an earlier invocation, whose own `kill` hit a pid that
-no longer exists and was swallowed by `2>/dev/null`, leaving only the write.
+### The flag had no owner
 
-**How it reached an unrelated mutant.** `fr_run_mutant` sets
-`out="$FR_OUT/w$slot.log"` — one file per **worker slot**, reused by every mutant
-that ever runs in that slot across every target — and `falsify_run_oracle`
-derived its flag as `"$out.timedout"` and armed it with `: > "$flag"`, an **empty
-file**. "The flag exists" and "this invocation armed the flag" were therefore the
-same expression, and nothing could tell them apart.
+`fr_run_mutant` sets `out="$FR_OUT/w$slot.log"` — one file per **worker slot**,
+reused by every mutant that ever runs in that slot across every target — and
+`falsify_run_oracle` derived its flag as `"$out.timedout"` and armed it with
+`: > "$flag"`, an **empty file**. So "the flag exists" and "this invocation armed
+the flag" were the same expression, and a flag written by any watchdog, at any
+time, read as this run's timeout.
 
-**The cost, which is the whole point.** `timeout` without `failline` is UNPROVEN,
-and UNPROVEN is *accepted but not required* in the ledger, because a real timeout
-is machine state. So the two `tests/bash-dialect-lint.sh` mutants above —
-**survivors**, by their own records — left the measured set owing nothing and
-saying nothing. `check-ledger` passed. This tier's one job is to stop exactly
-that, and it was being defeated through the exemption rather than through an
-assertion.
+### CORRECTION: they were not laundered survivors
 
-**Fixed in two layers, because they fail differently.**
+This entry first read those two bare-`timeout` records as **survivors** — no
+`exit`, no `failline` means an oracle that ran to completion and passed — and
+predicted that fixing the flag would surface them as `SURVIVED`, failing
+`check-ledger`'s check B and exposing a macOS-only coverage gap in the dialect
+linter.
 
-1. The watchdog refuses to arm a flag for an oracle that has already exited
-   (`kill -0 "$pid" || exit 0`), checked *before* the write, since the write is
-   the damage. That stops a stale watchdog at the source.
-2. The flag carries the **token** of the invocation that armed it —
-   `$BASHPID.<microseconds>`, `$BASHPID` and never `$$`, because inside a forked
-   worker `$$` is still the top-level shell's pid, which every slot would share.
+**That prediction was wrong, and was measured wrong.** Once the flag carried an
+owner, the same target on the same host reported:
+
+```
+TARGET|tests/bash-dialect-lint.sh|test-bash-dialect-lint.sh|27|27|0|0|0|176471
+```
+
+27 mutants, **27 KILLED**, zero survivors, zero unproven, zero timeouts — with
+`cond-negate:f204b4ce` killed `exit+failline` at 27.0s and `logic-flip:b3f102dc`
+at 10.8s. There is no coverage gap. The ledger owes nothing.
+
+### What actually happened, and why it is worse than a mislabel
+
+A stale watchdog did not merely write a flag. It went on to run
+
+```bash
+kill -TERM -"$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null
+sleep 1
+kill -KILL -"$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null
+```
+
+against a pid recorded up to `<timeout>` seconds earlier. On a busy macOS host
+that pid — and its process-group id — can be **recycled** in that window, so the
+kill lands on **another worker's live oracle**. Both `bash-dialect-lint.sh`
+records are consistent with exactly that: reliable kills, cut short mid-run at
+~12s, producing neither a killing exit nor a FAIL: line, and then labelled
+UNPROVEN by the forged flag.
+
+So the interference corrupts the **run**, not just its label — and that means it
+is **not conservative in either direction**. These two happened to lose a kill.
+A suite truncated *after* some unrelated test has already printed a FAIL: line
+reads as `exit+failline`, which is a **KILL** — and a false kill is precisely how
+a survivor disappears. The dangerous direction was always available; this run
+simply did not take it.
+
+### Fixed in three layers, because they fail differently
+
+1. **The watchdog stops existing when its subject does.** `falsify_watch_until`
+   polls the oracle's liveness once a second instead of `sleep "$limit"`, so a
+   watchdog is never stale for more than a second — a window in which a pid
+   cannot be recycled into another worker's oracle. Polling is the right shape
+   *here*, unlike `p_timeout` in `tests/portability.sh` (F22), which is itself a
+   mutation target where a negated liveness probe has to stay killable;
+   `tests/falsify/run.sh` is the measuring instrument and is never mutated.
+2. **The flag carries the token of the invocation that armed it** —
+   `$BASHPID.<microseconds>`, `$BASHPID` and never `$$`, which inside a forked
+   worker is still the top-level shell's pid and would be shared by every slot.
    `falsify_flag_is_mine` is a separate predicate so it can be asserted directly,
    and an **empty** flag — the form the old code wrote — is deliberately not
    mine: a flag with no owner is what cannot be attributed.
+3. **A foreign flag is reported, not ignored:**
+   `NOTE|foreign-timeout-flag|<identity>|slot N held a timeout flag armed by
+   <token>`, with a `FOREIGN TIMEOUT FLAG` warning naming the mutant and the
+   slot. If anything still gets through, it is a named event rather than a silent
+   reclassification.
 
-A foreign flag is now **reported**, not merely ignored:
-`NOTE|foreign-timeout-flag|<identity>|slot N held a timeout flag armed by <token>`,
-with a `FOREIGN TIMEOUT FLAG` warning naming the mutant and the slot. If any
-watchdog still gets past layer 1, it becomes a named, counted event instead of a
-silent reclassification.
+### Guards
 
-**Guard.** `tests/test-falsify-run.sh` asserts all four cases of the predicate —
+`tests/test-falsify-run.sh` asserts all four cases of the ownership predicate —
 missing, empty, another invocation's, and my own — with the positive case present
-so an ownership check that simply disabled timeouts fails too. Case 11's genuine
-hang still reports UNPROVEN, so the timeout path is intact. Demonstrated failing
-first: five named failures against the unowned flag.
+so an ownership check that merely disabled timeouts fails too. For the wait it
+asserts both directions, and the second is the one that bites: a subject
+outliving the clock must report the clock expiring, **and a subject that exits
+first must end the wait immediately**. Demonstrated against a deliberately blind
+`sleep "$secs"` inside the function, which passes the first and fails the second:
 
-**What is still not known.** *Why* a watchdog survives its own
-`kill -TERM -"$dog"` on macOS. Layer 1 makes it harmless and layer 2 makes it
-visible, so a verdict can no longer be corrupted by it either way, but the leak
-itself is unexplained and the `NOTE` exists to catch it if it persists. It has
-never reproduced on Linux: `--jobs 16 --timeout 900` and `--jobs 16 --timeout 20`
-(a clock above the slowest real oracle, 10.6s, and well inside the 68-second run)
-both give `TOTAL|9|264|262|2|0|0|0` with zero timeouts.
+```
+PASS:   … a subject that outlives the clock reports the clock expiring (3s)
+FAIL:   … a subject that exits first ends the wait immediately — rc=0 after 20s
+        of a 20s clock, so the watchdog outlives its oracle and still holds a
+        pid that may be recycled
+```
 
-**EXPECTED CONSEQUENCE, and it is not a regression.** With the false timeouts
-gone, those two `tests/bash-dialect-lint.sh` mutants will report **SURVIVED** on
-macOS instead of UNPROVEN — and a survivor IS required in the ledger, so
-`check-ledger`'s check B will **fail the next host run**. That failure is the
-finding surfacing, not a break. They are a genuine macOS-only coverage gap in the
-dialect linter that the ledger has never once seen. Resolving them is the next
-increment: either the oracle is made to notice the damage on macOS (preferred —
-the mutants die everywhere and no entry is owed), or they are filed
-`ENV-DEPENDENT` with a *measured* reason, which check A requires and which nobody
-has yet.
+Case 11's genuine hang still reports UNPROVEN, so the timeout path is intact.
 
-**The generalisable part: a shared mutable path is not a signal until it says who
-wrote it.** The flag was correct on the day it was written and stayed correct for
-as long as one invocation at a time could reach it. It became a lie the moment a
-slot outlived a watchdog — and it failed silently, in the direction of *less*
-coverage, which is the direction nothing checks.
+### Never reproduced on Linux
+
+`--jobs 16 --timeout 900` and `--jobs 16 --timeout 20` — a clock above the
+slowest real oracle in the corpus (10.6s) and well inside the 68-second run, so
+any watchdog outliving its kill would fire during a later mutant — both give
+`TOTAL|9|264|262|2|0|0|0` with zero timeouts.
+
+### The generalisable part
+
+Two of them, and the second was the expensive one.
+
+**A shared mutable path is not a signal until it says who wrote it.** The flag
+was correct while one invocation at a time could reach it, and became a lie the
+moment a slot outlived a watchdog.
+
+**And a wrong diagnosis survives being carefully reasoned.** "Bare `timeout`
+means the oracle passed, therefore a survivor" is sound as far as it goes, and it
+was still wrong, because it assumed the oracle had been left alone to finish.
+The reading that would have caught it — that the same mechanism which forges a
+flag also fires a kill — was available in the six lines directly beneath the
+write. It took a measurement, not more thought, to find that out.
 
 
 ## F51 — `ASSERTLESS` is claimed to be machine-independent, and that claim is untested

@@ -414,6 +414,41 @@ FALSIFY_MS=0
 # flag this run did not write can never be read as this run's timeout however it
 # got there. The second layer also makes the event visible instead of silent:
 # a foreign flag is reported, not just ignored.
+# A watchdog that sleeps its whole clock is STALE for as long as it outlives the
+# oracle it was watching, and a stale one is not merely useless: it goes on to
+# run `kill -TERM -"$pid"` against a pid recorded up to <timeout> seconds ago. On
+# a busy macOS host that pid — and its process group id — can have been recycled
+# by then, so the kill lands on ANOTHER WORKER'S LIVE ORACLE and truncates it.
+#
+# That is what made the false timeouts of 2026-08-20 more than a labelling bug.
+# Two `tests/bash-dialect-lint.sh` mutants were recorded UNPROVEN on a bare
+# `timeout` — neither a killing exit nor a FAIL: line — and were read here as
+# survivors. They are not: measured on the same host once the flag was owned,
+# that target is 27 mutants, 27 KILLED, 0 timeouts. Their oracles had been cut
+# short mid-run, which is why they produced no verdict of their own.
+#
+# So the interference corrupts the RUN, not just its label, and therefore is not
+# conservative: a suite truncated after some other test has already printed a
+# FAIL: line reads as `exit+failline`, which is a KILL — and a false kill is how
+# a survivor disappears. Backlog F50.
+#
+# The fix is for the watchdog to stop existing when its subject does. Polling is
+# the right shape HERE, unlike in tests/portability.sh's p_timeout (F22), which
+# is itself a mutation target where a negated liveness probe must stay killable:
+# tests/falsify/run.sh is the measuring instrument and is never mutated.
+falsify_watch_until() {   # <pid> <seconds> → 0 the pid went away first, 1 the clock ran out
+  local pid="$1" secs="$2" i
+  for (( i = 0; i < secs; i++ )); do
+    kill -0 "$pid" 2>/dev/null || return 0
+    sleep 1
+  done
+  # Once more after the last sleep: a pid that exits during the final second has
+  # still exited before the clock, and firing on it would be the same staleness
+  # one second smaller.
+  kill -0 "$pid" 2>/dev/null || return 0
+  return 1
+}
+
 falsify_run_oracle() {   # <tree> <oracle-set> <outfile> <timeout-seconds>
   local tree="$1" oracle="$2" out="$3" limit="$4"
   local flag="$out.timedout" pid dog t0 token
@@ -437,11 +472,10 @@ falsify_run_oracle() {   # <tree> <oracle-set> <outfile> <timeout-seconds>
   set -m
   ( cd "$tree" && exec bash "$FR_DRIVER_REL" -v "${onames[@]}" ) >"$out" 2>&1 &
   pid=$!
-  ( sleep "$limit"
-    # A watchdog whose oracle is already gone has nothing to report, and every
-    # false timeout measured so far was one of these still writing. Checked
-    # before the flag rather than after, because the write is the damage.
-    kill -0 "$pid" 2>/dev/null || exit 0
+  ( # Returns the moment the oracle exits, so this watchdog is never stale for
+    # more than a second — and a pid cannot be recycled into another worker's
+    # oracle inside a window that small.
+    falsify_watch_until "$pid" "$limit" && exit 0
     printf '%s' "$token" > "$flag"
     kill -TERM -"$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null
     sleep 1
