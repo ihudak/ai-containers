@@ -7,7 +7,7 @@ finding that lives only there is a finding that gets dropped.
 
 ---
 
-## F1 — `repo.sh` executes 2 of its 19 functions under the hermetic suite
+## F1 — `repo.sh` executes 2 of its 19 functions under the hermetic suite — **PARTLY COVERED 2026-08-20, still open**
 
 `tests/test-repo-registry.sh` sources `repo.sh` in a subshell deliberately
 arranged so that "dispatch never runs, no side effects occur" (the test's own
@@ -3631,3 +3631,77 @@ the same files come back as untracked and Phase 7 lints them, exactly as
 intended. Both halves of the list now have to be empty, so the fixture adds a
 `.gitignore` containing `*.sh`. That is a fixture change, not a weakened
 assertion: the branch still fails the phase and still names itself.
+
+---
+
+## F1 — progress: `cmd_rm` is covered, 2026-08-20
+
+**STILL OPEN.** One of the seven `cmd_*` subcommands is now exercised. The
+entry's reason for parking the rest is unchanged.
+
+`tests/test-repo-destructive.sh` runs `repo.sh` as a **real subprocess** —
+dispatch included — against a fake `docker` that never contacts a daemon and
+whose defining feature is that it **records every argv**. Volumes are marker
+files; `docker volume rm` deletes one and logs the call. The assertions read
+that log, so what is checked is the exact set of volumes `repo.sh` asked to
+destroy, not a side effect that happened to be survivable.
+
+Nineteen assertions over seven cases: the non-interactive refusal, the removal
+set, the blast radius, the registry edit, the unknown-name path, name validation,
+and the no-argument path. Three guards demonstrated failing against real damage
+to `repo.sh`:
+
+| damage | what it does | assertions that flip |
+|---|---|---|
+| `--filter "name=${vol}--wc-"` loses its `--wc-` anchor | **`rm docs` destroys `docs-archive` and its working copy** | 3 |
+| the non-interactive refusal becomes a warning | `rm docs` with no `--yes` deletes all three volumes | 3 |
+| `validate_repo_name` is skipped | `../../etc` reaches `docker volume ls --filter` | 2 |
+
+The first is the one this file exists for. `docker volume ls --filter name=X` is
+a SUBSTRING match, so a bystander repo whose name merely BEGINS with the
+subject's is inside the blast radius of a single dropped suffix — and nothing
+anywhere asserted otherwise.
+
+**What is still unexercised**, and why the row stays `EXECUTED-PARTIAL`:
+`cmd_sync`, `cmd_reset`/`reset_one`, `cmd_gc`, `cmd_list`, `cmd_add`,
+`cmd_reindex`, and the four `seed_from_*`/`sync_from_*` helpers. `cmd_reset` and
+`cmd_gc` are the other two destructive ones and are the obvious next slice.
+
+**It also exposed a fixture that had silently become a no-op.**
+`tests/test-falsify-targets.sh`'s gate-4c fixture rewrote the `repo.sh` row by
+matching its function list VERBATIM. The day that list changed — this day — the
+`sed` matched nothing, `gate4c.conf` was byte-identical to the real map, the
+gate passed, and the failure message read *"gate 4: an undefined function name
+was accepted"*: blaming the gate for the fixture's silence. Gate 5 already
+asserts its own premise; gate 4c now does too, and the pattern matches the
+field's SHAPE rather than its contents. Demonstrated by making the fixture a
+no-op again — the premise assertion fires first and names itself.
+
+---
+
+## F55 — `test-falsify-run.sh` failed once under full-suite load and did not reproduce
+
+**OPEN, and deliberately thin.** On 2026-08-20 a full `tests/run-all.sh` reported
+`57 test(s), 56 passed, 1 failed — Failing: test-falsify-run.sh`. Run alone
+immediately afterwards it passed, and three subsequent full-suite runs were
+`57/57`.
+
+**The failing assertion was not captured.** The run's output was piped to
+`tail -3`, so the `FAIL:` line scrolled past unread. That is an operator error,
+not a harness gap — `run-all.sh` does print it — and it is recorded because the
+alternative is pretending the event did not happen.
+
+**What is known:** the failure occurred under full-suite load and not in
+isolation. **What is not known:** which assertion, and therefore whether this is
+a timing sensitivity, a resource limit, or a genuine intermittent defect.
+
+**Prior art that makes this worth chasing rather than shrugging at:** F26 was
+exactly this file being timing-sensitive on macOS, and F32 records three
+load-sensitive oracles where the tier reads slowness as coverage. This file now
+also carries §11f, whose atomicity guard deliberately makes a write take two
+seconds and inspects the filesystem one second in — a construction that is
+correct but is, by design, about wall-clock.
+
+**Next step is capture, not theory:** run `tests/run-all.sh` with its output
+retained rather than tailed, and keep the log of any failing run. One captured
+`FAIL:` line settles this; nothing else will.

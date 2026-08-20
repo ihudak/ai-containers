@@ -393,7 +393,17 @@ grep -q "$T_SBCOMMON is EXECUTED-PARTIAL with an empty function list" <<<"$out" 
 
 # Naming functions is only meaningful if the names are real.
 f4c="$TMP/gate4c.conf"
-sed "s@^#DEFERRED|${RE_REPOSH}|EXECUTED-PARTIAL|test-repo-registry\\.sh|is_git_url,fmt_epoch@#DEFERRED|${T_REPOSH}|EXECUTED-PARTIAL|test-repo-registry.sh|is_git_url,no_such_function@" "$CONF" > "$f4c"
+# Rewrite whatever the row's 4th field currently is, rather than a literal copy
+# of it. The old version matched the function list verbatim, so the day that
+# list changed the sed became a no-op, gate4c.conf was identical to the real
+# map, the gate passed — and the FAILURE MESSAGE BLAMED THE GATE. Caught when
+# cmd_rm joined the list (backlog F1).
+sed -E "s@^#DEFERRED\|${RE_REPOSH}\|EXECUTED-PARTIAL\|([^|]*)\|[^|]*@#DEFERRED|${T_REPOSH}|EXECUTED-PARTIAL|\1|is_git_url,no_such_function@" "$CONF" > "$f4c"
+# THE FIXTURE'S OWN PREMISE, asserted the way gate 5 already asserts its own.
+# Without this the case above could only ever fail for the wrong reason.
+grep -q "^#DEFERRED|${RE_REPOSH}|EXECUTED-PARTIAL|[^|]*|is_git_url,no_such_function" "$f4c" \
+  && pass "fixture: gate4c.conf names a function that does not exist in $T_REPOSH" \
+  || fail "fixture: gate4c.conf was not rewritten — the assertion below would be vacuous"
 gate "$f4c"; out="$gate_out"
 grep -q "naming function no_such_function, which is not defined in $T_REPOSH" <<<"$out" \
   && pass "gate 4: a named function that is not defined in the target fails the gate" \
