@@ -18,12 +18,21 @@
 #   IT_EXTRA_ARGS='--tags fast' PHASES=4 bash ./verify-on-host.sh
 #                                              # extra flags for Phase 4's runner
 #   PHASES="5 7" bash ./verify-on-host.sh     # skip the phases that need Docker
+#   FALSIFY_TIMEOUT=300 FALSIFY_JOBS=6 PHASES=6 bash ./verify-on-host.sh
+#                                              # Phase 6's per-mutant clock and
+#                                              # worker count (default 120, auto)
 #
 # IT_EXTRA_ARGS is forwarded verbatim to tests/integration/run.sh in Phase 4, on
 # top of the --require security this script always passes. Phase 4 deliberately
 # runs the WHOLE corpus by default (a human running locally wants full coverage,
 # including the slow and needs-dns tiers CI excludes on cost), so this is the
 # hook for narrowing that when iterating — e.g. --tags fast, or -v.
+#
+# FALSIFY_TIMEOUT and FALSIFY_JOBS are Phase 6's equivalents, and exist because
+# that phase tells you to reach for exactly those two when a run comes back with
+# a chunk of the corpus unmeasured. Both default to what the phase always used
+# (120 seconds per mutant, one worker per available CPU), and the phase banner
+# prints the values it actually ran with.
 #
 # Phases (each independent; a later phase still runs if an earlier one fails).
 # Numbers are IDENTIFIERS, not execution order — the script actually runs them
@@ -339,8 +348,26 @@ fl_run="$(mktemp)" || phase_fail 6 "mktemp failed — Phase 6 has nowhere to wri
 # which is not owed a ledger entry: a mutant that WAS killed leaves the measured
 # set in silence. run.sh resolves the number and names both; surfaced here
 # rather than left buried in $fl_run.
-sub "running the corpus (jobs=auto, timeout=120) — a few minutes"
-if bash "$TESTS_DIR/falsify/run.sh" --jobs auto --timeout 120 > "$fl_run" 2>&1; then
+# Whether the log below survives the phase. Set by every branch that PRINTS
+# SOMETHING POINTING INTO IT; read once at the end. A flag rather than a delete
+# at each site so the two can never disagree about which runs are worth keeping.
+fl_keep=0
+# THE TWO KNOBS THE NOTES BELOW TELL THE OPERATOR TO REACH FOR. Both numbers used
+# to be written into the invocation directly, which made "raise --timeout or
+# reduce load" advice with nothing behind it: no variable, no flag and no
+# argument moved either one, so following it meant editing this script in the
+# middle of a verification — on a checkout that may be shared with an agent — or
+# running the corpus by hand and skipping the ratchet Phase 6 exists to pair with
+# it (backlog F48). Measured: the 2026-08-20 macOS run resolved auto to 18 on an
+# 18-CPU host and lost 71 mutants to the 120s clock, 14% of the corpus
+# unresolved, with the note naming the right lever and the lever not existing.
+#
+# The defaults ARE what was hardcoded, so an unset environment runs exactly what
+# it always ran. Phase 4's IT_EXTRA_ARGS is the same idea for the same reason.
+fl_jobs="${FALSIFY_JOBS:-auto}"
+fl_timeout="${FALSIFY_TIMEOUT:-120}"
+sub "running the corpus (jobs=$fl_jobs, timeout=$fl_timeout) — a few minutes"
+if bash "$TESTS_DIR/falsify/run.sh" --jobs "$fl_jobs" --timeout "$fl_timeout" > "$fl_run" 2>&1; then
   { grep -E '^falsify: --jobs auto ' "$fl_run" || true; } \
     | sed 's/^falsify: //' | while IFS= read -r l; do sub "$l"; done
   grep -E '^(TARGET|TOTAL|ASSERTLESS)\|' "$fl_run" | sed 's/^/  /' | while IFS= read -r l; do sub "$l"; done
@@ -360,9 +387,11 @@ if bash "$TESTS_DIR/falsify/run.sh" --jobs auto --timeout 120 > "$fl_run" 2>&1; 
     # while a developer host legitimately times out and failing it here would be
     # the everywhere-at-once mistake backlog F27 records.
     if (( fl_unp * 100 / fl_tot >= 10 )); then
-      sub "NOTE: $fl_unp mutant(s) timed out and were not measured — raise --timeout or"
-      sub "      reduce load for a fuller measurement. Not a failure HERE: an unproven"
-      sub "      mutant is machine state, not a property of the code. CI gates on it."
+      fl_keep=1
+      sub "NOTE: $fl_unp mutant(s) timed out and were not measured. FALSIFY_TIMEOUT"
+      sub "      (now $fl_timeout) raises the per-mutant clock; FALSIFY_JOBS (now $fl_jobs)"
+      sub "      lowers the load. Not a failure HERE: an unproven mutant is machine"
+      sub "      state, not a property of the code. CI gates on it."
     fi
   fi
   # KILLS WITH NO ASSERTION ATTACHED. Reported here rather than gated, but for
@@ -373,10 +402,12 @@ if bash "$TESTS_DIR/falsify/run.sh" --jobs auto --timeout 120 > "$fl_run" 2>&1; 
   # aborts on macOS and nowhere else, and that is a finding, not load.
   fl_al="$(awk -F'|' '$1=="ASSERTLESS" {print $2; exit}' "$fl_run")"
   if [[ -n "$fl_al" && "$fl_al" -gt 0 ]]; then
+    fl_keep=1
     sub "NOTE: $fl_al kill(s) arrived with NO assertion — the oracle exited non-zero"
     sub "      without printing a FAIL: line. CI gates this at 0, so a non-zero here"
-    sub "      is platform-specific and worth chasing. Grep the log for"
-    sub "      'KILLED WITH NO ASSERTION ATTACHED'."
+    sub "      is platform-specific and worth chasing. Grep the kept run log named"
+    sub "      at the end of this phase for 'KILLED WITH NO ASSERTION ATTACHED' —"
+    sub "      it names each mutant, and nothing else records which ones they were."
   fi
   # The ratchet is a SEPARATE step, as in CI: run.sh's stdout is the record and
   # its exit status is an independent signal, and a pipeline would discard one.
@@ -384,9 +415,11 @@ if bash "$TESTS_DIR/falsify/run.sh" --jobs auto --timeout 120 > "$fl_run" 2>&1; 
        --run-output "$fl_run" --ledger "$TESTS_DIR/falsify/survivors.txt"; then
     sub "survivor ledger: OK"
   else
+    fl_keep=1
     phase_fail 6 "the survivor-ledger ratchet rejected tests/falsify/survivors.txt"
   fi
 else
+  fl_keep=1
   sub "corpus exit: non-zero"
   # THE `ERROR:` LINES FIRST, AND UNCONDITIONALLY. `falsify:` is run.sh's
   # ROUTINE progress channel — one note per timed-out mutant, and a loaded
@@ -407,7 +440,29 @@ else
   grep -E '^falsify:' "$fl_run" | tail -6 | while IFS= read -r l; do sub "$l"; done
   phase_fail 6 "the falsify corpus did not complete — the ledger was not scored"
 fi
-rm -f "$fl_run"
+# THE LOG IS THIS PHASE'S EVIDENCE, NOT ITS SCRATCH. Everything above prints a
+# SUMMARY drawn out of $fl_run — a count of assertless kills, a count of unproven
+# mutants, six of however many notes — while the file itself is the only place
+# the per-mutant `MUTANT|<verdict>|<identity>|…` records and the per-occurrence
+# `falsify:` warnings exist at all. Deleting it unconditionally meant the two
+# notes that say GO READ THIS named a file with no printed path that was already
+# gone (backlog F47). Measured: the 2026-08-20 macOS run reported ASSERTLESS|2|227
+# — the first time that counter has ever fired, and platform-specific by
+# construction since CI holds --max-assertless 0 — and both identities became
+# unrecoverable the moment the phase ended.
+#
+# Kept only when something above pointed into it, so a verification with nothing
+# to chase still leaves nothing behind; a fix that merely dropped the delete
+# would fill $TMPDIR with a full corpus log per run. tests/test-verify-exit-code.sh
+# asserts both directions.
+if (( fl_keep )); then
+  sub "corpus run log kept at: $fl_run"
+  sub "  One MUTANT|<verdict>|<identity>|… record per mutant, plus every falsify:"
+  sub "  note — the detail the summaries above are counts of. Nothing else will"
+  sub "  remove it."
+else
+  rm -f "$fl_run"
+fi
 fi
 
 # ── Phase 7: lint ────────────────────────────────────────────────────────────────
