@@ -6,6 +6,7 @@
 #
 #   bash tests/falsify/run.sh [--target <file>] [--jobs N|auto] [--timeout S]
 #                            [--operators <list>] [--max-unproven-pct N]
+#                            [--max-assertless N]
 #
 #   --jobs auto             workers = min(what the OS reports, the cgroup CPU
 #                           quota). `nproc` reads the affinity mask and does not
@@ -14,6 +15,13 @@
 #   --max-unproven-pct N    fail the run when more than N% of mutants produced
 #                           no verdict. Opt-in: an UNPROVEN mutant is machine
 #                           state, so only the REFERENCE environment sets it.
+#   --max-assertless N      fail the run when more than N kills arrived with no
+#                           FAIL: line — the oracle exited non-zero without
+#                           being seen to assert anything. Unlike the unproven
+#                           fraction this is a property of the oracle's CODE,
+#                           not of the machine, so it is satisfiable everywhere
+#                           at once and CI passes 0. Opt-in all the same: see
+#                           the note beside the check for why.
 #
 # ── THE OUTPUT FORMAT (the survivor ledger's input; parse THIS, not stderr) ────
 # Every machine-readable record goes to STDOUT, pipe-delimited, one per line.
@@ -25,6 +33,7 @@
 #   NOTE|<what>|<identity>|<detail>
 #   TARGET|<target>|<oracle>|<total>|<killed>|<survived>|<unproven>|<timeouts>|<ms>
 #   TOTAL|<targets>|<total>|<killed>|<survived>|<unproven>|<timeouts>|<unresolved-pct>|<ms>
+#   ASSERTLESS|<kills-with-no-failline>|<killed>
 #
 #   identity   <file>:<operator>:<sha1-of-trimmed-original-line> — the ledger
 #              identity, NEVER file:line, because a line number changes on every
@@ -172,6 +181,7 @@ FR_CONF="${FALSIFY_CONF:-$FR_HERE/targets.conf}"
 # per-mutant clock climbs to 10.9x. Going from the quota to nproc's 12 buys one
 # second of wall-clock and spends 52% of every mutant's timeout budget.
 FR_MAX_UNPROVEN_PCT="${FALSIFY_MAX_UNPROVEN_PCT:-}"
+FR_MAX_ASSERTLESS="${FALSIFY_MAX_ASSERTLESS:-}"
 FR_CGROUP="${FALSIFY_CGROUP:-/sys/fs/cgroup}"
 
 fr_host_cpus() {   # what the OS reports, before any quota is applied
@@ -526,11 +536,13 @@ FR_KILLED=0
 FR_SURVIVED=0
 FR_UNPROVEN=0
 FR_TIMEOUTS=0
+FR_ASSERTLESS=0
 FR_BROKEN=0
 FR_T_KILLED=0
 FR_T_SURVIVED=0
 FR_T_UNPROVEN=0
 FR_T_TIMEOUTS=0
+FR_T_ASSERTLESS=0
 
 fr_harvest() {   # <pid> — print that mutant's records and tally them
   local pid="$1"
@@ -571,7 +583,23 @@ fr_harvest() {   # <pid> — print that mutant's records and tally them
         # on a memory-capped host the kernel picks one.
         case "$f7" in
           *signal*) fr_warn "ORACLE KILLED BY A SIGNAL (UNPROVEN — nothing was observed asserting; check the host's memory cap against --jobs $FR_JOBS): $f3" ;;
-        esac ;;
+        esac
+        # A KILL WITH NO ASSERTION ATTACHED. The oracle exited non-zero and
+        # never printed a FAIL: line — it did not time out, was not signalled,
+        # and did not report a scaffold failure, all of which are UNPROVEN
+        # above. What is left is a test that aborted somewhere without
+        # reporting, and the tier reads that as "the mutation was noticed".
+        #
+        # This is the third member of a family found one mutant at a time, by
+        # hand, never by the gate: F35 (a signal death scored as a kill), F30
+        # (a load-induced one), F43 (an errexit abort, where two of
+        # shared-files.sh's mutants were "killed" by an oracle that never
+        # reached an assertion). The evidence column has recorded which channel
+        # produced every kill since the tier was written; nothing read it.
+        if [[ "$f2" == "KILLED" && "$f7" != *failline* ]]; then
+          FR_ASSERTLESS=$(( FR_ASSERTLESS + 1 )); FR_T_ASSERTLESS=$(( FR_T_ASSERTLESS + 1 ))
+          fr_warn "KILLED WITH NO ASSERTION ATTACHED (signal=$f7 — the oracle exited non-zero without printing a FAIL: line, so nothing was observed asserting): $f3"
+        fi ;;
       'NOTE|write-failed|'*) FR_BROKEN=$(( FR_BROKEN + 1 )) ;;
     esac
   done < "$res"
@@ -661,6 +689,7 @@ falsify_main() {
       --target) FR_TARGET="${2:-}"; shift 2 || return 2 ;;
       --jobs) FR_JOBS="${2:-}"; shift 2 || return 2 ;;
       --max-unproven-pct) FR_MAX_UNPROVEN_PCT="${2:-}"; shift 2 || return 2 ;;
+      --max-assertless) FR_MAX_ASSERTLESS="${2:-}"; shift 2 || return 2 ;;
       --timeout) FR_TIMEOUT="${2:-}"; shift 2 || return 2 ;;
       --operators) FALSIFY_OPERATORS="${2:-}"; export FALSIFY_OPERATORS; shift 2 || return 2 ;;
       -h|--help) fr_usage; return 0 ;;
@@ -690,6 +719,9 @@ falsify_main() {
   fi
   if [[ -n "$FR_MAX_UNPROVEN_PCT" && ! "$FR_MAX_UNPROVEN_PCT" =~ ^[0-9]+$ ]]; then
     fr_err "--max-unproven-pct must be a non-negative integer, got '${FR_MAX_UNPROVEN_PCT}'"; return 2
+  fi
+  if [[ -n "$FR_MAX_ASSERTLESS" && ! "$FR_MAX_ASSERTLESS" =~ ^[0-9]+$ ]]; then
+    fr_err "--max-assertless must be a non-negative integer, got '${FR_MAX_ASSERTLESS}'"; return 2
   fi
   if [[ ! "$FR_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
     fr_err "--timeout must be a positive integer (seconds), got '${FR_TIMEOUT}'"; return 2
@@ -752,7 +784,7 @@ falsify_main() {
     target="${FR_TARGETS[i]}"
     oracle="${FR_ORACLES[i]}"
     mutants="$FR_OUT/mutants.$i.tsv"
-    FR_KILLED=0; FR_SURVIVED=0; FR_UNPROVEN=0; FR_TIMEOUTS=0
+    FR_KILLED=0; FR_SURVIVED=0; FR_UNPROVEN=0; FR_TIMEOUTS=0; FR_ASSERTLESS=0
     t_target="$(fr_now_us)"
 
     # ── the pristine baseline ───────────────────────────────────────────────
@@ -804,6 +836,21 @@ falsify_main() {
     "${#FR_TARGETS[@]}" "$done_total" "$FR_T_KILLED" "$FR_T_SURVIVED" "$FR_T_UNPROVEN" \
     "$FR_T_TIMEOUTS" "$pct" "$(fr_ms_since "$t_run")"
 
+  # ── HOW MANY OF THOSE KILLS CAME WITH AN ASSERTION ──────────────────────────
+  # Always emitted, even at zero, and on its own line rather than as a tenth
+  # TOTAL field: the ratchet, check-ledger.sh and verify-on-host.sh all parse
+  # TOTAL positionally, and a number nobody can read is the state this counter
+  # exists to end. `run.sh` has recorded which channel produced every kill since
+  # the tier was written and nothing consumed it, which is how three separate
+  # false-kill mechanisms each had to be found by hand, on one mutant, by
+  # somebody looking closely (F35, F30, F43).
+  #
+  # Zero is the honest reading today, in both repos: all 262 kills are
+  # `exit+failline`. That is precisely when to start reporting it — the number
+  # can only go up from here, and the state with nothing left to look at is the
+  # state in which nobody looks.
+  printf 'ASSERTLESS|%s|%s\n' "$FR_T_ASSERTLESS" "$FR_T_KILLED"
+
   if (( FR_BROKEN > 0 )); then
     fr_err "$FR_BROKEN mutant(s) produced no verdict — they are NOT counted as kills"
     rc=1
@@ -827,6 +874,20 @@ falsify_main() {
       fr_err "$FR_T_UNPROVEN of $done_total mutant(s) (${unp_pct}%) produced no verdict, over the --max-unproven-pct ${FR_MAX_UNPROVEN_PCT} budget — this run measured materially less than it appears to. Check --jobs against the CPU quota (try --jobs auto) and --timeout before trusting the kill count"
       rc=1
     fi
+  fi
+  # Bounded only when a caller asks, exactly like --max-unproven-pct above and
+  # for the mirror of its reason. An assertless kill is a property of the
+  # ORACLE'S CODE, not of the machine — a timeout, a signal death and a
+  # collapsed scaffold are all UNPROVEN before they ever reach this counter —
+  # so unlike the unproven fraction it IS satisfiable everywhere at once, and
+  # CI passes 0. It stays opt-in anyway: a test whose contract genuinely IS its
+  # exit status would be a legitimate non-zero here, and discovering that on
+  # somebody's laptop mid-task is not how it should be raised. The fix for a
+  # real one is to make the oracle print the FAIL: line it owes; raising this
+  # bound is the deliberate alternative, not the quiet one.
+  if [[ -n "$FR_MAX_ASSERTLESS" ]] && (( FR_T_ASSERTLESS > FR_MAX_ASSERTLESS )); then
+    fr_err "$FR_T_ASSERTLESS of $FR_T_KILLED kill(s) arrived with NO ASSERTION ATTACHED, over the --max-assertless ${FR_MAX_ASSERTLESS} budget — each one is an oracle that exited non-zero without printing a FAIL: line, so the mutation was not observed being noticed. Grep this run for 'KILLED WITH NO ASSERTION ATTACHED' for the list"
+    rc=1
   fi
   return "$rc"
 }

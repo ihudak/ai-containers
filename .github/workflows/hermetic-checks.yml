@@ -167,7 +167,19 @@ jobs:
           # machines: 223 killed / 4 unproven here against 210 / 26 there, both
           # scoring green. THIS is the reference environment, so this is where
           # that gets a floor. 10 is the same number Phase 6 warns at.
+          #
+          # --max-assertless 0: a kill whose oracle never printed a FAIL: line
+          # is coverage the tier cannot show its working for. Every other way an
+          # oracle can exit non-zero without observing anything — a timeout, a
+          # signal, a collapsed scaffold — is already UNPROVEN before this
+          # counter sees it, so what is left is a test that aborted somewhere in
+          # silence. Three such mechanisms have been found so far (F35, F30,
+          # F43), every one by hand and one mutant at a time, while the evidence
+          # column that names them was being written and never read. Both repos
+          # measure 0 today; 0 is therefore a floor that costs nothing to hold
+          # and is only satisfiable by oracles that report what they found.
           bash tests/falsify/run.sh --jobs auto --timeout 120 --max-unproven-pct 10 \
+            --max-assertless 0 \
             > "$RUNNER_TEMP/falsify-run.txt" || rc=$?
           # run.sh's STDOUT is the record the ratchet reads; its EXIT STATUS is
           # a separate signal (an oracle not green on the pristine tree, a

@@ -330,7 +330,7 @@ fi
 # quietly stopped honouring in two places.
 if want_phase 6; then
 say "PHASE 6 — falsify mutation tier + survivor-ledger ratchet"
-fl_run="$(mktemp)"
+fl_run="$(mktemp)" || phase_fail 6 "mktemp failed — Phase 6 has nowhere to write the corpus run, and an empty path would make every later read of it report an empty corpus rather than a broken one"
 # --jobs auto, NOT $(nproc). nproc reads the affinity MASK and does not see a
 # `--cpus` cgroup quota, so inside a container — including one this repo's own
 # sandbox.sh started, where CONTAINER_CPUS defaults to 1.0 — it reports the
@@ -343,7 +343,7 @@ sub "running the corpus (jobs=auto, timeout=120) — a few minutes"
 if bash "$TESTS_DIR/falsify/run.sh" --jobs auto --timeout 120 > "$fl_run" 2>&1; then
   { grep -E '^falsify: --jobs auto ' "$fl_run" || true; } \
     | sed 's/^falsify: //' | while IFS= read -r l; do sub "$l"; done
-  grep -E '^(TARGET|TOTAL)\|' "$fl_run" | sed 's/^/  /' | while IFS= read -r l; do sub "$l"; done
+  grep -E '^(TARGET|TOTAL|ASSERTLESS)\|' "$fl_run" | sed 's/^/  /' | while IFS= read -r l; do sub "$l"; done
   # HOW MUCH WAS ACTUALLY MEASURED. An UNPROVEN mutant produced no verdict at
   # all, so a run with many of them is measuring less than its pass suggests —
   # and the pass is honest only if that is said out loud rather than left in
@@ -364,6 +364,19 @@ if bash "$TESTS_DIR/falsify/run.sh" --jobs auto --timeout 120 > "$fl_run" 2>&1; 
       sub "      reduce load for a fuller measurement. Not a failure HERE: an unproven"
       sub "      mutant is machine state, not a property of the code. CI gates on it."
     fi
+  fi
+  # KILLS WITH NO ASSERTION ATTACHED. Reported here rather than gated, but for
+  # the OPPOSITE reason to the unproven note above: that one is advisory because
+  # a timeout is machine state, while this one is a property of the oracle's
+  # code and should read the same everywhere. Which is exactly why it is worth
+  # printing on a host — a non-zero here against CI's zero means an oracle
+  # aborts on macOS and nowhere else, and that is a finding, not load.
+  fl_al="$(awk -F'|' '$1=="ASSERTLESS" {print $2; exit}' "$fl_run")"
+  if [[ -n "$fl_al" && "$fl_al" -gt 0 ]]; then
+    sub "NOTE: $fl_al kill(s) arrived with NO assertion — the oracle exited non-zero"
+    sub "      without printing a FAIL: line. CI gates this at 0, so a non-zero here"
+    sub "      is platform-specific and worth chasing. Grep the log for"
+    sub "      'KILLED WITH NO ASSERTION ATTACHED'."
   fi
   # The ratchet is a SEPARATE step, as in CI: run.sh's stdout is the record and
   # its exit status is an independent signal, and a pipeline would discard one.

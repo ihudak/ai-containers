@@ -239,6 +239,27 @@ kill -KILL "$PPID"
 exit 0
 EOF
 
+# Oracle I — the ASSERTLESS shape: green on the pristine tree, and on the
+# mutated one it exits non-zero having printed NOTHING. No FAIL:, no
+# SCAFFOLD-FAILED:, no signal, no timeout — every other channel that means
+# "nothing was observed" is already UNPROVEN before this point, so what is left
+# is a test that aborted somewhere without reporting. Not a contrived shape: it
+# is exactly what errexit inherited from a sourced product script did to two of
+# shared-files.sh's mutants for weeks (backlog F43), and the tier scored both
+# KILLED.
+cat > "$FX/tests/test-fx-assertless.sh" <<'EOF'
+#!/usr/bin/env bash
+set -uo pipefail
+FX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=/dev/null
+source "$FX_DIR/fixture-lib.sh"
+if [[ "$(fx_bigger 5 3)" == "yes" ]]; then
+  printf 'PASS: fx_bigger orders its arguments\n'
+  exit 0
+fi
+exit 1
+EOF
+
 # THE REAL DRIVER, copied: the oracle contract is `tests/run-all.sh <name>`, so a
 # fixture with a hand-written stand-in driver would be testing the stand-in.
 cp "$TESTS_DIR/run-all.sh" "$FX/tests/run-all.sh"
@@ -261,6 +282,7 @@ CONF_TYPO="$(conf typo 'fixture-lib.sh|EXECUTED-WHOLE|test-fx-nosuchtest.sh')"
 CONF_SCAFFOLD="$(conf scaffold 'fixture-lib.sh|EXECUTED-WHOLE|test-fx-scaffold.sh')"
 CONF_BLIND="$(conf blind 'fixture-lib.sh|EXECUTED-WHOLE|test-fx-blind.sh')"
 CONF_SIGNAL="$(conf signal 'fixture-lib.sh|EXECUTED-WHOLE|test-fx-signal.sh')"
+CONF_ASSERTLESS="$(conf assertless 'fixture-lib.sh|EXECUTED-WHOLE|test-fx-assertless.sh')"
 # The blind oracle is FIRST deliberately: a runner that ran only the first name
 # would report the fx_bigger mutant SURVIVED, which is exactly the regression
 # this row type exists to make impossible.
@@ -813,5 +835,56 @@ check "the MUTANT record reports the oracle field verbatim" \
 # stop the target rather than be quietly dropped.
 check "the BASELINE record names the whole set too" \
   "1" "$(grep -c '^BASELINE|fixture-lib.sh|test-fx-blind.sh,test-fx-a.sh|PASS|' <<< "$FX_OUT")"
+
+# ── A KILL WITH NO ASSERTION ATTACHED IS COUNTED, NAMED, AND BOUNDABLE ────────
+# The tier has recorded which channel produced every kill since it was written,
+# and nothing consumed it — which is why three separate false-kill mechanisms
+# each had to be found by hand, on one mutant, by somebody looking closely
+# (F35 a signal death, F30 a load-induced kill, F43 an errexit abort). The
+# verdict stays KILLED, deliberately: the oracle DID distinguish the mutant, and
+# demoting it would be a second guess dressed as a measurement. What changes is
+# that the run now says how much of its coverage arrived this way.
+fx_run "$RUN" "$CONF_ASSERTLESS" "$FX" "$TMP/wit-assertless"
+check "an oracle that exits non-zero in silence still reports KILLED" \
+  "KILLED" "$(fx_verdict "$FX_OUT" "$KILLABLE")"
+fx_sig="$(fx_signal "$FX_OUT" "$KILLABLE")"
+case "$fx_sig" in
+  *failline*) fail "  … and its signal carries no failline (got '$fx_sig' — the fixture printed a FAIL: line, so this case is measuring the wrong thing)" ;;
+  *exit*)     pass "  … and its signal is a bare exit, with no failline ($fx_sig)" ;;
+  *)          fail "  … and its signal is a bare exit, with no failline (got '$fx_sig')" ;;
+esac
+# The COUNT, on its own line, emitted whether or not anything asked for a bound.
+# The WHOLE line rather than the numerator: `ASSERTLESS|3|3` also pins that the
+# denominator is the kill count, so a reader sees three-of-three without doing
+# arithmetic the report should have done — and a regression that reported the
+# count against the wrong total would still read plausibly if only field 2 were
+# checked. All three of this fixture's killable mutants take the silent path;
+# the fourth is fx_never_called's, which nothing kills.
+check "the run reports how many kills arrived with no assertion, over how many kills" \
+  "ASSERTLESS|3|3" "$(grep '^ASSERTLESS|' <<< "$FX_OUT")"
+grep -q 'KILLED WITH NO ASSERTION ATTACHED' <<< "$FX_ERR" \
+  && pass "  … and names the mutant, so the count is actionable rather than a number" \
+  || fail "  … and names the mutant (no 'KILLED WITH NO ASSERTION ATTACHED' line in stderr)"
+# Reporting without a bound must not fail the run: a developer host discovering
+# this mid-task is not how it should be raised, and the same reasoning is why
+# --max-unproven-pct is opt-in.
+check "reporting alone does not fail the run" "0" "$FX_RC"
+
+fx_run "$RUN" "$CONF_ASSERTLESS" "$FX" "$TMP/wit-assertless2" --max-assertless 0
+[[ "$FX_RC" -ne 0 ]] \
+  && pass "--max-assertless 0 fails a run whose kills carry no assertion (rc=$FX_RC)" \
+  || fail "--max-assertless 0 fails a run whose kills carry no assertion — got rc 0, so the bound is decorative"
+grep -q 'over the --max-assertless' <<< "$FX_ERR" \
+  && pass "  … and says which budget was exceeded" \
+  || fail "  … and says which budget was exceeded (stderr: $(tail -2 <<< "$FX_ERR"))"
+
+# The bound must be satisfiable by an honest oracle, or it is a tax rather than
+# a ratchet: the SAME flag against an oracle that reports its failures properly
+# has to pass. Without this the case above would also pass if --max-assertless
+# simply failed every run.
+fx_run "$RUN" "$CONF_A" "$FX" "$TMP/wit-assertless3" --max-assertless 0
+check "--max-assertless 0 passes an oracle that prints its FAIL: lines" "0" "$FX_RC"
+check "  … and that run reports zero assertless kills" \
+  "0" "$(awk -F'|' '$1 == "ASSERTLESS" { print $2 }' <<< "$FX_OUT")"
 
 printf '\n%d failure(s)\n' "$fails"; exit "$fails"
