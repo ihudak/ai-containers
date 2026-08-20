@@ -146,6 +146,60 @@ rA3="$(p_realdir "$TMP/dirA/./")"
   && pass "p_realdir normalises ./ and a trailing slash to the same answer" \
   || fail "p_realdir normalises ./ and a trailing slash to the same answer (got '$rA3', want '$rA')"
 
+# p_timeout: the BOUND the falsify tier was missing, so a damage that makes a
+# call non-terminating fails an assertion BY NAME instead of expiring run.sh's
+# per-mutant clock with nothing observed (backlog F22). Three properties, each
+# separately breakable:
+#
+#   1. a command that finishes in time yields ITS OWN status, not the bound's
+#   2. a command that does not finish yields 124 rather than hanging forever
+#   3. the bounded command is actually DEAD afterwards -- a bound that returns
+#      124 and leaves the process spinning would poison every test after it,
+#      and both oracles this was written for spin at 100% CPU when damaged
+#
+# Property 1 carries the mutation coverage: inverting either the liveness probe
+# (`while kill -0 …`) or the deadline comparison (`-ge`) makes p_timeout report
+# 124 for a command that completed, and that status is what this reads.
+p_timeout 3 bash -c 'exit 7'; to_rc=$?
+if [[ "$to_rc" -eq 7 ]]; then
+  pass "p_timeout returns the command's own exit status when it finishes in time"
+else
+  fail "p_timeout returns the command's own exit status when it finishes in time -- want 7, got $to_rc"
+fi
+
+to_out="$(p_timeout 3 bash -c 'printf ok')"
+if [[ "$to_out" == "ok" ]]; then
+  pass "p_timeout passes the bounded command's stdout through"
+else
+  fail "p_timeout passes the bounded command's stdout through -- want 'ok', got '$to_out'"
+fi
+
+# Property 2, and with it the only honest form of property 3. The first draft
+# of this block checked that the bounded command was no longer alive after
+# p_timeout returned -- a check that CANNOT FAIL, because p_timeout ends with
+# `wait "$cmd_pid"`, which by definition does not return until the child is
+# dead. It passed against a damage that removed the kill outright.
+#
+# What is actually falsifiable is that the bound CUTS THE COMMAND SHORT: bound a
+# 30-second sleep at 1 second and require both the 124 and an elapsed time
+# nowhere near 30. Remove the kills and the status stays 124 (the watchdog still
+# marks the flag) while `wait` sits out the full thirty seconds -- so the status
+# alone would call that a working bound, and only the clock catches it.
+to_t0=$SECONDS
+p_timeout 1 bash -c 'sleep 30'
+to_slow_rc=$?
+to_elapsed=$(( SECONDS - to_t0 ))
+if [[ "$to_slow_rc" -eq 124 ]]; then
+  pass "p_timeout returns 124 when the clock expires"
+else
+  fail "p_timeout returns 124 when the clock expires -- got $to_slow_rc"
+fi
+if [[ "$to_elapsed" -lt 10 ]]; then
+  pass "p_timeout cuts the command short rather than outliving it (${to_elapsed}s for a 30s command bounded at 1s)"
+else
+  fail "p_timeout cuts the command short rather than outliving it -- a 30s command bounded at 1s took ${to_elapsed}s, so nothing was actually killed"
+fi
+
 # No helper may leave the caller with an empty answer on THIS platform: an empty
 # string compares equal to another empty string, which is how a portability bug
 # turns into a test that passes by accident.

@@ -300,6 +300,20 @@ _ft_refs() {  # $1 = absolute file
           while (i <= n && (T[i] ~ /^-/ || isassign(T[i]))) { if (T[i] == "-u") i++; i++ }
           continue
         }
+        # A timeout-style prefix RUNS the rest of the line, so the walker has
+        # to see through it or the real invocation stops being at a command
+        # position and vanishes. Not a special case for one helper: none of
+        # these four was handled, so `timeout 10 bash x.sh` was already
+        # invisible here. p_timeout is the portable stand-in for timeout(1) in
+        # tests/portability.sh, since a stock macOS has no timeout(1) (backlog
+        # F22); it_timeout is the integration runner equivalent.
+        # No apostrophes in this comment: the whole program is one
+        # single-quoted shell string, as the BEGIN block above notes.
+        if (t == "timeout" || t == "gtimeout" || t == "p_timeout" || t == "it_timeout") {
+          i++
+          while (i <= n && (T[i] ~ /^-/ || T[i] ~ /^[0-9]+([.][0-9]+)?[smhd]?$/)) i++
+          continue
+        }
         if (t == "source" || t == ".") {
           j = i + 1
           while (j <= n && T[j] ~ /^-/) j++

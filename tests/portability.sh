@@ -57,3 +57,77 @@ p_realdir() {  # $1=existing dir → its fully-resolved (symlink-free) absolute 
   # resolve_path's readlink -f independently resolves it to.
   ( cd "$1" 2>/dev/null && pwd -P )
 }
+
+# p_timeout <seconds> <command> [args…] — run a command under a wall-clock bound.
+# Returns the command's OWN exit status if it finishes in time, or 124 (the code
+# GNU timeout uses, so a caller needs no special-casing) if the clock expires.
+#
+# Unlike the helpers above this one produces no value on stdout of its own — it
+# passes the command's through — so it is deliberately NOT part of the "must
+# never print empty" family, and must not be added to test-portability.sh's
+# non-empty sweep.
+#
+# WHY THIS EXISTS RATHER THAN `timeout 10 …`: timeout(1) is GNU coreutils and is
+# absent from a stock macOS. That is not a hypothesis — it took the first real
+# macOS run (2026-08-08) to surface it in the integration runner, whose
+# it_timeout() resolves GNU timeout, then Homebrew's gtimeout, then a pure-bash
+# fallback. The falsify backlog's F22 prescribed `timeout 10` for the callers
+# below; on the very host those callers are verified on, that is a command not
+# found.
+#
+# WHY THERE IS NO GNU-timeout FAST PATH HERE, unlike it_timeout: a
+# `command -v timeout` probe is a platform branch whose two arms behave
+# identically on any machine that HAS timeout — which is exactly the shape of
+# defect that let p_sha1's probe be inverted with every test green (backlog
+# F23), and it cost a whole increment to write an assertion that could see it.
+# One implementation has no unassertable arm, and it makes the bound behave the
+# same on Linux and macOS — which matters here, because the verdicts these
+# callers produce are currently a function of how fast the machine is.
+#
+# WHY A WATCHDOG AND NOT A POLLING LOOP, which is what it_timeout's fallback
+# uses: the polling shape was written here first and then discarded, because a
+# `while kill -0 "$pid"` loop followed by a bare `wait "$pid"` IS ITSELF
+# HANGABLE BY ITS OWN MUTATION. Negate the liveness probe and the loop never
+# runs, so control falls to a `wait` on a child that is still alive and blocks
+# forever. Measured: it hung test-portability.sh for the full two minutes it was
+# given. A bound whose own cond-negate mutant is UNPROVEN would have added a
+# fifth hanging mutant to the corpus in the helper written to remove the other
+# four. The watchdog has no loop and no conditional in front of the kill, so
+# every path through it terminates: `wait` cannot block past the deadline
+# because something always kills the child at it.
+#
+# The watchdog's stdio goes to /dev/null, and that redirect is load-bearing
+# rather than tidiness. Without it the watchdog -- and, more to the point, the
+# `sleep` it forks -- inherit the caller's stdout, so `out="$(p_timeout 10 …)"`
+# blocks until the sleep finishes even though the bounded command returned
+# immediately and the watchdog was already killed: a command substitution reads
+# until EVERY holder of the write end lets go. Measured before the redirect:
+# 0s called directly, 10s the moment the same call was wrapped in `$( )`, which
+# is exactly how two of the three callers below use it.
+#
+# The flag file, not the exit status, is what says "expired": a killed child
+# reports 143, which is also a status a command can legitimately exit with, and
+# a bound that cannot tell those apart is the same confusion between "the
+# process died" and "the process was seen failing" that this whole exercise is
+# about.
+p_timeout() {  # $1=seconds, $2… = command
+  local secs="$1"; shift
+  # An explicit template: `mktemp` with no arguments at all is a GNU extension,
+  # and this file exists because of exactly that class of difference.
+  local flag; flag="$(mktemp "${TMPDIR:-/tmp}/p_timeout.XXXXXX")" || return 125
+  "$@" &
+  local cmd_pid=$!
+  ( sleep "$secs"
+    printf 'x' > "$flag"
+    kill -TERM "$cmd_pid" 2>/dev/null
+    sleep 1
+    kill -KILL "$cmd_pid" 2>/dev/null ) >/dev/null 2>&1 &
+  local dog_pid=$!
+  wait "$cmd_pid"
+  local rc=$?
+  kill -TERM "$dog_pid" 2>/dev/null
+  wait "$dog_pid" 2>/dev/null
+  if [[ -s "$flag" ]]; then rm -f "$flag"; return 124; fi
+  rm -f "$flag"
+  return "$rc"
+}

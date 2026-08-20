@@ -19,6 +19,23 @@ fail() {
   return 0
 }
 
+# THE VERDICT, as a function, because this file has two ways out: the normal end
+# and the premise gate further down that stops the run when
+# tools_read_descriptor cannot terminate. Both must apply the same
+# disk-full-versus-real-failure rule -- the long note above the call at the
+# bottom of this file is what that rule is measuring -- and a second copy of it
+# beside the gate is a copy that drifts.
+verdict() {
+  if (( fails > 0 )) && (( enospc_seen == 1 )); then
+    printf 'SCAFFOLD-FAILED: the workspace filesystem could not take a write while this ran — the %s failure(s) above measured a full disk, not the code: %s\n' \
+      "$fails" "$TMP"
+    exit 1
+  fi
+  [[ "$fails" -eq 0 ]] && { echo "ALL PASS"; exit 0; } || { echo "$fails FAILED"; exit 1; }
+}
+
+# shellcheck source=portability.sh
+source "$REPO_DIR/tests/portability.sh"
 TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; trap 'rm -rf "$TMP"' EXIT
 # EVERY SCAFFOLDING STEP IS CHECKED, AND CHECKED FOR CONTENT.
 #
@@ -205,6 +222,47 @@ missing_out="$(tools_list_names)"; missing_rc=$?
   && pass "tools_list_names prints nothing when TOOLS_D_DIR does not exist" \
   || fail "tools_list_names prints nothing when TOOLS_D_DIR does not exist — got '$missing_out'"
 export TOOLS_D_DIR="$_saved_td_missing"
+
+# tools_read_descriptor's reader loop (tools-lib.sh:62) is
+# `while IFS= read -r line || [[ -n "$line" ]]`, and BOTH of its cond-negate
+# damages make it NON-TERMINATING -- at EOF a negated read stays true forever.
+# Every call to it below is in-process, so a damaged run hangs on the very next
+# line and run.sh's per-mutant clock expires having observed nothing: the two
+# mutants were UNPROVEN against the whole suite, not survivors of a weak
+# assertion but survivors of an assertion that was never reached (backlog F22).
+#
+# Parse the same descriptor in a BOUNDED subprocess, and do it here rather than
+# anywhere else in the file: placement is the assertion. Below this point the
+# first in-process call has already hung the run.
+#
+# It requires the parsed VALUES and not merely completion -- a reader that
+# terminated early having parsed nothing would satisfy a bound that only asked
+# whether the process came back.
+read_bounded="$(p_timeout 10 bash -c '
+  set -uo pipefail
+  export TOOLS_D_DIR="$1"
+  # shellcheck source=/dev/null
+  source "$2"
+  tools_read_descriptor foo || exit 3
+  printf "%s|%s\n" "$TOOL_repo" "$TOOL_private"
+' _ "$TOOLS_D_DIR" "$REPO_DIR/tools-lib.sh")"
+read_bounded_rc=$?
+if [[ "$read_bounded_rc" -eq 124 ]]; then
+  fail "tools_read_descriptor terminates and parses foo.conf -- it did not finish within 10s, so its reader loop never reached EOF"
+  # …and STOP, on this file's own terms. Every assertion below calls
+  # tools_read_descriptor in-process, so if the reader cannot terminate none of
+  # them can run: the file would hang here holding a FAIL it never got to
+  # report, and the tier would record a timeout with nothing observed -- which
+  # is precisely the verdict this block exists to replace. A premise this total
+  # is worth ending the run on, named and counted.
+  verdict
+elif [[ "$read_bounded_rc" -ne 0 ]]; then
+  fail "tools_read_descriptor terminates and parses foo.conf -- the bounded parse exited $read_bounded_rc"
+elif [[ "$read_bounded" == "acme/foo|yes" ]]; then
+  pass "tools_read_descriptor terminates and parses foo.conf (got '$read_bounded')"
+else
+  fail "tools_read_descriptor terminates and parses foo.conf -- want 'acme/foo|yes', got '$read_bounded'"
+fi
 
 tools_read_descriptor foo
 [[ "$TOOL_repo" == "acme/foo" ]] && pass "repo" || fail "repo ($TOOL_repo)"
@@ -439,6 +497,30 @@ if [[ "$out" == *"requires GITHUB_TOKEN"* ]] && [[ ! -s "$CURL_LOG" ]] && [[ ! -
   pass "repo-file: private with no token skips before any fetch"
 else
   fail "repo-file private/no-token guard"; fi
+
+# A RELEASE-path tool whose descriptor has no repo= must skip BEFORE any curl.
+# install_repo_file has refused an empty repo= since it was written; the release
+# path had no such check, so the empty value reached api_get as
+# `https://api.github.com/repos//releases/latest` and was retried three times
+# with two 5-second sleeps. The cost was not only the ten seconds: it made this
+# whole file take longer than the falsify tier's 60s per-mutant clock under any
+# damage that empties a descriptor, so three tools-lib.sh mutants were scored
+# `timeout+failline` — kills that depended on the FAIL: line landing before the
+# clock rather than on the run finishing.
+#
+# The curl log is the assertion, not the elapsed time: remove the guard and the
+# fetch happens, which the log records without depending on how fast the machine
+# is.
+printf 'binary=norepo-cli\n' > "$TOOLS_D_DIR/norepo.conf"
+scaffold_file "write norepo.conf (no repo=)" "$TOOLS_D_DIR/norepo.conf"
+: > "$CURL_LOG"; rm -f "$TOOLS_BIN_DIR/norepo-cli"
+out="$( PATH="$FAKEBIN:$PATH" install_one norepo latest 2>&1 )"
+if [[ "$out" == *"has no repo="* ]] && [[ ! -s "$CURL_LOG" ]] && [[ ! -e "$TOOLS_BIN_DIR/norepo-cli" ]]; then
+  pass "a release-path descriptor with no repo= skips before any fetch"
+else
+  fail "a release-path descriptor with no repo= skips before any fetch — out='$out', curl log $( [[ -s "$CURL_LOG" ]] && echo NON-EMPTY || echo empty )"
+fi
+rm -f "$TOOLS_D_DIR/norepo.conf"
 
 # A failed download must warn and install NOTHING. Until this case existed every
 # fake curl in this file exited 0, so a "report success on failure" bug was
@@ -875,10 +957,4 @@ rm -rf "$RTMP"
 # `rm -rf "$RTMP"` two lines above frees the very space that was exhausted, so
 # by the time control reaches this line the probe passes and the run is scored
 # KILLED anyway — measured, 6 of 16 before the probe was moved into fail().
-if (( fails > 0 )) && (( enospc_seen == 1 )); then
-  printf 'SCAFFOLD-FAILED: the workspace filesystem could not take a write while this ran — the %s failure(s) above measured a full disk, not the code: %s\n' \
-    "$fails" "$TMP"
-  exit 1
-fi
-
-[[ "$fails" -eq 0 ]] && { echo "ALL PASS"; exit 0; } || { echo "$fails FAILED"; exit 1; }
+verdict

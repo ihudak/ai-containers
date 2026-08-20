@@ -126,6 +126,16 @@ grep -q '0 problem(s)' <<<"$cached_out" \
 shim_verdict="$(awk -F'|' '$1 == "tests/integration/docker-shim.sh" { print $2 }' "$DERIVED")"
 check "docker-shim.sh is EXECUTED (resolved through the symlink, not the name)" \
   "EXECUTED" "$shim_verdict"
+# bash-dialect-lint.sh is reachable ONLY through a `p_timeout 10 bash …`
+# prefix: its oracle bounds every invocation (backlog F22) and the one bare
+# mention is a `bash -n`, which is a parse, not a run. A prefix that RUNS the
+# rest of the line has to be walked through or the invocation behind it stops
+# being at a command position and disappears — this exact row flipped to
+# NOT-EXECUTED the moment the bounds went in, and the aggregate --check caught
+# it. Named here so the next time it is named rather than inferred.
+lint_verdict="$(awk -F'|' '$1 == "tests/bash-dialect-lint.sh" { print $2 }' "$DERIVED")"
+check "bash-dialect-lint.sh is EXECUTED (seen through the p_timeout prefix, not around it)" \
+  "EXECUTED" "$lint_verdict"
 ep_verdict="$(awk -F'|' -v f="$T_ENTRYPOINT" '$1 == f { print $2 }' "$DERIVED")"
 check "$T_ENTRYPOINT is NOT-EXECUTED (bash -n and grep are not execution)" \
   "NOT-EXECUTED" "$ep_verdict"
