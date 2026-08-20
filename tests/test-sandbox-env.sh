@@ -17,7 +17,16 @@ type env_key_denied >/dev/null 2>&1 && pass "env_key_denied defined" || { fail "
 
 # Apply exactly as sandbox-common.sh does: local first, then portable.
 apply() { load_env_defaults "$LOCAL"; load_env_defaults "$PORTABLE"; }
-mk() { LOCAL="$(mktemp)"; PORTABLE="$(mktemp)"; }
+# This file runs under `set -uo pipefail` with NO errexit, so an unguarded
+# mktemp leaves an EMPTY path and every assertion after it measures the
+# wreckage rather than the loader (falsify backlog F31). SCAFFOLD-FAILED: is the
+# channel tests/run-all.sh and the mutation tier both read to say "this run
+# never got as far as asserting", instead of scoring the wall of failures that
+# follows as a real result.
+mk() {
+  LOCAL="$(mktemp)"    || { printf 'SCAFFOLD-FAILED: mktemp (LOCAL env file)\n'; exit 1; }
+  PORTABLE="$(mktemp)" || { printf 'SCAFFOLD-FAILED: mktemp (PORTABLE env file)\n'; exit 1; }
+}
 rmk() { rm -f "$LOCAL" "$PORTABLE"; }
 
 # precedence: inline > local > portable
@@ -52,7 +61,13 @@ mk
 ( unset EXTRA_MOUNTS; apply; [[ "$EXTRA_MOUNTS" == "/a /b" ]] ) \
   && pass "export prefix + surrounding quotes handled" || fail "export prefix + surrounding quotes handled"
 # a stray command line must NOT execute
-marker="$(mktemp -u)"; printf 'touch %s\n' "$marker" >> "$PORTABLE"
+# `mktemp -u` only invents a NAME, so a failure here is quieter and worse than
+# most: $marker becomes empty, and the assertion below is `[[ ! -e "$marker" ]]`
+# — `-e ""` is false, so `! -e ""` is TRUE and the check passes having tested
+# nothing at all.
+marker="$(mktemp -u)" || { printf 'SCAFFOLD-FAILED: mktemp -u (stray-command marker)\n'; exit 1; }
+[[ -n "$marker" ]] || { printf 'SCAFFOLD-FAILED: mktemp -u returned an empty name — the non-execution check below would pass vacuously\n'; exit 1; }
+printf 'touch %s\n' "$marker" >> "$PORTABLE"
 ( apply ) >/dev/null 2>&1
 [[ ! -e "$marker" ]] && pass "non-assignment lines do not execute" || { fail "non-assignment lines do not execute"; rm -f "$marker"; }
 rmk
@@ -67,7 +82,10 @@ rmk
 # team-shared file, so a well-formed `BASH_ENV=…` line would otherwise be exported by the
 # loader and then executed by the very next child bash that build.sh/sandbox.sh spawn —
 # arbitrary code out of a file the design promises is inert data.
-mk; evil="$(mktemp)"; marker2="$(mktemp -u)"
+mk
+evil="$(mktemp)"      || { printf 'SCAFFOLD-FAILED: mktemp (BASH_ENV payload)\n'; exit 1; }
+marker2="$(mktemp -u)" || { printf 'SCAFFOLD-FAILED: mktemp -u (BASH_ENV marker)\n'; exit 1; }
+[[ -n "$marker2" ]] || { printf 'SCAFFOLD-FAILED: mktemp -u returned an empty name — the BASH_ENV non-execution check would pass vacuously\n'; exit 1; }
 printf 'touch %s\n' "$marker2" > "$evil"
 printf 'BASH_ENV=%s\nIMAGE_NAME=still-parsed\n' "$evil" > "$PORTABLE"
 out_deny="$( ( unset BASH_ENV IMAGE_NAME; apply; printf 'BASH_ENV=[%s] IMAGE_NAME=[%s]\n' "${BASH_ENV:-}" "${IMAGE_NAME:-}"; bash -c 'true' ) 2>&1 )"
@@ -115,7 +133,7 @@ grep -qF '${2:-${SANDBOX_WORKDIR:-}}' "$REPO_DIR/sandbox.sh" \
 # when the repo root has no sandbox.env/sandbox.local.env (the loader would read them and
 # could set SANDBOX_MODE, defeating the probe); the committed repo has neither.
 if [[ ! -f "$REPO_DIR/sandbox.env" && ! -f "$REPO_DIR/sandbox.local.env" ]]; then
-  sbout="$(mktemp)"
+  sbout="$(mktemp)" || { printf 'SCAFFOLD-FAILED: mktemp (usage-probe output)\n'; exit 1; }
   ( unset SANDBOX_MODE SANDBOX_WORKDIR; bash "$REPO_DIR/sandbox.sh" >"$sbout" 2>&1 || true )
   grep -q '^Usage:' "$sbout" && pass "bare ./sandbox.sh (no SANDBOX_MODE) shows usage" || fail "bare ./sandbox.sh (no SANDBOX_MODE) shows usage"
   rm -f "$sbout"

@@ -534,7 +534,7 @@ repo_record_backend() {
 repo_registry_upsert() {
   local name="$1" type="$2" source="$3" added="$4" synced="$5" backend="${6:-}"
   repo_registry_ensure
-  local tmp; tmp="$(mktemp)"
+  local tmp; tmp="$(mktemp)" || { printf 'ERROR: mktemp failed — registry record for %s not written\n' "$name" >&2; return 1; }
   grep -vE "^${name}\|" "$repo_registry_file" > "$tmp" 2>/dev/null || true
   # Guard against a carried-over final line that lacks a trailing newline (older
   # writer, hand-edit, or partial/interrupted write). On GNU coreutils (Linux),
@@ -548,7 +548,7 @@ repo_registry_upsert() {
 repo_registry_remove() {
   local name="$1"
   [[ -f "$repo_registry_file" ]] || return 0
-  local tmp; tmp="$(mktemp)"
+  local tmp; tmp="$(mktemp)" || { printf 'ERROR: mktemp failed — registry record for %s not removed\n' "$name" >&2; return 1; }
   grep -vE "^${name}\|" "$repo_registry_file" > "$tmp" 2>/dev/null || true
   mv "$tmp" "$repo_registry_file"
 }

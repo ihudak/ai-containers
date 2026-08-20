@@ -78,7 +78,7 @@ conf_schema_version() {
 conf_set_version() {
   local f="$1" n="$2"
   if grep -qE '^# schema-version:' "$f" 2>/dev/null; then
-    local tmp; tmp="$(mktemp)"
+    local tmp; tmp="$(mktemp)" || { printf 'ERROR: mktemp failed — refusing to rewrite %s. The `cat > "$f"` below truncates its target before it reads anything, so an empty $tmp would empty the file.\n' "$f" >&2; return 1; }
     sed -E "s/^# schema-version:.*/# schema-version: ${n}/" "$f" > "$tmp"
     cat "$tmp" > "$f"
     rm -f "$tmp"

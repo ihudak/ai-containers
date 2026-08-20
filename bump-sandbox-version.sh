@@ -57,7 +57,7 @@ file="$1"
 #   grep -qE '^oldkey=' "$file" 2>/dev/null || exit 0
 
 # TODO: implement the key-only translation via a temp file, e.g.:
-#   tmp="$(mktemp)"
+#   tmp="$(mktemp)" || { printf 'ERROR: mktemp failed\\n' >&2; exit 1; }
 #   while IFS= read -r line || [[ -n "$line" ]]; do
 #     if [[ "$line" =~ ^oldkey= ]]; then
 #       printf 'newkey=%s\n' "${line#*=}" >> "$tmp"; continue
@@ -71,7 +71,7 @@ chmod +x "$hook"
 
 # Bump the marker (update in place, or append if somehow missing).
 if grep -qE '^# schema-version:' "$conf"; then
-  tmp="$(mktemp)"
+  tmp="$(mktemp)" || { printf 'ERROR: mktemp failed — refusing to rewrite %s. The `cat > "$conf"` below truncates its target before it reads anything, so an empty $tmp would empty the file.\n' "$conf" >&2; exit 1; }
   sed -E "s/^# schema-version:.*/# schema-version: ${next}/" "$conf" > "$tmp"
   cat "$tmp" > "$conf"
   rm -f "$tmp"
