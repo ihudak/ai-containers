@@ -237,9 +237,20 @@ grep -q 'STUB:check-sandbox-version\.sh' "$WITNESS_LOG" \
   && fail "check-sandbox-version.sh ran despite no usable BASE_REF — should have been skipped, not handed an unusable ref" \
   || pass "check-sandbox-version.sh is never invoked without a usable BASE_REF"
 
-# The other half: mk_repo's DEFAULT repo (add_origin=1, the origin/main ref
-# stamped at HEAD) DOES have a usable base, so the gate still genuinely runs
-# and phase 5 still passes — this file must not have become impossible to pass.
+# The other half: mk_repo's DEFAULT repo models a normal checkout sitting on
+# main — origin/main stamped at HEAD, and a parent commit behind it. The gate
+# still genuinely runs and phase 5 still passes; this file must not have become
+# impossible to pass.
+#
+# AND IT MUST NOT RUN WITH BASE_REF=HEAD, which is the assertion this block was
+# missing and the reason the defect survived. Until 2026-08-19 this said "the
+# origin/main ref stamped at HEAD DOES have a usable base" — it does not. On
+# main, merge-base(HEAD, origin/main) IS HEAD, so the gate was handed HEAD,
+# compared a commit against an identical working tree, found nothing removed and
+# printed OK. Running and checking are different things, and only "STUB:…" was
+# ever asserted, so the test agreed the whole time. Observed live on a host run
+# before it was fixed: `schema gate diffing sandbox.conf against aeb1421…` with
+# aeb1421 == HEAD. Backlog F44.
 r="$(mk_repo 0)"
 : > "$WITNESS_LOG"
 rc="$(run_verify "$r" 5)"
@@ -247,6 +258,96 @@ expect_rc "phase 5 passes when a usable BASE_REF exists (origin/main)" 0 "$rc"
 grep -q 'STUB:check-sandbox-version\.sh' "$WITNESS_LOG" \
   && pass "schema gate genuinely ran with a usable BASE_REF" \
   || fail "schema gate genuinely ran with a usable BASE_REF"
+
+gate_head="$(git -C "$r" rev-parse HEAD 2>/dev/null || true)"
+gate_parent="$(git -C "$r" rev-parse HEAD^ 2>/dev/null || true)"
+gate_ref="$(sed -n 's/^STUB-BASEREF:check-sandbox-version\.sh //p' "$WITNESS_LOG" | tail -1)"
+# The fixture's own premise first, so the two assertions below cannot pass by
+# both values being empty.
+if [[ -n "$gate_head" && -n "$gate_parent" && "$gate_head" != "$gate_parent" ]]; then
+  pass "the stub repo has a parent commit distinct from HEAD (the fixture can tell the two apart)"
+else
+  fail "the stub repo has a parent commit distinct from HEAD — head='$gate_head' parent='$gate_parent'; the BASE_REF assertions below would prove nothing"
+fi
+if [[ -n "$gate_ref" ]]; then
+  pass "the schema gate recorded the BASE_REF it was handed ($gate_ref)"
+else
+  fail "the schema gate recorded the BASE_REF it was handed — no STUB-BASEREF line, so the assertion below cannot fail"
+fi
+if [[ "$gate_ref" != "$gate_head" ]]; then
+  pass "the schema gate is never handed BASE_REF=HEAD (it would compare a commit to itself)"
+else
+  fail "the schema gate was handed BASE_REF=HEAD ($gate_ref) — it compared HEAD's sandbox.conf against an identical working tree and reported OK, verifying nothing"
+fi
+if [[ "$gate_ref" == "$gate_parent" ]]; then
+  pass "the schema gate fell back to HEAD^ when origin/main is HEAD"
+else
+  fail "the schema gate fell back to HEAD^ when origin/main is HEAD — want '$gate_parent', got '$gate_ref'"
+fi
+
+# ── mk_repo's origin/main stamp and parent commit, asserted directly ─────────
+# add_origin=1 must stamp refs/remotes/origin/main AT HEAD and leave a parent
+# commit; add_origin=0 must do neither. Both halves of both, because each guard
+# is a single condition and one half alone leaves its inversion unobserved.
+#
+# This exists because of a regression the fixture itself caused. mk_repo's
+# add_origin=1 repo gained a SECOND commit (backlog F44, so the fixture can tell
+# `origin/main == HEAD` apart from `no base at all`), and that quietly removed
+# the only thing that had been killing the update-ref line's mutants. Before,
+# inverting that line left the stub with neither origin/main nor a resolvable
+# HEAD^, so Phase 5 failed loudly and the block above saw it. After, HEAD^
+# resolves, the schema gate falls back to it and passes, and all three mutants
+# of that line SURVIVED — measured: tests/lib-verify-repo.sh went from 49/49 to
+# 55 mutants with 3 survivors, and the ledger ratchet failed on them.
+#
+# The general lesson, which is why this is a comment and not just four lines: a
+# fixture made richer to support a NEW assertion can take away what an OLD
+# assertion was resting on, and nothing about that change looks like a coverage
+# change. The tier is what noticed. So the contract is asserted here directly,
+# not left to depend on which fallback some consumer happens to reach for.
+r="$(mk_repo 0)"
+# The premise, first and strictly. An empty $r makes every `git -C "$r"` below
+# operate on the CURRENT directory — the real repository — which has an
+# origin/main at HEAD and a parent commit, so all four assertions would pass
+# while measuring nothing. That is not hypothetical: it is what this block did
+# on its first draft, in a file where mk_repo was not in scope.
+if [[ -n "$r" && "$r" == "$TMP"/* && -d "$r/.git" ]]; then
+  pass "the stub repo is a real git repo under \$TMP (not the working repository)"
+else
+  fail "the stub repo is a real git repo under \$TMP — got '$r'; every assertion below would read the REAL repository and pass vacuously"
+fi
+origin_sha="$(git -C "$r" rev-parse --verify -q refs/remotes/origin/main 2>/dev/null || true)"
+head_sha="$(git -C "$r" rev-parse --verify -q HEAD 2>/dev/null || true)"
+parent_sha="$(git -C "$r" rev-parse --verify -q HEAD^ 2>/dev/null || true)"
+if [[ -n "$origin_sha" && "$origin_sha" == "$head_sha" ]]; then
+  pass "mk_repo add_origin=1 stamps refs/remotes/origin/main at HEAD"
+else
+  fail "mk_repo add_origin=1 stamps refs/remotes/origin/main at HEAD — origin='$origin_sha' head='$head_sha'"
+fi
+if [[ -n "$parent_sha" && "$parent_sha" != "$head_sha" ]]; then
+  pass "mk_repo add_origin=1 leaves a parent commit, so HEAD^ resolves"
+else
+  fail "mk_repo add_origin=1 leaves a parent commit, so HEAD^ resolves — parent='$parent_sha' head='$head_sha'"
+fi
+
+r="$(mk_repo 0 0)"
+if [[ -n "$r" && "$r" == "$TMP"/* && -d "$r/.git" ]]; then
+  pass "the no-base stub repo is a real git repo under \$TMP"
+else
+  fail "the no-base stub repo is a real git repo under \$TMP — got '$r'"
+fi
+origin_sha="$(git -C "$r" rev-parse --verify -q refs/remotes/origin/main 2>/dev/null || true)"
+parent_sha="$(git -C "$r" rev-parse --verify -q HEAD^ 2>/dev/null || true)"
+if [[ -z "$origin_sha" ]]; then
+  pass "mk_repo add_origin=0 stamps no origin/main"
+else
+  fail "mk_repo add_origin=0 stamps no origin/main — got '$origin_sha', so the no-base case is not what it claims to be"
+fi
+if [[ -z "$parent_sha" ]]; then
+  pass "mk_repo add_origin=0 leaves a root commit, so HEAD^ does not resolve"
+else
+  fail "mk_repo add_origin=0 leaves a root commit, so HEAD^ does not resolve — got '$parent_sha'; the 'no usable BASE_REF' case would silently acquire one"
+fi
 
 # ── A stale PHASES selection must fail loudly, not verify nothing and exit 0 ───
 # The founding defect of this whole file, reachable now through phase SELECTION

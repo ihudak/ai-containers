@@ -223,12 +223,28 @@ else
     # which the script itself treats as "no sandbox.conf at that ref — nothing
     # to compare" and exits 0 — the exact silent-pass this phase exists to
     # prevent, just relocated one level down.
+    #
+    # A merge-base EQUAL TO HEAD is not a usable base, and treating it as one is
+    # how this block defeated itself for as long as it existed. It happens on the
+    # most ordinary thing a person does here: run Phase 5 on `main` after a merge.
+    # origin/main is then HEAD, merge-base returns HEAD, BASE_REF becomes HEAD —
+    # which is check-sandbox-version.sh's own default — and the gate diffs HEAD's
+    # sandbox.conf against a working tree identical to it, finds nothing removed,
+    # and prints OK. That is the silent no-op the whole comment above is about,
+    # reached through a route the emptiness check could not see. Measured on the
+    # host 2026-08-19: `schema gate diffing sandbox.conf against aeb1421…`, where
+    # aeb1421 WAS HEAD. Recorded as backlog F44.
+    #
+    # HEAD^ is the right fallback rather than an error: on main, "this change" is
+    # the last commit, and for a merge commit HEAD^ is the previous main — the
+    # same push semantics hermetic-checks.yml uses when there is no PR base.
+    gate_head_sha="$(git -C "$REPO" rev-parse HEAD 2>/dev/null || true)"
     gate_base_ref="$(git -C "$REPO" merge-base HEAD origin/main 2>/dev/null || true)"
-    if [[ -z "$gate_base_ref" ]]; then
+    if [[ -z "$gate_base_ref" || "$gate_base_ref" == "$gate_head_sha" ]]; then
       gate_base_ref="$(git -C "$REPO" rev-parse --verify -q HEAD^ 2>/dev/null || true)"
     fi
-    if [[ -z "$gate_base_ref" ]]; then
-      phase_fail 5 "no usable BASE_REF for the schema gate (no origin/main, no HEAD^) — refusing to run it against the default HEAD, which would silently verify nothing"
+    if [[ -z "$gate_base_ref" || "$gate_base_ref" == "$gate_head_sha" ]]; then
+      phase_fail 5 "no usable BASE_REF for the schema gate (origin/main is HEAD or absent, and HEAD^ does not resolve) — refusing to run it against HEAD itself, which would compare a commit to itself and silently verify nothing"
     else
       sub "schema gate diffing sandbox.conf against $gate_base_ref"
       BASE_REF="$gate_base_ref" bash "$CHECK_SANDBOX_VERSION_SH" --check 2>&1 | sed "s/^/$LOG_PREFIX   /"

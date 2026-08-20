@@ -251,7 +251,9 @@ rm -rf "$_gitprobe"
 # failure mk_repo itself could signal or that a caller guard on `$r` would
 # ever have caught.
 mk_repo() {  # $1=build.sh exit code (default 0)  $2=1 to stamp a
-             #    refs/remotes/origin/main ref at HEAD (default 1). Pass 0 for
+             #    refs/remotes/origin/main ref at HEAD (default 1), on a repo
+             #    given a SECOND commit first, so it models a normal checkout on
+             #    main: origin/main == HEAD and HEAD^ resolves. Pass 0 for
              #    a repo with NO usable schema-gate base at all — no
              #    origin/main ref, and the single "stub" commit below is also
              #    HEAD's only commit, so HEAD^ does not resolve either. That
@@ -305,8 +307,22 @@ mk_repo() {  # $1=build.sh exit code (default 0)  $2=1 to stamp a
         # rc_value_now, not a bare "${!rc_var:-0}", so the registry's `-`
         # sentinel cannot indirect through the shell's `$-` option flags.
         rc_val="$(rc_value_now "$rc_var")"
-        printf '#!/usr/bin/env bash\nprintf "STUB:%s\\n" >> "%s"\nexit %s\n' \
-          "$(basename "$target")" "$WITNESS_LOG" "$rc_val" > "$r/$target"
+        # Two witness lines, not one. "STUB:<name>" proves the check RAN, which
+        # is what the registry's own regex matches. "STUB-BASEREF:<name> <ref>"
+        # records the BASE_REF it was handed, and exists because running is not
+        # the same as checking: the schema gate hands its whole meaning to that
+        # one variable, and a BASE_REF equal to HEAD makes it compare a commit to
+        # itself and report OK (backlog F44). Only a test that can SEE the value
+        # can tell those two apart. Emitted by every repo-script stub rather than
+        # special-cased for one, and silent when BASE_REF is unset, so the other
+        # stubs are unaffected.
+        {
+          printf '#!/usr/bin/env bash\n'
+          printf 'printf "STUB:%s\\n" >> "%s"\n' "$(basename "$target")" "$WITNESS_LOG"
+          printf 'if [[ -n "${BASE_REF-}" ]]; then printf "STUB-BASEREF:%s %%s\\n" "$BASE_REF" >> "%s"; fi\n' \
+            "$(basename "$target")" "$WITNESS_LOG"
+          printf 'exit %s\n' "$rc_val"
+        } > "$r/$target"
         chmod +x "$r/$target"
         ;;
       probe)
@@ -319,9 +335,21 @@ mk_repo() {  # $1=build.sh exit code (default 0)  $2=1 to stamp a
         ;;
     esac
   done < <(lc_rows check)
+  # add_origin=1 gets a SECOND commit before the ref is stamped, so the repo it
+  # models is a normal checkout sitting on main: origin/main == HEAD, and HEAD^
+  # resolves. That is the shape verify-on-host.sh's BASE_REF resolution has to
+  # get right (backlog F44) — with only a root commit, "origin/main == HEAD" and
+  # "no base at all" are indistinguishable, and a one-commit repo could not tell
+  # a gate that falls back to HEAD^ from one that hands the gate HEAD itself.
+  # add_origin=0 deliberately keeps its single commit: that IS the no-base case.
   ( cd "$r" && { git init -q -b main . >/dev/null 2>&1 || git init -q . >/dev/null 2>&1; } \
       && git add -A \
       && git -c user.email=t@example -c user.name=t commit -q -m stub \
+      && { [[ "$add_origin" != "1" ]] || {
+             printf 'second\n' > .mk-repo-parent \
+               && git add .mk-repo-parent \
+               && git -c user.email=t@example -c user.name=t commit -q -m stub-2
+           }; } \
       && { [[ "$add_origin" != "1" ]] || git update-ref refs/remotes/origin/main HEAD; } \
       && { [[ "${MK_REPO_UNTRACK_SH:-0}" != "1" ]] || {
              git rm -q --cached -- '*.sh' >/dev/null 2>&1
