@@ -599,9 +599,17 @@ check "  … counted as unproven, NOT as a kill, in TOTAL" "1" \
 # SUBSHELL so run.sh's globals cannot reach this file's own state; run.sh guards
 # its main with `BASH_SOURCE == $0`, so sourcing defines functions and runs
 # nothing.
-flag_is_mine() { ( source "$RUN" >/dev/null 2>&1; falsify_flag_is_mine "$1" "$2" ); }
+flag_is_mine() {   # <flagfile> <token> → run.sh's own predicate, in a subshell
+  ( set +u
+    # shellcheck source=/dev/null
+    source "$RUN" >/dev/null 2>&1
+    falsify_flag_is_mine "$1" "$2" )
+}
 
-if ( source "$RUN" >/dev/null 2>&1; declare -F falsify_flag_is_mine >/dev/null ); then
+if ( set +u
+     # shellcheck source=/dev/null
+     source "$RUN" >/dev/null 2>&1
+     declare -F falsify_flag_is_mine >/dev/null ); then
   pass "run.sh exposes falsify_flag_is_mine"
   ff="$TMP/flagcheck"; rm -f "$ff"
 
