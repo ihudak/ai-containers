@@ -370,7 +370,7 @@ sub "running the corpus (jobs=$fl_jobs, timeout=$fl_timeout) — a few minutes"
 if bash "$TESTS_DIR/falsify/run.sh" --jobs "$fl_jobs" --timeout "$fl_timeout" > "$fl_run" 2>&1; then
   { grep -E '^falsify: --jobs auto ' "$fl_run" || true; } \
     | sed 's/^falsify: //' | while IFS= read -r l; do sub "$l"; done
-  grep -E '^(TARGET|TOTAL|ASSERTLESS)\|' "$fl_run" | sed 's/^/  /' | while IFS= read -r l; do sub "$l"; done
+  grep -E '^(TARGET|TOTAL|ASSERTLESS|SKIPPED|UNATTEMPTED)\|' "$fl_run" | sed 's/^/  /' | while IFS= read -r l; do sub "$l"; done
   # HOW MUCH WAS ACTUALLY MEASURED. An UNPROVEN mutant produced no verdict at
   # all, so a run with many of them is measuring less than its pass suggests —
   # and the pass is honest only if that is said out loud rather than left in

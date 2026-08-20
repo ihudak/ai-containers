@@ -712,6 +712,13 @@ FR_UNPROVEN=0
 FR_TIMEOUTS=0
 FR_ASSERTLESS=0
 FR_BROKEN=0
+# A target whose PRISTINE baseline is not green is skipped WHOLE, and every one
+# of its mutants leaves the corpus without ever being attempted. That is not the
+# same event as a mutant that ran and produced nothing (FR_BROKEN), and it is
+# invisible in TOTAL, whose first field counts the targets fr_load_targets
+# ACCEPTED — not the ones that were measured (backlog F54).
+FR_SKIPPED_TARGETS=0
+FR_SKIPPED_MUTANTS=0
 FR_T_KILLED=0
 FR_T_SURVIVED=0
 FR_T_UNPROVEN=0
@@ -938,7 +945,7 @@ fr_usage() { sed -n '2,60p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
 # ── main ──────────────────────────────────────────────────────────────────────
 falsify_main() {
-  local i n target oracle mutants total=0 t_run t_target
+  local i n target oracle mutants total=0 t_run t_target skipped_n
   local seq op lineno sha text slot res rc=0
 
   while (( $# > 0 )); do
@@ -1057,6 +1064,15 @@ falsify_main() {
         fr_err "oracle '$oracle' is not green on the PRISTINE tree (rc=$FALSIFY_RC, signal=$FALSIFY_SIGNAL) — every mutant of $target would be reported KILLED. Skipping $target."
       fi
       sed 's/^/    /' "$FR_OUT/baseline.log" | tail -20 >&2
+      # ON STDOUT, beside MUTANT/TARGET/TOTAL, because stderr is where this
+      # event already was and stderr is what a summary reader filters out. The
+      # count is what leaves the corpus: every mutant of this target, none of
+      # which will be attempted.
+      skipped_n="$(grep -c . "$mutants" 2>/dev/null || printf 0)"
+      printf 'SKIPPED|%s|%s|%s|%s\n' "$target" "$oracle" "$skipped_n" \
+        "$( (( FALSIFY_RC == 2 )) && printf 'no-test-matched' || printf 'baseline-not-green' )"
+      FR_SKIPPED_TARGETS=$(( FR_SKIPPED_TARGETS + 1 ))
+      FR_SKIPPED_MUTANTS=$(( FR_SKIPPED_MUTANTS + skipped_n ))
       rc=1
       continue
     fi
@@ -1107,6 +1123,20 @@ falsify_main() {
   # can only go up from here, and the state with nothing left to look at is the
   # state in which nobody looks.
   printf 'ASSERTLESS|%s|%s\n' "$FR_T_ASSERTLESS" "$FR_T_KILLED"
+
+  # ── HOW MUCH OF THE CORPUS WAS NEVER ATTEMPTED ──────────────────────────────
+  # Always emitted, even at zero, and on its own line for the same reason
+  # ASSERTLESS is: TOTAL is parsed POSITIONALLY by check-ledger.sh,
+  # verify-on-host.sh and this repo's own tests, so it does not grow a tenth
+  # field. And zero is exactly when to start printing it — the number can only
+  # go up, and the state with nothing to look at is the state in which nobody
+  # looks.
+  #
+  # TOTAL's first field is the targets fr_load_targets ACCEPTED and its second
+  # is the verdicts PRODUCED. On macOS at --jobs 32 --timeout 5 that read
+  # `TOTAL|9|106|…` for a run in which four targets and 158 mutants were never
+  # attempted at all, and no line said so (backlog F54). This one does.
+  printf 'UNATTEMPTED|%s|%s|%s\n' "$FR_SKIPPED_TARGETS" "$FR_SKIPPED_MUTANTS" "$total"
 
   if (( FR_BROKEN > 0 )); then
     fr_err "$FR_BROKEN mutant(s) produced no verdict — they are NOT counted as kills"
