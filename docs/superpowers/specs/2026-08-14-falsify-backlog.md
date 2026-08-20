@@ -26,13 +26,63 @@ yield survivors that measure the absence of a harness, not the quality of an
 assertion — the failure mode the ledger exists to keep out. It needs coverage
 first, then entry to the mutation tier.
 
-## F2 — `sandbox.sh`'s discovery and open modes are never executed hermetically — **PARTLY CLOSED 2026-08-14**
+## F2 — `sandbox.sh`'s discovery and open modes are never executed hermetically — **FIXED 2026-08-20**
 
-`tests/test-mode-capabilities.sh` now runs `sandbox.sh` in **all three** modes
+`tests/test-mode-capabilities.sh` runs `sandbox.sh` in **all three** modes
 against a fake `docker`, so the argv-parsing and mode-dispatch paths of discovery
-and open are executed. What remains unexecuted is everything the three modes do
+and open are executed. What remained unexecuted was everything the three modes do
 *differently* beyond the capability array — notably discovery's
-`output_mount_flags` branch. The entry stays open for that remainder.
+`output_mount_flags` branch.
+
+**The remainder is closed 2026-08-20** by `tests/test-mode-output-mounts.sh`,
+which drives the same three modes through the same fake-`docker` technique and
+asserts the block directly below the capability array — 18 assertions over three
+independent decisions:
+
+| mode | `DISCOVERY_CAPTURE_ENABLED` | output mount | dir created on host |
+|---|---|---|---|
+| restricted | `0` | `.agent-blocked` | `.agent-blocked` |
+| discovery | **`1`** | `.agent-discovery` | `.agent-discovery` |
+| open | `0` | **neither** | **neither** |
+
+**The trap, measured before a line was written, and it would have made the whole
+file vacuous.** `DISCOVERY_CAPTURE_DIR=/workspace/.agent-discovery` and
+`BLOCKED_CAPTURE_DIR=/workspace/.agent-blocked` are on the argv in **all three
+modes** — they are path constants the entrypoint reads, not mode decisions. An
+assertion greping for either name passes in every mode, including the one that
+must not have the mount, and goes on passing with the branch deleted. What
+discriminates is the `-v` PAIR (the `:` is the whole difference) and the value
+of `DISCOVERY_CAPTURE_ENABLED`.
+
+**Two assertions earn their place by failing ALONE**, which is the only way to
+show a check is not riding on its neighbours:
+
+| damage | failures |
+|---|---|
+| `cond-negate` the discovery test | 11 |
+| `cmp-flip` that same `==` to `!=` | 11 |
+| `cond-negate` the restricted `elif` | 4 (open gains a mount) |
+| set `capture_enabled` to `"0"` in the discovery branch | **1** — the flag alone |
+| delete the discovery `mkdir`, keep its `-v` | **1** — the directory alone |
+
+The mount and the `mkdir` are separate statements and only one of them is the
+mount, so a `-v` pointing at a directory that was never created reads as a
+perfectly good mount on the argv. `capture_enabled` is a third decision no mount
+assertion can see — and it is the flag that decides whether the firewall capture
+runs at all, which is the same class of thing as this project's founding example
+of a check that reports success while doing nothing.
+
+**And one damage that does NOTHING, recorded because it was in the test's header
+first and was wrong:** turning the `elif` into a plain `if` changes nothing
+observable — the two conditions are mutually exclusive. "Obviously that would
+break it" is how a demonstration ends up proving nothing.
+
+**A knock-on worth acting on later:** `targets.conf`'s DEFERRED row for
+`sandbox.sh` says its whole-file oracle is "a restricted-mode-only whole-file
+subprocess". That is now stale — two hermetic tests run it as a subprocess in
+all three modes. Un-deferring `sandbox.sh` still needs its own increment (the
+row's other half, the five sourced functions at a different granularity, is
+unchanged), but the stated blocker is half gone.
 
 ### Original finding
 
@@ -1524,7 +1574,7 @@ compares two samples of an environment-derived value**. Under mutation, a
 damaged accessor can turn such an assertion into a load detector. That is what
 made `tests/portability.sh` stay a 1:1 row (see F16).
 
-## F31 — every test's `mktemp -d` is unchecked, and a failed one is scored as a KILL — **THE FALSE KILL IS CLOSED 2026-08-20; 15 NON-ORACLE SITES REMAIN**
+## F31 — every test's `mktemp -d` is unchecked, and a failed one is scored as a KILL — **FIXED 2026-08-20**
 
 **This is the cause of F30's macOS false kills.** Root-caused 2026-08-18, after
 three wrong hypotheses (the `/etc/ai-containers/tools.d` default, the
@@ -1622,7 +1672,54 @@ Note how that first measurement lands: `FAIL  (exit 1)` has no colon, so
 counter now reports and CI now bounds at 0. The two fixes catch the same event
 from opposite ends.
 
-**Still open — the 15 unguarded assignments, none an oracle:**
+### Closed 2026-08-20 — and the last sweep found the one destructive instance
+
+The remaining sites are guarded in both repos. Two things the sweep turned up
+that the count alone did not:
+
+**1. `mgd-ai-containers/tests/test-preset-overlay.sh` DELETED a tracked file.**
+It backed up the real `base/projects.conf` around a `project-init.sh` run:
+
+```bash
+pc_bak=""; [[ -f "$pc" ]] && { pc_bak="$(mktemp)"; cp "$pc" "$pc_bak"; }
+…
+if [[ -n "$pc_bak" ]]; then cp "$pc_bak" "$pc"; rm -f "$pc_bak"; else rm -f "$pc"; fi
+```
+
+One variable carrying two facts: *where the backup is* and *whether there was
+anything to back up*. The restore reads an empty `$pc_bak` as the second, so a
+failed `mktemp` sent it down the `else` branch and **removed the tracked
+projects.conf it was meant to restore**. The file has no errexit, so the failing
+`cp` said nothing. Demonstrated in isolation: present before, absent after. Fixed
+by splitting the two facts (`pc_existed`) rather than by guarding alone — the
+guard stops the failure, the split stops the misreading.
+
+**2. Three of the sites are `cat "$tmp" > "$file"`, and the shell truncates a
+redirect target before it runs the command.** So an empty `$tmp` does not fail
+harmlessly there; it empties the file being rewritten. Measured on the shape:
+32 bytes → 0.
+
+**But every production entry point was already protected, and saying otherwise
+would be the overstatement this file exists to avoid.** `bump-sandbox-version.sh`,
+`sync-to-projects.sh` and every migration carry `set -euo pipefail`, so errexit
+aborts at the assignment. Verified against the real scripts with a failing
+`mktemp` stub rather than argued: the migration exits 1 with the file intact at
+36 bytes. The exposure was that this safety belongs to a shell option those files
+do not set at the point it matters and cannot see from the call site — which is
+exactly F43's finding, arriving from the other direction. The guards make the
+safety explicit instead of incidental, and each one now names the file it
+refused to touch.
+
+`tests/integration/minimal-conf.sh` is the same story with a smaller blast
+radius: no errexit and its stdout IS a config, but its only caller already
+checks the status, so what changed is one named line on stderr in place of zero
+bytes on stdout.
+
+**A template was teaching the bug**: `bump-sandbox-version.sh`'s comment block
+for authoring new migrations showed the unguarded `tmp="$(mktemp)"` idiom. Every
+migration written from it inherited the shape. Updated too.
+
+### The original list, for the record — the 15 unguarded assignments, none an oracle:
 `bump-sandbox-version.sh:74`, `sandbox-common.sh:537,551`,
 `sync-to-projects.sh:81`, `migrations/002:32`, `migrations/003:17`,
 `migrations/004:11`, `tests/test-sandbox-schema.sh:184`,
