@@ -2532,7 +2532,7 @@ parity check now has concrete files to compare. Still not built, and still
 recorded rather than assumed worth building — but "found by a human reading a
 diff during a port" has happened twice in one day.
 
-## F42 — the local lint cannot see a script you have just written
+## F42 — the local lint cannot see a script you have just written — **FIXED 2026-08-20**
 
 Found the hard way, in the increment that fixed F40: CI failed the very PR whose
 subject was *"the lint gate's file list silently omits files"*, on an SC2034 in
@@ -3581,3 +3581,53 @@ failing:
 The second damage leaves the zero control passing, because at zero the target
 count and the mutant count are the same number — which is exactly why the
 non-zero case had to be asserted separately rather than trusting the control.
+
+### 2026-08-20 — FIXED, and the entry's own two options were not exclusive
+
+The entry offered `-o --exclude-standard` in Phase 7 **or** having Phase 7 merely
+SAY what it skipped, and left it undecided. Both were done, because they answer
+different halves: including the files is what removes the red-CI surprise, and
+saying so is what stops the new policy being as silent as the old one.
+
+Phase 7 now builds its list ONCE, from `vh_all_scripts` — tracked plus
+untracked-and-not-ignored — and hands the same list to all three checks:
+`bash -n`, `tests/bash-dialect-lint.sh` (explicitly, as arguments), and
+`shellcheck`. Previously each rebuilt its own, and the dialect lint would have
+kept its tracked-only default while the other two moved.
+
+```
+parsed 137 script(s)
+  including 1 not yet tracked by git:
+    tests/test-something-new.sh
+  (they are linted here and in CI only once committed; .gitignore'd files are never included)
+```
+
+**CI is deliberately unchanged.** It checks out a branch where everything is
+committed, so the two lists are identical there — this can only ever differ on a
+developer's machine, which is where the surprise was. `bash-dialect-lint.sh`
+keeps its tracked-only default for exactly that reason.
+
+**Six assertions** in `tests/test-verify-lint-scope.sh`, on a fixture whose
+tracked broken script is REPAIRED first so the untracked one is the only thing
+that can fail the phase. Each guard demonstrated failing:
+
+| damage | assertions that flip |
+|---|---|
+| the list goes back to tracked-only | 3 — including *"the local gate still reports clean over a file it did not read"* |
+| `--exclude-standard` dropped | 3 — the ignored scratch file gets linted and the count is wrong |
+| the phase stops saying what it included | 2 — only the reporting pair |
+
+**It broke two other tests, and both were right to break.**
+
+`tests/test-grep-q-pipelines.sh` caught a `producer | grep -q` under `pipefail`
+in the new test code itself — F34's rule, enforced over every tracked script,
+firing on the increment that was written moments earlier. Rewritten as
+`[[ -n "$(…)" ]]`.
+
+`tests/test-verify-exit-code.sh`'s "parsed no files" fixture stopped reaching the
+branch it exists for. `MK_REPO_UNTRACK_SH=1` drops `*.sh` from the index while
+leaving the files on disk — which, after this change, no longer empties the list:
+the same files come back as untracked and Phase 7 lints them, exactly as
+intended. Both halves of the list now have to be empty, so the fixture adds a
+`.gitignore` containing `*.sh`. That is a fixture change, not a weakened
+assertion: the branch still fails the phase and still names itself.

@@ -423,7 +423,16 @@ fi
 # nothing. MK_REPO_UNTRACK_SH drops *.sh from the index while leaving the files
 # on disk, so every existence check still passes and this is the ONLY thing that
 # fails — which is what makes both assertions below meaningful.
+#
+# THE .gitignore IS PART OF THE FIXTURE, NOT AN ACCIDENT. Since backlog F42,
+# Phase 7's list is tracked PLUS untracked-and-not-ignored — so dropping *.sh
+# from the index no longer empties it: the same files come back as untracked
+# and Phase 7 lints them, which is the improvement F42 exists for. To keep
+# exercising the branch this block is about — "the file list is empty, so
+# nothing was verified" — BOTH halves of the list have to be empty, and
+# ignoring *.sh is how to say that while leaving every file on disk.
 r="$(MK_REPO_UNTRACK_SH=1 mk_repo 0)"
+printf '*.sh\n' > "$r/.gitignore"
 rc="$(run_verify "$r" "7")"
 [[ "$rc" != "0" ]] \
   && pass "a run whose bash -n matched no files exits non-zero" \

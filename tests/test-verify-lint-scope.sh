@@ -125,8 +125,84 @@ check_layout() {  # $1=upstream|sibling
   fi
 }
 
+# ── F42: a script you have JUST WRITTEN is not yet tracked, and was skipped ───
+# `git ls-files '*.sh'` lists the INDEX. Until `git add`, a new script is
+# invisible to it — so the local gate reported clean over a file it never read,
+# and the author's first feedback was a red CI job. It happened on the very PR
+# whose subject was "the lint gate's file list silently omits files".
+#
+# The tracked broken script is REPAIRED first, so the only thing that can fail
+# this phase is the untracked one. Without that, "the phase failed" would prove
+# nothing — it already fails for the F40 reason.
+check_untracked() {
+  local root engine rc out parsed n_untracked
+  IFS='|' read -r root engine <<< "$(mk_layout untracked)"
+
+  printf '#!/usr/bin/env bash\ntrue\n' > "$root/outside-engine-broken.sh"
+  ( cd "$root" && git add -A \
+      && git -c user.email=t@example -c user.name=t commit -q -m repair ) >/dev/null 2>&1
+  if [[ -n "$( cd "$root" && git status --porcelain )" ]]; then
+    fail "untracked: the fixture tree is dirty before the subject is planted — the checks below would prove nothing"
+    return
+  fi
+
+  # THE SUBJECT: written, not added. Exactly what an author has in hand.
+  printf '#!/usr/bin/env bash\nif [ 2 -eq\n' > "$root/not-yet-added.sh"
+  # AND THE CONTROL: deliberately ignored scratch, which must stay out of it.
+  # `--exclude-standard` is the whole reason this is safe to turn on, so the
+  # assertion that it is honoured belongs beside the one that it works.
+  printf 'scratch-*.sh\n' > "$root/.gitignore"
+  printf '#!/usr/bin/env bash\nif [ 3 -eq\n' > "$root/scratch-experiment.sh"
+
+  rc="$(run_verify "$engine" 7)"
+  out="$(cat "$TMP/out.log")"
+
+  if grep -q 'PARSE ERROR: not-yet-added.sh' <<< "$out"; then
+    pass "untracked: Phase 7 parses a script that is written but not yet added"
+  else
+    fail "untracked: Phase 7 never parsed not-yet-added.sh — the local gate still reports clean over a file it did not read ($(grep -o 'parsed [0-9]* script' <<< "$out" | head -1))"
+  fi
+  if [[ "$rc" != "0" ]]; then
+    pass "untracked: and that parse error fails the phase (rc=$rc)"
+  else
+    fail "untracked: Phase 7 exited 0 with a syntax error in an untracked script — found and ignored is no better than not found"
+  fi
+
+  # THE CONTROL. An ignored file must never be linted, or every developer's
+  # scratch directory becomes a gate failure.
+  if grep -q 'PARSE ERROR: scratch-experiment.sh' <<< "$out"; then
+    fail "untracked: a .gitignore'd script was linted — --exclude-standard is not being honoured"
+  else
+    pass "untracked: a .gitignore'd script is NOT linted"
+  fi
+
+  # And the phase must SAY it included them. Silence is what made the old
+  # behaviour a surprise rather than a policy.
+  n_untracked="$(sed -n 's/.*including \([0-9]*\) not yet tracked by git.*/\1/p' <<< "$out" | head -1)"
+  if [[ "$n_untracked" == "1" ]]; then
+    pass "untracked: Phase 7 says how many untracked scripts it included (1)"
+  else
+    fail "untracked: Phase 7 reported '${n_untracked:-no}' untracked script(s); the tree has exactly one non-ignored"
+  fi
+  if grep -q 'not-yet-added.sh' <<< "$(sed -n '/not yet tracked by git/,/only once committed/p' <<< "$out")"; then
+    pass "untracked:   … and names it"
+  else
+    fail "untracked:   … and names it — the count alone does not say which file"
+  fi
+
+  # The count must cover tracked AND untracked, and NOT the ignored one.
+  parsed="$(sed -n 's/.*parsed \([0-9]*\) script(s).*/\1/p' <<< "$out" | head -1)"
+  expected=$(( $( ( cd "$root" && git ls-files '*.sh' ) | grep -c . ) + 1 ))
+  if [[ "$parsed" == "$expected" ]]; then
+    pass "untracked: the parsed count is tracked + untracked, and excludes the ignored one ($parsed)"
+  else
+    fail "untracked: Phase 7 parsed ${parsed:-no} script(s), expected $expected (tracked + 1 untracked, ignored excluded)"
+  fi
+}
+
 check_layout upstream
 check_layout sibling
+check_untracked
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
