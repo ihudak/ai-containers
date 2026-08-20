@@ -104,6 +104,9 @@ run_sandbox() {
 
 # mounted <host-src> <container-dst> — is that exact bind flag in the captured args?
 mounted() { grep -qx -- "$1:$2:rw" "$CAPTURE"; }
+# The git identity files are mounted read-only, so they need their own predicate
+# rather than a mode argument nobody else would pass.
+mounted_ro() { grep -qx -- "$1:$2:ro" "$CAPTURE"; }
 
 # ── Case 1: active tool → group dir created and mounted ─────────────────────────
 setup
@@ -210,6 +213,107 @@ run_sandbox "$TMP/app"
 if [[ -f "$GROUP_ROOT/.gamma/one.yaml" && -f "$GROUP_ROOT/.config/gamma-cli/two.yaml" ]]; then
   pass "from:host bootstrap copies both config dirs"; else fail "from:host bootstrap copies both config dirs"; fi
 teardown
+
+# ── Case 9: the git identity comes from the GROUP, never from the host ────────
+# `gitconfig_src` starts at "$HOME/.gitconfig" and is REPOINTED at the group copy
+# for every group but `host`. Invert that one condition and a named group mounts
+# the host's real git identity into the container — the isolation boundary open,
+# with every test still green. Nothing asserted on these two mounts at all until
+# now: all three mutants of that line SURVIVED the whole hermetic suite
+# (falsify, 2026-08-20).
+setup
+printf 'name = host-identity\n' > "$HOME/.gitconfig"
+printf 'host-ignores\n'         > "$HOME/.gitignore_global"
+run_sandbox "$TMP/app"
+if mounted_ro "$GROUP_ROOT/.gitconfig" "/home/dev/.gitconfig"; then
+  pass "named group: .gitconfig mounted from the group root"; else fail "named group: .gitconfig mounted from the group root"; fi
+if mounted_ro "$GROUP_ROOT/.gitignore_global" "/home/dev/.gitignore_global"; then
+  pass "named group: .gitignore_global mounted from the group root"; else fail "named group: .gitignore_global mounted from the group root"; fi
+# THE ONE THAT MATTERS. The group copy existing does not prove the host copy is
+# not ALSO the mount source — that is the shape the flip produces.
+if ! grep -qx -- "$HOME/.gitconfig:/home/dev/.gitconfig:ro" "$CAPTURE"; then
+  pass "named group: the HOST .gitconfig is not the mount source"; else fail "named group: the HOST .gitconfig is not the mount source — the git identity crosses the group boundary"; fi
+if ! grep -qx -- "$HOME/.gitignore_global:/home/dev/.gitignore_global:ro" "$CAPTURE"; then
+  pass "named group: the HOST .gitignore_global is not the mount source"; else fail "named group: the HOST .gitignore_global is not the mount source"; fi
+teardown
+
+# ── Case 9b: …and `host` still means the host, which is the control ────────────
+setup
+printf 'name = host-identity\n' > "$HOME/.gitconfig"
+printf 'host-ignores\n'         > "$HOME/.gitignore_global"
+export AI_CONTAINER_GROUP=host AI_CONTAINER_HOST_ACK=1
+run_sandbox "$TMP/app"
+if mounted_ro "$HOME/.gitconfig" "/home/dev/.gitconfig"; then
+  pass "host group: .gitconfig mounted straight from \$HOME"; else fail "host group: .gitconfig mounted straight from \$HOME"; fi
+unset AI_CONTAINER_HOST_ACK
+teardown
+
+# ── Case 10: every BUILT-IN config dir is group-scoped, one assertion each ─────
+# The tools.d descriptors above go through one code path; these eight are
+# hardcoded in run_container, each with its own `if [[ "$group" != "host" ]];
+# then install -d …` guard, and the mount that follows is OUTSIDE the guard. So
+# inverting a guard does not redirect the mount — it stops the directory being
+# created, `add_mount_if_exists` then finds nothing, and that tool's credentials
+# silently stop reaching the container. One assertion per directory, because one
+# aggregate would kill all eight mutants without saying which line moved.
+BUILTIN_DIRS=(.config/gh .copilot .kiro .claude .codex .gemini .cache/qmd .ai-tools)
+setup
+printf '# schema-version: 3\nalpha=OFF\nbeta=OFF\ngamma=OFF\ngithub-cli=ON\ncopilot=ON\nkiro=ON\nclaude-code=ON\ncodex=ON\ngemini=ON\nqmd=ON\n' > "$SANDBOX_CONF"
+run_sandbox "$TMP/app"
+for _d in "${BUILTIN_DIRS[@]}"; do
+  if mounted "$GROUP_ROOT/$_d" "/home/dev/$_d"; then
+    pass "named group: $_d mounted from the group root"; else fail "named group: $_d mounted from the group root"; fi
+done
+_leaked=""
+for _d in "${BUILTIN_DIRS[@]}"; do
+  grep -qx -- "$HOME/$_d:/home/dev/$_d:rw" "$CAPTURE" && _leaked="$_leaked $_d"
+done
+if [[ -z "$_leaked" ]]; then
+  pass "named group: no built-in config dir is mounted from the bare host home"; else fail "named group: no built-in config dir is mounted from the bare host home —$_leaked"; fi
+teardown
+
+# ── Case 10b: `host` mounts the same eight straight from $HOME ────────────────
+setup
+printf '# schema-version: 3\nalpha=OFF\nbeta=OFF\ngamma=OFF\ngithub-cli=ON\ncopilot=ON\nkiro=ON\nclaude-code=ON\ncodex=ON\ngemini=ON\nqmd=ON\n' > "$SANDBOX_CONF"
+for _d in "${BUILTIN_DIRS[@]}"; do mkdir -p "$HOME/$_d"; done
+export AI_CONTAINER_GROUP=host AI_CONTAINER_HOST_ACK=1
+run_sandbox "$TMP/app"
+_missing=""
+for _d in "${BUILTIN_DIRS[@]}"; do
+  mounted "$HOME/$_d" "/home/dev/$_d" || _missing="$_missing $_d"
+done
+if [[ -z "$_missing" ]]; then
+  pass "host group: every built-in config dir mounted from \$HOME"; else fail "host group: every built-in config dir mounted from \$HOME — missing:$_missing"; fi
+if [[ ! -d "$HOME/.ai-containers/host" ]]; then
+  pass "host group: no group root is created behind the user's back"; else fail "host group: no group root is created behind the user's back"; fi
+unset AI_CONTAINER_HOST_ACK
+teardown
+
+# ── Case 11: the REPOS mode gate accepts exactly three modes ──────────────────
+# `[[ "$rmode" != "ro" && "$rmode" != "rw" && "$rmode" != "rwcopy" ]]` decides
+# whether a repo may be mounted writable. Every mutant of it survived. Asserted
+# from BOTH sides, and deliberately without registering anything: the mode gate
+# runs BEFORE the registry lookup, so an accepted mode falls through to "is not
+# a registered repo" — which is the observable that says the gate let it past.
+# Rejecting a valid mode is the direction that costs nothing and hides forever;
+# accepting an invalid one is the direction that widens the mount.
+setup
+export REPOS="acme:bogus"
+run_sandbox "$TMP/app"
+if grep -q "invalid mode 'bogus'" "$ERR"; then
+  pass "REPOS: an unknown mode is refused by name"; else fail "REPOS: an unknown mode is refused by name"; fi
+[[ $RC -ne 0 ]] && pass "REPOS: an unknown mode fails the launch" || fail "REPOS: an unknown mode fails the launch (rc=$RC)"
+teardown
+for _m in ro rw rwcopy; do
+  setup
+  export REPOS="acme:$_m"
+  run_sandbox "$TMP/app"
+  if ! grep -q 'invalid mode' "$ERR"; then
+    pass "REPOS: :$_m is accepted by the mode gate"; else fail "REPOS: :$_m is accepted by the mode gate — a valid mode is being refused"; fi
+  if grep -q 'is not a registered repo' "$ERR"; then
+    pass "  … and reaches the registry check, so the gate really let it past"; else fail "  … and reaches the registry check, so the gate really let it past"; fi
+  teardown
+done
 
 # ── Hermeticity: the real home and repo are untouched ───────────────────────────
 if [[ ! -e "$REAL_HOME/.ai-containers/default/.gamma" ]]; then
