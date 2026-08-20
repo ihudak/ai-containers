@@ -46,13 +46,20 @@ tier gap rather than an absence of coverage. Worth closing because the hermetic
 tier is the cheap one: the same fake-`docker` technique that already drives
 restricted mode would extend to both other modes for very little.
 
-## F3 — `any_active` in `sandbox-common.sh` is dead code
+## F3 — `any_active` in `sandbox-common.sh` is dead code — **FIXED 2026-08-20**
 
 Zero callers repo-wide (verified by grep). Either a leftover or an intended
 extension point that never landed. Deleting it is a one-line change; the reason
-it is recorded rather than done is that it belongs to no task in this
+it was recorded rather than done is that it belonged to no task in that
 increment's plan and a drive-by deletion is how unrelated breakage gets
 attributed to the wrong change.
+
+**Re-derived before deleting**, since the entry is a hypothesis like any other:
+`any_active` appears exactly twice in each repo — its own definition and the
+gitignored project copy under `.ai-containers/`, which regenerates. No indirect
+call shapes (`eval`, `declare -F`, `$fn "$@"`) exist in the file. Its only
+callee, `is_active`, keeps six real callers across `sandbox.sh` and `build.sh`,
+so nothing became dead behind it. Removed from both repos.
 
 ## F4 — `install-tools.sh:api_get` is unexercised
 
@@ -1517,7 +1524,7 @@ compares two samples of an environment-derived value**. Under mutation, a
 damaged accessor can turn such an assertion into a load detector. That is what
 made `tests/portability.sh` stay a 1:1 row (see F16).
 
-## F31 — every test's `mktemp -d` is unchecked, and a failed one is scored as a KILL
+## F31 — every test's `mktemp -d` is unchecked, and a failed one is scored as a KILL — **THE FALSE KILL IS CLOSED 2026-08-20; 15 NON-ORACLE SITES REMAIN**
 
 **This is the cause of F30's macOS false kills.** Root-caused 2026-08-18, after
 three wrong hypotheses (the `/etc/ai-containers/tools.d` default, the
@@ -1571,11 +1578,59 @@ TMP="$(mktemp -d)" || { echo "FAIL: mktemp -d failed" >&2; exit 1; }
 ```
 
 turns sixty misleading assertion failures into one true line — worth having —
-but it does **not** fix the false kill, because `run.sh` scores KILLED on any
-`FAIL:` line or any non-zero exit. A test that correctly reports its own
-scaffolding is broken would still be read as "the assertion noticed the
-mutation". The tier cannot currently tell *the oracle failed* from *the oracle
-failed BECAUSE OF THE MUTATION*, and that distinction is the whole tier.
+but it does **not** fix the false kill on its own, because `run.sh` scores
+KILLED on any `FAIL:` line or any non-zero exit. A test that correctly reports
+its own scaffolding is broken would still be read as "the assertion noticed the
+mutation". The tier cannot tell *the oracle failed* from *the oracle failed
+BECAUSE OF THE MUTATION* unless it is told, and that distinction is the whole
+tier.
+
+### Re-derived 2026-08-20: most of this entry is no longer true
+
+Both halves have since been built, and the entry still reads as if neither had.
+Measured rather than read:
+
+| this entry says | today |
+|---|---|
+| "the tier cannot tell the two apart" | `run.sh:falsify_has_scaffold_failure` greps for `SCAFFOLD-FAILED:` and scores such a run **UNPROVEN**, checked *before* the survived branch |
+| "87 call sites, and NOT ONE checks the status" | **87 sites now guarded**; 15 unguarded assignments remain |
+| the false kill | **closed** — every one of the 14 declared falsify oracles guards its `mktemp` |
+
+The third row is the one that matters and it was not obvious from either
+number: what makes a failed `mktemp` a FALSE KILL rather than an annoyance is
+that the collapsed test is somebody's ORACLE. Intersecting the unguarded set
+with the oracle column of `targets.conf` returns empty. The remaining fifteen
+are product scripts and non-oracle tests, where a failed `mktemp` costs a
+confusing run and cannot manufacture coverage.
+
+**Two of those fifteen were infrastructure and are now guarded too**, because
+"non-oracle" understates them:
+
+- **`tests/run-all.sh:51`** — the DRIVER. Every falsify oracle *is*
+  `tests/run-all.sh <name>`, so an empty `$log` makes `> "$log"` fail for every
+  test in the run. Measured with a failing `mktemp` stub, before the guard:
+  `── test-portability.sh` / `FAIL  (exit 1)` **and no `SCAFFOLD-FAILED:`
+  anywhere** — the driver's redirect fails before the test can reach its own
+  guard, so the test never gets to say its scaffolding broke. It now emits the
+  scaffold channel itself.
+- **`verify-on-host.sh:333`** — Phase 6's corpus log. An empty path made every
+  later read of it report an empty corpus rather than a broken one.
+
+Note how that first measurement lands: `FAIL  (exit 1)` has no colon, so
+`falsify_has_fail_line` does not match it — the run would have been a kill with
+**no assertion attached**, which is precisely what F43's new `ASSERTLESS`
+counter now reports and CI now bounds at 0. The two fixes catch the same event
+from opposite ends.
+
+**Still open — the 15 unguarded assignments, none an oracle:**
+`bump-sandbox-version.sh:74`, `sandbox-common.sh:537,551`,
+`sync-to-projects.sh:81`, `migrations/002:32`, `migrations/003:17`,
+`migrations/004:11`, `tests/test-sandbox-schema.sh:184`,
+`tests/test-sandbox-env.sh:20,70,118`, `tests/integration/minimal-conf.sh:31`.
+Mechanical, and each wants the same one-line guard. Left out of this increment
+deliberately rather than forgotten: they are a legibility fix, not a
+correctness one, and bundling fifteen product-script edits into a tier change
+is how an unrelated regression gets attributed to the wrong commit.
 
 ### The fix, in two halves
 
@@ -2116,6 +2171,22 @@ launcher tier and the expensive packages tier. If F36 lands first, the
 complement collapses and the script becomes the demonstrator for everything,
 at which point `demonstrate-mutations.sh` is simply correct.
 
+**Blast radius re-derived 2026-08-20, and the entry undercounted it.** It names
+`tests/falsify/targets.conf`, `AGENTS.md` and the mgd twin. The real set in this
+repo is nine files: those two plus `tests/test-mutations.sh:114`, two mutation
+patches that name the script in their own headers
+(`300-allowlist-not-delivered.patch`, `240-open-keeps-capabilities.patch`), six
+self-references inside the script, and three mentions in this backlog —
+`targets.conf:120` among them, as a `GREPPED-ONLY` row.
+
+**Held deliberately, and the reason is the one the entry already gives rather
+than a preference for leaving it.** This is a HOST-FACING entry point the user
+types by hand. Renaming it to `demonstrate-image-tier.sh` today and to
+`demonstrate-mutations.sh` after F36 is two renames of the same command; one is
+better than two. F37 is therefore sequenced AFTER F36, and that is the whole of
+its remaining cost — the defect is real, the fix is mechanical, and the only
+open question is which name it should land on.
+
 ## F38 — `--jobs $(nproc)` oversubscribes a CPU quota, and nothing bounded how much a run left unmeasured — **FIXED 2026-08-19**
 
 **Found by two machines disagreeing about the same commit on the same day.**
@@ -2396,7 +2467,7 @@ is normal) and leave CI on tracked-only; or have Phase 7 simply SAY when the
 working tree holds untracked `*.sh` it did not check, which costs nothing and
 removes the surprise. Recorded rather than guessed at.
 
-## F43 — a test that sources a product script inherits its `set -e`, and an abort scores as a KILL — **ITEM 2 FIXED 2026-08-20; ITEM 1 OPEN**
+## F43 — a test that sources a product script inherits its `set -e`, and an abort scores as a KILL — **FIXED 2026-08-20**
 
 **Found 2026-08-19 while closing F15, by a demonstration that produced no
 `FAIL:` line.** The mutant was scored KILLED by the tier and the oracle exited
@@ -2439,12 +2510,48 @@ added. **It is not a fix for the file, and it is not a fix for the class.**
 Three things remain open, in order of value:
 
 1. **`exit` versus `exit+failline` is already the evidence and nothing uses
-   it.** `run.sh` records which channel produced a kill. A kill with no
-   `failline` means the oracle exited non-zero without printing an assertion
-   failure — sometimes legitimate (a test whose contract IS its exit status),
-   often a scaffold abort. A report, or a ratchet, over that column would have
-   surfaced this without anyone stumbling into it. This is the cheapest of the
-   three and the one that generalises.
+   it.** **FIXED 2026-08-20 — and it turned out to be a regression guard, not a
+   bug report.**
+
+   `run.sh` now counts kills whose signal carries no `failline`, warns per
+   occurrence naming the mutant, emits `ASSERTLESS|<count>|<killed>` on its own
+   line, and accepts `--max-assertless N`. CI passes 0; Phase 6 prints the
+   number on the host.
+
+   **The measurement that decided the shape: the count is 0 today, in both
+   repos — all 262 kills are `exit+failline`.** So there was nothing to report.
+   That is exactly the argument for building it now rather than later: this is
+   the state the survivor ledger's own header warns about — *"the state in which
+   it is easiest to let a new GAP in unnoticed: with nothing left to look at,
+   nobody looks."* A number that reads 0 forever is cheap; the same number
+   discovered at 3 in six months, by hand, on one mutant, is how F35, F30 and
+   F43 were each found.
+
+   Three design points worth keeping:
+
+   - **The verdict stays KILLED.** The oracle genuinely distinguished the
+     mutant; demoting it to UNPROVEN would be a second guess dressed as a
+     measurement. What changed is that the run says how much of its coverage
+     arrived that way.
+   - **On its own line, not a tenth `TOTAL` field.** The ratchet,
+     `check-ledger.sh` and `verify-on-host.sh` all parse `TOTAL` positionally,
+     and a number nobody can read is the state this counter exists to end.
+   - **The bound is opt-in, but for the MIRROR of `--max-unproven-pct`'s
+     reason.** An assertless kill is a property of the oracle's code, not of
+     the machine — a timeout, a signal death and a collapsed scaffold are all
+     UNPROVEN *before* this counter sees them — so unlike the unproven fraction
+     it IS satisfiable everywhere at once, and CI holds it at 0. It stays
+     opt-in because a test whose contract genuinely is its exit status would be
+     a legitimate non-zero, and discovering that on somebody's laptop mid-task
+     is not how it should be raised.
+
+   The fixture is the historical case, not a contrivance: an oracle green on
+   the pristine tree that exits 1 in silence when mutated — which is precisely
+   what errexit inherited from a sourced product script did to two of
+   `shared-files.sh`'s mutants for weeks. Demonstrated failing three ways
+   (never counting, counting the inverse, and a bound that never fires), each
+   on a named assertion, plus a control proving the bound is satisfiable by an
+   honest oracle rather than failing every run.
 2. **`test-shared-files-parity.sh` should not silently run under errexit.**
    **FIXED 2026-08-20, and measured first as this item demanded.** `set +e`
    immediately after the source, with a comment saying why. Three measurements,

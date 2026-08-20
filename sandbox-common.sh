@@ -200,15 +200,6 @@ is_active() {
   [[ -n "$val" && "$val" != "OFF" ]]
 }
 
-# Returns 0 if at least one of the given keys is active.
-any_active() {
-  local k
-  for k in "$@"; do
-    if is_active "$k"; then return 0; fi
-  done
-  return 1
-}
-
 # Returns 0 if the version-list key has at least one version set.
 #
 # An explicit `OFF` counts as NOT set. Version-list keys document "leave empty to skip",

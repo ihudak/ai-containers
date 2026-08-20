@@ -48,7 +48,13 @@ fi
 total=0
 failed=0
 failed_names=""
-log="$(mktemp)"
+# GUARDED, and it emits the scaffold channel rather than just dying. This is the
+# DRIVER: every falsify oracle is `tests/run-all.sh <name>`, so an empty $log
+# here makes `> "$log"` fail for every test in the run and the whole thing looks
+# like a wall of failures — which the mutation tier reads as "the mutation was
+# noticed" (backlog F31). SCAFFOLD-FAILED: is the channel run.sh greps to score
+# such a run UNPROVEN instead of KILLED.
+log="$(mktemp)" || { printf 'SCAFFOLD-FAILED: mktemp (run-all.sh could not create its per-test log)\n'; exit 1; }
 trap 'rm -f "$log"' EXIT
 
 for t in $selected; do
