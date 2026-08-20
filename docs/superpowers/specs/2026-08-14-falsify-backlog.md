@@ -3273,3 +3273,59 @@ platforms in exactly the way that would explain a total asymmetry.
 **Reproduction:** `bash tests/falsify/run.sh --jobs 32 --timeout 5` on macOS.
 Two minutes. Compare `TOTAL`'s third field against 264, and read stderr rather
 than filtering it — the ERROR lines are the finding.
+
+### 2026-08-20 — the pool now names the cause. The mechanism is still open.
+
+`fr_harvest` reported the absence and nothing else: *a mutant worker produced no
+verdict at all (slot N)*. That sentence cannot tell a worker that gave up from
+one something else killed, which is exactly the distinction this entry needed
+and could not make.
+
+**The pool HELD the missing fact and threw it away.** `wait -n` returns the
+finished child's status; `fr_wait_for_slot` discarded it, then went looking for
+which worker had finished with `kill -0` — a question about whether *some*
+process holds that pid, not about whether it is still my worker. Both halves
+mattered: the discarded status is the only evidence of cause, and on a host that
+recycles pids quickly the `kill -0` answer can be about somebody else's process.
+
+Fixed with `wait -n -p` (bash 5.0; `bash-floor.sh` declares 5.1), which names the
+reaped pid and keeps its status. `fr_exit_cause` turns that status into a clause,
+so the same line now reads:
+
+```
+ERROR: a mutant worker produced no verdict at all (slot 7; it was KILLED BY SIGKILL) — not counted as a kill
+```
+
+Ten assertions in `tests/test-falsify-run.sh` §11d — six on the clause, four on
+the wiring through the real pool — and each guard demonstrated failing:
+
+| damage | assertions that flip |
+|---|---|
+| signal naming removed from `fr_exit_cause` | 3, incl. the wiring one (`it exited 137`) |
+| `st > 128` → `st >= 128` | 1 — status 128 was reported as `SIGEXIT` |
+| the pool stops recording the status it was handed | 1 — only the wiring one (`exit status not captured`) |
+
+Corpus unchanged on Linux after the change: `TOTAL|9|264|262|2|0|0|0`,
+`ASSERTLESS|0|262`, ledger `OK: 0 problem(s)`, suite 56/56.
+
+**THIS IS INSTRUMENTATION, NOT A ROOT CAUSE — F52 STAYS OPEN.** What it buys is
+that the next macOS run under a tight clock says whether those 158 workers were
+killed, and by what, instead of only that they were gone.
+
+**A repo-free probe exists, and it does NOT reproduce on Linux.** 32 workers
+running the exact shape of `falsify_run_oracle` — `set -m`, fork oracle with
+children, watchdog, `kill -TERM -PID`, `sleep 1`, `kill -KILL -PID` — against a
+5-second clock and a 30-second oracle, so the watchdog always fires:
+
+| variant | verdicts | worker exit statuses |
+|---|---|---|
+| A — shipped: `set -m` + group kill | 32/32 | 32×0 |
+| B — no `set -m`, group kill | 32/32 | 32×0 |
+| C — `set -m`, direct kill only | 32/32 | 32×0 |
+
+and `set -m` in a forked non-interactive worker DOES give the background job its
+own process group here (job pid 3178657, pgid 3178657, against the worker's own
+pgid 3178645), so variant A really is the shipped code path. On Linux the
+pattern loses nothing with no test suite involved. **The same probe on macOS is
+the next measurement**, and if it loses workers there, the mechanism is in these
+~40 lines rather than anywhere in the tier.
