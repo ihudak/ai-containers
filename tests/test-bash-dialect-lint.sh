@@ -11,6 +11,8 @@
 set -uo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LINT="$REPO_DIR/tests/bash-dialect-lint.sh"
+# shellcheck source=portability.sh
+source "$REPO_DIR/tests/portability.sh"
 TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; trap 'rm -rf "$TMP"' EXIT
 fails=0
 pass() { printf 'PASS: %s\n' "$1"; }
@@ -19,11 +21,27 @@ fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails+1)); }
 bash -n "$LINT" && pass "bash-dialect-lint.sh bash -n" || fail "bash-dialect-lint.sh bash -n"
 
 # $1=label $2=file content $3=expected rc
+# Every invocation of the linter in this file is BOUNDED. bash-dialect-lint.sh's
+# scan loop (line 105) is `while IFS=: read -r lineno linetext`, and negating it
+# makes the linter spin at EOF and never exit -- so an unbounded call hangs this
+# oracle rather than failing it, and run.sh scores the mutant UNPROVEN with
+# nothing observed (backlog F22). A bound turns the hang into a named failure.
+# The whole-tree run gets a wider clock than the single-vector ones: it scans
+# every tracked script (measured 0.6s here, but a loaded macOS host is slower).
 vector() {
   printf '%s\n' "$2" > "$TMP/v.sh"
-  bash "$LINT" "$TMP/v.sh" >/dev/null 2>&1
+  p_timeout 10 bash "$LINT" "$TMP/v.sh" >/dev/null 2>&1
   local rc=$?
-  if [[ "$rc" -eq "$3" ]]; then pass "$1"; else fail "$1 — expected rc $3, got $rc"; fi
+  if [[ "$rc" -eq 124 ]]; then
+    fail "$1 — the linter did not terminate within 10s; its scan loop never reached EOF"
+    # …and stop the file here. Every vector below runs the same loop, so
+    # seventeen more ten-second bounds would restate one fact seventeen times
+    # and push the run past run.sh's 60s per-mutant clock — converting a clean
+    # `exit+failline` kill back into the timeout this was written to remove.
+    printf '\n%d failure(s)\n' "$fails"
+    exit "$fails"
+  elif [[ "$rc" -eq "$3" ]]; then pass "$1"
+  else fail "$1 — expected rc $3, got $rc"; fi
 }
 
 # Builds the brace-space value-substitution construct at runtime, so this
@@ -95,8 +113,15 @@ vector "a marker with no reason does not suppress" \
 # The linter must read the floor rather than hardcoding it: with the floor
 # lowered to 4.4, a 5.0 construct becomes a violation.
 printf '%s\n' 'echo "$EPOCHREALTIME"' > "$TMP/v.sh"
-if AI_CONTAINERS_BASH_FLOOR_MAJOR=4 AI_CONTAINERS_BASH_FLOOR_MINOR=4 \
-     bash "$LINT" "$TMP/v.sh" >/dev/null 2>&1; then
+# Bounded, and restructured around the bound: as an `if … then fail; else pass`
+# a timeout is non-zero and lands in the PASSING branch, so the hang would have
+# been reported as the linter correctly rejecting the construct.
+p_timeout 10 env AI_CONTAINERS_BASH_FLOOR_MAJOR=4 AI_CONTAINERS_BASH_FLOOR_MINOR=4 \
+  bash "$LINT" "$TMP/v.sh" >/dev/null 2>&1
+floor_rc=$?
+if [[ "$floor_rc" -eq 124 ]]; then
+  fail "the linter reads the floor — the run did not terminate within 10s"
+elif [[ "$floor_rc" -eq 0 ]]; then
   fail "the linter reads the floor — a 5.0 construct passed at a 4.4 floor"
 else
   pass "the linter reads the floor rather than hardcoding it"
@@ -106,9 +131,15 @@ fi
 # exclusion exists any more (see bash-dialect-lint.sh's own header) — this
 # file and bash-dialect-lint.sh itself are both scanned for real, kept
 # clean purely by the markers and the DOLLAR trick above.
-bash "$LINT" >/dev/null 2>&1 \
-  && pass "the repository is clean at the current floor" \
-  || fail "the repository is clean at the current floor"
+p_timeout 30 bash "$LINT" >/dev/null 2>&1
+clean_rc=$?
+if [[ "$clean_rc" -eq 124 ]]; then
+  fail "the repository is clean at the current floor — the whole-tree run did not terminate within 30s"
+elif [[ "$clean_rc" -eq 0 ]]; then
+  pass "the repository is clean at the current floor"
+else
+  fail "the repository is clean at the current floor"
+fi
 
 # ── The "examined no files" guard, exercised ──────────────────────────────────
 # bash-dialect-lint.sh:84-87 refuses to report success when it examined nothing
@@ -124,8 +155,12 @@ empty_repo="$TMP/emptyrepo"; mkdir -p "$empty_repo/tests"
 cp "$LINT" "$empty_repo/tests/bash-dialect-lint.sh"   # deliberately NOT git-added
 # The floor is passed in so the copy needs no bash-floor.sh beside it (the
 # linter skips its own source when both vars are already set).
-if AI_CONTAINERS_BASH_FLOOR_MAJOR=5 AI_CONTAINERS_BASH_FLOOR_MINOR=1 \
-     bash "$empty_repo/tests/bash-dialect-lint.sh" > "$TMP/empty.out" 2>&1; then
+p_timeout 10 env AI_CONTAINERS_BASH_FLOOR_MAJOR=5 AI_CONTAINERS_BASH_FLOOR_MINOR=1 \
+  bash "$empty_repo/tests/bash-dialect-lint.sh" > "$TMP/empty.out" 2>&1
+empty_rc=$?
+if [[ "$empty_rc" -eq 124 ]]; then
+  fail "a lint run that examined no files fails, and says why — it did not terminate within 10s"
+elif [[ "$empty_rc" -eq 0 ]]; then
   fail "a lint run that examined no files reported SUCCESS"
 elif grep -q 'examined no files' "$TMP/empty.out"; then
   pass "a lint run that examined no files fails, and says why"

@@ -252,6 +252,21 @@ install_one() {
     return 0
   fi
 
+  # Only the RELEASE path needs a repo — install=repo-file has its own check
+  # above, and install=url involves no GitHub repo at all, so this sits
+  # after both dispatches rather than beside the other descriptor reads.
+  #
+  # Without it an empty repo= flows straight into the API URL as
+  # `https://api.github.com/repos//releases/latest`, and api_get retries that
+  # three times with two 5-second sleeps before giving up: a malformed
+  # descriptor costs ten seconds and then reports a doubled slash instead of the
+  # field that is missing. install_repo_file has refused this exact condition
+  # since it was written; the release path never did.
+  if [ -z "$repo" ]; then
+    echo "WARNING: ${name} has no repo= in its descriptor — skipping." >&2
+    return 0
+  fi
+
   local tag an
   if [ "$private" = "yes" ]; then
     local api="https://api.github.com/repos/${repo}/releases" release_json

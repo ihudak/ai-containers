@@ -104,6 +104,31 @@
 # ADDENDUM. RE-MEASURE AT --jobs 1. A verdict taken under load can be a
 # property of the machine.
 #
+# Corpus (2026-08-20, the F22/F43/F45 increment): TOTAL|9|264|262|2|0|0|0 —
+# **0 UNPROVEN, 0 TIMEOUTS, and the only two survivors are entry 6's EQUIVALENT
+# pair.** Every mutant in this corpus is now either killed or classified as one
+# no test could kill. The mutant count rose 261 -> 264 for p_timeout's three,
+# all killed; the four UNPROVEN became kills (backlog F22) and entry 10 is
+# retired.
+#
+# The two timeouts are gone for a reason worth separating from the four
+# UNPROVEN, because it was read as the same thing and is not. Three
+# tools-lib.sh:70 mutants were scored `timeout+failline` — kills that survived
+# scoring only because the FAIL: line landed before the clock. The oracle was
+# not hanging: it finished in 141 s, because an empty descriptor sent
+# `https://api.github.com/repos//releases/latest` into api_get, which retries
+# three times with two `sleep 5`s, once per install_one the damage broke.
+# install_one now refuses an empty repo= the way install_repo_file always has
+# (backlog F45), and the same three are `exit+failline` at ~330 ms. That target
+# went from 207 s to 28 s, and the whole corpus now runs in 72 s.
+#
+# Also this increment, and measured rather than argued (backlog F43 item 2):
+# test-shared-files-parity.sh no longer inherits sync-to-projects.sh's errexit.
+# Its output is byte-identical before and after, `$-` went `ehuB` -> `huB`, and
+# shared-files.sh's five kills went from **two bare `exit`** to **five
+# `exit+failline`** — the two mutants F43 named as killed by an oracle that
+# never asserted are now killed by an assertion.
+#
 # Corpus (2026-08-19, the F44 fix): TOTAL|9|261|255|2|4|11|2. The mutant count
 # rose 255 -> 261 because tests/lib-verify-repo.sh's mk_repo gained a second
 # commit for its add_origin=1 stub (backlog F44) — 49 mutants -> 55, all killed.
@@ -135,10 +160,12 @@
 # THE TWO SURVIVORS THAT REMAIN ARE ENTRY 6'S EQUIVALENT PAIR — one identity no
 # test COULD kill. Stated precisely, because the short version of this is easy to
 # get wrong: every GAP filed against a SURVIVING mutant is now closed. Three GAP
-# entries do remain (entry 10, backlog F22), and they are a different kind — they
-# cover UNPROVEN records, where the damage does not fail the oracle but stops it
-# terminating, so nothing was OBSERVED asserting either way. Those are still owed
-# a fix, and the fix is a BOUND rather than an assertion.
+# entries did remain at that reading (entry 10, backlog F22), of a different kind
+# — they covered UNPROVEN records, where the damage does not fail the oracle but
+# stops it terminating, so nothing was OBSERVED asserting either way. THOSE ARE
+# CLOSED TOO as of 2026-08-20: entry 10 is retired, there are no UNPROVEN records
+# left, and the fix was a BOUND rather than an assertion, as the entry said. What
+# is left in this file is the EQUIVALENT pair and nothing else.
 #
 # This is the state the file was built to reach, and also the state in which it is
 # easiest to let a new GAP in unnoticed: with nothing left to look at, nobody
@@ -404,42 +431,50 @@ tests/lib-layer-checks.sh:logic-flip:b6554f5a51c19c07a987509d2872c86e54d554ea
 # The number is left occupied, for the reason entry 3 records.
 
 # ── 10 ────────────────────────────────────────────────────────────────────────
-GROUP: the damage does not fail the oracle, it stops it terminating (UNPROVEN)
-tools-lib.sh:cond-negate:e46b949d2a1807e12ab8711e203a737dc2f8c961
-tests/bash-dialect-lint.sh:cond-negate:677e9cc352fc27f2621197eaee7b1bf39adaf9d4
-tests/integration/docker-shim.sh:cmp-flip:5a19451b4bc784bc1a7b629182186fd2c91d2153
-  tools-lib.sh:62          while IFS= read -r line || [[ -n "$line" ]]; do
-    damages: `while ! IFS= read … || [[ -n … ]]` and `while IFS= read … || [[ ! -n … ]]`
-  bash-dialect-lint.sh:105 while IFS=: read -r lineno linetext; do
-    damage:  `while ! IFS=: read …`
-  docker-shim.sh:60        … && "$(dirname "$real")" == "$(cd "$(dirname "$0")" && pwd)" …
-    damage:  `!=` — the self-reference guard now rejects a REAL docker and
-             accepts the shim, so the shim re-execs itself
-  GAP: not EQUIVALENT-by-hang. All four damages make the oracle NON-TERMINATING
-  — at EOF a negated read condition stays true forever, and an accepted
-  self-reference recurses — so run.sh's per-mutant clock expires with no `FAIL:`
-  line ever printed and the verdict is UNPROVEN: nothing was observed asserting.
-  That is not the same as unkillable. The mutated program is observably
-  different (it does not terminate), the difference is cheap to observe, and
-  docker-shim.sh's own header records this exact hang being hit by hand on
-  2026-08-09 — which is why the guard exits 127 rather than warning. What is
-  missing is a BOUND: an oracle that runs the damaged path under an explicit
-  `timeout` and fails by name when it expires turns all four into ordinary
-  kills. Concretely: parse a descriptor under `timeout 10` and require both
-  completion and the parsed values; run bash-dialect-lint.sh over a fixture
-  under `timeout 10` and require its exit status; and invoke the shim with a
-  self-referencing IT_REAL_DOCKER under `timeout 10` requiring exit 127. Note
-  the three siblings of the docker-shim damage on the same line DID print a
-  FAIL: before their clock ran out and are recorded as kills — the distinction
-  is real, not an artefact of load. Recorded as F22.
-  THE docker-shim MEMBER WAS MEASURED KILLED ON macOS (Phase 6 host run,
-  2026-08-17): there the oracle printed its FAIL: inside the clock, so the same
-  damage that is UNPROVEN here is an ordinary kill there. That is the argument
-  for the BOUND above restated as a measurement — the assertion exists and can
-  fail; whether the tier SEES it fail is currently a function of how fast the
-  machine is, which is not a property of the code. It stays in this entry rather
-  than moving to a killed-elsewhere classification, per the header's asymmetry
-  rule.
+# RETIRED 2026-08-20. The four UNPROVEN records used to sit here — the group
+# where the damage did not FAIL the oracle, it stopped the oracle terminating,
+# so run.sh's per-mutant clock expired with no `FAIL:` line and nothing was
+# observed asserting either way. They are all four KILLED now, every one
+# `exit+failline`, and with them the last GAP in this file closes: what remains
+# is entry 6's EQUIVALENT pair.
+#
+#   tools-lib.sh                     15/0 + 2 UNPROVEN  ->  17/17
+#   tests/bash-dialect-lint.sh       26/0 + 1 UNPROVEN  ->  27/27
+#   tests/integration/docker-shim.sh 28/0 + 1 UNPROVEN  ->  29/29
+#
+# Retired by WRITING THE BOUND the entry specified (backlog F22) — but not the
+# bound the entry specified, and the difference is the part worth keeping:
+#
+# 1. `timeout 10`, which this entry and F22 both prescribed by name, IS NOT
+#    AVAILABLE. timeout(1) is GNU coreutils and a stock macOS does not have it.
+#    Both this repo's own files say so — falsify/run.sh's oracle clock is
+#    hand-rolled for exactly that reason, and tests/integration/run.sh carries a
+#    three-way it_timeout() written after the first real macOS run found the
+#    gap. The prescribed fix would have failed on the one host these callers are
+#    verified on. The bound is `p_timeout` in tests/portability.sh instead.
+#
+# 2. THE docker-shim ASSERTION ALREADY EXISTED. test-integration-shim.sh has
+#    invoked the shim with a self-referencing IT_REAL_DOCKER and required exit
+#    127 since the guard was written; the entry read as though it needed
+#    writing. What it needed was one wrapper around the call — the mutant made
+#    the shim exec ITSELF, so the command substitution never returned and an
+#    assertion that was sitting right there was never reached.
+#
+# 3. p_timeout has no polling loop, and that is deliberate. The obvious shape —
+#    `while kill -0 "$pid"` then `wait "$pid"` — IS ITSELF HANGABLE BY ITS OWN
+#    MUTATION: negate the liveness probe and the loop never runs, so control
+#    reaches a `wait` on a live child and blocks forever. Measured, on the first
+#    draft. A bound whose own cond-negate mutant is UNPROVEN would have added a
+#    fifth hanging mutant in the helper written to remove the other four. The
+#    watchdog shape has no loop and no conditional in front of the kill.
+#
+# Two of the three oracles also needed a PREMISE GATE, not just a bound. In
+# test-tools-d.sh and test-bash-dialect-lint.sh every later assertion runs the
+# same damaged call, so bounding one of them leaves the file to hang on the
+# next: the run ends with a FAIL it never got to report. Both now stop at the
+# premise, named and counted, and exit through the file's own verdict.
+#
+# The number is left occupied, for the reason entry 3 records.
 
 # ── 11 ────────────────────────────────────────────────────────────────────────
 # RETIRED 2026-08-19. tests/portability.sh's p_sha1 platform probe used to sit

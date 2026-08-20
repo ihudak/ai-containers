@@ -17,6 +17,8 @@ set -uo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SHIM="$REPO_DIR/tests/integration/docker-shim.sh"
+# shellcheck source=portability.sh
+source "$REPO_DIR/tests/portability.sh"
 fails=0
 pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails + 1)); }
@@ -105,8 +107,18 @@ else
 fi
 
 # Pointing the shim at itself would fork until the process table gives out.
-out="$(IT_REAL_DOCKER="$TMP/bin/docker" "$TMP/bin/docker" run -it img 2>&1)"; rc=$?
-if [[ "$rc" -eq 127 ]] && grep -q 'points back at the shim' <<< "$out"; then
+# BOUNDED, and the bound is the whole point of this line. The assertion itself
+# has been here since the guard was written and is exactly the one the falsify
+# backlog asked for -- but the `cmp-flip` of the guard's second comparison makes
+# the shim accept the self-reference and exec ITSELF, so this command
+# substitution never returns and the assertion below is never reached. The
+# oracle hung instead of failing, and run.sh scored the mutant UNPROVEN
+# (backlog F22). `env` rather than a prefix assignment because p_timeout is a
+# shell function, where a prefix assignment's lifetime is a bash-mode detail.
+out="$(p_timeout 10 env IT_REAL_DOCKER="$TMP/bin/docker" "$TMP/bin/docker" run -it img 2>&1)"; rc=$?
+if [[ "$rc" -eq 124 ]]; then
+  fail "refuses when IT_REAL_DOCKER points back at the shim — the shim did not terminate within 10s, i.e. it accepted the self-reference and re-exec'd itself"
+elif [[ "$rc" -eq 127 ]] && grep -q 'points back at the shim' <<< "$out"; then
   pass "refuses when IT_REAL_DOCKER points back at the shim"
 else
   fail "refuses when IT_REAL_DOCKER points back at the shim (rc=$rc, out=$out)"

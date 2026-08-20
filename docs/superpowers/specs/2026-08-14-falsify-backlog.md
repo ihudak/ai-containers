@@ -1014,29 +1014,86 @@ reverse order, and "I undid it" vs "it was already gone" being different outcome
 **Killing assertion:** apply two mutations and require `revert` to print exactly
 one `Reverted <id>` line per id, in reverse order, and no "Already absent" line.
 
-## F22 — four damages hang the oracle instead of failing it; no oracle is time-bounded
+## F22 — four damages hang the oracle instead of failing it; no oracle is time-bounded — **FIXED 2026-08-20**
 
 The 4 UNPROVEN records. `tools-lib.sh:62` (two cond-negate damages) and
 `tests/bash-dialect-lint.sh:105` (one) negate a `while read` condition, which at
 EOF stays true forever; `tests/integration/docker-shim.sh:60`'s `cmp-flip` makes
 the self-reference guard reject a REAL docker and accept the shim, so the shim
-re-execs itself. In all four the per-mutant clock expires with no `FAIL:` line —
+re-execs itself. In all four the per-mutant clock expired with no `FAIL:` line —
 nothing was observed asserting.
 
-**This is a GAP, not equivalence-by-hang.** The mutated program is observably
-different (it does not terminate), the difference is cheap to observe, and
-`docker-shim.sh`'s own header records this exact hang being hit by hand on
-2026-08-09 — which is why that guard exits 127 rather than warning. What is
-missing is a BOUND.
+All four are killed now, every one `exit+failline`:
 
-**Killing assertion:** run the damaged path under an explicit `timeout` and fail
-by name when it expires — parse a descriptor under `timeout 10` requiring both
-completion and the parsed values; run `bash-dialect-lint.sh` over a fixture under
-`timeout 10` requiring its exit status; invoke the shim with a self-referencing
-`IT_REAL_DOCKER` under `timeout 10` requiring exit 127. Note that three siblings
-of the docker-shim damage on the same line DID print a `FAIL:` before their clock
-ran out and are recorded as kills, so the distinction is real rather than an
-artefact of load.
+| target | before | after |
+|---|---|---|
+| `tools-lib.sh` | 15/0 + 2 UNPROVEN | **17/17** |
+| `tests/bash-dialect-lint.sh` | 26/0 + 1 UNPROVEN | **27/27** |
+| `tests/integration/docker-shim.sh` | 28/0 + 1 UNPROVEN | **29/29** |
+
+### Three things this entry got wrong, all of them found by trying to do what it said
+
+**1. `timeout 10` is not available.** This entry prescribed it by name, three
+times. `timeout(1)` is GNU coreutils and a stock macOS does not ship it — which
+is not a hypothesis, it is written down twice in this repo already:
+`tests/falsify/run.sh:357` hand-rolls its oracle clock and says why, and
+`tests/integration/run.sh:182` carries a three-way `it_timeout()` added after
+the first real macOS run (2026-08-08) hit exactly this. The prescribed fix would
+have been a command-not-found on the one host these callers are verified on.
+
+The bound is `p_timeout` in `tests/portability.sh` instead — the file whose
+charter is GNU/BSD-neutral helpers, and which is itself a falsify target, so the
+bound is mutation-covered (3 mutants, all killed).
+
+**2. The docker-shim assertion already existed.** `test-integration-shim.sh:108`
+has invoked the shim with a self-referencing `IT_REAL_DOCKER` and required exit
+127 since the guard was written — word for word the "killing assertion" this
+entry asked someone to write. What was missing was one wrapper around the call:
+the mutant makes the shim `exec` ITSELF, so the command substitution never
+returns and an assertion sitting on the very next line is never reached. Same
+shape as F7. **A backlog entry describing a missing assertion is a hypothesis;
+grep for it before writing it.**
+
+**3. The obvious implementation of the bound is itself mutation-hangable.** The
+first draft of `p_timeout` was the shape `it_timeout()` uses — poll `kill -0` in
+a loop, then `wait`. Negate the liveness probe and the loop never runs, so
+control falls to a `wait` on a child that is still alive and blocks forever;
+measured, it hung `test-portability.sh` for the full two minutes it was given. A
+bound whose own `cond-negate` mutant is UNPROVEN would have added a fifth
+hanging mutant in the helper written to remove the other four. `p_timeout` uses
+a watchdog instead: no loop, no conditional in front of the kill, so every path
+through it terminates.
+
+### What else the fix needed, beyond the bound
+
+**A premise gate, in two of the three oracles.** Bounding one call is not enough
+when every later assertion runs the same damaged code: `test-tools-d.sh` calls
+`tools_read_descriptor` in-process from line 209 onward, and
+`test-bash-dialect-lint.sh` runs the linter eighteen more times. Bounding only
+the first leaves the file to hang on the next — a `FAIL:` printed and never
+reported, which run.sh scores `timeout+failline`: a kill that depends on the
+FAIL landing before the clock rather than on the run finishing. Both files now
+stop at the premise, named and counted, through the file's own verdict path.
+`test-tools-d.sh`'s verdict became a function for that reason: two exits, one
+disk-full-versus-real-failure rule, and a second copy of it would drift.
+
+**One assertion of mine that could not fail, caught the same way.** The first
+version of `p_timeout`'s third property checked that the bounded command was no
+longer alive after the bound expired. It cannot fail: `p_timeout` ends with
+`wait "$cmd_pid"`, which does not return until the child is dead. It passed
+against a damage that removed the kill outright. What is actually falsifiable is
+that the bound CUTS THE COMMAND SHORT — bound a 30-second sleep at 1 second and
+require both the 124 and an elapsed time nowhere near 30. Remove the kills and
+the status is still 124 while `wait` sits out the full thirty seconds, so only
+the clock catches it.
+
+**And a redirect that turns out to be load-bearing.** The watchdog's stdio goes
+to `/dev/null` because otherwise it — and the `sleep` it forks — inherit the
+caller's stdout, so `out="$(p_timeout 10 …)"` blocks until the sleep finishes
+even though the bounded command returned immediately and the watchdog was
+already killed. A command substitution reads until every holder of the write end
+lets go. Measured: 0s called directly, 10s the moment the same call was wrapped
+in `$( )` — which is how two of the three callers use it.
 
 ## F23 — `p_sha1`'s platform probe can be inverted with every test green — **FIXED 2026-08-19**
 
@@ -2339,7 +2396,7 @@ is normal) and leave CI on tracked-only; or have Phase 7 simply SAY when the
 working tree holds untracked `*.sh` it did not check, which costs nothing and
 removes the surprise. Recorded rather than guessed at.
 
-## F43 — a test that sources a product script inherits its `set -e`, and an abort scores as a KILL
+## F43 — a test that sources a product script inherits its `set -e`, and an abort scores as a KILL — **ITEM 2 FIXED 2026-08-20; ITEM 1 OPEN**
 
 **Found 2026-08-19 while closing F15, by a demonstration that produced no
 `FAIL:` line.** The mutant was scored KILLED by the tier and the oracle exited
@@ -2388,13 +2445,23 @@ Three things remain open, in order of value:
    often a scaffold abort. A report, or a ratchet, over that column would have
    surfaced this without anyone stumbling into it. This is the cheapest of the
    three and the one that generalises.
-2. **`test-shared-files-parity.sh` should not silently run under errexit.** The
-   honest options are to restore the file's own options after the source
-   (`set +e` immediately after, with a comment saying why), or to call
-   `sync_project()` in a subshell. Restoring is a one-line change; the reason it
-   is not made blind is that eleven existing assertions have been running under
-   errexit and are green, and turning it off could change what they do. Measure
-   before changing.
+2. **`test-shared-files-parity.sh` should not silently run under errexit.**
+   **FIXED 2026-08-20, and measured first as this item demanded.** `set +e`
+   immediately after the source, with a comment saying why. Three measurements,
+   in the order they were taken:
+
+   | | before | after |
+   |---|---|---|
+   | `$-` at end of file | `ehuB` | `huB` |
+   | the file's own output | — | **byte-identical** |
+   | `shared-files.sh` mutants | 5 KILLED, **2 of them bare `exit`** | 5 KILLED, **all 5 `exit+failline`** |
+
+   The third row is the one worth reading. The two mutants this entry names as
+   being "killed" by an oracle that never asserted anything are now killed by an
+   assertion — F15's guard block, which sits above the source line and was
+   already doing the real work. Turning errexit off cost nothing and converted
+   two fake kills into real ones, which is this entry's own thesis measured
+   rather than argued.
 3. **Any other test that sources a product script has the same exposure.**
    **Swept 2026-08-19, by measurement rather than by reading.** Thirteen test
    files source a product script that carries `set -e`; `$-` was sampled at the
@@ -2519,3 +2586,75 @@ Worth noting that the emptiness guard was not careless. It was written
 deliberately, with the failure mode named in the comment above it, by someone
 looking straight at the problem — and it still missed the case where the wrong
 answer is non-empty. Reading the warning does not transfer it to the code.
+
+## F45 — `install_one`'s release path accepted an empty `repo=` and retried a doubled slash — **FIXED 2026-08-20**
+
+Found while closing F22, by asking why three `tools-lib.sh` mutants were scored
+`timeout+failline` rather than plainly KILLED — and the answer was not the one
+the shape suggested.
+
+`install-tools.sh`'s `install_one()` read `repo="$TOOL_repo"` and, on the
+release path, handed it straight to `api_get`. With an empty value that is
+`https://api.github.com/repos//releases/latest`, and `api_get` retries three
+times with two `sleep 5`s between. So a malformed descriptor cost ten seconds
+and then reported a doubled slash instead of the field that was missing.
+`install_repo_file()` has refused this exact condition since it was written
+(`repo=` or `repo_path=` empty → warn and skip); the release path never did, and
+`install=url` genuinely has no repo, which is why the guard belongs after both
+dispatches rather than beside the other descriptor reads.
+
+**The tier is what surfaced it, and only via a second-order symptom.** Any
+mutation that empties a descriptor makes every `install_one` in
+`test-tools-d.sh` pay the retry, and the file then takes **141 s** — well past
+run.sh's 60 s per-mutant clock. Three `tools-lib.sh:70` mutants were therefore
+recorded `timeout+failline`: kills that survived scoring only because the
+`FAIL:` line landed before the clock, not because the oracle finished. With the
+guard the same three are `exit+failline` at ~330 ms, and the target's whole run
+drops from 207 s to 28 s.
+
+**Worth keeping: "the oracle timed out" is not one diagnosis.** It was read
+first as a hang — the same word F22's group uses — and it is not one. The
+damaged run terminates; it terminates in 141 seconds, because a `sleep 5` in the
+product's retry loop is multiplied by every call the damage breaks. A hang wants
+a bound; this wanted a guard at the source. Measuring how long it actually takes
+before assuming which one it is cost one background run and changed the fix
+entirely.
+
+The assertion is the curl log rather than the elapsed time: a release-path
+descriptor with no `repo=` must skip before any fetch, which stays true however
+fast the machine is. Demonstrated failing by negating the guard — the FAIL line
+carries `API attempt 1 failed, retrying in 5s...` as its evidence.
+
+## F46 — `mgd-ai-containers` set `enospc_seen` and never read it, so a disk-full run scored as a KILL — **FIXED 2026-08-20**
+
+Found while porting F22, by the port refusing to apply: the upstream end-of-file
+block this increment was refactoring into a `verdict()` function **does not
+exist in mgd-ai-containers**.
+
+`tests/test-tools-d.sh` carries the whole APFS disk-full apparatus in both
+repos — `enospc_seen`, `scaffold_can_write`, the probe inside `fail()` that
+samples the filesystem AT THE MOMENT OF EACH FAILURE rather than at the end.
+Upstream then reads it once at the bottom and prints `SCAFFOLD-FAILED:` instead
+of a verdict when the failures were measured on a full disk. mgd received the
+machinery and not the reader: `enospc_seen` was assigned, tested inside `fail()`
+to gate one capture, and never consulted again.
+
+**Why that matters more than it looks.** `SCAFFOLD-FAILED:` is a channel, not a
+message — `run.sh` reads it as scaffolding and refuses to score the mutant. A
+run that ends `N FAILED` is a non-zero exit with `FAIL:` lines, which is
+`exit+failline`: **a kill.** So in mgd a full disk during a tier run was not
+merely mis-reported, it was recorded as coverage. Upstream's own measurement of
+this exact scenario is in the file: 40 onsets swept across the run, 6 of 18
+scored KILLED before the guards, 3 of 40 after the per-step guards, 0 of 40 once
+the probe moved into `fail()`. mgd had the probe and not the verdict, so it sat
+somewhere before that last row.
+
+Both repos now share one `verdict()` function, called from the normal end and
+from F22's premise gate. Having two exits is what forced the extraction; the
+divergence is what made extracting it worth doing in both.
+
+**The generalisable part: a port that carries the mechanism can drop the
+consumer, and nothing about the result looks unfinished.** Every line mgd had
+was correct, referenced a real variable, and ran. What was missing was the one
+place the variable is finally read — invisible to a reader of either file alone,
+and visible immediately to anyone diffing them for a third reason.
