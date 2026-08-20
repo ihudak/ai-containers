@@ -580,6 +580,66 @@ fi
 check "  … counted as unproven, NOT as a kill, in TOTAL" "1" \
   "$(grep -c '^TOTAL|1|1|0|0|1|1|100|' <<< "$FX_OUT")"
 
+# ── 11b. THE TIMEOUT FLAG MUST NAME WHO ARMED IT ──────────────────────────────
+# `out` is "$FR_OUT/w$slot.log" — one file per WORKER SLOT, reused by every
+# mutant that ever runs in that slot across every target — and the timeout flag
+# is derived from it. So "the flag exists" only ever meant "somebody wrote it",
+# while it was read as "MY oracle timed out".
+#
+# Those came apart on macOS, 2026-08-20, --jobs 8 --timeout 600: five mutants
+# carried a `timeout` signal after running 6.6s to 59.8s of a 600-second clock.
+# Two were scored UNPROVEN on a BARE `timeout` — no `exit`, no `failline`, which
+# is an oracle that ran to completion and passed, i.e. a SURVIVOR. A watchdog
+# that had really fired would have TERMed it and left `timeout+signal`. So a
+# stale watchdog took two survivors out of the ledger's reach without a word,
+# through UNPROVEN's accepted-but-not-required exemption (backlog F50).
+#
+# Asserted on the predicate itself, because the defect was that "the flag
+# exists" and "this invocation armed it" were the same expression. Sourced in a
+# SUBSHELL so run.sh's globals cannot reach this file's own state; run.sh guards
+# its main with `BASH_SOURCE == $0`, so sourcing defines functions and runs
+# nothing.
+flag_is_mine() {   # <flagfile> <token> → run.sh's own predicate, in a subshell
+  ( set +u
+    # shellcheck source=/dev/null
+    source "$RUN" >/dev/null 2>&1
+    falsify_flag_is_mine "$1" "$2" )
+}
+
+if ( set +u
+     # shellcheck source=/dev/null
+     source "$RUN" >/dev/null 2>&1
+     declare -F falsify_flag_is_mine >/dev/null ); then
+  pass "run.sh exposes falsify_flag_is_mine"
+  ff="$TMP/flagcheck"; rm -f "$ff"
+
+  flag_is_mine "$ff" "tok-a" \
+    && fail "  … a missing flag is not mine" \
+    || pass "  … a missing flag is not mine"
+
+  : > "$ff"
+  flag_is_mine "$ff" "tok-a" \
+    && fail "  … an EMPTY flag is not mine — that is precisely what the old ': > \$flag' wrote, and it was read as this run's timeout" \
+    || pass "  … an EMPTY flag is not mine (the form the old code wrote)"
+
+  printf '%s' "tok-b" > "$ff"
+  flag_is_mine "$ff" "tok-a" \
+    && fail "  … ANOTHER invocation's flag is not mine — a stale watchdog's write still scores as my timeout, which is the whole finding" \
+    || pass "  … another invocation's flag is not mine"
+
+  printf '%s' "tok-a" > "$ff"
+  flag_is_mine "$ff" "tok-a" \
+    && pass "  … my own flag IS mine, so a real timeout is still detected" \
+    || fail "  … my own flag IS mine, so a real timeout is still detected — the ownership check has disabled the timeout path outright"
+  rm -f "$ff"
+else
+  fail "run.sh exposes falsify_flag_is_mine — without it 'the flag exists' is still the whole test, so any invocation's flag reads as this one's timeout"
+  fail "  … a missing flag is not mine — there is no predicate to ask"
+  fail "  … an EMPTY flag is not mine (the form the old code wrote) — there is no predicate to ask"
+  fail "  … another invocation's flag is not mine — there is no predicate to ask"
+  fail "  … my own flag IS mine, so a real timeout is still detected — there is no predicate to ask"
+fi
+
 # ── 12. Selections that must fail loudly rather than verify nothing ───────────
 fx_run "$RUN" "$CONF_GREPPED" "$FX" "$TMP/wit-g" --jobs 1
 check "a GREPPED-ONLY-only map is refused (exit 2), never silently empty" "2" "$FX_RC"

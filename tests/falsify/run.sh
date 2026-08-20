@@ -379,9 +379,44 @@ falsify_write_mutant() {   # <pristine-file> <dest-file> <lineno> <text>
 FALSIFY_RC=0
 FALSIFY_TIMED_OUT=0
 FALSIFY_MS=0
+# ── the timeout flag, and why it carries a token ──────────────────────────────
+# The flag is a SIGNAL ON A SHARED PATH: `out` is "$FR_OUT/w$slot.log", one file
+# per WORKER SLOT, reused by every mutant that ever runs in that slot across
+# every target. So "the flag exists" only ever meant "somebody wrote it", and it
+# was read as "MY oracle timed out".
+#
+# It is not the same thing, and the difference was measured. macOS, 2026-08-20,
+# --jobs 8 --timeout 600, five mutants carrying a `timeout` signal:
+#
+#   59.8s  KILLED    timeout+exit+failline  tests/integration/mutate.sh:return-flip:7efad11b
+#    6.6s  KILLED    timeout+exit+failline  tests/lib-layer-checks.sh:logic-flip:62fc80a5
+#   39.8s  KILLED    timeout+exit+failline  tests/lib-verify-repo.sh:cond-negate:6c630c05
+#   12.3s  UNPROVEN  timeout                tests/bash-dialect-lint.sh:cond-negate:f204b4ce
+#   12.7s  UNPROVEN  timeout                tests/bash-dialect-lint.sh:logic-flip:b3f102dc
+#
+# Every one ran a fraction of its 600-second clock, so none of them timed out.
+# The last two settle what wrote the flag: a bare `timeout` signal means the
+# oracle exited with a NON-killing status and printed no FAIL: line — it ran to
+# completion and passed. A watchdog that had actually fired would have TERMed it
+# and left `timeout+signal`. So the flag was armed by a watchdog that was not
+# watching this oracle: a stale one, from an earlier invocation in the same
+# slot, whose own `kill` hit a pid that no longer exists and was swallowed by
+# `2>/dev/null`, leaving only the write.
+#
+# The cost is not the wrong label. `timeout` without `failline` is UNPROVEN, and
+# UNPROVEN is accepted-but-not-required in the ledger because a real timeout is
+# machine state — so those two SURVIVORS left the measured set owing nothing and
+# saying nothing. That is this tier's one job, lost through the exemption.
+#
+# Two layers, because they fail differently. The watchdog now refuses to arm a
+# flag for an oracle that has already exited, which stops a stale one at the
+# source; and the flag carries the TOKEN of the invocation that armed it, so a
+# flag this run did not write can never be read as this run's timeout however it
+# got there. The second layer also makes the event visible instead of silent:
+# a foreign flag is reported, not just ignored.
 falsify_run_oracle() {   # <tree> <oracle-set> <outfile> <timeout-seconds>
   local tree="$1" oracle="$2" out="$3" limit="$4"
-  local flag="$out.timedout" pid dog t0
+  local flag="$out.timedout" pid dog t0 token
   # The oracle field is a SET: `a.sh,b.sh` names ONE invocation running both,
   # because run-all.sh OR-combines its filters and reports one aggregate status
   # — so a FAIL: from any member is this target's kill signal, and the baseline
@@ -391,6 +426,10 @@ falsify_run_oracle() {   # <tree> <oracle-set> <outfile> <timeout-seconds>
   local -a onames=()
   IFS=',' read -r -a onames <<<"$oracle"
   rm -f "$flag"
+  # Unique to THIS invocation: the worker process plus the microsecond it began.
+  # $BASHPID, never $$ — inside a forked worker $$ is still the top-level shell's
+  # pid, which every slot would share, which is the property being fixed.
+  token="$BASHPID.$(fr_now_us)"
   t0="$(fr_now_us)"
   # Monitor mode so each background job leads its own process group and a
   # timeout can kill the oracle's WHOLE tree of children (run-all.sh forks a
@@ -399,7 +438,11 @@ falsify_run_oracle() {   # <tree> <oracle-set> <outfile> <timeout-seconds>
   ( cd "$tree" && exec bash "$FR_DRIVER_REL" -v "${onames[@]}" ) >"$out" 2>&1 &
   pid=$!
   ( sleep "$limit"
-    : > "$flag"
+    # A watchdog whose oracle is already gone has nothing to report, and every
+    # false timeout measured so far was one of these still writing. Checked
+    # before the flag rather than after, because the write is the damage.
+    kill -0 "$pid" 2>/dev/null || exit 0
+    printf '%s' "$token" > "$flag"
     kill -TERM -"$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null
     sleep 1
     kill -KILL -"$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null ) &
@@ -411,15 +454,40 @@ falsify_run_oracle() {   # <tree> <oracle-set> <outfile> <timeout-seconds>
   wait "$dog" 2>/dev/null
   FALSIFY_MS="$(fr_ms_since "$t0")"
   FALSIFY_TIMED_OUT=0
-  [[ -f "$flag" ]] && FALSIFY_TIMED_OUT=1
+  FALSIFY_FOREIGN_FLAG=""
+  if [[ -f "$flag" ]]; then
+    if falsify_flag_is_mine "$flag" "$token"; then
+      FALSIFY_TIMED_OUT=1
+    else
+      # Not this invocation's flag. Not a timeout, and not silence either: the
+      # caller reports it, so a leak that gets past the liveness guard above is
+      # a named event rather than a mutant quietly leaving the measured set.
+      FALSIFY_FOREIGN_FLAG="$(cat "$flag" 2>/dev/null || true)"
+      FALSIFY_FOREIGN_FLAG="${FALSIFY_FOREIGN_FLAG:-<empty>}"
+    fi
+  fi
   rm -f "$flag"
   return 0
+}
+
+# Kept apart from its caller so it can be asserted directly: the whole defect
+# was that "the flag exists" and "this run armed the flag" were the same
+# expression. An empty flag — the form the old code wrote — is deliberately NOT
+# mine: a flag with no owner is exactly what cannot be attributed.
+falsify_flag_is_mine() {   # <flagfile> <token> → 0 iff this invocation armed it
+  [[ -f "$1" ]] || return 1
+  [[ -n "$2" ]] || return 1
+  [[ "$(cat "$1" 2>/dev/null)" == "$2" ]]
 }
 
 # ── the verdict ───────────────────────────────────────────────────────────────
 # Sets FALSIFY_VERDICT and FALSIFY_SIGNAL from the three signals.
 FALSIFY_VERDICT=""
 FALSIFY_SIGNAL=""
+# Set by falsify_run_oracle when the slot's flag was armed by some other
+# invocation. Declared here so `set -u` holds even if a future caller reads it
+# before the first oracle runs.
+FALSIFY_FOREIGN_FLAG=""
 falsify_verdict() {   # <rc> <outfile> <timed-out 0|1>
   local sig="" timed_out=0
   (( $3 == 1 )) && { sig="timeout"; timed_out=1; }
@@ -527,6 +595,14 @@ fr_run_mutant() {   # <slot> <target> <oracle> <seq> <lineno> <op> <sha> <text> 
     "$FALSIFY_VERDICT" "$ident" "$oracle" "$seq" "$lineno" \
     "$FALSIFY_SIGNAL" "$FALSIFY_MS" "$text" > "$res"
 
+  # A flag this invocation did not arm reached this slot. Recorded against the
+  # mutant it would have mislabelled, and naming the SLOT, because the slot is
+  # the shared thing — if these cluster, they name the leak.
+  if [[ -n "$FALSIFY_FOREIGN_FLAG" ]]; then
+    printf 'NOTE|foreign-timeout-flag|%s|slot %s held a timeout flag armed by %s, not by this run\n' \
+      "$ident" "$slot" "$FALSIFY_FOREIGN_FLAG" >> "$res"
+  fi
+
   # Restore FIRST, then ask whether anything else in the tree moved. An oracle
   # that left debris behind would make every later mutant in this slot a lie.
   cp -Pp "$FR_CACHE/$target" "$tree/$target"
@@ -568,7 +644,7 @@ fr_harvest() {   # <pid> — print that mutant's records and tally them
   fi
   while IFS= read -r line; do
     printf '%s\n' "$line"
-    IFS='|' read -r _ f2 f3 _ _ _ f7 f8 _ <<< "$line"
+    IFS='|' read -r _ f2 f3 f4 _ _ f7 f8 _ <<< "$line"
     case "$line" in
       'MUTANT|'*)
         case "$f2" in
@@ -630,6 +706,10 @@ fr_harvest() {   # <pid> — print that mutant's records and tally them
           fr_warn "KILLED WITH NO ASSERTION ATTACHED (signal=$f7 — the oracle exited non-zero without printing a FAIL: line, so nothing was observed asserting): $f3"
         fi ;;
       'NOTE|write-failed|'*) FR_BROKEN=$(( FR_BROKEN + 1 )) ;;
+      'NOTE|foreign-timeout-flag|'*)
+        # Never silent. This is the event that used to arrive as an UNPROVEN
+        # mutant and take a survivor out of the ledger's reach with it.
+        fr_warn "FOREIGN TIMEOUT FLAG — $f4. Not scored as a timeout: $f3" ;;
     esac
   done < "$res"
   rm -f "$res"
