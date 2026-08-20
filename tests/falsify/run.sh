@@ -255,6 +255,28 @@ fr_secs() {   # <milliseconds> → "N.Ms", or "?" when the record carried no num
 }
 fr_err()  { printf 'ERROR: %s\n' "$*" >&2; }
 
+# ── who armed a timeout flag ──────────────────────────────────────────────────
+# The token written into a slot's timeout flag, and the sentence printed when the
+# flag turns out to belong to somebody else. Both are FUNCTIONS, and both are
+# pure, because the open question they serve is an identification problem: a
+# watchdog from another invocation killed a live oracle twice in one run and the
+# NOTE could not say which one, because it printed the FOREIGN token with nothing
+# to compare it against (backlog F53).
+#
+# `<label>.<pid>.<microseconds>`. $BASHPID, never $$ — inside a forked worker $$
+# is still the top-level shell's pid, which every slot would share, which is the
+# property F50 was fixed to establish. The LABEL is what F53 adds: a bare pid
+# names a process that has already exited by the time anyone reads it, while
+# `s3.m47` names the slot and the mutant whose watchdog wrote it.
+fr_token() {   # <label> → this invocation's timeout-flag token
+  printf '%s.%s.%s' "${1:-?}" "$BASHPID" "$(fr_now_us)"
+}
+
+fr_foreign_note() {   # <ident> <slot> <foreign token> <own token> → the NOTE line
+  printf 'NOTE|foreign-timeout-flag|%s|slot %s held a timeout flag armed by %s, not by this invocation, whose own token was %s\n' \
+    "$1" "$2" "$3" "$4"
+}
+
 # ── the two verdict predicates ────────────────────────────────────────────────
 # Deliberately one tiny function each, and each one line of logic:
 # tests/test-falsify-run.sh BREAKS them one at a time (rewriting the body to
@@ -449,8 +471,8 @@ falsify_watch_until() {   # <pid> <seconds> → 0 the pid went away first, 1 the
   return 1
 }
 
-falsify_run_oracle() {   # <tree> <oracle-set> <outfile> <timeout-seconds>
-  local tree="$1" oracle="$2" out="$3" limit="$4"
+falsify_run_oracle() {   # <tree> <oracle-set> <outfile> <timeout-seconds> [<label>]
+  local tree="$1" oracle="$2" out="$3" limit="$4" label="${5:-?}"
   local flag="$out.timedout" pid dog t0 token
   # The oracle field is a SET: `a.sh,b.sh` names ONE invocation running both,
   # because run-all.sh OR-combines its filters and reports one aggregate status
@@ -461,10 +483,9 @@ falsify_run_oracle() {   # <tree> <oracle-set> <outfile> <timeout-seconds>
   local -a onames=()
   IFS=',' read -r -a onames <<<"$oracle"
   rm -f "$flag"
-  # Unique to THIS invocation: the worker process plus the microsecond it began.
-  # $BASHPID, never $$ — inside a forked worker $$ is still the top-level shell's
-  # pid, which every slot would share, which is the property being fixed.
-  token="$BASHPID.$(fr_now_us)"
+  # Unique to THIS invocation, and self-describing: see fr_token.
+  token="$(fr_token "$label")"
+  FALSIFY_TOKEN="$token"
   t0="$(fr_now_us)"
   # Monitor mode so each background job leads its own process group and a
   # timeout can kill the oracle's WHOLE tree of children (run-all.sh forks a
@@ -522,6 +543,9 @@ FALSIFY_SIGNAL=""
 # invocation. Declared here so `set -u` holds even if a future caller reads it
 # before the first oracle runs.
 FALSIFY_FOREIGN_FLAG=""
+# The token THIS invocation armed its own flag with. Only meaningful next to
+# FALSIFY_FOREIGN_FLAG: one foreign token names nothing, two tokens name a pair.
+FALSIFY_TOKEN=""
 falsify_verdict() {   # <rc> <outfile> <timed-out 0|1>
   local sig="" timed_out=0
   (( $3 == 1 )) && { sig="timeout"; timed_out=1; }
@@ -622,7 +646,7 @@ fr_run_mutant() {   # <slot> <target> <oracle> <seq> <lineno> <op> <sha> <text> 
     return 0
   fi
 
-  falsify_run_oracle "$tree" "$oracle" "$out" "$FR_TIMEOUT"
+  falsify_run_oracle "$tree" "$oracle" "$out" "$FR_TIMEOUT" "s$slot.m$seq"
   falsify_verdict "$FALSIFY_RC" "$out" "$FALSIFY_TIMED_OUT"
 
   printf 'MUTANT|%s|%s|%s|%s|%s|%s|%s|%s\n' \
@@ -633,8 +657,7 @@ fr_run_mutant() {   # <slot> <target> <oracle> <seq> <lineno> <op> <sha> <text> 
   # mutant it would have mislabelled, and naming the SLOT, because the slot is
   # the shared thing — if these cluster, they name the leak.
   if [[ -n "$FALSIFY_FOREIGN_FLAG" ]]; then
-    printf 'NOTE|foreign-timeout-flag|%s|slot %s held a timeout flag armed by %s, not by this run\n' \
-      "$ident" "$slot" "$FALSIFY_FOREIGN_FLAG" >> "$res"
+    fr_foreign_note "$ident" "$slot" "$FALSIFY_FOREIGN_FLAG" "$FALSIFY_TOKEN" >> "$res"
   fi
 
   # Restore FIRST, then ask whether anything else in the tree moved. An oracle
@@ -980,7 +1003,7 @@ falsify_main() {
     # An oracle that is not green on the UNMUTATED tree cannot distinguish
     # anything: every mutant would be reported KILLED. rc=2 is named for what
     # it is, because that is what a misspelled oracle looks like.
-    falsify_run_oracle "$(fr_slot_tree 0)" "$oracle" "$FR_OUT/baseline.log" "$FR_TIMEOUT"
+    falsify_run_oracle "$(fr_slot_tree 0)" "$oracle" "$FR_OUT/baseline.log" "$FR_TIMEOUT" "baseline"
     falsify_verdict "$FALSIFY_RC" "$FR_OUT/baseline.log" "$FALSIFY_TIMED_OUT"
     if [[ "$FALSIFY_VERDICT" != "SURVIVED" ]]; then
       if (( FALSIFY_RC == 2 )); then
