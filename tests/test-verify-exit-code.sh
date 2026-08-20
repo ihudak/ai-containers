@@ -477,5 +477,165 @@ grep -q 'refusing to measure' "$TMP/out.log" \
   && pass "phase 6: a failed corpus surfaces run.sh's ERROR line, not just its notes" \
   || fail "phase 6: a failed corpus surfaces run.sh's ERROR line, not just its notes (got: $(grep -c '^.*falsify: TIMEOUT' "$TMP/out.log") note line(s), no ERROR)"
 
+# The run that most needs its log is the one that used to keep it least: Phase 6
+# printed `tail -6` of the notes and then deleted the file, so the other fourteen
+# and every `MUTANT|` record went with it (backlog F47).
+f47_fail_kept="$(sed -n 's/^.*corpus run log kept at: //p' "$TMP/out.log" | head -1)"
+if [[ -n "$f47_fail_kept" && -f "$f47_fail_kept" ]]; then
+  pass "phase 6: a failed corpus keeps its run log, and says where"
+  grep -q 'falsify: TIMEOUT after 120s: mutant-0$' "$f47_fail_kept" \
+    && pass "phase 6: the kept log holds the notes the phase truncated away" \
+    || fail "phase 6: the kept log holds the notes the phase truncated away -- mutant-0 is one of the fourteen that tail -6 dropped, and it is not in the file either"
+  rm -f "$f47_fail_kept"
+else
+  fail "phase 6: a failed corpus keeps its run log, and says where -- '${f47_fail_kept:-<no path was printed>}' is gone"
+  fail "phase 6: the kept log holds the notes the phase truncated away -- there is no file to read it from"
+fi
+
+# ── PHASE 6 MUST KEEP THE LOG IT TELLS YOU TO READ (backlog F47) ──────────────
+# Phase 6 writes the whole corpus run — every `MUTANT|<verdict>|<identity>|…`
+# record and every `falsify:` note — into one mktemp file, prints a handful of
+# summary lines out of it, and then deletes it. Two of those summary lines are
+# INSTRUCTIONS TO GO READ IT:
+#
+#   NOTE: N kill(s) arrived with NO assertion … Grep the log for
+#         'KILLED WITH NO ASSERTION ATTACHED'.
+#
+# The path was never printed and the file was already gone by then, so the
+# instruction named something the reader could neither identify nor open.
+#
+# Not hypothetical, and not cheap: the 2026-08-20 macOS run reported
+# ASSERTLESS|2|227 — the first time F43's counter has ever fired, and a
+# platform-specific finding by construction, since CI holds --max-assertless 0 —
+# and the two mutant identities went into the delete with it. A second host run
+# became the only way to learn which two.
+#
+# The premise here is a REPORT WITH SOMETHING TO CHASE, not a failure: the corpus
+# exits 0, the ledger passes, and the only thing wrong is a non-zero assertless
+# count. That is the path that had no test at all — the failed-corpus case above
+# was the whole of Phase 6's coverage.
+r="$(mk_repo 0)"
+cat > "$r/tests/falsify/run.sh" <<'STUB'
+#!/usr/bin/env bash
+printf 'falsify: --jobs auto -> 4 (the OS reports 4 CPU(s))\n' >&2
+printf 'falsify: KILLED WITH NO ASSERTION ATTACHED (signal=exit — the oracle exited non-zero without printing a FAIL: line, so nothing was observed asserting): tests/portability.sh:cond-negate:f47f47f47f47f47f47f47f47f47f47f47f47f47f\n' >&2
+printf 'MUTANT|KILLED|tests/portability.sh:cond-negate:f47f47f47f47f47f47f47f47f47f47f47f47f47f|test-portability.sh|1|12|exit|900|  if command -v md5sum\n'
+printf 'TARGET|tests/portability.sh|test-portability.sh|13|13|0|0|0|1000\n'
+printf 'TOTAL|1|13|13|0|0|0|0|1000\n'
+printf 'ASSERTLESS|2|13\n'
+exit 0
+STUB
+rc="$(run_verify "$r" 6)"
+expect_rc "phase 6: a clean corpus carrying an assertless kill still passes" 0 "$rc"
+
+# The premise, asserted before the assertions that rest on it. Without this, a
+# Phase 6 that printed nothing at all would satisfy everything below by never
+# having pointed at the log in the first place.
+grep -q 'arrived with NO assertion' "$TMP/out.log" \
+  && pass "phase 6: a non-zero ASSERTLESS count is reported" \
+  || fail "phase 6: a non-zero ASSERTLESS count is reported — the note never fired, so the retention assertions below have no premise"
+
+f47_kept="$(sed -n 's/^.*corpus run log kept at: //p' "$TMP/out.log" | head -1)"
+if [[ -n "$f47_kept" ]]; then
+  pass "phase 6: the run log's path is printed when a note points at it"
+else
+  fail "phase 6: the run log's path is printed when a note points at it — no 'corpus run log kept at:' line, so the reader is told to grep a file whose name appears nowhere on screen"
+fi
+
+# The whole point: the file that instruction names is still there, and still
+# holds the line the instruction says to grep for.
+if [[ -n "$f47_kept" && -f "$f47_kept" ]]; then
+  pass "phase 6: the run log still exists after the phase ends"
+  grep -q 'KILLED WITH NO ASSERTION ATTACHED' "$f47_kept" \
+    && pass "phase 6: the kept log holds the per-occurrence line the note names" \
+    || fail "phase 6: the kept log holds the per-occurrence line the note names — the file survived but the evidence did not"
+  grep -q '^MUTANT|KILLED|tests/portability.sh:cond-negate:' "$f47_kept" \
+    && pass "phase 6: the kept log holds the per-mutant records that carry the identities" \
+    || fail "phase 6: the kept log holds the per-mutant records that carry the identities"
+  rm -f "$f47_kept"
+else
+  fail "phase 6: the run log still exists after the phase ends — '${f47_kept:-<no path was printed>}' is gone, so 'Grep the log' names a file nobody can open"
+  fail "phase 6: the kept log holds the per-occurrence line the note names — there is no file to read it from"
+  fail "phase 6: the kept log holds the per-mutant records that carry the identities — there is no file to read it from"
+fi
+
+# THE OTHER DIRECTION, and the reason this is a retention RULE rather than
+# "stop deleting": a verification with nothing to chase must leave nothing
+# behind. A fix that simply dropped the `rm -f` would satisfy every assertion
+# above while quietly filling $TMPDIR with one full corpus log per run.
+r="$(mk_repo 0)"
+cat > "$r/tests/falsify/run.sh" <<'STUB'
+#!/usr/bin/env bash
+printf 'TARGET|tests/portability.sh|test-portability.sh|13|13|0|0|0|1000\n'
+printf 'TOTAL|1|13|13|0|0|0|0|1000\n'
+printf 'ASSERTLESS|0|13\n'
+exit 0
+STUB
+rc="$(run_verify "$r" 6)"
+expect_rc "phase 6: a corpus with nothing to chase passes" 0 "$rc"
+# Reached its own end. Without this, "no kept-at line" is equally true of a
+# phase that aborted before it could print one.
+grep -q 'survivor ledger: OK' "$TMP/out.log" \
+  && pass "phase 6: the nothing-to-chase run reached the ledger step" \
+  || fail "phase 6: the nothing-to-chase run reached the ledger step — the absence check below would pass on a phase that died early"
+grep -q 'corpus run log kept at:' "$TMP/out.log" \
+  && fail "phase 6: a run with nothing to chase deletes its log — it was kept instead, so every clean verification leaves a full corpus log behind in TMPDIR" \
+  || pass "phase 6: a run with nothing to chase deletes its log"
+
+# ── PHASE 6'S ADVICE MUST NAME A KNOB THAT EXISTS (backlog F48) ───────────────
+# The sibling of F47, in the same twenty lines and of the same species: an
+# instruction the reader cannot act on. When more than a tenth of the corpus goes
+# unmeasured, Phase 6 says "raise --timeout or reduce load" — and both numbers
+# were hardcoded into the one invocation, with no variable, flag or argument that
+# changed either. Following the advice meant editing the script mid-verification,
+# or running tests/falsify/run.sh by hand and skipping the ratchet the phase
+# exists to pair with it.
+#
+# Measured: the 2026-08-20 macOS run resolved --jobs auto to 18 on an 18-CPU host
+# and lost 71 mutants to the 120s clock — 34 UNPROVEN, 14% unresolved, verdicts
+# obtained for 230 of 264. The note fired correctly and named the right lever.
+# The lever did not exist.
+#
+# The stub records the argv it was handed; the assertions read THAT, not the
+# banner, because a banner that prints "timeout=600" while passing 120 is exactly
+# the failure this is guarding against.
+r="$(mk_repo 0)"
+cat > "$r/tests/falsify/run.sh" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" > "$TMP/falsify-argv.txt"
+printf 'TARGET|tests/portability.sh|test-portability.sh|13|13|0|0|0|1000\n'
+printf 'TOTAL|1|13|13|0|0|0|0|1000\n'
+printf 'ASSERTLESS|0|13\n'
+exit 0
+STUB
+rm -f "$TMP/falsify-argv.txt"
+rc="$(run_verify "$r" 6)"
+expect_rc "phase 6: the default corpus invocation passes" 0 "$rc"
+f48_argv="$(cat "$TMP/falsify-argv.txt" 2>/dev/null || true)"
+case "$f48_argv" in
+  (*"--jobs auto"*"--timeout 120"*)
+    pass "phase 6: an unset environment runs exactly what was hardcoded ($f48_argv)" ;;
+  (*)
+    fail "phase 6: an unset environment runs exactly what was hardcoded -- got '$f48_argv', want --jobs auto and --timeout 120" ;;
+esac
+
+# The override. Both knobs at once, and both different from the defaults, so a
+# fix that wired up only one of them fails here.
+rm -f "$TMP/falsify-argv.txt"
+rc="$( export FALSIFY_JOBS=4 FALSIFY_TIMEOUT=600; run_verify "$r" 6 )"
+expect_rc "phase 6: an overridden corpus invocation passes" 0 "$rc"
+f48_argv="$(cat "$TMP/falsify-argv.txt" 2>/dev/null || true)"
+case "$f48_argv" in
+  (*"--jobs 4"*"--timeout 600"*)
+    pass "phase 6: FALSIFY_JOBS and FALSIFY_TIMEOUT reach the corpus ($f48_argv)" ;;
+  (*)
+    fail "phase 6: FALSIFY_JOBS and FALSIFY_TIMEOUT reach the corpus -- got '$f48_argv', so the note's 'raise --timeout' still names a knob nothing is connected to" ;;
+esac
+# Said out loud, not only obeyed: an operator who raised the clock has to be able
+# to see, in the log they paste back, which clock the run actually used.
+grep -q 'running the corpus (jobs=4, timeout=600)' "$TMP/out.log" \
+  && pass "phase 6: the banner reports the values actually used" \
+  || fail "phase 6: the banner reports the values actually used -- it still says jobs=auto/timeout=120 while running something else, which is worse than not printing them at all"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

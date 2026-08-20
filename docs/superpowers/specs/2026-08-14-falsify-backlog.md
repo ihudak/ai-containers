@@ -2862,3 +2862,105 @@ consumer, and nothing about the result looks unfinished.** Every line mgd had
 was correct, referenced a real variable, and ran. What was missing was the one
 place the variable is finally read — invisible to a reader of either file alone,
 and visible immediately to anyone diffing them for a third reason.
+
+
+## F47 — Phase 6 deletes the run log it just told you to grep — **FIXED 2026-08-20, in the increment that found it**
+
+**Found by the 2026-08-20 host run, which is also the run that lost the evidence.**
+
+`PHASES="5 6" bash ./verify-on-host.sh` on macOS reported:
+
+```
+ASSERTLESS|2|227
+NOTE: 2 kill(s) arrived with NO assertion — the oracle exited non-zero
+      without printing a FAIL: line. CI gates this at 0, so a non-zero here
+      is platform-specific and worth chasing. Grep the log for
+      'KILLED WITH NO ASSERTION ATTACHED'.
+```
+
+That note is correct and it is the whole point of F43's counter: CI holds
+`--max-assertless 0`, so a non-zero reading on a host is a property of an
+oracle that only shows on that platform. It is the first time the counter has
+ever fired.
+
+**The evidence for it no longer exists.** Phase 6 writes the corpus run to
+`fl_run="$(mktemp)"` (`verify-on-host.sh:333`), captures both channels into it
+(`> "$fl_run" 2>&1`, line 343), and ends the phase with an unconditional
+`rm -f "$fl_run"` (line 410). The per-occurrence warnings — `fr_warn "KILLED
+WITH NO ASSERTION ATTACHED (signal=…): <identity>"`, `run.sh:601`, the only
+place the two mutants are named — and the `MUTANT|<verdict>|<identity>|…`
+records for all 264 exist nowhere else. The path is never printed either, so
+even before the delete the reader could not have known which file to open.
+
+So the instruction names a file the reader cannot identify and cannot open.
+Two mutants on macOS are killed by an oracle that reaches no assertion, and
+which two is currently unknowable without a second host run.
+
+**The same delete lands on the failure path.** `phase_fail` records and
+returns — it does not exit — so line 410 runs after a failed corpus too, having
+shown only `tail -6` of the notes. The run that most needs its log is the one
+that keeps it least.
+
+**Scope.** The unproven note ("raise --timeout or reduce load") points at the
+same vanished log; its identities survived this run only because
+`check-ledger.sh` happens to print them on its own stderr. The two files are
+byte-identical across the repos, so both carry it.
+
+**Fix.** Retain the log whenever the phase says something that points at it —
+the assertless note, the unproven note, a rejected ledger, a corpus that did not
+complete — and print its path at the point of the advice. Delete it only on a
+run with nothing to chase, so a clean verification still leaves no litter.
+
+**The generalisable part: an instruction is only as real as the thing it names.**
+This note passed every review it has had, including the one that wrote it, because
+it reads as correct — and it is correct, right up to the point where a reader
+tries to follow it. Nothing in the suite could have caught that: the assertion
+would have to be that the file survives the phase, and no test ran Phase 6's
+success path at all. `test-verify-exit-code.sh` covered the failure path only.
+
+
+## F48 — Phase 6's advice names two knobs the script hardcodes — **FIXED 2026-08-20, in the increment that found it**
+
+F47's sibling, in the same twenty lines and of the same species: an instruction
+the reader cannot act on.
+
+When more than a tenth of the corpus goes unmeasured, Phase 6 printed:
+
+```
+NOTE: N mutant(s) timed out and were not measured — raise --timeout or
+      reduce load for a fuller measurement.
+```
+
+Both numbers were written into the one invocation at `verify-on-host.sh:343`:
+
+```bash
+bash "$TESTS_DIR/falsify/run.sh" --jobs auto --timeout 120 > "$fl_run" 2>&1
+```
+
+No variable, no flag and no argument moved either. Following the advice meant
+editing the script in the middle of a verification — on a checkout that may be
+shared with an agent — or running `tests/falsify/run.sh` by hand and skipping
+the ratchet Phase 6 exists to pair with it. The corpus run and the ledger score
+are deliberately **one operation** (see AGENTS.md), so "just run the corpus
+yourself" is not the same check.
+
+**Measured.** The 2026-08-20 macOS run resolved `--jobs auto` to 18 on an
+18-CPU host and lost 71 mutants to the 120-second clock: 34 UNPROVEN, 14% of
+the corpus unresolved, `verdicts obtained for 230/264 mutants (87%)`. The note
+fired correctly and named the right lever. The lever did not exist.
+
+**Phase 4 already had the pattern.** `IT_EXTRA_ARGS` is forwarded verbatim to
+that phase's runner, documented as "the hook for narrowing that when iterating".
+Phase 6 was written without one.
+
+**Fixed** with `FALSIFY_JOBS` and `FALSIFY_TIMEOUT`, defaulting to `auto` and
+`120` — the values that were hardcoded, so an unset environment runs exactly
+what it always ran. The banner prints the resolved pair, and the note names the
+variables rather than the flags they feed.
+
+**The generalisable part: advice is a feature, and it needs the review code
+gets.** F47 and F48 are one defect wearing two hats — a note telling the reader
+to open a file that was deleted, and a note telling the reader to turn a knob
+that was never fitted. Both read as complete. Both were written by someone who
+knew exactly what they meant. Neither was followed by anybody until a host run
+made it necessary, and the first attempt to follow either one failed.
