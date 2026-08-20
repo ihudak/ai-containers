@@ -554,9 +554,29 @@ sig="$(fx_signal "$FX_OUT" 'return 1')"
 [[ "$sig" == *timeout* ]] \
   && pass "  … with the timeout named in its signal field ($sig)" \
   || fail "  … with the timeout named in its signal field (got '$sig')"
-grep -q 'TIMEOUT after 1s (UNPROVEN — nothing was observed asserting)' <<< "$FX_ERR" \
-  && pass "  … and flagged on stderr as UNPROVEN, not as a kill" \
-  || fail "  … and flagged on stderr as UNPROVEN: $FX_ERR"
+# The note must report what it MEASURED, not repeat back the clock it was
+# configured with. It used to print "TIMEOUT after ${FR_TIMEOUT}s" for every
+# timeout — a string indistinguishable from one that never looked at the
+# mutant's own elapsed time, and on macOS it was printing "after 600s" for
+# mutants inside a target whose entire wall time was 64 seconds (backlog F50).
+grep -qE 'TIMEOUT: the oracle ran [0-9]+\.[0-9]s against a 1s clock \(UNPROVEN — nothing was observed asserting\)' <<< "$FX_ERR" \
+  && pass "  … and flagged on stderr as UNPROVEN, naming the measured elapsed and the clock" \
+  || fail "  … and flagged on stderr as UNPROVEN, naming the measured elapsed and the clock: $FX_ERR"
+
+# AND THE TWO NUMBERS MUST AGREE. A run that lasted less than its own clock did
+# not time out, whatever the signal field says. That is the contradiction the
+# old wording made unreadable — every note repeated the limit back, so a verdict
+# that could not have happened read exactly like one that did. Asserted here
+# against the fixture that genuinely hangs, so the check is known to hold when
+# the verdict is honest.
+to_ran="$(sed -n 's/.*the oracle ran \([0-9][0-9]*\)\.[0-9]s against a \([0-9][0-9]*\)s clock.*/\1 \2/p' <<< "$FX_ERR" | head -1)"
+if [[ -z "$to_ran" ]]; then
+  fail "  … and both of the note's numbers are readable — got none from: $FX_ERR"
+elif (( ${to_ran% *} >= ${to_ran#* } )); then
+  pass "  … and the elapsed it reports is at least the clock it names (${to_ran% *}s vs ${to_ran#* }s)"
+else
+  fail "  … and the elapsed it reports is at least the clock it names — ran ${to_ran% *}s against a ${to_ran#* }s clock, so the tier called something a timeout that finished well inside its own limit"
+fi
 check "  … counted as unproven, NOT as a kill, in TOTAL" "1" \
   "$(grep -c '^TOTAL|1|1|0|0|1|1|100|' <<< "$FX_OUT")"
 

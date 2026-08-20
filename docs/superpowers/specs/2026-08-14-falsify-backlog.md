@@ -3025,49 +3025,88 @@ asked — and that any future knob must be — is *"which existing test now depe
 on this being unset?"*
 
 
-## F50 — four mutants hang for 600s on macOS that die in 128ms on Linux
+## F50 — the tier reports timeouts that cannot have happened, and one of them turned a survivor into UNPROVEN
 
-**OPEN.** Distinct from the load-sensitivity family (F27–F32): this is not a
-slow oracle, it is a stopped one.
+**OPEN.** Mechanism not yet identified; the contradiction is proven arithmetically
+and the diagnostic that hid it is fixed.
 
-The 2026-08-20 host run at `--jobs 8 --timeout 600` — a third of the worker count
-of the run before it, on an 18-CPU machine — still reported:
+**This entry replaces an earlier, wrong reading of the same evidence.** It first
+said "four mutants hang for 600s on macOS that die in 128ms in the container".
+Both halves were wrong. `run.sh:577` prints *"(killed before the clock ran out)"*
+only when the verdict is **KILLED** — the assertion fired, so those mutants were
+covered, not hanging. And the "600s" was never measured: the note printed
+`${FR_TIMEOUT}`, the configured clock, for every timeout regardless of how long
+the mutant actually ran.
+
+**The contradiction.** A target's `ms` field is its wall time, and mutants inside
+it run concurrently against the per-mutant clock. So a target cannot contain a
+timeout longer than its own wall time. Measured on macOS:
+
+| run | target | mutants·killed·survived·unproven·timeouts | wall | clock |
+|---|---|---|---|---|
+| 3 (`--jobs 8 --timeout 600`) | `tests/integration/docker-shim.sh` | 29·29·0·0·**3** | **64s** | 600s |
+| 3 | `tests/lib-layer-checks.sh` | 48·46·1·**1**·**1** | **54s** | 600s |
+| 1 (`--jobs 18 --timeout 120`) | `tests/lib-layer-checks.sh` | 48·46·2·0·**2** | **45s** | 120s |
+
+Four timeouts in run 3 and two in run 1 are impossible: each claims a mutant hit
+a clock longer than the entire target took. (Run 1's other timeout counts —
+`mutate.sh` 18, `lib-verify-repo.sh` 43, `bash-dialect-lint.sh` 7 — are all
+arithmetically possible at that concurrency and are not evidence either way.)
+
+**Why it matters, and it is not cosmetic.** `timeout` without `failline` yields
+UNPROVEN, and UNPROVEN is *accepted but not required* in the ledger, because a
+real timeout is machine state. So a FALSE timeout launders a survivor out of the
+measured set with no entry owed and nothing said. It has already happened:
+`tests/lib-layer-checks.sh` reports **46 killed / 2 survived / 0 unproven** in
+every container run of this commit, and **46 / 1 / 1** on the host. Entry 6's
+EQUIVALENT pair is one identity with two records; on macOS one of those records
+became UNPROVEN. The ledger still passed — correctly, by its own rules — while
+one of the two things it was watching had quietly stopped being watched.
+
+That is the shape this whole tier exists to prevent, arriving through the
+exemption rather than through the assertion.
+
+**Why it stayed invisible: the note repeated the setting back.** Every timeout
+printed *"TIMEOUT after 600s"* whether the mutant ran for 600 seconds or for
+none, so a verdict that could not have happened read exactly like one that did.
+**Fixed here:** the note now names the mutant's own measured elapsed beside the
+clock — *"TIMEOUT: the oracle ran 0.9s against a 600s clock"* — and
+`tests/test-falsify-run.sh` asserts both numbers are present and that the
+elapsed is at least the clock, against the fixture that genuinely hangs.
+
+**The suspected mechanism, not yet demonstrated.** `fr_run_mutant` sets
+`out="$FR_OUT/w$slot.log"` — per **slot**, not per mutant — and
+`falsify_run_oracle` derives its watchdog flag as `"$out.timedout"`. That path is
+therefore reused by every mutant that ever runs in that slot, across all targets,
+and the only writer is a watchdog subshell. `falsify_run_oracle` removes the flag
+before starting and kills its watchdog after `wait`, so the exposure is a
+watchdog that outlives its kill: it then writes the flag `$limit` seconds later,
+into a slot now running an unrelated mutant. Consistent with every number above —
+the false timeouts land in the targets that follow the slow ones — but not
+demonstrated, and the kill path looks correct on inspection.
+
+**It does not reproduce on Linux.** Two attempts in the dev container, both
+`TOTAL|9|264|262|2|0|0|0` with zero timeouts:
+`--jobs 16 --timeout 900` (oversubscribed 2× on 8 CPUs), and `--jobs 16
+--timeout 20` — a clock chosen above the slowest real oracle in the corpus
+(10.6s) and well inside the 68-second run, so any watchdog that outlived its kill
+would fire during a later mutant. Neither produced a single timeout signal.
+
+**Evidence needed** — one grep against the log Phase 6 now keeps (F47). A mutant
+whose signal carries `timeout` while its own `ms` sits far below the clock is the
+proof, and names which mutants and which slots:
 
 ```
-falsify: TIMEOUT after 600s (killed before the clock ran out): tests/lib-layer-checks.sh:return-flip:e0e1f9fabfc9d4800c877a703b823ac0578ff8db
-falsify: TIMEOUT after 600s (killed before the clock ran out): tests/bash-dialect-lint.sh:cond-negate:32a62822abdad9cdf670c6a340cde7b24e83c2ef
-falsify: TIMEOUT after 600s (killed before the clock ran out): tests/bash-dialect-lint.sh:logic-flip:238ad5eea5be9f453b9de2b79c90dc94d6e4f5c1
-falsify: TIMEOUT after 600s (killed before the clock ran out): tests/integration/docker-shim.sh:cmp-flip:5a19451b4bc784bc1a7b629182186fd2c91d2153
+awk -F'|' '$1=="MUTANT" && $7 ~ /timeout/ {print $8"ms", $2, $7, $3}' <kept-log>
 ```
 
-Two of those identities are measured in the dev container, same commit, as
-`exit+failline` kills at **123 ms and 128 ms**:
-
-```
-MUTANT|KILLED|tests/bash-dialect-lint.sh:logic-flip:238ad5ee…|test-bash-dialect-lint.sh|2|45|exit+failline|128|[[ -f "$ENGINE_DIR/bash-floor.sh" ]] && ENGINE_DIR="$REPO_DIR/base"
-MUTANT|KILLED|tests/bash-dialect-lint.sh:cond-negate:32a62822…|test-bash-dialect-lint.sh|4|47|exit+failline|123|[[ -n "${AI_CONTAINERS_BASH_FLOOR_MAJOR:-}" ]] && source "$ENGINE_DIR/bash-floor.sh"
-```
-
-128 ms against 600 s is not a loaded machine. Both damaged lines govern how the
-oracle resolves `ENGINE_DIR` — the layout branch that lets one copy serve both
-repos — so the plausible shape is a mutant that sends the oracle down a path
-where something blocks rather than fails. F22's `p_timeout` bounds four specific
-call sites in `test-bash-dialect-lint.sh`; a hang reached by a different route is
-still unbounded and runs to the tier's own clock.
-
-**Why it is worth chasing rather than tolerating.** An UNPROVEN mutant is
-accepted by the ledger precisely because a timeout is machine state. These are
-not machine state: they reproduce at 5× the clock and a third of the load, which
-makes them a property of the code that the ledger is currently amnestying under
-a rule written for something else.
-
-**Evidence needed** — the run log Phase 6 now keeps (F47) holds the `MUTANT|`
-record and elapsed time for every one of them:
-
-```
-grep -E '^MUTANT\|' <kept-log> | awk -F'|' '$8 > 60000'
-grep 'TIMEOUT after' <kept-log>
-```
-
-Sequenced after F27–F32 only for the shared question of what a timeout means;
-the cause here is separable and does not wait on them.
+**Related, same host runs, unresolved.** `ASSERTLESS` read **2** in run 1
+(`--jobs 18 --timeout 120`, the run where `lib-verify-repo.sh` also produced 43
+timeouts and 24 UNPROVEN) and **0** in run 3 at lower concurrency. `run.sh`'s own
+header claims that counter is "a property of the oracle's CODE, not of the
+machine … satisfiable everywhere at once", which is why CI gates it at 0. Two
+readings on one machine is not proof against that claim — `test-verify-exit-code.sh`
+changed between the runs, and it is one of the three oracles involved — but it is
+not evidence for it either, and a load-sensitive counter behind a `--max-assertless 0`
+CI gate is a flaky gate. Resolve it with the same host run: if the count returns,
+`grep 'KILLED WITH NO ASSERTION ATTACHED'` on the kept log names the mutants.
