@@ -3218,9 +3218,14 @@ persuasive, at the head of a CI gate that fails the build. It cost one command t
 turn it into evidence.
 
 
-## F52 — under a clock tight enough to fire the watchdog, macOS loses more than half its workers
+## F52 — under a clock tight enough to fire the watchdog, macOS loses more than half its workers — **RESOLVED 2026-08-20: THE PREMISE WAS WRONG, AND IT WAS NEVER MEASURED**
 
-**OPEN.** Loud, not silent — the run fails with a named error and a non-zero exit
+> **Read the resolution at the bottom of this entry before the entry.** The
+> mutants were not lost. They were never attempted, for a reason the run states
+> in four named ERROR lines. What follows is the original filing, kept verbatim
+> because how it went wrong is the useful part.
+
+**ORIGINALLY FILED AS OPEN.** Loud, not silent — the run fails with a named error and a non-zero exit
 — and only reachable under a clock tight enough that mutants time out en masse.
 Filed because it is the same family as F50 (a mutant leaving the measured set)
 and because the platform asymmetry is total.
@@ -3274,7 +3279,7 @@ platforms in exactly the way that would explain a total asymmetry.
 Two minutes. Compare `TOTAL`'s third field against 264, and read stderr rather
 than filtering it — the ERROR lines are the finding.
 
-### 2026-08-20 — the pool now names the cause. The mechanism is still open.
+### 2026-08-20 (morning) — the pool now names the cause
 
 `fr_harvest` reported the absence and nothing else: *a mutant worker produced no
 verdict at all (slot N)*. That sentence cannot tell a worker that gave up from
@@ -3308,9 +3313,11 @@ the wiring through the real pool — and each guard demonstrated failing:
 Corpus unchanged on Linux after the change: `TOTAL|9|264|262|2|0|0|0`,
 `ASSERTLESS|0|262`, ledger `OK: 0 problem(s)`, suite 56/56.
 
-**THIS IS INSTRUMENTATION, NOT A ROOT CAUSE — F52 STAYS OPEN.** What it buys is
-that the next macOS run under a tight clock says whether those 158 workers were
-killed, and by what, instead of only that they were gone.
+**THIS IS INSTRUMENTATION, NOT A ROOT CAUSE.** What it buys is that the next
+macOS run under a tight clock says whether those 158 workers were killed, and by
+what, instead of only that they were gone. It did exactly that — see the
+resolution below, where the answer turned out to be that no worker was killed at
+all.
 
 **A repo-free probe exists, and it does NOT reproduce on Linux.** 32 workers
 running the exact shape of `falsify_run_oracle` — `set -m`, fork oracle with
@@ -3329,3 +3336,139 @@ pgid 3178645), so variant A really is the shipped code path. On Linux the
 pattern loses nothing with no test suite involved. **The same probe on macOS is
 the next measurement**, and if it loses workers there, the mechanism is in these
 ~40 lines rather than anywhere in the tier.
+
+### 2026-08-20 (evening) — RESOLVED. Nothing was losing workers.
+
+The macOS repro was run again with the morning's instrumentation in place, and
+the answer is that **the 158 mutants were never attempted.** Four of the nine
+targets were skipped whole, each with a named error:
+
+```
+ERROR: oracle 'test-mutations.sh' is not green on the PRISTINE tree (rc=143, signal=timeout) — every mutant of tests/integration/mutate.sh would be reported KILLED. Skipping tests/integration/mutate.sh.
+ERROR: oracle 'test-lib-verify-repo.sh,test-verify-exit-code.sh,test-layer-containment.sh' … (rc=143, signal=timeout) … Skipping tests/lib-verify-repo.sh.
+ERROR: oracle 'test-bash-dialect-lint.sh' … (rc=143, signal=timeout) … Skipping tests/bash-dialect-lint.sh.
+ERROR: oracle 'test-tools-d.sh' … (rc=143, signal=timeout+failline) … Skipping tools-lib.sh.
+```
+
+59 + 55 + 27 + 17 = **158.** Exactly the shortfall this entry was filed for.
+
+`rc=143` is 128+15 — SIGTERM, the per-mutant watchdog killing the **pristine**
+baseline. At a 5-second clock the UNDAMAGED suite does not finish on macOS: the
+same run measured `bash-floor.sh`'s oracle at 8.5s, `tests/portability.sh`'s at
+10.2s and `shared-files.sh`'s at 9.1s. So the tier refused to score those four
+targets, which is what `run.sh` is supposed to do — an oracle that is not green
+on the unmutated tree would report every mutant KILLED. It prints one ERROR per
+target, dumps the baseline tail, and `run.sh:992` sets `rc=1`.
+
+**And `FR_BROKEN` never fired.** Not one `produced no verdict at all` line in the
+whole run. The condition this entry named as its mechanism did not occur.
+
+**How it went wrong, because that is the reusable part.** The shortfall was real
+and the subtraction was right; everything after it was inference. `fr_reap` was
+read, its error path quoted, and `264 − 106 = 158` was attributed to it — from
+the source, not from the output. The output that would have refuted it (four
+ERROR lines naming four skipped targets, present in the very run being quoted)
+was not reconciled against the total. **Three mechanisms in this chain have now
+been asserted confidently and been wrong: F50's twice, and this one.** The rule
+that keeps surviving contact: a count that dropped is a measurement; WHY it
+dropped is not, until an output line says so.
+
+**What it cost, and what it bought.** Cost: one entry filed on a mechanism that
+did not exist. Bought: the morning's `fr_exit_cause` instrumentation, which is
+correct and now proves its own absence on every run — a `TOTAL` short of the
+corpus with zero broken workers is exactly the fingerprint of a skipped target
+rather than a lost one — plus two genuine findings the same run surfaced, F53
+and F54 below.
+
+**The residual question, deliberately not folded back in here:** at
+`--jobs 32 --timeout 5` the tier measures 106 of 264 mutants on macOS and 264 of
+264 on Linux. That asymmetry is real and it is just slowness — an 18-CPU machine
+running 32 workers, against a container running 8. It is not a defect; it is what
+`--max-unproven-pct` exists to bound. Nothing to fix.
+
+---
+
+## F53 — a watchdog from another invocation killed a live oracle, and the mechanism is not established
+
+**OPEN.** Observed twice in one macOS run, 2026-08-20,
+`bash tests/falsify/run.sh --jobs 32 --timeout 5`. Two mutants lost their verdict
+to a signal from something that was not their own watchdog:
+
+```
+MUTANT|UNPROVEN|tests/lib-layer-checks.sh:cond-negate:27da7c0e…|test-layer-checks-parser.sh|1|40|signal|5045|
+falsify: ORACLE KILLED BY A SIGNAL (UNPROVEN — nothing was observed asserting)
+NOTE|foreign-timeout-flag|…|slot 0 held a timeout flag armed by 50776.1787249974304247, not by this run
+
+MUTANT|UNPROVEN|tests/integration/docker-shim.sh:cond-negate:21828b2b…|test-integration-shim.sh|1|47|signal|5175|
+falsify: ORACLE KILLED BY A SIGNAL (UNPROVEN — nothing was observed asserting)
+NOTE|foreign-timeout-flag|…|slot 15 held a timeout flag armed by 55974.1787250031250895, not by this run
+```
+
+Both are `seq 1` — the first mutant dispatched to that slot — and both carry
+`signal` with no `timeout`, meaning this invocation's own clock never fired: the
+oracle was killed by somebody else. This is F50's leak, still live. F50's fix
+made it **visible** (the flag now carries an owner, so it is a named NOTE instead
+of a silently mislabelled timeout) and bounded the FIRST kill's staleness to
+about a second. It did not stop the kill.
+
+**THE MECHANISM IS NOT ESTABLISHED, AND THIS ENTRY WILL NOT GUESS AT IT.**
+`falsify_run_oracle` does `wait "$dog"` before it returns, so on the face of it a
+watchdog cannot outlive its own invocation and reach the next one on that slot.
+Three explanations were constructed and each was refuted by the code:
+
+* *the baseline's watchdog leaked* — no: the baseline's flag path is
+  `baseline.log.timedout`, and a slot's is `w<slot>.log.timedout`.
+* *two invocations overlapped on one slot* — no: a slot returns to
+  `FR_FREE_SLOTS` only inside `fr_harvest`, which runs after the pool has seen
+  that worker finish.
+* *a stale flag survived from an earlier run* — no: `FR_OUT` lives under a fresh
+  `mktemp -d` per run, and `falsify_run_oracle` unlinks the flag on entry.
+
+Given F52, F50 and F50-again, a fourth confident mechanism is worth less than one
+measurement. **Next step is instrumentation, not a fix:** the NOTE prints only
+the FOREIGN token, so there is nothing to compare it against. Print this
+invocation's own token beside it, and widen the token from `<pid>.<µs>` to
+`<slot>.<seq>.<pid>.<µs>` so a foreign flag names the mutant whose watchdog wrote
+it. The next occurrence then explains itself instead of being reasoned about.
+
+**Cost today:** two mutants per tight-clock run leave the measured set as
+UNPROVEN, which the ledger does not require an entry for (F27). Bounded by
+`--max-unproven-pct`, loud on stderr, and not reachable at the clocks anyone
+actually uses — the last full host run at `--timeout 600` had zero.
+
+**Reproduction:** `bash tests/falsify/run.sh --jobs 32 --timeout 5` on macOS, and
+grep stderr for `FOREIGN TIMEOUT FLAG`. Not yet reproduced on Linux.
+
+---
+
+## F54 — `TOTAL` reports the targets it LOADED, not the targets it measured
+
+**OPEN.** From the same run. Four of nine targets were skipped for an unusable
+pristine baseline, and the summary line says:
+
+```
+TOTAL|9|106|5|0|101|104|95|217887
+```
+
+Nine targets. 106 mutants. Both numbers are the wrong ones: nine is what
+`fr_load_targets` accepted, and 106 is what survived being attempted — 158
+mutants of four targets were never run, and **nothing in this line says so.**
+
+The information exists, one line per skipped target on stderr and in the earlier
+`RUN|…|mutants=264` record, so a reader who compares `RUN` against `TOTAL` can
+recover it. That is the defect: a summary that needs a second line to be true.
+`check-ledger.sh`, `verify-on-host.sh` Phase 6 and the ratchet all parse `TOTAL`
+positionally, and a 106-mutant corpus checked against the ledger reports `OK`
+while 158 mutants sit unmeasured.
+
+**What stops this being silent today:** `run.sh:992` sets `rc=1` on a skipped
+target, so the run exits non-zero and Phase 6 fails. That is real protection and
+it is why this is filed rather than treated as urgent. But it is protection that
+lives in the exit code alone; every human-readable and machine-parsed summary of
+the run still reports nine targets and calls itself complete.
+
+**The fix:** carry the skipped-target and unattempted-mutant counts in the
+summary, so one line states what was measured and what was not. Positional
+parsers make appending fields the mechanical part; deciding whether it is a new
+field on `TOTAL` or a separate `SKIPPED|` record — the shape `ASSERTLESS|` took,
+and for the same reason — is the part to get right.
