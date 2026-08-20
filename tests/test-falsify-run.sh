@@ -696,6 +696,103 @@ else
   fail "  … a subject that exits first ends the wait immediately — there is no wait to ask"
 fi
 
+# ── 11d. A WORKER THAT PRODUCES NO VERDICT MUST SAY WHY ──────────────────────
+# fr_harvest reports "a mutant worker produced no verdict at all (slot N)" and
+# stops there. That sentence is true and useless: it cannot tell a worker that
+# exited on its own from one something else SIGKILLed. On macOS, under a clock
+# tight enough to fire the watchdog, 158 of 264 mutants left the measured set
+# through exactly that line with no cause recorded, and the entry filed for it
+# had to stop short of a mechanism (backlog F52).
+#
+# The pool HELD the fact and threw it away. `wait -n` returns the finished
+# child's status; the loop discarded it and then went looking for the finished
+# pid with `kill -0`, which answers "does some process hold this pid" — not "is
+# this still my worker". `wait -n -p` names the pid AND keeps the status.
+#
+# Two assertions, deliberately split. The sentence is a pure function of a wait
+# status, asserted directly. The WIRING — that a killed worker's status reaches
+# that sentence — is asserted by running the pool against a worker this test
+# kills itself, because a cause-builder nothing calls proves nothing.
+exit_cause() {   # <wait status> → run.sh's own clause, in a subshell
+  ( set +u
+    # shellcheck source=/dev/null
+    source "$RUN" >/dev/null 2>&1
+    fr_exit_cause "$1" )
+}
+
+if ( set +u
+     # shellcheck source=/dev/null
+     source "$RUN" >/dev/null 2>&1
+     declare -F fr_exit_cause >/dev/null ); then
+  pass "run.sh exposes fr_exit_cause"
+  check "  … 137 is named as the signal it is, not left as a number" \
+        "it was KILLED BY SIGKILL" "$(exit_cause 137)"
+  check "  … 143 names SIGTERM" \
+        "it was KILLED BY SIGTERM" "$(exit_cause 143)"
+  check "  … a worker that exited 0 having written nothing says exactly that" \
+        "it exited 0 and wrote nothing" "$(exit_cause 0)"
+  check "  … an ordinary failure reports its code" \
+        "it exited 1" "$(exit_cause 1)"
+  # 128 is an exit STATUS of 128, not signal 0. A >= that should be a > reads it
+  # as a signal, which is why this case is here and not implied by the two above.
+  check "  … 128 is an exit status, not signal 0" \
+        "it exited 128" "$(exit_cause 128)"
+  check "  … a status that was never captured is not invented" \
+        "exit status not captured" "$(exit_cause "")"
+else
+  fail "run.sh exposes fr_exit_cause — a worker that vanishes still reports no cause"
+  fail "  … 137 is named as the signal it is, not left as a number — no builder to ask"
+  fail "  … 143 names SIGTERM — no builder to ask"
+  fail "  … a worker that exited 0 having written nothing says exactly that — no builder to ask"
+  fail "  … an ordinary failure reports its code — no builder to ask"
+  fail "  … 128 is an exit status, not signal 0 — no builder to ask"
+  fail "  … a status that was never captured is not invented — no builder to ask"
+fi
+
+# THE WIRING, through the real pool. A worker killed before it can write is
+# exactly F52's missing mutant; the pool must name the signal that took it.
+f52_killed="$( { set +u
+  # shellcheck source=/dev/null
+  source "$RUN" >/dev/null 2>&1
+  rm -f "$TMP/f52-no-result"
+  ( sleep 30 ) & f52_pid=$!
+  FR_PID_SLOT["$f52_pid"]=7
+  FR_PID_RESULT["$f52_pid"]="$TMP/f52-no-result"
+  kill -KILL "$f52_pid" 2>/dev/null
+  fr_wait_for_slot
+  printf 'BROKEN=%s\n' "$FR_BROKEN"
+} 2>&1 )"
+case "$f52_killed" in
+  *'produced no verdict at all'*'KILLED BY SIGKILL'*)
+    pass "the pool reports a SIGKILLed worker as killed, not merely as absent" ;;
+  *)
+    fail "the pool reports a SIGKILLed worker as killed, not merely as absent — got: $(printf '%s' "$f52_killed" | tr '\n' ' ')" ;;
+esac
+case "$f52_killed" in
+  *'BROKEN=1'*) pass "  … and still counts it broken, so the run cannot pass on it" ;;
+  *)            fail "  … and still counts it broken, so the run cannot pass on it — got: $(printf '%s' "$f52_killed" | tr '\n' ' ')" ;;
+esac
+
+# THE NEGATIVE CONTROL. Without it, a pool that called every worker broken would
+# pass both assertions above.
+f52_ok="$( { set +u
+  # shellcheck source=/dev/null
+  source "$RUN" >/dev/null 2>&1
+  rm -f "$TMP/f52-result"
+  ( printf 'MUTANT|KILLED|a.sh:op:deadbeef|o.sh|1|2|exit+failline|5|x\n' > "$TMP/f52-result" ) &
+  f52_pid2=$!
+  # shellcheck disable=SC2034  # both are read by fr_wait_for_slot/fr_harvest, sourced above
+  FR_PID_SLOT["$f52_pid2"]=3
+  # shellcheck disable=SC2034  # likewise
+  FR_PID_RESULT["$f52_pid2"]="$TMP/f52-result"
+  fr_wait_for_slot
+  printf 'BROKEN=%s KILLED=%s\n' "$FR_BROKEN" "$FR_KILLED"
+} 2>&1 )"
+case "$f52_ok" in
+  *'BROKEN=0 KILLED=1'*) pass "  … while a worker that DID write is harvested, not reported broken" ;;
+  *)                     fail "  … while a worker that DID write is harvested, not reported broken — got: $(printf '%s' "$f52_ok" | tr '\n' ' ')" ;;
+esac
+
 # ── 12. Selections that must fail loudly rather than verify nothing ───────────
 fx_run "$RUN" "$CONF_GREPPED" "$FX" "$TMP/wit-g" --jobs 1
 check "a GREPPED-ONLY-only map is refused (exit 2), never silently empty" "2" "$FX_RC"

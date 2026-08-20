@@ -651,6 +651,11 @@ fr_run_mutant() {   # <slot> <target> <oracle> <seq> <lineno> <op> <sha> <text> 
 # ── the worker pool ───────────────────────────────────────────────────────────
 declare -A FR_PID_SLOT=()
 declare -A FR_PID_RESULT=()
+# What `wait` said about each finished worker. Parallel to the two maps above
+# and populated by fr_wait_for_slot, because the status is the ONLY thing that
+# distinguishes a worker that gave up from one that was killed — see
+# fr_exit_cause.
+declare -A FR_PID_STATUS=()
 FR_FREE_SLOTS=()
 FR_KILLED=0
 FR_SURVIVED=0
@@ -664,14 +669,40 @@ FR_T_UNPROVEN=0
 FR_T_TIMEOUTS=0
 FR_T_ASSERTLESS=0
 
+# Why a worker produced nothing, from its `wait` status. A FUNCTION, and a pure
+# one, because tests/test-falsify-run.sh asserts on the sentence directly: the
+# defect it closes is that this sentence did not exist at all. "A worker
+# produced no verdict" and "a worker was SIGKILLed by something else" are the
+# same observation until somebody prints the status, and on macOS 158 of 264
+# mutants left the measured set through that silence (backlog F52).
+fr_exit_cause() {   # <wait status, possibly empty> → a clause for the error line
+  local st="${1:-}" sig
+  case "$st" in
+    ''|*[!0-9]*) printf 'exit status not captured'; return 0 ;;
+  esac
+  # `> 128`, never `>= 128`: 128 is an exit status of 128, and reading it as
+  # signal 0 would name a signal that does not exist for a worker that simply
+  # exited.
+  if (( st == 0 )); then
+    printf 'it exited 0 and wrote nothing'
+  elif (( st > 128 && st <= 192 )); then
+    sig="$(kill -l "$(( st - 128 ))" 2>/dev/null)"
+    printf 'it was KILLED BY SIG%s' "${sig:-$(( st - 128 ))}"
+  else
+    printf 'it exited %s' "$st"
+  fi
+}
+
 fr_harvest() {   # <pid> — print that mutant's records and tally them
   local pid="$1"
   local slot="${FR_PID_SLOT[$pid]}" res="${FR_PID_RESULT[$pid]}"
   local line f2 f3 f7
-  unset "FR_PID_SLOT[$pid]" "FR_PID_RESULT[$pid]"
+  local cause
+  cause="$(fr_exit_cause "${FR_PID_STATUS[$pid]:-}")"
+  unset "FR_PID_SLOT[$pid]" "FR_PID_RESULT[$pid]" "FR_PID_STATUS[$pid]"
   FR_FREE_SLOTS+=("$slot")
   if [[ ! -s "$res" ]]; then
-    fr_err "a mutant worker produced no verdict at all (slot $slot) — not counted as a kill"
+    fr_err "a mutant worker produced no verdict at all (slot $slot; $cause) — not counted as a kill"
     FR_BROKEN=$(( FR_BROKEN + 1 ))
     rm -f "$res"
     return 0
@@ -750,11 +781,26 @@ fr_harvest() {   # <pid> — print that mutant's records and tally them
 }
 
 fr_wait_for_slot() {   # block until at least one slot is free
-  local p rc harvested=0
+  local p rc reaped harvested=0
   while (( harvested == 0 )); do
     (( ${#FR_PID_SLOT[@]} > 0 )) || return 0
-    wait -n 2>/dev/null
+    # `-p` names the pid that finished, so this loop learns WHICH worker ended
+    # and keeps the status `wait` already returned. Bare `wait -n` threw the
+    # status away and then identified the finished worker with `kill -0`, which
+    # answers "does some process hold this pid" — not "is this still my
+    # worker". Both halves of that mattered: the discarded status is the one
+    # fact that says why a worker produced nothing, and on a host that recycles
+    # pids quickly the `kill -0` answer can be about somebody else's process.
+    # `wait -n -p` is bash 5.0; bash-floor.sh declares 5.1.
+    reaped=""
+    wait -n -p reaped 2>/dev/null
     rc=$?
+    if [[ -n "$reaped" && -n "${FR_PID_SLOT[$reaped]:-}" ]]; then
+      FR_PID_STATUS["$reaped"]="$rc"
+      fr_harvest "$reaped"
+      harvested=$(( harvested + 1 ))
+      continue
+    fi
     for p in "${!FR_PID_SLOT[@]}"; do
       kill -0 "$p" 2>/dev/null && continue
       fr_harvest "$p"
