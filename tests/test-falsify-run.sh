@@ -916,6 +916,101 @@ case "$f53_clean" in
   *)                         fail "  … while a run that nobody interfered with reports no foreign flag — got: $f53_clean" ;;
 esac
 
+# ── 11f. ARMING THE FLAG MUST BE ATOMIC ──────────────────────────────────────
+# F53 was filed as "a watchdog from another invocation killed a live oracle".
+# It was not. The macOS run that F53's own instrumentation asked for came back
+# with the two tokens printed side by side, and they were THE SAME STRING:
+#
+#   slot 1 held a timeout flag armed by s1.m2.67442.1787254686507373, not by
+#   this invocation, whose own token was s1.m2.67442.1787254686507373
+#
+# `printf '%s' "$token" > "$flag"` is two steps. The redirection creates and
+# truncates the destination; the token lands afterwards. falsify_flag_is_mine
+# read it in between, got an incomplete file, and could only call it somebody
+# else's — while the reporter, reading again microseconds later, got the whole
+# token. A worker mistaking its OWN flag, not a leak from anyone.
+#
+# The contract assertions below are necessary and would not have caught it. The
+# LAST one is the guard: it makes the write slow, on purpose, and asserts that
+# the destination does not exist while the token is still being produced. That
+# is the only assertion here that fails on the code F53 was filed against.
+arm_flag() {   # <flagfile> <token> → run.sh's own writer, in a subshell
+  ( set +u
+    # shellcheck source=/dev/null
+    source "$RUN" >/dev/null 2>&1
+    falsify_arm_flag "$1" "$2" )
+}
+
+if ( set +u
+     # shellcheck source=/dev/null
+     source "$RUN" >/dev/null 2>&1
+     declare -F falsify_arm_flag >/dev/null ); then
+  pass "run.sh exposes falsify_arm_flag"
+  f53f="$TMP/arm.flag"; rm -f "$f53f"
+  arm_flag "$f53f" "s2.m9.1234.5678"
+  check "  … the flag holds exactly the token" "s2.m9.1234.5678" "$(cat "$f53f" 2>/dev/null)"
+  # A slot's flag is reused across every mutant that runs in it, so overwriting
+  # a stale one is the normal case, not an edge case.
+  arm_flag "$f53f" "s2.m10.1234.9999"
+  check "  … arming again replaces the previous token" "s2.m10.1234.9999" "$(cat "$f53f" 2>/dev/null)"
+  if [[ -z "$(ls "$TMP"/arm.flag.*.arming 2>/dev/null)" ]]; then
+    pass "  … and leaves no half-written temporary behind"
+  else
+    fail "  … and leaves no half-written temporary behind — $(ls "$TMP"/arm.flag.*.arming 2>/dev/null | tr '\n' ' ')"
+  fi
+  # And the round trip: what it writes must read back as MINE, or the ownership
+  # check and the writer disagree about what a token is.
+  if flag_is_mine "$f53f" "s2.m10.1234.9999"; then
+    pass "  … and what it wrote reads back as this invocation's own"
+  else
+    fail "  … and what it wrote reads back as this invocation's own — the writer and falsify_flag_is_mine disagree"
+  fi
+
+  # ── THE GUARD ──────────────────────────────────────────────────────────────
+  # `printf` is overridden with a shell function, which takes precedence over
+  # the builtin, so the token takes two seconds to be produced. Nothing else
+  # about the writer changes. Then, one second in, the destination is examined:
+  #
+  #   rename      the token is being built somewhere else — destination ABSENT
+  #   redirection the destination was created first — present, and EMPTY
+  #
+  # Whole-second sleeps rather than fractions, because this assertion has to
+  # mean the same thing on a loaded macOS host as it does in the container.
+  f53g="$TMP/arm-slow.flag"
+  rm -f "$f53g" "$TMP"/arm-slow.flag.*.arming
+  f53_mid="$( set +u
+    # shellcheck source=/dev/null
+    source "$RUN" >/dev/null 2>&1
+    printf() {                       # slow ONLY the token write, nothing else
+      if [[ "${1:-}" == '%s' && "${2:-}" == s9.* ]]; then sleep 2; fi
+      builtin printf "$@"
+    }
+    falsify_arm_flag "$f53g" "s9.m1.4242.777" &
+    sleep 1
+    if [[ -e "$f53g" ]]; then builtin printf 'PRESENT:%s' "$(cat "$f53g" 2>/dev/null)"
+    else                      builtin printf 'ABSENT'; fi
+    wait )"
+  case "$f53_mid" in
+    ABSENT)
+      pass "the destination does not exist while the token is still being written" ;;
+    PRESENT:)
+      fail "the destination does not exist while the token is still being written — it exists and is EMPTY, which is exactly the state a reader calls somebody else's flag (backlog F53)" ;;
+    *)
+      fail "the destination does not exist while the token is still being written — got '$f53_mid'" ;;
+  esac
+  # And it must still arrive. An arm that never completes would pass the
+  # assertion above for the wrong reason.
+  check "  … and the token does arrive once the write completes" "s9.m1.4242.777" "$(cat "$f53g" 2>/dev/null)"
+else
+  fail "run.sh exposes falsify_arm_flag — the flag is written by a bare redirection, which a reader can catch half-done"
+  fail "  … the flag holds exactly the token — no writer to ask"
+  fail "  … arming again replaces the previous token — no writer to ask"
+  fail "  … and leaves no half-written temporary behind — no writer to ask"
+  fail "  … and what it wrote reads back as this invocation's own — no writer to ask"
+  fail "the destination does not exist while the token is still being written — no writer to ask"
+  fail "  … and the token does arrive once the write completes — no writer to ask"
+fi
+
 # ── 12. Selections that must fail loudly rather than verify nothing ───────────
 fx_run "$RUN" "$CONF_GREPPED" "$FX" "$TMP/wit-g" --jobs 1
 check "a GREPPED-ONLY-only map is refused (exit 2), never silently empty" "2" "$FX_RC"
