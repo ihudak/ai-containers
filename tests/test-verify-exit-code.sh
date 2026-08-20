@@ -609,20 +609,33 @@ printf 'ASSERTLESS|0|13\n'
 exit 0
 STUB
 rm -f "$TMP/falsify-argv.txt"
-rc="$(run_verify "$r" 6)"
+# EXPORTED ON PURPOSE, and the whole assertion is that it changes NOTHING.
+#
+# This is the exact condition the 2026-08-20 host run failed under. The first
+# version of this case read `run_verify "$r" 6` with nothing set and called the
+# result "an unset environment" — which asserted a property of whoever ran the
+# suite, not of the code. The operator had FALSIFY_TIMEOUT=600 exported because
+# Phase 6's own header tells them to, run_verify passed it straight through, and
+# this file went red on the host while passing in CI and in the dev container.
+# The falsify tier then skipped the target whose oracle it is, losing all 55
+# mutants of tests/lib-verify-repo.sh (backlog F49).
+#
+# Asserting the DEFAULT while the environment loudly says otherwise is the only
+# form of this that measures the script rather than the shell.
+rc="$( export FALSIFY_JOBS=99 FALSIFY_TIMEOUT=99; run_verify "$r" 6 )"
 expect_rc "phase 6: the default corpus invocation passes" 0 "$rc"
 f48_argv="$(cat "$TMP/falsify-argv.txt" 2>/dev/null || true)"
 case "$f48_argv" in
   (*"--jobs auto"*"--timeout 120"*)
-    pass "phase 6: an unset environment runs exactly what was hardcoded ($f48_argv)" ;;
+    pass "phase 6: the defaults survive an operator who exported the knobs ($f48_argv)" ;;
   (*)
-    fail "phase 6: an unset environment runs exactly what was hardcoded -- got '$f48_argv', want --jobs auto and --timeout 120" ;;
+    fail "phase 6: the defaults survive an operator who exported the knobs -- got '$f48_argv', so the suite is reading the developer's shell instead of the code" ;;
 esac
 
 # The override. Both knobs at once, and both different from the defaults, so a
 # fix that wired up only one of them fails here.
 rm -f "$TMP/falsify-argv.txt"
-rc="$( export FALSIFY_JOBS=4 FALSIFY_TIMEOUT=600; run_verify "$r" 6 )"
+rc="$(run_verify "$r" 6 FALSIFY_JOBS=4 FALSIFY_TIMEOUT=600)"
 expect_rc "phase 6: an overridden corpus invocation passes" 0 "$rc"
 f48_argv="$(cat "$TMP/falsify-argv.txt" 2>/dev/null || true)"
 case "$f48_argv" in
@@ -636,6 +649,24 @@ esac
 grep -q 'running the corpus (jobs=4, timeout=600)' "$TMP/out.log" \
   && pass "phase 6: the banner reports the values actually used" \
   || fail "phase 6: the banner reports the values actually used -- it still says jobs=auto/timeout=120 while running something else, which is worse than not printing them at all"
+
+# BOTH AT ONCE, because the fix rests on an ordering nothing else here pins:
+# run_verify removes the knobs with `env -u` and then hands `env` the caller's
+# VAR=VALUE operands, and the argument only wins if operands are applied after
+# options. That is true of GNU and BSD env alike, and "true of both" is exactly
+# the kind of claim this repo has been burned by assuming (tests/portability.sh
+# exists because of that class of difference). So it is measured, on whichever
+# platform is running, rather than believed.
+rm -f "$TMP/falsify-argv.txt"
+rc="$( export FALSIFY_JOBS=99 FALSIFY_TIMEOUT=99; run_verify "$r" 6 FALSIFY_JOBS=4 FALSIFY_TIMEOUT=600 )"
+expect_rc "phase 6: an explicit override beats an exported one, and still passes" 0 "$rc"
+f48_argv="$(cat "$TMP/falsify-argv.txt" 2>/dev/null || true)"
+case "$f48_argv" in
+  (*"--jobs 4"*"--timeout 600"*)
+    pass "phase 6: a stated knob beats an inherited one ($f48_argv)" ;;
+  (*)
+    fail "phase 6: a stated knob beats an inherited one -- got '$f48_argv', so env applied its -u after the operands and the test cannot set what it is asserting on" ;;
+esac
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

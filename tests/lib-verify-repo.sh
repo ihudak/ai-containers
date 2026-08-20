@@ -360,8 +360,31 @@ mk_repo() {  # $1=build.sh exit code (default 0)  $2=1 to stamp a
 }
 
 # Run a phase selection against a stub repo. Prints the exit code.
-run_verify() {  # $1=repo $2=phases  → exit code, log in $TMP/out.log
-  PATH="$TMP/bin:$PATH" REPO="$1" PHASES="$2" \
-    bash "$1/verify-on-host.sh" > "$TMP/out.log" 2>&1
+run_verify() {  # $1=repo  $2=phases  [$3…=VAR=VALUE for the script's environment]
+                #   → exit code, log in $TMP/out.log
+  local repo="$1" phases="$2"
+  shift 2
+  # THE OPERATOR'S SHELL IS NOT THE TEST'S ENVIRONMENT. verify-on-host.sh reads
+  # FALSIFY_JOBS and FALSIFY_TIMEOUT (Phase 6's worker count and per-mutant
+  # clock) and IT_EXTRA_ARGS (Phase 4's runner flags) straight out of the
+  # environment, and its own header tells a developer to export exactly those
+  # when a corpus run comes back with part of it unmeasured. A caller that
+  # merely OMITS one is therefore asserting a property of whoever ran the suite
+  # rather than of the script.
+  #
+  # Measured, 2026-08-20: tests/test-verify-exit-code.sh passed in CI and in the
+  # dev container and FAILED on the host — inside the falsify tier's
+  # pristine-oracle check, because the developer had followed this repo's own
+  # instructions and exported FALSIFY_TIMEOUT=600. The tier then skipped that
+  # oracle's whole target, so one environment-sensitive assertion cost all 55
+  # mutants of THIS file and aborted the entire Phase 6 measurement (F49).
+  #
+  # So the environment is stated here and never inherited: the knobs are
+  # removed, and a test that wants one passes it as a VAR=VALUE argument. `env`
+  # applies its operands after its own -u options, so an argument still wins
+  # over the removal — pinned by an assertion, not assumed.
+  PATH="$TMP/bin:$PATH" REPO="$repo" PHASES="$phases" \
+    env -u FALSIFY_JOBS -u FALSIFY_TIMEOUT -u IT_EXTRA_ARGS "$@" \
+      bash "$repo/verify-on-host.sh" > "$TMP/out.log" 2>&1
   printf '%s' "$?"
 }

@@ -2964,3 +2964,110 @@ to open a file that was deleted, and a note telling the reader to turn a knob
 that was never fitted. Both read as complete. Both were written by someone who
 knew exactly what they meant. Neither was followed by anybody until a host run
 made it necessary, and the first attempt to follow either one failed.
+
+
+## F49 — the verify harness read the operator's shell, and F48 had just told operators to fill it — **FIXED 2026-08-20, one hour after the defect that created it**
+
+F48 gave Phase 6 two environment knobs and documented them in the script's own
+header: *"FALSIFY_TIMEOUT=300 FALSIFY_JOBS=6 PHASES=6 bash ./verify-on-host.sh"*.
+The very next host run was made with `FALSIFY_TIMEOUT=600 FALSIFY_JOBS=8`,
+exactly as instructed, and Phase 6 came back:
+
+```
+ERROR: oracle 'test-lib-verify-repo.sh,test-verify-exit-code.sh,test-layer-containment.sh'
+is not green on the PRISTINE tree (rc=1, signal=exit+failline) — every mutant of
+tests/lib-verify-repo.sh would be reported KILLED. Skipping tests/lib-verify-repo.sh.
+** PHASE 6 FAILED: the falsify corpus did not complete — the ledger was not scored
+```
+
+`tests/lib-verify-repo.sh`'s `run_verify()` ran `verify-on-host.sh` with the
+caller's environment intact, and F48's new test asserted:
+
+```bash
+rc="$(run_verify "$r" 6)"
+case "$f48_argv" in (*"--jobs auto"*"--timeout 120"*) pass "…an unset environment…"
+```
+
+"An unset environment" is a property of **whoever ran the suite**, not of the
+script. With the knobs exported the child got `--jobs 8 --timeout 600` and the
+assertion failed — correctly, at what it was actually measuring.
+
+**Why it could only fail on a host.** CI exports neither variable; the dev
+container exports neither. The one layer where a developer plausibly has them
+set is the one where the header tells them to set them. So the defect was
+invisible to every gate and visible immediately to the first human who followed
+the documentation.
+
+**The blast radius was not one assertion.** That file is one of three oracles
+for `tests/lib-verify-repo.sh`, run as a single invocation. A non-green pristine
+oracle makes the tier **skip the whole target** — correctly, since every mutant
+would otherwise report KILLED for the wrong reason — so one environment-sensitive
+assertion cost all 55 of that target's mutants and aborted the corpus run, which
+then scored no ledger at all. A test that reads the environment does not fail
+alone.
+
+**Fixed** by moving the environment into the harness: `run_verify()` removes
+`FALSIFY_JOBS`, `FALSIFY_TIMEOUT` and `IT_EXTRA_ARGS` from the child's
+environment and takes optional trailing `VAR=VALUE` arguments for a test that
+wants one. The default case now exports `FALSIFY_JOBS=99 FALSIFY_TIMEOUT=99` **on
+purpose** and asserts the child still sees `auto`/`120` — the only form of that
+assertion that measures the script rather than the shell, and one that cannot
+pass vacuously. A further case exports 99 *and* passes 4/600, pinning `env`'s
+operands-after-options ordering on whichever platform runs it instead of assuming
+GNU and BSD agree about it.
+
+**The generalisable part: a documented knob is an input to every test that runs
+the thing reading it.** F48 was correct, tested, reviewed and green in three
+places. It created this defect in the same commit, because adding an environment
+variable widens the input space of every existing assertion at once, and nothing
+re-examines those assertions when it happens. The question F48 should have been
+asked — and that any future knob must be — is *"which existing test now depends
+on this being unset?"*
+
+
+## F50 — four mutants hang for 600s on macOS that die in 128ms on Linux
+
+**OPEN.** Distinct from the load-sensitivity family (F27–F32): this is not a
+slow oracle, it is a stopped one.
+
+The 2026-08-20 host run at `--jobs 8 --timeout 600` — a third of the worker count
+of the run before it, on an 18-CPU machine — still reported:
+
+```
+falsify: TIMEOUT after 600s (killed before the clock ran out): tests/lib-layer-checks.sh:return-flip:e0e1f9fabfc9d4800c877a703b823ac0578ff8db
+falsify: TIMEOUT after 600s (killed before the clock ran out): tests/bash-dialect-lint.sh:cond-negate:32a62822abdad9cdf670c6a340cde7b24e83c2ef
+falsify: TIMEOUT after 600s (killed before the clock ran out): tests/bash-dialect-lint.sh:logic-flip:238ad5eea5be9f453b9de2b79c90dc94d6e4f5c1
+falsify: TIMEOUT after 600s (killed before the clock ran out): tests/integration/docker-shim.sh:cmp-flip:5a19451b4bc784bc1a7b629182186fd2c91d2153
+```
+
+Two of those identities are measured in the dev container, same commit, as
+`exit+failline` kills at **123 ms and 128 ms**:
+
+```
+MUTANT|KILLED|tests/bash-dialect-lint.sh:logic-flip:238ad5ee…|test-bash-dialect-lint.sh|2|45|exit+failline|128|[[ -f "$ENGINE_DIR/bash-floor.sh" ]] && ENGINE_DIR="$REPO_DIR/base"
+MUTANT|KILLED|tests/bash-dialect-lint.sh:cond-negate:32a62822…|test-bash-dialect-lint.sh|4|47|exit+failline|123|[[ -n "${AI_CONTAINERS_BASH_FLOOR_MAJOR:-}" ]] && source "$ENGINE_DIR/bash-floor.sh"
+```
+
+128 ms against 600 s is not a loaded machine. Both damaged lines govern how the
+oracle resolves `ENGINE_DIR` — the layout branch that lets one copy serve both
+repos — so the plausible shape is a mutant that sends the oracle down a path
+where something blocks rather than fails. F22's `p_timeout` bounds four specific
+call sites in `test-bash-dialect-lint.sh`; a hang reached by a different route is
+still unbounded and runs to the tier's own clock.
+
+**Why it is worth chasing rather than tolerating.** An UNPROVEN mutant is
+accepted by the ledger precisely because a timeout is machine state. These are
+not machine state: they reproduce at 5× the clock and a third of the load, which
+makes them a property of the code that the ledger is currently amnestying under
+a rule written for something else.
+
+**Evidence needed** — the run log Phase 6 now keeps (F47) holds the `MUTANT|`
+record and elapsed time for every one of them:
+
+```
+grep -E '^MUTANT\|' <kept-log> | awk -F'|' '$8 > 60000'
+grep 'TIMEOUT after' <kept-log>
+```
+
+Sequenced after F27–F32 only for the shared question of what a timeout means;
+the cause here is separable and does not wait on them.
