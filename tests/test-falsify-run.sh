@@ -640,6 +640,62 @@ else
   fail "  … my own flag IS mine, so a real timeout is still detected — there is no predicate to ask"
 fi
 
+# ── 11c. THE WATCHDOG MUST NOT OUTLIVE THE ORACLE IT WATCHES ─────────────────
+# It used to `sleep "$limit"` blind, so it stayed alive for the rest of its clock
+# after the oracle had finished — and a stale watchdog does not just sit there,
+# it goes on to `kill -TERM -"$pid"` against a pid recorded up to <timeout>
+# seconds earlier. Recycled by then on a busy host, that kill lands on another
+# worker's live oracle and truncates it, which is how two mutants came back
+# UNPROVEN on a bare `timeout` while being reliable kills (backlog F50).
+#
+# Asserted on the wait itself, because the property is about TIME: a blind
+# `sleep "$limit"` passes the "clock expired" case below and fails the one after
+# it, which is the whole difference.
+watch_until() {   # <pid> <seconds> → run.sh's own wait, in a subshell
+  ( set +u
+    # shellcheck source=/dev/null
+    source "$RUN" >/dev/null 2>&1
+    falsify_watch_until "$1" "$2" )
+}
+
+if ( set +u
+     # shellcheck source=/dev/null
+     source "$RUN" >/dev/null 2>&1
+     declare -F falsify_watch_until >/dev/null ); then
+  pass "run.sh exposes falsify_watch_until"
+
+  # A subject that outlives the clock: the wait must report the clock expiring.
+  sleep 30 & wu_pid=$!
+  wu_t0=$SECONDS
+  watch_until "$wu_pid" 3 && wu_rc=0 || wu_rc=1
+  wu_el=$(( SECONDS - wu_t0 ))
+  kill "$wu_pid" 2>/dev/null; wait "$wu_pid" 2>/dev/null
+  if [[ "$wu_rc" -eq 1 && "$wu_el" -ge 3 ]]; then
+    pass "  … a subject that outlives the clock reports the clock expiring (${wu_el}s)"
+  else
+    fail "  … a subject that outlives the clock reports the clock expiring — rc=$wu_rc after ${wu_el}s, so a real hang would no longer time out"
+  fi
+
+  # THE ONE THAT MATTERS. A subject that exits early must end the wait EARLY. A
+  # blind `sleep "$limit"` returns the right answer here and takes the full 20
+  # seconds to do it — and every second of that is a watchdog holding a pid it
+  # no longer owns.
+  sleep 1 & wu_pid2=$!
+  wu_t0=$SECONDS
+  watch_until "$wu_pid2" 20 && wu_rc2=0 || wu_rc2=1
+  wu_el2=$(( SECONDS - wu_t0 ))
+  wait "$wu_pid2" 2>/dev/null
+  if [[ "$wu_rc2" -eq 0 && "$wu_el2" -lt 10 ]]; then
+    pass "  … a subject that exits first ends the wait immediately (${wu_el2}s of a 20s clock)"
+  else
+    fail "  … a subject that exits first ends the wait immediately — rc=$wu_rc2 after ${wu_el2}s of a 20s clock, so the watchdog outlives its oracle and still holds a pid that may be recycled"
+  fi
+else
+  fail "run.sh exposes falsify_watch_until — without it the watchdog sleeps its whole clock and stays alive holding a stale pid"
+  fail "  … a subject that outlives the clock reports the clock expiring — there is no wait to ask"
+  fail "  … a subject that exits first ends the wait immediately — there is no wait to ask"
+fi
+
 # ── 12. Selections that must fail loudly rather than verify nothing ───────────
 fx_run "$RUN" "$CONF_GREPPED" "$FX" "$TMP/wit-g" --jobs 1
 check "a GREPPED-ONLY-only map is refused (exit 2), never silently empty" "2" "$FX_RC"
