@@ -793,6 +793,129 @@ case "$f52_ok" in
   *)                     fail "  … while a worker that DID write is harvested, not reported broken — got: $(printf '%s' "$f52_ok" | tr '\n' ' ')" ;;
 esac
 
+# ── 11e. A FOREIGN TIMEOUT FLAG MUST NAME BOTH TOKENS ────────────────────────
+# On macOS at --jobs 32 --timeout 5, a watchdog belonging to another invocation
+# killed a live oracle twice in one run. The NOTE said "slot 0 held a timeout
+# flag armed by 50776.1787249974304247, not by this run" — a bare pid, of a
+# process that had already exited, with nothing to compare it against. It named
+# the event and identified nobody (backlog F53).
+#
+# Two changes, asserted separately. The token now carries the SLOT and MUTANT
+# that armed it, so a foreign token names a place in the run rather than a dead
+# pid. And the NOTE prints this invocation's own token beside the foreign one,
+# because one token identifies nothing — a pair identifies a leak.
+token_of() {   # <label> → run.sh's own token builder, in a subshell
+  ( set +u
+    # shellcheck source=/dev/null
+    source "$RUN" >/dev/null 2>&1
+    fr_token "$1" )
+}
+
+if ( set +u
+     # shellcheck source=/dev/null
+     source "$RUN" >/dev/null 2>&1
+     declare -F fr_token >/dev/null ); then
+  pass "run.sh exposes fr_token"
+  f53_t1="$(token_of 's3.m47')"
+  if [[ "$f53_t1" =~ ^s3\.m47\.[0-9]+\.[0-9]+$ ]]; then
+    pass "  … the token leads with the slot and mutant that armed it ($f53_t1)"
+  else
+    fail "  … the token leads with the slot and mutant that armed it — got '$f53_t1', so a foreign flag still names only a dead pid"
+  fi
+  # Uniqueness is what makes the ownership check an ownership check at all.
+  f53_t2="$(token_of 's3.m47')"
+  [[ "$f53_t1" != "$f53_t2" ]] \
+    && pass "  … and two invocations with the SAME label still differ" \
+    || fail "  … and two invocations with the SAME label still differ — both were '$f53_t1', so one worker's flag reads as another's"
+  # An unlabelled call must not produce a leading empty field: '.1234.5678' looks
+  # like a truncated token rather than an unlabelled one.
+  f53_t3="$(token_of '')"
+  [[ "$f53_t3" == '?.'* ]] \
+    && pass "  … and an unlabelled token says so rather than leading with a dot" \
+    || fail "  … and an unlabelled token says so rather than leading with a dot — got '$f53_t3'"
+else
+  fail "run.sh exposes fr_token — the flag token is built inline and cannot be asserted"
+  fail "  … the token leads with the slot and mutant that armed it — no builder to ask"
+  fail "  … and two invocations with the SAME label still differ — no builder to ask"
+  fail "  … and an unlabelled token says so rather than leading with a dot — no builder to ask"
+fi
+
+if ( set +u
+     # shellcheck source=/dev/null
+     source "$RUN" >/dev/null 2>&1
+     declare -F fr_foreign_note >/dev/null ); then
+  pass "run.sh exposes fr_foreign_note"
+  f53_note="$( set +u
+    # shellcheck source=/dev/null
+    source "$RUN" >/dev/null 2>&1
+    fr_foreign_note 'a.sh:op:deadbeef' 7 'THEIRS.111.222' 'MINE.333.444' )"
+  case "$f53_note" in
+    *'THEIRS.111.222'*'MINE.333.444'*)
+      pass "  … and the note names the foreign token AND this invocation's own" ;;
+    *'THEIRS.111.222'*)
+      fail "  … and the note names the foreign token AND this invocation's own — only the foreign one is there, which is the state F53 was filed in: $f53_note" ;;
+    *)
+      fail "  … and the note names the foreign token AND this invocation's own — got: $f53_note" ;;
+  esac
+else
+  fail "run.sh exposes fr_foreign_note — the note is built inline and cannot be asserted"
+  fail "  … and the note names the foreign token AND this invocation's own — no builder to ask"
+fi
+
+# THE WIRING, end to end. A fixture oracle that arms this slot's flag WHILE the
+# oracle is running stands in for another invocation's watchdog — the F53 event,
+# without needing a second worker to leak one. Nothing else in this file reaches
+# the foreign-flag branch of falsify_run_oracle.
+cat > "$FX/tests/test-fx-plantflag.sh" <<'PLANT'
+#!/usr/bin/env bash
+set -uo pipefail
+# Stands in for a watchdog belonging to some other invocation.
+if [[ -n "${FX_PLANT_FLAG:-}" ]]; then
+  printf 'someone-elses-worker.99999.1700000000000000' > "$FX_PLANT_FLAG"
+fi
+printf 'PASS: plantflag ran\n'
+PLANT
+chmod +x "$FX/tests/test-fx-plantflag.sh"
+
+f53_wire="$( set +u
+  # shellcheck source=/dev/null
+  source "$RUN" >/dev/null 2>&1
+  export FX_PLANT_FLAG="$TMP/f53.log.timedout"
+  rm -f "$TMP/f53.log" "$TMP/f53.log.timedout"
+  falsify_run_oracle "$FX" "test-fx-plantflag.sh" "$TMP/f53.log" 30 "s7.m42"
+  printf 'timedout=%s foreign=%s mine=%s\n' \
+    "$FALSIFY_TIMED_OUT" "$FALSIFY_FOREIGN_FLAG" "$FALSIFY_TOKEN" )"
+case "$f53_wire" in
+  *'timedout=0'*) pass "a flag armed by someone else is NOT scored as a timeout" ;;
+  *)              fail "a flag armed by someone else is NOT scored as a timeout — got: $f53_wire" ;;
+esac
+case "$f53_wire" in
+  *'foreign=someone-elses-worker.99999.1700000000000000'*)
+    pass "  … and the foreign token is reported verbatim" ;;
+  *)
+    fail "  … and the foreign token is reported verbatim — got: $f53_wire" ;;
+esac
+case "$f53_wire" in
+  *'mine=s7.m42.'*)
+    pass "  … and this invocation's own token names the slot and mutant it was given" ;;
+  *)
+    fail "  … and this invocation's own token names the slot and mutant it was given — got: $f53_wire" ;;
+esac
+
+# THE NEGATIVE CONTROL. Without it, a build that reported EVERY flag as foreign
+# would pass all three assertions above.
+f53_clean="$( set +u
+  # shellcheck source=/dev/null
+  source "$RUN" >/dev/null 2>&1
+  unset FX_PLANT_FLAG
+  rm -f "$TMP/f53b.log" "$TMP/f53b.log.timedout"
+  falsify_run_oracle "$FX" "test-fx-plantflag.sh" "$TMP/f53b.log" 30 "s1.m1"
+  printf 'timedout=%s foreign=[%s]\n' "$FALSIFY_TIMED_OUT" "$FALSIFY_FOREIGN_FLAG" )"
+case "$f53_clean" in
+  *'timedout=0 foreign=[]'*) pass "  … while a run that nobody interfered with reports no foreign flag" ;;
+  *)                         fail "  … while a run that nobody interfered with reports no foreign flag — got: $f53_clean" ;;
+esac
+
 # ── 12. Selections that must fail loudly rather than verify nothing ───────────
 fx_run "$RUN" "$CONF_GREPPED" "$FX" "$TMP/wit-g" --jobs 1
 check "a GREPPED-ONLY-only map is refused (exit 2), never silently empty" "2" "$FX_RC"
