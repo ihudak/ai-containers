@@ -14,7 +14,13 @@ grep -qE '^graalvm=' "$file" 2>/dev/null || exit 0
 # Capture the old value (raw remainder after '=', first occurrence).
 old="$(grep -E '^graalvm=' "$file" | head -1 | cut -d= -f2-)"
 
-tmp="$(mktemp)"
+# The mktemp guard is not decoration. The write-back below is
+# `cat "$tmp" > "$file"`, and the shell TRUNCATES the redirect target before it
+# runs cat — so an empty $tmp does not fail harmlessly, it empties the very file
+# the migration was rewriting. Every migration carries `set -euo pipefail`, which
+# already aborts at the assignment, but that safety belongs to a shell option
+# these files do not set at the point it matters and cannot see from here.
+tmp="$(mktemp)" || { printf 'ERROR: mktemp failed — refusing to rewrite %s\n' "$file" >&2; exit 1; }
 while IFS= read -r line || [[ -n "$line" ]]; do
   if [[ "$line" =~ ^graalvm= ]]; then
     printf 'graalvm-ce=%s\n' "$old" >> "$tmp"

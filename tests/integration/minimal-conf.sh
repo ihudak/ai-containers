@@ -28,7 +28,17 @@ src="${1:?minimal-conf.sh: source sandbox.conf required}"
 shift || true
 [[ -f "$src" ]] || { printf 'minimal-conf.sh: no such file: %s\n' "$src" >&2; exit 1; }
 
-tmp="$(mktemp)"
+# GUARDED. This file carries no errexit and its STDOUT is a sandbox.conf, so an
+# empty $tmp makes the sed redirect fail and the closing `cat "$tmp"` print
+# nothing — the caller writes an EMPTY config.
+#
+# What it does NOT do is let that pass unnoticed, and the distinction is worth
+# writing down rather than overstating: the only caller
+# (tests/integration/run.sh:633) already does `… > "$conf" || { … }`, and the
+# failing `cat` exits non-zero, so the run stops either way. What changes is
+# WHAT IT SAYS — one named line on stderr instead of zero bytes on stdout and a
+# bare non-zero to work backwards from.
+tmp="$(mktemp)" || { printf 'minimal-conf.sh: mktemp failed — refusing to emit a config, because an empty one would be accepted silently\n' >&2; exit 1; }
 trap 'rm -f "$tmp"' EXIT
 
 sed -E 's/^([a-z0-9-]+)=ON$/\1=OFF/; s/^(node|python|ruby|rust|go|openjdk|graalvm-ce|graalvm-oracle|kotlin|scala|maven|gradle|db-clients|angular-cli)=.*/\1=/' \
