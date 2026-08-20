@@ -3155,28 +3155,56 @@ flag also fires a kill — was available in the six lines directly beneath the
 write. It took a measurement, not more thought, to find that out.
 
 
-## F51 — `ASSERTLESS` is claimed to be machine-independent, and that claim is untested
-
-**OPEN.** Not a defect with a known failure; a claim behind a CI gate that no
-measurement supports.
+## F51 — `ASSERTLESS` was claimed machine-independent on an argument, not a measurement — **RESOLVED 2026-08-20**
 
 `run.sh`'s header states the counter "is a property of the oracle's CODE, not of
 the machine … so it is satisfiable everywhere at once and CI passes 0", and
-`hermetic-checks.yml` holds `--max-assertless 0` on that basis. The reasoning is
+`hermetic-checks.yml` holds `--max-assertless 0` on that basis. The argument is
 that every machine-dependent channel — timeout, signal death, collapsed scaffold
-— is UNPROVEN before it ever reaches the counter.
+— becomes UNPROVEN before it can reach the counter.
 
-F50 shows that reasoning was resting on a timeout classifier that could fire
-without a timeout, so the premise was not what it appeared to be. Separately, the
-counter has read differently on one machine across runs: **2** on 2026-08-20 at
-`--jobs 18 --timeout 120` (the run where `lib-verify-repo.sh` also produced 43
-timeouts and 24 UNPROVEN) and **0** at lower concurrency. That is not proof
-against the claim — `test-verify-exit-code.sh` changed between those runs and is
-one of the three oracles involved — but nothing supports it either, and a
-load-sensitive counter behind a zero-tolerance CI gate is a flaky gate.
+The claim was worth challenging on two grounds. It rested on a timeout
+classifier that F50 showed could fire without a timeout; and the counter had
+read **2** on one macOS run and **0** on every other, which is the shape of a
+number that moves with the machine.
 
-**What would settle it:** a corpus run under deliberate oversubscription with the
-counter watched, on both platforms, now that a false timeout can no longer
-launder the evidence. If it stays 0 under load the claim is earned and should say
-so; if it moves, the gate needs the same "reference environment only" treatment
-`--max-unproven-pct` already has (F27).
+**Measured, and the claim holds.** `--jobs 32 --timeout 5` in the dev container —
+four workers per CPU against a five-second clock — induced **58 timeouts** across
+the 264-mutant corpus:
+
+```
+TOTAL|9|264|233|2|29|58|11|46952
+ASSERTLESS|0|233
+
+    204 KILLED    exit+failline
+     29 KILLED    timeout+failline
+     29 UNPROVEN  timeout
+      2 SURVIVED  none
+```
+
+22% of the corpus hit the clock. Every one landed in the timeout channel and was
+routed correctly — no failline → UNPROVEN, failline → still a kill — and the
+assertless counter stayed at **zero**. That is the argument's own prediction,
+under the load that would break it if it were wrong.
+
+**And the counter-example is explained.** The single reading of 2 came from the
+2026-08-20 host run that F50 later showed was riddled with forged timeout flags,
+where a stale watchdog was issuing kills against recycled pids and truncating
+**other workers' oracles mid-run**. An oracle cut short exits non-zero having
+printed no FAIL: line — which is precisely an assertless kill. Since F50 was
+fixed the counter reads 0 on both platforms, including the host run that first
+produced the 2.
+
+The claim now carries this measurement in `run.sh` beside the check, so the next
+person to doubt it finds the evidence rather than the argument.
+
+**Caveat, stated rather than papered over:** the induced-timeout measurement was
+made on Linux. macOS has not been hammered the same way; what it has produced
+since the F50 fix is a full corpus at `ASSERTLESS|0|261` with zero timeouts,
+which is consistent but is not the same experiment.
+
+**The generalisable part: an argument that predicts an observation should be made
+to produce it.** This one was correct, and it had been sitting in a comment as
+reasoning for as long as the counter existed — believed because it was
+persuasive, at the head of a CI gate that fails the build. It cost one command to
+turn it into evidence.

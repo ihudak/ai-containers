@@ -1023,7 +1023,21 @@ falsify_main() {
   # ORACLE'S CODE, not of the machine — a timeout, a signal death and a
   # collapsed scaffold are all UNPROVEN before they ever reach this counter —
   # so unlike the unproven fraction it IS satisfiable everywhere at once, and
-  # CI passes 0. It stays opt-in anyway: a test whose contract genuinely IS its
+  # CI passes 0.
+  #
+  # MEASURED, not merely argued (backlog F51). The claim was challenged when this
+  # counter read 2 on one macOS run and 0 on every other, which is the shape of a
+  # machine-dependent number. `--jobs 32 --timeout 5` in the dev container — four
+  # workers per CPU against a five-second clock — induced 58 timeouts across the
+  # 264-mutant corpus, 29 of them UNPROVEN and 29 killed `timeout+failline`, and
+  # left this counter at ZERO. Machine pressure landed in the timeout channel
+  # exactly as the argument above says it must. The one non-zero reading came
+  # from a run riddled with F50's forged timeout flags, where a stale watchdog
+  # was truncating OTHER workers' oracles mid-run — an oracle cut short exits
+  # non-zero having printed no FAIL: line, which is precisely an assertless kill.
+  # It has read 0 on both platforms since that was fixed.
+  #
+  # It stays opt-in anyway: a test whose contract genuinely IS its
   # exit status would be a legitimate non-zero here, and discovering that on
   # somebody's laptop mid-task is not how it should be raised. The fix for a
   # real one is to make the oracle print the FAIL: line it owes; raising this
