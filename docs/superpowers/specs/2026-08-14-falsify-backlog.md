@@ -3198,13 +3198,78 @@ produced the 2.
 The claim now carries this measurement in `run.sh` beside the check, so the next
 person to doubt it finds the evidence rather than the argument.
 
-**Caveat, stated rather than papered over:** the induced-timeout measurement was
-made on Linux. macOS has not been hammered the same way; what it has produced
-since the F50 fix is a full corpus at `ASSERTLESS|0|261` with zero timeouts,
-which is consistent but is not the same experiment.
+**The caveat is closed too.** The same experiment was then run on macOS:
+
+```
+TOTAL|9|106|43|0|63|103|59|195540
+ASSERTLESS|0|43
+```
+
+103 induced timeouts, and the counter still **zero**. The claim now holds on both
+platforms under load that makes the machine-dependent channel fire constantly,
+which is the condition that would expose it if it were machine-dependent. (That
+run also surfaced something unrelated and new — 158 of 264 mutants produced no
+verdict at all on macOS where Linux produced 264 — which is F52, not this.)
 
 **The generalisable part: an argument that predicts an observation should be made
 to produce it.** This one was correct, and it had been sitting in a comment as
 reasoning for as long as the counter existed — believed because it was
 persuasive, at the head of a CI gate that fails the build. It cost one command to
 turn it into evidence.
+
+
+## F52 — under a clock tight enough to fire the watchdog, macOS loses more than half its workers
+
+**OPEN.** Loud, not silent — the run fails with a named error and a non-zero exit
+— and only reachable under a clock tight enough that mutants time out en masse.
+Filed because it is the same family as F50 (a mutant leaving the measured set)
+and because the platform asymmetry is total.
+
+Same command, same commit, same flags, two platforms:
+
+| | Linux (dev container, 8 CPUs) | macOS (18 CPUs) |
+|---|---|---|
+| `--jobs 32 --timeout 5` | `TOTAL\|9\|264\|233\|2\|29\|58\|11` | `TOTAL\|9\|106\|43\|0\|63\|103\|59` |
+| mutants that produced a verdict | **264 of 264** | **106 of 264** |
+| timeouts | 58 | 103 |
+
+`TOTAL`'s third field is `FR_T_KILLED + FR_T_SURVIVED + FR_T_UNPROVEN` — mutants
+that produced a verdict, not the corpus size. So on macOS **158 mutants produced
+none at all**, against zero on Linux.
+
+`fr_reap` names the condition exactly:
+
+```bash
+if [[ ! -s "$res" ]]; then
+  fr_err "a mutant worker produced no verdict at all (slot $slot) — not counted as a kill"
+  FR_BROKEN=$(( FR_BROKEN + 1 ))
+```
+
+and the run then ends `FR_BROKEN mutant(s) produced no verdict — they are NOT
+counted as kills` with `rc=1`. The worker never reached its
+`printf 'MUTANT|…' > "$res"`.
+
+**Why it is not urgent.** It needs the watchdog to actually fire, and at the
+clocks anyone really uses it does not: the last full host run at `--timeout 600`
+had **zero** timeouts across all 264 mutants. And when it does happen the tier
+refuses the run rather than reporting a smaller corpus as a pass — the opposite
+of F50, which was silent.
+
+**Why it is still worth chasing.** The mutants that vanish are not UNPROVEN, not
+survivors, and owed nothing by the ledger; they are simply absent. Today that is
+caught by `FR_BROKEN`'s gate. A future change that made the gate advisory, or a
+partial failure small enough to look like noise, would put it back in F50's
+territory.
+
+**What is NOT yet established** — and this entry deliberately stops short of the
+theory, because two confident mechanisms in this chain have already been wrong.
+The suspicion is that with a 5-second clock nearly every mutant times out, so the
+watchdog runs `kill -TERM -"$pid"` and then `kill -KILL -"$pid"` on the oracle's
+process group, and on macOS that is taking the worker with it. Not demonstrated.
+`set -m`'s behaviour in a non-interactive forked worker without a controlling
+terminal is the obvious thing to measure first, and it differs between the two
+platforms in exactly the way that would explain a total asymmetry.
+
+**Reproduction:** `bash tests/falsify/run.sh --jobs 32 --timeout 5` on macOS.
+Two minutes. Compare `TOTAL`'s third field against 264, and read stderr rather
+than filtering it — the ERROR lines are the finding.
