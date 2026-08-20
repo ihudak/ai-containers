@@ -243,6 +243,16 @@ FR_DRIVER_REL="${FR_TESTS_DIR#"$(cd "$FR_TESTS_DIR/.." && pwd)"/}/run-all.sh"
 fr_now_us() { local t="${EPOCHREALTIME//[.,]/}"; printf '%s' "$t"; }
 fr_ms_since() { local t="${EPOCHREALTIME//[.,]/}"; printf '%s' "$(( ( t - $1 ) / 1000 ))"; }
 fr_warn() { printf 'falsify: %s\n' "$*" >&2; }
+# Milliseconds as seconds, for notes that must report a MEASUREMENT rather than
+# repeat back the setting they were configured with. Non-numeric input yields
+# `?` rather than a shell arithmetic error: this formats a field parsed out of a
+# worker's record, and a note is the wrong place to die.
+fr_secs() {   # <milliseconds> → "N.Ms", or "?" when the record carried no number
+  case "${1:-}" in
+    (''|*[!0-9]*) printf '?' ;;
+    (*)           printf '%d.%ds' $(( $1 / 1000 )) $(( ( $1 % 1000 ) / 100 )) ;;
+  esac
+}
 fr_err()  { printf 'ERROR: %s\n' "$*" >&2; }
 
 # ── the two verdict predicates ────────────────────────────────────────────────
@@ -558,7 +568,7 @@ fr_harvest() {   # <pid> — print that mutant's records and tally them
   fi
   while IFS= read -r line; do
     printf '%s\n' "$line"
-    IFS='|' read -r _ f2 f3 _ _ _ f7 _ <<< "$line"
+    IFS='|' read -r _ f2 f3 _ _ _ f7 f8 _ <<< "$line"
     case "$line" in
       'MUTANT|'*)
         case "$f2" in
@@ -571,10 +581,29 @@ fr_harvest() {   # <pid> — print that mutant's records and tally them
             FR_TIMEOUTS=$(( FR_TIMEOUTS + 1 )); FR_T_TIMEOUTS=$(( FR_T_TIMEOUTS + 1 ))
             # A timeout WITH a failline is still a kill — the assertion was seen
             # failing before the clock ran out. Say which happened.
+            #
+            # AND SAY HOW LONG IT ACTUALLY RAN. This note used to print the
+            # CONFIGURED clock — "TIMEOUT after 600s" — for a mutant whose own
+            # record says it finished in well under a second. That is not a
+            # loose way of saying the same thing: it is the reporter stating a
+            # measurement it never took, and it hid a live contradiction for as
+            # long as it stood. Measured on macOS, 2026-08-20, --timeout 600:
+            # tests/integration/docker-shim.sh reported 3 timeouts inside a
+            # target whose entire wall time was 64s, and tests/lib-layer-checks.sh
+            # reported 1 inside 54s. Neither is possible against a 600-second
+            # clock, and one of them turned a SURVIVED mutant into an UNPROVEN
+            # one — which drops a ledger obligation in silence, the single thing
+            # this tier exists to stop. Backlog F50.
+            #
+            # $f8 is the mutant's own measured elapsed, from the record printed
+            # three lines above. Both numbers are named because it is the
+            # RELATIONSHIP that carries the meaning: a real timeout ran at least
+            # as long as its clock, and anything else is the tier reporting a
+            # verdict it did not observe.
             if [[ "$f2" == "UNPROVEN" ]]; then
-              fr_warn "TIMEOUT after ${FR_TIMEOUT}s (UNPROVEN — nothing was observed asserting): $f3"
+              fr_warn "TIMEOUT: the oracle ran $(fr_secs "$f8") against a ${FR_TIMEOUT}s clock (UNPROVEN — nothing was observed asserting): $f3"
             else
-              fr_warn "TIMEOUT after ${FR_TIMEOUT}s (killed before the clock ran out): $f3"
+              fr_warn "TIMEOUT: the oracle ran $(fr_secs "$f8") against a ${FR_TIMEOUT}s clock (killed before the clock ran out): $f3"
             fi ;;
         esac
         # A signal death is UNPROVEN, and silently so it would look like an
