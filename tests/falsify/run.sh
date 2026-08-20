@@ -272,6 +272,32 @@ fr_token() {   # <label> → this invocation's timeout-flag token
   printf '%s.%s.%s' "${1:-?}" "$BASHPID" "$(fr_now_us)"
 }
 
+# ARMING THE FLAG MUST BE ATOMIC. `printf '%s' "$token" > "$flag"` is TWO steps:
+# the redirection creates and truncates the destination, and only then does the
+# token land in it. A reader between those steps sees a file that EXISTS and
+# does not yet hold the token — and falsify_flag_is_mine can only report that as
+# somebody else's.
+#
+# That is not a theory. Measured on macOS, 2026-08-20, --jobs 32 --timeout 5:
+#
+#   slot 1 held a timeout flag armed by s1.m2.67442.1787254686507373, not by
+#   this invocation, whose own token was s1.m2.67442.1787254686507373
+#
+# The same string, on both sides of "not by this invocation". The predicate read
+# the flag once and got an incomplete file; the reporter read it again a few
+# microseconds later and got the whole token. There was never a foreign
+# watchdog — the leak F53 was filed for is a worker mistaking its OWN flag,
+# because the write it was racing had no atomicity.
+#
+# The rename removes the window: a reader sees no file, or the whole token.
+# Never a half-written one. mv within a directory is a rename, so there is no
+# instant at which the destination exists holding part of the token.
+falsify_arm_flag() {   # <flagfile> <token> → 0 iff the flag now holds the token
+  local tmp="$1.$BASHPID.arming"
+  printf '%s' "$2" > "$tmp" || { rm -f "$tmp"; return 1; }
+  mv -f "$tmp" "$1" || { rm -f "$tmp"; return 1; }
+}
+
 fr_foreign_note() {   # <ident> <slot> <foreign token> <own token> → the NOTE line
   printf 'NOTE|foreign-timeout-flag|%s|slot %s held a timeout flag armed by %s, not by this invocation, whose own token was %s\n' \
     "$1" "$2" "$3" "$4"
@@ -497,7 +523,7 @@ falsify_run_oracle() {   # <tree> <oracle-set> <outfile> <timeout-seconds> [<lab
     # more than a second — and a pid cannot be recycled into another worker's
     # oracle inside a window that small.
     falsify_watch_until "$pid" "$limit" && exit 0
-    printf '%s' "$token" > "$flag"
+    falsify_arm_flag "$flag" "$token"
     kill -TERM -"$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null
     sleep 1
     kill -KILL -"$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null ) &

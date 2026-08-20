@@ -3388,9 +3388,15 @@ running 32 workers, against a container running 8. It is not a defect; it is wha
 
 ---
 
-## F53 — a watchdog from another invocation killed a live oracle, and the mechanism is not established
+## F53 — a watchdog from another invocation killed a live oracle, and the mechanism is not established — **RESOLVED 2026-08-20: THERE WAS NO OTHER INVOCATION**
 
-**OPEN.** Observed twice in one macOS run, 2026-08-20,
+> **Read the resolution at the bottom first.** The oracle really was killed and
+> the measurement really was lost, but not by anyone else: a worker mistook its
+> OWN flag, because the write it was racing was not atomic. The original filing
+> is kept verbatim below — it deliberately refused to guess a mechanism, and the
+> instrumentation it shipped instead is what produced the answer in one run.
+
+**ORIGINALLY FILED AS OPEN.** Observed twice in one macOS run, 2026-08-20,
 `bash tests/falsify/run.sh --jobs 32 --timeout 5`. Two mutants lost their verdict
 to a signal from something that was not their own watchdog:
 
@@ -3472,3 +3478,61 @@ summary, so one line states what was measured and what was not. Positional
 parsers make appending fields the mechanical part; deciding whether it is a new
 field on `TOTAL` or a separate `SKIPPED|` record — the shape `ASSERTLESS|` took,
 and for the same reason — is the part to get right.
+
+### 2026-08-20 (evening) — RESOLVED. The flag was mine, read too early.
+
+The macOS repro this entry asked for, run with the instrumentation the entry
+shipped, came back with both tokens printed side by side:
+
+```
+NOTE|foreign-timeout-flag|tests/lib-layer-checks.sh:logic-flip:27da7c0e…|slot 1 held a timeout flag armed by s1.m2.67442.1787254686507373, not by this invocation, whose own token was s1.m2.67442.1787254686507373
+```
+
+**The same string, on both sides of "not by this invocation".** The flag was
+armed by the very worker that then failed to recognise it.
+
+**The mechanism.** `printf '%s' "$token" > "$flag"` is TWO operations: the
+redirection creates and truncates the destination, and only then does the token
+land in it. `falsify_run_oracle` reads the flag twice a few microseconds apart —
+once through `falsify_flag_is_mine`, once to build the NOTE:
+
+```bash
+if [[ -f "$flag" ]]; then
+  if falsify_flag_is_mine "$flag" "$token"; then      # read 1: incomplete file
+    FALSIFY_TIMED_OUT=1
+  else
+    FALSIFY_FOREIGN_FLAG="$(cat "$flag" …)"           # read 2: the whole token
+```
+
+The first read landed inside that window and got a file that existed and did not
+yet hold the token; the second landed after it and got the token in full. Two
+reads of one file, disagreeing, is the entire finding — and it is why the two
+tokens in the NOTE are identical.
+
+**Fixed by making the write atomic.** `falsify_arm_flag` writes the token to
+`<flag>.<pid>.arming` and renames it into place. A rename within a directory is
+atomic, so a reader sees no file or the whole token, never a half-written one.
+
+**Three assertions were already true of the broken code**, which is why the
+contract alone is not a guard: the flag held exactly the token, arming again
+replaced it, and what it wrote read back as mine. `tests/test-falsify-run.sh`
+§11f asserts those anyway, and then adds the one that matters — it overrides
+`printf` with a shell function so the token takes two seconds to produce, and
+asserts that **the destination does not exist while the token is still being
+written**. Demonstrated failing on the bare redirection: `it exists and is
+EMPTY, which is exactly the state a reader calls somebody else's flag`, with the
+other four still passing.
+
+**What this closes, and what it does not.** F50 fixed the flag having no owner —
+that was real, and the ownership check is what made this diagnosable at all.
+F53's *observation* was real too: two mutants per tight-clock run lost their
+verdict. What was wrong was the story, twice over — the flag was never foreign,
+and no watchdog outlived its invocation. The three refuted explanations recorded
+in the original filing were all refuted for the right reason: none of them was
+happening.
+
+**The pattern, now three for three.** F50, F52, F53: every time a mechanism was
+inferred from reading the source it was wrong, and every time the fix was to
+make the code SAY what happened and then run it once. The instrumentation is
+cheaper than the theory and it is the only thing that has ever produced an
+answer here.
