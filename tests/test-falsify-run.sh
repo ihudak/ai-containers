@@ -440,6 +440,35 @@ grep -q 'matched NO test' <<< "$FX_ERR" \
   || fail "  … and is reported for what it is (run-all.sh exit 2): $FX_ERR"
 check "  … and the run fails rather than reporting every mutant killed" "1" "$FX_RC"
 
+# ── 6b. A SKIPPED TARGET MUST SAY SO ON THE RECORD STREAM ────────────────────
+# The run above is the whole of backlog F54 in miniature: one target, four
+# mutants, none attempted, and a TOTAL that reports the targets fr_load_targets
+# ACCEPTED rather than the ones it MEASURED. On macOS at --jobs 32 --timeout 5
+# that read `TOTAL|9|106|…` while four targets and 158 mutants had never been
+# tried, and the only thing that said so was four ERROR lines on stderr — which
+# is exactly what a summary reader filters out.
+#
+# rc=1 is what stops this being silent and it is asserted directly above. These
+# assertions are about the RECORD stream, because that is what check-ledger.sh,
+# verify-on-host.sh and every later consumer read.
+check "a skipped target is recorded on stdout, with the mutants it took with it" "1" \
+  "$(grep -c '^SKIPPED|fixture-lib.sh|test-fx-nosuchtest.sh|4|no-test-matched$' <<< "$FX_OUT")"
+check "  … and the run says how much of the corpus was never attempted" "1" \
+  "$(grep -c '^UNATTEMPTED|1|4|4$' <<< "$FX_OUT")"
+# THE CONTRADICTION THE RECORD RESOLVES. TOTAL still says zero verdicts over one
+# target; UNATTEMPTED is the line that says four mutants existed and none ran.
+check "  … while TOTAL alone still reports a target it never measured" "1" \
+  "$(grep -c '^TOTAL|1|0|' <<< "$FX_OUT")"
+
+# THE NEGATIVE CONTROL. Emitted at zero on a healthy run, like ASSERTLESS —
+# without this, a build that never emitted the record would pass nothing, and a
+# build that emitted it always-nonzero would pass everything above.
+fx_run "$RUN" "$CONF_A" "$FX" "$TMP/wit-unatt" --jobs 1
+check "a run that skipped nothing still says so, at zero" "1" \
+  "$(grep -c '^UNATTEMPTED|0|0|4$' <<< "$FX_OUT")"
+check "  … and records no SKIPPED line at all" "0" \
+  "$(grep -c '^SKIPPED|' <<< "$FX_OUT")"
+
 # ── 7. Oracle property: a dirty tree does not by itself change the verdict ────
 # Every worker tree is dirty by construction — the mutant IS the modification —
 # and tests/integration/mutate.sh's cmd_apply carries a `git diff --quiet` gate.

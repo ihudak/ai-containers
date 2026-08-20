@@ -3447,9 +3447,9 @@ grep stderr for `FOREIGN TIMEOUT FLAG`. Not yet reproduced on Linux.
 
 ---
 
-## F54 — `TOTAL` reports the targets it LOADED, not the targets it measured
+## F54 — `TOTAL` reports the targets it LOADED, not the targets it measured — **FIXED 2026-08-20**
 
-**OPEN.** From the same run. Four of nine targets were skipped for an unusable
+**ORIGINALLY FILED AS OPEN.** From the same run. Four of nine targets were skipped for an unusable
 pristine baseline, and the summary line says:
 
 ```
@@ -3536,3 +3536,48 @@ inferred from reading the source it was wrong, and every time the fix was to
 make the code SAY what happened and then run it once. The instrumentation is
 cheaper than the theory and it is the only thing that has ever produced an
 answer here.
+
+### 2026-08-20 — FIXED. Two records, and neither of them is a tenth `TOTAL` field.
+
+`TOTAL` did not grow a field. It is parsed POSITIONALLY by `check-ledger.sh`,
+`verify-on-host.sh` Phase 6 and five places in this repo's own tests, and
+`ASSERTLESS` already set the precedent for a fact that deserves its own line.
+
+Two records, both on **stdout** — beside `MUTANT`/`TARGET`/`TOTAL`, because
+stderr is where this event already was and stderr is what a summary reader
+filters out:
+
+```
+SKIPPED|<target>|<oracle>|<mutants-not-attempted>|<no-test-matched|baseline-not-green>
+UNATTEMPTED|<targets-skipped>|<mutants-not-attempted>|<corpus-size>
+```
+
+`UNATTEMPTED` is emitted **always**, at zero like `ASSERTLESS`, for the same
+reason: the number can only go up, and the state with nothing to look at is the
+state in which nobody looks. A healthy run now closes with
+`UNATTEMPTED|0|0|264`.
+
+The macOS run that produced this finding would now read `UNATTEMPTED|4|158|264`
+beside its `TOTAL|9|106|…` — one line saying what the other cannot.
+
+**Phase 6 surfaces both.** `verify-on-host.sh`'s summary grep was
+`^(TARGET|TOTAL|ASSERTLESS)\|` and is now `^(TARGET|TOTAL|ASSERTLESS|SKIPPED|UNATTEMPTED)\|`.
+
+**No new gate.** `run.sh:992` already sets `rc=1` on a skipped target, which is
+what stops this being silent and is asserted directly in
+`tests/test-falsify-run.sh` §6. This entry was never about the run passing when
+it should not; it was about every human-readable and machine-parsed summary of
+the run still saying nine targets.
+
+**Five assertions in §6b**, on the misspelled-oracle fixture — one target, four
+mutants, none attempted — plus the zero control. Each guard demonstrated
+failing:
+
+| damage | assertion that flips |
+|---|---|
+| the `SKIPPED` record is not emitted | "a skipped target is recorded on stdout, with the mutants it took with it" |
+| `UNATTEMPTED`'s mutant field reports the TARGET count | "…and the run says how much of the corpus was never attempted" |
+
+The second damage leaves the zero control passing, because at zero the target
+count and the mutant count are the same number — which is exactly why the
+non-zero case had to be asserted separately rather than trusting the control.
