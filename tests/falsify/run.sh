@@ -805,6 +805,7 @@ fr_harvest() {   # <pid> — print that mutant's records and tally them
 
 fr_wait_for_slot() {   # block until at least one slot is free
   local p rc reaped harvested=0
+  local -a ended=()
   while (( harvested == 0 )); do
     (( ${#FR_PID_SLOT[@]} > 0 )) || return 0
     # `-p` names the pid that finished, so this loop learns WHICH worker ended
@@ -818,6 +819,24 @@ fr_wait_for_slot() {   # block until at least one slot is free
     reaped=""
     wait -n -p reaped 2>/dev/null
     rc=$?
+    # `-p` DOES NOT SET ITS VARIABLE AT THE DECLARED FLOOR. Measured by the
+    # bash-floor CI job: the same commit passes this file's §11d wiring
+    # assertion on bash 5.2 (ubuntu:24.04) and fails it on 5.1 (ubuntu:22.04)
+    # with "exit status not captured". The reason inside bash is not established
+    # here and this comment will not invent one — what matters is that the
+    # status must still be attributable at 5.1, which bash-floor.sh declares.
+    #
+    # `wait -n` returned A status; the scan says WHICH workers ended. When
+    # exactly one did, those are the same worker and the attribution is sound.
+    # When two ended in the same instant it is not, so nothing is attributed and
+    # fr_exit_cause says "not captured" rather than picking one.
+    if [[ -z "$reaped" ]]; then
+      ended=()
+      for p in "${!FR_PID_SLOT[@]}"; do
+        kill -0 "$p" 2>/dev/null || ended+=("$p")
+      done
+      (( ${#ended[@]} == 1 )) && reaped="${ended[0]}"
+    fi
     if [[ -n "$reaped" && -n "${FR_PID_SLOT[$reaped]:-}" ]]; then
       FR_PID_STATUS["$reaped"]="$rc"
       fr_harvest "$reaped"
