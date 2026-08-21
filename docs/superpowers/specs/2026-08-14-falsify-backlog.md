@@ -4195,3 +4195,35 @@ discriminates all three with a second of slack either side. Both demonstrated.
 **The operator error F55 was filed for is also closed:** the original message was
 lost to a `tail -3`. Full suite logs are kept now, which is the only reason this
 entry has a mechanism rather than a second unreproduced sighting.
+
+---
+
+## F1 — slice 4, 2026-08-21: the summary somebody reads before typing `yes`
+
+Slice 3's measurement located the gap: after every DECISION was asserted, 129 of
+249 mutants survived, clustered in what the user is TOLD rather than in what is
+done.
+
+**That summary is not cosmetic.** It is the entire basis on which a person
+consents to deleting a volume, and every mutant of it survived.
+
+Fifteen assertions on `cmd_rm`'s and `cmd_gc`'s summaries, all on the REFUSAL
+path — no `--yes` — because both print before they ask, so no case here deletes
+anything. Three guards demonstrated failing:
+
+| damage | what the summary then says |
+|---|---|
+| `has_base` inverted | offers to remove a volume that is not there, while silent about the one that is |
+| **the working-copies test inverted** | **`rm docs` deletes projA and projB without listing them** — only the base volume and the registry entry appear |
+| `gc`'s unknown-label fallbacks inverted | every labelled copy reads `?`, the unlabelled one reads blank — exactly backwards |
+
+The second is why the slice exists. That list is the sole warning that a volume
+may hold uncommitted work.
+
+**Re-measured: 129 KILLED / 120 SURVIVED of 249, 48% unresolved**, from 120/129.
+
+**What remains is largely unreachable hermetically**, and `targets.conf` says so
+rather than implying another slice would close it: the confirmation itself,
+`[[ -t 0 ]]` and `[[ "$reply" == "yes" ]]` in all three subcommands. Every case
+drives the non-interactive path because `read -r -p` needs a tty and nothing
+hermetic has one.
