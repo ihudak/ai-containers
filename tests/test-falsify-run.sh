@@ -263,6 +263,28 @@ EOF
 # THE REAL DRIVER, copied: the oracle contract is `tests/run-all.sh <name>`, so a
 # fixture with a hand-written stand-in driver would be testing the stand-in.
 cp "$TESTS_DIR/run-all.sh" "$FX/tests/run-all.sh"
+# Created HERE, with the other fixture oracles, so it is TRACKED before the
+# fixture repo is committed: falsify_seed_tree copies `git ls-files`, so an
+# untracked oracle never reaches a worker tree and run-all.sh reports "no tests
+# matched". Its assertions live in §14e.
+cat > "$FX/tests/test-fx-flaky.sh" <<'FLAKY'
+#!/usr/bin/env bash
+set -uo pipefail
+# Stands in for an oracle that is green on a quiet machine and goes red under
+# load. The trigger is a counter rather than real contention, because a test
+# that waits for a race is a test that fails somewhere else.
+n=0
+[[ -f "${FX_FLAKY_COUNT:-}" ]] && n="$(cat "$FX_FLAKY_COUNT")"
+n=$(( n + 1 ))
+printf '%s' "$n" > "$FX_FLAKY_COUNT"
+if (( n >= ${FX_FLAKY_FROM:-4} )); then
+  printf 'FAIL: run %s — the machine, not the mutation\n' "$n"
+  exit 1
+fi
+printf 'PASS: flaky oracle run %s\n' "$n"
+FLAKY
+chmod +x "$FX/tests/test-fx-flaky.sh"
+
 ( cd "$FX" && git init -q -b main . >/dev/null 2>&1 || git init -q . >/dev/null 2>&1
   git add -A && git -c user.email=t@example -c user.name=t commit -qm fixture ) >/dev/null 2>&1
 if ( cd "$FX" && git rev-parse HEAD >/dev/null 2>&1 ); then
@@ -1277,6 +1299,74 @@ fx_run "$RUN" "$CONF_SLOW" "$FX" "$TMP/wit-unp3" --jobs 1 --timeout 1
 check "control: with no budget given, an unproven run still exits 0" "0" "$FX_RC"
 fx_run "$RUN" "$CONF_SLOW" "$FX" "$TMP/wit-unp4" --jobs 1 --timeout 1 --max-unproven-pct banana
 check "a non-numeric budget is refused (exit 2), not silently ignored" "2" "$FX_RC"
+
+# ── 14e. A CONTROL RUN CATCHES AN ORACLE THAT GOES RED PARTWAY THROUGH ───────
+# `run.sh` runs each target's oracle on the pristine tree and requires PASS —
+# ONCE, at the start, with no workers running. That establishes the oracle is
+# green on a QUIET machine, which is not the condition the mutants are measured
+# under, and the tier itself is what loads the machine (backlog F30, F32).
+#
+# The failure that matters is not a slow oracle — F12 closed that — but a
+# FAILING-because-loaded one. Measured 2026-08-17: a contaminated oracle failed
+# with signal `exit+failline` in 2.5 seconds, no timeout involved. The obvious
+# remedy, "re-verify any kill that also timed out", would have missed it
+# completely.
+#
+# A false KILL is worse than a missed one: the mutant never reaches the survivor
+# set, check-ledger.sh never demands an entry, and the gap becomes INVISIBLE.
+#
+# THE FIXTURE reproduces the shape deterministically instead of racing for it.
+# test-fx-flaky.sh counts its own invocations in a file outside every worker
+# tree and starts failing from the Nth. At --jobs 1 the order is fixed —
+# baseline, m1, m2, control, m3, m4 — so FX_FLAKY_FROM=4 makes the BASELINE
+# pass and the CONTROL fail, which is precisely the case the per-target baseline
+# cannot see.
+CONF_FLAKY="$(conf flaky 'fixture-lib.sh|EXECUTED-WHOLE|test-fx-flaky.sh')"
+
+export FX_FLAKY_COUNT="$TMP/flaky.count"; : > "$FX_FLAKY_COUNT"
+export FX_FLAKY_FROM=4
+fx_run "$RUN" "$CONF_FLAKY" "$FX" "$TMP/wit-flaky" --jobs 1 --timeout 120 --controls 1
+check "an oracle that goes red mid-target is caught by a CONTROL run" "1" \
+  "$(grep -c '^CONTROL|FAIL|' <<< "$FX_OUT")"
+check "  … and the summary counts it: one control, one failure" "1" \
+  "$(grep -c '^CONTROLS|1|1$' <<< "$FX_OUT")"
+check "  … and the run FAILS rather than reporting a clean corpus" "1" "$FX_RC"
+grep -q 'CONTROL FAILED' <<< "$FX_ERR" \
+  && pass "  … naming it at the moment it happened" \
+  || fail "  … naming it at the moment it happened: $FX_ERR"
+grep -q 'may have been killed by the machine rather than by the damage' <<< "$FX_ERR" \
+  && pass "  … and saying what it means for the kill count" \
+  || fail "  … and saying what it means for the kill count: $FX_ERR"
+# THE POINT, stated as an assertion. The mutants dispatched AFTER the oracle
+# went red are scored KILLED, and without the control the run would have
+# reported that as coverage and exited 0.
+[[ "$(grep -c '^MUTANT|KILLED|' <<< "$FX_OUT")" -gt 0 ]] \
+  && pass "  … while the mutants after it were indeed scored KILLED, which is the harm" \
+  || fail "  … while the mutants after it were indeed scored KILLED — the fixture did not reproduce the false-kill shape"
+
+# THE NEGATIVE CONTROL. A healthy oracle must report controls that PASSED, and
+# must not fail the run. Without this, a build that failed every control would
+# pass every assertion above.
+: > "$FX_FLAKY_COUNT"; export FX_FLAKY_FROM=9999
+fx_run "$RUN" "$CONF_FLAKY" "$FX" "$TMP/wit-flaky2" --jobs 1 --timeout 120 --controls 1
+check "control: a healthy oracle reports its control passing" "1" \
+  "$(grep -c '^CONTROLS|1|0$' <<< "$FX_OUT")"
+check "  … and the run exits 0" "0" "$FX_RC"
+check "  … having emitted no CONTROL|FAIL line" "0" \
+  "$(grep -c '^CONTROL|FAIL|' <<< "$FX_OUT")"
+unset FX_FLAKY_FROM FX_FLAKY_COUNT
+
+# --controls 0 disables them, and SAYS SO with a zero total rather than by
+# omitting the record — "no controls ran" and "controls ran and passed" are
+# different claims and must not read the same.
+fx_run "$RUN" "$CONF_A" "$FX" "$TMP/wit-noctl" --jobs 1 --controls 0
+check "--controls 0 runs none, and still emits the record" "1" \
+  "$(grep -c '^CONTROLS|0|0$' <<< "$FX_OUT")"
+fx_run "$RUN" "$CONF_A" "$FX" "$TMP/wit-badctl" --jobs 1 --controls banana
+check "a non-numeric --controls is refused (exit 2)" "2" "$FX_RC"
+grep -q 'must be a non-negative integer' <<< "$FX_ERR" \
+  && pass "  … saying what it expected" \
+  || fail "  … saying what it expected: $FX_ERR"
 
 # ── 15. AN ORACLE FIELD NAMING SEVERAL TESTS RUNS ALL OF THEM ────────────────
 # The row's oracle field is a SET, and a runner that honoured only the first

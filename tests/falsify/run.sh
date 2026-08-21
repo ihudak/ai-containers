@@ -6,7 +6,7 @@
 #
 #   bash tests/falsify/run.sh [--target <file>] [--jobs N|auto] [--timeout S]
 #                            [--operators <list>] [--max-unproven-pct N]
-#                            [--max-assertless N]
+#                            [--max-assertless N] [--controls N]
 #
 #   --jobs auto             workers = min(what the OS reports, the cgroup CPU
 #                           quota). `nproc` reads the affinity mask and does not
@@ -15,6 +15,13 @@
 #   --max-unproven-pct N    fail the run when more than N% of mutants produced
 #                           no verdict. Opt-in: an UNPROVEN mutant is machine
 #                           state, so only the REFERENCE environment sets it.
+#   --controls N            interleave N PRISTINE oracle runs per target, in real
+#                           worker slots, under the same load as the mutants
+#                           around them. A control that FAILS means the oracle
+#                           went red without any mutation present, so the kills
+#                           in that run may be the machine's rather than the
+#                           damage's — the run says so and exits non-zero.
+#                           Default 2; 0 disables. (backlog F30, F32)
 #   --max-assertless N      fail the run when more than N kills arrived with no
 #                           FAIL: line — the oracle exited non-zero without
 #                           being seen to assert anything. Unlike the unproven
@@ -180,6 +187,11 @@ FR_CONF="${FALSIFY_CONF:-$FR_HERE/targets.conf}"
 # Wall-clock stops improving AT the quota and then gets worse, while the
 # per-mutant clock climbs to 10.9x. Going from the quota to nproc's 12 buys one
 # second of wall-clock and spends 52% of every mutant's timeout budget.
+# How many PRISTINE control runs to interleave among each target's mutants.
+# See fr_run_control: this is the only thing that asks "is this oracle green
+# UNDER THESE CONDITIONS", which is the question a per-target baseline taken on
+# a quiet machine cannot answer (backlog F30, F32).
+FR_CONTROLS="${FALSIFY_CONTROLS:-2}"
 FR_MAX_UNPROVEN_PCT="${FALSIFY_MAX_UNPROVEN_PCT:-}"
 FR_MAX_ASSERTLESS="${FALSIFY_MAX_ASSERTLESS:-}"
 FR_CGROUP="${FALSIFY_CGROUP:-/sys/fs/cgroup}"
@@ -697,6 +709,41 @@ fr_run_mutant() {   # <slot> <target> <oracle> <seq> <lineno> <op> <sha> <text> 
   return 0
 }
 
+# ── one CONTROL run: the pristine oracle, under load ──────────────────────────
+# A KILL is only trustworthy if the oracle would have PASSED under the same
+# conditions. `run.sh` already runs each target's oracle on the pristine tree and
+# requires PASS — but once, at the start, with no workers running. That
+# establishes the oracle is green on a QUIET machine, which is not the condition
+# the mutants are measured under, and the tier itself is what loads the machine.
+#
+# The failure that matters is not a slow oracle (F12 closed that) but a
+# FAILING-because-loaded one: measured 2026-08-17, a contaminated oracle failed
+# with signal `exit+failline` in 2.5 seconds — no timeout at all. A false KILL
+# then deletes the evidence a survivor would have provided: the mutant never
+# reaches the survivor set, check-ledger.sh never demands an entry, and the gap
+# becomes invisible. That is the tier's own failure mode inverted (backlog F30).
+#
+# So this runs the UNMUTATED tree through a real worker slot, interleaved among
+# the mutants, and asks the only question that detects it: is this oracle green
+# under THESE conditions? A control that fails does not identify which kills are
+# contaminated — it says the run's kills cannot be trusted, which is the honest
+# claim and is enough to refuse the run.
+fr_run_control() {   # <slot> <target> <oracle> <n> <resultfile>
+  local slot="$1" target="$2" oracle="$3" n="$4" res="$5"
+  local tree out verdict
+  tree="$(fr_slot_tree "$slot")"
+  out="$FR_OUT/w$slot.log"
+  falsify_run_oracle "$tree" "$oracle" "$out" "$FR_TIMEOUT" "c$slot.n$n"
+  falsify_verdict "$FALSIFY_RC" "$out" "$FALSIFY_TIMED_OUT"
+  # SURVIVED is falsify_verdict's word for "the oracle noticed nothing", which
+  # on an unmutated tree is exactly PASS. Anything else means the oracle went
+  # red with no mutation present.
+  if [[ "$FALSIFY_VERDICT" == "SURVIVED" ]]; then verdict=PASS; else verdict=FAIL; fi
+  printf 'CONTROL|%s|%s|%s|%s|%s|%s\n' \
+    "$verdict" "$target" "$oracle" "$n" "$FALSIFY_SIGNAL" "$FALSIFY_MS" > "$res"
+  return 0
+}
+
 # ── the worker pool ───────────────────────────────────────────────────────────
 declare -A FR_PID_SLOT=()
 declare -A FR_PID_RESULT=()
@@ -719,6 +766,10 @@ FR_BROKEN=0
 # ACCEPTED — not the ones that were measured (backlog F54).
 FR_SKIPPED_TARGETS=0
 FR_SKIPPED_MUTANTS=0
+# Control runs: the PRISTINE oracle, executed in a real worker slot, under the
+# same load as the mutants around it. See fr_run_control.
+FR_CONTROLS_OK=0
+FR_CONTROLS_FAILED=0
 FR_T_KILLED=0
 FR_T_SURVIVED=0
 FR_T_UNPROVEN=0
@@ -752,7 +803,7 @@ fr_exit_cause() {   # <wait status, possibly empty> → a clause for the error l
 fr_harvest() {   # <pid> — print that mutant's records and tally them
   local pid="$1"
   local slot="${FR_PID_SLOT[$pid]}" res="${FR_PID_RESULT[$pid]}"
-  local line f2 f3 f7
+  local line f2 f3 f7 c_target c_oracle c_sig c_ms
   local cause
   cause="$(fr_exit_cause "${FR_PID_STATUS[$pid]:-}")"
   unset "FR_PID_SLOT[$pid]" "FR_PID_RESULT[$pid]" "FR_PID_STATUS[$pid]"
@@ -826,6 +877,18 @@ fr_harvest() {   # <pid> — print that mutant's records and tally them
           FR_ASSERTLESS=$(( FR_ASSERTLESS + 1 )); FR_T_ASSERTLESS=$(( FR_T_ASSERTLESS + 1 ))
           fr_warn "KILLED WITH NO ASSERTION ATTACHED (signal=$f7 — the oracle exited non-zero without printing a FAIL: line, so nothing was observed asserting): $f3"
         fi ;;
+      'CONTROL|PASS|'*) FR_CONTROLS_OK=$(( FR_CONTROLS_OK + 1 )) ;;
+      'CONTROL|FAIL|'*)
+        FR_CONTROLS_FAILED=$(( FR_CONTROLS_FAILED + 1 ))
+        # Its own split: a CONTROL record is 7 fields and a MUTANT record is 9,
+        # so the shared positional read above lands `signal` and `ms` in the
+        # wrong variables. Contorting the record to line up with MUTANT's
+        # layout would be the other way to do this, and would make the grammar
+        # answer to the parser instead of the other way round.
+        IFS='|' read -r _ _ c_target c_oracle _ c_sig c_ms <<< "$line"
+        # Named at the moment it happens, not only in the summary: this is the
+        # line that says every kill around it is suspect.
+        fr_err "CONTROL FAILED — the PRISTINE oracle went red under this run's own load (signal=${c_sig:-none}, $(fr_secs "$c_ms")): $c_target via $c_oracle. Kills recorded near it cannot be trusted." ;;
       'NOTE|write-failed|'*) FR_BROKEN=$(( FR_BROKEN + 1 )) ;;
       'NOTE|foreign-timeout-flag|'*)
         # Never silent. This is the event that used to arrive as an UNPROVEN
@@ -946,12 +1009,14 @@ fr_usage() { sed -n '2,60p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 # ── main ──────────────────────────────────────────────────────────────────────
 falsify_main() {
   local i n target oracle mutants total=0 t_run t_target skipped_n
+  local n_mut ctl_at ctl_n ci ctl_pos cslot cres
   local seq op lineno sha text slot res rc=0
 
   while (( $# > 0 )); do
     case "$1" in
       --target) FR_TARGET="${2:-}"; shift 2 || return 2 ;;
       --jobs) FR_JOBS="${2:-}"; shift 2 || return 2 ;;
+      --controls) FR_CONTROLS="${2:-}"; shift 2 || return 2 ;;
       --max-unproven-pct) FR_MAX_UNPROVEN_PCT="${2:-}"; shift 2 || return 2 ;;
       --max-assertless) FR_MAX_ASSERTLESS="${2:-}"; shift 2 || return 2 ;;
       --timeout) FR_TIMEOUT="${2:-}"; shift 2 || return 2 ;;
@@ -980,6 +1045,9 @@ falsify_main() {
   fi
   if [[ ! "$FR_JOBS" =~ ^[1-9][0-9]*$ ]]; then
     fr_err "--jobs must be a positive integer or 'auto', got '${FR_JOBS}'"; return 2
+  fi
+  if [[ ! "$FR_CONTROLS" =~ ^[0-9]+$ ]]; then
+    fr_err "--controls must be a non-negative integer, got '${FR_CONTROLS}'"; return 2
   fi
   if [[ -n "$FR_MAX_UNPROVEN_PCT" && ! "$FR_MAX_UNPROVEN_PCT" =~ ^[0-9]+$ ]]; then
     fr_err "--max-unproven-pct must be a non-negative integer, got '${FR_MAX_UNPROVEN_PCT}'"; return 2
@@ -1078,6 +1146,22 @@ falsify_main() {
     fi
     printf 'BASELINE|%s|%s|PASS|%s\n' "$target" "$oracle" "$FALSIFY_MS"
 
+    # ── where the control runs go ───────────────────────────────────────────
+    # Evenly through the target's sequence, so they sample the run early, in the
+    # middle and late rather than clustering where the machine happens to be
+    # quiet. A target with fewer mutants than controls simply gets fewer: the
+    # positions are computed from its own count, never from a fixed stride.
+    n_mut="$(grep -c . "$mutants" 2>/dev/null || printf 0)"
+    ctl_at=""
+    if (( FR_CONTROLS > 0 && n_mut > 0 )); then
+      for (( ci = 1; ci <= FR_CONTROLS; ci++ )); do
+        ctl_pos=$(( ci * n_mut / (FR_CONTROLS + 1) ))
+        (( ctl_pos < 1 )) && ctl_pos=1
+        ctl_at="$ctl_at $ctl_pos "
+      done
+    fi
+    ctl_n=0
+
     seq=0
     while IFS=$'\t' read -r op lineno sha text; do
       [[ -n "$op" ]] || continue
@@ -1090,6 +1174,22 @@ falsify_main() {
       fr_run_mutant "$slot" "$target" "$oracle" "$seq" "$lineno" "$op" "$sha" "$text" "$res" &
       FR_PID_SLOT["$!"]="$slot"
       FR_PID_RESULT["$!"]="$res"
+
+      # A control goes into a slot of its own, right after the mutant at this
+      # position, so it competes with the same workers rather than waiting for
+      # a gap. The slot's tree is pristine here: fr_run_mutant restores the
+      # target file before it returns, and re-seeds if anything else moved.
+      if [[ "$ctl_at" == *" $seq "* ]]; then
+        ctl_n=$(( ctl_n + 1 ))
+        while (( ${#FR_FREE_SLOTS[@]} == 0 )); do fr_wait_for_slot; done
+        cslot="${FR_FREE_SLOTS[0]}"
+        FR_FREE_SLOTS=("${FR_FREE_SLOTS[@]:1}")
+        cres="$FR_OUT/control.$cslot.$ctl_n"
+        rm -f "$cres"
+        fr_run_control "$cslot" "$target" "$oracle" "$ctl_n" "$cres" &
+        FR_PID_SLOT["$!"]="$cslot"
+        FR_PID_RESULT["$!"]="$cres"
+      fi
     done < "$mutants"
     fr_drain
 
@@ -1137,6 +1237,16 @@ falsify_main() {
   # `TOTAL|9|106|…` for a run in which four targets and 158 mutants were never
   # attempted at all, and no line said so (backlog F54). This one does.
   printf 'UNATTEMPTED|%s|%s|%s\n' "$FR_SKIPPED_TARGETS" "$FR_SKIPPED_MUTANTS" "$total"
+
+  # ── WAS THE ORACLE GREEN UNDER THIS RUN'S OWN LOAD ──────────────────────────
+  # Always emitted, at zero-failed like ASSERTLESS and UNATTEMPTED. A run with
+  # no controls says so with a zero in the first field, which is a different
+  # statement from "controls ran and passed" and must not read the same.
+  printf 'CONTROLS|%s|%s\n' "$(( FR_CONTROLS_OK + FR_CONTROLS_FAILED ))" "$FR_CONTROLS_FAILED"
+  if (( FR_CONTROLS_FAILED > 0 )); then
+    fr_err "$FR_CONTROLS_FAILED of $(( FR_CONTROLS_OK + FR_CONTROLS_FAILED )) control run(s) FAILED: the PRISTINE oracle went red under this run's own load, so a mutant scored KILLED here may have been killed by the machine rather than by the damage. Re-run with fewer --jobs before trusting the kill count."
+    rc=1
+  fi
 
   if (( FR_BROKEN > 0 )); then
     fr_err "$FR_BROKEN mutant(s) produced no verdict — they are NOT counted as kills"
