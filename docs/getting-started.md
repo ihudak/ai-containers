@@ -64,6 +64,37 @@ cd /path/to/myproject/.ai-containers
 
 `runme.sh` is the only command you need day to day. It resolves a build-time `GITHUB_TOKEN` from `gh` if you have one, builds the image when it needs to, and starts the container in the mode recorded in `sandbox.env`. **After changing `sandbox.conf`, run it again** — it rebuilds.
 
+### 4. On macOS, put big repositories in a volume — before you get frustrated
+
+**Skip this on Linux**, where host bind mounts are already native speed.
+
+On macOS, Docker runs inside a Linux VM and host directories reach it over a network filesystem. For a large repository that an agent scans repeatedly — greps, builds, test runs — that is slow enough to change how the product feels. It is the single most common reason a first macOS experience is a bad one.
+
+The fix is a **repo volume**: a Docker named volume living inside the VM, at native speed. Seed it once from a checkout you already have:
+
+```bash
+cd /path/to/myproject/.ai-containers
+./repo.sh add app ~/dev/app          # from a local checkout — fast, no network
+./repo.sh add lib ssh://git@example.org/team/lib.git   # or clone from the remote
+```
+
+Then attach it by adding this to `sandbox.local.env` in the same directory:
+
+```bash
+REPOS=app:rw lib:ro
+SANDBOX_WORKDIR=@app
+```
+
+`:rw` for the repo you are editing, `:ro` for reference repos, and `@app` makes that volume the working directory. Refresh them whenever you like:
+
+```bash
+./repo.sh sync --all                 # every registered repo, in one command
+```
+
+**The trade-off, stated plainly:** a repo volume is not synced with your host checkout. It holds what you seeded, and you commit and push from inside the container to get work out. That is what buys the speed.
+
+[Repositories, volumes and mounts](repos-and-mounts.md) covers the rest — `:rwcopy` for two containers writing the same repo, `repo.sh list`/`gc`, and the per-platform backend.
+
 ### Keeping projects up to date
 
 When this repository changes, push the update into every registered project:

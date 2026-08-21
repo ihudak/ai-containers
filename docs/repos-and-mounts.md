@@ -28,7 +28,8 @@ Repo volumes are **global**: there is **one volume per repo name**, shared by co
 # …or by cloning from the remote (authenticates with your host ~/.ssh):
 ./repo.sh add cluster ssh://git@example.org/team/cluster.git
 
-./repo.sh sync cluster        # refresh when you choose (git pull, or re-copy a path source); sync --all does every repo
+./repo.sh sync cluster        # refresh ONE repo from its source (git pull, or re-copy a path source)
+./repo.sh sync --all          # refresh EVERY registered repo — the usual start-of-day refresh
 ./repo.sh reset cluster       # discard local changes — clean slate (keeps the repo registered)
 ./repo.sh list                # show repos (add --sizes for on-disk size; --copies for :rwcopy working copies)
 ./repo.sh rm cluster          # remove the volume + any working copies + registry entry
@@ -39,6 +40,8 @@ Repo volumes are **global**: there is **one volume per repo name**, shared by co
 > **Docker volumes are the source of truth; the registry is a cache.** Each base volume is labeled with its repo name, type, and source, and each `:rwcopy` working copy with its parent repo and originating launch directory. `list`, `list --copies`, and `gc` read those labels directly from Docker, so what you see reflects the volumes that actually exist (a registry entry whose volume is gone shows as `MISSING`). The registry at `~/.ai-containers/repos.conf` remains authoritative only for two things labels can't cover: **Linux `bind`-backend repos** (which have no volume to label) and the **mutable last-synced timestamp** (Docker labels are immutable after creation). If the registry is ever lost or out of sync, `./repo.sh reindex` rebuilds it from the volume labels.
 
 > **Managing `:rwcopy` working copies.** `./repo.sh list --copies` shows every working-copy volume with its parent repo, the launch directory it was seeded for, whether a running container currently has it mounted, and (with `--sizes`) its on-disk size. `./repo.sh gc` removes them: all of them by default, or `--repo <name>` to scope to one repo, `--unused` to keep any currently mounted by a running container, and `--yes` to skip the confirmation. Working copies can hold uncommitted work, so `gc` confirms before deleting.
+
+**`sync --all` is the one to remember.** A repo volume does not track its source — it holds whatever was there when you seeded or last synced it (see *Repo volumes shadow the host* below). `./repo.sh sync --all` brings every registered repo up to date in one command: `git pull` for git sources, an `rsync -a --delete` mirror for path sources. Run it when you sit down to work, or after pulling on the host, rather than syncing repos one at a time. It leaves existing `:rwcopy` working copies alone, because they may hold uncommitted work — see the note below on refreshing those.
 
 `reset` is the "start clean" button, distinct from `sync` (which *fetches* the latest): it **discards local state** and removes any `:rwcopy` working copies. For a git source it runs `git reset --hard` to the upstream (dropping uncommitted changes **and** local commits) plus `git clean -ffdx` (removing untracked **and** git-ignored files such as build output / `node_modules`); for a path source it re-mirrors from the host source. It is **destructive and cannot be undone**, so it prompts for confirmation unless you pass `--yes`. Reset every registered repo at once with `./repo.sh reset --all`. (The Linux `bind` backend is left untouched — its "volume" is your live host checkout — and `reset` just prints how to clean it yourself.)
 

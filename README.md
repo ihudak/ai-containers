@@ -39,7 +39,7 @@ cd /path/to/myproject/.ai-containers
 ./sync-to-projects.sh          # from here — updates every registered project
 ```
 
-Two optional extras worth knowing about early: [container groups](docs/groups.md) keep one project's credentials and agent config separate from another's, and [repo volumes](docs/repos-and-mounts.md) give native-speed source trees on macOS.
+Two things worth knowing before you settle in. [Container groups](docs/groups.md) keep one project's credentials and agent config separate from another's. And **on macOS, put large repositories in a [repo volume](docs/repos-and-mounts.md)** rather than a bind mount — host directories reach Docker's Linux VM over a network filesystem, which is slow enough for a big repo to sour the whole experience. On Linux, bind mounts are already native speed and there is nothing to do.
 
 > `build.sh` and `sandbox.sh` are what `runme.sh` calls. Run them by hand only when you are working on this repository itself, or debugging a build.
 
