@@ -59,6 +59,58 @@ EOF
 grep -q '^FAIL:' "$F2/out.txt" && fails=$((fails+1))
 rm -rf "$F2"
 
+# Fixture 3: c-toolchain=ON ALONE → KEEP_BUILD_TOOLCHAIN=1
+# Until this key existed there was no way to ASK for a C compiler: it arrived
+# only as a side effect of ruby= or db-clients=, so a Go developer wanting
+# `go test -race` (cgo, hence gcc) had to switch on an unrelated language
+# runtime to get one. Fixture 2 above is the control that makes this case mean
+# something — the SAME config without the key yields 0.
+F3="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
+cat > "$F3/sandbox.conf" <<'EOF'
+# schema-version: 3
+ruby=
+db-clients=
+c-toolchain=ON
+EOF
+(
+  export SANDBOX_CONF="$F3/sandbox.conf"
+  # shellcheck source=/dev/null
+  source "$REPO_DIR/build.sh"
+  declare -a args=()
+  build_args_from_config args
+  has_arg() { local w="$1" a; for a in "${args[@]}"; do [[ "$a" == "$w" ]] && return 0; done; return 1; }
+  has_arg "KEEP_BUILD_TOOLCHAIN=1" && printf 'PASS: c-toolchain=ON alone keeps the build toolchain\n' \
+                                   || printf 'FAIL: c-toolchain=ON alone keeps the build toolchain\n'
+  # It must not drag in anything else: the key buys a compiler, not a runtime.
+  has_arg "RUBY_RUNTIME=1"    && printf 'FAIL: c-toolchain=ON pulled in the Ruby runtime\n' \
+                              || printf 'PASS: c-toolchain=ON does not pull in the Ruby runtime\n'
+  has_arg "DB_CLIENTS="       && printf 'PASS: c-toolchain=ON leaves DB_CLIENTS empty\n' \
+                              || printf 'FAIL: c-toolchain=ON leaves DB_CLIENTS empty\n'
+) | tee "$F3/out.txt"
+grep -q '^FAIL:' "$F3/out.txt" && fails=$((fails+1))
+rm -rf "$F3"
+
+# Fixture 4: c-toolchain=OFF is OFF — the literal value, not just "absent".
+F4="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
+cat > "$F4/sandbox.conf" <<'EOF'
+# schema-version: 3
+ruby=
+db-clients=
+c-toolchain=OFF
+EOF
+(
+  export SANDBOX_CONF="$F4/sandbox.conf"
+  # shellcheck source=/dev/null
+  source "$REPO_DIR/build.sh"
+  declare -a args=()
+  build_args_from_config args
+  has_arg() { local w="$1" a; for a in "${args[@]}"; do [[ "$a" == "$w" ]] && return 0; done; return 1; }
+  has_arg "KEEP_BUILD_TOOLCHAIN=0" && printf 'PASS: c-toolchain=OFF still strips the toolchain\n' \
+                                   || printf 'FAIL: c-toolchain=OFF still strips the toolchain\n'
+) | tee "$F4/out.txt"
+grep -q '^FAIL:' "$F4/out.txt" && fails=$((fails+1))
+rm -rf "$F2"
+
 # Allowlist gating: mongo present → mongodb.txt included; absent → excluded.
 F3="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 cat > "$F3/sandbox.conf" <<'EOF'

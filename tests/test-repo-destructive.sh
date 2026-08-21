@@ -525,6 +525,124 @@ check "control: bare list exits 0" "0" "$RC"
 setup_world; run_repo list --copies
 check "control: list --copies exits 0" "0" "$RC"
 
+# ═════════════════════════════════════════════════════════════════════════════
+# SLICE 4 — THE SUMMARY SOMEBODY READS BEFORE TYPING `yes`.
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# Measured 2026-08-21: after slices 1-3 asserted every DECISION these
+# subcommands make, 129 of 249 mutants still survived, and they cluster here —
+# in what the user is TOLD, not in what is done. That summary is not cosmetic.
+# It is the entire basis on which a person consents to deleting a volume, and
+# every mutant of it survived: flip the `has_base` test and `rm` offers to
+# remove a volume that is not there while staying silent about the one that is;
+# flip the working-copies test and it deletes copies holding uncommitted work
+# WITHOUT LISTING THEM.
+#
+# All of this is asserted on the REFUSAL path — no `--yes` — because cmd_rm and
+# cmd_gc print the summary BEFORE they ask. Nothing is deleted by any case here,
+# which is also why they can assert the dangerous shapes at all.
+#
+# WHAT CANNOT BE ASSERTED HERE, stated rather than quietly skipped: the
+# confirmation itself (`[[ -t 0 ]]` and `[[ "$reply" == "yes" ]]`). Every case in
+# this file drives the non-interactive path; `read -r -p` needs a tty and
+# nothing hermetic has one. Those mutants stay alive and the ledger will keep
+# owing them.
+
+# ── 25. rm names the base volume it is about to destroy ──────────────────────
+setup_world
+run_repo rm docs
+grep -q -- '- base volume:    ai-containers-repo-docs' "$OUT" \
+  && pass "rm's summary names the base volume by its real name" \
+  || fail "rm's summary names the base volume by its real name (got: $(tr '\n' '|' < "$OUT"))"
+grep -q 'no volume — bind-mount backend' "$OUT" \
+  && fail "rm's summary claimed there is no volume while one exists — the has_base test is inverted" \
+  || pass "  … and does not also claim there is no volume"
+
+# ── 26. …and says so plainly when there ISN'T one ────────────────────────────
+# A bind-backend repo has no volume to remove; saying "base volume: <name>" for
+# one would offer to destroy something that does not exist while leaving the
+# reader to assume the host source is at risk. The message says the opposite,
+# in as many words.
+setup_world
+run_repo rm localsrc
+grep -q 'no volume — bind-mount backend; host source is left untouched' "$OUT" \
+  && pass "rm's summary says when there is NO volume, and that the host source is safe" \
+  || fail "rm's summary says when there is NO volume (got: $(tr '\n' '|' < "$OUT"))"
+grep -q -- '- base volume:' "$OUT" \
+  && fail "  … rather than naming a base volume that does not exist" \
+  || pass "  … rather than naming a base volume that does not exist"
+
+# ── 27. THE ONE THAT MATTERS: working copies are LISTED before they are lost ─
+# These are the volumes that may hold uncommitted work. Deleting them is the
+# most destructive thing this script does, and the list is the only warning.
+setup_world
+run_repo rm docs
+grep -q 'working copies (may contain UNCOMMITTED changes)' "$OUT" \
+  && pass "rm warns that the working copies may hold UNCOMMITTED changes" \
+  || fail "rm warns that the working copies may hold UNCOMMITTED changes (got: $(tr '\n' '|' < "$OUT"))"
+for wc in projA projB; do
+  grep -q "ai-containers-repo-docs--wc-$wc" "$OUT" \
+    && pass "  … and names $wc, which is about to be destroyed" \
+    || fail "  … and names $wc, which is about to be destroyed (got: $(tr '\n' '|' < "$OUT"))"
+done
+grep -q 'docs-archive--wc-' "$OUT" \
+  && fail "  … while not listing another repo's copy, which it is not going to touch" \
+  || pass "  … while not listing another repo's copy, which it is not going to touch"
+
+# ── 28. …and stays silent about working copies when there are none ───────────
+# The control for case 27: a summary that always printed the block would pass
+# every assertion above while telling the reader nothing.
+setup_world
+rm -f "$VOLS"/ai-containers-repo-docs--wc-*
+run_repo rm docs
+grep -q 'working copies' "$OUT" \
+  && fail "rm listed a working-copies section when the repo has none" \
+  || pass "rm says nothing about working copies when there are none"
+grep -q -- '- base volume:    ai-containers-repo-docs' "$OUT" \
+  && pass "  … while still naming the base volume it will remove" \
+  || fail "  … while still naming the base volume it will remove"
+
+# ── 29. rm names the registry file it is going to edit ───────────────────────
+setup_world
+run_repo rm docs
+grep -q "registry entry in $HOME/.ai-containers/repos.conf" "$OUT" \
+  && pass "rm's summary names the registry file it will edit" \
+  || fail "rm's summary names the registry file it will edit (got: $(tr '\n' '|' < "$OUT"))"
+
+# ── 30. gc's table says which repo each copy belongs to, and where it came from
+# A working-copy volume name is `<base>--wc-<tag>`; the REPO and LAUNCH DIR
+# columns come from its labels, and they are how a reader decides whether the
+# copy in front of them is the one holding their work.
+setup_world
+run_repo gc
+grep -qE 'ai-containers-repo-docs--wc-projA +docs +/tmp/docs--wc-projA' "$OUT" \
+  && pass "gc's table shows each copy's repo and launch dir, from its labels" \
+  || fail "gc's table shows each copy's repo and launch dir (got: $(tr '\n' '|' < "$OUT"))"
+
+# ── 31. …and admits when it does not know ────────────────────────────────────
+# An unlabelled volume is exactly the one a reader most needs flagged: it cannot
+# be attributed to a repo or a directory. Printing an empty column would read as
+# "no launch dir"; `?` and `(unlabeled)` read as "unknown", which is the truth.
+setup_world
+rm -f "$VOLS"/ai-containers-repo-docs--wc-projA.labels
+run_repo gc
+grep -qE 'ai-containers-repo-docs--wc-projA +\? +\(unlabeled\)' "$OUT" \
+  && pass "gc marks an unlabelled copy '?' and '(unlabeled)' rather than blank" \
+  || fail "gc marks an unlabelled copy '?' and '(unlabeled)' (got: $(tr '\n' '|' < "$OUT"))"
+
+# ── 32. gc's count matches the number it is actually about to remove ─────────
+setup_world
+run_repo gc
+grep -q 'About to remove 3 working-copy volume(s). These may hold UNCOMMITTED work.' "$OUT" \
+  && pass "gc's count matches the copies it listed (3)" \
+  || fail "gc's count matches the copies it listed (got: $(grep -o 'About to remove [0-9]* working-copy' "$OUT"))"
+setup_world
+printf 'ai-containers-repo-docs--wc-projA\n' > "$INUSE"
+run_repo gc --unused
+grep -q 'About to remove 2 working-copy volume(s)' "$OUT" \
+  && pass "  … and drops to 2 when --unused spares the one in use" \
+  || fail "  … and drops to 2 when --unused spares the one in use (got: $(grep -o 'About to remove [0-9]* working-copy' "$OUT"))"
+
 # ── Hermeticity ───────────────────────────────────────────────────────────────
 export HOME="$REAL_HOME"
 if [[ -n "$REAL_REGISTRY_BEFORE" ]]; then

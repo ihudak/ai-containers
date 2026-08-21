@@ -9,10 +9,9 @@
 #       DB_CLIENTS) are untouched.
 #
 diff --git a/build.sh b/build.sh
-index c8265e4..82c7d6f 100755
 --- a/build.sh
 +++ b/build.sh
-@@ -244,7 +244,7 @@ build_args_from_config() {
+@@ -244,7 +244,7 @@
    ver="$(version_list go)";     _args+=(--build-arg "GO_VERSION=$ver")
  
    # DB client libraries (client/dev libs + CLIs only — never servers).
@@ -20,4 +19,4 @@ index c8265e4..82c7d6f 100755
 +  ver="$(version_list db-clients)"; _args+=(--build-arg "DB_CLIENTS=$ver")
  
    # Retain a runtime build toolchain so native extensions compile at runtime.
-   # Needed whenever Ruby is present or a DB driver will be built.
+   # Needed whenever Ruby is present or a DB driver will be built — and now also
