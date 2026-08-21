@@ -3885,3 +3885,69 @@ re-run Phase 6 on current `main` and check whether
 `tools-lib.sh:return-flip:f128fd8d` still appears in the obsolete-amnesty list.
 With controls in place that run now also answers a second question it could not
 before: whether a real 18-way macOS run trips a control at all.
+
+---
+
+## F30 — CONFIRMED IN THE WILD, 2026-08-21, on the first real host run
+
+The control ran for the first time on macOS and **fired immediately**:
+
+```
+ERROR: CONTROL FAILED — the PRISTINE oracle went red under this run's own load
+(signal=exit+failline, 95.4s): tests/bash-dialect-lint.sh via test-bash-dialect-lint.sh.
+Kills recorded near it cannot be trusted.
+ERROR: 1 of 18 control run(s) FAILED …
+** PHASE 6 FAILED: the falsify corpus did not complete — the ledger was not scored
+```
+
+`FALSIFY_JOBS=8 FALSIFY_TIMEOUT=600`, Colima 12 CPU / 36 GiB. **Not a timeout** —
+`exit+failline`, which is exactly the shape F30 measured in 2026-08-17 and
+exactly why the entry ruled out scoping a re-verify to timed-out kills. The
+oracle took 95.4s where the container runs it in ~14s, so load is plainly
+involved; but the verdict is an assertion that FAILED, not a clock that ran out.
+
+**What this settles.** F30 is no longer a reconstruction from one macOS report of
+unknown provenance. The mechanism is real, it is reachable at a job count a
+person would actually use, and the tier now refuses the run instead of scoring a
+ledger against kills it cannot vouch for. Before this, the same machine reported
+`RESULT: PASSED` with the same contamination present and undetected.
+
+**What it does NOT settle**, and this is the part that matters: the original
+question — whether `tools-lib.sh:return-flip:f128fd8d` still appears in the
+obsolete-amnesty list — **was not answered, because the run stopped before the
+ledger was scored.** That is the correct behaviour and it is also a real
+consequence: a host that trips a control cannot complete Phase 6 at all.
+
+### The finding the finding exposed: a failed control could not say what failed
+
+The error names the target, the oracle, the signal and the elapsed time. It does
+**not** name the assertion that went red — and that is the one fact separating
+*"this oracle is load-sensitive"* from *"this oracle has a defect"*, which is
+precisely the distinction F32's standing advice turns on ("look for a mechanism
+before adding a timeout"; two of its four cases turned out to be F34's `grep -q`
+pipeline and F35's OOM kill, not slowness at all).
+
+The oracle's output went to `$FR_OUT/w<slot>.log` — **per SLOT**, overwritten by
+the next mutant that lands there, and removed with the scratch tree at exit. By
+the time anyone read the error it was gone.
+
+Fixed: a failed control now carries its own `FAIL:` / `SCAFFOLD-FAILED:` lines
+out on the record stream as `NOTE|control-output|<target>|<line>`, echoed to
+stderr beside the error they explain. An oracle that went red with no such line
+at all says *that*, rather than looking like output nobody captured.
+
+### `tests/bash-dialect-lint.sh` is a FIFTH load-sensitive oracle (F32)
+
+F32 lists four. This is the fifth, and it is the first one observed **as a
+pristine control** rather than as a mutant verdict — which means it was
+previously invisible: a red oracle mid-target simply became kills.
+
+**No mechanism is proposed here.** F32's own history is that half its cases had
+specific, fixable defects rather than a need for more time, and this project has
+been wrong five times running when it inferred a mechanism from reading source
+(F50 twice, F52, F53, the gate-4c fixture). The next host run carries the
+diagnosis; that is what decides it.
+
+**Reproduction:** `FALSIFY_TIMEOUT=600 FALSIFY_JOBS=8 PHASES=6 bash ./verify-on-host.sh`
+on macOS, and read the `NOTE|control-output|` lines beside the `CONTROL FAILED`
+error.

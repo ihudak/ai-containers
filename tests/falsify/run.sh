@@ -741,6 +741,36 @@ fr_run_control() {   # <slot> <target> <oracle> <n> <resultfile>
   if [[ "$FALSIFY_VERDICT" == "SURVIVED" ]]; then verdict=PASS; else verdict=FAIL; fi
   printf 'CONTROL|%s|%s|%s|%s|%s|%s\n' \
     "$verdict" "$target" "$oracle" "$n" "$FALSIFY_SIGNAL" "$FALSIFY_MS" > "$res"
+
+  # A FAILED CONTROL THAT CANNOT SAY WHAT FAILED IS HALF A FINDING. `$out` is
+  # "$FR_OUT/w<slot>.log" — per SLOT, reused by the next mutant that lands
+  # there, and removed with the scratch tree at exit. So by the time anyone
+  # reads the error, the oracle's own FAIL: lines are gone.
+  #
+  # Measured the hard way: the first real macOS run to trip a control
+  # (2026-08-21, jobs=8) reported `exit+failline` on
+  # tests/bash-dialect-lint.sh and nothing whatsoever about WHICH assertion
+  # went red — which is the one fact needed to tell a load-sensitive oracle
+  # from a defect in it, and F32's standing advice is to look for a mechanism
+  # before reaching for --timeout.
+  #
+  # Carried as NOTE records rather than dumped to stderr, because fr_harvest
+  # already prints every record line to stdout: the diagnosis then lands in the
+  # run log beside the CONTROL record it explains, in order, instead of
+  # interleaved with whatever other workers were writing at the time.
+  if [[ "$verdict" == "FAIL" ]]; then
+    grep -E '^(FAIL:|SCAFFOLD-FAILED:)' "$out" 2>/dev/null | head -10 \
+      | while IFS= read -r cl; do
+          printf 'NOTE|control-output|%s|%s\n' "$target" "$cl" >> "$res"
+        done
+    # An oracle that went red with no FAIL: line at all is a DIFFERENT event —
+    # a bare non-zero exit — and saying nothing would read as "no output was
+    # captured" rather than "there was none".
+    if ! grep -qE '^(FAIL:|SCAFFOLD-FAILED:)' "$out" 2>/dev/null; then
+      printf 'NOTE|control-output|%s|(no FAIL: or SCAFFOLD-FAILED: line — the oracle exited non-zero in silence; last line was: %s)\n' \
+        "$target" "$(tail -1 "$out" 2>/dev/null | tr -d '|')" >> "$res"
+    fi
+  fi
   return 0
 }
 
@@ -803,7 +833,7 @@ fr_exit_cause() {   # <wait status, possibly empty> → a clause for the error l
 fr_harvest() {   # <pid> — print that mutant's records and tally them
   local pid="$1"
   local slot="${FR_PID_SLOT[$pid]}" res="${FR_PID_RESULT[$pid]}"
-  local line f2 f3 f7 c_target c_oracle c_sig c_ms
+  local line f2 f3 f7 c_target c_oracle c_sig c_ms co_line
   local cause
   cause="$(fr_exit_cause "${FR_PID_STATUS[$pid]:-}")"
   unset "FR_PID_SLOT[$pid]" "FR_PID_RESULT[$pid]" "FR_PID_STATUS[$pid]"
@@ -889,6 +919,12 @@ fr_harvest() {   # <pid> — print that mutant's records and tally them
         # Named at the moment it happens, not only in the summary: this is the
         # line that says every kill around it is suspect.
         fr_err "CONTROL FAILED — the PRISTINE oracle went red under this run's own load (signal=${c_sig:-none}, $(fr_secs "$c_ms")): $c_target via $c_oracle. Kills recorded near it cannot be trusted." ;;
+      'NOTE|control-output|'*)
+        # Echoed to stderr as well as stdout: the CONTROL FAILED error above it
+        # is on stderr, and a reader following the failure must not have to
+        # cross streams to find out what went red.
+        IFS='|' read -r _ _ _ co_line <<< "$line"
+        fr_warn "  control output: $co_line" ;;
       'NOTE|write-failed|'*) FR_BROKEN=$(( FR_BROKEN + 1 )) ;;
       'NOTE|foreign-timeout-flag|'*)
         # Never silent. This is the event that used to arrive as an UNPROVEN
