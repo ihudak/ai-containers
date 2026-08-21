@@ -27,6 +27,15 @@ fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails+1)); }
 # left behind by sync-to-projects.sh is not documentation (see test-bash-floor.sh,
 # which learned this the hard way).
 mapfile -t PAGES < <(cd "$ENGINE_DIR" && git ls-files 'docs/*.md' 'docs/**/*.md' 'README.md' 2>/dev/null | grep -v '^docs/superpowers/')
+# When the engine is a subdirectory (mgd-ai-containers: base/), the repository
+# ROOT README is a page too — it is what GitHub shows first — and it is outside
+# $ENGINE_DIR, so the listing above cannot see it. An unchecked page is exactly
+# what this file exists to prevent; its links are relative to the root, so it is
+# checked with the root as its directory.
+ROOT_PAGES=()
+if [[ "$ENGINE_DIR" != "$REPO_DIR" ]] && [[ -f "$REPO_DIR/README.md" ]]; then
+  ROOT_PAGES=("README.md")
+fi
 if [[ "${#PAGES[@]}" -eq 0 ]]; then
   printf 'SCAFFOLD-FAILED: git ls-files listed no documentation pages under %s\n' "$ENGINE_DIR"
   exit 1
@@ -62,6 +71,18 @@ for page in "${PAGES[@]}"; do
       bad_links=$((bad_links+1))
     fi
   done < <(grep -oE '\]\([^)]+\)' "$ENGINE_DIR/$page" | sed 's/^](//; s/)$//')
+done
+for page in "${ROOT_PAGES[@]}"; do
+  while IFS= read -r target; do
+    [[ -n "$target" ]] || continue
+    case "$target" in http://*|https://*|mailto:*|/*|'#'*) continue ;; esac
+    target="${target%%#*}"
+    [[ -n "$target" ]] || continue
+    if [[ ! -e "$REPO_DIR/$target" ]]; then
+      fail "$page (repository root) links to $target, which does not exist"
+      bad_links=$((bad_links+1))
+    fi
+  done < <(grep -oE '\]\([^)]+\)' "$REPO_DIR/$page" | sed 's/^](//; s/)$//')
 done
 (( bad_links == 0 )) && pass "every relative link in the documentation resolves"
 
@@ -155,7 +176,13 @@ while IFS= read -r s; do
   # F34 — and it caught this line).
   grep -qx -- "${s#./}" <<<"$domains" && continue
   rel="${s#./}"
-  [[ -e "$ENGINE_DIR/$rel" ]] || { fail "the docs name $s, which does not exist in this repo"; missing_scripts=$((missing_scripts+1)); }
+  # Resolve against the ENGINE dir and the REPO root. They are the same upstream,
+  # but in mgd-ai-containers the engine is base/ while migrations/ and the
+  # sandbox-version scripts live at the root — so a base/docs/ page naming
+  # `migrations/005-drop-rails.sh` is correct, and checking only ENGINE_DIR
+  # reported a file that is right there.
+  [[ -e "$ENGINE_DIR/$rel" || -e "$REPO_DIR/$rel" ]] \
+    || { fail "the docs name $s, which does not exist in this repo"; missing_scripts=$((missing_scripts+1)); }
 done < <(for p in "${PAGES[@]}"; do grep -oE '`\.?/?[a-zA-Z0-9_./-]+\.sh`' "$ENGINE_DIR/$p"; done | tr -d '`' | sort -u)
 (( missing_scripts == 0 )) && pass "every repository script named in the documentation exists"
 
@@ -165,9 +192,14 @@ done < <(for p in "${PAGES[@]}"; do grep -oE '`\.?/?[a-zA-Z0-9_./-]+\.sh`' "$ENG
 unread=0
 while IFS= read -r v; do
   [[ -n "$v" ]] || continue
-  (cd "$ENGINE_DIR" && git grep -q "$v" -- '*.sh' Dockerfile 2>/dev/null) \
+  # EXCLUDE THIS FILE. It lists every variable name below, so while it sits
+  # inside $ENGINE_DIR it satisfies its own check — measured: upstream passed
+  # for $GH_TOKEN, which nothing reads, purely because this file mentions it.
+  # mgd-ai-containers put tests/ outside base/ and failed honestly, which is how
+  # it was found. A check that can be satisfied by the checker is not a check.
+  (cd "$ENGINE_DIR" && git grep -q "$v" -- '*.sh' Dockerfile ':!tests/test-docs.sh' 2>/dev/null) \
     || { fail "the docs describe \$$v, which no script or Dockerfile reads"; unread=$((unread+1)); }
-done < <(grep -ohE '\b(AI_[A-Z0-9_]+|CONTAINER_(CPUS|MEMORY)|REPOS|REPO_BACKEND|VAULT_PATH|SPECS_PATH|DOCS_PATH|EXTRA_MOUNTS|NO_CACHE|PREVIEW_PORTS|IMAGE_NAME|GITHUB_TOKEN|GH_TOKEN)\b' "${PAGES[@]/#/$ENGINE_DIR/}" | sort -u)
+done < <(grep -ohE '\b(AI_[A-Z0-9_]+|CONTAINER_(CPUS|MEMORY)|REPOS|REPO_BACKEND|VAULT_PATH|SPECS_PATH|DOCS_PATH|EXTRA_MOUNTS|NO_CACHE|PREVIEW_PORTS|IMAGE_NAME|GITHUB_TOKEN)\b' "${PAGES[@]/#/$ENGINE_DIR/}" | sort -u)
 (( unread == 0 )) && pass "every environment variable the documentation describes is read by the code"
 
 printf '\n%d failure(s)\n' "$fails"
