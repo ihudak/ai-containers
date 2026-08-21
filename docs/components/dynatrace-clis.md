@@ -18,9 +18,11 @@ dtctl=OFF       # skip entirely
 When set to `ON`, the build calls the GitHub API to find the latest release. The unauthenticated rate limit is 60 requests/hour. If you hit it:
 
 **Option 1 — set a GitHub token** (raises limit to 5000 req/h, token never stored in the image):
+From your project's `.ai-containers/` directory:
+
 ```bash
 export GITHUB_TOKEN=ghp_yourtoken
-./build.sh
+./build.sh          # or just ./runme.sh, which builds and then starts the container
 ```
 
 `./build.sh` also falls back to `GITHUB_PERSONAL_ACCESS_TOKEN` if `GITHUB_TOKEN` is unset, so if you already export the former in your shell profile (recommended — see [GitHub tokens at runtime](../security.md#github-tokens-at-runtime)) the build is authenticated automatically with no extra step.

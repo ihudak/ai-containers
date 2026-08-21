@@ -25,6 +25,7 @@ The macOS Keychain context is still relevant if you use `AI_CONTAINER_GROUP=host
 ## Corporate customization points
 
 - Edit `sandbox.conf` to enable only the components your team actually uses.
+- Edit these in **your project's** `.ai-containers/` — `custom.txt` is never synced, so the central copy does not reach an existing project.
 - Add environment-specific FQDNs (internal Git, artifact repos, MCP endpoints, search engines) to `allowlist-domains.d/custom.txt`.
 - If agent traffic must go through a corporate proxy, add wildcard patterns to `allowlist-proxy-domains.d/custom.txt` and allow only the proxy IPs in `allowlist-cidrs.d/custom.txt`.
 - The `custom.txt` files in each `*.d/` directory are **gitignored** to prevent internal hostnames and IPs from being committed. Each directory ships a `custom.txt.example` template; `./build.sh` auto-copies it to `custom.txt` on first run.

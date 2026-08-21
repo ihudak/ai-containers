@@ -22,14 +22,16 @@ Three `*.d/` directories hold the source-of-truth fragment files. `build.sh` ass
 
 **Where to put your additions:**
 
-| What you want to add | File to edit |
+> **Edit the copy in YOUR PROJECT**, at `<project>/.ai-containers/allowlist-*.d/`. This matters most for `custom.txt`, which `sync-to-projects.sh` **never touches** — that is deliberate, so a sync cannot wipe your internal hostnames, but it also means editing `custom.txt` in the central repository has no effect on any project that already exists. A change to a **component** fragment (`<component>.txt`) does sync, so make those centrally when they belong to everyone.
+
+| What you want to add | File to edit (in your project's `.ai-containers/`) |
 |----------------------|-------------|
 | A domain needed by an enabled component (e.g. a missing Copilot endpoint) | `allowlist-domains.d/<component>.txt` |
 | A domain not tied to any component (search engine, internal registry, MCP server) | `allowlist-domains.d/custom.txt` |
 | A wildcard pattern for the self-healing daemon | `allowlist-proxy-domains.d/custom.txt` |
 | A corporate proxy IP or narrow CIDR | `allowlist-cidrs.d/custom.txt` |
 
-After editing any fragment file, run `./build.sh` to regenerate the image.
+After editing any fragment file, rebuild — `./runme.sh` from the same directory does it, or `./build.sh` if you only want the image.
 
 ## Reviewing blocked traffic
 
