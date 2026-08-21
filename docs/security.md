@@ -8,7 +8,9 @@
 4. **Background daemons**: the ipset refresh loop and the blocked-traffic capture daemon are forked before the capability drop and retain their root capabilities to do their jobs.
 5. **Self-healing allowlist**: when a blocked IP maps to a domain that is already in `allowlist-domains.txt` or matches a wildcard pattern from `allowlist-proxy-domains.txt`, the daemon adds the IP to the active ipset on the fly. This cannot be exploited by the sandbox user: the internal lookup tables (DNS map, domain caches) are stored in a root-only directory (`/run/agent-blocked-internal`, mode 700) inaccessible to the sandbox shell, and `CAP_NET_RAW` is dropped so DNS responses cannot be spoofed. Set `SELF_HEALING_ENABLED=0` to disable self-healing entirely and use logging-only mode.
 
-Discovery mode runs as the sandbox user with unrestricted egress and `NET_RAW` retained (for tcpdump). It is intended for supervised traffic observation only.
+Discovery mode runs as the sandbox user with unrestricted egress, for supervised traffic observation only.
+
+> **The agent shell has no capabilities in any mode**, discovery included, and the documentation used to say otherwise. Restricted and open modes drop `cap_net_admin,cap_net_raw` explicitly; discovery names only `cap_net_admin` — but `capsh --user=` setuids away from root, and the kernel clears the permitted and effective sets on that transition unless `PR_SET_KEEPCAPS` is set, which it is not. So the two spellings are **equivalent in effect**, and the claim that discovery "keeps `NET_RAW` so the sandbox user can run tcpdump" was never true. Packet capture works because the pcap daemon is forked **as root, before** the `exec` that drops to the agent — see `entrypoint.sh`, whose own comment records this correction.
 
 ## Allowlist structure
 

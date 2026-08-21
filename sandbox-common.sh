@@ -332,7 +332,9 @@ repo_volume_name() {
 }
 
 # Docker volume name for a per-workspace writable working copy of a repo.
-#   $1 = repo name, $2 = working-copy tag (e.g. primary workspace basename)
+#   $1 = repo name, $2 = working-copy tag — the LAUNCH directory's basename plus
+#        a checksum of its full path (see ws_tag in sandbox.sh), not the primary
+#        workspace: two launches from different directories must not share a copy.
 repo_workcopy_volume_name() {
   printf '%s-repo-%s--wc-%s' "$repo_volume_prefix" "$(sanitize_volume_token "$1")" "$(sanitize_volume_token "$2")"
 }

@@ -4607,3 +4607,46 @@ way deliberately: it was seen once in five full-suite runs, and the guard turns
 the next occurrence into a named scaffold event instead of a false statement
 about the code. Whether it shares F32's root cause is unknown — the two share a
 shape, not a proven mechanism.
+
+---
+
+## F30/F32 — a fourth sighting, in CI, with a diagnosis nobody could use
+
+`mgd-ai-containers` PR #76, GitHub Actions run 32523718531, 2026-08-21. One of
+eighteen control runs failed on a diff that touched a documentation page and two
+comments — nothing the oracle reads:
+
+```
+falsify: control output: FAIL: p_md5 returned empty — comparisons using it
+                               would pass vacuously
+falsify: control output: FAIL: p_stat_meta returned empty …
+ERROR: 1 of 18 control run(s) FAILED: the PRISTINE oracle went red under this
+       run's own load
+```
+
+**The corpus measured normally in the same run** — `TOTAL|9|264|262|2|0|0|0`,
+identical to a local run on the same commit — and a re-run of the same job
+passed in 6m52s. So: intermittent, load-dependent, and the control machinery did
+exactly its job, refusing to trust a kill count it could not vouch for.
+
+**A NEW SHAPE.** Every earlier sighting was a missing file reported as
+`No such file or directory`. This one is two portability helpers returning
+EMPTY, which is a different symptom of possibly the same cause — and the report
+could not say which, because both helpers hide their own failure:
+
+* `p_md5` and `p_sha1` are PIPELINES — `md5sum "$1" | cut -d' ' -f1`. A failing
+  `md5sum` still leaves `cut` succeeding with empty output. No error, anywhere.
+* `p_stat_meta` writes to stderr and leaves stdout empty.
+
+Both went empty in the same instant, which *suggests* the scratch file was gone
+— F32's trigger — but nothing in the output distinguishes that from "the tool
+failed on a file that is right there". Fixed the way the scaffold guards were:
+`tests/test-portability.sh` now prints whether the file exists, its size, and
+the helper's own stderr, so the next occurrence separates the two.
+
+**Also worth recording: the same run showed what a red oracle COSTS the tier.**
+While `tests/test-integration-shim.sh` was red for an unrelated reason (a stale
+pinned line number), its target was SKIPPED, and the corpus reported
+`TOTAL|9|235|233|2|0|0|0` with `CONTROLS|16|0` — 29 fewer mutants and two fewer
+controls, with no failure of its own. `SKIPPED|` lines say so (F54), but a
+reader watching only `TOTAL` sees a green run that measured 11% less.

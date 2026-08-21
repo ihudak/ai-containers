@@ -1,6 +1,6 @@
 # vale — prose / style linter
 
-`vale` is a markup-aware linter for prose ([vale.sh](https://vale.sh)). It is commonly run as a "style check" phase in documentation workflows; without it installed, that phase is skipped with a warning. It is a single self-contained Go binary (no extra dependencies), installed from GitHub releases (`vale-cli/vale`) at build time.
+`vale` is a markup-aware linter for prose ([vale.sh](https://vale.sh)). It is commonly run as a "style check" phase in documentation workflows; without it installed, that phase is skipped with a warning. It is a single self-contained Go binary (no extra dependencies), installed from GitHub releases (`vale-cli/vale`) — at **container start**, not at build time. See the note below.
 
 ```bash
 vale=ON    # install the latest Vale binary from GitHub releases

@@ -289,6 +289,23 @@ split_env_list() {  # $1=raw value (e.g. "$REPOS", "$EXTRA_MOUNTS", "$PREVIEW_PO
   done
 }
 
+# Compare two git URLs for "same repository" without pretending to be a URL
+# parser: drop the scheme, any user@, a trailing .git and a trailing slash, fold
+# scp-form host:path to host/path, and lowercase. ssh://git@h/t/x.git,
+# git@h:t/x and https://h/t/X all reduce to h/t/x.
+normalise_git_url() {
+  local u="$1"
+  u="${u%.git}"; u="${u%/}"
+  u="${u#ssh://}"; u="${u#git+ssh://}"; u="${u#https://}"; u="${u#http://}"; u="${u#git://}"
+  u="${u#*@}"
+  # scp form is host:path — a colon NOT followed by a port number
+  case "$u" in
+    *:[0-9]*) : ;;
+    *:*)      u="${u%%:*}/${u#*:}" ;;
+  esac
+  printf '%s' "$u" | tr 'A-Z' 'a-z'
+}
+
 # Is this host directory already mounted in this container under some name?
 #
 # A host pointer — VAULT_PATH, SPECS_PATH, DOCS_PATH — names a directory. That
@@ -317,13 +334,38 @@ split_env_list() {  # $1=raw value (e.g. "$REPOS", "$EXTRA_MOUNTS", "$PREVIEW_PO
 # $1 = resolved host directory. Echoes the repo name and returns 0 when found.
 pointer_already_mounted_as() {
   local want="$1" name
-  (( ${#repo_source_real[@]} )) || return 1
-  for name in "${!repo_source_real[@]}"; do
-    if [[ "${repo_source_real[$name]}" == "$want" ]]; then
-      printf '%s' "$name"
-      return 0
-    fi
-  done
+  # 1. The same DIRECTORY, for a path-sourced repo. Exact identity.
+  if (( ${#repo_source_real[@]} )); then
+    for name in "${!repo_source_real[@]}"; do
+      if [[ "${repo_source_real[$name]}" == "$want" ]]; then
+        printf '%s' "$name"
+        return 0
+      fi
+    done
+  fi
+  # 2. The same REPOSITORY, for a git-sourced repo. The registry holds the URL
+  # it was cloned from and there is no host directory to compare, so ask the
+  # pointer's own checkout what it came from. This is the case a user hits when
+  # the project they work in was seeded with `repo.sh add <name> <git-url>` —
+  # reported 2026-08-21, where DOCS_PATH and the repo were the same repository
+  # and the launcher could not tell.
+  #
+  # "Same upstream" is a weaker claim than "same directory", and deliberately
+  # enough: what the caller needs to decide is whether mounting again would be a
+  # DUPLICATE, and two checkouts of one repository at /workspace/docs and
+  # /workspace/docs is exactly that. A second checkout you genuinely want beside
+  # the first belongs in REPOS or EXTRA_MOUNTS under its own name.
+  local want_url
+  want_url="$(git -C "$want" remote get-url origin 2>/dev/null || true)"
+  if [[ -n "$want_url" ]] && (( ${#repo_source_url[@]} )); then
+    want_url="$(normalise_git_url "$want_url")"
+    for name in "${!repo_source_url[@]}"; do
+      if [[ "${repo_source_url[$name]}" == "$want_url" ]]; then
+        printf '%s' "$name"
+        return 0
+      fi
+    done
+  fi
   return 1
 }
 
@@ -366,6 +408,9 @@ run_container() {
   # ALREADY mounted under some repo name must re-point at that mount rather than
   # mount it twice or refuse to start — see pointer_already_mounted_as below.
   local -A repo_source_real=()
+  # Same, for GIT-sourced repos: the registry holds a URL, so identity is proven
+  # by comparing the pointer directory's own `origin` against it.
+  local -A repo_source_url=()
 
   # ── Primary working directory (positional arg) ──────────────────────────────
   #   @name     → registered repo <name> becomes the working dir (must be writable)
@@ -509,6 +554,8 @@ run_container() {
       # path is the same checkout.
       if [[ "$(repo_record_field "$rrecord" 2)" == "path" ]]; then
         repo_source_real["$rname"]="$(resolve_path "${rsource/#\~/$HOME}")"
+      else
+        repo_source_url["$rname"]="$(normalise_git_url "$rsource")"
       fi
 
       if [[ "$rbackend" == "bind" ]]; then

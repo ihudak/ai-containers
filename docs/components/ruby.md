@@ -17,7 +17,8 @@ so state is shared by every project that uses that group and survives
 container restarts and rebuilds.
 
 Unlike the agent dotfile dirs, `~/.rvm` is backed by a **Docker named volume**
-(`ai-containers-rvm-<group>`), not a host bind mount, on every platform. It has
+(`ai-containers-rvm-<group>`, or `$REPO_VOLUME_PREFIX-rvm-<group>` if you set
+that), not a host bind mount, on every platform. It has
 to be: rvm bootstraps by extracting its release tarball, and GNU tar defers
 symlinks whose target contains `..` by first writing a mode-000 placeholder
 file — an operation macOS virtiofs (Colima, Docker Desktop) cannot service. tar
@@ -64,7 +65,7 @@ version that isn't there, sets the default to the first version that *did*
 install (or none, if all failed).
 
 **Non-interactive Ruby.** After the reconcile, the default Ruby's executables
-(`ruby`, `gem`, `bundle`, `bundler`, `rake`, `irb`) are symlinked onto
+(`ruby`, `gem`, `bundle`, `bundler`, `rake`, `irb`, `erb`) are symlinked onto
 `/usr/local/bin` so they resolve in **non-interactive, non-login** shells too —
 e.g. `docker exec -T <container> bash -c "bin/rails runner …"`, which would
 otherwise get `command not found` (login and interactive shells pick up rvm via
@@ -94,7 +95,25 @@ per public IP and every container behind one NAT shares that budget. rvm is
 then downloaded from GitHub over hosts `base.txt` already covers
 (`github.com`, `codeload.github.com`, `release-assets.githubusercontent.com`)
 and its signature verified against the rvm signing keys pre-seeded into
-`/etc/skel/.gnupg` at build time, so no keyserver fetch happens at run time.
+`/etc/skel/.gnupg` at build time.
+
+That seeding covers the usual case but not every case, which is why
+`keyserver.ubuntu.com` is allowlisted rather than left out. `entrypoint.sh`
+populates a new home with `cp -rn /etc/skel/.` — **no-clobber** — so a group
+whose home already carries its own `~/.gnupg` keyring keeps it, and never
+receives the rvm keys. The `host` group is the concrete case: its whole contract
+is to mount your real `$HOME`, which usually has a keyring already. There the
+installer falls back to fetching the keys, and the allowlist entry is what lets
+it.
+
+rvm also HEAD-probes all three of its prebuilt-binary mirrors on **every**
+`rvm install`, whichever Ruby you asked for, so those are allowlisted too:
+`rvm-io.global.ssl.fastly.net`, `rubies.travis-ci.org`, and — surprisingly —
+`repo1.maven.org`, which is Maven Central, where JRuby is published. Installing
+CRuby 3.4.5 still issues a HEAD for
+`repo1.maven.org/maven2/org/jruby/jruby-dist/ruby-3.4.5.tar.bz2`. See
+`allowlist-domains.d/rvm.txt`, which keeps the list in sync by rvm's config
+field names.
 
 > **The `rails` key has been removed.** Rails is an ordinary per-project gem
 > installed with `bundle install`/`gem install`, like any other — it never
