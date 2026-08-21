@@ -133,9 +133,11 @@ Environment variables:
                       volume (mounted at /workspace/<name> instead).
   DOCS_PATH           Host product-documentation repo mounted READ-ONLY at /workspace/docs (also
                       re-exported as DOCS_PATH=/workspace/docs). Accepts @<name> (→ /workspace/<name>)
-                      and a :ro/:rw suffix (default :ro). When the docs repo is the working dir,
-                      DOCS_PATH re-points to that writable mount. To edit docs, use :rw or mount
-                      the repo as the working dir.
+                      and a :ro/:rw suffix (default :ro). If that same directory is ALREADY
+                      mounted — as the working dir, or as a repo in REPOS — DOCS_PATH re-points
+                      at that mount instead of mounting it again, and inherits its mode. So a
+                      DOCS_PATH exported once on the host does not collide with the project that
+                      happens to BE the docs repo. To edit docs otherwise, use :rw.
   SANDBOX_ENV_FILE    Path to a KEY=VALUE env-file injected into the container
                       (default: <script_dir>/container.env if present). For
                       in-container app env (DB_HOST, REDIS_URL, ...). Not for secrets.
@@ -287,6 +289,44 @@ split_env_list() {  # $1=raw value (e.g. "$REPOS", "$EXTRA_MOUNTS", "$PREVIEW_PO
   done
 }
 
+# Is this host directory already mounted in this container under some name?
+#
+# A host pointer — VAULT_PATH, SPECS_PATH, DOCS_PATH — names a directory. That
+# same directory may already be attached as the primary workspace, or as a repo
+# volume listed in REPOS. When it is, mounting it a second time is at best a
+# duplicate and at worst a refusal to start: the name each pointer wants
+# (/workspace/docs) can already be taken by the repo of the same name.
+#
+# Reported 2026-08-21 by a user whose DOCS_PATH is exported once on the host for
+# every project, and whose docs project is itself attached as repo `docs`:
+#
+#   REPO: /workspace/docs  (rw, shared base volume ai-containers-repo-docs)
+#   ERROR: name 'docs' is used by REPOS, but DOCS_PATH also mounts at /workspace/docs.
+#
+# Nothing was wrong with that setup. The pointer and the repo were the same
+# checkout, and the only remedies were to unset a global variable for one
+# project or to rename the repo. Now the pointer re-points at the mount that is
+# already there — the same accommodation the primary-path case has always had
+# (see the DOCS_PATH block), extended to repo volumes.
+#
+# Identity is PROVEN, never guessed: only a path-sourced repo has a host
+# directory to compare, and both sides are resolved with resolve_path first. A
+# git-sourced repo records a URL, so a host path cannot be shown to be the same
+# checkout and the caller keeps its collision error.
+#
+# $1 = resolved host directory. Echoes the repo name and returns 0 when found.
+pointer_already_mounted_as() {
+  local want="$1" name
+  (( ${#repo_source_real[@]} )) || return 1
+  for name in "${!repo_source_real[@]}"; do
+    if [[ "${repo_source_real[$name]}" == "$want" ]]; then
+      printf '%s' "$name"
+      return 0
+    fi
+  done
+  return 1
+}
+
 run_container() {
   check_config
   local mode="$1"
@@ -321,6 +361,11 @@ run_container() {
   # Names already claimed under the /workspace umbrella (collision detection).
   local -A repos_used=()
   local -A repo_mode=()
+  # Resolved host source of each mounted PATH-backed repo, keyed by repo name.
+  # A host pointer (VAULT_PATH/SPECS_PATH/DOCS_PATH) naming a directory that is
+  # ALREADY mounted under some repo name must re-point at that mount rather than
+  # mount it twice or refuse to start — see pointer_already_mounted_as below.
+  local -A repo_source_real=()
 
   # ── Primary working directory (positional arg) ──────────────────────────────
   #   @name     → registered repo <name> becomes the working dir (must be writable)
@@ -459,6 +504,12 @@ run_container() {
       rrecord="$(repo_registry_lookup "$rname")"
       rsource="$(repo_record_field "$rrecord" 3)"
       rbackend="$(repo_record_backend "$rrecord")"
+      # Only a path-sourced repo has a host directory to compare against; a
+      # git-sourced one records a URL, and nothing here can prove that a host
+      # path is the same checkout.
+      if [[ "$(repo_record_field "$rrecord" 2)" == "path" ]]; then
+        repo_source_real["$rname"]="$(resolve_path "${rsource/#\~/$HOME}")"
+      fi
 
       if [[ "$rbackend" == "bind" ]]; then
         # Linux + path source: bind-mount the registered host path directly
@@ -534,13 +585,19 @@ run_container() {
     local vault_real
     vault_real="$(resolve_path "${VAULT_PATH/#\~/$HOME}")"
     if [[ -d "$vault_real" ]]; then
-      if [[ -n "${repos_used[vault]:-}" ]]; then
+      local vault_at
+      if vault_at="$(pointer_already_mounted_as "$vault_real")"; then
+        vault_env_args+=(-e "VAULT_PATH=/workspace/$vault_at")
+        qmd_corpora+=("VAULT_PATH")
+      elif [[ -n "${repos_used[vault]:-}" ]]; then
         printf "ERROR: name 'vault' is used by %s, but VAULT_PATH also mounts at /workspace/vault.\n" "${repos_used[vault]}" >&2
+        printf "       They are different directories; rename the repo or point VAULT_PATH elsewhere.\n" >&2
         exit 1
+      else
+        vault_mount_flags+=(-v "$vault_real:/workspace/vault:rw")
+        vault_env_args+=(-e VAULT_PATH=/workspace/vault)
+        qmd_corpora+=("VAULT_PATH")
       fi
-      vault_mount_flags+=(-v "$vault_real:/workspace/vault:rw")
-      vault_env_args+=(-e VAULT_PATH=/workspace/vault)
-      qmd_corpora+=("VAULT_PATH")
     else
       printf 'WARNING: VAULT_PATH is set but directory does not exist: %s\n' "$VAULT_PATH" >&2
     fi
@@ -558,13 +615,22 @@ run_container() {
       local specs_real
       specs_real="$(resolve_path "${specs_src/#\~/$HOME}")"
       if [[ -d "$specs_real" ]]; then
-        if [[ -n "${repos_used[specs]:-}" ]]; then
+        local specs_at
+        if [[ -n "$primary_path" && "$specs_real" == "$primary_path" ]]; then
+          specs_env_args+=(-e "SPECS_PATH=$workdir")
+          qmd_corpora+=("SPECS_PATH")
+        elif specs_at="$(pointer_already_mounted_as "$specs_real")"; then
+          specs_env_args+=(-e "SPECS_PATH=/workspace/$specs_at")
+          qmd_corpora+=("SPECS_PATH")
+        elif [[ -n "${repos_used[specs]:-}" ]]; then
           printf "ERROR: name 'specs' is used by %s, but SPECS_PATH also mounts at /workspace/specs.\n" "${repos_used[specs]}" >&2
+          printf "       They are different directories; rename the repo or point SPECS_PATH elsewhere.\n" >&2
           exit 1
+        else
+          specs_mount_flags+=(-v "$specs_real:/workspace/specs:rw")
+          specs_env_args+=(-e SPECS_PATH=/workspace/specs)
+          qmd_corpora+=("SPECS_PATH")
         fi
-        specs_mount_flags+=(-v "$specs_real:/workspace/specs:rw")
-        specs_env_args+=(-e SPECS_PATH=/workspace/specs)
-        qmd_corpora+=("SPECS_PATH")
       else
         printf 'WARNING: SPECS_PATH is set but directory does not exist: %s\n' "$specs_src" >&2
       fi
@@ -588,13 +654,24 @@ run_container() {
         docs_env_args+=(-e "DOCS_PATH=$workdir")
         qmd_corpora+=("DOCS_PATH")
       elif [[ -d "$docs_real" ]]; then
-        if [[ -n "${repos_used[docs]:-}" ]]; then
+        local docs_at
+        if docs_at="$(pointer_already_mounted_as "$docs_real")"; then
+          # Same checkout, already attached as a repo. Re-point at that mount —
+          # and note its mode wins: attached :rw, the docs are writable, which is
+          # correct when that repo IS what you are working in. The :ro default
+          # applies to a docs repo mounted BY this pointer, not to one you have
+          # deliberately attached for editing.
+          docs_env_args+=(-e "DOCS_PATH=/workspace/$docs_at")
+          qmd_corpora+=("DOCS_PATH")
+        elif [[ -n "${repos_used[docs]:-}" ]]; then
           printf "ERROR: name 'docs' is used by %s, but DOCS_PATH also mounts at /workspace/docs.\n" "${repos_used[docs]}" >&2
+          printf "       They are different directories; rename the repo or point DOCS_PATH elsewhere.\n" >&2
           exit 1
+        else
+          docs_mount_flags+=(-v "$docs_real:/workspace/docs:$docs_mode")
+          docs_env_args+=(-e DOCS_PATH=/workspace/docs)
+          qmd_corpora+=("DOCS_PATH")
         fi
-        docs_mount_flags+=(-v "$docs_real:/workspace/docs:$docs_mode")
-        docs_env_args+=(-e DOCS_PATH=/workspace/docs)
-        qmd_corpora+=("DOCS_PATH")
       else
         printf 'WARNING: DOCS_PATH is set but directory does not exist: %s\n' "$docs_src" >&2
       fi

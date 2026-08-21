@@ -27,7 +27,7 @@ DOCKER
   chmod +x "$TMP/bin/docker"
   export PATH="$TMP/bin:$PATH"
 }
-teardown() { rm -rf "$TMP"; unset DOCS_PATH VAULT_PATH SPECS_PATH EXTRA_MOUNTS SANDBOX_CONF; }
+teardown() { rm -rf "$TMP"; unset DOCS_PATH VAULT_PATH SPECS_PATH EXTRA_MOUNTS SANDBOX_CONF REPOS; }
 
 # run sandbox.sh restricted <primary>; sets RC and writes stderr to $ERR.
 run_sandbox() {
@@ -155,6 +155,84 @@ export DOCS_PATH="$TMP/mydocs:rw"
 run_sandbox "$TMP/app"
 if grep -q ":/workspace/docs:rw" "$CAPTURE" && grep -qx "DOCS_PATH=/workspace/docs" "$CAPTURE"; then
   pass "DOCS_PATH=path:rw → /workspace/docs rw"; else fail "DOCS_PATH=path:rw → /workspace/docs rw"; fi
+teardown
+
+# ── The pointer names a directory that is ALREADY mounted ─────────────────────
+#
+# Reported 2026-08-21: DOCS_PATH exported once on the host for every project,
+# and the docs project itself attached as repo `docs`. Both wanted
+# /workspace/docs, so the container refused to start:
+#
+#   ERROR: name 'docs' is used by REPOS, but DOCS_PATH also mounts at /workspace/docs.
+#
+# Nothing was wrong with the setup. The pointer and the repo were the same
+# checkout, and the only remedies were to unset a global variable for one
+# project or rename the repo.
+
+# Case 11: DOCS_PATH is the SAME checkout as a repo attached under the name
+# 'docs' → re-point, do not mount twice, do not refuse.
+setup
+mkdir -p "$TMP/docsrepo" "$TMP/app"
+register_repo docs "$TMP/docsrepo"
+export DOCS_PATH="$TMP/docsrepo" REPOS="docs:rw"
+run_sandbox "$TMP/app"
+if [[ "$RC" -eq 0 ]] && grep -qx "DOCS_PATH=/workspace/docs" "$CAPTURE" \
+   && [[ "$(grep -c "$TMP/docsrepo:" "$CAPTURE")" -eq 1 ]]; then
+  pass "DOCS_PATH == repo 'docs' → re-points, single mount, starts"
+else
+  fail "DOCS_PATH == repo 'docs' → re-points, single mount, starts (rc=$RC)"
+fi
+teardown
+
+# Case 12: same checkout, but the repo is attached under a DIFFERENT name → the
+# pointer follows it there. The name 'docs' is free; mounting again would still
+# be a duplicate of the same directory.
+setup
+mkdir -p "$TMP/docsrepo" "$TMP/app"
+register_repo mydocs "$TMP/docsrepo"
+export DOCS_PATH="$TMP/docsrepo" REPOS="mydocs:ro"
+run_sandbox "$TMP/app"
+if [[ "$RC" -eq 0 ]] && grep -qx "DOCS_PATH=/workspace/mydocs" "$CAPTURE" \
+   && [[ "$(grep -c "$TMP/docsrepo:" "$CAPTURE")" -eq 1 ]]; then
+  pass "DOCS_PATH == repo under another name → follows it"
+else
+  fail "DOCS_PATH == repo under another name → follows it (rc=$RC)"
+fi
+teardown
+
+# Case 13: THE REGRESSION GUARD. A DIFFERENT directory, with the name 'docs'
+# already taken, must still be refused — the fix must not turn a real collision
+# into a silent wrong mount.
+setup
+mkdir -p "$TMP/docsrepo" "$TMP/otherdocs" "$TMP/app"
+register_repo docs "$TMP/docsrepo"
+export DOCS_PATH="$TMP/otherdocs" REPOS="docs:rw"
+run_sandbox "$TMP/app"
+if [[ "$RC" -ne 0 ]] && grep -q "name 'docs' is used by" "$ERR"; then
+  pass "a DIFFERENT directory colliding on 'docs' is still refused"
+else
+  fail "a DIFFERENT directory colliding on 'docs' is still refused (rc=$RC)"
+fi
+teardown
+
+# Case 14: the same accommodation for SPECS_PATH.
+setup
+mkdir -p "$TMP/specsrepo" "$TMP/app"
+register_repo specs "$TMP/specsrepo"
+export SPECS_PATH="$TMP/specsrepo" REPOS="specs:rw"
+run_sandbox "$TMP/app"
+if [[ "$RC" -eq 0 ]] && grep -qx "SPECS_PATH=/workspace/specs" "$CAPTURE"; then
+  pass "SPECS_PATH == repo 'specs' → re-points"; else fail "SPECS_PATH == repo 'specs' → re-points (rc=$RC)"; fi
+teardown
+
+# Case 15: and for VAULT_PATH.
+setup
+mkdir -p "$TMP/vaultrepo" "$TMP/app"
+register_repo vault "$TMP/vaultrepo"
+export VAULT_PATH="$TMP/vaultrepo" REPOS="vault:rw"
+run_sandbox "$TMP/app"
+if [[ "$RC" -eq 0 ]] && grep -qx "VAULT_PATH=/workspace/vault" "$CAPTURE"; then
+  pass "VAULT_PATH == repo 'vault' → re-points"; else fail "VAULT_PATH == repo 'vault' → re-points (rc=$RC)"; fi
 teardown
 
 printf '\n%d failure(s)\n' "$fails"
