@@ -247,8 +247,20 @@ build_args_from_config() {
   ver="$(version_list db-clients)"; _args+=(--build-arg "DB_CLIENTS=$(versions_to_space "$ver")")
 
   # Retain a runtime build toolchain so native extensions compile at runtime.
-  # Needed whenever Ruby is present or a DB driver will be built.
-  if has_versions ruby || has_versions db-clients; then
+  # Needed whenever Ruby is present or a DB driver will be built — and now also
+  # on request, because until `c-toolchain` existed there was no way to ASK for
+  # a C compiler: it arrived only as a side effect of enabling Ruby or a DB
+  # client, so a Go developer wanting `go test -race` (cgo, hence gcc) had to
+  # switch on an unrelated language runtime to get one. Reported from a real
+  # session on the dtmgd Go CLI, where the fallback was relocating 31 arm64
+  # .debs by hand and wrapping gcc with -B and LD_LIBRARY_PATH to make a
+  # displaced cc1 find its own support objects.
+  #
+  # DELIBERATELY NOT IMPLIED BY `go`. Go only needs a C compiler for cgo, which
+  # most builds never touch; wiring it to the language key would grow every Go
+  # image for a capability most of them never use. It is opt-in for the same
+  # reason db-clients is.
+  if has_versions ruby || has_versions db-clients || is_enabled c-toolchain; then
     _args+=(--build-arg "KEEP_BUILD_TOOLCHAIN=1")
   else
     _args+=(--build-arg "KEEP_BUILD_TOOLCHAIN=0")

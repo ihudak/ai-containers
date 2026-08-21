@@ -20,7 +20,30 @@ A CLI-only Docker workspace for running AI coding agents (GitHub Copilot CLI, Ki
 
 `sandbox.conf` is the single source of truth for which optional components are included. Set a component to `ON` or `OFF` and rebuild. The format is strictly `component=ON` or `component=OFF`, one per line; comments start with `#`.
 
-Optional components: `copilot`, `kiro`, `claude-code`, `codex`, `gemini`, `graphify`, `openjdk`, `graalvm-ce`, `graalvm-oracle`, `kotlin`, `scala`, `maven`, `gradle`, `kubectl`, `aws-cli`, `azure-cli`, `github-cli`, `angular-cli`, `yarn`, `pnpm`, `bun`, `goreleaser`, `vale`, `qmd`, `dtctl`, `dtmgd`, `imagemagick`, `wkhtmltopdf`.
+Optional components: `copilot`, `kiro`, `claude-code`, `codex`, `gemini`, `graphify`, `openjdk`, `graalvm-ce`, `graalvm-oracle`, `kotlin`, `scala`, `maven`, `gradle`, `kubectl`, `aws-cli`, `azure-cli`, `github-cli`, `angular-cli`, `yarn`, `pnpm`, `bun`, `goreleaser`, `vale`, `qmd`, `dtctl`, `dtmgd`, `imagemagick`, `wkhtmltopdf`, `c-toolchain`.
+
+**`c-toolchain=ON`** keeps a C compiler in the finished image — `build-essential`
+(gcc, g++, make, binutils, `libc6-dev`) plus `libyaml-dev zlib1g-dev libssl-dev`,
+the same layer `ruby` and `db-clients` already rely on. Without it the Dockerfile
+purges `build-essential` at the end of the build, because most images never need
+a compiler at runtime.
+
+Turn it on when something compiles **inside** the container: `go test -race` (the
+race detector needs cgo, which needs gcc), `cgo` builds generally, a `pip install`
+of a source-only wheel, or `node-gyp`. It is **not** implied by `go=` — most Go
+builds never touch cgo, and wiring it to the language key would grow every Go
+image for a capability few of them use. It is opt-in for the same reason
+`db-clients` is.
+
+Before this key existed there was no way to *ask* for a compiler: one arrived
+only as a side effect of `ruby=` or `db-clients=`, so the choice was enabling an
+unrelated language runtime or working around it. One session did the latter —
+relocating 31 architecture-specific `.deb`s into `~/.local`, then wrapping `gcc`
+with `-B` flags so a displaced `cc1` could find its own support objects and
+`LD_LIBRARY_PATH` so `cc1` could find `libisl`/`libmpc`/`libmpfr`. `c-toolchain=ON`
+plus a rebuild replaces all of it. (Go tools installed with `go install`, such as
+`golangci-lint` or `govulncheck`, are a separate matter — they need no C compiler
+and are not covered by this key.)
 
 Version-list components (`node`, `python`, `ruby`, `rust`, `go`) accept comma-separated version values instead of `ON`/`OFF` (e.g., `node=22,20`). Constraints:
 - `angular-cli` accepts only a **single version** (not a comma-separated list).
