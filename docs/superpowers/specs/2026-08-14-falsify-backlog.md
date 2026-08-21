@@ -1457,7 +1457,7 @@ only test in the suite globbing a shared directory.
 
 ---
 
-## F30 — a KILL is only trustworthy if the oracle would have passed under the same load
+## F30 — a KILL is only trustworthy if the oracle would have passed under the same load — **DETECTION LANDED 2026-08-21, entry still open**
 
 `tests/falsify/run.sh` scores a mutant KILLED when the oracle exits non-zero or
 prints a `FAIL:` line, and a `timeout` that *also* carried a `FAIL:` line is
@@ -1869,7 +1869,7 @@ The 44–57 s under load is a ~6× slowdown, not 150×.
 
 ---
 
-## F32 — three load-sensitive oracles, and the tier reads slowness as coverage
+## F32 — three load-sensitive oracles, and the tier reads slowness as coverage — **DETECTION LANDED 2026-08-21 (see F30), entry still open**
 
 Distinct from F31 and unfixed. Three separate oracles have now been observed
 failing or timing out purely under concurrent load, on trees that are green when
@@ -3806,3 +3806,82 @@ correct but is, by design, about wall-clock.
 **Next step is capture, not theory:** run `tests/run-all.sh` with its output
 retained rather than tailed, and keep the log of any failing run. One captured
 `FAIL:` line settles this; nothing else will.
+
+---
+
+## F30 / F32 — 2026-08-21: control runs, and what they do and do not settle
+
+**Candidate fix 1 is built.** F30 listed three, in order, and said of the first
+that it "is the only proposal here that would have caught the measured case,
+because it asks the right question — *is this oracle green under these
+conditions?* — instead of guessing at a proxy for it." That is what landed.
+
+`fr_run_control` runs the **unmutated** tree through a real worker slot,
+interleaved among the mutants at positions computed from each target's own
+count, so the controls sample the run early, in the middle and late rather than
+clustering where the machine happens to be quiet. Two per target by default;
+`--controls N` / `FALSIFY_CONTROLS`, `0` disables.
+
+```
+CONTROL|<PASS|FAIL>|<target>|<oracle>|<n>|<signal>|<ms>
+CONTROLS|<total>|<failed>
+```
+
+`CONTROLS` is emitted **always**, like `ASSERTLESS` and `UNATTEMPTED`, and its
+first field is the total: *"no controls ran"* and *"controls ran and passed"* are
+different claims and must not read the same. A failed control names itself on
+stderr at the moment it happens and fails the run.
+
+**Why a control and not a re-verify.** F30's own measurement ruled out the
+obvious remedy: the contaminated oracle failed with signal `exit+failline` at
+**2.5 seconds**, no timeout involved. Scoping a re-verify to timed-out kills
+would have missed it entirely. Slowness is a symptom of the load, not the vector.
+
+**Cost, measured:** 18 controls over the 9-target corpus, wall time **74s against
+73s** without them. They fill slots that were idle at each target's tail, so the
+detection is very nearly free. That is the argument for a non-zero default.
+
+**Demonstrated by removing the dispatch**, which is the pre-F30 tier. The fixture
+is an oracle that counts its own invocations and goes red from the Nth, so at
+`--jobs 1` the ordering is fixed and the BASELINE passes while the CONTROL fails
+— precisely the case F32 says the per-target baseline cannot see. With the
+dispatch removed:
+
+```
+FAIL:   … and the run FAILS rather than reporting a clean corpus (expected '1', got '0')
+PASS:   … while the mutants after it were indeed scored KILLED, which is the harm
+```
+
+Same contaminated corpus, same false kills, reported clean and exiting 0. That
+pair is the whole finding.
+
+**What this does NOT do, stated plainly.**
+
+* It does not identify **which** kills are contaminated. A failed control says
+  the run's kills cannot be trusted; F30's fix 2 (re-verify every kill in a run
+  whose control failed) is deliberately not built, because it is only worth
+  building once there is a run that trips this in the wild.
+* It does not make a contaminated run **safe**. It makes it **loud**, which is
+  the difference between a gap that is invisible and one that is reported.
+* It cannot catch contamination that lands entirely between two controls. Two
+  per target is a sampling rate, not a proof, and raising it trades wall time
+  for resolution.
+
+**F32's remaining items are unchanged in kind.** Its listed options were
+"re-check the baseline mid-target", "scale `--timeout` from a measured
+per-oracle baseline", and "cap concurrency below `nproc`". The first is now
+built; the third exists as `--jobs auto` reading the cgroup quota (F38). The
+second is not built and should stay unbuilt until a control failure demands it —
+F32's own history is that **two of its four cases turned out to be specific
+defects rather than a need for more time** (F34's `grep -q` pipeline, F35's OOM
+kill), and the entry's standing advice is to look for a mechanism before
+reaching for `--timeout`.
+
+**STILL OPEN, and needing one host run.** F30 records that the macOS reading
+which surfaced it came from a tree whose exact commit is not known, so whether
+it already carried the `/tmp` fix is unresolved — and if it did, there is a
+second contamination path nobody has identified. The entry names the experiment:
+re-run Phase 6 on current `main` and check whether
+`tools-lib.sh:return-flip:f128fd8d` still appears in the obsolete-amnesty list.
+With controls in place that run now also answers a second question it could not
+before: whether a real 18-way macOS run trips a control at all.
