@@ -38,6 +38,23 @@ printf '%s\n' "$@" > "$REC"
 EOF
 chmod +x "$TMP/bin/realdocker"
 ln -sf "$SHIM" "$TMP/bin/docker"
+# CHECKED, AND CHECKED THROUGH THE SYMLINK. `-e` on a dangling link is false, so
+# this catches both "the link was never made" and "its target is gone" — and the
+# target is $SHIM in the repo under test, not a file this test owns.
+#
+# Without it, a scaffolding LOSS reads as ten assertion FAILURES about the shim's
+# behaviour. Measured on macOS, 2026-08-21: a falsify CONTROL run reported every
+# one of this file's cases failing, and the only line that said why was
+# "rc=127, out=env: …/bin/docker: No such file or directory". SCAFFOLD-FAILED: is
+# the channel for that — tests/run-all.sh reports it as "could not set itself
+# up", and tests/falsify/run.sh scores such a mutant UNPROVEN rather than
+# KILLED, so a scaffold that evaporates under load stops manufacturing false
+# kills (backlog F31, F30).
+if [[ ! -e "$TMP/bin/docker" || ! -x "$TMP/bin/docker" ]]; then
+  printf 'SCAFFOLD-FAILED: %s does not resolve to an executable (symlink to %s)\n' \
+    "$TMP/bin/docker" "$SHIM"
+  exit 1
+fi
 
 export REC="$TMP/recorded.txt"
 export IT_REAL_DOCKER="$TMP/bin/realdocker"
@@ -45,7 +62,29 @@ export IT_LABEL="ai-containers.it-run=unit"
 export IT_LAUNCH_NAME="it-launch-unit"
 
 # argv joined with | so a rewrite that merges or splits arguments is visible.
-shim() { : > "$REC"; "$TMP/bin/docker" "$@" >/dev/null 2>&1; tr '\n' '|' < "$REC"; }
+# Re-checked on EVERY call, not only at setup: the loss observed on macOS
+# happened PARTWAY THROUGH the file — the first four cases passed and every
+# later one failed — so a one-time check at the top would have let the run
+# continue and report the rest as assertion failures.
+#
+# ON STDERR, and that is not a detail. `shim` is called inside `$( … )`, so
+# stdout is CAPTURED as the value being asserted on and an `exit` there leaves
+# only the subshell. stderr escapes both: run-all.sh merges it into the per-test
+# log (`2>&1`) and checks `^SCAFFOLD-FAILED:` BEFORE the generic failure branch,
+# deliberately, so the channel wins over "true-but-irrelevant" assertion noise.
+# tests/falsify/run.sh's falsify_has_scaffold_failure reads the same merged
+# stream. Written to stdout instead, this line is swallowed by the command
+# substitution and nothing sees it — measured, in the first draft of this guard.
+shim_scaffold_ok() {
+  [[ -e "$TMP/bin/docker" && -x "$TMP/bin/docker" ]] && return 0
+  printf 'SCAFFOLD-FAILED: %s does not resolve to an executable mid-run (symlink to %s)\n' \
+    "$TMP/bin/docker" "$SHIM" >&2
+  return 1
+}
+shim() {
+  shim_scaffold_ok || { exit 1; }
+  : > "$REC"; "$TMP/bin/docker" "$@" >/dev/null 2>&1; tr '\n' '|' < "$REC"
+}
 
 # ── The container under test: -it → -d -i, plus name and label ─────────────────
 check "main run: -it becomes -d -i, name and label injected" \
@@ -90,6 +129,10 @@ check "inspect is passed through untouched" \
   "$(shim volume inspect v)"
 
 # ── Refusals ───────────────────────────────────────────────────────────────────
+# These call $TMP/bin/docker DIRECTLY rather than through shim(), so they need
+# the guard in their own right — and here it runs in the OUTER shell, where the
+# exit actually stops the file instead of just a substitution.
+shim_scaffold_ok || exit 1
 # A shim that silently did nothing when misconfigured would run the case against
 # an un-renamed, foreground container — i.e. hang, then time out.
 out="$(env -u IT_REAL_DOCKER "$TMP/bin/docker" run -it img 2>&1)"; rc=$?
