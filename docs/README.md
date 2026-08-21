@@ -6,6 +6,8 @@ Start here if you are new: **[Getting started](getting-started.md)**.
 
 The short version: `project-init.sh` once per project, then `runme.sh` from the project every time after that. `build.sh` and `sandbox.sh` are what `runme.sh` calls — you rarely run them yourself.
 
+> **Where to run the commands in these pages.** `project-init.sh` and `sync-to-projects.sh` exist **only in this repository** — run those from here. Everything else you are told to run — `build.sh`, `sandbox.sh`, `repo.sh`, `group.sh` — is copied into every project, so the copy you normally want is in your project's `.ai-containers/` directory, alongside `runme.sh`. Both copies behave identically.
+
 ## Setting up
 
 | Guide | What it answers |

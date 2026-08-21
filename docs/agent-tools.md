@@ -4,11 +4,13 @@
 
 The AI agents (Copilot CLI, Claude Code, Codex CLI, Gemini CLI), `graphify`, and `vale` are **not** baked into the image at all — see [Agent-tier tools (`~/.ai-tools`)](#agent-tier-tools-ai-tools) below for how they stay current without ever rebuilding.
 
-**Kiro CLI** and every `tools.d`-described tool (`dtctl`, `dtmgd`, `acli`) *are* baked into the image at build time, and Docker caches those layers — a plain `./build.sh` will *not* pick up a newer release of any of them. To refresh:
+**Kiro CLI** and every `tools.d`-described tool (`dtctl`, `dtmgd`, `acli`) *are* baked into the image at build time, and Docker caches those layers — a plain `./build.sh` will *not* pick up a newer release of any of them. To refresh, from your project's `.ai-containers/` directory:
 
 ```bash
-./build.sh --no-cache
+./build.sh --no-cache      # then ./runme.sh as usual
 ```
+
+(The generated `runme.sh` carries a commented-out `--no-cache` line for exactly this.)
 
 or, for the tools that support it (`dtctl`/`dtmgd` accept an exact `x.y.z` in `sandbox.conf`), bump the pinned version by hand instead of rebuilding everything.
 
