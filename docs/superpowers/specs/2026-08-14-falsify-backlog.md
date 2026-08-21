@@ -4096,3 +4096,69 @@ empty-body check, and leaking an `Authorization` header on the tokenless path.
 reads, after nine consecutive successes. It passed on re-run. That is F32's
 family arriving in the **integration** tier, which has no control-run mechanism
 of its own; one occurrence, message captured, no mechanism claimed.
+
+---
+
+## F32 — 2026-08-21: the two "load-sensitive oracles" were UNGUARDED SCAFFOLD WRITES
+
+The kept log from the 06:06 host run gave both controls' diagnoses, and they say
+the same thing:
+
+```
+CONTROL|FAIL|tests/bash-dialect-lint.sh|…|exit+failline|80350
+NOTE|control-output|…|FAIL: the empty run failed, but not with the 'examined no files' message
+   (got: bash: …/tmp.xYa06HxEye/emptyrepo/tests/bash-dialect-lint.sh: No such file or directory)
+
+CONTROL|FAIL|tests/integration/docker-shim.sh|…|exit+failline|47467
+NOTE|control-output|…|FAIL: refuses with 127 when IT_REAL_DOCKER is unset
+   (rc=127, out=env: …/tmp.G1R3ZjNW6O/bin/docker: No such file or directory)
+```
+
+**`No such file or directory`, both times, for a file the test had just written
+into its own `mktemp -d`.** Not slowness, and no `--timeout` addresses it. Each
+test guards `mktemp -d` itself and nothing after it, so:
+
+* `test-bash-dialect-lint.sh` — `cp "$LINT" "$empty_repo/tests/…"`, unchecked
+* `test-integration-shim.sh` — `ln -sf "$SHIM" "$TMP/bin/docker"`, unchecked
+
+That is **F31's family exactly** — "guard every unchecked `mktemp`" — one step
+further along: guard every unchecked scaffold WRITE. `test-tools-d.sh` already
+carries `scaffold_file`/`scaffold_exec` for precisely this, with its own note
+about ENOSPC leaving files empty on APFS.
+
+**Why it mattered more than a red test.** With the write unguarded, a lost
+scaffold reads as an assertion FAILURE. For a control that is merely
+mislabelled; **for a mutant it is a false KILL** — the oracle exits non-zero, the
+mutant is scored killed, and the survivor the ledger was owed disappears. That
+is F30's harm, arriving through the harness rather than through load.
+
+Both now emit `SCAFFOLD-FAILED:`, which is a CHANNEL and not a louder failure:
+`tests/run-all.sh` checks it **before** the generic failure branch and surfaces
+only those lines, and `falsify_verdict` scores such a mutant **UNPROVEN, not
+KILLED** (`run.sh:597`). Verified end to end by deleting the symlink mid-file:
+`FAIL (could not set itself up — the environment, not the code)`.
+
+**One thing the first draft got wrong, measured rather than reasoned.** The
+`shim()` guard printed to stdout and `exit 1`. `shim` is called inside `$( … )`,
+so stdout is captured as the value under assertion and the exit leaves only the
+subshell: nine assertion failures, and **not one SCAFFOLD-FAILED line anywhere**.
+Moved to stderr, which escapes the substitution and which both harnesses merge
+and read. The direct `$TMP/bin/docker` callers get the guard in the outer shell,
+where the exit actually stops the file.
+
+**Also measured, and it kills a theory rather than confirming one:** a bash
+subshell does **not** fire an inherited `EXIT` trap — checked on 5.2 for `$( )`,
+`( )` and `( exit 3 )`. The `trap 'rm -rf "$TMP"' EXIT` in both files is not the
+mechanism.
+
+**The trigger is still unidentified**, and this entry does not guess at it. What
+changed is that the next occurrence names itself as scaffolding and costs an
+UNPROVEN instead of a false kill.
+
+### The second host run passed clean, which is itself the point
+
+Same command, same commit, quiet machine: `TOTAL|9|264|261|3|0|0|1`,
+`CONTROLS|18|0`, ledger OK, `RESULT: PASSED`. Both controls that failed at 06:06
+passed at 09:21. The failure is **intermittent**, which is exactly the condition
+a sampled control detects and a one-shot baseline cannot — and exactly why
+`CONTROLS|18|0` on a green run is worth printing rather than omitting.

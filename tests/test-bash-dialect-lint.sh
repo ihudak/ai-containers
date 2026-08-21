@@ -153,6 +153,24 @@ empty_repo="$TMP/emptyrepo"; mkdir -p "$empty_repo/tests"
     && printf 'placeholder\n' > README.md && git add README.md \
     && git -c user.email=t@example -c user.name=t commit -q -m init ) >/dev/null 2>&1
 cp "$LINT" "$empty_repo/tests/bash-dialect-lint.sh"   # deliberately NOT git-added
+# CHECKED, AND CHECKED FOR CONTENT. An unchecked scaffold write turns a
+# scaffolding LOSS into an assertion FAILURE: the run below would report
+# "the empty run failed, but not with the 'examined no files' message
+# (got: bash: …/emptyrepo/tests/bash-dialect-lint.sh: No such file or
+# directory)" — which reads as a defect in the linter and is nothing of the
+# kind. Measured on macOS, 2026-08-21: a falsify CONTROL run tripped on exactly
+# that line, and the whole diagnosis was a missing file.
+#
+# SCAFFOLD-FAILED: is a CHANNEL, not a louder failure. tests/run-all.sh reports
+# it as "could not set itself up", and tests/falsify/run.sh scores a mutant
+# whose oracle said it UNPROVEN rather than KILLED — so a scaffold that
+# evaporates under load stops manufacturing false kills. Read back for CONTENT
+# because empty-after-write is the shape ENOSPC takes on APFS (backlog F31).
+if [[ ! -s "$empty_repo/tests/bash-dialect-lint.sh" ]]; then
+  printf 'SCAFFOLD-FAILED: could not stage the linter into %s (missing or empty after cp)\n' \
+    "$empty_repo/tests"
+  exit 1
+fi
 # The floor is passed in so the copy needs no bash-floor.sh beside it (the
 # linter skips its own source when both vars are already set).
 p_timeout 10 env AI_CONTAINERS_BASH_FLOOR_MAJOR=5 AI_CONTAINERS_BASH_FLOOR_MINOR=1 \
