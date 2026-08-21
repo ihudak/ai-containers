@@ -53,6 +53,7 @@ export DOCKER_LOG="$TMP/docker.log"
 # One volume name per line = "a running container has it mounted". `gc --unused`
 # is the only caller, and it is the only reason this fake knows `docker ps`.
 export INUSE="$TMP/inuse.txt"
+export TMP_LABELS="$TMP/.labels.tmp"
 cat > "$FAKE_BIN/docker" <<'FAKE'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$DOCKER_LOG"
@@ -86,6 +87,18 @@ case "$1 $2" in
       [[ "$b" == *.labels ]] && continue          # sidecar, not a volume
       [[ -z "$substr" || "$b" == *"$substr"* ]] && printf '%s\n' "$b"
     done
+    exit 0 ;;
+  "volume create")
+    name=""; : > "$TMP_LABELS"
+    for a in "${@:3}"; do
+      case "$a" in
+        --label) ;;
+        *=*) [[ "$prev_label" == "--label" ]] && printf '%s\n' "$a" >> "$TMP_LABELS" || name="$a" ;;
+        *) [[ "$a" == --* ]] || name="$a" ;;
+      esac
+      prev_label="$a"
+    done
+    [[ -n "$name" ]] && { : > "$VOLS/$name"; cp "$TMP_LABELS" "$VOLS/$name.labels"; }
     exit 0 ;;
   "volume rm")
     for a in "${@:3}"; do [[ "$a" == --* ]] || rm -f "$VOLS/$a"; done
@@ -355,6 +368,162 @@ setup_world; run_repo gc --nonsense --yes
 [[ "$RC" -ne 0 ]] && pass "gc rejects an unknown flag (rc=$RC)" \
                  || fail "gc accepted an unknown flag (rc=$RC)"
 check "  … removing nothing" "" "$(removed)"
+
+# ═════════════════════════════════════════════════════════════════════════════
+# SLICE 3 — `add`, `sync`, `reindex`. Nothing here deletes, but the seeding
+# helpers mount HOST paths and the host's PRIVATE KEYS into a container, and the
+# mount MODE is the only thing standing between "read the source" and "write to
+# it". That is argv, and argv is what this file already records.
+# ═════════════════════════════════════════════════════════════════════════════
+
+# The `docker run` argv, one invocation per line, for grepping mount flags.
+runs() { sed -n 's/^run //p' "$DOCKER_LOG"; }
+# `runs | grep -q …` is a producer piped into grep -q, which under `pipefail`
+# can report the opposite of what it observed (backlog F34, enforced over every
+# tracked script by tests/test-grep-q-pipelines.sh). A herestring has no pipe.
+run_has() { grep -q -- "$1" <<< "$(runs)"; }
+
+# ── 18. Seeding from a host path mounts the SOURCE READ-ONLY ─────────────────
+# `-v <real>:/src:ro`. Drop the `:ro` and the seed helper — running as root —
+# can write back into the developer's working tree through the bind. Nothing
+# in the container ever needs to.
+#
+# REPO_BACKEND=volume is required, not incidental: on Linux `auto` resolves a
+# path source to the `bind` backend, which seeds nothing and would make every
+# assertion here vacuous.
+setup_world
+mkdir -p "$TMP/newsrc"
+REPO_BACKEND=volume run_repo add fresh "$TMP/newsrc"
+check "add <path> exits 0" "0" "$RC"
+if run_has "-v $(cd "$TMP/newsrc" && pwd -P):/src:ro"; then
+  pass "add: the host source is mounted READ-ONLY into the seed helper"
+else
+  fail "add: the host source is NOT mounted read-only — the seed helper runs as root and could write back into the developer's tree: $(runs | head -1)"
+fi
+if run_has "-v ai-containers-repo-fresh:/dst"; then
+  pass "  … and the destination volume is mounted writable at /dst"
+else
+  fail "  … and the destination volume is mounted writable at /dst: $(runs | head -1)"
+fi
+
+# ── 19. Seeding from a git URL mounts the HOST'S PRIVATE KEYS read-only ──────
+# `-v $HOME/.ssh:/root/.ssh-host:ro`. This is the developer's actual SSH
+# identity. The helper copies it to a writable location inside the container on
+# purpose (accept-new has to record); the HOST side must never be writable.
+setup_world
+run_repo add gitrepo 'git@example.com:acme/thing.git'
+check "add <git-url> exits 0" "0" "$RC"
+if run_has "-v $HOME/.ssh:/root/.ssh-host:ro"; then
+  pass "add: the host ~/.ssh is mounted READ-ONLY into the clone helper"
+else
+  fail "add: the host ~/.ssh is NOT mounted read-only — the clone helper runs as root over the developer's private keys: $(runs | head -1)"
+fi
+
+# ── 20. The chown honours SANDBOX_UID/SANDBOX_GID ────────────────────────────
+# repo.sh hardcoded `id -u`/`id -g` once, which broke the documented override
+# and left seeded volumes owned by the wrong UID — the agent then hit permission
+# errors inside the container with nothing here to say why.
+setup_world
+mkdir -p "$TMP/newsrc"
+REPO_BACKEND=volume SANDBOX_UID=4242 SANDBOX_GID=4343 run_repo add fresh "$TMP/newsrc"
+if run_has '4242:4343'; then
+  pass "add: the seeded volume is chowned to SANDBOX_UID:SANDBOX_GID, not to id -u"
+else
+  fail "add: the chown ignored SANDBOX_UID/SANDBOX_GID — seeded volumes end up owned by the wrong UID: $(runs | head -1)"
+fi
+
+# ── 21. add refuses everything it cannot safely do ───────────────────────────
+setup_world
+run_repo add docs "$TMP/newsrc"
+[[ "$RC" -ne 0 ]] && pass "add refuses a name that is already registered (rc=$RC)"                  || fail "add re-registered an existing repo (rc=$RC)"
+grep -q 'already registered' "$ERR"   && pass "  … pointing at sync and rm instead"   || fail "  … pointing at sync and rm instead (got: $(tr '\n' ' ' < "$ERR"))"
+
+setup_world
+: > "$VOLS/ai-containers-repo-stray"
+REPO_BACKEND=volume run_repo add stray "$TMP/newsrc"
+[[ "$RC" -ne 0 ]] && pass "add refuses when a STRAY volume exists but nothing is registered (rc=$RC)"                  || fail "add seeded over a stray volume (rc=$RC)"
+grep -q 'Remove the stray volume first' "$ERR"   && pass "  … naming the volume and how to remove it"   || fail "  … naming the volume and how to remove it (got: $(tr '\n' ' ' < "$ERR"))"
+[[ -f "$VOLS/ai-containers-repo-stray" ]]   && pass "  … and leaving that volume alone"   || fail "  … and leaving that volume alone — add DELETED a volume it refused to use"
+
+setup_world
+run_repo add '../../etc' "$TMP/newsrc"
+[[ "$RC" -ne 0 ]] && pass "add refuses an invalid repo name (rc=$RC)"                  || fail "add accepted '../../etc' (rc=$RC)"
+check "  … before issuing a single docker command" "" "$(cat "$DOCKER_LOG")"
+
+setup_world
+REPO_BACKEND=volume run_repo add fresh "$TMP/no-such-directory"
+[[ "$RC" -ne 0 ]] && pass "add refuses a path source that does not exist (rc=$RC)"                  || fail "add accepted a non-existent path source (rc=$RC)"
+check "  … before issuing a single docker command" "" "$(cat "$DOCKER_LOG")"
+
+setup_world; run_repo add onlyname
+[[ "$RC" -ne 0 ]] && pass "add with no source is a usage error (rc=$RC)"                  || fail "add with no source was accepted (rc=$RC)"
+
+# ── 22. sync mounts the source read-only too, and skips what it must ─────────
+setup_world
+run_repo sync docs
+check "sync <git repo> exits 0" "0" "$RC"
+if run_has "-v $HOME/.ssh:/root/.ssh-host:ro"; then
+  pass "sync: the host ~/.ssh is mounted READ-ONLY into the pull helper"
+else
+  fail "sync: the host ~/.ssh is NOT mounted read-only: $(runs | head -1)"
+fi
+check "  … and no volume is removed by a sync" "" "$(removed)"
+
+setup_world
+run_repo sync localsrc
+check "sync on a bind-backend repo exits 0" "0" "$RC"
+check "  … issuing no docker command at all" "" "$(cat "$DOCKER_LOG")"
+grep -q 'nothing to sync' "$OUT"   && pass "  … and saying the source is live"   || fail "  … and saying the source is live (got: $(tr '\n' ' ' < "$OUT"))"
+
+setup_world
+run_repo sync --all
+check "sync --all exits 0" "0" "$RC"
+check "  … and removes nothing" "" "$(removed)"
+for r in docs docs-archive cluster; do
+  grep -q "OK: $r synced" "$OUT"     && pass "  … having synced $r"     || fail "  … having synced $r (got: $(tr '\n' ' ' < "$OUT"))"
+done
+
+# ── 23. reindex is additive: it never removes a registry entry ───────────────
+# Its whole contract is "recover a lost registry from volume labels". A reindex
+# that dropped the bind entry would silently unregister a repo that has no
+# volume to be rediscovered from — unrecoverable, and invisible until the next
+# launch failed.
+setup_world
+for v in docs docs-archive cluster; do
+  printf 'ai-containers.repo=%s\nai-containers.type=git\nai-containers.source=git@x:%s.git\n' "$v" "$v"     > "$VOLS/ai-containers-repo-$v.labels"
+done
+run_repo reindex
+check "reindex exits 0" "0" "$RC"
+check "  … removing nothing" "" "$(removed)"
+check "  … and the bind-backend entry, which has no volume, survives" "1"   "$(grep -c '^localsrc|' "$HOME/.ai-containers/repos.conf")"
+check "  … while every volume-backed repo is still registered" "3"   "$(grep -cE '^(docs|docs-archive|cluster)\|' "$HOME/.ai-containers/repos.conf")"
+
+# ── 24. list refuses what it cannot understand ───────────────────────────────
+# Not a destructive path, and included anyway: the measurement below found that
+# `exit 1` -> `exit 0` SURVIVED on both of these lines, so `repo.sh list
+# --nonsense` printed an error and reported success, and any script checking its
+# status was told the listing was fine. The same refusal is asserted for `gc`
+# and `reset` above; `list` was simply missed.
+setup_world
+run_repo list --nonsense
+[[ "$RC" -ne 0 ]] && pass "list rejects an unknown flag (rc=$RC)" \
+                 || fail "list accepted an unknown flag and reported success (rc=$RC)"
+grep -q 'unknown flag' "$ERR" \
+  && pass "  … naming it" \
+  || fail "  … naming it (got: $(tr '\n' ' ' < "$ERR"))"
+setup_world
+run_repo list stray-argument
+[[ "$RC" -ne 0 ]] && pass "list rejects an unexpected positional argument (rc=$RC)" \
+                 || fail "list accepted a stray argument and reported success (rc=$RC)"
+grep -q 'unexpected argument' "$ERR" \
+  && pass "  … naming it" \
+  || fail "  … naming it (got: $(tr '\n' ' ' < "$ERR"))"
+# The control: the two flags it DOES take must still work, or the case above
+# would pass on a `list` that refused everything.
+setup_world; run_repo list
+check "control: bare list exits 0" "0" "$RC"
+setup_world; run_repo list --copies
+check "control: list --copies exits 0" "0" "$RC"
 
 # ── Hermeticity ───────────────────────────────────────────────────────────────
 export HOME="$REAL_HOME"
