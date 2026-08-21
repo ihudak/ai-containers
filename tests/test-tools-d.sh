@@ -411,6 +411,8 @@ source "$REPO_DIR/install-tools.sh"   # sourced, not executed (guarded main)
 [[ "$(asset_name dtctl v0.25.0)" == "dtctl_0.25.0_linux_amd64.tar.gz" ]] \
   && pass "asset_name" || fail "asset_name ($(asset_name dtctl v0.25.0))"
 
+
+
 # --- ARCH resolution --------------------------------------------------------------
 # Both fetch modes key off ARCH: asset_name embeds it, and repo_path may template
 # ${ARCH}. A wrong value installs a binary for the wrong machine and only fails at
@@ -957,4 +959,120 @@ rm -rf "$RTMP"
 # `rm -rf "$RTMP"` two lines above frees the very space that was exhausted, so
 # by the time control reaches this line the probe passes and the run is scored
 # KILLED anyway — measured, 6 of 16 before the probe was moved into fail().
+# --- api_get: the retry loop, exercised (backlog F4) ---------------------------
+# The release path's GitHub API call, and the one function in this file nothing
+# executed. Its siblings install_repo_file, install_url and expand_placeholders
+# all run transitively via install_one; this ran only when a real network call
+# was made, which no hermetic test makes.
+#
+# PLACED LAST ON PURPOSE: ag_fake_curl overwrites $FAKEBIN/curl, and every
+# earlier case in this file installs its own fake there. Inserted mid-file it
+# silently displaced the repo-file fixture and took five unrelated assertions
+# down with it — caught immediately, and the reason it is written down is that
+# the next person to add a case here will reach for the same $FAKEBIN.
+#
+# TIME IS CONTROLLED, NOT WAITED OUT. api_get sleeps 5s between attempts, so a
+# faithful test of "it retries three times" would cost 10 seconds per case and
+# this file already carries a comment about that cost. `sleep` is overridden
+# with a shell FUNCTION — which takes precedence over the builtin for a function
+# sourced into this same shell — so the wait is RECORDED instead of endured.
+# That is strictly more than waiting would prove: it asserts the delay happened
+# AND how long it was asked for.
+# This file has pass()/fail() but no check(); the first draft of this block
+# called one anyway and bash reported `check: command not found` on stderr while
+# the file still printed ALL PASS — every assertion here silently absent. Named
+# ag_check rather than check so it cannot be mistaken for a shared helper.
+ag_check() {   # <label> <expected> <actual>
+  if [[ "$2" == "$3" ]]; then pass "$1"; else fail "$1"$'\n'"       expected: $2"$'\n'"       got:      $3"; fi
+}
+AG_CURL_LOG="$TMP/apiget-curl.log"
+AG_SLEEP_LOG="$TMP/apiget-sleep.log"
+sleep() { printf '%s\n' "${1:-}" >> "$AG_SLEEP_LOG"; }   # never actually waits
+
+ag_fake_curl() {   # <exit code> <body…> — a curl that records its argv
+  cat > "$FAKEBIN/curl" <<CURL
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$AG_CURL_LOG"
+printf '%s' '$2'
+exit $1
+CURL
+  chmod +x "$FAKEBIN/curl"
+  scaffold_exec "fake curl (api_get)" "$FAKEBIN/curl"
+}
+ag_run() {   # <exit> <body> → sets AG_OUT/AG_CALLS/AG_SLEEPS
+  : > "$AG_CURL_LOG"; : > "$AG_SLEEP_LOG"
+  ag_fake_curl "$1" "$2"
+  AG_OUT="$(PATH="$FAKEBIN:$PATH" api_get 'https://api.github.com/repos/acme/thing/releases/latest')"
+  AG_CALLS="$(grep -c . "$AG_CURL_LOG")"
+  AG_SLEEPS="$(grep -c . "$AG_SLEEP_LOG")"
+}
+
+# 1. A body on the first attempt is returned, and nothing is retried.
+ag_run 0 '{"tag_name":"v1.2.3"}'
+ag_check "api_get returns the body on success" '{"tag_name":"v1.2.3"}' "$AG_OUT"
+ag_check "  … calling curl exactly once" "1" "$AG_CALLS"
+ag_check "  … and never sleeping" "0" "$AG_SLEEPS"
+
+# 2. curl failing outright is retried three times, then gives up EMPTY.
+#    Empty is the contract: install_one reads the result and skips the tool.
+#
+#    THE BODY HERE IS THE POINT, and writing this case is what found the defect.
+#    curl is made to write output AND exit non-zero — the shape a connection
+#    reset part-way through a successful response takes, which `-f` does not
+#    suppress the way it suppresses an HTTP error page. api_get kept `body` from
+#    the failed attempt and returned the fragment as the API's answer, which
+#    install_one would then parse for a tag.
+ag_run 22 'partial-body-then-connection-reset'
+ag_check "api_get gives up empty after three failed attempts, discarding any partial body" "" "$AG_OUT"
+ag_check "  … having called curl three times" "3" "$AG_CALLS"
+ag_check "  … and waited twice, between the attempts and not after the last" "2" "$AG_SLEEPS"
+ag_check "  … five seconds each time" "5"$'\n'"5" "$(cat "$AG_SLEEP_LOG")"
+
+# 3. THE ONE A NAIVE READING MISSES. curl exiting 0 with an EMPTY body is a
+#    FAILURE — `&& [ -n "$body" ]` — because the GitHub API answers a rate-limit
+#    or a missing tag that way. Without that half, api_get would return empty on
+#    the first attempt and never retry, and install_one would report the tool
+#    unavailable on a blip that a retry would have cleared.
+ag_run 0 ''
+ag_check "api_get treats an empty body from a SUCCESSFUL curl as failure" "" "$AG_OUT"
+ag_check "  … and retries it, three attempts in all" "3" "$AG_CALLS"
+
+# 4. The request itself: the API media type, and the URL it was given.
+ag_run 0 '{"ok":true}'
+grep -q 'Accept: application/vnd.github+json' "$AG_CURL_LOG" \
+  && pass "api_get asks for the GitHub API media type" \
+  || fail "api_get asks for the GitHub API media type ($(cat "$AG_CURL_LOG"))"
+grep -q 'https://api.github.com/repos/acme/thing/releases/latest' "$AG_CURL_LOG" \
+  && pass "  … at the URL it was handed" \
+  || fail "  … at the URL it was handed ($(cat "$AG_CURL_LOG"))"
+grep -q -- '-fsSL' "$AG_CURL_LOG" \
+  && pass "  … with -f, so an HTTP error is a non-zero exit rather than a body" \
+  || fail "  … with -f, so an HTTP error is a non-zero exit rather than a body ($(cat "$AG_CURL_LOG"))"
+
+# 5. AUTH_ARGS is OPTIONAL — the token path and the tokenless one.
+#
+#    A NOTE ON WHAT THIS DOES *NOT* PROVE, because the first version of this
+#    comment claimed it did. `${AUTH_ARGS[@]+"${AUTH_ARGS[@]}"}` reads as a
+#    guard against `set -u` aborting on an unset array — and at the declared
+#    floor it is not one: bash has expanded an unset array to nothing without
+#    error since 4.4, measured here on 5.2 with `set -u` in force. The guard is
+#    vestigial, harmless, and the assertions below cannot demonstrate it failing
+#    because removing it changes nothing on any bash this project supports.
+#    What they DO pin is the behaviour that matters either way: the header is
+#    sent when a token is configured, and the call still works when none is.
+# shellcheck disable=SC2034  # read by api_get, sourced from install-tools.sh above
+AUTH_ARGS=(-H "Authorization: Bearer tok-abc")
+ag_run 0 '{"ok":true}'
+grep -q 'Authorization: Bearer tok-abc' "$AG_CURL_LOG" \
+  && pass "api_get passes AUTH_ARGS when a token is configured" \
+  || fail "api_get passes AUTH_ARGS when a token is configured ($(cat "$AG_CURL_LOG"))"
+unset AUTH_ARGS
+ag_run 0 '{"ok":true}'
+ag_check "  … and works with no AUTH_ARGS configured at all" '{"ok":true}' "$AG_OUT"
+grep -q 'Authorization' "$AG_CURL_LOG" \
+  && fail "  … sending no Authorization header when there is no token" \
+  || pass "  … sending no Authorization header when there is no token"
+
+unset -f sleep
+
 verdict
