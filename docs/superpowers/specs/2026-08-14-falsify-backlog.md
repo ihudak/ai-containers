@@ -3634,7 +3634,7 @@ assertion: the branch still fails the phase and still names itself.
 
 ---
 
-## F1 — progress: `cmd_rm` is covered, 2026-08-20
+## F1 — progress: the destructive trio is covered, 2026-08-20/21
 
 **STILL OPEN.** One of the seven `cmd_*` subcommands is now exercised. The
 entry's reason for parking the rest is unchanged.
@@ -3662,10 +3662,43 @@ a SUBSTRING match, so a bystander repo whose name merely BEGINS with the
 subject's is inside the blast radius of a single dropped suffix — and nothing
 anywhere asserted otherwise.
 
+### Slice 2, 2026-08-21 — `cmd_reset` and `cmd_gc`
+
+The destructive trio is complete. 36 more assertions in the same harness, which
+gained two things it needed: `docker volume inspect --format` now answers from a
+per-volume `.labels` sidecar, and `docker ps --filter volume=` answers from a
+one-name-per-line "in use" file — the only reason the fake knows `docker ps` at
+all is `gc --unused`.
+
+**`reset` and `rm` destroy different things, and that difference is the subject.**
+`rm` takes the base volume away; `reset` puts the base volume BACK to a clean
+state and removes only the working copies. A reset that removed the base would
+still look like success — the repo would simply be re-seeded on next use — so
+"the base volume survived" is asserted outright rather than inferred.
+
+Five guards demonstrated failing:
+
+| damage | what it does | assertions that flip |
+|---|---|---|
+| `reset_one`'s `--wc-` filter loses its anchor | `reset docs` reaches `docs-archive` **and** takes both base volumes | 3 |
+| a `docker volume rm "$vol"` is added to `reset_one` | `reset` silently becomes `rm` | 2 |
+| the bind-backend early return is dropped | `reset` seeds a volume no container will mount, and reports "reset to a clean state" | 1 |
+| `gc`'s `--unused` test is inverted | it removes exactly the copies a running container **is** using | 1 |
+| `gc`'s non-interactive refusal becomes a warning | every working copy on the machine is deleted without `--yes` | 2 |
+
+**One comment in this file was wrong and was corrected before it landed.** The
+bind-backend case originally claimed a reset without that guard "would delete a
+developer's uncommitted work on the host". It would not: `sync_from_path` copies
+INTO a volume, never over the host path. The real consequence is quieter and
+worth stating precisely — the user is told the repo they are about to run
+against was reset, while the thing that was reset is a volume no container will
+mount. The `DIRTY` file the case plants is therefore a **control**, not the
+guard, and the comment now says so.
+
 **What is still unexercised**, and why the row stays `EXECUTED-PARTIAL`:
-`cmd_sync`, `cmd_reset`/`reset_one`, `cmd_gc`, `cmd_list`, `cmd_add`,
-`cmd_reindex`, and the four `seed_from_*`/`sync_from_*` helpers. `cmd_reset` and
-`cmd_gc` are the other two destructive ones and are the obvious next slice.
+`cmd_sync`, `cmd_list`, `cmd_add`, `cmd_reindex`, and the four
+`seed_from_*`/`sync_from_*` helpers. **None of those five destroys anything**,
+which is why they are last rather than next.
 
 **It also exposed a fixture that had silently become a no-op.**
 `tests/test-falsify-targets.sh`'s gate-4c fixture rewrote the `repo.sh` row by

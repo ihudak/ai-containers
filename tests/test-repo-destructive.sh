@@ -50,21 +50,40 @@ trap 'export HOME="$REAL_HOME"; rm -rf "$TMP"' EXIT
 FAKE_BIN="$TMP/bin"; mkdir -p "$FAKE_BIN"
 export VOLS="$TMP/volumes"
 export DOCKER_LOG="$TMP/docker.log"
+# One volume name per line = "a running container has it mounted". `gc --unused`
+# is the only caller, and it is the only reason this fake knows `docker ps`.
+export INUSE="$TMP/inuse.txt"
 cat > "$FAKE_BIN/docker" <<'FAKE'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$DOCKER_LOG"
 case "$1 $2" in
   "volume inspect")
-    name=""
-    for a in "${@:3}"; do [[ "$a" == --* ]] || name="$a"; done
+    fmt=""; name=""; prev=""
+    for a in "${@:3}"; do
+      if [[ "$prev" == "--format" ]]; then fmt="$a"
+      elif [[ "$a" != "--format" ]]; then name="$a"; fi
+      prev="$a"
+    done
     [[ -f "$VOLS/$name" ]] || exit 1
+    if [[ "$fmt" == *Labels* ]]; then
+      key="$(printf '%s' "$fmt" | sed -n 's/.*index \.Labels \\*"\([^\\"]*\).*/\1/p')"
+      val=""
+      [[ -f "$VOLS/$name.labels" ]] && val="$(grep "^${key}=" "$VOLS/$name.labels" 2>/dev/null | head -1 | cut -d= -f2-)"
+      printf '%s\n' "$val"; exit 0
+    fi
     printf '%s\n' "$name"; exit 0 ;;
+  "ps "*|"ps")
+    v=""
+    for a in "$@"; do case "$a" in volume=*) v="${a#volume=}" ;; esac; done
+    [[ -n "$v" ]] && grep -qx -- "$v" "$INUSE" 2>/dev/null && printf 'fake-container-id\n'
+    exit 0 ;;
   "volume ls")
     substr=""
     for a in "$@"; do case "$a" in name=*) substr="${a#name=}" ;; esac; done
     for f in "$VOLS"/*; do
       [[ -f "$f" ]] || continue
       b="$(basename "$f")"
+      [[ "$b" == *.labels ]] && continue          # sidecar, not a volume
       [[ -z "$substr" || "$b" == *"$substr"* ]] && printf '%s\n' "$b"
     done
     exit 0 ;;
@@ -90,11 +109,22 @@ setup_world() {
   : > "$VOLS/ai-containers-repo-docs-archive"
   : > "$VOLS/ai-containers-repo-docs-archive--wc-projA"
   : > "$VOLS/ai-containers-repo-cluster"
+  : > "$INUSE"
+  # Labels are what `gc` reads to report a working copy's repo and launch dir.
+  for wc in docs--wc-projA docs--wc-projB docs-archive--wc-projA; do
+    printf 'ai-containers.repo=%s\nai-containers.launch-dir=/tmp/%s\n' "${wc%%--wc-*}" "$wc" \
+      > "$VOLS/ai-containers-repo-$wc.labels"
+  done
   {
     printf 'docs|git|git@x:docs.git|1700000000|1700000000|volume\n'
     printf 'docs-archive|git|git@x:docs-archive.git|1700000000|1700000000|volume\n'
     printf 'cluster|git|git@x:cluster.git|1700000000|1700000000|volume\n'
+    # A bind-backend repo: no volume anywhere, and its source is a REAL host
+    # directory this test creates, so "did it touch host files" is observable.
+    printf 'localsrc|path|%s|1700000000|1700000000|bind\n' "$TMP/hostsrc"
   } > "$HOME/.ai-containers/repos.conf"
+  rm -rf "$TMP/hostsrc"; mkdir -p "$TMP/hostsrc"
+  printf 'uncommitted work\n' > "$TMP/hostsrc/DIRTY"
 }
 
 run_repo() {   # <args…> — repo.sh as a real subprocess; sets RC, OUT, ERR
@@ -183,6 +213,148 @@ run_repo rm
   && pass "rm with no name is refused (rc=$RC)" \
   || fail "rm with no name was accepted (rc=$RC)"
 check "  … and removed nothing" "" "$(removed)"
+
+# ═════════════════════════════════════════════════════════════════════════════
+# SLICE 2 — `reset` and `gc`, the other two subcommands that delete data.
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# `reset` and `rm` destroy different things and the difference is the point:
+# `rm` takes the base volume away, `reset` puts the base volume BACK to a clean
+# state and removes only the working copies. A reset that removed the base would
+# still look like success — the repo would simply be re-seeded on next use — so
+# "the base volume survived" is asserted explicitly rather than inferred.
+
+# ── 8. reset refuses non-interactively without --yes, and destroys nothing ────
+setup_world
+run_repo reset docs
+check "reset without --yes is refused non-interactively (rc=1)" "1" "$RC"
+grep -q 'refusing to reset non-interactively' "$ERR" \
+  && pass "  … saying why, by name" \
+  || fail "  … saying why, by name (got: $(tr '\n' ' ' < "$ERR"))"
+check "  … and NOTHING was removed" "" "$(removed)"
+
+# ── 9. reset --yes removes the working copies and KEEPS the base volume ───────
+setup_world
+run_repo reset docs --yes
+check "reset --yes exits 0" "0" "$RC"
+check "reset --yes removes that repo's working copies" \
+  "ai-containers-repo-docs--wc-projA|ai-containers-repo-docs--wc-projB|" \
+  "$(removed)"
+[[ -f "$VOLS/ai-containers-repo-docs" ]] \
+  && pass "  … and the BASE volume survives — reset is not rm" \
+  || fail "  … and the BASE volume survives — reset is not rm: the base volume was removed"
+
+# ── 10. THE BLAST RADIUS, again, on the other subcommand ──────────────────────
+[[ -f "$VOLS/ai-containers-repo-docs-archive--wc-projA" ]] \
+  && pass "reset leaves another repo's working copy alone" \
+  || fail "reset leaves another repo's working copy alone — 'reset docs' reached docs-archive"
+
+# ── 11. A bind-backend repo is not touched AT ALL ─────────────────────────────
+# A bind-backend repo has no volume: the container mounts the host path directly,
+# so "reset it to a clean state" is not this script's to do, and `reset_one`
+# returns early saying so and printing the git commands to do it by hand.
+#
+# Drop that early return and it treats the repo as volume-backed: it SEEDS A
+# VOLUME from the host path and reports "reset to a clean state". Nothing is
+# deleted — which is exactly why this needs an assertion. The user is told the
+# repo they are about to run against was reset, while the thing that was reset
+# is a volume no container will mount. The `DIRTY` file below is a control, not
+# the guard: it must survive either way, and asserting it is how this file says
+# that out loud rather than leaving a reader to assume the worse story.
+setup_world
+run_repo reset localsrc --yes
+check "reset on a bind-backend repo exits 0" "0" "$RC"
+check "  … removing no volumes" "" "$(removed)"
+[[ -f "$TMP/hostsrc/DIRTY" ]] \
+  && pass "  … and leaving the host source untouched" \
+  || fail "  … and leaving the host source untouched — reset reached the host source, which nothing in this path should ever write to"
+grep -q 'not touching host files' "$OUT" \
+  && pass "  … and saying so, with the command to do it by hand" \
+  || fail "  … and saying so (got: $(tr '\n' ' ' < "$OUT"))"
+
+# ── 12. reset refuses what it cannot scope ───────────────────────────────────
+setup_world
+run_repo reset no-such-repo --yes
+[[ "$RC" -ne 0 ]] && pass "reset on an unregistered repo is refused (rc=$RC)" \
+                 || fail "reset accepted an unregistered repo (rc=$RC)"
+check "  … removing nothing" "" "$(removed)"
+setup_world; run_repo reset docs --all --yes
+[[ "$RC" -ne 0 ]] && pass "reset with BOTH a name and --all is refused (rc=$RC)" \
+                 || fail "reset accepted a name and --all together (rc=$RC)"
+check "  … removing nothing" "" "$(removed)"
+setup_world; run_repo reset --yes
+[[ "$RC" -ne 0 ]] && pass "reset with neither a name nor --all is refused (rc=$RC)" \
+                 || fail "reset with no target was accepted (rc=$RC)"
+check "  … removing nothing" "" "$(removed)"
+setup_world; run_repo reset docs --nonsense --yes
+[[ "$RC" -ne 0 ]] && pass "reset rejects an unknown flag (rc=$RC)" \
+                 || fail "reset accepted an unknown flag (rc=$RC)"
+check "  … removing nothing" "" "$(removed)"
+
+# ── 13. gc refuses non-interactively without --yes ───────────────────────────
+setup_world
+run_repo gc
+check "gc without --yes is refused non-interactively (rc=1)" "1" "$RC"
+check "  … and NOTHING was removed" "" "$(removed)"
+
+# ── 14. gc --yes removes EVERY working copy and NO base volume ───────────────
+# The scope is the danger here: gc with no --repo is repo-wide by design, so the
+# assertion that matters is the one about what it must NOT touch.
+setup_world
+run_repo gc --yes
+check "gc --yes exits 0" "0" "$RC"
+check "gc --yes removes every working copy, across all repos" \
+  "ai-containers-repo-docs--wc-projA|ai-containers-repo-docs--wc-projB|ai-containers-repo-docs-archive--wc-projA|" \
+  "$(removed)"
+for base in ai-containers-repo-docs ai-containers-repo-docs-archive ai-containers-repo-cluster; do
+  [[ -f "$VOLS/$base" ]] \
+    && pass "  … and never a base volume ($base)" \
+    || fail "  … and never a base volume — gc removed $base, which holds the repo itself"
+done
+
+# ── 15. gc --repo scopes to that repo, and the prefix bystander survives ─────
+setup_world
+run_repo gc --repo docs --yes
+check "gc --repo docs removes only that repo's working copies" \
+  "ai-containers-repo-docs--wc-projA|ai-containers-repo-docs--wc-projB|" \
+  "$(removed)"
+[[ -f "$VOLS/ai-containers-repo-docs-archive--wc-projA" ]] \
+  && pass "  … and docs-archive's working copy survives the substring filter" \
+  || fail "  … and docs-archive's working copy survives the substring filter — gc --repo docs took it"
+
+# ── 16. gc --unused keeps a copy a running container is using ────────────────
+setup_world
+printf 'ai-containers-repo-docs--wc-projA\n' > "$INUSE"
+run_repo gc --unused --yes
+check "gc --unused keeps the in-use copy and removes the rest" \
+  "ai-containers-repo-docs--wc-projB|ai-containers-repo-docs-archive--wc-projA|" \
+  "$(removed)"
+grep -q 'in use — kept' "$OUT" \
+  && pass "  … and says which one it kept, and why" \
+  || fail "  … and says which one it kept, and why (got: $(tr '\n' ' ' < "$OUT"))"
+# THE CONTROL: without --unused the same in-use copy IS removed, so the case
+# above cannot pass merely because something else spared it.
+setup_world
+printf 'ai-containers-repo-docs--wc-projA\n' > "$INUSE"
+run_repo gc --yes
+case "$(removed)" in
+  *ai-containers-repo-docs--wc-projA*) pass "  … control: without --unused, an in-use copy is still removed" ;;
+  *) fail "  … control: without --unused, an in-use copy is still removed — got: $(removed)" ;;
+esac
+
+# ── 17. gc refuses what it cannot scope ──────────────────────────────────────
+setup_world
+run_repo gc --repo '../../etc' --yes
+[[ "$RC" -ne 0 ]] && pass "gc rejects an invalid --repo name (rc=$RC)" \
+                 || fail "gc accepted '../../etc' as --repo (rc=$RC)"
+check "  … before issuing a single docker command" "" "$(cat "$DOCKER_LOG")"
+setup_world; run_repo gc --repo
+[[ "$RC" -ne 0 ]] && pass "gc rejects --repo with no name (rc=$RC)" \
+                 || fail "gc accepted a bare --repo (rc=$RC)"
+setup_world; run_repo gc --nonsense --yes
+[[ "$RC" -ne 0 ]] && pass "gc rejects an unknown flag (rc=$RC)" \
+                 || fail "gc accepted an unknown flag (rc=$RC)"
+check "  … removing nothing" "" "$(removed)"
 
 # ── Hermeticity ───────────────────────────────────────────────────────────────
 export HOME="$REAL_HOME"
