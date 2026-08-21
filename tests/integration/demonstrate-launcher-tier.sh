@@ -18,14 +18,14 @@
 # against an image built BEFORE the patch existed, so the case PASSES and the
 # mutation is reported dead when it was never applied to anything.
 #
-# demonstrate-network-tier.sh already solved this for the two tiers it covers,
+# demonstrate-network-delivery-tiers.sh already solved this for the two tiers it covers,
 # via patch_needs_rebuild() and a real rebuild. Those functions now live in
 # lib-rebuild.sh and this script is their second consumer — the "launcher/
 # packages-tier demonstrator that uses them" F36 asks for.
 #
 # SELECTION IS DERIVED, NOT LISTED. A patch is in scope here when it needs a
 # rebuild AND its case is not in the network-mode/delivery tiers (which
-# demonstrate-network-tier.sh owns). Today that is exactly nine patches across
+# demonstrate-network-delivery-tiers.sh owns). Today that is exactly nine patches across
 # seven cases and three image variants. A tenth that starts touching a build
 # input joins automatically; nothing here has to be remembered.
 #
@@ -42,7 +42,7 @@
 # built — the default variant in sweep() (run.sh:746), a non-default variant at
 # run.sh:1258 — so no mutated image can outlive its own patch. That is a
 # stronger guarantee than rebuilding a clean one afterwards, and it is why this
-# script does not need demonstrate-network-tier.sh's restore dance. The cleanup
+# script does not need demonstrate-network-delivery-tiers.sh's restore dance. The cleanup
 # trap still removes all three tags, because an interrupt can land between the
 # build and run.sh's own disposal.
 #
@@ -53,7 +53,7 @@
 # inside it, rather than discovering the overrun two hours in. Elapsed time per
 # patch is reported so the next budget is a measurement, not a guess.
 #
-# NAMING: F37 records that demonstrate-network-tier.sh covers two tiers while
+# NAMING: F37 records that demonstrate-network-delivery-tiers.sh covers two tiers while
 # its name says one, and sequences the rename after F36. This script inherits
 # that awkwardness deliberately — it covers the launcher tier (mounts/volumes)
 # AND the packages tier. When F37 lands, both collapse into demonstrate-
@@ -76,7 +76,7 @@ CASES_DIR="$REPO_DIR/tests/integration/cases"
 RUN="$REPO_DIR/tests/integration/run.sh"
 IT_IMAGE="${IT_IMAGE:-ai-sandbox-it}"
 
-# Same two-layout resolution as demonstrate-network-tier.sh and mutate.sh: one
+# Same two-layout resolution as demonstrate-network-delivery-tiers.sh and mutate.sh: one
 # copy of this file serves upstream (engine at the root) and mgd-ai-containers
 # (engine in base/), so it must not assume either.
 ENGINE_DIR="$REPO_DIR"
@@ -118,7 +118,7 @@ done
 }
 
 # ── Refuse to start on a dirty tree ───────────────────────────────────────────
-# The SAME whole-tree gate as mutate.sh:206 and demonstrate-network-tier.sh, and
+# The SAME whole-tree gate as mutate.sh:206 and demonstrate-network-delivery-tiers.sh, and
 # deliberately not a cleverer one. A narrower gate here (e.g. "only files some
 # patch touches") would let this script start and then die at the first
 # `mutate.sh apply`, which enforces the whole tree regardless — a gate looser
@@ -157,7 +157,7 @@ for p in "$MUT_DIR"/*.patch; do
   # Only a patch the image is built FROM. Everything else is correctly served by
   # the documented --reuse-image procedure and is not this script's business.
   patch_needs_rebuild "$p" || continue
-  # EVERY declared case, not head -1 — same reason as demonstrate-network-tier.sh:
+  # EVERY declared case, not head -1 — same reason as demonstrate-network-delivery-tiers.sh:
   # a patch may name more than one (735 and 730 both name 730-native-clients-run),
   # and reading only the first leaves the others never run while the report still
   # claims a demonstration.
@@ -165,7 +165,7 @@ for p in "$MUT_DIR"/*.patch; do
   for case_name in "${pcases[@]}"; do
     cf="$CASES_DIR/$case_name.sh"
     [[ -f "$cf" ]] || continue
-    # The complement of demonstrate-network-tier.sh's selection. Stated as an
+    # The complement of demonstrate-network-delivery-tiers.sh's selection. Stated as an
     # exclusion rather than an inclusion list of mounts/groups/volumes/packages
     # so a case in a NEW tier lands here (visibly, runnable) instead of being
     # silently owned by neither script.

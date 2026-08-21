@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Which mutation patches only take effect on a real image rebuild.
 #
-# Lifted VERBATIM from demonstrate-network-tier.sh:114-151 so that
+# Lifted VERBATIM from demonstrate-network-delivery-tiers.sh:114-151 so that
 # demonstrate-launcher-tier.sh does not carry a hand-written second opinion
 # about what a build input is. A copy of build_time_inputs() that drifted from
 # the original would not fail loudly: it would send a build-input patch down the
@@ -9,7 +9,7 @@
 # dead that was never applied to anything, which is the precise defect this
 # mechanism exists to prevent.
 #
-# UNFINISHED ON PURPOSE. demonstrate-network-tier.sh still holds its own copy,
+# UNFINISHED ON PURPOSE. demonstrate-network-delivery-tiers.sh still holds its own copy,
 # so there are two right now. Folding it onto this file is a four-line change
 # (delete 114-151, `source` this instead) that was written, verified green
 # against `shellcheck -S warning -e SC1091`, and then REVERTED: it dirties a
