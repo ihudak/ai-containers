@@ -22,6 +22,11 @@ setup() {
   cat > "$TMP/bin/docker" <<DOCKER
 #!/usr/bin/env bash
 if [[ "\$1" == "run" ]]; then shift; printf '%s\n' "\$@" > "$CAPTURE"; exit 0; fi
+# Volume queries succeed with no output: a registered repo's volume counts as
+# PRESENT, so a volume-backed repo can be exercised without a daemon. Without
+# this, sandbox.sh stops at "its docker volume is missing" before reaching any
+# mount decision, and a case meant to test that decision never gets there.
+if [[ "\$1" == "volume" ]]; then exit 0; fi
 exit 1
 DOCKER
   chmod +x "$TMP/bin/docker"
@@ -37,6 +42,16 @@ run_sandbox() {
   mkdir -p "$TMP/launch"
   ( cd "$TMP/launch" && bash "$REPO_DIR/sandbox.sh" restricted "$@" ) >"$TMP/stdout.txt" 2>"$ERR" </dev/null
   RC=$?
+}
+
+# Register a GIT-sourced repo plus a local checkout whose `origin` is that URL.
+# The registry holds a URL for these, so identity cannot come from a path
+# comparison — sandbox.sh asks the pointer's own checkout what it was cloned
+# from. Call AFTER setup().
+register_git_repo() {  # $1=name $2=url $3=local-checkout-dir
+  mkdir -p "$HOME/.ai-containers" "$3"
+  printf '%s|git|%s|0|0|volume\n' "$1" "$2" >> "$HOME/.ai-containers/repos.conf"
+  ( cd "$3" && git init -q && git remote add origin "$2" ) >/dev/null 2>&1
 }
 
 # Register a bind-backend 'path' repo in the temp HOME registry (no docker volume
@@ -233,6 +248,53 @@ export VAULT_PATH="$TMP/vaultrepo" REPOS="vault:rw"
 run_sandbox "$TMP/app"
 if [[ "$RC" -eq 0 ]] && grep -qx "VAULT_PATH=/workspace/vault" "$CAPTURE"; then
   pass "VAULT_PATH == repo 'vault' → re-points"; else fail "VAULT_PATH == repo 'vault' → re-points (rc=$RC)"; fi
+teardown
+
+# Case 16: the repo was seeded from a GIT URL, and DOCS_PATH is a local checkout
+# of the same repository. The registry has no host path to compare, so identity
+# comes from the checkout's own `origin`. Reported 2026-08-21: the first fix
+# covered path-sourced repos only, and this is the shape a real user had.
+setup
+mkdir -p "$TMP/app"
+register_git_repo docs ssh://git@example.org/team/docs.git "$TMP/docsco"
+export DOCS_PATH="$TMP/docsco" REPOS="docs:rw"
+run_sandbox "$TMP/app"
+if [[ "$RC" -eq 0 ]] && grep -qx "DOCS_PATH=/workspace/docs" "$CAPTURE" \
+   && [[ "$(grep -c "$TMP/docsco:" "$CAPTURE")" -eq 0 ]]; then
+  pass "DOCS_PATH is a checkout of the git-sourced repo → re-points, no second mount"
+else
+  fail "DOCS_PATH is a checkout of the git-sourced repo → re-points, no second mount (rc=$RC)"
+fi
+teardown
+
+# Case 17: URL SPELLING must not decide it. Same repository written scp-style
+# and without .git; the registry has the ssh:// form.
+setup
+mkdir -p "$TMP/app"
+register_git_repo docs ssh://git@example.org/team/docs.git "$TMP/docsco"
+( cd "$TMP/docsco" && git remote set-url origin git@example.org:team/docs ) >/dev/null 2>&1
+export DOCS_PATH="$TMP/docsco" REPOS="docs:rw"
+run_sandbox "$TMP/app"
+if [[ "$RC" -eq 0 ]] && grep -qx "DOCS_PATH=/workspace/docs" "$CAPTURE"; then
+  pass "scp-form and ssh:// spellings of one repository match"
+else
+  fail "scp-form and ssh:// spellings of one repository match (rc=$RC)"
+fi
+teardown
+
+# Case 18: THE REGRESSION GUARD for the git path. A DIFFERENT repository must
+# still be refused — proving the match is on identity, not on "is a git repo".
+setup
+mkdir -p "$TMP/app"
+register_git_repo docs ssh://git@example.org/team/docs.git "$TMP/docsco"
+mkdir -p "$TMP/other"; ( cd "$TMP/other" && git init -q && git remote add origin ssh://git@example.org/team/OTHER.git ) >/dev/null 2>&1
+export DOCS_PATH="$TMP/other" REPOS="docs:rw"
+run_sandbox "$TMP/app"
+if [[ "$RC" -ne 0 ]] && grep -q "name 'docs' is used by" "$ERR"; then
+  pass "a DIFFERENT git repository colliding on 'docs' is still refused"
+else
+  fail "a DIFFERENT git repository colliding on 'docs' is still refused (rc=$RC)"
+fi
 teardown
 
 printf '\n%d failure(s)\n' "$fails"

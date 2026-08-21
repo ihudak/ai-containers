@@ -205,7 +205,23 @@ fi
 # turns into a test that passes by accident.
 for h in p_stat_mode p_sha1 p_md5 p_stat_meta; do
   if [[ -n "$($h "$TMP/f")" ]]; then pass "$h is non-empty on this platform"
-  else fail "$h returned empty — comparisons using it would pass vacuously"; fi
+  else
+    fail "$h returned empty — comparisons using it would pass vacuously"
+    # WHY it was empty, because the last time this fired nobody could tell.
+    # CI, 2026-08-21 (mgd-ai-containers PR #76, run 32523718531): p_md5 AND
+    # p_stat_meta both returned empty in ONE control run, while the same run
+    # measured the corpus normally — a pristine oracle going red under the
+    # tier's own load (backlog F30/F32). The report named the symptom and
+    # nothing else, and the helpers are why: p_md5 and p_sha1 are PIPELINES
+    # (`md5sum … | cut`), so a failing md5sum still leaves `cut` succeeding with
+    # empty output, and p_stat_meta's error goes to stderr with stdout empty.
+    # Both hide the cause. Two facts separate the candidates — did the file
+    # vanish, or did the tool fail on a file that is right there?
+    printf '     diag: file=%s exists=%s size=%s\n' "$TMP/f" \
+      "$([[ -e "$TMP/f" ]] && printf y || printf n)" \
+      "$(wc -c <"$TMP/f" 2>/dev/null | tr -d ' ' || printf '?')" >&2
+    printf '     diag: %s stderr: %s\n' "$h" "$( $h "$TMP/f" 2>&1 >/dev/null | head -2 | tr '\n' ' ' )" >&2
+  fi
 done
 
 printf '\n%d failure(s)\n' "$fails"; exit "$fails"

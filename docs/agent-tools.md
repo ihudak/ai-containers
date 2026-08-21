@@ -33,7 +33,9 @@ Three modes are available:
   and `NET_RAW` from the agent shell. The default choice for day-to-day agent use.
 - **discovery** — unrestricted egress **with** capture (pcap + DNS/TLS destination
   logging), used to observe what an agent actually reaches before writing a
-  restricted allowlist. Drops only `NET_ADMIN` (keeps `NET_RAW` for tcpdump).
+  restricted allowlist. Names only `NET_ADMIN` in its drop, but the agent shell
+  still ends up with no capabilities — capture is done by a root daemon forked
+  before the drop, not by the shell (see [Security model](security.md)).
 - **open** — unrestricted egress and **no** capture (no firewall, no allowlist, no
   traffic logging). For projects that do not need network isolation. Drops both
   `NET_ADMIN` and `NET_RAW`. Equivalent to the historical
