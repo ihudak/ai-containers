@@ -1,7 +1,15 @@
 #!/usr/bin/env bash
-# Demonstrate every LAUNCHER/PACKAGES-tier mutation whose patch changes a file
-# BAKED INTO THE IMAGE, by running its case against an image REBUILT WITH the
-# mutation applied.
+# Demonstrate every mutation whose patch changes a file BAKED INTO THE IMAGE, by
+# running its case against an image REBUILT WITH the mutation applied — minus
+# the network-mode and delivery tiers, which
+# demonstrate-network-delivery-tiers.sh owns.
+#
+# The name says the PREDICATE, not a tier, because the selection IS a predicate:
+# patch_needs_rebuild() from lib-rebuild.sh. Filename and function agree so a
+# reader finds one from the other. Today that is nine patches spanning THREE
+# tiers — mounts (410), volumes (630) and packages (the other seven) — which is
+# why no tier name fits: it covers 2 of the launcher tier's 11 mutations, and 7
+# of the packages tier's 9.
 #
 # WHY THIS EXISTS (backlog F36):
 #
@@ -53,18 +61,19 @@
 # inside it, rather than discovering the overrun two hours in. Elapsed time per
 # patch is reported so the next budget is a measurement, not a guess.
 #
-# NAMING: F37 records that demonstrate-network-delivery-tiers.sh covers two tiers while
-# its name says one, and sequences the rename after F36. This script inherits
-# that awkwardness deliberately — it covers the launcher tier (mounts/volumes)
-# AND the packages tier. When F37 lands, both collapse into demonstrate-
-# mutations.sh and this comment goes with them.
+# NAMING, and the prediction this paragraph used to make: it said that when F37
+# landed, both scripts would "collapse into demonstrate-mutations.sh". They did
+# not. F37 landed as a rename, not a merger, and the two scripts still partition
+# the mutation set by two DIFFERENT kinds of selector — tags there, a predicate
+# here. Backlog F56 renamed this one accordingly; the asymmetry in the two names
+# is the asymmetry in the two selectors, and is meant to stay.
 #
 # Usage:
-#   bash tests/integration/demonstrate-launcher-tier.sh                 # all nine
-#   bash tests/integration/demonstrate-launcher-tier.sh 410 630         # only these
-#   bash tests/integration/demonstrate-launcher-tier.sh --dry-run       # plan only, no docker
-#   bash tests/integration/demonstrate-launcher-tier.sh --budget-minutes 45
-#   bash tests/integration/demonstrate-launcher-tier.sh --variant default
+#   bash tests/integration/demonstrate-needs-rebuild.sh                 # all nine
+#   bash tests/integration/demonstrate-needs-rebuild.sh 410 630         # only these
+#   bash tests/integration/demonstrate-needs-rebuild.sh --dry-run       # plan only, no docker
+#   bash tests/integration/demonstrate-needs-rebuild.sh --budget-minutes 45
+#   bash tests/integration/demonstrate-needs-rebuild.sh --variant default
 set -uo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -82,7 +91,7 @@ IT_IMAGE="${IT_IMAGE:-ai-sandbox-it}"
 ENGINE_DIR="$REPO_DIR"
 [[ -f "$ENGINE_DIR/build.sh" ]] || ENGINE_DIR="$REPO_DIR/base"
 [[ -f "$ENGINE_DIR/Dockerfile" ]] || {
-  printf 'demonstrate-launcher-tier.sh: no Dockerfile under %s — cannot tell which patches need a rebuild.\n' "$ENGINE_DIR" >&2
+  printf 'demonstrate-needs-rebuild.sh: no Dockerfile under %s — cannot tell which patches need a rebuild.\n' "$ENGINE_DIR" >&2
   exit 1
 }
 # shellcheck source=tests/integration/lib-rebuild.sh
@@ -96,7 +105,7 @@ source "$REPO_DIR/tests/integration/lib-rebuild.sh"
 # extracted to prevent. Verified: with the path broken, all 11 rebuild patches
 # read as reuse.
 declare -F patch_needs_rebuild >/dev/null || {
-  printf 'demonstrate-launcher-tier.sh: lib-rebuild.sh did not load — cannot tell which patches need a rebuild.\n' >&2
+  printf 'demonstrate-needs-rebuild.sh: lib-rebuild.sh did not load — cannot tell which patches need a rebuild.\n' >&2
   exit 1
 }
 
@@ -108,12 +117,12 @@ while [[ $# -gt 0 ]]; do
     --budget-minutes)  budget_min="$2"; shift 2 ;;
     --variant)         want_variant="$2"; shift 2 ;;
     -h|--help)         sed -n '68,74p' "${BASH_SOURCE[0]}"; exit 0 ;;
-    -*) printf 'demonstrate-launcher-tier.sh: unknown option %s\n' "$1" >&2; exit 2 ;;
+    -*) printf 'demonstrate-needs-rebuild.sh: unknown option %s\n' "$1" >&2; exit 2 ;;
     *)  wanted+=("$1"); shift ;;
   esac
 done
 [[ "$budget_min" =~ ^[0-9]+$ ]] || {
-  printf 'demonstrate-launcher-tier.sh: --budget-minutes wants a positive integer, got %s\n' "$budget_min" >&2
+  printf 'demonstrate-needs-rebuild.sh: --budget-minutes wants a positive integer, got %s\n' "$budget_min" >&2
   exit 2
 }
 
@@ -126,7 +135,7 @@ done
 # too late. Untracked files do not trip `git diff --quiet`, so a new, uncommitted
 # demonstrator (this file) can still be run from the tree it lives in.
 if ! git -C "$REPO_DIR" diff --quiet; then
-  printf 'demonstrate-launcher-tier.sh: working tree has unstaged changes — commit or stash first.\n' >&2
+  printf 'demonstrate-needs-rebuild.sh: working tree has unstaged changes — commit or stash first.\n' >&2
   printf '  A mutation must be the only difference, or reverting it is a guess.\n' >&2
   printf '  (mutate.sh enforces this too; failing here just says so before any image is built.)\n' >&2
   exit 1
@@ -183,7 +192,7 @@ for p in "$MUT_DIR"/*.patch; do
 done
 
 if [[ ${#patches[@]} -eq 0 ]]; then
-  printf 'demonstrate-launcher-tier.sh: no rebuild-tier mutations selected%s\n' \
+  printf 'demonstrate-needs-rebuild.sh: no rebuild-tier mutations selected%s\n' \
     "${wanted[*]:+ (${wanted[*]})}" >&2
   exit 2
 fi
@@ -211,7 +220,7 @@ printf '── preflight: harness selftest on a clean tree … '
 pre_t0=$SECONDS
 if ! bash "$RUN" --cases 000-harness-selftest --keep >/dev/null 2>&1; then
   printf 'FAILED\n'
-  printf 'demonstrate-launcher-tier.sh: the harness selftest failed on a CLEAN tree.\n' >&2
+  printf 'demonstrate-needs-rebuild.sh: the harness selftest failed on a CLEAN tree.\n' >&2
   printf '  Fix that first — nothing below would be interpretable.\n' >&2
   exit 1
 fi

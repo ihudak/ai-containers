@@ -4236,7 +4236,8 @@ hermetic has one.
 **`demonstrate-network-delivery-tiers.sh`**. Nine files, exactly as the
 re-derived blast radius said: the script itself (8 self-references),
 `AGENTS.md`, `tests/falsify/targets.conf:120`, `tests/test-mutations.sh:114`,
-two mutation patch headers, `lib-rebuild.sh`, `demonstrate-launcher-tier.sh`,
+two mutation patch headers, `lib-rebuild.sh`, `demonstrate-needs-rebuild.sh`
+(then still `demonstrate-launcher-tier.sh`),
 and this file.
 
 **Both names the entry proposed turned out to be wrong, and F36 is why.** F37
@@ -4249,7 +4250,7 @@ partition the set:
 | selector | script | patches |
 |---|---|---|
 | tagged `network-mode` or `delivery` | this one | 16 pairs, 2 needing a rebuild |
-| needs a rebuild, and NOT those tags | `demonstrate-launcher-tier.sh` | 9 |
+| needs a rebuild, and NOT those tags | `demonstrate-needs-rebuild.sh` | 9 |
 | everything else | hand-driven per AGENTS.md | 11 |
 
 So `demonstrate-image-tier.sh` — the entry's other candidate — would have been
@@ -4262,7 +4263,7 @@ is what produced the correction.
 
 ---
 
-## F56 — `demonstrate-launcher-tier.sh` has F37's defect, and its honest name needs a decision
+## F56 — `demonstrate-launcher-tier.sh` has F37's defect, and its honest name needs a decision — **FIXED 2026-08-21**
 
 Found while closing F37, by deriving what each demonstrator actually selects.
 
@@ -4287,3 +4288,36 @@ attempts to name one file correctly.
 **Cost is one coordinated change across both repos**, same shape as F37: the
 script, `targets.conf`, `AGENTS.md`, and whatever references accumulate. Cheaper
 now than after the name spreads further.
+
+---
+
+## F56 — FIXED 2026-08-21. The name says the predicate, because the selector is one.
+
+`tests/integration/demonstrate-launcher-tier.sh` is now
+**`demonstrate-needs-rebuild.sh`**, and the filename now agrees with
+`patch_needs_rebuild()` — the function in `lib-rebuild.sh` that actually
+implements the selection, so a reader finds one from the other.
+
+**The decision F56 was filed for, made:** every tier-based name overclaims. The
+script covers **2 of the launcher tier's 11** mutations (410, 630) and **7 of
+the packages tier's 9**, so `demonstrate-launcher-packages-tiers.sh` would have
+named two tiers it does not cover and omitted `volumes` and `mounts`, which it
+partly does. The selector was never a tier.
+
+**The two names are deliberately asymmetric, and that asymmetry is the point:**
+
+| script | selects by |
+|---|---|
+| `demonstrate-network-delivery-tiers.sh` | tags — `network-mode` or `delivery` |
+| `demonstrate-needs-rebuild.sh` | a predicate — `patch_needs_rebuild()` |
+
+Naming both as tiers would have hidden that one of them is not tag-driven at
+all, which is the misreading that produced F37's two wrong candidates.
+
+**A falsified prediction removed rather than left in place.** The script's NAMING
+paragraph, written when F36 landed, said that when F37 landed "both collapse
+into demonstrate-mutations.sh and this comment goes with them". They did not
+collapse — F37 was a rename, not a merger. The paragraph now records what
+happened instead of what was expected, because a stale prediction left in a
+header is the same defect as a stale measurement left in a row (see the mgd
+`#DEFERRED` fix of the same date).

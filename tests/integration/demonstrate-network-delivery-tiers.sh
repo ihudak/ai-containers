@@ -4,7 +4,7 @@
 # demonstrate-network-tier.sh until backlog F37 was closed, having covered
 # `delivery` since increment 5 while its name, usage text and error messages all
 # said one tier. What it does NOT cover is everything else — the rebuild-needing
-# remainder belongs to demonstrate-launcher-tier.sh, and the rest is hand-driven
+# remainder belongs to demonstrate-needs-rebuild.sh, and the rest is hand-driven
 # per AGENTS.md.
 #
 # WHY THIS EXISTS, AND WHY IT IS NOT PART OF run-all.sh OR run.sh:
@@ -116,7 +116,7 @@ trap cleanup EXIT INT TERM
 
 # ── Which patches only take effect on a rebuild ───────────────────────────────
 # build_time_inputs() and patch_needs_rebuild() live in lib-rebuild.sh, which was
-# extracted from this file when demonstrate-launcher-tier.sh became their second
+# extracted from this file when demonstrate-needs-rebuild.sh became their second
 # consumer. Two copies of "what is a build input" would not drift LOUDLY: a stale
 # copy sends a build-input patch down the --reuse-image path and reports the case
 # UNDEMONSTRATED — a mutation declared dead that was never applied to anything.

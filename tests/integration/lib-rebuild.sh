@@ -2,7 +2,7 @@
 # Which mutation patches only take effect on a real image rebuild.
 #
 # Lifted VERBATIM from demonstrate-network-delivery-tiers.sh:114-151 so that
-# demonstrate-launcher-tier.sh does not carry a hand-written second opinion
+# demonstrate-needs-rebuild.sh does not carry a hand-written second opinion
 # about what a build input is. A copy of build_time_inputs() that drifted from
 # the original would not fail loudly: it would send a build-input patch down the
 # --reuse-image path and report the case UNDEMONSTRATED — a mutation declared
