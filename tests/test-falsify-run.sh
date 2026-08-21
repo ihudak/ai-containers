@@ -279,6 +279,10 @@ n=$(( n + 1 ))
 printf '%s' "$n" > "$FX_FLAKY_COUNT"
 if (( n >= ${FX_FLAKY_FROM:-4} )); then
   printf 'FAIL: run %s — the machine, not the mutation\n' "$n"
+  # Indented continuation, exactly as tests/run-all.sh's `check` helper emits
+  # its expected/got pair. The capture has to bring this out too or it reports
+  # the name of a failure and none of its evidence.
+  printf '       expected-vs-got: the evidence lives on this line\n'
   exit 1
 fi
 printf 'PASS: flaky oracle run %s\n' "$n"
@@ -816,8 +820,26 @@ f52_killed="$( { set +u
 case "$f52_killed" in
   *'produced no verdict at all'*'KILLED BY SIGKILL'*)
     pass "the pool reports a SIGKILLed worker as killed, not merely as absent" ;;
+  *'produced no verdict at all'*'exit status not captured'*)
+    # NOT a pass for the pool and not a failure of it: a platform limit, stated.
+    # bash 5.1's `wait -n -p` intermittently returns 127 — its own "there are no
+    # unwaited-for children" — for a child that has already terminated, and then
+    # no status exists to attribute. Measured: the bash-floor CI job produced
+    # exactly this, and the identical job passed on re-run. The pool saying so
+    # is the correct behaviour; the thing that would be wrong is inventing a
+    # number, which the next assertion pins.
+    pass "the pool reported an honest non-capture (bash ${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]} supplied no status for an already-terminated child)" ;;
   *)
     fail "the pool reports a SIGKILLed worker as killed, not merely as absent — got: $(printf '%s' "$f52_killed" | tr '\n' ' ')" ;;
+esac
+# THE HARD ONE, and it holds on every bash: a `wait`-internal code is not a
+# worker exit status. 127 means wait had nothing to report; printing "it exited
+# 127" attributes to the worker a number nothing ever measured.
+case "$f52_killed" in
+  *'exited 127'*)
+    fail "the pool reported wait's own 'no unwaited-for children' code as the worker's exit status — got: $(printf '%s' "$f52_killed" | tr '\n' ' ')" ;;
+  *)
+    pass "  … and never reports a wait-internal code as a worker exit status" ;;
 esac
 case "$f52_killed" in
   *'BROKEN=1'*) pass "  … and still counts it broken, so the run cannot pass on it" ;;
@@ -1345,6 +1367,12 @@ grep -q 'may have been killed by the machine rather than by the damage' <<< "$FX
 # it, so it has to be carried out on the record stream or it is gone.
 check "  … and carrying the oracle's own FAIL: line out with it" "1" \
   "$(grep -c '^NOTE|control-output|.*the machine, not the mutation' <<< "$FX_OUT")"
+# AND THE EVIDENCE UNDER IT. `check` prints the assertion name on the FAIL:
+# line and the expected/got values INDENTED beneath. Capturing only the FAIL:
+# line takes the name and throws away the reason — measured on the first host
+# run that produced a diagnosis: five of six lines were bare names.
+check "  … together with the indented evidence beneath it" "1" \
+  "$(grep -c '^NOTE|control-output|.*expected-vs-got: the evidence' <<< "$FX_OUT")"
 grep -q 'control output:.*the machine, not the mutation' <<< "$FX_ERR" \
   && pass "  … on stderr too, beside the error it explains" \
   || fail "  … on stderr too, beside the error it explains: $FX_ERR"
