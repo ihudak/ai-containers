@@ -1519,4 +1519,32 @@ check "--max-assertless 0 passes an oracle that prints its FAIL: lines" "0" "$FX
 check "  … and that run reports zero assertless kills" \
   "0" "$(awk -F'|' '$1 == "ASSERTLESS" { print $2 }' <<< "$FX_OUT")"
 
+# ── §15. the clock scales with the ORACLE SET ─────────────────────────────────
+# A target whose oracle names three test files does three times the work per
+# mutant, so one global ceiling cannot be right for it and for a single-oracle
+# target at once. The ceiling is a hang detector, not a cost estimate (F36), so
+# it scales with the set rather than being tuned per target.
+#
+# Measured on macOS + Colima 2026-08-21 (F28): at the 120s default,
+# tests/lib-verify-repo.sh — the only three-oracle target — timed out 42 of 55
+# mutants and put two PRISTINE controls over the clock at 132.8s and 156.0s,
+# while all eight single-oracle targets recorded zero timeouts in the same run.
+eff_timeout() {   # <clock> <oracle-set> → run.sh's own computation, in a subshell
+  ( set +u
+    # shellcheck source=/dev/null
+    source "$RUN" >/dev/null 2>&1
+    # Read by fr_effective_timeout, which shellcheck cannot follow through the
+    # non-constant source above.
+    # shellcheck disable=SC2034
+    FR_TIMEOUT="$1"
+    fr_effective_timeout "$2" )
+}
+check "one oracle gets the plain clock"            "120" "$(eff_timeout 120 'test-a.sh')"
+check "three oracles get three times the clock"    "360" "$(eff_timeout 120 'test-a.sh,test-b.sh,test-c.sh')"
+check "two oracles get twice the clock"            "600" "$(eff_timeout 300 'test-a.sh,test-b.sh')"
+# A degenerate set must never yield 0: a zero clock would make every mutant time
+# out instantly and score the whole target UNPROVEN.
+check "an empty oracle set still gets one clock, never zero" "120" "$(eff_timeout 120 '')"
+check "a trailing comma does not count as an oracle"         "240" "$(eff_timeout 120 'test-a.sh,test-b.sh,')"
+
 printf '\n%d failure(s)\n' "$fails"; exit "$fails"

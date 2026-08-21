@@ -4650,3 +4650,70 @@ pinned line number), its target was SKIPPED, and the corpus reported
 `TOTAL|9|235|233|2|0|0|0` with `CONTROLS|16|0` — 29 fewer mutants and two fewer
 controls, with no failure of its own. `SKIPPED|` lines say so (F54), but a
 reader watching only `TOTAL` sees a green run that measured 11% less.
+
+---
+
+## F28 — CAUSE FOUND 2026-08-21: a 120s clock against a three-oracle target
+
+Measured on the host, a controlled 2x2 on one machine, same code, same day:
+
+| | `timeout=120` | `timeout=600` |
+|---|---|---|
+| `jobs=8` | 4 unproven, **2** controls red, 35.5 min, FAIL | 0 unproven, **0** controls red, ~6 min, PASS |
+| `jobs=18` | 7 unproven, **4** controls red, 28.6 min, FAIL | — |
+
+**The clock moves the outcome; the job count only moves its severity.** Halving
+`--jobs` took the run from four failed controls to two and cost seven minutes.
+Raising the clock took it to zero.
+
+**The damage is one target, and it is the only one with a SET of three oracles.**
+`tests/lib-verify-repo.sh` — `test-lib-verify-repo.sh,test-verify-exit-code.sh,
+test-layer-containment.sh` — timed out **42 of its 55 mutants** and accounted for
+every unproven verdict, while all eight single-oracle targets recorded zero
+timeouts and zero unproven in the same run. Two of its PRISTINE controls ran
+**132.8s and 156.0s against a 120s clock**, with the machine only half-loaded: an
+unmutated oracle cannot finish inside the budget, so no amount of load
+management fixes it.
+
+The same ratio is visible on Linux, far below the ceiling: ~2.6s per mutant for
+that target against ~0.78s for a single-oracle one. Three oracles, three times
+the work.
+
+**FIXED by deriving the clock rather than tuning it.** `fr_effective_timeout`
+multiplies `FR_TIMEOUT` by the number of oracle files in the target's set, so
+the three-oracle target gets 360s where a single-oracle target gets 120s.
+Derived from the set, not configured per target: nothing has to be remembered
+when a target gains or loses an oracle. This is F36's lesson applied — a
+declared timeout is a HANG DETECTOR, not a cost estimate, and one ceiling cannot
+be right for a 5-second target and a 200-second one.
+
+**What this does NOT establish.** The process-group drain shipped the same day
+cannot be credited from these runs: the only green run predates the comparison
+and used both a different clock and a different job count. Unproven fell
+14/35 (F28's original baseline) to 7 to 4, which is the right direction and not
+attributable.
+
+---
+
+## F59 — `--jobs auto` reads the HOST's CPU count, not the Docker VM's
+
+Found while measuring F28. On macOS + Colima, `jobs=auto` resolved to **18** —
+`hw.ncpu` — while Colima holds **12** of those CPUs for the Docker VM the tier's
+own oracles run against. The tier took every CPU on the machine and then
+competed with the VM it depends on.
+
+**This is F38's other half.** F38 fixed `nproc` reading an affinity mask inside a
+quota'd container. This is the same mistake from outside: the number the host
+reports is not the number available to the work.
+
+Measured cost: at `jobs=18`, four of eighteen pristine controls went red and the
+run took **28.6 min**; at `jobs=8` on the same machine and commit, two went red
+and it took **35.5 min**. Slower and better — the oversubscribed run was buying
+wall clock with trustworthiness.
+
+**Not fixed, and the reason is that the right number is not derivable from the
+host.** A macOS host cannot see how many CPUs Colima or Docker Desktop reserved;
+`docker info` reports the VM's own view, which is a daemon round-trip the runner
+does not currently make. The options are to ask the daemon, to cap `auto` at
+some fraction of `hw.ncpu`, or to document `FALSIFY_JOBS` as required on macOS.
+Recorded rather than guessed at.

@@ -509,6 +509,32 @@ falsify_watch_until() {   # <pid> <seconds> → 0 the pid went away first, 1 the
   return 1
 }
 
+# The timeout a target's mutants get: the clock, multiplied by how many oracle
+# FILES the target's set names.
+#
+# One global ceiling cannot be right for a target whose oracle is one test file
+# and a target whose oracle is three — the second does three times the work per
+# mutant, and the ceiling is a HANG DETECTOR, not a cost estimate (F36). This is
+# derived from the oracle set rather than configured per target, because the
+# thing that varies IS the set: nothing has to be remembered when a target gains
+# or loses an oracle.
+#
+# Measured, macOS + Colima, 2026-08-21 (backlog F28). At the 120s default,
+# tests/lib-verify-repo.sh — the only target with THREE oracles — timed out 42 of
+# its 55 mutants and took two pristine CONTROL runs over the clock at 132.8s and
+# 156.0s, while all eight single-oracle targets recorded zero timeouts and zero
+# unproven in the same run. On Linux the same target costs ~2.6s per mutant
+# against ~0.78s for a single-oracle target: the same 3x, just far below the
+# ceiling. The clock was the binding constraint, not the load — halving --jobs
+# moved the run from four failed controls to two, raising the clock moved it to
+# zero.
+fr_effective_timeout() {   # <oracle-set> → seconds
+  local oracle="$1" n
+  n="$(printf '%s' "$oracle" | tr ',' '\n' | grep -c .)"
+  (( n > 0 )) || n=1
+  printf '%s' "$(( FR_TIMEOUT * n ))"
+}
+
 falsify_run_oracle() {   # <tree> <oracle-set> <outfile> <timeout-seconds> [<label>]
   local tree="$1" oracle="$2" out="$3" limit="$4" label="${5:-?}"
   local flag="$out.timedout" pid dog t0 token
@@ -695,7 +721,7 @@ fr_run_mutant() {   # <slot> <target> <oracle> <seq> <lineno> <op> <sha> <text> 
     return 0
   fi
 
-  falsify_run_oracle "$tree" "$oracle" "$out" "$FR_TIMEOUT" "s$slot.m$seq"
+  falsify_run_oracle "$tree" "$oracle" "$out" "$(fr_effective_timeout "$oracle")" "s$slot.m$seq"
   falsify_verdict "$FALSIFY_RC" "$out" "$FALSIFY_TIMED_OUT"
 
   printf 'MUTANT|%s|%s|%s|%s|%s|%s|%s|%s\n' \
@@ -744,7 +770,7 @@ fr_run_control() {   # <slot> <target> <oracle> <n> <resultfile>
   local tree out verdict
   tree="$(fr_slot_tree "$slot")"
   out="$FR_OUT/w$slot.log"
-  falsify_run_oracle "$tree" "$oracle" "$out" "$FR_TIMEOUT" "c$slot.n$n"
+  falsify_run_oracle "$tree" "$oracle" "$out" "$(fr_effective_timeout "$oracle")" "c$slot.n$n"
   falsify_verdict "$FALSIFY_RC" "$out" "$FALSIFY_TIMED_OUT"
   # SURVIVED is falsify_verdict's word for "the oracle noticed nothing", which
   # on an unmutated tree is exactly PASS. Anything else means the oracle went
@@ -1189,7 +1215,7 @@ falsify_main() {
     # An oracle that is not green on the UNMUTATED tree cannot distinguish
     # anything: every mutant would be reported KILLED. rc=2 is named for what
     # it is, because that is what a misspelled oracle looks like.
-    falsify_run_oracle "$(fr_slot_tree 0)" "$oracle" "$FR_OUT/baseline.log" "$FR_TIMEOUT" "baseline"
+    falsify_run_oracle "$(fr_slot_tree 0)" "$oracle" "$FR_OUT/baseline.log" "$(fr_effective_timeout "$oracle")" "baseline"
     falsify_verdict "$FALSIFY_RC" "$FR_OUT/baseline.log" "$FALSIFY_TIMED_OUT"
     if [[ "$FALSIFY_VERDICT" != "SURVIVED" ]]; then
       if (( FALSIFY_RC == 2 )); then
