@@ -4418,3 +4418,88 @@ page: a companion that separates the two outcomes — a `never` predicate
 evaluated alongside the `not yet` one, or a returned reason code — so a
 permanently-false condition fails fast and REPORTS that it did, rather than
 being billed the full ceiling and read as a hang.
+
+---
+
+## F57 — ADDENDUM 2026-08-21: the fix is not a new primitive, and the case headers already said so
+
+F57 proposed a companion primitive that could express "never". Before building
+it, two things were read that changed the answer.
+
+**FIRST: at these three call sites there is nothing to wait for.** `entrypoint.sh`
+runs `run_agent_tools_reconcile` and then `link_agent_tools` **synchronously** —
+once per mode, at 239-240, 285-286 and 307-308 — and only then does `exec capsh`
+hand pid 1 to the sandbox user. `launcher_up` returns only after
+`_it_pid1_is_uid` observes that handover. So by the time `it_wait 900` runs, the
+reconcile has already finished. The condition is not "not yet decided"; it is
+decided, and the ceiling can only ever be spent confirming it.
+
+**SECOND, and this is the uncomfortable part: all three case headers already
+say this.** 700's says the condition is "already permanently decided, and
+it_wait has no way to know that; it will poll its own full 900s before giving
+up". 710 and 720 both call the wait "the redundant wait". The mechanism F57 was
+filed to discover was documented in the cases themselves — and each header then
+budgeted a full 900s ceiling for it anyway. **The defect was never that nobody
+knew. It was that the knowledge sat in a comment while the code did the opposite.**
+
+**The change: 900 → 10 at all three sites**, plus a message that stops lying.
+The old one — `the agent-tools reconcile did not finish within 900s` — is FALSE
+in 700's mutated run: the reconcile finished normally, the symlink was removed.
+It now reads `claude is absent after the reconcile completed — entrypoint runs
+it before handover, so this is not a timeout`.
+
+Ten rather than zero because the argument above is a code read, and this project
+has been wrong about read-derived mechanisms often enough to pay 10s for margin.
+
+**No new primitive, no engine change, and `it_wait`'s other 17 call sites are
+untouched** — so the "20 callers" risk F57 was deferred for does not arise.
+
+**Case timeouts (2100 / 2400 / 2000) are deliberately NOT re-tightened.** The
+compound bounds drop from ~1800 to ~910-950, but a declared timeout is a hang
+detector, not a cost estimate — F36's 403-minute projection against a measured
+42 is the lesson. Their derivation arithmetic is updated; the values stand.
+
+**CONFIRMED ON A REAL DAEMON, 2026-08-21**, both parts, by the Host Agent.
+
+*Part 1 — unmutated must still pass.* All three do, and **none failed at the 10s
+wait**, which was the falsifier: nothing resolves after the capsh handover.
+
+| case | run.sh case time | verdict |
+|---|---|---|
+| 700-agent-tools-install-restricted | 93s | PASS (12 assertions) |
+| 710-agent-tools-reused-not-reinstalled | 87s | PASS (3 assertions) |
+| 720-node-multiversion-nvm-use | 82s | PASS (3 assertions) |
+
+*Part 2 — mutated must still FAIL, faster.* `700-agent-tools-not-linked` applied:
+**FAIL, exit 13, 73s case time / 86s wall**, against **1003s** before. The new
+message fires as the FIRST assertion rather than as a timeout at the end:
+
+```
+FAIL: claude is absent after the reconcile completed — entrypoint runs it
+      before handover, so this is not a timeout
+```
+
+**−917s, and the number is the evidence.** The saving is not merely "large": it
+equals the ~900s the old `it_wait 900` was predicted to spend confirming a
+settled condition. A diagnosis whose predicted waste matches the measured saving
+to within ~2% is confirmed, not just consistent.
+
+**A cost INVERSION was removed, which nobody had named.** Under the old code the
+mutated run (1003s) cost 5x the healthy one (198s) — a failing test more
+expensive than a passing one, so every demonstration of this case was billed for
+the assertion working correctly. It is now 86s against 198s: the failing run is
+cheaper, because it stops at the first assertion instead of reaching the
+six-tool loops.
+
+**The durable half of the fix is the message, not the 917s.** "…so this is not a
+timeout" tells a future reader the condition was already decided, which means the
+answer is never "raise the ceiling" — the change that would reintroduce exactly
+this defect.
+
+**Not run in mgd-ai-containers, deliberately.** Every component of the mechanism
+is byte-identical across the repos — `entrypoint.sh`, `lib.sh` (`launcher_up` /
+`_it_pid1_is_uid`) and all three case files — so the only thing a second run
+could catch is a layout difference in code that is not layout-dependent. mgd's
+nightly runs `packages-agents`/`packages-native`, so those three cases execute
+there anyway at no marginal cost.
+

@@ -15,10 +15,12 @@
 # Two distinct paths through this case, bounded differently:
 #
 #   - PHASE 1 NEVER RESOLVES `claude`: `|| { fail; it_finish }` exits right
-#     there — bounded at ~900 (launcher_up) + ~900 (the redundant wait, only
+#     there — bounded at ~900 (launcher_up) + ~10 (the redundant wait, only
 #     if launcher_up DID succeed but claude specifically stayed missing) with
 #     NO tail after it (the mtime check, rm -f, and phase 2 never run).
-#     ≤1800s, self-contained.
+#     ≤910s, self-contained. That second term was 900 until backlog F57: this
+#     header already called the wait REDUNDANT and still budgeted a full
+#     ceiling for it, on a condition it says is decided before the wait runs.
 #   - PHASE 1 SUCCEEDS (the only way to reach phase 2 at all): its own
 #     redundant wait resolved near-instantly, because reaching this branch
 #     means the condition was already true — so phase 1's real cost is just
@@ -95,8 +97,11 @@ fixture_scope_init || it_finish
 export AI_CONTAINER_GROUP=agentreuse
 
 launcher_up restricted || it_finish
-it_wait 900 docker exec "$IT_CID" bash -c "command -v claude >/dev/null" \
-  || { fail "first container never finished installing"; it_finish; }
+# 10s, not 900: the reconcile completes inside entrypoint, before the handover
+# launcher_up waits for, so this condition is already decided. See 700's note
+# and backlog F57.
+it_wait 10 docker exec "$IT_CID" bash -c "command -v claude >/dev/null" \
+  || { fail "first container: claude absent after the reconcile completed"; it_finish; }
 first="$IT_CID"
 
 first_mtime="$(mtime_of "$first")"
