@@ -49,20 +49,22 @@ The first container start in a new group is empty — you log the agents in once
 
 Your project directory is mounted for you. Anything **else** the agent should reach is named by a path variable:
 
-| Variable | What it mounts |
+| Variable | What it holds |
 |---|---|
-| `VAULT_PATH` | An Obsidian vault at `/obsidian` (set `qmd=ON` if you want search over it) |
-| `DOCS_PATH` | A docs repository, read-only by default |
-| `SPECS_PATH` | A specs repository |
+| `VAULT_PATH` | **Your personal knowledge base** — markdown notes, mounted read-write at `/workspace/vault`. Obsidian is a common way to edit it, but that is your choice; the container only sees files. |
+| `SPECS_PATH` | **The shared bridge between people and agents** — specs, designs, ARDs and plans, mounted read-write at `/workspace/specs`. This is what a product manager, an architect, an engineer and a dev team hand back and forth, and what spec-driven agent workflows read. |
+| `DOCS_PATH` | A product documentation repository, mounted read-only by default |
 | `EXTRA_MOUNTS` | Any other host paths, space-separated, `:ro` for read-only |
+
+The first three are markdown corpora. Set `qmd=ON` in `sandbox.conf` if you want the agent to search them — `sandbox.sh` warns at startup when a corpus is mounted and `qmd` was not built in.
 
 **Set them once in your shell profile.** A vault, a docs repo and a specs repo are usually one per *person*, not one per project — so exporting them from `~/.bashrc`, `~/.zshrc` or `~/.profile` means every project you ever initialise picks them up with nothing further to do:
 
 ```bash
 # ~/.zshrc or ~/.bashrc
-export VAULT_PATH="$HOME/obsidian/my-vault"
-export DOCS_PATH="$HOME/dev/docs"
-export SPECS_PATH="$HOME/dev/specs"
+export VAULT_PATH="$HOME/notes"                 # your personal knowledge base
+export DOCS_PATH="$HOME/dev/product-docs"      # product documentation
+export SPECS_PATH="$HOME/dev/specs"            # shared specs, designs, plans
 ```
 
 Do this **before** you initialise, and the first container start already has them.
@@ -70,6 +72,19 @@ Do this **before** you initialise, and the first container start already has the
 **Or per project**, in `sandbox.local.env` inside the project's `.ai-containers/` — machine-specific and gitignored — when one project needs a different path from the rest.
 
 > **If you use both, the exported one wins.** `sandbox.env` and `sandbox.local.env` set a variable only when it is not already set, so a value exported from your profile beats both files. That is what makes the profile approach reliable — and it means a per-project override in `sandbox.local.env` will *not* take effect while your profile exports the same name. Unset it for that shell, or pass the value inline: `VAULT_PATH=/other ./runme.sh`.
+
+### Set `GITHUB_TOKEN` on the host, if you install tools from GitHub
+
+Several components are fetched from GitHub releases at build time — `dtctl`, `dtmgd`, `vale`, `goreleaser`. Unauthenticated GitHub API calls are rate-limited, and a rate-limited build fails at the point it tries to resolve "latest".
+
+If you have `gh` installed and authenticated, there is nothing to do: `runme.sh` resolves a token with `gh auth token` automatically. Otherwise export one:
+
+```bash
+# ~/.zshrc or ~/.bashrc
+export GITHUB_TOKEN="ghp_…"
+```
+
+It is **build-time only** — `build.sh` passes it to `docker build` as a BuildKit secret, and `sandbox.sh` deliberately does not forward it into the container. A private tool repository needs it too; `build.sh` warns by name when one is enabled without a token.
 
 `project-init.sh` prompts for **extra mounts** directly, so have those paths ready. It does *not* ask about the vault, docs or specs paths — those come from your profile or `sandbox.local.env`. See [Environment variables](configuration.md) and [Repositories, volumes and mounts](repos-and-mounts.md).
 
