@@ -33,8 +33,19 @@ fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails+1)); }
 
 # The floor is stated exactly once. A second literal somewhere else is how the
 # 4.3-vs-4.4-vs-3.2 contradiction happened in the first place.
-floor_defs="$(grep -rlE 'AI_CONTAINERS_BASH_FLOOR_(MAJOR|MINOR)=' "$ENGINE_DIR" \
-  --include='*.sh' 2>/dev/null | grep -v '/tests/' | wc -l | tr -d ' ')"
+#
+# TRACKED FILES ONLY, via git ls-files — the same idiom the entry-point list
+# below already uses, and for a reason measured on 2026-08-21: this check used
+# `grep -r` over the engine directory, which walks the filesystem and therefore
+# counted `.ai-containers/bash-floor.sh`. That path is a git-IGNORED copy of the
+# whole upstream repo, written into every project by sync-to-projects.sh —
+# including into this checkout. Running the sync turned the suite red with "the
+# floor is defined in 2 files", naming a second definition that is not a second
+# definition at all but a copy of the first. A guard that fails on a file the
+# project deliberately ignores does not protect the invariant; it just goes off.
+floor_defs="$( (cd "$ENGINE_DIR" && git ls-files -z '*.sh' \
+  | xargs -0 grep -lE 'AI_CONTAINERS_BASH_FLOOR_(MAJOR|MINOR)=' 2>/dev/null) \
+  | grep -vE '(^|/)tests/' | wc -l | tr -d ' ')"
 [[ "$floor_defs" == "1" ]] \
   && pass "the floor is defined in exactly one file" \
   || fail "the floor is defined in $floor_defs files — it must be exactly one"
