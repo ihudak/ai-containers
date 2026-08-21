@@ -1337,6 +1337,17 @@ grep -q 'CONTROL FAILED' <<< "$FX_ERR" \
 grep -q 'may have been killed by the machine rather than by the damage' <<< "$FX_ERR" \
   && pass "  … and saying what it means for the kill count" \
   || fail "  … and saying what it means for the kill count: $FX_ERR"
+# AND WHAT ACTUALLY WENT RED. The first real macOS run to trip a control
+# (2026-08-21) reported `exit+failline` on tests/bash-dialect-lint.sh and
+# nothing about WHICH assertion failed — the one fact that distinguishes a
+# load-sensitive oracle from a defect in it. The oracle's own output lives in a
+# per-SLOT log that the next mutant overwrites and the scratch tree takes with
+# it, so it has to be carried out on the record stream or it is gone.
+check "  … and carrying the oracle's own FAIL: line out with it" "1" \
+  "$(grep -c '^NOTE|control-output|.*the machine, not the mutation' <<< "$FX_OUT")"
+grep -q 'control output:.*the machine, not the mutation' <<< "$FX_ERR" \
+  && pass "  … on stderr too, beside the error it explains" \
+  || fail "  … on stderr too, beside the error it explains: $FX_ERR"
 # THE POINT, stated as an assertion. The mutants dispatched AFTER the oracle
 # went red are scored KILLED, and without the control the run would have
 # reported that as coverage and exited 0.
