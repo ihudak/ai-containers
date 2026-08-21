@@ -33,24 +33,64 @@
      ```
 - **Bash ≥ 5.1** on the host (for `sandbox.sh`). Linux distributions from Ubuntu 22.04 / Debian 11 / RHEL 9 onward ship this. macOS ships bash 3.2 — install a newer one via `brew install bash`.
 
-## Usage
+## Setting up your first project
 
-Edit `sandbox.conf` to choose which optional components to include, then build the image:
+You do not work in this repository. You initialise a project once, and the project gets its own launcher.
+
+### 1. Initialise the project — from this repository
 
 ```bash
-./build.sh
+./project-init.sh /path/to/myproject
+# optional second argument overrides the project name used for the image
+./project-init.sh /path/to/myproject my-custom-name
 ```
 
-`build.sh` reads `sandbox.conf`, assembles the three `allowlist-*.txt` files from the matching fragments in `allowlist-*.d/`, and passes a `--build-arg` flag for each component to `docker build`. The generated `allowlist-*.txt` files are gitignored; the `*.d/` fragment directories are the source of truth.
+It prompts for the image name, the [container group](groups.md), CPU and memory limits, and any extra mounts. Then it copies the infrastructure into `<project>/.ai-containers/`, registers the project in `projects.conf`, and writes the launcher. See [Managing projects](multiple-projects.md) for everything it generates and why the config is split into a portable `sandbox.env` and a machine-local `sandbox.local.env`.
 
-To force a full rebuild from scratch (bypassing Docker's layer cache), pass `--no-cache` or set `NO_CACHE=1`:
+### 2. Choose what goes in the image — optional on a first run
+
+```bash
+$EDITOR /path/to/myproject/.ai-containers/sandbox.conf
+```
+
+Every key is documented in [Components](components/README.md). The defaults give you Node, Python, git and the agent CLIs, which is enough to start.
+
+### 3. Launch
+
+```bash
+cd /path/to/myproject/.ai-containers
+./runme.sh
+```
+
+`runme.sh` is the only command you need day to day. It resolves a build-time `GITHUB_TOKEN` from `gh` if you have one, builds the image when it needs to, and starts the container in the mode recorded in `sandbox.env`. **After changing `sandbox.conf`, run it again** — it rebuilds.
+
+### Keeping projects up to date
+
+When this repository changes, push the update into every registered project:
+
+```bash
+./sync-to-projects.sh              # all registered projects
+./sync-to-projects.sh /path/to/p   # just one
+```
+
+## Running the scripts directly
+
+`runme.sh` calls `build.sh` and then `sandbox.sh`. You normally never call them yourself — but they are ordinary scripts, and when you are working on this repository, or debugging a build, they are the ones to reach for.
+
+```bash
+./build.sh                 # read sandbox.conf, assemble the allowlists, build the image
+./sandbox.sh restricted    # run the container with the firewall on
+```
+
+`build.sh` assembles the three `allowlist-*.txt` files from the matching fragments in `allowlist-*.d/` and passes a `--build-arg` for each component to `docker build`. The generated `allowlist-*.txt` files are gitignored; the `*.d/` fragment directories are the source of truth.
+
+Docker cannot detect that a remote file fetched with `curl` has changed, so to pick up newer CLI tool versions force a full rebuild:
 
 ```bash
 ./build.sh --no-cache
 NO_CACHE=1 ./build.sh
 ```
 
-This is useful when you want to pick up newer versions of CLI tools installed via `curl`/`wget` inside the Dockerfile, since Docker cannot detect remote content changes automatically.
 
 ---
 

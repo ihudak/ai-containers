@@ -1,7 +1,5 @@
 # Resource limits
 
-## Resource limits
-
 By default the container runs with `--cpus=1.0`, `--memory=4g`, `--memory-reservation=2g`, and `--memory-swap=4g`. Override any of them at run time:
 
 ```bash

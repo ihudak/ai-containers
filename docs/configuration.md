@@ -1,7 +1,5 @@
 # Environment variables
 
-## Environment variables
-
 These configure `sandbox.sh` at launch time. Set any of them **inline** for a single run
 (`VAULT_PATH=/path ./sandbox.sh restricted`) or **export them in your host shell profile**
 (`~/.bash_profile`, `~/.zshrc`) so they become the default for every container you start.

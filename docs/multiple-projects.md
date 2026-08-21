@@ -1,6 +1,4 @@
-# Managing multiple projects
-
-## Managing multiple projects
+# Managing projects — setup, launching and updates
 
 If you use ai-containers across several projects, two scripts help you keep them in sync without manual copying.
 
@@ -26,13 +24,14 @@ What it does:
 
 > **Note on resource defaults:** the CPU/memory values `project-init.sh` pre-fills in its prompts (`4.0` CPU, `8g` memory, `4g` reservation, swap = memory) reflect the recommended **comfortable** tier from [Resource limits](resources.md), not `sandbox.sh`'s conservative fallback (`1.0` CPU / `4g` / `2g` / `4g`). This is intentional: the generated `sandbox.env` records the comfortable values as `CONTAINER_*`, while `sandbox.sh`'s fallbacks remain the bare minimum for a single agent doing light work. Edit `sandbox.env` to lower them if your Docker/Colima VM is smaller (or override just this machine in `sandbox.local.env`).
 
-After init, edit `sandbox.conf` to choose components, review the launch script, then build:
+After init, edit `sandbox.conf` to choose components, then launch:
 
 ```bash
 cd <project>/.ai-containers
-./build.sh
 ./runme.sh
 ```
+
+`runme.sh` runs `build.sh` itself, so there is no separate build step — running both would build twice.
 
 ## sync-to-projects.sh — propagate updates
 

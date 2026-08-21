@@ -6,14 +6,42 @@ The agent gets your code and the network you explicitly allowed. Nothing else.
 
 ## Quick start
 
+You do not run this repository directly. You point it at a project once, and from then on the project has its own launcher.
+
+**1. Set the project up — once, from here:**
+
 ```bash
-./build.sh                 # reads sandbox.conf, assembles the allowlists, builds the image
-./sandbox.sh restricted    # run with the firewall on (the normal mode)
+./project-init.sh /path/to/myproject
 ```
 
-Edit **`sandbox.conf`** first to choose what goes in the image — languages, CLIs, database clients, and so on. Every key is listed in [Components](docs/components/README.md).
+It asks for the image name, container group, CPU and memory, and any extra mounts; copies the infrastructure into `<project>/.ai-containers/`; registers the project; and generates the launcher.
 
-In a consumer project you normally start it through the generated `runme.sh` launcher instead. See [Managing multiple projects](docs/multiple-projects.md).
+**2. Choose what goes in the image — in the project:**
+
+```bash
+$EDITOR /path/to/myproject/.ai-containers/sandbox.conf
+```
+
+Languages, CLIs, database clients and tools. Every key is in [Components](docs/components/README.md). Optional, and skippable on a first run — the defaults work.
+
+**3. Launch it — from the project, every time after that:**
+
+```bash
+cd /path/to/myproject/.ai-containers
+./runme.sh
+```
+
+`runme.sh` builds the image if it needs to and starts the container, using the network mode and working directory recorded in `sandbox.env`. It is the only command you need day to day; after changing `sandbox.conf`, just run it again.
+
+**Later, to pick up changes to this repository:**
+
+```bash
+./sync-to-projects.sh          # from here — updates every registered project
+```
+
+Two optional extras worth knowing about early: [container groups](docs/groups.md) keep one project's credentials and agent config separate from another's, and [repo volumes](docs/repos-and-mounts.md) give native-speed source trees on macOS.
+
+> `build.sh` and `sandbox.sh` are what `runme.sh` calls. Run them by hand only when you are working on this repository itself, or debugging a build.
 
 ## Documentation
 
@@ -29,7 +57,7 @@ In a consumer project you normally start it through the generated `runme.sh` lau
 | [Agent-tier tools](docs/agent-tools.md) | Where the agent CLIs live, and how to update them |
 | [Resource limits](docs/resources.md) | CPU and memory per agent |
 | [Security model, allowlists and tokens](docs/security.md) | What is blocked, how to allow it, where tokens go |
-| [Managing multiple projects](docs/multiple-projects.md) | Rolling a change out to every project |
+| [Managing projects](docs/multiple-projects.md) | What `project-init.sh` generates, and keeping projects in sync |
 | [Troubleshooting and host notes](docs/troubleshooting.md) | When it does not work, and macOS specifics |
 
 The full index is [docs/README.md](docs/README.md).
