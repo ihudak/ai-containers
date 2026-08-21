@@ -8,38 +8,40 @@ The agent gets your code and the network you explicitly allowed. Nothing else.
 
 You do not run this repository directly. You point it at a project once, and from then on the project has its own launcher.
 
-**1. Set the project up — once, from here:**
+### First, three decisions
+
+`project-init.sh` asks about two of these, and the third is painful to retrofit — so make them before you start. Details in [Getting started](docs/getting-started.md).
+
+1. **Which [container group](docs/groups.md)?** A named home for the agent's credentials and config, so two projects need not share logins. `default` is a fine answer; init will ask.
+2. **What should the container see besides your code?** An Obsidian vault (`VAULT_PATH`), docs (`DOCS_PATH`), specs (`SPECS_PATH`), anything else (`EXTRA_MOUNTS`). Export the first three from `~/.bashrc` or `~/.zshrc` **once** and every project picks them up — they are usually one per person, not per project. Init asks about extra mounts separately.
+3. **On macOS with a large repository — seed a [repo volume](docs/repos-and-mounts.md) first.** Host directories reach Docker's Linux VM over a network filesystem, which is slow enough for a big repo to sour the whole experience. Seed it *before* init: a repo attached as a volume must **not** also appear in `EXTRA_MOUNTS`, or the container refuses to start. On Linux, bind mounts are already native speed — nothing to do.
 
 ```bash
+./repo.sh add app ~/dev/app     # macOS, big repo — do this before init
+```
+
+### Then
+
+```bash
+# 1. once per project, from here
 ./project-init.sh /path/to/myproject
-```
 
-It asks for the image name, container group, CPU and memory, and any extra mounts; copies the infrastructure into `<project>/.ai-containers/`; registers the project; and generates the launcher.
-
-**2. Choose what goes in the image — in the project:**
-
-```bash
-$EDITOR /path/to/myproject/.ai-containers/sandbox.conf
-```
-
-Languages, CLIs, database clients and tools. Every key is in [Components](docs/components/README.md). Optional, and skippable on a first run — the defaults work.
-
-**3. Launch it — from the project, every time after that:**
-
-```bash
+# 2. configure it, in the project
 cd /path/to/myproject/.ai-containers
+$EDITOR sandbox.conf         # languages, CLIs, tools — see docs/components/
+$EDITOR sandbox.local.env    # VAULT_PATH / DOCS_PATH / SPECS_PATH, REPOS
+
+# 3. launch it, every time after that
 ./runme.sh
 ```
 
-`runme.sh` builds the image if it needs to and starts the container, using the network mode and working directory recorded in `sandbox.env`. It is the only command you need day to day; after changing `sandbox.conf`, just run it again.
+`runme.sh` builds the image when it needs to and starts the container. It is the only command you need day to day; after changing `sandbox.conf`, run it again.
 
 **Later, to pick up changes to this repository:**
 
 ```bash
 ./sync-to-projects.sh          # from here — updates every registered project
 ```
-
-Two things worth knowing before you settle in. [Container groups](docs/groups.md) keep one project's credentials and agent config separate from another's. And **on macOS, put large repositories in a [repo volume](docs/repos-and-mounts.md)** rather than a bind mount — host directories reach Docker's Linux VM over a network filesystem, which is slow enough for a big repo to sour the whole experience. On Linux, bind mounts are already native speed and there is nothing to do.
 
 > `build.sh` and `sandbox.sh` are what `runme.sh` calls. Run them by hand only when you are working on this repository itself, or debugging a build.
 
