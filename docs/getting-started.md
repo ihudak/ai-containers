@@ -121,12 +121,10 @@ You do not work in this repository. You initialise a project once, and the proje
 ### 1. Initialise the project — from this repository
 
 ```bash
-./project-init.sh /path/to/myproject
-# optional second argument overrides the project name used for the image
-./project-init.sh /path/to/myproject my-custom-name
+./project-init.sh
 ```
 
-It prompts for the image name, the container group, CPU and memory limits, and extra mounts — the decisions from the previous section. Then it copies the infrastructure into `<project>/.ai-containers/`, registers the project in `projects.conf`, and writes the launcher. [Managing projects](multiple-projects.md) covers everything it generates, and why the config is split into a portable `sandbox.env` and a machine-local `sandbox.local.env`.
+**It takes no arguments** — anything you pass is ignored. It asks for the project path first (and re-asks until the path exists), then the project name, defaulting to the directory's basename. After that it prompts for the image name, the container group, CPU and memory limits, and extra mounts — the decisions from the previous section. Then it copies the infrastructure into `<project>/.ai-containers/`, registers the project in `projects.conf`, and writes the launcher. [Managing projects](multiple-projects.md) covers everything it generates, and why the config is split into a portable `sandbox.env` and a machine-local `sandbox.local.env`.
 
 ### 2. Finish the configuration
 
