@@ -1,0 +1,20 @@
+# What is in the box
+
+
+- `Dockerfile` builds the image from a configurable set of optional components: **Kiro CLI**, JVM toolchains (via SDKMAN: OpenJDK, GraalVM CE, Kotlin, Scala, Maven, Gradle), Node.js versions (via nvm), Python versions (via pyenv), Ruby (via rvm), Rust (via rustup), Go, cloud CLIs (AWS, Azure, kubectl, GitHub CLI), dev tools (Angular CLI, qmd, GoReleaser), and external CLI tools described in `tools.d/` (currently Dynatrace's `dtctl` and `dtmgd`). The other agent-tier tools — GitHub Copilot CLI, Claude Code, Codex CLI, Gemini CLI, `graphify`, and Vale — are **not** baked into the image; they install at container start into a per-group `~/.ai-tools` home instead (see [Agent-tier tools (`~/.ai-tools`)](agent-tools.md)). Node.js (latest LTS), Python (latest stable), git, jq, packet-capture tools, and the non-root sandbox user are always included.
+- `sandbox.conf` controls which optional components are built into the image and which credential directories are mounted at runtime.
+- `tools.d/` holds one descriptor file per external CLI tool the image can install (currently `dtctl.conf`, `dtmgd.conf`, `acli.conf`) — its GitHub repo, binary name, whether that repo is private, its config directory (one path, or several space-separated), how the binary is fetched (`install=release` from a release asset, `install=repo-file` for a prebuilt binary committed in a repo at `repo_path=`, or `install=url` for a vendor-hosted download at `url=`), its allowlist fragment, and whether it ships an Agent Skill. `tools-lib.sh` is the shared parser for these descriptors. `install-tools.sh` is the generic build-time installer driven by them, with optional authentication via `GITHUB_TOKEN`. `install-agent-skills.sh` runs at container start and installs each installed tool's Agent Skill for every enabled AI agent — see [Dynatrace CLIs (dtctl / dtmgd)](components/dynatrace-clis.md).
+- `entrypoint.sh` applies a restricted firewall, a discovery mode, or an open (unrestricted, uncaptured) mode at container startup. In all three modes it creates the sandbox user and drops to it via `capsh`. Restricted and open modes drop both `NET_ADMIN` and `NET_RAW`; discovery mode drops only `NET_ADMIN` (keeping `NET_RAW` for tcpdump).
+- `refresh-ipset-allowlist.sh` resolves the concrete allowlist domains into IPv4 and IPv6 `ipset` sets.
+- `capture-blocked-traffic.sh` runs as a background root daemon in restricted mode, logging every blocked outbound destination to `/workspace/.agent-blocked/`.
+- `capture-agent-destinations.sh` helps you discover additional AI-agent-related DNS and TLS destinations in discovery mode.
+- `allowlist-domains.d/`, `allowlist-proxy-domains.d/`, `allowlist-cidrs.d/` contain per-component allowlist fragments. `build.sh` assembles the active fragments into the three `allowlist-*.txt` files that the Dockerfile copies into the image. Each directory also contains a `custom.txt` file that is always included regardless of which components are enabled.
+- `sandbox-common.sh` is a shared library (config parsing, container-group helpers, path/volume helpers, the repo registry) sourced by the three entry-point scripts below.
+- `build.sh` builds the image (reads `sandbox.conf`, regenerates the allowlists).
+- `sandbox.sh` runs the container engine (`restricted` / `discovery` / `open`). In a consumer project you normally invoke it indirectly through the generated `runme.sh` launcher (see project-init below).
+- `repo.sh` manages shared, native-speed repo volumes (`add` / `sync` / `reset` / `list` / `rm`).
+- `Dockerfile.seed` builds the small, shared helper image (`ai-containers-seed`: Alpine + `git`, `openssh-client`, `rsync`, `bash`) that `repo.sh` uses to seed and sync repo volumes. It is independent of the main sandbox image (and of `IMAGE_NAME`), so it is built once and reused by every project, and repo volumes can be seeded before `./build.sh` is ever run.
+
+---
+
+[← Documentation index](README.md)
