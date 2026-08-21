@@ -2210,7 +2210,7 @@ its own measurement.
 
 ---
 
-## F36 — the launcher tier's hand procedure cannot demonstrate a mutation that lives in the image
+## F36 — the launcher tier's hand procedure cannot demonstrate a mutation that lives in the image — **CLOSED 2026-08-20**
 
 Found by the F5 work, from the same derivation. `AGENTS.md` documents the
 launcher-tier demonstration as:
@@ -4321,3 +4321,100 @@ collapse — F37 was a rename, not a merger. The paragraph now records what
 happened instead of what was expected, because a stale prediction left in a
 header is the same defect as a stale measurement left in a row (see the mgd
 `#DEFERRED` fix of the same date).
+
+---
+
+## F36 — CLOSED 2026-08-20 on the host. Nine of nine, and the projection was 10x wrong.
+
+Run by the Host Agent on a real daemon, against images genuinely rebuilt with
+each mutation applied. **Nine patches, nine DEMONSTRATED, zero UNDEMONSTRATED,
+zero not-run.** Every one carried a real `FAIL:` assertion line, so none is the
+hollow "exited 0 but asserted nothing" verdict the INCONCLUSIVE outcome exists
+to catch.
+
+| patch | case | variant | wall | the assertion that fired |
+|---|---|---|---|---|
+| 410-workspace-root-not-chowned | 410-workdir-and-umbrella | default | — | the write was REFUSED |
+| 630-rvm-root-not-chowned | 630-rvm-volume-writable | default | 14s | agent can write …/.rvm — REFUSED |
+| 700-agent-tools-not-linked | 700-agent-tools-install-restricted | agents | 1003s | reconcile did not finish within 900s |
+| 720-npmrc-prefix-restored | 720-node-multiversion-nvm-use | agents | 99s | `nvm use 20` FAILED |
+| 730-db-clients-not-space-split | 730-native-clients-run | native | 372s | psql is on PATH |
+| 735-toolchain-not-restored | 730-native-clients-run | native | 135s | libyaml-dev's header is MISSING |
+| 740-default-ruby-not-linked | 740-ruby-bootstraps-and-resolves | native | 360s | ruby is on PATH |
+| 745-ruby-hooks-not-exposed | 740-ruby-bootstraps-and-resolves | native | 318s | bundle present but FAILED TO RUN |
+| 750-only-default-ruby-installed | 750-ruby-multiversion-selection | native | 177s | ruby_wait_ready: reconcile FAILED |
+
+**THE COST PROJECTION WAS WRONG BY 10x, AND THE REASON IS REUSABLE.** Summing
+the declared timeouts gave **403 minutes**. The measurement was **~42**. A
+declared timeout is a *hang detector*, not a cost estimate — a sound upper bound
+used as a point estimate. The tell that was missed: ceilings cluster on round
+numbers (300 / 2000 / 2100 / 3900), and a number that looks *chosen* rather than
+*observed* is not an estimate. Worth remembering before any future tier is
+deferred as "too expensive" on the strength of its own timeouts.
+
+`IT_RUBY_VERSIONS` is recorded as a standing cost lever rather than a deferral:
+one version roughly halves the native tier, at the price of withdrawing the
+multiruby capability — which would make `750-ruby-multiversion-selection` SKIP
+honestly. Nobody needs that at the measured cost, but a slower machine might.
+
+---
+
+## F57 — `it_wait` cannot distinguish "not yet" from "never"
+
+Found by the Host Agent during F36's run, and recorded here because it was not
+recorded anywhere: it lived only in a chat message until 2026-08-21.
+
+`tests/integration/lib.sh:122` polls until success or deadline:
+
+```bash
+it_wait() {  # $1=timeout in wall-clock seconds, $2… = command
+  local t="$1"; shift
+  local deadline=$(( EPOCHSECONDS + t ))
+  while :; do
+    "$@" >/dev/null 2>&1 && return 0
+    (( EPOCHSECONDS >= deadline )) && return 1
+    sleep 1
+  done
+}
+```
+
+It expresses **not yet**. It has no channel for **never**. Any mutation that
+permanently falsifies the condition burns the entire ceiling by construction,
+every time, and returns a timeout indistinguishable from a real hang.
+
+**Measured, with its own control.** Both numbers come from F36's run:
+
+| | call site | ceiling | whole run | why |
+|---|---|---|---|---|
+| `700` | `700:72`, `it_wait 900` | 900s | **1003s** | its mutation removes the claude link, so the condition is permanently false — ~900s of polling a decided question, ~100s for everything else |
+| `720` | `720:52`, `it_wait 900` | 900s | **99s** | its mutation breaks `nvm use 20`, not the link, so the *same* poll returns at once |
+
+Identical primitive, identical budget, identical failure message
+(`the agent-tools reconcile did not finish within 900s`) — and the cost decided
+entirely by whether the condition ever becomes true. `700`'s failure at `700:73`
+is bound to that `it_wait`, not to `launcher_up`'s settle: line 68 either
+succeeded or execution never reached 72.
+
+**Not a defect in case 700.** Its header reasons about exactly this and sizes
+2100s for margin. The defect is in the primitive.
+
+**WHY IT MATTERS BEYOND COST, which is the part worth keeping.** The falsify
+tier detects load-dependent verdicts through several channels — `timeout`,
+`scaffold`, `signal`. The integration tier detects **none** of them. A verdict
+that took the full ceiling and a verdict that failed instantly are reported the
+same way, so the tier cannot tell "this assertion can fail" from "this machine
+was slow", which is the F30/F32 family of defect in a place nothing checks for
+it.
+
+**Blast radius, re-derived 2026-08-21 and unchanged: 20 call sites across 11
+case files**, three of them at 900s (`700:72`, `710:98`, `720:52`). An earlier
+count of "16 case files" was files *mentioning* `it_wait`, not calling it — the
+Host Agent's correction, verified here.
+
+**Deliberately not fixed inline.** A new primitive with 20 callers is its own
+increment, and the validation needs the integration corpus, which needs a
+daemon. Sketch, so the increment starts from a position rather than a blank
+page: a companion that separates the two outcomes — a `never` predicate
+evaluated alongside the `not yet` one, or a returned reason code — so a
+permanently-false condition fails fast and REPORTS that it did, rather than
+being billed the full ceiling and read as a hang.
