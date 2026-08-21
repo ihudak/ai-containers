@@ -3634,7 +3634,7 @@ assertion: the branch still fails the phase and still names itself.
 
 ---
 
-## F1 — progress: the destructive trio is covered, 2026-08-20/21
+## F1 — progress: every subcommand is covered, and it is STILL not enough, 2026-08-20/21
 
 **STILL OPEN.** One of the seven `cmd_*` subcommands is now exercised. The
 entry's reason for parking the rest is unchanged.
@@ -3695,10 +3695,78 @@ against was reset, while the thing that was reset is a volume no container will
 mount. The `DIRTY` file the case plants is therefore a **control**, not the
 guard, and the comment now says so.
 
-**What is still unexercised**, and why the row stays `EXECUTED-PARTIAL`:
-`cmd_sync`, `cmd_list`, `cmd_add`, `cmd_reindex`, and the four
-`seed_from_*`/`sync_from_*` helpers. **None of those five destroys anything**,
-which is why they are last rather than next.
+### Slice 3, 2026-08-21 — `add`, `sync`, `reindex`, and `list`'s flag handling
+
+Nothing in slice 3 deletes, so it is aimed at what these paths DO carry: the
+seeding helpers mount **host paths and the developer's private SSH keys** into a
+**root** container, and the mount MODE is the only thing between "read the
+source" and "write to it". That is argv, and argv is what this harness already
+records. Four guards demonstrated failing:
+
+| damage | what the recorded argv then shows |
+|---|---|
+| `seed_from_path` drops `:ro` | `-v /…/newsrc:/src` — the root seed helper can write back into the developer's tree |
+| `seed_from_git` drops `:ro` | `-v /…/.ssh:/root/.ssh-host` — root, read-write, over the private keys |
+| `host_uid`/`host_gid` revert to `id -u`/`id -g` | `chown -R 502:20` while `SANDBOX_UID=4242` was set |
+| `cmd_add`'s stray-volume guard is dropped | `add` seeds straight over an unregistered volume |
+
+The third is not hypothetical: `AGENTS.md` records that exact regression as
+having already shipped once, breaking the documented override and leaving seeded
+volumes owned by the wrong UID.
+
+Also covered: `sync`'s read-only `~/.ssh`, `sync --all`, the bind-backend no-op,
+and that **`reindex` never removes a registry entry** — it exists to *recover* a
+lost registry, so dropping the bind entry would unregister a repo with no volume
+to rediscover it from.
+
+**`tests/test-grep-q-pipelines.sh` caught the new test code twice in one day.**
+Five `producer | grep -q` pipelines under `pipefail` — F34's rule, enforced over
+every tracked script, firing on the increment that had just been written.
+Rewritten through a `run_has` herestring helper, and one damage re-run afterwards
+to confirm the new form still flips rather than having gone quietly vacuous.
+
+### AND THE MEASUREMENT SAYS IT IS STILL NOT ENOUGH
+
+The stated goal of slice 3 was to finish F1 so `repo.sh` could leave DEFERRED and
+enter the mutation tier. **It does not.** Measured with all three slices in
+place, whole-file, under the derived two-test oracle set:
+
+| | mutants | killed | survived | unresolved |
+|---|---|---|---|---|
+| `repo.sh`, all three slices | 249 | 120 | **129** over 82 lines | **51%** |
+| `sandbox.sh`, for comparison | 267 | 193 | 74 | 27% |
+
+Against a corpus that carries **2** survivors. `repo.sh` is in worse shape than
+the target this project deliberately left deferred, after three slices of work.
+
+**Where they are, because it decides what comes next.** The survivors are
+overwhelmingly in *what the user is told*, not in *what is done*:
+
+```
+cmd_list 15 · list_copies 8 · cmd_gc 8 · ensure_seed_image 7 · cmd_sync 7
+cmd_rm 7 · cmd_reset 6 · cmd_reindex 6 · sync_one 4 · reset_one 4 · rest 10
+```
+
+`cmd_rm` and `cmd_gc` still carry survivors **despite slices 1 and 2**, because
+those assertions check what was REMOVED, not what was PRINTED before the
+removal — the *"About to remove …"* summary a human reads before typing `yes`.
+That summary is not cosmetic: it is the entire basis on which someone consents
+to a destructive operation, and every mutant of it survives today.
+
+And the interactive confirmation itself — `[[ "$reply" == "yes" ]]` — survives in
+both, because every case here drives the **non-interactive** path. `read -r -p`
+needs a tty, and nothing in the hermetic suite has one.
+
+**One thing slice 3's own measurement found and fixed immediately:** `exit 1` →
+`exit 0` SURVIVED on both of `cmd_list`'s flag-error lines, so
+`repo.sh list --nonsense` printed an error and reported **success**. The same
+refusal was already asserted for `gc` and `reset`; `list` had simply been missed.
+Four assertions added, demonstrated failing, and they killed 5 mutants.
+
+**The next slice is a different KIND of test** — assert the rendered output, and
+find a way to exercise the tty branch — and it is larger than the three before
+it. `repo.sh` stays DEFERRED **on that measurement**, not on the original
+argument, which slices 1-3 have now retired.
 
 **It also exposed a fixture that had silently become a no-op.**
 `tests/test-falsify-targets.sh`'s gate-4c fixture rewrote the `repo.sh` row by
