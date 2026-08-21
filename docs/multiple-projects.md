@@ -7,9 +7,7 @@ If you use ai-containers across several projects, two scripts help you keep them
 Copies the shared infrastructure into `<project>/.ai-containers/`, generates a ready-to-edit launch script, and registers the project in `projects.conf`.
 
 ```bash
-./project-init.sh /path/to/myproject
-# Optional: override the project name (used for the image name and launch script)
-./project-init.sh /path/to/myproject my-custom-name
+./project-init.sh          # takes no arguments — it prompts for the path and the name
 ```
 
 What it does:

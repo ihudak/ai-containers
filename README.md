@@ -23,8 +23,8 @@ You do not run this repository directly. You point it at a project once, and fro
 ### Then
 
 ```bash
-# 1. once per project, from here
-./project-init.sh /path/to/myproject
+# 1. once per project, from here — it prompts for the project path
+./project-init.sh
 
 # 2. configure it, in the project
 cd /path/to/myproject/.ai-containers
