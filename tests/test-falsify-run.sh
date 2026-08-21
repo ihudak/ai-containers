@@ -706,6 +706,16 @@ fi
 # Asserted on the wait itself, because the property is about TIME: a blind
 # `sleep "$limit"` passes the "clock expired" case below and fails the one after
 # it, which is the whole difference.
+# run.sh's own microsecond clock, in a subshell, so these cases measure time the
+# same way the code under test does rather than with a second-resolution
+# approximation of it (backlog F55).
+fr_now_us_of() {
+  ( set +u
+    # shellcheck source=/dev/null
+    source "$RUN" >/dev/null 2>&1
+    fr_now_us )
+}
+
 watch_until() {   # <pid> <seconds> → run.sh's own wait, in a subshell
   ( set +u
     # shellcheck source=/dev/null
@@ -720,15 +730,28 @@ if ( set +u
   pass "run.sh exposes falsify_watch_until"
 
   # A subject that outlives the clock: the wait must report the clock expiring.
+  #
+  # MEASURED IN MILLISECONDS, and that is a fix rather than a flourish. This
+  # assertion used `$SECONDS`, whose resolution is one second: a wait of ~3.00 s
+  # reads as 2 or 3 depending only on where the start landed inside a second, so
+  # `>= 3` failed roughly whenever the boundaries fell badly. It did — once,
+  # under full-suite load, and the message was `rc=1 after 2s` (backlog F55):
+  # rc was RIGHT and only the clock reading was wrong.
+  #
+  # The threshold is deliberately BELOW the nominal clock. What this case has to
+  # separate is "waited for the clock" from "returned immediately without
+  # waiting" — a blind `return 1` finishes in single-digit milliseconds, so 2000
+  # ms discriminates that with a full second of margin either side and no
+  # dependence on boundary alignment.
   sleep 30 & wu_pid=$!
-  wu_t0=$SECONDS
+  wu_t0="$(fr_now_us_of)"
   watch_until "$wu_pid" 3 && wu_rc=0 || wu_rc=1
-  wu_el=$(( SECONDS - wu_t0 ))
+  wu_el=$(( ( $(fr_now_us_of) - wu_t0 ) / 1000 ))
   kill "$wu_pid" 2>/dev/null; wait "$wu_pid" 2>/dev/null
-  if [[ "$wu_rc" -eq 1 && "$wu_el" -ge 3 ]]; then
-    pass "  … a subject that outlives the clock reports the clock expiring (${wu_el}s)"
+  if [[ "$wu_rc" -eq 1 && "$wu_el" -ge 2000 ]]; then
+    pass "  … a subject that outlives the clock reports the clock expiring (${wu_el}ms)"
   else
-    fail "  … a subject that outlives the clock reports the clock expiring — rc=$wu_rc after ${wu_el}s, so a real hang would no longer time out"
+    fail "  … a subject that outlives the clock reports the clock expiring — rc=$wu_rc after ${wu_el}ms, so a real hang would no longer time out"
   fi
 
   # THE ONE THAT MATTERS. A subject that exits early must end the wait EARLY. A
@@ -736,14 +759,14 @@ if ( set +u
   # seconds to do it — and every second of that is a watchdog holding a pid it
   # no longer owns.
   sleep 1 & wu_pid2=$!
-  wu_t0=$SECONDS
+  wu_t0="$(fr_now_us_of)"
   watch_until "$wu_pid2" 20 && wu_rc2=0 || wu_rc2=1
-  wu_el2=$(( SECONDS - wu_t0 ))
+  wu_el2=$(( ( $(fr_now_us_of) - wu_t0 ) / 1000 ))
   wait "$wu_pid2" 2>/dev/null
-  if [[ "$wu_rc2" -eq 0 && "$wu_el2" -lt 10 ]]; then
-    pass "  … a subject that exits first ends the wait immediately (${wu_el2}s of a 20s clock)"
+  if [[ "$wu_rc2" -eq 0 && "$wu_el2" -lt 10000 ]]; then
+    pass "  … a subject that exits first ends the wait immediately (${wu_el2}ms of a 20s clock)"
   else
-    fail "  … a subject that exits first ends the wait immediately — rc=$wu_rc2 after ${wu_el2}s of a 20s clock, so the watchdog outlives its oracle and still holds a pid that may be recycled"
+    fail "  … a subject that exits first ends the wait immediately — rc=$wu_rc2 after ${wu_el2}ms of a 20s clock, so the watchdog outlives its oracle and still holds a pid that may be recycled"
   fi
 else
   fail "run.sh exposes falsify_watch_until — without it the watchdog sleeps its whole clock and stays alive holding a stale pid"

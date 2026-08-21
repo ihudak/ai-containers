@@ -3780,7 +3780,7 @@ no-op again — the premise assertion fires first and names itself.
 
 ---
 
-## F55 — `test-falsify-run.sh` failed once under full-suite load and did not reproduce
+## F55 — `test-falsify-run.sh` failed once under full-suite load and did not reproduce — **RESOLVED 2026-08-21, it reproduced and had a mechanism**
 
 **OPEN, and deliberately thin.** On 2026-08-20 a full `tests/run-all.sh` reported
 `57 test(s), 56 passed, 1 failed — Failing: test-falsify-run.sh`. Run alone
@@ -4162,3 +4162,36 @@ Same command, same commit, quiet machine: `TOTAL|9|264|261|3|0|0|1`,
 passed at 09:21. The failure is **intermittent**, which is exactly the condition
 a sampled control detects and a one-shot baseline cannot — and exactly why
 `CONTROLS|18|0` on a green run is worth printing rather than omitting.
+
+---
+
+## F55 — RESOLVED 2026-08-21. A one-second clock measuring a three-second wait.
+
+It happened again, with the log kept this time, and the message was the whole
+finding:
+
+```
+FAIL:   … a subject that outlives the clock reports the clock expiring —
+        rc=1 after 2s, so a real hang would no longer time out
+```
+
+**`rc=1` was CORRECT.** The clock did expire and `falsify_watch_until` reported
+it. Only the *elapsed reading* was wrong.
+
+§11c measured with `$SECONDS`, whose resolution is one second, against a wait of
+about 3.00 s. The reading is therefore 2 or 3 depending only on where the start
+landed inside a second, and `>= 3` fails whenever the boundaries fall badly.
+Measured in milliseconds across three consecutive runs: **3032, 2905, 3034**.
+The middle one is under three seconds — so `$SECONDS` reads `2` and the old
+assertion fails. The flake reproduced and explained in one command.
+
+Both §11c cases now measure with `run.sh`'s own `fr_now_us`. The threshold is
+deliberately BELOW the nominal clock: what the case separates is *waited for the
+clock* from *returned immediately without waiting*, and the margins are enormous
+— an immediate return finishes in **5 ms**, correct behaviour sits at
+**2905–3034 ms**, and a blind `sleep "$secs"` takes **19794 ms**. 2000 ms
+discriminates all three with a second of slack either side. Both demonstrated.
+
+**The operator error F55 was filed for is also closed:** the original message was
+lost to a `tail -3`. Full suite logs are kept now, which is the only reason this
+entry has a mechanism rather than a second unreproduced sighting.
