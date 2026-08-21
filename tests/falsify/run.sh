@@ -543,6 +543,17 @@ falsify_run_oracle() {   # <tree> <oracle-set> <outfile> <timeout-seconds> [<lab
   set +m
   wait "$pid" 2>/dev/null
   FALSIFY_RC=$?
+  # `wait` returns when the DRIVER exits, not when its process group is empty,
+  # and the group is routinely NOT empty: instrumented over one 264-mutant run
+  # at --jobs 12 on a loaded machine, 97 of the oracle invocations left
+  # stragglers behind — 739 processes in total, every one of them a `sleep`
+  # whose parent shell had already gone. Orphans, so nothing runs after them,
+  # which is why they are not the F32 trigger. But they are self-inflicted load
+  # on a tier whose open findings (F30, F32) are ABOUT load-sensitivity: up to
+  # 30s of residual processes per invocation, accumulating across 12 slots.
+  # The group is this invocation's by construction (set -m above), and the
+  # driver has already exited, so anything still in it is an orphan.
+  kill -TERM -"$pid" 2>/dev/null || true
   kill -TERM -"$dog" 2>/dev/null || kill -TERM "$dog" 2>/dev/null
   wait "$dog" 2>/dev/null
   FALSIFY_MS="$(fr_ms_since "$t0")"

@@ -43,9 +43,31 @@ fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails+1)); }
 # floor is defined in 2 files", naming a second definition that is not a second
 # definition at all but a copy of the first. A guard that fails on a file the
 # project deliberately ignores does not protect the invariant; it just goes off.
-floor_defs="$( (cd "$ENGINE_DIR" && git ls-files -z '*.sh' \
-  | xargs -0 grep -lE 'AI_CONTAINERS_BASH_FLOOR_(MAJOR|MINOR)=' 2>/dev/null) \
-  | grep -vE '(^|/)tests/' | wc -l | tr -d ' ')"
+#
+# ONE derivation, guarded ONCE, because both checks in this file depend on it and
+# it has been observed producing NOTHING. During a full parallel `run-all.sh` on
+# 2026-08-21 this file failed with BOTH "the floor is defined in 0 files" and
+# "checked 0 entry points" — `git ls-files` had returned empty, and the same
+# command run a second later listed the file correctly. Zero tracked *.sh is
+# impossible in a healthy checkout, so reporting it as a failed ASSERTION states
+# something false about the code. It is a failed scaffold step, and
+# SCAFFOLD-FAILED: is the channel for that (backlog F31/F32): run-all.sh reports
+# it as "could not set itself up" and falsify scores such a mutant UNPROVEN
+# rather than KILLED. The entry-point check below has depended on this same
+# derivation since long before the floor count did.
+tracked_sh="$(cd "$ENGINE_DIR" && git ls-files '*.sh' 2>/dev/null)" || tracked_sh=""
+if [[ -z "$tracked_sh" ]]; then
+  printf 'SCAFFOLD-FAILED: git ls-files listed no *.sh under %s — the derivation both checks here depend on produced nothing\n' "$ENGINE_DIR"
+  exit 1
+fi
+
+floor_defs=0
+while IFS= read -r _f; do
+  [[ -n "$_f" ]] || continue
+  case "$_f" in tests/*|*/tests/*) continue ;; esac
+  grep -qE 'AI_CONTAINERS_BASH_FLOOR_(MAJOR|MINOR)=' "$ENGINE_DIR/$_f" 2>/dev/null \
+    && floor_defs=$(( floor_defs + 1 ))
+done <<< "$tracked_sh"
 [[ "$floor_defs" == "1" ]] \
   && pass "the floor is defined in exactly one file" \
   || fail "the floor is defined in $floor_defs files — it must be exactly one"
@@ -72,7 +94,7 @@ while IFS= read -r f; do
   else
     fail "$base reaches the bash floor guard — it can run under an unsupported bash"
   fi
-done < <(cd "$ENGINE_DIR" && git ls-files '*.sh' | grep -v '/')
+done < <(printf '%s\n' "$tracked_sh" | grep -v '/')
 
 # A derivation that found nothing must not report success.
 [[ "$n_checked" -gt 0 ]] \

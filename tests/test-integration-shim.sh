@@ -53,6 +53,16 @@ ln -sf "$SHIM" "$TMP/bin/docker"
 if [[ ! -e "$TMP/bin/docker" || ! -x "$TMP/bin/docker" ]]; then
   printf 'SCAFFOLD-FAILED: %s does not resolve to an executable (symlink to %s)\n' \
     "$TMP/bin/docker" "$SHIM"
+  # See the matching note in tests/test-bash-dialect-lint.sh. `-e` follows the
+  # symlink, so this guard fires both when the LINK is missing and when the link
+  # exists but its TARGET is gone — and those are different findings. link-exists
+  # separates them, which is exactly what the recorded occurrence could not do.
+  printf 'SCAFFOLD-FAILED: diag src=%s src-exists=%s | tree=%s tree-exists=%s | tmp=%s tmp-exists=%s | link-exists=%s link-target=%s\n' \
+    "$SHIM"      "$([[ -e "$SHIM" ]] && printf y || printf n)" \
+    "$REPO_DIR"  "$([[ -d "$REPO_DIR" ]] && printf y || printf n)" \
+    "$TMP"       "$([[ -d "$TMP" ]] && printf y || printf n)" \
+    "$([[ -L "$TMP/bin/docker" ]] && printf y || printf n)" \
+    "$(readlink "$TMP/bin/docker" 2>/dev/null || printf '<none>')"
   exit 1
 fi
 
