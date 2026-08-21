@@ -169,6 +169,18 @@ cp "$LINT" "$empty_repo/tests/bash-dialect-lint.sh"   # deliberately NOT git-add
 if [[ ! -s "$empty_repo/tests/bash-dialect-lint.sh" ]]; then
   printf 'SCAFFOLD-FAILED: could not stage the linter into %s (missing or empty after cp)\n' \
     "$empty_repo/tests"
+  # F32's TRIGGER IS STILL UNIDENTIFIED, and one fact splits the hypotheses in
+  # half: was the SOURCE gone (the falsify worker tree evaporated under the
+  # running oracle) or the DESTINATION gone (this process's own mktemp -d went
+  # away)? Those point at completely different mechanisms and the recorded
+  # occurrence cannot tell them apart. Same channel prefix so run-all.sh
+  # surfaces it — it greps ^SCAFFOLD-FAILED: and prints every matching line.
+  printf 'SCAFFOLD-FAILED: diag src=%s src-exists=%s src-bytes=%s | tree=%s tree-exists=%s | tmp=%s tmp-exists=%s | dest-dir-exists=%s\n' \
+    "$LINT"      "$([[ -e "$LINT" ]] && printf y || printf n)" \
+    "$(wc -c <"$LINT" 2>/dev/null | tr -d ' ' || printf '?')" \
+    "$REPO_DIR"  "$([[ -d "$REPO_DIR" ]] && printf y || printf n)" \
+    "$TMP"       "$([[ -d "$TMP" ]] && printf y || printf n)" \
+    "$([[ -d "$empty_repo/tests" ]] && printf y || printf n)"
   exit 1
 fi
 # The floor is passed in so the copy needs no bash-floor.sh beside it (the

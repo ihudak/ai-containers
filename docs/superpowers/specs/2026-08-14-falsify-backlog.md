@@ -4503,3 +4503,107 @@ could catch is a layout difference in code that is not layout-dependent. mgd's
 nightly runs `packages-agents`/`packages-native`, so those three cases execute
 there anyway at no marginal cost.
 
+
+---
+
+## F32 — 2026-08-21, second investigation: three mechanisms refuted, one measured, one NEW instance caught
+
+The trigger is **still unidentified**, and this entry does not guess either. What
+it does is narrow the space and make the next occurrence answer for itself.
+
+### Refuted, each cheaply
+
+1. **A straggler with a delayed action.** `wait "$pid"` returns when the oracle
+   DRIVER exits, not when its process group is empty — so a `( sleep N; rm … ) &`
+   left behind could fire into a re-seeded tree. Instrumented over one
+   264-mutant run at `--jobs 12` on a loaded machine: **97 of the invocations
+   left stragglers, 739 processes in total — and every one was a bare `sleep`
+   whose parent shell had already exited.** Orphans run nothing after they wake,
+   so this is not it.
+2. **A tree rebuilt under a running oracle.** `fr_seed_slot`'s `rm -rf` + `cp -a`
+   is the only window in which a tracked file is genuinely ABSENT — but it runs
+   only when the fingerprint says the oracle left debris, and that run recorded
+   **zero `NOTE|reseed`**.
+3. **Two concurrent instances colliding on a shared path.** The same oracle does
+   run in up to 12 slots at once, but neither failing test has a fixed path:
+   everything is under `$REPO_DIR` (per-slot, isolated) or a per-process
+   `mktemp -d`.
+
+Startup seeding was already ruled out by the code: the parallel `fr_seed_slot`
+loop is followed by `wait` and a per-slot existence check.
+
+### Measured, and acted on
+
+The process group is **not** drained when `wait` returns. The orphans are not
+the trigger, but they are self-inflicted load on a tier whose open findings are
+about load-sensitivity — up to 30s of residual processes per invocation across
+12 slots. `falsify_run_oracle` now TERMs its own group after `wait`; the group
+is this invocation's by construction and the driver has already exited, so
+anything left in it is an orphan.
+
+**Peak concurrent orphaned `sleep`s over a full corpus run: 556 → 116** (a second
+run of the new code gave 149). Both runs `TOTAL|9|264|262|2|0|0|0`,
+`CONTROLS|18|0`.
+
+### Reproduction attempt, stated with its bound
+
+Both failing oracles were run concurrently under 8 CPU burners on Linux. **12
+runs completed before the attempt hit its time budget; all 12 were clean.** That
+is not "does not reproduce on Linux" — it is twelve samples of a failure whose
+only recorded occurrence is on macOS.
+
+### The next occurrence now names its own trigger
+
+One fact splits the hypothesis space in half and the recorded occurrence could
+not supply it: was the **source** gone (the worker tree evaporated under a
+running oracle) or the **destination** gone (the test's own `mktemp -d` went
+away)? Both guards now print it on the same `SCAFFOLD-FAILED:` channel —
+source existence and size, tree existence, tmp existence, and for the shim
+whether the LINK exists separately from its TARGET, since `-e` follows symlinks
+and the two are different findings. Demonstrated in both shapes.
+
+---
+
+## F58 — `git ls-files` returned NOTHING under full-suite load, and two checks called it a code defect
+
+Caught while investigating F32, in a full `run-all.sh`:
+
+```
+── test-bash-floor.sh
+   FAIL  (exit 2)
+     FAIL: the floor is defined in 0 files — it must be exactly one
+     FAIL: checked 0 entry points — the derivation matched nothing
+```
+
+Both assertions derive from `git ls-files '*.sh'`, and it had returned **empty**.
+The same command run seconds later listed the files correctly, and the test
+passed standalone and through `run-all.sh` immediately afterwards.
+
+**Zero tracked `*.sh` is impossible in a healthy checkout**, so both messages
+state something FALSE about the code: they report a missing floor definition and
+an unreachable entry-point set when the truth is that a scaffold step produced
+nothing. That is F31/F32's family exactly — an unchecked derivation reading as
+an assertion failure — and on a mutant it would be a **false KILL**.
+
+**Not introduced by the `git ls-files` fix**, and the entry says so rather than
+letting the timing imply it: the entry-point check has used this same derivation
+since long before that fix; the floor count became a second consumer of it. What
+the fix changed is that there are now two ways for one empty derivation to show.
+
+**Fixed:** one derivation, guarded once. An empty result is now
+`SCAFFOLD-FAILED:` and the file exits, rather than two assertions failing.
+
+Demonstrated with a `git` shim whose `ls-files` returns nothing, run from the
+same location so `REPO_DIR` resolves identically (a first attempt that ran the
+old copy from a scratch dir was invalid and is not the evidence here):
+
+| | assertion failures | `SCAFFOLD-FAILED:` lines |
+|---|---|---|
+| before | **2** — the exact pair seen in the wild | 0 |
+| after | 0 | **1** |
+
+**The trigger of the empty `ls-files` is itself unidentified**, and is left that
+way deliberately: it was seen once in five full-suite runs, and the guard turns
+the next occurrence into a named scaffold event instead of a false statement
+about the code. Whether it shares F32's root cause is unknown — the two share a
+shape, not a proven mechanism.
