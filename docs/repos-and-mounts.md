@@ -111,7 +111,11 @@ DOCS_PATH=/path/to/docs \
 
 Export `DOCS_PATH` in your host shell profile to make it the default for every container, exactly as with `VAULT_PATH` / `SPECS_PATH`.
 
-`DOCS_PATH` accepts a small grammar: `@<name>` mounts a registered repo volume at `/workspace/<name>` (fast on macOS; see [Shared repo volumes](#shared-repo-volumes-native-speed--reposh-and-repos)), and a trailing `:ro`/`:rw` sets the mount mode (default `:ro`). To **edit** the docs, either mount the docs repo as the working directory or pass `DOCS_PATH=/path:rw`. When the docs repo **is** the working directory, `DOCS_PATH` re-points to that writable mount automatically — nothing to unset.
+`DOCS_PATH` accepts a small grammar: `@<name>` mounts a registered repo volume at `/workspace/<name>` (fast on macOS; see [Shared repo volumes](#shared-repo-volumes-native-speed--reposh-and-repos)), and a trailing `:ro`/`:rw` sets the mount mode (default `:ro`). To **edit** the docs, either mount the docs repo as the working directory or pass `DOCS_PATH=/path:rw`.
+
+> **A pointer never fights a mount that is already there.** If the directory `DOCS_PATH` names is already attached to the container — as the working directory, or as a repo listed in `REPOS` — the pointer **re-points at that mount** instead of mounting it a second time, and inherits that mount's mode. So exporting `DOCS_PATH` once on your host stays safe even for the project that *is* the docs repository: attached `:rw`, the docs are writable, which is correct when that repo is what you are working in. The `:ro` default applies to a docs repo mounted *by the pointer*, not to one you deliberately attached for editing. `VAULT_PATH` and `SPECS_PATH` behave the same way.
+>
+> Identity is proven, not guessed: only a **path-sourced** repo has a host directory to compare, and both sides are resolved first. A genuinely different directory colliding on the same name is still refused, and the error now says the two are different so you can rename the repo or re-point the variable.
 
 ## Mounting a specs repository
 
