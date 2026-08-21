@@ -111,7 +111,7 @@ done
 # image BUILD — a COPY line — rather than in a case file or a host script, which
 # is why it was exempt for an increment: the demonstrator ran every mutation
 # under --reuse-image, and a Dockerfile change is invisible to an image built
-# before it. demonstrate-network-tier.sh now rebuilds for such a patch.
+# before it. demonstrate-network-delivery-tiers.sh now rebuilds for such a patch.
 #
 # `network-mode` was added late, in increment 5, and the reason is worth keeping:
 # the network/security cases were believed covered because AGENTS.md said they

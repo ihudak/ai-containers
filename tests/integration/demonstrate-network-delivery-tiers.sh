@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # Demonstrate every network-mode and delivery case failing against its known-bad
-# mutation. (The filename still says network-tier; the delivery tier joined in
-# increment 5. Renaming it touches tests/falsify/targets.conf and this repo's
-# fork, so it is recorded in the backlog rather than done inline.)
+# mutation. TWO tiers, which is why the filename names two: it was
+# demonstrate-network-tier.sh until backlog F37 was closed, having covered
+# `delivery` since increment 5 while its name, usage text and error messages all
+# said one tier. What it does NOT cover is everything else — the rebuild-needing
+# remainder belongs to demonstrate-launcher-tier.sh, and the rest is hand-driven
+# per AGENTS.md.
 #
 # WHY THIS EXISTS, AND WHY IT IS NOT PART OF run-all.sh OR run.sh:
 #
@@ -50,8 +53,8 @@
 # nothing to skip on and would pass quietly.)
 #
 # Usage:
-#   bash tests/integration/demonstrate-network-tier.sh            # every selected patch
-#   bash tests/integration/demonstrate-network-tier.sh 050 210    # only these
+#   bash tests/integration/demonstrate-network-delivery-tiers.sh            # every selected patch
+#   bash tests/integration/demonstrate-network-delivery-tiers.sh 050 210    # only these
 set -uo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -62,7 +65,7 @@ MUT_DIR="$REPO_DIR/tests/integration/mutations"
 CASES_DIR="$REPO_DIR/tests/integration/cases"
 RUN="$REPO_DIR/tests/integration/run.sh"
 # The same default run.sh resolves (run.sh:31), and the same env var, so an
-# `IT_IMAGE=… bash demonstrate-network-tier.sh` names one image in both.
+# `IT_IMAGE=… bash demonstrate-network-delivery-tiers.sh` names one image in both.
 IT_IMAGE="${IT_IMAGE:-ai-sandbox-it}"
 # Everything above is repo-root-relative and identical in both layouts, because
 # tests/ sits at the root in both. The ENGINE is not: upstream keeps build.sh and
@@ -76,7 +79,7 @@ ENGINE_DIR="$REPO_DIR"
 # recognising every COPY source, and send those patches down the --reuse-image
 # path — the misleading UNDEMONSTRATED this whole mechanism exists to prevent.
 [[ -f "$ENGINE_DIR/Dockerfile" ]] || {
-  printf 'demonstrate-network-tier.sh: no Dockerfile under %s — cannot tell which patches need a rebuild.\n' "$ENGINE_DIR" >&2
+  printf 'demonstrate-network-delivery-tiers.sh: no Dockerfile under %s — cannot tell which patches need a rebuild.\n' "$ENGINE_DIR" >&2
   exit 1
 }
 
@@ -84,7 +87,7 @@ ENGINE_DIR="$REPO_DIR"
 # mutate.sh has its own clean-tree gate, but reaching it one mutation in would
 # leave the tree mutated. Check before touching anything.
 if ! git -C "$REPO_DIR" diff --quiet; then
-  printf 'demonstrate-network-tier.sh: working tree has unstaged changes — commit or stash first.\n' >&2
+  printf 'demonstrate-network-delivery-tiers.sh: working tree has unstaged changes — commit or stash first.\n' >&2
   printf '  A mutation must be the only difference, or reverting it is a guess.\n' >&2
   exit 1
 fi
@@ -112,42 +115,24 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 # ── Which patches only take effect on a rebuild ───────────────────────────────
-# DERIVED from the Dockerfile — itself, plus every path it COPYs out of the build
-# context — rather than kept as a list here. A missing entry does not fail
-# silently, but it fails MISLEADINGLY: the case runs against an image that never
-# contained the mutation, passes, and is reported as UNDEMONSTRATED, which reads
-# as "this mutation no longer damages its case" when the truth is "this mutation
-# was never applied to anything". Deriving it means a patch that starts touching
-# entrypoint.sh or install-tools.sh is rebuilt without anyone remembering to say
-# so.
-#
-# build.sh is in the set although nothing COPYs it: run.sh invokes it to produce
-# the build args AND the allowlist-*.txt files the Dockerfile then COPYs, so a
-# mutation there changes the image as surely as one in the Dockerfile.
-#
-# The names emitted here are UNPREFIXED even where the engine lives in base/,
-# because they are compared against the patch's own `+++ b/…` paths, and one
-# mutation set serves both repos with upstream paths in it. Only the Dockerfile
-# is READ through $ENGINE_DIR.
-#
-# The KNOWN LIMIT is what build.sh READS — an allowlist-*.d fragment,
-# sandbox-common.sh — which no patch touches today. If one ever does, the
-# symptom is the misleading UNDEMONSTRATED above, so extend this function rather
-# than the case.
-build_time_inputs() {
-  printf 'Dockerfile\nbuild.sh\n'
-  sed -n 's/^COPY[[:space:]]\{1,\}\([^[:space:]]\{1,\}\)[[:space:]].*/\1/p' "$ENGINE_DIR/Dockerfile"
-}
-patch_needs_rebuild() {  # $1=patch → 0 if it changes something the image is built FROM
-  local changed input
-  while IFS= read -r changed; do
-    while IFS= read -r input; do
-      # The exact file, or anything beneath a directory the Dockerfile COPYs
-      # whole: tools.d/dtctl.conf is as much a build input as tools-lib.sh.
-      [[ "$changed" == "$input" || "$changed" == "$input/"* ]] && return 0
-    done < <(build_time_inputs)
-  done < <(sed -n 's|^+++ b/||p' "$1")
-  return 1
+# build_time_inputs() and patch_needs_rebuild() live in lib-rebuild.sh, which was
+# extracted from this file when demonstrate-launcher-tier.sh became their second
+# consumer. Two copies of "what is a build input" would not drift LOUDLY: a stale
+# copy sends a build-input patch down the --reuse-image path and reports the case
+# UNDEMONSTRATED — a mutation declared dead that was never applied to anything.
+# shellcheck source=tests/integration/lib-rebuild.sh
+source "$REPO_DIR/tests/integration/lib-rebuild.sh"
+# A source that FAILS must not be survivable. Neither script sets -e, so without
+# this check a missing or unreadable lib-rebuild.sh prints one line to stderr and
+# then patch_needs_rebuild resolves to command-not-found — rc 127, which `if`
+# reads as "does not need a rebuild". Every build-input patch would silently take
+# the --reuse-image path and be reported UNDEMONSTRATED: a mutation declared dead
+# that was never applied to anything, which is the exact defect this library was
+# extracted to prevent. Verified: with the path broken, all 11 rebuild patches
+# read as reuse.
+declare -F patch_needs_rebuild >/dev/null || {
+  printf 'demonstrate-network-delivery-tiers.sh: lib-rebuild.sh did not load — cannot tell which patches need a rebuild.\n' >&2
+  exit 1
 }
 
 # (Re)build $IT_IMAGE from the tree AS IT IS NOW and prove it works. Used for the
@@ -192,7 +177,7 @@ for p in "$MUT_DIR"/*.patch; do
 done
 
 if [[ ${#patches[@]} -eq 0 ]]; then
-  printf 'demonstrate-network-tier.sh: no image-tier mutations selected%s\n' \
+  printf 'demonstrate-network-delivery-tiers.sh: no image-tier mutations selected%s\n' \
     "${wanted[*]:+ (${wanted[*]})}" >&2
   exit 2
 fi
@@ -203,7 +188,7 @@ printf 'A case that FAILs is the pass condition. PASS means the mutation is dead
 # ── Build the image once ──────────────────────────────────────────────────────
 printf '── building the integration image (once) …\n'
 if ! build_clean_image; then
-  printf 'demonstrate-network-tier.sh: the harness selftest failed on a CLEAN tree.\n' >&2
+  printf 'demonstrate-network-delivery-tiers.sh: the harness selftest failed on a CLEAN tree.\n' >&2
   printf '  Fix that first — nothing below would be interpretable.\n' >&2
   exit 1
 fi

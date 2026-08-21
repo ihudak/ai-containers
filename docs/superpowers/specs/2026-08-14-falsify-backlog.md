@@ -140,7 +140,7 @@ allowlist nobody generated is silent** — every network case mounts its own ove
 admits, and only 300 can see it. Three adjacent, near-identical `COPY` lines are
 exactly what invites that slip.
 
-**The rebuild path.** `demonstrate-network-tier.sh` derives the build-input set
+**The rebuild path.** `demonstrate-network-delivery-tiers.sh` derives the build-input set
 from the Dockerfile — itself, every path it `COPY`s, plus `build.sh`, which
 produces both the build args and the `allowlist-*.txt` files it copies — and for
 a patch against any of them drops `--reuse-image`, builds WITH the mutation,
@@ -2248,12 +2248,12 @@ be perfectly good — which is precisely the point: nobody can currently tell,
 because the only procedure on offer answers a different question.
 
 `patch_needs_rebuild()` and `build_clean_image()` in
-`demonstrate-network-tier.sh` are the mechanism; what is missing is a
+`demonstrate-network-delivery-tiers.sh` are the mechanism; what is missing is a
 launcher/packages-tier demonstrator that uses them. Parked rather than done
 because the packages tier's cases cost tens of minutes each and budgeting that
 run is its own decision.
 
-## F37 — `demonstrate-network-tier.sh` now covers two tiers and its name says one
+## F37 — `demonstrate-network-tier.sh` now covers two tiers and its name says one — **FIXED 2026-08-21**
 
 It selects `network-mode` **and** `delivery` as of F5. The filename, its usage
 text, and its own error messages still say "network tier". Same shape as F7 —
@@ -4227,3 +4227,63 @@ rather than implying another slice would close it: the confirmation itself,
 `[[ -t 0 ]]` and `[[ "$reply" == "yes" ]]` in all three subcommands. Every case
 drives the non-interactive path because `read -r -p` needs a tty and nothing
 hermetic has one.
+
+---
+
+## F37 — FIXED 2026-08-21. Renamed, and F36 changed which name was right.
+
+`tests/integration/demonstrate-network-tier.sh` is now
+**`demonstrate-network-delivery-tiers.sh`**. Nine files, exactly as the
+re-derived blast radius said: the script itself (8 self-references),
+`AGENTS.md`, `tests/falsify/targets.conf:120`, `tests/test-mutations.sh:114`,
+two mutation patch headers, `lib-rebuild.sh`, `demonstrate-launcher-tier.sh`,
+and this file.
+
+**Both names the entry proposed turned out to be wrong, and F36 is why.** F37
+predicted that if F36 landed first "the complement collapses and the script
+becomes the demonstrator for everything, at which point
+`demonstrate-mutations.sh` is simply correct." F36 did not collapse anything —
+it landed as a SECOND script, `demonstrate-launcher-tier.sh`, and the two now
+partition the set:
+
+| selector | script | patches |
+|---|---|---|
+| tagged `network-mode` or `delivery` | this one | 16 pairs, 2 needing a rebuild |
+| needs a rebuild, and NOT those tags | `demonstrate-launcher-tier.sh` | 9 |
+| everything else | hand-driven per AGENTS.md | 11 |
+
+So `demonstrate-image-tier.sh` — the entry's other candidate — would have been
+worse than the name it replaced: the image-baked set is precisely what the OTHER
+script owns. The honest name is the two tags it selects, and the plural is the
+whole point of the entry.
+
+Derived from the patches themselves rather than read off the headers, since that
+is what produced the correction.
+
+---
+
+## F56 — `demonstrate-launcher-tier.sh` has F37's defect, and its honest name needs a decision
+
+Found while closing F37, by deriving what each demonstrator actually selects.
+
+Its selector is `patch_needs_rebuild && NOT network-mode|delivery`, which today
+is nine patches spanning **three** tiers — `mounts` (410), `volumes` (630) and
+`packages` (700, 720, 730, 735, 740, 745, 750). Its own header says
+"LAUNCHER/PACKAGES-tier", so the undersell is known and written down, exactly as
+F37's was.
+
+**But it is not F37's mechanical fix, which is why this is filed rather than
+folded into that rename.** `demonstrate-launcher-packages-tiers.sh` would
+OVERCLAIM: the script does not demonstrate the launcher tier: it demonstrates
+the rebuild-needing 2 of its 11 members (410 and 630), and 400/420/430/440/500/
+510/600/610/620 stay hand-driven. Its selection is not tier-based at all. The
+accurate name describes the PREDICATE — something like
+`demonstrate-image-baked.sh` or `demonstrate-rebuild-required.sh` — and picking
+one introduces a word the project's tier vocabulary does not yet have.
+
+That is a naming decision, not a rename, and it is the reason F37 took two
+attempts to name one file correctly.
+
+**Cost is one coordinated change across both repos**, same shape as F37: the
+script, `targets.conf`, `AGENTS.md`, and whatever references accumulate. Cheaper
+now than after the name spreads further.

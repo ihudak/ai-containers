@@ -29,7 +29,7 @@
 #
 #       230 (discovery) shares pid1_caps but not this branch, so it is untouched
 #       and still passes — the coverage 240 adds. Needs a rebuild: entrypoint.sh
-#       is COPYed by the Dockerfile, and demonstrate-network-tier.sh derives that
+#       is COPYed by the Dockerfile, and demonstrate-network-delivery-tiers.sh derives that
 #       automatically.
 #
 diff --git a/entrypoint.sh b/entrypoint.sh
