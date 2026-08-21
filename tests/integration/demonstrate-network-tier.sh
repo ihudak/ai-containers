@@ -112,42 +112,24 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 # ── Which patches only take effect on a rebuild ───────────────────────────────
-# DERIVED from the Dockerfile — itself, plus every path it COPYs out of the build
-# context — rather than kept as a list here. A missing entry does not fail
-# silently, but it fails MISLEADINGLY: the case runs against an image that never
-# contained the mutation, passes, and is reported as UNDEMONSTRATED, which reads
-# as "this mutation no longer damages its case" when the truth is "this mutation
-# was never applied to anything". Deriving it means a patch that starts touching
-# entrypoint.sh or install-tools.sh is rebuilt without anyone remembering to say
-# so.
-#
-# build.sh is in the set although nothing COPYs it: run.sh invokes it to produce
-# the build args AND the allowlist-*.txt files the Dockerfile then COPYs, so a
-# mutation there changes the image as surely as one in the Dockerfile.
-#
-# The names emitted here are UNPREFIXED even where the engine lives in base/,
-# because they are compared against the patch's own `+++ b/…` paths, and one
-# mutation set serves both repos with upstream paths in it. Only the Dockerfile
-# is READ through $ENGINE_DIR.
-#
-# The KNOWN LIMIT is what build.sh READS — an allowlist-*.d fragment,
-# sandbox-common.sh — which no patch touches today. If one ever does, the
-# symptom is the misleading UNDEMONSTRATED above, so extend this function rather
-# than the case.
-build_time_inputs() {
-  printf 'Dockerfile\nbuild.sh\n'
-  sed -n 's/^COPY[[:space:]]\{1,\}\([^[:space:]]\{1,\}\)[[:space:]].*/\1/p' "$ENGINE_DIR/Dockerfile"
-}
-patch_needs_rebuild() {  # $1=patch → 0 if it changes something the image is built FROM
-  local changed input
-  while IFS= read -r changed; do
-    while IFS= read -r input; do
-      # The exact file, or anything beneath a directory the Dockerfile COPYs
-      # whole: tools.d/dtctl.conf is as much a build input as tools-lib.sh.
-      [[ "$changed" == "$input" || "$changed" == "$input/"* ]] && return 0
-    done < <(build_time_inputs)
-  done < <(sed -n 's|^+++ b/||p' "$1")
-  return 1
+# build_time_inputs() and patch_needs_rebuild() live in lib-rebuild.sh, which was
+# extracted from this file when demonstrate-launcher-tier.sh became their second
+# consumer. Two copies of "what is a build input" would not drift LOUDLY: a stale
+# copy sends a build-input patch down the --reuse-image path and reports the case
+# UNDEMONSTRATED — a mutation declared dead that was never applied to anything.
+# shellcheck source=tests/integration/lib-rebuild.sh
+source "$REPO_DIR/tests/integration/lib-rebuild.sh"
+# A source that FAILS must not be survivable. Neither script sets -e, so without
+# this check a missing or unreadable lib-rebuild.sh prints one line to stderr and
+# then patch_needs_rebuild resolves to command-not-found — rc 127, which `if`
+# reads as "does not need a rebuild". Every build-input patch would silently take
+# the --reuse-image path and be reported UNDEMONSTRATED: a mutation declared dead
+# that was never applied to anything, which is the exact defect this library was
+# extracted to prevent. Verified: with the path broken, all 11 rebuild patches
+# read as reuse.
+declare -F patch_needs_rebuild >/dev/null || {
+  printf 'demonstrate-network-tier.sh: lib-rebuild.sh did not load — cannot tell which patches need a rebuild.\n' >&2
+  exit 1
 }
 
 # (Re)build $IT_IMAGE from the tree AS IT IS NOW and prove it works. Used for the

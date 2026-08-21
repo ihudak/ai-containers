@@ -87,6 +87,18 @@ ENGINE_DIR="$REPO_DIR"
 }
 # shellcheck source=tests/integration/lib-rebuild.sh
 source "$REPO_DIR/tests/integration/lib-rebuild.sh"
+# A source that FAILS must not be survivable. Neither script sets -e, so without
+# this check a missing or unreadable lib-rebuild.sh prints one line to stderr and
+# then patch_needs_rebuild resolves to command-not-found — rc 127, which `if`
+# reads as "does not need a rebuild". Every build-input patch would silently take
+# the --reuse-image path and be reported UNDEMONSTRATED: a mutation declared dead
+# that was never applied to anything, which is the exact defect this library was
+# extracted to prevent. Verified: with the path broken, all 11 rebuild patches
+# read as reuse.
+declare -F patch_needs_rebuild >/dev/null || {
+  printf 'demonstrate-launcher-tier.sh: lib-rebuild.sh did not load — cannot tell which patches need a rebuild.\n' >&2
+  exit 1
+}
 
 # ── Arguments ─────────────────────────────────────────────────────────────────
 dry_run=0; budget_min=120; want_variant=""; wanted=()
