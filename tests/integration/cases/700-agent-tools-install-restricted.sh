@@ -35,6 +35,11 @@
 # + ~10 (this wait) + the two six-tool loops afterward (12 bounded docker
 # execs, ~30-40s) ≈ 950s.
 #
+# MEASURED on a real daemon after the change (2026-08-21): this case runs 93s
+# unmutated, and 73s with 700-agent-tools-not-linked applied — where the same
+# mutated case cost 1003s before, ~900 of it on this line. Note the direction:
+# the FAILING run is now cheaper than the passing one, which it was not before.
+#
 # 2100s STAYS ANYWAY, deliberately. A declared timeout is a HANG DETECTOR, not
 # a cost estimate (F36: summing ceilings projected 403 minutes against a
 # measured 42). Re-tightening it to sit near the new bound would trade a
