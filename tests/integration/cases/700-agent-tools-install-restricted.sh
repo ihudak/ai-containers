@@ -20,16 +20,27 @@
 # dominant failure mode is launcher_up itself failing around its own 900s
 # IT_SETTLE ceiling (a badly broken/hung reconcile), which exits this case
 # via `|| it_finish` at roughly that ceiling, never reaching the second wait
-# at all. The narrower case the second wait exists for is different: the
-# reconcile genuinely FINISHED (pid 1 flipped, launcher_up succeeded) but one
-# specific tool never got installed — nothing installs asynchronously after
-# the handover, so that condition is already permanently decided, and
-# it_wait has no way to know that; it will poll its own full 900s before
-# giving up. That compound case — launcher_up completing near its own
-# ceiling AND the specific-tool wait separately exhausting its own — is the
-# true (rare, not the expected) upper bound: ~900+900 ≈ 1800s, plus the two
-# six-tool loops afterward (12 bounded docker execs total, ~30-40s). 2100s
-# gives that bound real margin instead of sitting exactly on it.
+# at all.
+#
+# THE SECOND WAIT USED TO BE 900s, AND THIS PARAGRAPH IS WHY IT IS NOW 10.
+# The narrower case it exists for is: the reconcile genuinely FINISHED (pid 1
+# flipped, launcher_up succeeded) but one specific tool never got installed.
+# Nothing installs asynchronously after the handover, so that condition is
+# ALREADY PERMANENTLY DECIDED when the wait begins — this header said exactly
+# that, and then budgeted 900s to discover it anyway. Backlog F57 measured the
+# bill: with 700's mutation applied the case took 1003s, ~900 of it here,
+# polling a question that was settled before the first poll.
+#
+# So the compound upper bound is no longer ~900+900. It is ~900 (launcher_up)
+# + ~10 (this wait) + the two six-tool loops afterward (12 bounded docker
+# execs, ~30-40s) ≈ 950s.
+#
+# 2100s STAYS ANYWAY, deliberately. A declared timeout is a HANG DETECTOR, not
+# a cost estimate (F36: summing ceilings projected 403 minutes against a
+# measured 42). Re-tightening it to sit near the new bound would trade a
+# property that costs nothing when things work for a new way to fail on a slow
+# machine, and it would have to be re-derived from a host measurement rather
+# than from this arithmetic.
 #
 # THIS IS THE BLOCKING GATE. Nothing agent-tier is baked into the image: Copilot,
 # Claude Code, Codex, Gemini, graphify and vale install at container start into a
@@ -69,8 +80,21 @@ launcher_up restricted || it_finish
 
 # The reconcile is install-if-missing and non-fatal on failure, so poll for the
 # binaries rather than for an exit code that is always 0.
-it_wait 900 docker exec "$IT_CID" bash -c "command -v claude >/dev/null" \
-  || fail "the agent-tools reconcile did not finish within 900s"
+#
+# TEN SECONDS, NOT 900, and the difference is not a tuning choice. entrypoint
+# runs run_agent_tools_reconcile and link_agent_tools SYNCHRONOUSLY — once per
+# mode, at 239-240, 285-286 and 307-308 — and only then does `exec capsh` hand
+# pid 1 to the sandbox user. launcher_up returns only after _it_pid1_is_uid
+# observes that handover. So by the time this line runs, the reconcile has
+# already finished: there is NO "not yet" state to wait for here, and a 900s
+# ceiling could only ever be spent confirming a condition that is already
+# permanently decided. Measured: with 700's mutation applied the case took
+# 1003s, ~900 of it on this line. Backlog F57.
+#
+# Ten rather than zero because the paragraph above is a code read, and a small
+# margin costs nothing when the condition is already true.
+it_wait 10 docker exec "$IT_CID" bash -c "command -v claude >/dev/null" \
+  || fail "claude is absent after the reconcile completed — entrypoint runs it before handover, so this is not a timeout"
 
 for b in claude codex gemini copilot graphify vale; do
   assert_runs "$IT_CID" "$b"

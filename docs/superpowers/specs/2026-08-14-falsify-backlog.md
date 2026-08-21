@@ -4418,3 +4418,57 @@ page: a companion that separates the two outcomes — a `never` predicate
 evaluated alongside the `not yet` one, or a returned reason code — so a
 permanently-false condition fails fast and REPORTS that it did, rather than
 being billed the full ceiling and read as a hang.
+
+---
+
+## F57 — ADDENDUM 2026-08-21: the fix is not a new primitive, and the case headers already said so
+
+F57 proposed a companion primitive that could express "never". Before building
+it, two things were read that changed the answer.
+
+**FIRST: at these three call sites there is nothing to wait for.** `entrypoint.sh`
+runs `run_agent_tools_reconcile` and then `link_agent_tools` **synchronously** —
+once per mode, at 239-240, 285-286 and 307-308 — and only then does `exec capsh`
+hand pid 1 to the sandbox user. `launcher_up` returns only after
+`_it_pid1_is_uid` observes that handover. So by the time `it_wait 900` runs, the
+reconcile has already finished. The condition is not "not yet decided"; it is
+decided, and the ceiling can only ever be spent confirming it.
+
+**SECOND, and this is the uncomfortable part: all three case headers already
+say this.** 700's says the condition is "already permanently decided, and
+it_wait has no way to know that; it will poll its own full 900s before giving
+up". 710 and 720 both call the wait "the redundant wait". The mechanism F57 was
+filed to discover was documented in the cases themselves — and each header then
+budgeted a full 900s ceiling for it anyway. **The defect was never that nobody
+knew. It was that the knowledge sat in a comment while the code did the opposite.**
+
+**The change: 900 → 10 at all three sites**, plus a message that stops lying.
+The old one — `the agent-tools reconcile did not finish within 900s` — is FALSE
+in 700's mutated run: the reconcile finished normally, the symlink was removed.
+It now reads `claude is absent after the reconcile completed — entrypoint runs
+it before handover, so this is not a timeout`.
+
+Ten rather than zero because the argument above is a code read, and this project
+has been wrong about read-derived mechanisms often enough to pay 10s for margin.
+
+**No new primitive, no engine change, and `it_wait`'s other 17 call sites are
+untouched** — so the "20 callers" risk F57 was deferred for does not arise.
+
+**Case timeouts (2100 / 2400 / 2000) are deliberately NOT re-tightened.** The
+compound bounds drop from ~1800 to ~910-950, but a declared timeout is a hang
+detector, not a cost estimate — F36's 403-minute projection against a measured
+42 is the lesson. Their derivation arithmetic is updated; the values stand.
+
+**WHAT IS STILL UNVERIFIED, and it needs a daemon.** Everything above is a code
+read plus one corroborating measurement (700 took 1003s ≈ 900 + tail). The
+confirming experiment is small and decisive:
+
+1. `700`, `710`, `720` UNMUTATED must still pass. If any now fails at the 10s
+   wait, the read is wrong — something does resolve after the handover — and
+   this change must be reverted rather than re-tuned.
+2. `700` WITH `700-agent-tools-not-linked` applied must still FAIL, with the new
+   message, in roughly **100s instead of 1003s**.
+
+Until (1) and (2) are observed on a real daemon this is a hypothesis with a
+green hermetic suite behind it, which is exactly the state the falsify tier
+exists to distrust.

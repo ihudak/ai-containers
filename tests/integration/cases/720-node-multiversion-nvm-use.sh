@@ -18,9 +18,16 @@
 # (which exits immediately on this wait's failure), THIS case also does not
 # exit early (`|| fail`, not `|| { fail; it_finish; }`) — it falls through
 # into the nvm-use loop and the npmrc check regardless. True bound:
-# ~900 (launcher_up) + ~900 (compound case, redundant wait) + ~10s (three
-# single, non-polling agent_exec calls) ≈ 1810s. 2000s leaves ~190s of real
-# margin over that, not over the smaller "typical" case.
+# ~900 (launcher_up) + ~10 (compound case, redundant wait) + ~10s (three
+# single, non-polling agent_exec calls) ≈ 920s.
+#
+# That middle term was 900 until backlog F57 measured what it bought: nothing.
+# This header already called the wait REDUNDANT and said the condition "is
+# already fixed by then and nothing makes it_wait give up early" — and then
+# budgeted a full ceiling to discover it. 2000s STAYS regardless, because a
+# declared timeout is a hang detector rather than a cost estimate (F36), and
+# re-tightening it near the new bound would buy nothing and add a way to fail
+# on a slow machine.
 #
 # The slow tag follows from that budget, and was missing while every other
 # packages case carried it: this case pays the same cold six-tool agent-tier
@@ -49,8 +56,11 @@ IT_SETTLE=900
 fixture_scope_init || it_finish
 export AI_CONTAINER_GROUP=nodemulti
 launcher_up restricted || it_finish
-it_wait 900 docker exec "$IT_CID" bash -c "command -v claude >/dev/null" \
-  || fail "the agent-tools reconcile did not finish within 900s"
+# 10s, not 900: the reconcile completes inside entrypoint, before the handover
+# launcher_up waits for, so this condition is already decided. See 700's note
+# and backlog F57.
+it_wait 10 docker exec "$IT_CID" bash -c "command -v claude >/dev/null" \
+  || fail "claude is absent after the reconcile completed — entrypoint runs it before handover, so this is not a timeout"
 
 # Source nvm.sh directly rather than /etc/bash.bashrc. Ubuntu's stock
 # /etc/bash.bashrc — unmodified by this Dockerfile apart from the exports it
