@@ -111,7 +111,7 @@ call shapes (`eval`, `declare -F`, `$fn "$@"`) exist in the file. Its only
 callee, `is_active`, keeps six real callers across `sandbox.sh` and `build.sh`,
 so nothing became dead behind it. Removed from both repos.
 
-## F4 — `install-tools.sh:api_get` is unexercised
+## F4 — `install-tools.sh:api_get` is unexercised — **FIXED 2026-08-21, and it was hiding a defect**
 
 The release-type branch's GitHub API call. Confirmed unexercised within the 45
 hermetic tests; not chased beyond that scope. Its siblings `install_repo_file`,
@@ -4032,3 +4032,67 @@ assertion distinguishes them.
 
 **This also gives F55 what it was waiting for** — a captured intermittent
 failure with its message intact, and a cause: bash 5.1's `wait -n -p`.
+
+---
+
+## F4 — 2026-08-21: covered, and the coverage found a defect
+
+Fourteen assertions in `tests/test-tools-d.sh`. Writing them found a real bug in
+`api_get`, which is the argument for writing them.
+
+**THE DEFECT: a failed transfer became the response.** `api_get` does
+
+```bash
+body=$(curl -fsSL … "$url") && [ -n "$body" ] && break
+```
+
+and, on reaching the end of the retry loop, `printf '%s' "$body"`. If curl exits
+non-zero having ALREADY written to stdout, `body` keeps that fragment and it is
+returned as the API's answer — `install_one` then parses it for a tag. `-f`
+suppresses an HTTP *error page*, so the obvious reading is that this cannot
+happen; it does not suppress a **connection reset part-way through a successful
+response**, which is exactly a partial body plus a non-zero exit. One line:
+`body=""` after the failed attempt.
+
+**TIME IS CONTROLLED, NOT WAITED OUT.** `api_get` sleeps 5s between attempts, so
+a faithful "it retries three times" costs 10s per case — and this file already
+carries a comment about that cost. `sleep` is overridden with a shell FUNCTION,
+which takes precedence for a function sourced into the same shell, so the wait
+is RECORDED. That proves more than waiting would: the delay happened **and** it
+asked for 5 seconds.
+
+**What is asserted:** the body is returned on success with exactly one call and
+no sleep; three attempts and two 5-second waits on failure, giving up empty; an
+empty body from a *successful* curl counts as failure and is retried (the
+`&& [ -n "$body" ]` half — the API answers a rate-limit that way); the API media
+type, the URL and `-f` reach curl; the token header is sent when configured and
+**no `Authorization` header is sent when none is**.
+
+Guards demonstrated failing: removing the `body=""` discard, removing the
+empty-body check, and leaking an `Authorization` header on the tokenless path.
+
+### Three things went wrong writing this, and all three are recorded
+
+1. **The block was inserted mid-file and its fake `curl` displaced the
+   repo-file fixture**, taking five unrelated assertions down. It now sits last,
+   with the reason written at the site — the next person will reach for the same
+   `$FAKEBIN`.
+2. **It called `check`, which this file does not define.** bash printed
+   `check: command not found` on stderr and the file still reported **ALL
+   PASS** — every new assertion silently absent. Renamed `ag_check` so it cannot
+   be mistaken for a shared helper. That a missing helper produces a passing run
+   is worth knowing about this harness.
+3. **A comment claimed something untrue.** `${AUTH_ARGS[@]+"${AUTH_ARGS[@]}"}`
+   was described as the guard stopping `set -u` from aborting the installer when
+   no token is set. Measured on bash 5.2 with `set -u` in force: an unset array
+   expands to nothing without error, and has since 4.4. The guard is vestigial
+   at the declared floor, removing it changes nothing, and no assertion here can
+   demonstrate it failing. The comment now says that instead.
+
+**Also recorded from the same day:** `500-group-isolation` failed once on
+`mgd-ai-containers` CI —
+`FAIL: launcher_up(open): entrypoint never handed over to the agent shell (uid 1001)`
+— on a diff touching only the falsify engine, which the integration tier never
+reads, after nine consecutive successes. It passed on re-run. That is F32's
+family arriving in the **integration** tier, which has no control-run mechanism
+of its own; one occurrence, message captured, no mechanism claimed.

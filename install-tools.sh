@@ -33,6 +33,14 @@ api_get() {
   for i in 1 2 3; do
     body=$(curl -fsSL ${AUTH_ARGS[@]+"${AUTH_ARGS[@]}"} \
              -H "Accept: application/vnd.github+json" "$url") && [ -n "$body" ] && break
+    # A FAILED TRANSFER IS NOT A RESPONSE. Reaching here means curl exited
+    # non-zero or handed back nothing, and `body` still holds whatever it wrote
+    # to stdout first. `-f` suppresses an HTTP error page, but a connection
+    # reset part-way through a successful response does not: curl exits
+    # non-zero having already written a PARTIAL body. Without this line the
+    # last attempt's fragment is returned as if it were the API's answer, and
+    # install_one parses it for a tag.
+    body=""
     [ "$i" -lt 3 ] && { echo "  API attempt $i failed, retrying in 5s..." >&2; sleep 5; }
   done
   printf '%s' "$body"
