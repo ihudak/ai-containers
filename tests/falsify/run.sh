@@ -759,7 +759,18 @@ fr_run_control() {   # <slot> <target> <oracle> <n> <resultfile>
   # run log beside the CONTROL record it explains, in order, instead of
   # interleaved with whatever other workers were writing at the time.
   if [[ "$verdict" == "FAIL" ]]; then
-    grep -E '^(FAIL:|SCAFFOLD-FAILED:)' "$out" 2>/dev/null | head -10 \
+    # THE CONTINUATION LINES MATTER AS MUCH AS THE FAIL: LINE. This repo's
+    # `check` helper prints the failure name on the FAIL: line and the
+    # `expected:` / `got:` values INDENTED underneath it. Grepping only `^FAIL:`
+    # therefore captures the name of the assertion and discards the evidence —
+    # measured on the first host run that produced a diagnosis (2026-08-21):
+    # five of six captured lines were bare names, and the only one that told
+    # anybody anything was the case whose message happened to be on one line.
+    awk '
+      /^(FAIL:|SCAFFOLD-FAILED:)/ { if (n++ < 6) { keep = 1; print; next } keep = 0; next }
+      keep && /^[[:space:]]/      { print; next }
+      { keep = 0 }
+    ' "$out" 2>/dev/null | head -30 \
       | while IFS= read -r cl; do
           printf 'NOTE|control-output|%s|%s\n' "$target" "$cl" >> "$res"
         done
@@ -970,7 +981,15 @@ fr_wait_for_slot() {   # block until at least one slot is free
       (( ${#ended[@]} == 1 )) && reaped="${ended[0]}"
     fi
     if [[ -n "$reaped" && -n "${FR_PID_SLOT[$reaped]:-}" ]]; then
-      FR_PID_STATUS["$reaped"]="$rc"
+      # 127 IS `wait`'s OWN "there are no unwaited-for children", not a status
+      # any child exited with. At the declared floor, bash 5.1 returns it
+      # intermittently for a child that has ALREADY terminated — measured, not
+      # inferred: the bash-floor CI job reported `it exited 127` for a worker
+      # the test had SIGKILLed, and the identical job passed on re-run.
+      # Recording it as the worker's exit status makes fr_exit_cause state a
+      # number nothing measured, which is the one thing this whole channel
+      # exists to stop.
+      if (( rc == 127 )); then FR_PID_STATUS["$reaped"]=""; else FR_PID_STATUS["$reaped"]="$rc"; fi
       fr_harvest "$reaped"
       harvested=$(( harvested + 1 ))
       continue

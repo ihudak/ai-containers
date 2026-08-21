@@ -3951,3 +3951,84 @@ diagnosis; that is what decides it.
 **Reproduction:** `FALSIFY_TIMEOUT=600 FALSIFY_JOBS=8 PHASES=6 bash ./verify-on-host.sh`
 on macOS, and read the `NOTE|control-output|` lines beside the `CONTROL FAILED`
 error.
+
+---
+
+## F32 — 2026-08-21: the first captured diagnosis, and two things it exposed
+
+The second host run (same command, same `--jobs 8`) tripped **two** controls and
+carried their evidence out:
+
+```
+ERROR: CONTROL FAILED — … (signal=exit+failline, 80.3s): tests/bash-dialect-lint.sh …
+ERROR: CONTROL FAILED — … (signal=exit+failline, 47.4s): tests/integration/docker-shim.sh …
+falsify:   control output: FAIL: volume create: labelled
+falsify:   control output: FAIL: network create: labelled
+falsify:   control output: FAIL: volume rm is passed through untouched (no label injection)
+falsify:   control output: FAIL: an unrelated subcommand is passed through untouched
+falsify:   control output: FAIL: inspect is passed through untouched
+falsify:   control output: FAIL: refuses with 127 when IT_REAL_DOCKER is unset
+                            (rc=127, out=env: /var/folders/…/tmp.G1R3ZjNW6O/bin/docker: No such file or directory)
+```
+
+**IT IS NOT SLOWNESS.** `No such file or directory` for `$TMP/bin/docker` — the
+fake docker `test-integration-shim.sh` builds for itself, a symlink to
+`$REPO_DIR/tests/integration/docker-shim.sh` in the worker tree. Something the
+test depends on was **gone**, and no amount of `--timeout` addresses that. F32's
+standing advice — look for a mechanism before reaching for a clock — holds for a
+third case out of five.
+
+**The failing set is contiguous and it starts partway through.** These passed:
+`bash -n`, `is executable`, the three `main run:` cases, `helper run:`. These
+failed: everything from `volume create: labelled` onward. So the fake docker
+existed when the test began and was missing by the time it reached that case.
+
+**NOT REPRODUCED IN THE CONTAINER**, at `--jobs 16 --controls 6` against that
+target alone: `CONTROLS|6|0`. So it is macOS-observed and this entry does not
+claim a mechanism. Five separate times this project has inferred one from
+reading source and been wrong (F50 twice, F52, F53, the gate-4c fixture); the
+next diagnosis decides it, not this paragraph.
+
+### What the capture got wrong, and now does not
+
+**Five of the six captured lines were bare assertion NAMES with no evidence.**
+`tests/run-all.sh`'s `check` helper prints the name on the `FAIL:` line and the
+`expected:` / `got:` pair INDENTED underneath — and the capture grepped `^FAIL:`
+only. The one line that told anybody anything was the sixth, whose message
+happened to fit on one line. The capture now takes each `FAIL:` /
+`SCAFFOLD-FAILED:` line **plus the indented lines beneath it**, capped at 6
+failures and 30 lines.
+
+### And a defect in the pool's own reporting, from the same run
+
+The `bash-floor` CI job failed once on this PR chain with:
+
+```
+FAIL: … got: ERROR: a mutant worker produced no verdict at all (slot 7; it exited 127)
+```
+
+Re-running the identical job passed, and the same content had passed on the four
+runs before it — so it is **intermittent on bash 5.1**, which is the declared
+floor. `wait -n -p` there can return **127** for a child that has already
+terminated, and 127 is `wait`'s OWN *"there are no unwaited-for children"*, not a
+status any child exited with.
+
+`fr_wait_for_slot` recorded it as the worker's exit status, so `fr_exit_cause`
+printed *"it exited 127"* — **a number nothing measured**, about a worker that
+had in fact been SIGKILLed. That is precisely the failure mode this channel was
+built to end. Fixed: 127 is recorded as no status at all, and reads as
+`exit status not captured`.
+
+The §11d assertion now accepts either the real signal **or** an explicit
+non-capture — because at the floor bash genuinely cannot always supply one — and
+a second, version-independent assertion pins the part that is never acceptable:
+**a `wait`-internal code must never be reported as a worker exit status.** Both
+demonstrated failing.
+
+**Honest limitation:** the fallback's own guard is only asserted where bash can
+supply a status, i.e. at 5.2. At the floor, "the fallback is present but bash
+had nothing" and "the fallback is absent" produce the same message, and no
+assertion distinguishes them.
+
+**This also gives F55 what it was waiting for** — a captured intermittent
+failure with its message intact, and a cause: bash 5.1's `wait -n -p`.
