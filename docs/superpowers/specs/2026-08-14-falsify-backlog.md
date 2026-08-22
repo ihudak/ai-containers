@@ -4717,3 +4717,39 @@ host.** A macOS host cannot see how many CPUs Colima or Docker Desktop reserved;
 does not currently make. The options are to ask the daemon, to cap `auto` at
 some fraction of `hw.ncpu`, or to document `FALSIFY_JOBS` as required on macOS.
 Recorded rather than guessed at.
+
+---
+
+## F60 — `c-toolchain=ON` alone is CONFIRMED IN THE FIELD and UNGUARDED by a case
+
+Not a doubt about whether it works. It does — confirmed twice on 2026-08-22, by
+the user directly (`gcc` present and working in a container) and by the agent
+working on the dtmgd Go CLI, the same use case whose failure produced the key:
+
+```
+cgo: C compiler "gcc" not found: exec: "gcc": executable file not found in $PATH
+```
+
+**Both halves are demonstrated automatically; only their composition is not.**
+
+| step | demonstrated by |
+|---|---|
+| the key → the build arg | `tests/test-db-clients.sh`, four fixtures, both directions (dropping the new arm loses the ON case; making it unconditional loses both OFF cases) |
+| the build arg → a toolchain in the image | integration case `730-native-clients-run` asserts `gcc` and `/usr/include/yaml.h`, and mutation `735-toolchain-not-restored` demonstrates that assertion failing |
+| **the key alone, with nothing else set** | **nothing** |
+
+The gap exists because the `native` variant obtains the toolchain through
+`db-clients` and `ruby` regardless, so an assertion there would pass whatever
+the `c-toolchain` key did. Isolating it needs a **fourth image variant** built
+solely to exercise one boolean — a nightly image build, per run.
+
+**Recorded as UNGUARDED rather than unverified, and deliberately not bought.** A
+regression would have to break one of the two demonstrated halves to reach a
+user, and the field confirmation says the composition holds today. Revisit if
+someone reports setting `c-toolchain=ON` and finding no compiler — at which
+point the variant is justified by evidence rather than by symmetry.
+
+The general shape is worth keeping: **six components are enabled by no variant
+at all** — `goreleaser`, `qmd`, `acli`, `angular-cli`, `pnpm`, `bun` — so
+nothing builds them and no case can assert them. That is a cost boundary of the
+three-variant design, not an oversight, and the same question applies to each.
