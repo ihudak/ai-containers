@@ -15,6 +15,10 @@ LINT="$REPO_DIR/tests/bash-dialect-lint.sh"
 source "$REPO_DIR/tests/portability.sh"
 TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; trap 'rm -rf "$TMP"' EXIT
 fails=0
+# The worst single-file lint seen so far, in ms; the whole-tree bound is a
+# multiple of it. Declared here because vector() writes it and the whole-tree
+# assertion reads it.
+unit_ms=0
 pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails+1)); }
 
@@ -27,11 +31,22 @@ bash -n "$LINT" && pass "bash-dialect-lint.sh bash -n" || fail "bash-dialect-lin
 # oracle rather than failing it, and run.sh scores the mutant UNPROVEN with
 # nothing observed (backlog F22). A bound turns the hang into a named failure.
 # The whole-tree run gets a wider clock than the single-vector ones: it scans
-# every tracked script (measured 0.6s here, but a loaded macOS host is slower).
+# every tracked script (measured 0.6s here, but a loaded macOS host is slower),
+# and that clock is CALIBRATED from these vectors rather than fixed — see the
+# note above tree_bound_secs for why a flat one produced a false KILL.
 vector() {
   printf '%s\n' "$2" > "$TMP/v.sh"
+  # Timed, because the whole-tree bound below is DERIVED from this number
+  # rather than being a constant — see the calibration note there. The WORST
+  # of the vectors is kept, not the last: load on this tier's own host arrives
+  # in bursts (two pristine controls of this very file, same run, jobs=8:
+  # 8s and 132s), and a bound calibrated off a quiet moment is the constant
+  # again with extra steps.
+  local _t0="${EPOCHREALTIME//[.,]/}"
   p_timeout 10 bash "$LINT" "$TMP/v.sh" >/dev/null 2>&1
   local rc=$?
+  local _ms=$(( ( ${EPOCHREALTIME//[.,]/} - _t0 ) / 1000 ))
+  (( _ms > unit_ms )) && unit_ms="$_ms"
   if [[ "$rc" -eq 124 ]]; then
     fail "$1 — the linter did not terminate within 10s; its scan loop never reached EOF"
     # …and stop the file here. Every vector below runs the same loop, so
@@ -131,15 +146,56 @@ fi
 # exclusion exists any more (see bash-dialect-lint.sh's own header) — this
 # file and bash-dialect-lint.sh itself are both scanned for real, kept
 # clean purely by the markers and the DOLLAR trick above.
-p_timeout 30 bash "$LINT" >/dev/null 2>&1
+# THE BOUND IS CALIBRATED, NOT CONSTANT, AND THAT IS A CORRECTNESS FIX rather
+# than a tuning one. A `p_timeout` whose expiry calls `fail` converts SLOWNESS
+# into a FAIL: line, and under tests/falsify/run.sh a FAIL: line is a KILL — so
+# an overrun here credits this oracle with catching a mutation it never noticed,
+# which is the one error this tier cannot detect from its own output. It was not
+# hypothetical: on macOS + Colima at --jobs 8 (2026-08-22) the PRISTINE file
+# blew the flat 30s bound and went red, the second control of the same run
+# having passed in 8s. Only the control mechanism made it visible.
+#
+# The two costs move together, so the RATIO is what is stable, not either
+# number: measured here, a single-file lint is ~6ms and the whole tree (141
+# scripts, one startup shared) is ~580ms — 97x. The multiplier is 300, ~3x that
+# ratio, and the floor keeps a fast machine from deriving an absurdly tight
+# bound from a 6ms sample. Deliberately NOT capped against run.sh's per-mutant
+# ceiling: on a host loaded past the point where the bound would exceed it, the
+# honest outcome is the oracle hitting that ceiling and the mutant scoring
+# UNPROVEN, and a cap would trade that for the false KILL this whole note is
+# about. A hang is infinite and trips any bound, so F22's kill survives
+# everywhere the machine is fast enough to measure at all.
+tree_bound_secs() {   # <worst single-file lint, ms> → the whole-tree bound
+  local unit="$1" secs
+  secs=$(( unit * 3 / 10 ))
+  (( secs < 30 )) && secs=30
+  printf '%s' "$secs"
+}
+tree_secs="$(tree_bound_secs "$unit_ms")"
+p_timeout "$tree_secs" bash "$LINT" >/dev/null 2>&1
 clean_rc=$?
 if [[ "$clean_rc" -eq 124 ]]; then
-  fail "the repository is clean at the current floor — the whole-tree run did not terminate within 30s"
+  fail "the repository is clean at the current floor — the whole-tree run did not terminate within ${tree_secs}s (calibrated from a worst single-file lint of ${unit_ms}ms)"
 elif [[ "$clean_rc" -eq 0 ]]; then
   pass "the repository is clean at the current floor"
 else
   fail "the repository is clean at the current floor"
 fi
+
+# The derivation itself, asserted on fixed inputs — the run above cannot show
+# it, because on any healthy machine it lands on the floor and looks exactly
+# like the constant it replaced. These are the three points that tell them
+# apart.
+check_bound() {   # <label> <unit-ms> <expected seconds>
+  local got; got="$(tree_bound_secs "$2")"
+  if [[ "$got" == "$3" ]]; then pass "$1"; else fail "$1 — expected ${3}s, got ${got}s"; fi
+}
+check_bound "the whole-tree bound never drops below its 30s floor"        6    30
+# 300ms is roughly what a single-file lint costs on the host that tripped the
+# flat bound: 50x this container, and the tree run there costs ~30s of the 30
+# it used to be given.
+check_bound "a 50x slower machine gets a 50x bound, not the same 30s"     300  90
+check_bound "the bound tracks the measured cost, with no ceiling above it" 1000 300
 
 # ── The "examined no files" guard, exercised ──────────────────────────────────
 # bash-dialect-lint.sh:84-87 refuses to report success when it examined nothing
