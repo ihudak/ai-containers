@@ -4803,8 +4803,43 @@ this entry was waiting for. The earlier numbers here (4 red at 28.6 min vs 2 red
 at 35.5 min) predate the F28 fix and confounded the clock with the load; these
 do not.
 
-Still not fixed, and the reason is unchanged: **the right number is not
-derivable from the host.** `hw.ncpu` reports 18; Colima holds 12 for its VM;
+### FIXED 2026-08-22: the number IS derivable, and it was the core MIX
+
+The host's topology, measured rather than assumed:
+
+| | |
+|---|---|
+| `hw.ncpu` | 18 |
+| `hw.physicalcpu` | 18 (no SMT — all 18 are real cores) |
+| `hw.perflevel0.logicalcpu` | **6** — performance cores |
+| `hw.perflevel1.logicalcpu` | 12 — efficiency cores |
+| `docker info` NCPU | 12 |
+
+`hw.ncpu` counts twelve efficiency cores as equals against six performance ones,
+which for oracles that spend over half their wall time creating processes they are
+not: `tests/bash-dialect-lint.sh` costs 3.7-5.2s idle against 2.2s of user+sys, so
+under half of it is computation.
+
+Both candidate derivations give **6** on this machine — `hw.perflevel0.logicalcpu`,
+and `hw.ncpu` minus the VM's 12. They cannot be told apart here, and that agreement
+is a coincidence of one configuration rather than evidence they agree in general.
+The P-core cap was chosen on independent grounds: derivable from `sysctl` alone, no
+daemon round-trip inside an otherwise hermetic runner, correct when Docker is not
+running at all, and it names the real constraint — the workload, not a co-tenant.
+
+`fr_cpu_budget` now takes the minimum of the reported count, the cgroup quota, and
+the performance-core count. Each narrows and none widens, so a probe that returns
+nothing costs nothing, and Linux — which has no performance levels — is unchanged.
+
+**This is F38's third face.** F38 fixed `nproc` reading an affinity mask inside a
+quota'd container; this entry's first half was the host count ignoring a VM's
+reservation; this is the count treating unequal cores as equal. Every one of them is
+the same error: the number the OS reports is not the number available to the work.
+
+### The original recording, kept
+
+Still not fixed at the time of writing, and the reason given was that **the right
+number is not derivable from the host.** `hw.ncpu` reports 18; Colima holds 12 for its VM;
 neither figure is "CPUs free for this tier". The options remain (a) ask the
 daemon — `docker info` knows its own NCPU, at the price of a round-trip and a
 dependency in an otherwise hermetic runner, (b) cap `auto` at a fraction of

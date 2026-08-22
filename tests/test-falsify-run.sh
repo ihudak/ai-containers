@@ -1586,4 +1586,47 @@ check "the ceiling is reached in elapsed time, not in sleeps" "6" "$(watch_polls
 # The iteration-counting version returns 2 here and cuts the oracle at 0.2s.
 check "a poll that returns early does not spend the budget" "20" "$(watch_polls 100000 2)"
 
+# ── §17. `--jobs auto` does not count efficiency cores as equals ──────────────
+# hw.ncpu sums both performance levels on Apple Silicon. Measured on the host
+# (F59): 18 = 6 performance + 12 efficiency, no SMT, and `auto` took all 18 —
+# against oracles that spend over half their wall time creating processes, work
+# that collapses on an efficiency core. The pristine control that proves the
+# cost went 445.8s red -> 251s green on the same commit and clock at half the
+# jobs.
+#
+# `sysctl` is stubbed rather than read: this assertion has to hold on the Linux
+# CI that has no perflevels and on a Mac that does, so the machine underneath
+# must not be able to change the answer.
+cpu_budget() {   # <hw.ncpu> <hw.perflevel0.logicalcpu, or empty for absent> → workers
+  ( set +u
+    # shellcheck source=/dev/null
+    source "$RUN" >/dev/null 2>&1
+    _ncpu="$1"; _perf="$2"
+    sysctl() {
+      case "${3:-$2}" in
+        hw.ncpu) printf '%s\n' "$_ncpu" ;;
+        hw.perflevel0.logicalcpu) [[ -n "$_perf" ]] || return 1; printf '%s\n' "$_perf" ;;
+        *) return 1 ;;
+      esac
+    }
+    # nproc would be preferred by fr_host_cpus and would read the REAL machine.
+    nproc() { printf '%s\n' "$_ncpu"; }
+    # No cgroup quota: this section is about the core mix, and FR_CGROUP pointing
+    # at a path that cannot exist is how fr_quota_cpus is told so. Read by
+    # fr_quota_cpus, which shellcheck cannot follow through the source above.
+    # shellcheck disable=SC2034
+    FR_CGROUP="$TMP/no-such-cgroup"
+    fr_cpu_budget )
+}
+check "a 6P+12E machine is capped at its performance cores" "6"  "$(cpu_budget 18 6)"
+# The other direction, and the one that must not regress: a machine whose cores
+# are all equal reports no perflevel at all and keeps every one of them.
+check "a uniform machine keeps all of its cores"            "12" "$(cpu_budget 12 '')"
+# A perflevel that is not a positive integer is no answer, and must not be read
+# as one — the same rule fr_quota_cpus applies to an unparseable quota.
+check "an unparseable performance-core count is ignored"    "18" "$(cpu_budget 18 'zero')"
+# It NARROWS only. A perflevel larger than the reported count (a machine nobody
+# has met yet, or a stub) cannot hand out workers the OS did not report.
+check "the performance-core count never widens the budget"  "8"  "$(cpu_budget 8 16)"
+
 printf '\n%d failure(s)\n' "$fails"; exit "$fails"
