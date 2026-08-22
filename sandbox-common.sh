@@ -852,6 +852,46 @@ ai_containers_payload_digest() {   # <dir> → 64 hex, or rc 1 if it cannot be c
   } | ai_containers_sha256
 }
 
+# WHAT THE CONFIG ASKED FOR, as distinct from what the files contain.
+#
+# sandbox.conf is deliberately OUTSIDE the payload digest above, because it mixes
+# build-time keys (ruby=, db-clients=, c-toolchain=) with runtime ones (mode=,
+# agents=). Digesting the file would demand a rebuild after changing `mode=`,
+# which rebuilds nothing — and a warning that fires when nothing is wrong is a
+# warning people learn to dismiss, taking the true ones with it.
+#
+# So this digests what build.sh DERIVES from the config rather than the config
+# itself: the --build-arg list, which contains every build-time key by
+# construction and no runtime key at all. Measured on this repo's own
+# sandbox.conf: changing `ruby=` moves the digest, changing `mode=` between
+# restricted and open leaves it byte-identical.
+#
+# Self-maintaining, which is the point — a build-time key added later becomes a
+# build arg and enters this digest with no list to update anywhere.
+ai_containers_config_digest() {   # <dir> → 64 hex, or rc 1 when it cannot be computed
+  local dir="$1"
+  [[ -f "$dir/build.sh" ]] || return 1
+  # A SUBSHELL, because sourcing build.sh re-runs sandbox-common.sh and would
+  # otherwise reset script_dir, config_file and image_name under the caller's
+  # feet. build.sh returns early when sourced, so nothing is built.
+  (
+    # The re-entry guards are cleared FIRST. sandbox-common.sh returns early when
+    # _SANDBOX_COMMON_SOURCED is set, so sourcing build.sh from an already
+    # initialised shell — which is every real caller — would skip re-resolving
+    # `config_file` and silently digest the CALLER's config instead of $dir's.
+    # It gave the right answer for sandbox.sh, whose config is $dir's anyway,
+    # and the wrong one for anybody else, which is the shape of a function that
+    # only looks like it takes an argument.
+    unset _SANDBOX_COMMON_SOURCED _AI_CONTAINERS_BASH_FLOOR_SOURCED
+    # shellcheck source=/dev/null
+    source "$dir/build.sh" >/dev/null 2>&1 || exit 1
+    declare -a _cfg_args=()
+    build_args_from_config _cfg_args 2>/dev/null || exit 1
+    (( ${#_cfg_args[@]} )) || exit 1
+    printf '%s\n' "${_cfg_args[@]}" | LC_ALL=C sort | ai_containers_sha256
+  )
+}
+
 # The stamp itself, as a pure function of a directory and a clock, so it can be
 # asserted without building an image — build_image only has to append what this
 # returns.
@@ -860,6 +900,9 @@ ai_containers_provenance_labels() {   # <dir> [<iso-8601 utc>] → one --label a
   [[ -n "$now" ]] || now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   if digest="$(ai_containers_payload_digest "$dir")"; then
     printf '%s\n' "--label" "ai-containers.payload-digest=$digest"
+  fi
+  if digest="$(ai_containers_config_digest "$dir")"; then
+    printf '%s\n' "--label" "ai-containers.config-digest=$digest"
   fi
   printf '%s\n' "--label" "ai-containers.built-at=$now"
   # Only when the assets ARE a git checkout. A project's .ai-containers/ is a
@@ -875,17 +918,43 @@ ai_containers_provenance_labels() {   # <dir> [<iso-8601 utc>] → one --label a
 # elsewhere, a deliberate local edit), and a launcher that refuses to run over a
 # provenance mismatch would be turned off within a week.
 ai_containers_provenance_warn() {   # <image> <asset-dir>
-  local image="$1" dir="$2" baked here
-  baked="$(docker image inspect --format '{{index .Config.Labels "ai-containers.payload-digest"}}' "$image" 2>/dev/null || true)"
+  local image="$1" dir="$2" what="" here
+  # ONE `docker image inspect`, not one per label: this runs on every launch,
+  # and the daemon round-trip is the expensive part.
+  local labels
+  labels="$(docker image inspect \
+      --format '{{index .Config.Labels "ai-containers.payload-digest"}} {{index .Config.Labels "ai-containers.config-digest"}}' \
+      "$image" 2>/dev/null || true)"
+  local baked_payload="${labels%% *}" baked_config="${labels##* }"
+  [[ "$baked_payload" == "<no" || "$baked_payload" == "value>" ]] && baked_payload=""
+  [[ "$baked_config"  == "value>" ]] && baked_config=""
+
   # An image built before this existed carries no label. Silence is right there:
   # it is not evidence of drift, and a warning nobody can act on is noise.
-  [[ -n "$baked" && "$baked" != "<no value>" ]] || return 0
-  here="$(ai_containers_payload_digest "$dir")" || return 0
-  [[ "$here" == "$baked" ]] && return 0
-  printf 'WARNING: this image was NOT built from the files in %s.\n' "$dir" >&2
-  printf '         image was built from payload %s\n' "${baked:0:12}" >&2
-  printf '         these assets are            %s\n' "${here:0:12}" >&2
+  local detail=""
+  if [[ -n "$baked_payload" ]] && here="$(ai_containers_payload_digest "$dir")"; then
+    if [[ "$here" != "$baked_payload" ]]; then
+      what="the files"
+      # The digests, not just the claim: they are what lets somebody check this
+      # against `docker image inspect` instead of taking its word for it.
+      detail="${detail}         files:    built from ${baked_payload:0:12}, these assets are ${here:0:12}"$'\n'
+    fi
+  fi
+  # The config is checked SEPARATELY and named separately, because the two mean
+  # different things to the reader: "you synced and did not rebuild" versus "you
+  # changed a build-time key and did not rebuild". Both end in ./build.sh, but
+  # only one of them is something they just did on purpose.
+  if [[ -n "$baked_config" ]] && here="$(ai_containers_config_digest "$dir")"; then
+    if [[ "$here" != "$baked_config" ]]; then
+      what="${what:+$what and }the build-time settings in sandbox.conf"
+      detail="${detail}         settings: built from ${baked_config:0:12}, sandbox.conf now asks for ${here:0:12}"$'\n'
+    fi
+  fi
+  [[ -n "$what" ]] || return 0
+
+  printf 'WARNING: this image was NOT built from %s in %s.\n' "$what" "$dir" >&2
+  printf '%s' "$detail" >&2
   printf '         Rebuild before trusting it:  ./build.sh    (or ./runme.sh, which builds first)\n' >&2
-  printf '         If the assets were just synced from the central repo, that is exactly what this means.\n' >&2
+  printf '         Right after a sync from the central repo, that is exactly what this means.\n' >&2
   return 0
 }
