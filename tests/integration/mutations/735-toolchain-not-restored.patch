@@ -18,9 +18,10 @@
 #       else in the Dockerfile installs — present if and only if this layer ran.
 #
 #       Mutating the Dockerfile rather than build.sh is deliberate. build.sh sets
-#       KEEP_BUILD_TOOLCHAIN=1 whenever ruby OR db-clients is set, and the native
-#       variant sets both, so no build.sh edit can produce KEEP_BUILD_TOOLCHAIN=0
-#       there. Forcing the ARG to 0 directly is also not it: Dockerfile:331 fails
+#       KEEP_BUILD_TOOLCHAIN=1 whenever ruby, db-clients OR c-toolchain is set, and
+#       the native variant sets the first two, so no build.sh edit can produce
+#       KEEP_BUILD_TOOLCHAIN=0 there. Forcing the ARG to 0 directly is also not it:
+#       the RUBY_RUNTIME layer fails
 #       the build outright on RUBY_RUNTIME=1 with KEEP_BUILD_TOOLCHAIN!=1, so the
 #       image would never build and 730 would fail as "image did not build" — a
 #       named failure, but not this one. Defeating the restore layer while leaving
@@ -37,12 +38,11 @@
 #       -- still PASS. A run where gcc also fails means something else changed.
 #
 diff --git a/Dockerfile b/Dockerfile
-index ee36aec..6c1ffe6 100644
 --- a/Dockerfile
 +++ b/Dockerfile
-@@ -288,7 +288,7 @@ RUN if [ -n "$DB_CLIENTS" ]; then \
- # DB driver gems, and Python source wheels compile at runtime, so put a minimal
- # toolchain back when KEEP_BUILD_TOOLCHAIN=1 (set by build.sh for ruby OR db-clients).
+@@ -291,7 +291,7 @@
+ # interface, which is what lets `c-toolchain=ON` alone be sound without an image
+ # variant built to prove it (backlog F60).
  ARG KEEP_BUILD_TOOLCHAIN=0
 -RUN if [ "$KEEP_BUILD_TOOLCHAIN" = "1" ]; then \
 +RUN if [ "$KEEP_BUILD_TOOLCHAIN" = "NEVER" ]; then \

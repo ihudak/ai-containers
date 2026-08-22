@@ -155,5 +155,64 @@ else
 fi
 rm -rf "$GA_TMP"
 
+# ── F60: the composition, closed by construction rather than by a fourth image ─
+# Fixture 3 above proves `c-toolchain=ON` ALONE yields KEEP_BUILD_TOOLCHAIN=1.
+# Integration case 730 proves KEEP_BUILD_TOOLCHAIN=1 yields a working `gcc`, and
+# mutation 735 demonstrates that assertion failing. What was never demonstrated
+# is the JOIN — an image built from the key alone — because the `native` variant
+# obtains the toolchain through db-clients and ruby regardless, so an assertion
+# there would pass whatever the c-toolchain key did. Isolating it looked like it
+# needed a FOURTH image variant, built nightly to exercise one boolean.
+#
+# It does not, and these three assertions are why. The Dockerfile's decision
+# about the runtime toolchain reads ONE input: the KEEP_BUILD_TOOLCHAIN build
+# arg. It cannot know, and does not ask, which key set it. So
+# (key alone -> arg), already proven above, composes with (arg -> toolchain),
+# already proven in the native variant, for EVERY key that sets the arg —
+# including ones added later, which a fourth variant would not have covered.
+#
+# That is a stronger guarantee than the variant would have bought, and it costs
+# no image build. What it does NOT cover is a Dockerfile change that makes the
+# decision depend on something else — which is exactly what these assert.
+DF="$REPO_DIR/Dockerfile"
+if [[ ! -f "$DF" ]]; then
+  fail "the Dockerfile is where the toolchain decision lives"
+else
+  # 1. The layer that RESTORES the toolchain is guarded by the arg alone.
+  keep_cond="$(grep -n 'RUN if \[ "\$KEEP_BUILD_TOOLCHAIN" = "1" \]' "$DF" | head -1)"
+  if [[ -n "$keep_cond" ]]; then
+    pass "the toolchain-retention layer is guarded by KEEP_BUILD_TOOLCHAIN"
+  else
+    fail "the toolchain-retention layer is guarded by KEEP_BUILD_TOOLCHAIN — its condition changed shape, so F60's composition argument no longer holds"
+  fi
+
+  # 2. The retention BLOCK reads no other build arg. Scoped to the block rather
+  #    than to every mention of the name, because line 334 legitimately pairs
+  #    the two: it FAILS THE BUILD when RUBY_RUNTIME=1 arrives without
+  #    KEEP_BUILD_TOOLCHAIN=1. That asserts the invariant, it does not decide
+  #    the toolchain, and a check broad enough to flag it would be turned off.
+  #    This is the assertion that catches the retention being made conditional
+  #    on DB_CLIENTS or RUBY_RUNTIME — the only way F60's join comes apart.
+  offenders="$(awk '/RUN if \[ "\$KEEP_BUILD_TOOLCHAIN" = "1" \]/{inb=1} inb{print} inb&&/^[[:space:]]*fi[[:space:]]*$/{exit}' "$DF" \
+                 | grep -nE 'DB_CLIENTS|RUBY_RUNTIME|INSTALL_' || true)"
+  if [[ -z "$offenders" ]]; then
+    pass "no toolchain decision is conditioned on db-clients or ruby — the arg is the whole interface"
+  else
+    fail "no toolchain decision is conditioned on db-clients or ruby — the arg is the whole interface"
+    printf '%s\n' "$offenders" | sed 's/^/     /'
+  fi
+
+  # 3. Every purge of build-essential is behind the same arg. A purge that is
+  #    not would strip the toolchain behind the key's back, and neither half
+  #    above would notice.
+  bad_purge="$(grep -n 'apt-get purge.*build-essential' "$DF" | grep -v 'KEEP_BUILD_TOOLCHAIN' || true)"
+  if [[ -z "$bad_purge" ]]; then
+    pass "every purge of build-essential is conditioned on KEEP_BUILD_TOOLCHAIN"
+  else
+    fail "every purge of build-essential is conditioned on KEEP_BUILD_TOOLCHAIN"
+    printf '%s\n' "$bad_purge" | sed 's/^/     /'
+  fi
+fi
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

@@ -4728,7 +4728,7 @@ Recorded rather than guessed at.
 
 ---
 
-## F60 — `c-toolchain=ON` alone is CONFIRMED IN THE FIELD and UNGUARDED by a case
+## F60 — `c-toolchain=ON` alone is CONFIRMED IN THE FIELD and UNGUARDED by a case — **CLOSED 2026-08-22 BY CONSTRUCTION, no fourth variant**
 
 Not a doubt about whether it works. It does — confirmed twice on 2026-08-22, by
 the user directly (`gcc` present and working in a container) and by the agent
@@ -4756,6 +4756,51 @@ regression would have to break one of the two demonstrated halves to reach a
 user, and the field confirmation says the composition holds today. Revisit if
 someone reports setting `c-toolchain=ON` and finding no compiler — at which
 point the variant is justified by evidence rather than by symmetry.
+
+### CLOSED 2026-08-22 — the join needed an argument, not an image
+
+The fourth variant was never necessary, and the reason is one line of the
+Dockerfile: **the toolchain decision reads exactly one input, the
+`KEEP_BUILD_TOOLCHAIN` build arg.** That layer cannot know, and does not ask,
+which key set it.
+
+So the two demonstrated halves compose without anything further being built:
+
+```
+c-toolchain=ON alone  ──►  KEEP_BUILD_TOOLCHAIN=1   (test-db-clients.sh, fixture 3)
+KEEP_BUILD_TOOLCHAIN=1 ──►  a working gcc            (case 730 + mutation 735)
+```
+
+The middle term is the same variable in both rows. Nothing between them varies
+with `db-clients` or `ruby`, so the composition holds for **every** key that
+sets the arg — including keys added later, which a variant built today would
+not have covered. That is a stronger guarantee than the variant, at no build
+cost.
+
+**What the argument depends on is now asserted**, because an argument that
+nothing checks decays into a comment. Three assertions in
+`tests/test-db-clients.sh`:
+
+| assertion | catches |
+|---|---|
+| the retention layer is guarded by `KEEP_BUILD_TOOLCHAIN` | the condition changing shape — which would make the next assertion match nothing and pass vacuously |
+| no toolchain decision is conditioned on db-clients or ruby | the retention being coupled to another key again, the only way the join comes apart |
+| every purge of `build-essential` is conditioned on the arg | a purge added elsewhere stripping the toolchain behind the key's back |
+
+Demonstrated, all three: coupling the retention to `$DB_CLIENTS` reddens the
+second; adding an unguarded `apt-get purge build-essential` reddens the third;
+rewriting the condition as `test "x$KEEP_BUILD_TOOLCHAIN" = "x1"` reddens the
+first **while the second passes** — which is precisely the vacuity the first one
+exists to catch.
+
+**Two stale comments fixed on the way.** The Dockerfile said the arg was "set by
+build.sh for ruby OR db-clients" in two places. `c-toolchain` has set it since
+the key was added, and the file whose behaviour depends on the arg was
+describing the wrong set of triggers.
+
+**The scope limit, stated.** This closes the composition, not the field. Nothing
+here builds an image from `c-toolchain=ON` alone; if the retention layer itself
+regressed, case 730 in the `native` variant is what would catch it, and it does.
 
 The general shape is worth keeping: **six components are enabled by no variant
 at all** — `goreleaser`, `qmd`, `acli`, `angular-cli`, `pnpm`, `bun` — so
