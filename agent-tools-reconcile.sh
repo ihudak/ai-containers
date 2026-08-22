@@ -1,8 +1,16 @@
 #!/usr/bin/env bash
 # agent-tools-reconcile.sh — runs as the sandbox USER at container start. Installs the
 # enabled agent-tier tools (Claude Code, Codex, Gemini, Copilot, graphify, Vale) into
-# the group-mounted ~/.ai-tools home on first use — INSTALL-IF-MISSING only; keeping
-# them current is each tool's own job (/update, npm update -g, uv tool upgrade).
+# the group-mounted ~/.ai-tools home on first use. Mostly INSTALL-IF-MISSING, because
+# keeping current is normally the tool's own job — but that only holds for tools that
+# CAN update themselves here, which was established by testing each one rather than
+# assumed:
+#   claude-code  native install (~/.local/share/claude), self-updates    → if-missing
+#   copilot      downloads its own GitHub release, self-updates in place → if-missing
+#   codex        its `update` runs bare `npm install -g` → EACCES 243    → UPDATE each start
+#   gemini       has no update mechanism at all                          → UPDATE each start
+#   graphify     uv tool upgrade                                         → if-missing
+#   vale         pinned download                                         → if-missing
 # Concurrency-safe via flock on the shared mount. Offline-tolerant and non-fatal: a tool
 # that fails to install logs FAILED and is skipped, never blocking container start.
 # No `set -u` (parity with rvm-reconcile.sh; tolerate unset envs via ${VAR:-}).
@@ -40,6 +48,49 @@ install_npm() {   # $1=binary  $2=package
   npm install -g --prefix "$npm_prefix" "$pkg" || log "FAILED: npm install -g --prefix $npm_prefix $pkg (skipped)"
 }
 
+# Keep a package at the LATEST published version rather than merely present. Used only
+# for the tools that cannot keep themselves current, and the distinction is measured:
+#   * codex's own `update` shells out to a bare `npm install -g @openai/codex`, which
+#     resolves to nvm's root-owned prefix and dies EACCES (`exit status: 243`).
+#   * gemini ships no update mechanism at all — nothing matching update/upgrade in its
+#     --help.
+# Copilot is deliberately NOT in this set: it downloads its own release from GitHub and
+# self-updates in place, verified working behind the restricted firewall.
+# Cost measured in-container: ~7s for four packages with a warm cache, ~24s cold.
+update_npm() {    # $1=binary  $2=package
+  local bin="$1" pkg="$2"
+  log "updating $pkg…"
+  npm install -g --prefix "$npm_prefix" "$pkg" \
+    || log "FAILED: npm install -g --prefix $npm_prefix $pkg (skipped)"
+}
+
+# Claude Code installs NATIVELY rather than through npm, and the reason is a measurement
+# rather than a preference. Its npm-installed self-updater runs a bare `npm install -g`,
+# which resolves to nvm's root-owned prefix and fails with "no write permission to npm
+# prefix" — the capability lost when bc2e551 removed the baked /etc/skel/.npmrc. That
+# removal was correct (the baked prefix made `nvm use <version>` FAIL, not warn, breaking
+# the node= multi-version workflow), so the fix cannot be to put it back: restoring it
+# re-breaks nvm, and nvm's own suggested escape hatch, `nvm use --delete-prefix`, silently
+# deletes the prefix again at runtime.
+#
+# The native installer sidesteps the whole conflict by not involving npm at any point:
+# versions land in ~/.local/share/claude/versions/<v>, the launcher in ~/.local/bin/claude,
+# and `claude update` replaces them in place. Verified end-to-end in a restricted-mode
+# container — install and self-update both succeed behind the firewall (claude.ai,
+# downloads.claude.ai and storage.googleapis.com are already allowlisted, and nothing was
+# recorded in blocked-domains.txt), and `nvm use` still passes afterwards.
+#
+# Install-if-missing, keyed on the native install dir: keeping it current is `claude
+# update`'s job, which — unlike codex and gemini — actually works.
+install_claude_native() {
+  if [[ -x "$HOME/.local/bin/claude" && -d "$HOME/.local/share/claude" ]]; then
+    log "claude already present (native)"; return 0
+  fi
+  log "installing Claude Code (native installer)…"
+  curl -fsSL https://claude.ai/install.sh | bash \
+    || log "FAILED: native Claude Code install (skipped)"
+}
+
 install_uv() {    # $1=binary  $2=package
   local bin="$1" pkg="$2"
   if [[ -x "$UV_TOOL_BIN_DIR/$bin" ]]; then log "$bin already present"; return 0; fi
@@ -72,21 +123,26 @@ install_vale() {
 IFS=, read -ra want <<<"$tools"
 for t in "${want[@]}"; do
   case "$t" in
-    claude-code) install_npm claude "@anthropic-ai/claude-code" ;;
+    claude-code) install_claude_native ;;
     copilot)     install_npm copilot "@github/copilot" ;;
-    codex)       install_npm codex "@openai/codex" ;;
-    gemini)      install_npm gemini "@google/gemini-cli" ;;
+    codex)       update_npm  codex "@openai/codex" ;;
+    gemini)      update_npm  gemini "@google/gemini-cli" ;;
     graphify)    install_uv graphify "graphifyy" ;;
     vale)        install_vale ;;
     *)           log "unknown tool '$t' (skipped)" ;;
   esac
 done
 
-# Claude Code plugins expect the native path ~/.local/bin/claude; point it at the
-# group-mounted npm install when present.
-if [[ -x "$npm_bin/claude" ]]; then
+# Claude Code plugins expect ~/.local/bin/claude. The native installer creates and OWNS
+# that path, so only point it at a leftover npm copy when no native install exists —
+# a group provisioned before this change still carries ~300 MB of npm Claude under
+# ~/.ai-tools/npm, and it must keep working until someone clears it, without shadowing
+# the native install once that appears. Deliberately not deleted here: other containers
+# in the same group may be running against it right now.
+if [[ ! -d "$HOME/.local/share/claude" && -x "$npm_bin/claude" ]]; then
   mkdir -p "$HOME/.local/bin"
   ln -sf "$npm_bin/claude" "$HOME/.local/bin/claude"
+  log "using leftover npm Claude ($npm_bin/claude) — no native install present"
 fi
 
 log "done."

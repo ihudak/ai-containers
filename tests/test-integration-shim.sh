@@ -9,7 +9,7 @@
 #
 # The load-bearing test in this file is the LAST one — the single-`-it` premise.
 # The shim identifies the container under test by the `-it` flag, which is sound
-# only while sandbox.sh:929 is the only `docker run -it` a launcher run can
+# only while sandbox.sh:937 is the only `docker run -it` a launcher run can
 # reach. If that stops being true, the shim silently renames and detaches
 # somebody else's container and the affected case fails somewhere far away. This
 # test makes the premise itself the thing that breaks.
@@ -212,8 +212,8 @@ for f in "${reachable[@]}"; do
     hits="${hits:+$hits }$f:$n"
   done < <(awk '!/^[[:space:]]*#/ && /(^|[[:space:]])-(it|ti)([[:space:]]|$)/ { print NR }' "$ENGINE_DIR/$f")
 done
-check "exactly one -it/-ti in the scripts a launcher run reaches" "sandbox.sh:929" "$hits"
-if [[ "$hits" != "sandbox.sh:929" ]]; then
+check "exactly one -it/-ti in the scripts a launcher run reaches" "sandbox.sh:937" "$hits"
+if [[ "$hits" != "sandbox.sh:937" ]]; then
   printf '       The shim identifies the container under test by the -it flag.\n'
   printf '       If a second one now exists, either give the new call a distinct\n'
   printf '       marker or teach docker-shim.sh to tell them apart — and update\n'
@@ -239,7 +239,7 @@ check "the -it scan ignores a commented-out occurrence" "" "$found"
 want_line="$(grep -n 'docker run -it' "$REPO_DIR/sandbox.sh" | cut -d: -f1)"
 [[ -n "$want_line" ]] \
   || fail "no 'docker run -it' found in sandbox.sh — this whole file's premise is gone"
-# AGENTS.md (M4): the canonical doc names this same line (sandbox.sh:929, in its
+# AGENTS.md (M4): the canonical doc names this same line (sandbox.sh:937, in its
 # "Two tiers, two verbs" section) and had to be hand-fixed once already when the
 # line moved — scoping this scan to '*.sh' alone let it rot again with nothing
 # catching it. Verified: a literal 'AGENTS.md' pathspec (no wildcard) matches

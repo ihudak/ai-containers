@@ -22,19 +22,31 @@ docker builder prune --filter unused-for=720h
 
 ## Agent-tier tools (`~/.ai-tools`)
 
-Mirroring [Ruby (via rvm)](components/ruby.md): nothing agent-tier is baked into the image. Claude Code, Codex CLI, Gemini CLI, Copilot CLI, `graphify`, and `vale` install at **container start** into a per-user `~/.ai-tools` home (npm prefix `~/.ai-tools/npm`, `graphify`'s `uv` tool dir `~/.ai-tools/uv`, `vale`'s binary in `~/.ai-tools/bin`), mounted from the active container **group** — the same mechanism as `~/.claude`/`~/.codex`/`~/.gemini` (see [Host configuration mounts](repos-and-mounts.md#host-configuration-mounts)) — so the install is shared by every project using that group and survives container restarts and rebuilds.
+Mirroring [Ruby (via rvm)](components/ruby.md): nothing agent-tier is baked into the image. Codex CLI, Gemini CLI, Copilot CLI, `graphify`, and `vale` install at **container start** into a per-user `~/.ai-tools` home (npm prefix `~/.ai-tools/npm`, `graphify`'s `uv` tool dir `~/.ai-tools/uv`, `vale`'s binary in `~/.ai-tools/bin`); **Claude Code** installs the same way but through its own **native** installer, into `~/.local/share/claude`. All of them are mounted from the active container **group** — the same mechanism as `~/.claude`/`~/.codex`/`~/.gemini` (see [Host configuration mounts](repos-and-mounts.md#host-configuration-mounts)) — so the install is shared by every project using that group and survives container restarts and rebuilds.
 
-`agent-tools-reconcile.sh` (running as the sandbox user at container start, `flock`-guarded against concurrent same-group container starts) installs whichever enabled tools are missing from the group's `~/.ai-tools` — **install-if-missing only**. Because the install lives in a user-writable directory instead of a root-owned, read-only image layer, a tool can be brought up to date in place, with no rebuild. **How you do that differs by installer, and for the npm-based CLIs their own auto-updater is not the answer:**
+`agent-tools-reconcile.sh` (running as the sandbox user at container start, `flock`-guarded against concurrent same-group container starts) installs whichever enabled tools are missing. Because the install lives in a user-writable directory instead of a root-owned, read-only image layer, a tool can be brought up to date in place, with no rebuild — but **whether a tool can update itself is per-tool, and each row below was established by running it in a container**, not inferred from how it was installed:
 
-| tool | how to update |
-| --- | --- |
-| Claude Code, Codex CLI, Gemini CLI, Copilot CLI | `npm-agent-tools update -g` |
-| `graphify` | `uv tool upgrade graphify` |
-| `vale` | `vale` has no self-update; delete `~/.ai-tools/bin/vale` and restart the container |
+| tool | keeps itself current? | how it is updated |
+| --- | --- | --- |
+| Claude Code | **yes** — native installer, no npm involved | `claude update`, or automatically |
+| Copilot CLI | **yes** — downloads its own GitHub release | automatic; `copilot update` to force |
+| Codex CLI | no — its `update` shells out to a bare `npm install -g` and fails `EACCES` | the reconcile re-installs it **on every container start** |
+| Gemini CLI | no — ships no update mechanism at all | the reconcile re-installs it **on every container start** |
+| `graphify` | yes | `uv tool upgrade graphify` |
+| `vale` | no self-update | delete `~/.ai-tools/bin/vale` and restart the container |
 
-The agent CLIs' **own auto-updaters fail here**, with a message of the form *no write permission to npm prefix*. That is a consequence of the design rather than a fault: the image deliberately sets **no** global npm prefix anywhere, because a `prefix=` line in any npmrc — user, global, builtin or project, all four of which nvm inspects — makes nvm's `nvm_die_on_prefix` check **fail** `nvm use <version>` outright rather than warn, which would break the multi-version `node=22,20` workflow `sandbox.conf` advertises. With no prefix configured, `npm prefix -g` resolves to nvm's own root-owned node directory, which the sandbox user cannot write to, so the CLI's self-update aborts there instead of in `~/.ai-tools/npm` where it is actually installed.
+Updating Codex and Gemini on every start costs about **7 s** with a warm npm cache (~24 s cold), measured in-container.
 
-`npm-agent-tools` is the way through: a shell function baked into `/etc/profile.d/ai-tools.sh` that forwards `--prefix "$HOME/.ai-tools/npm"` to npm, which nvm does not object to because it inspects npmrc files and `$PREFIX`/`$NPM_CONFIG_PREFIX`, never a command's own flags. A bare `npm update -g` is the wrong command for the same reason the auto-updater is: it would update whatever node version nvm currently has active, not the group's tool home. Being a shell function, it is available in login and interactive shells only — a `docker exec -T` one-liner should call `npm --prefix "$HOME/.ai-tools/npm" update -g` directly. `link-agent-tools.sh` then symlinks each installed tool's binary onto `/usr/local/bin` so non-interactive, non-login shells (`docker exec -T <container> bash -c "claude …"`) resolve them too, not only login/interactive shells that source `/etc/profile.d/ai-tools.sh`.
+**Why Claude Code is the odd one out.** Installed through npm it hits the same wall Codex still does: its self-updater runs a bare `npm install -g`, and the image deliberately sets **no** global npm prefix anywhere — a `prefix=` line in any npmrc (user, project, **or node's builtin**, all of which nvm inspects) makes nvm's `nvm_die_on_prefix` check **fail** `nvm use <version>` outright rather than warn, which would break the multi-version `node=22,20` workflow `sandbox.conf` advertises. With no prefix configured, `npm prefix -g` resolves to nvm's own root-owned node directory, so the update aborts with *no write permission to npm prefix* instead of landing in `~/.ai-tools/npm`. Restoring the prefix is not a fix: nvm's own suggested escape hatch, `nvm use --delete-prefix`, silently deletes it again at runtime, so the repair undoes itself per user. The native installer avoids the conflict entirely by never invoking npm — verified in a **restricted-mode** container, where both the install and `claude update` succeed behind the firewall and `nvm use` still passes afterwards.
+
+For the CLIs still installed through npm, `npm-agent-tools update -g` is the manual way through — the reconcile keeps Codex and Gemini current on its own, so you need this only to update them mid-session without restarting the container. It is a shell function baked into `/etc/profile.d/ai-tools.sh` that forwards `--prefix "$HOME/.ai-tools/npm"` to npm, which nvm does not object to because it inspects npmrc files and `$PREFIX`/`$NPM_CONFIG_PREFIX`, never a command's own flags. A bare `npm update -g` is the wrong command: it would update whatever node version nvm currently has active, not the group's tool home. Being a shell function, it is available in login and interactive shells only — a `docker exec -T` one-liner should call `npm --prefix "$HOME/.ai-tools/npm" update -g` directly. `link-agent-tools.sh` then symlinks each installed tool's binary onto `/usr/local/bin` so non-interactive, non-login shells (`docker exec -T <container> bash -c "claude …"`) resolve them too; for Claude Code it prefers the native launcher at `~/.local/bin/claude`.
+
+**Reclaiming the old npm Claude Code.** A group provisioned before the switch still carries the npm copy under `~/.ai-tools/npm`. The reconcile does **not** delete it — other containers in the same group may be running against it — and falls back to it only when no native install is present. Once every container in that group is stopped:
+
+```bash
+rm -rf ~/.ai-containers/<group>/.ai-tools/npm/lib/node_modules/@anthropic-ai \
+       ~/.ai-containers/<group>/.ai-tools/npm/bin/claude
+```
 
 Three modes are available:
 

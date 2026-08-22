@@ -793,11 +793,19 @@ run_container() {
   fi
   if is_enabled claude-code; then
     if [[ "$group" != "host" ]]; then
-      install -d "$group_root/.claude"
+      install -d "$group_root/.claude" \
+                 "$group_root/.local/share/claude" "$group_root/.local/state/claude"
       [[ -e "$group_root/.claude.json" ]] || printf '{}\n' > "$group_root/.claude.json"
     fi
     add_mount_if_exists      config_mount_flags "$group_root/.claude"      "$dev_home/.claude"
     add_file_mount_if_exists config_mount_flags "$group_root/.claude.json" "$dev_home/.claude.json"
+    # Claude Code installs natively (agent-tools-reconcile.sh): ~/.local/share/claude holds
+    # versions/<v>, ~/.local/state/claude the updater's bookkeeping. Group-scoped exactly
+    # like ~/.local/share/kiro-cli above, and for the same reason — without these the
+    # install is redone on every container start and every self-update dies with the
+    # container, which is the whole capability this is meant to restore.
+    add_mount_if_exists config_mount_flags "$group_root/.local/share/claude" "$dev_home/.local/share/claude"
+    add_mount_if_exists config_mount_flags "$group_root/.local/state/claude" "$dev_home/.local/state/claude"
   fi
   if is_enabled codex; then
     if [[ "$group" != "host" ]]; then

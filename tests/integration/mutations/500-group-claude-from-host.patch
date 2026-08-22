@@ -2,15 +2,14 @@
 # what: the group's .claude is replaced by the host $HOME one, so every group shares the developer's real credentials
 #
 diff --git a/sandbox.sh b/sandbox.sh
-index ded2e31..dd18bc7 100755
 --- a/sandbox.sh
 +++ b/sandbox.sh
-@@ -635,7 +635,7 @@ run_container() {
-       install -d "$group_root/.claude"
+@@ -797,7 +797,7 @@
+                  "$group_root/.local/share/claude" "$group_root/.local/state/claude"
        [[ -e "$group_root/.claude.json" ]] || printf '{}\n' > "$group_root/.claude.json"
      fi
 -    add_mount_if_exists      config_mount_flags "$group_root/.claude"      "$dev_home/.claude"
 +    add_mount_if_exists      config_mount_flags "$HOME/.claude"             "$dev_home/.claude"
      add_file_mount_if_exists config_mount_flags "$group_root/.claude.json" "$dev_home/.claude.json"
-   fi
-   if is_enabled codex; then
+     # Claude Code installs natively (agent-tools-reconcile.sh): ~/.local/share/claude holds
+     # versions/<v>, ~/.local/state/claude the updater's bookkeeping. Group-scoped exactly
