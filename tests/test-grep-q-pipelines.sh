@@ -119,7 +119,16 @@ done < <(cd "$REPO_DIR" && git ls-files '*.sh')
 if [[ "$scanned" -gt 0 ]]; then
   pass "scanned $scanned tracked script(s) that set pipefail"
 else
-  fail "scanned no scripts at all — the rule below would pass vacuously"
+  # Reported through the SCAFFOLD channel rather than as a rule failure. This
+  # file counted from the day it was written, so the vacuous pass was never
+  # possible here — but "scanned no scripts at all" as a FAIL: still reads as a
+  # defect in the rule, and the cause is an empty `git ls-files` (F58), which is
+  # the environment. Same call tests/test-bash-floor.sh and
+  # tests/test-array-key-expansion.sh make for the same derivation.
+  printf 'SCAFFOLD-FAILED: git ls-files listed no *.sh under %s — the corpus this rule scans produced nothing, so a pass here would mean nothing\n' "$REPO_DIR"
+  fails=$((fails + 1))
+  printf '\n%d failure(s)\n' "$fails"
+  exit "$fails"
 fi
 
 if [[ "$offenders" -eq 0 ]]; then

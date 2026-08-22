@@ -72,16 +72,40 @@ fi
 # defect teaches nobody anything. tests/test-docs.sh learned the same lesson the
 # other way round, by SATISFYING its own check.
 self="tests/$(basename "${BASH_SOURCE[0]}")"
+# SCANNED, not just `found`. Without this counter an empty `git ls-files` makes
+# the loop body never run, `found` stay 0, and this file print
+# "no tracked script uses ${!array[@]+…}" — a PASS that examined nothing. That
+# is not hypothetical here: F58 recorded `git ls-files '*.sh'` returning empty
+# during a full run-all.sh, with the files present and the same command correct
+# seconds later. A lint whose whole corpus comes from one derivation inherits
+# that derivation's failure as a green.
+#
+# The sibling lint tests/test-grep-q-pipelines.sh has counted since it was
+# written; this one did not, and the two sit side by side in the same suite.
 found=0
+scanned=0
 while IFS= read -r f; do
   [[ "$f" == "$self" ]] && continue
+  scanned=$((scanned + 1))
   if grep -nE '\$\{![A-Za-z_][A-Za-z0-9_]*\[@\]\+' "$REPO_DIR/$f" >/dev/null 2>&1; then
     fail "$f uses \${!array[@]+…}, which silently empties the loop — write \"\${!array[@]}\""
     grep -nE '\$\{![A-Za-z_][A-Za-z0-9_]*\[@\]\+' "$REPO_DIR/$f" | sed 's/^/     /'
     found=$((found+1))
   fi
 done < <(cd "$REPO_DIR" && git ls-files '*.sh')
-(( found == 0 )) && pass "no tracked script uses \${!array[@]+…}"
+
+# An empty corpus is an ENVIRONMENT fault, not a verdict on the rule, and the
+# scaffold channel is what run-all.sh reports that through — the same call
+# tests/test-bash-floor.sh makes for the same derivation (F58). Reported before
+# the rule's own result, because "no tracked script uses …" said afterwards
+# would be the vacuous green this guards against.
+if (( scanned == 0 )); then
+  printf 'SCAFFOLD-FAILED: git ls-files listed no *.sh under %s — the corpus this rule scans produced nothing, so a pass here would mean nothing\n' "$REPO_DIR"
+  fails=$((fails + 1))
+  printf '\n%d failure(s)\n' "$fails"
+  exit "$fails"
+fi
+(( found == 0 )) && pass "no tracked script uses \${!array[@]+…} (scanned $scanned tracked script(s))"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
