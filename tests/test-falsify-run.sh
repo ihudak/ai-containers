@@ -1547,4 +1547,43 @@ check "two oracles get twice the clock"            "600" "$(eff_timeout 300 'tes
 check "an empty oracle set still gets one clock, never zero" "120" "$(eff_timeout 120 '')"
 check "a trailing comma does not count as an oracle"         "240" "$(eff_timeout 120 'test-a.sh,test-b.sh,')"
 
+# ── §16. the watchdog's clock is WALL TIME, not a count of sleeps ─────────────
+# falsify_watch_until is the per-mutant ceiling. Written as `for (( i = 0; i <
+# secs; i++ )); do … sleep 1; done` it counts ITERATIONS, and an iteration on a
+# loaded machine costs a sleep plus a fork plus whatever the scheduler adds — so
+# the ceiling grows with exactly the load the tier itself creates. Measured on
+# macOS + Colima at --jobs 8 (2026-08-22): a pristine CONTROL of
+# tests/bash-dialect-lint.sh, a single-oracle target on a 120s ceiling, was
+# recorded at 132.2s having exited on its own. A clock that reports 120 and
+# enforces 132 makes two runs incomparable and every timeout count a property
+# of the machine.
+#
+# Demonstrated WITHOUT a wall-clock margin, deliberately: an assertion that
+# measures real elapsed time inside an oracle is the very defect this section
+# is about — under load it flips, and in this tier a flipped assertion is a
+# false KILL. So the clock and the sleep are both stubbed and the POLL COUNT is
+# read instead. It is exact, it is instant, and it cannot be load-sensitive.
+watch_polls() {   # <us the fake clock advances per sleep> <ceiling seconds> → polls
+  ( set +u
+    # shellcheck source=/dev/null
+    source "$RUN" >/dev/null 2>&1
+    _adv="$1"; _now=0; _polls=0
+    fr_now_us() { printf '%s' "$_now"; }
+    # Shadows the real `sleep`, so no wall time passes and the only thing that
+    # moves the clock is this stub. `command sleep` below is unaffected.
+    sleep() { _polls=$(( _polls + 1 )); _now=$(( _now + _adv )); }
+    command sleep 30 & _pid=$!
+    falsify_watch_until "$_pid" "$2" >/dev/null 2>&1
+    kill -TERM "$_pid" 2>/dev/null
+    printf '%s' "$_polls" )
+}
+# Ten simulated seconds per poll against a 60s ceiling: six polls, not sixty.
+# The iteration-counting version returns 60 here — it never reads a clock at
+# all — which is the 10%-and-growing overrun measured on the host, in the small.
+check "the ceiling is reached in elapsed time, not in sleeps" "6" "$(watch_polls 10000000 60)"
+# The other direction, and the one that would silently SHORTEN every ceiling: a
+# poll that returns early (a busy `sleep`, a signal) must not spend the budget.
+# The iteration-counting version returns 2 here and cuts the oracle at 0.2s.
+check "a poll that returns early does not spend the budget" "20" "$(watch_polls 100000 2)"
+
 printf '\n%d failure(s)\n' "$fails"; exit "$fails"

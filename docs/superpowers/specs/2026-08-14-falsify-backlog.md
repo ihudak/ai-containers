@@ -4753,3 +4753,133 @@ The general shape is worth keeping: **six components are enabled by no variant
 at all** — `goreleaser`, `qmd`, `acli`, `angular-cli`, `pnpm`, `bun` — so
 nothing builds them and no case can assert them. That is a cost boundary of the
 three-variant design, not an oversight, and the same question applies to each.
+
+---
+
+## F28 — CONFIRMED ON THE HOST 2026-08-22, and the residue named
+
+Phase 6 re-run at defaults on `6cddfce` (`FALSIFY_JOBS`/`FALSIFY_TIMEOUT` both
+unset, banner `jobs=18, timeout=120`), against the same machine's pre-fix
+baseline:
+
+| | killed | unproven | timeouts | unresolved | controls red | wall |
+|---|---|---|---|---|---|---|
+| before (`jobs=18`, flat 120s) | 254 | 7 | 43 | 3% | 4 | 28.6 min |
+| after (`jobs=18`, 120s x oracles) | 261 | **0** | 34 | 1% | 2 | 41.5 min |
+
+`tests/lib-verify-repo.sh` — the three-oracle target the cause was found on —
+went to **55 mutants, 55 killed, 0 unproven**. Every mutant now carries a
+verdict. The extra 13 minutes is the previously-truncated oracles running to
+completion, which is the fix working rather than a cost.
+
+The two controls still red were both `lib-verify-repo`, at **445.8s and 430.1s
+against its scaled 360s clock** — so the clock was necessary and NOT sufficient.
+That residue is F59, and the run below isolates it.
+
+**A third survivor on macOS is not a regression.** Linux scores 262/2 and macOS
+261/3, and the difference is entirely
+`tests/portability.sh:cond-negate:4fcb6275…`, whose ledger entry has said since
+2026-08-16 that it is KILLED on Linux and SURVIVES on a mac carrying both digest
+tools. The other two are the single `tests/lib-layer-checks.sh:logic-flip:b6554f5a…`
+identity, which yields two mutants — verified with `generate.sh`, not assumed.
+Both macOS runs land on exactly the ledgered set.
+
+---
+
+## F59 — ISOLATED 2026-08-22: oversubscription, measured on one pristine oracle
+
+The clean discriminator, both runs on `6cddfce` with the scaled clock, only
+`--jobs` differing:
+
+| | timeouts | controls red | `lib-verify-repo` controls | wall |
+|---|---|---|---|---|
+| `jobs=18` | 34 | 2 | 445.8s / 430.1s — FAIL | 41.5 min |
+| `jobs=8` | **0** | 1 (a different target) | **251s / 244s — PASS** | 43.4 min |
+
+Halving the jobs with the clock untouched cut the SAME pristine oracle's runtime
+by ~44% and took every one of the nine targets to zero timeouts. That is
+oversubscription measured directly rather than inferred, and it is the evidence
+this entry was waiting for. The earlier numbers here (4 red at 28.6 min vs 2 red
+at 35.5 min) predate the F28 fix and confounded the clock with the load; these
+do not.
+
+Still not fixed, and the reason is unchanged: **the right number is not
+derivable from the host.** `hw.ncpu` reports 18; Colima holds 12 for its VM;
+neither figure is "CPUs free for this tier". The options remain (a) ask the
+daemon — `docker info` knows its own NCPU, at the price of a round-trip and a
+dependency in an otherwise hermetic runner, (b) cap `auto` at a fraction of
+`hw.ncpu` on Darwin, which is a guess with a friendlier failure mode, or
+(c) document `FALSIFY_JOBS` as required on macOS and warn when it is unset.
+
+---
+
+## F61 — the per-mutant clock counted SLEEPS, not seconds (FIXED)
+
+`falsify_watch_until` was `for (( i = 0; i < secs; i++ )); do kill -0; sleep 1;
+done`. One iteration is a sleep PLUS a fork, a `kill -0`, and whatever the
+scheduler adds, so on a loaded machine the ceiling stretches by exactly the load
+it exists to bound.
+
+**Field evidence, from the jobs=8 run above:** a pristine control of
+`tests/bash-dialect-lint.sh` — a single-oracle target, so a 120s ceiling — was
+recorded at **132.2s having exited on its own**, not having been cut. The run
+reported `timeout=120` and enforced 132.
+
+Why it matters beyond tidiness: every timeout and unproven count is then a
+function of the machine, two runs at "the same clock" are not comparable, and
+the numbers used to judge F28 and F59 were themselves ~10% off in the direction
+that flatters them.
+
+**Fixed** by fixing the deadline once from `fr_now_us` (EPOCHREALTIME) and
+polling against it. Demonstrated by stubbing both the clock and `sleep` and
+reading the POLL COUNT — deliberately not a wall-clock margin, because a
+timing assertion inside an oracle is the F62 defect: `tests/test-falsify-run.sh`
+§16, "the ceiling is reached in elapsed time, not in sleeps" (60 polls before,
+6 after) and "a poll that returns early does not spend the budget" (2 before,
+20 after).
+
+---
+
+## F62 — a `p_timeout` that `fail`s on expiry converts SLOWNESS into a FALSE KILL (FIXED)
+
+The one error this tier cannot detect from its own output, found in its own
+oracle set.
+
+`tests/test-bash-dialect-lint.sh` bounded its whole-tree run at a flat 30s and
+called `fail` on expiry. Under `run.sh` a `FAIL:` line is a KILL — so an
+overrun credits the oracle with catching a mutation it never noticed. The
+mutant leaves the survivor set, `check-ledger.sh` never demands an entry, and
+the gap becomes invisible. That is F30's shape, arriving through a clock
+instead of through contamination.
+
+Not hypothetical: on macOS + Colima at `--jobs 8` (2026-08-22) the **pristine**
+file blew the 30s bound and went red, while the second control of the same run
+passed in 8s — a 16x spread inside one run. Only the control mechanism made it
+visible, which is precisely what controls are for.
+
+**Why the bound was reachable.** It was flat where the cost is relative:
+measured in-container, a single-file lint is ~6ms and the whole tree (141
+scripts, one startup shared) ~580ms — a ratio of **97x** — yet the tree run was
+given only 3x the single-vector bound of 10s. The two costs move together on a
+loaded machine; the ratio is the stable quantity, not either number.
+
+**Fixed** by deriving the bound from the WORST single-file lint the same process
+measured (`unit_ms * 300 / 1000`, floor 30s) — 3x the observed ratio, and it
+tracks the machine automatically, the same shape as F28's fix. Deliberately NOT
+capped against `run.sh`'s per-mutant ceiling: on a host loaded past that point
+the honest outcome is the oracle hitting the ceiling and the mutant scoring
+UNPROVEN, and a cap would trade that for the false kill this entry is about. A
+hang is infinite and trips any bound, so F22's kill survives wherever the
+machine is fast enough to measure at all.
+
+Demonstrated on fixed inputs, because on a healthy machine the live run lands on
+the floor and looks exactly like the constant it replaced: "a 50x slower machine
+gets a 50x bound, not the same 30s" (30s before, 90s after) and "the bound
+tracks the measured cost, with no ceiling above it" (30s before, 300s after).
+
+**The other four `p_timeout` sites that `fail` on expiry were checked, not
+assumed:** `vector()`'s 10s, the floor-reading 10s and the empty-repo 10s in the
+same file, and `tests/test-integration-shim.sh`'s 10s. Each bounds a
+single-invocation cost of a few milliseconds — headroom of ~1600x against the
+97x that was not enough here — so each is left alone. The rule this entry
+establishes is about the RATIO, not about the presence of a bound.

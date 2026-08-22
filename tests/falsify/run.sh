@@ -496,10 +496,25 @@ FALSIFY_MS=0
 # the right shape HERE, unlike in tests/portability.sh's p_timeout (F22), which
 # is itself a mutation target where a negated liveness probe must stay killable:
 # tests/falsify/run.sh is the measuring instrument and is never mutated.
+#
+# ITS CLOCK IS WALL TIME, NOT A COUNT OF SLEEPS. `for (( i = 0; i < secs; i++ ))`
+# around a `sleep 1` measures seconds only on an idle machine: one iteration is
+# a sleep PLUS a fork, a `kill -0`, and however long the scheduler takes to hand
+# the shell back — so on the machine this tier deliberately loads, the ceiling
+# stretches by exactly the load it exists to bound. Measured on macOS + Colima
+# at --jobs 8 (2026-08-22): a pristine CONTROL of tests/bash-dialect-lint.sh —
+# one oracle, so a 120s ceiling — was recorded at 132.2s, having exited on its
+# own rather than being cut. The reported `timeout=120` was really 132s there
+# and would be more under heavier load, which makes two runs at "the same
+# clock" not comparable and every timeout count a function of the machine.
+# EPOCHREALTIME via fr_now_us, so the deadline is fixed once and the loop only
+# asks whether it has passed.
 falsify_watch_until() {   # <pid> <seconds> → 0 the pid went away first, 1 the clock ran out
-  local pid="$1" secs="$2" i
-  for (( i = 0; i < secs; i++ )); do
+  local pid="$1" secs="$2" deadline
+  deadline=$(( $(fr_now_us) + secs * 1000000 ))
+  while :; do
     kill -0 "$pid" 2>/dev/null || return 0
+    (( $(fr_now_us) >= deadline )) && break
     sleep 1
   done
   # Once more after the last sleep: a pid that exits during the final second has
