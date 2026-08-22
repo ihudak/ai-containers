@@ -677,5 +677,22 @@ case "$f48_argv" in
     fail "phase 6: a stated knob beats an inherited one -- got '$f48_argv', so env applied its -u after the operands and the test cannot set what it is asserting on" ;;
 esac
 
+# ── Phase 6 re-prints the records that explain a slow oracle ─────────────────
+# The corpus log is a mktemp deleted whenever the run is clean, so anything the
+# summary does not re-print is gone the moment the run goes green. Two record
+# kinds were being computed and then thrown away exactly then: BASELINE, each
+# oracle's honest cost on a quiet machine — the number that separates "this
+# oracle is slow" from "this machine was loaded" — and NOTE, which carries
+# `control-clock`, i.e. how late the watchdog NOTICED as opposed to how long
+# the oracle ran. A 120s ceiling recorded at 152.6s took a day to explain for
+# want of them (backlog F63).
+for rec in BASELINE NOTE TARGET TOTAL CONTROL CONTROLS; do
+  if grep -qE "\\^\\([A-Z|]*\\b${rec}\\b[A-Z|]*\\)\\\\\\|" "$VERIFY"; then
+    pass "phase 6 re-prints ${rec}| records from the corpus log"
+  else
+    fail "phase 6 re-prints ${rec}| records from the corpus log"
+  fi
+done
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

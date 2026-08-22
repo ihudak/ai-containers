@@ -273,4 +273,32 @@ else
   fail "a freshly initialised project's .ai-containers/build.sh --help succeeds (see $TMP/build-help.log: $(cat "$TMP/build-help.log" | tr '\n' ' '))"
 fi
 
+# ── The two definitions of "the payload", checked against each other ─────────
+# shared-files.sh NAMES the sync payload but is itself not in it, so a project's
+# .ai-containers/ cannot enumerate that list — which is why the provenance
+# digest derives its set from the directory instead
+# (sandbox-common.sh: ai_containers_payload_files). Two definitions of the same
+# thing is exactly the arrangement this file exists to police, so they are
+# compared rather than trusted: every synced engine file must fall inside the
+# digest, or a change to it could ship in an image the launcher calls current.
+#
+# One direction only, deliberately. The digest set is deliberately WIDER — it
+# also covers allowlist fragments, tools.d and the project-local custom.txt,
+# none of which are synced and all of which are composed into the image.
+# Sourced in a SUBSHELL: sandbox-common.sh sets globals of its own, and this
+# file's own variables must not be at the mercy of them.
+covered="$(bash -c 'source "$1/sandbox-common.sh" >/dev/null 2>&1; ai_containers_payload_files "$2"' _ "$REPO_DIR" "$DEST_A")"
+missing=""
+for f in "${AI_CONTAINERS_SHARED_FILES[@]}"; do
+  # Only files the fixture project actually received: this asserts coverage of
+  # the digest, not of project-init.sh, which has its own tests.
+  [[ -f "$DEST_A/$f" ]] || continue
+  grep -qxF "$f" <<<"$covered" || missing="${missing:+$missing }$f"
+done
+if [[ -z "$missing" ]]; then
+  pass "every synced engine file is inside the provenance digest"
+else
+  fail "every synced engine file is inside the provenance digest — outside it: $missing"
+fi
+
 printf '\n%d failure(s)\n' "$fails"; exit "$fails"
