@@ -1326,7 +1326,12 @@ all, instead of failing somewhere unrelated.
 > from the heading, which cost real work twice on 2026-08-22 — once when the
 > Host Agent listed F57 as remaining, and once when this file's own reader
 > almost began the 20-call-site increment F57's addendum had already declined.
-> Their headings now say so. If you resolve an entry, say it in the heading.
+> Their headings now say so. If you resolve an entry, say it in the heading —
+> and `tests/test-docs.sh` now REQUIRES it, because saying it here was not
+> enough. The first pass at this was keyword-based and still missed F4 and
+> F1, whose resolutions are headed "covered, and the coverage found a defect"
+> and "slice 4" — true, informative, and carrying no status a reader or a
+> grep can act on. Both were reported as open work hours after the pass.
 
 ## F27 — mutation verdicts are environment-dependent, so the ledger could not be satisfied everywhere at once — **RESOLVED: the `ENV-DEPENDENT` classification, verified across the full matrix**
 
@@ -1802,7 +1807,7 @@ correct to add either way, which is why it is not blocked on the answer.
 
 ---
 
-## F31 ADDENDUM — ENOSPC is a proven mechanism and an unproven trigger
+## F31 ADDENDUM — ENOSPC is a proven mechanism and an unproven trigger — **OPEN: needs a recurrence**
 
 Measured on the affected host, 2026-08-18. **`mktemp -d` was never the cause**;
 the guard built to confirm it eliminated it instead, which is the guard working.
@@ -4043,7 +4048,7 @@ failure with its message intact, and a cause: bash 5.1's `wait -n -p`.
 
 ---
 
-## F4 — 2026-08-21: covered, and the coverage found a defect
+## F4 — 2026-08-21: covered, and the coverage found a defect — **CLOSED: fourteen assertions, and the `api_get` defect they found is fixed**
 
 Fourteen assertions in `tests/test-tools-d.sh`. Writing them found a real bug in
 `api_get`, which is the argument for writing them.
@@ -4206,7 +4211,7 @@ entry has a mechanism rather than a second unreproduced sighting.
 
 ---
 
-## F1 — slice 4, 2026-08-21: the summary somebody reads before typing `yes`
+## F1 — slice 4, 2026-08-21: the summary somebody reads before typing `yes` — **CLOSED to the hermetic limit; the remainder needs a tty and `targets.conf` says so**
 
 Slice 3's measurement located the gap: after every DECISION was asserted, 129 of
 249 mutants survived, clustered in what the user is TOLD rather than in what is
@@ -4618,7 +4623,7 @@ shape, not a proven mechanism.
 
 ---
 
-## F30/F32 — a fourth sighting, in CI, with a diagnosis nobody could use
+## F30/F32 — a fourth sighting, in CI, with a diagnosis nobody could use — **OPEN: needs a recurrence; the diagnostics are in place and will name the half that failed**
 
 `mgd-ai-containers` PR #76, GitHub Actions run 32523718531, 2026-08-21. One of
 eighteen control runs failed on a diff that touched a documentation page and two

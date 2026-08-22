@@ -202,5 +202,74 @@ while IFS= read -r v; do
 done < <(grep -ohE '\b(AI_[A-Z0-9_]+|CONTAINER_(CPUS|MEMORY)|REPOS|REPO_BACKEND|VAULT_PATH|SPECS_PATH|DOCS_PATH|EXTRA_MOUNTS|NO_CACHE|PREVIEW_PORTS|IMAGE_NAME|GITHUB_TOKEN)\b' "${PAGES[@]/#/$ENGINE_DIR/}" | sort -u)
 (( unread == 0 )) && pass "every environment variable the documentation describes is read by the code"
 
+# ── every backlog entry's LATEST heading carries a status ────────────────────
+# The falsify backlog is this project's memory, and a heading that states no
+# status sends work in the wrong direction. On 2026-08-22 that happened three
+# times in one day: the Host Agent listed F57 as remaining when its addendum had
+# closed it and declined the follow-up increment; this suite's own reader nearly
+# began that increment; and F4 and F1 were reported as open work HOURS AFTER a
+# pass that was supposed to have fixed exactly this — because that pass grepped
+# for keywords and their resolution headings read "covered, and the coverage
+# found a defect" and "slice 4", which are true, informative, and unactionable.
+#
+# So it is mechanical now. The token is BOLD and immediately after `**`, not a
+# bare word: F2 and F7 are titled "…open modes are never executed hermetically"
+# and "…named and tagged for open mode", and a bare-word match reads both as
+# open when both are FIXED.
+#
+# Upstream-only — the mgd port carries no copy of this file, and skipping is
+# correct there rather than a gap.
+BACKLOG="$ENGINE_DIR/docs/superpowers/specs/2026-08-14-falsify-backlog.md"
+if [[ -f "$BACKLOG" ]]; then
+  # Parsed in the shell, not with awk's \\< word boundaries: mawk does not
+  # support them, and the first version of this check used them and therefore
+  # MATCHED NOTHING — a guard that passed on every input, written the same hour
+  # as a fix for exactly that. The heading format does the boundary work
+  # instead: ids live before the em dash, as "## F30/F32 — …".
+  declare -A bl_status=()
+  declare -A bl_text=()
+  while IFS= read -r bl_line; do
+    for bl_id in $(printf '%s' "${bl_line%%—*}" | grep -oE 'F[0-9]+' || true); do
+      # An entry may appear many times; the LAST heading is the current one.
+      # UPPERCASE, and bounded by non-letters. Case is the whole discriminator:
+      # F2 and F7 are titled "…open modes are never executed hermetically" and
+      # "…tagged for open mode", and a case-insensitive match reads both as open
+      # when both are FIXED. Requiring the token to be BOLD was the first
+      # attempt and was wrong in the other direction — it flagged seven headings
+      # that say `— FIXED 2026-08-21.` or `(FIXED)`, which are perfectly clear.
+      # No \b: BSD grep does not define it, and this suite runs on macOS.
+      # A here-string, not `printf | grep -q`: that pipeline is what
+      # tests/test-grep-q-pipelines.sh forbids, and it caught this file doing it
+      # twice in one session.
+      if grep -qE '(^|[^A-Za-z])(FIXED|RESOLVED|CLOSED|DECLINED|ACCEPTED|OPEN)([^A-Za-z]|$)' <<<"$bl_line"; then
+        bl_status["$bl_id"]=1
+      else
+        bl_status["$bl_id"]=0
+      fi
+      bl_text["$bl_id"]="$bl_line"
+    done
+  done < <(grep '^## ' "$BACKLOG")
+
+  # The count, because a parser that finds nothing would otherwise report a
+  # clean file. This is the lesson of the empty-corpus lints, applied here.
+  if (( ${#bl_status[@]} >= 30 )); then
+    pass "the backlog parser found ${#bl_status[@]} entries to check"
+  else
+    fail "the backlog parser found only ${#bl_status[@]} entries — it is not reading the file"
+  fi
+
+  statusless=""
+  for bl_id in "${!bl_status[@]}"; do
+    (( bl_status["$bl_id"] )) || statusless="${statusless}${bl_id}: ${bl_text[$bl_id]}"$'\n'
+  done
+  statusless="$(printf '%s' "$statusless" | LC_ALL=C sort)"
+  if [[ -z "$statusless" ]]; then
+    pass "every falsify-backlog entry's latest heading carries a status"
+  else
+    fail "every falsify-backlog entry's latest heading carries a status"
+    printf '%s\n' "$statusless" | sed 's/^/     /' | head -10
+  fi
+fi
+
 printf '\n%d failure(s)\n' "$fails"
 [[ "$fails" -eq 0 ]]
