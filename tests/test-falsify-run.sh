@@ -1290,9 +1290,32 @@ check "an unparseable quota is treated as no quota, never as a limit" "" "$(quot
 # capping without assuming anything about the host; the other two pin the
 # directions that must NOT cap.
 check "a 1-CPU quota caps the budget at 1, on any machine" "1" "$(budget_of "$(cg v2one v2 '100000 100000')")"
-check "no quota: the budget is what the OS reports" "$host_cpus" "$(budget_of "$(cg v2max v2 'max 100000')")"
+# NEITHER OF THESE IS `== fr_host_cpus` ANY MORE, and the reason is a regression
+# this pair caught the hard way. F59 capped the budget at the PERFORMANCE-core
+# count on a machine whose cores are not all equal, so on Apple Silicon the OS
+# reports 18 and the budget is 6 — and both assertions went red there while
+# staying green on Linux, which has no performance levels. Verified on Linux
+# only, the change looked clean; it had in fact been red on main in both repos.
+#
+# Worse than a stale number: the second assertion is about QUOTA handling, and
+# once it fails on the baseline it can no longer be evaluated for the property
+# it was written to check. A stale expectation had disabled a distinct guard.
+#
+# So the topology belongs where it can be FIXED rather than read — §17 stubs
+# sysctl and asserts the P-core cap on numbers that are the same everywhere.
+# What these two are for, and what is machine-independent, is the quota.
+unquota_budget="$(budget_of "$(cg v2max v2 'max 100000')")"
+if [[ "$unquota_budget" =~ ^[1-9][0-9]*$ ]] && (( unquota_budget <= host_cpus )); then
+  pass "no quota: the budget is a real worker count, never above what the OS reports ($unquota_budget of $host_cpus)"
+else
+  fail "no quota: the budget is a real worker count, never above what the OS reports (got '$unquota_budget', OS reports $host_cpus)"
+fi
+# The property, stated as one: a quota bigger than the machine must change
+# NOTHING. Comparing the two budgets rather than either against a constant keeps
+# this true on every machine and still fails an implementation that hands out
+# the quota — which would answer 999 here.
 check "a quota larger than the machine does not inflate the budget" \
-  "$host_cpus" "$(budget_of "$(cg v2big v2 '99900000 100000')")"
+  "$unquota_budget" "$(budget_of "$(cg v2big v2 '99900000 100000')")"
 
 # End to end, with a 1-CPU quota so the expectation holds on any runner: the
 # runner resolves it and SAYS BOTH NUMBERS. "jobs=1" alone leaves a reader

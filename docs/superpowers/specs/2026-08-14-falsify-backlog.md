@@ -4988,3 +4988,48 @@ broken `mkfifo` still yields a bounded wait.
 bounds it to the pre-fire path and the fix removes the only per-poll cost there,
 but the next host run is what confirms it — and it will now say so in a number
 rather than leaving it to be inferred.
+
+---
+
+## F59 — FOLLOW-UP: the fix was verified on Linux, and was red on macOS the whole time
+
+Reported by the Host Agent on 2026-08-22, from a real checkout on the host:
+
+```
+FAIL: no quota: the budget is what the OS reports (expected '18', got '6')
+FAIL: a quota larger than the machine does not inflate the budget (expected '18', got '6')
+```
+
+`tests/test-falsify-run.sh` pinned `fr_cpu_budget` against `fr_host_cpus` — the
+number the OS reports. F59 capped the budget at the PERFORMANCE-core count, so
+on Apple Silicon the OS reports 18 and the budget is 6, and both assertions went
+red. On Linux there are no performance levels, the cap never binds, and both
+stayed green: **every gate run before shipping was blind to it by construction.**
+
+The §17 assertions added WITH F59 stub `sysctl` and are machine-independent by
+design. These two predate it and read the real machine. The lesson is not "run
+the tests on macOS" — it is that an assertion which reads the host cannot pin
+behaviour that depends on the host's topology, and the fix belongs in the
+stubbed section that can fix the topology instead of reading it.
+
+**The second assertion was worse than stale.** It is about cgroup-quota
+handling; once it fails on the baseline number it can no longer be evaluated for
+the property it was written to check. A stale expectation had **disabled a
+distinct guard** — the Host Agent's observation, and the sharper half of the
+finding.
+
+**Fixed** by asserting the properties that hold on every machine: the no-quota
+budget is a positive integer never above what the OS reports, and a quota larger
+than the machine leaves the budget UNCHANGED — compared against the no-quota
+budget rather than against a constant, so it still fails an implementation that
+hands out the quota. Demonstrated by simulating a 6-performance-core machine in
+`fr_perf_cpus`: the old pair reproduces the host's failure verbatim, the new
+pair passes.
+
+**Also retracted here, because it was recorded as measured:** the
+`test-falsify-historical` "flakiness in both repos" was one methodological error
+made twice, not two observations. Those baselines ran inside `git worktree`
+checkouts, where `.git` is a FILE, and that test refuses to run without a real
+work tree — it failed deterministically and said so. It is not flaky. The
+investigation it prompted was not wasted: it found a genuinely vacuous isolation
+check (an assertion that could not fail) in the same file, fixed separately.
