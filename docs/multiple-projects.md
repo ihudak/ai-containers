@@ -46,6 +46,45 @@ After pulling changes to this repo, run this to push the updated shared files to
 
 **sandbox.conf reconcile:** Instead of a bare drift warning, `sync-to-projects.sh` now reconciles each project's `sandbox.conf` against this repo's on every sync — pending `migrations/` hooks run, any new upstream keys are appended under a dated banner, and the `# schema-version:` marker is ensured. A key the project already set is never touched, so per-project tool selections are preserved. See [sandbox.conf schema versioning](components/README.md#schema-versioning).
 
+## Which sources produced an image?
+
+Syncing and rebuilding are two steps, and getting only the second one done is
+invisible: `./build.sh` faithfully rebuilds whatever is in the project's
+`.ai-containers/`, so a project that was never synced produces a freshly-built
+image carrying month-old engine files. Nothing about the image looks stale.
+
+Every build now stamps the image with three labels:
+
+| label | what it records |
+| --- | --- |
+| `ai-containers.payload-digest` | a digest of every file that reaches the image — the engine scripts, `Dockerfile`, the allowlist fragments and `tools.d/` |
+| `ai-containers.built-at` | when the build ran, in UTC |
+| `ai-containers.source-commit` | the commit, **when the build ran from a git checkout**. A project's `.ai-containers/` is a copy with no history, so this is absent there — which is itself the answer to "was this built from the central repo or from a project copy?" |
+
+Read them back with:
+
+```bash
+docker image inspect ai-sandbox --format '{{json .Config.Labels}}' | tr ',' '\n' | grep ai-containers
+```
+
+`sandbox.sh` compares the stamped digest against the files sitting next to it at
+every launch, and prints a warning — never a refusal — when they disagree:
+
+```
+WARNING: this image was NOT built from the files in /path/to/.ai-containers.
+         Rebuild before trusting it:  ./build.sh    (or ./runme.sh, which builds first)
+```
+
+That is what you should expect to see immediately after a sync, and it clears
+on the next build. An image built before this existed carries no label and is
+never warned about, since an absent stamp is not evidence of drift.
+
+**What it does not cover.** `sandbox.conf` and `sandbox.env` are deliberately
+outside the digest: they mix build-time keys (`ruby=`, `db-clients=`) with
+runtime ones (`mode=`, `agents=`), so including them would demand a rebuild
+after changing `mode=`, which rebuilds nothing. Changing a build-time key still
+needs a rebuild, and nothing here will remind you.
+
 ## sandbox.conf schema versioning
 
 Every project keeps its **own** hand-edited `sandbox.conf` (its tool selection is exactly what must not be clobbered), so `sync-to-projects.sh` cannot simply overwrite it the way it does the other shared files. Instead it **reconciles**:

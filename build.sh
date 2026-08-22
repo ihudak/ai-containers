@@ -354,6 +354,14 @@ build_image() {
   local old_image_id
   old_image_id="$(docker image inspect --format '{{.Id}}' "$build_image_name" 2>/dev/null || true)"
 
+  # PROVENANCE, as LABELS rather than a file in the image: a label costs no
+  # layer, so stamping a build cannot itself invalidate one. Recorded even when
+  # the digest tool is missing — built-at alone still answers "when", and a
+  # partial stamp beats none.
+  local _lbl
+  while IFS= read -r _lbl; do build_args+=("$_lbl"); done \
+    < <(ai_containers_provenance_labels "$script_dir")
+
   docker build "${build_args[@]}" -t "$build_image_name" "$script_dir"
 
   # Only after a successful build: clean up the image it replaced.

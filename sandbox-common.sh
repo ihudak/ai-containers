@@ -777,3 +777,115 @@ ensure_group_exists() {
       ;;
   esac
 }
+
+# ── PROVENANCE: which assets produced this image ─────────────────────────────
+# On 2026-08-19 an image was rebuilt and still carried a file the 2026-08-06 fix
+# had deleted, because the project's .ai-containers/ had not been synced since
+# before that date. The build was faithful; the sources were stale. Nothing
+# anywhere could say so — not `docker images`, not sandbox.sh, not the container
+# itself — and the conclusion drawn was "I must have missed an image". Three
+# days of a fixed bug were live in a container that looked rebuilt.
+#
+# SELF-DESCRIBING ON PURPOSE. shared-files.sh names the sync payload, but is
+# ITSELF NOT IN IT: a project's .ai-containers/ has no copy, so nothing there
+# can enumerate that list. Hand-copying it into this file would create the
+# second hand-maintained list this repo already learned to avoid (the parity
+# witness exists for exactly that reason). So the set is derived from the
+# directory, and tests/test-shared-files-parity.sh asserts that every name
+# shared-files.sh does list falls inside it — the two definitions are checked
+# against each other rather than duplicated.
+ai_containers_sha256() {   # stdin → 64 hex, or rc 1 when the host has no digest tool
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum | cut -d' ' -f1
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 | cut -d' ' -f1
+  else
+    return 1
+  fi
+}
+
+# Everything whose content reaches the image, and nothing else. Sorted, so the
+# digest does not depend on readdir order.
+#
+# EXCLUDED, each for a reason rather than by oversight:
+#   runme.sh, *.pre-migrate  generated per project by project-init.sh and the
+#                            launcher migration; they never reach the image, and
+#                            including them would make every project's digest
+#                            differ from every other's by construction.
+#   sandbox.conf, sandbox*.env
+#                            they mix build-time keys (ruby=, db-clients=) with
+#                            runtime ones (mode=, agents=). Including them would
+#                            demand a rebuild after changing `mode=`, which
+#                            rebuilds nothing; excluding them means a changed
+#                            `ruby=` is NOT caught here. That is a known gap,
+#                            stated rather than hidden — build.sh already prints
+#                            the component set it is building.
+ai_containers_payload_files() {   # <dir> → one relative path per line, sorted
+  local dir="$1"
+  [[ -d "$dir" ]] || return 0
+  ( cd "$dir" 2>/dev/null || exit 0
+    {
+      for f in Dockerfile Dockerfile.seed .dockerignore; do
+        [[ -f "$f" ]] && printf '%s\n' "$f"
+      done
+      for f in *.sh; do
+        [[ -f "$f" ]] || continue
+        case "$f" in runme.sh|*.pre-migrate) continue ;; esac
+        printf '%s\n' "$f"
+      done
+      for f in allowlist-*.txt; do [[ -f "$f" ]] && printf '%s\n' "$f"; done
+      for f in allowlist-*.d/*.txt tools.d/*; do [[ -f "$f" ]] && printf '%s\n' "$f"; done
+    } 2>/dev/null | LC_ALL=C sort -u )
+}
+
+# The digest is over NAMES as well as content: a file that disappears has to
+# change the answer, and content alone would not notice a deletion when another
+# file happens to absorb the bytes.
+ai_containers_payload_digest() {   # <dir> → 64 hex, or rc 1 if it cannot be computed
+  local dir="$1" f
+  [[ -d "$dir" ]] || return 1
+  {
+    while IFS= read -r f; do
+      printf '%s\n' "$f"
+      cat "$dir/$f" 2>/dev/null
+    done < <(ai_containers_payload_files "$dir")
+  } | ai_containers_sha256
+}
+
+# The stamp itself, as a pure function of a directory and a clock, so it can be
+# asserted without building an image — build_image only has to append what this
+# returns.
+ai_containers_provenance_labels() {   # <dir> [<iso-8601 utc>] → one --label arg per line
+  local dir="$1" now="${2:-}" digest commit
+  [[ -n "$now" ]] || now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  if digest="$(ai_containers_payload_digest "$dir")"; then
+    printf '%s\n' "--label" "ai-containers.payload-digest=$digest"
+  fi
+  printf '%s\n' "--label" "ai-containers.built-at=$now"
+  # Only when the assets ARE a git checkout. A project's .ai-containers/ is a
+  # copy with no history, which is exactly the case this exists for: no commit
+  # recorded there is the honest answer, not a missing feature.
+  commit="$(git -C "$dir" rev-parse HEAD 2>/dev/null || true)"
+  [[ -n "$commit" ]] && printf '%s\n' "--label" "ai-containers.source-commit=$commit"
+  return 0
+}
+
+# A WARNING, never a refusal. Being wrong about this must not stop somebody
+# working: the digest can go stale for legitimate reasons (an image built
+# elsewhere, a deliberate local edit), and a launcher that refuses to run over a
+# provenance mismatch would be turned off within a week.
+ai_containers_provenance_warn() {   # <image> <asset-dir>
+  local image="$1" dir="$2" baked here
+  baked="$(docker image inspect --format '{{index .Config.Labels "ai-containers.payload-digest"}}' "$image" 2>/dev/null || true)"
+  # An image built before this existed carries no label. Silence is right there:
+  # it is not evidence of drift, and a warning nobody can act on is noise.
+  [[ -n "$baked" && "$baked" != "<no value>" ]] || return 0
+  here="$(ai_containers_payload_digest "$dir")" || return 0
+  [[ "$here" == "$baked" ]] && return 0
+  printf 'WARNING: this image was NOT built from the files in %s.\n' "$dir" >&2
+  printf '         image was built from payload %s\n' "${baked:0:12}" >&2
+  printf '         these assets are            %s\n' "${here:0:12}" >&2
+  printf '         Rebuild before trusting it:  ./build.sh    (or ./runme.sh, which builds first)\n' >&2
+  printf '         If the assets were just synced from the central repo, that is exactly what this means.\n' >&2
+  return 0
+}

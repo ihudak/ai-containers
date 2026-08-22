@@ -370,7 +370,16 @@ sub "running the corpus (jobs=$fl_jobs, timeout=$fl_timeout) — a few minutes"
 if bash "$TESTS_DIR/falsify/run.sh" --jobs "$fl_jobs" --timeout "$fl_timeout" > "$fl_run" 2>&1; then
   { grep -E '^falsify: --jobs auto ' "$fl_run" || true; } \
     | sed 's/^falsify: //' | while IFS= read -r l; do sub "$l"; done
-  grep -E '^(TARGET|TOTAL|ASSERTLESS|SKIPPED|UNATTEMPTED|CONTROL|CONTROLS)\|' "$fl_run" | sed 's/^/  /' | while IFS= read -r l; do sub "$l"; done
+  # BASELINE and NOTE are in this filter because leaving them out cost a day.
+  # BASELINE is each oracle's honest cost on a quiet machine — the number that
+  # tells "this oracle is slow" apart from "this machine was loaded", and the
+  # single most informative record when a control goes over its ceiling. NOTE
+  # carries the control diagnostics, including `control-clock`, which says how
+  # late the watchdog NOTICED as distinct from how long the oracle ran. Both
+  # were being computed and then discarded: the corpus log is a mktemp that is
+  # deleted whenever the run is clean, so on a green run the only copy of them
+  # went with it (backlog F47, in a place the F47 fix did not reach).
+  grep -E '^(BASELINE|TARGET|TOTAL|ASSERTLESS|SKIPPED|UNATTEMPTED|CONTROL|CONTROLS|NOTE)\|' "$fl_run" | sed 's/^/  /' | while IFS= read -r l; do sub "$l"; done
   # HOW MUCH WAS ACTUALLY MEASURED. An UNPROVEN mutant produced no verdict at
   # all, so a run with many of them is measuring less than its pass suggests —
   # and the pass is honest only if that is said out loud rather than left in

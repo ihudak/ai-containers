@@ -934,6 +934,11 @@ run_container() {
     printf '      For an agent plus a real build toolchain, CONTAINER_CPUS=4 CONTAINER_MEMORY=8g CONTAINER_MEMORY_SWAP=8g is more comfortable.\n' >&2
   fi
 
+  # Does this image come from the files sitting next to it? Warned about here,
+  # at the last moment before the container starts, because that is when the
+  # answer is actionable and when somebody is watching the terminal.
+  ai_containers_provenance_warn "$image_name" "$script_dir"
+
   docker run -it --rm \
     ${capabilities[@]+"${capabilities[@]}"} \
     --add-host=host.docker.internal:host-gateway \
