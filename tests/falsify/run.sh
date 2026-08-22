@@ -232,11 +232,47 @@ fr_quota_cpus() {
   printf '%s' "$n"
 }
 
-fr_cpu_budget() {   # workers this host can actually run: min(reported, quota)
-  local host quota
-  host="$(fr_host_cpus)"
+# The PERFORMANCE-core count, or NOTHING on a machine whose cores are all the
+# same. Apple Silicon reports two performance levels and `hw.ncpu` sums them as
+# if they were equals, which for this tier's fork-heavy oracles they are not.
+#
+# Measured on the host, 2026-08-22 (backlog F59): hw.ncpu 18 = 6 performance
+# cores + 12 efficiency cores, no SMT. `--jobs auto` took all 18 and a pristine
+# CONTROL of tests/lib-verify-repo.sh went from 445.8s (red) to 251s (green)
+# when the same run was repeated at 8. The single whole-tree lint that target's
+# neighbour runs costs 3.7-5.2s idle there against 2.2s of CPU — under half the
+# elapsed time is computation, the rest is process creation, which is exactly
+# the work that collapses when it lands on an efficiency core.
+#
+# This is F38's third face. F38 fixed `nproc` reading an affinity mask inside a
+# quota'd container; F59's first half was the host count ignoring a VM's
+# reservation; this is the count treating unequal cores as equal. Every one of
+# them is the same error: the number the OS reports is not the number available
+# to the work.
+#
+# Deliberately NOT `docker info`. Subtracting the VM's reservation gives the
+# same 6 on this machine, and the agreement is a coincidence of one
+# configuration rather than evidence the two agree in general — but the P-core
+# count is derivable from sysctl alone, needs no daemon round-trip in an
+# otherwise hermetic runner, and stays correct when Docker is not running at
+# all. It also names the real constraint: the workload, not a co-tenant.
+fr_perf_cpus() {
+  local n
+  n="$(sysctl -n hw.perflevel0.logicalcpu 2>/dev/null)" || return 0
+  [[ "$n" =~ ^[1-9][0-9]*$ ]] || return 0
+  printf '%s' "$n"
+}
+
+fr_cpu_budget() {   # workers this host can actually run: min(reported, quota, perf)
+  local budget quota perf
+  budget="$(fr_host_cpus)"
   quota="$(fr_quota_cpus)"
-  if [[ -n "$quota" ]] && (( quota < host )); then printf '%s' "$quota"; else printf '%s' "$host"; fi
+  perf="$(fr_perf_cpus)"
+  # Each narrows and none widens, so the order of these two does not matter and
+  # a probe that returns nothing costs nothing.
+  if [[ -n "$quota" ]] && (( quota < budget )); then budget="$quota"; fi
+  if [[ -n "$perf" ]] && (( perf < budget )); then budget="$perf"; fi
+  printf '%s' "$budget"
 }
 
 FR_JOBS="${FALSIFY_JOBS:-1}"
@@ -1133,8 +1169,8 @@ falsify_main() {
     esac
   done
   if [[ "$FR_JOBS" == "auto" ]]; then
-    local _host _quota
-    _host="$(fr_host_cpus)"; _quota="$(fr_quota_cpus)"
+    local _host _quota _perf _why
+    _host="$(fr_host_cpus)"; _quota="$(fr_quota_cpus)"; _perf="$(fr_perf_cpus)"
     FR_JOBS="$(fr_cpu_budget)"
     # Said out loud, with BOTH numbers: "jobs=8" alone leaves a reader unable to
     # tell a quota from a small machine, and the gap is the whole finding.
@@ -1145,10 +1181,17 @@ falsify_main() {
     # quota, where `quota < host` is false and the message said the opposite of
     # the truth.
     if [[ -n "$_quota" ]]; then
-      fr_warn "--jobs auto -> $FR_JOBS (the OS reports $_host CPU(s), the cgroup quota allows $_quota; nproc does not see the quota)"
+      _why="the cgroup quota allows $_quota; nproc does not see the quota"
     else
-      fr_warn "--jobs auto -> $FR_JOBS (the OS reports $_host CPU(s), no cgroup CPU quota in effect)"
+      _why="no cgroup CPU quota in effect"
     fi
+    # Stated whenever the machine HAS performance levels, not only when they
+    # bind — for the same reason the quota is: a reader who is told nothing
+    # cannot tell "all cores are equal here" from "nobody looked".
+    if [[ -n "$_perf" ]]; then
+      _why="$_why; $_perf of them are performance cores, and this tier is bound by process creation rather than by computation"
+    fi
+    fr_warn "--jobs auto -> $FR_JOBS (the OS reports $_host CPU(s), $_why)"
   fi
   if [[ ! "$FR_JOBS" =~ ^[1-9][0-9]*$ ]]; then
     fr_err "--jobs must be a positive integer or 'auto', got '${FR_JOBS}'"; return 2
