@@ -145,6 +145,46 @@ grep -qF 'npm-agent-tools() { npm --prefix "$HOME/.ai-tools/npm" "$@"; }' "$REPO
 grep -qE 'npm install -g --prefix "\$npm_prefix"' "$REPO_DIR/agent-tools-reconcile.sh" \
   && pass "reconcile passes --prefix explicitly per npm invocation (not via a baked .npmrc)" \
   || fail "reconcile passes --prefix explicitly per npm invocation (not via a baked .npmrc)"
+
+# ── the CONSEQUENCE of having no prefix, which the docs have to carry ─────────
+# The two assertions above keep the prefix out of the image. The price of that
+# is paid by the user: with no prefix configured anywhere, `npm prefix -g`
+# resolves to nvm's own root-owned node directory, so an agent CLI's built-in
+# auto-updater fails there rather than in ~/.ai-tools/npm where it is actually
+# installed. That is a design consequence and it is permanent — nvm inspects all
+# four npmrc locations (builtin, global, user, project) plus $PREFIX and
+# $NPM_CONFIG_PREFIX, so no configuration satisfies both it and the updater.
+#
+# It reached a user as an error with no explanation on 2026-08-22, because
+# docs/agent-tools.md said the opposite: that each tool "can self-update in
+# place using its own updater (e.g. the agent CLI's own /update or
+# auto-updater, npm update -g …)". Both of those are wrong here, and the one
+# command that works — the baked npm-agent-tools wrapper — appeared only in
+# AGENTS.md. A guard on the Dockerfile alone cannot notice that: the image was
+# correct and the documentation was not.
+#
+# $REPO_DIR is the ENGINE root in both repos (the mgd port sets it to base/),
+# so this path resolves without either copy needing its own logic.
+doc="$REPO_DIR/docs/agent-tools.md"
+if [[ ! -f "$doc" ]]; then
+  fail "docs/agent-tools.md exists to document the no-prefix consequence"
+else
+  # The wrapper by name: it is the only supported way to update the npm-based
+  # CLIs, and a rewrite of that paragraph that drops it leaves the user with
+  # nothing that works.
+  if grep -Fq 'npm-agent-tools update -g' "$doc"; then
+    pass "the docs name the npm-agent-tools wrapper the no-prefix design requires"
+  else
+    fail "the docs name the npm-agent-tools wrapper the no-prefix design requires"
+  fi
+  # And the SYMPTOM, verbatim, so the person reading the error can find the
+  # page by searching for what their terminal actually said.
+  if grep -Fq 'no write permission to npm prefix' "$doc"; then
+    pass "the docs quote the error the built-in updater fails with"
+  else
+    fail "the docs quote the error the built-in updater fails with"
+  fi
+fi
 grep -qF 'npm_prefix="$home_root/npm"' "$REPO_DIR/agent-tools-reconcile.sh" \
   && pass "reconcile's npm_prefix resolves to \$home_root/npm (~/.ai-tools/npm)" \
   || fail "reconcile's npm_prefix resolves to \$home_root/npm (~/.ai-tools/npm)"
