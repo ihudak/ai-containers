@@ -634,7 +634,7 @@ rule makes the stale and obsolete checks vacuous for unselected files. And
 `run.sh`'s exit status is a separate signal from its stdout, so a naive
 `run.sh | check-ledger.sh -` discards it — capture to a file and check both.
 
-## F14 — no mechanical guard against awk interval quantifiers
+## F14 — no mechanical guard against awk interval quantifiers — **ACCEPTED: a prose guard, weaker than this repo's norm and recorded as such**
 
 The floor run caught `/^[0-9a-f]{40}$/` in `tests/test-falsify-generate.sh`:
 ubuntu:22.04's mawk has intervals disabled, so the pattern matched no sha1 and
@@ -1320,7 +1320,15 @@ for the ledger: no mutation-tier verdict changes, and nothing about `run.sh`'s
 behaviour changed. What changed is that a slow host now fails honestly or not at
 all, instead of failing somewhere unrelated.
 
-## F27 — mutation verdicts are environment-dependent, so the ledger could not be satisfied everywhere at once
+> **How to read a heading here.** An entry's STATUS lives in its heading, and
+> where an entry has several (F28, F32, F57, F59 …) the LAST one is current.
+> Three entries below carried their resolution only in the body and read as open
+> from the heading, which cost real work twice on 2026-08-22 — once when the
+> Host Agent listed F57 as remaining, and once when this file's own reader
+> almost began the 20-call-site increment F57's addendum had already declined.
+> Their headings now say so. If you resolve an entry, say it in the heading.
+
+## F27 — mutation verdicts are environment-dependent, so the ledger could not be satisfied everywhere at once — **RESOLVED: the `ENV-DEPENDENT` classification, verified across the full matrix**
 
 Phase 6's first real host run (macOS, 2026-08-16) failed with 12 findings, and
 none of them was a code defect. The same 249 mutants on the same commit:
@@ -1387,7 +1395,7 @@ wall clock. **CI (ubuntu-latest) is the reference environment and does not have
 this problem**, so the ratchet's strength is unaffected; what degrades is the
 local layer's ability to add information beyond CI.
 
-## F29 — CI killed a mutant the sandbox container could not, because the product installs itself at the default path
+## F29 — CI killed a mutant the sandbox container could not, because the product installs itself at the default path — **FIXED 2026-08-17**
 
 The `falsify` job's first CI run failed with one finding:
 `tools-lib.sh:return-flip:f128fd8d` was a ledger entry for a mutant CI reports
@@ -4359,7 +4367,7 @@ honestly. Nobody needs that at the measured cost, but a slower machine might.
 
 ---
 
-## F57 — `it_wait` cannot distinguish "not yet" from "never"
+## F57 — `it_wait` cannot distinguish "not yet" from "never" — **RESOLVED 2026-08-21, see the ADDENDUM below**
 
 Found by the Host Agent during F36's run, and recorded here because it was not
 recorded anywhere: it lived only in a chat message until 2026-08-21.
@@ -4421,7 +4429,7 @@ being billed the full ceiling and read as a hang.
 
 ---
 
-## F57 — ADDENDUM 2026-08-21: the fix is not a new primitive, and the case headers already said so
+## F57 — ADDENDUM 2026-08-21: the fix is not a new primitive, and the case headers already said so — **RESOLVED, CONFIRMED ON A REAL DAEMON**
 
 F57 proposed a companion primitive that could express "never". Before building
 it, two things were read that changed the answer.
@@ -4564,7 +4572,7 @@ and the two are different findings. Demonstrated in both shapes.
 
 ---
 
-## F58 — `git ls-files` returned NOTHING under full-suite load, and two checks called it a code defect
+## F58 — `git ls-files` returned NOTHING under full-suite load, and two checks called it a code defect — **GUARD FIXED; the TRIGGER is still unidentified**
 
 Caught while investigating F32, in a full `run-all.sh`:
 
@@ -4756,7 +4764,7 @@ three-variant design, not an oversight, and the same question applies to each.
 
 ---
 
-## F28 — CONFIRMED ON THE HOST 2026-08-22, and the residue named
+## F28 — CONFIRMED ON THE HOST 2026-08-22, and the residue named — **FIXED**
 
 Phase 6 re-run at defaults on `6cddfce` (`FALSIFY_JOBS`/`FALSIFY_TIMEOUT` both
 unset, banner `jobs=18, timeout=120`), against the same machine's pre-fix
@@ -4921,7 +4929,7 @@ establishes is about the RATIO, not about the presence of a bound.
 
 ---
 
-## F63 — the watchdog paid three FORKS a second to find out what time it was
+## F63 — the watchdog paid three FORKS a second to find out what time it was — **FIXED**
 
 Found in the host's raw `CONTROL|` records for the F61/F62 run, which the summary
 had hidden inside a single number.
@@ -4991,7 +4999,7 @@ rather than leaving it to be inferred.
 
 ---
 
-## F59 — FOLLOW-UP: the fix was verified on Linux, and was red on macOS the whole time
+## F59 — FOLLOW-UP: the fix was verified on Linux, and was red on macOS the whole time — **FIXED**
 
 Reported by the Host Agent on 2026-08-22, from a real checkout on the host:
 
