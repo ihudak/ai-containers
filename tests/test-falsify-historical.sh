@@ -92,8 +92,35 @@ source "$GEN"
 TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 trap 'rm -rf "$TMP"' EXIT
 
-HEAD_BEFORE="$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null)"
-PORC_BEFORE="$(git -C "$REPO_DIR" status --porcelain 2>/dev/null)"
+# git can FAIL rather than answer, and `2>/dev/null` makes those two
+# indistinguishable: a failed `git status` yields an empty string, which
+# compares unequal to a non-empty before-state, and this file then reports that
+# THE HARNESS MODIFIED YOUR WORKING TREE. That is the most alarming claim it can
+# make and the one cause it would not be — an environment fault dressed as a
+# code defect, which is backlog F58's shape in a place with higher stakes.
+#
+# So the exit status is kept, and "git could not answer" is reported through the
+# scaffold channel run-all.sh already has for exactly this distinction. No retry
+# is attempted: index.lock contention was TESTED as a trigger and does not
+# produce it (`git status` returns 0 while another process holds the lock), so a
+# retry loop here would be guarding a mechanism nobody has observed.
+h_repo_state() {   # <git args…> → 0 and the state on stdout; 1 when git could not answer
+  local out rc
+  out="$(git -C "$REPO_DIR" "$@" 2>/dev/null)"; rc=$?
+  (( rc == 0 )) || return 1
+  printf '%s' "$out"
+}
+h_scaffold() {   # <what git could not report>
+  printf 'SCAFFOLD-FAILED: git could not report %s — the isolation check could not be MADE, which is not the same as the repo having changed\n' "$1"
+  fails=$((fails + 1))
+}
+
+if ! HEAD_BEFORE="$(h_repo_state rev-parse HEAD)"; then
+  h_scaffold "HEAD before the run"; h_finish
+fi
+if ! PORC_BEFORE="$(h_repo_state status --porcelain)"; then
+  h_scaffold "the working tree before the run"; h_finish
+fi
 
 SHA_H3=421d25d   # launcher_prepare's refusal check could not reach its branch
 SHA_H4=9b64bd3   # a conjunct satisfied by an unrelated line
@@ -512,9 +539,15 @@ printf '                       that reaches it damages a VALUE, and no operator 
 printf '  #2 44676f5  out of remit — run-all.sh'"'"'s ^FAIL: guard already catches its shape\n'
 printf '  #1, #5      out of reach — not hermetic-suite assertions at all\n'
 
-h_check "the real repo's HEAD is untouched by all of the above" \
-  "$HEAD_BEFORE" "$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null)"
-h_check "the real repo's working tree is untouched by all of the above" \
-  "$PORC_BEFORE" "$(git -C "$REPO_DIR" status --porcelain 2>/dev/null)"
+if head_after="$(h_repo_state rev-parse HEAD)"; then
+  h_check "the real repo's HEAD is untouched by all of the above" "$HEAD_BEFORE" "$head_after"
+else
+  h_scaffold "HEAD after the run"
+fi
+if porc_after="$(h_repo_state status --porcelain)"; then
+  h_check "the real repo's working tree is untouched by all of the above" "$PORC_BEFORE" "$porc_after"
+else
+  h_scaffold "the working tree after the run"
+fi
 
 h_finish
