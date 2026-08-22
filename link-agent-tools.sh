@@ -15,9 +15,17 @@ home_root="$dev_home/.ai-tools"
 
 log(){ printf '[link-agent-tools] %s\n' "$*"; }
 
+# Claude Code is installed NATIVELY (see agent-tools-reconcile.sh), so its launcher is
+# ~/.local/bin/claude, not a binary under the npm prefix. Prefer that, and fall back to a
+# leftover npm copy so a group provisioned before that change keeps resolving `claude` in
+# non-login shells until the npm copy is cleared. Order matters: the native install is the
+# one that can self-update, so it must win whenever both are present.
+claude_src="$dev_home/.local/bin/claude"
+[[ -x "$claude_src" ]] || claude_src="$home_root/npm/bin/claude"
+
 # tool binary → its location under the group home (npm prefix, uv bin, or plain bin).
 srcs=(
-  "claude:$home_root/npm/bin/claude"
+  "claude:$claude_src"
   "copilot:$home_root/npm/bin/copilot"
   "codex:$home_root/npm/bin/codex"
   "gemini:$home_root/npm/bin/gemini"

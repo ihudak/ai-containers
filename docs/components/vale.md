@@ -7,7 +7,7 @@ vale=ON    # install the latest Vale binary from GitHub releases
 vale=OFF   # skip (default)
 ```
 
-> **Note:** Vale is not baked into the image — like the other agent-tier tools, it installs **unpinned** at container start into the group-mounted `~/.ai-tools` (see [Agent-tier tools (`~/.ai-tools`)](../agent-tools.md)) and self-updates in place; there is no build-time step to refresh.
+> **Note:** Vale is not baked into the image — like the other agent-tier tools, it installs **unpinned** at container start into the group-mounted `~/.ai-tools` (see [Agent-tier tools (`~/.ai-tools`)](../agent-tools.md)); there is no build-time step to refresh. Vale has **no** self-update — to pick up a newer release, delete `~/.ai-tools/bin/vale` and restart the container, and the reconcile fetches the current one.
 
 > **Note:** The binary download and `vale sync` (which fetches style packages such as `Google`, `Microsoft`, `write-good`) use GitHub hosts (`github.com`, `*.githubusercontent.com`) that are allowlisted by default; `vale.sh` is added when `vale=ON` for package-index lookups. If your `.vale.ini` pulls packages from another host, add it to `allowlist-domains.d/custom.txt` and rebuild. Repos that vendor their `StylesPath` need no network at all.
 
