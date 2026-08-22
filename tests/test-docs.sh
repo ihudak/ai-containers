@@ -220,7 +220,15 @@ done < <(grep -ohE '\b(AI_[A-Z0-9_]+|CONTAINER_(CPUS|MEMORY)|REPOS|REPO_BACKEND|
 # Upstream-only — the mgd port carries no copy of this file, and skipping is
 # correct there rather than a gap.
 BACKLOG="$ENGINE_DIR/docs/superpowers/specs/2026-08-14-falsify-backlog.md"
-if [[ -f "$BACKLOG" ]]; then
+if [[ ! -f "$BACKLOG" ]]; then
+  # SAID OUT LOUD, not skipped in silence. In the mgd port the backlog genuinely
+  # does not exist and skipping is correct — but a check that vanishes without a
+  # word is indistinguishable from one that vanished because somebody renamed
+  # the file, and this whole assertion exists because a status nobody can see is
+  # a status nobody acts on.
+  printf 'SKIP: no falsify backlog at %s — the heading-status rule has nothing to check here\n' \
+    "${BACKLOG#"$ENGINE_DIR/"}"
+else
   # Parsed in the shell, not with awk's \\< word boundaries: mawk does not
   # support them, and the first version of this check used them and therefore
   # MATCHED NOTHING — a guard that passed on every input, written the same hour
