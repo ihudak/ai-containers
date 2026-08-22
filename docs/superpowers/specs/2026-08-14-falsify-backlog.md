@@ -4918,3 +4918,73 @@ same file, and `tests/test-integration-shim.sh`'s 10s. Each bounds a
 single-invocation cost of a few milliseconds — headroom of ~1600x against the
 97x that was not enough here — so each is left alone. The rule this entry
 establishes is about the RATIO, not about the presence of a bound.
+
+---
+
+## F63 — the watchdog paid three FORKS a second to find out what time it was
+
+Found in the host's raw `CONTROL|` records for the F61/F62 run, which the summary
+had hidden inside a single number.
+
+```
+RUN|…|jobs=18|timeout=120|…
+CONTROL|FAIL|tests/bash-dialect-lint.sh|test-bash-dialect-lint.sh|1|timeout|152603
+CONTROL|FAIL|tests/bash-dialect-lint.sh|test-bash-dialect-lint.sh|2|timeout|149972
+BASELINE|tests/bash-dialect-lint.sh|test-bash-dialect-lint.sh|PASS|10945
+TARGET|tests/bash-dialect-lint.sh|test-bash-dialect-lint.sh|27|26|0|1|9|168484
+```
+
+A **120s** ceiling, and the control recorded at **152.6s** — while `tools-lib`
+overshot by 0.2-0.3s and `lib-verify-repo` by 1.0-2.8s in the same run. One
+target out of nine, and the ~32s is not a rounding difference.
+
+**It cannot be the kill.** After the watchdog fires it sends TERM, waits one
+second, then SIGKILL, which nothing can ignore — so everything after the fire is
+bounded at a second or two. The lateness is therefore BEFORE the fire: the
+watchdog did not get scheduled.
+
+**Why that target.** `falsify_watch_until` polled once a second, and each poll
+cost three forks — two command substitutions around `fr_now_us`, plus
+`/bin/sleep`. Per in-flight oracle. `tests/bash-dialect-lint.sh` is the most
+fork-heavy oracle in the corpus: it scans 141 tracked scripts, and its 10.9s
+BASELINE against 2.2s of user+sys means over half its wall time is process
+creation rather than computation. Its watchdog was competing for exactly the
+resource whose exhaustion it existed to measure. The other eight targets never
+saturate forks, so their watchdogs stayed accurate.
+
+**The `BASELINE|` record is what made this legible** and it had never been
+surfaced before: 10.9s pristine against a 120s ceiling proves the oracle is not
+the problem, and 14x that under 18-way load proves the contention is.
+
+**A hypothesis tested and discarded first.** Before reading the raw lines, the
+same lateness was attributed to the polling loop being slow in general. Measured
+in-container: a 10s budget under a 24-way fork storm on 12 CPUs returned 10.0s
+(as shipped) against 10.9s (fork-free) — a 9% overshoot at 2x oversubscription,
+nowhere near 27%. That result did not survive, and the entry records it because
+"the loop is slow" and "the loop is slow WHERE THE ORACLE FORKS" are different
+claims with different fixes.
+
+**Fixed** two ways, both cheap:
+
+- `EPOCHREALTIME` read into a variable instead of through a subshell, and the
+  one-second wait taken as a `read -t 1` on a fifo opened READ-WRITE — which
+  never reports EOF and has no writer, so the read blocks for exactly its
+  timeout inside the shell. The poll now forks **nothing**. A host that cannot
+  create a fifo falls back to `sleep 1`, bounded rather than spinning.
+- Every timeout now records **how late the watchdog noticed**, beside the flag
+  rather than inside it (`falsify_flag_is_mine` compares the flag's whole
+  content to the token, so a second field there would make every timeout
+  foreign). A failing control prints it as a `NOTE|control-clock|` record, so
+  "the oracle overran" and "the watchdog ran late" stop being indistinguishable
+  — the ambiguity that cost a day here.
+
+Demonstrated: "the one-second wait forks nothing when a fifo can be opened"
+(forked → no-fork), "a timeout records how late the watchdog noticed" (empty →
+3000ms on a fake clock), "a watchdog that fires on the deadline reports no
+lateness" (empty → 0), and the fallback asserted in the opposite direction so a
+broken `mkfifo` still yields a bounded wait.
+
+**What this does NOT claim.** That the 32s is fully explained. The deduction
+bounds it to the pre-fire path and the fix removes the only per-poll cost there,
+but the next host run is what confirms it — and it will now say so in a number
+rather than leaving it to be inferred.

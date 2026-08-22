@@ -1563,15 +1563,22 @@ check "a trailing comma does not count as an oracle"         "240" "$(eff_timeou
 # is about — under load it flips, and in this tier a flipped assertion is a
 # false KILL. So the clock and the sleep are both stubbed and the POLL COUNT is
 # read instead. It is exact, it is instant, and it cannot be load-sensitive.
-watch_polls() {   # <us the fake clock advances per sleep> <ceiling seconds> → polls
+watch_polls() {   # <us the fake clock advances per poll> <ceiling seconds> → polls
   ( set +u
     # shellcheck source=/dev/null
     source "$RUN" >/dev/null 2>&1
     _adv="$1"; _now=0; _polls=0
-    fr_now_us() { printf '%s' "$_now"; }
-    # Shadows the real `sleep`, so no wall time passes and the only thing that
-    # moves the clock is this stub. `command sleep` below is unaffected.
-    sleep() { _polls=$(( _polls + 1 )); _now=$(( _now + _adv )); }
+    # Both assign globals that the sourced run.sh reads; shellcheck cannot
+    # follow that through a non-constant source.
+    # shellcheck disable=SC2034
+    fr_now_us_into() { FR_NOW_US="$_now"; }
+    # Shadows the one-second wait, so no real time passes and the only thing
+    # that moves the clock is this stub. The fifo is stubbed out with it: this
+    # section is about the arithmetic, not the plumbing.
+    falsify_tick() { _polls=$(( _polls + 1 )); _now=$(( _now + _adv )); }
+    # shellcheck disable=SC2034
+    falsify_tick_open() { FR_TICK_FD=""; }
+    falsify_tick_close() { :; }
     command sleep 30 & _pid=$!
     falsify_watch_until "$_pid" "$2" >/dev/null 2>&1
     kill -TERM "$_pid" 2>/dev/null
@@ -1585,6 +1592,63 @@ check "the ceiling is reached in elapsed time, not in sleeps" "6" "$(watch_polls
 # poll that returns early (a busy `sleep`, a signal) must not spend the budget.
 # The iteration-counting version returns 2 here and cuts the oracle at 0.2s.
 check "a poll that returns early does not spend the budget" "20" "$(watch_polls 100000 2)"
+
+# ── §17. the watchdog does not FORK to watch, and says how late it noticed ────
+# A pristine CONTROL of tests/bash-dialect-lint.sh on a 120s ceiling was recorded
+# at 152.6s and 150.0s (host, jobs=18, 2026-08-22) while every other target in
+# the same run overshot by 0.2-2.8s. The kill cannot account for it — TERM, one
+# second, then SIGKILL, which nothing ignores — so the watchdog noticed late. It
+# was paying three forks a second to read a clock bash exposes as a variable,
+# on the most fork-heavy target in the corpus.
+# The real clock and the real wait, so this measures the plumbing rather than
+# the arithmetic §16 covers. Reported as forked/no-fork, not as a count: the
+# number of one-second waits inside a two-second ceiling is a race with the
+# scheduler, and an assertion that can flip on timing is the defect this whole
+# section is about.
+watch_forks() {   # <ceiling seconds> <1 = break mkfifo> → forked | no-fork
+  ( set +u
+    # shellcheck source=/dev/null
+    source "$RUN" >/dev/null 2>&1
+    _sleeps=0
+    [[ "$2" == "1" ]] && { mkfifo() { return 1; }; }
+    # Still really waits — otherwise the fallback would spin against a real
+    # clock and prove nothing about being bounded.
+    sleep() { _sleeps=$(( _sleeps + 1 )); command sleep "$1"; }
+    command sleep 30 & _pid=$!
+    falsify_watch_until "$_pid" "$1" >/dev/null 2>&1
+    kill -TERM "$_pid" 2>/dev/null
+    (( _sleeps > 0 )) && printf 'forked' || printf 'no-fork' )
+}
+check "the one-second wait forks nothing when a fifo can be opened" "no-fork" "$(watch_forks 2 0)"
+# A host that cannot make a fifo still gets a BOUNDED wait rather than a loop
+# that spins a core — the fallback is load-bearing, not a formality.
+check "a host without mkfifo still falls back to a bounded wait" "forked" "$(watch_forks 2 1)"
+
+# The lateness itself, on a fake clock so the number is exact: polls landing
+# every 7 simulated seconds against a 60s ceiling first exceed it at 63s.
+watch_late() {   # <us per poll> <ceiling seconds> → FR_WATCH_LATE_MS
+  ( set +u
+    # shellcheck source=/dev/null
+    source "$RUN" >/dev/null 2>&1
+    _adv="$1"; _now=0
+    # Both assign globals that the sourced run.sh reads; shellcheck cannot
+    # follow that through a non-constant source.
+    # shellcheck disable=SC2034
+    fr_now_us_into() { FR_NOW_US="$_now"; }
+    falsify_tick() { _now=$(( _now + _adv )); }
+    # shellcheck disable=SC2034
+    falsify_tick_open() { FR_TICK_FD=""; }
+    falsify_tick_close() { :; }
+    command sleep 30 & _pid=$!
+    falsify_watch_until "$_pid" "$2" >/dev/null 2>&1
+    kill -TERM "$_pid" 2>/dev/null
+    printf '%s' "$FR_WATCH_LATE_MS" )
+}
+check "a timeout records how late the watchdog noticed" "3000" "$(watch_late 7000000 60)"
+# Landing exactly on the deadline is not lateness, and must not be reported as
+# 1ms of it: the field has to be able to say "on time" for the split to mean
+# anything.
+check "a watchdog that fires on the deadline reports no lateness" "0" "$(watch_late 10000000 60)"
 
 # ── §17. `--jobs auto` does not count efficiency cores as equals ──────────────
 # hw.ncpu sums both performance levels on Apple Silicon. Measured on the host
