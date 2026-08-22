@@ -286,7 +286,10 @@ RUN if [ -n "$DB_CLIENTS" ]; then \
 # ── Retain a runtime build toolchain (native extensions build at runtime) ───────
 # The cleanup layer above purged build-essential. Ruby gems (pg, bcrypt, ...),
 # DB driver gems, and Python source wheels compile at runtime, so put a minimal
-# toolchain back when KEEP_BUILD_TOOLCHAIN=1 (set by build.sh for ruby OR db-clients).
+# toolchain back when KEEP_BUILD_TOOLCHAIN=1 — set by build.sh for ruby, db-clients OR
+# c-toolchain. This layer deliberately does not know WHICH: the arg is the whole
+# interface, which is what lets `c-toolchain=ON` alone be sound without an image
+# variant built to prove it (backlog F60).
 ARG KEEP_BUILD_TOOLCHAIN=0
 RUN if [ "$KEEP_BUILD_TOOLCHAIN" = "1" ]; then \
       apt-get update && apt-get install -y --no-install-recommends \
@@ -421,7 +424,7 @@ ARG INSTALL_QMD=0
 # @tobilu/qmd pulls in tree-sitter, which compiles native addons via node-gyp.
 # build-essential was purged in the cleanup layer above, so reinstall the toolchain
 # just for this layer. Purge it again to keep the image lean — but ONLY when the
-# runtime toolchain isn't needed: ruby/db-clients set KEEP_BUILD_TOOLCHAIN=1 and rely
+# runtime toolchain isn't needed: ruby, db-clients or c-toolchain set KEEP_BUILD_TOOLCHAIN=1 and rely
 # on build-essential surviving for runtime native compilation, so keep it then.
 RUN if [ "$INSTALL_QMD" = "1" ]; then \
       apt-get update && apt-get install -y --no-install-recommends build-essential && \
