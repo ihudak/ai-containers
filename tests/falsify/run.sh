@@ -545,14 +545,73 @@ FALSIFY_MS=0
 # clock" not comparable and every timeout count a function of the machine.
 # EPOCHREALTIME via fr_now_us, so the deadline is fixed once and the loop only
 # asks whether it has passed.
+# ── the watchdog must not FORK to watch ───────────────────────────────────────
+# Measured on the host 2026-08-22, jobs=18: a pristine CONTROL of
+# tests/bash-dialect-lint.sh — one oracle, so a 120s ceiling — was recorded at
+# 152.6s and 150.0s, while tools-lib overshot by 0.2-0.3s and lib-verify-repo by
+# 1.0-2.8s in the same run. The ~32s is not the kill: after the watchdog fires it
+# sends TERM, waits a second, then SIGKILL, which nothing can ignore, so the
+# post-fire path is bounded at a second or two. The lateness is therefore BEFORE
+# the fire — the watchdog itself did not get scheduled.
+#
+# It was paying three forks a second to find out what time it was: two command
+# substitutions around fr_now_us and a /bin/sleep. Per in-flight oracle. On the
+# most fork-heavy target in the corpus — its oracle scans 141 scripts, and 10.9s
+# of its BASELINE against 2.2s of user+sys is over half spent creating processes
+# — that watchdog is competing for exactly the resource whose exhaustion it
+# exists to measure.
+#
+# Now it costs nothing: EPOCHREALTIME is a shell variable, and the one-second
+# wait is a `read` on a fifo opened READ-WRITE, which never reports EOF and has
+# no writer, so the read blocks for precisely its timeout inside the shell.
+fr_now_us_into() { FR_NOW_US="${EPOCHREALTIME//[.,]/}"; }
+
+# One mkfifo per watch, replacing one /bin/sleep per second of it. Opened and
+# then immediately unlinked: the descriptor keeps it alive, so nothing is left
+# in $TMPDIR even if the watchdog is killed mid-wait.
+falsify_tick_open() {
+  local f="${TMPDIR:-/tmp}/falsify.tick.$BASHPID"
+  FR_TICK_FD=""
+  rm -f "$f"
+  mkfifo "$f" 2>/dev/null || return 0
+  exec {FR_TICK_FD}<>"$f" 2>/dev/null || FR_TICK_FD=""
+  rm -f "$f"
+  return 0
+}
+falsify_tick_close() {
+  [[ -n "${FR_TICK_FD:-}" ]] || return 0
+  exec {FR_TICK_FD}>&- 2>/dev/null || true
+  FR_TICK_FD=""
+}
+# The fallback is deliberate and not a formality: a host without mkfifo, or a
+# $TMPDIR that refuses one, must still get a bounded watchdog rather than a
+# tight loop that spins a core.
+falsify_tick() {
+  if [[ -n "${FR_TICK_FD:-}" ]]; then
+    read -r -t 1 -u "$FR_TICK_FD" _ 2>/dev/null || true
+  else
+    sleep 1
+  fi
+}
+
 falsify_watch_until() {   # <pid> <seconds> → 0 the pid went away first, 1 the clock ran out
   local pid="$1" secs="$2" deadline
-  deadline=$(( $(fr_now_us) + secs * 1000000 ))
+  # How far past the deadline the decision to fire was actually taken. A
+  # watchdog that reports a timeout without saying how late it noticed leaves
+  # "the oracle ran long" and "the watchdog ran late" looking identical from the
+  # outside, which is the ambiguity that cost a day here.
+  FR_WATCH_LATE_MS=0
+  falsify_tick_open
+  fr_now_us_into
+  deadline=$(( FR_NOW_US + secs * 1000000 ))
   while :; do
-    kill -0 "$pid" 2>/dev/null || return 0
-    (( $(fr_now_us) >= deadline )) && break
-    sleep 1
+    kill -0 "$pid" 2>/dev/null || { falsify_tick_close; return 0; }
+    fr_now_us_into
+    (( FR_NOW_US >= deadline )) && break
+    falsify_tick
   done
+  FR_WATCH_LATE_MS=$(( ( FR_NOW_US - deadline ) / 1000 ))
+  falsify_tick_close
   # Once more after the last sleep: a pid that exits during the final second has
   # still exited before the clock, and firing on it would be the same staleness
   # one second smaller.
@@ -613,6 +672,10 @@ falsify_run_oracle() {   # <tree> <oracle-set> <outfile> <timeout-seconds> [<lab
     # oracle inside a window that small.
     falsify_watch_until "$pid" "$limit" && exit 0
     falsify_arm_flag "$flag" "$token"
+    # Beside the flag, not inside it: falsify_flag_is_mine compares the flag's
+    # WHOLE content to the token, and a second field there would make every
+    # timeout foreign.
+    printf '%s' "$FR_WATCH_LATE_MS" > "$flag.late" 2>/dev/null || true
     kill -TERM -"$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null
     sleep 1
     kill -KILL -"$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null ) &
@@ -634,6 +697,16 @@ falsify_run_oracle() {   # <tree> <oracle-set> <outfile> <timeout-seconds> [<lab
   kill -TERM -"$dog" 2>/dev/null || kill -TERM "$dog" 2>/dev/null
   wait "$dog" 2>/dev/null
   FALSIFY_MS="$(fr_ms_since "$t0")"
+  # How late the watchdog was in NOTICING, as distinct from how long the oracle
+  # ran. Without it a record says only that the ceiling was passed, and "the
+  # oracle ran long" and "the watchdog ran late" are indistinguishable — which
+  # is exactly the ambiguity a 152.6s control against a 120s clock presented.
+  FALSIFY_LATE_MS=""
+  if [[ -r "$flag.late" ]]; then
+    FALSIFY_LATE_MS="$(cat "$flag.late" 2>/dev/null || true)"
+    [[ "$FALSIFY_LATE_MS" =~ ^[0-9]+$ ]] || FALSIFY_LATE_MS=""
+  fi
+  rm -f "$flag.late"
   FALSIFY_TIMED_OUT=0
   FALSIFY_FOREIGN_FLAG=""
   if [[ -f "$flag" ]]; then
@@ -862,6 +935,14 @@ fr_run_control() {   # <slot> <target> <oracle> <n> <resultfile>
       | while IFS= read -r cl; do
           printf 'NOTE|control-output|%s|%s\n' "$target" "$cl" >> "$res"
         done
+    # THE SPLIT THE 2026-08-22 RUN COULD NOT MAKE. A control that times out says
+    # the ceiling was passed; it does not say whether the oracle overran it or
+    # the watchdog noticed late. One number separates them, and without it the
+    # only way to tell was to reason about which signals can be ignored.
+    if [[ -n "${FALSIFY_LATE_MS:-}" ]]; then
+      printf 'NOTE|control-clock|%s|the watchdog fired %sms past its %ss ceiling; the oracle then took %sms in total
+'         "$target" "$FALSIFY_LATE_MS" "$(fr_effective_timeout "$oracle")" "$FALSIFY_MS" >> "$res"
+    fi
     # An oracle that went red with no FAIL: line at all is a DIFFERENT event —
     # a bare non-zero exit — and saying nothing would read as "no output was
     # captured" rather than "there was none".
