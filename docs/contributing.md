@@ -192,6 +192,39 @@ CONTROLS|18|0
 - Verdicts can legitimately differ by platform. `ENV-DEPENDENT` is the ledger's
   classification for that, and there is currently one such entry.
 
+## Cutting a release
+
+Push the tag. That is the whole procedure, and it is deliberately the *only*
+step:
+
+```bash
+git checkout main && git pull --ff-only
+git tag -a v0.7.0 -m "v0.7.0 — <one line>"
+git push origin v0.7.0
+```
+
+`.github/workflows/release.yml` publishes the release from there, with
+`changelog-section.sh` supplying the body from `CHANGELOG.md`'s matching
+`## v0.7.0` section.
+
+- **Write the CHANGELOG section first**, in its own PR, and merge it before you
+  tag. A tag whose version has no section **fails the workflow** rather than
+  publishing an empty release. That is the point of the arrangement, not an
+  inconvenience to work around.
+- **Do not also run `gh release create`.** Two authors for one body is what
+  produced v0.5.0's duplicated notes and v0.6.0's duplicated "Full Changelog"
+  line: the workflow and the CLI both write it, and neither waits for the other.
+- **A section over 125,000 characters is refused**, naming its size — that is
+  GitHub's release-body limit. Nearer than it sounds: v0.6.0's section was
+  92,088 characters, 74% of the ceiling, because it absorbed everything that had
+  accumulated under `Unreleased`.
+
+See exactly what will be published, before the tag exists:
+
+```bash
+bash ./changelog-section.sh v0.7.0 | head -40
+```
+
 ## Porting to the sibling repository
 
 The two repositories share an engine, with one layout difference: upstream keeps
