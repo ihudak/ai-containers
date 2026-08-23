@@ -4,6 +4,55 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+### Release notes come from the CHANGELOG, and only one thing writes them
+
+- **`generate_release_notes: true` is gone from `.github/workflows/release.yml`.**
+  It published GitHub's list of merged pull requests — every branch that landed,
+  none of them explained — and it **raced** with anyone who also ran
+  `gh release create`, because both write the same body and neither waits for the
+  other. v0.5.0's release still carries the generated block twice for that reason,
+  and v0.6.0 needed a hand edit to remove a duplicated "Full Changelog" line. The
+  tag push is now the only author: `changelog-section.sh` extracts the `## <tag>`
+  section and the workflow publishes exactly that. `docs/contributing.md` says so
+  in as many words, because the fix is only half mechanical — the other half is
+  not running the CLI as well.
+- **Four ways to publish a wrong release now fail instead.** A tag whose version
+  has no section, a version with two sections, an empty section, and a section
+  over GitHub's 125,000-character release-body limit each stop the workflow before
+  anything is published, each naming what is wrong. The size ceiling is nearer
+  than it sounds: v0.6.0's section is 92,088 characters, 74% of it, because it
+  absorbed everything that had accumulated under `Unreleased`. A warning fires at
+  80% so the next one is not a surprise.
+- **The missing-version error lists the headings the file does have.** Without
+  that, a typo and an unwritten section produce the same message, and the reader
+  cannot tell which they have.
+
+### Fixed
+
+- **Two defects in the new script, both found by the mutation tier rather than by
+  review — which is the entire argument for having one.** Its first draft looped
+  with `while read … || [[ -n "$line" ]]` and `while [[ "$body" == *$'\n\n' ]]`.
+  Negating either condition produces a *genuine infinite loop* — `read` fails at
+  EOF with an empty line forever, and `${body%…}` strips nothing forever — so four
+  mutants scored `UNPROVEN`-by-timeout rather than `KILLED` and left the measured
+  set in silence. Every loop is now bounded by an array length. Separately, the
+  trailing-trim assertion compared against `$(…)`, which strips trailing newlines,
+  so it passed whether or not the trim had run and **survived** a comparison flip
+  that disabled the trim outright; it now reads the file. `changelog-section.sh`
+  is a falsify target: 49 mutants, 49 killed, 0 survivors, 0 unproven.
+- **The script did not source `bash-floor.sh`**, so it could run under a bash
+  older than the declared 5.1 floor while using `mapfile`, `printf -v` and array
+  slicing. Caught by `tests/test-bash-floor.sh`, which is exactly the guard that
+  exists for it.
+- **An apostrophe in an error message defeated the falsify derivation.**
+  `derive-targets.sh` tracks quote parity to decide what a script executes, and
+  `GitHub's` inside a double-quoted string read as an unterminated single-quoted
+  string — after which it stopped scanning and said so. It warned rather than
+  guessing, which is why this is a one-word fix and not a silent gap in the target
+  map.
+
 ## v0.6.0 — 2026-08-23
 
 This section covers everything since **v0.4.1**. `v0.5.0` was tagged without

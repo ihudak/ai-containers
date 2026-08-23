@@ -14,7 +14,24 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # The notes are the CHANGELOG's own section for this tag — the text a
+      # human wrote and a reviewer read — not GitHub's generated list of merged
+      # pull requests.
+      #
+      # `generate_release_notes: true` had two problems. It named every branch
+      # that landed and explained none of them; and it RACED with anyone who
+      # also ran `gh release create`, because both wrote the same body and
+      # neither waited. v0.5.0's release still carries the generated block
+      # twice, and v0.6.0 needed a hand edit to remove a duplicated "Full
+      # Changelog" line.
+      #
+      # THE TAG PUSH IS NOW THE ONLY AUTHOR. Do not also run `gh release
+      # create` — push the tag and let this publish. A tag whose version has no
+      # CHANGELOG section fails at this step, before anything is published.
+      - name: Extract release notes from CHANGELOG
+        run: bash ./changelog-section.sh "$GITHUB_REF_NAME" > "$RUNNER_TEMP/notes.md"
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@2bb465e97f322d3cb2a965294d483e0d26a67aa9  # v3.0.1
         with:
-          generate_release_notes: true
+          body_path: ${{ runner.temp }}/notes.md
