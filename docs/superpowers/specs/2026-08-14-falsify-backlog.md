@@ -5091,3 +5091,64 @@ checkouts, where `.git` is a FILE, and that test refuses to run without a real
 work tree — it failed deterministically and said so. It is not flaky. The
 investigation it prompted was not wasted: it found a genuinely vacuous isolation
 check (an assertion that could not fail) in the same file, fixed separately.
+
+---
+
+## F30/F32 — TWO RECURRENCES IN ONE HOUR, and the diagnostic could not reach the report — **OPEN, but the channel is fixed**
+
+2026-08-23. The entry said "needs a recurrence". It got two, forty minutes apart,
+both on `tests/portability.sh`, both pristine-oracle failures under the tier's
+own load.
+
+**One, in CI** (ai-containers `main`, run 32635611521, the falsify job):
+
+```
+falsify:   control output: FAIL: p_sha1 returned empty — comparisons using it would pass vacuously
+falsify:   control output: FAIL: p_md5 returned empty — comparisons using it would pass vacuously
+falsify:   control output: FAIL: p_stat_meta returned empty — comparisons using it would pass vacuously
+ERROR: 1 of 18 control run(s) FAILED
+```
+
+The corpus itself scored `TOTAL|9|264|262|2|0|0|0` — identical to a quiet
+in-container run. Only the control went red. A re-run of the same job passed, so
+the failure is load-dependent, not a regression from the commit under it.
+
+**Two, locally**, in the very next corpus run, immediately after a full
+`run-all.sh` had loaded the machine: the same oracle's BASELINE went red
+(`rc=0, signal=failline`), so the whole target was skipped —
+`SKIPPED|tests/portability.sh|test-portability.sh|13|baseline-not-green`,
+`UNATTEMPTED|1|13|264`, `rc=1`. The harness handled that correctly: the skip is
+named, the true denominator is printed, and the run fails. Nothing to fix there.
+
+**The one fact that survived, and it is a real clue.** In CI the loop
+`for h in p_stat_mode p_sha1 p_md5 p_stat_meta` reported **p_stat_mode passing
+and the other three failing** — and p_stat_mode is FIRST. So the fixture was
+readable at the first call and not for the three after it. That points at the
+file or the directory going away mid-loop rather than at any one tool failing,
+which is F32's "unguarded scaffold write" shape rather than a portability bug.
+
+### The diagnostic existed and could not be seen — FIXED
+
+`tests/test-portability.sh` has carried, since 2026-08-21, two `diag:` lines
+written for exactly this: is the file gone, or is the tool failing on a file
+that is right there? CI printed **three FAIL: lines and not one diag line**.
+
+The cause is a stream mismatch. `fail()` writes to **stdout**; the diags were
+written to **stderr**. The harness captures an oracle with `> "$out" 2>&1` and
+`fr_run_control` keeps a `FAIL:` line plus the indented lines **immediately
+following** it. stdout to a file is block-buffered and stderr is not, so the
+diagnostic is flushed out of order, stops being adjacent to the FAIL: it
+explains, and is dropped by the very mechanism meant to carry it.
+
+Fixed by putting the diags on stdout, guarded by an assertion on this file's own
+text — the property is invisible from inside a passing run, because the diag
+lines only appear when a helper fails and by then the reporter has already
+decided whether it could attach them. Demonstrated by putting one back on
+stderr.
+
+### And a process failure worth recording
+
+The CI logs for the first recurrence are **gone**, because the re-run was
+triggered before they were saved. `gh run rerun` replaces them. The evidence
+this entry had been waiting weeks for was destroyed by the command used to find
+out whether it was reproducible. **Capture the log before re-running anything.**

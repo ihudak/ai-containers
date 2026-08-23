@@ -217,11 +217,39 @@ for h in p_stat_mode p_sha1 p_md5 p_stat_meta; do
     # empty output, and p_stat_meta's error goes to stderr with stdout empty.
     # Both hide the cause. Two facts separate the candidates — did the file
     # vanish, or did the tool fail on a file that is right there?
+    # ON STDOUT, the same stream as fail(), and that is not a detail. The
+    # falsify harness captures an oracle with `> "$out" 2>&1` and then keeps a
+    # FAIL: line plus the indented lines IMMEDIATELY FOLLOWING it. stdout to a
+    # file is block-buffered and stderr is not, so a diagnostic written to
+    # stderr is flushed out of order and stops being adjacent to the FAIL: it
+    # explains — at which point the harness drops it.
+    #
+    # Measured: CI run 32635611521 (2026-08-23, ai-containers main) reported
+    # exactly three `FAIL: … returned empty` lines from this loop and NOT ONE
+    # diag line, so the second recurrence of F30/F32 arrived as unexplained as
+    # the first — with the explanation sitting in the same file, written for
+    # this exact purpose, on the wrong stream.
     printf '     diag: file=%s exists=%s size=%s\n' "$TMP/f" \
       "$([[ -e "$TMP/f" ]] && printf y || printf n)" \
-      "$(wc -c <"$TMP/f" 2>/dev/null | tr -d ' ' || printf '?')" >&2
-    printf '     diag: %s stderr: %s\n' "$h" "$( $h "$TMP/f" 2>&1 >/dev/null | head -2 | tr '\n' ' ' )" >&2
+      "$(wc -c <"$TMP/f" 2>/dev/null | tr -d ' ' || printf '?')"
+    printf '     diag: %s stderr: %s\n' "$h" "$( $h "$TMP/f" 2>&1 >/dev/null | head -2 | tr '\n' ' ' )"
   fi
 done
+
+# ── the diagnostics above must stay on stdout ────────────────────────────────
+# Asserted on this file's own text, because the property is invisible from
+# inside a passing run: the diag lines only appear when a helper fails, and by
+# then the harness has already decided whether it could attach them. A
+# diagnostic that explains a FAIL: has to travel on the same stream as the
+# FAIL:, or the reporter cannot pair them.
+# Anchored to an actual printf STATEMENT, so this check does not match the two
+# lines of itself that necessarily contain the pattern — the self-match that
+# caught it on the first draft.
+if grep -nE "^[[:space:]]*printf '     diag:.*>&2" "$0" >/dev/null 2>&1; then
+  fail "the diag lines write to stdout, so the harness can attach them to the failure they explain"
+  grep -nE "^[[:space:]]*printf '     diag:.*>&2" "$0" | sed 's/^/     /'
+else
+  pass "the diag lines write to stdout, so the harness can attach them to the failure they explain"
+fi
 
 printf '\n%d failure(s)\n' "$fails"; exit "$fails"
