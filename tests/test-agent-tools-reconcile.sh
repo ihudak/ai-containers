@@ -137,6 +137,43 @@ h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; run_case
   && pass "idempotent: self-updating tools not reinstalled" || fail "idempotent: self-updating tools not reinstalled"
 rm -rf "$h"
 
+# ── A FRESH CONTAINER over a WARM GROUP: the case the block above cannot see ──
+# The idempotency check above runs twice against the SAME home, so
+# ~/.local/bin/claude survives between the two runs and the presence check is
+# satisfied by a path that, in a real container, does not persist at all.
+#
+# Reality: ~/.local/share/claude is group-mounted and warm; ~/.local/bin lives
+# in the container's writable layer and is EMPTY on every start. Keying the
+# check on the launcher therefore re-ran `curl … install.sh | bash` on every
+# single start — a network dependency at container start even in restricted
+# mode, and a silent move of the whole group onto a new "stable" whenever
+# upstream published one. Observed on a real start (2026-08-23) before this
+# fixture existed to catch it.
+h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
+install -d "$h/.local/share/claude/versions/9.9.9" "$h/.local/state/claude"   # warm, mounted
+# and NO $h/.local/bin/claude — that is the whole point
+run_case "claude-code" "$h" >/dev/null
+if grep -q 'claude\.ai/install\.sh' "$h/calls.log"; then
+  fail "a fresh container over a warm group does not re-run the installer"
+else
+  pass "a fresh container over a warm group does not re-run the installer"
+fi
+# …and it still ends up usable: the launcher is rebuilt locally, pointing at the
+# version that persisted, without fetching anything.
+if [[ -L "$h/.local/bin/claude" && "$(readlink "$h/.local/bin/claude")" == "$h/.local/share/claude/versions/9.9.9" ]]; then
+  pass "the ephemeral launcher is rebuilt from the version that persisted"
+else
+  fail "the ephemeral launcher is rebuilt from the version that persisted (got: $(readlink "$h/.local/bin/claude" 2>/dev/null || echo none))"
+fi
+# Version ORDER matters: a plain lexicographic pick puts 2.1.99 above 2.1.241.
+install -d "$h/.local/share/claude/versions/9.9.100"
+rm -f "$h/.local/bin/claude"; : > "$h/calls.log"
+run_case "claude-code" "$h" >/dev/null
+[[ "$(readlink "$h/.local/bin/claude" 2>/dev/null)" == "$h/.local/share/claude/versions/9.9.100" ]] \
+  && pass "the newest version wins by VERSION order, not string order" \
+  || fail "the newest version wins by VERSION order, not string order (got: $(readlink "$h/.local/bin/claude" 2>/dev/null || echo none))"
+rm -rf "$h"
+
 # ── NOT idempotent, deliberately: codex and gemini are UPDATED every start ──
 # Neither can self-update in this environment — codex's own `update` shells out to a bare
 # `npm install -g` and dies EACCES 243, and gemini ships no updater at all — so the
