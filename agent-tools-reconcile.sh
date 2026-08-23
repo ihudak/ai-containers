@@ -83,8 +83,34 @@ update_npm() {    # $1=binary  $2=package
 # Install-if-missing, keyed on the native install dir: keeping it current is `claude
 # update`'s job, which — unlike codex and gemini — actually works.
 install_claude_native() {
-  if [[ -x "$HOME/.local/bin/claude" && -d "$HOME/.local/share/claude" ]]; then
-    log "claude already present (native)"; return 0
+  # THE PRESENCE CHECK MUST KEY ON WHAT PERSISTS. ~/.local/share/claude is
+  # group-mounted and survives the container; ~/.local/bin is NOT — it lives in
+  # the writable layer and is gone on every restart. Keying on the launcher made
+  # the conjunction false on every fresh start, so the reconcile re-ran
+  # `curl https://claude.ai/install.sh | bash` EVERY TIME: a network dependency
+  # at container start even in restricted mode, and a silent move of the whole
+  # group to a new "stable" whenever upstream publishes one. Observed on a real
+  # start, 2026-08-23: "installing Claude Code (native installer)…" with the
+  # version already sitting in the mounted versions dir.
+  #
+  # The versions directory decides, and the ephemeral launcher is re-created
+  # HERE rather than by re-running the installer. There is no other pointer to
+  # rebuild it from — ~/.local/state/claude holds only per-run locks — so the
+  # highest version present is the active one, which is what `claude update`
+  # converges to anyway.
+  local versions="$HOME/.local/share/claude/versions" latest="" _v
+  if [[ -d "$versions" ]]; then
+    # Glob + sort -V rather than parsing `ls`: 2.1.99 must not outrank 2.1.241.
+    # Assigned INSIDE the body: the read that hits EOF returns non-zero and
+    # clears its own variable, so a bare `while read latest; do :; done` leaves
+    # it empty — which sent this straight back to the reinstall branch.
+    while IFS= read -r _v; do latest="$_v"; done < <(cd "$versions" && printf '%s\n' * | sort -V)
+  fi
+  if [[ -n "$latest" && -x "$versions/$latest" ]]; then
+    mkdir -p "$HOME/.local/bin"
+    ln -sfn "$versions/$latest" "$HOME/.local/bin/claude"
+    log "claude already present (native, $latest)"
+    return 0
   fi
   log "installing Claude Code (native installer)…"
   # ~/.local/bin ON PATH FOR THE INSTALLER, which otherwise ends a clean install
