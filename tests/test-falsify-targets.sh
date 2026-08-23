@@ -566,4 +566,40 @@ active_rows="$(grep -cE '^[^#[:space:]]' "$CONF")"
   && pass "targets.conf has $active_rows uncommented row(s) for tests/falsify/run.sh to read" \
   || fail "targets.conf has no uncommented rows — the tier would mutate nothing"
 
+# ── no ORACLE may print the token a failure is detected by ───────────────────
+# run.sh decides a mutant was noticed with
+#
+#   grep -qE '(^|[[:space:]])FAIL:' "$out"
+#
+# deliberately loose, so an indented FAIL: from a nested runner still counts. The
+# cost of that looseness is that an oracle which merely MENTIONS the token in
+# passing output is read as having failed — and on the PRISTINE tree that means
+# "baseline not green", which skips the whole target. Thirteen mutants stopped
+# being measured on 2026-08-23 because an assertion in tests/test-portability.sh
+# read "…attach them to the FAIL: they explain". The run said so (SKIPPED,
+# UNATTEMPTED|1|13|264, exit 1) — but only if somebody noticed 251 was not 264.
+#
+# Checked for ORACLES only. tests/test-falsify-run.sh names the token in three
+# assertions and is entitled to: it is nobody's oracle, so it poisons nothing.
+oracle_poison=""
+while IFS='|' read -r _t _kind orc _rest; do
+  case "$_t" in ''|'#'*) continue ;; esac
+  [[ -n "$orc" ]] || continue
+  # `local` is invalid outside a function; this block runs at file scope.
+  saved_ifs="$IFS"; IFS=','
+  for o in $orc; do
+    IFS="$saved_ifs"
+    [[ -f "$REPO_DIR/tests/$o" ]] || continue
+    if grep -qE '(pass|fail|check|h_pass|h_fail|h_check) "[^"]*[[:space:]]FAIL:' "$REPO_DIR/tests/$o"; then
+      oracle_poison="${oracle_poison:+$oracle_poison }$o"
+    fi
+  done
+  IFS="$saved_ifs"
+done < "$CONF"
+if [[ -z "$oracle_poison" ]]; then
+  pass "no oracle prints a whitespace-prefixed FAIL: in its own assertion text"
+else
+  fail "no oracle prints a whitespace-prefixed FAIL: in its own assertion text — $oracle_poison"
+fi
+
 printf '\n%d failure(s)\n' "$fails"; exit "$fails"
