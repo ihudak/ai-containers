@@ -1,5 +1,7 @@
 # Agent-tier Tools → Runtime Group-Mounted Home; Retire `AGENTS_CACHE_BUST`
 
+**Status:** IMPLEMENTED — `agent-tools-reconcile.sh` and the group-mounted `~/.ai-tools` home ship. Claude Code has since moved from npm to the native installer (see `2026-08-22-agent-autoupdate-regression.md`); the runtime-home design this describes is otherwise as built.
+
 _Design spec — 2026-08-03_
 
 ## Goal

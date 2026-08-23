@@ -279,5 +279,44 @@ else
   fi
 fi
 
+# ── every spec says where it stands ──────────────────────────────────────────
+# A spec with no status is read as live work. F4 and F1 were reported as
+# remaining twice on 2026-08-22 for exactly that reason, hours apart, after a
+# pass that was supposed to have fixed it — their headings were true,
+# informative and carried nothing actionable.
+#
+# WHAT THIS CANNOT DO, said plainly so nobody mistakes it for more: it checks
+# that a status is PRESENT, never that it is TRUE. The auto-update regression
+# spec carried `**Status:** OPEN` for a full day after the work shipped and was
+# verified three times in a container — this check would have passed it happily.
+# Staleness is a review obligation; absence is the part a machine can hold.
+SPECS="$ENGINE_DIR/docs/superpowers/specs"
+if [[ ! -d "$SPECS" ]]; then
+  printf 'SKIP: no docs/superpowers/specs under %s — nothing to check\n' "${SPECS#"$ENGINE_DIR/"}"
+else
+  statusless=""; n_specs=0
+  while IFS= read -r sp; do
+    n_specs=$((n_specs + 1))
+    # First 15 lines: a status below the fold is one nobody reads either.
+    # A here-string, not `head | grep -q` — that pipeline is what
+    # tests/test-grep-q-pipelines.sh forbids, and it has now caught this file
+    # doing it three times in one day.
+    grep -qiE '^\*\*Status:\*\*' <<<"$(head -15 "$sp")" \
+      || statusless="${statusless}${statusless:+ }$(basename "$sp")"
+  done < <(find "$SPECS" -maxdepth 1 -name '*.md' -type f | LC_ALL=C sort)
+  # The count, for the same reason the backlog parser has one: a find that
+  # matches nothing would otherwise report a clean sweep.
+  if (( n_specs >= 10 )); then
+    pass "the spec scan found $n_specs documents to check"
+  else
+    fail "the spec scan found only $n_specs documents — it is not reading the directory"
+  fi
+  if [[ -z "$statusless" ]]; then
+    pass "every spec states its status in its first 15 lines"
+  else
+    fail "every spec states its status in its first 15 lines — missing: $statusless"
+  fi
+fi
+
 printf '\n%d failure(s)\n' "$fails"
 [[ "$fails" -eq 0 ]]

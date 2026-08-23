@@ -1,5 +1,7 @@
 # sandbox.local.env: document SANDBOX_MODE and always write the file
 
+**Status:** IMPLEMENTED — `SANDBOX_MODE` / `SANDBOX_WORKDIR` fall back through `sandbox.local.env`, and the docs describe it.
+
 ## Problem
 
 `project-init.sh` writes `SANDBOX_MODE=open` into `sandbox.env` (the portable,
