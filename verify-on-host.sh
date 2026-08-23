@@ -366,7 +366,20 @@ fl_keep=0
 # it always ran. Phase 4's IT_EXTRA_ARGS is the same idea for the same reason.
 fl_jobs="${FALSIFY_JOBS:-auto}"
 fl_timeout="${FALSIFY_TIMEOUT:-120}"
-sub "running the corpus (jobs=$fl_jobs, timeout=$fl_timeout) — a few minutes"
+# HOW LONG, honestly, and platform-aware — because the previous wording was
+# "a few minutes" and on macOS this phase takes about forty-five. A progress
+# line that understates by 20x is how somebody decides the run has hung and
+# kills it at minute ten, which costs them the whole phase and teaches them
+# not to run it again. Measured on one Apple Silicon machine, same 264-mutant
+# corpus, same hardware: ~76s inside the Linux dev container at --jobs 8,
+# ~45 min on macOS natively at --jobs 6. This tier is bound by process
+# creation, and macOS is far slower at it.
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  sub "running the corpus (jobs=$fl_jobs, timeout=$fl_timeout) — EXPECT ~45 MINUTES on macOS."
+  sub "  It is not hung: this tier forks constantly and macOS is slow at it. Leave it running."
+else
+  sub "running the corpus (jobs=$fl_jobs, timeout=$fl_timeout) — a few minutes"
+fi
 if bash "$TESTS_DIR/falsify/run.sh" --jobs "$fl_jobs" --timeout "$fl_timeout" > "$fl_run" 2>&1; then
   { grep -E '^falsify: --jobs auto ' "$fl_run" || true; } \
     | sed 's/^falsify: //' | while IFS= read -r l; do sub "$l"; done
