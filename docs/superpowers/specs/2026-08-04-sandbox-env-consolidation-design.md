@@ -1,5 +1,7 @@
 # `sandbox.env` Launcher-Config Consolidation
 
+**Status:** IMPLEMENTED — `sandbox.env` / `sandbox.local.env` and `load_env_defaults` ship in `sandbox-common.sh`.
+
 _Design spec — 2026-08-04_
 
 ## Goal

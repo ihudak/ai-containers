@@ -1,5 +1,7 @@
 # `falsify` — a Mutation Tier for the Hermetic Suite — Design
 
+**Status:** IMPLEMENTED — the tier ships: generator, runner, targets, survivor ledger, ratchet and ship gate. Its open findings live in `2026-08-14-falsify-backlog.md`, not here.
+
 **Increment 5.** Designed and approved in substance on 2026-08-11, then
 deferred behind increment 4 (`2026-08-11-execution-layers-and-portability-design.md`),
 which settles the bash floor this harness is written against and creates the

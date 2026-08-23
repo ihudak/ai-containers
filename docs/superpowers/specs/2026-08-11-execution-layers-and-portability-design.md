@@ -1,5 +1,7 @@
 # Execution Layers and Host Portability — Design
 
+**Status:** IMPLEMENTED — the three execution layers, `tests/portability.sh` and the layer-containment guard all ship.
+
 **Increment 4 of the runtime verification work.** Increment 5 (`falsify`, the
 mutation tier for hermetic tests) is designed separately in
 `2026-08-11-falsify-mutation-tier-design.md` and depends on this one.
