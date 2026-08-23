@@ -292,7 +292,7 @@ fi
 # Staleness is a review obligation; absence is the part a machine can hold.
 SPECS="$ENGINE_DIR/docs/superpowers/specs"
 if [[ ! -d "$SPECS" ]]; then
-  printf 'SKIP: no docs/superpowers/specs under %s — nothing to check\n' "${SPECS#"$ENGINE_DIR/"}"
+  printf 'SKIP: no spec directory at %s — nothing to check here\n' "${SPECS#"$ENGINE_DIR/"}"
 else
   statusless=""; n_specs=0
   while IFS= read -r sp; do
