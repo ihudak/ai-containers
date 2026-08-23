@@ -77,6 +77,28 @@ link_agent_tools() {
 # Create the sandbox user at startup with the host user's name, UID, and GID so
 # that files in bind-mounted volumes (/workspace and its sub-mounts) are accessible
 # without any chown. useradd -m creates the home directory with correct ownership.
+# useradd warns for EVERY macOS host user:
+#
+#   useradd warning: ivan's uid 502 outside of the UID_MIN 1000 and UID_MAX 60000 range.
+#
+# macOS starts human UIDs at 501; shadow-utils expects 1000+. Matching the host
+# UID is the ENTIRE POINT of this design — it is what makes bind-mounted files
+# writable without a chown — so that line describes the feature working, and it
+# is one of the first things a new user sees on every single start.
+#
+# Dropped BY PATTERN, not by silencing the command: every other line of stderr
+# is passed through and the exit status is preserved, because a useradd that
+# genuinely fails must still say so and still stop the start.
+useradd_matching_host_uid() {
+  local err rc=0
+  # useradd writes nothing to stdout, so capturing stderr alone loses nothing.
+  err="$(useradd "$@" 2>&1 >/dev/null)" || rc=$?
+  if [[ -n "$err" ]]; then
+    grep -v 'outside of the UID_MIN' <<<"$err" >&2 || true
+  fi
+  return "$rc"
+}
+
 setup_sandbox_user() {
   local uid="${SANDBOX_UID:-1000}"
   local gid="${SANDBOX_GID:-1000}"
@@ -111,7 +133,7 @@ setup_sandbox_user() {
     if getent passwd "$username" &>/dev/null; then
       username="sandbox_${uid}"
     fi
-    useradd -M -s /bin/bash -u "$uid" -g "$gid" -d "/home/$username" "$username"
+    useradd_matching_host_uid -M -s /bin/bash -u "$uid" -g "$gid" -d "/home/$username" "$username"
   fi
 
     # Ensure the home directory exists with skel defaults and correct ownership.

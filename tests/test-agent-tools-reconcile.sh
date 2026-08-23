@@ -41,6 +41,7 @@ EOF
   cat > "$bin/curl" <<EOF
 #!/usr/bin/env bash
 echo "curl \$*" >> "$home/calls.log"
+echo "curl-saw-PATH=\$PATH" >> "$home/calls.log"
 for a in "\$@"; do case "\$a" in *releases/latest) echo "https://github.com/vale-cli/vale/releases/tag/v3.0.0"; exit 0;; esac; done
 # Claude Code's NATIVE installer is fetched and piped to bash, so this stub must emit a
 # SCRIPT on stdout rather than write a file. What it emits mirrors what the real one does
@@ -88,6 +89,15 @@ c="$h/calls.log"
 # first would still pass if npm were reintroduced alongside, which is the configuration
 # that reinstates ~300 MB of dead weight and lets the npm copy shadow the native launcher.
 grep -q 'curl .*claude\.ai/install\.sh' "$c" && pass "installs claude-code natively" || fail "installs claude-code natively"
+# The installer is told the truth about PATH. It runs from the entrypoint via
+# runuser — non-interactive, non-login — so /etc/profile.d/ai-tools.sh has not
+# been sourced and ~/.local/bin is absent unless this script puts it there.
+# Without it a clean install ends with "Native installation exists but
+# ~/.local/bin is not in your PATH", which is false in every shell the user
+# actually gets, and is the first thing a new user sees.
+grep -q "curl-saw-PATH=.*$h/\.local/bin" "$c" \
+  && pass "the native installer sees ~/.local/bin on PATH, so it does not warn about it" \
+  || fail "the native installer sees ~/.local/bin on PATH, so it does not warn about it"
 ! grep -q 'npm install .*@anthropic-ai/claude-code' "$c" && pass "claude-code is NOT installed via npm" || fail "claude-code is NOT installed via npm"
 grep -q 'npm install -g --prefix .*@github/copilot' "$c"           && pass "installs copilot"     || fail "installs copilot"
 grep -q 'npm install -g --prefix .*@openai/codex' "$c"             && pass "installs codex"       || fail "installs codex"
