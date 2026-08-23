@@ -36,4 +36,10 @@ The short version: `project-init.sh` once per project, then `runme.sh` from the 
 
 ## For contributors
 
-`AGENTS.md` in the repository root is the working agreement for anyone — human or agent — changing this repository: the test suite, the mutation and falsify tiers, and the rules a change has to satisfy before it lands.
+| Guide | What it answers |
+|---|---|
+| [Contributing](contributing.md) | What must my change satisfy, which tests do I run while working, and which before the PR? |
+
+`AGENTS.md` in the repository root is the deeper reference behind that page: why each layer exists and what it is guarding.
+
+Two things worth knowing before you start: **CI has no macOS runner at all**, and it runs only a fast subset of the integration corpus on a PR — so a green PR check is necessary and not sufficient. [Contributing](contributing.md) says what to run instead.
