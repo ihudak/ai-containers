@@ -154,6 +154,64 @@ check "an unset label reads as absent, not as a mismatch" "" "$(warn_out "<no va
   ai_containers_provenance_warn img "$A" >/dev/null 2>&1 )
 check "the warning never fails the launch" "0" "$?"
 
+# ── the config digest: build-time keys only ──────────────────────────────────
+# sandbox.conf is not in the payload digest, and must not be: it mixes
+# build-time keys with runtime ones, and a warning that fires when `mode=`
+# changes — which rebuilds nothing — is a warning people learn to dismiss,
+# taking the true ones with it. So what is digested is what build.sh DERIVES
+# from the config: the --build-arg list, which contains every build-time key by
+# construction and no runtime key at all.
+#
+# Against the REAL engine, because the fixture's build.sh is a stub with no
+# build_args_from_config to call. Both directions, since only the pair is
+# evidence: one of them alone would pass against a digest that ignored the file
+# entirely, and the other against one that digested the whole thing.
+if [[ -f "$ENGINE_DIR/sandbox.conf" && -f "$ENGINE_DIR/build.sh" ]]; then
+  cfg_of() { ( export SANDBOX_CONF="$1"; ai_containers_config_digest "$ENGINE_DIR" ); }
+  base_cfg="$(cfg_of "$ENGINE_DIR/sandbox.conf")"
+  if [[ ! "$base_cfg" =~ ^[0-9a-f]{64}$ ]]; then
+    fail "the config digest is computable from the real engine (got '${base_cfg:0:20}')"
+  else
+    pass "the config digest is computable from the real engine"
+    # A BUILD-time key. `ruby=` decides whether the runtime toolchain and the
+    # rvm layer are in the image, so an image built before it changed is stale.
+    sed 's/^ruby=.*/ruby=3.3/' "$ENGINE_DIR/sandbox.conf" > "$TMP/ruby.conf"
+    grep -q '^ruby=' "$TMP/ruby.conf" || printf 'ruby=3.3\n' >> "$TMP/ruby.conf"
+    if [[ "$(cfg_of "$TMP/ruby.conf")" != "$base_cfg" ]]; then
+      pass "a build-time key (ruby=) moves the config digest"
+    else
+      fail "a build-time key (ruby=) moves the config digest"
+    fi
+    # A RUNTIME key. `mode=` picks the firewall the container starts under and
+    # rebuilds nothing, so it must leave the digest alone.
+    sed 's/^mode=.*/mode=open/' "$ENGINE_DIR/sandbox.conf" > "$TMP/mode.conf"
+    check "a runtime-only key (mode=) leaves the config digest alone" \
+      "$base_cfg" "$(cfg_of "$TMP/mode.conf")"
+  fi
+  reallabels="$(ai_containers_provenance_labels "$ENGINE_DIR" 2026-01-01T00:00:00Z)"
+  grep -q "ai-containers.config-digest=" <<<"$reallabels" \
+    && pass "the labels carry the config digest" || fail "the labels carry the config digest"
+fi
+
+# A config that has drifted while the FILES have not is its own message: "you
+# synced and did not rebuild" and "you changed a build-time key and did not
+# rebuild" send a reader to different places, though both end in ./build.sh.
+warn_two() {   # <payload label> <config label> → stderr of the warning
+  ( FAKE="$1 $2"
+    docker() { [[ "$1" == "image" ]] && printf '%s\n' "$FAKE"; }
+    { ai_containers_provenance_warn img "$A" 1>/dev/null; } 2>&1 )
+}
+out2="$(warn_two "$(ai_containers_payload_digest "$A")" "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef")"
+if [[ -z "$out2" ]]; then
+  # $A's stub build.sh yields no args, so the config digest is uncomputable
+  # there and the check is correctly skipped rather than guessed at.
+  pass "an asset dir with no usable build.sh skips the config check rather than guessing"
+else
+  grep -q 'sandbox.conf' <<<"$out2" \
+    && pass "a drifted config names sandbox.conf, not just the files" \
+    || fail "a drifted config names sandbox.conf, not just the files"
+fi
+
 # ── the wiring, by name ──────────────────────────────────────────────────────
 # The helpers above can be perfect and never called. These two assertions are
 # what tie them to the launcher and the builder.

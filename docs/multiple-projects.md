@@ -79,11 +79,29 @@ That is what you should expect to see immediately after a sync, and it clears
 on the next build. An image built before this existed carries no label and is
 never warned about, since an absent stamp is not evidence of drift.
 
-**What it does not cover.** `sandbox.conf` and `sandbox.env` are deliberately
-outside the digest: they mix build-time keys (`ruby=`, `db-clients=`) with
-runtime ones (`mode=`, `agents=`), so including them would demand a rebuild
-after changing `mode=`, which rebuilds nothing. Changing a build-time key still
-needs a rebuild, and nothing here will remind you.
+**`sandbox.conf` is covered too, but not by digesting the file.** It mixes
+build-time keys (`ruby=`, `db-clients=`) with runtime ones (`mode=`, `agents=`),
+and digesting it whole would demand a rebuild after changing `mode=`, which
+rebuilds nothing — a warning that fires when nothing is wrong is one you learn
+to dismiss, and it takes the true ones with it.
+
+So a second label, `ai-containers.config-digest`, records what `build.sh`
+*derives* from the config: the `--build-arg` list, which contains every
+build-time key by construction and no runtime key at all. Change `ruby=` and the
+launcher says so; switch `mode=` between `restricted` and `open` and it stays
+quiet. A build-time key added to the tool in future is covered automatically,
+because it becomes a build arg with no list to update.
+
+The two are reported separately, because they mean different things:
+
+```
+WARNING: this image was NOT built from the build-time settings in sandbox.conf in /path/.ai-containers.
+         settings: built from 881d7e28e230, sandbox.conf now asks for 8763665c2041
+         Rebuild before trusting it:  ./build.sh    (or ./runme.sh, which builds first)
+```
+
+**What it still does not cover:** `sandbox.env` and `sandbox.local.env`, which
+are runtime-only, and anything that changes outside this directory.
 
 ## sandbox.conf schema versioning
 
