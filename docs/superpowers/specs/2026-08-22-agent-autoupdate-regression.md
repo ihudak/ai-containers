@@ -1,6 +1,21 @@
 # Agent self-update is a REGRESSION, not a missing feature
 
-**Status:** OPEN. Bugs first. Recorded 2026-08-22, after a user hit it as an
+**Status:** **CLOSED for Claude Code, 2026-08-23** — shipped, and verified in a
+real container three times over (native install present, `nvm use` working
+alongside it, the group-mounted install reused on restart rather than
+re-downloaded). **Copilot was never affected**; it self-updates and was
+deliberately left alone. **Codex and Gemini remain unable to self-update** — the
+reconcile updates them on every container start instead, which is the working
+arrangement and not a defect, and the Open question below is the only part of
+this entry still live.
+
+This status line said OPEN for a day after the work landed. That is the same
+bookkeeping failure the falsify backlog's headings had, which cost real work
+three times — see the note at the top of
+`2026-08-14-falsify-backlog.md`. A status nobody can see is a status nobody acts
+on, and one that is wrong is worse.
+
+Originally recorded 2026-08-22, after a user hit it as an
 unexplained error in a running container.
 
 **The one-line version.** The machinery for refreshing the agent layer without a
