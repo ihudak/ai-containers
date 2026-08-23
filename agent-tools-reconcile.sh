@@ -87,6 +87,18 @@ install_claude_native() {
     log "claude already present (native)"; return 0
   fi
   log "installing Claude Code (native installer)…"
+  # ~/.local/bin ON PATH FOR THE INSTALLER, which otherwise ends a clean install
+  # with a warning that is FALSE by the time anybody reads it:
+  #
+  #   ● Native installation exists but ~/.local/bin is not in your PATH.
+  #
+  # It is not on PATH *here* — this script runs from the entrypoint via runuser,
+  # a non-interactive non-login shell, so /etc/profile.d/ai-tools.sh has not been
+  # sourced. It IS on PATH in every shell the user ever gets. The installer is
+  # telling the truth about the wrong shell, and the first thing a new user sees
+  # is their tooling apparently misconfigured. Telling it the truth about the
+  # shell that matters costs one export.
+  export PATH="$HOME/.local/bin:$PATH"
   curl -fsSL https://claude.ai/install.sh | bash \
     || log "FAILED: native Claude Code install (skipped)"
 }
