@@ -55,8 +55,8 @@ the ones you will run constantly.
 | --- | --- | --- | --- |
 | Hermetic suite | `bash tests/run-all.sh` | no | a few minutes |
 | Lint | `bash tests/bash-dialect-lint.sh`, `shellcheck` | no | seconds |
-| Falsify mutation tier | `bash tests/falsify/run.sh --jobs auto` | no | see the timing note |
-| Integration corpus | `bash tests/integration/run.sh` | **yes** | tens of minutes |
+| Falsify mutation tier | `bash tests/falsify/run.sh --jobs auto` | no | ~76s in the container, **~45 min on macOS** |
+| Integration corpus | `bash tests/integration/run.sh` | **yes** | tens of minutes; individual cases run 80–100s |
 
 The hermetic suite takes a substring filter and a verbose flag:
 
@@ -92,7 +92,7 @@ abort. The script exits non-zero if any selected phase failed, and prints a
 | **0** | environment banner — versions, Colima state, disk | no | always; it is free and it is what you paste into a bug report |
 | **5** | the hermetic suite **and** the same suite under the declared bash floor, plus the `sandbox.conf` schema gate | no | **after every change.** This is the one you run constantly |
 | **7** | lint — `bash -n`, the dialect floor, shellcheck | no | after any shell edit |
-| **6** | the falsify mutation tier and the survivor-ledger ratchet | no | when you touch a falsify target or one of its oracles |
+| **6** | the falsify mutation tier and the survivor-ledger ratchet | no | when you touch a falsify target or one of its oracles. **~45 min on macOS** — see below |
 | **4** | the runtime integration corpus | **yes** | when you touch the launcher, the entrypoint, mounts, groups, allowlists or the Dockerfile |
 
 Select phases with `PHASES`:
@@ -114,6 +114,13 @@ are editing the launcher or the image.
 
 **Before you open the PR:** the whole thing, `bash ./verify-on-host.sh` with no
 `PHASES`, on a host with Docker. That is the run that covers what CI will not.
+
+> **It takes a while, and it has not hung.** On macOS budget **an hour or more**
+> for a full run — Phase 6 alone is around 45 minutes there, and Phase 4 builds
+> and starts real containers. Phase 6 says so on screen before it starts. The
+> tier forks constantly and macOS is slow at that; a quiet terminal is the
+> normal state, not a stall. Start it and go and do something else. Killing it
+> part-way costs you the whole phase, and the phases do not resume.
 
 ## Linux green does not mean macOS green
 
@@ -145,10 +152,14 @@ Measured on one Apple Silicon machine, the same 264-mutant corpus:
 | inside the Linux dev container (Colima), `--jobs auto` → 8 | **~76 seconds** |
 | on macOS natively, `--jobs auto` → 6 | **~45 minutes** |
 
-Same physical hardware. The tier is bound by process creation, and macOS is
-dramatically slower at it. So: **run the non-Docker layers inside the container**
-where they are fast, and use the host only for what genuinely needs it — Phase 4,
-and a confirming run of the platform-sensitive layers.
+Same physical hardware — 35x. The tier is bound by process creation, and macOS
+is dramatically slower at it. Two things follow:
+
+- **Run the non-Docker layers inside the container** where they are fast, and
+  use the host only for what genuinely needs it: Phase 4, and a confirming run
+  of whatever is platform-sensitive.
+- **When you do run Phase 6 on the host, expect the wait.** Forty-five minutes
+  of near-silence is what a healthy run looks like there. It is not hung.
 
 ## Reading a falsify result
 
