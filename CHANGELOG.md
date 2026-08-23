@@ -4,7 +4,157 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## Unreleased
+## v0.6.0 — 2026-08-23
+
+This section covers everything since **v0.4.1**. `v0.5.0` was tagged without
+moving the then-`Unreleased` entries under a version heading, so a handful of
+the items below shipped in that tag; they are left where they are rather than
+split out retroactively on a guess about which was which.
+
+### The falsify mutation tier — a test of the tests
+
+`tests/falsify/` damages the code on purpose and asks whether anything notices.
+It generates mutants of nine targets, runs each target's declared oracle set,
+and scores every mutant **killed**, **survived**, or **unproven**. It runs on
+every CI run and as Phase 6 of `verify-on-host.sh`: **264 mutants, 262 killed,
+2 survivors, 0 unproven**, in ~76 seconds inside the container.
+
+- **Every survivor is owed a classified ledger entry.** `tests/falsify/survivors.txt`
+  distinguishes `GAP:` (no test kills it today), `EQUIVALENT:` (no test *could*),
+  and `ENV-DEPENDENT:` (the verdict moves with the machine and neither reading is
+  wrong) — different claims, and conflating them is how a ledger stops protecting
+  anything. `check-ledger.sh` is the ratchet: an unclassified survivor, an entry
+  for a mutant that no longer exists, and an entry for a mutant that is now killed
+  each fail the gate. **There are two entries today and neither is a `GAP`.**
+- **`UNPROVEN` is not `KILLED`, and it has three channels.** The oracle timed out,
+  it printed `SCAFFOLD-FAILED:` (it could not set *itself* up), or it was killed by
+  a signal — the OOM killer's signature on a memory-capped host. All three used to
+  read as `KILLED`, which removes a survivor the ledger was owed and grows the
+  coverage claim without growing the coverage.
+- **A kill is only trustworthy if the oracle was green under the same load.**
+  Control runs execute the *unmutated* code alongside the mutants; a failed control
+  means the kill count cannot be believed, and the run now says *what* went red
+  rather than only that something did.
+- **An oracle must be observed executing its target.** The gate that enforces this
+  found oracles that never ran the file they were named for — a mutant they could
+  not possibly have killed was scoring as killed. Making a target's oracle a *set*
+  rather than a single test turned eight real kills that had been reading as
+  survivors back into kills.
+- **Most of what the tier found were defects in the suite's own ability to fail**,
+  which is what it exists for: an unchecked `mktemp -d` scored as a kill, four
+  oracles that hung, kills arriving with no assertion, and a cluster of guards that
+  could not fail at all.
+- **The clock had to be fixed before the results meant anything.** Two timers
+  measured the machine's load rather than the code under test, the watchdog paid
+  three forks a second to read the clock, and `--jobs auto` counted a Mac's twelve
+  efficiency cores as equals — the same corpus takes ~76s in the container and
+  ~45 minutes natively on macOS, so a worker budget that over-reports costs real
+  time. `--jobs auto` now reads the cgroup CPU quota and the performance-core count.
+
+### Agent CLIs can update themselves again
+
+Moving the agent tools to a runtime `~/.ai-tools` home traded the old rebuild
+machinery for "each tool's own updater takes over". Three days later an unrelated
+fix removed the npm prefix those updaters depended on. Neither half was in place
+for the sixteen days between `bc2e551` and a user hitting it, and the documentation
+kept promising the updater worked throughout.
+
+- **Claude Code installs natively** into a group-mounted `~/.local/share/claude`,
+  involving npm at no point — so `claude update` works and nvm's `nvm_die_on_prefix`
+  never fires, keeping the `node=22,20` multi-version workflow intact. Verified
+  end-to-end in a **restricted-mode** container: the install, the self-update, and
+  `nvm use` afterwards.
+- **Codex and Gemini have no self-updater at all**, so the reconcile updates them on
+  every container start (~7s with a warm npm cache). **Copilot was never affected.**
+  Each row of that table was established by running the tool in a container rather
+  than reasoned from its install method — see `AGENTS.md`.
+- **The install is no longer redone on every start.** The presence check keyed on
+  `~/.local/bin/claude`, a launcher that dies with the container, instead of the
+  group-mounted version tree that persists — so every container start re-ran
+  `curl … | bash`.
+
+### An image records which files built it, and the launcher checks
+
+`./build.sh` stamps the image with a **payload digest** (the engine files that went
+into it), a **config digest** (only the `sandbox.conf` keys that are build-time
+inputs), the build time, and the source commit. `sandbox.sh` compares both on every
+launch and names *which* drifted, because "you synced and did not rebuild" and "you
+changed a build-time key and did not rebuild" send you to different places — even
+though both end in `./build.sh`. The config digest deliberately ignores runtime-only
+keys, so flipping a mode does not cry rebuild. An image built before this existed
+carries no label and stays silent: absence is not evidence of drift.
+
+### Documentation
+
+- **The 1133-line README is now eleven task-oriented guides** under `docs/` —
+  overview, getting started, configuration, groups, repos and mounts, security,
+  agent tools, multiple projects, troubleshooting, resources, contributing — plus
+  nine per-component pages under `docs/components/`. The root README is 86 lines
+  and `docs/README.md` is the map.
+- **A contributing page** (`docs/contributing.md`), because a green PR is not a green
+  repository: it states the rules, what CI structurally cannot check (there is no
+  macOS runner in any workflow), which `verify-on-host.sh` phases to run while you
+  work versus before you open a PR, how to read a falsify result, and — measured —
+  how long each takes, so nobody kills a 45-minute phase thinking it has hung.
+- **Status is gated, not remembered.** Every spec and every backlog heading must say
+  where it stands, and a check enforces it. A status nobody can see is a status
+  nobody acts on, and one that is wrong is worse — that bookkeeping failure cost
+  real work three times.
+- Skip messages now say plainly when a check had nothing to check, rather than
+  passing silently and reading as coverage.
+
+### CI
+
+- **Every job is pinned to `ubuntu-24.04`, never `ubuntu-latest`.** An unpinned
+  runner is an unpinned toolchain underneath a blocking merge gate: what passes
+  could change with nobody having edited this repo. Not hypothetical — `cd ""` is a
+  silent no-op on bash 5.1 and 5.2 and an **error** on 5.3, so a label rolled onto a
+  bash-5.3 image changes what the falsify tier reports. A test enforces that all
+  pinned jobs name the *same* image, so "CI passed" keeps meaning one toolchain.
+- **The lint job's `apt-get` is bounded and retried** (three attempts, five minutes
+  each). It is the only network operation in the gate, and a mirror stall once left
+  it running for 72 minutes against a normal 40 seconds. Both layers now report the
+  shellcheck version they ran rather than pinning a number that can drift from the
+  image.
+
+### Added
+
+- **`c-toolchain=ON`** keeps a C compiler in the finished image (`build-essential`
+  plus the headers `ruby`/`db-clients` already pull in). Turn it on when something
+  compiles *inside* the container — `go test -race`, cgo, a source-only wheel,
+  `node-gyp`. Before this key there was no way to *ask* for a compiler: one arrived
+  only as a side effect of an unrelated language runtime.
+- **The runtime integration corpus is now 35 cases** with 35 known-bad mutations, one
+  per case in every covered tier, so a new case with no mutation fails at review time.
+- **`repo.sh` and the group isolation boundary are asserted**, on the volumes they
+  destroy rather than on their exit codes — `rm`, `reset`, `gc`, `add`, `sync`,
+  `reindex`.
+- **The per-mode output mounts are now asserted** rather than assumed — restricted
+  bind-mounts `.agent-blocked`, discovery bind-mounts `.agent-discovery` and arms the
+  capture flag, open mounts neither. And the capability drop in **open** mode is
+  checked by a case that actually launches open mode: the case named for that job had
+  been launching discovery instead, so nothing verified it.
+
+### Fixed
+
+- **Two start-up warnings that were not true**, printed on every container start.
+- **A lint that scanned nothing reported a clean bill of health.** The local lint also
+  could not see a script you had just written — `git ls-files` skips an untracked
+  file — so a new script was linted by CI and never by its author.
+- **Phase 5's schema gate compared a commit to itself and reported OK**, and Phase 7
+  linted only the engine directory rather than the whole repository.
+- **`it_wait` bounded poll count, not wall clock**, so its timeout meant nothing on a
+  loaded machine; and three 900-second waits polled a condition that had already been
+  decided.
+- **`api_get` returned a failed transfer's partial body** as if it were a response.
+- **The isolation check stopped checking when `git` could not answer**, reporting an
+  environment failure as repository contamination.
+- **A fix verified on Linux had been red on macOS from the moment it merged**, because
+  the assertion read the host's topology instead of fixing it. Assertions that touch
+  the machine now stub it.
+- **A host pointer no longer fights a mount that is already there**, and
+  `project-init.sh` takes no arguments — the README had claimed otherwise since it
+  was written.
 
 ### Undiscardable failure signalling in the stub-repo library
 
