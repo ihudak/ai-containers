@@ -30,7 +30,7 @@ and what it is guarding. This page is the practical one.
 
 | Workflow | Trigger | What runs | Runner |
 | --- | --- | --- | --- |
-| `tests.yml` → `hermetic-checks.yml` | every push and PR | the hermetic suite, the same suite again under the declared bash floor, the falsify mutation tier, and lint | `ubuntu-24.04` |
+| `tests.yml` → `hermetic-checks.yml` | every push and PR | the hermetic suite, the same suite again under the declared bash floor, the same suite a third time with `TMPDIR` pointed at a symlink, the falsify mutation tier, and lint | `ubuntu-24.04` |
 | `integration.yml` | every push and PR | the integration corpus, but only `--tags fast --exclude needs-external,needs-dns` | `ubuntu-24.04` |
 | `nightly.yml` | 03:17 daily | the whole integration corpus, allowlist health, and the `packages-agents` / `packages-native` image tiers | `ubuntu-24.04` |
 
@@ -42,6 +42,16 @@ checks:
 | --- | --- | --- |
 | `release.yml` | a pushed tag | publishes the release, with the body taken from this CHANGELOG's matching section |
 | `update-nvm-version.yml` | Mondays 08:00 UTC, or on demand | reads the latest `nvm-sh/nvm` release and, when it differs, opens a PR updating `nvm-version` in `sandbox.conf` and `ARG NVM_VERSION` in the `Dockerfile` |
+
+> **Why the suite runs three times.** Once ordinarily; once inside `ubuntu:22.04`
+> to exercise the declared bash floor; and once with `TMPDIR` pointed at a
+> **symlink**. That third run is a stand-in for macOS, where `/var` is a symlink
+> to `/private/var` — so `mktemp -d` hands back `/var/folders/…` while anything
+> canonicalising reports `/private/var/folders/…`, and a test comparing one
+> against the other passes in CI and fails on every Mac. It does **not** replace
+> running on a real Mac: it catches the path-resolution class only, and the
+> GNU-vs-BSD class (`realpath -m --relative-to`, which BSD lacks) is invisible
+> here.
 
 **Every job runs on `ubuntu-24.04`. There is no macOS runner in any workflow.**
 So the three things CI structurally cannot tell you are:
