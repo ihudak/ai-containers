@@ -10,9 +10,12 @@
 # scrolled away. All three are already knowable from where this file sits.
 # IMAGE_NAME resolves through sandbox-common.sh exactly as it does for
 # build.sh/sandbox.sh (sandbox.local.env, then sandbox.env, with inline env
-# still winning), and this script ships beside sandbox.sh — which is the
-# directory the generated runme.sh cd's into before launching, i.e. the launch
-# directory itself. So the normal invocation carries no arguments at all:
+# still winning), and the capture is looked for in the launch directory — which
+# in a CONSUMER PROJECT is the directory this script ships in, because that is
+# where the generated runme.sh cd's to before launching. In the BASE REPO it is
+# not: the engine sits at the repository root while the container is launched
+# from the synced .ai-containers/ working copy, so that directory is searched
+# too. Either way the normal invocation carries no arguments at all:
 #
 #   ./extract-discovery.sh
 #
@@ -51,8 +54,9 @@ Usage:
 Turns a discovery-mode pcap into DNS and TLS-SNI hostname lists, then reports
 which of those hostnames this image's allowlist does not already cover.
 
-With no capture-dir, looks for .agent-discovery/ in the current directory, then
-beside this script.
+With no capture-dir, looks for .agent-discovery/ in the current directory, in
+./.ai-containers/, then in those same two places beside this script. The
+argument may be the capture directory or the launch directory holding it.
 
 Options:
   --clean        after a successful extract, delete the raw capture
@@ -150,18 +154,56 @@ done
 
 # ── Locate the capture directory ──────────────────────────────────────────────
 
+# The places a capture can be, in order. `.ai-containers/` is in the list
+# because "this script ships beside sandbox.sh, which IS the launch directory"
+# holds for a consumer project and NOT for the base repo: there the engine sits
+# at the repository root while the container is launched from the synced
+# .ai-containers/ working copy, so the capture lands one level down from both
+# $PWD and this script. Deduplicated, because in that same repo those two are
+# the same directory and an error listing one path twice reads as a bug in the
+# error message rather than as the answer to a question.
+candidates=()
+add_candidate() {
+  local c
+  for c in ${candidates[@]+"${candidates[@]}"}; do [[ "$c" == "$1" ]] && return 0; done
+  candidates+=("$1")
+}
+add_candidate "$PWD/.agent-discovery"
+add_candidate "$PWD/.ai-containers/.agent-discovery"
+add_candidate "${_here}/.agent-discovery"
+add_candidate "${_here}/.ai-containers/.agent-discovery"
+# One level above the script, for the layout the mgd port uses: engine in
+# base/, working copy at the repository root, so the launch directory is the
+# script's PARENT's .ai-containers rather than its own. This repo already
+# tolerates that split everywhere else it matters (tests resolve ENGINE_DIR as
+# "$REPO_DIR" or "$REPO_DIR/base"; verify-on-host.sh does the same for tests/),
+# and without it the fix above would land in mgd broken in precisely the way it
+# was broken here.
+add_candidate "$(cd "${_here}/.." 2>/dev/null && pwd)/.ai-containers/.agent-discovery"
+
 capture_dir=""
 if [[ -n "$capture_arg" ]]; then
-  [[ -d "$capture_arg" ]] || die "no such capture directory: $capture_arg"
-  capture_dir="$(cd "$capture_arg" && pwd)"
+  [[ -d "$capture_arg" ]] || die "no such directory: $capture_arg"
+  # A LAUNCH directory is accepted as readily as a capture directory: passing
+  # `.ai-containers/` is the natural thing to reach for, and answering "no pcap
+  # in there" is a worse reply than looking one level down for the thing that
+  # obviously is in there.
+  if [[ -d "$capture_arg/.agent-discovery" ]]; then
+    capture_dir="$(cd "$capture_arg/.agent-discovery" && pwd)"
+  else
+    capture_dir="$(cd "$capture_arg" && pwd)"
+  fi
 else
-  for cand in "$PWD/.agent-discovery" "${_here}/.agent-discovery"; do
+  for cand in "${candidates[@]}"; do
     if [[ -d "$cand" ]]; then capture_dir="$(cd "$cand" && pwd)"; break; fi
   done
-  [[ -n "$capture_dir" ]] || die "no .agent-discovery/ found. Looked in:
-         $PWD/.agent-discovery
-         ${_here}/.agent-discovery
-       Run ./sandbox.sh discovery first, or pass the directory explicitly."
+  if [[ -z "$capture_dir" ]]; then
+    printf 'ERROR: no .agent-discovery/ found. Looked in:\n' >&2
+    printf '         %s\n' "${candidates[@]}" >&2
+    printf '       Run ./sandbox.sh discovery first, or pass the launch\n' >&2
+    printf '       directory (or the capture directory) explicitly.\n' >&2
+    exit 1
+  fi
 fi
 
 pcap="$capture_dir/agent-traffic.pcap"
