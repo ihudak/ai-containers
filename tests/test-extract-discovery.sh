@@ -233,6 +233,107 @@ else
 $OUT"
 fi
 
+# ── the base repo's shape, which the first design got wrong ──────────────────
+#
+# "This script ships beside sandbox.sh, which IS the launch directory" holds for
+# a consumer project and NOT for the base repo, where the engine sits at the
+# repository root while the container is launched from the synced
+# .ai-containers/ working copy. The capture then lands one level down from both
+# $PWD and the script, and the original two candidates missed it entirely —
+# reported from a real macOS host against a real capture.
+T="$(fresh)"
+mkdir -p "$T/engine/.ai-containers/.agent-discovery"
+cp "$T/launch/.agent-discovery/agent-traffic.pcap" "$T/engine/.ai-containers/.agent-discovery/"
+mkdir -p "$T/elsewhere"
+run_in "$T" "$T/engine"
+if grep -qF "capture: $T/engine/.ai-containers/.agent-discovery" <<<"$OUT"; then
+  pass "a capture inside .ai-containers/ is found from the base repo's root"
+else
+  fail "a capture inside .ai-containers/ is found from the base repo's root
+$OUT"
+fi
+
+# Standing in a PROJECT root whose capture is under its own .ai-containers/,
+# with the script somewhere else entirely. This is what distinguishes the
+# $PWD/.ai-containers candidate from the one beside the script: in the base repo
+# above those two are the same directory, so either alone would find the capture
+# and dropping one would go unnoticed.
+mkdir -p "$T/proj/.ai-containers/.agent-discovery"
+cp "$T/engine/.ai-containers/.agent-discovery/agent-traffic.pcap" "$T/proj/.ai-containers/.agent-discovery/"
+rm -rf "$T/engine/.ai-containers"
+run_in "$T" "$T/proj"
+if grep -qF "capture: $T/proj/.ai-containers/.agent-discovery" <<<"$OUT"; then
+  pass "a capture under \$PWD/.ai-containers is found with the script elsewhere"
+else
+  fail "a capture under \$PWD/.ai-containers is found with the script elsewhere
+$OUT"
+fi
+
+# And the mirror: nothing under $PWD, the capture beside the SCRIPT instead.
+T="$(fresh)"
+mkdir -p "$T/engine/.ai-containers/.agent-discovery" "$T/elsewhere"
+cp "$T/launch/.agent-discovery/agent-traffic.pcap" "$T/engine/.ai-containers/.agent-discovery/"
+rm -rf "$T/launch/.agent-discovery"
+run_in "$T" "$T/elsewhere"
+if grep -qF "capture: $T/engine/.ai-containers/.agent-discovery" <<<"$OUT"; then
+  pass "… and the .ai-containers beside the script is found from anywhere else"
+else
+  fail "… and from anywhere else, via the .ai-containers beside the script
+$OUT"
+fi
+
+# The mgd port's layout: engine in base/, working copy at the repository root,
+# so the launch directory is the script's PARENT's .ai-containers rather than
+# its own. Found while porting the fix above — without that candidate the fix
+# would have landed there broken in exactly the way it was broken here.
+T="$(fresh)"
+mkdir -p "$T/engine/base" "$T/engine/.ai-containers/.agent-discovery"
+for f in extract-discovery.sh sandbox-common.sh bash-floor.sh tools-lib.sh; do
+  cp "$T/engine/$f" "$T/engine/base/$f"
+done
+cp -R "$T/engine/tools.d" "$T/engine/base/tools.d" 2>/dev/null || true
+printf 'IMAGE_NAME=test-image\n' > "$T/engine/base/sandbox.env"
+cp "$T/launch/.agent-discovery/agent-traffic.pcap" "$T/engine/.ai-containers/.agent-discovery/"
+OUT="$(
+  cd "$T/engine/base" || exit 90
+  unset IMAGE_NAME
+  export STUB_DIR="$T" STUB_IMAGE_MISSING=0 STUB_EXTRACT_FAIL=0 PATH="$T/bin:$PATH"
+  bash "$T/engine/base/extract-discovery.sh" 2>&1 < /dev/null
+)"; RC=$?
+if grep -qF "capture: $T/engine/.ai-containers/.agent-discovery" <<<"$OUT"; then
+  pass "a base/ engine finds the working copy one level up (the mgd layout)"
+else
+  fail "a base/ engine finds the working copy one level up (the mgd layout) (rc=$RC)
+$OUT"
+fi
+
+# In that same repo $PWD and the script's directory ARE the same place, so the
+# candidate list must not report one path twice: an error that lists the same
+# directory on two lines reads as a bug in the error message, not as an answer.
+T="$(fresh)"
+rm -rf "$T/launch/.agent-discovery"
+run_in "$T" "$T/engine"
+listed="$(grep -c '\.agent-discovery$' <<<"$OUT")"
+unique="$(grep '\.agent-discovery$' <<<"$OUT" | sort -u | wc -l | tr -d ' ')"
+if [[ "$RC" -ne 0 ]] && [[ "$listed" -eq "$unique" ]] && [[ "$listed" -gt 0 ]]; then
+  pass "the paths it tried are listed once each ($listed unique)"
+else
+  fail "the paths it tried are listed once each (listed=$listed unique=$unique)
+$OUT"
+fi
+
+# A LAUNCH directory is as acceptable an argument as a capture directory —
+# passing `.ai-containers/` is the natural thing to reach for.
+T="$(fresh)"
+mkdir -p "$T/elsewhere2"
+run_in "$T" "$T/elsewhere2" "$T/launch"
+if [[ "$RC" -eq 0 ]] && grep -qF "capture: $T/launch/.agent-discovery" <<<"$OUT"; then
+  pass "a launch directory given as the argument resolves to its capture dir"
+else
+  fail "a launch directory given as the argument resolves to its capture dir (rc=$RC)
+$OUT"
+fi
+
 # An explicit directory argument wins over both.
 T="$(fresh)"
 run_in "$T" "$T/elsewhere2" 2>/dev/null

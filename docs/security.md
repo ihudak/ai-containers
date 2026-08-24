@@ -147,6 +147,8 @@ From that directory:
 
 It resolves the image name exactly as `build.sh` and `sandbox.sh` do (`sandbox.local.env`, then `sandbox.env`, with an inline `IMAGE_NAME` still winning), finds the capture directory, and reports three things:
 
+> **Where it looks:** `.agent-discovery/` in the current directory, in `./.ai-containers/`, then in those same two places beside the script. The `.ai-containers/` entries matter in **this** repository, where the engine sits at the repository root while the container is launched from the synced `.ai-containers/` working copy — so the capture is one level down from both. You can also pass the launch directory, or the capture directory, explicitly as an argument.
+
 - **DNS queries** — hostnames the container attempted to resolve, written to `agent-dns.txt`.
 - **TLS SNI hostnames** — HTTPS endpoints presented during TLS handshakes, written to `agent-sni.txt`.
 - **What this image does not already cover** — the subset of those hostnames restricted mode would block. That verdict is read out of the image's own baked allowlists rather than re-derived from the fragments, and it applies the same two rules the runtime daemon applies: exact, full-line match against `allowlist-domains.txt`, and leading-`*`-stripped suffix match against `allowlist-proxy-domains.txt`. So `sub.example.com` counts as covered by `*.example.com` and the bare `example.com` does not — which is what `capture-blocked-traffic.sh` does at runtime, and a report that disagreed with the daemon would not be worth reading.
