@@ -218,9 +218,39 @@ inspect_git() {   # $1 = volume  → the helper's records on stdout
 # is handed the branch NAME the prompt displayed so that what was approved is
 # what happens.
 reset_git() {   # $1 = volume  $2 = primary branch
-  local vol="$1" primary="$2"
+  local vol="$1" primary="$2" out line kind rest on="" at=""
   printf 'Resetting volume "%s" to a clean checkout on "%s" ...\n' "$vol" "$primary"
-  git_helper_run "$vol" reset /dst "$primary" "${host_uid}:${host_gid}"
+
+  # The helper speaks records (DELETED|x, ON|y, AT|z, …) because a test needs to
+  # read them. A person does not: unrendered they arrive as `DELETED|throwaway`,
+  # `AT|3500160`, which reads like debug output leaking through. Captured and
+  # translated here, so the protocol stays machine-readable and the terminal
+  # stays prose. stderr is deliberately NOT captured — the helper's `die`
+  # messages should reach the user unaltered and immediately.
+  if ! out="$(git_helper_run "$vol" reset /dst "$primary" "${host_uid}:${host_gid}")"; then
+    printf '  ERROR: the git reset failed inside the seed container.\n' >&2
+    return 1
+  fi
+
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    kind="${line%%|*}"; rest="${line#*|}"
+    case "$kind" in
+      DELETED)       printf '  removed branch %s\n' "$rest" ;;
+      KEPT)          printf '  WARNING: kept branch %s — %s\n' "${rest%%|*}" "${rest#*|}" >&2 ;;
+      WARN)          printf '  WARNING: %s\n' "$rest" >&2 ;;
+      ON)            on="$rest" ;;
+      AT)            at="$rest" ;;
+      DELETED-COUNT) ;;   # each deletion is already named above
+      # Anything this function does not recognise is printed VERBATIM rather
+      # than dropped. A record type added to the helper later would otherwise
+      # vanish here, and silence is the one thing a reset must never report.
+      *)             printf '  %s\n' "$line" ;;
+    esac
+  done <<< "$out"
+
+  [[ -n "$on" ]] && printf '  now on %s%s\n' "$on" "${at:+ at $at}"
+  return 0
 }
 
 cmd_add() {

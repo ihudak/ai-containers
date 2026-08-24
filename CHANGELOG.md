@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### `reset` says what it did, in prose
+
+- **The git helper's records were reaching the terminal raw.** A real run ended
+  with `DELETED|throwaway`, `ON|master`, `AT|3500160`, `DELETED-COUNT|1` — the
+  helper's machine-readable protocol, correct and honest and reading exactly
+  like debug output that escaped. `reset_git` now captures that stream and
+  renders it: `removed branch throwaway`, then `now on master at 3500160`.
+- **A record it does not recognise is printed verbatim, not dropped.** The
+  tidier-looking loop ignores unknown kinds, and would silently swallow the
+  output of any record type added to the helper later. Silence is the one thing
+  a destructive command must never report, so unknown records fall through to
+  the terminal unchanged.
+- **stderr is deliberately not captured**, so the helper's own `die` messages
+  still arrive unaltered and immediately; `KEPT` (a branch git refused to
+  delete) and `WARN` (a failed chown) are rendered *to* stderr for the same
+  reason — they must not be lost in a successful run's output.
+- The records themselves are unchanged: the tests read them, and
+  `tests/test-repo-git-reset.sh` still asserts against the protocol rather than
+  the prose.
+
 ### Fixed — extract-discovery could not find the capture in this repository
 
 - **The launch directory is not always the directory the script ships in.**
