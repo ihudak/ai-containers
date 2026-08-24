@@ -13,6 +13,14 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
+        # fetch-tags, because the title now comes from the ANNOTATED TAG'S
+        # MESSAGE and the default fetch brings the ref without guaranteeing the
+        # tag OBJECT that carries it. release-title.sh tells "absent" apart from
+        # "lightweight" and fails on the former rather than falling back — so
+        # getting this wrong is a loud failure here, not a bare title nobody
+        # notices.
+        with:
+          fetch-tags: true
 
       # The notes are the CHANGELOG's own section for this tag — the text a
       # human wrote and a reviewer read — not GitHub's generated list of merged
@@ -31,7 +39,32 @@ jobs:
       - name: Extract release notes from CHANGELOG
         run: bash ./changelog-section.sh "$GITHUB_REF_NAME" > "$RUNNER_TEMP/notes.md"
 
+      # The TITLE, from the same tag that supplies the notes. Passing no `name`
+      # to the action leaves it defaulting to the tag string, so every release
+      # published so far was titled "v0.6.0", "v0.7.0", and every descriptive
+      # title in this repo's history was typed in by hand afterwards — a manual
+      # step invisible until someone notices a bare title, and therefore one
+      # that will be forgotten.
+      #
+      # The description already exists in the right place: the annotated tag's
+      # own message, written at the moment of tagging. This makes the tag the
+      # single author of BOTH the body and the title, which is the principle
+      # changelog-section.sh already established for the body.
+      #
+      # In a script rather than three lines here, because a `run:` block can be
+      # read but not executed by anything in the hermetic suite —
+      # tests/test-release-title.sh drives release-title.sh against real
+      # annotated, lightweight, empty-message and absent tags.
+      - name: Derive the release title from the tag
+        id: title
+        run: |
+          set -euo pipefail
+          title="$(bash ./release-title.sh "$GITHUB_REF_NAME")"
+          printf 'value=%s\n' "$title" >> "$GITHUB_OUTPUT"
+          printf 'release title: %s\n' "$title"
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@2bb465e97f322d3cb2a965294d483e0d26a67aa9  # v3.0.1
         with:
+          name: ${{ steps.title.outputs.value }}
           body_path: ${{ runner.temp }}/notes.md

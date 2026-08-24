@@ -4,6 +4,36 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+### The release title comes from the tag, like the notes already did
+
+- **Every release published so far was titled `v0.6.0`, `v0.7.0`.**
+  `release.yml` passed only `body_path` to `softprops/action-gh-release`, so the
+  name defaulted to the tag string, and every descriptive title in this repo's
+  history was typed in by hand afterwards — a manual step invisible until
+  someone notices a bare title, and therefore one that gets forgotten. It now
+  comes from the annotated tag's own message, so `git tag -a v0.8.0 -m "v0.8.0 —
+  …"` supplies both halves and the tag is the single author of the release, the
+  same principle `changelog-section.sh` already established for the body.
+- **Absent is not the same as lightweight, and conflating them is the bug this
+  is shaped around.** A lightweight tag and an annotated tag whose object was
+  never fetched both yield an empty `%(contents:subject)`. If both fell back to
+  the tag name, a shallow checkout would publish a bare title that looks exactly
+  like a deliberate choice and nobody would learn the fetch was wrong. The two
+  are told apart by the object's TYPE — `git cat-file -t` returns `tag`,
+  `commit`, or an error — so a lightweight tag falls back, an empty message
+  falls back, and a missing tag object **fails the release**. The checkout now
+  passes `fetch-tags: true` for the same reason.
+- **In a script, not three lines of YAML.** Nothing in the hermetic suite can
+  execute a `run:` block, so logic living there is read but never run —
+  `changelog-section.sh` was extracted for exactly that reason.
+  `tests/test-release-title.sh` drives `release-title.sh` against real
+  annotated, multi-line, empty-message, lightweight and absent tags in a
+  throwaway repository, and one of its assertions checks **this repository's own
+  most recent tag** carries a descriptive message, so the convention the script
+  rests on cannot quietly stop being followed. 7 mutants, 7 killed.
+
 ## v0.7.0 — 2026-08-24
 
 **A minor bump, not a patch, and the reason is `repo.sh reset`.** It is a
