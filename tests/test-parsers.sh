@@ -419,6 +419,7 @@ fails=$(( fails + $(grep -c '^FAIL' "$TMP/common.out") ))
 SCRIPTS="$TMP/scripts"; mkdir -p "$SCRIPTS"
 for f in project-init.sh projects.conf.example sandbox-common.sh sandbox.sh build.sh \
          repo.sh group.sh entrypoint.sh tools-lib.sh install-tools.sh install-agent-skills.sh \
+         repo-git-reset.sh \
          bash-floor.sh shared-files.sh \
          rvm-reconcile.sh link-default-ruby.sh agent-tools-reconcile.sh link-agent-tools.sh \
          Dockerfile Dockerfile.seed .dockerignore sandbox.conf \

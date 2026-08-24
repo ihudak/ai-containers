@@ -6,6 +6,73 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### `repo.sh reset` is a real reset
+
+- **It lands on the primary branch, not wherever you were standing.** `reset`
+  discarded local changes and reset the *current* branch to its upstream, which
+  left you on whatever half-finished branch the volume happened to be on, with
+  every other local branch still there. It now fetches (pruning), works out the
+  remote's primary branch, checks that branch out at the remote's tip, cleans
+  the tree, and deletes every other local branch.
+- **The primary branch is asked for, never assumed.** It comes from the
+  remote's own `HEAD` — refreshed with `git remote set-head origin -a`, so a
+  default branch renamed since the clone is picked up — falling back to
+  `origin/main`, then `origin/master`, then the checked-out branch. Nothing
+  hardcodes `main`; a repo whose default is `master` or `trunk` lands on its own
+  default, and a repo with no usable remote and a detached HEAD is left
+  untouched with a message rather than reset onto a guess.
+- **It tells you what it will delete before deleting it, on every run.** The
+  summary names the branch it will switch to and each branch it will drop,
+  marking those carrying commits that are on no remote, and raises a separate
+  warning when there are any. It prints under `--yes` too — partly so that
+  non-interactive runs leave a record of what went, and partly because the
+  hermetic tier has no tty and could never assert a listing shown only at the
+  prompt.
+- **The listing is measured after the fetch, not before.** A read-only `inspect`
+  pass does the fetch and reports the branches, and the destructive pass is
+  handed the branch name that listing displayed rather than deriving its own —
+  so what was approved is what happens. "Not on any remote" is
+  `git rev-list --count <branch> --not --remotes`, i.e. against every remote,
+  not just a configured upstream: a branch pushed under a different name is not
+  reported as work about to be lost.
+- **A failed fetch no longer stops the clean-up.** No network, no credentials,
+  or a vanished remote warns loudly, does the local half, and reports `STALE`:
+  the tree is clean and on the primary branch, at the remote tip as last
+  fetched. `reset` could always be run offline and still can.
+
+### The git half moved into its own file, to be testable at all
+
+- **`repo-git-reset.sh`** is mounted read-only into the seed container instead of
+  being embedded as a `docker run … bash -c '…'` string like `seed_from_git` and
+  `sync_from_git`. Those are one git call each; this is a dozen, with branch
+  detection, fallbacks and a destructive loop — and `tests/test-repo-destructive.sh`'s
+  fake `docker` can only record the string, never run it, so every assertion
+  about it would have been an assertion about configuration. As a file it runs
+  directly against real repositories in `tests/test-repo-git-reset.sh`: real
+  branches, real unpushed commits, real remotes (a local bare repo, so no
+  network), with the offline path exercised by deleting the remote rather than
+  by pretending. Mounting rather than baking it into `Dockerfile.seed` keeps
+  every existing seed image working with no rebuild.
+- **It is a hard member of `AI_CONTAINERS_SHARED_FILES`.** `repo.sh` mounts it
+  from its own directory, so a project copy without it has a broken `reset` —
+  the same class of dependency as `bash-floor.sh`.
+- **The old reset coverage could not have noticed the git half disappearing.**
+  `tests/test-repo-destructive.sh` asserted that `reset` removed the working
+  copies and kept the base volume, and both stay true if the reset never
+  happens; its fake `docker` answered `run` with silence, which would have sent
+  every reset down the "no branch to reset onto" path with the suite green. The
+  fake now answers the `inspect` call with a canned report, and five new
+  assertions cover the helper being mounted, the inspect-before-destroy order,
+  the primary branch being threaded through rather than re-derived, the summary
+  and its warning, and the primary branch never appearing in the deletion list.
+
+- **One defect, caught by the existing destructive tests within a minute of
+  being written.** The summary line was built with an inline
+  `$([[ -n "$stale" ]] && printf …)`; a command substitution's exit status
+  becomes the status of the assignment containing it, so on every run where the
+  fetch **succeeded** — the normal case — the non-zero status met `set -e` and
+  killed the script.
+
 ### A script for the thing the discovery banner used to only describe
 
 - **`extract-discovery.sh` turns a discovery capture into hostname lists from the

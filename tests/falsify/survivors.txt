@@ -593,3 +593,27 @@ extract-discovery.sh:return-flip:5186e1556592508df5a7495a0585775e1a319fb9
   script; and the `printf '0'` exists because an EMPTY result would make the
   caller's `$(( total + ))` a syntax error rather than a wrong number. The
   mutant damages exactly the half of that pair the tier can see.
+
+# ── 16 ────────────────────────────────────────────────────────────────────────
+GROUP: repo-git-reset.sh runs without errexit, so three exit statuses are read by nothing
+repo-git-reset.sh:logic-flip:bfefa9b0411d327b435d5cd8264b421dfcb5d714
+repo-git-reset.sh:logic-flip:da75d440c51f5672ad89c0e7e363aefa7f22b546
+repo-git-reset.sh:return-flip:cebd950b015708fbfa3e5da46dd8d1c4827578b9
+  git -C "$dir" remote set-head origin -a >/dev/null 2>&1 || true
+  git config --global --add safe.directory "$1" >/dev/null 2>&1 || true
+  [[ "$(id -u)" == "0" ]] || return 0
+  damaged:  the first two become `&& true`; the third returns 1 instead of 0.
+  EQUIVALENT: no test could kill these, because nothing anywhere reads the
+  status they change. This file sets `set -uo pipefail` and deliberately NOT
+  `-e` — its error path is the explicit `die`, so a failing statement does not
+  end the script and `|| true` versus `&& true` differ only in a value that is
+  then discarded. `mark_safe_directory` is likewise invoked as a bare statement,
+  so whether its early return says 0 or 1 is unobservable.
+  This is a claim about the two ENDS of the chain, not just the middle: the
+  status is not read at the call site AND it cannot reach `set -e`, so there is
+  no observer left. Contrast entry 15, where the same-looking `|| true` in
+  extract-discovery.sh WAS killable — that script runs under `set -e`, and the
+  fix there was to give the status a reader rather than to file it here.
+  The three are one entry because they are one fact. If `set -e` is ever added
+  to this file, that fact stops being true and all three should be re-measured:
+  they would become real, killable assertions about failure handling.
