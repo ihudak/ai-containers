@@ -226,7 +226,11 @@ apply_discovery_firewall() {
     local host_workspace="${HOST_WORKSPACE_DIR:-\$(pwd)}"
     printf 'Discovery capture started in %s\n' "$capture_dir"
     printf 'When done, exit the container (Ctrl+D). The pcap file persists on the host.\n'
-    printf 'Then extract DNS and TLS hostname lists with:\n'
+    printf 'Then, ON THE HOST, in %s:\n' "$host_workspace"
+    printf '  ./extract-discovery.sh             # hostname lists + what this image would block\n'
+    printf '  ./extract-discovery.sh --clean     # ... and delete the pcap once extracted\n'
+    printf '  ./extract-discovery.sh --discard   # drop the capture without extracting it\n'
+    printf 'That script ships beside sandbox.sh. If you launched from somewhere it is not:\n'
     printf '  docker run --rm --entrypoint capture-agent-destinations.sh \\\n'
     printf '    -v "%s:/workspace" %s extract %s\n' "$host_workspace" "${IMAGE_NAME:-ai-sandbox}" "$capture_dir"
   fi

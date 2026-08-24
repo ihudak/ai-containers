@@ -572,3 +572,24 @@ tests/portability.sh:cond-negate:4fcb6275d979c49c1b9fe171b6e97b319b8e6c10
   would be false on Linux; and leaving it unfiled fails check B on the mac while
   filing it fails check D in CI. It is exempt from check D only, and still
   required to survive check A's reason test.
+
+# ── 15 ────────────────────────────────────────────────────────────────────────
+GROUP: file_bytes' unreadable-file fallback — no test can make wc -c fail here
+extract-discovery.sh:return-flip:5186e1556592508df5a7495a0585775e1a319fb9
+  n="$(wc -c < "$1" 2>/dev/null)" || { printf '0'; return 0; }
+  damaged:  ... || { printf '0'; return 1; }
+  GAP: nothing makes `wc -c` fail on a path that `[[ -f ]]` has already
+  accepted, so the fallback branch never runs and its return value is never
+  observed. An assertion COULD exist — a file that exists but cannot be opened
+  would reach it — which is why this is a GAP and not an EQUIVALENT.
+  What stops it being written here is that the hermetic suite runs as root
+  inside the container image, and mode bits do not deny root: `chmod 000` on the
+  fixture changes nothing, so the test would pass vacuously on the machine it
+  most needs to run on. Writing it for a non-root host only would make the
+  verdict move with the machine, which is a different classification and a
+  worse trade than recording the debt plainly.
+  The `return 0` is deliberate, not incidental. Every caller assigns
+  `bytes="$(file_bytes …)"` under `set -e`, so a non-zero return kills the
+  script; and the `printf '0'` exists because an EMPTY result would make the
+  caller's `$(( total + ))` a syntax error rather than a wrong number. The
+  mutant damages exactly the half of that pair the tier can see.

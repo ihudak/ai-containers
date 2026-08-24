@@ -214,6 +214,7 @@ expected_shared_files=(
   refresh-ipset-allowlist.sh
   capture-blocked-traffic.sh capture-agent-destinations.sh
   install-tools.sh install-agent-skills.sh
+  extract-discovery.sh
 )
 derived_sorted="$(printf '%s\n' "${derived_shared_files[@]}" | sort | tr '\n' ' ')"
 expected_sorted="$(printf '%s\n' "${expected_shared_files[@]}" | sort | tr '\n' ' ')"

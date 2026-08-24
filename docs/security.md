@@ -137,21 +137,44 @@ Build-time rate-limit avoidance: `./build.sh` automatically uses `GITHUB_PERSONA
 
 ## Extracting discovery results
 
-After running in discovery mode, reproduce the AI agent interaction you want to observe, then exit the container (`Ctrl+D`). The pcap capture file persists on the host in the `.agent-discovery` directory of the **launch directory** (where you ran `sandbox.sh`).
+After running in discovery mode, reproduce the AI agent interaction you want to observe, then exit the container (`Ctrl+D`). The pcap capture file persists on the host in the `.agent-discovery` directory of the **launch directory** — where you ran `sandbox.sh`, which is normally your project's `.ai-containers/`.
 
-Extract the DNS and TLS hostname lists:
+From that directory:
+
+```bash
+./extract-discovery.sh
+```
+
+It resolves the image name exactly as `build.sh` and `sandbox.sh` do (`sandbox.local.env`, then `sandbox.env`, with an inline `IMAGE_NAME` still winning), finds the capture directory, and reports three things:
+
+- **DNS queries** — hostnames the container attempted to resolve, written to `agent-dns.txt`.
+- **TLS SNI hostnames** — HTTPS endpoints presented during TLS handshakes, written to `agent-sni.txt`.
+- **What this image does not already cover** — the subset of those hostnames restricted mode would block. That verdict is read out of the image's own baked allowlists rather than re-derived from the fragments, and it applies the same two rules the runtime daemon applies: exact, full-line match against `allowlist-domains.txt`, and leading-`*`-stripped suffix match against `allowlist-proxy-domains.txt`. So `sub.example.com` counts as covered by `*.example.com` and the bare `example.com` does not — which is what `capture-blocked-traffic.sh` does at runtime, and a report that disagreed with the daemon would not be worth reading.
+
+Add the ones you want to `allowlist-domains.d/custom.txt` (or a wildcard pattern to `allowlist-proxy-domains.d/custom.txt`), rebuild with `./build.sh`, and switch to restricted mode.
+
+### Cleaning up the capture
+
+The pcap is the only file here that reaches gigabytes and the only raw evidence — re-extracting is possible exactly as long as it exists — so nothing is deleted unless you ask:
+
+| Command | What it removes |
+|---|---|
+| `./extract-discovery.sh` | nothing; reports the pcap's size and how to drop it |
+| `./extract-discovery.sh --clean` | after a successful extract: the pcap and tcpdump's log/pid, keeping both hostname lists |
+| `./extract-discovery.sh --discard` | the whole capture, without extracting it — for a session you have decided not to analyse. Prompts unless you add `--yes`. |
+
+Both removal paths delete only those specific filenames, inside that one directory.
+
+### Without the script
+
+`extract-discovery.sh` ships beside `sandbox.sh`, so it is in every project's `.ai-containers/`. If you launched from somewhere it is not, the equivalent is:
 
 ```bash
 docker run --rm --entrypoint capture-agent-destinations.sh \
   -v "/path/to/launch-dir:/workspace" "${IMAGE_NAME:-ai-sandbox}" extract /workspace/.agent-discovery
 ```
 
-The container prints this command with the correct path when discovery mode starts. The output lists:
-
-- DNS queries — hostnames the container attempted to resolve.
-- TLS SNI hostnames — HTTPS endpoints presented during TLS handshakes.
-
-Add the discovered hostnames to `allowlist-domains.d/custom.txt`, rebuild the image with `./build.sh`, and switch to restricted mode.
+That writes the same two hostname lists and nothing else — the coverage report and the cleanup are the script's own.
 
 ---
 
