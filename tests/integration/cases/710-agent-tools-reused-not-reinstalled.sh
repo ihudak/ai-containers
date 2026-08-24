@@ -86,12 +86,33 @@ IT_SETTLE=900
 # it); unchanged after launch 2 is direct proof of reuse; changed is direct
 # proof of a genuine reinstall. All three readings hold regardless of how much
 # of the reconcile's own stdout `docker logs` happened to capture.
-claude_bin="$IT_LAUNCH_HOME_IN/.ai-tools/npm/bin/claude"
-# No `-L`: an npm global install SYMLINKS bin/claude into lib/node_modules/...,
-# and a real (re)install recreates that symlink even when the target package
-# content is byte-identical — so the SYMLINK's own mtime, not its target's, is
-# the thing that moves exactly when npm actually touches this path.
-mtime_of() { docker exec "$1" bash -c "stat -c %Y '$claude_bin' 2>/dev/null"; }
+# Claude Code installs NATIVELY now, not through npm — this case asserted
+# ~/.ai-tools/npm/bin/claude and failed nightly from 2026-08-23, correctly
+# reporting that the file it expected was absent while `command -v claude`
+# still resolved.
+#
+# WHICH ARTIFACT TO WATCH IS THE WHOLE QUESTION, and two of the three obvious
+# answers are wrong:
+#
+#   ~/.local/bin/claude          WRONG. agent-tools-reconcile.sh re-creates this
+#                                symlink on EVERY start by design, because
+#                                ~/.local/bin is in the writable layer and does
+#                                not survive the container. Its mtime moves every
+#                                launch, so it can never show reuse.
+#   ~/.local/share/claude/versions   WRONG. The directory's mtime moves when any
+#                                new version lands, so a self-update — which this
+#                                tool does, and which is NOT a reinstall of the
+#                                group's tool home — would read as a failure.
+#   versions/<v>                 RIGHT. The version binary itself: group-mounted,
+#                                persistent, written once by the install of that
+#                                version and by nothing else. A self-update adds
+#                                a DIFFERENT file and leaves this one untouched,
+#                                which is exactly the reading this case wants.
+#
+# The version is resolved AFTER the first launch rather than hardcoded, because
+# which version is current is upstream's business, not this case's.
+claude_versions="$IT_LAUNCH_HOME_IN/.local/share/claude/versions"
+mtime_of() { docker exec "$1" bash -c "stat -c %Y '$2' 2>/dev/null"; }
 
 fixture_scope_init || it_finish
 export AI_CONTAINER_GROUP=agentreuse
@@ -104,27 +125,40 @@ it_wait 10 docker exec "$IT_CID" bash -c "command -v claude >/dev/null" \
   || { fail "first container: claude absent after the reconcile completed"; it_finish; }
 first="$IT_CID"
 
-first_mtime="$(mtime_of "$first")"
+# `printf '%s\n' *` + sort -V, matching install_claude_native's own selection —
+# 2.1.99 must not outrank 2.1.241.
+claude_ver="$(docker exec "$first" bash -c \
+  "cd '$claude_versions' 2>/dev/null && printf '%s\n' * | sort -V | tail -1")"
+claude_bin="$claude_versions/$claude_ver"
+first_mtime=""
+[[ -n "$claude_ver" && "$claude_ver" != "*" ]] && first_mtime="$(mtime_of "$first" "$claude_bin")"
 if [[ -z "$first_mtime" ]]; then
-  fail "claude is on PATH but the npm-installed binary is missing: $claude_bin"
+  # Name both layouts: if this ever fails because the reconcile fell back to
+  # npm, the message should say so rather than leave the reader guessing.
+  fail "claude is on PATH but no native install is present under $claude_versions"
+  docker exec "$first" bash -c "ls -la '$IT_LAUNCH_HOME_IN/.local/share/claude' \
+    '$IT_LAUNCH_HOME_IN/.ai-tools/npm/bin' 2>&1" | sed 's/^/       /' || true
   it_diagnose "$first"
   it_finish
 fi
-pass "the first start installed claude into ~/.ai-tools ($claude_bin)"
+pass "the first start installed claude natively ($claude_bin)"
 docker rm -f "$first" >/dev/null 2>&1 || true
 
 launcher_up restricted || it_finish
 it_wait 120 docker exec "$IT_CID" bash -c "command -v claude >/dev/null" \
   || fail "the second container did not have the tools available within 120s"
 
-second_mtime="$(mtime_of "$IT_CID")"
+# The SAME path as launch 1, deliberately: a self-update between the two
+# launches writes a different versions/<v> and leaves this one alone, which is
+# reuse of the group's tool home and must not read as a reinstall.
+second_mtime="$(mtime_of "$IT_CID" "$claude_bin")"
 if [[ -z "$second_mtime" ]]; then
-  fail "claude is on PATH but the npm-installed binary is missing after the second launch: $claude_bin"
+  fail "the native install vanished between launches: $claude_bin"
   it_diagnose "$IT_CID"
 elif [[ "$second_mtime" == "$first_mtime" ]]; then
-  pass "the second start reused ~/.ai-tools (mtime unchanged: $first_mtime)"
+  pass "the second start reused the group's tool home (mtime unchanged: $first_mtime)"
 else
-  fail "the second start RE-INSTALLED claude — ~/.ai-tools was not reused (mtime $first_mtime -> $second_mtime)"
+  fail "the second start RE-INSTALLED claude — the group's tool home was not reused (mtime $first_mtime -> $second_mtime)"
 fi
 assert_runs "$IT_CID" claude
 

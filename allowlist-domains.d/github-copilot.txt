@@ -15,5 +15,9 @@ origin-tracker.individual.githubcopilot.com
 proxy.business.githubcopilot.com
 githubcopilot.com
 
-# GitHub Models / multi-model support (required by newer Copilot CLI versions)
-models.inference.ai.azure.com
+# GitHub Models / multi-model support (required by newer Copilot CLI versions).
+# Was models.inference.ai.azure.com, which GitHub retired: it went NXDOMAIN and
+# the nightly allowlist-health job caught it on 2026-08-22. A dead entry is not
+# harmless here — it is a capability the firewall silently stops allowing, whose
+# only symptom is a tool that mysteriously cannot reach a model.
+models.github.ai
