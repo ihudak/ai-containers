@@ -31,6 +31,42 @@ cd <project>/.ai-containers
 
 `runme.sh` runs `build.sh` itself, so there is no separate build step — running both would build twice.
 
+## ai-containers-report.sh — what is registered, and how it is configured
+
+```bash
+./ai-containers-report.sh                     # this repo's registry
+./ai-containers-report.sh --markdown          # a pipe table to paste somewhere
+./ai-containers-report.sh --tsv               # for a script to read
+```
+
+Reads **this repo's `projects.conf`** and, for each registered project, resolves its settings from `<project>/.ai-containers/sandbox.env` (with `sandbox.local.env` overriding, exactly as the launcher resolves them). One row per project: container group, network mode, CPUs, memory as limit/reservation/swap, the size of its `.agent-discovery`, and its path.
+
+```
+base: ~/dev/ai-tools/ai-containers
+
+GROUP    PROJECT                 NETWORK    CPUS  MEM(L/R/S)  DISCOVERY  PATH
+-------  ----------------------  ---------  ----  ----------  ---------  -----------------------------------
+ihudak   ai-containers           DISCOVERY  4.0   16g/4g/16g  352M       ~/dev/ai-tools/ai-containers
+ihudak   ihudak-claude-plugins   DISCOVERY  4.0   8g/4g/8g    6.2G       ~/dev/ai-tools/ihudak-claude-plugins
+
+2 registered project(s).
+```
+
+**It does not search your filesystem.** The registry is the whole input, so what you get back is what *this* checkout is responsible for keeping in sync — the same set `sync-to-projects.sh` writes to. To report on another checkout, name it; the argument is a path, not a search:
+
+```bash
+./ai-containers-report.sh ~/dev/other/ai-containers          # that base instead
+./ai-containers-report.sh . ~/dev/other/ai-containers        # both
+```
+
+With more than one base a `BASE` column is added and the rows stay grouped by base; with one, the base is stated once above the table rather than repeated on every row. `--tsv` always emits the base column, so a script reading it sees one schema either way.
+
+Footnotes call out what needs attention: a registry entry whose path no longer exists, a project with no `.ai-containers/sandbox.env` (run `sync-to-projects.sh`), a project whose `sandbox.env` sets no group (so it is on `default` implicitly), and any surviving pre-rename `<project>-container.sh` launcher. `--no-notes` suppresses them.
+
+Other flags: `--full-paths` (do not abbreviate `$HOME` to `~`), and `--path-map HOST=LOCAL` (repeatable) which changes only where the report **looks**, never what it prints — useful when running it inside a container where the host's paths are mounted elsewhere.
+
+---
+
 ## sync-to-projects.sh — propagate updates
 
 After pulling changes to this repo, run this to push the updated shared files to all registered projects:

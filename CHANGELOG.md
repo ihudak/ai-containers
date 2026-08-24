@@ -35,6 +35,58 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   what tells the two apart; each candidate is now independently pinned, checked
   by deleting each in turn.
 
+### `ai-containers-report.sh` reports THIS repo's projects
+
+- **A new base-repo tool**, beside `project-init.sh` and `sync-to-projects.sh`:
+  one row per project in this repo's `projects.conf`, showing its container
+  group, network mode, CPUs, memory as limit/reservation/swap, the size of its
+  `.agent-discovery`, and its path — each resolved from the project's own
+  `sandbox.env` with `sandbox.local.env` overriding, the same precedence
+  `sandbox-common.sh` applies. It is deliberately **not** in
+  `AI_CONTAINERS_SHARED_FILES`: a project is a leaf with no registry of its own.
+- **It does not search the filesystem.** It previously walked a configurable
+  root to a fixed depth collecting every `project-init.sh` it could find, which
+  answers a different question — "what does this whole machine have" rather than
+  "what is this checkout responsible for keeping in sync" — and made the answer
+  depend on where it was run from. To report another base you name it; the
+  argument is a path, not a search.
+- **The BASE column appears only when it distinguishes rows.** With one base it
+  was the same 37-character string on every line; it is now stated once above
+  the table. With several it returns, and the rows stay grouped by base.
+  `--tsv` always emits it, because a machine-readable schema that changed shape
+  with the argument count would not be one.
+
+### Fixed — three defects in that script, two of which shellcheck found
+
+- **Two `BASE_DIR` arguments concatenated into one nonexistent path.** The
+  separator was `$(printf '\n')` — the empty string, because command
+  substitution strips trailing newlines. Latent while a filesystem walk supplied
+  the base list and nobody passed two; load-bearing the moment naming them
+  became the only way to report on more than one.
+- **A path containing a glob character was stripped wrongly.** `${_hp#$_from}`
+  and `${_dp#$HOME}` leave the pattern unquoted inside `${…}`, where it is
+  matched as a **glob**, so a project path containing `[`, `*` or `?` produced a
+  mangled prefix strip. Both are now quoted.
+- **`tr 'A-Z' 'a-z'` replaced with the POSIX character classes** — hygiene, not
+  a third defect, and the entry says so because measuring it showed the claim it
+  first carried ("makes the case folding correct outside ASCII") was false: GNU
+  `tr` does not case-fold multibyte characters under `[:upper:]` either, and
+  both forms produce identical output for every input tested. The change
+  silences a shellcheck note in a file being rewritten anyway. The same
+  spelling elsewhere in the repo (`sandbox.sh`'s git-URL host lowercasing,
+  `tests/test-docs.sh`'s anchor generation) was left alone deliberately: a
+  hostname is ASCII by protocol, and no tracked heading contains a non-ASCII
+  letter, so neither can observe the difference.
+
+### Documentation
+
+- **The two workflows that verify nothing are now listed as such.**
+  `docs/contributing.md`'s "What CI covers" table described three workflows;
+  `release.yml` appeared only in prose further down and `update-nvm-version.yml`
+  was undocumented entirely. Both are now in a second table, kept out of the
+  first on purpose — listing a publisher and a dependency bumper as "coverage"
+  would overstate what CI checks.
+
 ### `repo.sh reset` is a real reset
 
 - **It lands on the primary branch, not wherever you were standing.** `reset`
