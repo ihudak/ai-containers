@@ -4,7 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## Unreleased
+## v0.7.0 — 2026-08-24
+
+**A minor bump, not a patch, and the reason is `repo.sh reset`.** It is a
+destructive command that now destroys *more*: it switches to the remote's
+primary branch and deletes every other local branch, where before it reset
+whichever branch you happened to be on and left the rest alone. It lists what it
+will delete and flags branches carrying commits that are on no remote before
+asking, so this is not silent loss — but it is a changed contract, and a patch
+number would tell a reader they could skip these notes.
+
+Two new commands ship (`extract-discovery.sh`, `ai-containers-report.sh`), and
+`ai-containers-report.sh` reports its own repository's registry rather than
+searching the filesystem.
 
 ### The suite runs a third time, with TMPDIR pointed at a symlink
 
