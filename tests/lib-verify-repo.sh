@@ -316,10 +316,22 @@ mk_repo() {  # $1=build.sh exit code (default 0)  $2=1 to stamp a
         # can tell those two apart. Emitted by every repo-script stub rather than
         # special-cased for one, and silent when BASE_REF is unset, so the other
         # stubs are unaffected.
+        #
+        # "STUB-TMPDIR:<name> <dir>" is the same idea for the same reason. Phase
+        # 5 runs tests/run-all.sh TWICE — once ordinarily, once with TMPDIR
+        # pointed at a symlink, which is the Linux stand-in for macOS, where /var
+        # is a symlink and an unresolved-vs-resolved path comparison fails. Both
+        # runs emit an identical "STUB:run-all.sh", so that line alone cannot
+        # tell them apart, and a witness that cannot tell them apart would be
+        # satisfied by the ordinary run while the symlinked one had been deleted.
+        # Recording the TMPDIR is what makes the second run's witness
+        # falsifiable. Silent when TMPDIR is unset, like BASE_REF above.
         {
           printf '#!/usr/bin/env bash\n'
           printf 'printf "STUB:%s\\n" >> "%s"\n' "$(basename "$target")" "$WITNESS_LOG"
           printf 'if [[ -n "${BASE_REF-}" ]]; then printf "STUB-BASEREF:%s %%s\\n" "$BASE_REF" >> "%s"; fi\n' \
+            "$(basename "$target")" "$WITNESS_LOG"
+          printf 'if [[ -n "${TMPDIR-}" ]]; then printf "STUB-TMPDIR:%s %%s\\n" "$TMPDIR" >> "%s"; fi\n' \
             "$(basename "$target")" "$WITNESS_LOG"
           printf 'exit %s\n' "$rc_val"
         } > "$r/$target"

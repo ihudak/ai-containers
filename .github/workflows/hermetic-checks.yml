@@ -61,6 +61,52 @@ jobs:
           echo "diffing sandbox.conf against $base"
           BASE_REF="$base" ./check-sandbox-version.sh --check
 
+  # CI is ubuntu-only, where the temp directory is NOT a symlink. macOS's is:
+  # /var is a symlink to /private/var, so `mktemp -d` returns /var/folders/…
+  # while anything canonicalising reports /private/var/folders/…. A test that
+  # compares one against the other passes here AND in suite-floor, and fails on
+  # every Mac. That shape has cost this repo twice — 19 assertions in increment
+  # 4, and three more on 2026-08-24 (test-report.sh, test-docs-path.sh, and the
+  # docs orphan gate).
+  #
+  # This job is a stand-in for a Mac: same suite, TMPDIR pointed at a symlink.
+  # It is the same relationship suite-floor has to `suite` — one suite, a second
+  # environment — which is why it is a separate job rather than a second step:
+  # they run in parallel, so the gate's latency barely moves.
+  #
+  # It does NOT replace running on a real Mac. It catches the path-resolution
+  # class only; the GNU-vs-BSD class (`realpath -m --relative-to`, which BSD
+  # lacks) is invisible here and shows up only in verify-on-host.sh on a real
+  # host — which is exactly where it was found.
+  #
+  # tests/test-symlinked-tmp-guard.sh keeps this job honest by demonstrating
+  # that a path-naive comparison FAILS under a symlinked TMPDIR and PASSES under
+  # an ordinary one. Without it, pointing TMPDIR at a plain directory by mistake
+  # would leave this job green while checking nothing.
+  suite-symlinked-tmp:
+    name: Shell test suite (symlinked TMPDIR)
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Run tests with TMPDIR pointed at a symlink
+        run: |
+          set -euo pipefail
+          root="$(mktemp -d)"
+          mkdir -p "$root/real"
+          ln -s "$root/real" "$root/symlinked-tmp"
+          # Asserted, not assumed: if this ever stopped being a symlink the job
+          # would go on passing while checking nothing.
+          [[ -L "$root/symlinked-tmp" ]] || { echo "::error::TMPDIR arm is not a symlink"; exit 1; }
+          resolved="$(cd "$root/symlinked-tmp" && pwd -P)"
+          [[ "$resolved" != "$root/symlinked-tmp" ]] \
+            || { echo "::error::TMPDIR arm resolves to itself — not a stand-in for macOS"; exit 1; }
+          echo "TMPDIR=$root/symlinked-tmp resolves to $resolved"
+          TMPDIR="$root/symlinked-tmp" ./tests/run-all.sh
+
   suite-floor:
     name: Shell test suite (bash floor)
     runs-on: ubuntu-24.04

@@ -6,6 +6,46 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### The suite runs a third time, with TMPDIR pointed at a symlink
+
+- **CI is ubuntu-only, and that is a blind spot with a name.** macOS's temp
+  directory is reached through a symlink — `/var` points at `/private/var` — so
+  `mktemp -d` hands back `/var/folders/…` while anything canonicalising reports
+  `/private/var/folders/…`. A test comparing one against the other passes in
+  `suite` **and** in `suite-floor` and fails on every Mac. That shape has now
+  cost this repo twice: 19 assertions in increment 4, and three more on
+  2026-08-24 (`test-report.sh`, `test-docs-path.sh`, and the docs orphan gate).
+  `suite-symlinked-tmp` runs the same suite with `TMPDIR` pointed at a symlink —
+  a stand-in for a Mac, on Linux, in parallel with the other jobs so the gate's
+  latency barely moves. `verify-on-host.sh` Phase 5 mirrors it, because
+  `tests/test-layer-containment.sh` requires every PR-gate check to exist
+  locally too.
+- **Two things stop it becoming a green gate that gates nothing.** The CI step
+  asserts its own arm is a symlink *and* resolves elsewhere before running
+  anything. And `tests/test-symlinked-tmp-guard.sh` demonstrates the premise
+  rather than describing it: a deliberately path-naive comparison must FAIL
+  under the symlinked arm and PASS under an ordinary one, and a
+  `p_realdir`-correct one must pass under both. The second half is the
+  load-bearing one — without it, a fixture that failed for some unrelated reason
+  would look like proof that the symlink was doing the detecting.
+- **The witness can tell the two runs apart.** Phase 5 now invokes
+  `tests/run-all.sh` twice, and both emit an identical `STUB:run-all.sh`, so
+  that line alone would be satisfied by the ordinary run while the symlinked one
+  had been deleted. `lib-verify-repo.sh`'s repo-script stubs now also record
+  `STUB-TMPDIR:<name> <dir>`, and the registry row keys on the arm's name.
+  Verified by deleting the symlinked run (caught) and by pointing it at a plain
+  directory instead of the symlink (also caught) — the second being exactly the
+  mistake that would otherwise leave the job green and inert.
+- **Phase 5's copy is gated on the ordinary run having passed.** The two
+  exercise one suite in two environments, so a suite that is already broken
+  fails both and reports the same problem twice — into a verdict that counts
+  failures rather than distinct phases, where one broken test would read as
+  "2 phase(s)".
+- **It does not replace running on a Mac, and the docs say so.** It catches the
+  path-resolution class only. The GNU-vs-BSD class — `realpath -m
+  --relative-to`, flags BSD does not have — is invisible to it, and was found by
+  a real host run.
+
 ### Fixed — the two nightly failures
 
 - **`models.inference.ai.azure.com` went NXDOMAIN and the firewall quietly

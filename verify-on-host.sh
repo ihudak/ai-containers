@@ -311,6 +311,48 @@ else
     [[ "$f_rc" -eq 0 ]] || phase_fail 5 "hermetic suite at the declared floor exited $f_rc"
   fi
 fi
+
+# ── the suite again, with TMPDIR pointed at a SYMLINK ────────────────────────
+# Mirrors hermetic-checks.yml's `suite-symlinked-tmp` job, and exists because CI
+# is ubuntu-only, where the temp directory is not a symlink. macOS's is: /var is
+# a symlink to /private/var, so `mktemp -d` returns /var/folders/… while
+# anything canonicalising reports /private/var/folders/…. A test comparing one
+# against the other passes in CI AND in the floor container and fails on every
+# Mac — a shape that has cost this repo twice, 19 assertions in increment 4 and
+# three more on 2026-08-24.
+#
+# This run is a stand-in for a Mac, so ON a Mac it is largely redundant: the
+# host run above already has a symlinked TMPDIR by default. It runs anyway
+# rather than being skipped on Darwin, because a conditional whose macOS branch
+# nothing exercises is precisely the untested claim this repo keeps purging —
+# and because the containment invariant requires every PR-gate check to exist
+# here too. The cost is one more suite run; the alternative is a branch nobody
+# can see fail.
+#
+# tests/test-symlinked-tmp-guard.sh is what keeps this honest: it demonstrates
+# that a path-naive comparison fails under the symlinked arm and PASSES under an
+# ordinary one, so pointing TMPDIR at a plain directory by accident would be
+# caught rather than silently reducing this to a second ordinary run.
+# Gated on the ORDINARY run having passed. The two runs exercise the same suite
+# in two environments, so a suite that is already broken fails both and reports
+# the same problem twice — and the verdict counts failures, not distinct phases,
+# so a single broken test would read as "2 phase(s)". Running the variant only
+# when the baseline is green keeps the failure output pointed at the one thing
+# that is actually wrong, and loses nothing: you fix that and re-run.
+sl_tmp=""
+if [[ "${h_rc:-1}" -eq 0 ]]; then
+  sl_tmp="$(mktemp -d)" || phase_fail 5 "mktemp -d failed — nowhere to build the symlinked TMPDIR"
+fi
+if [[ -n "$sl_tmp" && -d "$sl_tmp" ]]; then
+  mkdir -p "$sl_tmp/real"
+  ln -s "$sl_tmp/real" "$sl_tmp/symlinked-tmp"
+  sub "running the suite with TMPDIR pointed at a symlink (the macOS shape)"
+  TMPDIR="$sl_tmp/symlinked-tmp" "$TESTS_DIR/run-all.sh" 2>&1 | sed "s/^/$LOG_PREFIX   /"
+  sl_rc="${PIPESTATUS[0]:-1}"
+  sub "symlinked-TMPDIR suite exit: $sl_rc"
+  [[ "$sl_rc" -eq 0 ]] || phase_fail 5 "hermetic suite under a symlinked TMPDIR exited $sl_rc"
+  rm -rf "$sl_tmp"
+fi
 fi
 
 # ── Phase 6: the falsify mutation tier ───────────────────────────────────────────
