@@ -117,13 +117,15 @@ Everything mounts under a single `/workspace` umbrella. The positional `[primary
 ```bash
 ./repo.sh add  <name> <host-path|git-url>   # seed a repo volume once + register it
 ./repo.sh sync <name|--all>                  # refresh (git pull, or re-copy a path source)
-./repo.sh reset <name|--all> [--yes]         # discard local changes → clean slate (keeps registry)
+./repo.sh reset <name|--all> [--yes]         # clean slate: primary branch @ remote tip, other branches dropped
 ./repo.sh list [--sizes] [--copies]          # list repos; --copies lists :rwcopy working copies
 ./repo.sh rm   <name> [--yes]                # remove volume + working copies + registry entry
 ./repo.sh gc   [--repo <name>] [--unused] [--yes]   # prune :rwcopy working copies
 ./repo.sh reindex                            # rebuild registry from volume labels
 ```
 Attach them at run time with `REPOS="cluster:ro lib:ro app:rw" ./sandbox.sh restricted @app`.
+
+**`reset` is a full reset, and its git half is a separate file for a testability reason.** For a git-backed volume it fetches (pruning), resolves the remote's **primary branch** — `git remote set-head origin -a` then `refs/remotes/origin/HEAD`, falling back to `origin/main`, `origin/master`, then the checked-out branch, and never a hardcoded `main` — checks it out at the remote tip, runs `clean -ffdx`, and **deletes every other local branch**. Every run, `--yes` included, first prints the branch it will switch to and each branch it will drop, marking those whose commits are on no remote; that listing is built from a read-only `inspect` pass which **is** the fetch, so the counts are current rather than read from stale refs, and the primary branch the summary names is passed to the destructive pass rather than re-derived there. A failed fetch is not fatal: it warns, does the local half, and reports `STALE`. That git program lives in **`repo-git-reset.sh`**, mounted read-only into the seed container rather than embedded as a `docker run … bash -c '…'` string like `seed_from_git`/`sync_from_git` — because `tests/test-repo-destructive.sh`'s fake `docker` can only record such a string, never run it, and asserting the string is asserting configuration. As a file it runs directly against real repositories in `tests/test-repo-git-reset.sh` (git is available hermetically; docker is not), which is the only place the branch deletions are observed actually happening. It is therefore a **hard member of `AI_CONTAINERS_SHARED_FILES`**: `repo.sh` mounts it from its own directory, so a project copy without it has a broken `reset`.
 
 **Manage container groups:**
 ```bash

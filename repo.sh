@@ -20,7 +20,7 @@ usage() {
 Usage:
   ./repo.sh add  <name> <host-path | git-url>   Seed a repo volume and register it
   ./repo.sh sync <name | --all>                  Refresh a repo volume from its source
-  ./repo.sh reset <name | --all> [--yes]         Discard local changes (clean slate; keeps the repo)
+  ./repo.sh reset <name | --all> [--yes]         Clean slate: primary branch, remote tip, other branches dropped
   ./repo.sh list [--sizes] [--copies]            List repos (--copies lists :rwcopy working copies)
   ./repo.sh rm   <name> [--yes]                  Remove a repo volume + its working copies
   ./repo.sh gc   [--repo <name>] [--unused] [--yes]
@@ -183,25 +183,44 @@ sync_from_git() {
       chown -R '"${host_uid}:${host_gid}"' /dst'
 }
 
-# Reset a git volume to a clean checkout: discard uncommitted changes, drop
-# untracked/ignored files, and reset the current branch to its upstream (or
-# HEAD if there is none). Fully local — no fetch, no re-clone.
-reset_git() {
-  local vol="$1"
-  printf 'Resetting volume "%s" to a clean checkout ...\n' "$vol"
+# The git half of `reset` lives in repo-git-reset.sh, mounted read-only into the
+# seed container rather than embedded here as a string. It is a dozen git calls
+# with branch detection, fallbacks and a destructive loop, and a string can only
+# ever be ASSERTED, never RUN, by the hermetic suite — see that file's header and
+# tests/test-repo-git-reset.sh, which drives it against real repositories.
+# Mounting (rather than baking into Dockerfile.seed) keeps every existing seed
+# image working with no rebuild.
+git_helper_run() {   # $1 = volume  $2... = repo-git-reset.sh arguments
+  local vol="$1"; shift
   docker run --rm --entrypoint bash \
+    -v "$HOME/.ssh":/root/.ssh-host:ro \
+    -v "${script_dir}/repo-git-reset.sh":/repo-git-reset.sh:ro \
     -v "$vol":/dst \
     "$seed_image" -c '
-      set -e
-      # Helper runs as root while /dst is owned by the host UID.
-      git config --global --add safe.directory /dst
-      target=HEAD
-      if git -C /dst rev-parse --abbrev-ref --symbolic-full-name "@{u}" >/dev/null 2>&1; then
-        target="@{u}"
-      fi
-      git -C /dst reset --hard "$target"
-      git -C /dst clean -ffdx
-      chown -R '"${host_uid}:${host_gid}"' /dst'
+      mkdir -p /root/.ssh && cp -a /root/.ssh-host/. /root/.ssh/ 2>/dev/null || true
+      chmod 700 /root/.ssh; chmod 600 /root/.ssh/* 2>/dev/null || true
+      export GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=accept-new"
+      exec bash /repo-git-reset.sh "$@"' _ "$@"
+}
+
+# Read-only pass: fetch, then report the primary branch and every local branch
+# with the number of its commits that are on no remote. This is what the
+# confirmation prompt is built from, which is why the FETCH lives here — a
+# "not on any remote" count read from stale refs would understate the loss at
+# exactly the moment the user is deciding whether to accept it.
+inspect_git() {   # $1 = volume  → the helper's records on stdout
+  git_helper_run "$1" inspect /dst
+}
+
+# Destructive pass: put the checkout on $2 at its remote tip, discard local
+# changes and untracked/ignored files, and delete every other local branch.
+# Deliberately does NOT fetch — it acts on what inspect_git already fetched, and
+# is handed the branch NAME the prompt displayed so that what was approved is
+# what happens.
+reset_git() {   # $1 = volume  $2 = primary branch
+  local vol="$1" primary="$2"
+  printf 'Resetting volume "%s" to a clean checkout on "%s" ...\n' "$vol" "$primary"
+  git_helper_run "$vol" reset /dst "$primary" "${host_uid}:${host_gid}"
 }
 
 cmd_add() {
@@ -479,7 +498,7 @@ cmd_rm() {
 
 # Reset a single registered repo to a clean state (used by cmd_reset).
 reset_one() {
-  local name="$1"
+  local name="$1" primary="${2:-}"
   local record; record="$(repo_registry_lookup "$name")" || {
     printf "  SKIP %s: not registered.\n" "$name" >&2
     return 0
@@ -509,13 +528,102 @@ reset_one() {
     repo_base_volume_create "$name" "$type" "$source"
     if [[ "$type" == "git" ]]; then seed_from_git "$vol" "$source"; else seed_from_path "$vol" "$source"; fi
   else
-    if [[ "$type" == "git" ]]; then reset_git "$vol"; else sync_from_path "$vol" "$source"; fi
+    if [[ "$type" != "git" ]]; then
+      sync_from_path "$vol" "$source"
+    elif [[ -n "$primary" ]]; then
+      reset_git "$vol" "$primary"
+    else
+      # detect_primary falls back all the way to the checked-out branch, so an
+      # empty answer means a detached HEAD with no usable remote. Guessing a
+      # branch there would be inventing the target of a destructive operation.
+      printf '  %s: no branch to reset onto (detached HEAD, no usable remote) — left untouched.\n' "$name"
+      printf '         Inspect it directly, or re-add the repo to re-clone it.\n'
+      return 0
+    fi
   fi
 
   local now added; now="$(date +%s)"
   added="$(repo_record_field "$record" 4)"
   repo_registry_upsert "$name" "$type" "$source" "$added" "$now" "$backend"
   printf '  OK: %s reset to a clean state.\n' "$name"
+}
+
+# What `reset` is about to destroy, gathered BEFORE anything is destroyed.
+#
+# Filled by collect_inspections(), read by the prompt and then by reset_one, so
+# the branch named in the summary is the branch reset is handed — not a second
+# derivation that could disagree with what was approved.
+declare -A RESET_PRIMARY=()
+declare -A RESET_STALE=()
+RESET_SUMMARY=()
+RESET_AT_RISK=0
+
+collect_inspections() {   # $@ = repo names
+  local name record type vol backend line kind rest br unpushed flags
+  for name in "$@"; do
+    record="$(repo_registry_lookup "$name")" || continue
+    type="$(repo_record_field "$record" 2)"
+    backend="$(repo_record_backend "$record")"
+    vol="$(repo_volume_name "$name")"
+
+    # Bind-backed repos are the live host checkout and reset never writes to
+    # them; path-sourced volumes are mirrored from the host, not branched.
+    if [[ "$backend" == "bind" ]]; then
+      RESET_SUMMARY+=("  - ${name}: bind-mount backend — host source untouched")
+      continue
+    fi
+    if [[ "$type" != "git" ]]; then
+      RESET_SUMMARY+=("  - ${name}: re-mirrored from its host source (no branches)")
+      continue
+    fi
+    if ! docker volume inspect "$vol" >/dev/null 2>&1; then
+      RESET_SUMMARY+=("  - ${name}: base volume missing — will be re-cloned clean")
+      continue
+    fi
+
+    ensure_seed_image
+    local branches=() primary="" stale=""
+    while IFS= read -r line; do
+      kind="${line%%|*}"; rest="${line#*|}"
+      case "$kind" in
+        PRIMARY) primary="$rest" ;;
+        STALE)   stale="$rest" ;;
+        BRANCH)
+          br="${rest%%|*}"; rest="${rest#*|}"
+          unpushed="${rest%%|*}"; flags="${rest#*|}"
+          branches+=("${br}|${unpushed}|${flags}")
+          ;;
+      esac
+    done < <(inspect_git "$vol")
+
+    [[ -n "$primary" ]] && RESET_PRIMARY["$name"]="$primary"
+    [[ -n "$stale"   ]] && RESET_STALE["$name"]="$stale"
+
+    if [[ -z "$primary" ]]; then
+      RESET_SUMMARY+=("  - ${name}: no branch to reset onto (detached HEAD, no usable remote) — will be left untouched")
+      continue
+    fi
+    # Built as a plain variable, not inlined as $( … ): a command substitution
+    # that exits non-zero sets the status of the assignment containing it, and
+    # under `set -e` that ends the script — here, on the ordinary path where
+    # the fetch SUCCEEDED and $stale is empty.
+    local stale_note=""
+    [[ -n "$stale" ]] && stale_note=" (STALE: fetch failed)"
+    RESET_SUMMARY+=("  - ${name}: switches to '${primary}'${stale_note}")
+
+    local entry
+    for entry in "${branches[@]}"; do
+      br="${entry%%|*}"; rest="${entry#*|}"
+      unpushed="${rest%%|*}"
+      [[ "$br" == "$primary" ]] && continue
+      if [[ "${unpushed:-0}" -gt 0 ]]; then
+        RESET_SUMMARY+=("      DELETE ${br} — ${unpushed} commit(s) not on any remote  <-- unpushed work")
+        RESET_AT_RISK=$(( RESET_AT_RISK + 1 ))
+      else
+        RESET_SUMMARY+=("      DELETE ${br} — pushed")
+      fi
+    done
+  done
 }
 
 cmd_reset() {
@@ -554,11 +662,23 @@ cmd_reset() {
     targets+=("$name")
   fi
 
+  # The inspection runs FIRST and unconditionally — before the prompt, and even
+  # under --yes. It is also the fetch, so the "not on any remote" counts below
+  # are measured against current remote refs rather than whatever this volume
+  # last happened to see.
+  collect_inspections "${targets[@]}"
+
+  printf 'About to RESET the following repo(s) to a clean state:\n'
+  local l; for l in "${RESET_SUMMARY[@]}"; do printf '%s\n' "$l"; done
+  printf 'This DISCARDS uncommitted changes and untracked/ignored files (git: reset --hard\n'
+  printf '+ clean -ffdx; path: rsync mirror), DELETES the local branches listed above, and\n'
+  printf 'removes any :rwcopy working copies. Cannot be undone.\n'
+  if (( RESET_AT_RISK > 0 )); then
+    printf '\nWARNING: %s branch(es) above carry commits that are on no remote. Deleting\n' "$RESET_AT_RISK"
+    printf '         them discards those commits. Push them first if you want them.\n\n'
+  fi
+
   if (( ! assume_yes )); then
-    printf 'About to RESET the following repo(s) to a clean state:\n'
-    local t; for t in "${targets[@]}"; do printf '  - %s\n' "$t"; done
-    printf 'This DISCARDS uncommitted changes and untracked/ignored files (git: reset --hard\n'
-    printf '+ clean -ffdx; path: rsync mirror) and removes any :rwcopy working copies. Cannot be undone.\n'
     if [[ -t 0 ]]; then
       read -r -p "Type 'yes' to confirm: " reply
       [[ "$reply" == "yes" ]] || { echo "Aborted."; exit 1; }
@@ -571,7 +691,12 @@ cmd_reset() {
   # ensure_seed_image runs lazily inside reset_one (only for non-bind repos).
   local target
   for target in "${targets[@]}"; do
-    reset_one "$target"
+    if [[ -n "${RESET_STALE[$target]:-}" ]]; then
+      printf 'WARNING: %s: fetch failed (%s).\n' "$target" "${RESET_STALE[$target]}" >&2
+      printf '         Continuing with the LOCAL reset: the tree will be clean and on the\n' >&2
+      printf '         primary branch, but at the remote tip as last fetched, not as of now.\n' >&2
+    fi
+    reset_one "$target" "${RESET_PRIMARY[$target]:-}"
   done
   printf 'OK: reset complete.\n'
 }

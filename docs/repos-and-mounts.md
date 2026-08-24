@@ -30,7 +30,7 @@ Repo volumes are **global**: there is **one volume per repo name**, shared by co
 
 ./repo.sh sync cluster        # refresh ONE repo from its source (git pull, or re-copy a path source)
 ./repo.sh sync --all          # refresh EVERY registered repo — the usual start-of-day refresh
-./repo.sh reset cluster       # discard local changes — clean slate (keeps the repo registered)
+./repo.sh reset cluster       # clean slate: primary branch at the remote tip, other branches dropped
 ./repo.sh list                # show repos (add --sizes for on-disk size; --copies for :rwcopy working copies)
 ./repo.sh rm cluster          # remove the volume + any working copies + registry entry
 ./repo.sh gc                  # prune :rwcopy working copies (--repo <name>, --unused, --yes)
@@ -43,7 +43,27 @@ Repo volumes are **global**: there is **one volume per repo name**, shared by co
 
 **`sync --all` is the one to remember.** A repo volume does not track its source — it holds whatever was there when you seeded or last synced it (see *Repo volumes shadow the host* below). `./repo.sh sync --all` brings every registered repo up to date in one command: `git pull` for git sources, an `rsync -a --delete` mirror for path sources. Run it when you sit down to work, or after pulling on the host, rather than syncing repos one at a time. It leaves existing `:rwcopy` working copies alone, because they may hold uncommitted work — see the note below on refreshing those.
 
-`reset` is the "start clean" button, distinct from `sync` (which *fetches* the latest): it **discards local state** and removes any `:rwcopy` working copies. For a git source it runs `git reset --hard` to the upstream (dropping uncommitted changes **and** local commits) plus `git clean -ffdx` (removing untracked **and** git-ignored files such as build output / `node_modules`); for a path source it re-mirrors from the host source. It is **destructive and cannot be undone**, so it prompts for confirmation unless you pass `--yes`. Reset every registered repo at once with `./repo.sh reset --all`. (The Linux `bind` backend is left untouched — its "volume" is your live host checkout — and `reset` just prints how to clean it yourself.)
+`reset` is the "start clean" button, and it is a *full* reset rather than a tidy-up of wherever you happen to be standing. For a git source it fetches (pruning), works out the remote's **primary branch**, checks that branch out at the remote's tip, discards uncommitted changes and untracked/ignored files (`clean -ffdx`, so build output and `node_modules` go too), and **deletes every other local branch**. For a path source it re-mirrors from the host source. Either way it removes any `:rwcopy` working copies. Reset every registered repo at once with `./repo.sh reset --all`. (The Linux `bind` backend is left untouched — its "volume" is your live host checkout — and `reset` just prints how to clean it yourself.)
+
+**The primary branch is asked for, never assumed.** It comes from the remote's own `HEAD` (refreshed with `git remote set-head origin -a`, so a default branch renamed since you cloned is picked up), falling back to `origin/main`, then `origin/master`, and finally to whatever is checked out. Nothing hardcodes `main`: a repo whose default is `master`, `trunk`, or `develop` lands on its own default.
+
+**It tells you what it will delete before it deletes it.** Every run — including `--yes` — prints the branch it will switch to and each local branch it will drop, marking those carrying commits that are on **no remote**:
+
+```
+About to RESET the following repo(s) to a clean state:
+  - app: switches to 'main'
+      DELETE feat/parser — 3 commit(s) not on any remote  <-- unpushed work
+      DELETE fix/typo — pushed
+
+WARNING: 1 branch(es) above carry commits that are on no remote. Deleting
+         them discards those commits. Push them first if you want them.
+```
+
+It is **destructive and cannot be undone**, so it prompts for confirmation unless you pass `--yes`. The counts are measured *after* the fetch, so "not on any remote" reflects what the remote has now, not what this volume last saw.
+
+**If the fetch fails, reset still cleans.** No network, no credentials, or a remote that has gone away leaves you with a warning and a local reset: the tree ends up clean and on the primary branch, at the remote tip **as last fetched**. The final line says `STALE — fetch failed` so you know the slate is clean but not fresh.
+
+`reset` differs from `sync` in what it protects: `sync` is `git pull --ff-only` and keeps your branches and your work; `reset` keeps nothing.
 
 `add` refuses to overwrite an existing repo — use `sync` to refresh or `rm` first. Authentication for `git-url` sources uses your **host `~/.ssh`** (mounted read-only into a short-lived seeding container); local-path sources need no credentials.
 

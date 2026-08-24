@@ -209,6 +209,7 @@ expected_shared_files=(
   Dockerfile Dockerfile.seed .dockerignore
   bash-floor.sh sandbox-common.sh tools-lib.sh
   build.sh sandbox.sh repo.sh group.sh entrypoint.sh
+  repo-git-reset.sh
   rvm-reconcile.sh link-default-ruby.sh
   agent-tools-reconcile.sh link-agent-tools.sh
   refresh-ipset-allowlist.sh

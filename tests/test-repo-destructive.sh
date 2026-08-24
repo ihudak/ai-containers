@@ -105,6 +105,24 @@ case "$1 $2" in
     exit 0 ;;
   "image inspect") exit 0 ;;
 esac
+# `docker run` of the git helper. A fake that returned nothing would leave
+# repo.sh with no PRIMARY record, sending every reset down the "no branch to
+# reset onto" path — and the assertions in SLICE 2 would still pass, because
+# they were written before there was a git half to miss. So the inspect call
+# answers with a canned report, which exercises repo.sh's record parsing, its
+# summary, and the threading of the primary branch into the reset call.
+# What the helper does to a real repository is asserted in
+# tests/test-repo-git-reset.sh, which runs it against real git.
+if [[ "$1" == "run" ]]; then
+  case "$*" in
+    *" inspect /dst"*)
+      printf 'PRIMARY|main\n'
+      printf 'BRANCH|main|0|current\n'
+      printf 'BRANCH|feat/unpushed|3|\n'
+      printf 'BRANCH|fix/pushed|0|\n'
+      exit 0 ;;
+  esac
+fi
 exit 0
 FAKE
 chmod +x "$FAKE_BIN/docker"
@@ -245,6 +263,77 @@ grep -q 'refusing to reset non-interactively' "$ERR" \
   && pass "  … saying why, by name" \
   || fail "  … saying why, by name (got: $(tr '\n' ' ' < "$ERR"))"
 check "  … and NOTHING was removed" "" "$(removed)"
+
+# ── 8b. reset RUNS the git helper, and hands it what the summary promised ─────
+#
+# The three assertions below are what stands between "reset removed the working
+# copies" — which was the whole of this file's reset coverage — and "reset
+# actually reset the checkout". Without them the git half could be deleted
+# entirely and SLICE 2 would stay green.
+setup_world
+run_repo reset docs --yes
+check "reset --yes exits 0 (git helper path)" "0" "$RC"
+
+if grep -q -- 'repo-git-reset.sh:/repo-git-reset.sh:ro' "$DOCKER_LOG"; then
+  pass "reset mounts the git helper into the seed container, read-only"
+else
+  fail "reset mounts the git helper into the seed container, read-only
+$(grep '^run ' "$DOCKER_LOG" | head -3)"
+fi
+
+if grep -q -- ' inspect /dst' "$DOCKER_LOG"; then
+  pass "reset inspects BEFORE destroying — that pass is also the fetch"
+else
+  fail "reset inspects before destroying
+$(grep '^run ' "$DOCKER_LOG" | head -3)"
+fi
+
+# The fake reports PRIMARY|main, so "main" is the name the summary showed and
+# therefore the name reset must be handed. A reset that re-derived its own
+# target could differ from what the user approved.
+if grep -qE -- " reset /dst main [0-9]+:[0-9]+" "$DOCKER_LOG"; then
+  pass "the primary branch from the inspection is the one reset is given"
+else
+  fail "the primary branch from the inspection is the one reset is given
+$(grep '^run ' "$DOCKER_LOG" | head -3)"
+fi
+
+# ── 8c. the summary names the branches, and marks the ones carrying work ──────
+#
+# Printed on BOTH paths, not only before the prompt: the hermetic tier has no
+# tty and can never reach the prompt, so a summary printed only there would be
+# unassertable — and under --yes the user would get no record of what went.
+if grep -q 'DELETE feat/unpushed — 3 commit(s) not on any remote' "$OUT"; then
+  pass "the summary names a branch that will be deleted, with its unpushed count"
+else
+  fail "the summary names a branch that will be deleted, with its unpushed count
+$(cat "$OUT")"
+fi
+if grep -q 'DELETE fix/pushed — pushed' "$OUT"; then
+  pass "… and distinguishes one that is fully pushed"
+else
+  fail "… and distinguishes one that is fully pushed
+$(cat "$OUT")"
+fi
+if grep -q "switches to 'main'" "$OUT"; then
+  pass "… and says which branch the checkout will end up on"
+else
+  fail "… and says which branch the checkout will end up on
+$(cat "$OUT")"
+fi
+if grep -q 'carry commits that are on no remote' "$OUT"; then
+  pass "unpushed work raises an explicit warning above the confirmation"
+else
+  fail "unpushed work raises an explicit warning above the confirmation
+$(cat "$OUT")"
+fi
+# The primary branch itself must never be in the deletion list.
+if ! grep -q 'DELETE main' "$OUT"; then
+  pass "the primary branch is never listed for deletion"
+else
+  fail "the primary branch is never listed for deletion
+$(cat "$OUT")"
+fi
 
 # ── 9. reset --yes removes the working copies and KEEPS the base volume ───────
 setup_world
