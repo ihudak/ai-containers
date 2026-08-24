@@ -75,6 +75,10 @@ Run in discovery mode to capture outbound destinations before tightening the all
 ./sandbox.sh discovery /path/to/your/repo
 ```
 
+Afterwards, from the same directory, `./extract-discovery.sh` turns the capture into
+hostname lists and tells you which of them the image would still block — see
+[Extracting discovery results](security.md#extracting-discovery-results).
+
 Run in open mode for unrestricted egress with no capture:
 
 ```bash

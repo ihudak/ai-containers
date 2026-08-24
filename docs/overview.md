@@ -8,6 +8,7 @@
 - `refresh-ipset-allowlist.sh` resolves the concrete allowlist domains into IPv4 and IPv6 `ipset` sets.
 - `capture-blocked-traffic.sh` runs as a background root daemon in restricted mode, logging every blocked outbound destination to `/workspace/.agent-blocked/`.
 - `capture-agent-destinations.sh` helps you discover additional AI-agent-related DNS and TLS destinations in discovery mode.
+- `extract-discovery.sh` is that daemon's host-side companion: after a discovery session it turns the pcap into the two hostname lists, reports which of them this image would still block, and — only when asked — deletes the capture. See [Extracting discovery results](security.md#extracting-discovery-results).
 - `allowlist-domains.d/`, `allowlist-proxy-domains.d/`, `allowlist-cidrs.d/` contain per-component allowlist fragments. `build.sh` assembles the active fragments into the three `allowlist-*.txt` files that the Dockerfile copies into the image. Each directory also contains a `custom.txt` file that is always included regardless of which components are enabled.
 - `sandbox-common.sh` is a shared library (config parsing, container-group helpers, path/volume helpers, the repo registry) sourced by the three entry-point scripts below.
 - `build.sh` builds the image (reads `sandbox.conf`, regenerates the allowlists).

@@ -422,7 +422,8 @@ for f in project-init.sh projects.conf.example sandbox-common.sh sandbox.sh buil
          bash-floor.sh shared-files.sh \
          rvm-reconcile.sh link-default-ruby.sh agent-tools-reconcile.sh link-agent-tools.sh \
          Dockerfile Dockerfile.seed .dockerignore sandbox.conf \
-         refresh-ipset-allowlist.sh capture-blocked-traffic.sh capture-agent-destinations.sh; do
+         refresh-ipset-allowlist.sh capture-blocked-traffic.sh capture-agent-destinations.sh \
+         extract-discovery.sh; do
   [[ -f "$REPO_DIR/$f" ]] && cp "$REPO_DIR/$f" "$SCRIPTS/$f"
 done
 for d in allowlist-domains.d allowlist-proxy-domains.d allowlist-cidrs.d tools.d; do

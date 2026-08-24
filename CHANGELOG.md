@@ -6,6 +6,66 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### A script for the thing the discovery banner used to only describe
+
+- **`extract-discovery.sh` turns a discovery capture into hostname lists from the
+  host.** Discovery mode ends with a `docker run --rm --entrypoint …` line printed
+  into a banner that has scrolled away by the time anyone needs it, carrying three
+  things the reader has to get right — the image tag, the host path to mount, and
+  the in-container capture path — all three of which are already knowable from
+  where the script sits. It ships in `AI_CONTAINERS_SHARED_FILES`, so it lands
+  beside `sandbox.sh` in every project, which is the launch directory itself, which
+  is why the normal invocation is `./extract-discovery.sh` with no arguments at
+  all. `entrypoint.sh`'s banner now names it first and keeps the raw `docker run`
+  underneath, for a launch directory that has no working copy in it.
+- **It also answers the question the extract only sets up: which of those
+  hostnames restricted mode would still block.** That verdict is read out of the
+  image's own baked `/tmp/allowlist-domains.txt` and
+  `/tmp/allowlist-proxy-domains.txt`, applying the same two rules
+  `capture-blocked-traffic.sh` applies at runtime — exact full-line match, and
+  leading-`*` stripped and suffix-matched, so `example.com` is **not** covered by
+  `*.example.com`. Reading the image rather than re-assembling the fragments is
+  what makes the report unable to disagree with the running container; it also
+  duplicates none of `build.sh`.
+- **It deletes nothing by default.** The pcap is the only file here that reaches
+  gigabytes and the only raw evidence, and re-extracting is possible exactly as
+  long as it exists — so the default prints its size and the command to drop it,
+  `--clean` removes it once the extract has succeeded (keeping the hostname
+  lists), and `--discard` drops a capture you have decided not to analyse at all,
+  prompting unless `--yes`. Both remove only the specific filenames inside that
+  one directory, never `rm -rf` on a path handed in.
+
+- **The mutation tier took the survivor count from 18 to 1.** Adding the script
+  as an `EXECUTED-WHOLE` target generated 63 mutants, and the first run killed
+  45 — every survivor an assertion that had not been written: the counts line
+  nothing read, `--discard`'s exit status and its "freed" receipt, the
+  confirmation prompt actually answered rather than declined, an empty capture
+  directory, an image whose allowlists cannot be read, a comments-only proxy
+  list (the configuration that once killed `capture-blocked-traffic.sh`
+  outright), and every size branch above bytes. Nine assertions later, 62 of 63
+  die. The last one is recorded in `tests/falsify/survivors.txt` as a GAP, with
+  the reason it cannot be written here: it needs a file that exists and cannot
+  be opened, and the suite runs as root, where mode bits deny nothing.
+- **One of those survivors was a defect, not a missing assertion.** The two
+  allowlist reads nested a command substitution inside a here-string word, whose
+  exit status bash discards — so `read_from_image`'s `|| true` fallback was
+  inert, and an image whose `cat` failed was indistinguishable from one whose
+  allowlist was empty. Both now assign to a variable first, which is what makes
+  the fallback observable at all.
+- **Two defects were caught by its tests rather than by review, and one of them
+  was in the test.** An unconfirmed `--discard` died instead of doing nothing:
+  `read` fails at EOF, `set -e` turned that into an exit, and the "nothing
+  removed" message never printed — so piping input, or answering with Ctrl-D,
+  looked like a crash. Separately, the test invoked the script behind an `env`
+  prefix carrying an array of per-call assignments, which
+  `tests/falsify/derive-targets.sh` cannot see through: its `env` rule stops at
+  the first token that is neither a flag nor an assignment, so the `bash` behind
+  it was never found and the script classified as `NOT-EXECUTED`. It would have
+  entered the mutation tier claiming no oracle, and every mutant would have
+  "survived" a test that in fact kills them — the derivation was right that
+  nothing it could see executed the file, which is exactly why the invocation is
+  now a bare `bash <path>` at a command position.
+
 ### Release notes come from the CHANGELOG, and only one thing writes them
 
 - **`generate_release_notes: true` is gone from `.github/workflows/release.yml`.**

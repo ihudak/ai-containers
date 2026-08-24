@@ -200,7 +200,13 @@ tests/integration/mutate.sh revert
 
 CI runs the `fast` tier on every PR (`.github/workflows/integration.yml`) and the **whole** corpus nightly (`.github/workflows/nightly.yml`), including the `slow` and `needs-dns` cases the gate excludes on cost — so a case excluded on cost is still a case that runs. `nightly.yml` also checks that every domain in `allowlist-domains.d/` still resolves; fragments rot silently, and the only symptom is a tool that mysteriously cannot install behind the firewall.
 
-**Extract discovery results** (after exiting a discovery-mode container — the pcap is in `.agent-discovery/` of the launch directory):
+**Extract discovery results** (after exiting a discovery-mode container — the pcap is in `.agent-discovery/` of the launch directory, which is normally the project's `.ai-containers/`):
+```bash
+./extract-discovery.sh              # hostname lists + what this image would still block
+./extract-discovery.sh --clean      # ... and delete the pcap once extracted
+./extract-discovery.sh --discard    # drop a capture without extracting it (prompts; --yes skips)
+```
+`extract-discovery.sh` is a **host** script and ships in `AI_CONTAINERS_SHARED_FILES`, so it sits beside `sandbox.sh` in every project. It resolves `IMAGE_NAME` through `sandbox-common.sh` like every other entry point, defaults the capture directory to `$PWD/.agent-discovery` and falls back to the one beside itself, and mounts that directory **at** `/workspace/.agent-discovery` rather than exposing the whole launch dir. Its coverage report reads the image's own baked `/tmp/allowlist-domains.txt` and `/tmp/allowlist-proxy-domains.txt` and applies the same two matching rules `capture-blocked-traffic.sh` applies at runtime (exact full-line match; leading-`*` stripped and suffix-matched) — so it cannot disagree with what the container would actually do, and duplicates none of `build.sh`'s fragment assembly. **It deletes nothing by default**: the pcap is the only raw evidence and the only file that reaches gigabytes, so `--clean` (post-extract, keeps the hostname lists) and `--discard` (no extract at all) are explicit, and both remove only the specific filenames inside that one directory. `entrypoint.sh`'s discovery banner names the script first and keeps the raw `docker run` as the fallback for a launch directory that has no working copy in it:
 ```bash
 docker run --rm --entrypoint capture-agent-destinations.sh \
   -v "/path/to/launch-dir:/workspace" "${IMAGE_NAME:-ai-sandbox}" extract /workspace/.agent-discovery
