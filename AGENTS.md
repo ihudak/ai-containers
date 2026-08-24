@@ -149,6 +149,12 @@ The per-project `.ai-containers/` is a synced working copy; its `sandbox.local.e
 ```
 Parses the old launcher's `export` lines into a portable `sandbox.env` plus a machine-local `sandbox.local.env`, then replaces it with the thin `runme.sh` that `project-init.sh` generates — the same `emit_launcher()` function, so the two cannot drift. Old files are copied to `*.pre-migrate` (timestamped if a backup already exists) and never deleted. `--dry-run` writes nothing. Non-interactive: it needs no stdin and prompts for nothing.
 
+**Report what is registered here** (container group, network mode, resources, capture size, per project):
+```bash
+./ai-containers-report.sh [--markdown|--tsv] [--full-paths] [--no-notes] [--path-map HOST=LOCAL] [BASE_DIR ...]
+```
+Reads **this repo's `projects.conf`** and resolves each project from its `sandbox.env` (with `sandbox.local.env` overriding), the same precedence `sandbox-common.sh` applies. It deliberately does **not** search the filesystem: an earlier version walked a configurable root to a fixed depth collecting every `project-init.sh`, which answered "what does this whole machine have" rather than "what is this checkout responsible for", and made the answer depend on where it was run from. Naming a `BASE_DIR` is a path, not a search. The `BASE` column appears only when more than one base is in play (with one, the base is stated once above the table); `--tsv` always emits it, so a machine-readable schema does not change shape with the argument count. Like `project-init.sh` and `sync-to-projects.sh` it is a **base-repo** tool and is deliberately **not** in `AI_CONTAINERS_SHARED_FILES` — a project is a leaf and has no registry of its own.
+
 **Sync shared files to all registered projects** (after pulling updates to this repo):
 ```bash
 ./sync-to-projects.sh              # all projects in projects.conf

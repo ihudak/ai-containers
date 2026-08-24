@@ -34,6 +34,15 @@ and what it is guarding. This page is the practical one.
 | `integration.yml` | every push and PR | the integration corpus, but only `--tags fast --exclude needs-external,needs-dns` | `ubuntu-24.04` |
 | `nightly.yml` | 03:17 daily | the whole integration corpus, allowlist health, and the `packages-agents` / `packages-native` image tiers | `ubuntu-24.04` |
 
+Two more workflows exist and are deliberately **not** in that table, because
+neither verifies anything — listing them as coverage would overstate what CI
+checks:
+
+| Workflow | Trigger | What it does |
+| --- | --- | --- |
+| `release.yml` | a pushed tag | publishes the release, with the body taken from this CHANGELOG's matching section |
+| `update-nvm-version.yml` | Mondays 08:00 UTC, or on demand | reads the latest `nvm-sh/nvm` release and, when it differs, opens a PR updating `nvm-version` in `sandbox.conf` and `ARG NVM_VERSION` in the `Dockerfile` |
+
 **Every job runs on `ubuntu-24.04`. There is no macOS runner in any workflow.**
 So the three things CI structurally cannot tell you are:
 
