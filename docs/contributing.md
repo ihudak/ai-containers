@@ -224,7 +224,13 @@ git push origin v0.7.0
 
 `.github/workflows/release.yml` publishes the release from there, with
 `changelog-section.sh` supplying the body from `CHANGELOG.md`'s matching
-`## v0.7.0` section.
+`## v0.7.0` section, and `release-title.sh` supplying the **title** from the
+annotated tag's own message. So `-m "v0.7.0 — <one line>"` above is not a note
+to yourself: its first line becomes the release title. A lightweight tag, or an
+annotated one with an empty message, falls back to the tag name; a tag whose
+object is missing entirely **fails** rather than falling back, because a shallow
+fetch that dropped tag objects looks identical to a lightweight tag and would
+otherwise publish a bare title that reads as deliberate.
 
 - **Write the CHANGELOG section first**, in its own PR, and merge it before you
   tag. A tag whose version has no section **fails the workflow** rather than
