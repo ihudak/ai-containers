@@ -6,6 +6,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Fixed — extract-discovery could not find the capture in this repository
+
+- **The launch directory is not always the directory the script ships in.**
+  `extract-discovery.sh` looked for `.agent-discovery/` in `$PWD` and beside
+  itself, on the reasoning that it ships next to `sandbox.sh` and that *is* the
+  launch directory. True in a consumer project, where `runme.sh` cd's into
+  `.ai-containers/` before launching — and false in this repository, where the
+  engine sits at the repository root while the container is launched from the
+  synced `.ai-containers/` working copy. The capture landed one level below
+  everywhere the script looked. It now searches `./.ai-containers/` and the
+  `.ai-containers/` beside itself as well. Reported from a macOS host against a
+  real capture; no test had the base repo's shape, and the one that has it now
+  needed a second fixture to be worth anything (see below).
+- **The error listed the same directory twice.** In that same repository `$PWD`
+  and the script's own directory are the same place, so both candidates printed
+  identically — which reads as a bug in the error message rather than as an
+  answer to the question. The candidate list is deduplicated.
+- **A launch directory is now accepted as the argument.** Passing
+  `.ai-containers/` is the natural thing to reach for, and being told there is
+  no pcap *inside* it was a worse answer than looking one level down for the one
+  that obviously is.
+- **The first fixture for this could not have caught it.** Testing from the base
+  repo's root exercises `$PWD/.ai-containers` and the script-relative
+  `.ai-containers` at once — they are the same directory there — so either
+  candidate alone still found the capture and deleting one went unnoticed. A
+  second fixture stands in a *project* root with the script elsewhere, which is
+  what tells the two apart; each candidate is now independently pinned, checked
+  by deleting each in turn.
+
 ### `ai-containers-report.sh` reports THIS repo's projects
 
 - **A new base-repo tool**, beside `project-init.sh` and `sync-to-projects.sh`:
