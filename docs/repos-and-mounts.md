@@ -61,6 +61,15 @@ WARNING: 1 branch(es) above carry commits that are on no remote. Deleting
 
 It is **destructive and cannot be undone**, so it prompts for confirmation unless you pass `--yes`. The counts are measured *after* the fetch, so "not on any remote" reflects what the remote has now, not what this volume last saw.
 
+Afterwards it says what it did, one line per branch:
+
+```
+Resetting volume "ai-containers-repo-app" to a clean checkout on "master" ...
+  removed branch throwaway
+  now on master at 3500160
+  OK: app reset to a clean state.
+```
+
 **If the fetch fails, reset still cleans.** No network, no credentials, or a remote that has gone away leaves you with a warning and a local reset: the tree ends up clean and on the primary branch, at the remote tip **as last fetched**. The final line says `STALE — fetch failed` so you know the slate is clean but not fresh.
 
 `reset` differs from `sync` in what it protects: `sync` is `git pull --ff-only` and keeps your branches and your work; `reset` keeps nothing.

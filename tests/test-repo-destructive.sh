@@ -121,6 +121,20 @@ if [[ "$1" == "run" ]]; then
       printf 'BRANCH|feat/unpushed|3|\n'
       printf 'BRANCH|fix/pushed|0|\n'
       exit 0 ;;
+    *" reset /dst"*)
+      # The records repo.sh renders into prose. SOMETHING-NEW is deliberate: a
+      # record type this version of repo.sh does not know must still reach the
+      # user, because silence is the one thing a destructive command must never
+      # report.
+      printf 'DELETED|feat/unpushed\n'
+      printf 'DELETED|fix/pushed\n'
+      printf 'KEPT|stubborn|could not delete\n'
+      printf 'WARN|chown failed\n'
+      printf 'ON|main\n'
+      printf 'AT|abc1234\n'
+      printf 'DELETED-COUNT|2\n'
+      printf 'SOMETHING-NEW|from a future helper\n'
+      exit 0 ;;
   esac
 fi
 exit 0
@@ -333,6 +347,48 @@ if ! grep -q 'DELETE main' "$OUT"; then
 else
   fail "the primary branch is never listed for deletion
 $(cat "$OUT")"
+fi
+
+# ── 8d. the helper's records are rendered as prose, not leaked ────────────────
+#
+# The helper speaks records so that tests can read them; a person should not
+# have to. Unrendered they arrive as `DELETED|throwaway` / `AT|3500160`, which
+# reads like debug output leaking through — observed on a real macOS run.
+setup_world
+run_repo reset docs --yes
+if grep -q '^  removed branch feat/unpushed$' "$OUT" && grep -q '^  removed branch fix/pushed$' "$OUT"; then
+  pass "each deleted branch is named in prose"
+else
+  fail "each deleted branch is named in prose
+$(cat "$OUT")"
+fi
+if grep -q '^  now on main at abc1234$' "$OUT"; then
+  pass "the final state is one readable line"
+else
+  fail "the final state is one readable line
+$(cat "$OUT")"
+fi
+if ! grep -qE '^(DELETED|ON|AT|DELETED-COUNT)\|' "$OUT"; then
+  pass "no raw record reaches the terminal"
+else
+  fail "no raw record reaches the terminal
+$(grep -E '^[A-Z-]+\|' "$OUT")"
+fi
+# A record repo.sh does not recognise must still be shown. Dropping the unknown
+# ones would be the tidier-looking loop and the one that hides a future helper's
+# output entirely.
+if grep -q 'SOMETHING-NEW|from a future helper' "$OUT"; then
+  pass "an unrecognised record is passed through verbatim, not swallowed"
+else
+  fail "an unrecognised record is passed through verbatim, not swallowed
+$(cat "$OUT")"
+fi
+# Trouble goes to stderr, where it is not lost in a successful run's output.
+if grep -q 'kept branch stubborn' "$ERR" && grep -q 'chown failed' "$ERR"; then
+  pass "a branch that could not be deleted, and a failed chown, go to stderr"
+else
+  fail "a branch that could not be deleted, and a failed chown, go to stderr
+$(cat "$ERR")"
 fi
 
 # ── 9. reset --yes removes the working copies and KEEPS the base volume ───────
