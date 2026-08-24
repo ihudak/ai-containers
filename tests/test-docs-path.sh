@@ -5,12 +5,23 @@
 set -uo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=portability.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/portability.sh"
 fails=0
 pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails+1)); }
 
 setup() {
   TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
+  # RESOLVED once, here, rather than compared unresolved later. sandbox.sh
+  # canonicalises every mount source before it reaches the docker argv, so a
+  # test that greps the captured argv for the raw `mktemp -d` path is comparing
+  # an unresolved value against a resolved one. That is invisible wherever the
+  # temp directory is not a symlink — CI, the floor container — and fails on
+  # every macOS run, where /var is a symlink to /private/var. Resolving TMP at
+  # the source fixes every assertion in this file at once instead of each in
+  # turn. Reproduced on Linux with TMPDIR pointed at a symlink.
+  TMP="$(p_realdir "$TMP")"
   export HOME="$TMP/home"; mkdir -p "$HOME"
   export AI_CONTAINER_GROUP_INIT=clean   # non-interactive group bootstrap
   # Isolate from any VAULT_PATH/SPECS_PATH exported in the invoking shell (e.g.

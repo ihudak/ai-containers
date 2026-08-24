@@ -121,6 +121,28 @@ done
 # A page nothing links to is a page nobody finds. Reachability is transitive:
 # the component pages hang off docs/components/README.md, which hangs off the
 # index.
+# Resolve a link target to a repo-relative path, LEXICALLY and with no external
+# tool. This was `realpath -m --relative-to="$ENGINE_DIR"`, and BOTH of those
+# flags are GNU coreutils extensions that BSD realpath does not have — so on
+# macOS the command failed for every link, $norm was always empty, LINKED never
+# gained an entry, and EVERY page reported as an orphan. A check that cannot
+# pass on a whole platform is not a check there; this one had never once run on
+# a Mac. Lexical is also the correct semantics here: `-m` exists precisely to
+# skip the existence test, and these targets are compared as text against the
+# tracked page list, not opened.
+norm_link() {   # $1 = page's dir, repo-relative ("" for the root)  $2 = target
+  local combined="${1:+$1/}$2" seg out=() IFS='/'
+  read -ra _segs <<< "$combined"
+  for seg in "${_segs[@]}"; do
+    case "$seg" in
+      ''|'.') continue ;;
+      '..')   [[ "${#out[@]}" -gt 0 ]] && unset "out[$(( ${#out[@]} - 1 ))]" ;;
+      *)      out+=("$seg") ;;
+    esac
+  done
+  printf '%s' "${out[*]}"
+}
+
 declare -A LINKED=()
 for page in "${PAGES[@]}"; do
   dir="$(dirname "$page")"; [[ "$dir" == "." ]] && dir=""
@@ -128,7 +150,7 @@ for page in "${PAGES[@]}"; do
     case "$target" in http://*|https://*|mailto:*|/*|'#'*|'') continue ;; esac
     target="${target%%#*}"
     [[ -n "$target" ]] || continue
-    norm="$(cd "$ENGINE_DIR/${dir:-.}" 2>/dev/null && realpath -m --relative-to="$ENGINE_DIR" "$target" 2>/dev/null)"
+    norm="$(norm_link "$dir" "$target")"
     [[ -n "$norm" ]] && LINKED["$norm"]=1
   done < <(grep -oE '\]\([^)]+\)' "$ENGINE_DIR/$page" | sed 's/^](//; s/)$//')
 done

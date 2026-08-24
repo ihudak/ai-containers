@@ -19,6 +19,15 @@ ENGINE_DIR="$REPO_DIR"
 [[ -f "$ENGINE_DIR/ai-containers-report.sh" ]] || ENGINE_DIR="$REPO_DIR/base"
 SRC="$ENGINE_DIR/ai-containers-report.sh"
 
+# p_realdir: the base line is printed from the script's own `pwd -P`, which on
+# macOS resolves /var/folders/… to /private/var/folders/… because /var is a
+# symlink. Comparing that against the raw `mktemp -d` output is the exact
+# unresolved-vs-resolved mismatch tests/portability.sh exists to prevent, and it
+# passed everywhere /tmp is not a symlink — CI and the floor container — while
+# failing on every Mac.
+# shellcheck source=portability.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/portability.sh"
+
 fails=0
 pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails + 1)); }
@@ -88,7 +97,7 @@ $(grep -F 'registered project' <<<"$OUT")"
 fi
 
 # ── 2. the single-base layout ────────────────────────────────────────────────
-if grep -qF "base: $TMP/outer/base" <<<"$OUT"; then
+if grep -qF "base: $(p_realdir "$TMP/outer/base")" <<<"$OUT"; then
   pass "one base is stated once, above the table"
 else
   fail "one base is stated once, above the table
