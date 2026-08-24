@@ -617,3 +617,17 @@ repo-git-reset.sh:return-flip:cebd950b015708fbfa3e5da46dd8d1c4827578b9
   The three are one entry because they are one fact. If `set -e` is ever added
   to this file, that fact stops being true and all three should be re-measured:
   they would become real, killable assertions about failure handling.
+
+# ── 17 ────────────────────────────────────────────────────────────────────────
+GROUP: legacy_launchers' early return, in a script without errexit
+ai-containers-report.sh:return-flip:0f5819f8e8c518d71a8e707f2af9cf2c0e90ce69
+  [ -d "$_d" ] || return 0
+  damaged:  [ -d "$_d" ] || return 1
+  EQUIVALENT: the function is called once, as `stale="$(legacy_launchers …)"`,
+  and the caller then tests `[ -n "$stale" ]`. A command substitution's status
+  is discarded by that assignment unless `set -e` is on, and this file runs
+  `set -uo pipefail` deliberately without `-e`. So nothing anywhere reads the
+  value this mutant changes, and the output is byte-identical: a project with no
+  .ai-containers directory prints nothing either way.
+  Same shape as entry 16 in this ledger, and the same caveat applies — adding
+  `set -e` to this file would give the status a reader and make it killable.
