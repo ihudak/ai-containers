@@ -6,6 +6,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Fixed — the two nightly failures
+
+- **`models.inference.ai.azure.com` went NXDOMAIN and the firewall quietly
+  stopped allowing GitHub Models.** GitHub retired that endpoint in favour of
+  `models.github.ai`; the nightly allowlist-health job caught it on 2026-08-22
+  and had failed every night since. This is the failure mode that job exists
+  for: a dead allowlist entry is not harmless, it is a capability silently
+  withdrawn whose only symptom is a tool that mysteriously cannot reach a model
+  from behind the firewall. Every one of the 135 concrete hostnames across the
+  fragments now resolves.
+- **Case `710-agent-tools-reused-not-reinstalled` still asserted the npm
+  layout.** Claude Code installs natively now, so `command -v claude` resolved
+  while `~/.ai-tools/npm/bin/claude` was absent, and the case failed nightly
+  from 2026-08-23 — correctly reporting that the file it expected was not
+  there. It now keys on the native install, and **which artifact it watches is
+  the whole question**: `~/.local/bin/claude` is re-created on every start by
+  design (that directory does not survive the container), so its mtime can
+  never show reuse; the `versions/` directory's mtime moves whenever any new
+  version lands, so a self-update — which is not a reinstall of the group's
+  tool home — would read as a failure. The version binary itself,
+  `versions/<v>`, is group-mounted, written once by the install of that version
+  and by nothing else, and is left untouched by a self-update. The version is
+  resolved after the first launch rather than hardcoded, using the same
+  `sort -V` selection `install_claude_native` uses, because 2.1.99 must not
+  outrank 2.1.241.
+- **When the case cannot find a native install it now names both layouts**, so
+  a future fallback to npm is diagnosable from the failure message instead of
+  from a guess.
+
 ### `reset` says what it did, in prose
 
 - **The git helper's records were reaching the terminal raw.** A real run ended
