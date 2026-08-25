@@ -1,0 +1,56 @@
+# case: 770-playwright-deps-present
+# what: the Playwright build layer runs, records its version marker, and installs
+#       NOTHING -- `install-deps` is replaced by a no-op while everything around
+#       it stays truthful. This is the state the image was in before this layer
+#       existed, and the state a project would be in if the layer were ever made
+#       conditional on something that is not PLAYWRIGHT_VERSION.
+#
+#       IT DEFEATS THE DISCRIMINATING ASSERTION, NOT THE CHEAP ONE. The obvious
+#       patch -- flipping the `-n "$PLAYWRIGHT_VERSION"` guard to something never
+#       true -- would make the case fail at assertion 1 ("the version marker is
+#       missing") and it_finish there, never reaching the dpkg check that is the
+#       actual point of the case. That would demonstrate the marker file, not the
+#       oracle. 735 learned this the expensive way: its first version targeted
+#       gcc, applied cleanly, and case 730 passed all six assertions anyway,
+#       because gcc survived for an unrelated reason. A patch that a case
+#       survives, or that a case fails for a DIFFERENT reason than the one named,
+#       demonstrates nothing.
+#
+#       Leaving the marker write intact is therefore deliberate: assertions 1 and
+#       2 must still PASS, so the FAIL that arrives is unambiguously assertion 3.
+#
+#       Expected: assertions 1 and 2 PASS ("the playwright layer ran — image
+#       built against Playwright <v>", "Playwright names N OS packages"), and
+#       assertion 3 FAILS with "M of N Playwright OS dependencies are NOT
+#       installed", listing the missing ones.
+#
+#       M IS NOT N, AND THAT IS CORRECT. A handful of the packages Playwright
+#       names are already present for unrelated reasons -- libx11-6,
+#       libfontconfig1 and libjpeg-turbo8 come from the wkhtmltopdf layer, others
+#       arrive as transitive dependencies of imagemagick -- so the mutated image
+#       still has some of them. The case fails on any missing package, and the
+#       big ones (libnss3, libgbm1, the gstreamer set, the fonts) are installed
+#       by nothing else in this Dockerfile.
+#
+#       NEEDS A REBUILD. This patch changes an image build input, so the
+#       `mutate.sh apply` + `run.sh --reuse-image` procedure in AGENTS.md is
+#       SILENTLY WRONG for it -- the image would predate the mutation, the case
+#       would pass, and the mutation would be recorded dead having never been
+#       applied to anything. patch_needs_rebuild() selects it automatically;
+#       demonstrate it with tests/integration/demonstrate-needs-rebuild.sh.
+#
+#       Safe to demonstrate alongside its neighbours: unlike 735, this layer
+#       installs nothing 730/740/750/760 depend on, so it cannot mask them.
+#
+diff --git a/Dockerfile b/Dockerfile
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -359,7 +359,7 @@ RUN if [ "$INSTALL_WKHTMLTOPDF" = "1" ]; then \
+ ARG PLAYWRIGHT_VERSION=
+ RUN if [ -n "$PLAYWRIGHT_VERSION" ]; then \
+       apt-get update && \
+-      npx --yes "playwright@${PLAYWRIGHT_VERSION}" install-deps && \
++      true "install-deps defeated by mutation 770" && \
+       npx --yes "playwright@${PLAYWRIGHT_VERSION}" --version \
+         | awk '{print $NF}' > /etc/ai-containers-playwright-version && \
+       test -s /etc/ai-containers-playwright-version && \

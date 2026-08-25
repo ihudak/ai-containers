@@ -348,7 +348,11 @@ else
     fi
     # An empty value must be the skip. If the guard tested anything else — say
     # `!= "OFF"` — then `playwright=` would run `npx playwright@ install-deps`.
-    if printf '%s\n' "$pw_block" | grep -qE '\-n "\$PLAYWRIGHT_VERSION"'; then
+    # A here-string, not `printf | grep -q`: grep exits on the first match and
+    # SIGPIPEs the producer, which under `set -o pipefail` is a non-zero status
+    # nobody asked for (backlog F34, tests/test-grep-q-pipelines.sh — which
+    # caught this exact line).
+    if grep -qE '\-n "\$PLAYWRIGHT_VERSION"' <<<"$pw_block"; then
       pass "the playwright layer skips on an EMPTY PLAYWRIGHT_VERSION"
     else
       fail "the playwright layer skips on an EMPTY PLAYWRIGHT_VERSION"
