@@ -18,12 +18,21 @@
 #       Leaving the marker write intact is therefore deliberate: assertion 1 must
 #       still PASS, so the failures that arrive are unambiguously 2 and 3.
 #
-#       Expected, in order:
-#         1 PASSes  -- "the playwright layer ran — image built against <v>"
-#         2 FAILs   -- "10 of 10 representative Playwright OS dependencies are
-#                      NOT installed", listing all ten
-#         3 FAILs   -- "Playwright reports its own dependencies unsatisfied
-#                      (`install-deps --dry-run` exited 1)"
+#       Expected, in order: assertion 1 PASSes (the version marker is readable),
+#       assertion 2 FAILs reporting all ten packages missing and listing them,
+#       and assertion 3 FAILs through its dependency-unsatisfied branch.
+#
+#       Deliberately NOT quoting those three messages verbatim. A header that
+#       reproduces text a human is meant to compare against goes stale the moment
+#       the message is reworded -- which is exactly what happened to an earlier
+#       version of this block, and the same drift the paragraph below avoids by
+#       pointing at the case header instead of restating its derivation. Read the
+#       current wording in the case; what matters here is WHICH assertion fails
+#       and why, not its punctuation.
+#
+#       Assertion 3 must reach its DEPENDENCY branch, not its unclassified one:
+#       an unclassified FAIL would mean the probe never ran (no network, no npx)
+#       and would demonstrate nothing about this layer.
 #
 #       ALL TEN GO MISSING, and that was measured rather than assumed: a
 #       simulated install of every other apt-installing layer that SURVIVES into

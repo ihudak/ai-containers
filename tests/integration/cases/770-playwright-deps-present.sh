@@ -176,11 +176,19 @@ if grep -q 'All system dependencies are installed' <<<"$deps_out"; then
 elif grep -qE 'Missing system dependencies|has no installation candidate|Unable to locate package|Failed to install browser dependencies' <<<"$deps_out"; then
   fail "Playwright $pw_version reports its own dependencies unsatisfied (exit $deps_rc)"
   printf '%s\n' "$deps_out" | head -6 | sed 's/^/     /'
-elif grep -q -- '--no-install-recommends' <<<"$deps_out"; then
-  # The pre-1.62 contract, identified by the apt command it prints rather than
-  # assumed from "rc 0 and no success line". Reported as neither pass nor
+elif grep -q -- '--no-install-recommends' <<<"$deps_out" && (( deps_rc == 0 )); then
+  # The pre-1.62 contract, identified POSITIVELY by the apt command it prints,
+  # not assumed from "rc 0 and no success line". Reported as neither pass nor
   # failure, because it is neither: nothing was checked, and a PASS here would
   # grow the coverage claim without the coverage.
+  #
+  # `deps_rc == 0` is part of the identification, not belt-and-braces. Measured:
+  # 1.58.2 exits 0 whether the packages are present or absent, and with npm
+  # notices stripped its output in those two states is BYTE-IDENTICAL — it
+  # carries no install-state information at all, which is exactly why "checked
+  # nothing" is the truthful reading. So a version that printed an apt command
+  # AND signalled failure would not be this contract, and belongs in the
+  # unclassified branch below rather than being absorbed here.
   printf 'NOTE: playwright %s printed the apt command instead of verifying it (the\n' "$pw_version"
   printf '      pre-1.62 --dry-run contract), so assertion 3 checked nothing here.\n'
   printf '      Assertion 2 above is the one that holds for this image.\n'
@@ -189,7 +197,10 @@ else
   # gone) or Playwright has a third output shape. Both need a human, and neither
   # may be silently absorbed into a passing case.
   fail "the Playwright probe could not be classified (exit $deps_rc) — assertion 3 verified nothing; this is a probe or contract problem, NOT a verdict on the packages (assertion 2 above is)"
-  printf '%s\n' "$deps_out" | head -6 | sed 's/^/     /'
+  # Guarded: a dead `docker exec` leaves deps_out EMPTY (its own error goes to
+  # the local stderr), and an unguarded dump then prints one line of bare
+  # indentation, which reads as truncated output rather than as no output.
+  [[ -n "$deps_out" ]] && printf '%s\n' "$deps_out" | head -6 | sed 's/^/     /'
 fi
 
 it_finish
