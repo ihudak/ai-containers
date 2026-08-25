@@ -7,30 +7,42 @@
 #
 #       IT DEFEATS THE DISCRIMINATING ASSERTION, NOT THE CHEAP ONE. The obvious
 #       patch -- flipping the `-n "$PLAYWRIGHT_VERSION"` guard to something never
-#       true -- would make the case fail at assertion 1 ("the version marker is
-#       missing") and it_finish there, never reaching the dpkg check that is the
-#       actual point of the case. That would demonstrate the marker file, not the
+#       true -- would make the case fail at assertion 1 ("the version marker
+#       could not be read") and it_finish there, never reaching the dpkg check
+#       that is the point of the case. That demonstrates the marker file, not the
 #       oracle. 735 learned this the expensive way: its first version targeted
-#       gcc, applied cleanly, and case 730 passed all six assertions anyway,
-#       because gcc survived for an unrelated reason. A patch that a case
-#       survives, or that a case fails for a DIFFERENT reason than the one named,
-#       demonstrates nothing.
+#       gcc, applied cleanly, and case 730 passed all six assertions anyway. A
+#       patch a case survives, or that a case fails for a DIFFERENT reason than
+#       the one named, demonstrates nothing.
 #
-#       Leaving the marker write intact is therefore deliberate: assertions 1 and
-#       2 must still PASS, so the FAIL that arrives is unambiguously assertion 3.
+#       Leaving the marker write intact is therefore deliberate: assertion 1 must
+#       still PASS, so the failures that arrive are unambiguously 2 and 3.
 #
-#       Expected: assertions 1 and 2 PASS ("the playwright layer ran — image
-#       built against Playwright <v>", "Playwright names N OS packages"), and
-#       assertion 3 FAILS with "M of N Playwright OS dependencies are NOT
-#       installed", listing the missing ones.
+#       Expected, in order:
+#         1 PASSes  -- "the playwright layer ran — image built against <v>"
+#         2 FAILs   -- "10 of 10 representative Playwright OS dependencies are
+#                      NOT installed", listing all ten
+#         3 FAILs   -- "Playwright reports its own dependencies unsatisfied
+#                      (`install-deps --dry-run` exited 1)"
 #
-#       M IS NOT N, AND THAT IS CORRECT. A handful of the packages Playwright
-#       names are already present for unrelated reasons -- libx11-6,
-#       libfontconfig1 and libjpeg-turbo8 come from the wkhtmltopdf layer, others
-#       arrive as transitive dependencies of imagemagick -- so the mutated image
-#       still has some of them. The case fails on any missing package, and the
-#       big ones (libnss3, libgbm1, the gstreamer set, the fonts) are installed
-#       by nothing else in this Dockerfile.
+#       ALL TEN GO MISSING, and that was measured rather than assumed. Every
+#       package in the case's PW_PKGS list was checked against a simulated
+#       install of every other layer of the `native` variant -- the Dockerfile's
+#       base essentials, imagemagick, wkhtmltopdf, the pg/mysql clients, the
+#       build toolchain and the ruby-build set, 249 packages in total -- and none
+#       of them pulls in any of the ten. So an unmutated image has them only
+#       because this layer installed them, and a mutated image has none.
+#
+#       ASSERTION 3'S FAILURE MESSAGE IS INDIRECT, EXPECTED, AND NOT A DEFECT.
+#       The layer clears /var/lib/apt/lists in BOTH the mutated and unmutated
+#       forms (that line is outside this hunk), so in the mutated image
+#       `install-deps --dry-run` reaches apt with no package lists and reports
+#       `has no installation candidate` rather than `Missing system
+#       dependencies`. Both are exit 1 and both are correct: the deps are not
+#       there. Measured on the unmutated image, the same empty apt lists produce
+#       `All system dependencies are installed.` and exit 0, because Playwright
+#       consults dpkg first and never reaches apt when nothing is missing -- so
+#       the empty lists do not make assertion 3 vacuous in the passing direction.
 #
 #       NEEDS A REBUILD. This patch changes an image build input, so the
 #       `mutate.sh apply` + `run.sh --reuse-image` procedure in AGENTS.md is
@@ -45,12 +57,12 @@
 diff --git a/Dockerfile b/Dockerfile
 --- a/Dockerfile
 +++ b/Dockerfile
-@@ -359,7 +359,7 @@ RUN if [ "$INSTALL_WKHTMLTOPDF" = "1" ]; then \
+@@ -371,7 +371,7 @@
  ARG PLAYWRIGHT_VERSION=
  RUN if [ -n "$PLAYWRIGHT_VERSION" ]; then \
        apt-get update && \
 -      npx --yes "playwright@${PLAYWRIGHT_VERSION}" install-deps && \
 +      true "install-deps defeated by mutation 770" && \
        npx --yes "playwright@${PLAYWRIGHT_VERSION}" --version \
-         | awk '{print $NF}' > /etc/ai-containers-playwright-version && \
+         | awk 'NR==1{print $NF}' > /etc/ai-containers-playwright-version && \
        test -s /etc/ai-containers-playwright-version && \

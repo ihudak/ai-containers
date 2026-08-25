@@ -110,6 +110,31 @@ else
   fail "validate_config rejects a comma-separated playwright value (rc=$vc_rc, out='$vc_out')"
 fi
 
+# A lowercase `on`/`off` is a TYPO, not a version. is_active compares against the
+# literal ON/OFF, so without this it is read as a version and reaches the build
+# as `npx playwright@on` — an npm 404 naming neither this key nor this file.
+for bad in on off On oFF; do
+  printf '# schema-version: 4\nplaywright=%s\n' "$bad" > "$VC_TMP/sandbox.conf"
+  vc_out="$(SANDBOX_CONF="$VC_TMP/sandbox.conf" bash -c "source '$REPO_DIR/build.sh'; validate_config" 2>&1)"
+  if (( $? != 0 )) && [[ "$vc_out" == *playwright* ]]; then
+    pass "validate_config rejects playwright=$bad (capitals required)"
+  else
+    fail "validate_config rejects playwright=$bad (capitals required)"
+  fi
+done
+
+# The controls that keep the check NARROW. npm dist-tags are legitimate pinned
+# values and must keep working — a validator that demanded a numeric version
+# would refuse `next` and `beta`, which are real things to want here.
+for good in next beta 1.62.1; do
+  printf '# schema-version: 4\nplaywright=%s\n' "$good" > "$VC_TMP/sandbox.conf"
+  if SANDBOX_CONF="$VC_TMP/sandbox.conf" bash -c "source '$REPO_DIR/build.sh'; validate_config" >/dev/null 2>&1; then
+    pass "validate_config accepts playwright=$good (npm dist-tags stay usable)"
+  else
+    fail "validate_config accepts playwright=$good (npm dist-tags stay usable)"
+  fi
+done
+
 # The control: a single pinned version must NOT be rejected, or the check above
 # would be satisfied by a validate_config that refuses everything.
 printf '# schema-version: 4\nplaywright=1.58.2\n' > "$VC_TMP/sandbox.conf"

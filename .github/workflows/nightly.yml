@@ -388,10 +388,17 @@ jobs:
   packages-native:
     name: Package installs — native variant (real allowlist)
     runs-on: ubuntu-24.04
-    # Real headroom over the realistic 25-50 min estimate, but comfortably below
-    # the 730+740+750+760 worst-case sum (3900+3900+3900+7600s = 322 min). Same
-    # trade as the agents job above: a long-but-alive job is a signal, a job
+    # Real headroom over the realistic estimate, but comfortably below the
+    # 730+740+750+760+770 worst-case sum (3900+3900+3900+7600+3900s = 387 min).
+    # Same trade as the agents job above: a long-but-alive job is a signal, a job
     # killed at the outer timeout is silence.
+    #
+    # The 25-50 min the ceiling was originally sized against predates 770 and the
+    # playwright layer in the native image; both add to the run without changing
+    # the shape of the trade, and 770 itself finds the rvm group warm (it is last
+    # in filename order), so its own cost is the npx call, not another compile.
+    # If this starts running long, the Budget step below is the instrument and
+    # the COST SWITCH comment is where the lever is described.
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v5

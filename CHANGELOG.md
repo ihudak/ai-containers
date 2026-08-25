@@ -37,18 +37,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   every container that does not ask for Playwright composes the `docker run` it
   always did. Playwright's own docs suggest `--ipc=host` here; that shares the
   host IPC namespace and is not a trade this project makes.
-- **The documented oracle for the integration case does not work, and the case
-  says so.** Playwright's CLI docs describe `install-deps --dry-run` as exiting
-  non-zero when packages are missing. Measured against `playwright@1.58.2` on a
-  host with none of them installed, it printed the `apt-get` command it would
-  run and exited **0** — it never consults dpkg. A case built on it would have
-  passed against an image with not one dependency installed. Case
-  `770-playwright-deps-present` therefore uses `--dry-run` only to obtain the
-  package list, and asserts against `dpkg-query` — and refuses to report success
-  if that list comes back implausibly short, so a parse that finds nothing fails
-  loudly instead of checking nothing. The image records the resolved Playwright
-  version at `/etc/ai-containers-playwright-version` so the case compares itself
-  against the list the image was *built* from rather than one published since.
+- **`install-deps --dry-run` changed contract mid-development, which is why the
+  case does not rest on it alone.** Three measurements, each on a real image:
+  `playwright@1.58.2`, on a host with none of the packages installed, printed
+  the `apt-get` command it would run and exited **0** without consulting dpkg;
+  `playwright@1.62.1`, in an image with every package present, printed `All
+  system dependencies are installed.` and exited 0; the same 1.62.1 with
+  `libnss3` and `libgbm1` removed exited **1** naming them. So on 1.62 it is the
+  dpkg-backed check its documentation describes, and on 1.58 it was not — and
+  `playwright=ON` means *latest at build time*, so which contract an image meets
+  depends on when it was built. Case `770-playwright-deps-present` therefore
+  asserts primarily against `dpkg-query`, over a fixed set of packages measured
+  to be installed by no other layer of the `native` variant, and adds
+  Playwright's own verdict as a second assertion that reports explicitly when the
+  installed version does not verify anything rather than counting that as a pass.
+  The image records the resolved version at
+  `/etc/ai-containers-playwright-version` so the case pins to what it was *built*
+  against rather than to whatever is current.
 - **Cost, stated rather than buried.** The deps for all three browser engines
   add several hundred MB, most of it WebKit's GStreamer and codec set, and the
   `native` image variant carries them so nightly actually builds the layer.

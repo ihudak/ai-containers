@@ -341,10 +341,18 @@ RUN if [ "$INSTALL_WKHTMLTOPDF" = "1" ]; then \
 # argument test-db-clients.sh makes for KEEP_BUILD_TOOLCHAIN, backlog F60).
 # EMPTY is the skip — build.sh normalises both OFF and an unset key to it.
 #
-# Placed after the cleanup purge above, alongside imagemagick/wkhtmltopdf: apt
-# marks anything installed explicitly as manual, so the later conditional
-# toolchain purge (guarded by KEEP_BUILD_TOOLCHAIN) does not reclaim them.
-# Integration case 730 is what observes that surviving, for wkhtmltopdf.
+# Placed after the cleanup purge above, alongside imagemagick/wkhtmltopdf. One
+# purge runs LATER than this layer: the qmd layer's, gated on INSTALL_QMD=1 AND
+# KEEP_BUILD_TOOLCHAIN!=1. `install-deps` installs these packages explicitly, so
+# apt marks them manual and `--auto-remove` does not reclaim them.
+#
+# THAT ARGUMENT IS REASONED, NOT OBSERVED, and this comment previously claimed
+# integration case 730 observed it. It does not: no image any case builds
+# reaches that purge at all — `native` sets KEEP_BUILD_TOOLCHAIN=1 (via ruby and
+# db-clients) and leaves qmd=OFF, so its condition is false there, and the same
+# was true of the wkhtmltopdf precedent cited as evidence. The one configuration
+# that exercises it is `playwright=ON qmd=ON` with no ruby/db-clients/c-toolchain,
+# which nothing in the corpus builds.
 #
 # The RESOLVED version is recorded at /etc/ai-containers-playwright-version. `ON`
 # means "latest at build time", so the image cannot otherwise say which
@@ -352,8 +360,11 @@ RUN if [ "$INSTALL_WKHTMLTOPDF" = "1" ]; then \
 # that: it asks Playwright which packages this version wants and checks the image
 # has them. Asking `playwright@latest` at case-run time instead would compare the
 # image against a list published after it was built, and fail for drift rather
-# than for a defect. `awk '{print $NF}'` rather than stripping a literal
-# "Version " prefix, so a change to that prefix does not silently empty the file;
+# than for a defect. `awk 'NR==1{print $NF}'` rather than stripping a literal
+# "Version " prefix, so a change to that prefix does not silently empty the file
+# — and NR==1 because a bare `{print $NF}` prints the last field of EVERY line,
+# so one stray npm notice on stdout would write a multi-line marker that `test
+# -s` still accepts;
 # the `test -s` then fails the BUILD if it somehow did, rather than shipping an
 # image whose only evidence of this layer is an empty file.
 ARG PLAYWRIGHT_VERSION=
@@ -361,7 +372,7 @@ RUN if [ -n "$PLAYWRIGHT_VERSION" ]; then \
       apt-get update && \
       npx --yes "playwright@${PLAYWRIGHT_VERSION}" install-deps && \
       npx --yes "playwright@${PLAYWRIGHT_VERSION}" --version \
-        | awk '{print $NF}' > /etc/ai-containers-playwright-version && \
+        | awk 'NR==1{print $NF}' > /etc/ai-containers-playwright-version && \
       test -s /etc/ai-containers-playwright-version && \
       rm -rf /var/lib/apt/lists/* /root/.npm; \
     fi

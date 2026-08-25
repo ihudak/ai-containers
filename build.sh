@@ -60,6 +60,18 @@ validate_config() {
     printf '       Use ON (latest at build time), a single version (e.g. 1.58.2), or OFF.\n' >&2
     exit 1
   fi
+  # is_active compares against the LITERAL ON/OFF, so `playwright=on` is not a
+  # boolean here — it is read as a version and reaches the build as
+  # `npx playwright@on`, whose npm 404 names neither this key nor this file.
+  # Deliberately narrow: `next` and `beta` are real npm dist-tags and must keep
+  # working, so only a case-variant of the two words this key already reserves
+  # is refused.
+  if [[ "$pw_val" != "ON" && "$pw_val" != "OFF" ]] \
+     && [[ "${pw_val^^}" == "ON" || "${pw_val^^}" == "OFF" ]]; then
+    printf 'ERROR: playwright value "%s" must be written in capitals (ON or OFF).\n' "$pw_val" >&2
+    printf '       Lowercase is read as a version and becomes `npx playwright@%s`.\n' "$pw_val" >&2
+    exit 1
+  fi
   local jvm_key jvm_val ver
   for jvm_key in openjdk graalvm-ce graalvm-oracle kotlin scala maven gradle; do
     jvm_val=$(version_list "$jvm_key")
