@@ -112,6 +112,12 @@ Both GraalVM variants also install the `native-image` toolchain.
 | `db-clients` | `pg`, `mysql`, `mongo` | [Database client tools](db-clients.md) — clients only, never servers |
 | `c-toolchain` | ON / OFF | [A C compiler and headers](c-toolchain.md), for cgo and native extensions |
 
+### Browser automation
+
+| Key | Values | What it does |
+|---|---|---|
+| `playwright` | ON / version / OFF | [Playwright browser OS dependencies](playwright.md) — baked at build time; **raises `/dev/shm`** |
+
 ### Media and documents
 
 | Key | Values | What it does |

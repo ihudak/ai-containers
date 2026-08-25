@@ -49,6 +49,17 @@ validate_config() {
     printf '       Use ON (latest), a single version number (e.g. 19), or OFF.\n' >&2
     exit 1
   fi
+  # playwright names ONE version whose dependency list the build layer asks for,
+  # so a comma-separated value has no meaning — the layer runs a single
+  # `npx playwright@<ver> install-deps`. Caught here, like angular-cli's, because
+  # the alternative is an npx failure complaining about a package named
+  # "1.50.0,1.58.2", which points nowhere near this key.
+  local pw_val; pw_val=$(get_versions playwright)
+  if [[ "$pw_val" == *,* ]]; then
+    printf 'ERROR: playwright only supports a single version (got: "%s").\n' "$pw_val" >&2
+    printf '       Use ON (latest at build time), a single version (e.g. 1.58.2), or OFF.\n' >&2
+    exit 1
+  fi
   local jvm_key jvm_val ver
   for jvm_key in openjdk graalvm-ce graalvm-oracle kotlin scala maven gradle; do
     jvm_val=$(version_list "$jvm_key")
@@ -149,6 +160,12 @@ generate_allowlists() {
     include_if_enabled       "$domains_d/goreleaser.txt"      goreleaser
     include_if_enabled       "$domains_d/vale.txt"            vale
     if is_active angular-cli; then include_fragment "$domains_d/angular-cli.txt"; fi
+    # is_active, NOT is_enabled: the key's grammar is ON | x.y.z | OFF, and a
+    # PINNED version is every bit as on as ON. Gating this with is_enabled would
+    # leave a pinned install unable to download a single browser through the
+    # firewall — a failure that reads as a network problem and points nowhere
+    # near sandbox.conf.
+    if is_active playwright; then include_fragment "$domains_d/playwright.txt"; fi
     include_fragment         "$domains_d/custom.txt"
   } > "${script_dir}/allowlist-domains.txt"
 
@@ -215,6 +232,21 @@ build_args_from_config() {
     _args+=(--build-arg "ANGULAR_CLI_VERSION=${angular_raw}")
   else
     _args+=(--build-arg "ANGULAR_CLI_VERSION=")
+  fi
+
+  # Playwright's OS dependency list, asked of Playwright itself at build time.
+  # ON cannot pass through as the literal string (npx would resolve
+  # playwright@ON); a pinned version passes verbatim; OFF and empty both become
+  # EMPTY, which is the Dockerfile layer's skip condition. Emitting "OFF" here is
+  # the ruby=OFF defect this repo already paid for once — the literal value
+  # reached the runtime and was treated as a version.
+  local pw_raw; pw_raw=$(get_versions playwright)
+  if [[ "$pw_raw" == "ON" ]]; then
+    _args+=(--build-arg "PLAYWRIGHT_VERSION=latest")
+  elif [[ -n "$pw_raw" && "$pw_raw" != "OFF" ]]; then
+    _args+=(--build-arg "PLAYWRIGHT_VERSION=${pw_raw}")
+  else
+    _args+=(--build-arg "PLAYWRIGHT_VERSION=")
   fi
 
   local jvm_keys=(openjdk graalvm-ce graalvm-oracle kotlin scala maven gradle)

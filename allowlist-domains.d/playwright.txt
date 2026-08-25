@@ -1,0 +1,20 @@
+# Playwright — browser binary downloads (`npx playwright install`).
+#
+# Included only when `playwright` is active in sandbox.conf (ON or a pinned
+# version). The OS packages the browsers link against are baked into the image
+# at build time; the browsers THEMSELVES are ~500 MB that Playwright downloads
+# at container run time into ~/.cache/ms-playwright, which sandbox.sh
+# group-mounts so the download happens once per group rather than once per
+# container.
+#
+# registry.npmjs.org is NOT repeated here — base.txt already has it, and that is
+# what `npx playwright@<version>` needs before it can download anything.
+
+# Current download host (Playwright ~1.40 onwards).
+cdn.playwright.dev
+
+# The pre-1.40 host, kept because the `playwright` key accepts a PINNED version
+# and an old pin still fetches from here. Playwright also has internal
+# -akamai/-verizon fallbacks of this host; a version old enough to fall through
+# to one of them can add it to custom.txt.
+playwright.azureedge.net

@@ -892,6 +892,21 @@ run_container() {
     fi
     add_mount_if_exists config_mount_flags "$group_root/.cache/qmd" "$dev_home/.cache/qmd"
   fi
+  # Playwright's browser binaries (~500 MB) are NOT baked into the image — only
+  # the OS libraries they link against are. They are downloaded at run time into
+  # ~/.cache/ms-playwright, and containers run with --rm, so without this mount
+  # every single container start re-downloads all of them. Group-scoped for the
+  # same reason ~/.cache/qmd above is: the cost is paid once per group, not once
+  # per project and not once per run.
+  #
+  # is_active, NOT is_enabled: the key is ON | x.y.z | OFF, and a pinned version
+  # is just as on as ON.
+  if is_active playwright; then
+    if [[ "$group" != "host" ]]; then
+      install -d "$group_root/.cache/ms-playwright"
+    fi
+    add_mount_if_exists config_mount_flags "$group_root/.cache/ms-playwright" "$dev_home/.cache/ms-playwright"
+  fi
 
   # Resolve COPILOT_GITHUB_TOKEN from the group's gh hosts.yml if not set.
   local copilot_token="${COPILOT_GITHUB_TOKEN:-}"
@@ -939,8 +954,28 @@ run_container() {
   # answer is actionable and when somebody is watching the terminal.
   ai_containers_provenance_warn "$image_name" "$script_dir"
 
+  # /dev/shm sizing. Docker's default is 64 MB, and headless Chromium dies on it
+  # — the single most common Playwright-in-Docker failure, and one CONTAINER_MEMORY
+  # cannot fix, because /dev/shm is a tmpfs sized independently of the memory
+  # cgroup: a 16g container still crashes. Playwright's own docs reach for
+  # `--ipc=host`, which fixes it by sharing the HOST's IPC namespace; this
+  # project does not spend isolation to buy convenience, and --shm-size buys the
+  # same result without it.
+  #
+  # Only passed when something actually needs it, so every container that does
+  # not ask for Playwright composes exactly the `docker run` it composed before.
+  # CONTAINER_SHM_SIZE overrides, and works on its own for anything else that
+  # needs shared memory (it is not tied to this one component's key).
+  local shm_flags=()
+  if [[ -n "${CONTAINER_SHM_SIZE:-}" ]]; then
+    shm_flags=(--shm-size="$CONTAINER_SHM_SIZE")
+  elif is_active playwright; then
+    shm_flags=(--shm-size=1g)
+  fi
+
   docker run -it --rm \
     ${capabilities[@]+"${capabilities[@]}"} \
+    ${shm_flags[@]+"${shm_flags[@]}"} \
     --add-host=host.docker.internal:host-gateway \
     ${env_file_args[@]+"${env_file_args[@]}"} \
     ${port_flags[@]+"${port_flags[@]}"} \

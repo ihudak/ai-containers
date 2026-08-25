@@ -412,7 +412,19 @@ jobs:
           ( while :; do df --output=used,avail -BM / | awk 'NR==2 { gsub(/M/,""); print $1, $2 }' >> /tmp/disk-samples.log; sleep 5; done ) &
           echo "DISK_SAMPLER_PID=$!" >> "$GITHUB_ENV"
 
-      # COST SWITCH. IT_RUBY_VERSIONS (tests/integration/run.sh) defaults to
+      # COST SWITCH. Two things dominate this job's cost, and only one has a
+      # lever. (1) IT_RUBY_VERSIONS, below. (2) The `playwright=ON` in the
+      # native variant's overrides, which adds Playwright's full browser
+      # dependency set (chromium + firefox + webkit; webkit's gstreamer/codec
+      # packages are the bulk) to the IMAGE BUILD — several hundred MB of apt,
+      # paid once per build, not per case. It has no switch on purpose: case
+      # 770-playwright-deps-present is the only thing that ever proves that
+      # layer builds, and a variant without it would report the key working
+      # while nothing had installed a single package. If disk is the binding
+      # constraint, throw the Ruby lever below first — it is worth more and
+      # costs less coverage.
+      #
+      # IT_RUBY_VERSIONS (tests/integration/run.sh) defaults to
       # 3.3.6,3.4.5, and the native variant compiles BOTH at container start —
       # every one of 740/750/760 pays for this; 760's own 7600s budget is the
       # two-version cold-compile precedent (case 730) applied twice. If this job
