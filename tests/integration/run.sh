@@ -249,7 +249,7 @@ variant_overrides() {  # $1=variant → space-separated key=value; rc 1 if unkno
   case "$1" in
     default) printf '' ;;
     agents)  printf 'copilot=ON claude-code=ON codex=ON gemini=ON graphify=ON vale=ON node=22,20' ;;
-    native)  printf 'db-clients=pg,mysql,mongo imagemagick=ON wkhtmltopdf=ON ruby=%s' "$IT_RUBY_VERSIONS" ;;
+    native)  printf 'db-clients=pg,mysql,mongo imagemagick=ON wkhtmltopdf=ON playwright=ON ruby=%s' "$IT_RUBY_VERSIONS" ;;
     *)       return 1 ;;
   esac
   return 0
@@ -434,7 +434,7 @@ probe_netadmin() {
 # instead, so those cases SKIP naming `launcher`, and --require can make that
 # fatal. A case that cannot run is not a pass.
 #
-# The probe issues the SAME SHAPE sandbox.sh:942 does — `docker run -it --rm`
+# The probe issues the SAME SHAPE sandbox.sh:976 does — `docker run -it --rm`
 # with no name and no label — so it exercises the actual `-it` → `-d -i` rewrite
 # rather than a simplified stand-in that could pass while the real thing fails.
 probe_launcher() {

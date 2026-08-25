@@ -6,6 +6,60 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### `playwright=ON` — browser OS dependencies, baked at build time
+
+- **A new `sandbox.conf` key: `playwright=ON | x.y.z | OFF`** (default `OFF`).
+  It installs the operating-system packages Playwright's browsers link against
+  — `libnss3`, `libgbm1`, `libatk-bridge2.0-0t64`, the font set — by running
+  Playwright's own `install-deps` in a build layer. The package list is
+  Playwright's, deliberately not ours: a hardcoded list rots against both new
+  Playwright releases and Ubuntu's own renames, and the t64 transition already
+  moved most of that set once.
+- **It has to be a build-time key, and that is the whole point.**
+  `entrypoint.sh` permanently drops root via `capsh --user=` before the agent
+  shell exists, so the runtime-reconcile pattern the agent-tier tools and rvm
+  use is simply unavailable here — nothing in the container can ever `apt-get
+  install`. That is also why `npx playwright install --with-deps` fails inside
+  the container: the `--with-deps` half needs root.
+- **Only the libraries are baked; the browsers are not.** Those are ~500 MB
+  downloaded at run time into `~/.cache/ms-playwright`, which `sandbox.sh` now
+  group-mounts exactly as it does `~/.cache/qmd` — containers run with `--rm`,
+  so without it every start re-downloads all of them.
+  `allowlist-domains.d/playwright.txt` admits `cdn.playwright.dev` for that
+  download, gated on `is_active` so a **pinned** version counts as on, not just
+  the literal `ON`.
+- **`/dev/shm` is the resource that actually bites, and `CONTAINER_MEMORY` does
+  not govern it.** It is a tmpfs sized independently of the memory cgroup, so a
+  container given 16g still gets Docker's 64m default and headless Chromium
+  dies with `Target closed` — a message pointing nowhere near the cause. A new
+  `CONTAINER_SHM_SIZE` variable sets it, and `sandbox.sh` passes `--shm-size=1g`
+  automatically when the key is active and **nothing at all** otherwise, so
+  every container that does not ask for Playwright composes the `docker run` it
+  always did. Playwright's own docs suggest `--ipc=host` here; that shares the
+  host IPC namespace and is not a trade this project makes.
+- **`install-deps --dry-run` changed contract mid-development, which is why the
+  case does not rest on it alone.** Three measurements, each on a real image:
+  `playwright@1.58.2`, on a host with none of the packages installed, printed
+  the `apt-get` command it would run and exited **0** without consulting dpkg;
+  `playwright@1.62.1`, in an image with every package present, printed `All
+  system dependencies are installed.` and exited 0; the same 1.62.1 with
+  `libnss3` and `libgbm1` removed exited **1** naming them. So on 1.62 it is the
+  dpkg-backed check its documentation describes, and on 1.58 it was not — and
+  `playwright=ON` means *latest at build time*, so which contract an image meets
+  depends on when it was built. Case `770-playwright-deps-present` therefore
+  asserts primarily against `dpkg-query`, over a fixed set of packages measured
+  to be installed by no other layer of the `native` variant, and adds
+  Playwright's own verdict as a second assertion that reports explicitly when the
+  installed version does not verify anything rather than counting that as a pass.
+  The image records the resolved version at
+  `/etc/ai-containers-playwright-version` so the case pins to what it was *built*
+  against rather than to whatever is current.
+- **Cost, stated rather than buried.** The deps for all three browser engines
+  add several hundred MB, most of it WebKit's GStreamer and codec set, and the
+  `native` image variant carries them so nightly actually builds the layer.
+  `nightly.yml`'s cost-switch comment now names Playwright alongside
+  `IT_RUBY_VERSIONS` as a contributor, and says which lever to throw first.
+
 ### The release title comes from the tag, like the notes already did
 
 - **Every release published so far was titled `v0.6.0`, `v0.7.0`.**

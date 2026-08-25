@@ -503,8 +503,8 @@ esac
 
 out="$(bash "$TMP/callfn.sh" variant_overrides native)"
 case "$out" in
-  *db-clients=pg,mysql,mongo*imagemagick=ON*wkhtmltopdf=ON*ruby=3.3.6,3.4.5*)
-    pass "variant native carries the KEEP_BUILD_TOOLCHAIN components and both rubies" ;;
+  *db-clients=pg,mysql,mongo*imagemagick=ON*wkhtmltopdf=ON*playwright=ON*ruby=3.3.6,3.4.5*)
+    pass "variant native carries the KEEP_BUILD_TOOLCHAIN components, playwright and both rubies" ;;
   *) fail "variant native overrides — got: $out" ;;
 esac
 

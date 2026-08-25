@@ -388,10 +388,20 @@ jobs:
   packages-native:
     name: Package installs — native variant (real allowlist)
     runs-on: ubuntu-24.04
-    # Real headroom over the realistic 25-50 min estimate, but comfortably below
-    # the 730+740+750+760 worst-case sum (3900+3900+3900+7600s = 322 min). Same
-    # trade as the agents job above: a long-but-alive job is a signal, a job
+    # Real headroom over the realistic estimate, but comfortably below the
+    # 730+740+750+760+770 worst-case sum (3900+3900+3900+7600+3900s = 387 min).
+    # Same trade as the agents job above: a long-but-alive job is a signal, a job
     # killed at the outer timeout is silence.
+    #
+    # The 25-50 min the ceiling was originally sized against predates 770 and the
+    # playwright layer in the native image; both add to the run without changing
+    # the shape of the trade. In a FULL tier run 770 is last in filename order
+    # and finds the rvm group already warm, but that is a property of the run,
+    # not of the case: the `cases` input above can select it alone, and then it
+    # pays the cold two-version compile itself, which is why its own budget is
+    # 3900s and why the sum below counts it in full. If this starts running long,
+    # the Budget step below is the instrument and the COST SWITCH comment is
+    # where the lever is described.
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v5
@@ -412,7 +422,19 @@ jobs:
           ( while :; do df --output=used,avail -BM / | awk 'NR==2 { gsub(/M/,""); print $1, $2 }' >> /tmp/disk-samples.log; sleep 5; done ) &
           echo "DISK_SAMPLER_PID=$!" >> "$GITHUB_ENV"
 
-      # COST SWITCH. IT_RUBY_VERSIONS (tests/integration/run.sh) defaults to
+      # COST SWITCH. Two things dominate this job's cost, and only one has a
+      # lever. (1) IT_RUBY_VERSIONS, below. (2) The `playwright=ON` in the
+      # native variant's overrides, which adds Playwright's full browser
+      # dependency set (chromium + firefox + webkit; webkit's gstreamer/codec
+      # packages are the bulk) to the IMAGE BUILD — several hundred MB of apt,
+      # paid once per build, not per case. It has no switch on purpose: case
+      # 770-playwright-deps-present is the only thing that ever proves that
+      # layer builds, and a variant without it would report the key working
+      # while nothing had installed a single package. If disk is the binding
+      # constraint, throw the Ruby lever below first — it is worth more and
+      # costs less coverage.
+      #
+      # IT_RUBY_VERSIONS (tests/integration/run.sh) defaults to
       # 3.3.6,3.4.5, and the native variant compiles BOTH at container start —
       # every one of 740/750/760 pays for this; 760's own 7600s budget is the
       # two-version cold-compile precedent (case 730) applied twice. If this job

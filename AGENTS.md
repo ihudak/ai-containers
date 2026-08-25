@@ -20,7 +20,7 @@ A CLI-only Docker workspace for running AI coding agents (GitHub Copilot CLI, Ki
 
 `sandbox.conf` is the single source of truth for which optional components are included. Set a component to `ON` or `OFF` and rebuild. The format is strictly `component=ON` or `component=OFF`, one per line; comments start with `#`.
 
-Optional components: `copilot`, `kiro`, `claude-code`, `codex`, `gemini`, `graphify`, `openjdk`, `graalvm-ce`, `graalvm-oracle`, `kotlin`, `scala`, `maven`, `gradle`, `kubectl`, `aws-cli`, `azure-cli`, `github-cli`, `angular-cli`, `yarn`, `pnpm`, `bun`, `goreleaser`, `vale`, `qmd`, `dtctl`, `dtmgd`, `imagemagick`, `wkhtmltopdf`, `c-toolchain`.
+Optional components: `copilot`, `kiro`, `claude-code`, `codex`, `gemini`, `graphify`, `openjdk`, `graalvm-ce`, `graalvm-oracle`, `kotlin`, `scala`, `maven`, `gradle`, `kubectl`, `aws-cli`, `azure-cli`, `github-cli`, `angular-cli`, `yarn`, `pnpm`, `bun`, `goreleaser`, `vale`, `qmd`, `dtctl`, `dtmgd`, `imagemagick`, `wkhtmltopdf`, `c-toolchain`, `playwright`.
 
 **`c-toolchain=ON`** keeps a C compiler in the finished image — `build-essential`
 (gcc, g++, make, binutils, `libc6-dev`) plus `libyaml-dev zlib1g-dev libssl-dev`,
@@ -44,6 +44,39 @@ with `-B` flags so a displaced `cc1` could find its own support objects and
 plus a rebuild replaces all of it. (Go tools installed with `go install`, such as
 `golangci-lint` or `govulncheck`, are a separate matter — they need no C compiler
 and are not covered by this key.)
+
+**`playwright=ON | x.y.z | OFF`** bakes the OS packages Playwright's browsers link
+against — `libnss3`, `libgbm1`, `libatk-bridge2.0-0t64`, the font set — by running
+Playwright's own `install-deps` in a build layer. `ON` uses whatever
+`playwright@latest` wants at build time; a pinned version is reproducible and is
+what `--no-cache`-free refreshes need, since Docker caches the layer either way.
+`build.sh` rejects a comma-separated value by name: one layer runs one
+`install-deps`. The package list is **Playwright's**, deliberately not ours — a
+hardcoded list rots against both new Playwright releases and Ubuntu renames (the
+t64 transition moved most of that set).
+
+It cannot be a runtime install, and that is the whole reason it is a build-time
+key. `entrypoint.sh` permanently drops root via `capsh --user=` before the agent
+shell exists, so the runtime-reconcile pattern the agent-tier tools and rvm use
+is unavailable: nothing in the container can ever `apt-get install`. This is also
+why `npx playwright install --with-deps` fails inside the container — the
+`--with-deps` half needs root.
+
+Only the LIBRARIES are baked. The browser binaries (~500 MB) are downloaded at
+run time into `~/.cache/ms-playwright`, which `sandbox.sh` group-mounts exactly
+as it does `~/.cache/qmd`, so containers running with `--rm` do not re-download
+them every start. `allowlist-domains.d/playwright.txt` (gated on `is_active`, so
+a pinned version counts) admits `cdn.playwright.dev` for that download.
+
+**`/dev/shm` is the resource that actually bites, and `CONTAINER_MEMORY` does not
+govern it.** It is a tmpfs sized independently of the memory cgroup, so a
+container given 16g still has Docker's 64m default and headless Chromium dies
+with `Target closed` — a message pointing nowhere near the cause. `sandbox.sh`
+passes `--shm-size=1g` when the key is active, overridable via
+`CONTAINER_SHM_SIZE`, and passes nothing at all otherwise, so every container
+that does not ask for Playwright composes the `docker run` it always did.
+Playwright's own docs suggest `--ipc=host` for this; that shares the host IPC
+namespace and is not a trade this project makes.
 
 Version-list components (`node`, `python`, `ruby`, `rust`, `go`) accept comma-separated version values instead of `ON`/`OFF` (e.g., `node=22,20`). Constraints:
 - `angular-cli` accepts only a **single version** (not a comma-separated list).
@@ -177,7 +210,7 @@ Cases live in `tests/integration/cases/` and declare `tags:` and `requires:` in 
 
 The suite asserts **effect, not configuration**: it observes from outside the container whether the packet arrived, the file exists, the log line is present. `tests/test-entrypoint-wiring.sh` asserts the capture daemon is *wired into* `entrypoint.sh` and passed every day of a months-long outage, because the wiring was correct and the daemon died after being started.
 
-**Two tiers, two verbs.** Network cases call `sandbox_up`, which composes its own `docker run` — that isolates the image and the entrypoint from the launcher. Mounts, groups and volumes cases call `launcher_up`, which drives **the real `sandbox.sh`**, because every mount decision lives there and reproducing it in the harness would test the reproduction. `launcher_up` works through `tests/integration/docker-shim.sh`, a pass-through `docker` on `PATH` that rewrites the launcher's `-it` to `-d -i` and adds a `--name`/`--label` so a case can exec into the container and the runner can sweep it. `sandbox.sh:942` is the only `docker run -it` a launcher run can reach, which is what makes that identification sound; `tests/test-integration-shim.sh` pins the premise by file:line so a second one fails at its cause. These cases carry `requires: launcher`, a probed capability — a machine that cannot drive the shim SKIPs them by name rather than failing them as if mounts were broken. A launcher case never inherits the developer's `sandbox.conf` (`tests/integration/minimal-conf.sh`, shared with `run.sh`'s image build): a `ruby=` there would bootstrap rvm before the agent shell appeared. Launcher-driven cases only started passing on macOS + Colima in `b6191da`: `launcher_run`/`launcher_script` redirect `HOME` to a per-case scratch dir to isolate group state, which also threw away `$HOME/.docker/config.json`'s `currentContext` — invisible on a host where the daemon sits at the CLI's built-in default socket (Linux CI), fatal on macOS + Colima, which supplies its endpoint only through the active context. Before that fix, all 17 launcher-driven cases failed identically there.
+**Two tiers, two verbs.** Network cases call `sandbox_up`, which composes its own `docker run` — that isolates the image and the entrypoint from the launcher. Mounts, groups and volumes cases call `launcher_up`, which drives **the real `sandbox.sh`**, because every mount decision lives there and reproducing it in the harness would test the reproduction. `launcher_up` works through `tests/integration/docker-shim.sh`, a pass-through `docker` on `PATH` that rewrites the launcher's `-it` to `-d -i` and adds a `--name`/`--label` so a case can exec into the container and the runner can sweep it. `sandbox.sh:976` is the only `docker run -it` a launcher run can reach, which is what makes that identification sound; `tests/test-integration-shim.sh` pins the premise by file:line so a second one fails at its cause. These cases carry `requires: launcher`, a probed capability — a machine that cannot drive the shim SKIPs them by name rather than failing them as if mounts were broken. A launcher case never inherits the developer's `sandbox.conf` (`tests/integration/minimal-conf.sh`, shared with `run.sh`'s image build): a `ruby=` there would bootstrap rvm before the agent shell appeared. Launcher-driven cases only started passing on macOS + Colima in `b6191da`: `launcher_run`/`launcher_script` redirect `HOME` to a per-case scratch dir to isolate group state, which also threw away `$HOME/.docker/config.json`'s `currentContext` — invisible on a host where the daemon sits at the CLI's built-in default socket (Linux CI), fatal on macOS + Colima, which supplies its endpoint only through the active context. Before that fix, all 17 launcher-driven cases failed identically there.
 
 **Every case must have been seen failing.** A case never observed failing is green because its primitive works, not because the product does. Two mechanisms hold that rule up, by era:
 
@@ -259,6 +292,7 @@ The three pointers form a personal / team / product tier:
 | `ALLOW_IPV6_BYPASS` | Set `1` to suppress the `ip6tables`-unavailable warning (WSL2/nf_tables). Read by the container's firewall init (`entrypoint.sh`). | `0` | forwarded |
 | `COPILOT_GITHUB_TOKEN` | Copilot CLI auth token; bypasses device-flow OAuth. When unset, auto-extracted from the group's `~/.config/gh/hosts.yml`. Accepts a fine-grained PAT with "Copilot Requests" permission or a `gh` OAuth token. | auto from `gh` | forwarded |
 | `GITHUB_PERSONAL_ACCESS_TOKEN` | Forwarded as-is for tools that expect this exact name (github MCP servers, Claude Code github plugin). | none | forwarded |
+| `CONTAINER_SHM_SIZE` | Size of `/dev/shm` (`--shm-size`). Its SIZE is **not** governed by `CONTAINER_MEMORY` — a 16g container still gets Docker's 64m default and headless Chromium dies on it — though the pages written there ARE charged to the memory cgroup, so it is not free. Passed through unreconciled, unlike the `CONTAINER_MEMORY*` trio. Passed automatically as `1g` when `playwright` is active; set explicitly, it wins for every run. `--ipc=host` is deliberately never used. | Docker's `64m`; `1g` with `playwright` | — |
 | `SANDBOX_ENV_FILE` | Path to a `KEY=VALUE` env-file injected into the container via `docker run --env-file` — non-secret in-container **application** env (e.g. `DB_HOST`, `REDIS_URL`), not credentials. | `<project>/.ai-containers/container.env` if present, else unset | — |
 
 ## Architecture
