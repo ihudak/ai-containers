@@ -6,10 +6,10 @@ fails=0
 pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails+1)); }
 
-# SANDBOX_PATH — the ambient PATH with every directory that provides an `rvm`
-# removed, so a fixture's stub directory is the ONLY source of rvm a child can
-# resolve, and a fixture that deliberately omits that stub models absence rather
-# than modelling "whatever this developer has installed".
+# SANDBOX_PATH — the ambient PATH with `rvm` made unresolvable, so a fixture's
+# stub directory is the ONLY source of rvm a child can resolve, and a fixture
+# that deliberately omits that stub models absence rather than modelling
+# "whatever this developer has installed".
 #
 # Prepending a stub dir is not enough for the omitting case, and that was a real
 # defect, not a hypothetical: boot_case's `no_rvm=1` case asserts the reconcile
@@ -20,22 +20,19 @@ fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails+1)); }
 # fail was verify-on-host.sh's Phase 5, the one the containment invariant calls
 # a superset of nightly.
 #
+# The construction lives in tests/lib-path-isolation.sh because removing the
+# providing DIRECTORY is its own trap (it can take bash and sed with it), and
+# tests/test-rvm-fixture-isolation.sh is the guard for both halves.
+#
 # Applied to EVERY case, not only the omitting one. The other cases prepend a
 # stub that shadows the host's rvm anyway, so they are correct today by
 # ORDERING; making the invariant hold by construction means the next case to
 # omit a stub inherits it instead of rediscovering this.
-# tests/test-rvm-fixture-isolation.sh is the guard that demonstrates it.
-sandbox_path() {
-  local d kept=() IFS=':'
-  read -ra _dirs <<< "$PATH"
-  for d in "${_dirs[@]}"; do
-    [[ -n "$d" ]] || continue
-    [[ -x "$d/rvm" ]] && continue
-    kept+=("$d")
-  done
-  printf '%s' "${kept[*]}"
-}
-SANDBOX_PATH="$(sandbox_path)"
+# shellcheck source=lib-path-isolation.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib-path-isolation.sh"
+PATH_SCRATCH="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
+trap 'rm -rf "$PATH_SCRATCH"' EXIT
+SANDBOX_PATH="$(path_without_tool rvm "$PATH_SCRATCH")"
 
 bash -n "$REPO_DIR/rvm-reconcile.sh" && pass "rvm-reconcile.sh bash -n" || fail "rvm-reconcile.sh bash -n"
 
