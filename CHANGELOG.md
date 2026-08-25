@@ -6,6 +6,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### A test fixture that modelled "rvm is absent" by finding the developer's rvm
+
+- **`test-rvm-reconcile.sh` failed on any machine with rvm installed, and passed
+  everywhere else.** Its `boot_case` models "rvm bootstrapped but the loader
+  gave us no usable rvm" by *omitting* its own `rvm` stub, then asserts the
+  reconcile hits bash's `rvm: command not found`. It composed the child's PATH
+  as `"$bin:$PATH"` — the stub directory prepended to whatever the developer
+  had. Omitting the stub therefore meant "unresolvable" only on a machine with
+  no rvm. On one that had it, the call reached the **host's** rvm, the reconcile
+  succeeded, and the case failed pointing at the product: it reported
+  `ruby-3.4.5 already present`, which was the version in the developer's
+  `~/.rvm`, not in the test's temp home.
+- **CI could never see it.** GitHub's runners have no rvm, so the case passed
+  there for the thirteen days between `f95cd57` — the commit that made the case
+  reach that branch at all — and its discovery. `verify-on-host.sh`'s Phase 5
+  runs the same suite, so the **local** layer, the one `local ⊇ nightly ⊇ PR`
+  calls a superset, was the only layer that could fail, and did. This is the
+  third instance of that shape here, after macOS's `/var`→`/private/var` and the
+  symlinked `TMPDIR`: an assumption true in CI's environment and false in a
+  developer's, invisible to the layer that runs most often.
+- **Fixed at the fixture's PATH contract, and applied to all three cases** — not
+  only the one that broke. The other two prepend a stub that shadows the host's
+  rvm anyway, so they were correct by *ordering*; making the invariant hold by
+  construction means the next case to omit a stub inherits it rather than
+  rediscovering this.
+- **`tests/test-rvm-fixture-isolation.sh` is the guard, and it works by
+  demonstration.** It plants an rvm on `PATH` — so it runs identically on a
+  clean CI runner and on a developer's machine — and shows a naive composition
+  finding it, a sanitised one not, and the real fixture surviving end to end,
+  with a clean-host control so the assertion cannot be satisfied by a test that
+  fails everywhere equally. Reverting the single fixed line turns it red; the
+  control stays green throughout.
+
 ### `playwright=ON` — browser OS dependencies, baked at build time
 
 - **A new `sandbox.conf` key: `playwright=ON | x.y.z | OFF`** (default `OFF`).
