@@ -58,7 +58,12 @@ grep -q '^SANDBOX_MODE=open'    "$SBENV" && pass "sandbox.env has SANDBOX_MODE" 
 grep -q '^SANDBOX_WORKDIR=\.\.' "$SBENV" && pass "sandbox.env has SANDBOX_WORKDIR" || fail "sandbox.env has SANDBOX_WORKDIR"
 grep -q '^CONTAINER_CPUS='      "$SBENV" && pass "sandbox.env has CONTAINER_CPUS"  || fail "sandbox.env has CONTAINER_CPUS"
 ! grep -qE '^export (IMAGE_NAME|CONTAINER_)' "$LAUNCHER" && pass "runme.sh is thin (no baked config exports)" || fail "runme.sh is thin (no baked config exports)"
-grep -qxF './sandbox.sh' "$LAUNCHER" && pass "runme.sh calls bare ./sandbox.sh" || fail "runme.sh calls bare ./sandbox.sh"
+# The launcher FORWARDS its arguments now, so `./runme.sh --version` and
+# `./runme.sh restricted @app` both reach sandbox.sh. A bare `./sandbox.sh`
+# would swallow them silently, which is what this pinned the absence of before
+# there was anything to forward.
+grep -qxF './sandbox.sh "$@"' "$LAUNCHER" && pass "runme.sh forwards its arguments to ./sandbox.sh" || fail "runme.sh forwards its arguments to ./sandbox.sh"
+grep -qE '^\s*-V\|--version\|version\)' "$LAUNCHER" && pass "runme.sh answers --version without building" || fail "runme.sh answers --version without building"
 grep -qxF 'sandbox.local.env' "$PROJ/.ai-containers/.gitignore" && pass "sandbox.local.env is gitignored" || fail "sandbox.local.env is gitignored"
 # PROJ is a NEW group (isolated HOME) → group_init=from:host, host-referential, so it lands
 # in sandbox.local.env (not the portable file) even without EXTRA_MOUNTS.

@@ -67,7 +67,42 @@ chmod +x "$HOSTILE/rvm" || { printf 'SCAFFOLD-FAILED: chmod\n'; exit 1; }
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib-path-isolation.sh"
 path_without_rvm() { path_without_tool rvm "$TMP/scratch" "$1"; }
 mkdir -p "$TMP/scratch" || { printf 'SCAFFOLD-FAILED: mkdir scratch\n'; exit 1; }
-BENIGN="$(path_without_rvm "$PATH")"
+
+# BENIGN is derived INDEPENDENTLY of path_without_tool, and that is not
+# fastidiousness — the first version of this file built it WITH the function
+# under test, and the mutation tier caught the consequence immediately: five
+# mutants came back UNPROVEN with a `scaffold` channel, because a broken helper
+# broke the PATH this file then runs everything under, including its own
+# `mktemp`. An oracle that cannot set itself up when the code is wrong reports
+# nothing about the code. It is also the `assert f(x) == f(x)` shape
+# portability.sh's p_realdir note already warns about, arrived at from the other
+# direction.
+#
+# A DIFFERENT ALGORITHM on purpose: ask `command -v` where rvm is and drop that
+# directory, repeatedly, rather than scanning every entry as the helper does.
+benign_path() {   # $1 = a PATH value → the same value with no rvm on it
+  local p="$1" found dir rest
+  while :; do
+    found="$(PATH="$p" command -v rvm 2>/dev/null)" || found=""
+    [[ -n "$found" ]] || break
+    dir="$(dirname "$found")"
+    rest="$(printf '%s' "$p" | tr ':' '\n' | grep -vxF -- "$dir" | paste -sd: -)"
+    [[ "$rest" == "$p" ]] && break        # cannot make progress; stop rather than spin
+    p="$rest"
+  done
+  printf '%s' "$p"
+}
+BENIGN="$(benign_path "$PATH")"
+
+# The scaffold's own premise: whatever benign_path removed, the tools this file
+# and the real fixture need must still be there. Without this a machine whose
+# rvm shares a directory with coreutils would fail everything below for a reason
+# that has nothing to do with the property under test.
+for _t in bash sed grep mktemp; do
+  PATH="$BENIGN" command -v "$_t" >/dev/null 2>&1 && continue
+  printf 'SCAFFOLD-FAILED: removing rvm from PATH also removed %s — this host keeps rvm in a directory with coreutils, and this file cannot build a benign arm here\n' "$_t"
+  exit 1
+done
 
 # ── Scaffold premises, checked before anything is concluded from them ─────────
 # Both arms must actually differ in the property under test, or every assertion

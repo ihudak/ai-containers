@@ -6,6 +6,48 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### `--version`, and a PATH repair that took bash with it
+
+- **`./runme.sh --version` (and `./sandbox.sh --version`) reports three numbers
+  from three places**: the engine release, `sandbox.conf`'s schema version, and
+  the pinned `nvm-version`. It is pure output — the generated launcher
+  short-circuits **before** its own `./build.sh`, so asking what version this is
+  never builds an image to answer.
+- **The engine release is the only one that can lie, and the design is shaped
+  around that.** In this repo it comes from `git describe --tags`, suffix
+  included, so a tree eleven commits past a release says so instead of claiming
+  to be the release. A project's `.ai-containers/` is a working *copy*, not a git
+  repo, so `project-init.sh` and `sync-to-projects.sh` write `engine-version`
+  into it at copy time; the recorded value is preferred over git precisely so a
+  copy sitting inside an unrelated repo cannot report that repo's version, and a
+  copy that was never told reports `unknown` rather than guessing.
+- **`nvm-version` is in the report because it is pinned rather than detected** —
+  nvm's latest cannot be resolved at build time behind a rate limit, and
+  `update-nvm-version.yml` exists solely to keep the key current, so the field is
+  that job's output. An empty key reports the Dockerfile's `ARG NVM_VERSION`
+  default instead, labelled, because the question is what the *image* gets.
+- **Sourcing it from `sandbox-common.sh` was tried and reverted within the
+  hour.** Several fixtures copy a hand-picked set of engine files into an
+  isolated tree, and one new hard dependency there broke twelve tests at once.
+  `version.sh` is sourced directly by the three entry points that call into it —
+  the same reasoning that has six entry points sourcing `bash-floor.sh` directly.
+- **The PATH sanitising from the previous entry could take `bash` and `sed` with
+  it.** It dropped any directory providing `rvm`, which is harmless when rvm has
+  a directory of its own and catastrophic when a system-wide install is
+  symlinked into `/usr/local/bin`. This repo had already sprung that exact trap
+  once with `shellcheck` in place of `rvm`. A directory is now dropped only when
+  the tool is *all* it provides; otherwise it is replaced by a shadow of symlinks
+  to everything else, so nothing is built in the common case and nothing is lost
+  in the rare one.
+- **The mutation tier found a real flaw in the guard for that fix.** Five mutants
+  came back `UNPROVEN` with a `scaffold` channel, because the guard built its own
+  benign PATH *with the function under test* — so a broken helper broke the
+  test's own setup, and an oracle that cannot set itself up reports nothing. The
+  benign arm is now derived by a deliberately different algorithm, and the guard
+  asserts its own premise. That target went from 7 killed / 2 survived / 5
+  unproven to **12 killed / 2 survived / 0 unproven**, with both survivors
+  classified in the ledger.
+
 ### A test fixture that modelled "rvm is absent" by finding the developer's rvm
 
 - **`test-rvm-reconcile.sh` failed on any machine with rvm installed, and passed

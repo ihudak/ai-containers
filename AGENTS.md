@@ -210,7 +210,7 @@ Cases live in `tests/integration/cases/` and declare `tags:` and `requires:` in 
 
 The suite asserts **effect, not configuration**: it observes from outside the container whether the packet arrived, the file exists, the log line is present. `tests/test-entrypoint-wiring.sh` asserts the capture daemon is *wired into* `entrypoint.sh` and passed every day of a months-long outage, because the wiring was correct and the daemon died after being started.
 
-**Two tiers, two verbs.** Network cases call `sandbox_up`, which composes its own `docker run` — that isolates the image and the entrypoint from the launcher. Mounts, groups and volumes cases call `launcher_up`, which drives **the real `sandbox.sh`**, because every mount decision lives there and reproducing it in the harness would test the reproduction. `launcher_up` works through `tests/integration/docker-shim.sh`, a pass-through `docker` on `PATH` that rewrites the launcher's `-it` to `-d -i` and adds a `--name`/`--label` so a case can exec into the container and the runner can sweep it. `sandbox.sh:976` is the only `docker run -it` a launcher run can reach, which is what makes that identification sound; `tests/test-integration-shim.sh` pins the premise by file:line so a second one fails at its cause. These cases carry `requires: launcher`, a probed capability — a machine that cannot drive the shim SKIPs them by name rather than failing them as if mounts were broken. A launcher case never inherits the developer's `sandbox.conf` (`tests/integration/minimal-conf.sh`, shared with `run.sh`'s image build): a `ruby=` there would bootstrap rvm before the agent shell appeared. Launcher-driven cases only started passing on macOS + Colima in `b6191da`: `launcher_run`/`launcher_script` redirect `HOME` to a per-case scratch dir to isolate group state, which also threw away `$HOME/.docker/config.json`'s `currentContext` — invisible on a host where the daemon sits at the CLI's built-in default socket (Linux CI), fatal on macOS + Colima, which supplies its endpoint only through the active context. Before that fix, all 17 launcher-driven cases failed identically there.
+**Two tiers, two verbs.** Network cases call `sandbox_up`, which composes its own `docker run` — that isolates the image and the entrypoint from the launcher. Mounts, groups and volumes cases call `launcher_up`, which drives **the real `sandbox.sh`**, because every mount decision lives there and reproducing it in the harness would test the reproduction. `launcher_up` works through `tests/integration/docker-shim.sh`, a pass-through `docker` on `PATH` that rewrites the launcher's `-it` to `-d -i` and adds a `--name`/`--label` so a case can exec into the container and the runner can sweep it. `sandbox.sh:984` is the only `docker run -it` a launcher run can reach, which is what makes that identification sound; `tests/test-integration-shim.sh` pins the premise by file:line so a second one fails at its cause. These cases carry `requires: launcher`, a probed capability — a machine that cannot drive the shim SKIPs them by name rather than failing them as if mounts were broken. A launcher case never inherits the developer's `sandbox.conf` (`tests/integration/minimal-conf.sh`, shared with `run.sh`'s image build): a `ruby=` there would bootstrap rvm before the agent shell appeared. Launcher-driven cases only started passing on macOS + Colima in `b6191da`: `launcher_run`/`launcher_script` redirect `HOME` to a per-case scratch dir to isolate group state, which also threw away `$HOME/.docker/config.json`'s `currentContext` — invisible on a host where the daemon sits at the CLI's built-in default socket (Linux CI), fatal on macOS + Colima, which supplies its endpoint only through the active context. Before that fix, all 17 launcher-driven cases failed identically there.
 
 **Every case must have been seen failing.** A case never observed failing is green because its primitive works, not because the product does. Two mechanisms hold that rule up, by era:
 
@@ -252,6 +252,39 @@ CI runs the `fast` tier on every PR (`.github/workflows/integration.yml`) and th
 docker run --rm --entrypoint capture-agent-destinations.sh \
   -v "/path/to/launch-dir:/workspace" "${IMAGE_NAME:-ai-sandbox}" extract /workspace/.agent-discovery
 ```
+
+**Report what this is:**
+```bash
+./sandbox.sh --version     # anywhere; also -V, or `version`
+./runme.sh --version       # in a project (short-circuits BEFORE its own ./build.sh)
+```
+Three numbers from three sources, assembled by `version.sh` (a shared file, so
+every project has it after a sync): the **engine release**, the **`sandbox.conf`
+schema version**, and the pinned **nvm version**.
+
+The engine release is the only one that can lie, and the design is shaped around
+that. In this repo it comes from `git describe --tags` — with the suffix, so a
+tree eleven commits past a release reports `v0.7.0-11-g<sha>` rather than
+claiming to be the release. A project's `.ai-containers/` is a working **copy**,
+not a git repo, so it cannot derive anything: `project-init.sh` and
+`sync-to-projects.sh` write `engine-version` into it at copy time, and
+`version_engine` prefers that recorded value over git precisely so a copy sitting
+inside some unrelated repo cannot report that repo's version. A copy that was
+never told says `unknown`.
+
+`nvm-version` is reported because it is **pinned rather than detected** — nvm's
+latest cannot be resolved at build time behind a rate limit, and
+`.github/workflows/update-nvm-version.yml` exists solely to keep the key current,
+so this field is that job's output. An empty key reports the Dockerfile's `ARG
+NVM_VERSION` default instead, labelled: the question is what the image will get.
+
+`version.sh` is sourced by `sandbox.sh`, `project-init.sh` and
+`sync-to-projects.sh` **directly**, not via `sandbox-common.sh`. That was tried
+and reverted the same hour: several test fixtures copy a hand-picked set of
+engine files into an isolated tree, and a new hard dependency inside
+`sandbox-common.sh` broke twelve of them at once. Only the entry points that call
+into it need it — the same reasoning that has six entry points sourcing
+`bash-floor.sh` directly.
 
 **Key env vars for `sandbox.sh`:** set inline for one run (`VAULT_PATH=/path ./sandbox.sh restricted`)
 or export in the host shell profile to default for every container. The **In container** column

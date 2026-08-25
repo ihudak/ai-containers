@@ -8,6 +8,13 @@ set -euo pipefail
 _here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=SCRIPTDIR/sandbox-common.sh
 source "${_here}/sandbox-common.sh"
+# shellcheck source=version.sh
+# Sourced HERE and not from sandbox-common.sh: several test fixtures copy a
+# hand-picked set of engine files into an isolated tree, and a new hard
+# dependency in sandbox-common.sh breaks every one of them. Only the entry
+# points that call version_report() need it — the same reason six entry points
+# source bash-floor.sh directly.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/version.sh"
 
 # Parse a host-pointer value "[@]<source>[:ro|:rw]" into three globals the caller
 # reads immediately: PTR_KIND (volume|path), PTR_SRC (repo name or host path),
@@ -53,6 +60,7 @@ Usage:
   ./sandbox.sh restricted [primary]
   ./sandbox.sh discovery  [primary]
   ./sandbox.sh open       [primary]
+  ./sandbox.sh --version
 
 Commands:
   restricted  Run the container with the firewall enabled (agent runs as non-root, NET_ADMIN/NET_RAW dropped)
@@ -1034,6 +1042,11 @@ case "$command" in
     ;;
   -h|--help|help|usage)
     usage
+    ;;
+  -V|--version|version)
+    # Pure output: no build, no container. The generated runme.sh short-circuits
+    # to here BEFORE its own ./build.sh for the same reason.
+    version_report "$script_dir"
     ;;
   *)
     usage >&2
