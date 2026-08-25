@@ -6,6 +6,37 @@ fails=0
 pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails+1)); }
 
+# SANDBOX_PATH — the ambient PATH with every directory that provides an `rvm`
+# removed, so a fixture's stub directory is the ONLY source of rvm a child can
+# resolve, and a fixture that deliberately omits that stub models absence rather
+# than modelling "whatever this developer has installed".
+#
+# Prepending a stub dir is not enough for the omitting case, and that was a real
+# defect, not a hypothetical: boot_case's `no_rvm=1` case asserts the reconcile
+# hits bash's `rvm: command not found`, and on any machine with rvm on PATH the
+# call resolved to the HOST's rvm instead. The reconcile then succeeded, and the
+# case failed pointing at the product. CI has no rvm, so CI never saw it — for
+# the thirteen days between f95cd57 and 2026-08-25 the only layer that could
+# fail was verify-on-host.sh's Phase 5, the one the containment invariant calls
+# a superset of nightly.
+#
+# Applied to EVERY case, not only the omitting one. The other cases prepend a
+# stub that shadows the host's rvm anyway, so they are correct today by
+# ORDERING; making the invariant hold by construction means the next case to
+# omit a stub inherits it instead of rediscovering this.
+# tests/test-rvm-fixture-isolation.sh is the guard that demonstrates it.
+sandbox_path() {
+  local d kept=() IFS=':'
+  read -ra _dirs <<< "$PATH"
+  for d in "${_dirs[@]}"; do
+    [[ -n "$d" ]] || continue
+    [[ -x "$d/rvm" ]] && continue
+    kept+=("$d")
+  done
+  printf '%s' "${kept[*]}"
+}
+SANDBOX_PATH="$(sandbox_path)"
+
 bash -n "$REPO_DIR/rvm-reconcile.sh" && pass "rvm-reconcile.sh bash -n" || fail "rvm-reconcile.sh bash -n"
 
 run_case() {           # $1=preinstalled  $2=RUBY_VERSIONS  [$3=out sink: calls|out (default calls)]
@@ -43,7 +74,7 @@ EOF
   printf '#!/usr/bin/env bash\nexit 0\n' > "$bin/flock"; chmod +x "$bin/flock"
   # Fake curl (bootstrap) + a pre-existing rvm script so no bootstrap fetch runs.
   install -d "$home/.rvm/scripts"; printf 'true\n' > "$home/.rvm/scripts/rvm"
-  PATH="$bin:$PATH" HOME="$home" RUBY_VERSIONS="$want" \
+  PATH="$bin:$SANDBOX_PATH" HOME="$home" RUBY_VERSIONS="$want" \
     STUB_HAS_DEFAULT="${STUB_HAS_DEFAULT:-0}" STUB_INSTALL_FAILS="${STUB_INSTALL_FAILS:-0}" \
     STUB_FAIL_VERSIONS="${STUB_FAIL_VERSIONS:-}" \
     bash "$REPO_DIR/rvm-reconcile.sh" >"$home/out.log" 2>&1
@@ -167,7 +198,7 @@ EOF
   # platform — without this stub the case would silently depend on the HOST
   # having a real flock(1), which a base macOS install does not.
   printf '#!/usr/bin/env bash\nexit 0\n' > "$bin/flock"; chmod +x "$bin/flock"
-  PATH="$bin:$PATH" HOME="$home" RUBY_VERSIONS="3.4.5" \
+  PATH="$bin:$SANDBOX_PATH" HOME="$home" RUBY_VERSIONS="3.4.5" \
     bash "$REPO_DIR/rvm-reconcile.sh" >"$home/out.log" 2>&1
   printf '%s\n---CALLS---\n%s\n' "$(cat "$home/out.log" 2>/dev/null)" "$(cat "$home/calls.log" 2>/dev/null)"
   rm -rf "$home" "$bin"
@@ -276,7 +307,7 @@ rebootstrap_home="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit
 install -d "$rebootstrap_home/.rvm/scripts"; : > "$rebootstrap_home/.rvm/scripts/rvm"   # zero bytes
 printf '#!/usr/bin/env bash\necho "curl $*" >> %s/calls.log\nexit 1\n' "$rebootstrap_home" > "$rebootstrap_bin/curl"
 chmod +x "$rebootstrap_bin/curl"
-PATH="$rebootstrap_bin:$PATH" HOME="$rebootstrap_home" RUBY_VERSIONS="3.4.5" \
+PATH="$rebootstrap_bin:$SANDBOX_PATH" HOME="$rebootstrap_home" RUBY_VERSIONS="3.4.5" \
   bash "$REPO_DIR/rvm-reconcile.sh" >"$rebootstrap_home/out.log" 2>&1
 grep -q 'bootstrapping rvm' "$rebootstrap_home/out.log" \
   && pass "a zero-byte ~/.rvm/scripts/rvm triggers a re-bootstrap" \
