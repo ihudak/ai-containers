@@ -395,10 +395,13 @@ jobs:
     #
     # The 25-50 min the ceiling was originally sized against predates 770 and the
     # playwright layer in the native image; both add to the run without changing
-    # the shape of the trade, and 770 itself finds the rvm group warm (it is last
-    # in filename order), so its own cost is the npx call, not another compile.
-    # If this starts running long, the Budget step below is the instrument and
-    # the COST SWITCH comment is where the lever is described.
+    # the shape of the trade. In a FULL tier run 770 is last in filename order
+    # and finds the rvm group already warm, but that is a property of the run,
+    # not of the case: the `cases` input above can select it alone, and then it
+    # pays the cold two-version compile itself, which is why its own budget is
+    # 3900s and why the sum below counts it in full. If this starts running long,
+    # the Budget step below is the instrument and the COST SWITCH comment is
+    # where the lever is described.
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v5

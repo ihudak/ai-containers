@@ -10,6 +10,8 @@ Installs the operating-system packages Playwright's browsers link against — `l
 
 **Single version only.** `playwright=1.50.0,1.58.2` is rejected by `build.sh` with an error naming the key. One layer runs one `install-deps`.
 
+**`ON` and `OFF` must be capitals.** Every value that is not literally `ON` or `OFF` is read as a version, so `playwright=on` would become `npx playwright@on` and fail at npm with a message naming neither this key nor this file. `build.sh` refuses a lowercase or mixed-case spelling of either word up front. npm dist-tags are still valid versions here — `playwright=next` and `playwright=beta` work, and pin exactly what they say.
+
 ## Why it has to be baked into the image
 
 `entrypoint.sh` permanently drops root via `capsh --user=` before the agent shell ever starts. Nothing inside the container can `apt-get install` anything, so the runtime-reconcile pattern that the agent-tier tools and rvm use is not available here. These packages are baked at build time or they are not there at all.

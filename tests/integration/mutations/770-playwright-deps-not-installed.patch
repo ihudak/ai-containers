@@ -25,13 +25,17 @@
 #         3 FAILs   -- "Playwright reports its own dependencies unsatisfied
 #                      (`install-deps --dry-run` exited 1)"
 #
-#       ALL TEN GO MISSING, and that was measured rather than assumed. Every
-#       package in the case's PW_PKGS list was checked against a simulated
-#       install of every other layer of the `native` variant -- the Dockerfile's
-#       base essentials, imagemagick, wkhtmltopdf, the pg/mysql clients, the
-#       build toolchain and the ruby-build set, 249 packages in total -- and none
-#       of them pulls in any of the ten. So an unmutated image has them only
-#       because this layer installed them, and a mutated image has none.
+#       ALL TEN GO MISSING, and that was measured rather than assumed: a
+#       simulated install of every other apt-installing layer that SURVIVES into
+#       the finished image (249 packages) contains none of the ten. The case's
+#       own header carries that derivation in full, including the two caveats it
+#       depends on -- libnss3/libnspr4 are transitively reachable through the
+#       pyenv layer and are absent only because the cleanup purge reclaims
+#       libxmlsec1-dev, and fonts-liberation is absent only because apt picks the
+#       first alternative of fontconfig-config's Depends. Read it there rather
+#       than trusting this summary: if either caveat stops holding, this patch
+#       still applies and still mutates the image, but two of the ten stop
+#       discriminating and the demonstration gets quietly weaker.
 #
 #       ASSERTION 3'S FAILURE MESSAGE IS INDIRECT, EXPECTED, AND NOT A DEFECT.
 #       The layer clears /var/lib/apt/lists in BOTH the mutated and unmutated
