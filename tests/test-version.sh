@@ -113,6 +113,61 @@ else
   fail "an empty nvm-version reports the Dockerfile's default ($dockerfile_default) (got: $alt2)"
 fi
 
+# ── version_engine's exit STATUS, not only its output ─────────────────────────
+# Every path returns 0; nothing above checked that, so flipping any early
+# `return 0` to `return 1` changed nothing observable. Callers DO branch on it
+# (version_record's `v="$(version_engine …)"` runs under callers that may use
+# -e), so the status is part of the contract, not decoration.
+for arm in "$proj" "$bare" "$REPO_DIR"; do
+  ( cd "$arm" 2>/dev/null && bash -c "source '$REPO_DIR/version.sh'; version_engine ." >/dev/null 2>&1 )
+  rc=$?
+  (( rc == 0 )) \
+    && pass "version_engine returns 0 for $(basename "$arm")" \
+    || fail "version_engine returns 0 for $(basename "$arm") (got $rc)"
+done
+
+# ── version_record: the half that WRITES ──────────────────────────────────────
+# Nothing exercised this function at all, which is why every mutant of it
+# survived. It is what makes a project copy able to answer the question later,
+# so its three behaviours are pinned here.
+rec_src="$TMP/rec-src"; rec_dst="$TMP/rec-dst"; mkdir -p "$rec_src" "$rec_dst"
+printf 'v1.2.3-recorded\n' > "$rec_src/engine-version"
+( bash -c "source '$REPO_DIR/version.sh'; version_record '$rec_src' '$rec_dst'" )
+[[ "$(cat "$rec_dst/engine-version" 2>/dev/null)" == "v1.2.3-recorded" ]] \
+  && pass "version_record writes the source tree's version into the destination" \
+  || fail "version_record writes the source tree's version into the destination (got '$(cat "$rec_dst/engine-version" 2>/dev/null)')"
+
+# `unknown` must NOT be written. A file saying `unknown` is worse than no file:
+# version_engine already reports `unknown` when the file is absent, so writing it
+# only makes a later sync unable to tell "never recorded" from "recorded once,
+# badly".
+unk_src="$TMP/unk-src"; unk_dst="$TMP/unk-dst"; mkdir -p "$unk_src" "$unk_dst"
+( bash -c "source '$REPO_DIR/version.sh'; version_record '$unk_src' '$unk_dst'" )
+unk_rc=$?
+[[ ! -e "$unk_dst/engine-version" ]] \
+  && pass "version_record writes nothing when the source version is unknown" \
+  || fail "version_record writes nothing when the source version is unknown (wrote '$(cat "$unk_dst/engine-version" 2>/dev/null)')"
+
+# ...AND it must return 0 while doing so. This is not tidiness about exit codes:
+# project-init.sh and sync-to-projects.sh both run under `set -euo pipefail` and
+# both call version_record as a BARE command, so a non-zero return aborts them.
+# The realistic trigger is a release tarball — no .git, no recorded version —
+# where `unknown` is the correct answer and initialising a project must still
+# work. The mutation tier is what surfaced this: every assertion above passed
+# with the return flipped, because none of them looked at the status.
+(( unk_rc == 0 )) \
+  && pass "version_record returns 0 on an unknown version (its callers are set -e)" \
+  || fail "version_record returns 0 on an unknown version — project-init.sh and sync-to-projects.sh run under set -e and call it bare, so this aborts them (got $unk_rc)"
+
+# Non-fatal on an unwritable destination: project-init.sh and sync-to-projects.sh
+# call this for its side effect, and a project that cannot be told its version
+# must still be initialised.
+( bash -c "source '$REPO_DIR/version.sh'; version_record '$rec_src' '$TMP/does-not-exist'" ) 2>/dev/null
+rc=$?
+(( rc == 0 )) \
+  && pass "version_record is non-fatal when the destination cannot be written" \
+  || fail "version_record is non-fatal when the destination cannot be written (got $rc)"
+
 # ── version.sh reaches projects ───────────────────────────────────────────────
 # A shared file that sync does not copy is a feature every project lacks.
 grep -q 'version\.sh' "$REPO_DIR/shared-files.sh" \

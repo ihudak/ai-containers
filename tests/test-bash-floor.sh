@@ -72,15 +72,18 @@ done <<< "$tracked_sh"
   && pass "the floor is defined in exactly one file" \
   || fail "the floor is defined in $floor_defs files — it must be exactly one"
 
-# Derived entry-point list: executable *.sh at the engine directory's top level
-# (not nested) that are RUN, not sourced. In-container scripts are excluded by
-# name because they never execute on a host at all.
+# Derived entry-point list: tracked *.sh at the engine directory's top level (not
+# nested) that are RUN, not sourced. The exclusion list below is what encodes
+# "not sourced" — the derivation itself is `git ls-files '*.sh'` and applies no
+# executable-bit filter, so a sourced-only library reaches this loop and has to
+# be named. In-container scripts are excluded for a different reason: they never
+# execute on a host at all.
 in_container="entrypoint.sh rvm-reconcile.sh agent-tools-reconcile.sh
   link-agent-tools.sh link-default-ruby.sh install-tools.sh
   refresh-ipset-allowlist.sh capture-blocked-traffic.sh
   install-agent-skills.sh capture-agent-destinations.sh bash-floor.sh
   repo-git-reset.sh
-  sandbox-common.sh tools-lib.sh shared-files.sh"
+  sandbox-common.sh tools-lib.sh shared-files.sh version.sh"
 # The multi-line string above embeds literal newlines; normalize them to spaces
 # before substring-matching, otherwise an entry at the end of a physical line
 # (immediately before its embedded \n, not a space) never matches " $base ".
