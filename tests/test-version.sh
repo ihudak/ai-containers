@@ -209,6 +209,30 @@ unk_rc=$?
   && pass "version_record writes nothing when the source version is unknown" \
   || fail "version_record writes nothing when the source version is unknown (wrote '$(cat "$unk_dst/engine-version" 2>/dev/null)')"
 
+# ...AND a STALE record must be REMOVED, not left standing. This is the case the
+# rule above does not cover and that shipped without it: `unknown` for the SOURCE
+# says nothing about what the DESTINATION already holds. A project recorded once
+# from a git checkout and then re-synced from a release tarball (no .git, nothing
+# recorded) kept reporting the old release forever — `--version` naming a tree
+# the copy demonstrably did not come from, with nothing in the output hinting at
+# it. That is the one thing this file's header says the engine field must never
+# do.
+#
+# Asserted through the RECORDED value, not through the absence of the file, so
+# the assertion still holds if a future version marks "cannot know" some other
+# way.
+stale_src="$TMP/stale-src"; stale_dst="$TMP/stale-dst"; mkdir -p "$stale_src" "$stale_dst"
+printf 'v0.1.0-stale\n' > "$stale_dst/engine-version"
+( bash -c "source '$REPO_DIR/version.sh'; version_record '$stale_src' '$stale_dst'" )
+stale_rc=$?
+stale_got="$(bash -c "source '$REPO_DIR/version.sh'; version_engine '$stale_dst'" 2>&1)"
+[[ "$stale_got" == "unknown" ]] \
+  && pass "version_record clears a stale record when the source version is unknown" \
+  || fail "version_record clears a stale record when the source version is unknown — still reports '$stale_got', a version this copy did not come from"
+(( stale_rc == 0 )) \
+  && pass "version_record returns 0 when clearing a stale record" \
+  || fail "version_record returns 0 when clearing a stale record (got $stale_rc) — its callers run under set -e and call it bare"
+
 # ...AND it must return 0 while doing so. This is not tidiness about exit codes:
 # project-init.sh and sync-to-projects.sh both run under `set -euo pipefail` and
 # both call version_record as a BARE command, so a non-zero return aborts them.
@@ -219,6 +243,38 @@ unk_rc=$?
 (( unk_rc == 0 )) \
   && pass "version_record returns 0 on an unknown version (its callers are set -e)" \
   || fail "version_record returns 0 on an unknown version — project-init.sh and sync-to-projects.sh run under set -e and call it bare, so this aborts them (got $unk_rc)"
+
+# ...and non-fatal while CLEARING one, which is a different code path and needs a
+# different fixture. The assertion above uses a destination that does not exist,
+# where `rm -f` SUCCEEDS (that is what -f means) — so it cannot reach this. Only
+# an existing directory that cannot be written to makes the removal itself fail.
+#
+# Run under `set -e`, because that is the failure this models: both callers run
+# `set -euo pipefail` and call version_record BARE, so a non-zero status aborts
+# project-init.sh or sync-to-projects.sh outright rather than returning anything
+# for a caller to inspect. Without `set -e` the mutation tier's `&& true` variant
+# survives — execution simply carries on to `return 0` and the status is never
+# consulted.
+#
+# THE PREMISE IS CHECKED, not assumed. As root, or on a filesystem that ignores
+# the mode, `rm` succeeds anyway and the assertion would pass without exercising
+# anything. That is reported as a skip rather than counted as a pass.
+unwr="$TMP/unwritable"; mkdir -p "$unwr"
+printf 'v0.1.0-stale\n' > "$unwr/engine-version"
+chmod 500 "$unwr" 2>/dev/null
+if ( rm -f "$unwr/engine-version" ) 2>/dev/null; then
+  chmod 700 "$unwr" 2>/dev/null
+  printf 'NOTE: the unwritable-destination premise does not hold here (root, or a\n'
+  printf '      filesystem ignoring the mode), so the clear-path non-fatality\n'
+  printf '      assertion was NOT exercised.\n'
+else
+  ( bash -c "set -e; source '$REPO_DIR/version.sh'; version_record '$unk_src' '$unwr'; exit 0" ) 2>/dev/null
+  unwr_rc=$?
+  chmod 700 "$unwr" 2>/dev/null
+  (( unwr_rc == 0 )) \
+    && pass "version_record is non-fatal under set -e when a stale record cannot be removed" \
+    || fail "version_record is non-fatal under set -e when a stale record cannot be removed (got $unwr_rc) — this aborts project-init.sh and sync-to-projects.sh, which call it bare"
+fi
 
 # Non-fatal on an unwritable destination: project-init.sh and sync-to-projects.sh
 # call this for its side effect, and a project that cannot be told its version
