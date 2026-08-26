@@ -329,6 +329,20 @@ fi
 # here too. The cost is one more suite run; the alternative is a branch nobody
 # can see fail.
 #
+# ON DARWIN IT IS INERT, not merely redundant, and that is worth stating rather
+# than leaving a reader to infer "redundant" means "does the same thing twice".
+# macOS's mktemp IGNORES TMPDIR when given no template and uses the per-user
+# directory from confstr(_CS_DARWIN_USER_TEMP_DIR) — measured:
+#
+#   TMPDIR=/Users/x/tmp-plain mktemp -d
+#   -> /var/folders/w9/…/T/tmp.UuY97xwbZb
+#
+# so the export below steers nothing there. The arm still costs nothing but a
+# suite run, and it is still correct to run it — the point it exists to make is
+# made on Linux, where TMPDIR does steer, and where CI's suite-symlinked-tmp job
+# runs. tests/test-symlinked-tmp-guard.sh measures the same lever and says so
+# when it is absent.
+#
 # tests/test-symlinked-tmp-guard.sh is what keeps this honest: it demonstrates
 # that a path-naive comparison fails under the symlinked arm and PASSES under an
 # ordinary one, so pointing TMPDIR at a plain directory by accident would be
@@ -406,7 +420,33 @@ fl_keep=0
 #
 # The defaults ARE what was hardcoded, so an unset environment runs exactly what
 # it always ran. Phase 4's IT_EXTRA_ARGS is the same idea for the same reason.
-fl_jobs="${FALSIFY_JOBS:-auto}"
+# `auto` IS WRONG ON DARWIN, and the number it picks is the reason Phase 6 could
+# not complete on a Mac. fr_cpu_budget resolves `auto` to min(nproc, cgroup
+# quota); macOS has no cgroup, so it takes nproc — 12 on the machine below — and
+# every worker runs a WHOLE run-all.sh. The budget measures how many CPUs may be
+# burned, when the binding constraint here is fork throughput.
+#
+# Measured, one Apple Silicon host, one target (version.sh, 30 mutants):
+#
+#   oracle baseline    136 ms on Linux   vs   2514 ms here   (~18x, unloaded)
+#
+#   --jobs auto (12)   many controls red, oracles red on PRISTINE trees, no score
+#   --jobs 4           2 of 26 controls red, 4 mutants over a 300s clock, no score
+#   --jobs 1           clean: baseline PASS, 29 killed / 1 survived / 0 unproven,
+#                      controls 2 of 2 green, ~87s for the target
+#
+# A failed control invalidates every kill recorded near it, so the default is
+# the only value OBSERVED clean rather than the largest that might work. 2 is
+# untested — deliberately not chosen, because picking an unmeasured number is
+# what this tier exists to refuse. Measure it and raise this the same hour.
+#
+# The cost is bounded: Phase 6's own banner already tells a macOS reader to
+# expect ~45 minutes, and jobs=1 lands inside that.
+if [[ -z "${FALSIFY_JOBS:-}" && "$(uname -s)" == "Darwin" ]]; then
+  fl_jobs=1
+else
+  fl_jobs="${FALSIFY_JOBS:-auto}"
+fi
 fl_timeout="${FALSIFY_TIMEOUT:-120}"
 # HOW LONG, honestly, and platform-aware — because the previous wording was
 # "a few minutes" and on macOS this phase takes about forty-five. A progress
