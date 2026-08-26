@@ -21,11 +21,22 @@
 # a lightweight tag and falls back to the bare name, which is the exact defect
 # de3c706 existed to fix. Green workflow, silently worse release.
 #
-# So this file asserts the property that actually matters — a usable annotated
-# tag — rather than the spelling of a YAML key. It reads the fetch configuration
-# out of release.yml, performs the fetch git would perform under it, and checks
-# what lands. A future edit that swaps one plausible-looking key for another has
-# to survive that, not merely look reasonable in review.
+# AND `fetch-depth: 0` alone is not the answer either, which the FIRST version of
+# this file got wrong and shipped. It simulated ONE fetch. checkout performs TWO
+# on a tag push, the second undoing the first — observed in the runner log:
+#
+#   git fetch ... +refs/heads/*:... +refs/tags/*:refs/tags/*   <- the tag object
+#   git fetch --no-tags ... +<sha>:refs/tags/v0.8.0            <- clobbers it
+#
+# So this file passed on a configuration that published a bare-titled release,
+# which is worse than no guard: it was consulted, and it agreed. The sequence
+# below is now the one the runner actually issues, and the workflow's own
+# recovery step is EXECUTED rather than assumed — a release.yml that stops
+# restoring the tag object fails here.
+#
+# The property asserted is a usable annotated tag, never the spelling of a YAML
+# key. A future edit that swaps one plausible-looking key for another has to
+# survive that, not merely look reasonable in review.
 set -uo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -74,19 +85,48 @@ SHA="$(git -C "$UP" rev-parse 'v9.9.9^{commit}')"
 DOWN="$TMP/runner"; mkdir -p "$DOWN"
 git -C "$DOWN" init -q
 git -C "$DOWN" remote add origin "$UP"
-fetch_args=(fetch --prune --no-recurse-submodules)
+fetch_ok=1
 if [[ "$depth" != "0" ]]; then
-  fetch_args+=(--depth="$depth")
-  [[ "$tags" == "true" ]] || fetch_args+=(--no-tags)
-  fetch_args+=(origin "+${SHA}:refs/tags/v9.9.9")
+  # Shallow: one fetch, mapping the commit onto the tag ref. --no-tags unless
+  # fetch-tags asked otherwise, which is the combination that fails outright.
+  shallow=(fetch --prune --no-recurse-submodules --depth="$depth")
+  [[ "$tags" == "true" ]] || shallow+=(--no-tags)
+  shallow+=(origin "+${SHA}:refs/tags/v9.9.9")
+  git -C "$DOWN" "${shallow[@]}" >/dev/null 2>&1 || fetch_ok=0
 else
-  fetch_args+=(origin '+refs/heads/*:refs/remotes/origin/*' '+refs/tags/*:refs/tags/*')
+  # depth 0: checkout fetches heads AND tags, then STILL force-updates the tag
+  # ref to the commit. Both are issued here because both happen.
+  git -C "$DOWN" fetch --prune --no-recurse-submodules origin \
+      '+refs/heads/*:refs/remotes/origin/*' '+refs/tags/*:refs/tags/*' >/dev/null 2>&1 || fetch_ok=0
+  git -C "$DOWN" fetch --no-tags --prune --no-recurse-submodules origin \
+      "+${SHA}:refs/tags/v9.9.9" >/dev/null 2>&1 || fetch_ok=0
 fi
 
-if git -C "$DOWN" "${fetch_args[@]}" >/dev/null 2>&1; then
+if (( fetch_ok )); then
   pass "the configured checkout fetch SUCCEEDS on a tag push"
 else
   fail "the configured checkout fetch SUCCEEDS on a tag push — this is the 'Cannot fetch both <sha> and refs/tags/<tag>' failure that broke v0.8.0's first release attempt"
+fi
+
+# ── Now run the workflow's OWN recovery, whatever it is ───────────────────────
+# Extracted from release.yml rather than restated, so a workflow that stops
+# restoring the tag object cannot keep this file green. The tag name is
+# substituted for the fixture's; nothing else about the command is interpreted.
+# `.*`, not `[^\n]*`: in a POSIX bracket expression that reads as "not backslash,
+# not the letter n", so it truncated `origin` to `origi` and the restore silently
+# fetched from a remote that does not exist. grep is line-oriented anyway.
+mapfile -t restores < <(grep -oE '^[[:space:]]*git fetch .*' "$WF" | sed 's/^[[:space:]]*//')
+if (( ${#restores[@]} == 0 )); then
+  fail "release.yml runs no git fetch of its own — checkout leaves refs/tags/<tag> on a COMMIT, so the title degrades to the bare tag name"
+else
+  pass "release.yml restores the tag object itself (${#restores[@]} fetch command(s))"
+  for r in "${restores[@]}"; do
+    # The workflow names the tag through $GITHUB_REF_NAME; the fixture's tag
+    # stands in for it. sed rather than parameter expansion so the brace form
+    # needs no escaping gymnastics to match.
+    cmd="$(printf '%s' "$r" | sed 's/\${GITHUB_REF_NAME}/v9.9.9/g')"
+    ( cd "$DOWN" && eval "$cmd" ) >/dev/null 2>&1 || true
+  done
 fi
 
 # ── What landed must be a tag OBJECT, not a ref onto a commit ─────────────────
