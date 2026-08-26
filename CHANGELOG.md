@@ -48,6 +48,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   | `--jobs 4` | 2 of 26 controls red, 4 mutants over a 300 s clock, no score |
   | `--jobs 1` | clean — 29 killed / 1 survived / 0 unproven, controls 2/2 green |
 
+- **`--jobs 2` was measured afterwards and also fails** — 2 of 24 controls red,
+  four oracles red on pristine trees, no score. Recorded in the comment rather
+  than left out, because a negative result nobody writes down is one somebody
+  re-derives: the next reader's first instinct is "surely 2 is fine on a 12-core
+  machine", and it is not.
+- **That run also pointed away from CPU contention.** Assertions inside the red
+  oracles reported **rc=137** — SIGKILL, a process being shot, not a test
+  failing. Colima holds 36 GiB on that host and Phase 6 runs beside it, so the
+  ceiling may be memory rather than cores. Measure free host RAM before reaching
+  for the jobs number again.
 - **`verify-on-host.sh` now defaults `FALSIFY_JOBS` to 1 on Darwin**, and only
   there — an unset environment on Linux runs exactly what it always ran, and an
   explicit `FALSIFY_JOBS` still wins everywhere. A failed control invalidates
