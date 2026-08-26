@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## v0.8.0 — 2026-08-26
+
+**A minor bump, and the reason is `playwright=ON`.** A new `sandbox.conf` key
+bakes the OS packages Playwright's browsers link against — it has to be
+build-time, because `entrypoint.sh` drops root before the agent shell exists and
+nothing in the container can ever `apt-get install`. `sandbox.sh` gained
+`--version`, and a new `CONTAINER_SHM_SIZE` alongside it: headless Chromium dies
+on Docker's 64 MB `/dev/shm`, and `CONTAINER_MEMORY` does not govern that.
+
+The rest is repair, and two of the three defects fixed here were **tests that
+passed in one environment and covered nothing in another** — a fixture that
+modelled "rvm is absent" by finding the developer's rvm, and a version check
+that asserted the git path only where the checkout happened to have tags. Both
+had been green on somebody's machine while asserting nothing on everybody
+else's. The lesson each time was the same: construct the state the test needs
+instead of inheriting it.
+
+
 ### `--version`, and a PATH repair that took bash with it
 
 - **`./runme.sh --version` (and `./sandbox.sh --version`) reports three numbers
