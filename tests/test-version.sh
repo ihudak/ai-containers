@@ -51,10 +51,58 @@ grep -qiE 'docker run|Generating allowlists' <<<"$report" \
   && fail "--version neither builds nor launches" \
   || pass "--version neither builds nor launches"
 
-# ── The engine release, in the base repo: derived from git ────────────────────
+# ── The engine release, derived from git: SYNTHETIC repos, not the ambient one ─
+# These build the git state they need instead of hoping the checkout has it, and
+# that is not belt-and-braces — it is the whole reason this block was rewritten.
+# The version that read the AMBIENT repo passed here and left five mutants alive
+# in CI, every one of them in version_engine's git branch. The falsify job checks
+# out with a bare `actions/checkout@v5`: no `fetch-depth: 0`, therefore no tags,
+# therefore `git describe --tags` came back empty, therefore the assertion took
+# its "not applicable" branch and the whole git path went unasserted in the one
+# environment that gates merges. A test whose coverage depends on how the caller
+# happened to clone is not covering anything it can be relied on for.
+#
 # `git describe --tags` and not `describe --tags --abbrev=0`: the suffix is the
 # honest part. A copy taken five commits after v0.7.0 is not v0.7.0, and saying
 # so is the difference between a version and a wish.
+mkrepo() {  # $1=dir  $2=tag (optional) → an initialised repo with one commit
+  git -C "$1" init -q -b main 2>/dev/null || git -C "$1" init -q
+  git -C "$1" -c user.email=t@example.invalid -c user.name=t \
+      commit -q --allow-empty -m init
+  [[ -n "${2:-}" ]] && git -C "$1" tag -a "$2" -m "$2"
+  return 0
+}
+
+# Tagged: the report must carry the tag.
+gtag="$TMP/gitrepo"; mkdir -p "$gtag"
+if mkrepo "$gtag" v1.0.0; then
+  got="$(bash -c "source '$REPO_DIR/version.sh'; version_engine '$gtag'" 2>&1)"
+  [[ "$got" == v1.0.0* ]] \
+    && pass "a git tree reports its tag ($got)" \
+    || fail "a git tree reports its tag (got '$got')"
+else
+  printf 'SCAFFOLD-FAILED: could not build a tagged repo\n'; exit 1
+fi
+
+# Untagged: `describe` yields nothing, so the short SHA is the fallback. This is
+# the arm CI actually runs in, and the arm that was never asserted before.
+gbare="$TMP/gitnotag"; mkdir -p "$gbare"
+if mkrepo "$gbare"; then
+  want_sha="$(git -C "$gbare" rev-parse --short HEAD)"
+  got="$(bash -c "source '$REPO_DIR/version.sh'; version_engine '$gbare'" 2>&1)"
+  [[ "$got" == "$want_sha" ]] \
+    && pass "an untagged git tree falls back to its short SHA ($got)" \
+    || fail "an untagged git tree falls back to its short SHA (wanted '$want_sha', got '$got')"
+  [[ "$got" != "unknown" ]] \
+    && pass "an untagged git tree is not reported as unknown" \
+    || fail "an untagged git tree is not reported as unknown"
+else
+  printf 'SCAFFOLD-FAILED: could not build an untagged repo\n'; exit 1
+fi
+
+# The ambient repo, as a bonus end-to-end check. Deliberately NOT load-bearing:
+# it is skipped wherever the checkout has no tags, which is precisely how the
+# gap above went unnoticed.
 if git -C "$REPO_DIR" rev-parse --git-dir >/dev/null 2>&1; then
   want="$(git -C "$REPO_DIR" describe --tags 2>/dev/null || true)"
   if [[ -n "$want" ]]; then
