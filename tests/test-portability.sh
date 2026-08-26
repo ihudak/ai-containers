@@ -11,6 +11,20 @@ fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails+1)); }
 
 printf 'content\n' > "$TMP/f"; chmod 644 "$TMP/f"
 
+# THE FIXTURE, ASSERTED BEFORE ANYTHING IS CONCLUDED FROM IT. Every helper below
+# is handed this one file, so if it was never written they all return empty and
+# the report is four mysterious "returned empty" lines describing one fact. That
+# is exactly how F30/F32 has read three times (see the loop near the end of this
+# file). SCAFFOLD-FAILED: is its own channel in the falsify harness, reported
+# apart from assertion failures, which is what makes "the fixture is missing"
+# land as a cause rather than as four symptoms.
+if [[ ! -s "$TMP/f" ]]; then
+  printf 'SCAFFOLD-FAILED: fixture %s is missing or empty (exists=%s size=%s) — every helper below would return empty and report four symptoms of this one fact\n' \
+    "$TMP/f" "$([[ -e "$TMP/f" ]] && printf y || printf n)" \
+    "$(wc -c <"$TMP/f" 2>/dev/null | tr -d ' ' || printf '?')"
+  exit 1
+fi
+
 [[ "$(p_stat_mode "$TMP/f")" == "644" ]] \
   && pass "p_stat_mode reports the octal mode" \
   || fail "p_stat_mode reports the octal mode — got '$(p_stat_mode "$TMP/f")'"
@@ -206,7 +220,25 @@ fi
 for h in p_stat_mode p_sha1 p_md5 p_stat_meta; do
   if [[ -n "$($h "$TMP/f")" ]]; then pass "$h is non-empty on this platform"
   else
-    fail "$h returned empty — comparisons using it would pass vacuously"
+    # ON THE FAIL: LINE ITSELF. The diagnosis used to sit on indented lines
+    # UNDERNEATH this one, and it has now been lost three times running:
+    #
+    #   2026-08-21  mgd-ai-containers PR #76, run 32523718531   p_md5 + p_stat_meta
+    #   2026-08-23  ai-containers main, run 32635611521         three helpers
+    #   2026-08-26  ai-containers PR #134, run 32980406406      all four
+    #
+    # The first loss was diagnosed as the wrong STREAM and fixed by moving the
+    # diag from stderr to stdout. It went missing again anyway. The third time
+    # supplies the fact that settles it: all four FAIL: lines reached the log and
+    # NOT ONE continuation line did — so whatever drops them, the FAIL: line is
+    # the transport that demonstrably survives. The harness is not the culprit;
+    # feeding its own extraction awk a synthetic FAIL:-plus-indented-diag block
+    # keeps the diag lines correctly.
+    #
+    # So stop relying on a second line arriving. A diagnostic that needs its
+    # explanation to travel separately is one transport away from being no
+    # diagnostic at all, and this repo has now paid that three times.
+    fail "$h returned empty — comparisons using it would pass vacuously [fixture=$TMP/f exists=$([[ -e "$TMP/f" ]] && printf y || printf n) size=$(wc -c <"$TMP/f" 2>/dev/null | tr -d ' ' || printf '?') | $h stderr: $( $h "$TMP/f" 2>&1 >/dev/null | head -1 | tr -d '\n' )]"
     # WHY it was empty, because the last time this fired nobody could tell.
     # CI, 2026-08-21 (mgd-ai-containers PR #76, run 32523718531): p_md5 AND
     # p_stat_meta both returned empty in ONE control run, while the same run
@@ -229,27 +261,33 @@ for h in p_stat_mode p_sha1 p_md5 p_stat_meta; do
     # diag line, so the second recurrence of F30/F32 arrived as unexplained as
     # the first — with the explanation sitting in the same file, written for
     # this exact purpose, on the wrong stream.
-    printf '     diag: file=%s exists=%s size=%s\n' "$TMP/f" \
-      "$([[ -e "$TMP/f" ]] && printf y || printf n)" \
-      "$(wc -c <"$TMP/f" 2>/dev/null | tr -d ' ' || printf '?')"
-    printf '     diag: %s stderr: %s\n' "$h" "$( $h "$TMP/f" 2>&1 >/dev/null | head -2 | tr '\n' ' ' )"
   fi
 done
 
-# ── the diagnostics above must stay on stdout ────────────────────────────────
+# ── the diagnosis must live ON the FAIL: line ────────────────────────────────
 # Asserted on this file's own text, because the property is invisible from
-# inside a passing run: the diag lines only appear when a helper fails, and by
-# then the harness has already decided whether it could attach them. A
-# diagnostic that explains a FAIL: has to travel on the same stream as the
-# FAIL:, or the reporter cannot pair them.
-# Anchored to an actual printf STATEMENT, so this check does not match the two
-# lines of itself that necessarily contain the pattern — the self-match that
-# caught it on the first draft.
-if grep -nE "^[[:space:]]*printf '     diag:.*>&2" "$0" >/dev/null 2>&1; then
-  fail "the diag lines write to stdout, so the harness can attach them to the failure they explain"
-  grep -nE "^[[:space:]]*printf '     diag:.*>&2" "$0" | sed 's/^/     /'
+# inside a passing run: the diagnosis only appears when a helper returns empty,
+# and by then the reporter has already decided what it could keep.
+#
+# The predecessor of this check asserted the diag lines went to stdout rather
+# than stderr. They did, and they were lost anyway — twice more. The property
+# worth pinning is not which STREAM the explanation uses but whether it needs a
+# SECOND LINE to arrive at all: the FAIL: line is the one transport observed
+# surviving every recurrence.
+#
+# Anchored to the `fail "$h returned empty` statement, so the check reads the
+# code rather than this comment.
+#
+# "the failure line itself", NOT "the FAIL: line", and that is not a style
+# choice: a whitespace-prefixed `FAIL:` inside a pass/fail STRING makes the
+# falsify harness read this oracle as red on the pristine tree and skip the
+# whole target. tests/test-falsify-targets.sh guards it, having been written
+# after the previous wording of this very block cost 13 unmeasured mutants on
+# 2026-08-23. Rewriting this sentence naturally reintroduces the bug.
+if grep -qE '^[[:space:]]*fail "\$h returned empty.*fixture=' "$0"; then
+  pass "the empty-helper diagnosis travels on the failure line itself, needing no continuation to survive"
 else
-  pass "the diag lines write to stdout, so the harness can attach them to the failure they explain"
+  fail "the empty-helper diagnosis travels on the failure line itself — it has moved back onto a continuation line, the transport that lost it three times (2026-08-21, 2026-08-23, 2026-08-26)"
 fi
 
 printf '\n%d failure(s)\n' "$fails"; exit "$fails"

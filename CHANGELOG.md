@@ -6,6 +6,59 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### A diagnostic that has been lost three times now travels on the failure line
+
+- **`test-portability.sh` reports four helpers "returned empty" and, three times
+  running, has failed to say why.** `2026-08-21` (mgd PR #76, run 32523718531),
+  `2026-08-23` (main, run 32635611521), `2026-08-26` (PR #134, run 32980406406).
+  Each time the explanation existed, in the same file, written for that purpose.
+- **The first loss was diagnosed as the wrong stream** and fixed by moving the
+  diagnostic from stderr to stdout. It went missing twice more anyway. The third
+  occurrence supplies the fact that settles it: **all four `FAIL:` lines reached
+  the log and not one continuation line did.** The harness is not the culprit —
+  feeding its own extraction `awk` a synthetic block keeps continuation lines
+  correctly. Whatever drops them, the failure line is the transport observed
+  surviving every recurrence.
+- **So the diagnosis now travels on that line**, and needs no second line to
+  arrive. A diagnostic whose explanation travels separately is one transport away
+  from being no diagnostic at all, and this repo has paid that three times.
+- **The fixture is also asserted before any helper is consulted.** Every helper
+  is handed one file; if it was never written they all return empty and the
+  report is four symptoms of one fact. That is now a `SCAFFOLD-FAILED:` — its own
+  channel in the harness — naming the cause once.
+- **The rewording is load-bearing, not cosmetic.** A whitespace-prefixed `FAIL:`
+  inside a `pass`/`fail` string makes the falsify harness read the oracle as red
+  on the pristine tree and **skip the whole target**. The natural phrasing here —
+  "the FAIL: line" — is exactly the poison that cost 13 unmeasured mutants on
+  2026-08-23, so the guard caught this change reintroducing it, and the comment
+  now says why the wording cannot be tidied back.
+
+### `--jobs auto` was wrong on Darwin, and it is why Phase 6 could not complete
+
+- **`fr_cpu_budget` resolves `auto` to `min(nproc, cgroup quota)`. macOS has no
+  cgroup**, so it takes `nproc` — 12 on the measured host — and every falsify
+  worker runs a whole `run-all.sh`. The budget measures how many CPUs may be
+  burned; the binding constraint on macOS is fork throughput.
+- **Measured**, one Apple Silicon host, one target (`version.sh`, 30 mutants):
+
+  | | result |
+  |---|---|
+  | oracle baseline | **136 ms** on Linux vs **2514 ms** here (~18×, unloaded) |
+  | `--jobs auto` (12) | many controls red, oracles red on pristine trees, no score |
+  | `--jobs 4` | 2 of 26 controls red, 4 mutants over a 300 s clock, no score |
+  | `--jobs 1` | clean — 29 killed / 1 survived / 0 unproven, controls 2/2 green |
+
+- **`verify-on-host.sh` now defaults `FALSIFY_JOBS` to 1 on Darwin**, and only
+  there — an unset environment on Linux runs exactly what it always ran, and an
+  explicit `FALSIFY_JOBS` still wins everywhere. A failed control invalidates
+  every kill near it, so the default is the only value **observed** clean rather
+  than the largest that might work. **2 is untested and deliberately not chosen**;
+  measure it and raise this the same hour.
+- **Phase 5's symlinked-TMPDIR arm is INERT on Darwin, not merely redundant**,
+  and the comment now says so: macOS's `mktemp` ignores `TMPDIR` when given no
+  template, so the export steers nothing there. The arm still runs — the point it
+  exists to make is made on Linux, where CI's `suite-symlinked-tmp` job runs.
+
 ### A syntax gate that could not run counted as a rejected candidate
 
 - **`generate.sh` conflated "this candidate does not parse" with "the check never
