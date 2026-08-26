@@ -66,10 +66,23 @@ grep -qiE 'docker run|Generating allowlists' <<<"$report" \
 # honest part. A copy taken five commits after v0.7.0 is not v0.7.0, and saying
 # so is the difference between a version and a wish.
 mkrepo() {  # $1=dir  $2=tag (optional) → an initialised repo with one commit
-  git -C "$1" init -q -b main 2>/dev/null || git -C "$1" init -q
-  git -C "$1" -c user.email=t@example.invalid -c user.name=t \
-      commit -q --allow-empty -m init
-  [[ -n "${2:-}" ]] && git -C "$1" tag -a "$2" -m "$2"
+  git -C "$1" init -q -b main 2>/dev/null || git -C "$1" init -q || return 1
+  # The identity is set IN THE REPO, not inherited, and `git tag -a` needs a
+  # TAGGER just as `commit` needs an author. Passing -c to the commit alone
+  # worked on a developer machine with a global identity and silently produced an
+  # UNTAGGED repo on a CI runner, which has none — so the tagged-repo assertion
+  # measured the short-SHA fallback and reported a plausible wrong answer.
+  git -C "$1" config user.email "fixture@example.invalid" || return 1
+  git -C "$1" config user.name  "version.sh fixture"      || return 1
+  git -C "$1" commit -q --allow-empty -m init             || return 1
+  if [[ -n "${2:-}" ]]; then
+    git -C "$1" tag -a "$2" -m "$2" || return 1
+    # The scaffold's own premise, checked rather than assumed: if the tag is not
+    # actually describable, every assertion built on this repo is measuring the
+    # fallback path while claiming to measure the tag path. A bare `return 0`
+    # here is what let that happen once already.
+    git -C "$1" describe --tags >/dev/null 2>&1 || return 1
+  fi
   return 0
 }
 
