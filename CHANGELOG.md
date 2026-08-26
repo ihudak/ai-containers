@@ -6,23 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
-## v0.8.0 — 2026-08-26
+## v0.8.1 — 2026-08-26
 
-**A minor bump, and the reason is `playwright=ON`.** A new `sandbox.conf` key
-bakes the OS packages Playwright's browsers link against — it has to be
-build-time, because `entrypoint.sh` drops root before the agent shell exists and
-nothing in the container can ever `apt-get install`. `sandbox.sh` gained
-`--version`, and a new `CONTAINER_SHM_SIZE` alongside it: headless Chromium dies
-on Docker's 64 MB `/dev/shm`, and `CONTAINER_MEMORY` does not govern that.
+**A patch release that exists because v0.8.0 could not publish itself.** The tag
+push failed before any of this repository's scripts ran, and the repair that
+followed was wrong twice — first in a way that failed loudly, then in a way that
+published a release titled `v0.8.0` and looked fine. Nothing else changed: no
+key, no script, no behaviour inside the container.
 
-The rest is repair, and two of the three defects fixed here were **tests that
-passed in one environment and covered nothing in another** — a fixture that
-modelled "rvm is absent" by finding the developer's rvm, and a version check
-that asserted the git path only where the checkout happened to have tags. Both
-had been green on somebody's machine while asserting nothing on everybody
-else's. The lesson each time was the same: construct the state the test needs
-instead of inheriting it.
-
+**This section exists at all because the fixes were recorded against the wrong
+release.** Both landed after `v0.8.0` was tagged and both wrote their entries
+into that tag's section, so `CHANGELOG.md` on `main` described work the tag did
+not contain and no longer matched the release body published from it. The
+entries are unchanged; only the version they are filed under is. A changelog
+that misreports which tag carries a fix is the same class of defect as a test
+that passes without asserting anything — it is consulted, it agrees, and it is
+wrong.
 
 ### The release workflow could not check itself out
 
@@ -66,6 +65,24 @@ instead of inheriting it.
   sequence the runner actually issues, and **executes the workflow's own recovery
   step** rather than assuming it — a `release.yml` that stops restoring the tag
   object fails three of its assertions, and `fetch-tags: true` fails it outright.
+
+## v0.8.0 — 2026-08-26
+
+**A minor bump, and the reason is `playwright=ON`.** A new `sandbox.conf` key
+bakes the OS packages Playwright's browsers link against — it has to be
+build-time, because `entrypoint.sh` drops root before the agent shell exists and
+nothing in the container can ever `apt-get install`. `sandbox.sh` gained
+`--version`, and a new `CONTAINER_SHM_SIZE` alongside it: headless Chromium dies
+on Docker's 64 MB `/dev/shm`, and `CONTAINER_MEMORY` does not govern that.
+
+The rest is repair, and two of the three defects fixed here were **tests that
+passed in one environment and covered nothing in another** — a fixture that
+modelled "rvm is absent" by finding the developer's rvm, and a version check
+that asserted the git path only where the checkout happened to have tags. Both
+had been green on somebody's machine while asserting nothing on everybody
+else's. The lesson each time was the same: construct the state the test needs
+instead of inheriting it.
+
 
 ### `--version`, and a PATH repair that took bash with it
 

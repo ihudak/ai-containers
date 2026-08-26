@@ -51,6 +51,18 @@ jobs:
           # difference.
           [ "$kind" = "tag" ] || { echo "::error::refs/tags/${GITHUB_REF_NAME} is a ${kind}, not an annotated tag object — the title would degrade to the bare tag name"; exit 1; }
 
+      # The notes are the CHANGELOG's own section for this tag — the text a human
+      # wrote and a reviewer read — not GitHub's generated list of merged pull
+      # requests. `generate_release_notes: true` named every branch that landed
+      # and explained none of them, and RACED with anyone who also ran `gh
+      # release create`: both write the same body and neither waits. v0.5.0's
+      # release still carries the generated block twice.
+      #
+      # THE TAG PUSH IS THE ONLY AUTHOR. Do not also run `gh release create` —
+      # push the tag and let this publish. A tag whose version has no CHANGELOG
+      # section fails at this step, before anything is published. (docs/
+      # contributing.md carries the same rule; it is repeated here because this
+      # is where somebody adding a step would be standing.)
       - name: Extract release notes from CHANGELOG
         run: bash ./changelog-section.sh "$GITHUB_REF_NAME" > "$RUNNER_TEMP/notes.md"
 
