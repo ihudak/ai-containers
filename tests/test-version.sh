@@ -74,7 +74,16 @@ mkrepo() {  # $1=dir  $2=tag (optional) → an initialised repo with one commit
   # measured the short-SHA fallback and reported a plausible wrong answer.
   git -C "$1" config user.email "fixture@example.invalid" || return 1
   git -C "$1" config user.name  "version.sh fixture"      || return 1
-  git -C "$1" commit -q --allow-empty -m init             || return 1
+  # An ENGINE tree, not merely a git tree, because that is what the git fallback
+  # is for and what it is now scoped to. version_engine asks git only about a
+  # directory carrying project-init.sh — base-repo-only by construction, absent
+  # from AI_CONTAINERS_SHARED_FILES — so that a project's .ai-containers/ cannot
+  # answer with its ENCLOSING project's version. These fixtures existed to
+  # exercise the engine path and were shaped as bare git repos only because
+  # nothing distinguished the two before; the marker makes the intent explicit.
+  : > "$1/project-init.sh"                                || return 1
+  git -C "$1" add -A                                      || return 1
+  git -C "$1" commit -q -m init                           || return 1
   if [[ -n "${2:-}" ]]; then
     git -C "$1" tag -a "$2" -m "$2" || return 1
     # The scaffold's own premise, checked rather than assumed: if the tag is not
@@ -186,6 +195,60 @@ for arm in "$proj" "$bare" "$REPO_DIR"; do
     && pass "version_engine returns 0 for $(basename "$arm")" \
     || fail "version_engine returns 0 for $(basename "$arm") (got $rc)"
 done
+
+# ── the git fallback must not answer for SOMEBODY ELSE'S repository ───────────
+# `git -C` resolves the ENCLOSING repository, and does so for an ignored
+# directory exactly as for a tracked one. So a project's .ai-containers/ that was
+# never told its version answered with the PROJECT's own `git describe` — a real
+# release string, for entirely the wrong tree, with nothing marking it a guess.
+#
+# This is the COMMON case, not a corner: every project synced before
+# `engine-version` existed is in that state until its next sync, and
+# docs/configuration.md promises those report `unknown` "rather than guessing".
+#
+# The fixture is a project repo carrying its OWN tag, so a leaked answer is
+# unmistakable rather than merely wrong-looking.
+proj_repo="$TMP/enclosing"; mkdir -p "$proj_repo/.ai-containers"
+git init -q --initial-branch=main "$proj_repo" >/dev/null 2>&1 || git init -q "$proj_repo" >/dev/null 2>&1
+git -C "$proj_repo" config user.email t@example.invalid
+git -C "$proj_repo" config user.name  t
+printf 'x\n' > "$proj_repo/f"; git -C "$proj_repo" add -A >/dev/null 2>&1
+git -C "$proj_repo" commit -qm init >/dev/null 2>&1
+git -C "$proj_repo" tag -a v9.1.2 -m "the PROJECT's own release" >/dev/null 2>&1
+printf '.ai-containers/\n' > "$proj_repo/.gitignore"
+
+# Premise: the fixture really is a git repo with that tag, and the copy really is
+# inside it. Without this the assertion below could pass because git failed.
+if [[ "$(git -C "$proj_repo/.ai-containers" describe --tags 2>/dev/null)" == "v9.1.2" ]]; then
+  pass "scaffold: the project copy sits inside a git repo tagged v9.1.2"
+else
+  fail "scaffold: the project copy sits inside a git repo tagged v9.1.2 — the assertion below cannot discriminate"
+fi
+
+got="$(bash -c "source '$REPO_DIR/version.sh'; version_engine '$proj_repo/.ai-containers'" 2>&1)"
+[[ "$got" == "unknown" ]] \
+  && pass "an untold project copy reports unknown, not its enclosing repo's version" \
+  || fail "an untold project copy reports unknown, not its enclosing repo's version — got '$got', which describes the PROJECT, not the engine"
+
+# ...and a copy that WAS told still wins over everything.
+printf 'v0.4.2\n' > "$proj_repo/.ai-containers/engine-version"
+got="$(bash -c "source '$REPO_DIR/version.sh'; version_engine '$proj_repo/.ai-containers'" 2>&1)"
+[[ "$got" == "v0.4.2" ]] \
+  && pass "a recorded version still wins inside an enclosing git repo" \
+  || fail "a recorded version still wins inside an enclosing git repo (got '$got')"
+
+# ...and the ENGINE tree itself must keep deriving from git, or the fix has
+# traded one silent wrong answer for another. Asserted against THIS repo, which
+# is an engine tree by construction.
+got="$(bash -c "source '$REPO_DIR/version.sh'; version_engine '$REPO_DIR'" 2>&1)"
+if [[ -f "$REPO_DIR/project-init.sh" ]] && git -C "$REPO_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+  [[ -n "$got" && "$got" != "unknown" ]] \
+    && pass "an engine tree still derives its version from git" \
+    || fail "an engine tree still derives its version from git (got '$got') — the fallback was narrowed too far"
+else
+  printf 'NOTE: this checkout is not a git engine tree, so the engine-side half of\n'
+  printf '      the fallback narrowing was NOT exercised.\n'
+fi
 
 # ── version_record: the half that WRITES ──────────────────────────────────────
 # Nothing exercised this function at all, which is why every mutant of it

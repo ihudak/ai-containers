@@ -39,18 +39,25 @@ cd <project>/.ai-containers
 ./ai-containers-report.sh --tsv               # for a script to read
 ```
 
-Reads **this repo's `projects.conf`** and, for each registered project, resolves its settings from `<project>/.ai-containers/sandbox.env` (with `sandbox.local.env` overriding, exactly as the launcher resolves them). One row per project: container group, network mode, CPUs, memory as limit/reservation/swap, the size of its `.agent-discovery`, and its path.
+Reads **this repo's `projects.conf`** and, for each registered project, resolves its settings from `<project>/.ai-containers/sandbox.env` (with `sandbox.local.env` overriding, exactly as the launcher resolves them). One row per project: the engine version and `sandbox.conf` schema that project's copy is on, its container group, network mode, CPUs, memory as limit/reservation/swap, the size of its `.agent-discovery`, and its path.
 
 ```
 base: ~/dev/ai-tools/ai-containers
 
-GROUP    PROJECT                 NETWORK    CPUS  MEM(L/R/S)  DISCOVERY  PATH
--------  ----------------------  ---------  ----  ----------  ---------  -----------------------------------
-ihudak   ai-containers           DISCOVERY  4.0   16g/4g/16g  352M       ~/dev/ai-tools/ai-containers
-ihudak   ihudak-claude-plugins   DISCOVERY  4.0   8g/4g/8g    6.2G       ~/dev/ai-tools/ihudak-claude-plugins
+VERSION           SCHEMA  GROUP    PROJECT                NETWORK    CPUS  MEM(L/R/S)  DISCOVERY  PATH
+----------------  ------  -------  ---------------------  ---------  ----  ----------  ---------  -----------------------------------
+v0.8.1            4       ihudak   ai-containers          DISCOVERY  4.0   16g/4g/16g  352M       ~/dev/ai-tools/ai-containers
+v0.7.0-5-gefce88  3       ihudak   ihudak-claude-plugins  DISCOVERY  4.0   8g/4g/8g    6.2G       ~/dev/ai-tools/ihudak-claude-plugins
 
 2 registered project(s).
 ```
+
+**`VERSION` and `SCHEMA` are per project, not per base** — that is the point of reporting them. A project's `.ai-containers/` is a working *copy*, and it drifts from the base it was made from until someone runs `sync-to-projects.sh`. The row above is the case worth catching: two projects from one base, on different engine releases and different schema versions, because only one of them has been synced recently.
+
+- **`VERSION`** is the `engine-version` file `project-init.sh` / `sync-to-projects.sh` write into the copy at copy time. It is the same number [`./runme.sh --version`](configuration.md#reporting-versions) reports inside that project, from the same function.
+- **`SCHEMA`** is the `# schema-version:` marker in that project's own `sandbox.conf`, which says which [migrations](../README.md) it has had applied.
+- **`unknown`** means the copy was never told — it predates the `engine-version` file, or has no `sandbox.conf`. It is not a guess: a copy is never asked its enclosing project's git tags, which would report a version belonging to an entirely different tree.
+- **`n/a`** means the registry entry's path does not exist, so nothing could be read at all.
 
 **It does not search your filesystem.** The registry is the whole input, so what you get back is what *this* checkout is responsible for keeping in sync — the same set `sync-to-projects.sh` writes to. To report on another checkout, name it; the argument is a path, not a search:
 
