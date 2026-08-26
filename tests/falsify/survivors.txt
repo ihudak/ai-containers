@@ -326,6 +326,32 @@
 # The number is left occupied, for the reason entry 3 records.
 
 # ── 6 ─────────────────────────────────────────────────────────────────────────
+tests/lib-path-isolation.sh:return-flip:d6555dd140637d29787804dd93d1c2a81abb0833
+  :47  mkdir -p "$shadow" || return 1
+  the damages:  mkdir -p "$shadow" || return 0
+  GAP: reachable only when mkdir fails, and nothing in the suite makes it fail.
+  The shadow directory is created under a scratch dir the CALLER just created
+  successfully, so provoking this needs a read-only scratch or an exhausted
+  inode table -- a fixture that would test the OS rather than this function.
+  Killable in principle (pass a scratch path that cannot be written and assert
+  the non-zero return), and cheap; it is recorded as a gap rather than closed
+  because the value of that assertion is low next to the two the mutation tier
+  already forced into this file's design.
+
+tests/lib-path-isolation.sh:logic-flip:aec066a8785ce432d2a7c5866f97dac16c664845
+  :50  ln -sfn "$entry" "$shadow/$base" 2>/dev/null || true
+  the damages:  ln -sfn "$entry" "$shadow/$base" 2>/dev/null && true
+  EQUIVALENT: under every caller this repo has, and worth stating exactly why
+  rather than waving at it. `cmd || true` and `cmd && true` differ ONLY in the
+  status they yield when cmd FAILS -- 0 versus cmd's own -- and the symlink
+  either way is equally absent. That status is discarded: it is neither the
+  function's last command nor tested by the caller, and no caller runs under
+  `set -e` (test-rvm-reconcile.sh and test-rvm-fixture-isolation.sh both use
+  `set -uo pipefail`, deliberately without -e). So no observable behaviour
+  differs. It would STOP being equivalent under a `set -e` caller, which is why
+  the `|| true` stays: it is insurance against a caller this repo does not have
+  yet, and insurance no test can currently exercise.
+
 tests/lib-layer-checks.sh:logic-flip:b6554f5a51c19c07a987509d2872c86e54d554ea
   :78  insteps && started && /^        [A-Za-z]/ {
   the damages:  insteps || started && /^        [A-Za-z]/ {

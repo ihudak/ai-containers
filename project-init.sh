@@ -47,13 +47,20 @@ if command -v gh >/dev/null 2>&1; then
   export GITHUB_TOKEN
 fi
 
+# Version query: pure output, no build. MUST come before ./build.sh — asking
+# what version this is should not build an image to answer.
+case "\${1:-}" in
+  -V|--version|version) exec ./sandbox.sh --version ;;
+esac
+
 ./build.sh
 #./build.sh --no-cache
 
 # Network mode + working dir come from SANDBOX_MODE / SANDBOX_WORKDIR (sandbox.env /
 # sandbox.local.env). One-off override:  SANDBOX_MODE=restricted ./runme.sh
 # Or drive sandbox.sh directly:           ./sandbox.sh restricted @app
-./sandbox.sh
+# Arguments are forwarded, so ./runme.sh restricted @app works too.
+./sandbox.sh "\$@"
 EOF
   chmod +x "$dest_path"
 }
@@ -318,9 +325,22 @@ rsync -a "${script_dir}/tools.d/" "${dest}/tools.d/"
 # notice. See shared-files.sh's header.
 # shellcheck source=shared-files.sh
 source "${script_dir}/shared-files.sh"
+# shellcheck source=version.sh
+# Sourced HERE and not from sandbox-common.sh: several test fixtures copy a
+# hand-picked set of engine files into an isolated tree, and a new hard
+# dependency in sandbox-common.sh breaks every one of them. Only the entry
+# points that call version_record() need it — the same reason six entry points
+# source bash-floor.sh directly.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/version.sh"
 for f in "${AI_CONTAINERS_SHARED_FILES[@]}"; do
   [[ -f "${script_dir}/${f}" ]] && cp "${script_dir}/${f}" "${dest}/${f}"
 done
+
+# Record which engine tree this copy came from, at the moment it was copied.
+# The copy is not a git repo, so `--version` has no other way to know; without
+# this it reports `unknown`, which is honest but not useful. Non-fatal by
+# design — see version_record().
+version_record "${script_dir}" "${dest}"
 
 if [[ ! -f "${dest}/sandbox.conf" ]]; then
   cp "${script_dir}/sandbox.conf" "${dest}/sandbox.conf"

@@ -63,23 +63,46 @@ chmod +x "$HOSTILE/rvm" || { printf 'SCAFFOLD-FAILED: chmod\n'; exit 1; }
 # need the same ordinary tools the reconcile does, wherever this platform keeps
 # them (Homebrew's prefix is not /usr/bin, and a hardcoded list would make the
 # benign arm fail for reasons unrelated to rvm).
-path_without_rvm() {  # $1 = a PATH value → the same value minus every dir providing `rvm`
-  # `kept`, not `out`: shellcheck's array/scalar type tracking is not
-  # scope-aware, so a local ARRAY named `out` here makes the scalar `out=` used
-  # for command output further down read as the same variable and falsely
-  # trigger SC2178/SC2128. build.sh:tool_versions_arg documents the same
-  # collision and the same remedy — rename, rather than suppress a rule that is
-  # right about every other call site.
-  local d kept=() IFS=':'
-  read -ra _dirs <<< "$1"
-  for d in "${_dirs[@]}"; do
-    [[ -n "$d" ]] || continue
-    [[ -x "$d/rvm" ]] && continue
-    kept+=("$d")
+# shellcheck source=lib-path-isolation.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib-path-isolation.sh"
+path_without_rvm() { path_without_tool rvm "$TMP/scratch" "$1"; }
+mkdir -p "$TMP/scratch" || { printf 'SCAFFOLD-FAILED: mkdir scratch\n'; exit 1; }
+
+# BENIGN is derived INDEPENDENTLY of path_without_tool, and that is not
+# fastidiousness — the first version of this file built it WITH the function
+# under test, and the mutation tier caught the consequence immediately: five
+# mutants came back UNPROVEN with a `scaffold` channel, because a broken helper
+# broke the PATH this file then runs everything under, including its own
+# `mktemp`. An oracle that cannot set itself up when the code is wrong reports
+# nothing about the code. It is also the `assert f(x) == f(x)` shape
+# portability.sh's p_realdir note already warns about, arrived at from the other
+# direction.
+#
+# A DIFFERENT ALGORITHM on purpose: ask `command -v` where rvm is and drop that
+# directory, repeatedly, rather than scanning every entry as the helper does.
+benign_path() {   # $1 = a PATH value → the same value with no rvm on it
+  local p="$1" found dir rest
+  while :; do
+    found="$(PATH="$p" command -v rvm 2>/dev/null)" || found=""
+    [[ -n "$found" ]] || break
+    dir="$(dirname "$found")"
+    rest="$(printf '%s' "$p" | tr ':' '\n' | grep -vxF -- "$dir" | paste -sd: -)"
+    [[ "$rest" == "$p" ]] && break        # cannot make progress; stop rather than spin
+    p="$rest"
   done
-  printf '%s' "${kept[*]}"
+  printf '%s' "$p"
 }
-BENIGN="$(path_without_rvm "$PATH")"
+BENIGN="$(benign_path "$PATH")"
+
+# The scaffold's own premise: whatever benign_path removed, the tools this file
+# and the real fixture need must still be there. Without this a machine whose
+# rvm shares a directory with coreutils would fail everything below for a reason
+# that has nothing to do with the property under test.
+for _t in bash sed grep mktemp; do
+  PATH="$BENIGN" command -v "$_t" >/dev/null 2>&1 && continue
+  printf 'SCAFFOLD-FAILED: removing rvm from PATH also removed %s — this host keeps rvm in a directory with coreutils, and this file cannot build a benign arm here\n' "$_t"
+  exit 1
+done
 
 # ── Scaffold premises, checked before anything is concluded from them ─────────
 # Both arms must actually differ in the property under test, or every assertion
@@ -123,6 +146,51 @@ if sanitised_sees_rvm "$HOSTILE:$BENIGN"; then
   fail "demonstration: sanitising the PATH removes the host's rvm"
 else
   pass "demonstration: sanitising the PATH removes the host's rvm"
+fi
+
+# ── Demonstration 3: a SHARED directory must not be taken wholesale ───────────
+# rvm's usual installs give it a directory of its own, and dropping such a
+# directory is harmless. A system-wide rvm symlinked into /usr/local/bin is not
+# that: dropping THAT directory takes bash, sed and git with it, and the run
+# dies at exit 127 on a PATH self-inflicted wound rather than on anything to do
+# with rvm. test-verify-exit-code.sh records this repo hitting exactly that
+# before, with shellcheck in place of rvm — which is why it is asserted here
+# rather than left to a comment.
+SHARED="$TMP/sharedbin"; mkdir -p "$SHARED" || { printf 'SCAFFOLD-FAILED: mkdir\n'; exit 1; }
+cp "$HOSTILE/rvm" "$SHARED/rvm"
+printf '#!/usr/bin/env bash\necho essential\n' > "$SHARED/an-essential-tool"
+chmod +x "$SHARED/rvm" "$SHARED/an-essential-tool"
+
+shared_path="$(path_without_rvm "$SHARED:$BENIGN")"
+if PATH="$shared_path" command -v rvm >/dev/null 2>&1; then
+  fail "a shared directory: rvm is made unresolvable"
+else
+  pass "a shared directory: rvm is made unresolvable"
+fi
+if PATH="$shared_path" command -v an-essential-tool >/dev/null 2>&1; then
+  pass "a shared directory: everything ELSE it provided still resolves"
+else
+  fail "a shared directory: everything ELSE it provided still resolves — the directory was taken wholesale, which is the exit-127 wound test-verify-exit-code.sh already records"
+fi
+# ...and it must still WORK, not merely resolve: a dangling symlink resolves to
+# a name and fails to execute, which would be a subtler version of the same bug.
+if [[ "$(PATH="$shared_path" an-essential-tool 2>/dev/null)" == "essential" ]]; then
+  pass "a shared directory: the preserved tools actually execute"
+else
+  fail "a shared directory: the preserved tools actually execute"
+fi
+
+# The control for the cheap path: a directory that provides ONLY rvm is simply
+# dropped, with no shadow built. Without this, the implementation could satisfy
+# the assertions above by always building a shadow, paying that cost on every
+# call for a case that never needs it.
+before="$(find "$TMP/scratch" -maxdepth 1 -type d | wc -l)"
+_="$(path_without_rvm "$HOSTILE:$BENIGN")"
+after="$(find "$TMP/scratch" -maxdepth 1 -type d | wc -l)"
+if [[ "$before" == "$after" ]]; then
+  pass "an rvm-only directory is dropped outright, with no shadow built"
+else
+  fail "an rvm-only directory is dropped outright, with no shadow built (scratch dirs went $before -> $after)"
 fi
 
 # ── The end-to-end assertion ──────────────────────────────────────────────────

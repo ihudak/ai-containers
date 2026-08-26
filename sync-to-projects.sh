@@ -27,6 +27,13 @@ projects_conf="${script_dir}/projects.conf"
 
 # shellcheck source=shared-files.sh
 source "${script_dir}/shared-files.sh"
+# shellcheck source=version.sh
+# Sourced HERE and not from sandbox-common.sh: several test fixtures copy a
+# hand-picked set of engine files into an isolated tree, and a new hard
+# dependency in sandbox-common.sh breaks every one of them. Only the entry
+# points that call version_record() need it — the same reason six entry points
+# source bash-floor.sh directly.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/version.sh"
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -249,6 +256,10 @@ sync_project() {
       cp "${script_dir}/${f}" "${dest}/${f}"
     fi
   done
+
+  # Refresh the recorded engine version — a sync makes the copy a copy of THIS
+  # tree, so the number it reports must move with it (see version_record()).
+  version_record "${script_dir}" "${dest}"
 
   # README documents central-repo orchestration (project-init/sync) that doesn't
   # exist in a child working copy. Children are leaves: runtime files only.
