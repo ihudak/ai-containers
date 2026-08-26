@@ -36,7 +36,25 @@ version_engine() {
     [[ -n "$v" ]] && { printf '%s' "$v"; return 0; }
   fi
 
-  if git -C "$dir" rev-parse --git-dir >/dev/null 2>&1; then
+  # GIT IS ONLY EVER ASKED ABOUT AN ENGINE TREE. `git -C` resolves the ENCLOSING
+  # repository, and it does so for an ignored directory exactly as for a tracked
+  # one -- so a project's .ai-containers/ that was never told its version used to
+  # answer with the PROJECT's own `git describe`. A project tagged v9.1.2 reported
+  # `ai-containers  v9.1.2`: a real release string, for entirely the wrong tree,
+  # with nothing marking it as a guess. That is the exact thing the header above
+  # says cannot happen, and docs/configuration.md promises does not ("reports
+  # `unknown` ... and says so rather than guessing") -- and it was the COMMON
+  # case, not a corner: every project synced before `engine-version` existed is
+  # in that state until its next sync.
+  #
+  # project-init.sh is the discriminator because it is BASE-REPO ONLY: it is
+  # deliberately absent from AI_CONTAINERS_SHARED_FILES (see shared-files.sh and
+  # AGENTS.md), so no project copy has ever had one, while every engine tree does
+  # -- upstream's repository root and this port's base/ alike. A predicate over
+  # the directory's own contents also keeps working where "is this a git repo"
+  # cannot: a release tarball has no .git at all, and a project copy is ignored
+  # by, but still inside, its project's repository.
+  if [[ -f "$dir/project-init.sh" ]] && git -C "$dir" rev-parse --git-dir >/dev/null 2>&1; then
     v="$(git -C "$dir" describe --tags --dirty 2>/dev/null || true)"
     [[ -z "$v" ]] && v="$(git -C "$dir" rev-parse --short HEAD 2>/dev/null || true)"
     [[ -n "$v" ]] && { printf '%s' "$v"; return 0; }
@@ -73,16 +91,28 @@ version_record() {
   printf '%s\n' "$v" > "$dest/engine-version" 2>/dev/null || return 0
 }
 
+# version_schema [dir] — the `# schema-version:` marker in <dir>'s sandbox.conf,
+# or `unknown`. A FUNCTION because two callers need it: version_report below and
+# ai-containers-report.sh, which reports the marker per registered project.
+# SANDBOX_CONF overrides the location, as everywhere else in this engine.
+version_schema() {
+  local dir="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+  local conf="${SANDBOX_CONF:-$dir/sandbox.conf}" schema=""
+  if [[ -f "$conf" ]]; then
+    schema="$(grep -E '^# schema-version:[[:space:]]*[0-9]+' "$conf" 2>/dev/null | head -1 \
+                | sed -E 's/^# schema-version:[[:space:]]*([0-9]+).*/\1/')"
+  fi
+  printf '%s' "${schema:-unknown}"
+}
+
 # version_report [dir] — the human-facing report, one field per line.
 version_report() {
   local dir="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
   local conf="${SANDBOX_CONF:-$dir/sandbox.conf}"
-  local schema="unknown" nvm="" nvm_note=""
+  local schema nvm="" nvm_note=""
 
+  schema="$(version_schema "$dir")"
   if [[ -f "$conf" ]]; then
-    schema="$(grep -E '^# schema-version:[[:space:]]*[0-9]+' "$conf" 2>/dev/null | head -1 \
-                | sed -E 's/^# schema-version:[[:space:]]*([0-9]+).*/\1/')"
-    [[ -z "$schema" ]] && schema="unknown"
     nvm="$(grep -E '^nvm-version=' "$conf" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '[:space:]')"
   fi
 

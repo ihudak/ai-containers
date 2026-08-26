@@ -15,13 +15,22 @@
 # run from. To report another base, name it: the argument is a path, not a
 # search.
 #
-# Output columns: container group | project | network mode | cpus | memory |
-#                 discovery | path
+# Output columns: engine version | sandbox.conf schema | container group |
+#                 project | network mode | cpus | memory | discovery | path
 # Sorted by group, then project name. With MORE THAN ONE base a BASE column is
 # added and the sort leads with it; with one base the base is stated once above
 # the table instead of repeated on every row. `--tsv` always emits the base
 # column, so a machine-readable schema does not change shape with the argument
 # count.
+#
+# VERSION and SCHEMA are per PROJECT, not per base, which is the whole point of
+# reporting them: a project's .ai-containers/ is a working COPY that drifts from
+# the base it was made from until someone syncs it. VERSION is the
+# `engine-version` file project-init.sh/sync-to-projects.sh write at copy time;
+# a copy that was never told reports `unknown` (it does NOT fall back to the
+# project's own git tags -- see version_engine). SCHEMA is the
+# `# schema-version:` marker in the project's own sandbox.conf, which says which
+# migrations it has had applied.
 #
 # Network mode / CPUs / memory come from SANDBOX_MODE, CONTAINER_CPUS and
 # CONTAINER_MEMORY[_RESERVATION|_SWAP] (this-machine's sandbox.local.env overrides
@@ -55,6 +64,12 @@ set -uo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=SCRIPTDIR/bash-floor.sh
 source "${script_dir}/bash-floor.sh"
+# shellcheck source=SCRIPTDIR/version.sh
+# version_engine/version_schema, so the VERSION and SCHEMA columns cannot
+# disagree with what `./sandbox.sh --version` says about the same project. Both
+# read the project's OWN files, so reporting another base needs nothing from
+# that base's copy of version.sh.
+source "${script_dir}/version.sh"
 
 # ---------------------------------------------------------------- args --------
 format="text"
@@ -275,6 +290,8 @@ printf '%s\n' "$bases" | while IFS= read -r base_raw; do
 
     group=""
     note=""
+    engver="n/a"
+    schema="n/a"
     netmode="n/a"
     cpu="n/a"
     mem="n/a"
@@ -293,6 +310,9 @@ printf '%s\n' "$bases" | while IFS= read -r base_raw; do
         group="n/a"
         note="no .ai-containers/sandbox.env — run sync-to-projects.sh"
       fi
+      engver="$(version_engine "$proj_local/.ai-containers")"
+      [ -n "$engver" ] || engver="unknown"
+      schema="$(version_schema "$proj_local/.ai-containers")"
       netmode="$(resolve_network_mode "$proj_local")"
       cpu="$(resolve_env_var "$proj_local" CONTAINER_CPUS)"; [ -n "$cpu" ] || cpu="n/a"
       mem_lim="$(resolve_env_var "$proj_local" CONTAINER_MEMORY)"
@@ -308,7 +328,7 @@ printf '%s\n' "$bases" | while IFS= read -r base_raw; do
       fi
     fi
 
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$base_label" "$group" "$name" "$netmode" "$cpu" "$mem" "$disc" "$(display_path "$proj")" >>"$rows"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$base_label" "$engver" "$schema" "$group" "$name" "$netmode" "$cpu" "$mem" "$disc" "$(display_path "$proj")" >>"$rows"
     [ -n "$note" ] && printf '%s (%s): %s\n' "$name" "$(display_path "$proj")" "$note" >>"$notes"
     printf '%s\t%s\n' "$proj" "$base_label" >>"$seen"
   done
@@ -333,54 +353,60 @@ fi
 
 # With one base the sort key starts at the group; with several it leads with the
 # base so a base's rows stay together.
+# The keys name GROUP (4) and PROJECT (5), NOT "the first two visible columns".
+# VERSION and SCHEMA were inserted ahead of them, and a sort left keyed on 2,3
+# would silently have reordered the report by version -- the header above still
+# promises "sorted by group, then project name".
 if [ "$first_col" -eq 1 ]; then
-  LC_ALL=C sort -t "$(printf '\t')" -k1,1 -k2,2 -k3,3 "$rows" >"$sorted"
+  LC_ALL=C sort -t "$(printf '\t')" -k1,1 -k4,4 -k5,5 "$rows" >"$sorted"
 else
-  LC_ALL=C sort -t "$(printf '\t')" -k2,2 -k3,3 "$rows" >"$sorted"
+  LC_ALL=C sort -t "$(printf '\t')" -k4,4 -k5,5 "$rows" >"$sorted"
 fi
 
 case "$format" in
   tsv)
     # Always every column, including base. A machine-readable schema that
     # changed shape with the argument count would not be one.
-    printf 'base\tcontainer_group\tproject\tnetwork_mode\tcpus\tmemory\tagent_discovery_size\tpath\n'
+    printf 'base\tengine_version\tschema_version\tcontainer_group\tproject\tnetwork_mode\tcpus\tmemory\tagent_discovery_size\tpath\n'
     cat "$sorted"
     ;;
   markdown)
     awk -F'\t' -v c0="$first_col" '
       BEGIN {
-        h[1] = "Base"; h[2] = "Container group"; h[3] = "Project"; h[4] = "Network mode"
-        h[5] = "CPUs"; h[6] = "Memory (limit/reservation/swap)"; h[7] = ".agent-discovery"; h[8] = "Path"
+        h[1] = "Base"; h[2] = "Version"; h[3] = "Schema"; h[4] = "Container group"
+        h[5] = "Project"; h[6] = "Network mode"; h[7] = "CPUs"
+        h[8] = "Memory (limit/reservation/swap)"; h[9] = ".agent-discovery"; h[10] = "Path"
         head = ""; sep = ""
-        for (i = c0; i <= 8; i++) { head = head "| " h[i] " "; sep = sep "|---" }
+        for (i = c0; i <= 10; i++) { head = head "| " h[i] " "; sep = sep "|---" }
         print head "|"; print sep "|"
       }
       { row = ""
-        for (i = c0; i <= 8; i++) row = row "| " (i == 8 ? "`" $i "`" : $i) " "
+        for (i = c0; i <= 10; i++) row = row "| " (i == 10 ? "`" $i "`" : $i) " "
         print row "|" }
     ' "$sorted"
     ;;
   *)
     awk -F'\t' -v c0="$first_col" '
       BEGIN {
-        h[1] = "BASE"; h[2] = "GROUP"; h[3] = "PROJECT"; h[4] = "NETWORK"
-        h[5] = "CPUS"; h[6] = "MEM(L/R/S)"; h[7] = "DISCOVERY"; h[8] = "PATH"
+        h[1] = "BASE"; h[2] = "VERSION"; h[3] = "SCHEMA"; h[4] = "GROUP"
+        h[5] = "PROJECT"; h[6] = "NETWORK"; h[7] = "CPUS"; h[8] = "MEM(L/R/S)"
+        h[9] = "DISCOVERY"; h[10] = "PATH"
       }
-      { n++; for (i = c0; i <= 8; i++) { r[n, i] = $i; if (length($i) > w[i]) w[i] = length($i) } }
+      { n++; for (i = c0; i <= 10; i++) { r[n, i] = $i; if (length($i) > w[i]) w[i] = length($i) } }
       END {
-        for (i = c0; i <= 8; i++) if (length(h[i]) > w[i]) w[i] = length(h[i])
+        for (i = c0; i <= 10; i++) if (length(h[i]) > w[i]) w[i] = length(h[i])
         # Built by concatenation rather than a printf with a fixed argument
         # list, because the number of columns is now a variable.
         line = ""; rule = ""
-        for (i = c0; i <= 8; i++) {
-          line = line (i < 8 ? sprintf("%-*s  ", w[i], h[i]) : h[i])
+        for (i = c0; i <= 10; i++) {
+          line = line (i < 10 ? sprintf("%-*s  ", w[i], h[i]) : h[i])
           pad = ""; for (j = 0; j < w[i]; j++) pad = pad "-"
-          rule = rule pad (i < 8 ? "  " : "")
+          rule = rule pad (i < 10 ? "  " : "")
         }
         print line; print rule
         for (k = 1; k <= n; k++) {
           line = ""
-          for (i = c0; i <= 8; i++) line = line (i < 8 ? sprintf("%-*s  ", w[i], r[k, i]) : r[k, i])
+          for (i = c0; i <= 10; i++) line = line (i < 10 ? sprintf("%-*s  ", w[i], r[k, i]) : r[k, i])
           print line
         }
       }

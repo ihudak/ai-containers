@@ -6,6 +6,50 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### `--version` answered for whatever git repo it was standing in
+
+- **A project copy that was never told its version reported the PROJECT's own
+  release.** `git -C` resolves the *enclosing* repository, and it does so for an
+  ignored directory exactly as for a tracked one — so `<project>/.ai-containers/`
+  with no `engine-version` fell through to `git describe` on the project itself.
+  A project tagged `v9.1.2` reported `ai-containers  v9.1.2`: a real release
+  string, for entirely the wrong tree, with nothing marking it a guess.
+- **This was the common case, not a corner.** Every project synced before
+  `engine-version` existed is in exactly that state until its next sync — and
+  `docs/configuration.md` promises those report `unknown` "rather than guessing",
+  while `version.sh`'s own header said it "does not fall back to the git repo the
+  caller happens to be standing in". Both were describing an intent the code did
+  not implement. Demonstrated against this repository's own `.ai-containers/`,
+  which reported `v0.8.1-2-g17caa8f-dirty` and now reports `unknown`.
+- **Git is now asked only about an engine tree**, identified by `project-init.sh`
+  — base-repo-only by construction, deliberately absent from
+  `AI_CONTAINERS_SHARED_FILES`, so no project copy has ever had one while every
+  engine tree does. A predicate over the directory's own contents also keeps
+  working where "is this a git repo" cannot: a release tarball has no `.git`, and
+  a project copy is ignored by, but still inside, its project's repository.
+
+### `ai-containers-report.sh` reports each project's version and schema
+
+- **Two new columns, `VERSION` and `SCHEMA`**, after `BASE` — and leading the
+  table when `BASE` is absent, which is the single-base default.
+- **They are per PROJECT, which is the whole point.** A project's
+  `.ai-containers/` is a working *copy* that drifts from the base it was made
+  from until someone runs `sync-to-projects.sh`, and until now nothing showed
+  that drift: two projects from one base could sit on different engine releases
+  and different schema versions with the report saying nothing about it.
+- **Read through `version.sh`**, not re-derived, so a column cannot disagree with
+  what `./sandbox.sh --version` reports inside the same project. `version_schema`
+  was extracted from `version_report` for the second caller rather than the
+  marker-parsing being written twice. That makes `version.sh` a hard dependency
+  beside the script, exactly as `bash-floor.sh` already is.
+- **`unknown` and `n/a` mean different things and are kept distinct**: `unknown`
+  is a copy that was never told (or has no `sandbox.conf`), `n/a` is a registry
+  entry whose path does not exist, so nothing could be read at all.
+- **The sort keys moved with the columns.** They name `GROUP` and `PROJECT` by
+  field number, and inserting two columns ahead of them would otherwise have
+  silently re-sorted the report by version while the header went on promising
+  "sorted by group, then project name".
+
 ### `--version` could report a release the copy did not come from
 
 - **`version_record()` left a stale record standing.** When the source tree

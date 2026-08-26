@@ -38,13 +38,21 @@ bash -n "$SRC" && pass "ai-containers-report.sh bash -n" || fail "ai-containers-
 TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 trap 'rm -rf "$TMP"' EXIT
 
-# mk_base <dir> — a base holding a copy of the script, its floor, and a registry.
+# mk_base <dir> — a base holding a copy of the script, its floor, version.sh and
+# a registry. version.sh is a HARD dependency, sourced beside the script exactly
+# as bash-floor.sh is: the report reads each project's engine version and schema
+# marker through version_engine/version_schema so its columns cannot disagree
+# with what `./sandbox.sh --version` says about the same project.
 mk_base() {
   mkdir -p "$1" || return 1
-  cp "$SRC" "$ENGINE_DIR/bash-floor.sh" "$1/" || return 1
+  cp "$SRC" "$ENGINE_DIR/bash-floor.sh" "$ENGINE_DIR/version.sh" "$1/" || return 1
   printf '# registry\n' > "$1/projects.conf"
 }
 # mk_proj <base> <project-dir> <group> <mode> <cpus>
+# mk_proj <base> <project-dir> <group> <mode> <cpus> [engine-version] [schema]
+# The last two are OPTIONAL and deliberately so: a project copy made before
+# `engine-version` existed has neither, and `unknown/unknown` is the answer the
+# report must give for it. Passing them models a copy that has been synced.
 mk_proj() {
   local base="$1" dir="$2"
   mkdir -p "$dir/.ai-containers"
@@ -54,6 +62,8 @@ mk_proj() {
     printf 'CONTAINER_CPUS=%s\n' "$5"
     printf 'CONTAINER_MEMORY=8g\nCONTAINER_MEMORY_RESERVATION=4g\nCONTAINER_MEMORY_SWAP=8g\n'
   } > "$dir/.ai-containers/sandbox.env"
+  [[ -n "${6:-}" ]] && printf '%s\n' "$6" > "$dir/.ai-containers/engine-version"
+  [[ -n "${7:-}" ]] && printf '# schema-version: %s\n' "$7" > "$dir/.ai-containers/sandbox.conf"
   printf '%s\n' "$dir" >> "$base/projects.conf"
 }
 
@@ -63,7 +73,7 @@ OUT=""; RC=0
 # ── the fixture ──────────────────────────────────────────────────────────────
 OUTER="$TMP/outer/base"
 mk_base "$OUTER" || { printf 'SCAFFOLD-FAILED: mk_base\n'; exit 1; }
-mk_proj "$OUTER" "$TMP/outer/web" ihudak  DISCOVERY  4.0
+mk_proj "$OUTER" "$TMP/outer/web" ihudak  DISCOVERY  4.0 v0.7.0-3-gabc1234 4
 mk_proj "$OUTER" "$TMP/outer/api" default RESTRICTED 2.0
 
 # A SECOND, complete base one level down — the thing a filesystem walk would
@@ -103,7 +113,7 @@ else
   fail "one base is stated once, above the table
 $OUT"
 fi
-if grep -qE '^GROUP  +PROJECT' <<<"$OUT"; then
+if grep -qE '^VERSION  +SCHEMA  +GROUP  +PROJECT' <<<"$OUT"; then
   pass "… and the BASE column is gone from the header"
 else
   fail "… and the BASE column is gone from the header
@@ -111,7 +121,7 @@ $(grep -E 'GROUP' <<<"$OUT")"
 fi
 
 # ── 3. the values themselves ─────────────────────────────────────────────────
-if grep -qE '^ihudak +web +DISCOVERY +4\.0 +8g/4g/8g' <<<"$OUT"; then
+if grep -qE '^v0\.7\.0-3-gabc1234 +4 +ihudak +web +DISCOVERY +4\.0 +8g/4g/8g' <<<"$OUT"; then
   pass "group, network mode, cpus and memory are read from sandbox.env"
 else
   fail "group, network mode, cpus and memory are read from sandbox.env
@@ -132,7 +142,7 @@ else
   fail "two bases named explicitly are both reported (rc=$RC)
 $OUT"
 fi
-if grep -qE '^BASE  +GROUP' <<<"$OUT"; then
+if grep -qE '^BASE  +VERSION  +SCHEMA  +GROUP' <<<"$OUT"; then
   pass "… and the BASE column comes back when it distinguishes rows"
 else
   fail "… and the BASE column comes back when it distinguishes rows
@@ -178,14 +188,14 @@ fi
 
 # ── 7. markdown ──────────────────────────────────────────────────────────────
 run "$OUTER/ai-containers-report.sh" --markdown
-if grep -q '^| Container group | Project |' <<<"$OUT" && ! grep -q '^| Base |' <<<"$OUT"; then
+if grep -q '^| Version | Schema | Container group | Project |' <<<"$OUT" && ! grep -q '^| Base |' <<<"$OUT"; then
   pass "--markdown drops the Base column for one base too"
 else
   fail "--markdown drops the Base column for one base too
 $(grep '^|' <<<"$OUT" | head -2)"
 fi
 run "$OUTER/ai-containers-report.sh" --markdown "$OUTER" "$NESTED"
-if grep -q '^| Base | Container group |' <<<"$OUT"; then
+if grep -q '^| Base | Version | Schema | Container group |' <<<"$OUT"; then
   pass "--markdown restores it for several"
 else
   fail "--markdown restores it for several
@@ -200,13 +210,13 @@ fi
 mkdir -p "$TMP/outer/web/.ai-containers/.agent-discovery"
 head -c 40000 /dev/zero > "$TMP/outer/web/.ai-containers/.agent-discovery/agent-traffic.pcap"
 run "$OUTER/ai-containers-report.sh" --full-paths
-if grep -qE '^ihudak +web +DISCOVERY +4\.0 +8g/4g/8g +[0-9]' <<<"$OUT"; then
+if grep -qE '^v0\.7\.0-3-gabc1234 +4 +ihudak +web +DISCOVERY +4\.0 +8g/4g/8g +[0-9]' <<<"$OUT"; then
   pass "a project with a capture reports its size, not N/A"
 else
   fail "a project with a capture reports its size, not N/A
 $(grep ' web ' <<<"$OUT")"
 fi
-if grep -qE '^default +api .* N/A ' <<<"$OUT"; then
+if grep -qE '^unknown +unknown +default +api .* N/A ' <<<"$OUT"; then
   pass "… and a project without one still reports N/A"
 else
   fail "… and a project without one still reports N/A
@@ -272,7 +282,7 @@ else
 $OUT"
 fi
 run "$MAPBASE/ai-containers-report.sh" --full-paths --path-map "$TMP/outer=$MOVED"
-if ! grep -q 'stale registry entry' <<<"$OUT" && grep -qE '^ihudak +web +DISCOVERY' <<<"$OUT"; then
+if ! grep -q 'stale registry entry' <<<"$OUT" && grep -qE '^v0\.7\.0-3-gabc1234 +4 +ihudak +web +DISCOVERY' <<<"$OUT"; then
   pass "--path-map redirects where the report LOOKS"
 else
   fail "--path-map redirects where the report looks
@@ -302,7 +312,7 @@ SLASHB="$TMP/slashbase"; mk_base "$SLASHB"
 mk_proj "$SLASHB" "$TMP/slashproj" default OPEN 1.0
 printf '%s\n' "$TMP/slashproj///" > "$SLASHB/projects.conf"
 run "$SLASHB/ai-containers-report.sh" --full-paths
-if grep -qE '^default +slashproj +OPEN' <<<"$OUT" && ! grep -q 'stale registry entry' <<<"$OUT"; then
+if grep -qE '^unknown +unknown +default +slashproj +OPEN' <<<"$OUT" && ! grep -q 'stale registry entry' <<<"$OUT"; then
   pass "a registry path with trailing slashes still resolves"
 else
   fail "a registry path with trailing slashes still resolves
@@ -348,7 +358,7 @@ $(grep -F 'registered project' <<<"$OUT")"
 fi
 
 run "$OUTER/ai-containers-report.sh" --markdown --no-notes
-if grep -qE '^\| default \| api \|.*\| `/' <<<"$OUT"; then
+if grep -qE '^\| unknown \| unknown \| default \| api \|.*\| `/' <<<"$OUT"; then
   pass "--markdown backticks the path cell only"
 else
   fail "--markdown backticks the path cell only
