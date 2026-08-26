@@ -432,13 +432,26 @@ fl_keep=0
 #
 #   --jobs auto (12)   many controls red, oracles red on PRISTINE trees, no score
 #   --jobs 4           2 of 26 controls red, 4 mutants over a 300s clock, no score
+#   --jobs 2           2 of 24 controls red, four oracles red on PRISTINE trees,
+#                      no score — MEASURED 2026-08-26, whole corpus
 #   --jobs 1           clean: baseline PASS, 29 killed / 1 survived / 0 unproven,
 #                      controls 2 of 2 green, ~87s for the target
 #
 # A failed control invalidates every kill recorded near it, so the default is
-# the only value OBSERVED clean rather than the largest that might work. 2 is
-# untested — deliberately not chosen, because picking an unmeasured number is
-# what this tier exists to refuse. Measure it and raise this the same hour.
+# the only value observed clean rather than the largest that might work.
+#
+# 2 WAS THE OBVIOUS CANDIDATE AND IT FAILS. It is written down here because a
+# negative result nobody records is a negative result somebody re-derives: the
+# next reader's first instinct is "surely 2 is fine on a 12-core machine", and
+# it is not. Do not raise this without a measurement, and put the measurement
+# here when you have one.
+#
+# WHAT THE 2-JOB RUN ADDED, and it points away from CPU contention: assertions
+# inside the red oracles reported rc=137 — SIGKILL, a process being shot, not a
+# test failing. On that host Colima holds 36 GiB, and Phase 6 runs on the HOST
+# beside it, so the ceiling being hit may be MEMORY rather than cores. If this
+# is ever revisited, measure free host RAM during the run before reaching for
+# the jobs number again.
 #
 # The cost is bounded: Phase 6's own banner already tells a macOS reader to
 # expect ~45 minutes, and jobs=1 lands inside that.
