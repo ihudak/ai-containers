@@ -24,6 +24,33 @@ else's. The lesson each time was the same: construct the state the test needs
 instead of inheriting it.
 
 
+### The release workflow could not check itself out
+
+- **v0.8.0's first tag push failed before any of this repo's scripts ran.**
+  `de3c706` added `fetch-tags: true` so the release title could come from the
+  annotated tag's message. That flag drops `actions/checkout`'s `--no-tags`, so
+  git's automatic tag-following targets `refs/tags/<tag>` at the same moment as
+  checkout's own explicit `+<sha>:refs/tags/<tag>` refspec, and git refuses two
+  sources for one destination: `fatal: Cannot fetch both <sha> and
+  refs/tags/v0.8.0 to refs/tags/v0.8.0`.
+- **It had never been exercised.** v0.7.0 was published from the previous
+  configuration, and v0.8.0 was the first release after the change — so a
+  modification to the release path shipped green and broke on first use, which
+  is the failure mode this repo's whole test posture exists to prevent.
+- **The obvious repair is a trap, and this was measured rather than reasoned.**
+  Removing `fetch-tags` makes the fetch succeed and leaves `refs/tags/<tag>`
+  pointing at a **commit**: `git cat-file -t` reports `commit`,
+  `release-title.sh` correctly reads that as a lightweight tag, and the release
+  publishes the bare tag name — exactly the defect `de3c706` existed to fix.
+  `fetch-depth: 0` yields a real tag object and a rendered title.
+- **`tests/test-release-checkout.sh` pins it by effect, not by key name.** It
+  reads the fetch configuration out of `release.yml`, performs the fetch git
+  would perform under it against a fixture repository carrying a real annotated
+  tag, and then runs the shipped `release-title.sh` against the result. Both
+  wrong configurations fail it — `fetch-tags: true` on three assertions and the
+  plausible `fetch-depth: 1` repair on two — so a future edit that swaps one
+  reasonable-looking key for another has to survive the property, not the review.
+
 ### `--version`, and a PATH repair that took bash with it
 
 - **`./runme.sh --version` (and `./sandbox.sh --version`) reports three numbers

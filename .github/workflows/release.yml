@@ -13,29 +13,34 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
-        # fetch-tags, because the title now comes from the ANNOTATED TAG'S
-        # MESSAGE and the default fetch brings the ref without guaranteeing the
-        # tag OBJECT that carries it. release-title.sh tells "absent" apart from
-        # "lightweight" and fails on the former rather than falling back — so
-        # getting this wrong is a loud failure here, not a bare title nobody
-        # notices.
         with:
-          fetch-tags: true
-
-      # The notes are the CHANGELOG's own section for this tag — the text a
-      # human wrote and a reviewer read — not GitHub's generated list of merged
-      # pull requests.
-      #
-      # `generate_release_notes: true` had two problems. It named every branch
-      # that landed and explained none of them; and it RACED with anyone who
-      # also ran `gh release create`, because both wrote the same body and
-      # neither waited. v0.5.0's release still carries the generated block
-      # twice, and v0.6.0 needed a hand edit to remove a duplicated "Full
-      # Changelog" line.
-      #
-      # THE TAG PUSH IS NOW THE ONLY AUTHOR. Do not also run `gh release
-      # create` — push the tag and let this publish. A tag whose version has no
-      # CHANGELOG section fails at this step, before anything is published.
+          # fetch-depth: 0, NOT fetch-tags: true, and the difference is the whole
+          # reason v0.8.0's first release attempt failed at checkout.
+          #
+          # The title comes from the ANNOTATED TAG'S MESSAGE, so this job needs
+          # the tag OBJECT, not merely a ref of that name. `fetch-tags: true`
+          # was the obvious way to ask for that and is actively wrong here: it
+          # drops checkout's `--no-tags`, so git's automatic tag-following wants
+          # to write refs/tags/<tag> at the same time as checkout's own explicit
+          # `+<sha>:refs/tags/<tag>` refspec, and git refuses two sources for one
+          # destination:
+          #
+          #   fatal: Cannot fetch both <sha> and refs/tags/v0.8.0 to refs/tags/v0.8.0
+          #
+          # Simply removing fetch-tags is not the fix either — measured, not
+          # assumed. That restores `--no-tags`, the fetch succeeds, and
+          # refs/tags/<tag> then points at a COMMIT: `git cat-file -t` reports
+          # `commit`, release-title.sh correctly reads that as a lightweight tag
+          # and falls back to the bare tag name. That is precisely the defect
+          # de3c706 set out to fix, reintroduced by the repair.
+          #
+          # fetch-depth: 0 fetches full history and real tag objects, with no
+          # SHA-to-tag refspec to collide with. Verified against this repository:
+          # `cat-file -t v0.8.0` -> `tag`, and release-title.sh renders the
+          # message. tests/test-release-checkout.sh pins it by EFFECT — it reads
+          # this block and proves the configuration it describes actually yields
+          # a usable annotated tag.
+          fetch-depth: 0
       - name: Extract release notes from CHANGELOG
         run: bash ./changelog-section.sh "$GITHUB_REF_NAME" > "$RUNNER_TEMP/notes.md"
 
