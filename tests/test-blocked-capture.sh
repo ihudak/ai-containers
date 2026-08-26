@@ -166,13 +166,28 @@ run_capture2() {
   PATH="$FAKE_BIN2:$PATH" BLOCKED_INTERNAL_DIR="$internal" \
     ALLOWLIST_DOMAINS_FILE="$populated" ALLOWLIST_PROXY_DOMAINS_FILE="$comments_only" \
     bash "$REPO_DIR/capture-blocked-traffic.sh" "$cap" >/dev/null 2>&1
-  # The daemon backgrounds its read loops and returns almost immediately;
-  # give the piped `while read` a brief, bounded window to process the one
-  # line the fake tshark already wrote to its stdout before exiting.
-  for _ in $(seq 1 20); do
+  # The daemon backgrounds its read loops and returns almost immediately; give
+  # the piped `while read` a bounded window to process the one line the fake
+  # tshark already wrote to its stdout before exiting.
+  #
+  # 30s, not the 2s this used to allow. The budget is not a guess about how long
+  # the work takes — it takes milliseconds — it is headroom against the machine.
+  # 2s went red on a macOS host running two test suites at once: oracle runs
+  # there are ~18x slower than on Linux before any contention, and this test is
+  # itself run as a falsify oracle inside workers that each execute a whole
+  # run-all.sh. A red that means "your laptop was busy" teaches people to ignore
+  # red, which is the one thing this suite cannot afford.
+  #
+  # Costs nothing when the daemon is prompt: the loop breaks on the first poll.
+  # A genuine failure still fails — 28 seconds later, and the message says how
+  # long it waited so a slow pass is never mistaken for a fast one.
+  waited=0
+  for _ in $(seq 1 300); do
     grep -qF '203.0.113.9' "$cap/blocked-ips.txt" 2>/dev/null && break
     sleep 0.1
+    waited=$((waited + 1))
   done
+  printf '%s' "$waited" > "$cap/.waited"
   printf '%s' "$cap"
 }
 
@@ -180,7 +195,7 @@ capdir2="$(run_capture2)"
 if grep -qxF '203.0.113.9' "$capdir2/blocked-ips.txt" 2>/dev/null; then
   pass "a real blocked packet becomes a real row in blocked-ips.txt"
 else
-  fail "a real blocked packet becomes a real row in blocked-ips.txt — got: $(cat "$capdir2/blocked-ips.txt" 2>/dev/null | tr '\n' '|')"
+  fail "a real blocked packet becomes a real row in blocked-ips.txt after $(( $(cat "$capdir2/.waited" 2>/dev/null || echo 0) / 10 ))s — got: $(cat "$capdir2/blocked-ips.txt" 2>/dev/null | tr '\n' '|')"
 fi
 if grep -qF '203.0.113.9' "$capdir2/blocked.log" 2>/dev/null; then
   pass "the same packet is recorded in blocked.log"
