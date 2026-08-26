@@ -43,13 +43,29 @@ instead of inheriting it.
   `release-title.sh` correctly reads that as a lightweight tag, and the release
   publishes the bare tag name — exactly the defect `de3c706` existed to fix.
   `fetch-depth: 0` yields a real tag object and a rendered title.
-- **`tests/test-release-checkout.sh` pins it by effect, not by key name.** It
-  reads the fetch configuration out of `release.yml`, performs the fetch git
-  would perform under it against a fixture repository carrying a real annotated
-  tag, and then runs the shipped `release-title.sh` against the result. Both
-  wrong configurations fail it — `fetch-tags: true` on three assertions and the
-  plausible `fetch-depth: 1` repair on two — so a future edit that swaps one
-  reasonable-looking key for another has to survive the property, not the review.
+- **`fetch-depth: 0` was necessary and not sufficient, which took a second
+  failed attempt to learn.** With it, the workflow ran green and published a
+  release titled `v0.8.0` — the bare tag name — with a perfectly good body.
+  `actions/checkout` fetches real tag objects and then, on a tag push,
+  force-updates `refs/tags/<tag>` to the commit SHA. Two fetches, the second
+  undoing the first, straight from the runner log:
+
+  ```
+  git fetch ... +refs/heads/*:... +refs/tags/*:refs/tags/*   <- the tag object
+  git fetch --no-tags ... +<sha>:refs/tags/v0.8.0            <- clobbers it
+  ```
+
+  No checkout configuration prevents that second fetch, so the workflow now
+  restores the tag object itself and **fails loudly** if it is not an annotated
+  tag — a wrong title on a published release is much more annoying to correct
+  than a failed workflow.
+- **`tests/test-release-checkout.sh` pins it by effect, not by key name**, and
+  its first version was itself wrong in the instructive way: it simulated ONE
+  fetch, so it passed on the configuration that published a bare-titled release.
+  A guard that is consulted and agrees is worse than no guard. It now issues the
+  sequence the runner actually issues, and **executes the workflow's own recovery
+  step** rather than assuming it — a `release.yml` that stops restoring the tag
+  object fails three of its assertions, and `fetch-tags: true` fails it outright.
 
 ### `--version`, and a PATH repair that took bash with it
 

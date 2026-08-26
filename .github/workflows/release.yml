@@ -14,33 +14,43 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          # fetch-depth: 0, NOT fetch-tags: true, and the difference is the whole
-          # reason v0.8.0's first release attempt failed at checkout.
+          # fetch-depth: 0 is NECESSARY but NOT SUFFICIENT, and both halves were
+          # learned from a failed release rather than from the documentation.
           #
           # The title comes from the ANNOTATED TAG'S MESSAGE, so this job needs
-          # the tag OBJECT, not merely a ref of that name. `fetch-tags: true`
-          # was the obvious way to ask for that and is actively wrong here: it
-          # drops checkout's `--no-tags`, so git's automatic tag-following wants
-          # to write refs/tags/<tag> at the same time as checkout's own explicit
-          # `+<sha>:refs/tags/<tag>` refspec, and git refuses two sources for one
-          # destination:
-          #
-          #   fatal: Cannot fetch both <sha> and refs/tags/v0.8.0 to refs/tags/v0.8.0
-          #
-          # Simply removing fetch-tags is not the fix either — measured, not
-          # assumed. That restores `--no-tags`, the fetch succeeds, and
-          # refs/tags/<tag> then points at a COMMIT: `git cat-file -t` reports
-          # `commit`, release-title.sh correctly reads that as a lightweight tag
-          # and falls back to the bare tag name. That is precisely the defect
-          # de3c706 set out to fix, reintroduced by the repair.
-          #
-          # fetch-depth: 0 fetches full history and real tag objects, with no
-          # SHA-to-tag refspec to collide with. Verified against this repository:
-          # `cat-file -t v0.8.0` -> `tag`, and release-title.sh renders the
-          # message. tests/test-release-checkout.sh pins it by EFFECT — it reads
-          # this block and proves the configuration it describes actually yields
-          # a usable annotated tag.
+          # the tag OBJECT. `fetch-tags: true` was the first attempt and fails
+          # outright on a tag push: it drops checkout's `--no-tags`, so git's
+          # automatic tag-following collides with checkout's own explicit
+          # `+<sha>:refs/tags/<tag>` refspec and git refuses two sources for one
+          # destination. Merely dropping it is worse than it looks -- the fetch
+          # then succeeds and leaves refs/tags/<tag> on a COMMIT, so the title
+          # silently degrades to the bare tag name.
           fetch-depth: 0
+
+      # RESTORE THE TAG OBJECT. checkout fetches real tags and then, on a tag
+      # push, force-updates refs/tags/<tag> to the commit SHA -- two fetches, the
+      # second undoing what the first brought. Observed in the runner log for
+      # v0.8.0's second attempt:
+      #
+      #   git fetch ... +refs/heads/*:... +refs/tags/*:refs/tags/*   <- tag object
+      #   git fetch --no-tags ... +<sha>:refs/tags/v0.8.0            <- clobbers it
+      #
+      # So `cat-file -t` reported `commit`, release-title.sh correctly read a
+      # lightweight tag, and the release published as a bare "v0.8.0" with a
+      # perfectly good body. No amount of checkout configuration prevents that
+      # second fetch; the tag object has to be put back afterwards.
+      - name: Restore the annotated tag object
+        run: |
+          set -euo pipefail
+          git fetch --force origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
+          kind="$(git cat-file -t "$GITHUB_REF_NAME")"
+          printf 'tag object type: %s\n' "$kind"
+          # Fail here rather than publishing a bare-titled release: a wrong title
+          # on a published release is far more annoying to correct than a failed
+          # workflow, and this is the one place that can still tell the
+          # difference.
+          [ "$kind" = "tag" ] || { echo "::error::refs/tags/${GITHUB_REF_NAME} is a ${kind}, not an annotated tag object — the title would degrade to the bare tag name"; exit 1; }
+
       - name: Extract release notes from CHANGELOG
         run: bash ./changelog-section.sh "$GITHUB_REF_NAME" > "$RUNNER_TEMP/notes.md"
 
