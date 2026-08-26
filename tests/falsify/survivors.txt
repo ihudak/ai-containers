@@ -352,6 +352,33 @@ tests/lib-path-isolation.sh:logic-flip:aec066a8785ce432d2a7c5866f97dac16c664845
   the `|| true` stays: it is insurance against a caller this repo does not have
   yet, and insurance no test can currently exercise.
 
+version.sh:logic-flip:9afb91ee98f1cddd278a3e14a10f165bc2ed3fb7
+  :70  rm -f "$dest/engine-version" 2>/dev/null || true
+  the damages:  rm -f "$dest/engine-version" 2>/dev/null && true
+  EQUIVALENT: the same class as the lib-path-isolation entry above, and the
+  reasoning was MEASURED here rather than carried over, because the site is not
+  the same: this one sits inside a function whose callers run `set -euo
+  pipefail`, which is exactly where `|| true` and `&& true` would be expected to
+  diverge. They do not. bash suppresses errexit for the non-final command of an
+  AND-OR list, so a failing `rm -f` in `A && true` runs neither `true` nor the
+  exit trap -- execution simply carries on to the `return 0` on the next line,
+  and the compound's status is discarded there. Demonstrated directly:
+
+      bash -c 'set -e; f() { false && true; return 0; }; f; echo rc=$?'   -> rc=0
+      bash -c 'set -e; f() { false || true; return 0; }; f; echo rc=$?'   -> rc=0
+
+  and the mutant confirmed surviving the whole of test-version.sh, including
+  the assertion written specifically to reach this line (an EXISTING but
+  UNWRITABLE destination directory -- the pre-existing non-fatality assertion
+  cannot reach it, because `rm -f` on a path under a directory that does not
+  exist SUCCEEDS, which is what -f means).
+  That assertion is kept even though it does not discriminate this mutant: it
+  pins the clear path's non-fatality, and it does discriminate the plausible
+  alternative `|| return 1`, which aborts both callers.
+  The `|| true` stays. It is the idiom this file already uses, it states the
+  intent at the point of the risk, and it stops being redundant the moment a
+  statement is added after it or the `return 0` moves.
+
 tests/lib-layer-checks.sh:logic-flip:b6554f5a51c19c07a987509d2872c86e54d554ea
   :78  insteps && started && /^        [A-Za-z]/ {
   the damages:  insteps || started && /^        [A-Za-z]/ {

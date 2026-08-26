@@ -6,6 +6,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### `--version` could report a release the copy did not come from
+
+- **`version_record()` left a stale record standing.** When the source tree
+  cannot state its own version it correctly declines to write `unknown` — a file
+  saying `unknown` is worse than no file, because it stops a later sync telling
+  "never recorded" from "recorded once, badly". But declining to *write* is not
+  the same as leaving whatever is already there, and that is what it did: a
+  project recorded once from a git checkout and then re-synced from a `.git`-less
+  export of the engine — a release tarball, an `rsync`ed copy, a Docker build
+  context — kept reporting the **old release forever**, with nothing in the
+  output hinting that the number described a tree the copy no longer came from.
+  Reproduced before it was fixed, not reasoned about.
+- **It is the one thing this feature's own header says must never happen.**
+  "The engine release is the only one that can lie, and the design is shaped
+  around that" — every other part of it is: `git describe` keeps its suffix, the
+  recorded value beats the git repo the caller happens to be standing in, and an
+  unrecorded copy says `unknown` rather than guessing. This was the remaining
+  path where it lied, confidently.
+- **Fixed by removing the stale record, not by writing `unknown`**, so absence
+  keeps meaning exactly one thing and the rule above survives intact.
+- **The mutation tier found the new line's one weakness and it turned out to be
+  equivalent** — `|| true` against `&& true` on the `rm`. The site looked like it
+  should discriminate, because it sits in a function whose callers run `set -euo
+  pipefail`; it does not, since bash suppresses errexit for the non-final command
+  of an AND-OR list. Measured directly, recorded in `survivors.txt` as
+  EQUIVALENT, and the `|| true` kept: it states the intent at the point of the
+  risk and stops being redundant the moment anything is added after it.
+- **A second assertion came out of it that does discriminate**, covering a path
+  nothing reached before: non-fatality when a stale record exists and **cannot**
+  be removed. The pre-existing non-fatality assertion uses a destination
+  directory that does not exist, where `rm -f` succeeds by definition, so only an
+  existing-but-unwritable directory reaches the failure. It checks its own
+  premise and reports a skip rather than passing vacuously where the mode is
+  ignored (root, or a filesystem that does not enforce it).
+
 ## v0.8.1 — 2026-08-26
 
 **A patch release that exists because v0.8.0 could not publish itself.** The tag

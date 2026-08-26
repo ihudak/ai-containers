@@ -53,7 +53,23 @@ version_engine() {
 version_record() {
   local src="$1" dest="$2" v
   v="$(version_engine "$src")"
-  [[ "$v" == "unknown" ]] && return 0
+  if [[ "$v" == "unknown" ]]; then
+    # REMOVE a stale record; do not leave it standing. After this call the copy
+    # is a copy of THIS tree, so a number recorded from some earlier tree now
+    # describes something the copy did not come from -- and `--version` would
+    # report it with no hint that it is describing the wrong tree. The realistic
+    # trigger is a release tarball or any .git-less export of the engine: a
+    # project recorded once from a git checkout and re-synced from one of those
+    # kept reporting the old release forever.
+    #
+    # Removing, NOT writing the literal `unknown`: version_engine already reports
+    # `unknown` for an absent file, so absence keeps meaning exactly one thing
+    # and a later sync can still tell "never recorded" from "recorded once,
+    # badly". Non-fatal like the write below -- both callers run under `set -e`
+    # and call this bare.
+    rm -f "$dest/engine-version" 2>/dev/null || true
+    return 0
+  fi
   printf '%s\n' "$v" > "$dest/engine-version" 2>/dev/null || return 0
 }
 
