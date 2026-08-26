@@ -158,22 +158,53 @@ falsify_operator_set() {
 _FALSIFY_CACHE_FILE=""
 _FALSIFY_CACHE_LINES=()
 
-falsify_check_syntax() {   # <file> <line-no> <candidate-line> → 0 parses, 1 not
-  local file="$1" lineno="$2" text="$3" idx
-  _falsify_tmpdir || return 1
+# A CANDIDATE THAT DOES NOT PARSE AND A CHECK THAT COULD NOT RUN ARE DIFFERENT
+# ANSWERS, and conflating them silently shrinks the corpus. `bash -n` separates
+# them cleanly and always has — measured, not assumed:
+#
+#   syntax error       rc 2
+#   well-formed        rc 0
+#   cannot be run at all (unreadable/missing file, and the shape a failed fork
+#                      takes under memory or process pressure)   rc 127
+#
+# The old code returned `bash -n`'s status directly and the caller discarded on
+# ANY non-zero, so a check that never ran was recorded as "bash -n rejected the
+# candidate". On a loaded macOS host — where every oracle run forks constantly
+# and is ~18x slower than Linux — that turns fork pressure into a QUIETLY
+# SMALLER mutant set, which is the one failure a mutation tier must never have:
+# coverage that shrinks without the number that reports it moving.
+#
+#   0  the candidate parses
+#   1  the candidate does NOT parse — a real discard
+#   2  the check could not be performed — the caller must not call this a discard
+falsify_check_syntax() {   # <file> <line-no> <candidate-line>
+  local file="$1" lineno="$2" text="$3" idx rc
+  _falsify_tmpdir || return 2
   if [[ "$file" != "$_FALSIFY_CACHE_FILE" ]]; then
     _FALSIFY_CACHE_LINES=()
-    mapfile -t _FALSIFY_CACHE_LINES < "$file" || return 1
+    mapfile -t _FALSIFY_CACHE_LINES < "$file" || return 2
     _FALSIFY_CACHE_FILE="$file"
   fi
   idx=$((lineno - 1))
   if (( idx < 0 || idx >= ${#_FALSIFY_CACHE_LINES[@]} )); then
     printf 'falsify: line %s is outside %s\n' "$lineno" "$file" >&2
-    return 1
+    return 2
   fi
   printf '%s\n' "${_FALSIFY_CACHE_LINES[@]:0:idx}" "$text" \
-                "${_FALSIFY_CACHE_LINES[@]:idx+1}" > "$_FALSIFY_SYNTAX_TMP" || return 1
+                "${_FALSIFY_CACHE_LINES[@]:idx+1}" > "$_FALSIFY_SYNTAX_TMP" || return 2
   bash -n "$_FALSIFY_SYNTAX_TMP" 2>/dev/null
+  rc=$?
+  # 0 and 2 are bash's own verdicts on the program. Anything else means bash
+  # never got to judge it. A STUBBED gate (tests replace the `bash -n` line with
+  # `true`) yields 0 and still reads as "parses", so the demonstration that the
+  # gate is load-bearing keeps working.
+  case "$rc" in
+    0) return 0 ;;
+    2) return 1 ;;
+    *) printf 'falsify: bash -n could not run (rc=%s) on %s:%s — not a verdict on the candidate\n' \
+         "$rc" "$file" "$lineno" >&2
+       return 2 ;;
+  esac
 }
 
 # ── the line scanner ──────────────────────────────────────────────────────────
@@ -450,14 +481,22 @@ falsify_generate() {   # <file>
     fi
 
     for (( k = 0; k < ${#SCAN_OPS[@]}; k++ )); do
-      if falsify_check_syntax "$file" "$lineno" "${SCAN_TEXTS[k]}"; then
-        printf '%s\t%s\t%s\t%s\n' "${SCAN_OPS[k]}" "$lineno" "$sha" "${SCAN_TEXTS[k]}"
-        FALSIFY_MUTANTS=$((FALSIFY_MUTANTS + 1))
-      else
-        FALSIFY_DISCARDED=$((FALSIFY_DISCARDED + 1))
-        printf 'falsify: DISCARD %s:%s %s — bash -n rejected the candidate\n' \
-          "$file" "$lineno" "${SCAN_OPS[k]}" >&2
-      fi
+      falsify_check_syntax "$file" "$lineno" "${SCAN_TEXTS[k]}"
+      case "$?" in
+        0) printf '%s\t%s\t%s\t%s\n' "${SCAN_OPS[k]}" "$lineno" "$sha" "${SCAN_TEXTS[k]}"
+           FALSIFY_MUTANTS=$((FALSIFY_MUTANTS + 1)) ;;
+        1) FALSIFY_DISCARDED=$((FALSIFY_DISCARDED + 1))
+           printf 'falsify: DISCARD %s:%s %s — bash -n rejected the candidate\n' \
+             "$file" "$lineno" "${SCAN_OPS[k]}" >&2 ;;
+        # NOT a discard, and not silent: the corpus would be short by one mutant
+        # for a reason having nothing to do with the mutant. Fail the whole
+        # generation instead, so the caller cannot proceed on a short list
+        # believing it complete.
+        *) printf 'falsify: ABORTING %s:%s — the syntax gate could not run\n' \
+             "$file" "$lineno" >&2
+           _falsify_tmpdir_release
+           return 1 ;;
+      esac
     done
   done
 

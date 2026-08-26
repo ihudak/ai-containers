@@ -6,6 +6,48 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### A syntax gate that could not run counted as a rejected candidate
+
+- **`generate.sh` conflated "this candidate does not parse" with "the check never
+  ran".** It returned `bash -n`'s status straight through, and the caller
+  discarded on any non-zero. `bash -n` distinguishes them cleanly and always has
+  — measured, not assumed: **rc 2** is a syntax error, **rc 0** parses, and
+  anything else (an unreadable scratch file, and the shape a failed fork takes
+  under memory or process pressure) means bash never judged the candidate.
+- **The consequence is the one failure a mutation tier must never have.** With
+  the gate un-runnable, the old generator exits **0** and reports
+  `0 mutant(s), 17 discarded` — a plausible tally, a successful exit, and an
+  empty corpus. Coverage shrinks without the number that reports it moving. On a
+  loaded macOS host — where oracle runs are **~18× slower than Linux** before any
+  contention, and every falsify worker runs a whole `run-all.sh` — that is
+  reachable, not theoretical.
+- **A gate that cannot run now aborts the generation and names the cause**,
+  rather than blaming the candidate. Demonstrated by making the gate return 127:
+  the generator exits non-zero, emits no mutants, says `bash -n could not run`,
+  and prints **no discard tally** — because a tally would read as a completed
+  run. A stubbed gate (which the tests use to prove the gate is load-bearing)
+  still yields 0 and still reads as "parses", so that demonstration is untouched.
+
+### Two tests that went red because the machine was busy
+
+- **`test-blocked-capture.sh` allowed the daemon 2 seconds** to record one packet
+  — work that takes milliseconds. The budget was never about the work; it is
+  headroom against the machine, and 2s went red on a Mac running two suites at
+  once. Now 30s, which **costs nothing when the daemon is prompt** (the loop
+  breaks on the first poll — the file still runs in 0.16s), and the failure
+  message now says how long it waited, so a slow pass is never mistaken for a
+  fast one.
+- **`test-falsify-generate.sh` compared the walked count against the pinned
+  total**, so a generator that came up short and a walk that could not read its
+  own input produced the identical sentence: `independently re-applied 36
+  mutants — walked 34 instead`. Those are different defects with different
+  owners. The two facts are now separate assertions, and the one that fired on
+  macOS — the **generator** came up short — says so.
+- **Neither is a tolerance raised to hide a defect.** A test that goes red
+  because a laptop was busy teaches people to ignore red, which is the one thing
+  this suite cannot afford. Both still fail on a real defect, and both now say
+  which defect.
+
 ### The symlinked-TMPDIR guard could not run on the platform it exists for
 
 - **`test-symlinked-tmp-guard.sh` failed on every Mac**, in both repositories,

@@ -299,6 +299,39 @@ else
   pass "a discarded candidate never reaches stdout"
 fi
 
+# ── 7b. a gate that CANNOT RUN is not a discard ──────────────────────────────
+# `bash -n` answers three different ways and the generator must not flatten them:
+# rc 0 parses, rc 2 is a real syntax error, and anything else means bash never
+# judged the candidate at all — an unreadable scratch file, or the shape a failed
+# fork takes under memory/process pressure. Treating the third as a discard turns
+# load into a QUIETLY SMALLER corpus reported with a successful exit code, which
+# is the one failure a mutation tier must never have.
+#
+# Demonstrated by making the gate un-runnable (rc 127) rather than argued: the
+# generator must exit non-zero and name the cause, and must NOT report a tally.
+cantrun="$TESTS_DIR/falsify/tmp-cantrun-$$.sh"
+sed 's|bash -n "\$_FALSIFY_SYNTAX_TMP" 2>/dev/null|bash -n /nonexistent/nope.sh 2>/dev/null|' \
+  "$GEN" > "$cantrun"
+if grep -q 'nonexistent/nope.sh' "$cantrun"; then
+  pass "the un-runnable-gate fixture was rewritten"
+else
+  fail "the un-runnable-gate fixture was rewritten — the demonstration below is vacuous"
+fi
+cr_out="$(bash "$cantrun" "$ENGINE_DIR/tools-lib.sh" 2>"$TMP/cantrun.err")"; cr_rc=$?
+rm -f "$cantrun"
+(( cr_rc != 0 )) \
+  && pass "a gate that cannot run FAILS the generation (rc=$cr_rc)" \
+  || fail "a gate that cannot run FAILS the generation — got rc=0, so a short corpus would be reported as a complete one"
+[[ -z "$cr_out" ]] \
+  && pass "…and emits no mutants to stdout" \
+  || fail "…and emits no mutants to stdout (got $(grep -c . <<<"$cr_out"))"
+grep -q 'could not run' "$TMP/cantrun.err" \
+  && pass "…and says the gate could not run, rather than blaming the candidate" \
+  || fail "…and says the gate could not run — stderr: $(head -2 "$TMP/cantrun.err" | tr '\n' '|')"
+! grep -q 'discarded' "$TMP/cantrun.err" \
+  && pass "…and reports no discard tally, which would read as a completed run" \
+  || fail "…and reports no discard tally — got: $(grep -o '[0-9]* mutant(s), [0-9]* discarded' "$TMP/cantrun.err")"
+
 # ── 8. the pinned counts, all five operators ─────────────────────────────────
 # A regression fence, not a fact about these files. If a target's real content
 # changes, the number moves legitimately and is updated here. What must NOT
@@ -355,9 +388,10 @@ done
 # Not via falsify_check_syntax: asserting a generator's output with the
 # generator's own checker is assert f(x) == f(x). This rebuilds the file with
 # head/tail and parses it.
-mut_checked=0; mut_bad=0; changed_bad=0
+mut_checked=0; mut_bad=0; changed_bad=0; mut_emitted=0
 for src in "$ENGINE_DIR/tools-lib.sh" "$ENGINE_DIR/bash-floor.sh" "$ENGINE_DIR/shared-files.sh"; do
   while IFS=$'\t' read -r _op lineno _sha text; do
+    mut_emitted=$((mut_emitted + 1))
     [[ -n "${lineno:-}" ]] || continue
     { head -n $((lineno - 1)) "$src"; printf '%s\n' "$text"; tail -n +$((lineno + 1)) "$src"; } \
       > "$TMP/applied.sh"
@@ -371,9 +405,18 @@ done
 # stale — the exact drift this repo removes wherever it finds it.
 mut_expected=0
 for _t in "${!PINNED[@]}"; do mut_expected=$(( mut_expected + PINNED[$_t] )); done
-[[ "$mut_checked" == "$mut_expected" ]] \
-  && pass "independently re-applied all $mut_expected mutants of the three pinned targets" \
-  || fail "independently re-applied $mut_expected mutants — walked $mut_checked instead"
+# TWO facts, told apart, because one number cannot say which went wrong. A
+# generator that emitted fewer rows and a walk that could not read the rows it
+# was given are different defects with different owners, and the single
+# walked-vs-pinned comparison this replaced reported both as the same sentence —
+# which cost an hour on a macOS host where the emitted count was the one that
+# moved.
+[[ "$mut_emitted" == "$mut_expected" ]] \
+  && pass "the generator emitted all $mut_expected mutants of the three pinned targets" \
+  || fail "the generator emitted $mut_emitted of $mut_expected mutants across the three pinned targets — the GENERATOR came up short, not the walk"
+[[ "$mut_checked" == "$mut_emitted" ]] \
+  && pass "independently re-applied every one of the $mut_emitted rows emitted" \
+  || fail "independently re-applied $mut_checked of the $mut_emitted rows emitted — $((mut_emitted - mut_checked)) row(s) carried no line number, so the generator's output is malformed"
 [[ "$mut_bad" == "0" ]] \
   && pass "every emitted mutant parses when applied to the real file" \
   || fail "every emitted mutant parses when applied to the real file — $mut_bad did not"
