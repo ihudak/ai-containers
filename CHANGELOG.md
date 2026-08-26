@@ -6,6 +6,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### The symlinked-TMPDIR guard could not run on the platform it exists for
+
+- **`test-symlinked-tmp-guard.sh` failed on every Mac**, in both repositories,
+  while passing in CI and in the floor container. Its whole demonstration rests
+  on `TMPDIR` steering `mktemp -d` — GNU coreutils behaviour, and **not
+  universal**. macOS's `mktemp`, given no template, ignores `TMPDIR` entirely and
+  uses the per-user directory from `confstr(_CS_DARWIN_USER_TEMP_DIR)`. Measured
+  on Darwin arm64: `TMPDIR=/Users/x/tmp-plain mktemp -d` returns
+  `/var/folders/w9/…/T/tmp.UuY97xwbZb`.
+- **The guard was right to fail, which is the point.** With no lever, the naive
+  fixture fails under *both* arms — every path it is handed is symlinked
+  whatever `TMPDIR` says — so assertion 1 passed **for the wrong reason** and
+  assertion 2, the control that exists to catch exactly that, failed. It refused
+  to certify a demonstration it could not perform. What it must not do is report
+  a platform lacking the lever as though the mechanism were broken.
+- **The lever is now measured, not assumed**, and where it is absent the same
+  property is demonstrated through an explicit `mktemp -d "$dir/…XXXXXX"`, which
+  every `mktemp` honours — the symlink still has to be what makes the naive
+  comparison fail. Only the claim that *`TMPDIR` is the lever* is lost, and that
+  is printed as a `NOTE` naming what went unexercised rather than quietly
+  skipped. Probed rather than sniffed with `uname`: the question is what
+  `mktemp` does here, and a platform test is a proxy that can drift.
+- **Reproduced before fixing, with a fake `mktemp` of the macOS shape** — no Mac
+  required. The old guard under it emits the identical
+  `the same fixture passes under an ordinary TMPDIR (got rc=1, wanted 0)`, and
+  passes under GNU `mktemp` as a control; the new guard passes under both.
+- **This is the third instance of the shape the file itself was written to
+  prevent** — an assumption true in CI's environment and false in a developer's.
+  That it happened to the guard *for* that class is the sharpest possible
+  argument for the local layer: nothing but a real host run could have found it.
+
 ### `--version` answered for whatever git repo it was standing in
 
 - **A project copy that was never told its version reported the PROJECT's own

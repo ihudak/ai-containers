@@ -65,10 +65,16 @@ fi
 # ── the two fixtures ─────────────────────────────────────────────────────────
 # NAIVE: the exact shape of every bug this check is for — a path from mktemp
 # compared against the same path after something canonicalised it.
+# $1, when given, is the directory to create in — the EXPLICIT form, which every
+# mktemp honours. With no argument the bare form is used, which is what the real
+# suite does and what TMPDIR is supposed to steer. Both forms exist because the
+# lever is not universal; see the probe below.
 cat > "$TMP/naive.sh" <<'FIX'
 #!/usr/bin/env bash
 set -uo pipefail
-d="$(mktemp -d)" || exit 2
+if [[ -n "${1:-}" ]]; then d="$(mktemp -d "$1/fixture.XXXXXX")" || exit 2
+else                       d="$(mktemp -d)"                     || exit 2
+fi
 resolved="$(cd "$d" && pwd -P)"
 [[ "$d" == "$resolved" ]] || exit 1
 exit 0
@@ -77,7 +83,9 @@ FIX
 cat > "$TMP/correct.sh" <<'FIX'
 #!/usr/bin/env bash
 set -uo pipefail
-d="$(mktemp -d)" || exit 2
+if [[ -n "${1:-}" ]]; then d="$(mktemp -d "$1/fixture.XXXXXX")" || exit 2
+else                       d="$(mktemp -d)"                     || exit 2
+fi
 d="$( cd "$d" && pwd -P )"
 resolved="$(cd "$d" && pwd -P)"
 [[ "$d" == "$resolved" ]] || exit 1
@@ -89,9 +97,57 @@ run_under() {  # $1 = TMPDIR to use, $2 = fixture → echoes its exit code
   TMPDIR="$1" bash "$2" >/dev/null 2>&1
   printf '%s' "$?"
 }
+run_in_dir() { # $1 = directory to create in, $2 = fixture → echoes its exit code
+  bash "$2" "$1" >/dev/null 2>&1
+  printf '%s' "$?"
+}
+
+# ── THE LEVER, PROBED RATHER THAN ASSUMED ────────────────────────────────────
+# Assertions 1 and 2 rest on TMPDIR steering `mktemp -d`. That is GNU coreutils
+# behaviour and NOT universal: macOS's mktemp, given no template, ignores TMPDIR
+# and uses the per-user directory from confstr(_CS_DARWIN_USER_TEMP_DIR) —
+# /var/folders/…, itself behind the /var -> /private/var symlink. Measured on
+# Darwin arm64, 2026-08-26:
+#
+#   TMPDIR=/Users/x/tmp-plain mktemp -d
+#   -> /var/folders/w9/_yghn6w95_jcb_lrdjg06vj40000gp/T/tmp.UuY97xwbZb
+#
+# Where the lever is absent, those two assertions cannot mean what they say: the
+# naive fixture then fails under BOTH arms, because every path it is handed is
+# symlinked whatever TMPDIR says. Assertion 1 passes for the wrong reason and
+# assertion 2 — the control that exists to catch exactly that — fails. THE GUARD
+# IS RIGHT TO REFUSE; what it must not do is report a platform without the lever
+# as though the mechanism were broken. That is how this file failed on every Mac
+# while passing in CI, the very shape it was written to prevent.
+#
+# So the lever is measured, and where it is missing the SAME PROPERTY is
+# demonstrated through the explicit form instead — the symlink still has to be
+# what makes the naive comparison fail. What is lost is only the claim that
+# TMPDIR is the lever, which is stated as a note rather than quietly skipped.
+# Probed, not sniffed with `uname`: the question is what mktemp does here, and a
+# platform test would be a proxy for it that can drift.
+lever=0
+_probe="$(TMPDIR="$TMP/plain" mktemp -d 2>/dev/null || true)"
+case "$_probe" in "$TMP/plain"/*) lever=1 ;; esac
+[[ -n "$_probe" ]] && rm -rf "$_probe"
+if (( lever )); then
+  pass "scaffold: TMPDIR steers mktemp -d here, so the TMPDIR lever is testable"
+else
+  printf 'NOTE: mktemp -d ignores TMPDIR on this platform (macOS does), so the\n'
+  printf '      TMPDIR LEVER itself is not exercised below. The same property is\n'
+  printf '      demonstrated through an explicit template, which every mktemp\n'
+  printf '      honours. The lever is covered on Linux, by CI and by the floor\n'
+  printf '      container, which is where the suite-symlinked-tmp job runs.\n'
+fi
+
+# arm <dir> <fixture> — drive a fixture at <dir> through whichever mechanism
+# this platform actually has.
+arm() {
+  if (( lever )); then run_under "$1" "$2"; else run_in_dir "$1" "$2"; fi
+}
 
 # ── 1. the symlinked arm detects the bug ─────────────────────────────────────
-rc="$(run_under "$TMP/link" "$TMP/naive.sh")"
+rc="$(arm "$TMP/link" "$TMP/naive.sh")"
 if [[ "$rc" == "1" ]]; then
   pass "a path-naive comparison FAILS under a symlinked TMPDIR"
 else
@@ -102,7 +158,7 @@ fi
 # The load-bearing half. If this passes for the wrong reason — because the
 # fixture is broken outright rather than because of the symlink — then the
 # check above proves nothing about TMPDIR at all.
-rc="$(run_under "$TMP/plain" "$TMP/naive.sh")"
+rc="$(arm "$TMP/plain" "$TMP/naive.sh")"
 if [[ "$rc" == "0" ]]; then
   pass "…and PASSES under an ordinary one, so the symlink is what detects it"
 else
@@ -112,8 +168,8 @@ else
 fi
 
 # ── 3. the corrected shape survives both ─────────────────────────────────────
-rc_link="$(run_under "$TMP/link" "$TMP/correct.sh")"
-rc_plain="$(run_under "$TMP/plain" "$TMP/correct.sh")"
+rc_link="$(arm "$TMP/link" "$TMP/correct.sh")"
+rc_plain="$(arm "$TMP/plain" "$TMP/correct.sh")"
 if [[ "$rc_link" == "0" && "$rc_plain" == "0" ]]; then
   pass "a p_realdir-correct comparison passes under both"
 else
