@@ -6,6 +6,52 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### A partial `cp -a` nested the scratch tree, and three oracles took the blame
+
+- **`cp -R src dst` means two different things.** "Copy src TO dst" when dst is
+  absent; "copy src INSIDE dst" when it exists. So a `cp -a` that creates the
+  destination and **then** fails turns the fallback into a nested tree: part of
+  the files at the top level, the rest under `dst/<basename>/`, and whatever
+  `cp -a` never reached missing outright.
+- **macOS produces exactly that shape.** Its `cp -a` (`= -pRP`) returns non-zero
+  when it cannot copy extended attributes, *having already copied contents*. A
+  2026-08-27 host run showed the result:
+
+  ```
+  FAIL: no *.yml files found under …/work/w0/.github/workflows — nothing was enumerated
+  FAIL: ARCH: uname -m x86_64 -> linux/ (want linux/amd64)
+  ```
+
+  The workflows were sitting under `w0/pristine/` instead. **Three oracles went
+  red in one run for this single reason**, each reported as a defect in the code
+  it tests — `tests/lib-verify-repo.sh` and `tools-lib.sh` skipped entirely,
+  retiring every one of their mutants.
+- **Both copies had it**, and the `.git` one is worse: a partial `cp -a` there
+  yields `$dest/.git/.git`, a work tree whose git directory is one level too
+  deep, so every oracle that shells out to git in the scratch tree fails for a
+  reason unrelated to the mutant.
+- **Fixed by clearing the destination before the retry**, and **demonstrated**
+  with a `cp` that copies part of the tree and exits 1 — driven through the real
+  `fr_seed_slot`, because the bug lives in the recovery path and a
+  reimplementation in the test would repeat the same mistake. Against the old
+  code the assertion fails with the nested tree in its `got:`; against the fixed
+  code it passes.
+- **It explains the two SEEDING failures and nothing else — a scope this entry
+  originally overstated.** The claim written here first was that this was "the
+  cause of the vanishing files this session kept meeting", covering
+  `test-portability.sh`'s `exists=n` and the shim's lost recorder too. That is
+  wrong, and the evidence arrived the same day: a CI control run on **Linux**
+  reported `dir=n exists=n left=0` for `test-portability.sh` — its whole
+  `mktemp -d` gone. That directory is the test's own, never seeded from the
+  cache, so no `cp` in this file can touch it, and the platform rules out the
+  macOS xattr path entirely.
+- **So there are two separate faults, and only one is fixed here.** The seeded
+  worker tree being nested is this one, demonstrated and closed. Test-owned
+  `mktemp -d` directories disappearing mid-run is a different, still-open
+  problem, seen now on both macOS and Linux CI and not reproduced in 24
+  consecutive control runs locally. The diagnostics added earlier are what
+  separated them; without `dir=n` the two would still read as one story.
+
 ### The shim's scaffold guard watched one third of the scaffold
 
 - **A macOS Phase 6 run reported the shim broken. It was not.**
