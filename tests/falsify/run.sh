@@ -272,14 +272,23 @@ fr_perf_cpus() {
 #
 #   --jobs auto (12)   many controls red, oracles red on PRISTINE trees, no score
 #   --jobs 4           2 of 26 controls red, 4 mutants over a 300s clock, no score
-#   --jobs 2           2 of 24 controls red, four oracles red on PRISTINE, no score
 #   --jobs 1           clean: controls green, every target scored
 #
 # A failed control invalidates every kill recorded near it, so the cap is the
-# only value OBSERVED clean rather than the largest that might work. 2 was the
-# obvious candidate and it fails; that negative is recorded here so the next
-# reader does not re-derive it. Raise this only with a measurement, and put the
-# measurement here.
+# only value OBSERVED clean rather than the largest that might work.
+#
+# 2 IS NOT ON THAT LIST, AND THE REASON IS A RETRACTION. It was measured and
+# written down here as a clean negative; it was neither. Two confounds, both
+# ours: an assistant was running the hermetic suite and a second falsify job on
+# the same machine throughout, and the run also predates the fix below this
+# comment -- so one of the oracles it reported red on the PRISTINE tree was red
+# DETERMINISTICALLY, from the cap living in verify-on-host.sh, not from load.
+# A number obtained under a bug the number was being used to reason about is not
+# a measurement.
+#
+# So: 1 is the only value observed clean, and everything above it is UNMEASURED
+# rather than refuted. Measuring 2 is now cheap and honest -- the deterministic
+# failure is gone -- and if it holds, raise this and put the run here.
 #
 # It lives HERE, in the budget, and not in verify-on-host.sh — where it was
 # first written and where it was wrong twice over. `auto` means "work out a
