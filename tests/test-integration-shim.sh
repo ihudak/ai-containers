@@ -85,11 +85,47 @@ export IT_LAUNCH_NAME="it-launch-unit"
 # tests/falsify/run.sh's falsify_has_scaffold_failure reads the same merged
 # stream. Written to stdout instead, this line is swallowed by the command
 # substitution and nothing sees it — measured, in the first draft of this guard.
+# THREE PIECES, NOT ONE. The guard originally watched only the `docker` symlink,
+# and that is not the whole scaffold: the shim `exec`s IT_REAL_DOCKER, and the
+# RECORDER is what writes $REC. Lose either of those and the shim still runs, the
+# symlink check still passes, `$REC` stays empty, and the file reports a run of
+# assertion failures about the shim's BEHAVIOUR — which is the exact misreading
+# the docker check was added to prevent, one component over.
+#
+# Observed 2026-08-27, a falsify baseline on macOS: the first four cases passed
+# and `volume create` onward failed with `got:` empty, no SCAFFOLD-FAILED: line
+# anywhere, because the one component being watched was the one still present.
+# That is the same partway-through loss this file's header already records from
+# 2026-08-21 — same shape, different piece of the scaffold.
+#
+# Each is named separately. "the scaffold is gone" is not a finding; "realdocker
+# is gone while the symlink survives" is, and it points somewhere different from
+# "the temp directory is gone".
 shim_scaffold_ok() {
-  [[ -e "$TMP/bin/docker" && -x "$TMP/bin/docker" ]] && return 0
-  printf 'SCAFFOLD-FAILED: %s does not resolve to an executable mid-run (symlink to %s)\n' \
-    "$TMP/bin/docker" "$SHIM" >&2
-  return 1
+  # DIRECTORY FIRST, and the order is the whole reason this branch is reachable.
+  # Checked after the two files, `-e "$TMP/bin/docker"` is already false when the
+  # directory is gone, so the docker branch fires and this one can never run — a
+  # line no assertion can watch, which is the thing this repo removes rather than
+  # excuses. Asked first, it separates "the whole fixture went" from "one file of
+  # it went", which point at different culprits.
+  if [[ ! -d "$TMP/bin" ]]; then
+    printf 'SCAFFOLD-FAILED: the scratch directory %s is gone mid-run — the whole fixture went, not one file of it\n' \
+      "$TMP/bin" >&2
+    return 1
+  fi
+  if [[ ! -e "$TMP/bin/docker" || ! -x "$TMP/bin/docker" ]]; then
+    printf 'SCAFFOLD-FAILED: %s does not resolve to an executable mid-run (symlink to %s)\n' \
+      "$TMP/bin/docker" "$SHIM" >&2
+    return 1
+  fi
+  # The shim execs this; without it the shim exits non-zero having recorded
+  # nothing, and `shim`'s own 2>/dev/null swallows the reason.
+  if [[ ! -e "$IT_REAL_DOCKER" || ! -x "$IT_REAL_DOCKER" ]]; then
+    printf 'SCAFFOLD-FAILED: the recorder %s is gone mid-run (docker symlink still present) — every later case would report an empty capture as a shim defect\n' \
+      "$IT_REAL_DOCKER" >&2
+    return 1
+  fi
+  return 0
 }
 shim() {
   shim_scaffold_ok || { exit 1; }
