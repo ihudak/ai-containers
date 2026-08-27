@@ -6,6 +6,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### The shim's scaffold guard watched one third of the scaffold
+
+- **A macOS Phase 6 run reported the shim broken. It was not.**
+
+  ```
+  FAIL: volume create: labelled
+        expected: volume|create|--label|ai-containers.it-run=unit|ai-containers-rvm-g|
+        got:
+  ```
+
+  The first four cases passed and every later one failed with an empty capture —
+  the same partway-through loss this file's header already records from
+  2026-08-21, one component over.
+- **`shim_scaffold_ok` watched the `docker` symlink and nothing else.** The
+  scaffold is three things: the symlink, the **recorder** the shim `exec`s
+  (`IT_REAL_DOCKER`), and the directory holding both. Lose the recorder and the
+  shim still runs, the symlink check still passes, `$REC` stays empty, and the
+  file reports a run of assertion failures about the shim's *behaviour* — the
+  exact misreading the `docker` check was added to prevent.
+- **Each piece is named separately**, because they point at different culprits:
+  "the recorder is gone while the symlink survives" is a finding; "the scaffold
+  is gone" is not.
+- **The directory is checked FIRST, and the order is load-bearing.** Asked after
+  the two files, `-e "$TMP/bin/docker"` is already false when the directory is
+  gone, so that branch fires and the directory branch can never run — a line no
+  assertion can watch. Caught while demonstrating the arms, not in review.
+- **All three demonstrated by removing each in turn**, against a control that
+  stays green. With the recorder removed, the old guard produces the Mac's exact
+  line and the new one produces `SCAFFOLD-FAILED: the recorder … is gone
+  mid-run`. That channel matters: `run-all.sh` reports it as "could not set
+  itself up", and the falsify tier scores such a mutant UNPROVEN rather than
+  KILLED, so a scaffold that evaporates stops manufacturing false kills.
+- **This is the second test this week losing files from its own `mktemp -d`
+  mid-run on that host**, after `test-portability.sh`. Both intermittent, both
+  macOS-only, neither reproducible on Linux. The cause is still unknown and is
+  deliberately not guessed at; both now say precisely what went missing, which is
+  what the next occurrence needs.
+
 ### The empty-helper diagnostic fired for real, and now splits its two causes
 
 - **It worked.** On 2026-08-27 the diagnostic added a release earlier fired for
