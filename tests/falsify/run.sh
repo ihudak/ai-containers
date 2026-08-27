@@ -263,15 +263,49 @@ fr_perf_cpus() {
   printf '%s' "$n"
 }
 
-fr_cpu_budget() {   # workers this host can actually run: min(reported, quota, perf)
-  local budget quota perf
+# THE CONSTRAINT ON DARWIN IS NOT CORES, IT IS FORK THROUGHPUT, and every other
+# probe here counts cores. Each falsify worker runs a whole run-all.sh, which
+# forks constantly, and macOS is far slower at that than Linux — measured on one
+# Apple Silicon host (12 logical CPUs, 64 GB), one target, whole corpus:
+#
+#   oracle baseline    136 ms on Linux   vs   2514 ms there   (~18x, unloaded)
+#
+#   --jobs auto (12)   many controls red, oracles red on PRISTINE trees, no score
+#   --jobs 4           2 of 26 controls red, 4 mutants over a 300s clock, no score
+#   --jobs 2           2 of 24 controls red, four oracles red on PRISTINE, no score
+#   --jobs 1           clean: controls green, every target scored
+#
+# A failed control invalidates every kill recorded near it, so the cap is the
+# only value OBSERVED clean rather than the largest that might work. 2 was the
+# obvious candidate and it fails; that negative is recorded here so the next
+# reader does not re-derive it. Raise this only with a measurement, and put the
+# measurement here.
+#
+# It lives HERE, in the budget, and not in verify-on-host.sh — where it was
+# first written and where it was wrong twice over. `auto` means "work out a
+# sensible number", so a platform that needs a different number needs a
+# different `auto`, not a different caller: someone running
+# `tests/falsify/run.sh --jobs auto` by hand got no benefit from the caller-side
+# version at all. And verify-on-host.sh substituting its own number made the
+# DEFAULT platform-dependent, which broke test-verify-exit-code.sh's assertion
+# that the script uses its own defaults rather than the operator's shell — on
+# macOS only, invisible to CI, found by a host run.
+fr_fork_cost_cap() {
+  [[ "$(uname -s)" == "Darwin" ]] || return 0
+  printf '1'
+}
+
+fr_cpu_budget() {   # workers this host can actually run: min(reported, quota, perf, fork cost)
+  local budget quota perf cap
   budget="$(fr_host_cpus)"
   quota="$(fr_quota_cpus)"
   perf="$(fr_perf_cpus)"
-  # Each narrows and none widens, so the order of these two does not matter and
-  # a probe that returns nothing costs nothing.
+  cap="$(fr_fork_cost_cap)"
+  # Each narrows and none widens, so the order of these does not matter and a
+  # probe that returns nothing costs nothing.
   if [[ -n "$quota" ]] && (( quota < budget )); then budget="$quota"; fi
   if [[ -n "$perf" ]] && (( perf < budget )); then budget="$perf"; fi
+  if [[ -n "$cap" ]] && (( cap < budget )); then budget="$cap"; fi
   printf '%s' "$budget"
 }
 

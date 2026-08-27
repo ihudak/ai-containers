@@ -6,6 +6,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### The Darwin worker cap was in the wrong place, and broke a test only macOS could see
+
+- **A host run finally named it**, one release after the baseline learned to say
+  what went red:
+
+  ```
+  FAIL: phase 6: the defaults survive an operator who exported the knobs
+        -- got '--jobs 1 --timeout 120', so the suite is reading the developer's shell instead of the code
+  ```
+
+  `test-verify-exit-code.sh` scrubs `FALSIFY_*` and asserts the corpus is invoked
+  with the script's **own** defaults. Putting the Darwin cap in
+  `verify-on-host.sh` made "the default" platform-dependent, so on macOS the
+  assertion saw `--jobs 1` and concluded the operator's shell had leaked in. On
+  Linux the branch never fires, so **no CI job could see it** — and the failure
+  skipped `tests/lib-verify-repo.sh` entirely, retiring all 55 of its mutants.
+- **`auto` means "work out a sensible number", so a platform needing a different
+  number needs a different `auto`, not a different caller.** The cap moves to
+  `fr_fork_cost_cap`, beside the probes that already narrow the budget by
+  reported CPUs, cgroup quota and performance cores — each narrows, none widens.
+- **It also fixes a case the caller-side version never covered**: anyone running
+  `tests/falsify/run.sh --jobs auto` directly on a Mac got no benefit at all.
+- **Both branches are now exercised on every machine.** `uname` is faked rather
+  than the platform sniffed, so Linux CI runs the Darwin arm too — and asserts
+  the cap is **inert** off Darwin, since a narrowing probe that fired everywhere
+  would silently serialise CI. A Darwin conditional with no Linux-visible test is
+  the untested claim this repo keeps purging, and this one had already proved why.
+- **The measurements move with the cap**, including the negative: `--jobs 2` was
+  the obvious candidate and it fails (2 of 24 controls red). Recorded where the
+  number lives so the next reader does not re-derive it.
+
 ### A skipped target would not say what went red
 
 - **The most consequential failure the mutation tier can report was also the only

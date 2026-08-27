@@ -420,46 +420,14 @@ fl_keep=0
 #
 # The defaults ARE what was hardcoded, so an unset environment runs exactly what
 # it always ran. Phase 4's IT_EXTRA_ARGS is the same idea for the same reason.
-# `auto` IS WRONG ON DARWIN, and the number it picks is the reason Phase 6 could
-# not complete on a Mac. fr_cpu_budget resolves `auto` to min(nproc, cgroup
-# quota); macOS has no cgroup, so it takes nproc — 12 on the machine below — and
-# every worker runs a WHOLE run-all.sh. The budget measures how many CPUs may be
-# burned, when the binding constraint here is fork throughput.
-#
-# Measured, one Apple Silicon host, one target (version.sh, 30 mutants):
-#
-#   oracle baseline    136 ms on Linux   vs   2514 ms here   (~18x, unloaded)
-#
-#   --jobs auto (12)   many controls red, oracles red on PRISTINE trees, no score
-#   --jobs 4           2 of 26 controls red, 4 mutants over a 300s clock, no score
-#   --jobs 2           2 of 24 controls red, four oracles red on PRISTINE trees,
-#                      no score — MEASURED 2026-08-26, whole corpus
-#   --jobs 1           clean: baseline PASS, 29 killed / 1 survived / 0 unproven,
-#                      controls 2 of 2 green, ~87s for the target
-#
-# A failed control invalidates every kill recorded near it, so the default is
-# the only value observed clean rather than the largest that might work.
-#
-# 2 WAS THE OBVIOUS CANDIDATE AND IT FAILS. It is written down here because a
-# negative result nobody records is a negative result somebody re-derives: the
-# next reader's first instinct is "surely 2 is fine on a 12-core machine", and
-# it is not. Do not raise this without a measurement, and put the measurement
-# here when you have one.
-#
-# WHAT THE 2-JOB RUN ADDED, and it points away from CPU contention: assertions
-# inside the red oracles reported rc=137 — SIGKILL, a process being shot, not a
-# test failing. On that host Colima holds 36 GiB, and Phase 6 runs on the HOST
-# beside it, so the ceiling being hit may be MEMORY rather than cores. If this
-# is ever revisited, measure free host RAM during the run before reaching for
-# the jobs number again.
-#
-# The cost is bounded: Phase 6's own banner already tells a macOS reader to
-# expect ~45 minutes, and jobs=1 lands inside that.
-if [[ -z "${FALSIFY_JOBS:-}" && "$(uname -s)" == "Darwin" ]]; then
-  fl_jobs=1
-else
-  fl_jobs="${FALSIFY_JOBS:-auto}"
-fi
+# `auto` is resolved by the corpus itself (fr_cpu_budget), which narrows by
+# reported CPUs, cgroup quota, performance cores AND — since a macOS host run
+# proved it necessary — fork cost. That knowledge belongs there, not here: this
+# script is a caller, and a caller that substitutes its own number makes the
+# DEFAULT platform-dependent, which is exactly what broke
+# test-verify-exit-code.sh's assertion that the defaults come from the code and
+# not from the operator's shell. Measured and recorded beside fr_fork_cost_cap.
+fl_jobs="${FALSIFY_JOBS:-auto}"
 fl_timeout="${FALSIFY_TIMEOUT:-120}"
 # HOW LONG, honestly, and platform-aware — because the previous wording was
 # "a few minutes" and on macOS this phase takes about forty-five. A progress
