@@ -238,7 +238,23 @@ for h in p_stat_mode p_sha1 p_md5 p_stat_meta; do
     # So stop relying on a second line arriving. A diagnostic that needs its
     # explanation to travel separately is one transport away from being no
     # diagnostic at all, and this repo has now paid that three times.
-    fail "$h returned empty — comparisons using it would pass vacuously [fixture=$TMP/f exists=$([[ -e "$TMP/f" ]] && printf y || printf n) size=$(wc -c <"$TMP/f" 2>/dev/null | tr -d ' ' || printf '?') | $h stderr: $( $h "$TMP/f" 2>&1 >/dev/null | head -1 | tr -d '\n' )]"
+    # THE DIRECTORY AS WELL AS THE FILE, because they are different findings and
+    # the first real firing of this diagnostic could not tell them apart. On
+    # 2026-08-27 it reported `exists=n` — the fixture was GONE, which nobody knew
+    # across the three prior occurrences (2026-08-21, 08-23, 08-26) because the
+    # explanation never reached the log. That is a fact, and it is where the
+    # trail stops: not reproducible standalone, not reproducible over repeated
+    # full-suite runs, no glob `rm` anywhere in tests/, run-all.sh runs nothing
+    # in parallel, and bash does not fire an EXIT trap inside a `( )` subshell
+    # (measured, not assumed).
+    #
+    # Two candidates remain and one field separates them:
+    #   dir=n   something removed the whole scratch directory — a trap that fired
+    #           early, or a cleanup that reached too far
+    #   dir=y   something removed this file specifically, or it was never written
+    # `left=` is the tie-breaker for dir=y: an otherwise-populated directory
+    # means targeted removal, an empty one means the whole fixture step lost.
+    fail "$h returned empty — comparisons using it would pass vacuously [fixture=$TMP/f dir=$([[ -d "$TMP" ]] && printf y || printf n) exists=$([[ -e "$TMP/f" ]] && printf y || printf n) size=$(wc -c <"$TMP/f" 2>/dev/null | tr -d ' ' || printf '?') left=$(ls -A "$TMP" 2>/dev/null | wc -l | tr -d ' ') | $h stderr: $( $h "$TMP/f" 2>&1 >/dev/null | head -1 | tr -d '\n' )]"
     # WHY it was empty, because the last time this fired nobody could tell.
     # CI, 2026-08-21 (mgd-ai-containers PR #76, run 32523718531): p_md5 AND
     # p_stat_meta both returned empty in ONE control run, while the same run
