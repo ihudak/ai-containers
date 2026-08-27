@@ -889,6 +889,30 @@ fr_run_mutant() {   # <slot> <target> <oracle> <seq> <lineno> <op> <sha> <text> 
 # under THESE conditions? A control that fails does not identify which kills are
 # contaminated — it says the run's kills cannot be trusted, which is the honest
 # claim and is enough to refuse the run.
+# fr_oracle_excerpt <oracle-output-file> — the FAIL: lines and their evidence.
+#
+# THE CONTINUATION LINES MATTER AS MUCH AS THE FAIL: LINE. This repo's `check`
+# helper prints the failure name on the FAIL: line and the `expected:` / `got:`
+# values INDENTED underneath it. Grepping only `^FAIL:` therefore captures the
+# name of the assertion and discards the evidence — measured on the first host
+# run that produced a diagnosis (2026-08-21): five of six captured lines were
+# bare names, and the only one that told anybody anything was the case whose
+# message happened to be on one line.
+#
+# A FUNCTION because two callers need it and one of them did without it for far
+# too long: fr_run_control has extracted this since 2026-08-21, while the
+# PRISTINE BASELINE — whose failure is strictly worse, since it skips a whole
+# target and leaves every one of its mutants unmeasured — printed only an rc and
+# a signal. Three macOS host runs in a row reported two oracles "not green on the
+# PRISTINE tree" and not one of them said what went red.
+fr_oracle_excerpt() {   # <outfile>
+  awk '
+    /^(FAIL:|SCAFFOLD-FAILED:)/ { if (n++ < 6) { keep = 1; print; next } keep = 0; next }
+    keep && /^[[:space:]]/      { print; next }
+    { keep = 0 }
+  ' "$1" 2>/dev/null | head -30
+}
+
 fr_run_control() {   # <slot> <target> <oracle> <n> <resultfile>
   local slot="$1" target="$2" oracle="$3" n="$4" res="$5"
   local tree out verdict
@@ -927,11 +951,7 @@ fr_run_control() {   # <slot> <target> <oracle> <n> <resultfile>
     # measured on the first host run that produced a diagnosis (2026-08-21):
     # five of six captured lines were bare names, and the only one that told
     # anybody anything was the case whose message happened to be on one line.
-    awk '
-      /^(FAIL:|SCAFFOLD-FAILED:)/ { if (n++ < 6) { keep = 1; print; next } keep = 0; next }
-      keep && /^[[:space:]]/      { print; next }
-      { keep = 0 }
-    ' "$out" 2>/dev/null | head -30 \
+    fr_oracle_excerpt "$out" \
       | while IFS= read -r cl; do
           printf 'NOTE|control-output|%s|%s\n' "$target" "$cl" >> "$res"
         done
@@ -1361,6 +1381,18 @@ falsify_main() {
         fr_err "oracle '$oracle' matched NO test (run-all.sh exit 2) — a misspelled oracle name would report every mutant of $target as KILLED. Skipping $target."
       else
         fr_err "oracle '$oracle' is not green on the PRISTINE tree (rc=$FALSIFY_RC, signal=$FALSIFY_SIGNAL) — every mutant of $target would be reported KILLED. Skipping $target."
+        # WHAT WENT RED, not just that something did. Skipping a target retires
+        # all of its mutants from the measured set, so this is the most
+        # consequential failure the tier can report and it was also the only one
+        # that said nothing. Same extraction the control path uses, so the two
+        # cannot drift into disagreeing about what counts as evidence.
+        if grep -qE '^(FAIL:|SCAFFOLD-FAILED:)' "$FR_OUT/baseline.log" 2>/dev/null; then
+          while IFS= read -r bl; do
+            fr_warn "  baseline output: $bl"
+          done < <(fr_oracle_excerpt "$FR_OUT/baseline.log")
+        else
+          fr_warn "  baseline output: (no FAIL: or SCAFFOLD-FAILED: line — the oracle exited non-zero in silence; last line was: $(tail -1 "$FR_OUT/baseline.log" 2>/dev/null))"
+        fi
       fi
       sed 's/^/    /' "$FR_OUT/baseline.log" | tail -20 >&2
       # ON STDOUT, beside MUTANT/TARGET/TOTAL, because stderr is where this
