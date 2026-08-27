@@ -36,11 +36,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   reimplementation in the test would repeat the same mistake. Against the old
   code the assertion fails with the nested tree in its `got:`; against the fixed
   code it passes.
-- **This is the cause of the "vanishing files" this session kept meeting.** Not
-  files disappearing — files that were never copied to where the test looked.
-  `test-portability.sh`'s `exists=n` and the shim's lost recorder are the same
-  event seen from two other angles, and the diagnostics added for those are what
-  made this one legible at all.
+- **It explains the two SEEDING failures and nothing else — a scope this entry
+  originally overstated.** The claim written here first was that this was "the
+  cause of the vanishing files this session kept meeting", covering
+  `test-portability.sh`'s `exists=n` and the shim's lost recorder too. That is
+  wrong, and the evidence arrived the same day: a CI control run on **Linux**
+  reported `dir=n exists=n left=0` for `test-portability.sh` — its whole
+  `mktemp -d` gone. That directory is the test's own, never seeded from the
+  cache, so no `cp` in this file can touch it, and the platform rules out the
+  macOS xattr path entirely.
+- **So there are two separate faults, and only one is fixed here.** The seeded
+  worker tree being nested is this one, demonstrated and closed. Test-owned
+  `mktemp -d` directories disappearing mid-run is a different, still-open
+  problem, seen now on both macOS and Linux CI and not reproduced in 24
+  consecutive control runs locally. The diagnostics added earlier are what
+  separated them; without `dir=n` the two would still read as one story.
 
 ### The shim's scaffold guard watched one third of the scaffold
 
