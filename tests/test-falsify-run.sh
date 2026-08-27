@@ -1309,6 +1309,7 @@ seed_out="$( set +u
   export PATH="$seed_fakebin:$PATH"
   # shellcheck source=/dev/null
   source "$RUN" >/dev/null 2>&1
+  # shellcheck disable=SC2034  # read by fr_seed_slot, sourced from $RUN above
   FR_WORK="$TMP/seedwork"; FR_OUT="$TMP/seedout"; FR_CACHE="$seed_cache"
   mkdir -p "$FR_WORK" "$FR_OUT"
   fr_seed_slot 0 >/dev/null 2>&1
