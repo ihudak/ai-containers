@@ -6,6 +6,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### The empty-helper diagnostic fired for real, and now splits its two causes
+
+- **It worked.** On 2026-08-27 the diagnostic added a release earlier fired for
+  the first time on a genuine failure and reported the fact three prior
+  occurrences could not:
+
+  ```
+  FAIL: p_stat_mode returned empty … [fixture=/tmp/tmp.E2JLz5Q8Ru/f exists=n size=?
+        | p_stat_mode stderr: stat: cannot statx '…/f': No such file or directory]
+  ```
+
+  **`exists=n` — the fixture file is gone.** Across 2026-08-21, 08-23 and 08-26
+  nobody knew that; the explanation never reached the log.
+- **The trail stops there, and that is recorded rather than guessed past.** Not
+  reproducible standalone (3/3 clean, both repos), not reproducible over repeated
+  full-suite runs (3 further runs, 72/72 each), no glob `rm` anywhere in
+  `tests/`, `run-all.sh` runs nothing in parallel, and bash does **not** fire an
+  `EXIT` trap inside a `( )` subshell — measured, not assumed. Four hypotheses
+  this session have now been killed by measurement; a fifth is not worth writing
+  down.
+- **So the instrument gets sharper instead.** The diagnostic now reports the
+  **directory** and what is left in it, which separates the two remaining
+  candidates on sight:
+
+  | | `dir` | `exists` | `left` |
+  |---|---|---|---|
+  | something removed the file specifically | `y` | `n` | non-zero |
+  | something removed the whole scratch dir | `n` | `n` | 0 |
+
+  Both arms demonstrated by removing each in turn, rather than reasoned about.
+
 ### The Darwin worker cap was in the wrong place, and broke a test only macOS could see
 
 - **A host run finally named it**, one release after the baseline learned to say
