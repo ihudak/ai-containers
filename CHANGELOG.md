@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### `shellcheck=ON` — the linter the gate uses, in the container
+
+- **A new `sandbox.conf` key** (default `OFF`) installing Ubuntu's `shellcheck`
+  package.
+- **The version match is the point, not a detail.** This base is `ubuntu:24.04`
+  and CI pins `runs-on: ubuntu-24.04`, so apt hands back **the same shellcheck
+  the lint gate runs**. A newer binary — Homebrew's, say — reports findings the
+  gate does not, and time spent on those is time spent on a lint nobody is
+  blocked by. Matching the gate beats being current here.
+- **It exists because its absence cost two red pull requests in one day.** An
+  agent working inside a container with no `shellcheck` cannot check its own work
+  before pushing; the first fix for an `SC2034` was wrong, and the correction to
+  it was wrong too, because the only place the real check ran was CI. Both were
+  the same one-line directive.
+- **A key rather than always-installed**, matching `vale`, `goreleaser` and every
+  other optional tool: most projects in these containers write no shell at all,
+  and the repo's size discipline is deliberate. Turn it **ON** in any project
+  whose work *is* shell — above all this engine's own checkout, where Phase 7 and
+  `hermetic-checks.yml`'s `lint` job both gate on it.
+- Placed after the cleanup purge alongside `imagemagick`/`wkhtmltopdf`/
+  `playwright`; `apt-get install` marks it manual, so the later qmd-layer
+  `--auto-remove` does not reclaim it.
+
 ### A partial `cp -a` nested the scratch tree, and three oracles took the blame
 
 - **`cp -R src dst` means two different things.** "Copy src TO dst" when dst is
