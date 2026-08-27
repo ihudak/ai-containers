@@ -29,6 +29,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   With a `git` that dies on exactly one mid-run `apply --check` — the shape a
   loaded machine produces — the old caller emits the Mac's line verbatim and the
   new one says the patch was never examined. Real `git`: 0 failures, unchanged.
+- **The falsify tier immediately found a hole in the new code, and it was a real
+  one.** Splitting the return into three answers created a `1) return 0` mutant
+  that nothing killed: with it, `mutate.sh` would report every **stale** patch as
+  applying, and the staleness guard — the entire reason `cmd_check` exists —
+  would pass while detecting nothing. Until then no assertion had ever handed it
+  a patch that does not apply, because every patch in `mutations/` applies. Now
+  one does, through a fixture repo rather than a temporary file dropped into the
+  real `mutations/` (which the coverage loops would count, and an interrupted run
+  would leave behind). That target now measures **60 mutants, 60 killed, 0
+  survivors**.
 - **This is the second instance of one shape in one day**, after
   `tests/falsify/generate.sh` conflating "this candidate does not parse" with
   "`bash -n` never ran". Both turn machine trouble into a confident, wrong,
