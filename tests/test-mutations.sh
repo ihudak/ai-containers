@@ -42,6 +42,56 @@ if ! ( cd "$REPO_DIR" && git rev-parse --git-dir >/dev/null 2>&1 ); then
   exit "$fails"
 fi
 
+# ── A patch that does NOT apply must be reported as not applying ──────────────
+# The whole purpose of cmd_check is to notice a patch that has gone stale, and
+# until this assertion existed NOTHING in the suite ever handed it one: every
+# patch in MUT_DIR applies, so only the applies-path was exercised. The falsify
+# tier found it the moment the three-way return was written — `1) return 0`
+# survived, meaning mutate.sh could call every stale patch fine and this file
+# would pass while detecting nothing.
+#
+# A FIXTURE REPO, not a temporary file dropped into the real MUT_DIR: a stray
+# patch there is checked by the loops below, counted by the coverage assertions,
+# and left behind entirely if this file is interrupted.
+stale_root="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
+trap 'rm -rf "$stale_root"' EXIT
+mkdir -p "$stale_root/tests/integration/mutations"
+if git init -q "$stale_root" >/dev/null 2>&1 \
+   && git -C "$stale_root" config user.email "fixture@example.invalid" \
+   && git -C "$stale_root" config user.name  "mutate fixture" \
+   && printf 'the real content\n' > "$stale_root/target.txt" \
+   && git -C "$stale_root" add -A >/dev/null 2>&1 \
+   && git -C "$stale_root" commit -qm init >/dev/null 2>&1; then
+  cp "$MUTATE" "$stale_root/tests/integration/mutate.sh"
+  # Context that matches nothing in target.txt, so `git apply --check` returns 1
+  # — a genuinely stale patch, which is the state being modelled.
+  cat > "$stale_root/tests/integration/mutations/zz-stale.patch" <<'STALEPATCH'
+# case: 000-not-a-real-case
+# what: context that no longer matches, so this patch is stale
+diff --git a/target.txt b/target.txt
+--- a/target.txt
++++ b/target.txt
+@@ -1 +1 @@
+-content that was never there
++something else
+STALEPATCH
+  # The fixture's own premise: git must agree the patch is stale, or the
+  # assertion below measures mutate.sh against a patch that was fine all along.
+  if ( cd "$stale_root" && git apply --check tests/integration/mutations/zz-stale.patch ) 2>/dev/null; then
+    fail "scaffold: the stale fixture patch is genuinely stale — git applied it, so the check below proves nothing"
+  else
+    pass "scaffold: the stale fixture patch is genuinely stale"
+    bash "$stale_root/tests/integration/mutate.sh" check zz-stale >/dev/null 2>&1
+    stale_rc=$?
+    [[ "$stale_rc" == "1" ]] \
+      && pass "check reports a stale patch as not applying (rc=1)" \
+      || fail "check reports a stale patch as not applying — got rc=$stale_rc; 0 would call every stale patch fine and this file would detect nothing"
+  fi
+else
+  printf 'SCAFFOLD-FAILED: could not build the stale-patch fixture repo\n'
+  exit 1
+fi
+
 # ── There is a mutation set at all ─────────────────────────────────────────────
 n_patch=0
 for p in "$MUT_DIR"/*.patch; do [[ -f "$p" ]] && n_patch=$((n_patch + 1)); done
@@ -61,11 +111,20 @@ for p in "$MUT_DIR"/*.patch; do
   # Through mutate.sh, not a local `git apply`: the base/-layout resolution lives
   # there, and a second copy here would be right in this repo and quietly wrong
   # in the fork — reporting every patch stale, or worse, every patch fine.
-  if bash "$MUTATE" check "$id" >/dev/null 2>&1; then
-    pass "$id still applies"
-  else
-    fail "$id still applies — the code it breaks has changed; regenerate the patch"
-  fi
+  # THREE ANSWERS, NOT TWO. mutate.sh check returns 0 applies, 1 does not apply,
+  # 3 could-not-determine — and only the middle one means somebody has to
+  # regenerate a patch. Reading any non-zero as "the code it breaks has changed"
+  # sends a reader to edit a patch that was never examined; on 2026-08-27 that is
+  # exactly what a macOS host run reported for 410-workspace-root-not-chowned,
+  # which applies cleanly on every other machine and whose target had not been
+  # touched in weeks. The remedy in the message is what makes the conflation
+  # expensive: it is confidently wrong about what to do next.
+  bash "$MUTATE" check "$id" >/dev/null 2>&1
+  case "$?" in
+    0) pass "$id still applies" ;;
+    1) fail "$id still applies — the code it breaks has changed; regenerate the patch" ;;
+    *) fail "$id could not be checked — git apply never judged it, so whether it still applies is UNKNOWN; this is a machine or repository problem, NOT a stale patch, and regenerating it would be editing something nobody has examined" ;;
+  esac
 
   # A patch may declare MORE THAN ONE case, and 070-230-pid1-caps-fresh-exec
   # does: its damage is a single edit to tests/integration/lib.sh, which both
