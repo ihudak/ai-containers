@@ -6,6 +6,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### A skipped target would not say what went red
+
+- **The most consequential failure the mutation tier can report was also the only
+  one that said nothing.** An oracle that is not green on the PRISTINE tree gets
+  its whole target **skipped** — every one of its mutants retired from the
+  measured set — and the report was an `rc` and a signal name:
+
+  ```
+  ERROR: oracle '…' is not green on the PRISTINE tree (rc=1, signal=exit+failline) — Skipping …
+  ```
+
+- **Three macOS host runs in a row hit this and none of them could be diagnosed.**
+  Two oracle sets went red on the pristine tree every time, and every time the
+  only way forward was to guess — which is how this session spent an hour on a
+  memory hypothesis that turned out to be unsupported.
+- **`fr_run_control` has captured exactly this since 2026-08-21.** The control
+  path extracts the `FAIL:` lines *and their indented evidence*, for a failure
+  strictly less severe than a skipped target. The baseline never got it.
+- **One definition now, used by both.** `fr_oracle_excerpt` carries the extraction
+  and the reasoning behind it — the continuation lines matter as much as the
+  `FAIL:` line, because this repo's `check` helper puts the assertion's name on
+  one and the `expected:`/`got:` evidence on the others. Two copies would drift
+  into disagreeing about what counts as evidence.
+- **Demonstrated in both directions** against a deliberately red pristine oracle:
+  the old code prints the skip and nothing else; the new one prints the `FAIL:`
+  line and its two evidence lines. An oracle that goes red *silently* is reported
+  as that rather than as "no output was captured", the same distinction the
+  control path already draws.
+
 ### A killed `git apply` was reported as a stale mutation patch
 
 - **A macOS Phase 6 run reported `410-workspace-root-not-chowned` stale**, with
