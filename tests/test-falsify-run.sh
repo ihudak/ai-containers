@@ -1278,6 +1278,36 @@ host_cpus="$( ( set +u
   || fail "fr_host_cpus reported '$host_cpus'"
 
 # What each layout is READ as — the same answer on every machine.
+# ── the fork-cost cap, exercised ON LINUX ────────────────────────────────────
+# A platform conditional whose macOS branch nothing runs is the untested claim
+# this repo keeps purging — and it is not hypothetical here: the first version of
+# this cap lived in verify-on-host.sh, made the DEFAULT platform-dependent, and
+# broke test-verify-exit-code.sh on macOS ONLY, where no CI job could see it.
+#
+# `uname` is faked rather than the platform sniffed, so both branches run on
+# every machine. The cap must also be INERT off Darwin: a narrowing probe that
+# fires everywhere would silently serialise Linux CI.
+fake_uname_dir="$TMP/fake-uname"; mkdir -p "$fake_uname_dir"
+printf '#!/usr/bin/env bash\n[ "$1" = "-s" ] && { echo Darwin; exit 0; }\nexec /usr/bin/uname "$@"\n' \
+  > "$fake_uname_dir/uname"
+chmod +x "$fake_uname_dir/uname"
+cap_under() {  # <PATH-prefix or ""> → what fr_fork_cost_cap returns there
+  ( set +u; [[ -n "$1" ]] && export PATH="$1:$PATH"
+    # shellcheck source=/dev/null
+    source "$RUN" >/dev/null 2>&1
+    fr_fork_cost_cap )
+}
+# The fake's own premise, checked before anything is concluded from it.
+check "scaffold: the fake uname reports Darwin" "Darwin" "$(PATH="$fake_uname_dir:$PATH" uname -s)"
+check "the fork-cost cap is 1 on Darwin" "1" "$(cap_under "$fake_uname_dir")"
+check "the fork-cost cap is EMPTY off Darwin, so it narrows nothing" "" "$(cap_under "")"
+# And it reaches the budget: a cap of 1 binds on any machine, so this pins the
+# narrowing without assuming a host CPU count.
+check "the Darwin cap narrows fr_cpu_budget to 1" "1" \
+  "$( ( set +u; export PATH="$fake_uname_dir:$PATH"
+        # shellcheck source=/dev/null
+        source "$RUN" >/dev/null 2>&1; fr_cpu_budget ) )"
+
 check "cgroup v2: a 2-CPU quota is read as 2" "2" "$(quota_of "$(cg v2quota v2 '200000 100000')")"
 check "cgroup v2: a fractional quota floors to 1, not to 0" "1" "$(quota_of "$(cg v2half v2 '50000 100000')")"
 check "cgroup v2: \`max\` is NO quota" "" "$(quota_of "$(cg v2max v2 'max 100000')")"
