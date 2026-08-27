@@ -1278,6 +1278,44 @@ host_cpus="$( ( set +u
   || fail "fr_host_cpus reported '$host_cpus'"
 
 # What each layout is READ as — the same answer on every machine.
+# ── a partial `cp -a` must not nest the tree ─────────────────────────────────
+# `cp -R src dst` means "copy src TO dst" when dst is absent and "copy src INSIDE
+# dst" when it exists. So a `cp -a` that creates the destination and THEN fails
+# turns the fallback into a nested tree: part of the files at the top level, the
+# rest under dst/<basename>/, and whatever cp -a never reached missing entirely.
+#
+# macOS's cp -a returns non-zero when it cannot copy extended attributes, having
+# already copied contents, and a 2026-08-27 host run produced exactly that — three
+# oracles red on scratch trees, each reported as a defect in the code it tests,
+# the loudest being `no *.yml files found under .../w0/.github/workflows`.
+#
+# Driven through the REAL fr_seed_slot with a `cp` that copies part of the tree
+# and exits 1, because the bug lives in the recovery path and a reimplementation
+# here would just be the same mistake written twice.
+seed_cache="$TMP/seedsrc"; mkdir -p "$seed_cache/.github/workflows" "$seed_cache/a"
+printf 'x\n' > "$seed_cache/a/file1"
+printf 'y\n' > "$seed_cache/.github/workflows/nightly.yml"
+seed_fakebin="$TMP/seedbin"; mkdir -p "$seed_fakebin"
+cat > "$seed_fakebin/cp" <<'FAKECP'
+#!/usr/bin/env bash
+# -a: copy only part of the tree, then fail — the shape a macOS xattr error takes.
+if [ "$1" = "-a" ]; then
+  mkdir -p "$3/a"; command cp "$2/a/file1" "$3/a/" 2>/dev/null; exit 1
+fi
+exec /bin/cp "$@"
+FAKECP
+chmod +x "$seed_fakebin/cp"
+seed_out="$( set +u
+  export PATH="$seed_fakebin:$PATH"
+  # shellcheck source=/dev/null
+  source "$RUN" >/dev/null 2>&1
+  FR_WORK="$TMP/seedwork"; FR_OUT="$TMP/seedout"; FR_CACHE="$seed_cache"
+  mkdir -p "$FR_WORK" "$FR_OUT"
+  fr_seed_slot 0 >/dev/null 2>&1
+  find "$FR_WORK/w0" -type f 2>/dev/null | sed "s|^$FR_WORK/w0/||" | sort | tr '\n' ' ' )"
+check "a partial cp -a does not nest the seeded tree" \
+  ".github/workflows/nightly.yml a/file1 " "$seed_out"
+
 # ── the fork-cost cap, exercised ON LINUX ────────────────────────────────────
 # A platform conditional whose macOS branch nothing runs is the untested claim
 # this repo keeps purging — and it is not hypothetical here: the first version of

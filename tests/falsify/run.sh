@@ -491,7 +491,14 @@ falsify_seed_tree() {   # <repo> <dest> — tracked files + .git, nothing else
   if (( ${#batch[@]} > 0 )); then
     _fr_flush_batch "$dest/$prev" "${batch[@]}" || return 1
   fi
-  cp -a "$repo/.git" "$dest/.git" 2>/dev/null || cp -R "$repo/.git" "$dest/.git" || return 1
+  # Same trap as fr_seed_slot's: a partial `cp -a` leaves $dest/.git present, and
+  # the fallback would then produce $dest/.git/.git — a work tree whose git
+  # directory is one level too deep, so every oracle that shells out to git in
+  # the scratch tree fails for a reason having nothing to do with the mutant.
+  if ! cp -a "$repo/.git" "$dest/.git" 2>/dev/null; then
+    rm -rf "$dest/.git"
+    cp -R "$repo/.git" "$dest/.git" || return 1
+  fi
 }
 
 falsify_tree_fingerprint() {   # <tree> → what `git status` says about it
@@ -871,7 +878,25 @@ fr_seed_slot() {   # <slot> — a fresh tree from the cache, plus its fingerprin
   local slot="$1" tree
   tree="$(fr_slot_tree "$slot")"
   rm -rf "$tree"
-  cp -a "$FR_CACHE" "$tree" 2>/dev/null || cp -R "$FR_CACHE" "$tree" || return 1
+  # A FAILED `cp -a` CAN LEAVE A PARTIAL DESTINATION, and the fallback must not
+  # copy INTO it. `cp -R src dst` means "copy src to dst" when dst is absent and
+  # "copy src INSIDE dst" when it exists — so a cp -a that creates the directory
+  # and then errors turns the retry into a NESTED tree: some files at the top
+  # level, the rest under dst/<basename-of-src>/, and whatever cp -a never
+  # reached missing outright.
+  #
+  # Not hypothetical. macOS's cp -a (= -pRP) returns non-zero when it cannot copy
+  # extended attributes, having already copied file contents, and a 2026-08-27
+  # host run produced exactly this: `no *.yml files found under .../w0/.github/
+  # workflows`, with the workflows sitting under w0/pristine/ instead. Two other
+  # oracles went red in the same run for the same reason, each reported as a
+  # defect in the code they test.
+  #
+  # Demonstrated with a cp that copies part of the tree and then exits 1.
+  if ! cp -a "$FR_CACHE" "$tree" 2>/dev/null; then
+    rm -rf "$tree"
+    cp -R "$FR_CACHE" "$tree" || return 1
+  fi
   falsify_tree_fingerprint "$tree" > "$FR_OUT/w$slot.porcelain"
 }
 
