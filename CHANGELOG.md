@@ -33,9 +33,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the cap is **inert** off Darwin, since a narrowing probe that fired everywhere
   would silently serialise CI. A Darwin conditional with no Linux-visible test is
   the untested claim this repo keeps purging, and this one had already proved why.
-- **The measurements move with the cap**, including the negative: `--jobs 2` was
-  the obvious candidate and it fails (2 of 24 controls red). Recorded where the
-  number lives so the next reader does not re-derive it.
+- **The measurements move with the cap** — and one of them is retracted. See
+  below.
 
 ### A skipped target would not say what went red
 
@@ -148,16 +147,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   | `--jobs 4` | 2 of 26 controls red, 4 mutants over a 300 s clock, no score |
   | `--jobs 1` | clean — 29 killed / 1 survived / 0 unproven, controls 2/2 green |
 
-- **`--jobs 2` was measured afterwards and also fails** — 2 of 24 controls red,
-  four oracles red on pristine trees, no score. Recorded in the comment rather
-  than left out, because a negative result nobody writes down is one somebody
-  re-derives: the next reader's first instinct is "surely 2 is fine on a 12-core
-  machine", and it is not.
-- **That run also pointed away from CPU contention.** Assertions inside the red
-  oracles reported **rc=137** — SIGKILL, a process being shot, not a test
-  failing. Colima holds 36 GiB on that host and Phase 6 runs beside it, so the
-  ceiling may be memory rather than cores. Measure free host RAM before reaching
-  for the jobs number again.
+- **`--jobs 2` was reported here as a clean negative. RETRACTED — it was not
+  measured cleanly, and the write-up was the mistake.** Two confounds, both ours:
+  an assistant was running the hermetic suite and a second falsify job on the
+  same machine throughout that run, and the run predates the fix that moved the
+  Darwin cap out of `verify-on-host.sh` — so one of the oracles it reported red
+  on the pristine tree was red **deterministically**, from that bug, not from
+  load. A number obtained under a bug the number is being used to reason about is
+  not a measurement. Above 1 is **unmeasured**, not refuted.
+- **The memory hypothesis built on that run is RETRACTED too.** `rc=137` in the
+  failing assertions was read as evidence of host memory pressure, and Colima's
+  36 GiB was proposed as the cause. It does not hold: a later run with every
+  other application closed and the assistant idle failed the same way, the host
+  has 64 GB, and the concrete causes turned out to be two status-code
+  conflations and one misplaced platform conditional — none of them memory. The
+  rc=137 remains unexplained and is recorded as that, rather than as a theory.
 - **`verify-on-host.sh` now defaults `FALSIFY_JOBS` to 1 on Darwin**, and only
   there — an unset environment on Linux runs exactly what it always ran, and an
   explicit `FALSIFY_JOBS` still wins everywhere. A failed control invalidates
