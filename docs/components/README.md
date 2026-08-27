@@ -111,6 +111,7 @@ Both GraalVM variants also install the `native-image` toolchain.
 |---|---|---|
 | `db-clients` | `pg`, `mysql`, `mongo` | [Database client tools](db-clients.md) — clients only, never servers |
 | `c-toolchain` | ON / OFF | [A C compiler and headers](c-toolchain.md), for cgo and native extensions |
+| `shellcheck` | ON / OFF | The shell linter this repo gates on — Ubuntu's package, the **same version CI runs** |
 
 ### Browser automation
 

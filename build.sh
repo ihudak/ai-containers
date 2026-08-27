@@ -223,6 +223,7 @@ build_args_from_config() {
     "bun:INSTALL_BUN"
     "imagemagick:INSTALL_IMAGEMAGICK"
     "wkhtmltopdf:INSTALL_WKHTMLTOPDF"
+    "shellcheck:INSTALL_SHELLCHECK"
   )
   for mapping in "${bool_mappings[@]}"; do
     component="${mapping%%:*}"

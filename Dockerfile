@@ -377,6 +377,23 @@ RUN if [ -n "$PLAYWRIGHT_VERSION" ]; then \
       rm -rf /var/lib/apt/lists/* /root/.npm; \
     fi
 
+# ── shellcheck ─────────────────────────────────────────────────────────────────
+# From Ubuntu's own archive, deliberately, not a pinned upstream release: this
+# base is ubuntu:24.04 and CI pins `runs-on: ubuntu-24.04`, so apt hands back the
+# SAME shellcheck the lint gate runs. Matching the gate is worth more here than
+# being current — a newer binary reports findings the gate does not, and time
+# spent on those is time spent on a lint nobody is blocked by.
+#
+# After the cleanup purge above, alongside imagemagick/wkhtmltopdf/playwright.
+# `apt-get install` marks it manual, so the later qmd-layer purge's --auto-remove
+# does not reclaim it.
+ARG INSTALL_SHELLCHECK=0
+RUN if [ "$INSTALL_SHELLCHECK" = "1" ]; then \
+      apt-get update && \
+      apt-get install -y --no-install-recommends shellcheck && \
+      rm -rf /var/lib/apt/lists/*; \
+    fi
+
 # ── Ruby runtime prerequisites (rvm is a per-user install at ~/.rvm, done at
 # container start; nothing Ruby is baked). Retain the FULL ruby-build dependency
 # set so `rvm install` compiles Ruby at runtime, pre-seed rvm's GPG keys so the

@@ -77,6 +77,18 @@ the ones you will run constantly.
 | Falsify mutation tier | `bash tests/falsify/run.sh --jobs auto` | no | ~76s in the container, **~45 min on macOS** |
 | Integration corpus | `bash tests/integration/run.sh` | **yes** | tens of minutes; individual cases run 80–100s |
 
+**`shellcheck` is not in the image unless you ask for it.** Set `shellcheck=ON`
+in your project's `sandbox.conf` and rebuild. Do it: the lint row above is a
+merge gate, and a container without the linter cannot check its own work — which
+has cost this repo two red pull requests in a single day, both on the same
+one-line directive, because CI was the only place the check ran.
+
+The key installs **Ubuntu's** package, not a pinned upstream release, and that is
+deliberate: the base is `ubuntu:24.04` and CI pins `runs-on: ubuntu-24.04`, so
+apt hands back the same version the gate runs. A newer shellcheck reports
+findings the gate does not, and chasing those is work on a lint nobody is
+blocked by.
+
 The hermetic suite takes a substring filter and a verbose flag:
 
 ```bash
