@@ -61,11 +61,20 @@ for p in "$MUT_DIR"/*.patch; do
   # Through mutate.sh, not a local `git apply`: the base/-layout resolution lives
   # there, and a second copy here would be right in this repo and quietly wrong
   # in the fork — reporting every patch stale, or worse, every patch fine.
-  if bash "$MUTATE" check "$id" >/dev/null 2>&1; then
-    pass "$id still applies"
-  else
-    fail "$id still applies — the code it breaks has changed; regenerate the patch"
-  fi
+  # THREE ANSWERS, NOT TWO. mutate.sh check returns 0 applies, 1 does not apply,
+  # 3 could-not-determine — and only the middle one means somebody has to
+  # regenerate a patch. Reading any non-zero as "the code it breaks has changed"
+  # sends a reader to edit a patch that was never examined; on 2026-08-27 that is
+  # exactly what a macOS host run reported for 410-workspace-root-not-chowned,
+  # which applies cleanly on every other machine and whose target had not been
+  # touched in weeks. The remedy in the message is what makes the conflation
+  # expensive: it is confidently wrong about what to do next.
+  bash "$MUTATE" check "$id" >/dev/null 2>&1
+  case "$?" in
+    0) pass "$id still applies" ;;
+    1) fail "$id still applies — the code it breaks has changed; regenerate the patch" ;;
+    *) fail "$id could not be checked — git apply never judged it, so whether it still applies is UNKNOWN; this is a machine or repository problem, NOT a stale patch, and regenerating it would be editing something nobody has examined" ;;
+  esac
 
   # A patch may declare MORE THAN ONE case, and 070-230-pid1-caps-fresh-exec
   # does: its damage is a single edit to tests/integration/lib.sh, which both

@@ -164,28 +164,65 @@ cmd_list() {
   done
 }
 
+# "DOES NOT APPLY" AND "COULD NOT BE CHECKED" ARE DIFFERENT ANSWERS, and only
+# one of them means somebody has to regenerate a patch. `git apply --check`
+# separates them and always has — measured, not assumed:
+#
+#   applies                 rc 0
+#   does not apply          rc 1
+#   never got that far      rc 128 (missing/unreadable patch, unusable repo)
+#                           and any other status, including 128+N when the
+#                           process is SIGKILLed under memory or process pressure
+#
+# Flattening the third into the second is how a killed `git` becomes the report
+# "the code it patches has changed" — an instruction to go and edit a patch that
+# was never examined. That happened: a macOS host run on 2026-08-27 reported
+# 410-workspace-root-not-chowned stale while the patch applied cleanly on every
+# other machine and nothing had touched entrypoint.sh in weeks.
+#
+# Same defect, same day, as the one tests/falsify/generate.sh carried between its
+# `bash -n` gate and its DISCARD tally. Look for this shape wherever a checker's
+# status is passed straight through.
 cmd_verify() {
-  local p bad=0
+  local p id bad=0 rc
   for p in "$MUT_DIR"/*.patch; do
     [[ -f "$p" ]] || continue
-    if git_apply --check "$p" 2>/dev/null; then
-      printf 'ok      %s\n' "$(basename "$p" .patch)"
-    else
-      printf 'STALE   %s — the code it patches has changed\n' "$(basename "$p" .patch)" >&2
-      bad=1
-    fi
+    id="$(basename "$p" .patch)"
+    git_apply --check "$p" 2>/dev/null
+    rc=$?
+    case "$rc" in
+      0) printf 'ok      %s\n' "$id" ;;
+      1) printf 'STALE   %s — the code it patches has changed\n' "$id" >&2
+         bad=1 ;;
+      *) printf 'UNCHECKED %s — git apply exited %s without judging the patch; NOTHING is known about whether it still applies\n' \
+           "$id" "$rc" >&2
+         bad=2 ;;
+    esac
   done
   return "$bad"
 }
 
-# One patch, exit 0 if it still applies. Exists so tests/test-mutations.sh does
-# not carry a second copy of the layout resolution above — a copy that would be
-# correct in this repo and silently wrong in the base/ one.
+# One patch. Exit 0 if it still applies, 1 if it does not, 3 if that could not be
+# determined — see cmd_verify above for why the third is not folded into the
+# second. 3 rather than 2 because 2 is already this script's usage error, and a
+# caller must be able to tell "you called me wrong" from "git could not answer".
+#
+# Exists so tests/test-mutations.sh does not carry a second copy of the layout
+# resolution above — a copy that would be correct in this repo and silently wrong
+# in the base/ one.
 cmd_check() {
-  local id="${1:-}"
+  local id="${1:-}" rc
   [[ -n "$id" ]] || { printf 'mutate.sh: check needs a mutation id\n' >&2; exit 2; }
   [[ -f "$MUT_DIR/$id.patch" ]] || { printf 'mutate.sh: no such mutation: %s\n' "$id" >&2; exit 2; }
   git_apply --check "$MUT_DIR/$id.patch" 2>/dev/null
+  rc=$?
+  case "$rc" in
+    0) return 0 ;;
+    1) return 1 ;;
+    *) printf 'mutate.sh: git apply exited %s without judging %s — the patch was not examined\n' \
+         "$rc" "$id" >&2
+       return 3 ;;
+  esac
 }
 
 cmd_apply() {  # $@ = one or more mutation ids

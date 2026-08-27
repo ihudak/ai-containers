@@ -6,6 +6,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### A killed `git apply` was reported as a stale mutation patch
+
+- **A macOS Phase 6 run reported `410-workspace-root-not-chowned` stale**, with
+  the remedy *"the code it breaks has changed; regenerate the patch"* — while the
+  patch applied cleanly on every other machine and its target, `entrypoint.sh`,
+  had not been touched in weeks.
+- **`git apply --check` answers three ways and the caller flattened two of them.**
+  Measured: **0** applies, **1** does not apply, **128** (and any other status,
+  including 128+N when the process is SIGKILLed under memory or process pressure)
+  means it never judged the patch at all. `mutate.sh check` returned that status
+  verbatim and `test-mutations.sh` read every non-zero as "the code changed".
+- **The remedy is what made it expensive.** A wrong verdict that says nothing
+  costs a reader a minute; one that confidently instructs them to regenerate a
+  patch nobody examined costs an investigation — and invites an edit to a file
+  that was never wrong.
+- **`mutate.sh check` now returns 3 for could-not-determine** (3, not 2 — 2 is
+  already its usage error, and a caller must be able to tell "you called me
+  wrong" from "git could not answer"), `verify` prints `UNCHECKED` rather than
+  `STALE`, and `test-mutations.sh` reports the three answers separately.
+- **Reproduced before fixing, and the old message reproduces byte-for-byte.**
+  With a `git` that dies on exactly one mid-run `apply --check` — the shape a
+  loaded machine produces — the old caller emits the Mac's line verbatim and the
+  new one says the patch was never examined. Real `git`: 0 failures, unchanged.
+- **This is the second instance of one shape in one day**, after
+  `tests/falsify/generate.sh` conflating "this candidate does not parse" with
+  "`bash -n` never ran". Both turn machine trouble into a confident, wrong,
+  actionable-looking verdict. The pattern is worth looking for wherever a
+  checker's exit status is passed straight through to a caller that only asks
+  whether it was zero.
+
 ### A diagnostic that has been lost three times now travels on the failure line
 
 - **`test-portability.sh` reports four helpers "returned empty" and, three times
