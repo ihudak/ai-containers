@@ -685,6 +685,33 @@ grep -q 'running the corpus (jobs=4, timeout=600)' "$TMP/out.log" \
   && pass "phase 6: the banner reports the values actually used" \
   || fail "phase 6: the banner reports the values actually used -- it still says jobs=auto/timeout=120 while running something else, which is worse than not printing them at all"
 
+# ── AND ON THE DARWIN BRANCH, WHICH CI NEVER TAKES ───────────────────────────
+# The banner is written twice, once per platform, and only the Linux half was
+# ever asserted. A 2026-08-28 change to the macOS half moved "→ 1 worker on
+# macOS" BETWEEN the two values, breaking the grep above on macOS while CI
+# stayed green -- and it surfaced as tests/lib-verify-repo.sh not being green on
+# the pristine tree, three targets into a two-hour corpus run, which names
+# neither the file nor the platform.
+#
+# `uname` is FAKED rather than the platform sniffed, the same way
+# tests/test-falsify-run.sh exercises fr_fork_cost_cap's Darwin arm, so Linux CI
+# runs this branch too. The fake is removed immediately: every other assertion
+# in this file means the platform it is actually running on.
+f48_uname="$TMP/bin/uname"
+printf '#!/usr/bin/env bash\n[ "$1" = "-s" ] && { echo Darwin; exit 0; }\nexec /usr/bin/uname "$@"\n' > "$f48_uname"
+chmod +x "$f48_uname"
+[[ "$(PATH="$TMP/bin:$PATH" uname -s)" == "Darwin" ]] \
+  && pass "scaffold: the fake uname reports Darwin" \
+  || fail "scaffold: the fake uname reports Darwin — the Darwin-branch assertion below would be vacuous"
+rc="$(run_verify "$r" 6 FALSIFY_JOBS=4 FALSIFY_TIMEOUT=600)"
+rm -f "$f48_uname"
+grep -q 'running the corpus (jobs=4, timeout=600)' "$TMP/out.log" \
+  && pass "phase 6: the DARWIN banner reports them in the same format" \
+  || fail "phase 6: the DARWIN banner reports them in the same format -- got: $(grep -m1 'running the corpus' "$TMP/out.log")"
+grep -q '1 worker on macOS' "$TMP/out.log" \
+  && pass "  … and the branch under test really was the Darwin one" \
+  || fail "  … and the branch under test really was the Darwin one — the fake uname did not take effect, so the assertion above proved nothing"
+
 # BOTH AT ONCE, because the fix rests on an ordering nothing else here pins:
 # run_verify removes the knobs with `env -u` and then hands `env` the caller's
 # VAR=VALUE operands, and the argument only wins if operands are applied after

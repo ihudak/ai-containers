@@ -6,6 +6,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### The Phase 6 banner broke its own assertion, on macOS only
+
+- **`(jobs=X, timeout=Y)` is an asserted contract, not prose.**
+  `test-verify-exit-code.sh` greps for that substring literally, so an operator
+  who raised a knob can see in the log they paste back which one the run used.
+- The runtime-estimate change put `→ 1 worker on macOS` **between** the two
+  values. Only the Darwin branch changed, CI is Linux, so CI stayed green — and
+  the failure surfaced on a Mac as **`tests/lib-verify-repo.sh` not green on the
+  pristine tree**, three targets into a two-hour corpus run, naming neither the
+  file nor the platform. Two host runs were spent on it.
+- **The banner is written twice, once per platform, and only the Linux half was
+  ever asserted.** `uname` is now faked — the same way `test-falsify-run.sh`
+  exercises `fr_fork_cost_cap`'s Darwin arm — so Linux CI runs the macOS branch
+  too, and the new assertion is demonstrated failing against the broken banner.
+- Extra detail goes on its own line now, where it cannot come between two values
+  something greps for.
+
+### A `mktemp -d` in a subshell leaked a directory per invocation
+
+- `sha="$(falsify_sha1_string …)"` called the scratch-dir helper **inside a
+  command substitution**. `mktemp -d` made the directory on disk while the
+  variables tracking it were set in the subshell and died with it, so the
+  parent's release had nothing to release.
+- Exactly one per invocation, which is why it never looked like a leak: one
+  target run left 1, a 16-target corpus 16, and a container running the tier for
+  weeks held **4,877 directories at 644 MB**. On macOS those land in
+  `/var/folders`, shared with everything else on the machine.
+- The scratch directory is now claimed in the **parent**, before anything reaches
+  a subshell. Measured both paths: `delta=1` → `delta=0`.
+
 ### `(no error text)` was true, and useless
 
 - **A non-zero exit that wrote nothing is a different finding** from a command
