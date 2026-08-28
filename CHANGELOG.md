@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### A failed re-seed reported itself as a successful one
+
+- **Introduced by the seed-fidelity guard itself.** Once `fr_seed_slot` could
+  fail, the mid-run re-seed could fail too — and its `NOTE` said *"re-seeded"*
+  unconditionally, was never counted, and left the run exiting 0 on verdicts
+  produced in a tree that is not the repo.
+- **It also retried forever.** The fingerprint is the slot's reference; a failed
+  re-seed left the stale one in place, so the very next mutant saw the same
+  mismatch and paid another full tree copy. One bad slot became a copy storm, on
+  the slowest platform the tier runs on.
+- Now: the failure is named on stderr where it happens, counted, and makes the
+  run exit non-zero; and the tree is fingerprinted as it actually is so the
+  retry stops.
+
+### Four unchecked scaffold steps, and a diagnostic that pointed nowhere
+
+- **`test-integration-shim.sh` built its fixture with four unchecked commands** —
+  `mkdir`, a heredoc, `chmod`, `ln -sf` — so a failure in *any* of them surfaced
+  only as the symptom of the last: `link-exists=n`.
+- A 2026-08-28 host run reported exactly that, as a falsify CONTROL failure, with
+  the tmpdir present. Reproduced locally by failing the **`mkdir`**: the old code
+  emits that identical diag line, naming nothing.
+- Each step now reports itself and the error it gave, and the diag reports
+  `$TMP/bin` — the directory the link lives in, which it never mentioned.
+
 ### A scratch tree that was not the repo, and three runs that blamed the code
 
 - **The falsify tier seeded worker trees and never checked it had copied the
