@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Phase 6 promised 45 minutes and took 110
+
+- **The estimate was measured at `--jobs 6` and never re-measured.** Its own
+  comment said so. `fr_fork_cost_cap` narrows `auto` to **one** worker on macOS —
+  deliberately, because `--jobs 2` put 2 of 24 controls red — so the real figure
+  had been several-fold higher than the banner for every run since that cap
+  existed.
+- **A 2026-08-28 run took 110 minutes and its operator concluded the tier had
+  hung.** That is the failure mode: an estimate nothing re-measures is worse than
+  none, because the banner is what decides whether a healthy run gets killed.
+- Now states that macOS runs **serially**, gives the measured figure *as*
+  measured with its date, says the number grows with the corpus, and names the
+  measurement behind the cap so `--jobs 2` is not rediscovered by hand.
+- Part of that growth is real progress: the same run was the first to measure two
+  targets that had been silently skipped.
 ### A failed re-seed reported itself as a successful one
 
 - **Introduced by the seed-fidelity guard itself.** Once `fr_seed_slot` could

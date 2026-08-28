@@ -435,11 +435,26 @@ fl_timeout="${FALSIFY_TIMEOUT:-120}"
 # kills it at minute ten, which costs them the whole phase and teaches them
 # not to run it again. Measured on one Apple Silicon machine, same 264-mutant
 # corpus, same hardware: ~76s inside the Linux dev container at --jobs 8,
-# ~45 min on macOS natively at --jobs 6. This tier is bound by process
-# creation, and macOS is far slower at it.
+# THIS TIER RUNS SERIALLY ON macOS. fr_fork_cost_cap narrows `auto` to ONE
+# worker there -- deliberately and by measurement, because --jobs 2 put 2 of 24
+# controls red. So the wall clock is the whole corpus, one mutant at a time, on
+# the platform that is slowest at forking.
+#
+# The figure below is stated as MEASURED rather than promised, because the
+# estimate it replaced was neither. That one said "~45 MINUTES", carried a
+# comment saying it was taken "at --jobs 6", and predated the cap that made the
+# real number 1 -- so it under-promised several-fold on every run since. A 2026-
+# 08-28 run took 110 minutes and its operator reasonably concluded the tier had
+# hung. An estimate nothing re-measures is worse than none: it is the banner
+# that decides whether a healthy run gets killed.
+#
+# It also moves with the corpus. That same run was the first to measure two
+# targets that had been silently SKIPPED, which is most of the growth.
 if [[ "$(uname -s)" == "Darwin" ]]; then
-  sub "running the corpus (jobs=$fl_jobs, timeout=$fl_timeout) — EXPECT ~45 MINUTES on macOS."
-  sub "  It is not hung: this tier forks constantly and macOS is slow at it. Leave it running."
+  sub "running the corpus (jobs=$fl_jobs → 1 worker on macOS, timeout=$fl_timeout)."
+  sub "  EXPECT 1.5-2 HOURS: measured 110 min on 2026-08-28, and it grows with the corpus."
+  sub "  It is not hung. This tier forks constantly, macOS is slow at it, and the"
+  sub "  worker cap is 1 here by measurement (--jobs 2 put 2 of 24 controls red)."
 else
   sub "running the corpus (jobs=$fl_jobs, timeout=$fl_timeout) — a few minutes"
 fi
