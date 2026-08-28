@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Phase 0 demanded a daemon for phases that have no container in them
+
+- **`PHASES=6` exited 1 without Docker.** Phase 0's environment banner made the
+  daemon check unconditional, so the mutation tier and the linters — neither of
+  which touches Docker anywhere — could not run without one.
+- **That is not a technicality.** Phase 6 runs *serially* on macOS and takes
+  hours, and the obvious way to give it the whole machine is to stop the VM
+  holding 12 vCPUs and 36 GiB. The check turned the single configuration that
+  makes the slowest phase fastest into an immediate `exit 1`.
+- Fatal now only when the selected phases include one that needs a daemon
+  (`4`, `5`), and it says which. Otherwise the banner reports the daemon
+  unreachable and carries on.
+- The header's advice to use `PHASES="5 7"` to *"skip the phases that need
+  Docker"* was **wrong about 5** — it re-runs the suite inside the bash-floor
+  container. `PHASES="6 7"` is the Docker-free selection.
+- Both directions asserted, and the new assertions demonstrated failing against
+  the old script: a gate that never fires and a gate that always fires are
+  equally useless.
+
 ### Phase 6 promised 45 minutes and took 110
 
 - **The estimate was measured at `--jobs 6` and never re-measured.** Its own

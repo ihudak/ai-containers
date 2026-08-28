@@ -94,6 +94,9 @@ if [[ "\${1:-}" == "run" ]]; then
 fi
 case "\${1:-}" in
   run) exit "\${DOCKER_RUN_RC:-0}" ;;
+  # Phase 0 gates on this one, and only for the phases that need a daemon, so a
+  # test that means to exercise that gate has to be able to fail it.
+  info) exit "\${DOCKER_INFO_RC:-0}" ;;
   *) exit 0 ;;
 esac
 EOF
