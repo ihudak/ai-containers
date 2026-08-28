@@ -499,6 +499,72 @@ falsify_seed_tree() {   # <repo> <dest> — tracked files + .git, nothing else
     rm -rf "$dest/.git"
     cp -R "$repo/.git" "$dest/.git" || return 1
   fi
+  _fr_verify_seed "$repo" "$dest" "the pristine cache" || return 1
+}
+
+# ── is the seeded tree actually the repo? ─────────────────────────────────────
+# A scratch tree that differs from its origin makes every oracle running in it
+# answer a question nobody asked. That has now cost three Phase 6 runs: an oracle
+# goes red on the PRISTINE tree, the target is skipped, all of its mutants leave
+# the measured set, and the report blames the code the oracle tests. The tier
+# already had the evidence in hand and threw it away -- fr_seed_slot records the
+# tree's `git status` as the reference fingerprint, so a tree born damaged has
+# its damage adopted as normal.
+#
+# Tracked files only (-uno): the seed copies `git ls-files`, so an untracked file
+# beside the origin is EXPECTED to be absent from the copy and is not drift.
+_fr_tracked_state() { ( cd "$1" && git status --porcelain -uno 2>&1 ); }
+
+# Every tracked path whose mode differs from the index, as "<mode> <path>".
+# Empty for a tree whose modes all agree with what git recorded.
+_fr_mode_drift() {   # <dir>
+  ( cd "$1" && git diff --summary 2>/dev/null ) \
+    | sed -n 's/^ mode change [0-7]* => \([0-7]*\) \(.*\)$/\1 \2/p'
+}
+
+# Give <dest> the git-visible modes <src> has. `cp -Pp` does not always preserve
+# them: measured 2026-08-28 on a virtiofs mount, the one 0600 file in this repo
+# arrives as 0755, so the copy reads as ` M` to git while the origin is clean --
+# and tests/test-verify-lint-scope.sh asserts an EMPTY porcelain, so that alone
+# reddens an oracle for a reason having nothing to do with any mutant.
+#
+# Only the exec bit, because that is the whole of what git records and therefore
+# the whole of what an oracle can see. Normally both drift sets are empty and
+# this costs two `git` calls and no chmod at all.
+_fr_match_modes() {   # <src> <dest>
+  local src="$1" dest="$2" mode path target
+  local -A want=() have=()
+  while read -r mode path; do want["$path"]="$mode"; done < <(_fr_mode_drift "$src")
+  while read -r mode path; do have["$path"]="$mode"; done < <(_fr_mode_drift "$dest")
+  for path in "${!want[@]}" "${!have[@]}"; do
+    [[ "${want[$path]:-}" == "${have[$path]:-}" ]] && continue
+    target="${want[$path]:-}"
+    if [[ -z "$target" ]]; then
+      target="$( cd "$src" && git ls-files -s -- "$path" 2>/dev/null | cut -d' ' -f1 )"
+    fi
+    if [[ "$target" == "100755" ]]; then
+      chmod +x "$dest/$path" || return 1
+    else
+      chmod -x "$dest/$path" || return 1
+    fi
+  done
+}
+
+# The one place a seeded tree is declared fit to run oracles in. Loud, and fatal:
+# a tree that is not the repo cannot measure the repo, and continuing produces
+# verdicts that read exactly like real ones.
+_fr_verify_seed() {   # <src> <dest> <what>
+  local src="$1" dest="$2" what="$3" want got
+  _fr_match_modes "$src" "$dest" || { fr_err "$what: could not align file modes with $src"; return 1; }
+  want="$(_fr_tracked_state "$src")"
+  got="$(_fr_tracked_state "$dest")"
+  if [[ "$want" != "$got" ]]; then
+    fr_err "$what is NOT a faithful copy of $src — every oracle run in it would answer for a tree that is not this repo"
+    while IFS= read -r line; do
+      [[ -n "$line" ]] && fr_warn "  seed drift: $line"
+    done < <(diff <(printf '%s\n' "$want") <(printf '%s\n' "$got") 2>/dev/null | head -20)
+    return 1
+  fi
 }
 
 falsify_tree_fingerprint() {   # <tree> → what `git status` says about it
@@ -897,6 +963,10 @@ fr_seed_slot() {   # <slot> — a fresh tree from the cache, plus its fingerprin
     rm -rf "$tree"
     cp -R "$FR_CACHE" "$tree" || return 1
   fi
+  # BEFORE the fingerprint is taken, not after: the fingerprint is the reference
+  # every later debris check compares against, so a tree verified afterwards has
+  # already had its damage written down as normal.
+  _fr_verify_seed "$FR_CACHE" "$tree" "worker slot $slot" || return 1
   falsify_tree_fingerprint "$tree" > "$FR_OUT/w$slot.porcelain"
 }
 
@@ -1421,8 +1491,20 @@ falsify_main() {
   # Worker trees, seeded in parallel: each is a ~20 MB copy and they are
   # independent, so N of them cost about as long as one.
   FR_FREE_SLOTS=()
-  for (( i = 0; i < FR_JOBS; i++ )); do fr_seed_slot "$i" & done
-  wait
+  # Each seeding is BACKGROUNDED, so its exit status has to be collected by pid.
+  # A bare `wait` discards it, and the only check that survived was "the
+  # directory exists" -- which a partial copy always satisfies, so the guard
+  # could not fire for the one failure mode that actually happens.
+  local -a seed_pids=()
+  for (( i = 0; i < FR_JOBS; i++ )); do fr_seed_slot "$i" & seed_pids+=("$!"); done
+  local seed_rc=0
+  for (( i = 0; i < FR_JOBS; i++ )); do
+    if ! wait "${seed_pids[i]}"; then
+      fr_err "worker slot $i could not be seeded"
+      seed_rc=1
+    fi
+  done
+  (( seed_rc == 0 )) || return 1
   for (( i = 0; i < FR_JOBS; i++ )); do
     if [[ ! -d "$(fr_slot_tree "$i")" ]]; then
       fr_err "worker slot $i could not be seeded"

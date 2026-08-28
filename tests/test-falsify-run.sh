@@ -1322,6 +1322,90 @@ seed_out="$( set +u
 check "a partial cp -a does not nest the seeded tree" \
   ".github/workflows/nightly.yml a/file1 " "$seed_out"
 
+# ── a seeded tree that is NOT the repo, caught at the seed ────────────────────
+# The nesting fix above recovers when `cp -a` FAILS. It does nothing when a copy
+# exits 0 having produced an incomplete tree, and that is the case that reached a
+# 2026-08-27 host run: two oracles red on the PRISTINE tree, both targets skipped
+# with every one of their mutants, and the report naming the code the oracles
+# test. The tier had the evidence and discarded it — fr_seed_slot recorded the
+# damaged tree's `git status` as the REFERENCE fingerprint, so the damage became
+# the baseline; and the only post-seed guard asked whether the directory EXISTS,
+# which a partial copy always satisfies.
+#
+# Driven through the REAL fr_seed_slot against a REAL git tree, because the check
+# is a git-status comparison and a fixture without git could not exercise it.
+sf_repo="$TMP/seedfid"; mkdir -p "$sf_repo/.github/workflows" "$sf_repo/sub"
+printf 'a\n' > "$sf_repo/.github/workflows/nightly.yml"
+printf 'b\n' > "$sf_repo/sub/keep.txt"
+printf '#!/bin/sh\ntrue\n' > "$sf_repo/exec.sh"; chmod 755 "$sf_repo/exec.sh"
+( cd "$sf_repo" && git init -q -b main . >/dev/null 2>&1 || git init -q . >/dev/null 2>&1
+  git add -A && git -c user.email=t@example -c user.name=t commit -qm fixture ) >/dev/null 2>&1
+if ( cd "$sf_repo" && git rev-parse HEAD >/dev/null 2>&1 ); then
+  pass "scaffold: seed-fidelity fixture repo built"
+else
+  fail "scaffold: seed-fidelity fixture repo built — the assertions below would be vacuous"
+fi
+
+# A cp that copies everything and then removes the workflows, exiting 0: the
+# damage without the failure, which is what the exit-code guard cannot see.
+sf_bin="$TMP/seedfidbin"; mkdir -p "$sf_bin"
+cat > "$sf_bin/cp" <<'SFCP'
+#!/usr/bin/env bash
+if [ "$1" = "-a" ] && [ -d "$2/.github" ]; then
+  /bin/cp -a "$2" "$3"; rm -f "$3"/.github/workflows/*.yml; exit 0
+fi
+exec /bin/cp "$@"
+SFCP
+chmod +x "$sf_bin/cp"
+
+sf_run() {   # <PATH-prefix or ""> → "<rc>|<stderr>"
+  ( set +u
+    [[ -n "$1" ]] && export PATH="$1:$PATH"
+    # shellcheck source=/dev/null
+    source "$RUN" >/dev/null 2>&1
+    FR_WORK="$TMP/sfwork.$2"; FR_OUT="$TMP/sfout.$2"
+    # shellcheck disable=SC2034  # read by fr_seed_slot, sourced from $RUN above
+    FR_CACHE="$TMP/sfcache.$2"
+    mkdir -p "$FR_WORK" "$FR_OUT"
+    falsify_seed_tree "$sf_repo" "$FR_CACHE" >/dev/null 2>&1 || { printf 'seed-failed|'; exit 0; }
+    err="$(fr_seed_slot 0 2>&1 >/dev/null)"; rc=$?
+    printf '%s|%s' "$rc" "$(printf '%s' "$err" | tr '\n' ' ')" )
+}
+
+sf_clean="$(sf_run "" clean)"
+check "an undamaged seed is accepted" "0|" "$sf_clean"
+
+sf_damaged="$(sf_run "$sf_bin" dmg)"
+case "$sf_damaged" in
+  0\|*)  fail "a seed missing tracked files is REJECTED — accepted it silently (the shape that cost a host run)" ;;
+  seed*) fail "a seed missing tracked files is REJECTED — the cache seed itself failed, so nothing was exercised" ;;
+  *)     pass "a seed missing tracked files is REJECTED" ;;
+esac
+case "$sf_damaged" in
+  *nightly.yml*) pass "  … and the message NAMES the file that went missing" ;;
+  *) fail "  … and the message NAMES the file that went missing — got: $sf_damaged" ;;
+esac
+
+# Mode drift, repaired rather than merely detected. `cp -Pp` does not always
+# preserve modes (measured on a virtiofs mount: the one 0600 file in this repo
+# arrives 0755), and tests/test-verify-lint-scope.sh asserts an EMPTY porcelain,
+# so an unrepaired exec bit reddens an oracle on its own.
+sf_md="$TMP/sfmode"; mkdir -p "$sf_md"
+cp -R "$sf_repo/." "$sf_md/" >/dev/null 2>&1
+chmod 644 "$sf_md/exec.sh"
+sf_mode_before="$( cd "$sf_md" && git status --porcelain -uno | tr -d ' \n' )"
+sf_mode_after="$( set +u
+  # shellcheck source=/dev/null
+  source "$RUN" >/dev/null 2>&1
+  _fr_match_modes "$sf_repo" "$sf_md" >/dev/null 2>&1
+  cd "$sf_md" && git status --porcelain -uno | tr -d ' \n' )"
+if [[ -n "$sf_mode_before" ]]; then
+  pass "scaffold: a stripped exec bit does read as drift ($sf_mode_before)"
+else
+  fail "scaffold: a stripped exec bit does read as drift — the repair below would be vacuous"
+fi
+check "mode drift is repaired, not just detected" "" "$sf_mode_after"
+
 # ── the fork-cost cap, exercised ON LINUX ────────────────────────────────────
 # A platform conditional whose macOS branch nothing runs is the untested claim
 # this repo keeps purging — and it is not hypothetical here: the first version of
