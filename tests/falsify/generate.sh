@@ -85,6 +85,19 @@ _FALSIFY_TMPDIR_OWNED=0
 _FALSIFY_SYNTAX_TMP=""
 _FALSIFY_SHA_TMP=""
 
+# CREATED IN THE PARENT OR NOT AT ALL. `mktemp -d` inside a command substitution
+# makes the directory on disk but sets _FALSIFY_TMPDIR and _FALSIFY_TMPDIR_OWNED
+# in a SUBSHELL, where both die -- so the parent's release has nothing to
+# release and the directory survives the process. falsify_sha1_string is called
+# as `sha="$(falsify_sha1_string ...)"` (line ~475), so whichever call got there
+# first leaked one directory per invocation: measured 2026-08-28, a 16-target
+# corpus left 16 behind, and a machine that had run this tier for weeks held
+# thousands in a temp directory shared with everything else on the host.
+#
+# falsify_generate now calls this once up front, in the parent, so no subshell
+# ever reaches the mktemp branch. Kept lazy rather than made eager at load time
+# because this file is also SOURCED, and a sourcing test that never generates
+# anything should not pay for a scratch directory.
 _falsify_tmpdir() {
   [[ -n "$_FALSIFY_TMPDIR" ]] && return 0
   if [[ -n "${FALSIFY_TMPDIR:-}" ]]; then
@@ -410,6 +423,8 @@ FALSIFY_MUTANTS=0
 FALSIFY_DISCARDED=0
 
 falsify_generate() {   # <file>
+  # Before anything runs in a subshell — see _falsify_tmpdir's note.
+  _falsify_tmpdir || return 1
   local file="${1:-}"
   if [[ -z "$file" ]]; then
     printf 'usage: generate.sh <file>\n' >&2
@@ -508,6 +523,17 @@ falsify_generate() {   # <file>
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
   set -uo pipefail
+  # EVERY exit path, not the two that call it by hand. Measured 2026-08-28: one
+  # `mktemp -d` per invocation survived the run, so a 16-target corpus left 16
+  # behind and a machine that had run the tier for weeks held thousands. On a
+  # host whose temp directory is shared with everything else (macOS's
+  # /var/folders), that is litter this harness has no business creating.
+  #
+  # INSIDE the main guard, deliberately. tests/test-falsify-generate.sh and
+  # tests/test-falsify-historical.sh SOURCE this file, and an unconditional EXIT
+  # trap would replace the `rm -rf "$TMP"` trap those tests set on themselves --
+  # fixing a one-directory leak by creating a much larger one.
+  trap '_falsify_tmpdir_release' EXIT
   falsify_generate "$@"
   exit $?
 fi

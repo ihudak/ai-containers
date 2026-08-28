@@ -472,7 +472,15 @@ fl_timeout="${FALSIFY_TIMEOUT:-120}"
 # It also moves with the corpus. That same run was the first to measure two
 # targets that had been silently SKIPPED, which is most of the growth.
 if [[ "$(uname -s)" == "Darwin" ]]; then
-  sub "running the corpus (jobs=$fl_jobs → 1 worker on macOS, timeout=$fl_timeout)."
+  # THE `(jobs=X, timeout=Y)` SUBSTRING IS AN ASSERTED CONTRACT, not prose.
+  # tests/test-verify-exit-code.sh greps for it literally, so that an operator
+  # who raised a knob can see in the log they paste back which one the run
+  # actually used. An earlier version of this line put "→ 1 worker on macOS"
+  # BETWEEN the two values and broke that grep -- on macOS only, because only
+  # this branch changed, so CI stayed green and the failure surfaced as
+  # `tests/lib-verify-repo.sh` not being green on the pristine tree, three
+  # targets deep into a two-hour corpus run. Extra detail goes on its OWN line.
+  sub "running the corpus (jobs=$fl_jobs, timeout=$fl_timeout) — 1 worker on macOS."
   sub "  EXPECT 1.5-2 HOURS: measured 110 min on 2026-08-28, and it grows with the corpus."
   sub "  It is not hung. This tier forks constantly, macOS is slow at it, and the"
   sub "  worker cap is 1 here by measurement (--jobs 2 put 2 of 24 controls red)."

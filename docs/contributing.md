@@ -74,8 +74,25 @@ the ones you will run constantly.
 | --- | --- | --- | --- |
 | Hermetic suite | `bash tests/run-all.sh` | no | a few minutes |
 | Lint | `bash tests/bash-dialect-lint.sh`, `shellcheck` | no | seconds |
-| Falsify mutation tier | `bash tests/falsify/run.sh --jobs auto` | no | ~76s in the container, **~45 min on macOS** |
+| Falsify mutation tier | `bash tests/falsify/run.sh --jobs auto` | no | ~76s in the container, **1.5-2 h on macOS** (it runs SERIALLY there) |
 | Integration corpus | `bash tests/integration/run.sh` | **yes** | tens of minutes; individual cases run 80–100s |
+
+**Never chase a falsify failure with a whole-corpus run.** When the tier reports
+`oracle '<names>' is not green on the PRISTINE tree` for some target, re-run
+**that target alone**:
+
+```bash
+bash tests/falsify/run.sh --target <the-file-it-named> --timeout 120
+```
+
+The baseline runs before any mutant and a failure there stops the target
+immediately, so this reproduces in **a minute or two** what a full corpus takes
+two hours to reach — and it prints the oracle's own assertion text, which names
+the defect. On 2026-08-28 three consecutive whole-corpus runs were spent on a
+failure that a single `--target` run identified in two minutes: a one-line banner
+change had broken a `grep` in `tests/test-verify-exit-code.sh`, on the macOS
+branch only. The corpus is for scoring the ledger. It is the wrong instrument for
+diagnosis.
 
 **`shellcheck` is not in the image unless you ask for it.** Set `shellcheck=ON`
 in your project's `sandbox.conf` and rebuild. Do it: the lint row above is a
