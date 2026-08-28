@@ -31,13 +31,39 @@ bash -n "$SHIM" && pass "docker-shim.sh bash -n" || fail "docker-shim.sh bash -n
 [[ -x "$SHIM" ]] && pass "docker-shim.sh is executable" || fail "docker-shim.sh is executable"
 
 # ── A recorder standing in for the real docker ─────────────────────────────────
-mkdir -p "$TMP/bin"
-cat > "$TMP/bin/realdocker" <<'EOF'
+# EVERY STEP CHECKED, and each one says which step it was. Four unchecked
+# commands built this fixture, so a failure in any of them surfaced only as the
+# symptom of the LAST one — a 2026-08-28 host run reported `link-exists=n` with
+# the tmpdir present, which is what a failed `mkdir`, a failed heredoc, a failed
+# `chmod` and a failed `ln` all look like from the outside. The step that failed
+# and the reason it gave are what a reader needs; neither was recorded.
+scaffold_step() {   # <what> <command...>
+  local what="$1"; shift
+  local err
+  if ! err="$("$@" 2>&1)"; then
+    printf 'SCAFFOLD-FAILED: %s: %s\n' "$what" "${err:-(no error text)}"
+    exit 1
+  fi
+}
+scaffold_step "mkdir -p \$TMP/bin" mkdir -p "$TMP/bin"
+if ! cat > "$TMP/bin/realdocker" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$@" > "$REC"
 EOF
-chmod +x "$TMP/bin/realdocker"
+then
+  printf 'SCAFFOLD-FAILED: could not write the recorder at %s\n' "$TMP/bin/realdocker"
+  exit 1
+fi
+scaffold_step "chmod +x the recorder" chmod +x "$TMP/bin/realdocker"
+# LEFT AT COMMAND POSITION, DELIBERATELY, and not wrapped like the three steps
+# above. tests/falsify/derive-targets.sh reads this file STATICALLY and learns
+# that docker-shim.sh is EXECUTED from seeing `ln` as the command -- it is the
+# only path by which this oracle reaches that target. Wrapping it in a helper
+# hides it, the target derives as NOT-EXECUTED, and targets.conf's
+# EXECUTED-WHOLE row becomes a --check error. Its status is captured on the next
+# line instead, which changes nothing the walker reads.
 ln -sf "$SHIM" "$TMP/bin/docker"
+ln_rc=$?
 # CHECKED, AND CHECKED THROUGH THE SYMLINK. `-e` on a dangling link is false, so
 # this catches both "the link was never made" and "its target is gone" — and the
 # target is $SHIM in the repo under test, not a file this test owns.
@@ -57,10 +83,12 @@ if [[ ! -e "$TMP/bin/docker" || ! -x "$TMP/bin/docker" ]]; then
   # symlink, so this guard fires both when the LINK is missing and when the link
   # exists but its TARGET is gone — and those are different findings. link-exists
   # separates them, which is exactly what the recorded occurrence could not do.
-  printf 'SCAFFOLD-FAILED: diag src=%s src-exists=%s | tree=%s tree-exists=%s | tmp=%s tmp-exists=%s | link-exists=%s link-target=%s\n' \
+  printf 'SCAFFOLD-FAILED: diag src=%s src-exists=%s | tree=%s tree-exists=%s | tmp=%s tmp-exists=%s | bin-exists=%s ln-rc=%s | link-exists=%s link-target=%s\n' \
     "$SHIM"      "$([[ -e "$SHIM" ]] && printf y || printf n)" \
     "$REPO_DIR"  "$([[ -d "$REPO_DIR" ]] && printf y || printf n)" \
     "$TMP"       "$([[ -d "$TMP" ]] && printf y || printf n)" \
+    "$([[ -d "$TMP/bin" ]] && printf y || printf n)" \
+    "$ln_rc" \
     "$([[ -L "$TMP/bin/docker" ]] && printf y || printf n)" \
     "$(readlink "$TMP/bin/docker" 2>/dev/null || printf '<none>')"
   exit 1
