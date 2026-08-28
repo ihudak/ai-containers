@@ -6,6 +6,46 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## v0.9.0 — 2026-08-28
+
+**A minor bump, and the reason is `shellcheck=ON`.** A new `sandbox.conf` key
+installs Ubuntu's `shellcheck` — deliberately Ubuntu's, because the base is
+`ubuntu:24.04` and CI pins `runs-on: ubuntu-24.04`, so apt hands back the same
+version the lint gate runs. It exists because its absence cost two red pull
+requests in one day: an agent working inside a container with no linter cannot
+check its own work before pushing. `ai-containers-report.sh` also gained
+`VERSION` and `SCHEMA` columns, read through `version.sh` so they cannot
+disagree with what `./sandbox.sh --version` reports in the same project.
+
+**The rest is the mutation tier learning to say what went wrong.** Most of the
+entries below are one shape: the tier detected a failure and reported something
+else, or nothing at all — a killed `git apply` read as a stale patch, a syntax
+gate that could not run counted as a rejected candidate, a skipped target that
+would not name what went red, four scaffold steps that failed silently, a
+re-seed that reported itself as a success. Each was found by a host run, because
+none of them can happen on Linux CI.
+
+**The worst was a scratch tree that was not the repo.** Worker trees were seeded
+and never checked, and the tier recorded the damaged tree's `git status` as the
+**reference** every later check compared against — so a tree born broken had its
+damage adopted as normal, and the only post-seed guard asked whether the
+directory *existed*, which a partial copy always satisfies. Three consecutive
+Phase 6 runs blamed the code the oracles test.
+
+**Two defects here were introduced by fixes in this same release**, which is the
+honest measure of how much of this was diagnosis rather than repair. Both were
+Darwin-only: a worker cap in the wrong place, and a banner change that moved
+`→ 1 worker on macOS` between two values a `grep` asserts. CI is Linux, so
+neither could be seen there, and the second surfaced as an unrelated target
+failing three targets deep into a two-hour run. The rule this repo already had —
+a platform conditional needs a faked `uname`, or it is an untested claim — now
+covers both branches of each.
+
+**Diagnosis no longer costs two hours.** `docs/contributing.md` says to chase a
+falsify failure with `--target`, which reproduces in a minute or two what the
+corpus takes hours to reach, and Phase 0 no longer demands a Docker daemon for
+phases that have no container in them.
+
 ### The Phase 6 banner broke its own assertion, on macOS only
 
 - **`(jobs=X, timeout=Y)` is an asserted contract, not prose.**
