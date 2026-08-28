@@ -6,6 +6,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### A scratch tree that was not the repo, and three runs that blamed the code
+
+- **The falsify tier seeded worker trees and never checked it had copied the
+  repo.** Three consecutive Phase 6 runs died the same way: an oracle red on the
+  *pristine* tree, the target skipped, every one of its mutants gone from the
+  measured set, and the report naming the code the oracle tests —
+  `no *.yml files found under .../w0/.github/workflows`.
+- **The tier had the evidence and threw it away.** `fr_seed_slot` records the
+  fresh tree's `git status` as the *reference* fingerprint every later debris
+  check compares against, so a tree born damaged had its damage written down as
+  normal. The only post-seed guard asked whether the slot **directory exists** —
+  which a partial copy always satisfies, so it could never fire for the one
+  failure mode that happens.
+- **And the seeding ran backgrounded**, so `fr_seed_slot`'s exit status went to a
+  bare `wait` and was discarded outright.
+- **Fixed by verifying the seed against its origin** — a tracked-file
+  `git status` comparison at both hops (repo → cache, cache → slot), fatal and
+  naming the drift, before the fingerprint is taken. Slot seeding now collects
+  its exit status per pid.
+- **`cp -Pp` does not always preserve file modes.** Measured on a virtiofs mount:
+  the one 0600 file in this repo arrives 0755, so the copy reads as ` M` to git
+  while the origin is clean — and `tests/test-verify-lint-scope.sh` asserts an
+  **empty** porcelain, so that alone reddens an oracle for a reason having
+  nothing to do with any mutant. Every run in that environment had been doing
+  this silently. Git-visible modes are now aligned after the copy.
+- Demonstrated both directions: the damaged tree the Mac produced is now
+  **rejected in seconds** naming the missing file, where the previous code
+  returned 0 and ran the corpus for 45 minutes against it.
+
 ### `shellcheck=ON` — the linter the gate uses, in the container
 
 - **A new `sandbox.conf` key** (default `OFF`) installing Ubuntu's `shellcheck`
