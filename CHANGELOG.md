@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### `(no error text)` was true, and useless
+
+- **A non-zero exit that wrote nothing is a different finding** from a command
+  that failed and said why. The scaffold helper printed `(no error text)` for
+  both.
+- A 2026-08-28 host run hit exactly that on **`chmod +x`** — a command that says
+  *"No such file or directory"* when its target is missing. Silence rules that
+  out and points somewhere else: at the command substitution never having run.
+  On macOS the per-user process limit is low, and a **failed fork** yields empty
+  output and a non-zero status, indistinguishable from a failed command unless
+  the limit is reported next to it.
+- The silent branch now reports the exit status, says plainly that the command
+  may never have run, and prints `ulimit -u`, the caller's live process count,
+  and `ls -l` of the file the step was acting on — the three facts that separate
+  "fork exhaustion" from "the file went away" from "the command genuinely
+  failed".
+
 ### Phase 0 demanded a daemon for phases that have no container in them
 
 - **`PHASES=6` exited 1 without Docker.** Phase 0's environment banner made the
