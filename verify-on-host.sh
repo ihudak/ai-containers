@@ -17,7 +17,8 @@
 #
 #   IT_EXTRA_ARGS='--tags fast' PHASES=4 bash ./verify-on-host.sh
 #                                              # extra flags for Phase 4's runner
-#   PHASES="5 7" bash ./verify-on-host.sh     # skip the phases that need Docker
+#   PHASES="6 7" bash ./verify-on-host.sh     # the phases that need no Docker,
+#                                              # so they run with the VM stopped
 #   FALSIFY_TIMEOUT=300 FALSIFY_JOBS=6 PHASES=6 bash ./verify-on-host.sh
 #                                              # Phase 6's per-mutant clock and
 #                                              # worker count (default 120, auto)
@@ -189,11 +190,31 @@ if command -v colima >/dev/null 2>&1; then
   sub "colima status:    $(colima status 2>&1 | tr '\n' ' ' | cut -c1-160)"
   sub "colima resources: $(colima list 2>&1 | tail -n +1 | tr '\n' ' ' | cut -c1-200)"
 fi
+# FATAL ONLY IF A SELECTED PHASE ACTUALLY NEEDS THE DAEMON. Phases 6 and 7 --
+# the mutation tier and the linters -- touch Docker nowhere, yet this check
+# refused to run them, so `PHASES=6` demanded a running daemon to do work that
+# has no container in it.
+#
+# That is not a technicality. Phase 6 runs SERIALLY on macOS and takes hours, and
+# the obvious way to give it the whole machine is to stop the VM that is holding
+# 12 vCPUs and 36 GiB -- which this check turned into an immediate exit 1. The
+# one configuration that makes the slowest phase fastest was the one it forbade.
+#
+# The set is named rather than inlined so it stays answerable: 4 delegates to the
+# integration corpus, 5 re-runs the suite inside the bash-floor container (line
+# ~305). The header's old advice to use `PHASES="5 7"` to "skip the phases that
+# need Docker" was wrong about 5 for exactly that reason.
+DOCKER_PHASES="4 5"
+needs_docker=0
+for _p in $DOCKER_PHASES; do want_phase "$_p" && needs_docker=1; done
 if ! docker info >/dev/null 2>&1; then
-  echo "$LOG_PREFIX FATAL: docker daemon unreachable. Start Colima and export DOCKER_HOST:" >&2
-  echo "  colima start --cpu 6 --memory 12 --disk 120" >&2
-  echo '  export DOCKER_HOST="unix://${HOME}/.colima/default/docker.sock"' >&2
-  exit 1
+  if (( needs_docker )); then
+    echo "$LOG_PREFIX FATAL: docker daemon unreachable, and PHASES=$PHASES selects a phase that needs it ($DOCKER_PHASES). Start Colima and export DOCKER_HOST:" >&2
+    echo "  colima start --cpu 6 --memory 12 --disk 120" >&2
+    echo '  export DOCKER_HOST="unix://${HOME}/.colima/default/docker.sock"' >&2
+    exit 1
+  fi
+  sub "docker daemon:    UNREACHABLE — not fatal: PHASES=$PHASES selects nothing that needs it."
 fi
 sub "docker disk:      $(docker system df --format '{{.Type}}={{.Size}}' 2>/dev/null | tr '\n' ' ')"
 

@@ -166,6 +166,32 @@ grep -q 'RESULT: FAILED — 2 phase(s)' "$TMP/out.log" \
   && pass "verdict counts exactly 2 failed phases, not 1" \
   || fail "verdict counts exactly 2 failed phases, not 1"
 
+# ── Phase 0 demands a daemon ONLY for the phases that need one ────────────────
+# It used to demand one always, so `PHASES=6` exited 1 without Docker to do work
+# that has no container in it. That is not a technicality: Phase 6 runs serially
+# on macOS and takes hours, and the obvious way to give it the whole machine is
+# to stop the VM holding 12 vCPUs and 36 GiB -- which the old check turned into
+# an immediate exit 1. Both directions are asserted, because a gate that never
+# fires and a gate that always fires are equally useless.
+r="$(mk_repo 0)"
+rc="$(DOCKER_INFO_RC=1 run_verify "$r" 6 DOCKER_INFO_RC=1)"
+if grep -q 'docker daemon:    UNREACHABLE' "$TMP/out.log"; then
+  pass "phase 0: an unreachable daemon is NOT fatal when PHASES selects none that need it"
+else
+  fail "phase 0: an unreachable daemon is NOT fatal for PHASES=6 — got rc=$rc"
+  sed -n '1,12p' "$TMP/out.log" | sed 's/^/       /'
+fi
+grep -q 'PHASE 6' "$TMP/out.log" \
+  && pass "  … and the selected phase actually ran" \
+  || fail "  … and the selected phase actually ran — it exited at the banner"
+
+# The other direction: 4 and 5 DO need it, and must still stop.
+rc="$(DOCKER_INFO_RC=1 run_verify "$r" 5 DOCKER_INFO_RC=1)"
+expect_rc "phase 0: an unreachable daemon IS fatal when PHASES selects one that needs it" 1 "$rc"
+grep -q 'FATAL: docker daemon unreachable' "$TMP/out.log" \
+  && pass "  … and says which phases need it" \
+  || fail "  … and says which phases need it"
+
 # ── shellcheck missing from PATH must fail the phase, not silently skip it ─────
 # Phase 7's shellcheck sub-check is gated on `command -v shellcheck`. Bypasses
 # run_verify()'s PATH (which always prepends the stub shellcheck) with a
