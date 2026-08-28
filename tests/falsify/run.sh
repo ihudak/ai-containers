@@ -1001,9 +1001,20 @@ fr_run_mutant() {   # <slot> <target> <oracle> <seq> <lineno> <op> <sha> <text> 
   # that left debris behind would make every later mutant in this slot a lie.
   cp -Pp "$FR_CACHE/$target" "$tree/$target"
   if [[ "$(falsify_tree_fingerprint "$tree")" != "$(cat "$FR_OUT/w$slot.porcelain")" ]]; then
-    printf 'NOTE|reseed|%s|the oracle left the worker tree changed; slot %s re-seeded\n' \
-      "$ident" "$slot" >> "$res"
-    fr_seed_slot "$slot"
+    # A reseed that FAILS must not be reported as one that worked, and must not
+    # be retried per mutant. The fingerprint is this slot's reference: leaving
+    # the stale one in place means the very next mutant sees the same mismatch
+    # and pays another full tree copy, so a single bad slot turns into a copy
+    # storm on the slowest platform the tier runs on. Record the tree as it
+    # actually is, say so, and let the run's own verdict carry the failure.
+    if fr_seed_slot "$slot"; then
+      printf 'NOTE|reseed|%s|the oracle left the worker tree changed; slot %s re-seeded\n' \
+        "$ident" "$slot" >> "$res"
+    else
+      falsify_tree_fingerprint "$tree" > "$FR_OUT/w$slot.porcelain"
+      printf 'NOTE|reseed-failed|%s|slot %s could NOT be re-seeded; every later mutant in it runs against a tree that is not the repo\n' \
+        "$ident" "$slot" >> "$res"
+    fi
   fi
   return 0
 }
@@ -1127,6 +1138,7 @@ FR_UNPROVEN=0
 FR_TIMEOUTS=0
 FR_ASSERTLESS=0
 FR_BROKEN=0
+FR_RESEED_FAILED=0
 # A target whose PRISTINE baseline is not green is skipped WHOLE, and every one
 # of its mutants leaves the corpus without ever being attempted. That is not the
 # same event as a mutant that ran and produced nothing (FR_BROKEN), and it is
@@ -1171,7 +1183,7 @@ fr_exit_cause() {   # <wait status, possibly empty> → a clause for the error l
 fr_harvest() {   # <pid> — print that mutant's records and tally them
   local pid="$1"
   local slot="${FR_PID_SLOT[$pid]}" res="${FR_PID_RESULT[$pid]}"
-  local line f2 f3 f7 c_target c_oracle c_sig c_ms co_line
+  local line f2 f3 f7 c_target c_oracle c_sig c_ms co_line rs_detail
   local cause
   cause="$(fr_exit_cause "${FR_PID_STATUS[$pid]:-}")"
   unset "FR_PID_SLOT[$pid]" "FR_PID_RESULT[$pid]" "FR_PID_STATUS[$pid]"
@@ -1264,6 +1276,12 @@ fr_harvest() {   # <pid> — print that mutant's records and tally them
         IFS='|' read -r _ _ _ co_line <<< "$line"
         fr_warn "  control output: $co_line" ;;
       'NOTE|write-failed|'*) FR_BROKEN=$(( FR_BROKEN + 1 )) ;;
+      'NOTE|reseed-failed|'*)
+        # Loud where it happens, and counted, because every verdict recorded in
+        # that slot afterwards came from a tree that is not this repo.
+        IFS='|' read -r _ _ _ rs_detail <<< "$line"
+        fr_err "RESEED FAILED — $rs_detail"
+        FR_RESEED_FAILED=$(( FR_RESEED_FAILED + 1 )) ;;
       'NOTE|foreign-timeout-flag|'*)
         # Never silent. This is the event that used to arrive as an UNPROVEN
         # mutant and take a survivor out of the ledger's reach with it.
@@ -1663,6 +1681,11 @@ falsify_main() {
 
   if (( FR_BROKEN > 0 )); then
     fr_err "$FR_BROKEN mutant(s) produced no verdict — they are NOT counted as kills"
+    rc=1
+  fi
+
+  if (( FR_RESEED_FAILED > 0 )); then
+    fr_err "$FR_RESEED_FAILED slot re-seed(s) FAILED: mutants scored after one of them ran against a tree that is not this repo, so their verdicts — kills and survivors alike — cannot be trusted."
     rc=1
   fi
   # ── HOW MUCH THIS RUN ACTUALLY MEASURED ──────────────────────────────────────

@@ -889,6 +889,39 @@ case "$f52_ok" in
   *)                     fail "  … while a worker that DID write is harvested, not reported broken — got: $(printf '%s' "$f52_ok" | tr '\n' ' ')" ;;
 esac
 
+# ── a re-seed that FAILED must not be reported as one that worked ────────────
+# Introduced by the seed-fidelity guard itself: once fr_seed_slot can FAIL, the
+# mid-run reseed can fail too, and it was neither reported nor counted -- the
+# NOTE said "re-seeded" unconditionally. Every mutant scored in that slot
+# afterwards ran against a tree that is not the repo, and the run still exited 0.
+rsf_out="$( { set +u
+  # shellcheck source=/dev/null
+  source "$RUN" >/dev/null 2>&1
+  rm -f "$TMP/rsf-result"
+  ( printf 'NOTE|reseed-failed|a.sh:op:deadbeef|slot 3 could NOT be re-seeded; every later mutant in it runs against a tree that is not the repo\n' \
+      > "$TMP/rsf-result" ) &
+  rsf_pid=$!
+  # shellcheck disable=SC2034  # read by fr_wait_for_slot/fr_harvest, sourced above
+  FR_PID_SLOT["$rsf_pid"]=3
+  # shellcheck disable=SC2034  # likewise
+  FR_PID_RESULT["$rsf_pid"]="$TMP/rsf-result"
+  fr_wait_for_slot
+  printf 'RESEEDFAILED=%s BROKEN=%s\n' "$FR_RESEED_FAILED" "$FR_BROKEN"; } 2>&1 )"
+case "$rsf_out" in
+  *'RESEEDFAILED=1'*) pass "a failed re-seed is COUNTED, so the run cannot exit 0 on verdicts from a broken tree" ;;
+  *) fail "a failed re-seed is COUNTED — got: $(printf '%s' "$rsf_out" | tr '\n' ' ')" ;;
+esac
+case "$rsf_out" in
+  *'RESEED FAILED'*) pass "  … and named on stderr where it happens, not only in the summary" ;;
+  *) fail "  … and named on stderr where it happens — got: $(printf '%s' "$rsf_out" | tr '\n' ' ')" ;;
+esac
+# The note must not ALSO read as a successful reseed, which is what made the
+# regression invisible: the two share a prefix.
+case "$rsf_out" in
+  *'|reseed|'*) fail "  … and is not also reported as a successful re-seed" ;;
+  *) pass "  … and is not also reported as a successful re-seed" ;;
+esac
+
 # ── 11e. A FOREIGN TIMEOUT FLAG MUST NAME BOTH TOKENS ────────────────────────
 # On macOS at --jobs 32 --timeout 5, a watchdog belonging to another invocation
 # killed a live oracle twice in one run. The NOTE said "slot 0 held a timeout
