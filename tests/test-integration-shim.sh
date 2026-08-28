@@ -39,11 +39,29 @@ bash -n "$SHIM" && pass "docker-shim.sh bash -n" || fail "docker-shim.sh bash -n
 # and the reason it gave are what a reader needs; neither was recorded.
 scaffold_step() {   # <what> <command...>
   local what="$1"; shift
-  local err
-  if ! err="$("$@" 2>&1)"; then
-    printf 'SCAFFOLD-FAILED: %s: %s\n' "$what" "${err:-(no error text)}"
-    exit 1
+  local err rc
+  err="$("$@" 2>&1)"; rc=$?
+  (( rc == 0 )) && return 0
+  if [[ -n "$err" ]]; then
+    printf 'SCAFFOLD-FAILED: %s: rc=%s: %s\n' "$what" "$rc" "$err"
+  else
+    # A NON-ZERO EXIT THAT WROTE NOTHING is a different finding from a command
+    # that failed and said why, and the first version of this helper printed
+    # "(no error text)" for it -- true, and useless. A 2026-08-28 host run hit
+    # exactly this on `chmod +x`, a command that reports "No such file or
+    # directory" when its target is missing, so silence rules that out and
+    # points at the command substitution never having run: on macOS the
+    # per-user process limit is low and a fork that fails yields empty output
+    # and a non-zero status, indistinguishable from a failed command unless the
+    # limit is reported beside it.
+    printf 'SCAFFOLD-FAILED: %s: rc=%s, NOTHING on stderr — the command may never have run (a failed fork looks exactly like this)\n' \
+      "$what" "$rc"
+    printf 'SCAFFOLD-FAILED:   procs: ulimit -u=%s in-use=%s | target: %s\n' \
+      "$(ulimit -u 2>/dev/null || printf '?')" \
+      "$(ps -o pid= -u "$(id -u)" 2>/dev/null | grep -c . || printf '?')" \
+      "$(ls -ld "${!#}" 2>&1 | head -1)"
   fi
+  exit 1
 }
 scaffold_step "mkdir -p \$TMP/bin" mkdir -p "$TMP/bin"
 if ! cat > "$TMP/bin/realdocker" <<'EOF'
