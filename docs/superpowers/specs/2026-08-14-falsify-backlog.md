@@ -5303,7 +5303,7 @@ to look if this recurs.
 
 ---
 
-## F66 — a Phase 4 run leaves empty `IT_RUN_ID`-shaped directories in the real cache — **OPEN: observed and bounded, source not identified**
+## F66 — a Phase 4 run leaves empty `IT_RUN_ID`-shaped directories in the real cache — **FIXED 2026-08-29: `probe_launcher` hung its PATH dir off `$IT_SCRATCH`**
 
 Observed 2026-08-29 on a Linux host, after `PHASES="4" bash ./verify-on-host.sh`
 against `0a9a129`. The run itself was clean — `36/36 passed`, no
@@ -5357,6 +5357,47 @@ more than the commit (whole script versus one phase), so it is recorded as an
 observation rather than a lead.
 
 ---
+
+
+**RESOLUTION 2026-08-29 — the source, and why five probes missed it.**
+
+`probe_launcher` needs somewhere to hold one `docker` symlink for `PATH`. It used
+`$IT_SCRATCH/launcher-probe`, so `mkdir -p` created the **scratch root** as a side
+effect and the `rm -rf "$d"` at the end removed only the child. The parent it
+left is exactly the observed artefact: empty, no `logs/`, `IT_RUN_ID`-shaped.
+
+Permanent rather than transient for two compounding reasons, both in the entry's
+own evidence and neither previously connected: `--list-caps` exits **before**
+`run.sh` installs `trap 'sweep' EXIT` and before it creates `$IT_SCRATCH/logs`,
+so nothing collects it; and each invocation computes a fresh `IT_RUN_ID` from
+`$$`, so they accumulate one per call rather than overwriting.
+
+**Why `--list-caps` measured zero in the table above.** `detect_caps` only
+*attempts* `probe_launcher` when `--reuse-image` is set or
+`docker image inspect "$IT_CAPS_IMAGE"` succeeds. A bare `--list-caps` on a
+machine with nothing built never reaches the probe — so the probe that ruled it
+out was measuring a path that does not run. The first regression test written
+for this fix made the identical mistake and **passed against the unfixed code**;
+it was the mandatory pre-fix demonstration that caught it, not review.
+
+**How it was found:** by watching rather than reading, after five probes had
+failed. The real cache was emptied, a poller sampled it every 200 ms and captured
+the process table on each new entry, and a full Phase 4 ran. It left exactly four
+— 22:24:12–22:24:15, four distinct pids, each holding `launcher-probe` at birth
+and nothing afterwards — while the run's own scratch was swept correctly in the
+same run, which is what tells the two apart. That host had 61 banked.
+
+**The fix:** the probe uses its own `mktemp -d` and creates nothing it does not
+remove. The regression test passes `--reuse-image` and a stub satisfying the
+liveness check, redirects `HOME` so it asserts the real default path, and
+deliberately leaves `IT_SCRATCH` unset — setting it is precisely what hides the
+defect. Demonstrated FAIL before, PASS after.
+
+**The timing note in this entry is now explained.** The earlier full
+`verify-on-host.sh` run left zero while the Phase-4-only run left eight: a full
+run's `--list-caps`-shaped invocations come from `tests/test-integration-runner.sh`,
+whose stubs mostly fail `image inspect`; the count tracks how many invocations
+reached the probe, not the commit.
 
 ## F65 RESOLUTION — the verdict logic now has a test, and it drives the real runner — **FIXED 2026-08-29**
 
