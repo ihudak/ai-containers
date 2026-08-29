@@ -58,6 +58,22 @@ export IT_LABEL="ai-containers.it-run=unit" IT_DNS_IMAGE=unit-dns
 mkdir -p "$IT_SCRATCH"
 # shellcheck disable=SC1090
 . "$LIB"
+# SOURCING THE LIBRARY TOOK THIS FILE'S CLEANUP WITH IT. lib.sh installs
+# `trap 'it_cleanup' EXIT` at its top level, and bash keeps exactly ONE EXIT
+# handler -- so the `trap 'rm -rf "$TMP"' EXIT` set above is DISCARDED the
+# moment this line runs, and $TMP was leaked on every run, passing runs
+# included (measured 2026-08-29: one clean `bash tests/test-integration-lib.sh`,
+# rc=0, left one stub-repo tree behind).
+#
+# The cure is lib.sh's OWN registry rather than a second trap: it_cleanup
+# already removes every `dir:` resource it_track was given, so handing it $TMP
+# keeps ONE handler owning ALL of the teardown. Re-installing a combined
+# `trap 'it_cleanup; rm -rf "$TMP"' EXIT` would work today and rot silently the
+# day lib.sh renames its handler -- this cannot.
+#
+# A static scan cannot see this: the trap that wins is in ANOTHER FILE, which is
+# why the guard for it (tests/test-temp-leaks.sh) runs each test and looks.
+it_track "dir:$TMP"
 
 # ── allowlist_write ────────────────────────────────────────────────────────────
 d="$(it_scratch)"

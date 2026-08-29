@@ -6,6 +6,55 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Four tests left a temp directory behind on every PASSING run
+
+A macOS host had accumulated **447 stale entries in the user temp directory**,
+90 MB, and 281 of them carried one signature. None came from a failure: a clean,
+71/71 suite run leaked on its own. Four causes, deliberately listed apart
+because only the first two share a mechanism and none share a fix.
+
+**`tests/test-mutations.sh`** installed `trap 'rm -rf "$stale_root"' EXIT` at
+line 57 and then `trap 'rm -rf "$tmp"' EXIT` at line 256. Bash keeps exactly ONE
+EXIT handler, so the second DISCARDED the first and `$stale_root` was never
+removed. This file is also the oracle for the `tests/integration/mutate.sh`
+falsify target, so one corpus run invoked it ~63 times and left ~63 directories.
+
+**`tests/test-integration-lib.sh`** lost its handler the same way, but to
+ANOTHER FILE: `. "$LIB"` at line 60 sources `tests/integration/lib.sh`, whose
+top level runs `trap 'it_cleanup' EXIT`. `it_cleanup` removes every resource
+`it_track` was given and knew nothing of this file's `$TMP`. The cure is that
+registry — `it_track "dir:$TMP"` — rather than a combined trap, so one handler
+owns all teardown and nothing rots the day `lib.sh` renames its own.
+
+**`tests/test-db-clients.sh`** removed `"$F2"` where it meant `"$F4"`. `$F2` was
+already gone forty lines above, so the removal was a no-op. That file also had
+no trap at all, so an interrupted run left all six of its fixtures; it has one
+now, backstopping the inline removals rather than replacing them.
+
+**`tests/test-falsify-run.sh` was not a cleanup defect**, and treating it as one
+would have fixed nothing. `tests/run-all.sh` removes its per-test log correctly
+on a normal exit — demonstrated — and leaks exactly one when SIGKILLed, also
+demonstrated. The three it left came from the cases that SIGKILL a driver ON
+PURPOSE to exercise the watchdog path, and no trap runs on SIGKILL. So the cure
+is containment: `run-all.sh` now creates that log from an explicit
+`${TMPDIR:-/tmp}` template and `fx_run` points `TMPDIR` at its own scratch, so
+what the trap cannot reach lands somewhere the test already deletes.
+
+**That last change fixes a second thing.** A bare `mktemp` honours `$TMPDIR` on
+GNU and IGNORES it on BSD/macOS, where the per-user directory comes from
+`confstr` and no environment variable reaches it (measured: `TMPDIR=/x mktemp -d`
+returns `/var/folders/…`). `run-all.sh` therefore ignored `TMPDIR` on every Mac,
+which is the mechanism Phase 5's symlinked-`TMPDIR` arm relies on. With an
+explicit template both platforms agree.
+
+**The measurement needed fixing before the defects could be.** Snapshot-diffing
+the temp directory around each test attributed the same directory to two
+different tests and flagged entries belonging to other software on the machine
+entirely. The replacement is a `mktemp` shim on `PATH` that supplies a
+`$TMPDIR`-rooted template when the caller gives none: each test then runs in a
+private temp root and whatever remains in it is unambiguously that test's. Under
+that method the suite leaks **0**.
+
 ### The floor container trusted the mount, but not the copies the suite makes of it
 
 Phase 5 re-runs the hermetic suite as root inside the bash-floor container

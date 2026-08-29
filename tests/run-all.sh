@@ -54,7 +54,19 @@ failed_names=""
 # like a wall of failures — which the mutation tier reads as "the mutation was
 # noticed" (backlog F31). SCAFFOLD-FAILED: is the channel run.sh greps to score
 # such a run UNPROVEN instead of KILLED.
-log="$(mktemp)" || { printf 'SCAFFOLD-FAILED: mktemp (run-all.sh could not create its per-test log)\n'; exit 1; }
+#
+# AN EXPLICIT TEMPLATE, so that $TMPDIR is HONOURED. A bare `mktemp` honours it
+# on GNU and IGNORES it on BSD/macOS, where the per-user directory comes from
+# confstr and no environment variable reaches it -- measured: `TMPDIR=/x mktemp
+# -d` returns /var/folders/... on this platform. With a template both agree.
+#
+# That matters because this trap CANNOT run on SIGKILL, and SIGKILL is routine
+# here: the falsify watchdog kills a timed-out oracle's whole process group, and
+# `tests/test-falsify-run.sh` SIGKILLs drivers on purpose to exercise that path.
+# Each such death orphans one log. The trap is right and stays; what changes is
+# that a caller can now CONTAIN what the trap cannot reach, by pointing TMPDIR
+# at a directory it removes itself -- which is exactly what that test now does.
+log="$(mktemp "${TMPDIR:-/tmp}/run-all-log.XXXXXX")" || { printf 'SCAFFOLD-FAILED: mktemp (run-all.sh could not create its per-test log)\n'; exit 1; }
 trap 'rm -f "$log"' EXIT
 
 for t in $selected; do

@@ -7,6 +7,15 @@ fails=0
 pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails+1)); }
 
+# EVERY FIXTURE, IN ONE TRAP. This file removes its six scratch dirs inline as
+# it finishes with each one, which cleans up a run that reaches the end and
+# nothing else: an interrupted run left all six behind, and a mis-typed variable
+# in one of those inline removals left one behind on EVERY run (see $F4 below).
+# The inline removals stay -- they keep the peak at one fixture rather than six
+# -- and this backstops them. `${VAR:-}` because the trap can fire before any of
+# them is assigned, and this file runs under `set -u` via the suite driver.
+trap 'rm -rf "${F1:-}" "${F2:-}" "${F3:-}" "${F4:-}" "${GA_TMP:-}"' EXIT
+
 # Fixture 1: ruby + db-clients=pg,mongo + imagemagick/wkhtmltopdf ON
 F1="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 cat > "$F1/sandbox.conf" <<'EOF'
@@ -109,7 +118,12 @@ EOF
                                    || printf 'FAIL: c-toolchain=OFF still strips the toolchain\n'
 ) | tee "$F4/out.txt"
 grep -q '^FAIL:' "$F4/out.txt" && fails=$((fails+1))
-rm -rf "$F2"
+# $F4, NOT $F2. This line said "$F2" -- a fixture already removed forty lines
+# above, so the removal was a no-op and $F4 was leaked on every run, PASSING
+# runs included. Measured 2026-08-29 under a TMPDIR-honouring mktemp: one clean
+# `bash tests/test-db-clients.sh` (rc=0) left one `out.txt+sandbox.conf` tree
+# behind, and this file is the only place that signature comes from.
+rm -rf "$F4"
 
 # Allowlist gating: mongo present → mongodb.txt included; absent → excluded.
 F3="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
