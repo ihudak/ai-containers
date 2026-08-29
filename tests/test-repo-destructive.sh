@@ -29,6 +29,11 @@ ENGINE_DIR="$REPO_DIR"
 [[ -f "$ENGINE_DIR/repo.sh" ]] || ENGINE_DIR="$REPO_DIR/base"
 REPO_SH="$ENGINE_DIR/repo.sh"
 
+# p_realdir: an independently-derived physical path, for asserting against a
+# mount that repo.sh resolved. See its use in setup_path_world below.
+# shellcheck source=./portability.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/portability.sh"
+
 REAL_HOME="$HOME"
 REAL_REGISTRY="$HOME/.ai-containers/repos.conf"
 REAL_REGISTRY_BEFORE=""
@@ -787,6 +792,107 @@ run_repo gc --unused
 grep -q 'About to remove 2 working-copy volume(s)' "$OUT" \
   && pass "  … and drops to 2 when --unused spares the one in use" \
   || fail "  … and drops to 2 when --unused spares the one in use (got: $(grep -o 'About to remove [0-9]* working-copy' "$OUT"))"
+
+# ── sync_from_path: the one function nothing ever executed (backlog F1) ───────
+# Measured 2026-08-29 by instrumenting every function in repo.sh and running the
+# three repo test files: 21 of its 22 functions run. `sync_from_path` was the
+# only one that never did, and the reason is a gap in the FIXTURES rather than
+# in the tests — reaching it needs a repo that is `path`-TYPED and
+# `volume`-BACKED, and every path repo in this file is bind-backed, which
+# sync_one answers with "nothing to sync" before it gets there.
+#
+# That combination is not exotic. On Linux `auto` registers a path repo as a
+# bind alias, but on macOS it cannot — bind mounts are the thing repo volumes
+# exist to avoid there — so on a Mac EVERY path repo is volume-backed and every
+# `repo.sh sync` of one runs this function. The single unexecuted function was
+# the one an entire platform takes on its normal path.
+#
+# It also deletes. `rsync -a --delete /src/ /dst/` mirrors, so the guard below
+# is not a nicety: with the source gone and the guard removed, the mirror runs
+# from nothing and the volume's contents are what gets deleted.
+setup_path_world() {
+  export HOME="$TMP/home"; rm -rf "$HOME"; mkdir -p "$HOME/.ai-containers"
+  rm -rf "$VOLS"; mkdir -p "$VOLS"; : > "$DOCKER_LOG"; : > "$INUSE"
+  : > "$VOLS/ai-containers-repo-localvol"
+  printf 'localvol|path|%s|1700000000|1700000000|volume\n' "$TMP/pathsrc" \
+    > "$HOME/.ai-containers/repos.conf"
+  rm -rf "$TMP/pathsrc"; mkdir -p "$TMP/pathsrc"
+  printf 'real content\n' > "$TMP/pathsrc/FILE"
+  # sync_from_path RESOLVES the source before mounting it, so the mount carries
+  # the physical path — which is NOT $TMP/pathsrc whenever TMPDIR contains a
+  # symlink. That is the ordinary case on macOS (/var → /private/var) and it is
+  # what the suite's symlinked-TMPDIR arm exists to catch; asserting against the
+  # unresolved value passes on an ordinary Linux host and fails on every Mac.
+  #
+  # p_realdir, not readlink -f: resolve_path itself uses readlink -f, and
+  # canonicalising the EXPECTED value with the same primitive as the code under
+  # test is `assert f(x) == f(x)`. p_realdir reaches the same physical answer
+  # through `cd` + `pwd -P`, a different mechanism.
+  PATHSRC_REAL="$(p_realdir "$TMP/pathsrc")"
+}
+# The `docker run` lines only — `volume inspect` also names the volume, and a
+# grep over the whole log would pass on that instead of on the mirror.
+runs() { grep '^run ' "$DOCKER_LOG"; }
+# Captured FIRST, then matched from a here-string. `runs | grep -q …` would be a
+# producer piped into `grep -q` under pipefail — the shape
+# tests/test-grep-q-pipelines.sh forbids, because grep exits on its first match,
+# the producer dies 141 on the broken pipe, and pipefail promotes that over
+# grep's success. A regression guard written that way reports "no defect" at
+# exactly the moment the defect returns.
+has_run() { local out; out="$(runs)"; grep -q -- "$1" <<<"$out"; }
+
+# 1. The happy path reaches the mirror at all, and mounts BOTH ends of it.
+setup_path_world
+run_repo sync localvol
+check "a path-typed, volume-backed repo syncs successfully" "0" "$RC"
+if has_run "-v $PATHSRC_REAL:/src:ro"; then
+  pass "the mirror mounts the host source at /src, READ-ONLY"
+else
+  fail "the mirror mounts the host source at /src read-only — got: $(runs | head -1)"
+fi
+if has_run "-v ai-containers-repo-localvol:/dst"; then
+  pass "the mirror mounts the repo's own volume at /dst"
+else
+  fail "the mirror mounts the repo's own volume at /dst — got: $(runs | head -1)"
+fi
+# `:ro` is the whole reason a sync cannot damage the developer's checkout. As a
+# separate assertion from the mount above, because a mount without it would
+# still satisfy that one.
+if has_run ":/src:ro"; then
+  pass "the source mount carries :ro, so a sync can never write to the host tree"
+else
+  fail "the source mount carries :ro — got: $(runs | head -1)"
+fi
+check "the host source file is untouched by a sync" "real content" "$(cat "$TMP/pathsrc/FILE" 2>/dev/null)"
+
+# 2. THE GUARD. Source gone → refuse, and above all run NOTHING: the mirror
+#    deletes, so mirroring from a vanished source is how a volume gets emptied
+#    by the command meant to update it.
+setup_path_world
+rm -rf "$TMP/pathsrc"
+run_repo sync localvol
+check "a sync whose source path has vanished fails" "1" "$RC"
+if grep -q 'source path no longer exists' "$ERR"; then
+  pass "… and says which path, on stderr"
+else
+  fail "… and says which path, on stderr — got: $(cat "$ERR")"
+fi
+if has_run ":/dst"; then
+  fail "a vanished source must start NO mirror — one ran: $(runs | head -1)"
+else
+  pass "a vanished source starts no mirror at all, so the volume cannot be emptied"
+fi
+
+# 3. `reset` of a path repo routes through the same function (repo.sh:562), and
+#    that arm has never run either. Same guard, same consequence.
+setup_path_world
+run_repo reset localvol --yes
+check "resetting a path-typed repo succeeds" "0" "$RC"
+if has_run "-v ai-containers-repo-localvol:/dst"; then
+  pass "reset re-mirrors the path repo into its volume"
+else
+  fail "reset re-mirrors the path repo into its volume — got: $(runs | tr '\n' ';')"
+fi
 
 # ── Hermeticity ───────────────────────────────────────────────────────────────
 export HOME="$REAL_HOME"

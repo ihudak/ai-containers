@@ -7,7 +7,7 @@ finding that lives only there is a finding that gets dropped.
 
 ---
 
-## F1 — `repo.sh` executes 2 of its 19 functions under the hermetic suite — **PARTLY COVERED 2026-08-20, still open**
+## F1 — `repo.sh` executes 2 of its 19 functions under the hermetic suite — **EXECUTION COVERAGE COMPLETE 2026-08-29 (22 of 22, measured); mutation-tier entry still OPEN**
 
 `tests/test-repo-registry.sh` sources `repo.sh` in a subshell deliberately
 arranged so that "dispatch never runs, no side effects occur" (the test's own
@@ -5451,3 +5451,76 @@ at both moments.
 That is stated as the next thing to try, not as a finding: run the hermetic
 suite and a Phase 4 at the same time, with the watcher above running, and see
 whether the bursts reappear.
+
+---
+
+## F1 RESOLUTION (first half) — measured, not estimated: 22 of 22 — **execution coverage FIXED 2026-08-29; the tier half remains OPEN**
+
+**The entry's headline number was two generations stale.** "2 of 19" described
+the suite before `tests/test-repo-destructive.sh` existed. Rather than trust
+either number, every function in `repo.sh` was instrumented in a scratch copy of
+the tree — an appended marker line per function — and the three repo test files
+run against it.
+
+**Result before this change: 21 of 22.** Every `cmd_*`, every `seed_*`/`sync_*`
+except one, `reset_git`, `collect_inspections`, `git_helper_run`, `list_copies`
+— all reached. The single function nothing had ever executed was
+**`sync_from_path`**.
+
+**The reason it was missed is worth more than the fact.** It was a gap in the
+FIXTURES, not the tests: reaching it needs a repo that is `path`-TYPED and
+`volume`-BACKED, and every path repo in the suite was bind-backed, which
+`sync_one` answers with "nothing to sync" before it gets there. That
+combination is not exotic — on Linux `auto` registers a path repo as a bind
+alias, but on macOS it cannot, so **on a Mac every path repo is volume-backed
+and every `repo.sh sync` of one runs this function.** The one unexecuted
+function was the one an entire platform takes on its normal path.
+
+**And it deletes.** `sync_from_path` mirrors with `rsync -a --delete /src/
+/dst/`, so its "source no longer exists" guard is load-bearing: without it the
+mirror runs from nothing and the volume's contents are what gets removed by the
+command meant to update them.
+
+Twelve assertions added to `tests/test-repo-destructive.sh` (its harness already
+runs `repo.sh` as a real subprocess against a recording fake `docker`). They
+cover the mirror's two mounts, the `:ro` on the source as its own assertion, the
+host file being untouched, the vanished-source guard refusing AND starting no
+mirror at all, and `reset`'s arm through the same function. Coverage is now
+**22 of 22**, re-measured the same way.
+
+Each was demonstrated failing against a mutated `repo.sh`: dropping the
+vanished-source guard, dropping `:ro`, mirroring into the wrong volume, and
+skipping the mirror entirely — all KILLED.
+
+**A note on the demonstrations, because it cost two false conclusions here and
+one in F65.** Twice a mutant was reported SURVIVED when it was in fact killed:
+the demo harness greps for one expected FAIL: line, and both times the mutation
+was caught by a DIFFERENT assertion than the one named. A demonstration must
+check that the suite went red, not that a particular string did.
+
+**What remains OPEN is the entry's second half**, unchanged and still correct:
+execution is not assertion. `repo.sh` is still not a falsify target, so nothing
+measures whether these 22 functions are *asserted* or merely *run*. That is the
+next step, and it is now safe to take — the entry parked it because mutating
+`repo.sh` would have yielded survivors measuring the absence of a harness. The
+harness exists now.
+
+**A path-shape defect in the new assertions, caught by the arm that exists for
+it.** The first version compared the mount against `$TMP/pathsrc` — the
+UNRESOLVED path. `sync_from_path` calls `resolve_path` before mounting, so the
+mount carries the physical path, and the two differ whenever `TMPDIR` contains a
+symlink. It passed the ordinary suite AND the bash-floor container, and failed
+`suite-symlinked-tmp` — the macOS shape, exactly the class AGENTS.md records
+this repo having paid for twice before.
+
+Fixed with `p_realdir`, deliberately not `readlink -f`: `resolve_path` itself
+uses `readlink -f`, and canonicalising the expected value with the same
+primitive as the code under test is `assert f(x) == f(x)`.
+
+Worth recording because of what it makes the assertion sensitive to. A mutant
+that drops the `resolve_path` call — `real="$src"` — now dies, but **only in the
+symlinked arm**: under an ordinary `TMPDIR` resolved and unresolved are the same
+string, so that mutant is unobservable there by construction, not merely
+unnoticed. Measured both ways: 1 red under a symlinked `TMPDIR`, 0 under an
+ordinary one. That is the clearest demonstration in this file of why the third
+arm is a separate arm.
