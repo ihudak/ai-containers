@@ -306,7 +306,13 @@ else
     # this: actions/checkout clones INSIDE that container, as root, so the
     # clone and the container user already match.
     #
-    # BOTH lines are needed, and the second one's scope is the point. /w alone
+    # The `*` entry is the one that matters, and it SUBSUMES the `/w` above it —
+    # git treats `safe.directory = *` as trusting every directory, so /w is
+    # redundant rather than complementary. It is kept because it states the
+    # mount this container is actually for, and because a future narrowing back
+    # to specific paths starts from it; nothing here depends on it being load
+    # bearing, and an earlier version of this comment claiming "BOTH lines are
+    # needed" was simply wrong. /w alone
     # was written on a macOS host, where the Docker file-sharing layer interposes
     # and the container never sees the host's uid at all; a LINUX host passes the
     # real uid through unchanged, and on 2026-08-29 — this repo's first full

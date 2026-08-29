@@ -143,7 +143,12 @@ done
 [ -n "$_ra_real" ] || { echo "mktemp: no system mktemp found" >&2; exit 127; }
 for _a in "$@"; do
   case "$_a" in
-    -p*|-t*) exec "$_ra_real" "$@" ;;
+    # --tmpdir[=DIR] is the caller naming a directory, exactly like -p, and it
+    # must be treated as one: GNU REFUSES an absolute template alongside it
+    # ("with --tmpdir, it may not be absolute"), so falling into the -* arm and
+    # appending one turns a working call into an error. It matches neither -p*
+    # nor -t* (it begins with two dashes), which is how it reached that arm.
+    -p*|-t*|--tmpdir|--tmpdir=*) exec "$_ra_real" "$@" ;;
     -*)      ;;
     *)       exec "$_ra_real" "$@" ;;
   esac

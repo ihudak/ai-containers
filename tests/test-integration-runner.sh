@@ -37,7 +37,7 @@ RUNNER="$RUN"
 # Without this the only way to test variant resolution would be a full run,
 # which needs a Docker daemon this suite does not have.
 # Same IT_SOURCE_ONLY cut is explained from the other two sides at
-# tests/integration/run.sh:128 and tests/integration/run.sh:785 — an edit
+# tests/integration/run.sh:139 and tests/integration/run.sh:870 — an edit
 # to any of the three should check the other two have not drifted.
 cat > "$TMP/callfn.sh" <<EOF
 #!/usr/bin/env bash
@@ -65,6 +65,11 @@ case "$1 ${2:-}" in
   "ps -aq") exit 0 ;;          # empty list: sweep's while-read loop never fires
   "network ls") exit 0 ;;      # same, for the network-cleanup loop
   "rm -f") exit 0 ;;
+  # it_reclaim_scratch's chown container. Recorded rather than merely tolerated:
+  # the reclaim's whole contract is WHICH image it runs and WHETHER it runs at
+  # all, and neither is observable from the runner's stdout. $FAKE_DOCKER_LOG is
+  # unset for every other caller, so this costs them nothing.
+  run\ *) printf '%s\n' "$*" >> "${FAKE_DOCKER_LOG:-/dev/null}"; exit 0 ;;
   rmi\ *) exit 0 ;;            # $2 is the image tag, not a fixed verb — glob it
   info*) exit 0 ;;             # "docker info" alone leaves a trailing space in $2
   *) echo "fake docker: unexpected call: $*" >&2; exit 99 ;;
@@ -607,6 +612,49 @@ has "$out" 'unknown variant' \
 has "$out" 'no case was selected' \
   && fail "the unknown-variant error must be distinct from the generic zero-selection message -- got: $out" \
   || pass "the unknown-variant error is distinct from the generic zero-selection message"
+
+# ── the ownership reclaim is not the image removal, and must not share its gate ─
+# it_reclaim_scratch hands $IT_SCRATCH back to this uid using an image that is
+# about to disappear. It was written INSIDE the `[[ $v != default && $reuse_image
+# -eq 0 && $keep -eq 0 ]]` block that guards the `docker rmi` — but whether an
+# image was REUSED has nothing to do with whether a case left root-owned files
+# in the scratch dir, and neither does --keep.
+#
+# Both mis-gatings have a consequence, and they differ:
+#   --reuse-image  the variant image is never used for the reclaim, so sweep()
+#                  falls back to $IT_IMAGE — the DEFAULT tag, which a
+#                  `--variant agents` run never built. `docker run` on a missing
+#                  tag does not fail locally, it reaches for the REGISTRY, from
+#                  inside the EXIT trap. (nightly's packages-agents job is
+#                  exactly this shape.)
+#   --keep         nothing is reclaimed at all, so the kept scratch stays
+#                  part root-owned and needs sudo to remove — the same silent
+#                  leak the reclaim exists to end, moved to the kept path.
+#
+# run_it always passes --reuse-image, so these assertions ARE the --reuse-image
+# case; no extra plumbing is needed to reach it.
+RECLAIM_LOG="$TMP/reclaim-docker.log"
+: > "$RECLAIM_LOG"
+out="$(FAKE_DOCKER_LOG="$RECLAIM_LOG" IT_FORCE_CAPS="docker" run_it --tags varsel --variant agents)"
+if grep -q -- "--entrypoint chown" "$RECLAIM_LOG"; then
+  pass "ownership is reclaimed even when the image is reused"
+else
+  fail "ownership is reclaimed even when the image is reused — no chown container ran"
+fi
+# The VARIANT's image, not the default tag: the default may never have been
+# built, and reaching for it is what turns a local cleanup into a registry pull.
+if grep -q "fake-img-agents" "$RECLAIM_LOG"; then
+  pass "the reclaim uses the variant's own image, which is guaranteed to exist"
+else
+  fail "the reclaim uses the variant's own image — got: $(tr '\n' ';' < "$RECLAIM_LOG")"
+fi
+# A missing tag must fail locally rather than fetch and then root-run a
+# third-party image over a host bind mount.
+if grep -q -- "--pull=never" "$RECLAIM_LOG"; then
+  pass "the reclaim never pulls: a missing image fails locally"
+else
+  fail "the reclaim never pulls — got: $(tr '\n' ';' < "$RECLAIM_LOG")"
+fi
 
 rm -f "$CASES/150-variant-agents.sh" "$CASES/151-variant-native.sh" "$CASES/152-variant-default.sh"
 
@@ -1626,6 +1674,12 @@ if grep -q -- "--entrypoint chown fake-variant-img" "$RS_LOG" 2>/dev/null; then
 else
   fail "it_reclaim_scratch chowns through the image it is handed — got: $(tr '\n' ';' < "$RS_LOG")"
 fi
+# An OVER-FIX guard, not evidence the fix works: it holds against the unfixed
+# runner too, because a function that does not exist deletes nothing either. It
+# earns its place by pinning "reclaim ≠ remove" — a later edit that made this
+# function tear the tree down would be caught here and nowhere else — but read
+# it as a bound on the fix's blast radius, not as coverage of the defect. The
+# discriminating assertion for that is the one directly above.
 if [[ -f "$RS_KEEP/x/f" ]]; then
   pass "it_reclaim_scratch leaves the scratch tree in place"
 else

@@ -470,20 +470,40 @@ fi
 PRE_H4="$TMP/pre-h4.sh"
 H4_FIXED="grep -q 'error:.*it-fake-missing-interp'"
 H4_PREFIX=$'ar_has "$out" \'error:   \' && ar_has "$out" \'it-fake-missing-interp\' \\'
+# A SECOND assertion reads the same error value: the dead-container case added
+# later, which requires docker's own message to land ON the error: line. It is
+# unrelated to 9b64bd3 and did not exist when that defect shipped — but it is in
+# the file the reconstruction copies, and it notices an emptied error value just
+# as well, so leaving it in place makes the "defective" copy kill the mutant and
+# the SURVIVED half of this pair unreachable. The reconstruction must model a
+# file where NOTHING asserts the error value, so this line is neutralised too:
+# replaced by `true`, which keeps the `&& t_pass … || t_fail …` continuation
+# that follows it syntactically intact while making it unable to fail.
+#
+# This is faithfulness, not convenience. Were it removed instead, the oracle
+# would differ from the historical file in a second way; were it left, this pair
+# would measure the new assertion rather than the old hole.
+H4_DEAD="grep -q 'error:.*Error response from daemon'"
 h4_damaged=""
 
 build_h4() {
   local -a src=()
-  local i k=-1 n=0 orig
+  local i k=-1 n=0 kd=-1 nd=0 orig
   mapfile -t src < "$CACHE/$TIL_REL"
   for (( i = 0; i < ${#src[@]}; i++ )); do
     case "${src[i]}" in *"$H4_FIXED"*) n=$((n + 1)); k=$i ;; esac
+    case "${src[i]}" in *"$H4_DEAD"*)  nd=$((nd + 1)); kd=$i ;; esac
   done
   if [[ "$n" != "1" ]]; then
     h_fail "#4: the one-line grep 9b64bd3 introduced is present exactly once (got $n)"
     return 1
   fi
+  if [[ "$nd" != "1" ]]; then
+    h_fail "#4: the dead-container error-value assertion is present exactly once (got $nd)"
+    return 1
+  fi
   src[k]="$H4_PREFIX"
+  src[kd]='true \'
   printf '%s\n' "${src[@]}" > "$PRE_H4" || return 1
   h_pass "#4: that one line was reverted to its two-conjunct pre-fix form"
   printf '       %s\n' "$H4_PREFIX"

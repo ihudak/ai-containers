@@ -1123,5 +1123,81 @@ ar_has "$out" 'rc=0' \
   && t_pass "assert_runs returns zero for a working binary" \
   || t_fail "assert_runs returns zero for a working binary (got: $out)"
 
+# ── the resource registry must survive a path with a space in it ──────────────
+# it_track joins resources into one string and it_cleanup iterated it with an
+# UNQUOTED `for r in $_it_resources`, so a tracked path containing a space was
+# split into fragments and neither fragment matched anything removable — the
+# resource leaked, silently, with cleanup reporting nothing.
+#
+# This is not hypothetical for the thing that motivated the registry: several
+# tests now hand it their own $TMP, which comes from `mktemp -d` under $TMPDIR,
+# and a developer whose TMPDIR contains a space (or a macOS path under a volume
+# name with one) gets exactly this. The mechanism the registry REPLACED — a
+# quoted `trap 'rm -rf "$TMP"' EXIT` — did not have the hole, so this was a
+# regression introduced by the cure.
+#
+# Newlines in a path would still defeat it. That is stated rather than fixed:
+# a newline cannot appear in any path this registry is given (they all come from
+# mktemp templates), and a delimiter that survives newlines needs an array,
+# which the registry cannot use while it stays a plain string shared with
+# `it_track`'s callers.
+rr_dir="$TMP/rr sp ace"
+mkdir -p "$rr_dir/inner"
+(
+  # $LIB is this suite's own lib.sh, resolved at run time.
+  # shellcheck disable=SC1090
+  . "$LIB" >/dev/null 2>&1
+  # Sourcing seeds the registry with whatever lib.sh tracks for itself; start
+  # from empty so this asserts on the one resource the test hands it.
+  _it_resources=""
+  it_track "dir:$rr_dir"
+  it_cleanup
+) >/dev/null 2>&1
+if [[ ! -e "$rr_dir" ]]; then
+  t_pass "it_cleanup removes a tracked directory whose path contains a space"
+else
+  t_fail "it_cleanup removes a tracked directory whose path contains a space — it leaked"
+fi
+
+# 5. The DOCKER call itself fails — a dead or removed container. The tool's own
+#    stderr is merged inside the container by the `2>&1` in the exec's script,
+#    but docker's own error is written by the docker CLI on the HOST, outside
+#    that redirect, so a capture that does not also redirect the exec itself
+#    loses it: `out` comes back empty and the dump prints a bare `error:` label
+#    with nothing after it.
+#
+#    That is not a cosmetic loss. The runner's failure report carries a
+#    failure's context by taking the INDENTED lines under its FAIL: (see
+#    tests/integration/run.sh), and the daemon's message is unindented — so it
+#    is dropped there, and it is out of the `tail -40` window behind
+#    it_diagnose's dump. The one line saying why the container was unreachable
+#    reaches no reader at all.
+#
+#    Asserted as ONE grep for the same reason case 3 states: `error:   ` is an
+#    unconditional label lib.sh prints whatever the value is, so a separate
+#    "output mentions the daemon" conjunct would be satisfied by the raw
+#    stderr this test captures with 2>&1 and could not fail.
+AR_DEAD="$TMP/ar-dead"; mkdir -p "$AR_DEAD"
+cat > "$AR_DEAD/docker" <<'FAKE'
+#!/usr/bin/env bash
+# The container is alive for the `command -v` probe and gone by the time the
+# --version run lands — the ordering a real teardown produces, and the only one
+# that reaches the FAILED-TO-RUN branch at all. A fake that failed the probe too
+# would exercise the "not on PATH" branch instead and prove nothing about this.
+case "${*}" in
+  *"command -v"*) exit 0 ;;
+esac
+# Nothing on stdout, the daemon's message on stderr, docker's own non-zero
+# status: what `docker exec` into a removed container actually does.
+printf 'Error response from daemon: No such container: fake-cid\n' >&2
+exit 1
+FAKE
+chmod +x "$AR_DEAD/docker"
+out="$(FAKE_CONTAINER_BIN="$AR_ABSENT" IT_DOCKER_HOST="" PATH="$AR_DEAD:$PATH" \
+        bash -c ". '$LIB'; assert_runs fake-cid $AR_TOOL; printf 'rc=%s\n' \"\$?\"" 2>&1)"
+grep -q 'error:.*Error response from daemon' <<<"$out" \
+  && t_pass "the failure dump carries docker's own error when the exec itself fails" \
+  || t_fail "the failure dump carries docker's own error when the exec itself fails (got: $out)"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
