@@ -5213,7 +5213,7 @@ assumed independent of them.
 
 ---
 
-## F65 — `tests/run-all.sh` decides every verdict in the suite and is asserted on almost not at all — **shim half FIXED 2026-08-29, verdict logic still OPEN**
+## F65 — `tests/run-all.sh` decides every verdict in the suite and is asserted on almost not at all — **FIXED 2026-08-29: shim half by test-run-all-shim.sh, verdict logic by test-run-all.sh**
 
 Found by an adversarial review of v0.9.2 (2026-08-29). `run-all.sh` gained ~140
 lines in that release — a per-test `TMPDIR`, a leaked-temp counter, and a
@@ -5355,3 +5355,57 @@ while the Phase-4-only run on `0a9a129` left eight. That is suggestive of a
 change in between, but no mechanism connects them and the two runs differed in
 more than the commit (whole script versus one phase), so it is recorded as an
 observation rather than a lead.
+
+---
+
+## F65 RESOLUTION — the verdict logic now has a test, and it drives the real runner — **FIXED 2026-08-29**
+
+`tests/test-run-all.sh`. Fifteen assertions over the rules every other result in
+the suite depends on.
+
+**The method is what makes it worth having.** `run-all.sh` resolves its corpus
+from `BASH_SOURCE[0]` and sources nothing, so the test copies the SHIPPED file
+into a scratch `tests/` dir beside a synthetic corpus and runs it there. Not a
+reimplementation of the verdict logic — a copy of the real script, so a change
+to it is a change to what is asserted. It also cannot recurse: this file is
+itself collected by the `test-*.sh` glob, and it never invokes the runner in the
+real tests directory.
+
+**Each planted test is one verdict vector**, and the two that matter most are
+those where the exit status and the truth disagree — both are "green" to
+anything reading only `$?`:
+
+* `FAIL:` printed while exiting 0 → must be FAIL. The historical scorecard
+  (hole #2) names this as the shape `run-all.sh`'s `^FAIL:` guard exists to
+  catch, and puts it OUT of the mutation tier's remit for that reason. So this
+  guard was the only thing between that shape and a false green, and nothing
+  asserted it.
+* exit 0 having asserted nothing → must be FAIL, not PASS.
+
+Also covered: the assertion COUNT on a pass, `SKIP` with its reason, PASS's
+precedence over SKIP for a file that does both, the leaked-temp counter firing
+AND naming the leaker, a tidy test not being reported as leaking, the mixed
+summary tally, and the corpus exit status in both directions.
+
+**Every rule was demonstrated failing**, by mutating the real `run-all.sh` and
+re-running:
+
+| mutation | outcome |
+|---|---|
+| drop the `^FAIL:`-with-rc-0 guard | KILLED — 2 assertions red |
+| drop the assertless guard | KILLED |
+| invert PASS-over-SKIP precedence | KILLED |
+| silence the leak counter | KILLED |
+
+One demonstration is worth recording because it nearly produced a wrong
+conclusion. The first precedence mutant made the PASS branch unreachable for
+EVERY file (`-gt 0` → `-gt 99999`), which trips this file's own scaffold check
+and exits before the precedence assertion is ever reached — reporting SURVIVED
+for an assertion that is in fact discriminating. A precise mutant that inverts
+precedence only for files carrying both markers kills it immediately. **A
+mutation broad enough to break the harness measures the harness, not the rule.**
+
+`run-all.sh` remains outside the falsify tier by design
+(`tests/falsify/targets.conf:277`, as the instrument the tier measures with), so
+this file is the only coverage it will ever have. That is why the mutation
+demonstrations above are recorded here rather than left as a one-off.
