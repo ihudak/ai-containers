@@ -15,6 +15,12 @@
 #   --max-unproven-pct N    fail the run when more than N% of mutants produced
 #                           no verdict. Opt-in: an UNPROVEN mutant is machine
 #                           state, so only the REFERENCE environment sets it.
+#   FALSIFY_BASELINE_ATTEMPTS=N   how many times the PRISTINE baseline may be
+#                           re-run when the oracle reports it could not SET
+#                           ITSELF UP (default 3). Environment only — there is no
+#                           flag. ONLY that channel is retried: an oracle that
+#                           goes red with a FAIL: line is a statement about the
+#                           code and is taken at its word on the first attempt.
 #   --controls N            interleave N PRISTINE oracle runs per target, in real
 #                           worker slots, under the same load as the mutants
 #                           around them. A control that FAILS means the oracle
@@ -41,6 +47,16 @@
 #   TARGET|<target>|<oracle>|<total>|<killed>|<survived>|<unproven>|<timeouts>|<ms>
 #   TOTAL|<targets>|<total>|<killed>|<survived>|<unproven>|<timeouts>|<unresolved-pct>|<ms>
 #   ASSERTLESS|<kills-with-no-failline>|<killed>
+#   CONTROL|PASS\x7cFAIL|<target>|<oracle>|<n>|<signal>|<ms>
+#   CONTROLS|<controls-run>|<controls-failed>
+#   SKIPPED|<target>|<oracle>|<mutants-not-attempted>|<reason>
+#   UNATTEMPTED|<skipped-targets>|<skipped-mutants>|<mutants-generated>
+#
+#   <reason> on SKIPPED is one of: no-test-matched (the oracle name matched no
+#              test at all), baseline-scaffold (the oracle could not SET ITSELF
+#              UP, FR_BASELINE_ATTEMPTS times running — the environment), or
+#              baseline-not-green (it ran and went red — the oracle). The three
+#              send a reader to three different places and must not be collapsed.
 #
 #   identity   <file>:<operator>:<sha1-of-trimmed-original-line> — the ledger
 #              identity, NEVER file:line, because a line number changes on every
@@ -83,6 +99,15 @@
 #
 # MUTANT lines stream in COMPLETION order, so with --jobs > 1 they are not
 # ordered. Each line is self-describing; sort downstream if order matters.
+#
+# ── end of --help ─────────────────────────────────────────────────────────────
+# Everything below this line is design rationale for a reader of the source, not
+# reference material for a caller, and fr_usage stops here. It stops on THIS
+# MARKER rather than on a line number: `sed -n '2,60p'` was the previous rule,
+# the block grew past it, and --help ended mid-sentence on "They are one
+# invocation, not several: a" while four emitted record types sat below the cut
+# undocumented. A number cannot notice that it has gone stale; a marker moves
+# with the text it delimits.
 #
 # ── ISOLATION: THE WORKING TREE IS NEVER MUTATED ──────────────────────────────
 # This is the single most damaging thing this harness could get wrong, so it is
@@ -1521,7 +1546,7 @@ fr_load_targets() {
   return 0
 }
 
-fr_usage() { sed -n '2,60p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+fr_usage() { sed -n '2,/^# ── end of --help/p' "${BASH_SOURCE[0]}" | sed '$d; s/^# \{0,1\}//'; }
 
 # ── main ──────────────────────────────────────────────────────────────────────
 falsify_main() {

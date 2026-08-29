@@ -46,7 +46,7 @@ check() {   # <label> <expected> <actual>
 
 if [[ ! -f "$RUN" ]]; then
   fail "tests/falsify/run.sh exists"
-  printf '\n%d failure(s)\n' "$fails"; exit "$fails"
+printf '\n%d failure(s)\n' "$fails"; exit "$fails"
 fi
 pass "tests/falsify/run.sh exists"
 bash -n "$RUN" && pass "run.sh parses" || fail "run.sh parses"
@@ -2089,5 +2089,37 @@ check "an unparseable performance-core count is ignored"    "18" "$(cpu_budget 1
 # It NARROWS only. A perflevel larger than the reported count (a machine nobody
 # has met yet, or a stub) cannot hand out workers the OS did not report.
 check "the performance-core count never widens the budget"  "8"  "$(cpu_budget 8 16)"
+
+# ── §18. --help documents every record the runner actually emits ─────────────
+# THE OUTPUT FORMAT IS A STATED CONTRACT -- the block is headed "parse THIS, not
+# stderr", and check-ledger.sh, verify-on-host.sh and this file all parse those
+# records positionally. It had drifted: CONTROL, CONTROLS, SKIPPED and
+# UNATTEMPTED were all being emitted and none was listed, because fr_usage cut
+# the block at a hardcoded line 60 that the text had grown past -- so --help
+# ended mid-sentence and the four sat below the cut, undocumented and unnoticed.
+#
+# DERIVED FROM THE SOURCE, not from a second list. A hand-maintained list of
+# expected record types is a third thing to keep in sync and would have drifted
+# exactly as the first two did; this reads what the runner PRINTS and requires
+# --help to mention it. A new record type therefore fails here on the commit
+# that introduces it.
+help_out="$(bash "$RUN" --help 2>&1)"
+[[ -n "$help_out" ]] \
+  && pass "--help prints something at all" \
+  || fail "--help prints something at all"
+# The truncation itself, asserted: the block's last line is a whole sentence.
+[[ "$help_out" == *"sort downstream if order matters."* ]] \
+  && pass "  … and reaches the END of the usage block rather than stopping mid-sentence" \
+  || fail "  … and reaches the END of the usage block — got last line: $(tail -1 <<<"$help_out")"
+# And it must STOP there: everything below the marker is design rationale, and
+# dumping the whole 157-line header would be the opposite failure.
+! grep -q 'ISOLATION: THE WORKING TREE IS NEVER MUTATED' <<<"$help_out" \
+  && pass "  … and stops at the marker rather than dumping the design notes" \
+  || fail "  … and stops at the marker rather than dumping the design notes"
+undocumented=""
+while IFS= read -r rec; do
+  grep -q "^  *${rec}|" <<<"$help_out" || undocumented="${undocumented:+$undocumented }$rec"
+done < <(grep -oE "printf '[A-Z]+\|" "$RUN" | sed "s/printf '//; s/|//" | sort -u)
+check "every record type the runner emits is documented in --help" "" "$undocumented"
 
 printf '\n%d failure(s)\n' "$fails"; exit "$fails"

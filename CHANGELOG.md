@@ -6,6 +6,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### `--help` truncated at a line number, and four record types sat below the cut
+
+`fr_usage` was `sed -n '2,60p'`. The header block it prints has grown to 157
+lines, so `--help` ended **mid-sentence** — on *"They are one invocation, not
+several: a"* — and everything past the cut was invisible to a caller.
+
+What was past the cut mattered. The block is headed **"the output format (parse
+THIS, not stderr)"**, and `CONTROL`, `CONTROLS`, `SKIPPED` and `UNATTEMPTED` were
+all being emitted and none of the four was listed. `check-ledger.sh`,
+`verify-on-host.sh` and the tests parse those records positionally, so this is a
+stated contract that had drifted, not a formatting nicety. `SKIPPED`'s `<reason>`
+field is documented with all three of its values, because
+`no-test-matched` / `baseline-scaffold` / `baseline-not-green` send a reader to
+three different places.
+
+`FALSIFY_BASELINE_ATTEMPTS` is documented too — an environment-only knob with no
+flag, previously discoverable only by reading the source.
+
+**The cut is now a marker, not a number.** A line number cannot notice it has
+gone stale; a marker moves with the text it delimits.
+
+**And the drift is now guarded, by derivation rather than by a second list.**
+A hand-maintained list of expected record types would be a third thing to keep
+in sync and would drift exactly as the other two did. The check reads what the
+runner *prints* — every `printf 'X|'` in the source — and requires `--help` to
+mention it, so a new record type fails on the commit that introduces it. It also
+pins both edges: the help must reach the end of the usage block, and must stop
+at the marker rather than dumping the design notes. Demonstrated against the
+unfixed runner: it reports the mid-sentence last line verbatim and names all four
+missing types.
+
 ### A capability probe that said yes on the platform it was protecting
 
 `tests/test-run-all-shim.sh` gates its GNU long-option assertions on
