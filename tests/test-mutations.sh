@@ -253,7 +253,18 @@ fi
 # `verify` must be able to FAIL. Point it at a mutations dir holding a patch
 # that cannot apply, and require a non-zero exit — otherwise "all patches apply"
 # above is being reported by a command incapable of saying otherwise.
-tmp="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; trap 'rm -rf "$tmp"' EXIT
+# BOTH SCRATCH DIRS, IN ONE TRAP. Bash keeps exactly ONE EXIT handler, so a
+# second `trap ... EXIT` REPLACES the first rather than adding to it -- and this
+# one used to name only "$tmp", silently discarding the handler installed for
+# $stale_root two hundred lines above. The result was a directory leaked on
+# every run of this file, PASSING runs included: measured 2026-08-29, one clean
+# `bash tests/test-mutations.sh` (rc=0) left one `.git+target.txt+tests` tree in
+# the user's temp dir, and 281 of the 337 stale directories found on that host
+# carried exactly that signature. This file is also the oracle for the
+# tests/integration/mutate.sh falsify target, so a single corpus run invoked it
+# ~63 times and leaked ~63 of them. Extending the list is the same shape
+# ai-containers-report.sh already uses for its second trap.
+tmp="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; trap 'rm -rf "$stale_root" "$tmp"' EXIT
 mkdir -p "$tmp/tests/integration/mutations"
 cp "$MUTATE" "$tmp/tests/integration/mutate.sh"
 cat > "$tmp/tests/integration/mutations/bogus.patch" <<'EOF'

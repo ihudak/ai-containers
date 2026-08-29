@@ -372,7 +372,17 @@ fx_run() {   # <runner> <conf> <repo> <witness> [args…]
   local has_timeout=0 a
   for a in "$@"; do [[ "$a" == "--timeout" ]] && has_timeout=1; done
   (( has_timeout )) || set -- "$@" --timeout "${FX_TIMEOUT:-300}"
-  FALSIFY_REPO="$repo" FALSIFY_CONF="$cnf" \
+  # TMPDIR INTO THIS TEST'S OWN SCRATCH, which this file's EXIT trap removes.
+  # Several cases below SIGKILL an oracle on purpose (the --timeout 1 path, the
+  # stale-watchdog cases), and a SIGKILLed `tests/run-all.sh` cannot run its own
+  # EXIT trap -- so it orphans the per-test log it had just created. Measured
+  # 2026-08-29: three such logs per run of this file, left in the user's temp
+  # directory forever. They are not a cleanup defect in the driver (a normal
+  # exit removes the log; only the kill does not), so the cure is CONTAINMENT
+  # rather than another trap: run-all.sh creates that log with an explicit
+  # ${TMPDIR}-rooted template, so pointing TMPDIR here puts every orphan inside
+  # a directory that goes when this file does.
+  FALSIFY_REPO="$repo" FALSIFY_CONF="$cnf" TMPDIR="$TMP" \
   FX_WITNESS="$wit" FX_ORIGIN="$repo/fixture-lib.sh" \
     bash "$runner" "$@" > "$TMP/stdout" 2> "$TMP/stderr"
   FX_RC=$?
