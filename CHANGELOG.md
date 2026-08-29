@@ -6,6 +6,65 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### A capability probe that said yes on the platform it was protecting
+
+`tests/test-run-all-shim.sh` gates its GNU long-option assertions on
+`/usr/bin/mktemp --tmpdir -u` exiting 0. **BSD exits 0 there** — it treats `--`
+as the end-of-options marker, shrugs, and prints an ordinary path — so on a stock
+macOS the probe reports "GNU long options supported" and four `--suffix`
+assertions then run against an option BSD does not have. Measured 2026-08-29:
+both failed with `mktemp: unrecognized option` in Phase 5 on this host while the
+whole file passed on Linux. That is this repo's most-repeated defect shape, this
+time wearing a capability probe.
+
+Probed by EFFECT now: `--tmpdir=DIR` must actually place the path in `DIR`, and
+`--suffix` must be accepted. BSD satisfies neither, GNU both, and nothing in
+between is read as a yes.
+
+### A collapse that also asserted was reported as the environment
+
+`FALSIFY_SIGNAL` is built **additively** — `falsify_verdict` appends `failline`
+and then appends `scaffold` on top of it — so `exit+failline+scaffold` is an
+ordinary value rather than a contradiction. The baseline retry added in v0.9.2
+tested for `scaffold` alone at all three of its sites, which reads a run that
+**did** observe an assertion failing as one that observed nothing.
+
+It bites on the oracle **sets**. `tests/lib-verify-repo.sh` names three tests run
+as one `run-all.sh` invocation into one log. Let one member go genuinely red
+while another's `mktemp -d` collapses, and both markers land together: the
+baseline is then re-run `FALSIFY_BASELINE_ATTEMPTS` times against a 360-second
+clock, the target is skipped as `baseline-scaffold`, and the run reports "that is
+the ENVIRONMENT rather than the oracle" directly above the excerpt showing the
+assertion that failed. The reader is sent at the machine while the tree is
+broken. Demonstrated against the pre-fix runner: the retry counter reads 3.
+
+This is the rule `falsify_verdict` already applies one channel over, in its own
+words — *"A FAIL: line printed before the signal still wins"*. The scaffold
+channel was the one place it was not applied. `fr_scaffold_only` now states it
+once and all three sites use it.
+
+Checked in the other direction rather than assumed: every real test in the suite
+`exit`s immediately after printing `SCAFFOLD-FAILED:`, so a genuine collapse
+carries no `^FAIL:` line and is still retried. The only files emitting both are
+two fixtures whose baselines are green by construction.
+
+### A one-second clock that only ever measured the machine
+
+Three `--max-unproven-pct` cases ran the slow fixture at `--timeout 1`. The
+mutant `sleep 300`s, so any clock from about 2 to 250 trips it equally — the one
+second was doing nothing for the case and leaving the **baseline** no headroom.
+On a loaded macOS host it went over, which times out the baseline, skips the
+target, and fails the run for a reason having nothing to do with the budget
+under test. Measured 2026-08-29: `control: a run AT the budget passes` reported
+rc=1 in Phase 5 while the same assertion passed 205/205 in the bash-floor
+container minutes later on the same commit. Raised to 5s — 5× the headroom for a
+fixture that needs none, still 60× below the sleep it must catch.
+
+### An assertion label naming a flag that does not exist
+
+`--baseline-attempts` is not a flag; the knob is the environment variable
+`FALSIFY_BASELINE_ATTEMPTS`. The label now names what a reader can actually set.
+
 ### What an adversarial review of v0.9.2 found
 
 Five defects, all in the release's own new code, plus the first assertion the

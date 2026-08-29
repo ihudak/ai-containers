@@ -91,7 +91,22 @@ fi
 # --tmpdir/--suffix are GNU-only; BSD mktemp (a stock macOS) has neither, so the
 # assertions are gated on the real mktemp actually supporting them rather than
 # failing a correct shim on a platform that cannot express the input.
-if /usr/bin/mktemp --tmpdir -u >/dev/null 2>&1; then
+# PROBED BY EFFECT, NOT BY EXIT STATUS, and the difference is the whole gate.
+# `/usr/bin/mktemp --tmpdir -u` EXITS 0 ON BSD -- it treats `--` as the
+# end-of-options marker, shrugs, and prints an ordinary path -- so an rc-only
+# probe concludes "GNU long options supported" on a stock macOS and then runs
+# four assertions the platform cannot express. Measured 2026-08-29: both
+# `--suffix` cases failed with `mktemp: unrecognized option` in Phase 5 on a Mac
+# while the whole file passed on Linux, which is this repo's most-repeated
+# defect shape wearing a capability probe.
+#
+# So: require --tmpdir=DIR to actually PUT THE PATH IN DIR, and --suffix to be
+# accepted at all. BSD satisfies neither, GNU satisfies both, and nothing in
+# between is silently read as a yes.
+_probe="$(/usr/bin/mktemp -d)"
+if [[ "$(/usr/bin/mktemp --tmpdir="$_probe" -u 2>/dev/null)" == "$_probe"/* ]] \
+   && /usr/bin/mktemp --suffix=.probe -u >/dev/null 2>&1; then
+  rmdir "$_probe" 2>/dev/null || true
   # --tmpdir says "put it in TMPDIR", which is what the shim wants anyway — but
   # GNU REFUSES an absolute template alongside it ("with --tmpdir, it may not be
   # absolute"), so appending one turns a working call into an error. It has to
@@ -127,7 +142,8 @@ if /usr/bin/mktemp --tmpdir -u >/dev/null 2>&1; then
     fail "--suffix=VALUE keeps its suffix and stays steered (rc=$rc, got: $out)"
   fi
 else
-  printf 'SKIP: the GNU long-option assertions — this mktemp has no --tmpdir (BSD)\n'
+  rmdir "$_probe" 2>/dev/null || true
+  printf 'SKIP: the GNU long-option assertions — this mktemp honours neither --tmpdir nor --suffix (BSD)\n'
 fi
 
 # ── 4. a TMPDIR with a trailing slash must not yield a doubled separator ──────
