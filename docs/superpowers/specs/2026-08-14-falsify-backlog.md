@@ -5409,3 +5409,45 @@ mutation broad enough to break the harness measures the harness, not the rule.**
 (`tests/falsify/targets.conf:277`, as the instrument the tier measures with), so
 this file is the only coverage it will ever have. That is why the mutation
 demonstrations above are recorded here rather than left as a one-off.
+
+---
+
+## F66 ADDENDUM — two measurements, one refuted hypothesis, and a narrower question — **OPEN**
+
+2026-08-29, same host, after the entry above.
+
+**Hypothesis tried: `probe_launcher` leaves `$IT_SCRATCH` behind.** It is the one
+place that creates the scratch path outside `run.sh:891` — `mkdir -p
+"$IT_SCRATCH/launcher-probe"` creates `$IT_SCRATCH` as a parent side effect, and
+the probe's own `rm -rf "$d"` removes only the `launcher-probe` child. That
+would produce exactly the observed shape: a directory with no `logs/` in it.
+
+**REFUTED by measurement.** A real run with an image present —
+`run.sh --cases 000-harness-selftest`, which builds the default variant and so
+reaches `detect_caps` twice WITH something to probe against — was watched at
+0.3s resolution while it ran. Exactly **one** directory ever appeared, the run's
+own (`build-default.log logs minimal-sandbox-default.conf saved-allowlists`),
+and the sweep removed it. **Zero left behind.**
+
+A second measurement explains why an earlier `--list-caps` probe showed nothing
+and is worth keeping: with no image built, `detect_caps` reports `netadmin` and
+`launcher` as *undetermined* and never calls `probe_launcher` at all, so that
+code path is unreachable without an image. The first `--list-caps` result was
+therefore not evidence about the probe either way.
+
+**So the ordinary path is clean**, in both configurations that can be tested
+cheaply: the hermetic suite alone leaves zero, and a real build-and-run leaves
+zero.
+
+**The narrower question.** The eight directories carried eight distinct
+`IT_RUN_ID`s, and `IT_RUN_ID` is minted only by `run.sh` itself
+(`run.sh:25`); `lib.sh` refuses to load without one (`:?`). So eight separate
+`run.sh` invocations minted them. A single Phase 4 is one invocation. What is
+still unexplained is what performed the other seven — and the one circumstance
+the two observed bursts share, which no reproduction so far has recreated, is
+that a `tests/run-all.sh` was running CONCURRENTLY with Phase 4 on the same host
+at both moments.
+
+That is stated as the next thing to try, not as a finding: run the hermetic
+suite and a Phase 4 at the same time, with the watcher above running, and see
+whether the bursts reappear.
