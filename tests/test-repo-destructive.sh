@@ -793,6 +793,121 @@ grep -q 'About to remove 2 working-copy volume(s)' "$OUT" \
   && pass "  … and drops to 2 when --unused spares the one in use" \
   || fail "  … and drops to 2 when --unused spares the one in use (got: $(grep -o 'About to remove [0-9]* working-copy' "$OUT"))"
 
+# ── the PRE-CONSENT SUMMARY: what the user is told before typing yes ──────────
+# targets.conf names this as the next slice, from its own measurement: cmd_rm
+# and cmd_gc still carry mutation survivors DESPITE the destructive slices,
+# "because those assertions check what was REMOVED, not what was PRINTED before
+# the removal".
+#
+# For a destructive command the summary IS the consent. A user types `yes` to
+# the list they were shown, not to the argv repo.sh later hands docker, and the
+# two are only the same thing while something checks. Under-report and they
+# consent to less than happens; over-report and they refuse a safe operation.
+# Every assertion below is on the OUTPUT, and the last of them is the one that
+# ties output to action.
+setup_world
+run_repo rm docs --yes
+check "rm of a registered repo succeeds" "0" "$RC"
+grep -q 'About to remove repo "docs"' "$OUT" \
+  && pass "the summary names the repo being removed" \
+  || fail "the summary names the repo being removed (got: $(tr '\n' ' ' < "$OUT"))"
+grep -q -- '- base volume: *ai-containers-repo-docs$' "$OUT" \
+  && pass "the summary names the base volume it will destroy" \
+  || fail "the summary names the base volume it will destroy (got: $(tr '\n' ' ' < "$OUT"))"
+# BOTH copies, not "some". A summary listing one of two is the under-report that
+# makes consent mean the wrong thing, and it is invisible to any assertion that
+# only checks a copy was mentioned.
+for wc in ai-containers-repo-docs--wc-projA ai-containers-repo-docs--wc-projB; do
+  grep -q "^ *$wc\$" "$OUT" \
+    && pass "the summary lists working copy ${wc##*--wc-}" \
+    || fail "the summary lists working copy ${wc##*--wc-} (got: $(tr '\n' ' ' < "$OUT"))"
+done
+grep -q 'UNCOMMITTED' "$OUT" \
+  && pass "the summary warns that working copies may hold uncommitted work" \
+  || fail "the summary warns that working copies may hold uncommitted work"
+# The bystander whose name PREFIXES the subject's. Over-reporting is the other
+# half of a wrong summary: a user shown docs-archive would refuse a safe removal.
+grep -q 'docs-archive' "$OUT" \
+  && fail "the summary must not name the bystander docs-archive (got: $(tr '\n' ' ' < "$OUT"))" \
+  || pass "the summary names no repo other than the one being removed"
+
+# THE ONE THAT TIES THEM TOGETHER. Every volume named in the summary, compared
+# against every volume repo.sh actually asked docker to destroy. Equality is the
+# property that makes the summary consent rather than decoration; either
+# direction failing is a different, and equally real, defect.
+summary_vols() {
+  { sed -n 's/^ *- base volume: *//p' "$OUT"
+    sed -n 's/^ *\(ai-containers-repo-[^ ]*\)$/\1/p' "$OUT"
+  } | sort -u | tr '\n' '|'
+}
+check "the volumes named in the summary are EXACTLY those removed" "$(summary_vols)" "$(removed)"
+
+# A bind-backend repo destroys no volume, and the summary has to say so — the
+# host source is the user's own directory and "removing the repo" must not read
+# as removing it.
+setup_world
+run_repo rm localsrc --yes
+check "rm of a bind-backend repo succeeds" "0" "$RC"
+grep -q 'host source is left untouched' "$OUT" \
+  && pass "the summary states the host source survives a bind-backend removal" \
+  || fail "the summary states the host source survives (got: $(tr '\n' ' ' < "$OUT"))"
+# NOT "nothing was removed": cmd_rm issues `docker volume rm "$vol" || true`
+# unconditionally, which for a bind-backend repo asks docker to remove a volume
+# that does not exist. That is deliberate defensive cleanup — a repo re-registered
+# from volume to bind would otherwise strand its old volume — and asserting
+# "nothing" would pin a bug rather than the behaviour. What must hold is that
+# nothing belonging to ANOTHER repo is touched.
+check "removing a bind-backend repo touches no other repo's volume" "ai-containers-repo-localsrc|" "$(removed)"
+check "the host source directory still exists afterwards" "uncommitted work" "$(cat "$TMP/hostsrc/DIRTY" 2>/dev/null)"
+
+# gc's summary is a COUNT, which is the same promise in a shorter form: the
+# number the user consents to must be the number that goes.
+setup_world
+printf '%s\n' ai-containers-repo-docs--wc-projB > "$INUSE"
+run_repo gc --unused --yes
+check "gc --unused succeeds" "0" "$RC"
+gc_claimed="$(sed -n 's/^About to remove \([0-9]*\) working-copy volume(s).*/\1/p' "$OUT" | head -1)"
+gc_actual="$(sed -n 's/^volume rm //p' "$DOCKER_LOG" | tr ' ' '\n' | grep -c '^ai-containers-repo-')"
+check "the count gc asks consent for is the count it removes" "$gc_claimed" "$gc_actual"
+# `[in use — kept]` is printed only under --unused; without it gc removes in-use
+# copies by design, which is why this arm passes the flag.
+grep -q 'in use — kept' "$OUT" \
+  && pass "gc --unused marks an in-use copy as kept" \
+  || fail "gc --unused marks an in-use copy as kept (got: $(tr '\n' ' ' < "$OUT"))"
+# And keeping it must mean not destroying it — the listing and the action again.
+if grep -q 'volume rm.*docs--wc-projB' "$DOCKER_LOG"; then
+  fail "gc --unused removed the copy it reported as kept"
+else
+  pass "the copy gc reported as kept is not among those removed"
+fi
+
+# ── ERROR PATHS MUST EXIT NON-ZERO ────────────────────────────────────────────
+# Measured 2026-08-30: of repo.sh's 123 surviving mutants, 27 are `return-flip`
+# and the sampled ones are all the same shape — `exit 1` turned into `exit 0` on
+# an argument-validation path, so repo.sh PRINTS "ERROR: unknown flag" and then
+# reports success. Nothing asserted the status of those paths, only the message.
+#
+# That is not cosmetic: a wrapper, a Makefile or a CI step reads $?, not stderr.
+# `repo.sh sync a b || echo failed` stays silent while nothing was synced.
+#
+# This slice exists because the slice targets.conf PRESCRIBED did not work. Its
+# survivor census was by FUNCTION ("cmd_list 15 · list_copies 8 …") and read as
+# "assert what is PRINTED" — but the census by OPERATOR is 54 cond-negate, 35
+# logic-flip, 27 return-flip, 7 cmp-flip and ZERO that damage a printf's text,
+# because the generator has no value-damage operator (hole #4 of the historical
+# scorecard). Asserting the text could not kill them. Asserting the STATUS can.
+for bad in "rm" "sync a b" "reset a b" "gc --repo" "list --nope" "gc --nope"; do
+  setup_world
+  # shellcheck disable=SC2086
+  run_repo $bad
+  if [[ "$RC" -ne 0 ]]; then
+    pass "\`repo.sh $bad\` exits non-zero"
+  else
+    fail "\`repo.sh $bad\` exits 0 despite failing (stderr: $(tr '\n' ' ' < "$ERR"))"
+  fi
+  check "  … and destroys nothing" "" "$(removed)"
+done
+
 # ── sync_from_path: the one function nothing ever executed (backlog F1) ───────
 # Measured 2026-08-29 by instrumenting every function in repo.sh and running the
 # three repo test files: 21 of its 22 functions run. `sync_from_path` was the
