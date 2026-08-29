@@ -1309,14 +1309,26 @@ for v in $(selected_variants $selected); do
       # generous for every real caller and still refuses a runaway.
       awk '
         /^(PASS|FAIL|SKIP):/ { print; ctx = ($0 ~ /^FAIL:/) ? 1 : 0; n = 0; next }
-        # An indented, non-blank line directly under a FAIL: is that failure
-        # explaining itself. Anything else ends the run, so unrelated output
-        # further down the log is never swept in.
+        # An indented, non-blank line under a FAIL: is that failure explaining
+        # itself. CONTEXT_MAX bounds how many are taken, so unrelated output
+        # further down the log cannot be swept in wholesale.
         ctx && /^[[:space:]]+[^[:space:]]/ {
           if (n++ < CONTEXT_MAX) print
           next
         }
-        { ctx = 0 }
+        # AN UNINDENTED LINE DOES NOT END THE RUN, and the producer this block
+        # exists for is why. it_assert_runs prints `FAIL:`, then the output of a
+        # `docker exec ... 2>&1` -- and against a dead container docker prints
+        # `Error response from daemon: ...` UNINDENTED, right between the FAIL:
+        # and the `error:` line that carries the actual reason. Ending the run
+        # there dropped the most informative of the three, in exactly the case a
+        # reader most needs it. CONTEXT_MAX is what bounds this, not the reset:
+        # the runaway that reset was meant to stop is indented anyway (the
+        # trailing dump of a case), so the cap was already doing that work.
+        # NO APOSTROPHES IN THIS COMMENT -- the awk program is single-quoted, so
+        # one would close it and hand the rest to the shell. That is not
+        # hypothetical: it happened while writing this very block, and six
+        # assertions in tests/test-integration-runner.sh went red at once.
       ' CONTEXT_MAX=8 "$log" | sed 's/^/     /'
       # The SAME truncation defect applies one layer down, to it_diagnose's own
       # dump: it prints "── docker logs (last 60) ──" FIRST, then iptables -S,

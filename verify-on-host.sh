@@ -376,19 +376,20 @@ fi
 # here too. The cost is one more suite run; the alternative is a branch nobody
 # can see fail.
 #
-# ON DARWIN IT IS INERT, not merely redundant, and that is worth stating rather
-# than leaving a reader to infer "redundant" means "does the same thing twice".
-# macOS's mktemp IGNORES TMPDIR when given no template and uses the per-user
-# directory from confstr(_CS_DARWIN_USER_TEMP_DIR) — measured:
+# IT WAS INERT ON DARWIN UNTIL run-all.sh LEARNED TO STEER, and this paragraph
+# used to stop at the first half of that. macOS's mktemp IGNORES TMPDIR when
+# given no template, using confstr(_CS_DARWIN_USER_TEMP_DIR) instead — measured:
 #
 #   TMPDIR=/Users/x/tmp-plain mktemp -d
 #   -> /var/folders/w9/…/T/tmp.UuY97xwbZb
 #
-# so the export below steers nothing there. The arm still costs nothing but a
-# suite run, and it is still correct to run it — the point it exists to make is
-# made on Linux, where TMPDIR does steer, and where CI's suite-symlinked-tmp job
-# runs. tests/test-symlinked-tmp-guard.sh measures the same lever and says so
-# when it is absent.
+# so a bare export steered nothing there, and this arm was a second Linux run.
+# It is not any more: run-all.sh now hands every test an explicit
+# $TMPDIR-rooted template through a shim, which is the one form BSD and GNU
+# agree on. The arm reaches macOS, and it immediately earned itself — eleven
+# assertions that had never run under a symlinked TMPDIR on a Mac went red the
+# first time it did. Do not restore the "inert" claim; it describes a mechanism
+# that no longer exists.
 #
 # tests/test-symlinked-tmp-guard.sh is what keeps this honest: it demonstrates
 # that a path-naive comparison fails under the symlinked arm and PASSES under an
