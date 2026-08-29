@@ -323,6 +323,24 @@ exit 1
 SCAFFLAKY
 chmod +x "$FX/tests/test-fx-scafflaky.sh"
 
+# Oracle L — collapses AND asserts, which is what an ORACLE SET looks like when
+# one member's workspace fails while another member is genuinely red. The two
+# lines arrive in one log because the set is one run-all.sh invocation, so
+# FALSIFY_SIGNAL carries `failline` AND `scaffold` together. Retrying that, or
+# calling it the environment, sends the reader at the machine while the tree is
+# broken.
+cat > "$FX/tests/test-fx-scaffold-and-fail.sh" <<'SCAFFAIL'
+#!/usr/bin/env bash
+set -uo pipefail
+n=0
+[[ -f "${FX_SCAF_COUNT:-}" ]] && n="$(cat "$FX_SCAF_COUNT")"
+n=$(( n + 1 )); printf '%s' "$n" > "$FX_SCAF_COUNT"
+printf 'SCAFFOLD-FAILED: chmod +x the recorder: rc=137, NOTHING on stderr\n'
+printf 'FAIL: a genuinely red assertion in another member of the set\n'
+exit 1
+SCAFFAIL
+chmod +x "$FX/tests/test-fx-scaffold-and-fail.sh"
+
 ( cd "$FX" && git init -q -b main . >/dev/null 2>&1 || git init -q . >/dev/null 2>&1
   git add -A && git -c user.email=t@example -c user.name=t commit -qm fixture ) >/dev/null 2>&1
 if ( cd "$FX" && git rev-parse HEAD >/dev/null 2>&1 ); then
@@ -344,6 +362,7 @@ CONF_BLIND="$(conf blind 'fixture-lib.sh|EXECUTED-WHOLE|test-fx-blind.sh')"
 CONF_SIGNAL="$(conf signal 'fixture-lib.sh|EXECUTED-WHOLE|test-fx-signal.sh')"
 CONF_ASSERTLESS="$(conf assertless 'fixture-lib.sh|EXECUTED-WHOLE|test-fx-assertless.sh')"
 CONF_SCAFFLAKY="$(conf scafflaky 'fixture-lib.sh|EXECUTED-WHOLE|test-fx-scafflaky.sh')"
+CONF_SCAFFAIL="$(conf scaffail 'fixture-lib.sh|EXECUTED-WHOLE|test-fx-scaffold-and-fail.sh')"
 # The blind oracle is FIRST deliberately: a runner that ran only the first name
 # would report the fx_bigger mutant SURVIVED, which is exactly the regression
 # this row type exists to make impossible.
@@ -1593,9 +1612,21 @@ grep -q "the cgroup quota allows $host_cpus" <<< "$FX_ERR" \
 # where the reference reports 223 scores exactly as green. Measured, on two
 # machines running the same commit on the same day.
 #
-# The slow fixture at --timeout 1 puts its one mutant at 100% unproven, so the
-# boundary is exact rather than approximate.
-fx_run "$RUN" "$CONF_SLOW" "$FX" "$TMP/wit-unp1" --jobs 1 --timeout 1 --max-unproven-pct 50
+# The slow fixture puts its one mutant at 100% unproven, so the boundary is
+# exact rather than approximate.
+#
+# THE CLOCK IS 5s, NOT 1s, AND THE ONE SECOND WAS A FLAKE THIS SUITE SHIPPED.
+# The mutant `sleep 300`s, so every value from about 2 to 250 trips it equally
+# -- the clock is not what makes this case work. What one second DID do was
+# leave the BASELINE no headroom: it is sub-second unloaded, and on a loaded
+# macOS host (load 5.5, a full verify-on-host.sh plus a second agent) it went
+# over, which times out the baseline, skips the target, and fails the run for a
+# reason having nothing to do with the budget under test. Measured 2026-08-29:
+# `control: a run AT the budget passes` reported rc=1 in Phase 5 on this host
+# while the SAME assertion passed 205/205 in the bash-floor container minutes
+# later, on the same commit. Five seconds is 5x the headroom for a fixture that
+# needs none of it, and still 60x below the sleep it has to catch.
+fx_run "$RUN" "$CONF_SLOW" "$FX" "$TMP/wit-unp1" --jobs 1 --timeout 5 --max-unproven-pct 50
 [[ "$FX_RC" -ne 0 ]] \
   && pass "a run over the unproven budget FAILS, however green its verdicts look" \
   || fail "a run at 100% unproven passed a --max-unproven-pct 50 budget (rc=$FX_RC)"
@@ -1607,13 +1638,13 @@ grep -q 'measured materially less than it appears to' <<< "$FX_ERR" \
   || fail "  … and says what that means (stderr: $FX_ERR)"
 # The control, and it matters: without it every assertion above is satisfied by
 # a runner that fails on --max-unproven-pct unconditionally.
-fx_run "$RUN" "$CONF_SLOW" "$FX" "$TMP/wit-unp2" --jobs 1 --timeout 1 --max-unproven-pct 100
+fx_run "$RUN" "$CONF_SLOW" "$FX" "$TMP/wit-unp2" --jobs 1 --timeout 5 --max-unproven-pct 100
 check "control: a run AT the budget passes (100% against a budget of 100)" "0" "$FX_RC"
 # And absent, the option changes nothing — this is opt-in because a developer
 # host legitimately times out.
 fx_run "$RUN" "$CONF_SLOW" "$FX" "$TMP/wit-unp3" --jobs 1 --timeout 1
 check "control: with no budget given, an unproven run still exits 0" "0" "$FX_RC"
-fx_run "$RUN" "$CONF_SLOW" "$FX" "$TMP/wit-unp4" --jobs 1 --timeout 1 --max-unproven-pct banana
+fx_run "$RUN" "$CONF_SLOW" "$FX" "$TMP/wit-unp4" --jobs 1 --timeout 5 --max-unproven-pct banana
 check "a non-numeric budget is refused (exit 2), not silently ignored" "2" "$FX_RC"
 
 # ── 14e. A CONTROL RUN CATCHES AN ORACLE THAT GOES RED PARTWAY THROUGH ───────
@@ -1689,6 +1720,27 @@ check "  … having emitted no CONTROL|FAIL line" "0" \
   "$(grep -c '^CONTROL|FAIL|' <<< "$FX_OUT")"
 unset FX_FLAKY_FROM FX_FLAKY_COUNT
 
+# ── a collapse that ALSO asserted is not "the environment" ────────────────────
+# FALSIFY_SIGNAL is built additively, so `failline+scaffold` is an ordinary
+# value rather than a contradiction, and a target's oracle field is a SET run as
+# one invocation into one log. One member red plus one member collapsed
+# therefore produces both markers -- and reading only `scaffold` there retries a
+# broken tree FR_BASELINE_ATTEMPTS times and then blames the machine for it.
+# The rule is falsify_verdict's own, one channel over: an assertion that WAS
+# observed failing still wins.
+export FX_SCAF_COUNT="$TMP/scaffail.count"; : > "$FX_SCAF_COUNT"
+FALSIFY_BASELINE_ATTEMPTS=3 fx_run "$RUN" "$CONF_SCAFFAIL" "$FX" "$TMP/wit-scaffail" --jobs 1 --controls 1
+check "a collapse that ALSO printed FAIL: is NOT retried" "1" "$(cat "$FX_SCAF_COUNT")"
+check "  … and is recorded as a red oracle, not as a scaffold skip" "1" \
+  "$(grep -c '^SKIPPED|fixture-lib.sh|test-fx-scaffold-and-fail.sh|[0-9]*|baseline-not-green$' <<< "$FX_OUT")"
+grep -q 'is not green on the PRISTINE tree' <<< "$FX_ERR" \
+  && pass "  … sending the reader at the oracle, which is where the FAIL: line points" \
+  || fail "  … sending the reader at the oracle: $FX_ERR"
+! grep -q 'could not SET ITSELF UP' <<< "$FX_ERR" \
+  && pass "  … and never claiming the environment over the top of an assertion" \
+  || fail "  … and never claiming the environment over the top of an assertion: $FX_ERR"
+unset FX_SCAF_COUNT
+
 # ── a baseline that could not SET ITSELF UP is the environment, not a verdict ──
 # `scaffold` is this runner's word for "the oracle never ran", and falsify_verdict
 # scores a scaffold-failed MUTANT UNPROVEN for exactly that reason. The baseline
@@ -1729,7 +1781,7 @@ check "a baseline that ALWAYS collapses still retires the target" "1" \
 check "  … and the run FAILS rather than reporting a clean corpus" "1" "$FX_RC"
 # THE BOUND, OBSERVED. Without this the loop could be running once, or forever,
 # and every other assertion here would read the same.
-check "  … having tried exactly --baseline-attempts times" "3" "$(cat "$FX_SCAF_COUNT")"
+check "  … having tried exactly FALSIFY_BASELINE_ATTEMPTS times" "3" "$(cat "$FX_SCAF_COUNT")"
 # A DIFFERENT REASON IN THE RECORD, because stderr is what a summary reader
 # filters out and the record is then the only place the two can be told apart.
 check "  … recording it as a SCAFFOLD skip, not as a red oracle" "1" \

@@ -1127,13 +1127,45 @@ fr_oracle_excerpt() {   # <outfile>
 # counter reads ONE for that case. A persistent scaffold failure still skips the
 # target and still fails the run; what changes is that it must be persistent,
 # and that it is then named for what it is.
+# COULD NOT START **AND** ASSERTED NOTHING. Both halves, because
+# FALSIFY_SIGNAL is built ADDITIVELY -- falsify_verdict appends `failline` and
+# then appends `scaffold` on top of it -- so `exit+failline+scaffold` is an
+# ordinary value, not a contradiction. Testing for `scaffold` alone reads a run
+# that DID observe an assertion failing as one that observed nothing.
+#
+# It bites on the ORACLE SETS. tests/lib-verify-repo.sh names three tests
+# (test-lib-verify-repo.sh, test-verify-exit-code.sh, test-layer-containment.sh)
+# run as ONE run-all.sh invocation whose output is one log. Let one member go
+# genuinely red while another's `mktemp -d` collapses, and the log holds a
+# `FAIL:` line and a `SCAFFOLD-FAILED:` line together: the retry below then
+# re-runs all three a further FR_BASELINE_ATTEMPTS-1 times against a 360s clock,
+# and the skip is reported as "the ENVIRONMENT rather than the oracle" directly
+# above the excerpt showing the assertion that failed. The reader is sent at the
+# machine while the tree is broken.
+#
+# This is the same rule falsify_verdict already applies one channel over, for
+# the same reason, in the same words: "A FAIL: line printed before the signal
+# still wins: the assertion WAS observed failing". The scaffold channel was the
+# one place it was not applied.
+#
+# SAFE AGAINST THE OTHER DIRECTION, checked rather than assumed: every real test
+# in this suite `exit`s immediately after printing SCAFFOLD-FAILED:, so a
+# genuine collapse carries NO `^FAIL:` line and is still retried. The only files
+# that emit both are two FIXTURES in tests/test-falsify-run.sh, and both are
+# green on the pristine tree by construction -- their baselines never reach
+# here. (The driver's own `   FAIL  (…)` line has no colon and is not matched by
+# falsify_has_fail_line.)
+fr_scaffold_only() {   # <signal> → 0 when the oracle could not start and asserted nothing
+  [[ "$1" == *scaffold* && "$1" != *failline* ]]
+}
+
 fr_run_baseline() {   # <oracle> — leaves FALSIFY_* set by the LAST attempt
   local oracle="$1" attempt=1 bl
   while :; do
     falsify_run_oracle "$(fr_slot_tree 0)" "$oracle" "$FR_OUT/baseline.log" \
       "$(fr_effective_timeout "$oracle")" "baseline"
     falsify_verdict "$FALSIFY_RC" "$FR_OUT/baseline.log" "$FALSIFY_TIMED_OUT"
-    [[ "$FALSIFY_SIGNAL" == *scaffold* ]] || return 0
+    fr_scaffold_only "$FALSIFY_SIGNAL" || return 0
     (( attempt >= FR_BASELINE_ATTEMPTS )) && return 0
     # NAMED EVERY TIME, even when the retry then succeeds. A scaffold failure
     # that is silently absorbed is a machine getting worse with nothing saying
@@ -1631,7 +1663,7 @@ falsify_main() {
     if [[ "$FALSIFY_VERDICT" != "SURVIVED" ]]; then
       if (( FALSIFY_RC == 2 )); then
         fr_err "oracle '$oracle' matched NO test (run-all.sh exit 2) — a misspelled oracle name would report every mutant of $target as KILLED. Skipping $target."
-      elif [[ "$FALSIFY_SIGNAL" == *scaffold* ]]; then
+      elif fr_scaffold_only "$FALSIFY_SIGNAL"; then
         # A DIFFERENT FINDING FROM A RED ORACLE, and it has to read differently.
         # "not green on the PRISTINE tree" sends a reader to the oracle's code;
         # this one sends them to the machine. Both skip the target, because
@@ -1673,7 +1705,7 @@ falsify_main() {
       # two that were here keep meaning what they meant.
       printf 'SKIPPED|%s|%s|%s|%s\n' "$target" "$oracle" "$skipped_n" \
         "$( if (( FALSIFY_RC == 2 )); then printf 'no-test-matched'
-            elif [[ "$FALSIFY_SIGNAL" == *scaffold* ]]; then printf 'baseline-scaffold'
+            elif fr_scaffold_only "$FALSIFY_SIGNAL"; then printf 'baseline-scaffold'
             else printf 'baseline-not-green'; fi )"
       FR_SKIPPED_TARGETS=$(( FR_SKIPPED_TARGETS + 1 ))
       FR_SKIPPED_MUTANTS=$(( FR_SKIPPED_MUTANTS + skipped_n ))
