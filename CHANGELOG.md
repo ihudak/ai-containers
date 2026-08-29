@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Two things the mgd port found, carried back
+
+- **A fixture path that worked here only by coincidence of layout.** The
+  relocated `cantrun` fixture resolved its sibling as
+  `$ENGINE_DIR/tests/portability.sh`, which is correct here because `tests/`
+  sits under the engine — and wrong in the fork, where `tests/` is at the repo
+  root. There it broke outright: three assertions red, reporting on a generator
+  that had failed to source anything. `$TESTS_DIR/portability.sh` is
+  layout-independent and is what the mirror fixture 70 lines above already uses.
+  **Latent here, not broken** — the demonstration is the fork's run.
+- **A mutant count in prose, which had already gone stale.** The Cadence row
+  said "~10 min over 251 mutants" for long enough that the corpus more than
+  doubled underneath it. It states a *standing property*, so any number in it
+  has to be maintained forever; "the whole corpus" cannot rot. Adopted from the
+  fork, which had it right.
+- Deliberately **not** swept: the other counts in this repo
+  (`the same 264-mutant corpus`, `249 mutants gave 4 unproven`, `97 min over 519
+  mutants on 2026-08-28`) record *what was measured*, and the count is part of
+  the evidence. A number describing what is true now rots; a number describing
+  what was measured then is data.
+
 ### One transient `chmod` retired a target and discarded ninety-seven minutes
 
 A macOS Phase 6 run came back 508 killed, 11 survived, **zero** unproven, with
