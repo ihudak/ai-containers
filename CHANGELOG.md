@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### The last shared scratch namespace in the mutation tier
+
+`falsify_run_oracle` pointed every concurrent worker's `TMPDIR` at one
+`$FR_SCRATCH/tmp`, and `FR_SCRATCH` is a single `mktemp -d` **per run**. Two
+oracles running at `--jobs N` therefore shared one temp namespace — the last
+place in the tier where they could see each other's scratch at all.
+
+F64's addendum named exactly this as "the one shared surface that survives and
+the first place to look if this recurs". Removing it is cheaper than waiting for
+a recurrence to indict it: each invocation now gets `$FR_SCRATCH/tmp/$token`.
+
+**Per invocation, not per slot** — slots are *reused* across mutants, so a
+per-slot directory would still be shared between a timed-out oracle whose
+children outlive the `kill -KILL` and the next mutant dispatched into that slot.
+`fr_token` is unique per invocation; the slot number is not.
+
+**This does not close F64, and is not written up as if it did.** A deliberate
+reproduction was run first — both rootings reverted so the flat `/tmp` of all
+five sightings was restored, three runs at `--jobs 12` with `--controls 6`
+against the target that failed — and it produced **0 `dir=n` and 0 control
+failures**. The flat namespace alone did not trigger it. That is a negative
+result recorded in the entry, not evidence of a fix: the sightings were on Linux
+CI, this attempt was on macOS, and three runs is a small sample against a
+failure seen about once in several days. The entry stays OPEN.
+
 ### F66 — a capability probe littered the developer's real cache, one directory per call
 
 `probe_launcher` needs a directory to hold a single `docker` symlink for `PATH`.

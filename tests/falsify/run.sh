@@ -842,9 +842,28 @@ falsify_run_oracle() {   # <tree> <oracle-set> <outfile> <timeout-seconds> [<lab
   # produces exactly that on every timeout, 548 mutants at a time, into the
   # DEVELOPER'S temp directory. Rooting it here makes fr_cleanup's `rm -rf
   # "$FR_SCRATCH"` the backstop that the kill removed.
-  mkdir -p "$FR_SCRATCH/tmp" 2>/dev/null || true
+  #
+  # PER INVOCATION, NOT PER RUN — backlog F64. `$FR_SCRATCH/tmp` alone is ONE
+  # directory shared by every concurrent worker, because FR_SCRATCH is a single
+  # `mktemp -d` per run. That is the last shared scratch namespace in the tier,
+  # and it is the exact shape five `dir=n` sightings describe: a fixture's whole
+  # `mktemp -d` directory gone out from under a control that was still using it,
+  # while parallel oracles shared one flat namespace.
+  #
+  # The F64 addendum established that every sighting predates the rooting that
+  # nests per RUN, and named this as "the one shared surface that survives and
+  # the first place to look if this recurs". Removing it is cheaper than waiting
+  # for a recurrence to indict it: two oracles now cannot see each other's
+  # temp namespace at all, so the collision has nowhere left to happen.
+  #
+  # $token is unique to THIS invocation (fr_token), which is what the slot
+  # number is not: slots are REUSED across mutants, so a per-slot directory
+  # would still be shared between a timed-out oracle whose children outlive the
+  # kill and the next mutant dispatched into that slot.
+  local otmp="$FR_SCRATCH/tmp/$token"
+  mkdir -p "$otmp" 2>/dev/null || true
   set -m
-  ( cd "$tree" && export TMPDIR="$FR_SCRATCH/tmp" && exec bash "$FR_DRIVER_REL" -v "${onames[@]}" ) >"$out" 2>&1 &
+  ( cd "$tree" && export TMPDIR="$otmp" && exec bash "$FR_DRIVER_REL" -v "${onames[@]}" ) >"$out" 2>&1 &
   pid=$!
   ( # Returns the moment the oracle exits, so this watchdog is never stale for
     # more than a second — and a pid cannot be recycled into another worker's

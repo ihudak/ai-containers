@@ -5301,6 +5301,36 @@ launch; `rm -rf` only in `fr_cleanup` at the end), so it is not a live
 candidate, but it is the one shared surface that survives and the first place
 to look if this recurs.
 
+
+**REPRODUCTION ATTEMPT 2026-08-29 — NEGATIVE, and the shared surface removed anyway.**
+
+The flat namespace was deliberately restored — both rootings reverted in a
+scratch tree, so oracles and their `run-all.sh` invocations shared one `/tmp`
+exactly as they did at `189ebda` — and the tier run three times at `--jobs 12`
+with `--controls 6` against `tests/portability.sh`, the target that failed.
+
+**Result: 0 `dir=n`, 0 control failures, three for three.** The flat namespace
+alone did not trigger it.
+
+Read this narrowly. It does not exonerate the flat namespace and it does not
+identify anything: the five sightings were on **Linux CI**, this attempt was on
+macOS, where fork and filesystem behaviour differ; and three attempts is a small
+sample against a failure seen roughly once in several days. Per this entry's own
+rule — *"If it does not recur, that is weak evidence, not a fix"* — the entry
+stays **OPEN**.
+
+What did change is the surface named above. `$FR_SCRATCH/tmp` is no longer
+shared: `falsify_run_oracle` gives each invocation `$FR_SCRATCH/tmp/$token`.
+Per INVOCATION rather than per slot, deliberately — slots are reused across
+mutants, so a per-slot directory would still be shared between a timed-out
+oracle whose children outlive the `kill -KILL` and the next mutant dispatched
+into that slot. This is removal of a wrong shared namespace, not a fix for
+`dir=n`; nothing here licenses closing this entry.
+
+**The reproduction that would still be worth running is on a Linux HOST** — CI's
+falsify job is `runs-on: ubuntu-24.04` with no `container:`, so all five
+sightings had the runner's real `/tmp`. A container would supply its own and
+change the thing under test.
 ---
 
 ## F66 — a Phase 4 run leaves empty `IT_RUN_ID`-shaped directories in the real cache — **FIXED 2026-08-29: `probe_launcher` hung its PATH dir off `$IT_SCRATCH`**
