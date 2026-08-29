@@ -6,6 +6,52 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### The suite now contains its own temp, and the macOS TMPDIR arm finally reaches it
+
+Two problems, one mechanism, and they turned out to be the same problem seen
+from opposite ends.
+
+**Leaks.** The four fixed in the previous entry were found by hand, and only two
+of them were reviewable in principle — a `trap … EXIT` silently replaced by a
+later one leaves no trace at the call site, and in one case the replacing trap
+was in a different file entirely. The fifth would arrive the same way.
+
+**The symlinked-`TMPDIR` arm.** `verify-on-host.sh` Phase 5 and CI's
+`suite-symlinked-tmp` job re-run the suite with `TMPDIR` pointed at a **symlink**
+to catch the macOS path-shape class (`/var/folders` vs `/private/var/folders`)
+that has cost this repo 22 assertions across two increments. On Linux it works.
+On a Mac it largely did not: a bare `mktemp` honours `$TMPDIR` on GNU and
+**ignores** it on BSD, where the per-user directory comes from `confstr` and no
+environment variable reaches it. Measured 2026-08-29 by instrumenting every
+call: of 60 tests, **zero** honoured a symlinked `TMPDIR` fully, **53 ignored it
+entirely**, and **622 of 834 calls escaped** to `/var/folders`. The arm that
+exists *because CI is not a Mac* was, on a Mac, mostly a second ordinary run.
+
+`run-all.sh` now gives each test its own `TMPDIR` under one scratch root it
+removes at exit, and generates a `mktemp` shim on `PATH` that supplies an
+explicit `$TMPDIR`-rooted template when the caller gives none — so BSD and GNU
+agree, the per-test directory is genuinely reached, and what a test forgets goes
+with the run either way.
+
+**It contains; it does not judge.** Nothing here fails a test for leaking. Every
+falsify oracle is `tests/run-all.sh <name>`, so a test turned red by its own
+untidiness would score as the mutation being noticed — a false `KILL`, which is
+exactly what the survivor ledger exists to prevent.
+
+**The shim is generated, not committed**, because a tracked file named `mktemp`
+has no `.sh` suffix and every gate here discovers scripts by that suffix
+(`git ls-files '*.sh'`) — it would have escaped `bash -n`, the dialect linter and
+shellcheck alike.
+
+**And the arm immediately earned itself.** Handing tests a real `TMPDIR` on macOS
+broke ten assertions in `test-extract-discovery.sh` and one in
+`test-integration-shim.sh` — because **macOS exports `TMPDIR` with a trailing
+slash**, so `"${TMPDIR}/x"` yields `//x`. `extract-discovery.sh` canonicalises
+the path it prints while the assertion holds the raw value, and the two compare
+unequal. That is precisely the path-shape class the arm was built for, invisible
+until tests actually received a `TMPDIR`. Stripped once in `run-all.sh`, so every
+path it hands out is already clean.
+
 ### Four tests left a temp directory behind on every PASSING run
 
 A macOS host had accumulated **447 stale entries in the user temp directory**,
