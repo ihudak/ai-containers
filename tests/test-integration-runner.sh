@@ -1373,5 +1373,161 @@ else
   fail "--dry-run touches no docker — it invoked the daemon"
 fi
 
+# ── it_remove_scratch: the sweep must be able to remove what ROOT left ────────
+# A case's container runs as root, and `docker exec` defaults to root too, so a
+# root-owned DIRECTORY can appear inside $IT_SCRATCH — which is bind-mounted
+# from the host and swept by the non-root user who launched the run. Unlinking
+# a file needs write permission on its PARENT, so one such directory makes its
+# whole subtree unremovable: `rm -rf` prints "Permission denied" per entry,
+# leaves everything above it on disk, and the run still exits 0. Measured on
+# 2026-08-29: case 700 execs `graphify --version` as root, CPython writes
+# `__pycache__/` as root into the uid-1000 group tree, and two such directories
+# survived every sweep.
+#
+# The failure is invisible on macOS — Docker's file-sharing layer never gives
+# the container the host's uid — and free in CI, where the whole VM is
+# discarded. A Linux host is the first place it can be seen at all, which is
+# why it went unnoticed until this repo was run on one.
+#
+# The stuck tree here is simulated with `chmod 500` rather than a real
+# root-owned directory: it is the same SHAPE (a directory whose contents this
+# uid cannot unlink) and it needs no root, so this stays a hermetic test.
+RS_LOG="$TMP/rs-docker.log"
+
+mk_stuck() {   # <dir> — a tree whose inner directory blocks its own removal
+  mkdir -p "$1/pkg/__pycache__"
+  echo bytecode > "$1/pkg/__pycache__/a.pyc"
+  chmod 500 "$1/pkg/__pycache__"
+}
+# The scratch dirs outlive an assertion when the fix is absent, and the EXIT
+# trap's `rm -rf "$TMP"` cannot clear them either — so unstick them by hand.
+unstick() { chmod -R u+rwX "$1" 2>/dev/null || true; }
+
+# A docker that RECORDS every call and repairs the tree, standing in for what a
+# real root container achieves by handing ownership back.
+RS_BIN_OK="$TMP/rs-bin-ok"; mkdir -p "$RS_BIN_OK"
+cat > "$RS_BIN_OK/docker" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$RS_LOG"
+# Mimic the real escalation's EFFECT: whatever it was asked to do to the
+# mounted directory, the tree is this uid's to delete afterwards.
+for a in "$@"; do
+  case "$a" in
+    *:/scratch) chmod -R u+rwX "${a%%:*}" 2>/dev/null ;;
+  esac
+done
+exit 0
+FAKE
+chmod +x "$RS_BIN_OK/docker"
+
+# A docker that records and does nothing — the image is gone, or the daemon is
+# unreachable. The function must still not be fatal.
+RS_BIN_NOOP="$TMP/rs-bin-noop"; mkdir -p "$RS_BIN_NOOP"
+cat > "$RS_BIN_NOOP/docker" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$RS_LOG"
+exit 1
+FAKE
+chmod +x "$RS_BIN_NOOP/docker"
+
+# 1. An ordinary tree: removed, and NO container is started for it. Without
+#    this, a fix that shells out to docker on every sweep would pass the two
+#    below while adding a container run to every green run.
+: > "$RS_LOG"
+RS_PLAIN="$TMP/rs-plain"; mkdir -p "$RS_PLAIN/a/b"; echo x > "$RS_PLAIN/a/b/f"
+RS_LOG="$RS_LOG" PATH="$RS_BIN_OK:$PATH" "$TMP/callfn.sh" it_remove_scratch "$RS_PLAIN" >/dev/null 2>&1
+if [[ ! -e "$RS_PLAIN" ]]; then
+  pass "it_remove_scratch removes an ordinary scratch tree"
+else
+  fail "it_remove_scratch removes an ordinary scratch tree"
+fi
+if [[ ! -s "$RS_LOG" ]]; then
+  pass "it_remove_scratch starts no container when plain rm -rf suffices"
+else
+  fail "it_remove_scratch starts no container when plain rm -rf suffices — got: $(tr '\n' ';' < "$RS_LOG")"
+fi
+
+# The two blocks below need a NON-ROOT uid and say so rather than running
+# vacuously. `chmod` does not constrain uid 0: as root the "stuck" tree is
+# removed by the very first `rm -rf`, the escalation never runs, and the
+# assertions either fail or — worse — pass having observed nothing. There is no
+# root-proof substitute: the immutable attribute would need
+# CAP_LINUX_IMMUTABLE, which is not in Docker's default capability set.
+#
+# So they run wherever this suite runs as a normal user — every developer host,
+# CI's `suite` and `suite-symlinked-tmp` arms — and skip in the one arm that is
+# root, `suite-floor`, which runs inside a container where actions/checkout has
+# already made the whole tree root-owned. run-all.sh gives PASS precedence over
+# SKIP, so this file still reports its real assertion count; the SKIP: line is
+# there to make the gap legible in the log rather than silent.
+if [[ "$(id -u)" -eq 0 ]]; then
+  printf 'SKIP: the stuck-tree assertions need a non-root uid — chmod does not constrain root\n'
+else
+
+# 2. A stuck tree: the escalation runs, is scoped to THAT directory, and the
+#    tree is gone afterwards.
+: > "$RS_LOG"
+RS_STUCK="$TMP/rs-stuck"; mk_stuck "$RS_STUCK"
+RS_LOG="$RS_LOG" PATH="$RS_BIN_OK:$PATH" "$TMP/callfn.sh" it_remove_scratch "$RS_STUCK" >/dev/null 2>&1
+if [[ ! -e "$RS_STUCK" ]]; then
+  pass "it_remove_scratch removes a tree a plain rm -rf cannot"
+else
+  fail "it_remove_scratch removes a tree a plain rm -rf cannot — $RS_STUCK survived"
+fi
+if grep -q -- "$RS_STUCK:/scratch" "$RS_LOG" 2>/dev/null; then
+  pass "the escalation mounts exactly the scratch dir it was given"
+else
+  fail "the escalation mounts exactly the scratch dir it was given — got: $(tr '\n' ';' < "$RS_LOG")"
+fi
+unstick "$RS_STUCK"
+
+# 3. The escalation itself fails (no image, no daemon). Never fatal — a sweep
+#    that aborts the script would lose the exit status the whole run is FOR —
+#    but it must SAY the path, because silence here is a leak nobody can find.
+: > "$RS_LOG"
+RS_LOUD="$TMP/rs-loud"; mk_stuck "$RS_LOUD"
+rs_out="$(RS_LOG="$RS_LOG" PATH="$RS_BIN_NOOP:$PATH" "$TMP/callfn.sh" it_remove_scratch "$RS_LOUD" 2>&1)"; rs_rc=$?
+if [[ "$rs_rc" -eq 0 ]]; then
+  pass "it_remove_scratch is non-fatal when the escalation fails"
+else
+  fail "it_remove_scratch is non-fatal when the escalation fails — exited $rs_rc"
+fi
+if grep -qF "$RS_LOUD" <<<"$rs_out"; then
+  pass "an unremovable scratch dir is reported by path"
+else
+  fail "an unremovable scratch dir is reported by path — said: $rs_out"
+fi
+unstick "$RS_LOUD"
+
+fi   # non-root only
+
+# ── it_reclaim_scratch: ownership has to come back BEFORE the image goes ──────
+# The variant loop discards each non-default image as soon as its cases are
+# done, so by sweep() time a `--variant agents` run — how nightly invokes the
+# packages tier — has no image left to start the recovery container from. The
+# reclaim therefore runs inside the loop, against the variant's own image,
+# while it still exists.
+: > "$RS_LOG"
+RS_KEEP="$TMP/rs-keep"; mkdir -p "$RS_KEEP/x"; echo y > "$RS_KEEP/x/f"
+RS_LOG="$RS_LOG" PATH="$RS_BIN_OK:$PATH" \
+  "$TMP/callfn.sh" it_reclaim_scratch fake-variant-img "$RS_KEEP" >/dev/null 2>&1
+if grep -q -- "--entrypoint chown fake-variant-img" "$RS_LOG" 2>/dev/null; then
+  pass "it_reclaim_scratch chowns through the image it is handed"
+else
+  fail "it_reclaim_scratch chowns through the image it is handed — got: $(tr '\n' ';' < "$RS_LOG")"
+fi
+if [[ -f "$RS_KEEP/x/f" ]]; then
+  pass "it_reclaim_scratch leaves the scratch tree in place"
+else
+  fail "it_reclaim_scratch leaves the scratch tree in place — it deleted something"
+fi
+# Non-fatal: this runs mid-loop, where a failure must not take the run with it.
+if RS_LOG="$RS_LOG" PATH="$RS_BIN_NOOP:$PATH" \
+     "$TMP/callfn.sh" it_reclaim_scratch fake-variant-img "$RS_KEEP" >/dev/null 2>&1; then
+  pass "it_reclaim_scratch is non-fatal when docker fails"
+else
+  fail "it_reclaim_scratch is non-fatal when docker fails"
+fi
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

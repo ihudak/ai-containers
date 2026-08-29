@@ -718,6 +718,73 @@ ensure_caps_image() {  # $@=selected case files
 }
 
 # ── Teardown ────────────────────────────────────────────────────────────────────
+# ── removing the scratch dir, INCLUDING whatever ran as root inside it ────────
+# $IT_SCRATCH is a HOST directory bind-mounted into containers that run as root
+# — and `docker exec` defaults to root too — so a case can leave a root-owned
+# DIRECTORY behind in it. Unlinking a file needs write permission on its
+# PARENT, so one such directory makes its whole subtree unremovable by the
+# non-root user sweeping it: `rm -rf` prints "Permission denied" per entry,
+# leaves everything above it on disk, and the run still exits 0. Measured
+# 2026-08-29: case 700 execs `graphify --version`, which is Python, so CPython
+# writes `__pycache__/` as root into the uid-1000 group tree — two such
+# directories per run, surviving every sweep.
+#
+# Only a LINUX HOST can see this, which is why it stood for as long as it did.
+# macOS's Docker file-sharing layer never hands the container a host uid, and
+# in CI the whole VM is discarded, so the leak costs nothing there.
+#
+# The recovery only ever CHOWNS. The deletion stays on this side, under the
+# user's own account; the container's entire power is to hand ownership back,
+# through one explicit mount of one directory. Two functions below: the chown
+# itself, and the sweep-time removal that falls back to it.
+#
+# ── the chown ────────────────────────────────────────────────────────────────
+# Hand ownership of everything under <dir> back to this user, using <image>.
+# The container's whole job is that chown; it deletes nothing.
+#
+# UNCONDITIONAL rather than gated on "does the tree contain foreign files".
+# That predicate is the obvious optimisation and it is deliberately not here:
+# it can only be exercised by a test that can create a file owned by another
+# uid, which needs root, which the hermetic suite does not have — so the gate
+# would be the one branch in this file nothing could ever see working. One
+# container per variant, at well under a second, against a Phase 4 measured in
+# tens of minutes, is not a cost worth an untestable branch.
+it_reclaim_scratch() {   # <image> <dir>
+  local img="$1" dir="$2"
+  [[ -n "$img" && -n "$dir" && -d "$dir" ]] || return 0
+  docker run --rm -v "$dir:/scratch" --entrypoint chown "$img" \
+    -R "$(id -u):$(id -g)" /scratch >/dev/null 2>&1 || true
+  return 0
+}
+
+# ── the removal ──────────────────────────────────────────────────────────────
+# Plain `rm -rf` first, and a run with nothing root-owned in it starts no extra
+# container at all — the escalation is reached only when that has already been
+# tried and left something behind.
+#
+# Never fatal, at either step. This runs from the EXIT trap, where aborting
+# would discard the exit status the entire run exists to produce. A leak that
+# cannot be cleared is reported BY PATH instead, because the failure this
+# replaces was silent to the exit code and unreadable in the output.
+it_remove_scratch() {   # <dir>
+  local dir="$1"
+  [[ -n "$dir" && -d "$dir" ]] || return 0
+  rm -rf "$dir" 2>/dev/null
+  [[ -e "$dir" ]] || return 0
+  # $IT_IMAGE is the DEFAULT variant's tag, and it is the one image still
+  # present at sweep time in a full run — the variant loop removes only the
+  # non-default images it built. A run that never built the default variant
+  # (`--variant agents`, which is exactly how nightly's packages-agents job
+  # invokes this) has nothing here, which is why the loop reclaims ownership
+  # with its OWN image before discarding it; this is the backstop, not the
+  # only line of defence.
+  it_reclaim_scratch "$IT_IMAGE" "$dir"
+  rm -rf "$dir" 2>/dev/null
+  [[ -e "$dir" ]] || return 0
+  warn "── could not remove scratch dir — root-owned leftovers remain: $dir"
+  return 0
+}
+
 sweep() {
   # Gated on reuse_image: see the comment above snapshot_real_allowlists(). No
   # build ran, so nothing was snapshotted, and restoring here would still
@@ -742,10 +809,6 @@ sweep() {
   docker network ls -q --filter "label=$IT_LABEL" 2>/dev/null | while read -r n; do
     [[ -n "$n" ]] && docker network rm "$n" >/dev/null 2>&1
   done
-  # Image cleanup is independent of failures; only --keep preserves it.
-  if [[ "$keep" -eq 0 && "$reuse_image" -eq 0 ]]; then
-    docker rmi "$IT_IMAGE" >/dev/null 2>&1
-  fi
   # $IT_SCRATCH/logs is the ONLY record of why a case failed. CI's "Collect
   # diagnostics" step copies $IT_SCRATCH into an upload artifact, but that
   # step runs AFTER run.sh has already exited and this EXIT trap has already
@@ -761,7 +824,15 @@ sweep() {
   elif [[ "$n_fail" -gt 0 ]]; then
     warn "── kept scratch ($n_fail failing case(s) — logs are the evidence): $IT_SCRATCH"
   else
-    rm -rf "$IT_SCRATCH"
+    it_remove_scratch "$IT_SCRATCH"
+  fi
+  # Image cleanup is independent of failures; only --keep preserves it. It runs
+  # AFTER the scratch removal above, not before: it_remove_scratch's escalation
+  # needs an image to start a container from, and $IT_IMAGE is the one image
+  # this run is guaranteed to have had. Removing it first left the escalation
+  # with nothing to run and turned the recovery into a warning.
+  if [[ "$keep" -eq 0 && "$reuse_image" -eq 0 ]]; then
+    docker rmi "$IT_IMAGE" >/dev/null 2>&1
   fi
   return 0
 }
@@ -1256,6 +1327,13 @@ for v in $(selected_variants $selected); do
   # (per the comment above the loop) is always still the default here, so
   # this variant-scoped rmi and sweep()'s own never collide or double up.
   if [[ "$v" != "default" && "$reuse_image" -eq 0 && "$keep" -eq 0 ]]; then
+    # Ownership first, while this image still exists. The cases just run as
+    # root inside containers holding $IT_SCRATCH, so this variant is exactly
+    # what can leave a root-owned directory the host sweep cannot unlink —
+    # and once the image is gone, sweep() has nothing to start a container
+    # from unless the default variant also ran. In a `--variant agents` run it
+    # did not, so doing this after the rmi below would be doing it never.
+    it_reclaim_scratch "$variant_img" "$IT_SCRATCH"
     docker rmi "$variant_img" >/dev/null 2>&1 || true
   fi
 done
