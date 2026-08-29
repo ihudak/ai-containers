@@ -6,6 +6,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### The floor container trusted the mount, but not the copies the suite makes of it
+
+Phase 5 re-runs the hermetic suite as root inside the bash-floor container
+against the working tree bind-mounted `:ro` at `/w`, and trusted exactly that
+one path through git's `safe.directory`. The narrow scope was reasoned from
+"this container is single-purpose and throwaway (`--rm`) and never touches any
+other directory", and that premise is false:
+`tests/test-falsify-historical.sh` seeds a scratch copy of the repo — `.git`
+included — into a `mktemp` dir, and `cp -a` running as root **preserves the
+host uid on the copy**. git then refuses the copy as dubious ownership,
+`_fr_tracked_state` folds that `fatal:` into the tree's state (`2>&1`,
+deliberately), and the seed-faithfulness guard fires. The guard was right: no
+oracle could have run in that tree. The trust was too narrow.
+
+**The class cannot appear in the three environments this repo had run in until
+now**, which is why it surfaced only on 2026-08-29, in the first full
+`verify-on-host.sh` run on a Linux host. On a macOS host the Docker
+file-sharing layer interposes and the container never sees a host uid at all;
+in a daemon-less container Phase 5's floor container does not run; and in
+Actions `actions/checkout` clones *inside* the container as root, so the uids
+match by construction. A Linux host is the first place a real bind mount
+carries a real uid that differs from the container's root.
+
+Fixed by trusting `*` in addition to `/w`. Not a narrower pattern: the floor
+image ships git 2.34.1, where prefix globs do not exist — measured, not
+assumed, `safe.directory '/tmp/*'` still refuses the same repo and only the
+literal `*` is honoured. The trust that adds is bounded to a `--rm` container
+whose one mount is the developer's own `:ro` tree — the same trust `/w` already
+granted, extended to copies of `/w` at paths nothing can predict.
+
 ## v0.9.1 — 2026-08-29
 
 **A patch: five repairs, no new keys.** Every one was found by running the local

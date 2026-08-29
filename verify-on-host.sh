@@ -304,11 +304,29 @@ else
     # refuses every operation in here ("detected dubious ownership") unless the
     # mount is explicitly trusted first. CI's suite-floor job does not need
     # this: actions/checkout clones INSIDE that container, as root, so the
-    # clone and the container user already match. Scoped to the literal mount
-    # point (/w — always this exact path, never the host's), not the `*`
-    # wildcard: this container is single-purpose and throwaway (--rm) and never
-    # touches any other directory, so the wildcard would trust more than this
-    # invocation could ever use.
+    # clone and the container user already match.
+    #
+    # BOTH lines are needed, and the second one's scope is the point. /w alone
+    # was written on a macOS host, where the Docker file-sharing layer interposes
+    # and the container never sees the host's uid at all; a LINUX host passes the
+    # real uid through unchanged, and on 2026-08-29 — this repo's first full
+    # verify-on-host run on one — that difference failed the phase. The reasoning
+    # for scoping to the literal mount point was "this container is
+    # single-purpose and throwaway (--rm) and never touches any other
+    # directory", and that premise is false: tests/test-falsify-historical.sh
+    # seeds a scratch copy of the repo — .git included — into a mktemp dir, and
+    # `cp -a` as root PRESERVES the host uid on the copy. So git rejects the
+    # copy, tests/falsify/run.sh's _fr_tracked_state folds that `fatal:` into the
+    # tree's state (2>&1, deliberately), and the seed-faithfulness guard fires on
+    # a tree that really was unusable. The guard was right; the trust was too
+    # narrow.
+    #
+    # `*` rather than a narrower pattern because the floor image ships git
+    # 2.34.1, where prefix globs do not exist — measured: `safe.directory
+    # '/tmp/*'` still refuses the same repo, and only the literal `*` works. The
+    # trust it adds is bounded to this --rm container whose one mount is the
+    # developer's own :ro tree, i.e. the same trust /w already grants, extended
+    # to copies of /w the suite makes at paths nothing can predict.
     #
     # The mount itself is :ro — DO NOT drop this suffix, even if a future test
     # needs scratch space; give it a mktemp dir instead. This is root, against
@@ -333,6 +351,7 @@ else
     docker run --rm -v "$REPO_ROOT:/w:ro" -w /w "$floor_img" bash -c \
       'apt-get update -qq && apt-get install -y -qq git rsync >/dev/null 2>&1 && \
        git config --global --add safe.directory /w && \
+       git config --global --add safe.directory "*" && \
        bash --version | head -1 && ./tests/run-all.sh' 2>&1 | sed "s/^/$LOG_PREFIX   /"
     f_rc="${PIPESTATUS[0]:-1}"
     sub "floor suite exit: $f_rc"
