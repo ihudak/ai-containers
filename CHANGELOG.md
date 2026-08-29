@@ -6,6 +6,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## v0.9.2 — 2026-08-29
+
+**A patch, and every entry is again a repair.** No new key, no new column,
+nothing to adopt.
+
+**The whole release came out of running the suite on real hosts.** Two full
+`verify-on-host` runs — one macOS, one Linux — each turned up defects that CI
+cannot reach by construction, and a comprehensive review of those fixes found
+five more. The pattern across all of them is one thing: **a test that could not
+fail, or could fail for the wrong reason.**
+
+**The sharpest was an assertion that passed on the value of HEAD.** A schema
+check grepped the whole `--version` report for `77`, and that report's first line
+is the engine version — so it passed whenever the short git sha happened to
+contain those two digits, whatever the schema field said. CI killed that mutant
+at one commit and reported it SURVIVED at the next, with nothing in between but
+a merge. The ledger caught it by refusing an unclassified survivor; nobody
+noticed it by reading.
+
+**Four fixes concern scratch state**, which turned out to be one thread pulled
+end to end: four tests leaking a temp directory on every *passing* run, a sweep
+that could not remove what its own cases left behind, a suite that did not
+contain its own temp, and — after the containment landed — the realisation that
+it had removed the only signal by which such leaks were ever found. That signal
+is now a report rather than debris, and it earned itself immediately: on its
+first run in the downstream repo it named a duplicated scaffold block that had
+been orphaning a directory per run, invisible upstream because only the other
+repo's directory layout exposed it.
+
+**Two defects were introduced by fixes in this same release and caught by the
+gates within minutes** — an apostrophe closing a single-quoted awk program, and
+a comment line beginning with the word shellcheck being read as a directive.
+Both are recorded at the site rather than quietly corrected.
+
+Verified end to end on a host before tagging: Phase 4 36/36, Phase 5 71/71
+across all three arms, Phase 6 **548/548 verdicts with zero unproven and zero
+timeouts**, Phase 7 clean over 161 scripts.
+
 ### An assertion that passed on the value of HEAD
 
 - **`grep -q '77'` searched the whole `--version` report**, and that report
