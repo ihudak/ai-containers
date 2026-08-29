@@ -6,6 +6,55 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### What a review of the last five fixes found
+
+An Opus review of the five host-found repairs returned PASS WITH
+RECOMMENDATIONS and eleven findings. None was a correctness bug in shipped
+behaviour; five were worth fixing before tagging, and all five are shapes this
+repo purges elsewhere.
+
+- **The leak fix leaked.** `run-all.sh` created its per-test log, then its
+  scratch root, then one trap covering both — so a failing `mktemp -d` exited
+  between them and orphaned the log. Demonstrated with a stub `mktemp` that
+  fails only on `-d`: HEAD leaves `run-all-log.XXXXXX` behind, the fix leaves
+  nothing. The log now lives *inside* the scratch root, needing no `mktemp` and
+  no second trap, so the window cannot reopen.
+- **Containment was applied to the test of the falsify runner, not the runner.**
+  `tests/falsify/run.sh` still handed its oracle the developer's `TMPDIR`, and
+  the watchdog ends that oracle with `kill -KILL`, which no `EXIT` trap
+  survives. Rooted in `$FR_SCRATCH` now, so the run's own cleanup is the
+  backstop the kill removed.
+- **Three assertions were red for the wrong reason.** They grepped the *whole*
+  runner output rather than the extract, and were failing pre-fix only because
+  filler pushed the context past `tail -40`. They now assert against the
+  extract, and the marker is matched without its line count — hardcoding
+  `last 40 lines` meant changing the tail would silently make the extract the
+  entire output and every check below it vacuous.
+- **A comment named a guard that has never existed** (`tests/test-temp-leaks.sh`,
+  zero commits in any branch) — and the containment fix had removed the only
+  signal by which those leaks were originally found. `run-all.sh` now counts
+  what each test leaves in its own `TMPDIR` and prints `left in TMPDIR:` after
+  the totals. It **reports and never judges**: every falsify oracle is
+  `run-all.sh <name>`, so failing a test for untidiness would manufacture a
+  false KILL.
+- **The failure-context window ended at the first unindented line** — which is
+  exactly what `docker exec` prints against a dead container, landing between
+  the `FAIL:` and the `error:` line and dropping the reason. `CONTEXT_MAX` was
+  already the real bound; the reset only cost information.
+
+Three claims that were overstated are now corrected rather than removed: the
+generated `mktemp` shim escapes `bash -n` and the shellcheck pass exactly as a
+tracked unsuffixed file would (only the dialect linter still sees it); the
+symlinked-`TMPDIR` arm is no longer inert on macOS, so the comment saying it is
+described a mechanism that no longer exists; and the `SKIP:` line in
+`test-integration-runner.sh` is *not* visible in the CI arm where it fires.
+
+Two defects were introduced while writing these fixes and caught by the gates
+within minutes: an apostrophe in an awk comment closed the single-quoted program
+(six assertions red at once), and a comment line beginning with the word
+`shellcheck` was parsed as a directive (`SC1072`/`SC1073`). Both are recorded at
+the site.
+
 ### A failing assertion reached the report; the reason attached to it did not
 
 The integration runner's failure report extracted assertion lines with

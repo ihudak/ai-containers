@@ -809,8 +809,17 @@ falsify_run_oracle() {   # <tree> <oracle-set> <outfile> <timeout-seconds> [<lab
   # Monitor mode so each background job leads its own process group and a
   # timeout can kill the oracle's WHOLE tree of children (run-all.sh forks a
   # bash per test), not just the driver.
+  # TMPDIR INSIDE THE SCRATCH THIS RUN OWNS, so what the oracle leaves goes when
+  # the run does. run-all.sh contains its own tests, but only against its EXIT
+  # trap -- and the watchdog below ends this oracle with `kill -KILL`, which no
+  # trap survives. Measured: a SIGKILLed run-all.sh leaks its whole
+  # `run-all-tmp.*` tree into whatever TMPDIR it inherited, and this tier
+  # produces exactly that on every timeout, 548 mutants at a time, into the
+  # DEVELOPER'S temp directory. Rooting it here makes fr_cleanup's `rm -rf
+  # "$FR_SCRATCH"` the backstop that the kill removed.
+  mkdir -p "$FR_SCRATCH/tmp" 2>/dev/null || true
   set -m
-  ( cd "$tree" && exec bash "$FR_DRIVER_REL" -v "${onames[@]}" ) >"$out" 2>&1 &
+  ( cd "$tree" && export TMPDIR="$FR_SCRATCH/tmp" && exec bash "$FR_DRIVER_REL" -v "${onames[@]}" ) >"$out" 2>&1 &
   pid=$!
   ( # Returns the moment the oracle exits, so this watchdog is never stale for
     # more than a second — and a pid cannot be recycled into another worker's

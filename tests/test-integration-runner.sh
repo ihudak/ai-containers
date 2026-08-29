@@ -1401,8 +1401,17 @@ printf "     error:   codex: symbol lookup error\n"
 i=0; while [ $i -lt 60 ]; do echo "     ipset noise line $i"; i=$((i+1)); done
 exit 1'
 out="$(IT_FORCE_CAPS="docker netadmin dns" run_it --cases 090-ctx)"
+# THE EXTRACT, NOT THE WHOLE OUTPUT, and computed BEFORE anything is concluded.
+# These three assertions used to grep $out, which also contains the trailing
+# diagnostics tail -- so they were red before the fix only because the 60 filler
+# lines happened to push the context past that tail's window. Raise the tail and
+# they go green against unfixed code, which makes them assertions about a size
+# rather than about the report. The marker is matched WITHOUT its line count for
+# the same reason: hardcoding "last 40 lines" means changing the tail silently
+# turns $extract into the entire output and every check below it vacuous.
+extract="$(printf '%s\n' "$out" | sed -n '1,/diagnostics (last /p')"
 for label in "path:" "shebang:" "error:"; do
-  if has "$out" "$label"; then
+  if has "$extract" "$label"; then
     pass "a failing assertion's '$label' context reaches the failure report"
   else
     fail "a failing assertion's '$label' context reaches the failure report — it was filtered out"
@@ -1422,7 +1431,6 @@ has "$out" 'PASS: reached the check' \
 # "diagnostics (last 40 lines)" marker — because the tail below that marker
 # prints ~40 filler lines BY DESIGN, and counting the whole output would score
 # that intended behaviour as a regression.
-extract="$(printf '%s\n' "$out" | sed -n '1,/diagnostics (last 40 lines/p')"
 noise="$(printf '%s' "$extract" | grep -c 'ipset noise line')"
 if [[ "$noise" -le 8 ]]; then
   pass "context after a FAIL: is bounded ($noise filler line(s) in the extract)"
@@ -1430,6 +1438,42 @@ else
   fail "context after a FAIL: is bounded — $noise filler line(s) leaked into the extract"
 fi
 rm -f "$CASES/090-ctx.sh"
+
+# ── an UNINDENTED line mid-context must not end the context ──────────────────
+# The producer this extract exists for is it_assert_runs, which prints FAIL:,
+# then the output of a `docker exec ... 2>&1`, then its own `error:` line. When
+# the container is dead docker writes `Error response from daemon: ...` to that
+# stream UNINDENTED, landing between the FAIL: and the error: line -- so a rule
+# that ended the context at the first unindented line dropped the one line
+# carrying the reason, in exactly the situation a reader most needs it.
+#
+# The filler is here for the same purpose as in 090-ctx: without it the trailing
+# tail would surface the error: line anyway and this would assert nothing.
+mkcase 091-ctx-gap "security fast" "docker" '
+echo "PASS: reached the check"
+echo "FAIL: codex is present but FAILED TO RUN"
+printf "     path:    /usr/local/bin/codex -> /home/u/.ai-tools/npm/bin/codex\n"
+echo "Error response from daemon: container abc is not running"
+printf "     error:   codex: symbol lookup error\n"
+i=0; while [ $i -lt 60 ]; do echo "     ipset noise line $i"; i=$((i+1)); done
+exit 1'
+gap_out="$(IT_FORCE_CAPS="docker netadmin dns" run_it --cases 091-ctx-gap)"
+gap_extract="$(printf '%s\n' "$gap_out" | sed -n '1,/diagnostics (last /p')"
+has "$gap_extract" 'path:' \
+  && pass "context before an unindented interloper still reaches the report" \
+  || fail "context before an unindented interloper still reaches the report"
+has "$gap_extract" 'error:   codex: symbol lookup error' \
+  && pass "context AFTER an unindented interloper reaches it too" \
+  || fail "context AFTER an unindented interloper reaches it too — the daemon error ended the context and took the reason with it"
+# Still bounded: dropping the reset must not turn the cap into the only thing
+# standing between the extract and a case's whole trailing dump.
+gap_noise="$(printf '%s' "$gap_extract" | grep -c 'ipset noise line')"
+if [[ "$gap_noise" -le 8 ]]; then
+  pass "  … and the context is still bounded ($gap_noise filler line(s))"
+else
+  fail "  … and the context is still bounded — $gap_noise filler line(s) leaked in"
+fi
+rm -f "$CASES/091-ctx-gap.sh"
 
 # ── it_remove_scratch: the sweep must be able to remove what ROOT left ────────
 # A case's container runs as root, and `docker exec` defaults to root too, so a
@@ -1515,9 +1559,17 @@ fi
 # So they run wherever this suite runs as a normal user — every developer host,
 # CI's `suite` and `suite-symlinked-tmp` arms — and skip in the one arm that is
 # root, `suite-floor`, which runs inside a container where actions/checkout has
-# already made the whole tree root-owned. run-all.sh gives PASS precedence over
-# SKIP, so this file still reports its real assertion count; the SKIP: line is
-# there to make the gap legible in the log rather than silent.
+# already made the whole tree root-owned.
+#
+# THE SKIP: LINE IS NOT VISIBLE IN CI, and this comment used to imply it was.
+# run-all.sh gives PASS precedence over SKIP, so a file that also prints real
+# PASS lines reports as a PASS with its assertion count and the SKIP: line stays
+# in the per-test log — which is deleted, and which hermetic-checks.yml does not
+# ask for anyway (it runs run-all.sh with no -v). The only signal that reaches a
+# reader is the assertion count differing between arms, and nothing compares
+# those. Legible in a LOCAL verbose run; silent in the arm where it actually
+# fires. Said plainly here because the alternative is a reader trusting a
+# visibility that does not exist.
 if [[ "$(id -u)" -eq 0 ]]; then
   printf 'SKIP: the stuck-tree assertions need a non-root uid — chmod does not constrain root\n'
 else

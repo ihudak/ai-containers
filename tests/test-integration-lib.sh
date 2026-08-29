@@ -71,8 +71,14 @@ mkdir -p "$IT_SCRATCH"
 # `trap 'it_cleanup; rm -rf "$TMP"' EXIT` would work today and rot silently the
 # day lib.sh renames its handler -- this cannot.
 #
-# A static scan cannot see this: the trap that wins is in ANOTHER FILE, which is
-# why the guard for it (tests/test-temp-leaks.sh) runs each test and looks.
+# A static scan cannot see this: the trap that wins is in ANOTHER FILE. Nothing
+# ASSERTS it, and this comment previously named `tests/test-temp-leaks.sh` as
+# "the guard for it" -- a file that has never existed in any branch. What exists
+# instead is a report: tests/run-all.sh counts what each test leaves in its own
+# TMPDIR and prints `left in TMPDIR: <name>:<n>` after the totals. It never
+# fails a run for it, because every falsify oracle is `run-all.sh <name>` and a
+# test turned red by its own untidiness would be scored as a mutation being
+# noticed. A number a reader can see beats a guard that was only ever claimed.
 it_track "dir:$TMP"
 
 # ── allowlist_write ────────────────────────────────────────────────────────────

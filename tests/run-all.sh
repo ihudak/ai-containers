@@ -74,7 +74,6 @@ failed_names=""
 # of that file's assertions failed on exactly that (measured 2026-08-29). Done
 # once, here, so every path this driver hands a test is already clean.
 RA_TMP="${TMPDIR:-/tmp}"; RA_TMP="${RA_TMP%/}"
-log="$(mktemp "$RA_TMP/run-all-log.XXXXXX")" || { printf 'SCAFFOLD-FAILED: mktemp (run-all.sh could not create its per-test log)\n'; exit 1; }
 
 # ── EVERY TEST GETS ITS OWN TMPDIR, AND IT GOES WHEN THE RUN DOES ─────────────
 # Two problems, one mechanism, and they are the same problem seen from two ends.
@@ -103,8 +102,16 @@ log="$(mktemp "$RA_TMP/run-all-log.XXXXXX")" || { printf 'SCAFFOLD-FAILED: mktem
 # when the caller gave none, so BSD and GNU agree, and then a per-test TMPDIR
 # both CONTAINS the test and is genuinely reached by it. Generated into the
 # run's own scratch rather than committed, because a tracked file named `mktemp`
-# has no .sh suffix and would escape every gate this repo runs -- `bash -n`, the
-# dialect linter and the shellcheck pass all discover scripts by that suffix.
+# has no .sh suffix and the gates discover scripts by that suffix. THAT TRADE IS
+# NOT FREE, and the honest version is: a quoted heredoc escapes both `bash -n`
+# and the shellcheck pass just as completely as an unsuffixed tracked file
+# would, so those two are lost either way. (A line here may not BEGIN with the
+# word shellcheck after the `#`: that is a directive, and shellcheck errors
+# SC1072/SC1073 on it.) Only the dialect linter still sees this body, because it
+# matches raw lines rather than parsing files. Keeping it generated buys the
+# guarantee that the shim cannot drift from the driver that installs it; it does
+# not buy lint coverage, and claiming otherwise was the reason to write this
+# down.
 #
 # IT CONTAINS, IT DOES NOT JUDGE. Nothing here fails a test for leaking, and
 # that is deliberate: every falsify oracle is `tests/run-all.sh <name>`, so a
@@ -112,7 +119,15 @@ log="$(mktemp "$RA_TMP/run-all-log.XXXXXX")" || { printf 'SCAFFOLD-FAILED: mktem
 # noticed -- a false KILL, which is precisely what the survivor ledger exists to
 # prevent. Containment is safe here; a verdict is not.
 RA_TMPROOT="$(mktemp -d "$RA_TMP/run-all-tmp.XXXXXX")" || { printf 'SCAFFOLD-FAILED: mktemp -d (run-all.sh could not create its scratch root)\n'; exit 1; }
-trap 'rm -f "$log"; rm -rf "$RA_TMPROOT"' EXIT
+# ONE THING TO REMOVE, AND IT EXISTS BEFORE ANYTHING IS REMOVABLE. The per-test
+# log used to be its own `mktemp` taken BEFORE this directory, with a trap
+# covering both installed AFTER it -- so a failing `mktemp -d` exited between
+# them and orphaned the log. Demonstrated with a stub mktemp that fails only on
+# -d: SCAFFOLD-FAILED, rc=1, run-all-log.XXXXXX left behind. Inside the scratch
+# root it needs no mktemp of its own (the directory is already unique) and no
+# second trap, so the window cannot reopen.
+log="$RA_TMPROOT/run-all-log"
+trap 'rm -rf "$RA_TMPROOT"' EXIT
 mkdir -p "$RA_TMPROOT/bin" || { printf 'SCAFFOLD-FAILED: mkdir (run-all.sh could not create its shim directory)\n'; exit 1; }
 cat > "$RA_TMPROOT/bin/mktemp" <<'RA_MKTEMP_SHIM'
 #!/usr/bin/env bash
@@ -159,6 +174,22 @@ for t in $selected; do
   else
     TMPDIR="$ra_td" bash "$t" >"$log" 2>&1
     rc=$?
+  fi
+  # WHAT THE TEST LEFT, COUNTED AND NEVER JUDGED. Containment made leaks
+  # INVISIBLE: before this scratch root existed they surfaced as debris in the
+  # developer's own temp directory, which is exactly how four of them were
+  # found. Now run-all.sh removes everything on exit, so a reintroduced trap
+  # clobber would be permanently undetectable -- the fix having removed the only
+  # signal that the class exists.
+  #
+  # REPORTED AT THE END, never as a failure and never inline. Every falsify
+  # oracle is `tests/run-all.sh <name>` run with -v, so a test turned red by its
+  # own untidiness would be scored as the mutation being noticed -- a false
+  # KILL, the thing the survivor ledger exists to prevent. And an extra line
+  # beside PASS/FAIL/SKIP is a line something downstream may be parsing.
+  if [ "$ra_td" != "$RA_TMPROOT" ]; then
+    ra_left="$(ls -A "$ra_td" 2>/dev/null | wc -l | tr -d ' ')"
+    [ "${ra_left:-0}" -gt 0 ] 2>/dev/null && ra_leaky="${ra_leaky:+$ra_leaky }$name:$ra_left"
   fi
   if [ "$rc" -eq 0 ]; then
     # A printed FAIL: line is a failure regardless of the exit code, checked
@@ -227,6 +258,11 @@ for t in $selected; do
 done
 
 printf '\n%s test(s), %s passed, %s failed\n' "$total" "$((total - failed))" "$failed"
+# AFTER the totals line, and only when there is something to say: that line is
+# parsed in several places and this one must not come between anything and it.
+# `left` rather than `leaked`, because a test may keep scratch deliberately --
+# this reports a fact and draws no conclusion from it.
+[ -n "${ra_leaky:-}" ] && printf 'left in TMPDIR: %s\n' "$ra_leaky"
 if [ "$failed" -gt 0 ]; then
   printf 'Failing: %s\n' "$failed_names"
   exit 1
