@@ -6,6 +6,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### A failing assertion reached the report; the reason attached to it did not
+
+The integration runner's failure report extracted assertion lines with
+`grep -E '^(PASS|FAIL|SKIP):'`, which by construction cannot carry the context
+a helper prints *under* its `FAIL:` — that context is indented, so it does not
+start with the keyword, and every line of it was dropped. `lib.sh`'s
+`assert_runs` is the case in point: beneath its "X is present but FAILED TO
+RUN" it prints `path:`, `shebang:` and `error:`, which is the entire record of
+why a binary that resolves on `PATH` would not execute.
+
+Measured on the 2026-08-29 nightly. `700-agent-tools-install-restricted` failed
+with **"codex is present but FAILED TO RUN"** and the artifact contained none of
+the three, so the run named what broke and could not say why. The `tail -40`
+below the extract did not stand in for them either: by that point the log's last
+lines are `it_diagnose`'s ipset/capture dump. That is the *same* truncation this
+block already existed to correct, one level further in — the assertion was
+rescued, the reason attached to it was not.
+
+The extract now carries an indented, non-blank run directly beneath a `FAIL:`,
+capped at 8 lines per failure. Unbounded would pull a case's whole trailing dump
+into the extract and recreate the defect from the other side; real helpers print
+a handful of labelled lines, so the cap is generous for every current caller and
+still refuses a runaway.
+
+The test that guards it is deliberately awkward: its synthetic case prints 60
+lines of trailing noise after the context. With a short log the `tail -40` alone
+would surface those lines and the assertion would pass against the unfixed
+runner — the filler is what puts the context out of the tail's reach, so only
+the extract can carry it.
+
+This does not explain the codex failure itself, which is not reproducible on a
+Linux host — the same case passes there. It makes the next occurrence legible.
+
 ### The suite now contains its own temp, and the macOS TMPDIR arm finally reaches it
 
 Two problems, one mechanism, and they turned out to be the same problem seen
