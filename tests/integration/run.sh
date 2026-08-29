@@ -1285,7 +1285,39 @@ for v in $(selected_variants $selected); do
       # and no statement of the failure. Print the assertions unconditionally
       # and first — they must never be the thing that gets truncated — then a
       # bounded diagnostics tail for context.
-      grep -E '^(PASS|FAIL|SKIP):' "$log" | sed 's/^/     /'
+      #
+      # The extract carries the assertion lines AND the indented context a
+      # helper prints under a FAIL:. A plain `grep -E '^(PASS|FAIL|SKIP):'`
+      # cannot, by construction — that context is indented, so it does not
+      # start with the keyword and every line of it was dropped. lib.sh's
+      # assert_runs is the case in point: under its "X is present but FAILED TO
+      # RUN" it prints `path:`, `shebang:` and `error:`, which is the entire
+      # record of WHY a binary that resolves on PATH would not execute.
+      #
+      # Measured on the 2026-08-29 nightly: 700-agent-tools-install-restricted
+      # failed with "codex is present but FAILED TO RUN" and the artifact held
+      # none of the three, so the run named what broke and could not say why —
+      # and the tail below could not stand in for them, because by then the
+      # log's last 40 lines are it_diagnose's ipset/capture dump. That is the
+      # same truncation this whole block already exists to correct, one level
+      # further in: the assertion was rescued, the reason attached to it was
+      # not.
+      #
+      # Bounded at CONTEXT_MAX lines per failure. Unbounded would pull a case's
+      # whole trailing dump into the extract and recreate the defect from the
+      # other side; helpers print a handful of labelled lines, so the cap is
+      # generous for every real caller and still refuses a runaway.
+      awk '
+        /^(PASS|FAIL|SKIP):/ { print; ctx = ($0 ~ /^FAIL:/) ? 1 : 0; n = 0; next }
+        # An indented, non-blank line directly under a FAIL: is that failure
+        # explaining itself. Anything else ends the run, so unrelated output
+        # further down the log is never swept in.
+        ctx && /^[[:space:]]+[^[:space:]]/ {
+          if (n++ < CONTEXT_MAX) print
+          next
+        }
+        { ctx = 0 }
+      ' CONTEXT_MAX=8 "$log" | sed 's/^/     /'
       # The SAME truncation defect applies one layer down, to it_diagnose's own
       # dump: it prints "── docker logs (last 60) ──" FIRST, then iptables -S,
       # ipset counts and capture-dir listings AFTER it (lib.sh's it_diagnose,

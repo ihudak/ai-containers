@@ -1373,6 +1373,64 @@ else
   fail "--dry-run touches no docker — it invoked the daemon"
 fi
 
+# ── a failing assertion's CONTEXT must survive the failure report ────────────
+# The report extracts assertion lines with `grep -E '^(PASS|FAIL|SKIP):'`, which
+# by construction drops anything a helper prints UNDER its FAIL: — those lines
+# are indented, so they do not start with the keyword. lib.sh's assert_runs is
+# the case in point: on failure it prints `path:`, `shebang:` and `error:`,
+# which is the whole of what identifies WHY a binary that is on PATH would not
+# execute.
+#
+# Measured on the 2026-08-29 nightly: 700-agent-tools-install-restricted failed
+# with "codex is present but FAILED TO RUN" and the artifact contained none of
+# the three, so the run said what broke and could not say why. The `tail -40`
+# below the extract does not rescue them either — by then the log's last lines
+# are it_diagnose's ipset/capture dump, which is the same truncation defect the
+# comments around that grep already describe for the assertions themselves.
+#
+# The filler here is what makes this test discriminating rather than decorative:
+# with a SHORT log the tail alone would surface the context and the assertion
+# would pass against the unfixed runner. 60 lines of trailing noise puts the
+# context out of the tail's reach, so only the extract can carry it.
+mkcase 090-ctx "security fast" "docker" '
+echo "PASS: reached the check"
+echo "FAIL: codex is present but FAILED TO RUN"
+printf "     path:    /usr/local/bin/codex -> /home/u/.ai-tools/npm/bin/codex\n"
+printf "     shebang: #!/usr/bin/env node\n"
+printf "     error:   codex: symbol lookup error\n"
+i=0; while [ $i -lt 60 ]; do echo "     ipset noise line $i"; i=$((i+1)); done
+exit 1'
+out="$(IT_FORCE_CAPS="docker netadmin dns" run_it --cases 090-ctx)"
+for label in "path:" "shebang:" "error:"; do
+  if has "$out" "$label"; then
+    pass "a failing assertion's '$label' context reaches the failure report"
+  else
+    fail "a failing assertion's '$label' context reaches the failure report — it was filtered out"
+  fi
+done
+# The context must not cost the assertion lines their guaranteed place.
+has "$out" 'FAIL: codex is present but FAILED TO RUN' \
+  && pass "the FAIL: assertion itself still reaches the report" \
+  || fail "the FAIL: assertion itself still reaches the report"
+has "$out" 'PASS: reached the check' \
+  && pass "PASS: lines still reach the report" \
+  || fail "PASS: lines still reach the report"
+# Unbounded context would recreate the dump this report is sized against: the
+# 60 filler lines are indented exactly like real context, so a fix that prints
+# every indented line after a FAIL swallows the whole trailing dump into the
+# extract. Counted in the EXTRACT SECTION ALONE — everything before the
+# "diagnostics (last 40 lines)" marker — because the tail below that marker
+# prints ~40 filler lines BY DESIGN, and counting the whole output would score
+# that intended behaviour as a regression.
+extract="$(printf '%s\n' "$out" | sed -n '1,/diagnostics (last 40 lines/p')"
+noise="$(printf '%s' "$extract" | grep -c 'ipset noise line')"
+if [[ "$noise" -le 8 ]]; then
+  pass "context after a FAIL: is bounded ($noise filler line(s) in the extract)"
+else
+  fail "context after a FAIL: is bounded — $noise filler line(s) leaked into the extract"
+fi
+rm -f "$CASES/090-ctx.sh"
+
 # ── it_remove_scratch: the sweep must be able to remove what ROOT left ────────
 # A case's container runs as root, and `docker exec` defaults to root too, so a
 # root-owned DIRECTORY can appear inside $IT_SCRATCH — which is bind-mounted
