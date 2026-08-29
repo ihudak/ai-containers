@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### An assertion that passed on the value of HEAD
+
+- **`grep -q '77'` searched the whole `--version` report**, and that report
+  contains the engine version. So the schema assertion passed whenever the short
+  git sha happened to contain those two digits — whatever the schema field
+  actually said.
+- Found by CI going red on `main` with a survivor that had been killed **at the
+  previous commit and nothing in between but a merge**:
+  `version.sh:cond-negate:c26ba37…`, the `[[ -f "$conf" ]]` guard in
+  `version_schema`. Negate it and the report reads `schema unknown`; the
+  assertion still passed at commit `9a3f774`, because of the `77` inside `f774`.
+- **A mutant whose verdict depends on the commit hash** is the sharpest form of
+  the thing this tier exists to find, and the ledger caught it by refusing an
+  unclassified survivor rather than by anyone noticing.
+- Both assertions are now anchored to their own line and field. The mutant is
+  killed: `version.sh` goes 27/3 → **29/1**, and the one survivor left is the
+  entry the ledger already holds.
+- Nothing was added to `survivors.txt`. A gap that can be closed by making the
+  assertion say what it meant is not a gap to classify.
+
 ### What a review of the last five fixes found
 
 An Opus review of the five host-found repairs returned PASS WITH

@@ -162,10 +162,19 @@ got="$(cd "$bare" && bash -c 'source ./version.sh; version_engine .' 2>&1)"
 conf="$TMP/alt.conf"
 printf '# schema-version: 77\nnvm-version=v1.2.3\n' > "$conf"
 alt="$(cd "$REPO_DIR" && SANDBOX_CONF="$conf" bash ./sandbox.sh --version 2>&1)"
-grep -q '77' <<<"$alt" \
+# MATCHED ON ITS OWN LINE, NOT ANYWHERE IN THE REPORT. `grep -q '77'` searched
+# the whole output, and the whole output contains the engine version -- so the
+# assertion passed whenever the short git sha happened to contain those two
+# digits, whatever the schema field actually said. Not hypothetical: with
+# version_schema's `[[ -f "$conf" ]]` guard negated the report reads
+# `schema unknown`, and this still passed at commit 9a3f774 because of the `77`
+# inside `f774`. That is a mutant surviving on the value of HEAD, and it is
+# exactly what happened -- CI killed it at one commit and reported it SURVIVED
+# at the next, with nothing in between but a merge.
+grep -qE '^sandbox\.conf[[:space:]]+schema[[:space:]]+77$' <<<"$alt" \
   && pass "the schema version is read from the active sandbox.conf" \
   || fail "the schema version is read from the active sandbox.conf (got: $alt)"
-grep -q 'v1.2.3' <<<"$alt" \
+grep -qE '^nvm[[:space:]]+v1\.2\.3$' <<<"$alt" \
   && pass "the nvm version is read from the active sandbox.conf" \
   || fail "the nvm version is read from the active sandbox.conf (got: $alt)"
 
