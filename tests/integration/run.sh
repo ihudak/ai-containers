@@ -440,8 +440,24 @@ probe_netadmin() {
 probe_launcher() {
   [[ -n "$IT_REAL_DOCKER" && -x "$IT_REAL_DOCKER" ]] || return 1
   [[ -x "$INT_DIR/docker-shim.sh" ]] || return 1
-  local d="$IT_SCRATCH/launcher-probe" name="it-probe-launcher-$IT_RUN_ID" rc=1
-  mkdir -p "$d" || return 1
+  # ITS OWN DIRECTORY, NOT $IT_SCRATCH -- backlog F66. All this needs is a place
+  # to hold one `docker` symlink for PATH, and hanging that off $IT_SCRATCH made
+  # `mkdir -p` create the SCRATCH ROOT as a side effect. The `rm -rf "$d"` below
+  # then removed the child and left the parent: an empty, `logs`-less,
+  # IT_RUN_ID-shaped directory in the developer's real ~/.cache.
+  #
+  # It is permanent litter because --list-caps EXITS before run.sh installs
+  # `trap 'sweep' EXIT` and before it creates $IT_SCRATCH/logs, so nothing ever
+  # collects it -- and every invocation computes a fresh IT_RUN_ID from $$,
+  # so they accumulate one per call rather than overwriting.
+  #
+  # Measured 2026-08-29: a Phase 4 run against an emptied cache left exactly
+  # four, created 22:24:12-22:24:15 with four distinct pids, each holding
+  # `launcher-probe` at birth and nothing afterwards; that host had 61 banked.
+  # The run's OWN scratch was swept correctly in the same run, which is what
+  # tells the two apart.
+  local d name="it-probe-launcher-$IT_RUN_ID" rc=1
+  d="$(mktemp -d)" || return 1
   ln -sf "$INT_DIR/docker-shim.sh" "$d/docker" || return 1
   (
     export PATH="$d:$PATH" IT_REAL_DOCKER IT_LAUNCH_NAME="$name" IT_LABEL

@@ -1105,6 +1105,46 @@ esac
 EOF
 chmod +x "$LISTCAPS_BIN/docker"
 
+# ── F66: --list-caps must not litter the real cache ──────────────────────────
+# probe_launcher used to hang its PATH directory off $IT_SCRATCH, so `mkdir -p`
+# created the SCRATCH ROOT as a side effect and the `rm -rf` afterwards removed
+# only the child -- leaving an empty, logs-less, IT_RUN_ID-shaped directory in
+# the developer's real ~/.cache. Permanent, because --list-caps exits BEFORE
+# run.sh installs `trap 'sweep' EXIT` and before it creates $IT_SCRATCH/logs;
+# and a fresh IT_RUN_ID per invocation means they accumulate rather than
+# overwrite. One macOS host had banked 61; a Phase 4 run against an emptied
+# cache left four, at 22:24:12-22:24:15 with four distinct pids.
+#
+# --reuse-image IS THE POINT, not a convenience. detect_caps only ATTEMPTS
+# probe_launcher when `--reuse-image` is set or `docker image inspect` succeeds
+# (run.sh's caps block), so a stub whose `image inspect` fails never reaches the
+# probe at all -- which is exactly why the backlog's own `--list-caps` probe
+# measured zero and why the FIRST version of this test passed against the
+# unfixed code. A test that cannot fail is not a test.
+#
+# HOME is redirected so this asserts the real default path
+# ($HOME/.cache/ai-containers-it), and IT_SCRATCH is deliberately NOT set,
+# because setting it is precisely what hides the defect.
+F66_BIN="$TMP/bin-f66"; mkdir -p "$F66_BIN"
+cat > "$F66_BIN/docker" <<'EOF'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "info "*)           exit 0 ;;
+  "image inspect")    exit 0 ;;
+  "inspect -f")       echo "true"; exit 0 ;;   # probe_launcher's liveness check
+esac
+case "$1" in
+  run|rm|network|pull|version) exit 0 ;;
+  *) exit 0 ;;
+esac
+EOF
+chmod +x "$F66_BIN/docker"
+f66_home="$TMP/f66-home"; mkdir -p "$f66_home"
+HOME="$f66_home" PATH="$F66_BIN:$PATH" IT_REAL_DOCKER="$F66_BIN/docker" \
+  bash "$RUN" --list-caps --reuse-image --image f66-img >/dev/null 2>&1
+f66_left="$(find "$f66_home/.cache/ai-containers-it" -mindepth 1 -maxdepth 1 2>/dev/null | wc -l | tr -d ' ')"
+check "--list-caps leaves nothing behind in the real cache (F66)" "0" "$f66_left"
+
 out="$(PATH="$LISTCAPS_BIN:$PATH" bash "$RUN" --list-caps 2>&1)"
 cap_line="$(printf '%s\n' "$out" | grep '^capabilities:')"
 

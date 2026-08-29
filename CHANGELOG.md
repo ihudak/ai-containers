@@ -6,6 +6,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### F66 — a capability probe littered the developer's real cache, one directory per call
+
+`probe_launcher` needs a directory to hold a single `docker` symlink for `PATH`.
+It hung that off `$IT_SCRATCH`, so `mkdir -p "$IT_SCRATCH/launcher-probe"`
+created the **scratch root** as a side effect, and the `rm -rf` afterwards
+removed only the child — leaving an empty, `logs`-less, `IT_RUN_ID`-shaped
+directory behind.
+
+It is permanent litter rather than a transient one: `--list-caps` exits **before**
+`run.sh` installs `trap 'sweep' EXIT` and before it creates `$IT_SCRATCH/logs`,
+so nothing ever collects it, and every invocation computes a fresh `IT_RUN_ID`
+from `$$`, so they accumulate one per call instead of overwriting. One macOS host
+had banked **61**.
+
+**Caught by watching, after five probes had failed to find it by reading.** A
+Phase 4 run against an emptied cache left exactly four, created 22:24:12–22:24:15
+with four distinct pids, each holding `launcher-probe` at birth and nothing
+afterwards — while the run's own scratch was swept correctly in the same run,
+which is what tells the two apart. The probe now uses its own `mktemp -d` and
+creates nothing it does not remove.
+
+**Why the backlog's own `--list-caps` measurement read zero**, and why the first
+version of this test passed against the unfixed code: `detect_caps` only
+*attempts* `probe_launcher` when `--reuse-image` is set or `docker image inspect`
+succeeds. A stub whose `image inspect` fails never reaches the probe at all. The
+regression test therefore passes `--reuse-image` and a stub that satisfies the
+liveness check, redirects `HOME` so it asserts the real default path, and
+deliberately leaves `IT_SCRATCH` unset — setting it is precisely what hides the
+defect. Demonstrated FAIL before, PASS after.
+
 ## v0.9.3 — 2026-08-29
 
 **A patch, and every entry is again a repair.** No new `sandbox.conf` key, no new
