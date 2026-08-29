@@ -5152,3 +5152,99 @@ The CI logs for the first recurrence are **gone**, because the re-run was
 triggered before they were saved. `gh run rerun` replaces them. The evidence
 this entry had been waiting weeks for was destroyed by the command used to find
 out whether it was reproducible. **Capture the log before re-running anything.**
+
+---
+
+## F64 — F30/F32's fifth sighting, and the field that finally separates the two candidates — **`dir=n`: the whole scratch directory was gone. OPEN: which of the two dir=n mechanisms is still undetermined**
+
+`ai-containers` PR-gate run
+[33245548932](https://github.com/ihudak/ai-containers/actions/runs/33245548932),
+2026-08-29, on `189ebda` (a push to main). Log captured **before** any re-run,
+per the warning at the end of F30/F32's fourth-sighting entry.
+
+```
+ERROR: CONTROL FAILED — the PRISTINE oracle went red under this run's own load
+       (signal=exit+failline, 1.3s): tests/portability.sh via test-portability.sh.
+       Kills recorded near it cannot be trusted.
+falsify:   control output: FAIL: p_stat_mode returned empty … [fixture=/tmp/tmp.tneErmsnvo/f
+           dir=n exists=n size=? left=0 | p_stat_mode stderr: stat: cannot statx
+           '/tmp/tmp.tneErmsnvo/f': No such file or directory]
+falsify:   control output: FAIL: p_sha1 returned empty …      [same fields]
+falsify:   control output: FAIL: p_md5 returned empty …       [same fields]
+falsify:   control output: FAIL: p_stat_meta returned empty … [same fields]
+ERROR: 1 of 32 control run(s) FAILED …
+TOTAL|16|548|538|10|0|0|1|641571
+```
+
+**This is the answer the fourth-sighting entry was parked waiting for.**
+`tests/test-portability.sh` states the two remaining candidates and the one
+field that separates them:
+
+> `dir=n` something removed the whole scratch directory — a trap that fired
+> early, or a cleanup that reached too far
+> `dir=y` something removed this file specifically, or it was never written
+
+This run reports **`dir=n`**, with `left=0`. So it is not targeted removal of the
+fixture and not a fixture step that failed to write: **the entire `mktemp -d`
+scratch directory was gone by the time the helpers ran.** The 2026-08-27 sighting
+established `exists=n`; this one establishes which side of `exists=n` it is.
+
+The diagnostic installed on 2026-08-21 did exactly the job it was added for, on
+its second real firing, and the investigation can now drop the `dir=y` branch
+entirely.
+
+**What this does NOT settle.** Which of the two `dir=n` mechanisms — an early
+trap or an over-reaching cleanup — is still open, and nothing here distinguishes
+them. Note the shape of the run: 32 controls, one red, corpus measuring
+normally (`548` mutants, matching a local run on the same commit), the tier
+correctly refusing to vouch for kills near it. Same intermittent,
+load-dependent signature as all four prior sightings.
+
+**Bearing on recent work, stated so it is not assumed either way.** The
+2026-08-29 releases (v0.9.2 and the review fixes after it) changed temp-directory
+handling in three places — `run-all.sh` now gives each test its own `TMPDIR`
+under one root it removes at exit, `it_cleanup` moved from a quoted `trap` to a
+resource registry, and four tests stopped leaking their own `$TMP`. None of them
+can be the CAUSE here: this run is `189ebda`, which predates all but the first,
+and the four prior sightings predate every one of them. But they are edits to
+exactly the mechanism this entry is chasing — an early trap, or a cleanup that
+reaches too far — so the next sighting should be read against them rather than
+assumed independent of them.
+
+---
+
+## F65 — `tests/run-all.sh` decides every verdict in the suite and is asserted on almost not at all — **shim half FIXED 2026-08-29, verdict logic still OPEN**
+
+Found by an adversarial review of v0.9.2 (2026-08-29). `run-all.sh` gained ~140
+lines in that release — a per-test `TMPDIR`, a leaked-temp counter, and a
+`mktemp` shim injected on `PATH` **for every test in the suite** — with no test
+of any kind. It cannot get one from the mutation tier either:
+`tests/falsify/targets.conf:277` excludes it deliberately, as the instrument the
+tier measures with.
+
+`tests/test-run-all-shim.sh` (added 2026-08-29) closes the shim half: it
+extracts the shim from the heredoc rather than copying it, so the two cannot
+drift, and it caught a real defect on arrival — `--tmpdir` was treated as a
+generic flag, so the shim appended an absolute template and GNU refused it.
+
+**Still uncovered, and this is the part that matters:** the runner's own VERDICT
+logic. Nothing asserts that
+
+* a test printing `FAIL:` while exiting 0 is reported FAIL (the `^FAIL:` guard —
+  the very mechanism that hole #2 of the historical scorecard says makes that
+  class catchable at all),
+* `PASS` takes precedence over `SKIP` for a file that did both,
+* a test exiting 0 having asserted nothing is reported FAIL, not PASS,
+* the `left in TMPDIR:` counter fires, and names the test that leaked.
+
+A regression in any of those does not read as "run-all.sh is broken" — it reads
+as every other test's verdict being wrong, or as a green run that measured
+nothing. That is precisely the failure class this repo built the falsify tier to
+end, sitting in the one file the tier is not allowed to look at.
+
+**Not fixed here** because the honest shape is a `tests/test-run-all.sh` that
+drives the real runner over a synthetic corpus of planted tests (one that fails
+loudly, one that fails silently with rc 0, one that asserts nothing, one that
+skips, one that leaks a temp dir) and asserts the verdict for each. That is a
+new test file rather than a mechanical edit, and it must not invoke `run-all.sh`
+recursively — this repo's own glob would collect it.
