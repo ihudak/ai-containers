@@ -6,6 +6,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## v0.9.1 — 2026-08-29
+
+**A patch: five repairs, no new keys.** Every one was found by running the local
+layer on a Mac, and **none of them can happen on Linux CI** — which is the whole
+argument for that layer existing.
+
+**The costly one was a single transient `chmod`.** A corpus came back 508 killed,
+11 survived, **zero** unproven, all 30 controls green — and exited non-zero,
+because one scaffold step returned 137 during the one pristine-baseline
+invocation an oracle gets. `scaffold` is the runner's own word for *"the oracle
+never ran"*, and a scaffold-failed **mutant** was already scored UNPROVEN for
+exactly that reason; the baseline gate was the single place reading it as a claim
+about the oracle's **code**. Ninety-seven minutes of measurement discarded by an
+event the tier already knew how to classify.
+
+**Two blocks of the tier's own tests only ever ran one branch** — they faked
+`uname` for the Darwin arm and then read the real machine for the negative one,
+so the assertion was about the host: green on the Linux that runs CI, red on
+every Mac. And **a test wrote its fixture into the working tree**, which Phase 5
+mounts `:ro`; CI's floor job checks out *inside* its container, so that whole
+class is structurally invisible there. The `:ro` mount's comment had cited a grep
+as proof no test does this. The grep was wrong; the mount is the evidence.
+
+**The parallelism question is now measured rather than retracted.** `--jobs 6`
+against `--jobs 1` on the same host and corpus bought **1.21×** — and turned two
+KILLED mutants UNPROVEN, which no ledger entry is owed, so the run scored green
+while the coverage claim quietly shrank by two. The ceiling is global fork
+throughput; workers divide it rather than add to it. The cap stays at 1, for a
+reason that now has numbers behind it.
+
+Verified end to end on a host: Phase 4 36/36, Phase 5 71/71 across all three
+arms, Phase 6 **548/548 verdicts with zero unproven and zero timeouts**, Phase 7
+clean over 161 scripts.
+
 ### Two things the mgd port found, carried back
 
 - **A fixture path that worked here only by coincidence of layout.** The
