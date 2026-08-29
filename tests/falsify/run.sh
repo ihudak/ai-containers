@@ -192,6 +192,10 @@ FR_CONF="${FALSIFY_CONF:-$FR_HERE/targets.conf}"
 # UNDER THESE CONDITIONS", which is the question a per-target baseline taken on
 # a quiet machine cannot answer (backlog F30, F32).
 FR_CONTROLS="${FALSIFY_CONTROLS:-2}"
+
+# HOW MANY TIMES THE PRISTINE BASELINE MAY BE RE-RUN, and ONLY for the one
+# channel that says the oracle never ran at all. See fr_run_baseline.
+FR_BASELINE_ATTEMPTS="${FALSIFY_BASELINE_ATTEMPTS:-3}"
 FR_MAX_UNPROVEN_PCT="${FALSIFY_MAX_UNPROVEN_PCT:-}"
 FR_MAX_ASSERTLESS="${FALSIFY_MAX_ASSERTLESS:-}"
 FR_CGROUP="${FALSIFY_CGROUP:-/sys/fs/cgroup}"
@@ -277,18 +281,43 @@ fr_perf_cpus() {
 # A failed control invalidates every kill recorded near it, so the cap is the
 # only value OBSERVED clean rather than the largest that might work.
 #
-# 2 IS NOT ON THAT LIST, AND THE REASON IS A RETRACTION. It was measured and
-# written down here as a clean negative; it was neither. Two confounds, both
-# ours: an assistant was running the hermetic suite and a second falsify job on
-# the same machine throughout, and the run also predates the fix below this
-# comment -- so one of the oracles it reported red on the PRISTINE tree was red
-# DETERMINISTICALLY, from the cap living in verify-on-host.sh, not from load.
-# A number obtained under a bug the number was being used to reason about is not
-# a measurement.
+# 2 WAS ONCE ON THAT LIST AS A CLEAN NEGATIVE, AND THAT WAS RETRACTED: two
+# confounds, both ours (a second falsify job on the same machine throughout, and
+# a run predating the fix below this comment, so one oracle was red
+# DETERMINISTICALLY rather than from load). A number obtained under a bug the
+# number was being used to reason about is not a measurement. That left
+# everything above 1 UNMEASURED rather than refuted, and this comment asked for
+# the run.
 #
-# So: 1 is the only value observed clean, and everything above it is UNMEASURED
-# rather than refuted. Measuring 2 is now cheap and honest -- the deterministic
-# failure is gone -- and if it holds, raise this and put the run here.
+# HERE IS THAT RUN. 2026-08-29, same Apple Silicon host (18 logical = 6
+# performance + 12 efficiency), whole corpus, `--jobs 6 --timeout 120` against
+# the `--jobs 1` run of the previous night:
+#
+#            mutants   wall     per mutant   controls   unproven   timeouts
+#   jobs=1       519   97.1m     11.22 s      30 / 30       0          1
+#   jobs=6       548   84.9m      9.29 s      32 / 32       2          8
+#
+# SIX WORKERS BOUGHT 21 %. Not 6x, not 2x -- 1.21x, because the constraint is a
+# GLOBAL fork/exec throughput ceiling rather than a per-core one, so adding
+# workers divides the same throughput instead of adding to it. The per-mutant
+# cost on the most expensive target moved 4.8x the wrong way for it: median
+# 43.5s -> 207.0s on tests/lib-verify-repo.sh, taking 66 % of that target's
+# clock where one worker took 14 %.
+#
+# AND IT COST MEASUREMENT. Every one of the 519 shared mutants got the same
+# verdict at 6 workers as at 1 -- except two, and both moved KILLED -> UNPROVEN:
+# tests/bash-dialect-lint.sh's f204b4ce pair ran 128.9s under one worker and
+# ~300s under six, never reaching the assertion that had been observed failing.
+# An UNPROVEN mutant is not owed a ledger entry, so check-ledger.sh scored that
+# run OK: the coverage claim stayed green while the coverage dropped by two.
+# That is the exact silent shrinkage --max-unproven-pct exists to bound, bought
+# for 12 minutes on a hundred-minute run.
+#
+# So the cap stays at 1, now for a measured reason rather than a retracted one.
+# Controls stayed green and no verdict was INVERTED, so the failure mode is
+# fewer answers rather than wrong ones -- which is why the knobs are left open:
+# an operator who wants the 21 % can take it with FALSIFY_JOBS, and should raise
+# FALSIFY_TIMEOUT with it, because the clock is what the load consumes first.
 #
 # It lives HERE, in the budget, and not in verify-on-host.sh — where it was
 # first written and where it was wrong twice over. `auto` means "work out a
@@ -1062,6 +1091,53 @@ fr_oracle_excerpt() {   # <outfile>
   ' "$1" 2>/dev/null | head -30
 }
 
+# THE PRISTINE BASELINE, WITH ONE CHANNEL RETRIED AND THE OTHERS NOT.
+#
+# `scaffold` is this runner's word for "the oracle said it could not set ITSELF
+# up", and every other place that reads it treats it as a statement about the
+# MACHINE rather than a verdict: falsify_verdict scores a scaffold-failed mutant
+# UNPROVEN precisely because "a test that never ran cannot have noticed
+# anything". The baseline gate was the one place that did not, and it read the
+# same event as "the oracle is not green on the PRISTINE tree" — a claim about
+# the oracle's code — then retired the whole target and failed the run.
+#
+# MEASURED, not theorised. A 2026-08-28 macOS host run of the whole corpus came
+# back 508 killed / 11 survived / 0 unproven with all 30 controls GREEN, and
+# still exited non-zero: one `chmod +x` inside test-integration-shim.sh's
+# scaffold returned 137 — SIGKILL, nothing on stderr, with `ulimit -u` at 10666
+# against 417 processes in use, so not fork exhaustion — during the ONE baseline
+# invocation that oracle gets. That retired all 29 mutants of
+# tests/integration/docker-shim.sh and, because the corpus exits non-zero, the
+# survivor ratchet the phase exists to pair with it never ran at all. Ninety-
+# seven minutes of measurement discarded by a single transient exec.
+#
+# So the retry is scoped to exactly that channel and nothing else. An oracle
+# that goes red with a FAIL: line IS a statement about the code and is taken at
+# its word on the first attempt — re-running it would only spend the clock
+# before reaching the same conclusion, and tests/test-falsify-run.sh asserts the
+# counter reads ONE for that case. A persistent scaffold failure still skips the
+# target and still fails the run; what changes is that it must be persistent,
+# and that it is then named for what it is.
+fr_run_baseline() {   # <oracle> — leaves FALSIFY_* set by the LAST attempt
+  local oracle="$1" attempt=1 bl
+  while :; do
+    falsify_run_oracle "$(fr_slot_tree 0)" "$oracle" "$FR_OUT/baseline.log" \
+      "$(fr_effective_timeout "$oracle")" "baseline"
+    falsify_verdict "$FALSIFY_RC" "$FR_OUT/baseline.log" "$FALSIFY_TIMED_OUT"
+    [[ "$FALSIFY_SIGNAL" == *scaffold* ]] || return 0
+    (( attempt >= FR_BASELINE_ATTEMPTS )) && return 0
+    # NAMED EVERY TIME, even when the retry then succeeds. A scaffold failure
+    # that is silently absorbed is a machine getting worse with nothing saying
+    # so, and the whole reason this is bounded at FR_BASELINE_ATTEMPTS rather
+    # than looped until green.
+    fr_warn "the PRISTINE baseline for '$oracle' could not SET ITSELF UP (attempt $attempt of $FR_BASELINE_ATTEMPTS, signal=$FALSIFY_SIGNAL) — that is the environment, not a verdict, so it is retried rather than read as a red oracle"
+    while IFS= read -r bl; do
+      fr_warn "  baseline attempt $attempt: $bl"
+    done < <(fr_oracle_excerpt "$FR_OUT/baseline.log")
+    attempt=$(( attempt + 1 ))
+  done
+}
+
 fr_run_control() {   # <slot> <target> <oracle> <n> <resultfile>
   local slot="$1" target="$2" oracle="$3" n="$4" res="$5"
   local tree out verdict
@@ -1542,11 +1618,23 @@ falsify_main() {
     # An oracle that is not green on the UNMUTATED tree cannot distinguish
     # anything: every mutant would be reported KILLED. rc=2 is named for what
     # it is, because that is what a misspelled oracle looks like.
-    falsify_run_oracle "$(fr_slot_tree 0)" "$oracle" "$FR_OUT/baseline.log" "$(fr_effective_timeout "$oracle")" "baseline"
-    falsify_verdict "$FALSIFY_RC" "$FR_OUT/baseline.log" "$FALSIFY_TIMED_OUT"
+    fr_run_baseline "$oracle"
     if [[ "$FALSIFY_VERDICT" != "SURVIVED" ]]; then
       if (( FALSIFY_RC == 2 )); then
         fr_err "oracle '$oracle' matched NO test (run-all.sh exit 2) — a misspelled oracle name would report every mutant of $target as KILLED. Skipping $target."
+      elif [[ "$FALSIFY_SIGNAL" == *scaffold* ]]; then
+        # A DIFFERENT FINDING FROM A RED ORACLE, and it has to read differently.
+        # "not green on the PRISTINE tree" sends a reader to the oracle's code;
+        # this one sends them to the machine. Both skip the target, because
+        # nothing can be measured through an oracle that cannot start — but a
+        # reader who is told the wrong thing looks in the wrong place, and on
+        # the run that produced this branch that cost a day.
+        fr_err "oracle '$oracle' could not SET ITSELF UP on the PRISTINE tree, $FR_BASELINE_ATTEMPTS attempt(s) running (rc=$FALSIFY_RC, signal=$FALSIFY_SIGNAL) — that is the ENVIRONMENT rather than the oracle, but nothing can be measured through it. Skipping $target."
+        if grep -qE '^(FAIL:|SCAFFOLD-FAILED:)' "$FR_OUT/baseline.log" 2>/dev/null; then
+          while IFS= read -r bl; do
+            fr_warn "  baseline output: $bl"
+          done < <(fr_oracle_excerpt "$FR_OUT/baseline.log")
+        fi
       else
         fr_err "oracle '$oracle' is not green on the PRISTINE tree (rc=$FALSIFY_RC, signal=$FALSIFY_SIGNAL) — every mutant of $target would be reported KILLED. Skipping $target."
         # WHAT WENT RED, not just that something did. Skipping a target retires
@@ -1568,8 +1656,16 @@ falsify_main() {
       # count is what leaves the corpus: every mutant of this target, none of
       # which will be attempted.
       skipped_n="$(grep -c . "$mutants" 2>/dev/null || printf 0)"
+      # THREE REASONS, NOT TWO. A target retired because the oracle could not
+      # START is not the same finding as one retired because the oracle went
+      # RED, and the record is the only place a later reader can tell them
+      # apart — the stderr that explains it is exactly what a summary reader
+      # filters out. A new VALUE in an existing field, never a renamed one: the
+      # two that were here keep meaning what they meant.
       printf 'SKIPPED|%s|%s|%s|%s\n' "$target" "$oracle" "$skipped_n" \
-        "$( (( FALSIFY_RC == 2 )) && printf 'no-test-matched' || printf 'baseline-not-green' )"
+        "$( if (( FALSIFY_RC == 2 )); then printf 'no-test-matched'
+            elif [[ "$FALSIFY_SIGNAL" == *scaffold* ]]; then printf 'baseline-scaffold'
+            else printf 'baseline-not-green'; fi )"
       FR_SKIPPED_TARGETS=$(( FR_SKIPPED_TARGETS + 1 ))
       FR_SKIPPED_MUTANTS=$(( FR_SKIPPED_MUTANTS + skipped_n ))
       rc=1
