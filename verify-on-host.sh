@@ -316,8 +316,15 @@ else
     # Nothing in this sequence needs write access: apt-get writes only to the
     # container's own package DB; `git config --global` writes to $HOME/.gitconfig
     # (root's own home, never redirected here); every test file's scratch output
-    # goes through mktemp/mktemp -d (confirmed by grepping every output
-    # redirect in tests/*.sh for one that ISN'T $TMP-scoped — none are). Getting
+    # goes through mktemp/mktemp -d. That last clause once cited a GREP over
+    # tests/*.sh as its evidence, and the grep was wrong: on 2026-08-29 this
+    # mount caught tests/test-falsify-generate.sh writing a fixture to
+    # tests/falsify/tmp-cantrun-$$.sh, inside the tree, where the redirect
+    # failed and every assertion below it then reported on a file that was never
+    # written. THIS MOUNT is the evidence — CI's suite-floor job checks out
+    # INSIDE its container, so the tree is writable there and the whole class is
+    # invisible to it. The property holds because being :ro is what enforces it,
+    # not because anything proved it in advance. Getting
     # this wrong fails LOUD: the very next write attempt errors immediately with
     # "Read-only file system" on the next run. The alternative — staying :rw and
     # being wrong about something above — is silent corruption of a real
@@ -457,9 +464,13 @@ fl_timeout="${FALSIFY_TIMEOUT:-120}"
 # not to run it again. Measured on one Apple Silicon machine, same 264-mutant
 # corpus, same hardware: ~76s inside the Linux dev container at --jobs 8,
 # THIS TIER RUNS SERIALLY ON macOS. fr_fork_cost_cap narrows `auto` to ONE
-# worker there -- deliberately and by measurement, because --jobs 2 put 2 of 24
-# controls red. So the wall clock is the whole corpus, one mutant at a time, on
-# the platform that is slowest at forking.
+# worker there, and the run that establishes it is recorded beside that function
+# rather than repeated here -- the short version being that six workers bought
+# 1.21x and turned two KILLED mutants UNPROVEN, because the ceiling is a GLOBAL
+# fork throughput one and more workers divide it rather than add to it. So the
+# wall clock is the whole corpus, one mutant at a time, on the platform that is
+# slowest at forking, and that is the honest number rather than a pessimistic
+# one.
 #
 # The figure below is stated as MEASURED rather than promised, because the
 # estimate it replaced was neither. That one said "~45 MINUTES", carried a
@@ -469,8 +480,12 @@ fl_timeout="${FALSIFY_TIMEOUT:-120}"
 # hung. An estimate nothing re-measures is worse than none: it is the banner
 # that decides whether a healthy run gets killed.
 #
-# It also moves with the corpus. That same run was the first to measure two
-# targets that had been silently SKIPPED, which is most of the growth.
+# It also moves with the corpus, so the banner names the mutant count it was
+# taken over. 97 min over 519 (2026-08-28, --jobs 1); the corpus is 548 today,
+# which is the same rate and about 102 min. THIRTY-SIX PER CENT OF IT IS ONE
+# TARGET -- tests/lib-verify-repo.sh, whose 55 mutants each run a three-oracle
+# set -- so anyone shortening this phase should start there rather than with
+# --jobs.
 if [[ "$(uname -s)" == "Darwin" ]]; then
   # THE `(jobs=X, timeout=Y)` SUBSTRING IS AN ASSERTED CONTRACT, not prose.
   # tests/test-verify-exit-code.sh greps for it literally, so that an operator
@@ -481,9 +496,12 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   # `tests/lib-verify-repo.sh` not being green on the pristine tree, three
   # targets deep into a two-hour corpus run. Extra detail goes on its OWN line.
   sub "running the corpus (jobs=$fl_jobs, timeout=$fl_timeout) — 1 worker on macOS."
-  sub "  EXPECT 1.5-2 HOURS: measured 110 min on 2026-08-28, and it grows with the corpus."
-  sub "  It is not hung. This tier forks constantly, macOS is slow at it, and the"
-  sub "  worker cap is 1 here by measurement (--jobs 2 put 2 of 24 controls red)."
+  sub "  EXPECT 1.5-2 HOURS: 97 min over 519 mutants on 2026-08-28, and it grows"
+  sub "  with the corpus. It is not hung. This tier forks constantly and macOS is"
+  sub "  slow at it. More workers barely help and cost measurement: --jobs 6 ran"
+  sub "  the same corpus 1.21x faster and turned two KILLED mutants UNPROVEN"
+  sub "  (2026-08-29, recorded beside fr_fork_cost_cap). FALSIFY_JOBS overrides;"
+  sub "  raise FALSIFY_TIMEOUT with it, because the clock is what load eats first."
 else
   sub "running the corpus (jobs=$fl_jobs, timeout=$fl_timeout) — a few minutes"
 fi

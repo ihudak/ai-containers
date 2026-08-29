@@ -309,7 +309,20 @@ fi
 #
 # Demonstrated by making the gate un-runnable (rc 127) rather than argued: the
 # generator must exit non-zero and name the cause, and must NOT report a tally.
-cantrun="$TESTS_DIR/falsify/tmp-cantrun-$$.sh"
+# IN $TMP, NOT IN THE REPO. The rewritten copy used to be dropped beside the
+# original as tests/falsify/tmp-cantrun-$$.sh, because generate.sh sources
+# `../portability.sh` relative to its own directory and a copy anywhere else
+# could not find it. That put the ONLY write this suite makes outside mktemp
+# into the developer's working tree -- and verify-on-host.sh's Phase 5 mounts
+# that tree :ro into the bash-floor container, where the redirect simply fails
+# and every assertion below it reports on a file that was never written
+# ("No such file or directory", measured 2026-08-28). The layout is reproduced
+# instead: a falsify/ directory with portability.sh as its sibling, which is all
+# the copy needs to resolve its source line.
+cantrun_root="$TMP/cantrun"
+mkdir -p "$cantrun_root/falsify"
+cp "$ENGINE_DIR/tests/portability.sh" "$cantrun_root/portability.sh"
+cantrun="$cantrun_root/falsify/generate.sh"
 sed 's|bash -n "\$_FALSIFY_SYNTAX_TMP" 2>/dev/null|bash -n /nonexistent/nope.sh 2>/dev/null|' \
   "$GEN" > "$cantrun"
 if grep -q 'nonexistent/nope.sh' "$cantrun"; then
@@ -318,7 +331,7 @@ else
   fail "the un-runnable-gate fixture was rewritten — the demonstration below is vacuous"
 fi
 cr_out="$(bash "$cantrun" "$ENGINE_DIR/tools-lib.sh" 2>"$TMP/cantrun.err")"; cr_rc=$?
-rm -f "$cantrun"
+rm -rf "$cantrun_root"
 (( cr_rc != 0 )) \
   && pass "a gate that cannot run FAILS the generation (rc=$cr_rc)" \
   || fail "a gate that cannot run FAILS the generation — got rc=0, so a short corpus would be reported as a complete one"

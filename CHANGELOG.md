@@ -6,6 +6,95 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### One transient `chmod` retired a target and discarded ninety-seven minutes
+
+A macOS Phase 6 run came back 508 killed, 11 survived, **zero** unproven, with
+all 30 controls green — and exited non-zero. One `chmod +x` inside
+`test-integration-shim.sh`'s scaffold returned 137 (SIGKILL, nothing on stderr,
+`ulimit -u` at 10666 against 417 processes in use, so not fork exhaustion)
+during the single pristine-baseline invocation each target gets. That retired
+all 29 mutants of `tests/integration/docker-shim.sh`, and because the corpus
+then exits non-zero, the survivor ratchet the phase exists to pair with it never
+ran at all.
+
+`scaffold` is this runner's own word for "the oracle said it could not set
+ITSELF up", and every other place that reads it treats the event as the
+machine's rather than the code's: `falsify_verdict` scores a scaffold-failed
+mutant UNPROVEN for exactly that reason, and the record format says so outright.
+The baseline gate was the one place that did not — it read the same event as
+"the oracle is not green on the PRISTINE tree", which is a claim about the
+oracle's code, and skipped the target on it.
+
+`fr_run_baseline` now retries that one channel, `FALSIFY_BASELINE_ATTEMPTS`
+times (default 3), and nothing else: an oracle that goes red with a `FAIL:` line
+is a statement about the code and is still taken at its word on the first
+attempt — pinned by a counter that must read exactly one. A collapse that
+persists still retires the target and still fails the run, but it must now be
+persistent, it is named as the environment rather than as a red oracle, and the
+`SKIPPED` record carries a third reason (`baseline-scaffold`) so a summary
+reader can tell the two apart without the stderr they filter out.
+
+### More workers on macOS buy 21 %, and cost two mutants
+
+`fr_fork_cost_cap` capped `--jobs auto` at one worker on Darwin, and the comment
+under it recorded a **retraction** rather than a measurement: the `--jobs 2` run
+it once cited had been taken under two confounds of ours, which left everything
+above 1 unmeasured rather than refuted. That comment asked for the run. Here it
+is — same host, whole corpus, `--jobs 6 --timeout 120` against the previous
+night's `--jobs 1`:
+
+| | mutants | wall | per mutant | controls | unproven | timeouts |
+|---|---|---|---|---|---|---|
+| `--jobs 1` | 519 | 97.1 min | 11.22 s | 30 / 30 | 0 | 1 |
+| `--jobs 6` | 548 | 84.9 min | 9.29 s | 32 / 32 | 2 | 8 |
+
+Six workers bought **1.21×**, because the ceiling is a *global* fork/exec
+throughput one rather than a per-core one — so workers divide the same
+throughput instead of adding to it. The most expensive target paid 4.8× per
+mutant for it (median 43.5 s → 207.0 s on `tests/lib-verify-repo.sh`, taking
+66 % of that target's clock where one worker took 14 %).
+
+And it cost measurement. Every one of the 519 shared mutants got the same
+verdict at six workers as at one **except two**, and both moved KILLED →
+UNPROVEN — `tests/bash-dialect-lint.sh`'s `f204b4ce` pair ran 128.9 s under one
+worker and ~300 s under six, never reaching the assertion that had been observed
+failing. An unproven mutant is not owed a ledger entry, so `check-ledger.sh`
+scored that run OK: the coverage claim stayed green while the coverage dropped
+by two. Controls stayed green and no verdict was *inverted*, so the failure mode
+is fewer answers rather than wrong ones.
+
+The cap therefore stays at 1, now for a measured reason. The knobs stay open for
+an operator who wants the 21 %, and the banner says to raise `FALSIFY_TIMEOUT`
+alongside `FALSIFY_JOBS`, because the clock is what load consumes first. It also
+now names where the time actually goes: 36 % of the run is one target.
+
+### Two blocks of the mutation tier's own tests only ever ran one branch
+
+`tests/test-falsify-run.sh` faked `uname` to exercise `fr_fork_cost_cap`'s
+Darwin arm and then read the **real** machine for the negative arm, so "the cap
+is empty off Darwin" was an assertion about the host: green on Linux CI, red on
+every Mac. The `--jobs auto` core-mix section had the same shape one probe
+further out — it stubbed `sysctl` and `nproc` but not `uname`, so the Darwin cap
+collapsed all four of its expectations to 1 on a Mac while CI stayed green. Five
+assertions, all failing only on the platform the code is written for. Both arms
+are now faked in both directions.
+
+### A test wrote its fixture into the working tree, and only the local layer could see it
+
+`tests/test-falsify-generate.sh` dropped a rewritten copy of `generate.sh` at
+`tests/falsify/tmp-cantrun-$$.sh` — beside the original, because the copy sources
+`../portability.sh` relative to its own directory. `verify-on-host.sh`'s Phase 5
+mounts the working tree `:ro` into the bash-floor container, where that redirect
+simply fails, and every assertion below it then reported on a file that was
+never written. CI's `suite-floor` job checks out *inside* its container, so the
+tree is writable there and the whole class is invisible to it.
+
+The `:ro` mount was right and stays; the fixture now reproduces the two-file
+layout it needs inside `mktemp -d`. The comment above that mount claimed the
+property was confirmed by grepping every redirect in `tests/*.sh` — it was not,
+and the mount itself is what caught it, which is the only guard in this repo
+that could have.
+
 ## v0.9.0 — 2026-08-28
 
 **A minor bump, and the reason is `shellcheck=ON`.** A new `sandbox.conf` key

@@ -23,7 +23,7 @@
 #      assertion that cannot fail is not an assertion.
 #
 # FAST BY CONSTRUCTION: everything runs against a tiny fixture repo (one 4-mutant
-# target, four one-purpose oracles) built in $TMP, never the real 248-mutant
+# target, four one-purpose oracles) built in $TMP, never the real 548-mutant
 # corpus. The fixture's tests/run-all.sh is a COPY of the real driver, so the
 # oracle contract under test is the real one.
 #
@@ -289,6 +289,40 @@ printf 'PASS: flaky oracle run %s\n' "$n"
 FLAKY
 chmod +x "$FX/tests/test-fx-flaky.sh"
 
+# Oracle K — its SCAFFOLD collapses on its first N invocations and then works.
+# Stands in for the one event the baseline gate could not survive: a transient
+# exec failure during the single pristine baseline run each target gets. The
+# trigger is a counter, not real contention, for the reason the flaky oracle
+# above gives — a test that waits for a race is a test that fails somewhere
+# else. Past the Nth invocation it behaves exactly like oracle A, so a target
+# whose baseline was retried is genuinely measured rather than merely
+# un-skipped.
+cat > "$FX/tests/test-fx-scafflaky.sh" <<'SCAFFLAKY'
+#!/usr/bin/env bash
+set -uo pipefail
+FX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+n=0
+[[ -f "${FX_SCAF_COUNT:-}" ]] && n="$(cat "$FX_SCAF_COUNT")"
+n=$(( n + 1 ))
+printf '%s' "$n" > "$FX_SCAF_COUNT"
+if (( n <= ${FX_SCAF_UNTIL:-0} )); then
+  printf 'SCAFFOLD-FAILED: chmod +x the recorder: rc=137, NOTHING on stderr
+'
+  exit 1
+fi
+# shellcheck source=/dev/null
+source "$FX_DIR/fixture-lib.sh"
+if [[ "$(fx_bigger 5 3)" == "yes" && "$(fx_bigger 3 5)" == "no" ]]; then
+  printf 'PASS: fx_bigger orders its arguments
+'
+  exit 0
+fi
+printf 'FAIL: fx_bigger orders its arguments
+'
+exit 1
+SCAFFLAKY
+chmod +x "$FX/tests/test-fx-scafflaky.sh"
+
 ( cd "$FX" && git init -q -b main . >/dev/null 2>&1 || git init -q . >/dev/null 2>&1
   git add -A && git -c user.email=t@example -c user.name=t commit -qm fixture ) >/dev/null 2>&1
 if ( cd "$FX" && git rev-parse HEAD >/dev/null 2>&1 ); then
@@ -309,6 +343,7 @@ CONF_SCAFFOLD="$(conf scaffold 'fixture-lib.sh|EXECUTED-WHOLE|test-fx-scaffold.s
 CONF_BLIND="$(conf blind 'fixture-lib.sh|EXECUTED-WHOLE|test-fx-blind.sh')"
 CONF_SIGNAL="$(conf signal 'fixture-lib.sh|EXECUTED-WHOLE|test-fx-signal.sh')"
 CONF_ASSERTLESS="$(conf assertless 'fixture-lib.sh|EXECUTED-WHOLE|test-fx-assertless.sh')"
+CONF_SCAFFLAKY="$(conf scafflaky 'fixture-lib.sh|EXECUTED-WHOLE|test-fx-scafflaky.sh')"
 # The blind oracle is FIRST deliberately: a runner that ran only the first name
 # would report the fx_bigger mutant SURVIVED, which is exactly the regression
 # this row type exists to make impossible.
@@ -1448,20 +1483,32 @@ check "mode drift is repaired, not just detected" "" "$sf_mode_after"
 # `uname` is faked rather than the platform sniffed, so both branches run on
 # every machine. The cap must also be INERT off Darwin: a narrowing probe that
 # fires everywhere would silently serialise Linux CI.
-fake_uname_dir="$TMP/fake-uname"; mkdir -p "$fake_uname_dir"
-printf '#!/usr/bin/env bash\n[ "$1" = "-s" ] && { echo Darwin; exit 0; }\nexec /usr/bin/uname "$@"\n' \
-  > "$fake_uname_dir/uname"
-chmod +x "$fake_uname_dir/uname"
-cap_under() {  # <PATH-prefix or ""> → what fr_fork_cost_cap returns there
-  ( set +u; [[ -n "$1" ]] && export PATH="$1:$PATH"
+# BOTH BRANCHES ARE FAKED, and the off-Darwin one is the whole reason. Faking
+# only Darwin leaves the negative arm reading the REAL machine, so
+# "the cap is empty off Darwin" is an assertion about the host rather than about
+# the code -- green on the Linux that happens to run CI, red on every Mac. That
+# is this repo's most-repeated defect (the symlinked-TMPDIR class), and it cost
+# this very block: a 2026-08-28 host run failed here with `expected '', got '1'`
+# on a machine where the claim was never in question.
+fake_uname() {   # <dir> <kernel name> -> a uname on PATH reporting that kernel
+  mkdir -p "$1"
+  printf '#!/usr/bin/env bash\n[ "$1" = "-s" ] && { echo %s; exit 0; }\nexec /usr/bin/uname "$@"\n' \
+    "$2" > "$1/uname"
+  chmod +x "$1/uname"
+}
+fake_uname_dir="$TMP/fake-uname"          ; fake_uname "$fake_uname_dir" Darwin
+fake_uname_linux="$TMP/fake-uname-linux"  ; fake_uname "$fake_uname_linux" Linux
+cap_under() {  # <PATH-prefix> → what fr_fork_cost_cap returns there
+  ( set +u; export PATH="$1:$PATH"
     # shellcheck source=/dev/null
     source "$RUN" >/dev/null 2>&1
     fr_fork_cost_cap )
 }
-# The fake's own premise, checked before anything is concluded from it.
+# Each fake's own premise, checked before anything is concluded from it.
 check "scaffold: the fake uname reports Darwin" "Darwin" "$(PATH="$fake_uname_dir:$PATH" uname -s)"
+check "scaffold: the other fake uname reports Linux" "Linux" "$(PATH="$fake_uname_linux:$PATH" uname -s)"
 check "the fork-cost cap is 1 on Darwin" "1" "$(cap_under "$fake_uname_dir")"
-check "the fork-cost cap is EMPTY off Darwin, so it narrows nothing" "" "$(cap_under "")"
+check "the fork-cost cap is EMPTY off Darwin, so it narrows nothing" "" "$(cap_under "$fake_uname_linux")"
 # And it reaches the budget: a cap of 1 binds on any machine, so this pins the
 # narrowing without assuming a host CPU count.
 check "the Darwin cap narrows fr_cpu_budget to 1" "1" \
@@ -1630,6 +1677,71 @@ check "control: a healthy oracle reports its control passing" "1" \
 check "  … and the run exits 0" "0" "$FX_RC"
 check "  … having emitted no CONTROL|FAIL line" "0" \
   "$(grep -c '^CONTROL|FAIL|' <<< "$FX_OUT")"
+unset FX_FLAKY_FROM FX_FLAKY_COUNT
+
+# ── a baseline that could not SET ITSELF UP is the environment, not a verdict ──
+# `scaffold` is this runner's word for "the oracle never ran", and falsify_verdict
+# scores a scaffold-failed MUTANT UNPROVEN for exactly that reason. The baseline
+# gate read the same event as "the oracle is not green on the PRISTINE tree" — a
+# claim about the oracle's CODE — and retired the whole target on it.
+#
+# What that cost, measured: a 2026-08-28 macOS host run came back 508 killed /
+# 11 survived / 0 unproven with all 30 controls GREEN, and still exited
+# non-zero. One `chmod +x` inside test-integration-shim.sh's scaffold returned
+# 137 during the ONE baseline invocation that oracle gets, which retired all 29
+# mutants of tests/integration/docker-shim.sh — and because the corpus exits
+# non-zero, the survivor ratchet Phase 6 exists to pair with it never ran.
+# Ninety-seven minutes of measurement discarded by a single transient exec.
+export FX_SCAF_COUNT="$TMP/scaf.count"
+: > "$FX_SCAF_COUNT"; export FX_SCAF_UNTIL=1
+FALSIFY_BASELINE_ATTEMPTS=3 fx_run "$RUN" "$CONF_SCAFFLAKY" "$FX" "$TMP/wit-scaf1" --jobs 1 --controls 1
+check "a baseline that collapses ONCE does not retire the target" "0" \
+  "$(grep -c '^SKIPPED|' <<< "$FX_OUT")"
+check "  … the target is genuinely measured, not merely un-skipped" "1" \
+  "$( [[ "$(grep -c '^MUTANT|' <<< "$FX_OUT")" -gt 0 ]] && printf 1 || printf 0 )"
+check "  … and the run exits 0" "0" "$FX_RC"
+# NAMED EVEN WHEN THE RETRY WORKS. A machine quietly getting worse with nothing
+# saying so is the reason this is bounded rather than looped until green.
+grep -q 'could not SET ITSELF UP (attempt 1 of 3' <<< "$FX_ERR" \
+  && pass "  … while still reporting the collapse it absorbed" \
+  || fail "  … while still reporting the collapse it absorbed: $FX_ERR"
+grep -q 'the environment, not a verdict' <<< "$FX_ERR" \
+  && pass "  … and saying which of the two it is" \
+  || fail "  … and saying which of the two it is: $FX_ERR"
+
+# THE RETRY IS BOUNDED, and a persistent collapse still retires the target —
+# nothing can be measured through an oracle that cannot start. What changes is
+# that it must be PERSISTENT, and that it is then named for what it is.
+: > "$FX_SCAF_COUNT"; export FX_SCAF_UNTIL=9999
+FALSIFY_BASELINE_ATTEMPTS=3 fx_run "$RUN" "$CONF_SCAFFLAKY" "$FX" "$TMP/wit-scaf2" --jobs 1 --controls 1
+check "a baseline that ALWAYS collapses still retires the target" "1" \
+  "$(grep -c '^SKIPPED|' <<< "$FX_OUT")"
+check "  … and the run FAILS rather than reporting a clean corpus" "1" "$FX_RC"
+# THE BOUND, OBSERVED. Without this the loop could be running once, or forever,
+# and every other assertion here would read the same.
+check "  … having tried exactly --baseline-attempts times" "3" "$(cat "$FX_SCAF_COUNT")"
+# A DIFFERENT REASON IN THE RECORD, because stderr is what a summary reader
+# filters out and the record is then the only place the two can be told apart.
+check "  … recording it as a SCAFFOLD skip, not as a red oracle" "1" \
+  "$(grep -c '^SKIPPED|fixture-lib.sh|test-fx-scafflaky.sh|[0-9]*|baseline-scaffold$' <<< "$FX_OUT")"
+grep -q 'could not SET ITSELF UP on the PRISTINE tree' <<< "$FX_ERR" \
+  && pass "  … and sending the reader at the machine rather than at the oracle" \
+  || fail "  … and sending the reader at the machine rather than at the oracle: $FX_ERR"
+unset FX_SCAF_UNTIL FX_SCAF_COUNT
+
+# THE NEGATIVE CONTROL, and the one that keeps the retry SCOPED. An oracle that
+# goes red with a FAIL: line IS a statement about the code, and re-running it
+# would only spend the clock before reaching the same conclusion. The counter is
+# the assertion: one invocation, not three.
+export FX_FLAKY_COUNT="$TMP/flaky.count"; : > "$FX_FLAKY_COUNT"; export FX_FLAKY_FROM=1
+FALSIFY_BASELINE_ATTEMPTS=3 fx_run "$RUN" "$CONF_FLAKY" "$FX" "$TMP/wit-scaf3" --jobs 1 --controls 1
+check "a baseline that goes RED is taken at its word on the first attempt" "1" \
+  "$(cat "$FX_FLAKY_COUNT")"
+check "  … and its target is retired as before" "1" \
+  "$(grep -c '^SKIPPED|fixture-lib.sh|test-fx-flaky.sh|[0-9]*|baseline-not-green$' <<< "$FX_OUT")"
+grep -q 'is not green on the PRISTINE tree' <<< "$FX_ERR" \
+  && pass "  … still named as a red oracle, not as an environment failure" \
+  || fail "  … still named as a red oracle, not as an environment failure: $FX_ERR"
 unset FX_FLAKY_FROM FX_FLAKY_COUNT
 
 # --controls 0 disables them, and SAYS SO with a zero total rather than by
@@ -1875,11 +1987,20 @@ check "a watchdog that fires on the deadline reports no lateness" "0" "$(watch_l
 # `sysctl` is stubbed rather than read: this assertion has to hold on the Linux
 # CI that has no perflevels and on a Mac that does, so the machine underneath
 # must not be able to change the answer.
+#
+# AND SO IS `uname`, for the same reason and one probe further out. Stubbing the
+# core counts but not the kernel name leaves fr_fork_cost_cap reading the real
+# machine, and its Darwin branch caps the budget at 1 -- which collapses every
+# expectation in this section to 1 on a Mac while CI stays green. Measured: a
+# 2026-08-28 host run failed all four of the checks below with `got '1'`, none
+# of which is about the fork-cost cap at all. This section is about the CORE
+# MIX; the cap has its own section above, where both of its branches are faked.
 cpu_budget() {   # <hw.ncpu> <hw.perflevel0.logicalcpu, or empty for absent> → workers
   ( set +u
     # shellcheck source=/dev/null
     source "$RUN" >/dev/null 2>&1
     _ncpu="$1"; _perf="$2"
+    uname() { [[ "$1" == "-s" ]] && { printf 'Linux\n'; return 0; }; return 1; }
     sysctl() {
       case "${3:-$2}" in
         hw.ncpu) printf '%s\n' "$_ncpu" ;;
