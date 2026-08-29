@@ -134,7 +134,7 @@ EOF
 # `exit 2`, which kills the whole sourcing process (not just this loop) before
 # the requested function is ever called.
 # Same IT_SOURCE_ONLY cut is explained from the other two sides at
-# tests/integration/run.sh:785 and tests/test-integration-runner.sh:35 — an edit
+# tests/integration/run.sh:870 and tests/test-integration-runner.sh:35 — an edit
 # to any of the three should check the other two have not drifted.
 while [[ -z "${IT_SOURCE_ONLY:-}" && $# -gt 0 ]]; do
   # A value-taking option with no value must be a usage error, not a crash.
@@ -752,7 +752,13 @@ ensure_caps_image() {  # $@=selected case files
 it_reclaim_scratch() {   # <image> <dir>
   local img="$1" dir="$2"
   [[ -n "$img" && -n "$dir" && -d "$dir" ]] || return 0
-  docker run --rm -v "$dir:/scratch" --entrypoint chown "$img" \
+  # --pull=never: `docker run` on a tag that is not present locally does not
+  # fail, it reaches for the REGISTRY. This runs during teardown — from the EXIT
+  # trap in the sweep's case — where an outbound fetch is both surprising and
+  # slow, and where the thing fetched would then be run AS ROOT over a host bind
+  # mount. A missing image must fail locally and warn, which is what the callers
+  # already handle.
+  docker run --rm --pull=never -v "$dir:/scratch" --entrypoint chown "$img" \
     -R "$(id -u):$(id -g)" /scratch >/dev/null 2>&1 || true
   return 0
 }
@@ -1366,18 +1372,32 @@ for v in $(selected_variants $selected); do
     fi
   done
 
+  # Ownership first, and OUTSIDE the rmi's gate. The cases just ran as root in
+  # containers holding $IT_SCRATCH, so this variant is exactly what can leave a
+  # root-owned directory the host sweep cannot unlink — and this image is the
+  # one guaranteed to exist right now. Whether it was REUSED, and whether the
+  # user asked to KEEP it, say nothing about that; sharing the rmi's condition
+  # was a mis-gating with two distinct consequences, both live:
+  #
+  #   --reuse-image  the reclaim never ran with the variant's image, so sweep()
+  #                  fell back to $IT_IMAGE — the DEFAULT tag, which a
+  #                  `--variant agents` run never builds. `docker run` on a
+  #                  missing tag does not fail locally, it reaches for the
+  #                  REGISTRY, from inside the EXIT trap. That is nightly's
+  #                  packages-agents shape exactly.
+  #   --keep         nothing was reclaimed at all, so the kept scratch stayed
+  #                  part root-owned and needed sudo to remove — the same
+  #                  silent leak this exists to end, relocated to the kept path.
+  #
+  # Unconditional also means the DEFAULT variant reclaims here rather than only
+  # via sweep(), which matters for exactly the runs sweep() does not remove:
+  # --keep, and any run with a failing case.
+  it_reclaim_scratch "$variant_img" "$IT_SCRATCH"
   # Reclaim the disk before the next variant. Never the default variant: --keep
   # and the existing sweep() own that one — sweep() targets $IT_IMAGE, which
   # (per the comment above the loop) is always still the default here, so
   # this variant-scoped rmi and sweep()'s own never collide or double up.
   if [[ "$v" != "default" && "$reuse_image" -eq 0 && "$keep" -eq 0 ]]; then
-    # Ownership first, while this image still exists. The cases just run as
-    # root inside containers holding $IT_SCRATCH, so this variant is exactly
-    # what can leave a root-owned directory the host sweep cannot unlink —
-    # and once the image is gone, sweep() has nothing to start a container
-    # from unless the default variant also ran. In a `--variant agents` run it
-    # did not, so doing this after the rmi below would be doing it never.
-    it_reclaim_scratch "$variant_img" "$IT_SCRATCH"
     docker rmi "$variant_img" >/dev/null 2>&1 || true
   fi
 done

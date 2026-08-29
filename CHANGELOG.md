@@ -6,6 +6,64 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### What an adversarial review of v0.9.2 found
+
+Five defects, all in the release's own new code, plus the first assertion the
+`mktemp` shim has ever had.
+
+- **The failure report still lost the one line explaining a dead container.**
+  `assert_runs` captured `docker exec`'s output with the `2>&1` *inside* the
+  container's `bash -c`, which merges the tool's stderr but not the docker
+  CLI's. Against a removed container `out` came back empty, the dump printed a
+  bare `error:` label, and the daemon's `Error response from daemon: …` escaped
+  **unindented** — where the report's context rule drops it and `it_diagnose`'s
+  dump has already pushed it out of the tail window. Fixed at the source with a
+  second, outer redirect, so the message lands on the `error:` line rather than
+  needing the runner to learn docker-specific text.
+- **The ownership reclaim shared the image removal's gate.** `it_reclaim_scratch`
+  sat inside `[[ $v != default && $reuse_image -eq 0 && $keep -eq 0 ]]` — but
+  whether an image was *reused*, or the user asked to *keep* it, says nothing
+  about whether a case left root-owned files behind. Two live consequences:
+  under `--reuse-image` the reclaim never ran with the variant's image, so the
+  sweep fell back to `$IT_IMAGE` — the default tag a `--variant agents` run
+  never builds, and `docker run` on a missing tag reaches for the **registry**,
+  from inside the `EXIT` trap (nightly's `packages-agents` job is that shape
+  exactly); under `--keep` nothing was reclaimed at all, leaving the kept
+  scratch root-owned and needing `sudo`. The reclaim is now unconditional and
+  only the `docker rmi` stays gated, and the container runs `--pull=never` so a
+  missing image fails locally instead of fetching one to run as root over a
+  host bind mount.
+- **The resource registry leaked any path containing a space.** `it_track`
+  joined with spaces and `it_cleanup` iterated `for r in $_it_resources`
+  unquoted, so a tracked path was split into fragments matching no
+  `container:`/`dir:` prefix and silently survived — reproduced with
+  `TMPDIR="/tmp/sp ace"`. Newline-delimited now, read back with
+  `IFS= read -r`. The quoted trap this registry replaced did not have the hole,
+  so it was a regression introduced by the cure.
+- **The `mktemp` shim turned `--tmpdir` into an error.** `--tmpdir` and
+  `--tmpdir=DIR` fell into the generic `-*` arm, so the shim appended an
+  absolute template and GNU refused it outright. They are the caller naming a
+  directory, exactly like `-p`.
+- **A comment claimed both `safe.directory` lines were needed.** `*` subsumes
+  `/w`; the `/w` entry is kept for what it documents, not because anything
+  depends on it.
+
+`tests/test-run-all-shim.sh` is new, and closes the review's largest structural
+gap: the shim is injected on `PATH` for **every** test in the suite, and
+`run-all.sh` cannot be covered by the falsify tier (`targets.conf` excludes it as
+the measuring instrument), so the most widely-executed new code in the release
+had no assertion at all. It extracts the shim from `run-all.sh`'s heredoc rather
+than copying it, so a change to the shim is a change to what is tested.
+
+Adding the dead-container assertion also made
+`tests/test-falsify-historical.sh`'s hole-#4 reconstruction unfaithful: that
+pair reverts the *one* line asserting the error value and requires the defective
+copy not to notice, and the new assertion reads the same value. The
+reconstruction now neutralises both, so it once again models a file where
+nothing asserts that value. The ship-gate scorecard is unchanged at 2 of 3 —
+correctly, because the generator still has no value-damage operator; what
+changed is the test file's coverage, not the tier's power.
+
 ## v0.9.2 — 2026-08-29
 
 **A patch, and every entry is again a repair.** No new key, no new column,

@@ -71,18 +71,32 @@ it_finish() { printf '\n%d failure(s)\n' "$it_fails"; exit "$it_fails"; }
 
 # ── Resource tracking ───────────────────────────────────────────────────────────
 _it_resources=""
-it_track() { _it_resources="${_it_resources}${_it_resources:+ }$1"; }
+# NEWLINE-delimited, and read back a line at a time. Space-joined with an
+# unquoted `for r in $_it_resources` split any tracked path containing a space
+# into fragments, none of which matched a `container:`/`dir:` prefix, so the
+# resource leaked in silence. Several tests now hand this their own mktemp $TMP,
+# which sits under $TMPDIR — a developer whose TMPDIR contains a space hit it
+# every run, and the quoted trap this registry replaced did not have the hole.
+#
+# Newlines in a path still defeat it. Left as-is deliberately: every path here
+# comes from a mktemp template and cannot contain one, and the delimiter that
+# would survive it needs an array, which this cannot be while it stays a plain
+# string that callers append to.
+it_track() { _it_resources="${_it_resources}${_it_resources:+$'\n'}$1"; }
 it_cleanup() {
   local r
   # Diagnostics BEFORE teardown: a failing case that tears down first leaves a
   # human with nothing but the assertion text, which costs a whole round trip.
   if [[ "$it_fails" -gt 0 && -n "$IT_CID" ]]; then it_diagnose "$IT_CID"; fi
-  for r in $_it_resources; do
+  # `IFS= read -r`, not `for r in $…`: see it_track. An empty registry feeds one
+  # empty line through the here-string, which the guard drops.
+  while IFS= read -r r; do
+    [[ -n "$r" ]] || continue
     case "$r" in
       container:*) docker rm -f "${r#container:}" >/dev/null 2>&1 || true ;;
       dir:*)       rm -rf "${r#dir:}" 2>/dev/null || true ;;
     esac
-  done
+  done <<< "$_it_resources"
 }
 trap 'it_cleanup' EXIT
 
@@ -675,7 +689,18 @@ assert_runs() {  # $1=cid $2=binary — asserts the binary is on PATH AND EXECUT
   # binstub shebangs to `#!/usr/bin/env ruby_executable_hooks`, so a correctly
   # linked `bundle` can still die on exec; "on PATH" and "runs" are genuinely
   # different failures and need different diagnostics.
-  if out="$(docker exec "$1" bash -c "$2 --version 2>&1")"; then
+  # TWO redirects, and they capture different things. The INNER one merges the
+  # tool's own stderr inside the container, so an interpreter that dies takes
+  # its message with it into $out (case 3 of this function's tests). The OUTER
+  # one captures what the docker CLI writes on the HOST — "Error response from
+  # daemon: No such container: …" when the container has gone. Without it that
+  # line is not in $out, the dump below prints a bare `error:` label with
+  # nothing after it, and the daemon's message escapes to the case's stderr
+  # UNINDENTED, where run.sh's failure report drops it (that report carries a
+  # failure's context by taking the indented lines beneath its FAIL:) and where
+  # it_diagnose's dump has already pushed it out of the tail window. The one
+  # line saying why the container was unreachable then reaches no reader.
+  if out="$(docker exec "$1" bash -c "$2 --version 2>&1" 2>&1)"; then
     pass "$2 runs: $(printf '%s\n' "$out" | head -1)"
     return 0
   fi
