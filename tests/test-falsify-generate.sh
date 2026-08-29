@@ -321,7 +321,10 @@ fi
 # the copy needs to resolve its source line.
 cantrun_root="$TMP/cantrun"
 mkdir -p "$cantrun_root/falsify"
-cp "$ENGINE_DIR/tests/portability.sh" "$cantrun_root/portability.sh"
+# $TESTS_DIR, not $ENGINE_DIR/tests: tests/ sits beside the engine in one repo
+# and inside it in the other, and the mirror fixture 70 lines above already
+# resolves this file the layout-independent way.
+cp "$TESTS_DIR/portability.sh" "$cantrun_root/portability.sh"
 cantrun="$cantrun_root/falsify/generate.sh"
 sed 's|bash -n "\$_FALSIFY_SYNTAX_TMP" 2>/dev/null|bash -n /nonexistent/nope.sh 2>/dev/null|' \
   "$GEN" > "$cantrun"
