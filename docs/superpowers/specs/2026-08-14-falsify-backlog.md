@@ -5248,3 +5248,55 @@ loudly, one that fails silently with rc 0, one that asserts nothing, one that
 skips, one that leaks a temp dir) and asserts the verdict for each. That is a
 new test file rather than a mechanical edit, and it must not invoke `run-all.sh`
 recursively — this repo's own glob would collect it.
+
+---
+
+## F64 ADDENDUM — every sighting happened in a configuration that no longer exists — **OPEN: the next sighting is a different experiment**
+
+Established 2026-08-29, after F64 was filed, by following the failing run's
+fixture path rather than its symptom.
+
+**The path is the clue.** The failing control reported
+`fixture=/tmp/tmp.tneErmsnvo/f` — a `mktemp -d` default template sitting
+**directly under `/tmp`**. If the oracle had been rooted anywhere, the path
+would have been nested. It was not, and the reason is that on `189ebda` nothing
+rooted it:
+
+| | at `189ebda` (and all 5 sightings) | on `main` today |
+|---|---|---|
+| falsify → oracle | inherits the host's `TMPDIR`, i.e. `/tmp` in CI | `export TMPDIR="$FR_SCRATCH/tmp"`, per run (`run.sh:822`) |
+| `run-all.sh` scratch | none — only `log="$(mktemp)"` | `RA_TMPROOT`, one per invocation, under `TMPDIR` (`run-all.sh:76`) |
+| a test's `mktemp -d` | **flat, in a `/tmp` shared by every parallel worker** | `$FR_SCRATCH/tmp/run-all-tmp.XXX/<test>/tmp.XXX` |
+
+`git log -S` dates the first row precisely: the rooting arrived in **`6e5bfc7`**
+(PR #160, merged 2026-08-29 14:43 UTC) — roughly three hours **after** the
+`189ebda` failure this entry records, and after every earlier sighting. The
+second row arrived in the same day's `3c2264f` / `352a2eb`.
+
+**What this does and does not license.**
+
+It does NOT say the bug is fixed. No mechanism was ever established, so nothing
+here can be said to have removed one. What it says is narrower and checkable:
+every sighting occurred while all parallel workers created their scratch
+directories in ONE flat, shared namespace, and that namespace is gone. Two
+concurrent oracles are now separated by three levels of per-run and
+per-invocation nesting, so a collision or an over-reaching removal in a flat
+`/tmp` — the shape `dir=n` describes — has no structure left to occur in.
+
+**Consequently the prior evidence has a shelf life.** The five sightings
+describe a configuration that cannot recur, so re-reading them for a mechanism
+is now archaeology rather than debugging. The useful next datum is a **sighting
+under the new regime**, which would mean the cause is something else entirely
+and would be worth more than all five prior ones combined.
+
+**If it does not recur, that is weak evidence, not a fix.** The failure is
+intermittent at roughly one run in several days; silence for a week says little.
+Close this only on a deliberate reproduction attempt under load, or leave it
+open and let a recurrence reopen the question with better data.
+
+**One thing that is NOT resolved by the nesting:** `$FR_SCRATCH/tmp` is still
+shared by every worker WITHIN a run — `FR_SCRATCH` is one `mktemp -d` per run,
+not per worker. Nothing removes it mid-run (`mkdir -p` before each oracle
+launch; `rm -rf` only in `fr_cleanup` at the end), so it is not a live
+candidate, but it is the one shared surface that survives and the first place
+to look if this recurs.
