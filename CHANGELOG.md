@@ -36,6 +36,46 @@ literal `*` is honoured. The trust that adds is bounded to a `--rm` container
 whose one mount is the developer's own `:ro` tree — the same trust `/w` already
 granted, extended to copies of `/w` at paths nothing can predict.
 
+### The integration sweep could not remove what its own cases left behind
+
+`$IT_SCRATCH` is a host directory bind-mounted into containers that run as
+root — and `docker exec` defaults to root too — so a case can leave a
+**root-owned directory** in it. Unlinking a file needs write permission on its
+*parent*, so one such directory makes its whole subtree unremovable by the
+non-root user doing the sweeping: `rm -rf` prints `Permission denied` per
+entry, leaves everything above it on disk, and the run still exits 0.
+
+Measured 2026-08-29: case 700 execs `graphify --version`, and of the six
+agent-tier tools graphify is the only Python one, so CPython writes
+`__pycache__/` as root into the uid-1000 group tree. Two such directories per
+run, surviving every sweep of every run.
+
+Fixed in the sweep rather than in the case. Stopping *this* leak at the source
+would have meant suppressing Python bytecode for one `docker exec`, leaving the
+next root-run command that writes anything to reopen the same hole; the sweep
+is what owns the "scratch is removed" invariant. `it_remove_scratch` tries a
+plain `rm -rf` first and starts **no container at all** when that succeeds, so
+an ordinary green run costs nothing extra. Only when something survives does it
+escalate — to a container that does nothing but **chown**: the deletion stays
+on the host side under the user's own account, and the container's entire power
+is handing ownership back, through one explicit mount of one directory. It is
+non-fatal at every step, because it runs from the `EXIT` trap where aborting
+would discard the exit status the whole run exists to produce; a leak it cannot
+clear is now reported **by path** instead of being silent to the exit code and
+illegible in the output.
+
+Ownership is also reclaimed **inside the variant loop**, against each variant's
+own image, immediately before that image is discarded. Doing it only in the
+sweep would have fixed the full local run and not nightly: `--variant agents`
+never builds the default image, so by sweep time that run has nothing left to
+start a recovery container from — and it is precisely the run that produces
+these leftovers.
+
+**Only a Linux host can see any of this.** macOS's Docker file-sharing layer
+never hands the container a host uid, and CI discards the whole VM, so the leak
+is free there. It surfaced in this repo's first full `verify-on-host.sh` run on
+a Linux host.
+
 ## v0.9.1 — 2026-08-29
 
 **A patch: five repairs, no new keys.** Every one was found by running the local
