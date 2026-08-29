@@ -5300,3 +5300,58 @@ not per worker. Nothing removes it mid-run (`mkdir -p` before each oracle
 launch; `rm -rf` only in `fr_cleanup` at the end), so it is not a live
 candidate, but it is the one shared surface that survives and the first place
 to look if this recurs.
+
+---
+
+## F66 — a Phase 4 run leaves empty `IT_RUN_ID`-shaped directories in the real cache — **OPEN: observed and bounded, source not identified**
+
+Observed 2026-08-29 on a Linux host, after `PHASES="4" bash ./verify-on-host.sh`
+against `0a9a129`. The run itself was clean — `36/36 passed`, no
+`Permission denied`, no root-owned files — and afterwards
+`~/.cache/ai-containers-it` held **eight empty directories**, 4.0K each, in two
+bursts of four at three-second intervals, both inside the run's window.
+
+**What is established:**
+
+* Their names are `IT_RUN_ID`-shaped (`<UTC timestamp>-<pid>`), so something
+  computed a fresh run id and created the DEFAULT `IT_SCRATCH`
+  (`$HOME/.cache/ai-containers-it/$IT_RUN_ID`) eight separate times.
+* They contain no `logs/`. That matters: `run.sh:891` is the only place that
+  creates this path and it creates `$IT_SCRATCH/logs`, so these did **not** come
+  from there.
+* `run.sh` DOES `export IT_SCRATCH` (line 966), so an ordinary case inherits the
+  run's own scratch and cannot produce one of these.
+
+**Ruled out by direct measurement, not by reading:**
+
+| Candidate | Result |
+|---|---|
+| the whole hermetic suite (`tests/run-all.sh`) | 0 directories |
+| `tests/test-integration-runner.sh` alone | 0 |
+| `tests/test-integration-lib.sh` alone | 0 — it redirects `IT_SCRATCH` to its own `$TMP` before its `mkdir` |
+| `tests/integration/run.sh --list-caps` | 0 |
+
+**Not established: what creates them.** Five probes did not find it. The two
+bursts of four at a three-second cadence suggest four short-lived invocations
+repeated once, which matches Phase 4's two capability-detection passes in
+shape — but `--list-caps` on its own creates nothing, so that shape is a
+coincidence until something demonstrates otherwise.
+
+**Severity, stated honestly so nobody re-derives it:** functional but trivial —
+the harness writes stray empty directories into the developer's real cache. No
+data loss, no effect on any verdict, 4K each. It is filed because it is a known
+defect and this file's rule is that a finding living only in a session log is a
+finding that gets dropped, not because it is urgent.
+
+**Cheapest way to close it:** it appears during a real Phase 4, which already
+costs ~50 minutes, so it needs no run of its own. Whoever next runs Phase 4
+should empty `~/.cache/ai-containers-it` first and check it afterwards; if the
+directories reappear, bisect by watching the cache while running one tier at a
+time with `--reuse-image` against an image that already exists.
+
+**One unresolved timing note.** The full `verify-on-host.sh` run earlier the same
+day, on `v0.9.2` before that day's later fixes, left **zero** such directories,
+while the Phase-4-only run on `0a9a129` left eight. That is suggestive of a
+change in between, but no mechanism connects them and the two runs differed in
+more than the commit (whole script versus one phase), so it is recorded as an
+observation rather than a lead.
