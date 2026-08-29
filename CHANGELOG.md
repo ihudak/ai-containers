@@ -6,6 +6,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## v0.9.3 — 2026-08-29
+
+**A patch, and every entry is again a repair.** No new `sandbox.conf` key, no new
+column, nothing a consumer has to adopt.
+
+**Where v0.9.2 was about tests that could not fail, this release is about tools
+and gates that reported something other than what they measured.** Read as a
+set, the six entries are one failure mode seen six ways: a `--help` that
+documented less than its script implemented; a capability probe that answered
+yes on the very platform it existed to protect; a collapse that had *also*
+asserted, reported as the environment rather than as the failure it was; a
+timeout that only ever measured the machine it ran on; a label naming a flag
+that does not exist; and five defects an adversarial review found in v0.9.2's
+own new code.
+
+**The sharpest is the capability probe, because of where it came from.**
+`tests/test-run-all-shim.sh` was added in v0.9.2 to close that release's largest
+coverage gap — the `mktemp` shim injected on `PATH` for every test in the suite,
+which nothing asserted. It gated its GNU long-option assertions on
+`mktemp --tmpdir -u` exiting 0. BSD exits 0 there too, treating `--` as the
+end-of-options marker, so on macOS the probe reported GNU support and four
+`--suffix` assertions ran against an option BSD does not have. Green on Linux,
+red on a Mac. The gate written to make the file portable is precisely what made
+it fail on the other platform, and it asked a question where this repo's own
+rule is to measure an effect. It now probes by effect.
+
+**Two of the six were reachable only by running on a Mac, and five only by
+reviewing the previous release's fixes.** That is the same pattern v0.9.2
+recorded and the reason both layers exist: CI is ubuntu-only and cannot see the
+BSD class by construction, and no gate reviews the code that was written to
+satisfy it.
+
+**One entry is a correction to the correction.** The adversarial review found
+that v0.9.2's failure-report fix — added so a failing case could say *why* —
+still dropped the one line explaining a dead container, because `assert_runs`
+captured the tool's stderr but not the docker CLI's. The fix whose entire
+purpose was legibility was itself illegible in the case that motivated it.
+
 ### `--help` truncated at a line number, and four record types sat below the cut
 
 `fr_usage` was `sed -n '2,60p'`. The header block it prints has grown to 157
