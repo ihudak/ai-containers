@@ -6,6 +6,52 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### F30/F32/F64 settled: a test's EXIT trap was firing in its own forked child
+
+Five sightings over nine days of a falsify CONTROL going red with
+`dir=n exists=n size=? left=0` — a fixture's whole `mktemp -d` directory gone
+while the test still needed it. A macOS reproduction had already failed and was
+recorded as a negative result.
+
+**macOS was the wrong platform.** The sightings are Linux, on a real host
+`/tmp`. On a Linux host, in a scratch tree with both TMPDIR rootings reverted to
+restore `189ebda`'s flat shared `/tmp`, and the tier run deliberately
+oversubscribed (`--jobs 32` on 16 cores, `--controls 12`), it reproduced **three
+times** — at iterations 23, 11 and 2 of separate loops — with the sightings'
+exact signature.
+
+**The mechanism was then caught directly**, by an `rm` shim logging every
+fixture removal with its parent chain, and an instrumented trap:
+
+```
+TRAPFIRE pid=2284480 bashpid=2285462 subshell=1
+         cmd=[local cmd_pid=$!] fn=[p_timeout main]
+```
+
+`BASH_SUBSHELL=1`, `BASHPID != $$`: the script's own `trap 'rm -rf "$TMP"' EXIT`
+running **in a forked child of the script**, inside `p_timeout`, at its `"$@" &`
+fork. `p_timeout` backgrounds two children, and **47 test files** set that same
+trap — so each of those children carries a loaded `rm -rf` aimed at its caller's
+fixture. The four `p_*` helpers then return empty and report four symptoms of
+that one fact.
+
+The fix gives the fixture an owner: `TMP_OWNER="$BASHPID"`, and the trap acts
+only when `$BASHPID` matches. `$BASHPID` rather than `$$`, because `$$` is
+unchanged in a subshell and would guard nothing.
+
+**A fix in `p_timeout` was tried first and reverted**, and that is recorded
+rather than hidden: clearing the caller's trap across the forks and restoring it
+after made the failure *deterministic*. Bash neutralises an inherited trap in a
+subshell, but an explicitly re-armed one fires — the restore converted a dormant
+trap into a live one in every subshell `p_timeout` runs inside.
+
+Verified by re-running the identical reproduction with the guard in place:
+**1404 controls, 0 failures**, against roughly one failure per 144 controls
+without it.
+
+This does not make the TMPDIR rootings redundant. It shows the `dir=n` sightings
+were never cross-worker: the destroyer was always the test's own forked child.
+
 ### The last shared scratch namespace in the mutation tier
 
 `falsify_run_oracle` pointed every concurrent worker's `TMPDIR` at one

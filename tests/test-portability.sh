@@ -4,7 +4,28 @@ set -uo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=portability.sh
 source "$REPO_DIR/tests/portability.sh"
-TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; trap 'rm -rf "$TMP"' EXIT
+TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
+# OWNED BY THIS PROCESS — backlog F30/F32/F64. p_timeout backgrounds the
+# command it times and a watchdog beside it; both are forked children of this
+# script, and a child can end up running this EXIT trap. When it does, it
+# deletes the fixture THIS script is still using, and the four p_* helpers
+# below then return empty and report four symptoms of that one fact.
+#
+# Reproduced 2026-08-30 on a Linux host by restoring 189ebda's flat shared
+# /tmp and running the tier oversubscribed: a control went red with the
+# sightings' exact signature (dir=n exists=n size=? left=0), and an
+# instrumented trap caught the firing directly —
+#   TRAPFIRE pid=2284480 bashpid=2285462 subshell=1
+#            cmd=[local cmd_pid=$!] fn=[p_timeout main]
+# — BASH_SUBSHELL=1 and BASHPID != $$: this trap, running in a forked child.
+#
+# $BASHPID, not $$: $$ is the SCRIPT's pid and stays the same in a subshell,
+# so comparing it to itself would guard nothing. $BASHPID is the pid of the
+# process actually executing, which is what distinguishes a child from the
+# owner. The removal is thus confined to the one process entitled to make it,
+# whatever fires the trap and whenever.
+TMP_OWNER="$BASHPID"
+trap '[[ "$BASHPID" == "$TMP_OWNER" ]] && rm -rf "$TMP"' EXIT
 fails=0
 pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails+1)); }
@@ -304,6 +325,39 @@ if grep -qE '^[[:space:]]*fail "\$h returned empty.*fixture=' "$0"; then
   pass "the empty-helper diagnosis travels on the failure line itself, needing no continuation to survive"
 else
   fail "the empty-helper diagnosis travels on the failure line itself — it has moved back onto a continuation line, the transport that lost it three times (2026-08-21, 2026-08-23, 2026-08-26)"
+fi
+
+# ── the fixture's EXIT trap is confined to its owner (F30/F32/F64) ───────────
+# The mechanism, reproduced 2026-08-30 (see the trap's own comment at the top of
+# this file): p_timeout forks the command it times and a watchdog beside it, and
+# a forked child can end up running this script's EXIT trap — deleting the
+# fixture the script is still using. Five sightings; the four p_* helpers then
+# return empty and report four symptoms of that one fact.
+#
+# ASSERTED ON THE MECHANISM, NOT THE RACE. Whether a child fires the trap is
+# load-dependent — that is why it took five sightings and 276 controls to catch
+# once, and a test that tried to race it would pass by luck. What is
+# deterministic is whether the trap, WHEN it runs in a child, can destroy the
+# fixture. So run the trap's own action in a forked child and look.
+pt_action="$(trap -p EXIT | sed -E "s/^trap -- '(.*)' EXIT$/\1/")"
+if [[ -z "$pt_action" ]]; then
+  fail "the fixture's EXIT trap action could be read back (nothing to test otherwise)"
+else
+  ( eval "$pt_action" )   # a real forked child, running exactly what the trap runs
+  if [[ -d "$TMP" && -f "$TMP/f" ]]; then
+    pass "the EXIT trap's action, run in a forked child, leaves the fixture alone"
+  else
+    fail "the EXIT trap's action, run in a forked child, destroyed the fixture — dir=$([[ -d "$TMP" ]] && printf y || printf n) file=$([[ -f "$TMP/f" ]] && printf y || printf n)"
+  fi
+fi
+# And the guard must not be inert. A condition that never holds would confine the
+# removal to nobody, trading a destroyed fixture for one leaked on every run —
+# which is the defect the trap exists to prevent, and which four tests shipped
+# (v0.9.2) before run-all.sh grew a leak counter.
+if [[ "$BASHPID" == "$TMP_OWNER" ]]; then
+  pass "the guard's condition holds in the owning process, so the fixture is still cleaned up"
+else
+  fail "the guard's condition holds in the owning process (BASHPID=$BASHPID TMP_OWNER=$TMP_OWNER)"
 fi
 
 printf '\n%d failure(s)\n' "$fails"; exit "$fails"
