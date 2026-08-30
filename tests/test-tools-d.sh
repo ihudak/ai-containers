@@ -36,7 +36,12 @@ verdict() {
 
 # shellcheck source=portability.sh
 source "$REPO_DIR/tests/portability.sh"
-TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; trap 'rm -rf "$TMP"' EXIT
+TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
+# Confined to the owning process — the fixture must survive a forked child
+# running this trap (F30/F32/F64; tests/test-exit-trap-ownership.sh).
+# $BASHPID, not $$: $$ is unchanged in a subshell and would guard nothing.
+TMP_OWNER="$BASHPID"
+trap '[[ "$BASHPID" == "$TMP_OWNER" ]] && rm -rf "$TMP"' EXIT
 # EVERY SCAFFOLDING STEP IS CHECKED, AND CHECKED FOR CONTENT.
 #
 # This test builds a workspace before it can assert anything, and when that

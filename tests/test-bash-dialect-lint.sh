@@ -13,7 +13,12 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LINT="$REPO_DIR/tests/bash-dialect-lint.sh"
 # shellcheck source=portability.sh
 source "$REPO_DIR/tests/portability.sh"
-TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; trap 'rm -rf "$TMP"' EXIT
+TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
+# Confined to the owning process — the fixture must survive a forked child
+# running this trap (F30/F32/F64; tests/test-exit-trap-ownership.sh).
+# $BASHPID, not $$: $$ is unchanged in a subshell and would guard nothing.
+TMP_OWNER="$BASHPID"
+trap '[[ "$BASHPID" == "$TMP_OWNER" ]] && rm -rf "$TMP"' EXIT
 fails=0
 # The worst single-file lint seen so far, in ms; the whole-tree bound is a
 # multiple of it. Declared here because vector() writes it and the whole-tree
