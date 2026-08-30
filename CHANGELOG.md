@@ -6,6 +6,52 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### What an adversarial review of v0.9.3–v0.9.6 found
+
+A review of the four releases returned PASS WITH RECOMMENDATIONS and eleven
+findings, none a correctness bug on Linux. These are the ones worth fixing, and
+the macOS one is the reason this could not wait for the port.
+
+- **`p_pty`'s probe was not valid on the platform it exists for.** It ran
+  `script --version`, and BSD getopt treats any `--`-prefixed argument as the
+  end-of-options marker — the same semantics this repo already measured for
+  `mktemp --tmpdir`. On macOS that left `script` with no file and no command, so
+  it would open its default `typescript` **in the current directory** — the repo
+  root under `verify-on-host.sh` — and exec an interactive `$SHELL`. With a
+  terminal on stdin, which `run-all.sh` does not redirect, that reads the
+  developer's terminal inside a command substitution and presents as a hang. In
+  a file every test sources. Now `script -q /dev/null --version </dev/null`,
+  captured rather than piped: valid on both platforms, writes nothing, reads
+  nothing, and no `grep -q` under `pipefail` to select the wrong arm from a
+  SIGPIPE.
+- **The exit-trap rule advertised coverage it did not have.** Its guard check
+  was file-scoped, so a file was exempted by *any* mention of `BASHPID`
+  anywhere in it — including the assertion that the guard must not be inert, and
+  the rule's own regex. Two of the in-scope files were permanently un-flaggable,
+  one of them the file where the hazard was first observed. And it matched only
+  `trap … rm -rf … EXIT`, so `trap 'sweep' EXIT` and `trap fr_cleanup EXIT` —
+  the two most destructive EXIT traps in the repo, both in files that fork —
+  were invisible to it. Now per trap line, and it sees named cleanups.
+- **The trap hazard, measured exactly.** A backgrounded `( … ) &` subshell does
+  **not** run the parent's EXIT trap, on normal exit or on SIGTERM. A
+  backgrounded **function** does, but only when signalled. Neither of the two
+  newly-visible traps is a live bug — falsify only TERMs those workers from
+  inside the cleanup itself, and every `it_timeout` caller passes an *external*
+  command, which execs — but both are guarded now rather than exempted, so the
+  first fork of a shell function does not reintroduce it.
+- Smaller: `probe_launcher` leaked its scratch on an early return (F66's class,
+  relocated by the fix for it); one of five `--timeout 1` sites was missed by the
+  flake fix; two assertions passed on paths where their subject never ran; and
+  `FALSIFY_SOURCE_ONLY=1` gated nothing, the variable existing nowhere in the
+  runner.
+- **One recommendation was tried and refuted.** Narrowing the fake docker's
+  `run *)` arm to the reclaim cannot work — that `case` matches on two words, so
+  no pattern naming a later flag can match, and the runner legitimately starts
+  other containers through it. Measured: three assertions red. Reverted, with
+  the measurement recorded at the site.
+- The probe rewrite drops the corpus from 552 mutants to 551: a `case` has no
+  condition to negate where an `if` had one. Stated rather than absorbed.
+
 ## v0.9.6 — 2026-08-30
 
 **No product code changed in this release.** `sandbox.sh`, `repo.sh`, `build.sh`,

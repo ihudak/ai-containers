@@ -1718,7 +1718,15 @@ falsify_main() {
   fr_load_targets || return 2
 
   FR_SCRATCH="$(mktemp -d)" || return 1
-  trap fr_cleanup EXIT INT TERM
+  # CONFINED TO THE OWNING PROCESS. fr_run_mutant and fr_run_control are
+  # BACKGROUNDED FUNCTIONS, and a backgrounded function that is SIGTERMed runs
+  # the parent EXIT trap in the child (measured 2026-08-30: normal exit does
+  # not, a `( ) &` subshell does not, `func &` + SIGTERM does). The only TERM
+  # those workers receive today is fr_cleanup's own, by which point the scratch
+  # is going anyway — so this is not a live bug, it is the guard that keeps it
+  # from becoming one the next time something backgrounds a function here.
+  FR_OWNER="$BASHPID"
+  trap '[[ "$BASHPID" == "$FR_OWNER" ]] && fr_cleanup' EXIT INT TERM
   FR_CACHE="$FR_SCRATCH/pristine"
   FR_WORK="$FR_SCRATCH/work"
   FR_OUT="$FR_SCRATCH/out"

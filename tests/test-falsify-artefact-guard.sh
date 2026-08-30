@@ -39,7 +39,11 @@ trap '[[ "$BASHPID" == "$TMP_OWNER" ]] && rm -rf "$TMP"' EXIT
 # run.sh is a script, not a library; IT_SOURCE_ONLY has no equivalent here, so
 # the functions are exercised through a helper that sources it the way
 # tests/test-falsify-run.sh already does.
-callfn() { FALSIFY_SOURCE_ONLY=1 bash -c '. "$1"; shift; "$@"' _ "$RUN" "$@"; }
+# NO FALSIFY_SOURCE_ONLY: that variable exists nowhere in run.sh, which guards
+# itself with `[[ "${BASH_SOURCE[0]}" == "${0}" ]]`. Setting it steered nothing
+# and implied a mechanism that does not exist; the five other `. "$RUN"` sites
+# in this file correctly omit it.
+callfn() { bash -c '. "$1"; shift; "$@"' _ "$RUN" "$@"; }
 
 # ── 1. the probe, in the three states that matter ────────────────────────────
 healthy="$TMP/healthy"; mkdir -p "$healthy"
@@ -118,7 +122,7 @@ fi
 band="$TMP/band"; mkdir -p "$band"
 band_out="$(
   # shellcheck disable=SC2016
-  FALSIFY_SOURCE_ONLY=1 bash -c '
+  bash -c '
     trap "" XFSZ
     ulimit -f 1 2>/dev/null || { echo NOLIMIT; exit 0; }
     . "$1"; d="$2"
@@ -143,8 +147,13 @@ case "$band_out" in
     fail "fr_scratch_intact rejects the reserve band (got '$band_out')" ;;
 esac
 # Nothing may be left behind there either — the truncated probe included.
+# ONLY WHEN THE PROBE ACTUALLY RAN. On the NOLIMIT path above, fr_scratch_intact
+# was never called against $band and the directory is trivially empty, so this
+# reported a property of a skipped test as a PASS. A skip is reported as a skip.
 band_left="$(ls -A "$band" | wc -l | tr -d ' ')"
-if [[ "$band_left" == "0" ]]; then
+if [[ "$band_out" == NOLIMIT* ]]; then
+  printf 'SKIP: the probe leaves nothing behind after a truncated write — no reserve band was posed\n'
+elif [[ "$band_left" == "0" ]]; then
   pass "the probe leaves nothing behind after a truncated write"
 else
   fail "the probe leaves nothing behind after a truncated write — found $band_left file(s)"

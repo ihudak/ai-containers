@@ -69,6 +69,14 @@ case "$1 ${2:-}" in
   # the reclaim's whole contract is WHICH image it runs and WHETHER it runs at
   # all, and neither is observable from the runner's stdout. $FAKE_DOCKER_LOG is
   # unset for every other caller, so this costs them nothing.
+  # NOT NARROWED TO THE RECLAIM, AND THAT WAS TRIED. A review suggested
+  # `run *--entrypoint chown*` so an unexpected container start would reach the
+  # loud `*)` arm. It cannot work here: this case matches on `"$1 ${2:-}"`, TWO
+  # WORDS, so no pattern naming a later flag can ever match — and the runner
+  # legitimately starts other containers through this fake (probe_launcher runs
+  # `docker run -it …`), which the narrow arm sent to `exit 99`. Measured: three
+  # reclaim assertions red. Every run is logged instead, and $FAKE_DOCKER_LOG is
+  # unset for callers that do not care.
   run\ *) printf '%s\n' "$*" >> "${FAKE_DOCKER_LOG:-/dev/null}"; exit 0 ;;
   rmi\ *) exit 0 ;;            # $2 is the image tag, not a fixed verb — glob it
   info*) exit 0 ;;             # "docker info" alone leaves a trailing space in $2

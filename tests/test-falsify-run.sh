@@ -1646,7 +1646,11 @@ fx_run "$RUN" "$CONF_SLOW" "$FX" "$TMP/wit-unp2" --jobs 1 --timeout 5 --max-unpr
 check "control: a run AT the budget passes (100% against a budget of 100)" "0" "$FX_RC"
 # And absent, the option changes nothing — this is opt-in because a developer
 # host legitimately times out.
-fx_run "$RUN" "$CONF_SLOW" "$FX" "$TMP/wit-unp3" --jobs 1 --timeout 1
+# --timeout 5, like the other CONF_SLOW sites. A 1s clock also times out the
+# BASELINE, which skips the target and fails the run — the exposure the comment
+# on those sites already describes. Four of the five were raised; this one was
+# missed, and it asserts rc 0.
+fx_run "$RUN" "$CONF_SLOW" "$FX" "$TMP/wit-unp3" --jobs 1 --timeout 5
 check "control: with no budget given, an unproven run still exits 0" "0" "$FX_RC"
 fx_run "$RUN" "$CONF_SLOW" "$FX" "$TMP/wit-unp4" --jobs 1 --timeout 5 --max-unproven-pct banana
 check "a non-numeric budget is refused (exit 2), not silently ignored" "2" "$FX_RC"
