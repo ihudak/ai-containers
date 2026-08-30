@@ -54,14 +54,22 @@ T_ENTRYPOINT="${ENGINE_REL}entrypoint.sh"
 T_SBCOMMON="${ENGINE_REL}sandbox-common.sh"
 T_REPOSH="${ENGINE_REL}repo.sh"
 T_GROUPSH="${ENGINE_REL}group.sh"
+# gate 4c below needs a row that is DEFERRED, EXECUTED-PARTIAL, and likely to
+# STAY that way. install-tools.sh is the durable choice: its two unreached
+# functions (api_get, main) need the network and a real GitHub API, so no
+# amount of test-writing promotes that row to EXECUTED-WHOLE. gate 4c used to
+# anchor on repo.sh, which was exactly the wrong pick — repo.sh reached full
+# execution coverage and correcting its category would have turned that sed
+# into a no-op.
+T_INSTALLTOOLS="${ENGINE_REL}install-tools.sh"
 RE_TOOLSLIB="${T_TOOLSLIB//./\\.}"
 RE_ENTRYPOINT="${T_ENTRYPOINT//./\\.}"
 RE_SBCOMMON="${T_SBCOMMON//./\\.}"
-RE_REPOSH="${T_REPOSH//./\\.}"
 RE_GROUPSH="${T_GROUPSH//./\\.}"
+RE_INSTALLTOOLS="${T_INSTALLTOOLS//./\\.}"
 # The probe must have resolved to a path that really is in the map, or every
 # fixture below silently degrades to "no change" exactly as described above.
-for _t in "$T_TOOLSLIB" "$T_ENTRYPOINT" "$T_SBCOMMON" "$T_REPOSH" "$T_GROUPSH" "$T_LIBVERIFY"; do
+for _t in "$T_TOOLSLIB" "$T_ENTRYPOINT" "$T_SBCOMMON" "$T_REPOSH" "$T_GROUPSH" "$T_LIBVERIFY" "$T_INSTALLTOOLS"; do
   grep -q "|${_t}|\|^${_t}|" "$CONF" \
     || { printf 'FAIL: %s\n' "the layout probe resolved $_t, which has no row in targets.conf — every fixture below would edit nothing"; exit 1; }
 done
@@ -403,14 +411,14 @@ f4c="$TMP/gate4c.conf"
 # list changed the sed became a no-op, gate4c.conf was identical to the real
 # map, the gate passed — and the FAILURE MESSAGE BLAMED THE GATE. Caught when
 # cmd_rm joined the list (backlog F1).
-sed -E "s@^#DEFERRED\|${RE_REPOSH}\|EXECUTED-PARTIAL\|([^|]*)\|[^|]*@#DEFERRED|${T_REPOSH}|EXECUTED-PARTIAL|\1|is_git_url,no_such_function@" "$CONF" > "$f4c"
+sed -E "s@^#DEFERRED\|${RE_INSTALLTOOLS}\|EXECUTED-PARTIAL\|([^|]*)\|[^|]*@#DEFERRED|${T_INSTALLTOOLS}|EXECUTED-PARTIAL|\1|asset_name,no_such_function@" "$CONF" > "$f4c"
 # THE FIXTURE'S OWN PREMISE, asserted the way gate 5 already asserts its own.
 # Without this the case above could only ever fail for the wrong reason.
-grep -q "^#DEFERRED|${RE_REPOSH}|EXECUTED-PARTIAL|[^|]*|is_git_url,no_such_function" "$f4c" \
-  && pass "fixture: gate4c.conf names a function that does not exist in $T_REPOSH" \
+grep -q "^#DEFERRED|${RE_INSTALLTOOLS}|EXECUTED-PARTIAL|[^|]*|asset_name,no_such_function" "$f4c" \
+  && pass "fixture: gate4c.conf names a function that does not exist in $T_INSTALLTOOLS" \
   || fail "fixture: gate4c.conf was not rewritten — the assertion below would be vacuous"
 gate "$f4c"; out="$gate_out"
-grep -q "naming function no_such_function, which is not defined in $T_REPOSH" <<<"$out" \
+grep -q "naming function no_such_function, which is not defined in $T_INSTALLTOOLS" <<<"$out" \
   && pass "gate 4: a named function that is not defined in the target fails the gate" \
   || fail "gate 4: an undefined function name was accepted (output: $out)"
 
