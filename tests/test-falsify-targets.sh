@@ -65,7 +65,6 @@ T_INSTALLTOOLS="${ENGINE_REL}install-tools.sh"
 RE_TOOLSLIB="${T_TOOLSLIB//./\\.}"
 RE_ENTRYPOINT="${T_ENTRYPOINT//./\\.}"
 RE_SBCOMMON="${T_SBCOMMON//./\\.}"
-RE_REPOSH="${T_REPOSH//./\\.}"
 RE_GROUPSH="${T_GROUPSH//./\\.}"
 RE_INSTALLTOOLS="${T_INSTALLTOOLS//./\\.}"
 # The probe must have resolved to a path that really is in the map, or every
