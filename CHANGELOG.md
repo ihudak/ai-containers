@@ -6,6 +6,87 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## v0.9.6 — 2026-08-30
+
+**No product code changed in this release.** `sandbox.sh`, `repo.sh`, `build.sh`,
+the Dockerfile and every runtime script are byte-identical to v0.9.5. This is a
+release about what the tests now catch — and it closes **F1**, the oldest open
+finding in the backlog, leaving that file with **no open entry for the first
+time**.
+
+### F1 closed: `repo.sh`'s destructive commands are asserted, not merely executed
+
+`repo.sh` owns the operations that delete data shared by every project on the
+machine. Two weeks ago the hermetic suite executed two of its functions. It now
+executes all 22 — and, more to the point, **asserts** them: mutation score went
+from 185 killed / 102 survived to **208 / 79** over the same 289 mutants, with
+the ledger cost of adopting the file dropping from 67 to **58 identities**.
+
+Three gaps closed, each guarding a different way to lose data:
+
+* **`ensure_seed_image`'s three refusals had never executed at all.** The
+  function was reported covered by the "22 of 22" pass and was — *at function
+  granularity*. The fake `docker` answered `image inspect` with an unconditional
+  `exit 0`, so every run returned at its second line. The refusals below guard
+  building over a deliberately pinned image, seeding from a helper that was never
+  built, and — worst — continuing past a **failed** build to run the seed with an
+  image that does not exist. That last one is asserted on "no seed run followed",
+  not on the exit status: a command that exits 1 *after* seeding passes a status
+  check.
+* **`cmd_gc`'s confirmation** was filed as needing a tty and did not. Inverting
+  `[[ -t 0 ]]` yields the same status *and* the same untouched volumes, because
+  `read` meets EOF, the reply is empty, and it aborts. Only the wording separates
+  them.
+* **The consent comparison** — the line that decides whether typing something
+  other than `yes` actually stops a destructive command — is now driven through a
+  **real tty**, on all three of `rm`, `reset` and `gc`, in both directions.
+
+**Closed to the practical limit, not abandoned.** 58 identities remain,
+overwhelmingly `cond-negate`/`logic-flip`, and they are named as out of scope
+rather than quietly dropped.
+
+### A correction that outlives its numbers: the ledger counts identities, not mutants
+
+The survivor ledger keys on `<file>:<operator>:<sha-of-the-line>`, so **two
+byte-identical lines are one identity**. For a week the decision on whether to
+adopt `repo.sh` rested on a written figure of "103 exemptions" — that was the
+*record* count, and the real cost was 58. Wrong by 45, in the sentence that was
+the stated basis of the decision.
+
+Both directions of that collision are now recorded, because they pull opposite
+ways: two identical lines can **split** one identity's verdict across them (one
+killed, one hanging), and a slice touching three identical lines **multiplies**
+into far fewer ledger entries than its record count suggests.
+
+### `p_pty`, and the arm no CI job here can run
+
+`tests/portability.sh` gains `p_pty`, which gives a command a real tty — GNU
+`script` takes the command as one string, BSD takes argv, and no single
+invocation satisfies both.
+
+Both arms are measured rather than assumed: the GNU arm on Linux and in the
+bash-floor container, the BSD arm on macOS 15. And because **every CI job here
+runs `ubuntu-24.04`**, the BSD arm is executed by nothing in this project — so it
+is pinned mechanically as well, or a typo in it would ship green forever and
+surface only on a developer's Mac.
+
+Adding it also demonstrated a hazard worth stating: `tests/portability.sh` is a
+mutation target, so a two-armed platform probe added to it creates mutants no
+single-platform run can kill. That failed the ledger ratchet with three
+unclassified survivors while every other gate stayed green.
+
+### Measuring the mutation tier is a Linux job, and that is now written down
+
+Measured over the same corpus: CI scores 548 mutants in ~11 minutes (~1.2 s
+each); a macOS host scores 289 mutants of one deferred target in ~100 minutes
+(~21 s each) — **~17× slower**, and not buyable with workers, since more of them
+converts KILLED into UNPROVEN.
+
+So `AGENTS.md` now states the cadence: **per slice, demonstrate** — damage the
+line and require the new assertion to go red, which is the causal claim and costs
+minutes; **per batch, score, on Linux**. A score moving by +12 does not say which
+assertion earned it.
+
 ## v0.9.5 — 2026-08-30
 
 **A patch, and both entries are repairs to this project's checks on itself.** No
