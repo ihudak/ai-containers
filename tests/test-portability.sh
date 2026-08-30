@@ -360,4 +360,40 @@ else
   fail "the guard's condition holds in the owning process (BASHPID=$BASHPID TMP_OWNER=$TMP_OWNER)"
 fi
 
+# ── p_pty: a real tty on stdin, and the child's status ────────────────────────
+# ASSERTED BY EFFECT. Both mutants that can damage this helper — the util-linux
+# probe, and the arm test that reads it — select the WRONG `script` syntax, and
+# either wrong choice makes the call fail outright: GNU takes the command as ONE
+# STRING, BSD as argv. So RUNNING it is the assertion. Nothing here reads
+# _P_PTY_GNU, which would assert the configuration instead of the behaviour, and
+# would still pass with both arms broken.
+#
+# Measured with the arm inverted: the transcript comes back EMPTY and the status
+# is 1 instead of 7 — so both assertions below flip, which is what makes them
+# worth having rather than decorative.
+#
+# The status assertion is not a duplicate of the tty one. `p_pty` exists to
+# drive repo.sh's consent prompts, where the whole question is whether an
+# aborted destructive command reports failure; a helper that produced a tty but
+# swallowed the status would pass the first check and be useless for its only
+# caller.
+if ! command -v script >/dev/null 2>&1; then
+  printf 'SKIP: no script(1) on this host, so p_pty cannot be exercised\n'
+else
+  # Substring, not equality: BSD `script` prefixes the transcript with ^D.
+  pty_out="$(p_pty bash -c '[[ -t 0 ]] && printf TTY' </dev/null 2>/dev/null | tr -d '\r\n')"
+  if [[ "$pty_out" == *TTY* ]]; then
+    pass "p_pty gives the child a real tty on stdin"
+  else
+    fail "p_pty gives the child a real tty on stdin (got '$pty_out')"
+  fi
+  p_pty bash -c 'exit 7' </dev/null >/dev/null 2>&1
+  pty_rc=$?
+  if [[ "$pty_rc" == "7" ]]; then
+    pass "p_pty propagates the child's exit status"
+  else
+    fail "p_pty propagates the child's exit status (expected 7, got $pty_rc)"
+  fi
+fi
+
 printf '\n%d failure(s)\n' "$fails"; exit "$fails"
