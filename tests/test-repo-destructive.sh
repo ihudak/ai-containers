@@ -896,7 +896,42 @@ fi
 # logic-flip, 27 return-flip, 7 cmp-flip and ZERO that damage a printf's text,
 # because the generator has no value-damage operator (hole #4 of the historical
 # scorecard). Asserting the text could not kill them. Asserting the STATUS can.
-for bad in "rm" "sync a b" "reset a b" "gc --repo" "list --nope" "gc --nope"; do
+# Every entry below reaches a DISTINCT `exit 1` in repo.sh; the line number is
+# named so a future edit can tell whether a path lost its coverage or merely
+# moved. `run_repo` redirects stdin from /dev/null, so the three consent paths
+# take the non-interactive refusal branch rather than blocking on a prompt.
+bad_invocations=(
+  "nosuchcmd"                 # :847  dispatch — unknown subcommand
+  "add"                       # :258  add — no arguments
+  "add onlyname"              # :258  add — missing <source>
+  "add ../../etc /tmp"        # :259  add — validate_repo_name
+  "add docs /tmp"             # :265  add — name already registered
+  "add fresh /no/such/path"   # :275  add — source path does not exist
+  "sync"                      # :361  sync — no arguments
+  "sync --nope"               # :351  sync — unknown flag
+  "sync a b"                  # :352  sync — two names
+  "sync docs --all"           # :358  sync — <name> and --all together
+  "sync ../../etc"            # :373  sync — validate_repo_name
+  "sync nosuchrepo"           # :376  sync — name is not registered
+  "list --nope"               # :416  list — unknown flag
+  "list extra"                # :417  list — unexpected argument
+  "rm"                        # :484  rm — no arguments
+  "rm ../../etc"              # :485  rm — validate_repo_name
+  "rm docs"                   # :516  rm — non-interactive without --yes
+  "reset"                     # :675  reset — no arguments
+  "reset --nope"              # :665  reset — unknown flag
+  "reset a b"                 # :666  reset — two names
+  "reset docs --all"          # :672  reset — <name> and --all together
+  "reset ../../etc --yes"     # :687  reset — validate_repo_name
+  "reset nosuchrepo --yes"    # :690  reset — name is not registered
+  "reset docs"                # :717  reset — non-interactive without --yes
+  "gc --repo"                 # :742  gc — --repo with no value
+  "gc --nope"                 # :745  gc — unknown flag
+  "gc extra"                  # :746  gc — unexpected argument
+  "gc --repo ../../etc"       # :750  gc — validate_repo_name
+  "gc"                        # :786  gc — non-interactive without --yes
+)
+for bad in "${bad_invocations[@]}"; do
   setup_world
   # shellcheck disable=SC2086
   run_repo $bad
