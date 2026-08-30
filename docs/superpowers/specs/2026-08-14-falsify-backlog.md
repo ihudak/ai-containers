@@ -5827,3 +5827,66 @@ One expected non-issue for whoever runs it: the guard's test SKIPS its
 unwritable-directory case as root, because `chmod` does not constrain uid 0.
 The APFS case is unaffected — ENOSPC ignores uid — so the assertion that matters
 still runs there.
+
+---
+
+## F1 — the new coverage brought two HANGING mutants into the measured set — **OPEN: informational, for whoever finishes F1**
+
+Measured 2026-08-30 on a Linux host, after `#179` (29 error paths) and `#182`
+(no-op paths) landed:
+
+```
+TOTAL|1|289|185|102|2|3|35        # mutants|killed|survived|unproven|timeouts
+```
+
+**185 killed / 102 survived is real progress** — 123 survivors before those two
+slices, 129 at the 2026-08-21 baseline. But the last two fields moved off zero
+for the first time: **2 UNPROVEN, 3 timeouts**, where every earlier `repo.sh`
+run measured `0 | 0`.
+
+**It is not load.** Re-run on an idle machine (load average 0.50) at the same
+`--jobs 8`: byte-identical totals, twice.
+
+### Both unproven mutants are the same shape
+
+```
+repo.sh:cond-negate:d0f6d85… | timeout |   while ! IFS= read -r v; do …
+repo.sh:cond-negate:e4795969… | timeout |   while ! IFS= read -r n; do …
+```
+
+A negated `read` loop, and its behaviour depends entirely on whether the input
+is empty — measured, not reasoned:
+
+| input | `while ! IFS= read -r x` |
+|---|---|
+| non-empty | exits IMMEDIATELY; the body never runs |
+| **empty** | **spins forever** — `read` fails, `!` makes it true, repeat |
+
+So these two hang only when their loop has nothing to read: no volumes, no
+targets. **That is exactly what the new slices added** — the no-op and error
+paths are the "nothing to remove", "no repos registered" cases. The mutants were
+always there; the coverage that reaches them is new.
+
+### This is the tier working, and it still costs something
+
+Scored UNPROVEN rather than KILLED, which is correct: nothing was observed, so
+nothing may be claimed. But two consequences are worth stating for whoever
+closes F1:
+
+* **They are unkillable by any assertion.** A hanging mutant produces no output
+  to assert on; only the clock ends it. They are permanent UNPROVENs unless the
+  loops are rewritten, and `--max-unproven-pct` is what bounds them, not the
+  ledger (F27, check B).
+* **They cost 240s per corpus run** — two mutants × the 120s clock — which is a
+  material share of a `repo.sh` run measured at ~450s.
+
+### What this does NOT mean
+
+`185 killed` is not "185 of 289 measured". Three mutants timed out; two of those
+are the unprovens above and one carried a `FAIL:` line and was correctly scored
+KILLED anyway. Read the kill count against 286 attempted, not 289.
+
+**A correction on my own first reading**, kept because the wrong step is the
+useful part: I first asserted these hang because `read` fails at EOF. That is
+backwards — with input present the negated loop exits at once and its body never
+runs. Checking it took five seconds and changed the explanation entirely.
