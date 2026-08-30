@@ -1807,7 +1807,7 @@ correct to add either way, which is why it is not blocked on the answer.
 
 ---
 
-## F31 ADDENDUM — ENOSPC is a proven mechanism and an unproven trigger — **GUARD LANDED 2026-08-30 (Linux-validated); OPEN pending APFS confirmation**
+## F31 ADDENDUM — ENOSPC is a proven mechanism and an unproven trigger — **CLOSED 2026-08-30: APFS-confirmed, and the confirmation found a second defect in the guard**
 
 Measured on the affected host, 2026-08-18. **`mktemp -d` was never the cause**;
 the guard built to confirm it eliminated it instead, which is the guard working.
@@ -5767,7 +5767,7 @@ and the flat `/tmp` was a coincidence of where the fixture happened to live.
 
 ---
 
-## F31 ADDENDUM — the guard, and what is still unvalidated — **OPEN: needs an APFS run, not a recurrence**
+## F31 ADDENDUM — the guard, and what is still unvalidated — **CLOSED 2026-08-30: the APFS run found the guard's own defect; see the section at the end of this entry**
 
 **"Needs a recurrence" was the wrong standing.** The addendum above proved the
 mechanism by INJECTION — four kinds of damage into an unmutated tree, each
@@ -5829,6 +5829,87 @@ The APFS case is unaffected — ENOSPC ignores uid — so the assertion that mat
 still runs there.
 
 ---
+
+---
+
+### THE APFS RUN, 2026-08-30 — and the guard had the defect it was built to catch
+
+**The guard met a real APFS ENOSPC, and it did not fire.** A 20 MB APFS sparse
+image (`hdiutil create -fs APFS`, no privileges) was driven into its reserve
+band and measured there:
+
+| write | result |
+|---|---|
+| 25 B | succeeds |
+| 96 KiB | succeeds |
+| 128 KiB | file exists, **truncated** (5 of 5) |
+| 256 KiB | file exists, 98304 of 262144 |
+| 1 MiB | file exists, 98304 of 1048576 |
+
+`df` reported **1176 KB free** throughout — a starker version of the ~1.8 MB
+this entry already recorded, and confirmation that a `df`-based check would
+still be the wrong hypothesis.
+
+The probe wrote **~25 bytes**. In that band a 25-byte write STICKS, so
+`fr_scratch_intact` read back INTACT and `falsify_verdict` scored **KILLED**
+while a real artefact write was being truncated. That is this entry's own
+defect class — "the artefact exists but is wrong" — surviving inside the guard
+written to stop it. `/dev/full` could not have found it: it fails EVERY write,
+so any probe size passes the test.
+
+**The fix: a block, not a token.** The probe writes `1 MiB` (built with
+`printf '%*s'` — no `/dev/zero`, no `head -c`, nothing that differs between GNU
+and BSD userland) and checks the read-back by SIZE, keeping the token as a
+prefix so the check still means "the bytes came back" rather than trusting a
+stat. Cost: 37 ms against 22 ms, measured over 100 iterations — about 8 seconds
+across a corpus run, paid only on the KILLED path.
+
+**1 MiB is a proxy and the entry should say so.** A probe of N bytes answers
+"can this filesystem still take N". An oracle writing more than N, in a band
+that admits N, would still slip through. It is sized above anything this
+suite's tests write to their scratch; it is not a proof.
+
+**`ulimit -f` reproduces the band hermetically**, with no privileges, no disk
+image and no platform branch: under a small file-size limit a tiny write sticks
+and a block write is truncated. That equivalence was not assumed — both were
+run side by side against the real APFS volume:
+
+|  | real APFS reserve band | `ulimit -f 1` |
+|---|---|---|
+| old probe (~25 B) | INTACT — false kill | INTACT — false kill |
+| new probe (1 MiB) | fires | fires |
+| healthy filesystem | INTACT | INTACT |
+
+**The verdict layer, confirmed on both** (`FR_SCRATCH` set AFTER sourcing
+`run.sh`, which resets it at `:1088` — the first harness for this got KILLED
+for that reason and not because the guard was wrong):
+
+```
+real APFS band     → UNPROVEN | exit+failline+artefact
+ulimit -f band     → UNPROVEN | exit+failline+artefact
+healthy + kill rc  → KILLED   | exit+failline
+healthy + clean rc → SURVIVED | none
+```
+
+**A healthy macOS run is unaffected.** `verify-on-host.sh` Phase 6, whole
+corpus: 16 targets, **548 mutants, 537 KILLED, 11 SURVIVED, 0 UNPROVEN**, 1
+timeout, 32 controls green, 0 assertless, verdicts for 548/548; ledger `OK: 0
+problem(s)` over 10 entries. **No `+artefact` verdict was produced anywhere** —
+the channel exists and fires on demand without firing on a working machine. The
+one-mutant difference from the Linux baseline (537/11 against 538/10) is the
+host-dependent verdict recorded under F1, not this change.
+
+### Standing
+
+**CLOSED.** All four steps the previous section asked for are done, and the
+third of them found a defect rather than confirming an absence: an APFS ENOSPC
+was reproduced, the probe did NOT return non-zero for it, the probe was fixed,
+the verdict now scores `…+artefact` on both the real filesystem and a hermetic
+stand-in, and a healthy run still reports zero.
+
+What remains true and is not a gap: the probe is a fixed-size proxy, the three
+`config`-shaped equivalences of ENOSPC (absent / empty / short) are all caught
+by the same size-checked read-back, and `df` is used nowhere.
 
 ## F1 — the new coverage brought two HANGING mutants into the measured set — **OPEN: informational, for whoever finishes F1**
 
