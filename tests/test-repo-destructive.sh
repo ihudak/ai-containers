@@ -121,12 +121,20 @@ esac
 if [[ "$1" == "run" ]]; then
   case "$*" in
     *" inspect /dst"*)
-      printf 'PRIMARY|main\n'
+      # HELPER_NO_PRIMARY: the helper found no branch to reset onto — a detached
+      # HEAD with no usable remote. repo.sh must leave that repo untouched and
+      # still report SUCCESS: a skip is not a failure, and under --all one such
+      # repo must not fail the whole run.
+      [[ -n "${HELPER_NO_PRIMARY:-}" ]] || printf 'PRIMARY|main\n'
       printf 'BRANCH|main|0|current\n'
       printf 'BRANCH|feat/unpushed|3|\n'
       printf 'BRANCH|fix/pushed|0|\n'
       exit 0 ;;
     *" reset /dst"*)
+      # HELPER_RESET_FAILS: the git reset failed inside the seed container. The
+      # opposite obligation to the one above — a destructive command that could
+      # not do the work must never exit 0.
+      [[ -z "${HELPER_RESET_FAILS:-}" ]] || exit 1
       # The records repo.sh renders into prose. SOMETHING-NEW is deliberate: a
       # record type this version of repo.sh does not know must still reach the
       # user, because silence is the one thing a destructive command must never
@@ -145,6 +153,16 @@ fi
 exit 0
 FAKE
 chmod +x "$FAKE_BIN/docker"
+
+# A machine that has never registered a repo: no volumes, no registry entries.
+# Every "nothing to do" path in repo.sh is reached from here, and this is the
+# state a fresh checkout is in — the one a provisioning script meets first.
+setup_empty_world() {
+  export HOME="$TMP/home"; rm -rf "$HOME"; mkdir -p "$HOME/.ai-containers"
+  rm -rf "$VOLS"; mkdir -p "$VOLS"
+  : > "$DOCKER_LOG"; : > "$INUSE"
+  : > "$HOME/.ai-containers/repos.conf"
+}
 
 # ── a world: two repos, each with a working copy ──────────────────────────────
 # `docs` is the SUBJECT. `docs-archive` is the BYSTANDER, and its name begins
@@ -942,6 +960,85 @@ for bad in "${bad_invocations[@]}"; do
   fi
   check "  … and destroys nothing" "" "$(removed)"
 done
+
+# ── NO-OP PATHS MUST REPORT SUCCESS ──────────────────────────────────────────
+# The mirror of the block above, and the other half of what `return-flip`
+# damages. Measured on this host 2026-08-30, after the error-path slice: 17
+# return-flip survivors remained, and NINE were "nothing to do" early returns.
+# Flipping their `return 0` makes repo.sh report FAILURE for a legitimate no-op,
+# and nothing asserted otherwise.
+#
+# This is the more dangerous direction of the two. A provisioning script running
+# `./repo.sh sync --all` on a machine with no repos registered yet would abort
+# the whole run — and `|| true` is exactly the workaround that gets added, which
+# then hides a real sync failure later. An error path that wrongly succeeds is
+# caught the first time someone looks; a no-op that wrongly fails trains people
+# to suppress the status altogether.
+noop_ok() {   # <label> <args…> — must exit 0 AND destroy nothing
+  local label="$1"; shift
+  run_repo "$@"
+  if [[ "$RC" -eq 0 ]]; then
+    pass "$label exits 0"
+  else
+    fail "$label exits $RC (stderr: $(tr '\n' ' ' < "$ERR"))"
+  fi
+  check "  … and destroys nothing" "" "$(removed)"
+}
+
+setup_empty_world
+noop_ok '`sync --all` on a machine with no repos registered' sync --all       # :370
+noop_ok '`list` with no repos and no volumes'                list             # :441
+noop_ok '`reset --all --yes` with an empty registry'         reset --all --yes # :684
+noop_ok '`gc --yes` with no working copies anywhere'         gc --yes         # :755
+noop_ok '`list --copies` when no working copies exist'       list --copies    # :395
+
+# victims empty for a different reason: copies EXIST, but --unused filters every
+# one of them out. Distinct from :755 above, where none existed at all.
+setup_world
+printf '%s\n' ai-containers-repo-docs--wc-projA \
+               ai-containers-repo-docs--wc-projB \
+               ai-containers-repo-docs-archive--wc-projA > "$INUSE"
+noop_ok '`gc --unused --yes` when every copy is in use'      gc --unused --yes # :776
+
+# A repo the helper cannot resolve a primary branch for is LEFT UNTOUCHED, and
+# that is a success: reset skips it rather than inventing the target of a
+# destructive operation.
+setup_world
+export HELPER_NO_PRIMARY=1
+run_repo reset docs --yes                                                      # :571
+if [[ "$RC" -eq 0 ]]; then
+  pass '`reset --yes` on a repo with no branch to reset onto exits 0'
+else
+  fail "\`reset --yes\` on a repo with no branch to reset onto exits $RC (stderr: $(tr '\n' ' ' < "$ERR"))"
+fi
+# Deliberately NOT noop_ok: this one is not a no-op. `reset` removes the repo's
+# working copies BEFORE it learns the helper has no primary branch to offer, so
+# `destroys nothing` is false here — measured, not assumed. The skip is about
+# the base volume's checkout, not about the working copies, whose removal is
+# reset's contract either way. Asserting emptiness here would have been an
+# assertion about an ordering this slice has no opinion on.
+grep -q 'no branch to reset onto' "$OUT" \
+  && pass 'the run says WHY the repo was left untouched' \
+  || fail "the run does not explain the skip (stdout: $(tr '\n' ' ' < "$OUT"))"
+unset HELPER_NO_PRIMARY
+
+# ── AND THE CONVERSE: a reset that FAILED must not report success ─────────────
+# repo.sh runs under `set -euo pipefail`, so reset_one's non-zero return does
+# propagate even though cmd_reset discards it — verified against the real
+# script, not assumed from reading the loop. That makes :232 a live guard, and
+# flipping its `return 1` would make a failed destructive operation silent.
+setup_world
+export HELPER_RESET_FAILS=1
+run_repo reset docs --yes
+if [[ "$RC" -ne 0 ]]; then
+  pass "a git reset that failed inside the seed container exits non-zero"
+else
+  fail "a failed git reset reported success (stdout: $(tr '\n' ' ' < "$OUT"))"
+fi
+grep -q 'OK: reset complete' "$OUT" \
+  && fail "repo.sh printed 'OK: reset complete.' after the reset had failed" \
+  || pass "repo.sh does not claim the reset completed after it failed"
+unset HELPER_RESET_FAILS
 
 # ── sync_from_path: the one function nothing ever executed (backlog F1) ───────
 # Measured 2026-08-29 by instrumenting every function in repo.sh and running the
