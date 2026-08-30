@@ -943,6 +943,27 @@ FALSIFY_FOREIGN_FLAG=""
 # The token THIS invocation armed its own flag with. Only meaningful next to
 # FALSIFY_FOREIGN_FLAG: one foreign token names nothing, two tokens name a pair.
 FALSIFY_TOKEN=""
+# Can this directory still hold a file with content in it? Writes a token and
+# READS IT BACK, because "the write returned success" is not the property that
+# matters — on APFS under ENOSPC it does, and leaves the file empty. Returns
+# non-zero when the write fails OR when what comes back is not what went in.
+#
+# Deliberately cheap and self-cleaning: one small file per call, removed on
+# every path, named per-process so two workers probing at once cannot read each
+# other's token and call a healthy filesystem broken.
+fr_scratch_intact() {   # <dir> → 0 when a write survives a read-back
+  local dir="$1" probe token back
+  probe="$dir/.fr-scratch-probe.$BASHPID"
+  token="fr-probe-$BASHPID-$SECONDS"
+  # Braced: `printf … > "$probe" 2>/dev/null` suppresses printf's stderr, not the
+  # SHELL's "Permission denied" for the redirection itself, which would then leak
+  # into the tier's output once per probed kill.
+  { printf '%s' "$token" > "$probe"; } 2>/dev/null || { rm -f "$probe" 2>/dev/null; return 1; }
+  back="$(cat "$probe" 2>/dev/null)"
+  rm -f "$probe" 2>/dev/null
+  [[ "$back" == "$token" ]]
+}
+
 falsify_verdict() {   # <rc> <outfile> <timed-out 0|1>
   local sig="" timed_out=0
   (( $3 == 1 )) && { sig="timeout"; timed_out=1; }
@@ -993,9 +1014,39 @@ falsify_verdict() {   # <rc> <outfile> <timed-out 0|1>
   # ledger.
   if (( timed_out )) && ! falsify_has_fail_line "$2"; then
     FALSIFY_VERDICT="UNPROVEN"; FALSIFY_SIGNAL="$sig"
-  else
-    FALSIFY_VERDICT="KILLED"; FALSIFY_SIGNAL="$sig"
+    return 0
   fi
+  # ── A KILL IS ONLY A KILL IF THE SCRATCH COULD STILL HOLD A FILE (F31) ──────
+  # The remaining class from F31's addendum is "the artefact exists but is
+  # WRONG". Measured on the affected host 2026-08-18: four kinds of damage
+  # injected into an UNMUTATED tree each scored `KILLED | exit+failline` — the
+  # tier reporting a kill with no mutation present at all. A false KILL inflates
+  # the coverage claim exactly as a false green does, and unlike a survivor it
+  # is owed no ledger entry, so nothing downstream ever questions it.
+  #
+  # THE PROBE WRITES AND READS BACK, because the two filesystem shapes fail
+  # differently and only one of them is visible to an existence check:
+  #   HFS+   fails at open()      → the artefact is absent
+  #   APFS   `cat > f` succeeds   → the artefact exists and is EMPTY (17 of 30)
+  # The field report matches the second. `[[ -e ]]` and `[[ -r ]]` pass for it,
+  # which is why F31's first guard never fired.
+  #
+  # NOT `df`: measured, APFS reported ~1.8 MB free while writes were already
+  # coming back empty, so a df-based check would have read healthy throughout
+  # and become the next wrong hypothesis.
+  #
+  # SAMPLED HERE, at the moment a kill is about to be recorded, because an
+  # end-of-run probe passes: `rm -rf "$RTMP"` frees the exhausted space two
+  # lines earlier, and the run is scored KILLED anyway (6 of 16 measured).
+  #
+  # Only on this path. A SURVIVED verdict needs no probe — nothing was observed
+  # failing, so there is no environmental failure to misattribute — and probing
+  # every verdict would put a write in the hot loop for no signal.
+  if [[ -n "${FR_SCRATCH:-}" && -d "${FR_SCRATCH:-}" ]] && ! fr_scratch_intact "$FR_SCRATCH"; then
+    FALSIFY_VERDICT="UNPROVEN"; FALSIFY_SIGNAL="${sig:+$sig+}artefact"
+    return 0
+  fi
+  FALSIFY_VERDICT="KILLED"; FALSIFY_SIGNAL="$sig"
 }
 
 # ── scratch layout ────────────────────────────────────────────────────────────
