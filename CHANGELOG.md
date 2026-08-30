@@ -6,6 +6,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### The EXIT-trap hazard is now a rule, and the sweep it demanded
+
+v0.9.4 fixed F30/F32/F64 in one file and said the mechanism was "latent in 47
+files". **That number was wrong, and it overstated the hazard.** 47 was the count
+of files matching the trap *pattern*; a trap can only fire in a child if the
+script *has* a child. Measured: **52** files carry a temp-removing `EXIT` trap,
+and **6** of them fork — via `p_timeout`, which backgrounds two children, or a
+plain background job. Those six are the exposure. Five were unguarded and now
+are not.
+
+`tests/test-exit-trap-ownership.sh` makes it a mechanical rule rather than a
+one-time sweep, in the same shape as `test-grep-q-pipelines.sh`: a script that
+removes a temp dir on `EXIT` *and* forks must confine the removal to its owning
+process, or opt out with a stated reason. A file that gains its first `&` next
+year gains the rule with it. The check demonstrates the hazard in both
+directions before judging any file — an unguarded trap run in a forked child
+destroys the fixture, a guarded one does not, and a guarded one still cleans up
+for its owner, so the guard cannot be a no-op that trades a deleted fixture for
+a leaked one.
+
+**One measurement error is recorded because it nearly shipped a wrong
+conclusion.** Mid-sweep, guarding `test-falsify-run.sh` appeared to make it leak
+two files — reproducibly, three runs against three. It does not. The metric was
+counting entries in a shared `/tmp` on a machine running other work, including
+this session's own background jobs. Re-measured with each run given its own
+`TMPDIR`, both versions leave exactly zero, three runs each. A derived
+hypothesis — that the file was line-count sensitive — rested on the same bad
+metric and is withdrawn. **Counting a shared directory is not a measurement.**
+
 ## v0.9.4 — 2026-08-30
 
 **A patch, and every entry is again a repair.** No new `sandbox.conf` key, no new

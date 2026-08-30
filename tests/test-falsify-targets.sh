@@ -65,7 +65,12 @@ for _t in "$T_TOOLSLIB" "$T_ENTRYPOINT" "$T_SBCOMMON" "$T_REPOSH" "$T_GROUPSH" "
   grep -q "|${_t}|\|^${_t}|" "$CONF" \
     || { printf 'FAIL: %s\n' "the layout probe resolved $_t, which has no row in targets.conf — every fixture below would edit nothing"; exit 1; }
 done
-TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; trap 'rm -rf "$TMP"' EXIT
+TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
+# Confined to the owning process — the fixture must survive a forked child
+# running this trap (F30/F32/F64; tests/test-exit-trap-ownership.sh).
+# $BASHPID, not $$: $$ is unchanged in a subshell and would guard nothing.
+TMP_OWNER="$BASHPID"
+trap '[[ "$BASHPID" == "$TMP_OWNER" ]] && rm -rf "$TMP"' EXIT
 fails=0
 pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails+1)); }

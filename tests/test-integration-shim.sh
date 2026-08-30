@@ -25,7 +25,11 @@ fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails + 1)); }
 check() { if [[ "$2" == "$3" ]]; then pass "$1"; else fail "$1"$'\n'"       expected: $2"$'\n'"       got:      $3"; fi; }
 
 TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
-trap 'rm -rf "$TMP"' EXIT
+# Confined to the owning process — the fixture must survive a forked child
+# running this trap (F30/F32/F64; tests/test-exit-trap-ownership.sh).
+# $BASHPID, not $$: $$ is unchanged in a subshell and would guard nothing.
+TMP_OWNER="$BASHPID"
+trap '[[ "$BASHPID" == "$TMP_OWNER" ]] && rm -rf "$TMP"' EXIT
 
 bash -n "$SHIM" && pass "docker-shim.sh bash -n" || fail "docker-shim.sh bash -n"
 [[ -x "$SHIM" ]] && pass "docker-shim.sh is executable" || fail "docker-shim.sh is executable"
