@@ -396,4 +396,58 @@ else
   fi
 fi
 
+# ── …and the arm THIS machine does not run ───────────────────────────────────
+# The two assertions above run whichever arm the probe selects, which is the
+# right way to check that p_pty WORKS and is enough to kill every mutant the
+# tier can generate here: any wrong choice picks the wrong `script` syntax and
+# the call fails outright. Measured — with the arm inverted the transcript comes
+# back empty and the status is 1 instead of 7.
+#
+# What they cannot see is the OTHER arm's contents. Every CI job in
+# hermetic-checks.yml is ubuntu-24.04, and the floor container is ubuntu:22.04,
+# so on this project's CI the BSD arm is never executed by anything: a typo in
+# it — `-Q` for `-q`, the file and the command transposed — ships green forever
+# and surfaces only on a developer's Mac. Measured both ways: the effect
+# assertions above MISS both of those, and the argv assertions below catch them.
+#
+# This is the F23 shape from the other side. There the probe was inverted and no
+# test could see it; here the probe is fine and the unexecuted arm is unchecked.
+# Asserting argv is asserting configuration, which is normally the weaker thing
+# to do — it is justified only because for this one arm there is no behaviour to
+# observe on any machine that runs this suite.
+PTY_BIN="$TMP/ptybin"; mkdir -p "$PTY_BIN"
+export SCRIPT_ARGV_LOG="$TMP/script-argv.txt"
+cat > "$PTY_BIN/script" <<'PTYFAKE'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$SCRIPT_ARGV_LOG"
+exit 0
+PTYFAKE
+chmod +x "$PTY_BIN/script"
+
+pty_argv() {   # <forced _P_PTY_GNU> [cmd…] → the argv p_pty handed to `script`
+  local flag="$1"; shift
+  : > "$SCRIPT_ARGV_LOG"
+  ( PATH="$PTY_BIN:$PATH"; _P_PTY_GNU="$flag"; p_pty "$@" ) >/dev/null 2>&1
+  cat "$SCRIPT_ARGV_LOG"
+}
+gnu_argv="$(pty_argv 1 bash -c 'echo hi')"
+bsd_argv="$(pty_argv 0 bash -c 'echo hi')"
+
+case "$gnu_argv" in
+  "-qec "*" /dev/null") pass "p_pty's GNU arm: script -qec <one string> /dev/null" ;;
+  *) fail "p_pty's GNU arm: script -qec <one string> /dev/null (got '$gnu_argv')" ;;
+esac
+# The one that matters on this platform: nothing else here ever runs it.
+case "$bsd_argv" in
+  "-q /dev/null bash -c echo hi") pass "p_pty's BSD arm: script -q /dev/null <argv…> — unexecuted here, so unobservable otherwise" ;;
+  *) fail "p_pty's BSD arm: script -q /dev/null <argv…> (got '$bsd_argv')" ;;
+esac
+# A branch that collapsed to one arm satisfies whichever case above matches it,
+# and only this comparison sees that.
+if [[ "$gnu_argv" != "$bsd_argv" ]]; then
+  pass "  … and the two differ, so the branch is a real branch"
+else
+  fail "  … and the two differ — both arms issued '$gnu_argv', the branch is dead"
+fi
+
 printf '\n%d failure(s)\n' "$fails"; exit "$fails"
