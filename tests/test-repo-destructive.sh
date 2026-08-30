@@ -108,8 +108,20 @@ case "$1 $2" in
   "volume rm")
     for a in "${@:3}"; do [[ "$a" == --* ]] || rm -f "$VOLS/$a"; done
     exit 0 ;;
-  "image inspect") exit 0 ;;
+  "image inspect")
+    # SEED_IMAGE_MISSING: the seed helper image is not on this machine — the
+    # state a fresh checkout is in, and the only state in which any of
+    # ensure_seed_image past its first `return` can run at all.
+    [[ -z "${SEED_IMAGE_MISSING:-}" ]] || exit 1
+    exit 0 ;;
 esac
+# `docker build` of the seed helper. SEED_BUILD_FAILS makes the build itself
+# fail, which is the third of ensure_seed_image's three refusals and the only
+# one that cannot be posed by arranging files.
+if [[ "$1" == "build" ]]; then
+  [[ -z "${SEED_BUILD_FAILS:-}" ]] || exit 1
+  exit 0
+fi
 # `docker run` of the git helper. A fake that returned nothing would leave
 # repo.sh with no PRIMARY record, sending every reset down the "no branch to
 # reset onto" path — and the assertions in SLICE 2 would still pass, because
@@ -476,6 +488,16 @@ check "  … removing nothing" "" "$(removed)"
 setup_world
 run_repo gc
 check "gc without --yes is refused non-interactively (rc=1)" "1" "$RC"
+# THE MESSAGE, and it is not decoration. rc=1 and "nothing removed" are BOTH
+# produced by the failure this assertion exists to catch: invert `[[ -t 0 ]]`
+# and gc takes the interactive branch instead, where `read -r -p` meets EOF on
+# /dev/null, the reply is empty, `[[ "" == "yes" ]]` is false, and it aborts —
+# same status, same untouched volumes, a completely different code path. Only
+# the wording tells them apart. `rm` has carried this assertion since slice 1,
+# which is exactly why its guard's mutants die and gc's did not.
+grep -q 'refusing to remove non-interactively' "$ERR" \
+  && pass "  … saying why, by name — not by aborting an interactive prompt nobody answered" \
+  || fail "  … saying why, by name (got: $(tr '\n' ' ' < "$ERR"))"
 check "  … and NOTHING was removed" "" "$(removed)"
 
 # ── 14. gc --yes removes EVERY working copy and NO base volume ───────────────
@@ -1139,6 +1161,111 @@ if has_run "-v ai-containers-repo-localvol:/dst"; then
   pass "reset re-mirrors the path repo into its volume"
 else
   fail "reset re-mirrors the path repo into its volume — got: $(runs | tr '\n' ';')"
+fi
+
+# ── 33. ensure_seed_image: three refusals, none of which had ever run ────────
+# EVERY repo.sh command that touches a volume goes through this function first,
+# and on a fresh checkout it is the code that decides whether the machine gets a
+# seed helper at all. It was reported as covered by the "22 of 22" execution
+# measurement, and it was — but only its FIRST TWO LINES. The fake `docker`
+# answered `image inspect` with exit 0 unconditionally, so every run returned at
+# repo.sh:87 and the three refusals below were never reached by anything. That
+# is the difference between a function being EXECUTED and its branches being
+# executed, and it is invisible to a per-function instrumentation pass.
+#
+# Nine surviving mutants lived here. They matter because each refusal guards a
+# different way of destroying or corrupting someone's setup: building over a
+# pinned image, seeding from a helper that was never built, and — worst —
+# continuing past a failed build to run the seed with an image that does not
+# exist.
+#
+# The `docker build` argv, one per line. Its ABSENCE is the assertion in three
+# of the four cases below, so it is read the same recorded way as `runs`.
+builds() { sed -n 's/^build //p' "$DOCKER_LOG"; }
+build_count() { printf '%s' "$(builds | grep -c . || true)"; }
+
+# 33a. The ordinary path: the helper image is already here, so NOTHING is built.
+# This is the case that pins the first guard. Invert `docker image inspect` and
+# a machine that already has the image builds it again on every single repo
+# command — no error, no failure, just a rebuild nobody asked for, which is
+# precisely the shape a test asserting only "it worked" cannot see.
+setup_world; mkdir -p "$TMP/newsrc"
+REPO_BACKEND=volume run_repo add fresh1 "$TMP/newsrc"
+check "add exits 0 when the seed image is already present" "0" "$RC"
+check "  … and builds NOTHING, because the image is already there" "0" "$(build_count)"
+
+# 33b. REPO_SEED_IMAGE names an image this machine does not have.
+# The user pinned a helper deliberately; repo.sh must refuse rather than build
+# something else under that name. Asserted three ways, because rc alone would
+# also pass if it refused for an unrelated reason.
+setup_world; mkdir -p "$TMP/newsrc"
+SEED_IMAGE_MISSING=1 REPO_SEED_IMAGE=no-such-seed:v9 REPO_BACKEND=volume \
+  run_repo add fresh2 "$TMP/newsrc"
+check "add refuses when a PINNED seed image is absent (rc=1)" "1" "$RC"
+grep -q 'REPO_SEED_IMAGE' "$ERR" \
+  && pass "  … naming REPO_SEED_IMAGE, so the user knows which knob refused" \
+  || fail "  … naming REPO_SEED_IMAGE (got: $(tr '\n' ' ' < "$ERR"))"
+grep -q 'no-such-seed:v9' "$ERR" \
+  && pass "  … and naming the image it looked for" \
+  || fail "  … and naming the image it looked for (got: $(tr '\n' ' ' < "$ERR"))"
+check "  … and builds NOTHING over the pinned name" "0" "$(build_count)"
+check "  … and seeds nothing" "" "$(runs)"
+
+# 33c. No pin, and the seed Dockerfile is missing from the engine directory.
+# `seed_dockerfile` is "${_here}/Dockerfile.seed", so posing this needs an
+# engine dir without that one file. A symlink farm gives exactly that and
+# nothing else: bash does not resolve symlinks in BASH_SOURCE, so `_here`
+# resolves to the farm while every file repo.sh sources still reaches the real
+# one. A project copy missing this file is not hypothetical — it is what a
+# partial sync leaves behind.
+FARM="$TMP/engine-no-dockerfile"; rm -rf "$FARM"; mkdir -p "$FARM"
+for f in "$ENGINE_DIR"/*; do
+  [[ "$(basename "$f")" == "Dockerfile.seed" ]] && continue
+  ln -s "$f" "$FARM/$(basename "$f")"
+done
+if [[ -e "$FARM/Dockerfile.seed" ]]; then
+  fail "fixture: the farm still has a Dockerfile.seed, so this case proves nothing"
+else
+  pass "fixture: an engine directory with no Dockerfile.seed"
+  setup_world; mkdir -p "$TMP/newsrc"
+  OUT="$TMP/out.txt"; ERR="$TMP/err.txt"
+  SEED_IMAGE_MISSING=1 REPO_BACKEND=volume PATH="$FAKE_BIN:$PATH" \
+    bash "$FARM/repo.sh" add fresh3 "$TMP/newsrc" >"$OUT" 2>"$ERR" </dev/null
+  RC=$?
+  check "add refuses when the seed Dockerfile is missing (rc=1)" "1" "$RC"
+  grep -q 'Dockerfile.seed' "$ERR" \
+    && pass "  … naming the path it looked for" \
+    || fail "  … naming the path it looked for (got: $(tr '\n' ' ' < "$ERR"))"
+  check "  … and attempts no build" "0" "$(build_count)"
+  check "  … and seeds nothing" "" "$(runs)"
+fi
+
+# 33d. The build itself fails.
+# THE MOST DANGEROUS OF THE THREE. The other two refuse before anything has been
+# attempted; this one refuses after. Continue past it and repo.sh runs the seed
+# container with an image that was never built — so the assertion that carries
+# this case is not the exit status, it is that NO seed run followed.
+setup_world; mkdir -p "$TMP/newsrc"
+SEED_IMAGE_MISSING=1 SEED_BUILD_FAILS=1 REPO_BACKEND=volume \
+  run_repo add fresh4 "$TMP/newsrc"
+check "add refuses when the seed image fails to build (rc=1)" "1" "$RC"
+grep -q 'failed to build' "$ERR" \
+  && pass "  … saying the build failed" \
+  || fail "  … saying the build failed (got: $(tr '\n' ' ' < "$ERR"))"
+check "  … having actually tried once" "1" "$(build_count)"
+check "  … and does NOT seed with an image that was never built" "" "$(runs)"
+
+# 33e. …and when the build succeeds, it builds ONCE and then seeds.
+# The positive half. Without it every assertion above is satisfied by a repo.sh
+# that refuses unconditionally, which is a passing suite and a broken tool.
+setup_world; mkdir -p "$TMP/newsrc"
+SEED_IMAGE_MISSING=1 REPO_BACKEND=volume run_repo add fresh5 "$TMP/newsrc"
+check "add succeeds when the missing image builds (rc=0)" "0" "$RC"
+check "  … having built the helper exactly once" "1" "$(build_count)"
+if run_has "-v ai-containers-repo-fresh5:/dst"; then
+  pass "  … and then seeded into the destination volume"
+else
+  fail "  … and then seeded into the destination volume — got: $(runs | tr '\n' ';')"
 fi
 
 # ── Hermeticity ───────────────────────────────────────────────────────────────
