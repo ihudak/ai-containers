@@ -4623,7 +4623,7 @@ shape, not a proven mechanism.
 
 ---
 
-## F30/F32 — a fourth sighting, in CI, with a diagnosis nobody could use — **OPEN: needs a recurrence; the diagnostics are in place and will name the half that failed**
+## F30/F32 — a fourth sighting, in CI, with a diagnosis nobody could use — **CLOSED 2026-08-30, superseded by the F64 RESOLUTION: the recurrence came, the diagnostics did name the half that failed, and the cause is found**
 
 `mgd-ai-containers` PR #76, GitHub Actions run 32523718531, 2026-08-21. One of
 eighteen control runs failed on a diff that touched a documentation page and two
@@ -5094,7 +5094,7 @@ check (an assertion that could not fail) in the same file, fixed separately.
 
 ---
 
-## F30/F32 — TWO RECURRENCES IN ONE HOUR, and the diagnostic could not reach the report — **OPEN, but the channel is fixed**
+## F30/F32 — TWO RECURRENCES IN ONE HOUR, and the diagnostic could not reach the report — **CLOSED 2026-08-30, superseded by the F64 RESOLUTION; the channel fixed here is what carried the evidence that solved it**
 
 2026-08-23. The entry said "needs a recurrence". It got two, forty minutes apart,
 both on `tests/portability.sh`, both pristine-oracle failures under the tier's
@@ -5251,7 +5251,7 @@ recursively — this repo's own glob would collect it.
 
 ---
 
-## F64 ADDENDUM — every sighting happened in a configuration that no longer exists — **OPEN: the next sighting is a different experiment**
+## F64 ADDENDUM — every sighting happened in a configuration that no longer exists — **CLOSED 2026-08-30, superseded: its conclusion was wrong, see the correction below and the F64 RESOLUTION**
 
 Established 2026-08-29, after F64 was filed, by following the failing run's
 fixture path rather than its symptom.
@@ -5645,6 +5645,25 @@ string, so that mutant is unobservable there by construction, not merely
 unnoticed. Measured both ways: 1 red under a symlinked `TMPDIR`, 0 under an
 ordinary one. That is the clearest demonstration in this file of why the third
 arm is a separate arm.
+
+---
+
+**CORRECTION 2026-08-30.** This addendum's conclusion — "the useful next datum
+is a sighting under the new regime" — was wrong, and following it would have
+meant waiting indefinitely for an intermittent failure the tier had already made
+rare. What settled F64 was the opposite move: RE-CREATING the old configuration
+in a scratch tree on the right platform and driving it hard, which reproduced in
+minutes.
+
+Two of its premises were sound and one was not. Sound: the sightings all predate
+the rootings, and the flat shared `/tmp` really is gone. NOT sound: the inference
+that the mechanism therefore lived in that shared namespace. It did not — the
+destroyer was the test's OWN forked child running its OWN EXIT trap, and the flat
+`/tmp` was merely where the fixture happened to sit. The addendum reasoned from
+where the evidence was to what the cause must be, and that step does not follow.
+
+Kept rather than deleted, because the reasoning is a fair record of what the
+evidence supported at the time and the correction is the useful part.
 
 ---
 
