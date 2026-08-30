@@ -1807,7 +1807,7 @@ correct to add either way, which is why it is not blocked on the answer.
 
 ---
 
-## F31 ADDENDUM — ENOSPC is a proven mechanism and an unproven trigger — **OPEN: needs a recurrence**
+## F31 ADDENDUM — ENOSPC is a proven mechanism and an unproven trigger — **GUARD LANDED 2026-08-30 (Linux-validated); OPEN pending APFS confirmation**
 
 Measured on the affected host, 2026-08-18. **`mktemp -d` was never the cause**;
 the guard built to confirm it eliminated it instead, which is the guard working.
@@ -5764,3 +5764,66 @@ namespace that made a *cross-worker* collision possible, and this entry never
 proved that mechanism absent. What it proves is that the `dir=n` sightings were
 NOT cross-worker at all — the destroyer was always the test's own forked child,
 and the flat `/tmp` was a coincidence of where the fixture happened to live.
+
+---
+
+## F31 ADDENDUM — the guard, and what is still unvalidated — **OPEN: needs an APFS run, not a recurrence**
+
+**"Needs a recurrence" was the wrong standing.** The addendum above proved the
+mechanism by INJECTION — four kinds of damage into an unmutated tree, each
+scored `KILLED | exit+failline`. Nothing about that required waiting: a false
+KILL was being produced on demand, on any platform. (F64 had the same wrong
+standing and cost nine days; the lesson transfers.)
+
+### What landed 2026-08-30
+
+`fr_scratch_intact` in `tests/falsify/run.sh`: writes a token and READS IT BACK.
+`falsify_verdict` calls it at the moment a kill is about to be recorded and
+scores `UNPROVEN | …+artefact` when it fails — a fourth channel beside
+`timeout`, `scaffold` and `signal`.
+
+Read-back rather than existence, because the two shapes differ and only one is
+visible to `[[ -e ]]`/`[[ -r ]]`: HFS+ fails at `open()` so the artefact is
+absent; **APFS** lets `cat > f` succeed and leaves it EMPTY, which is what the
+field report matched and why F31's first guard never fired. `df` is not used —
+this entry already measured APFS reporting ~1.8 MB free while writes came back
+empty.
+
+On the KILLED path only: an end-of-run probe passes because the scratch removal
+frees the space two lines earlier (6 of 16, measured above), and a SURVIVED
+verdict observed nothing failing so there is nothing to misattribute.
+
+### What is verified, and on what
+
+`tests/test-falsify-artefact-guard.sh`, on **Linux**. It reproduces the APFS
+shape with **`/dev/full`** — a write that returns ENOSPC and reads back empty —
+so the case needs no root, no loopback mount and leaves nothing behind, and it
+asserts that premise before relying on it. Demonstrated failing against the
+pre-guard `run.sh`, where the broken-scratch case scores `KILLED|exit+failline`:
+this entry's exact signature.
+
+Overreach is pinned too, because a verdict guard that fires too widely is worse
+than the defect: a healthy scratch still scores KILLED, SURVIVED is untouched,
+`FR_SCRATCH` unset behaves exactly as before, and the probe leaves no file
+behind. Whole corpus unchanged: 548 mutants, 538 KILLED, 10 SURVIVED, **0
+UNPROVEN**, ledger clean.
+
+### What is NOT verified, and is the whole of what remains
+
+**The guard has never met a real APFS ENOSPC.** `/dev/full` is a stand-in
+chosen to match the recorded shape; nothing confirms the probe sees the real
+thing. That needs a macOS run, and it is the only reason this entry is still
+open:
+
+1. exhaust an APFS filesystem the way this entry measured it (`/var/folders`,
+   `cat > f` leaving the file created and empty, 17 of 30);
+2. confirm `fr_scratch_intact` returns non-zero for it — if not, the read-back
+   may need to distinguish a SHORT write from an empty one;
+3. confirm `falsify_verdict` then scores `UNPROVEN | …+artefact`, ideally
+   against the four injected damages recorded above;
+4. confirm a healthy macOS run still produces zero `…+artefact` unprovens.
+
+One expected non-issue for whoever runs it: the guard's test SKIPS its
+unwritable-directory case as root, because `chmod` does not constrain uid 0.
+The APFS case is unaffected — ENOSPC ignores uid — so the assertion that matters
+still runs there.
