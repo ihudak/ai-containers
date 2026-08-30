@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## v0.9.5 — 2026-08-30
+
+**A patch, and both entries are repairs to this project's checks on itself.** No
+new `sandbox.conf` key, no new column, nothing a consumer has to adopt.
+
+**Each one corrects a claim this repo made about its own tests, and neither
+correction came from reading.** v0.9.4 said the EXIT-trap hazard was "latent in
+47 files"; counting what actually forks put the exposure at 6. The artefact
+guard shipped saying a token-sized probe was enough, verified against a Linux
+stand-in; the first real APFS reserve band showed the probe silently passing
+while artefact writes were truncated — the guard carrying the defect it was
+written to catch. Both were settled by running something on the machine that
+disagreed.
+
 ### A kill is only a kill if the scratch could still hold a file (F31)
 
 F31's addendum measured, on the affected host, four kinds of damage injected
@@ -17,30 +31,61 @@ no ledger entry, so nothing downstream ever questions it.
 `falsify_verdict` now probes the scratch at the moment a kill is about to be
 recorded, and scores `UNPROVEN | …+artefact` when it cannot hold a file.
 
-**The probe writes a token and reads it back**, because the two filesystem
-shapes fail differently and only one is visible to an existence check: HFS+
-fails at `open()` so the artefact is absent, while APFS lets `cat > f` succeed
-and leaves the file **empty** — 17 of 30 measured, and the shape the field
-report matches. `[[ -e ]]` and `[[ -r ]]` are both true for it, which is why
-F31's first guard never fired. `df` is not used: APFS reported ~1.8 MB free
-while writes were already coming back empty.
+**The probe writes a block and reads it back**, because the filesystem shapes
+fail differently and an existence check sees none of them. HFS+ fails at
+`open()` so the artefact is absent; APFS lets `cat > f` succeed and leaves the
+file **empty** — 17 of 30 measured. `[[ -e ]]` and `[[ -r ]]` are true for the
+second, which is why F31's first guard never fired. `df` is no help either
+way: it reported ~1.8 MB free while writes were already coming back empty.
+
+**A token was not enough, and finding that out needed a real filesystem.** The
+probe first shipped writing ~25 bytes, verified on Linux with `/dev/full`. Its
+first meeting with a real APFS ENOSPC — a 20 MB sparse image driven into its
+reserve band — it did not fire:
+
+| write | result |
+|---|---|
+| 25 B | **succeeds** |
+| 96 KiB | succeeds |
+| 128 KiB | file exists, truncated |
+| 1 MiB | file exists, 98304 of 1048576 |
+
+In that band a token-sized write *sticks*, so the read-back returned intact and
+the verdict stayed `KILLED` while real artefact writes were being truncated —
+this guard's own defect, of exactly the class it exists to catch. `/dev/full`
+could not have found it: it fails **every** write, so every probe size passes
+against it. The stand-in was right about the shape and silent about the size.
+
+The probe now writes **1 MiB** and checks the read-back by size, keeping the
+token as a prefix so the check still means "the bytes came back" rather than
+trusting a `stat`. It is built with `printf '%*s'` — no `/dev/zero`, no
+`head -c`, nothing that differs between GNU and BSD userland. **1 MiB is a proxy
+and not a proof**: a probe of N bytes answers "can this filesystem still take
+N", and an oracle writing more than N in a band that admits N would still slip
+through. It is sized above anything this suite writes to its scratch, and costs
+~1 ms per probed kill, paid only on the `KILLED` path.
 
 Sampled on the KILLED path only. An end-of-run probe passes because the scratch
 removal frees the exhausted space two lines earlier, and a SURVIVED verdict
 observed nothing failing, so there is nothing to misattribute.
 
-Guarded by `tests/test-falsify-artefact-guard.sh`, which reproduces the APFS
-shape on Linux with `/dev/full` — a write that returns ENOSPC and reads back
-empty — so the case needs no root, no loopback mount, and leaves nothing behind.
-Demonstrated failing against the previous `run.sh`, where the broken-scratch
-case scores `KILLED|exit+failline`: the addendum's exact signature.
+Guarded by `tests/test-falsify-artefact-guard.sh`, which poses both shapes
+hermetically: `/dev/full` for the write that cannot stick, and **`ulimit -f`**
+for the reserve band, where a tiny write survives and a block write is
+truncated. Neither needs root, a loopback mount, or a platform branch, and
+`ulimit -f` constrains uid 0 as well — unlike `chmod`, so the band case runs in
+the bash-floor arm too, where the unwritable-directory case correctly skips.
+Both were demonstrated failing first: the broken-scratch case scores
+`KILLED|exit+failline` against the pre-guard `run.sh`, and the band case reads
+`INTACT` against the token-sized probe.
 
 Measured unchanged where it must be: the whole corpus still scores 548 mutants,
 538 killed, 10 survived, **0 unproven**, with the ledger clean.
 
-**Not yet validated on APFS.** The mechanism was observed on macOS and the guard
-is written from that measurement, but `/dev/full` is a Linux stand-in for it.
-F31 stays open pending a macOS run.
+**Validated on APFS, which is how the second defect was found.** The entry that
+carried this work said the guard "has never met a real APFS ENOSPC" and named
+that as the whole of what remained. It has now met one, was found insufficient,
+and was fixed — which is the argument for not closing an entry on a stand-in.
 
 ### The EXIT-trap hazard is now a rule, and the sweep it demanded
 
