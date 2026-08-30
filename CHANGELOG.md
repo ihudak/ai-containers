@@ -6,6 +6,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### A kill is only a kill if the scratch could still hold a file (F31)
+
+F31's addendum measured, on the affected host, four kinds of damage injected
+into an **unmutated** tree — each scored `KILLED | exit+failline`. The tier
+reported kills with no mutation present at all. A false KILL inflates the
+coverage claim exactly as a false green does, and unlike a survivor it is owed
+no ledger entry, so nothing downstream ever questions it.
+
+`falsify_verdict` now probes the scratch at the moment a kill is about to be
+recorded, and scores `UNPROVEN | …+artefact` when it cannot hold a file.
+
+**The probe writes a token and reads it back**, because the two filesystem
+shapes fail differently and only one is visible to an existence check: HFS+
+fails at `open()` so the artefact is absent, while APFS lets `cat > f` succeed
+and leaves the file **empty** — 17 of 30 measured, and the shape the field
+report matches. `[[ -e ]]` and `[[ -r ]]` are both true for it, which is why
+F31's first guard never fired. `df` is not used: APFS reported ~1.8 MB free
+while writes were already coming back empty.
+
+Sampled on the KILLED path only. An end-of-run probe passes because the scratch
+removal frees the exhausted space two lines earlier, and a SURVIVED verdict
+observed nothing failing, so there is nothing to misattribute.
+
+Guarded by `tests/test-falsify-artefact-guard.sh`, which reproduces the APFS
+shape on Linux with `/dev/full` — a write that returns ENOSPC and reads back
+empty — so the case needs no root, no loopback mount, and leaves nothing behind.
+Demonstrated failing against the previous `run.sh`, where the broken-scratch
+case scores `KILLED|exit+failline`: the addendum's exact signature.
+
+Measured unchanged where it must be: the whole corpus still scores 548 mutants,
+538 killed, 10 survived, **0 unproven**, with the ledger clean.
+
+**Not yet validated on APFS.** The mechanism was observed on macOS and the guard
+is written from that measurement, but `/dev/full` is a Linux stand-in for it.
+F31 stays open pending a macOS run.
+
 ### The EXIT-trap hazard is now a rule, and the sweep it demanded
 
 v0.9.4 fixed F30/F32/F64 in one file and said the mechanism was "latent in 47
