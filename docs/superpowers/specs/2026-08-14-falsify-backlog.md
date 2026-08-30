@@ -6207,3 +6207,62 @@ stays DEFERRED and therefore has no ledger entries to be right about on two
 machines. Should anyone re-open the un-defer question, that confirmation becomes
 a prerequisite again — the two hosts' clocks differ enormously (100 of macOS's
 103 survivors ran past 120s; Linux finishes in single digits).
+
+
+---
+
+## F1 — all four operators die on the consent lines, and the +12 is FOUR identities — **CLOSED 2026-08-30: the last unmeasured question, measured**
+
+Two entries above closed F1's tier half. This adds only what a controlled
+two-arm run produced and neither carries: the answer to the question `#192`
+recorded as "the interesting part", and the reason its `+12` bought less ledger
+than it looks like.
+
+### All four operators die there
+
+`#192` demonstrated six guards failing — `cond-negate` and `return-flip` on each
+of `repo.sh:513`, `:714`, `:783` — and left `logic-flip` and `cmp-flip`
+unmeasured. **All four die, on all three lines:**
+
+```
+repo.sh:cond-negate:bf962a12…    :513  :714  :783
+repo.sh:logic-flip:bf962a12…     :513  :714  :783
+repo.sh:cmp-flip:bf962a12…       :513  :714  :783
+repo.sh:return-flip:bf962a12…    :513  :714  :783
+```
+
+The consent gate is therefore closed at that granularity, not merely at the two
+operators demonstrated.
+
+### …and that is 4 identities, not 12, because the three lines are one sha
+
+```
+[[ "$reply" == "yes" ]] || { echo "Aborted."; exit 1; }
+```
+
+is byte-identical at all three sites, and identity is
+`<file>:<operator>:<sha-of-trimmed-line>`. So twelve killed RECORDS collapse into
+**four IDENTITIES** — which is why the ledger cost moved 62 → 58 while records
+moved 91 → 79. A 12-record slice bought 4 entries' worth of ratchet.
+
+This is the `:367`/`:681` collision arriving from the opposite direction: there
+one identity's verdict was SPLIT across two lines, here one slice's reach is
+MULTIPLIED across three. Same mechanism, opposite consequence, and it is the
+reason the two counts must never be swapped for one another.
+
+### The arms, and the check that a net figure hides
+
+| arm | commit | mutants | KILLED | SURVIVED | UNPROVEN | controls |
+|---|---|---|---|---|---|---|
+| A — before `#192` | `1d0858e` | 289 | 196 | 91 | 2 | 4 green |
+| B — with `#192` | `e12e795` | 289 | 208 | 79 | 2 | 4 green |
+
+Clean clones, never the working tree; same flags; and **the instrument verified
+byte-identical between the arms** by diffing `tests/falsify/`, since a delta
+measured across two versions of `run.sh` is an artefact of the tool rather than
+of the change. (`git worktree` cannot serve here — the runner refuses a tree
+whose `.git` is a file rather than a directory.)
+
+**No identity survived in arm B that had survived in arm A.** Worth stating
+because a net `+12` would look identical if the slice had killed 14 and lost 2,
+and nothing in a TOTAL line distinguishes those.
