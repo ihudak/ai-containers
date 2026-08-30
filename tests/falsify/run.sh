@@ -951,17 +951,52 @@ FALSIFY_TOKEN=""
 # Deliberately cheap and self-cleaning: one small file per call, removed on
 # every path, named per-process so two workers probing at once cannot read each
 # other's token and call a healthy filesystem broken.
-fr_scratch_intact() {   # <dir> → 0 when a write survives a read-back
-  local dir="$1" probe token back
+# HOW MUCH THE SCRATCH MUST STILL BE ABLE TO HOLD for a kill to be believed.
+#
+# A TOKEN IS NOT ENOUGH, measured on a real APFS volume 2026-08-30 rather than
+# reasoned. Driven into its reserve band, the volume reported 1176 KB free and:
+#
+#     25 B write  → succeeds
+#     96 KiB      → succeeds
+#    128 KiB      → file exists, TRUNCATED (5 of 5)
+#    256 KiB      → file exists, 98304 bytes of 262144
+#      1 MiB      → file exists, 98304 bytes of 1048576
+#
+# So the original ~25-byte probe read back INTACT while a real artefact write
+# was being truncated, and the verdict stayed KILLED — the exact false kill this
+# guard exists to stop, surviving the guard meant to stop it. `df` is no help in
+# either direction: it claimed 1176 KB free throughout.
+#
+# 1 MiB is a PROXY, not a proof: a probe of N bytes answers "can this filesystem
+# still take N", and an oracle writing more than N in a band that admits N would
+# still slip through. It is sized to be larger than anything a test in this
+# suite writes to its scratch, and it costs ~15 ms per probed kill (37 ms vs
+# 22 ms, measured over 100 iterations) — about 8 seconds across a whole corpus
+# run, paid only on the KILLED path.
+FR_PROBE_BYTES="${FALSIFY_PROBE_BYTES:-1048576}"
+
+fr_scratch_intact() {   # <dir> → 0 when a block write survives a read-back
+  local dir="$1" probe token size want head_back
   probe="$dir/.fr-scratch-probe.$BASHPID"
   token="fr-probe-$BASHPID-$SECONDS"
+  want=$(( ${#token} + FR_PROBE_BYTES ))
+  # `printf '%*s'` builds the block in the shell — no /dev/zero, no `head -c`,
+  # nothing to differ between GNU and BSD userland.
+  #
   # Braced: `printf … > "$probe" 2>/dev/null` suppresses printf's stderr, not the
   # SHELL's "Permission denied" for the redirection itself, which would then leak
   # into the tier's output once per probed kill.
-  { printf '%s' "$token" > "$probe"; } 2>/dev/null || { rm -f "$probe" 2>/dev/null; return 1; }
-  back="$(cat "$probe" 2>/dev/null)"
+  { printf '%s%*s' "$token" "$FR_PROBE_BYTES" '' > "$probe"; } 2>/dev/null \
+    || { rm -f "$probe" 2>/dev/null; return 1; }
+  # SIZE, not content: ENOSPC truncates, it does not corrupt, and reading a
+  # whole megabyte back through a command substitution to compare it would cost
+  # more than the write. The token prefix is still read back, so the check keeps
+  # its original meaning — the bytes came back — rather than trusting a stat.
+  size="$(wc -c < "$probe" 2>/dev/null | tr -d ' ')"
+  head_back=""
+  read -r -N "${#token}" head_back < "$probe" 2>/dev/null
   rm -f "$probe" 2>/dev/null
-  [[ "$back" == "$token" ]]
+  [[ "$size" == "$want" && "$head_back" == "$token" ]]
 }
 
 falsify_verdict() {   # <rc> <outfile> <timed-out 0|1>

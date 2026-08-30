@@ -100,6 +100,56 @@ else
   fail "fr_scratch_intact rejects the APFS shape (got '$apfs_out')"
 fi
 
+# THE RESERVE BAND — the shape a ~25-byte probe cannot see, and the reason this
+# guard needed a second fix. Measured on a real APFS volume 2026-08-30 (a
+# 20 MB sparse image driven into its reserve): `df` reported 1176 KB free while
+# a 25-byte write SUCCEEDED, 96 KiB SUCCEEDED, and 128 KiB came back TRUNCATED.
+# The token-sized probe read back INTACT there, so the verdict stayed KILLED —
+# this guard's own defect, of exactly the class it exists to catch.
+#
+# `ulimit -f` reproduces that band with no privileges, no disk image and no
+# platform branch: under a small file-size limit a tiny write sticks and a block
+# write is truncated. That equivalence is not assumed — both were run side by
+# side against the real APFS volume, and the two probes agreed on both:
+#
+#            real APFS reserve band     ulimit -f 1
+#   old      INTACT (false kill)        INTACT (false kill)
+#   new      fires                      fires
+band="$TMP/band"; mkdir -p "$band"
+band_out="$(
+  # shellcheck disable=SC2016
+  FALSIFY_SOURCE_ONLY=1 bash -c '
+    trap "" XFSZ
+    ulimit -f 1 2>/dev/null || { echo NOLIMIT; exit 0; }
+    . "$1"; d="$2"
+    # THE PREMISE, asserted rather than assumed: a tiny write must still stick
+    # here. If it does not, this is an ordinary full disk — a case the /dev/full
+    # arm above already covers — and it would prove nothing about the band.
+    printf x > "$d/.tiny" 2>/dev/null || { echo NOSMALL; exit 0; }
+    [[ "$(wc -c < "$d/.tiny" | tr -d " ")" == "1" ]] || { echo NOSMALL; exit 0; }
+    rm -f "$d/.tiny"
+    fr_scratch_intact "$d" && echo INTACT || echo BROKEN
+  ' _ "$RUN" "$band" 2>/dev/null
+)"
+case "$band_out" in
+  NOLIMIT)
+    printf 'SKIP: this shell cannot set ulimit -f, so the reserve band cannot be posed here\n' ;;
+  NOSMALL)
+    fail "fixture: under ulimit -f a small write must still stick — it did not, so the band case cannot be posed here" ;;
+  BROKEN)
+    pass "fixture: ulimit -f poses the band — a small write sticks"
+    pass "fr_scratch_intact rejects the reserve band: a token-sized write sticks, a block write does not" ;;
+  *)
+    fail "fr_scratch_intact rejects the reserve band (got '$band_out')" ;;
+esac
+# Nothing may be left behind there either — the truncated probe included.
+band_left="$(ls -A "$band" | wc -l | tr -d ' ')"
+if [[ "$band_left" == "0" ]]; then
+  pass "the probe leaves nothing behind after a truncated write"
+else
+  fail "the probe leaves nothing behind after a truncated write — found $band_left file(s)"
+fi
+
 # It must also clean up after itself, or a probe on the KILLED path litters the
 # scratch once per kill — hundreds of files in a corpus run.
 probe_left="$(ls -A "$healthy" | wc -l | tr -d ' ')"
