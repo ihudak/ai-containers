@@ -5911,7 +5911,7 @@ What remains true and is not a gap: the probe is a fixed-size proxy, the three
 `config`-shaped equivalences of ENOSPC (absent / empty / short) are all caught
 by the same size-checked read-back, and `df` is used nowhere.
 
-## F1 — the new coverage brought two HANGING mutants into the measured set — **OPEN: informational, for whoever finishes F1**
+## F1 — the new coverage brought two HANGING mutants into the measured set — **CLOSED 2026-08-30: the loops stay as they are; see F1's tier-half closure at the end of this file**
 
 Measured 2026-08-30 on a Linux host, after `#179` (29 error paths) and `#182`
 (no-op paths) landed:
@@ -5974,7 +5974,7 @@ runs. Checking it took five seconds and changed the explanation entirely.
 
 ---
 
-## F1 — the pty vehicle is sound on Linux, and the ledger debt is 67, not 103 — **OPEN: measured 2026-08-30, for whoever finishes F1**
+## F1 — the pty vehicle is sound on Linux, and the ledger debt is 67, not 103 — **CLOSED 2026-08-30: the vehicle shipped in #192; the debt is now 58 — see the tier-half closure at the end of this file**
 
 Three questions settled on a Linux host so the remaining F1 slices can be built
 on measured ground rather than on assumption. None of this changes a line of
@@ -6186,6 +6186,19 @@ only `rc` and "nothing removed" were checked — and inverting `[[ -t 0 ]]` prod
 both anyway (interactive branch → `read` meets EOF → empty reply → abort). Only
 the message separates the two paths, which is why `rm`'s guard always died and
 `gc`'s did not.
+
+### The two hanging mutants: the loops stay as they are
+
+Decided rather than left open. `repo.sh:367/:436/:681` are already the correct,
+idiomatic form — `while IFS= read -r n; do …` — and the MUTANT is the negation.
+"Rewriting the loops" would therefore mean restructuring correct code so that a
+hypothetical negation of it would not hang: reshaping the product so the
+measuring instrument is happier. This repo already holds the opposite principle
+explicitly — `tests/run-all.sh` is `#EXCLUDED` from mutation rather than
+modified, because mutating the instrument corrupts the measurement instead of
+improving it. The cost is real, bounded, charged to `--max-unproven-pct` rather
+than the ledger, and it only ever bites at un-defer time, which is not
+scheduled.
 
 ### What is NOT claimed
 
