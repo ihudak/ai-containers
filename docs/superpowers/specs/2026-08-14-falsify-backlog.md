@@ -5483,7 +5483,7 @@ demonstrations above are recorded here rather than left as a one-off.
 
 ---
 
-## F66 ADDENDUM — two measurements, one refuted hypothesis, and a narrower question — **OPEN**
+## F66 ADDENDUM — two measurements, one refuted hypothesis, and a narrower question — **CLOSED 2026-08-30: superseded by the F66 RESOLUTION above; the refutation below is unsound**
 
 2026-08-29, same host, after the entry above.
 
@@ -5522,6 +5522,56 @@ at both moments.
 That is stated as the next thing to try, not as a finding: run the hermetic
 suite and a Phase 4 at the same time, with the watcher above running, and see
 whether the bursts reappear.
+
+### SUPERSEDED 2026-08-30 — the refutation is unsound, and the experiment it prescribes is not owed
+
+**Read this entry against the F66 RESOLUTION, which sits ninety lines ABOVE it
+and was written an hour AFTER it.** This file is ordered chronologically by
+commit, not by finding: the addendum landed in `8ba954b`, the fix and its
+resolution in `3f83739`, and that resolution was written into the ORIGINAL F66
+entry rather than appended here. So a reader arriving at the end of the file
+meets the stale record last and takes it for the current one — the same
+two-records-disagreeing defect this file has had to correct before, and the
+reason this section exists rather than a silent deletion.
+
+**Why "REFUTED by measurement" was wrong.** The observation was right; the
+inference was not. `run.sh --cases 000-harness-selftest` *does* reach
+`probe_launcher` — it builds the default variant, so `docker image inspect`
+succeeds and `detect_caps` probes — and the pre-fix
+`mkdir -p "$IT_SCRATCH/launcher-probe"` created the scratch root in that run
+too. It was invisible because that root is the same directory the run was going
+to create anyway, and any invocation that proceeds past selection installs
+`trap 'sweep' EXIT` and removes it. "Exactly one directory ever appeared, the
+run's own" is precisely what a littering probe looks like from inside a complete
+run.
+
+**The discriminator is not whether the probe runs. It is whether the invocation
+reaches the sweep.** Only an invocation that exits BEFORE `trap 'sweep' EXIT`
+can leave the artefact, and `--list-caps` is that invocation. A complete run
+could not have separated the two hypotheses at all, so that measurement had no
+power to refute anything — the same shape as a test that passes against unfixed
+code, which this fix's own first regression test also had until the mandatory
+pre-fix demonstration caught it.
+
+**The narrower question is answered above**, in the resolution's closing
+paragraph: the `--list-caps`-shaped invocations come from
+`tests/test-integration-runner.sh`, and the count tracks how many of them
+reached the probe. That is also the concurrency correlation this entry could not
+explain — the concurrent `tests/run-all.sh` WAS the source, not a condition
+acting on Phase 4. The prescribed experiment (a hermetic suite and a Phase 4 at
+once) would re-derive a settled fact and is not owed.
+
+**Post-fix measurement, 2026-08-30, same host.** The four directories still
+banked here were stamped 22:24:11–22:24:15 on 2026-08-29; the fix merged at
+23:29:34 the same evening. They are the residue of the very run the resolution
+quotes, not a recurrence. They were removed, and the full hermetic suite was
+then run with the real `$HOME` under the same 200 ms poller: **73 tests, 73
+passed, and zero directories ever appeared — not one created, not one left.**
+`tests/test-integration-runner.sh` and `tests/test-layer-containment.sh`, the
+two files that invoke `run.sh`, both ran inside the watched window. `--dry-run`
+was checked at the same time and makes no docker call at all (the
+`do_dry_run -eq 0` guard covers the trap and network setup), so there is no
+second early-exit path able to reach the probe.
 
 ---
 
