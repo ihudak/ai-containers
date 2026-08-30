@@ -131,3 +131,44 @@ p_timeout() {  # $1=seconds, $2… = command
   rm -f "$flag"
   return "$rc"
 }
+
+# ── A REAL TTY ON STDIN, for the consent prompts ─────────────────────────────
+# `repo.sh` gates its destructive commands on `[[ -t 0 ]]`, so the branch that
+# reads "Type 'yes' to confirm" is unreachable from an ordinary test — which is
+# why nothing asserted that answering "no" leaves the data alone. Reaching it
+# needs a pty, and `script(1)` is the only vehicle available: **python3 is
+# ABSENT from ubuntu:22.04**, the bash-floor image, so a Python-`pty` harness
+# would pass on macOS and on a developer host and die in exactly the arm the
+# floor container exists to catch. There is nothing behind `script`.
+#
+# GNU takes the command as ONE STRING and BSD takes argv, so the platform is
+# PROBED ONCE rather than discovered by letting one invocation fail — the same
+# discipline, and the same reason, as _P_STAT_GNU above.
+#
+# Measured on both arms before being relied on: GNU on WSL2, ubuntu:22.04 (as
+# root) and ubuntu:24.04, util-linux 2.37.2/2.39.3; BSD on macOS 15. Both give
+# rc 0 for a delayed "yes", rc 1 for "no", and the transcript echoes the prompt
+# BEFORE the reply — which is what proves `read -r -p` blocked on the pty rather
+# than consuming buffered input.
+#
+# TWO TRAPS, both of which ship green. The pty emits `\r`, so exact-match and
+# line-count assertions need it stripped — but stripping it THROUGH A PIPE
+# replaces the command's exit status with `tr`'s:
+#
+#   out=$( … | p_pty cmd | tr -d '\r' ); rc=$?   # rc is tr's 0 — the abort is INVISIBLE
+#   out=$( … | p_pty cmd ); rc=$?; out="${out//$'\r'/}"   # rc=1, correct
+#
+# The status is the entire point of the mutants these prompts carry, so strip
+# after capturing, never in the pipeline.
+if script --version 2>/dev/null | grep -q util-linux; then _P_PTY_GNU=1; else _P_PTY_GNU=0; fi
+
+p_pty() {  # $1… = command + args, run with a real tty on stdin
+  if [[ "$_P_PTY_GNU" == "1" ]]; then
+    # %q, because GNU collapses the command to one string and a path containing
+    # a space would otherwise split into two arguments.
+    local cmd; printf -v cmd '%q ' "$@"
+    script -qec "$cmd" /dev/null
+  else
+    script -q /dev/null "$@"
+  fi
+}
