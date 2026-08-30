@@ -7,7 +7,7 @@ finding that lives only there is a finding that gets dropped.
 
 ---
 
-## F1 — `repo.sh` executes 2 of its 19 functions under the hermetic suite — **EXECUTION COVERAGE COMPLETE 2026-08-29 (22 of 22, measured); mutation-tier entry still OPEN**
+## F1 — `repo.sh` executes 2 of its 19 functions under the hermetic suite — **CLOSED 2026-08-30: execution coverage complete (22 of 22, measured), tier half closed to the practical limit**
 
 `tests/test-repo-registry.sh` sources `repo.sh` in a subshell deliberately
 arranged so that "dispatch never runs, no side effects occur" (the test's own
@@ -5575,7 +5575,7 @@ second early-exit path able to reach the probe.
 
 ---
 
-## F1 RESOLUTION (first half) — measured, not estimated: 22 of 22 — **execution coverage FIXED 2026-08-29; the tier half remains OPEN**
+## F1 RESOLUTION (first half) — measured, not estimated: 22 of 22 — **execution coverage FIXED 2026-08-29; tier half CLOSED 2026-08-30 to the practical limit, see the end of this file**
 
 **The entry's headline number was two generations stale.** "2 of 19" described
 the suite before `tests/test-repo-destructive.sh` existed. Rather than trust
@@ -6126,3 +6126,71 @@ logic-flip majority is untouched, the three `ensure_seed_image` error paths
 error branches are below the granularity the "22 of 22" execution measurement
 used — and the three consent aborts still need the harness this entry only
 de-risks.
+
+---
+
+## F1 — the tier half, closed to the practical limit — **CLOSED 2026-08-30**
+
+**The number the decision rested on was wrong, and it was mine.** `targets.conf`'s
+row said *"103 survivors against a ledger carrying 0 … un-deferring would concede
+103 classified exemptions"*. 103 is the count of mutant **records**; the ledger
+keys on **identity** (`generate.sh:23-26` excludes line numbers from the hash),
+and `repo.sh`'s mutants collide heavily — `:367` and `:681` are byte-identical
+lines, and 65 identities carried more than one record at the start of the day.
+The real cost of un-deferring is **58 identities**, so the sentence was off by 45
+against the number the gate actually enforces. Found by the Linux host (#188,
+re-measured after #192); corrected in the row.
+
+### The decision, re-taken against 58: still DEFERRED
+
+A smaller concession than the one refused before, and still one that blunts a
+ratchet guarding an active corpus that carries 10. It is also **understated as
+work**: 16 of `repo.sh`'s identities carry MIXED verdicts — a kill and a survival
+under one identity — so an entry has to name *which* instances survive and why,
+when identical damage elsewhere dies. "58 entries" does not convey that.
+
+### The arc, and why it stops here
+
+| | KILLED | SURVIVED | identities |
+|---|---|---|---|
+| start of 2026-08-30 | 185 | 102 | 67 |
+| after #191 (`ensure_seed_image`, `cmd_gc`) | 196 | 91 | 62 |
+| after #192 (pty consent gate) | **208** | **79** | **58** |
+
+Return-flip survivors went **25 → 3** across four slices: error paths exit
+non-zero (29 sites, was 6); no-op paths report success and a failed reset does
+not (8 guards); `ensure_seed_image`'s three refusals and `cmd_gc`'s consent guard
+(11 mutants); and the pty consent gate on `repo.sh:513/:714/:783`. **The 3 that
+remain are defensive branches their callers pre-validate** — EQUIVALENT, killable
+by no test.
+
+Return-flip is therefore finished, which was the agreed condition for closing.
+What is left is **40 cond-negate + 32 logic-flip + 4 cmp-flip**: asserting exit
+status structurally cannot reach them, and killing them needs assertions on both
+branches of every guard. That is **deliberately not scheduled** — closed to the
+practical limit, exactly as F1's slice 4 was closed to the hermetic limit, so the
+entry stops being an indefinite debt rather than pretending to be finished.
+
+### Two corrections from doing the work, worth more than the counts
+
+**"22 of 22" means every FUNCTION was entered, never that every BRANCH was
+reached.** `ensure_seed_image` was counted as covered and only its first two
+lines ever ran: the fake `docker` answered `image inspect` with an unconditional
+`exit 0`, so every run returned at `repo.sh:87` and nine mutants lived below it.
+A per-function instrumentation pass cannot see that, and this file should not be
+read as if it could.
+
+**`cmd_gc`'s consent guard at `repo.sh:781` was never pty-blocked.** This backlog
+filed all three as needing a tty; two do. `gc` is driven non-interactively, but
+only `rc` and "nothing removed" were checked — and inverting `[[ -t 0 ]]` produces
+both anyway (interactive branch → `read` meets EOF → empty reply → abort). Only
+the message separates the two paths, which is why `rm`'s guard always died and
+`gc`'s did not.
+
+### What is NOT claimed
+
+No cross-host confirmation of an ENV-DEPENDENT verdict is owed, because the row
+stays DEFERRED and therefore has no ledger entries to be right about on two
+machines. Should anyone re-open the un-defer question, that confirmation becomes
+a prerequisite again — the two hosts' clocks differ enormously (100 of macOS's
+103 survivors ran past 120s; Linux finishes in single digits).
