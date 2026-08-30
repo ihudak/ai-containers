@@ -6,6 +6,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## v0.9.4 — 2026-08-30
+
+**A patch, and every entry is again a repair.** No new `sandbox.conf` key, no new
+column, nothing a consumer has to adopt.
+
+**This release closes three long-running intermittent failures, and the common
+thread is that each was finally settled by REPRODUCING it rather than by reading
+the evidence again.** F30/F32/F64 had five sightings across nine days, a failed
+macOS reproduction, and an addendum of mine concluding that the useful next step
+was to wait for a sixth. That conclusion was wrong: re-creating the *old*
+configuration in a scratch tree on the right platform, deliberately
+oversubscribed, reproduced it three times in minutes and an instrumented trap
+named the mechanism outright. F66 followed the same shape — five probes by
+reading found nothing, and a watcher capturing the process table on each removal
+cracked it in one run.
+
+**The F30/F32/F64 mechanism is worth stating plainly, because it is latent in 47
+files.** `p_timeout` backgrounds two children, and a forked child inherits its
+caller's `trap 'rm -rf "$TMP"' EXIT`. When one of those children exits, it
+deletes the fixture the test is still using — and the four `p_*` helpers then
+return empty and report four symptoms of that one fact. The fixture now has an
+owner (`$BASHPID`, not `$$`, which is unchanged in a subshell and would guard
+nothing), so the removal is confined to the process entitled to make it.
+
+**Two wrong turns are recorded rather than edited away**, because in both cases
+the wrong step is the useful part. A fix inside `p_timeout` — clearing the
+caller's trap across the forks and restoring it after — made the failure
+*deterministic*, because bash neutralises an inherited trap in a subshell but
+fires an explicitly re-armed one. And the F64 addendum reasoned from *where the
+evidence was* to *what the cause must be*; the flat shared `/tmp` was only where
+the fixture happened to sit, not what destroyed it.
+
+**None of this makes the TMPDIR rootings redundant.** They remove the shared
+namespace a cross-worker collision would need, and nothing here proves that
+mechanism absent — only that these sightings were not it.
+
 ### F30/F32/F64 settled: a test's EXIT trap was firing in its own forked child
 
 Five sightings over nine days of a falsify CONTROL going red with
