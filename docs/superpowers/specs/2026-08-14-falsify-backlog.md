@@ -1470,7 +1470,7 @@ only test in the suite globbing a shared directory.
 
 ---
 
-## F30 — a KILL is only trustworthy if the oracle would have passed under the same load — **DETECTION LANDED 2026-08-21, entry still open**
+## F30 — a KILL is only trustworthy if the oracle would have passed under the same load — **CAUSE FOUND AND FIXED 2026-08-30, see F64 RESOLUTION**
 
 `tests/falsify/run.sh` scores a mutant KILLED when the oracle exits non-zero or
 prints a `FAIL:` line, and a `timeout` that *also* carried a `FAIL:` line is
@@ -1882,7 +1882,7 @@ The 44–57 s under load is a ~6× slowdown, not 150×.
 
 ---
 
-## F32 — three load-sensitive oracles, and the tier reads slowness as coverage — **DETECTION LANDED 2026-08-21 (see F30), entry still open**
+## F32 — three load-sensitive oracles, and the tier reads slowness as coverage — **CAUSE FOUND AND FIXED 2026-08-30, see F64 RESOLUTION** — **DETECTION LANDED 2026-08-21 (see F30), entry still open**
 
 Distinct from F31 and unfixed. Three separate oracles have now been observed
 failing or timing out purely under concurrent load, on trees that are green when
@@ -5155,7 +5155,7 @@ out whether it was reproducible. **Capture the log before re-running anything.**
 
 ---
 
-## F64 — F30/F32's fifth sighting, and the field that finally separates the two candidates — **`dir=n`: the whole scratch directory was gone. OPEN: which of the two dir=n mechanisms is still undetermined**
+## F64 — F30/F32's fifth sighting, and the field that finally separates the two candidates — **`dir=n`: the whole scratch directory was gone. FIXED 2026-08-30 — reproduced, mechanism identified, guard added**
 
 `ai-containers` PR-gate run
 [33245548932](https://github.com/ihudak/ai-containers/actions/runs/33245548932),
@@ -5595,3 +5595,103 @@ string, so that mutant is unobservable there by construction, not merely
 unnoticed. Measured both ways: 1 red under a symlinked `TMPDIR`, 0 under an
 ordinary one. That is the clearest demonstration in this file of why the third
 arm is a separate arm.
+
+---
+
+## F64 RESOLUTION — reproduced on Linux, and the mechanism is a trap firing in a forked child — **FIXED 2026-08-30**
+
+Five sightings over nine days (2026-08-21, 08-23, 08-26, 08-27, 08-29), a macOS
+reproduction attempt that failed, and an addendum concluding the prior evidence
+described a configuration that no longer exists. Settled here.
+
+### Reproduced
+
+macOS was the wrong platform: the sightings are Linux, on a real host `/tmp`.
+On a Linux host (WSL2, 16 cores, Xeon W-10885M, `/tmp` on disk), in a SCRATCH
+tree with both rootings reverted to restore 189ebda's flat shared `/tmp`:
+
+```
+tests/falsify/run.sh --target tests/portability.sh --jobs 32 --controls 12 --timeout 120
+```
+
+`--jobs 32` on 16 cores deliberately — F59 records oversubscription raising the
+red-control rate, and if the mechanism is a race then interleaving is the
+variable. **Three reproductions, at iterations 23, 11 and 2 of separate 60-run
+loops** (~36 iterations, ~432 controls). Each carried the sightings' exact
+signature:
+
+```
+ERROR: CONTROL FAILED — the PRISTINE oracle went red under this run's own load
+       (signal=exit+failline, 1.9s): tests/portability.sh via test-portability.sh
+FAIL: p_stat_mode returned empty … [fixture=/tmp/tmp.ufhI3yMh0z/f dir=n exists=n size=? left=0]
+```
+
+### The mechanism, caught directly
+
+An `rm` shim on `PATH` logging every removal of a `/tmp` fixture with its parent
+chain showed the fixture removed **twice** — once by the test's own EXIT trap at
+teardown, and once 1.1s EARLIER by a process whose parent and grandparent were
+both `test-portability.sh`. An instrumented trap then named it outright:
+
+```
+TRAPFIRE pid=2284480 bashpid=2285462 subshell=1
+         cmd=[local cmd_pid=$!] fn=[p_timeout main]
+```
+
+`BASH_SUBSHELL=1`, `BASHPID != $$`: **the script's `trap 'rm -rf "$TMP"' EXIT`
+ran in a forked child of the script, inside `p_timeout`, at its `"$@" &` fork.**
+The child deleted the fixture the script was still using; the four `p_*` helpers
+then returned empty and reported four symptoms of that one fact.
+
+`p_timeout` backgrounds two children — the timed command and a watchdog — and a
+child can end up running the caller's EXIT trap. **47 test files** in this suite
+set `trap 'rm -rf "$TMP"' EXIT`, so each of those children carries a loaded
+`rm -rf` aimed at its caller's own fixture.
+
+### Why it is load-dependent, and why five sightings were not enough
+
+Whether a child FIRES the trap depends on scheduling; whether it is HANDED one
+does not. That asymmetry is why this took nine days and 276 controls to see once
+— and it is why the guard is asserted on the second property, not the first.
+
+### The fix, and one that was tried and reverted
+
+`tests/test-portability.sh` now owns its fixture explicitly:
+
+```bash
+TMP_OWNER="$BASHPID"
+trap '[[ "$BASHPID" == "$TMP_OWNER" ]] && rm -rf "$TMP"' EXIT
+```
+
+`$BASHPID`, not `$$`: `$$` is the script's pid and is unchanged in a subshell,
+so comparing it to itself would guard nothing.
+
+**A fix in `p_timeout` was tried first and REVERTED, and the reason is worth
+keeping.** Clearing the caller's EXIT trap across the two forks and restoring it
+after made the failure DETERMINISTIC — 4 failures on every run, the exact
+`dir=n` signature. Bash neutralises an *inherited* trap in a subshell, but an
+explicitly re-armed one fires: the restore converted a dormant trap into a live
+one in every subshell `p_timeout` runs inside, such as a command substitution.
+Isolated by running the fixed helper against the ORIGINAL test file (4 failures)
+and the original helper against the original test file (0). The hazard belongs
+to whoever owns the fixture, not to the helper that forks.
+
+### Verified
+
+The guard asserted deterministically in `test-portability.sh` — the trap's own
+action, run in a forked child, must leave the fixture alone — and demonstrated
+FAILING against the unguarded trap (`dir=n file=n`). A second assertion pins
+that the guard is not inert, since a condition that never holds would trade a
+destroyed fixture for one leaked on every run.
+
+Then the reproduction re-run under identical conditions with the guard in place:
+**117 iterations, 1404 controls, 0 control failures**, against ~1 failure per
+144 controls without it — roughly ten times the exposure, clean.
+
+### What this does not claim
+
+The rootings (`6e5bfc7`, `#175`) are not redundant: they remove the shared
+namespace that made a *cross-worker* collision possible, and this entry never
+proved that mechanism absent. What it proves is that the `dir=n` sightings were
+NOT cross-worker at all — the destroyer was always the test's own forked child,
+and the flat `/tmp` was a coincidence of where the fixture happened to live.
