@@ -1062,6 +1062,99 @@ grep -q 'OK: reset complete' "$OUT" \
   || pass "repo.sh does not claim the reset completed after it failed"
 unset HELPER_RESET_FAILS
 
+# ── THE CONSENT GATE, ON A REAL TTY ──────────────────────────────────────────
+# Every case above feeds stdin from /dev/null, so `[[ -t 0 ]]` is false and
+# repo.sh takes its NON-INTERACTIVE refusal branch. The interactive branch —
+# `read -r -p "…Type 'yes' to confirm: "` then `[[ "$reply" == "yes" ]]` — was
+# therefore unreachable from this file, and nothing anywhere asserted the one
+# thing it decides: that answering NO leaves the data alone.
+#
+# That is not a small gap. Measured 2026-08-30, twelve surviving mutants sit on
+# those three lines (repo.sh:513, :714, :783 — `rm`, `reset`, `gc`), four
+# operators each. The `return-flip` one only mislabels the exit status. The
+# `cond-negate` one INVERTS THE COMPARISON: the user types "no" and the
+# destructive command proceeds anyway — deleting a repo'"'"'s base volume and its
+# working copies, discarding local state and branches, removing copies that may
+# hold uncommitted work. This file exists for exactly that assertion.
+#
+# THE YES CASE GUARDS THE NO CASE'"'"'S PREMISE, and that pairing is load-bearing.
+# Measured: with NO input at all, the prompt reads EOF and repo.sh aborts —
+# indistinguishable from a correct "no". So a lone "answering no destroys
+# nothing" assertion would pass against a completely broken harness. The yes
+# case can only pass if the answer genuinely arrived, so it is what makes the
+# no case mean something.
+if ! command -v script >/dev/null 2>&1; then
+  printf 'SKIP: no script(1) on this host, so the consent prompts cannot be reached\n'
+else
+  # THE ANSWER IS SENT WHEN THE PROMPT APPEARS, NOT AFTER A FIXED SLEEP.
+  # A `sleep 1` here would be a load-sensitive assertion inside an oracle, which
+  # is the F30/F32 shape this repo has already paid for twice: under load the
+  # answer arrives before the prompt, `read` takes EOF, the yes case fails, and
+  # the tier reads that as a KILL. Polling the transcript instead is bounded
+  # (30s), adapts to an arbitrarily slow prompt — verified against a fixture
+  # lagging 2s, where it waited 2.75s — and is FASTER in the common case:
+  # 0.42s against the 1.4s the fixed sleep cost.
+  answer_when_prompted() {   # <answer> <transcript> — write once the prompt is up
+    local ans="$1" out="$2" i=0
+    while (( i < 600 )); do grep -q 'confirm:' "$out" 2>/dev/null && break; sleep 0.05; i=$((i+1)); done
+    printf '%s\n' "$ans"
+    # Hold the pipe open until the child has echoed it. Closing stdin the
+    # instant after the write can reach `read` as EOF under load.
+    i=0
+    while (( i < 200 )); do grep -q "confirm: $ans" "$out" 2>/dev/null && break; sleep 0.05; i=$((i+1)); done
+    sleep 0.1
+  }
+  run_repo_pty() {   # <answer> <args…> — repo.sh on a real tty; sets RC, OUT
+    local ans="$1"; shift
+    OUT="$TMP/out.txt"; : > "$OUT"
+    # NOT piped through `tr -d '\r'`: that would replace repo.sh's exit status
+    # with tr's, and the status is precisely what these mutants damage. Strip
+    # after capturing instead.
+    answer_when_prompted "$ans" "$OUT" \
+      | ( export PATH="$FAKE_BIN:$PATH"; p_pty bash "$REPO_SH" "$@" ) > "$OUT" 2>&1
+    RC=$?
+  }
+  # `gc` takes no name; the other two act on `docs`.
+  for spec in "rm docs" "reset docs" "gc"; do
+    # shellcheck disable=SC2086
+    set -- $spec
+    verb="$1"
+
+    setup_world
+    run_repo_pty yes "$@"
+    if [[ "$RC" -eq 0 ]]; then
+      pass "\`$verb\` answered YES on a tty succeeds"
+    else
+      fail "\`$verb\` answered YES on a tty succeeds (rc=$RC, out: $(tr -d '\r' < "$OUT" | tr '\n' ' '))"
+    fi
+    # The premise the no case rests on: the answer reached the prompt. A pty
+    # echoes what it is fed, so the reply appears in the transcript AFTER the
+    # prompt — which is also what shows `read` blocked rather than consuming
+    # buffered input.
+    if grep -q "confirm: yes" <(tr -d '\r' < "$OUT"); then
+      pass "  … and the transcript shows the answer arriving after the prompt"
+    else
+      fail "  … and the transcript shows the answer arriving after the prompt (out: $(tr -d '\r' < "$OUT" | tr '\n' ' '))"
+    fi
+    yes_removed="$(removed)"
+    if [[ -n "$yes_removed" ]]; then
+      pass "  … and it destroys what it asked about"
+    else
+      fail "  … and it destroys what it asked about — nothing was removed, so the NO case below would prove nothing"
+    fi
+
+    setup_world
+    run_repo_pty no "$@"
+    if [[ "$RC" -ne 0 ]]; then
+      pass "\`$verb\` answered NO on a tty exits non-zero"
+    else
+      fail "\`$verb\` answered NO on a tty exits non-zero (rc=$RC)"
+    fi
+    # THE ASSERTION THIS BLOCK EXISTS FOR.
+    check "\`$verb\` answered NO DESTROYS NOTHING" "" "$(removed)"
+  done
+fi
+
 # ── sync_from_path: the one function nothing ever executed (backlog F1) ───────
 # Measured 2026-08-29 by instrumenting every function in repo.sh and running the
 # three repo test files: 21 of its 22 functions run. `sync_from_path` was the
