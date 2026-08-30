@@ -5890,3 +5890,158 @@ KILLED anyway. Read the kill count against 286 attempted, not 289.
 useful part: I first asserted these hang because `read` fails at EOF. That is
 backwards — with input present the negated loop exits at once and its body never
 runs. Checking it took five seconds and changed the explanation entirely.
+
+---
+
+## F1 — the pty vehicle is sound on Linux, and the ledger debt is 67, not 103 — **OPEN: measured 2026-08-30, for whoever finishes F1**
+
+Three questions settled on a Linux host so the remaining F1 slices can be built
+on measured ground rather than on assumption. None of this changes a line of
+`repo.sh` or its oracles; it is what the next slice needs to know first.
+
+### 1. `script` is the pty vehicle, and it has no fallback behind it
+
+The three consent aborts (`repo.sh:513`, `:714`, `:783`) are unreachable because
+`run_repo` feeds `</dev/null`, so `[[ -t 0 ]]` is false in every case. Reaching
+them needs a pty. Measured, against a fixture mimicking `repo.sh:511-514`:
+
+| environment | `script` | verdict |
+|---|---|---|
+| host (WSL2) | util-linux 2.37.2 | works |
+| `ubuntu:22.04` — **the `suite-floor` image**, as root | util-linux 2.37.2 | works |
+| `ubuntu:24.04` — the CI runner family | util-linux 2.39.3 | works |
+
+| case | rc | transcript |
+|---|---|---|
+| delayed `yes`, arriving 0.4 s AFTER the prompt | 0 | `Type 'yes' to confirm: yes` / `Proceeding.` |
+| delayed `no` | **1** | `Type 'yes' to confirm: no` / `Aborted.` |
+| control — no `script` at all | 3 | `NON-INTERACTIVE — no tty` |
+
+The transcript ORDERING is what proves the answer was genuinely delayed: the
+prompt is echoed before the reply, so `read -r -p` blocked on the pty rather than
+consuming buffered input. The control earns its place separately — rc=3 without
+`script` shows the tty is what flips the branch, not something incidental about
+the invocation.
+
+**`python3` is ABSENT from `ubuntu:22.04`.** A Python-`pty` harness — the obvious
+second choice — would pass on macOS and on a developer host and die in the floor
+arm, which is precisely the shape of failure the floor container exists to catch.
+There is nothing behind `script`.
+
+### 2. Two traps in the harness, both of which would have shipped green
+
+**The pty emits `\r`.** Exact-match and line-count assertions need it stripped;
+`grep -q` on a substring does not.
+
+**Stripping it through a pipe destroys the exit status** — and the exit status is
+the entire point of these three mutants, each of which is an `exit 1`:
+
+```bash
+out=$( … | p_pty bash x.sh | tr -d '\r' ); rc=$?           # rc is tr's 0 — the abort is INVISIBLE
+out=$( … | p_pty bash x.sh ); rc=$?; out="${out//$'\r'/}"  # rc=1, correct
+```
+
+A harness that pipes for tidiness would assert on the transcript while silently
+discarding the status it exists to check.
+
+### 3. The helper, if the slice wants one
+
+GNU and BSD `script` take their command differently — GNU as ONE string, BSD as
+argv — so this is `tests/portability.sh`'s shape, probed once rather than by
+letting one invocation fail (the discipline that file records paying for in
+`p_stat_mode`):
+
+```bash
+if script --version 2>/dev/null | grep -q util-linux; then _P_PTY_GNU=1; else _P_PTY_GNU=0; fi
+
+p_pty() {  # $1… = command + args, run with a real tty on stdin/stdout
+  if [[ "$_P_PTY_GNU" == "1" ]]; then
+    local cmd; printf -v cmd '%q ' "$@"    # GNU takes one string; %q or a spaced path breaks it
+    script -qec "$cmd" /dev/null
+  else
+    script -q /dev/null "$@"               # BSD takes argv
+  fi
+}
+```
+
+The GNU arm is verified on all three environments above, including the `%q` half
+against a path containing spaces, and as root. **The BSD arm is unverified here**
+and must be measured on a Mac before it is trusted — stating that rather than
+shipping a helper whose second arm nothing has run is the same rule `p_sha1`'s
+inverted probe (F23) cost an increment to learn.
+
+### 4. The ledger debt is 67 identities, not 103 survivors
+
+The headline number every earlier F1 note used — 103, or 102 on this host — is a
+count of mutant RECORDS, which is what `run.sh`'s `TOTAL` line reports. **The
+ledger keys on IDENTITY**, and identity is `<file>:<operator>:<sha1-of-trimmed-
+original-line>` with line numbers explicitly excluded (`generate.sh:23-26`), so
+two byte-identical lines in one file collapse to one identity. `repo.sh` has a
+lot of those:
+
+| | count |
+|---|---|
+| mutant records | 289 |
+| distinct identities | 154 |
+| surviving/unproven RECORDS | 104 |
+| **distinct surviving IDENTITIES** | **67** ← what un-deferring actually costs |
+
+65 identities carry more than one record. So the decision this row has been
+resting on — "103 survivors against a ledger carrying 0, and a ratchet that
+concedes that much is not a ratchet" — was taken against the wrong denominator.
+67 against an active corpus carrying 10 is still a large concession and the
+conclusion may well survive; the point is that it should be re-taken against the
+number the gate will actually enforce.
+
+**Sixteen identities carry MIXED verdicts** — a kill and a survival under one
+identity. That is handled correctly and is already pinned: `check-ledger.sh:377`
+fires check D only when NO record of an identity survived, and
+`tests/test-falsify-ledger.sh:246` asserts exactly that ("an identity that still
+has one survivor is not obsolete amnesty"). Nothing to fix.
+
+**But it changes what an entry has to say.** One entry classifies every damage
+sharing that identity, at every line it appears, and some of them are killed
+while others are not — `repo.sh:return-flip:7efad11b…` is 4 SURVIVED against 9
+KILLED under a single identity. A `GAP:`/`EQUIVALENT:` reason for that has to
+name which instances survive and why, when nine identical damages elsewhere die.
+That is harder than classifying one mutant, and it is work the "67 entries"
+figure does not convey.
+
+### 5. The cross-host discrepancy, identified rather than deduced — and inconsequential
+
+Recorded 2026-08-30: macOS measured 184 KILLED / 103 SURVIVED, Linux 185 / 102,
+over the same 289 mutants on the same tree. An elimination argument was offered
+(two of the three timeouts are the known permanent hangs, so the third is the
+discrepant one) and its premise was wrong: **the three timeout records are TWO
+identities**, because `repo.sh:367` and `:681` are byte-identical lines.
+
+That identity's four records on Linux:
+
+```
+KILLED    line=367  exit+failline          6070ms
+SURVIVED  line=681  none                   6115ms
+KILLED    line=367  timeout+failline     240965ms   <- the discrepant record
+UNPROVEN  line=681  timeout              240981ms
+```
+
+The discrepant record is the **367 hang**. At this host's 120 s clock it had
+already emitted a `FAIL:` before hanging (`timeout+failline` → KILLED); at the
+600 s clock it had not. The verdict moves with the clock, which is a property of
+the machine — the textbook `ENV-DEPENDENT` shape.
+
+**It does not move the ledger at all.** That identity survives on either host
+regardless, through its 681 record, so it needs exactly one entry either way.
+The 185-vs-184 difference is a record-level count inside an identity whose
+ledger obligation is identical on both machines. Worth writing down because the
+reverse conclusion — "our two hosts disagree, so the ledger cannot be correct on
+both" — is the one a reader reaches from the totals alone, and it is false here.
+
+### What this does NOT claim
+
+Nothing here reduces the survivor count or closes a slice. The cond-negate /
+logic-flip majority is untouched, the three `ensure_seed_image` error paths
+(`repo.sh:91`, `:95`, `:100`) are still unexecuted — the fake `docker`'s
+`image inspect` exits 0, so the function returns at `:87` every time and its
+error branches are below the granularity the "22 of 22" execution measurement
+used — and the three consent aborts still need the harness this entry only
+de-risks.
