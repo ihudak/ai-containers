@@ -3,7 +3,21 @@
 Committed, not scratch: the SDD workspace is deleted on completion and a
 finding that lives only there is a finding that gets dropped.
 
-**Status:** OPEN
+**Status:** CLOSED 2026-08-30 — no finding in this file is open.
+
+This header tracked the file, not any one entry, and it said OPEN for a day
+after the last entry closed. That is the same stale-record shape several
+entries below were themselves corrected for (F66's addendum, F1's two
+outlived pointers): the status a reader meets FIRST is the one they act on.
+Re-open it by editing this line when a finding is parked here again — the
+line is the file's own claim about itself and has to be maintained like any
+other.
+
+What remains recorded here is deliberately not open work: 24 DEFERRED rows in
+`tests/falsify/targets.conf` and 4 `GAP:` entries in
+`tests/falsify/survivors.txt`, each carrying its own reason. A GAP is a
+mutant nothing kills TODAY and one could — acknowledged, bounded, and
+ratcheted, which is the opposite of forgotten.
 
 ---
 
