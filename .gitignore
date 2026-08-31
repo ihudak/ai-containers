@@ -49,10 +49,18 @@ allowlist-cidrs.d/custom.txt
 
 # script(1)'s default output file. Given no file argument it writes `typescript`
 # in the CURRENT directory — which is how an empty one reached the repo root in
-# the v0.9.6 review commit, from a bare `script` run while testing p_pty. That
-# was also the shape of the bug being fixed there: BSD `script --version` names
-# no file, so it opens this and execs an interactive shell. tests/portability.sh
-# now passes `-q /dev/null`, and tests/test-portability.sh asserts that sourcing
-# it creates no file in the cwd — but neither stops a stray one being COMMITTED,
-# which is what this line is for.
+# the v0.9.6 review commit, from a bare `script` run while testing p_pty.
+#
+# THE SECOND HALF OF THIS NOTE WAS WRONG AND IS CORRECTED RATHER THAN DELETED.
+# It said "BSD `script --version` names no file, so it opens this and execs an
+# interactive shell", which was DERIVED from `mktemp --tmpdir` exiting 0 on BSD
+# and never executed. Measured on macOS 26.6.2 the next day: BSD script REJECTS
+# `--version` at getopt (rc 1, "illegal option -- -"), creates no file and execs
+# nothing. The `--`-prefixed-argument behaviour is per-utility, not a property
+# of BSD getopt, so one measured utility licenses no conclusion about another.
+#
+# The line still earns its place, and so does the probe change it describes:
+# tests/portability.sh passes `-q /dev/null` so no BSD variant CAN write one,
+# and tests/test-portability.sh asserts that sourcing it creates no file in the
+# cwd — but neither stops a stray one being COMMITTED, which is what this is for.
 /typescript
