@@ -1194,14 +1194,21 @@ setup_path_world() {
 }
 # The `docker run` lines only — `volume inspect` also names the volume, and a
 # grep over the whole log would pass on that instead of on the mirror.
-runs() { grep '^run ' "$DOCKER_LOG"; }
+# NOT a second definition of runs(). The one at the top of this file strips the
+# leading `run ` (`sed -n 's/^run //p'`) and run_has() consumes that shape;
+# redefining it here to KEEP the prefix changed what every later caller received
+# while run_has() still expected the old form. Renamed instead, so the two
+# shapes are two names.
+runs_raw() { grep '^run ' "$DOCKER_LOG"; }
 # Captured FIRST, then matched from a here-string. `runs | grep -q …` would be a
 # producer piped into `grep -q` under pipefail — the shape
 # tests/test-grep-q-pipelines.sh forbids, because grep exits on its first match,
 # the producer dies 141 on the broken pipe, and pipefail promotes that over
 # grep's success. A regression guard written that way reports "no defect" at
 # exactly the moment the defect returns.
-has_run() { local out; out="$(runs)"; grep -q -- "$1" <<<"$out"; }
+# -F: the argument is a PATH, and `tmp.XXXXXXXXXX` contains dots that a basic
+# regular expression reads as "any character" — so a near-miss path would match.
+has_run() { local out; out="$(runs_raw)"; grep -qF -- "$1" <<<"$out"; }
 
 # 1. The happy path reaches the mirror at all, and mounts BOTH ends of it.
 setup_path_world

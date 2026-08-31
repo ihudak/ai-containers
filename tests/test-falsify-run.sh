@@ -50,7 +50,7 @@ check() {   # <label> <expected> <actual>
 
 if [[ ! -f "$RUN" ]]; then
   fail "tests/falsify/run.sh exists"
-printf '\n%d failure(s)\n' "$fails"; exit "$fails"
+  printf '\n%d failure(s)\n' "$fails"; exit "$fails"
 fi
 pass "tests/falsify/run.sh exists"
 bash -n "$RUN" && pass "run.sh parses" || fail "run.sh parses"

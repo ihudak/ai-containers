@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Three "cosmetic" findings, one of which was not
+
+The last three items from the review, taken because *"no behavioural effect"* is
+not a reason to leave a trap for the next editor.
+
+- **`grep` was reading a path as a regular expression**, and this one is not
+  cosmetic at all. `has_run` matched a bind-mount argument containing
+  `tmp.XXXXXXXXXX`, whose dots a basic regular expression reads as *any
+  character* — so `/tmp/tmpXAAAAAAAAAA/...` satisfies an assertion asking for
+  `/tmp/tmp.AAAAAAAAAA/...`. Demonstrated both ways; `-F` now.
+- **`runs()` was redefined mid-file** with a different output shape — the first
+  strips the leading `run `, the second kept it — while `run_has()` went on
+  consuming the first shape. Renamed to `runs_raw()`, so two shapes are two
+  names.
+- A `printf` de-indented to column 0 inside an `if` block, now aligned.
+
 ### The rest of the review, and a recursion the fix for it introduced
 
 The findings left open at v0.9.7, taken in full.
