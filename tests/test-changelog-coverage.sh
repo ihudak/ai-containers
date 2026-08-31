@@ -37,10 +37,23 @@ trap '[[ "$BASHPID" == "$TMP_OWNER" ]] && rm -rf "$TMP"' EXIT
 # A world: a tagged release, then one merge of the caller's choosing.
 # `changelog-coverage.sh` resolves both its own directory and the repo from
 # $BASH_SOURCE, so the script is COPIED in rather than pointed at.
+#
+# AND SO IS bash-floor.sh, WHICH THE SCRIPT SOURCES FROM BESIDE ITSELF. Copying
+# the tool alone builds a world the tool cannot run in: the source fails, bash
+# prints `bash-floor.sh: No such file or directory` into every assertion's
+# captured output, and — because the script does not `set -e` — execution
+# carries on with the floor guard never loaded. Fourteen assertions passed that
+# way, and deleting the source line outright would not have failed one of them.
+# A fixture that is not the tool's real environment tests a tool that does not
+# ship.
+seed_world_files() {   # <dir>
+  cp "$SCRIPT" "$1/changelog-coverage.sh"
+  cp "$REPO_DIR/bash-floor.sh" "$1/bash-floor.sh"
+}
 mk_world() {   # <dir> <unreleased-body> <file-to-touch>
   local d="$1" body="$2" file="$3"
   rm -rf "$d"; mkdir -p "$d/docs"
-  cp "$SCRIPT" "$d/changelog-coverage.sh"
+  seed_world_files "$d"
   git -C "$d" init -q 2>/dev/null
   git -C "$d" config user.email t@t; git -C "$d" config user.name t
   git -C "$d" config commit.gpgsign false
@@ -129,7 +142,7 @@ check_rc "  … --check exits 0 there" "0" "$(rc_of "$TMP/docsonly" --check)"
 
 # ── 4. environments where the question does not apply ────────────────────────
 notgit="$TMP/notgit"; rm -rf "$notgit"; mkdir -p "$notgit"
-cp "$SCRIPT" "$notgit/changelog-coverage.sh"
+seed_world_files "$notgit"
 printf '# Changelog\n\n## Unreleased\n' > "$notgit/CHANGELOG.md"
 out="$(run "$notgit")"
 if grep -q "^SKIP: not a git repository" <<< "$out"; then
@@ -140,7 +153,7 @@ fi
 check_rc "  … exiting 0" "0" "$(rc_of "$notgit")"
 
 untagged="$TMP/untagged"; rm -rf "$untagged"; mkdir -p "$untagged"
-cp "$SCRIPT" "$untagged/changelog-coverage.sh"
+seed_world_files "$untagged"
 printf '# Changelog\n\n## Unreleased\n' > "$untagged/CHANGELOG.md"
 git -C "$untagged" init -q; git -C "$untagged" config user.email t@t
 git -C "$untagged" config user.name t; git -C "$untagged" config commit.gpgsign false
@@ -173,6 +186,55 @@ fi
 # a caller while reading correctly to a human.
 check_rc "the no-tags SKIP exits 0, so a fresh clone does not fail its release step" "0" "$(rc_of "$untagged")"
 check_rc "  … and --check does not turn that SKIP into a failure" "0" "$(rc_of "$untagged" --check)"
+
+# ── 7. the floor the script sources is LOADED, and can stop it ───────────────
+# Two assertions, because they fail differently. The first says the source line
+# runs at all; the second says what it loads is allowed to refuse. Without the
+# pair, a fixture missing bash-floor.sh reads exactly like a fixture whose floor
+# passed — which is the state every assertion above was in until this section
+# existed.
+#
+# A STAND-IN, not the real floor: bash-floor.sh ASSIGNS
+# AI_CONTAINERS_BASH_FLOOR_MAJOR/MINOR unconditionally, so the environment
+# cannot raise the floor to provoke a refusal, and the running bash clears the
+# real one by definition. What is under test is the wiring — that the script
+# loads a file named bash-floor.sh from beside itself and lets it have its say.
+if grep -q 'bash-floor.sh' "$SCRIPT"; then
+  pass "changelog-coverage.sh sources a bash floor at all"
+else
+  fail "changelog-coverage.sh sources a bash floor at all — it does not, so section 7 tests nothing"
+fi
+floorw="$TMP/floor"; rm -rf "$floorw"; mkdir -p "$floorw"
+seed_world_files "$floorw"
+printf '# Changelog\n\n## Unreleased\n' > "$floorw/CHANGELOG.md"
+printf '#!/usr/bin/env bash\nprintf "FLOOR-LOADED\\n" >&2\n' > "$floorw/bash-floor.sh"
+out="$(run "$floorw")"
+if grep -q 'FLOOR-LOADED' <<< "$out"; then
+  pass "the floor beside the script is actually sourced, not merely named in it"
+else
+  fail "the floor beside the script is actually sourced (got: $(tr '\n' '|' <<< "$out"))"
+fi
+
+printf '#!/usr/bin/env bash\nprintf "FLOOR-REFUSED\\n" >&2\nexit 1\n' > "$floorw/bash-floor.sh"
+out="$(run "$floorw")"; rc="$(rc_of "$floorw")"
+if [[ "$rc" == "1" ]] && grep -q 'FLOOR-REFUSED' <<< "$out" && ! grep -q '^SKIP:' <<< "$out"; then
+  pass "  … and a floor that refuses stops the tool before it reports anything"
+else
+  fail "  … and a floor that refuses stops the tool before it reports anything (rc=$rc, out: $(tr '\n' '|' <<< "$out"))"
+fi
+
+# AND NO WORLD ABOVE WAS MISSING IT. The report is the point: an assertion that
+# greps for one phrase passes happily while bash writes a sourcing error beside
+# it, which is exactly what happened here.
+noisy=""
+for w in "$TMP/bare" "$TMP/noted" "$TMP/docsonly" "$notgit" "$untagged"; do
+  grep -q 'No such file or directory' <<< "$(run "$w")" && noisy="${noisy}${noisy:+ }${w##*/}"
+done
+if [[ -z "$noisy" ]]; then
+  pass "no fixture makes the script report a missing file — each is the environment it ships in"
+else
+  fail "these fixtures run the script in an environment it could not load: $noisy"
+fi
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
