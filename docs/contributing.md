@@ -41,7 +41,7 @@ checks:
 | Workflow | Trigger | What it does |
 | --- | --- | --- |
 | `release.yml` | a pushed tag | publishes the release, with the body taken from this CHANGELOG's matching section |
-| `update-nvm-version.yml` | Mondays 08:00 UTC, or on demand | reads the latest `nvm-sh/nvm` release and, when it differs, opens a PR updating `nvm-version` in `sandbox.conf` and `ARG NVM_VERSION` in the `Dockerfile` |
+| `update-nvm-version.yml` | Mondays 08:00 UTC, or on demand | reads the latest `nvm-sh/nvm` release and, when it differs, opens a PR updating `ARG NVM_VERSION` in the `Dockerfile`. It deliberately leaves `sandbox.conf`'s `nvm-version` empty — empty means "use that ARG", so every project without a pin tracks the update |
 
 > **Why the suite runs three times.** Once ordinarily; once inside `ubuntu:22.04`
 > to exercise the declared bash floor; and once with `TMPDIR` pointed at a

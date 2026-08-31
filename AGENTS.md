@@ -83,7 +83,7 @@ Version-list components (`node`, `python`, `ruby`, `rust`, `go`) accept comma-se
 - `ruby` is a comma-separated list too, like `node`/`python` (e.g. `ruby=3.3.6,3.4.5`) — useful for migrating a project between Ruby versions. Nothing Ruby-related is baked into the image: rvm, every configured version, and installed gems live in a per-user `~/.rvm`, group-mounted like the agent dotfile dirs (see [Host directory mounts](#host-directory-mounts)) and installed additively at container start (`rvm-reconcile.sh`, `flock`-guarded against concurrent same-group starts) — a version's first install compiles it then (can take a few minutes), every later start is instant, and rubies/gems persist per group across container runs. The `rails` key has been removed entirely — Rails is an ordinary per-project gem, not a build-time/`sandbox.conf` concern. After the reconcile, the default Ruby's `ruby`/`gem`/`bundle`/`bundler`/`rake`/`irb`/`erb` are symlinked onto `/usr/local/bin` (`link-default-ruby.sh`, run by the entrypoint as root) so they resolve in **non-interactive, non-login** shells (`docker exec -T … bash -c "bin/rails …"`), not only in login/interactive shells that source rvm; per-project gemset selection still comes from `.ruby-version` via a login shell. If an install totally fails, reconcile logs `FAILED: ruby-<version>` and never points the default at a version that isn't installed.
 - SDKMAN-managed components (`openjdk`, `graalvm-ce`, `graalvm-oracle`, `kotlin`, `scala`, `maven`, `gradle`) require **full patch versions** (e.g., `openjdk=21.0.11`, not `21`).
 - Any tool described by a `tools.d/*.conf` descriptor (currently `dtctl`, `dtmgd`) accepts `ON` (auto-detect latest from GitHub), `x.y.z` (pinned), or `OFF` — this grammar is independent of the tool, so a future tool added the same way follows it automatically.
-- `node` always installs the latest LTS (required by the AI agents); `node=20,22` adds those versions alongside it. `nvm-version` pins the nvm release used to install Node (e.g., `nvm-version=v0.40.5`); leave empty for the Dockerfile default.
+- `node` always installs the latest LTS (required by the AI agents); `node=20,22` adds those versions alongside it. `nvm-version` selects the nvm release used to install Node, and **shipping it empty is the point**: empty means the Dockerfile's `ARG NVM_VERSION`, which the weekly job keeps current, so a project tracks the maintained version with no action. A pin here never catches up — `sync-to-projects.sh` never overwrites a key a project already set, so it freezes while the ARG moves on.
 - `db-clients` also accepts a comma-separated list, but drawn from the closed set `pg`, `mysql`, `mongo` (not version numbers) — installs **client** shells/dev libraries only (`libpq-dev`+`postgresql-client`, `default-libmysqlclient-dev`+`default-mysql-client`, `mongosh`), never a database server, and is language-agnostic. An entry outside that set is rejected by `build.sh`'s `validate_config` with a clear error rather than reaching the build. Selecting `mongo` adds `repo.mongodb.org` to the generated domain allowlist automatically. Setting `ruby` to any version, or `db-clients` to a non-empty value, makes `build.sh` set `KEEP_BUILD_TOOLCHAIN=1`, so the Dockerfile keeps `build-essential`/`libyaml-dev`/`zlib1g-dev`/`libssl-dev` instead of stripping them, letting native extensions compile at runtime.
 - **A version-list key set to the literal `OFF` means "skip", exactly like the empty `key=`.** The two grammars share one file, so `ruby=OFF` is a natural thing to write; `version_list()` in `sandbox-common.sh` normalises it to empty and `has_versions()` reports it as unset, keeping both consistent with `is_active()`. Use `version_list` — never `get_versions` — wherever a version-list *value* is emitted into a build arg or the container env, because `get_versions` must keep returning `OFF` verbatim for the boolean keys. (Without this, `ruby=OFF` baked the whole Ruby build toolchain **and** shipped `RUBY_VERSIONS=OFF` into the container, so `rvm-reconcile.sh` bootstrapped rvm and ran `rvm install OFF` on every container start, into an `~/.rvm` that `sandbox.sh` — correctly using `is_active` — had not mounted.)
 
@@ -280,11 +280,18 @@ not a git repo, so it cannot derive anything: `project-init.sh` and
 inside some unrelated repo cannot report that repo's version. A copy that was
 never told says `unknown`.
 
-`nvm-version` is reported because it is **pinned rather than detected** — nvm's
-latest cannot be resolved at build time behind a rate limit, and
-`.github/workflows/update-nvm-version.yml` exists solely to keep the key current,
-so this field is that job's output. An empty key reports the Dockerfile's `ARG
-NVM_VERSION` default instead, labelled: the question is what the image will get.
+`nvm-version` is reported because it is **maintained rather than detected** —
+nvm's latest cannot be resolved at build time behind a rate limit, so
+`.github/workflows/update-nvm-version.yml` keeps the **Dockerfile's `ARG
+NVM_VERSION`** current every Monday and `sandbox.conf` ships the key empty. An
+empty key therefore reports that ARG, labelled `(Dockerfile default)`: the
+question this field answers is what the image will get, not what the file says.
+
+That job deliberately does **not** write a pin into `sandbox.conf`. It once did,
+and the result was the failure mode this design now avoids: `sync-to-projects.sh`
+never overwrites a key a project has already set — correctly, since that is what
+protects a project's own choices — so a pin written in some past release stayed
+written in every project forever while the ARG moved on without it.
 
 `version.sh` is sourced by `sandbox.sh`, `project-init.sh` and
 `sync-to-projects.sh` **directly**, not via `sandbox-common.sh`. That was tried
