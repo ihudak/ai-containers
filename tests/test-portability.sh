@@ -360,6 +360,37 @@ else
   fail "the guard's condition holds in the owning process (BASHPID=$BASHPID TMP_OWNER=$TMP_OWNER)"
 fi
 
+# ── SOURCING THIS FILE MUST NOT WRITE ANYTHING, ANYWHERE ─────────────────────
+# The _P_PTY_GNU probe runs `script`, and `script`'s DEFAULT is to create a file
+# called `typescript` in the current directory. The first version passed
+# `--version`, which BSD getopt consumes as the end-of-options marker -- leaving
+# BSD script with no file and no command, so it would have written that file
+# into whatever directory a test happened to be in, the repo root included.
+#
+# Asserted from a scratch cwd rather than reasoned about, and asserted on the
+# DIRECTORY rather than on the probe's arguments: an argv check would have to be
+# rewritten every time the probe is, and would not have caught this at all.
+# Linux cannot exercise the BSD arm, but it CAN prove the invocation is bounded,
+# which is the half that generalises.
+pty_cwd="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d (pty cwd)\n'; exit 1; }
+# THE SOURCE MUST BE OBSERVED HAPPENING. The first version of this block named a
+# variable ($TESTS_DIR) that does not exist in this file: `. ""` failed
+# silently, `ls -A .` saw an empty directory, and the assertion passed against a
+# probe deliberately rewritten to write `typescript`. An assertion whose subject
+# never ran reports the absence of its own effect. The marker makes the source
+# prove itself before anything is concluded from the directory.
+pty_probe_out="$( cd "$pty_cwd" && bash -c '. "$1" >/dev/null 2>&1 && printf SOURCED; printf "|"; ls -A .' _ "$REPO_DIR/tests/portability.sh" )"
+if [[ "$pty_probe_out" == SOURCED\|* ]]; then
+  pass "scaffold: portability.sh was actually sourced in the probe cwd"
+else
+  fail "scaffold: portability.sh was actually sourced in the probe cwd — the assertion below would be vacuous (got '$pty_probe_out')"
+fi
+pty_left="${pty_probe_out#*|}"
+[[ -z "$pty_left" ]] \
+  && pass "sourcing portability.sh creates no file in the current directory" \
+  || fail "sourcing portability.sh creates no file in the current directory — left: $(printf '%s' "$pty_left" | tr '\n' ' ')"
+rm -rf "$pty_cwd"
+
 # ── p_pty: a real tty on stdin, and the child's status ────────────────────────
 # ASSERTED BY EFFECT. Both mutants that can damage this helper — the util-linux
 # probe, and the arm test that reads it — select the WRONG `script` syntax, and

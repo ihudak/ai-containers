@@ -458,7 +458,15 @@ probe_launcher() {
   # tells the two apart.
   local d name="it-probe-launcher-$IT_RUN_ID" rc=1
   d="$(mktemp -d)" || return 1
-  ln -sf "$INT_DIR/docker-shim.sh" "$d/docker" || return 1
+  # REMOVED ON EVERY PATH, INCLUDING THIS ONE. `ln -sf … || return 1` returned
+  # with $d still on disk — F66's own class, relocated to the new path by the
+  # fix for it: $d used to live under $IT_SCRATCH and be swept, and now it is in
+  # the real $TMPDIR, which nothing sweeps. --list-caps also exits before
+  # `trap 'sweep' EXIT` is installed, so there is no later net to catch it.
+  if ! ln -sf "$INT_DIR/docker-shim.sh" "$d/docker"; then
+    rm -rf "$d"
+    return 1
+  fi
   (
     export PATH="$d:$PATH" IT_REAL_DOCKER IT_LAUNCH_NAME="$name" IT_LABEL
     docker run -it --rm --entrypoint sleep --label "$IT_LABEL" "$IT_CAPS_IMAGE" 120
@@ -902,7 +910,17 @@ fi
 # otherwise touch docker on the way out. See the comment on the IT_SOURCE_ONLY
 # guard just above, which cuts at this exact same line for the same reason.
 if [[ "$do_dry_run" -eq 0 ]]; then
-  trap 'sweep' EXIT
+  # CONFINED TO THE OWNING PROCESS. `sweep` removes containers, volumes, the
+  # image and the scratch tree, and this file forks at it_timeout's macOS
+  # fallback (`"$@" &`, then kill -TERM on the deadline). A backgrounded
+  # FUNCTION that is SIGTERMed runs the parent EXIT trap in the child — measured
+  # 2026-08-30; normal exit does not, and a `( ) &` subshell does not. Every
+  # it_timeout caller today passes an EXTERNAL command (`docker pull`,
+  # `bash "$f"`), which execs and leaves no bash child to run anything, so this
+  # is not a live bug. It is the guard that stops one appearing the first time
+  # somebody hands it_timeout a shell function.
+  IT_SWEEP_OWNER="$BASHPID"
+  trap '[[ "$BASHPID" == "$IT_SWEEP_OWNER" ]] && sweep' EXIT
 
   mkdir -p "$IT_SCRATCH/logs"
   # Gated on reuse_image: see the comment above snapshot_real_allowlists(). Only

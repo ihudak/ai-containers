@@ -110,15 +110,50 @@ while IFS= read -r f; do
   case "$f" in tests/*.sh) ;; *) continue ;; esac
   [[ -f "$REPO_DIR/$f" ]] || continue
   scanned=$((scanned + 1))
-  grep -qE "trap .*rm -rf.*EXIT" "$REPO_DIR/$f" || continue
+  # THE RULE'S OWN FIXTURES ARE DELIBERATE VECTORS. This file's heredocs contain
+  # unguarded traps on purpose — they are what the positive control runs — so
+  # scanning it would report the test as its own offender.
+  [[ "$f" == "tests/test-exit-trap-ownership.sh" ]] && continue
+  # A TRAP THAT REMOVES SCRATCH THROUGH A NAMED FUNCTION IS STILL ONE.
+  # `trap .*rm -rf.*EXIT` saw only the literal form, so `trap 'sweep' EXIT`
+  # (tests/integration/run.sh) and `trap fr_cleanup EXIT` (tests/falsify/run.sh)
+  # — the two most destructive EXIT traps in the repo, both in files that fork —
+  # were invisible to a rule whose summary line claims to cover every in-scope
+  # script. Comment lines are dropped: four of the seven matches this widening
+  # first produced were prose ABOUT a trap, not a trap.
+  trap_lines="$(grep -nE "trap .*(rm -rf|cleanup|sweep|teardown).*EXIT" "$REPO_DIR/$f" \
+                 | grep -vE '^[0-9]+:[[:space:]]*#')"
+  [[ -n "$trap_lines" ]] || continue
   if ! grep -qE '(^|[^&])&[[:space:]]*$' "$REPO_DIR/$f" && ! grep -q 'p_timeout' "$REPO_DIR/$f"; then
     continue                                   # no child: the trap cannot run anywhere else
   fi
   in_scope=$((in_scope + 1))
-  # Guarded, or opted out with a stated reason on the trap line or the one above.
-  grep -qE 'BASHPID.*==.*TMP_OWNER|TMP_OWNER.*==.*BASHPID' "$REPO_DIR/$f" && continue
-  grep -qE '# exit-trap-ok: *[^ ]' "$REPO_DIR/$f" && continue
-  offenders="${offenders}${offenders:+ }$(basename "$f")"
+  # PER TRAP LINE, NOT PER FILE. A file-wide grep exempted a file on ANY mention
+  # of the guard anywhere in it — including the assertion that the guard must not
+  # be inert, and this rule's own regex. Two of seven in-scope files were
+  # permanently un-flaggable that way, one of them the file where the hazard was
+  # first observed. The opt-out is read from the trap line or the one above it.
+  while IFS= read -r tl; do
+    [[ -n "$tl" ]] || continue
+    tl_no="${tl%%:*}"; tl_txt="${tl#*:}"
+    # ANY $BASHPID comparison, not one named TMP_OWNER. The property is that the
+    # trap is confined to the owning process; the variable holding that pid is
+    # named for what it protects (TMP_OWNER, FR_OWNER, IT_SWEEP_OWNER), and a
+    # rule that hardcoded one of those names reported two correctly-guarded
+    # traps as offenders the moment a third name appeared.
+    [[ "$tl_txt" =~ BASHPID[^=]*==|==[^=]*BASHPID ]] && continue
+    [[ "$tl_txt" =~ \#\ exit-trap-ok:\ *[^\ ] ]] && continue
+    # CAPTURED, NOT PIPED. `producer | grep -q` under `pipefail` can report the
+    # opposite of what it observed when grep exits early and the producer takes
+    # SIGPIPE — which tests/test-grep-q-pipelines.sh flags, and flagged this
+    # very line within a minute of it being written.
+    prev_line="$(sed -n "$(( tl_no > 1 ? tl_no - 1 : 1 ))p" "$REPO_DIR/$f")"
+    [[ "$prev_line" =~ \#\ exit-trap-ok:\ *[^\ ] ]] && continue
+    # THE PATH, not the basename: two of the in-scope files are called run.sh
+    # (tests/falsify/ and tests/integration/), and a failure naming "run.sh:905"
+    # twice sends a reader to the wrong one.
+    offenders="${offenders}${offenders:+ }$f:$tl_no"
+  done <<< "$trap_lines"
 done < <(cd "$REPO_DIR" && git ls-files 'tests/*.sh')
 
 if [[ "$scanned" -gt 20 ]]; then

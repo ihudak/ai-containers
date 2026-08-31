@@ -171,6 +171,14 @@ has "$out" 'left in TMPDIR: .*gg-leaky' \
 rm -f "$CORPUS"/test-*.sh
 mkt hh-tidy 'd="$(mktemp -d)"; rm -rf "$d"; echo "PASS: cleaned up"; exit 0'
 out="$(run_corpus)"
+# THE RUN MUST HAVE WORKED for its silence to mean anything: a corpus that
+# failed outright also prints no `left in TMPDIR:` line, so this passed on any
+# breakage. Conjoined with the tidy test's own PASS.
+if has "$out" 'PASS'; then
+  pass "scaffold: the tidy corpus run produced a passing test"
+else
+  fail "scaffold: the tidy corpus run produced a passing test — the assertion below would pass on a broken run (got: $out)"
+fi
 has "$out" 'left in TMPDIR:' \
   && fail "a tidy test must not be reported as leaking — got: $out" \
   || pass "a tidy test is not reported as leaking"

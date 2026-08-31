@@ -160,7 +160,31 @@ p_timeout() {  # $1=seconds, $2… = command
 #
 # The status is the entire point of the mutants these prompts carry, so strip
 # after capturing, never in the pipeline.
-if script --version 2>/dev/null | grep -q util-linux; then _P_PTY_GNU=1; else _P_PTY_GNU=0; fi
+# THE PROBE MUST BE VALID ON BOTH PLATFORMS, which `script --version` is not.
+# This comment used to claim "the same discipline as _P_STAT_GNU above"; it was
+# the opposite. `stat -c '%a' .` is a VALID invocation that merely fails on BSD.
+# BSD getopt treats any `--`-prefixed argument as the end-of-options marker --
+# the same semantics this repo already measured in tests/test-run-all-shim.sh,
+# where `/usr/bin/mktemp --tmpdir -u` EXITS 0 ON BSD. So on macOS `script
+# --version` left BSD script with no file and no command: it opens its default
+# `typescript` IN THE CURRENT DIRECTORY (the repo root, under verify-on-host.sh)
+# and execs an interactive $SHELL. With a terminal on stdin -- which
+# tests/run-all.sh does not redirect -- that shell reads from the developer's
+# terminal inside a command substitution, which presents as a hang.
+#
+# Three changes, each closing one of those:
+#   `-q /dev/null`  names the output file, so BSD writes no stray typescript
+#   `</dev/null`    so nothing can read the terminal, on any platform
+#   `$( )` not `|`  because `producer | grep -q` under `pipefail` can select the
+#                   WRONG ARM from a SIGPIPE, and tests/test-grep-q-pipelines.sh
+#                   cannot see this file (it scans only files that themselves
+#                   set pipefail; this one is sourced INTO callers that do).
+#
+# On GNU the flag is still parsed and the version still printed. Verified here;
+# the BSD arm is derived from that measured getopt behaviour, not executed.
+_p_pty_probe="$(script -q /dev/null --version </dev/null 2>/dev/null || true)"
+case "$_p_pty_probe" in *util-linux*) _P_PTY_GNU=1 ;; *) _P_PTY_GNU=0 ;; esac
+unset _p_pty_probe
 
 p_pty() {  # $1… = command + args, run with a real tty on stdin
   if [[ "$_P_PTY_GNU" == "1" ]]; then
