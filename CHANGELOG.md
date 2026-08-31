@@ -6,6 +6,75 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## v0.9.9 — 2026-08-31
+
+**A patch, and a hardening release whose own hardening needed hardening.**
+Fifteen build-time `curl`s gained `--retry`; three of them had no `-f`, which
+makes a retry decoration — without it curl calls a 404 a successful transfer of
+an error page, exits 0, and there is nothing to retry. `curl -LO` on a missing
+kubectl release therefore left a 260-byte XML document in a file named
+`kubectl`, and the next line installed it as the binary. A build that succeeds
+and ships an error page is the worst shape a fetch failure can take, and it was
+reachable for the whole of one afternoon.
+
+**Every defect fixed here was introduced here.** Four merges went in; the review
+of those four found three problems, and all three shared one cause — **a
+convention that lived only in prose.** The retry rule was written down, correct,
+and applied fifteen times by hand; hands missed three. A fixture copied the tool
+it tested but not the file that tool sources, so fourteen assertions ran against
+a script whose bash floor never loaded — and deleting the `source` line outright
+would not have failed one of them. A paragraph documenting a new tool landed
+between two rows of a table.
+
+**So the rules are mechanical now.** `tests/test-build-fetch-retry.sh` requires
+`-f` **and** `--retry` at every fetch in the `Dockerfile` and `install-tools.sh`,
+reading command position off the *joined* logical line as Docker does — a first
+cut that knew only separators found six of thirteen sites and pronounced the
+file clean. `tests/test-changelog-coverage.sh`'s worlds now carry the floor, and
+assert both that it is genuinely sourced and that one which refuses can stop the
+tool.
+
+**Two things in this release exist to stop a measurement lying.** All four time
+bounds in the dialect-lint oracle called `fail` on expiry, and under
+`tests/falsify/run.sh` a `FAIL:` line **is a kill** — so a slow machine credited
+that oracle with catching mutations it never noticed, the one error the tier
+cannot detect from its own output. Two constants had already failed there under
+one mechanism before the instrument itself was changed. And
+`changelog-coverage.sh` reports, before a tag is cut, which merges the notes are
+supposed to describe: twice in two days a release was nearly published
+describing none of the fixes it shipped.
+
+### The other fifteen build-time fetches now retry, and five stopped piping into a shell
+
+v0.9.8 hardened **one** `curl` — nvm's — and established the right convention.
+Twelve network fetches in the `Dockerfile` and three in `install-tools.sh` still
+carried the same exposure, and five of them still had the truncation hazard that
+release fixed only for nvm.
+
+`--retry 5 --retry-delay 2 --retry-all-errors` now covers go, kubectl (×2),
+aws-cli, azure-cli, the github-cli keyring, the mongodb key, wkhtmltopdf, sdkman,
+pyenv, rustup and kiro, plus `install-tools.sh`'s `api_get` and its three
+release/asset downloads.
+
+**`--retry-all-errors` was contested and the measurement settled it.** The
+argument against was that a 404 from a genuinely wrong URL should fail now rather
+than five attempts later. v0.9.8's entry carries the counter-evidence: several
+builds in one morning could not fetch nvm v0.40.6 while v0.40.7 succeeded, and
+v0.40.6 worked again later. That is a CDN edge serving one path inconsistently,
+so the 404 **is** the transient case — and it also reconciles two reported build
+failures with six clean installs measured the following day.
+
+**And five more pipes became files.** `curl | bash` hands the interpreter whatever
+arrived, so a truncated download executes its prefix and reports success. sdkman,
+pyenv, rustup, azure-cli and kiro now fetch to a file first, as nvm already did.
+`rustup`'s `sh -s --` becomes `sh FILE`, since `-s` means "read the script from
+stdin" and there is no longer a stdin to read.
+
+Verified by building with **all eleven affected components enabled** — the default
+`sandbox.conf` turns on exactly one of them, so a default build would have proved
+nothing — and by reading the build log to confirm the reshaped commands are what
+ran, with zero occurrences of the old pipe form.
+
 ### Three build-time fetches could not fail, so their retries were inert
 
 v0.9.9's sweep put `--retry 5 --retry-delay 2 --retry-all-errors` on fifteen
@@ -31,25 +100,35 @@ fetch. Seven of the thirteen Dockerfile sites sit behind `then` or a `case` arm,
 so the keyword list is load-bearing rather than decorative. Demonstrated red on
 the three lines as merged, green after.
 
-### A fixture that could not load the tool it was testing
+### A timeout was being reported as an assertion failure, which the tier reads as a kill
 
-`tests/test-changelog-coverage.sh` copied `changelog-coverage.sh` into its
-worlds but not the `bash-floor.sh` it sources from beside itself. The source
-failed, bash wrote `No such file or directory` into every assertion's captured
-output, and — the script does not `set -e` — the floor guard was simply never
-loaded. All fourteen assertions passed that way, and **deleting the source line
-outright would not have failed one of them**.
+`tests/bash-dialect-lint.sh` is a falsify **oracle**, and all four of its time
+bounds called `fail` when they expired. Under `tests/falsify/run.sh` a `FAIL:`
+line **is a kill** — so a slow machine credited this oracle with catching
+mutations it never noticed, which is precisely the error the tier cannot detect
+from its own output.
 
-The fixtures now carry the floor, one assertion proves it is genuinely sourced
-rather than merely named, another proves a floor that refuses stops the tool
-before it reports anything, and a third fails if any world makes the script
-report a missing file.
+**The file already said so.** Its own calibration note reads: *"A `p_timeout`
+whose expiry calls `fail` converts SLOWNESS into a `FAIL:` line, and under
+`tests/falsify/run.sh` a `FAIL:` line is a KILL."* The diagnosis was written
+down, and then the remedy applied twice was a bigger constant.
 
-### A paragraph inside a table
+**Two constants have now failed here, one mechanism:**
 
-`docs/contributing.md`'s note about `changelog-coverage.sh` landed between two
-rows of the workflow table, ending it early and leaving the
-`update-nvm-version.yml` row to render as literal pipes. Moved below the table.
+| date | bound | outcome |
+|---|---|---|
+| 2026-08-30 | whole-tree, flat 30 s | control red at 35.6 s, corpus unscored |
+| 2026-08-31 | whole-tree floor raised to 120 s | held — but a flat 10 s **single-file** bound went red at 49.6 s |
+
+The second was on a quiet machine with `--jobs auto` resolving to **one** worker,
+and this file's own note already records two pristine controls of itself, in one
+run, taking 8 s and 132 s. **No constant spans 16×**, so raising the 10 s would
+only have scheduled the third failure.
+
+The right channel already existed and is named for exactly this: `SCAFFOLD-FAILED:`,
+which `falsify_verdict` checks *before* the kill branch and scores UNPROVEN. All
+four bounds now print it and exit 1 rather than calling `fail`. Slowness costs a
+verdict, which is honest, instead of manufacturing one.
 
 ### A release-time report for what the notes should cover
 
@@ -82,66 +161,25 @@ classifier built on it calls every merge docs-only, leaving the alarm unable to
 fire. `tests/test-changelog-coverage.sh` lands a real `--no-ff` merge for that
 reason — a squashed commit would pass against the broken implementation too.
 
-### A timeout was being reported as an assertion failure, which the tier reads as a kill
+### A fixture that could not load the tool it was testing
 
-`tests/bash-dialect-lint.sh` is a falsify **oracle**, and all four of its time
-bounds called `fail` when they expired. Under `tests/falsify/run.sh` a `FAIL:`
-line **is a kill** — so a slow machine credited this oracle with catching
-mutations it never noticed, which is precisely the error the tier cannot detect
-from its own output.
+`tests/test-changelog-coverage.sh` copied `changelog-coverage.sh` into its
+worlds but not the `bash-floor.sh` it sources from beside itself. The source
+failed, bash wrote `No such file or directory` into every assertion's captured
+output, and — the script does not `set -e` — the floor guard was simply never
+loaded. All fourteen assertions passed that way, and **deleting the source line
+outright would not have failed one of them**.
 
-**The file already said so.** Its own calibration note reads: *"A `p_timeout`
-whose expiry calls `fail` converts SLOWNESS into a `FAIL:` line, and under
-`tests/falsify/run.sh` a `FAIL:` line is a KILL."* The diagnosis was written
-down, and then the remedy applied twice was a bigger constant.
+The fixtures now carry the floor, one assertion proves it is genuinely sourced
+rather than merely named, another proves a floor that refuses stops the tool
+before it reports anything, and a third fails if any world makes the script
+report a missing file.
 
-**Two constants have now failed here, one mechanism:**
+### A paragraph inside a table
 
-| date | bound | outcome |
-|---|---|---|
-| 2026-08-30 | whole-tree, flat 30 s | control red at 35.6 s, corpus unscored |
-| 2026-08-31 | whole-tree floor raised to 120 s | held — but a flat 10 s **single-file** bound went red at 49.6 s |
-
-The second was on a quiet machine with `--jobs auto` resolving to **one** worker,
-and this file's own note already records two pristine controls of itself, in one
-run, taking 8 s and 132 s. **No constant spans 16×**, so raising the 10 s would
-only have scheduled the third failure.
-
-The right channel already existed and is named for exactly this: `SCAFFOLD-FAILED:`,
-which `falsify_verdict` checks *before* the kill branch and scores UNPROVEN. All
-four bounds now print it and exit 1 rather than calling `fail`. Slowness costs a
-verdict, which is honest, instead of manufacturing one.
-
-### The other fifteen build-time fetches now retry, and five stopped piping into a shell
-
-v0.9.8 hardened **one** `curl` — nvm's — and established the right convention.
-Twelve network fetches in the `Dockerfile` and three in `install-tools.sh` still
-carried the same exposure, and five of them still had the truncation hazard that
-release fixed only for nvm.
-
-`--retry 5 --retry-delay 2 --retry-all-errors` now covers go, kubectl (×2),
-aws-cli, azure-cli, the github-cli keyring, the mongodb key, wkhtmltopdf, sdkman,
-pyenv, rustup and kiro, plus `install-tools.sh`'s `api_get` and its three
-release/asset downloads.
-
-**`--retry-all-errors` was contested and the measurement settled it.** The
-argument against was that a 404 from a genuinely wrong URL should fail now rather
-than five attempts later. v0.9.8's entry carries the counter-evidence: several
-builds in one morning could not fetch nvm v0.40.6 while v0.40.7 succeeded, and
-v0.40.6 worked again later. That is a CDN edge serving one path inconsistently,
-so the 404 **is** the transient case — and it also reconciles two reported build
-failures with six clean installs measured the following day.
-
-**And five more pipes became files.** `curl | bash` hands the interpreter whatever
-arrived, so a truncated download executes its prefix and reports success. sdkman,
-pyenv, rustup, azure-cli and kiro now fetch to a file first, as nvm already did.
-`rustup`'s `sh -s --` becomes `sh FILE`, since `-s` means "read the script from
-stdin" and there is no longer a stdin to read.
-
-Verified by building with **all eleven affected components enabled** — the default
-`sandbox.conf` turns on exactly one of them, so a default build would have proved
-nothing — and by reading the build log to confirm the reshaped commands are what
-ran, with zero occurrences of the old pipe form.
+`docs/contributing.md`'s note about `changelog-coverage.sh` landed between two
+rows of the workflow table, ending it early and leaving the
+`update-nvm-version.yml` row to render as literal pipes. Moved below the table.
 
 ## v0.9.8 — 2026-08-31
 
