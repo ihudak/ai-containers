@@ -81,7 +81,8 @@ ARG MAVEN_VERSIONS=""
 ARG GRADLE_VERSIONS=""
 ENV SDKMAN_DIR=/opt/sdkman
 RUN if [ "$INSTALL_SDKMAN" = "1" ]; then \
-      curl -fsSL "https://get.sdkman.io" | SDKMAN_DIR="$SDKMAN_DIR" bash && \
+      curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors -o /tmp/sdkman.sh "https://get.sdkman.io" && \
+      SDKMAN_DIR="$SDKMAN_DIR" bash /tmp/sdkman.sh && rm -f /tmp/sdkman.sh && \
       chmod -R a+rX "$SDKMAN_DIR"; \
     fi
 # Install each requested JVM candidate in a separate RUN so layer caching is useful.
@@ -161,7 +162,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libsqlite3-dev libncursesw5-dev xz-utils tk-dev libxml2-dev \
       libxmlsec1-dev libffi-dev liblzma-dev && \
     rm -rf /var/lib/apt/lists/* && \
-    curl -fsSL https://pyenv.run | PYENV_ROOT="$PYENV_ROOT" bash && \
+    curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors -o /tmp/pyenv.sh https://pyenv.run && \
+    PYENV_ROOT="$PYENV_ROOT" bash /tmp/pyenv.sh && rm -f /tmp/pyenv.sh && \
     chmod -R a+rX "$PYENV_ROOT" && \
     # Always install latest stable Python (sort -V for correct ordering with 3.20+)
     latest=$("$PYENV_ROOT/bin/pyenv" install --list | grep -E '^\s+3\.[0-9]+\.[0-9]+$' | tr -d ' ' | sort -V | tail -1) && \
@@ -188,9 +190,10 @@ ENV RUSTUP_HOME=/opt/rustup
 ENV CARGO_HOME=/opt/cargo
 ENV PATH="$CARGO_HOME/bin:$PATH"
 RUN if [ -n "$RUST_TOOLCHAIN" ]; then \
-      curl -fsSL https://sh.rustup.rs | \
+      curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors -o /tmp/rustup.sh https://sh.rustup.rs && \
         RUSTUP_HOME="$RUSTUP_HOME" CARGO_HOME="$CARGO_HOME" \
-        sh -s -- -y --no-modify-path --default-toolchain "$RUST_TOOLCHAIN" && \
+        sh /tmp/rustup.sh -y --no-modify-path --default-toolchain "$RUST_TOOLCHAIN" && \
+      rm -f /tmp/rustup.sh && \
       chmod -R a+rX "$RUSTUP_HOME" "$CARGO_HOME"; \
     fi
 RUN if [ -n "$RUST_TOOLCHAIN" ]; then \
@@ -205,7 +208,7 @@ ENV GOROOT=/usr/local/go
 ENV PATH="$GOROOT/bin:$PATH"
 RUN if [ -n "$GO_VERSION" ]; then \
       ARCH=$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/') && \
-      curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${ARCH}.tar.gz" \
+      curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors "https://go.dev/dl/go${GO_VERSION}.linux-${ARCH}.tar.gz" \
         | tar xz -C /usr/local && \
       ln -sf /usr/local/go/bin/go   /usr/local/bin/go && \
       ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt; \
@@ -238,8 +241,8 @@ RUN apt-get purge -y --auto-remove \
 ARG INSTALL_KUBECTL=0
 RUN if [ "$INSTALL_KUBECTL" = "1" ]; then \
       ARCH=$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/') && \
-      KUBE_VERSION=$(curl -fsSL https://dl.k8s.io/release/stable.txt) && \
-      curl -LO "https://dl.k8s.io/release/${KUBE_VERSION}/bin/linux/${ARCH}/kubectl" && \
+      KUBE_VERSION=$(curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors https://dl.k8s.io/release/stable.txt) && \
+      curl -LO --retry 5 --retry-delay 2 --retry-all-errors "https://dl.k8s.io/release/${KUBE_VERSION}/bin/linux/${ARCH}/kubectl" && \
       install kubectl /usr/local/bin/kubectl && rm kubectl; \
     fi
 
@@ -247,20 +250,21 @@ RUN if [ "$INSTALL_KUBECTL" = "1" ]; then \
 ARG INSTALL_AWS_CLI=0
 RUN if [ "$INSTALL_AWS_CLI" = "1" ]; then \
       ARCH=$(uname -m) && \
-      curl "https://awscli.amazonaws.com/awscli-exe-linux-${ARCH}.zip" -o awscliv2.zip && \
+      curl --retry 5 --retry-delay 2 --retry-all-errors "https://awscli.amazonaws.com/awscli-exe-linux-${ARCH}.zip" -o awscliv2.zip && \
       unzip awscliv2.zip && ./aws/install && rm -rf aws awscliv2.zip; \
     fi
 
 # ── Optional: Azure CLI ─────────────────────────────────────────────────────────
 ARG INSTALL_AZURE_CLI=0
 RUN if [ "$INSTALL_AZURE_CLI" = "1" ]; then \
-      curl -sL https://aka.ms/InstallAzureCLIDeb | bash; \
+      curl -sL --retry 5 --retry-delay 2 --retry-all-errors -o /tmp/azcli.sh https://aka.ms/InstallAzureCLIDeb && \
+      bash /tmp/azcli.sh && rm -f /tmp/azcli.sh; \
     fi
 
 # ── Optional: GitHub CLI ────────────────────────────────────────────────────────
 ARG INSTALL_GITHUB_CLI=0
 RUN if [ "$INSTALL_GITHUB_CLI" = "1" ]; then \
-      curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | \
+      curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors https://cli.github.com/packages/githubcli-archive-keyring.gpg | \
         dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg && \
       chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg && \
       echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] \
@@ -284,7 +288,7 @@ RUN if [ -n "$DB_CLIENTS" ]; then \
           mysql) \
             apt-get install -y --no-install-recommends default-libmysqlclient-dev default-mysql-client ;; \
           mongo) \
-            curl -fsSL https://pgp.mongodb.com/server-8.0.asc \
+            curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors https://pgp.mongodb.com/server-8.0.asc \
               | gpg --dearmor -o /usr/share/keyrings/mongodb-server-8.0.gpg && \
             echo "deb [ signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg ] https://repo.mongodb.org/apt/ubuntu noble/mongodb-org/8.0 multiverse" \
               > /etc/apt/sources.list.d/mongodb-org-8.0.list && \
@@ -327,7 +331,7 @@ RUN if [ "$INSTALL_WKHTMLTOPDF" = "1" ]; then \
         libxrender1 libxext6 libx11-6 libfontconfig1 libjpeg-turbo8 \
         fontconfig xfonts-base xfonts-75dpi && \
       ARCH="$(dpkg --print-architecture)" && \
-      curl -fsSL -o /tmp/wkhtmltox.deb \
+      curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors -o /tmp/wkhtmltox.deb \
         "https://github.com/wkhtmltopdf/packaging/releases/download/0.12.6.1-3/wkhtmltox_0.12.6.1-3.jammy_${ARCH}.deb" && \
       apt-get install -y --no-install-recommends /tmp/wkhtmltox.deb && \
       rm -f /tmp/wkhtmltox.deb && rm -rf /var/lib/apt/lists/*; \
@@ -528,7 +532,8 @@ RUN if [ "$INSTALL_BUN" = "1" ]; then \
 # ── Optional: Kiro CLI ──────────────────────────────────────────────────────────
 ARG INSTALL_KIRO=0
 RUN if [ "$INSTALL_KIRO" = "1" ]; then \
-      curl -fsSL https://cli.kiro.dev/install | bash && \
+      curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors -o /tmp/kiro.sh https://cli.kiro.dev/install && \
+      bash /tmp/kiro.sh && rm -f /tmp/kiro.sh && \
       # Copy installed binaries to PATH; find them dynamically in case the
       # installer changes its default location.
       install_dir=$(dirname "$(command -v kiro-cli 2>/dev/null || find /root -name kiro-cli -type f 2>/dev/null | head -1)") && \
