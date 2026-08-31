@@ -46,3 +46,13 @@ allowlist-cidrs.d/custom.txt
 
 # mutate.sh state marker (which known-bad patch is currently applied)
 /tests/integration/mutations/.applied
+
+# script(1)'s default output file. Given no file argument it writes `typescript`
+# in the CURRENT directory — which is how an empty one reached the repo root in
+# the v0.9.6 review commit, from a bare `script` run while testing p_pty. That
+# was also the shape of the bug being fixed there: BSD `script --version` names
+# no file, so it opens this and execs an interactive shell. tests/portability.sh
+# now passes `-q /dev/null`, and tests/test-portability.sh asserts that sourcing
+# it creates no file in the cwd — but neither stops a stray one being COMMITTED,
+# which is what this line is for.
+/typescript
