@@ -666,7 +666,12 @@ ruby_wait_ready() {  # $1=cid $2=timeout seconds (default 1800 — a cold compil
     # A dead container will never print a terminal reconcile line, so the loop
     # above would otherwise spin silently until the timeout. Catch that early
     # and say so, rather than reporting a generic timeout for a different cause.
-    docker inspect -f '{{.State.Running}}' "$cid" 2>/dev/null | grep -q true || {
+    # CAPTURED, NOT PIPED. `producer | grep -q` under pipefail can report the
+    # opposite of what it observed: grep exits at the first match, the producer
+    # takes SIGPIPE, and pipefail hands the pipeline 141. This file does not set
+    # pipefail itself but is sourced INTO tests/integration/run.sh, which does.
+    _rw_state="$(docker inspect -f '{{.State.Running}}' "$cid" 2>/dev/null || true)"
+    [[ "$_rw_state" == *true* ]] || {
       fail "ruby_wait_ready: the container exited before the reconcile finished"
       return 1
     }
@@ -806,7 +811,15 @@ assert_launcher_refused() {  # $1=expected stderr ERE
   else fail "no container was created — found $found"; fi
 }
 assert_log_contains() {  # $1=cid $2=ERE
-  if docker logs "$1" 2>&1 | grep -qE "$2"; then pass "container log matches: $2"
+  # CAPTURED, NOT PIPED, and this one is the consequential instance: a container
+  # log is LARGE, so `grep -qE` exits at the first match long before `docker
+  # logs` has finished writing, the producer takes SIGPIPE, and pipefail scores
+  # the pipeline 141 — reporting NO MATCH for a log that matched. A false FAIL
+  # on the assertion that is hardest to disbelieve, since the evidence for it is
+  # the very output being discarded.
+  local _alc_logs
+  _alc_logs="$(docker logs "$1" 2>&1 || true)"
+  if grep -qE "$2" <<<"$_alc_logs"; then pass "container log matches: $2"
   else fail "container log matches: $2"; fi
 }
 # A "capability is absent" claim is a NEGATIVE assertion, and a negative built on

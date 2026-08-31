@@ -154,7 +154,7 @@ while IFS= read -r f; do
     # twice sends a reader to the wrong one.
     offenders="${offenders}${offenders:+ }$f:$tl_no"
   done <<< "$trap_lines"
-done < <(cd "$REPO_DIR" && git ls-files 'tests/*.sh')
+done < <(cd "$REPO_DIR" && { git ls-files 'tests/*.sh'; git ls-files --others --exclude-standard 'tests/*.sh'; } | sort -u)
 
 if [[ "$scanned" -gt 20 ]]; then
   pass "the scan read $scanned tracked test script(s)"

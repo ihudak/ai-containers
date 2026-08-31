@@ -103,9 +103,55 @@ fi
 # So: require --tmpdir=DIR to actually PUT THE PATH IN DIR, and --suffix to be
 # accepted at all. BSD satisfies neither, GNU satisfies both, and nothing in
 # between is silently read as a yes.
-_probe="$(/usr/bin/mktemp -d)"
-if [[ "$(/usr/bin/mktemp --tmpdir="$_probe" -u 2>/dev/null)" == "$_probe"/* ]] \
-   && /usr/bin/mktemp --suffix=.probe -u >/dev/null 2>&1; then
+# RESOLVED, not hardcoded. `/usr/bin/mktemp` is not where every host keeps it
+# (NixOS, a stripped image, a Homebrew coreutils ahead of /usr/bin on a Mac),
+# and on a host that has only /bin/mktemp this probe produced an empty $_probe,
+# the `"" == /*` test was false, and four assertions below SKIPPED citing "this
+# is not GNU mktemp" — the wrong reason, for a host that may well have had it.
+# ── run-all.sh MUST NOT RESOLVE ITS "real" mktemp TO ANOTHER SHIM ────────────
+# run-all.sh NESTS: a falsify oracle is `run-all.sh <name>`, and fixtures inside
+# it run run-all.sh again. So the inner one resolves its system mktemp with an
+# OUTER shim already first on PATH — and `command -v mktemp` hands back that
+# shim. The inner shim then execs the outer, the outer execs what it was told is
+# real, and they exec each other forever.
+#
+# Not hypothetical: introducing exactly this ran the suite 20 minutes into
+# test-falsify-run.sh without finishing and made test-falsify-historical.sh
+# report an oracle HUNG for 180s without asserting. Neither symptom named a
+# cause, which is why the resolution is asserted here rather than trusted.
+nest_dir="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d (nest probe)\n'; exit 1; }
+mkdir -p "$nest_dir/run-all-tmp.PROBE/bin"
+printf '#!/bin/sh\necho SHIM\n' > "$nest_dir/run-all-tmp.PROBE/bin/mktemp"
+chmod +x "$nest_dir/run-all-tmp.PROBE/bin/mktemp"
+# The premise: a bare `command -v` really would pick the shim here.
+nest_naive="$(PATH="$nest_dir/run-all-tmp.PROBE/bin:$PATH" command -v mktemp)"
+if [[ "$nest_naive" == *"/run-all-tmp.PROBE/bin/mktemp" ]]; then
+  pass "scaffold: with a shim first on PATH, a bare resolution picks the shim"
+else
+  fail "scaffold: with a shim first on PATH, a bare resolution picks the shim — got '$nest_naive', so the assertion below proves nothing"
+fi
+nest_got="$(PATH="$nest_dir/run-all-tmp.PROBE/bin:$PATH" bash -c '
+  RA_RESOLVE_PATH="$(printf "%s" "$PATH" | tr ":" "\n" | grep -v "/run-all-tmp\.[^/]*/bin$" | paste -sd: -)"
+  PATH="$RA_RESOLVE_PATH" command -v mktemp')"
+if [[ -n "$nest_got" && "$nest_got" != *"/run-all-tmp."* ]]; then
+  pass "run-all.sh's resolution skips shim directories, so nesting cannot loop"
+else
+  fail "run-all.sh's resolution skips shim directories — got '$nest_got', which is a shim: nested run-all.sh would exec in a loop"
+fi
+# The rule the resolution depends on must match what run-all.sh actually writes.
+grep -qF 'run-all-tmp\.[^/]*/bin$' "$REPO_DIR/tests/run-all.sh" \
+  && pass "  … and run-all.sh uses that same exclusion" \
+  || fail "  … and run-all.sh uses that same exclusion — the two have drifted"
+rm -rf "$nest_dir"
+
+_REAL_MKTEMP="$(command -v mktemp 2>/dev/null || true)"
+if [[ -z "$_REAL_MKTEMP" ]]; then
+  printf 'SCAFFOLD-FAILED: no mktemp on PATH — the GNU/BSD probe below cannot run\n'
+  exit 1
+fi
+_probe="$("$_REAL_MKTEMP" -d)"
+if [[ "$("$_REAL_MKTEMP" --tmpdir="$_probe" -u 2>/dev/null)" == "$_probe"/* ]] \
+   && "$_REAL_MKTEMP" --suffix=.probe -u >/dev/null 2>&1; then
   rmdir "$_probe" 2>/dev/null || true
   # --tmpdir says "put it in TMPDIR", which is what the shim wants anyway — but
   # GNU REFUSES an absolute template alongside it ("with --tmpdir, it may not be
@@ -125,9 +171,17 @@ if [[ "$(/usr/bin/mktemp --tmpdir="$_probe" -u 2>/dev/null)" == "$_probe"/* ]] \
     fail "--tmpdir=DIR is passed through untouched (rc=$rc, got: $out)"
   fi
 
-  # --suffix's VALUE is a separate argument, and it is not a template. Matched
-  # by the operand arm it made the shim pass everything through, silently
-  # dropping the steering this whole mechanism exists for.
+  # --suffix's VALUE is a separate argument and is not a template, so it matches
+  # the OPERAND arm and the shim passes everything through.
+  #
+  # WHAT THAT GUARDS IS NOT WHAT THIS COMMENT FIRST SAID. It claimed the
+  # pass-through "silently dropped the steering". Measured: it does not. GNU
+  # mktemp implies --tmpdir when given no template, so `TMPDIR=$D mktemp
+  # --suffix .txt` lands in $D whether the shim intervenes or not — the
+  # assertion cannot fail for the reason stated. What it DOES pin is that an
+  # operand-looking argument makes the shim pass through rather than APPEND its
+  # own template: appending one here would hand mktemp two operands and the call
+  # would error, which is a failure this assertion catches.
   out="$(shim --suffix .txt 2>&1)"; rc=$?
   if [[ "$rc" -eq 0 && "$out" == "$STEER"/*.txt ]]; then
     pass "--suffix VALUE keeps its suffix AND stays steered into TMPDIR"

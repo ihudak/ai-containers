@@ -85,14 +85,42 @@ fi
 unset _big _out
 
 # ── 2. The rule, over every tracked script ───────────────────────────────────
-# Only files that set pipefail are subject to it: without pipefail the pipeline
-# takes grep's status and the hazard cannot arise.
+# Subject to the rule when the file sets pipefail — OR WHEN IT IS SOURCED BY ONE
+# THAT DOES, which is the half this scan was missing. A sourced file runs under
+# the CALLER's shell options, so `tests/integration/lib.sh` (no `set` line of its
+# own, sourced into tests/integration/run.sh, which sets pipefail) executed every
+# one of its pipelines under pipefail while sitting outside the scan entirely.
+# It held two, and one of them mattered: `docker logs … | grep -qE` on a log
+# large enough that grep exits first, so the producer takes SIGPIPE and a
+# MATCHING log is reported as no match.
+#
+# Basename matching, deliberately: a source line may spell the path through any
+# variable ($INT_DIR, $TESTS_DIR, $REPO_DIR/tests), and resolving those
+# statically would be a second thing to get wrong. Two tracked files sharing a
+# basename would over-include, never under-include, and the rule fails safe in
+# that direction.
+sourced_by_pipefail=""
+while IFS= read -r sf; do
+  [[ -f "$REPO_DIR/$sf" ]] || continue
+  grep -qE '^[[:space:]]*set[[:space:]]+-[a-z]*o?[a-z]*[[:space:]]*.*pipefail|^[[:space:]]*set[[:space:]]+-o[[:space:]]+pipefail' "$REPO_DIR/$sf" || continue
+  src_targets="$(grep -hE '^[[:space:]]*(source|\.)[[:space:]]' "$REPO_DIR/$sf" 2>/dev/null || true)"
+  [[ -n "$src_targets" ]] || continue
+  while IFS= read -r one; do
+    [[ -n "$one" ]] && sourced_by_pipefail="$sourced_by_pipefail $one"
+  done < <(printf '%s\n' "$src_targets" | grep -oE '[A-Za-z0-9._-]+\.sh' || true)
+done < <(cd "$REPO_DIR" && { git ls-files '*.sh'; git ls-files --others --exclude-standard '*.sh'; } | sort -u)
+
 scanned=0
 offenders=0
 offender_list=""
 while IFS= read -r f; do
   [[ -f "$REPO_DIR/$f" ]] || continue
-  grep -qE '^[[:space:]]*set[[:space:]]+-[a-z]*o?[a-z]*[[:space:]]*.*pipefail|^[[:space:]]*set[[:space:]]+-o[[:space:]]+pipefail' "$REPO_DIR/$f" || continue
+  if ! grep -qE '^[[:space:]]*set[[:space:]]+-[a-z]*o?[a-z]*[[:space:]]*.*pipefail|^[[:space:]]*set[[:space:]]+-o[[:space:]]+pipefail' "$REPO_DIR/$f"; then
+    case " $sourced_by_pipefail " in
+      *" $(basename "$f") "*) ;;      # sourced into a pipefail caller
+      *) continue ;;
+    esac
+  fi
   scanned=$((scanned + 1))
   while IFS=: read -r n _; do
     [[ -n "$n" ]] || continue
@@ -114,10 +142,10 @@ while IFS= read -r f; do
     # independent greps reading files, with no pipeline and no hazard, and
     # counting it would train readers to ignore this list.
   done < <(grep -nE '[^|]\|[[:space:]]*grep[[:space:]]+-[a-zA-Z-]*q' "$REPO_DIR/$f" | cut -d: -f1)
-done < <(cd "$REPO_DIR" && git ls-files '*.sh')
+done < <(cd "$REPO_DIR" && { git ls-files '*.sh'; git ls-files --others --exclude-standard '*.sh'; } | sort -u)
 
 if [[ "$scanned" -gt 0 ]]; then
-  pass "scanned $scanned tracked script(s) that set pipefail"
+  pass "scanned $scanned tracked script(s) running under pipefail (set here or by a caller that sources them)"
 else
   # Reported through the SCAFFOLD channel rather than as a rule failure. This
   # file counted from the day it was written, so the vacuous pass was never

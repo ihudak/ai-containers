@@ -6,6 +6,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### The rest of the review, and a recursion the fix for it introduced
+
+The findings left open at v0.9.7, taken in full.
+
+- **The `grep -q`-under-`pipefail` guard could not see the files most exposed to
+  it.** It scanned only scripts that set `pipefail` *themselves* — but a sourced
+  file runs under its caller's options, so `tests/integration/lib.sh` (no `set`
+  line, sourced into a runner that sets `pipefail`) sat outside the rule with two
+  live pipelines. One mattered: `docker logs … | grep -qE` on a log large enough
+  that grep exits first, the producer takes SIGPIPE, and a **matching** log is
+  reported as no match — a false FAIL on the assertion hardest to disbelieve,
+  since the evidence for it is the output being discarded. Both captured now, and
+  the scan follows `source` lines.
+- **Two scans read only tracked files**, so a test written but not yet `git
+  add`ed was outside every rule here — exactly when a new offender is most
+  likely and least likely to be noticed.
+- **A claim measured and corrected rather than repeated.** The `--suffix`
+  assertions were said to guard against the shim "silently dropping the
+  steering". They cannot: GNU implies `--tmpdir` when given no template, so those
+  calls land in `TMPDIR` whether the shim intervenes or not. What they *do* pin
+  is that an operand-looking argument makes the shim pass through instead of
+  appending a second template.
+- **`/usr/bin/mktemp` hardcoded in two places**, which on a host that keeps it
+  elsewhere collapses every `mktemp` call in the suite, and in the test made four
+  assertions skip citing the wrong reason.
+- One finding needed no action: the shim's pass-through set already handles
+  `--tmpdir` in both spellings, measured.
+
+**And the mktemp fix introduced a recursion, which is the part worth reading.**
+`run-all.sh` **nests** — a falsify oracle *is* `run-all.sh`, and fixtures inside
+it run `run-all.sh` again — so resolving the real `mktemp` with a bare
+`command -v` in the inner one returns the **outer shim**. The two then exec each
+other forever. It cost 20 minutes of a suite run stuck in one test and an oracle
+reported as hanging 180 seconds without asserting, neither of which named a
+cause. The resolution now strips shim directories from `PATH` first, and a test
+asserts it — including that the exclusion in the test and the one in
+`run-all.sh` have not drifted apart.
+
 ## v0.9.7 — 2026-08-31
 
 **A patch, and it is mostly about measurements correcting each other.**
