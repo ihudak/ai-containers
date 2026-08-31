@@ -6280,3 +6280,56 @@ whose `.git` is a file rather than a directory.)
 **No identity survived in arm B that had survived in arm A.** Worth stating
 because a net `+12` would look identical if the slice had killed 14 and lost 2,
 and nothing in a TOTAL line distinguishes those.
+
+---
+
+## The oracle timing spread that defeats any constant bound — **MEASURED 2026-08-31, macOS**
+
+Recorded because it is the evidence behind #211 and against #200's approach, and
+because it currently exists nowhere but a chat log. Two Phase 6 runs on the same
+tree (`ffd9462`), same machine, differing only in worker count.
+
+### The numbers
+
+Pristine control oracle, `tests/bash-dialect-lint.sh`:
+
+| run | config | control wall times |
+|---|---|---|
+| 1 | `jobs=auto` → **1 worker** | 4.9 s, 4.7 s |
+| 2 | `FALSIFY_JOBS=8` | **252.0 s**, 115.1 s |
+
+**52× between configurations; 2.2× between two controls of the same file in the
+same run.** Across all targets, run 2's controls ranged **115 s → 316 s**. That
+reproduces and exceeds the 8 s / 132 s spread `test-bash-dialect-lint.sh` already
+recorded for itself, and it is the whole case against sizing these bounds with a
+constant: at `--jobs 8` the oracle ran at **twice** the 120 s whole-tree bound it
+contains.
+
+### Why both runs nevertheless passed
+
+| | mutants | KILLED | SURVIVED | UNPROVEN | controls | ledger |
+|---|---|---|---|---|---|---|
+| run 1 | 551 | 536 | 11 | 4 | 32/32 | `OK: 0 problem(s)` |
+| run 2 | 551 | 535 | 11 | 5 | 32/32 | `OK: 0 problem(s)` |
+
+The bounds were not hit. **Zero `+scaffold` unprovens in either run**, so #211's
+channel — which makes an expiry score UNPROVEN rather than a false KILL — was
+*not* exercised here. It is correct by forced demonstration (same expiry:
+`KILLED|exit+failline` before, `UNPROVEN|exit+scaffold` after), and these runs
+are not field evidence for it. A clean run is evidence the bounds were not
+tripped, never that they are comfortably sized.
+
+### Two things a later reader should not misread
+
+**Run 2's zero timeouts are a configuration choice, not the machine coping.** It
+ran `FALSIFY_TIMEOUT=600`; at the default 120 s, oracles taking 252–316 s would
+have timed out in bulk. The tier's own banner recommends raising the clock
+alongside `--jobs`, and that is why.
+
+**The history is three attempts, not one.** A flat 30 s whole-tree bound went
+red at 35.6 s (2026-08-30); raising it to 120 s held, and an uncalibrated flat
+10 s single-file bound went red instead at 49.6 s (2026-08-31); only converting
+every expiry to `SCAFFOLD-FAILED:` let the corpus complete. Two constants failed
+under one mechanism before the instrument was changed — which is the durable
+finding, not either number.
+
