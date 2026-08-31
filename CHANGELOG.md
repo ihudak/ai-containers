@@ -6,6 +6,67 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### A timeout was being reported as an assertion failure, which the tier reads as a kill
+
+`tests/bash-dialect-lint.sh` is a falsify **oracle**, and all four of its time
+bounds called `fail` when they expired. Under `tests/falsify/run.sh` a `FAIL:`
+line **is a kill** — so a slow machine credited this oracle with catching
+mutations it never noticed, which is precisely the error the tier cannot detect
+from its own output.
+
+**The file already said so.** Its own calibration note reads: *"A `p_timeout`
+whose expiry calls `fail` converts SLOWNESS into a `FAIL:` line, and under
+`tests/falsify/run.sh` a `FAIL:` line is a KILL."* The diagnosis was written
+down, and then the remedy applied twice was a bigger constant.
+
+**Two constants have now failed here, one mechanism:**
+
+| date | bound | outcome |
+|---|---|---|
+| 2026-08-30 | whole-tree, flat 30 s | control red at 35.6 s, corpus unscored |
+| 2026-08-31 | whole-tree floor raised to 120 s | held — but a flat 10 s **single-file** bound went red at 49.6 s |
+
+The second was on a quiet machine with `--jobs auto` resolving to **one** worker,
+and this file's own note already records two pristine controls of itself, in one
+run, taking 8 s and 132 s. **No constant spans 16×**, so raising the 10 s would
+only have scheduled the third failure.
+
+The right channel already existed and is named for exactly this: `SCAFFOLD-FAILED:`,
+which `falsify_verdict` checks *before* the kill branch and scores UNPROVEN. All
+four bounds now print it and exit 1 rather than calling `fail`. Slowness costs a
+verdict, which is honest, instead of manufacturing one.
+
+### The other fifteen build-time fetches now retry, and five stopped piping into a shell
+
+v0.9.8 hardened **one** `curl` — nvm's — and established the right convention.
+Twelve network fetches in the `Dockerfile` and three in `install-tools.sh` still
+carried the same exposure, and five of them still had the truncation hazard that
+release fixed only for nvm.
+
+`--retry 5 --retry-delay 2 --retry-all-errors` now covers go, kubectl (×2),
+aws-cli, azure-cli, the github-cli keyring, the mongodb key, wkhtmltopdf, sdkman,
+pyenv, rustup and kiro, plus `install-tools.sh`'s `api_get` and its three
+release/asset downloads.
+
+**`--retry-all-errors` was contested and the measurement settled it.** The
+argument against was that a 404 from a genuinely wrong URL should fail now rather
+than five attempts later. v0.9.8's entry carries the counter-evidence: several
+builds in one morning could not fetch nvm v0.40.6 while v0.40.7 succeeded, and
+v0.40.6 worked again later. That is a CDN edge serving one path inconsistently,
+so the 404 **is** the transient case — and it also reconciles two reported build
+failures with six clean installs measured the following day.
+
+**And five more pipes became files.** `curl | bash` hands the interpreter whatever
+arrived, so a truncated download executes its prefix and reports success. sdkman,
+pyenv, rustup, azure-cli and kiro now fetch to a file first, as nvm already did.
+`rustup`'s `sh -s --` becomes `sh FILE`, since `-s` means "read the script from
+stdin" and there is no longer a stdin to read.
+
+Verified by building with **all eleven affected components enabled** — the default
+`sandbox.conf` turns on exactly one of them, so a default build would have proved
+nothing — and by reading the build log to confirm the reshaped commands are what
+ran, with zero occurrences of the old pipe form.
+
 ## v0.9.8 — 2026-08-31
 
 **A patch. No new key, no new column** — and the one entry that reads like a
