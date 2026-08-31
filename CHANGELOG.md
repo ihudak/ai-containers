@@ -6,6 +6,45 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## v0.9.7 — 2026-08-31
+
+**A patch, and it is mostly about measurements correcting each other.**
+
+**An adversarial review of v0.9.3–v0.9.6** returned eleven findings and led the
+release: a platform probe that was not valid on the platform it existed for, an
+exit-trap rule whose guard check was file-scoped (so any mention of `BASHPID`
+anywhere exempted a file, including the rule's own regex), two assertions that
+passed on paths where their subject never ran, and a scratch directory leaked on
+an early return.
+
+**Then executing the derived arm refuted part of the review's own reasoning.**
+The probe fix was justified by BSD getopt treating any `--`-prefixed argument as
+the end-of-options marker, generalised from `mktemp --tmpdir` — and its commit
+said plainly that the BSD arm was *derived, not executed*. Run on macOS 26.6.2
+the next day, BSD `script` **rejects** `--version` at getopt: no file, no shell,
+no hang to close. The generalisation was the error, and the durable lesson is
+sharper than the claim it replaced — **`--`-prefixed handling is per utility,
+not a property of BSD getopt**. The change is kept on the grounds that survive.
+Both arms are executed now rather than one derived.
+
+**A third correction followed the second:** the `.gitignore` note repeating that
+refuted mechanism outlived the commit that refuted it, because the fix reached
+`portability.sh` and the CHANGELOG and not the one place a reader meets the
+claim first.
+
+**And a bound that was calibrated on one platform.** The whole-tree lint ratio is
+97× on the reference machine and 227× on macOS, so the multiplier derived a
+bound *below* the honest cost there. Measured: idle 10.2s, eight CPU-bound loops
+12.1s — load alone is not it — eight fork-heavy loops past 300s. Fork
+contention, not CPU, and macOS is slow at forking. Floor raised 30s → 120s.
+
+Two defects were introduced while fixing the review's findings, both caught by
+the repo's own gates within a minute: an assertion that named a variable which
+did not exist, so its subject never ran; and a `grep -q` pipeline under
+`pipefail`, flagged by the test that exists for exactly that. One recommendation
+was tried, measured to break three assertions, and reverted with the measurement
+recorded at the site.
+
 ### Phase 6 could not complete on macOS, and the control mechanism is what said so
 
 `tests/bash-dialect-lint.sh` is a falsify **oracle**, and it carried a
