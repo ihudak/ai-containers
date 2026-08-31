@@ -6,6 +6,68 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Phase 6 could not complete on macOS, and the control mechanism is what said so
+
+`tests/bash-dialect-lint.sh` is a falsify **oracle**, and it carried a
+load-sensitive time budget — the exact class its own comment records being
+bitten by on 2026-08-22. On a Mac an **unmutated** tree scored a kill:
+
+```
+CONTROL FAILED — the PRISTINE oracle went red under this run's own load
+  (signal=exit+failline, 35.6s): tests/bash-dialect-lint.sh
+FAIL: the whole-tree run did not terminate within 30s
+  (calibrated from a worst single-file lint of 45ms)
+```
+
+The run then refused to trust the kills around it and declined to score the
+ledger. **That is the guard working**, and it is why this was found at all
+rather than shipping as a handful of unexplained verdicts.
+
+**The calibration assumed a platform-stable ratio, and there isn't one.**
+Reference: single-file ~6 ms, whole tree ~580 ms — 97×. macOS: worst sample
+45 ms, idle tree 10.2 s — **227×**. And the cause is not CPU but **fork
+contention**, the property already recorded beside `fr_fork_cost_cap`:
+
+| condition | whole-tree lint |
+|---|---|
+| idle | 10.2 s |
+| 8 CPU-bound loops | 12.1 s — load alone is not it |
+| 8 fork-heavy loops | **> 300 s** |
+| the real tier, one worker | > 30 s |
+
+No constant survives that third row, and none needs to: the bound exists only
+to tell *terminated* from *hung*, and past it `run.sh`'s own per-mutant clock
+takes over and scores UNPROVEN — which the surrounding rule already says to
+prefer over a false KILL. The floor moves 30 s → **120 s** (4× the observed
+real-tier cost, 12× idle); the multiplier is deliberately **unchanged**,
+because re-tuning it to another constant would only relocate the same platform
+assumption.
+
+The middle test point had to move with it — at a 120 s floor a 300 ms sample is
+floored, so the case would no longer distinguish the derivation from the
+constant, which is the one job those three points have. Re-pointed to
+600 ms → 180 s. All three demonstrated failing: reverting the floor (1 assertion),
+weakening the multiplier (2), replacing the derivation with a flat constant (2).
+
+**Not a product regression.** On the same tree, phases 5 (75/75 in all three
+arms), 7 (shellcheck 0 over 165 scripts) and 4 (36 of 36 integration cases) all
+passed. Phase 6 failed to **measure**, not to pass.
+
+### A stray `typescript` reached the repo root
+
+`script(1)` writes `typescript` in the **current** directory when given no file
+argument, so a bare `script` run while testing `p_pty` left an empty one behind
+and it was committed. That is the same mechanism the `p_pty` probe fix above
+addresses — BSD `script --version` names no file, so it opens this and execs an
+interactive shell.
+
+`tests/test-portability.sh` already asserts that sourcing `portability.sh`
+creates no file in the current directory, and that assertion **passes**: it
+guards the code path, but the artefact predated it and nothing checked that a
+stray one is not *committed*. Removed, and `/typescript` added to `.gitignore`
+so the recurrence is structurally impossible rather than dependent on someone
+reading `git status` before `git add -A`.
+
 ### What an adversarial review of v0.9.3–v0.9.6 found
 
 A review of the four releases returned PASS WITH RECOMMENDATIONS and eleven
