@@ -261,6 +261,24 @@ docker run --rm --entrypoint capture-agent-destinations.sh \
   -v "/path/to/launch-dir:/workspace" "${IMAGE_NAME:-ai-sandbox}" extract /workspace/.agent-discovery
 ```
 
+**Check a release describes what it contains** (run before tagging):
+```bash
+./changelog-coverage.sh            # what landed since the last tag, and how many Unreleased entries
+./changelog-coverage.sh --check    # exit 1 when non-docs commits exist and Unreleased is EMPTY
+```
+It **reports**; it gates only under `--check`. A per-PR "you changed code, add an
+entry" rule was designed first and rejected on measurement: over this repo's own
+43 merges since v0.9.3 it fires on about twenty, most of them test-coverage
+slices this project deliberately summarises at release time — and the refined
+"Unreleased must be non-empty" variant additionally fires on **every release
+commit**, because a release moves entries out of `Unreleased` and empties it by
+construction (eight false positives in fourteen sampled). A check that cries
+wolf on half of all commits is suppressed within a week and then catches
+nothing, which is worse than none because it looks like coverage. So the one
+mechanical alarm is raised where the omission actually costs something — at
+release time, when notes would otherwise publish describing none of the fixes
+they ship. That failure happened twice in two days (#200/#201, then #211/#212).
+
 **Report what this is:**
 ```bash
 ./sandbox.sh --version     # anywhere; also -V, or `version`

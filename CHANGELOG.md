@@ -6,6 +6,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### A release-time report for what the notes should cover
+
+Twice in two days a release was nearly cut with merged fixes described nowhere
+(#200/#201, then #211/#212). `changelog-coverage.sh` lists the non-docs merges
+since the last tag alongside the `Unreleased` entry count, so the notes can be
+read against what they actually ship. `--check` turns its one mechanical
+condition — non-docs commits exist and `Unreleased` is empty — into a non-zero
+exit; by default it always exits 0, because it reports rather than gates.
+
+**A per-PR gate was designed first and rejected on measurement.** "You changed
+code, so add an entry" fires on about twenty of this repo's 43 merges since
+v0.9.3, most of them test-coverage slices this project deliberately summarises
+at release time. The refined "Unreleased must be non-empty" variant additionally
+fires on **every release commit**, because a release moves entries out of
+`Unreleased` and empties it by construction — eight false positives in fourteen
+sampled commits. A check that cries wolf on half of all commits is suppressed
+within a week and then catches nothing, which is worse than no check because it
+looks like coverage.
+
+**One heuristic was written and then removed**, for the same reason: matching PR
+numbers from merge subjects against the `Unreleased` text flagged both merges it
+was pointed at, and both were already described in full without their numbers
+spelled out. 100% noise on first contact. What ships has no false-positive
+concept at all.
+
+The classifier reads each merge's **first-parent diff**, not `git show`: a merge
+commit has no diff of its own, so `git show --name-only` prints nothing and a
+classifier built on it calls every merge docs-only, leaving the alarm unable to
+fire. `tests/test-changelog-coverage.sh` lands a real `--no-ff` merge for that
+reason — a squashed commit would pass against the broken implementation too.
+
 ### A timeout was being reported as an assertion failure, which the tier reads as a kill
 
 `tests/bash-dialect-lint.sh` is a falsify **oracle**, and all four of its time
