@@ -39,6 +39,31 @@ bash -n "$LINT" && pass "bash-dialect-lint.sh bash -n" || fail "bash-dialect-lin
 # every tracked script (measured 0.6s here, but a loaded macOS host is slower),
 # and that clock is CALIBRATED from these vectors rather than fixed — see the
 # note above tree_bound_secs for why a flat one produced a false KILL.
+# A TIMEOUT IS NOT AN ASSERTION FAILURE, AND EVERY BOUND IN THIS FILE NOW SAYS SO.
+#
+# Each `p_timeout` below used to call `fail` on expiry. Under tests/falsify/run.sh
+# a FAIL: line IS A KILL, so an overrun credited this oracle with catching a
+# mutation it never noticed — the one error the tier cannot detect from its own
+# output, and the hazard the calibration note further down already described.
+# The answer there was a BIGGER CONSTANT. Measured twice on macOS, that is the
+# wrong instrument rather than the wrong number:
+#
+#   2026-08-30  whole-tree bound, flat 30s   -> control red at 35.6s, corpus unscored
+#   2026-08-31  whole-tree floor raised 120s -> HELD; a flat 10s single-file bound
+#                                               went red instead at 49.6s
+#
+# Two different constants, one mechanism. Raising the 10s would schedule the
+# third. And this file's own note records two pristine controls of ITSELF, same
+# run at jobs=8, taking 8s and 132s — a 16x spread no constant spans.
+#
+# SCAFFOLD-FAILED: is the channel that already exists for exactly this: an oracle
+# that could not RUN, as opposed to one that ran and noticed something.
+# falsify_verdict scores it UNPROVEN rather than KILLED (run.sh:504, and
+# run-all.sh:55 states the intent outright), and run-all.sh:268 classifies it.
+# So slowness now costs a verdict, which is honest, instead of manufacturing one.
+# The bounds are KEPT — a hang is still infinite and still trips them — and the
+# generous whole-tree floor is kept too, because a bound that fires rarely
+# produces fewer unproven mutants than one that fires often.
 vector() {
   printf '%s\n' "$2" > "$TMP/v.sh"
   # Timed, because the whole-tree bound below is DERIVED from this number
@@ -53,13 +78,12 @@ vector() {
   local _ms=$(( ( ${EPOCHREALTIME//[.,]/} - _t0 ) / 1000 ))
   (( _ms > unit_ms )) && unit_ms="$_ms"
   if [[ "$rc" -eq 124 ]]; then
-    fail "$1 — the linter did not terminate within 10s; its scan loop never reached EOF"
+    printf 'SCAFFOLD-FAILED: %s — the linter did not terminate within 10s; its scan loop never reached EOF\n' "$1"
     # …and stop the file here. Every vector below runs the same loop, so
     # seventeen more ten-second bounds would restate one fact seventeen times
-    # and push the run past run.sh's 60s per-mutant clock — converting a clean
-    # `exit+failline` kill back into the timeout this was written to remove.
-    printf '\n%d failure(s)\n' "$fails"
-    exit "$fails"
+    # and push the run past run.sh's per-mutant clock — trading this UNPROVEN
+    # for a timeout, which says the same thing less precisely.
+    exit 1
   elif [[ "$rc" -eq "$3" ]]; then pass "$1"
   else fail "$1 — expected rc $3, got $rc"; fi
 }
@@ -140,7 +164,8 @@ p_timeout 10 env AI_CONTAINERS_BASH_FLOOR_MAJOR=4 AI_CONTAINERS_BASH_FLOOR_MINOR
   bash "$LINT" "$TMP/v.sh" >/dev/null 2>&1
 floor_rc=$?
 if [[ "$floor_rc" -eq 124 ]]; then
-  fail "the linter reads the floor — the run did not terminate within 10s"
+  printf 'SCAFFOLD-FAILED: the linter reads the floor — the run did not terminate within 10s\n'
+  exit 1
 elif [[ "$floor_rc" -eq 0 ]]; then
   fail "the linter reads the floor — a 5.0 construct passed at a 4.4 floor"
 else
@@ -200,7 +225,8 @@ tree_secs="$(tree_bound_secs "$unit_ms")"
 p_timeout "$tree_secs" bash "$LINT" >/dev/null 2>&1
 clean_rc=$?
 if [[ "$clean_rc" -eq 124 ]]; then
-  fail "the repository is clean at the current floor — the whole-tree run did not terminate within ${tree_secs}s (calibrated from a worst single-file lint of ${unit_ms}ms)"
+  printf 'SCAFFOLD-FAILED: the whole-tree run did not terminate within %ss (calibrated from a worst single-file lint of %sms)\n' "$tree_secs" "$unit_ms"
+  exit 1
 elif [[ "$clean_rc" -eq 0 ]]; then
   pass "the repository is clean at the current floor"
 else
@@ -271,7 +297,8 @@ p_timeout 10 env AI_CONTAINERS_BASH_FLOOR_MAJOR=5 AI_CONTAINERS_BASH_FLOOR_MINOR
   bash "$empty_repo/tests/bash-dialect-lint.sh" > "$TMP/empty.out" 2>&1
 empty_rc=$?
 if [[ "$empty_rc" -eq 124 ]]; then
-  fail "a lint run that examined no files fails, and says why — it did not terminate within 10s"
+  printf 'SCAFFOLD-FAILED: the empty-repo run did not terminate within 10s\n'
+  exit 1
 elif [[ "$empty_rc" -eq 0 ]]; then
   fail "a lint run that examined no files reported SUCCESS"
 elif grep -q 'examined no files' "$TMP/empty.out"; then
