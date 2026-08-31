@@ -6,6 +6,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## v0.9.8 — 2026-08-31
+
+**A patch. No new key, no new column** — and the one entry that reads like a
+feature is a repair: `sandbox.conf` shipped `nvm-version=` **pinned**, and the
+pin was defeating the weekly job meant to keep it current. `sync-to-projects.sh`
+never touches a key a project already has, so that PR reached no existing
+project while every new one froze its own copy. The version now lives only in
+the `Dockerfile`, which a sync *does* refresh. Its download also retries, and is
+fetched to a file before being run — a pipe hands `bash` whatever arrived, so a
+truncated download executes its prefix and reports success.
+
+**This release closes the register.** Every finding from two adversarial reviews
+is resolved: nine fixed, one that needed no action (measured, not assumed), one
+tried and refuted with the measurement recorded at the site, and the three
+"cosmetic" items — of which one was not cosmetic at all. `has_run` matched a
+bind-mount path as a **regular expression**, so `tmp.XXXXXXXXXX`'s dots meant
+*any character* and an assertion could pass on a mount it never asked for.
+
+**The theme across all of it is guards that could not fire.** A scan that skipped
+the files most exposed to it, because a sourced file runs under its caller's
+shell options and the scan only read files that set them themselves — which left
+`docker logs … | grep -qE` reporting **no match for a log that matched**. A check
+exempted by any mention of its own regex anywhere in a file. An assertion whose
+subject never ran. None broke anything; all advertised protection they did not
+provide.
+
+**Three defects were introduced by these fixes**, which is the honest measure of
+the work. Two were caught by the repo's own gates within a minute each. The third
+was not, and the reason is worth keeping: it made `run-all.sh` resolve its
+"real" `mktemp` to another shim when nested inside itself, so the two exec'd each
+other forever — and its only symptom was **slowness**, which nothing asserts. It
+cost twenty minutes of a stalled suite run and an oracle reported as hanging,
+neither naming a cause.
+
 ### The nvm version now lives in one place, and its download retries
 
 - **`nvm-version=` in `sandbox.conf` is empty by default.** It shipped pinned,
