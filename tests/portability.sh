@@ -163,25 +163,38 @@ p_timeout() {  # $1=seconds, $2… = command
 # THE PROBE MUST BE VALID ON BOTH PLATFORMS, which `script --version` is not.
 # This comment used to claim "the same discipline as _P_STAT_GNU above"; it was
 # the opposite. `stat -c '%a' .` is a VALID invocation that merely fails on BSD.
-# BSD getopt treats any `--`-prefixed argument as the end-of-options marker --
-# the same semantics this repo already measured in tests/test-run-all-shim.sh,
-# where `/usr/bin/mktemp --tmpdir -u` EXITS 0 ON BSD. So on macOS `script
-# --version` left BSD script with no file and no command: it opens its default
-# `typescript` IN THE CURRENT DIRECTORY (the repo root, under verify-on-host.sh)
-# and execs an interactive $SHELL. With a terminal on stdin -- which
-# tests/run-all.sh does not redirect -- that shell reads from the developer's
-# terminal inside a command substitution, which presents as a hang.
+# THE BSD HALF WAS DERIVED, AND EXECUTING IT REFUTED THE DERIVATION. The line
+# above used to end "the BSD arm is derived from that measured getopt behaviour,
+# not executed", which was the honest way to write it; this is what running it
+# found. Measured on macOS 26.6.2 (25G83), in a clean directory:
 #
-# Three changes, each closing one of those:
-#   `-q /dev/null`  names the output file, so BSD writes no stray typescript
+#   script --version </dev/null   ->  rc 1, stderr "script: illegal option -- -"
+#                                     plus usage; NO file created; NO shell exec'd
+#   the OLD probe line, verbatim  ->  answered BSD, i.e. CORRECTLY; no file
+#
+# So BSD `script` REJECTS `--version` at getopt rather than treating `--` as the
+# end-of-options marker. It does not fall through to "no file and no command", it
+# does not open a default `typescript`, and it does not exec $SHELL — there was
+# no hang to close on this platform, and the stray `typescript` once committed
+# here did not come from this probe. That is the OPPOSITE of `mktemp --tmpdir`,
+# which this repo did measure exiting 0 on BSD: the `--`-prefixed-argument
+# behaviour is per-utility, not a property of BSD getopt, and generalising from
+# one utility to another is what produced the wrong story.
+#
+# THE CHANGE BELOW IS KEPT ANYWAY, on the grounds that survive:
+#   `-q /dev/null`  names the output file, so no BSD variant CAN write a stray
+#                   typescript — the per-utility finding above is exactly why a
+#                   probe should not depend on which way one of them jumps
 #   `</dev/null`    so nothing can read the terminal, on any platform
-#   `$( )` not `|`  because `producer | grep -q` under `pipefail` can select the
-#                   WRONG ARM from a SIGPIPE, and tests/test-grep-q-pipelines.sh
-#                   cannot see this file (it scans only files that themselves
-#                   set pipefail; this one is sourced INTO callers that do).
+#   `$( )` not `|`  independent of all this: `producer | grep -q` under
+#                   `pipefail` can select the WRONG ARM from a SIGPIPE, and
+#                   tests/test-grep-q-pipelines.sh cannot see this file (it scans
+#                   only files that themselves set pipefail; this one is sourced
+#                   INTO callers that do).
 #
-# On GNU the flag is still parsed and the version still printed. Verified here;
-# the BSD arm is derived from that measured getopt behaviour, not executed.
+# What each closes:
+# On GNU the flag is still parsed and the version still printed. Both arms are
+# now EXECUTED rather than one derived: GNU on Linux, BSD on macOS 26.6.2.
 _p_pty_probe="$(script -q /dev/null --version </dev/null 2>/dev/null || true)"
 case "$_p_pty_probe" in *util-linux*) _P_PTY_GNU=1 ;; *) _P_PTY_GNU=0 ;; esac
 unset _p_pty_probe
