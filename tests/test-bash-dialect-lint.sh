@@ -160,11 +160,31 @@ fi
 # blew the flat 30s bound and went red, the second control of the same run
 # having passed in 8s. Only the control mechanism made it visible.
 #
-# The two costs move together, so the RATIO is what is stable, not either
-# number: measured here, a single-file lint is ~6ms and the whole tree (141
-# scripts, one startup shared) is ~580ms — 97x. The multiplier is 300, ~3x that
-# ratio, and the floor keeps a fast machine from deriving an absurdly tight
-# bound from a 6ms sample. Deliberately NOT capped against run.sh's per-mutant
+# THE RATIO IS NOT PLATFORM-STABLE, and this comment used to claim it was.
+# Measured on the reference machine: single-file ~6ms, whole tree (141 scripts,
+# one startup shared) ~580ms — 97x. Measured on macOS 2026-08-31: the run's own
+# worst single-file sample was 45ms and the idle tree run 10.2s — 227x. The
+# multiplier of 300 is ~3x the reference ratio and only ~1.3x the macOS one, so
+# on this platform it derives a bound BELOW the honest cost and the floor is
+# what actually binds. Keeping the multiplier (it still scales a genuinely slow
+# machine) and raising the floor is therefore the fix; re-tuning the multiplier
+# to some other constant would just move the same platform assumption.
+#
+# THE FLOOR IS 120s BECAUSE FORK CONTENTION, NOT CPU, IS WHAT INFLATES THIS RUN,
+# and macOS is slow at forking — the same property recorded beside
+# fr_fork_cost_cap. Measured 2026-08-31 on one host:
+#
+#   idle                                   10.2s
+#   8 CPU-bound busy loops                 12.1s   (1.2x — load alone is not it)
+#   8 fork-heavy loops                     >300s   (did not finish in 5 minutes)
+#   the real falsify tier, ONE worker      >30s    (blew the old floor; the
+#                                                   control oracle took 35.6s)
+#
+# No constant survives the third row, and none needs to: the bound exists ONLY
+# to tell "terminated" from "hung", and past it run.sh's own per-mutant clock
+# takes over and scores the mutant UNPROVEN — the outcome the paragraph above
+# says to prefer over a false KILL. 120s is 4x the observed real-tier cost and
+# 12x idle, which buys back the headroom the 30s floor had already lost. Deliberately NOT capped against run.sh's per-mutant
 # ceiling: on a host loaded past the point where the bound would exceed it, the
 # honest outcome is the oracle hitting that ceiling and the mutant scoring
 # UNPROVEN, and a cap would trade that for the false KILL this whole note is
@@ -173,7 +193,7 @@ fi
 tree_bound_secs() {   # <worst single-file lint, ms> → the whole-tree bound
   local unit="$1" secs
   secs=$(( unit * 3 / 10 ))
-  (( secs < 30 )) && secs=30
+  (( secs < 120 )) && secs=120
   printf '%s' "$secs"
 }
 tree_secs="$(tree_bound_secs "$unit_ms")"
@@ -195,11 +215,12 @@ check_bound() {   # <label> <unit-ms> <expected seconds>
   local got; got="$(tree_bound_secs "$2")"
   if [[ "$got" == "$3" ]]; then pass "$1"; else fail "$1 — expected ${3}s, got ${got}s"; fi
 }
-check_bound "the whole-tree bound never drops below its 30s floor"        6    30
-# 300ms is roughly what a single-file lint costs on the host that tripped the
-# flat bound: 50x this container, and the tree run there costs ~30s of the 30
-# it used to be given.
-check_bound "a 50x slower machine gets a 50x bound, not the same 30s"     300  90
+check_bound "the whole-tree bound never drops below its 120s floor"       6    120
+# The middle case has to sit ABOVE the floor to test anything: at the old 30s
+# floor a 300ms sample derived 90s, but under 120s it would be floored and this
+# assertion would silently stop distinguishing the derivation from the constant
+# — which is exactly what these three points exist to tell apart.
+check_bound "a slower machine gets a derived bound, not the floor"        600  180
 check_bound "the bound tracks the measured cost, with no ceiling above it" 1000 300
 
 # ── The "examined no files" guard, exercised ──────────────────────────────────
