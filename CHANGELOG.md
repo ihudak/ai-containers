@@ -74,18 +74,35 @@ A review of the four releases returned PASS WITH RECOMMENDATIONS and eleven
 findings, none a correctness bug on Linux. These are the ones worth fixing, and
 the macOS one is the reason this could not wait for the port.
 
-- **`p_pty`'s probe was not valid on the platform it exists for.** It ran
-  `script --version`, and BSD getopt treats any `--`-prefixed argument as the
-  end-of-options marker — the same semantics this repo already measured for
-  `mktemp --tmpdir`. On macOS that left `script` with no file and no command, so
-  it would open its default `typescript` **in the current directory** — the repo
-  root under `verify-on-host.sh` — and exec an interactive `$SHELL`. With a
-  terminal on stdin, which `run-all.sh` does not redirect, that reads the
-  developer's terminal inside a command substitution and presents as a hang. In
-  a file every test sources. Now `script -q /dev/null --version </dev/null`,
-  captured rather than piped: valid on both platforms, writes nothing, reads
-  nothing, and no `grep -q` under `pipefail` to select the wrong arm from a
-  SIGPIPE.
+**The list below does not add up to eleven, and that gap is recorded rather than
+rounded away.** Counting what is here: three named findings, four gathered under
+"Smaller", and one recommendation tried and refuted — eight or nine depending on
+whether the two stale assertions count once or twice. The remaining two or three
+were not individually written down at the time, so nobody can now say what they
+were or why they were dropped. "Not worth fixing" is a legitimate answer; an
+unrecorded one is not, because it cannot be checked. The count is left as the
+review's own total rather than trimmed to match the list, so the discrepancy
+stays visible.
+
+- **`p_pty`'s probe was hardened, and the reason given for it was wrong.** The
+  probe ran `script --version`; it is now `script -q /dev/null --version
+  </dev/null`, captured rather than piped. That change is right and stays: no
+  BSD variant *can* write a stray `typescript` when the output file is named,
+  nothing can read the terminal, and `$( )` avoids `grep -q` under `pipefail`
+  selecting the wrong arm from a SIGPIPE. **The stated mechanism, however, was
+  derived rather than executed — the entry said so — and executing it refuted
+  it.** Measured on macOS 26.6.2 in a clean directory: `script --version` exits
+  **1** with `script: illegal option -- -`, creates **no** file and execs **no**
+  shell, and the old probe line answered `BSD` — correctly. BSD `script`
+  *rejects* `--version` at getopt rather than treating `--` as the
+  end-of-options marker, so there was no default `typescript`, no interactive
+  `$SHELL` and no hang on this platform, and the stray `typescript` once
+  committed here did not come from this probe. The generalisation is the lesson:
+  it was reasoned from `/usr/bin/mktemp --tmpdir -u`, which this repo *did*
+  measure exiting 0 on BSD, but the `--`-prefixed-argument behaviour is
+  **per-utility**, not a property of BSD getopt. One measured utility licenses no
+  conclusion about another — which is itself the argument for a probe that does
+  not depend on which way any of them jumps.
 - **The exit-trap rule advertised coverage it did not have.** Its guard check
   was file-scoped, so a file was exempted by *any* mention of `BASHPID`
   anywhere in it — including the assertion that the guard must not be inert, and
