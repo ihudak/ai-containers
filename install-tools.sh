@@ -31,7 +31,7 @@ fi
 api_get() {
   local url="$1" body="" i
   for i in 1 2 3; do
-    body=$(curl -fsSL ${AUTH_ARGS[@]+"${AUTH_ARGS[@]}"} \
+    body=$(curl -fsSL --retry 3 --retry-delay 2 --retry-connrefused ${AUTH_ARGS[@]+"${AUTH_ARGS[@]}"} \
              -H "Accept: application/vnd.github+json" "$url") && [ -n "$body" ] && break
     # A FAILED TRANSFER IS NOT A RESPONSE. Reaching here means curl exited
     # non-zero or handed back nothing, and `body` still holds whatever it wrote
@@ -88,7 +88,7 @@ install_repo_file() {
   fi
 
   echo "Installing ${name} from ${repo}:${path}..."
-  if ! curl -fsSL ${AUTH_ARGS[@]+"${AUTH_ARGS[@]}"} \
+  if ! curl -fsSL --retry 3 --retry-delay 2 --retry-connrefused ${AUTH_ARGS[@]+"${AUTH_ARGS[@]}"} \
          -H "Accept: application/vnd.github.raw" "$url" -o "$tmp"; then
     echo "WARNING: download failed for ${name} (${repo}:${path}) — skipping." >&2
     echo "         Check the path exists on that ref and that GITHUB_TOKEN grants access." >&2
@@ -287,7 +287,7 @@ install_one() {
     asset_id=$(printf '%s' "$release_json" | jq -r --arg n "$an" '.assets[] | select(.name==$n) | .id')
     [ -n "$asset_id" ] || { echo "WARNING: asset ${an} not found for ${name} ${tag} — skipping." >&2; return 0; }
     echo "Installing ${name} ${tag} (private)..."
-    if ! curl -fsSL ${AUTH_ARGS[@]+"${AUTH_ARGS[@]}"} -H "Accept: application/octet-stream" \
+    if ! curl -fsSL --retry 3 --retry-delay 2 --retry-connrefused ${AUTH_ARGS[@]+"${AUTH_ARGS[@]}"} -H "Accept: application/octet-stream" \
            "https://api.github.com/repos/${repo}/releases/assets/${asset_id}" \
          | tar xz -C "$BIN_DIR" "$binary"; then
       echo "WARNING: download/extract failed for ${name} ${tag} — skipping." >&2; return 0
@@ -306,7 +306,7 @@ install_one() {
     fi
     an=$(asset_name "$binary" "$tag")
     echo "Installing ${name} ${tag}..."
-    if ! curl -fsSL "https://github.com/${repo}/releases/download/${tag}/${an}" \
+    if ! curl -fsSL --retry 3 --retry-delay 2 --retry-connrefused "https://github.com/${repo}/releases/download/${tag}/${an}" \
          | tar xz -C "$BIN_DIR" "$binary"; then
       echo "WARNING: download/extract failed for ${name} ${tag} — skipping." >&2
       echo "         Check that version '${tag#v}' exists at https://github.com/${repo}/releases" >&2
