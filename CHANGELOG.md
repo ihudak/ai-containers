@@ -6,6 +6,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### The nvm version now lives in one place, and its download retries
+
+- **`nvm-version=` in `sandbox.conf` is empty by default.** It shipped pinned,
+  and the pin was the problem: `sync-to-projects.sh` never touches a key a
+  project already has, so every project carried a frozen copy of the version and
+  the weekly `update-nvm-version.yml` PR reached none of them. The one file a
+  sync *does* refresh is the `Dockerfile`, so keeping the version only in its
+  `ARG NVM_VERSION` means a project on the default tracks it for free. Setting a
+  tag still pins a project deliberately.
+- **The weekly job updates the `Dockerfile` alone**, and now verifies its own
+  edit landed — `sed -i` reports success when its pattern matched nothing, so a
+  renamed `ARG` would have opened a PR changing no file while reporting the
+  version as updated.
+- **The nvm installer download retries, and is fetched before it is run.**
+  `raw.githubusercontent.com` fails intermittently: measured 2026-08-31, several
+  builds in one morning could not fetch `v0.40.6` while `v0.40.7` succeeded, and
+  `v0.40.6` worked again later — nothing about the tag had changed.
+  `--retry-all-errors`, because the failures are not only the transient classes
+  curl retries by default; a missing tag still fails, five attempts later and no
+  less clearly (measured: rc 22 in 10s).
+- **`-o` then `bash FILE`, not `curl | bash`.** A pipe hands bash whatever
+  arrived, so a truncated download executes its prefix and reports success. With
+  a file, a short read is curl's failure and the build stops there. That hazard
+  was not what was reported, and it was in the same line.
+
+**An existing project keeps the tag it was created with** — no sync will clear
+it. Blank that one line and it follows the `Dockerfile` from then on. That is a
+one-time edit per project, deliberately not automated: a migration cannot tell a
+value someone chose from one they merely inherited.
+
 ### Three "cosmetic" findings, one of which was not
 
 The last three items from the review, taken because *"no behavioural effect"* is

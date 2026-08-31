@@ -35,9 +35,21 @@ ENV NVM_DIR=/opt/nvm
 # Configured via nvm-version in sandbox.conf; this default is the fallback.
 # Check https://github.com/nvm-sh/nvm/releases for newer versions.
 ARG NVM_VERSION=v0.40.7
+# RETRIED, AND FETCHED BEFORE IT IS RUN. raw.githubusercontent.com fails
+# intermittently: measured 2026-08-31, several builds in one morning could not
+# fetch v0.40.6 while v0.40.7 succeeded, and v0.40.6 worked again later. Nothing
+# about the tag had changed. `--retry-all-errors` because the failures are not
+# only the transient classes curl retries by default; a genuinely missing tag
+# still fails, five attempts later and no less clearly.
+#
+# `-o` then `bash FILE`, not `curl | bash`: a pipe hands bash whatever arrived,
+# so a TRUNCATED download executes its prefix and reports success. With a file,
+# a short read is curl's failure and the build stops there.
 RUN mkdir -p "$NVM_DIR" && \
-    curl -fsSL "https://raw.githubusercontent.com/nvm-sh/nvm/${NVM_VERSION}/install.sh" | \
-      PROFILE=/dev/null bash && \
+    curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors \
+      -o /tmp/nvm-install.sh \
+      "https://raw.githubusercontent.com/nvm-sh/nvm/${NVM_VERSION}/install.sh" && \
+    PROFILE=/dev/null bash /tmp/nvm-install.sh && rm -f /tmp/nvm-install.sh && \
     # Always install latest LTS
     bash -c "source $NVM_DIR/nvm.sh && nvm install --lts && nvm alias default 'lts/*'" && \
     # Install any extra versions requested
