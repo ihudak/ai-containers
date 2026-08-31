@@ -41,12 +41,12 @@ checks:
 | Workflow | Trigger | What it does |
 | --- | --- | --- |
 | `release.yml` | a pushed tag | publishes the release, with the body taken from this CHANGELOG's matching section |
+| `update-nvm-version.yml` | Mondays 08:00 UTC, or on demand | reads the latest `nvm-sh/nvm` release and, when it differs, opens a PR updating `ARG NVM_VERSION` in the `Dockerfile`, which is the only place the version lives — `sandbox.conf`'s `nvm-version=` is empty by default and defers to it |
+
 Before tagging a release, run `./changelog-coverage.sh` — it lists the non-docs
 merges since the last tag and how many `Unreleased` entries exist, so the notes
 can be read against what they actually ship. `--check` turns the one mechanical
 condition (non-docs commits, empty `Unreleased`) into a non-zero exit.
-
-| `update-nvm-version.yml` | Mondays 08:00 UTC, or on demand | reads the latest `nvm-sh/nvm` release and, when it differs, opens a PR updating `ARG NVM_VERSION` in the `Dockerfile`, which is the only place the version lives — `sandbox.conf`'s `nvm-version=` is empty by default and defers to it |
 
 > **Why the suite runs three times.** Once ordinarily; once inside `ubuntu:22.04`
 > to exercise the declared bash floor; and once with `TMPDIR` pointed at a

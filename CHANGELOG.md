@@ -6,6 +6,51 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Three build-time fetches could not fail, so their retries were inert
+
+v0.9.9's sweep put `--retry 5 --retry-delay 2 --retry-all-errors` on fifteen
+fetches. Three of them had no `-f`, and without `-f` curl treats an HTTP error
+as a **successful transfer of an error page**: it exits 0, writes the body to
+the output file, and `--retry-all-errors` retries nothing because nothing
+failed. Measured against a real 404 — `rc=0` and a 260-byte XML document
+without `-f`, `rc=22` and a retry with it.
+
+kubectl was the one with teeth. `curl -LO` on a 404 leaves that XML in a file
+named `kubectl`, and the next command is `install kubectl /usr/local/bin/kubectl`
+— a build that succeeds and ships an error page as the binary. aws-cli and
+azure-cli fail more loudly (unzip and bash both choke on HTML) but retried
+nothing either.
+
+**The convention existed only in prose, which is how three sites missed it.**
+`tests/test-build-fetch-retry.sh` now requires every fetch in the `Dockerfile`
+and `install-tools.sh` to carry both `-f` and `--retry`, and names the line when
+one does not. It reads command position off the **joined** logical line, as
+Docker does: `apt-get install … ca-certificates curl gnupg` puts `curl` at
+column 0 of a continuation line, and a rule judging physical lines calls that a
+fetch. Seven of the thirteen Dockerfile sites sit behind `then` or a `case` arm,
+so the keyword list is load-bearing rather than decorative. Demonstrated red on
+the three lines as merged, green after.
+
+### A fixture that could not load the tool it was testing
+
+`tests/test-changelog-coverage.sh` copied `changelog-coverage.sh` into its
+worlds but not the `bash-floor.sh` it sources from beside itself. The source
+failed, bash wrote `No such file or directory` into every assertion's captured
+output, and — the script does not `set -e` — the floor guard was simply never
+loaded. All fourteen assertions passed that way, and **deleting the source line
+outright would not have failed one of them**.
+
+The fixtures now carry the floor, one assertion proves it is genuinely sourced
+rather than merely named, another proves a floor that refuses stops the tool
+before it reports anything, and a third fails if any world makes the script
+report a missing file.
+
+### A paragraph inside a table
+
+`docs/contributing.md`'s note about `changelog-coverage.sh` landed between two
+rows of the workflow table, ending it early and leaving the
+`update-nvm-version.yml` row to render as literal pipes. Moved below the table.
+
 ### A release-time report for what the notes should cover
 
 Twice in two days a release was nearly cut with merged fixes described nowhere

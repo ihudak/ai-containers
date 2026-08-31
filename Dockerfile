@@ -42,6 +42,16 @@ ARG NVM_VERSION=v0.40.7
 # only the transient classes curl retries by default; a genuinely missing tag
 # still fails, five attempts later and no less clearly.
 #
+# `-f` IS A PRECONDITION OF ALL OF THAT, not a tidiness flag. Without it curl
+# treats an HTTP error as a successful transfer of an error page: it exits 0,
+# writes the body to the output file, and `--retry-all-errors` has nothing to
+# retry because nothing failed. Three fetches here shipped in exactly that
+# state — kubectl, aws-cli and azure-cli — so the retry they were given was
+# inert, and `curl -LO` on a 404 left a 260-byte XML error document that
+# `install kubectl /usr/local/bin/kubectl` then installed as the binary.
+# Measured, not reasoned: without `-f`, rc=0 and the file is the error page;
+# with it, rc=22 and the transfer is retried.
+#
 # `-o` then `bash FILE`, not `curl | bash`: a pipe hands bash whatever arrived,
 # so a TRUNCATED download executes its prefix and reports success. With a file,
 # a short read is curl's failure and the build stops there.
@@ -242,7 +252,7 @@ ARG INSTALL_KUBECTL=0
 RUN if [ "$INSTALL_KUBECTL" = "1" ]; then \
       ARCH=$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/') && \
       KUBE_VERSION=$(curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors https://dl.k8s.io/release/stable.txt) && \
-      curl -LO --retry 5 --retry-delay 2 --retry-all-errors "https://dl.k8s.io/release/${KUBE_VERSION}/bin/linux/${ARCH}/kubectl" && \
+      curl -fLO --retry 5 --retry-delay 2 --retry-all-errors "https://dl.k8s.io/release/${KUBE_VERSION}/bin/linux/${ARCH}/kubectl" && \
       install kubectl /usr/local/bin/kubectl && rm kubectl; \
     fi
 
@@ -250,14 +260,14 @@ RUN if [ "$INSTALL_KUBECTL" = "1" ]; then \
 ARG INSTALL_AWS_CLI=0
 RUN if [ "$INSTALL_AWS_CLI" = "1" ]; then \
       ARCH=$(uname -m) && \
-      curl --retry 5 --retry-delay 2 --retry-all-errors "https://awscli.amazonaws.com/awscli-exe-linux-${ARCH}.zip" -o awscliv2.zip && \
+      curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors "https://awscli.amazonaws.com/awscli-exe-linux-${ARCH}.zip" -o awscliv2.zip && \
       unzip awscliv2.zip && ./aws/install && rm -rf aws awscliv2.zip; \
     fi
 
 # ── Optional: Azure CLI ─────────────────────────────────────────────────────────
 ARG INSTALL_AZURE_CLI=0
 RUN if [ "$INSTALL_AZURE_CLI" = "1" ]; then \
-      curl -sL --retry 5 --retry-delay 2 --retry-all-errors -o /tmp/azcli.sh https://aka.ms/InstallAzureCLIDeb && \
+      curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors -o /tmp/azcli.sh https://aka.ms/InstallAzureCLIDeb && \
       bash /tmp/azcli.sh && rm -f /tmp/azcli.sh; \
     fi
 
