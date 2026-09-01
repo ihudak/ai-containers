@@ -6333,3 +6333,144 @@ every expiry to `SCAFFOLD-FAILED:` let the corpus complete. Two constants failed
 under one mechanism before the instrument was changed — which is the durable
 finding, not either number.
 
+---
+
+## A "BLOCKING gate" that never ran, and did not need to — **CLOSED 2026-09-01: deleted, and running it once first found a fork bomb in `build.sh` — see the entry at the end of this file**
+
+Found 2026-09-01 while auditing a green `verify-on-host.sh` run for anything
+unread. Three `SKIP` lines went past in the log — one per Phase 5 arm — and the
+reporting was honest (`run-all.sh` prints `SKIP`, excludes it from the pass
+tally, so no count was inflated). The file behind them was not.
+
+**`tests/test-agent-tools-smoke.sh` calls itself a BLOCKING pre-merge gate and
+has never run in any automated layer.** Nothing sets `AGENT_TOOLS_SMOKE=1` — not
+CI, not nightly, not `verify-on-host.sh`. The only other references are in the
+plan that introduced it on 2026-08-03, where its own *"the BLOCKING gate"*
+checkbox is still unticked. Four weeks of skipping cleanly.
+
+**It is superseded, not neglected.** Each of its three claims is covered by the
+`packages` tier, which nightly's `packages-agents` job runs against the `agents`
+image variant:
+
+| its claim | covered by |
+|---|---|
+| installs behind the restricted firewall | case 700 — *"all six agent-tier tools install behind the restricted firewall"* |
+| resolves under a non-login `docker exec` | case 700 — *"and resolve for the AGENT, in a non-login shell"* |
+| persists to a second container, no reinstall | case 710 — *"a second container in the same group reuses `~/.ai-tools`"* |
+
+This is the same absorption that removed Phases 1-3 when the packages tier took
+over agent-tier install coverage. **Those phases were deleted; this file was
+not** — and a `SKIP` reads like a pass at a glance, so nothing surfaced it.
+
+### The one thing it still does that the cases do not
+
+It builds from the developer's **real `sandbox.conf`** and runs against their
+**real `$HOME` group directory**; the cases use a minimal conf and an isolated
+`HOME`. That is a sanity check of one machine's own configuration, not a gate.
+Whether it earns a 30-minute image build is the decision this entry is open for:
+delete it as superseded, or keep it and say plainly in its header that it is a
+local convenience nobody is required to run.
+
+### Not verified here, and why
+
+The macOS host could not complete a run: Docker Hub returned
+`TLS handshake timeout` resolving `ubuntu:24.04` (office network, likely
+unauthenticated rate limiting), and a later attempt stalled with BuildKit
+reporting zero active records across three samples. `verify-on-host.sh` Phase 4
+had built images successfully six hours earlier, so this is the network of the
+day rather than the repo. The redundancy above is established by reading the
+cases' own summaries against the smoke test's own claims, not by running either.
+
+**Three diagnostic errors are worth recording with it**, because each cost time
+and each came from weak evidence read confidently: `grep -c '[d]ocker build'`
+matched the grep's OWN command line and was read as "a build is running";
+"no `docker build` in host `ps`" was read as "not building", when BuildKit runs
+inside the Colima VM and never appears on the host (`docker system df`'s ACTIVE
+build-cache count is the honest probe); and `tools_read_descriptor` was pursued
+as a stdin-reader before checking that it ends `done < "$file"`.
+
+### Also fixed here
+
+The gating comment claims the test needs `DOCKER_CONFIG`. **It never references
+that variable** — it uses the real `$HOME` and calls `docker run` directly, so
+it needs no context redirection and behaves the same under Colima and Docker
+Desktop. That stale line is what made this look like a four-platform problem
+when it is one test.
+
+
+---
+
+## The smoke test was superseded AND rotted — deleted, and it took a fork bomb in `build.sh` with it — **CLOSED 2026-09-01**
+
+`#218` established by READING that `tests/test-agent-tools-smoke.sh` was
+superseded by the packages tier. Running it — the thing that could not be done
+on macOS, where Docker Hub returned a TLS handshake timeout — established
+something the reading could not.
+
+### It fork-bombed, and the bug was not in the smoke test
+
+First execution since 2026-08-03: **1077 `build.sh` processes over two hours**,
+one new level roughly every seven seconds, never reaching `docker build`. It
+stopped immediately after `Generating allowlists from sandbox.conf...`.
+
+The defect is in **`build.sh`**, which guarded re-entry by comparing strings:
+
+```bash
+[[ "${BASH_SOURCE[0]}" != "${0}" ]] && return 0
+```
+
+`ai_containers_config_digest` (`sandbox-common.sh:871`) computes the provenance
+label by SOURCING `"$dir/build.sh"` — an absolute path — after deliberately
+unsetting the re-entry guards. Execute `build.sh` by that same absolute path and
+`$0` is byte-identical to `BASH_SOURCE[0]`: the guard concludes "not sourced",
+the whole build body runs INSIDE the digest subshell, and that body computes the
+digest again.
+
+**The guard was correct only by accident of how people usually type it.**
+Measured both ways: `./build.sh` → rc 0, image built; `/abs/path/build.sh` →
+killed at the clock, unbounded spawning. Fixed with `(return 0 2>/dev/null)`,
+which asks the shell rather than the argv, and verified across all three cases —
+relative exec, absolute exec, and sourced-by-that-same-absolute-path, where the
+string form gets the third wrong.
+
+**Blast radius was contained but the trap was live.** Every ordinary caller uses
+`./build.sh`, including the `runme.sh` that `project-init.sh` generates. The only
+absolute-path caller was the smoke test — and an absolute path is the MORE robust
+idiom, so this was waiting for the next caller who did it properly.
+
+### The redundancy claim survived falsification, and strengthened
+
+Read against the cases line by line, both smoke assertions are **weaker**:
+
+| | smoke test | the case that absorbed it |
+|---|---|---|
+| run 1 | polls `docker exec`, which defaults to **root**; `command -v` only | **700** also asserts via `agent_exec` that each binary resolves as the **non-root agent** in a non-login shell, and `assert_runs` proves it EXECUTES |
+| run 2 | waits for tools to resolve — **passes even on a full reinstall** | **710** asserts the absence of a reinstall directly, which is the regression it exists for |
+
+The one property it did not share — building from the real `sandbox.conf`
+against the real `$HOME`, where the cases use a minimal conf and an isolated
+HOME — is a difference that does not make it a gate: it tests whether THIS
+DEVELOPER'S local configuration produces a working image, not whether the repo
+is correct, and a check whose verdict depends on an untracked local file cannot
+gate a merge.
+
+### Deleted, with the credit recorded
+
+A 164-line file that calls itself a `BLOCKING pre-merge gate`, has never been
+executed, whose assertions are each weaker than the tier that absorbed them, and
+which spawns a thousand processes when finally run, is not dormant coverage — it
+is a claim of coverage that does not exist, and now also a hazard.
+
+**It earned one genuine credit on the way out**: it was the only caller invoking
+`build.sh` the robust way, so it found a defect nothing else could. That
+detection is now permanent and cheaper — `tests/test-provenance.sh` asserts it by
+effect, bounded, in its own process group (a test for a fork bomb must not be
+able to leave one behind), with no docker, no network, and in under a second.
+
+**Two vacuous tests were written and caught on the way**, both by demonstrating
+the assertion failing rather than by review. The first reproduction sourced
+`build.sh` as `bash -c '…' _ "$path"`, which makes `$0` the placeholder `_` —
+the strings then differ, the OLD guard works, and the assertion passed against
+the very defect it existed for. `bash -c '…' "$path"` sets `$0` to the path and
+reproduces it. The `#218` note that `DOCKER_CONFIG` was never referenced by the
+file is confirmed and now moot.

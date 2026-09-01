@@ -17,9 +17,21 @@
 set -uo pipefail
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$TESTS_DIR/.." && pwd)"
+# p_timeout: a portable bound. `timeout` is GNU-only and absent on macOS, where
+# it returns 127 — a non-zero status that silently satisfies a naive check.
+# shellcheck source=./portability.sh
+. "$TESTS_DIR/portability.sh"
 ENGINE_DIR="$REPO_DIR"
 [[ -f "$ENGINE_DIR/sandbox-common.sh" ]] || ENGINE_DIR="$REPO_DIR/base"
-TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; trap 'rm -rf "$TMP"' EXIT
+TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
+# GUARDED, because this file now FORKS: prov_absolute_exec_terminates runs
+# build.sh as a background job to bound and reap it. A backgrounded FUNCTION
+# inherits the parent's EXIT trap and runs it when signalled, so an unguarded
+# `rm -rf "$TMP"` would let the child delete the fixture the parent is still
+# using. tests/test-exit-trap-ownership.sh caught this the moment the fork was
+# added — the rule working, not a false positive.
+TMP_OWNER="$BASHPID"
+trap '[[ "$BASHPID" == "$TMP_OWNER" ]] && rm -rf "$TMP"' EXIT
 
 fails=0
 pass() { printf 'PASS: %s\n' "$1"; }
@@ -228,6 +240,91 @@ if [[ -n "$warn_line" && -n "$run_line" ]] && (( warn_line < run_line )); then
   pass "the warning is printed before the container starts"
 else
   fail "the warning is printed before the container starts (warn=$warn_line run=$run_line)"
+fi
+
+# ── build.sh must know it is being SOURCED, however it was invoked ───────────
+# ai_containers_config_digest sources "$dir/build.sh" to read the build args out
+# of it. build.sh must return early there — if it does not, the whole build body
+# runs INSIDE this function and computes the digest again: unbounded recursion.
+#
+# THE GUARD USED TO BE `[[ "${BASH_SOURCE[0]}" != "${0}" ]]`, a STRING compare,
+# which is right only because people usually type `./build.sh`. Execute it by the
+# same absolute path this function sources and $0 is byte-identical to
+# BASH_SOURCE[0]: the guard concludes "not sourced" and the recursion begins.
+# Measured 2026-09-01 through the only caller that invoked by absolute path (a
+# gated smoke test, deleted in the same change as superseded): 1077 build.sh
+# processes over two hours, never reaching `docker build`. That caller is gone;
+# this assertion is what keeps the defect from coming back, and unlike the smoke
+# test it needs no docker, no network and under a second.
+#
+# ASSERTED BY EFFECT, AND BOUNDED. The subject is a script that spawns without
+# limit when broken, so the assertion runs it under a hard clock in its own
+# process group and reaps that group afterwards: a test for a fork bomb must not
+# be able to leave one behind. `timeout` alone is not enough — it kills the
+# child it spawned, not the tree beneath it.
+prov_absolute_exec_terminates() {   # → 0 when an absolute-path exec finishes
+  local dir="$1" rc
+  # --no-build-arg-probe: nothing here needs docker. The digest path is reached
+  # long before any daemon call, and the recursion (when present) happens there.
+  # `bash -c 'script' NAME` sets $0 to NAME, so this reproduces the exact
+  # condition: BASH_SOURCE[0] and $0 both the absolute path. Passing the path as
+  # $1 with a placeholder $0 does NOT — the strings differ, the old guard works,
+  # and the assertion passes against the very defect it exists for. (Measured:
+  # the first version of this test did precisely that and was vacuous.)
+  #
+  # NEITHER `setsid` NOR `timeout` EXISTS ON macOS, and the first version of
+  # this assertion used both. Absent, each returns 127 — which is neither 137
+  # nor 124, so the check below concluded "terminated" and PASSED. Measured
+  # 2026-09-01: with the broken string guard restored, this file reported
+  # `PASS (41 assertions)` on macOS and both new assertions were vacuous. A
+  # guard for a defect that passes on the platform running it is the same
+  # nothing the deleted smoke test was.
+  #
+  # `set -m` is the portable equivalent of the `setsid` half: with job control
+  # on, each background job becomes a process-group leader, so `kill -"$pid"`
+  # reaps the TREE. tests/falsify/run.sh:865 uses exactly this, for exactly this
+  # reason. The clock is a poll rather than `timeout`, for the same portability.
+  local pid waited=0
+  set -m
+  bash -c 'source "$0" >/dev/null 2>&1' "$dir/build.sh" >/dev/null 2>&1 &
+  pid=$!
+  set +m
+  while (( waited < 250 )); do            # 25s, in 0.1s steps
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.1; waited=$(( waited + 1 ))
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    # Still alive at the deadline: it is recursing. Kill the GROUP — killing the
+    # leader alone leaves the fork bomb running, and a test for one must never
+    # leave one behind.
+    kill -KILL -"$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null
+    return 1
+  fi
+  wait "$pid" 2>/dev/null
+  return 0
+}
+
+# The real file, sourced by its own absolute path — the shape that recursed.
+if prov_absolute_exec_terminates "$REPO_DIR"; then
+  pass "sourcing build.sh by absolute path returns instead of running the build"
+else
+  fail "sourcing build.sh by absolute path did not return — the sourced-guard is comparing strings, so \$0 matching BASH_SOURCE[0] restarts the build inside ai_containers_config_digest"
+fi
+
+# AND THE GUARD IS NOT VACUOUS: it must still let an EXECUTED build.sh run. A
+# guard that returns early always would satisfy the assertion above and break
+# every build, so the negative case is asserted too — cheaply, by checking that
+# an executed build.sh gets far enough to reject a bad argument rather than
+# returning silently at the top.
+# `p_timeout`, not `timeout`: see the portability note above — a bare `timeout`
+# is absent on macOS, returns 127, and satisfies this test's own `rc -ne 0`
+# condition while running nothing at all.
+out="$(cd "$REPO_DIR" && p_timeout 20 ./build.sh --definitely-not-a-flag 2>&1)"; rc=$?
+if [[ "$rc" -ne 0 && "$rc" -ne 124 && -n "$out" ]]; then
+  pass "  … while an EXECUTED build.sh still runs (the guard is not always-return)"
+else
+  fail "  … while an EXECUTED build.sh still runs — it returned silently, so the guard fires for execution too (rc=$rc)"
 fi
 
 printf '\n%d failure(s)\n' "$fails"
