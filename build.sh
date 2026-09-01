@@ -416,7 +416,24 @@ build_image() {
 }
 
 # Allow tests to source this file for its pure helpers without building.
-[[ "${BASH_SOURCE[0]}" != "${0}" ]] && return 0
+# SOURCED-OR-EXECUTED, BY BEHAVIOUR RATHER THAN BY STRING. This was
+# `[[ "${BASH_SOURCE[0]}" != "${0}" ]] && return 0`, and it is correct only by
+# accident of how people usually type the command.
+#
+# ai_containers_config_digest (sandbox-common.sh) computes the provenance label
+# by SOURCING "$dir/build.sh" — an absolute path — after deliberately unsetting
+# the re-entry guards. Execute build.sh by that same absolute path and $0 is
+# byte-identical to BASH_SOURCE[0]: the guard concludes "not sourced", the whole
+# build body runs INSIDE the digest subshell, and that body computes the digest
+# again. Unbounded recursion. Measured 2026-09-01 via the one caller that does
+# invoke by absolute path: 1077 build.sh processes over two hours, one new level
+# roughly every seven seconds, never reaching `docker build` at all.
+#
+# `(return 0 2>/dev/null)` asks the shell instead of the argv: `return` outside a
+# function succeeds only in a sourced file. Verified across all three cases —
+# relative exec, absolute exec, and sourced-by-the-same-absolute-path — where the
+# string form gets the third one wrong.
+(return 0 2>/dev/null) && return 0
 
 # ── Entry point ──────────────────────────────────────────────────────────────────
 

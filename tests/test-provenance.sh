@@ -230,5 +230,58 @@ else
   fail "the warning is printed before the container starts (warn=$warn_line run=$run_line)"
 fi
 
+# ── build.sh must know it is being SOURCED, however it was invoked ───────────
+# ai_containers_config_digest sources "$dir/build.sh" to read the build args out
+# of it. build.sh must return early there — if it does not, the whole build body
+# runs INSIDE this function and computes the digest again: unbounded recursion.
+#
+# THE GUARD USED TO BE `[[ "${BASH_SOURCE[0]}" != "${0}" ]]`, a STRING compare,
+# which is right only because people usually type `./build.sh`. Execute it by the
+# same absolute path this function sources and $0 is byte-identical to
+# BASH_SOURCE[0]: the guard concludes "not sourced" and the recursion begins.
+# Measured 2026-09-01 through the only caller that invoked by absolute path (a
+# gated smoke test, deleted in the same change as superseded): 1077 build.sh
+# processes over two hours, never reaching `docker build`. That caller is gone;
+# this assertion is what keeps the defect from coming back, and unlike the smoke
+# test it needs no docker, no network and under a second.
+#
+# ASSERTED BY EFFECT, AND BOUNDED. The subject is a script that spawns without
+# limit when broken, so the assertion runs it under a hard clock in its own
+# process group and reaps that group afterwards: a test for a fork bomb must not
+# be able to leave one behind. `timeout` alone is not enough — it kills the
+# child it spawned, not the tree beneath it.
+prov_absolute_exec_terminates() {   # → 0 when an absolute-path exec finishes
+  local dir="$1" rc
+  # --no-build-arg-probe: nothing here needs docker. The digest path is reached
+  # long before any daemon call, and the recursion (when present) happens there.
+  # `bash -c 'script' NAME` sets $0 to NAME, so this reproduces the exact
+  # condition: BASH_SOURCE[0] and $0 both the absolute path. Passing the path as
+  # $1 with a placeholder $0 does NOT — the strings differ, the old guard works,
+  # and the assertion passes against the very defect it exists for. (Measured:
+  # the first version of this test did precisely that and was vacuous.)
+  setsid timeout -s KILL 25 \
+    bash -c 'source "$0" >/dev/null 2>&1' "$dir/build.sh" >/dev/null 2>&1
+  rc=$?
+  return $(( rc == 137 || rc == 124 ? 1 : 0 ))
+}
+
+# The real file, sourced by its own absolute path — the shape that recursed.
+if prov_absolute_exec_terminates "$REPO_DIR"; then
+  pass "sourcing build.sh by absolute path returns instead of running the build"
+else
+  fail "sourcing build.sh by absolute path did not return — the sourced-guard is comparing strings, so \$0 matching BASH_SOURCE[0] restarts the build inside ai_containers_config_digest"
+fi
+
+# AND THE GUARD IS NOT VACUOUS: it must still let an EXECUTED build.sh run. A
+# guard that returns early always would satisfy the assertion above and break
+# every build, so the negative case is asserted too — cheaply, by checking that
+# an executed build.sh gets far enough to reject a bad argument rather than
+# returning silently at the top.
+if out="$(cd "$REPO_DIR" && timeout 20 ./build.sh --definitely-not-a-flag 2>&1)"; rc=$?; [[ "$rc" -ne 0 && -n "$out" ]]; then
+  pass "  … while an EXECUTED build.sh still runs (the guard is not always-return)"
+else
+  fail "  … while an EXECUTED build.sh still runs — it returned silently, so the guard fires for execution too (rc=$rc)"
+fi
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
