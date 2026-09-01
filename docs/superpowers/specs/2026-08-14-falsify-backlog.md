@@ -6335,7 +6335,7 @@ finding, not either number.
 
 ---
 
-## A "BLOCKING gate" that never ran, and did not need to — **OPEN: one decision, keep or delete**
+## A "BLOCKING gate" that never ran, and did not need to — **CLOSED 2026-09-01: deleted, and running it once first found a fork bomb in `build.sh` — see the entry at the end of this file**
 
 Found 2026-09-01 while auditing a green `verify-on-host.sh` run for anything
 unread. Three `SKIP` lines went past in the log — one per Phase 5 arm — and the
