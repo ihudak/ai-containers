@@ -6333,3 +6333,67 @@ every expiry to `SCAFFOLD-FAILED:` let the corpus complete. Two constants failed
 under one mechanism before the instrument was changed — which is the durable
 finding, not either number.
 
+---
+
+## A "BLOCKING gate" that never ran, and did not need to — **OPEN: one decision, keep or delete**
+
+Found 2026-09-01 while auditing a green `verify-on-host.sh` run for anything
+unread. Three `SKIP` lines went past in the log — one per Phase 5 arm — and the
+reporting was honest (`run-all.sh` prints `SKIP`, excludes it from the pass
+tally, so no count was inflated). The file behind them was not.
+
+**`tests/test-agent-tools-smoke.sh` calls itself a BLOCKING pre-merge gate and
+has never run in any automated layer.** Nothing sets `AGENT_TOOLS_SMOKE=1` — not
+CI, not nightly, not `verify-on-host.sh`. The only other references are in the
+plan that introduced it on 2026-08-03, where its own *"the BLOCKING gate"*
+checkbox is still unticked. Four weeks of skipping cleanly.
+
+**It is superseded, not neglected.** Each of its three claims is covered by the
+`packages` tier, which nightly's `packages-agents` job runs against the `agents`
+image variant:
+
+| its claim | covered by |
+|---|---|
+| installs behind the restricted firewall | case 700 — *"all six agent-tier tools install behind the restricted firewall"* |
+| resolves under a non-login `docker exec` | case 700 — *"and resolve for the AGENT, in a non-login shell"* |
+| persists to a second container, no reinstall | case 710 — *"a second container in the same group reuses `~/.ai-tools`"* |
+
+This is the same absorption that removed Phases 1-3 when the packages tier took
+over agent-tier install coverage. **Those phases were deleted; this file was
+not** — and a `SKIP` reads like a pass at a glance, so nothing surfaced it.
+
+### The one thing it still does that the cases do not
+
+It builds from the developer's **real `sandbox.conf`** and runs against their
+**real `$HOME` group directory**; the cases use a minimal conf and an isolated
+`HOME`. That is a sanity check of one machine's own configuration, not a gate.
+Whether it earns a 30-minute image build is the decision this entry is open for:
+delete it as superseded, or keep it and say plainly in its header that it is a
+local convenience nobody is required to run.
+
+### Not verified here, and why
+
+The macOS host could not complete a run: Docker Hub returned
+`TLS handshake timeout` resolving `ubuntu:24.04` (office network, likely
+unauthenticated rate limiting), and a later attempt stalled with BuildKit
+reporting zero active records across three samples. `verify-on-host.sh` Phase 4
+had built images successfully six hours earlier, so this is the network of the
+day rather than the repo. The redundancy above is established by reading the
+cases' own summaries against the smoke test's own claims, not by running either.
+
+**Three diagnostic errors are worth recording with it**, because each cost time
+and each came from weak evidence read confidently: `grep -c '[d]ocker build'`
+matched the grep's OWN command line and was read as "a build is running";
+"no `docker build` in host `ps`" was read as "not building", when BuildKit runs
+inside the Colima VM and never appears on the host (`docker system df`'s ACTIVE
+build-cache count is the honest probe); and `tools_read_descriptor` was pursued
+as a stdin-reader before checking that it ends `done < "$file"`.
+
+### Also fixed here
+
+The gating comment claims the test needs `DOCKER_CONFIG`. **It never references
+that variable** — it uses the real `$HOME` and calls `docker run` directly, so
+it needs no context redirection and behaves the same under Colima and Docker
+Desktop. That stale line is what made this look like a four-platform problem
+when it is one test.
+

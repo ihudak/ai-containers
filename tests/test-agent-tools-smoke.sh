@@ -1,4 +1,42 @@
 #!/usr/bin/env bash
+# SUPERSEDED 2026-09-01, AND NOT WIRED INTO ANY LAYER. Read this before running it.
+#
+# It calls itself a BLOCKING pre-merge gate below, and it has never run in any
+# automated layer: nothing anywhere sets AGENT_TOOLS_SMOKE=1 — not CI, not
+# nightly, not verify-on-host.sh. The only other references are in the plan that
+# introduced it (2026-08-03), where its own "BLOCKING gate" checkbox is still
+# unticked. It has skipped cleanly in every suite run for four weeks.
+#
+# That is not the gap it looks like. Its three claims are each covered by the
+# integration corpus's `packages` tier, which nightly's `packages-agents` job
+# runs against the `agents` image variant:
+#
+#   1. installs behind the restricted firewall  -> case 700, whose summary is
+#      "all six agent-tier tools install behind the restricted firewall"
+#   2. resolves under a non-login `docker exec` -> case 700, same summary:
+#      "and resolve for the AGENT, in a non-login shell"
+#   3. persists to a second container run       -> case 710, whose summary is
+#      "a second container in the same group reuses ~/.ai-tools instead of
+#      re-downloading every agent-tier tool"
+#
+# This is the same absorption that removed verify-on-host.sh's Phases 1-3 when
+# the packages tier took over agent-tier install coverage (AGENTS.md's phase
+# table records those numbers as permanently burned). Those phases were deleted;
+# this file was not, and nobody noticed because a SKIP looks like a pass at a
+# glance.
+#
+# WHAT IT STILL DOES THAT THE CASES DO NOT: it builds from the developer's REAL
+# sandbox.conf and runs against their REAL $HOME group directory, where the
+# cases use a minimal conf and an isolated HOME. That is a local sanity check of
+# one machine's own configuration, not a gate — and it is the honest reason to
+# keep the file rather than delete it outright. Whether that is worth 30+
+# minutes of image build is the open question; see the backlog entry.
+#
+# THE `DOCKER_CONFIG` IN THE GATING NOTE BELOW IS STALE: this file never
+# references that variable. It uses the real $HOME and calls `docker run`
+# directly, so it needs no context redirection and runs the same under Colima
+# and Docker Desktop.
+#
 # BLOCKING pre-merge gate. Builds the image and drives the REAL entrypoint in a
 # RESTRICTED-mode container so that agent-tools-reconcile (as the sandbox user) and
 # link-agent-tools (as root) actually run, then proves each enabled agent-tier tool:
