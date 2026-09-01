@@ -851,5 +851,13 @@ git commit -m "docs: runtime tool home + --no-cache refresh for baked tools; pur
 
 - [ ] `rm -f .agents-cache-bust; bash tests/run-all.sh` → green.
 - [ ] `! grep -rn 'AGENTS_CACHE_BUST\|AGENT_REBUILD_MAX_AGE_HOURS' --include='*.sh' --include='Dockerfile*' --include='*.md' . | grep -v CHANGELOG` → empty.
-- [ ] `DOCKER_CONFIG=<cfg> AGENT_TOOLS_SMOKE=1 bash tests/test-agent-tools-smoke.sh` → `0 failure(s)` (the BLOCKING gate).
+- [x] ~~`AGENT_TOOLS_SMOKE=1 bash tests/test-agent-tools-smoke.sh` (the BLOCKING gate)~~ — **the file was deleted 2026-09-01 as superseded.**
+      It never ran in any layer, and its two claims are each WEAKER than the
+      packages-tier cases that absorbed them: it polled as **root** where case
+      700 asserts resolution as the non-root agent, and its second run passed
+      even on a full reinstall, which is exactly what case 710 exists to detect.
+      (Its `DOCKER_CONFIG` was also never referenced by the file.) Running it
+      once before deleting was not ceremony: it exposed a fork bomb in
+      `build.sh`, fixed in the same change and now guarded by
+      `tests/test-provenance.sh`.
 - [ ] `docker build --check "$PWD"` → clean.
