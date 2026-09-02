@@ -33,6 +33,7 @@ container:
 | `VAULT_PATH` | Host directory mounted read-write at `/workspace/vault` — your **personal** knowledge base (an Obsidian vault is typical, but any markdown corpus works, e.g. imported Jira tickets under `$VAULT_PATH/jira-products`, read heavily by several workflows). Pair with `qmd=ON` for in-container search. | host `$VAULT_PATH` export | → `/workspace/vault` |
 | `SPECS_PATH` | Host repo of AI-ready specifications, design documents, and development plans — the **team/shared** knowledge base — mounted read-write at `/workspace/specs`. Consumed by spec-driven workflows (e.g. the dev-workflows plugin). Accepts `@<name>` for a registered repo volume (mounted at `/workspace/<name>`; fast on macOS). | host `$SPECS_PATH` export | → `/workspace/specs` |
 | `DOCS_PATH` | Host **product-documentation** repo mounted **read-only** by default at `/workspace/docs`, re-exported as `DOCS_PATH=/workspace/docs`. Grounding for plugin workflows (idea / VI / release-notes). Accepts `@<name>` (→ `/workspace/<name>`) and a `:ro`/`:rw` suffix (default `:ro`). When the docs repo is the working dir, `DOCS_PATH` re-points to that writable mount; to edit docs otherwise use `:rw`. | host `$DOCS_PATH` export | → `/workspace/docs` |
+| `REPOS_PATH` | Where code repositories live **inside** the container, for tools that need to find them (e.g. Claude Code plugins). Everything the launcher attaches — the positional `[primary]`, every `REPOS` entry, every `EXTRA_MOUNTS` path — lands under the `/workspace` umbrella, so that is the default. `/workspace` also holds `vault`/`specs`/`docs` and the `.agent-*` output dirs, so a consumer should filter (e.g. for a `.git` dir) rather than treat every entry as a repo. Distinct from `REPOS`, which selects **which** repo volumes to attach. | `/workspace` | forwarded |
 | `PREVIEW_PORTS` | Space-separated ports (or `host:container` pairs) to publish for dev servers. | none | — |
 | `CONTAINER_CPUS` | CPU limit. | `1.0` | — |
 | `CONTAINER_MEMORY` | Hard memory limit. | `4g` | — |
@@ -45,6 +46,47 @@ container:
 | `COPILOT_GITHUB_TOKEN` | Copilot CLI auth token; bypasses device-flow OAuth. Auto-extracted from the group's `gh` `hosts.yml` when unset. | auto from `gh` | forwarded |
 | `GITHUB_PERSONAL_ACCESS_TOKEN` | Forwarded as-is for tools expecting this exact name (github MCP servers, Claude Code github plugin). | none | forwarded |
 | `SANDBOX_ENV_FILE` | Path to a `KEY=VALUE` env-file injected into the container via `docker run --env-file` — for non-secret in-container **application** env (e.g. `DB_HOST`, `REDIS_URL`), not credentials. | `<project>/.ai-containers/container.env` if present, else unset | — |
+
+### `GITHUB_TOKEN` — build time, strongly recommended
+
+Not in the table above: it is read by `build.sh`, never forwarded into the
+container. Set it anyway.
+
+Two build layers run vendor installers that `git clone` from github.com — nvm's
+install.sh, and pyenv's installer (four clones: pyenv, pyenv-doctor,
+pyenv-update, pyenv-virtualenv). Anonymous git traffic sits in GitHub's
+low-budget tier, and when that tier throttles your host those clones fail with:
+
+```
+fatal: could not read Username for 'https://github.com': No such device or address
+```
+
+That is a 401 on a **public** repo — what GitHub returns to an unauthenticated
+caller it is throttling. It reads like a network fault or a broken Dockerfile,
+which is what makes it worth pre-empting. Measured 2026-09-02, it failed a whole
+build cycle, recurred in bursts over about half an hour, and was not cured by
+retrying (5 attempts over ~150s all failed); in the same container at the same
+moment an authenticated clone succeeded where the anonymous one got 401.
+
+With a token set, `build.sh` passes it as a BuildKit secret, both clone layers
+mount it, and git presents it **when challenged** — so the anonymous path is
+unchanged and the token is pure headroom. It is never written into an image
+layer, and it is presented through a credential helper rather than a URL, so it
+cannot leak into the build log via a git error message.
+
+```bash
+export GITHUB_TOKEN="$(gh auth token)"     # or a PAT; put it in ~/.bashrc / ~/.zshrc
+```
+
+`build.sh` falls back to `GITHUB_PERSONAL_ACCESS_TOKEN` when `GITHUB_TOKEN` is
+unset. It reads both from the environment of the shell you launch the build
+from — so a token rotated in `gh` but stale in your profile quietly puts you back
+on the anonymous path.
+
+**Still optional.** With no token the clones are anonymous exactly as before and
+the build proceeds; nothing in this repo *requires* one (both `tools.d/` tools,
+`dtctl` and `dtmgd`, are public). Without it you are simply exposed to GitHub's
+anonymous throttling.
 
 See [Mounting an Obsidian vault](repos-and-mounts.md#mounting-an-obsidian-vault),
 [Mounting a specs repository](repos-and-mounts.md#mounting-a-specs-repository),

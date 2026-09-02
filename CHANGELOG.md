@@ -6,6 +6,80 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Added
+
+- **`REPOS_PATH`, so an in-container tool can find the repositories without
+  hardcoding the layout.** Forwarded into every container, defaulting to
+  `/workspace` — the umbrella everything the launcher attaches lands under: the
+  positional `[primary]`, every `REPOS` entry, every `EXTRA_MOUNTS` path.
+  Consumers should filter (e.g. for a `.git` directory) rather than treat every
+  entry as a repo, because `vault`/`specs`/`docs` and the `.agent-*` output dirs
+  share that umbrella. Distinct from `REPOS`, which selects *which* repo volumes
+  to attach.
+- **The default lives in `sandbox.sh`, deliberately not in `sandbox.env`.**
+  `sandbox.env` is written once by `project-init.sh` and `sync-to-projects.sh`
+  never overwrites it, so a default placed there would reach new projects and
+  silently miss every existing one. In code, it applies everywhere immediately
+  and the env files stay pure override — which is also what makes the ordinary
+  precedence (inline > `sandbox.local.env` > `sandbox.env`) work for free. The
+  `sandbox.local.env` template gains a commented example rather than a live key,
+  so no project pins a value that would outlive a future change to the default.
+
+### Changed
+
+- **`GITHUB_TOKEN` is now documented as strongly recommended for building**,
+  where it was previously described as "always an optional rate-limit
+  convenience, never a requirement". That was true of `tools.d/` and false of the
+  image as a whole: two layers run vendor installers that `git clone` from
+  github.com, and an anonymous clone GitHub chooses to throttle fails the build
+  with a 401 on a *public* repo. Documented in `AGENTS.md`, `README.md`, and a
+  new section in `docs/configuration.md`, including the quiet failure mode where
+  a token rotated in `gh` but stale in a shell profile silently reverts the build
+  to the anonymous path.
+
+### Fixed
+
+- **The two layers that clone from GitHub ran anonymous while a perfectly good
+  token sat unused on the host.** `build.sh` has passed `GITHUB_TOKEN` as the
+  `github_token` BuildKit secret for months, but only `install-tools.sh` ever
+  mounted it — so the nvm and pyenv bootstraps, which are the layers that
+  actually `git clone` from github.com, had no credentials at all. Anonymous git
+  traffic sits in GitHub's low-budget tier; when that tier throttles an IP the
+  build has nothing to fall back on. Both layers now mount the same secret and
+  present it if it is there.
+- **It stays optional, and that is asserted.** With no secret the clones are
+  anonymous exactly as before — this repo ships no private tool and the token
+  remains a rate-limit convenience, never a requirement. Verified by building a
+  secret-mounting layer with no secret passed: the mount is empty and the build
+  proceeds.
+- **The token is presented through a credential helper, never a URL.** The
+  obvious form, `url.https://x-access-token:$TOK@github.com/.insteadOf`, embeds
+  the secret in the remote URL — and git echoes remote URLs in some failure
+  messages, which would publish it into the build log, the one place a BuildKit
+  secret must never reach. `tests/test-build-fetch-retry.sh` refuses that form;
+  the assertion was seen failing against it.
+- **A bounded retry loop around each bootstrap, with a clean slate per attempt.**
+  Necessary but not sufficient on its own: run against the live condition at 3
+  attempts over 30s and again at 5 over ~150s, both failed every attempt. It is
+  kept because it is what makes a genuinely transient failure survivable, and
+  the reset was observed doing its job in a real build — clone 1 of 4 got
+  through, clone 2 took the 401, leaving `$PYENV_ROOT` populated.
+- **pyenv's reset is load-bearing for a stronger reason than nvm's, and the
+  difference is a trap.** `pyenv-installer` refuses to run at all when
+  `$PYENV_ROOT` exists — *"Can not proceed with installation. Kindly remove the
+  '…' directory first."*, exit 1, before it touches the network. So without
+  `rm -rf` a retry loop converts one failure into three deterministic ones.
+  And unlike nvm's, that reset must **not** be followed by `mkdir -p`: nvm's
+  `install.sh` needs its directory to exist, pyenv's exits 1 because it does, so
+  copying nvm's loop verbatim breaks pyenv every time. Both directions asserted.
+- **What the failure actually was, since the first diagnosis was wrong.** It
+  presents as `fatal: could not read Username for 'https://github.com'` — a 401
+  on a *public* repo. It is intermittent, not sustained: it cleared for about two
+  minutes mid-session and returned. It is not protocol negotiation (v0 and v2
+  both fail), and it is not a simple IP block — during one failing window `curl`
+  of the same `info/refs` URL returned 200 from the same container while `git`
+  got 401, and an authenticated clone succeeded where the anonymous one failed.
+
 ## v0.9.11 — 2026-09-02
 
 **A retry rule that stopped at the edge of the thing it was protecting.** v0.9.9
