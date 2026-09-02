@@ -285,7 +285,40 @@ hits="$(scan_string_guards "$TMP/plant-comment.sh")"
 # THE SWEEP. `find`, not `git ls-files`: an untracked script in the tree is still
 # a script someone can run, and this file must also work in the bash-floor
 # container and in a falsify-seeded tree, neither guaranteed to be a checkout.
-mapfile -t all_sh < <(find "$REPO_DIR" -name '*.sh' -not -path '*/.git/*' -type f 2>/dev/null | sort)
+#
+# EXCEPT A SYNCED PROJECT WORKING COPY, which is not source and cannot be fixed
+# by editing anything. `project-init.sh` puts a `.ai-containers/` beside a
+# project — including beside THIS repo, when it is registered against itself —
+# holding copies of AI_CONTAINERS_SHARED_FILES as of the release it last synced.
+# A copy that predates #218 therefore still carries the string compare, and it
+# reappears every time an older engine is synced, so a hit there is a report
+# about the copy's AGE, not about a fourth file acquiring the idiom. The remedy
+# is `./sync-to-projects.sh <project>`, never a source edit; the drift itself is
+# what `ai-containers-report.sh`'s per-project VERSION/SCHEMA columns exist to
+# show. Sweeping it makes this assertion fail on every machine that actually
+# runs containers from this checkout and pass in CI, which has no working copy —
+# green where it is cheap to be green, red where the developer is. Measured
+# 2026-09-02 on macOS: three hits, all in a v0.9.9 copy, none in the tree.
+tree_scripts() {   # <root> → every *.sh under it that this ratchet governs
+  find "$1" -name '*.sh' -type f \
+    -not -path '*/.git/*' \
+    -not -path '*/.ai-containers/*' 2>/dev/null | sort
+}
+
+# THE EXCLUSION IS DEMONSTRATED IN BOTH DIRECTIONS, because a path filter that
+# quietly matched too much would empty the sweep and report success.
+mkdir -p "$TMP/sweeproot/sub" "$TMP/sweeproot/.ai-containers"
+: > "$TMP/sweeproot/sub/real.sh"
+: > "$TMP/sweeproot/.ai-containers/synced-copy.sh"
+listed="$(tree_scripts "$TMP/sweeproot")"
+[[ "$listed" == *"sub/real.sh"* ]] \
+  && pass "the sweep still reaches an ordinary script anywhere under the tree" \
+  || fail "the sweep still reaches an ordinary script anywhere under the tree — it listed '$listed', so the exclusion below matches too much and the ratchet is empty"
+[[ "$listed" != *".ai-containers/synced-copy.sh"* ]] \
+  && pass "  … and skips a synced project working copy, whose age is not this file's subject" \
+  || fail "  … and skips a synced project working copy, whose age is not this file's subject — it listed '$listed'"
+
+mapfile -t all_sh < <(tree_scripts "$REPO_DIR")
 if (( ${#all_sh[@]} == 0 )); then
   printf 'SCAFFOLD-FAILED: found no *.sh under %s\n' "$REPO_DIR"
   exit 1
