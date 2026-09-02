@@ -2130,4 +2130,66 @@ while IFS= read -r rec; do
 done < <(grep -oE "printf '[A-Z]+\|" "$RUN" | sed "s/printf '//; s/|//" | sort -u)
 check "every record type the runner emits is documented in --help" "" "$undocumented"
 
+# ── A DIRECT CALLER MUST NOT LEAK THE ORACLE'S TEMP DIRECTORY ────────────────
+# falsify_run_oracle roots the oracle's TMPDIR at "$FR_SCRATCH/tmp/$token" so
+# whatever the oracle leaves goes when the run does. FR_SCRATCH is set only by
+# the RUN function and is declared EMPTY at the top of that file, so for a
+# DIRECT caller — a test that sources it to drive one oracle, which this file
+# and tests/test-falsify-historical.sh both are — that string was an ABSOLUTE
+# "/tmp/$token": it ignored the caller's TMPDIR and nothing removed it.
+#
+# MEASURED, not reasoned: 11 directories appeared in /tmp per hermetic suite run
+# (nine from test-falsify-historical.sh, which passes no label, plus the two
+# labelled ones this file's own F53 assertions create), and 513 had accumulated
+# in one developer's /tmp over three days. A suite that litters the machine it
+# runs on is invisible to every assertion that only reads what the suite PRINTS.
+#
+# TWO PROPERTIES, AND THEY ARE NOT THE SAME PROPERTY. Removing the fallback
+# while leaving the cleanup in place leaves NOTHING BEHIND — the directory is
+# created in the shared /tmp namespace and then deleted — so a check that only
+# looks at what survives the run reports the escape as fixed when it is not.
+# WHERE the oracle's TMPDIR was put is therefore observed FROM INSIDE THE
+# ORACLE, which is the only place it is visible while it still exists. That
+# placement is the F64 property this rooting exists for: two oracles must not
+# share one temp namespace.
+cat > "$FX/tests/test-fx-tmpdir.sh" <<'TD'
+#!/usr/bin/env bash
+set -uo pipefail
+# Reports where the harness put this oracle's TMPDIR, so the caller can assert
+# the PLACEMENT rather than infer it from what is left behind.
+printf 'PASS: tmpdir is %s\n' "${TMPDIR:-<unset>}"
+TD
+chmod +x "$FX/tests/test-fx-tmpdir.sh"
+
+leak_tmp="$TMP/leakcheck-tmpdir"
+mkdir -p "$leak_tmp"
+# A label unique to this assertion, so the /tmp check is an exact-name test
+# rather than a diff of /tmp, which on a shared machine races with every other
+# process on it.
+leak_label="leakcheck$$"
+rm -rf "/tmp/${leak_label}."* 2>/dev/null || true
+rm -f "$TMP/leak.log"
+( set +u
+  # shellcheck source=/dev/null
+  source "$RUN" >/dev/null 2>&1
+  FR_SCRATCH=""                 # exactly what a direct caller has
+  export TMPDIR="$leak_tmp"
+  falsify_run_oracle "$FX" "test-fx-tmpdir.sh" "$TMP/leak.log" 30 "$leak_label" ) >/dev/null 2>&1
+
+leak_seen="$(sed -n 's/.*PASS: tmpdir is //p' "$TMP/leak.log" 2>/dev/null | head -1)"
+if [[ -z "$leak_seen" ]]; then
+  fail "the oracle reported the TMPDIR it was given — it printed nothing, so the two assertions below would be vacuous"
+elif [[ "$leak_seen" == "$leak_tmp"/* ]]; then
+  pass "a direct falsify_run_oracle call roots the oracle's TMPDIR in the CALLER's TMPDIR"
+else
+  fail "a direct falsify_run_oracle call roots the oracle's TMPDIR in the CALLER's TMPDIR — it used '$leak_seen', so an empty FR_SCRATCH still makes it an absolute /tmp path shared with every other process"
+fi
+
+leak_left="$(find "$leak_tmp" -mindepth 1 -maxdepth 2 2>/dev/null | head -3)"
+leak_escaped="$(find /tmp -maxdepth 1 -name "${leak_label}.*" 2>/dev/null | head -3)"
+[[ -z "$leak_left" && -z "$leak_escaped" ]] \
+  && pass "  … and removes it when the oracle is done, leaving nothing in either place" \
+  || fail "  … and removes it when the oracle is done — left ${leak_left}${leak_escaped}, so a caller with no run scratch accumulates one directory per oracle"
+rm -rf "/tmp/${leak_label}."* 2>/dev/null || true
+
 printf '\n%d failure(s)\n' "$fails"; exit "$fails"
