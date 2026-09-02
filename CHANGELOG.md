@@ -42,6 +42,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the idiom cannot return. It runs its subjects against a scratch copy holding
   no `projects.conf`, because a broken `sync-to-projects.sh` guard would
   otherwise sync every registered project on the machine.
+- **…and that sweep then failed on any checkout that runs containers.** It swept
+  every `*.sh` under the repo, including the `.ai-containers/` working copy
+  `project-init.sh` puts beside a project — this repo included, when registered
+  against itself. That copy holds the shared files as of the release it last
+  synced, so a copy predating the fix above still carries the string compare it
+  forbids. Measured on macOS: 76 of 77 hermetic tests passed, the one failure
+  naming three hits, all in a v0.9.9 working copy and **none in the tree**. CI
+  has no working copy, so it was green there — green where that is cheap, red
+  where the developer is. A hit in a synced copy is a report about the copy's
+  **age**, fixable only by `./sync-to-projects.sh` and already visible in
+  `ai-containers-report.sh`'s per-project `VERSION`/`SCHEMA` columns, so the
+  sweep now skips `*/.ai-containers/*` — with the exclusion demonstrated in both
+  directions, since a filter matching too much would empty the ratchet and
+  report success.
 
 ## v0.9.9 — 2026-08-31
 
