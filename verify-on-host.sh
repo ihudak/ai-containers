@@ -423,6 +423,101 @@ if [[ -n "$sl_tmp" && -d "$sl_tmp" ]]; then
 fi
 fi
 
+# ── Phase 7: lint ────────────────────────────────────────────────────────────────
+# Mirrors .github/workflows/hermetic-checks.yml's `lint` job. shellcheck runs as a GATE
+# both here and in CI: Task 9 (increment 4) cleared the pre-existing findings
+# backlog — real defects fixed, everything else suppressed at the site with a
+# reason — and dropped hermetic-checks.yml's `|| true`, so the two now agree instead of
+# this phase being the only one that gates.
+# ── EVERY script this phase must examine ──────────────────────────────────────
+# TRACKED, plus UNTRACKED-AND-NOT-IGNORED. `git ls-files '*.sh'` alone lists the
+# INDEX, so a script you have just written is invisible until `git add` — and
+# the local gate then reports clean over a file it never read, the author's
+# first feedback being a red CI job. That is not hypothetical: it happened on
+# the very PR whose subject was "the lint gate's file list silently omits
+# files" (backlog F40, then F42).
+#
+# `--exclude-standard` honours .gitignore, so what this adds is exactly the
+# files you are about to commit — not a developer's ignored scratch.
+#
+# CI IS DELIBERATELY NOT CHANGED. It checks out a branch where everything is
+# committed, so the two lists are identical there; this can only ever differ on
+# a developer's machine, which is where the surprise was. tests/bash-dialect-lint.sh
+# keeps its own tracked-only default for exactly that reason and is handed this
+# list explicitly instead.
+vh_tracked_scripts()   { ( cd "$REPO_ROOT" 2>/dev/null && git ls-files '*.sh' 2>/dev/null ); }
+vh_untracked_scripts() { ( cd "$REPO_ROOT" 2>/dev/null && git ls-files --others --exclude-standard '*.sh' 2>/dev/null ); }
+vh_all_scripts()       { { vh_tracked_scripts; vh_untracked_scripts; } | sort -u; }
+
+if want_phase 7; then
+say "PHASE 7 — lint (bash -n, dialect floor, shellcheck)"
+n_parsed=0; parse_rc=0
+while IFS= read -r f; do
+  n_parsed=$((n_parsed + 1))
+  bash -n "$REPO_ROOT/$f" 2>/dev/null || { sub "PARSE ERROR: $f"; parse_rc=1; }
+done < <(vh_all_scripts)
+n_untracked="$(vh_untracked_scripts | grep -c . )"
+if [[ "$n_parsed" -eq 0 ]]; then
+  phase_fail 7 "bash -n parsed no files — the pathspec matched nothing"
+else
+  sub "parsed $n_parsed script(s)"
+  # SAY when the list included files git does not track yet. Silence here is
+  # what made the old behaviour a surprise rather than a policy: a reader could
+  # not tell whether a new script had been checked or skipped.
+  if (( n_untracked > 0 )); then
+    sub "  including $n_untracked not yet tracked by git:"
+    vh_untracked_scripts | while IFS= read -r u; do sub "    $u"; done
+    sub "  (they are linted here and in CI only once committed; .gitignore'd files are never included)"
+  fi
+  [[ "$parse_rc" -eq 0 ]] || phase_fail 7 "bash -n found a parse error"
+fi
+
+if [[ -f "$TESTS_DIR/bash-dialect-lint.sh" ]]; then
+  # Handed the SAME list the other two checks use, absolute, so all three agree
+  # on what "every script" means. Its own default stays tracked-only for CI.
+  vh_dl_files=()
+  while IFS= read -r f; do vh_dl_files+=("$REPO_ROOT/$f"); done < <(vh_all_scripts)
+  bash "$TESTS_DIR/bash-dialect-lint.sh" ${vh_dl_files[@]+"${vh_dl_files[@]}"} 2>&1 | sed "s/^/$LOG_PREFIX   /"
+  d_rc="${PIPESTATUS[0]:-1}"
+  [[ "$d_rc" -eq 0 ]] || phase_fail 7 "bash dialect lint exited $d_rc"
+  # Both of these are silent when clean, so a phase that ran them and a phase
+  # that skipped them looked identical in the log. In a project whose recurring
+  # bug is checks reporting success without doing anything, "passed silently" is
+  # not good enough evidence — say what ran and over how much.
+  sub "dialect lint exit: $d_rc"
+else
+  phase_fail 7 "bash-dialect-lint.sh not found — the dialect floor was not checked"
+fi
+
+if command -v shellcheck >/dev/null 2>&1; then
+  # -r/--no-run-if-empty: GNU xargs runs the command ONCE even when its input is
+  # empty. shellcheck with zero file arguments does not read stdin — it prints
+  # "No files specified." and exits 3, which xargs reports as 123 — so this
+  # phase would record a SECOND phase_fail for the one root cause the bash -n
+  # branch above already reported ("RESULT: FAILED — 2 phase(s)" for a single
+  # problem). BSD xargs is no-run-if-empty by default and does not accept -r
+  # before macOS 13, so probe for it rather than assuming.
+  xargs_r=()
+  printf '' | xargs -r true >/dev/null 2>&1 && xargs_r=(-r)
+  ( cd "$REPO_ROOT" && vh_all_scripts | xargs "${xargs_r[@]}" shellcheck -S warning -e SC1091 ) \
+    2>&1 | sed "s/^/$LOG_PREFIX   /"
+  sc_rc="${PIPESTATUS[0]:-1}"
+  [[ "$sc_rc" -eq 0 ]] || phase_fail 7 "shellcheck exited $sc_rc"
+  # Say WHICH shellcheck, for the same reason the CI step does. This is the one
+  # place the two layers genuinely differ: CI takes the version its pinned
+  # runner image ships (ubuntu-24.04 -> 0.9.0), and this host takes whatever is
+  # installed (Homebrew ships current). Measured 2026-08-19 over the same 132
+  # scripts, 0.9.0 and 0.11.0 both returned 0 — so they agree on this tree, and
+  # the exposure is a finding that exists in one layer and not the other.
+  # Reported, not asserted: pinning a number here would be a claim that drifts
+  # from the runner image, and failing on a mismatch would break every Mac.
+  sc_ver="$(shellcheck --version 2>/dev/null | awk '/^version:/ { print $2 }')"
+  sub "shellcheck exit: $sc_rc over $( vh_all_scripts | grep -c . ) script(s), version ${sc_ver:-unknown}"
+else
+  phase_fail 7 "shellcheck not installed — install it (brew install shellcheck) or deselect phase 7"
+fi
+fi
+
 # ── Phase 6: the falsify mutation tier ───────────────────────────────────────────
 # Mirrors .github/workflows/hermetic-checks.yml's `falsify` job. Phase 6 was
 # RESERVED for this increment and deliberately kept out of VALID_PHASES until it
@@ -635,101 +730,6 @@ if (( fl_keep )); then
   sub "  remove it."
 else
   rm -f "$fl_run"
-fi
-fi
-
-# ── Phase 7: lint ────────────────────────────────────────────────────────────────
-# Mirrors .github/workflows/hermetic-checks.yml's `lint` job. shellcheck runs as a GATE
-# both here and in CI: Task 9 (increment 4) cleared the pre-existing findings
-# backlog — real defects fixed, everything else suppressed at the site with a
-# reason — and dropped hermetic-checks.yml's `|| true`, so the two now agree instead of
-# this phase being the only one that gates.
-# ── EVERY script this phase must examine ──────────────────────────────────────
-# TRACKED, plus UNTRACKED-AND-NOT-IGNORED. `git ls-files '*.sh'` alone lists the
-# INDEX, so a script you have just written is invisible until `git add` — and
-# the local gate then reports clean over a file it never read, the author's
-# first feedback being a red CI job. That is not hypothetical: it happened on
-# the very PR whose subject was "the lint gate's file list silently omits
-# files" (backlog F40, then F42).
-#
-# `--exclude-standard` honours .gitignore, so what this adds is exactly the
-# files you are about to commit — not a developer's ignored scratch.
-#
-# CI IS DELIBERATELY NOT CHANGED. It checks out a branch where everything is
-# committed, so the two lists are identical there; this can only ever differ on
-# a developer's machine, which is where the surprise was. tests/bash-dialect-lint.sh
-# keeps its own tracked-only default for exactly that reason and is handed this
-# list explicitly instead.
-vh_tracked_scripts()   { ( cd "$REPO_ROOT" 2>/dev/null && git ls-files '*.sh' 2>/dev/null ); }
-vh_untracked_scripts() { ( cd "$REPO_ROOT" 2>/dev/null && git ls-files --others --exclude-standard '*.sh' 2>/dev/null ); }
-vh_all_scripts()       { { vh_tracked_scripts; vh_untracked_scripts; } | sort -u; }
-
-if want_phase 7; then
-say "PHASE 7 — lint (bash -n, dialect floor, shellcheck)"
-n_parsed=0; parse_rc=0
-while IFS= read -r f; do
-  n_parsed=$((n_parsed + 1))
-  bash -n "$REPO_ROOT/$f" 2>/dev/null || { sub "PARSE ERROR: $f"; parse_rc=1; }
-done < <(vh_all_scripts)
-n_untracked="$(vh_untracked_scripts | grep -c . )"
-if [[ "$n_parsed" -eq 0 ]]; then
-  phase_fail 7 "bash -n parsed no files — the pathspec matched nothing"
-else
-  sub "parsed $n_parsed script(s)"
-  # SAY when the list included files git does not track yet. Silence here is
-  # what made the old behaviour a surprise rather than a policy: a reader could
-  # not tell whether a new script had been checked or skipped.
-  if (( n_untracked > 0 )); then
-    sub "  including $n_untracked not yet tracked by git:"
-    vh_untracked_scripts | while IFS= read -r u; do sub "    $u"; done
-    sub "  (they are linted here and in CI only once committed; .gitignore'd files are never included)"
-  fi
-  [[ "$parse_rc" -eq 0 ]] || phase_fail 7 "bash -n found a parse error"
-fi
-
-if [[ -f "$TESTS_DIR/bash-dialect-lint.sh" ]]; then
-  # Handed the SAME list the other two checks use, absolute, so all three agree
-  # on what "every script" means. Its own default stays tracked-only for CI.
-  vh_dl_files=()
-  while IFS= read -r f; do vh_dl_files+=("$REPO_ROOT/$f"); done < <(vh_all_scripts)
-  bash "$TESTS_DIR/bash-dialect-lint.sh" ${vh_dl_files[@]+"${vh_dl_files[@]}"} 2>&1 | sed "s/^/$LOG_PREFIX   /"
-  d_rc="${PIPESTATUS[0]:-1}"
-  [[ "$d_rc" -eq 0 ]] || phase_fail 7 "bash dialect lint exited $d_rc"
-  # Both of these are silent when clean, so a phase that ran them and a phase
-  # that skipped them looked identical in the log. In a project whose recurring
-  # bug is checks reporting success without doing anything, "passed silently" is
-  # not good enough evidence — say what ran and over how much.
-  sub "dialect lint exit: $d_rc"
-else
-  phase_fail 7 "bash-dialect-lint.sh not found — the dialect floor was not checked"
-fi
-
-if command -v shellcheck >/dev/null 2>&1; then
-  # -r/--no-run-if-empty: GNU xargs runs the command ONCE even when its input is
-  # empty. shellcheck with zero file arguments does not read stdin — it prints
-  # "No files specified." and exits 3, which xargs reports as 123 — so this
-  # phase would record a SECOND phase_fail for the one root cause the bash -n
-  # branch above already reported ("RESULT: FAILED — 2 phase(s)" for a single
-  # problem). BSD xargs is no-run-if-empty by default and does not accept -r
-  # before macOS 13, so probe for it rather than assuming.
-  xargs_r=()
-  printf '' | xargs -r true >/dev/null 2>&1 && xargs_r=(-r)
-  ( cd "$REPO_ROOT" && vh_all_scripts | xargs "${xargs_r[@]}" shellcheck -S warning -e SC1091 ) \
-    2>&1 | sed "s/^/$LOG_PREFIX   /"
-  sc_rc="${PIPESTATUS[0]:-1}"
-  [[ "$sc_rc" -eq 0 ]] || phase_fail 7 "shellcheck exited $sc_rc"
-  # Say WHICH shellcheck, for the same reason the CI step does. This is the one
-  # place the two layers genuinely differ: CI takes the version its pinned
-  # runner image ships (ubuntu-24.04 -> 0.9.0), and this host takes whatever is
-  # installed (Homebrew ships current). Measured 2026-08-19 over the same 132
-  # scripts, 0.9.0 and 0.11.0 both returned 0 — so they agree on this tree, and
-  # the exposure is a finding that exists in one layer and not the other.
-  # Reported, not asserted: pinning a number here would be a claim that drifts
-  # from the runner image, and failing on a mismatch would break every Mac.
-  sc_ver="$(shellcheck --version 2>/dev/null | awk '/^version:/ { print $2 }')"
-  sub "shellcheck exit: $sc_rc over $( vh_all_scripts | grep -c . ) script(s), version ${sc_ver:-unknown}"
-else
-  phase_fail 7 "shellcheck not installed — install it (brew install shellcheck) or deselect phase 7"
 fi
 fi
 
