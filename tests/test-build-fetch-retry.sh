@@ -196,6 +196,44 @@ else
   fail "  … and it found all three of them rather than none (found $n_good)"
 fi
 
+# ── AN INSTALLER'S OWN FETCHES ARE NOT COVERED BY THE RULE ABOVE ─────────────
+# Everything above asks whether each `curl` can fail and can retry. It cannot ask
+# anything about what the downloaded script then does, and six vendor installers
+# run in this Dockerfile (`bash /tmp/<name>.sh`) that each fetch again from the
+# network on their own terms.
+#
+# nvm is the one with recorded failures, twice. Its install.sh defaults to
+# install_nvm_from_git, a bare `git clone --depth=1` against github.com with no
+# retry — and on 2026-09-02 GitHub answered an unauthenticated clone of a PUBLIC
+# repo with 401 (`could not read Username for 'https://github.com'`, its
+# rate-limiting shape), which failed all three image variants and every one of
+# the 36 integration cases. The identical build succeeded minutes later with
+# nothing changed. So the retry has to wrap the INSTALLER, not just its download.
+#
+# ASSERTED NARROWLY AND ON PURPOSE. This checks the one installer that has
+# actually failed, rather than demanding a retry loop around all six: the other
+# five have no recorded failure, and each needs its own idempotency argument for
+# what a second attempt does to a half-finished install. Widening this is a
+# change that wants evidence, and the evidence would be a failure.
+nvm_run="$(awk '/^RUN mkdir -p "\$NVM_DIR"/{f=1} f{print} f&&/ln -sf .*\/npx \/usr\/local\/bin\/npx/{exit}' "$REPO_DIR/Dockerfile")"
+if [[ -z "$nvm_run" ]]; then
+  fail "the nvm bootstrap RUN block was found — it is not where this check looks, so the assertions below are vacuous"
+else
+  pass "the nvm bootstrap RUN block was found"
+  if grep -q 'for attempt in' <<< "$nvm_run"; then
+    pass "  … and the installer runs inside a retry loop, not just its download"
+  else
+    fail "  … and the installer runs inside a retry loop, not just its download — nvm's install.sh git-clones from github.com with no retry of its own, so a rate-limited clone fails the whole build (measured 2026-09-02)"
+  fi
+  # A retry over the previous attempt's debris is not a retry: install.sh takes
+  # its "already installed" branch when $NVM_DIR/.git survives.
+  if grep -q 'rm -rf "\$NVM_DIR"' <<< "$nvm_run"; then
+    pass "  … and each attempt starts from a clean \$NVM_DIR"
+  else
+    fail "  … and each attempt starts from a clean \$NVM_DIR — without the reset, install.sh finds a half-finished clone and fetches into it instead of re-cloning"
+  fi
+fi
+
 # ── 2. the real files ────────────────────────────────────────────────────────
 declare -a targets=("$REPO_DIR/Dockerfile" "$REPO_DIR/install-tools.sh")
 total=0

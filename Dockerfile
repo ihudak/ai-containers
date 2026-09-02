@@ -55,13 +55,44 @@ ARG NVM_VERSION=v0.40.7
 # `-o` then `bash FILE`, not `curl | bash`: a pipe hands bash whatever arrived,
 # so a TRUNCATED download executes its prefix and reports success. With a file,
 # a short read is curl's failure and the build stops there.
+# RETRY THE INSTALLER, NOT ONLY ITS DOWNLOAD. The curl below is retried; what it
+# downloads is not. nvm's install.sh defaults to install_nvm_from_git, which runs
+# a bare `git clone --depth=1` against github.com with no retry of its own.
+#
+# Measured 2026-09-02, not reasoned: `fatal: could not read Username for
+# 'https://github.com'` — GitHub answering an unauthenticated clone of a PUBLIC
+# repo with 401, which is what it does when rate-limiting an IP — failed all
+# three image variants and therefore all 36 integration cases, and the identical
+# build succeeded on the next attempt with nothing changed. The v0.40.6 incident
+# was the same class reached from the other side.
+#
+# v0.9.9 decided a build-time fetch must survive a transient failure;
+# tests/test-build-fetch-retry.sh enforces that for every `curl` and CANNOT see a
+# fetch a vendor's own installer makes. This loop is where that gap is closed for
+# the one installer with recorded failures.
+#
+# A CLEAN SLATE PER ATTEMPT is load-bearing: a half-finished clone leaves
+# $NVM_DIR/.git behind, and install.sh then takes its "already installed" branch
+# and fetches into a repository that may be broken — so a retry over the debris
+# of the previous attempt is not a retry. `nvm install --lts` sits inside the
+# loop for the same reason the clone does (it downloads from nodejs.org) and is
+# idempotent given that reset.
 RUN mkdir -p "$NVM_DIR" && \
     curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors \
       -o /tmp/nvm-install.sh \
       "https://raw.githubusercontent.com/nvm-sh/nvm/${NVM_VERSION}/install.sh" && \
-    PROFILE=/dev/null bash /tmp/nvm-install.sh && rm -f /tmp/nvm-install.sh && \
-    # Always install latest LTS
-    bash -c "source $NVM_DIR/nvm.sh && nvm install --lts && nvm alias default 'lts/*'" && \
+    for attempt in 1 2 3; do \
+      rm -rf "$NVM_DIR"; mkdir -p "$NVM_DIR"; \
+      if PROFILE=/dev/null bash /tmp/nvm-install.sh && \
+         bash -c "source $NVM_DIR/nvm.sh && nvm install --lts && nvm alias default 'lts/*'"; then \
+        break; \
+      fi; \
+      if [ "$attempt" = 3 ]; then \
+        echo "nvm bootstrap failed after 3 attempts" >&2; exit 1; \
+      fi; \
+      sleep $((attempt * 10)); \
+    done && \
+    rm -f /tmp/nvm-install.sh && \
     # Install any extra versions requested
     if [ -n "$NODE_EXTRA_VERSIONS" ]; then \
       for ver in $NODE_EXTRA_VERSIONS; do \
