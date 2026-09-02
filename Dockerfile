@@ -77,20 +77,27 @@ ARG NVM_VERSION=v0.40.7
 # of the previous attempt is not a retry. `nvm install --lts` sits inside the
 # loop for the same reason the clone does (it downloads from nodejs.org) and is
 # idempotent given that reset.
-RUN mkdir -p "$NVM_DIR" && \
+RUN --mount=type=secret,id=github_token \
+    if [ -s /run/secrets/github_token ]; then \
+      GH_TOKEN="$(cat /run/secrets/github_token)"; export GH_TOKEN; \
+      export GIT_CONFIG_COUNT=1 \
+        GIT_CONFIG_KEY_0="credential.https://github.com.helper" \
+        GIT_CONFIG_VALUE_0='!f() { echo username=x-access-token; echo "password=$GH_TOKEN"; }; f'; \
+    fi; \
+    mkdir -p "$NVM_DIR" && \
     curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors \
       -o /tmp/nvm-install.sh \
       "https://raw.githubusercontent.com/nvm-sh/nvm/${NVM_VERSION}/install.sh" && \
-    for attempt in 1 2 3; do \
+    for attempt in 1 2 3 4 5; do \
       rm -rf "$NVM_DIR"; mkdir -p "$NVM_DIR"; \
       if PROFILE=/dev/null bash /tmp/nvm-install.sh && \
          bash -c "source $NVM_DIR/nvm.sh && nvm install --lts && nvm alias default 'lts/*'"; then \
         break; \
       fi; \
-      if [ "$attempt" = 3 ]; then \
-        echo "nvm bootstrap failed after 3 attempts" >&2; exit 1; \
+      if [ "$attempt" = 5 ]; then \
+        echo "nvm bootstrap failed after 5 attempts" >&2; exit 1; \
       fi; \
-      sleep $((attempt * 10)); \
+      sleep $((attempt * 15)); \
     done && \
     rm -f /tmp/nvm-install.sh && \
     # Install any extra versions requested
@@ -198,13 +205,79 @@ RUN if [ "$INSTALL_SDKMAN" = "1" ]; then \
 ARG PYTHON_EXTRA_VERSIONS=""
 ENV PYENV_ROOT=/opt/pyenv
 ENV PATH="$PYENV_ROOT/bin:$PYENV_ROOT/shims:$PATH"
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# RETRY THE INSTALLER, NOT ONLY ITS DOWNLOAD — the second installer to need it.
+# The curl below is retried; what it downloads is not. `https://pyenv.run` is a
+# 270-byte SHIM whose entire body is `curl -s -S -L .../pyenv-installer | bash`,
+# and that real installer runs FOUR bare `git clone`s — pyenv, pyenv-doctor,
+# pyenv-update, pyenv-virtualenv — none of them retried.
+#
+# Measured 2026-09-02, not reasoned: the first of those four answered `fatal:
+# could not read Username for 'https://github.com'` — GitHub answering an
+# unauthenticated clone of a PUBLIC repo with 401, which is what it does when
+# rate-limiting an IP — and failed the build here. That is the same window and
+# the same shape that took the nvm layer above; see its block for why the rule
+# in tests/test-build-fetch-retry.sh cannot see a fetch a vendor installer makes.
+#
+# A CLEAN SLATE PER ATTEMPT IS LOAD-BEARING, for a STRONGER reason than nvm's.
+# pyenv-installer refuses to run at all when $PYENV_ROOT exists — "Can not
+# proceed with installation. Kindly remove the '...' directory first.", exit 1,
+# before it touches the network. With four clones, a partially populated
+# $PYENV_ROOT is the LIKELY shape of a rate-limited failure rather than an edge
+# case: clone 1 succeeds, clone 3 takes the 401, the directory is left behind.
+# Without the reset, attempts 2 and 3 would then fail deterministically — a loop
+# that converts one transient 401 into three.
+#
+# THE TOKEN IS THE HEADROOM; THE LOOP ONLY BUYS TIME. Both clone layers mount the
+# same `github_token` BuildKit secret install-tools.sh already uses, and configure
+# git to present it when it is there. It stays OPTIONAL — with no secret the
+# clones are anonymous exactly as before, so this repo's "GITHUB_TOKEN is a
+# rate-limit convenience, never a requirement" position is unchanged.
+#
+# IT IS A CREDENTIAL HELPER, NOT A URL REWRITE, on purpose: an
+# `url.https://x-access-token:$TOK@github.com/.insteadOf` rewrite puts the token
+# INSIDE the remote URL, and git prints that URL in some failure messages — which
+# would publish the token into the build log, the one place a BuildKit secret is
+# meant never to reach. The helper keeps it in env only. Env set inside a RUN
+# does not persist into the image, and a secret mount is not a layer.
+#
+# THE BUDGET IS 5 ATTEMPTS OVER ~150s OF BACKOFF, AND THAT NUMBER IS MEASURED.
+# The first version of this loop was 3 attempts over 30s, copied from nvm's. It
+# ran against the real window on 2026-09-02 and FAILED ALL THREE: 401 at t=35s,
+# t=45s and t=65s of the build, ~31s apart end to end. The identical clone
+# succeeded 119s later, from the same host and the same daemon, inside a
+# `docker build` — so the window outlasted a 30s budget and had cleared within
+# the following two minutes. A retry budget shorter than the transient it exists
+# to survive is a loop that only makes the failure take longer to arrive, which
+# is what 3x10s was. nvm's loop carries the same budget for the same reason and
+# was widened with this one; its numbers had never met a real window.
+#
+# NOTE THE ASYMMETRY WITH NVM: that loop resets with `rm -rf` THEN `mkdir -p`,
+# because install.sh needs $NVM_DIR to exist. Here the mkdir would trip the very
+# refusal above, so there must not be one. The guard asserts both directions.
+RUN --mount=type=secret,id=github_token \
+    if [ -s /run/secrets/github_token ]; then \
+      GH_TOKEN="$(cat /run/secrets/github_token)"; export GH_TOKEN; \
+      export GIT_CONFIG_COUNT=1 \
+        GIT_CONFIG_KEY_0="credential.https://github.com.helper" \
+        GIT_CONFIG_VALUE_0='!f() { echo username=x-access-token; echo "password=$GH_TOKEN"; }; f'; \
+    fi; \
+    apt-get update && apt-get install -y --no-install-recommends \
       build-essential libssl-dev zlib1g-dev libbz2-dev libreadline-dev \
       libsqlite3-dev libncursesw5-dev xz-utils tk-dev libxml2-dev \
       libxmlsec1-dev libffi-dev liblzma-dev && \
     rm -rf /var/lib/apt/lists/* && \
     curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors -o /tmp/pyenv.sh https://pyenv.run && \
-    PYENV_ROOT="$PYENV_ROOT" bash /tmp/pyenv.sh && rm -f /tmp/pyenv.sh && \
+    for attempt in 1 2 3 4 5; do \
+      rm -rf "$PYENV_ROOT"; \
+      if PYENV_ROOT="$PYENV_ROOT" bash /tmp/pyenv.sh; then \
+        break; \
+      fi; \
+      if [ "$attempt" = 5 ]; then \
+        echo "pyenv bootstrap failed after 5 attempts" >&2; exit 1; \
+      fi; \
+      sleep $((attempt * 15)); \
+    done && \
+    rm -f /tmp/pyenv.sh && \
     chmod -R a+rX "$PYENV_ROOT" && \
     # Always install latest stable Python (sort -V for correct ordering with 3.20+)
     latest=$("$PYENV_ROOT/bin/pyenv" install --list | grep -E '^\s+3\.[0-9]+\.[0-9]+$' | tr -d ' ' | sort -V | tail -1) && \

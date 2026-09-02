@@ -406,6 +406,7 @@ fi
 #   REPOS="app:rw lib:ro"                  # named-volume repos (./repo.sh add; macOS perf)
 #   SANDBOX_WORKDIR=@app                   # named-volume working dir (macOS)
 #   AI_CONTAINER_GROUP_INIT=from:host      # one-time group bootstrap: clean|from:host|from:<group>
+#   REPOS_PATH=/workspace                  # where in-container tools look for repos (default /workspace)
 #
 # SANDBOX_MODE overrides the portable default (currently "open" in sandbox.env). Options:
 #   restricted  firewall enabled, NET_ADMIN/NET_RAW dropped from the agent shell
