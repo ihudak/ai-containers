@@ -205,11 +205,24 @@ RUN if [ "$INSTALL_SDKMAN" = "1" ]; then \
 ARG PYTHON_EXTRA_VERSIONS=""
 ENV PYENV_ROOT=/opt/pyenv
 ENV PATH="$PYENV_ROOT/bin:$PYENV_ROOT/shims:$PATH"
+# NOT `https://pyenv.run`, AND THAT IS THE POINT. pyenv.run is a 270-byte SHIM
+# whose entire body is `curl -s -S -L .../pyenv-installer | bash` — so fetching
+# it with `-o` obeyed this file's own rule (stated at the nvm layer: "`-o` then
+# `bash FILE`, not `curl | bash`") for the stub, and then broke it for the 2850
+# bytes that matter. That inner curl carries no `-f` and no `--retry`, and runs
+# in a shell with no `pipefail`, so its exit status is discarded outright.
+#
+# TRACED, NOT ASSUMED: on a mid-transfer reset curl exits 18 while bash has
+# ALREADY executed the prefix, and the pipeline reports bash's status. The
+# installer's last four statements are its four `checkout` calls, so a
+# truncation after the first yields pyenv with no plugins and EXIT 0 — a
+# silently broken image rather than a failed build. The URL below is the one
+# pyenv.run resolves to, so this is the same installer, not a new dependency;
+# if pyenv moves it, `-f` turns that into a loud 404 instead.
+#
 # RETRY THE INSTALLER, NOT ONLY ITS DOWNLOAD — the second installer to need it.
-# The curl below is retried; what it downloads is not. `https://pyenv.run` is a
-# 270-byte SHIM whose entire body is `curl -s -S -L .../pyenv-installer | bash`,
-# and that real installer runs FOUR bare `git clone`s — pyenv, pyenv-doctor,
-# pyenv-update, pyenv-virtualenv — none of them retried.
+# The installer runs FOUR bare `git clone`s — pyenv, pyenv-doctor, pyenv-update,
+# pyenv-virtualenv — none of them retried.
 #
 # Measured 2026-09-02, not reasoned: the first of those four answered `fatal:
 # could not read Username for 'https://github.com'` — GitHub answering an
@@ -266,7 +279,8 @@ RUN --mount=type=secret,id=github_token \
       libsqlite3-dev libncursesw5-dev xz-utils tk-dev libxml2-dev \
       libxmlsec1-dev libffi-dev liblzma-dev && \
     rm -rf /var/lib/apt/lists/* && \
-    curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors -o /tmp/pyenv.sh https://pyenv.run && \
+    curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors -o /tmp/pyenv.sh \
+      https://raw.githubusercontent.com/pyenv/pyenv-installer/master/bin/pyenv-installer && \
     for attempt in 1 2 3 4 5; do \
       rm -rf "$PYENV_ROOT"; \
       if PYENV_ROOT="$PYENV_ROOT" bash /tmp/pyenv.sh; then \

@@ -314,6 +314,66 @@ for layer in nvm:"$nvm_run" pyenv:"$pyenv_run"; do
   fi
 done
 
+# ── A DOWNLOADED SCRIPT MUST NOT BE PIPED INTO A SHELL ───────────────────────
+# The Dockerfile states this rule itself, at the nvm layer: "`-o` then
+# `bash FILE`, not `curl | bash`: a pipe hands bash whatever arrived, so a
+# TRUNCATED download executes its prefix and reports success. With a file, a
+# short read is curl's failure and the build stops there."
+#
+# THE PYENV LAYER OBEYED IT FOR A 270-BYTE STUB AND BROKE IT FOR THE REAL
+# INSTALLER. `https://pyenv.run` is not the installer; its entire body is
+#   index_main() { set -e; curl -s -S -L .../pyenv-installer | bash; }
+# so `-o /tmp/pyenv.sh` saved the shim to a file and the shim then piped the
+# 2850-byte installer straight into bash — with no `-f`, no `--retry`, and in a
+# shell with no `pipefail`, so curl's exit status is discarded entirely.
+#
+# WHAT THAT COSTS, traced rather than assumed: on a mid-transfer reset curl
+# exits 18 while bash has ALREADY executed the prefix, and the pipeline reports
+# bash's status. The installer's last four statements are its four `checkout`
+# calls, so a truncation after the first yields pyenv with no plugins and
+# EXIT 0 — a silently, subtly broken image rather than a failed build.
+#
+# The fix is the one the nvm layer already uses in this same file: fetch the
+# installer itself with `-o` + `--retry` and run it as `bash FILE`. Fetching the
+# raw URL is not a new dependency — it is the URL pyenv.run resolves to.
+if grep -q 'pyenv\.run' <<< "$(grep -vE '^[[:space:]]*#' <<< "$pyenv_run")"; then
+  fail "the pyenv layer does not fetch pyenv.run — that URL is a shim whose whole body is \`curl … | bash\`, so the real installer arrives through a pipe and a truncated one executes its prefix and reports success"
+else
+  pass "the pyenv layer fetches the installer itself, not the pyenv.run shim"
+fi
+
+# The direct form of the same defect, in our own files. Neither has ever had one;
+# this refuses the shape rather than waiting for it.
+#
+# IT NEEDS ITS OWN SCAN, and that is the whole point. `fetch_sites` ends every
+# segment at the first `&& || | ;`, because the flags after that belong to the
+# NEXT command — so a pipe is exactly what it throws away, and a check built on
+# it can never fire. That version was written, passed, and was found vacuous
+# only by planting a `curl … | bash` and watching it stay green.
+#
+# So: join continuations (as Docker does), drop whole-line comments (this file's
+# rules are DISCUSSED in prose right above), and look for a curl whose pipeline
+# reaches a shell. The boundary matters — `| shasum` starts with "sh" and is not
+# a shell; the real pipes in these files go to tar, dd and gpg.
+pipe_hits=0
+for t in "$REPO_DIR/Dockerfile" "$REPO_DIR/install-tools.sh"; do
+  logical=""; lineno=0; origin=0
+  while IFS= read -r raw || [[ -n "$raw" ]]; do
+    lineno=$((lineno + 1))
+    [[ "$raw" =~ ^[[:space:]]*# ]] && continue
+    [[ -z "$logical" ]] && origin="$lineno"
+    logical="${logical}${raw%\\} "
+    [[ "$raw" == *\\ ]] && continue
+    if [[ "$logical " =~ curl[^\|]*\|[[:space:]]*(ba)?sh[[:space:]] ]]; then
+      printf 'FAIL: %s:%s pipes a fetch into a shell — a truncated download executes its prefix and reports success\n' \
+        "${t##*/}" "$origin"
+      pipe_hits=$((pipe_hits + 1)); fails=$((fails + 1))
+    fi
+    logical=""
+  done < "$t"
+done
+(( pipe_hits == 0 )) && pass "no fetch in either build file pipes into a shell interpreter"
+
 # ── 2. the real files ────────────────────────────────────────────────────────
 declare -a targets=("$REPO_DIR/Dockerfile" "$REPO_DIR/install-tools.sh")
 total=0
