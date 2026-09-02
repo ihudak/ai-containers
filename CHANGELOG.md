@@ -8,6 +8,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The new pyenv guard's extractor never terminated, so its strongest assertion
+  could not fail.** `tests/test-build-fetch-retry.sh` cuts each vendor-installer
+  layer out of the `Dockerfile` between a start anchor and an end anchor, then
+  greps what it cut. pyenv's end anchor was written `uvx \/usr\/local\/bin\/uvx$`
+  and the line it targets is `ln -sf "$PYENV_ROOT/shims/uvx" /usr/local/bin/uvx`
+  — the **quote** between the two `uvx`es means it never matched, awk ran to EOF,
+  and "the pyenv layer" became the whole rest of the file: **501 lines instead of
+  105**, including `install-tools.sh`'s own `RUN`, which mounts the same
+  `github_token` secret. So *"the pyenv clone layer mounts the secret"* passed
+  with that mount **deleted from the pyenv layer** — demonstrated, not inferred.
+- **Found-too-much is now its own verdict, separate from found-nothing.** The
+  `-z` guard each block carried catches only a drifted *start* anchor; the half
+  that actually broke was invisible to it. `awk` now prints a sentinel on the
+  line it exits at, and a block that reaches EOF without one fails by name
+  instead of silently widening to swallow every later layer. Both blocks — nvm
+  and pyenv — are extracted and checked through the one helper, so neither can
+  regain the hole alone. All three failure shapes were demonstrated: the deleted
+  secret mount, a drifted end anchor, and a drifted start anchor.
+
 - **The pyenv layer downloaded a shim that piped the real installer into `bash`.**
   This Dockerfile states the rule at its nvm layer — *"`-o` then `bash FILE`, not
   `curl | bash`: a pipe hands bash whatever arrived, so a TRUNCATED download
@@ -82,7 +101,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   secret-mounting layer with no secret passed: the mount is empty and the build
   proceeds.
 - **The token is presented through a credential helper, never a URL.** The
-  obvious form, `url.https://x-access-token:$TOK@github.com/.insteadOf`, embeds
+  obvious form — an `insteadOf` rewrite of the `https://github.com/` remote
+  carrying `x-access-token` and the token as the URL's userinfo — embeds
   the secret in the remote URL — and git echoes remote URLs in some failure
   messages, which would publish it into the build log, the one place a BuildKit
   secret must never reach. `tests/test-build-fetch-retry.sh` refuses that form;

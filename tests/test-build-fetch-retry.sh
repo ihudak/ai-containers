@@ -215,11 +215,57 @@ fi
 # five have no recorded failure, and each needs its own idempotency argument for
 # what a second attempt does to a half-finished install. Widening this is a
 # change that wants evidence, and the evidence would be a failure.
-nvm_run="$(awk '/^ARG NVM_VERSION=/{f=1} f{print} f&&/ln -sf .*\/npx \/usr\/local\/bin\/npx/{exit}' "$REPO_DIR/Dockerfile")"
-if [[ -z "$nvm_run" ]]; then
-  fail "the nvm bootstrap RUN block was found — it is not where this check looks, so the assertions below are vacuous"
-else
-  pass "the nvm bootstrap RUN block was found"
+#
+# ── EXTRACTING A LAYER, AND KNOWING THE EXTRACTION STOPPED WHERE IT SHOULD ────
+# Each block below is cut out of the Dockerfile by a START anchor and an END
+# anchor, and every assertion after it is a grep over what was cut. A `-z` guard
+# catches a START anchor that has drifted: nothing matched, nothing extracted,
+# and the greps would all be vacuous. It cannot catch the other half — and the
+# other half is the one that actually happened.
+#
+# MEASURED, NOT IMAGINED. pyenv's END anchor was written
+# `uvx \/usr\/local\/bin\/uvx$`; the line it targets is
+# `ln -sf "$PYENV_ROOT/shims/uvx" /usr/local/bin/uvx`, and the QUOTE between the
+# two `uvx`es means it never matched. awk therefore ran to EOF, and "the pyenv
+# layer" became the whole rest of the Dockerfile — 501 lines instead of 105,
+# INCLUDING the install-tools.sh RUN block, which mounts the same
+# `github_token` secret. So "the pyenv clone layer mounts the secret" passed
+# with that mount DELETED from the pyenv layer. An assertion that cannot fail is
+# worse than no assertion: it reports coverage it does not have.
+#
+# Found-too-much is thus its own verdict, reported apart from found-nothing. awk
+# prints a sentinel on the line it exits at; no sentinel means it fell off the
+# end and the block is not a block.
+LAYER_END_SENTINEL=$'\001END-ANCHOR-MATCHED'
+
+# Pure — prints, never judges. It is called in a command substitution, and a
+# `fails=$((fails+1))` inside a subshell is discarded, which would make this
+# file under-report exactly the way the defect above did.
+extract_layer() {  # $1 start-regex  $2 end-regex  $3 file
+  awk -v s="$1" -v e="$2" -v sent="$LAYER_END_SENTINEL" '
+    $0 ~ s      { f = 1 }
+    f           { print }
+    f && $0 ~ e { print sent; exit }
+  ' "$3"
+}
+
+# Judges — in the CURRENT shell, so pass/fail reach the real counter. Leaves the
+# block in LAYER_BODY, empty when either anchor failed.
+check_layer() {  # $1 name  $2 raw extraction
+  LAYER_BODY=""
+  if [[ -z "$2" ]]; then
+    fail "the $1 bootstrap RUN block was found — its START anchor matched nothing, so the assertions below are vacuous"
+  elif [[ "${2##*$'\n'}" != "$LAYER_END_SENTINEL" ]]; then
+    fail "the $1 bootstrap RUN block stopped at its END anchor — it did not, so awk ran to EOF and the block swallowed every later layer; the assertions below would then be satisfied by some OTHER layer's text (this is how the pyenv secret-mount check came to pass with the mount deleted)"
+  else
+    pass "the $1 bootstrap RUN block was found, and stopped at its END anchor"
+    LAYER_BODY="${2%$'\n'"$LAYER_END_SENTINEL"}"
+  fi
+}
+
+check_layer nvm "$(extract_layer '^ARG NVM_VERSION=' 'ln -sf .*/npx /usr/local/bin/npx' "$REPO_DIR/Dockerfile")"
+nvm_run="$LAYER_BODY"
+if [[ -n "$nvm_run" ]]; then
   if grep -q 'for attempt in' <<< "$nvm_run"; then
     pass "  … and the installer runs inside a retry loop, not just its download"
   else
@@ -256,11 +302,14 @@ fi
 # install.sh needs $NVM_DIR to exist, pyenv's installer exits 1 because it does.
 # Copying the nvm loop verbatim breaks pyenv 100% of the time, so that is
 # asserted here rather than left to be rediscovered.
-pyenv_run="$(awk '/^ENV PYENV_ROOT=/{f=1} f{print} f&&/uvx \/usr\/local\/bin\/uvx$/{exit}' "$REPO_DIR/Dockerfile")"
-if [[ -z "$pyenv_run" ]]; then
-  fail "the pyenv bootstrap RUN block was found — it is not where this check looks, so the assertions below are vacuous"
-else
-  pass "the pyenv bootstrap RUN block was found"
+#
+# THE END ANCHOR IS THE WHOLE LINE'S TAIL, not a two-token phrase. The line is
+# `ln -sf "$PYENV_ROOT/shims/uvx" /usr/local/bin/uvx`, and the earlier attempt to
+# name both `uvx`es either side of a space could not match across the quote. The
+# install path is unique in this file; check_layer proves the anchor still fires.
+check_layer pyenv "$(extract_layer '^ENV PYENV_ROOT=' '/usr/local/bin/uvx$' "$REPO_DIR/Dockerfile")"
+pyenv_run="$LAYER_BODY"
+if [[ -n "$pyenv_run" ]]; then
   if grep -q 'for attempt in' <<< "$pyenv_run"; then
     pass "  … and the installer runs inside a retry loop, not just its download"
   else
@@ -290,11 +339,15 @@ fi
 # this repo ships no private tool and the token is a rate-limit convenience, not
 # a requirement. What is asserted is that the layers can USE one.
 #
-# AND IT MUST BE A CREDENTIAL HELPER, NOT A URL REWRITE. The obvious form,
-# `url.https://x-access-token:$TOK@github.com/.insteadOf`, embeds the token in
+# AND IT MUST BE A CREDENTIAL HELPER, NOT A URL REWRITE. The obvious form is an
+# `insteadOf` rewrite of the `https://github.com/` remote that carries
+# `x-access-token` and the token as the URL's userinfo. That embeds the token in
 # the remote URL, and git echoes that URL in some failure messages — publishing
 # the secret into the build log, the one place a BuildKit secret must never
 # reach. That is a silent, plausible-looking regression, so it is refused here.
+# (Described rather than written out: a literal `https://user:secret@host` is a
+# shape secret scanners match on, and naming an anti-pattern should not cost a
+# false positive. The RULE below still matches the real thing, in code.)
 for layer in nvm:"$nvm_run" pyenv:"$pyenv_run"; do
   name="${layer%%:*}"; body="${layer#*:}"
   [[ -n "$body" ]] || continue          # its own vacuity guard already fired above
