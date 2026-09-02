@@ -2195,4 +2195,41 @@ leak_escaped="$(find /tmp -maxdepth 1 -name "${leak_label}.*" 2>/dev/null | head
   || fail "  … and removes it when the oracle is done — left ${leak_left}${leak_escaped}, so a caller with no run scratch accumulates one directory per oracle"
 rm -rf "/tmp/${leak_label}."* 2>/dev/null || true
 
+# ── …AND A RUN SCRATCH KEEPS ITS PARENT, WHICH IS NOT THE SAME PROPERTY ──────
+# The cleanup above removes the token directory AND `rmdir`s its parent. For a
+# direct caller that is right: nobody else owns the parent. For a RUN it is a
+# hazard, and `rmdir`'s emptiness check does not cover it — the window is inside
+# `mkdir -p "$parent/$token"`, which creates the two levels in separate steps.
+# An `rmdir` from a finishing worker landing between them removes the parent,
+# the second step fails ENOENT, the `|| true` swallows it, and the next oracle
+# is handed a TMPDIR that does not exist. Measured 2026-09-02 by hammering that
+# interleaving directly: 19 missing directories in the first 200-iteration
+# round. The oracle's `mktemp -d` then fails and the mutant leaves the measured
+# set as SCAFFOLD-FAILED — the flaky-verdict class F30/F32/F64 are about.
+#
+# Nothing is lost by keeping it: `fr_cleanup`'s `rm -rf "$FR_SCRATCH"` already
+# owns that parent, and it sits inside a per-run `mktemp -d`.
+#
+# OBSERVED, not read: one oracle is run with a real FR_SCRATCH and the two
+# levels are checked separately afterwards. Asserting only "the token directory
+# is gone" would pass with the parent removed too, which is the defect.
+scratch_root="$TMP/runscratch"
+mkdir -p "$scratch_root"
+rm -f "$TMP/scratch.log"
+( set +u
+  # shellcheck source=/dev/null
+  source "$RUN" >/dev/null 2>&1
+  # shellcheck disable=SC2034  # read by falsify_run_oracle in the file sourced above, which shellcheck does not follow
+  FR_SCRATCH="$scratch_root"
+  falsify_run_oracle "$FX" "test-fx-tmpdir.sh" "$TMP/scratch.log" 30 "scratchcheck$$" ) >/dev/null 2>&1
+
+scratch_seen="$(sed -n 's/.*PASS: tmpdir is //p' "$TMP/scratch.log" 2>/dev/null | head -1)"
+if [[ "$scratch_seen" != "$scratch_root"/* ]]; then
+  fail "an oracle run with a run scratch is rooted inside it — it used '${scratch_seen:-<nothing>}', so the two assertions below would be vacuous"
+else
+  pass "an oracle run with a run scratch is rooted inside it"
+  [[ ! -e "$scratch_seen" ]]     && pass "  … and its own token directory is still removed when the oracle is done"     || fail "  … and its own token directory is still removed when the oracle is done — '$scratch_seen' survives"
+  [[ -d "$scratch_root/tmp" ]]     && pass "  … while the shared parent SURVIVES, so a concurrent worker's mkdir -p cannot race an rmdir of it"     || fail "  … while the shared parent SURVIVES — '$scratch_root/tmp' was removed, so a worker creating into it at that moment gets a TMPDIR that does not exist and its mutant leaves the measured set"
+fi
+
 printf '\n%d failure(s)\n' "$fails"; exit "$fails"
