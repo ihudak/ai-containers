@@ -471,7 +471,9 @@ cl_main() {
   return 0
 }
 
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+# BY BEHAVIOUR, NOT BY STRING (#218): `return` succeeds outside a function only
+# in a sourced file, so this cannot be fooled by an absolute-path invocation.
+if ! (return 0 2>/dev/null); then
   set -uo pipefail
   cl_main "$@"
   exit $?

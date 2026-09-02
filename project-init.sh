@@ -77,9 +77,11 @@ projects_conf="${script_dir}/projects.conf"
 # be on stdin. Placing the guard any earlier leaves the caller with an unbound
 # projects_conf; any later and the wizard has already started prompting.
 # migrate-runme.sh's header already CLAIMED this guard existed.
-if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
-  return 0
-fi
+# BY BEHAVIOUR, NOT BY STRING: `return` outside a function succeeds only in a
+# sourced file. The string compare this replaced is correct only while no caller
+# invokes this script by the same absolute path it gets sourced as — the accident
+# that let build.sh recurse without bound (#218).
+(return 0 2>/dev/null) && return 0
 
 
 # ── Prompt helpers ─────────────────────────────────────────────────────────────
