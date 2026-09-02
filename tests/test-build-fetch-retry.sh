@@ -339,11 +339,15 @@ fi
 # this repo ships no private tool and the token is a rate-limit convenience, not
 # a requirement. What is asserted is that the layers can USE one.
 #
-# AND IT MUST BE A CREDENTIAL HELPER, NOT A URL REWRITE. The obvious form,
-# `url.https://x-access-token:$TOK@github.com/.insteadOf`, embeds the token in
+# AND IT MUST BE A CREDENTIAL HELPER, NOT A URL REWRITE. The obvious form is an
+# `insteadOf` rewrite of the `https://github.com/` remote that carries
+# `x-access-token` and the token as the URL's userinfo. That embeds the token in
 # the remote URL, and git echoes that URL in some failure messages — publishing
 # the secret into the build log, the one place a BuildKit secret must never
 # reach. That is a silent, plausible-looking regression, so it is refused here.
+# (Described rather than written out: a literal `https://user:secret@host` is a
+# shape secret scanners match on, and naming an anti-pattern should not cost a
+# false positive. The RULE below still matches the real thing, in code.)
 for layer in nvm:"$nvm_run" pyenv:"$pyenv_run"; do
   name="${layer%%:*}"; body="${layer#*:}"
   [[ -n "$body" ]] || continue          # its own vacuity guard already fired above

@@ -246,12 +246,17 @@ ENV PATH="$PYENV_ROOT/bin:$PYENV_ROOT/shims:$PATH"
 # clones are anonymous exactly as before, so this repo's "GITHUB_TOKEN is a
 # rate-limit convenience, never a requirement" position is unchanged.
 #
-# IT IS A CREDENTIAL HELPER, NOT A URL REWRITE, on purpose: an
-# `url.https://x-access-token:$TOK@github.com/.insteadOf` rewrite puts the token
-# INSIDE the remote URL, and git prints that URL in some failure messages — which
-# would publish the token into the build log, the one place a BuildKit secret is
-# meant never to reach. The helper keeps it in env only. Env set inside a RUN
-# does not persist into the image, and a secret mount is not a layer.
+# IT IS A CREDENTIAL HELPER, NOT A URL REWRITE, on purpose. The obvious
+# alternative is an `insteadOf` rewrite of the `https://github.com/` remote that
+# carries `x-access-token` and the token as the URL's userinfo. That puts the
+# token INSIDE the remote URL, and git prints that URL in some failure messages
+# — which would publish the token into the build log, the one place a BuildKit
+# secret is meant never to reach. The helper keeps it in env only. Env set inside
+# a RUN does not persist into the image, and a secret mount is not a layer.
+#
+# (Spelled out as prose rather than as a literal `https://user:secret@host` URL,
+# which is a shape secret scanners match on. Naming the anti-pattern should not
+# cost a false positive on every PR that touches this file.)
 #
 # THE BUDGET IS 5 ATTEMPTS OVER ~150s OF BACKOFF, AND THAT NUMBER IS MEASURED.
 # The first version of this loop was 3 attempts over 30s, copied from nvm's. It

@@ -101,7 +101,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   secret-mounting layer with no secret passed: the mount is empty and the build
   proceeds.
 - **The token is presented through a credential helper, never a URL.** The
-  obvious form, `url.https://x-access-token:$TOK@github.com/.insteadOf`, embeds
+  obvious form — an `insteadOf` rewrite of the `https://github.com/` remote
+  carrying `x-access-token` and the token as the URL's userinfo — embeds
   the secret in the remote URL — and git echoes remote URLs in some failure
   messages, which would publish it into the build log, the one place a BuildKit
   secret must never reach. `tests/test-build-fetch-retry.sh` refuses that form;
