@@ -6,8 +6,68 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## v0.9.10 — 2026-09-02
+
+**A guard that was right by accident, and a review of the fix that found three
+more of the same shape.** `build.sh` decided whether it had been sourced by
+comparing `"${BASH_SOURCE[0]}"` to `"${0}"` as *strings* — a question about how
+the caller happened to type the path, not about the shell. `ai_containers_config_digest`
+sources `build.sh` by an absolute path; execute it by that same path and the two
+are byte-identical, so the guard concluded "not sourced", the whole build body
+ran inside the digest subshell, and that body computed the digest again.
+**1077 processes over two hours, never reaching `docker build`.**
+
+**It was found by running a test in order to delete it.** `tests/test-agent-tools-smoke.sh`
+called itself a BLOCKING pre-merge gate and had never run in any layer — nothing
+set `AGENT_TOOLS_SMOKE=1`, for four weeks. Its claims were each weaker than the
+`packages`-tier case that absorbed them, so it went; but it was also the only
+caller invoking `build.sh` by an absolute path — the *more* robust idiom — and
+running it once before deleting it is what surfaced the recursion.
+
+**A hand review of that fix found two more instances. A class sweep found
+eight.** The two polarities fail in opposite directions: the `!=` form skips the
+body of an executed script, the `==` form runs `main` during a source. All eight
+were latent — no caller sources any of them by a path equal to its own `$0`
+*today*, which is exactly what `build.sh` was on the day before
+`ai_containers_config_digest` arrived. "No such caller today" is a fact about
+callers, not about these files.
+
+**Then the review of THAT work found three more, and every one of them was a
+check that reported coverage it did not have.** Two new assertions used
+`$REPO_DIR` in a file whose every other line resolves `$ENGINE_DIR` — so in the
+`base/`-layout repo they passed against a `build.sh` that was not there, and
+against the very fork bomb they exist for. A per-invocation cleanup `rmdir`ed a
+parent that a concurrent worker's `mkdir -p` was still creating in two steps,
+turning a real verdict into `SCAFFOLD-FAILED`. And a sweep that had just been
+taught to skip synced working copies turned out to have a twin door left open:
+this repo's own `.ai-containers/` was ignored by the developer's *global*
+gitignore and by nothing in the repo, so `verify-on-host.sh` Phase 7 lints 22
+scripts from whatever release that copy last synced.
+
+**The through-line is one rule.** A check is not coverage until it has been seen
+failing — in every layout it claims to run in.
+
 ### Fixed
 
+- **`build.sh` fork-bombed when executed by an absolute path.** Its re-entry
+  guard asked whether `"${BASH_SOURCE[0]}"` and `"${0}"` differed as *strings* —
+  how the caller typed the path, not what the shell is doing.
+  `ai_containers_config_digest` (`sandbox-common.sh`) computes the provenance
+  label by **sourcing** `"$dir/build.sh"` after deliberately unsetting the
+  re-entry guards, so executing `build.sh` by that same absolute path made `$0`
+  byte-identical to `BASH_SOURCE[0]`: the guard concluded "not sourced", the
+  whole build body ran inside the digest subshell, and that body computed the
+  digest again. Measured 2026-09-01: **1077 `build.sh` processes over two hours**,
+  one new level roughly every seven seconds, never reaching `docker build` at
+  all. Every ordinary caller types `./build.sh` — including the `runme.sh`
+  `project-init.sh` generates — so the blast radius was contained, but an
+  absolute path is the *more* robust idiom and this was waiting for the next
+  caller who used one. The guard now asks the shell: `(return 0 2>/dev/null)`
+  succeeds outside a function only in a sourced file. Verified across all three
+  cases — relative exec, absolute exec, and sourced-by-that-same-absolute-path,
+  where the string form gets the third wrong — and asserted by
+  `tests/test-provenance.sh` by effect, bounded, in its own process group,
+  because a test for a fork bomb must not be able to leave one behind.
 - **A documented command was not runnable.** `tests/integration/mutate.sh apply <id>`
   is printed in AGENTS.md as a copy-pasteable command and the file was committed
   `100644`, so that invocation failed with `Permission denied`. The repo's own
@@ -93,6 +153,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   copy as of whatever release it last synced — green in CI, which has no working
   copy, red on the machine that runs containers. The same shape as the sweep
   exclusion above, through the other door.
+
+### Removed
+
+- **`tests/test-agent-tools-smoke.sh`, which called itself a BLOCKING pre-merge
+  gate and had never run in any layer.** Nothing set `AGENT_TOOLS_SMOKE=1` — not
+  CI, not nightly, not `verify-on-host.sh` — for the four weeks since it landed,
+  and its own plan's "BLOCKING gate" checkbox was still unticked. Three `SKIP`
+  lines per `verify-on-host.sh` run reported this honestly and a `SKIP` reads
+  like a pass at a glance. It is **superseded, not neglected**: read against the
+  `packages`-tier cases line by line, both its assertions are *weaker* — it
+  polled as **root** where case 700 asserts each binary resolves as the non-root
+  agent in a non-login shell and proves it EXECUTES, and its second run passed
+  even on a full reinstall, which is precisely what case 710 exists to detect.
+  The one property it did not share — building from the developer's real
+  `sandbox.conf` against their real `$HOME` — makes it a sanity check of one
+  machine's configuration, and a check whose verdict depends on an untracked
+  local file cannot gate a merge.
+- **It earned one credit on the way out.** It was the only caller invoking
+  `build.sh` by an absolute path, so running it once before deleting it is what
+  found the fork bomb above. That detection is now permanent and cheaper: no
+  docker, no network, under a second.
 
 ## v0.9.9 — 2026-08-31
 
