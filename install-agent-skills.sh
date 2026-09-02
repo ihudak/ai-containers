@@ -86,4 +86,6 @@ main() {
   printf '%s\n' "$want" > "$STAMP" 2>/dev/null || true
 }
 
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then main; fi
+# BY BEHAVIOUR, NOT BY STRING (#218): `return` succeeds outside a function only
+# in a sourced file, so this cannot be fooled by an absolute-path invocation.
+if ! (return 0 2>/dev/null); then main; fi

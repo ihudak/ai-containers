@@ -843,6 +843,8 @@ ft_main() {
 
 # Sourced by tests/test-falsify-targets.sh for its negative paths; run directly
 # everywhere else.
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+# BY BEHAVIOUR, NOT BY STRING (#218): `return` succeeds outside a function only
+# in a sourced file, so this cannot be fooled by an absolute-path invocation.
+if ! (return 0 2>/dev/null); then
   ft_main "$@"
 fi

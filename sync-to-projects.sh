@@ -285,7 +285,8 @@ sync_project() {
 }
 
 # Allow tests to source this file for its reconcile helpers without running a sync.
-[[ "${BASH_SOURCE[0]}" != "${0}" ]] && return 0
+# BY BEHAVIOUR, NOT BY STRING — see project-init.sh's guard and build.sh's (#218).
+(return 0 2>/dev/null) && return 0
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 

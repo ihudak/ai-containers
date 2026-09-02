@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Fixed
+
+- **The sourced-or-executed guard compared argv strings in eight more files.**
+  v0.9.9 fixed `build.sh`, whose guard asked whether `$0` and `BASH_SOURCE[0]`
+  differed as *strings* — a question about how the caller typed the path, not
+  about the shell. A hand review afterwards found two more instances; a scan
+  matching **both polarities** found eight. The `!=` form (`project-init.sh`,
+  `sync-to-projects.sh`) skips the body of an executed script; the `==` form
+  (`install-tools.sh`, `install-agent-skills.sh`, and four `tests/falsify/`
+  scripts) fails the other way round — sourced by the invoking path, the
+  comparison is true and `main` runs during the source. All eight were latent:
+  no caller sources any of them by a path equal to its own `$0` today, which is
+  exactly what `build.sh` was until such a caller arrived. All eight now ask the
+  shell: `return` outside a function succeeds only in a sourced file.
+- `tests/test-sourced-guards.sh` asserts this by **effect** in both polarities
+  and both directions — a guard that always returned early would satisfy the
+  "sourced" assertion while breaking every invocation — and sweeps the tree so
+  the idiom cannot return. It runs its subjects against a scratch copy holding
+  no `projects.conf`, because a broken `sync-to-projects.sh` guard would
+  otherwise sync every registered project on the machine.
+
 ## v0.9.9 — 2026-08-31
 
 **A patch, and a hardening release whose own hardening needed hardening.**
