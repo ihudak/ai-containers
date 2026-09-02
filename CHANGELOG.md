@@ -6,6 +6,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Fixed
+
+- **The pyenv layer downloaded a shim that piped the real installer into `bash`.**
+  This Dockerfile states the rule at its nvm layer — *"`-o` then `bash FILE`, not
+  `curl | bash`: a pipe hands bash whatever arrived, so a TRUNCATED download
+  executes its prefix and reports success"* — and the pyenv layer obeyed it for a
+  **270-byte stub** and then broke it for the 2850 bytes that matter.
+  `https://pyenv.run` is not the installer; its entire body is
+  `curl -s -S -L .../pyenv-installer | bash`, and that inner fetch carries no
+  `-f`, no `--retry`, and runs in a shell with no `pipefail`, so curl's exit
+  status is discarded outright.
+- **What it would have cost, traced rather than assumed.** On a mid-transfer
+  reset curl exits 18 while bash has *already executed the prefix*, and the
+  pipeline reports bash's status. The installer's last four statements are its
+  four `checkout` calls, so a truncation after the first yields pyenv with no
+  plugins and **exit 0** — a silently, subtly broken image rather than a failed
+  build. The layer now fetches the installer itself, with `-o` and `--retry`, and
+  runs it as `bash FILE`, exactly as the nvm layer already does. The URL is the
+  one `pyenv.run` resolves to, so it is the same installer rather than a new
+  dependency; if pyenv moves it, `-f` makes that a loud 404.
+- **The guard that would have caught it was written vacuous first, and that is
+  recorded.** A check built on the existing `fetch_sites` extractor could never
+  fire: that helper ends every segment at the first `| && || ;`, so a pipe is
+  precisely what it discards. It passed, and was found hollow only by planting a
+  `curl … | bash` and watching it stay green. It now has its own scan, joining
+  continuations the way Docker does, and is demonstrated in both directions — it
+  catches a piped fetch and does not mistake `| shasum` for a shell.
+
+
 ### Added
 
 - **`REPOS_PATH`, so an in-container tool can find the repositories without
