@@ -8,6 +8,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A documented command was not runnable.** `tests/integration/mutate.sh apply <id>`
+  is printed in AGENTS.md as a copy-pasteable command and the file was committed
+  `100644`, so that invocation failed with `Permission denied`. The repo's own
+  tests call it as `bash "$MUTATE"`, which is why nothing noticed. `test-docs.sh`
+  now checks that every script the docs show **as a command** — the first token of
+  a line inside a fenced block — is committed executable; naming an interpreter
+  (`bash ./verify-on-host.sh`) is deliberately not such a claim.
+- **The test suite littered `/tmp`.** `falsify_run_oracle` roots the oracle's
+  TMPDIR at `"$FR_SCRATCH/tmp/$token"`, and `FR_SCRATCH` is declared empty and set
+  only by the run function — so a **direct caller** (a test sourcing `run.sh` to
+  drive one oracle) got an absolute `/tmp/$token` that ignored its own `TMPDIR`
+  and was never removed. Measured: **11 directories per hermetic suite run**, and
+  513 accumulated in one developer's `/tmp` over three days. The root now falls
+  back to the caller's `TMPDIR`, and the directory is removed per invocation.
+  Verified by measurement: 11 → **0** new `/tmp` entries across a full suite run.
+
 - **The sourced-or-executed guard compared argv strings in eight more files.**
   v0.9.9 fixed `build.sh`, whose guard asked whether `$0` and `BASH_SOURCE[0]`
   differed as *strings* — a question about how the caller typed the path, not

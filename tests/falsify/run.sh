@@ -860,7 +860,16 @@ falsify_run_oracle() {   # <tree> <oracle-set> <outfile> <timeout-seconds> [<lab
   # number is not: slots are REUSED across mutants, so a per-slot directory
   # would still be shared between a timed-out oracle whose children outlive the
   # kill and the next mutant dispatched into that slot.
-  local otmp="$FR_SCRATCH/tmp/$token"
+  # `:-`, NOT `-`: FR_SCRATCH is DECLARED EMPTY at the top of this file, so a
+  # test for "unset" would not fire. A DIRECT caller — a test that sources this
+  # file to run one oracle, which tests/test-falsify-run.sh and
+  # tests/test-falsify-historical.sh both do — has no run scratch, and an empty
+  # FR_SCRATCH made this an ABSOLUTE "/tmp/$token" that ignored the caller's
+  # TMPDIR entirely and was never removed. Measured 2026-09-02: 11 directories
+  # left in /tmp per hermetic suite run, and 513 found in one developer's /tmp
+  # after three days. The point of rooting the oracle's TMPDIR is that SOMEBODY
+  # OWNS IT; with no run scratch to own it, the caller's TMPDIR does.
+  local otmp="${FR_SCRATCH:-${TMPDIR:-/tmp}}/tmp/$token"
   mkdir -p "$otmp" 2>/dev/null || true
   set -m
   ( cd "$tree" && export TMPDIR="$otmp" && exec bash "$FR_DRIVER_REL" -v "${onames[@]}" ) >"$out" 2>&1 &
@@ -919,6 +928,15 @@ falsify_run_oracle() {   # <tree> <oracle-set> <outfile> <timeout-seconds> [<lab
     fi
   fi
   rm -f "$flag"
+  # PER INVOCATION, so a caller with no run scratch does not accumulate one
+  # directory per oracle. fr_cleanup's `rm -rf "$FR_SCRATCH"` remains the
+  # backstop for the case this cannot cover — a SIGKILL that stops this function
+  # ever reaching here.
+  rm -rf "$otmp"
+  # And the intermediate, which rm -rf on the leaf does not touch. `rmdir`, never
+  # `rm -rf`: it removes the directory ONLY when empty, so a concurrent worker
+  # whose own token directory is still in there keeps it.
+  rmdir "${otmp%/*}" 2>/dev/null || true
   return 0
 }
 

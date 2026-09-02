@@ -208,6 +208,50 @@ while IFS= read -r s; do
 done < <(for p in "${PAGES[@]}"; do grep -oE '`\.?/?[a-zA-Z0-9_./-]+\.sh`' "$ENGINE_DIR/$p"; done | tr -d '`' | sort -u)
 (( missing_scripts == 0 )) && pass "every repository script named in the documentation exists"
 
+# ── 4b. …AND IS RUNNABLE THE WAY THE DOCS SHOW IT ────────────────────────────
+# Existing is not the same as working. `tests/integration/mutate.sh apply <id>`
+# is printed in AGENTS.md as a copy-pasteable command, and the file was committed
+# 100644 — so the documented invocation fails with "Permission denied" while
+# section 4 above reports the script as present. The repo's own tests call it as
+# `bash "$MUTATE"`, which is why nothing noticed.
+#
+# NARROW BY CONSTRUCTION. Only a line inside a fenced block whose FIRST token is
+# a repo-relative `.sh` path counts — that is the shape a reader copies. A line
+# that names an interpreter (`bash ./verify-on-host.sh`) is deliberately NOT a
+# claim about the exec bit, and neither is a script mentioned in prose. Leading
+# `VAR=value` assignments are stripped first, because `VAULT_PATH=/p ./sandbox.sh`
+# is still a bare-path invocation of sandbox.sh.
+#
+# AGENTS.md is read here even though it is not in PAGES: PAGES is the docs/ +
+# README set the link and orphan checks reason about, and the command that
+# exposed this defect lives in AGENTS.md.
+cmd_pages=("${PAGES[@]}")
+[[ -f "$ENGINE_DIR/AGENTS.md" ]] && cmd_pages+=("AGENTS.md")
+not_runnable=0
+while IFS= read -r rel; do
+  [[ -n "$rel" ]] || continue
+  case "$rel" in /*|*runme.sh) continue ;; esac
+  [[ -e "$ENGINE_DIR/$rel" || -e "$REPO_DIR/$rel" ]] || continue   # section 4 owns existence
+  mode="$(cd "$ENGINE_DIR" && git ls-files -s -- "$rel" 2>/dev/null | awk '{print $1}')"
+  [[ -z "$mode" ]] && mode="$(cd "$REPO_DIR" && git ls-files -s -- "$rel" 2>/dev/null | awk '{print $1}')"
+  [[ -z "$mode" ]] && continue                                     # untracked: not a documented command
+  [[ "$mode" == "100755" ]] && continue
+  fail "the docs show \`$rel …\` as a command, but it is committed $mode — that invocation fails with Permission denied"
+  not_runnable=$((not_runnable+1))
+done < <(
+  for p in "${cmd_pages[@]}"; do
+    awk '/^```/ { infence = !infence; next }
+         infence {
+           line = $0
+           sub(/^[[:space:]]+/, "", line)
+           while (line ~ /^[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+/) sub(/^[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+/, "", line)
+           tok = line; sub(/[[:space:]].*$/, "", tok)
+           if (tok ~ /\.sh$/) { sub(/^\.\//, "", tok); print tok }
+         }' "$ENGINE_DIR/$p" 2>/dev/null
+  done | sort -u
+)
+(( not_runnable == 0 )) && pass "every script the docs show as a command is committed executable"
+
 # ── 5. Every documented environment variable is read by something ─────────────
 # A variable the docs promise and no script reads is a promise the product does
 # not keep — the same defect class as an undocumented key, pointing the other way.

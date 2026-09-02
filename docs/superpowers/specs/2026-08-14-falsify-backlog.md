@@ -5345,6 +5345,33 @@ into that slot. This is removal of a wrong shared namespace, not a fix for
 falsify job is `runs-on: ubuntu-24.04` with no `container:`, so all five
 sightings had the runner's real `/tmp`. A container would supply its own and
 change the thing under test.
+
+**ADDENDUM 2026-09-02 — the shared surface this entry named is now removed
+mid-run too, for an unrelated reason.** The paragraph above records that
+`$FR_SCRATCH/tmp` is "still shared by every worker WITHIN a run … Nothing
+removes it mid-run … the first place to look if this recurs". That is no longer
+true, and the change was made for a different defect, so it is recorded here
+rather than left to be discovered.
+
+`falsify_run_oracle` now removes its own `$FR_SCRATCH/tmp/$token` when the
+oracle finishes, and then `rmdir`s the `tmp` parent — `rmdir`, never `rm -rf`,
+so it succeeds only when empty and a concurrent worker whose token directory is
+still in there keeps it. `mkdir -p` before each launch recreates the parent, so
+removal and re-creation race harmlessly.
+
+The defect that motivated it was a LEAK, not `dir=n`: `FR_SCRATCH` is declared
+empty at the top of `run.sh` and is set only by the run function, so a DIRECT
+caller — `tests/test-falsify-run.sh` and `tests/test-falsify-historical.sh` both
+source the file to drive one oracle — got an ABSOLUTE `/tmp/$token` that ignored
+its own TMPDIR and was never cleaned. Measured: 11 directories per hermetic
+suite run, 513 accumulated in one developer's `/tmp` over three days.
+
+**This does not close this entry, and it weakens the next reproduction slightly
+rather than helping it.** Per this entry's own rule, absence of recurrence is
+weak evidence; and the surface named as "the first place to look" is now gone,
+so a future `dir=n` sighting can no longer be tested against it. The Linux-HOST
+reproduction described above remains the datum worth having. The entry stays
+**OPEN**.
 ---
 
 ## F66 — a Phase 4 run leaves empty `IT_RUN_ID`-shaped directories in the real cache — **FIXED 2026-08-29: `probe_launcher` hung its PATH dir off `$IT_SCRATCH`**
