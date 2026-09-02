@@ -6,53 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
-### Fixed
-
-- **The new pyenv guard's extractor never terminated, so its strongest assertion
-  could not fail.** `tests/test-build-fetch-retry.sh` cuts each vendor-installer
-  layer out of the `Dockerfile` between a start anchor and an end anchor, then
-  greps what it cut. pyenv's end anchor was written `uvx \/usr\/local\/bin\/uvx$`
-  and the line it targets is `ln -sf "$PYENV_ROOT/shims/uvx" /usr/local/bin/uvx`
-  — the **quote** between the two `uvx`es means it never matched, awk ran to EOF,
-  and "the pyenv layer" became the whole rest of the file: **501 lines instead of
-  105**, including `install-tools.sh`'s own `RUN`, which mounts the same
-  `github_token` secret. So *"the pyenv clone layer mounts the secret"* passed
-  with that mount **deleted from the pyenv layer** — demonstrated, not inferred.
-- **Found-too-much is now its own verdict, separate from found-nothing.** The
-  `-z` guard each block carried catches only a drifted *start* anchor; the half
-  that actually broke was invisible to it. `awk` now prints a sentinel on the
-  line it exits at, and a block that reaches EOF without one fails by name
-  instead of silently widening to swallow every later layer. Both blocks — nvm
-  and pyenv — are extracted and checked through the one helper, so neither can
-  regain the hole alone. All three failure shapes were demonstrated: the deleted
-  secret mount, a drifted end anchor, and a drifted start anchor.
-
-- **The pyenv layer downloaded a shim that piped the real installer into `bash`.**
-  This Dockerfile states the rule at its nvm layer — *"`-o` then `bash FILE`, not
-  `curl | bash`: a pipe hands bash whatever arrived, so a TRUNCATED download
-  executes its prefix and reports success"* — and the pyenv layer obeyed it for a
-  **270-byte stub** and then broke it for the 2850 bytes that matter.
-  `https://pyenv.run` is not the installer; its entire body is
-  `curl -s -S -L .../pyenv-installer | bash`, and that inner fetch carries no
-  `-f`, no `--retry`, and runs in a shell with no `pipefail`, so curl's exit
-  status is discarded outright.
-- **What it would have cost, traced rather than assumed.** On a mid-transfer
-  reset curl exits 18 while bash has *already executed the prefix*, and the
-  pipeline reports bash's status. The installer's last four statements are its
-  four `checkout` calls, so a truncation after the first yields pyenv with no
-  plugins and **exit 0** — a silently, subtly broken image rather than a failed
-  build. The layer now fetches the installer itself, with `-o` and `--retry`, and
-  runs it as `bash FILE`, exactly as the nvm layer already does. The URL is the
-  one `pyenv.run` resolves to, so it is the same installer rather than a new
-  dependency; if pyenv moves it, `-f` makes that a loud 404.
-- **The guard that would have caught it was written vacuous first, and that is
-  recorded.** A check built on the existing `fetch_sites` extractor could never
-  fire: that helper ends every segment at the first `| && || ;`, so a pipe is
-  precisely what it discards. It passed, and was found hollow only by planting a
-  `curl … | bash` and watching it stay green. It now has its own scan, joining
-  continuations the way Docker does, and is demonstrated in both directions — it
-  catches a piped fetch and does not mistake `| shasum` for a shell.
-
+## v0.9.12 — 2026-09-02
 
 ### Added
 
@@ -87,6 +41,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The pyenv layer downloaded a shim that piped the real installer into `bash`.**
+  This Dockerfile states the rule at its nvm layer — *"`-o` then `bash FILE`, not
+  `curl | bash`: a pipe hands bash whatever arrived, so a TRUNCATED download
+  executes its prefix and reports success"* — and the pyenv layer obeyed it for a
+  **270-byte stub** and then broke it for the 2850 bytes that matter.
+  `https://pyenv.run` is not the installer; its entire body is
+  `curl -s -S -L .../pyenv-installer | bash`, and that inner fetch carries no
+  `-f`, no `--retry`, and runs in a shell with no `pipefail`, so curl's exit
+  status is discarded outright.
+- **What it would have cost, traced rather than assumed.** On a mid-transfer
+  reset curl exits 18 while bash has *already executed the prefix*, and the
+  pipeline reports bash's status. The installer's last four statements are its
+  four `checkout` calls, so a truncation after the first yields pyenv with no
+  plugins and **exit 0** — a silently, subtly broken image rather than a failed
+  build. The layer now fetches the installer itself, with `-o` and `--retry`, and
+  runs it as `bash FILE`, exactly as the nvm layer already does. The URL is the
+  one `pyenv.run` resolves to, so it is the same installer rather than a new
+  dependency; if pyenv moves it, `-f` makes that a loud 404.
+- **The guard that would have caught it was written vacuous first, and that is
+  recorded.** A check built on the existing `fetch_sites` extractor could never
+  fire: that helper ends every segment at the first `| && || ;`, so a pipe is
+  precisely what it discards. It passed, and was found hollow only by planting a
+  `curl … | bash` and watching it stay green. It now has its own scan, joining
+  continuations the way Docker does, and is demonstrated in both directions — it
+  catches a piped fetch and does not mistake `| shasum` for a shell.
 - **The two layers that clone from GitHub ran anonymous while a perfectly good
   token sat unused on the host.** `build.sh` has passed `GITHUB_TOKEN` as the
   `github_token` BuildKit secret for months, but only `install-tools.sh` ever
@@ -128,6 +107,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   both fail), and it is not a simple IP block — during one failing window `curl`
   of the same `info/refs` URL returned 200 from the same container while `git`
   got 401, and an authenticated clone succeeded where the anonymous one failed.
+- **The new pyenv guard's extractor never terminated, so its strongest assertion
+  could not fail.** `tests/test-build-fetch-retry.sh` cuts each vendor-installer
+  layer out of the `Dockerfile` between a start anchor and an end anchor, then
+  greps what it cut. pyenv's end anchor was written `uvx \/usr\/local\/bin\/uvx$`
+  and the line it targets is `ln -sf "$PYENV_ROOT/shims/uvx" /usr/local/bin/uvx`
+  — the **quote** between the two `uvx`es means it never matched, awk ran to EOF,
+  and "the pyenv layer" became the whole rest of the file: **501 lines instead of
+  105**, including `install-tools.sh`'s own `RUN`, which mounts the same
+  `github_token` secret. So *"the pyenv clone layer mounts the secret"* passed
+  with that mount **deleted from the pyenv layer** — demonstrated, not inferred.
+- **Found-too-much is now its own verdict, separate from found-nothing.** The
+  `-z` guard each block carried catches only a drifted *start* anchor; the half
+  that actually broke was invisible to it. `awk` now prints a sentinel on the
+  line it exits at, and a block that reaches EOF without one fails by name
+  instead of silently widening to swallow every later layer. Both blocks — nvm
+  and pyenv — are extracted and checked through the one helper, so neither can
+  regain the hole alone. All three failure shapes were demonstrated: the deleted
+  secret mount, a drifted end anchor, and a drifted start anchor.
 
 ## v0.9.11 — 2026-09-02
 
