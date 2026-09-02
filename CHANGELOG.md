@@ -25,6 +25,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   **Narrowly scoped on purpose:** five other vendor installers run in this
   Dockerfile and none has a recorded failure; each would need its own idempotency
   argument for what a second attempt does, so widening this wants evidence.
+
 ## v0.9.10 — 2026-09-02
 
 **A guard that was right by accident, and a review of the fix that found three
