@@ -6,6 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## v0.9.11 — 2026-09-02
+
+**A retry rule that stopped at the edge of the thing it was protecting.** v0.9.9
+made every build-time `curl` carry `-f` and `--retry`, and
+`tests/test-build-fetch-retry.sh` enforces that at every fetch site in the tree.
+But a *fetch site* is where this repo asks the network — not where the script it
+just downloaded does. Six vendor installers run in this Dockerfile, and nvm's
+`install.sh` defaults to `install_nvm_from_git`: a bare `git clone --depth=1`
+against github.com with no retry of its own.
+
+**On 2026-09-02 that cost a whole cycle.** GitHub answered an unauthenticated
+clone of a **public** repo with 401 — `could not read Username for
+'https://github.com'`, which is its rate-limiting shape — and the build failed in
+all three image variants, taking **all 36 integration cases** with it. The
+identical build succeeded minutes later with nothing changed. The failure was
+transient; the gap was not.
+
+**The retry now wraps the installer, and the clean slate between attempts is the
+half that is easy to leave out.** A failed clone leaves `$NVM_DIR/.git` behind,
+and `install.sh` then takes its *already installed* branch and fetches into
+whatever the last attempt left — so a retry over that debris is not a retry. The
+loop resets `$NVM_DIR` first, and both halves are asserted in both directions.
+
+**Scoped to the one installer with a recorded failure**, deliberately. Five
+others run in this Dockerfile and none has failed; each would need its own
+argument for what a second attempt does to a half-finished install, and that
+argument wants evidence rather than symmetry.
+
 ### Fixed
 
 - **A vendor installer's own network fetch was not retried, and it failed a whole
