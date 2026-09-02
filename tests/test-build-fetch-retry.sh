@@ -215,7 +215,7 @@ fi
 # five have no recorded failure, and each needs its own idempotency argument for
 # what a second attempt does to a half-finished install. Widening this is a
 # change that wants evidence, and the evidence would be a failure.
-nvm_run="$(awk '/^RUN mkdir -p "\$NVM_DIR"/{f=1} f{print} f&&/ln -sf .*\/npx \/usr\/local\/bin\/npx/{exit}' "$REPO_DIR/Dockerfile")"
+nvm_run="$(awk '/^ARG NVM_VERSION=/{f=1} f{print} f&&/ln -sf .*\/npx \/usr\/local\/bin\/npx/{exit}' "$REPO_DIR/Dockerfile")"
 if [[ -z "$nvm_run" ]]; then
   fail "the nvm bootstrap RUN block was found — it is not where this check looks, so the assertions below are vacuous"
 else
@@ -233,6 +233,86 @@ else
     fail "  … and each attempt starts from a clean \$NVM_DIR — without the reset, install.sh finds a half-finished clone and fetches into it instead of re-cloning"
   fi
 fi
+
+
+# pyenv is the second, reached the same way inside the same rate-limiting window.
+# `https://pyenv.run` is a 270-BYTE SHIM whose entire body is
+# `curl -s -S -L .../pyenv-installer | bash`; the real installer then runs FOUR
+# bare `git clone`s — pyenv, pyenv-doctor, pyenv-update, pyenv-virtualenv — none
+# retried. On 2026-09-02 the first of the four answered `fatal: could not read
+# Username for 'https://github.com'` and failed the build at the pyenv layer.
+#
+# ITS RESET IS LOAD-BEARING FOR A STRONGER REASON THAN NVM'S, and the difference
+# between them is a trap. pyenv-installer REFUSES TO RUN AT ALL when $PYENV_ROOT
+# already exists — "Can not proceed with installation. Kindly remove the '...'
+# directory first.", exit 1, before it touches the network (measured, not
+# reasoned). With four clones, a PARTIALLY populated $PYENV_ROOT is the likely
+# shape of a rate-limited failure rather than an edge case: clone 1 succeeds,
+# clone 3 takes the 401, and the directory is left behind. Without `rm -rf`,
+# attempts 2 and 3 are then GUARANTEED to fail — a loop that converts one
+# transient 401 into three deterministic ones.
+#
+# And unlike nvm's reset, this one must NOT be followed by `mkdir -p`: nvm's
+# install.sh needs $NVM_DIR to exist, pyenv's installer exits 1 because it does.
+# Copying the nvm loop verbatim breaks pyenv 100% of the time, so that is
+# asserted here rather than left to be rediscovered.
+pyenv_run="$(awk '/^ENV PYENV_ROOT=/{f=1} f{print} f&&/uvx \/usr\/local\/bin\/uvx$/{exit}' "$REPO_DIR/Dockerfile")"
+if [[ -z "$pyenv_run" ]]; then
+  fail "the pyenv bootstrap RUN block was found — it is not where this check looks, so the assertions below are vacuous"
+else
+  pass "the pyenv bootstrap RUN block was found"
+  if grep -q 'for attempt in' <<< "$pyenv_run"; then
+    pass "  … and the installer runs inside a retry loop, not just its download"
+  else
+    fail "  … and the installer runs inside a retry loop, not just its download — pyenv.run's installer git-clones four repos from github.com with no retry of its own, so one rate-limited clone fails the whole build (measured 2026-09-02)"
+  fi
+  if grep -q 'rm -rf "\$PYENV_ROOT"' <<< "$pyenv_run"; then
+    pass "  … and each attempt starts from a clean \$PYENV_ROOT"
+  else
+    fail "  … and each attempt starts from a clean \$PYENV_ROOT — pyenv-installer refuses outright when the directory exists, so without the reset a partial install makes every later attempt fail deterministically"
+  fi
+  if grep -q 'mkdir -p "\$PYENV_ROOT"' <<< "$pyenv_run"; then
+    fail "  … and it does NOT recreate \$PYENV_ROOT after the reset — pyenv-installer exits 1 when the directory exists, so the mkdir that nvm's loop requires is fatal here"
+  else
+    pass "  … and it does NOT recreate \$PYENV_ROOT after the reset"
+  fi
+fi
+# ── THE CLONES MUST BE ABLE TO AUTHENTICATE, AND THE TOKEN MUST NOT LEAK ──────
+# The retry loops above only buy time; they cannot create budget. Anonymous git
+# traffic sits in GitHub's low tier, and when that tier throttles an IP the build
+# has nothing to fall back on — measured 2026-09-02, an anonymous clone taking
+# 401 in the same container where an authenticated one succeeded. `build.sh`
+# already passes the host's GITHUB_TOKEN as the `github_token` BuildKit secret;
+# for months only install-tools.sh mounted it, so the two layers that actually
+# clone ran anonymous with a perfectly good token sitting unused on the host.
+#
+# IT STAYS OPTIONAL. With no secret the clones are anonymous exactly as before —
+# this repo ships no private tool and the token is a rate-limit convenience, not
+# a requirement. What is asserted is that the layers can USE one.
+#
+# AND IT MUST BE A CREDENTIAL HELPER, NOT A URL REWRITE. The obvious form,
+# `url.https://x-access-token:$TOK@github.com/.insteadOf`, embeds the token in
+# the remote URL, and git echoes that URL in some failure messages — publishing
+# the secret into the build log, the one place a BuildKit secret must never
+# reach. That is a silent, plausible-looking regression, so it is refused here.
+for layer in nvm:"$nvm_run" pyenv:"$pyenv_run"; do
+  name="${layer%%:*}"; body="${layer#*:}"
+  [[ -n "$body" ]] || continue          # its own vacuity guard already fired above
+  if grep -q 'mount=type=secret,id=github_token' <<< "$body"; then
+    pass "the $name clone layer can authenticate — it mounts the github_token secret"
+  else
+    fail "the $name clone layer can authenticate — it mounts the github_token secret; without it the clone is anonymous and has no budget to fall back on when GitHub throttles the IP"
+  fi
+  # COMMENTS STRIPPED FIRST, for the reason the extractor above strips them: the
+  # Dockerfile DISCUSSES the URL-rewrite form in order to explain why it is
+  # refused, and a raw scan flags that prose as the defect it warns against.
+  code="$(grep -vE '^[[:space:]]*#' <<< "$body")"
+  if grep -qE 'insteadOf|x-access-token:\$|@github\.com/' <<< "$code"; then
+    fail "  … and the $name layer does NOT put the token in a URL — git prints remote URLs in failure messages, which would leak the secret into the build log; use the credential helper"
+  else
+    pass "  … and the $name layer does not put the token in a URL"
+  fi
+done
 
 # ── 2. the real files ────────────────────────────────────────────────────────
 declare -a targets=("$REPO_DIR/Dockerfile" "$REPO_DIR/install-tools.sh")
