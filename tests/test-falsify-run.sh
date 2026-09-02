@@ -2172,6 +2172,9 @@ rm -f "$TMP/leak.log"
 ( set +u
   # shellcheck source=/dev/null
   source "$RUN" >/dev/null 2>&1
+  # The empty value IS the precondition under test: run.sh declares FR_SCRATCH
+  # empty itself, and a future edit could change that without this line noticing.
+  # shellcheck disable=SC2034  # read by falsify_run_oracle in the file sourced above, which shellcheck does not follow
   FR_SCRATCH=""                 # exactly what a direct caller has
   export TMPDIR="$leak_tmp"
   falsify_run_oracle "$FX" "test-fx-tmpdir.sh" "$TMP/leak.log" 30 "$leak_label" ) >/dev/null 2>&1
