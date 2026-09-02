@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Fixed
+
+- **A vendor installer's own network fetch was not retried, and it failed a whole
+  cycle.** v0.9.9 required every build-time `curl` to carry `-f` and `--retry`, and
+  `tests/test-build-fetch-retry.sh` enforces it — but that rule can only see the
+  fetch that downloads an installer, never the fetches the installer then makes.
+  nvm's `install.sh` defaults to `install_nvm_from_git`, a bare
+  `git clone --depth=1` against github.com with no retry of its own. On 2026-09-02
+  GitHub answered an unauthenticated clone of a **public** repo with 401
+  (`could not read Username for 'https://github.com'` — its rate-limiting shape),
+  which failed all three image variants and therefore **all 36 integration cases**;
+  the identical build succeeded minutes later with nothing changed. The nvm
+  bootstrap now runs inside a bounded retry loop that resets `$NVM_DIR` between
+  attempts — a retry over a half-finished clone is not a retry, because `install.sh`
+  then takes its *already installed* branch and fetches into broken debris.
+  Asserted, in both directions, by two new checks in the same guard.
+  **Narrowly scoped on purpose:** five other vendor installers run in this
+  Dockerfile and none has a recorded failure; each would need its own idempotency
+  argument for what a second attempt does, so widening this wants evidence.
 ## v0.9.10 — 2026-09-02
 
 **A guard that was right by accident, and a review of the fix that found three
