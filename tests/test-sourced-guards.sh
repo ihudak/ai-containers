@@ -65,6 +65,13 @@
 set -uo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# THE ENGINE IS NOT ALWAYS THE REPO ROOT. The mgd port keeps the engine under
+# `base/` with tests at the root, which is why every other test in this tree
+# resolves it this way rather than assuming a flat checkout. Without it the
+# scratch below is built from the wrong directory and this file SCAFFOLD-FAILs
+# on that layout — loud, but it means the class ratchet never runs there.
+ENGINE_DIR="$REPO_DIR"
+[[ -f "$ENGINE_DIR/sandbox-common.sh" ]] || ENGINE_DIR="$REPO_DIR/base"
 # shellcheck source=./portability.sh
 source "$REPO_DIR/tests/portability.sh"
 
@@ -89,10 +96,15 @@ trap '[[ "$BASHPID" == "$TMP_OWNER" ]] && rm -rf "$TMP"' EXIT
 # a falsify-seeded tree, neither of which is guaranteed to be a git checkout.
 ENGINE="$TMP/engine"
 mkdir -p "$ENGINE" || { printf 'SCAFFOLD-FAILED: mkdir engine\n'; exit 1; }
-cp "$REPO_DIR"/*.sh "$ENGINE/" 2>/dev/null || true
+cp "$ENGINE_DIR"/*.sh "$ENGINE/" 2>/dev/null || true
+# migrations/ is shared at the REPO root in the mgd layout and sits beside the
+# engine in a flat checkout, so both are tried and whichever exists wins.
 for d in migrations tools.d; do
-  [[ -d "$REPO_DIR/$d" ]] || continue
-  mkdir -p "$ENGINE/$d" && cp -R "$REPO_DIR/$d/." "$ENGINE/$d/" 2>/dev/null || true
+  for src in "$ENGINE_DIR/$d" "$REPO_DIR/$d"; do
+    [[ -d "$src" ]] || continue
+    mkdir -p "$ENGINE/$d" && cp -R "$src/." "$ENGINE/$d/" 2>/dev/null || true
+    break
+  done
 done
 chmod +x "$ENGINE"/*.sh 2>/dev/null || true
 

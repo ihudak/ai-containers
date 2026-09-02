@@ -305,26 +305,43 @@ prov_absolute_exec_terminates() {   # → 0 when an absolute-path exec finishes
   return 0
 }
 
-# The real file, sourced by its own absolute path — the shape that recursed.
-if prov_absolute_exec_terminates "$REPO_DIR"; then
-  pass "sourcing build.sh by absolute path returns instead of running the build"
+# $ENGINE_DIR, NEVER $REPO_DIR. Every other reference in this file resolves the
+# engine through the ENGINE_DIR fallback at the top of it, because the mgd port
+# keeps the engine under `base/` with tests at the root. These two assertions
+# were written against $REPO_DIR, where in that layout there is no build.sh at
+# all — so `source` failed instantly, the bound saw a process that terminated,
+# and the assertion PASSED. Measured 2026-09-02 by restoring the pre-#218 string
+# guard in both layouts: the flat one FAILS (the assertion works), the `base/`
+# one PASSES against the very fork bomb it exists for.
+#
+# THE SUBJECT IS ASSERTED PRESENT FIRST, so "the file is not where I looked" can
+# never again be reported as "the guard is correct" — which is the failure mode
+# this whole batch of work is about.
+if [[ ! -f "$ENGINE_DIR/build.sh" ]]; then
+  fail "sourcing build.sh by absolute path returns instead of running the build — there is no build.sh under $ENGINE_DIR, so both assertions here would be vacuous"
+  fail "  … while an EXECUTED build.sh still runs — same missing subject"
 else
-  fail "sourcing build.sh by absolute path did not return — the sourced-guard is comparing strings, so \$0 matching BASH_SOURCE[0] restarts the build inside ai_containers_config_digest"
-fi
+  # The real file, sourced by its own absolute path — the shape that recursed.
+  if prov_absolute_exec_terminates "$ENGINE_DIR"; then
+    pass "sourcing build.sh by absolute path returns instead of running the build"
+  else
+    fail "sourcing build.sh by absolute path did not return — the sourced-guard is comparing strings, so \$0 matching BASH_SOURCE[0] restarts the build inside ai_containers_config_digest"
+  fi
 
-# AND THE GUARD IS NOT VACUOUS: it must still let an EXECUTED build.sh run. A
-# guard that returns early always would satisfy the assertion above and break
-# every build, so the negative case is asserted too — cheaply, by checking that
-# an executed build.sh gets far enough to reject a bad argument rather than
-# returning silently at the top.
-# `p_timeout`, not `timeout`: see the portability note above — a bare `timeout`
-# is absent on macOS, returns 127, and satisfies this test's own `rc -ne 0`
-# condition while running nothing at all.
-out="$(cd "$REPO_DIR" && p_timeout 20 ./build.sh --definitely-not-a-flag 2>&1)"; rc=$?
-if [[ "$rc" -ne 0 && "$rc" -ne 124 && -n "$out" ]]; then
-  pass "  … while an EXECUTED build.sh still runs (the guard is not always-return)"
-else
-  fail "  … while an EXECUTED build.sh still runs — it returned silently, so the guard fires for execution too (rc=$rc)"
+  # AND THE GUARD IS NOT VACUOUS: it must still let an EXECUTED build.sh run. A
+  # guard that returns early always would satisfy the assertion above and break
+  # every build, so the negative case is asserted too — cheaply, by checking that
+  # an executed build.sh gets far enough to reject a bad argument rather than
+  # returning silently at the top.
+  # `p_timeout`, not `timeout`: see the portability note above — a bare `timeout`
+  # is absent on macOS, returns 127, and satisfies this test's own `rc -ne 0`
+  # condition while running nothing at all.
+  out="$(cd "$ENGINE_DIR" && p_timeout 20 ./build.sh --definitely-not-a-flag 2>&1)"; rc=$?
+  if [[ "$rc" -ne 0 && "$rc" -ne 124 && -n "$out" ]]; then
+    pass "  … while an EXECUTED build.sh still runs (the guard is not always-return)"
+  else
+    fail "  … while an EXECUTED build.sh still runs — it returned silently, so the guard fires for execution too (rc=$rc)"
+  fi
 fi
 
 printf '\n%d failure(s)\n' "$fails"

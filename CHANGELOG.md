@@ -57,6 +57,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   directions, since a filter matching too much would empty the ratchet and
   report success.
 
+- **Two of the assertions added above were blind in the `base/`-layout repo.**
+  `tests/test-provenance.sh` resolves the engine through an `ENGINE_DIR`
+  fallback — the mgd port keeps the engine under `base/` with tests at the root
+  — and every reference in the file uses it except the two new fork-bomb
+  assertions, which used `$REPO_DIR`. In that layout there is no `build.sh`
+  there at all, so `source` failed instantly, the bound saw a process that
+  terminated, and the assertion PASSED. Measured by restoring the pre-#218
+  string guard in both layouts: the flat one FAILS, the `base/` one PASSES
+  against the very fork bomb the assertion exists for. `tests/test-sourced-guards.sh`
+  had the same assumption in its scratch-engine copy, where it SCAFFOLD-FAILs
+  instead — loud, but the class ratchet never runs there. Both now resolve the
+  engine the way the rest of the suite does, and the provenance assertions state
+  the subject must be present rather than reporting "not where I looked" as
+  "correct".
+- **The per-invocation cleanup added above raced its own `mkdir -p`.**
+  `falsify_run_oracle` `rmdir`s the parent of the token directory, chosen over
+  `rm -rf` so a concurrent worker's populated parent survives. That covers the
+  wrong window: `mkdir -p "$parent/$token"` creates the two levels in separate
+  steps, so an `rmdir` landing between them removes the parent, the second step
+  fails `ENOENT`, and the `|| true` swallows it — `TMPDIR` is then exported
+  pointing at a directory that does not exist, the oracle's `mktemp -d` fails,
+  and the mutant leaves the measured set as `SCAFFOLD-FAILED`. Measured by
+  hammering that interleaving: **19 missing directories in the first
+  200-iteration round**. The same flaky-verdict class F30/F32/F64 are about, and
+  nothing is bought by it — when a run scratch exists `fr_cleanup`'s
+  `rm -rf "$FR_SCRATCH"` already owns that parent. The `rmdir` is now confined to
+  the direct-caller case it was added for, where callers are tests running one
+  oracle at a time.
+- **This repo's own synced working copy was ignored only by the developer's
+  global gitignore.** `project-init.sh` writes `/.ai-containers/` into every
+  project it initialises; this repo, registered against itself, never got the
+  line. Without the global one, `git ls-files --others --exclude-standard '*.sh'`
+  lists 22 working-copy scripts, so `verify-on-host.sh` Phase 7 lints an engine
+  copy as of whatever release it last synced — green in CI, which has no working
+  copy, red on the machine that runs containers. The same shape as the sweep
+  exclusion above, through the other door.
+
 ## v0.9.9 — 2026-08-31
 
 **A patch, and a hardening release whose own hardening needed hardening.**

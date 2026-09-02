@@ -933,10 +933,29 @@ falsify_run_oracle() {   # <tree> <oracle-set> <outfile> <timeout-seconds> [<lab
   # backstop for the case this cannot cover — a SIGKILL that stops this function
   # ever reaching here.
   rm -rf "$otmp"
-  # And the intermediate, which rm -rf on the leaf does not touch. `rmdir`, never
-  # `rm -rf`: it removes the directory ONLY when empty, so a concurrent worker
-  # whose own token directory is still in there keeps it.
-  rmdir "${otmp%/*}" 2>/dev/null || true
+  # And the intermediate — BUT ONLY WHEN THERE IS NO RUN SCRATCH TO OWN IT.
+  #
+  # `rmdir` was chosen over `rm -rf` because it succeeds only on an empty
+  # directory, so a concurrent worker whose token directory is still in there
+  # keeps it. That reasoning covers the wrong window. The hazard is not a
+  # populated parent, it is `mkdir -p "$parent/$token"` ABOVE, which creates the
+  # parent and the token directory in two separate steps: an `rmdir` landing
+  # between them removes the parent, the second step fails with ENOENT, and the
+  # `|| true` there swallows it. TMPDIR is then exported pointing at a directory
+  # that does not exist, the oracle's own `mktemp -d` fails, and the mutant
+  # leaves the measured set as SCAFFOLD-FAILED — a verdict indistinguishable
+  # from a real scaffolding fault. Measured 2026-09-02 by hammering the exact
+  # interleaving: 19 missing directories in the first 200-iteration round.
+  #
+  # That is the same flaky-verdict class F30/F32/F64 are about, so it is not
+  # worth the trade — and there is nothing to trade for, because when a run
+  # scratch exists the parent is already owned: fr_cleanup's
+  # `rm -rf "$FR_SCRATCH"` takes it, and it lives inside a per-run `mktemp -d`
+  # that nothing else can reach. The parent needs collecting only for a DIRECT
+  # caller, whose root is the caller's own TMPDIR and whom nobody cleans up
+  # after. Direct callers are tests, and they run one oracle at a time, so no
+  # concurrent `mkdir -p` exists there to race.
+  [[ -n "$FR_SCRATCH" ]] || rmdir "${otmp%/*}" 2>/dev/null || true
   return 0
 }
 

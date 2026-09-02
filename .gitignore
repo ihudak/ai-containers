@@ -40,6 +40,18 @@ allowlist-cidrs.d/custom.txt
 # committing personal paths. See projects.conf.example for the format.
 /projects.conf
 
+# The synced working copy project-init.sh puts beside a project — including this
+# repo, when it is registered against itself. project-init.sh writes exactly this
+# line into every project it initialises; this repo never got it, and was relying
+# on a `.ai-containers/` line in the DEVELOPER'S global gitignore instead.
+# Without that global line, `git ls-files --others --exclude-standard '*.sh'`
+# lists 22 working-copy scripts here, so verify-on-host.sh Phase 7 lints a copy
+# of the engine as of whatever release it last synced — which can fail on rules
+# added since. Green in CI, which has no working copy; red on the machine that
+# actually runs containers. Same shape as the sweep exclusion in
+# tests/test-sourced-guards.sh, through the other door.
+/.ai-containers/
+
 
 # subagent-driven-development scratch (ledger, briefs, review packages)
 .superpowers/
