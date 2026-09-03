@@ -1922,7 +1922,12 @@ falsify_main() {
       # event already was and stderr is what a summary reader filters out. The
       # count is what leaves the corpus: every mutant of this target, none of
       # which will be attempted.
-      skipped_n="$(grep -c . "$mutants" 2>/dev/null || printf 0)"
+      # NOT `|| printf 0`: grep -c ALWAYS prints a count and exits 1 when that
+      # count is ZERO, so the fallback appends a SECOND zero and this record
+      # goes out as `SKIPPED|target|oracle|0\n0|reason` — split across two
+      # lines, which the harvester parses as two malformed records. The
+      # 2>/dev/null case (no such file) still needs the default, hence :-.
+      skipped_n="$(grep -c . "$mutants" 2>/dev/null)"; skipped_n="${skipped_n:-0}"
       # THREE REASONS, NOT TWO. A target retired because the oracle could not
       # START is not the same finding as one retired because the oracle went
       # RED, and the record is the only place a later reader can tell them
@@ -1945,7 +1950,10 @@ falsify_main() {
     # middle and late rather than clustering where the machine happens to be
     # quiet. A target with fewer mutants than controls simply gets fewer: the
     # positions are computed from its own count, never from a fixed stride.
-    n_mut="$(grep -c . "$mutants" 2>/dev/null || printf 0)"
+    # Same idiom, and here it is arithmetic rather than a record: a `0\n0` makes
+    # the (( )) below die with "syntax error in expression" on a target whose
+    # mutant list came back empty.
+    n_mut="$(grep -c . "$mutants" 2>/dev/null)"; n_mut="${n_mut:-0}"
     ctl_at=""
     if (( FR_CONTROLS > 0 && n_mut > 0 )); then
       for (( ci = 1; ci <= FR_CONTROLS; ci++ )); do

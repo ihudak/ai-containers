@@ -60,9 +60,16 @@ scaffold_step() {   # <what> <command...>
     # limit is reported beside it.
     printf 'SCAFFOLD-FAILED: %s: rc=%s, NOTHING on stderr — the command may never have run (a failed fork looks exactly like this)\n' \
       "$what" "$rc"
+    # `grep -c . || printf '?'` was wrong twice over: grep -c ALWAYS prints a
+    # count and exits 1 when it is ZERO, so a failed `ps` produced BOTH — the
+    # value became "0\n?" and split this one-line diagnostic in two, precisely
+    # in the fork-failure case it exists to report. Testing `ps` OUTPUT instead
+    # of the pipeline's status also keeps the two meanings apart, which the old
+    # form could not: an empty result is UNKNOWN ('?'), not a count of zero.
     printf 'SCAFFOLD-FAILED:   procs: ulimit -u=%s in-use=%s | target: %s\n' \
       "$(ulimit -u 2>/dev/null || printf '?')" \
-      "$(ps -o pid= -u "$(id -u)" 2>/dev/null | grep -c . || printf '?')" \
+      "$(_ps="$(ps -o pid= -u "$(id -u)" 2>/dev/null)"; \
+         if [ -n "$_ps" ]; then grep -c . <<< "$_ps"; else printf '?'; fi)" \
       "$(ls -ld "${!#}" 2>&1 | head -1)"
   fi
   exit 1
