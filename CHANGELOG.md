@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Fixed
+
+- **One unmeasurable control voided a 95-minute mutation corpus.** Phase 6 of a
+  full local cycle failed with the ledger unscored — not on a mutant, but because
+  1 of 34 **pristine** controls self-aborted at 27.2s (`signal=exit+scaffold`)
+  while the other 33 passed and every mutant already had a verdict. Two causes.
+  `tests/test-bash-dialect-lint.sh` bounded three single-file lints at a flat
+  **10s** while the harness governing it allows **120** — a bound tighter than the
+  governing clock cannot protect anything, since the harness expiry it pre-empts
+  is the better verdict (the runner classifies its own timeout as `UNPROVEN`
+  against the real budget). And `fr_run_control` mapped only `SURVIVED` to PASS,
+  folding **`UNPROVEN`** — timed out, `SCAFFOLD-FAILED`, or killed by a signal —
+  in with `KILLED`. Everywhere else in this tier that word is a property of the
+  **host**: a mutant landing there is `UNPROVEN` rather than a false `KILL`, and
+  AGENTS.md exempts it from the ledger outright. An unmeasurable control is now
+  **retried once**, which measures the difference instead of guessing a threshold:
+  transient load passes the second time, a persistently unmeasurable oracle fails
+  twice and stays fatal, and a control that is genuinely **red on undamaged code
+  is never retried**. Every retry is counted and reported, because a rising retry
+  count is how a host says it is losing the ability to measure this tier.
+
 ## v0.9.12 — 2026-09-02
 
 ### Added
