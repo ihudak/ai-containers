@@ -78,13 +78,19 @@ ARG NVM_VERSION=v0.40.7
 # loop for the same reason the clone does (it downloads from nodejs.org) and is
 # idempotent given that reset.
 RUN --mount=type=secret,id=github_token \
-    : > /tmp/gh-curl.cfg; \
+    # MODE AT CREATION, not by umask afterwards. `: > file` creates it with the
+    # DEFAULT umask (0644 for root) and a later redirect does NOT change an
+    # existing file's mode — so the `(umask 077; … > cfg)` this replaces was a
+    # no-op. Measured: 644 pre-created vs 600 created under the umask.
+    # `install -m 600 /dev/null` forces the mode either way and leaves it empty,
+    # which is also what makes `curl -K` valid when there is no token.
+    install -m 600 /dev/null /tmp/gh-curl.cfg; \
     if [ -s /run/secrets/github_token ]; then \
       GH_TOKEN="$(cat /run/secrets/github_token)"; export GH_TOKEN; \
       export GIT_CONFIG_COUNT=1 \
         GIT_CONFIG_KEY_0="credential.https://github.com.helper" \
         GIT_CONFIG_VALUE_0='!f() { echo username=x-access-token; echo "password=$GH_TOKEN"; }; f'; \
-      (umask 077; printf 'header = "Authorization: Bearer %s"\n' "$GH_TOKEN" > /tmp/gh-curl.cfg); \
+      printf 'header = "Authorization: Bearer %s"\n' "$GH_TOKEN" > /tmp/gh-curl.cfg; \
     fi; \
     mkdir -p "$NVM_DIR" && \
     # THE TOKEN IS HEADROOM, SO A BAD ONE MUST NOT BE FATAL — AND WITHOUT THIS
@@ -307,13 +313,19 @@ ENV PATH="$PYENV_ROOT/bin:$PYENV_ROOT/shims:$PATH"
 # because install.sh needs $NVM_DIR to exist. Here the mkdir would trip the very
 # refusal above, so there must not be one. The guard asserts both directions.
 RUN --mount=type=secret,id=github_token \
-    : > /tmp/gh-curl.cfg; \
+    # MODE AT CREATION, not by umask afterwards. `: > file` creates it with the
+    # DEFAULT umask (0644 for root) and a later redirect does NOT change an
+    # existing file's mode — so the `(umask 077; … > cfg)` this replaces was a
+    # no-op. Measured: 644 pre-created vs 600 created under the umask.
+    # `install -m 600 /dev/null` forces the mode either way and leaves it empty,
+    # which is also what makes `curl -K` valid when there is no token.
+    install -m 600 /dev/null /tmp/gh-curl.cfg; \
     if [ -s /run/secrets/github_token ]; then \
       GH_TOKEN="$(cat /run/secrets/github_token)"; export GH_TOKEN; \
       export GIT_CONFIG_COUNT=1 \
         GIT_CONFIG_KEY_0="credential.https://github.com.helper" \
         GIT_CONFIG_VALUE_0='!f() { echo username=x-access-token; echo "password=$GH_TOKEN"; }; f'; \
-      (umask 077; printf 'header = "Authorization: Bearer %s"\n' "$GH_TOKEN" > /tmp/gh-curl.cfg); \
+      printf 'header = "Authorization: Bearer %s"\n' "$GH_TOKEN" > /tmp/gh-curl.cfg; \
     fi; \
     apt-get update && apt-get install -y --no-install-recommends \
       build-essential libssl-dev zlib1g-dev libbz2-dev libreadline-dev \

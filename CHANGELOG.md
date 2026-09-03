@@ -8,6 +8,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The `umask` guarding the curl credential file was a no-op.** Both clone
+  layers write the token into a `curl -K` config, and that file was created with
+  `: > /tmp/gh-curl.cfg` — under the **default** umask, 0644 for root — and only
+  then written inside `(umask 077; … > cfg)`. A redirect does not change an
+  existing file's mode, so the umask never applied. Measured: **644**
+  pre-created, against **600** when created under the umask. The protection was
+  written and did not protect.
+- **Created mode-restricted instead**, with `install -m 600 /dev/null`, which
+  sets the mode at creation, forces it even if the file somehow already exists,
+  and still leaves it empty — the property the no-token path depends on, since
+  an empty bearer would be a 404. Verified **inside a real build**:
+  `CFG-MODE=600 SIZE=74`, where the same probe reported 644 before.
+- **Exploitability was nil and the guard is here anyway.** Only root exists in
+  that layer and the file is removed inside the same `RUN`, so it never reached
+  a committed layer. But that is a property of the surrounding code, not of this
+  line, and it is one moved `rm` away from mattering. Four assertions in
+  `tests/test-build-fetch-retry.sh`, all seen failing against the exact form
+  they replace. The neighbouring *emptied-first* check now matches the property
+  rather than the `: >` spelling — it failed on a change that preserved the
+  behaviour it names.
+
+
+### Fixed
+
 - **The count idiom survived in three more places, and the sweep is now
   mechanical.** #237 fixed four sites and #238 a fifth, each believed complete.
   Three more were live: `tests/falsify/run.sh` twice and

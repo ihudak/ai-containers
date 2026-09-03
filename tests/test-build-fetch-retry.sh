@@ -427,6 +427,42 @@ for t in "$REPO_DIR/Dockerfile" "$REPO_DIR/install-tools.sh"; do
 done
 (( pipe_hits == 0 )) && pass "no fetch in either build file pipes into a shell interpreter"
 
+# ── THE CURL CREDENTIAL FILE MUST BE MODE-RESTRICTED AT CREATION ─────────────
+# Both clone layers write the token into a curl config (`curl -K`) so the same
+# credential reaches curl as reaches git. That file must never be world-readable.
+#
+# `umask` CANNOT DO IT AFTER THE FACT, and the first version of this tried to.
+# `: > /tmp/gh-curl.cfg` creates the file under the DEFAULT umask — 0644 for
+# root — and a later `(umask 077; … > /tmp/gh-curl.cfg)` writes to a file that
+# already exists, which does not change its mode. Measured: 644 pre-created,
+# against 600 when created under the umask. The protection was written and did
+# not protect, which is the class this suite exists to refuse.
+#
+# `install -m 600 /dev/null <file>` sets the mode AT creation, forces it even if
+# the file somehow already exists, and leaves it empty — which is also what makes
+# `curl -K` valid on the no-token path.
+#
+# Exploitability today is nil: only root exists in that layer and the file is
+# removed inside the same RUN, so it never reaches a committed layer. The
+# assertion is here because that is a property of the surrounding code, not of
+# this line, and it is one `rm` away from mattering.
+for layer in nvm:"$nvm_run" pyenv:"$pyenv_run"; do
+  name="${layer%%:*}"; body="${layer#*:}"
+  [[ -n "$body" ]] || continue
+  code="$(grep -vE '^[[:space:]]*#' <<< "$body")"
+  grep -q 'gh-curl.cfg' <<< "$code" || continue
+  if grep -qE 'install -m 6[04]0 /dev/null /tmp/gh-curl\.cfg' <<< "$code"; then
+    pass "the $name layer creates its curl credential file mode-restricted"
+  else
+    fail "the $name layer creates its curl credential file mode-restricted — use \`install -m 600 /dev/null\`; a bare \`: >\` makes it 0644 and a later umask cannot change an existing file's mode"
+  fi
+  if grep -qE '^[[:space:]]*: >[[:space:]]*/tmp/gh-curl\.cfg' <<< "$code"; then
+    fail "  … and the $name layer does NOT create it with a bare \`: >\` — that is the 0644 form the umask silently failed to fix"
+  else
+    pass "  … and not with a bare \`: >\`"
+  fi
+done
+
 # ── 2. the real files ────────────────────────────────────────────────────────
 declare -a targets=("$REPO_DIR/Dockerfile" "$REPO_DIR/install-tools.sh")
 total=0
@@ -497,7 +533,12 @@ for _l in nvm pyenv; do
   grep -q 'curl -K /tmp/gh-curl.cfg' <<< "$_body" \
     && pass "the $_l layer's curl presents the token when one was passed" \
     || fail "the $_l layer's curl presents the token when one was passed — it fetches its installer from raw.githubusercontent.com anonymously while the same layer authenticates git"
-  grep -q ': > /tmp/gh-curl.cfg' <<< "$_body" \
+  # EITHER SPELLING, because the property is EMPTINESS, not the idiom. `: >` and
+  # `install -m 600 /dev/null` both leave an empty file; the second additionally
+  # fixes the mode, which `umask` could not do after the fact (see the
+  # mode-restriction rule above). Matching only `: >` made this fail on a change
+  # that preserved the property it names.
+  grep -qE '(: >|install -m [0-7]{3,4} /dev/null) /tmp/gh-curl\.cfg' <<< "$_body" \
     && pass "  … and the config is EMPTIED first, so a build with no secret still fetches anonymously" \
     || fail "  … and the config is EMPTIED first, so a build with no secret still fetches anonymously — an empty bearer is a 404, so the no-token path must send no header at all"
   grep -qE 'rm -f [^&]*gh-curl\.cfg' <<< "$_body" \
