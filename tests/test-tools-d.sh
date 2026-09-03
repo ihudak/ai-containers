@@ -1162,8 +1162,13 @@ GITHUB_TOKEN=ghp_staleValue
 # shellcheck disable=SC2034  # ditto
 AUTH_ARGS=(-H "Authorization: Bearer ghp_staleValue")
 PATH="$FAKEBIN:$PATH" ARCH=arm64 install_one ext 9f3c1ab >/dev/null 2>&1 || true
-_auth_tries="$(grep -c 'Authorization:' "$STALE_LOG" 2>/dev/null || printf 0)"
-_anon_tries="$(grep -vc 'Authorization:' "$STALE_LOG" 2>/dev/null || printf 0)"
+# COUNTS WITHOUT `|| printf 0`: grep -c and grep -vc ALWAYS print a count and
+# exit 1 when it is ZERO, so the fallback appends a SECOND zero and the (( ))
+# below dies with "syntax error in expression". Harmless while both counts are
+# expected non-zero — and wrong precisely on the failure path, where the
+# assertion is supposed to explain itself.
+_auth_tries="$(grep -c 'Authorization:' "$STALE_LOG" 2>/dev/null)"; _auth_tries="${_auth_tries:-0}"
+_anon_tries="$(grep -vc 'Authorization:' "$STALE_LOG" 2>/dev/null)"; _anon_tries="${_anon_tries:-0}"
 
 if [[ -s "$TOOLS_BIN_DIR/ext-cli" ]]; then
   pass "a stale token does not drop a public tool — the fetch is retried anonymously"
@@ -1190,6 +1195,53 @@ if (( _n == 1 )); then
   pass "  … while a build with NO token makes exactly one request, not two"
 else
   fail "  … while a build with NO token makes exactly one request, not two — saw $_n, so the fallback fires when there is no credential to fall back from"
+fi
+
+# ── …AND NOT FOR A PRIVATE TOOL, WHERE THE TOKEN IS A REQUIREMENT ────────────
+# install-tools.sh states the rule at the top: the fallback exists ONLY where the
+# token is headroom. For a PRIVATE repo it is not — an anonymous retry cannot
+# succeed, so it spends a guaranteed-404 request and then prints "is GITHUB_TOKEN
+# stale?" over a case whose real cause is usually a missing or un-SSO-authorized
+# token. That is a misleading diagnostic on top of a wasted request.
+#
+# The release-asset path honoured the rule from the start. install_repo_file did
+# not: its fallback was unconditional, so a private repo-file tool with a token
+# the server rejects retried anonymously anyway.
+#
+# THIS REPO SHIPS NO PRIVATE repo-file TOOL, so the branch is latent here — which
+# is exactly why it needs a test rather than an observation. The mgd port has one
+# (`acli-pii`), and tools.d/ is designed so a descriptor is all it takes.
+#
+# install_one's own guard covers an ABSENT token by skipping before any fetch
+# (asserted earlier in this file). This is the other half: a token that is
+# PRESENT and rejected.
+export TOOLS_D_DIR="$TMP/tools.d-private-stale"; mkdir -p "$TOOLS_D_DIR"
+cat > "$TOOLS_D_DIR/ext.conf" <<'EOF'
+repo=acme/vendored
+binary=ext-cli
+install=repo-file
+private=yes
+repo_path=utils/ext/ext-cli
+EOF
+scaffold_file "write ext.conf (private, stale token)" "$TOOLS_D_DIR/ext.conf"
+: > "$STALE_LOG"
+rm -f "$TOOLS_BIN_DIR/ext-cli"
+# shellcheck disable=SC2034  # read by install_one in the file sourced at the top
+GITHUB_TOKEN=ghp_staleValue
+# shellcheck disable=SC2034  # ditto
+AUTH_ARGS=(-H "Authorization: Bearer ghp_staleValue")
+PATH="$FAKEBIN:$PATH" install_one ext latest >"$TMP/priv.out" 2>&1 || true
+_p_auth="$(grep -c 'Authorization:' "$STALE_LOG" 2>/dev/null)"; _p_auth="${_p_auth:-0}"
+_p_anon="$(grep -vc 'Authorization:' "$STALE_LOG" 2>/dev/null)"; _p_anon="${_p_anon:-0}"
+if (( _p_auth >= 1 && _p_anon == 0 )); then
+  pass "a PRIVATE repo-file tool does not retry anonymously — the token is a requirement there, not headroom"
+else
+  fail "a PRIVATE repo-file tool does not retry anonymously — saw $_p_auth authenticated and $_p_anon anonymous request(s); an anonymous fetch of a private repo is a guaranteed 404, so it wastes a request and blames a stale token for what is usually a missing or un-SSO-authorized one"
+fi
+if grep -q 'retrying anonymously' "$TMP/priv.out"; then
+  fail "  … and it does not print the stale-token diagnostic for a private tool, which sends the reader at the wrong cause"
+else
+  pass "  … and it does not print the stale-token diagnostic for a private tool"
 fi
 
 unset -f sleep

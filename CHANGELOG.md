@@ -8,6 +8,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The new anonymous fallback ignored `private=yes`, contradicting the rule the
+  same file states.** The previous entry added an anonymous retry so a stale
+  token cannot silently drop a public tool, and scoped it deliberately: *"only
+  where the token is optional… the private release-asset path therefore has no
+  fallback, because an anonymous retry there cannot succeed"*. `install_repo_file`
+  did not apply that rule — its fallback was unconditional. For a **private**
+  repo-file tool with a token the server rejects, it spends a guaranteed-404
+  request and then prints *"is GITHUB_TOKEN stale?"* over a case whose real cause
+  is usually a missing or un-SSO-authorized token. `install_one`'s guard already
+  covers an **absent** token; this is the other half.
+- **It is latent in this repo and live in the port, which is why it is tested
+  rather than observed.** Nothing here installs `repo-file` from a private repo
+  (`dtctl`/`dtmgd` are public release installs, `acli` is `url`), but `tools.d/`
+  is designed so a descriptor is all it takes — and the mgd port already ships
+  one. The test drives the branch directly.
+- **A count idiom that broke exactly on the failure path.** `grep -c` and
+  `grep -vc` *always* print a count and exit 1 when it is **zero**, so the
+  `|| printf 0` guarding four of them appended a second zero and the `(( ))`
+  below died with `syntax error in expression`. Harmless while both counts were
+  expected non-zero — and wrong precisely where an assertion has to explain
+  itself. Demonstrated: with the old idiom the new private-tool assertion fails
+  on **correct** code.
+
 - **A stale `GITHUB_TOKEN` silently dropped a public tool.** #234 gave the
   Dockerfile's installer fetches an anonymous fallback for a credential the
   server rejects; `install-tools.sh` was the one place outside that change.

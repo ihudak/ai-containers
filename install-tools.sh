@@ -102,7 +102,7 @@ asset_name() { printf '%s_%s_%s_%s.tar.gz' "$1" "${2#v}" "$OS" "$ARCH"; }
 install_repo_file() {
   local name="$1" ref="$2"
   # shellcheck disable=SC2154
-  local repo="$TOOL_repo" binary="$TOOL_binary" path="$TOOL_repo_path"
+  local repo="$TOOL_repo" binary="$TOOL_binary" path="$TOOL_repo_path" private="$TOOL_private"
 
   if [ -z "$repo" ] || [ -z "$path" ]; then
     echo "WARNING: ${name} sets install=repo-file but repo= or repo_path= is empty — skipping." >&2
@@ -127,10 +127,23 @@ install_repo_file() {
     return 0
   fi
 
+  # THE ANONYMOUS FALLBACK IS FOR PUBLIC TOOLS ONLY — the rule this file states
+  # at the top, applied here rather than only to the release-asset path. For a
+  # PRIVATE repo the token is a REQUIREMENT, not headroom: an anonymous retry
+  # cannot succeed, so it would spend a guaranteed-404 request and then print
+  # "is GITHUB_TOKEN stale?" over a case whose real cause is usually a missing
+  # or un-SSO-authorized token. install_one's private guard already covers an
+  # ABSENT token; this covers a present one the server rejects.
+  #
+  # It matters where a private repo-file tool actually exists. This repo ships
+  # none today (dtctl/dtmgd are release-installed and public, acli is url), so
+  # the branch is latent here — but tools.d/ is designed so a descriptor is all
+  # it takes, and the mgd port already has one.
   echo "Installing ${name} from ${repo}:${path}..."
   if ! curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors ${AUTH_ARGS[@]+"${AUTH_ARGS[@]}"} \
          -H "Accept: application/vnd.github.raw" "$url" -o "$tmp" \
-     && ! { [ -n "${AUTH_ARGS[*]+set}" ] && [ "${#AUTH_ARGS[@]}" -gt 0 ] \
+     && ! { [ "$private" != "yes" ] \
+            && [ -n "${AUTH_ARGS[*]+set}" ] && [ "${#AUTH_ARGS[@]}" -gt 0 ] \
             && echo "  authenticated fetch failed; retrying anonymously (is GITHUB_TOKEN stale?)" >&2 \
             && curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors \
                  -H "Accept: application/vnd.github.raw" "$url" -o "$tmp"; }; then
