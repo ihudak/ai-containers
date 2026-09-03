@@ -8,6 +8,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A fifth `grep -c` count kept the idiom #237 fixed at four others.** `grep -c`
+  and `grep -vc` always print a count *and* exit 1 when that count is **zero**, so
+  guarding one with a printing fallback appends a second zero and the arithmetic
+  reading it dies with a syntax error instead of failing cleanly. It is wrong only
+  on the zero path — which is the failure path, i.e. exactly when the assertion
+  needs to explain itself, and why it survives review. Since the class has now
+  recurred, the file gets a **sweep** rather than a third individual fix; the
+  sweep assembles its own pattern and skips whole-line comments so it is genuinely
+  subject to its own rule rather than exempted by path.
+
+### Fixed
+
 - **The new anonymous fallback ignored `private=yes`, contradicting the rule the
   same file states.** The previous entry added an anonymous retry so a stale
   token cannot silently drop a public tool, and scoped it deliberately: *"only
