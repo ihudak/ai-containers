@@ -87,9 +87,34 @@ RUN --mount=type=secret,id=github_token \
       (umask 077; printf 'header = "Authorization: Bearer %s"\n' "$GH_TOKEN" > /tmp/gh-curl.cfg); \
     fi; \
     mkdir -p "$NVM_DIR" && \
-    curl -K /tmp/gh-curl.cfg -fsSL --retry 5 --retry-delay 2 --retry-all-errors \
-      -o /tmp/nvm-install.sh \
-      "https://raw.githubusercontent.com/nvm-sh/nvm/${NVM_VERSION}/install.sh" && \
+    # THE TOKEN IS HEADROOM, SO A BAD ONE MUST NOT BE FATAL — AND WITHOUT THIS
+    # FALLBACK IT IS. The git half of this layer keeps that property for free:
+    # git tries anonymously and only presents the credential WHEN CHALLENGED, so
+    # a stale token costs nothing on a public clone. curl has no such protocol —
+    # `-K` puts the header on the very first request, unconditionally.
+    #
+    # Measured 2026-09-03 against this exact URL, through a config file:
+    #     no token (empty config)   200
+    #     a valid token             200
+    #     a STALE / WRONG token     404   <- and `-f` makes that fail the build
+    #
+    # GitHub answers a credential it will not honour with 404, not 401, so the
+    # symptom is INDISTINGUISHABLE from "the vendor moved the installer" — the
+    # very diagnosis the `-f` on this line exists to make loud. A token rotated
+    # in `gh` but stale in a shell profile is a case AGENTS.md already documents
+    # as live, and before this fallback it turned a build that works anonymously
+    # into one that cannot build at all.
+    #
+    # So: authenticated first (that is the headroom), anonymous if it fails.
+    # A bad token now costs one wasted retry budget instead of the image.
+    if ! curl -K /tmp/gh-curl.cfg -fsSL --retry 5 --retry-delay 2 --retry-all-errors \
+           -o /tmp/nvm-install.sh \
+           "https://raw.githubusercontent.com/nvm-sh/nvm/${NVM_VERSION}/install.sh"; then \
+      echo "nvm installer: authenticated fetch failed, retrying anonymously (is GITHUB_TOKEN stale?)" >&2; \
+      curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors \
+        -o /tmp/nvm-install.sh \
+        "https://raw.githubusercontent.com/nvm-sh/nvm/${NVM_VERSION}/install.sh"; \
+    fi && \
     for attempt in 1 2 3 4 5; do \
       rm -rf "$NVM_DIR"; mkdir -p "$NVM_DIR"; \
       if PROFILE=/dev/null bash /tmp/nvm-install.sh && \
@@ -295,8 +320,16 @@ RUN --mount=type=secret,id=github_token \
       libsqlite3-dev libncursesw5-dev xz-utils tk-dev libxml2-dev \
       libxmlsec1-dev libffi-dev liblzma-dev && \
     rm -rf /var/lib/apt/lists/* && \
-    curl -K /tmp/gh-curl.cfg -fsSL --retry 5 --retry-delay 2 --retry-all-errors -o /tmp/pyenv.sh \
-      https://raw.githubusercontent.com/pyenv/pyenv-installer/master/bin/pyenv-installer && \
+    # Anonymous fallback, for the reason given in full at the nvm layer above: a
+    # stale token gets 404 here, `-f` makes that fatal, and the git half of this
+    # same layer does not have the problem because git only authenticates when
+    # challenged. Measured 2026-09-03: no token 200, valid token 200, stale 404.
+    if ! curl -K /tmp/gh-curl.cfg -fsSL --retry 5 --retry-delay 2 --retry-all-errors -o /tmp/pyenv.sh \
+           https://raw.githubusercontent.com/pyenv/pyenv-installer/master/bin/pyenv-installer; then \
+      echo "pyenv installer: authenticated fetch failed, retrying anonymously (is GITHUB_TOKEN stale?)" >&2; \
+      curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors -o /tmp/pyenv.sh \
+        https://raw.githubusercontent.com/pyenv/pyenv-installer/master/bin/pyenv-installer; \
+    fi && \
     for attempt in 1 2 3 4 5; do \
       rm -rf "$PYENV_ROOT"; \
       if PYENV_ROOT="$PYENV_ROOT" bash /tmp/pyenv.sh; then \

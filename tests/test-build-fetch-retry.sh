@@ -505,6 +505,56 @@ for _l in nvm pyenv; do
     || fail "  … and the config is removed, so the token does not ship inside the image — /tmp is part of the image filesystem"
 done
 
+# ── A TOKEN THE SERVER WILL NOT HONOUR MUST NOT BE FATAL ────────────────────
+# The block above proves the header is ABSENT when no secret was passed. That
+# covers the empty token and nothing else. There is a third state, and it is the
+# one a real machine actually reaches: a token that EXISTS and is STALE — rotated
+# in `gh`, still exported from a shell profile. AGENTS.md already names that case
+# as live ("a token rotated in `gh` but stale in a shell profile silently reverts
+# the build to the anonymous path").
+#
+# It no longer reverts. `-K` puts the header on the FIRST request unconditionally,
+# so with `-f` a rejected credential fails the fetch outright:
+#
+#   measured 2026-09-03, both installer URLs, header via a curl config file
+#     no token (empty config)   200
+#     a valid token             200
+#     a STALE / WRONG token     404   <- and `-f` makes that fail the build
+#
+# GitHub answers a credential it will not honour with 404, NOT 401. So the
+# symptom is indistinguishable from "the vendor moved the installer" — the very
+# diagnosis the `-f` on those lines is documented as making loud. A build that
+# works anonymously stops working because a variable is set, and the message
+# blames the vendor.
+#
+# THE GIT HALF OF THE SAME LAYER DOES NOT HAVE THIS PROBLEM, which is what makes
+# it an asymmetry rather than a cost of authenticating: git tries anonymously and
+# presents the credential only WHEN CHALLENGED, so a stale token costs a public
+# clone nothing. curl has no such protocol, so the fallback has to be written.
+#
+# Asserted as: each layer fetches its installer a SECOND time without the config
+# when the authenticated attempt fails. Verified end to end against the live URL
+# — stale token, first attempt fails, fallback returns the real 17870-byte
+# installer — not merely grepped for here.
+for _l in nvm pyenv; do
+  case "$_l" in
+    nvm)   _body="$nvm_run" ;;
+    *)     _body="$pyenv_run" ;;
+  esac
+  [[ -n "$_body" ]] || continue
+  # The authenticated attempt must be a TESTED condition, not a bare command:
+  # under `set -e` (this Dockerfile's SHELL is `bash -euo pipefail`) a bare
+  # failing curl ends the layer before any fallback could run.
+  grep -q 'if ! curl -K /tmp/gh-curl.cfg' <<< "$_body" \
+    && pass "the $_l layer's authenticated fetch is TESTED, so a failure can be recovered" \
+    || fail "the $_l layer's authenticated fetch is TESTED, so a failure can be recovered — under 'bash -euo pipefail' a bare curl that fails ends the layer and no fallback can run"
+  # …and the recovery must drop the config, or it repeats the same rejection.
+  _anon="$(grep -c 'curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors' <<< "$_body")"
+  (( _anon >= 1 )) \
+    && pass "  … and it falls back to an ANONYMOUS fetch, so a stale token cannot fail a build that works without one" \
+    || fail "  … and it falls back to an ANONYMOUS fetch, so a stale token cannot fail a build that works without one — GitHub answers a credential it will not honour with 404, which -f turns into a failed build and reads like the vendor moved the file"
+done
+
 # ── EVERY VERSION INSTALL IS RETRIED, NOT ONLY THE BOOTSTRAP ─────────────────
 # The retry loops added for the clone failures wrap the BOOTSTRAP. Three version
 # installs sat outside them, each downloading over the network: nvm's
