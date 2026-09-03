@@ -8,6 +8,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The count idiom survived in three more places, and the sweep is now
+  mechanical.** #237 fixed four sites and #238 a fifth, each believed complete.
+  Three more were live: `tests/falsify/run.sh` twice and
+  `tests/test-integration-shim.sh` once. They break in three different ways, all
+  observed rather than imagined — `(( n > 0 ))` dying with
+  `((: 0\n0: syntax error in expression`; a `SKIPPED|…` record **split across two
+  lines**, which the harvester reads as two malformed ones (silent corruption of
+  the tier's own output); and a one-line `SCAFFOLD-FAILED` diagnostic splitting
+  in two, precisely in the fork-failure case it exists to report.
+- **The shim site was wrong twice over**, so fixing only the formatting would
+  have left a bug: testing the *pipeline's status* cannot tell "`ps` failed"
+  from "zero processes", and the fallback existed to say **unknown**. It now
+  tests `ps`'s output, so `?` still means unknown and a count still means a
+  count.
+- **`|| true` is not the defect, and that distinction is the rule.** A fallback
+  that prints *nothing* only discards grep's exit status — correct, and the
+  dominant idiom here (18 lines of it). Only a fallback that **prints** appends a
+  second value. A first version of the checker missed this and flagged 18 correct
+  lines; a rule that flags correct code gets switched off.
+- **`tests/test-count-idiom.sh`** now sweeps every tracked and
+  untracked-but-not-ignored script for a counting `grep` whose `||` binds to it
+  *and* prints. It judges each `||` against the command it actually guards, so a
+  match-printing `grep … || echo '<absent>'` and an `[[ … ]] && x || y` ternary
+  are left alone. The rule is tested on known-bad and known-good vectors before
+  it is trusted on the tree, and is demonstrated catching **all eight** original
+  sites.
+
 - **A fifth `grep -c` count kept the idiom #237 fixed at four others.** `grep -c`
   and `grep -vc` always print a count *and* exit 1 when that count is **zero**, so
   guarding one with a printing fallback appends a second zero and the arithmetic
