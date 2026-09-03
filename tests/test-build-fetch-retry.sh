@@ -461,5 +461,81 @@ else
   fail "the scan read only $total fetch site(s) — the extractor is not reading the tree"
 fi
 
+# ── THE TOKEN MUST REACH curl, AND MUST NOT BREAK THE BUILD WHEN ABSENT ──────
+# The credential helper both clone layers set up configures GIT. It does nothing
+# for `curl`, and each of those layers ALSO fetches its installer from
+# raw.githubusercontent.com — GitHub-hosted traffic on the anonymous budget, in a
+# layer where the token is already mounted and exported.
+#
+# STATED HONESTLY: unlike the git clones, there is NO recorded curl failure here.
+# raw.githubusercontent.com is Fastly-cached and answered 200 anonymously when
+# this was written. The argument is that the token is already in the layer and
+# costs one flag — not that a failure was measured. This repo does not widen a
+# fix on symmetry, so the weaker warrant is written down rather than implied.
+#
+# THE NAIVE FORM BREAKS THE NO-TOKEN BUILD, AND THAT IS MEASURED. An
+# unconditional `-H "Authorization: Bearer $GH_TOKEN"` with no secret passed
+# sends an EMPTY bearer and GitHub answers 404 — turning a working anonymous
+# build into a failing one, which is precisely the guarantee this repo asserts.
+#
+#   measured 2026-09-03, raw.githubusercontent.com
+#     empty curl config file (no token)    200
+#     config file carrying the token       200
+#     -H "Authorization: Bearer " (empty)  404   <- breaks anonymous builds
+#
+# So the header goes in a curl CONFIG FILE, written only when the secret exists
+# and EMPTY otherwise — one invocation covering both paths, with the token kept
+# out of the process command line. It is removed in the same statement that
+# removes the installer, because /tmp is part of the image filesystem and a
+# config left there would ship the secret a BuildKit mount exists to keep out.
+for _l in nvm pyenv; do
+  case "$_l" in
+    nvm)   _body="$nvm_run" ;;
+    *)     _body="$pyenv_run" ;;
+  esac
+  [[ -n "$_body" ]] || continue
+  grep -q 'curl -K /tmp/gh-curl.cfg' <<< "$_body" \
+    && pass "the $_l layer's curl presents the token when one was passed" \
+    || fail "the $_l layer's curl presents the token when one was passed — it fetches its installer from raw.githubusercontent.com anonymously while the same layer authenticates git"
+  grep -q ': > /tmp/gh-curl.cfg' <<< "$_body" \
+    && pass "  … and the config is EMPTIED first, so a build with no secret still fetches anonymously" \
+    || fail "  … and the config is EMPTIED first, so a build with no secret still fetches anonymously — an empty bearer is a 404, so the no-token path must send no header at all"
+  grep -qE 'rm -f [^&]*gh-curl\.cfg' <<< "$_body" \
+    && pass "  … and the config is removed, so the token does not ship inside the image" \
+    || fail "  … and the config is removed, so the token does not ship inside the image — /tmp is part of the image filesystem"
+done
+
+# ── EVERY VERSION INSTALL IS RETRIED, NOT ONLY THE BOOTSTRAP ─────────────────
+# The retry loops added for the clone failures wrap the BOOTSTRAP. Three version
+# installs sat outside them, each downloading over the network: nvm's
+# NODE_EXTRA_VERSIONS loop (nodejs.org), pyenv's always-installed latest, and its
+# PYTHON_EXTRA_VERSIONS loop (python.org). One transient failure there failed the
+# whole build with no second attempt — the same shape as the defect that cost a
+# cycle, one statement further down.
+#
+# THE CLEAN SLATE DIFFERS PER TOOL, AND READING THE VENDOR SOURCE IS WHY.
+#   nvm    `nvm install <v>` on an ALREADY-PRESENT version does not reinstall: it
+#          prints "is already installed", runs `nvm use`, and returns THAT status
+#          (nvm.sh:3953, v0.40.7). There is no --force. So a partial version
+#          directory would make the next attempt report SUCCESS on a broken
+#          install — the worst outcome available. The retry therefore uninstalls
+#          first, and deactivates before it, because `nvm uninstall` REFUSES the
+#          currently-active version (nvm.sh:4120).
+#   pyenv  `pyenv install -f` is documented as "install even if version appears
+#          already installed", so it IS the clean slate and needs no removal.
+if [[ -n "$nvm_run" ]]; then
+  grep -q 'nvm uninstall $ver' <<< "$nvm_run" \
+    && pass "a failed node version install is REMOVED before the retry" \
+    || fail "a failed node version install is REMOVED before the retry — nvm install treats an existing directory as 'already installed' and merely uses it (nvm.sh:3953), so a partial one makes the next attempt report success on a broken install"
+  grep -q 'nvm deactivate' <<< "$nvm_run" \
+    && pass "  … after stepping off it, because nvm refuses to uninstall the ACTIVE version" \
+    || fail "  … after stepping off it, because nvm refuses to uninstall the ACTIVE version (nvm.sh:4120) — without the deactivate the cleanup silently does nothing and the retry inherits the debris"
+fi
+if [[ -n "$pyenv_run" ]]; then
+  grep -qE '"\$PYENV_ROOT/bin/pyenv" install "\$(latest|ver)"' <<< "$pyenv_run" \
+    && fail "every pyenv install goes through -f, so a retry reinstalls over a partial version — a bare 'pyenv install' is present, and pyenv refuses when the version directory already exists" \
+    || pass "every pyenv install goes through -f, so a retry reinstalls over a partial version"
+fi
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

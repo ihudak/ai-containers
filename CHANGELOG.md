@@ -8,6 +8,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The token reached `git` but not `curl`, and the naive fix would have broken
+  builds without one.** Both clone layers set up a credential helper for `git`,
+  and both then fetch their installer from `raw.githubusercontent.com` with
+  `curl` — anonymously, in a layer where the token is already mounted. Stated
+  plainly: unlike the git clones there is **no recorded curl failure** here
+  (`raw.githubusercontent.com` is Fastly-cached and answers 200 anonymously); the
+  warrant is that the token is already in the layer and costs one flag. But an
+  unconditional `-H "Authorization: Bearer $GH_TOKEN"` sends an **empty bearer**
+  when no secret is passed, and GitHub answers **404** — turning a working
+  anonymous build into a failing one. The header now goes in a curl **config
+  file**, written only when the secret exists and empty otherwise: one
+  invocation covering both paths, the token kept out of the process command line,
+  and removed with the installer because `/tmp` ships in the image. wkhtmltopdf
+  is deliberately **not** changed — its release URL redirects cross-host, where
+  curl strips the header by default.
+- **Three version installs ran outside the retry loops that were added for
+  exactly this.** nvm's `NODE_EXTRA_VERSIONS` loop, pyenv's always-installed
+  latest, and its `PYTHON_EXTRA_VERSIONS` loop each download over the network,
+  and one transient failure failed the whole build with no second attempt. The
+  clean slate differs per tool, from the vendor source rather than by analogy:
+  `nvm install <v>` on an already-present version **does not reinstall** — it
+  prints *"is already installed"*, runs `nvm use`, and returns that status
+  (`nvm.sh:3953`), with no `--force`, so a partial directory would make the retry
+  **report success on a broken install**; the retry therefore uninstalls first,
+  and deactivates before it, because `nvm uninstall` refuses the currently-active
+  version (`nvm.sh:4120`). `pyenv install -f` is documented as *"install even if
+  version appears already installed"* and is itself the clean slate.
+
+### Fixed
+
 - **One unmeasurable control voided a 95-minute mutation corpus.** Phase 6 of a
   full local cycle failed with the ledger unscored — not on a mutant, but because
   1 of 34 **pristine** controls self-aborted at 27.2s (`signal=exit+scaffold`)
