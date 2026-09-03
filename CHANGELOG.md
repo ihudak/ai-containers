@@ -8,6 +8,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A stale `GITHUB_TOKEN` silently dropped a public tool.** #234 gave the
+  Dockerfile's installer fetches an anonymous fallback for a credential the
+  server rejects; `install-tools.sh` was the one place outside that change.
+  Measured against `dynatrace-oss/dtctl`'s `releases/latest`: **no token 200,
+  valid token 200, stale token 401**. `-f` turns that 401 into a failed transfer,
+  `api_get` returns empty, and the tool is skipped — so a **public** tool that
+  installs fine with *no* token stops installing because a variable was set. Every
+  failure here is non-fatal by design, which is what made it quiet: the build
+  stays green and the image simply ships without a tool `sandbox.conf` asked for,
+  while the diagnostic advised *"set GITHUB_TOKEN"* — which is set. Both optional
+  paths now retry anonymously, and the message distinguishes a stale token from
+  an absent one. The **private** release-asset path deliberately does not: there
+  the token is a requirement rather than headroom, so an anonymous retry cannot
+  succeed. The fallback is written out at each site rather than wrapped in a
+  helper, because a wrapper forwarding `"$@"` hides the `-f`/`--retry` flags from
+  `test-build-fetch-retry.sh`'s per-site scan.
+- `api_get`'s call-count assertions now pin the credential state explicitly.
+  The new fallback makes the count depend on whether a token was configured, so
+  inheriting `AUTH_ARGS` from the environment would have made those tests mean
+  different things on different machines — green where `GITHUB_TOKEN` is unset,
+  red where it is exported, for a reason unrelated to the code.
+
+### Fixed
+
 - **`actions/upload-artifact@v5` is still node20, so a v4 → v5 bump fixes
   nothing.** GitHub is retiring the node20 action runtime. An action's runtime is
   declared in its own `action.yml` (`runs.using:`) and is **not** implied by how

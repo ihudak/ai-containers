@@ -965,6 +965,14 @@ rm -rf "$RTMP"
 # by the time control reaches this line the probe passes and the run is scored
 # KILLED anyway — measured, 6 of 16 before the probe was moved into fail().
 # --- api_get: the retry loop, exercised (backlog F4) ---------------------------
+# THE CREDENTIAL STATE IS PINNED FOR THIS WHOLE SECTION. These cases count curl
+# invocations to exercise the RETRY LOOP, and api_get makes one extra anonymous
+# pass when a credential was configured and every attempt failed. Inheriting
+# AUTH_ARGS from the environment would therefore make each count mean something
+# different depending on whether the developer happens to export GITHUB_TOKEN —
+# green on one machine, red on another, for a reason unrelated to the code. The
+# cases that are ABOUT the credential set it themselves, below.
+AUTH_ARGS=()
 # The release path's GitHub API call, and the one function in this file nothing
 # executed. Its siblings install_repo_file, install_url and expand_placeholders
 # all run transitively via install_one; this ran only when a real network call
@@ -1027,9 +1035,25 @@ ag_check "  … and never sleeping" "0" "$AG_SLEEPS"
 #    suppress the way it suppresses an HTTP error page. api_get kept `body` from
 #    the failed attempt and returned the fragment as the API's answer, which
 #    install_one would then parse for a tag.
+# THE CALL COUNT DEPENDS ON WHETHER A CREDENTIAL WAS CONFIGURED, so both states
+# are pinned here rather than left to the developer's environment. api_get takes
+# three attempts; when a token was configured it then makes ONE anonymous pass,
+# because a STALE credential otherwise skips a public tool that installs fine
+# with no token at all. Before that fallback existed this assertion happened to
+# hold either way, and a run with GITHUB_TOKEN exported would now silently mean
+# something different from a run without it.
+AUTH_ARGS=()
 ag_run 22 'partial-body-then-connection-reset'
 ag_check "api_get gives up empty after three failed attempts, discarding any partial body" "" "$AG_OUT"
-ag_check "  … having called curl three times" "3" "$AG_CALLS"
+ag_check "  … having called curl three times, with no credential to fall back from" "3" "$AG_CALLS"
+
+AUTH_ARGS=(-H "Authorization: Bearer tok-stale")
+ag_run 22 'partial-body-then-connection-reset'
+ag_check "  … and a FOURTH, anonymous, when a credential was configured and failed" "4" "$AG_CALLS"
+grep -q 'Authorization' <<< "$(tail -1 "$AG_CURL_LOG")" \
+  && fail "  … with the credential dropped on that last attempt" \
+  || pass "  … with the credential dropped on that last attempt"
+AUTH_ARGS=()   # back to the section default for the cases that follow
 ag_check "  … and waited twice, between the attempts and not after the last" "2" "$AG_SLEEPS"
 ag_check "  … five seconds each time" "5"$'\n'"5" "$(cat "$AG_SLEEP_LOG")"
 
@@ -1077,6 +1101,96 @@ ag_check "  … and works with no AUTH_ARGS configured at all" '{"ok":true}' "$A
 grep -q 'Authorization' "$AG_CURL_LOG" \
   && fail "  … sending no Authorization header when there is no token" \
   || pass "  … sending no Authorization header when there is no token"
+
+# --- a STALE token must not silently drop a PUBLIC tool ------------------------
+# A token that EXISTS and is STALE — rotated in `gh`, still exported from a shell
+# profile — is a case AGENTS.md documents as live. Measured 2026-09-03 against
+# dynatrace-oss/dtctl's releases/latest: no token 200, valid token 200, STALE
+# 401. `-f` turns that 401 into a failed transfer, api_get returns empty, and the
+# tool is SKIPPED. So a PUBLIC tool that installs fine with NO token stops
+# installing because a variable was set, and because every failure here is
+# non-fatal by design the build still succeeds — the image just ships without a
+# tool sandbox.conf asked for.
+#
+# Same defect #234 fixed for the Dockerfile's installer fetches; this was the one
+# place outside that change. The fake curl below reproduces the server's
+# behaviour rather than the symptom: it FAILS whenever it is given an
+# Authorization header and succeeds without one, so the assertion is about the
+# fallback actually happening, not about a string in the source.
+STALE_LOG="$TMP/stale-curl.log"
+# ITS OWN BIN DIR AND ITS OWN AUTH STATE. Earlier sections in this file
+# deliberately `unset TOOLS_BIN_DIR` (line ~805) and `unset AUTH_ARGS`
+# (line ~1074), so a block at the end of the file that inherits either is
+# reading whatever the last test left behind — which for BIN_DIR is
+# /usr/local/bin, i.e. outside the scratch tree.
+# SELF-CONTAINED, because earlier sections deliberately unset the state this
+# needs: TOOLS_BIN_DIR (line ~805) and TOOLS_D_DIR, which is restored to the REAL
+# tools.d at line ~407 and then left behind. A block at the end of the file that
+# inherits either is reading whatever the last test happened to leave, and
+# install_one exits without a descriptor — silently, which is how this first
+# presented.
+export TOOLS_BIN_DIR="$TMP/bin-stale"; mkdir -p "$TOOLS_BIN_DIR"
+BIN_DIR="$TOOLS_BIN_DIR"
+scaffold_dir "mkdir TOOLS_BIN_DIR for the stale-token case" "$TOOLS_BIN_DIR"
+export TOOLS_D_DIR="$TMP/tools.d-stale"; mkdir -p "$TOOLS_D_DIR"
+cat > "$TOOLS_D_DIR/ext.conf" <<'EOF'
+repo=acme/vendored
+binary=ext-cli
+install=repo-file
+repo_path=utils/ext/ext-cli-linux-${ARCH}
+EOF
+scaffold_file "write ext.conf for the stale-token case" "$TOOLS_D_DIR/ext.conf"
+cat > "$FAKEBIN/curl" <<CURL
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$STALE_LOG"
+for a in "\$@"; do [[ "\$a" == Authorization:* ]] && exit 22; done
+out=""; prev=""
+for a in "\$@"; do [[ "\$prev" == "-o" ]] && out="\$a"; prev="\$a"; done
+[[ -n "\$out" ]] && printf 'ELF-ish payload\n' > "\$out"
+exit 0
+CURL
+chmod +x "$FAKEBIN/curl"
+scaffold_exec "fake curl (rejects a credential, serves anonymously)" "$FAKEBIN/curl"
+
+: > "$STALE_LOG"
+rm -f "$TOOLS_BIN_DIR/ext-cli"
+# SET EXPLICITLY, NOT AS A COMMAND PREFIX: `AUTH_ARGS=(…) cmd` is an ARRAY in a
+# prefix assignment, which bash does not apply to a function call the way it does
+# a scalar — the call died silently here before this was unwound.
+# shellcheck disable=SC2034  # both are read by install_one in the file sourced at the top, which shellcheck does not follow
+GITHUB_TOKEN=ghp_staleValue
+# shellcheck disable=SC2034  # ditto
+AUTH_ARGS=(-H "Authorization: Bearer ghp_staleValue")
+PATH="$FAKEBIN:$PATH" ARCH=arm64 install_one ext 9f3c1ab >/dev/null 2>&1 || true
+_auth_tries="$(grep -c 'Authorization:' "$STALE_LOG" 2>/dev/null || printf 0)"
+_anon_tries="$(grep -vc 'Authorization:' "$STALE_LOG" 2>/dev/null || printf 0)"
+
+if [[ -s "$TOOLS_BIN_DIR/ext-cli" ]]; then
+  pass "a stale token does not drop a public tool — the fetch is retried anonymously"
+else
+  fail "a stale token does not drop a public tool — the fetch is retried anonymously: nothing was installed, so a credential the server rejects still costs the tool (build stays green, image ships without it)"
+fi
+if (( _auth_tries >= 1 && _anon_tries >= 1 )); then
+  pass "  … and it TRIED the credential first, so the token is still headroom"
+else
+  fail "  … and it TRIED the credential first, so the token is still headroom — saw $_auth_tries authenticated and $_anon_tries anonymous request(s); dropping the credential entirely would pass the assertion above while throwing away the rate-limit budget the token exists for"
+fi
+
+# NOT VACUOUS: with NO token there must be exactly one request and no fallback,
+# because a helper that always made two would double every anonymous build's
+# GitHub traffic while still satisfying both assertions above.
+: > "$STALE_LOG"
+rm -f "$TOOLS_BIN_DIR/ext-cli"
+unset GITHUB_TOKEN
+# shellcheck disable=SC2034  # read by install_one in the file sourced at the top
+AUTH_ARGS=()
+PATH="$FAKEBIN:$PATH" ARCH=arm64 install_one ext 9f3c1ab >/dev/null 2>&1 || true
+_n="$(grep -c . "$STALE_LOG" 2>/dev/null || printf 0)"
+if (( _n == 1 )); then
+  pass "  … while a build with NO token makes exactly one request, not two"
+else
+  fail "  … while a build with NO token makes exactly one request, not two — saw $_n, so the fallback fires when there is no credential to fall back from"
+fi
 
 unset -f sleep
 
