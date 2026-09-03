@@ -29,7 +29,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   rather than the `: >` spelling — it failed on a change that preserved the
   behaviour it names.
 
-
 ### Fixed
 
 - **The count idiom survived in three more places, and the sweep is now
@@ -2678,7 +2677,6 @@ that asserted the git path only where the checkout happened to have tags. Both
 had been green on somebody's machine while asserting nothing on everybody
 else's. The lesson each time was the same: construct the state the test needs
 instead of inheriting it.
-
 
 ### `--version`, and a PATH repair that took bash with it
 
