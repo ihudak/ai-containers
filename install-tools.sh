@@ -27,6 +27,34 @@ else
   AUTH_ARGS=()
 fi
 
+# THE TOKEN IS HEADROOM, SO A STALE ONE MUST NOT COST A PUBLIC TOOL.
+#
+# A token that EXISTS and is STALE — rotated in `gh`, still exported from a shell
+# profile — is a case AGENTS.md documents as live. Measured 2026-09-03 against
+# dynatrace-oss/dtctl's releases/latest:
+#
+#     no token      200 (anonymous, 60/h)
+#     valid token   200
+#     STALE token   401
+#
+# `-f` turns that 401 into a failed transfer, so the tool is SKIPPED — a PUBLIC
+# tool that installs fine with NO token stops installing because a variable was
+# set. Every failure here is non-fatal by design, which is what makes it quiet:
+# the build stays green and the image simply ships without a tool sandbox.conf
+# asked for. Same defect #234 fixed for the Dockerfile's installer fetches; this
+# script was the one place outside that change.
+#
+# THE FALLBACK IS WRITTEN OUT AT EACH SITE, NOT WRAPPED IN A HELPER. A wrapper
+# forwarding "$@" hides the `-f` and `--retry` flags from
+# tests/test-build-fetch-retry.sh, which scans each curl invocation for them and
+# is right to: it cannot know what a caller passes.
+#
+# ONLY WHERE THE TOKEN IS OPTIONAL. For a PRIVATE tool it is a requirement, not
+# headroom (see the table in AGENTS.md); the private release-asset path therefore
+# has no fallback, because an anonymous retry there cannot succeed and would add
+# a guaranteed-failing request and a misleading diagnostic to a case already
+# reported correctly.
+
 # api_get <url> — GET the GitHub API with retries; echo body (empty on failure).
 api_get() {
   local url="$1" body="" i
@@ -43,6 +71,18 @@ api_get() {
     body=""
     [ "$i" -lt 3 ] && { echo "  API attempt $i failed, retrying in 5s..." >&2; sleep 5; }
   done
+  # ONE ANONYMOUS PASS, AT THIS LEVEL RATHER THAN PER ATTEMPT. A stale token
+  # makes every attempt above fail, and this recovers a PUBLIC tool that would
+  # otherwise be skipped (see gh_curl's note for the measurement). Doing it
+  # inside the loop instead would double EVERY attempt — three calls become six
+  # — spending twice the rate-limit budget on exactly the path where it is
+  # already short, and breaking the "three attempts" contract this function's
+  # own tests pin.
+  if [ -z "$body" ] && [ -n "${AUTH_ARGS[*]+set}" ] && [ "${#AUTH_ARGS[@]}" -gt 0 ]; then
+    echo "  API request failed with a credential; retrying anonymously (is GITHUB_TOKEN stale?)" >&2
+    body=$(curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors \
+             -H "Accept: application/vnd.github+json" "$url") || body=""
+  fi
   printf '%s' "$body"
 }
 
@@ -89,7 +129,11 @@ install_repo_file() {
 
   echo "Installing ${name} from ${repo}:${path}..."
   if ! curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors ${AUTH_ARGS[@]+"${AUTH_ARGS[@]}"} \
-         -H "Accept: application/vnd.github.raw" "$url" -o "$tmp"; then
+         -H "Accept: application/vnd.github.raw" "$url" -o "$tmp" \
+     && ! { [ -n "${AUTH_ARGS[*]+set}" ] && [ "${#AUTH_ARGS[@]}" -gt 0 ] \
+            && echo "  authenticated fetch failed; retrying anonymously (is GITHUB_TOKEN stale?)" >&2 \
+            && curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors \
+                 -H "Accept: application/vnd.github.raw" "$url" -o "$tmp"; }; then
     echo "WARNING: download failed for ${name} (${repo}:${path}) — skipping." >&2
     echo "         Check the path exists on that ref and that GITHUB_TOKEN grants access." >&2
     rm -f "$tmp"
@@ -298,7 +342,16 @@ install_one() {
               | jq -r '.tag_name // empty')
       if [ -z "$tag" ]; then
         echo "WARNING: could not resolve latest ${name} (rate limit?) — skipping." >&2
-        echo "         Pin a version in sandbox.conf (e.g. ${name}=0.25.0) or set GITHUB_TOKEN." >&2
+        # The advice has to match the state. Telling someone to set GITHUB_TOKEN
+        # when it IS set sends them to the one place that is already done, and a
+        # stale value is exactly the case that reaches here after the anonymous
+        # retry above has also failed.
+        if [ -n "${GITHUB_TOKEN:-}" ]; then
+          echo "         GITHUB_TOKEN is set; an anonymous retry also failed. If it is stale, refresh or unset it." >&2
+          echo "         Or pin a version in sandbox.conf (e.g. ${name}=0.25.0), which needs no API call." >&2
+        else
+          echo "         Pin a version in sandbox.conf (e.g. ${name}=0.25.0) or set GITHUB_TOKEN." >&2
+        fi
         return 0
       fi
     else
