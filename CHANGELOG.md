@@ -8,6 +8,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Three more `grep -c` printing fallbacks, outside the file #238 swept.** That
+  fix added a sweep for the idiom but scoped it to `${BASH_SOURCE[0]}` — its own
+  file — so the class was fixed in one place and left standing in three others:
+  two in `tests/falsify/run.sh` and one in `tests/test-integration-shim.sh`.
+- **Two of them fed arithmetic directly, which is the consequential shape.**
+  `tests/falsify/run.sh` computed `n_mut="$(grep -c . "$mutants" || printf 0)"`
+  and then used it in `(( FR_CONTROLS > 0 && n_mut > 0 ))` and
+  `ctl_pos=$(( ci * n_mut / (FR_CONTROLS + 1) ))`. On an empty mutant file
+  `grep -c` prints `0` **and** exits 1, so the fallback appends a second zero,
+  the value becomes `$'0\n0'`, and the arithmetic dies with a syntax error
+  instead of taking the `n_mut == 0` branch that already exists.
+- **The guard is now repo-wide**, in `tests/test-grep-q-pipelines.sh` — where the
+  other repo-wide grep rule already lives — scanning all 169 tracked and
+  untracked scripts rather than one file. Its pattern forbids `)` and `|`
+  between the count and the `||`, so a `-c` with no fallback followed by a
+  *different* grep that has one is not flagged; that shape is real
+  (`tests/test-repos-path.sh:78`) and a naive pattern reports it. Demonstrated
+  in both directions: all three offending shapes (`-c`, `-vc`, piped) are
+  caught, and the correct `n="$(grep -c X f)"; n="${n:-0}"` form is not.
+
+
+### Fixed
+
 - **A fifth `grep -c` count kept the idiom #237 fixed at four others.** `grep -c`
   and `grep -vc` always print a count *and* exit 1 when that count is **zero**, so
   guarding one with a printing fallback appends a second zero and the arithmetic

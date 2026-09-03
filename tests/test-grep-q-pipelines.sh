@@ -144,6 +144,57 @@ while IFS= read -r f; do
   done < <(grep -nE '[^|]\|[[:space:]]*grep[[:space:]]+-[a-zA-Z-]*q' "$REPO_DIR/$f" | cut -d: -f1)
 done < <(cd "$REPO_DIR" && { git ls-files '*.sh'; git ls-files --others --exclude-standard '*.sh'; } | sort -u)
 
+# ── A COUNT MUST NOT BE GUARDED WITH A PRINTING FALLBACK ─────────────────────
+# `grep -c` and `grep -vc` PRINT the count and EXIT 1 when that count is ZERO.
+# So `n="$(grep -c X f || printf 0)"` runs the fallback on the zero path and
+# appends a SECOND zero: n becomes $'0\n0'. Measured, not reasoned — the
+# arithmetic that reads it then dies with a syntax error:
+#
+#   $ : > empty; v="$(grep -c . empty || printf 0)"; echo $(( v + 1 ))
+#   bash: 0: syntax error in expression
+#
+# It is wrong ONLY on the zero path, which is the FAILURE path — exactly when
+# the count is needed to explain what went wrong. That is why it survives
+# review, and why it has now recurred six times in this repo.
+#
+# tests/test-tools-d.sh gained a sweep for this in #238, scoped to itself with
+# `${BASH_SOURCE[0]}`. Three more instances were sitting outside that file, two
+# of them in tests/falsify/run.sh feeding `(( ... ))` directly — so the rule
+# belongs where the other repo-wide grep rule already lives.
+#
+# THE PATTERN FORBIDS `)` AND `|` BETWEEN THE COUNT AND THE `||`, so that a
+# `-c` with no fallback followed by a DIFFERENT grep that has one is not
+# flagged. That shape is real: tests/test-repos-path.sh:78 has it, and a naive
+# pattern reports it. Failing safe means under-reporting here, not crying wolf.
+#
+# The correct form assigns, then defaults:
+#   n="$(grep -c X f 2>/dev/null)"; n="${n:-0}"
+#
+# Assembled rather than written whole, so this rule is subject to itself
+# instead of matching its own definition.
+count_idiom="grep -[a-zA-Z]*c[a-zA-Z]*[^)|]*\\|\\|[[:space:]]*(pr""intf|ec""ho)"
+count_scanned=0
+count_offenders=0
+count_list=""
+while IFS= read -r f; do
+  [[ -f "$REPO_DIR/$f" ]] || continue
+  count_scanned=$((count_scanned + 1))
+  while IFS=: read -r n _; do
+    [[ -n "$n" ]] || continue
+    line="$(sed -n "${n}p" "$REPO_DIR/$f")"
+    case "${line#"${line%%[![:space:]]*}"}" in '#'*) continue ;; esac
+    count_offenders=$((count_offenders + 1))
+    count_list="${count_list}
+  $f:$n  ${line#"${line%%[![:space:]]*}"}"
+  done < <(grep -nE "$count_idiom" "$REPO_DIR/$f" | cut -d: -f1)
+done < <(cd "$REPO_DIR" && { git ls-files '*.sh'; git ls-files --others --exclude-standard '*.sh'; } | sort -u)
+
+if (( count_offenders == 0 )); then
+  pass "no count in $count_scanned script(s) is guarded with a printing fallback"
+else
+  fail "a grep count is guarded with a printing fallback — grep -c prints 0 AND exits 1, so the guard yields \$'0\\n0' and the reader dies on the failure path. Use: n=\"\$(grep -c X f)\"; n=\"\${n:-0}\"$count_list"
+fi
+
 if [[ "$scanned" -gt 0 ]]; then
   pass "scanned $scanned tracked script(s) running under pipefail (set here or by a caller that sources them)"
 else

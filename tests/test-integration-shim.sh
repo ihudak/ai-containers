@@ -62,7 +62,7 @@ scaffold_step() {   # <what> <command...>
       "$what" "$rc"
     printf 'SCAFFOLD-FAILED:   procs: ulimit -u=%s in-use=%s | target: %s\n' \
       "$(ulimit -u 2>/dev/null || printf '?')" \
-      "$(ps -o pid= -u "$(id -u)" 2>/dev/null | grep -c . || printf '?')" \
+      "$(_n="$(ps -o pid= -u "$(id -u)" 2>/dev/null | grep -c .)"; printf '%s' "${_n:-?}")" \
       "$(ls -ld "${!#}" 2>&1 | head -1)"
   fi
   exit 1
