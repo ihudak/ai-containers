@@ -8,6 +8,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A stale `GITHUB_TOKEN` failed builds that work fine without one.** The
+  previous entry made `curl` present the token through a config file, and got the
+  ABSENT case right — an empty config sends no header, so a build with no secret
+  still fetches anonymously. There is a third state it did not cover, and it is
+  the one a real machine reaches: a token that **exists and is stale**, rotated in
+  `gh` but still exported from a shell profile — a case `AGENTS.md` already names
+  as live. `-K` puts the header on the **first** request unconditionally, so with
+  `-f` a credential the server will not honour fails the fetch outright.
+  Measured 2026-09-03 against both installer URLs: no token `200`, valid token
+  `200`, **stale token `404`**.
+- **And GitHub answers such a credential with 404, not 401**, so the symptom is
+  indistinguishable from *"the vendor moved the installer"* — the very diagnosis
+  the `-f` on those lines is documented as making loud. A build that works
+  anonymously stopped working because a variable was set, and the error blamed
+  pyenv.
+- **The `git` half of the same layer never had the problem**, which is what makes
+  this an asymmetry rather than a cost of authenticating: git tries anonymously
+  and presents the credential only **when challenged**. `curl` has no such
+  protocol, so each layer now fetches its installer a second time **without** the
+  config when the authenticated attempt fails. A stale token costs one wasted
+  retry budget instead of the image. Verified end to end against the live URL —
+  stale token, first attempt fails, fallback returns the real 17870-byte
+  installer — and the guard is demonstrated failing two ways: a bare
+  (untestable) authenticated `curl`, and a fallback that still sends the config.
+
 - **The token reached `git` but not `curl`, and the naive fix would have broken
   builds without one.** Both clone layers set up a credential helper for `git`,
   and both then fetch their installer from `raw.githubusercontent.com` with
