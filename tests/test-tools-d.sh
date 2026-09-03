@@ -1190,7 +1190,7 @@ unset GITHUB_TOKEN
 # shellcheck disable=SC2034  # read by install_one in the file sourced at the top
 AUTH_ARGS=()
 PATH="$FAKEBIN:$PATH" ARCH=arm64 install_one ext 9f3c1ab >/dev/null 2>&1 || true
-_n="$(grep -c . "$STALE_LOG" 2>/dev/null || printf 0)"
+_n="$(grep -c . "$STALE_LOG" 2>/dev/null)"; _n="${_n:-0}"
 if (( _n == 1 )); then
   pass "  … while a build with NO token makes exactly one request, not two"
 else
@@ -1242,6 +1242,31 @@ if grep -q 'retrying anonymously' "$TMP/priv.out"; then
   fail "  … and it does not print the stale-token diagnostic for a private tool, which sends the reader at the wrong cause"
 else
   pass "  … and it does not print the stale-token diagnostic for a private tool"
+fi
+
+# ── THE COUNT IDIOM, SWEPT ────────────────────────────────────────────────────
+# `grep -c` and `grep -vc` ALWAYS print a count and exit 1 when that count is
+# ZERO, so guarding one with a fallback that PRINTS appends a SECOND zero, and
+# the arithmetic below it dies with a syntax error instead of failing cleanly.
+# It is wrong ONLY on the zero path — which is the failure path, i.e. exactly
+# when an assertion needs to explain itself, and why it survives review.
+#
+# #237 fixed four sites; a fifth kept it and broke the same way. A class that
+# recurs gets a sweep rather than a third individual fix. `${x:-0}` is the
+# correct idiom: grep's output is already the count, and the default only has to
+# cover grep not running at all.
+#
+# THE PATTERN IS ASSEMBLED, AND WHOLE-LINE COMMENTS ARE SKIPPED, so this file is
+# genuinely subject to its own rule rather than exempted by path: written out,
+# the rule's own prose and its failure message would match it. Same reasoning as
+# the sweep in tests/test-sourced-guards.sh.
+_cidiom="grep -(c|vc)[^|]*\|\| *pr""intf"
+_bad_counts="$(grep -nE "$_cidiom" "${BASH_SOURCE[0]}" | grep -vE '^[0-9]+:[[:space:]]*#' || true)"
+if [[ -z "$_bad_counts" ]]; then
+  pass "no grep count in this file is guarded with a printing fallback"
+else
+  fail "no grep count in this file is guarded with a printing fallback — grep prints 0 AND exits 1, so the guard doubles the value and the arithmetic reading it dies on the failure path:"
+  printf '%s\n' "$_bad_counts" | sed 's/^/         /'
 fi
 
 unset -f sleep
