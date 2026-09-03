@@ -2232,4 +2232,75 @@ else
   [[ -d "$scratch_root/tmp" ]]     && pass "  … while the shared parent SURVIVES, so a concurrent worker's mkdir -p cannot race an rmdir of it"     || fail "  … while the shared parent SURVIVES — '$scratch_root/tmp' was removed, so a worker creating into it at that moment gets a TMPDIR that does not exist and its mutant leaves the measured set"
 fi
 
+# ── AN UNMEASURABLE CONTROL IS THE HOST, NOT THE CODE ────────────────────────
+# fr_run_control maps falsify_verdict's three words onto PASS/FAIL. SURVIVED is
+# PASS (the oracle ran and there was nothing to see). KILLED is FAIL and must
+# stay fatal — the oracle went RED on undamaged code, which is the entire reason
+# controls exist. UNPROVEN is neither: the oracle could not be MEASURED — it
+# timed out, printed SCAFFOLD-FAILED, or died on a signal.
+#
+# That third word used to be folded in with KILLED, so ONE unmeasurable control
+# ended the corpus with the ledger unscored. Measured 2026-09-03: 1 of 34
+# controls self-aborted at 27.2s (signal=exit+scaffold) and discarded a
+# 95-minute run whose other 33 controls passed and whose mutants all had
+# verdicts. Everywhere else in this tier that word is a property of the HOST — a
+# mutant landing there is UNPROVEN rather than a false KILL, and AGENTS.md
+# exempts it from the ledger outright.
+#
+# It is now RETRIED ONCE, which MEASURES the difference instead of guessing a
+# threshold. All three arms are asserted, because the value is in the contrast:
+# absorbing a transient blip is only correct if a persistent one still fails,
+# and if a genuinely red oracle is never handed a second chance to come good.
+ctl_case() {   # <mode> → "<attempts>|<verdict>|<retried yes/no>"
+  local mode="$1" d oracle n v r
+  d="$TMP/ctl-$mode"; rm -rf "$d"; mkdir -p "$d/work/w0/tests" "$d/out"
+  oracle="$d/work/w0/tests/orc.sh"
+  case "$mode" in
+    transient)  printf '%s\n' '#!/usr/bin/env bash' \
+                  'n=$(( $(wc -l < "$ATTEMPTS" 2>/dev/null || echo 0) + 1 )); echo x >> "$ATTEMPTS"' \
+                  '[[ "$n" -eq 1 ]] && { echo "SCAFFOLD-FAILED: simulated load burst"; exit 1; }' \
+                  'echo "PASS: fixture"; exit 0' > "$oracle" ;;
+    persistent) printf '%s\n' '#!/usr/bin/env bash' \
+                  'echo x >> "$ATTEMPTS"' \
+                  'echo "SCAFFOLD-FAILED: simulated persistent breakage"; exit 1' > "$oracle" ;;
+    red)        printf '%s\n' '#!/usr/bin/env bash' \
+                  'echo x >> "$ATTEMPTS"' \
+                  'echo "FAIL: red on undamaged code"; exit 1' > "$oracle" ;;
+  esac
+  chmod +x "$oracle"
+  : > "$d/attempts"
+  ( set +u
+    export ATTEMPTS="$d/attempts"
+    # OWN THE TEMP NAMESPACE. falsify_run_oracle's watchdog opens a tick FIFO at
+    # "$TMPDIR/falsify.tick.$BASHPID" and unlinks it immediately; a watchdog
+    # killed inside that window leaves the node behind. Rare per oracle, and
+    # this helper runs five of them, so run-all.sh's litter check saw two.
+    # Pointing TMPDIR at this case's own scratch means anything that does escape
+    # dies with $TMP instead of accumulating in the suite's shared directory.
+    export TMPDIR="$d"
+    # shellcheck source=/dev/null
+    source "$RUN" >/dev/null 2>&1
+    # Each on its own line with its own directive: a `disable` covers only the
+    # FIRST command on the line it precedes, so the four-assignment one-liner
+    # this replaced left two of them flagged and the lint gate red.
+    FR_WORK="$d/work"
+    FR_OUT="$d/out"
+    # shellcheck disable=SC2034  # read by fr_run_control in the file sourced above, which shellcheck does not follow
+    FR_SCRATCH="$d"
+    # shellcheck disable=SC2034  # read by falsify_run_oracle in the file sourced above
+    FR_DRIVER_REL="tests/orc.sh"
+    fr_run_control 0 "demo-target" "orc.sh" 1 "$d/res" ) >/dev/null 2>&1
+  n="$(wc -l < "$d/attempts" 2>/dev/null | tr -d ' ')"
+  v="$(sed -n 's/^CONTROL|\([A-Z]*\)|.*/\1/p' "$d/res" 2>/dev/null | head -1)"
+  r=no; grep -q '^NOTE|control-retried' "$d/res" 2>/dev/null && r=yes
+  printf '%s|%s|%s' "${n:-0}" "${v:-none}" "$r"
+}
+
+check "a control that is UNMEASURABLE once is retried, and the retry decides it" \
+  "2|PASS|yes" "$(ctl_case transient)"
+check "  … one that stays unmeasurable still FAILS, so the guard keeps its teeth" \
+  "2|FAIL|yes" "$(ctl_case persistent)"
+check "  … and one RED on undamaged code fails on the FIRST attempt, never retried" \
+  "1|FAIL|no" "$(ctl_case red)"
+
 printf '\n%d failure(s)\n' "$fails"; exit "$fails"

@@ -1353,12 +1353,58 @@ fr_run_control() {   # <slot> <target> <oracle> <n> <resultfile>
   out="$FR_OUT/w$slot.log"
   falsify_run_oracle "$tree" "$oracle" "$out" "$(fr_effective_timeout "$oracle")" "c$slot.n$n"
   falsify_verdict "$FALSIFY_RC" "$out" "$FALSIFY_TIMED_OUT"
+
+  # UNPROVEN ON A PRISTINE TREE IS THE MACHINE, NOT THE CODE — AND IT USED TO
+  # VOID THE WHOLE RUN.
+  #
+  # falsify_verdict has three words. SURVIVED means the oracle ran and noticed
+  # nothing, which on an unmutated tree is PASS. KILLED means it ran and went
+  # RED with no mutation present — a real finding, fatal, and the reason
+  # controls exist. UNPROVEN means it could not be measured at all: it timed
+  # out, printed SCAFFOLD-FAILED, or died on a signal.
+  #
+  # Everything else in this tier treats that third word as a property of the
+  # HOST. A mutant that lands there is UNPROVEN rather than a false KILL
+  # (run.sh:504), and AGENTS.md exempts it from the ledger outright — "a ratchet
+  # that cannot be satisfied everywhere at once is not a ratchet". Only here was
+  # it folded in with KILLED, so one unmeasurable control ended the corpus with
+  # the ledger unscored.
+  #
+  # Measured 2026-09-03: 1 of 34 controls self-aborted at 27.2s
+  # (signal=exit+scaffold, tests/bash-dialect-lint.sh) and discarded a 95-minute
+  # run. The other 33 passed, every mutant already had a verdict, and nothing
+  # about the CODE was in question.
+  #
+  # SO IT IS RETRIED ONCE, WHICH IS THE MEASUREMENT THAT SEPARATES THE TWO
+  # CASES rather than a threshold guessed in advance. Transient load passes the
+  # second time; a genuinely broken or persistently unmeasurable oracle fails
+  # twice and stays fatal, so the guard keeps its teeth. A KILLED control is NOT
+  # retried — the oracle went red on undamaged code, retrying only risks
+  # laundering a flaky assertion into a pass.
+  local retried=0 first_signal=""
+  if [[ "$FALSIFY_VERDICT" == "UNPROVEN" ]]; then
+    retried=1
+    first_signal="${FALSIFY_SIGNAL:-none}"
+    falsify_run_oracle "$tree" "$oracle" "$out" "$(fr_effective_timeout "$oracle")" "c$slot.n$n.retry"
+    falsify_verdict "$FALSIFY_RC" "$out" "$FALSIFY_TIMED_OUT"
+  fi
+
   # SURVIVED is falsify_verdict's word for "the oracle noticed nothing", which
   # on an unmutated tree is exactly PASS. Anything else means the oracle went
   # red with no mutation present.
   if [[ "$FALSIFY_VERDICT" == "SURVIVED" ]]; then verdict=PASS; else verdict=FAIL; fi
   printf 'CONTROL|%s|%s|%s|%s|%s|%s\n' \
     "$verdict" "$target" "$oracle" "$n" "$FALSIFY_SIGNAL" "$FALSIFY_MS" > "$res"
+
+  # A RETRY THAT NOBODY COUNTS IS A GATE QUIETLY GETTING WEAKER. A host that
+  # needs one control in thirty retried is loaded; a host that retries half of
+  # them is telling you the tier is no longer measuring anything there, and that
+  # has to be visible without reading verdicts one by one. Carried as a NOTE so
+  # the 7-field CONTROL grammar the harvester parses is untouched.
+  if (( retried == 1 )); then
+    printf 'NOTE|control-retried|%s|%s (first attempt %s, retried: %s)\n' \
+      "$target" "$oracle" "$first_signal" "$FALSIFY_VERDICT" >> "$res"
+  fi
 
   # A FAILED CONTROL THAT CANNOT SAY WHAT FAILED IS HALF A FINDING. `$out` is
   # "$FR_OUT/w<slot>.log" — per SLOT, reused by the next mutant that lands
@@ -1434,6 +1480,7 @@ FR_SKIPPED_MUTANTS=0
 # same load as the mutants around it. See fr_run_control.
 FR_CONTROLS_OK=0
 FR_CONTROLS_FAILED=0
+FR_CONTROLS_RETRIED=0
 FR_T_KILLED=0
 FR_T_SURVIVED=0
 FR_T_UNPROVEN=0
@@ -1559,6 +1606,10 @@ fr_harvest() {   # <pid> — print that mutant's records and tally them
         # cross streams to find out what went red.
         IFS='|' read -r _ _ _ co_line <<< "$line"
         fr_warn "  control output: $co_line" ;;
+      'NOTE|control-retried|'*)
+        FR_CONTROLS_RETRIED=$(( FR_CONTROLS_RETRIED + 1 ))
+        IFS='|' read -r _ _ _ cr_detail <<< "$line"
+        fr_warn "CONTROL RETRIED — the pristine oracle could not be MEASURED on the first attempt (the host, not the code); the retry decided it: $cr_detail" ;;
       'NOTE|write-failed|'*) FR_BROKEN=$(( FR_BROKEN + 1 )) ;;
       'NOTE|reseed-failed|'*)
         # Loud where it happens, and counted, because every verdict recorded in
@@ -1986,6 +2037,12 @@ falsify_main() {
   # no controls says so with a zero in the first field, which is a different
   # statement from "controls ran and passed" and must not read the same.
   printf 'CONTROLS|%s|%s\n' "$(( FR_CONTROLS_OK + FR_CONTROLS_FAILED ))" "$FR_CONTROLS_FAILED"
+  # Reported whether or not anything failed: a rising retry count is how a host
+  # says it is becoming unable to measure this tier, and that warning has to
+  # arrive BEFORE the run it finally voids.
+  if (( FR_CONTROLS_RETRIED > 0 )); then
+    fr_warn "$FR_CONTROLS_RETRIED of $(( FR_CONTROLS_OK + FR_CONTROLS_FAILED )) control run(s) needed a RETRY: the pristine oracle was unmeasurable on the first attempt (timeout, SCAFFOLD-FAILED or a signal) and the retry decided it. A few mean a loaded host; many mean this machine can no longer measure the tier, and kills recorded here are worth less than the count suggests."
+  fi
   if (( FR_CONTROLS_FAILED > 0 )); then
     fr_err "$FR_CONTROLS_FAILED of $(( FR_CONTROLS_OK + FR_CONTROLS_FAILED )) control run(s) FAILED: the PRISTINE oracle went red under this run's own load, so a mutant scored KILLED here may have been killed by the machine rather than by the damage. Re-run with fewer --jobs before trusting the kill count."
     rc=1

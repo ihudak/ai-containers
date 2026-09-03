@@ -24,6 +24,25 @@ fails=0
 # multiple of it. Declared here because vector() writes it and the whole-tree
 # assertion reads it.
 unit_ms=0
+# THE IN-TEST BOUND MUST NEVER BE TIGHTER THAN THE HARNESS THAT GOVERNS US.
+# tests/falsify/run.sh gives each oracle FALSIFY_TIMEOUT seconds — verify-on-host.sh
+# passes 120, the runner's own default is 60. A bound in here that is tighter than
+# that cannot protect anything: the harness expiry it pre-empts is the BETTER
+# verdict, because the runner classifies its own timeout as UNPROVEN (run.sh:504)
+# against the real budget, while a self-abort in here is a SCAFFOLD-FAILED that
+# reads the same for a mutant and is FATAL for a pristine control.
+#
+# Measured 2026-09-03: a control of this file self-aborted at 27.2s against a flat
+# 10s bound, INSIDE a 120s harness clock, and that one control in 34 voided a
+# 95-minute corpus with the ledger unscored. The whole-tree bound below already
+# used 120; the three single-file bounds had been 10 since 2026-08-20 and never
+# got that treatment.
+#
+# This does NOT contradict the note above about constants — that note is right,
+# and is why the durable fix is in the runner (a scaffold-failed control is the
+# machine, not the code). Matching the governing clock is not the next arbitrary
+# constant; it is removing a second clock that could only ever fire early.
+LINT_BOUND_SECS=120   # ...but see the literal note at the call sites
 pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails+1)); }
 
@@ -73,12 +92,19 @@ vector() {
   # 8s and 132s), and a bound calibrated off a quiet moment is the constant
   # again with extra steps.
   local _t0="${EPOCHREALTIME//[.,]/}"
-  p_timeout 10 bash "$LINT" "$TMP/v.sh" >/dev/null 2>&1
+  # THE DURATION IS A LITERAL, NOT $LINT_BOUND_SECS, AND THAT IS FORCED.
+  # tests/falsify/derive-targets.sh decides whether an oracle EXECUTES its
+  # target by walking tokens, and its p_timeout skip consumes only flags and a
+  # NUMERIC duration. A variable there stops the skip, the following `bash` is
+  # never seen, and this file stops counting as executing the linter — which
+  # tests/test-falsify-targets.sh catches as "classify it GREPPED-ONLY".
+  # The constant above is still the single declaration these three must match.
+  p_timeout 120 bash "$LINT" "$TMP/v.sh" >/dev/null 2>&1
   local rc=$?
   local _ms=$(( ( ${EPOCHREALTIME//[.,]/} - _t0 ) / 1000 ))
   (( _ms > unit_ms )) && unit_ms="$_ms"
   if [[ "$rc" -eq 124 ]]; then
-    printf 'SCAFFOLD-FAILED: %s — the linter did not terminate within 10s; its scan loop never reached EOF\n' "$1"
+    printf 'SCAFFOLD-FAILED: %s — the linter did not terminate within %ss; its scan loop never reached EOF\n' "$1" "$LINT_BOUND_SECS"
     # …and stop the file here. Every vector below runs the same loop, so
     # seventeen more ten-second bounds would restate one fact seventeen times
     # and push the run past run.sh's per-mutant clock — trading this UNPROVEN
@@ -92,6 +118,19 @@ vector() {
 # vector's OWN source line below never contains the literal substring the
 # dollar-brace-space rule detects — no marker needed for it, unlike the
 # rules further down whose name IS the literal being detected.
+# THE CONSTANT AND THE LITERALS MUST AGREE, AND NOTHING ELSE WOULD NOTICE.
+# LINT_BOUND_SECS is what the SCAFFOLD-FAILED messages report and what the
+# whole-tree floor uses; the three call sites must spell the same number as a
+# literal because derive-targets.sh cannot see past a variable there. Two places
+# holding one number is a drift shape, so it is checked rather than trusted.
+_self="${BASH_SOURCE[0]}"
+_lit="$(grep -c "p_timeout $LINT_BOUND_SECS " "$_self")"
+if [[ "$_lit" == "3" ]]; then
+  pass "the three literal p_timeout bounds match LINT_BOUND_SECS (${LINT_BOUND_SECS}s)"
+else
+  fail "the three literal p_timeout bounds match LINT_BOUND_SECS (${LINT_BOUND_SECS}s) — found $_lit such call site(s), so a bound and the number this file reports have drifted apart"
+fi
+
 DOLLAR='$'
 
 vector "plain script passes"            'printf "%s\n" "$1"'                 0
@@ -160,11 +199,11 @@ printf '%s\n' 'echo "$EPOCHREALTIME"' > "$TMP/v.sh"
 # Bounded, and restructured around the bound: as an `if … then fail; else pass`
 # a timeout is non-zero and lands in the PASSING branch, so the hang would have
 # been reported as the linter correctly rejecting the construct.
-p_timeout 10 env AI_CONTAINERS_BASH_FLOOR_MAJOR=4 AI_CONTAINERS_BASH_FLOOR_MINOR=4 \
+p_timeout 120 env AI_CONTAINERS_BASH_FLOOR_MAJOR=4 AI_CONTAINERS_BASH_FLOOR_MINOR=4 \
   bash "$LINT" "$TMP/v.sh" >/dev/null 2>&1
 floor_rc=$?
 if [[ "$floor_rc" -eq 124 ]]; then
-  printf 'SCAFFOLD-FAILED: the linter reads the floor — the run did not terminate within 10s\n'
+  printf 'SCAFFOLD-FAILED: the linter reads the floor — the run did not terminate within %ss\n' "$LINT_BOUND_SECS"
   exit 1
 elif [[ "$floor_rc" -eq 0 ]]; then
   fail "the linter reads the floor — a 5.0 construct passed at a 4.4 floor"
@@ -218,7 +257,7 @@ fi
 tree_bound_secs() {   # <worst single-file lint, ms> → the whole-tree bound
   local unit="$1" secs
   secs=$(( unit * 3 / 10 ))
-  (( secs < 120 )) && secs=120
+  (( secs < LINT_BOUND_SECS )) && secs="$LINT_BOUND_SECS"
   printf '%s' "$secs"
 }
 tree_secs="$(tree_bound_secs "$unit_ms")"
@@ -293,11 +332,11 @@ if [[ ! -s "$empty_repo/tests/bash-dialect-lint.sh" ]]; then
 fi
 # The floor is passed in so the copy needs no bash-floor.sh beside it (the
 # linter skips its own source when both vars are already set).
-p_timeout 10 env AI_CONTAINERS_BASH_FLOOR_MAJOR=5 AI_CONTAINERS_BASH_FLOOR_MINOR=1 \
+p_timeout 120 env AI_CONTAINERS_BASH_FLOOR_MAJOR=5 AI_CONTAINERS_BASH_FLOOR_MINOR=1 \
   bash "$empty_repo/tests/bash-dialect-lint.sh" > "$TMP/empty.out" 2>&1
 empty_rc=$?
 if [[ "$empty_rc" -eq 124 ]]; then
-  printf 'SCAFFOLD-FAILED: the empty-repo run did not terminate within 10s\n'
+  printf 'SCAFFOLD-FAILED: the empty-repo run did not terminate within %ss\n' "$LINT_BOUND_SECS"
   exit 1
 elif [[ "$empty_rc" -eq 0 ]]; then
   fail "a lint run that examined no files reported SUCCESS"
