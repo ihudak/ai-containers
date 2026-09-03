@@ -8,6 +8,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`actions/upload-artifact@v5` is still node20, so a v4 → v5 bump fixes
+  nothing.** GitHub is retiring the node20 action runtime. An action's runtime is
+  declared in its own `action.yml` (`runs.using:`) and is **not** implied by how
+  new the tag looks — which is the trap, because such a bump reads like a fix and
+  passes review. Measured 2026-09-03 by reading each tag's own `action.yml`:
+  `upload-artifact` is node20 at **v4 and v5**, and node24 at **v6 and v7**. Both
+  call sites (`integration.yml`, `nightly.yml`) now pin **v7**, the current
+  release. Input compatibility was checked in the same pass — v4..v7 share the
+  whole input surface (v7 only *adds* `archive`, defaulted) and
+  `if-no-files-found` stays `warn`, which matters because both sites upload a
+  directory that need not exist under `if: failure()`.
+- **And nothing was looking at action runtimes, which is why the half-fix would
+  have landed.** `tests/test-workflow-runner-pinned.sh` already refuses an
+  unpinned *runner*; it now also holds every `actions/*` pin at or above a major
+  **measured** to be node24. The floor is a recorded fact with a date, not a
+  derived one — a hermetic test has no network and cannot ask an action what
+  runtime it uses — so what the guard claims is narrow: a pin cannot drift below
+  what was verified by hand. A row naming an action no workflow uses fails as
+  vacuous rather than passing as coverage. Demonstrated failing on `@v4`, on
+  `@v5`, and on its own vacuity.
+
 - **A stale `GITHUB_TOKEN` failed builds that work fine without one.** The
   previous entry made `curl` present the token through a config file, and got the
   ABSENT case right — an empty config sends no header, so a build with no secret

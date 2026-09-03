@@ -96,5 +96,58 @@ if [[ "${#images[@]}" -gt 0 ]]; then
   fi
 fi
 
+# ── A NODE20 ACTION IS ON A DEPRECATION CLOCK, AND A BUMP CAN MISS IT ────────
+# GitHub is retiring the node20 action runtime. An action's runtime is declared
+# in its OWN action.yml (`runs.using:`) and is NOT implied by how new the tag
+# looks — which is the trap, because a version bump reads like a fix, passes
+# review, and can change nothing at all.
+#
+# THAT IS NOT HYPOTHETICAL. `actions/upload-artifact@v5` is STILL node20, so a
+# v4 -> v5 bump made under the heading "update to node24 compatible versions"
+# achieved exactly nothing (mgd-ai-containers#157). Nothing noticed, because
+# nothing here was looking at runtimes.
+#
+# MEASURED 2026-09-03 by reading each tag's own action.yml over the API:
+#     actions/upload-artifact   v4 node20 · v5 node20 · v6 node24 · v7 node24
+#     actions/checkout          v5 node24
+#
+# THE FLOOR BELOW IS THAT MEASUREMENT, WRITTEN DOWN, and it is a recorded fact
+# rather than a derived one: a hermetic test has no network, so it cannot ask an
+# action what runtime it uses. What this guard can do — and the only thing it
+# claims — is stop a pin drifting BELOW a major that was verified by hand. When
+# a floor is raised, re-measure and update the date; that is the maintenance
+# cost, and it is the same trade the runner pin above makes deliberately.
+#
+# Input compatibility was checked in the same pass: v4..v7 share the entire
+# input surface (v7 only ADDS `archive`, defaulted), and `if-no-files-found`
+# stays `warn` throughout — which matters, because both call sites upload a
+# directory that need not exist when the step runs under `if: failure()`.
+declare -a node24_floor=(
+  "actions/upload-artifact:6"
+  "actions/checkout:5"
+)
+for _entry in "${node24_floor[@]}"; do
+  _action="${_entry%:*}"; _min="${_entry##*:}"
+  _seen=0; _bad=""
+  while IFS= read -r _use; do
+    _seen=$(( _seen + 1 ))
+    _ver="${_use##*@v}"; _ver="${_ver%%.*}"
+    # A non-numeric ref (a SHA pin, or a branch) is not this rule's business:
+    # it cannot be ordered against a floor, and SHA pinning is the STRICTER
+    # discipline this repo already applies to third-party actions.
+    [[ "$_ver" =~ ^[0-9]+$ ]] || continue
+    (( _ver < _min )) && _bad="$_bad $_use"
+  done < <(grep -rhoE "uses:[[:space:]]*${_action}@\S+" "$WF_DIR" | sed 's/uses:[[:space:]]*//')
+  if (( _seen == 0 )); then
+    # Vacuity, reported as such: an action that is no longer used needs its row
+    # removed, not a silent pass that looks like coverage.
+    fail "the node24 floor for $_action was checked — no workflow uses it, so this row asserts nothing; remove the row or fix the pattern"
+  elif [[ -n "$_bad" ]]; then
+    fail "$_action is pinned at or above v$_min (node24) — found$_bad; a lower major still runs on node20, which GitHub is retiring, and bumping only part-way (v5 is node20 too) looks like a fix while changing nothing"
+  else
+    pass "$_action is pinned at or above v$_min, the major measured to be node24 ($_seen use(s))"
+  fi
+done
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
