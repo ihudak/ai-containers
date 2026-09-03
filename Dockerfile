@@ -78,14 +78,16 @@ ARG NVM_VERSION=v0.40.7
 # loop for the same reason the clone does (it downloads from nodejs.org) and is
 # idempotent given that reset.
 RUN --mount=type=secret,id=github_token \
+    : > /tmp/gh-curl.cfg; \
     if [ -s /run/secrets/github_token ]; then \
       GH_TOKEN="$(cat /run/secrets/github_token)"; export GH_TOKEN; \
       export GIT_CONFIG_COUNT=1 \
         GIT_CONFIG_KEY_0="credential.https://github.com.helper" \
         GIT_CONFIG_VALUE_0='!f() { echo username=x-access-token; echo "password=$GH_TOKEN"; }; f'; \
+      (umask 077; printf 'header = "Authorization: Bearer %s"\n' "$GH_TOKEN" > /tmp/gh-curl.cfg); \
     fi; \
     mkdir -p "$NVM_DIR" && \
-    curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors \
+    curl -K /tmp/gh-curl.cfg -fsSL --retry 5 --retry-delay 2 --retry-all-errors \
       -o /tmp/nvm-install.sh \
       "https://raw.githubusercontent.com/nvm-sh/nvm/${NVM_VERSION}/install.sh" && \
     for attempt in 1 2 3 4 5; do \
@@ -99,11 +101,18 @@ RUN --mount=type=secret,id=github_token \
       fi; \
       sleep $((attempt * 15)); \
     done && \
-    rm -f /tmp/nvm-install.sh && \
+    rm -f /tmp/nvm-install.sh /tmp/gh-curl.cfg && \
     # Install any extra versions requested
     if [ -n "$NODE_EXTRA_VERSIONS" ]; then \
       for ver in $NODE_EXTRA_VERSIONS; do \
-        bash -c "source $NVM_DIR/nvm.sh && nvm install $ver"; \
+        for attempt in 1 2 3 4 5; do \
+          if bash -c "source $NVM_DIR/nvm.sh && nvm install $ver"; then break; fi; \
+          if [ "$attempt" = 5 ]; then \
+            echo "node $ver failed after 5 attempts" >&2; exit 1; \
+          fi; \
+          bash -c "source $NVM_DIR/nvm.sh && { nvm deactivate || true; nvm uninstall $ver || true; }" >/dev/null 2>&1 || true; \
+          sleep $((attempt * 15)); \
+        done; \
       done; \
     fi && \
     # Symlink the default (latest LTS) node/npm/npx into PATH for non-nvm shells
@@ -273,18 +282,20 @@ ENV PATH="$PYENV_ROOT/bin:$PYENV_ROOT/shims:$PATH"
 # because install.sh needs $NVM_DIR to exist. Here the mkdir would trip the very
 # refusal above, so there must not be one. The guard asserts both directions.
 RUN --mount=type=secret,id=github_token \
+    : > /tmp/gh-curl.cfg; \
     if [ -s /run/secrets/github_token ]; then \
       GH_TOKEN="$(cat /run/secrets/github_token)"; export GH_TOKEN; \
       export GIT_CONFIG_COUNT=1 \
         GIT_CONFIG_KEY_0="credential.https://github.com.helper" \
         GIT_CONFIG_VALUE_0='!f() { echo username=x-access-token; echo "password=$GH_TOKEN"; }; f'; \
+      (umask 077; printf 'header = "Authorization: Bearer %s"\n' "$GH_TOKEN" > /tmp/gh-curl.cfg); \
     fi; \
     apt-get update && apt-get install -y --no-install-recommends \
       build-essential libssl-dev zlib1g-dev libbz2-dev libreadline-dev \
       libsqlite3-dev libncursesw5-dev xz-utils tk-dev libxml2-dev \
       libxmlsec1-dev libffi-dev liblzma-dev && \
     rm -rf /var/lib/apt/lists/* && \
-    curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors -o /tmp/pyenv.sh \
+    curl -K /tmp/gh-curl.cfg -fsSL --retry 5 --retry-delay 2 --retry-all-errors -o /tmp/pyenv.sh \
       https://raw.githubusercontent.com/pyenv/pyenv-installer/master/bin/pyenv-installer && \
     for attempt in 1 2 3 4 5; do \
       rm -rf "$PYENV_ROOT"; \
@@ -296,16 +307,28 @@ RUN --mount=type=secret,id=github_token \
       fi; \
       sleep $((attempt * 15)); \
     done && \
-    rm -f /tmp/pyenv.sh && \
+    rm -f /tmp/pyenv.sh /tmp/gh-curl.cfg && \
     chmod -R a+rX "$PYENV_ROOT" && \
     # Always install latest stable Python (sort -V for correct ordering with 3.20+)
     latest=$("$PYENV_ROOT/bin/pyenv" install --list | grep -E '^\s+3\.[0-9]+\.[0-9]+$' | tr -d ' ' | sort -V | tail -1) && \
-    "$PYENV_ROOT/bin/pyenv" install "$latest" && \
+    for attempt in 1 2 3 4 5; do \
+      if "$PYENV_ROOT/bin/pyenv" install -f "$latest"; then break; fi; \
+      if [ "$attempt" = 5 ]; then \
+        echo "python $latest failed after 5 attempts" >&2; exit 1; \
+      fi; \
+      sleep $((attempt * 15)); \
+    done && \
     "$PYENV_ROOT/bin/pyenv" global "$latest" && \
     # Install extra versions
     if [ -n "$PYTHON_EXTRA_VERSIONS" ]; then \
       for ver in $PYTHON_EXTRA_VERSIONS; do \
-        "$PYENV_ROOT/bin/pyenv" install "$ver"; \
+        for attempt in 1 2 3 4 5; do \
+          if "$PYENV_ROOT/bin/pyenv" install -f "$ver"; then break; fi; \
+          if [ "$attempt" = 5 ]; then \
+            echo "python $ver failed after 5 attempts" >&2; exit 1; \
+          fi; \
+          sleep $((attempt * 15)); \
+        done; \
       done; \
     fi && \
     # Symlink python3/pip3/uvx into PATH
