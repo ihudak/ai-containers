@@ -6,162 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
-### Fixed
-
-- **The `umask` guarding the curl credential file was a no-op.** Both clone
-  layers write the token into a `curl -K` config, and that file was created with
-  `: > /tmp/gh-curl.cfg` — under the **default** umask, 0644 for root — and only
-  then written inside `(umask 077; … > cfg)`. A redirect does not change an
-  existing file's mode, so the umask never applied. Measured: **644**
-  pre-created, against **600** when created under the umask. The protection was
-  written and did not protect.
-- **Created mode-restricted instead**, with `install -m 600 /dev/null`, which
-  sets the mode at creation, forces it even if the file somehow already exists,
-  and still leaves it empty — the property the no-token path depends on, since
-  an empty bearer would be a 404. Verified **inside a real build**:
-  `CFG-MODE=600 SIZE=74`, where the same probe reported 644 before.
-- **Exploitability was nil and the guard is here anyway.** Only root exists in
-  that layer and the file is removed inside the same `RUN`, so it never reached
-  a committed layer. But that is a property of the surrounding code, not of this
-  line, and it is one moved `rm` away from mattering. Four assertions in
-  `tests/test-build-fetch-retry.sh`, all seen failing against the exact form
-  they replace. The neighbouring *emptied-first* check now matches the property
-  rather than the `: >` spelling — it failed on a change that preserved the
-  behaviour it names.
+## v0.9.13 — 2026-09-04
 
 ### Fixed
 
-- **The count idiom survived in three more places, and the sweep is now
-  mechanical.** #237 fixed four sites and #238 a fifth, each believed complete.
-  Three more were live: `tests/falsify/run.sh` twice and
-  `tests/test-integration-shim.sh` once. They break in three different ways, all
-  observed rather than imagined — `(( n > 0 ))` dying with
-  `((: 0\n0: syntax error in expression`; a `SKIPPED|…` record **split across two
-  lines**, which the harvester reads as two malformed ones (silent corruption of
-  the tier's own output); and a one-line `SCAFFOLD-FAILED` diagnostic splitting
-  in two, precisely in the fork-failure case it exists to report.
-- **The shim site was wrong twice over**, so fixing only the formatting would
-  have left a bug: testing the *pipeline's status* cannot tell "`ps` failed"
-  from "zero processes", and the fallback existed to say **unknown**. It now
-  tests `ps`'s output, so `?` still means unknown and a count still means a
-  count.
-- **`|| true` is not the defect, and that distinction is the rule.** A fallback
-  that prints *nothing* only discards grep's exit status — correct, and the
-  dominant idiom here (18 lines of it). Only a fallback that **prints** appends a
-  second value. A first version of the checker missed this and flagged 18 correct
-  lines; a rule that flags correct code gets switched off.
-- **`tests/test-count-idiom.sh`** now sweeps every tracked and
-  untracked-but-not-ignored script for a counting `grep` whose `||` binds to it
-  *and* prints. It judges each `||` against the command it actually guards, so a
-  match-printing `grep … || echo '<absent>'` and an `[[ … ]] && x || y` ternary
-  are left alone. The rule is tested on known-bad and known-good vectors before
-  it is trusted on the tree, and is demonstrated catching **all eight** original
-  sites.
-
-- **A fifth `grep -c` count kept the idiom #237 fixed at four others.** `grep -c`
-  and `grep -vc` always print a count *and* exit 1 when that count is **zero**, so
-  guarding one with a printing fallback appends a second zero and the arithmetic
-  reading it dies with a syntax error instead of failing cleanly. It is wrong only
-  on the zero path — which is the failure path, i.e. exactly when the assertion
-  needs to explain itself, and why it survives review. Since the class has now
-  recurred, the file gets a **sweep** rather than a third individual fix; the
-  sweep assembles its own pattern and skips whole-line comments so it is genuinely
-  subject to its own rule rather than exempted by path.
-
-### Fixed
-
-- **The new anonymous fallback ignored `private=yes`, contradicting the rule the
-  same file states.** The previous entry added an anonymous retry so a stale
-  token cannot silently drop a public tool, and scoped it deliberately: *"only
-  where the token is optional… the private release-asset path therefore has no
-  fallback, because an anonymous retry there cannot succeed"*. `install_repo_file`
-  did not apply that rule — its fallback was unconditional. For a **private**
-  repo-file tool with a token the server rejects, it spends a guaranteed-404
-  request and then prints *"is GITHUB_TOKEN stale?"* over a case whose real cause
-  is usually a missing or un-SSO-authorized token. `install_one`'s guard already
-  covers an **absent** token; this is the other half.
-- **It is latent in this repo and live in the port, which is why it is tested
-  rather than observed.** Nothing here installs `repo-file` from a private repo
-  (`dtctl`/`dtmgd` are public release installs, `acli` is `url`), but `tools.d/`
-  is designed so a descriptor is all it takes — and the mgd port already ships
-  one. The test drives the branch directly.
-- **A count idiom that broke exactly on the failure path.** `grep -c` and
-  `grep -vc` *always* print a count and exit 1 when it is **zero**, so the
-  `|| printf 0` guarding four of them appended a second zero and the `(( ))`
-  below died with `syntax error in expression`. Harmless while both counts were
-  expected non-zero — and wrong precisely where an assertion has to explain
-  itself. Demonstrated: with the old idiom the new private-tool assertion fails
-  on **correct** code.
-
-- **A stale `GITHUB_TOKEN` silently dropped a public tool.** #234 gave the
-  Dockerfile's installer fetches an anonymous fallback for a credential the
-  server rejects; `install-tools.sh` was the one place outside that change.
-  Measured against `dynatrace-oss/dtctl`'s `releases/latest`: **no token 200,
-  valid token 200, stale token 401**. `-f` turns that 401 into a failed transfer,
-  `api_get` returns empty, and the tool is skipped — so a **public** tool that
-  installs fine with *no* token stops installing because a variable was set. Every
-  failure here is non-fatal by design, which is what made it quiet: the build
-  stays green and the image simply ships without a tool `sandbox.conf` asked for,
-  while the diagnostic advised *"set GITHUB_TOKEN"* — which is set. Both optional
-  paths now retry anonymously, and the message distinguishes a stale token from
-  an absent one. The **private** release-asset path deliberately does not: there
-  the token is a requirement rather than headroom, so an anonymous retry cannot
-  succeed. The fallback is written out at each site rather than wrapped in a
-  helper, because a wrapper forwarding `"$@"` hides the `-f`/`--retry` flags from
-  `test-build-fetch-retry.sh`'s per-site scan.
-- `api_get`'s call-count assertions now pin the credential state explicitly.
-  The new fallback makes the count depend on whether a token was configured, so
-  inheriting `AUTH_ARGS` from the environment would have made those tests mean
-  different things on different machines — green where `GITHUB_TOKEN` is unset,
-  red where it is exported, for a reason unrelated to the code.
-
-### Fixed
-
-- **`actions/upload-artifact@v5` is still node20, so a v4 → v5 bump fixes
-  nothing.** GitHub is retiring the node20 action runtime. An action's runtime is
-  declared in its own `action.yml` (`runs.using:`) and is **not** implied by how
-  new the tag looks — which is the trap, because such a bump reads like a fix and
-  passes review. Measured 2026-09-03 by reading each tag's own `action.yml`:
-  `upload-artifact` is node20 at **v4 and v5**, and node24 at **v6 and v7**. Both
-  call sites (`integration.yml`, `nightly.yml`) now pin **v7**, the current
-  release. Input compatibility was checked in the same pass — v4..v7 share the
-  whole input surface (v7 only *adds* `archive`, defaulted) and
-  `if-no-files-found` stays `warn`, which matters because both sites upload a
-  directory that need not exist under `if: failure()`.
-- **And nothing was looking at action runtimes, which is why the half-fix would
-  have landed.** `tests/test-workflow-runner-pinned.sh` already refuses an
-  unpinned *runner*; it now also holds every `actions/*` pin at or above a major
-  **measured** to be node24. The floor is a recorded fact with a date, not a
-  derived one — a hermetic test has no network and cannot ask an action what
-  runtime it uses — so what the guard claims is narrow: a pin cannot drift below
-  what was verified by hand. A row naming an action no workflow uses fails as
-  vacuous rather than passing as coverage. Demonstrated failing on `@v4`, on
-  `@v5`, and on its own vacuity.
-
-- **A stale `GITHUB_TOKEN` failed builds that work fine without one.** The
-  previous entry made `curl` present the token through a config file, and got the
-  ABSENT case right — an empty config sends no header, so a build with no secret
-  still fetches anonymously. There is a third state it did not cover, and it is
-  the one a real machine reaches: a token that **exists and is stale**, rotated in
-  `gh` but still exported from a shell profile — a case `AGENTS.md` already names
-  as live. `-K` puts the header on the **first** request unconditionally, so with
-  `-f` a credential the server will not honour fails the fetch outright.
-  Measured 2026-09-03 against both installer URLs: no token `200`, valid token
-  `200`, **stale token `404`**.
-- **And GitHub answers such a credential with 404, not 401**, so the symptom is
-  indistinguishable from *"the vendor moved the installer"* — the very diagnosis
-  the `-f` on those lines is documented as making loud. A build that works
-  anonymously stopped working because a variable was set, and the error blamed
-  pyenv.
-- **The `git` half of the same layer never had the problem**, which is what makes
-  this an asymmetry rather than a cost of authenticating: git tries anonymously
-  and presents the credential only **when challenged**. `curl` has no such
-  protocol, so each layer now fetches its installer a second time **without** the
-  config when the authenticated attempt fails. A stale token costs one wasted
-  retry budget instead of the image. Verified end to end against the live URL —
-  stale token, first attempt fails, fallback returns the real 17870-byte
-  installer — and the guard is demonstrated failing two ways: a bare
-  (untestable) authenticated `curl`, and a fallback that still sends the config.
+- **One unmeasurable control voided a 95-minute mutation corpus.** Phase 6 of a
+  full local cycle failed with the ledger unscored — not on a mutant, but because
+  1 of 34 **pristine** controls self-aborted at 27.2s (`signal=exit+scaffold`)
+  while the other 33 passed and every mutant already had a verdict. Two causes.
+  `tests/test-bash-dialect-lint.sh` bounded three single-file lints at a flat
+  **10s** while the harness governing it allows **120** — a bound tighter than the
+  governing clock cannot protect anything, since the harness expiry it pre-empts
+  is the better verdict (the runner classifies its own timeout as `UNPROVEN`
+  against the real budget). And `fr_run_control` mapped only `SURVIVED` to PASS,
+  folding **`UNPROVEN`** — timed out, `SCAFFOLD-FAILED`, or killed by a signal —
+  in with `KILLED`. Everywhere else in this tier that word is a property of the
+  **host**: a mutant landing there is `UNPROVEN` rather than a false `KILL`, and
+  AGENTS.md exempts it from the ledger outright. An unmeasurable control is now
+  **retried once**, which measures the difference instead of guessing a threshold:
+  transient load passes the second time, a persistently unmeasurable oracle fails
+  twice and stays fatal, and a control that is genuinely **red on undamaged code
+  is never retried**. Every retry is counted and reported, because a rising retry
+  count is how a host says it is losing the ability to measure this tier.
 
 - **The token reached `git` but not `curl`, and the naive fix would have broken
   builds without one.** Both clone layers set up a credential helper for `git`,
@@ -191,26 +57,161 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   version (`nvm.sh:4120`). `pyenv install -f` is documented as *"install even if
   version appears already installed"* and is itself the clean slate.
 
-### Fixed
+- **A stale `GITHUB_TOKEN` failed builds that work fine without one.** The
+  previous entry made `curl` present the token through a config file, and got the
+  ABSENT case right — an empty config sends no header, so a build with no secret
+  still fetches anonymously. There is a third state it did not cover, and it is
+  the one a real machine reaches: a token that **exists and is stale**, rotated in
+  `gh` but still exported from a shell profile — a case `AGENTS.md` already names
+  as live. `-K` puts the header on the **first** request unconditionally, so with
+  `-f` a credential the server will not honour fails the fetch outright.
+  Measured 2026-09-03 against both installer URLs: no token `200`, valid token
+  `200`, **stale token `404`**.
+- **And GitHub answers such a credential with 404, not 401**, so the symptom is
+  indistinguishable from *"the vendor moved the installer"* — the very diagnosis
+  the `-f` on those lines is documented as making loud. A build that works
+  anonymously stopped working because a variable was set, and the error blamed
+  pyenv.
+- **The `git` half of the same layer never had the problem**, which is what makes
+  this an asymmetry rather than a cost of authenticating: git tries anonymously
+  and presents the credential only **when challenged**. `curl` has no such
+  protocol, so each layer now fetches its installer a second time **without** the
+  config when the authenticated attempt fails. A stale token costs one wasted
+  retry budget instead of the image. Verified end to end against the live URL —
+  stale token, first attempt fails, fallback returns the real 17870-byte
+  installer — and the guard is demonstrated failing two ways: a bare
+  (untestable) authenticated `curl`, and a fallback that still sends the config.
 
-- **One unmeasurable control voided a 95-minute mutation corpus.** Phase 6 of a
-  full local cycle failed with the ledger unscored — not on a mutant, but because
-  1 of 34 **pristine** controls self-aborted at 27.2s (`signal=exit+scaffold`)
-  while the other 33 passed and every mutant already had a verdict. Two causes.
-  `tests/test-bash-dialect-lint.sh` bounded three single-file lints at a flat
-  **10s** while the harness governing it allows **120** — a bound tighter than the
-  governing clock cannot protect anything, since the harness expiry it pre-empts
-  is the better verdict (the runner classifies its own timeout as `UNPROVEN`
-  against the real budget). And `fr_run_control` mapped only `SURVIVED` to PASS,
-  folding **`UNPROVEN`** — timed out, `SCAFFOLD-FAILED`, or killed by a signal —
-  in with `KILLED`. Everywhere else in this tier that word is a property of the
-  **host**: a mutant landing there is `UNPROVEN` rather than a false `KILL`, and
-  AGENTS.md exempts it from the ledger outright. An unmeasurable control is now
-  **retried once**, which measures the difference instead of guessing a threshold:
-  transient load passes the second time, a persistently unmeasurable oracle fails
-  twice and stays fatal, and a control that is genuinely **red on undamaged code
-  is never retried**. Every retry is counted and reported, because a rising retry
-  count is how a host says it is losing the ability to measure this tier.
+- **`actions/upload-artifact@v5` is still node20, so a v4 → v5 bump fixes
+  nothing.** GitHub is retiring the node20 action runtime. An action's runtime is
+  declared in its own `action.yml` (`runs.using:`) and is **not** implied by how
+  new the tag looks — which is the trap, because such a bump reads like a fix and
+  passes review. Measured 2026-09-03 by reading each tag's own `action.yml`:
+  `upload-artifact` is node20 at **v4 and v5**, and node24 at **v6 and v7**. Both
+  call sites (`integration.yml`, `nightly.yml`) now pin **v7**, the current
+  release. Input compatibility was checked in the same pass — v4..v7 share the
+  whole input surface (v7 only *adds* `archive`, defaulted) and
+  `if-no-files-found` stays `warn`, which matters because both sites upload a
+  directory that need not exist under `if: failure()`.
+- **And nothing was looking at action runtimes, which is why the half-fix would
+  have landed.** `tests/test-workflow-runner-pinned.sh` already refuses an
+  unpinned *runner*; it now also holds every `actions/*` pin at or above a major
+  **measured** to be node24. The floor is a recorded fact with a date, not a
+  derived one — a hermetic test has no network and cannot ask an action what
+  runtime it uses — so what the guard claims is narrow: a pin cannot drift below
+  what was verified by hand. A row naming an action no workflow uses fails as
+  vacuous rather than passing as coverage. Demonstrated failing on `@v4`, on
+  `@v5`, and on its own vacuity.
+
+- **A stale `GITHUB_TOKEN` silently dropped a public tool.** #234 gave the
+  Dockerfile's installer fetches an anonymous fallback for a credential the
+  server rejects; `install-tools.sh` was the one place outside that change.
+  Measured against `dynatrace-oss/dtctl`'s `releases/latest`: **no token 200,
+  valid token 200, stale token 401**. `-f` turns that 401 into a failed transfer,
+  `api_get` returns empty, and the tool is skipped — so a **public** tool that
+  installs fine with *no* token stops installing because a variable was set. Every
+  failure here is non-fatal by design, which is what made it quiet: the build
+  stays green and the image simply ships without a tool `sandbox.conf` asked for,
+  while the diagnostic advised *"set GITHUB_TOKEN"* — which is set. Both optional
+  paths now retry anonymously, and the message distinguishes a stale token from
+  an absent one. The **private** release-asset path deliberately does not: there
+  the token is a requirement rather than headroom, so an anonymous retry cannot
+  succeed. The fallback is written out at each site rather than wrapped in a
+  helper, because a wrapper forwarding `"$@"` hides the `-f`/`--retry` flags from
+  `test-build-fetch-retry.sh`'s per-site scan.
+- `api_get`'s call-count assertions now pin the credential state explicitly.
+  The new fallback makes the count depend on whether a token was configured, so
+  inheriting `AUTH_ARGS` from the environment would have made those tests mean
+  different things on different machines — green where `GITHUB_TOKEN` is unset,
+  red where it is exported, for a reason unrelated to the code.
+
+- **The new anonymous fallback ignored `private=yes`, contradicting the rule the
+  same file states.** The previous entry added an anonymous retry so a stale
+  token cannot silently drop a public tool, and scoped it deliberately: *"only
+  where the token is optional… the private release-asset path therefore has no
+  fallback, because an anonymous retry there cannot succeed"*. `install_repo_file`
+  did not apply that rule — its fallback was unconditional. For a **private**
+  repo-file tool with a token the server rejects, it spends a guaranteed-404
+  request and then prints *"is GITHUB_TOKEN stale?"* over a case whose real cause
+  is usually a missing or un-SSO-authorized token. `install_one`'s guard already
+  covers an **absent** token; this is the other half.
+- **It is latent in this repo and live in the port, which is why it is tested
+  rather than observed.** Nothing here installs `repo-file` from a private repo
+  (`dtctl`/`dtmgd` are public release installs, `acli` is `url`), but `tools.d/`
+  is designed so a descriptor is all it takes — and the mgd port already ships
+  one. The test drives the branch directly.
+- **A count idiom that broke exactly on the failure path.** `grep -c` and
+  `grep -vc` *always* print a count and exit 1 when it is **zero**, so the
+  `|| printf 0` guarding four of them appended a second zero and the `(( ))`
+  below died with `syntax error in expression`. Harmless while both counts were
+  expected non-zero — and wrong precisely where an assertion has to explain
+  itself. Demonstrated: with the old idiom the new private-tool assertion fails
+  on **correct** code.
+
+- **A fifth `grep -c` count kept the idiom #237 fixed at four others.** `grep -c`
+  and `grep -vc` always print a count *and* exit 1 when that count is **zero**, so
+  guarding one with a printing fallback appends a second zero and the arithmetic
+  reading it dies with a syntax error instead of failing cleanly. It is wrong only
+  on the zero path — which is the failure path, i.e. exactly when the assertion
+  needs to explain itself, and why it survives review. Since the class has now
+  recurred, the file gets a **sweep** rather than a third individual fix; the
+  sweep assembles its own pattern and skips whole-line comments so it is genuinely
+  subject to its own rule rather than exempted by path.
+
+- **The count idiom survived in three more places, and the sweep is now
+  mechanical.** #237 fixed four sites and #238 a fifth, each believed complete.
+  Three more were live: `tests/falsify/run.sh` twice and
+  `tests/test-integration-shim.sh` once. They break in three different ways, all
+  observed rather than imagined — `(( n > 0 ))` dying with
+  `((: 0\n0: syntax error in expression`; a `SKIPPED|…` record **split across two
+  lines**, which the harvester reads as two malformed ones (silent corruption of
+  the tier's own output); and a one-line `SCAFFOLD-FAILED` diagnostic splitting
+  in two, precisely in the fork-failure case it exists to report.
+- **The shim site was wrong twice over**, so fixing only the formatting would
+  have left a bug: testing the *pipeline's status* cannot tell "`ps` failed"
+  from "zero processes", and the fallback existed to say **unknown**. It now
+  tests `ps`'s output, so `?` still means unknown and a count still means a
+  count.
+- **`|| true` is not the defect, and that distinction is the rule.** A fallback
+  that prints *nothing* only discards grep's exit status — correct, and the
+  dominant idiom here (18 lines of it). Only a fallback that **prints** appends a
+  second value. A first version of the checker missed this and flagged 18 correct
+  lines; a rule that flags correct code gets switched off.
+- **`tests/test-count-idiom.sh`** now sweeps every tracked and
+  untracked-but-not-ignored script for a counting `grep` whose `||` binds to it
+  *and* prints. It judges each `||` against the command it actually guards, so a
+  match-printing `grep … || echo '<absent>'` and an `[[ … ]] && x || y` ternary
+  are left alone. The rule is tested on known-bad and known-good vectors before
+  it is trusted on the tree, and is demonstrated catching **all eight** original
+  sites.
+- **And the in-file sweep it made redundant was removed.** `tests/test-tools-d.sh`
+  had grown a 25-line self-sweep of the same class, written before the tree-wide
+  rule existed. The tree-wide rule subsumes it and is strictly wider on both
+  sides: it catches `|| echo 0`, which the in-file version missed, and it leaves
+  an `[[ … ]] && x || y` ternary alone, which the in-file version flagged. Checked
+  by planting a violation in that very file and watching the tree-wide sweep name
+  it by `file:line`.
+
+- **The `umask` guarding the curl credential file was a no-op.** Both clone
+  layers write the token into a `curl -K` config, and that file was created with
+  `: > /tmp/gh-curl.cfg` — under the **default** umask, 0644 for root — and only
+  then written inside `(umask 077; … > cfg)`. A redirect does not change an
+  existing file's mode, so the umask never applied. Measured: **644**
+  pre-created, against **600** when created under the umask. The protection was
+  written and did not protect.
+- **Created mode-restricted instead**, with `install -m 600 /dev/null`, which
+  sets the mode at creation, forces it even if the file somehow already exists,
+  and still leaves it empty — the property the no-token path depends on, since
+  an empty bearer would be a 404. Verified **inside a real build**:
+  `CFG-MODE=600 SIZE=74`, where the same probe reported 644 before.
+- **Exploitability was nil and the guard is here anyway.** Only root exists in
+  that layer and the file is removed inside the same `RUN`, so it never reached
+  a committed layer. But that is a property of the surrounding code, not of this
+  line, and it is one moved `rm` away from mattering. Four assertions in
+  `tests/test-build-fetch-retry.sh`, all seen failing against the exact form
+  they replace. The neighbouring *emptied-first* check now matches the property
+  rather than the `: >` spelling — it failed on a change that preserved the
+  behaviour it names.
 
 ## v0.9.12 — 2026-09-02
 
