@@ -7,7 +7,7 @@
   | Platform | Recommended runtime | Notes |
   |----------|---------------------|-------|
   | **Linux** | [Docker Engine](https://docs.docker.com/engine/install/) | Socket at `/var/run/docker.sock` by default. |
-  | **macOS** | [Docker Desktop](https://www.docker.com/products/docker-desktop/) or [Colima](https://github.com/abiosoft/colima) | See macOS note below. |
+  | **macOS** | [Docker Desktop](https://www.docker.com/products/docker-desktop/), [Colima](https://github.com/abiosoft/colima) or [Rancher Desktop](https://rancherdesktop.io/) | See the macOS notes below. |
   | **Windows** | [Docker Desktop](https://www.docker.com/products/docker-desktop/) + WSL2 backend | Run the scripts from inside a WSL2 shell. |
 
   **macOS with Colima:** Colima is a lightweight, open-source alternative to Docker Desktop. Install it with Homebrew, then follow these one-time setup steps:
@@ -31,6 +31,15 @@
      ```bash
      docker buildx install
      ```
+
+  **macOS with Rancher Desktop:** Rancher Desktop is another open-source alternative, configured through a GUI, and it ships both the `docker` CLI and `buildx` — so there is nothing to install with Homebrew. Two of its settings matter here:
+
+  1. **Set the container engine to `dockerd (moby)`** (Preferences → Container Engine). The other choice, `containerd`, serves `nerdctl` rather than the `docker` CLI these scripts call.
+
+  2. **Size the VM** (Preferences → Virtual Machine → Hardware). It defaults to 2 CPUs and 2 GB of memory, which is not enough to build this image — size it for the build and the container resources you plan to use (see [Resource limits](resources.md)).
+
+  `DOCKER_HOST` normally needs nothing: granted administrative access, Rancher Desktop points `/var/run/docker.sock` at its own socket; without it, it creates a `rancher-desktop` docker context and makes that current instead. If you exported `DOCKER_HOST` for Colima earlier, unset it — or point it at `unix://${HOME}/.rd/docker.sock`.
+
 - **Bash ≥ 5.1** on the host (for `sandbox.sh`). Linux distributions from Ubuntu 22.04 / Debian 11 / RHEL 9 onward ship this. macOS ships bash 3.2 — install a newer one via `brew install bash`.
 
 ## Before you initialise

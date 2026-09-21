@@ -69,7 +69,7 @@ The full index is [docs/README.md](docs/README.md).
 - **Docker ≥ 23** with BuildKit and `docker buildx`
 - **Bash ≥ 5.1** on the host — macOS ships 3.2, so `brew install bash`
 
-Full details, including Colima setup on macOS, are in [Getting started](docs/getting-started.md).
+Full details, including Colima and Rancher Desktop setup on macOS, are in [Getting started](docs/getting-started.md).
 
 ## Three network modes
 
