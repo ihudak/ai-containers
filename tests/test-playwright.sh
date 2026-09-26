@@ -157,7 +157,7 @@ rm -rf "$VC_TMP"
 
 GA_TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 cp "$REPO_DIR/build.sh" "$REPO_DIR/sandbox-common.sh" "$REPO_DIR/tools-lib.sh" \
-   "$REPO_DIR/bash-floor.sh" "$GA_TMP/"
+   "$REPO_DIR/bash-floor.sh" "$REPO_DIR/host-preflight.sh" "$GA_TMP/"
 cp -r "$REPO_DIR/allowlist-domains.d" "$REPO_DIR/allowlist-proxy-domains.d" \
       "$REPO_DIR/allowlist-cidrs.d" "$GA_TMP/"
 mkdir -p "$GA_TMP/tools.d"

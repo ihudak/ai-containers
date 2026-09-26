@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Fixed
+
+- **A Windows checkout could look healthy and not be.** Native Windows git commonly
+  checks the scripts out with CRLF line endings (bash then fails on `$'\r'`, and a CRLF
+  allowlist line silently allows nothing), and without Developer Mode it turns the
+  repo's symlinks into 9-byte text files while `git status` stays clean. A WSL clone
+  under `/mnt/c` produces symlinks Windows git tools cannot read, plus slow mounts.
+  A new `.gitattributes` pins LF. New `host-preflight.sh`, called by `build.sh`,
+  `sandbox.sh`, `project-init.sh` and `sync-to-projects.sh`, **refuses** a CRLF
+  script, Dockerfile, `tools.d` descriptor or allowlist fragment, naming the files
+  and the fix, and **warns** about a checkout under `/mnt/<drive>` on WSL. Getting
+  started now says to clone inside WSL on its own filesystem. `host-preflight.sh`
+  is a shared file, so a project picks it up on the next sync.
+
 ### Added
 
 - **Containers get a legible `--name`** (ported from mgd-ai-containers):

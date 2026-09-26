@@ -21,6 +21,8 @@
 set -euo pipefail
 # shellcheck source=bash-floor.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bash-floor.sh"
+# shellcheck source=host-preflight.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/host-preflight.sh"
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 projects_conf="${script_dir}/projects.conf"
@@ -303,6 +305,7 @@ if ! command -v rsync >/dev/null 2>&1; then
   printf '       script from WSL instead, or install rsync for your shell.\n' >&2
   exit 1
 fi
+host_checkout_preflight "$script_dir" || exit 1
 
 if [[ $# -ge 1 ]]; then
   # Single project passed on the command line
