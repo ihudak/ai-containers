@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`project-init.sh`/`sync-to-projects.sh` died silently without `rsync`**
+  (ported from mgd-ai-containers). Git for Windows' bundled bash ships none, and
+  under `set -euo pipefail` `sync-to-projects.sh` printed `Syncing → …` and then
+  stopped at `rsync: command not found`, copying nothing. Both now refuse up
+  front, naming the fix (run from WSL, or install rsync). The check sits after
+  `project-init.sh`'s sourcing guard, so `migrate-runme.sh` — which sources it
+  and never calls rsync — still works without it.
 - **A tool set `OFF` in `sandbox.conf` was still runnable when another project in
   the same group had it `ON`.** Observed with `copilot=OFF`: `copilot` started in
   the container. `~/.ai-tools` is group-shared, so the sibling project's install

@@ -83,6 +83,22 @@ projects_conf="${script_dir}/projects.conf"
 # that let build.sh recurse without bound (#218).
 (return 0 2>/dev/null) && return 0
 
+# The shared-file copy below is an rsync call, and this script runs under
+# set -euo pipefail — so a missing rsync would kill it silently partway
+# through copying, after the user has already answered every prompt. Checked
+# up front instead, before any prompt runs — but AFTER the sourcing guard, so
+# migrate-runme.sh (which sources this file for emit_launcher and never calls
+# rsync) is not refused on a host without it. Git for Windows' bundled bash
+# does not ship rsync, so this is the common case on Windows: run this script
+# from WSL instead (rsync is preinstalled on most distros), or install rsync
+# for your shell.
+if ! command -v rsync >/dev/null 2>&1; then
+  printf 'ERROR: rsync is required by this script but was not found on PATH.\n' >&2
+  printf '       Git for Windows'"'"'s bash does not ship rsync by default — run this\n' >&2
+  printf '       script from WSL instead, or install rsync for your shell.\n' >&2
+  exit 1
+fi
+
 
 # ── Prompt helpers ─────────────────────────────────────────────────────────────
 
