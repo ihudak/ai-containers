@@ -32,7 +32,7 @@ _AI_CONTAINERS_SHARED_FILES_SOURCED=1
 # shellcheck disable=SC2034  # consumed by project-init.sh and sync-to-projects.sh, which source this file
 AI_CONTAINERS_SHARED_FILES=(
   Dockerfile Dockerfile.seed .dockerignore
-  bash-floor.sh sandbox-common.sh tools-lib.sh
+  bash-floor.sh host-preflight.sh sandbox-common.sh tools-lib.sh
   build.sh sandbox.sh repo.sh group.sh entrypoint.sh version.sh
   repo-git-reset.sh
   rvm-reconcile.sh link-default-ruby.sh

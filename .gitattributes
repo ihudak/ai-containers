@@ -1,0 +1,6 @@
+# Every text file in this repo is LF, on every platform. Without this, Git for
+# Windows' common core.autocrlf=true checks the scripts out with CRLF, and they
+# fail under bash with `$'\r': command not found` (an allowlist fragment with
+# CRLF silently allows nothing). host-preflight.sh refuses a CRLF checkout; this
+# prevents one.
+* text=auto eol=lf

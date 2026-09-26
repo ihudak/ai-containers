@@ -16,6 +16,8 @@
 set -euo pipefail
 # shellcheck source=bash-floor.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bash-floor.sh"
+# shellcheck source=host-preflight.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/host-preflight.sh"
 
 # emit_launcher <path> <project-name> — write the thin runme.sh launcher.
 #
@@ -98,6 +100,7 @@ if ! command -v rsync >/dev/null 2>&1; then
   printf '       script from WSL instead, or install rsync for your shell.\n' >&2
   exit 1
 fi
+host_checkout_preflight "$script_dir" || exit 1
 
 
 # ── Prompt helpers ─────────────────────────────────────────────────────────────

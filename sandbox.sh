@@ -8,6 +8,8 @@ set -euo pipefail
 _here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=SCRIPTDIR/sandbox-common.sh
 source "${_here}/sandbox-common.sh"
+# shellcheck source=host-preflight.sh
+source "${_here}/host-preflight.sh"
 # shellcheck source=version.sh
 # Sourced HERE and not from sandbox-common.sh: several test fixtures copy a
 # hand-picked set of engine files into an isolated tree, and a new hard
@@ -1061,6 +1063,7 @@ command="${1:-${SANDBOX_MODE:-usage}}"
 
 case "$command" in
   restricted|discovery|open)
+    host_checkout_preflight "$_here" || exit 1
     run_container "$command" "${2:-${SANDBOX_WORKDIR:-}}"
     ;;
   build)
