@@ -290,6 +290,20 @@ sync_project() {
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 
+# sync_project's very first action is an rsync call, and this script runs under
+# set -euo pipefail — so a missing rsync previously killed the sync silently
+# after only printing "Syncing → ...", copying nothing at all (not even the
+# files before that first call), with no hint at what went wrong. Git for
+# Windows' bundled bash does not ship rsync, so this is the common case on
+# Windows: run this script from WSL instead (rsync is preinstalled on most
+# distros), or install rsync for your shell.
+if ! command -v rsync >/dev/null 2>&1; then
+  printf 'ERROR: rsync is required by this script but was not found on PATH.\n' >&2
+  printf '       Git for Windows'"'"'s bash does not ship rsync by default — run this\n' >&2
+  printf '       script from WSL instead, or install rsync for your shell.\n' >&2
+  exit 1
+fi
+
 if [[ $# -ge 1 ]]; then
   # Single project passed on the command line
   project_path="$(cd "$1" 2>/dev/null && pwd)" || {
