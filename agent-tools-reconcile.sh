@@ -176,8 +176,10 @@ done
 # a group provisioned before this change still carries ~300 MB of npm Claude under
 # ~/.ai-tools/npm, and it must keep working until someone clears it, without shadowing
 # the native install once that appears. Deliberately not deleted here: other containers
-# in the same group may be running against it right now.
-if [[ ! -d "$HOME/.local/share/claude" && -x "$npm_bin/claude" ]]; then
+# in the same group may be running against it right now. Gated on claude-code being ON
+# here: the npm copy is in the group's shared tool home, so its mere presence says only
+# that SOME project in the group enabled it.
+if [[ ",$tools," == *",claude-code,"* && ! -d "$HOME/.local/share/claude" && -x "$npm_bin/claude" ]]; then
   mkdir -p "$HOME/.local/bin"
   ln -sf "$npm_bin/claude" "$HOME/.local/bin/claude"
   log "using leftover npm Claude ($npm_bin/claude) — no native install present"

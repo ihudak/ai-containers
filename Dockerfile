@@ -676,11 +676,17 @@ RUN chmod +x /usr/local/bin/link-default-ruby.sh
 # without exporting NPM_CONFIG_PREFIX globally, which would trip that same nvm check.
 # The six tools (Claude Code, Codex, Gemini, Copilot, graphify, Vale) install at
 # container start via agent-tools-reconcile.sh; nothing agent-tier is baked.
+#
+# THE TOOL HOME'S BIN DIRS ARE NOT ON PATH. ~/.ai-tools is shared by every project in
+# the group, so its npm/uv/bin dirs hold whatever ANY of them enabled — putting a
+# directory on PATH exposes all of it, and `copilot` ran in a project with copilot=OFF.
+# link-agent-tools.sh links exactly this project's AI_RUNTIME_TOOLS into /usr/local/bin,
+# which every shell already has, so that is the one route onto PATH.
 RUN install -d /etc/skel/.local/bin && \
     printf '%s\n' \
       'export UV_TOOL_DIR="$HOME/.ai-tools/uv"' \
       'export UV_TOOL_BIN_DIR="$HOME/.ai-tools/uv/bin"' \
-      'export PATH="$HOME/.ai-tools/npm/bin:$HOME/.ai-tools/uv/bin:$HOME/.ai-tools/bin:$HOME/.local/bin:$PATH"' \
+      'export PATH="$HOME/.local/bin:$PATH"' \
       'npm-agent-tools() { npm --prefix "$HOME/.ai-tools/npm" "$@"; }' \
       | tee /etc/profile.d/ai-tools.sh >> /etc/bash.bashrc
 
