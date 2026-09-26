@@ -981,7 +981,33 @@ run_container() {
     shm_flags=(--shm-size=1g)
   fi
 
+  # Container name. CONTAINER_NAME overrides; the default combines the
+  # project's name with this process's PID, so several containers started
+  # against the very same workspace (e.g. one editing, others
+  # read-only-investigating) still get distinct names instead of colliding on
+  # Docker's random adjective_surname default — which gives no clue which
+  # running container is which task. The PID alone already guarantees
+  # uniqueness; the project name is just there for legibility in `docker ps`.
+  # launch_dir is "<project>/.ai-containers" (the documented invocation is
+  # always `cd <project>/.ai-containers && ./sandbox.sh`), so its basename is
+  # ".ai-containers" itself — useless, and Docker rejects a leading '.' in
+  # --name outright. dirname(launch_dir) is the project folder.
+  local container_name="${CONTAINER_NAME:-}"
+  if [[ -z "$container_name" ]]; then
+    local proj; proj="$(sanitize_volume_token "$(basename "$(dirname "$launch_dir")")")"
+    # Docker requires --name to START with [a-zA-Z0-9]. sanitize_volume_token
+    # only fixes disallowed characters, not a disallowed LEADING one — a
+    # project folder named e.g. ".hidden" or "-scratch" would still crash the
+    # same way ".ai-containers" did. Strip any such leading characters; if
+    # nothing alphanumeric is left, fall back to a plain default.
+    proj="$(printf '%s' "$proj" | sed -E 's/^[^a-zA-Z0-9]+//')"
+    [[ -z "$proj" ]] && proj="workspace"
+    container_name="${proj}-$$"
+  fi
+  printf 'Container name: %s\n' "$container_name" >&2
+
   docker run -it --rm \
+    --name "$container_name" \
     ${capabilities[@]+"${capabilities[@]}"} \
     ${shm_flags[@]+"${shm_flags[@]}"} \
     --add-host=host.docker.internal:host-gateway \

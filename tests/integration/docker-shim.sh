@@ -4,7 +4,7 @@
 #
 # WHY THIS EXISTS
 #
-# sandbox.sh:984 runs `docker run -it --rm …`: foreground, interactive, with no
+# sandbox.sh:1009 runs `docker run -it --rm …`: foreground, interactive, with no
 # --name and no label. There is nothing for a case to exec into and nothing for
 # the runner to sweep afterwards. The alternative was a test-only detach knob
 # inside a security-relevant launcher; this keeps sandbox.sh exactly as users
@@ -16,8 +16,16 @@
 #
 # WHAT IT CHANGES, and only on the container under test:
 #   -it  →  -d -i        detached, so the case observes from outside
+#   any --name the launcher itself passed → stripped, then
 #   +    --name  $IT_LAUNCH_NAME
 #   +    --label $IT_LABEL
+#
+# sandbox.sh now passes its own --name (a legible default, or CONTAINER_NAME).
+# Docker's flag parsing takes the LAST --name when a command line carries two,
+# so simply appending ours after the launcher's own would make ordering alone
+# decide which one wins — implicit, and one launcher-side arg reorder away
+# from silently breaking again. Stripping the launcher's --name outright
+# leaves no ambiguity: there is only ever one --name by the time this execs.
 # and it labels every `docker volume create` / `docker network create` so the
 # runner's sweep can find volumes the launcher creates on its own (the rvm
 # volume, a :rwcopy working copy) instead of leaking multi-GB debris.
@@ -80,7 +88,10 @@ case "${1:-}" in
     if [[ "$main" -eq 1 ]]; then
       [[ -n "${IT_LAUNCH_NAME:-}" ]] && pre+=(--name "$IT_LAUNCH_NAME")
       args=()
+      skip_next=0
       for a in "$@"; do
+        if [[ "$skip_next" -eq 1 ]]; then skip_next=0; continue; fi
+        if [[ "$a" == "--name" ]]; then skip_next=1; continue; fi
         if [[ "$a" == "-it" || "$a" == "-ti" ]]; then args+=(-d -i); else args+=("$a"); fi
       done
       exec "$real" run ${pre[@]+"${pre[@]}"} "${args[@]}"
