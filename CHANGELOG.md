@@ -6,8 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## v0.9.14 — 2026-09-26
+
 ### Fixed
 
+- **A tool set `OFF` in `sandbox.conf` was still runnable when another project in
+  the same group had it `ON`.** Observed with `copilot=OFF`: `copilot` started in
+  the container. `~/.ai-tools` is group-shared, so the sibling project's install
+  sat in it, and two routes exposed it regardless of this project's config —
+  `link-agent-tools.sh` linked every binary *present* into `/usr/local/bin`, and
+  `/etc/profile.d/ai-tools.sh` put the tool home's `npm/bin`, `uv/bin` and `bin`
+  on `PATH` wholesale. The linker now links only the tools in `AI_RUNTIME_TOOLS`
+  (and removes its own link for one that is not), and the shared bin directories
+  are off `PATH`, leaving `/usr/local/bin` the single route. The reconcile's
+  leftover-npm-Claude fallback is gated on `claude-code` for the same reason.
+  **Needs a rebuild** (`./build.sh`) for the `PATH` half. A package installed by
+  hand with `npm-agent-tools install -g` is no longer on `PATH` automatically;
+  call it by its full path under `~/.ai-tools/npm/bin`.
+- **`project-init.sh`/`sync-to-projects.sh` died silently without `rsync`**
+  (ported from mgd-ai-containers). Git for Windows' bundled bash ships none, and
+  under `set -euo pipefail` `sync-to-projects.sh` printed `Syncing → …` and then
+  stopped at `rsync: command not found`, copying nothing. Both now refuse up
+  front, naming the fix (run from WSL, or install rsync). The check sits after
+  `project-init.sh`'s sourcing guard, so `migrate-runme.sh` — which sources it
+  and never calls rsync — still works without it.
 - **A Windows checkout could look healthy and not be.** Native Windows git commonly
   checks the scripts out with CRLF line endings (bash then fails on `$'\r'`, and a CRLF
   allowlist line silently allows nothing), and without Developer Mode it turns the
@@ -33,30 +55,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **nvm pinned to v0.40.8.**
+- **Docs: Rancher Desktop is documented as a runtime on macOS and Windows**, alongside
+  Docker Desktop and Colima (`docs/getting-started.md`), including the one setting
+  it needs (`dockerd (moby)`) and, on Windows, WSL integration.
 - **CI: `actions/checkout` v5 → v7** (ported from mgd-ai-containers).
-
-### Fixed
-
-- **`project-init.sh`/`sync-to-projects.sh` died silently without `rsync`**
-  (ported from mgd-ai-containers). Git for Windows' bundled bash ships none, and
-  under `set -euo pipefail` `sync-to-projects.sh` printed `Syncing → …` and then
-  stopped at `rsync: command not found`, copying nothing. Both now refuse up
-  front, naming the fix (run from WSL, or install rsync). The check sits after
-  `project-init.sh`'s sourcing guard, so `migrate-runme.sh` — which sources it
-  and never calls rsync — still works without it.
-- **A tool set `OFF` in `sandbox.conf` was still runnable when another project in
-  the same group had it `ON`.** Observed with `copilot=OFF`: `copilot` started in
-  the container. `~/.ai-tools` is group-shared, so the sibling project's install
-  sat in it, and two routes exposed it regardless of this project's config —
-  `link-agent-tools.sh` linked every binary *present* into `/usr/local/bin`, and
-  `/etc/profile.d/ai-tools.sh` put the tool home's `npm/bin`, `uv/bin` and `bin`
-  on `PATH` wholesale. The linker now links only the tools in `AI_RUNTIME_TOOLS`
-  (and removes its own link for one that is not), and the shared bin directories
-  are off `PATH`, leaving `/usr/local/bin` the single route. The reconcile's
-  leftover-npm-Claude fallback is gated on `claude-code` for the same reason.
-  **Needs a rebuild** (`./build.sh`) for the `PATH` half. A package installed by
-  hand with `npm-agent-tools install -g` is no longer on `PATH` automatically;
-  call it by its full path under `~/.ai-tools/npm/bin`.
 
 ## v0.9.13 — 2026-09-04
 
