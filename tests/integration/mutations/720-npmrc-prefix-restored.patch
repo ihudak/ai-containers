@@ -5,13 +5,12 @@
 #       node=22,20 multi-version workflow breaks the instant ~/.ai-tools is populated.
 #
 diff --git a/Dockerfile b/Dockerfile
-index ee36aec..c5bb71e 100644
 --- a/Dockerfile
 +++ b/Dockerfile
-@@ -383,7 +383,8 @@ RUN chmod +x /usr/local/bin/link-default-ruby.sh
- # without exporting NPM_CONFIG_PREFIX globally, which would trip that same nvm check.
- # The six tools (Claude Code, Codex, Gemini, Copilot, graphify, Vale) install at
- # container start via agent-tools-reconcile.sh; nothing agent-tier is baked.
+@@ -682,7 +682,8 @@ RUN chmod +x /usr/local/bin/link-default-ruby.sh
+ # directory on PATH exposes all of it, and `copilot` ran in a project with copilot=OFF.
+ # link-agent-tools.sh links exactly this project's AI_RUNTIME_TOOLS into /usr/local/bin,
+ # which every shell already has, so that is the one route onto PATH.
 -RUN install -d /etc/skel/.local/bin && \
 +RUN printf 'prefix=${HOME}/.ai-tools/npm\n' > /etc/skel/.npmrc && \
 +    install -d /etc/skel/.local/bin && \

@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Fixed
+
+- **A tool set `OFF` in `sandbox.conf` was still runnable when another project in
+  the same group had it `ON`.** Observed with `copilot=OFF`: `copilot` started in
+  the container. `~/.ai-tools` is group-shared, so the sibling project's install
+  sat in it, and two routes exposed it regardless of this project's config —
+  `link-agent-tools.sh` linked every binary *present* into `/usr/local/bin`, and
+  `/etc/profile.d/ai-tools.sh` put the tool home's `npm/bin`, `uv/bin` and `bin`
+  on `PATH` wholesale. The linker now links only the tools in `AI_RUNTIME_TOOLS`
+  (and removes its own link for one that is not), and the shared bin directories
+  are off `PATH`, leaving `/usr/local/bin` the single route. The reconcile's
+  leftover-npm-Claude fallback is gated on `claude-code` for the same reason.
+  **Needs a rebuild** (`./build.sh`) for the `PATH` half. A package installed by
+  hand with `npm-agent-tools install -g` is no longer on `PATH` automatically;
+  call it by its full path under `~/.ai-tools/npm/bin`.
+
 ## v0.9.13 — 2026-09-04
 
 ### Fixed

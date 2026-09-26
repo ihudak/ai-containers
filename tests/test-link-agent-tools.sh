@@ -41,6 +41,36 @@ h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; d="$(mkt
 [[ -z "$(ls -A "$d")" ]] && pass "no AI_RUNTIME_TOOLS is a no-op" || fail "no AI_RUNTIME_TOOLS is a no-op"
 rm -rf "$h" "$d"
 
+# ── Present but NOT enabled → not linked. The tool home is group-shared: a sibling
+# project with copilot=ON leaves copilot in it, and this project said copilot=OFF. ──
+h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; d="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
+mk_tool "$h" npm/bin/claude; mk_tool "$h" npm/bin/copilot; mk_tool "$h" npm/bin/codex
+AI_RUNTIME_TOOLS="claude-code,codex" bash "$REPO_DIR/link-agent-tools.sh" "$h" "$d" >/dev/null 2>&1
+[[ -L "$d/claude" && -L "$d/codex" && ! -e "$d/copilot" && ! -L "$d/copilot" ]] \
+  && pass "present-but-disabled tool is not linked" || fail "present-but-disabled tool is not linked"
+rm -rf "$h" "$d"
+
+# ── A link an earlier start made for a now-disabled tool is removed ──
+h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; d="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
+mk_tool "$h" npm/bin/claude; mk_tool "$h" npm/bin/copilot
+ln -s "$h/.ai-tools/npm/bin/copilot" "$d/copilot"
+AI_RUNTIME_TOOLS="claude-code" bash "$REPO_DIR/link-agent-tools.sh" "$h" "$d" >/dev/null 2>&1
+[[ -L "$d/claude" && ! -L "$d/copilot" ]] && pass "stale link for a disabled tool is removed" || fail "stale link for a disabled tool is removed"
+rm -rf "$h" "$d"
+
+# ── The key is matched exactly, not as a substring of another entry ──
+h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; d="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
+mk_tool "$h" npm/bin/codex
+AI_RUNTIME_TOOLS="codex-x" bash "$REPO_DIR/link-agent-tools.sh" "$h" "$d" >/dev/null 2>&1
+[[ ! -L "$d/codex" ]] && pass "enabled-key match is exact" || fail "enabled-key match is exact"
+rm -rf "$h" "$d"
+
+# ── The baked PATH must not expose the shared tool home's bin dirs; /usr/local/bin
+# (populated above, per project) is the only route. ──
+path_line="$(grep -E "'export PATH=" "$REPO_DIR/Dockerfile" | grep -F 'ai-tools' || true)"
+[[ -z "$path_line" ]] && pass "Dockerfile does not put ~/.ai-tools bin dirs on PATH" \
+  || fail "Dockerfile puts ~/.ai-tools bin dirs on PATH: $path_line"
+
 # ── Guards ──
 grep -qE '^set +-[a-z]*u|nounset' "$REPO_DIR/link-agent-tools.sh" && fail "must NOT enable nounset" || pass "does not enable nounset"
 

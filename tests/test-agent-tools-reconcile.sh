@@ -199,6 +199,18 @@ rm -rf "$bin"
   && pass "leftover npm claude is used when the native install is absent" || fail "leftover npm claude is used when the native install is absent"
 rm -rf "$h"
 
+# ── ...but NOT when claude-code is OFF: the npm copy is in the GROUP's tool home, so a
+# project that did not enable Claude must not pick it up because a sibling project did.
+h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
+install -d "$h/.ai-tools/npm/bin"; printf '#!/bin/sh\n' > "$h/.ai-tools/npm/bin/claude"; chmod +x "$h/.ai-tools/npm/bin/claude"
+bin="$(mktemp -d)"; mk_stubs "$bin" "$h"
+PATH="$bin:$PATH" HOME="$h" AI_RUNTIME_TOOLS="codex" \
+  bash "$REPO_DIR/agent-tools-reconcile.sh" >"$h/out.log" 2>&1
+rm -rf "$bin"
+[[ ! -e "$h/.local/bin/claude" && ! -L "$h/.local/bin/claude" ]] \
+  && pass "leftover npm claude is NOT linked when claude-code is off" || fail "leftover npm claude is NOT linked when claude-code is off"
+rm -rf "$h"
+
 # ── Empty AI_RUNTIME_TOOLS → no-op ──
 h="$(run_case "")"; [[ ! -s "$h/calls.log" ]] && pass "empty AI_RUNTIME_TOOLS is a no-op" || fail "empty AI_RUNTIME_TOOLS is a no-op"; rm -rf "$h"
 
