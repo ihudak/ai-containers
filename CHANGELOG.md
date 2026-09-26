@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Added
+
+- **Containers get a legible `--name`** (ported from mgd-ai-containers):
+  `<project-folder>-<PID>` by default, `CONTAINER_NAME` to override, printed at
+  launch. Several containers can already run from one image on one project;
+  this makes them tell-apart-able in `docker ps` instead of Docker's random
+  `adjective_surname`. The project folder is the launch dir's parent (a leading
+  `.` from `.ai-containers` is rejected by Docker), sanitised to Docker's name
+  rule. `docker-shim.sh` strips the launcher's `--name` before injecting its own.
+  New `tests/test-container-name.sh`.
+
+### Changed
+
+- **CI: `actions/checkout` v5 → v7** (ported from mgd-ai-containers).
+
 ### Fixed
 
 - **`project-init.sh`/`sync-to-projects.sh` died silently without `rsync`**

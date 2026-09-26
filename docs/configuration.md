@@ -41,6 +41,7 @@ container:
 | `CONTAINER_MEMORY_SWAP` | Memory + swap total (≥ `CONTAINER_MEMORY`; set equal to disable swap, `-1` for unlimited). | `4g` | — |
 | `CONTAINER_NOFILE` | Open-file-descriptor limit, `soft[:hard]`. | `1048576:1048576` | — |
 | `CONTAINER_SHM_SIZE` | Size of `/dev/shm` (`--shm-size`). Its size is not governed by `CONTAINER_MEMORY` (whose 4g default leaves a 64m `/dev/shm` that crashes headless Chromium), though its pages are charged to that cgroup. Passed automatically as `1g` when `playwright` is active. | Docker's `64m`; `1g` with `playwright` | — |
+| `CONTAINER_NAME` | Container name (`--name`), printed at launch. Default: `<project-folder>-<PID>` — the parent of the launch dir, sanitised to Docker's `[a-zA-Z0-9][a-zA-Z0-9_.-]*` (`workspace` if nothing usable is left) — so concurrent containers, even several against the very same workspace, get distinct, legible names instead of Docker's random `adjective_surname`. Set it **inline, for one run**: persisted in `sandbox.env`/`sandbox.local.env` it applies to every launch, and the second concurrent container fails on the name conflict. | derived (see left) | — |
 | `SELF_HEALING_ENABLED` | Set `0` to disable reactive IP auto-allowing (logging only). | `1` | forwarded |
 | `ALLOW_IPV6_BYPASS` | Set `1` to suppress the `ip6tables`-unavailable warning (WSL2/nf_tables). | `0` | forwarded |
 | `COPILOT_GITHUB_TOKEN` | Copilot CLI auth token; bypasses device-flow OAuth. Auto-extracted from the group's `gh` `hosts.yml` when unset. | auto from `gh` | forwarded |
