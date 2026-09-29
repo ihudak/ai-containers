@@ -189,6 +189,20 @@ grep -q 'Invalid group' "$G/bad.err" && pass "picker: invalid name reports why" 
 run_init "$HG" "$G/outofrange" "9" "y"
 check "picker: out-of-range number is a (confirmed) name" "$(group_of "$G/outofrange")" "9"
 
+# A group that sorts BEFORE `default`. Every fixture above sorts after it
+# (docs, work), so building the list WITHOUT pinning `default` to row 1
+# produces byte-identical output and no assertion here notices — while on a
+# machine that has an `alpha` group, row 1 becomes `alpha` and Enter, the one
+# gesture this picker exists to leave unchanged, silently selects the wrong
+# group. Verified: that mutation survived every other case in this file.
+HA="$TMP/home-alpha"; mkdir -p "$HA/.ai-containers/"{alpha,default,zulu}
+run_init "$HA" "$G/alpha" ""
+grep -qxF '  1) default' "$G/alpha.out" \
+  && pass "picker: default is row 1 even with a group sorting before it" || fail "picker: default is row 1 even with a group sorting before it"
+grep -qxF '  2) alpha' "$G/alpha.out" \
+  && pass "picker: the other groups follow default, still sorted" || fail "picker: the other groups follow default, still sorted"
+check "picker: Enter still means default, not whatever sorts first" "$(group_of "$G/alpha")" "default"
+
 run_init "$HG" "$G/host" "host" "$TMP"
 check "picker: typed host selects the host sentinel" "$(group_of "$G/host")" "host"
 check "picker: host needs no bootstrap" "$(init_of "$G/host")" ""

@@ -42,6 +42,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The group picker's one guaranteed property was untested: `default` on row
+  1.** Every fixture in `tests/test-project-init.sh` planted groups that sort
+  *after* `default` (`docs`, `work`), so building the menu without pinning
+  `default` to row 1 produced byte-identical output and all eleven picker
+  assertions stayed green — verified by mutation. On a machine with a group
+  sorting before it (`alpha`, `backend`), row 1 becomes that group and Enter —
+  the one gesture the picker exists to leave unchanged — silently selects the
+  wrong group. A fixture with an `alpha` group now pins it; the mutant fails
+  with `got 'alpha', want 'default'`.
+
+  The same pass found `existing_groups`'s `LC_ALL=C sort` has no test and
+  cannot have a hermetic one: glibc's `en_US.UTF-8` collates a dashed name
+  differently, but macOS's `sort` does not reorder that pair and the
+  bash-floor container ships only `C`/`C.utf8`/`POSIX`, so any test would pass
+  whether or not the `LC_ALL=C` survived. That is now recorded at the line
+  instead of left as an invisible, deletable defence.
+
 - **Four stale claims in `AGENTS.md`, and the gap that let one of them rot.**
   `entrypoint.sh:203` pointed at a blank line (the pcap daemon moved to `:225`);
   two `tools.d` passages said "currently `dtctl`, `dtmgd`" although `acli` is

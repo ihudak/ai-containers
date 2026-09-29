@@ -35,6 +35,15 @@ valid_group_name() {
 # existing_groups — every group directory under ~/.ai-containers, one name per
 # line. Only valid group names: anything else there cannot be selected anyway.
 # LC_ALL=C so the menu numbering is the same under every host locale.
+#
+# That LC_ALL=C has NO regression test, deliberately, and this note is the
+# reason: glibc's en_US.UTF-8 ignores punctuation at primary strength, so a
+# dashed name (`a-x` vs `ab`) collates differently there — but neither
+# environment the hermetic suite runs in can show it. macOS's sort orders that
+# pair byte-wise under en_US.UTF-8 anyway, and the bash-floor container
+# (ubuntu:22.04) ships only C, C.utf8 and POSIX. A test here would pass whether
+# or not the LC_ALL=C survived, which is worse than none. Do not remove it on
+# the grounds that nothing fails when you do.
 existing_groups() {
   local d name
   [[ -d "$HOME/.ai-containers" ]] || return 0
