@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # project-init.sh — interactively configure a project to use ai-containers.
 #
-# Prompts for image name, project location, container group (with optional
-# from-which-group bootstrap), CPU/memory limits, and extra mounts. Then
+# Prompts for image name, project location, container group (picked from the
+# existing groups or named anew, with optional from-which-group bootstrap),
+# CPU/memory limits, and extra mounts. Then
 # copies the shared .ai-containers infrastructure into the project, registers
 # it in projects.conf, and writes a ready-to-run runme.sh launcher modelled on
 # ihudak-claude-plugins/.ai-containers/claude-plugins.sh.
@@ -29,6 +30,19 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/host-preflight.sh"
 valid_group_name() {
   # Mirrors validate_group_name() in sandbox-common.sh.
   [[ "$1" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]]
+}
+
+# existing_groups — every group directory under ~/.ai-containers, one name per
+# line. Only valid group names: anything else there cannot be selected anyway.
+# LC_ALL=C so the menu numbering is the same under every host locale.
+existing_groups() {
+  local d name
+  [[ -d "$HOME/.ai-containers" ]] || return 0
+  for d in "$HOME/.ai-containers"/*/; do
+    [[ -d "$d" ]] || continue
+    name="$(basename "$d")"
+    if valid_group_name "$name"; then printf '%s\n' "$name"; fi
+  done | LC_ALL=C sort
 }
 
 emit_launcher() {  # $1=destination path  $2=project name
@@ -258,13 +272,43 @@ while true; do
 done
 
 # ── 6. Group ───────────────────────────────────────────────────────────────────
+# A numbered list of the groups that already exist, `default` always row 1 so
+# Enter still means `default`. Anything that is not a row number is a group
+# NAME, and a name with no directory is confirmed before it is accepted: this
+# used to be free text, and a mistyped name went straight on to the "Initialize
+# from" menu below as a brand-new group, with no way back. `host` is not listed
+# (it mounts the real $HOME), but typing it still selects it.
 
-while true; do
-  prompt_with_default "Container group (AI_CONTAINER_GROUP)" "default" group_name
-  if valid_group_name "$group_name"; then
-    break
+group_choices=(default)
+while IFS= read -r name; do
+  [[ "$name" == "default" ]] || group_choices+=("$name")
+done < <(existing_groups)
+
+group_name=""
+while [[ -z "$group_name" ]]; do
+  printf '\nContainer group (AI_CONTAINER_GROUP):\n'
+  for i in "${!group_choices[@]}"; do
+    label="${group_choices[$i]}"
+    [[ -d "$HOME/.ai-containers/$label" ]] || label+=" (new)"
+    printf '  %d) %s\n' "$((i+1))" "$label"
+  done
+  read -r -p "Pick a number, or type a name for a new group [1]: " reply || exit 1
+  [[ -z "$reply" ]] && reply=1
+  # No leading zero: bash arithmetic would read "08" as octal. An out-of-range
+  # number falls through to the name branch, so a numeric group name can still
+  # be created — and the confirmation catches a mistyped row number.
+  if [[ "$reply" =~ ^[1-9][0-9]{0,8}$ ]] && (( reply <= ${#group_choices[@]} )); then
+    group_name="${group_choices[$((reply-1))]}"
+  elif ! valid_group_name "$reply"; then
+    printf '  Invalid group. Allowed: lowercase letters, digits, dashes; 1-32 chars; must start with alphanum.\n' >&2
+  elif [[ "$reply" == "host" || -d "$HOME/.ai-containers/$reply" ]]; then
+    group_name="$reply"
+  else
+    read -r -p "Group '$reply' does not exist. Create it? [y/N]: " confirm || exit 1
+    case "$confirm" in
+      y|Y|yes|YES) group_name="$reply" ;;
+    esac
   fi
-  printf '  Invalid group. Allowed: lowercase letters, digits, dashes; 1-32 chars; must start with alphanum.\n' >&2
 done
 
 # ── 7. Group init (conditional) ────────────────────────────────────────────────
@@ -282,14 +326,10 @@ if [[ "$group_name" != "host" && ! -d "$group_root" ]]; then
   fi
   init_values+=("from:host"); init_labels+=("host (\$HOME)")
 
-  if [[ -d "$HOME/.ai-containers" ]]; then
-    while IFS= read -r dir; do
-      [[ -z "$dir" ]] && continue
-      name="$(basename "$dir")"
-      [[ "$name" == "default" || "$name" == "$group_name" ]] && continue
-      init_values+=("from:$name"); init_labels+=("$name")
-    done < <(find "$HOME/.ai-containers" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
-  fi
+  while IFS= read -r name; do
+    [[ "$name" == "default" || "$name" == "$group_name" ]] && continue
+    init_values+=("from:$name"); init_labels+=("$name")
+  done < <(existing_groups)
 
   init_values+=("clean"); init_labels+=("<empty>")
 

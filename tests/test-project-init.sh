@@ -126,4 +126,74 @@ for f in sandbox.local.env.pre-init \
   fi
 done
 
+# ── Group picker (step 6) ─────────────────────────────────────────────────────
+# The group prompt lists existing groups by number; anything else is a name, and
+# a name with no directory is confirmed before it becomes a new group. Each run
+# gets its own HOME so the groups on offer are exactly the ones planted here.
+#
+# run_init <home> <project> <answer...> — path, six defaults (name, image, cpus,
+# memory, reservation, swap), then the given answers from the group prompt on,
+# then blank lines for whatever follows (group-init menu row 1, extra mounts).
+run_init() {
+  local home="$1" proj="$2"; shift 2
+  mkdir -p "$proj"; git -C "$proj" init -q
+  { printf '%s\n\n\n\n\n\n\n' "$proj"; printf '%s\n' "$@"; printf '\n\n\n'; } \
+    | HOME="$home" bash "$SCRIPTS/project-init.sh" >"$proj.out" 2>"$proj.err"
+}
+group_of() { sed -n 's/^AI_CONTAINER_GROUP=//p' "$1/.ai-containers/sandbox.env"; }
+init_of()  { sed -n 's/^AI_CONTAINER_GROUP_INIT=//p' "$1/.ai-containers/sandbox.local.env"; }
+check() {  # $1=label $2=actual $3=expected
+  [[ "$2" == "$3" ]] && pass "$1" || fail "$1 (got '$2', want '$3')"
+}
+
+G="$TMP/pick"
+HG="$TMP/home-groups"
+mkdir -p "$HG/.ai-containers/"{default,docs,work,Not_A_Group}
+HE="$TMP/home-empty"; mkdir -p "$HE"
+
+run_init "$HE" "$G/fresh" ""
+grep -qxF '  1) default (new)' "$G/fresh.out" && pass "picker: missing default is labelled (new)" || fail "picker: missing default is labelled (new)"
+check "picker: Enter on a fresh machine → default" "$(group_of "$G/fresh")" "default"
+check "picker: new default still bootstraps (from:host)" "$(init_of "$G/fresh")" "from:host"
+
+run_init "$HG" "$G/bynum" "2"
+grep -qxF '  1) default' "$G/bynum.out" && grep -qxF '  2) docs' "$G/bynum.out" && grep -qxF '  3) work' "$G/bynum.out" \
+  && pass "picker: lists default first, then groups sorted" || fail "picker: lists default first, then groups sorted"
+! grep -q 'Not_A_Group' "$G/bynum.out" && pass "picker: invalid dir names are not listed" || fail "picker: invalid dir names are not listed"
+! grep -q '(new)' "$G/bynum.out" && pass "picker: existing default is not labelled (new)" || fail "picker: existing default is not labelled (new)"
+check "picker: row number selects that group" "$(group_of "$G/bynum")" "docs"
+check "picker: existing group needs no bootstrap" "$(init_of "$G/bynum")" ""
+
+# The line after the name is an extra-mount path: had a confirmation prompt been
+# shown it would have eaten that line instead, and EXTRA_MOUNTS would be missing.
+run_init "$HG" "$G/byname" "work" "$TMP"
+check "picker: typed existing name selects it" "$(group_of "$G/byname")" "work"
+grep -q '^EXTRA_MOUNTS=' "$G/byname/.ai-containers/sandbox.local.env" \
+  && pass "picker: existing name asks no confirmation" || fail "picker: existing name asks no confirmation"
+
+run_init "$HG" "$G/typo" "dcos" "" "2"
+check "picker: Enter declines creating a mistyped group" "$(group_of "$G/typo")" "docs"
+[[ ! -d "$HG/.ai-containers/dcos" ]] && pass "picker: declined name leaves no directory" || fail "picker: declined name leaves no directory"
+[[ "$(grep -cxF '  1) default' "$G/typo.out")" == 2 ]] && pass "picker: list shown again after declining" || fail "picker: list shown again after declining"
+
+run_init "$HG" "$G/newgrp" "newgrp" "y" "1"
+check "picker: confirmed new name is used" "$(group_of "$G/newgrp")" "newgrp"
+check "picker: new group goes on to bootstrap menu" "$(init_of "$G/newgrp")" "from:default"
+grep -q "Group 'newgrp' does not exist yet" "$G/newgrp.out" && pass "picker: bootstrap menu shown for new group" || fail "picker: bootstrap menu shown for new group"
+! grep -q 'Not_A_Group' "$G/newgrp.out" && pass "bootstrap menu: invalid dir names are not listed" || fail "bootstrap menu: invalid dir names are not listed"
+
+run_init "$HG" "$G/bad" "Bad Name" "3"
+check "picker: invalid name re-prompts" "$(group_of "$G/bad")" "work"
+grep -q 'Invalid group' "$G/bad.err" && pass "picker: invalid name reports why" || fail "picker: invalid name reports why"
+
+run_init "$HG" "$G/outofrange" "9" "y"
+check "picker: out-of-range number is a (confirmed) name" "$(group_of "$G/outofrange")" "9"
+
+run_init "$HG" "$G/host" "host" "$TMP"
+check "picker: typed host selects the host sentinel" "$(group_of "$G/host")" "host"
+check "picker: host needs no bootstrap" "$(init_of "$G/host")" ""
+grep -q '^EXTRA_MOUNTS=' "$G/host/.ai-containers/sandbox.local.env" \
+  && pass "picker: host asks no confirmation" || fail "picker: host asks no confirmation"
+! grep -qE '^  [0-9]+\) host' "$G/host.out" && pass "picker: host is not a listed row" || fail "picker: host is not a listed row"
+
 [[ "$fails" -eq 0 ]] && { echo "ALL PASS"; exit 0; } || { echo "$fails FAILED"; exit 1; }
