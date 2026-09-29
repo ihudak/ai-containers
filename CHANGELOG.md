@@ -6,7 +6,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## v0.9.15 — 2026-09-29
+
 ### Changed
+
+- **`.aws`, `.azure`, `.kube` and `.yarn` are mounted from the container group
+  instead of straight from `$HOME`.** They were the last four host-shared paths,
+  and not by design: they predate the group system and were never revisited, so
+  a container could write the developer's real AWS credentials and `kubectl
+  config use-context` inside the sandbox flipped the host's current context.
+  They now behave like `.claude` and every other group-scoped dir, gated on
+  their component key (`aws-cli`, `azure-cli`, `kubectl`, `yarn`), and
+  `AI_CONTAINER_GROUP=host` still mounts `$HOME` as that group's contract says.
+  A group bootstrapped `from:host` or `from:<group>` inherits `.aws`/`.azure`/
+  `.kube` through `_copy_group_slice`; `.yarn` is mounted but not copied, being
+  a regenerable package cache like `.ai-tools` and `.cache/ms-playwright`.
+
+  **Action required for groups that already exist.** The bootstrap runs only at
+  group creation, so an existing group gets an empty directory and the first
+  container after upgrading starts with no AWS credentials and no kubeconfig.
+  Nothing errors — the symptom looks like expired credentials. Copy them across
+  once, per group:
+
+  ```bash
+  cp -a ~/.aws ~/.azure ~/.kube ~/.ai-containers/<group>/
+  ```
+
+- **`project-init.sh` lists the existing container groups to pick from.** The
+  group prompt was free text: Enter gave `default`, but any other group had to
+  be typed exactly, and a typo went straight on to the "Initialize from" menu
+  as a brand-new, empty group, with no way back. It now shows a numbered list —
+  `default` always row 1, so Enter is unchanged, then every group under
+  `~/.ai-containers/` — and accepts either a row number or a name. A name with
+  no group directory asks `Create it? [y/N]` first; Enter declines and shows
+  the list again. `host` is not listed (it mounts the real `$HOME`), but typing
+  it still selects it.
 
 - **The testing evidence moved out of `AGENTS.md` into `docs/testing.md`.**
   `AGENTS.md` is loaded into every agent session, and `## Commands` alone was
@@ -44,59 +78,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   ambiguous between the falsify and integration runners and was resolved per
   occurrence rather than by a blanket rule.
 
-
-### Changed
-
-- **`project-init.sh` lists the existing container groups to pick from.** The
-  group prompt was free text: Enter gave `default`, but any other group had to
-  be typed exactly, and a typo went straight on to the "Initialize from" menu
-  as a brand-new, empty group, with no way back. It now shows a numbered list —
-  `default` always row 1, so Enter is unchanged, then every group under
-  `~/.ai-containers/` — and accepts either a row number or a name. A name with
-  no group directory asks `Create it? [y/N]` first; Enter declines and shows
-  the list again. `host` is not listed (it mounts the real `$HOME`), but typing
-  it still selects it.
-
-- **`.aws`, `.azure`, `.kube` and `.yarn` are mounted from the container group
-  instead of straight from `$HOME`.** They were the last four host-shared paths,
-  and not by design: they predate the group system and were never revisited, so
-  a container could write the developer's real AWS credentials and `kubectl
-  config use-context` inside the sandbox flipped the host's current context.
-  They now behave like `.claude` and every other group-scoped dir, gated on
-  their component key (`aws-cli`, `azure-cli`, `kubectl`, `yarn`), and
-  `AI_CONTAINER_GROUP=host` still mounts `$HOME` as that group's contract says.
-  A group bootstrapped `from:host` or `from:<group>` inherits `.aws`/`.azure`/
-  `.kube` through `_copy_group_slice`; `.yarn` is mounted but not copied, being
-  a regenerable package cache like `.ai-tools` and `.cache/ms-playwright`.
-
-  **Action required for groups that already exist.** The bootstrap runs only at
-  group creation, so an existing group gets an empty directory and the first
-  container after upgrading starts with no AWS credentials and no kubeconfig.
-  Nothing errors — the symptom looks like expired credentials. Copy them across
-  once, per group:
-
-  ```bash
-  cp -a ~/.aws ~/.azure ~/.kube ~/.ai-containers/<group>/
-  ```
-
 ### Fixed
 
-- **The group picker's one guaranteed property was untested: `default` on row
-  1.** Every fixture in `tests/test-project-init.sh` planted groups that sort
-  *after* `default` (`docs`, `work`), so building the menu without pinning
-  `default` to row 1 produced byte-identical output and all eleven picker
-  assertions stayed green — verified by mutation. On a machine with a group
-  sorting before it (`alpha`, `backend`), row 1 becomes that group and Enter —
-  the one gesture the picker exists to leave unchanged — silently selects the
-  wrong group. A fixture with an `alpha` group now pins it; the mutant fails
-  with `got 'alpha', want 'default'`.
-
-  The same pass found `existing_groups`'s `LC_ALL=C sort` has no test and
-  cannot have a hermetic one: glibc's `en_US.UTF-8` collates a dashed name
-  differently, but macOS's `sort` does not reorder that pair and the
-  bash-floor container ships only `C`/`C.utf8`/`POSIX`, so any test would pass
-  whether or not the `LC_ALL=C` survived. That is now recorded at the line
-  instead of left as an invisible, deletable defence.
+- **`tests/test-host-preflight.sh` failed on every Mac and passed in CI.** Its
+  CRLF assertion normalises `host_crlf_files`'s unordered output with `sort`
+  and compares it against a byte-ordered expectation (`Dockerfile` first), but
+  `sort` collates by locale: under a developer's `en_US.UTF-8` the uppercase
+  name sorts *after* `allowlist-domains.d/custom.txt`, so the assertion failed
+  for a reason that has nothing to do with CRLF detection. Pinned to `LC_ALL=C
+  sort`. Same class as the `/private/var` and `/bin/true` divergences
+  `tests/portability.sh` exists for — the product was right, the test's
+  assumption was not, and CI being ubuntu-only is why it went unnoticed.
 
 - **Four stale claims in `AGENTS.md`, and the gap that let one of them rot.**
   `entrypoint.sh:203` pointed at a blank line (the pcap daemon moved to `:225`);
@@ -118,15 +110,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   that drifted onto another non-blank line; that needs a content assertion
   naming what belongs there, which is what the shim test does for its one line.
 
-- **`tests/test-host-preflight.sh` failed on every Mac and passed in CI.** Its
-  CRLF assertion normalises `host_crlf_files`'s unordered output with `sort`
-  and compares it against a byte-ordered expectation (`Dockerfile` first), but
-  `sort` collates by locale: under a developer's `en_US.UTF-8` the uppercase
-  name sorts *after* `allowlist-domains.d/custom.txt`, so the assertion failed
-  for a reason that has nothing to do with CRLF detection. Pinned to `LC_ALL=C
-  sort`. Same class as the `/private/var` and `/bin/true` divergences
-  `tests/portability.sh` exists for — the product was right, the test's
-  assumption was not, and CI being ubuntu-only is why it went unnoticed.
+- **The group picker's one guaranteed property was untested: `default` on row
+  1.** Every fixture in `tests/test-project-init.sh` planted groups that sort
+  *after* `default` (`docs`, `work`), so building the menu without pinning
+  `default` to row 1 produced byte-identical output and all eleven picker
+  assertions stayed green — verified by mutation. On a machine with a group
+  sorting before it (`alpha`, `backend`), row 1 becomes that group and Enter —
+  the one gesture the picker exists to leave unchanged — silently selects the
+  wrong group. A fixture with an `alpha` group now pins it; the mutant fails
+  with `got 'alpha', want 'default'`.
+
+  The same pass found `existing_groups`'s `LC_ALL=C sort` has no test and
+  cannot have a hermetic one: glibc's `en_US.UTF-8` collates a dashed name
+  differently, but macOS's `sort` does not reorder that pair and the
+  bash-floor container ships only `C`/`C.utf8`/`POSIX`, so any test would pass
+  whether or not the `LC_ALL=C` survived. That is now recorded at the line
+  instead of left as an invisible, deletable defence.
 
 ## v0.9.14 — 2026-09-26
 
