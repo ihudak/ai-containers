@@ -249,16 +249,25 @@ unset AI_CONTAINER_HOST_ACK
 teardown
 
 # ── Case 10: every BUILT-IN config dir is group-scoped, one assertion each ─────
-# The tools.d descriptors above go through one code path; these eight are
+# The tools.d descriptors above go through one code path; these twelve are
 # hardcoded in run_container, each with its own `if [[ "$group" != "host" ]];
 # then install -d …` guard, and the mount that follows is OUTSIDE the guard. So
 # inverting a guard does not redirect the mount — it stops the directory being
 # created, `add_mount_if_exists` then finds nothing, and that tool's credentials
 # silently stop reaching the container. One assertion per directory, because one
-# aggregate would kill all eight mutants without saying which line moved.
-BUILTIN_DIRS=(.config/gh .copilot .kiro .claude .codex .gemini .cache/qmd .ai-tools)
+# aggregate would kill all twelve mutants without saying which line moved.
+#
+# The last four — .aws/.azure/.kube/.yarn — were mounted straight from $HOME
+# until they joined the group, which is why the host copies below matter: with
+# no $HOME/.aws on disk, the "not mounted from the bare host home" assertion
+# cannot fail even when the mount source IS the host home, because
+# add_mount_if_exists skips a source that does not exist. Creating them makes
+# that assertion load-bearing for all twelve rather than vacuous.
+BUILTIN_DIRS=(.config/gh .copilot .kiro .claude .codex .gemini .cache/qmd .ai-tools
+              .aws .azure .kube .yarn)
 setup
-printf '# schema-version: 3\nalpha=OFF\nbeta=OFF\ngamma=OFF\ngithub-cli=ON\ncopilot=ON\nkiro=ON\nclaude-code=ON\ncodex=ON\ngemini=ON\nqmd=ON\n' > "$SANDBOX_CONF"
+printf '# schema-version: 3\nalpha=OFF\nbeta=OFF\ngamma=OFF\ngithub-cli=ON\ncopilot=ON\nkiro=ON\nclaude-code=ON\ncodex=ON\ngemini=ON\nqmd=ON\naws-cli=ON\nazure-cli=ON\nkubectl=ON\nyarn=ON\n' > "$SANDBOX_CONF"
+for _d in "${BUILTIN_DIRS[@]}"; do mkdir -p "$HOME/$_d"; done
 run_sandbox "$TMP/app"
 for _d in "${BUILTIN_DIRS[@]}"; do
   if mounted "$GROUP_ROOT/$_d" "/home/dev/$_d"; then
@@ -272,9 +281,9 @@ if [[ -z "$_leaked" ]]; then
   pass "named group: no built-in config dir is mounted from the bare host home"; else fail "named group: no built-in config dir is mounted from the bare host home —$_leaked"; fi
 teardown
 
-# ── Case 10b: `host` mounts the same eight straight from $HOME ────────────────
+# ── Case 10b: `host` mounts the same twelve straight from $HOME ───────────────
 setup
-printf '# schema-version: 3\nalpha=OFF\nbeta=OFF\ngamma=OFF\ngithub-cli=ON\ncopilot=ON\nkiro=ON\nclaude-code=ON\ncodex=ON\ngemini=ON\nqmd=ON\n' > "$SANDBOX_CONF"
+printf '# schema-version: 3\nalpha=OFF\nbeta=OFF\ngamma=OFF\ngithub-cli=ON\ncopilot=ON\nkiro=ON\nclaude-code=ON\ncodex=ON\ngemini=ON\nqmd=ON\naws-cli=ON\nazure-cli=ON\nkubectl=ON\nyarn=ON\n' > "$SANDBOX_CONF"
 for _d in "${BUILTIN_DIRS[@]}"; do mkdir -p "$HOME/$_d"; done
 export AI_CONTAINER_GROUP=host AI_CONTAINER_HOST_ACK=1
 run_sandbox "$TMP/app"
@@ -314,6 +323,63 @@ for _m in ro rw rwcopy; do
     pass "  … and reaches the registry check, so the gate really let it past"; else fail "  … and reaches the registry check, so the gate really let it past"; fi
   teardown
 done
+
+# ── Case 11: the group slice carries cloud CREDENTIALS, not package caches ────
+# _copy_group_slice decides what a new group inherits. .aws/.azure/.kube are
+# credentials and config — small, and inheriting them is the entire point of
+# bootstrapping a group from the host. .yarn is a regenerable package cache
+# (berry's reaches gigabytes), so it is group-MOUNTED but deliberately left out
+# of the slice, exactly like .ai-tools, .rvm and .cache/ms-playwright.
+#
+# The .yarn assertion has to look for the host's FILE, not for the directory:
+# run_container install -d's the group's .yarn whenever yarn=ON, so the
+# directory exists either way and only its contents distinguish the two.
+setup
+printf '# schema-version: 3\nalpha=OFF\nbeta=OFF\ngamma=OFF\naws-cli=ON\nazure-cli=ON\nkubectl=ON\nyarn=ON\n' > "$SANDBOX_CONF"
+mkdir -p "$HOME/.aws" "$HOME/.azure" "$HOME/.kube" "$HOME/.yarn"
+printf 'aws-host\n'   > "$HOME/.aws/credentials"
+printf 'azure-host\n' > "$HOME/.azure/msal_token_cache.json"
+printf 'kube-host\n'  > "$HOME/.kube/config"
+printf 'yarn-host\n'  > "$HOME/.yarn/marker"
+export AI_CONTAINER_GROUP_INIT=from:host
+run_sandbox "$TMP/app"
+for _d in .aws/credentials .azure/msal_token_cache.json .kube/config; do
+  if [[ -f "$GROUP_ROOT/$_d" ]]; then
+    pass "from:host bootstrap copies $_d into the group"; else fail "from:host bootstrap copies $_d into the group"; fi
+done
+if [[ ! -e "$GROUP_ROOT/.yarn/marker" ]]; then
+  pass "from:host bootstrap does NOT copy the .yarn cache"; else fail "from:host bootstrap does NOT copy the .yarn cache"; fi
+teardown
+
+# ── Case 12: a group bootstrapped from ANOTHER GROUP inherits the same slice ──
+# from:<group> and from:host walk the same _copy_group_slice, but nothing
+# asserted the group→group direction at all until now — a slice entry could be
+# reachable from the host and not from a sibling group with every test green.
+setup
+printf '# schema-version: 3\nalpha=OFF\nbeta=OFF\ngamma=OFF\naws-cli=ON\nazure-cli=ON\nkubectl=ON\nclaude-code=ON\n' > "$SANDBOX_CONF"
+SRC_ROOT="$HOME/.ai-containers/src"
+DST_ROOT="$HOME/.ai-containers/derived"
+mkdir -p "$SRC_ROOT/.aws" "$SRC_ROOT/.azure" "$SRC_ROOT/.kube" "$SRC_ROOT/.claude"
+printf 'aws-from-src\n'   > "$SRC_ROOT/.aws/credentials"
+printf 'azure-from-src\n' > "$SRC_ROOT/.azure/msal_token_cache.json"
+printf 'kube-from-src\n'  > "$SRC_ROOT/.kube/config"
+printf 'claude-from-src\n' > "$SRC_ROOT/.claude/SECRET"
+# The host's copies must NOT be what lands in the derived group: from:<group>
+# names a source, and silently preferring $HOME would defeat the whole point of
+# keeping one group's credentials out of another's.
+mkdir -p "$HOME/.aws"; printf 'aws-from-host\n' > "$HOME/.aws/credentials"
+export AI_CONTAINER_GROUP=derived
+export AI_CONTAINER_GROUP_INIT=from:src
+run_sandbox "$TMP/app"
+for _pair in ".aws/credentials:aws-from-src" ".azure/msal_token_cache.json:azure-from-src" \
+             ".kube/config:kube-from-src" ".claude/SECRET:claude-from-src"; do
+  _f="${_pair%%:*}"; _want="${_pair##*:}"
+  if [[ "$(cat "$DST_ROOT/$_f" 2>/dev/null)" == "$_want" ]]; then
+    pass "from:<group> bootstrap copies $_f from the source group"; else fail "from:<group> bootstrap copies $_f from the source group"; fi
+done
+if mounted "$DST_ROOT/.aws" "/home/dev/.aws"; then
+  pass "from:<group>: the derived group's .aws is what gets mounted"; else fail "from:<group>: the derived group's .aws is what gets mounted"; fi
+teardown
 
 # ── Hermeticity: the real home and repo are untouched ───────────────────────────
 if [[ ! -e "$REAL_HOME/.ai-containers/default/.gamma" ]]; then

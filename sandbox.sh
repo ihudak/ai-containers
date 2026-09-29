@@ -854,17 +854,42 @@ run_container() {
     fi
     add_mount_if_exists config_mount_flags "$group_root/.ai-tools" "$dev_home/.ai-tools"
   fi
+  # .yarn/.aws/.azure/.kube are group-scoped like every dir above. They were
+  # mounted straight from $HOME until now only because they predate the group
+  # system and were never revisited — not because a cloud credential deserves a
+  # weaker boundary than a Claude Code token. Two consequences worth naming: a
+  # container can no longer write the developer's real AWS/Azure credentials,
+  # and `kubectl config use-context` inside the sandbox stops flipping the
+  # host's current context out from under whatever else is using it.
+  #
+  # What a group STARTS with is _copy_group_slice's decision, not this one: an
+  # existing group gets an empty dir here, a group bootstrapped from:host or
+  # from:<group> inherits the real files. .aws/.azure/.kube are in that slice;
+  # .yarn is mounted but deliberately not copied, being a regenerable package
+  # cache like .ai-tools and .cache/ms-playwright rather than a credential.
   if is_enabled yarn; then
-    add_mount_if_exists config_mount_flags "$HOME/.yarn" "$dev_home/.yarn"
+    if [[ "$group" != "host" ]]; then
+      install -d "$group_root/.yarn"
+    fi
+    add_mount_if_exists config_mount_flags "$group_root/.yarn" "$dev_home/.yarn"
   fi
   if is_enabled aws-cli; then
-    add_mount_if_exists config_mount_flags "$HOME/.aws" "$dev_home/.aws"
+    if [[ "$group" != "host" ]]; then
+      install -d "$group_root/.aws"
+    fi
+    add_mount_if_exists config_mount_flags "$group_root/.aws" "$dev_home/.aws"
   fi
   if is_enabled azure-cli; then
-    add_mount_if_exists config_mount_flags "$HOME/.azure" "$dev_home/.azure"
+    if [[ "$group" != "host" ]]; then
+      install -d "$group_root/.azure"
+    fi
+    add_mount_if_exists config_mount_flags "$group_root/.azure" "$dev_home/.azure"
   fi
   if is_enabled kubectl; then
-    add_mount_if_exists config_mount_flags "$HOME/.kube" "$dev_home/.kube"
+    if [[ "$group" != "host" ]]; then
+      install -d "$group_root/.kube"
+    fi
+    add_mount_if_exists config_mount_flags "$group_root/.kube" "$dev_home/.kube"
   fi
   # Tool config dirs (dtctl/dtmgd/...) are group-scoped like agent
   # credentials: created lazily in the group and seeded ONCE from the host home
