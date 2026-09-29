@@ -356,14 +356,15 @@ teardown
 # asserted the group→group direction at all until now — a slice entry could be
 # reachable from the host and not from a sibling group with every test green.
 setup
-printf '# schema-version: 3\nalpha=OFF\nbeta=OFF\ngamma=OFF\naws-cli=ON\nazure-cli=ON\nkubectl=ON\nclaude-code=ON\n' > "$SANDBOX_CONF"
+printf '# schema-version: 3\nalpha=OFF\nbeta=OFF\ngamma=OFF\naws-cli=ON\nazure-cli=ON\nkubectl=ON\nyarn=ON\nclaude-code=ON\n' > "$SANDBOX_CONF"
 SRC_ROOT="$HOME/.ai-containers/src"
 DST_ROOT="$HOME/.ai-containers/derived"
-mkdir -p "$SRC_ROOT/.aws" "$SRC_ROOT/.azure" "$SRC_ROOT/.kube" "$SRC_ROOT/.claude"
+mkdir -p "$SRC_ROOT/.aws" "$SRC_ROOT/.azure" "$SRC_ROOT/.kube" "$SRC_ROOT/.claude" "$SRC_ROOT/.yarn"
 printf 'aws-from-src\n'   > "$SRC_ROOT/.aws/credentials"
 printf 'azure-from-src\n' > "$SRC_ROOT/.azure/msal_token_cache.json"
 printf 'kube-from-src\n'  > "$SRC_ROOT/.kube/config"
 printf 'claude-from-src\n' > "$SRC_ROOT/.claude/SECRET"
+printf 'yarn-from-src\n'  > "$SRC_ROOT/.yarn/marker"
 # The host's copies must NOT be what lands in the derived group: from:<group>
 # names a source, and silently preferring $HOME would defeat the whole point of
 # keeping one group's credentials out of another's.
@@ -379,6 +380,12 @@ for _pair in ".aws/credentials:aws-from-src" ".azure/msal_token_cache.json:azure
 done
 if mounted "$DST_ROOT/.aws" "/home/dev/.aws"; then
   pass "from:<group>: the derived group's .aws is what gets mounted"; else fail "from:<group>: the derived group's .aws is what gets mounted"; fi
+# The exclusion holds in BOTH directions, and the docs claim it in both. One
+# function serves from:host and from:<group>, so this follows structurally —
+# which is the reason to assert it rather than leave it inferred: a future
+# special case for one direction would contradict the documentation silently.
+if [[ ! -e "$DST_ROOT/.yarn/marker" ]]; then
+  pass "from:<group> bootstrap does NOT copy the .yarn cache either"; else fail "from:<group> bootstrap does NOT copy the .yarn cache either"; fi
 teardown
 
 # ── Hermeticity: the real home and repo are untouched ───────────────────────────
