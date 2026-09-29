@@ -384,7 +384,7 @@ else
   fi
 fi
 
-# ── every file:line reference in AGENTS.md still resolves ────────────────────
+# ── every file:line reference in AGENTS.md + docs pages still resolves ────────────────────
 # AGENTS.md cites code by file:line. Those numbers rot on any edit above them,
 # and the rot is invisible: the sentence still reads true, it just points
 # somewhere else. One guard existed for this — tests/test-integration-shim.sh —
@@ -398,9 +398,12 @@ fi
 # end of one, and a line that has become blank. It does NOT catch a reference
 # that drifted onto some other non-blank line — that needs a content assertion
 # naming what belongs there, which is exactly what the shim test does for its
-# one line. Scope is AGENTS.md alone, for the same reason the shim test gives:
-# CHANGELOG.md and docs/superpowers/** are records of what was true when
-# written, not live documentation that must track a current line number.
+# one line. Scope is AGENTS.md AND the docs pages: testing.md took several of
+# these references with it when the testing evidence moved out of AGENTS.md,
+# and a guard that did not follow them would have re-opened the hole it was
+# written to close. PAGES already excludes docs/superpowers/**, which, like
+# CHANGELOG.md, records what was true when written rather than tracking a
+# current line number.
 AGENTS="$ENGINE_DIR/AGENTS.md"
 if [[ ! -f "$AGENTS" ]]; then
   fail "AGENTS.md found at $ENGINE_DIR — the line-reference scan checked nothing"
@@ -418,13 +421,13 @@ else
     elif [[ -z "$(sed -n "${ref_line}p" "$ENGINE_DIR/$ref_file" | tr -d '[:space:]')" ]]; then
       bad_refs="$bad_refs $ref(blank line)"
     fi
-  done < <(grep -ohE '\b[a-zA-Z0-9._-]+\.sh:[0-9]+' "$AGENTS" | sort -u)
+  done < <(grep -ohE '\b[a-zA-Z0-9._-]+\.sh:[0-9]+' "$AGENTS" "${PAGES[@]/#/$ENGINE_DIR/}" | sort -u)
   if (( n_refs == 0 )); then
     fail "AGENTS.md line references found — none at all, so this checked nothing"
   elif [[ -z "$bad_refs" ]]; then
-    pass "every file:line reference in AGENTS.md resolves ($n_refs checked)"
+    pass "every file:line reference in AGENTS.md and the docs pages resolves ($n_refs checked)"
   else
-    fail "every file:line reference in AGENTS.md resolves —$bad_refs"
+    fail "every file:line reference in AGENTS.md and the docs pages resolves —$bad_refs"
   fi
 fi
 
