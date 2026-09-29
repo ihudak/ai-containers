@@ -32,6 +32,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Four stale claims in `AGENTS.md`, and the gap that let one of them rot.**
+  `entrypoint.sh:203` pointed at a blank line (the pcap daemon moved to `:225`);
+  two `tools.d` passages said "currently `dtctl`, `dtmgd`" although `acli` is
+  both a descriptor and a `sandbox.conf` key, and one of them additionally
+  claimed the `ON | x.y.z | OFF` grammar for every `tools.d` tool when `acli`
+  is fetched from a vendor `/latest/` URL and can only be `ON | OFF`; the
+  `bash-floor.sh` entry-point count said six and is nine; and the
+  per-component allowlist-fragment list read as exhaustive while naming 8 of
+  27, so it rots on every fragment added — it now points at
+  `ls allowlist-domains.d/` instead of trying to enumerate.
+
+  The line-number rot was invisible because nothing checked it:
+  `tests/test-integration-shim.sh` scans for `sandbox.sh:NNN` only, pinning its
+  own premise. `tests/test-docs.sh` now resolves **every** `file:line`
+  reference in `AGENTS.md` and fails on a missing file, a line past the end of
+  one, or a line gone blank — demonstrated against all three, including the
+  exact `entrypoint.sh:203` defect. It deliberately cannot catch a reference
+  that drifted onto another non-blank line; that needs a content assertion
+  naming what belongs there, which is what the shim test does for its one line.
+
 - **`tests/test-host-preflight.sh` failed on every Mac and passed in CI.** Its
   CRLF assertion normalises `host_crlf_files`'s unordered output with `sort`
   and compares it against a byte-ordered expectation (`Dockerfile` first), but
