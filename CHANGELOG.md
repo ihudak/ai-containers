@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **`project-init.sh` lists the existing container groups to pick from.** The
+  group prompt was free text: Enter gave `default`, but any other group had to
+  be typed exactly, and a typo went straight on to the "Initialize from" menu
+  as a brand-new, empty group, with no way back. It now shows a numbered list —
+  `default` always row 1, so Enter is unchanged, then every group under
+  `~/.ai-containers/` — and accepts either a row number or a name. A name with
+  no group directory asks `Create it? [y/N]` first; Enter declines and shows
+  the list again. `host` is not listed (it mounts the real `$HOME`), but typing
+  it still selects it.
+
 - **`.aws`, `.azure`, `.kube` and `.yarn` are mounted from the container group
   instead of straight from `$HOME`.** They were the last four host-shared paths,
   and not by design: they predate the group system and were never revisited, so

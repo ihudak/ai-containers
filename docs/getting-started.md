@@ -59,7 +59,7 @@
 
 A **container group** is a named directory under `~/.ai-containers/<name>/` holding the agent's credentials, skills, MCP config and SSH keys. Everything a project uses is scoped to its group, so two projects in different groups cannot see each other's logins.
 
-`project-init.sh` will ask you for one. **`default` is a fine answer** — you can move a project to another group later by editing `AI_CONTAINER_GROUP` in `sandbox.env`. Answer with something else when you want a project's credentials kept separate: a `docs` group with wiki access, a `work` group with corporate logins.
+`project-init.sh` will ask you for one, listing the groups you already have by number. **`default` is a fine answer** (row 1 — just press Enter) — you can move a project to another group later by editing `AI_CONTAINER_GROUP` in `sandbox.env`. Pick another row, or type a new name, when you want a project's credentials kept separate: a `docs` group with wiki access, a `work` group with corporate logins. A typed name that does not exist yet is confirmed before it becomes a new group, so a typo cannot create one by accident.
 
 The first container start in a new group is empty — you log the agents in once, and that group keeps them. [Container groups](groups.md) covers bootstrapping a group from an existing one or from your `$HOME`.
 
