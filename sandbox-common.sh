@@ -643,7 +643,12 @@ ensure_group_scaffold() {
 # Copy the group-scoped slice of dotfiles from $src into $dst.
 _copy_group_slice() {
   local src="$1" dst="$2"
-  local paths=(.claude .claude.json .copilot .config/gh .kiro ".local/share/kiro-cli" .codex .gemini .agents .ssh .cache/qmd)
+  # Credentials and settings only. A regenerable install or cache (.ai-tools,
+  # .rvm, .local/share/claude, .cache/ms-playwright, .yarn) is group-MOUNTED but
+  # not copied: cloning a group should not clone gigabytes a tool rebuilds by
+  # itself. .aws/.azure/.kube are on the credential side of that line.
+  local paths=(.claude .claude.json .copilot .config/gh .kiro ".local/share/kiro-cli" .codex .gemini .agents .ssh .cache/qmd
+               .aws .azure .kube)
   # Tool config dirs (dtctl/dtmgd/...) are group-scoped too — pull them
   # from the descriptors so new tools are covered without editing this list.
   # config_dir may list several space-separated paths. read -ra, not an unquoted

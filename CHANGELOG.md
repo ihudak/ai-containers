@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Changed
+
+- **`.aws`, `.azure`, `.kube` and `.yarn` are mounted from the container group
+  instead of straight from `$HOME`.** They were the last four host-shared paths,
+  and not by design: they predate the group system and were never revisited, so
+  a container could write the developer's real AWS credentials and `kubectl
+  config use-context` inside the sandbox flipped the host's current context.
+  They now behave like `.claude` and every other group-scoped dir, gated on
+  their component key (`aws-cli`, `azure-cli`, `kubectl`, `yarn`), and
+  `AI_CONTAINER_GROUP=host` still mounts `$HOME` as that group's contract says.
+  A group bootstrapped `from:host` or `from:<group>` inherits `.aws`/`.azure`/
+  `.kube` through `_copy_group_slice`; `.yarn` is mounted but not copied, being
+  a regenerable package cache like `.ai-tools` and `.cache/ms-playwright`.
+
+  **Action required for groups that already exist.** The bootstrap runs only at
+  group creation, so an existing group gets an empty directory and the first
+  container after upgrading starts with no AWS credentials and no kubeconfig.
+  Nothing errors — the symptom looks like expired credentials. Copy them across
+  once, per group:
+
+  ```bash
+  cp -a ~/.aws ~/.azure ~/.kube ~/.ai-containers/<group>/
+  ```
+
 ## v0.9.14 — 2026-09-26
 
 ### Fixed
