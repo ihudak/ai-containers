@@ -8,6 +8,45 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **The testing evidence moved out of `AGENTS.md` into `docs/testing.md`.**
+  `AGENTS.md` is loaded into every agent session, and `## Commands` alone was
+  6,948 words — 47% of the file — most of it testing narrative: measurements,
+  what was tried and refuted, how each guard came to be shaped that way. That
+  is worth keeping and is not worth 20k tokens a session for work that never
+  touches `tests/`. 24 paragraphs (3,447 words) now live in a new
+  `docs/testing.md`; `AGENTS.md` drops from 14,912 to 11,958 words (−20%) and
+  keeps every *rule* — every case must have been seen failing, the fixtures
+  must not be consolidated, mutations and falsify must not be unified, phases
+  1-3 are permanently burned, the floor is 5.1, shellcheck is a gate, runners
+  are pinned — each now carrying a pointer to the evidence.
+
+  The move was mechanical and asserted, not editorial: paragraphs were
+  relocated verbatim and the script then verified that all 148 original
+  paragraphs are still present across the two files. Rewriting while
+  relocating is how a rule disappears with nobody noticing.
+
+  Two guards had to follow the text, and this is the part worth reading. The
+  `file:line` guard added days earlier scanned `AGENTS.md` only, and
+  `tests/test-integration-shim.sh`'s stale-reference scan covered `'*.sh'` and
+  `'AGENTS.md'` — so `sandbox.sh:1036`, which moved into `docs/testing.md`,
+  would have become unguarded by both, silently re-opening the exact hole they
+  exist to close. Both now scan the docs pages, with `docs/superpowers/**`
+  excluded explicitly: a git pathspec's `*` crosses `/`, so `docs/*.md` alone
+  also matches eight deliberately stale line numbers in the superpowers plans.
+  Demonstrated by breaking the moved reference and requiring both to fail.
+
+  One consequence was only visible once the new page was tracked, which is its
+  own lesson: `test-docs.sh` derives its page list from `git ls-files`, so an
+  untracked `docs/testing.md` was invisible to every check — the guards
+  reported success having examined one reference instead of two. Staging it
+  then surfaced nine bare script names (`run-all.sh`, `test-mutations.sh`, …)
+  that a docs page must write as resolvable paths, and one (`run.sh`) that is
+  ambiguous between the falsify and integration runners and was resolved per
+  occurrence rather than by a blanket rule.
+
+
+### Changed
+
 - **`project-init.sh` lists the existing container groups to pick from.** The
   group prompt was free text: Enter gave `default`, but any other group had to
   be typed exactly, and a typo went straight on to the "Initialize from" menu

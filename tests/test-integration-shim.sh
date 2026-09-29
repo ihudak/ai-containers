@@ -353,7 +353,16 @@ want_line="$(grep -n 'docker run -it' "$REPO_DIR/sandbox.sh" | cut -d: -f1)"
 # historical records of what was true when written, like CHANGELOG.md (also not
 # scanned here), not live documentation that must track the current line
 # number.
+#
+# docs/*.md joined the scan when the testing evidence moved out of AGENTS.md
+# into docs/testing.md, taking this very reference with it — a scan that did
+# not follow it would have re-opened the hole this check exists to close. The
+# exclusion is explicit because a git pathspec's `*` DOES cross `/`:
+# `docs/*.md` alone also matches docs/superpowers/plans/**, which carries
+# eight deliberately stale sandbox.sh line numbers and would fail this on day
+# one.
 bad="$(cd "$REPO_DIR" && git grep -hoE 'sandbox\.sh:[0-9]+' -- '*.sh' 'AGENTS.md' \
+         'docs/*.md' ':(exclude)docs/superpowers/' \
          | sort -u | grep -v "^sandbox\.sh:${want_line}$" || true)"
 [[ -z "$bad" ]] \
   && pass "every sandbox.sh:<line> reference in tracked scripts points at $want_line" \

@@ -39,6 +39,7 @@ The short version: `project-init.sh` once per project, then `runme.sh` from the 
 | Guide | What it answers |
 |---|---|
 | [Contributing](contributing.md) | What must my change satisfy, which tests do I run while working, and which before the PR? |
+| [Testing and CI](testing.md) | How the corpus, the mutation demonstrations and the falsify tier work — and the evidence behind each rule in `AGENTS.md`. |
 
 `AGENTS.md` in the repository root is the deeper reference behind that page: why each layer exists and what it is guarding.
 
