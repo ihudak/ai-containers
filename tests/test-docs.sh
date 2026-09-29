@@ -384,5 +384,49 @@ else
   fi
 fi
 
+# ── every file:line reference in AGENTS.md still resolves ────────────────────
+# AGENTS.md cites code by file:line. Those numbers rot on any edit above them,
+# and the rot is invisible: the sentence still reads true, it just points
+# somewhere else. One guard existed for this — tests/test-integration-shim.sh —
+# but it scans for `sandbox.sh:NNN` specifically, because it is pinning ITS OWN
+# premise (the single `docker run -it`). Every other script's references were
+# unguarded, and `entrypoint.sh:203` duly drifted to a BLANK LINE while the
+# claim around it stayed correct.
+#
+# What this can and cannot catch, stated plainly because a guard whose reach is
+# overestimated is worse than none: it catches a deleted file, a line past the
+# end of one, and a line that has become blank. It does NOT catch a reference
+# that drifted onto some other non-blank line — that needs a content assertion
+# naming what belongs there, which is exactly what the shim test does for its
+# one line. Scope is AGENTS.md alone, for the same reason the shim test gives:
+# CHANGELOG.md and docs/superpowers/** are records of what was true when
+# written, not live documentation that must track a current line number.
+AGENTS="$ENGINE_DIR/AGENTS.md"
+if [[ ! -f "$AGENTS" ]]; then
+  fail "AGENTS.md found at $ENGINE_DIR — the line-reference scan checked nothing"
+else
+  bad_refs=""
+  n_refs=0
+  while IFS= read -r ref; do
+    [[ -n "$ref" ]] || continue
+    n_refs=$((n_refs + 1))
+    ref_file="${ref%%:*}"; ref_line="${ref##*:}"
+    if [[ ! -f "$ENGINE_DIR/$ref_file" ]]; then
+      bad_refs="$bad_refs $ref(no such file)"
+    elif (( ref_line > $(wc -l < "$ENGINE_DIR/$ref_file") )); then
+      bad_refs="$bad_refs $ref(past end of file)"
+    elif [[ -z "$(sed -n "${ref_line}p" "$ENGINE_DIR/$ref_file" | tr -d '[:space:]')" ]]; then
+      bad_refs="$bad_refs $ref(blank line)"
+    fi
+  done < <(grep -ohE '\b[a-zA-Z0-9._-]+\.sh:[0-9]+' "$AGENTS" | sort -u)
+  if (( n_refs == 0 )); then
+    fail "AGENTS.md line references found — none at all, so this checked nothing"
+  elif [[ -z "$bad_refs" ]]; then
+    pass "every file:line reference in AGENTS.md resolves ($n_refs checked)"
+  else
+    fail "every file:line reference in AGENTS.md resolves —$bad_refs"
+  fi
+fi
+
 printf '\n%d failure(s)\n' "$fails"
 [[ "$fails" -eq 0 ]]
