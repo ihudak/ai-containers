@@ -26,7 +26,15 @@ printf '#!/bin/bash\r\necho ok\r\n' > "$d/bad.sh"
 printf 'example.com\r\n' > "$d/allowlist-domains.d/custom.txt"
 printf 'repo=x/y\r\n' > "$d/tools.d/t.conf"
 printf 'FROM x\r\n' > "$d/Dockerfile"
-got="$(host_crlf_files "$d" | sort | tr '\n' ' ')"
+# LC_ALL=C, not a bare sort: host_crlf_files returns an unordered set, so the
+# sort is the test's own normalisation — and `sort` collates by LOCALE. The
+# expectation below is in byte order (uppercase first), which is what CI's
+# locale produces and what a developer's en_US.UTF-8 does NOT: there
+# `Dockerfile` sorts after `allowlist-domains.d/custom.txt` and this assertion
+# failed on every Mac while passing in CI. Same class as the /private/var and
+# /bin/true divergences tests/portability.sh exists for — the product is right,
+# the test's assumption was not.
+got="$(host_crlf_files "$d" | LC_ALL=C sort | tr '\n' ' ')"
 want="Dockerfile allowlist-domains.d/custom.txt bad.sh tools.d/t.conf "
 [[ "$got" == "$want" ]] && pass "CRLF found in scripts, Dockerfile, tools.d and allowlist fragments" \
   || fail "CRLF found in scripts, Dockerfile, tools.d and allowlist fragments: want '$want' got '$got'"

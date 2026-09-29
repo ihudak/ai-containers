@@ -30,6 +30,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   cp -a ~/.aws ~/.azure ~/.kube ~/.ai-containers/<group>/
   ```
 
+### Fixed
+
+- **`tests/test-host-preflight.sh` failed on every Mac and passed in CI.** Its
+  CRLF assertion normalises `host_crlf_files`'s unordered output with `sort`
+  and compares it against a byte-ordered expectation (`Dockerfile` first), but
+  `sort` collates by locale: under a developer's `en_US.UTF-8` the uppercase
+  name sorts *after* `allowlist-domains.d/custom.txt`, so the assertion failed
+  for a reason that has nothing to do with CRLF detection. Pinned to `LC_ALL=C
+  sort`. Same class as the `/private/var` and `/bin/true` divergences
+  `tests/portability.sh` exists for — the product was right, the test's
+  assumption was not, and CI being ubuntu-only is why it went unnoticed.
+
 ## v0.9.14 — 2026-09-26
 
 ### Fixed
