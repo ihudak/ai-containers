@@ -18,7 +18,7 @@
 # does not run.
 #
 # WHAT IS AND IS NOT MEANINGFUL HERE. sandbox_up passes no --cap-add for open
-# mode (lib.sh:203), so cap_net_admin is never granted and asserting its absence
+# mode (lib.sh:244), so cap_net_admin is never granted and asserting its absence
 # is nearly free. cap_net_raw is the load-bearing one: Docker's default bounding
 # set includes it (for ping), and neither sandbox.sh nor sandbox_up issues any
 # --cap-drop, so an open-mode CONTAINER holds cap_net_raw whatever entrypoint.sh

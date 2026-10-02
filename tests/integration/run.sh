@@ -889,7 +889,7 @@ sweep() {
 # bottom of this file enforces, applied to the one path that could reach the
 # bottom having done nothing at all.
 # Same IT_SOURCE_ONLY cut is explained from the other two sides at
-# tests/integration/run.sh:128 and tests/test-integration-runner.sh:35 — an edit
+# tests/integration/run.sh:129 and tests/test-integration-runner.sh:35 — an edit
 # to any of the three should check the other two have not drifted.
 if [[ -n "${IT_SOURCE_ONLY:-}" ]]; then
   return 0 2>/dev/null

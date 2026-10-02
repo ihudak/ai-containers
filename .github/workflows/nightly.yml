@@ -3,9 +3,10 @@ name: Nightly
 # Non-blocking but LOUD. Everything too slow, too external, or too expensive for
 # the PR gate runs here — so a case excluded on cost is still a case that RUNS.
 #
-# This workflow is not a nicety. The PR gate selects `--tags fast`, which today
-# excludes 3 of the 16 integration cases: 120-discovery-collects (slow), and
-# 080/085-selfheal-* (needs-dns). All three are verified, but until this file
+# This workflow is not a nicety. The PR gate selects `--tags fast`, which,
+# when this file was written, excluded 3 of the 16 integration cases:
+# 120-discovery-collects (slow), and 080/085-selfheal-* (needs-dns). All three
+# are verified, but until this file
 # exists they are verified ONCE and never again — any later change to
 # capture-agent-destinations.sh, its tcpdump filter, or the self-healing path in
 # capture-blocked-traffic.sh would be unguarded. "Excluded on cost" quietly

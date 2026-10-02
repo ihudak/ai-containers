@@ -137,7 +137,7 @@ jobs:
             # ~108 min (agents) + ~322 min (native). This job is capped at
             # timeout-minutes: 45. Blanking the `tags` input — a perfectly
             # ordinary thing to do, since blank is documented as "all" —
-            # otherwise selects all 34 cases and builds all three variant
+            # otherwise selects the whole corpus and builds all three variant
             # images here, and the job dies at the OUTER timeout reporting
             # nothing about the fast tier it exists for: exactly the ambiguous
             # kill the per-case `timeout:` headers were added to prevent,
