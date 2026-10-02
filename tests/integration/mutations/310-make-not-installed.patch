@@ -18,6 +18,11 @@
 #       -- and a run where make PASSES means some other default-image package
 #       pulls make back in, which would make this patch demonstrate nothing.
 #
+#       Demonstrated in run 36986769849 (integration.yml dispatched with
+#       --tags delivery against a branch carrying this patch, rebuilt image):
+#       exactly that -- `make is on PATH` FAILed, the other ten PASSed, and
+#       case 300 beside it was unaffected.
+#
 #       NEEDS A REBUILD. This patch changes the Dockerfile, so
 #       demonstrate-network-delivery-tiers.sh detects it as a build input and
 #       drops --reuse-image for it; the hand-driven `mutate.sh apply` +
