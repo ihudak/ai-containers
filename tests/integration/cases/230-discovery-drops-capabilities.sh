@@ -16,8 +16,8 @@
 # owns that belt.
 #
 # Launching discovery here is deliberate and stays. sandbox_up grants
-# --cap-add=NET_ADMIN --cap-add=NET_RAW to restricted and discovery (lib.sh:202)
-# and nothing at all to open (lib.sh:203), so this is the mode where the drop has
+# --cap-add=NET_ADMIN --cap-add=NET_RAW to restricted and discovery (lib.sh:243)
+# and nothing at all to open (lib.sh:244), so this is the mode where the drop has
 # the most to take away. One case per mode, because each mode reaches a different
 # `exec capsh` and a case cannot cover a branch it does not run: 070 restricted,
 # this one discovery, 240 open.
@@ -26,7 +26,7 @@
 # claimed it asserted that "sandbox.sh passes no --cap-add at all, so the
 # capabilities were never granted to begin with". This case cannot observe
 # sandbox.sh at all: lib.sh's sandbox_up composes its OWN docker run with its own
-# per-mode capability logic (lib.sh:202-203) and never invokes the launcher. What
+# per-mode capability logic (lib.sh:243-244) and never invokes the launcher. What
 # sandbox.sh requests is asserted hermetically instead, in
 # tests/test-mode-capabilities.sh.
 #

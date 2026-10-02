@@ -1365,7 +1365,7 @@ fr_run_control() {   # <slot> <target> <oracle> <n> <resultfile>
   #
   # Everything else in this tier treats that third word as a property of the
   # HOST. A mutant that lands there is UNPROVEN rather than a false KILL
-  # (run.sh:504), and AGENTS.md exempts it from the ledger outright — "a ratchet
+  # (run.sh:1088), and AGENTS.md exempts it from the ledger outright — "a ratchet
   # that cannot be satisfied everywhere at once is not a ratchet". Only here was
   # it folded in with KILLED, so one unmeasurable control ended the corpus with
   # the ledger unscored.

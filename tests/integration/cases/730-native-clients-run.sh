@@ -38,8 +38,9 @@
 # All six answer --version cleanly per the per-binary conventions checked while
 # writing this case (psql, mysql, mongosh, convert, wkhtmltopdf and gcc all
 # support the flag and exit 0 on it independent of any server/network state).
-# verify-on-host.sh's own Phase 2 runs the identical `"$c" --version 2>&1`
-# probe over the identical list, which corroborates the choice; its claim of
+# verify-on-host.sh's old Phase 2 (since burned) ran the identical
+# `"$c" --version 2>&1` probe over the identical list, which corroborates the
+# choice; its claim of
 # "real version strings in past runs" is cited here as an UNVERIFIED historical
 # note, not evidence — no log artifact from that claim was inspected.
 # CHANGELOG.md's Phase-2 fix was about capturing the WRONG process's exit
@@ -57,7 +58,7 @@
 # case's own SIX ASSERTIONS never touch the network at container run time —
 # that is the actual, checked reason external is omitted. The Ruby reconcile's
 # own wall-clock is a separate question: a DNS-absent machine does fail
-# rvm-reconcile.sh's bootstrap curl fast, but rvm-reconcile.sh:46 sets no
+# rvm-reconcile.sh's bootstrap curl fast, but rvm-reconcile.sh:50 sets no
 # `--connect-timeout`, so a machine with working DNS and a filtered route could
 # stall on that curl considerably longer than "a few seconds" — this is not
 # claimed to be fast, only that it cannot make the six assertions below fail.

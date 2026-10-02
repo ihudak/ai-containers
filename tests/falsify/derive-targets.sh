@@ -230,9 +230,9 @@ _ft_refs() {  # $1 = absolute file
     # only place the real path is written is ARG. Emitted as kind `argv`, and
     # deliberately COARSE: binding the positionals properly would still miss
     # both shapes this repo actually uses — a body that copies "$1" into a
-    # local before sourcing it (tests/test-parsers.sh:79) and a body that
-    # shifts before `exec bash "$@"` (tests/test-tools-d.sh:806) — while a
-    # rule that simply reads the arguments catches both. Guarded by
+    # local before sourcing it (run_fn in tests/test-parsers.sh) and a body that
+    # shifts before `exec bash "$@"` (the sandbox.sh launch in test-tools-d.sh)
+    # — while a rule that simply reads the arguments catches both. Guarded by
     # DOLLARSEEN, so a `bash -c` body that names its target literally does not
     # also drag its arguments in.
     function emit_argv(T, from, n, ln,    k) {
@@ -371,14 +371,14 @@ _ft_refs() {  # $1 = absolute file
       # difference decides whether its contents are executions:
       #
       #   DATA  an awk program, or a harness body written to a file. Skipped.
-      #         tests/test-entrypoint-wiring.sh:20 is why: a multi-line awk
-      #         program whose LAST line then names entrypoint.sh as the awk
-      #         input file, which read as code looks like executing it. And
-      #         tests/test-lib-verify-repo.sh:297 names $r/tests/run-all.sh —
-      #         the instrumented STUB planted in a scratch repo, not the real
-      #         tests/run-all.sh.
-      #   CODE  a `bash -c` body. Walked line by line.
-      #         tests/test-allowlists.sh:172 sources sandbox-common.sh and
+      #         The case-branch extractor in tests/test-entrypoint-wiring.sh
+      #         is why: a multi-line awk program whose LAST line then names
+      #         entrypoint.sh as the awk input file, which read as code looks
+      #         like executing it. And tests/test-lib-verify-repo.sh:398 names
+      #         $r/tests/run-all.sh — the instrumented STUB planted in a
+      #         scratch repo, not the real tests/run-all.sh.
+      #   CODE  a `bash -c` body. Walked line by line. The gen_out block in
+      #         tests/test-allowlists.sh sources sandbox-common.sh and
       #         build.sh from inside one.
       #
       # Either way the STATE is tracked to the closing quote, so the quote that

@@ -236,7 +236,7 @@ for entry in "${patches[@]}"; do
     # asserting — a correct verdict, but the opposite of a demonstration: it
     # says the case did nothing, not that its assertion can be false. Requiring
     # a real `FAIL:` assertion line separates the two. run.sh prints every
-    # PASS/FAIL/SKIP line first and unbounded (run.sh:1216), so a missing line
+    # PASS/FAIL/SKIP line first and unbounded (run.sh:1351), so a missing line
     # here is a genuine absence and never truncation.
     line="$(grep -E '^ *FAIL:' <<<"$out" | head -1 | sed 's/^ *//')"
     if [[ -z "$line" ]]; then

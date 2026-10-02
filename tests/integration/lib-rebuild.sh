@@ -13,7 +13,7 @@
 # so there are two right now. Folding it onto this file is a four-line change
 # (delete 114-151, `source` this instead) that was written, verified green
 # against `shellcheck -S warning -e SC1091`, and then REVERTED: it dirties a
-# tracked file, and both mutate.sh:206 and the demonstrators refuse to run on a
+# tracked file, and both mutate.sh:243 and the demonstrators refuse to run on a
 # dirty tree, so the extraction cannot be used until it is committed. Do that
 # fold-in in the same commit that first tracks this file.
 #

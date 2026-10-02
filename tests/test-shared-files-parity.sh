@@ -212,9 +212,10 @@ DEST_B="$PROJ_B/.ai-containers"
 # shellcheck disable=SC1091
 source "$SCRIPTS/sync-to-projects.sh"
 # …and put this file's OWN options back. `set -e` is a shell option, not a
-# property of the sourced file, and sync-to-projects.sh:21 is `set -euo
-# pipefail` — so without this line every statement below runs under errexit,
-# which line 24's `set -uo pipefail` says this file never wanted.
+# property of the sourced file, and sync-to-projects.sh runs `set -euo
+# pipefail` at its top — so without this line every statement below runs
+# under errexit, which line 24's `set -uo pipefail` says this file never
+# wanted.
 #
 # It is not a style point. Under errexit a bare command that returns non-zero
 # ends the test WHERE IT STANDS: no `FAIL:` line, no failure count, just exit 1

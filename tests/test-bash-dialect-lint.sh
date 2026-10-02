@@ -28,7 +28,7 @@ unit_ms=0
 # tests/falsify/run.sh gives each oracle FALSIFY_TIMEOUT seconds — verify-on-host.sh
 # passes 120, the runner's own default is 60. A bound in here that is tighter than
 # that cannot protect anything: the harness expiry it pre-empts is the BETTER
-# verdict, because the runner classifies its own timeout as UNPROVEN (run.sh:504)
+# verdict, because the runner classifies its own timeout as UNPROVEN (run.sh:1088)
 # against the real budget, while a self-abort in here is a SCAFFOLD-FAILED that
 # reads the same for a mutant and is FATAL for a pristine control.
 #
@@ -77,7 +77,7 @@ bash -n "$LINT" && pass "bash-dialect-lint.sh bash -n" || fail "bash-dialect-lin
 #
 # SCAFFOLD-FAILED: is the channel that already exists for exactly this: an oracle
 # that could not RUN, as opposed to one that ran and noticed something.
-# falsify_verdict scores it UNPROVEN rather than KILLED (run.sh:504, and
+# falsify_verdict scores it UNPROVEN rather than KILLED (run.sh:1050, and
 # run-all.sh:55 states the intent outright), and run-all.sh:268 classifies it.
 # So slowness now costs a verdict, which is honest, instead of manufacturing one.
 # The bounds are KEPT — a hang is still infinite and still trips them — and the
