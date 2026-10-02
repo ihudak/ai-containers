@@ -438,6 +438,40 @@ RUN apt-get purge -y --auto-remove \
       libxmlsec1-dev libffi-dev liblzma-dev 2>/dev/null || true && \
     rm -rf /var/lib/apt/lists/*
 
+# ── Agent shell utilities ───────────────────────────────────────────────────────
+# What agent CLIs reach for when they shell out. Each one that is missing costs
+# a failed turn, and the agent cannot install it: entrypoint.sh drops root
+# before the agent shell exists, so nothing in the container can `apt-get`.
+# rg, file, column and bc are here because each one failed with `command not
+# found` in a real agent session: `file` under Claude Code, Copilot and Kiro
+# alike. Codex prompts its model to prefer rg. Claude Code is the exception
+# for rg only: its Bash tool wraps its own bundled ripgrep, so the missing
+# binary never surfaced there.
+#
+# Unconditional, like the essentials layer, because these are not components:
+# no `sandbox.conf` key, no allowlist fragment, and together roughly 20 MB on a
+# multi-GB image. A separate layer AFTER the cleanup purge, not appended to the
+# essentials list, so changing it rebuilds from here and does not recompile
+# the pyenv layer's Python.
+#
+# `make` IS NOT REDUNDANT WITH build-essential. The pyenv layer installs it as
+# a dependency of build-essential, and the cleanup purge above takes it away
+# again with --auto-remove, so an image without ruby, db-clients or c-toolchain
+# had no `make` at all and `make test` failed. Installed here, it is marked
+# manual, so the later qmd-layer purge's --auto-remove does not reclaim it.
+# That last point is reasoned, not observed: no image the integration corpus
+# builds sets qmd=ON without KEEP_BUILD_TOOLCHAIN=1.
+#
+# bsdextrautils is the package that ships `column` (and `hexdump`) on noble.
+# Ubuntu names fd's binary `fdfind` to avoid a clash with an unrelated package,
+# and that package is not installed, so `fd` is linked to it. Integration case
+# 310 asserts every tool here is on PATH and runs.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ripgrep fd-find tree file bsdextrautils bc make \
+      sqlite3 zstd xxd less && \
+    ln -s /usr/bin/fdfind /usr/local/bin/fd && \
+    rm -rf /var/lib/apt/lists/*
+
 # ── Optional: kubectl ───────────────────────────────────────────────────────────
 ARG INSTALL_KUBECTL=0
 RUN if [ "$INSTALL_KUBECTL" = "1" ]; then \

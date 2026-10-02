@@ -45,6 +45,13 @@ plus a rebuild replaces all of it. (Go tools installed with `go install`, such a
 `golangci-lint` or `govulncheck`, are a separate matter — they need no C compiler
 and are not covered by this key.)
 
+`make` on its own does **not** need this key. It sits in the Dockerfile's
+unconditional agent-utilities layer, beside `rg`, `fd`, `file` and the rest, so
+a Makefile that only runs scripts works in every image. Do not drop it from
+that layer as redundant with `build-essential`. The cleanup purge removes
+`build-essential`'s copy too, which is exactly what mutation
+`310-make-not-installed` breaks on purpose to prove the guard catches it.
+
 **`playwright=ON | x.y.z | OFF`** bakes the OS packages Playwright's browsers link
 against — `libnss3`, `libgbm1`, `libatk-bridge2.0-0t64`, the font set — by running
 Playwright's own `install-deps` in a build layer. `ON` uses whatever

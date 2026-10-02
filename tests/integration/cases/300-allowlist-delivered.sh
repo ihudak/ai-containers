@@ -6,7 +6,7 @@
 # ASSEMBLY vs DELIVERY. tests/test-allowlists.sh already covers assembly with 44
 # hermetic assertions — component ON means its fragment lands in the generated
 # file. DELIVERY, meaning that generated file actually reaches /tmp/ in the
-# image, is covered by NOTHING, anywhere. Dockerfile:467-469 are three bare
+# image, is covered by NOTHING, anywhere. Dockerfile:809-811 are three bare
 # `COPY allowlist-*.txt /tmp/` lines, and a stale or absent allowlist would ship
 # with every existing test green.
 #
