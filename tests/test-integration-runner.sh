@@ -36,9 +36,10 @@ RUNNER="$RUN"
 # before the selection/execution phase so its pure functions can be unit-tested.
 # Without this the only way to test variant resolution would be a full run,
 # which needs a Docker daemon this suite does not have.
-# Same IT_SOURCE_ONLY cut is explained from the other two sides at
-# tests/integration/run.sh:139 and tests/integration/run.sh:870 — an edit
-# to any of the three should check the other two have not drifted.
+# Same IT_SOURCE_ONLY cut is explained from the other two sides, in
+# tests/integration/run.sh: `# IT_SOURCE_ONLY (see the early return` and at
+# tests/integration/run.sh: `# Sourced by tests/test-integration-runner.sh` — an
+# edit to any of the three should check the other two have not drifted.
 cat > "$TMP/callfn.sh" <<EOF
 #!/usr/bin/env bash
 export IT_SOURCE_ONLY=1

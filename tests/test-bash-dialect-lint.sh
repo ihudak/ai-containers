@@ -28,8 +28,8 @@ unit_ms=0
 # tests/falsify/run.sh gives each oracle FALSIFY_TIMEOUT seconds — verify-on-host.sh
 # passes 120, the runner's own default is 60. A bound in here that is tighter than
 # that cannot protect anything: the harness expiry it pre-empts is the BETTER
-# verdict, because the runner classifies its own timeout as UNPROVEN (run.sh:1088)
-# against the real budget, while a self-abort in here is a SCAFFOLD-FAILED that
+# verdict, because the runner classifies its own timeout as UNPROVEN
+# (tests/falsify/run.sh: `A TIMEOUT IS NOT A KILL`) against the real budget, while a self-abort in here is a SCAFFOLD-FAILED that
 # reads the same for a mutant and is FATAL for a pristine control.
 #
 # Measured 2026-09-03: a control of this file self-aborted at 27.2s against a flat
@@ -77,8 +77,10 @@ bash -n "$LINT" && pass "bash-dialect-lint.sh bash -n" || fail "bash-dialect-lin
 #
 # SCAFFOLD-FAILED: is the channel that already exists for exactly this: an oracle
 # that could not RUN, as opposed to one that ran and noticed something.
-# falsify_verdict scores it UNPROVEN rather than KILLED (run.sh:1050, and
-# run-all.sh:55 states the intent outright), and run-all.sh:268 classifies it.
+# falsify_verdict scores it UNPROVEN rather than KILLED
+# (tests/falsify/run.sh: `FALSIFY_SIGNAL="${sig:+$sig+}scaffold"`), run-all.sh
+# states the intent outright, and run-all.sh classifies it
+# (run-all.sh: `^SCAFFOLD-FAILED:`).
 # So slowness now costs a verdict, which is honest, instead of manufacturing one.
 # The bounds are KEPT — a hang is still infinite and still trips them — and the
 # generous whole-tree floor is kept too, because a bound that fires rarely
@@ -289,7 +291,8 @@ check_bound "a slower machine gets a derived bound, not the floor"        600  1
 check_bound "the bound tracks the measured cost, with no ceiling above it" 1000 300
 
 # ── The "examined no files" guard, exercised ──────────────────────────────────
-# bash-dialect-lint.sh:84-87 refuses to report success when it examined nothing
+# bash-dialect-lint.sh refuses to report success when it examined nothing
+# (bash-dialect-lint.sh: `examined no files`)
 # — the same rule the bash -n CI step applies to itself. It had never run:
 # replacing its `exit 1` with `exit 0` produced zero test failures. A scratch git
 # repo whose only tracked file is not a .sh, with the linter copied in UNTRACKED,

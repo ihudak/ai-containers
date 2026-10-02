@@ -652,7 +652,7 @@ RUN if [ "$INSTALL_SHELLCHECK" = "1" ]; then \
 # rc-source line (no runtime /etc write needed).
 ARG RUBY_RUNTIME=0
 # build.sh always co-sets KEEP_BUILD_TOOLCHAIN=1 when RUBY_RUNTIME=1 (ruby implies both,
-# build.sh:231/239), and that earlier layer already installs build-essential / libssl-dev /
+# build.sh: `has_versions ruby ||`), and that earlier layer already installs build-essential / libssl-dev /
 # libyaml-dev / zlib1g-dev — so this layer installs only the ruby-build-specific extras.
 RUN if [ "$RUBY_RUNTIME" = "1" ]; then \
       if [ "$KEEP_BUILD_TOOLCHAIN" != "1" ]; then echo "ERROR: RUBY_RUNTIME=1 requires KEEP_BUILD_TOOLCHAIN=1 (build.sh co-sets them; this layer relies on that layer's build-essential/libssl-dev/libyaml-dev/zlib1g-dev)" >&2; exit 1; fi; \

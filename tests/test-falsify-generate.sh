@@ -359,8 +359,9 @@ grep -q 'could not run' "$TMP/cantrun.err" \
 # default four-operator corpus is unchanged at 249 — stream-flip is opt-in.
 #
 # bash-floor.sh moved 12 -> 13 when the span scanner learned to carry `[[`/`((`
-# depth across a backslash continuation (backlog F9). Before that, the `<` on
-# bash-floor.sh:42 — inside the multi-line arithmetic condition that IS this
+# depth across a backslash continuation (backlog F9). Before that, the `<` in
+# bash-floor.sh: `BASH_VERSINFO[1] < AI_CONTAINERS_BASH_FLOOR_MINOR` — inside the
+# multi-line arithmetic condition that IS this
 # repo's bash floor check — was unreachable by any mutant. The fix is strictly
 # additive: measured before/after, exactly one mutant gained, none lost.
 declare -A PINNED=(

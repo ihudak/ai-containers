@@ -125,7 +125,7 @@ launcher_up restricted || it_finish
 #
 # it_diagnose is deliberately NOT called here. it_cleanup already dumps it
 # automatically, exactly once, for any case that ends with it_fails > 0
-# (lib.sh:101, the EXIT trap) — calling it again here would duplicate several
+# (lib.sh: `trap 'it_cleanup' EXIT`) — calling it again here would duplicate several
 # dozen lines of firewall/ipset/capture diagnostics that have nothing to do
 # with Ruby, and interleave them BETWEEN this failure and the
 # version-presence loop that follows, burying the one piece of information
@@ -163,7 +163,8 @@ fi
 for v in ${want[@]+"${want[@]}"}; do
   # -F: the version string is matched LITERALLY, its dots are not regex
   # wildcards. -x: whole-line, not substring. Both matter for the same reason
-  # rvm-reconcile.sh:80-83 already grep this way — without them "ruby-3.4.5"
+  # rvm-reconcile.sh already greps this way
+  # (rvm-reconcile.sh: `grep -Fqx "ruby-$v"`) — without them "ruby-3.4.5"
   # also matches "ruby-3.4.50", and a plain `grep -q` here would reproduce the
   # exact anti-pattern the product hardened against, on the line whose only
   # job is confirming which versions actually installed.

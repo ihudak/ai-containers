@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Which mutation patches only take effect on a real image rebuild.
 #
-# Lifted VERBATIM from demonstrate-network-delivery-tiers.sh:114-151 so that
+# Lifted VERBATIM from demonstrate-network-delivery-tiers.sh so that
 # demonstrate-needs-rebuild.sh does not carry a hand-written second opinion
 # about what a build input is. A copy of build_time_inputs() that drifted from
 # the original would not fail loudly: it would send a build-input patch down the
@@ -13,7 +13,8 @@
 # so there are two right now. Folding it onto this file is a four-line change
 # (delete 114-151, `source` this instead) that was written, verified green
 # against `shellcheck -S warning -e SC1091`, and then REVERTED: it dirties a
-# tracked file, and both mutate.sh:243 and the demonstrators refuse to run on a
+# tracked file, and both mutate.sh (mutate.sh: `git diff --quiet`) and the
+# demonstrators refuse to run on a
 # dirty tree, so the extraction cannot be used until it is committed. Do that
 # fold-in in the same commit that first tracks this file.
 #

@@ -228,7 +228,7 @@ missing_out="$(tools_list_names)"; missing_rc=$?
   || fail "tools_list_names prints nothing when TOOLS_D_DIR does not exist — got '$missing_out'"
 export TOOLS_D_DIR="$_saved_td_missing"
 
-# tools_read_descriptor's reader loop (tools-lib.sh:62) is
+# tools_read_descriptor's reader loop (tools-lib.sh: `while IFS= read -r line ||`) is
 # `while IFS= read -r line || [[ -n "$line" ]]`, and BOTH of its cond-negate
 # damages make it NON-TERMINATING -- at EOF a negated read stays true forever.
 # Every call to it below is in-process, so a damaged run hangs on the very next

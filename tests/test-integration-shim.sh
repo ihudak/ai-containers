@@ -9,8 +9,8 @@
 #
 # The load-bearing test in this file is the LAST one — the single-`-it` premise.
 # The shim identifies the container under test by the `-it` flag, which is sound
-# only while sandbox.sh:1036 is the only `docker run -it` a launcher run can
-# reach. If that stops being true, the shim silently renames and detaches
+# only while sandbox.sh: `docker run -it --rm` is the only `docker run -it` a
+# launcher run can reach. If that stops being true, the shim silently renames and detaches
 # somebody else's container and the affected case fails somewhere far away. This
 # test makes the premise itself the thing that breaks.
 set -uo pipefail
@@ -298,8 +298,15 @@ check "main run without IT_LAUNCH_NAME: still detached, no --name" \
 # scanner that cannot tell the difference flags the text explaining the rule.
 # Layout-tolerant, like run.sh and lib.sh: upstream keeps the engine beside
 # tests/, mgd-ai-containers keeps it in base/. Hits are reported by BARE
-# filename so the expected value is one string in both repos — the shared files
-# are byte-identical, so the line number is too.
+# filename so the expected value is one string in both repos.
+#
+# The hit is identified by its CONTENT, not its line number. It used to be pinned
+# by number, so every edit above it in sandbox.sh failed this file and every
+# comment repeating the number went stale — the churn the repo-wide citation
+# rule (tests/test-code-references.sh) exists to end. What the shim relies on is
+# that there is exactly one `-it`, that it is sandbox.sh's, and that it sits on
+# the `docker run` the shim rewrites; that is what is checked. Flag order is not
+# part of the premise, so it is not part of the check.
 ENGINE_DIR="$REPO_DIR"
 [[ -f "$ENGINE_DIR/sandbox.sh" ]] || ENGINE_DIR="$REPO_DIR/base"
 if [[ ! -f "$ENGINE_DIR/sandbox.sh" ]]; then
@@ -315,8 +322,18 @@ for f in "${reachable[@]}"; do
     hits="${hits:+$hits }$f:$n"
   done < <(awk '!/^[[:space:]]*#/ && /(^|[[:space:]])-(it|ti)([[:space:]]|$)/ { print NR }' "$ENGINE_DIR/$f")
 done
-check "exactly one -it/-ti in the scripts a launcher run reaches" "sandbox.sh:1036" "$hits"
-if [[ "$hits" != "sandbox.sh:1036" ]]; then
+hit_file="${hits%%:*}"; hit_line="${hits#*:}"
+check "exactly one -it/-ti in the scripts a launcher run reaches, and it is sandbox.sh's" \
+  "sandbox.sh" "$( [[ "$hits" == *" "* ]] && printf '%s' "$hits" || printf '%s' "$hit_file" )"
+hit_text=""
+[[ "$hit_file" == sandbox.sh && "$hit_line" =~ ^[0-9]+$ ]] \
+  && hit_text="$(sed -n "${hit_line}p" "$ENGINE_DIR/sandbox.sh")"
+if [[ "$hit_text" == *"docker run "* ]]; then
+  pass "that one -it is on sandbox.sh's docker run, the call the shim rewrites"
+else
+  fail "that one -it is on sandbox.sh's docker run, the call the shim rewrites (the line reads: ${hit_text:-nothing})"
+fi
+if [[ "$hit_file" != "sandbox.sh" || "$hits" == *" "* ]]; then
   printf '       The shim identifies the container under test by the -it flag.\n'
   printf '       If a second one now exists, either give the new call a distinct\n'
   printf '       marker or teach docker-shim.sh to tell them apart — and update\n'
@@ -333,40 +350,11 @@ printf '# docker run -it --rm x\n' > "$TMP/commented.sh"
 found="$(awk '!/^[[:space:]]*#/ && /(^|[[:space:]])-(it|ti)([[:space:]]|$)/ { print NR }' "$TMP/commented.sh")"
 check "the -it scan ignores a commented-out occurrence" "" "$found"
 
-# ── Every reference to the pinned line agrees with reality ────────────────────
-# This file already pins sandbox.sh:<N> for its OWN two references, which is why
-# a shift breaks it loudly. It knew nothing about the other references to the
-# same line, and two of them (docker-shim.sh, run.sh) sat 30 lines stale until
-# an unrelated comment edit exposed them. A named list can only police what it
-# names — so derive the list instead.
-want_line="$(grep -n 'docker run -it' "$REPO_DIR/sandbox.sh" | cut -d: -f1)"
-[[ -n "$want_line" ]] \
-  || fail "no 'docker run -it' found in sandbox.sh — this whole file's premise is gone"
-# AGENTS.md (M4): the canonical doc names this same line (sandbox.sh:1036, in its
-# "Two tiers, two verbs" section) and had to be hand-fixed once already when the
-# line moved — scoping this scan to '*.sh' alone let it rot again with nothing
-# catching it. Verified: a literal 'AGENTS.md' pathspec (no wildcard) matches
-# ONLY the exact root-relative path, so this reaches the canonical file but not
-# its symlinked copies (.github/copilot-instructions.md,
-# .kiro/steering/AGENTS.md — same bytes, so nothing is lost) and not anything
-# under docs/superpowers/**, which stays excluded on purpose — those are
-# historical records of what was true when written, like CHANGELOG.md (also not
-# scanned here), not live documentation that must track the current line
-# number.
-#
-# docs/*.md joined the scan when the testing evidence moved out of AGENTS.md
-# into docs/testing.md, taking this very reference with it — a scan that did
-# not follow it would have re-opened the hole this check exists to close. The
-# exclusion is explicit because a git pathspec's `*` DOES cross `/`:
-# `docs/*.md` alone also matches docs/superpowers/plans/**, which carries
-# eight deliberately stale sandbox.sh line numbers and would fail this on day
-# one.
-bad="$(cd "$REPO_DIR" && git grep -hoE 'sandbox\.sh:[0-9]+' -- '*.sh' 'AGENTS.md' \
-         'docs/*.md' ':(exclude)docs/superpowers/' \
-         | sort -u | grep -v "^sandbox\.sh:${want_line}$" || true)"
-[[ -z "$bad" ]] \
-  && pass "every sandbox.sh:<line> reference in tracked scripts points at $want_line" \
-  || fail "stale sandbox.sh line reference(s): $(printf '%s' "$bad" | tr '\n' ' ')(actual: $want_line)"
+# ── References to that line ─────────────────────────────────────────────────
+# A section here used to require every `sandbox.sh:<line>` reference in the repo
+# to match the pinned number, because two had sat 30 lines stale. Nothing cites
+# it by number any more: tests/test-code-references.sh refuses numbered
+# references outright and checks each citation's snippet, sandbox.sh's included.
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

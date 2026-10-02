@@ -356,7 +356,7 @@ The three pointers form a personal / team / product tier:
 
 2. **restricted mode**: calls `apply_restricted_firewall` → forks the ipset refresh loop and `capture-blocked-traffic.sh` as root background daemons → `run_agent_skill_install` (see below) → `exec capsh --drop=cap_net_admin,cap_net_raw --user=<sandbox>` to drop firewall-modification capabilities from the agent shell.
 
-3. **discovery mode**: calls `apply_discovery_firewall` (iptables OUTPUT ACCEPT) → starts `capture-agent-destinations.sh` for pcap → `run_agent_skill_install` → `exec capsh --drop=cap_net_admin --user=<sandbox>`. The drop names only `cap_net_admin`, but the agent shell ends up with **no capabilities at all**: `capsh --user=` setuids from root, and the kernel clears the permitted and effective sets on that transition unless `PR_SET_KEEPCAPS` is set (`capsh --keep=1`, which is not used). So `--drop=cap_net_admin` and `--drop=cap_net_admin,cap_net_raw` are equivalent here. This is deliberate: the pcap daemon is started as root at `entrypoint.sh:225`, before the exec that hands PID 1 to the agent shell, so it keeps its own capabilities and needs nothing from the agent shell. Verified by case `230-discovery-drops-capabilities` in the integration suite.
+3. **discovery mode**: calls `apply_discovery_firewall` (iptables OUTPUT ACCEPT) → starts `capture-agent-destinations.sh` for pcap → `run_agent_skill_install` → `exec capsh --drop=cap_net_admin --user=<sandbox>`. The drop names only `cap_net_admin`, but the agent shell ends up with **no capabilities at all**: `capsh --user=` setuids from root, and the kernel clears the permitted and effective sets on that transition unless `PR_SET_KEEPCAPS` is set (`capsh --keep=1`, which is not used). So `--drop=cap_net_admin` and `--drop=cap_net_admin,cap_net_raw` are equivalent here. This is deliberate: the pcap daemon is started as root (entrypoint.sh: `capture-agent-destinations.sh start`), before the exec that hands PID 1 to the agent shell, so it keeps its own capabilities and needs nothing from the agent shell. Verified by case `230-discovery-drops-capabilities` in the integration suite.
 
 4. **open mode**: no firewall is applied and no capture daemon is started (unrestricted egress, no logging) → `run_agent_skill_install` → `exec capsh --drop=cap_net_admin,cap_net_raw --user=<sandbox>` (same capability drop as restricted mode). `sandbox.sh` passes an empty `capabilities=()` array for this mode (neither `--cap-add=NET_ADMIN` nor `--cap-add=NET_RAW`). Equivalent in effect to the historical `DISCOVERY_CAPTURE_ENABLED=0 ./sandbox.sh discovery`, but as an explicit, honestly named mode rather than a flag on discovery. The capability drop is verified by case `240-open-drops-capabilities`; until backlog F7 was closed, nothing verified it, because the case named for the job launched discovery instead.
 
@@ -512,6 +512,21 @@ The single definition of which engine files `project-init.sh` and `sync-to-proje
 `shellcheck` runs as a **gate**, not an advisory, both in CI (`hermetic-checks.yml`'s `lint` job) and locally (Phase 7) — the `|| true` that made it advisory-only is gone. Increment 4 cleared the pre-existing findings backlog first (measured at 75 findings across 25 files: real defects fixed, structural false positives from `local -n` namerefs and sourced-library patterns suppressed at the site with a reason, in the same `# shellcheck disable=SCxxxx: reason` idiom as everywhere else) so the gate lands green rather than red on day one.
 
 Every workflow job names a **pinned** runner image (`ubuntu-24.04`, never `ubuntu-latest`) so "CI passed" keeps meaning one toolchain; `tests/test-workflow-runner-pinned.sh` enforces it. Why that matters, and the measured difference between the two layers' shellcheck versions, are in [docs/testing.md](docs/testing.md).
+
+### Citing code
+
+Comments, docs and this file cite code by what it **says**, never by line
+number. Write `<file>: ` followed by a backticked snippet, on one line: a
+function as `name()`, or a short literal copied from the line meant.
+`tests/test-code-references.sh` checks that every such snippet still occurs in
+the file it names. It refuses a numbered reference to any tracked file unless
+the line carries `ref-lint: allow: <reason>`, and it refuses a citation split
+across two lines, which it could not check. CHANGELOG.md and docs/superpowers/
+are dated records and keep their numbers.
+
+Numbers rot on every edit above them, and one number cannot be right in this
+repo and mgd-ai-containers at once. On 2026-10-02, 21 of the ~55 in `tests/`
+pointed at the wrong code. Detail in [docs/testing.md](docs/testing.md#citing-code).
 
 ## Corporate customization
 

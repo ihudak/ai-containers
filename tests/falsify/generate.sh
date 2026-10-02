@@ -472,7 +472,8 @@ falsify_generate() {   # <file>
     # invisible — silently under-generating, which is the worse failure
     # direction for a tool whose whole job is finding gaps.
     #
-    # The instance that exposed it is not incidental: bash-floor.sh:40-42 is the
+    # The instance that exposed it is not incidental: the condition at
+    # bash-floor.sh: `BASH_VERSINFO[0] < AI_CONTAINERS_BASH_FLOOR_MAJOR` is the
     # bash floor check ITSELF, the comparison deciding whether this repo refuses
     # to run at all, and it holds two `<` that no mutant could reach.
     #

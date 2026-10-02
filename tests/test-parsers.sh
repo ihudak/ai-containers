@@ -58,7 +58,8 @@ REPO_STATUS_BEFORE="$(HOME="$REAL_HOME" git -C "$REPO_DIR" status --porcelain 2>
 # — can ever observe an edit to it: appending to it, creating it, or deleting
 # it produces no diff and no status line, with git working perfectly. Hash the
 # file directly instead (same p_md5 + before/after pattern as
-# tests/test-sync-project.sh:34, which guards this exact file for this exact
+# tests/test-sync-project.sh: `REAL_PROJECTS_CONF=`, which guards this exact file
+# for this exact
 # reason). The empty string doubles as "absent": unset when the file doesn't
 # exist before/after, so absent→absent compares equal (unchanged) while
 # either direction of absent↔present compares unequal (a real change) with no

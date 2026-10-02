@@ -384,52 +384,12 @@ else
   fi
 fi
 
-# ── every file:line reference in AGENTS.md + docs pages still resolves ────────────────────
-# AGENTS.md cites code by file:line. Those numbers rot on any edit above them,
-# and the rot is invisible: the sentence still reads true, it just points
-# somewhere else. One guard existed for this — tests/test-integration-shim.sh —
-# but it scans for `sandbox.sh:NNN` specifically, because it is pinning ITS OWN
-# premise (the single `docker run -it`). Every other script's references were
-# unguarded, and `entrypoint.sh:203` duly drifted to a BLANK LINE while the
-# claim around it stayed correct.
-#
-# What this can and cannot catch, stated plainly because a guard whose reach is
-# overestimated is worse than none: it catches a deleted file, a line past the
-# end of one, and a line that has become blank. It does NOT catch a reference
-# that drifted onto some other non-blank line — that needs a content assertion
-# naming what belongs there, which is exactly what the shim test does for its
-# one line. Scope is AGENTS.md AND the docs pages: testing.md took several of
-# these references with it when the testing evidence moved out of AGENTS.md,
-# and a guard that did not follow them would have re-opened the hole it was
-# written to close. PAGES already excludes docs/superpowers/**, which, like
-# CHANGELOG.md, records what was true when written rather than tracking a
-# current line number.
-AGENTS="$ENGINE_DIR/AGENTS.md"
-if [[ ! -f "$AGENTS" ]]; then
-  fail "AGENTS.md found at $ENGINE_DIR — the line-reference scan checked nothing"
-else
-  bad_refs=""
-  n_refs=0
-  while IFS= read -r ref; do
-    [[ -n "$ref" ]] || continue
-    n_refs=$((n_refs + 1))
-    ref_file="${ref%%:*}"; ref_line="${ref##*:}"
-    if [[ ! -f "$ENGINE_DIR/$ref_file" ]]; then
-      bad_refs="$bad_refs $ref(no such file)"
-    elif (( ref_line > $(wc -l < "$ENGINE_DIR/$ref_file") )); then
-      bad_refs="$bad_refs $ref(past end of file)"
-    elif [[ -z "$(sed -n "${ref_line}p" "$ENGINE_DIR/$ref_file" | tr -d '[:space:]')" ]]; then
-      bad_refs="$bad_refs $ref(blank line)"
-    fi
-  done < <(grep -ohE '\b[a-zA-Z0-9._-]+\.sh:[0-9]+' "$AGENTS" "${PAGES[@]/#/$ENGINE_DIR/}" | sort -u)
-  if (( n_refs == 0 )); then
-    fail "AGENTS.md line references found — none at all, so this checked nothing"
-  elif [[ -z "$bad_refs" ]]; then
-    pass "every file:line reference in AGENTS.md and the docs pages resolves ($n_refs checked)"
-  else
-    fail "every file:line reference in AGENTS.md and the docs pages resolves —$bad_refs"
-  fi
-fi
+# ── code references ───────────────────────────────────────────────────────────
+# A line-number guard lived here: it caught a reference to AGENTS.md or a docs
+# page only when it landed on a blank line or past the end of its file, and 21
+# references in tests/ drifted onto OTHER code without it noticing. Its job,
+# widened to every tracked script, workflow, patch and page, is now
+# tests/test-code-references.sh, which checks citations by their content.
 
 printf '\n%d failure(s)\n' "$fails"
 [[ "$fails" -eq 0 ]]

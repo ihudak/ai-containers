@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Changed
+
+- **Code is cited by what it says, not by line number.** Comments and docs
+  pointed at code as `file:line`, and those numbers had rotted: 21 of the ~55
+  under `tests/` named the wrong line (fixed in #260). Nothing caught them,
+  because the only guard checked AGENTS.md and the docs pages for a reference
+  landing on a blank line. Every reference is now a snippet citation, a file
+  name followed by a short quoted piece of the code meant, and
+  `tests/test-code-references.sh` checks each one still occurs in its file. The
+  same test refuses new numbered references unless the line carries a
+  `ref-lint: allow:` marker with a reason. `tests/test-integration-shim.sh`
+  stops pinning the launcher's `docker run -it` to a line number and checks it
+  by content, so an edit higher up in `sandbox.sh` no longer fails it.
+
 ## v0.9.16 — 2026-10-02
 
 ### Added
