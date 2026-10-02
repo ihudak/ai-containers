@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Added
+
+- **The shell utilities agents reach for are baked into every image:** `rg`,
+  `fd`, `tree`, `file`, `column`, `bc`, `make`, `sqlite3`, `zstd`, `xxd` and
+  `less`. A missing one costs a failed turn, and the agent cannot install it,
+  because nothing in the container can `apt-get`. Four of them were already
+  failing with `command not found` in real sessions: `rg` (Codex prompts its
+  model to prefer it), plus `file`, `column` and `bc`. `make` is the subtle
+  one. The pyenv layer installs it with `build-essential`, but the cleanup purge
+  removes it again, so an image without `ruby`, `db-clients` or `c-toolchain`
+  had no `make`, and `make test` failed. They go in one unconditional layer
+  after that purge, with no `sandbox.conf` key, adding roughly 20 MB. Changing
+  the layer therefore does not recompile Python. Integration case
+  `310-agent-utilities-delivered` checks that each tool is on PATH and actually
+  runs, on every PR.
+
 ## v0.9.15 — 2026-09-29
 
 ### Changed

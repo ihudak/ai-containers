@@ -24,13 +24,13 @@
 # and this comment used to claim it was. Measured, not reasoned: mutation
 # 735-toolchain-not-restored makes that layer unreachable while build.sh still
 # passes KEEP_BUILD_TOOLCHAIN=1, and this case still PASSED all six assertions
-# (run 31466356415). gcc survives the Dockerfile:219 `apt-get purge
+# (run 31466356415). gcc survives the Dockerfile:435 `apt-get purge
 # --auto-remove build-essential` on its own — build-essential is a metapackage,
 # and --auto-remove keeps anything another installed package still needs. So the
 # gcc assertion could not fail for the reason it was written down for.
 #
 # The yaml.h check below is the discriminating one. libyaml-dev appears exactly
-# once in the Dockerfile — in that restore layer (line 293) — so /usr/include/
+# once in the Dockerfile — in that restore layer (line 547) — so /usr/include/
 # yaml.h is present if and only if the layer ran. It is also the header rvm
 # needs to build psych, which is why a stripped toolchain shows up as a Ruby
 # bootstrap failure rather than a missing compiler.

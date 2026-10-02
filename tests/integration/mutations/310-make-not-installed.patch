@@ -1,0 +1,38 @@
+# case: 310-agent-utilities-delivered
+# what: `make` is dropped from the agent-utilities layer as "redundant with
+#       build-essential", and the cleanup purge then strips it from every image
+#       without ruby, db-clients or c-toolchain -- the state the image was in
+#       before that layer existed.
+#
+#       MAKE, NOT RIPGREP. Dropping rg would demonstrate the loop and nothing
+#       else: no reviewer would approve removing the tool the layer was added
+#       for. Dropping make is the edit a reviewer WOULD approve, because the
+#       pyenv layer visibly installs build-essential and make looks covered.
+#       It is not: the cleanup purge's --auto-remove takes build-essential's
+#       make with it. The Dockerfile comment above the layer says so; this
+#       patch is what proves case 310 notices when someone acts on the
+#       opposite belief anyway.
+#
+#       Expected: exactly ONE assertion fails, `make is on PATH`, and the other
+#       ten tools still pass. Any other failure means something else changed
+#       -- and a run where make PASSES means some other default-image package
+#       pulls make back in, which would make this patch demonstrate nothing.
+#
+#       NEEDS A REBUILD. This patch changes the Dockerfile, so
+#       demonstrate-network-delivery-tiers.sh detects it as a build input and
+#       drops --reuse-image for it; the hand-driven `mutate.sh apply` +
+#       `run.sh --reuse-image` procedure would test an image that predates the
+#       patch and report it dead.
+#
+diff --git a/Dockerfile b/Dockerfile
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -467,7 +467,7 @@
+ # and that package is not installed, so `fd` is linked to it. Integration case
+ # 310 asserts every tool here is on PATH and runs.
+ RUN apt-get update && apt-get install -y --no-install-recommends \
+-      ripgrep fd-find tree file bsdextrautils bc make \
++      ripgrep fd-find tree file bsdextrautils bc \
+       sqlite3 zstd xxd less && \
+     ln -s /usr/bin/fdfind /usr/local/bin/fd && \
+     rm -rf /var/lib/apt/lists/*

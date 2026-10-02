@@ -8,7 +8,7 @@
 #       This targets the yaml.h assertion, NOT gcc. The first version of this
 #       patch was written to target gcc and DID NOT DEMONSTRATE: run 31466356415
 #       applied exactly this Dockerfile change and case 730 still passed all six
-#       assertions. gcc survives the Dockerfile:219 `apt-get purge --auto-remove
+#       assertions. gcc survives the Dockerfile:435 `apt-get purge --auto-remove
 #       build-essential` independently — build-essential is a metapackage and
 #       --auto-remove keeps what other installed packages still need. So 730's
 #       stated reason for asserting gcc ("if the Dockerfile ever stripped the
