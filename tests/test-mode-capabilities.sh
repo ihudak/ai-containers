@@ -8,7 +8,8 @@
 # it is the assembled `docker run` argument list, which a fake `docker` on PATH
 # captures without a daemon. An integration case cannot observe it at all:
 # tests/integration/lib.sh's sandbox_up composes its OWN `docker run` with its
-# own per-mode capability logic (lib.sh:243-244) and never invokes sandbox.sh, so
+# own per-mode capability logic (lib.sh: `restricted|discovery) caps=`) and never
+# invokes sandbox.sh, so
 # a case run through sandbox_up would report on the harness, not the product.
 #
 # That is not hypothetical. An earlier attempt at this coverage was written as an

@@ -34,7 +34,7 @@ shift || true
 #
 # What it does NOT do is let that pass unnoticed, and the distinction is worth
 # writing down rather than overstating: the only caller
-# (tests/integration/run.sh:657) already does `… > "$conf" || { … }`, and the
+# (run.sh: `bash "$INT_DIR/minimal-conf.sh"`) already does `… > "$conf" || { … }`, and the
 # failing `cat` exits non-zero, so the run stops either way. What changes is
 # WHAT IT SAYS — one named line on stderr instead of zero bytes on stdout and a
 # bare non-zero to work backwards from.

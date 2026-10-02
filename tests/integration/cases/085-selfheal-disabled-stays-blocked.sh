@@ -37,7 +37,8 @@ sandbox_wait_capture "$IT_CID" || it_finish
 # ONE readiness signal, TWO tshark instances. sandbox_wait_capture polls only
 # tshark-nflog-errors.log — the blocked-packet watcher. The self-heal chain also
 # needs start_dns_map_builder's SEPARATE `tshark -i any -f "port 53"` instance
-# (capture-blocked-traffic.sh:158-202) to be attached when the DNS response comes
+# (capture-blocked-traffic.sh: `start_dns_map_builder()`) to be attached when the
+# DNS response comes
 # back, and nothing waits for that one. `-i any` enumerates every interface, so it
 # can plausibly attach LATER than `-i nflog:100`.
 #

@@ -48,8 +48,9 @@
 # WHY NO --keep, AND WHY NO build_clean_image() RESTORE: every patch selected
 # here needs a rebuild, so none of them uses --reuse-image and none of them
 # shares an image with the next. Without --keep, run.sh disposes of the image it
-# built — the default variant in sweep() (run.sh:865), a non-default variant at
-# run.sh:1435 — so no mutated image can outlive its own patch. That is a
+# built — the default variant in sweep() (run.sh: `docker rmi "$IT_IMAGE"`), a
+# non-default variant after its cases (run.sh: `docker rmi "$variant_img"`) — so
+# no mutated image can outlive its own patch. That is a
 # stronger guarantee than rebuilding a clean one afterwards, and it is why this
 # script does not need demonstrate-network-delivery-tiers.sh's restore dance. The cleanup
 # trap still removes all three tags, because an interrupt can land between the
@@ -128,7 +129,8 @@ done
 }
 
 # ── Refuse to start on a dirty tree ───────────────────────────────────────────
-# The SAME whole-tree gate as mutate.sh:243 and demonstrate-network-delivery-tiers.sh, and
+# The SAME whole-tree gate as mutate.sh (mutate.sh: `git diff --quiet`) and
+# demonstrate-network-delivery-tiers.sh, and
 # deliberately not a cleverer one. A narrower gate here (e.g. "only files some
 # patch touches") would let this script start and then die at the first
 # `mutate.sh apply`, which enforces the whole tree regardless — a gate looser

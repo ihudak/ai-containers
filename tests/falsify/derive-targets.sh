@@ -17,7 +17,7 @@
 #                  (tests/test-integration-shim.sh reaches docker-shim.sh ONLY
 #                   through `ln -sf "$SHIM" "$TMP/bin/docker"`)
 #                a path printf'd INTO A FILE as a source/bash line
-#                  (tests/test-lib-verify-repo.sh:79 builds its harness with
+#                  (tests/test-lib-verify-repo.sh builds its harness with
 #                   `printf 'source %q\n' "$REPO_DIR/tests/lib-verify-repo.sh"
 #                   >> "$h"`, which is that library's ONLY dedicated oracle)
 #                a path handed to `bash -c BODY _ <path>` whose body runs it as
@@ -374,9 +374,10 @@ _ft_refs() {  # $1 = absolute file
       #         The case-branch extractor in tests/test-entrypoint-wiring.sh
       #         is why: a multi-line awk program whose LAST line then names
       #         entrypoint.sh as the awk input file, which read as code looks
-      #         like executing it. And tests/test-lib-verify-repo.sh:398 names
-      #         $r/tests/run-all.sh — the instrumented STUB planted in a
-      #         scratch repo, not the real tests/run-all.sh.
+      #         like executing it. And the run-all.sh that
+      #         tests/test-lib-verify-repo.sh: `bash "$r/tests/run-all.sh"`
+      #         runs is the instrumented STUB planted in a scratch repo, not
+      #         the real tests/run-all.sh.
       #   CODE  a `bash -c` body. Walked line by line. The gen_out block in
       #         tests/test-allowlists.sh sources sandbox-common.sh and
       #         build.sh from inside one.

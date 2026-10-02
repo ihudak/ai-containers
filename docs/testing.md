@@ -18,7 +18,7 @@ fixing.
 
 The suite asserts **effect, not configuration**: it observes from outside the container whether the packet arrived, the file exists, the log line is present. `tests/test-entrypoint-wiring.sh` asserts the capture daemon is *wired into* `entrypoint.sh` and passed every day of a months-long outage, because the wiring was correct and the daemon died after being started.
 
-**Two tiers, two verbs.** Network cases call `sandbox_up`, which composes its own `docker run` — that isolates the image and the entrypoint from the launcher. Mounts, groups and volumes cases call `launcher_up`, which drives **the real `sandbox.sh`**, because every mount decision lives there and reproducing it in the harness would test the reproduction. `launcher_up` works through `tests/integration/docker-shim.sh`, a pass-through `docker` on `PATH` that rewrites the launcher's `-it` to `-d -i` and replaces the launcher's own `--name` with its own (Docker takes the last of two, so it strips rather than out-orders) and adds a `--label`, so a case can exec into the container and the runner can sweep it. `sandbox.sh:1036` is the only `docker run -it` a launcher run can reach, which is what makes that identification sound; `tests/test-integration-shim.sh` pins the premise by file:line so a second one fails at its cause. These cases carry `requires: launcher`, a probed capability — a machine that cannot drive the shim SKIPs them by name rather than failing them as if mounts were broken. A launcher case never inherits the developer's `sandbox.conf` (`tests/integration/minimal-conf.sh`, shared with `tests/integration/run.sh`'s image build): a `ruby=` there would bootstrap rvm before the agent shell appeared. Launcher-driven cases only started passing on macOS + Colima in `b6191da`: `launcher_run`/`launcher_script` redirect `HOME` to a per-case scratch dir to isolate group state, which also threw away `$HOME/.docker/config.json`'s `currentContext` — invisible on a host where the daemon sits at the CLI's built-in default socket (Linux CI), fatal on macOS + Colima, which supplies its endpoint only through the active context. Before that fix, all 17 launcher-driven cases failed identically there.
+**Two tiers, two verbs.** Network cases call `sandbox_up`, which composes its own `docker run` — that isolates the image and the entrypoint from the launcher. Mounts, groups and volumes cases call `launcher_up`, which drives **the real `sandbox.sh`**, because every mount decision lives there and reproducing it in the harness would test the reproduction. `launcher_up` works through `tests/integration/docker-shim.sh`, a pass-through `docker` on `PATH` that rewrites the launcher's `-it` to `-d -i` and replaces the launcher's own `--name` with its own (Docker takes the last of two, so it strips rather than out-orders) and adds a `--label`, so a case can exec into the container and the runner can sweep it. sandbox.sh: `docker run -it --rm` is the only `docker run -it` a launcher run can reach, which is what makes that identification sound; `tests/test-integration-shim.sh` pins that premise by content, so a second one fails at its cause. These cases carry `requires: launcher`, a probed capability — a machine that cannot drive the shim SKIPs them by name rather than failing them as if mounts were broken. A launcher case never inherits the developer's `sandbox.conf` (`tests/integration/minimal-conf.sh`, shared with `tests/integration/run.sh`'s image build): a `ruby=` there would bootstrap rvm before the agent shell appeared. Launcher-driven cases only started passing on macOS + Colima in `b6191da`: `launcher_run`/`launcher_script` redirect `HOME` to a per-case scratch dir to isolate group state, which also threw away `$HOME/.docker/config.json`'s `currentContext` — invisible on a host where the daemon sits at the CLI's built-in default socket (Linux CI), fatal on macOS + Colima, which supplies its endpoint only through the active context. Before that fix, all 17 launcher-driven cases failed identically there.
 
 ## Known-bad demonstrations
 
@@ -98,3 +98,42 @@ The `lint` job's `apt-get` is **bounded and retried** (three attempts, five minu
 ---
 
 [← Documentation index](README.md)
+
+## Citing code
+
+**Measured, 2026-10-02.** Of the ~55 `file:line` references under `tests/`, 21
+pointed at the wrong line (ai-containers #260). None had landed on a blank line,
+so the guard of the time — the one in `tests/test-docs.sh`, which scanned only AGENTS.md and
+the docs pages and flagged only a blank or out-of-range target — saw none of
+them. Five more were right in one repository and wrong in the other: the citing
+file is byte-identical in mgd-ai-containers, the cited file is not.
+
+**Why not check each numbered line's content instead.** It would catch the drift,
+and then fire on every edit above every reference, which is the common edit. One
+Dockerfile insertion that week moved three references at once. A gate that
+demands hand-renumbering after ordinary edits is the gate people learn to work
+around.
+
+**What replaced it.** A citation names code by a snippet: `<file>: ` and a
+backticked function name or literal, on one line. `tests/test-code-references.sh`
+resolves the file — a path matches a tracked path or a suffix of one, so the
+same text resolves under mgd's `base/`; a bare name is tried beside the citing
+file, then as a unique basename — and requires the snippet to occur in it. It
+also refuses a numbered reference to a tracked file (an untracked one, such as a
+fixture written at run time or nvm's own source, is skipped), unless the line
+carries `ref-lint: allow: <reason>`; and it refuses a citation split across two
+lines. A sentence that ends in a file name and a colon and carries on in words
+is left alone: the split rule fires only when the next line opens with a
+backtick. The test proves each rule can fail on a fixture tree before it checks
+the real one.
+
+**What it cannot catch.** A snippet that still occurs but now means something
+else, and a number written as prose ("line 24"). It proves the cited text
+exists, not that the sentence around it is still true.
+
+**The shim test changed with it.** `tests/test-integration-shim.sh` pinned the
+launcher's one `docker run -it` by line number, so any edit above that line in
+`sandbox.sh` failed it, and it kept its own guard for every comment repeating
+the number. It now checks the premise itself — exactly one `-it` among the
+scripts a launcher run reaches, in `sandbox.sh`, on its `docker run` — and the
+general guard covers the comments.

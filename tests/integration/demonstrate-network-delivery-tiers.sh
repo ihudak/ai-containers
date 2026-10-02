@@ -64,7 +64,8 @@ MUT="$REPO_DIR/tests/integration/mutate.sh"
 MUT_DIR="$REPO_DIR/tests/integration/mutations"
 CASES_DIR="$REPO_DIR/tests/integration/cases"
 RUN="$REPO_DIR/tests/integration/run.sh"
-# The same default run.sh resolves (run.sh:31), and the same env var, so an
+# The same default run.sh resolves (run.sh: `IT_IMAGE="${IT_IMAGE:-ai-sandbox-it}"`),
+# and the same env var, so an
 # `IT_IMAGE=… bash demonstrate-network-delivery-tiers.sh` names one image in both.
 IT_IMAGE="${IT_IMAGE:-ai-sandbox-it}"
 # Everything above is repo-root-relative and identical in both layouts, because
@@ -236,7 +237,8 @@ for entry in "${patches[@]}"; do
     # asserting — a correct verdict, but the opposite of a demonstration: it
     # says the case did nothing, not that its assertion can be false. Requiring
     # a real `FAIL:` assertion line separates the two. run.sh prints every
-    # PASS/FAIL/SKIP line first and unbounded (run.sh:1351), so a missing line
+    # PASS/FAIL/SKIP line first and unbounded (run.sh: `/^(PASS|FAIL|SKIP):/`),
+    # so a missing line
     # here is a genuine absence and never truncation.
     line="$(grep -E '^ *FAIL:' <<<"$out" | head -1 | sed 's/^ *//')"
     if [[ -z "$line" ]]; then

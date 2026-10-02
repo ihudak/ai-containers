@@ -146,7 +146,8 @@ run_group gc --yes >/dev/null
 
 # ── rm ──────────────────────────────────────────────────────────────────────────
 # group.sh has TWO independent exit-1 paths a "host" run could hit: the host-guard
-# (group.sh:142-145) and the generic "no such group" fallback (group.sh:152-155),
+# (group.sh: `if [[ "$name" == "host" ]]`) and the generic "no such group"
+# fallback (group.sh: `ERROR: no such group`),
 # which fires whenever a name has neither a directory nor a volume. Without a real
 # ~/.ai-containers/host directory, "host" would satisfy the fallback too, and an
 # rc-only assertion could pass for the WRONG reason (the fallback, not the guard it

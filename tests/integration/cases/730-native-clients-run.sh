@@ -24,8 +24,8 @@
 # and this comment used to claim it was. Measured, not reasoned: mutation
 # 735-toolchain-not-restored makes that layer unreachable while build.sh still
 # passes KEEP_BUILD_TOOLCHAIN=1, and this case still PASSED all six assertions
-# (run 31466356415). gcc survives the Dockerfile:435 `apt-get purge
-# --auto-remove build-essential` on its own — build-essential is a metapackage,
+# (run 31466356415). gcc survives the cleanup layer's purge of build-essential
+# (Dockerfile: `RUN apt-get purge -y --auto-remove`) on its own — build-essential is a metapackage,
 # and --auto-remove keeps anything another installed package still needs. So the
 # gcc assertion could not fail for the reason it was written down for.
 #
@@ -58,8 +58,8 @@
 # case's own SIX ASSERTIONS never touch the network at container run time —
 # that is the actual, checked reason external is omitted. The Ruby reconcile's
 # own wall-clock is a separate question: a DNS-absent machine does fail
-# rvm-reconcile.sh's bootstrap curl fast, but rvm-reconcile.sh:50 sets no
-# `--connect-timeout`, so a machine with working DNS and a filtered route could
+# rvm-reconcile.sh's bootstrap curl fast, but that curl
+# (rvm-reconcile.sh: `curl -fsSL https://get.rvm.io`) sets no `--connect-timeout`, so a machine with working DNS and a filtered route could
 # stall on that curl considerably longer than "a few seconds" — this is not
 # claimed to be fast, only that it cannot make the six assertions below fail.
 # netadmin IS required: launcher_up drives restricted mode, entrypoint.sh's

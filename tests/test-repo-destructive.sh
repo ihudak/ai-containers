@@ -1070,7 +1070,8 @@ unset HELPER_RESET_FAILS
 # thing it decides: that answering NO leaves the data alone.
 #
 # That is not a small gap. Measured 2026-08-30, twelve surviving mutants sit on
-# those three lines (repo.sh:513, :714, :783 — `rm`, `reset`, `gc`), four
+# those three lines (repo.sh: `{ echo "Aborted."; exit 1; }`, once each in
+# `rm`, `reset` and `gc`), four
 # operators each. The `return-flip` one only mislabels the exit status. The
 # `cond-negate` one INVERTS THE COMPARISON: the user types "no" and the
 # destructive command proceeds anyway — deleting a repo'"'"'s base volume and its
@@ -1252,7 +1253,8 @@ else
   pass "a vanished source starts no mirror at all, so the volume cannot be emptied"
 fi
 
-# 3. `reset` of a path repo routes through the same function (repo.sh:562), and
+# 3. `reset` of a path repo routes through the same function
+#    (repo.sh: `sync_from_path "$vol" "$source"`), and
 #    that arm has never run either. Same guard, same consequence.
 setup_path_world
 run_repo reset localvol --yes
@@ -1269,7 +1271,8 @@ fi
 # seed helper at all. It was reported as covered by the "22 of 22" execution
 # measurement, and it was — but only its FIRST TWO LINES. The fake `docker`
 # answered `image inspect` with exit 0 unconditionally, so every run returned at
-# repo.sh:87 and the three refusals below were never reached by anything. That
+# the top of repo.sh: `ensure_seed_image()` and the three refusals below were
+# never reached by anything. That
 # is the difference between a function being EXECUTED and its branches being
 # executed, and it is invisible to a per-function instrumentation pass.
 #

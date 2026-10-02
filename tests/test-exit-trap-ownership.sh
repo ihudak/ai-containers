@@ -150,8 +150,8 @@ while IFS= read -r f; do
     prev_line="$(sed -n "$(( tl_no > 1 ? tl_no - 1 : 1 ))p" "$REPO_DIR/$f")"
     [[ "$prev_line" =~ \#\ exit-trap-ok:\ *[^\ ] ]] && continue
     # THE PATH, not the basename: two of the in-scope files are called run.sh
-    # (tests/falsify/ and tests/integration/), and a failure naming "run.sh:905"
-    # twice sends a reader to the wrong one.
+    # (tests/falsify/ and tests/integration/), and a failure naming a bare
+    # run.sh with a line number sends a reader to the wrong one half the time.
     offenders="${offenders}${offenders:+ }$f:$tl_no"
   done <<< "$trap_lines"
 done < <(cd "$REPO_DIR" && { git ls-files 'tests/*.sh'; git ls-files --others --exclude-standard 'tests/*.sh'; } | sort -u)

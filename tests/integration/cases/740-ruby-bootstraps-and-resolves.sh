@@ -59,8 +59,9 @@ export AI_CONTAINER_GROUP="itruby-cold-$$"
 launcher_up restricted || it_finish
 ruby_wait_ready "$IT_CID" 1800 || { it_diagnose "$IT_CID"; it_finish; }
 
-# link-default-ruby.sh's contract, verbatim (`link-default-ruby.sh:46`: `for b
-# in ruby gem bundle bundler rake irb erb`) — all SEVEN onto /usr/local/bin so
+# link-default-ruby.sh's contract, verbatim
+# (link-default-ruby.sh: `for b in ruby gem bundle bundler rake irb erb`) —
+# all SEVEN onto /usr/local/bin so
 # a NON-login shell resolves them. Corrected from an earlier draft that
 # claimed `bundler` was deliberately excluded from this set (it was not — that
 # claim was checked against the wrong list) and dropped `erb` entirely. Both

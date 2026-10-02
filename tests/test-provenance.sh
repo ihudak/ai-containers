@@ -282,7 +282,7 @@ prov_absolute_exec_terminates() {   # → 0 when an absolute-path exec finishes
   #
   # `set -m` is the portable equivalent of the `setsid` half: with job control
   # on, each background job becomes a process-group leader, so `kill -"$pid"`
-  # reaps the TREE. tests/falsify/run.sh:874 uses exactly this, for exactly this
+  # reaps the TREE. tests/falsify/run.sh: `set -m` is exactly this, for exactly this
   # reason. The clock is a poll rather than `timeout`, for the same portability.
   local pid waited=0
   set -m

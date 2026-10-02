@@ -13,7 +13,8 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LIB="$REPO_DIR/tests/integration/lib.sh"
 fails=0
 # t_pass/t_fail/t_check — NOT pass/fail/check — is deliberate, not decorative.
-# `. "$LIB"` below REDEFINES pass()/fail() (lib.sh:67-68) to increment lib.sh's
+# `. "$LIB"` below REDEFINES pass()/fail() (lib.sh: `it_fails=$((it_fails + 1))`)
+# to increment lib.sh's
 # own $it_fails, not this file's $fails. Bash resolves a function name at CALL
 # time, not at definition time, so if this file's own assertions used plain
 # pass()/fail() they would silently start tallying into the wrong counter the
