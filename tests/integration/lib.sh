@@ -20,18 +20,31 @@ IT_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IT_REPO_DIR="$(cd "$IT_LIB_DIR/../.." && pwd)"
 [[ -f "$IT_REPO_DIR/build.sh" ]] || IT_REPO_DIR="$(cd "$IT_LIB_DIR/../../base" && pwd)"
 
-# The host-launcher keys a case may set for itself before launcher_run. A
-# developer's exported value for any of them must not perturb a case — and the
-# host pointers (VAULT_PATH, SPECS_PATH, DOCS_PATH, ARCHITECTURE_REPO_PATH) are
-# MEANT to be exported once in a host profile, so the person running the corpus
-# is the one most likely to have them set. Cleared HERE, at source time, because
-# every case sources lib.sh before it sets anything: a value present now can only
-# have been inherited. launcher_run cannot do it — by then the case's own value
-# and an inherited one look identical. (Until 2026-10-05 only launcher_run's
+# The launcher configuration a case may set for itself before launcher_run: every
+# variable docs/configuration.md documents for sandbox.sh, except the identity
+# overrides (SANDBOX_UID/GID/USER/GROUP), which this file reads to know which
+# user the container will run as and so must inherit. A developer's exported
+# value for any of the rest must not perturb a case, and all of them are meant
+# to be settable in a host profile — a host pointer becomes a surprise mount, an
+# exported token is forwarded into every test container, a memory limit changes
+# what a case measures. Cleared HERE, at source time, because every case sources
+# lib.sh before it sets anything: a value present now can only have been
+# inherited. launcher_run cannot do it — by then the case's own value and an
+# inherited one look identical. (Until 2026-10-05 only launcher_run's
 # set-but-empty pass existed, which neutralises sandbox.env and lets every
 # exported value straight through to every case that launches sandbox.sh.)
-IT_LAUNCHER_ENV_KEYS="EXTRA_MOUNTS REPOS VAULT_PATH SPECS_PATH DOCS_PATH ARCHITECTURE_REPO_PATH \
-PREVIEW_PORTS SANDBOX_MODE SANDBOX_WORKDIR SANDBOX_ENV_FILE SELF_HEALING_ENABLED"
+#
+# tests/test-integration-lib.sh reads the documented table and fails if any
+# variable in it, exported, reaches the launcher — so a variable documented
+# later lands here or turns that test red. IMAGE_NAME is listed for
+# completeness; launcher_run sets it to the image under test regardless.
+IT_LAUNCHER_ENV_KEYS="IMAGE_NAME SANDBOX_MODE SANDBOX_WORKDIR SANDBOX_ENV_FILE \
+AI_CONTAINER_GROUP AI_CONTAINER_GROUP_INIT AI_CONTAINER_HOST_ACK \
+REPOS REPO_BACKEND REPOS_PATH EXTRA_MOUNTS PREVIEW_PORTS \
+VAULT_PATH SPECS_PATH DOCS_PATH ARCHITECTURE_REPO_PATH \
+CONTAINER_CPUS CONTAINER_MEMORY CONTAINER_MEMORY_RESERVATION CONTAINER_MEMORY_SWAP \
+CONTAINER_NOFILE CONTAINER_SHM_SIZE CONTAINER_NAME \
+SELF_HEALING_ENABLED ALLOW_IPV6_BYPASS COPILOT_GITHUB_TOKEN GITHUB_PERSONAL_ACCESS_TOKEN"
 for _it_k in $IT_LAUNCHER_ENV_KEYS; do unset "$_it_k"; done
 unset _it_k
 

@@ -581,35 +581,64 @@ esac
   || t_pass "an already-exported empty IT_DOCKER_HOST skips the docker subprocess entirely"
 
 # ── A developer's exported launcher config does not reach a case ──────────────
-# The host pointers are meant to be exported once in a host profile, so the
-# person running the corpus is the one most likely to carry them into it. Same
-# real launcher_run as above; the fake sandbox.sh reports what arrived. The case
-# sets REPOS itself AFTER sourcing lib.sh, and that value MUST arrive — a fix
-# that blanked every key would pass the first two assertions and break every
-# case that configures the launcher.
+# Every variable docs/configuration.md documents as launcher configuration is
+# meant to be settable in a host profile, so the person running the corpus is
+# the one most likely to carry it in: a host pointer becomes a surprise mount,
+# an exported token is forwarded into every test container, a memory limit
+# changes what the case measures. The keys come from that TABLE, not from
+# lib.sh's own list, so a launcher variable documented later is covered without
+# anyone remembering this test — it joins IT_LAUNCHER_ENV_KEYS or this goes red.
+# That is how ARCHITECTURE_REPO_PATH reached the list, and fifteen others did not.
+#
+# Checked by EFFECT through the real launcher_run: the fake sandbox.sh dumps the
+# environment it was handed. Inherited ON PURPOSE, so exempt here:
+# SANDBOX_UID/GID/USER/GROUP — lib.sh reads them to know which user the
+# container will run as, and the launcher must agree with it.
+LE_CONF="$REPO_DIR/docs/configuration.md"
+[[ -f "$LE_CONF" ]] || LE_CONF="$REPO_DIR/base/docs/configuration.md"
+# Both anchors: the table's header row starts the read, and the first line that
+# is not a table row must END it — a read that ran off the end of the file never
+# saw the table close, and proves nothing about what the table holds.
+le_table="$(awk '/^\| Variable \| Purpose/{t=1; next} t && /^\|/{print; next} t{print "END-OF-TABLE"; exit}' "$LE_CONF" 2>/dev/null)"
+le_keys=()
+while IFS= read -r k; do
+  case "$k" in SANDBOX_UID|SANDBOX_GID|SANDBOX_USER|SANDBOX_GROUP) continue ;; esac
+  le_keys+=("$k")
+done < <(grep -v '^END-OF-TABLE$' <<< "$le_table" | cut -d'|' -f2 | grep -oE '`[A-Z_][A-Z0-9_]*`' | tr -d '`' | sort -u)
+if grep -qx 'END-OF-TABLE' <<< "$le_table" && (( ${#le_keys[@]} >= 20 )); then
+  t_pass "read ${#le_keys[@]} launcher variables from the documented table"
+else
+  t_fail "could not read the launcher table in $LE_CONF (${#le_keys[@]} keys, end of table seen: $(grep -qx 'END-OF-TABLE' <<< "$le_table" && echo yes || echo no))"
+fi
 LE_FAKE_REPO="$TMP/le-fakerepo"
 mkdir -p "$LE_FAKE_REPO/tests"
 ln -sf "$IT_LIB_DIR" "$LE_FAKE_REPO/tests/integration"
 : > "$LE_FAKE_REPO/build.sh"
 : > "$LE_FAKE_REPO/sandbox.conf"
-cat > "$LE_FAKE_REPO/sandbox.sh" <<'LEEOF'
-#!/usr/bin/env bash
-for k in DOCS_PATH ARCHITECTURE_REPO_PATH REPOS; do printf '%s=%s\n' "$k" "${!k-<unset>}"; done
-LEEOF
+printf '#!/usr/bin/env bash\nenv\n' > "$LE_FAKE_REPO/sandbox.sh"
 chmod +x "$LE_FAKE_REPO/sandbox.sh"
-out="$(env -u DOCKER_HOST \
-    DOCS_PATH=/host/docs ARCHITECTURE_REPO_PATH=/host/arch REPOS=host-repo:ro \
+le_env=()
+for k in ${le_keys[@]+"${le_keys[@]}"}; do le_env+=("$k=LEAKED-$k"); done
+# The case sets REPOS itself AFTER sourcing lib.sh, and that value MUST arrive:
+# a fix that blanked every key would pass the leak check and break every case
+# that configures the launcher.
+out="$(env -u DOCKER_HOST ${le_env[@]+"${le_env[@]}"} \
     IT_RUN_ID="unit-le-$RANDOM" IT_IMAGE=unit-img IT_NET=unit-net \
     IT_SCRATCH="$TMP/scratch-le-$RANDOM" IT_LABEL="ai-containers.it-run=unit-le" \
     IT_REAL_DOCKER="$TRUE_STUB" IT_DOCKER_HOST="" \
     LE_LIB="$LE_FAKE_REPO/tests/integration/lib.sh" \
     bash -c '. "$LE_LIB"; export REPOS="case-own:ro"; launcher_run open >/dev/null 2>&1; cat "$IT_LAUNCH_OUT"')"
-grep -qx 'DOCS_PATH=' <<< "$out" \
-  && t_pass "an exported DOCS_PATH does not reach a case's launcher" \
-  || t_fail "an exported DOCS_PATH does not reach a case's launcher (got: '$out')"
-grep -qx 'ARCHITECTURE_REPO_PATH=' <<< "$out" \
-  && t_pass "an exported ARCHITECTURE_REPO_PATH does not reach a case's launcher" \
-  || t_fail "an exported ARCHITECTURE_REPO_PATH does not reach a case's launcher (got: '$out')"
+# Proof the dump came from sandbox.sh under launcher_run — IMAGE_NAME is the
+# value launcher_run itself exports. Without it, an empty $out would make the
+# leak check below pass having observed nothing.
+if grep -qx 'IMAGE_NAME=unit-img' <<< "$out"; then
+  leaked="$(grep -oE '^[A-Z_][A-Z0-9_]*=LEAKED-' <<< "$out" | cut -d= -f1 | tr '\n' ' ')"
+  [[ -z "$leaked" ]] \
+    && t_pass "none of the ${#le_keys[@]} documented launcher variables, exported in the developer's shell, reaches a case's launcher" \
+    || t_fail "exported in the developer's shell, these reach a case's launcher: ${leaked% }"
+else
+  t_fail "the fake sandbox.sh never ran under launcher_run, so nothing was observed (got: '$out')"
+fi
 grep -qx 'REPOS=case-own:ro' <<< "$out" \
   && t_pass "a value the case sets itself still reaches the launcher" \
   || t_fail "a value the case sets itself still reaches the launcher (got: '$out')"

@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Fixed
+
+- **No launcher variable exported in your shell reaches an integration case
+  any more.** v0.9.18 stopped the host pointers from leaking, but fifteen
+  other documented launcher variables still passed straight through. They
+  include `AI_CONTAINER_GROUP`, the `CONTAINER_*` resource limits and
+  `CONTAINER_NAME`, and `GITHUB_PERSONAL_ACCESS_TOKEN` and
+  `COPILOT_GITHUB_TOKEN`, which the launcher forwards into the container, so
+  real tokens reached every test container. `tests/integration/lib.sh` now
+  clears every variable `docs/configuration.md` documents for `sandbox.sh`,
+  except the `SANDBOX_UID`/`GID`/`USER`/`GROUP` identity overrides, which the
+  harness reads to know which user the container runs as. A case that sets a
+  variable itself still gets it. `tests/test-integration-lib.sh` takes the
+  list from that documented table rather than from `lib.sh`, so a launcher
+  variable documented later either joins the list or turns that test red.
+
 ## v0.9.18 — 2026-10-05
 
 ### Added
