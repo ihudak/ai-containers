@@ -395,24 +395,38 @@ Background daemons are forked **before** `exec capsh` so they retain root capabi
 `start-services.sh` (baked to `/usr/local/bin/`) starts the servers `sandbox.conf`
 enabled. `sandbox.sh` passes them as `AI_SERVICES="name=value,…"`
 (`sandbox-common.sh`: `services_csv()`), and `entrypoint.sh`'s `run_services`
-calls the runner twice: `prepare` as **root**, which only creates each service's
-directories and chowns them to the sandbox user, then `start` via `runuser` as the
+calls the runner twice: `prepare` as **root**, which creates each service's
+directories and hands them to the sandbox user, then `start` via `runuser` as the
 **sandbox user** — so no server process is ever root. The runner's path is fixed;
 there is deliberately no env override, because `container.env` reaches that root
-process. For the same reason both calls run under
-`env -u AI_SERVICES_DIR -u AI_SERVICES_STATE_ROOT -u AI_SERVICES_LOG_ROOT`: those
-are the runner's test-only path overrides, and a project file must not repoint them.
+process. For the same reason **`prepare` runs with a scrubbed environment**:
+`env -i` with a fixed `PATH`, and only `PATH`, `AI_SERVICES`, `SANDBOX_UID` and
+`SANDBOX_GID` reach it. Adapters run in `prepare` too — the postgres one executes
+`<lib root>/<major>/bin/postgres --version` and chowns its socket directory — and
+`container.env` is writable by the project and from inside the container, so any
+adapter knob reaching root could choose what root runs or chowns; a strip-list
+would miss every knob added later. `start`
+keeps the environment, because it runs as the sandbox user and needs
+`container.env`'s `POSTGRES_*`, minus the runner's test-only path overrides
+(`env -u AI_SERVICES_DIR -u AI_SERVICES_STATE_ROOT -u AI_SERVICES_LOG_ROOT`), so
+`prepare` and `start` agree on the directories. An adapter's own test knobs are
+namespaced `AI_SERVICES_<NAME>_*` (`AI_SERVICES_PG_PORT`, …), never a name an app
+might set: `start` sees all of `container.env`.
 
 Each server is an **adapter**, `services.d/<name>.sh`, sourced in its own subshell
 and required to define five functions:
 
 | Function | Contract |
 |---|---|
-| `svc_installed_version` | print the installed version, or nothing if this image lacks the server |
+| `svc_installed_version` | print the installed version, or nothing if this image lacks the server. Runs in both phases — in `prepare` as root with the scrubbed environment |
 | `svc_runtime_dirs` | print extra absolute directories `prepare` must create, one per line |
 | `svc_start <datadir> <logfile>` | initialise and start; return 0 once it accepts connections. Its output goes to the log |
-| `svc_provision` | create what the adapter's env asks for; warn per bad entry; print the ready-line suffix on stdout |
+| `svc_provision` | create what the adapter's env asks for; warn per bad entry; print the ready-line suffix on stdout. **Must return 0** — a non-zero is reported as a start failure |
 | `svc_endpoint` | print where to connect |
+
+`svc_installed_version`, `svc_runtime_dirs` and `svc_endpoint` run **outside** the
+watchdog, so they must return promptly; only `svc_start` and `svc_provision` are
+bounded.
 
 The runner owns everything else, once: the 60 s watchdog (`AI_SERVICES_TIMEOUT`;
 it keeps the watchdog shape of `tests/portability.sh`'s `p_timeout()` — copied
@@ -422,7 +436,11 @@ expiry, because adapters start children by design (`initdb`, `pg_ctl`, `psql`) a
 a hung child must not survive the deadline), the ready line, the log tail on
 failure, the "image has no such server — rebuild" and "sandbox.conf asks for X,
 image has Y" warnings (a **warning, never a refusal**, matching
-`ai_containers_provenance_warn()`), and the rule that every path exits 0.
+`ai_containers_provenance_warn()`), and the rule that every `prepare`/`start`
+path exits 0 (a usage error exits 2). On expiry the group is KILLed again after
+`wait`, because a child that ignores TERM outlives the watchdog that would have
+sent it; and where `set -m` made no group (no job control) the watchdog signals
+the PID instead.
 
 Data is **ephemeral** (`/var/lib/ai-services/<name>` in the container layer, gone
 with `--rm`). Do not group-mount it: two concurrent containers in one group would

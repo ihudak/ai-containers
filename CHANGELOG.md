@@ -14,14 +14,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the server from PGDG at build time (`ON` is whatever PGDG's `postgresql`
   package depends on — 18 today; a pin is a major, and a minor is refused), and
   every container starts an empty, throwaway cluster as your user on
-  `localhost:5432` and `/var/run/postgresql`, before the prompt. Loopback is
-  always allowed, so restricted mode needs no allowlist change. `POSTGRES_ROLES`
-  and `POSTGRES_DATABASES` in `container.env` create roles (superuser) and
-  databases at every start. A server that fails to start leaves you a shell and a
-  warning with its log; an image built for another major starts anyway and says
-  so. It runs on a new shared runner, `start-services.sh` with one adapter per
-  server under `services.d/`, which Redis, MySQL and MongoDB will reuse. See
-  `docs/components/postgres.md`.
+  `localhost:5432` and `/var/run/postgresql`, before the prompt — your user is
+  the superuser and has a database of its own, so a bare `psql` connects.
+  Loopback is always allowed, so restricted mode needs no allowlist change.
+  `POSTGRES_ROLES` and `POSTGRES_DATABASES` in `container.env` create roles
+  (superuser) and databases at every start; the official image's
+  `POSTGRES_USER`/`POSTGRES_DB` are not read. A server that fails to start
+  leaves you a shell and a warning with its log; an image built for another
+  major starts anyway and says so. It runs on a new shared runner,
+  `start-services.sh` with one adapter per server under `services.d/`, which
+  Redis, MySQL and MongoDB will reuse. See `docs/components/postgres.md`.
 
 ## v0.9.20 — 2026-10-05
 

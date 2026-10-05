@@ -1,6 +1,6 @@
 # In-container database servers, starting with PostgreSQL
 
-**Status:** draft — awaiting review (2026-10-05)
+**Status:** approved 2026-10-05; implemented on feat/in-container-postgres (see [plan](../plans/2026-10-05-in-container-postgres.md))
 **Scope of this spec:** a shared service runner plus its first adapter, PostgreSQL
 (`postgres=` key). Redis, MySQL and MongoDB are follow-ups that reuse the runner,
 one PR each; they are sketched under [Follow-ups](#follow-ups) only to show the
@@ -61,7 +61,7 @@ drifts from the first.
 |---|---|---|
 | D1 | The server runs **inside** the agent container. | Loopback is already allowed by the restricted firewall (`iptables -A OUTPUT -o lo -j ACCEPT`), so restricted mode works with no allowlist change; nothing is shared; nothing else has to be started. |
 | D2 | Installed at **build time**, one `ARG`+`RUN` layer. | `entrypoint.sh` drops root permanently via `capsh --user=` before the shell exists; nothing in the container can `apt-get install`. Same reason `playwright` is a build-time key. |
-| D3 | Started by the entrypoint **as the sandbox user** (`runuser`), before the `capsh` exec. | No new root process. `initdb` run as that user makes it the bootstrap superuser, so `psql` with no arguments just works. The agent owns the server and may restart or reconfigure it. |
+| D3 | Started by the entrypoint **as the sandbox user** (`runuser`), before the `capsh` exec. | No new root process. `initdb` run as that user makes it the bootstrap superuser, and `svc_start` then creates a database named after that user — libpq defaults the database name to the user name, and `initdb` creates only `postgres`/`template0`/`template1` — so `psql` with no arguments just works. (Being the superuser is not enough on its own: a bare `psql` would fail with `database "<user>" does not exist`.) The agent owns the server and may restart or reconfigure it. |
 | D4 | Listens on **`localhost` only**, plus the Debian default socket directory `/var/run/postgresql`. | Nothing reachable from outside the container; libpq's compiled-in default socket path means `psql`, `pg_dump` and a `database.yml` with no `host:` all find it without configuration. |
 | D5 | Data is **ephemeral**: `initdb` into the container's own filesystem on every start. | Tests rebuild their schema anyway. A group-mounted data directory would let two concurrent containers in the same group start two postmasters on one directory — the `postmaster.pid` interlock compares PIDs, which are per-namespace, so it cannot be relied on to stop the second one. Throwaway data also means switching majors never needs `pg_upgrade`. |
 | D6 | Packages come from **PGDG** (`apt.postgresql.org`), `main` component only. Grammar `ON \| <major> \| OFF`. | Lets a project match its CI's major. PGDG publishes betas in separate components (`19`, `20` today), so enabling `main` alone can never install a beta. |
@@ -183,8 +183,8 @@ thing printed before the prompt. Returns at once when `AI_SERVICES` is empty or
 the runner is absent. Two calls, both non-fatal (`|| true`):
 
 ```
-start-services.sh prepare                            # as root
-runuser -u "$sandbox_user" -- start-services.sh start   # as the sandbox user
+env -i PATH=<fixed> AI_SERVICES=… SANDBOX_UID=… SANDBOX_GID=… start-services.sh prepare   # as root
+runuser -u "$sandbox_user" -- env -u AI_SERVICES_DIR … start-services.sh start          # as the sandbox user
 ```
 
 The entrypoint stays service-agnostic. It names no adapter variable:
@@ -194,6 +194,14 @@ intact, with `HOME`/`USER` set for the target user), and `container.env`'s
 variables are already in that environment via `--env-file`. Which directories a
 service needs is the adapter's business, carried out by the runner's `prepare`
 phase.
+
+`prepare` is the exception, and the reason is that it is root: it gets an
+**emptied** environment holding only a fixed `PATH`, `AI_SERVICES`, `SANDBOX_UID`
+and `SANDBOX_GID`. Adapters run there too (`svc_installed_version`,
+`svc_runtime_dirs`), and `container.env` is writable by the project and from
+inside the container; any adapter knob reaching root could choose a binary root
+executes or a directory root chowns. (Added in the final review: the first
+version stripped only the runner's three path overrides.)
 
 ### `start-services.sh` — the runner
 
@@ -215,7 +223,8 @@ For each entry, in order:
    `svc_runtime_dirs`, owned by `SANDBOX_UID:SANDBOX_GID`.
 5. **`start`** (sandbox user): call `svc_start <datadir> <logfile>` and then
    `svc_provision` under one overall timeout per service (60 s default,
-   overridable via `AI_SERVICES_TIMEOUT` so tests can shorten it; the postgres
+   overridable via `AI_SERVICES_TIMEOUT` so tests can shorten it — a positive
+   whole number; anything else, `0` included, falls back to 60; the postgres
    adapter's own `pg_ctl -t 30` sits inside it); on success print the ready line
    from `svc_endpoint`. If the requested value is a version (anything but `ON`)
    and the installed version neither equals it nor starts with it followed by a
@@ -224,8 +233,8 @@ For each entry, in order:
    /var/log/ai-services/<name>.log`, followed by its last 20 lines. Continue with
    the next service.
 
-The runner **always exits 0**. Output goes to stderr, like the other startup
-warnings.
+The runner **always exits 0** for `prepare` and `start`; only a usage error
+exits 2. Output goes to stderr, like the other startup warnings.
 
 #### Adapter contract (`services.d/<name>.sh`, sourced)
 
@@ -234,8 +243,11 @@ warnings.
 | `svc_installed_version` | both | print the installed version (e.g. `18.6`), or nothing if not installed |
 | `svc_runtime_dirs` | prepare | print extra absolute directories to create and hand to the sandbox user, one per line |
 | `svc_start <datadir> <logfile>` | start | initialise and start; return 0 only once the server accepts connections |
-| `svc_provision` | start | create what the adapter's env asks for; warn per bad entry, never fail the service for one; print the ready-line suffix (`; roles: …`) on stdout |
+| `svc_provision` | start | create what the adapter's env asks for; warn per bad entry, never fail the service for one; print the ready-line suffix (`; roles: …`) on stdout; return 0 (a non-zero is reported as a start failure) |
 | `svc_endpoint` | start | print the "where to connect" part of the ready line |
+
+`svc_installed_version`, `svc_runtime_dirs` and `svc_endpoint` run outside the
+watchdog and must return promptly.
 
 ### `services.d/postgres.sh` — the first adapter
 
@@ -244,19 +256,25 @@ warnings.
 - `svc_runtime_dirs`: `/var/run/postgresql`.
 - `svc_start`:
   - `initdb -D <datadir> -U <sandbox user> --auth=trust --encoding=UTF8
-    --locale=en_US.UTF-8`;
+    --locale=en_US.UTF-8 --no-sync`;
   - append to `postgresql.conf`: `listen_addresses = 'localhost'`,
     `port = 5432`, `unix_socket_directories = '/var/run/postgresql'`,
     `fsync = off`, `synchronous_commit = off`, `full_page_writes = off`,
     `dynamic_shared_memory_type = mmap`;
-  - `pg_ctl -D <datadir> -l <logfile> -w -t 30 start`.
+  - `pg_ctl -D <datadir> -l <logfile> -w -t 30 start`;
+  - unless the sandbox user is named `postgres` (whose database `initdb` already
+    made), `CREATE DATABASE "<sandbox user>" OWNER "<sandbox user>"` — what makes
+    a bare `psql` connect (D3). Cluster initialisation, like the official image's
+    default `POSTGRES_DB`, so it is here and not in `svc_provision`; a failure
+    fails `svc_start`.
 - `svc_provision`:
   - **`POSTGRES_ROLES`** — comma-separated; surrounding whitespace trimmed
     (including a `\r` from a `container.env` saved with CRLF line endings); a
     repeated name is created once; each
     name must match `^[a-z_][a-z0-9_]*$`, otherwise `WARNING: POSTGRES_ROLES:
     '<entry>' is not a valid role name — skipped`; a name equal to the sandbox
-    user is skipped silently (it already exists); each other name →
+    user is skipped silently (it already exists) — checked BEFORE the pattern,
+    because the sandbox user's name is not held to it; each other name →
     `CREATE ROLE "<name>" SUPERUSER LOGIN`.
   - **`POSTGRES_DATABASES`** — comma-separated `name` or `name:owner`, created
     after the roles; both parts must match the same pattern; owner defaults to
@@ -297,7 +315,7 @@ WARNING: sandbox.conf asks for postgres=17, this image has 16.15. Rebuild: ./bui
 |---|---|
 | `postgres=` changed, no rebuild | host: existing provenance warning; container: old server starts, mismatch warning (D10) |
 | key active, image built without it | runner warning naming `./build.sh`; shell starts without a server |
-| `initdb` / `pg_ctl` fails, or 30 s timeout | warning + log path + last 20 log lines; shell starts |
+| `initdb` / `pg_ctl` fails, the superuser's own database cannot be created, or 30 s timeout | warning + log path + last 20 log lines; shell starts |
 | invalid role / database entry, or unknown owner | warning naming the entry; other entries proceed |
 | pinned major PGDG does not carry | build fails in the postgres layer, naming the key and the available majors |
 | `AI_SERVICES` names a service with no adapter | warning; skipped |

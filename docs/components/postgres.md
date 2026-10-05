@@ -24,8 +24,8 @@ Only PGDG's `main` component is enabled, so a beta can never be installed. The b
 
 ## What happens when the container starts
 
-1. `start-services.sh prepare` runs as root and only creates directories for your user.
-2. `start-services.sh start` runs **as your user**: `initdb` creates an empty cluster in `/var/lib/ai-services/postgres`, the server starts, and the roles and databases you asked for are created.
+1. `start-services.sh prepare` runs as root, with an emptied environment, and creates directories and hands them over to your user. It starts nothing.
+2. `start-services.sh start` runs **as your user**: `initdb` creates an empty cluster in `/var/lib/ai-services/postgres`, the server starts, a database named after you is created, and then the roles and databases you asked for.
 3. One line is printed just before the prompt:
 
 ```
@@ -35,7 +35,7 @@ postgres 18.6 ready on localhost:5432 (socket /var/run/postgresql), superuser al
 | | |
 |---|---|
 | Listens on | `localhost:5432` and the socket `/var/run/postgresql` — nothing outside the container |
-| Superuser | your user, so `psql` with no arguments just works |
+| Superuser | your user, with a database of the same name — so `psql` with no arguments just works (libpq connects to the database named after the user unless told otherwise) |
 | Authentication | `trust`: any password is accepted, so the one in your app's config does not matter |
 | Collation | `en_US.UTF-8`, the official `postgres` image's default — `ORDER BY` sorts as it does in CI |
 | Durability | off (`fsync`, `synchronous_commit`, `full_page_writes`) — the data is thrown away anyway |
@@ -54,7 +54,9 @@ POSTGRES_ROLES=app_user,reporting                  # each created SUPERUSER LOGI
 POSTGRES_DATABASES=myapp_test:app_user,myapp_dev   # name, or name:owner (owner defaults to you)
 ```
 
-Names must be lowercase letters, digits and `_`. An invalid entry, or a database whose owner is not a role here, is skipped with a warning naming it; the rest are still created. A repeated name is created once.
+Names must be lowercase letters, digits and `_`. An invalid entry, or a database whose owner is not a role here, is skipped with a warning naming it; the rest are still created. A repeated name, or your own user's name, is skipped.
+
+The official `postgres` image's `POSTGRES_USER`, `POSTGRES_DB` and `POSTGRES_PASSWORD` are **not read** — a `container.env` copied from a `docker compose` setup creates nothing through them. Put the role in `POSTGRES_ROLES` and the database in `POSTGRES_DATABASES`; no password is needed. While `postgres=` is `OFF`, the sandbox ignores every `POSTGRES_*` variable.
 
 Most frameworks create their own databases — `bin/rails db:prepare`, Django's test runner, migration tools — so `POSTGRES_ROLES` is often all you need. `POSTGRES_DATABASES` is for apps that expect the database to exist already.
 
@@ -80,6 +82,8 @@ DATABASES = {"default": {"ENGINE": "django.db.backends.postgresql",
 DATABASE_URL=postgres://app_user@localhost:5432/myapp_test
 ```
 
+**Moving from a database on the host?** Remove the old settings from `container.env`. A `PGHOST`, `PGPORT`, `DATABASE_URL` or `DB_HOST` still pointing at `host.docker.internal` is read before any default, so the app keeps talking to the old server — or, in restricted mode, to nothing.
+
 ## The data is thrown away
 
 The cluster is created empty on every container start and disappears when the container exits (`sandbox.sh` runs it with `--rm`). This is for tests. Data you want to keep belongs in a database outside the sandbox.
@@ -104,6 +108,12 @@ The agent owns the server process, so it can stop and restart it:
 ```bash
 /usr/lib/postgresql/$(cat /etc/ai-containers/postgres-major)/bin/pg_ctl \
   -D /var/lib/ai-services/postgres -l /var/log/ai-services/postgres.log restart
+```
+
+From the host, `docker exec` runs as **root** unless told otherwise. Root has no role in the cluster, and `pg_ctl` refuses to run as root. Pass your UID, which is the container user's:
+
+```bash
+docker exec -it -u "$(id -u)" <container> psql
 ```
 
 ## Refreshing
