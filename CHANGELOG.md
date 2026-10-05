@@ -6,6 +6,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Added
+
+- **`ARCHITECTURE_REPO_PATH` mounts an architecture repository**, the fourth
+  host pointer beside `VAULT_PATH`, `SPECS_PATH` and `DOCS_PATH`. Export it
+  once in your shell profile and every container mounts the repository
+  read-only at `/workspace/architecture`, and sees the variable re-exported
+  at that path. It takes the `DOCS_PATH` grammar unchanged: `@<name>` for a
+  registered repo volume, a `:ro`/`:rw` suffix, and re-pointing at an
+  existing mount when the directory is already the working dir or a repo in
+  `REPOS`. The name comes from product-architecture's own tooling, whose MCP
+  server and `/check-radar`, `/create-adr` and `/validate-service` commands
+  read it as the repository root, so they work inside the container
+  unchanged. It is also listed in the qmd startup warning, like the other
+  markdown corpora.
+
+### Fixed
+
+- **A host pointer exported in your shell no longer leaks into integration
+  cases.** `tests/integration/lib.sh` neutralised a `sandbox.env` value but
+  passed an exported `DOCS_PATH`, `REPOS` or `EXTRA_MOUNTS` straight through
+  to every case that launches `sandbox.sh`, although its comment said
+  otherwise. The pointers are meant to be exported once in a host profile, so
+  the person running the corpus is the one most likely to carry them in.
+  `lib.sh` now clears the launcher keys when it is sourced, before a case can
+  set its own, and `tests/test-integration-lib.sh` checks that an exported
+  value is dropped and a case's own value still arrives.
+
 ## v0.9.17 — 2026-10-02
 
 ### Changed

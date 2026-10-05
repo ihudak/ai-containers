@@ -72,17 +72,19 @@ Your project directory is mounted for you. Anything **else** the agent should re
 | `VAULT_PATH` | **Your personal knowledge base** — markdown notes, mounted read-write at `/workspace/vault`. Obsidian is a common way to edit it, but that is your choice; the container only sees files. |
 | `SPECS_PATH` | **The shared bridge between people and agents** — specs, designs, ARDs and plans, mounted read-write at `/workspace/specs`. This is what a product manager, an architect, an engineer and a dev team hand back and forth, and what spec-driven agent workflows read. |
 | `DOCS_PATH` | A product documentation repository, mounted read-only by default |
+| `ARCHITECTURE_REPO_PATH` | An architecture repository — standards, radar, ADRs — mounted read-only by default at `/workspace/architecture` |
 | `EXTRA_MOUNTS` | Any other host paths, space-separated, `:ro` for read-only |
 
-The first three are markdown corpora. Set `qmd=ON` in `sandbox.conf` if you want the agent to search them — `sandbox.sh` warns at startup when a corpus is mounted and `qmd` was not built in.
+The first four are markdown corpora. Set `qmd=ON` in `sandbox.conf` if you want the agent to search them — `sandbox.sh` warns at startup when a corpus is mounted and `qmd` was not built in.
 
-**Set them once in your shell profile.** A vault, a docs repo and a specs repo are usually one per *person*, not one per project — so exporting them from `~/.bashrc`, `~/.zshrc` or `~/.profile` means every project you ever initialise picks them up with nothing further to do:
+**Set them once in your shell profile.** A vault, a docs repo, a specs repo and an architecture repo are usually one per *person*, not one per project — so exporting them from `~/.bashrc`, `~/.zshrc` or `~/.profile` means every project you ever initialise picks them up with nothing further to do:
 
 ```bash
 # ~/.zshrc or ~/.bashrc
 export VAULT_PATH="$HOME/notes"                 # your personal knowledge base
 export DOCS_PATH="$HOME/dev/product-docs"      # product documentation
 export SPECS_PATH="$HOME/dev/specs"            # shared specs, designs, plans
+export ARCHITECTURE_REPO_PATH="$HOME/dev/product-architecture"  # standards, radar, ADRs
 ```
 
 Do this **before** you initialise, and the first container start already has them.
@@ -149,7 +151,7 @@ You do not work in this repository. You initialise a project once, and the proje
 ```bash
 cd /path/to/myproject/.ai-containers
 $EDITOR sandbox.conf        # which languages, CLIs and tools go in the image
-$EDITOR sandbox.local.env   # VAULT_PATH / DOCS_PATH / SPECS_PATH, and REPOS if you seeded volumes
+$EDITOR sandbox.local.env   # VAULT_PATH / DOCS_PATH / SPECS_PATH / ARCHITECTURE_REPO_PATH, and REPOS if you seeded volumes
 ```
 
 Every `sandbox.conf` key is documented in [Components](components/README.md). Both files are optional on a first run — the defaults give you Node, Python, git and the agent CLIs, which is enough to start.

@@ -24,10 +24,10 @@ setup() {
   TMP="$(p_realdir "$TMP")"
   export HOME="$TMP/home"; mkdir -p "$HOME"
   export AI_CONTAINER_GROUP_INIT=clean   # non-interactive group bootstrap
-  # Isolate from any VAULT_PATH/SPECS_PATH exported in the invoking shell (e.g.
-  # a host profile, or this very repo's own dev container) so the qmd-warning
-  # cases only ever see the corpora each case sets up itself.
-  unset VAULT_PATH SPECS_PATH
+  # Isolate from any VAULT_PATH/SPECS_PATH/ARCHITECTURE_REPO_PATH exported in the
+  # invoking shell (e.g. a host profile, or this very repo's own dev container)
+  # so the qmd-warning cases only ever see the corpora each case sets up itself.
+  unset VAULT_PATH SPECS_PATH ARCHITECTURE_REPO_PATH
   CAPTURE="$TMP/docker-args.txt"; : > "$CAPTURE"
   mkdir -p "$TMP/bin"
   cat > "$TMP/bin/docker" <<DOCKER
@@ -43,7 +43,7 @@ DOCKER
   chmod +x "$TMP/bin/docker"
   export PATH="$TMP/bin:$PATH"
 }
-teardown() { rm -rf "$TMP"; unset DOCS_PATH VAULT_PATH SPECS_PATH EXTRA_MOUNTS SANDBOX_CONF REPOS; }
+teardown() { rm -rf "$TMP"; unset DOCS_PATH VAULT_PATH SPECS_PATH ARCHITECTURE_REPO_PATH EXTRA_MOUNTS SANDBOX_CONF REPOS; }
 
 # run sandbox.sh restricted <primary>; sets RC and writes stderr to $ERR.
 run_sandbox() {

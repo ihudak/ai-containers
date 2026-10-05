@@ -580,6 +580,40 @@ esac
   && t_fail "an already-exported empty IT_DOCKER_HOST must not trigger a docker subprocess (stderr: $(cat "$TMP/dh-poison2.err"))" \
   || t_pass "an already-exported empty IT_DOCKER_HOST skips the docker subprocess entirely"
 
+# ── A developer's exported launcher config does not reach a case ──────────────
+# The host pointers are meant to be exported once in a host profile, so the
+# person running the corpus is the one most likely to carry them into it. Same
+# real launcher_run as above; the fake sandbox.sh reports what arrived. The case
+# sets REPOS itself AFTER sourcing lib.sh, and that value MUST arrive — a fix
+# that blanked every key would pass the first two assertions and break every
+# case that configures the launcher.
+LE_FAKE_REPO="$TMP/le-fakerepo"
+mkdir -p "$LE_FAKE_REPO/tests"
+ln -sf "$IT_LIB_DIR" "$LE_FAKE_REPO/tests/integration"
+: > "$LE_FAKE_REPO/build.sh"
+: > "$LE_FAKE_REPO/sandbox.conf"
+cat > "$LE_FAKE_REPO/sandbox.sh" <<'LEEOF'
+#!/usr/bin/env bash
+for k in DOCS_PATH ARCHITECTURE_REPO_PATH REPOS; do printf '%s=%s\n' "$k" "${!k-<unset>}"; done
+LEEOF
+chmod +x "$LE_FAKE_REPO/sandbox.sh"
+out="$(env -u DOCKER_HOST \
+    DOCS_PATH=/host/docs ARCHITECTURE_REPO_PATH=/host/arch REPOS=host-repo:ro \
+    IT_RUN_ID="unit-le-$RANDOM" IT_IMAGE=unit-img IT_NET=unit-net \
+    IT_SCRATCH="$TMP/scratch-le-$RANDOM" IT_LABEL="ai-containers.it-run=unit-le" \
+    IT_REAL_DOCKER="$TRUE_STUB" IT_DOCKER_HOST="" \
+    LE_LIB="$LE_FAKE_REPO/tests/integration/lib.sh" \
+    bash -c '. "$LE_LIB"; export REPOS="case-own:ro"; launcher_run open >/dev/null 2>&1; cat "$IT_LAUNCH_OUT"')"
+grep -qx 'DOCS_PATH=' <<< "$out" \
+  && t_pass "an exported DOCS_PATH does not reach a case's launcher" \
+  || t_fail "an exported DOCS_PATH does not reach a case's launcher (got: '$out')"
+grep -qx 'ARCHITECTURE_REPO_PATH=' <<< "$out" \
+  && t_pass "an exported ARCHITECTURE_REPO_PATH does not reach a case's launcher" \
+  || t_fail "an exported ARCHITECTURE_REPO_PATH does not reach a case's launcher (got: '$out')"
+grep -qx 'REPOS=case-own:ro' <<< "$out" \
+  && t_pass "a value the case sets itself still reaches the launcher" \
+  || t_fail "a value the case sets itself still reaches the launcher (got: '$out')"
+
 
 # ── forensics_report ────────────────────────────────────────────────────────────
 # The reverse-mapped NAME can be wrong on a shared CDN address; the IP and port

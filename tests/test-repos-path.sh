@@ -43,7 +43,7 @@ setup() {
   export AI_CONTAINER_GROUP_INIT=clean   # non-interactive group bootstrap
   # Isolate from anything the invoking shell exports — a host profile, or this
   # repo's own dev container — so each case sees only what it sets itself.
-  unset VAULT_PATH SPECS_PATH DOCS_PATH REPOS EXTRA_MOUNTS REPOS_PATH
+  unset VAULT_PATH SPECS_PATH DOCS_PATH ARCHITECTURE_REPO_PATH REPOS EXTRA_MOUNTS REPOS_PATH
   CAPTURE="$TMP/docker-args.txt"; : > "$CAPTURE"
   mkdir -p "$TMP/bin"
   cat > "$TMP/bin/docker" <<DOCKER

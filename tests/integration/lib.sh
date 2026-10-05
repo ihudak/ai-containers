@@ -20,6 +20,21 @@ IT_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IT_REPO_DIR="$(cd "$IT_LIB_DIR/../.." && pwd)"
 [[ -f "$IT_REPO_DIR/build.sh" ]] || IT_REPO_DIR="$(cd "$IT_LIB_DIR/../../base" && pwd)"
 
+# The host-launcher keys a case may set for itself before launcher_run. A
+# developer's exported value for any of them must not perturb a case — and the
+# host pointers (VAULT_PATH, SPECS_PATH, DOCS_PATH, ARCHITECTURE_REPO_PATH) are
+# MEANT to be exported once in a host profile, so the person running the corpus
+# is the one most likely to have them set. Cleared HERE, at source time, because
+# every case sources lib.sh before it sets anything: a value present now can only
+# have been inherited. launcher_run cannot do it — by then the case's own value
+# and an inherited one look identical. (Until 2026-10-05 only launcher_run's
+# set-but-empty pass existed, which neutralises sandbox.env and lets every
+# exported value straight through to every case that launches sandbox.sh.)
+IT_LAUNCHER_ENV_KEYS="EXTRA_MOUNTS REPOS VAULT_PATH SPECS_PATH DOCS_PATH ARCHITECTURE_REPO_PATH \
+PREVIEW_PORTS SANDBOX_MODE SANDBOX_WORKDIR SANDBOX_ENV_FILE SELF_HEALING_ENABLED"
+for _it_k in $IT_LAUNCHER_ENV_KEYS; do unset "$_it_k"; done
+unset _it_k
+
 IT_LABEL="${IT_LABEL:-ai-containers.it-run=$IT_RUN_ID}"
 IT_SCRATCH="${IT_SCRATCH:-$HOME/.cache/ai-containers-it/$IT_RUN_ID}"
 IT_CONNECT_TIMEOUT="${IT_CONNECT_TIMEOUT:-5}"
@@ -428,13 +443,13 @@ launcher_conf() {  # $*=key=value overrides (the variant's are added first, auto
 launcher_run() {  # $1=mode [$2=primary]
   launcher_prepare || return 1
   local mode="$1" primary="${2:-}" k
-  # A developer's exported EXTRA_MOUNTS, or a sandbox.env sitting in the repo,
-  # must not perturb a case. sandbox-common.sh's load_env_defaults treats
-  # SET-BUT-EMPTY as set (`[[ -n "${!key+x}" ]] && continue`), so exporting
-  # empty is precisely the neutraliser it already honours — and only for keys
-  # this case did not set itself.
-  for k in EXTRA_MOUNTS REPOS VAULT_PATH SPECS_PATH DOCS_PATH PREVIEW_PORTS \
-           SANDBOX_MODE SANDBOX_WORKDIR SANDBOX_ENV_FILE SELF_HEALING_ENABLED; do
+  # A sandbox.env sitting in the repo must not perturb a case either.
+  # sandbox-common.sh's load_env_defaults treats SET-BUT-EMPTY as set
+  # (`[[ -n "${!key+x}" ]] && continue`), so exporting empty is precisely the
+  # neutraliser it already honours — and only for keys this case did not set
+  # itself. (The developer's exported values were cleared when lib.sh was
+  # sourced; see IT_LAUNCHER_ENV_KEYS.)
+  for k in $IT_LAUNCHER_ENV_KEYS; do
     [[ -n "${!k+x}" ]] || export "$k="
   done
   IT_LAUNCH_NAME="it-launch-$$-$RANDOM"

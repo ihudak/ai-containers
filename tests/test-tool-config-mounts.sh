@@ -46,7 +46,7 @@ setup() {
   # Pin the in-container username so the expected mount targets are stable
   # (sandbox.sh derives dev_home from SANDBOX_USER, defaulting to `id -un`).
   export SANDBOX_USER=dev
-  unset VAULT_PATH SPECS_PATH DOCS_PATH EXTRA_MOUNTS REPOS AI_CONTAINER_GROUP
+  unset VAULT_PATH SPECS_PATH DOCS_PATH ARCHITECTURE_REPO_PATH EXTRA_MOUNTS REPOS AI_CONTAINER_GROUP
 
   # Synthetic descriptors: alpha/beta are normally installed tools, gamma is
   # provided from outside the image and splits its state over two dirs.

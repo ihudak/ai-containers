@@ -215,7 +215,7 @@ pw_setup() {  # $1 = sandbox.conf body
   HOME="$(p_realdir "$HOME")"; export HOME
   export AI_CONTAINER_GROUP_INIT=clean
   export SANDBOX_USER=dev
-  unset VAULT_PATH SPECS_PATH DOCS_PATH EXTRA_MOUNTS REPOS AI_CONTAINER_GROUP CONTAINER_SHM_SIZE
+  unset VAULT_PATH SPECS_PATH DOCS_PATH ARCHITECTURE_REPO_PATH EXTRA_MOUNTS REPOS AI_CONTAINER_GROUP CONTAINER_SHM_SIZE
 
   export SANDBOX_CONF="$TMP/sandbox.conf"
   printf '# schema-version: 4\n%s\n' "$1" > "$SANDBOX_CONF"

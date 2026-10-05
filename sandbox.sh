@@ -148,6 +148,13 @@ Environment variables:
                       at that mount instead of mounting it again, and inherits its mode. So a
                       DOCS_PATH exported once on the host does not collide with the project that
                       happens to BE the docs repo. To edit docs otherwise, use :rw.
+  ARCHITECTURE_REPO_PATH
+                      Host architecture repo (standards, radar, ADRs) mounted READ-ONLY at
+                      /workspace/architecture (also re-exported as
+                      ARCHITECTURE_REPO_PATH=/workspace/architecture). Same grammar and
+                      re-point rules as DOCS_PATH: @<name> (→ /workspace/<name>), a :ro/:rw
+                      suffix (default :ro), and the existing mount when that directory is
+                      already the working dir or a repo in REPOS.
   SANDBOX_ENV_FILE    Path to a KEY=VALUE env-file injected into the container
                       (default: <script_dir>/container.env if present). For
                       in-container app env (DB_HOST, REDIS_URL, ...). Not for secrets.
@@ -318,11 +325,12 @@ normalise_git_url() {
 
 # Is this host directory already mounted in this container under some name?
 #
-# A host pointer — VAULT_PATH, SPECS_PATH, DOCS_PATH — names a directory. That
-# same directory may already be attached as the primary workspace, or as a repo
-# volume listed in REPOS. When it is, mounting it a second time is at best a
-# duplicate and at worst a refusal to start: the name each pointer wants
-# (/workspace/docs) can already be taken by the repo of the same name.
+# A host pointer — VAULT_PATH, SPECS_PATH, DOCS_PATH, ARCHITECTURE_REPO_PATH —
+# names a directory. That same directory may already be attached as the primary
+# workspace, or as a repo volume listed in REPOS. When it is, mounting it a
+# second time is at best a duplicate and at worst a refusal to start: the name
+# each pointer wants (/workspace/docs) can already be taken by the repo of the
+# same name.
 #
 # Reported 2026-08-21 by a user whose DOCS_PATH is exported once on the host for
 # every project, and whose docs project is itself attached as repo `docs`:
@@ -414,9 +422,10 @@ run_container() {
   local -A repos_used=()
   local -A repo_mode=()
   # Resolved host source of each mounted PATH-backed repo, keyed by repo name.
-  # A host pointer (VAULT_PATH/SPECS_PATH/DOCS_PATH) naming a directory that is
-  # ALREADY mounted under some repo name must re-point at that mount rather than
-  # mount it twice or refuse to start — see pointer_already_mounted_as below.
+  # A host pointer (VAULT_PATH/SPECS_PATH/DOCS_PATH/ARCHITECTURE_REPO_PATH)
+  # naming a directory that is ALREADY mounted under some repo name must
+  # re-point at that mount rather than mount it twice or refuse to start — see
+  # pointer_already_mounted_as below.
   local -A repo_source_real=()
   # Same, for GIT-sourced repos: the registry holds a URL, so identity is proven
   # by comparing the pointer directory's own `origin` against it.
@@ -504,11 +513,13 @@ run_container() {
   fi
 
   # ── Host-pointer @name desugar ───────────────────────────────────────────────
-  # DOCS_PATH/SPECS_PATH may name a registered repo volume (@name); treat it like a
-  # REPOS entry so the loop below mounts it at /workspace/<name> (reusing an existing
-  # entry instead of double-mounting). Host-path forms are handled after the loop.
+  # DOCS_PATH/SPECS_PATH/ARCHITECTURE_REPO_PATH may name a registered repo volume
+  # (@name); treat it like a REPOS entry so the loop below mounts it at
+  # /workspace/<name> (reusing an existing entry instead of double-mounting).
+  # Host-path forms are handled after the loop.
   local docs_kind="" docs_src="" docs_mode=""
   local specs_kind="" specs_src="" specs_mode=""
+  local arch_kind="" arch_src="" arch_mode=""
   local PTR_KIND PTR_SRC PTR_MODE _entry
   if [[ -n "${DOCS_PATH:-}" ]]; then
     parse_pointer_spec "$DOCS_PATH" ro 1
@@ -523,6 +534,14 @@ run_container() {
     specs_kind="$PTR_KIND"; specs_src="$PTR_SRC"; specs_mode="$PTR_MODE"
     if [[ "$specs_kind" == "volume" ]]; then
       _entry="$(pointer_repo_entry "$specs_src" "$specs_mode" ${repos_list[@]+"${repos_list[@]}"})"
+      [[ -n "$_entry" ]] && repos_list+=("$_entry")
+    fi
+  fi
+  if [[ -n "${ARCHITECTURE_REPO_PATH:-}" ]]; then
+    parse_pointer_spec "$ARCHITECTURE_REPO_PATH" ro 1
+    arch_kind="$PTR_KIND"; arch_src="$PTR_SRC"; arch_mode="$PTR_MODE"
+    if [[ "$arch_kind" == "volume" ]]; then
+      _entry="$(pointer_repo_entry "$arch_src" "$arch_mode" ${repos_list[@]+"${repos_list[@]}"})"
       [[ -n "$_entry" ]] && repos_list+=("$_entry")
     fi
   fi
@@ -731,6 +750,47 @@ run_container() {
         fi
       else
         printf 'WARNING: DOCS_PATH is set but directory does not exist: %s\n' "$docs_src" >&2
+      fi
+    fi
+  fi
+
+  # ── Architecture repo → /workspace/architecture (grounding), /workspace/<name>
+  #    (@name), or the working-dir mount when it IS the working dir ─────────────
+  # Same grammar and re-point rules as DOCS_PATH, and read-only by default for
+  # the same reason: workflows ground against it. The NAME comes from
+  # product-architecture's own tooling (its MCP server and slash commands read
+  # ARCHITECTURE_REPO_PATH as the repository root), so it is re-exported under
+  # that name, at that root, for them to work in here unchanged.
+  local arch_mount_flags=()
+  local arch_env_args=()
+  if [[ -n "${ARCHITECTURE_REPO_PATH:-}" ]]; then
+    if [[ "$arch_kind" == "volume" ]]; then
+      arch_env_args+=(-e "ARCHITECTURE_REPO_PATH=/workspace/$arch_src")
+      qmd_corpora+=("ARCHITECTURE_REPO_PATH")
+    else
+      local arch_real
+      arch_real="$(resolve_path "${arch_src/#\~/$HOME}")"
+      if [[ -n "$primary_path" && "$arch_real" == "$primary_path" ]]; then
+        # It IS the working dir: already mounted rw at $workdir, so the :ro
+        # default and any suffix are moot — authoring an ADR there just works.
+        arch_env_args+=(-e "ARCHITECTURE_REPO_PATH=$workdir")
+        qmd_corpora+=("ARCHITECTURE_REPO_PATH")
+      elif [[ -d "$arch_real" ]]; then
+        local arch_at
+        if arch_at="$(pointer_already_mounted_as "$arch_real")"; then
+          arch_env_args+=(-e "ARCHITECTURE_REPO_PATH=/workspace/$arch_at")
+          qmd_corpora+=("ARCHITECTURE_REPO_PATH")
+        elif [[ -n "${repos_used[architecture]:-}" ]]; then
+          printf "ERROR: name 'architecture' is used by %s, but ARCHITECTURE_REPO_PATH also mounts at /workspace/architecture.\n" "${repos_used[architecture]}" >&2
+          printf "       They are different directories; rename the repo or point ARCHITECTURE_REPO_PATH elsewhere.\n" >&2
+          exit 1
+        else
+          arch_mount_flags+=(-v "$arch_real:/workspace/architecture:$arch_mode")
+          arch_env_args+=(-e ARCHITECTURE_REPO_PATH=/workspace/architecture)
+          qmd_corpora+=("ARCHITECTURE_REPO_PATH")
+        fi
+      else
+        printf 'WARNING: ARCHITECTURE_REPO_PATH is set but directory does not exist: %s\n' "$arch_src" >&2
       fi
     fi
   fi
@@ -1067,12 +1127,14 @@ run_container() {
     ${vault_env_args[@]+"${vault_env_args[@]}"} \
     ${specs_env_args[@]+"${specs_env_args[@]}"} \
     ${docs_env_args[@]+"${docs_env_args[@]}"} \
+    ${arch_env_args[@]+"${arch_env_args[@]}"} \
     ${output_mount_flags[@]+"${output_mount_flags[@]}"} \
     ${repo_mount_flags[@]+"${repo_mount_flags[@]}"} \
     ${extra_mount_flags[@]+"${extra_mount_flags[@]}"} \
     ${vault_mount_flags[@]+"${vault_mount_flags[@]}"} \
     ${specs_mount_flags[@]+"${specs_mount_flags[@]}"} \
     ${docs_mount_flags[@]+"${docs_mount_flags[@]}"} \
+    ${arch_mount_flags[@]+"${arch_mount_flags[@]}"} \
     ${config_mount_flags[@]+"${config_mount_flags[@]}"} \
     -w "$workdir" \
     "$image_name"
