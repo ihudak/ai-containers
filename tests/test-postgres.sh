@@ -344,7 +344,8 @@ grep -qE '^(services\.d|start-services\.sh)' "$REPO_DIR/.dockerignore" \
   || pass "E .dockerignore keeps the runner and its adapters in the build context"
 
 # ── Part G: shipping to projects ───────────────────────────────────────────────
-( source "$REPO_DIR/shared-files.sh"; printf '%s\n' "${AI_CONTAINERS_SHARED_FILES[@]}" ) | grep -qx 'start-services.sh' \
+shared_list="$( source "$REPO_DIR/shared-files.sh"; printf '%s\n' "${AI_CONTAINERS_SHARED_FILES[@]}" )"
+grep -qx 'start-services.sh' <<<"$shared_list" \
   && pass "G start-services.sh is a shared file (a project's build COPYs it)" \
   || fail "G start-services.sh is a shared file"
 payload="$(bash -c 'source "$1/sandbox-common.sh" >/dev/null 2>&1; ai_containers_payload_files "$1"' _ "$REPO_DIR")"
