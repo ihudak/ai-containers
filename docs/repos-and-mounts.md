@@ -127,7 +127,7 @@ VAULT_PATH=/path/to/obsidian-vault \
 ./sandbox.sh restricted /path/to/repo
 ```
 
-When any markdown corpus (`VAULT_PATH`, `SPECS_PATH`, or `DOCS_PATH`) is mounted, set `qmd=ON` in `sandbox.conf` and rebuild — `sandbox.sh` prints one startup warning naming the mounted corpora if qmd was not baked into the image. `qmd` is the on-device markdown search engine [@tobilu/qmd](https://github.com/tobi/qmd), installed globally via npm.
+When any markdown corpus (`VAULT_PATH`, `SPECS_PATH`, `DOCS_PATH`, or `ARCHITECTURE_REPO_PATH`) is mounted, set `qmd=ON` in `sandbox.conf` and rebuild — `sandbox.sh` prints one startup warning naming the mounted corpora if qmd was not baked into the image. `qmd` is the on-device markdown search engine [@tobilu/qmd](https://github.com/tobi/qmd), installed globally via npm.
 
 ## Mounting a docs repository (read-only by default)
 
@@ -142,9 +142,22 @@ Export `DOCS_PATH` in your host shell profile to make it the default for every c
 
 `DOCS_PATH` accepts a small grammar: `@<name>` mounts a registered repo volume at `/workspace/<name>` (fast on macOS; see [Shared repo volumes](#shared-repo-volumes-native-speed--reposh-and-repos)), and a trailing `:ro`/`:rw` sets the mount mode (default `:ro`). To **edit** the docs, either mount the docs repo as the working directory or pass `DOCS_PATH=/path:rw`.
 
-> **A pointer never fights a mount that is already there.** If the directory `DOCS_PATH` names is already attached to the container — as the working directory, or as a repo listed in `REPOS` — the pointer **re-points at that mount** instead of mounting it a second time, and inherits that mount's mode. So exporting `DOCS_PATH` once on your host stays safe even for the project that *is* the docs repository: attached `:rw`, the docs are writable, which is correct when that repo is what you are working in. The `:ro` default applies to a docs repo mounted *by the pointer*, not to one you deliberately attached for editing. `VAULT_PATH` and `SPECS_PATH` behave the same way.
+> **A pointer never fights a mount that is already there.** If the directory `DOCS_PATH` names is already attached to the container — as the working directory, or as a repo listed in `REPOS` — the pointer **re-points at that mount** instead of mounting it a second time, and inherits that mount's mode. So exporting `DOCS_PATH` once on your host stays safe even for the project that *is* the docs repository: attached `:rw`, the docs are writable, which is correct when that repo is what you are working in. The `:ro` default applies to a docs repo mounted *by the pointer*, not to one you deliberately attached for editing. `VAULT_PATH`, `SPECS_PATH` and `ARCHITECTURE_REPO_PATH` behave the same way.
 >
 > Identity is proven, not guessed: only a **path-sourced** repo has a host directory to compare, and both sides are resolved first. A genuinely different directory colliding on the same name is still refused, and the error now says the two are different so you can rename the repo or re-point the variable.
+
+## Mounting an architecture repository (read-only by default)
+
+Set `ARCHITECTURE_REPO_PATH` to a host clone of your architecture repository — standards, the technology radar, ADRs — to mount it **read-only** at `/workspace/architecture`. It is re-exported as `ARCHITECTURE_REPO_PATH=/workspace/architecture` inside the container, so architecture-aware workflows ground against it at a stable path.
+
+```bash
+ARCHITECTURE_REPO_PATH=/path/to/product-architecture \
+./sandbox.sh restricted /path/to/repo
+```
+
+The variable name is not this project's invention: product-architecture's own MCP server and its `/check-radar`, `/create-adr` and `/validate-service` commands read `ARCHITECTURE_REPO_PATH` as the repository root, so they work inside the container with no further setup.
+
+It takes exactly the `DOCS_PATH` grammar — `@<name>` for a registered repo volume at `/workspace/<name>`, a trailing `:ro`/`:rw` (default `:ro`) — and re-points at an existing mount in the same way. To author an ADR, make the architecture repo the working directory, which is writable, or pass `ARCHITECTURE_REPO_PATH=/path:rw`.
 
 ## Mounting a specs repository
 

@@ -265,7 +265,7 @@ while IFS= read -r v; do
   # it was found. A check that can be satisfied by the checker is not a check.
   (cd "$ENGINE_DIR" && git grep -q "$v" -- '*.sh' Dockerfile ':!tests/test-docs.sh' 2>/dev/null) \
     || { fail "the docs describe \$$v, which no script or Dockerfile reads"; unread=$((unread+1)); }
-done < <(grep -ohE '\b(AI_[A-Z0-9_]+|CONTAINER_(CPUS|MEMORY)|REPOS|REPO_BACKEND|VAULT_PATH|SPECS_PATH|DOCS_PATH|EXTRA_MOUNTS|NO_CACHE|PREVIEW_PORTS|IMAGE_NAME|GITHUB_TOKEN)\b' "${PAGES[@]/#/$ENGINE_DIR/}" | sort -u)
+done < <(grep -ohE '\b(AI_[A-Z0-9_]+|CONTAINER_(CPUS|MEMORY)|REPOS|REPO_BACKEND|VAULT_PATH|SPECS_PATH|DOCS_PATH|ARCHITECTURE_REPO_PATH|EXTRA_MOUNTS|NO_CACHE|PREVIEW_PORTS|IMAGE_NAME|GITHUB_TOKEN)\b' "${PAGES[@]/#/$ENGINE_DIR/}" | sort -u)
 (( unread == 0 )) && pass "every environment variable the documentation describes is read by the code"
 
 # ── every backlog entry's LATEST heading carries a status ────────────────────

@@ -889,7 +889,7 @@ export HOME="$RTMP/home"; mkdir -p "$HOME/.config/dtctl"; echo hostcfg > "$HOME/
 scaffold_dir "mkdir the fake HOME" "$HOME/.config/dtctl"
 scaffold_file "seed the fake HOME" "$HOME/.config/dtctl/config"
 export AI_CONTAINER_GROUP_INIT=clean
-unset VAULT_PATH SPECS_PATH DOCS_PATH
+unset VAULT_PATH SPECS_PATH DOCS_PATH ARCHITECTURE_REPO_PATH
 unset TOOLS_D_DIR   # earlier sections in this file point it at a synthetic foo/bar
                     # dir; sandbox.sh must resolve the real repo tools.d (dtctl/dtmgd).
 RCONF="$RTMP/sandbox.conf"
