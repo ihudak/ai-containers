@@ -33,24 +33,16 @@
 #       automatically.
 #
 diff --git a/entrypoint.sh b/entrypoint.sh
-index d4817a6..4238b98 100755
 --- a/entrypoint.sh
 +++ b/entrypoint.sh
-@@ -306,14 +306,16 @@ case "$mode" in
-     link_default_ruby
-     run_agent_tools_reconcile
-     link_agent_tools
-     run_agent_skill_install
+@@ -355,7 +355,9 @@ case "$mode" in
+     run_services
  
      exec capsh \
 -      --drop=cap_net_admin,cap_net_raw \
 +      --keep=1 \
-       --user="$sandbox_user" \
 +      --inh=cap_net_raw \
 +      --addamb=cap_net_raw \
+       --user="$sandbox_user" \
        -- -l
-     ;;
-   *)
-     printf 'Unsupported DEV_CONTAINER_MODE: %s\n' "$mode" >&2
-     exit 1
      ;;

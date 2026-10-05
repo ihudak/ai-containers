@@ -6,7 +6,6 @@
 #       at all, only a login shell sourcing /etc/profile.d/ai-tools.sh could.
 #
 diff --git a/entrypoint.sh b/entrypoint.sh
-index 25b5795..ae553dd 100755
 --- a/entrypoint.sh
 +++ b/entrypoint.sh
 @@ -68,10 +68,7 @@ run_agent_tools_reconcile() {
@@ -20,4 +19,4 @@ index 25b5795..ae553dd 100755
 +  : # MUTATION: link-agent-tools.sh is never invoked
  }
  
- # Create the sandbox user at startup with the host user's name, UID, and GID so
+ # Start the in-container database servers sandbox.conf enabled (AI_SERVICES).
