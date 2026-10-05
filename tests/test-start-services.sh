@@ -27,8 +27,18 @@ svc_start() {
   printf 'start|%s|%s\n' "$1" "$2" >> "$FAKE_TRACE"
   case "${FAKE_START:-ok}" in
     ok)   printf 'fake server log line\n' ;;
+    slow) sleep 1; printf 'fake server log line\n' ;;
     fail) printf 'boom: disk on fire\n'; return 1 ;;
     hang) sleep 30 & printf '%s' "$!" > "$FAKE_PIDFILE"; wait ;;
+    # A child that IGNORES TERM, as a server mid-shutdown or a stuck client can:
+    # the group's TERM kills this function's shell, not the child.
+    hang-ignore-term) ( trap '' TERM; exec sleep 30 ) & printf '%s' "$!" > "$FAKE_PIDFILE"; wait ;;
+    # The function's OWN shell notes TERM and keeps waiting, so a trace line
+    # proves TERM arrived and only a KILL can end it.
+    hang-shrug-term)
+      trap 'printf "TERM\n" >> "$FAKE_TRACE"' TERM
+      sleep 30 & printf '%s' "$!" > "$FAKE_PIDFILE"
+      while ! wait; do :; done ;;
   esac
 }
 svc_provision() {
@@ -66,6 +76,16 @@ run_runner() {  # $1 = phase, $2… = extra VAR=value → sets OUT (stdout+stder
   RC=$?
 }
 has()  { grep -qF -- "$1" <<<"$OUT"; }
+# gone <pid> — dead within ~2 s. Polled, not one `kill -0`: a killed child stays
+# a zombie, which `kill -0` still finds, until whoever inherited it reaps it.
+gone() {
+  local tries=20
+  while (( tries-- > 0 )); do
+    kill -0 "$1" 2>/dev/null || return 0
+    sleep 0.1
+  done
+  return 1
+}
 
 # T1 — the happy path: ready line, svc_start's chatter in the log not on screen.
 reset; run_runner start AI_SERVICES=fake=ON
@@ -182,11 +202,48 @@ for mode in FAKE_START FAKE_PROVISION; do
     && pass "T14 $mode=hang is cut off at AI_SERVICES_TIMEOUT (${took}s) and reported" \
     || fail "T14 $mode=hang watchdog (rc=$RC, took=${took}s, out=$OUT)"
   cpid="$(cat "$TMP/childpid" 2>/dev/null)"
-  [[ -n "$cpid" ]] && ! kill -0 "$cpid" 2>/dev/null \
+  [[ -n "$cpid" ]] && gone "$cpid" \
     && pass "T14 $mode=hang: the hung child process is dead afterwards" \
     || fail "T14 $mode=hang: child '$cpid' survived the watchdog"
   [[ -n "$cpid" ]] && kill -KILL "$cpid" 2>/dev/null
 done
+
+# T14b — a child that ignores TERM. The group's TERM kills the function's own
+# shell, `wait` returns, and the watchdog — with its KILL still pending — is
+# stopped; so the KILL must not live only in the watchdog.
+reset; rm -f "$TMP/childpid"; started=$SECONDS
+run_runner start AI_SERVICES=fake=ON FAKE_START=hang-ignore-term AI_SERVICES_TIMEOUT=1
+took=$((SECONDS - started))
+[[ "$RC" -eq 0 ]] && has "WARNING: fake did not become ready within 1s" && (( took < 10 )) \
+  && pass "T14b a hang whose child ignores TERM is cut off (${took}s) and reported" \
+  || fail "T14b TERM-ignoring hang (rc=$RC, took=${took}s, out=$OUT)"
+cpid="$(cat "$TMP/childpid" 2>/dev/null)"
+[[ -n "$cpid" ]] && gone "$cpid" \
+  && pass "T14b the child that ignored TERM is dead afterwards (KILLed)" \
+  || fail "T14b child '$cpid' ignored TERM and survived the watchdog"
+[[ -n "$cpid" ]] && kill -KILL "$cpid" 2>/dev/null
+
+# T14c — no job control: `set -m` creates no process group (simulated with an
+# exported function that swallows -m/+m), so there is no group to signal. The
+# watchdog must fall back to the PID, or `wait` blocks for the whole hang. The
+# function's shell notes TERM and keeps waiting (hang-shrug-term), so TERM and
+# KILL are each observed: the trace line is the TERM fallback, and the deadline
+# being met at all is the KILL fallback.
+reset; rm -f "$TMP/childpid"; started=$SECONDS
+nojc_set() { case "${1:-}" in -m|+m) return 0 ;; esac; builtin set "$@"; }
+OUT="$( set() { nojc_set "$@"; }; export -f set nojc_set
+        env AI_SERVICES_DIR="$ADAPTERS" AI_SERVICES_STATE_ROOT="$TMP/state" AI_SERVICES_LOG_ROOT="$TMP/log" \
+            FAKE_TRACE="$TRACE" FAKE_PIDFILE="$TMP/childpid" FAKE_RUNTIME_DIR="$TMP/run/fake" \
+            AI_SERVICES=fake=ON FAKE_START=hang-shrug-term AI_SERVICES_TIMEOUT=1 bash "$RUNNER" start 2>&1 )"; RC=$?
+took=$((SECONDS - started))
+[[ "$RC" -eq 0 ]] && has "WARNING: fake did not become ready within 1s" && (( took < 10 )) \
+  && pass "T14c with no process group the watchdog KILLs the PID: cut off (${took}s) and reported" \
+  || fail "T14c no job control (rc=$RC, took=${took}s, out=$OUT)"
+grep -qx 'TERM' "$TRACE" \
+  && pass "T14c with no process group the PID is sent TERM first" \
+  || fail "T14c no TERM reached the PID (trace: $(cat "$TRACE"))"
+cpid="$(cat "$TMP/childpid" 2>/dev/null)"
+[[ -n "$cpid" ]] && kill -KILL "$cpid" 2>/dev/null
 
 # T15 — nothing asked for: nothing said.
 reset; run_runner start AI_SERVICES=
@@ -207,6 +264,13 @@ reset; run_runner start AI_SERVICES=fake=ON AI_SERVICES_TIMEOUT=abc
 has "fake 1.2 ready on fake:1234" \
   && pass "T18 a non-numeric AI_SERVICES_TIMEOUT falls back to the default" \
   || fail "T18 non-numeric timeout (out=$OUT)"
+# 0 is numeric and means "expire at once": every server would be reported as
+# not ready. A one-second start makes that deterministic rather than a race
+# between the watchdog's `sleep 0` and a fast fake.
+reset; run_runner start AI_SERVICES=fake=ON AI_SERVICES_TIMEOUT=0 FAKE_START=slow
+has "fake 1.2 ready on fake:1234" && ! has "did not become ready" \
+  && pass "T18 AI_SERVICES_TIMEOUT=0 falls back to the default too" \
+  || fail "T18 zero timeout (out=$OUT)"
 
 # T19 — an adapter that fails to LOAD is named as such (not as "incomplete").
 reset; run_runner start AI_SERVICES=broken=ON

@@ -25,7 +25,9 @@ SERVICES_DIR="${AI_SERVICES_DIR:-/etc/ai-containers/services.d}"
 STATE_ROOT="${AI_SERVICES_STATE_ROOT:-/var/lib/ai-services}"
 LOG_ROOT="${AI_SERVICES_LOG_ROOT:-/var/log/ai-services}"
 TIMEOUT="${AI_SERVICES_TIMEOUT:-60}"
-[[ "$TIMEOUT" =~ ^[0-9]+$ ]] || TIMEOUT=60
+# A positive whole number of seconds. 0 is numeric but would expire at once and
+# report every server as not ready, so it falls back too.
+[[ "$TIMEOUT" =~ ^[1-9][0-9]*$ ]] || TIMEOUT=60
 # A name becomes a PATH ($SERVICES_DIR/<name>.sh), so it is held to a pattern
 # with no `/` and no `.` — nothing can name a file outside services.d.
 NAME_RE='^[a-z][a-z0-9-]*$'
@@ -42,6 +44,16 @@ warn() { printf 'WARNING: %s\n' "$*" >&2; }
 # (initdb, pg_ctl -w, psql), and a hang lives in a child, so the command gets its
 # own process group (`set -m`) and expiry signals the whole group, not the PID.
 # Not timeout(1): this file's tests run on macOS hosts, which do not ship it.
+#
+# Two ways the group signal can miss, each handled:
+#   - no group at all: without job control `set -m` makes none, `kill -- -PID`
+#     finds nothing, and `wait` would sit out the whole hang. The watchdog then
+#     signals the PID itself — the command's own shell, still unreaped here, so
+#     the PID cannot have been reused.
+#   - a child that ignores TERM: the group's TERM kills the command's shell,
+#     `wait` returns, and stopping the watchdog cancels its pending KILL. So on
+#     expiry the KILL is sent again after `wait`, to the group only — the PID has
+#     been reaped by then and may already belong to something else.
 run_bounded() {
   local secs="$1"; shift
   local flag; flag="$(mktemp "${TMPDIR:-/tmp}/ai-services.XXXXXX")" || return 125
@@ -51,15 +63,19 @@ run_bounded() {
   set +m
   ( sleep "$secs"
     printf 'x' > "$flag"
-    kill -TERM -- "-$cmd_pid" 2>/dev/null
+    kill -TERM -- "-$cmd_pid" 2>/dev/null || kill -TERM "$cmd_pid" 2>/dev/null
     sleep 1
-    kill -KILL -- "-$cmd_pid" 2>/dev/null ) >/dev/null 2>&1 &
+    kill -KILL -- "-$cmd_pid" 2>/dev/null || kill -KILL "$cmd_pid" 2>/dev/null ) >/dev/null 2>&1 &
   local dog_pid=$!
   wait "$cmd_pid"
   local rc=$?
   kill -TERM "$dog_pid" 2>/dev/null
   wait "$dog_pid" 2>/dev/null
-  if [[ -s "$flag" ]]; then rm -f "$flag"; return 124; fi
+  if [[ -s "$flag" ]]; then
+    kill -KILL -- "-$cmd_pid" 2>/dev/null
+    rm -f "$flag"
+    return 124
+  fi
   rm -f "$flag"
   return "$rc"
 }
