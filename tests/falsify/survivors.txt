@@ -684,3 +684,36 @@ ai-containers-report.sh:return-flip:0f5819f8e8c518d71a8e707f2af9cf2c0e90ce69
   .ai-containers directory prints nothing either way.
   Same shape as entry 16 in this ledger, and the same caveat applies — adding
   `set -e` to this file would give the status a reader and make it killable.
+
+# ── 18 ────────────────────────────────────────────────────────────────────────
+GROUP: start-services.sh runs without errexit, so the exit status of its skip paths is read by nothing
+start-services.sh:return-flip:d42508315cc707a9a61fae1b68cf86f5e7f828f6
+start-services.sh:return-flip:3a7daa7e215b9f085eb563517bf892cdb4fa70fb
+start-services.sh:return-flip:ba09cec5aef078adf80fb2c7b59f76fb36ff36db
+start-services.sh:return-flip:06d3d9b2060dd51343d5f19f0e531f15c507e3d1
+start-services.sh:return-flip:9964d31aceb35290ba79305d6a1ad631e7f12592
+start-services.sh:return-flip:ea514b3cc511010229b94af3a289b8a689725cd8
+start-services.sh:return-flip:0ef8c6b19c1b3c9a66eb9da92260a26f5131c6d1
+start-services.sh:return-flip:7e5bf7e6c027b98594f847c3eb39610a0731f9f0
+  [[ "$name" =~ $NAME_RE && ... ]] || return 0      (prepare_one)
+  load_adapter "$name" || exit 0                    (prepare_one, in a subshell)
+  [[ -n "$(svc_installed_version)" ]] || exit 0     (prepare_one, in a subshell)
+  `return 0` closing prepare_one, the bad-name and unknown-name skips and the
+  end of start_one
+  `exit 0` after the load-failure, incomplete-adapter and missing-server
+  warnings, and after a failed `mktemp`, all in start_one's subshell
+  damaged:  every `0` above becomes `1`.
+  EQUIVALENT: no test could kill these, because nothing reads the status they
+  change. The script sets `set -uo pipefail` and deliberately NOT `-e`;
+  each_service calls `"$cb" "$name" "$value"` as a bare statement, both
+  subshells are followed by an unconditional `return 0`, and the script ends in
+  an unconditional `exit 0` after the phase `case`, so a skip path's status
+  cannot reach the process's own. The output is byte-identical either way.
+  Those unconditional `return 0`/`exit 0` are the contract (the runner never
+  fails container start), and a damaged one that DID reach the exit status is
+  killed (T1, T4, T12 and T15 assert exit 0). Tried and rejected as an assertion:
+  running the runner under `bash -e` — it fails on the REAL code, because
+  `load_adapter`'s `return 2` and `run_bounded`'s status are read through bare
+  `$?`, so errexit-compatibility is not a property this script has.
+  Same shape as entry 16. If `set -e` is ever added, re-measure: these become
+  real assertions about failure handling.

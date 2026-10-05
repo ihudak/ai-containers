@@ -50,6 +50,8 @@ cat > "$ADAPTERS/partial.sh" <<'EOF'
 svc_installed_version() { printf '1.0'; }
 svc_start()             { printf 'start|partial\n' >> "$FAKE_TRACE"; }
 EOF
+# broken: a file that fails to load at all (source returns non-zero).
+printf 'return 1\n' > "$ADAPTERS/broken.sh"
 # evil: OUTSIDE services.d; must never be sourced through a crafted name.
 printf 'touch "%s/evil-ran"\n' "$TMP" > "$TMP/evil.sh"
 
@@ -205,6 +207,26 @@ reset; run_runner start AI_SERVICES=fake=ON AI_SERVICES_TIMEOUT=abc
 has "fake 1.2 ready on fake:1234" \
   && pass "T18 a non-numeric AI_SERVICES_TIMEOUT falls back to the default" \
   || fail "T18 non-numeric timeout (out=$OUT)"
+
+# T19 — an adapter that fails to LOAD is named as such (not as "incomplete").
+reset; run_runner start AI_SERVICES=broken=ON
+has "WARNING: services.d/broken.sh failed to load — skipped" && ! has "incomplete" \
+  && pass "T19 an adapter that fails to load says so" \
+  || fail "T19 load failure (out=$OUT)"
+
+# T20 — prepare chowns every directory it creates to SANDBOX_UID:SANDBOX_GID.
+# Run as an ordinary user a real chown to oneself is a no-op, so a recording
+# stub on PATH is the only observer.
+mkdir -p "$TMP/bin"
+printf '#!/bin/sh\nprintf "%%s|" "$@" >> "%s/chown.log"; printf "\\n" >> "%s/chown.log"\n' "$TMP" "$TMP" > "$TMP/bin/chown"
+chmod +x "$TMP/bin/chown"
+reset; : > "$TMP/chown.log"
+run_runner prepare AI_SERVICES=fake=ON "PATH=$TMP/bin:$PATH" SANDBOX_UID=4242 SANDBOX_GID=4343
+for d in "$TMP/state/fake" "$TMP/log" "$TMP/run/fake"; do
+  grep -qxF "4242:4343|$d|" "$TMP/chown.log" \
+    && pass "T20 prepare chowns $d to SANDBOX_UID:SANDBOX_GID" \
+    || fail "T20 prepare chown of $d (log: $(cat "$TMP/chown.log"))"
+done
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
