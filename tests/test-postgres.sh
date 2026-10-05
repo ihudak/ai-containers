@@ -144,6 +144,8 @@ ai_services_case 'postgres=OFF' ''            "postgres=OFF → AI_SERVICES empt
 ai_services_case 'copilot=ON'   ''            "postgres absent → AI_SERVICES empty"
 
 # ── Part D: services.d/postgres.sh against fake binaries ───────────────────────
+# Isolate from the host environment: only what Part D or the adapter reads.
+unset POSTGRES_ROLES POSTGRES_DATABASES PG_PORT PG_SUPERUSER PG_SUPERUSER_TEST PG_MAJOR_FILE PG_LIB_ROOT PG_SOCKET_DIR FAKE_PSQL_FAIL FAKE_INITDB_RC FAKE_CONF_AS_DIR
 FAKE="$TMP_ROOT/pg"; mkdir -p "$FAKE/lib/18/bin" "$FAKE/sock" "$FAKE/data"
 printf '18\n' > "$FAKE/major"
 cat > "$FAKE/lib/18/bin/postgres" <<'EOF'
@@ -154,7 +156,7 @@ cat > "$FAKE/lib/18/bin/initdb" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$@" > "$FAKE_DIR/initdb.args"
 [[ "${FAKE_INITDB_RC:-0}" -eq 0 ]] || exit "$FAKE_INITDB_RC"
-while (( $# )); do [[ "$1" == -D ]] && { mkdir -p "$2"; printf '# initdb default\n' > "$2/postgresql.conf"; }; shift; done
+while (( $# )); do [[ "$1" == -D ]] && { mkdir -p "$2"; if [[ -n "${FAKE_CONF_AS_DIR:-}" ]]; then mkdir -p "$2/postgresql.conf"; else printf '# initdb default\n' > "$2/postgresql.conf"; fi; }; shift; done
 EOF
 cat > "$FAKE/lib/18/bin/pg_ctl" <<'EOF'
 #!/usr/bin/env bash
@@ -184,7 +186,7 @@ chmod +x "$FAKE"/lib/18/bin/*
 pg() {
   ( export PG_MAJOR_FILE="$FAKE/major" PG_LIB_ROOT="$FAKE/lib" PG_SOCKET_DIR="$FAKE/sock" \
            PG_SUPERUSER="${PG_SUPERUSER_TEST:-alice}" FAKE_DIR="$FAKE" \
-           FAKE_PSQL_FAIL="${FAKE_PSQL_FAIL:-}" FAKE_INITDB_RC="${FAKE_INITDB_RC:-0}"
+           FAKE_PSQL_FAIL="${FAKE_PSQL_FAIL:-}" FAKE_INITDB_RC="${FAKE_INITDB_RC:-0}" FAKE_CONF_AS_DIR="${FAKE_CONF_AS_DIR:-}"
     # shellcheck source=../services.d/postgres.sh
     source "$REPO_DIR/services.d/postgres.sh"
     "$@" )
@@ -197,11 +199,11 @@ sql_count() { if [[ -f "$FAKE/sql.log" ]]; then grep -c . "$FAKE/sql.log"; else 
 got="$(pg svc_installed_version)"
 [[ "$got" == "18.6" ]] && pass "D1 svc_installed_version reads 18.6 out of PGDG's version string" || fail "D1 svc_installed_version (got '$got')"
 mv "$FAKE/major" "$FAKE/major.off"
-got="$(pg svc_installed_version)"
-[[ -z "$got" ]] && pass "D2 no major marker → nothing installed" || fail "D2 no major marker (got '$got')"
+got="$(pg svc_installed_version)"; rc=$?
+[[ -z "$got" && "$rc" -eq 0 ]] && pass "D2 no major marker → nothing installed, status 0" || fail "D2 no major marker (got '$got', rc=$rc)"
 printf '17\n' > "$FAKE/major"
-got="$(pg svc_installed_version)"
-[[ -z "$got" ]] && pass "D3 a marker naming a major with no binaries → nothing installed" || fail "D3 marker without binaries (got '$got')"
+got="$(pg svc_installed_version)"; rc=$?
+[[ -z "$got" && "$rc" -eq 0 ]] && pass "D3 a marker naming a major with no binaries → nothing installed, status 0" || fail "D3 marker without binaries (got '$got', rc=$rc)"
 mv "$FAKE/major.off" "$FAKE/major"
 
 # D4 — the socket directory is the one runtime dir.
@@ -224,10 +226,18 @@ done
   || fail "D5 pg_ctl arguments (got '$(cat "$FAKE/pg_ctl.args" 2>/dev/null)')"
 
 # D6 — initdb fails: svc_start fails, and nothing is started.
-pg_reset; FAKE_INITDB_RC=1 pg svc_start "$FAKE/data" "$FAKE/log"; rc=$?
+pg_reset; mkdir -p "$FAKE/data"   # the runner pre-creates the data dir
+FAKE_INITDB_RC=1 pg svc_start "$FAKE/data" "$FAKE/log"; rc=$?
 [[ "$rc" -ne 0 && ! -e "$FAKE/pg_ctl.args" ]] \
   && pass "D6 a failed initdb fails svc_start and never reaches pg_ctl" \
   || fail "D6 failed initdb (rc=$rc)"
+
+# D6b — initdb succeeds but the config append fails (postgresql.conf is a
+# directory, which fails even for root): svc_start fails, pg_ctl never runs.
+pg_reset; mkdir -p "$FAKE/data"; FAKE_CONF_AS_DIR=1 pg svc_start "$FAKE/data" "$FAKE/log" 2>/dev/null; rc=$?
+[[ "$rc" -ne 0 && ! -e "$FAKE/pg_ctl.args" ]] \
+  && pass "D6b a failed config append fails svc_start and never reaches pg_ctl" \
+  || fail "D6b failed append (rc=$rc)"
 
 # D7 — roles.
 pg_reset; out="$(POSTGRES_ROLES=' app_user , reporting' pg svc_provision 2>"$FAKE/err")"
