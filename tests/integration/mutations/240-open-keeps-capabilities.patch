@@ -33,16 +33,18 @@
 #       automatically.
 #
 diff --git a/entrypoint.sh b/entrypoint.sh
+index 47da78b..a94aafc 100755
 --- a/entrypoint.sh
 +++ b/entrypoint.sh
-@@ -355,7 +355,9 @@ case "$mode" in
+@@ -355,8 +355,10 @@ case "$mode" in
      run_services
  
      exec capsh \
 -      --drop=cap_net_admin,cap_net_raw \
 +      --keep=1 \
+       --user="$sandbox_user" \
 +      --inh=cap_net_raw \
 +      --addamb=cap_net_raw \
-       --user="$sandbox_user" \
        -- -l
      ;;
+   *)
