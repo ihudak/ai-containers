@@ -37,18 +37,23 @@ warn() { printf 'WARNING: %s\n' "$*" >&2; }
 # clock expired. The watchdog shape of tests/portability.sh: `p_timeout()`,
 # copied rather than sourced because that file is not in the image; its comment
 # explains why this is a watchdog and not a polling loop, and why the watchdog's
-# stdio goes to /dev/null. Not timeout(1): this file's tests run on macOS hosts,
-# which do not ship it.
+# stdio goes to /dev/null. It differs in one respect: p_timeout bounds a single
+# process, but this bounds an adapter function that starts CHILDREN by design
+# (initdb, pg_ctl -w, psql), and a hang lives in a child, so the command gets its
+# own process group (`set -m`) and expiry signals the whole group, not the PID.
+# Not timeout(1): this file's tests run on macOS hosts, which do not ship it.
 run_bounded() {
   local secs="$1"; shift
   local flag; flag="$(mktemp "${TMPDIR:-/tmp}/ai-services.XXXXXX")" || return 125
+  set -m
   "$@" &
   local cmd_pid=$!
+  set +m
   ( sleep "$secs"
     printf 'x' > "$flag"
-    kill -TERM "$cmd_pid" 2>/dev/null
+    kill -TERM -- "-$cmd_pid" 2>/dev/null
     sleep 1
-    kill -KILL "$cmd_pid" 2>/dev/null ) >/dev/null 2>&1 &
+    kill -KILL -- "-$cmd_pid" 2>/dev/null ) >/dev/null 2>&1 &
   local dog_pid=$!
   wait "$cmd_pid"
   local rc=$?

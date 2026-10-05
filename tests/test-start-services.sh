@@ -28,10 +28,13 @@ svc_start() {
   case "${FAKE_START:-ok}" in
     ok)   printf 'fake server log line\n' ;;
     fail) printf 'boom: disk on fire\n'; return 1 ;;
-    hang) exec sleep 30 ;;
+    hang) sleep 30 & printf '%s' "$!" > "$FAKE_PIDFILE"; wait ;;
   esac
 }
-svc_provision() { printf 'provision\n' >> "$FAKE_TRACE"; printf '; extras: %s' "${FAKE_EXTRAS:-none}"; }
+svc_provision() {
+  printf 'provision\n' >> "$FAKE_TRACE"
+  [[ "${FAKE_PROVISION:-ok}" == hang ]] && { sleep 30 & printf '%s' "$!" > "$FAKE_PIDFILE"; wait; }
+  printf '; extras: %s' "${FAKE_EXTRAS:-none}"; }
 svc_endpoint()  { printf 'fake:1234'; }
 EOF
 # bad: complete, always fails to start.
@@ -54,7 +57,7 @@ reset() { rm -rf "$TMP/state" "$TMP/log" "$TMP/run"; mkdir -p "$TMP/state" "$TMP
 run_runner() {  # $1 = phase, $2… = extra VAR=value → sets OUT (stdout+stderr) and RC
   local phase="$1"; shift
   OUT="$(env AI_SERVICES_DIR="$ADAPTERS" AI_SERVICES_STATE_ROOT="$TMP/state" \
-             AI_SERVICES_LOG_ROOT="$TMP/log" FAKE_TRACE="$TRACE" \
+             AI_SERVICES_LOG_ROOT="$TMP/log" FAKE_TRACE="$TRACE" FAKE_PIDFILE="$TMP/childpid" AI_SERVICES_TIMEOUT=5 \
              FAKE_RUNTIME_DIR="$TMP/run/fake" \
              SANDBOX_UID="$(id -u)" SANDBOX_GID="$(id -g)" "$@" \
              bash "$RUNNER" "$phase" 2>&1)"
@@ -167,13 +170,21 @@ has "WARNING: bad failed to start" && has "fake 1.2 ready on fake:1234" \
   && pass "T13 a failing service does not stop the next one" \
   || fail "T13 a failing service does not stop the next one (out=$OUT)"
 
-# T14 — the watchdog: a hung start is cut off and reported.
-reset; started=$SECONDS
-run_runner start AI_SERVICES=fake=ON FAKE_START=hang AI_SERVICES_TIMEOUT=1
-took=$((SECONDS - started))
-[[ "$RC" -eq 0 ]] && has "WARNING: fake did not become ready within 1s" && (( took < 10 )) \
-  && pass "T14 a hung start is cut off at AI_SERVICES_TIMEOUT (${took}s) and reported" \
-  || fail "T14 watchdog (rc=$RC, took=${took}s, out=$OUT)"
+# T14 — the watchdog: a hang in a CHILD process (where a real adapter hangs:
+# initdb, pg_ctl -w, psql) is cut off, reported, and the child is killed too.
+for mode in FAKE_START FAKE_PROVISION; do
+  reset; rm -f "$TMP/childpid"; started=$SECONDS
+  run_runner start AI_SERVICES=fake=ON "$mode=hang" AI_SERVICES_TIMEOUT=1
+  took=$((SECONDS - started))
+  [[ "$RC" -eq 0 ]] && has "WARNING: fake did not become ready within 1s" && (( took < 10 )) \
+    && pass "T14 $mode=hang is cut off at AI_SERVICES_TIMEOUT (${took}s) and reported" \
+    || fail "T14 $mode=hang watchdog (rc=$RC, took=${took}s, out=$OUT)"
+  cpid="$(cat "$TMP/childpid" 2>/dev/null)"
+  [[ -n "$cpid" ]] && ! kill -0 "$cpid" 2>/dev/null \
+    && pass "T14 $mode=hang: the hung child process is dead afterwards" \
+    || fail "T14 $mode=hang: child '$cpid' survived the watchdog"
+  [[ -n "$cpid" ]] && kill -KILL "$cpid" 2>/dev/null
+done
 
 # T15 — nothing asked for: nothing said.
 reset; run_runner start AI_SERVICES=
