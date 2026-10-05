@@ -203,19 +203,24 @@ For each entry, in order:
 
 1. **Unknown name** (no `services.d/<name>.sh`) → `WARNING: unknown service
    '<name>' — skipped`.
-2. **Not in this image** (`svc_installed_version` prints nothing) →
+2. **Incomplete adapter** (any of the five functions below undefined after
+   sourcing) → `WARNING: services.d/<name>.sh is incomplete — skipped`. Each
+   adapter is sourced in its own subshell, so one adapter's functions can never
+   stand in for another's.
+3. **Not in this image** (`svc_installed_version` prints nothing) →
    `WARNING: sandbox.conf has <name>=<value>, but this image has no <name> server.
    Rebuild: ./build.sh` — skipped.
-3. **`prepare`** (root): create `/var/lib/ai-services/<name>`,
+4. **`prepare`** (root): create `/var/lib/ai-services/<name>`,
    `/var/log/ai-services/` and every directory the adapter lists via
    `svc_runtime_dirs`, owned by `SANDBOX_UID:SANDBOX_GID`.
-4. **`start`** (sandbox user): call `svc_start <datadir> <logfile>` and then
+5. **`start`** (sandbox user): call `svc_start <datadir> <logfile>` and then
    `svc_provision` under one overall timeout per service (60 s default,
    overridable via `AI_SERVICES_TIMEOUT` so tests can shorten it; the postgres
    adapter's own `pg_ctl -t 30` sits inside it); on success print the ready line
-   from `svc_endpoint`. If the requested value is a major and differs from the
-   installed one, append the mismatch warning (D10).
-5. **Failure** at any step → `WARNING: <name> failed to start — log:
+   from `svc_endpoint`. If the requested value is a version (anything but `ON`)
+   and the installed version neither equals it nor starts with it followed by a
+   `.` (`17` matches `17.11`, not `170.1`), append the mismatch warning (D10).
+6. **Failure** at any step → `WARNING: <name> failed to start — log:
    /var/log/ai-services/<name>.log`, followed by its last 20 lines. Continue with
    the next service.
 
@@ -229,7 +234,7 @@ warnings.
 | `svc_installed_version` | both | print the installed version (e.g. `18.6`), or nothing if not installed |
 | `svc_runtime_dirs` | prepare | print extra absolute directories to create and hand to the sandbox user, one per line |
 | `svc_start <datadir> <logfile>` | start | initialise and start; return 0 only once the server accepts connections |
-| `svc_provision` | start | create what the adapter's env asks for; warn per bad entry, never fail the service for one |
+| `svc_provision` | start | create what the adapter's env asks for; warn per bad entry, never fail the service for one; print the ready-line suffix (`; roles: …`) on stdout |
 | `svc_endpoint` | start | print the "where to connect" part of the ready line |
 
 ### `services.d/postgres.sh` — the first adapter
@@ -246,7 +251,9 @@ warnings.
     `dynamic_shared_memory_type = mmap`;
   - `pg_ctl -D <datadir> -l <logfile> -w -t 30 start`.
 - `svc_provision`:
-  - **`POSTGRES_ROLES`** — comma-separated; surrounding whitespace trimmed; each
+  - **`POSTGRES_ROLES`** — comma-separated; surrounding whitespace trimmed
+    (including a `\r` from a `container.env` saved with CRLF line endings); a
+    repeated name is created once; each
     name must match `^[a-z_][a-z0-9_]*$`, otherwise `WARNING: POSTGRES_ROLES:
     '<entry>' is not a valid role name — skipped`; a name equal to the sandbox
     user is skipped silently (it already exists); each other name →
@@ -255,7 +262,10 @@ warnings.
     after the roles; both parts must match the same pattern; owner defaults to
     the sandbox user and must exist (the sandbox user or a role from
     `POSTGRES_ROLES`), otherwise a warning naming the entry and a skip; each →
-    `CREATE DATABASE "<name>" OWNER "<owner>"`.
+    `CREATE DATABASE "<name>" OWNER "<owner>"`. A repeated name is created once.
+  - Identifiers are always double-quoted with embedded `"` doubled, so the
+    sandbox user's own name — which comes from the host and is not held to the
+    pattern (a macOS `John.Doe` is legal) — is safe as a default owner.
   - Statements go through `psql -v ON_ERROR_STOP=1` over the socket, one per
     entry, so one failure is reported against its own entry.
 - `svc_endpoint`: `localhost:5432 (socket /var/run/postgresql), superuser
@@ -271,7 +281,7 @@ and with a mismatch:
 
 ```
 postgres 16.15 ready on localhost:5432 (socket /var/run/postgresql), superuser alice
-WARNING: sandbox.conf asks for postgres=17, this image has 16. Rebuild: ./build.sh
+WARNING: sandbox.conf asks for postgres=17, this image has 16.15. Rebuild: ./build.sh
 ```
 
 ### Shipping to projects
