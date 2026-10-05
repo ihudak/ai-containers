@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Fixed
+
+- **`tests/test-parsers.sh` no longer fails when your shell exports the memory
+  limits.** Its `validate_memory_limits` defaults case ran with no values of
+  its own and inherited an exported `CONTAINER_MEMORY`,
+  `CONTAINER_MEMORY_RESERVATION` and `CONTAINER_MEMORY_SWAP`, so with
+  `CONTAINER_MEMORY=8g` in a host profile it read `8g 4g 8g` and failed
+  against the `4g 2g 4g` defaults. The case now clears the three first. Found
+  by running the hermetic suite at v0.9.19 with a realistic host profile
+  exported. Every other test passed that way.
+
 ## v0.9.19 — 2026-10-05
 
 ### Fixed

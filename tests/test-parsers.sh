@@ -136,8 +136,12 @@ run_validate_memory() { # $1=MEMORY $2=RESERVATION $3=SWAP
   )
 }
 
-# Defaults (no env set) -> 4g / 2g / 4g, all within ordering already.
-out="$( ( cd "$TMP" && HOME="$HOME" bash -c '
+# Defaults (no env set) -> 4g / 2g / 4g, all within ordering already. "No env
+# set" has to be MADE true: the trio is meant to be exportable from a host
+# profile, and inherited from the developer's shell this case read their limits
+# instead of the defaults (found 2026-10-05 with CONTAINER_MEMORY=8g exported).
+out="$( ( cd "$TMP" && HOME="$HOME" \
+    env -u CONTAINER_MEMORY -u CONTAINER_MEMORY_RESERVATION -u CONTAINER_MEMORY_SWAP bash -c '
       src="$1"; set --
       source "$src" >/dev/null
       validate_memory_limits
