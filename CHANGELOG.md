@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## v0.9.20 — 2026-10-05
+
 ### Fixed
 
 - **`tests/test-parsers.sh` no longer fails when your shell exports the memory
