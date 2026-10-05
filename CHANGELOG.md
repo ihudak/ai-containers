@@ -21,6 +21,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   variable itself still gets it. `tests/test-integration-lib.sh` takes the
   list from that documented table rather than from `lib.sh`, so a launcher
   variable documented later either joins the list or turns that test red.
+  Its failure messages report only those variables, never the rest of your
+  environment.
 
 ## v0.9.18 — 2026-10-05
 
