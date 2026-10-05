@@ -4,9 +4,12 @@
 #       versions_to_space. The Dockerfile's `for c in $DB_CLIENTS` loop word-splits
 #       on whitespace only, so the whole string becomes ONE unrecognized token, its
 #       case statement falls to the *) "unknown db-client" warning branch, and
-#       postgresql-client/mysql-client/mongosh are never installed -- psql, mysql and
-#       mongosh all disappear from PATH while gcc/convert/wkhtmltopdf (unrelated to
-#       DB_CLIENTS) are untouched.
+#       postgresql-client/mysql-client/mongosh are never installed -- mysql and mongosh
+#       disappear from PATH and libpq-dev's /usr/include/postgresql/libpq-fe.h goes
+#       missing, while gcc/convert/wkhtmltopdf (unrelated to DB_CLIENTS) are
+#       untouched. psql is NOT among the losses under the native variant: its
+#       postgres=ON layer installs postgresql-NN, which depends on the client
+#       package, so psql survives; that is why the case probes libpq-fe.h instead.
 #
 diff --git a/build.sh b/build.sh
 --- a/build.sh

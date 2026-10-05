@@ -390,13 +390,14 @@ jobs:
     name: Package installs — native variant (real allowlist)
     runs-on: ubuntu-24.04
     # Real headroom over the realistic estimate, but comfortably below the
-    # 730+740+750+760+770 worst-case sum (3900+3900+3900+7600+3900s = 387 min).
+    # 730+740+750+760+770+780 worst-case sum (3900+3900+3900+7600+3900+3900s = 452 min).
     # Same trade as the agents job above: a long-but-alive job is a signal, a job
     # killed at the outer timeout is silence.
     #
-    # The 25-50 min the ceiling was originally sized against predates 770 and the
-    # playwright layer in the native image; both add to the run without changing
-    # the shape of the trade. In a FULL tier run 770 is last in filename order
+    # The 25-50 min the ceiling was originally sized against predates 770, 780 and the
+    # playwright and postgres layers in the native image; both add to the run without changing
+    # the shape of the trade. In a FULL tier run 780 is last in filename order
+    # (measured 627s on one machine with a warm group)
     # and finds the rvm group already warm, but that is a property of the run,
     # not of the case: the `cases` input above can select it alone, and then it
     # pays the cold two-version compile itself, which is why its own budget is

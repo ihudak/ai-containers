@@ -35,6 +35,10 @@
 # needs to build psych, which is why a stripped toolchain shows up as a Ruby
 # bootstrap failure rather than a missing compiler.
 #
+# NOTE: psql no longer appears in the binary loop and a libpq-fe.h header check
+# stands in for it (see the loop), so the binary count is five plus two header
+# checks; the "six" below predates that and counts the original probe list.
+#
 # All six answer --version cleanly per the per-binary conventions checked while
 # writing this case (psql, mysql, mongosh, convert, wkhtmltopdf and gcc all
 # support the flag and exit 0 on it independent of any server/network state).
@@ -122,7 +126,11 @@ fixture_scope_init || it_finish
 export AI_CONTAINER_GROUP="$IT_RUBY_GROUP"
 launcher_up restricted || it_finish
 
-for b in psql mysql mongosh convert wkhtmltopdf gcc; do
+# psql is deliberately NOT in this loop: the native variant also carries
+# postgres=ON, whose PGDG layer installs postgresql-NN, which depends on
+# postgresql-client-NN and so ships /usr/bin/psql whether or not the db-clients
+# `pg)` arm ran. A psql probe no longer discriminates; the libpq-fe.h check below does.
+for b in mysql mongosh convert wkhtmltopdf gcc; do
   assert_runs "$IT_CID" "$b"
 done
 
@@ -133,6 +141,14 @@ if docker exec "$IT_CID" test -f /usr/include/yaml.h; then
   pass "libyaml-dev's header is present — KEEP_BUILD_TOOLCHAIN's restore layer ran"
 else
   fail "libyaml-dev's header is MISSING — the toolchain restore layer did not run, so runtime native compilation (psych, pg, mysql2) will fail"
+fi
+
+# The db-clients `pg)` arm's fingerprint: libpq-dev's header. The postgres=ON
+# layer also puts psql on PATH, so only this header proves `pg)` installed anything.
+if docker exec "$IT_CID" test -f /usr/include/postgresql/libpq-fe.h; then
+  pass "libpq-dev's header is present — the db-clients pg arm ran"
+else
+  fail "libpq-dev's header is MISSING — the db-clients pg arm did not install libpq-dev (psql alone would not show it: postgres=ON ships one too)"
 fi
 
 it_finish

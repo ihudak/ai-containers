@@ -5,7 +5,9 @@
 #       build arg, the layer and AI_SERVICES are all correct.
 #
 #       Expected: assertion 1 FAILs on the socket (no server answers) and the
-#       case finishes there, printing the empty log path's tail. A FAIL anywhere
+#       case finishes there. /var/log/ai-services/postgres.log is never created
+#       under this mutation, so the diagnostic prints tail's "cannot open" error
+#       rather than a log tail. A FAIL anywhere
 #       else first would mean the case is measuring something other than "was
 #       the server started".
 diff --git a/entrypoint.sh b/entrypoint.sh

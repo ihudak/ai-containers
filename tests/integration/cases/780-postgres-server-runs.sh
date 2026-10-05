@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# summary:  postgres=ON starts a loopback-only server owned by the agent, before the shell
-# tags:     packages slow
+# summary:  postgres=ON starts a loopback-only server owned by the agent, started by the entrypoint
+# tags:     packages slow needs-external
 # requires: docker launcher netadmin
 # image:    native
 # timeout:  3900
@@ -8,9 +8,12 @@
 # WHAT IS PROVEN, against the real image the `native` variant builds with
 # postgres=ON, in RESTRICTED mode:
 #   1. a server answers over the default socket AND over 127.0.0.1 — so the
-#      entrypoint started it before handing over, and the firewall did not get
+#      entrypoint started it before handing over (nothing else starts it), and the firewall did not get
 #      in the way (loopback is allowed; no allowlist entry exists for it);
-#   2. every postgres process runs as the sandbox UID, never root;
+#   2. every postgres process runs as the sandbox UID, not as PGDG's `postgres`
+#      system user (PostgreSQL refuses root by itself, so "not root" cannot fail;
+#      the real alternative is the package's own user, which owns
+#      /var/run/postgresql at build time);
 #   3. it listens on loopback addresses only;
 #   4. POSTGRES_ROLES / POSTGRES_DATABASES from the project's container.env were
 #      provisioned: app_user is a superuser and owns myapp_test;
@@ -24,8 +27,11 @@
 # SQL — are tests/test-postgres.sh and tests/test-start-services.sh. Neither can
 # show a server starting in a real image; this case is the only place that is.
 #
-# Not needs-external: nothing here touches the network at run time. netadmin IS
-# required — launcher_up drives restricted mode.
+# needs-external is a TAG, not a requirement of the assertions: they touch no
+# network (the server is local, loopback needs no allowlist). The tag marks the
+# container START, which on the native variant runs the rvm reconcile and, on a
+# cold group, reaches get.rvm.io and Ruby sources — the same reason 730 and 770
+# carry it. netadmin IS required — launcher_up drives restricted mode.
 #
 # GROUP: $IT_RUBY_GROUP, shared with 730–770 for the reason 770's header gives —
 # the native variant runs the rvm reconcile at every container start, and a cold
@@ -62,7 +68,7 @@ fi
   && pass "psql over 127.0.0.1:5432 answers in restricted mode (loopback needs no allowlist entry)" \
   || fail "psql over 127.0.0.1:5432 did not answer in restricted mode"
 
-# ── 2. Owned by the agent, never root ──────────────────────────────────────────
+# ── 2. Owned by the agent, not by PGDG's postgres user ──────────────────────────────────────────
 # From /proc rather than ps: procps is not guaranteed in every variant.
 uids="$(docker exec "$IT_CID" bash -c 'for p in /proc/[0-9]*; do
           [ "$(cat "$p/comm" 2>/dev/null)" = postgres ] && awk "/^Uid:/{print \$2}" "$p/status"
@@ -70,7 +76,7 @@ uids="$(docker exec "$IT_CID" bash -c 'for p in /proc/[0-9]*; do
 if [[ -z "$uids" ]]; then
   fail "no postgres process found in /proc — assertion 2 verified nothing"
 elif [[ "$uids" == "$IT_LAUNCH_UID" ]]; then
-  pass "every postgres process runs as the sandbox UID ($IT_LAUNCH_UID), not root"
+  pass "every postgres process runs as the sandbox UID ($IT_LAUNCH_UID), not PGDG's postgres user"
 else
   fail "postgres runs as UID(s) $(tr '\n' ' ' <<<"$uids")— expected only $IT_LAUNCH_UID"
 fi
@@ -78,7 +84,7 @@ fi
 # ── 3. Loopback only ───────────────────────────────────────────────────────────
 # /proc/net/tcp{,6}: state 0A is LISTEN; port 5432 is 1538 in hex. 0100007F is
 # 127.0.0.1 and the 32-digit form is ::1. Anything else is exposure.
-listeners="$(docker exec "$IT_CID" awk 'NR>1 && $4=="0A" && $2 ~ /:1538$/ {print $2}' /proc/net/tcp /proc/net/tcp6 2>/dev/null)"
+listeners="$(docker exec "$IT_CID" awk 'FNR>1 && $4=="0A" && $2 ~ /:1538$/ {print $2}' /proc/net/tcp /proc/net/tcp6 2>/dev/null)"
 if [[ -z "$listeners" ]]; then
   fail "no listener on port 5432 in /proc/net — assertion 3 verified nothing"
 elif exposed="$(grep -vE '^(0100007F|00000000000000000000000001000000):1538$' <<<"$listeners")"; then
