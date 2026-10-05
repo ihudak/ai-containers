@@ -75,17 +75,23 @@ link_agent_tools() {
 }
 
 # Start the in-container database servers sandbox.conf enabled (AI_SERVICES).
-# `prepare` runs as ROOT and only creates directories for the sandbox user;
-# `start` runs as the sandbox user, so no server process is ever root. Both are
-# non-fatal: a server that fails to start must not cost the user their shell.
+# `prepare` runs as ROOT and creates directories and hands them to the sandbox
+# user; `start` runs as the sandbox user, so no server process is ever root. Both
+# are non-fatal: a server that fails to start must not cost the user their shell.
 # The runner's path is fixed on purpose — container.env reaches this process,
 # and no project data file may choose what root executes. For the same reason
-# both invocations strip the runner's test-only AI_SERVICES_DIR/_STATE_ROOT/
-# _LOG_ROOT overrides, so a project file cannot repoint root's prepare phase.
+# root's prepare starts from an EMPTY environment (env -i) holding only a fixed
+# PATH, AI_SERVICES and SANDBOX_UID/GID: an adapter reads its own knobs in
+# prepare too (the postgres one runs "<lib root>/<major>/bin/postgres --version"
+# and chowns its socket directory), so stripping a named few would leave every
+# knob added later reaching root. `start` keeps the environment — it runs as the
+# sandbox user and needs container.env's POSTGRES_* — minus the runner's
+# test-only path overrides, so prepare and start agree on the directories.
 run_services() {
   [[ -n "${AI_SERVICES:-}" ]] || return 0
   [[ -x /usr/local/bin/start-services.sh ]] || return 0
-  env -u AI_SERVICES_DIR -u AI_SERVICES_STATE_ROOT -u AI_SERVICES_LOG_ROOT \
+  env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    AI_SERVICES="$AI_SERVICES" SANDBOX_UID="${SANDBOX_UID:-1000}" SANDBOX_GID="${SANDBOX_GID:-1000}" \
     /usr/local/bin/start-services.sh prepare || true
   runuser -u "$sandbox_user" -- env -u AI_SERVICES_DIR -u AI_SERVICES_STATE_ROOT -u AI_SERVICES_LOG_ROOT \
     /usr/local/bin/start-services.sh start || true

@@ -7,7 +7,8 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 fails=0; pass(){ printf 'PASS: %s\n' "$1"; }; fail(){ printf 'FAIL: %s\n' "$1"; fails=$((fails+1)); }
 # Added for the useradd-wrapper section at the end, which extracts a function
 # out of entrypoint.sh and runs it; everything above this is pure grep.
-TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; trap 'rm -rf "$TMP"' EXIT
+TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; TMP_OWNER="$BASHPID"
+trap '[[ "$BASHPID" == "$TMP_OWNER" ]] && rm -rf "$TMP"' EXIT
 bash -n "$REPO_DIR/entrypoint.sh" && pass "entrypoint.sh bash -n" || fail "entrypoint.sh bash -n"
 grep -q 'run_agent_tools_reconcile()' "$REPO_DIR/entrypoint.sh" && pass "defines run_agent_tools_reconcile" || fail "defines run_agent_tools_reconcile"
 grep -q 'link_agent_tools()' "$REPO_DIR/entrypoint.sh" && pass "defines link_agent_tools" || fail "defines link_agent_tools"
@@ -90,13 +91,74 @@ grep -q 'runuser -u "$sandbox_user" -- env -u AI_SERVICES_DIR -u AI_SERVICES_STA
   && grep -q '^    /usr/local/bin/start-services.sh start || true$' "$REPO_DIR/entrypoint.sh" \
   && pass "the start phase runs as the sandbox user" \
   || fail "the start phase runs as the sandbox user"
-# Both runner invocations strip the test-only path overrides: container.env
-# reaches this root process and must not redirect prepare's chown.
+# The sandbox-user start strips the test-only path overrides; root's prepare
+# goes further (env -i, below), so exactly one invocation uses the strip list.
 nstrip="$(grep -c 'env -u AI_SERVICES_DIR -u AI_SERVICES_STATE_ROOT -u AI_SERVICES_LOG_ROOT' "$REPO_DIR/entrypoint.sh")"
-[[ "$nstrip" -eq 2 ]] && pass "both runner invocations strip the path overrides ($nstrip)" || fail "both runner invocations strip the path overrides ($nstrip)"
+[[ "$nstrip" -eq 1 ]] && pass "the start invocation strips the path overrides ($nstrip)" || fail "the start invocation strips the path overrides ($nstrip)"
+grep -q '^  env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \\$' "$REPO_DIR/entrypoint.sh" \
+  && pass "the prepare invocation starts from an empty environment (env -i, fixed PATH)" \
+  || fail "the prepare invocation starts from an empty environment (env -i, fixed PATH)"
 grep -q 'AI_SERVICES_RUNNER' "$REPO_DIR/entrypoint.sh" \
   && fail "run_services takes no env override for the runner path" \
   || pass "run_services takes no env override for the runner path"
+
+# ── what reaches each phase, by EXECUTION ─────────────────────────────────────
+# container.env (project-writable, and writable from inside the container)
+# reaches this ROOT process. In `prepare` the postgres adapter EXECUTES
+# "<lib root>/<major>/bin/postgres --version" and mkdirs+chowns its socket dir,
+# so any variable that reaches root's prepare can choose a binary root runs or a
+# path root chowns. The claim is therefore about what does NOT arrive.
+#
+# run_services is extracted by name and run with its fixed runner path pointed
+# at a fake that records the environment it was given. runuser is a stub that
+# checks its `-u <user> --` shape and runs the rest; everything else is real.
+rs_fn="$TMP/run-services.sh"; rs_fake="$TMP/fake-start-services.sh"
+cat > "$rs_fake" <<FAKE
+#!/bin/sh
+env > "$TMP/env.\$1"
+FAKE
+chmod +x "$rs_fake"
+awk '/^run_services\(\) \{/,/^\}/' "$REPO_DIR/entrypoint.sh" \
+  | sed "s#/usr/local/bin/start-services.sh#$rs_fake#g" > "$rs_fn"
+n_fake="$(grep -c "$rs_fake" "$rs_fn")"
+if [[ "$n_fake" -lt 3 ]]; then
+  fail "run_services could be extracted with its runner path replaced in all 3 places (got $n_fake)"
+else
+  pass "run_services could be extracted with its runner path replaced in all 3 places"
+  rm -f "$TMP"/env.*
+  ( # shellcheck source=/dev/null
+    source "$rs_fn"
+    runuser() { [[ "${1:-}" == -u && "${2:-}" == alice && "${3:-}" == -- ]] || return 97; shift 3; "$@"; }
+    # shellcheck disable=SC2034  # read by the extracted run_services, which shellcheck cannot see
+    sandbox_user=alice
+    export AI_SERVICES=postgres=ON SANDBOX_UID=4242 SANDBOX_GID=4343 \
+           AI_SERVICES_DIR=/evil AI_SERVICES_STATE_ROOT=/evil AI_SERVICES_LOG_ROOT=/evil \
+           AI_SERVICES_PG_LIB_ROOT=/evil AI_SERVICES_PG_MAJOR_FILE=/evil AI_SERVICES_PG_SOCKET_DIR=/etc \
+           PG_LIB_ROOT=/evil POSTGRES_ROLES=app_user DATABASE_URL=postgres://app_user@localhost/myapp_test
+    run_services ) >/dev/null 2>&1
+  # A shell adds its own PWD/SHLVL/_ to whatever it was handed; those are the
+  # fake's, not the caller's.
+  prep_names="$(sed -n 's/=.*//p' "$TMP/env.prepare" 2>/dev/null | grep -vxE 'PWD|OLDPWD|SHLVL|_' | sort | tr '\n' ' ')"
+  [[ "$prep_names" == "AI_SERVICES PATH SANDBOX_GID SANDBOX_UID " ]] \
+    && pass "root's prepare receives exactly AI_SERVICES, PATH, SANDBOX_UID, SANDBOX_GID" \
+    || fail "root's prepare receives exactly AI_SERVICES, PATH, SANDBOX_UID, SANDBOX_GID (got: ${prep_names:-no prepare run at all})"
+  prep_vals="$(grep -E '^(AI_SERVICES|PATH|SANDBOX_UID|SANDBOX_GID)=' "$TMP/env.prepare" 2>/dev/null | sort | tr '\n' ' ')"
+  [[ "$prep_vals" == "AI_SERVICES=postgres=ON PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin SANDBOX_GID=4343 SANDBOX_UID=4242 " ]] \
+    && pass "those four carry the caller's AI_SERVICES/SANDBOX_UID/SANDBOX_GID and a fixed PATH" \
+    || fail "prepare's four values (got: $prep_vals)"
+  start_env="$(cat "$TMP/env.start" 2>/dev/null)"
+  if [[ -z "$start_env" ]]; then
+    fail "the start phase ran (via runuser -u <sandbox user> --) — nothing was recorded"
+  else
+    pass "the start phase ran (via runuser -u <sandbox user> --)"
+    grep -qE '^AI_SERVICES_(DIR|STATE_ROOT|LOG_ROOT)=' <<<"$start_env" \
+      && fail "start receives no AI_SERVICES_DIR/_STATE_ROOT/_LOG_ROOT" \
+      || pass "start receives no AI_SERVICES_DIR/_STATE_ROOT/_LOG_ROOT"
+    grep -qx 'POSTGRES_ROLES=app_user' <<<"$start_env" \
+      && pass "start still receives container.env (POSTGRES_ROLES), which it needs" \
+      || fail "start still receives container.env (POSTGRES_ROLES)"
+  fi
+fi
 # LAST before the exec in each mode, so the ready line is the last thing printed
 # before the prompt.
 for m in restricted discovery open; do
