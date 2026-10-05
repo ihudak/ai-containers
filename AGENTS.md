@@ -20,7 +20,7 @@ A CLI-only Docker workspace for running AI coding agents (GitHub Copilot CLI, Ki
 
 `sandbox.conf` is the single source of truth for which optional components are included. Set a component to `ON` or `OFF` and rebuild. The format is strictly `component=ON` or `component=OFF`, one per line; comments start with `#`.
 
-Optional components: `copilot`, `kiro`, `claude-code`, `codex`, `gemini`, `graphify`, `openjdk`, `graalvm-ce`, `graalvm-oracle`, `kotlin`, `scala`, `maven`, `gradle`, `kubectl`, `aws-cli`, `azure-cli`, `github-cli`, `angular-cli`, `yarn`, `pnpm`, `bun`, `goreleaser`, `vale`, `qmd`, `dtctl`, `dtmgd`, `imagemagick`, `wkhtmltopdf`, `c-toolchain`, `playwright`, `shellcheck`.
+Optional components: `copilot`, `kiro`, `claude-code`, `codex`, `gemini`, `graphify`, `openjdk`, `graalvm-ce`, `graalvm-oracle`, `kotlin`, `scala`, `maven`, `gradle`, `kubectl`, `aws-cli`, `azure-cli`, `github-cli`, `angular-cli`, `yarn`, `pnpm`, `bun`, `goreleaser`, `vale`, `qmd`, `dtctl`, `dtmgd`, `imagemagick`, `wkhtmltopdf`, `c-toolchain`, `playwright`, `postgres`, `shellcheck`.
 
 **`c-toolchain=ON`** keeps a C compiler in the finished image — `build-essential`
 (gcc, g++, make, binutils, `libc6-dev`) plus `libyaml-dev zlib1g-dev libssl-dev`,
@@ -85,13 +85,24 @@ that does not ask for Playwright composes the `docker run` it always did.
 Playwright's own docs suggest `--ipc=host` for this; that shares the host IPC
 namespace and is not a trade this project makes.
 
+**`postgres=ON | <major> | OFF`** bakes a PGDG PostgreSQL server into the image and
+starts a throwaway cluster in every container, as the sandbox user, on loopback
+only. `ON` is whatever PGDG's `postgresql` metapackage depends on at build time; a
+pinned value is a major (a minor is refused). The image layer fails closed: it runs
+`apt-get update --error-on=any` and refuses to build if PGDG's index did not load,
+so a transient fetch failure cannot silently install Ubuntu's own PostgreSQL 16. It
+is the first server on the shared runner described under
+[In-container database servers](#in-container-database-servers);
+`POSTGRES_ROLES` / `POSTGRES_DATABASES` in `container.env` provision it. User docs:
+`docs/components/postgres.md`.
+
 Version-list components (`node`, `python`, `ruby`, `rust`, `go`) accept comma-separated version values instead of `ON`/`OFF` (e.g., `node=22,20`). Constraints:
 - `angular-cli` accepts only a **single version** (not a comma-separated list).
 - `ruby` is a comma-separated list too, like `node`/`python` (e.g. `ruby=3.3.6,3.4.5`) — useful for migrating a project between Ruby versions. Nothing Ruby-related is baked into the image: rvm, every configured version, and installed gems live in a per-user `~/.rvm`, group-mounted like the agent dotfile dirs (see [Host directory mounts](#host-directory-mounts)) and installed additively at container start (`rvm-reconcile.sh`, `flock`-guarded against concurrent same-group starts) — a version's first install compiles it then (can take a few minutes), every later start is instant, and rubies/gems persist per group across container runs. The `rails` key has been removed entirely — Rails is an ordinary per-project gem, not a build-time/`sandbox.conf` concern. After the reconcile, the default Ruby's `ruby`/`gem`/`bundle`/`bundler`/`rake`/`irb`/`erb` are symlinked onto `/usr/local/bin` (`link-default-ruby.sh`, run by the entrypoint as root) so they resolve in **non-interactive, non-login** shells (`docker exec -T … bash -c "bin/rails …"`), not only in login/interactive shells that source rvm; per-project gemset selection still comes from `.ruby-version` via a login shell. If an install totally fails, reconcile logs `FAILED: ruby-<version>` and never points the default at a version that isn't installed.
 - SDKMAN-managed components (`openjdk`, `graalvm-ce`, `graalvm-oracle`, `kotlin`, `scala`, `maven`, `gradle`) require **full patch versions** (e.g., `openjdk=21.0.11`, not `21`).
 - Any tool described by a `tools.d/*.conf` descriptor (currently `dtctl`, `dtmgd`, `acli`) accepts `ON` (auto-detect latest from GitHub), `x.y.z` (pinned), or `OFF` — this grammar is independent of the tool, so a future tool added the same way follows it automatically. The one thing that narrows it is a descriptor that cannot *express* a version: `acli` is fetched from a vendor `/latest/` URL with no versioned path (a versioned one returns 403), so its grammar is `ON | OFF` and a pinned value is refused rather than silently ignored.
 - `node` always installs the latest LTS (required by the AI agents); `node=20,22` adds those versions alongside it. `nvm-version` pins the nvm release used to install Node (e.g., `nvm-version=v0.40.5`); leave empty for the Dockerfile default.
-- `db-clients` also accepts a comma-separated list, but drawn from the closed set `pg`, `mysql`, `mongo` (not version numbers) — installs **client** shells/dev libraries only (`libpq-dev`+`postgresql-client`, `default-libmysqlclient-dev`+`default-mysql-client`, `mongosh`), never a database server, and is language-agnostic. An entry outside that set is rejected by `build.sh`'s `validate_config` with a clear error rather than reaching the build. Selecting `mongo` adds `repo.mongodb.org` to the generated domain allowlist automatically. Setting `ruby` to any version, or `db-clients` to a non-empty value, makes `build.sh` set `KEEP_BUILD_TOOLCHAIN=1`, so the Dockerfile keeps `build-essential`/`libyaml-dev`/`zlib1g-dev`/`libssl-dev` instead of stripping them, letting native extensions compile at runtime.
+- `db-clients` also accepts a comma-separated list, but drawn from the closed set `pg`, `mysql`, `mongo` (not version numbers) — installs **client** shells/dev libraries only (`libpq-dev`+`postgresql-client`, `default-libmysqlclient-dev`+`default-mysql-client`, `mongosh`), never a database server, and is language-agnostic. (A server is `postgres=`, below.) An entry outside that set is rejected by `build.sh`'s `validate_config` with a clear error rather than reaching the build. Selecting `mongo` adds `repo.mongodb.org` to the generated domain allowlist automatically. Setting `ruby` to any version, or `db-clients` to a non-empty value, makes `build.sh` set `KEEP_BUILD_TOOLCHAIN=1`, so the Dockerfile keeps `build-essential`/`libyaml-dev`/`zlib1g-dev`/`libssl-dev` instead of stripping them, letting native extensions compile at runtime.
 - **A version-list key set to the literal `OFF` means "skip", exactly like the empty `key=`.** The two grammars share one file, so `ruby=OFF` is a natural thing to write; `version_list()` in `sandbox-common.sh` normalises it to empty and `has_versions()` reports it as unset, keeping both consistent with `is_active()`. Use `version_list` — never `get_versions` — wherever a version-list *value* is emitted into a build arg or the container env, because `get_versions` must keep returning `OFF` verbatim for the boolean keys. (Without this, `ruby=OFF` baked the whole Ruby build toolchain **and** shipped `RUBY_VERSIONS=OFF` into the container, so `rvm-reconcile.sh` bootstrapped rvm and ran `rvm install OFF` on every container start, into an `~/.rvm` that `sandbox.sh` — correctly using `is_active` — had not mounted.)
 
 **Schema changes to `sandbox.conf`.** Adding a new on/off or version-list key needs nothing extra: no marker bump, no hook. `sync-to-projects.sh` reconciles each project's copy on every sync — it appends new upstream keys and never touches keys a project already set. Renaming a key, splitting it into multiple keys, removing it, or changing what its value means while keeping the same key name requires a `migrations/NNN-*.sh` hook — author it with `./bump-sandbox-version.sh <slug>`, and see the README "sandbox.conf schema versioning" section. Never redefine an existing key's semantics in place; always introduce a new key name for a semantic change. The reconcile mechanism assumes an existing key's meaning never silently changes underneath a project that has already set it — violating this discipline is not automatically detectable by tooling. `check-sandbox-version.sh --check` is the CI gate that blocks a removal/rename lacking a matching hook and marker bump — in CI it MUST be run with `BASE_REF` set to a ref that predates the change (e.g. `BASE_REF="$(git merge-base HEAD origin/main)"`), never left at its default `HEAD`, which silently no-ops once the change is committed (see README "sandbox.conf schema versioning").
@@ -363,6 +374,10 @@ The four pointers form a personal / team / product / architecture tier:
 
 4. **open mode**: no firewall is applied and no capture daemon is started (unrestricted egress, no logging) → `run_agent_skill_install` → `exec capsh --drop=cap_net_admin,cap_net_raw --user=<sandbox>` (same capability drop as restricted mode). `sandbox.sh` passes an empty `capabilities=()` array for this mode (neither `--cap-add=NET_ADMIN` nor `--cap-add=NET_RAW`). Equivalent in effect to the historical `DISCOVERY_CAPTURE_ENABLED=0 ./sandbox.sh discovery`, but as an explicit, honestly named mode rather than a flag on discovery. The capability drop is verified by case `240-open-drops-capabilities`; until backlog F7 was closed, nothing verified it, because the case named for the job launched discovery instead.
 
+In all three modes `run_services` is the last step before the `capsh` exec, so the
+in-container servers' ready lines are the last output before the prompt — see
+[In-container database servers](#in-container-database-servers).
+
 Background daemons are forked **before** `exec capsh` so they retain root capabilities despite the exec. `run_agent_skill_install` runs as the sandbox user (via `runuser`) in all three modes, right before the `capsh` exec — see [Automatic Agent Skill installation](#automatic-agent-skill-installation) below.
 
 ### Automatic Agent Skill installation
@@ -374,6 +389,51 @@ Background daemons are forked **before** `exec capsh` so they retain root capabi
 - **Cross-client skill:** if the descriptor sets `skills_crossclient=` (both `dtctl` and `dtmgd` do), that flag is passed once (e.g. `dtctl skills install --cross-client --global --force`) in addition to the per-agent installs.
 - **Idempotent via a version stamp:** `current_stamp` builds one `name=$(binary --version)` line per skills-capable installed tool (sorted); if it matches `~/.agents/.ai-containers-skills-stamp` from the last run byte-for-byte, the whole install step is a no-op. This means a normal container start (same image, same tool versions) does the skill install exactly once, not on every start — it only re-runs after a tool's version changes (e.g. after a rebuild that picks up a newer release).
 - **Never fails container start:** each `<tool> skills install ...` call is best-effort (`>/dev/null 2>&1`); a tool with no supported agent, or one that errors, is reported inline (`  <tool> → (no supported agents)`) and does not stop the loop.
+
+### In-container database servers
+
+`start-services.sh` (baked to `/usr/local/bin/`) starts the servers `sandbox.conf`
+enabled. `sandbox.sh` passes them as `AI_SERVICES="name=value,…"`
+(`sandbox-common.sh`: `services_csv()`), and `entrypoint.sh`'s `run_services`
+calls the runner twice: `prepare` as **root**, which only creates each service's
+directories and chowns them to the sandbox user, then `start` via `runuser` as the
+**sandbox user** — so no server process is ever root. The runner's path is fixed;
+there is deliberately no env override, because `container.env` reaches that root
+process. For the same reason both calls run under
+`env -u AI_SERVICES_DIR -u AI_SERVICES_STATE_ROOT -u AI_SERVICES_LOG_ROOT`: those
+are the runner's test-only path overrides, and a project file must not repoint them.
+
+Each server is an **adapter**, `services.d/<name>.sh`, sourced in its own subshell
+and required to define five functions:
+
+| Function | Contract |
+|---|---|
+| `svc_installed_version` | print the installed version, or nothing if this image lacks the server |
+| `svc_runtime_dirs` | print extra absolute directories `prepare` must create, one per line |
+| `svc_start <datadir> <logfile>` | initialise and start; return 0 once it accepts connections. Its output goes to the log |
+| `svc_provision` | create what the adapter's env asks for; warn per bad entry; print the ready-line suffix on stdout |
+| `svc_endpoint` | print where to connect |
+
+The runner owns everything else, once: the 60 s watchdog (`AI_SERVICES_TIMEOUT`;
+it keeps the watchdog shape of `tests/portability.sh`'s `p_timeout()` — copied
+because the image has no access to that file and macOS has no `timeout(1)` — but
+starts the bounded command in its own process group and signals the whole group on
+expiry, because adapters start children by design (`initdb`, `pg_ctl`, `psql`) and
+a hung child must not survive the deadline), the ready line, the log tail on
+failure, the "image has no such server — rebuild" and "sandbox.conf asks for X,
+image has Y" warnings (a **warning, never a refusal**, matching
+`ai_containers_provenance_warn()`), and the rule that every path exits 0.
+
+Data is **ephemeral** (`/var/lib/ai-services/<name>` in the container layer, gone
+with `--rm`). Do not group-mount it: two concurrent containers in one group would
+start two servers on one data directory, and PostgreSQL's `postmaster.pid`
+interlock compares PIDs, which are per-namespace.
+
+**Adding a server** is: the key in `sandbox.conf` (+ `validate_config` and a build
+arg in `build.sh`), one Dockerfile layer, its name in `services_csv()`, one
+adapter, its `docs/components/<name>.md`, a hermetic test with the adapter as a
+falsify target, and an integration case with mutations. The runner and the
+entrypoint do not change.
 
 ### Mount layout (`/workspace` umbrella) and repo volumes
 

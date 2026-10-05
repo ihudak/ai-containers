@@ -23,6 +23,8 @@ db-clients=                 # empty = skip (default)
 
 > **Note — retained runtime build toolchain.** Setting `ruby=` to any version, or `db-clients=` to a non-empty value, makes `build.sh` set `KEEP_BUILD_TOOLCHAIN=1`, which keeps `build-essential`, `libyaml-dev`, `zlib1g-dev`, and `libssl-dev` in the built image instead of stripping them (see [Important notes](../troubleshooting.md)). This lets native extensions — the `pg`/`mysql2` gems, Python source wheels, and similar — compile **at container runtime**, not only at build time.
 
+> **Need a server, not a client?** [`postgres=`](postgres.md) runs a PostgreSQL server inside the container for your tests.
+
 ---
 
 [← Components](README.md) · [Documentation index](../README.md)

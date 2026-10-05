@@ -117,7 +117,7 @@ Both GraalVM variants also install the `native-image` toolchain.
 
 | Key | Values | What it does |
 |---|---|---|
-| `postgres` | ON / major / OFF | A PostgreSQL server inside the container, for test suites — loopback only, data thrown away on exit |
+| `postgres` | ON / major / OFF | [A PostgreSQL server inside the container](postgres.md), for test suites — loopback only, data thrown away on exit |
 
 ### Browser automation
 
