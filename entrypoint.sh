@@ -74,6 +74,23 @@ link_agent_tools() {
     bash /usr/local/bin/link-agent-tools.sh "/home/$sandbox_user" || true
 }
 
+# Start the in-container database servers sandbox.conf enabled (AI_SERVICES).
+# `prepare` runs as ROOT and only creates directories for the sandbox user;
+# `start` runs as the sandbox user, so no server process is ever root. Both are
+# non-fatal: a server that fails to start must not cost the user their shell.
+# The runner's path is fixed on purpose — container.env reaches this process,
+# and no project data file may choose what root executes. For the same reason
+# both invocations strip the runner's test-only AI_SERVICES_DIR/_STATE_ROOT/
+# _LOG_ROOT overrides, so a project file cannot repoint root's prepare phase.
+run_services() {
+  [[ -n "${AI_SERVICES:-}" ]] || return 0
+  [[ -x /usr/local/bin/start-services.sh ]] || return 0
+  env -u AI_SERVICES_DIR -u AI_SERVICES_STATE_ROOT -u AI_SERVICES_LOG_ROOT \
+    /usr/local/bin/start-services.sh prepare || true
+  runuser -u "$sandbox_user" -- env -u AI_SERVICES_DIR -u AI_SERVICES_STATE_ROOT -u AI_SERVICES_LOG_ROOT \
+    /usr/local/bin/start-services.sh start || true
+}
+
 # Create the sandbox user at startup with the host user's name, UID, and GID so
 # that files in bind-mounted volumes (/workspace and its sub-mounts) are accessible
 # without any chown. useradd -m creates the home directory with correct ownership.
@@ -265,6 +282,7 @@ case "$mode" in
     run_agent_tools_reconcile
     link_agent_tools
     run_agent_skill_install
+    run_services
 
     exec capsh \
       --drop=cap_net_admin,cap_net_raw \
@@ -311,6 +329,7 @@ case "$mode" in
     run_agent_tools_reconcile
     link_agent_tools
     run_agent_skill_install
+    run_services
 
     exec capsh \
       --drop=cap_net_admin \
@@ -333,6 +352,7 @@ case "$mode" in
     run_agent_tools_reconcile
     link_agent_tools
     run_agent_skill_install
+    run_services
 
     exec capsh \
       --drop=cap_net_admin,cap_net_raw \

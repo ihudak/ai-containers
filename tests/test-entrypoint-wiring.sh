@@ -77,4 +77,39 @@ grep -q 'useradd_matching_host_uid -M -s /bin/bash' "$REPO_DIR/entrypoint.sh" \
   && pass "setup_sandbox_user calls the wrapper, not useradd directly" \
   || fail "setup_sandbox_user calls the wrapper, not useradd directly"
 
+# ── in-container database servers ──────────────────────────────────────────────
+# Grep-level, like the rest of this file: entrypoint.sh runs as root and is
+# GREPPED-ONLY in the falsify tier. That a real server starts is integration case
+# 780-postgres-server-runs. run_services deliberately takes NO env override for
+# the runner's path — container.env reaches this root process, and an override
+# would let a project's data file choose what root executes.
+grep -q '^run_services() {' "$REPO_DIR/entrypoint.sh" && pass "defines run_services" || fail "defines run_services"
+ns="$(grep -c '^[[:space:]]*run_services$' "$REPO_DIR/entrypoint.sh")"
+[[ "$ns" -ge 3 ]] && pass "run_services wired in 3 modes ($ns)" || fail "run_services wired in 3 modes ($ns)"
+grep -q 'runuser -u "$sandbox_user" -- env -u AI_SERVICES_DIR -u AI_SERVICES_STATE_ROOT -u AI_SERVICES_LOG_ROOT \\$' "$REPO_DIR/entrypoint.sh" \
+  && grep -q '^    /usr/local/bin/start-services.sh start || true$' "$REPO_DIR/entrypoint.sh" \
+  && pass "the start phase runs as the sandbox user" \
+  || fail "the start phase runs as the sandbox user"
+# Both runner invocations strip the test-only path overrides: container.env
+# reaches this root process and must not redirect prepare's chown.
+nstrip="$(grep -c 'env -u AI_SERVICES_DIR -u AI_SERVICES_STATE_ROOT -u AI_SERVICES_LOG_ROOT' "$REPO_DIR/entrypoint.sh")"
+[[ "$nstrip" -eq 2 ]] && pass "both runner invocations strip the path overrides ($nstrip)" || fail "both runner invocations strip the path overrides ($nstrip)"
+grep -q 'AI_SERVICES_RUNNER' "$REPO_DIR/entrypoint.sh" \
+  && fail "run_services takes no env override for the runner path" \
+  || pass "run_services takes no env override for the runner path"
+# LAST before the exec in each mode, so the ready line is the last thing printed
+# before the prompt.
+for m in restricted discovery open; do
+  block="$(awk -v m="$m" '
+    $0 ~ "^[[:space:]]*"m"\\)" {grab=1; next}
+    grab && /;;/ {grab=0}
+    grab {print}
+  ' "$REPO_DIR/entrypoint.sh")"
+  order="$(grep -E '^[[:space:]]*(run_agent_skill_install|run_services|exec capsh)' <<<"$block" \
+           | awk '{print $1}' | tr '\n' ' ')"
+  [[ "$order" == "run_agent_skill_install run_services exec " ]] \
+    && pass "$m: run_services runs after the skill install and immediately before exec capsh" \
+    || fail "$m: run_services order (got: $order)"
+done
+
 printf '\n%d failure(s)\n' "$fails"; exit "$fails"
