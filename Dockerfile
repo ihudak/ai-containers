@@ -678,13 +678,22 @@ RUN if [ -n "$POSTGRES_VERSION" ]; then \
         > /etc/apt/sources.list.d/postgresql-pgdg.list && \
       mkdir -p /etc/postgresql-common && \
       echo 'create_main_cluster = false' > /etc/postgresql-common/createcluster.conf && \
-      apt-get update && \
+      apt-get update --error-on=any && \
+      pgdg="$(apt-cache policy postgresql)" && \
+      if ! grep -q 'apt.postgresql.org' <<<"$pgdg"; then \
+        echo "ERROR: postgres=${POSTGRES_VERSION/latest/ON} in sandbox.conf: PGDG's package index (apt.postgresql.org) did not load, so the build would fall back to Ubuntu's own PostgreSQL." >&2; \
+        exit 1; \
+      fi && \
       major="$POSTGRES_VERSION" && \
       if [ "$major" = "latest" ]; then \
         major="$(apt-cache depends postgresql | sed -n 's/^ *Depends: postgresql-\([0-9][0-9]*\)$/\1/p' | head -1)"; \
+        if [ -z "$major" ]; then \
+          echo "ERROR: postgres=ON in sandbox.conf: could not resolve the newest major from PGDG's postgresql package for ${codename}." >&2; \
+          exit 1; \
+        fi; \
       fi && \
-      if [ -z "$major" ] || ! apt-cache show "postgresql-$major" >/dev/null 2>&1; then \
-        echo "ERROR: postgres=$POSTGRES_VERSION in sandbox.conf: PGDG has no postgresql-${major:-?} for ${codename}." >&2; \
+      if ! apt-cache show "postgresql-$major" >/dev/null 2>&1; then \
+        echo "ERROR: postgres=${POSTGRES_VERSION/latest/ON} in sandbox.conf: PGDG has no postgresql-${major} for ${codename}." >&2; \
         echo "       Majors it does carry: $(apt-cache search --names-only '^postgresql-[0-9]+$' | sed 's/^postgresql-\([0-9]*\) .*/\1/' | sort -n | tr '\n' ' ')" >&2; \
         exit 1; \
       fi && \

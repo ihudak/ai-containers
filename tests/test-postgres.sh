@@ -343,6 +343,13 @@ grep -qE '^(services\.d|start-services\.sh)' "$REPO_DIR/.dockerignore" \
   && fail "E .dockerignore must not exclude the runner or its adapters" \
   || pass "E .dockerignore keeps the runner and its adapters in the build context"
 
+grep -qF -- 'apt-get update --error-on=any' <<<"$layer" && pass "E a failed index fetch fails the build (--error-on=any)" || fail "E --error-on=any"
+pgdg_at="$(grep -nF 'apt.postgresql.org' <<<"$layer" | sed -n '2p' | cut -d: -f1)"
+resolve_at="$(grep -nF 'apt-cache depends postgresql' <<<"$layer" | head -1 | cut -d: -f1)"
+[[ -n "$pgdg_at" && -n "$resolve_at" && "$pgdg_at" -lt "$resolve_at" ]] \
+  && pass "E PGDG's index is asserted loaded before the major is resolved" \
+  || fail "E PGDG index check precedes resolution (check=$pgdg_at resolve=$resolve_at)"
+
 # ── Part G: shipping to projects ───────────────────────────────────────────────
 shared_list="$( source "$REPO_DIR/shared-files.sh"; printf '%s\n' "${AI_CONTAINERS_SHARED_FILES[@]}" )"
 grep -qx 'start-services.sh' <<<"$shared_list" \
