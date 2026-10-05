@@ -74,6 +74,29 @@ validate_config() {
     printf '       Lowercase is read as a version and becomes `npx playwright@%s`.\n' "$pw_val" >&2
     exit 1
   fi
+  # postgres names ONE server major (spec D6/D7). Checked here because every
+  # mistake below otherwise surfaces as an apt error inside the build — "Unable to
+  # locate package postgresql-on" — which names neither this key nor this file.
+  # Order matters: a list, then a case-variant of the two reserved words, then a
+  # minor (with the major to pin instead), then anything that is not a number.
+  local pg_val; pg_val=$(get_versions postgres)
+  if [[ -n "$pg_val" && "$pg_val" != "ON" && "$pg_val" != "OFF" ]]; then
+    if [[ "$pg_val" == *,* ]]; then
+      printf 'ERROR: postgres only supports a single value (got: "%s").\n' "$pg_val" >&2
+      printf '       Use ON (newest major at build time), a major version (e.g. 17), or OFF.\n' >&2
+      exit 1
+    elif [[ "${pg_val^^}" == "ON" || "${pg_val^^}" == "OFF" ]]; then
+      printf 'ERROR: postgres value "%s" must be written in capitals (ON or OFF).\n' "$pg_val" >&2
+      exit 1
+    elif [[ "$pg_val" =~ ^[0-9]+\.[0-9.]*$ ]]; then
+      printf 'ERROR: postgres=%s pins a minor version; pin the major instead: postgres=%s\n' "$pg_val" "${pg_val%%.*}" >&2
+      printf '       PGDG ships only the latest minor of each major.\n' >&2
+      exit 1
+    elif [[ ! "$pg_val" =~ ^[0-9]+$ ]]; then
+      printf 'ERROR: postgres value "%s" is not ON, OFF or a major version number (e.g. 17).\n' "$pg_val" >&2
+      exit 1
+    fi
+  fi
   local jvm_key jvm_val ver
   for jvm_key in openjdk graalvm-ce graalvm-oracle kotlin scala maven gradle; do
     jvm_val=$(version_list "$jvm_key")
@@ -262,6 +285,18 @@ build_args_from_config() {
     _args+=(--build-arg "PLAYWRIGHT_VERSION=${pw_raw}")
   else
     _args+=(--build-arg "PLAYWRIGHT_VERSION=")
+  fi
+
+  # PostgreSQL server major for the in-container test cluster (PGDG). ON becomes
+  # `latest`, which the Dockerfile layer resolves through PGDG's own `postgresql`
+  # metapackage; a pinned major passes verbatim. OFF and empty emit NOTHING — not
+  # an empty arg — so the config digest of a project that never enables the key
+  # is unaffected by the key existing.
+  local pg_raw; pg_raw=$(get_versions postgres)
+  if [[ "$pg_raw" == "ON" ]]; then
+    _args+=(--build-arg "POSTGRES_VERSION=latest")
+  elif [[ -n "$pg_raw" && "$pg_raw" != "OFF" ]]; then
+    _args+=(--build-arg "POSTGRES_VERSION=${pg_raw}")
   fi
 
   local jvm_keys=(openjdk graalvm-ce graalvm-oracle kotlin scala maven gradle)

@@ -113,6 +113,12 @@ Both GraalVM variants also install the `native-image` toolchain.
 | `c-toolchain` | ON / OFF | [A C compiler and headers](c-toolchain.md), for cgo and native extensions |
 | `shellcheck` | ON / OFF | The shell linter this repo gates on — Ubuntu's package, the **same version CI runs** |
 
+### Database servers
+
+| Key | Values | What it does |
+|---|---|---|
+| `postgres` | ON / major / OFF | A PostgreSQL server inside the container, for test suites — loopback only, data thrown away on exit |
+
 ### Browser automation
 
 | Key | Values | What it does |
