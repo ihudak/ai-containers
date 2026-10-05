@@ -382,7 +382,7 @@ pg_reset; out="$(POSTGRES_ROLES='' POSTGRES_DATABASES='' pg svc_provision 2>"$FA
 # D18 — an app's own PG_* variables in container.env reach `start`, and are not
 # the adapter's knobs: PG_PORT=5433 is a common app setting, and read as a knob
 # it would move the server off 5432 and away from libpq's default socket.
-got="$(PG_PORT=5433 PG_SUPERUSER=bob PG_SOCKET_DIR=/nowhere PG_MAJOR_FILE=/nowhere PG_LIB_ROOT=/nowhere pg svc_endpoint)"
+got="$(PG_PORT=5433 PG_SUPERUSER=reporting PG_SOCKET_DIR=/nowhere PG_MAJOR_FILE=/nowhere PG_LIB_ROOT=/nowhere pg svc_endpoint)"
 [[ "$got" == "localhost:5432 (socket $FAKE/sock), superuser alice" ]] \
   && pass "D18 an app's PG_PORT/PG_SUPERUSER/PG_SOCKET_DIR do not move the server" \
   || fail "D18 app PG_* variables (got '$got')"
