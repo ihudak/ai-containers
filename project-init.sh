@@ -386,6 +386,7 @@ rsync -a --exclude='custom.txt' \
 rsync -a --exclude='custom.txt' \
   "${script_dir}/allowlist-cidrs.d/"         "${dest}/allowlist-cidrs.d/"
 rsync -a "${script_dir}/tools.d/" "${dest}/tools.d/"
+rsync -a "${script_dir}/services.d/" "${dest}/services.d/"
 
 # Shared scripts and build files — the list lives in shared-files.sh, the
 # single definition sync-to-projects.sh also sources (see there). These were

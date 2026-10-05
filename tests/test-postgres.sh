@@ -322,5 +322,35 @@ pg_reset; out="$(POSTGRES_ROLES='' POSTGRES_DATABASES='' pg svc_provision 2>"$FA
   && pass "D17 nothing requested: nothing run, nothing printed" \
   || fail "D17 (rc=$rc out='$out')"
 
+# ── Part E: the Dockerfile layer's shape ──────────────────────────────────────
+# Shape only: that it BUILDS is integration case 780. These pin the properties
+# the spec decided, so a later edit that drops one fails here, in seconds.
+DF="$REPO_DIR/Dockerfile"
+layer="$(awk '/^ARG POSTGRES_VERSION=$/{grab=1} grab{print} grab && /^$/{exit}' "$DF")"
+[[ -n "$layer" ]] && pass "E the Dockerfile declares ARG POSTGRES_VERSION= (empty default = skip)" \
+                  || fail "E the Dockerfile declares ARG POSTGRES_VERSION="
+grep -qF 'if [ -n "$POSTGRES_VERSION" ]' <<<"$layer" && pass "E the layer is skipped when the arg is empty" || fail "E skip guard"
+grep -qF -- '-pgdg main" ' <<<"$layer" && ! grep -qE -- '-pgdg main [0-9]' <<<"$layer" \
+  && pass "E PGDG's main component only — betas live in other components" \
+  || fail "E PGDG main component only"
+grep -qF 'create_main_cluster = false' <<<"$layer" && pass "E no cluster is created at build time" || fail "E create_main_cluster"
+grep -qF 'apt-cache depends postgresql' <<<"$layer" && pass "E ON resolves through PGDG's postgresql metapackage" || fail "E latest resolution"
+grep -qF 'locale-gen en_US.UTF-8' <<<"$layer" && pass "E en_US.UTF-8 is generated" || fail "E locale"
+grep -qF '/etc/ai-containers/postgres-major' <<<"$layer" && pass "E the resolved major is recorded for the adapter" || fail "E major marker"
+grep -qx 'COPY start-services.sh /usr/local/bin/start-services.sh' "$DF" && pass "E the runner is copied into the image" || fail "E COPY start-services.sh"
+grep -qx 'COPY services.d /etc/ai-containers/services.d' "$DF" && pass "E the adapters are copied into the image" || fail "E COPY services.d"
+grep -qE '^(services\.d|start-services\.sh)' "$REPO_DIR/.dockerignore" \
+  && fail "E .dockerignore must not exclude the runner or its adapters" \
+  || pass "E .dockerignore keeps the runner and its adapters in the build context"
+
+# ── Part G: shipping to projects ───────────────────────────────────────────────
+( source "$REPO_DIR/shared-files.sh"; printf '%s\n' "${AI_CONTAINERS_SHARED_FILES[@]}" ) | grep -qx 'start-services.sh' \
+  && pass "G start-services.sh is a shared file (a project's build COPYs it)" \
+  || fail "G start-services.sh is a shared file"
+payload="$(bash -c 'source "$1/sandbox-common.sh" >/dev/null 2>&1; ai_containers_payload_files "$1"' _ "$REPO_DIR")"
+grep -qx 'services.d/postgres.sh' <<<"$payload" && grep -qx 'start-services.sh' <<<"$payload" \
+  && pass "G the provenance digest covers the runner and services.d/ (they are built into the image)" \
+  || fail "G provenance digest coverage"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

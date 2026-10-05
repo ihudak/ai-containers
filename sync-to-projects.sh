@@ -247,6 +247,7 @@ sync_project() {
   rsync -a --exclude='custom.txt' \
     "${script_dir}/allowlist-cidrs.d/"         "${dest}/allowlist-cidrs.d/"
   rsync -a "${script_dir}/tools.d/" "${dest}/tools.d/"
+  rsync -a "${script_dir}/services.d/" "${dest}/services.d/"
 
   # Migrate legacy runme.sh<->launcher naming before copying shared files.
   migrate_launcher_naming "$dest"

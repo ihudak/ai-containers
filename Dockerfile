@@ -645,6 +645,55 @@ RUN if [ "$INSTALL_SHELLCHECK" = "1" ]; then \
       rm -rf /var/lib/apt/lists/*; \
     fi
 
+# ── Optional: PostgreSQL server (in-container, for tests) ──────────────────────
+# POSTGRES_VERSION: empty = skip; `latest` (from postgres=ON) or a major (17).
+# From PGDG (apt.postgresql.org), `main` component ONLY — PGDG publishes betas
+# in per-major components (`19`, `20`), so main alone can never install one.
+# `latest` resolves through PGDG's own `postgresql` metapackage: the definition
+# of "current" is PGDG's, not this file's. A major PGDG does not carry fails the
+# build with the majors it does.
+#
+# create_main_cluster = false: the Debian packaging would otherwise create a
+# cluster at BUILD time, owned by the `postgres` user, which nothing uses —
+# services.d/postgres.sh initdb's a fresh one as the sandbox user at every start.
+# en_US.UTF-8 is generated because the base image ships only C/C.utf8, and the
+# adapter creates the cluster with the official postgres image's default
+# collation (see services.d/postgres.sh).
+#
+# The resolved major is recorded at /etc/ai-containers/postgres-major: it is how
+# the adapter finds /usr/lib/postgresql/<major>/bin, and what the runner compares
+# against a pinned postgres= to warn about a stale image.
+#
+# After the cleanup purge above, alongside playwright/shellcheck: apt marks these
+# packages manual, so the later qmd-layer purge's --auto-remove leaves them.
+ARG POSTGRES_VERSION=
+RUN if [ -n "$POSTGRES_VERSION" ]; then \
+      apt-get update && \
+      apt-get install -y --no-install-recommends locales gnupg && \
+      locale-gen en_US.UTF-8 && \
+      codename="$(. /etc/os-release && printf '%s' "$VERSION_CODENAME")" && \
+      curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+        | gpg --dearmor -o /usr/share/keyrings/postgresql-pgdg.gpg && \
+      echo "deb [signed-by=/usr/share/keyrings/postgresql-pgdg.gpg] https://apt.postgresql.org/pub/repos/apt ${codename}-pgdg main" \
+        > /etc/apt/sources.list.d/postgresql-pgdg.list && \
+      mkdir -p /etc/postgresql-common && \
+      echo 'create_main_cluster = false' > /etc/postgresql-common/createcluster.conf && \
+      apt-get update && \
+      major="$POSTGRES_VERSION" && \
+      if [ "$major" = "latest" ]; then \
+        major="$(apt-cache depends postgresql | sed -n 's/^ *Depends: postgresql-\([0-9][0-9]*\)$/\1/p' | head -1)"; \
+      fi && \
+      if [ -z "$major" ] || ! apt-cache show "postgresql-$major" >/dev/null 2>&1; then \
+        echo "ERROR: postgres=$POSTGRES_VERSION in sandbox.conf: PGDG has no postgresql-${major:-?} for ${codename}." >&2; \
+        echo "       Majors it does carry: $(apt-cache search --names-only '^postgresql-[0-9]+$' | sed 's/^postgresql-\([0-9]*\) .*/\1/' | sort -n | tr '\n' ' ')" >&2; \
+        exit 1; \
+      fi && \
+      apt-get install -y --no-install-recommends "postgresql-$major" && \
+      test -x "/usr/lib/postgresql/$major/bin/postgres" && \
+      mkdir -p /etc/ai-containers && printf '%s\n' "$major" > /etc/ai-containers/postgres-major && \
+      rm -rf /var/lib/apt/lists/*; \
+    fi
+
 # ── Ruby runtime prerequisites (rvm is a per-user install at ~/.rvm, done at
 # container start; nothing Ruby is baked). Retain the FULL ruby-build dependency
 # set so `rvm install` compiles Ruby at runtime, pre-seed rvm's GPG keys so the
@@ -801,7 +850,9 @@ RUN --mount=type=secret,id=github_token \
     GITHUB_TOKEN="$(cat /run/secrets/github_token 2>/dev/null || true)" \
     bash /tmp/install-tools.sh
 COPY install-agent-skills.sh /usr/local/bin/install-agent-skills.sh
-RUN chmod +x /usr/local/bin/install-agent-skills.sh
+COPY start-services.sh /usr/local/bin/start-services.sh
+COPY services.d /etc/ai-containers/services.d
+RUN chmod +x /usr/local/bin/install-agent-skills.sh /usr/local/bin/start-services.sh
 
 COPY refresh-ipset-allowlist.sh /usr/local/bin/
 COPY capture-agent-destinations.sh /usr/local/bin/

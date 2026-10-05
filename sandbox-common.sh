@@ -852,7 +852,7 @@ ai_containers_payload_files() {   # <dir> → one relative path per line, sorted
         printf '%s\n' "$f"
       done
       for f in allowlist-*.txt; do [[ -f "$f" ]] && printf '%s\n' "$f"; done
-      for f in allowlist-*.d/*.txt tools.d/*; do [[ -f "$f" ]] && printf '%s\n' "$f"; done
+      for f in allowlist-*.d/*.txt tools.d/* services.d/*; do [[ -f "$f" ]] && printf '%s\n' "$f"; done
     } 2>/dev/null | LC_ALL=C sort -u )
 }
 

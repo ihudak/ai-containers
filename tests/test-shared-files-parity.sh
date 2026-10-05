@@ -302,4 +302,15 @@ else
   fail "every synced engine file is inside the provenance digest — outside it: $missing"
 fi
 
+# services.d/ is a directory, so it is copied by rsync beside tools.d/ rather than
+# listed in AI_CONTAINERS_SHARED_FILES — which makes it the one engine input this
+# file's list-parity check cannot see. Asserted by effect in both callers.
+for d in "$DEST_A" "$DEST_B"; do
+  if cmp -s "$REPO_DIR/services.d/postgres.sh" "$d/services.d/postgres.sh" 2>/dev/null; then
+    pass "services.d/ lands in $(basename "$(dirname "$d")")"
+  else
+    fail "services.d/ lands in $(basename "$(dirname "$d")")"
+  fi
+done
+
 printf '\n%d failure(s)\n' "$fails"; exit "$fails"

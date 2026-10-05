@@ -211,7 +211,7 @@ expected_shared_files=(
   build.sh sandbox.sh repo.sh group.sh entrypoint.sh version.sh
   repo-git-reset.sh
   rvm-reconcile.sh link-default-ruby.sh
-  agent-tools-reconcile.sh link-agent-tools.sh
+  agent-tools-reconcile.sh link-agent-tools.sh start-services.sh
   refresh-ipset-allowlist.sh
   capture-blocked-traffic.sh capture-agent-destinations.sh
   install-tools.sh install-agent-skills.sh
@@ -260,6 +260,12 @@ if [[ -f "$DEST/tools.d/dtctl.conf" ]] && cmp -s "$REPO_DIR/tools.d/dtctl.conf" 
   pass "tools.d/ fragments synced"
 else
   fail "tools.d/ fragments synced"
+fi
+
+if [[ -f "$DEST/services.d/postgres.sh" ]] && cmp -s "$REPO_DIR/services.d/postgres.sh" "$DEST/services.d/postgres.sh" 2>/dev/null; then
+  pass "services.d/ adapters synced"
+else
+  fail "services.d/ adapters synced"
 fi
 
 # ── 3. Deliberately-NOT-synced files stay untouched (sentinels survive) ────────
