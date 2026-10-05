@@ -590,8 +590,8 @@ esac
 # anyone remembering this test — it joins IT_LAUNCHER_ENV_KEYS or this goes red.
 # That is how ARCHITECTURE_REPO_PATH reached the list, and fifteen others did not.
 #
-# Checked by EFFECT through the real launcher_run: the fake sandbox.sh dumps the
-# environment it was handed. Inherited ON PURPOSE, so exempt here:
+# Checked by EFFECT through the real launcher_run: the fake sandbox.sh reports
+# the value it was handed for each key under test. Inherited ON PURPOSE, so exempt here:
 # SANDBOX_UID/GID/USER/GROUP — lib.sh reads them to know which user the
 # container will run as, and the launcher must agree with it.
 LE_CONF="$REPO_DIR/docs/configuration.md"
@@ -615,20 +615,34 @@ mkdir -p "$LE_FAKE_REPO/tests"
 ln -sf "$IT_LIB_DIR" "$LE_FAKE_REPO/tests/integration"
 : > "$LE_FAKE_REPO/build.sh"
 : > "$LE_FAKE_REPO/sandbox.conf"
-printf '#!/usr/bin/env bash\nenv\n' > "$LE_FAKE_REPO/sandbox.sh"
+# The fake reports ONLY the keys under test plus IMAGE_NAME, never the whole
+# environment. The failure messages below print what it reported, and a full
+# `env` would carry any credential the developer exports outside the documented
+# table — a build GITHUB_TOKEN, say — straight into the test log.
+printf '%s\n' IMAGE_NAME ${le_keys[@]+"${le_keys[@]}"} > "$LE_FAKE_REPO/keys"
+cat > "$LE_FAKE_REPO/sandbox.sh" <<'LEEOF'
+#!/usr/bin/env bash
+while IFS= read -r k; do printf '%s=%s\n' "$k" "${!k-<unset>}"; done < "$(dirname "$0")/keys"
+LEEOF
 chmod +x "$LE_FAKE_REPO/sandbox.sh"
 le_env=()
 for k in ${le_keys[@]+"${le_keys[@]}"}; do le_env+=("$k=LEAKED-$k"); done
-# The case sets REPOS itself AFTER sourcing lib.sh, and that value MUST arrive:
-# a fix that blanked every key would pass the leak check and break every case
-# that configures the launcher.
-out="$(env -u DOCKER_HOST ${le_env[@]+"${le_env[@]}"} \
+# $1 = a REPOS value the case sets itself after sourcing lib.sh, or empty for a
+# case that sets nothing. LE_UNRELATED_SECRET stands in for a credential outside
+# the documented table, which the report must never contain.
+le_launch() {
+  env -u DOCKER_HOST ${le_env[@]+"${le_env[@]}"} LE_UNRELATED_SECRET=do-not-print-me \
     IT_RUN_ID="unit-le-$RANDOM" IT_IMAGE=unit-img IT_NET=unit-net \
     IT_SCRATCH="$TMP/scratch-le-$RANDOM" IT_LABEL="ai-containers.it-run=unit-le" \
     IT_REAL_DOCKER="$TRUE_STUB" IT_DOCKER_HOST="" \
-    LE_LIB="$LE_FAKE_REPO/tests/integration/lib.sh" \
-    bash -c '. "$LE_LIB"; export REPOS="case-own:ro"; launcher_run open >/dev/null 2>&1; cat "$IT_LAUNCH_OUT"')"
-# Proof the dump came from sandbox.sh under launcher_run — IMAGE_NAME is the
+    LE_LIB="$LE_FAKE_REPO/tests/integration/lib.sh" LE_CASE_REPOS="${1:-}" \
+    bash -c '. "$LE_LIB"; [[ -n "$LE_CASE_REPOS" ]] && export REPOS="$LE_CASE_REPOS"; launcher_run open >/dev/null 2>&1; cat "$IT_LAUNCH_OUT"'
+}
+# Launch 1: the case sets NOTHING, so every key's inherited sentinel is exposed.
+# Checking the leak in a launch where the case had overridden a key would let
+# that key leak unseen — the case's own value would overwrite the sentinel.
+out="$(le_launch "")"
+# Proof the report came from sandbox.sh under launcher_run — IMAGE_NAME is the
 # value launcher_run itself exports. Without it, an empty $out would make the
 # leak check below pass having observed nothing.
 if grep -qx 'IMAGE_NAME=unit-img' <<< "$out"; then
@@ -639,6 +653,13 @@ if grep -qx 'IMAGE_NAME=unit-img' <<< "$out"; then
 else
   t_fail "the fake sandbox.sh never ran under launcher_run, so nothing was observed (got: '$out')"
 fi
+grep -q 'do-not-print-me' <<< "$out" \
+  && t_fail "the launcher report carries an undocumented exported variable, so a failure message would print it" \
+  || t_pass "the launcher report carries only the variables under test"
+# Launch 2: the case sets REPOS itself, and that value MUST arrive. A fix that
+# blanked every key would pass launch 1 and break every case that configures
+# the launcher.
+out="$(le_launch "case-own:ro")"
 grep -qx 'REPOS=case-own:ro' <<< "$out" \
   && t_pass "a value the case sets itself still reaches the launcher" \
   || t_fail "a value the case sets itself still reaches the launcher (got: '$out')"
