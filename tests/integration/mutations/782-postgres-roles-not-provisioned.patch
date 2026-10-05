@@ -6,10 +6,10 @@
 #       Expected: assertions 1, 2, 3, 6 and 7 PASS; both halves of assertion 4
 #       FAIL, and assertion 5 FAILs (app_user cannot connect).
 diff --git a/services.d/postgres.sh b/services.d/postgres.sh
-index c4a03a2..cbda1e5 100644
+index c0f9a58..2527599 100644
 --- a/services.d/postgres.sh
 +++ b/services.d/postgres.sh
-@@ -101,6 +101,7 @@ EOF
+@@ -116,6 +116,7 @@ EOF
  }
  
  svc_provision() {

@@ -9,7 +9,9 @@
 # postgres=ON, in RESTRICTED mode:
 #   1. a server answers over the default socket AND over 127.0.0.1 — so the
 #      entrypoint started it before handing over (nothing else starts it), and the firewall did not get
-#      in the way (loopback is allowed; no allowlist entry exists for it);
+#      in the way (loopback is allowed; no allowlist entry exists for it). The
+#      socket query is a bare `psql`, so it also proves the superuser's own
+#      database exists — libpq's default database name is the user name;
 #   2. every postgres process runs as the sandbox UID, not as PGDG's `postgres`
 #      system user (PostgreSQL refuses root by itself, so "not root" cannot fail;
 #      the real alternative is the package's own user, which owns
@@ -56,10 +58,15 @@ launcher_up restricted || it_finish
 q() { agent_exec "$IT_CID" "psql -X -At -q -v ON_ERROR_STOP=1 $1" 2>&1; }
 
 # ── 1. The server answers, over the socket and over TCP ─────────────────────────
-if [[ "$(q "-d postgres -c 'select 1'")" == "1" ]]; then
-  pass "psql over the default socket answers, as the agent"
+# The socket query is a BARE psql — no -h, no -d, no -U — because that is the
+# promise: libpq defaults the database name to the user name, so it connects
+# only if the server is on the default socket AND svc_start created the
+# superuser's own database. The TCP query names -d postgres: it is about the
+# listener, not about that database.
+if [[ "$(q "-c 'select 1'")" == "1" ]]; then
+  pass "a bare psql (no -h, no -d) answers over the default socket, as the agent"
 else
-  fail "psql over the default socket did not answer — no server, or not where libpq looks"
+  fail "a bare psql did not answer — no server, not where libpq looks, or no database named after the user"
   docker exec "$IT_CID" tail -n 30 /var/log/ai-services/postgres.log 2>&1 | sed 's/^/     /'
   docker logs "$IT_CID" 2>&1 | grep -iE 'postgres|services' | tail -n 10 | sed 's/^/     /'
   it_finish

@@ -144,23 +144,33 @@ ai_services_case 'postgres=OFF' ''            "postgres=OFF → AI_SERVICES empt
 ai_services_case 'copilot=ON'   ''            "postgres absent → AI_SERVICES empty"
 
 # ── Part D: services.d/postgres.sh against fake binaries ───────────────────────
-# Isolate from the host environment: only what Part D or the adapter reads.
-unset POSTGRES_ROLES POSTGRES_DATABASES PG_PORT PG_SUPERUSER PG_SUPERUSER_TEST PG_MAJOR_FILE PG_LIB_ROOT PG_SOCKET_DIR FAKE_PSQL_FAIL FAKE_INITDB_RC FAKE_CONF_AS_DIR
+# Isolate from the host environment: only what Part D or the adapter reads. The
+# adapter's knobs carry the AI_SERVICES_PG_ prefix so that an app's own PG_PORT
+# in container.env cannot move the server; PG_* are unset too, because D18
+# sets them on purpose and must be the only thing that does.
+unset POSTGRES_ROLES POSTGRES_DATABASES PG_SUPERUSER_TEST FAKE_PSQL_FAIL FAKE_INITDB_RC FAKE_CONF_AS_DIR FAKE_PGCTL_RC \
+      AI_SERVICES_PG_MAJOR_FILE AI_SERVICES_PG_LIB_ROOT AI_SERVICES_PG_SOCKET_DIR AI_SERVICES_PG_PORT AI_SERVICES_PG_SUPERUSER \
+      PG_MAJOR_FILE PG_LIB_ROOT PG_SOCKET_DIR PG_PORT PG_SUPERUSER
 FAKE="$TMP_ROOT/pg"; mkdir -p "$FAKE/lib/18/bin" "$FAKE/sock" "$FAKE/data"
 printf '18\n' > "$FAKE/major"
 cat > "$FAKE/lib/18/bin/postgres" <<'EOF'
 #!/usr/bin/env bash
 printf 'postgres (PostgreSQL) 18.6 (Ubuntu 18.6-1.pgdg24.04+2)\n'
 EOF
+# Every fake appends its name to $FAKE_DIR/calls, so an assertion can read the
+# ORDER the adapter ran them in, not merely that each ran.
 cat > "$FAKE/lib/18/bin/initdb" <<'EOF'
 #!/usr/bin/env bash
+printf 'initdb\n' >> "$FAKE_DIR/calls"
 printf '%s\n' "$@" > "$FAKE_DIR/initdb.args"
 [[ "${FAKE_INITDB_RC:-0}" -eq 0 ]] || exit "$FAKE_INITDB_RC"
 while (( $# )); do [[ "$1" == -D ]] && { mkdir -p "$2"; if [[ -n "${FAKE_CONF_AS_DIR:-}" ]]; then mkdir -p "$2/postgresql.conf"; else printf '# initdb default\n' > "$2/postgresql.conf"; fi; }; shift; done
 EOF
 cat > "$FAKE/lib/18/bin/pg_ctl" <<'EOF'
 #!/usr/bin/env bash
+printf 'pg_ctl\n' >> "$FAKE_DIR/calls"
 printf '%s ' "$@" > "$FAKE_DIR/pg_ctl.args"
+exit "${FAKE_PGCTL_RC:-0}"
 EOF
 # psql: records each -c statement and its -U; fails on a statement matching
 # FAKE_PSQL_FAIL, the way psql does — message on stderr, exit 1.
@@ -171,6 +181,7 @@ while (( $# )); do
   case "$1" in -c) sql="$2"; shift ;; -U) user="$2"; shift ;; esac
   shift
 done
+printf 'psql|%s\n' "$sql" >> "$FAKE_DIR/calls"
 printf '%s\n' "$sql" >> "$FAKE_DIR/sql.log"
 printf '%s\n' "$user" >> "$FAKE_DIR/psql.users"
 if [[ -n "${FAKE_PSQL_FAIL:-}" ]] && grep -qE -- "$FAKE_PSQL_FAIL" <<<"$sql"; then
@@ -184,14 +195,16 @@ chmod +x "$FAKE"/lib/18/bin/*
 # FAKE_PSQL_FAIL, …) is visible to the function; the FAKE_* the binaries read
 # are exported explicitly.
 pg() {
-  ( export PG_MAJOR_FILE="$FAKE/major" PG_LIB_ROOT="$FAKE/lib" PG_SOCKET_DIR="$FAKE/sock" \
-           PG_SUPERUSER="${PG_SUPERUSER_TEST:-alice}" FAKE_DIR="$FAKE" \
-           FAKE_PSQL_FAIL="${FAKE_PSQL_FAIL:-}" FAKE_INITDB_RC="${FAKE_INITDB_RC:-0}" FAKE_CONF_AS_DIR="${FAKE_CONF_AS_DIR:-}"
+  ( export AI_SERVICES_PG_MAJOR_FILE="$FAKE/major" AI_SERVICES_PG_LIB_ROOT="$FAKE/lib" \
+           AI_SERVICES_PG_SOCKET_DIR="$FAKE/sock" AI_SERVICES_PG_SUPERUSER="${PG_SUPERUSER_TEST:-alice}" FAKE_DIR="$FAKE" \
+           FAKE_PSQL_FAIL="${FAKE_PSQL_FAIL:-}" FAKE_INITDB_RC="${FAKE_INITDB_RC:-0}" FAKE_CONF_AS_DIR="${FAKE_CONF_AS_DIR:-}" \
+           FAKE_PGCTL_RC="${FAKE_PGCTL_RC:-0}"
     # shellcheck source=../services.d/postgres.sh
     source "$REPO_DIR/services.d/postgres.sh"
     "$@" )
 }
-pg_reset() { rm -f "$FAKE"/{sql.log,psql.users,initdb.args,pg_ctl.args}; rm -rf "$FAKE/data"; }
+pg_reset() { rm -f "$FAKE"/{sql.log,psql.users,initdb.args,pg_ctl.args,calls}; rm -rf "$FAKE/data"; }
+calls()    { if [[ -f "$FAKE/calls" ]]; then tr '\n' ' ' < "$FAKE/calls"; fi; }
 sql_has()   { grep -qxF -- "$1" "$FAKE/sql.log" 2>/dev/null; }
 sql_count() { if [[ -f "$FAKE/sql.log" ]]; then grep -c . "$FAKE/sql.log"; else printf '0'; fi; }
 
@@ -212,7 +225,9 @@ mv "$FAKE/major.off" "$FAKE/major"
 # D5 — svc_start: initdb flags, appended config, pg_ctl flags.
 pg_reset; pg svc_start "$FAKE/data" "$FAKE/log"; rc=$?
 [[ "$rc" -eq 0 ]] && pass "D5 svc_start returns 0" || fail "D5 svc_start returns 0 (rc=$rc)"
-for want in -D "$FAKE/data" -U alice --auth=trust --encoding=UTF8 --locale=en_US.UTF-8; do
+# --no-sync: initdb's own fsync of the new cluster, skipped for the same reason
+# the appended config switches fsync off.
+for want in -D "$FAKE/data" -U alice --auth=trust --encoding=UTF8 --locale=en_US.UTF-8 --no-sync; do
   grep -qxF -- "$want" "$FAKE/initdb.args" 2>/dev/null \
     && pass "D5 initdb gets $want" || fail "D5 initdb gets $want"
 done
@@ -224,6 +239,34 @@ done
 [[ "$(cat "$FAKE/pg_ctl.args" 2>/dev/null)" == "-D $FAKE/data -l $FAKE/log -w -t 30 start " ]] \
   && pass "D5 pg_ctl -D <data> -l <log> -w -t 30 start" \
   || fail "D5 pg_ctl arguments (got '$(cat "$FAKE/pg_ctl.args" 2>/dev/null)')"
+# psql and libpq default the DATABASE name to the user name, and initdb creates
+# only postgres/template0/template1 — so without this, a bare `psql` fails with
+# `database "alice" does not exist`. Created once the server is up, and nothing
+# else is: provisioning is svc_provision's job.
+[[ "$(calls)" == 'initdb pg_ctl psql|CREATE DATABASE "alice" OWNER "alice" ' ]] \
+  && pass "D5 after pg_ctl, the superuser's own database is created (so a bare psql connects)" \
+  || fail "D5 superuser's database after pg_ctl (calls: $(calls))"
+
+# D5b — a superuser named postgres already has its database: no statement.
+pg_reset; PG_SUPERUSER_TEST=postgres pg svc_start "$FAKE/data" "$FAKE/log" >/dev/null; rc=$?
+[[ "$rc" -eq 0 && "$(calls)" == 'initdb pg_ctl ' ]] \
+  && pass "D5b a superuser named postgres creates no database (initdb made it)" \
+  || fail "D5b superuser postgres (rc=$rc, calls: $(calls))"
+
+# D5c — that CREATE DATABASE fails: svc_start fails, saying why. Its output is
+# the log, whose tail the runner prints.
+pg_reset; out="$(FAKE_PSQL_FAIL='CREATE DATABASE' pg svc_start "$FAKE/data" "$FAKE/log" 2>&1)"; rc=$?
+[[ "$rc" -ne 0 ]] && pass "D5c a failed CREATE DATABASE for the superuser fails svc_start" \
+                  || fail "D5c a failed CREATE DATABASE for the superuser fails svc_start (rc=$rc)"
+[[ "$out" == *'"alice"'*'ERROR:  boom'* ]] \
+  && pass "D5c the failure names the database and carries psql's error" \
+  || fail "D5c failure text (got '$out')"
+
+# D5d — a superuser name that is not a plain identifier is quoted here too.
+pg_reset; PG_SUPERUSER_TEST='John.Doe' pg svc_start "$FAKE/data" "$FAKE/log" >/dev/null
+sql_has 'CREATE DATABASE "John.Doe" OWNER "John.Doe"' \
+  && pass "D5d the superuser's own database is a quoted identifier (John.Doe)" \
+  || fail "D5d quoted superuser database (sql: $(cat "$FAKE/sql.log" 2>/dev/null))"
 
 # D6 — initdb fails: svc_start fails, and nothing is started.
 pg_reset; mkdir -p "$FAKE/data"   # the runner pre-creates the data dir
@@ -238,6 +281,12 @@ pg_reset; mkdir -p "$FAKE/data"; FAKE_CONF_AS_DIR=1 pg svc_start "$FAKE/data" "$
 [[ "$rc" -ne 0 && ! -e "$FAKE/pg_ctl.args" ]] \
   && pass "D6b a failed config append fails svc_start and never reaches pg_ctl" \
   || fail "D6b failed append (rc=$rc)"
+
+# D6c — pg_ctl fails: svc_start fails, and no SQL is sent to a server that is not up.
+pg_reset; FAKE_PGCTL_RC=1 pg svc_start "$FAKE/data" "$FAKE/log" >/dev/null 2>&1; rc=$?
+[[ "$rc" -ne 0 && "$(calls)" == 'initdb pg_ctl ' ]] \
+  && pass "D6c a failed pg_ctl fails svc_start and sends no SQL" \
+  || fail "D6c failed pg_ctl (rc=$rc, calls: $(calls))"
 
 # D7 — roles.
 pg_reset; out="$(POSTGRES_ROLES=' app_user , reporting' pg svc_provision 2>"$FAKE/err")"
@@ -262,6 +311,14 @@ pg_reset; POSTGRES_ROLES='alice,app_user,app_user' pg svc_provision >/dev/null 2
 [[ "$(sql_count)" -eq 1 && ! -s "$FAKE/err" ]] \
   && pass "D9 own name skipped, repeated role created once, no warnings" \
   || fail "D9 (sql: $(cat "$FAKE/sql.log" 2>/dev/null); err: $(cat "$FAKE/err"))"
+
+# D9b — the superuser's own name is skipped silently even when it is NOT a plain
+# identifier: it comes from the host, where a macOS John.Doe is legal, and a
+# project listing it must not be told its user's name is invalid.
+pg_reset; PG_SUPERUSER_TEST='John.Doe' POSTGRES_ROLES='John.Doe,app_user' pg svc_provision >/dev/null 2>"$FAKE/err"
+[[ "$(sql_count)" -eq 1 ]] && sql_has 'CREATE ROLE "app_user" SUPERUSER LOGIN' && [[ ! -s "$FAKE/err" ]] \
+  && pass "D9b a non-identifier superuser listed in POSTGRES_ROLES is skipped without a warning" \
+  || fail "D9b (sql: $(cat "$FAKE/sql.log" 2>/dev/null); err: $(cat "$FAKE/err"))"
 
 # D10 — CRLF from a Windows-saved container.env (Review Focus 1).
 pg_reset; POSTGRES_ROLES=$'app_user\r' pg svc_provision >/dev/null 2>"$FAKE/err"
@@ -321,6 +378,18 @@ pg_reset; out="$(POSTGRES_ROLES='' POSTGRES_DATABASES='' pg svc_provision 2>"$FA
 [[ "$rc" -eq 0 && -z "$out" && "$(sql_count)" -eq 0 && ! -s "$FAKE/err" ]] \
   && pass "D17 nothing requested: nothing run, nothing printed" \
   || fail "D17 (rc=$rc out='$out')"
+
+# D18 — an app's own PG_* variables in container.env reach `start`, and are not
+# the adapter's knobs: PG_PORT=5433 is a common app setting, and read as a knob
+# it would move the server off 5432 and away from libpq's default socket.
+got="$(PG_PORT=5433 PG_SUPERUSER=bob PG_SOCKET_DIR=/nowhere PG_MAJOR_FILE=/nowhere PG_LIB_ROOT=/nowhere pg svc_endpoint)"
+[[ "$got" == "localhost:5432 (socket $FAKE/sock), superuser alice" ]] \
+  && pass "D18 an app's PG_PORT/PG_SUPERUSER/PG_SOCKET_DIR do not move the server" \
+  || fail "D18 app PG_* variables (got '$got')"
+got="$(PG_MAJOR_FILE=/nowhere PG_LIB_ROOT=/nowhere pg svc_installed_version)"
+[[ "$got" == "18.6" ]] \
+  && pass "D18 an app's PG_MAJOR_FILE/PG_LIB_ROOT do not hide the installed server" \
+  || fail "D18 app PG_MAJOR_FILE/PG_LIB_ROOT (got '$got')"
 
 # ── Part E: the Dockerfile layer's shape ──────────────────────────────────────
 # Shape only: that it BUILDS is integration case 780. These pin the properties

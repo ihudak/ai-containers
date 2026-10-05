@@ -13,13 +13,17 @@
 # the container with --rm.
 #
 # Every path is overridable from the environment so tests/test-postgres.sh can
-# drive this file against fake binaries. Nothing in the image sets them.
+# drive this file against fake binaries. Nothing in the image sets them. The
+# knobs are AI_SERVICES_PG_*, never PG_*: container.env reaches `start`, and an
+# app's own PG_PORT=5433 read here would move the server off libpq's default.
+# (`prepare`, which runs as root, gets none of them: entrypoint.sh scrubs its
+# environment.)
 
-PG_MAJOR_FILE="${PG_MAJOR_FILE:-/etc/ai-containers/postgres-major}"
-PG_LIB_ROOT="${PG_LIB_ROOT:-/usr/lib/postgresql}"
-PG_SOCKET_DIR="${PG_SOCKET_DIR:-/var/run/postgresql}"
-PG_PORT="${PG_PORT:-5432}"
-PG_SUPERUSER="${PG_SUPERUSER:-$(id -un)}"
+PG_MAJOR_FILE="${AI_SERVICES_PG_MAJOR_FILE:-/etc/ai-containers/postgres-major}"
+PG_LIB_ROOT="${AI_SERVICES_PG_LIB_ROOT:-/usr/lib/postgresql}"
+PG_SOCKET_DIR="${AI_SERVICES_PG_SOCKET_DIR:-/var/run/postgresql}"
+PG_PORT="${AI_SERVICES_PG_PORT:-5432}"
+PG_SUPERUSER="${AI_SERVICES_PG_SUPERUSER:-$(id -un)}"
 # Role and database names a project may ask for. Deliberately narrow — every
 # name reaches SQL — and the superuser's own name is NOT held to it: it comes
 # from the host, where a macOS `John.Doe` is legal. _pg_ident quotes either.
@@ -75,13 +79,15 @@ svc_installed_version() {
 svc_runtime_dirs() { printf '%s\n' "$PG_SOCKET_DIR"; }
 
 svc_start() {  # <datadir> <logfile>
-  local datadir="$1" logfile="$2" bin
+  local datadir="$1" logfile="$2" bin err
   bin="$(_pg_bin)"
   # en_US.UTF-8, not the image's C.utf8: the official postgres image — what CI
   # service containers usually run — defaults to it, and collation decides
   # ORDER BY on text. A suite green in CI must not go red here on sort order.
+  # --no-sync: initdb's own flush of the new cluster, for the reason fsync is
+  # off below.
   "$bin/initdb" -D "$datadir" -U "$PG_SUPERUSER" --auth=trust \
-    --encoding=UTF8 --locale=en_US.UTF-8 || return 1
+    --encoding=UTF8 --locale=en_US.UTF-8 --no-sync || return 1
   # fsync/synchronous_commit/full_page_writes off: durability buys nothing for a
   # cluster deleted on exit. mmap: dynamic shared memory from files in the data
   # directory, so Docker's 64 MB /dev/shm never limits it and sandbox.sh's
@@ -97,7 +103,16 @@ synchronous_commit = off
 full_page_writes = off
 dynamic_shared_memory_type = mmap
 EOF
-  "$bin/pg_ctl" -D "$datadir" -l "$logfile" -w -t 30 start
+  "$bin/pg_ctl" -D "$datadir" -l "$logfile" -w -t 30 start || return 1
+  # psql and libpq default the database name to the user name, and initdb makes
+  # only postgres/template0/template1 — so without this a bare `psql` fails with
+  # `database "<user>" does not exist`. Cluster initialisation, like the
+  # official image's default POSTGRES_DB, and so here rather than in
+  # svc_provision, which creates only what the project asked for.
+  [[ "$PG_SUPERUSER" == postgres ]] && return 0
+  err="$(_pg_sql "CREATE DATABASE $(_pg_ident "$PG_SUPERUSER") OWNER $(_pg_ident "$PG_SUPERUSER")")" && return 0
+  printf "could not create the superuser's own database %s: %s\n" "$(_pg_ident "$PG_SUPERUSER")" "$err"
+  return 1
 }
 
 svc_provision() {
@@ -107,11 +122,13 @@ svc_provision() {
   IFS=',' read -ra entries <<< "${POSTGRES_ROLES:-}"
   for entry in "${entries[@]}"; do
     name="$(_pg_trim "$entry")"
+    # Known names first: the superuser's own name is not held to the pattern
+    # (a macOS John.Doe), and listing it must not draw a warning.
+    _pg_in "$name" "${known[@]}" && continue   # the superuser itself, or a repeat
     if [[ ! "$name" =~ $PG_NAME_RE ]]; then
       printf "WARNING: POSTGRES_ROLES: '%s' is not a valid role name (lowercase letters, digits, _) — skipped\n" "$name" >&2
       continue
     fi
-    _pg_in "$name" "${known[@]}" && continue   # the superuser itself, or a repeat
     if err="$(_pg_sql "CREATE ROLE $(_pg_ident "$name") SUPERUSER LOGIN")"; then
       roles+=("$name"); known+=("$name")
     else
