@@ -143,5 +143,174 @@ ai_services_case 'postgres=17'  'postgres=17' "postgres=17 → AI_SERVICES=postg
 ai_services_case 'postgres=OFF' ''            "postgres=OFF → AI_SERVICES empty (is_active, never the literal OFF)"
 ai_services_case 'copilot=ON'   ''            "postgres absent → AI_SERVICES empty"
 
+# ── Part D: services.d/postgres.sh against fake binaries ───────────────────────
+FAKE="$TMP_ROOT/pg"; mkdir -p "$FAKE/lib/18/bin" "$FAKE/sock" "$FAKE/data"
+printf '18\n' > "$FAKE/major"
+cat > "$FAKE/lib/18/bin/postgres" <<'EOF'
+#!/usr/bin/env bash
+printf 'postgres (PostgreSQL) 18.6 (Ubuntu 18.6-1.pgdg24.04+2)\n'
+EOF
+cat > "$FAKE/lib/18/bin/initdb" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "$FAKE_DIR/initdb.args"
+[[ "${FAKE_INITDB_RC:-0}" -eq 0 ]] || exit "$FAKE_INITDB_RC"
+while (( $# )); do [[ "$1" == -D ]] && { mkdir -p "$2"; printf '# initdb default\n' > "$2/postgresql.conf"; }; shift; done
+EOF
+cat > "$FAKE/lib/18/bin/pg_ctl" <<'EOF'
+#!/usr/bin/env bash
+printf '%s ' "$@" > "$FAKE_DIR/pg_ctl.args"
+EOF
+# psql: records each -c statement and its -U; fails on a statement matching
+# FAKE_PSQL_FAIL, the way psql does — message on stderr, exit 1.
+cat > "$FAKE/lib/18/bin/psql" <<'EOF'
+#!/usr/bin/env bash
+sql="" user=""
+while (( $# )); do
+  case "$1" in -c) sql="$2"; shift ;; -U) user="$2"; shift ;; esac
+  shift
+done
+printf '%s\n' "$sql" >> "$FAKE_DIR/sql.log"
+printf '%s\n' "$user" >> "$FAKE_DIR/psql.users"
+if [[ -n "${FAKE_PSQL_FAIL:-}" ]] && grep -qE -- "$FAKE_PSQL_FAIL" <<<"$sql"; then
+  printf 'ERROR:  boom for %s\n' "$sql" >&2; exit 1
+fi
+EOF
+chmod +x "$FAKE"/lib/18/bin/*
+
+# pg <function> [args] — run one adapter function in a FRESH subshell, the way
+# start-services.sh does, against the fakes. Env set on the call (POSTGRES_ROLES,
+# FAKE_PSQL_FAIL, …) is visible to the function; the FAKE_* the binaries read
+# are exported explicitly.
+pg() {
+  ( export PG_MAJOR_FILE="$FAKE/major" PG_LIB_ROOT="$FAKE/lib" PG_SOCKET_DIR="$FAKE/sock" \
+           PG_SUPERUSER="${PG_SUPERUSER_TEST:-alice}" FAKE_DIR="$FAKE" \
+           FAKE_PSQL_FAIL="${FAKE_PSQL_FAIL:-}" FAKE_INITDB_RC="${FAKE_INITDB_RC:-0}"
+    # shellcheck source=../services.d/postgres.sh
+    source "$REPO_DIR/services.d/postgres.sh"
+    "$@" )
+}
+pg_reset() { rm -f "$FAKE"/{sql.log,psql.users,initdb.args,pg_ctl.args}; rm -rf "$FAKE/data"; }
+sql_has()   { grep -qxF -- "$1" "$FAKE/sql.log" 2>/dev/null; }
+sql_count() { if [[ -f "$FAKE/sql.log" ]]; then grep -c . "$FAKE/sql.log"; else printf '0'; fi; }
+
+# D1–D3 — what this image has.
+got="$(pg svc_installed_version)"
+[[ "$got" == "18.6" ]] && pass "D1 svc_installed_version reads 18.6 out of PGDG's version string" || fail "D1 svc_installed_version (got '$got')"
+mv "$FAKE/major" "$FAKE/major.off"
+got="$(pg svc_installed_version)"
+[[ -z "$got" ]] && pass "D2 no major marker → nothing installed" || fail "D2 no major marker (got '$got')"
+printf '17\n' > "$FAKE/major"
+got="$(pg svc_installed_version)"
+[[ -z "$got" ]] && pass "D3 a marker naming a major with no binaries → nothing installed" || fail "D3 marker without binaries (got '$got')"
+mv "$FAKE/major.off" "$FAKE/major"
+
+# D4 — the socket directory is the one runtime dir.
+[[ "$(pg svc_runtime_dirs)" == "$FAKE/sock" ]] && pass "D4 svc_runtime_dirs is the socket directory" || fail "D4 svc_runtime_dirs"
+
+# D5 — svc_start: initdb flags, appended config, pg_ctl flags.
+pg_reset; pg svc_start "$FAKE/data" "$FAKE/log"; rc=$?
+[[ "$rc" -eq 0 ]] && pass "D5 svc_start returns 0" || fail "D5 svc_start returns 0 (rc=$rc)"
+for want in -D "$FAKE/data" -U alice --auth=trust --encoding=UTF8 --locale=en_US.UTF-8; do
+  grep -qxF -- "$want" "$FAKE/initdb.args" 2>/dev/null \
+    && pass "D5 initdb gets $want" || fail "D5 initdb gets $want"
+done
+for want in "listen_addresses = 'localhost'" "port = 5432" "unix_socket_directories = '$FAKE/sock'" \
+            "fsync = off" "synchronous_commit = off" "full_page_writes = off" "dynamic_shared_memory_type = mmap"; do
+  grep -qxF -- "$want" "$FAKE/data/postgresql.conf" 2>/dev/null \
+    && pass "D5 postgresql.conf: $want" || fail "D5 postgresql.conf: $want"
+done
+[[ "$(cat "$FAKE/pg_ctl.args" 2>/dev/null)" == "-D $FAKE/data -l $FAKE/log -w -t 30 start " ]] \
+  && pass "D5 pg_ctl -D <data> -l <log> -w -t 30 start" \
+  || fail "D5 pg_ctl arguments (got '$(cat "$FAKE/pg_ctl.args" 2>/dev/null)')"
+
+# D6 — initdb fails: svc_start fails, and nothing is started.
+pg_reset; FAKE_INITDB_RC=1 pg svc_start "$FAKE/data" "$FAKE/log"; rc=$?
+[[ "$rc" -ne 0 && ! -e "$FAKE/pg_ctl.args" ]] \
+  && pass "D6 a failed initdb fails svc_start and never reaches pg_ctl" \
+  || fail "D6 failed initdb (rc=$rc)"
+
+# D7 — roles.
+pg_reset; out="$(POSTGRES_ROLES=' app_user , reporting' pg svc_provision 2>"$FAKE/err")"
+sql_has 'CREATE ROLE "app_user" SUPERUSER LOGIN' && sql_has 'CREATE ROLE "reporting" SUPERUSER LOGIN' \
+  && pass "D7 each POSTGRES_ROLES entry → CREATE ROLE \"<name>\" SUPERUSER LOGIN" \
+  || fail "D7 roles (sql: $(cat "$FAKE/sql.log" 2>/dev/null))"
+[[ "$out" == "; roles: app_user, reporting" ]] && pass "D7 suffix lists the roles" || fail "D7 suffix (got '$out')"
+grep -qxF -- "alice" "$FAKE/psql.users" && pass "D7 psql connects as the superuser" || fail "D7 psql -U"
+
+# D8 — invalid entries: warned, never reach SQL.
+pg_reset; POSTGRES_ROLES='x; drop table y,Mixed,,ok_role' pg svc_provision >/dev/null 2>"$FAKE/err"
+[[ "$(sql_count)" -eq 1 ]] && sql_has 'CREATE ROLE "ok_role" SUPERUSER LOGIN' \
+  && pass "D8 only the valid role reaches SQL" \
+  || fail "D8 only the valid role reaches SQL (sql: $(cat "$FAKE/sql.log" 2>/dev/null))"
+[[ "$(grep -c 'is not a valid role name' "$FAKE/err")" -eq 3 ]] \
+  && grep -qF "'x; drop table y'" "$FAKE/err" && grep -qF "'Mixed'" "$FAKE/err" \
+  && pass "D8 each invalid entry (including an empty one) is warned about by value" \
+  || fail "D8 warnings (got: $(cat "$FAKE/err"))"
+
+# D9 — the superuser's own name and a repeat are skipped quietly (Review Focus 3).
+pg_reset; POSTGRES_ROLES='alice,app_user,app_user' pg svc_provision >/dev/null 2>"$FAKE/err"
+[[ "$(sql_count)" -eq 1 && ! -s "$FAKE/err" ]] \
+  && pass "D9 own name skipped, repeated role created once, no warnings" \
+  || fail "D9 (sql: $(cat "$FAKE/sql.log" 2>/dev/null); err: $(cat "$FAKE/err"))"
+
+# D10 — CRLF from a Windows-saved container.env (Review Focus 1).
+pg_reset; POSTGRES_ROLES=$'app_user\r' pg svc_provision >/dev/null 2>"$FAKE/err"
+sql_has 'CREATE ROLE "app_user" SUPERUSER LOGIN' && [[ ! -s "$FAKE/err" ]] \
+  && pass "D10 a trailing \\r is trimmed, not rejected" \
+  || fail "D10 CRLF (sql: $(cat "$FAKE/sql.log" 2>/dev/null); err: $(cat "$FAKE/err"))"
+
+# D11 — databases: name:owner, default owner, repeats (Review Focus 3).
+pg_reset
+out="$(POSTGRES_ROLES=app_user POSTGRES_DATABASES='myapp_test:app_user, myapp_dev,myapp_test:app_user' pg svc_provision 2>"$FAKE/err")"
+sql_has 'CREATE DATABASE "myapp_test" OWNER "app_user"' && sql_has 'CREATE DATABASE "myapp_dev" OWNER "alice"' \
+  && [[ "$(grep -c 'CREATE DATABASE' "$FAKE/sql.log")" -eq 2 ]] \
+  && pass "D11 name:owner honoured, owner defaults to the superuser, a repeat is created once" \
+  || fail "D11 databases (sql: $(cat "$FAKE/sql.log" 2>/dev/null))"
+[[ "$out" == "; roles: app_user; databases: myapp_test, myapp_dev" ]] \
+  && pass "D11 suffix lists roles then databases" || fail "D11 suffix (got '$out')"
+
+# D12 — an owner that is not a role here.
+pg_reset; POSTGRES_DATABASES='x_test:ghost' pg svc_provision >/dev/null 2>"$FAKE/err"
+[[ "$(sql_count)" -eq 0 ]] && grep -qF "owner 'ghost'" "$FAKE/err" && grep -qF 'POSTGRES_ROLES' "$FAKE/err" \
+  && pass "D12 an unknown owner is refused, pointing at POSTGRES_ROLES" \
+  || fail "D12 unknown owner (err: $(cat "$FAKE/err"))"
+
+# D13 — invalid database entries.
+pg_reset; POSTGRES_DATABASES='my-app,x:Bad' pg svc_provision >/dev/null 2>"$FAKE/err"
+[[ "$(sql_count)" -eq 0 && "$(grep -c 'is not name or name:owner' "$FAKE/err")" -eq 2 ]] \
+  && pass "D13 invalid database names and owners are refused" \
+  || fail "D13 (err: $(cat "$FAKE/err"))"
+
+# D14 — a role that fails to create cannot own a database (Review Focus 4).
+pg_reset
+out="$(FAKE_PSQL_FAIL='"reporting"' POSTGRES_ROLES='app_user,reporting' POSTGRES_DATABASES='r_db:reporting' pg svc_provision 2>"$FAKE/err")"
+grep -qF "could not create role 'reporting': ERROR:  boom" "$FAKE/err" \
+  && pass "D14 a psql failure is reported against its own entry, with psql's error" \
+  || fail "D14 role failure message (err: $(cat "$FAKE/err"))"
+grep -qF "'r_db:reporting' — owner 'reporting' is not a role here" "$FAKE/err" && ! grep -q 'CREATE DATABASE' "$FAKE/sql.log" \
+  && pass "D14 a database owned by the failed role is refused by name, never attempted" \
+  || fail "D14 dependent database (err: $(cat "$FAKE/err"))"
+[[ "$out" == "; roles: app_user" ]] && pass "D14 the suffix lists only what exists" || fail "D14 suffix (got '$out')"
+
+# D15 — a superuser name that is not a plain identifier (Review Focus 2).
+pg_reset; PG_SUPERUSER_TEST='John.Doe' POSTGRES_DATABASES='myapp_test' pg svc_provision >/dev/null 2>"$FAKE/err"
+sql_has 'CREATE DATABASE "myapp_test" OWNER "John.Doe"' \
+  && pass "D15 a macOS-style superuser name is a quoted default owner" \
+  || fail "D15 (sql: $(cat "$FAKE/sql.log" 2>/dev/null))"
+pg_reset; PG_SUPERUSER_TEST='o"brien' POSTGRES_DATABASES='myapp_test' pg svc_provision >/dev/null 2>"$FAKE/err"
+sql_has 'CREATE DATABASE "myapp_test" OWNER "o""brien"' \
+  && pass "D15 an embedded double quote is doubled, never closing the identifier" \
+  || fail "D15 quote (sql: $(cat "$FAKE/sql.log" 2>/dev/null))"
+
+# D16 — endpoint text.
+[[ "$(pg svc_endpoint)" == "localhost:5432 (socket $FAKE/sock), superuser alice" ]] \
+  && pass "D16 svc_endpoint" || fail "D16 svc_endpoint (got '$(pg svc_endpoint)')"
+
+# D17 — nothing requested: no SQL, no suffix.
+pg_reset; out="$(POSTGRES_ROLES='' POSTGRES_DATABASES='' pg svc_provision 2>"$FAKE/err")"; rc=$?
+[[ "$rc" -eq 0 && -z "$out" && "$(sql_count)" -eq 0 && ! -s "$FAKE/err" ]] \
+  && pass "D17 nothing requested: nothing run, nothing printed" \
+  || fail "D17 (rc=$rc out='$out')"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
