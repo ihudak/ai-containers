@@ -1118,6 +1118,7 @@ run_container() {
     -e AI_AGENTS_ENABLED="$(enabled_agents_csv)" \
     -e AI_RUNTIME_TOOLS="$(runtime_tools_csv)" \
     -e RUBY_VERSIONS="$(versions_to_space "$(version_list ruby)")" \
+    -e AI_SERVICES="$(services_csv)" \
     -e REPOS_PATH="${REPOS_PATH:-/workspace}" \
     ${git_optional_locks_env[@]+"${git_optional_locks_env[@]}"} \
     ${SELF_HEALING_ENABLED:+-e SELF_HEALING_ENABLED="$SELF_HEALING_ENABLED"} \

@@ -105,5 +105,43 @@ grep -qx 'postgres=OFF' "$REPO_DIR/sandbox.conf" \
   && pass "sandbox.conf ships postgres=OFF" \
   || fail "sandbox.conf ships postgres=OFF"
 
+# ── Part C: sandbox.sh passes AI_SERVICES to the container ─────────────────────
+# Driven through a fake `docker` on PATH that captures the assembled `docker run`
+# argv — the harness tests/test-playwright.sh uses. No daemon involved.
+sb_run() {  # $1 = sandbox.conf body → prints the path of the captured argv file
+  local d
+  d="$(mktemp -d "$TMP_ROOT/sb.XXXXXX")" || { printf 'SCAFFOLD-FAILED: mktemp\n' >&2; return 1; }
+  mkdir -p "$d/home" "$d/bin" "$d/app" "$d/launch"
+  printf '# schema-version: 4\n%s\n' "$1" > "$d/sandbox.conf"
+  cat > "$d/bin/docker" <<DOCKER
+#!/usr/bin/env bash
+if [[ "\$1" == "run" ]]; then shift; printf '%s\n' "\$@" > "$d/argv"; exit 0; fi
+exit 1
+DOCKER
+  chmod +x "$d/bin/docker"
+  ( HOME="$(p_realdir "$d/home")"; export HOME
+    export PATH="$d/bin:$PATH" SANDBOX_CONF="$d/sandbox.conf" AI_CONTAINER_GROUP_INIT=clean SANDBOX_USER=dev
+    unset VAULT_PATH SPECS_PATH DOCS_PATH ARCHITECTURE_REPO_PATH EXTRA_MOUNTS REPOS \
+          AI_CONTAINER_GROUP CONTAINER_SHM_SIZE SANDBOX_ENV_FILE IMAGE_NAME CONTAINER_NAME \
+          CONTAINER_CPUS CONTAINER_MEMORY CONTAINER_MEMORY_RESERVATION CONTAINER_MEMORY_SWAP
+    cd "$d/launch" && bash "$REPO_DIR/sandbox.sh" restricted "$d/app" ) >/dev/null 2>&1 </dev/null
+  printf '%s' "$d/argv"
+}
+
+ai_services_case() {  # $1 = conf body, $2 = expected AI_SERVICES value, $3 = label
+  local argv; argv="$(sb_run "$1")"
+  if [[ ! -s "$argv" ]]; then
+    fail "$3: sandbox.sh never reached docker run — nothing was verified"
+  elif grep -qx -- "AI_SERVICES=$2" "$argv"; then
+    pass "$3"
+  else
+    fail "$3 (got: $(grep '^AI_SERVICES=' "$argv" || printf 'no AI_SERVICES at all'))"
+  fi
+}
+ai_services_case 'postgres=ON'  'postgres=ON' "postgres=ON → AI_SERVICES=postgres=ON"
+ai_services_case 'postgres=17'  'postgres=17' "postgres=17 → AI_SERVICES=postgres=17 (the runner needs the pin to detect a stale image)"
+ai_services_case 'postgres=OFF' ''            "postgres=OFF → AI_SERVICES empty (is_active, never the literal OFF)"
+ai_services_case 'copilot=ON'   ''            "postgres absent → AI_SERVICES empty"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

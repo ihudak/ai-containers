@@ -258,6 +258,19 @@ runtime_tools_csv() {
   local IFS=,; printf '%s' "${out[*]}"
 }
 
+# services_csv — comma-separated name=value for every in-container server key that
+# is ACTIVE (ON or a pinned version), e.g. "postgres=17". is_active, not
+# is_enabled: a pinned major must start the server too, and the value travels
+# with the name so start-services.sh can tell an image built for another major.
+# Consumed by sandbox.sh (-e AI_SERVICES) and start-services.sh. Empty when none.
+services_csv() {
+  local s out=()
+  for s in postgres; do
+    is_active "$s" && out+=("$s=$(get_versions "$s")")
+  done
+  local IFS=,; printf '%s' "${out[*]}"
+}
+
 # Convert a comma-separated version list to a space-separated list for build args.
 versions_to_space() {
   printf '%s' "$1" | tr ',' ' '
