@@ -1,0 +1,20 @@
+# case: 780-postgres-server-runs
+# what: the server listens on every address instead of loopback only. Everything
+#       a test suite would notice still works — that is the point: exposure is
+#       invisible to the app, so only assertion 3 can catch it.
+#
+#       Expected: assertions 1, 2, 4, 5, 6 and 7 PASS; assertion 3 FAILs, naming
+#       the 0.0.0.0 (00000000:1538) and :: listeners.
+diff --git a/services.d/postgres.sh b/services.d/postgres.sh
+index c4a03a2..7546040 100644
+--- a/services.d/postgres.sh
++++ b/services.d/postgres.sh
+@@ -89,7 +89,7 @@ svc_start() {  # <datadir> <logfile>
+   cat >> "$datadir/postgresql.conf" <<EOF || return 1
+ 
+ # ── ai-containers (services.d/postgres.sh): a throwaway test cluster ──
+-listen_addresses = 'localhost'
++listen_addresses = '*'
+ port = $PG_PORT
+ unix_socket_directories = '$PG_SOCKET_DIR'
+ fsync = off

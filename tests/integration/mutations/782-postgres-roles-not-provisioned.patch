@@ -1,0 +1,19 @@
+# case: 780-postgres-server-runs
+# what: provisioning is skipped: the server starts and answers, but
+#       POSTGRES_ROLES and POSTGRES_DATABASES are silently ignored — the failure a
+#       project would meet as "role app_user does not exist" from its own suite.
+#
+#       Expected: assertions 1, 2, 3, 6 and 7 PASS; both halves of assertion 4
+#       FAIL, and assertion 5 FAILs (app_user cannot connect).
+diff --git a/services.d/postgres.sh b/services.d/postgres.sh
+index c4a03a2..cbda1e5 100644
+--- a/services.d/postgres.sh
++++ b/services.d/postgres.sh
+@@ -101,6 +101,7 @@ EOF
+ }
+ 
+ svc_provision() {
++  return 0
+   local entry name owner err
+   local -a entries=() roles=() dbs=() known=("$PG_SUPERUSER")
+ 

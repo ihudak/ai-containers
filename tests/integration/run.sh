@@ -250,7 +250,7 @@ variant_overrides() {  # $1=variant → space-separated key=value; rc 1 if unkno
   case "$1" in
     default) printf '' ;;
     agents)  printf 'copilot=ON claude-code=ON codex=ON gemini=ON graphify=ON vale=ON node=22,20' ;;
-    native)  printf 'db-clients=pg,mysql,mongo imagemagick=ON wkhtmltopdf=ON playwright=ON ruby=%s' "$IT_RUBY_VERSIONS" ;;
+    native)  printf 'db-clients=pg,mysql,mongo imagemagick=ON wkhtmltopdf=ON playwright=ON postgres=ON ruby=%s' "$IT_RUBY_VERSIONS" ;;
     *)       return 1 ;;
   esac
   return 0
