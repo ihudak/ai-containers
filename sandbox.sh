@@ -319,7 +319,8 @@ launcher_ro_overlay() {
   local x f e q w c safe inner how
   local uid="${SANDBOX_UID:-$(id -u)}" gid="${SANDBOX_GID:-$(id -g)}" you
   local -a found unreadable cand bsrc=() bdst=() cl=() cat=() csrc=() cdst=() cdep=() ckind=() ro_dsts=() psrc pdst
-  local -a scan links walk
+  local -a scan links walk gdirs gfiles glinks gunr gro
+  local g base what
   local -A seen=() tried=() scanned=() pinned=()
   local nl
   # The agent's identity decides what it can reach; find needs it numeric (and
@@ -474,6 +475,111 @@ launcher_ro_overlay() {
         fi
       else
         printf 'READ-ONLY: %s  (launcher files; edit them on the host)\n' "$at" >&2
+      fi
+    done
+  done
+
+  # Git internals. What the HOST's git runs from a repository — its hooks, and
+  # configuration whose keys run programs (core.hooksPath, core.fsmonitor,
+  # core.sshCommand, filters, diff and merge drivers) — changed from inside the
+  # container would run outside it at the next `git commit` or `git status`, and
+  # nothing under .git/ shows in git status or git diff. So every git directory a
+  # writable mount exposes (git_dirs_in) has its hooks/, config, config.worktree
+  # and commondir mounted read-only, and every .git FILE (a linked worktree's or
+  # a submodule's checkout, naming its git directory) likewise. Objects, refs and
+  # the index stay writable: committing, branching, pushing and rebasing work;
+  # what writes config (git config, git remote add, the upstream `push -u` would
+  # record) does not. Directories from the mount root down to each, the git
+  # directory itself included, are pinned, so .git cannot be renamed out from
+  # under the overlay. A .git SYMLINK cannot be pinned (it would be replaced, not
+  # renamed) and is warned about; a .git you cannot list is mounted read-only
+  # whole, as an unreadable directory is for launchers. One already under a
+  # read-only overlay (inside a launcher, say) needs nothing more.
+  for i in ${bsrc[@]+"${!bsrc[@]}"}; do
+    src="${bsrc[i]}"; dst="${bdst[i]}"
+    gdirs=(); gfiles=(); glinks=(); gunr=()
+    git_dirs_in gdirs gfiles glinks gunr "$src"
+    for f in ${glinks[@]+"${glinks[@]}"}; do
+      at="$dst${f#"$src"}"; skip=""
+      for r in ${ro_dsts[@]+"${ro_dsts[@]}"}; do
+        if [[ "$at" == "$r" || "$at" == "$r"/* ]]; then skip=1; break; fi
+      done
+      if [[ -n "$skip" ]]; then continue; fi
+      printf 'WARNING: %s is a symlink inside a writable mount (%s); the agent can\n' "$f" "$dst" >&2
+      printf '         replace it with a git directory of its own, and your host'\''s git would\n' >&2
+      printf '         run that one'\''s hooks there. Replace the link with what it names.\n' >&2
+    done
+    for g in ${gdirs[@]+"${gdirs[@]}"} ${gfiles[@]+"${gfiles[@]}"} ${gunr[@]+"${gunr[@]}"}; do
+      gro=()
+      if [[ -f "$g" ]]; then
+        base="${g%/*}"; gro=("$g")
+      elif [[ ! -r "$g" || ! -x "$g" ]]; then
+        base="${g%/*}"; gro=("$g")      # read-only whole: pin only what is above it
+      else
+        base="$g"
+        # git creates hooks/ at init, but a repository can lack it — and then the
+        # agent could create it. Made here, as you, so there is something to overlay.
+        if [[ -d "$g/objects" && ! -e "$g/hooks" && ! -L "$g/hooks" ]]; then mkdir "$g/hooks" 2>/dev/null || true; fi
+        for f in config config.worktree commondir hooks; do
+          if [[ -L "$g/$f" ]]; then
+            printf 'WARNING: %s is a symlink, which cannot be mounted read-only in place;\n' "$g/$f" >&2
+            printf '         what it leads to is what your host'\''s git reads. Replace the link with it.\n' >&2
+          elif [[ -e "$g/$f" ]]; then
+            gro+=("$g/$f")
+          elif [[ "$f" == hooks && -d "$g/objects" ]]; then
+            printf 'WARNING: %s has no hooks/ and one could not be made; the agent could make it.\n' "$g" >&2
+          fi
+        done
+      fi
+      if (( ${#gro[@]} == 0 )); then continue; fi
+      at="$dst${g#"$src"}"; skip=""
+      for r in ${ro_dsts[@]+"${ro_dsts[@]}"}; do
+        if [[ "$at" == "$r" || "$at" == "$r"/* ]]; then skip=1; break; fi
+      done
+      if [[ -n "$skip" ]]; then continue; fi
+      psrc=(); pdst=()
+      if [[ "$base" != "$src" ]]; then
+        rest="${base#"$src"/}"; path="$src"; pin="$dst"
+        while [[ -n "$rest" ]]; do
+          part="${rest%%/*}"
+          if [[ "$rest" == */* ]]; then rest="${rest#*/}"; else rest=""; fi
+          path="$path/$part"; pin="$pin/$part"
+          if [[ -z "${seen[$pin]:-}" ]]; then psrc+=("$path"); pdst+=("$pin"); fi
+        done
+      fi
+      ok=1
+      for k in ${psrc[@]+"${!psrc[@]}"}; do
+        if ! _mount_representable "${psrc[k]}" "${pdst[k]}"; then ok=""; fi
+      done
+      for f in "${gro[@]}"; do
+        if ! _mount_representable "$f" "$dst${f#"$src"}"; then ok=""; fi
+      done
+      if [[ -z "$ok" ]]; then
+        printf 'WARNING: cannot protect the git internals of %s: docker cannot be handed\n' "$base" >&2
+        printf '         that name intact, so they stay writable. Rename it on the host.\n' >&2
+        continue
+      fi
+      for k in ${psrc[@]+"${!psrc[@]}"}; do
+        seen[${pdst[k]}]=1; pinned[${pdst[k]}]=1
+        _bind_mount_arg mf mv "${psrc[k]}" "${pdst[k]}" rw
+        _ro+=("$mf" "$mv"); _vrfy+=("${psrc[k]}" "${pdst[k]}")
+      done
+      what=""
+      for f in "${gro[@]}"; do
+        x="$dst${f#"$src"}"
+        _bind_mount_arg mf mv "$f" "$x" ro
+        _ro+=("$mf" "$mv"); _vrfy+=("$f" "$x")
+        seen[$x]=1; ro_dsts+=("$x")
+        if [[ "$f" != "$g" ]]; then what+="${what:+, }${f##*/}"; fi
+      done
+      if [[ -d "$g" && ( ! -r "$g" || ! -x "$g" ) ]]; then
+        printf 'WARNING: %s cannot be listed by you, so its hooks and config cannot be\n' "$g" >&2
+        printf '         protected one by one; it is mounted read-only whole at %s.\n' "$at" >&2
+        printf '         Restore: chmod u+rx %q\n' "$g" >&2
+      elif [[ -f "$g" ]]; then
+        printf 'READ-ONLY: %s  (names the git directory your host'\''s git uses here)\n' "$at" >&2
+      else
+        printf 'READ-ONLY: %s: %s  (what your host'\''s git runs; change them on the host)\n' "$at" "$what" >&2
       fi
     done
   done
@@ -832,6 +938,40 @@ launcher_dirs_in() {
          -print0 2>/dev/null)
   for f in ${hits[@]+"${hits[@]}"}; do
     if [[ ! -r "$f" || ! -x "$f" ]]; then _ldi_unr+=("$f"); fi
+  done
+  return 0
+}
+
+# git_dirs_in <gitdirs-out> <gitfiles-out> <links-out> <unreadable-out> <dir>: appends every
+# git directory below <dir>, matched by CONTENT — a directory holding HEAD and
+# either config and objects/ (a repository's own, bare or not, or a submodule's
+# under .git/modules) or commondir (a linked worktree's, under .git/worktrees) —
+# every `.git` FILE (a linked worktree's or a submodule's checkout, naming its git
+# directory), every `.git` symlink, and every `.git` directory you cannot list.
+# Git directories to seven levels down, so a checkout's own .git is found to six,
+# as launchers are; dependency trees are pruned, and so are a .git's object
+# store, refs and logs, which hold nothing that runs. NUL-delimited; always 0.
+git_dirs_in() {
+  # shellcheck disable=SC2178  # nameref: shellcheck does not model `local -n`
+  local -n _gdi_dirs=$1 _gdi_files=$2 _gdi_links=$3 _gdi_unr=$4
+  local f g
+  local -a hits=()
+  mapfile -d '' -t hits < <(find "$5" -mindepth 1 -maxdepth 8 \
+      \( \( -name node_modules -o -name vendor -o -name .venv -o -name target \) \
+         -o -path '*/.git/objects' -o -path '*/.git/refs' -o -path '*/.git/logs' \
+         -o -path '*/.git/modules/*/objects' -o -path '*/.git/modules/*/refs' -o -path '*/.git/modules/*/logs' \) -prune \
+      -o -type f -name HEAD -print0 \
+      -o -name .git \( -type f -o -type l -o -type d \) -print0 2>/dev/null)
+  for f in ${hits[@]+"${hits[@]}"}; do
+    if [[ "${f##*/}" == .git ]]; then
+      if [[ -L "$f" ]]; then _gdi_links+=("$f")
+      elif [[ -f "$f" ]]; then _gdi_files+=("$f")
+      elif [[ -d "$f" && ( ! -r "$f" || ! -x "$f" ) ]]; then _gdi_unr+=("$f")
+      fi
+      continue
+    fi
+    g="${f%/HEAD}"
+    if [[ ( -f "$g/config" && -d "$g/objects" ) || -f "$g/commondir" ]]; then _gdi_dirs+=("$g"); fi
   done
   return 0
 }
