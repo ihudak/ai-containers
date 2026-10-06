@@ -1643,6 +1643,13 @@ fr_wait_for_slot() {   # block until at least one slot is free
     reaped=""
     wait -n -p reaped 2>/dev/null
     rc=$?
+    # bash 5.2 UNSETS -p's variable before it assigns it ("The variable will be
+    # unset initially", bash(1)) and assigns nothing when it reaps nothing (127),
+    # so the `reaped=""` above does not survive the call. Under this file's
+    # `set -u` the next read ended the whole run — measured in CI, `reaped:
+    # unbound variable`, every later target unscored. Back to empty, which the
+    # code below already reads as "wait named no worker".
+    reaped="${reaped:-}"
     # `-p` DOES NOT SET ITS VARIABLE AT THE DECLARED FLOOR. Measured by the
     # bash-floor CI job: the same commit passes this file's §11d wiring
     # assertion on bash 5.2 (ubuntu:24.04) and fails it on 5.1 (ubuntu:22.04)

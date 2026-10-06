@@ -957,6 +957,37 @@ case "$f52_ok" in
   *)                     fail "  … while a worker that DID write is harvested, not reported broken — got: $(printf '%s' "$f52_ok" | tr '\n' ' ')" ;;
 esac
 
+# THE UNSET VARIABLE. When `wait -n -p` reaps nothing — every pid the pool still
+# holds was reaped already — it returns 127 and, on bash 5.2, leaves its -p
+# variable UNSET ("The variable will be unset initially", bash(1)), whatever it
+# held before the call. run.sh runs under `set -u`, so the next read of it ended
+# the whole run: measured in CI, `run.sh: line 1657: reaped: unbound variable`,
+# every later target unscored. A slot whose worker was reaped elsewhere is that
+# state, made on purpose.
+u_out="$( { set +u
+  # shellcheck source=/dev/null
+  source "$RUN" >/dev/null 2>&1
+  # Sourced, run.sh returns before its own `set -uo pipefail`; a real run has
+  # it, and this is the one assertion here that depends on it.
+  set -u
+  rm -f "$TMP/u-none"
+  ( : ) & u_pid=$!
+  wait "$u_pid"
+  # shellcheck disable=SC2034  # read by fr_wait_for_slot/fr_harvest, sourced above
+  FR_PID_SLOT["$u_pid"]=4
+  # shellcheck disable=SC2034  # likewise
+  FR_PID_RESULT["$u_pid"]="$TMP/u-none"
+  fr_wait_for_slot
+  printf 'POOL-CARRIED-ON BROKEN=%s\n' "$FR_BROKEN"; } 2>&1 )"
+case "$u_out" in
+  *'unbound variable'*)
+    fail "a slot wait has nothing to reap for ends the run with an unbound variable — got: $(printf '%s' "$u_out" | tr '\n' ' ')" ;;
+  *'POOL-CARRIED-ON BROKEN=1'*)
+    pass "a slot wait has nothing to reap for (127, its -p variable unset) is harvested as broken, under set -u — not a crash" ;;
+  *)
+    fail "a slot wait has nothing to reap for is harvested as broken — got: $(printf '%s' "$u_out" | tr '\n' ' ')" ;;
+esac
+
 # ── a re-seed that FAILED must not be reported as one that worked ────────────
 # Introduced by the seed-fidelity guard itself: once fr_seed_slot can FAIL, the
 # mid-run reseed can fail too, and it was neither reported nor counted -- the
