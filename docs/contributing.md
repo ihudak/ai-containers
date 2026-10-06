@@ -32,7 +32,7 @@ and what it is guarding. This page is the practical one.
 | --- | --- | --- | --- |
 | `tests.yml` → `hermetic-checks.yml` | every push and PR | the hermetic suite, the same suite again under the declared bash floor, the same suite a third time with `TMPDIR` pointed at a symlink, the falsify mutation tier, and lint | `ubuntu-24.04` |
 | `integration.yml` | every push and PR | the integration corpus, but only `--tags fast --exclude needs-external,needs-dns` | `ubuntu-24.04` |
-| `nightly.yml` | 03:17 daily | the whole integration corpus, allowlist health, and the `packages-agents` / `packages-native` image tiers | `ubuntu-24.04` |
+| `nightly.yml` | 03:17 daily | the whole integration corpus, allowlist health, and the `packages-agents` / `packages-native` / `packages-services` image tiers | `ubuntu-24.04` |
 
 Two more workflows exist and are deliberately **not** in that table, because
 neither verifies anything — listing them as coverage would overstate what CI

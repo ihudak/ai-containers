@@ -274,8 +274,7 @@ runtime_tools_csv() {
 # Consumed by sandbox.sh (-e AI_SERVICES) and start-services.sh. Empty when none.
 services_csv() {
   local s out=()
-  # shellcheck disable=SC2043  # one server today; the list grows with each adapter
-  for s in postgres; do
+  for s in postgres redis; do
     is_active "$s" && out+=("$s=$(get_versions "$s")")
   done
   local IFS=,; printf '%s' "${out[*]}"

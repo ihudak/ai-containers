@@ -6,10 +6,10 @@
 #
 # The name says the PREDICATE, not a tier, because the selection IS a predicate:
 # patch_needs_rebuild() from lib-rebuild.sh. Filename and function agree so a
-# reader finds one from the other. Today that is thirteen patches spanning THREE
-# tiers — mounts (410), volumes (630) and packages (the other eleven) — which is
-# why no tier name fits: it covers 2 of the launcher tier's 11 mutations, and 11
-# of the packages tier's 13.
+# reader finds one from the other. Today that is nineteen patches spanning THREE
+# tiers — mounts (410), volumes (630) and packages (the other seventeen) — which
+# is why no tier name fits: it covers 2 of the mounts and volumes tiers' 20
+# mutations, and 17 of the packages tier's 18.
 #
 # WHY THIS EXISTS (backlog F36):
 #
@@ -33,9 +33,9 @@
 #
 # SELECTION IS DERIVED, NOT LISTED. A patch is in scope here when it needs a
 # rebuild AND its case is not in the network-mode/delivery tiers (which
-# demonstrate-network-delivery-tiers.sh owns). Today that is exactly thirteen patches across
-# nine cases and three image variants. A fourteenth that starts touching a build
-# input joins automatically; nothing here has to be remembered — 780-782 are the most
+# demonstrate-network-delivery-tiers.sh owns). Today that is exactly nineteen patches across
+# eleven cases and four image variants. A twentieth that starts touching a build
+# input joins automatically; nothing here has to be remembered — 785-788 are the most
 # recent to have joined that way, with no edit to this file's selection.
 #
 # OUTCOMES — a FAIL is the pass condition, as in the network demonstrator:
@@ -71,7 +71,7 @@
 # is the asymmetry in the two selectors, and is meant to stay.
 #
 # Usage:
-#   bash tests/integration/demonstrate-needs-rebuild.sh                 # all thirteen
+#   bash tests/integration/demonstrate-needs-rebuild.sh                 # all nineteen
 #   bash tests/integration/demonstrate-needs-rebuild.sh 410 630         # only these
 #   bash tests/integration/demonstrate-needs-rebuild.sh --dry-run       # plan only, no docker
 #   bash tests/integration/demonstrate-needs-rebuild.sh --budget-minutes 45

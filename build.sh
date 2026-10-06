@@ -112,6 +112,19 @@ validate_config() {
       exit 1
     fi
   fi
+  # redis is ON or OFF: Ubuntu's archive carries one Redis, so a version could not
+  # be honoured, and is refused here rather than ignored. A lowercase on/off would
+  # otherwise read as OFF without a word.
+  local rd_val; rd_val=$(get_versions redis)
+  if [[ -n "$rd_val" && "$rd_val" != "ON" && "$rd_val" != "OFF" ]]; then
+    if [[ "${rd_val^^}" == "ON" || "${rd_val^^}" == "OFF" ]]; then
+      printf 'ERROR: redis value "%s" must be written in capitals (ON or OFF).\n' "$rd_val" >&2
+    else
+      printf 'ERROR: redis value "%s" is not ON or OFF.\n' "$rd_val" >&2
+      printf '       Ubuntu 24.04 carries one Redis (7.0), so a version cannot be pinned.\n' >&2
+    fi
+    exit 1
+  fi
   local jvm_key jvm_val ver
   for jvm_key in openjdk graalvm-ce graalvm-oracle kotlin scala maven gradle; do
     jvm_val=$(version_list "$jvm_key")
@@ -312,6 +325,12 @@ build_args_from_config() {
     _args+=(--build-arg "POSTGRES_VERSION=latest")
   elif [[ -n "$pg_raw" && "$pg_raw" != "OFF" ]]; then
     _args+=(--build-arg "POSTGRES_VERSION=${pg_raw}")
+  fi
+  # Redis: INSTALL_REDIS=1 when ON, and NOTHING otherwise — not INSTALL_REDIS=0 —
+  # for the reason above: the config digest of a project that never enables the
+  # key must not move because the key exists.
+  if is_enabled redis; then
+    _args+=(--build-arg "INSTALL_REDIS=1")
   fi
 
   local jvm_keys=(openjdk graalvm-ce graalvm-oracle kotlin scala maven gradle)

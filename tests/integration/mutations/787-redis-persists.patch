@@ -1,0 +1,20 @@
+# case: 785-redis-server-runs
+# what: persistence left at Redis's defaults — RDB snapshots on a schedule —
+#       because the two options that turn it off are gone. A suite would not
+#       notice; the disk would, and a throwaway server must not write one.
+#
+#       Expected: assertions 1, 2, 3, 5 and 6 PASS; assertion 4 FAILs, naming
+#       the snapshot schedule.
+diff --git a/services.d/redis.sh b/services.d/redis.sh
+index e6f2ade..9ca1a4c 100644
+--- a/services.d/redis.sh
++++ b/services.d/redis.sh
+@@ -47,7 +47,7 @@ svc_start() {  # <datadir> <logfile>
+   # own and the call returns, so the runner's watchdog never holds the server.
+   "$REDIS_SERVER" --bind 127.0.0.1 -::1 --port "$REDIS_PORT" \
+     --daemonize yes --pidfile "$datadir/redis.pid" --logfile "$logfile" --dir "$datadir" \
+-    --save '' --appendonly no || return 1
++    || return 1
+   # Detached, so started is not ready. Ready is THIS server answering: the pid it
+   # reports must be the one it wrote, so no other Redis on the port passes for
+   # it. One that died after writing its pid fails at once. One that never wrote

@@ -127,6 +127,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   major starts anyway and says so. It runs on a new shared runner,
   `start-services.sh` with one adapter per server under `services.d/`, which
   Redis, MySQL and MongoDB will reuse. See `docs/components/postgres.md`.
+- **A Redis server inside the container: `redis=ON | OFF`.** Ubuntu 24.04's
+  `redis-server` (7.0), started in every container before the prompt, as your
+  user, on `redis://localhost:6379` — the IPv4 and IPv6 loopback only, so a
+  Node client that looks up `localhost` as `::1` connects too. No password, and
+  nothing written to disk. For the test suites and dev servers that expect one
+  (Sidekiq, Action Cable, Celery, BullMQ). It takes no version, because Ubuntu
+  carries one Redis; `./build.sh` refuses `redis=7.2` rather than ignore it. A
+  `REDIS_PORT` an app sets in `container.env` does not move the server. See
+  `docs/components/redis.md`.
 
 ## v0.9.20 — 2026-10-05
 

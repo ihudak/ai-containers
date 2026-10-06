@@ -1,0 +1,19 @@
+# case: 785-redis-server-runs
+# what: the adapter reads an app's own REDIS_PORT, which container.env hands
+#       to the start phase — the case sets REDIS_PORT=7777 there, so the server
+#       moves off the port every client defaults to.
+#
+#       Expected: assertion 1 FAILs (no PONG on 6379) and the case stops there.
+diff --git a/services.d/redis.sh b/services.d/redis.sh
+index e6f2ade..1dc76b1 100644
+--- a/services.d/redis.sh
++++ b/services.d/redis.sh
+@@ -18,7 +18,7 @@
+ 
+ REDIS_SERVER="${AI_SERVICES_REDIS_SERVER:-/usr/bin/redis-server}"
+ REDIS_CLI="${AI_SERVICES_REDIS_CLI:-/usr/bin/redis-cli}"
+-REDIS_PORT="${AI_SERVICES_REDIS_PORT:-6379}"
++REDIS_PORT="${REDIS_PORT:-${AI_SERVICES_REDIS_PORT:-6379}}"
+ # How many 0.1 s waits svc_start allows the server to answer: 30 s by default.
+ REDIS_TRIES="${AI_SERVICES_REDIS_TRIES:-300}"
+ [[ "$REDIS_TRIES" =~ ^[1-9][0-9]*$ ]] || REDIS_TRIES=300

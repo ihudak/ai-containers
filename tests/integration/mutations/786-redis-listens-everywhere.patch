@@ -1,0 +1,20 @@
+# case: 785-redis-server-runs
+# what: the server binds every address instead of loopback only. Everything an
+#       app would notice still works — that is the point: exposure is invisible
+#       to the app, so only assertion 3 can catch it.
+#
+#       Expected: assertions 1, 2, 4, 5 and 6 PASS; assertion 3 FAILs, naming
+#       the 0.0.0.0 listener (00000000:18EB).
+diff --git a/services.d/redis.sh b/services.d/redis.sh
+index e6f2ade..5455594 100644
+--- a/services.d/redis.sh
++++ b/services.d/redis.sh
+@@ -45,7 +45,7 @@ svc_start() {  # <datadir> <logfile>
+   # container without IPv6 still starts. --save '' and --appendonly no: nothing
+   # is written to disk. --daemonize: the server detaches into a session of its
+   # own and the call returns, so the runner's watchdog never holds the server.
+-  "$REDIS_SERVER" --bind 127.0.0.1 -::1 --port "$REDIS_PORT" \
++  "$REDIS_SERVER" --bind 0.0.0.0 -::1 --port "$REDIS_PORT" \
+     --daemonize yes --pidfile "$datadir/redis.pid" --logfile "$logfile" --dir "$datadir" \
+     --save '' --appendonly no || return 1
+   # Detached, so started is not ready. Ready is THIS server answering: the pid it

@@ -313,4 +313,28 @@ for d in "$DEST_A" "$DEST_B"; do
   fi
 done
 
+# Every file the Dockerfile COPYs from the build context must reach a synced
+# project: a project builds from its own .ai-containers copy, so a COPY source the
+# sync never copies fails every project's build — whatever sandbox.conf says, since
+# a COPY cannot be skipped. A directory sync-to-projects.sh rsyncs (tools.d,
+# services.d) reaches the project that way; the allowlist-*.txt files are
+# generated into the build context by build.sh. (From the closed #272, whose
+# settings file would have broken every project build this way.)
+synced_dirs="$(sed -n 's|.*rsync -a.*"\${script_dir}/\([^/"]*\)/".*|\1|p' "$REPO_DIR/sync-to-projects.sh")"
+copies=0
+while read -r src; do
+  [[ -n "$src" ]] || continue
+  copies=$((copies + 1))
+  case "$src" in
+    allowlist-*.txt) continue ;;
+  esac
+  grep -qxF "$src" <<<"$synced_dirs" && continue
+  if is_member "$src" "${AI_CONTAINERS_SHARED_FILES[@]}"; then
+    pass "Dockerfile COPY source $src reaches a synced project"
+  else
+    fail "Dockerfile COPY source $src reaches a synced project — add it to AI_CONTAINERS_SHARED_FILES, or every project build fails"
+  fi
+done < <(awk '/^COPY / { for (i = 2; i < NF; i++) if ($i !~ /^--/) { print $i; break } }' "$REPO_DIR/Dockerfile")
+(( copies > 0 )) || fail "found no COPY in the Dockerfile — the COPY-source check verified nothing"
+
 printf '\n%d failure(s)\n' "$fails"; exit "$fails"

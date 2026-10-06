@@ -24,7 +24,7 @@ A CLI-only Docker workspace for running AI coding agents (GitHub Copilot CLI, Ki
 
 `sandbox.conf` is the single source of truth for which optional components are included. Set a component to `ON` or `OFF` and rebuild. The format is strictly `component=ON` or `component=OFF`, one per line; comments start with `#`.
 
-Optional components: `copilot`, `kiro`, `claude-code`, `codex`, `gemini`, `graphify`, `openjdk`, `graalvm-ce`, `graalvm-oracle`, `kotlin`, `scala`, `maven`, `gradle`, `kubectl`, `aws-cli`, `azure-cli`, `github-cli`, `angular-cli`, `yarn`, `pnpm`, `bun`, `goreleaser`, `vale`, `qmd`, `dtctl`, `dtmgd`, `imagemagick`, `wkhtmltopdf`, `c-toolchain`, `playwright`, `postgres`, `shellcheck`.
+Optional components: `copilot`, `kiro`, `claude-code`, `codex`, `gemini`, `graphify`, `openjdk`, `graalvm-ce`, `graalvm-oracle`, `kotlin`, `scala`, `maven`, `gradle`, `kubectl`, `aws-cli`, `azure-cli`, `github-cli`, `angular-cli`, `yarn`, `pnpm`, `bun`, `goreleaser`, `vale`, `qmd`, `dtctl`, `dtmgd`, `imagemagick`, `wkhtmltopdf`, `c-toolchain`, `playwright`, `postgres`, `redis`, `shellcheck`.
 
 **`c-toolchain=ON`** keeps a C compiler in the finished image — `build-essential`
 (gcc, g++, make, binutils, `libc6-dev`) plus `libyaml-dev zlib1g-dev libssl-dev`,
@@ -99,6 +99,16 @@ is the first server on the shared runner described under
 [In-container database servers](#in-container-database-servers);
 `POSTGRES_ROLES` / `POSTGRES_DATABASES` in `container.env` provision it. User docs:
 `docs/components/postgres.md`.
+
+**`redis=ON | OFF`** bakes Ubuntu 24.04's `redis-server` (7.0) and starts it on the
+same runner: `127.0.0.1` and `::1` only (Node 17 and later resolve `localhost` to
+`::1` first; the `::1` bind is optional), no password, no snapshots and no
+append-only file. It takes no version, because Ubuntu's archive carries one, and
+`build.sh` refuses one rather than ignore it. Ready means **this** server
+answering: the pid its `INFO` reports must be the one it wrote, so another Redis
+on the port never passes for it. Its integration case runs on the `services`
+image variant, which holds the servers that need no build toolchain. User docs:
+`docs/components/redis.md`.
 
 Version-list components (`node`, `python`, `ruby`, `rust`, `go`) accept comma-separated version values instead of `ON`/`OFF` (e.g., `node=22,20`). Constraints:
 - `angular-cli` accepts only a **single version** (not a comma-separated list).

@@ -522,6 +522,14 @@ case "$out" in
   *) fail "variant native overrides — got: $out" ;;
 esac
 
+out="$(bash "$TMP/callfn.sh" variant_overrides services)"
+case "$out" in
+  *redis=ON*) pass "variant services turns on the in-container servers that need no toolchain (redis)" ;;
+  *) fail "variant services overrides — got: $out" ;;
+esac
+check "variant_image services is suffixed" \
+  "ai-sandbox-it-services" "$(bash "$TMP/callfn.sh" variant_image services)"
+
 out="$(IT_RUBY_VERSIONS=3.4.5 bash "$TMP/callfn.sh" variant_overrides native)"
 case "$out" in
   *ruby=3.4.5*) pass "IT_RUBY_VERSIONS overrides the native variant's ruby list" ;;
