@@ -23,7 +23,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   it. Each protected path is printed at launch (`READ-ONLY: …`); everything else
   stays writable. A project reached through a symlink that sits inside a
   writable mount gets a `WARNING:` naming the real path to launch from, since a
-  link can be replaced rather than renamed. **Behaviour change:** edit `sandbox.conf`, the allowlist
+  link can be replaced rather than renamed. A writable mount whose root you
+  cannot read now refuses the launch, naming it, and an unreadable directory of
+  yours inside one is mounted read-only with a warning. If your team versions
+  `.ai-containers/` in git, switch branches on the host: inside the container
+  git cannot update those files, warns `unable to unlink`, and exits 0 anyway. **Behaviour change:** edit `sandbox.conf`, the allowlist
   fragments and the other launcher files on the host, not from inside the
   container. Launching with a launcher's own directory as the working directory
   (developing ai-containers itself) keeps it writable and prints a `NOTE:`.

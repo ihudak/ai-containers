@@ -12,7 +12,8 @@
 # sandbox-common.sh, so an ai-containers checkout counts too) — pins every
 # directory between a mount root and a launcher, and skips a launcher nested in
 # another (T9–T19); robust to stray files and odd names, and warns about a
-# symlink it cannot pin (T20–T23).
+# symlink it cannot pin (T20–T23); never mounts a name docker would mangle, and
+# never scans blind past an unreadable directory (T24–T27).
 #
 # Hermetic: fake `docker` capturing the run args, no daemon. Integration cases
 # 450-launcher-dir-read-only and 455-launcher-dir-nested-mount check that the
@@ -30,7 +31,7 @@ TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; REAL_H
 # Physical path: on macOS mktemp hands out /var/..., which is a symlink to
 # /private/var/..., and sandbox.sh resolves every mount source.
 TMP="$(cd "$TMP" && pwd -P)"
-trap 'rm -rf "$TMP"; export HOME="$REAL_HOME"' EXIT
+trap 'chmod -R u+rwx "$TMP" 2>/dev/null; rm -rf "$TMP"; export HOME="$REAL_HOME"' EXIT
 
 export HOME="$TMP/home"; mkdir -p "$HOME"
 export AI_CONTAINER_GROUP=default AI_CONTAINER_GROUP_INIT=clean SANDBOX_USER=tester
@@ -303,10 +304,90 @@ NL="$TMP/nl"; nlname='x'$'\n''y'; mkdir -p "$NL/$nlname/.ai-containers"
 got="$(bash -c '
   set -euo pipefail
   eval "$(awk "/^launcher_dirs_in\\(\\) \\{/,/^}\$/" "$1")"
-  out=(); launcher_dirs_in out "$2"; printf "%s\0" "${out[@]}"' _ "$ENGINE/sandbox.sh" "$NL" | tr '\0\n' '|^')"
+  out=(); unr=(); launcher_dirs_in out unr "$2" "$(id -u)"; printf "%s\0" "${out[@]}"' _ "$ENGINE/sandbox.sh" "$NL" | tr '\0\n' '|^')"
 [[ "$got" == "$NL/x^y/.ai-containers|" ]] \
   && pass "T23 launcher_dirs_in finds a launcher under a name with a newline, whole" \
   || fail "T23 newline in a name (got: $got)"
+
+# A launcher at <base>/<name>/.ai-containers, a real one (both files).
+mk_launcher() { mkdir -p "$1/.ai-containers" && : > "$1/.ai-containers/sandbox.sh" && : > "$1/.ai-containers/sandbox-common.sh"; }
+# The argument after each `-v` / `--mount`, raw, one per line, prefixed by the flag.
+raw_mounts() { awk 'prev=="-v"||prev=="--mount"{print prev " " $0} {prev=$0}' "$CAPTURE"; }
+
+# ── T24: how each launcher is handed to docker. `-v` carries every name docker
+# accepts except one holding ':' (its separator); `--mount` carries the ':' but
+# refuses a value ending in whitespace. What neither can carry faithfully — a
+# ':' plus a trailing space, or a name that is not valid UTF-8, which docker
+# rewrites (and Docker Desktop then CREATES, root-owned, inside the project) —
+# is not mounted at all, with a WARNING, rather than wedging the launch.
+REP="$TMP/rep"
+mk_launcher "$REP/c:o,n"; mk_launcher "$REP/tr "; mk_launcher "$REP/c:o "; mk_launcher "$REP/p:q/in"
+# A launcher whose OWN directory has the unrepresentable name — nothing above it
+# to pin, so only the check on the launcher itself can catch it.
+mkdir -p "$REP/l:x "; : > "$REP/l:x /sandbox.sh"; : > "$REP/l:x /sandbox-common.sh"
+EXTRA_MOUNTS="$REP" launch "$LAUNCHER" "$TMP/app"
+grep -aqxF -- "--mount type=bind,\"source=$REP/c:o,n/.ai-containers\",\"destination=/workspace/rep/c:o,n/.ai-containers\",readonly" <<<"$(raw_mounts)" \
+  && pass "T24 a name with ':' goes through --mount, CSV-quoted" \
+  || fail "T24 ':' via --mount (got: $(raw_mounts | grep -aF 'c:o,n' | tr '\n' ' '))"
+grep -aqxF -- "-v $REP/tr /.ai-containers:/workspace/rep/tr /.ai-containers:ro" <<<"$(raw_mounts)" \
+  && grep -aqxF -- "-v $REP/tr :/workspace/rep/tr :rw" <<<"$(raw_mounts)" \
+  && pass "T24 a name ending in a space goes through -v, which keeps it" \
+  || fail "T24 trailing space via -v (got: $(raw_mounts | grep -aF '/tr ' | tr '\n' ' '))"
+if ! grep -aqF -- "c:o /" <<<"$(raw_mounts)" && grep -aqF "WARNING: cannot protect $REP/c:o /.ai-containers" "$ERR"; then
+  pass "T24 ':' plus a trailing space is not mounted, and is warned about"
+else
+  fail "T24 unrepresentable ':'+space (mounts: $(raw_mounts | grep -aF 'c:o ' | tr '\n' ' '); stderr: $(grep -aF 'c:o ' "$ERR" | tr '\n' ' '))"
+fi
+grep -aqxF -- "--mount type=bind,\"source=$REP/p:q\",\"destination=/workspace/rep/p:q\"" <<<"$(raw_mounts)" \
+  && grep -aqxF -- "--mount type=bind,\"source=$REP/p:q/in\",\"destination=/workspace/rep/p:q/in\"" <<<"$(raw_mounts)" \
+  && grep -aqxF -- "--mount type=bind,\"source=$REP/p:q/in/.ai-containers\",\"destination=/workspace/rep/p:q/in/.ai-containers\",readonly" <<<"$(raw_mounts)" \
+  && pass "T24 pins under a ':' go through --mount, writable; the launcher read-only" \
+  || fail "T24 ':' in a pinned directory (got: $(raw_mounts | grep -aF 'p:q' | tr '\n' ' '))"
+if ! grep -aqF -- "l:x " <<<"$(raw_mounts)" && grep -aqF "WARNING: cannot protect $REP/l:x " "$ERR"; then
+  pass "T24 a launcher whose own name is unrepresentable is not mounted, and is warned about"
+else
+  fail "T24 launcher's own name (mounts: $(raw_mounts | grep -aF 'l:x' | tr '\n' ' '); stderr: $(grep -aF 'l:x' "$ERR" | tr '\n' ' '))"
+fi
+[[ -s "$CAPTURE" ]] && pass "T24 ... and the launch still goes ahead" || fail "T24 the launch still goes ahead"
+BAD="$TMP/bad"
+if mk_launcher "$BAD/x"$'\xff' 2>/dev/null; then
+  EXTRA_MOUNTS="$BAD" launch "$LAUNCHER" "$TMP/app"
+  if ! grep -aqF -- "$BAD/x" <<<"$(raw_mounts)" && grep -aqF "WARNING: cannot protect $BAD/x" "$ERR" && [[ -s "$CAPTURE" ]]; then
+    pass "T24 a name that is not valid UTF-8 is not mounted, is warned about, and the launch goes ahead"
+  else
+    fail "T24 invalid UTF-8 (mounts: $(raw_mounts | grep -aF "$BAD" | tr '\n' ' '); stderr: $(grep -aF "$BAD" "$ERR" | tr '\n' ' '))"
+  fi
+else
+  pass "T24 (this filesystem refuses a name that is not valid UTF-8; nothing to check)"
+fi
+
+# ── T25: a directory the agent owns but has made unreadable cannot be looked
+# inside, so a launcher in it would go unseen and stay writable at the next
+# launch. It is treated as one: overlaid read-only, its parents pinned, warned.
+LOCK="$TMP/lockp"; mk_launcher "$LOCK/inner/proj2"; chmod 0311 "$LOCK/inner"
+EXTRA_MOUNTS="$LOCK" launch "$LAUNCHER" "$TMP/app"
+chmod 0755 "$LOCK/inner"
+[[ "$(mounts_under /workspace/lockp/)" == "$LOCK/inner:/workspace/lockp/inner:ro" ]] \
+  && grep -qF "WARNING: $LOCK/inner is not readable" "$ERR" \
+  && pass "T25 an unreadable directory of the agent's is mounted read-only, with a warning" \
+  || fail "T25 unreadable directory (got: $(mounts_under /workspace/lockp/ | tr '\n' ' '); stderr: $(grep -F "$LOCK" "$ERR" | tr '\n' ' '))"
+
+# ── T26: an unreadable writable mount ROOT cannot be overlaid (it is the mount)
+# or looked inside, so the launch is refused, naming it — never started blind.
+ROOTL="$TMP/rootl"; mk_launcher "$ROOTL/p"; chmod 0311 "$ROOTL"
+EXTRA_MOUNTS="$ROOTL" launch "$LAUNCHER" "$TMP/app"
+chmod 0755 "$ROOTL"
+[[ ! -s "$CAPTURE" ]] && grep -qF "ERROR: $ROOTL is not readable" "$ERR" \
+  && pass "T26 an unreadable writable mount root refuses the launch, naming it" \
+  || fail "T26 unreadable mount root (docker run reached: $([[ -s "$CAPTURE" ]] && echo yes || echo no); stderr: $(grep -E 'ERROR|WARNING' "$ERR" | tr '\n' ' '))"
+
+# ── T27: the documented limits, so code and docs cannot drift: six levels
+# down, and dependency/VCS trees are not searched.
+LIM="$TMP/lim"; mk_launcher "$LIM/1/2/3/4/5"; mk_launcher "$LIM/a/b/c/d/e/f"; mk_launcher "$LIM/node_modules/p"
+EXTRA_MOUNTS="$LIM" launch "$LAUNCHER" "$TMP/app"
+[[ "$(mounts_under /workspace/lim/ | grep ':ro$')" == "$LIM/1/2/3/4/5/.ai-containers:/workspace/lim/1/2/3/4/5/.ai-containers:ro" ]] \
+  && pass "T27 a launcher six levels down is found; seven levels, or under node_modules, is not" \
+  || fail "T27 limits (got: $(mounts_under /workspace/lim/ | grep ':ro$' | tr '\n' ' '))"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

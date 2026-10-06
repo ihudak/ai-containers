@@ -15,10 +15,11 @@
 # The same mount also exposes ANOTHER project's launcher, which must be read-only
 # too: the host runs it at that project's next launch.
 #
-# A third launcher sits under a directory whose name holds a comma. docker reads a
-# --mount value as CSV, so the overlay quotes its fields; unquoted, the comma
-# would split one and docker would refuse to start the container at all — a
-# name an agent can create, wedging every later launch.
+# Three more sit under names an agent can create, one per way docker is handed a
+# path: `odd,name` and `tr ` (trailing space) go through -v, which keeps both;
+# `c:o,n` holds -v's separator, so it goes through --mount, whose value docker
+# reads as CSV — quoted fields, or the comma splits one. Handed over wrongly,
+# any of them makes docker refuse the whole `docker run`, at every launch.
 #
 # Paired as everywhere in this tier: the parent and the pinned directory must
 # still accept writes, so "cannot move" cannot mean "nothing here works".
@@ -35,6 +36,12 @@ mkdir -p "$grp/odd,name/.ai-containers"
 printf '#!/usr/bin/env bash\n' > "$grp/odd,name/.ai-containers/sandbox.sh"
 : > "$grp/odd,name/.ai-containers/sandbox-common.sh"
 printf 'marker-odd\n'   > "$grp/odd,name/.ai-containers/MARKER"
+for n in "tr " "c:o,n"; do
+  mkdir -p "$grp/$n/.ai-containers"
+  printf '#!/usr/bin/env bash\n' > "$grp/$n/.ai-containers/sandbox.sh"
+  : > "$grp/$n/.ai-containers/sandbox-common.sh"
+  printf 'marker-%s\n' "$n" > "$grp/$n/.ai-containers/MARKER"
+done
 printf 'marker-proj\n'  > "$grp/proj/.ai-containers/MARKER"
 printf 'marker-other\n' > "$grp/other/.ai-containers/MARKER"
 
@@ -49,6 +56,10 @@ assert_not_writable "$IT_CID" /workspace/grp/proj/.ai-containers
 assert_not_writable "$IT_CID" /workspace/grp/other/.ai-containers
 assert_agent_reads  "$IT_CID" "/workspace/grp/odd,name/.ai-containers/MARKER" marker-odd
 assert_not_writable "$IT_CID" "/workspace/grp/odd,name/.ai-containers"
+for n in "tr " "c:o,n"; do
+  assert_agent_reads  "$IT_CID" "/workspace/grp/$n/.ai-containers/MARKER" "marker-$n"
+  assert_not_writable "$IT_CID" "/workspace/grp/$n/.ai-containers"
+done
 assert_writable     "$IT_CID" /workspace/grp
 assert_writable     "$IT_CID" /workspace/grp/proj
 

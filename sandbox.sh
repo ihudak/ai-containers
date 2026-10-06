@@ -270,7 +270,10 @@ add_file_mount_if_exists() {
 # :rw repo, a parent directory in EXTRA_MOUNTS, or an ai-containers checkout
 # sitting in one. A launcher is matched by CONTENT (a directory holding both
 # sandbox.sh and sandbox-common.sh), not by the name .ai-containers: the engine
-# checkout itself is named ai-containers and is just as dangerous writable.
+# checkout itself is named ai-containers and is just as dangerous writable. A
+# directory of the agent's that it has made unreadable cannot be looked inside,
+# so it is treated as if it held one; an unreadable writable mount ROOT can be
+# neither looked inside nor overlaid, so it refuses the launch.
 #
 # The directories BETWEEN the mount root and a launcher are pinned too, each
 # bind-mounted onto itself read-write: an ordinary directory above a mount point
@@ -298,12 +301,14 @@ add_file_mount_if_exists() {
 # `set -euo pipefail` and an agent can name directories: everything here stays
 # in arrays in this shell — no pipeline whose failure could end the loop early
 # and leave later mounts unprotected, no newline- or tab-separated text a name
-# could split — and every --mount value is CSV-quoted (_bind_mount_arg).
+# could split — and every path is handed to docker in a form that carries it
+# intact (_bind_mount_arg), or, where none can, not mounted, with a WARNING.
 launcher_ro_overlay() {
   # shellcheck disable=SC2178  # nameref: shellcheck does not model `local -n`
   local -n _ro=$1
-  local reached="$2" self spec src rest dst opts l at pin path part r skip i depth max=0 d m p pp
-  local -a found bsrc=() bdst=() cl=() cat=() csrc=() cdst=() cdep=() ro_dsts=()
+  local reached="$2" self spec src rest dst opts l at pin path part r skip i k depth max=0 d p pp kind ok mf mv
+  local uid="${SANDBOX_UID:-$(id -u)}"
+  local -a found unreadable cand bsrc=() bdst=() cl=() cat=() csrc=() cdst=() cdep=() ckind=() ro_dsts=() psrc pdst
   local -A seen=()
   shift 2
   self="$(cd "$reached" 2>/dev/null && pwd -P)" || self="$reached"
@@ -315,6 +320,14 @@ launcher_ro_overlay() {
     if [[ "$rest" == *:* ]]; then opts="${rest#*:}"; fi
     if [[ ",$opts," == *,ro,* ]]; then continue; fi
     if [[ "$src" != /* || ! -d "$src" ]]; then continue; fi
+    # The agent can chmod its own directories. One it cannot read cannot be
+    # searched for launchers, and a mount root cannot be overlaid either.
+    if [[ -n "$(find "$src" -maxdepth 0 -user "$uid" ! -perm -0500 -print 2>/dev/null)" ]]; then
+      printf 'ERROR: %s is not readable by you, so the launcher cannot check it for\n' "$src" >&2
+      printf '       launchers before mounting it writable at %s.\n' "$dst" >&2
+      printf '       Restore it (chmod u+rx %q), or mount it :ro.\n' "$src" >&2
+      exit 1
+    fi
     src="$(cd "$src" 2>/dev/null && pwd -P)" || continue
     bsrc+=("$src"); bdst+=("$dst")
   done
@@ -340,28 +353,33 @@ launcher_ro_overlay() {
     done
   done
 
-  # Every launcher each mount exposes, with where it lands in the container.
+  # Every launcher each mount exposes — and every directory there it cannot
+  # see into — with where it lands in the container.
   for i in ${bsrc[@]+"${!bsrc[@]}"}; do
     src="${bsrc[i]}"; dst="${bdst[i]}"
-    found=()
+    found=(); unreadable=()
     if [[ "$self" == "$src" || "$self" == "$src"/* ]]; then found+=("$self"); fi
-    launcher_dirs_in found "$src"
-    for l in ${found[@]+"${found[@]}"}; do
+    launcher_dirs_in found unreadable "$src" "$uid"
+    cand=(${found[@]+"${found[@]}"} ${unreadable[@]+"${unreadable[@]}"})
+    for k in ${cand[@]+"${!cand[@]}"}; do
+      l="${cand[k]}"
+      kind=launcher
+      if (( k >= ${#found[@]} )); then kind=unreadable; fi
       if [[ "$l" == "$src" ]]; then at="$dst"
       elif [[ "$l" == "$src"/* ]]; then at="$dst/${l#"$src"/}"
       else continue; fi
       d="${at//[!\/]/}"
-      cl+=("$l"); cat+=("$at"); csrc+=("$src"); cdst+=("$dst"); cdep+=("${#d}")
+      cl+=("$l"); cat+=("$at"); csrc+=("$src"); cdst+=("$dst"); cdep+=("${#d}"); ckind+=("$kind")
       if (( ${#d} > max )); then max=${#d}; fi
     done
   done
 
-  # Shallowest first, so an outer launcher's read-only overlay is recorded
-  # before anything nested in it is considered.
+  # Shallowest first, so an outer read-only overlay is recorded before anything
+  # nested in it is considered.
   for (( depth = 0; depth <= max; depth++ )); do
     for i in ${cat[@]+"${!cat[@]}"}; do
       if (( cdep[i] != depth )); then continue; fi
-      at="${cat[i]}"; l="${cl[i]}"; src="${csrc[i]}"; dst="${cdst[i]}"
+      at="${cat[i]}"; l="${cl[i]}"; src="${csrc[i]}"; dst="${cdst[i]}"; kind="${ckind[i]}"
       if [[ -n "${seen[$at]:-}" ]]; then continue; fi
       skip=""
       for r in ${ro_dsts[@]+"${ro_dsts[@]}"}; do
@@ -374,50 +392,113 @@ launcher_ro_overlay() {
         printf '      what changes there runs on the host at the next launch.\n' >&2
         continue
       fi
+      # The pins this one needs, then whether docker can be handed all of them
+      # and the overlay intact — all or nothing, never a partial set.
+      psrc=(); pdst=()
       rest="${l#"$src"/}"; path="$src"; pin="$dst"
       while [[ "$rest" == */* ]]; do
         part="${rest%%/*}"; rest="${rest#*/}"
         path="$path/$part"; pin="$pin/$part"
-        if [[ -n "${seen[$pin]:-}" ]]; then continue; fi
-        seen[$pin]=1
-        _bind_mount_arg m "$path" "$pin"
-        _ro+=(--mount "$m")
+        if [[ -z "${seen[$pin]:-}" ]]; then psrc+=("$path"); pdst+=("$pin"); fi
       done
-      _bind_mount_arg m "$l" "$at" readonly
-      _ro+=(--mount "$m")
+      ok=1
+      if ! _mount_representable "$l" "$at"; then ok=""; fi
+      for k in ${psrc[@]+"${!psrc[@]}"}; do
+        if [[ -n "$ok" ]] && ! _mount_representable "${psrc[k]}" "${pdst[k]}"; then ok=""; fi
+      done
+      if [[ -z "$ok" ]]; then
+        printf 'WARNING: cannot protect %s: docker cannot be handed that name intact,\n' "$l" >&2
+        printf '         so it stays writable. Rename it on the host.\n' >&2
+        continue
+      fi
+      for k in ${psrc[@]+"${!psrc[@]}"}; do
+        seen[${pdst[k]}]=1
+        _bind_mount_arg mf mv "${psrc[k]}" "${pdst[k]}" rw
+        _ro+=("$mf" "$mv")
+      done
+      _bind_mount_arg mf mv "$l" "$at" ro
+      _ro+=("$mf" "$mv")
       ro_dsts+=("$at")
-      printf 'READ-ONLY: %s  (launcher files; edit them on the host)\n' "$at" >&2
+      if [[ "$kind" == unreadable ]]; then
+        printf 'WARNING: %s is not readable by you, so it cannot be checked for\n' "$l" >&2
+        printf '         launchers; it is mounted read-only at %s. Restore: chmod u+rx %q\n' "$at" "$l" >&2
+      else
+        printf 'READ-ONLY: %s  (launcher files; edit them on the host)\n' "$at" >&2
+      fi
     done
   done
 }
 
-# _bind_mount_arg <var> <source> <destination> [readonly]: one `--mount` value.
-# docker reads it as a CSV record, so each field is quoted and any '"' doubled;
-# unquoted, a ',' an agent puts in a directory name splits the field, and the
-# next launch fails until someone finds and renames it on the host.
+# _bind_mount_arg <flag-var> <value-var> <source> <destination> <rw|ro>: how to
+# hand docker one bind. `-v` carries any name docker accepts except one with a
+# ':' (its separator) — trailing whitespace, tabs, newlines, commas and quotes
+# included; a name with a ':' goes through `--mount` instead, whose value docker
+# reads as a CSV record, so each field is quoted and any '"' doubled.
 _bind_mount_arg() {
-  local s="source=$2" d="destination=$3"
-  printf -v "$1" 'type=bind,"%s","%s"%s' "${s//\"/\"\"}" "${d//\"/\"\"}" "${4:+,$4}"
+  local s="source=$3" d="destination=$4" o=""
+  if [[ "$3$4" != *:* ]]; then
+    printf -v "$1" '%s' -v
+    printf -v "$2" '%s:%s:%s' "$3" "$4" "$5"
+  else
+    if [[ "$5" == ro ]]; then o=",readonly"; fi
+    printf -v "$1" '%s' --mount
+    printf -v "$2" 'type=bind,"%s","%s"%s' "${s//\"/\"\"}" "${d//\"/\"\"}" "$o"
+  fi
 }
 
-# launcher_dirs_in <out-array> <dir>: appends every launcher directory below
-# <dir> — matched by CONTENT, a directory holding both sandbox.sh and
-# sandbox-common.sh, which is what the host runs `./sandbox.sh` from (a
-# project's .ai-containers/ copy, or an ai-containers checkout itself). To six
-# levels down, pruning dependency and VCS trees: it runs on every launch over
-# every writable mount, measured at a few hundredths of a second over a ~/dev
-# full of repos. NUL-delimited, and always returns 0 — see launcher_ro_overlay.
+# _mount_representable <source> <destination>: can _bind_mount_arg hand docker
+# this pair so that it arrives byte for byte? Not when a name is not valid UTF-8:
+# the CLI rewrites it to U+FFFD, the bind then names a path that does not exist,
+# and Docker Desktop CREATES that path, root-owned, inside the host directory.
+# And not, through `--mount`, a value ending in whitespace (docker refuses it —
+# Go's unicode.IsSpace, so NBSP and U+3000 too) or holding a CR (its CSV reader
+# folds CRLF to LF). Without iconv the UTF-8 half is skipped; the price is a
+# launch docker refuses, never a launcher left writable silently.
+_mount_representable() {
+  local v w
+  for v in "$1" "$2"; do
+    if command -v iconv >/dev/null 2>&1 && ! printf '%s' "$v" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; then
+      return 1
+    fi
+  done
+  if [[ "$1$2" != *:* ]]; then return 0; fi
+  for v in "$1" "$2"; do
+    if [[ "$v" == *$'\r'* || "$v" == *[[:space:]] ]]; then return 1; fi
+    for w in $'\xc2\x85' $'\xc2\xa0' $'\xe1\x9a\x80' $'\xe2\x80\x80' $'\xe2\x80\x81' $'\xe2\x80\x82' \
+             $'\xe2\x80\x83' $'\xe2\x80\x84' $'\xe2\x80\x85' $'\xe2\x80\x86' $'\xe2\x80\x87' $'\xe2\x80\x88' \
+             $'\xe2\x80\x89' $'\xe2\x80\x8a' $'\xe2\x80\xa8' $'\xe2\x80\xa9' $'\xe2\x80\xaf' $'\xe2\x81\x9f' \
+             $'\xe3\x80\x80'; do
+      if [[ "$v" == *"$w" ]]; then return 1; fi
+    done
+  done
+  return 0
+}
+
+# launcher_dirs_in <launchers-out> <unreadable-out> <dir> <uid>: appends every
+# launcher directory below <dir> — matched by CONTENT, a directory holding both
+# sandbox.sh and sandbox-common.sh, which is what the host runs `./sandbox.sh`
+# from (a project's .ai-containers/ copy, or an ai-containers checkout itself) —
+# and every directory owned by <uid> (the agent's) that lacks u+rx, which the
+# search cannot see into. To six levels down, pruning dependency and VCS trees:
+# it runs on every launch over every writable mount, measured at a few
+# hundredths of a second over a ~/dev full of repos (far slower on a WSL drvfs
+# path under /mnt/<drive>). NUL-delimited, and always returns 0.
 launcher_dirs_in() {
   # shellcheck disable=SC2178  # nameref: shellcheck does not model `local -n`
-  local -n _ldi_out=$1
+  local -n _ldi_out=$1 _ldi_unr=$2
   local f
   local -a hits=()
-  mapfile -d '' -t hits < <(find "$2" -mindepth 1 -maxdepth 7 \
+  mapfile -d '' -t hits < <(find "$3" -mindepth 1 -maxdepth 7 \
       \( -name node_modules -o -name .git -o -name vendor -o -name .venv -o -name target \) -prune \
       -o -type f -name sandbox.sh -print0 2>/dev/null)
   for f in ${hits[@]+"${hits[@]}"}; do
     if [[ -f "${f%/sandbox.sh}/sandbox-common.sh" ]]; then _ldi_out+=("${f%/sandbox.sh}"); fi
   done
+  hits=()
+  mapfile -d '' -t hits < <(find "$3" -mindepth 1 -maxdepth 6 \
+      \( -name node_modules -o -name .git -o -name vendor -o -name .venv -o -name target \) -prune \
+      -o -type d -user "$4" ! -perm -0500 -print0 2>/dev/null)
+  _ldi_unr+=(${hits[@]+"${hits[@]}"})
   return 0
 }
 
