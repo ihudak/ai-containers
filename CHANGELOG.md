@@ -58,6 +58,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   that line is skipped, with a warning. **Behaviour change:**
   `SELF_HEALING_ENABLED` and `ALLOW_IPV6_BYPASS` in `container.env` are refused
   with a warning — they configure root, so set them in `sandbox.env`.
+- **An agent can no longer plant code your host's git runs.** The usual launch
+  mounts the whole project read-write, `.git` included, and your host's git runs
+  what `.git` holds: its `hooks/` when you commit, and `.git/config` settings
+  that start programs (`core.hooksPath`, `core.fsmonitor`, `core.sshCommand`,
+  filters) when you commit or merely run `git status`. None of it shows in `git
+  status` or `git diff`. Every repository a writable mount exposes now has
+  `.git/hooks/` and `.git/config` (and `config.worktree`, a worktree's
+  `commondir`, a worktree's or submodule's `.git` file) mounted read-only, with
+  `.git` pinned so it cannot be renamed away; each is printed at launch
+  (`READ-ONLY: …`). **Behaviour change:** commit, branch, push and rebase work
+  as before, but `git config`, `git remote add` and the upstream `git push -u`
+  records fail inside the container — git claims tracking was set up and it was
+  not — so push and pull with the branch named there, and set up remotes and
+  tracking on the host.
 
 ### Added
 
