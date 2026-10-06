@@ -67,12 +67,18 @@ boundary — which here it is.
 
 ## Before turning it on
 
-- **Not yet measured on a Docker host:** that bubblewrap starts with both
-  profiles lifted. A host whose kernel restricts unprivileged user namespaces
-  (Ubuntu 24.04 sets `kernel.apparmor_restrict_unprivileged_userns=1`) restricts
-  an unconfined process's namespace too, unless a host AppArmor profile grants
-  `userns` to bubblewrap. Where it does not start, Claude Code exits at startup
-  (`failIfUnavailable`) rather than run unsandboxed.
+- **It does not start on an Ubuntu 24.04 host.** Measured by integration case
+  790 on GitHub's `ubuntu-24.04` runners, with both profiles lifted: bubblewrap
+  creates its user namespace but cannot use it — `setting up uid map: Permission
+  denied` without a network namespace, and `loopback: Failed RTM_NEWADDR:
+  Operation not permitted` with one, which Claude Code's network isolation needs.
+  The host's `kernel.apparmor_restrict_unprivileged_userns=1` strips the
+  namespace of an unconfined process of its capabilities, and nothing inside the
+  container can lift it. It takes a host change: that setting turned off for the
+  whole host, or an AppArmor profile for the container that grants `userns`.
+  Where the sandbox cannot start, Claude Code exits at startup
+  (`failIfUnavailable`) rather than run unsandboxed — so on such a host, turning
+  the key on stops every Claude Code session.
 - A package source outside the list — a private registry, a Git dependency — is
   refused. Add its host to `network.allowedDomains` in
   `claude-managed-settings.json` and rebuild.

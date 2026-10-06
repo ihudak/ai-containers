@@ -1643,6 +1643,9 @@ run_container() {
   #   that call, so the refusal is AppArmor's;
   # - the mounts: Docker's seccomp profile gates mount, umount2, pivot_root and
   #   setns on CAP_SYS_ADMIN, which this container never holds.
+  # Lifting both is NOT enough on an Ubuntu 24.04 host: its
+  # kernel.apparmor_restrict_unprivileged_userns=1 still strips the namespace of
+  # an unconfined process (integration case 790, measured on GitHub's runners).
   # Both profiles are lifted only when the key asks for the inner sandbox — the
   # trade is set out in docs/components/claude-code-sandbox.md — so every other
   # container composes exactly the `docker run` it did before.
