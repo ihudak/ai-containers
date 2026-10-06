@@ -19,8 +19,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the container with both unconfined — the trade
   `docs/components/claude-code-sandbox.md` sets out. Only Claude Code's commands
   gain the sandbox; the lifted profiles apply to every agent in the container.
-  It does not start on an Ubuntu 24.04 host, measured by integration case 790:
-  the host's user-namespace restriction needs a host-side change.
+  It does not start where Docker's kernel is Ubuntu 24.04's — on a Mac, the VM
+  Docker runs in — measured by integration case 790: that kernel's user-namespace
+  restriction needs a change in that VM or host.
 
 ### Security
 

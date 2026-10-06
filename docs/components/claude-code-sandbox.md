@@ -45,8 +45,8 @@ git hooks run with them.
 apparmor=unconfined`.** bubblewrap has to create a user namespace, then mount and
 `pivot_root` inside it, and Docker's default profiles refuse both:
 
-- **The namespace — AppArmor.** In a running container of this image (its mgd flavour) on an
-  Ubuntu 24.04 host, `unshare(CLONE_NEWUSER)` fails with `EPERM` under the
+- **The namespace — AppArmor.** In a running container of this image (its mgd flavour) on a Mac,
+  whose Docker runs in a Lima VM on Ubuntu 24.04's kernel, `unshare(CLONE_NEWUSER)` fails with `EPERM` under the
   `docker-default` profile. Docker's seccomp profile allows that call
   ([Docker: seccomp](https://docs.docker.com/engine/security/seccomp/)), so the
   refusal is AppArmor's.
@@ -67,15 +67,18 @@ boundary — which here it is.
 
 ## Before turning it on
 
-- **It does not start on an Ubuntu 24.04 host.** Measured by integration case
+- **It does not start where Docker's kernel is Ubuntu 24.04's.** On a Mac that
+  is the Linux VM Docker runs in — Colima's and Lima's default Ubuntu image
+  among them — not macOS. Measured by integration case
   790 on GitHub's `ubuntu-24.04` runners, with both profiles lifted: bubblewrap
   creates its user namespace but cannot use it — `setting up uid map: Permission
   denied` without a network namespace, and `loopback: Failed RTM_NEWADDR:
   Operation not permitted` with one, which Claude Code's network isolation needs.
   The host's `kernel.apparmor_restrict_unprivileged_userns=1` strips the
   namespace of an unconfined process of its capabilities, and nothing inside the
-  container can lift it. It takes a host change: that setting turned off for the
-  whole host, or an AppArmor profile for the container that grants `userns`.
+  container can lift it. It takes a change where that kernel runs — in the VM,
+  on a Mac (`colima ssh`, or `limactl shell <instance>`): that setting turned off
+  there, or an AppArmor profile for the container that grants `userns`.
   Where the sandbox cannot start, Claude Code exits at startup
   (`failIfUnavailable`) rather than run unsandboxed — so on such a host, turning
   the key on stops every Claude Code session.

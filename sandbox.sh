@@ -1636,14 +1636,15 @@ run_container() {
   # Claude Code's own sandbox (claude-code-sandbox=ON) runs each shell command
   # Claude starts inside bubblewrap, which must create a user namespace and then
   # mount and pivot_root inside it. Docker's default profiles refuse both halves:
-  # - the namespace: in a running container of this image (its mgd flavour) on an
-  #   Ubuntu 24.04 host
+  # - the namespace: in a running container of this image (its mgd flavour) on a Mac
+  #   whose Docker runs in a Lima VM on Ubuntu 24.04's kernel
   #   (docker-default AppArmor enforcing, kernel.apparmor_restrict_unprivileged_userns=1)
   #   unshare(CLONE_NEWUSER) fails with EPERM. Docker's seccomp profile allows
   #   that call, so the refusal is AppArmor's;
   # - the mounts: Docker's seccomp profile gates mount, umount2, pivot_root and
   #   setns on CAP_SYS_ADMIN, which this container never holds.
-  # Lifting both is NOT enough on an Ubuntu 24.04 host: its
+  # Lifting both is NOT enough where Docker's kernel is Ubuntu 24.04's (on a Mac,
+  # the Linux VM Docker runs in): its
   # kernel.apparmor_restrict_unprivileged_userns=1 still strips the namespace of
   # an unconfined process (integration case 790, measured on GitHub's runners).
   # Both profiles are lifted only when the key asks for the inner sandbox — the
