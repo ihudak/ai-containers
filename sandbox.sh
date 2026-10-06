@@ -320,7 +320,15 @@ launcher_ro_overlay() {
   local uid="${SANDBOX_UID:-$(id -u)}" gid="${SANDBOX_GID:-$(id -g)}" you
   local -a found unreadable cand bsrc=() bdst=() cl=() cat=() csrc=() cdst=() cdep=() ckind=() ro_dsts=() psrc pdst
   local -a scan links walk gdirs gfiles glinks gunr gro ug usrc udst udep ukind
-  local g base what gmax gn gitmax cfg hp hpd k2
+  local g base what gmax gn gitmax cfg hp hpd k2 first eks ik ip
+  local -a ek inc pgd=() pga=() pgc=()
+  # The hooks git runs, by name (githooks(5)); anything else in hooks/ is inert.
+  local -a git_hook_names=(applypatch-msg pre-applypatch post-applypatch pre-commit
+    pre-merge-commit prepare-commit-msg commit-msg post-commit pre-rebase post-checkout
+    post-merge pre-push pre-receive update proc-receive post-receive post-update
+    reference-transaction push-to-checkout pre-auto-gc post-rewrite sendemail-validate
+    fsmonitor-watchman p4-changelist p4-prepare-changelist p4-post-changelist
+    p4-pre-submit post-index-change)
   local -A seen=() tried=() scanned=() pinned=()
   local nl
   # The agent's identity decides what it can reach; find needs it numeric (and
@@ -590,8 +598,9 @@ launcher_ro_overlay() {
           # git makes hooks/ at init, but a repository can lack it — and then the
           # agent could make it.
           if [[ ! -e "$g/hooks" && ! -L "$g/hooks" ]]; then mkdir "$g/hooks" 2>/dev/null || true; fi
+          first=""
           if [[ ! -e "$g/commondir" && ! -L "$g/commondir" ]]; then
-            ( set -C; printf './\n' > "$g/commondir" ) 2>/dev/null || true
+            if ( set -C; printf './\n' > "$g/commondir" ) 2>/dev/null; then first=1; fi
           fi
           # Anything but our ./ sends the host's git elsewhere for this repository's
           # configuration and hooks, and git never writes one here: refuse, rather
@@ -601,6 +610,24 @@ launcher_ro_overlay() {
             printf '       configuration and hooks, and git never writes one in a repository'\''s own git\n' >&2
             printf '       directory. If you did not make it, remove it on the host and launch again.\n' >&2
             exit 1
+          fi
+          # Freezing the config read-only freezes whatever is in it. The launch
+          # that first protects a repository — the one that just made its
+          # placeholder — is the one moment that can only be what was set before
+          # the protection existed, possibly from inside a container: name the
+          # keys there that make the host's git run programs, once. Every value
+          # stays unprinted; a credential helper's can hold a secret.
+          if [[ -n "$first" ]]; then
+            ek=()
+            mapfile -d '' -t ek < <(_git_exec_keys "$g/config" "$g/config.worktree")
+            if (( ${#ek[@]} )); then
+              eks=""
+              for e in "${ek[@]}"; do eks+="${eks:+, }$e"; done
+              printf 'NOTE: %s is protected for the first time, and its config already sets\n' "$at" >&2
+              printf '      what makes your host'\''s git run programs: %s.\n' "$eks" >&2
+              printf '      If you did not set them yourself, review them on the host:\n' >&2
+              printf '        git config --file %q --list\n' "$g/config" >&2
+            fi
           fi
         elif [[ -f "$g/commondir" ]]; then
           cfg="$(cd "$g" 2>/dev/null && cd "$(cat commondir 2>/dev/null)" 2>/dev/null && pwd -P)/config" || cfg=""
@@ -666,33 +693,7 @@ launcher_ro_overlay() {
         printf 'READ-ONLY: %s  (names the git directory your host'\''s git uses here)\n' "$at" >&2
       else
         printf 'READ-ONLY: %s: %s  (what your host'\''s git runs; change them on the host)\n' "$at" "$what" >&2
-      fi
-      # Hooks run from a directory core.hooksPath names are project files the
-      # overlay leaves writable — and hook managers keep the scripts they run
-      # gitignored (husky's .husky/_), so a change need not show in git status.
-      if [[ "$kind" == dir && "$cfg" == "$g/config" ]]; then
-        hp="$(_git_config_get "$cfg" core.hooksPath)" || hp=""
-        if [[ -n "$hp" ]]; then
-          # shellcheck disable=SC2088  # '~/'* matches a LITERAL leading ~/ in the config value, expanded by hand
-          case "$hp" in
-            /*) hpd="$hp" ;;
-            '~/'*) hpd="$HOME/${hp#\~/}" ;;
-            *) if [[ "$g" == */.git ]]; then hpd="${g%/.git}/$hp"; else hpd="$g/$hp"; fi ;;
-          esac
-          hpd="$(cd "$hpd" 2>/dev/null && pwd -P)" || hpd=""
-          for i in ${bsrc[@]+"${!bsrc[@]}"}; do
-            if [[ -z "$hpd" || ( "$hpd" != "${bsrc[i]}" && "$hpd" != "${bsrc[i]}"/* ) ]]; then continue; fi
-            x="${bdst[i]}${hpd#"${bsrc[i]}"}"; safe=""
-            for r in ${ro_dsts[@]+"${ro_dsts[@]}"}; do
-              if [[ "$x" == "$r" || "$x" == "$r"/* ]]; then safe=1; break; fi
-            done
-            if [[ -n "$safe" ]]; then continue; fi
-            printf 'NOTE: %s runs its git hooks from %s (core.hooksPath), which the agent\n' "$at" "$x" >&2
-            printf '      can change; hook managers keep those scripts gitignored (husky'\''s .husky/_),\n' >&2
-            printf '      so a change need not show in git status. Check them before a git commit on the host.\n' >&2
-            break
-          done
-        fi
+        pgd+=("$g"); pga+=("$at"); pgc+=("$cfg")
       fi
     done
   done
@@ -701,6 +702,83 @@ launcher_ro_overlay() {
     printf '      adds seconds to every container start on Docker Desktop. Mount narrower\n' >&2
     printf '      directories, or mount the ones you will not change :ro.\n' >&2
   fi
+
+  # What a protected repository's git runs or reads from OUTSIDE its read-only
+  # mounts — judged now that every overlay is decided, so a step into a
+  # repository handled later counts as protected.
+  for k in ${pgd[@]+"${!pgd[@]}"}; do
+    g="${pgd[k]}"; at="${pga[k]}"; cfg="${pgc[k]}"
+    # Hooks run from a directory core.hooksPath names are project files the
+    # overlay leaves writable — and hook managers keep the scripts they run
+    # gitignored (husky's .husky/_), so a change need not show in git status.
+    hp=""
+    if [[ "$cfg" == "$g/config" ]]; then hp="$(_git_config_get "$cfg" core.hooksPath)" || hp=""; fi
+    if [[ -n "$hp" ]]; then
+      # shellcheck disable=SC2088  # '~/'* matches a LITERAL leading ~/ in the config value, expanded by hand
+      case "$hp" in
+        /*) hpd="$hp" ;;
+        '~/'*) hpd="$HOME/${hp#\~/}" ;;
+        *) if [[ "$g" == */.git ]]; then hpd="${g%/.git}/$hp"; else hpd="$g/$hp"; fi ;;
+      esac
+      hpd="$(cd "$hpd" 2>/dev/null && pwd -P)" || hpd=""
+      for i in ${bsrc[@]+"${!bsrc[@]}"}; do
+        if [[ -z "$hpd" || ( "$hpd" != "${bsrc[i]}" && "$hpd" != "${bsrc[i]}"/* ) ]]; then continue; fi
+        x="${bdst[i]}${hpd#"${bsrc[i]}"}"; safe=""
+        for r in ${ro_dsts[@]+"${ro_dsts[@]}"}; do
+          if [[ "$x" == "$r" || "$x" == "$r"/* ]]; then safe=1; break; fi
+        done
+        if [[ -n "$safe" ]]; then continue; fi
+        printf 'NOTE: %s runs its git hooks from %s (core.hooksPath), which the agent\n' "$at" "$x" >&2
+        printf '      can change; hook managers keep those scripts gitignored (husky'\''s .husky/_),\n' >&2
+        printf '      so a change need not show in git status. Check them before a git commit on the host.\n' >&2
+        break
+      done
+    elif [[ -d "$g/hooks" && ! -L "$g/hooks" ]]; then
+      # A hook that is a link: hooks/ is read-only, but the link's way out need
+      # not be. Pointing hooks at scripts the project tracks is a common setup,
+      # hence a NOTE. Only the names git runs are looked at, so the count is
+      # bounded whatever hooks/ was filled with before it was protected.
+      for e in "${git_hook_names[@]}"; do
+        f="$g/hooks/$e"
+        if [[ ! -L "$f" ]]; then continue; fi
+        walk=()
+        mapfile -d '' -t walk < <(_link_walk "$f")
+        if ! _walk_exposed how q w "" ${walk[@]+"${walk[@]}"}; then continue; fi
+        printf 'NOTE: %s/hooks/%s, a hook your host'\''s git runs, is a link the agent can redirect:\n' "$at" "$e" >&2
+        case "$how" in
+          change)  printf '      it can change %s (at %s), which the hook runs.\n' "$q" "$w" >&2 ;;
+          repoint) printf '      it can repoint %s (at %s), a link on its way.\n' "$q" "$w" >&2 ;;
+          replace) printf '      it can replace %s (at %s) with a link; the way steps out of it (..).\n' "$q" "$w" >&2 ;;
+        esac
+        printf '      Check it before a git commit on the host, or replace the link with what it names.\n' >&2
+      done
+    fi
+    # A file the config includes is read as part of it, so it can set anything
+    # the config can — core.fsmonitor, core.hooksPath — from wherever it lies.
+    # git resolves a relative path from the including file's directory.
+    for f in "$g/config" "$g/config.worktree"; do
+      if [[ ! -f "$f" || -L "$f" ]]; then continue; fi
+      inc=()
+      mapfile -d '' -t inc < <(_git_include_paths "$f")
+      for e in ${inc[@]+"${inc[@]}"}; do
+        ik="${e%%$'\n'*}"; ip=""
+        if [[ "$e" == *$'\n'* ]]; then ip="${e#*$'\n'}"; fi
+        if [[ -z "$ip" ]]; then continue; fi
+        # shellcheck disable=SC2088  # '~/'* matches a LITERAL leading ~/ in the config value, expanded by hand
+        case "$ip" in '~/'*) ip="$HOME/${ip#\~/}" ;; esac
+        walk=()
+        mapfile -d '' -t walk < <(_path_walk "$(cd "${f%/*}" 2>/dev/null && pwd -P)" "$ip")
+        if ! _walk_exposed how q w "" ${walk[@]+"${walk[@]}"}; then continue; fi
+        printf 'WARNING: %s/%s includes %s (%s), which the agent can redirect:\n' "$at" "${f##*/}" "$ip" "$ik" >&2
+        case "$how" in
+          change)  printf '         it can write %s (at %s), which git reads as part of that config.\n' "$q" "$w" >&2 ;;
+          repoint) printf '         it can repoint %s (at %s), a link on its way.\n' "$q" "$w" >&2 ;;
+          replace) printf '         it can replace %s (at %s) with a link; the way steps out of it (..).\n' "$q" "$w" >&2 ;;
+        esac
+        printf '         It can set what your host'\''s git runs. Move what it sets into %s on the host.\n' "${f##*/}" >&2
+      done
+    done
+  done
 
   # Symlinks in a launcher whose way out leads somewhere the agent can change.
   # Judged from the container side, now that the overlays are decided: every
@@ -737,50 +815,69 @@ launcher_ro_overlay() {
       fi
       walk=()
       mapfile -d '' -t walk < <(_link_walk "$f")
-      for e in ${walk[@]+"${walk[@]}"}; do
-        case "$e" in
-          =*) how=change;  q="${e#=}" ;;
-          ^*) how=replace; q="${e#^}" ;;
-          *)  how=repoint; q="$e" ;;
-        esac
-        # Inside this launcher and in no writable bind of its own (an output
-        # directory, say): the way stays home — read-only with the launcher,
-        # or the working dir someone is deliberately editing.
-        if [[ "$q" == "$x" || "$q" == "$x"/* ]]; then
-          inner=""
-          for i in ${bsrc[@]+"${!bsrc[@]}"}; do
-            if [[ "${bsrc[i]}" == "$x"/* && ( "$q" == "${bsrc[i]}" || "$q" == "${bsrc[i]}"/* ) ]]; then inner=1; break; fi
-          done
-          if [[ -z "$inner" ]]; then continue; fi
-        fi
-        w=""
-        for i in ${bsrc[@]+"${!bsrc[@]}"}; do
-          if [[ "$q" != "${bsrc[i]}" && "$q" != "${bsrc[i]}"/* ]]; then continue; fi
-          c="${bdst[i]}${q#"${bsrc[i]}"}"
-          safe=""
-          for r in ${ro_dsts[@]+"${ro_dsts[@]}"}; do
-            if [[ "$c" == "$r" || "$c" == "$r"/* ]]; then safe=1; break; fi
-          done
-          if [[ -z "$safe" && "$how" == replace ]]; then
-            if [[ -n "${pinned[$c]:-}" ]]; then safe=1; fi
-            for r in "${bdst[@]}"; do
-              if [[ "$c" == "$r" ]]; then safe=1; break; fi
-            done
-          fi
-          if [[ -z "$safe" ]]; then w="$c"; break; fi
-        done
-        if [[ -z "$w" ]]; then continue; fi
-        printf 'WARNING: launcher link %s leads somewhere the agent can change:\n' "$f" >&2
-        case "$how" in
-          change)  printf '         it can change %s (at %s), which the host reads through it.\n' "$q" "$w" >&2 ;;
-          repoint) printf '         it can repoint %s (at %s), a link on its way.\n' "$q" "$w" >&2 ;;
-          replace) printf '         it can replace %s (at %s) with a link; the way steps out of it (..).\n' "$q" "$w" >&2 ;;
-        esac
-        printf '         Replace the link with what it names, or mount that directory :ro.\n' >&2
-        break
-      done
+      # A step inside this launcher and in no writable bind of its own (an output
+      # directory, say) stays home — read-only with the launcher, or the working
+      # dir someone is deliberately editing.
+      if ! _walk_exposed how q w "$x" ${walk[@]+"${walk[@]}"}; then continue; fi
+      printf 'WARNING: launcher link %s leads somewhere the agent can change:\n' "$f" >&2
+      case "$how" in
+        change)  printf '         it can change %s (at %s), which the host reads through it.\n' "$q" "$w" >&2 ;;
+        repoint) printf '         it can repoint %s (at %s), a link on its way.\n' "$q" "$w" >&2 ;;
+        replace) printf '         it can replace %s (at %s) with a link; the way steps out of it (..).\n' "$q" "$w" >&2 ;;
+      esac
+      printf '         Replace the link with what it names, or mount that directory :ro.\n' >&2
     done
   done
+}
+
+# _walk_exposed <how-var> <step-var> <at-var> <home> <step>...: called from
+# launcher_ro_overlay, once its overlays are decided — it reads that function's
+# bsrc, bdst, ro_dsts and pinned. Given a walk (_link_walk, _path_walk), succeeds
+# at the first step the agent can change from inside the container, judged
+# through every writable bind that exposes it: a step is safe only if each of
+# them puts it under a read-only overlay or — for a directory a `..` steps out
+# of — makes it a mount point (a mount root, a pin, an overlay root), which
+# cannot be swapped for a link. Sets how (change, repoint or replace), the
+# step's host path, and where the agent sees it. A step inside <home> and in no
+# writable bind of <home>'s own is not judged. Its own names are prefixed, so
+# none can shadow a variable the caller names.
+_walk_exposed() {
+  local -n _we_how=$1 _we_step=$2 _we_at=$3
+  local _we_home="$4" _we_e _we_h _we_q _we_c _we_r _we_safe _we_in _we_j
+  shift 4
+  for _we_e in "$@"; do
+    case "$_we_e" in
+      =*) _we_h=change;  _we_q="${_we_e#=}" ;;
+      ^*) _we_h=replace; _we_q="${_we_e#^}" ;;
+      *)  _we_h=repoint; _we_q="$_we_e" ;;
+    esac
+    if [[ -n "$_we_home" && ( "$_we_q" == "$_we_home" || "$_we_q" == "$_we_home"/* ) ]]; then
+      _we_in=""
+      for _we_j in ${bsrc[@]+"${!bsrc[@]}"}; do
+        if [[ "${bsrc[_we_j]}" == "$_we_home"/* && ( "$_we_q" == "${bsrc[_we_j]}" || "$_we_q" == "${bsrc[_we_j]}"/* ) ]]; then _we_in=1; break; fi
+      done
+      if [[ -z "$_we_in" ]]; then continue; fi
+    fi
+    for _we_j in ${bsrc[@]+"${!bsrc[@]}"}; do
+      if [[ "$_we_q" != "${bsrc[_we_j]}" && "$_we_q" != "${bsrc[_we_j]}"/* ]]; then continue; fi
+      _we_c="${bdst[_we_j]}${_we_q#"${bsrc[_we_j]}"}"
+      _we_safe=""
+      for _we_r in ${ro_dsts[@]+"${ro_dsts[@]}"}; do
+        if [[ "$_we_c" == "$_we_r" || "$_we_c" == "$_we_r"/* ]]; then _we_safe=1; break; fi
+      done
+      if [[ -z "$_we_safe" && "$_we_h" == replace ]]; then
+        if [[ -n "${pinned[$_we_c]:-}" ]]; then _we_safe=1; fi
+        for _we_r in "${bdst[@]}"; do
+          if [[ "$_we_c" == "$_we_r" ]]; then _we_safe=1; break; fi
+        done
+      fi
+      if [[ -z "$_we_safe" ]]; then
+        _we_how="$_we_h"; _we_step="$_we_q"; _we_at="$_we_c"
+        return 0
+      fi
+    done
+  done
+  return 1
 }
 
 # _bind_mount_arg <flag-var> <value-var> <source> <destination> <rw|ro>: how to
@@ -832,12 +929,20 @@ _mount_representable() {
 # steps out of (swap it for a link and the way changes), then "=" and the final
 # path, which need not exist. Stops quietly after 40 links (a loop).
 _link_walk() {
-  local cur rest c t n=1
+  local cur c t
   cur="$(cd "${1%/*}/" 2>/dev/null && pwd -P)" || return 0
   c="${1##*/}"
   printf '%s\0' "$cur/$c"
   _readlink_exact t "$cur/$c" || return 0
-  if [[ "$t" == /* ]]; then cur=""; rest="${t#/}"; else rest="$t"; fi
+  _path_walk "$cur" "$t" 1
+}
+
+# _path_walk <physical dir> <path> [<links met so far>]: the walk of <path> from
+# <physical dir>, printed as _link_walk prints it — for a path that is not a
+# link's target, such as a file a git config includes.
+_path_walk() {
+  local cur="$1" rest c t n="${3:-0}"
+  if [[ "$2" == /* ]]; then cur=""; rest="${2#/}"; else rest="$2"; fi
   while [[ -n "$rest" ]]; do
     c="${rest%%/*}"
     if [[ "$rest" == */* ]]; then rest="${rest#*/}"; else rest=""; fi
@@ -1194,6 +1299,41 @@ _git_config_get() {
       print v; found = 1; exit
     }
     END { exit !found }' "$1" 2>/dev/null
+}
+
+# _git_exec_keys <config-file>...: the keys these git config files set that make
+# git run a program, or read another file of keys (an include), NUL-separated,
+# each once, values never printed. Read with git, which runs nothing from a
+# file it only lists; with no git on this host, none. A boolean core.fsmonitor
+# is git's own daemon, and an alias or a submodule's update runs a program only
+# when it starts with '!'. A file that does not exist sets nothing.
+_git_exec_keys() {
+  local f rec k v
+  local re='^(core\.(fsmonitor|hookspath|sshcommand|editor|pager|askpass|gitproxy|alternaterefscommand)|sequence\.editor|pager\..+|diff\.external|diff\..+\.(command|textconv)|merge\..+\.driver|filter\..+\.(clean|smudge|process)|credential\.(.+\.)?helper|gpg\.(.+\.)?program|remote\..+\.(uploadpack|receivepack)|(difftool|mergetool|man|browser)\..+\.(cmd|path)|web\.browser|include\.path|includeif\..+\.path|alias\..+|submodule\..+\.update)$'
+  local -A had=()
+  command -v git >/dev/null 2>&1 || return 0
+  for f in "$@"; do
+    if [[ ! -f "$f" ]]; then continue; fi
+    while IFS= read -r -d '' rec; do
+      k="${rec%%$'\n'*}"; v=""
+      if [[ "$rec" == *$'\n'* ]]; then v="${rec#*$'\n'}"; fi
+      if [[ ! "$k" =~ $re || -n "${had[$k]:-}" ]]; then continue; fi
+      case "$k" in
+        core.fsmonitor) if [[ "${v,,}" =~ ^(true|false|yes|no|on|off|-?[0-9]+)?$ ]]; then continue; fi ;;
+        alias.*|submodule.*.update) if [[ "$v" != '!'* ]]; then continue; fi ;;
+      esac
+      had[$k]=1
+      printf '%s\0' "$k"
+    done < <(git config --file "$f" --null --list 2>/dev/null)
+  done
+}
+
+# _git_include_paths <config-file>: every include.path and includeIf.*.path the
+# file sets, each as `<key>\n<value>`, NUL-separated — whatever the condition,
+# since one that does not hold today may hold tomorrow. With no git, none.
+_git_include_paths() {
+  command -v git >/dev/null 2>&1 || return 0
+  git config --file "$1" --null --get-regexp '^include(if\..*)?\.path$' 2>/dev/null || true
 }
 
 # Seed a per-workspace writable working-copy volume from a repo's shared base

@@ -4,7 +4,9 @@
 # core.fsmonitor, core.sshCommand, filters). sandbox.sh mounts them read-only
 # inside every writable mount that exposes a git directory, pins the directories
 # above them so .git cannot be renamed away, and leaves objects, refs and the
-# index writable (launcher_ro_overlay, git_dirs_in).
+# index writable (launcher_ro_overlay, git_dirs_in). What it cannot freeze is
+# named: a hook that links out, an include of a file the agent can write, and —
+# once, at the first protection — the keys a config already sets that run programs.
 #
 # Hermetic: a fake `docker` capturing the run args, real git repositories.
 # Integration case 465-git-internals-read-only checks that the container the
@@ -380,6 +382,73 @@ launch ..
   && pass "G23 a bare 'worktreeConfig' key reads as true, as git reads it, and gets the placeholder" \
   || fail "G23 bare worktreeConfig (git mounts: $(git_mounts | grep worktree | tr '\n' ' '))"
 "${G[@]}" -C "$PROJ" config --unset extensions.worktreeConfig 2>/dev/null; rm -f "$PROJ/.git/config.worktree"
+
+# ── G24: a hook that is a link into the writable tree is named ────────────────
+# hooks/ is read-only, but the link's way out is not. Only names git runs are
+# looked at; a link that stays in hooks/, or leaves every mount, is silent.
+mkdir -p "$PROJ/scripts" && printf '#!/bin/sh\n' > "$PROJ/scripts/pre-commit"
+ln -s ../../scripts/pre-commit "$PROJ/.git/hooks/pre-commit"
+: > "$PROJ/.git/hooks/x.sample" && ln -s x.sample "$PROJ/.git/hooks/post-commit"
+ln -s "$TMP/home/elsewhere" "$PROJ/.git/hooks/pre-push"
+ln -s ../../scripts/pre-commit "$PROJ/.git/hooks/my-helper"
+launch ..
+grep -qF "NOTE: /workspace/proj/.git/hooks/pre-commit, a hook your host's git runs, is a link the agent can redirect:" "$ERR" \
+  && grep -qF "it can change $PROJ/scripts/pre-commit (at /workspace/proj/scripts/pre-commit), which the hook runs." "$ERR" \
+  && pass "G24 a hook linked into the writable project is named in a NOTE, with where the agent sees it" \
+  || fail "G24 hook link NOTE (stderr: $(grep -A1 'hooks/' "$ERR" | tr '\n' ' '))"
+! grep -qE 'hooks/(post-commit|pre-push|my-helper),' "$ERR" \
+  && pass "G24 a link staying in hooks/, one leaving every mount, and a name git never runs are silent" \
+  || fail "G24 quiet hook links (stderr: $(grep 'hooks/' "$ERR" | tr '\n' ' '))"
+rm -f "$PROJ/.git/hooks/pre-commit" "$PROJ/.git/hooks/post-commit" "$PROJ/.git/hooks/pre-push" \
+      "$PROJ/.git/hooks/my-helper" "$PROJ/.git/hooks/x.sample"; rm -rf "$PROJ/scripts"
+
+# ── G25: a config that includes a file the agent can write is named ───────────
+# git reads an included file as part of the config, so it can set core.fsmonitor
+# from wherever it lies — even one that does not exist yet, which the agent can
+# create. A relative path resolves from the including file's directory.
+"${G[@]}" -C "$PROJ" config include.path ../shared.gitconfig
+"${G[@]}" -C "$PROJ" config 'includeIf.gitdir:/x/.path' ../other.gitconfig
+"${G[@]}" -C "$PROJ" config --add include.path "$TMP/outside.gitconfig"
+"${G[@]}" -C "$PROJ" config --add include.path ../.ai-containers/team.gitconfig
+launch ..
+grep -qF "WARNING: /workspace/proj/.git/config includes ../shared.gitconfig (include.path), which the agent can redirect:" "$ERR" \
+  && grep -qF "it can write $PROJ/shared.gitconfig (at /workspace/proj/shared.gitconfig)" "$ERR" \
+  && pass "G25 an include.path into the writable project, not yet there, is named in a WARNING" \
+  || fail "G25 include.path WARNING (stderr: $(grep -A1 'includes' "$ERR" | tr '\n' ' '))"
+grep -qF "includes ../other.gitconfig (includeif.gitdir:/x/.path)" "$ERR" \
+  && pass "G25 so is an includeIf, whatever its condition" \
+  || fail "G25 includeIf (stderr: $(grep 'includes' "$ERR" | tr '\n' ' '))"
+! grep -qE 'includes .*(outside|team)\.gitconfig' "$ERR" \
+  && pass "G25 an include outside every mount, or under the read-only launcher, is silent" \
+  || fail "G25 quiet includes (stderr: $(grep 'includes' "$ERR" | tr '\n' ' '))"
+"${G[@]}" -C "$PROJ" config --unset-all include.path; "${G[@]}" -C "$PROJ" config --remove-section 'includeIf.gitdir:/x/'
+
+# ── G26: the launch that first protects a repository names what its config ────
+# already runs — the one moment that can only be what was set before the
+# protection existed. Once: a later launch says nothing. Names, never values.
+mkdir -p "$TMP/fp/r" "$TMP/fp/clean"
+"${G[@]}" -C "$TMP/fp/r" init -q && "${G[@]}" -C "$TMP/fp/clean" init -q
+"${G[@]}" -C "$TMP/fp/r" config core.sshCommand 'ssh -i sekrit-key'
+"${G[@]}" -C "$TMP/fp/r" config core.fsmonitor .git/hooks/fsmonitor-watchman
+"${G[@]}" -C "$TMP/fp/r" config filter.lfs.clean 'git-lfs clean -- %f'
+"${G[@]}" -C "$TMP/fp/r" config alias.sh '!echo hi'
+"${G[@]}" -C "$TMP/fp/r" config alias.st status
+"${G[@]}" -C "$TMP/fp/clean" config core.fsmonitor true
+EXTRA_MOUNTS="$TMP/fp" launch "$TMP/app"
+nl26="$(grep -A1 -F 'NOTE: /workspace/fp/r/.git is protected for the first time' "$ERR" | tail -1)"
+[[ "$nl26" == *core.sshcommand* && "$nl26" == *core.fsmonitor* && "$nl26" == *filter.lfs.clean* && "$nl26" == *alias.sh* ]] \
+  && grep -qF "git config --file $TMP/fp/r/.git/config --list" "$ERR" \
+  && pass "G26 the first protection names the keys that run programs, and how to review them" \
+  || fail "G26 first-protection NOTE (got: $nl26; stderr: $(grep -A3 'first time' "$ERR" | tr '\n' ' '))"
+[[ "$nl26" != *alias.st* ]] && ! grep -q 'fp/clean/.git is protected for the first time' "$ERR" \
+  && pass "G26 a plain alias, and git's own fsmonitor daemon, are not named" \
+  || fail "G26 benign keys named (got: $nl26; stderr: $(grep 'first time' "$ERR" | tr '\n' ' '))"
+! grep -qF 'sekrit' "$ERR" && pass "G26 no value is printed" || fail "G26 a value was printed"
+EXTRA_MOUNTS="$TMP/fp" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -q 'protected for the first time' "$ERR" \
+  && pass "G26 the next launch says nothing: the repository is already protected" \
+  || fail "G26 repeated NOTE (rc=$LAUNCH_RC; stderr: $(grep 'first time' "$ERR" | tr '\n' ' '))"
+rm -rf "$TMP/fp"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

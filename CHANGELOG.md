@@ -80,7 +80,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   tracking `git checkout -b` records fail inside the container — git claims
   tracking was set up and it was not — so push and pull with the branch named
   there, and set up remotes, tracking and submodules on the host. A repository
-  that existed at launch cannot be deleted from inside the container.
+  that existed at launch cannot be deleted from inside the container. What
+  the protection cannot freeze is named at launch: a `core.hooksPath`, or a
+  hook in `.git/hooks/` that is a link, leading to files the agent can change
+  (`NOTE:`), and an `include.path` or `includeIf` pointing at a file it can
+  write (`WARNING:`), since that file can set anything `.git/config` can. The
+  first launch that protects a repository lists, once, the settings its config
+  already has that make git run programs (`core.sshCommand`, filters, `!`
+  aliases, …) — names only, never values — because they were set before the
+  protection existed; if you did not set them, review them on the host.
 
 ### Fixed
 
