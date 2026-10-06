@@ -65,6 +65,25 @@ ln "$TMP/f" "$TMP/f.hard" 2>/dev/null && : > "$TMP/g"
   && pass "p_dev_ino identifies the object, not the name" \
   || fail "p_dev_ino identifies the object (f=$di hard=$(p_dev_ino "$TMP/f.hard") g=$(p_dev_ino "$TMP/g"))"
 
+# p_zombie: a child that exits under a parent that never reaps is one; that live
+# parent is not; nor is a pid that is gone. The parent execs `sleep`, which never
+# waits, so its child stays a zombie until the parent itself ends.
+bash -c 'sleep 0.3 & echo "$!" > "$1"; exec sleep 5' _ "$TMP/zpid" &
+zparent=$!
+zombie=0
+for _ in $(seq 1 30); do
+  [[ -s "$TMP/zpid" ]] && p_zombie "$(cat "$TMP/zpid")" && { zombie=1; break; }
+  sleep 0.1
+done
+[[ "$zombie" == 1 ]] \
+  && pass "p_zombie finds an exited, unreaped child" \
+  || fail "p_zombie finds an exited, unreaped child (pid '$(cat "$TMP/zpid" 2>/dev/null)')"
+! p_zombie "$zparent" \
+  && pass "p_zombie: a live process is not one" || fail "p_zombie: a live process is not one"
+kill "$zparent" 2>/dev/null; wait "$zparent" 2>/dev/null
+! p_zombie "$zparent" \
+  && pass "p_zombie: a reaped pid is not one" || fail "p_zombie: a reaped pid is not one"
+
 # The digest helpers must be stable and must differ for differing content.
 a="$(p_sha1 "$TMP/f")"; b="$(p_sha1 "$TMP/f")"
 [[ -n "$a" && "$a" == "$b" ]] \
