@@ -130,6 +130,31 @@ validate_config() {
   fi
   validate_server_on_off redis 'Redis (7.0)'
   validate_server_on_off mysql 'MySQL (8.0)'
+  # mongo names ONE release series, X.Y, as MongoDB's repository names them
+  # (noble/mongodb-org/8.0) — not a major (its 8.2 is a separate series) and not
+  # a release (the repository carries several per series). Checked here because
+  # every mistake below otherwise surfaces as an apt 404 inside the build.
+  local mg_val; mg_val=$(get_versions mongo)
+  if [[ -n "$mg_val" && "$mg_val" != "ON" && "$mg_val" != "OFF" ]]; then
+    if [[ "$mg_val" == *,* ]]; then
+      printf 'ERROR: mongo only supports a single value (got: "%s").\n' "$mg_val" >&2
+      printf '       Use ON (the 8.0 series), a release series (e.g. 8.2), or OFF.\n' >&2
+      exit 1
+    elif [[ "${mg_val^^}" == "ON" || "${mg_val^^}" == "OFF" ]]; then
+      printf 'ERROR: mongo value "%s" must be written in capitals (ON or OFF).\n' "$mg_val" >&2
+      exit 1
+    elif [[ "$mg_val" =~ ^([1-9][0-9]*\.[0-9]+)\.[0-9]+$ ]]; then
+      printf 'ERROR: mongo=%s pins a release; pin the series instead: mongo=%s\n' "$mg_val" "${BASH_REMATCH[1]}" >&2
+      printf '       MongoDB'"'"'s repository is per series, and installs its newest release.\n' >&2
+      exit 1
+    elif [[ "$mg_val" =~ ^[1-9][0-9]*$ ]]; then
+      printf 'ERROR: mongo=%s names a major; MongoDB'"'"'s repository is per series: mongo=%s.0\n' "$mg_val" "$mg_val" >&2
+      exit 1
+    elif [[ ! "$mg_val" =~ ^[1-9][0-9]*\.[0-9]+$ ]]; then
+      printf 'ERROR: mongo value "%s" is not ON, OFF or a release series (e.g. 8.0).\n' "$mg_val" >&2
+      exit 1
+    fi
+  fi
   local jvm_key jvm_val ver
   for jvm_key in openjdk graalvm-ce graalvm-oracle kotlin scala maven gradle; do
     jvm_val=$(version_list "$jvm_key")
@@ -339,6 +364,16 @@ build_args_from_config() {
   fi
   if is_enabled mysql; then
     _args+=(--build-arg "INSTALL_MYSQL=1")
+  fi
+  # MongoDB release series. ON is 8.0 — the series the db-clients=mongo layer
+  # installs mongosh from, and MongoDB's current major; not "newest", because
+  # MongoDB's newer series on the same major (8.2, 8.3) are shorter-lived. A
+  # pinned series passes verbatim; OFF and empty emit nothing, as for postgres.
+  local mg_raw; mg_raw=$(get_versions mongo)
+  if [[ "$mg_raw" == "ON" ]]; then
+    _args+=(--build-arg "MONGO_SERIES=8.0")
+  elif [[ -n "$mg_raw" && "$mg_raw" != "OFF" ]]; then
+    _args+=(--build-arg "MONGO_SERIES=${mg_raw}")
   fi
 
   local jvm_keys=(openjdk graalvm-ce graalvm-oracle kotlin scala maven gradle)
