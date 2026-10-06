@@ -65,7 +65,7 @@ ro_overlays() { mounts | grep -F -- "$LAUNCHER:" | grep ':ro$'; }
 launch "$LAUNCHER" ..
 if [[ -s "$CAPTURE" ]]; then pass "T1 sandbox.sh reached docker run"
 else fail "T1 sandbox.sh reached docker run (no args captured)"; tail -5 "$ERR"; fi
-mounts | grep -qx -- "$PROJ:/workspace/proj:rw" \
+grep -qxF -- "$PROJ:/workspace/proj:rw" <<<"$(mounts)" \
   && pass "T1 the project itself is still mounted read-write" \
   || fail "T1 the project itself is still mounted read-write (mounts: $(mounts | tr '\n' ' '))"
 [[ "$(ro_overlays)" == "$LAUNCHER:/workspace/proj/.ai-containers:ro" ]] \
@@ -117,7 +117,7 @@ launch "$TMP/link/.ai-containers" ..
 # ── T8: the launcher directory IS the mount (developing the engine itself) →
 # it cannot be read-only without making the work impossible; say so instead.
 launch "$LAUNCHER" .
-mounts | grep -qx -- "$LAUNCHER:/workspace/.ai-containers:rw" \
+grep -qxF -- "$LAUNCHER:/workspace/.ai-containers:rw" <<<"$(mounts)" \
   && [[ -z "$(ro_overlays)" ]] \
   && pass "T8 the launcher's own directory as the working dir stays writable" \
   || fail "T8 launcher dir as primary (mounts: $(mounts | tr '\n' ' '))"
