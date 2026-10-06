@@ -847,6 +847,14 @@ pointer_already_mounted_as() {
   return 1
 }
 
+# Device and inode of a path, "<dev> <ino>", GNU `stat -c` then BSD `stat -f`
+# (macOS has only the latter — the same split tests/portability.sh handles with
+# p_stat_meta, which this host launcher cannot source from tests/). Prints
+# nothing and returns non-zero if neither works, so a caller can degrade.
+_launcher_dev_ino() {
+  stat -c '%d %i' "$1" 2>/dev/null || stat -f '%d %i' "$1" 2>/dev/null
+}
+
 # Set by run_container when it creates a launcher-mount verify dir; removed by
 # the EXIT trap below. A global, not a run_container local, so the trap can see
 # it, and guarded with :- so `set -u` is satisfied when no dir was made.
@@ -1599,11 +1607,13 @@ run_container() {
       : > "$_vdir/manifest"
       for (( _i = 0; _i < ${#launcher_verify[@]}; _i += 2 )); do
         _vsrc="${launcher_verify[_i]}"; _vdst="${launcher_verify[_i+1]}"
-        if read -r _vdev _vino < <(stat -c '%d %i' "$_vsrc" 2>/dev/null); then :; else _vdev=0; _vino=0; fi
+        if read -r _vdev _vino < <(_launcher_dev_ino "$_vsrc"); then :; else _vdev=0; _vino=0; fi
         printf '%s\0%s\0%s\0' "$_vdev" "$_vino" "$_vdst" >> "$_vdir/manifest"
       done
       launcher_verify_flags=(-v "$_vdir:/run/ai-launcher:ro")
-      launcher_anchor_env=(-e "AI_LAUNCHER_ANCHOR=$(stat -c '%d:%i' "$_vdir")")
+      local _adev="" _aino=""
+      read -r _adev _aino < <(_launcher_dev_ino "$_vdir") || true
+      launcher_anchor_env=(-e "AI_LAUNCHER_ANCHOR=${_adev}:${_aino}")
     else
       printf 'WARNING: could not create %s; launcher mounts will not be verified against\n' "$_vdir" >&2
       printf '         a concurrent-container swap this launch.\n' >&2

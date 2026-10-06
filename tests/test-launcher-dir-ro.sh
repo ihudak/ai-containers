@@ -17,7 +17,7 @@
 # about launcher links that lead somewhere the agent can change (T29, T32–T38),
 # names a writable mount inside a launcher (T40), records every launcher
 # mount for the entrypoint to re-verify against a concurrent-container swap (T41,
-# T42), and
+# T42), works with a BSD-only stat (T43), and
 # refuses a non-numeric identity (T30).
 #
 # Hermetic: fake `docker` capturing the run args, no daemon. Integration cases
@@ -717,6 +717,30 @@ launch "$LAUNCHER" "$TMP/app"
   && [[ -z "$(awk 'prev=="-e"{print} {prev=$0}' "$CAPTURE" | grep '^AI_LAUNCHER_ANCHOR=' || true)" ]] \
   && pass "T42 a launch with no launcher mounts adds no verify mount or anchor" \
   || fail "T42 spurious verify machinery (mounts: $(mounts | grep -F /run/ai-launcher | tr '\n' ' '))"
+
+# ── T43: the host launcher must not use GNU-only `stat -c` (macOS has only BSD
+# `stat -f`). A shim that rejects -c and serves -f stands in for a BSD host:
+# the launch must still reach docker run, with a well-formed anchor, not abort
+# under set -euo pipefail. (The manifest's dev:ino need not match anything here;
+# on a real macOS host the entrypoint's anchor check then degrades to a skip.)
+BSD="$TMP/bsdbin"; mkdir -p "$BSD"
+cat > "$BSD/stat" <<'SH'
+#!/usr/bin/env bash
+# BSD-only: no -c; translate `-f FMT PATH...` to GNU `stat -c FMT`.
+if [[ "$1" == -c ]]; then echo "stat: illegal option -- c" >&2; exit 1; fi
+if [[ "$1" == -f ]]; then fmt="$2"; shift 2; exec /usr/bin/stat -c "$fmt" "$@"; fi
+exec /usr/bin/stat "$@"
+SH
+chmod +x "$BSD/stat"
+: > "$CAPTURE"
+( cd "$LAUNCHER" && PATH="$BSD:$PATH" bash ./sandbox.sh restricted .. ) >/dev/null 2>"$ERR"; bsd_rc=$?
+[[ "$bsd_rc" -eq 0 && -s "$CAPTURE" ]] \
+  && pass "T43 a BSD-only stat host still reaches docker run (no GNU stat -c in the launcher)" \
+  || fail "T43 BSD stat launch (rc=$bsd_rc, reached docker=$([[ -s "$CAPTURE" ]] && echo yes || echo no); $(tail -1 "$ERR"))"
+aenv="$(awk 'prev=="-e"{print} {prev=$0}' "$CAPTURE" | sed -n 's/^AI_LAUNCHER_ANCHOR=//p')"
+[[ "$aenv" =~ ^[0-9]+:[0-9]+$ ]] \
+  && pass "T43 the anchor is still a well-formed device:inode via stat -f" \
+  || fail "T43 anchor via BSD stat (got: '$aenv')"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
