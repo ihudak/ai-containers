@@ -1,0 +1,23 @@
+# case: 455-launcher-dir-nested-mount
+# what: a launcher link whose way out leads into a writable mount is no longer
+#       warned about — the launch is silent while the agent can change what the
+#       host reads through proj/.ai-containers/linked.conf (shared/linked.conf):
+#       the state before the reviews that found it.
+#
+#       Expected: "a launcher link into a writable directory is warned about,
+#       naming its target" FAILs. Every overlay, the pinning and every
+#       writability control still PASS.
+#
+diff --git a/sandbox.sh b/sandbox.sh
+index 40bd939..9a4ab10 100755
+--- a/sandbox.sh
++++ b/sandbox.sh
+@@ -428,7 +428,7 @@ launcher_ro_overlay() {
+           if [[ "$q" == "$r"/* ]]; then w=""; break; fi
+         done
+         if [[ -z "$w" ]]; then continue; fi
+-        printf 'WARNING: launcher link %s leads into a writable mount: the agent can\n' "$f" >&2
++        continue
+         if [[ "$e" == =* ]]; then
+           printf '         change %s (at %s), which the host reads through it.\n' "$q" "$w" >&2
+         else
