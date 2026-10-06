@@ -297,5 +297,34 @@ for d in "$TMP/state/fake" "$TMP/log" "$TMP/run/fake"; do
     || fail "T20 prepare chown of $d (log: $(cat "$TMP/chown.log"))"
 done
 
+# T21 — a runtime directory `start` names that `prepare` never made: an adapter
+# knob (AI_SERVICES_PG_SOCKET_DIR) in container.env reaches start, never the
+# scrubbed, root prepare. Made by start when this user can, and the server
+# starts; when it cannot, one warning naming it and the server is skipped,
+# rather than started into a failure whose log names neither.
+reset; run_runner prepare AI_SERVICES=fake=ON
+run_runner start AI_SERVICES=fake=ON FAKE_RUNTIME_DIR="$TMP/run/elsewhere"
+[[ -d "$TMP/run/elsewhere" ]] && has "fake 1.2 ready on fake:1234" \
+  && pass "T21 a runtime dir prepare never made is made by start, and the server starts" \
+  || fail "T21 start makes a runtime dir it can (rc=$RC, out=$OUT)"
+mkdir -p "$TMP/ro"; chmod 555 "$TMP/ro"
+if [[ -w "$TMP/ro" ]]; then
+  printf 'SKIP: T21 unwritable runtime dir — chmod does not constrain root\n'
+else
+  reset; run_runner start AI_SERVICES=fake=ON FAKE_RUNTIME_DIR="$TMP/ro/sock"
+  [[ "$RC" -eq 0 ]] && has "fake: runtime directory $TMP/ro/sock cannot be made or written" \
+    && ! grep -q '^start|' "$TRACE" && ! has "ready on" \
+    && pass "T21 one it cannot make is named, and the server is skipped, not started into a failure" \
+    || fail "T21 unwritable runtime dir (rc=$RC, out=$OUT, trace=$(tr '\n' ' ' < "$TRACE"))"
+  # One that EXISTS but is not this user's to write — a root-owned directory
+  # such as /var/run — is skipped the same way.
+  reset; run_runner start AI_SERVICES=fake=ON FAKE_RUNTIME_DIR="$TMP/ro"
+  [[ "$RC" -eq 0 ]] && has "fake: runtime directory $TMP/ro cannot be made or written" \
+    && ! grep -q '^start|' "$TRACE" && ! has "ready on" \
+    && pass "T21 one that exists but cannot be written is named and skipped too" \
+    || fail "T21 existing unwritable runtime dir (rc=$RC, out=$OUT, trace=$(tr '\n' ' ' < "$TRACE"))"
+fi
+chmod 755 "$TMP/ro"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

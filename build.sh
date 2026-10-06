@@ -78,9 +78,13 @@ validate_config() {
   # mistake below otherwise surfaces as an apt error inside the build — "Unable to
   # locate package postgresql-on" — which names neither this key nor this file.
   # Order matters: a list, then a case-variant of the two reserved words, then a
-  # minor (with the major to pin instead), then anything that is not a number.
+  # leading zero (017 would reach the layer as postgresql-017, which PGDG does not
+  # have), then a minor (with the major to pin instead), then anything that is
+  # not a number.
   local pg_val; pg_val=$(get_versions postgres)
   if [[ -n "$pg_val" && "$pg_val" != "ON" && "$pg_val" != "OFF" ]]; then
+    local pg_major="${pg_val%%.*}"
+    pg_major="${pg_major#"${pg_major%%[!0]*}"}"
     if [[ "$pg_val" == *,* ]]; then
       printf 'ERROR: postgres only supports a single value (got: "%s").\n' "$pg_val" >&2
       printf '       Use ON (newest major at build time), a major version (e.g. 17), or OFF.\n' >&2
@@ -88,11 +92,22 @@ validate_config() {
     elif [[ "${pg_val^^}" == "ON" || "${pg_val^^}" == "OFF" ]]; then
       printf 'ERROR: postgres value "%s" must be written in capitals (ON or OFF).\n' "$pg_val" >&2
       exit 1
-    elif [[ "$pg_val" =~ ^[0-9]+\.[0-9.]*$ ]]; then
-      printf 'ERROR: postgres=%s pins a minor version; pin the major instead: postgres=%s\n' "$pg_val" "${pg_val%%.*}" >&2
-      printf '       PGDG ships only the latest minor of each major.\n' >&2
+    elif [[ "$pg_val" =~ ^0[0-9]*$ ]]; then
+      if [[ -n "$pg_major" ]]; then
+        printf 'ERROR: postgres=%s has a leading zero; write postgres=%s\n' "$pg_val" "$pg_major" >&2
+      else
+        printf 'ERROR: postgres value "%s" is not ON, OFF or a major version number (e.g. 17).\n' "$pg_val" >&2
+      fi
       exit 1
-    elif [[ ! "$pg_val" =~ ^[0-9]+$ ]]; then
+    elif [[ "$pg_val" =~ ^[0-9]+\.[0-9.]*$ ]]; then
+      if [[ -n "$pg_major" ]]; then
+        printf 'ERROR: postgres=%s pins a minor version; pin the major instead: postgres=%s\n' "$pg_val" "$pg_major" >&2
+        printf '       PGDG ships only the latest minor of each major.\n' >&2
+      else
+        printf 'ERROR: postgres value "%s" is not ON, OFF or a major version number (e.g. 17).\n' "$pg_val" >&2
+      fi
+      exit 1
+    elif [[ ! "$pg_val" =~ ^[1-9][0-9]*$ ]]; then
       printf 'ERROR: postgres value "%s" is not ON, OFF or a major version number (e.g. 17).\n' "$pg_val" >&2
       exit 1
     fi

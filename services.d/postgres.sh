@@ -44,6 +44,10 @@ _pg_trim() {
   printf '%s' "${s%"${s##*[![:space:]]}"}"
 }
 
+# A name a project may use: the pattern, or the superuser's own name, which
+# comes from the host and is not held to it.
+_pg_name_ok() { [[ "$1" == "$PG_SUPERUSER" || "$1" =~ $PG_NAME_RE ]]; }
+
 # An SQL identifier: double-quoted, any embedded " doubled.
 _pg_ident() { printf '"%s"' "${1//\"/\"\"}"; }
 
@@ -136,14 +140,20 @@ svc_provision() {
     fi
   done
 
+  # Each database's owner as first listed (and valid): a later listing with
+  # another owner is warned about, never silently dropped.
+  local -A db_owner=()
   entries=()
   IFS=',' read -ra entries <<< "${POSTGRES_DATABASES:-}"
   for entry in "${entries[@]}"; do
     entry="$(_pg_trim "$entry")"
-    name="${entry%%:*}"
+    # Each half trimmed on its own, so `myapp_test : app_user` reads as written.
+    name="$(_pg_trim "${entry%%:*}")"
     owner="$PG_SUPERUSER"
-    [[ "$entry" == *:* ]] && owner="${entry#*:}"
-    if [[ ! "$name" =~ $PG_NAME_RE ]] || { [[ "$entry" == *:* ]] && [[ ! "$owner" =~ $PG_NAME_RE ]]; }; then
+    [[ "$entry" == *:* ]] && owner="$(_pg_trim "${entry#*:}")"
+    # The superuser's own name is not held to the pattern, as a database (the one
+    # svc_start made) or as an owner, for the reason it is not as a role.
+    if ! _pg_name_ok "$name" || { [[ "$entry" == *:* ]] && ! _pg_name_ok "$owner"; }; then
       printf "WARNING: POSTGRES_DATABASES: '%s' is not name or name:owner (lowercase letters, digits, _) — skipped\n" "$entry" >&2
       continue
     fi
@@ -151,7 +161,25 @@ svc_provision() {
       printf "WARNING: POSTGRES_DATABASES: '%s' — owner '%s' is not a role here (add it to POSTGRES_ROLES) — skipped\n" "$entry" "$owner" >&2
       continue
     fi
-    _pg_in "$name" "${dbs[@]}" && continue
+    if [[ -n "${db_owner[$name]+x}" ]]; then
+      [[ "${db_owner[$name]}" == "$owner" ]] \
+        || printf "WARNING: POSTGRES_DATABASES: '%s' is listed with two owners, '%s' and '%s' — keeping '%s'\n" \
+                  "$name" "${db_owner[$name]}" "$owner" "${db_owner[$name]}" >&2
+      continue
+    fi
+    db_owner[$name]="$owner"
+    # Two databases exist before provisioning: initdb's postgres, and the
+    # superuser's own (svc_start). Both belong to the superuser, so listing one
+    # changes only its owner — CREATE would fail with "already exists".
+    if [[ "$name" == postgres || "$name" == "$PG_SUPERUSER" ]]; then
+      if [[ "$owner" == "$PG_SUPERUSER" ]] \
+         || err="$(_pg_sql "ALTER DATABASE $(_pg_ident "$name") OWNER TO $(_pg_ident "$owner")")"; then
+        dbs+=("$name")
+      else
+        printf "WARNING: POSTGRES_DATABASES: could not give database '%s' to '%s': %s\n" "$name" "$owner" "$err" >&2
+      fi
+      continue
+    fi
     if err="$(_pg_sql "CREATE DATABASE $(_pg_ident "$name") OWNER $(_pg_ident "$owner")")"; then
       dbs+=("$name")
     else

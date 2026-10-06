@@ -54,7 +54,7 @@ POSTGRES_ROLES=app_user,reporting                  # each created SUPERUSER LOGI
 POSTGRES_DATABASES=myapp_test:app_user,myapp_dev   # name, or name:owner (owner defaults to you)
 ```
 
-Names must be lowercase letters, digits and `_`. An invalid entry, or a database whose owner is not a role here, is skipped with a warning naming it; the rest are still created. A repeated name, or your own user's name, is skipped.
+Names must be lowercase letters, digits and `_`; spaces around the `:` are fine (`myapp_test : app_user`). An invalid entry, or a database whose owner is not a role here, is skipped with a warning naming it; the rest are still created. In `POSTGRES_ROLES`, a repeated name, or your own user's name, is skipped. In `POSTGRES_DATABASES`, a database listed again with the same owner is skipped; listed with a different owner, it keeps the first and warns. Two databases exist before any of this — `postgres`, and the one named after your user — so listing either with an owner (`yourname:app_user`) hands it to that owner instead of creating it.
 
 The official `postgres` image's `POSTGRES_USER`, `POSTGRES_DB` and `POSTGRES_PASSWORD` are **not read** — a `container.env` copied from a `docker compose` setup creates nothing through them. Put the role in `POSTGRES_ROLES` and the database in `POSTGRES_DATABASES`; no password is needed. While `postgres=` is `OFF`, the sandbox ignores every `POSTGRES_*` variable.
 

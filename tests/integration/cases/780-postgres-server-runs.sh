@@ -18,7 +18,10 @@
 #      /var/run/postgresql at build time);
 #   3. it listens on loopback addresses only;
 #   4. POSTGRES_ROLES / POSTGRES_DATABASES from the project's container.env were
-#      provisioned: app_user is a superuser and owns myapp_test;
+#      provisioned: app_user is a superuser and owns myapp_test, written with
+#      spaces around the ':' as people do; and the superuser's own database,
+#      which exists before provisioning, was handed to the owner it was listed
+#      with (CREATE would fail on it, "already exists");
 #   5. app_user connects over TCP with a password the server never checks, and
 #      can create a contrib extension (pgcrypto) and a database;
 #   6. the cluster's collation is en_US.UTF-8, the official postgres image's
@@ -49,7 +52,9 @@ IT_SETTLE=3600
 fixture_scope_init || it_finish
 export AI_CONTAINER_GROUP="$IT_RUBY_GROUP"
 scratch="$(it_scratch)"
-printf 'POSTGRES_ROLES=app_user\nPOSTGRES_DATABASES=myapp_test:app_user\n' > "$scratch/container.env"
+# The superuser is the sandbox user: the name sandbox.sh passes as SANDBOX_USER.
+pg_super="${SANDBOX_USER:-$(id -un)}"
+printf 'POSTGRES_ROLES=app_user\nPOSTGRES_DATABASES=myapp_test : app_user,%s:app_user\n' "$pg_super" > "$scratch/container.env"
 export SANDBOX_ENV_FILE="$scratch/container.env"
 launcher_up restricted || it_finish
 
@@ -105,8 +110,11 @@ fi
   && pass "POSTGRES_ROLES: app_user exists as a superuser" \
   || fail "POSTGRES_ROLES: app_user is missing or not a superuser"
 [[ "$(q "-d postgres -c \"select pg_get_userbyid(datdba) from pg_database where datname='myapp_test'\"")" == "app_user" ]] \
-  && pass "POSTGRES_DATABASES: myapp_test exists, owned by app_user" \
+  && pass "POSTGRES_DATABASES: myapp_test exists, owned by app_user (written 'myapp_test : app_user')" \
   || fail "POSTGRES_DATABASES: myapp_test is missing or not owned by app_user"
+[[ "$(q "-d postgres -c \"select pg_get_userbyid(datdba) from pg_database where datname='$pg_super'\"")" == "app_user" ]] \
+  && pass "POSTGRES_DATABASES: the superuser's own database, listed with an owner, now belongs to app_user" \
+  || fail "POSTGRES_DATABASES: the superuser's own database was not handed to app_user"
 
 # ── 5. The app role over TCP, with a password nobody checks ────────────────────
 out="$(agent_exec "$IT_CID" "PGPASSWORD=not-checked psql -X -At -q -v ON_ERROR_STOP=1 -h 127.0.0.1 -U app_user -d myapp_test \
