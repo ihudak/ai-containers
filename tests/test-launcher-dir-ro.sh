@@ -14,7 +14,7 @@
 # another (T9–T19); robust to stray files and odd names, and warns about a
 # symlink it cannot pin (T20–T23); never mounts a name docker would mangle, and
 # never scans blind past a directory you cannot list (T24–T28, T31), warns
-# about launcher links that lead into a writable mount (T29, T32, T33), and
+# about launcher links that lead somewhere the agent can change (T29, T32–T37), and
 # refuses a non-numeric identity (T30).
 #
 # Hermetic: fake `docker` capturing the run args, no daemon. Integration cases
@@ -477,6 +477,9 @@ ln -s shared/config "$LK/config"; ln -s ../../config/sandbox.conf "$A/via.conf" 
 ln -s sandbox.sh "$A/alias.sh"                               # stays inside: silent
 ln -s "$ENGINE/AGENTS.md" "$A/outside.md"                    # outside every mount: silent
 mk_launcher "$LK/q"; ln -s ../../q/.ai-containers/sandbox-common.sh "$A/peer.sh"  # into another launcher, read-only already: silent
+mkdir -p "$LK/p/real"; ln -s ../real/../../q/.ai-containers/sandbox-common.sh "$A/step.conf"  # steps out of an ordinary dir
+ln -s ../../shared/real.conf "$A/target"                     # named like a pruned directory: still checked
+ln -s ../../../lk/shared/real.conf "$A/up3.conf"             # steps out of the mount root itself: that is safe
 ln -s loop2 "$LK/shared/loop1"; ln -s loop1 "$LK/shared/loop2"; ln -s ../../shared/loop1 "$A/loop.conf"
 EXTRA_MOUNTS="$LK" launch "$LAUNCHER" "$TMP/app"
 [[ "$(mounts_under /workspace/lk/ | sort)" == "$(printf '%s\n' "$A:/workspace/lk/p/.ai-containers:ro" "$LK/p:/workspace/lk/p:rw" \
@@ -484,28 +487,31 @@ EXTRA_MOUNTS="$LK" launch "$LAUNCHER" "$TMP/app"
   && pass "T29 a launcher's links add no mounts (the two launchers are overlaid, nothing else)" \
   || fail "T29 no mounts for link targets (got: $(mounts_under /workspace/lk/ | tr '\n' ' '))"
 t29() {  # $1 link name, $2 change|repoint, $3 the place named
-  grep -qF "WARNING: launcher link $A/$1 leads into a writable mount" "$ERR" \
-    && grep -qF "$2 $3 (at " <<<"$(grep -A1 -F "launcher link $A/$1 leads" "$ERR")"
+  grep -qF "WARNING: launcher link $A/$1 leads somewhere the agent can change" "$ERR" \
+    && grep -qF "it can $2 $3 (at " <<<"$(grep -A1 -F "launcher link $A/$1 leads" "$ERR")"
 }
 ok=1
 t29 sandbox.conf change  "$LK/shared/sandbox.conf" || { ok=0; fail "T29 file target"; }
 t29 tools.d      change  "$LK/shared/tools.d"      || { ok=0; fail "T29 directory target"; }
 t29 hop.conf     repoint "$LK/shared/hop"          || { ok=0; fail "T29 a link on the way"; }
 t29 sub          change  "$LK/shared/subdir"       || { ok=0; fail "T29 symlinked dir member"; }
-t29 wrong.conf   change  "$LK/shared/cfg.env"      || { ok=0; fail "T29 sub/../x resolved as the kernel does"; }
+t29 wrong.conf   replace "$LK/shared/subdir"       || { ok=0; fail "T29 sub/../x resolved as the kernel does (steps out of where sub leads)"; }
+t29 step.conf    replace "$LK/p/real"              || { ok=0; fail "T29 a .. out of an ordinary directory"; }
+t29 target       change  "$LK/shared/real.conf"    || { ok=0; fail "T29 a link named like a pruned directory"; }
+t29 up3.conf     change  "$LK/shared/real.conf"    || { ok=0; fail "T29 stepping out of a mount root is not reported"; }
 t29 via.conf     repoint "$LK/config"              || { ok=0; fail "T29 a symlinked component in a writable mount"; }
 t29 loop.conf    repoint "$LK/shared/loop1"        || { ok=0; fail "T29 a loop"; }
 [[ "$ok" -eq 1 ]] && pass "T29 each link leading into a writable mount is warned about, naming what the agent could change or repoint"
-[[ "$(grep -c 'leads into a writable mount' "$ERR")" -eq 7 ]] \
+[[ "$(grep -c 'leads somewhere the agent can change' "$ERR")" -eq 10 ]] \
   && ! grep -qF "$A/alias.sh" "$ERR" && ! grep -qF "$A/outside.md" "$ERR" && ! grep -qF "$A/peer.sh" "$ERR" \
   && pass "T29 exactly once per link; one staying inside its launcher, into another (read-only) launcher, or out of every mount is silent" \
-  || fail "T29 warning count/silence (got $(grep -c 'leads into a writable mount' "$ERR"): $(grep -F 'leads into' "$ERR" | tr '\n' ' '))"
+  || fail "T29 warning count/silence (got $(grep -c 'leads somewhere the agent can change' "$ERR"): $(grep -F 'leads into' "$ERR" | tr '\n' ' '))"
 # A launcher under a path with a space: its own link is not mistaken for a
 # repointable link on the way (membership must not split the path).
 SPL="$TMP/spl"; mk_launcher "$SPL/sp ace"; echo s > "$SPL/shared.conf"
 ln -s ../../shared.conf "$SPL/sp ace/.ai-containers/shared.conf"
 EXTRA_MOUNTS="$SPL" launch "$LAUNCHER" "$TMP/app"
-[[ "$(grep -c 'leads into a writable mount' "$ERR")" -eq 1 ]] \
+[[ "$(grep -c 'leads somewhere the agent can change' "$ERR")" -eq 1 ]] \
   && grep -qF "change $SPL/shared.conf (at " <<<"$(grep -A1 -F "launcher link $SPL/sp ace/.ai-containers/shared.conf leads" "$ERR")" \
   && pass "T29 a launcher under a path with a space: its link is followed out, and named once" \
   || fail "T29 space in a launcher path (stderr: $(grep -A1 -F 'leads into' "$ERR" | tr '\n' ' '))"
@@ -547,7 +553,7 @@ fi
 SOLO="$TMP/solo/.ai-containers"; mkdir -p "$TMP/solo" "$TMP/vault32"; cp -R "$LAUNCHER" "$SOLO"
 rm -f "$SOLO/sandbox.env"; : > "$TMP/vault32/sandbox.env"; ln -s "$TMP/vault32/sandbox.env" "$SOLO/sandbox.env"
 VAULT_PATH="$TMP/vault32" launch "$SOLO" "$TMP/app"
-grep -qF "change $TMP/vault32/sandbox.env (at /workspace/vault/sandbox.env)" <<<"$(grep -A1 -F "launcher link $SOLO/sandbox.env leads into a writable mount" "$ERR")" \
+grep -qF "change $TMP/vault32/sandbox.env (at /workspace/vault/sandbox.env)" <<<"$(grep -A1 -F "launcher link $SOLO/sandbox.env leads somewhere the agent can change" "$ERR")" \
   && pass "T32 this launcher's own links are checked even when no mount holds it" \
   || fail "T32 unmounted launcher's link (stderr: $(grep -A1 -F 'leads into' "$ERR" | tr '\n' ' '))"
 
@@ -557,10 +563,53 @@ grep -qF "change $TMP/vault32/sandbox.env (at /workspace/vault/sandbox.env)" <<<
 ln -s sandbox.sh "$LAUNCHER/CLAUDE-like.md"
 launch "$LAUNCHER" .
 rm -f "$LAUNCHER/CLAUDE-like.md"
-! grep -q 'leads into a writable mount' "$ERR" && [[ -z "$(ro_overlays)" ]] \
+! grep -q 'leads somewhere the agent can change' "$ERR" && [[ -z "$(ro_overlays)" ]] \
   && ! grep -qF -- "$LAUNCHER/sandbox.sh:" <<<"$(mounts)" \
   && pass "T33 links inside a checkout used as the working dir: no warning, no file bind" \
   || fail "T33 engine-as-workdir links (stderr: $(grep -F 'leads into' "$ERR" | tr '\n' ' '); overlays: $(ro_overlays | tr '\n' ' '))"
+
+# ── T34: a link is judged by EVERY writable mount that exposes its target. A
+# peer launcher too deep for mount A's search (seven levels) but near the root
+# of mount B is read-only through B and writable through A: still warned.
+MA="$TMP/ma"; PD="$MA/a/b/c/d/e/f/g"; mk_launcher "$PD/peer"
+ln -s "$PD/peer/.ai-containers/sandbox-common.sh" "$LAUNCHER/deep-peer.sh"
+EXTRA_MOUNTS="$PD $MA" launch "$LAUNCHER" ..   # the protecting mount first
+rm -f "$LAUNCHER/deep-peer.sh"
+grep -qF "it can change $PD/peer/.ai-containers/sandbox-common.sh (at /workspace/ma/a/b/c/d/e/f/g/peer/.ai-containers/sandbox-common.sh)" \
+     <<<"$(grep -A1 -F "launcher link $LAUNCHER/deep-peer.sh leads" "$ERR")" \
+  && pass "T34 a target read-only through one mount but writable through another is warned about" \
+  || fail "T34 two mounts, one unprotected (stderr: $(grep -A1 -F 'deep-peer' "$ERR" | tr '\n' ' '))"
+
+# ── T35: a link into a writable directory INSIDE the launcher (its blocked-
+# traffic output, mounted read-write on its own) is not "staying home".
+ln -s .agent-blocked/x.conf "$LAUNCHER/blk.conf"
+launch "$LAUNCHER" ..
+rm -f "$LAUNCHER/blk.conf"
+grep -qF "it can change $LAUNCHER/.agent-blocked/x.conf (at /workspace/.agent-blocked/x.conf)" \
+     <<<"$(grep -A1 -F "launcher link $LAUNCHER/blk.conf leads" "$ERR")" \
+  && pass "T35 a link into a writable bind inside the launcher is warned about" \
+  || fail "T35 link into .agent-blocked (stderr: $(grep -A1 -F 'blk.conf' "$ERR" | tr '\n' ' '))"
+
+# ── T36: a link into a launcher that could not be overlaid (a name docker
+# cannot carry) is not protected by that launcher: warned.
+UR="$TMP/ur"; mk_launcher "$UR/c:o "
+ln -s "$UR/c:o /.ai-containers/sandbox.sh" "$LAUNCHER/unrep.sh"
+EXTRA_MOUNTS="$UR" launch "$LAUNCHER" "$TMP/app"
+rm -f "$LAUNCHER/unrep.sh"
+grep -qF "launcher link $LAUNCHER/unrep.sh leads somewhere the agent can change" "$ERR" \
+  && pass "T36 a link into a launcher that could not be overlaid is warned about" \
+  || fail "T36 link into an unrepresentable launcher (stderr: $(grep -F 'unrep' "$ERR" | tr '\n' ' '))"
+
+# ── T37: _link_walk reads a link's target byte for byte — a target ending in a
+# newline names a different file than the same text without it.
+NLT="$TMP/nlt"; mkdir -p "$NLT/d"; : > "$NLT/d/f"$'\n'; ln -s "f"$'\n' "$NLT/d/l"
+got="$(bash -c '
+  set -euo pipefail
+  eval "$(awk "/^_link_walk\\(\\) \\{/,/^}\$/" "$1")"; eval "$(awk "/^_readlink_exact\\(\\) \\{/,/^}\$/" "$1")"
+  _link_walk "$2"' _ "$ENGINE/sandbox.sh" "$NLT/d/l" | tr '\0\n' '|^')"
+[[ "$got" == "$NLT/d/l|=$NLT/d/f^|" ]] \
+  && pass "T37 a link target ending in a newline is followed exactly" \
+  || fail "T37 trailing newline in a target (got: $got)"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

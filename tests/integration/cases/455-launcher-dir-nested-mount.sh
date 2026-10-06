@@ -97,7 +97,7 @@ fi
 
 # A launcher link into a writable directory is named at launch, with what it
 # leads to; the directory itself is left writable.
-grep -qF "change $grp/shared/linked.conf (at /workspace/grp/shared/linked.conf)" <<<"$(grep -A1 -F "launcher link $grp/proj/.ai-containers/linked.conf leads into a writable mount" "$IT_LAUNCH_ERR")" \
+grep -qF "change $grp/shared/linked.conf (at /workspace/grp/shared/linked.conf)" <<<"$(grep -A1 -F "launcher link $grp/proj/.ai-containers/linked.conf leads somewhere the agent can change" "$IT_LAUNCH_ERR")" \
   && pass "a launcher link into a writable directory is warned about, naming its target" \
   || fail "a launcher link into a writable directory is warned about, naming its target"
 assert_writable "$IT_CID" /workspace/grp/shared

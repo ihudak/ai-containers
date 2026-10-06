@@ -26,8 +26,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   link can be replaced rather than renamed. A writable mount whose root you
   cannot list now refuses the launch, naming it; a directory inside one that you
   cannot list, but the agent could still reach into, is mounted read-only with a
-  warning, and so is a symlink inside a launcher that leads into a writable
-  mount, since the agent can change what it points at. If your team versions
+  warning. A symlink inside a launcher whose way out leads somewhere the agent
+  can change is named in a warning too; replace it with the file it points at.
+  If your team versions
   `.ai-containers/` in git, switch branches on the host: inside the container
   git cannot update those files, warns `unable to unlink`, and exits 0 anyway. **Behaviour change:** edit `sandbox.conf`, the allowlist
   fragments and the other launcher files on the host, not from inside the

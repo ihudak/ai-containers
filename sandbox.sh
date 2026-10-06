@@ -316,17 +316,17 @@ launcher_ro_overlay() {
   # shellcheck disable=SC2178  # nameref: shellcheck does not model `local -n`
   local -n _ro=$1
   local reached="$2" self spec src rest dst opts l at pin path part r skip i k depth max=0 d p pp kind ok mf mv
-  local x f e q w
+  local x f e q w c safe inner how
   local uid="${SANDBOX_UID:-$(id -u)}" gid="${SANDBOX_GID:-$(id -g)}" you
   local -a found unreadable cand bsrc=() bdst=() cl=() cat=() csrc=() cdst=() cdep=() ckind=() ro_dsts=() psrc pdst
-  local -a scan links walk prot
-  local -A seen=() scanned=()
+  local -a scan links walk
+  local -A seen=() scanned=() pinned=()
   # The agent's identity decides what it can reach; find needs it numeric (and
   # within a 32-bit id — GNU find rejects 4294967295 and up), and a find that
   # errors out finds nothing — so refuse rather than search blind.
   if [[ ! "$uid" =~ ^[0-9]{1,10}$ || ! "$gid" =~ ^[0-9]{1,10}$ ]] \
      || (( 10#$uid > 4294967294 || 10#$gid > 4294967294 )); then
-    printf 'ERROR: SANDBOX_UID/SANDBOX_GID must be numeric (got %q / %q).\n' "$uid" "$gid" >&2
+    printf 'ERROR: SANDBOX_UID/SANDBOX_GID must be numeric ids from 0 to 4294967294 (got %q / %q).\n' "$uid" "$gid" >&2
     exit 1
   fi
   you="$(id -u)"
@@ -395,51 +395,6 @@ launcher_ro_overlay() {
     done
   done
 
-  # Symlinks in a launcher whose way out leads into a writable mount. Scanned:
-  # this launcher, mounted or not, and every launcher found. Protected already
-  # (so not reported): a path inside a launcher or unlistable directory that is
-  # about to be overlaid read-only — i.e. not itself a mount root.
-  scan=("$self"); scanned[$self]=1; prot=()
-  for i in ${cl[@]+"${!cl[@]}"}; do
-    if [[ "${cl[i]}" != "${csrc[i]}" ]]; then prot+=("${cl[i]}"); fi
-    if [[ "${ckind[i]}" == launcher && -z "${scanned[${cl[i]}]:-}" ]]; then
-      scanned[${cl[i]}]=1; scan+=("${cl[i]}")
-    fi
-  done
-  for x in "${scan[@]}"; do
-    links=()
-    mapfile -d '' -t links < <(find "$x" -maxdepth 6 \( -name node_modules -o -name .git -o -name vendor -o -name .venv -o -name target \) -prune \
-                                  -o -type l -print0 2>/dev/null)
-    for f in ${links[@]+"${links[@]}"}; do
-      walk=()
-      mapfile -d '' -t walk < <(_link_walk "$f")
-      for e in ${walk[@]+"${walk[@]}"}; do
-        q="${e#=}"
-        # Inside this launcher: the link's own way stays home.
-        if [[ "$q" == "$x" || "$q" == "$x"/* ]]; then continue; fi
-        w=""
-        for i in ${bsrc[@]+"${!bsrc[@]}"}; do
-          if [[ "$q" == "${bsrc[i]}" || "$q" == "${bsrc[i]}"/* ]]; then
-            w="${bdst[i]}${q#"${bsrc[i]}"}"; break
-          fi
-        done
-        if [[ -z "$w" ]]; then continue; fi
-        for r in ${prot[@]+"${prot[@]}"}; do
-          if [[ "$q" == "$r"/* ]]; then w=""; break; fi
-        done
-        if [[ -z "$w" ]]; then continue; fi
-        printf 'WARNING: launcher link %s leads into a writable mount: the agent can\n' "$f" >&2
-        if [[ "$e" == =* ]]; then
-          printf '         change %s (at %s), which the host reads through it.\n' "$q" "$w" >&2
-        else
-          printf '         repoint %s (at %s), a link on its way.\n' "$q" "$w" >&2
-        fi
-        printf '         Replace the link with what it names, or mount that directory :ro.\n' >&2
-        break
-      done
-    done
-  done
-
   # Shallowest first, so an outer read-only overlay is recorded before anything
   # nested in it is considered.
   for (( depth = 0; depth <= max; depth++ )); do
@@ -478,7 +433,7 @@ launcher_ro_overlay() {
         continue
       fi
       for k in ${psrc[@]+"${!psrc[@]}"}; do
-        seen[${pdst[k]}]=1
+        seen[${pdst[k]}]=1; pinned[${pdst[k]}]=1
         _bind_mount_arg mf mv "${psrc[k]}" "${pdst[k]}" rw
         _ro+=("$mf" "$mv")
       done
@@ -496,6 +451,72 @@ launcher_ro_overlay() {
       else
         printf 'READ-ONLY: %s  (launcher files; edit them on the host)\n' "$at" >&2
       fi
+    done
+  done
+
+  # Symlinks in a launcher whose way out leads somewhere the agent can change.
+  # Judged from the container side, now that the overlays are decided: every
+  # writable bind that exposes a step on the way is checked, and the step is
+  # safe only if each of them puts it under a read-only overlay — or, for a
+  # directory a `..` steps out of, makes it a mount point (a mount root, a pin,
+  # an overlay root), which cannot be swapped for a link. Scanned: this
+  # launcher, mounted or not, and every launcher found.
+  scan=("$self"); scanned[$self]=1
+  for i in ${cl[@]+"${!cl[@]}"}; do
+    if [[ "${ckind[i]}" == launcher && -z "${scanned[${cl[i]}]:-}" ]]; then
+      scanned[${cl[i]}]=1; scan+=("${cl[i]}")
+    fi
+  done
+  for x in "${scan[@]}"; do
+    links=()
+    mapfile -d '' -t links < <(find "$x" -maxdepth 6 \
+        \( -type d \( -name node_modules -o -name .git -o -name vendor -o -name .venv -o -name target \) \) -prune \
+        -o -type l -print0 2>/dev/null)
+    for f in ${links[@]+"${links[@]}"}; do
+      walk=()
+      mapfile -d '' -t walk < <(_link_walk "$f")
+      for e in ${walk[@]+"${walk[@]}"}; do
+        case "$e" in
+          =*) how=change;  q="${e#=}" ;;
+          ^*) how=replace; q="${e#^}" ;;
+          *)  how=repoint; q="$e" ;;
+        esac
+        # Inside this launcher and in no writable bind of its own (an output
+        # directory, say): the way stays home — read-only with the launcher,
+        # or the working dir someone is deliberately editing.
+        if [[ "$q" == "$x" || "$q" == "$x"/* ]]; then
+          inner=""
+          for i in ${bsrc[@]+"${!bsrc[@]}"}; do
+            if [[ "${bsrc[i]}" == "$x"/* && ( "$q" == "${bsrc[i]}" || "$q" == "${bsrc[i]}"/* ) ]]; then inner=1; break; fi
+          done
+          if [[ -z "$inner" ]]; then continue; fi
+        fi
+        w=""
+        for i in ${bsrc[@]+"${!bsrc[@]}"}; do
+          if [[ "$q" != "${bsrc[i]}" && "$q" != "${bsrc[i]}"/* ]]; then continue; fi
+          c="${bdst[i]}${q#"${bsrc[i]}"}"
+          safe=""
+          for r in ${ro_dsts[@]+"${ro_dsts[@]}"}; do
+            if [[ "$c" == "$r" || "$c" == "$r"/* ]]; then safe=1; break; fi
+          done
+          if [[ -z "$safe" && "$how" == replace ]]; then
+            if [[ -n "${pinned[$c]:-}" ]]; then safe=1; fi
+            for r in "${bdst[@]}"; do
+              if [[ "$c" == "$r" ]]; then safe=1; break; fi
+            done
+          fi
+          if [[ -z "$safe" ]]; then w="$c"; break; fi
+        done
+        if [[ -z "$w" ]]; then continue; fi
+        printf 'WARNING: launcher link %s leads somewhere the agent can change:\n' "$f" >&2
+        case "$how" in
+          change)  printf '         it can change %s (at %s), which the host reads through it.\n' "$q" "$w" >&2 ;;
+          repoint) printf '         it can repoint %s (at %s), a link on its way.\n' "$q" "$w" >&2 ;;
+          replace) printf '         it can replace %s (at %s) with a link; the way steps out of it (..).\n' "$q" "$w" >&2 ;;
+        esac
+        printf '         Replace the link with what it names, or mount that directory :ro.\n' >&2
+        break
+      done
     done
   done
 }
@@ -545,32 +566,42 @@ _mount_representable() {
 # _link_walk <link>: resolves <link> the way the kernel does — one component at
 # a time, from a physical directory, so `..` steps out of where a link really
 # led rather than where its text pointed — and prints, NUL-separated, every
-# symlink met (its physical path; <link> first), then "=" and the final path,
-# which need not exist. Stops quietly after 40 links (a loop).
+# symlink met (its physical path; <link> first), "^" and every directory a `..`
+# steps out of (swap it for a link and the way changes), then "=" and the final
+# path, which need not exist. Stops quietly after 40 links (a loop).
 _link_walk() {
   local cur rest c t n=1
   cur="$(cd "${1%/*}/" 2>/dev/null && pwd -P)" || return 0
   c="${1##*/}"
   printf '%s\0' "$cur/$c"
-  t="$(readlink "$cur/$c")" || return 0
+  _readlink_exact t "$cur/$c" || return 0
   if [[ "$t" == /* ]]; then cur=""; rest="${t#/}"; else rest="$t"; fi
   while [[ -n "$rest" ]]; do
     c="${rest%%/*}"
     if [[ "$rest" == */* ]]; then rest="${rest#*/}"; else rest=""; fi
     case "$c" in
       ''|.) continue ;;
-      ..) cur="${cur%/*}"; continue ;;
+      ..) if [[ -n "$cur" ]]; then printf '^%s\0' "$cur"; fi; cur="${cur%/*}"; continue ;;
     esac
     if [[ -L "$cur/$c" ]]; then
       if (( ++n > 40 )); then return 0; fi
       printf '%s\0' "$cur/$c"
-      t="$(readlink "$cur/$c")" || return 0
+      _readlink_exact t "$cur/$c" || return 0
       if [[ "$t" == /* ]]; then cur=""; rest="${t#/}${rest:+/$rest}"; else rest="$t${rest:+/$rest}"; fi
     else
       cur="$cur/$c"
     fi
   done
   printf '=%s\0' "${cur:-/}"
+}
+
+# _readlink_exact <var> <link>: a link's target, byte for byte — $(readlink)
+# alone would drop any trailing newlines the target itself ends with.
+_readlink_exact() {
+  local out
+  out="$(readlink -- "$2" && printf x)" || return 1
+  out="${out%x}"
+  printf -v "$1" '%s' "${out%$'\n'}"
 }
 
 # _utf8_valid <string>: is it UTF-8 as RFC 3629 — and Go, whose JSON encoding of
