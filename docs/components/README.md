@@ -118,6 +118,7 @@ Both GraalVM variants also install the `native-image` toolchain.
 | Key | Values | What it does |
 |---|---|---|
 | `postgres` | ON / major / OFF | [A PostgreSQL server inside the container](postgres.md), for test suites — loopback only, data thrown away on exit |
+| `redis` | ON / OFF | [A Redis server inside the container](redis.md), for test suites and dev servers — loopback only, nothing written to disk |
 
 ### Browser automation
 

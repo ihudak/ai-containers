@@ -46,7 +46,7 @@ on:
       # is a no-op — both jobs render their existing hardcoded command
       # unchanged, exactly like tags/exclude above.
       cases:
-        description: 'run.sh --cases for the packages-agents/packages-native jobs (e.g. 760-ruby-persists-no-recompile) — empty = every packages case for that variant'
+        description: 'run.sh --cases for the packages-agents/packages-native/packages-services jobs (e.g. 760-ruby-persists-no-recompile) — empty = every packages case for that variant'
         required: false
         default: ''
       # Task 11c: this ONE value is threaded into BOTH jobs below, unfiltered —
@@ -508,3 +508,36 @@ jobs:
           echo "-- post-cleanup snapshot --"
           df -h / | tail -1
           docker system df
+
+  # The in-container database servers (case 785). Their own variant rather than
+  # `native`: they need no build toolchain, Ruby or Playwright, and native's job
+  # is already at its budget. The image is the default one plus the servers, so
+  # this job is one ordinary image build and cases that take seconds.
+  packages-services:
+    name: Package installs — services variant (real allowlist)
+    runs-on: ubuntu-24.04
+    # Real headroom over one image build (the PR gate builds the default image,
+    # this one's base, in about five minutes) plus seconds per case, and below
+    # the sum of the cases' own timeouts — the same trade as the jobs above.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Start timer
+        run: echo "PACKAGES_START=$(date +%s)" >> "$GITHUB_ENV"
+
+      # --require packages, as above: a selected case whose requirement is unmet
+      # FAILS the job rather than skipping quietly.
+      - name: Packages tier (services variant)
+        run: >-
+          ./tests/integration/run.sh --tags packages --variant services --require packages
+          ${{ inputs.cases && format('--cases {0}', inputs.cases) || '' }}
+
+      - name: Budget
+        if: always()
+        run: |
+          end=$(date +%s)
+          start="${PACKAGES_START:-$end}"
+          elapsed=$((end - start))
+          echo "packages-services wall-clock: $((elapsed / 60))m $((elapsed % 60))s"
+          df -h / | tail -1
