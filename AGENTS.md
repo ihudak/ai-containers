@@ -20,7 +20,7 @@ A CLI-only Docker workspace for running AI coding agents (GitHub Copilot CLI, Ki
 
 `sandbox.conf` is the single source of truth for which optional components are included. Set a component to `ON` or `OFF` and rebuild. The format is strictly `component=ON` or `component=OFF`, one per line; comments start with `#`.
 
-Optional components: `copilot`, `kiro`, `claude-code`, `codex`, `gemini`, `graphify`, `openjdk`, `graalvm-ce`, `graalvm-oracle`, `kotlin`, `scala`, `maven`, `gradle`, `kubectl`, `aws-cli`, `azure-cli`, `github-cli`, `angular-cli`, `yarn`, `pnpm`, `bun`, `goreleaser`, `vale`, `qmd`, `dtctl`, `dtmgd`, `imagemagick`, `wkhtmltopdf`, `c-toolchain`, `playwright`, `postgres`, `redis`, `shellcheck`.
+Optional components: `copilot`, `kiro`, `claude-code`, `codex`, `gemini`, `graphify`, `openjdk`, `graalvm-ce`, `graalvm-oracle`, `kotlin`, `scala`, `maven`, `gradle`, `kubectl`, `aws-cli`, `azure-cli`, `github-cli`, `angular-cli`, `yarn`, `pnpm`, `bun`, `goreleaser`, `vale`, `qmd`, `dtctl`, `dtmgd`, `imagemagick`, `wkhtmltopdf`, `c-toolchain`, `playwright`, `postgres`, `redis`, `mysql`, `shellcheck`.
 
 **`c-toolchain=ON`** keeps a C compiler in the finished image — `build-essential`
 (gcc, g++, make, binutils, `libc6-dev`) plus `libyaml-dev zlib1g-dev libssl-dev`,
@@ -105,6 +105,19 @@ answering: the pid its `INFO` reports must be the one it wrote, so another Redis
 on the port never passes for it. Its integration case runs on the `services`
 image variant, which holds the servers that need no build toolchain. User docs:
 `docs/components/redis.md`.
+
+**`mysql=ON | OFF`** bakes Ubuntu 24.04's `mysql-server` (8.0) and a **template data
+directory** initialised at build time, time zone tables loaded, which the adapter
+copies at start: ~0.6 s to ready instead of `--initialize-insecure`'s ~5.6 s on every
+launch. `mysqld` runs with `--no-defaults`, every option on its command line:
+`127.0.0.1`, and `::1` only where the container has an IPv6 loopback (`mysqld` refuses
+an address it cannot bind), the default socket, no X Protocol listener,
+`performance_schema` off (147 MB idle instead of 376 MB) and durability off. `root`
+and the sandbox user have no password; `MYSQL_USERS` (`name` or `name:password`;
+`root:<pw>` is set last) and `MYSQL_DATABASES` (names — MySQL has no owners)
+provision the rest. Not MariaDB, whose SQL has drifted from MySQL 8's (it rejects
+`utf8mb4_0900_ai_ci`, `->>` and `LATERAL` — measured). User docs:
+`docs/components/mysql.md`.
 
 Version-list components (`node`, `python`, `ruby`, `rust`, `go`) accept comma-separated version values instead of `ON`/`OFF` (e.g., `node=22,20`). Constraints:
 - `angular-cli` accepts only a **single version** (not a comma-separated list).
