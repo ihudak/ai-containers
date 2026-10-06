@@ -157,6 +157,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (`8.0.32`) or a bare major (`8`) is refused with the value to write instead,
   and a series MongoDB does not publish for Ubuntu 24.04 fails the build by
   name. On x86-64 it needs a CPU with AVX. See `docs/components/mongo.md`.
+- **Copilot CLI describes every installed skill to the model:
+  `SKILL_CHAR_BUDGET=25000`.** Copilot lists installed skills for the model
+  within a character budget, read from `SKILL_CHAR_BUDGET` in its own
+  environment and 15,000 by default. It fills that budget plugin by plugin, in
+  load order, and lists a skill past it by name only, without its description,
+  so the model cannot tell when to use that skill. Each entry costs 93
+  characters plus its name and its XML-escaped description, so a few plugins
+  with many skills overflow the default: one measured set needs about 22,700.
+  Every container now gets `SKILL_CHAR_BUDGET=25000`. If your host exports
+  `SKILL_CHAR_BUDGET`, or `sandbox.env`/`sandbox.local.env` sets it, that value
+  is passed instead. Like the other variables the launcher sets, it is refused
+  from `container.env` with a warning.
 
 ## v0.9.20 — 2026-10-05
 
