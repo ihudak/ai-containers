@@ -156,6 +156,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   takes under a second. `performance_schema` is off, which saves about 230 MB
   of RAM. It takes no version, because Ubuntu carries one MySQL. See
   `docs/components/mysql.md`.
+- **A MariaDB server inside the container: `mariadb=ON | <series> | OFF`.** For
+  projects whose production runs MariaDB (a MySQL app keeps `mysql=`: MariaDB's
+  SQL has drifted from MySQL 8's). `ON` is Ubuntu 24.04's MariaDB 10.11; a pin
+  such as `mariadb=11.4` installs that series from MariaDB's own repository, and
+  a series it does not publish for Ubuntu 24.04 fails the build by name. It
+  behaves like `mysql=` — `root` and your user with no password, the same
+  `MYSQL_USERS` / `MYSQL_DATABASES` — and serves the character set its package
+  intends (utf8mb4), as the official `mariadb` image of the same series does.
+  `mysql=` and `mariadb=` cannot both be on. With `db-clients=mysql`, `mysql`
+  becomes MariaDB's client and `libmysqlclient-dev` stays. See
+  `docs/components/mariadb.md`.
 - **A MongoDB server inside the container: `mongo=ON | <series> | OFF`.**
   `mongod` and `mongosh` from MongoDB's own repository — `ON` is the 8.0 series,
   and a pin is a series (`mongo=8.2`) — started in every container before the

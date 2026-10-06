@@ -24,7 +24,7 @@ A CLI-only Docker workspace for running AI coding agents (GitHub Copilot CLI, Ki
 
 `sandbox.conf` is the single source of truth for which optional components are included. Set a component to `ON` or `OFF` and rebuild. The format is strictly `component=ON` or `component=OFF`, one per line; comments start with `#`.
 
-Optional components: `copilot`, `kiro`, `claude-code`, `codex`, `gemini`, `graphify`, `openjdk`, `graalvm-ce`, `graalvm-oracle`, `kotlin`, `scala`, `maven`, `gradle`, `kubectl`, `aws-cli`, `azure-cli`, `github-cli`, `angular-cli`, `yarn`, `pnpm`, `bun`, `goreleaser`, `vale`, `qmd`, `dtctl`, `dtmgd`, `imagemagick`, `wkhtmltopdf`, `c-toolchain`, `playwright`, `postgres`, `redis`, `mysql`, `mongo`, `shellcheck`.
+Optional components: `copilot`, `kiro`, `claude-code`, `codex`, `gemini`, `graphify`, `openjdk`, `graalvm-ce`, `graalvm-oracle`, `kotlin`, `scala`, `maven`, `gradle`, `kubectl`, `aws-cli`, `azure-cli`, `github-cli`, `angular-cli`, `yarn`, `pnpm`, `bun`, `goreleaser`, `vale`, `qmd`, `dtctl`, `dtmgd`, `imagemagick`, `wkhtmltopdf`, `c-toolchain`, `playwright`, `postgres`, `redis`, `mysql`, `mariadb`, `mongo`, `shellcheck`.
 
 **`c-toolchain=ON`** keeps a C compiler in the finished image — `build-essential`
 (gcc, g++, make, binutils, `libc6-dev`) plus `libyaml-dev zlib1g-dev libssl-dev`,
@@ -122,6 +122,23 @@ and the sandbox user have no password; `MYSQL_USERS` (`name` or `name:password`;
 provision the rest. Not MariaDB, whose SQL has drifted from MySQL 8's (it rejects
 `utf8mb4_0900_ai_ci`, `->>` and `LATERAL` — measured). User docs:
 `docs/components/mysql.md`.
+
+**`mariadb=ON | <series> | OFF`** is for projects whose production runs MariaDB. `ON`
+is Ubuntu 24.04's `mariadb-server` (10.11), with no third-party repository; a pin is
+a release series from MariaDB's own repository, checked for by its `Release` file
+before apt sees it and installed from that series only, with
+`mariadb-client-compat` so `mysql` works either way. Refused together with `mysql=`
+(one port, one socket, conflicting packages). `services.d/mariadb.sh` **is the
+MySQL adapter** — it sources `services.d/mysql.sh` for the accounts, `MYSQL_USERS` /
+`MYSQL_DATABASES`, the endpoint and the ready line — with MariaDB's binaries and
+template and its own start: `mariadbd` has no `--daemonize`, so it runs in the
+background and is ready only when the server answering on the socket reports
+**this** start's `@@pid_file`. `--no-defaults` also drops the package's character
+set (bare 10.11 serves latin1), so the package's own `character-set-server` /
+`collation-server` / `character-set-collations` are read back from
+`--print-defaults` — the official images' utf8mb4 settings, per series. Its
+integration case runs on its own `mariadb` image variant. User docs:
+`docs/components/mariadb.md`.
 
 **`mongo=ON | <series> | OFF`** bakes `mongod` and `mongosh` from MongoDB's own
 repository (the one `db-clients=mongo` uses). `ON` is the 8.0 series; a pin is a
