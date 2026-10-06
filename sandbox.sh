@@ -254,28 +254,44 @@ add_file_mount_if_exists() {
   fi
 }
 
-# The launcher's own directory must not be writable from inside the container.
+# Launcher directories must not be writable from inside the container.
 # A project's .ai-containers/ holds what the HOST runs or reads at the next
 # launch — sandbox.sh, build.sh, the Dockerfile and entrypoint it builds,
 # sandbox.env (SANDBOX_MODE, EXTRA_MOUNTS), sandbox.conf, container.env — and the
 # documented launch mounts the whole project read-write (SANDBOX_WORKDIR=..).
 # Left writable, the agent could rewrite any of them, and .ai-containers/ is
 # gitignored, so `git status` would never show it. Docker mounts a nested bind
-# on top of its parent (it orders mounts by destination depth), so the directory
-# is mounted again, :ro, under every writable host bind that contains it, and the
-# rest of the project stays writable.
+# on top of its parent (it orders mounts by destination depth), so each one is
+# mounted again, :ro, inside every writable host bind that contains it, and the
+# rest of the mount stays writable.
 #
-# launcher_ro_overlay <out-array> <launcher dir, resolved> <docker flag>...
-# Reads the `-v <src>:<dst>[:<opts>]` pairs among the flags. A named volume's
-# source is a name, not a path, so it never contains this directory; a :ro bind
-# is read-only already. Containment is by path component, so /x/pro does not
-# contain /x/proj. A mount that IS the launcher directory — the engine
-# checkout itself as the working dir — cannot be made read-only without making
-# that work impossible, so it is named instead.
+# Which directories: this launcher's own, wherever it lives, and every other
+# project's launcher a writable mount exposes (launcher_dirs_in) — the engine
+# checkout launching `./sandbox.sh restricted ~/proj`, a project attached as a
+# :rw repo, or a parent directory in EXTRA_MOUNTS.
+#
+# The directories BETWEEN the mount root and a launcher are pinned too, each
+# bind-mounted onto itself read-write: an ordinary directory above a mount point
+# can be renamed, and with it the read-only overlay moves out of the way of the
+# path the host reads. A mount point cannot be renamed (EBUSY), and a self-bind
+# changes nothing else about the directory. With the documented layout there is
+# nothing between: the project is the mount root and .ai-containers its child.
+#
+# launcher_ro_overlay <out-array> <this launcher's dir> <docker flag>...
+# Reads the `-v <src>:<dst>[:<opts>]` pairs among the flags. Only a writable bind
+# of a directory can expose one: a named volume's source is a name and holds a
+# copy, a file mount holds no directory, and a :ro bind is read-only already.
+# Paths are compared physically (`pwd -P`), which also settles case on macOS,
+# where getcwd reports the on-disk spelling; containment is by path component,
+# so /x/pro does not contain /x/proj. A mount that IS a launcher directory — the
+# engine checkout itself as the working dir — cannot be made read-only without
+# making that work impossible, so it is named instead.
 launcher_ro_overlay() {
   # shellcheck disable=SC2178  # nameref: shellcheck does not model `local -n`
   local -n _ro=$1
-  local dir="$2" spec src rest dst opts at
+  local self="$2" spec src rest dst opts l rel at path part
+  local -a parts
+  local -A seen=()
   shift 2
   while (( $# )); do
     if [[ "$1" != -v || $# -lt 2 ]]; then shift; continue; fi
@@ -284,17 +300,45 @@ launcher_ro_overlay() {
     dst="${rest%%:*}"; opts=""
     [[ "$rest" == *:* ]] && opts="${rest#*:}"
     [[ ",$opts," == *,ro,* ]] && continue
-    src="${src%/}"
-    if [[ "$dir" == "$src" ]]; then
-      printf "NOTE: %s is this launcher's own directory and stays writable at %s;\n" "$dir" "$dst" >&2
-      printf '      what changes there runs on the host at the next launch.\n' >&2
-      continue
-    fi
-    [[ "$dir" == "$src"/* ]] || continue
-    at="$dst/${dir#"$src"/}"
-    _ro+=(-v "$dir:$at:ro")
-    printf "READ-ONLY: %s  (this launcher's own files; edit them on the host)\n" "$at" >&2
+    [[ "$src" == /* && -d "$src" ]] || continue
+    src="$(cd "$src" 2>/dev/null && pwd -P)" || continue
+    while IFS= read -r l; do
+      [[ -n "$l" ]] || continue
+      if [[ "$l" == "$src" ]]; then
+        printf "NOTE: %s holds a launcher and stays writable at %s;\n" "$l" "$dst" >&2
+        printf '      what changes there runs on the host at the next launch.\n' >&2
+        continue
+      fi
+      [[ "$l" == "$src"/* ]] || continue
+      rel="${l#"$src"/}"
+      IFS=/ read -ra parts <<<"$rel"
+      path="$src"; at="$dst"
+      for part in "${parts[@]:0:${#parts[@]}-1}"; do
+        path="$path/$part"; at="$at/$part"
+        [[ -n "${seen[$at]:-}" ]] && continue
+        seen[$at]=1
+        _ro+=(-v "$path:$at:rw")
+      done
+      at="$dst/$rel"
+      [[ -n "${seen[$at]:-}" ]] && continue
+      seen[$at]=1
+      _ro+=(-v "$l:$at:ro")
+      printf 'READ-ONLY: %s  (launcher files; edit them on the host)\n' "$at" >&2
+    done < <({ printf '%s\n' "$self"; launcher_dirs_in "$src"; } | sort -u)
   done
+}
+
+# launcher_dirs_in <dir>: every project launcher under <dir> — a .ai-containers
+# directory holding a sandbox.sh — to six levels down, skipping dependency and
+# VCS trees. Bounded because it runs on every launch over every writable mount;
+# measured at a few hundredths of a second over a ~/dev holding dozens of repos.
+launcher_dirs_in() {
+  local d
+  while IFS= read -r d; do
+    [[ -f "$d/sandbox.sh" ]] && printf '%s\n' "$d"
+  done < <(find "$1" -mindepth 1 -maxdepth 6 \
+             \( -name node_modules -o -name .git -o -name vendor -o -name .venv -o -name target \) -prune \
+             -o -type d -name .ai-containers -print -prune 2>/dev/null)
 }
 
 # Seed a per-workspace writable working-copy volume from a repo's shared base
@@ -1138,7 +1182,7 @@ run_container() {
 
   # Last, once every bind mount is known: see launcher_ro_overlay.
   local launcher_ro_flags=()
-  launcher_ro_overlay launcher_ro_flags "$(resolve_path "$script_dir")" \
+  launcher_ro_overlay launcher_ro_flags "$(cd "$script_dir" && pwd -P)" \
     ${output_mount_flags[@]+"${output_mount_flags[@]}"} \
     ${repo_mount_flags[@]+"${repo_mount_flags[@]}"} \
     ${extra_mount_flags[@]+"${extra_mount_flags[@]}"} \

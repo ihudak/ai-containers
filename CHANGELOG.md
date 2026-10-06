@@ -8,21 +8,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
-- **An agent can no longer edit the launcher from inside the container.** The
+- **An agent can no longer edit a launcher from inside the container.** The
   usual launch mounts the whole project read-write, and that included
   `<project>/.ai-containers/` — `sandbox.sh`, `build.sh`, the `Dockerfile` and
   `entrypoint.sh` it builds, `sandbox.env`, `sandbox.conf` and `container.env`.
   An agent in restricted mode could therefore set `SANDBOX_MODE=open` for the
   next launch, add a mount of your home directory, or change code your host runs
   on the next `./runme.sh` — in a directory that is gitignored, so `git status`
-  never showed it. `sandbox.sh` now mounts that directory again, read-only, on
-  top of every writable mount that contains it, and says so at launch
-  (`READ-ONLY: /workspace/<project>/.ai-containers`); the rest of the project
+  never showed it. `sandbox.sh` now mounts that directory again, read-only,
+  inside every writable mount that contains it, and does the same for any other
+  project's launcher a writable mount exposes (a parent directory in
+  `EXTRA_MOUNTS`, a project attached as a `:rw` repo). Directories between a
+  mount root and a launcher are pinned so they cannot be renamed out from under
+  it. Each protected path is printed at launch (`READ-ONLY: …`); everything else
   stays writable. **Behaviour change:** edit `sandbox.conf`, the allowlist
   fragments and the other launcher files on the host, not from inside the
-  container. Launching with the launcher's own directory as the working
-  directory (developing ai-containers itself) keeps it writable and prints a
-  `NOTE:`.
+  container. Launching with a launcher's own directory as the working directory
+  (developing ai-containers itself) keeps it writable and prints a `NOTE:`.
 
 ### Added
 

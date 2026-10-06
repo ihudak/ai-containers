@@ -7,10 +7,13 @@
 # whole project read-write (SANDBOX_WORKDIR=..), so without an overlay the agent
 # could rewrite any of them — and .ai-containers/ is gitignored, so `git status`
 # would never show it. sandbox.sh therefore mounts its own directory again,
-# :ro, on top of every writable bind mount that contains it.
+# :ro, inside every writable bind mount that contains it — and any other
+# project's launcher such a mount exposes — and pins every directory between a
+# mount root and a launcher (T9–T12).
 #
-# Hermetic: fake `docker` capturing the run args, no daemon. Integration case
-# 450-launcher-dir-read-only checks that the overlay is actually read-only.
+# Hermetic: fake `docker` capturing the run args, no daemon. Integration cases
+# 450-launcher-dir-read-only and 455-launcher-dir-nested-mount check that the
+# container the agent gets actually enforces it.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -124,6 +127,67 @@ grep -qxF -- "$LAUNCHER:/workspace/.ai-containers:rw" <<<"$(mounts)" \
 grep -q 'NOTE:.*writable' "$ERR" \
   && pass "T8 ... and the launch says so" \
   || fail "T8 ... and the launch says so (stderr: $(tr '\n' ' ' <"$ERR"))"
+
+# What lands under a destination prefix: one "<src>:<dst>:<opts>" per line.
+mounts_under() { mounts | awk -F: -v p="$1" 'index($2, p) == 1'; }
+
+# ── T9: the documented launch needs nothing between the mount root and the
+# launcher — the project IS the mount root and .ai-containers its child.
+launch "$LAUNCHER" ..
+[[ "$(mounts_under /workspace/proj/)" == "$LAUNCHER:/workspace/proj/.ai-containers:ro" ]] \
+  && pass "T9 the documented launch adds the overlay and nothing else under the project" \
+  || fail "T9 only the overlay under /workspace/proj/ (got: $(mounts_under /workspace/proj/ | tr '\n' ' '))"
+
+# ── T10: a mount rooted ABOVE the project pins every directory in between,
+# each bound onto itself read-write: an ordinary directory above a mount point
+# can be renamed, and the overlay would move with it.
+EXTRA_MOUNTS="$TMP" launch "$LAUNCHER" "$TMP/app"
+want="$(printf '%s\n' "$PROJ:/workspace/$tbase/proj:rw" \
+                      "$LAUNCHER:/workspace/$tbase/proj/.ai-containers:ro")"
+[[ "$(mounts_under "/workspace/$tbase/")" == "$want" ]] \
+  && pass "T10 the directory between the mount root and the launcher is pinned, writable" \
+  || fail "T10 pinned intermediate (got: $(mounts_under "/workspace/$tbase/" | tr '\n' ' '))"
+
+# ── T11: deeper still — one pin per directory, in order, none twice.
+DEEP="$TMP/deep"; mkdir -p "$DEEP/a/b"
+cp -R "$LAUNCHER" "$DEEP/a/b/"
+EXTRA_MOUNTS="$DEEP" launch "$LAUNCHER" "$TMP/app"
+want="$(printf '%s\n' "$DEEP/a:/workspace/deep/a:rw" "$DEEP/a/b:/workspace/deep/a/b:rw" \
+                      "$DEEP/a/b/.ai-containers:/workspace/deep/a/b/.ai-containers:ro")"
+[[ "$(mounts_under /workspace/deep/)" == "$want" ]] \
+  && pass "T11 every directory between is pinned exactly once" \
+  || fail "T11 pins at depth 2 (got: $(mounts_under /workspace/deep/ | tr '\n' ' '))"
+
+# ── T12: ANOTHER project's launcher inside a writable mount is protected too —
+# e.g. this engine launching `./sandbox.sh restricted ~/other`. A directory
+# merely named .ai-containers (no sandbox.sh) is not a launcher.
+OTHER="$TMP/other"; mkdir -p "$OTHER/.ai-containers" "$OTHER/sub/.ai-containers"
+: > "$OTHER/.ai-containers/sandbox.sh"
+launch "$LAUNCHER" "$OTHER"
+[[ "$(mounts_under /workspace/other/)" == "$OTHER/.ai-containers:/workspace/other/.ai-containers:ro" ]] \
+  && pass "T12 another project's launcher in the mount is read-only; a bare .ai-containers is not touched" \
+  || fail "T12 other launcher (got: $(mounts_under /workspace/other/ | tr '\n' ' '))"
+
+# ── T13–T15: the other writable mount sources reach the overlay too.
+VAULT_PATH="$TMP" launch "$LAUNCHER" "$TMP/app"
+mounts_under /workspace/vault/ | grep -qxF -- "$LAUNCHER:/workspace/vault/proj/.ai-containers:ro" \
+  && pass "T13 VAULT_PATH (writable) gets the overlay" \
+  || fail "T13 VAULT_PATH (got: $(mounts_under /workspace/vault/ | tr '\n' ' '))"
+SPECS_PATH="$TMP" launch "$LAUNCHER" "$TMP/app"
+mounts_under /workspace/specs/ | grep -qxF -- "$LAUNCHER:/workspace/specs/proj/.ai-containers:ro" \
+  && pass "T14 SPECS_PATH (writable) gets the overlay" \
+  || fail "T14 SPECS_PATH (got: $(mounts_under /workspace/specs/ | tr '\n' ' '))"
+mkdir -p "$HOME/.ai-containers"
+printf 'otherrepo|path|%s|0|0|bind\n' "$OTHER" >> "$HOME/.ai-containers/repos.conf"
+REPOS="otherrepo:rw" launch "$LAUNCHER" "$TMP/app"
+[[ "$(mounts_under /workspace/otherrepo/)" == "$OTHER/.ai-containers:/workspace/otherrepo/.ai-containers:ro" ]] \
+  && pass "T15 a :rw bind repo gets the overlay" \
+  || fail "T15 bind repo (got: $(mounts_under /workspace/otherrepo/ | tr '\n' ' '); stderr: $(tail -3 "$ERR" | tr '\n' ' '))"
+DOCS_PATH="$TMP:rw" ARCHITECTURE_REPO_PATH="$TMP:rw" launch "$LAUNCHER" "$TMP/app"
+mounts_under /workspace/docs/ | grep -qxF -- "$LAUNCHER:/workspace/docs/proj/.ai-containers:ro" \
+  && mounts_under /workspace/architecture/ | grep -qxF -- "$LAUNCHER:/workspace/architecture/proj/.ai-containers:ro" \
+  && pass "T16 DOCS_PATH / ARCHITECTURE_REPO_PATH mounted :rw get the overlay" \
+  || fail "T16 docs/architecture :rw (got: $(mounts_under /workspace/docs/ | tr '\n' ' ') | $(mounts_under /workspace/architecture/ | tr '\n' ' '))"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
