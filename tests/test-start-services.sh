@@ -316,6 +316,13 @@ else
     && ! grep -q '^start|' "$TRACE" && ! has "ready on" \
     && pass "T21 one it cannot make is named, and the server is skipped, not started into a failure" \
     || fail "T21 unwritable runtime dir (rc=$RC, out=$OUT, trace=$(tr '\n' ' ' < "$TRACE"))"
+  # One that EXISTS but is not this user's to write — a root-owned directory
+  # such as /var/run — is skipped the same way.
+  reset; run_runner start AI_SERVICES=fake=ON FAKE_RUNTIME_DIR="$TMP/ro"
+  [[ "$RC" -eq 0 ]] && has "fake: runtime directory $TMP/ro cannot be made or written" \
+    && ! grep -q '^start|' "$TRACE" && ! has "ready on" \
+    && pass "T21 one that exists but cannot be written is named and skipped too" \
+    || fail "T21 existing unwritable runtime dir (rc=$RC, out=$OUT, trace=$(tr '\n' ' ' < "$TRACE"))"
 fi
 chmod 755 "$TMP/ro"
 
