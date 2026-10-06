@@ -1,0 +1,26 @@
+# case: 455-launcher-dir-nested-mount
+# what: names are no longer checked for valid UTF-8, so the launcher under
+#       /workspace/grp/bad<F4 90 80 80> (a code point above U+10FFFF) is handed
+#       to docker, whose CLI rewrites it to U+FFFD. On Docker Desktop the
+#       rewritten path is then CREATED, root-owned, in the host tree; on a
+#       native engine the bind names a path that does not exist and the launch
+#       fails.
+#
+#       Expected, Docker Desktop: "skipped with a warning" and "nothing owned by
+#       another user appeared in the host tree" FAIL. Native engine:
+#       launcher_up FAILs (docker refuses the missing bind source) and the case
+#       ends there. Either way the case is red.
+#
+diff --git a/sandbox.sh b/sandbox.sh
+index f3a6208..1a7cd59 100755
+--- a/sandbox.sh
++++ b/sandbox.sh
+@@ -464,7 +464,7 @@ _bind_mount_arg() {
+ _mount_representable() {
+   local v w
+   for v in "$1" "$2"; do
+-    if ! _utf8_valid "$v"; then return 1; fi
++    :
+   done
+   if [[ "$1$2" != *:* ]]; then return 0; fi
+   for v in "$1" "$2"; do

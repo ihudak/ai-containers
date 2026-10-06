@@ -8,15 +8,15 @@
 #       overlay, the pinning and every writability control still PASS.
 #
 diff --git a/sandbox.sh b/sandbox.sh
-index 7261e57..8bb2353 100755
+index f3a6208..80e8660 100755
 --- a/sandbox.sh
 +++ b/sandbox.sh
-@@ -492,7 +492,7 @@ launcher_dirs_in() {
+@@ -532,7 +532,7 @@ launcher_dirs_in() {
        \( -name node_modules -o -name .git -o -name vendor -o -name .venv -o -name target \) -prune \
-       -o -type f -name sandbox.sh -print0 2>/dev/null)
+       -o -name sandbox.sh \( -type f -o -type l \) -print0 2>/dev/null)
    for f in ${hits[@]+"${hits[@]}"}; do
--    if [[ -f "${f%/sandbox.sh}/sandbox-common.sh" ]]; then _ldi_out+=("${f%/sandbox.sh}"); fi
+-    if [[ -f "$f" && -f "${f%/sandbox.sh}/sandbox-common.sh" ]]; then _ldi_out+=("${f%/sandbox.sh}"); fi
 +    :
    done
-   hits=()
-   mapfile -d '' -t hits < <(find "$3" -mindepth 1 -maxdepth 6 \
+   # Mode bits narrow the candidates to directories your own permission class
+   # cannot list AND the agent's class could reach into; -r/-x then confirm
