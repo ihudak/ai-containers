@@ -1,0 +1,43 @@
+# case: 320-container-env-not-root
+# what: the entrypoint sets container.env aside from root and never gives it
+#       back to the agent's shell: capsh starts `bash -l` directly, as it did
+#       before this fix. Root is protected; the application environment the
+#       file exists to provide is gone.
+#
+#       Expected: "the agent's shell holds container.env's APP_GREETING" and
+#       "… and XTABLES_LIBDIR" FAIL. The warnings, the firewall and root's
+#       environment still PASS.
+#
+# NOTE: entrypoint.sh is COPYed into the image, so this patch needs a rebuild to
+# take effect — never --reuse-image.
+diff --git a/entrypoint.sh b/entrypoint.sh
+index d1ecb18..fab469d 100755
+--- a/entrypoint.sh
++++ b/entrypoint.sh
+@@ -381,7 +381,7 @@ case "$mode" in
+     exec capsh \
+       --drop=cap_net_admin,cap_net_raw \
+       --user="$sandbox_user" \
+-      -- -c 'exec env "$@" /bin/bash -l' bash ${app_env[@]+"${app_env[@]}"}
++      -- -l
+     ;;
+   discovery)
+     apply_discovery_firewall
+@@ -428,7 +428,7 @@ case "$mode" in
+     exec capsh \
+       --drop=cap_net_admin \
+       --user="$sandbox_user" \
+-      -- -c 'exec env "$@" /bin/bash -l' bash ${app_env[@]+"${app_env[@]}"}
++      -- -l
+     ;;
+   open)
+     setup_sandbox_user
+@@ -451,7 +451,7 @@ case "$mode" in
+     exec capsh \
+       --drop=cap_net_admin,cap_net_raw \
+       --user="$sandbox_user" \
+-      -- -c 'exec env "$@" /bin/bash -l' bash ${app_env[@]+"${app_env[@]}"}
++      -- -l
+     ;;
+   *)
+     printf 'Unsupported DEV_CONTAINER_MODE: %s\n' "$mode" >&2

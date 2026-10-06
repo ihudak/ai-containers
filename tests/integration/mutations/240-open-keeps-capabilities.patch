@@ -33,18 +33,17 @@
 #       automatically.
 #
 diff --git a/entrypoint.sh b/entrypoint.sh
-index 47da78b..a94aafc 100755
+index d1ecb18..e1410bc 100755
 --- a/entrypoint.sh
 +++ b/entrypoint.sh
-@@ -355,8 +355,10 @@ case "$mode" in
+@@ -449,7 +449,9 @@ case "$mode" in
      run_services
  
      exec capsh \
 -      --drop=cap_net_admin,cap_net_raw \
 +      --keep=1 \
-       --user="$sandbox_user" \
 +      --inh=cap_net_raw \
 +      --addamb=cap_net_raw \
-       -- -l
+       --user="$sandbox_user" \
+       -- -c 'exec env "$@" /bin/bash -l' bash ${app_env[@]+"${app_env[@]}"}
      ;;
-   *)
