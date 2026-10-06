@@ -39,6 +39,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   fragments and the other launcher files on the host, not from inside the
   container. Launching with a launcher's own directory as the working directory
   (developing ai-containers itself) keeps it writable and prints a `NOTE:`.
+- **`container.env` no longer reaches the container's root setup.** It is a
+  project file, written by whoever can commit to the project, and `docker run
+  --env-file` handed it to the root process that builds the firewall:
+  `XTABLES_LIBDIR` chose the plugins `iptables` loads, `ALLOWLIST_CIDRS_FILE` the
+  allowlist itself, `PATH` the bash the entrypoint runs. The container now sets
+  every variable from the file aside before root reads anything, and gives them
+  back only to processes that run as you — your shell, and what it starts,
+  in-container servers included. Variables that act before even that step
+  (`PATH`, any `LD_*`, `GLIBC_TUNABLES`, `BASH_ENV`, …) and variables the launcher
+  sets itself (`SANDBOX_UID`, `IMAGE_NAME`, …), as well as `HOME`, `USER` and
+  `LOGNAME`, are not passed at all: the launch prints a `WARNING:` naming the line,
+  never its value. The same widened list — every `LD_*`/`DYLD_*` rather than five
+  of them, plus `GCONV_PATH`, `LOCPATH`, `GLIBC_TUNABLES`, `POSIXLY_CORRECT`,
+  `BASH_COMPAT`, `BASH_XTRACEFD` and `GLOBIGNORE` — is refused from `sandbox.env`
+  and `sandbox.local.env`. A line docker would refuse (`export NAME=…`, a space
+  in a name, invalid UTF-8) used to stop the launch with docker's error; now only
+  that line is skipped, with a warning. **Behaviour change:**
+  `SELF_HEALING_ENABLED` and `ALLOW_IPV6_BYPASS` in `container.env` are refused
+  with a warning — they configure root, so set them in `sandbox.env`.
 
 ### Added
 

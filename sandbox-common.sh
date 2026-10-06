@@ -60,10 +60,11 @@ source "${script_dir}/tools-lib.sh"
 # class costs nothing.
 #
 # sandbox.sh refuses the same keys in container.env, where they would reach the
-# container's ROOT entrypoint before its first line runs (sandbox.sh:
-# container_env_filter()), so the list is everything that acts at a process's start:
-# bash's own start-up, the loader (every LD_*/DYLD_*, GLIBC_TUNABLES), and what glibc
-# loads code or data from by path (GCONV_PATH, LOCPATH).
+# container's ROOT entrypoint before its first line runs
+# (sandbox.sh: container_env_filter()), so the list is everything that acts at a
+# process's start: bash's own start-up, the loader (every LD_*/DYLD_*,
+# GLIBC_TUNABLES), and what glibc loads code or data from by path (GCONV_PATH,
+# LOCPATH).
 env_key_denied() {
   case "$1" in
     BASH_ENV|ENV|SHELLOPTS|BASHOPTS|CDPATH|IFS|PS4|PATH|\
