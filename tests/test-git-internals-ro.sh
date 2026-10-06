@@ -434,7 +434,14 @@ mkdir -p "$TMP/fp/r" "$TMP/fp/clean"
 "${G[@]}" -C "$TMP/fp/r" config alias.sh '!echo hi'
 "${G[@]}" -C "$TMP/fp/r" config alias.st status
 "${G[@]}" -C "$TMP/fp/clean" config core.fsmonitor true
+# A key set only in config.worktree is named, and that file is in the review.
+mkdir -p "$TMP/fp/wtc" && "${G[@]}" -C "$TMP/fp/wtc" init -q && "${G[@]}" -C "$TMP/fp/wtc" config extensions.worktreeConfig true
+"${G[@]}" -C "$TMP/fp/wtc" config --worktree filter.x.smudge 'x-smudge'
 EXTRA_MOUNTS="$TMP/fp" launch "$TMP/app"
+grep -A1 -F 'NOTE: /workspace/fp/wtc/.git is protected for the first time' "$ERR" | grep -qF 'filter.x.smudge' \
+  && grep -qF "git config --file $TMP/fp/wtc/.git/config.worktree --list" "$ERR" \
+  && pass "G26 a key set only in config.worktree is named, with config.worktree to review" \
+  || fail "G26 config.worktree key (stderr: $(grep -A4 'wtc/.git is protected' "$ERR" | tr '\n' ' '))"
 nl26="$(grep -A1 -F 'NOTE: /workspace/fp/r/.git is protected for the first time' "$ERR" | tail -1)"
 [[ "$nl26" == *core.sshcommand* && "$nl26" == *core.fsmonitor* && "$nl26" == *filter.lfs.clean* && "$nl26" == *alias.sh* ]] \
   && grep -qF "git config --file $TMP/fp/r/.git/config --list" "$ERR" \

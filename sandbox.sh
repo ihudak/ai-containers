@@ -626,7 +626,9 @@ launcher_ro_overlay() {
               printf 'NOTE: %s is protected for the first time, and its config already sets\n' "$at" >&2
               printf '      what makes your host'\''s git run programs: %s.\n' "$eks" >&2
               printf '      If you did not set them yourself, review them on the host:\n' >&2
-              printf '        git config --file %q --list\n' "$g/config" >&2
+              for f in "$g/config" "$g/config.worktree"; do
+                if [[ -f "$f" ]]; then printf '        git config --file %q --list\n' "$f" >&2; fi
+              done
             fi
           fi
         elif [[ -f "$g/commondir" ]]; then
