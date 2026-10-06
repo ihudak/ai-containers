@@ -89,7 +89,7 @@ svc_installed_version() {
 svc_runtime_dirs() { printf '%s\n' "$MYSQL_SOCKET_DIR"; }
 
 svc_start() {  # <datadir> <logfile>
-  local datadir="$1" logfile="$2" bind="127.0.0.1" err
+  local datadir="$1" logfile="$2" bind="127.0.0.1"
   cp -a "$MYSQL_TEMPLATE/." "$datadir/" || return 1
   # ::1 as well where the container has an IPv6 loopback — a client that looks
   # up `localhost` as ::1 first (Node 17 and later) must not be refused — and
@@ -106,9 +106,15 @@ svc_start() {  # <datadir> <logfile>
     --performance-schema=OFF --skip-log-bin --innodb-redo-log-capacity=8388608 \
     --innodb-flush-log-at-trx-commit=0 --innodb-doublewrite=OFF --secure-file-priv= \
     --daemonize || return 1
-  # The mysql client logs in as the OS user unless told otherwise, so without
-  # this a bare `mysql` is refused. Server initialisation, like the official
-  # image's root account, and so here rather than in svc_provision.
+  _mysql_create_self
+}
+
+# The client logs in as the OS user unless told otherwise, so without this a
+# bare `mysql` is refused. Server initialisation, like the official image's root
+# account, and so part of svc_start rather than svc_provision. (services.d/mariadb.sh
+# calls it too.)
+_mysql_create_self() {
+  local err
   [[ "$MYSQL_SELF" == root ]] && return 0
   err="$(_mysql_sql "CREATE USER $(_mysql_str "$MYSQL_SELF")@'localhost'; GRANT ALL PRIVILEGES ON *.* TO $(_mysql_str "$MYSQL_SELF")@'localhost' WITH GRANT OPTION")" && return 0
   printf 'could not create the account %s: %s\n' "$(_mysql_str "$MYSQL_SELF")" "$err"
