@@ -451,8 +451,31 @@ launcher_conf() {  # $*=key=value overrides (the variant's are added first, auto
   return 0
 }
 
-# Run sandbox.sh once. Sets IT_LAUNCH_RC / _OUT / _ERR / _NAME. Does NOT require
-# the launch to succeed — case 420 asserts a REFUSED launch, and needs the rc.
+# A project's working copy of the engine: <project>/.ai-containers holding the
+# files project-init.sh / sync-to-projects.sh put there. After this, launcher_run
+# runs THAT sandbox.sh rather than the repo's. Case 450 needs the launcher to sit
+# inside the directory it mounts, which is the documented layout and not the
+# repo's. Copied from the tree under test at call time, so a mutation applied to
+# that tree reaches the copy.
+IT_ENGINE_DIR=""
+launcher_engine_in() {  # $1=project dir → IT_ENGINE_DIR=$1/.ai-containers
+  local dest="$1/.ai-containers" f
+  # shellcheck source=shared-files.sh
+  source "$IT_REPO_DIR/shared-files.sh" \
+    || { fail "launcher_engine_in: cannot read $IT_REPO_DIR/shared-files.sh"; return 1; }
+  mkdir -p "$dest" || { fail "launcher_engine_in: cannot create $dest"; return 1; }
+  for f in "${AI_CONTAINERS_SHARED_FILES[@]}"; do
+    cp -p "$IT_REPO_DIR/$f" "$dest/$f" || { fail "launcher_engine_in: cannot copy $f"; return 1; }
+  done
+  cp -R "$IT_REPO_DIR/tools.d" "$IT_REPO_DIR/services.d" "$dest/" \
+    || { fail "launcher_engine_in: cannot copy tools.d/services.d"; return 1; }
+  IT_ENGINE_DIR="$dest"
+  return 0
+}
+
+# Run sandbox.sh once — the repo's, or the copy launcher_engine_in made. Sets
+# IT_LAUNCH_RC / _OUT / _ERR / _NAME. Does NOT require the launch to succeed —
+# case 420 asserts a REFUSED launch, and needs the rc.
 launcher_run() {  # $1=mode [$2=primary]
   launcher_prepare || return 1
   local mode="$1" primary="${2:-}" k
@@ -481,7 +504,7 @@ launcher_run() {  # $1=mode [$2=primary]
     export IT_REAL_DOCKER IT_LAUNCH_NAME IT_LABEL
     export IMAGE_NAME="$IT_IMAGE"
     export AI_CONTAINER_GROUP_INIT="${AI_CONTAINER_GROUP_INIT:-clean}"
-    exec bash "$IT_REPO_DIR/sandbox.sh" "$mode" ${primary:+"$primary"}
+    exec bash "${IT_ENGINE_DIR:-$IT_REPO_DIR}/sandbox.sh" "$mode" ${primary:+"$primary"}
   ) >"$IT_LAUNCH_OUT" 2>"$IT_LAUNCH_ERR" </dev/null
   IT_LAUNCH_RC=$?
   return 0

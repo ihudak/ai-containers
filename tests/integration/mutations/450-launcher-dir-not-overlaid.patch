@@ -1,0 +1,23 @@
+# case: 450-launcher-dir-read-only
+# what: the read-only overlay is computed and announced — the launch still prints
+#       READ-ONLY: /workspace/<project>/.ai-containers — but never handed to
+#       docker run, so .ai-containers is exactly as writable as the project
+#       around it: every launch before the overlay existed, plus a message
+#       claiming otherwise.
+#
+#       Expected: "agent cannot write: /workspace/proj/.ai-containers", the
+#       sandbox.env append and the host-file check FAIL. Both markers and the
+#       project's own writability still PASS; a FAIL there first would mean the
+#       case measures something other than the overlay.
+diff --git a/sandbox.sh b/sandbox.sh
+index ff67586..d9a6d1c 100755
+--- a/sandbox.sh
++++ b/sandbox.sh
+@@ -1192,7 +1192,6 @@ run_container() {
+     ${docs_mount_flags[@]+"${docs_mount_flags[@]}"} \
+     ${arch_mount_flags[@]+"${arch_mount_flags[@]}"} \
+     ${config_mount_flags[@]+"${config_mount_flags[@]}"} \
+-    ${launcher_ro_flags[@]+"${launcher_ro_flags[@]}"} \
+     -w "$workdir" \
+     "$image_name"
+ }

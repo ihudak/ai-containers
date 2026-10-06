@@ -254,6 +254,49 @@ add_file_mount_if_exists() {
   fi
 }
 
+# The launcher's own directory must not be writable from inside the container.
+# A project's .ai-containers/ holds what the HOST runs or reads at the next
+# launch — sandbox.sh, build.sh, the Dockerfile and entrypoint it builds,
+# sandbox.env (SANDBOX_MODE, EXTRA_MOUNTS), sandbox.conf, container.env — and the
+# documented launch mounts the whole project read-write (SANDBOX_WORKDIR=..).
+# Left writable, the agent could rewrite any of them, and .ai-containers/ is
+# gitignored, so `git status` would never show it. Docker mounts a nested bind
+# on top of its parent (it orders mounts by destination depth), so the directory
+# is mounted again, :ro, under every writable host bind that contains it, and the
+# rest of the project stays writable.
+#
+# launcher_ro_overlay <out-array> <launcher dir, resolved> <docker flag>...
+# Reads the `-v <src>:<dst>[:<opts>]` pairs among the flags. A named volume's
+# source is a name, not a path, so it never contains this directory; a :ro bind
+# is read-only already. Containment is by path component, so /x/pro does not
+# contain /x/proj. A mount that IS the launcher directory — the engine
+# checkout itself as the working dir — cannot be made read-only without making
+# that work impossible, so it is named instead.
+launcher_ro_overlay() {
+  # shellcheck disable=SC2178  # nameref: shellcheck does not model `local -n`
+  local -n _ro=$1
+  local dir="$2" spec src rest dst opts at
+  shift 2
+  while (( $# )); do
+    if [[ "$1" != -v || $# -lt 2 ]]; then shift; continue; fi
+    spec="$2"; shift 2
+    src="${spec%%:*}"; rest="${spec#*:}"
+    dst="${rest%%:*}"; opts=""
+    [[ "$rest" == *:* ]] && opts="${rest#*:}"
+    [[ ",$opts," == *,ro,* ]] && continue
+    src="${src%/}"
+    if [[ "$dir" == "$src" ]]; then
+      printf "NOTE: %s is this launcher's own directory and stays writable at %s;\n" "$dir" "$dst" >&2
+      printf '      what changes there runs on the host at the next launch.\n' >&2
+      continue
+    fi
+    [[ "$dir" == "$src"/* ]] || continue
+    at="$dst/${dir#"$src"/}"
+    _ro+=(-v "$dir:$at:ro")
+    printf "READ-ONLY: %s  (this launcher's own files; edit them on the host)\n" "$at" >&2
+  done
+}
+
 # Seed a per-workspace writable working-copy volume from a repo's shared base
 # volume using a fast local copy inside the VM (no network, no re-clone). The
 # working copy is labeled with its parent repo and originating launch dir so
@@ -1093,6 +1136,18 @@ run_container() {
   fi
   printf 'Container name: %s\n' "$container_name" >&2
 
+  # Last, once every bind mount is known: see launcher_ro_overlay.
+  local launcher_ro_flags=()
+  launcher_ro_overlay launcher_ro_flags "$(resolve_path "$script_dir")" \
+    ${output_mount_flags[@]+"${output_mount_flags[@]}"} \
+    ${repo_mount_flags[@]+"${repo_mount_flags[@]}"} \
+    ${extra_mount_flags[@]+"${extra_mount_flags[@]}"} \
+    ${vault_mount_flags[@]+"${vault_mount_flags[@]}"} \
+    ${specs_mount_flags[@]+"${specs_mount_flags[@]}"} \
+    ${docs_mount_flags[@]+"${docs_mount_flags[@]}"} \
+    ${arch_mount_flags[@]+"${arch_mount_flags[@]}"} \
+    ${config_mount_flags[@]+"${config_mount_flags[@]}"}
+
   docker run -it --rm \
     --name "$container_name" \
     ${capabilities[@]+"${capabilities[@]}"} \
@@ -1137,6 +1192,7 @@ run_container() {
     ${docs_mount_flags[@]+"${docs_mount_flags[@]}"} \
     ${arch_mount_flags[@]+"${arch_mount_flags[@]}"} \
     ${config_mount_flags[@]+"${config_mount_flags[@]}"} \
+    ${launcher_ro_flags[@]+"${launcher_ro_flags[@]}"} \
     -w "$workdir" \
     "$image_name"
 }

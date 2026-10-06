@@ -1284,5 +1284,25 @@ grep -q 'error:.*Error response from daemon' <<<"$out" \
   && t_pass "the failure dump carries docker's own error when the exec itself fails" \
   || t_fail "the failure dump carries docker's own error when the exec itself fails (got: $out)"
 
+# ── launcher_engine_in: a project working copy of the engine ──────────────────
+# Case 450 needs the launcher INSIDE the directory it mounts, so it runs a copy
+# laid out the way project-init.sh lays one out. That launcher_run then execs
+# the copy is proven by the case itself: run from the repo, no overlay applies
+# and its read-only assertion fails.
+EI_PROJ="$TMP/ei-proj"
+ei_out="$(PATH="$FAKE_BIN:$PATH" bash -c ". '$LIB'; launcher_engine_in '$EI_PROJ' && printf '%s' \"\$IT_ENGINE_DIR\"" 2>&1)"
+[[ "$ei_out" == "$EI_PROJ/.ai-containers" ]] \
+  && t_pass "launcher_engine_in points IT_ENGINE_DIR at <project>/.ai-containers" \
+  || t_fail "launcher_engine_in points IT_ENGINE_DIR at <project>/.ai-containers (got: $ei_out)"
+ei_missing=""
+# shellcheck source=shared-files.sh
+source "$REPO_DIR/shared-files.sh"
+for f in "${AI_CONTAINERS_SHARED_FILES[@]}" tools.d services.d; do
+  [[ -e "$EI_PROJ/.ai-containers/$f" ]] || ei_missing+=" $f"
+done
+[[ -z "$ei_missing" ]] \
+  && t_pass "launcher_engine_in copies every shared file plus tools.d and services.d" \
+  || t_fail "launcher_engine_in copies every shared file plus tools.d and services.d (missing:$ei_missing)"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
