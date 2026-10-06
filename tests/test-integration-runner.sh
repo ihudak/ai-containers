@@ -524,7 +524,7 @@ esac
 
 out="$(bash "$TMP/callfn.sh" variant_overrides services)"
 case "$out" in
-  *redis=ON*mysql=ON*) pass "variant services turns on the in-container servers that need no toolchain (redis, mysql)" ;;
+  *redis=ON*mysql=ON*mongo=ON*) pass "variant services turns on the in-container servers that need no toolchain (redis, mysql, mongo)" ;;
   *) fail "variant services overrides — got: $out" ;;
 esac
 check "variant_image services is suffixed" \
