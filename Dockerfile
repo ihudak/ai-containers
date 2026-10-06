@@ -703,6 +703,20 @@ RUN if [ -n "$POSTGRES_VERSION" ]; then \
       rm -rf /var/lib/apt/lists/*; \
     fi
 
+# ── Optional: Redis server (in-container, for tests) ───────────────────────────
+# INSTALL_REDIS=1 from redis=ON. Ubuntu's own redis-server (7.0 on 24.04): the key
+# takes no version because the archive carries one. Its packaging would start the
+# service at install time; the base image's policy-rc.d refuses that. Nothing
+# uses the package's /etc/redis/redis.conf, redis user or /var/lib/redis:
+# services.d/redis.sh starts a server of its own as the sandbox user, every
+# option on its command line. After the cleanup purge, like the postgres layer.
+ARG INSTALL_REDIS=0
+RUN if [ "$INSTALL_REDIS" = "1" ]; then \
+      apt-get update && apt-get install -y --no-install-recommends redis-server && \
+      test -x /usr/bin/redis-server && test -x /usr/bin/redis-cli && \
+      rm -rf /var/lib/apt/lists/*; \
+    fi
+
 # ── Ruby runtime prerequisites (rvm is a per-user install at ~/.rvm, done at
 # container start; nothing Ruby is baked). Retain the FULL ruby-build dependency
 # set so `rvm install` compiles Ruby at runtime, pre-seed rvm's GPG keys so the
