@@ -14,8 +14,26 @@ fails=0
 pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails + 1)); }
 
+# shellcheck source=tests/portability.sh
+source "$REPO_DIR/tests/portability.sh"
 TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED\n'; exit 1; }
 trap 'rm -rf "$TMP"' EXIT
+
+# The function under test is container code: it runs on Linux and calls GNU
+# `stat -c`. On a BSD host (a Mac running this suite), hand it a `stat` that
+# serves -c by asking the native -f for the same %d/%i fields, so what is tested
+# is the function's decision, not the host's userland.
+if [[ "$_P_STAT_GNU" != "1" ]]; then
+  REAL_STAT="$(command -v stat)"
+  mkdir -p "$TMP/statbin"
+  cat > "$TMP/statbin/stat" <<SHIM
+#!/usr/bin/env bash
+if [[ "\$1" == -c ]]; then shift; exec "$REAL_STAT" -f "\$@"; fi
+exec "$REAL_STAT" "\$@"
+SHIM
+  chmod +x "$TMP/statbin/stat"
+  export PATH="$TMP/statbin:$PATH"
+fi
 
 grep -q '^verify_launcher_mounts()' "$ENGINE/entrypoint.sh" \
   && pass "entrypoint defines verify_launcher_mounts" || { fail "entrypoint defines verify_launcher_mounts"; exit "$fails"; }
@@ -41,10 +59,10 @@ run_case() {
   local anchor_ok="$1" entry_ok="$2" d="$TMP/c$RANDOM"
   rm -rf "$RUN" "$d"; mkdir -p "$RUN" "$d/dest"
   local dev ino
-  read -r dev ino < <(stat -c '%d %i' "$d/dest")
+  read -r dev ino < <(p_dev_ino "$d/dest")
   if [[ "$entry_ok" == 0 ]]; then ino=$((ino + 1000000)); fi   # a dest that is not what was recorded
   printf '%s\0%s\0%s\0' "$dev" "$ino" "$d/dest" > "$RUN/manifest"
-  local anchor; anchor="$(stat -c '%d:%i' "$RUN")"
+  local anchor; anchor="$(p_dev_ino "$RUN" | tr ' ' ':')"
   [[ "$anchor_ok" == 0 ]] && anchor="999999:999999"
   ( set -uo pipefail
     # shellcheck source=/dev/null

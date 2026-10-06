@@ -55,6 +55,16 @@ chmod 755 "$TMP/f"
   && pass "p_stat_mode tracks a mode change" \
   || fail "p_stat_mode tracks a mode change — got '$(p_stat_mode "$TMP/f")'"
 
+# p_dev_ino: two numbers; the same object twice gives the same answer, a hard
+# link (same inode) the same, a different file a different inode.
+di="$(p_dev_ino "$TMP/f")"
+[[ "$di" =~ ^[0-9]+\ [0-9]+$ ]] \
+  && pass "p_dev_ino reports \"dev ino\"" || fail "p_dev_ino reports \"dev ino\" — got '$di'"
+ln "$TMP/f" "$TMP/f.hard" 2>/dev/null && : > "$TMP/g"
+[[ "$(p_dev_ino "$TMP/f.hard")" == "$di" && "$(p_dev_ino "$TMP/g")" != "$di" ]] \
+  && pass "p_dev_ino identifies the object, not the name" \
+  || fail "p_dev_ino identifies the object (f=$di hard=$(p_dev_ino "$TMP/f.hard") g=$(p_dev_ino "$TMP/g"))"
+
 # The digest helpers must be stable and must differ for differing content.
 a="$(p_sha1 "$TMP/f")"; b="$(p_sha1 "$TMP/f")"
 [[ -n "$a" && "$a" == "$b" ]] \

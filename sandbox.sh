@@ -847,12 +847,14 @@ pointer_already_mounted_as() {
   return 1
 }
 
-# Device and inode of a path, "<dev> <ino>", GNU `stat -c` then BSD `stat -f`
-# (macOS has only the latter — the same split tests/portability.sh handles with
-# p_stat_meta, which this host launcher cannot source from tests/). Prints
-# nothing and returns non-zero if neither works, so a caller can degrade.
+# Device and inode of a path, "<dev> <ino>": GNU `stat -c` or BSD `stat -f`
+# (macOS has only the latter). The platform is probed once, as
+# tests/portability.sh does, rather than falling back on failure: GNU `stat -f`
+# does not fail, it reports the FILESYSTEM instead. Prints nothing and returns
+# non-zero when the path cannot be stat'ed, so a caller can degrade.
+if stat -c '%i' . >/dev/null 2>&1; then _launcher_stat_gnu=1; else _launcher_stat_gnu=0; fi
 _launcher_dev_ino() {
-  stat -c '%d %i' "$1" 2>/dev/null || stat -f '%d %i' "$1" 2>/dev/null
+  if (( _launcher_stat_gnu )); then stat -c '%d %i' "$1" 2>/dev/null; else stat -f '%d %i' "$1" 2>/dev/null; fi
 }
 
 # Set by run_container when it creates a launcher-mount verify dir; removed by
@@ -1596,13 +1598,18 @@ run_container() {
     _launcher_verify_dir="$HOME/.ai-containers/.verify-$$-$RANDOM"
     local _vdir="$_launcher_verify_dir"
     if mkdir -p "$_vdir" 2>/dev/null; then
-      # Best-effort sweep of verify dirs left by a crashed launch whose pid is gone.
+      # Best-effort sweep of verify dirs a crashed launch left behind: older than
+      # an hour AND whose launcher pid is gone. The age keeps it off a dir another
+      # launch is still setting up (a pid can look dead from another pid
+      # namespace, or another host sharing $HOME). Never fatal: a dir that will
+      # not go must not cost this launch, under set -e, its start.
       local _old _opid
-      for _old in "$HOME"/.ai-containers/.verify-*; do
-        [[ -d "$_old" ]] || continue
+      while IFS= read -r -d '' _old; do
         _opid="${_old##*/.verify-}"; _opid="${_opid%%-*}"
-        [[ "$_opid" =~ ^[0-9]+$ ]] && ! kill -0 "$_opid" 2>/dev/null && rm -rf "$_old" 2>/dev/null
-      done
+        if [[ "$_opid" =~ ^[0-9]+$ ]] && ! kill -0 "$_opid" 2>/dev/null; then
+          rm -rf "$_old" 2>/dev/null || true
+        fi
+      done < <(find "$HOME/.ai-containers" -mindepth 1 -maxdepth 1 -type d -name '.verify-*' -mmin +60 -print0 2>/dev/null)
       local _i _vsrc _vdst _vdev _vino
       : > "$_vdir/manifest"
       for (( _i = 0; _i < ${#launcher_verify[@]}; _i += 2 )); do

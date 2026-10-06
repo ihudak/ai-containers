@@ -17,7 +17,8 @@
 # about launcher links that lead somewhere the agent can change (T29, T32–T38),
 # names a writable mount inside a launcher (T40), records every launcher
 # mount for the entrypoint to re-verify against a concurrent-container swap (T41,
-# T42), works with a BSD-only stat (T43), and
+# T42), works with a BSD-only stat (T43), sweeps only stale verify dirs and never
+# fatally (T44), and
 # refuses a non-numeric identity (T30).
 #
 # Hermetic: fake `docker` capturing the run args, no daemon. Integration cases
@@ -28,6 +29,8 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Layout-tolerant: this repo keeps the engine at the root, the mgd port under base/.
 if [[ -f "$ROOT/base/sandbox.sh" ]]; then ENGINE="$ROOT/base"; else ENGINE="$ROOT"; fi
+# shellcheck source=tests/portability.sh
+source "$ROOT/tests/portability.sh"
 fails=0
 pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails + 1)); }
@@ -55,7 +58,7 @@ if [[ "\$1" == "run" ]]; then
     if [[ "\$prev" == -v && "\$a" == *:/run/ai-launcher:ro ]]; then
       vsrc="\${a%:/run/ai-launcher:ro}"
       cp "\$vsrc/manifest" "$CAPTURE.manifest" 2>/dev/null
-      stat -c '%d:%i' "\$vsrc" > "$CAPTURE.anchor" 2>/dev/null
+      if [[ "$_P_STAT_GNU" == 1 ]]; then stat -c '%d:%i' "\$vsrc"; else stat -f '%d:%i' "\$vsrc"; fi > "$CAPTURE.anchor" 2>/dev/null
     fi
     prev="\$a"
   done
@@ -703,7 +706,7 @@ ok=1
 # the project overlay (an overlay source) and the pin above it (a pin source)
 for pair in "$LAUNCHER=/workspace/$tbase/proj/.ai-containers" "$PROJ=/workspace/$tbase/proj"; do
   src="${pair%%=*}"; dst="${pair#*=}"
-  want="$(stat -c '%d:%i' "$src")"
+  want="$(p_dev_ino "$src" | tr ' ' ':')"
   [[ "${man[$dst]:-}" == "$want" ]] || { ok=0; fail "T41 manifest $dst -> ${man[$dst]:-MISSING} (want $want for $src)"; }
 done
 [[ "$ok" -eq 1 ]] && pass "T41 the manifest records each overlay and pin by its source's device:inode and its destination"
@@ -724,12 +727,15 @@ launch "$LAUNCHER" "$TMP/app"
 # under set -euo pipefail. (The manifest's dev:ino need not match anything here;
 # on a real macOS host the entrypoint's anchor check then degrades to a skip.)
 BSD="$TMP/bsdbin"; mkdir -p "$BSD"
-cat > "$BSD/stat" <<'SH'
+REAL_STAT="$(command -v stat)"
+if [[ "$_P_STAT_GNU" == 1 ]]; then f_via="-c"; else f_via="-f"; fi
+cat > "$BSD/stat" <<SH
 #!/usr/bin/env bash
-# BSD-only: no -c; translate `-f FMT PATH...` to GNU `stat -c FMT`.
-if [[ "$1" == -c ]]; then echo "stat: illegal option -- c" >&2; exit 1; fi
-if [[ "$1" == -f ]]; then fmt="$2"; shift 2; exec /usr/bin/stat -c "$fmt" "$@"; fi
-exec /usr/bin/stat "$@"
+# BSD-only: no -c. -f FMT is served by the real stat — natively on a BSD host,
+# through GNU's -c (same %d/%i letters) on a GNU one.
+if [[ "\$1" == -c ]]; then echo "stat: illegal option -- c" >&2; exit 1; fi
+if [[ "\$1" == -f ]]; then fmt="\$2"; shift 2; exec "$REAL_STAT" $f_via "\$fmt" "\$@"; fi
+exec "$REAL_STAT" "\$@"
 SH
 chmod +x "$BSD/stat"
 : > "$CAPTURE"
@@ -741,6 +747,32 @@ aenv="$(awk 'prev=="-e"{print} {prev=$0}' "$CAPTURE" | sed -n 's/^AI_LAUNCHER_AN
 [[ "$aenv" =~ ^[0-9]+:[0-9]+$ ]] \
   && pass "T43 the anchor is still a well-formed device:inode via stat -f" \
   || fail "T43 anchor via BSD stat (got: '$aenv')"
+
+# ── T44: the sweep of verify dirs a crashed launch left behind. Swept only when
+# BOTH older than an hour and its launcher pid is gone; a fresh one is kept even
+# with a dead pid (it may belong to a launch still setting up — a pid can look
+# dead from another namespace or host); and a dir that will not go must not
+# abort this launch under set -e.
+VBASE="$HOME/.ai-containers"; mkdir -p "$VBASE"
+sleep 0 & deadpid=$!; wait "$deadpid" 2>/dev/null || true
+mkdir -p "$VBASE/.verify-$deadpid-1" "$VBASE/.verify-$deadpid-2"
+touch -t 202001010000 "$VBASE/.verify-$deadpid-1"            # stale: old + dead pid
+launch "$LAUNCHER" ..
+[[ ! -e "$VBASE/.verify-$deadpid-1" && -d "$VBASE/.verify-$deadpid-2" ]] \
+  && pass "T44 an old verify dir of a dead launch is swept; a fresh one is kept" \
+  || fail "T44 sweep (old: $([[ -e "$VBASE/.verify-$deadpid-1" ]] && echo kept || echo gone), fresh: $([[ -d "$VBASE/.verify-$deadpid-2" ]] && echo kept || echo gone))"
+rm -rf "$VBASE/.verify-$deadpid-2"
+if [[ "$(id -u)" -ne 0 ]]; then
+  stuck="$VBASE/.verify-$deadpid-3"; mkdir -p "$stuck/ro"; : > "$stuck/ro/f"; chmod 0500 "$stuck/ro"
+  touch -t 202001010000 "$stuck"
+  launch "$LAUNCHER" ..
+  chmod 0700 "$stuck/ro"; rm -rf "$stuck"
+  [[ "${LAUNCH_RC:-1}" -eq 0 && -s "$CAPTURE" ]] \
+    && pass "T44 a stale dir that cannot be removed does not abort the launch" \
+    || fail "T44 unremovable stale dir aborted the launch (rc=${LAUNCH_RC:-?}; $(tail -1 "$ERR"))"
+else
+  pass "T44 (as root every stale dir can be removed; the unremovable case needs an ordinary user)"
+fi
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

@@ -31,8 +31,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   When several containers share one workspace, a launcher mount could be swapped
   between the host scan and the mount; the container now records each mount's
   identity and refuses to start, before the agent shell, if what was mounted is
-  not what was checked (it warns and proceeds where the filesystem does not
-  preserve device/inode across a bind). If your team versions
+  not what was checked (where the filesystem does not preserve device/inode
+  across a bind — macOS Docker Desktop, Colima — it notes that in one line and
+  proceeds). If your team versions
   `.ai-containers/` in git, switch branches on the host: inside the container
   git cannot update those files, warns `unable to unlink`, and exits 0 anyway. **Behaviour change:** edit `sandbox.conf`, the allowlist
   fragments and the other launcher files on the host, not from inside the

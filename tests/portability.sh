@@ -36,6 +36,10 @@ p_stat_meta() {  # $1=file → "name size mtime", for change detection
   if [[ "$_P_STAT_GNU" == "1" ]]; then stat -c '%n %s %Y' "$1"; else stat -f '%N %z %m' "$1"; fi
 }
 
+p_dev_ino() {  # $1=path → "dev ino", the identity a bind mount preserves
+  if [[ "$_P_STAT_GNU" == "1" ]]; then stat -c '%d %i' "$1"; else stat -f '%d %i' "$1"; fi
+}
+
 p_sha1() {  # $1=file → hex digest only
   if command -v sha1sum >/dev/null 2>&1; then sha1sum "$1" | cut -d' ' -f1
   else shasum -a 1 "$1" | cut -d' ' -f1; fi

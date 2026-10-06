@@ -280,9 +280,9 @@ verify_launcher_mounts() {
   local got dev ino dst bad=0
   got="$(stat -c '%d:%i' /run/ai-launcher 2>/dev/null || true)"
   if [[ "$got" != "$AI_LAUNCHER_ANCHOR" ]]; then
-    printf 'WARNING: this filesystem does not preserve device/inode across a bind mount,\n' >&2
-    printf '         so launcher mounts cannot be verified; the protection against a\n' >&2
-    printf '         concurrent container swapping one is reduced this launch.\n' >&2
+    # Expected on every launch on such a host (macOS file sharing), and nothing
+    # to act on there: one line, not an alarm people learn to skip.
+    printf 'NOTE: this filesystem does not preserve device/inode across a bind mount; launcher mounts are not verified against a concurrent-container swap.\n' >&2
     return 0
   fi
   while IFS= read -r -d '' dev && IFS= read -r -d '' ino && IFS= read -r -d '' dst; do
