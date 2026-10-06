@@ -59,10 +59,12 @@ fi
 
 # ── 3. root's own processes hold none of container.env ───────────────────────
 # capture-blocked-traffic.sh is forked by the root entrypoint, after it set the
-# keys aside, and stays root: its environment is the entrypoint's.
+# keys aside, and stays root: its environment is the entrypoint's. The pattern
+# says traffi[c] so that this probe's own command line, which holds the
+# pattern, cannot match it.
 pid="$(docker exec "$IT_CID" sh -c 'for p in /proc/[0-9]*; do
   c="$(tr "\0" " " < "$p/cmdline" 2>/dev/null)"
-  case "$c" in *capture-blocked-traffic*) echo "${p#/proc/}"; break ;; esac
+  case "$c" in *capture-blocked-traffi[c]*) echo "${p#/proc/}"; break ;; esac
 done')"
 renv="$(docker exec "$IT_CID" sh -c "tr '\\0' '\\n' < /proc/$pid/environ" 2>/dev/null)"
 if [[ -z "$pid" ]] || ! grep -q '^SANDBOX_UID=' <<<"$renv"; then
@@ -72,9 +74,13 @@ elif grep -qE '^(APP_GREETING|XTABLES_LIBDIR|LD_PRELOAD)=' <<<"$renv"; then
 else
   pass "a root daemon's environment holds none of container.env"
 fi
-grep -qx 'SANDBOX_USER=root' <<<"$renv" \
-  && fail "container.env's SANDBOX_USER reached root" \
-  || pass "the launcher's SANDBOX_USER is the one root used"
+# -e always beats --env-file, so the question is whether root still HAS the
+# launcher's value: had SANDBOX_USER been listed for setting aside, root would
+# have none and create the default user instead.
+want_user="${SANDBOX_USER:-$(id -un)}"
+grep -qx "SANDBOX_USER=$want_user" <<<"$renv" \
+  && pass "root kept the launcher's SANDBOX_USER ($want_user)" \
+  || fail "root kept the launcher's SANDBOX_USER ($want_user) — it has: $(grep '^SANDBOX_USER=' <<<"$renv" || echo none)"
 
 # ── 4. the agent's shell holds the application environment ───────────────────
 aenv="$(agent_exec "$IT_CID" "tr '\\0' '\\n' < /proc/1/environ" 2>&1)"

@@ -145,29 +145,50 @@ done
   || fail "E3 none of them reaches docker — got: $(envfile | tr '\n' '|')"
 
 # ── E4: what the entrypoint could not set aside or give back unchanged ────────
-printf 'HOME=s3cr3t-1\nUSER=s3cr3t-2\nLOGNAME=s3cr3t-3\nUID=s3cr3t-4\nEUID=s3cr3t-5\nPPID=s3cr3t-6\nBASH_ARGV0=s3cr3t-7\na.b=s3cr3t-8\na-b=s3cr3t-9\nBASHO_HOST=riak\n' > "$CENV"
+printf 'HOME=s3cr3t-1\nUSER=s3cr3t-2\nLOGNAME=s3cr3t-3\nUID=s3cr3t-4\nEUID=s3cr3t-5\nPPID=s3cr3t-6\nBASH_ARGV0=s3cr3t-7\na.b=s3cr3t-8\na-b=s3cr3t-9\nSHLVL=s3cr3t-10\n_aice_k=s3cr3t-11\nBASHO_HOST=riak\n' > "$CENV"
 launch
 for spec in "1|the container sets HOME" "2|the container sets USER" "3|the container sets LOGNAME" \
             "4|UID is bash's own" "5|EUID is bash's own" "6|PPID is bash's own" "7|BASH_ARGV0 is bash's own" \
-            "8|its name is not a shell variable name" "9|its name is not a shell variable name"; do
+            "8|its name is not a shell variable name" "9|its name is not a shell variable name" \
+            "10|SHLVL is bash's own" "11|_aice_k is reserved for the launcher and the entrypoint"; do
   warned "${spec%%|*}" "${spec#*|}" && pass "E4 line ${spec%%|*} warned: ${spec#*|}" \
     || fail "E4 line ${spec%%|*} warned: ${spec#*|} — stderr: $(grep WARNING "$ERR" | tr '\n' ' ')"
 done
 [[ "$(envfile)" == "BASHO_HOST=riak" ]] && pass "E4 a name merely starting with BASH is the application's" \
   || fail "E4 BASHO_HOST passes — got: $(envfile | tr '\n' '|')"
+# Measured, not listed: every variable THIS bash overrides, unsets or locks when
+# it arrives in its environment would reach the shell as bash's value, not the
+# file's — each must be refused. A new bash that adds one fails here.
+bash_own=""
+for n in BASH BASHOPTS BASHPID BASH_ARGV0 COMP_WORDBREAKS COMPREPLY COPROC DIRSTACK EPOCHREALTIME \
+         EPOCHSECONDS EUID FUNCNAME GROUPS HISTCMD HOSTNAME HOSTTYPE LINENO MACHTYPE MAPFILE OLDPWD \
+         OPTARG OPTERR OPTIND OSTYPE PIPESTATUS PPID PWD RANDOM READLINE_LINE REPLY SECONDS SHELLOPTS \
+         SHLVL SRANDOM UID _ TMOUT HISTFILE PS1 PS2 MAIL MAILCHECK TERM GLOBSORT; do
+  got="$(env "$n=fromfile" bash -c "if [[ -v $n ]]; then printf %s \"\${$n}\"; fi; unset -v $n 2>/dev/null || printf :RO" 2>/dev/null)"
+  [[ "$got" == fromfile ]] || bash_own+=" $n"
+done
+: > "$CENV"; for n in $bash_own; do printf '%s=1\n' "$n" >> "$CENV"; done
+launch
+bad=""; i=0
+for n in $bash_own; do i=$((i + 1)); warned "$i" "" || bad+=" $n"; done
+[[ -n "$bash_own" && -z "$bad" ]] \
+  && pass "E4 every variable this bash ($BASH_VERSION) overrides or locks is refused:$bash_own" \
+  || fail "E4 variables this bash overrides, not refused:${bad:- (measured none — the probe is broken)}"
 
 # ── E5: a key the launcher sets is refused — read from the -e flags themselves ─
-printf 'SANDBOX_UID=0\nDEV_CONTAINER_MODE=open\nIMAGE_NAME=other\nGITHUB_PERSONAL_ACCESS_TOKEN=from-file\nAI_CONTAINER_ENV_KEYS=PATH\nSELF_HEALING_ENABLED=0\nALLOW_IPV6_BYPASS=1\nAPP=1\n' > "$CENV"
+printf 'SANDBOX_UID=0\nDEV_CONTAINER_MODE=open\nIMAGE_NAME=other\nGITHUB_PERSONAL_ACCESS_TOKEN=from-file\nAI_CONTAINER_ENV_KEYS=PATH\nSELF_HEALING_ENABLED=0\nALLOW_IPV6_BYPASS=1\nBLOCKED_CAPTURE_ENABLED=0\nAPP=1\n' > "$CENV"
 launch
 for spec in "1|the launcher sets SANDBOX_UID itself" "2|the launcher sets DEV_CONTAINER_MODE itself" \
-            "3|the launcher sets IMAGE_NAME itself" "5|AI_CONTAINER_ENV_KEYS is the launcher's own" \
+            "3|the launcher sets IMAGE_NAME itself" "5|AI_CONTAINER_ENV_KEYS is reserved" \
             "6|only the container's root setup reads SELF_HEALING_ENABLED" \
-            "7|only the container's root setup reads ALLOW_IPV6_BYPASS"; do
+            "7|only the container's root setup reads ALLOW_IPV6_BYPASS" \
+            "8|only the container's root setup reads BLOCKED_CAPTURE_ENABLED"; do
   warned "${spec%%|*}" "${spec#*|}" && pass "E5 line ${spec%%|*} warned: ${spec#*|}" \
     || fail "E5 line ${spec%%|*} warned: ${spec#*|} — stderr: $(grep WARNING "$ERR" | tr '\n' ' ')"
 done
-grep -qF 'set it in sandbox.env' "$ERR" && pass "E5 a root-only knob's warning says where it belongs" \
-  || fail "E5 a root-only knob's warning says where it belongs"
+[[ "$(grep -c 'set it in sandbox.env' "$ERR")" == 2 ]] \
+  && pass "E5 the two user-facing root knobs say where they belong; the others do not pretend to" \
+  || fail "E5 'set it in sandbox.env' on exactly the two user-facing knobs — got: $(grep -c 'set it in sandbox.env' "$ERR")"
 [[ "$(envfile)" == $'GITHUB_PERSONAL_ACCESS_TOKEN=from-file\nAPP=1' ]] \
   && pass "E5 a key the launcher passes only when set on the host is the file's when it is not" \
   || fail "E5 GITHUB_PERSONAL_ACCESS_TOKEN passes when the host has none — got: $(envfile | tr '\n' '|')"
@@ -177,6 +198,19 @@ warned 4 "the launcher sets GITHUB_PERSONAL_ACCESS_TOKEN itself" && has_flag "GI
   || fail "E5 GITHUB_PERSONAL_ACCESS_TOKEN refused when the host sets it — stderr: $(grep WARNING "$ERR" | tr '\n' ' ')"
 [[ "$(keys_arg)" == "APP" ]] && pass "E5 AI_CONTAINER_ENV_KEYS is the launcher's, never the file's" \
   || fail "E5 AI_CONTAINER_ENV_KEYS is the launcher's — got '$(keys_arg)'"
+# Every knob the container's root side reads is either passed by the launcher
+# with -e or refused: one that is neither would, from container.env, silently do
+# nothing. Read from the scripts themselves, so a knob added there without
+# landing in container_env_filter (or the -e flags) fails here.
+: > "$CENV"
+for f in entrypoint.sh capture-blocked-traffic.sh capture-agent-destinations.sh refresh-ipset-allowlist.sh; do
+  grep -oE '\$\{[A-Z][A-Z0-9_]*(:-|-|:\+|\+)' "$ENGINE/$f" | sed -E 's/^\$\{//; s/(:-|-|:\+|\+)$//'
+done | sort -u | while IFS= read -r n; do printf '%s=1\n' "$n"; done > "$CENV"
+launch
+loose="$(envfile | sed 's/=.*//' | tr '\n' ' ')"
+[[ -s "$CENV" && -z "$loose" ]] \
+  && pass "E5 every knob the root side reads ($(wc -l < "$CENV" | tr -d ' ')) is the launcher's or refused" \
+  || fail "E5 root-side knobs neither passed by the launcher nor refused: ${loose:-(none read — the scan is broken)}"
 
 # ── E6: no value is ever printed ─────────────────────────────────────────────
 # Every refused line above carried a s3cr3t-<n> value; container.env may hold
@@ -199,14 +233,15 @@ ran && ! has_flag --env-file && grep -qF "SANDBOX_ENV_FILE=$TMP/nowhere.env not 
   && pass "E7 SANDBOX_ENV_FILE naming nothing warns and passes no --env-file" \
   || fail "E7 SANDBOX_ENV_FILE naming nothing warns and passes no --env-file"
 
-# ── E8: a key only root reads is NOT refused — the entrypoint keeps it from root ─
-# No list could name every key a root tool reads (XTABLES_LIBDIR picks the plugins
-# iptables loads); this one passes, named, so the entrypoint sets it aside.
-printf 'XTABLES_LIBDIR=/x\nALLOWLIST_CIDRS_FILE=/y\n' > "$CENV"
+# ── E8: a key no list names is NOT refused — the entrypoint keeps it from root ─
+# No list could name every key a root tool reads: XTABLES_LIBDIR picks the
+# plugins iptables loads, HOSTALIASES what glibc's resolver answers. They pass,
+# named, so the entrypoint sets them aside.
+printf 'XTABLES_LIBDIR=/x\nHOSTALIASES=/y\n' > "$CENV"
 launch
-[[ "$(keys_arg)" == "XTABLES_LIBDIR ALLOWLIST_CIDRS_FILE" ]] \
-  && pass "E8 keys root tools read pass, named in AI_CONTAINER_ENV_KEYS for the entrypoint to set aside" \
-  || fail "E8 keys root tools read are named — got '$(keys_arg)'"
+[[ "$(keys_arg)" == "XTABLES_LIBDIR HOSTALIASES" ]] \
+  && pass "E8 keys no list names pass, named in AI_CONTAINER_ENV_KEYS for the entrypoint to set aside" \
+  || fail "E8 keys no list names are named — got '$(keys_arg)'"
 
 # ── the deny-list itself, which sandbox.env's loader shares ──────────────────
 eval "$(sed -n '/^env_key_denied()/,/^}/p' "$ENGINE/sandbox-common.sh")"
@@ -222,9 +257,9 @@ for k in LDAP_URL DB_HOST XTABLES_LIBDIR; do env_key_denied "$k" && bad+=" (wron
 # ── E9–E11: the entrypoint sets the keys aside and gives them back ───────────
 EP="$TMP/ep.sh"
 { printf 'set -euo pipefail\n'
-  awk '/^app_env=\(\)$/{print} /^stash_app_env\(\) \{/,/^}$/{print} /^as_sandbox_user\(\) \{/,/^}$/{print}' "$ENGINE/entrypoint.sh"
+  awk '/^_aice_app_env=\(\)$/{print} /^stash_app_env\(\) \{/,/^}$/{print} /^as_sandbox_user\(\) \{/,/^}$/{print}' "$ENGINE/entrypoint.sh"
 } > "$EP"
-grep -q '^stash_app_env()' "$EP" && grep -q '^as_sandbox_user()' "$EP" && grep -q '^app_env=()' "$EP" \
+grep -q '^stash_app_env()' "$EP" && grep -q '^as_sandbox_user()' "$EP" && grep -q '^_aice_app_env=()' "$EP" \
   || { printf 'SCAFFOLD-FAILED: cannot extract stash_app_env/as_sandbox_user from entrypoint.sh\n'; exit 1; }
 # A fake runuser: drops `-u <user> --` and runs the rest, as the sandbox user would.
 cat > "$TMP/bin/runuser" <<'RU'
@@ -236,35 +271,43 @@ chmod +x "$TMP/bin/runuser"
 mkdir -p "$TMP/cwd"; : > "$TMP/cwd/GLOBBED"
 cat > "$TMP/drive.sh" <<'DRIVE'
 . "$1"; stash_app_env
-for kv in ${app_env[@]+"${app_env[@]}"}; do printf 'stash:%s\n' "${kv//$'\n'/|}"; done
-printf 'root:%s\n' "$(env | grep -E '^(A|B|NL|GLOBBED|AI_CONTAINER_ENV_KEYS)=' | tr '\n' ,)"
+for kv in ${_aice_app_env[@]+"${_aice_app_env[@]}"}; do printf 'stash:%s\n' "${kv//$'\n'/|}"; done
+printf 'root:%s\n' "$(env | grep -E '^(A|B|NL|GLOBBED|AI_CONTAINER_ENV_KEYS|k|v|set|keys|app_env|TMOUT)=' | sort | tr '\n' ,)"
 sandbox_user=tester
 printf 'user-A:%s\n' "$(as_sandbox_user printenv A)"
 printf 'user-NL:%s\n' "$(as_sandbox_user printenv NL | tr '\n' '|')"
+printf 'user-k:%s\n' "$(as_sandbox_user printenv k)"
 printf 'reached the end\n'
 DRIVE
-out="$(cd "$TMP/cwd" && env AI_CONTAINER_ENV_KEYS='A B NL GONE PPID * bad.name' A=1 B='two words' NL=$'x\ny' GLOBBED=1 \
+# The list names the readonly PPID, a glob, a bad name, an unset key, names the
+# stash itself might use (k, v, set, keys, app_env), a TMOUT that would time out
+# a `read`, and a function's name (as_sandbox_user, unset as a variable).
+out="$(cd "$TMP/cwd" && env AI_CONTAINER_ENV_KEYS='A B NL GONE PPID * bad.name k v set keys app_env TMOUT as_sandbox_user' \
+        A=1 B='two words' NL=$'x\ny' GLOBBED=1 k=kk v=vv set=ss keys=ks app_env=ae TMOUT=0.000001 \
         bash "$TMP/drive.sh" "$EP" 2>&1)"
-grep -qx 'reached the end' <<<"$out" && pass "E9 setting keys aside never stops the entrypoint (a readonly PPID, a glob, a bad name)" \
+grep -qx 'reached the end' <<<"$out" \
+  && pass "E9 setting keys aside never stops the entrypoint (readonly, glob, bad name, its own names, TMOUT)" \
   || fail "E9 setting keys aside never stops the entrypoint — got: $(tr '\n' ' ' <<<"$out")"
-[[ "$(grep '^stash:' <<<"$out" | tr '\n' ,)" == "stash:A=1,stash:B=two words,stash:NL=x|y," ]] \
-  && ! grep -q '^stash:PPID=' <<<"$out" && ! grep -q '^stash:GLOBBED' <<<"$out" \
-  && pass "E9 each set key is kept exactly, newlines too; unset, readonly and globbed names are not" \
+[[ "$(grep '^stash:' <<<"$out" | tr '\n' ,)" == "stash:A=1,stash:B=two words,stash:NL=x|y,stash:k=kk,stash:v=vv,stash:set=ss,stash:keys=ks,stash:app_env=ae,stash:TMOUT=0.000001," ]] \
+  && pass "E9 each set key is kept exactly, newlines and the stash's own names too; unset, readonly and globbed names are not" \
   || fail "E9 kept exactly — got: $(grep '^stash:' <<<"$out" | tr '\n' ' ')"
 [[ "$(grep '^root:' <<<"$out")" == "root:GLOBBED=1," ]] \
   && pass "E10 root's environment no longer holds them, nor the key list" \
   || fail "E10 root's environment no longer holds them — got: $(grep '^root:' <<<"$out")"
-grep -qx 'user-A:1' <<<"$out" && grep -qx 'user-NL:x|y|' <<<"$out" \
-  && pass "E11 a process run as the sandbox user gets them back, exactly" \
+grep -qx 'user-A:1' <<<"$out" && grep -qx 'user-NL:x|y|' <<<"$out" && grep -qx 'user-k:kk' <<<"$out" \
+  && pass "E11 a process run as the sandbox user gets them back, exactly — and a key named for a function left it alone" \
   || fail "E11 the sandbox user gets them back — got: $(grep '^user-' <<<"$out" | tr '\n' ' ')"
-# And every place the entrypoint hands over to the sandbox user does give them
-# back: the runuser calls go through as_sandbox_user (run_services' start filters
-# app_env itself), and all three modes' final shells pass app_env through capsh.
-n_shell="$(grep -cF -- "-- -c 'exec env \"\$@\" /bin/bash -l' bash \${app_env[@]+\"\${app_env[@]}\"}" "$ENGINE/entrypoint.sh")"
-n_bare="$(grep -cE 'runuser -u "\$sandbox_user" -- *\\?$' "$ENGINE/entrypoint.sh")"
-[[ "$n_shell" == 3 && "$n_bare" == 0 ]] \
-  && pass "E11 all three modes' shells, and every runuser hand-over, give container.env back" \
-  || fail "E11 hand-overs give container.env back (final shells: $n_shell of 3; bare runuser: $n_bare)"
+# And every place the entrypoint hands over to the sandbox user gives them back:
+# each runuser line carries the stash (as_sandbox_user's) or run_services' start
+# copy of it, and all three modes' final shells pass it through capsh.
+n_shell="$(grep -cF -- "-- -c 'exec env \"\$@\" /bin/bash -l' bash \${_aice_app_env[@]+\"\${_aice_app_env[@]}\"}" "$ENGINE/entrypoint.sh")"
+# Continued lines joined first: a hand-over may wrap.
+joined="$(awk '{ if (sub(/\\$/, "")) { buf = buf $0; next } print buf $0; buf = "" }' "$ENGINE/entrypoint.sh")"
+bare="$(grep -E '^[^#]*runuser ' <<<"$joined" | grep -vF '_aice_app_env[@]' | grep -vF 'start_env[@]')"
+n_ru="$(grep -cE '^[^#]*runuser ' <<<"$joined")"
+[[ "$n_shell" == 3 && -z "$bare" && "$n_ru" -ge 2 ]] \
+  && pass "E11 all three modes' shells, and all $n_ru runuser hand-overs, give container.env back" \
+  || fail "E11 hand-overs give container.env back (final shells: $n_shell of 3; runuser without it: ${bare:-none}; runuser lines: $n_ru)"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

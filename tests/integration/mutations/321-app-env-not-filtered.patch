@@ -4,16 +4,18 @@
 #       AI_CONTAINER_ENV_KEYS, whatever it is — LD_PRELOAD, and SANDBOX_USER,
 #       which the launcher sets itself.
 #
-#       Expected: "the launch warned about LD_PRELOAD and SANDBOX_USER" FAILs
-#       (no warning), and "a refused key reached no one (LD_PRELOAD)" FAILs —
-#       the agent's shell holds it. The firewall, root's environment and
-#       APP_GREETING still PASS: the entrypoint's half is intact.
+#       Expected three FAILs: "the launch warned about LD_PRELOAD and
+#       SANDBOX_USER" (no warning); "root kept the launcher's SANDBOX_USER"
+#       (now listed, the entrypoint sets the launcher's own value aside and
+#       creates the default user); and "a refused key reached no one
+#       (LD_PRELOAD)" (the agent's shell holds it). The firewall, root's
+#       environment and APP_GREETING still PASS: the entrypoint's half is intact.
 diff --git a/sandbox.sh b/sandbox.sh
-index af05cc4..ad54cb9 100755
+index fb3bdef..32ef203 100755
 --- a/sandbox.sh
 +++ b/sandbox.sh
-@@ -756,7 +756,7 @@ container_env_filter() {
-           why="only the container's root setup reads $name, and container.env does not reach it: set it in sandbox.env" ;;
+@@ -775,7 +775,7 @@ container_env_filter() {
+           why="only the container's root setup reads $name, and container.env does not reach it" ;;
        esac
      fi
 -    if [[ -n "$why" ]]; then

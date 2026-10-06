@@ -10,20 +10,26 @@ set -euo pipefail
 # (as_sandbox_user, and the final shell). What acts before this line can — the
 # loader, env(1)'s PATH search for bash, bash's own start-up — sandbox.sh refuses
 # outright (sandbox.sh: container_env_filter()).
-app_env=()
-# read -a, not a bare $AI_CONTAINER_ENV_KEYS: a word list that globs would let a
-# file in the working directory name a key. A name bash will not unset (readonly,
-# such as PPID) holds bash's value, not the file's, and is left alone.
+# Every name here starts _aice_, which sandbox.sh refuses from container.env: a
+# key named like a variable of this function (k, set, app_env…) would otherwise
+# be unset in its place — aborting the entrypoint under set -u, leaving the key
+# in root's environment, or emptying what was stashed. The list is split by
+# parameter expansion, not `read` (which a TMOUT key would time out) nor an
+# unquoted word list (which would glob, letting a file name a key). `unset -v`,
+# because a bare unset of a name with no variable removes a FUNCTION of that
+# name. A name bash will not unset (readonly, such as PPID) holds bash's value,
+# not the file's, and is left alone.
+_aice_app_env=()
 stash_app_env() {
-  local IFS=$' \t\n' k v set
-  local -a keys=()
-  read -r -a keys <<<"${AI_CONTAINER_ENV_KEYS:-}"
-  for k in ${keys[@]+"${keys[@]}"}; do
-    [[ "$k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
-    set=0; v=""
-    if [[ -n "${!k+x}" ]]; then set=1; v="${!k}"; fi
-    unset "$k" 2>/dev/null || continue
-    if (( set )); then app_env+=("$k=$v"); fi
+  local _aice_rest="${AI_CONTAINER_ENV_KEYS:-}" _aice_k _aice_v _aice_set
+  while [[ -n "$_aice_rest" ]]; do
+    _aice_k="${_aice_rest%% *}"
+    if [[ "$_aice_rest" == *' '* ]]; then _aice_rest="${_aice_rest#* }"; else _aice_rest=""; fi
+    [[ "$_aice_k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ && "$_aice_k" != _aice_* ]] || continue
+    _aice_set=0; _aice_v=""
+    if [[ -n "${!_aice_k+x}" ]]; then _aice_set=1; _aice_v="${!_aice_k}"; fi
+    unset -v "$_aice_k" 2>/dev/null || continue
+    if (( _aice_set )); then _aice_app_env+=("$_aice_k=$_aice_v"); fi
   done
   unset AI_CONTAINER_ENV_KEYS
 }
@@ -31,7 +37,7 @@ stash_app_env
 
 # runuser … -- <command> as the sandbox user, with container.env given back.
 as_sandbox_user() {
-  runuser -u "$sandbox_user" -- env ${app_env[@]+"${app_env[@]}"} "$@"
+  runuser -u "$sandbox_user" -- env ${_aice_app_env[@]+"${_aice_app_env[@]}"} "$@"
 }
 
 mode="${DEV_CONTAINER_MODE:-restricted}"
@@ -129,7 +135,7 @@ run_services() {
     AI_SERVICES="$AI_SERVICES" SANDBOX_UID="${SANDBOX_UID:-1000}" SANDBOX_GID="${SANDBOX_GID:-1000}" \
     /usr/local/bin/start-services.sh prepare || true
   local kv start_env=()
-  for kv in ${app_env[@]+"${app_env[@]}"}; do
+  for kv in ${_aice_app_env[@]+"${_aice_app_env[@]}"}; do
     case "${kv%%=*}" in
       AI_SERVICES_DIR|AI_SERVICES_STATE_ROOT|AI_SERVICES_LOG_ROOT) ;;
       *) start_env+=("$kv") ;;
@@ -381,7 +387,7 @@ case "$mode" in
     exec capsh \
       --drop=cap_net_admin,cap_net_raw \
       --user="$sandbox_user" \
-      -- -c 'exec env "$@" /bin/bash -l' bash ${app_env[@]+"${app_env[@]}"}
+      -- -c 'exec env "$@" /bin/bash -l' bash ${_aice_app_env[@]+"${_aice_app_env[@]}"}
     ;;
   discovery)
     apply_discovery_firewall
@@ -411,7 +417,7 @@ case "$mode" in
     #
     # This comment used to claim "NET_RAW is kept so the sandbox user can run
     # tcpdump if needed". That never worked, and keeping it would be the wrong
-    # fix: the pcap daemon is started as ROOT at line 203, before the exec below,
+    # fix: the pcap daemon is started as ROOT (`capture-agent-destinations.sh start`), before the exec below,
     # so it retains its own capabilities and needs nothing from the agent shell.
     # Granting the agent raw-socket access to satisfy a comment would widen its
     # capability surface for a convenience nobody has asked for, in a mode that
@@ -428,7 +434,7 @@ case "$mode" in
     exec capsh \
       --drop=cap_net_admin \
       --user="$sandbox_user" \
-      -- -c 'exec env "$@" /bin/bash -l' bash ${app_env[@]+"${app_env[@]}"}
+      -- -c 'exec env "$@" /bin/bash -l' bash ${_aice_app_env[@]+"${_aice_app_env[@]}"}
     ;;
   open)
     setup_sandbox_user
@@ -451,7 +457,7 @@ case "$mode" in
     exec capsh \
       --drop=cap_net_admin,cap_net_raw \
       --user="$sandbox_user" \
-      -- -c 'exec env "$@" /bin/bash -l' bash ${app_env[@]+"${app_env[@]}"}
+      -- -c 'exec env "$@" /bin/bash -l' bash ${_aice_app_env[@]+"${_aice_app_env[@]}"}
     ;;
   *)
     printf 'Unsupported DEV_CONTAINER_MODE: %s\n' "$mode" >&2

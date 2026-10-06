@@ -691,8 +691,10 @@ _utf8_valid() {
 #     HOME/USER/LOGNAME (the container sets them for the sandbox user), and a key this
 #     launch passes with -e (setting it aside would unset the launcher's value) — read
 #     from the docker run arguments themselves, so it cannot drift from them;
-#   - SELF_HEALING_ENABLED and ALLOW_IPV6_BYPASS, which only root reads: from here they
-#     would silently do nothing, so the warning says where they belong.
+#   - knobs only root reads (SELF_HEALING_ENABLED, ALLOW_IPV6_BYPASS, the allowlist
+#     and capture settings): from here they would silently do nothing, so the
+#     warning says so, and where the two user-facing ones belong;
+#   - the names stash_app_env uses itself (_aice_*), which it could not set aside.
 #
 # Parsed exactly as docker parses an env-file (measured against the docker CLI): a BOM
 # is dropped from line 1, leading Unicode whitespace (Go's unicode.IsSpace) from every
@@ -723,7 +725,9 @@ container_env_filter() {
   )
   # `read` drops NUL bytes without a word, so find them first: one entry per line,
   # N for each NUL in it.
-  mapfile -t nul < <(tr -c '\000\n' '.' < "$file" | tr '\000' 'N')
+  # LC_ALL=C on each tr: a `local LC_ALL` is not exported, and BSD tr in a UTF-8
+  # locale stops at the first invalid byte, truncating the map.
+  mapfile -t nul < <(LC_ALL=C tr -c '\000\n' '.' < "$file" | LC_ALL=C tr '\000' 'N')
   while IFS= read -r raw || [[ -n "$raw" ]]; do
     n=$((n + 1))
     line="${raw%$'\r'}"
@@ -750,10 +754,25 @@ container_env_filter() {
     else
       case "$name" in
         HOME|USER|LOGNAME) why="the container sets $name for the sandbox user" ;;
-        UID|EUID|PPID|BASH|BASHOPTS|BASHPID|BASH_*) why="$name is bash's own variable" ;;
-        AI_CONTAINER_ENV_KEYS) why="$name is the launcher's own" ;;
+        # bash assigns these itself, or will not let them go, so the shell would
+        # hold bash's value rather than the file's. Measured on bash 5.1 and 5.2;
+        # tests/test-env-file.sh re-measures whichever bash runs it.
+        BASH|BASHOPTS|BASHPID|BASH_*|COMP_*|COMPREPLY|COPROC*|DIRSTACK|EPOCHREALTIME|EPOCHSECONDS)
+          why="$name is bash's own variable" ;;
+        EUID|FUNCNAME|GROUPS|HISTCMD|LINENO|MAPFILE|OLDPWD|OPTARG|OPTERR|OPTIND|PIPESTATUS|PPID)
+          why="$name is bash's own variable" ;;
+        PS1|PS2|PWD|RANDOM|READLINE_*|REPLY|SECONDS|SHLVL|SRANDOM|UID|_)
+          why="$name is bash's own variable" ;;
+        AI_CONTAINER_ENV_KEYS|_aice_*) why="$name is reserved for the launcher and the entrypoint" ;;
+        # Knobs only the container's root setup reads (entrypoint.sh and the
+        # daemons it starts as root); tests/test-env-file.sh fails if one is added
+        # there without landing here or in the -e flags.
         SELF_HEALING_ENABLED|ALLOW_IPV6_BYPASS)
           why="only the container's root setup reads $name, and container.env does not reach it: set it in sandbox.env" ;;
+        ALLOWLIST_DOMAINS_FILE|ALLOWLIST_CIDRS_FILE|ALLOWLIST_PROXY_DOMAINS_FILE|ALLOWLIST_IPV4_SET)
+          why="only the container's root setup reads $name, and container.env does not reach it" ;;
+        ALLOWLIST_IPV6_SET|BLOCKED_CAPTURE_ENABLED|BLOCKED_INTERNAL_DIR|NFLOG_GROUP)
+          why="only the container's root setup reads $name, and container.env does not reach it" ;;
       esac
     fi
     if [[ -n "$why" ]]; then

@@ -11,32 +11,32 @@
 # NOTE: entrypoint.sh is COPYed into the image, so this patch needs a rebuild to
 # take effect — never --reuse-image.
 diff --git a/entrypoint.sh b/entrypoint.sh
-index d1ecb18..fab469d 100755
+index 9d5fe92..639f6a3 100755
 --- a/entrypoint.sh
 +++ b/entrypoint.sh
-@@ -381,7 +381,7 @@ case "$mode" in
+@@ -387,7 +387,7 @@ case "$mode" in
      exec capsh \
        --drop=cap_net_admin,cap_net_raw \
        --user="$sandbox_user" \
--      -- -c 'exec env "$@" /bin/bash -l' bash ${app_env[@]+"${app_env[@]}"}
+-      -- -c 'exec env "$@" /bin/bash -l' bash ${_aice_app_env[@]+"${_aice_app_env[@]}"}
 +      -- -l
      ;;
    discovery)
      apply_discovery_firewall
-@@ -428,7 +428,7 @@ case "$mode" in
+@@ -434,7 +434,7 @@ case "$mode" in
      exec capsh \
        --drop=cap_net_admin \
        --user="$sandbox_user" \
--      -- -c 'exec env "$@" /bin/bash -l' bash ${app_env[@]+"${app_env[@]}"}
+-      -- -c 'exec env "$@" /bin/bash -l' bash ${_aice_app_env[@]+"${_aice_app_env[@]}"}
 +      -- -l
      ;;
    open)
      setup_sandbox_user
-@@ -451,7 +451,7 @@ case "$mode" in
+@@ -457,7 +457,7 @@ case "$mode" in
      exec capsh \
        --drop=cap_net_admin,cap_net_raw \
        --user="$sandbox_user" \
--      -- -c 'exec env "$@" /bin/bash -l' bash ${app_env[@]+"${app_env[@]}"}
+-      -- -c 'exec env "$@" /bin/bash -l' bash ${_aice_app_env[@]+"${_aice_app_env[@]}"}
 +      -- -l
      ;;
    *)
