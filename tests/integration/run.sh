@@ -79,7 +79,7 @@ n_fail=0
 # definition below, carry a comment pointing back here: its per-variant
 # override bodies can't be derived from a flat name list without contorting
 # that function, so the two are kept in sync by hand plus that pointer.
-KNOWN_VARIANTS="default agents native"
+KNOWN_VARIANTS="default agents native sandbox"
 # The DISPLAY form of the same list, derived rather than duplicated. The
 # variable itself stays space-separated because that is its machine form — a
 # `for v in $KNOWN_VARIANTS` word-split, and the `case " $KNOWN_VARIANTS " in
@@ -251,6 +251,7 @@ variant_overrides() {  # $1=variant → space-separated key=value; rc 1 if unkno
     default) printf '' ;;
     agents)  printf 'copilot=ON claude-code=ON codex=ON gemini=ON graphify=ON vale=ON node=22,20' ;;
     native)  printf 'db-clients=pg,mysql,mongo imagemagick=ON wkhtmltopdf=ON playwright=ON postgres=ON ruby=%s' "$IT_RUBY_VERSIONS" ;;
+    sandbox) printf 'claude-code-sandbox=ON' ;;
     *)       return 1 ;;
   esac
   return 0

@@ -46,7 +46,7 @@ on:
       # is a no-op — both jobs render their existing hardcoded command
       # unchanged, exactly like tags/exclude above.
       cases:
-        description: 'run.sh --cases for the packages-agents/packages-native jobs (e.g. 760-ruby-persists-no-recompile) — empty = every packages case for that variant'
+        description: 'run.sh --cases for the packages-agents/packages-native/packages-sandbox jobs (e.g. 760-ruby-persists-no-recompile) — empty = every packages case for that variant'
         required: false
         default: ''
       # Task 11c: this ONE value is threaded into BOTH jobs below, unfiltered —
@@ -502,6 +502,57 @@ jobs:
           fi
           # For comparison only — this is the POST-CLEANUP snapshot, not the
           # peak; run.sh's sweep()/rmi have already reclaimed the image by now.
+          echo "-- post-cleanup snapshot --"
+          df -h / | tail -1
+          docker system df
+
+  # The sandbox variant: claude-code-sandbox=ON. Its one case measures that bubblewrap
+  # starts under the profiles that key lifts, on this ubuntu-24.04 runner, whose kernel
+  # restricts unprivileged user namespaces. Steps as packages-native's, whose comments
+  # explain them; its disk and wall-clock figures are the native image's, not this one's.
+  packages-sandbox:
+    name: Package installs — sandbox variant (real allowlist)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Free disk
+        run: |
+          df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          df -h / | tail -1
+
+      - name: Start timer and disk-peak sampler
+        run: |
+          echo "PACKAGES_START=$(date +%s)" >> "$GITHUB_ENV"
+          rm -f /tmp/disk-samples.log
+          ( while :; do df --output=used,avail -BM / | awk 'NR==2 { gsub(/M/,""); print $1, $2 }' >> /tmp/disk-samples.log; sleep 5; done ) &
+          echo "DISK_SAMPLER_PID=$!" >> "$GITHUB_ENV"
+
+      - name: Packages tier (sandbox variant)
+        run: >-
+          ./tests/integration/run.sh --tags packages --variant sandbox --require packages
+          ${{ inputs.cases && format('--cases {0}', inputs.cases) || '' }}
+
+      - name: Budget
+        if: always()
+        run: |
+          if [ -n "${DISK_SAMPLER_PID:-}" ]; then
+            kill "$DISK_SAMPLER_PID" 2>/dev/null || true
+          fi
+          end=$(date +%s)
+          start="${PACKAGES_START:-$end}"
+          elapsed=$((end - start))
+          echo "packages-sandbox wall-clock: $((elapsed / 60))m $((elapsed % 60))s"
+          if [ -s /tmp/disk-samples.log ]; then
+            base="$(head -1 /tmp/disk-samples.log | awk '{print $1}')"
+            peak="$(awk '{print $1}' /tmp/disk-samples.log | sort -n | tail -1)"
+            mina="$(awk '{print $2}' /tmp/disk-samples.log | sort -n | head -1)"
+            echo "packages-sandbox disk on /: baseline used ${base}M, peak used ${peak}M, this tier +$((peak - base))M, MIN AVAILABLE ${mina}M"
+          else
+            echo "packages-sandbox disk on /: NO SAMPLES (sampler did not run)"
+          fi
           echo "-- post-cleanup snapshot --"
           df -h / | tail -1
           docker system df

@@ -522,6 +522,12 @@ case "$out" in
   *) fail "variant native overrides — got: $out" ;;
 esac
 
+out="$(bash "$TMP/callfn.sh" variant_overrides sandbox)"
+case "$out" in
+  claude-code-sandbox=ON) pass "variant sandbox turns on claude-code-sandbox and nothing else" ;;
+  *) fail "variant sandbox overrides — got: $out" ;;
+esac
+
 out="$(IT_RUBY_VERSIONS=3.4.5 bash "$TMP/callfn.sh" variant_overrides native)"
 case "$out" in
   *ruby=3.4.5*) pass "IT_RUBY_VERSIONS overrides the native variant's ruby list" ;;

@@ -1,0 +1,25 @@
+# case: 790-claude-sandbox-bubblewrap-starts
+# what: the image is built with claude-code-sandbox=ON — bubblewrap, socat and the
+#       managed settings all present — but sandbox.sh no longer lifts Docker's
+#       seccomp and AppArmor profiles for it. This is the container the key would
+#       give if its run-time half were ever dropped or made conditional on the wrong
+#       thing.
+#
+#       Expected: assertions 1 and 2 PASS (the image is unchanged), and assertion 3
+#       FAILS — bubblewrap cannot create its namespace or mount in it under the
+#       default profiles. That is the failure the case names; a patch that broke the
+#       image instead would fail it at 1 or 2 and demonstrate nothing about the
+#       flags.
+diff --git a/sandbox.sh b/sandbox.sh
+index db5e582..af45f3d 100755
+--- a/sandbox.sh
++++ b/sandbox.sh
+@@ -1647,7 +1647,7 @@ run_container() {
+   # trade is set out in docs/components/claude-code-sandbox.md — so every other
+   # container composes exactly the `docker run` it did before.
+   local inner_sandbox_flags=()
+-  if is_enabled claude-code-sandbox; then
++  if false; then
+     inner_sandbox_flags=(--security-opt seccomp=unconfined --security-opt apparmor=unconfined)
+   fi
+ 
