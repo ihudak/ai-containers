@@ -41,6 +41,22 @@ EOF
 
 # ── Validation ─────────────────────────────────────────────────────────────────
 
+# validate_server_on_off <key> <what Ubuntu 24.04 carries>: a server key whose
+# only values are ON and OFF, because Ubuntu's archive carries one version of it.
+# A version could not be honoured, so it is refused rather than ignored; a
+# lowercase on/off would otherwise read as OFF without a word.
+validate_server_on_off() {
+  local v; v=$(get_versions "$1")
+  [[ -z "$v" || "$v" == "ON" || "$v" == "OFF" ]] && return 0
+  if [[ "${v^^}" == "ON" || "${v^^}" == "OFF" ]]; then
+    printf 'ERROR: %s value "%s" must be written in capitals (ON or OFF).\n' "$1" "$v" >&2
+  else
+    printf 'ERROR: %s value "%s" is not ON or OFF.\n' "$1" "$v" >&2
+    printf '       Ubuntu 24.04 carries one %s, so a version cannot be pinned.\n' "$2" >&2
+  fi
+  exit 1
+}
+
 validate_config() {
   if is_enabled copilot && ! is_enabled github-cli; then
     printf 'NOTE: copilot=ON implies github-cli. gh CLI will be installed for authentication.\n' >&2
@@ -112,19 +128,8 @@ validate_config() {
       exit 1
     fi
   fi
-  # redis is ON or OFF: Ubuntu's archive carries one Redis, so a version could not
-  # be honoured, and is refused here rather than ignored. A lowercase on/off would
-  # otherwise read as OFF without a word.
-  local rd_val; rd_val=$(get_versions redis)
-  if [[ -n "$rd_val" && "$rd_val" != "ON" && "$rd_val" != "OFF" ]]; then
-    if [[ "${rd_val^^}" == "ON" || "${rd_val^^}" == "OFF" ]]; then
-      printf 'ERROR: redis value "%s" must be written in capitals (ON or OFF).\n' "$rd_val" >&2
-    else
-      printf 'ERROR: redis value "%s" is not ON or OFF.\n' "$rd_val" >&2
-      printf '       Ubuntu 24.04 carries one Redis (7.0), so a version cannot be pinned.\n' >&2
-    fi
-    exit 1
-  fi
+  validate_server_on_off redis 'Redis (7.0)'
+  validate_server_on_off mysql 'MySQL (8.0)'
   local jvm_key jvm_val ver
   for jvm_key in openjdk graalvm-ce graalvm-oracle kotlin scala maven gradle; do
     jvm_val=$(version_list "$jvm_key")
@@ -331,6 +336,9 @@ build_args_from_config() {
   # key must not move because the key exists.
   if is_enabled redis; then
     _args+=(--build-arg "INSTALL_REDIS=1")
+  fi
+  if is_enabled mysql; then
+    _args+=(--build-arg "INSTALL_MYSQL=1")
   fi
 
   local jvm_keys=(openjdk graalvm-ce graalvm-oracle kotlin scala maven gradle)

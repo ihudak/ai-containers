@@ -274,7 +274,7 @@ runtime_tools_csv() {
 # Consumed by sandbox.sh (-e AI_SERVICES) and start-services.sh. Empty when none.
 services_csv() {
   local s out=()
-  for s in postgres redis; do
+  for s in postgres redis mysql; do
     is_active "$s" && out+=("$s=$(get_versions "$s")")
   done
   local IFS=,; printf '%s' "${out[*]}"
