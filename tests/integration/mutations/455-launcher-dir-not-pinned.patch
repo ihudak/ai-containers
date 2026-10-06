@@ -10,15 +10,15 @@
 #       other than the pinning.
 #
 diff --git a/sandbox.sh b/sandbox.sh
-index f4f3d8f..e497877 100755
+index 4785435..41ccd67 100755
 --- a/sandbox.sh
 +++ b/sandbox.sh
-@@ -317,7 +317,7 @@ launcher_ro_overlay() {
-         path="$path/$part"; at="$at/$part"
-         [[ -n "${seen[$at]:-}" ]] && continue
-         seen[$at]=1
--        _ro+=(-v "$path:$at:rw")
-+        :
-       done
-       at="$dst/$rel"
+@@ -331,7 +331,7 @@ launcher_ro_overlay() {
+       path="$path/$part"; at="$at/$part"
        [[ -n "${seen[$at]:-}" ]] && continue
+       seen[$at]=1
+-      _ro+=(--mount "type=bind,source=$path,destination=$at")
++      :
+     done
+     at="$dst/$rel"
+     [[ -n "${seen[$at]:-}" ]] && continue
