@@ -293,7 +293,7 @@ add_file_mount_if_exists() {
 # CLAUDE.md links to AGENTS.md, and scans with no bound. A link that stays
 # inside its own launcher is not reported.
 #
-# launcher_ro_overlay <out-array> <this launcher's dir, as reached> <docker flag>...
+# launcher_ro_overlay <ro-flags-out> <verify-pairs-out> <this launcher's dir, as reached> <docker flag>...
 # Reads the `-v <src>:<dst>[:<opts>]` pairs among the flags. Only a writable bind
 # of a directory can expose a launcher: a named volume's source is a name and
 # holds a copy, a file mount holds no directory, and a :ro bind is read-only
@@ -314,8 +314,8 @@ add_file_mount_if_exists() {
 # intact (_bind_mount_arg), or, where none can, not mounted, with a WARNING.
 launcher_ro_overlay() {
   # shellcheck disable=SC2178  # nameref: shellcheck does not model `local -n`
-  local -n _ro=$1
-  local reached="$2" self spec src rest dst opts l at pin path part r skip i k depth max=0 d p pp kind ok mf mv
+  local -n _ro=$1 _vrfy=$2
+  local reached="$3" self spec src rest dst opts l at pin path part r skip i k depth max=0 d p pp kind ok mf mv
   local x f e q w c safe inner how
   local uid="${SANDBOX_UID:-$(id -u)}" gid="${SANDBOX_GID:-$(id -g)}" you
   local -a found unreadable cand bsrc=() bdst=() cl=() cat=() csrc=() cdst=() cdep=() ckind=() ro_dsts=() psrc pdst
@@ -331,7 +331,7 @@ launcher_ro_overlay() {
     exit 1
   fi
   you="$(id -u)"
-  shift 2
+  shift 3
   self="$(cd "$reached" 2>/dev/null && pwd -P)" || self="$reached"
   while (( $# )); do
     if [[ "$1" != -v || $# -lt 2 ]]; then shift; continue; fi
@@ -458,10 +458,10 @@ launcher_ro_overlay() {
       for k in ${psrc[@]+"${!psrc[@]}"}; do
         seen[${pdst[k]}]=1; pinned[${pdst[k]}]=1
         _bind_mount_arg mf mv "${psrc[k]}" "${pdst[k]}" rw
-        _ro+=("$mf" "$mv")
+        _ro+=("$mf" "$mv"); _vrfy+=("${psrc[k]}" "${pdst[k]}")
       done
       _bind_mount_arg mf mv "$l" "$at" ro
-      _ro+=("$mf" "$mv")
+      _ro+=("$mf" "$mv"); _vrfy+=("$l" "$at")
       seen[$at]=1
       ro_dsts+=("$at")
       if [[ "$kind" == unreadable ]]; then
@@ -846,6 +846,12 @@ pointer_already_mounted_as() {
   fi
   return 1
 }
+
+# Set by run_container when it creates a launcher-mount verify dir; removed by
+# the EXIT trap below. A global, not a run_container local, so the trap can see
+# it, and guarded with :- so `set -u` is satisfied when no dir was made.
+_launcher_verify_dir=""
+trap 'rm -rf "${_launcher_verify_dir:-}" 2>/dev/null' EXIT
 
 run_container() {
   check_config
@@ -1554,8 +1560,8 @@ run_container() {
   printf 'Container name: %s\n' "$container_name" >&2
 
   # Last, once every bind mount is known: see launcher_ro_overlay.
-  local launcher_ro_flags=()
-  launcher_ro_overlay launcher_ro_flags "$script_dir" \
+  local launcher_ro_flags=() launcher_verify=()
+  launcher_ro_overlay launcher_ro_flags launcher_verify "$script_dir" \
     ${output_mount_flags[@]+"${output_mount_flags[@]}"} \
     ${repo_mount_flags[@]+"${repo_mount_flags[@]}"} \
     ${extra_mount_flags[@]+"${extra_mount_flags[@]}"} \
@@ -1564,6 +1570,45 @@ run_container() {
     ${docs_mount_flags[@]+"${docs_mount_flags[@]}"} \
     ${arch_mount_flags[@]+"${arch_mount_flags[@]}"} \
     ${config_mount_flags[@]+"${config_mount_flags[@]}"}
+
+  # A concurrent container on an overlapping writable tree could swap one of the
+  # launcher mounts' SOURCES for a symlink between the scan above and the moment
+  # Docker resolves it, so the new container would mount an arbitrary host path.
+  # Guard it: record each launcher mount's source identity (device:inode) now,
+  # in a directory only this launch can reach — under $HOME/.ai-containers, where
+  # the group mounts already come from, never inside /workspace — and hand it to
+  # the root entrypoint, which re-checks every mount before the agent shell
+  # exists and refuses to start on a mismatch (entrypoint.sh: verify_launcher_
+  # mounts). The verify directory is itself mounted read-only and is the anchor:
+  # if its own device:inode does not survive the mount, this filesystem does not
+  # preserve them (some file-sharing layers), and the entrypoint says so and
+  # skips rather than refusing every launch.
+  local launcher_verify_flags=() launcher_anchor_env=()
+  if (( ${#launcher_verify[@]} )); then
+    _launcher_verify_dir="$HOME/.ai-containers/.verify-$$-$RANDOM"
+    local _vdir="$_launcher_verify_dir"
+    if mkdir -p "$_vdir" 2>/dev/null; then
+      # Best-effort sweep of verify dirs left by a crashed launch whose pid is gone.
+      local _old _opid
+      for _old in "$HOME"/.ai-containers/.verify-*; do
+        [[ -d "$_old" ]] || continue
+        _opid="${_old##*/.verify-}"; _opid="${_opid%%-*}"
+        [[ "$_opid" =~ ^[0-9]+$ ]] && ! kill -0 "$_opid" 2>/dev/null && rm -rf "$_old" 2>/dev/null
+      done
+      local _i _vsrc _vdst _vdev _vino
+      : > "$_vdir/manifest"
+      for (( _i = 0; _i < ${#launcher_verify[@]}; _i += 2 )); do
+        _vsrc="${launcher_verify[_i]}"; _vdst="${launcher_verify[_i+1]}"
+        if read -r _vdev _vino < <(stat -c '%d %i' "$_vsrc" 2>/dev/null); then :; else _vdev=0; _vino=0; fi
+        printf '%s\0%s\0%s\0' "$_vdev" "$_vino" "$_vdst" >> "$_vdir/manifest"
+      done
+      launcher_verify_flags=(-v "$_vdir:/run/ai-launcher:ro")
+      launcher_anchor_env=(-e "AI_LAUNCHER_ANCHOR=$(stat -c '%d:%i' "$_vdir")")
+    else
+      printf 'WARNING: could not create %s; launcher mounts will not be verified against\n' "$_vdir" >&2
+      printf '         a concurrent-container swap this launch.\n' >&2
+    fi
+  fi
 
   docker run -it --rm \
     --name "$container_name" \
@@ -1610,6 +1655,8 @@ run_container() {
     ${arch_mount_flags[@]+"${arch_mount_flags[@]}"} \
     ${config_mount_flags[@]+"${config_mount_flags[@]}"} \
     ${launcher_ro_flags[@]+"${launcher_ro_flags[@]}"} \
+    ${launcher_verify_flags[@]+"${launcher_verify_flags[@]}"} \
+    ${launcher_anchor_env[@]+"${launcher_anchor_env[@]}"} \
     -w "$workdir" \
     "$image_name"
 }

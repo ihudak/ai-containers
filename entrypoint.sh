@@ -259,6 +259,49 @@ apply_discovery_firewall() {
   fi
 }
 
+# Refuse to start if a launcher mount is not the directory sandbox.sh resolved.
+# sandbox.sh records each launcher overlay/pin source's device:inode and its
+# destination in /run/ai-launcher/manifest, mounted read-only from a directory
+# only that launch could reach. A concurrent container sharing a writable tree
+# could swap a mount's SOURCE for a symlink between sandbox.sh's scan and the
+# moment Docker resolved it, so this new container would have mounted an
+# arbitrary host path — writable, for a pin. Re-checking here, as root and
+# before the agent shell exists, closes that window: a swapped mount lands on a
+# different inode (verified), so its device:inode no longer matches.
+#
+# The verify directory is itself the anchor: AI_LAUNCHER_ANCHOR is its own
+# device:inode as sandbox.sh saw it. If that does not survive the mount, this
+# filesystem does not preserve device:inode across a bind (some file-sharing
+# layers do not), so no mount here can be checked that way — say so and skip,
+# rather than refuse every launch. Nothing an agent writes can reach this: the
+# manifest and the anchor come from sandbox.sh's own -v/-e, not container.env.
+verify_launcher_mounts() {
+  [[ -n "${AI_LAUNCHER_ANCHOR:-}" && -f /run/ai-launcher/manifest ]] || return 0
+  local got dev ino dst bad=0
+  got="$(stat -c '%d:%i' /run/ai-launcher 2>/dev/null || true)"
+  if [[ "$got" != "$AI_LAUNCHER_ANCHOR" ]]; then
+    printf 'WARNING: this filesystem does not preserve device/inode across a bind mount,\n' >&2
+    printf '         so launcher mounts cannot be verified; the protection against a\n' >&2
+    printf '         concurrent container swapping one is reduced this launch.\n' >&2
+    return 0
+  fi
+  while IFS= read -r -d '' dev && IFS= read -r -d '' ino && IFS= read -r -d '' dst; do
+    got="$(stat -c '%d:%i' "$dst" 2>/dev/null || true)"
+    if [[ "$got" != "$dev:$ino" ]]; then
+      printf 'ERROR: %s is not the directory it was checked as (expected %s, got %s).\n' "$dst" "$dev:$ino" "${got:-none}" >&2
+      bad=1
+    fi
+  done < /run/ai-launcher/manifest
+  if (( bad )); then
+    printf 'ERROR: a launcher mount changed between the host scan and the mount — refusing to\n' >&2
+    printf '       start. A container already running on an overlapping tree may have swapped\n' >&2
+    printf '       it. Stop other containers on this workspace and relaunch.\n' >&2
+    exit 1
+  fi
+}
+
+verify_launcher_mounts
+
 case "$mode" in
   restricted)
     apply_restricted_firewall

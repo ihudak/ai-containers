@@ -15,7 +15,9 @@
 # symlink it cannot pin (T20–T23); never mounts a name docker would mangle, and
 # never scans blind past a directory you cannot list (T24–T28, T31), warns
 # about launcher links that lead somewhere the agent can change (T29, T32–T38),
-# names a writable mount inside a launcher (T40), and
+# names a writable mount inside a launcher (T40), records every launcher
+# mount for the entrypoint to re-verify against a concurrent-container swap (T41,
+# T42), and
 # refuses a non-numeric identity (T30).
 #
 # Hermetic: fake `docker` capturing the run args, no daemon. Integration cases
@@ -44,7 +46,21 @@ CAPTURE="$TMP/docker-args.txt"
 mkdir -p "$TMP/bin"
 cat > "$TMP/bin/docker" <<DOCKER
 #!/usr/bin/env bash
-if [[ "\$1" == "run" ]]; then shift; printf '%s\n' "\$@" > "$CAPTURE"; exit 0; fi
+if [[ "\$1" == "run" ]]; then
+  shift; printf '%s\n' "\$@" > "$CAPTURE"
+  # Before sandbox.sh's EXIT trap removes it, copy out the verify dir's manifest
+  # and its own device:inode, so the test can inspect them.
+  prev=""
+  for a in "\$@"; do
+    if [[ "\$prev" == -v && "\$a" == *:/run/ai-launcher:ro ]]; then
+      vsrc="\${a%:/run/ai-launcher:ro}"
+      cp "\$vsrc/manifest" "$CAPTURE.manifest" 2>/dev/null
+      stat -c '%d:%i' "\$vsrc" > "$CAPTURE.anchor" 2>/dev/null
+    fi
+    prev="\$a"
+  done
+  exit 0
+fi
 exit 0
 DOCKER
 chmod +x "$TMP/bin/docker"
@@ -66,6 +82,7 @@ ERR="$TMP/err.txt"
 launch() {
   : > "$CAPTURE"
   ( cd "$1" && bash ./sandbox.sh restricted "$2" ) >/dev/null 2>"$ERR" </dev/null
+  LAUNCH_RC=$?
 }
 # Every mount, rendered `src:dst[:opts]`, one per line — both the `-v` pairs the
 # rest of sandbox.sh emits and the `--mount` values the launcher overlay emits.
@@ -107,6 +124,7 @@ ro_overlays() { mounts | grep -F -- "$LAUNCHER:" | grep ':ro$'; }
 launch "$LAUNCHER" ..
 if [[ -s "$CAPTURE" ]]; then pass "T1 sandbox.sh reached docker run"
 else fail "T1 sandbox.sh reached docker run (no args captured)"; tail -5 "$ERR"; fi
+[[ "${LAUNCH_RC:-1}" -eq 0 ]] && pass "T1 the launcher exits 0 (cleanup/trap included)"   || fail "T1 the launcher exits 0 — got $LAUNCH_RC ($(tail -1 "$ERR"))"
 grep -qxF -- "$PROJ:/workspace/proj:rw" <<<"$(mounts)" \
   && pass "T1 the project itself is still mounted read-write" \
   || fail "T1 the project itself is still mounted read-write (mounts: $(mounts | tr '\n' ' '))"
@@ -658,6 +676,47 @@ grep -qF "NOTE: $LAUNCHER/tools.d, part of launcher $LAUNCHER, is mounted writab
   && ! grep -qF "NOTE: $LAUNCHER/.agent-blocked, part of launcher" "$ERR" \
   && pass "T40 a writable mount inside a launcher is named; its output directory is not" \
   || fail "T40 inner writable mount (stderr: $(grep -F 'part of launcher' "$ERR" | tr '\n' ' '))"
+
+# ── T41: every launcher mount is recorded for the entrypoint to re-verify, so
+# a concurrent container cannot swap a mount's source between the scan and the
+# mount. For each overlay (:ro) and pin (:rw) the manifest carries the source's
+# device:inode and the container-side destination; the anchor env carries the
+# verify dir's own device:inode, and the verify dir is mounted :ro from under
+# $HOME/.ai-containers, never from /workspace.
+EXTRA_MOUNTS="$TMP" launch "$LAUNCHER" ..
+# the verify mount exists, sourced from the group tree, read-only
+vline="$(mounts | grep ':/run/ai-launcher:ro$' || true)"
+[[ -n "$vline" && "${vline%%:*}" == "$HOME/.ai-containers/.verify-"* ]] \
+  && pass "T41 the verify dir is mounted read-only at /run/ai-launcher, from under \$HOME/.ai-containers" \
+  || fail "T41 verify mount (got: $vline)"
+# the anchor env equals the verify dir's own device:inode
+aenv="$(awk 'prev=="-e"{print} {prev=$0}' "$CAPTURE" | sed -n 's/^AI_LAUNCHER_ANCHOR=//p')"
+[[ -n "$aenv" && "$aenv" == "$(cat "$CAPTURE.anchor" 2>/dev/null)" ]] \
+  && pass "T41 AI_LAUNCHER_ANCHOR is the verify dir's own device:inode" \
+  || fail "T41 anchor env (got: '$aenv', dir: '$(cat "$CAPTURE.anchor" 2>/dev/null)')"
+# the manifest lists each overlay and pin, with its SOURCE's device:inode and dest
+declare -A man=()
+while IFS= read -r -d '' dev && IFS= read -r -d '' ino && IFS= read -r -d '' dst; do
+  man["$dst"]="$dev:$ino"
+done < "$CAPTURE.manifest"
+ok=1
+# the project overlay (an overlay source) and the pin above it (a pin source)
+for pair in "$LAUNCHER=/workspace/$tbase/proj/.ai-containers" "$PROJ=/workspace/$tbase/proj"; do
+  src="${pair%%=*}"; dst="${pair#*=}"
+  want="$(stat -c '%d:%i' "$src")"
+  [[ "${man[$dst]:-}" == "$want" ]] || { ok=0; fail "T41 manifest $dst -> ${man[$dst]:-MISSING} (want $want for $src)"; }
+done
+[[ "$ok" -eq 1 ]] && pass "T41 the manifest records each overlay and pin by its source's device:inode and its destination"
+# nothing under /workspace is a verify source
+[[ "${vline%%:*}" != /workspace/* ]] && pass "T41 the verify source is never under /workspace" || fail "T41 verify source is under /workspace: $vline"
+
+# ── T42: no launcher mounts (no writable mount contains a launcher) → no verify
+# mount and no anchor at all; nothing to guard.
+launch "$LAUNCHER" "$TMP/app"
+[[ -z "$(mounts | grep ':/run/ai-launcher:ro$' || true)" ]] \
+  && [[ -z "$(awk 'prev=="-e"{print} {prev=$0}' "$CAPTURE" | grep '^AI_LAUNCHER_ANCHOR=' || true)" ]] \
+  && pass "T42 a launch with no launcher mounts adds no verify mount or anchor" \
+  || fail "T42 spurious verify machinery (mounts: $(mounts | grep -F /run/ai-launcher | tr '\n' ' '))"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
