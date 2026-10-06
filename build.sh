@@ -249,6 +249,7 @@ build_args_from_config() {
     "imagemagick:INSTALL_IMAGEMAGICK"
     "wkhtmltopdf:INSTALL_WKHTMLTOPDF"
     "shellcheck:INSTALL_SHELLCHECK"
+    "claude-code-sandbox:INSTALL_CLAUDE_CODE_SANDBOX"
   )
   for mapping in "${bool_mappings[@]}"; do
     component="${mapping%%:*}"

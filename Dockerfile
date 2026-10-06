@@ -555,6 +555,22 @@ RUN if [ "$INSTALL_IMAGEMAGICK" = "1" ]; then \
       rm -rf /var/lib/apt/lists/*; \
     fi
 
+# ── Optional: Claude Code's own sandbox ─────────────────────────────────────────
+# bubblewrap isolates each shell command Claude Code runs, socat relays its
+# network through Claude Code's allowlisting proxy, and the managed settings file
+# turns the sandbox on for every session in a way user or project settings cannot
+# undo (docs/components/claude-code-sandbox.md). The settings file is copied in
+# unconditionally — a COPY cannot be skipped — and removed again when OFF.
+ARG INSTALL_CLAUDE_CODE_SANDBOX=0
+COPY claude-managed-settings.json /tmp/claude-managed-settings.json
+RUN if [ "$INSTALL_CLAUDE_CODE_SANDBOX" = "1" ]; then \
+      apt-get update && apt-get install -y --no-install-recommends bubblewrap socat && \
+      rm -rf /var/lib/apt/lists/* && \
+      install -d -m 0755 /etc/claude-code && \
+      install -m 0644 /tmp/claude-managed-settings.json /etc/claude-code/managed-settings.json; \
+    fi && \
+    rm -f /tmp/claude-managed-settings.json
+
 # ── Optional: wkhtmltopdf runtime libs + standalone binary ───────────────────────
 # Installs the Qt/X11/font libraries the wkhtmltopdf binary links against (so a
 # gem-vendored binary can run) AND the official standalone binary (so non-Ruby

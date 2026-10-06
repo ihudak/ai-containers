@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Added
+
+- **`claude-code-sandbox=ON` — Claude Code's own sandbox inside the container.**
+  Off by default. Bakes `bubblewrap`, `socat` and a managed settings file that
+  turns the sandbox on for every Claude Code session: the shell commands Claude
+  runs reach only package registries, write only under `/workspace` and the
+  package caches, never see the GitHub tokens, and cannot be rerun outside it.
+  `git`, `gh`, `acli`, `dtctl` and `dtmgd` run outside it. bubblewrap
+  needs a user namespace, which the docker-default AppArmor profile refuses, and
+  mounts inside it, which Docker's seccomp profile refuses, so the key also runs
+  the container with both unconfined — the trade
+  `docs/components/claude-code-sandbox.md` sets out. Only Claude Code's commands
+  gain the sandbox; the lifted profiles apply to every agent in the container.
+
 ### Security
 
 - **An agent can no longer edit a launcher from inside the container.** The

@@ -1,0 +1,60 @@
+{
+  "sandbox": {
+    "enabled": true,
+    "failIfUnavailable": true,
+    "allowUnsandboxedCommands": false,
+    "autoAllowBashIfSandboxed": true,
+    "enableWeakerNestedSandbox": true,
+    "excludedCommands": [
+      "git *",
+      "gh *",
+      "acli *",
+      "dtctl *",
+      "dtmgd *"
+    ],
+    "network": {
+      "strictAllowlist": true,
+      "allowedDomains": [
+        "registry.npmjs.org",
+        "registry.yarnpkg.com",
+        "repo.yarnpkg.com",
+        "pypi.org",
+        "files.pythonhosted.org",
+        "repo.maven.apache.org",
+        "repo1.maven.org",
+        "plugins.gradle.org",
+        "services.gradle.org",
+        "downloads.gradle.org",
+        "proxy.golang.org",
+        "sum.golang.org",
+        "index.crates.io",
+        "static.crates.io",
+        "rubygems.org",
+        "index.rubygems.org"
+      ]
+    },
+    "filesystem": {
+      "allowWrite": [
+        "/workspace",
+        "~/.npm",
+        "~/.cache",
+        "~/.m2",
+        "~/.gradle",
+        "~/.cargo",
+        "~/go/pkg/mod",
+        "~/.local/share/pnpm",
+        "~/.yarn",
+        "~/.gem",
+        "~/.bundle"
+      ]
+    },
+    "credentials": {
+      "envVars": [
+        { "name": "GITHUB_PERSONAL_ACCESS_TOKEN", "mode": "deny" },
+        { "name": "COPILOT_GITHUB_TOKEN", "mode": "deny" },
+        { "name": "GITHUB_TOKEN", "mode": "deny" },
+        { "name": "GH_TOKEN", "mode": "deny" }
+      ]
+    }
+  }
+}

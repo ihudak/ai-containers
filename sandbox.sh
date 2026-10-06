@@ -1633,9 +1633,28 @@ run_container() {
     fi
   fi
 
+  # Claude Code's own sandbox (claude-code-sandbox=ON) runs each shell command
+  # Claude starts inside bubblewrap, which must create a user namespace and then
+  # mount and pivot_root inside it. Docker's default profiles refuse both halves:
+  # - the namespace: in a running container of this image (its mgd flavour) on an
+  #   Ubuntu 24.04 host
+  #   (docker-default AppArmor enforcing, kernel.apparmor_restrict_unprivileged_userns=1)
+  #   unshare(CLONE_NEWUSER) fails with EPERM. Docker's seccomp profile allows
+  #   that call, so the refusal is AppArmor's;
+  # - the mounts: Docker's seccomp profile gates mount, umount2, pivot_root and
+  #   setns on CAP_SYS_ADMIN, which this container never holds.
+  # Both profiles are lifted only when the key asks for the inner sandbox — the
+  # trade is set out in docs/components/claude-code-sandbox.md — so every other
+  # container composes exactly the `docker run` it did before.
+  local inner_sandbox_flags=()
+  if is_enabled claude-code-sandbox; then
+    inner_sandbox_flags=(--security-opt seccomp=unconfined --security-opt apparmor=unconfined)
+  fi
+
   docker run -it --rm \
     --name "$container_name" \
     ${capabilities[@]+"${capabilities[@]}"} \
+    ${inner_sandbox_flags[@]+"${inner_sandbox_flags[@]}"} \
     ${shm_flags[@]+"${shm_flags[@]}"} \
     --add-host=host.docker.internal:host-gateway \
     ${env_file_args[@]+"${env_file_args[@]}"} \
