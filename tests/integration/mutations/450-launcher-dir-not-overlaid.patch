@@ -10,16 +10,23 @@
 #       project's own writability still PASS; a FAIL there first would mean the
 #       case measures something other than the overlay.
 diff --git a/sandbox.sh b/sandbox.sh
-index 0ee427d..b26fd54 100755
+index af05cc4..be5c6cf 100755
 --- a/sandbox.sh
 +++ b/sandbox.sh
-@@ -1654,9 +1654,6 @@ run_container() {
+@@ -1755,7 +1755,6 @@ run_container() {
+     ${specs_env_args[@]+"${specs_env_args[@]}"}
+     ${docs_env_args[@]+"${docs_env_args[@]}"}
+     ${arch_env_args[@]+"${arch_env_args[@]}"}
+-    ${launcher_anchor_env[@]+"${launcher_anchor_env[@]}"}
+   )
+ 
+   # container.env, filtered (container_env_filter), and the names it sets, which the
+@@ -1793,8 +1792,6 @@ run_container() {
      ${docs_mount_flags[@]+"${docs_mount_flags[@]}"} \
      ${arch_mount_flags[@]+"${arch_mount_flags[@]}"} \
      ${config_mount_flags[@]+"${config_mount_flags[@]}"} \
 -    ${launcher_ro_flags[@]+"${launcher_ro_flags[@]}"} \
 -    ${launcher_verify_flags[@]+"${launcher_verify_flags[@]}"} \
--    ${launcher_anchor_env[@]+"${launcher_anchor_env[@]}"} \
      -w "$workdir" \
      "$image_name"
  }

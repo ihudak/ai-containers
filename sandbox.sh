@@ -672,6 +672,128 @@ _utf8_valid() {
     }'
 }
 
+# container_env_filter <file> <lines-out> <keys-out> <docker run args>...: the lines of
+# container.env that may go to the container, as env-file lines, and the names they set.
+#
+# container.env is the project's APPLICATION environment (DB_HOST, POSTGRES_*), and
+# whoever can commit to the project writes it. `docker run --env-file` hands it to the
+# ROOT entrypoint, where XTABLES_LIBDIR chooses the plugins iptables loads and
+# ALLOWLIST_CIDRS_FILE the firewall's own allowlist — and every tool root runs reads
+# keys of its own, so no deny-list closes that. The entrypoint therefore sets every key
+# named in AI_CONTAINER_ENV_KEYS aside before it reads anything, and hands them back
+# only to processes that run as the sandbox user (entrypoint.sh: stash_app_env()). What
+# is left for this side, each refused with a WARNING naming the line (never the value)
+# while the launch goes on:
+#   - what acts before the entrypoint's first line can: the loader, env(1)'s PATH search
+#     for the `#!/usr/bin/env bash` interpreter, bash's own start-up — env_key_denied;
+#   - what the entrypoint could not set aside, or give back unchanged: a name that is not
+#     a shell variable (bash passes `a.b=1` on and cannot unset it), bash's own variables,
+#     HOME/USER/LOGNAME (the container sets them for the sandbox user), and a key this
+#     launch passes with -e (setting it aside would unset the launcher's value) — read
+#     from the docker run arguments themselves, so it cannot drift from them;
+#   - knobs only root reads (SELF_HEALING_ENABLED, ALLOW_IPV6_BYPASS, the allowlist
+#     and capture settings): from here they would silently do nothing, so the
+#     warning says so, and where the two user-facing ones belong;
+#   - the names stash_app_env uses itself (_aice_*), which it could not set aside.
+#
+# Parsed exactly as docker parses an env-file (measured against the docker CLI): a BOM
+# is dropped from line 1, leading Unicode whitespace (Go's unicode.IsSpace) from every
+# line, and one trailing CR; `#` starts a comment only as the first character left; a
+# value is literal (quotes, `#`, trailing spaces kept); a bare NAME is passed bare, so
+# docker still takes it from this shell's environment or drops it. A line docker would
+# refuse — whitespace or nothing before `=` (`export NAME=` is the common one), invalid
+# UTF-8, a NUL, more than 65535 bytes — would stop the whole launch; here only that line
+# is refused. So is a value still ending in CR after the one docker drops: forwarded,
+# docker would drop that one too.
+container_env_filter() {
+  local file="$1"
+  local -n _cef_lines="$2" _cef_keys="$3"
+  shift 3
+  local -A launcher=() seen=()
+  local prev="" a
+  for a in "$@"; do
+    [[ "$prev" == -e ]] && launcher["${a%%=*}"]=1
+    prev="$a"
+  done
+  # keys_len: the length so far of "AI_CONTAINER_ENV_KEYS=<name> <name>…" — the
+  # variable's own name, then a separator (= or space) and a name per key.
+  local keys_var=AI_CONTAINER_ENV_KEYS
+  local LC_ALL=C n=0 raw line name why ws keys_len=${#keys_var}
+  local -a nul=() uws=(
+    $'\xc2\x85' $'\xc2\xa0' $'\xe1\x9a\x80'                                   # U+0085 U+00A0 U+1680
+    $'\xe2\x80\x80' $'\xe2\x80\x81' $'\xe2\x80\x82' $'\xe2\x80\x83' $'\xe2\x80\x84' # U+2000…
+    $'\xe2\x80\x85' $'\xe2\x80\x86' $'\xe2\x80\x87' $'\xe2\x80\x88' $'\xe2\x80\x89'
+    $'\xe2\x80\x8a'                                                           # …U+200A
+    $'\xe2\x80\xa8' $'\xe2\x80\xa9' $'\xe2\x80\xaf' $'\xe2\x81\x9f' $'\xe3\x80\x80' # U+2028 U+2029 U+202F U+205F U+3000
+  )
+  # `read` drops NUL bytes without a word, so find them first: one entry per line,
+  # N for each NUL in it.
+  # LC_ALL=C on each tr: a `local LC_ALL` is not exported, and BSD tr in a UTF-8
+  # locale stops at the first invalid byte, truncating the map.
+  mapfile -t nul < <(LC_ALL=C tr -c '\000\n' '.' < "$file" | LC_ALL=C tr '\000' 'N')
+  while IFS= read -r raw || [[ -n "$raw" ]]; do
+    n=$((n + 1))
+    line="${raw%$'\r'}"
+    (( n == 1 )) && line="${line#$'\xef\xbb\xbf'}"
+    while :; do
+      case "$line" in [[:space:]]*) line="${line:1}"; continue ;; esac
+      for ws in "${uws[@]}"; do
+        if [[ "$line" == "$ws"* ]]; then line="${line:${#ws}}"; continue 2; fi
+      done
+      break
+    done
+    [[ -z "$line" || "$line" == '#'* ]] && continue
+    name="${line%%=*}"; why=""
+    if (( ${#raw} > 65535 )); then why="it is longer than docker reads (65535 bytes)"
+    elif [[ "${nul[n - 1]:-}" == *N* ]]; then why="it holds a NUL byte"
+    elif [[ "$line" == *[![:ascii:]]* ]] && ! _utf8_valid "$line"; then why="it is not valid UTF-8"
+    elif [[ "$line" == *$'\r' ]]; then why="its value ends in a carriage return"
+    elif [[ -z "$name" ]]; then why="it has no name before the ="
+    elif [[ "$name" == export[[:blank:]]* ]]; then why="docker does not take 'export': write NAME=value"
+    elif [[ "$name" == *[[:blank:]]* ]]; then why="its name holds whitespace"
+    elif ! [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then why="its name is not a shell variable name"
+    elif env_key_denied "$name"; then why="$name acts on the container's first process before it can be set aside"
+    elif [[ -n "${launcher[$name]:-}" ]]; then why="the launcher sets $name itself"
+    else
+      case "$name" in
+        HOME|USER|LOGNAME) why="the container sets $name for the sandbox user" ;;
+        # bash assigns these itself, or will not let them go, so the shell would
+        # hold bash's value rather than the file's. Measured on bash 5.1 and 5.2;
+        # tests/test-env-file.sh re-measures whichever bash runs it.
+        BASH|BASHOPTS|BASHPID|BASH_*|COMP_*|COMPREPLY|COPROC*|DIRSTACK|EPOCHREALTIME|EPOCHSECONDS)
+          why="$name is bash's own variable" ;;
+        EUID|FUNCNAME|GROUPS|HISTCMD|LINENO|MAPFILE|OLDPWD|OPTARG|OPTERR|OPTIND|PIPESTATUS|PPID)
+          why="$name is bash's own variable" ;;
+        PS1|PS2|PWD|RANDOM|READLINE_*|REPLY|SECONDS|SHLVL|SRANDOM|UID|_)
+          why="$name is bash's own variable" ;;
+        AI_CONTAINER_ENV_KEYS|_aice_*) why="$name is reserved for the launcher and the entrypoint" ;;
+        # Knobs only the container's root setup reads (entrypoint.sh and the
+        # daemons it starts as root); tests/test-env-file.sh fails if one is added
+        # there without landing here or in the -e flags.
+        SELF_HEALING_ENABLED|ALLOW_IPV6_BYPASS)
+          why="only the container's root setup reads $name, and container.env does not reach it: set it in sandbox.env" ;;
+        ALLOWLIST_DOMAINS_FILE|ALLOWLIST_CIDRS_FILE|ALLOWLIST_PROXY_DOMAINS_FILE|ALLOWLIST_IPV4_SET)
+          why="only the container's root setup reads $name, and container.env does not reach it" ;;
+        ALLOWLIST_IPV6_SET|BLOCKED_CAPTURE_ENABLED|BLOCKED_INTERNAL_DIR|NFLOG_GROUP)
+          why="only the container's root setup reads $name, and container.env does not reach it" ;;
+      esac
+    fi
+    if [[ -n "$why" ]]; then
+      printf 'WARNING: %s line %d not passed to the container: %s.\n' "$file" "$n" "$why" >&2
+      continue
+    fi
+    # Every name travels in one value, AI_CONTAINER_ENV_KEYS=…, and the kernel caps
+    # one environment string at 128 KiB with its NUL (MAX_ARG_STRLEN): past that
+    # the container could not start at all.
+    if [[ -z "${seen[$name]:-}" ]] && (( keys_len + 1 + ${#name} > 131071 )); then
+      printf 'WARNING: %s line %d not passed to the container: too many variables — their names no longer fit in one value.\n' "$file" "$n" >&2
+      continue
+    fi
+    _cef_lines+=("$line")
+    [[ -n "${seen[$name]:-}" ]] || { seen[$name]=1; _cef_keys+=("$name"); keys_len=$((keys_len + 1 + ${#name})); }
+  done < "$file"
+}
+
 # launcher_dirs_in <launchers-out> <unreadable-out> <dir> <agent-uid> <agent-gid> <your-uid>: appends every
 # launcher directory below <dir> — matched by CONTENT, a directory holding both
 # sandbox.sh and sandbox-common.sh, which is what the host runs `./sandbox.sh`
@@ -1508,14 +1630,16 @@ run_container() {
 
   # Optional project env-file → in-container app env (DB_HOST, REDIS_URL, ...).
   # Auto-detect container.env beside this script (i.e. <project>/.ai-containers/),
-  # or honour an explicit SANDBOX_ENV_FILE override.
-  local env_file_args=()
+  # or honour an explicit SANDBOX_ENV_FILE override. Filtered just before docker run,
+  # once every -e flag is known (container_env_filter).
   local _env_file="${SANDBOX_ENV_FILE:-${script_dir}/container.env}"
   if [[ -n "${SANDBOX_ENV_FILE:-}" && ! -f "$_env_file" ]]; then
     printf 'WARNING: SANDBOX_ENV_FILE=%s not found — skipping.\n' "$_env_file" >&2
+    _env_file=""
   elif [[ -f "$_env_file" ]]; then
-    env_file_args+=(--env-file "$_env_file")
     printf 'Injecting project env-file: %s\n' "$_env_file" >&2
+  else
+    _env_file=""
   fi
 
   local mem_limit mem_reservation mem_swap
@@ -1633,42 +1757,63 @@ run_container() {
     fi
   fi
 
+  # Every -e this launch passes, in one array: container_env_filter reads the names
+  # from it, so a key added here is refused from container.env with no second edit.
+  local launcher_env=(
+    -e DEV_CONTAINER_MODE="$mode"
+    -e DISCOVERY_CAPTURE_ENABLED="$capture_enabled"
+    -e DISCOVERY_CAPTURE_DIR="/workspace/.agent-discovery"
+    -e BLOCKED_CAPTURE_DIR="/workspace/.agent-blocked"
+    -e HOST_WORKSPACE_DIR="$launch_dir"
+    -e IMAGE_NAME="$image_name"
+    -e SANDBOX_UID="${SANDBOX_UID:-$(id -u)}"
+    -e SANDBOX_GID="${SANDBOX_GID:-$(id -g)}"
+    -e SANDBOX_USER="${SANDBOX_USER:-$(id -un)}"
+    -e SANDBOX_GROUP="${SANDBOX_GROUP:-$(id -gn)}"
+    -e AI_AGENTS_ENABLED="$(enabled_agents_csv)"
+    -e AI_RUNTIME_TOOLS="$(runtime_tools_csv)"
+    -e RUBY_VERSIONS="$(versions_to_space "$(version_list ruby)")"
+    -e AI_SERVICES="$(services_csv)"
+    -e REPOS_PATH="${REPOS_PATH:-/workspace}"
+    ${git_optional_locks_env[@]+"${git_optional_locks_env[@]}"}
+    ${SELF_HEALING_ENABLED:+-e SELF_HEALING_ENABLED="$SELF_HEALING_ENABLED"}
+    ${ALLOW_IPV6_BYPASS:+-e ALLOW_IPV6_BYPASS="$ALLOW_IPV6_BYPASS"}
+    ${GITHUB_PERSONAL_ACCESS_TOKEN:+-e GITHUB_PERSONAL_ACCESS_TOKEN="$GITHUB_PERSONAL_ACCESS_TOKEN"}
+    ${copilot_token:+-e COPILOT_GITHUB_TOKEN="$copilot_token"}
+    ${vault_env_args[@]+"${vault_env_args[@]}"}
+    ${specs_env_args[@]+"${specs_env_args[@]}"}
+    ${docs_env_args[@]+"${docs_env_args[@]}"}
+    ${arch_env_args[@]+"${arch_env_args[@]}"}
+    ${launcher_anchor_env[@]+"${launcher_anchor_env[@]}"}
+  )
+
+  # container.env, filtered (container_env_filter), and the names it sets, which the
+  # entrypoint sets aside from root. Handed over on a descriptor held open for docker
+  # run: a process substitution expanded into an array assignment is closed once the
+  # assignment ends, and docker then finds nothing at /dev/fd/N.
+  local app_env_flags=()
+  if [[ -n "$_env_file" ]]; then
+    local _app_lines=() _app_keys=() _app_fd
+    container_env_filter "$_env_file" _app_lines _app_keys "${launcher_env[@]}"
+    if (( ${#_app_lines[@]} )); then
+      exec {_app_fd}< <(printf '%s\n' "${_app_lines[@]}")
+      app_env_flags=(--env-file "/dev/fd/$_app_fd" -e "AI_CONTAINER_ENV_KEYS=${_app_keys[*]}")
+    fi
+  fi
+
   docker run -it --rm \
     --name "$container_name" \
     ${capabilities[@]+"${capabilities[@]}"} \
     ${shm_flags[@]+"${shm_flags[@]}"} \
     --add-host=host.docker.internal:host-gateway \
-    ${env_file_args[@]+"${env_file_args[@]}"} \
+    ${app_env_flags[@]+"${app_env_flags[@]}"} \
     ${port_flags[@]+"${port_flags[@]}"} \
     --cpus="${CONTAINER_CPUS:-1.0}" \
     --memory="$mem_limit" \
     --memory-reservation="$mem_reservation" \
     --memory-swap="$mem_swap" \
     --ulimit nofile="${CONTAINER_NOFILE:-1048576:1048576}" \
-    -e DEV_CONTAINER_MODE="$mode" \
-    -e DISCOVERY_CAPTURE_ENABLED="$capture_enabled" \
-    -e DISCOVERY_CAPTURE_DIR="/workspace/.agent-discovery" \
-    -e BLOCKED_CAPTURE_DIR="/workspace/.agent-blocked" \
-    -e HOST_WORKSPACE_DIR="$launch_dir" \
-    -e IMAGE_NAME="$image_name" \
-    -e SANDBOX_UID="${SANDBOX_UID:-$(id -u)}" \
-    -e SANDBOX_GID="${SANDBOX_GID:-$(id -g)}" \
-    -e SANDBOX_USER="${SANDBOX_USER:-$(id -un)}" \
-    -e SANDBOX_GROUP="${SANDBOX_GROUP:-$(id -gn)}" \
-    -e AI_AGENTS_ENABLED="$(enabled_agents_csv)" \
-    -e AI_RUNTIME_TOOLS="$(runtime_tools_csv)" \
-    -e RUBY_VERSIONS="$(versions_to_space "$(version_list ruby)")" \
-    -e AI_SERVICES="$(services_csv)" \
-    -e REPOS_PATH="${REPOS_PATH:-/workspace}" \
-    ${git_optional_locks_env[@]+"${git_optional_locks_env[@]}"} \
-    ${SELF_HEALING_ENABLED:+-e SELF_HEALING_ENABLED="$SELF_HEALING_ENABLED"} \
-    ${ALLOW_IPV6_BYPASS:+-e ALLOW_IPV6_BYPASS="$ALLOW_IPV6_BYPASS"} \
-    ${GITHUB_PERSONAL_ACCESS_TOKEN:+-e GITHUB_PERSONAL_ACCESS_TOKEN="$GITHUB_PERSONAL_ACCESS_TOKEN"} \
-    ${copilot_token:+-e COPILOT_GITHUB_TOKEN="$copilot_token"} \
-    ${vault_env_args[@]+"${vault_env_args[@]}"} \
-    ${specs_env_args[@]+"${specs_env_args[@]}"} \
-    ${docs_env_args[@]+"${docs_env_args[@]}"} \
-    ${arch_env_args[@]+"${arch_env_args[@]}"} \
+    "${launcher_env[@]}" \
     ${output_mount_flags[@]+"${output_mount_flags[@]}"} \
     ${repo_mount_flags[@]+"${repo_mount_flags[@]}"} \
     ${extra_mount_flags[@]+"${extra_mount_flags[@]}"} \
@@ -1679,7 +1824,6 @@ run_container() {
     ${config_mount_flags[@]+"${config_mount_flags[@]}"} \
     ${launcher_ro_flags[@]+"${launcher_ro_flags[@]}"} \
     ${launcher_verify_flags[@]+"${launcher_verify_flags[@]}"} \
-    ${launcher_anchor_env[@]+"${launcher_anchor_env[@]}"} \
     -w "$workdir" \
     "$image_name"
 }
