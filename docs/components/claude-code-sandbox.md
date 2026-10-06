@@ -73,7 +73,15 @@ syscalls than Docker's seccomp profile allows, and AppArmor confinement with thr
 more permissions than Docker's default. The network firewall, the non-root user
 and the dropped capabilities are unchanged.
 
-**Measured.** On a Mac, with the AppArmor profile loaded in its Colima VM and
+**Measured.** Integration case 790 passes under both profiles, network namespace
+included, on an `ubuntu-24.04` runner, with bubblewrap given the flags Claude Code
+passes it. Two of the seccomp profile's five additions were measured
+load-bearing: without `unshare`, bubblewrap stops at `unshare user ns: Operation
+not permitted`; without `pivot_root` (mutation `790-seccomp-refuses-pivot-root`),
+at `pivot_root: Operation not permitted`. The other three, `clone`, `mount` and
+`umount2`, it calls on every start.
+
+On a Mac, with the AppArmor profile loaded in its Colima VM and
 seccomp still lifted entirely — the run predates the seccomp profile — a Claude
 Code session started with the sandbox up (`failIfUnavailable` on) and its
 sandbox refused a write to the home directory (`Read-only file system`) and a
