@@ -54,7 +54,12 @@ mount and `pivot_root` inside it, and Docker's default profiles refuse both:
   grants `userns` is exempt, so the container runs under
   [`ai-containers-sandbox.apparmor`](../../ai-containers-sandbox.apparmor):
   Docker's default profile plus `userns`, `mount` and `pivot_root`. Case 790
-  passes under it, network namespace included, on an `ubuntu-24.04` runner.
+  passes under it, network namespace included, on an `ubuntu-24.04` runner. On a
+  Mac, with the profile loaded in its Colima VM, a Claude Code session started
+  with the sandbox up (`failIfUnavailable` on) and its sandbox refused a write to
+  the home directory (`Read-only file system`) and a request to a host off the
+  allowlist (the sandbox proxy's `403`) — in a container in OPEN mode, with no
+  firewall of its own.
 - **The mounts — seccomp.** Docker's seccomp profile gates `mount`, `umount2`,
   `pivot_root` and `setns` on `CAP_SYS_ADMIN`, which this container never holds,
   so seccomp is lifted.
