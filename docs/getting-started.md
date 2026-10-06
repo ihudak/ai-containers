@@ -44,8 +44,8 @@
 
   | Checkout | What goes wrong |
   |---|---|
-  | Native Windows git | `core.autocrlf=true` (a common Git for Windows default) writes the scripts with CRLF line endings, and bash fails with `$'\r': command not found`. Without Developer Mode, the repo's symlinks (`CLAUDE.md`, `.github/copilot-instructions.md`, `.kiro/steering/AGENTS.md`) check out as 9-byte text files containing `AGENTS.md`, and `git status` still reports clean. |
-  | WSL git under `/mnt/c` | The symlinks become WSL reparse points that Windows-side git tools cannot read (`error: open("CLAUDE.md"): Function not implemented`). Bind mounts from `/mnt/c` also go through WSL's 9p bridge, which is slow, the same penalty as virtio-fs on macOS. |
+  | Native Windows git | `core.autocrlf=true` (a common Git for Windows default) writes the scripts with CRLF line endings, and bash fails with `$'\r': command not found`. Without Developer Mode, the repo's symlinks (`.github/copilot-instructions.md`, `.kiro/steering/AGENTS.md`) check out as small text files holding the path to `AGENTS.md`, and `git status` still reports clean. |
+  | WSL git under `/mnt/c` | The symlinks become WSL reparse points that Windows-side git tools cannot read (`error: open(".github/copilot-instructions.md"): Function not implemented`). Bind mounts from `/mnt/c` also go through WSL's 9p bridge, which is slow, the same penalty as virtio-fs on macOS. |
 
   Enabling Developer Mode fixes the symlinks for native git, but not the line endings. The repo's `.gitattributes` now pins LF, and the entry points check the checkout on every run: `build.sh`, `sandbox.sh`, `project-init.sh` and `sync-to-projects.sh` **refuse** to run with a CRLF script, Dockerfile, `tools.d` descriptor or allowlist fragment (a CRLF allowlist line silently allows nothing), and **warn** when the checkout is under `/mnt/<drive>`. The same applies to your projects: keep them on WSL's filesystem too, or every mount pays the 9p cost.
 

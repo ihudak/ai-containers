@@ -48,7 +48,7 @@
 # NOT SCANNED: CHANGELOG.md, docs/superpowers/ and specs/ (dated records of what
 # was true when written, which is what a number in them means), the falsify
 # ledger's own data files (*.txt, *.conf, the same reason), and symlinks
-# (CLAUDE.md and its siblings are AGENTS.md, checked once).
+# (.github/copilot-instructions.md and its sibling are AGENTS.md, checked once).
 #
 # WHAT IT CANNOT CATCH, stated so nobody overestimates it: a snippet that still
 # occurs but now means something else — this proves the cited text exists, not

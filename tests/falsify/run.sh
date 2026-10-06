@@ -510,8 +510,8 @@ _fr_flush_batch() {   # <dest-dir> <src-file>...
   local dir="$1"; shift
   (( $# > 0 )) || return 0
   mkdir -p "$dir" || return 1
-  # -P, not a bare -p: three tracked files are symlinks (CLAUDE.md → AGENTS.md
-  # and friends). Dereferencing them would make the copy differ from the origin
+  # -P, not a bare -p: tracked files include symlinks (.github/copilot-instructions.md
+  # → AGENTS.md and a sibling). Dereferencing them would make the copy differ from the origin
   # in a way `git status` reports as a typechange in every worker tree.
   cp -Pp "$@" "$dir/" || return 1
 }

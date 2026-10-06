@@ -3,6 +3,8 @@
 
 # Personal/local Claude Code settings (a shared .claude/settings.json may still be committed)
 .claude/settings.local.json
+# A personal `@AGENTS.md` import for a Claude Code that cannot read AGENTS.md itself (see AGENTS.md)
+/CLAUDE.local.md
 
 # Editor swap/temp files
 *.swp
