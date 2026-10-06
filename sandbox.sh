@@ -715,7 +715,10 @@ container_env_filter() {
     [[ "$prev" == -e ]] && launcher["${a%%=*}"]=1
     prev="$a"
   done
-  local LC_ALL=C n=0 raw line name why ws
+  # keys_len: the length so far of "AI_CONTAINER_ENV_KEYS=<name> <name>…" — the
+  # variable's own name, then a separator (= or space) and a name per key.
+  local keys_var=AI_CONTAINER_ENV_KEYS
+  local LC_ALL=C n=0 raw line name why ws keys_len=${#keys_var}
   local -a nul=() uws=(
     $'\xc2\x85' $'\xc2\xa0' $'\xe1\x9a\x80'                                   # U+0085 U+00A0 U+1680
     $'\xe2\x80\x80' $'\xe2\x80\x81' $'\xe2\x80\x82' $'\xe2\x80\x83' $'\xe2\x80\x84' # U+2000…
@@ -779,8 +782,15 @@ container_env_filter() {
       printf 'WARNING: %s line %d not passed to the container: %s.\n' "$file" "$n" "$why" >&2
       continue
     fi
+    # Every name travels in one value, AI_CONTAINER_ENV_KEYS=…, and the kernel caps
+    # one environment string at 128 KiB with its NUL (MAX_ARG_STRLEN): past that
+    # the container could not start at all.
+    if [[ -z "${seen[$name]:-}" ]] && (( keys_len + 1 + ${#name} > 131071 )); then
+      printf 'WARNING: %s line %d not passed to the container: too many variables — their names no longer fit in one value.\n' "$file" "$n" >&2
+      continue
+    fi
     _cef_lines+=("$line")
-    [[ -n "${seen[$name]:-}" ]] || { seen[$name]=1; _cef_keys+=("$name"); }
+    [[ -n "${seen[$name]:-}" ]] || { seen[$name]=1; _cef_keys+=("$name"); keys_len=$((keys_len + 1 + ${#name})); }
   done < "$file"
 }
 

@@ -163,7 +163,7 @@ bash_own=""
 for n in BASH BASHOPTS BASHPID BASH_ARGV0 COMP_WORDBREAKS COMPREPLY COPROC DIRSTACK EPOCHREALTIME \
          EPOCHSECONDS EUID FUNCNAME GROUPS HISTCMD HOSTNAME HOSTTYPE LINENO MACHTYPE MAPFILE OLDPWD \
          OPTARG OPTERR OPTIND OSTYPE PIPESTATUS PPID PWD RANDOM READLINE_LINE REPLY SECONDS SHELLOPTS \
-         SHLVL SRANDOM UID _ TMOUT HISTFILE PS1 PS2 MAIL MAILCHECK TERM GLOBSORT; do
+         SHLVL SRANDOM UID _ TMOUT HISTFILE PS1 PS2 MAIL MAILCHECK TERM; do
   got="$(env "$n=fromfile" bash -c "if [[ -v $n ]]; then printf %s \"\${$n}\"; fi; unset -v $n 2>/dev/null || printf :RO" 2>/dev/null)"
   [[ "$got" == fromfile ]] || bash_own+=" $n"
 done
@@ -242,6 +242,23 @@ launch
 [[ "$(keys_arg)" == "XTABLES_LIBDIR HOSTALIASES" ]] \
   && pass "E8 keys no list names pass, named in AI_CONTAINER_ENV_KEYS for the entrypoint to set aside" \
   || fail "E8 keys no list names are named — got '$(keys_arg)'"
+
+# ── E12: the key list never outgrows one environment string ──────────────────
+# AI_CONTAINER_ENV_KEYS carries every name in one value, and the kernel refuses an
+# environment string over 128 KiB (MAX_ARG_STRLEN, with its NUL) — the container
+# would not start. 4500 thirty-byte names overflow it; the tail is refused, the
+# rest still passes.
+awk 'BEGIN { for (i = 1; i <= 4500; i++) printf "APP_VARIABLE_NUMBER_%010d=1\n", i }' > "$CENV"
+launch
+klen="$(sed -n '/^AI_CONTAINER_ENV_KEYS=/p' "$CAPTURE" | awk '{ print length($0) }')"
+nkeys="$(keys_arg | wc -w | tr -d ' ')"
+[[ "$LAUNCH_RC" == 0 && -n "$klen" && "$klen" -le 131071 && "$nkeys" -gt 4000 && "$nkeys" -lt 4500 ]] \
+  && grep -qF 'too many variables' "$ERR" \
+  && pass "E12 the key list stops at the kernel's limit for one value ($klen bytes, $nkeys of 4500 keys), with a warning" \
+  || fail "E12 the key list stays under 131072 bytes — got ${klen:-none} bytes, ${nkeys:-0} keys, rc=$LAUNCH_RC"
+[[ "$(envfile | wc -l | tr -d ' ')" == "$nkeys" ]] \
+  && pass "E12 … and exactly the named keys reach docker" \
+  || fail "E12 the env-file holds the named keys only — $(envfile | wc -l) lines for $nkeys keys"
 
 # ── the deny-list itself, which sandbox.env's loader shares ──────────────────
 eval "$(sed -n '/^env_key_denied()/,/^}/p' "$ENGINE/sandbox-common.sh")"
