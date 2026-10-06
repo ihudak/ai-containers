@@ -58,6 +58,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   that line is skipped, with a warning. **Behaviour change:**
   `SELF_HEALING_ENABLED` and `ALLOW_IPV6_BYPASS` in `container.env` are refused
   with a warning — they configure root, so set them in `sandbox.env`.
+- **An agent can no longer plant code your host's git runs.** The usual launch
+  mounts the whole project read-write, `.git` included, and your host's git runs
+  what `.git` holds: its `hooks/` when you commit, and `.git/config` settings
+  that start programs (`core.hooksPath`, `core.fsmonitor`, `core.sshCommand`,
+  filters) when you commit or merely run `git status`. None of it shows in `git
+  status` or `git diff`. Every repository a writable mount exposes (past 200 the
+  launch is refused instead) now has `.git/hooks/`, `.git/config` and `.git/commondir` (and
+  `config.worktree`, a worktree's `commondir`, a worktree's or submodule's `.git`
+  file) mounted read-only, with `.git` pinned so it cannot be renamed away; each
+  is printed at launch (`READ-ONLY: …`). **Behaviour changes:** each repository
+  gains a `.git/commondir` holding `./` — git, libgit2, dulwich and gitoxide read
+  it as "this directory", and it stops an agent creating one that points git
+  elsewhere; the one visible difference is that `git rev-parse --git-common-dir`
+  prints an absolute path, so a script comparing it with `--git-dir` as text
+  takes a protected repository for a linked worktree. A `commondir` already
+  there holding anything else stops the launch, naming it. Past 200 git
+  directories the launch is refused, naming some; `SANDBOX_GIT_MAX` raises it.
+  Commit, branch, push and rebase work as before, but `git config`, `git remote
+  add`, `git submodule update --init` and the upstream `git push -u` or a
+  tracking `git checkout -b` records fail inside the container — git claims
+  tracking was set up and it was not — so push and pull with the branch named
+  there, and set up remotes, tracking and submodules on the host. A repository
+  that existed at launch cannot be deleted from inside the container.
 
 ### Fixed
 

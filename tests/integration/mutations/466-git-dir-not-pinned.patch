@@ -1,0 +1,25 @@
+# case: 465-git-internals-read-only
+# what: hooks/ and config are mounted read-only, but .git itself is not pinned,
+#       so an ordinary rename carries both mounts away and leaves room for a
+#       .git of the agent's own, whose hooks the host would run.
+#
+#       Expected: "the agent cannot rename .git away from the read-only mounts"
+#       and "the host's .git is where it was" FAIL. The hook and config
+#       assertions still PASS: until the rename, the overlay itself is intact.
+diff --git a/sandbox.sh b/sandbox.sh
+index af1400f..0b1f95d 100755
+--- a/sandbox.sh
++++ b/sandbox.sh
+@@ -629,11 +629,7 @@ launcher_ro_overlay() {
+         continue
+       fi
+       gn=$((gn + 1))
+-      for k2 in ${psrc[@]+"${!psrc[@]}"}; do
+-        seen[${pdst[k2]}]=1; pinned[${pdst[k2]}]=1
+-        _bind_mount_arg mf mv "${psrc[k2]}" "${pdst[k2]}" rw
+-        _ro+=("$mf" "$mv"); _vrfy+=("${psrc[k2]}" "${pdst[k2]}")
+-      done
++      :
+       what=""
+       for f in "${gro[@]}"; do
+         x="$dst${f#"$src"}"

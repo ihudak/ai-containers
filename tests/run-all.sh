@@ -188,6 +188,16 @@ chmod +x "$RA_TMPROOT/bin/mktemp" || { printf 'SCAFFOLD-FAILED: chmod (run-all.s
 PATH="$RA_TMPROOT/bin:$PATH"
 export PATH
 
+# HERMETIC MEANS NOT YOUR DIRECTORIES. A test that launches sandbox.sh with the
+# developer's own VAULT_PATH/SPECS_PATH/EXTRA_MOUNTS/REPOS still exported mounts
+# those real directories — and the launch WRITES into the git repositories it
+# protects there (sandbox.sh: launcher_ro_overlay(), the commondir placeholder).
+# On 2026-10-06 a suite run did exactly that to a real vault. Unset for every
+# test here; each test that launches sandbox.sh unsets them too, for a run on its
+# own, and tests/test-hermetic-env.sh fails if one does not.
+unset VAULT_PATH SPECS_PATH DOCS_PATH ARCHITECTURE_REPO_PATH EXTRA_MOUNTS REPOS \
+      SANDBOX_ENV_FILE SANDBOX_WORKDIR
+
 for t in $selected; do
   name="$(basename "$t")"
   total=$((total + 1))

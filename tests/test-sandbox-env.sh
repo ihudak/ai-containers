@@ -3,6 +3,9 @@
 # inline > local > portable) and sandbox.sh's SANDBOX_MODE/SANDBOX_WORKDIR defaulting.
 # NOTE: tests/test-env-file.sh covers a DIFFERENT layer (in-container container.env).
 set -uo pipefail
+# Hermetic: the developer's own pointers must not reach a launch — sandbox.sh
+# mounts them writable and writes into the git repositories it protects there.
+unset VAULT_PATH SPECS_PATH DOCS_PATH ARCHITECTURE_REPO_PATH EXTRA_MOUNTS REPOS SANDBOX_ENV_FILE SANDBOX_WORKDIR
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 fails=0; pass() { printf 'PASS: %s\n' "$1"; }; fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails+1)); }
 
