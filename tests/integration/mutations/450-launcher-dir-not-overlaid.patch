@@ -10,14 +10,16 @@
 #       project's own writability still PASS; a FAIL there first would mean the
 #       case measures something other than the overlay.
 diff --git a/sandbox.sh b/sandbox.sh
-index ff67586..d9a6d1c 100755
+index 0ee427d..b26fd54 100755
 --- a/sandbox.sh
 +++ b/sandbox.sh
-@@ -1192,7 +1192,6 @@ run_container() {
+@@ -1654,9 +1654,6 @@ run_container() {
      ${docs_mount_flags[@]+"${docs_mount_flags[@]}"} \
      ${arch_mount_flags[@]+"${arch_mount_flags[@]}"} \
      ${config_mount_flags[@]+"${config_mount_flags[@]}"} \
 -    ${launcher_ro_flags[@]+"${launcher_ro_flags[@]}"} \
+-    ${launcher_verify_flags[@]+"${launcher_verify_flags[@]}"} \
+-    ${launcher_anchor_env[@]+"${launcher_anchor_env[@]}"} \
      -w "$workdir" \
      "$image_name"
  }

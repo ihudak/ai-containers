@@ -1,0 +1,25 @@
+# case: 460-launcher-mount-verified
+# what: the entrypoint still detects a launcher mount that is not what sandbox.sh
+#       recorded (it prints the ERROR) but no longer exits, so the container
+#       starts anyway — the state before this guard, and the exact hole a
+#       concurrent-container mount swap would walk through.
+#
+#       Expected: "a mount that is not what sandbox.sh recorded refuses the
+#       launch" FAILs (the run no longer exits non-zero). The positive and skip
+#       assertions still PASS.
+#
+# NOTE: entrypoint.sh is COPYed into the image, so this patch needs a rebuild to
+# take effect — never --reuse-image.
+diff --git a/entrypoint.sh b/entrypoint.sh
+index aae4c1d..7bad87d 100755
+--- a/entrypoint.sh
++++ b/entrypoint.sh
+@@ -296,7 +296,7 @@ verify_launcher_mounts() {
+     printf 'ERROR: a launcher mount changed between the host scan and the mount — refusing to\n' >&2
+     printf '       start. A container already running on an overlapping tree may have swapped\n' >&2
+     printf '       it. Stop other containers on this workspace and relaunch.\n' >&2
+-    exit 1
++    :
+   fi
+ }
+ 

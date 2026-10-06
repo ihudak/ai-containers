@@ -10,15 +10,16 @@
 #       other than the pinning.
 #
 diff --git a/sandbox.sh b/sandbox.sh
-index 1f460e3..f18a9b9 100755
+index 0ee427d..94abc0b 100755
 --- a/sandbox.sh
 +++ b/sandbox.sh
-@@ -434,8 +434,6 @@ launcher_ro_overlay() {
+@@ -457,8 +457,7 @@ launcher_ro_overlay() {
        fi
        for k in ${psrc[@]+"${!psrc[@]}"}; do
          seen[${pdst[k]}]=1; pinned[${pdst[k]}]=1
 -        _bind_mount_arg mf mv "${psrc[k]}" "${pdst[k]}" rw
--        _ro+=("$mf" "$mv")
+-        _ro+=("$mf" "$mv"); _vrfy+=("${psrc[k]}" "${pdst[k]}")
++        :
        done
        _bind_mount_arg mf mv "$l" "$at" ro
-       _ro+=("$mf" "$mv")
+       _ro+=("$mf" "$mv"); _vrfy+=("$l" "$at")
