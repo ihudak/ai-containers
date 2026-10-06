@@ -213,11 +213,11 @@ grep -qxF -- "$LAUNCHER:/workspace/docs/proj/.ai-containers:ro" <<<"$(mounts_und
 ENG="$TMP/devroot/ai-tools/ai-containers"; mkdir -p "$ENG"
 : > "$ENG/sandbox.sh"; : > "$ENG/sandbox-common.sh"
 EXTRA_MOUNTS="$TMP/devroot" launch "$LAUNCHER" "$TMP/app"
-mounts | grep -qxF -- "$ENG:/workspace/devroot/ai-tools/ai-containers:ro" \
+grep -qxF -- "$ENG:/workspace/devroot/ai-tools/ai-containers:ro" <<<"$(mounts)" \
   && pass "T17 an ai-containers checkout in a writable mount is read-only" \
   || fail "T17 engine checkout (got: $(mounts | grep -F devroot | tr '\n' ' '))"
 # and the directories above it are pinned, writable, so it cannot be moved
-mounts | grep -qxF -- "$TMP/devroot/ai-tools:/workspace/devroot/ai-tools:rw" \
+grep -qxF -- "$TMP/devroot/ai-tools:/workspace/devroot/ai-tools:rw" <<<"$(mounts)" \
   && pass "T17 ... with its parent directories pinned writable" \
   || fail "T17 engine parents pinned (got: $(mounts | grep -F devroot | tr '\n' ' '))"
 

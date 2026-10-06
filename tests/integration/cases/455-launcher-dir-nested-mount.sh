@@ -22,7 +22,10 @@
 grp="$(it_scratch)/grp"
 launcher_engine_in "$grp/proj" || it_finish
 mkdir -p "$grp/other/.ai-containers"
+# A real launcher is a directory holding both sandbox.sh and sandbox-common.sh
+# (what launcher_dirs_in matches, and what ./sandbox.sh needs to run at all).
 printf '#!/usr/bin/env bash\n' > "$grp/other/.ai-containers/sandbox.sh"
+: > "$grp/other/.ai-containers/sandbox-common.sh"
 printf 'marker-proj\n'  > "$grp/proj/.ai-containers/MARKER"
 printf 'marker-other\n' > "$grp/other/.ai-containers/MARKER"
 
