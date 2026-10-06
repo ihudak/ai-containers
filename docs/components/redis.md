@@ -94,7 +94,7 @@ docker exec -it -u "$(id -u)" <container> redis-cli
 
 ## Cost
 
-About 7 MB of image and 11 MB of RAM while idle. It adds about 30 ms to container start (measured with Redis 7.0.15).
+About 9 MB of image (its layer, measured with `docker history`) and 11 MB of RAM while idle. It adds about 30 ms to container start (measured with Redis 7.0.15).
 
 ---
 
