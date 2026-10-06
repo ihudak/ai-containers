@@ -116,6 +116,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     socket to a directory nobody had made, so the server failed to start with
     only its log to go on. The container now makes such a directory when it
     can, and otherwise names it and skips the server.
+- **The mutation tier no longer stops partway through a run.** On bash 5.2,
+  `wait -n -p` leaves its variable unset when it reaps nothing, and under the
+  runner's `set -u` that ended the whole corpus run with `reaped: unbound
+  variable`, every later target unscored — seen in CI after two oracle
+  timeouts. The pool tests never ran with `-u`, because the runner returns
+  before its own `set -uo pipefail` when sourced; the new one does.
+
+### Changed
+
+- **For contributors: no `CLAUDE.md` in the repository.** Claude Code 2.1.277
+  and later reads `AGENTS.md` itself, but only when no `CLAUDE.md` is in the
+  working directory or above it, so the symlink stood in for the file it
+  pointed at. On an older Claude Code, put `@AGENTS.md` in an untracked
+  `CLAUDE.local.md` (gitignored).
 
 ### Added
 
