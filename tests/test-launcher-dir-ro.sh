@@ -8,8 +8,10 @@
 # could rewrite any of them — and .ai-containers/ is gitignored, so `git status`
 # would never show it. sandbox.sh therefore mounts its own directory again,
 # :ro, inside every writable bind mount that contains it — and any other
-# project's launcher such a mount exposes — and pins every directory between a
-# mount root and a launcher (T9–T12).
+# launcher such a mount exposes (matched by content: a dir with sandbox.sh and
+# sandbox-common.sh, so an ai-containers checkout counts too) — pins every
+# directory between a mount root and a launcher, and skips a launcher nested in
+# another (T9–T19).
 #
 # Hermetic: fake `docker` capturing the run args, no daemon. Integration cases
 # 450-launcher-dir-read-only and 455-launcher-dir-nested-mount check that the
@@ -60,8 +62,25 @@ launch() {
   : > "$CAPTURE"
   ( cd "$1" && bash ./sandbox.sh restricted "$2" ) >/dev/null 2>"$ERR" </dev/null
 }
-# Every `-v` value, one per line.
-mounts() { awk 'prev=="-v"{print} {prev=$0}' "$CAPTURE"; }
+# Every mount, rendered `src:dst[:opts]`, one per line — both the `-v` pairs the
+# rest of sandbox.sh emits and the `--mount type=bind,...` the launcher overlay
+# emits (switched to --mount so a `:` in a host path cannot wedge the run).
+mounts() {
+  awk '
+    prev=="-v"{print}
+    /^type=bind,/{
+      src=dst=""; ro=0; n=split($0,a,","); 
+      for(i=1;i<=n;i++){
+        if(a[i]~/^source=/)      {sub(/^source=/,"",a[i]);      src=a[i]}
+        else if(a[i]~/^destination=/){sub(/^destination=/,"",a[i]); dst=a[i]}
+        else if(a[i]=="readonly"||a[i]=="ro"||a[i]=="readonly=true"){ro=1}
+      }
+      printf "%s:%s%s\n", src, dst, (ro?":ro":":rw")
+    }
+    {prev=$0}
+  ' "$CAPTURE"
+}
+# The overlay lines for THIS launcher ($LAUNCHER), read-only.
 ro_overlays() { mounts | grep -F -- "$LAUNCHER:" | grep ':ro$'; }
 
 # ── T1: the documented launch — project mounted rw, its .ai-containers ro on top
@@ -160,12 +179,12 @@ want="$(printf '%s\n' "$DEEP/a:/workspace/deep/a:rw" "$DEEP/a/b:/workspace/deep/
 
 # ── T12: ANOTHER project's launcher inside a writable mount is protected too —
 # e.g. this engine launching `./sandbox.sh restricted ~/other`. A directory
-# merely named .ai-containers (no sandbox.sh) is not a launcher.
+# that only holds a name (no sandbox.sh + sandbox-common.sh) is not a launcher.
 OTHER="$TMP/other"; mkdir -p "$OTHER/.ai-containers" "$OTHER/sub/.ai-containers"
-: > "$OTHER/.ai-containers/sandbox.sh"
+: > "$OTHER/.ai-containers/sandbox.sh"; : > "$OTHER/.ai-containers/sandbox-common.sh"
 launch "$LAUNCHER" "$OTHER"
 [[ "$(mounts_under /workspace/other/)" == "$OTHER/.ai-containers:/workspace/other/.ai-containers:ro" ]] \
-  && pass "T12 another project's launcher in the mount is read-only; a bare .ai-containers is not touched" \
+  && pass "T12 another launcher (sandbox.sh + sandbox-common.sh) in the mount is read-only; a bare .ai-containers is not" \
   || fail "T12 other launcher (got: $(mounts_under /workspace/other/ | tr '\n' ' '))"
 
 # ── T13–T15: the other writable mount sources reach the overlay too.
@@ -188,6 +207,39 @@ grep -qxF -- "$LAUNCHER:/workspace/docs/proj/.ai-containers:ro" <<<"$(mounts_und
   && grep -qxF -- "$LAUNCHER:/workspace/architecture/proj/.ai-containers:ro" <<<"$(mounts_under /workspace/architecture/)" \
   && pass "T16 DOCS_PATH / ARCHITECTURE_REPO_PATH mounted :rw get the overlay" \
   || fail "T16 docs/architecture :rw (got: $(mounts_under /workspace/docs/ | tr '\n' ' ') | $(mounts_under /workspace/architecture/ | tr '\n' ' '))"
+
+# ── T17: an engine checkout (named "ai-containers", NOT ".ai-containers")
+# exposed by a writable mount is protected too — matched by content, not name.
+ENG="$TMP/devroot/ai-tools/ai-containers"; mkdir -p "$ENG"
+: > "$ENG/sandbox.sh"; : > "$ENG/sandbox-common.sh"
+EXTRA_MOUNTS="$TMP/devroot" launch "$LAUNCHER" "$TMP/app"
+mounts | grep -qxF -- "$ENG:/workspace/devroot/ai-tools/ai-containers:ro" \
+  && pass "T17 an ai-containers checkout in a writable mount is read-only" \
+  || fail "T17 engine checkout (got: $(mounts | grep -F devroot | tr '\n' ' '))"
+# and the directories above it are pinned, writable, so it cannot be moved
+mounts | grep -qxF -- "$TMP/devroot/ai-tools:/workspace/devroot/ai-tools:rw" \
+  && pass "T17 ... with its parent directories pinned writable" \
+  || fail "T17 engine parents pinned (got: $(mounts | grep -F devroot | tr '\n' ' '))"
+
+# ── T18: a launcher NESTED in another launcher gets no writable pin inside the
+# outer read-only overlay — the whole nested path is already read-only.
+NEST="$TMP/nest"; mkdir -p "$NEST/.ai-containers/sub/.ai-containers"
+: > "$NEST/.ai-containers/sandbox.sh"; : > "$NEST/.ai-containers/sandbox-common.sh"
+: > "$NEST/.ai-containers/sub/.ai-containers/sandbox.sh"; : > "$NEST/.ai-containers/sub/.ai-containers/sandbox-common.sh"
+launch "$LAUNCHER" "$NEST"
+[[ "$(mounts | grep -F "/workspace/nest/.ai-containers")" == "$NEST/.ai-containers:/workspace/nest/.ai-containers:ro" ]] \
+  && pass "T18 a launcher nested in another is covered by the outer overlay, with no writable pin punched into it" \
+  || fail "T18 nested launcher (got: $(mounts | grep -F /workspace/nest | tr '\n' ' '))"
+
+# ── T19: a mount whose ROOT is a launcher cannot be made read-only (it is the
+# mount); it stays writable and says so with a NOTE, rather than silently.
+launch "$LAUNCHER" "$OTHER"   # OTHER's working dir is /workspace/other; but mount it AS its launcher:
+EXTRA_MOUNTS="$OTHER/.ai-containers" launch "$LAUNCHER" "$TMP/app"
+obase="$(basename "$OTHER/.ai-containers")"   # ".ai-containers"
+[[ -z "$(mounts | grep -F "/workspace/$obase:" | grep ':ro$')" ]] \
+  && grep -q "NOTE:.*holds a launcher" "$ERR" \
+  && pass "T19 a mount rooted at a launcher stays writable and prints a NOTE" \
+  || fail "T19 launcher-as-mount NOTE (mounts: $(mounts | grep -F "/workspace/$obase" | tr '\n' ' '); stderr: $(grep NOTE "$ERR" | tr '\n' ' '))"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

@@ -261,14 +261,16 @@ add_file_mount_if_exists() {
 # documented launch mounts the whole project read-write (SANDBOX_WORKDIR=..).
 # Left writable, the agent could rewrite any of them, and .ai-containers/ is
 # gitignored, so `git status` would never show it. Docker mounts a nested bind
-# on top of its parent (it orders mounts by destination depth), so each one is
-# mounted again, :ro, inside every writable host bind that contains it, and the
-# rest of the mount stays writable.
+# on top of its parent (it orders mounts by destination depth), so each launcher
+# is mounted again, read-only, inside every writable host bind that exposes it,
+# and the rest of the mount stays writable.
 #
 # Which directories: this launcher's own, wherever it lives, and every other
-# project's launcher a writable mount exposes (launcher_dirs_in) — the engine
-# checkout launching `./sandbox.sh restricted ~/proj`, a project attached as a
-# :rw repo, or a parent directory in EXTRA_MOUNTS.
+# launcher a writable mount exposes (launcher_dirs_in) — a project attached as a
+# :rw repo, a parent directory in EXTRA_MOUNTS, or an ai-containers checkout
+# sitting in one. A launcher is matched by CONTENT (a directory holding both
+# sandbox.sh and sandbox-common.sh), not by the name .ai-containers: the engine
+# checkout itself is named ai-containers and is just as dangerous writable.
 #
 # The directories BETWEEN the mount root and a launcher are pinned too, each
 # bind-mounted onto itself read-write: an ordinary directory above a mount point
@@ -279,18 +281,22 @@ add_file_mount_if_exists() {
 #
 # launcher_ro_overlay <out-array> <this launcher's dir> <docker flag>...
 # Reads the `-v <src>:<dst>[:<opts>]` pairs among the flags. Only a writable bind
-# of a directory can expose one: a named volume's source is a name and holds a
-# copy, a file mount holds no directory, and a :ro bind is read-only already.
-# Paths are compared physically (`pwd -P`), which also settles case on macOS,
-# where getcwd reports the on-disk spelling; containment is by path component,
-# so /x/pro does not contain /x/proj. A mount that IS a launcher directory — the
-# engine checkout itself as the working dir — cannot be made read-only without
-# making that work impossible, so it is named instead.
+# of a directory can expose a launcher: a named volume's source is a name and
+# holds a copy, a file mount holds no directory, and a :ro bind is read-only
+# already. Sources are canonicalised physically (`pwd -P`) and compared by path
+# component, so /x/pro does not contain /x/proj. A mount that IS a launcher —
+# an engine checkout as the working dir, or a mount rooted at a project's
+# .ai-containers — cannot be made read-only without making that work impossible,
+# so it is named with a NOTE instead. Candidates are handled shallowest-first:
+# once a directory is overlaid read-only, everything inside it already is, so a
+# launcher nested in another is skipped rather than pinned — a :rw pin there
+# would punch a writable hole in the read-only parent. Emitted as `--mount`, not
+# `-v`, so a `:` in a host path (which an agent can create) cannot wedge the run.
 launcher_ro_overlay() {
   # shellcheck disable=SC2178  # nameref: shellcheck does not model `local -n`
   local -n _ro=$1
-  local self="$2" spec src rest dst opts l rel at path part
-  local -a parts
+  local self="$2" spec src rest dst opts l rel at path part r skip
+  local -a parts binds=() ro_dsts=()
   local -A seen=()
   shift 2
   while (( $# )); do
@@ -302,43 +308,64 @@ launcher_ro_overlay() {
     [[ ",$opts," == *,ro,* ]] && continue
     [[ "$src" == /* && -d "$src" ]] || continue
     src="$(cd "$src" 2>/dev/null && pwd -P)" || continue
-    while IFS= read -r l; do
-      [[ -n "$l" ]] || continue
-      if [[ "$l" == "$src" ]]; then
-        printf "NOTE: %s holds a launcher and stays writable at %s;\n" "$l" "$dst" >&2
-        printf '      what changes there runs on the host at the next launch.\n' >&2
-        continue
-      fi
-      [[ "$l" == "$src"/* ]] || continue
-      rel="${l#"$src"/}"
-      IFS=/ read -ra parts <<<"$rel"
-      path="$src"; at="$dst"
-      for part in "${parts[@]:0:${#parts[@]}-1}"; do
-        path="$path/$part"; at="$at/$part"
-        [[ -n "${seen[$at]:-}" ]] && continue
-        seen[$at]=1
-        _ro+=(-v "$path:$at:rw")
-      done
-      at="$dst/$rel"
+    binds+=("$src"$'\t'"$dst")
+  done
+  # Shallowest destination first, so an outer launcher's read-only overlay is
+  # recorded before anything nested in it is considered. LC_ALL=C so the sort is
+  # by byte, never a locale collation that could merge two distinct paths.
+  while IFS=$'\t' read -r at l src dst; do
+    skip=""
+    for r in ${ro_dsts[@]+"${ro_dsts[@]}"}; do
+      [[ "$at" == "$r" || "$at" == "$r"/* ]] && { skip=1; break; }
+    done
+    [[ -n "$skip" ]] && continue
+    if [[ "$l" == "$src" ]]; then
+      printf 'NOTE: %s holds a launcher and stays writable at %s;\n' "$l" "$dst" >&2
+      printf '      what changes there runs on the host at the next launch.\n' >&2
+      continue
+    fi
+    rel="${l#"$src"/}"
+    IFS=/ read -ra parts <<<"$rel"
+    path="$src"; at="$dst"
+    for part in "${parts[@]:0:${#parts[@]}-1}"; do
+      path="$path/$part"; at="$at/$part"
       [[ -n "${seen[$at]:-}" ]] && continue
       seen[$at]=1
-      _ro+=(-v "$l:$at:ro")
-      printf 'READ-ONLY: %s  (launcher files; edit them on the host)\n' "$at" >&2
-    done < <({ printf '%s\n' "$self"; launcher_dirs_in "$src"; } | sort -u)
-  done
+      _ro+=(--mount "type=bind,source=$path,destination=$at")
+    done
+    at="$dst/$rel"
+    [[ -n "${seen[$at]:-}" ]] && continue
+    seen[$at]=1
+    _ro+=(--mount "type=bind,source=$l,destination=$at,readonly")
+    ro_dsts+=("$at")
+    printf 'READ-ONLY: %s  (launcher files; edit them on the host)\n' "$at" >&2
+  done < <(
+    for spec in ${binds[@]+"${binds[@]}"}; do
+      src="${spec%%$'\t'*}"; dst="${spec#*$'\t'}"
+      { [[ "$self" == "$src" || "$self" == "$src"/* ]] && printf '%s\n' "$self"
+        launcher_dirs_in "$src"; } \
+        | while IFS= read -r l; do
+            [[ "$l" == "$src" ]] && { printf '%s\t%s\t%s\t%s\n' "$dst" "$l" "$src" "$dst"; continue; }
+            [[ "$l" == "$src"/* ]] || continue
+            printf '%s\t%s\t%s\t%s\n' "$dst/${l#"$src"/}" "$l" "$src" "$dst"
+          done
+    done | LC_ALL=C sort -u
+  )
 }
-
-# launcher_dirs_in <dir>: every project launcher under <dir> — a .ai-containers
-# directory holding a sandbox.sh — to six levels down, skipping dependency and
-# VCS trees. Bounded because it runs on every launch over every writable mount;
-# measured at a few hundredths of a second over a ~/dev holding dozens of repos.
+# launcher_dirs_in <dir>: every launcher directory at or below <dir> — matched by
+# CONTENT, a directory holding both sandbox.sh and sandbox-common.sh, which is
+# what the host runs `./sandbox.sh` from (a project's .ai-containers/ copy, or an
+# ai-containers checkout itself). To six levels down, pruning dependency and VCS
+# trees. Bounded because it runs on every launch over every writable mount;
+# measured at a few hundredths of a second over a ~/dev full of repos.
 launcher_dirs_in() {
-  local d
-  while IFS= read -r d; do
-    [[ -f "$d/sandbox.sh" ]] && printf '%s\n' "$d"
-  done < <(find "$1" -mindepth 1 -maxdepth 6 \
+  local f d
+  while IFS= read -r f; do
+    d="${f%/sandbox.sh}"
+    [[ -f "$d/sandbox-common.sh" ]] && printf '%s\n' "$d"
+  done < <(find "$1" -mindepth 1 -maxdepth 7 \
              \( -name node_modules -o -name .git -o -name vendor -o -name .venv -o -name target \) -prune \
-             -o -type d -name .ai-containers -print -prune 2>/dev/null)
+             -o -type f -name sandbox.sh -print 2>/dev/null)
 }
 
 # Seed a per-workspace writable working-copy volume from a repo's shared base
