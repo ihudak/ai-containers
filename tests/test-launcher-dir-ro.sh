@@ -170,11 +170,11 @@ launch "$LAUNCHER" "$OTHER"
 
 # ── T13–T15: the other writable mount sources reach the overlay too.
 VAULT_PATH="$TMP" launch "$LAUNCHER" "$TMP/app"
-mounts_under /workspace/vault/ | grep -qxF -- "$LAUNCHER:/workspace/vault/proj/.ai-containers:ro" \
+grep -qxF -- "$LAUNCHER:/workspace/vault/proj/.ai-containers:ro" <<<"$(mounts_under /workspace/vault/)" \
   && pass "T13 VAULT_PATH (writable) gets the overlay" \
   || fail "T13 VAULT_PATH (got: $(mounts_under /workspace/vault/ | tr '\n' ' '))"
 SPECS_PATH="$TMP" launch "$LAUNCHER" "$TMP/app"
-mounts_under /workspace/specs/ | grep -qxF -- "$LAUNCHER:/workspace/specs/proj/.ai-containers:ro" \
+grep -qxF -- "$LAUNCHER:/workspace/specs/proj/.ai-containers:ro" <<<"$(mounts_under /workspace/specs/)" \
   && pass "T14 SPECS_PATH (writable) gets the overlay" \
   || fail "T14 SPECS_PATH (got: $(mounts_under /workspace/specs/ | tr '\n' ' '))"
 mkdir -p "$HOME/.ai-containers"
@@ -184,8 +184,8 @@ REPOS="otherrepo:rw" launch "$LAUNCHER" "$TMP/app"
   && pass "T15 a :rw bind repo gets the overlay" \
   || fail "T15 bind repo (got: $(mounts_under /workspace/otherrepo/ | tr '\n' ' '); stderr: $(tail -3 "$ERR" | tr '\n' ' '))"
 DOCS_PATH="$TMP:rw" ARCHITECTURE_REPO_PATH="$TMP:rw" launch "$LAUNCHER" "$TMP/app"
-mounts_under /workspace/docs/ | grep -qxF -- "$LAUNCHER:/workspace/docs/proj/.ai-containers:ro" \
-  && mounts_under /workspace/architecture/ | grep -qxF -- "$LAUNCHER:/workspace/architecture/proj/.ai-containers:ro" \
+grep -qxF -- "$LAUNCHER:/workspace/docs/proj/.ai-containers:ro" <<<"$(mounts_under /workspace/docs/)" \
+  && grep -qxF -- "$LAUNCHER:/workspace/architecture/proj/.ai-containers:ro" <<<"$(mounts_under /workspace/architecture/)" \
   && pass "T16 DOCS_PATH / ARCHITECTURE_REPO_PATH mounted :rw get the overlay" \
   || fail "T16 docs/architecture :rw (got: $(mounts_under /workspace/docs/ | tr '\n' ' ') | $(mounts_under /workspace/architecture/ | tr '\n' ' '))"
 
