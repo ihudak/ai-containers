@@ -30,7 +30,7 @@ trap '[[ "$BASHPID" == "$TMP_OWNER" ]] && { chmod -R u+rwx "$TMP" 2>/dev/null; r
 export HOME="$TMP/home"; mkdir -p "$HOME"
 export AI_CONTAINER_GROUP=default AI_CONTAINER_GROUP_INIT=clean SANDBOX_USER=tester
 unset CONTAINER_NAME EXTRA_MOUNTS REPOS VAULT_PATH SPECS_PATH DOCS_PATH ARCHITECTURE_REPO_PATH \
-      SANDBOX_MODE SANDBOX_WORKDIR SANDBOX_ENV_FILE
+      SANDBOX_MODE SANDBOX_WORKDIR SANDBOX_ENV_FILE SANDBOX_GIT_MAX
 # The repositories below are made with the test's own identity, never the host's.
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 G=(git -c user.email=t@example.invalid -c user.name=t -c init.defaultBranch=main)
@@ -346,8 +346,18 @@ nro="$(grep -c '^READ-ONLY: /workspace/many/.*/\.git: ' "$ERR")"
 for n in $(seq -w 33 201); do mkdir -p "$TMP/many/r$n" && "${G[@]}" -C "$TMP/many/r$n" init -q; done
 EXTRA_MOUNTS="$TMP/many" launch "$TMP/app"
 [[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && grep -qF 'ERROR: the writable mounts hold more than 200 git directories' "$ERR" \
-  && pass "G21 past 200 the launch is refused, never left partly protected" \
-  || fail "G21 refusal past 200 (rc=$LAUNCH_RC; stderr: $(grep -E 'ERROR' "$ERR" | tr '\n' ' '))"
+  && grep -qE "^         $TMP/many/r[0-9]+/\.git$" "$ERR" \
+  && pass "G21 past 200 the launch is refused, never left partly protected, naming git directories past the limit" \
+  || fail "G21 refusal past 200 (rc=$LAUNCH_RC; stderr: $(grep -E 'ERROR|^         ' "$ERR" | head -4 | tr '\n' ' '))"
+# A tree that legitimately holds more (an AOSP-style checkout) can raise it.
+SANDBOX_GIT_MAX=300 EXTRA_MOUNTS="$TMP/many" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 && "$(grep -c '^READ-ONLY: /workspace/many/.*/\.git: ' "$ERR")" == 202 ]] \
+  && pass "G21 SANDBOX_GIT_MAX raises the limit, and then all 202 are protected" \
+  || fail "G21 SANDBOX_GIT_MAX=300 (rc=$LAUNCH_RC; protected: $(grep -c '^READ-ONLY: /workspace/many/' "$ERR"))"
+SANDBOX_GIT_MAX=abc EXTRA_MOUNTS="$TMP/many" launch "$TMP/app"
+[[ "$LAUNCH_RC" != 0 ]] && grep -qF 'SANDBOX_GIT_MAX must be a whole number' "$ERR" \
+  && pass "G21 a SANDBOX_GIT_MAX that is not a number refuses the launch" \
+  || fail "G21 SANDBOX_GIT_MAX=abc (rc=$LAUNCH_RC)"
 rm -rf "$TMP/many"
 
 # ── G22: a submodule whose .git is EMBEDDED, under vendor/, found via the index ─

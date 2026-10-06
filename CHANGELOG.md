@@ -71,8 +71,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   gains a `.git/commondir` holding `./` — git, libgit2, dulwich and gitoxide read
   it as "this directory", and it stops an agent creating one that points git
   elsewhere; the one visible difference is that `git rev-parse --git-common-dir`
-  prints an absolute path. A `commondir` already there holding anything else
-  stops the launch, naming it.
+  prints an absolute path, so a script comparing it with `--git-dir` as text
+  takes a protected repository for a linked worktree. A `commondir` already
+  there holding anything else stops the launch, naming it. Past 200 git
+  directories the launch is refused, naming some; `SANDBOX_GIT_MAX` raises it.
   Commit, branch, push and rebase work as before, but `git config`, `git remote
   add`, `git submodule update --init` and the upstream `git push -u` or a
   tracking `git checkout -b` records fail inside the container — git claims

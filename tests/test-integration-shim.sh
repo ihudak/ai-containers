@@ -14,6 +14,9 @@
 # somebody else's container and the affected case fails somewhere far away. This
 # test makes the premise itself the thing that breaks.
 set -uo pipefail
+# Hermetic: the developer's own pointers must not reach a launch — sandbox.sh
+# mounts them writable and writes into the git repositories it protects there.
+unset VAULT_PATH SPECS_PATH DOCS_PATH ARCHITECTURE_REPO_PATH EXTRA_MOUNTS REPOS SANDBOX_ENV_FILE SANDBOX_WORKDIR
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SHIM="$REPO_DIR/tests/integration/docker-shim.sh"

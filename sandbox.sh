@@ -320,7 +320,7 @@ launcher_ro_overlay() {
   local uid="${SANDBOX_UID:-$(id -u)}" gid="${SANDBOX_GID:-$(id -g)}" you
   local -a found unreadable cand bsrc=() bdst=() cl=() cat=() csrc=() cdst=() cdep=() ckind=() ro_dsts=() psrc pdst
   local -a scan links walk gdirs gfiles glinks gunr gro ug usrc udst udep ukind
-  local g base what gmax gn cfg hp hpd k2
+  local g base what gmax gn gitmax cfg hp hpd k2
   local -A seen=() tried=() scanned=() pinned=()
   local nl
   # The agent's identity decides what it can reach; find needs it numeric (and
@@ -546,6 +546,11 @@ launcher_ro_overlay() {
     if (( ${#d} > gmax )); then gmax=${#d}; fi
   done
   gn=0
+  gitmax="${SANDBOX_GIT_MAX:-200}"
+  if [[ ! "$gitmax" =~ ^[1-9][0-9]{0,5}$ ]]; then
+    printf 'ERROR: SANDBOX_GIT_MAX must be a whole number from 1 to 999999 (got %q).\n' "$gitmax" >&2
+    exit 1
+  fi
   for (( depth = 0; depth <= gmax; depth++ )); do
     for k in ${ug[@]+"${!ug[@]}"}; do
       if (( udep[k] != depth )); then continue; fi
@@ -557,11 +562,22 @@ launcher_ro_overlay() {
       if [[ -n "$skip" ]]; then continue; fi
       # Every one is protected — a cap that left some writable could be filled by
       # the agent (it can make repositories and unlistable directories) to push a
-      # real one past it. Past 200, refuse instead: a bind mount costs every start.
-      if (( gn >= 200 )); then
-        printf 'ERROR: the writable mounts hold more than 200 git directories to protect, and\n' >&2
-        printf '       each adds bind mounts to every container start. Mount narrower\n' >&2
-        printf '       directories, or mount them :ro.\n' >&2
+      # real one past it. Past SANDBOX_GIT_MAX (200), refuse instead: a bind mount
+      # costs every start. The refusal names where the overflow is, since an agent
+      # could have planted it, and a big tree (an AOSP-style checkout) can raise it.
+      if (( gn >= gitmax )); then
+        printf 'ERROR: the writable mounts hold more than %d git directories to protect, and\n' "$gitmax" >&2
+        printf '       each adds bind mounts to every container start. Among those past the limit:\n' >&2
+        x=0
+        for (( d = depth; d <= gmax && x < 5; d++ )); do
+          for k2 in "${!ug[@]}"; do
+            if (( udep[k2] == d && x < 5 )) && { (( d > depth )) || (( k2 >= k )); }; then
+              printf '         %s\n' "${ug[k2]}" >&2; x=$((x + 1))
+            fi
+          done
+        done
+        printf '       Mount narrower directories, or mount them :ro, or raise SANDBOX_GIT_MAX\n' >&2
+        printf '       if every one of them is yours.\n' >&2
         exit 1
       fi
       gro=(); cfg=""
@@ -1114,7 +1130,11 @@ git_dirs_in() {
     links=()
     # From the work tree's root: run from a subdirectory (sandbox.sh runs from
     # .ai-containers), ls-files lists only what lies under it.
-    mapfile -d '' -t links < <(git -C "$top" -c core.fsmonitor=false --git-dir="$g" --work-tree="$top" ls-files -s -z 2>/dev/null)
+    # safe.directory='*': a repository another user owns would otherwise refuse
+    # to be read, and its submodules go unprotected; ls-files runs nothing from a
+    # repository's config once fsmonitor is off.
+    mapfile -d '' -t links < <(git -C "$top" -c core.fsmonitor=false -c safe.directory='*' \
+        --git-dir="$g" --work-tree="$top" ls-files -s -z 2>/dev/null)
     for rec in ${links[@]+"${links[@]}"}; do
       mode="${rec%% *}"; path="${rec#*$'\t'}"
       [[ "$mode" == 160000 && -n "$path" ]] || continue
