@@ -45,7 +45,8 @@ if docker exec "$IT_CID" stat -c '%d:%i' /run/ai-launcher >/dev/null 2>&1; then
 else
   fail "a launch with launcher mounts carries the read-only verify mount"
 fi
-noted=0; docker logs "$IT_CID" 2>&1 | grep -q 'does not preserve device/inode' && noted=1
+logs="$(docker logs "$IT_CID" 2>&1)"   # captured, not piped: see lib.sh
+noted=0; if grep -q 'does not preserve device/inode' <<<"$logs"; then noted=1; fi
 if [[ "$preserving" == 1 ]]; then
   [[ "$noted" == 0 ]] \
     && pass "the guard is active here: the launch verified its mounts (no NOTE)" \

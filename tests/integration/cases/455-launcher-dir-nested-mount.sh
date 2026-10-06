@@ -92,7 +92,7 @@ if [[ "$bad_ok" -eq 1 ]]; then
     && pass "nothing owned by another user appeared in the host tree" \
     || fail "nothing owned by another user appeared in the host tree — found: $junk"
 else
-  pass "(this filesystem refuses a name that is not valid UTF-8; nothing to check)"
+  printf 'SKIP: the invalid-UTF-8 launcher — this filesystem refuses such a name\n'
 fi
 
 # A launcher link into a writable directory is named at launch, with what it

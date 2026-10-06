@@ -848,13 +848,19 @@ pointer_already_mounted_as() {
 }
 
 # Device and inode of a path, "<dev> <ino>": GNU `stat -c` or BSD `stat -f`
-# (macOS has only the latter). The platform is probed once, as
-# tests/portability.sh does, rather than falling back on failure: GNU `stat -f`
-# does not fail, it reports the FILESYSTEM instead. Prints nothing and returns
-# non-zero when the path cannot be stat'ed, so a caller can degrade.
-if stat -c '%i' . >/dev/null 2>&1; then _launcher_stat_gnu=1; else _launcher_stat_gnu=0; fi
+# (macOS has only the latter). The platform is probed once, on `/` (always
+# searchable — a probe of `.` fails in an unsearchable working directory and
+# would mistake GNU for BSD), as tests/portability.sh does, rather than falling
+# back on failure: GNU `stat -f` does not fail, it reports the FILESYSTEM
+# instead. Anything that is not two numbers is discarded, so a misdetection
+# degrades to the entrypoint's skip instead of handing it garbage. Prints
+# nothing and returns non-zero when the path cannot be stat'ed.
+if stat -c '%i' / >/dev/null 2>&1; then _launcher_stat_gnu=1; else _launcher_stat_gnu=0; fi
 _launcher_dev_ino() {
-  if (( _launcher_stat_gnu )); then stat -c '%d %i' "$1" 2>/dev/null; else stat -f '%d %i' "$1" 2>/dev/null; fi
+  local out
+  if (( _launcher_stat_gnu )); then out="$(stat -c '%d %i' "$1" 2>/dev/null)"; else out="$(stat -f '%d %i' "$1" 2>/dev/null)"; fi
+  [[ "$out" =~ ^[0-9]+\ [0-9]+$ ]] || return 1
+  printf '%s\n' "$out"
 }
 
 # Set by run_container when it creates a launcher-mount verify dir; removed by

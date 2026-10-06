@@ -91,8 +91,8 @@ grep -q 'ERROR:.*is not the directory it was checked as' <<<"$out" \
 out="$(run_case 0 0)"
 [[ "$out" == *"rc=0"* ]] && grep -q 'does not preserve device/inode' <<<"$out" \
   && ! grep -q 'ERROR' <<<"$out" \
-  && pass "an anchor mismatch warns and skips, so a non-preserving filesystem still launches" \
-  || fail "anchor mismatch warns and skips (got: $(tr '\n' ' ' <<<"$out"))"
+  && pass "an anchor mismatch notes and skips, so a non-preserving filesystem still launches" \
+  || fail "anchor mismatch notes and skips (got: $(tr '\n' ' ' <<<"$out"))"
 
 # 4) no anchor / no manifest → nothing to do
 # shellcheck source=/dev/null

@@ -26,7 +26,9 @@
 # sites (all pre-check existence) and silently wrong for anyone reusing the
 # idiom for a new field. Probe the platform once instead of relying on one
 # invocation failing.
-if stat -c '%a' . >/dev/null 2>&1; then _P_STAT_GNU=1; else _P_STAT_GNU=0; fi
+# On `/`, which is always searchable: a probe of `.` fails in an unsearchable
+# working directory and would mistake GNU for BSD.
+if stat -c '%a' / >/dev/null 2>&1; then _P_STAT_GNU=1; else _P_STAT_GNU=0; fi
 
 p_stat_mode() {  # $1=file → octal mode, e.g. 644
   if [[ "$_P_STAT_GNU" == "1" ]]; then stat -c '%a' "$1"; else stat -f '%Lp' "$1"; fi

@@ -17,8 +17,8 @@
 # about launcher links that lead somewhere the agent can change (T29, T32–T38),
 # names a writable mount inside a launcher (T40), records every launcher
 # mount for the entrypoint to re-verify against a concurrent-container swap (T41,
-# T42), works with a BSD-only stat (T43), sweeps only stale verify dirs and never
-# fatally (T44), and
+# T42), works with a BSD-only stat (T43) from any working directory (T45), sweeps
+# only stale verify dirs and never fatally (T44), and
 # refuses a non-numeric identity (T30).
 #
 # Hermetic: fake `docker` capturing the run args, no daemon. Integration cases
@@ -389,7 +389,7 @@ if (( made > 0 )); then
     fail "T24 invalid UTF-8 ($made made, $nwarn warned; mounts: $(raw_mounts | grep -aF "$BAD/x" | od -An -c | tr -s ' \n' ' '))"
   fi
 else
-  pass "T24 (this filesystem refuses names that are not valid UTF-8; nothing to check)"
+  printf 'SKIP: T24 invalid-UTF-8 names — this filesystem refuses them\n'
 fi
 # Valid UTF-8 must NOT be refused: a check that over-rejects leaves every
 # non-ASCII project unprotected. Cyrillic, an emoji (4 bytes), U+10FFFF.
@@ -446,7 +446,7 @@ if [[ "$(id -u)" -ne 0 ]]; then
     && pass "T25b one the agent can search but you cannot list is mounted read-only; T25c one it cannot enter is left alone" \
     || fail "T25b/c agent-reach (got: $(mounts_under /workspace/own/ | tr '\n' ' '); stderr: $(grep -F "$OWN" "$ERR" | tr '\n' ' '))"
 else
-  pass "T25b/c (as root every directory can be listed; nothing to check)"
+  printf 'SKIP: T25b/c — as root every directory can be listed\n'
 fi
 
 # ── T26: an unreadable writable mount ROOT cannot be overlaid (it is the mount)
@@ -569,7 +569,7 @@ if [[ "$(id -u)" -eq 0 ]] && command -v setpriv >/dev/null 2>&1; then
     && pass "T31 a directory hidden from you only by a supplementary group is reported" \
     || fail "T31 supplementary-group blind spot (got: ${got:-nothing})"
 else
-  pass "T31 (needs root and setpriv to build another owner's directory; runs in the floor job)"
+  printf 'SKIP: T31 — needs root and setpriv to build another owner'"'"'s directory (runs in the floor job)\n'
 fi
 
 # ── T32: the launcher you launch from is searched even when no mount holds it
@@ -755,13 +755,14 @@ aenv="$(awk 'prev=="-e"{print} {prev=$0}' "$CAPTURE" | sed -n 's/^AI_LAUNCHER_AN
 # abort this launch under set -e.
 VBASE="$HOME/.ai-containers"; mkdir -p "$VBASE"
 sleep 0 & deadpid=$!; wait "$deadpid" 2>/dev/null || true
-mkdir -p "$VBASE/.verify-$deadpid-1" "$VBASE/.verify-$deadpid-2"
+mkdir -p "$VBASE/.verify-$deadpid-1" "$VBASE/.verify-$deadpid-2" "$VBASE/.verify-$$-3"
 touch -t 202001010000 "$VBASE/.verify-$deadpid-1"            # stale: old + dead pid
+touch -t 202001010000 "$VBASE/.verify-$$-3"                  # old, but its pid ($$, this test) is alive
 launch "$LAUNCHER" ..
-[[ ! -e "$VBASE/.verify-$deadpid-1" && -d "$VBASE/.verify-$deadpid-2" ]] \
-  && pass "T44 an old verify dir of a dead launch is swept; a fresh one is kept" \
-  || fail "T44 sweep (old: $([[ -e "$VBASE/.verify-$deadpid-1" ]] && echo kept || echo gone), fresh: $([[ -d "$VBASE/.verify-$deadpid-2" ]] && echo kept || echo gone))"
-rm -rf "$VBASE/.verify-$deadpid-2"
+[[ ! -e "$VBASE/.verify-$deadpid-1" && -d "$VBASE/.verify-$deadpid-2" && -d "$VBASE/.verify-$$-3" ]] \
+  && pass "T44 an old verify dir of a dead launch is swept; a fresh one, or an old one whose pid lives, is kept" \
+  || fail "T44 sweep (old+dead: $([[ -e "$VBASE/.verify-$deadpid-1" ]] && echo kept || echo gone), fresh: $([[ -d "$VBASE/.verify-$deadpid-2" ]] && echo kept || echo gone), old+live: $([[ -d "$VBASE/.verify-$$-3" ]] && echo kept || echo gone))"
+rm -rf "$VBASE/.verify-$deadpid-2" "$VBASE/.verify-$$-3"
 if [[ "$(id -u)" -ne 0 ]]; then
   stuck="$VBASE/.verify-$deadpid-3"; mkdir -p "$stuck/ro"; : > "$stuck/ro/f"; chmod 0500 "$stuck/ro"
   touch -t 202001010000 "$stuck"
@@ -771,7 +772,23 @@ if [[ "$(id -u)" -ne 0 ]]; then
     && pass "T44 a stale dir that cannot be removed does not abort the launch" \
     || fail "T44 unremovable stale dir aborted the launch (rc=${LAUNCH_RC:-?}; $(tail -1 "$ERR"))"
 else
-  pass "T44 (as root every stale dir can be removed; the unremovable case needs an ordinary user)"
+  printf 'SKIP: T44 unremovable stale dir — chmod does not constrain root\n'
+fi
+
+# ── T45: the GNU/BSD stat probe must not depend on the working directory. Run
+# from one that cannot be searched, a probe of `.` fails, a GNU host is taken
+# for BSD, and `stat -f` (GNU: filesystem status) hands the entrypoint garbage
+# for an anchor. The anchor must still be two numbers.
+if [[ "$(id -u)" -ne 0 ]]; then
+  UNS="$TMP/unsearchable"; mkdir -p "$UNS"; : > "$CAPTURE"
+  ( cd "$UNS" && chmod 000 "$UNS" && bash "$LAUNCHER/sandbox.sh" open "$PROJ" ) >/dev/null 2>"$ERR" </dev/null
+  chmod 0755 "$UNS"
+  aenv="$(awk 'prev=="-e"{print} {prev=$0}' "$CAPTURE" | sed -n 's/^AI_LAUNCHER_ANCHOR=//p')"
+  [[ "$aenv" =~ ^[0-9]+:[0-9]+$ ]] \
+    && pass "T45 launched from an unsearchable directory, the anchor is still device:inode" \
+    || fail "T45 unsearchable cwd (anchor: '$aenv'; $(tail -1 "$ERR"))"
+else
+  printf 'SKIP: T45 — chmod does not constrain root\n'
 fi
 
 printf '\n%d failure(s)\n' "$fails"
