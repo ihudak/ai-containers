@@ -1,0 +1,22 @@
+# case: 455-launcher-dir-nested-mount
+# what: the --mount values are no longer CSV-quoted. docker reads a --mount value
+#       as a CSV record, so the comma in /workspace/grp/odd,name splits a field
+#       and docker refuses the whole `docker run`: one directory name an agent
+#       can create, and every later launch fails until it is found on the host.
+#
+#       Expected: launcher_up FAILs — sandbox.sh exits non-zero with docker's
+#       --mount parse error in the launch log — and the case ends there.
+#
+diff --git a/sandbox.sh b/sandbox.sh
+index c7e0532..8319cf8 100755
+--- a/sandbox.sh
++++ b/sandbox.sh
+@@ -397,7 +397,7 @@ launcher_ro_overlay() {
+ # next launch fails until someone finds and renames it on the host.
+ _bind_mount_arg() {
+   local s="source=$2" d="destination=$3"
+-  printf -v "$1" 'type=bind,"%s","%s"%s' "${s//\"/\"\"}" "${d//\"/\"\"}" "${4:+,$4}"
++  printf -v "$1" 'type=bind,%s,%s%s' "$s" "$d" "${4:+,$4}"
+ }
+ 
+ # launcher_dirs_in <out-array> <dir>: appends every launcher directory below

@@ -4,21 +4,22 @@
 #       again: renamable, with the read-only overlay moving along with them. The
 #       overlays themselves are untouched.
 #
-#       Expected: "the directory above the launcher cannot be moved" FAILs. Both
-#       launchers still read and refuse writes, and the parent and project stay
-#       writable; a FAIL there first would mean the case measures something
+#       Expected: "the directory above the launcher cannot be moved" FAILs. All
+#       three launchers still read and refuse writes, and the parent and project
+#       stay writable; a FAIL there first would mean the case measures something
 #       other than the pinning.
 #
 diff --git a/sandbox.sh b/sandbox.sh
-index 4785435..41ccd67 100755
+index c7e0532..43ee7f4 100755
 --- a/sandbox.sh
 +++ b/sandbox.sh
-@@ -331,7 +331,7 @@ launcher_ro_overlay() {
-       path="$path/$part"; at="$at/$part"
-       [[ -n "${seen[$at]:-}" ]] && continue
-       seen[$at]=1
--      _ro+=(--mount "type=bind,source=$path,destination=$at")
-+      :
-     done
-     at="$dst/$rel"
-     [[ -n "${seen[$at]:-}" ]] && continue
+@@ -380,8 +380,7 @@ launcher_ro_overlay() {
+         path="$path/$part"; pin="$pin/$part"
+         if [[ -n "${seen[$pin]:-}" ]]; then continue; fi
+         seen[$pin]=1
+-        _bind_mount_arg m "$path" "$pin"
+-        _ro+=(--mount "$m")
++        :
+       done
+       _bind_mount_arg m "$l" "$at" readonly
+       _ro+=(--mount "$m")
