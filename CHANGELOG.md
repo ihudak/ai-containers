@@ -136,6 +136,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   carries one Redis; `./build.sh` refuses `redis=7.2` rather than ignore it. A
   `REDIS_PORT` an app sets in `container.env` does not move the server. See
   `docs/components/redis.md`.
+- **A MySQL server inside the container: `mysql=ON | OFF`.** Ubuntu 24.04's
+  `mysql-server` (8.0), started in every container before the prompt, as your
+  user, on `localhost:3306` and `/var/run/mysqld/mysqld.sock`, loopback only.
+  `root` and your user have no password, so a bare `mysql` connects and so does
+  a Rails app with its generated `database.yml`. `MYSQL_USERS`
+  (`name` or `name:password`) and `MYSQL_DATABASES` in `container.env` create
+  users (every privilege) and databases at every start; the official image's
+  `MYSQL_ROOT_PASSWORD`/`MYSQL_DATABASE` are not read. The data directory is
+  initialised once, at build time, with the time zone tables loaded, so a start
+  takes under a second. `performance_schema` is off, which saves about 230 MB
+  of RAM. It takes no version, because Ubuntu carries one MySQL. See
+  `docs/components/mysql.md`.
 
 ## v0.9.20 — 2026-10-05
 

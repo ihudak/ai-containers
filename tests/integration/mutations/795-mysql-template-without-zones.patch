@@ -1,0 +1,17 @@
+# case: 790-mysql-server-runs
+# what: the template is built without the time zone tables. Everything starts
+#       and connects; only an app converting a NAMED zone finds out, as NULL.
+#
+#       Expected: every assertion PASSes except the first half of 6.
+diff --git a/Dockerfile b/Dockerfile
+index 12d7dff..4cbce38 100644
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -744,7 +744,6 @@ RUN if [ "$INSTALL_MYSQL" = "1" ]; then \
+       mysqld --no-defaults --user=mysql --datadir="$tpl" --skip-networking --mysqlx=OFF \
+         --socket="$bs/sock" --pid-file="$bs/pid" --log-error="$bs/err.log" \
+         --skip-log-bin --innodb-redo-log-capacity=8388608 --daemonize && \
+-      mysql_tzinfo_to_sql /usr/share/zoneinfo 2>/dev/null | mysql --no-defaults --socket="$bs/sock" -uroot mysql && \
+       mysqladmin --no-defaults --socket="$bs/sock" -uroot shutdown && \
+       for _ in $(seq 1 300); do [ -e "$bs/pid" ] || break; sleep 0.2; done && \
+       [ ! -e "$bs/pid" ] && \

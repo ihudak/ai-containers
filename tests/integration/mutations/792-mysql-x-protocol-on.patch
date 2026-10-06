@@ -1,0 +1,20 @@
+# case: 790-mysql-server-runs
+# what: --mysqlx=OFF dropped, so the X Protocol plugin listens on 33060 — on
+#       every address, since its own bind setting defaults to all. Nothing a
+#       classic client does notices it.
+#
+#       Expected: every assertion PASSes except the second half of 4, the X
+#       Protocol listener check.
+diff --git a/services.d/mysql.sh b/services.d/mysql.sh
+index 91bc56e..23395d9 100644
+--- a/services.d/mysql.sh
++++ b/services.d/mysql.sh
+@@ -101,7 +101,7 @@ svc_start() {  # <datadir> <logfile>
+   # redo flush and doublewrite off: durability buys nothing for a server
+   # deleted on exit. No X Protocol: it would listen on 33060, on every address.
+   "$MYSQL_MYSQLD" --no-defaults --datadir="$datadir" --socket="$(_mysql_sock)" \
+-    --port="$MYSQL_PORT" --bind-address="$bind" --mysqlx=OFF \
++    --port="$MYSQL_PORT" --bind-address="$bind" \
+     --pid-file="$datadir/mysqld.pid" --log-error="$logfile" \
+     --performance-schema=OFF --skip-log-bin --innodb-redo-log-capacity=8388608 \
+     --innodb-flush-log-at-trx-commit=0 --innodb-doublewrite=OFF --secure-file-priv= \

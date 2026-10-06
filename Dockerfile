@@ -717,6 +717,41 @@ RUN if [ "$INSTALL_REDIS" = "1" ]; then \
       rm -rf /var/lib/apt/lists/*; \
     fi
 
+# ── Optional: MySQL server (in-container, for tests) ───────────────────────────
+# INSTALL_MYSQL=1 from mysql=ON. Ubuntu's own mysql-server (8.0 on 24.04): the
+# key takes no version because the archive carries one. tzdata is for the time
+# zone tables below.
+#
+# The package initialises /var/lib/mysql at install (181 MB, measured), which
+# nothing uses, so it is emptied. In its place a TEMPLATE data directory is
+# initialised once, here, with the time zone tables loaded as the official mysql
+# image loads them — so a container start copies ~90 MB (~50 ms, measured)
+# instead of running `mysqld --initialize-insecure` (~5.6 s) every time.
+# services.d/mysql.sh copies it as the sandbox user, so it is world-readable;
+# root has no password in it, which is the point of a throwaway test server, and
+# nothing listens until the adapter starts a copy on loopback. The bootstrap
+# server that loads the zones listens on no port at all (--skip-networking), and
+# the layer waits for it to EXIT, not merely to accept the shutdown: the layer
+# snapshot must not catch InnoDB mid-flush.
+ARG INSTALL_MYSQL=0
+RUN if [ "$INSTALL_MYSQL" = "1" ]; then \
+      apt-get update && apt-get install -y --no-install-recommends mysql-server tzdata && \
+      rm -rf /var/lib/apt/lists/* /var/lib/mysql/* && \
+      tpl=/usr/share/ai-containers/mysql-template && bs=/tmp/mysql-bootstrap && \
+      mkdir -p /usr/share/ai-containers "$bs" && chown mysql "$bs" && \
+      mysqld --no-defaults --initialize-insecure --user=mysql --datadir="$tpl" \
+        --innodb-redo-log-capacity=8388608 --log-error="$bs/init.log" && \
+      mysqld --no-defaults --user=mysql --datadir="$tpl" --skip-networking --mysqlx=OFF \
+        --socket="$bs/sock" --pid-file="$bs/pid" --log-error="$bs/err.log" \
+        --skip-log-bin --innodb-redo-log-capacity=8388608 --daemonize && \
+      mysql_tzinfo_to_sql /usr/share/zoneinfo 2>/dev/null | mysql --no-defaults --socket="$bs/sock" -uroot mysql && \
+      mysqladmin --no-defaults --socket="$bs/sock" -uroot shutdown && \
+      for _ in $(seq 1 300); do [ -e "$bs/pid" ] || break; sleep 0.2; done && \
+      [ ! -e "$bs/pid" ] && \
+      chmod -R a+rX "$tpl" && rm -rf "$bs" && \
+      test -x /usr/sbin/mysqld && test -x /usr/bin/mysql && test -f "$tpl/mysql.ibd"; \
+    fi
+
 # ── Ruby runtime prerequisites (rvm is a per-user install at ~/.rvm, done at
 # container start; nothing Ruby is baked). Retain the FULL ruby-build dependency
 # set so `rvm install` compiles Ruby at runtime, pre-seed rvm's GPG keys so the

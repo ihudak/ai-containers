@@ -1,0 +1,18 @@
+# case: 790-mysql-server-runs
+# what: svc_start reports success without starting mysqld. The runner then prints
+#       its ready line for a server that is not there.
+#
+#       Expected: assertion 1 FAILs (no connection) and the case stops there,
+#       with the log tail.
+diff --git a/services.d/mysql.sh b/services.d/mysql.sh
+index 91bc56e..b1aa6ae 100644
+--- a/services.d/mysql.sh
++++ b/services.d/mysql.sh
+@@ -100,6 +100,7 @@ svc_start() {  # <datadir> <logfile>
+   # performance_schema off: 147 MB idle instead of 376 MB (measured). Binary log,
+   # redo flush and doublewrite off: durability buys nothing for a server
+   # deleted on exit. No X Protocol: it would listen on 33060, on every address.
++  return 0
+   "$MYSQL_MYSQLD" --no-defaults --datadir="$datadir" --socket="$(_mysql_sock)" \
+     --port="$MYSQL_PORT" --bind-address="$bind" --mysqlx=OFF \
+     --pid-file="$datadir/mysqld.pid" --log-error="$logfile" \
