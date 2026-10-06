@@ -1,0 +1,23 @@
+# case: 455-launcher-dir-nested-mount
+# what: every bind goes through --mount, never -v — the state before the final
+#       review. --mount refuses a value ending in whitespace, so the launcher
+#       under /workspace/grp/"tr " (a trailing space, a name an agent can
+#       create) makes docker refuse the whole `docker run`, at every launch.
+#
+#       Expected: launcher_up FAILs — sandbox.sh exits 125 with docker's
+#       "value should not have whitespace" (or equivalent) in the launch log —
+#       and the case ends there.
+#
+diff --git a/sandbox.sh b/sandbox.sh
+index 7261e57..5495a16 100755
+--- a/sandbox.sh
++++ b/sandbox.sh
+@@ -436,7 +436,7 @@ launcher_ro_overlay() {
+ # reads as a CSV record, so each field is quoted and any '"' doubled.
+ _bind_mount_arg() {
+   local s="source=$3" d="destination=$4" o=""
+-  if [[ "$3$4" != *:* ]]; then
++  if false; then
+     printf -v "$1" '%s' -v
+     printf -v "$2" '%s:%s:%s' "$3" "$4" "$5"
+   else

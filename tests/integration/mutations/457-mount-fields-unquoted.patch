@@ -1,22 +1,24 @@
 # case: 455-launcher-dir-nested-mount
-# what: the --mount values are no longer CSV-quoted. docker reads a --mount value
-#       as a CSV record, so the comma in /workspace/grp/odd,name splits a field
-#       and docker refuses the whole `docker run`: one directory name an agent
-#       can create, and every later launch fails until it is found on the host.
+# what: the --mount value is no longer CSV-quoted. docker reads it as a CSV
+#       record, so the comma in /workspace/grp/c:o,n (a name with a ':', hence
+#       handed over as --mount) splits a field and docker refuses the whole
+#       `docker run`: one directory name an agent can create, and every later
+#       launch fails until someone finds it on the host.
 #
-#       Expected: launcher_up FAILs — sandbox.sh exits non-zero with docker's
-#       --mount parse error in the launch log — and the case ends there.
+#       Expected: launcher_up FAILs — sandbox.sh exits 125 with docker's
+#       "invalid field ... must be a key=value pair" in the launch log — and the
+#       case ends there.
 #
 diff --git a/sandbox.sh b/sandbox.sh
-index c7e0532..8319cf8 100755
+index 7261e57..28619d1 100755
 --- a/sandbox.sh
 +++ b/sandbox.sh
-@@ -397,7 +397,7 @@ launcher_ro_overlay() {
- # next launch fails until someone finds and renames it on the host.
- _bind_mount_arg() {
-   local s="source=$2" d="destination=$3"
--  printf -v "$1" 'type=bind,"%s","%s"%s' "${s//\"/\"\"}" "${d//\"/\"\"}" "${4:+,$4}"
-+  printf -v "$1" 'type=bind,%s,%s%s' "$s" "$d" "${4:+,$4}"
+@@ -442,7 +442,7 @@ _bind_mount_arg() {
+   else
+     if [[ "$5" == ro ]]; then o=",readonly"; fi
+     printf -v "$1" '%s' --mount
+-    printf -v "$2" 'type=bind,"%s","%s"%s' "${s//\"/\"\"}" "${d//\"/\"\"}" "$o"
++    printf -v "$2" 'type=bind,%s,%s%s' "$s" "$d" "$o"
+   fi
  }
  
- # launcher_dirs_in <out-array> <dir>: appends every launcher directory below
