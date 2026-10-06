@@ -4,8 +4,10 @@
 #       as writable as the mount around it.
 #
 #       Expected: "agent cannot write" FAILs for every other launcher under
-#       /workspace/grp (other, odd,name, "tr ", c:o,n). This launcher's own
-#       overlay, the pinning and every writability control still PASS.
+#       /workspace/grp (other, odd,name, "tr ", c:o,n), and so does the
+#       skipped-name warning — the launcher under the name docker cannot carry
+#       is never found either. This launcher's own overlay, the pinning and
+#       every writability control still PASS.
 #
 diff --git a/sandbox.sh b/sandbox.sh
 index f3a6208..80e8660 100755
