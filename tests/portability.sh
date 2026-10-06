@@ -45,12 +45,15 @@ p_dev_ino() {  # $1=path → "dev ino", the identity a bind mount preserves
 # A zombie has exited but not been reaped, and `kill -0` still finds it. Whoever
 # inherits an orphan reaps it — unless that is a PID 1 that never reaps, as in a
 # GitHub container job (`tail -f /dev/null`), where a killed grandchild stays a
-# zombie for good. Linux reads /proc (ubuntu:22.04 has no `ps`); macOS has no
-# /proc and asks `ps`. A predicate, not a printer: a platform where neither
-# answers says "not a zombie", so a check built on it fails rather than passes.
+# zombie for good. Linux reads /proc, which every Linux has and which needs no
+# other tool; macOS has no /proc and asks `ps`. Probed once, like the stat probe above, so a test can
+# drive the `ps` branch on Linux too. A predicate, not a printer: a platform
+# where neither answers says "not a zombie", so a check built on it fails
+# rather than passes.
+if [[ -r /proc/self/stat ]]; then _P_PROC=1; else _P_PROC=0; fi
 p_zombie() {  # $1=pid → succeeds when it is a zombie
   local s
-  if [[ -r /proc/self/stat ]]; then
+  if [[ "$_P_PROC" == "1" ]]; then
     s="$(cat "/proc/$1/stat" 2>/dev/null)" || return 1
     s="${s##*) }"                   # past "pid (comm) ", whatever comm holds
   else

@@ -67,22 +67,43 @@ ln "$TMP/f" "$TMP/f.hard" 2>/dev/null && : > "$TMP/g"
 
 # p_zombie: a child that exits under a parent that never reaps is one; that live
 # parent is not; nor is a pid that is gone. The parent execs `sleep`, which never
-# waits, so its child stays a zombie until the parent itself ends.
-bash -c 'sleep 0.3 & echo "$!" > "$1"; exec sleep 5' _ "$TMP/zpid" &
-zparent=$!
-zombie=0
-for _ in $(seq 1 30); do
-  [[ -s "$TMP/zpid" ]] && p_zombie "$(cat "$TMP/zpid")" && { zombie=1; break; }
-  sleep 0.1
-done
-[[ "$zombie" == 1 ]] \
-  && pass "p_zombie finds an exited, unreaped child" \
-  || fail "p_zombie finds an exited, unreaped child (pid '$(cat "$TMP/zpid" 2>/dev/null)')"
-! p_zombie "$zparent" \
-  && pass "p_zombie: a live process is not one" || fail "p_zombie: a live process is not one"
-kill "$zparent" 2>/dev/null; wait "$zparent" 2>/dev/null
-! p_zombie "$zparent" \
-  && pass "p_zombie: a reaped pid is not one" || fail "p_zombie: a reaped pid is not one"
+# waits, so its child stays a zombie until the parent itself ends. Both ways of
+# asking, wherever this host has them: /proc (Linux) and `ps` (macOS, and any
+# host that ships it).
+zombie_checks() {  # $1 = label
+  local zparent zombie=0 _
+  rm -f "$TMP/zpid"
+  bash -c 'sleep 0.3 & echo "$!" > "$1"; exec sleep 5' _ "$TMP/zpid" &
+  zparent=$!
+  for _ in $(seq 1 30); do
+    [[ -s "$TMP/zpid" ]] && p_zombie "$(cat "$TMP/zpid")" && { zombie=1; break; }
+    sleep 0.1
+  done
+  [[ "$zombie" == 1 ]] \
+    && pass "p_zombie ($1) finds an exited, unreaped child" \
+    || fail "p_zombie ($1) finds an exited, unreaped child (pid '$(cat "$TMP/zpid" 2>/dev/null)')"
+  ! p_zombie "$zparent" \
+    && pass "p_zombie ($1): a live process is not one" || fail "p_zombie ($1): a live process is not one"
+  kill "$zparent" 2>/dev/null; wait "$zparent" 2>/dev/null
+  ! p_zombie "$zparent" \
+    && pass "p_zombie ($1): a reaped pid is not one" || fail "p_zombie ($1): a reaped pid is not one"
+}
+if [[ -r /proc/self/stat ]]; then
+  # Where /proc exists it is what p_zombie reads, so it needs no other tool.
+  [[ "$_P_PROC" == 1 ]] && pass "p_zombie reads /proc where there is one" \
+    || fail "p_zombie reads /proc where there is one (_P_PROC=$_P_PROC)"
+  # … with a `ps` that always fails first on PATH, so it is the /proc branch
+  # that answers, not whichever one works on this host.
+  mkdir -p "$TMP/nops"; printf '#!/bin/sh\nexit 1\n' > "$TMP/nops/ps"; chmod +x "$TMP/nops/ps"
+  PATH="$TMP/nops:$PATH" zombie_checks /proc
+fi
+if command -v ps >/dev/null 2>&1; then
+  _p_proc_saved="$_P_PROC"; _P_PROC=0
+  zombie_checks ps
+  _P_PROC="$_p_proc_saved"
+else
+  printf 'SKIP: p_zombie (ps) — this host has no ps\n'
+fi
 
 # The digest helpers must be stable and must differ for differing content.
 a="$(p_sha1 "$TMP/f")"; b="$(p_sha1 "$TMP/f")"
