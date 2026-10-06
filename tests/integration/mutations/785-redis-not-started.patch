@@ -1,0 +1,19 @@
+# case: 785-redis-server-runs
+# what: svc_start reports success without starting anything. The runner then
+#       prints its ready line for a server that is not there — so assertion 6
+#       still PASSES, which is why it cannot be the only check.
+#
+#       Expected: assertion 1 FAILs (no PONG) and the case stops there, with the
+#       log tail.
+diff --git a/services.d/redis.sh b/services.d/redis.sh
+index e6f2ade..4e2bc29 100644
+--- a/services.d/redis.sh
++++ b/services.d/redis.sh
+@@ -45,6 +45,7 @@ svc_start() {  # <datadir> <logfile>
+   # container without IPv6 still starts. --save '' and --appendonly no: nothing
+   # is written to disk. --daemonize: the server detaches into a session of its
+   # own and the call returns, so the runner's watchdog never holds the server.
++  return 0
+   "$REDIS_SERVER" --bind 127.0.0.1 -::1 --port "$REDIS_PORT" \
+     --daemonize yes --pidfile "$datadir/redis.pid" --logfile "$logfile" --dir "$datadir" \
+     --save '' --appendonly no || return 1
