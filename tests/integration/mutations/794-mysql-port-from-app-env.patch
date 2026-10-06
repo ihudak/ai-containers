@@ -1,0 +1,20 @@
+# case: 790-mysql-server-runs
+# what: the adapter reads an app's own MYSQL_PORT, which container.env hands to
+#       the start phase — the case sets MYSQL_PORT=7777 there, so the server moves
+#       off the port every client defaults to. The socket still works.
+#
+#       Expected: assertion 1 PASSes (socket); assertion 2 FAILs (nothing on
+#       127.0.0.1:3306) and so does 4 (no listener on 3306).
+diff --git a/services.d/mysql.sh b/services.d/mysql.sh
+index 91bc56e..44dfc1d 100644
+--- a/services.d/mysql.sh
++++ b/services.d/mysql.sh
+@@ -22,7 +22,7 @@ MYSQL_MYSQLD="${AI_SERVICES_MYSQL_MYSQLD:-/usr/sbin/mysqld}"
+ MYSQL_CLIENT="${AI_SERVICES_MYSQL_CLIENT:-/usr/bin/mysql}"
+ MYSQL_TEMPLATE="${AI_SERVICES_MYSQL_TEMPLATE:-/usr/share/ai-containers/mysql-template}"
+ MYSQL_SOCKET_DIR="${AI_SERVICES_MYSQL_SOCKET_DIR:-/var/run/mysqld}"
+-MYSQL_PORT="${AI_SERVICES_MYSQL_PORT:-3306}"
++MYSQL_PORT="${MYSQL_PORT:-${AI_SERVICES_MYSQL_PORT:-3306}}"
+ MYSQL_SELF="${AI_SERVICES_MYSQL_SELF:-$(id -un)}"
+ MYSQL_IF_INET6="${AI_SERVICES_MYSQL_IF_INET6:-/proc/net/if_inet6}"
+ # User and database names a project may ask for. Deliberately narrow — every

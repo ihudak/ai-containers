@@ -1,0 +1,18 @@
+# case: 790-mysql-server-runs
+# what: svc_provision returns before creating anything: MYSQL_USERS and
+#       MYSQL_DATABASES are read by nothing.
+#
+#       Expected: assertions 1-4 and 6 PASS; assertion 5 FAILs (no app_user, no
+#       myapp_test, no reporting) and so does 7 (the ready line names none).
+diff --git a/services.d/mysql.sh b/services.d/mysql.sh
+index 91bc56e..4a5a9f5 100644
+--- a/services.d/mysql.sh
++++ b/services.d/mysql.sh
+@@ -116,6 +116,7 @@ svc_start() {  # <datadir> <logfile>
+ }
+ 
+ svc_provision() {
++  return 0
+   local entry name pw err root_pw="" root_set=""
+   local -a entries=() users=() dbs=() known=(root "$MYSQL_SELF")
+ 
