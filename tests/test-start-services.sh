@@ -9,6 +9,8 @@
 set -uo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUNNER="$REPO_DIR/start-services.sh"
+# shellcheck source=portability.sh
+source "$REPO_DIR/tests/portability.sh"
 fails=0
 pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails+1)); }
@@ -77,11 +79,14 @@ run_runner() {  # $1 = phase, $2… = extra VAR=value → sets OUT (stdout+stder
 }
 has()  { grep -qF -- "$1" <<<"$OUT"; }
 # gone <pid> — dead within ~2 s. Polled, not one `kill -0`: a killed child stays
-# a zombie, which `kill -0` still finds, until whoever inherited it reaps it.
+# a zombie, which `kill -0` still finds, until whoever inherited it reaps it —
+# and in a GitHub container job that is a PID 1 which never reaps, so a zombie
+# counts as dead (p_zombie).
 gone() {
   local tries=20
   while (( tries-- > 0 )); do
     kill -0 "$1" 2>/dev/null || return 0
+    p_zombie "$1" && return 0
     sleep 0.1
   done
   return 1
