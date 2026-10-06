@@ -1,0 +1,22 @@
+# case: 465-git-internals-read-only
+# what: the launcher never looks for git directories, so .git is exactly as
+#       writable as the project around it: every launch before this change.
+#
+#       Expected: "the agent cannot write .git/hooks/pre-commit", "the host has
+#       no pre-commit hook" and "the agent cannot change .git/config" FAIL, and
+#       so does "the agent cannot rename .git" (nothing is mounted on it). The
+#       project's writability and the agent's commit still PASS; a FAIL there
+#       first would mean the case measures something other than the overlay.
+diff --git a/sandbox.sh b/sandbox.sh
+index 7e1cd5a..330dc1b 100755
+--- a/sandbox.sh
++++ b/sandbox.sh
+@@ -498,7 +498,7 @@ launcher_ro_overlay() {
+   for i in ${bsrc[@]+"${!bsrc[@]}"}; do
+     src="${bsrc[i]}"; dst="${bdst[i]}"
+     gdirs=(); gfiles=(); glinks=(); gunr=()
+-    git_dirs_in gdirs gfiles glinks gunr "$src"
++    :
+     for f in ${glinks[@]+"${glinks[@]}"}; do
+       at="$dst${f#"$src"}"; skip=""
+       for r in ${ro_dsts[@]+"${ro_dsts[@]}"}; do
