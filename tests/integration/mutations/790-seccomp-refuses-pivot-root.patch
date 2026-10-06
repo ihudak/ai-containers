@@ -1,0 +1,24 @@
+# case: 790-claude-sandbox-bubblewrap-starts
+# what: the seccomp profile no longer allows pivot_root, which Docker's default
+#       profile refuses to every container. The image, the AppArmor profile and
+#       sandbox.sh's flags are unchanged; only the syscall bubblewrap needs to
+#       switch to its new root is refused again. This is the profile a narrowing
+#       one syscall too far would ship.
+#
+#       Expected: assertions 1 and 2 PASS (the image is unchanged), and assertions 3
+#       and 4 FAIL — bubblewrap stops at `pivot_root: Operation not permitted`. That
+#       the case catches it is what makes the profile's five additions checked
+#       rather than merely present; a patch that broke the image instead would fail
+#       it at 1 or 2 and demonstrate nothing about the profile.
+diff --git a/ai-containers-sandbox.seccomp.json b/ai-containers-sandbox.seccomp.json
+index df3d0eb..8051b5d 100644
+--- a/ai-containers-sandbox.seccomp.json
++++ b/ai-containers-sandbox.seccomp.json
+@@ -670,7 +670,6 @@
+ 			"names": [
+ 				"clone",
+ 				"mount",
+-				"pivot_root",
+ 				"umount2",
+ 				"unshare"
+ 			],

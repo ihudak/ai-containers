@@ -3,9 +3,10 @@
 #
 # The key buys three things: the bubblewrap + socat packages and the managed
 # settings file at build time (one build arg), and the two --security-opt flags
-# bubblewrap needs at run time. These are wiring assertions. That bubblewrap then
-# starts inside a container run with those flags is a claim no hermetic test can
-# make; it needs a Docker host.
+# bubblewrap needs at run time, one of which names the seccomp profile this repo
+# ships (Part D holds that file to what it promises). These are wiring
+# assertions. That bubblewrap then starts inside a container run with those flags
+# is a claim no hermetic test can make; it needs a Docker host.
 set -uo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=portability.sh
@@ -69,13 +70,19 @@ cs_run() { ( cd "$TMP/launch" && bash "$REPO_DIR/sandbox.sh" restricted "$TMP/ap
 cs_setup 'claude-code-sandbox=ON'
 cs_run
 security_opts="$(grep -A1 -x -- '--security-opt' "$CAPTURE")"
-for opt in seccomp=unconfined apparmor=ai-containers-sandbox; do
-  if grep -qx -- "$opt" <<<"$security_opts"; then
-    pass "claude-code-sandbox=ON: --security-opt $opt"
-  else
-    fail "claude-code-sandbox=ON: --security-opt $opt"
-  fi
-done
+if grep -qx -- 'apparmor=ai-containers-sandbox' <<<"$security_opts"; then
+  pass "claude-code-sandbox=ON: --security-opt apparmor=ai-containers-sandbox"
+else
+  fail "claude-code-sandbox=ON: --security-opt apparmor=ai-containers-sandbox"
+fi
+# The seccomp profile goes by path: the Docker client reads the file and sends it
+# with the container. It is the one shipped beside sandbox.sh — never `unconfined`.
+seccomp_opt="$(grep -x -- 'seccomp=.*' <<<"$security_opts")"
+if [[ "$seccomp_opt" == seccomp=*/ai-containers-sandbox.seccomp.json && -f "${seccomp_opt#seccomp=}" ]]; then
+  pass "claude-code-sandbox=ON: --security-opt seccomp=<the shipped profile>"
+else
+  fail "claude-code-sandbox=ON: --security-opt seccomp=<the shipped profile> — got: ${seccomp_opt:-none}"
+fi
 cs_teardown
 
 # OFF: every container that does not ask for the inner sandbox keeps Docker's
@@ -93,15 +100,15 @@ cs_teardown
 # it would stop every Claude Code session (failIfUnavailable), so sandbox.sh probes
 # with a throwaway container first and stops, saying how to load it. The fake
 # docker fails that probe — `--entrypoint true` — the way the daemon does.
-cs_setup 'claude-code-sandbox=ON'
-cat > "$TMP/bin/docker" <<DOCKER
+probe_refuses() {  # $1 = the error Docker prints for the probe container
+  cat > "$TMP/bin/docker" <<DOCKER
 #!/usr/bin/env bash
 if [[ "\$1" == "run" ]]; then
   shift
   prev=""
   for a in "\$@"; do
     if [[ "\$prev" == "--entrypoint" && "\$a" == "true" ]]; then
-      echo "docker: Error response from daemon: AppArmor enabled on system but the ai-containers-sandbox profile could not be loaded" >&2
+      echo "$1" >&2
       exit 125
     fi
     prev="\$a"
@@ -110,7 +117,10 @@ if [[ "\$1" == "run" ]]; then
 fi
 exit 1
 DOCKER
-chmod +x "$TMP/bin/docker"
+  chmod +x "$TMP/bin/docker"
+}
+cs_setup 'claude-code-sandbox=ON'
+probe_refuses "docker: Error response from daemon: AppArmor enabled on system but the ai-containers-sandbox profile could not be loaded"
 err="$( ( cd "$TMP/launch" && bash "$REPO_DIR/sandbox.sh" restricted "$TMP/app" ) 2>&1 >/dev/null </dev/null )"; rc=$?
 if [[ "$rc" -ne 0 ]]; then
   pass "claude-code-sandbox=ON, profile not loaded: sandbox.sh stops"
@@ -129,6 +139,24 @@ else
 fi
 cs_teardown
 
+# A refusal that is not AppArmor's — the seccomp profile unreadable or rejected,
+# say — is shown as Docker gave it, never as the load commands for a profile that
+# may well be loaded.
+cs_setup 'claude-code-sandbox=ON'
+probe_refuses "docker: Error response from daemon: Decoding seccomp profile failed: invalid character"
+err="$( ( cd "$TMP/launch" && bash "$REPO_DIR/sandbox.sh" restricted "$TMP/app" ) 2>&1 >/dev/null </dev/null )"; rc=$?
+if [[ "$rc" -ne 0 && ! -s "$CAPTURE" ]]; then
+  pass "claude-code-sandbox=ON, another refusal: sandbox.sh stops and starts no container"
+else
+  fail "claude-code-sandbox=ON, another refusal: sandbox.sh stops and starts no container"
+fi
+if grep -qF 'Decoding seccomp profile failed' <<<"$err" && ! grep -qF 'apparmor_parser' <<<"$err"; then
+  pass "claude-code-sandbox=ON, another refusal: Docker's error is shown, not the AppArmor load commands"
+else
+  fail "claude-code-sandbox=ON, another refusal: Docker's error is shown, not the AppArmor load commands"
+fi
+cs_teardown
+
 # ── Part C: the managed settings file holds the boundary ───────────────────────
 # Each line below is a property the docs page promises; a settings edit that
 # drops one turns the sandbox back into a prompt-saver Claude can step out of.
@@ -144,6 +172,45 @@ if command -v python3 >/dev/null 2>&1; then
   else
     fail "managed settings: valid JSON"
   fi
+fi
+
+# ── Part D: the seccomp profile frees what bubblewrap needs, and nothing else ──
+# Docker's default profile with clone (namespace flags included), unshare, mount,
+# umount2 and pivot_root allowed to a container without CAP_SYS_ADMIN. Everything
+# else Docker reserves for CAP_SYS_ADMIN — setns, bpf, sethostname and the rest —
+# must stay reserved: a widened rule would hand every agent in the container more
+# than bubblewrap asks for.
+P="$REPO_DIR/ai-containers-sandbox.seccomp.json"
+if command -v python3 >/dev/null 2>&1; then
+  out="$(python3 - "$P" 2>&1 <<'PY'
+import json, sys
+p = json.load(open(sys.argv[1]))
+rules = p["syscalls"]
+def plain(r):
+    return r["action"] == "SCMP_ACT_ALLOW" and not r.get("args") and not r.get("includes") and not r.get("excludes")
+free = {n for r in rules if plain(r) for n in r["names"]}
+admin = {n for r in rules if (r.get("includes") or {}).get("caps") == ["CAP_SYS_ADMIN"] for n in r["names"]}
+five = {"clone", "unshare", "mount", "umount2", "pivot_root"}
+print("refuses-by-default" if p["defaultAction"] == "SCMP_ACT_ERRNO" else "default: " + p["defaultAction"])
+print("frees-the-five" if five <= free else "not freed: %s" % sorted(five - free))
+print("rest-stays-reserved" if not (admin - five) & free else "freed beyond the five: %s" % sorted((admin - five) & free))
+print("admin-rule-intact" if {"setns", "unshare", "bpf", "sethostname"} <= admin else "CAP_SYS_ADMIN rule changed")
+print("clone3-enosys" if any(r["names"] == ["clone3"] and r["action"] == "SCMP_ACT_ERRNO" and r.get("errnoRet") == 38 for r in rules) else "clone3 rule changed")
+print("no-filtered-clone" if not any("clone" in r["names"] and r.get("args") for r in rules) else "an argument-filtered clone rule is left")
+PY
+)"
+  for want in "refuses-by-default:refuses any syscall it does not list (SCMP_ACT_ERRNO)" \
+              "frees-the-five:allows clone, unshare, mount, umount2 and pivot_root to a container without CAP_SYS_ADMIN" \
+              "rest-stays-reserved:keeps the rest of what Docker reserves for CAP_SYS_ADMIN reserved" \
+              "admin-rule-intact:keeps Docker's CAP_SYS_ADMIN rule (setns, unshare, bpf, sethostname)" \
+              "clone3-enosys:still answers clone3 with ENOSYS, so glibc falls back to clone" \
+              "no-filtered-clone:leaves no argument-filtered clone rule beside the unconditional one"; do
+    if grep -qx -- "${want%%:*}" <<<"$out"; then
+      pass "seccomp profile: ${want#*:}"
+    else
+      fail "seccomp profile: ${want#*:} — got: $(tr '\n' ' ' <<<"$out")"
+    fi
+  done
 fi
 
 [[ $fails -eq 0 ]] && exit 0 || exit 1

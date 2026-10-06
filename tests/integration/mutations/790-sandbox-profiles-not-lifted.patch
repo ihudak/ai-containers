@@ -1,10 +1,10 @@
 # case: 790-claude-sandbox-bubblewrap-starts
 # what: the image is built with claude-code-sandbox=ON — bubblewrap, socat and the
-#       managed settings all present — but sandbox.sh no longer lifts seccomp nor
-#       runs it under the ai-containers-sandbox AppArmor profile (nor probes for
-#       it), so it starts under Docker's default profiles. This is the container the key would
-#       give if its run-time half were ever dropped or made conditional on the wrong
-#       thing.
+#       managed settings all present — but sandbox.sh no longer runs it under either
+#       of the key's profiles, ai-containers-sandbox.seccomp.json and the
+#       ai-containers-sandbox AppArmor profile (nor probes for them), so it starts
+#       under Docker's default profiles. This is the container the key would give if
+#       its run-time half were ever dropped or made conditional on the wrong thing.
 #
 #       Expected: assertions 1 and 2 PASS (the image is unchanged), and assertions 3
 #       and 4 FAIL — bubblewrap cannot create its namespace or mount in it under the
@@ -12,15 +12,15 @@
 #       image instead would fail it at 1 or 2 and demonstrate nothing about the
 #       flags.
 diff --git a/sandbox.sh b/sandbox.sh
-index fc6793d..60ea268 100755
+index 9f6da57..392cf3f 100755
 --- a/sandbox.sh
 +++ b/sandbox.sh
-@@ -1670,7 +1670,7 @@ run_container() {
-   # starts. Both options apply only when the key asks for the inner sandbox: every
+@@ -1677,7 +1677,7 @@ run_container() {
+   # it. Both options apply only when the key asks for the inner sandbox: every
    # other container composes exactly the `docker run` it did before.
-   local inner_sandbox_flags=()
+   local inner_sandbox_flags=() probe_err
 -  if is_enabled claude-code-sandbox; then
 +  if false; then
-     inner_sandbox_flags=(--security-opt seccomp=unconfined --security-opt apparmor=ai-containers-sandbox)
-     if ! docker run --rm --entrypoint true "${inner_sandbox_flags[@]}" "$image_name" >/dev/null 2>&1; then
-       claude_sandbox_profile_missing "$script_dir/ai-containers-sandbox.apparmor"
+     inner_sandbox_flags=(--security-opt "seccomp=$script_dir/ai-containers-sandbox.seccomp.json"
+                          --security-opt apparmor=ai-containers-sandbox)
+     if ! probe_err="$(docker run --rm --entrypoint true "${inner_sandbox_flags[@]}" "$image_name" 2>&1 >/dev/null)"; then

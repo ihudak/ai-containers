@@ -1653,8 +1653,8 @@ run_container() {
   fi
 
   # Claude Code's own sandbox (claude-code-sandbox=ON) runs each shell command
-  # Claude starts inside bubblewrap, which must create a user namespace and then
-  # mount and pivot_root inside it. Docker's default profiles refuse both halves:
+  # Claude starts inside bubblewrap, which must create its namespaces and then
+  # mount and pivot_root inside them. Docker's default profiles refuse both halves:
   # - the namespace: AppArmor. Where Docker's kernel is Ubuntu 24.04's — on a Mac,
   #   the Linux VM Docker runs in (measured in a Lima VM) —
   #   kernel.apparmor_restrict_unprivileged_userns=1 refuses it under
@@ -1662,18 +1662,31 @@ run_container() {
   #   apparmor=unconfined. A profile that grants `userns` is exempt:
   #   ai-containers-sandbox.apparmor is docker-default plus userns, mount and
   #   pivot_root, and integration case 790 passes under it on such a kernel.
-  # - the mounts: seccomp. Docker's profile gates mount, umount2, pivot_root and
-  #   setns on CAP_SYS_ADMIN, which this container never holds, so it is lifted.
-  # The profile must be loaded where Docker's kernel runs, and a container started
-  # without it would stop every Claude Code session at startup (failIfUnavailable),
-  # so a throwaway container under it proves it is loaded before the real one
-  # starts. Both options apply only when the key asks for the inner sandbox: every
+  # - the namespaces and the mounts: seccomp. Docker's profile refuses clone with
+  #   a namespace flag, unshare, mount and umount2 to a container without
+  #   CAP_SYS_ADMIN, which this one never holds, and pivot_root to every
+  #   container. ai-containers-sandbox.seccomp.json is Docker's profile with those
+  #   five allowed (unshare: bubblewrap's second user namespace, which it creates
+  #   whenever it mounts /dev). The Docker client reads the file and sends it with
+  #   the container, so, unlike the AppArmor profile, it is never loaded anywhere.
+  # The AppArmor profile must be loaded where Docker's kernel runs, and a container
+  # started without it would stop every Claude Code session at startup
+  # (failIfUnavailable), so a throwaway container under both profiles proves they
+  # apply before the real one starts. A refusal that does not name AppArmor is
+  # Docker's own (an unreadable seccomp profile, say) and is shown as Docker gave
+  # it. Both options apply only when the key asks for the inner sandbox: every
   # other container composes exactly the `docker run` it did before.
-  local inner_sandbox_flags=()
+  local inner_sandbox_flags=() probe_err
   if is_enabled claude-code-sandbox; then
-    inner_sandbox_flags=(--security-opt seccomp=unconfined --security-opt apparmor=ai-containers-sandbox)
-    if ! docker run --rm --entrypoint true "${inner_sandbox_flags[@]}" "$image_name" >/dev/null 2>&1; then
-      claude_sandbox_profile_missing "$script_dir/ai-containers-sandbox.apparmor"
+    inner_sandbox_flags=(--security-opt "seccomp=$script_dir/ai-containers-sandbox.seccomp.json"
+                         --security-opt apparmor=ai-containers-sandbox)
+    if ! probe_err="$(docker run --rm --entrypoint true "${inner_sandbox_flags[@]}" "$image_name" 2>&1 >/dev/null)"; then
+      if grep -qi 'apparmor' <<<"$probe_err"; then
+        claude_sandbox_profile_missing "$script_dir/ai-containers-sandbox.apparmor"
+      else
+        printf 'claude-code-sandbox=ON, but Docker cannot start a container with its security options:\n%s\n' "$probe_err" >&2
+        printf 'See docs/components/claude-code-sandbox.md. Or set claude-code-sandbox=OFF.\n' >&2
+      fi
       exit 1
     fi
   fi

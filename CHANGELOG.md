@@ -14,14 +14,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   runs reach only package registries, write only under `/workspace` and the
   package caches, never see the GitHub tokens, and cannot be rerun outside it.
   `git`, `gh`, `acli`, `dtctl` and `dtmgd` run outside it. bubblewrap
-  needs a user namespace and mounts inside it, so the key lifts seccomp and runs
-  the container under a new AppArmor profile, `ai-containers-sandbox.apparmor`:
-  Docker's default plus `userns`, `mount` and `pivot_root`. Where Docker's kernel
-  is Ubuntu 24.04's — on a Mac, the VM Docker runs in — its user-namespace
-  restriction defeats `apparmor=unconfined` (integration case 790) but exempts
-  that profile, which must be loaded once, as root, there; `sandbox.sh` stops with
-  the commands until it is. Only Claude Code's commands gain the sandbox; both
-  changes apply to every agent in the container.
+  needs a user namespace and mounts inside it, so the key runs the container
+  under two profiles of its own: `ai-containers-sandbox.seccomp.json`, Docker's
+  default seccomp profile plus `clone` with namespace flags, `unshare`, `mount`,
+  `umount2` and `pivot_root`, and `ai-containers-sandbox.apparmor`, Docker's
+  default AppArmor profile plus `userns`, `mount` and `pivot_root`. Where
+  Docker's kernel is Ubuntu 24.04's — on a Mac, the VM Docker runs in — its
+  user-namespace restriction defeats `apparmor=unconfined` (integration case 790)
+  but exempts the AppArmor profile, which must be loaded once, as root, there;
+  `sandbox.sh` stops with the commands until it is. The seccomp profile needs no
+  loading: the Docker client sends it with the container. Only Claude Code's
+  commands gain the sandbox; both profiles apply to every agent in the container.
 
 ### Security
 

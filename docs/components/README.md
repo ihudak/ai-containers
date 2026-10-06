@@ -42,7 +42,7 @@ Every key in `sandbox.conf`. Keys with more to say than a line link to their own
 |---|---|---|
 | `copilot` | ON / OFF | GitHub Copilot CLI |
 | `claude-code` | ON / OFF | Claude Code CLI |
-| `claude-code-sandbox` | ON / OFF | [Claude Code's own sandbox](claude-code-sandbox.md) for the commands Claude runs — registries only, writes under `/workspace`; **lifts seccomp and needs an AppArmor profile loaded where Docker's kernel runs** |
+| `claude-code-sandbox` | ON / OFF | [Claude Code's own sandbox](claude-code-sandbox.md) for the commands Claude runs — registries only, writes under `/workspace`; **five more syscalls than Docker's seccomp profile, and an AppArmor profile loaded where Docker's kernel runs** |
 | `codex` | ON / OFF | OpenAI Codex CLI |
 | `gemini` | ON / OFF | Google Gemini CLI |
 | `kiro` | ON / OFF | Kiro CLI |

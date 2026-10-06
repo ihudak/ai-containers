@@ -507,7 +507,7 @@ jobs:
           docker system df
 
   # The sandbox variant: claude-code-sandbox=ON. Its one case measures that bubblewrap
-  # starts under the profiles that key lifts, on this ubuntu-24.04 runner, whose kernel
+  # starts under the two profiles that key sets, on this ubuntu-24.04 runner, whose kernel
   # restricts unprivileged user namespaces. Steps as packages-native's, whose comments
   # explain them; its disk and wall-clock figures are the native image's, not this one's.
   packages-sandbox:

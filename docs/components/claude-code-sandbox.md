@@ -41,9 +41,10 @@ git hooks run with them.
 
 ## What it costs
 
-**The container runs with `--security-opt seccomp=unconfined --security-opt
-apparmor=ai-containers-sandbox`.** bubblewrap has to create a user namespace, then
-mount and `pivot_root` inside it, and Docker's default profiles refuse both:
+**The container runs under two profiles of its own:** `--security-opt
+seccomp=<…>/ai-containers-sandbox.seccomp.json --security-opt
+apparmor=ai-containers-sandbox`. bubblewrap has to create its namespaces, then
+mount and `pivot_root` inside them, and Docker's default profiles refuse both:
 
 - **The namespace — AppArmor.** Where Docker's kernel is Ubuntu 24.04's — on a
   Mac, the Linux VM Docker runs in; measured in a Lima VM —
@@ -53,22 +54,31 @@ mount and `pivot_root` inside it, and Docker's default profiles refuse both:
   `setting up uid map: Permission denied`). A process confined by a profile that
   grants `userns` is exempt, so the container runs under
   [`ai-containers-sandbox.apparmor`](../../ai-containers-sandbox.apparmor):
-  Docker's default profile plus `userns`, `mount` and `pivot_root`. Case 790
-  passes under it, network namespace included, on an `ubuntu-24.04` runner. On a
-  Mac, with the profile loaded in its Colima VM, a Claude Code session started
-  with the sandbox up (`failIfUnavailable` on) and its sandbox refused a write to
-  the home directory (`Read-only file system`) and a request to a host off the
-  allowlist (the sandbox proxy's `403`) — in a container in OPEN mode, with no
-  firewall of its own.
-- **The mounts — seccomp.** Docker's seccomp profile gates `mount`, `umount2`,
-  `pivot_root` and `setns` on `CAP_SYS_ADMIN`, which this container never holds,
-  so seccomp is lifted.
+  Docker's default profile plus `userns`, `mount` and `pivot_root`.
+- **The namespaces and the mounts — seccomp.** Docker's seccomp profile refuses
+  `clone` with a namespace flag, `unshare`, `mount` and `umount2` to a container
+  without `CAP_SYS_ADMIN`, which this one never holds, and `pivot_root` to every
+  container.
+  [`ai-containers-sandbox.seccomp.json`](../../ai-containers-sandbox.seccomp.json)
+  is Docker's default profile, as Docker 29.8 ships it, with those five allowed:
+  what bubblewrap 0.9 calls on the path Claude Code takes — `unshare` for the
+  second user namespace it creates whenever it mounts `/dev`. `setns`, `bpf`,
+  `sethostname` and the rest of what Docker reserves for `CAP_SYS_ADMIN` stay
+  refused. Unlike the AppArmor profile it needs no loading: the Docker client
+  reads the file and sends it with the container.
 
 Both apply to every process in the container — every agent's, Copilot's, Codex's,
-Gemini's and Kiro's included, none of which gains the inner sandbox: no seccomp
-filter, and AppArmor confinement with three more permissions than Docker's
-default. The network firewall, the non-root user and the dropped capabilities are
-unchanged.
+Gemini's and Kiro's included, none of which gains the inner sandbox: five more
+syscalls than Docker's seccomp profile allows, and AppArmor confinement with three
+more permissions than Docker's default. The network firewall, the non-root user
+and the dropped capabilities are unchanged.
+
+**Measured.** On a Mac, with the AppArmor profile loaded in its Colima VM and
+seccomp still lifted entirely — the run predates the seccomp profile — a Claude
+Code session started with the sandbox up (`failIfUnavailable` on) and its
+sandbox refused a write to the home directory (`Read-only file system`) and a
+request to a host off the allowlist (the sandbox proxy's `403`) — in a container
+in OPEN mode, with no firewall of its own.
 
 `enableWeakerNestedSandbox` is set because, in a container, bubblewrap cannot
 mount a fresh `/proc`; the sandbox bind-mounts the container's instead, so a
