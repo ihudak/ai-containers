@@ -21,6 +21,25 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/version.sh"
 # Parse a host-pointer value "[@]<source>[:ro|:rw]" into three globals the caller
 # reads immediately: PTR_KIND (volume|path), PTR_SRC (repo name or host path),
 # PTR_MODE (ro|rw — the trailing suffix when $3 is 1, else the $2 default).
+# claude-code-sandbox=ON and Docker cannot start a container under the
+# ai-containers-sandbox AppArmor profile: say where and how to load it, once, as
+# root, where Docker's kernel runs. The copy under /etc/apparmor.d is loaded again
+# on every boot of that kernel.
+claude_sandbox_profile_missing() {  # $1=absolute path of ai-containers-sandbox.apparmor
+  local profile="$1"
+  local load="cp '$profile' /etc/apparmor.d/ai-containers-sandbox && apparmor_parser -r /etc/apparmor.d/ai-containers-sandbox"
+  {
+    printf 'claude-code-sandbox=ON, but Docker cannot start a container under the\n'
+    printf 'ai-containers-sandbox AppArmor profile: it is not loaded where Docker'"'"'s kernel runs.\n'
+    printf 'Load it once, as root, there (the profile path must be visible inside the VM;\n'
+    printf 'Colima and Lima share your home directory by default):\n\n'
+    printf '  Mac, Colima:  colima ssh -- sudo sh -c "%s"\n' "$load"
+    printf '  Mac, Lima:    limactl shell <instance> -- sudo sh -c "%s"\n' "$load"
+    printf '  Linux:        sudo sh -c "%s"\n\n' "$load"
+    printf 'See docs/components/claude-code-sandbox.md. Or set claude-code-sandbox=OFF.\n'
+  } >&2
+}
+
 parse_pointer_spec() {  # $1=raw value  $2=default mode  $3=allow_suffix(1|0)
   local val="$1" default_mode="$2" allow_suffix="$3"
   PTR_MODE="$default_mode"
@@ -1636,23 +1655,27 @@ run_container() {
   # Claude Code's own sandbox (claude-code-sandbox=ON) runs each shell command
   # Claude starts inside bubblewrap, which must create a user namespace and then
   # mount and pivot_root inside it. Docker's default profiles refuse both halves:
-  # - the namespace: in a running container of this image (its mgd flavour) on a Mac
-  #   whose Docker runs in a Lima VM on Ubuntu 24.04's kernel
-  #   (docker-default AppArmor enforcing, kernel.apparmor_restrict_unprivileged_userns=1)
-  #   unshare(CLONE_NEWUSER) fails with EPERM. Docker's seccomp profile allows
-  #   that call, so the refusal is AppArmor's;
-  # - the mounts: Docker's seccomp profile gates mount, umount2, pivot_root and
-  #   setns on CAP_SYS_ADMIN, which this container never holds.
-  # Lifting both is NOT enough where Docker's kernel is Ubuntu 24.04's (on a Mac,
-  # the Linux VM Docker runs in): its
-  # kernel.apparmor_restrict_unprivileged_userns=1 still strips the namespace of
-  # an unconfined process (integration case 790, measured on GitHub's runners).
-  # Both profiles are lifted only when the key asks for the inner sandbox — the
-  # trade is set out in docs/components/claude-code-sandbox.md — so every other
-  # container composes exactly the `docker run` it did before.
+  # - the namespace: AppArmor. Where Docker's kernel is Ubuntu 24.04's — on a Mac,
+  #   the Linux VM Docker runs in (measured in a Lima VM) —
+  #   kernel.apparmor_restrict_unprivileged_userns=1 refuses it under
+  #   docker-default, and still strips it of its capabilities under
+  #   apparmor=unconfined. A profile that grants `userns` is exempt:
+  #   ai-containers-sandbox.apparmor is docker-default plus userns, mount and
+  #   pivot_root, and integration case 790 passes under it on such a kernel.
+  # - the mounts: seccomp. Docker's profile gates mount, umount2, pivot_root and
+  #   setns on CAP_SYS_ADMIN, which this container never holds, so it is lifted.
+  # The profile must be loaded where Docker's kernel runs, and a container started
+  # without it would stop every Claude Code session at startup (failIfUnavailable),
+  # so a throwaway container under it proves it is loaded before the real one
+  # starts. Both options apply only when the key asks for the inner sandbox: every
+  # other container composes exactly the `docker run` it did before.
   local inner_sandbox_flags=()
   if is_enabled claude-code-sandbox; then
-    inner_sandbox_flags=(--security-opt seccomp=unconfined --security-opt apparmor=unconfined)
+    inner_sandbox_flags=(--security-opt seccomp=unconfined --security-opt apparmor=ai-containers-sandbox)
+    if ! docker run --rm --entrypoint true "${inner_sandbox_flags[@]}" "$image_name" >/dev/null 2>&1; then
+      claude_sandbox_profile_missing "$script_dir/ai-containers-sandbox.apparmor"
+      exit 1
+    fi
   fi
 
   docker run -it --rm \

@@ -69,7 +69,7 @@ cs_run() { ( cd "$TMP/launch" && bash "$REPO_DIR/sandbox.sh" restricted "$TMP/ap
 cs_setup 'claude-code-sandbox=ON'
 cs_run
 security_opts="$(grep -A1 -x -- '--security-opt' "$CAPTURE")"
-for opt in seccomp=unconfined apparmor=unconfined; do
+for opt in seccomp=unconfined apparmor=ai-containers-sandbox; do
   if grep -qx -- "$opt" <<<"$security_opts"; then
     pass "claude-code-sandbox=ON: --security-opt $opt"
   else
@@ -86,6 +86,46 @@ if [[ -s "$CAPTURE" ]] && ! grep -q -- '--security-opt' "$CAPTURE"; then
   pass "claude-code-sandbox=OFF: no --security-opt flag"
 else
   fail "claude-code-sandbox=OFF: no --security-opt flag"
+fi
+cs_teardown
+
+# The profile not loaded where Docker's kernel runs: a container started without
+# it would stop every Claude Code session (failIfUnavailable), so sandbox.sh probes
+# with a throwaway container first and stops, saying how to load it. The fake
+# docker fails that probe — `--entrypoint true` — the way the daemon does.
+cs_setup 'claude-code-sandbox=ON'
+cat > "$TMP/bin/docker" <<DOCKER
+#!/usr/bin/env bash
+if [[ "\$1" == "run" ]]; then
+  shift
+  prev=""
+  for a in "\$@"; do
+    if [[ "\$prev" == "--entrypoint" && "\$a" == "true" ]]; then
+      echo "docker: Error response from daemon: AppArmor enabled on system but the ai-containers-sandbox profile could not be loaded" >&2
+      exit 125
+    fi
+    prev="\$a"
+  done
+  printf '%s\n' "\$@" > "$CAPTURE"; exit 0
+fi
+exit 1
+DOCKER
+chmod +x "$TMP/bin/docker"
+err="$( ( cd "$TMP/launch" && bash "$REPO_DIR/sandbox.sh" restricted "$TMP/app" ) 2>&1 >/dev/null </dev/null )"; rc=$?
+if [[ "$rc" -ne 0 ]]; then
+  pass "claude-code-sandbox=ON, profile not loaded: sandbox.sh stops"
+else
+  fail "claude-code-sandbox=ON, profile not loaded: sandbox.sh stops"
+fi
+if [[ ! -s "$CAPTURE" ]]; then
+  pass "claude-code-sandbox=ON, profile not loaded: no container is started"
+else
+  fail "claude-code-sandbox=ON, profile not loaded: no container is started"
+fi
+if grep -qF 'apparmor_parser -r' <<<"$err" && grep -qF 'ai-containers-sandbox.apparmor' <<<"$err"; then
+  pass "claude-code-sandbox=ON, profile not loaded: the message says how to load it"
+else
+  fail "claude-code-sandbox=ON, profile not loaded: the message says how to load it"
 fi
 cs_teardown
 

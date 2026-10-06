@@ -844,7 +844,7 @@ ai_containers_payload_files() {   # <dir> → one relative path per line, sorted
   [[ -d "$dir" ]] || return 0
   ( cd "$dir" 2>/dev/null || exit 0
     {
-      for f in Dockerfile Dockerfile.seed .dockerignore; do
+      for f in Dockerfile Dockerfile.seed .dockerignore claude-managed-settings.json ai-containers-sandbox.apparmor; do
         [[ -f "$f" ]] && printf '%s\n' "$f"
       done
       for f in *.sh; do

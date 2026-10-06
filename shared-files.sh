@@ -40,4 +40,5 @@ AI_CONTAINERS_SHARED_FILES=(
   refresh-ipset-allowlist.sh capture-blocked-traffic.sh
   capture-agent-destinations.sh install-tools.sh install-agent-skills.sh
   extract-discovery.sh
+  claude-managed-settings.json ai-containers-sandbox.apparmor
 )

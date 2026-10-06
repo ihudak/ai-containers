@@ -1,0 +1,58 @@
+# AppArmor profile for a container run with claude-code-sandbox=ON.
+#
+# Docker's default profile (moby, profiles/apparmor/template.go) with three
+# additions, all for Claude Code's own sandbox — bubblewrap — inside the
+# container:
+#   userns      create a user namespace. Ubuntu 24.04 sets
+#               kernel.apparmor_restrict_unprivileged_userns=1, which strips the
+#               namespace of an unconfined process (apparmor=unconfined) of its
+#               capabilities; a process confined by a profile that grants
+#               `userns` is exempt.
+#   mount       bubblewrap's bind mounts and its /proc, inside that namespace;
+#   pivot_root  bubblewrap's new root, inside that namespace.
+# Everything else is docker-default's, so every other agent in the container
+# keeps the AppArmor confinement apparmor=unconfined would drop.
+#
+# Load it once where Docker's kernel runs, as root — on a Mac, inside the VM
+# Docker runs in (`colima ssh`, `limactl shell <instance>`):
+#   sudo apparmor_parser -r -W <this file>
+
+abi <abi/4.0>,
+include <tunables/global>
+
+profile ai-containers-sandbox flags=(attach_disconnected,mediate_deleted) {
+  include <abstractions/base>
+
+  network,
+  capability,
+  file,
+  umount,
+
+  userns,
+  mount,
+  pivot_root,
+
+  signal (receive) peer=unconfined,
+  signal (receive) peer=runc,
+  signal (receive) peer=crun,
+  signal (receive) peer=dockerd,
+  signal (send,receive) peer=ai-containers-sandbox,
+
+  deny @{PROC}/* w,
+  deny @{PROC}/{[^1-9],[^1-9][^0-9],[^1-9s][^0-9y][^0-9s],[^1-9][^0-9][^0-9][^0-9/]*}/** w,
+  deny @{PROC}/sys/[^k]** w,
+  deny @{PROC}/sys/kernel/{?,??,[^s][^h][^m]**} w,
+  deny @{PROC}/sysrq-trigger rwklx,
+  deny @{PROC}/kcore rwklx,
+
+  deny /sys/[^f]*/** wklx,
+  deny /sys/f[^s]*/** wklx,
+  deny /sys/fs/[^c]*/** wklx,
+  deny /sys/fs/c[^g]*/** wklx,
+  deny /sys/fs/cg[^r]*/** wklx,
+  deny /sys/firmware/** rwklx,
+  deny /sys/devices/virtual/powercap/** rwklx,
+  deny /sys/kernel/security/** rwklx,
+
+  ptrace (trace,read,tracedby,readby) peer=ai-containers-sandbox,
+}

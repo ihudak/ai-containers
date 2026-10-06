@@ -42,22 +42,28 @@ git hooks run with them.
 ## What it costs
 
 **The container runs with `--security-opt seccomp=unconfined --security-opt
-apparmor=unconfined`.** bubblewrap has to create a user namespace, then mount and
-`pivot_root` inside it, and Docker's default profiles refuse both:
+apparmor=ai-containers-sandbox`.** bubblewrap has to create a user namespace, then
+mount and `pivot_root` inside it, and Docker's default profiles refuse both:
 
-- **The namespace — AppArmor.** In a running container of this image (its mgd flavour) on a Mac,
-  whose Docker runs in a Lima VM on Ubuntu 24.04's kernel, `unshare(CLONE_NEWUSER)` fails with `EPERM` under the
-  `docker-default` profile. Docker's seccomp profile allows that call
-  ([Docker: seccomp](https://docs.docker.com/engine/security/seccomp/)), so the
-  refusal is AppArmor's.
+- **The namespace — AppArmor.** Where Docker's kernel is Ubuntu 24.04's — on a
+  Mac, the Linux VM Docker runs in; measured in a Lima VM —
+  `kernel.apparmor_restrict_unprivileged_userns=1` refuses it under
+  `docker-default` (`unshare(CLONE_NEWUSER)` fails with `EPERM`), and still
+  strips it of its capabilities under `apparmor=unconfined` (integration case 790:
+  `setting up uid map: Permission denied`). A process confined by a profile that
+  grants `userns` is exempt, so the container runs under
+  [`ai-containers-sandbox.apparmor`](../../ai-containers-sandbox.apparmor):
+  Docker's default profile plus `userns`, `mount` and `pivot_root`. Case 790
+  passes under it, network namespace included, on an `ubuntu-24.04` runner.
 - **The mounts — seccomp.** Docker's seccomp profile gates `mount`, `umount2`,
-  `pivot_root` and `setns` on `CAP_SYS_ADMIN`, which this container never holds.
+  `pivot_root` and `setns` on `CAP_SYS_ADMIN`, which this container never holds,
+  so seccomp is lifted.
 
-Lifting both weakens the outer container for every process in it — every agent's,
-Copilot's, Codex's, Gemini's and Kiro's included, none of which gains the inner
-sandbox — to strengthen the boundary around Claude Code's commands alone. Where
-agents other than Claude Code do much of the work, that is a poor trade. The
-network firewall, the non-root user and the dropped capabilities are unchanged.
+Both apply to every process in the container — every agent's, Copilot's, Codex's,
+Gemini's and Kiro's included, none of which gains the inner sandbox: no seccomp
+filter, and AppArmor confinement with three more permissions than Docker's
+default. The network firewall, the non-root user and the dropped capabilities are
+unchanged.
 
 `enableWeakerNestedSandbox` is set because, in a container, bubblewrap cannot
 mount a fresh `/proc`; the sandbox bind-mounts the container's instead, so a
@@ -67,21 +73,22 @@ boundary — which here it is.
 
 ## Before turning it on
 
-- **It does not start where Docker's kernel is Ubuntu 24.04's.** On a Mac that
-  is the Linux VM Docker runs in — Colima's and Lima's default Ubuntu image
-  among them — not macOS. Measured by integration case
-  790 on GitHub's `ubuntu-24.04` runners, with both profiles lifted: bubblewrap
-  creates its user namespace but cannot use it — `setting up uid map: Permission
-  denied` without a network namespace, and `loopback: Failed RTM_NEWADDR:
-  Operation not permitted` with one, which Claude Code's network isolation needs.
-  The host's `kernel.apparmor_restrict_unprivileged_userns=1` strips the
-  namespace of an unconfined process of its capabilities, and nothing inside the
-  container can lift it. It takes a change where that kernel runs — in the VM,
-  on a Mac (`colima ssh`, or `limactl shell <instance>`): that setting turned off
-  there, or an AppArmor profile for the container that grants `userns`.
-  Where the sandbox cannot start, Claude Code exits at startup
-  (`failIfUnavailable`) rather than run unsandboxed — so on such a host, turning
-  the key on stops every Claude Code session.
+- **Load the profile once, as root, where Docker's kernel runs** — on a Mac, in
+  the VM Docker runs in, not macOS. A copy under `/etc/apparmor.d` is loaded again
+  on every boot:
+
+  ```bash
+  # Mac, Colima (Lima: limactl shell <instance> -- …; Linux: run it with sudo directly)
+  colima ssh -- sudo sh -c "cp '<path>/ai-containers-sandbox.apparmor' /etc/apparmor.d/ai-containers-sandbox && apparmor_parser -r /etc/apparmor.d/ai-containers-sandbox"
+  ```
+
+  The path is your project's `.ai-containers/ai-containers-sandbox.apparmor`;
+  Colima and Lima share your home directory with the VM by default. Until the
+  profile is loaded, `sandbox.sh` stops before starting the container and prints
+  these commands with the path filled in — a container started without it would
+  stop every Claude Code session at startup (`failIfUnavailable`).
+- **Not measured: Docker Desktop.** Its LinuxKit VM's AppArmor and user-namespace
+  settings were not examined.
 - A package source outside the list — a private registry, a Git dependency — is
   refused. Add its host to `network.allowedDomains` in
   `claude-managed-settings.json` and rebuild.

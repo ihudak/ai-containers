@@ -216,6 +216,7 @@ expected_shared_files=(
   capture-blocked-traffic.sh capture-agent-destinations.sh
   install-tools.sh install-agent-skills.sh
   extract-discovery.sh
+  claude-managed-settings.json ai-containers-sandbox.apparmor
 )
 derived_sorted="$(printf '%s\n' "${derived_shared_files[@]}" | sort | tr '\n' ' ')"
 expected_sorted="$(printf '%s\n' "${expected_shared_files[@]}" | sort | tr '\n' ' ')"

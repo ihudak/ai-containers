@@ -123,6 +123,14 @@ jobs:
             exit 1
           fi
 
+      - name: Load the claude-code-sandbox AppArmor profile
+        run: |
+          # The sandbox variant's container runs under this profile, which must be
+          # loaded where Docker's kernel runs. Loading it here is harmless for every
+          # other case: nothing else names it.
+          sudo apparmor_parser -r -W ai-containers-sandbox.apparmor
+          sudo grep -q '^ai-containers-sandbox ' /sys/kernel/security/apparmor/profiles && echo "ai-containers-sandbox loaded"
+
       - name: Run
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
