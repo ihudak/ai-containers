@@ -3,7 +3,7 @@
 #       POSTGRES_ROLES and POSTGRES_DATABASES are silently ignored — the failure a
 #       project would meet as "role app_user does not exist" from its own suite.
 #
-#       Expected: assertions 1, 2, 3, 6 and 7 PASS; both halves of assertion 4
+#       Expected: assertions 1, 2, 3, 6 and 7 PASS; all three parts of assertion 4
 #       FAIL, and assertion 5 FAILs (app_user cannot connect).
 diff --git a/services.d/postgres.sh b/services.d/postgres.sh
 index c0f9a58..2527599 100644
