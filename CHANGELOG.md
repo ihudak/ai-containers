@@ -24,8 +24,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   stays writable. A project reached through a symlink that sits inside a
   writable mount gets a `WARNING:` naming the real path to launch from, since a
   link can be replaced rather than renamed. A writable mount whose root you
-  cannot read now refuses the launch, naming it, and an unreadable directory of
-  yours inside one is mounted read-only with a warning. If your team versions
+  cannot list now refuses the launch, naming it; a directory inside one that you
+  cannot list, but the agent could still reach into, is mounted read-only with a
+  warning. If your team versions
   `.ai-containers/` in git, switch branches on the host: inside the container
   git cannot update those files, warns `unable to unlink`, and exits 0 anyway. **Behaviour change:** edit `sandbox.conf`, the allowlist
   fragments and the other launcher files on the host, not from inside the

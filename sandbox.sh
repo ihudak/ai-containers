@@ -271,9 +271,11 @@ add_file_mount_if_exists() {
 # sitting in one. A launcher is matched by CONTENT (a directory holding both
 # sandbox.sh and sandbox-common.sh), not by the name .ai-containers: the engine
 # checkout itself is named ai-containers and is just as dangerous writable. A
-# directory of the agent's that it has made unreadable cannot be looked inside,
-# so it is treated as if it held one; an unreadable writable mount ROOT can be
-# neither looked inside nor overlaid, so it refuses the launch.
+# directory you cannot list, but the agent could still reach into (it owns it,
+# so it can chmod it back; or its mode lets the agent search it), cannot be
+# looked inside, so it is treated as if it held one; a writable mount ROOT you
+# cannot list can be neither looked inside nor overlaid, so it refuses the
+# launch.
 #
 # The directories BETWEEN the mount root and a launcher are pinned too, each
 # bind-mounted onto itself read-write: an ordinary directory above a mount point
@@ -307,7 +309,7 @@ launcher_ro_overlay() {
   # shellcheck disable=SC2178  # nameref: shellcheck does not model `local -n`
   local -n _ro=$1
   local reached="$2" self spec src rest dst opts l at pin path part r skip i k depth max=0 d p pp kind ok mf mv
-  local uid="${SANDBOX_UID:-$(id -u)}"
+  local uid="${SANDBOX_UID:-$(id -u)}" gid="${SANDBOX_GID:-$(id -g)}"
   local -a found unreadable cand bsrc=() bdst=() cl=() cat=() csrc=() cdst=() cdep=() ckind=() ro_dsts=() psrc pdst
   local -A seen=()
   shift 2
@@ -320,12 +322,13 @@ launcher_ro_overlay() {
     if [[ "$rest" == *:* ]]; then opts="${rest#*:}"; fi
     if [[ ",$opts," == *,ro,* ]]; then continue; fi
     if [[ "$src" != /* || ! -d "$src" ]]; then continue; fi
-    # The agent can chmod its own directories. One it cannot read cannot be
-    # searched for launchers, and a mount root cannot be overlaid either.
-    if [[ -n "$(find "$src" -maxdepth 0 -user "$uid" ! -perm -0500 -print 2>/dev/null)" ]]; then
-      printf 'ERROR: %s is not readable by you, so the launcher cannot check it for\n' "$src" >&2
+    # A mount root this launch cannot list cannot be searched for launchers,
+    # and cannot be overlaid either (it IS the mount). -r/-x ask the kernel, so
+    # ACLs and supplementary groups count.
+    if [[ ! -r "$src" || ! -x "$src" ]]; then
+      printf 'ERROR: %s cannot be listed by you, so the launcher cannot check it for\n' "$src" >&2
       printf '       launchers before mounting it writable at %s.\n' "$dst" >&2
-      printf '       Restore it (chmod u+rx %q), or mount it :ro.\n' "$src" >&2
+      printf '       Make it listable (chmod u+rx, if it is yours), or mount it :ro.\n' >&2
       exit 1
     fi
     src="$(cd "$src" 2>/dev/null && pwd -P)" || continue
@@ -359,7 +362,7 @@ launcher_ro_overlay() {
     src="${bsrc[i]}"; dst="${bdst[i]}"
     found=(); unreadable=()
     if [[ "$self" == "$src" || "$self" == "$src"/* ]]; then found+=("$self"); fi
-    launcher_dirs_in found unreadable "$src" "$uid"
+    launcher_dirs_in found unreadable "$src" "$uid" "$gid"
     cand=(${found[@]+"${found[@]}"} ${unreadable[@]+"${unreadable[@]}"})
     for k in ${cand[@]+"${!cand[@]}"}; do
       l="${cand[k]}"
@@ -420,8 +423,13 @@ launcher_ro_overlay() {
       _ro+=("$mf" "$mv")
       ro_dsts+=("$at")
       if [[ "$kind" == unreadable ]]; then
-        printf 'WARNING: %s is not readable by you, so it cannot be checked for\n' "$l" >&2
-        printf '         launchers; it is mounted read-only at %s. Restore: chmod u+rx %q\n' "$at" "$l" >&2
+        printf 'WARNING: %s cannot be listed by you, so it cannot be checked for\n' "$l" >&2
+        printf '         launchers; it is mounted read-only at %s.\n' "$at" >&2
+        if [[ -O "$l" ]]; then
+          printf '         Restore: chmod u+rx %q\n' "$l" >&2
+        else
+          printf '         It is not yours: ask its owner, or mount it :ro yourself.\n' >&2
+        fi
       else
         printf 'READ-ONLY: %s  (launcher files; edit them on the host)\n' "$at" >&2
       fi
@@ -447,19 +455,16 @@ _bind_mount_arg() {
 }
 
 # _mount_representable <source> <destination>: can _bind_mount_arg hand docker
-# this pair so that it arrives byte for byte? Not when a name is not valid UTF-8:
-# the CLI rewrites it to U+FFFD, the bind then names a path that does not exist,
-# and Docker Desktop CREATES that path, root-owned, inside the host directory.
-# And not, through `--mount`, a value ending in whitespace (docker refuses it —
-# Go's unicode.IsSpace, so NBSP and U+3000 too) or holding a CR (its CSV reader
-# folds CRLF to LF). Without iconv the UTF-8 half is skipped; the price is a
-# launch docker refuses, never a launcher left writable silently.
+# this pair so that it arrives byte for byte? Not when a name is not valid UTF-8
+# (_utf8_valid): the CLI rewrites it to U+FFFD, the bind then names a path that
+# does not exist, and Docker Desktop CREATES that path, root-owned, inside the
+# host directory. And not, through `--mount`, a value ending in whitespace
+# (docker refuses it — Go's unicode.IsSpace, so NBSP and U+3000 too) or holding
+# a CR (its CSV reader folds CRLF to LF).
 _mount_representable() {
   local v w
   for v in "$1" "$2"; do
-    if command -v iconv >/dev/null 2>&1 && ! printf '%s' "$v" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; then
-      return 1
-    fi
+    if ! _utf8_valid "$v"; then return 1; fi
   done
   if [[ "$1$2" != *:* ]]; then return 0; fi
   for v in "$1" "$2"; do
@@ -474,31 +479,75 @@ _mount_representable() {
   return 0
 }
 
-# launcher_dirs_in <launchers-out> <unreadable-out> <dir> <uid>: appends every
+# _utf8_valid <string>: is it UTF-8 as RFC 3629 — and Go, whose JSON encoding of
+# the request is what rewrites anything else — defines it? No overlongs, no
+# surrogates, nothing above U+10FFFF. Not iconv: glibc's accepts both F4 90 80 80
+# (above U+10FFFF) and five-byte forms, which Go rejects. Bytes are read as
+# decimal numbers, so neither the locale nor the awk in use can change the answer.
+_utf8_valid() {
+  printf '%s' "$1" | od -An -v -tu1 | awk '
+    { for (i = 1; i <= NF; i++) b[n++] = $i + 0 }
+    END {
+      i = 0
+      while (i < n) {
+        c = b[i]
+        if (c < 128) { i++; continue }
+        if (c >= 194 && c <= 223)                              { k = 1; lo = 128; hi = 191 }
+        else if (c == 224)                                     { k = 2; lo = 160; hi = 191 }
+        else if (c >= 225 && c <= 236 || c == 238 || c == 239) { k = 2; lo = 128; hi = 191 }
+        else if (c == 237)                                     { k = 2; lo = 128; hi = 159 }
+        else if (c == 240)                                     { k = 3; lo = 144; hi = 191 }
+        else if (c >= 241 && c <= 243)                         { k = 3; lo = 128; hi = 191 }
+        else if (c == 244)                                     { k = 3; lo = 128; hi = 143 }
+        else exit 1
+        if (i + k >= n) exit 1
+        if (b[i + 1] < lo || b[i + 1] > hi) exit 1
+        for (j = 2; j <= k; j++) if (b[i + j] < 128 || b[i + j] > 191) exit 1
+        i += k + 1
+      }
+      exit 0
+    }'
+}
+
+# launcher_dirs_in <launchers-out> <unreadable-out> <dir> <uid> <gid>: appends every
 # launcher directory below <dir> — matched by CONTENT, a directory holding both
 # sandbox.sh and sandbox-common.sh, which is what the host runs `./sandbox.sh`
-# from (a project's .ai-containers/ copy, or an ai-containers checkout itself) —
-# and every directory owned by <uid> (the agent's) that lacks u+rx, which the
-# search cannot see into. To six levels down, pruning dependency and VCS trees:
+# from (a project's .ai-containers/ copy, or an ai-containers checkout itself;
+# sandbox.sh may be a symlink) — and every directory the search cannot see into
+# although the agent (<uid>/<gid>) could reach inside it: one it owns, so can
+# chmod back, or one whose mode lets it search. A directory nobody but its owner
+# can enter (a database's data directory, say) hides nothing the agent can
+# touch, so it is not reported. Mode bits decide the agent's side; the kernel
+# (-r/-x) decides yours. To six levels down, pruning dependency and VCS trees:
 # it runs on every launch over every writable mount, measured at a few
 # hundredths of a second over a ~/dev full of repos (far slower on a WSL drvfs
 # path under /mnt/<drive>). NUL-delimited, and always returns 0.
 launcher_dirs_in() {
   # shellcheck disable=SC2178  # nameref: shellcheck does not model `local -n`
   local -n _ldi_out=$1 _ldi_unr=$2
-  local f
+  local f su sg
   local -a hits=()
+  su="$(id -u)"; sg="$(id -g)"
   mapfile -d '' -t hits < <(find "$3" -mindepth 1 -maxdepth 7 \
       \( -name node_modules -o -name .git -o -name vendor -o -name .venv -o -name target \) -prune \
-      -o -type f -name sandbox.sh -print0 2>/dev/null)
+      -o -name sandbox.sh \( -type f -o -type l \) -print0 2>/dev/null)
   for f in ${hits[@]+"${hits[@]}"}; do
-    if [[ -f "${f%/sandbox.sh}/sandbox-common.sh" ]]; then _ldi_out+=("${f%/sandbox.sh}"); fi
+    if [[ -f "$f" && -f "${f%/sandbox.sh}/sandbox-common.sh" ]]; then _ldi_out+=("${f%/sandbox.sh}"); fi
   done
+  # Mode bits narrow the candidates to directories your own permission class
+  # cannot list AND the agent's class could reach into; -r/-x then confirm
+  # against the kernel, for ACLs and supplementary groups.
   hits=()
   mapfile -d '' -t hits < <(find "$3" -mindepth 1 -maxdepth 6 \
       \( -name node_modules -o -name .git -o -name vendor -o -name .venv -o -name target \) -prune \
-      -o -type d -user "$4" ! -perm -0500 -print0 2>/dev/null)
-  _ldi_unr+=(${hits[@]+"${hits[@]}"})
+      -o -type d \
+         \( \( -user "$su" ! -perm -0500 \) -o \( ! -user "$su" -group "$sg" ! -perm -0050 \) \
+            -o \( ! -user "$su" ! -group "$sg" ! -perm -0005 \) \) \
+         \( -user "$4" -o \( -group "$5" -perm -0010 \) -o \( ! -group "$5" -perm -0001 \) \) \
+         -print0 2>/dev/null)
+  for f in ${hits[@]+"${hits[@]}"}; do
+    if [[ ! -r "$f" || ! -x "$f" ]]; then _ldi_unr+=("$f"); fi
+  done
   return 0
 }
 

@@ -21,6 +21,12 @@
 # reads as CSV — quoted fields, or the comma splits one. Handed over wrongly,
 # any of them makes docker refuse the whole `docker run`, at every launch.
 #
+# One more holds bytes that are not valid UTF-8 (a code point above U+10FFFF —
+# which glibc's iconv accepts and Go does not). docker's CLI would rewrite it to
+# U+FFFD, and Docker Desktop then CREATES the rewritten path, root-owned, in the
+# host tree. It is not mounted at all, with a WARNING; the launch goes ahead and
+# nothing root-owned appears on the host.
+#
 # Paired as everywhere in this tier: the parent and the pinned directory must
 # still accept writes, so "cannot move" cannot mean "nothing here works".
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
@@ -45,6 +51,12 @@ done
 printf 'marker-proj\n'  > "$grp/proj/.ai-containers/MARKER"
 printf 'marker-other\n' > "$grp/other/.ai-containers/MARKER"
 
+bad_ok=0
+bad="$grp/bad"$'\xf4\x90\x80\x80'
+if mkdir -p "$bad/.ai-containers" 2>/dev/null; then
+  : > "$bad/.ai-containers/sandbox.sh"; : > "$bad/.ai-containers/sandbox-common.sh"; bad_ok=1
+fi
+
 export EXTRA_MOUNTS="$grp"
 launcher_up open "$grp/proj" || it_finish
 
@@ -62,6 +74,18 @@ for n in "tr " "c:o,n"; do
 done
 assert_writable     "$IT_CID" /workspace/grp
 assert_writable     "$IT_CID" /workspace/grp/proj
+
+if [[ "$bad_ok" -eq 1 ]]; then
+  grep -aqF "WARNING: cannot protect $bad" "$IT_LAUNCH_ERR" \
+    && pass "a launcher under a name docker cannot carry is skipped with a warning" \
+    || fail "a launcher under a name docker cannot carry is skipped with a warning"
+  junk="$(find "$grp" ! -user "$IT_LAUNCH_UID" -print 2>/dev/null | head -3)"
+  [[ -z "$junk" ]] \
+    && pass "nothing owned by another user appeared in the host tree" \
+    || fail "nothing owned by another user appeared in the host tree — found: $junk"
+else
+  pass "(this filesystem refuses a name that is not valid UTF-8; nothing to check)"
+fi
 
 # The directory between the mount root and the launcher stays where it is.
 if agent_exec "$IT_CID" 'mv /workspace/grp/proj /workspace/grp/proj.moved' >/dev/null 2>&1; then
