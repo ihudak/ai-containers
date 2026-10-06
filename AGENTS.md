@@ -24,7 +24,7 @@ A CLI-only Docker workspace for running AI coding agents (GitHub Copilot CLI, Ki
 
 `sandbox.conf` is the single source of truth for which optional components are included. Set a component to `ON` or `OFF` and rebuild. The format is strictly `component=ON` or `component=OFF`, one per line; comments start with `#`.
 
-Optional components: `copilot`, `kiro`, `claude-code`, `codex`, `gemini`, `graphify`, `openjdk`, `graalvm-ce`, `graalvm-oracle`, `kotlin`, `scala`, `maven`, `gradle`, `kubectl`, `aws-cli`, `azure-cli`, `github-cli`, `angular-cli`, `yarn`, `pnpm`, `bun`, `goreleaser`, `vale`, `qmd`, `dtctl`, `dtmgd`, `imagemagick`, `wkhtmltopdf`, `c-toolchain`, `playwright`, `postgres`, `redis`, `mysql`, `shellcheck`.
+Optional components: `copilot`, `kiro`, `claude-code`, `codex`, `gemini`, `graphify`, `openjdk`, `graalvm-ce`, `graalvm-oracle`, `kotlin`, `scala`, `maven`, `gradle`, `kubectl`, `aws-cli`, `azure-cli`, `github-cli`, `angular-cli`, `yarn`, `pnpm`, `bun`, `goreleaser`, `vale`, `qmd`, `dtctl`, `dtmgd`, `imagemagick`, `wkhtmltopdf`, `c-toolchain`, `playwright`, `postgres`, `redis`, `mysql`, `mongo`, `shellcheck`.
 
 **`c-toolchain=ON`** keeps a C compiler in the finished image — `build-essential`
 (gcc, g++, make, binutils, `libc6-dev`) plus `libyaml-dev zlib1g-dev libssl-dev`,
@@ -122,6 +122,20 @@ and the sandbox user have no password; `MYSQL_USERS` (`name` or `name:password`;
 provision the rest. Not MariaDB, whose SQL has drifted from MySQL 8's (it rejects
 `utf8mb4_0900_ai_ci`, `->>` and `LATERAL` — measured). User docs:
 `docs/components/mysql.md`.
+
+**`mongo=ON | <series> | OFF`** bakes `mongod` and `mongosh` from MongoDB's own
+repository (the one `db-clients=mongo` uses). `ON` is the 8.0 series; a pin is a
+release **series**, `X.Y` (`8.2`), as the repository names them — a release
+(`8.0.32`) and a bare major (`8`) are refused with the value to write instead. The
+server is installed from that series only (`mongodb-org-server=<series>.*`),
+whatever other MongoDB lists the image holds, and a series MongoDB does not
+publish for the Ubuntu release fails the build by name before apt sees it. Every
+series of a major is signed with the major's key (8.2 with `server-8.0.asc` — there
+is no `server-8.2.asc`). At start: `127.0.0.1`, and `::1` (`--ipv6`) where the
+container has an IPv6 loopback, no authentication, the WiredTiger cache capped at
+0.25 GB (`AI_SERVICES_MONGO_CACHE_GB`; the default takes 1.5 GB of a 4 GB
+container). Nothing to provision. x86-64 needs AVX. User docs:
+`docs/components/mongo.md`.
 
 Version-list components (`node`, `python`, `ruby`, `rust`, `go`) accept comma-separated version values instead of `ON`/`OFF` (e.g., `node=22,20`). Constraints:
 - `angular-cli` accepts only a **single version** (not a comma-separated list).

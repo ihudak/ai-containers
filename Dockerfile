@@ -752,6 +752,37 @@ RUN if [ "$INSTALL_MYSQL" = "1" ]; then \
       test -x /usr/sbin/mysqld && test -x /usr/bin/mysql && test -f "$tpl/mysql.ibd"; \
     fi
 
+# ── Optional: MongoDB server (in-container, for tests) ─────────────────────────
+# MONGO_SERIES: empty = skip; a release series (8.0 from mongo=ON, or a pinned
+# 8.2). From MongoDB's own repository, the one the db-clients=mongo layer uses.
+# Every series of a major is signed with that major's key — 8.2 and 8.3 with
+# server-8.0.asc; there is no server-8.2.asc (measured) — so the key is the
+# major's. The repository for one series is checked for before apt sees it, so a
+# series MongoDB does not publish for this release fails here, by name, not as an
+# apt 404. The server is installed from THAT series, whatever other MongoDB lists
+# the image holds (db-clients=mongo adds 8.0's): mongodb-org-server=<series>.*.
+# mongosh comes with it, as psql and mysql come with theirs. After the cleanup
+# purge, like the other server layers.
+ARG MONGO_SERIES=
+RUN if [ -n "$MONGO_SERIES" ]; then \
+      apt-get update && apt-get install -y --no-install-recommends gnupg && \
+      codename="$(. /etc/os-release && printf '%s' "$VERSION_CODENAME")" && \
+      major="${MONGO_SERIES%%.*}" && \
+      repo="https://repo.mongodb.org/apt/ubuntu/dists/${codename}/mongodb-org/${MONGO_SERIES}" && \
+      if ! curl -fsS --retry 5 --retry-delay 2 --retry-all-errors -o /dev/null "$repo/Release"; then \
+        echo "ERROR: mongo=${MONGO_SERIES} in sandbox.conf: MongoDB publishes no ${MONGO_SERIES} series for Ubuntu ${codename} ($repo)." >&2; \
+        exit 1; \
+      fi && \
+      curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors "https://pgp.mongodb.com/server-${major}.0.asc" \
+        | gpg --batch --yes --dearmor -o "/usr/share/keyrings/mongodb-server-${major}.0.gpg" && \
+      echo "deb [ signed-by=/usr/share/keyrings/mongodb-server-${major}.0.gpg ] https://repo.mongodb.org/apt/ubuntu ${codename}/mongodb-org/${MONGO_SERIES} multiverse" \
+        > "/etc/apt/sources.list.d/mongodb-org-${MONGO_SERIES}.list" && \
+      apt-get update --error-on=any && \
+      apt-get install -y --no-install-recommends mongodb-org-server="${MONGO_SERIES}.*" mongodb-mongosh && \
+      test -x /usr/bin/mongod && test -x /usr/bin/mongosh && \
+      rm -rf /var/lib/apt/lists/*; \
+    fi
+
 # ── Ruby runtime prerequisites (rvm is a per-user install at ~/.rvm, done at
 # container start; nothing Ruby is baked). Retain the FULL ruby-build dependency
 # set so `rvm install` compiles Ruby at runtime, pre-seed rvm's GPG keys so the

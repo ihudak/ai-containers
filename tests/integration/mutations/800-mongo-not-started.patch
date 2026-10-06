@@ -1,0 +1,18 @@
+# case: 800-mongo-server-runs
+# what: svc_start reports success without starting mongod. The runner then
+#       prints its ready line for a server that is not there.
+#
+#       Expected: assertion 1 FAILs (no answer) and the case stops there, with
+#       the log tail.
+diff --git a/services.d/mongo.sh b/services.d/mongo.sh
+index cd8e0c3..c2fe9b7 100644
+--- a/services.d/mongo.sh
++++ b/services.d/mongo.sh
+@@ -43,6 +43,7 @@ svc_start() {  # <datadir> <logfile>
+   if grep -qE '^0{31}1 .* lo$' "$MONGO_IF_INET6" 2>/dev/null; then bind="127.0.0.1,::1"; v6=(--ipv6); fi
+   # --fork returns once the server accepts connections, and non-zero when it
+   # cannot start (the port taken, say); its reason is in the log.
++  return 0
+   "$MONGO_MONGOD" --dbpath "$datadir" --logpath "$logfile" --logappend --fork \
+     --pidfilepath "$datadir/mongod.pid" --port "$MONGO_PORT" --bind_ip "$bind" ${v6[@]+"${v6[@]}"} \
+     --wiredTigerCacheSizeGB "$MONGO_CACHE_GB" >/dev/null || return 1

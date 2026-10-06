@@ -148,6 +148,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   takes under a second. `performance_schema` is off, which saves about 230 MB
   of RAM. It takes no version, because Ubuntu carries one MySQL. See
   `docs/components/mysql.md`.
+- **A MongoDB server inside the container: `mongo=ON | <series> | OFF`.**
+  `mongod` and `mongosh` from MongoDB's own repository — `ON` is the 8.0 series,
+  and a pin is a series (`mongo=8.2`) — started in every container before the
+  prompt, as your user, on `mongodb://localhost:27017`, loopback only, with no
+  authentication and nothing to create first. Its cache is capped at 0.25 GB,
+  where MongoDB's default would take 1.5 GB of a 4 GB container. A release
+  (`8.0.32`) or a bare major (`8`) is refused with the value to write instead,
+  and a series MongoDB does not publish for Ubuntu 24.04 fails the build by
+  name. On x86-64 it needs a CPU with AVX. See `docs/components/mongo.md`.
 
 ## v0.9.20 — 2026-10-05
 

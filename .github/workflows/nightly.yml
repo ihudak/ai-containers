@@ -509,7 +509,7 @@ jobs:
           df -h / | tail -1
           docker system df
 
-  # The in-container database servers (cases 785, 790). Their own variant rather than
+  # The in-container database servers (cases 785, 790, 800). Their own variant rather than
   # `native`: they need no build toolchain, Ruby or Playwright, and native's job
   # is already at its budget. The image is the default one plus the servers, so
   # this job is one ordinary image build and cases that take seconds.

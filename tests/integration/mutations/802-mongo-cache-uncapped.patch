@@ -1,0 +1,19 @@
+# case: 800-mongo-server-runs
+# what: the cache cap is gone, so WiredTiger takes its default — half of
+#       (memory − 1 GB), 1.5 GB of a 4 GB container. Nothing a test does notices
+#       until the container runs out of memory beside the app.
+#
+#       Expected: every assertion PASSes except 4, naming the default size.
+diff --git a/services.d/mongo.sh b/services.d/mongo.sh
+index cd8e0c3..1fabda4 100644
+--- a/services.d/mongo.sh
++++ b/services.d/mongo.sh
+@@ -45,7 +45,7 @@ svc_start() {  # <datadir> <logfile>
+   # cannot start (the port taken, say); its reason is in the log.
+   "$MONGO_MONGOD" --dbpath "$datadir" --logpath "$logfile" --logappend --fork \
+     --pidfilepath "$datadir/mongod.pid" --port "$MONGO_PORT" --bind_ip "$bind" ${v6[@]+"${v6[@]}"} \
+-    --wiredTigerCacheSizeGB "$MONGO_CACHE_GB" >/dev/null || return 1
++    >/dev/null || return 1
+ }
+ 
+ # Nothing to create: a database exists once something writes to it.

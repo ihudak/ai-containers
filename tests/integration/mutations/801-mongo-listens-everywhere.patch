@@ -1,0 +1,20 @@
+# case: 800-mongo-server-runs
+# what: the server binds every address instead of loopback only. Everything an
+#       app would notice still works — exposure is invisible to the app, so only
+#       assertion 3 can catch it.
+#
+#       Expected: assertions 1, 2 and 4-6 PASS; assertion 3 FAILs, naming the
+#       wildcard listener on 27017.
+diff --git a/services.d/mongo.sh b/services.d/mongo.sh
+index cd8e0c3..4cf02b8 100644
+--- a/services.d/mongo.sh
++++ b/services.d/mongo.sh
+@@ -44,7 +44,7 @@ svc_start() {  # <datadir> <logfile>
+   # --fork returns once the server accepts connections, and non-zero when it
+   # cannot start (the port taken, say); its reason is in the log.
+   "$MONGO_MONGOD" --dbpath "$datadir" --logpath "$logfile" --logappend --fork \
+-    --pidfilepath "$datadir/mongod.pid" --port "$MONGO_PORT" --bind_ip "$bind" ${v6[@]+"${v6[@]}"} \
++    --pidfilepath "$datadir/mongod.pid" --port "$MONGO_PORT" --bind_ip_all ${v6[@]+"${v6[@]}"} \
+     --wiredTigerCacheSizeGB "$MONGO_CACHE_GB" >/dev/null || return 1
+ }
+ 

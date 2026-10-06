@@ -120,6 +120,7 @@ Both GraalVM variants also install the `native-image` toolchain.
 | `postgres` | ON / major / OFF | [A PostgreSQL server inside the container](postgres.md), for test suites — loopback only, data thrown away on exit |
 | `redis` | ON / OFF | [A Redis server inside the container](redis.md), for test suites and dev servers — loopback only, nothing written to disk |
 | `mysql` | ON / OFF | [A MySQL server inside the container](mysql.md), for test suites — loopback only, root with no password, data thrown away on exit |
+| `mongo` | ON / series / OFF | [A MongoDB server inside the container](mongo.md), for test suites — loopback only, no authentication, cache capped, data thrown away on exit |
 
 ### Browser automation
 
