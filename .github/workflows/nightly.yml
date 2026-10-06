@@ -509,10 +509,12 @@ jobs:
           df -h / | tail -1
           docker system df
 
-  # The in-container database servers (cases 785, 790, 800). Their own variant rather than
-  # `native`: they need no build toolchain, Ruby or Playwright, and native's job
-  # is already at its budget. The image is the default one plus the servers, so
-  # this job is one ordinary image build and cases that take seconds.
+  # The in-container database servers: cases 785, 790 and 800 on the `services`
+  # variant, 810 on `mariadb` (MySQL and MariaDB cannot share an image). Their
+  # own variants rather than `native`: they need no build toolchain, Ruby or
+  # Playwright, and native's job is already at its budget. Each image is the
+  # default one plus servers, so this job is two ordinary image builds and cases
+  # that take seconds.
   packages-services:
     name: Package installs — services variant (real allowlist)
     runs-on: ubuntu-24.04
@@ -531,6 +533,15 @@ jobs:
       - name: Packages tier (services variant)
         run: >-
           ./tests/integration/run.sh --tags packages --variant services --require packages
+          ${{ inputs.cases && format('--cases {0}', inputs.cases) || '' }}
+
+      # MariaDB cannot share the services image with MySQL (same port, same
+      # socket, conflicting packages), so it has a variant of its own; run.sh
+      # removes the services image before building this one.
+      - name: Packages tier (mariadb variant)
+        if: always()
+        run: >-
+          ./tests/integration/run.sh --tags packages --variant mariadb --require packages
           ${{ inputs.cases && format('--cases {0}', inputs.cases) || '' }}
 
       - name: Budget

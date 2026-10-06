@@ -1,0 +1,29 @@
+# case: 810-mariadb-server-runs
+# what: a pinned series is installed without mariadb-client-compat (and the
+#       layer's own check for it is gone), so with db-clients=mysql the image has
+#       no `mysql` at all: apt removed MySQL's client for MariaDB's, whose own
+#       packages name it `mariadb` only. A script that runs `mysql` breaks.
+#
+#       Expected: the second half of assertion 1 FAILs; the rest PASS.
+diff --git a/Dockerfile b/Dockerfile
+index 2861bc4..470a519 100644
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -785,7 +785,7 @@ RUN if [ -n "$MARIADB_SERIES" ]; then \
+         echo "deb [signed-by=/usr/share/keyrings/mariadb-keyring-2019.gpg] $repo ${codename} main" \
+           > "/etc/apt/sources.list.d/mariadb-${MARIADB_SERIES}.list" && \
+         apt-get update --error-on=any && \
+-        pkgs=("mariadb-server=1:${MARIADB_SERIES}.*" "mariadb-client-compat=1:${MARIADB_SERIES}.*"); \
++        pkgs=("mariadb-server=1:${MARIADB_SERIES}.*"); \
+       fi && \
+       apt-get install -y --no-install-recommends "${pkgs[@]}" tzdata && \
+       rm -rf /var/lib/apt/lists/* /var/lib/mysql/* && \
+@@ -802,7 +802,7 @@ RUN if [ -n "$MARIADB_SERIES" ]; then \
+       for _ in $(seq 1 300); do [ -e "$bs/pid" ] || break; sleep 0.2; done && \
+       [ ! -e "$bs/pid" ] && \
+       chmod -R a+rX "$tpl" && rm -rf "$bs" && \
+-      test -x /usr/sbin/mariadbd && test -x /usr/bin/mariadb && test -e /usr/bin/mysql && \
++      test -x /usr/sbin/mariadbd && test -x /usr/bin/mariadb && \
+       test -f "$tpl/mysql/global_priv.frm"; \
+     fi
+ 

@@ -1,0 +1,20 @@
+# case: 810-mariadb-server-runs
+# what: the package's own character-set options are not passed back, so under
+#       --no-defaults the server serves its compiled default, latin1 — what a
+#       suite storing anything outside Latin-1 trips over, and what the official
+#       image does not serve.
+#
+#       Expected: the character-set half of assertion 6 FAILs; the rest PASS.
+diff --git a/services.d/mariadb.sh b/services.d/mariadb.sh
+index 2462c89..c98d604 100644
+--- a/services.d/mariadb.sh
++++ b/services.d/mariadb.sh
+@@ -58,7 +58,7 @@ svc_start() {  # <datadir> <logfile>
+     --port="$MYSQL_PORT" --bind-address="$bind" \
+     --pid-file="$datadir/mariadbd.pid" --log-error="$logfile" \
+     --skip-log-bin --innodb-log-file-size=8388608 --innodb-flush-log-at-trx-commit=0 \
+-    --innodb-doublewrite=OFF --secure-file-priv= ${cs[@]+"${cs[@]}"} \
++    --innodb-doublewrite=OFF --secure-file-priv= \
+     </dev/null >/dev/null 2>&1 &
+   pid=$!
+   # Ready is THIS server answering on the socket: the pid file it reports is the

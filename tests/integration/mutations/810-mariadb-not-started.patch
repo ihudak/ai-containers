@@ -1,0 +1,18 @@
+# case: 810-mariadb-server-runs
+# what: svc_start reports success without starting mariadbd. The runner then
+#       prints its ready line for a server that is not there.
+#
+#       Expected: assertion 1 FAILs (no connection) and the case stops there,
+#       with the log tail.
+diff --git a/services.d/mariadb.sh b/services.d/mariadb.sh
+index 2462c89..92a1f7c 100644
+--- a/services.d/mariadb.sh
++++ b/services.d/mariadb.sh
+@@ -54,6 +54,7 @@ svc_start() {  # <datadir> <logfile>
+   # No --daemonize in mariadbd: it is started in the background, with its own
+   # pid, and waited for. The redo log matches the template's (8 MB), or the
+   # server would resize it at every start.
++  return 0
+   "$MYSQL_MYSQLD" --no-defaults --datadir="$datadir" --socket="$(_mysql_sock)" \
+     --port="$MYSQL_PORT" --bind-address="$bind" \
+     --pid-file="$datadir/mariadbd.pid" --log-error="$logfile" \
