@@ -59,6 +59,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `SELF_HEALING_ENABLED` and `ALLOW_IPV6_BYPASS` in `container.env` are refused
   with a warning — they configure root, so set them in `sandbox.env`.
 
+### Fixed
+
+- **In-container PostgreSQL provisioning.** Five bugs, each now covered by a
+  test that fails without its fix:
+  - `POSTGRES_DATABASES` naming the database that carries your own user's
+    name, or `postgres`, warned "already exists" and dropped the owner it was
+    listed with. Both exist before provisioning, so a listed owner is now
+    applied, and with no owner there is nothing to do.
+  - Spaces around the `:` (`myapp_test : app_user`) made the entry invalid.
+  - A database listed twice with different owners silently kept the first.
+    It now warns, naming both owners.
+  - `postgres=017` passed validation and failed later, inside the build,
+    looking for `postgresql-017`. A leading zero is now refused with the fix
+    in the message.
+  - An `AI_SERVICES_PG_SOCKET_DIR` in `container.env` moved the server's
+    socket to a directory nobody had made, so the server failed to start with
+    only its log to go on. The container now makes such a directory when it
+    can, and otherwise names it and skips the server.
+
 ### Added
 
 - **A PostgreSQL server inside the container: `postgres=ON | <major> | OFF`.**
