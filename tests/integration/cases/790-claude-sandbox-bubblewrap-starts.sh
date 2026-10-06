@@ -23,18 +23,28 @@
 # too.
 #
 # Assertions, in order:
-#   1. bwrap and socat are installed and run;
+#   1. bwrap and socat are installed and run (socat answers -V; it rejects --version);
 #   2. /etc/claude-code/managed-settings.json is in the image;
-#   3. bubblewrap starts and isolates, as the agent user, in a launched container.
+#   3. bubblewrap starts and isolates, as the agent user, WITHOUT a network
+#      namespace: a user, IPC and UTS namespace, the read-only root and the bind;
+#   4. the same WITH a network namespace (--unshare-net), which Claude Code's
+#      sandbox needs to restrict a command's traffic. Measured on this suite's
+#      ubuntu-24.04 runner with both profiles lifted, 4 failed setting up the new
+#      namespace's loopback (`loopback: Failed RTM_NEWADDR: Operation not
+#      permitted`): the host's userns restriction leaves the namespace without the
+#      capability. 3 and 4 are separate so a red run says which half failed.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 
 fixture_scope_init || it_finish
 launcher_up restricted || it_finish
 
-for b in bwrap socat; do
-  assert_runs "$IT_CID" "$b"
-done
+assert_runs "$IT_CID" bwrap
+if out="$(docker exec "$IT_CID" socat -V 2>&1)"; then
+  pass "socat runs: $(printf '%s\n' "$out" | grep -m1 -i 'socat version' || printf '%s\n' "$out" | head -1)"
+else
+  fail "socat is present but FAILED TO RUN: $(printf '%s\n' "$out" | head -1)"
+fi
 
 if docker exec "$IT_CID" test -s /etc/claude-code/managed-settings.json; then
   pass "the managed settings file is in the image"
@@ -42,16 +52,21 @@ else
   fail "the managed settings file is MISSING — Claude Code would run with its sandbox off"
 fi
 
-probe='d="$(mktemp -d)" &&
-  bwrap --unshare-user --unshare-net --unshare-ipc --unshare-uts --die-with-parent \
-        --ro-bind / / --bind "$d" "$d" --dev /dev --bind /proc /proc \
-        sh -c "touch \"$d/probe\" && ! touch /usr/.it-bwrap-probe 2>/dev/null && echo BWRAP-ISOLATES"'
-out="$(agent_exec "$IT_CID" "$probe" 2>&1)"
-if grep -q '^BWRAP-ISOLATES$' <<<"$out"; then
-  pass "bubblewrap starts as the agent user, and its root is read-only while its bind is writable"
-else
-  fail "bubblewrap did not start (or did not isolate) as the agent user — Claude Code's sandbox cannot run here"
-  printf '     output: %s\n' "$(printf '%s\n' "$out" | head -3)"
-fi
+bwrap_probe() {  # $1=extra namespace flag (or empty) $2=what it proves
+  local probe out
+  probe='d="$(mktemp -d)" &&
+    bwrap --unshare-user '"$1"' --unshare-ipc --unshare-uts --die-with-parent \
+          --ro-bind / / --bind "$d" "$d" --dev /dev --bind /proc /proc \
+          sh -c "touch \"$d/probe\" && ! touch /usr/.it-bwrap-probe 2>/dev/null && echo BWRAP-ISOLATES"'
+  out="$(agent_exec "$IT_CID" "$probe" 2>&1)"
+  if grep -q '^BWRAP-ISOLATES$' <<<"$out"; then
+    pass "bubblewrap starts as the agent user $2, its root read-only and its bind writable"
+  else
+    fail "bubblewrap did not start (or did not isolate) as the agent user $2 — Claude Code's sandbox cannot run here"
+    printf '     output: %s\n' "$(printf '%s\n' "$out" | head -3)"
+  fi
+}
+bwrap_probe "" "without a network namespace"
+bwrap_probe "--unshare-net" "with a network namespace, as Claude Code's network isolation needs"
 
 it_finish

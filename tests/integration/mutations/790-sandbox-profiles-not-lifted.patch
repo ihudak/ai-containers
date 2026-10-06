@@ -5,8 +5,8 @@
 #       give if its run-time half were ever dropped or made conditional on the wrong
 #       thing.
 #
-#       Expected: assertions 1 and 2 PASS (the image is unchanged), and assertion 3
-#       FAILS — bubblewrap cannot create its namespace or mount in it under the
+#       Expected: assertions 1 and 2 PASS (the image is unchanged), and assertions 3
+#       and 4 FAIL — bubblewrap cannot create its namespace or mount in it under the
 #       default profiles. That is the failure the case names; a patch that broke the
 #       image instead would fail it at 1 or 2 and demonstrate nothing about the
 #       flags.
