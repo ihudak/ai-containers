@@ -2,11 +2,15 @@
 
 This file is the **canonical instruction set** for AI coding agents working in this
 repository (architecture, conventions, and commands). It follows the open
-[AGENTS.md](https://agents.md) standard read natively by Codex, GitHub Copilot,
-Gemini CLI, Cursor, and others.
+[AGENTS.md](https://agents.md) standard read natively by Claude Code (v2.1.277 and
+later), Codex, GitHub Copilot, Gemini CLI, Cursor, and others.
+
+There is deliberately no `CLAUDE.md`: Claude Code reads `AGENTS.md` only when no
+`CLAUDE.md` sits in the working directory or above it, so one here would take its
+place. On an older Claude Code, or with its built-in `agents-md` plugin disabled,
+put `@AGENTS.md` in an untracked `CLAUDE.local.md`.
 
 For agents that look for a tool-specific filename, these are **symlinks to this file**:
-- `CLAUDE.md` → `AGENTS.md` (Claude Code)
 - `.github/copilot-instructions.md` → `AGENTS.md` (GitHub Copilot)
 - `.kiro/steering/AGENTS.md` → `AGENTS.md` (Kiro CLI loads `.kiro/steering/**/*.md`, not a root file)
 

@@ -17,9 +17,8 @@
 #
 # WSL /mnt/<drive> — WARNED. A checkout on the Windows filesystem works, but
 #   bind mounts from there go through WSL's 9p bridge (slow), and the repo's
-#   symlinks (CLAUDE.md, .github/copilot-instructions.md,
-#   .kiro/steering/AGENTS.md) become WSL reparse points that Windows-side git
-#   tools cannot read. Cloning inside WSL (e.g. ~/dev) avoids both.
+#   symlinks (.github/copilot-instructions.md, .kiro/steering/AGENTS.md)
+#   become WSL reparse points that Windows-side git tools cannot read. Cloning inside WSL (e.g. ~/dev) avoids both.
 
 # host_is_wsl — true under WSL. A function so tests can redefine it.
 host_is_wsl() {
