@@ -320,7 +320,7 @@ launcher_ro_overlay() {
   local uid="${SANDBOX_UID:-$(id -u)}" gid="${SANDBOX_GID:-$(id -g)}" you
   local -a found unreadable cand bsrc=() bdst=() cl=() cat=() csrc=() cdst=() cdep=() ckind=() ro_dsts=() psrc pdst
   local -a scan links walk gdirs gfiles glinks gunr gro ug usrc udst udep ukind
-  local g base what gmax gn gover cfg v hp hpd k2
+  local g base what gmax gn cfg hp hpd k2
   local -A seen=() tried=() scanned=() pinned=()
   local nl
   # The agent's identity decides what it can reach; find needs it numeric (and
@@ -494,23 +494,28 @@ launcher_ro_overlay() {
   # Two files git honours that a repository normally LACKS must exist to be
   # mounted, so they are made, as you, before mounting: commondir, which git
   # reads in any git directory and which would otherwise let the agent point git
-  # at a config and hooks of its own — made holding `.`, this directory, which
+  # at a config and hooks of its own — made holding `./`, this directory, which
   # git treats exactly as no commondir (measured over commit, merge, rebase,
   # stash, worktrees, gc, fsck and submodules; only `git rev-parse
-  # --git-common-dir` prints the path absolute) — and config.worktree, made
-  # empty, where extensions.worktreeConfig is on. They stay: removing one at exit
-  # would detach it in any other container still running on that repository.
+  # --git-common-dir` prints the path absolute), as do libgit2 1.7 and 1.9,
+  # dulwich and gitoxide; NOT `.`, which libgit2 refuses ("Repository not
+  # found") — and config.worktree, made empty, where extensions.worktreeConfig
+  # is on. They stay: removing one at exit would detach it in any other
+  # container still running on that repository. A commondir that is not `./`
+  # in a repository's own git directory refuses the launch: git never writes one
+  # there, and it sends the host's git elsewhere for config and hooks.
   #
   # Directories from the mount root down to each, the git directory itself
   # included, are pinned, so .git cannot be renamed out from under the overlay.
   # A .git SYMLINK cannot be pinned (it would be replaced, not renamed) and is
   # warned about; a .git, or a directory inside one, that you cannot list is
   # mounted read-only whole. Handled shallowest first, so one under a read-only
-  # overlay (a launcher, another repository's hooks/) needs nothing more, and at
-  # most 30: each costs four or five bind mounts, and a bind mount adds ~50 ms to
-  # every container start on Docker Desktop — the nearest the mount roots, the
-  # project itself, are always among them. A named group's own directories are
-  # not scanned: the host's git never runs there.
+  # overlay (a launcher, another repository's hooks/) needs nothing more. Every
+  # one is protected: each costs four or five bind mounts, and a bind mount adds
+  # ~50 ms to every container start on Docker Desktop, so past 30 a NOTE says so
+  # — but a cap leaving the rest writable could be filled by the agent to push a
+  # real repository past it, so past 200 the launch is refused instead. A named
+  # group's own directories are not scanned: the host's git never runs there.
   ug=(); usrc=(); udst=(); udep=(); ukind=(); gmax=0
   for i in ${bsrc[@]+"${!bsrc[@]}"}; do
     src="${bsrc[i]}"; dst="${bdst[i]}"
@@ -540,7 +545,7 @@ launcher_ro_overlay() {
     udep+=("${#d}")
     if (( ${#d} > gmax )); then gmax=${#d}; fi
   done
-  gn=0; gover=0
+  gn=0
   for (( depth = 0; depth <= gmax; depth++ )); do
     for k in ${ug[@]+"${!ug[@]}"}; do
       if (( udep[k] != depth )); then continue; fi
@@ -550,7 +555,15 @@ launcher_ro_overlay() {
         if [[ "$at" == "$r" || "$at" == "$r"/* ]]; then skip=1; break; fi
       done
       if [[ -n "$skip" ]]; then continue; fi
-      if (( gn >= 30 )); then gover=$((gover + 1)); continue; fi
+      # Every one is protected — a cap that left some writable could be filled by
+      # the agent (it can make repositories and unlistable directories) to push a
+      # real one past it. Past 200, refuse instead: a bind mount costs every start.
+      if (( gn >= 200 )); then
+        printf 'ERROR: the writable mounts hold more than 200 git directories to protect, and\n' >&2
+        printf '       each adds bind mounts to every container start. Mount narrower\n' >&2
+        printf '       directories, or mount them :ro.\n' >&2
+        exit 1
+      fi
       gro=(); cfg=""
       if [[ "$kind" != dir ]]; then
         base="${g%/*}"; gro=("$g")      # a .git file, or read-only whole: pin what is above it
@@ -562,19 +575,24 @@ launcher_ro_overlay() {
           # agent could make it.
           if [[ ! -e "$g/hooks" && ! -L "$g/hooks" ]]; then mkdir "$g/hooks" 2>/dev/null || true; fi
           if [[ ! -e "$g/commondir" && ! -L "$g/commondir" ]]; then
-            ( set -C; printf '.\n' > "$g/commondir" ) 2>/dev/null || true
+            ( set -C; printf './\n' > "$g/commondir" ) 2>/dev/null || true
           fi
-          if [[ -f "$g/commondir" && ! -L "$g/commondir" && "$(cat "$g/commondir" 2>/dev/null)" != "." ]]; then
-            printf 'WARNING: %s sends git to %q for this repository'\''s\n' "$g/commondir" "$(head -c 200 "$g/commondir" 2>/dev/null)" >&2
-            printf '         configuration and hooks; git never writes one in a repository'\''s own\n' >&2
-            printf '         git directory. If you did not make it, remove it on the host.\n' >&2
+          # Anything but our ./ sends the host's git elsewhere for this repository's
+          # configuration and hooks, and git never writes one here: refuse, rather
+          # than mount the redirect read-only and launch.
+          if [[ -f "$g/commondir" && ! -L "$g/commondir" && "$(cat "$g/commondir" 2>/dev/null)" != "./" ]]; then
+            printf 'ERROR: %s sends git to %q for this repository'\''s\n' "$g/commondir" "$(head -c 200 "$g/commondir" 2>/dev/null)" >&2
+            printf '       configuration and hooks, and git never writes one in a repository'\''s own git\n' >&2
+            printf '       directory. If you did not make it, remove it on the host and launch again.\n' >&2
+            exit 1
           fi
         elif [[ -f "$g/commondir" ]]; then
           cfg="$(cd "$g" 2>/dev/null && cd "$(cat commondir 2>/dev/null)" 2>/dev/null && pwd -P)/config" || cfg=""
         fi
         if [[ -n "$cfg" && ! -e "$g/config.worktree" && ! -L "$g/config.worktree" ]]; then
-          v="$(_git_config_get "$cfg" extensions.worktreeConfig)" || v=""
-          case "${v,,}" in true|yes|on|1) ( set -C; : > "$g/config.worktree" ) 2>/dev/null || true ;; esac
+          if _git_config_bool "$cfg" extensions.worktreeConfig; then
+            ( set -C; : > "$g/config.worktree" ) 2>/dev/null || true
+          fi
         fi
         for f in config config.worktree commondir hooks; do
           if [[ -L "$g/$f" ]]; then
@@ -662,11 +680,10 @@ launcher_ro_overlay() {
       fi
     done
   done
-  if (( gover )); then
-    printf 'WARNING: the writable mounts hold more git repositories than the 30 protected\n' >&2
-    printf '         (the nearest their mount roots); %d more stay writable, their hooks and\n' "$gover" >&2
-    printf '         config included. Each one protected adds to every container start, so\n' >&2
-    printf '         mount narrower directories, or mount the rest :ro.\n' >&2
+  if (( gn > 30 )); then
+    printf 'NOTE: %d git directories were protected, each with its own bind mounts; that\n' "$gn" >&2
+    printf '      adds seconds to every container start on Docker Desktop. Mount narrower\n' >&2
+    printf '      directories, or mount the ones you will not change :ro.\n' >&2
   fi
 
   # Symlinks in a launcher whose way out leads somewhere the agent can change.
@@ -1068,18 +1085,73 @@ git_dirs_in() {
     g="${f%/HEAD}"
     if [[ ( -f "$g/config" && -d "$g/objects" ) || -f "$g/commondir" ]]; then _gdi_dirs+=("$g"); fi
   done
-  # A submodule's checkout, through its git directory's core.worktree.
-  for g in ${_gdi_dirs[@]+"${_gdi_dirs[@]}"}; do
-    [[ "$g" == */.git/modules/* ]] || continue
-    wt="$(_git_config_get "$g/config" core.worktree)" || continue
-    [[ -n "$wt" ]] || continue
-    co="$(cd "$g" 2>/dev/null && cd "$wt" 2>/dev/null && pwd -P)" || continue
-    f="$co/.git"
-    if [[ ( "$co" == "$5" || "$co" == "$5"/* ) && -f "$f" && ! -L "$f" && -z "${had[$f]:-}" ]]; then
-      _gdi_files+=("$f"); had[$f]=1
+  # Submodules the scan cannot see — a vendor/ is pruned by name, and submodules
+  # commonly live in one: an absorbed one's checkout through its git directory's
+  # core.worktree, and every submodule a repository's INDEX records (a gitlink),
+  # whose .git may be a directory embedded in the checkout. Followed until
+  # nothing new turns up, so a submodule's own submodules are found too. The
+  # index is read with git, fsmonitor off, so a config tampered with before this
+  # protection existed runs nothing here; without git, only what the scan sees.
+  for g in ${_gdi_dirs[@]+"${_gdi_dirs[@]}"}; do had[$g]=1; done
+  local n=0 top rec mode path
+  local -a links=()
+  while (( n < ${#_gdi_dirs[@]} )); do
+    g="${_gdi_dirs[n]}"; n=$((n + 1))
+    [[ -f "$g/config" && -d "$g/objects" ]] || continue
+    top=""
+    if [[ "$g" == */.git/modules/* ]]; then
+      wt="$(_git_config_get "$g/config" core.worktree)" || wt=""
+      if [[ -n "$wt" ]]; then top="$(cd "$g" 2>/dev/null && cd "$wt" 2>/dev/null && pwd -P)" || top=""; fi
+    elif [[ "$g" == */.git ]]; then
+      top="${g%/.git}"
     fi
+    [[ -n "$top" ]] || continue
+    if [[ "$g" == */.git/modules/* && -f "$top/.git" && ! -L "$top/.git" && -z "${had[$top/.git]:-}" ]] \
+       && [[ "$top" == "$5" || "$top" == "$5"/* ]]; then
+      _gdi_files+=("$top/.git"); had[$top/.git]=1
+    fi
+    command -v git >/dev/null 2>&1 || continue
+    links=()
+    # From the work tree's root: run from a subdirectory (sandbox.sh runs from
+    # .ai-containers), ls-files lists only what lies under it.
+    mapfile -d '' -t links < <(git -C "$top" -c core.fsmonitor=false --git-dir="$g" --work-tree="$top" ls-files -s -z 2>/dev/null)
+    for rec in ${links[@]+"${links[@]}"}; do
+      mode="${rec%% *}"; path="${rec#*$'\t'}"
+      [[ "$mode" == 160000 && -n "$path" ]] || continue
+      co="$top/$path"; f="$co/.git"
+      [[ "$co" == "$5"/* ]] || continue
+      if [[ -L "$f" ]]; then
+        [[ -n "${had[$f]:-}" ]] || { _gdi_links+=("$f"); had[$f]=1; }
+      elif [[ -f "$f" ]]; then
+        [[ -n "${had[$f]:-}" ]] || { _gdi_files+=("$f"); had[$f]=1; }
+      elif [[ -d "$f" && -f "$f/HEAD" && -f "$f/config" && -d "$f/objects" && -z "${had[$f]:-}" ]]; then
+        _gdi_dirs+=("$f"); had[$f]=1
+      fi
+    done
   done
   return 0
+}
+
+# _git_config_bool <config-file> <key>: succeeds when git would read the key as
+# true — with git's own --type=bool, or else as git spells true: a bare key, or
+# true/yes/on, or a non-zero integer.
+_git_config_bool() {
+  local v
+  if command -v git >/dev/null 2>&1; then
+    v="$(git config --file "$1" --type=bool --get "$2" 2>/dev/null)" || return 1
+    [[ "$v" == true ]]; return
+  fi
+  awk -v sec="${2%.*}" -v key="${2##*.}" '
+    /^[[:space:]]*\[/ { s = tolower($0); gsub(/[][[:space:]]/, "", s); insec = (s == tolower(sec)); next }
+    insec {
+      line = $0; sub(/^[[:space:]]+/, "", line); sub(/[[:space:]]*([#;].*)?$/, "", line)
+      n = index(line, "="); k = n ? substr(line, 1, n - 1) : line; sub(/[[:space:]]+$/, "", k)
+      if (tolower(k) != tolower(key)) next
+      if (!n) { r = 1; next }
+      v = tolower(substr(line, n + 1)); gsub(/[[:space:]]/, "", v)
+      r = (v == "true" || v == "yes" || v == "on" || (v ~ /^-?[0-9]+$/ && v + 0 != 0))
+    }
+    END { exit !r }' "$1" 2>/dev/null
 }
 
 # _git_config_get <config-file> <key>: a key's value from one git config file —

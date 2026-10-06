@@ -10,10 +10,10 @@
 #       project's writability and the agent's commit still PASS; a FAIL there
 #       first would mean the case measures something other than the overlay.
 diff --git a/sandbox.sh b/sandbox.sh
-index bb162f8..46c3553 100755
+index af1400f..6e449b1 100755
 --- a/sandbox.sh
 +++ b/sandbox.sh
-@@ -520,7 +520,7 @@ launcher_ro_overlay() {
+@@ -525,7 +525,7 @@ launcher_ro_overlay() {
        printf '      your host'\''s git may run what changes there.\n' >&2
      fi
      gdirs=(); gfiles=(); glinks=(); gunr=()

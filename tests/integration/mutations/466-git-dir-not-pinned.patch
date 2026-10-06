@@ -7,10 +7,10 @@
 #       and "the host's .git is where it was" FAIL. The hook and config
 #       assertions still PASS: until the rename, the overlay itself is intact.
 diff --git a/sandbox.sh b/sandbox.sh
-index bb162f8..4fe9649 100755
+index af1400f..0b1f95d 100755
 --- a/sandbox.sh
 +++ b/sandbox.sh
-@@ -611,11 +611,7 @@ launcher_ro_overlay() {
+@@ -629,11 +629,7 @@ launcher_ro_overlay() {
          continue
        fi
        gn=$((gn + 1))

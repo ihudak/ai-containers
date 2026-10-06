@@ -58,13 +58,14 @@ agit "config core.hooksPath /workspace/proj/hooks" >/dev/null 2>&1
 
 # git reads .git/commondir in ANY git directory, and a repository's own has
 # none — written by the agent, it would point the host's git at a config and
-# hooks of its own. sandbox.sh makes one holding `.` and mounts it read-only.
+# hooks of its own. sandbox.sh makes one holding `./` (this directory) and mounts
+# it read-only.
 if agent_exec "$IT_CID" 'printf "../planted\n" > /workspace/proj/.git/commondir' >/dev/null 2>&1; then
   fail "the agent cannot write .git/commondir — the write SUCCEEDED"
 else
   pass "the agent cannot write .git/commondir"
 fi
-[[ "$(cat "$proj/.git/commondir" 2>/dev/null)" == . && "$(hostgit rev-parse --git-common-dir)" == "$proj/.git" ]] \
+[[ "$(cat "$proj/.git/commondir" 2>/dev/null)" == ./ && "$(hostgit rev-parse --git-common-dir)" == "$proj/.git" ]] \
   && pass "the host's git still takes its config and hooks from .git itself" \
   || fail "the host's git still takes its config and hooks from .git itself — common dir: $(hostgit rev-parse --git-common-dir)"
 

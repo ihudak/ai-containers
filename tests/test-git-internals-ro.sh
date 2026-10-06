@@ -117,10 +117,11 @@ has_mount "$PROJ/.git/config:/workspace/proj/.git/config:ro" && has_mount "$PROJ
   && pass "G1 .git/config and .git/hooks are mounted read-only in place" \
   || fail "G1 config and hooks read-only (git mounts: $(git_mounts | tr '\n' ' '))"
 # git reads commondir in ANY git directory, and a repository's own has none —
-# so one is made, holding `.` (this directory, which git treats as none), and
-# mounted read-only, or the agent could make one pointing git elsewhere.
-[[ "$(cat "$PROJ/.git/commondir" 2>/dev/null)" == . ]] && has_mount "$PROJ/.git/commondir:/workspace/proj/.git/commondir:ro" \
-  && pass "G1 a commondir holding '.' is made and mounted read-only, so the agent cannot make one" \
+# so one is made, holding `./` (this directory, which git, libgit2, dulwich and
+# gitoxide all treat as none — libgit2 refuses a bare `.`), and mounted
+# read-only, or the agent could make one pointing git elsewhere.
+[[ "$(cat "$PROJ/.git/commondir" 2>/dev/null)" == ./ ]] && has_mount "$PROJ/.git/commondir:/workspace/proj/.git/commondir:ro" \
+  && pass "G1 a commondir holding './' is made and mounted read-only, so the agent cannot make one" \
   || fail "G1 commondir placeholder (content: '$(cat "$PROJ/.git/commondir" 2>/dev/null)'; git mounts: $(git_mounts | tr '\n' ' '))"
 [[ "$(git_mounts | wc -l | tr -d ' ')" == 4 ]] \
   && pass "G1 and nothing else of .git: objects, refs and the index stay writable" \
@@ -270,14 +271,16 @@ launch "$TMP/app"
 [[ -s "$CAPTURE" && -z "$(git_mounts)" ]] && pass "G14 a mount with no repository gets no git mounts" \
   || fail "G14 no repo (git mounts: $(git_mounts | tr '\n' ' '))"
 
-# ── G15: a commondir already there that is not '.' is named — and frozen ─────
+# ── G15: a commondir already there that is not './' refuses the launch ──────
+# git never writes one in a repository's own git directory, and it already sends
+# the host's git elsewhere for config and hooks: mounting it read-only would only
+# freeze the redirect.
 mkdir -p "$TMP/cd/r" && "${G[@]}" -C "$TMP/cd/r" init -q && printf '../elsewhere\n' > "$TMP/cd/r/.git/commondir"
 EXTRA_MOUNTS="$TMP/cd" launch "$TMP/app"
-grep -qF "WARNING: $TMP/cd/r/.git/commondir sends git to" "$ERR" \
-  && has_mount "$TMP/cd/r/.git/commondir:/workspace/cd/r/.git/commondir:ro" \
+[[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && grep -qF "ERROR: $TMP/cd/r/.git/commondir sends git to" "$ERR" \
   && [[ "$(cat "$TMP/cd/r/.git/commondir")" == ../elsewhere ]] \
-  && pass "G15 a commondir that is not '.' is warned about, left as it is, and mounted read-only" \
-  || fail "G15 foreign commondir (stderr: $(grep WARNING "$ERR" | tr '\n' ' '))"
+  && pass "G15 a commondir that is not './' refuses the launch, naming it, and is left for you to inspect" \
+  || fail "G15 foreign commondir (rc=$LAUNCH_RC; stderr: $(grep -E 'ERROR|WARNING' "$ERR" | tr '\n' ' '))"
 rm -rf "$TMP/cd"
 
 # ── G16: a directory inside .git you cannot list is mounted read-only whole ───
@@ -327,17 +330,46 @@ grep -qF "NOTE: $PROJ/.git/hooks lies inside a git directory and is mounted writ
   && pass "G20 a writable mount rooted inside a .git gets a NOTE" \
   || fail "G20 mount inside .git (stderr: $(grep NOTE "$ERR" | tr '\n' ' '))"
 
-# ── G21: at most 30 repositories, the nearest first, the rest named ───────────
+# ── G21: every repository is protected; past 30 the cost is named ─────────────
+# No cap that leaves some writable: the agent can make repositories, and would
+# fill one to push a real repository past it.
 mkdir -p "$TMP/many"
 for n in $(seq -w 1 32); do mkdir -p "$TMP/many/r$n" && "${G[@]}" -C "$TMP/many/r$n" init -q; done
 mkdir -p "$TMP/many/zz/deep" && "${G[@]}" -C "$TMP/many/zz/deep" init -q
 EXTRA_MOUNTS="$TMP/many" launch "$TMP/app"
 nro="$(grep -c '^READ-ONLY: /workspace/many/.*/\.git: ' "$ERR")"
-[[ "$nro" == 30 ]] && grep -qF 'WARNING: the writable mounts hold more git repositories than the 30 protected' "$ERR" \
-  && grep -qF '3 more stay writable' "$ERR" && ! grep -q 'zz/deep/.git' <<<"$(mounts)" \
-  && pass "G21 30 repositories are protected, the deepest left out first, and the rest named in a WARNING" \
-  || fail "G21 cap (protected: $nro; stderr: $(grep -E 'WARNING' "$ERR" | tr '\n' ' '))"
+[[ "$LAUNCH_RC" == 0 && "$nro" == 33 ]] && grep -q 'zz/deep/.git/config' <<<"$(mounts)" \
+  && grep -qF 'NOTE: 33 git directories were protected' "$ERR" \
+  && pass "G21 all 33 repositories are protected, and the start-up cost is named in a NOTE" \
+  || fail "G21 every repository (rc=$LAUNCH_RC; protected: $nro; stderr: $(grep -E 'NOTE: [0-9]|WARNING' "$ERR" | tr '\n' ' '))"
+# Past 200 the launch is refused rather than leaving any writable.
+for n in $(seq -w 33 201); do mkdir -p "$TMP/many/r$n" && "${G[@]}" -C "$TMP/many/r$n" init -q; done
+EXTRA_MOUNTS="$TMP/many" launch "$TMP/app"
+[[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && grep -qF 'ERROR: the writable mounts hold more than 200 git directories' "$ERR" \
+  && pass "G21 past 200 the launch is refused, never left partly protected" \
+  || fail "G21 refusal past 200 (rc=$LAUNCH_RC; stderr: $(grep -E 'ERROR' "$ERR" | tr '\n' ' '))"
 rm -rf "$TMP/many"
+
+# ── G22: a submodule whose .git is EMBEDDED, under vendor/, found via the index ─
+# `git submodule add` of a repository already in place keeps its .git directory
+# in the checkout; vendor/ is pruned by name, but the superproject's index
+# records the gitlink, and its `git status` runs git in there.
+mkdir -p "$PROJ/vendor/emb" && "${G[@]}" -C "$PROJ/vendor/emb" init -q && "${G[@]}" -C "$PROJ/vendor/emb" commit -q --allow-empty -m e
+"${G[@]}" -C "$PROJ" -c protocol.file.allow=always submodule --quiet add ./vendor/emb vendor/emb 2>/dev/null
+[[ -d "$PROJ/vendor/emb/.git" ]] || printf 'SCAFFOLD-NOTE: git absorbed the embedded .git; G22 then tests the absorbed path\n'
+launch ..
+{ has_mount "$PROJ/vendor/emb/.git/config:/workspace/proj/vendor/emb/.git/config:ro" \
+  || has_mount "$PROJ/vendor/emb/.git:/workspace/proj/vendor/emb/.git:ro"; } \
+  && pass "G22 a submodule under vendor/ with an embedded .git is found through the index and protected" \
+  || fail "G22 embedded vendor/ submodule (git mounts: $(git_mounts | grep vendor | tr '\n' ' '))"
+
+# ── G23: extensions.worktreeConfig as git spells true — a bare key ────────────
+printf '[extensions]\n\tworktreeConfig\n' >> "$PROJ/.git/config"
+launch ..
+[[ -f "$PROJ/.git/config.worktree" ]] && has_mount "$PROJ/.git/config.worktree:/workspace/proj/.git/config.worktree:ro" \
+  && pass "G23 a bare 'worktreeConfig' key reads as true, as git reads it, and gets the placeholder" \
+  || fail "G23 bare worktreeConfig (git mounts: $(git_mounts | grep worktree | tr '\n' ' '))"
+"${G[@]}" -C "$PROJ" config --unset extensions.worktreeConfig 2>/dev/null; rm -f "$PROJ/.git/config.worktree"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
