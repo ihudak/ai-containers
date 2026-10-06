@@ -1,0 +1,24 @@
+# case: 455-launcher-dir-nested-mount
+# what: the directories between a mount root and a launcher are no longer bound
+#       onto themselves, so under a parent mount they are ordinary directories
+#       again: renamable, with the read-only overlay moving along with them. The
+#       overlays themselves are untouched.
+#
+#       Expected: "the directory above the launcher cannot be moved" FAILs. Both
+#       launchers still read and refuse writes, and the parent and project stay
+#       writable; a FAIL there first would mean the case measures something
+#       other than the pinning.
+#
+diff --git a/sandbox.sh b/sandbox.sh
+index f4f3d8f..e497877 100755
+--- a/sandbox.sh
++++ b/sandbox.sh
+@@ -317,7 +317,7 @@ launcher_ro_overlay() {
+         path="$path/$part"; at="$at/$part"
+         [[ -n "${seen[$at]:-}" ]] && continue
+         seen[$at]=1
+-        _ro+=(-v "$path:$at:rw")
++        :
+       done
+       at="$dst/$rel"
+       [[ -n "${seen[$at]:-}" ]] && continue

@@ -1,0 +1,23 @@
+# case: 455-launcher-dir-nested-mount
+# what: launcher_dirs_in finds nothing, so only this launcher's own directory is
+#       protected — the state before the review — and another project's
+#       .ai-containers inside the same writable mount is as writable as the
+#       mount around it.
+#
+#       Expected: "agent cannot write: /workspace/grp/other/.ai-containers"
+#       FAILs. This launcher's own overlay, the pinning and every writability
+#       control still PASS.
+#
+diff --git a/sandbox.sh b/sandbox.sh
+index f4f3d8f..b1b341a 100755
+--- a/sandbox.sh
++++ b/sandbox.sh
+@@ -335,7 +335,7 @@ launcher_ro_overlay() {
+ launcher_dirs_in() {
+   local d
+   while IFS= read -r d; do
+-    [[ -f "$d/sandbox.sh" ]] && printf '%s\n' "$d"
++    false && printf '%s\n' "$d"
+   done < <(find "$1" -mindepth 1 -maxdepth 6 \
+              \( -name node_modules -o -name .git -o -name vendor -o -name .venv -o -name target \) -prune \
+              -o -type d -name .ai-containers -print -prune 2>/dev/null)
