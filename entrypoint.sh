@@ -1,6 +1,45 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# container.env is the project's APPLICATION environment, and whoever can commit to
+# the project writes it — yet `docker run --env-file` hands it to this ROOT process,
+# where XTABLES_LIBDIR would choose the plugins iptables loads and ALLOWLIST_CIDRS_FILE
+# the firewall's own allowlist. sandbox.sh names every key it passed from the file in
+# AI_CONTAINER_ENV_KEYS; they are set aside here, before anything below reads the
+# environment, and handed back only to processes that run as the sandbox user
+# (as_sandbox_user, and the final shell). What acts before this line can — the
+# loader, env(1)'s PATH search for bash, bash's own start-up — sandbox.sh refuses
+# outright (sandbox.sh: container_env_filter()).
+# Every name here starts _aice_, which sandbox.sh refuses from container.env: a
+# key named like a variable of this function (k, set, app_env…) would otherwise
+# be unset in its place — aborting the entrypoint under set -u, leaving the key
+# in root's environment, or emptying what was stashed. The list is split by
+# parameter expansion, not `read` (which a TMOUT key would time out) nor an
+# unquoted word list (which would glob, letting a file name a key). `unset -v`,
+# because a bare unset of a name with no variable removes a FUNCTION of that
+# name. A name bash will not unset (readonly, such as PPID) holds bash's value,
+# not the file's, and is left alone.
+_aice_app_env=()
+stash_app_env() {
+  local _aice_rest="${AI_CONTAINER_ENV_KEYS:-}" _aice_k _aice_v _aice_set
+  while [[ -n "$_aice_rest" ]]; do
+    _aice_k="${_aice_rest%% *}"
+    if [[ "$_aice_rest" == *' '* ]]; then _aice_rest="${_aice_rest#* }"; else _aice_rest=""; fi
+    [[ "$_aice_k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ && "$_aice_k" != _aice_* ]] || continue
+    _aice_set=0; _aice_v=""
+    if [[ -n "${!_aice_k+x}" ]]; then _aice_set=1; _aice_v="${!_aice_k}"; fi
+    unset -v "$_aice_k" 2>/dev/null || continue
+    if (( _aice_set )); then _aice_app_env+=("$_aice_k=$_aice_v"); fi
+  done
+  unset AI_CONTAINER_ENV_KEYS
+}
+stash_app_env
+
+# runuser … -- <command> as the sandbox user, with container.env given back.
+as_sandbox_user() {
+  runuser -u "$sandbox_user" -- env ${_aice_app_env[@]+"${_aice_app_env[@]}"} "$@"
+}
+
 mode="${DEV_CONTAINER_MODE:-restricted}"
 domains_file="${ALLOWLIST_DOMAINS_FILE:-/tmp/allowlist-domains.txt}"
 cidrs_file="${ALLOWLIST_CIDRS_FILE:-/tmp/allowlist-cidrs.txt}"
@@ -16,7 +55,7 @@ sandbox_user="${SANDBOX_USER:-user}"
 # Offline and non-fatal — never blocks container start.
 run_agent_skill_install() {
   [[ -x /usr/local/bin/install-agent-skills.sh ]] || return 0
-  runuser -u "$sandbox_user" -- \
+  as_sandbox_user \
     env AI_AGENTS_ENABLED="${AI_AGENTS_ENABLED:-}" \
     bash /usr/local/bin/install-agent-skills.sh || true
 }
@@ -40,7 +79,7 @@ chown_rvm_root() {
 run_ruby_reconcile() {
   [[ -n "${RUBY_VERSIONS:-}" ]] || return 0
   [[ -x /usr/local/bin/rvm-reconcile.sh ]] || return 0
-  runuser -u "$sandbox_user" -- \
+  as_sandbox_user \
     env HOME="/home/$sandbox_user" RUBY_VERSIONS="${RUBY_VERSIONS}" \
     bash /usr/local/bin/rvm-reconcile.sh || true
 }
@@ -60,7 +99,7 @@ link_default_ruby() {
 run_agent_tools_reconcile() {
   [[ -n "${AI_RUNTIME_TOOLS:-}" ]] || return 0
   [[ -x /usr/local/bin/agent-tools-reconcile.sh ]] || return 0
-  runuser -u "$sandbox_user" -- \
+  as_sandbox_user \
     env HOME="/home/$sandbox_user" AI_RUNTIME_TOOLS="${AI_RUNTIME_TOOLS}" \
     bash /usr/local/bin/agent-tools-reconcile.sh || true
 }
@@ -78,23 +117,32 @@ link_agent_tools() {
 # `prepare` runs as ROOT and creates directories and hands them to the sandbox
 # user; `start` runs as the sandbox user, so no server process is ever root. Both
 # are non-fatal: a server that fails to start must not cost the user their shell.
-# The runner's path is fixed on purpose — container.env reaches this process,
-# and no project data file may choose what root executes. For the same reason
-# root's prepare starts from an EMPTY environment (env -i) holding only a fixed
-# PATH, AI_SERVICES and SANDBOX_UID/GID: an adapter reads its own knobs in
-# prepare too (the postgres one runs "<lib root>/<major>/bin/postgres --version"
-# and chowns its socket directory), so stripping a named few would leave every
-# knob added later reaching root. `start` keeps the environment — it runs as the
-# sandbox user and needs container.env's POSTGRES_* — minus the runner's
-# test-only path overrides, so prepare and start agree on the directories.
+# The runner's path is fixed on purpose: no project data file may choose what
+# root executes. For the same reason root's prepare starts from an EMPTY
+# environment (env -i) holding only a fixed PATH, AI_SERVICES and
+# SANDBOX_UID/GID: an adapter reads its own knobs in prepare too (the postgres
+# one runs "<lib root>/<major>/bin/postgres --version" and chowns its socket
+# directory), so stripping a named few would leave every knob added later
+# reaching root — container.env is set aside from root already (stash_app_env),
+# and prepare does not depend on that alone. `start` runs as the sandbox user
+# with container.env given back, since it needs its POSTGRES_* — minus the
+# runner's test-only path overrides, so prepare and start agree on the
+# directories.
 run_services() {
   [[ -n "${AI_SERVICES:-}" ]] || return 0
   [[ -x /usr/local/bin/start-services.sh ]] || return 0
   env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     AI_SERVICES="$AI_SERVICES" SANDBOX_UID="${SANDBOX_UID:-1000}" SANDBOX_GID="${SANDBOX_GID:-1000}" \
     /usr/local/bin/start-services.sh prepare || true
+  local kv start_env=()
+  for kv in ${_aice_app_env[@]+"${_aice_app_env[@]}"}; do
+    case "${kv%%=*}" in
+      AI_SERVICES_DIR|AI_SERVICES_STATE_ROOT|AI_SERVICES_LOG_ROOT) ;;
+      *) start_env+=("$kv") ;;
+    esac
+  done
   runuser -u "$sandbox_user" -- env -u AI_SERVICES_DIR -u AI_SERVICES_STATE_ROOT -u AI_SERVICES_LOG_ROOT \
-    /usr/local/bin/start-services.sh start || true
+    ${start_env[@]+"${start_env[@]}"} /usr/local/bin/start-services.sh start || true
 }
 
 # Create the sandbox user at startup with the host user's name, UID, and GID so
@@ -325,6 +373,9 @@ case "$mode" in
 
     # Hand control to the sandbox user with dangerous capabilities dropped.
     # Background processes forked above are unaffected by this exec and keep their capabilities.
+    # In every mode the shell capsh starts as that user gives container.env back
+    # (stash_app_env) and execs the login shell — after the switch, so no root
+    # process ever holds it.
     chown_rvm_root
     run_ruby_reconcile
     link_default_ruby
@@ -336,7 +387,7 @@ case "$mode" in
     exec capsh \
       --drop=cap_net_admin,cap_net_raw \
       --user="$sandbox_user" \
-      -- -l
+      -- -c 'exec env "$@" /bin/bash -l' bash ${_aice_app_env[@]+"${_aice_app_env[@]}"}
     ;;
   discovery)
     apply_discovery_firewall
@@ -366,7 +417,7 @@ case "$mode" in
     #
     # This comment used to claim "NET_RAW is kept so the sandbox user can run
     # tcpdump if needed". That never worked, and keeping it would be the wrong
-    # fix: the pcap daemon is started as ROOT at line 203, before the exec below,
+    # fix: the pcap daemon is started as ROOT (`capture-agent-destinations.sh start`), before the exec below,
     # so it retains its own capabilities and needs nothing from the agent shell.
     # Granting the agent raw-socket access to satisfy a comment would widen its
     # capability surface for a convenience nobody has asked for, in a mode that
@@ -383,7 +434,7 @@ case "$mode" in
     exec capsh \
       --drop=cap_net_admin \
       --user="$sandbox_user" \
-      -- -l
+      -- -c 'exec env "$@" /bin/bash -l' bash ${_aice_app_env[@]+"${_aice_app_env[@]}"}
     ;;
   open)
     setup_sandbox_user
@@ -406,7 +457,7 @@ case "$mode" in
     exec capsh \
       --drop=cap_net_admin,cap_net_raw \
       --user="$sandbox_user" \
-      -- -l
+      -- -c 'exec env "$@" /bin/bash -l' bash ${_aice_app_env[@]+"${_aice_app_env[@]}"}
     ;;
   *)
     printf 'Unsupported DEV_CONTAINER_MODE: %s\n' "$mode" >&2

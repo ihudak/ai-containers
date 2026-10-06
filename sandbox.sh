@@ -338,7 +338,8 @@ launcher_ro_overlay() {
   local x f e q w c safe inner how
   local uid="${SANDBOX_UID:-$(id -u)}" gid="${SANDBOX_GID:-$(id -g)}" you
   local -a found unreadable cand bsrc=() bdst=() cl=() cat=() csrc=() cdst=() cdep=() ckind=() ro_dsts=() psrc pdst
-  local -a scan links walk
+  local -a scan links walk gdirs gfiles glinks gunr gro ug usrc udst udep ukind
+  local g base what gmax gn gitmax cfg hp hpd k2
   local -A seen=() tried=() scanned=() pinned=()
   local nl
   # The agent's identity decides what it can reach; find needs it numeric (and
@@ -496,6 +497,229 @@ launcher_ro_overlay() {
       fi
     done
   done
+
+  # Git internals. What the HOST's git runs from a repository — its hooks, and
+  # configuration whose keys run programs (core.hooksPath, core.fsmonitor,
+  # core.sshCommand, filters, diff and merge drivers) — changed from inside the
+  # container would run outside it at the next `git commit` or `git status`, and
+  # nothing under .git/ shows in git status or git diff. So every git directory a
+  # writable mount exposes (git_dirs_in) has its hooks/, config, config.worktree
+  # and commondir mounted read-only, and every .git FILE (a linked worktree's or
+  # a submodule's checkout, naming its git directory) likewise. Objects, refs and
+  # the index stay writable: committing, branching, pushing and rebasing work;
+  # what writes config (git config, git remote add, the upstream `push -u` would
+  # record, `git submodule update --init`) does not.
+  #
+  # Two files git honours that a repository normally LACKS must exist to be
+  # mounted, so they are made, as you, before mounting: commondir, which git
+  # reads in any git directory and which would otherwise let the agent point git
+  # at a config and hooks of its own — made holding `./`, this directory, which
+  # git treats exactly as no commondir (measured over commit, merge, rebase,
+  # stash, worktrees, gc, fsck and submodules; only `git rev-parse
+  # --git-common-dir` prints the path absolute), as do libgit2 1.7 and 1.9,
+  # dulwich and gitoxide; NOT `.`, which libgit2 refuses ("Repository not
+  # found") — and config.worktree, made empty, where extensions.worktreeConfig
+  # is on. They stay: removing one at exit would detach it in any other
+  # container still running on that repository. A commondir that is not `./`
+  # in a repository's own git directory refuses the launch: git never writes one
+  # there, and it sends the host's git elsewhere for config and hooks.
+  #
+  # Directories from the mount root down to each, the git directory itself
+  # included, are pinned, so .git cannot be renamed out from under the overlay.
+  # A .git SYMLINK cannot be pinned (it would be replaced, not renamed) and is
+  # warned about; a .git, or a directory inside one, that you cannot list is
+  # mounted read-only whole. Handled shallowest first, so one under a read-only
+  # overlay (a launcher, another repository's hooks/) needs nothing more. Every
+  # one is protected: each costs four or five bind mounts, and a bind mount adds
+  # ~50 ms to every container start on Docker Desktop, so past 30 a NOTE says so
+  # — but a cap leaving the rest writable could be filled by the agent to push a
+  # real repository past it, so past 200 the launch is refused instead. A named
+  # group's own directories are not scanned: the host's git never runs there.
+  ug=(); usrc=(); udst=(); udep=(); ukind=(); gmax=0
+  for i in ${bsrc[@]+"${!bsrc[@]}"}; do
+    src="${bsrc[i]}"; dst="${bdst[i]}"
+    if [[ -n "${_git_skip_root:-}" && ( "$src" == "$_git_skip_root" || "$src" == "$_git_skip_root"/* ) ]]; then continue; fi
+    if [[ "$src" == */.git/* ]]; then
+      printf 'NOTE: %s lies inside a git directory and is mounted writable at %s;\n' "$src" "$dst" >&2
+      printf '      your host'\''s git may run what changes there.\n' >&2
+    fi
+    gdirs=(); gfiles=(); glinks=(); gunr=()
+    git_dirs_in gdirs gfiles glinks gunr "$src"
+    for f in ${glinks[@]+"${glinks[@]}"}; do
+      at="$dst${f#"$src"}"; skip=""
+      for r in ${ro_dsts[@]+"${ro_dsts[@]}"}; do
+        if [[ "$at" == "$r" || "$at" == "$r"/* ]]; then skip=1; break; fi
+      done
+      if [[ -n "$skip" ]]; then continue; fi
+      printf 'WARNING: %s is a symlink inside a writable mount (%s); the agent can\n' "$f" "$dst" >&2
+      printf '         replace it with a git directory of its own, and your host'\''s git would\n' >&2
+      printf '         run that one'\''s hooks there. Replace the link with what it names.\n' >&2
+    done
+    for g in ${gdirs[@]+"${gdirs[@]}"}; do ug+=("$g"); ukind+=(dir); usrc+=("$src"); udst+=("$dst"); done
+    for g in ${gfiles[@]+"${gfiles[@]}"}; do ug+=("$g"); ukind+=(file); usrc+=("$src"); udst+=("$dst"); done
+    for g in ${gunr[@]+"${gunr[@]}"}; do ug+=("$g"); ukind+=(unr); usrc+=("$src"); udst+=("$dst"); done
+  done
+  for k in ${ug[@]+"${!ug[@]}"}; do
+    at="${udst[k]}${ug[k]#"${usrc[k]}"}"; d="${at//[!\/]/}"
+    udep+=("${#d}")
+    if (( ${#d} > gmax )); then gmax=${#d}; fi
+  done
+  gn=0
+  gitmax="${SANDBOX_GIT_MAX:-200}"
+  if [[ ! "$gitmax" =~ ^[1-9][0-9]{0,5}$ ]]; then
+    printf 'ERROR: SANDBOX_GIT_MAX must be a whole number from 1 to 999999 (got %q).\n' "$gitmax" >&2
+    exit 1
+  fi
+  for (( depth = 0; depth <= gmax; depth++ )); do
+    for k in ${ug[@]+"${!ug[@]}"}; do
+      if (( udep[k] != depth )); then continue; fi
+      g="${ug[k]}"; src="${usrc[k]}"; dst="${udst[k]}"; kind="${ukind[k]}"
+      at="$dst${g#"$src"}"; skip=""
+      for r in ${ro_dsts[@]+"${ro_dsts[@]}"}; do
+        if [[ "$at" == "$r" || "$at" == "$r"/* ]]; then skip=1; break; fi
+      done
+      if [[ -n "$skip" ]]; then continue; fi
+      # Every one is protected — a cap that left some writable could be filled by
+      # the agent (it can make repositories and unlistable directories) to push a
+      # real one past it. Past SANDBOX_GIT_MAX (200), refuse instead: a bind mount
+      # costs every start. The refusal names where the overflow is, since an agent
+      # could have planted it, and a big tree (an AOSP-style checkout) can raise it.
+      if (( gn >= gitmax )); then
+        printf 'ERROR: the writable mounts hold more than %d git directories to protect, and\n' "$gitmax" >&2
+        printf '       each adds bind mounts to every container start. Among those past the limit:\n' >&2
+        x=0
+        for (( d = depth; d <= gmax && x < 5; d++ )); do
+          for k2 in "${!ug[@]}"; do
+            if (( udep[k2] == d && x < 5 )) && { (( d > depth )) || (( k2 >= k )); }; then
+              printf '         %s\n' "${ug[k2]}" >&2; x=$((x + 1))
+            fi
+          done
+        done
+        printf '       Mount narrower directories, or mount them :ro, or raise SANDBOX_GIT_MAX\n' >&2
+        printf '       if every one of them is yours.\n' >&2
+        exit 1
+      fi
+      gro=(); cfg=""
+      if [[ "$kind" != dir ]]; then
+        base="${g%/*}"; gro=("$g")      # a .git file, or read-only whole: pin what is above it
+      else
+        base="$g"
+        if [[ -d "$g/objects" && -f "$g/config" ]]; then
+          cfg="$g/config"
+          # git makes hooks/ at init, but a repository can lack it — and then the
+          # agent could make it.
+          if [[ ! -e "$g/hooks" && ! -L "$g/hooks" ]]; then mkdir "$g/hooks" 2>/dev/null || true; fi
+          if [[ ! -e "$g/commondir" && ! -L "$g/commondir" ]]; then
+            ( set -C; printf './\n' > "$g/commondir" ) 2>/dev/null || true
+          fi
+          # Anything but our ./ sends the host's git elsewhere for this repository's
+          # configuration and hooks, and git never writes one here: refuse, rather
+          # than mount the redirect read-only and launch.
+          if [[ -f "$g/commondir" && ! -L "$g/commondir" && "$(cat "$g/commondir" 2>/dev/null)" != "./" ]]; then
+            printf 'ERROR: %s sends git to %q for this repository'\''s\n' "$g/commondir" "$(head -c 200 "$g/commondir" 2>/dev/null)" >&2
+            printf '       configuration and hooks, and git never writes one in a repository'\''s own git\n' >&2
+            printf '       directory. If you did not make it, remove it on the host and launch again.\n' >&2
+            exit 1
+          fi
+        elif [[ -f "$g/commondir" ]]; then
+          cfg="$(cd "$g" 2>/dev/null && cd "$(cat commondir 2>/dev/null)" 2>/dev/null && pwd -P)/config" || cfg=""
+        fi
+        if [[ -n "$cfg" && ! -e "$g/config.worktree" && ! -L "$g/config.worktree" ]]; then
+          if _git_config_bool "$cfg" extensions.worktreeConfig; then
+            ( set -C; : > "$g/config.worktree" ) 2>/dev/null || true
+          fi
+        fi
+        for f in config config.worktree commondir hooks; do
+          if [[ -L "$g/$f" ]]; then
+            printf 'WARNING: %s is a symlink, which cannot be mounted read-only in place;\n' "$g/$f" >&2
+            printf '         what it leads to is what your host'\''s git reads. Replace the link with it.\n' >&2
+          elif [[ -e "$g/$f" ]]; then
+            gro+=("$g/$f")
+          elif [[ "$f" == hooks || "$f" == commondir ]] && [[ -d "$g/objects" ]]; then
+            printf 'WARNING: %s has no %s and one could not be made; the agent could make it.\n' "$g" "$f" >&2
+          fi
+        done
+      fi
+      if (( ${#gro[@]} == 0 )); then continue; fi
+      psrc=(); pdst=()
+      if [[ "$base" != "$src" ]]; then
+        rest="${base#"$src"/}"; path="$src"; pin="$dst"
+        while [[ -n "$rest" ]]; do
+          part="${rest%%/*}"
+          if [[ "$rest" == */* ]]; then rest="${rest#*/}"; else rest=""; fi
+          path="$path/$part"; pin="$pin/$part"
+          if [[ -z "${seen[$pin]:-}" ]]; then psrc+=("$path"); pdst+=("$pin"); fi
+        done
+      fi
+      ok=1
+      for k2 in ${psrc[@]+"${!psrc[@]}"}; do
+        if ! _mount_representable "${psrc[k2]}" "${pdst[k2]}"; then ok=""; fi
+      done
+      for f in "${gro[@]}"; do
+        if ! _mount_representable "$f" "$dst${f#"$src"}"; then ok=""; fi
+      done
+      if [[ -z "$ok" ]]; then
+        printf 'WARNING: cannot protect the git internals of %s: docker cannot be handed\n' "$g" >&2
+        printf '         that name intact, so they stay writable. Rename it on the host.\n' >&2
+        continue
+      fi
+      gn=$((gn + 1))
+      for k2 in ${psrc[@]+"${!psrc[@]}"}; do
+        seen[${pdst[k2]}]=1; pinned[${pdst[k2]}]=1
+        _bind_mount_arg mf mv "${psrc[k2]}" "${pdst[k2]}" rw
+        _ro+=("$mf" "$mv"); _vrfy+=("${psrc[k2]}" "${pdst[k2]}")
+      done
+      what=""
+      for f in "${gro[@]}"; do
+        x="$dst${f#"$src"}"
+        _bind_mount_arg mf mv "$f" "$x" ro
+        _ro+=("$mf" "$mv"); _vrfy+=("$f" "$x")
+        seen[$x]=1; ro_dsts+=("$x")
+        if [[ "$f" != "$g" ]]; then what+="${what:+, }${f##*/}"; fi
+      done
+      if [[ "$kind" == unr ]]; then
+        printf 'WARNING: %s cannot be listed by you, so what it holds cannot be\n' "$g" >&2
+        printf '         protected one by one; it is mounted read-only whole at %s.\n' "$at" >&2
+        printf '         Restore: chmod u+rx %q\n' "$g" >&2
+      elif [[ "$kind" == file ]]; then
+        printf 'READ-ONLY: %s  (names the git directory your host'\''s git uses here)\n' "$at" >&2
+      else
+        printf 'READ-ONLY: %s: %s  (what your host'\''s git runs; change them on the host)\n' "$at" "$what" >&2
+      fi
+      # Hooks run from a directory core.hooksPath names are project files the
+      # overlay leaves writable — and hook managers keep the scripts they run
+      # gitignored (husky's .husky/_), so a change need not show in git status.
+      if [[ "$kind" == dir && "$cfg" == "$g/config" ]]; then
+        hp="$(_git_config_get "$cfg" core.hooksPath)" || hp=""
+        if [[ -n "$hp" ]]; then
+          # shellcheck disable=SC2088  # '~/'* matches a LITERAL leading ~/ in the config value, expanded by hand
+          case "$hp" in
+            /*) hpd="$hp" ;;
+            '~/'*) hpd="$HOME/${hp#\~/}" ;;
+            *) if [[ "$g" == */.git ]]; then hpd="${g%/.git}/$hp"; else hpd="$g/$hp"; fi ;;
+          esac
+          hpd="$(cd "$hpd" 2>/dev/null && pwd -P)" || hpd=""
+          for i in ${bsrc[@]+"${!bsrc[@]}"}; do
+            if [[ -z "$hpd" || ( "$hpd" != "${bsrc[i]}" && "$hpd" != "${bsrc[i]}"/* ) ]]; then continue; fi
+            x="${bdst[i]}${hpd#"${bsrc[i]}"}"; safe=""
+            for r in ${ro_dsts[@]+"${ro_dsts[@]}"}; do
+              if [[ "$x" == "$r" || "$x" == "$r"/* ]]; then safe=1; break; fi
+            done
+            if [[ -n "$safe" ]]; then continue; fi
+            printf 'NOTE: %s runs its git hooks from %s (core.hooksPath), which the agent\n' "$at" "$x" >&2
+            printf '      can change; hook managers keep those scripts gitignored (husky'\''s .husky/_),\n' >&2
+            printf '      so a change need not show in git status. Check them before a git commit on the host.\n' >&2
+            break
+          done
+        fi
+      fi
+    done
+  done
+  if (( gn > 30 )); then
+    printf 'NOTE: %d git directories were protected, each with its own bind mounts; that\n' "$gn" >&2
+    printf '      adds seconds to every container start on Docker Desktop. Mount narrower\n' >&2
+    printf '      directories, or mount the ones you will not change :ro.\n' >&2
+  fi
 
   # Symlinks in a launcher whose way out leads somewhere the agent can change.
   # Judged from the container side, now that the overlays are decided: every
@@ -691,6 +915,128 @@ _utf8_valid() {
     }'
 }
 
+# container_env_filter <file> <lines-out> <keys-out> <docker run args>...: the lines of
+# container.env that may go to the container, as env-file lines, and the names they set.
+#
+# container.env is the project's APPLICATION environment (DB_HOST, POSTGRES_*), and
+# whoever can commit to the project writes it. `docker run --env-file` hands it to the
+# ROOT entrypoint, where XTABLES_LIBDIR chooses the plugins iptables loads and
+# ALLOWLIST_CIDRS_FILE the firewall's own allowlist — and every tool root runs reads
+# keys of its own, so no deny-list closes that. The entrypoint therefore sets every key
+# named in AI_CONTAINER_ENV_KEYS aside before it reads anything, and hands them back
+# only to processes that run as the sandbox user (entrypoint.sh: stash_app_env()). What
+# is left for this side, each refused with a WARNING naming the line (never the value)
+# while the launch goes on:
+#   - what acts before the entrypoint's first line can: the loader, env(1)'s PATH search
+#     for the `#!/usr/bin/env bash` interpreter, bash's own start-up — env_key_denied;
+#   - what the entrypoint could not set aside, or give back unchanged: a name that is not
+#     a shell variable (bash passes `a.b=1` on and cannot unset it), bash's own variables,
+#     HOME/USER/LOGNAME (the container sets them for the sandbox user), and a key this
+#     launch passes with -e (setting it aside would unset the launcher's value) — read
+#     from the docker run arguments themselves, so it cannot drift from them;
+#   - knobs only root reads (SELF_HEALING_ENABLED, ALLOW_IPV6_BYPASS, the allowlist
+#     and capture settings): from here they would silently do nothing, so the
+#     warning says so, and where the two user-facing ones belong;
+#   - the names stash_app_env uses itself (_aice_*), which it could not set aside.
+#
+# Parsed exactly as docker parses an env-file (measured against the docker CLI): a BOM
+# is dropped from line 1, leading Unicode whitespace (Go's unicode.IsSpace) from every
+# line, and one trailing CR; `#` starts a comment only as the first character left; a
+# value is literal (quotes, `#`, trailing spaces kept); a bare NAME is passed bare, so
+# docker still takes it from this shell's environment or drops it. A line docker would
+# refuse — whitespace or nothing before `=` (`export NAME=` is the common one), invalid
+# UTF-8, a NUL, more than 65535 bytes — would stop the whole launch; here only that line
+# is refused. So is a value still ending in CR after the one docker drops: forwarded,
+# docker would drop that one too.
+container_env_filter() {
+  local file="$1"
+  local -n _cef_lines="$2" _cef_keys="$3"
+  shift 3
+  local -A launcher=() seen=()
+  local prev="" a
+  for a in "$@"; do
+    [[ "$prev" == -e ]] && launcher["${a%%=*}"]=1
+    prev="$a"
+  done
+  # keys_len: the length so far of "AI_CONTAINER_ENV_KEYS=<name> <name>…" — the
+  # variable's own name, then a separator (= or space) and a name per key.
+  local keys_var=AI_CONTAINER_ENV_KEYS
+  local LC_ALL=C n=0 raw line name why ws keys_len=${#keys_var}
+  local -a nul=() uws=(
+    $'\xc2\x85' $'\xc2\xa0' $'\xe1\x9a\x80'                                   # U+0085 U+00A0 U+1680
+    $'\xe2\x80\x80' $'\xe2\x80\x81' $'\xe2\x80\x82' $'\xe2\x80\x83' $'\xe2\x80\x84' # U+2000…
+    $'\xe2\x80\x85' $'\xe2\x80\x86' $'\xe2\x80\x87' $'\xe2\x80\x88' $'\xe2\x80\x89'
+    $'\xe2\x80\x8a'                                                           # …U+200A
+    $'\xe2\x80\xa8' $'\xe2\x80\xa9' $'\xe2\x80\xaf' $'\xe2\x81\x9f' $'\xe3\x80\x80' # U+2028 U+2029 U+202F U+205F U+3000
+  )
+  # `read` drops NUL bytes without a word, so find them first: one entry per line,
+  # N for each NUL in it.
+  # LC_ALL=C on each tr: a `local LC_ALL` is not exported, and BSD tr in a UTF-8
+  # locale stops at the first invalid byte, truncating the map.
+  mapfile -t nul < <(LC_ALL=C tr -c '\000\n' '.' < "$file" | LC_ALL=C tr '\000' 'N')
+  while IFS= read -r raw || [[ -n "$raw" ]]; do
+    n=$((n + 1))
+    line="${raw%$'\r'}"
+    (( n == 1 )) && line="${line#$'\xef\xbb\xbf'}"
+    while :; do
+      case "$line" in [[:space:]]*) line="${line:1}"; continue ;; esac
+      for ws in "${uws[@]}"; do
+        if [[ "$line" == "$ws"* ]]; then line="${line:${#ws}}"; continue 2; fi
+      done
+      break
+    done
+    [[ -z "$line" || "$line" == '#'* ]] && continue
+    name="${line%%=*}"; why=""
+    if (( ${#raw} > 65535 )); then why="it is longer than docker reads (65535 bytes)"
+    elif [[ "${nul[n - 1]:-}" == *N* ]]; then why="it holds a NUL byte"
+    elif [[ "$line" == *[![:ascii:]]* ]] && ! _utf8_valid "$line"; then why="it is not valid UTF-8"
+    elif [[ "$line" == *$'\r' ]]; then why="its value ends in a carriage return"
+    elif [[ -z "$name" ]]; then why="it has no name before the ="
+    elif [[ "$name" == export[[:blank:]]* ]]; then why="docker does not take 'export': write NAME=value"
+    elif [[ "$name" == *[[:blank:]]* ]]; then why="its name holds whitespace"
+    elif ! [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then why="its name is not a shell variable name"
+    elif env_key_denied "$name"; then why="$name acts on the container's first process before it can be set aside"
+    elif [[ -n "${launcher[$name]:-}" ]]; then why="the launcher sets $name itself"
+    else
+      case "$name" in
+        HOME|USER|LOGNAME) why="the container sets $name for the sandbox user" ;;
+        # bash assigns these itself, or will not let them go, so the shell would
+        # hold bash's value rather than the file's. Measured on bash 5.1 and 5.2;
+        # tests/test-env-file.sh re-measures whichever bash runs it.
+        BASH|BASHOPTS|BASHPID|BASH_*|COMP_*|COMPREPLY|COPROC*|DIRSTACK|EPOCHREALTIME|EPOCHSECONDS)
+          why="$name is bash's own variable" ;;
+        EUID|FUNCNAME|GROUPS|HISTCMD|LINENO|MAPFILE|OLDPWD|OPTARG|OPTERR|OPTIND|PIPESTATUS|PPID)
+          why="$name is bash's own variable" ;;
+        PS1|PS2|PWD|RANDOM|READLINE_*|REPLY|SECONDS|SHLVL|SRANDOM|UID|_)
+          why="$name is bash's own variable" ;;
+        AI_CONTAINER_ENV_KEYS|_aice_*) why="$name is reserved for the launcher and the entrypoint" ;;
+        # Knobs only the container's root setup reads (entrypoint.sh and the
+        # daemons it starts as root); tests/test-env-file.sh fails if one is added
+        # there without landing here or in the -e flags.
+        SELF_HEALING_ENABLED|ALLOW_IPV6_BYPASS)
+          why="only the container's root setup reads $name, and container.env does not reach it: set it in sandbox.env" ;;
+        ALLOWLIST_DOMAINS_FILE|ALLOWLIST_CIDRS_FILE|ALLOWLIST_PROXY_DOMAINS_FILE|ALLOWLIST_IPV4_SET)
+          why="only the container's root setup reads $name, and container.env does not reach it" ;;
+        ALLOWLIST_IPV6_SET|BLOCKED_CAPTURE_ENABLED|BLOCKED_INTERNAL_DIR|NFLOG_GROUP)
+          why="only the container's root setup reads $name, and container.env does not reach it" ;;
+      esac
+    fi
+    if [[ -n "$why" ]]; then
+      printf 'WARNING: %s line %d not passed to the container: %s.\n' "$file" "$n" "$why" >&2
+      continue
+    fi
+    # Every name travels in one value, AI_CONTAINER_ENV_KEYS=…, and the kernel caps
+    # one environment string at 128 KiB with its NUL (MAX_ARG_STRLEN): past that
+    # the container could not start at all.
+    if [[ -z "${seen[$name]:-}" ]] && (( keys_len + 1 + ${#name} > 131071 )); then
+      printf 'WARNING: %s line %d not passed to the container: too many variables — their names no longer fit in one value.\n' "$file" "$n" >&2
+      continue
+    fi
+    _cef_lines+=("$line")
+    [[ -n "${seen[$name]:-}" ]] || { seen[$name]=1; _cef_keys+=("$name"); keys_len=$((keys_len + 1 + ${#name})); }
+  done < "$file"
+}
+
 # launcher_dirs_in <launchers-out> <unreadable-out> <dir> <agent-uid> <agent-gid> <your-uid>: appends every
 # launcher directory below <dir> — matched by CONTENT, a directory holding both
 # sandbox.sh and sandbox-common.sh, which is what the host runs `./sandbox.sh`
@@ -731,6 +1077,142 @@ launcher_dirs_in() {
     if [[ ! -r "$f" || ! -x "$f" ]]; then _ldi_unr+=("$f"); fi
   done
   return 0
+}
+
+# git_dirs_in <gitdirs-out> <gitfiles-out> <links-out> <unreadable-out> <dir>: appends every
+# git directory below <dir>, matched by CONTENT — a directory holding HEAD and
+# either config and objects/ (a repository's own, bare or not, or a submodule's
+# under .git/modules) or commondir (a linked worktree's, under .git/worktrees) —
+# every `.git` FILE (a linked worktree's or a submodule's checkout, naming its git
+# directory), every `.git` symlink, and every directory you cannot list that is
+# a .git or lies inside one (an agent that owns it could `chmod 000` it in one
+# session to hide what is inside from the next scan). A submodule's checkout is
+# also found through its git directory's core.worktree, wherever it lies — a
+# vendor/ is pruned by name, and submodules commonly live in one. Git directories
+# to seven levels down, so a checkout's own .git is found to six, as launchers
+# are; dependency trees are pruned outside .git, and a .git's object store, refs
+# and logs, which hold nothing that runs. NUL-delimited; always returns 0.
+git_dirs_in() {
+  # shellcheck disable=SC2178  # nameref: shellcheck does not model `local -n`
+  local -n _gdi_dirs=$1 _gdi_files=$2 _gdi_links=$3 _gdi_unr=$4
+  local f g wt co
+  local -a hits=()
+  local -A had=()
+  mapfile -d '' -t hits < <(find "$5" -mindepth 1 -maxdepth 8 \
+      \( \( \( -name node_modules -o -name vendor -o -name .venv -o -name target \) ! -path '*/.git/*' \) \
+         -o -path '*/.git/objects' -o -path '*/.git/refs' -o -path '*/.git/logs' \
+         -o -path '*/.git/modules/*/objects' -o -path '*/.git/modules/*/refs' -o -path '*/.git/modules/*/logs' \) -prune \
+      -o -type f -name HEAD -print0 \
+      -o -name .git \( -type f -o -type l -o -type d \) -print0 \
+      -o -type d -path '*/.git/*' -print0 2>/dev/null)
+  for f in ${hits[@]+"${hits[@]}"}; do
+    if [[ "${f##*/}" == .git ]]; then
+      if [[ -L "$f" ]]; then _gdi_links+=("$f")
+      elif [[ -f "$f" ]]; then _gdi_files+=("$f"); had[$f]=1
+      elif [[ -d "$f" && ( ! -r "$f" || ! -x "$f" ) ]]; then _gdi_unr+=("$f")
+      fi
+      continue
+    fi
+    if [[ -d "$f" ]]; then
+      if [[ ! -r "$f" || ! -x "$f" ]]; then _gdi_unr+=("$f"); fi
+      continue
+    fi
+    g="${f%/HEAD}"
+    if [[ ( -f "$g/config" && -d "$g/objects" ) || -f "$g/commondir" ]]; then _gdi_dirs+=("$g"); fi
+  done
+  # Submodules the scan cannot see — a vendor/ is pruned by name, and submodules
+  # commonly live in one: an absorbed one's checkout through its git directory's
+  # core.worktree, and every submodule a repository's INDEX records (a gitlink),
+  # whose .git may be a directory embedded in the checkout. Followed until
+  # nothing new turns up, so a submodule's own submodules are found too. The
+  # index is read with git, fsmonitor off, so a config tampered with before this
+  # protection existed runs nothing here; without git, only what the scan sees.
+  for g in ${_gdi_dirs[@]+"${_gdi_dirs[@]}"}; do had[$g]=1; done
+  local n=0 top rec mode path
+  local -a links=()
+  while (( n < ${#_gdi_dirs[@]} )); do
+    g="${_gdi_dirs[n]}"; n=$((n + 1))
+    [[ -f "$g/config" && -d "$g/objects" ]] || continue
+    top=""
+    if [[ "$g" == */.git/modules/* ]]; then
+      wt="$(_git_config_get "$g/config" core.worktree)" || wt=""
+      if [[ -n "$wt" ]]; then top="$(cd "$g" 2>/dev/null && cd "$wt" 2>/dev/null && pwd -P)" || top=""; fi
+    elif [[ "$g" == */.git ]]; then
+      top="${g%/.git}"
+    fi
+    [[ -n "$top" ]] || continue
+    if [[ "$g" == */.git/modules/* && -f "$top/.git" && ! -L "$top/.git" && -z "${had[$top/.git]:-}" ]] \
+       && [[ "$top" == "$5" || "$top" == "$5"/* ]]; then
+      _gdi_files+=("$top/.git"); had[$top/.git]=1
+    fi
+    command -v git >/dev/null 2>&1 || continue
+    links=()
+    # From the work tree's root: run from a subdirectory (sandbox.sh runs from
+    # .ai-containers), ls-files lists only what lies under it.
+    # safe.directory='*': a repository another user owns would otherwise refuse
+    # to be read, and its submodules go unprotected; ls-files runs nothing from a
+    # repository's config once fsmonitor is off.
+    mapfile -d '' -t links < <(git -C "$top" -c core.fsmonitor=false -c safe.directory='*' \
+        --git-dir="$g" --work-tree="$top" ls-files -s -z 2>/dev/null)
+    for rec in ${links[@]+"${links[@]}"}; do
+      mode="${rec%% *}"; path="${rec#*$'\t'}"
+      [[ "$mode" == 160000 && -n "$path" ]] || continue
+      co="$top/$path"; f="$co/.git"
+      [[ "$co" == "$5"/* ]] || continue
+      if [[ -L "$f" ]]; then
+        [[ -n "${had[$f]:-}" ]] || { _gdi_links+=("$f"); had[$f]=1; }
+      elif [[ -f "$f" ]]; then
+        [[ -n "${had[$f]:-}" ]] || { _gdi_files+=("$f"); had[$f]=1; }
+      elif [[ -d "$f" && -f "$f/HEAD" && -f "$f/config" && -d "$f/objects" && -z "${had[$f]:-}" ]]; then
+        _gdi_dirs+=("$f"); had[$f]=1
+      fi
+    done
+  done
+  return 0
+}
+
+# _git_config_bool <config-file> <key>: succeeds when git would read the key as
+# true — with git's own --type=bool, or else as git spells true: a bare key, or
+# true/yes/on, or a non-zero integer.
+_git_config_bool() {
+  local v
+  if command -v git >/dev/null 2>&1; then
+    v="$(git config --file "$1" --type=bool --get "$2" 2>/dev/null)" || return 1
+    [[ "$v" == true ]]; return
+  fi
+  awk -v sec="${2%.*}" -v key="${2##*.}" '
+    /^[[:space:]]*\[/ { s = tolower($0); gsub(/[][[:space:]]/, "", s); insec = (s == tolower(sec)); next }
+    insec {
+      line = $0; sub(/^[[:space:]]+/, "", line); sub(/[[:space:]]*([#;].*)?$/, "", line)
+      n = index(line, "="); k = n ? substr(line, 1, n - 1) : line; sub(/[[:space:]]+$/, "", k)
+      if (tolower(k) != tolower(key)) next
+      if (!n) { r = 1; next }
+      v = tolower(substr(line, n + 1)); gsub(/[[:space:]]/, "", v)
+      r = (v == "true" || v == "yes" || v == "on" || (v ~ /^-?[0-9]+$/ && v + 0 != 0))
+    }
+    END { exit !r }' "$1" 2>/dev/null
+}
+
+# _git_config_get <config-file> <key>: a key's value from one git config file —
+# with git, which reads it exactly, or else the first `<name> = value` line of
+# the key's section, which covers what git itself writes. Fails when unset.
+_git_config_get() {
+  local v
+  if command -v git >/dev/null 2>&1; then
+    v="$(git config --file "$1" --get "$2" 2>/dev/null)" || return 1
+    printf '%s' "$v"; return 0
+  fi
+  awk -v sec="${2%.*}" -v key="${2##*.}" '
+    /^[[:space:]]*\[/ { s = tolower($0); gsub(/[][[:space:]]/, "", s); insec = (s == tolower(sec)); next }
+    insec {
+      line = $0; sub(/^[[:space:]]+/, "", line)
+      n = index(line, "="); if (!n) next
+      k = substr(line, 1, n - 1); sub(/[[:space:]]+$/, "", k)
+      if (tolower(k) != tolower(key)) next
+      v = substr(line, n + 1); sub(/^[[:space:]]+/, "", v); sub(/[[:space:]]+$/, "", v)
+      print v; found = 1; exit
+    }
+    END { exit !found }' "$1" 2>/dev/null
 }
 
 # Seed a per-workspace writable working-copy volume from a repo's shared base
@@ -886,6 +1368,9 @@ _launcher_dev_ino() {
 # the EXIT trap below. A global, not a run_container local, so the trap can see
 # it, and guarded with :- so `set -u` is satisfied when no dir was made.
 _launcher_verify_dir=""
+# A named group's directory, which launcher_ro_overlay does not scan for git
+# repositories (the host's git never runs there). Set by run_container.
+_git_skip_root=""
 trap 'rm -rf "${_launcher_verify_dir:-}" 2>/dev/null' EXIT
 
 run_container() {
@@ -1321,6 +1806,7 @@ run_container() {
     group_root="$HOME/.ai-containers/$group"
     ensure_group_exists "$group" "$group_root"
     ensure_group_scaffold "$group_root"
+    _git_skip_root="$(cd "$group_root" 2>/dev/null && pwd -P)" || _git_skip_root=""
   fi
 
   # ── Credential mounts (enabled components only) ──────────────────────────────
@@ -1527,14 +2013,16 @@ run_container() {
 
   # Optional project env-file → in-container app env (DB_HOST, REDIS_URL, ...).
   # Auto-detect container.env beside this script (i.e. <project>/.ai-containers/),
-  # or honour an explicit SANDBOX_ENV_FILE override.
-  local env_file_args=()
+  # or honour an explicit SANDBOX_ENV_FILE override. Filtered just before docker run,
+  # once every -e flag is known (container_env_filter).
   local _env_file="${SANDBOX_ENV_FILE:-${script_dir}/container.env}"
   if [[ -n "${SANDBOX_ENV_FILE:-}" && ! -f "$_env_file" ]]; then
     printf 'WARNING: SANDBOX_ENV_FILE=%s not found — skipping.\n' "$_env_file" >&2
+    _env_file=""
   elif [[ -f "$_env_file" ]]; then
-    env_file_args+=(--env-file "$_env_file")
     printf 'Injecting project env-file: %s\n' "$_env_file" >&2
+  else
+    _env_file=""
   fi
 
   local mem_limit mem_reservation mem_swap
@@ -1691,43 +2179,64 @@ run_container() {
     fi
   fi
 
+  # Every -e this launch passes, in one array: container_env_filter reads the names
+  # from it, so a key added here is refused from container.env with no second edit.
+  local launcher_env=(
+    -e DEV_CONTAINER_MODE="$mode"
+    -e DISCOVERY_CAPTURE_ENABLED="$capture_enabled"
+    -e DISCOVERY_CAPTURE_DIR="/workspace/.agent-discovery"
+    -e BLOCKED_CAPTURE_DIR="/workspace/.agent-blocked"
+    -e HOST_WORKSPACE_DIR="$launch_dir"
+    -e IMAGE_NAME="$image_name"
+    -e SANDBOX_UID="${SANDBOX_UID:-$(id -u)}"
+    -e SANDBOX_GID="${SANDBOX_GID:-$(id -g)}"
+    -e SANDBOX_USER="${SANDBOX_USER:-$(id -un)}"
+    -e SANDBOX_GROUP="${SANDBOX_GROUP:-$(id -gn)}"
+    -e AI_AGENTS_ENABLED="$(enabled_agents_csv)"
+    -e AI_RUNTIME_TOOLS="$(runtime_tools_csv)"
+    -e RUBY_VERSIONS="$(versions_to_space "$(version_list ruby)")"
+    -e AI_SERVICES="$(services_csv)"
+    -e REPOS_PATH="${REPOS_PATH:-/workspace}"
+    ${git_optional_locks_env[@]+"${git_optional_locks_env[@]}"}
+    ${SELF_HEALING_ENABLED:+-e SELF_HEALING_ENABLED="$SELF_HEALING_ENABLED"}
+    ${ALLOW_IPV6_BYPASS:+-e ALLOW_IPV6_BYPASS="$ALLOW_IPV6_BYPASS"}
+    ${GITHUB_PERSONAL_ACCESS_TOKEN:+-e GITHUB_PERSONAL_ACCESS_TOKEN="$GITHUB_PERSONAL_ACCESS_TOKEN"}
+    ${copilot_token:+-e COPILOT_GITHUB_TOKEN="$copilot_token"}
+    ${vault_env_args[@]+"${vault_env_args[@]}"}
+    ${specs_env_args[@]+"${specs_env_args[@]}"}
+    ${docs_env_args[@]+"${docs_env_args[@]}"}
+    ${arch_env_args[@]+"${arch_env_args[@]}"}
+    ${launcher_anchor_env[@]+"${launcher_anchor_env[@]}"}
+  )
+
+  # container.env, filtered (container_env_filter), and the names it sets, which the
+  # entrypoint sets aside from root. Handed over on a descriptor held open for docker
+  # run: a process substitution expanded into an array assignment is closed once the
+  # assignment ends, and docker then finds nothing at /dev/fd/N.
+  local app_env_flags=()
+  if [[ -n "$_env_file" ]]; then
+    local _app_lines=() _app_keys=() _app_fd
+    container_env_filter "$_env_file" _app_lines _app_keys "${launcher_env[@]}"
+    if (( ${#_app_lines[@]} )); then
+      exec {_app_fd}< <(printf '%s\n' "${_app_lines[@]}")
+      app_env_flags=(--env-file "/dev/fd/$_app_fd" -e "AI_CONTAINER_ENV_KEYS=${_app_keys[*]}")
+    fi
+  fi
+
   docker run -it --rm \
     --name "$container_name" \
     ${capabilities[@]+"${capabilities[@]}"} \
     ${inner_sandbox_flags[@]+"${inner_sandbox_flags[@]}"} \
     ${shm_flags[@]+"${shm_flags[@]}"} \
     --add-host=host.docker.internal:host-gateway \
-    ${env_file_args[@]+"${env_file_args[@]}"} \
+    ${app_env_flags[@]+"${app_env_flags[@]}"} \
     ${port_flags[@]+"${port_flags[@]}"} \
     --cpus="${CONTAINER_CPUS:-1.0}" \
     --memory="$mem_limit" \
     --memory-reservation="$mem_reservation" \
     --memory-swap="$mem_swap" \
     --ulimit nofile="${CONTAINER_NOFILE:-1048576:1048576}" \
-    -e DEV_CONTAINER_MODE="$mode" \
-    -e DISCOVERY_CAPTURE_ENABLED="$capture_enabled" \
-    -e DISCOVERY_CAPTURE_DIR="/workspace/.agent-discovery" \
-    -e BLOCKED_CAPTURE_DIR="/workspace/.agent-blocked" \
-    -e HOST_WORKSPACE_DIR="$launch_dir" \
-    -e IMAGE_NAME="$image_name" \
-    -e SANDBOX_UID="${SANDBOX_UID:-$(id -u)}" \
-    -e SANDBOX_GID="${SANDBOX_GID:-$(id -g)}" \
-    -e SANDBOX_USER="${SANDBOX_USER:-$(id -un)}" \
-    -e SANDBOX_GROUP="${SANDBOX_GROUP:-$(id -gn)}" \
-    -e AI_AGENTS_ENABLED="$(enabled_agents_csv)" \
-    -e AI_RUNTIME_TOOLS="$(runtime_tools_csv)" \
-    -e RUBY_VERSIONS="$(versions_to_space "$(version_list ruby)")" \
-    -e AI_SERVICES="$(services_csv)" \
-    -e REPOS_PATH="${REPOS_PATH:-/workspace}" \
-    ${git_optional_locks_env[@]+"${git_optional_locks_env[@]}"} \
-    ${SELF_HEALING_ENABLED:+-e SELF_HEALING_ENABLED="$SELF_HEALING_ENABLED"} \
-    ${ALLOW_IPV6_BYPASS:+-e ALLOW_IPV6_BYPASS="$ALLOW_IPV6_BYPASS"} \
-    ${GITHUB_PERSONAL_ACCESS_TOKEN:+-e GITHUB_PERSONAL_ACCESS_TOKEN="$GITHUB_PERSONAL_ACCESS_TOKEN"} \
-    ${copilot_token:+-e COPILOT_GITHUB_TOKEN="$copilot_token"} \
-    ${vault_env_args[@]+"${vault_env_args[@]}"} \
-    ${specs_env_args[@]+"${specs_env_args[@]}"} \
-    ${docs_env_args[@]+"${docs_env_args[@]}"} \
-    ${arch_env_args[@]+"${arch_env_args[@]}"} \
+    "${launcher_env[@]}" \
     ${output_mount_flags[@]+"${output_mount_flags[@]}"} \
     ${repo_mount_flags[@]+"${repo_mount_flags[@]}"} \
     ${extra_mount_flags[@]+"${extra_mount_flags[@]}"} \
@@ -1738,7 +2247,6 @@ run_container() {
     ${config_mount_flags[@]+"${config_mount_flags[@]}"} \
     ${launcher_ro_flags[@]+"${launcher_ro_flags[@]}"} \
     ${launcher_verify_flags[@]+"${launcher_verify_flags[@]}"} \
-    ${launcher_anchor_env[@]+"${launcher_anchor_env[@]}"} \
     -w "$workdir" \
     "$image_name"
 }

@@ -58,10 +58,19 @@ source "${script_dir}/tools-lib.sh"
 # spawn — arbitrary code from a "data" file, which is exactly what parsing is meant to
 # prevent. These files configure the launcher, never the shell, so refusing the whole
 # class costs nothing.
+#
+# sandbox.sh refuses the same keys in container.env, where they would reach the
+# container's ROOT entrypoint before its first line runs
+# (sandbox.sh: container_env_filter()), so the list is everything that acts at a
+# process's start: bash's own start-up, the loader (every LD_*/DYLD_*,
+# GLIBC_TUNABLES), and what glibc loads code or data from by path (GCONV_PATH,
+# LOCPATH).
 env_key_denied() {
   case "$1" in
     BASH_ENV|ENV|SHELLOPTS|BASHOPTS|CDPATH|IFS|PS4|PATH|\
-    LD_PRELOAD|LD_LIBRARY_PATH|LD_AUDIT|DYLD_INSERT_LIBRARIES|DYLD_LIBRARY_PATH) return 0 ;;
+    POSIXLY_CORRECT|BASH_COMPAT|BASH_XTRACEFD|GLOBIGNORE|\
+    GCONV_PATH|LOCPATH|GLIBC_TUNABLES) return 0 ;;
+    LD_*|DYLD_*) return 0 ;;   # the dynamic loader, Linux and macOS
     BASH_FUNC_*) return 0 ;;   # exported-function smuggling
   esac
   return 1

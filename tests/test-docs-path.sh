@@ -3,6 +3,9 @@
 # Uses a fake `docker` on PATH to capture the assembled `docker run` args
 # without launching a container.
 set -uo pipefail
+# Hermetic: the developer's own pointers must not reach a launch — sandbox.sh
+# mounts them writable and writes into the git repositories it protects there.
+unset VAULT_PATH SPECS_PATH DOCS_PATH ARCHITECTURE_REPO_PATH EXTRA_MOUNTS REPOS SANDBOX_ENV_FILE SANDBOX_WORKDIR
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=portability.sh

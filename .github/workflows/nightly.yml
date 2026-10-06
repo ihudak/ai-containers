@@ -226,7 +226,10 @@ jobs:
       # which fails the same way as a check that never fires.
       - name: Every resolved domain still resolves
         run: |
-          command -v dig >/dev/null || sudo apt-get install -y -qq bind9-dnsutils
+          # Update first (an install from no index finds nothing), but judge by
+          # the install: a repository the runner carries for its own tools can
+          # fail the update as a whole (see hermetic-checks.yml's shellcheck step).
+          command -v dig >/dev/null || { sudo apt-get update -qq || true; sudo apt-get install -y -qq bind9-dnsutils; }
           # A job that scanned NOTHING must not report success. Without this, a
           # renamed directory or a moved fragment set makes the glob match zero
           # files, every loop below is skipped, rc stays 0, and the job goes green

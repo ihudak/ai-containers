@@ -1,0 +1,22 @@
+# case: 465-git-internals-read-only
+# what: hooks/ and config are read-only and .git is pinned, but no commondir
+#       placeholder is made, so the agent can create .git/commondir — which git
+#       reads in ANY git directory — and point the host's git at a config and
+#       hooks of its own. The bypass the overlay alone left open.
+#
+#       Expected: "the agent cannot write .git/commondir" and "the host's git
+#       still takes its config and hooks from .git itself" FAIL. The hook,
+#       config and rename assertions still PASS: everything else is intact.
+diff --git a/sandbox.sh b/sandbox.sh
+index af1400f..dc379f9 100755
+--- a/sandbox.sh
++++ b/sandbox.sh
+@@ -575,7 +575,7 @@ launcher_ro_overlay() {
+           # agent could make it.
+           if [[ ! -e "$g/hooks" && ! -L "$g/hooks" ]]; then mkdir "$g/hooks" 2>/dev/null || true; fi
+           if [[ ! -e "$g/commondir" && ! -L "$g/commondir" ]]; then
+-            ( set -C; printf './\n' > "$g/commondir" ) 2>/dev/null || true
++            :
+           fi
+           # Anything but our ./ sends the host's git elsewhere for this repository's
+           # configuration and hooks, and git never writes one here: refuse, rather

@@ -67,7 +67,8 @@ install (or none, if all failed).
 **Non-interactive Ruby.** After the reconcile, the default Ruby's executables
 (`ruby`, `gem`, `bundle`, `bundler`, `rake`, `irb`, `erb`) are symlinked onto
 `/usr/local/bin` so they resolve in **non-interactive, non-login** shells too —
-e.g. `docker exec -T <container> bash -c "bin/rails runner …"`, which would
+e.g. `docker exec -u "$(id -u)" <container> bash -c "bin/rails runner …"` (as you:
+a bare `docker exec` runs as root, with the container's `container.env`), which would
 otherwise get `command not found` (login and interactive shells pick up rvm via
 `/etc/profile.d/rvm.sh` and `/etc/bash.bashrc`). These symlinks expose the
 **default** Ruby only; per-project version/gemset selection still comes from a

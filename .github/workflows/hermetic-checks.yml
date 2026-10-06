@@ -36,7 +36,9 @@ jobs:
       # The suite drives project-init.sh / sync-to-projects.sh, which rsync the
       # repo into throwaway dirs. Present on GitHub runners, guarded anyway.
       - name: Ensure rsync is available
-        run: command -v rsync >/dev/null || (sudo apt-get update && sudo apt-get install -y rsync)
+        # `apt-get update` fails as a whole when any repository the runner image
+        # carries does (see the shellcheck step): the install is the verdict.
+        run: command -v rsync >/dev/null || { sudo apt-get update || true; sudo apt-get install -y rsync; }
 
       - name: Run tests
         run: ./tests/run-all.sh
@@ -167,7 +169,9 @@ jobs:
       # — drives sync-to-projects.sh, which rsyncs into a throwaway dir. Present
       # on GitHub runners, guarded anyway, exactly as the `suite` job does.
       - name: Ensure rsync is available
-        run: command -v rsync >/dev/null || (sudo apt-get update && sudo apt-get install -y rsync)
+        # `apt-get update` fails as a whole when any repository the runner image
+        # carries does (see the shellcheck step): the install is the verdict.
+        run: command -v rsync >/dev/null || { sudo apt-get update || true; sudo apt-get install -y rsync; }
 
       # ── WHY THIS RUNS THE CORPUS INSTEAD OF CHECKING A COMMITTED RUN ────────
       # check-ledger.sh scores the ledger against ONE run output, and that is
@@ -292,10 +296,19 @@ jobs:
           # wrongly, but it can hold one hostage, so it is bounded and retried.
           # The analysis itself is ~13s over ~130 scripts; anything past a few
           # minutes here is the network, not shellcheck.
+          #
+          # The INSTALL is the verdict, not `apt-get update`'s exit status. The
+          # update fails as a whole when any repository the runner image carries
+          # for its own tools fails — on 2026-10-06 packages.microsoft.com
+          # answered 403 / "is no longer signed" and this gate went red without
+          # linting a line — though shellcheck comes from Ubuntu's archive. If
+          # that archive itself is unreachable the install fails ("Unable to
+          # locate package"), so this still retries and then errors.
           ok=0
           for attempt in 1 2 3; do
-            if timeout 300 sudo apt-get update -qq \
-               && timeout 300 sudo apt-get install -y -qq shellcheck; then
+            timeout 300 sudo apt-get update -qq \
+              || echo "apt-get update reported errors (attempt $attempt); trying the install anyway"
+            if timeout 300 sudo apt-get install -y -qq shellcheck; then
               ok=1; break
             fi
             echo "apt attempt $attempt failed or timed out"

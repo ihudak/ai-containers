@@ -59,6 +59,67 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   fragments and the other launcher files on the host, not from inside the
   container. Launching with a launcher's own directory as the working directory
   (developing ai-containers itself) keeps it writable and prints a `NOTE:`.
+- **`container.env` no longer reaches the container's root setup.** It is a
+  project file, written by whoever can commit to the project, and `docker run
+  --env-file` handed it to the root process that builds the firewall:
+  `XTABLES_LIBDIR` chose the plugins `iptables` loads, `ALLOWLIST_CIDRS_FILE` the
+  allowlist itself, `PATH` the bash the entrypoint runs. The container now sets
+  every variable from the file aside before root reads anything, and gives them
+  back only to processes that run as you — your shell, and what it starts,
+  in-container servers included. Variables that act before even that step
+  (`PATH`, any `LD_*`, `GLIBC_TUNABLES`, `BASH_ENV`, …) and variables the launcher
+  sets itself (`SANDBOX_UID`, `IMAGE_NAME`, …), as well as `HOME`, `USER` and
+  `LOGNAME`, are not passed at all: the launch prints a `WARNING:` naming the line,
+  never its value. The same widened list — every `LD_*`/`DYLD_*` rather than five
+  of them, plus `GCONV_PATH`, `LOCPATH`, `GLIBC_TUNABLES`, `POSIXLY_CORRECT`,
+  `BASH_COMPAT`, `BASH_XTRACEFD` and `GLOBIGNORE` — is refused from `sandbox.env`
+  and `sandbox.local.env`. A line docker would refuse (`export NAME=…`, a space
+  in a name, invalid UTF-8) used to stop the launch with docker's error; now only
+  that line is skipped, with a warning. **Behaviour change:**
+  `SELF_HEALING_ENABLED` and `ALLOW_IPV6_BYPASS` in `container.env` are refused
+  with a warning — they configure root, so set them in `sandbox.env`.
+- **An agent can no longer plant code your host's git runs.** The usual launch
+  mounts the whole project read-write, `.git` included, and your host's git runs
+  what `.git` holds: its `hooks/` when you commit, and `.git/config` settings
+  that start programs (`core.hooksPath`, `core.fsmonitor`, `core.sshCommand`,
+  filters) when you commit or merely run `git status`. None of it shows in `git
+  status` or `git diff`. Every repository a writable mount exposes (past 200 the
+  launch is refused instead) now has `.git/hooks/`, `.git/config` and `.git/commondir` (and
+  `config.worktree`, a worktree's `commondir`, a worktree's or submodule's `.git`
+  file) mounted read-only, with `.git` pinned so it cannot be renamed away; each
+  is printed at launch (`READ-ONLY: …`). **Behaviour changes:** each repository
+  gains a `.git/commondir` holding `./` — git, libgit2, dulwich and gitoxide read
+  it as "this directory", and it stops an agent creating one that points git
+  elsewhere; the one visible difference is that `git rev-parse --git-common-dir`
+  prints an absolute path, so a script comparing it with `--git-dir` as text
+  takes a protected repository for a linked worktree. A `commondir` already
+  there holding anything else stops the launch, naming it. Past 200 git
+  directories the launch is refused, naming some; `SANDBOX_GIT_MAX` raises it.
+  Commit, branch, push and rebase work as before, but `git config`, `git remote
+  add`, `git submodule update --init` and the upstream `git push -u` or a
+  tracking `git checkout -b` records fail inside the container — git claims
+  tracking was set up and it was not — so push and pull with the branch named
+  there, and set up remotes, tracking and submodules on the host. A repository
+  that existed at launch cannot be deleted from inside the container.
+
+### Fixed
+
+- **In-container PostgreSQL provisioning.** Five bugs, each now covered by a
+  test that fails without its fix:
+  - `POSTGRES_DATABASES` naming the database that carries your own user's
+    name, or `postgres`, warned "already exists" and dropped the owner it was
+    listed with. Both exist before provisioning, so a listed owner is now
+    applied, and with no owner there is nothing to do.
+  - Spaces around the `:` (`myapp_test : app_user`) made the entry invalid.
+  - A database listed twice with different owners silently kept the first.
+    It now warns, naming both owners.
+  - `postgres=017` passed validation and failed later, inside the build,
+    looking for `postgresql-017`. A leading zero is now refused with the fix
+    in the message.
+  - An `AI_SERVICES_PG_SOCKET_DIR` in `container.env` moved the server's
+    socket to a directory nobody had made, so the server failed to start with
+    only its log to go on. The container now makes such a directory when it
+    can, and otherwise names it and skips the server.
 
 ### Added
 

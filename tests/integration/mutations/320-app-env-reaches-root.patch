@@ -1,0 +1,25 @@
+# case: 320-container-env-not-root
+# what: the entrypoint never sets container.env aside, so its keys stay in the
+#       ROOT entrypoint's environment — the state before this fix. sandbox.sh
+#       still filters and still names the keys; nothing acts on the list.
+#
+#       Expected: the case's XTABLES_LIBDIR=/nonexistent/xtables reaches root's
+#       iptables, restricted mode's first `iptables -m conntrack` cannot load
+#       its extension, set -e ends the entrypoint, and launcher_up FAILs with
+#       "entrypoint never handed over to the agent shell" — the attack's own
+#       consequence, a firewall chosen by a project data file.
+#
+# NOTE: entrypoint.sh is COPYed into the image, so this patch needs a rebuild to
+# take effect — never --reuse-image.
+diff --git a/entrypoint.sh b/entrypoint.sh
+index d1ecb18..289be67 100755
+--- a/entrypoint.sh
++++ b/entrypoint.sh
+@@ -27,7 +27,6 @@ stash_app_env() {
+   done
+   unset AI_CONTAINER_ENV_KEYS
+ }
+-stash_app_env
+ 
+ # runuser … -- <command> as the sandbox user, with container.env given back.
+ as_sandbox_user() {

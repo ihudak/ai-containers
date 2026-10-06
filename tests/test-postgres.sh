@@ -81,7 +81,7 @@ done
 
 # Each refusal must NAME the key: an error that does not say "postgres" sends the
 # reader looking everywhere but here.
-for bad in '16,17' on Off oN latest 17beta1 abc; do
+for bad in '16,17' on Off oN latest 17beta1 abc 017 0 00; do
   vc "$bad"
   if [[ "$VC_RC" -ne 0 && "$VC_OUT" == *postgres* ]]; then
     pass "validate_config refuses postgres=$bad, by name"
@@ -90,13 +90,17 @@ for bad in '16,17' on Off oN latest 17beta1 abc; do
   fi
 done
 
-# A minor is refused AND the message hands back the major to pin instead.
-vc '17.2'
-if [[ "$VC_RC" -ne 0 && "$VC_OUT" == *"postgres=17"* ]]; then
-  pass "validate_config refuses postgres=17.2 and suggests postgres=17"
-else
-  fail "validate_config refuses postgres=17.2 and suggests postgres=17 (rc=$VC_RC, out='$VC_OUT')"
-fi
+# A minor is refused AND the message hands back the major to pin instead —
+# without a leading zero, which would be refused next time.
+for v in 17.2 017.2 017; do
+  vc "$v"
+  if [[ "$VC_RC" -ne 0 && "$VC_OUT" == *"postgres=17"* && "$VC_OUT" != *"postgres=017 pins"* ]] \
+     && ! grep -qE 'write postgres=0|instead: postgres=0' <<<"$VC_OUT"; then
+    pass "validate_config refuses postgres=$v and suggests postgres=17"
+  else
+    fail "validate_config refuses postgres=$v and suggests postgres=17 (rc=$VC_RC, out='$VC_OUT')"
+  fi
+done
 
 # ── Part F: the shipped default ────────────────────────────────────────────────
 # New keys reach every project through sync's append, so the upstream default is
@@ -390,6 +394,53 @@ got="$(PG_MAJOR_FILE=/nowhere PG_LIB_ROOT=/nowhere pg svc_installed_version)"
 [[ "$got" == "18.6" ]] \
   && pass "D18 an app's PG_MAJOR_FILE/PG_LIB_ROOT do not hide the installed server" \
   || fail "D18 app PG_MAJOR_FILE/PG_LIB_ROOT (got '$got')"
+
+# D19 — the two databases that exist before provisioning: initdb's postgres, and
+# the superuser's own (svc_start). Listing one with an owner gives it to that
+# owner; CREATE would fail with "already exists" and the owner would be lost.
+pg_reset
+out="$(POSTGRES_ROLES=app_user POSTGRES_DATABASES='alice:app_user,postgres:app_user' pg svc_provision 2>"$FAKE/err")"
+sql_has 'ALTER DATABASE "alice" OWNER TO "app_user"' && sql_has 'ALTER DATABASE "postgres" OWNER TO "app_user"' \
+  && ! grep -q 'CREATE DATABASE' "$FAKE/sql.log" && [[ ! -s "$FAKE/err" ]] \
+  && pass "D19 the superuser's own database and postgres change owner, never CREATE" \
+  || fail "D19 existing databases (sql: $(tr '\n' '|' < "$FAKE/sql.log" 2>/dev/null); err: $(cat "$FAKE/err"))"
+[[ "$out" == "; roles: app_user; databases: alice, postgres" ]] \
+  && pass "D19 … and the suffix lists them" || fail "D19 suffix (got '$out')"
+pg_reset; out="$(POSTGRES_DATABASES='alice' pg svc_provision 2>"$FAKE/err")"
+[[ "$(sql_count)" -eq 0 && ! -s "$FAKE/err" && "$out" == "; databases: alice" ]] \
+  && pass "D19 the superuser's own database with no owner: nothing to do, nothing warned" \
+  || fail "D19 own database, no owner (sql: $(sql_count); err: $(cat "$FAKE/err"); out '$out')"
+pg_reset; PG_SUPERUSER_TEST='John.Doe' POSTGRES_ROLES=app_user POSTGRES_DATABASES='John.Doe:app_user' pg svc_provision >/dev/null 2>"$FAKE/err"
+sql_has 'ALTER DATABASE "John.Doe" OWNER TO "app_user"' && [[ ! -s "$FAKE/err" ]] \
+  && pass "D19 a macOS-style superuser's own database is not held to the name pattern" \
+  || fail "D19 John.Doe (sql: $(cat "$FAKE/sql.log" 2>/dev/null); err: $(cat "$FAKE/err"))"
+pg_reset; FAKE_PSQL_FAIL='^ALTER DATABASE' POSTGRES_ROLES=app_user POSTGRES_DATABASES='alice:app_user' pg svc_provision >/dev/null 2>"$FAKE/err"
+grep -qF "could not give database 'alice' to 'app_user': ERROR:  boom" "$FAKE/err" \
+  && pass "D19 an ALTER that fails is reported with psql's error" \
+  || fail "D19 failing ALTER (err: $(cat "$FAKE/err"))"
+
+# D20 — whitespace around the ':' is the writer's, not part of a name.
+pg_reset; POSTGRES_ROLES=app_user POSTGRES_DATABASES=$' myapp_test : app_user ,\tmyapp_dev\t:\tapp_user' pg svc_provision >/dev/null 2>"$FAKE/err"
+sql_has 'CREATE DATABASE "myapp_test" OWNER "app_user"' && sql_has 'CREATE DATABASE "myapp_dev" OWNER "app_user"' && [[ ! -s "$FAKE/err" ]] \
+  && pass "D20 spaces and tabs around ':' are trimmed from each half" \
+  || fail "D20 (sql: $(tr '\n' '|' < "$FAKE/sql.log" 2>/dev/null); err: $(cat "$FAKE/err"))"
+pg_reset; POSTGRES_DATABASES='myapp_test : ' pg svc_provision >/dev/null 2>"$FAKE/err"
+[[ "$(sql_count)" -eq 0 ]] && grep -qF 'is not name or name:owner' "$FAKE/err" \
+  && pass "D20 … but a ':' with no owner after it is still refused" \
+  || fail "D20 empty owner (err: $(cat "$FAKE/err"))"
+
+# D21 — one database, two owners: warned, and the first VALID listing kept. A
+# listing refused for its owner does not count as the first.
+pg_reset; POSTGRES_ROLES=app_user POSTGRES_DATABASES='x_db:app_user,x_db:alice,x_db:app_user' pg svc_provision >/dev/null 2>"$FAKE/err"
+sql_has 'CREATE DATABASE "x_db" OWNER "app_user"' && [[ "$(grep -c 'CREATE DATABASE' "$FAKE/sql.log")" -eq 1 ]] \
+  && grep -qF "'x_db' is listed with two owners, 'app_user' and 'alice' — keeping 'app_user'" "$FAKE/err" \
+  && [[ "$(grep -c 'two owners' "$FAKE/err")" -eq 1 ]] \
+  && pass "D21 a database listed with a second owner is warned about once; the first is kept, a same-owner repeat is quiet" \
+  || fail "D21 two owners (sql: $(tr '\n' '|' < "$FAKE/sql.log" 2>/dev/null); err: $(cat "$FAKE/err"))"
+pg_reset; POSTGRES_ROLES=app_user POSTGRES_DATABASES='x_db:ghost,x_db:app_user' pg svc_provision >/dev/null 2>"$FAKE/err"
+sql_has 'CREATE DATABASE "x_db" OWNER "app_user"' && ! grep -q 'two owners' "$FAKE/err" \
+  && pass "D21 a listing refused for its owner does not shadow a valid one" \
+  || fail "D21 refused then valid (sql: $(cat "$FAKE/sql.log" 2>/dev/null); err: $(cat "$FAKE/err"))"
 
 # ── Part E: the Dockerfile layer's shape ──────────────────────────────────────
 # Shape only: that it BUILDS is integration case 780. These pin the properties

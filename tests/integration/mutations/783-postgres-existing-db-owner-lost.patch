@@ -1,0 +1,24 @@
+# case: 780-postgres-server-runs
+# what: the superuser's own database is CREATEd like any other when the
+#       project lists it, the state before this fix: psql answers "already
+#       exists", provisioning warns, and the owner it was listed with is lost.
+#
+#       Expected: "POSTGRES_DATABASES: the superuser's own database, listed with
+#       an owner, now belongs to app_user" FAILs. Every other assertion PASSes —
+#       myapp_test, written with spaces around the ':', is still provisioned.
+#
+# NOTE: services.d/ is COPYed into the image, so this patch needs a rebuild to
+# take effect — never --reuse-image.
+diff --git a/services.d/postgres.sh b/services.d/postgres.sh
+index 26ba70d..8988c50 100644
+--- a/services.d/postgres.sh
++++ b/services.d/postgres.sh
+@@ -171,7 +171,7 @@ svc_provision() {
+     # Two databases exist before provisioning: initdb's postgres, and the
+     # superuser's own (svc_start). Both belong to the superuser, so listing one
+     # changes only its owner — CREATE would fail with "already exists".
+-    if [[ "$name" == postgres || "$name" == "$PG_SUPERUSER" ]]; then
++    if false; then
+       if [[ "$owner" == "$PG_SUPERUSER" ]] \
+          || err="$(_pg_sql "ALTER DATABASE $(_pg_ident "$name") OWNER TO $(_pg_ident "$owner")")"; then
+         dbs+=("$name")

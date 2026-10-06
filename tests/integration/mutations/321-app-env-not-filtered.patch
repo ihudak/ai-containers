@@ -1,0 +1,25 @@
+# case: 320-container-env-not-root
+# what: container_env_filter still parses container.env but refuses nothing:
+#       every line docker can read is forwarded and named in
+#       AI_CONTAINER_ENV_KEYS, whatever it is — LD_PRELOAD, and SANDBOX_USER,
+#       which the launcher sets itself.
+#
+#       Expected three FAILs: "the launch warned about LD_PRELOAD and
+#       SANDBOX_USER" (no warning); "root kept the launcher's SANDBOX_USER"
+#       (now listed, the entrypoint sets the launcher's own value aside and
+#       creates the default user); and "a refused key reached no one
+#       (LD_PRELOAD)" (the agent's shell holds it). The firewall, root's
+#       environment and APP_GREETING still PASS: the entrypoint's half is intact.
+diff --git a/sandbox.sh b/sandbox.sh
+index fb3bdef..32ef203 100755
+--- a/sandbox.sh
++++ b/sandbox.sh
+@@ -775,7 +775,7 @@ container_env_filter() {
+           why="only the container's root setup reads $name, and container.env does not reach it" ;;
+       esac
+     fi
+-    if [[ -n "$why" ]]; then
++    if false; then
+       printf 'WARNING: %s line %d not passed to the container: %s.\n' "$file" "$n" "$why" >&2
+       continue
+     fi

@@ -11,12 +11,12 @@
 #       else first would mean the case is measuring something other than "was
 #       the server started".
 diff --git a/entrypoint.sh b/entrypoint.sh
-index 3fe4d27..fff2823 100755
+index d1ecb18..a57db58 100755
 --- a/entrypoint.sh
 +++ b/entrypoint.sh
-@@ -88,7 +88,7 @@ link_agent_tools() {
- # sandbox user and needs container.env's POSTGRES_* — minus the runner's
- # test-only path overrides, so prepare and start agree on the directories.
+@@ -123,7 +123,7 @@ link_agent_tools() {
+ # runner's test-only path overrides, so prepare and start agree on the
+ # directories.
  run_services() {
 -  [[ -n "${AI_SERVICES:-}" ]] || return 0
 +  return 0

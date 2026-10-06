@@ -170,6 +170,20 @@ start_one() {
       warn "sandbox.conf has $name=$value, but this image has no $name server. Rebuild: ./build.sh"
       exit 0
     fi
+    # `prepare` made the runtime directories as root, from the image's own
+    # settings: it runs with a scrubbed environment, and container.env never
+    # reaches it. An adapter knob in container.env (AI_SERVICES_PG_SOCKET_DIR)
+    # reaches THIS phase, though, and can name a directory prepare never made.
+    # Make it if this user can; if not, say which and skip, rather than let the
+    # server fail with a log tail that names neither.
+    while IFS= read -r d; do
+      [[ -n "$d" ]] || continue
+      mkdir -p "$d" 2>/dev/null
+      if [[ ! -d "$d" || ! -w "$d" ]]; then
+        warn "$name: runtime directory $d cannot be made or written as $(id -un 2>/dev/null || id -u); only the image's own directories are made in advance, as root, and container.env does not reach that step — skipped"
+        exit 0
+      fi
+    done < <(svc_runtime_dirs)
     logfile="$LOG_ROOT/$name.log"
     suffix_file="$(mktemp "${TMPDIR:-/tmp}/ai-services-suffix.XXXXXX")" || exit 0
     run_bounded "$TIMEOUT" svc_up "$STATE_ROOT/$name" "$logfile" "$suffix_file"
