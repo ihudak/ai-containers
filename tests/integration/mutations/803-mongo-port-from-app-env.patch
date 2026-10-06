@@ -1,0 +1,19 @@
+# case: 800-mongo-server-runs
+# what: the adapter reads an app's own MONGO_PORT, which container.env hands to
+#       the start phase — the case sets MONGO_PORT=7777 there, so the server moves
+#       off the port every client defaults to.
+#
+#       Expected: assertion 1 FAILs (nothing on 27017) and the case stops there.
+diff --git a/services.d/mongo.sh b/services.d/mongo.sh
+index cd8e0c3..a88c65b 100644
+--- a/services.d/mongo.sh
++++ b/services.d/mongo.sh
+@@ -18,7 +18,7 @@
+ # read here would move the server off the port its clients expect.
+ 
+ MONGO_MONGOD="${AI_SERVICES_MONGO_MONGOD:-/usr/bin/mongod}"
+-MONGO_PORT="${AI_SERVICES_MONGO_PORT:-27017}"
++MONGO_PORT="${MONGO_PORT:-${AI_SERVICES_MONGO_PORT:-27017}}"
+ MONGO_IF_INET6="${AI_SERVICES_MONGO_IF_INET6:-/proc/net/if_inet6}"
+ # WiredTiger's own default is half of (memory − 1 GB): 1.5 GB of a 4 GB container
+ # (measured), for a server that holds test fixtures. A quarter of a gigabyte
