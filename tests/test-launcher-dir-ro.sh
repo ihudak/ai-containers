@@ -14,7 +14,8 @@
 # another (T9–T19); robust to stray files and odd names, and warns about a
 # symlink it cannot pin (T20–T23); never mounts a name docker would mangle, and
 # never scans blind past a directory you cannot list (T24–T28, T31), warns
-# about launcher links that lead somewhere the agent can change (T29, T32–T37), and
+# about launcher links that lead somewhere the agent can change (T29, T32–T38),
+# names a writable mount inside a launcher (T40), and
 # refuses a non-numeric identity (T30).
 #
 # Hermetic: fake `docker` capturing the run args, no daemon. Integration cases
@@ -536,6 +537,9 @@ SANDBOX_UID=4294967296 launch "$LAUNCHER" ..
 if [[ "$(id -u)" -eq 0 ]] && command -v setpriv >/dev/null 2>&1; then
   SG="$TMP/sg"; mk_launcher "$SG/locked/p"; chown -R 1500:1500 "$SG/locked/p"
   chown 0:2600 "$SG/locked"; chmod 0705 "$SG/locked"; chmod 0755 "$TMP" "$SG"
+  # tests/run-all.sh gives each test a 0700 TMPDIR: let the ordinary user
+  # traverse (o+x only, no listing) every directory above the tree we own.
+  d="$TMP"; while d="${d%/*}"; [[ -n "$d" ]]; do if [[ -O "$d" ]]; then chmod o+x "$d"; fi; done
   got="$(setpriv --reuid=1500 --regid=1500 --groups=2600 bash -c '
     set -euo pipefail
     eval "$(awk "/^launcher_dirs_in\\(\\) \\{/,/^}\$/" "$1")"
@@ -610,6 +614,50 @@ got="$(bash -c '
 [[ "$got" == "$NLT/d/l|=$NLT/d/f^|" ]] \
   && pass "T37 a link target ending in a newline is followed exactly" \
   || fail "T37 trailing newline in a target (got: $got)"
+
+# ── T38: what the agent can write cannot make the link check noisy or slow.
+# Links planted in the launcher's own output directory are not walked; a
+# launcher that is itself the working dir (writable by design, with a NOTE) is
+# not walked; and at most 200 links per launcher are, with a NOTE beyond that.
+OUT38="$TMP/out38"; mkdir -p "$OUT38" "$LAUNCHER/.agent-blocked"
+ln -s "$OUT38/x" "$LAUNCHER/.agent-blocked/planted"
+EXTRA_MOUNTS="$OUT38" launch "$LAUNCHER" ..
+rm -f "$LAUNCHER/.agent-blocked/planted"
+! grep -q 'leads somewhere the agent can change' "$ERR" \
+  && pass "T38 a link planted in the launcher's output directory is not walked" \
+  || fail "T38 planted output-dir link (stderr: $(grep -F 'leads somewhere' "$ERR" | tr '\n' ' '))"
+ln -s "$OUT38/x" "$LAUNCHER/outward.conf"
+EXTRA_MOUNTS="$OUT38" launch "$LAUNCHER" .
+rm -f "$LAUNCHER/outward.conf"
+! grep -q 'leads somewhere the agent can change' "$ERR" && grep -q 'NOTE:.*holds a launcher' "$ERR" \
+  && pass "T38 a launcher that is the working dir is not walked (its NOTE says it is writable)" \
+  || fail "T38 launcher-as-mount-root walked (stderr: $(grep -E 'NOTE|leads somewhere' "$ERR" | tr '\n' ' '))"
+MANY="$TMP/many"; mk_launcher "$MANY/p"; mkdir -p "$MANY/w"
+for n in $(seq 1 205); do ln -s "../../w/f$n" "$MANY/p/.ai-containers/l$n"; done
+EXTRA_MOUNTS="$MANY" launch "$LAUNCHER" "$TMP/app"
+[[ "$(grep -c 'leads somewhere the agent can change' "$ERR")" -eq 200 ]] \
+  && grep -qF "NOTE: $MANY/p/.ai-containers holds more than 200 symlinks; only the first 200 were checked." "$ERR" \
+  && pass "T38 at most 200 links per launcher are walked, and the cap is named" \
+  || fail "T38 cap (warnings: $(grep -c 'leads somewhere' "$ERR"); stderr: $(grep -F 'more than 200' "$ERR"))"
+
+# ── T39: a launcher nested in one that cannot be overlaid needs that outer
+# directory pinned, and it cannot be (same name): so it is not protected
+# either, and must not be reported READ-ONLY.
+NEST39="$TMP/n39"; mkdir -p "$NEST39/a: "; : > "$NEST39/a: /sandbox.sh"; : > "$NEST39/a: /sandbox-common.sh"
+mk_launcher "$NEST39/a: /in"
+EXTRA_MOUNTS="$NEST39" launch "$LAUNCHER" "$TMP/app"
+[[ "$(grep -c "WARNING: cannot protect $NEST39/a: " "$ERR")" -eq 2 ]] && ! grep -qF "READ-ONLY: /workspace/n39/" "$ERR" \
+  && pass "T39 a launcher nested in an unprotectable one is not reported READ-ONLY" \
+  || fail "T39 nested in unprotectable (stderr: $(grep -E 'cannot protect|READ-ONLY: /workspace/n39' "$ERR" | tr '\n' ' '))"
+
+# ── T40: a writable mount of a directory INSIDE a launcher (its tools.d, say)
+# keeps those files writable whatever overlay the launcher gets: named. The
+# launcher's own output directory, meant to be written, is not.
+EXTRA_MOUNTS="$LAUNCHER/tools.d" launch "$LAUNCHER" ..
+grep -qF "NOTE: $LAUNCHER/tools.d, part of launcher $LAUNCHER, is mounted writable at /workspace/tools.d;" "$ERR" \
+  && ! grep -qF "NOTE: $LAUNCHER/.agent-blocked, part of launcher" "$ERR" \
+  && pass "T40 a writable mount inside a launcher is named; its output directory is not" \
+  || fail "T40 inner writable mount (stderr: $(grep -F 'part of launcher' "$ERR" | tr '\n' ' '))"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

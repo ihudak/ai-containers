@@ -320,7 +320,8 @@ launcher_ro_overlay() {
   local uid="${SANDBOX_UID:-$(id -u)}" gid="${SANDBOX_GID:-$(id -g)}" you
   local -a found unreadable cand bsrc=() bdst=() cl=() cat=() csrc=() cdst=() cdep=() ckind=() ro_dsts=() psrc pdst
   local -a scan links walk
-  local -A seen=() scanned=() pinned=()
+  local -A seen=() tried=() scanned=() pinned=()
+  local nl
   # The agent's identity decides what it can reach; find needs it numeric (and
   # within a 32-bit id — GNU find rejects 4294967295 and up), and a find that
   # errors out finds nothing — so refuse rather than search blind.
@@ -395,20 +396,42 @@ launcher_ro_overlay() {
     done
   done
 
+  # Every launcher in play: this one, mounted or not, and every one found.
+  scan=("$self"); scanned[$self]=1
+  for i in ${cl[@]+"${!cl[@]}"}; do
+    if [[ "${ckind[i]}" == launcher && -z "${scanned[${cl[i]}]:-}" ]]; then
+      scanned[${cl[i]}]=1; scan+=("${cl[i]}")
+    fi
+  done
+
+  # A writable bind of a directory INSIDE a launcher (its allowlist fragments,
+  # say) keeps those files writable whatever overlay the launcher gets. Its own
+  # output directories are meant to be written; anything else is named.
+  for i in ${bsrc[@]+"${!bsrc[@]}"}; do
+    for x in "${scan[@]}"; do
+      if [[ "${bsrc[i]}" != "$x"/* ]]; then continue; fi
+      case "${bsrc[i]#"$x"/}" in .agent-blocked|.agent-discovery) continue ;; esac
+      printf 'NOTE: %s, part of launcher %s, is mounted writable at %s;\n' "${bsrc[i]}" "$x" "${bdst[i]}" >&2
+      printf '      what changes there the host reads at the next launch.\n' >&2
+      break
+    done
+  done
+
   # Shallowest first, so an outer read-only overlay is recorded before anything
   # nested in it is considered.
   for (( depth = 0; depth <= max; depth++ )); do
     for i in ${cat[@]+"${!cat[@]}"}; do
       if (( cdep[i] != depth )); then continue; fi
       at="${cat[i]}"; l="${cl[i]}"; src="${csrc[i]}"; dst="${cdst[i]}"; kind="${ckind[i]}"
-      if [[ -n "${seen[$at]:-}" ]]; then continue; fi
+      if [[ -n "${tried[$at]:-}" || -n "${seen[$at]:-}" ]]; then continue; fi
+      tried[$at]=1
       skip=""
       for r in ${ro_dsts[@]+"${ro_dsts[@]}"}; do
         if [[ "$at" == "$r" || "$at" == "$r"/* ]]; then skip=1; break; fi
       done
       if [[ -n "$skip" ]]; then continue; fi
-      seen[$at]=1
       if [[ "$l" == "$src" ]]; then
+        seen[$at]=1
         printf 'NOTE: %s holds a launcher and stays writable at %s;\n' "$l" "$dst" >&2
         printf '      what changes there runs on the host at the next launch.\n' >&2
         continue
@@ -439,6 +462,7 @@ launcher_ro_overlay() {
       done
       _bind_mount_arg mf mv "$l" "$at" ro
       _ro+=("$mf" "$mv")
+      seen[$at]=1
       ro_dsts+=("$at")
       if [[ "$kind" == unreadable ]]; then
         printf 'WARNING: %s cannot be listed by you, so it cannot be checked for\n' "$l" >&2
@@ -459,20 +483,34 @@ launcher_ro_overlay() {
   # writable bind that exposes a step on the way is checked, and the step is
   # safe only if each of them puts it under a read-only overlay — or, for a
   # directory a `..` steps out of, makes it a mount point (a mount root, a pin,
-  # an overlay root), which cannot be swapped for a link. Scanned: this
-  # launcher, mounted or not, and every launcher found.
-  scan=("$self"); scanned[$self]=1
-  for i in ${cl[@]+"${!cl[@]}"}; do
-    if [[ "${ckind[i]}" == launcher && -z "${scanned[${cl[i]}]:-}" ]]; then
-      scanned[${cl[i]}]=1; scan+=("${cl[i]}")
-    fi
-  done
+  # an overlay root), which cannot be swapped for a link. Scanned: every
+  # launcher in play, except one that is itself a writable mount root — it is
+  # writable by design, said so with a NOTE, and its links are the agent's to
+  # make. Links that sit in a writable bind inside a launcher (an output
+  # directory) are the agent's too, so they are not walked; links that point
+  # INTO one are. At most 200 links per launcher, so nothing the agent can
+  # write makes every later launch slow.
   for x in "${scan[@]}"; do
+    inner=""
+    for i in ${bsrc[@]+"${!bsrc[@]}"}; do
+      if [[ "${bsrc[i]}" == "$x" ]]; then inner=1; break; fi
+    done
+    if [[ -n "$inner" ]]; then continue; fi
+    nl=0
     links=()
     mapfile -d '' -t links < <(find "$x" -maxdepth 6 \
         \( -type d \( -name node_modules -o -name .git -o -name vendor -o -name .venv -o -name target \) \) -prune \
         -o -type l -print0 2>/dev/null)
     for f in ${links[@]+"${links[@]}"}; do
+      inner=""
+      for i in ${bsrc[@]+"${!bsrc[@]}"}; do
+        if [[ "${bsrc[i]}" == "$x"/* && "$f" == "${bsrc[i]}"/* ]]; then inner=1; break; fi
+      done
+      if [[ -n "$inner" ]]; then continue; fi
+      if (( ++nl > 200 )); then
+        printf 'NOTE: %s holds more than 200 symlinks; only the first 200 were checked.\n' "$x" >&2
+        break
+      fi
       walk=()
       mapfile -d '' -t walk < <(_link_walk "$f")
       for e in ${walk[@]+"${walk[@]}"}; do
