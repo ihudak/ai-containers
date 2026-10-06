@@ -116,10 +116,19 @@ has_mount "$PROJ/.git:/workspace/proj/.git:rw" \
 has_mount "$PROJ/.git/config:/workspace/proj/.git/config:ro" && has_mount "$PROJ/.git/hooks:/workspace/proj/.git/hooks:ro" \
   && pass "G1 .git/config and .git/hooks are mounted read-only in place" \
   || fail "G1 config and hooks read-only (git mounts: $(git_mounts | tr '\n' ' '))"
-[[ "$(git_mounts | wc -l | tr -d ' ')" == 3 ]] \
+# git reads commondir in ANY git directory, and a repository's own has none —
+# so one is made, holding `.` (this directory, which git treats as none), and
+# mounted read-only, or the agent could make one pointing git elsewhere.
+[[ "$(cat "$PROJ/.git/commondir" 2>/dev/null)" == . ]] && has_mount "$PROJ/.git/commondir:/workspace/proj/.git/commondir:ro" \
+  && pass "G1 a commondir holding '.' is made and mounted read-only, so the agent cannot make one" \
+  || fail "G1 commondir placeholder (content: '$(cat "$PROJ/.git/commondir" 2>/dev/null)'; git mounts: $(git_mounts | tr '\n' ' '))"
+[[ "$(git_mounts | wc -l | tr -d ' ')" == 4 ]] \
   && pass "G1 and nothing else of .git: objects, refs and the index stay writable" \
-  || fail "G1 exactly three git mounts (got: $(git_mounts | tr '\n' ' '))"
-grep -qF 'READ-ONLY: /workspace/proj/.git: config, hooks' "$ERR" \
+  || fail "G1 exactly four git mounts (got: $(git_mounts | tr '\n' ' '))"
+[[ "$("${G[@]}" -C "$PROJ" rev-parse --git-common-dir)" == "$PROJ/.git" && "$("${G[@]}" -C "$PROJ" log -1 --format=%s)" == init ]] \
+  && pass "G1 git on the host still reads the repository as before (common dir = .git)" \
+  || fail "G1 host git with the placeholder (common dir: $("${G[@]}" -C "$PROJ" rev-parse --git-common-dir 2>&1))"
+grep -qF 'READ-ONLY: /workspace/proj/.git: config, commondir, hooks' "$ERR" \
   && pass "G1 the launch says what it made read-only" \
   || fail "G1 READ-ONLY line (stderr: $(grep -E 'READ-ONLY|WARNING' "$ERR" | tr '\n' ' '))"
 has_mount "$LAUNCHER:/workspace/proj/.ai-containers:ro" \
@@ -133,12 +142,18 @@ launch ..
   || fail "G2 missing hooks/ (exists: $([[ -d "$PROJ/.git/hooks" ]] && echo y || echo n); git mounts: $(git_mounts | tr '\n' ' '))"
 
 # ── G3: config.worktree, which git reads with extensions.worktreeConfig ───────
-: > "$PROJ/.git/config.worktree"
+# Off (the default): git ignores the file, so none is made.
 launch ..
-has_mount "$PROJ/.git/config.worktree:/workspace/proj/.git/config.worktree:ro" \
-  && pass "G3 config.worktree is read-only too, where it exists" \
-  || fail "G3 config.worktree (git mounts: $(git_mounts | tr '\n' ' '))"
-rm -f "$PROJ/.git/config.worktree"
+[[ ! -e "$PROJ/.git/config.worktree" ]] && pass "G3 with extensions.worktreeConfig off, no config.worktree is made" \
+  || fail "G3 config.worktree made with the extension off"
+# On: git would read one the agent made, so an empty one is made and mounted.
+"${G[@]}" -C "$PROJ" config extensions.worktreeConfig true
+launch ..
+[[ -f "$PROJ/.git/config.worktree" && ! -s "$PROJ/.git/config.worktree" ]] \
+  && has_mount "$PROJ/.git/config.worktree:/workspace/proj/.git/config.worktree:ro" \
+  && pass "G3 with it on, an empty config.worktree is made and mounted read-only" \
+  || fail "G3 config.worktree placeholder (git mounts: $(git_mounts | tr '\n' ' '))"
+"${G[@]}" -C "$PROJ" config --unset extensions.worktreeConfig; rm -f "$PROJ/.git/config.worktree"
 
 # ── G4: a linked worktree inside the mount ─────────────────────────────────────
 "${G[@]}" -C "$PROJ" worktree add -q "$PROJ/wt" -b wt 2>/dev/null
@@ -155,6 +170,9 @@ has_mount "$PROJ/.git/worktrees/wt/commondir:/workspace/proj/.git/worktrees/wt/c
 # ── G5: a submodule's git directory and checkout ──────────────────────────────
 mkdir -p "$TMP/libsrc" && "${G[@]}" -C "$TMP/libsrc" init -q && "${G[@]}" -C "$TMP/libsrc" commit -q --allow-empty -m l
 "${G[@]}" -C "$PROJ" -c protocol.file.allow=always submodule --quiet add "$TMP/libsrc" lib 2>/dev/null
+# … and one under vendor/, which the scan prunes by name: found anyway, through
+# its git directory's core.worktree.
+"${G[@]}" -C "$PROJ" -c protocol.file.allow=always submodule --quiet add "$TMP/libsrc" vendor/lib 2>/dev/null
 launch ..
 has_mount "$PROJ/.git/modules/lib/config:/workspace/proj/.git/modules/lib/config:ro" \
   && has_mount "$PROJ/.git/modules/lib/hooks:/workspace/proj/.git/modules/lib/hooks:ro" \
@@ -164,6 +182,10 @@ has_mount "$PROJ/.git/modules/lib/config:/workspace/proj/.git/modules/lib/config
 has_mount "$PROJ/lib/.git:/workspace/proj/lib/.git:ro" \
   && pass "G5 its checkout's .git file is read-only" \
   || fail "G5 submodule .git file (git mounts: $(git_mounts | tr '\n' ' '))"
+has_mount "$PROJ/.git/modules/vendor/lib/config:/workspace/proj/.git/modules/vendor/lib/config:ro" \
+  && has_mount "$PROJ/vendor/lib/.git:/workspace/proj/vendor/lib/.git:ro" \
+  && pass "G5 a submodule under vendor/ is protected too: its git directory, and its checkout's .git" \
+  || fail "G5 vendor/ submodule (git mounts: $(git_mounts | tr '\n' ' '))"
 
 # ── G6: a bare repository a writable mount exposes ────────────────────────────
 mkdir -p "$TMP/extra" && "${G[@]}" init -q --bare "$TMP/extra/origin.git"
@@ -175,7 +197,7 @@ has_mount "$TMP/extra/origin.git/config:/workspace/extra/origin.git/config:ro" \
 
 # ── G7: a read-only mount needs nothing ───────────────────────────────────────
 EXTRA_MOUNTS="$TMP/extra:ro" launch "$TMP/app"
-[[ -s "$CAPTURE" ]] && ! mounts | grep -q 'origin.git/' \
+[[ -s "$CAPTURE" ]] && ! grep -q 'origin.git/' <<<"$(mounts)" \
   && pass "G7 a :ro mount gets no git overlays" || fail "G7 :ro mount (mounts: $(mounts | grep extra | tr '\n' ' '))"
 
 # ── G8: a repository inside a launcher is already read-only with it ───────────
@@ -188,7 +210,7 @@ has_mount "$TMP/eng/.git/config:/workspace/eng/.git/config:ro" \
   || fail "G8a a launcher root's .git (mounts: $(mounts | grep eng | tr '\n' ' '))"
 mkdir -p "$TMP/wrap" && mv "$TMP/eng" "$TMP/wrap/eng"
 EXTRA_MOUNTS="$TMP/wrap" launch "$TMP/app"
-has_mount "$TMP/wrap/eng:/workspace/wrap/eng:ro" && ! mounts | grep -q 'wrap/eng/.git' \
+has_mount "$TMP/wrap/eng:/workspace/wrap/eng:ro" && ! grep -q 'wrap/eng/.git' <<<"$(mounts)" \
   && pass "G8b a repository inside a launcher overlaid read-only needs nothing more" \
   || fail "G8b repo inside a read-only launcher (mounts: $(mounts | grep wrap | tr '\n' ' '))"
 rm -rf "$TMP/wrap"
@@ -221,7 +243,7 @@ chmod 755 "$TMP/hid/r/.git"; rm -rf "$TMP/hid"
 # directory that happens to hold HEAD and config must keep its config writable.
 mkdir -p "$TMP/app/docs" && printf 'ref: x\n' > "$TMP/app/docs/HEAD" && printf 'k=v\n' > "$TMP/app/docs/config"
 launch "$TMP/app"
-! mounts | grep -q '/app/docs' && pass "G11 a stray HEAD file is not taken for a git directory" \
+! grep -q '/app/docs' <<<"$(mounts)" && pass "G11 a stray HEAD file is not taken for a git directory" \
   || fail "G11 stray HEAD (mounts: $(mounts | grep '/app/' | tr '\n' ' '))"
 
 # ── G12: depth — a checkout six levels down is found, seven is not ────────────
@@ -229,7 +251,7 @@ mkdir -p "$TMP/deep/1/2/3/4/5/6/7"
 "${G[@]}" -C "$TMP/deep/1/2/3/4/5/6" init -q 2>/dev/null; "${G[@]}" -C "$TMP/deep/1/2/3/4/5/6/7" init -q 2>/dev/null
 EXTRA_MOUNTS="$TMP/deep" launch "$TMP/app"
 has_mount "$TMP/deep/1/2/3/4/5/6/.git/config:/workspace/deep/1/2/3/4/5/6/.git/config:ro" \
-  && ! mounts | grep -q '/6/7/.git' \
+  && ! grep -q '/6/7/.git' <<<"$(mounts)" \
   && pass "G12 a checkout six levels below the mount root is protected; seven is past the limit" \
   || fail "G12 depth (mounts: $(mounts | grep '/deep/' | tr '\n' ' '))"
 rm -rf "$TMP/deep"
@@ -237,8 +259,8 @@ rm -rf "$TMP/deep"
 # ── G13: the concurrent-swap manifest records every git mount ─────────────────
 launch ..
 ok=1
-for d in /workspace/proj/.git /workspace/proj/.git/config /workspace/proj/.git/hooks; do
-  tr '\0' '\n' < "$CAPTURE.manifest" 2>/dev/null | grep -qxF -- "$d" || ok=""
+for d in /workspace/proj/.git /workspace/proj/.git/config /workspace/proj/.git/commondir /workspace/proj/.git/hooks; do
+  grep -qxF -- "$d" <<<"$(tr '\0' '\n' < "$CAPTURE.manifest" 2>/dev/null)" || ok=""
 done
 [[ -n "$ok" ]] && pass "G13 the verify manifest covers the .git pin and its read-only mounts" \
   || fail "G13 manifest (has: $(tr '\0' ' ' < "$CAPTURE.manifest" 2>/dev/null | head -c 400))"
@@ -247,6 +269,75 @@ done
 launch "$TMP/app"
 [[ -s "$CAPTURE" && -z "$(git_mounts)" ]] && pass "G14 a mount with no repository gets no git mounts" \
   || fail "G14 no repo (git mounts: $(git_mounts | tr '\n' ' '))"
+
+# ── G15: a commondir already there that is not '.' is named — and frozen ─────
+mkdir -p "$TMP/cd/r" && "${G[@]}" -C "$TMP/cd/r" init -q && printf '../elsewhere\n' > "$TMP/cd/r/.git/commondir"
+EXTRA_MOUNTS="$TMP/cd" launch "$TMP/app"
+grep -qF "WARNING: $TMP/cd/r/.git/commondir sends git to" "$ERR" \
+  && has_mount "$TMP/cd/r/.git/commondir:/workspace/cd/r/.git/commondir:ro" \
+  && [[ "$(cat "$TMP/cd/r/.git/commondir")" == ../elsewhere ]] \
+  && pass "G15 a commondir that is not '.' is warned about, left as it is, and mounted read-only" \
+  || fail "G15 foreign commondir (stderr: $(grep WARNING "$ERR" | tr '\n' ' '))"
+rm -rf "$TMP/cd"
+
+# ── G16: a directory inside .git you cannot list is mounted read-only whole ───
+# The agent owns .git/modules and can `chmod 000` it in one session, to hide the
+# submodules' git directories from the next launch's scan.
+chmod 000 "$PROJ/.git/modules"
+if [[ -r "$PROJ/.git/modules" ]]; then
+  printf 'SKIP: G16 — chmod does not constrain root\n'
+else
+  launch ..
+  has_mount "$PROJ/.git/modules:/workspace/proj/.git/modules:ro" \
+    && grep -qF "WARNING: $PROJ/.git/modules cannot be listed by you" "$ERR" \
+    && pass "G16 an unlistable directory inside .git is read-only whole, with a WARNING" \
+    || fail "G16 unlistable .git/modules (git mounts: $(git_mounts | tr '\n' ' '))"
+fi
+chmod 755 "$PROJ/.git/modules"
+
+# ── G17: a named group's own directories are not scanned ──────────────────────
+# The host's git never runs inside ~/.ai-containers/<group>/, and repositories
+# there (plugin marketplaces) are deleted and re-cloned by the tools that own
+# them, which a pin would turn into EBUSY.
+mkdir -p "$HOME/.ai-containers/default/.agents/r" && "${G[@]}" -C "$HOME/.ai-containers/default/.agents/r" init -q
+launch "$TMP/app"
+[[ -s "$CAPTURE" ]] && ! grep -q '/.agents/r/.git' <<<"$(mounts)" \
+  && pass "G17 a repository in a named group's directory gets no git mounts" \
+  || fail "G17 group repo (mounts: $(mounts | grep agents | tr '\n' ' '))"
+
+# ── G18: shallowest first — a repository under another's read-only hooks/ ─────
+mkdir -p "$PROJ/.git/hooks/inner" && "${G[@]}" -C "$PROJ/.git/hooks/inner" init -q
+launch ..
+! grep -q ':/workspace/proj/.git/hooks:rw$' <<<"$(mounts)" && ! grep -q 'hooks/inner' <<<"$(mounts)" \
+  && pass "G18 a repository inside another's read-only hooks/ is left under it, never pinned writable" \
+  || fail "G18 ordering (git mounts: $(git_mounts | grep hooks | tr '\n' ' '))"
+rm -rf "$PROJ/.git/hooks/inner"
+
+# ── G19: hooks run from a writable core.hooksPath are named ───────────────────
+mkdir -p "$PROJ/.husky/_" && "${G[@]}" -C "$PROJ" config core.hooksPath .husky/_
+launch ..
+grep -qF "NOTE: /workspace/proj/.git runs its git hooks from /workspace/proj/.husky/_ (core.hooksPath)" "$ERR" \
+  && pass "G19 a core.hooksPath in the writable project is named in a NOTE" \
+  || fail "G19 hooksPath NOTE (stderr: $(grep -E 'NOTE' "$ERR" | tr '\n' ' '))"
+"${G[@]}" -C "$PROJ" config --unset core.hooksPath; rm -rf "$PROJ/.husky"
+
+# ── G20: a mount rooted inside a .git is named ────────────────────────────────
+EXTRA_MOUNTS="$PROJ/.git/hooks" launch "$TMP/app"
+grep -qF "NOTE: $PROJ/.git/hooks lies inside a git directory and is mounted writable" "$ERR" \
+  && pass "G20 a writable mount rooted inside a .git gets a NOTE" \
+  || fail "G20 mount inside .git (stderr: $(grep NOTE "$ERR" | tr '\n' ' '))"
+
+# ── G21: at most 30 repositories, the nearest first, the rest named ───────────
+mkdir -p "$TMP/many"
+for n in $(seq -w 1 32); do mkdir -p "$TMP/many/r$n" && "${G[@]}" -C "$TMP/many/r$n" init -q; done
+mkdir -p "$TMP/many/zz/deep" && "${G[@]}" -C "$TMP/many/zz/deep" init -q
+EXTRA_MOUNTS="$TMP/many" launch "$TMP/app"
+nro="$(grep -c '^READ-ONLY: /workspace/many/.*/\.git: ' "$ERR")"
+[[ "$nro" == 30 ]] && grep -qF 'WARNING: the writable mounts hold more git repositories than the 30 protected' "$ERR" \
+  && grep -qF '3 more stay writable' "$ERR" && ! grep -q 'zz/deep/.git' <<<"$(mounts)" \
+  && pass "G21 30 repositories are protected, the deepest left out first, and the rest named in a WARNING" \
+  || fail "G21 cap (protected: $nro; stderr: $(grep -E 'WARNING' "$ERR" | tr '\n' ' '))"
+rm -rf "$TMP/many"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

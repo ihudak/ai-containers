@@ -3,17 +3,19 @@
 #       writable as the project around it: every launch before this change.
 #
 #       Expected: "the agent cannot write .git/hooks/pre-commit", "the host has
-#       no pre-commit hook" and "the agent cannot change .git/config" FAIL, and
-#       so does "the agent cannot rename .git" (nothing is mounted on it). The
+#       no pre-commit hook", "the agent cannot change .git/config", "the agent
+#       cannot write .git/commondir" and "the host's git still takes its config
+#       and hooks from .git itself" FAIL, and so do both rename assertions
+#       (nothing is mounted on .git). The
 #       project's writability and the agent's commit still PASS; a FAIL there
 #       first would mean the case measures something other than the overlay.
 diff --git a/sandbox.sh b/sandbox.sh
-index 7e1cd5a..330dc1b 100755
+index bb162f8..46c3553 100755
 --- a/sandbox.sh
 +++ b/sandbox.sh
-@@ -498,7 +498,7 @@ launcher_ro_overlay() {
-   for i in ${bsrc[@]+"${!bsrc[@]}"}; do
-     src="${bsrc[i]}"; dst="${bdst[i]}"
+@@ -520,7 +520,7 @@ launcher_ro_overlay() {
+       printf '      your host'\''s git may run what changes there.\n' >&2
+     fi
      gdirs=(); gfiles=(); glinks=(); gunr=()
 -    git_dirs_in gdirs gfiles glinks gunr "$src"
 +    :

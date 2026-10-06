@@ -7,16 +7,19 @@
 #       and "the host's .git is where it was" FAIL. The hook and config
 #       assertions still PASS: until the rename, the overlay itself is intact.
 diff --git a/sandbox.sh b/sandbox.sh
-index 7e1cd5a..c154868 100755
+index bb162f8..4fe9649 100755
 --- a/sandbox.sh
 +++ b/sandbox.sh
-@@ -561,8 +561,7 @@ launcher_ro_overlay() {
+@@ -611,11 +611,7 @@ launcher_ro_overlay() {
+         continue
        fi
-       for k in ${psrc[@]+"${!psrc[@]}"}; do
-         seen[${pdst[k]}]=1; pinned[${pdst[k]}]=1
--        _bind_mount_arg mf mv "${psrc[k]}" "${pdst[k]}" rw
--        _ro+=("$mf" "$mv"); _vrfy+=("${psrc[k]}" "${pdst[k]}")
-+        :
-       done
+       gn=$((gn + 1))
+-      for k2 in ${psrc[@]+"${!psrc[@]}"}; do
+-        seen[${pdst[k2]}]=1; pinned[${pdst[k2]}]=1
+-        _bind_mount_arg mf mv "${psrc[k2]}" "${pdst[k2]}" rw
+-        _ro+=("$mf" "$mv"); _vrfy+=("${psrc[k2]}" "${pdst[k2]}")
+-      done
++      :
        what=""
        for f in "${gro[@]}"; do
+         x="$dst${f#"$src"}"

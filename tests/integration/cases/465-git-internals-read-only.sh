@@ -16,7 +16,7 @@
 # it with the same primitive that fails on .git's internals, so "cannot write"
 # can be neither "nothing is writable" nor "git is broken here".
 #
-# Mutations 465 and 466 demonstrate this case failing.
+# Mutations 465, 466 and 467 demonstrate this case failing.
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 
 proj="$(it_scratch)/proj"
@@ -55,6 +55,18 @@ agit "config core.hooksPath /workspace/proj/hooks" >/dev/null 2>&1
 [[ -z "$(hostgit config --get core.hooksPath)" && "$(cat "$proj/.git/config")" == "$before" ]] \
   && pass "the agent cannot change .git/config (core.hooksPath unset, the file unchanged)" \
   || fail "the agent cannot change .git/config — core.hooksPath is '$(hostgit config --get core.hooksPath)'"
+
+# git reads .git/commondir in ANY git directory, and a repository's own has
+# none — written by the agent, it would point the host's git at a config and
+# hooks of its own. sandbox.sh makes one holding `.` and mounts it read-only.
+if agent_exec "$IT_CID" 'printf "../planted\n" > /workspace/proj/.git/commondir' >/dev/null 2>&1; then
+  fail "the agent cannot write .git/commondir — the write SUCCEEDED"
+else
+  pass "the agent cannot write .git/commondir"
+fi
+[[ "$(cat "$proj/.git/commondir" 2>/dev/null)" == . && "$(hostgit rev-parse --git-common-dir)" == "$proj/.git" ]] \
+  && pass "the host's git still takes its config and hooks from .git itself" \
+  || fail "the host's git still takes its config and hooks from .git itself — common dir: $(hostgit rev-parse --git-common-dir)"
 
 # The overlays are mounts on .git's entries; without the pin, renaming .git
 # would carry them away and leave room for a .git of the agent's own.
