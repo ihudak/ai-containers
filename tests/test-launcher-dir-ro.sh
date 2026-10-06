@@ -13,7 +13,8 @@
 # directory between a mount root and a launcher, and skips a launcher nested in
 # another (T9–T19); robust to stray files and odd names, and warns about a
 # symlink it cannot pin (T20–T23); never mounts a name docker would mangle, and
-# never scans blind past a directory you cannot list (T24–T28).
+# never scans blind past a directory you cannot list (T24–T28, T31), protects
+# what a launcher's symlinks point at (T29), and refuses a non-numeric identity (T30).
 #
 # Hermetic: fake `docker` capturing the run args, no daemon. Integration cases
 # 450-launcher-dir-read-only and 455-launcher-dir-nested-mount check that the
@@ -304,7 +305,7 @@ NL="$TMP/nl"; nlname='x'$'\n''y'; mkdir -p "$NL/$nlname/.ai-containers"
 got="$(bash -c '
   set -euo pipefail
   eval "$(awk "/^launcher_dirs_in\\(\\) \\{/,/^}\$/" "$1")"
-  out=(); unr=(); launcher_dirs_in out unr "$2" "$(id -u)" "$(id -g)"; printf "%s\0" "${out[@]}"' _ "$ENGINE/sandbox.sh" "$NL" | tr '\0\n' '|^')"
+  out=(); unr=(); launcher_dirs_in out unr "$2" "$(id -u)" "$(id -g)" "$(id -u)"; printf "%s\0" "${out[@]}"' _ "$ENGINE/sandbox.sh" "$NL" | tr '\0\n' '|^')"
 [[ "$got" == "$NL/x^y/.ai-containers|" ]] \
   && pass "T23 launcher_dirs_in finds a launcher under a name with a newline, whole" \
   || fail "T23 newline in a name (got: $got)"
@@ -455,6 +456,74 @@ EXTRA_MOUNTS="$SL" launch "$LAUNCHER" "$TMP/app"
 grep -qxF -- "$SL/p/.ai-containers:/workspace/sl/p/.ai-containers:ro" <<<"$(mounts)" \
   && pass "T28 a launcher whose sandbox.sh is a symlink is found and protected" \
   || fail "T28 symlinked sandbox.sh (got: $(mounts | grep -F /workspace/sl | tr '\n' ' '))"
+
+# ── T29: symlinks INSIDE a launcher. The link is read-only with the launcher,
+# but its target is what the host reads: a target in a writable mount is
+# protected too — a file, a directory (searched for links in turn), at the end
+# of a relative or absolute link. A link on the way that itself sits in a
+# writable mount can be repointed, so it is warned about. A target outside
+# every mount needs nothing.
+LK="$TMP/lk"; mk_launcher "$LK/p"; mkdir -p "$LK/shared/tools.d" "$LK/deep"
+echo c > "$LK/shared/sandbox.conf"; echo r > "$LK/shared/real.conf"; echo d > "$LK/deep/inner.conf"
+ln -s ../../shared/sandbox.conf "$LK/p/.ai-containers/sandbox.conf"
+ln -s "$LK/shared/tools.d" "$LK/p/.ai-containers/tools.d"
+ln -s "$LK/deep/inner.conf" "$LK/shared/tools.d/inner.conf"
+ln -s real.conf "$LK/shared/hop"; ln -s ../../shared/hop "$LK/p/.ai-containers/hop.conf"
+ln -s "$ENGINE/AGENTS.md" "$LK/p/.ai-containers/outside.md"
+EXTRA_MOUNTS="$LK" launch "$LAUNCHER" "$TMP/app"
+got="$(mounts_under /workspace/lk/ | sort)"
+want="$(printf '%s\n' \
+  "$LK/deep/inner.conf:/workspace/lk/deep/inner.conf:ro" \
+  "$LK/deep:/workspace/lk/deep:rw" \
+  "$LK/p/.ai-containers:/workspace/lk/p/.ai-containers:ro" \
+  "$LK/p:/workspace/lk/p:rw" \
+  "$LK/shared/real.conf:/workspace/lk/shared/real.conf:ro" \
+  "$LK/shared/sandbox.conf:/workspace/lk/shared/sandbox.conf:ro" \
+  "$LK/shared/tools.d:/workspace/lk/shared/tools.d:ro" \
+  "$LK/shared:/workspace/lk/shared:rw" | sort)"
+[[ "$got" == "$want" ]] \
+  && pass "T29 what a launcher's links point at, in a writable mount, is read-only too (file, dir, a link inside that dir)" \
+  || fail "T29 linked targets (got: $(tr '\n' ' ' <<<"$got"))"
+grep -qF "WARNING: $LK/shared/hop, which a launcher link passes through, is a symlink" "$ERR" \
+  && [[ "$(grep -c 'which a launcher link passes through' "$ERR")" -eq 1 ]] \
+  && pass "T29 a link on the way that sits in a writable mount is warned about — and only that one" \
+  || fail "T29 hop warning (stderr: $(grep -F 'passes through' "$ERR" | tr '\n' ' '))"
+
+# A launcher under a path with a space: its own links must not be mistaken for a
+# repointable link on the way (the launcher-membership test must not split it).
+SPL="$TMP/spl"; mk_launcher "$SPL/sp ace"; echo s > "$SPL/shared.conf"
+ln -s ../../shared.conf "$SPL/sp ace/.ai-containers/shared.conf"
+EXTRA_MOUNTS="$SPL" launch "$LAUNCHER" "$TMP/app"
+! grep -q 'which a launcher link passes through' "$ERR" \
+  && grep -qxF -- "$SPL/shared.conf:/workspace/spl/shared.conf:ro" <<<"$(mounts)" \
+  && pass "T29 a launcher under a path with a space: its link is followed, and not mistaken for a hop" \
+  || fail "T29 space in a launcher path (stderr: $(grep -F 'passes through' "$ERR" | tr '\n' ' '); mounts: $(mounts | grep -F "$SPL" | tr '\n' ' '))"
+
+# ── T30: the agent's identity must be numeric; find would error on anything
+# else and the search would quietly find nothing. Refuse instead.
+SANDBOX_UID=abc launch "$LAUNCHER" ..
+[[ ! -s "$CAPTURE" ]] && grep -qF 'ERROR: SANDBOX_UID/SANDBOX_GID must be numeric' "$ERR" \
+  && pass "T30 a non-numeric SANDBOX_UID refuses the launch" \
+  || fail "T30 non-numeric SANDBOX_UID (docker run reached: $([[ -s "$CAPTURE" ]] && echo yes || echo no); stderr: $(grep ERROR "$ERR" | tr '\n' ' '))"
+
+# ── T31: a directory you do not own, which you cannot list only because of a
+# SUPPLEMENTARY group the agent does not have (root:<group> 0705: your class is
+# that group, with nothing; the agent's is "other", with r-x). Mode bits alone
+# guess your class wrong; only the kernel knows. Needs root to build another
+# owner's directory and to run the search as an ordinary user.
+if [[ "$(id -u)" -eq 0 ]] && command -v setpriv >/dev/null 2>&1; then
+  SG="$TMP/sg"; mk_launcher "$SG/locked/p"; chown -R 1500:1500 "$SG/locked/p"
+  chown 0:2600 "$SG/locked"; chmod 0705 "$SG/locked"; chmod 0755 "$TMP" "$SG"
+  got="$(setpriv --reuid=1500 --regid=1500 --groups=2600 bash -c '
+    set -euo pipefail
+    eval "$(awk "/^launcher_dirs_in\\(\\) \\{/,/^}\$/" "$1")"
+    out=(); unr=(); launcher_dirs_in out unr "$2" 1500 1500 1500; printf "%s|" ${unr[@]+"${unr[@]}"}' _ "$ENGINE/sandbox.sh" "$SG")"
+  [[ "$got" == "$SG/locked|" ]] \
+    && pass "T31 a directory hidden from you only by a supplementary group is reported" \
+    || fail "T31 supplementary-group blind spot (got: ${got:-nothing})"
+else
+  pass "T31 (needs root and setpriv to build another owner's directory; runs in the floor job)"
+fi
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

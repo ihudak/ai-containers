@@ -284,7 +284,11 @@ add_file_mount_if_exists() {
 # changes nothing else about the directory. With the documented layout there is
 # nothing between: the project is the mount root and .ai-containers its child.
 # A SYMLINK on the path the host takes cannot be pinned that way, so one inside
-# a writable mount is warned about instead.
+# a writable mount is warned about instead. A symlink INSIDE a launcher is
+# read-only with it, but what it points at is what the host reads, so a target
+# in a writable mount is protected like a launcher (and a directory target is
+# searched for links in turn); a link on the way there that itself sits in a
+# writable mount is warned about.
 #
 # launcher_ro_overlay <out-array> <this launcher's dir, as reached> <docker flag>...
 # Reads the `-v <src>:<dst>[:<opts>]` pairs among the flags. Only a writable bind
@@ -309,9 +313,18 @@ launcher_ro_overlay() {
   # shellcheck disable=SC2178  # nameref: shellcheck does not model `local -n`
   local -n _ro=$1
   local reached="$2" self spec src rest dst opts l at pin path part r skip i k depth max=0 d p pp kind ok mf mv
-  local uid="${SANDBOX_UID:-$(id -u)}" gid="${SANDBOX_GID:-$(id -g)}"
+  local x f e tgt hop
+  local uid="${SANDBOX_UID:-$(id -u)}" gid="${SANDBOX_GID:-$(id -g)}" you
   local -a found unreadable cand bsrc=() bdst=() cl=() cat=() csrc=() cdst=() cdep=() ckind=() ro_dsts=() psrc pdst
-  local -A seen=()
+  local -a queue links hops
+  local -A seen=() queued=()
+  # The agent's identity decides what it can reach; find needs it numeric, and a
+  # find that errors out finds nothing — so refuse rather than search blind.
+  if [[ ! "$uid" =~ ^[0-9]+$ || ! "$gid" =~ ^[0-9]+$ ]]; then
+    printf 'ERROR: SANDBOX_UID/SANDBOX_GID must be numeric (got %q / %q).\n' "$uid" "$gid" >&2
+    exit 1
+  fi
+  you="$(id -u)"
   shift 2
   self="$(cd "$reached" 2>/dev/null && pwd -P)" || self="$reached"
   while (( $# )); do
@@ -362,7 +375,7 @@ launcher_ro_overlay() {
     src="${bsrc[i]}"; dst="${bdst[i]}"
     found=(); unreadable=()
     if [[ "$self" == "$src" || "$self" == "$src"/* ]]; then found+=("$self"); fi
-    launcher_dirs_in found unreadable "$src" "$uid" "$gid"
+    launcher_dirs_in found unreadable "$src" "$uid" "$gid" "$you"
     cand=(${found[@]+"${found[@]}"} ${unreadable[@]+"${unreadable[@]}"})
     for k in ${cand[@]+"${!cand[@]}"}; do
       l="${cand[k]}"
@@ -374,6 +387,51 @@ launcher_ro_overlay() {
       d="${at//[!\/]/}"
       cl+=("$l"); cat+=("$at"); csrc+=("$src"); cdst+=("$dst"); cdep+=("${#d}"); ckind+=("$kind")
       if (( ${#d} > max )); then max=${#d}; fi
+    done
+  done
+
+  # What a launcher's symlinks point at, wherever a writable mount exposes it.
+  # A worklist, because a directory target can hold links of its own.
+  queue=()
+  for i in ${cl[@]+"${!cl[@]}"}; do
+    if [[ "${ckind[i]}" == launcher && -z "${queued[${cl[i]}]:-}" ]]; then queued[${cl[i]}]=1; queue+=("${cl[i]}"); fi
+  done
+  while (( ${#queue[@]} )); do
+    x="${queue[0]}"; queue=("${queue[@]:1}")
+    links=()
+    mapfile -d '' -t links < <(find "$x" \( -name node_modules -o -name .git -o -name vendor -o -name .venv -o -name target \) -prune \
+                                  -o -type l -print0 2>/dev/null)
+    for f in ${links[@]+"${links[@]}"}; do
+      hops=(); tgt=""
+      mapfile -d '' -t hops < <(_symlink_chain "$f")
+      for e in ${hops[@]+"${hops[@]}"}; do
+        if [[ ! -L "$e" ]]; then tgt="$e"; continue; fi
+        # A link on the way that is not itself inside a launcher can be repointed.
+        hop=""
+        for i in ${bsrc[@]+"${!bsrc[@]}"}; do
+          if [[ "$e" == "${bsrc[i]}"/* ]]; then hop="${bdst[i]}/${e#"${bsrc[i]}"/}"; break; fi
+        done
+        if [[ -z "$hop" ]]; then continue; fi
+        for k in ${queued[@]+"${!queued[@]}"}; do
+          if [[ "$e" == "$k"/* ]]; then hop=""; break; fi
+        done
+        if [[ -n "$hop" ]]; then
+          printf 'WARNING: %s, which a launcher link passes through, is a symlink inside a\n' "$e" >&2
+          printf '         writable mount (%s): the agent can repoint it. Point the link at\n' "$hop" >&2
+          printf '         the real path instead.\n' >&2
+        fi
+      done
+      if [[ -z "$tgt" ]]; then continue; fi
+      for i in ${bsrc[@]+"${!bsrc[@]}"}; do
+        src="${bsrc[i]}"; dst="${bdst[i]}"
+        if [[ "$tgt" == "$src" ]]; then at="$dst"
+        elif [[ "$tgt" == "$src"/* ]]; then at="$dst/${tgt#"$src"/}"
+        else continue; fi
+        d="${at//[!\/]/}"
+        cl+=("$tgt"); cat+=("$at"); csrc+=("$src"); cdst+=("$dst"); cdep+=("${#d}"); ckind+=(linked)
+        if (( ${#d} > max )); then max=${#d}; fi
+      done
+      if [[ -d "$tgt" && -z "${queued[$tgt]:-}" ]]; then queued[$tgt]=1; queue+=("$tgt"); fi
     done
   done
 
@@ -391,8 +449,13 @@ launcher_ro_overlay() {
       if [[ -n "$skip" ]]; then continue; fi
       seen[$at]=1
       if [[ "$l" == "$src" ]]; then
-        printf 'NOTE: %s holds a launcher and stays writable at %s;\n' "$l" "$dst" >&2
-        printf '      what changes there runs on the host at the next launch.\n' >&2
+        if [[ "$kind" == linked ]]; then
+          printf 'NOTE: %s, which a launcher links to, is itself a writable mount at %s\n' "$l" "$dst" >&2
+          printf '      and stays writable; what changes there the host reads at the next launch.\n' >&2
+        else
+          printf 'NOTE: %s holds a launcher and stays writable at %s;\n' "$l" "$dst" >&2
+          printf '      what changes there runs on the host at the next launch.\n' >&2
+        fi
         continue
       fi
       # The pins this one needs, then whether docker can be handed all of them
@@ -430,6 +493,8 @@ launcher_ro_overlay() {
         else
           printf '         It is not yours: ask its owner, or mount it :ro yourself.\n' >&2
         fi
+      elif [[ "$kind" == linked ]]; then
+        printf 'READ-ONLY: %s  (a launcher links to it; edit it on the host)\n' "$at" >&2
       else
         printf 'READ-ONLY: %s  (launcher files; edit them on the host)\n' "$at" >&2
       fi
@@ -479,6 +544,30 @@ _mount_representable() {
   return 0
 }
 
+# _symlink_chain <link>: NUL-separated, every symlink on the way from <link> to
+# what it finally names (physical paths, <link> first), then that final path —
+# omitted when the chain dangles or loops. One hop at a time rather than
+# readlink -f, because a link on the way matters as much as where it ends.
+_symlink_chain() {
+  local p="$1" t d n=0
+  while [[ -L "$p" ]]; do
+    if (( ++n > 40 )); then return 0; fi
+    d="$(cd "${p%/*}/" 2>/dev/null && pwd -P)" || return 0
+    printf '%s\0' "$d/${p##*/}"
+    t="$(readlink "$p")" || return 0
+    case "$t" in /*) p="$t" ;; *) p="$d/$t" ;; esac
+  done
+  if [[ -d "$p" ]]; then
+    p="$(cd "$p" 2>/dev/null && pwd -P)" || return 0
+  elif [[ -e "$p" ]]; then
+    d="$(cd "${p%/*}/" 2>/dev/null && pwd -P)" || return 0
+    p="$d/${p##*/}"
+  else
+    return 0
+  fi
+  printf '%s\0' "$p"
+}
+
 # _utf8_valid <string>: is it UTF-8 as RFC 3629 — and Go, whose JSON encoding of
 # the request is what rewrites anything else — defines it? No overlongs, no
 # surrogates, nothing above U+10FFFF. Not iconv: glibc's accepts both F4 90 80 80
@@ -509,7 +598,7 @@ _utf8_valid() {
     }'
 }
 
-# launcher_dirs_in <launchers-out> <unreadable-out> <dir> <uid> <gid>: appends every
+# launcher_dirs_in <launchers-out> <unreadable-out> <dir> <agent-uid> <agent-gid> <your-uid>: appends every
 # launcher directory below <dir> — matched by CONTENT, a directory holding both
 # sandbox.sh and sandbox-common.sh, which is what the host runs `./sandbox.sh`
 # from (a project's .ai-containers/ copy, or an ai-containers checkout itself;
@@ -525,24 +614,24 @@ _utf8_valid() {
 launcher_dirs_in() {
   # shellcheck disable=SC2178  # nameref: shellcheck does not model `local -n`
   local -n _ldi_out=$1 _ldi_unr=$2
-  local f su sg
+  local f
   local -a hits=()
-  su="$(id -u)"; sg="$(id -g)"
   mapfile -d '' -t hits < <(find "$3" -mindepth 1 -maxdepth 7 \
       \( -name node_modules -o -name .git -o -name vendor -o -name .venv -o -name target \) -prune \
       -o -name sandbox.sh \( -type f -o -type l \) -print0 2>/dev/null)
   for f in ${hits[@]+"${hits[@]}"}; do
     if [[ -f "$f" && -f "${f%/sandbox.sh}/sandbox-common.sh" ]]; then _ldi_out+=("${f%/sandbox.sh}"); fi
   done
-  # Mode bits narrow the candidates to directories your own permission class
-  # cannot list AND the agent's class could reach into; -r/-x then confirm
-  # against the kernel, for ACLs and supplementary groups.
+  # Candidates: a directory of yours whose owner bits deny you (exact — the
+  # owner class is all that applies to you), or any directory you do not own
+  # (which class applies to you, given supplementary groups and ACLs, only the
+  # kernel knows) — in either case only where the agent's own class, from mode
+  # bits and its single group, lets it reach in. -r/-x then ask the kernel.
   hits=()
   mapfile -d '' -t hits < <(find "$3" -mindepth 1 -maxdepth 6 \
       \( -name node_modules -o -name .git -o -name vendor -o -name .venv -o -name target \) -prune \
       -o -type d \
-         \( \( -user "$su" ! -perm -0500 \) -o \( ! -user "$su" -group "$sg" ! -perm -0050 \) \
-            -o \( ! -user "$su" ! -group "$sg" ! -perm -0005 \) \) \
+         \( \( -user "$6" ! -perm -0500 \) -o ! -user "$6" \) \
          \( -user "$4" -o \( -group "$5" -perm -0010 \) -o \( ! -group "$5" -perm -0001 \) \) \
          -print0 2>/dev/null)
   for f in ${hits[@]+"${hits[@]}"}; do

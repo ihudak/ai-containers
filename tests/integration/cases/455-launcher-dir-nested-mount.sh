@@ -27,6 +27,10 @@
 # host tree. It is not mounted at all, with a WARNING; the launch goes ahead and
 # nothing root-owned appears on the host.
 #
+# The project's launcher also holds a symlink into a writable sibling directory,
+# shared/. The link is read-only with the launcher, but the host reads what it
+# points at, so that file is read-only too — and shared/ around it is not.
+#
 # Paired as everywhere in this tier: the parent and the pinned directory must
 # still accept writes, so "cannot move" cannot mean "nothing here works".
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
@@ -50,6 +54,9 @@ for n in "tr " "c:o,n"; do
 done
 printf 'marker-proj\n'  > "$grp/proj/.ai-containers/MARKER"
 printf 'marker-other\n' > "$grp/other/.ai-containers/MARKER"
+
+mkdir -p "$grp/shared"; printf 'linked\n' > "$grp/shared/linked.conf"
+ln -s ../../shared/linked.conf "$grp/proj/.ai-containers/linked.conf"
 
 bad_ok=0
 bad="$grp/bad"$'\xf4\x90\x80\x80'
@@ -86,6 +93,15 @@ if [[ "$bad_ok" -eq 1 ]]; then
 else
   pass "(this filesystem refuses a name that is not valid UTF-8; nothing to check)"
 fi
+
+# What a launcher's symlink points at is read-only; the directory around it is not.
+if agent_exec "$IT_CID" 'echo x >> /workspace/grp/shared/linked.conf' >/dev/null 2>&1
+then fail "agent cannot change what a launcher's symlink points at — the append SUCCEEDED"
+else pass "agent cannot change what a launcher's symlink points at"; fi
+assert_writable "$IT_CID" /workspace/grp/shared
+[[ "$(cat "$grp/shared/linked.conf")" == linked ]] \
+  && pass "the host's linked file is unchanged" \
+  || fail "the host's linked file is unchanged — it now reads: $(tr '\n' ' ' <"$grp/shared/linked.conf")"
 
 # The directory between the mount root and the launcher stays where it is.
 if agent_exec "$IT_CID" 'mv /workspace/grp/proj /workspace/grp/proj.moved' >/dev/null 2>&1; then
