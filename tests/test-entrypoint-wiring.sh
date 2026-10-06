@@ -82,13 +82,14 @@ grep -q 'useradd_matching_host_uid -M -s /bin/bash' "$REPO_DIR/entrypoint.sh" \
 # Grep-level, like the rest of this file: entrypoint.sh runs as root and is
 # GREPPED-ONLY in the falsify tier. That a real server starts is integration case
 # 780-postgres-server-runs. run_services deliberately takes NO env override for
-# the runner's path — container.env reaches this root process, and an override
-# would let a project's data file choose what root executes.
+# the runner's path — an override would let a project's data file choose what
+# root executes. start gets container.env back (stash_app_env), minus the
+# runner's test-only path knobs.
 grep -q '^run_services() {' "$REPO_DIR/entrypoint.sh" && pass "defines run_services" || fail "defines run_services"
 ns="$(grep -c '^[[:space:]]*run_services$' "$REPO_DIR/entrypoint.sh")"
 [[ "$ns" -ge 3 ]] && pass "run_services wired in 3 modes ($ns)" || fail "run_services wired in 3 modes ($ns)"
 grep -q 'runuser -u "$sandbox_user" -- env -u AI_SERVICES_DIR -u AI_SERVICES_STATE_ROOT -u AI_SERVICES_LOG_ROOT \\$' "$REPO_DIR/entrypoint.sh" \
-  && grep -q '^    /usr/local/bin/start-services.sh start || true$' "$REPO_DIR/entrypoint.sh" \
+  && grep -qF '    ${start_env[@]+"${start_env[@]}"} /usr/local/bin/start-services.sh start || true' "$REPO_DIR/entrypoint.sh" \
   && pass "the start phase runs as the sandbox user" \
   || fail "the start phase runs as the sandbox user"
 # The sandbox-user start strips the test-only path overrides; root's prepare
