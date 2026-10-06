@@ -21,7 +21,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `EXTRA_MOUNTS`, a project attached as a `:rw` repo). Directories between a
   mount root and a launcher are pinned so they cannot be renamed out from under
   it. Each protected path is printed at launch (`READ-ONLY: …`); everything else
-  stays writable. **Behaviour change:** edit `sandbox.conf`, the allowlist
+  stays writable. A project reached through a symlink that sits inside a
+  writable mount gets a `WARNING:` naming the real path to launch from, since a
+  link can be replaced rather than renamed. **Behaviour change:** edit `sandbox.conf`, the allowlist
   fragments and the other launcher files on the host, not from inside the
   container. Launching with a launcher's own directory as the working directory
   (developing ai-containers itself) keeps it writable and prints a `NOTE:`.

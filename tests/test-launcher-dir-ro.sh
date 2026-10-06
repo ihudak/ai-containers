@@ -11,7 +11,8 @@
 # launcher such a mount exposes (matched by content: a dir with sandbox.sh and
 # sandbox-common.sh, so an ai-containers checkout counts too) — pins every
 # directory between a mount root and a launcher, and skips a launcher nested in
-# another (T9–T19).
+# another (T9–T19); robust to stray files and odd names, and warns about a
+# symlink it cannot pin (T20–T23).
 #
 # Hermetic: fake `docker` capturing the run args, no daemon. Integration cases
 # 450-launcher-dir-read-only and 455-launcher-dir-nested-mount check that the
@@ -63,21 +64,36 @@ launch() {
   ( cd "$1" && bash ./sandbox.sh restricted "$2" ) >/dev/null 2>"$ERR" </dev/null
 }
 # Every mount, rendered `src:dst[:opts]`, one per line — both the `-v` pairs the
-# rest of sandbox.sh emits and the `--mount type=bind,...` the launcher overlay
-# emits (switched to --mount so a `:` in a host path cannot wedge the run).
+# rest of sandbox.sh emits and the `--mount` values the launcher overlay emits.
+# docker parses a --mount value as one CSV record, so this does too: quoted
+# fields, `""` for a quote, commas inside quotes kept.
 mounts() {
   awk '
-    prev=="-v"{print}
-    /^type=bind,/{
-      src=dst=""; ro=0; n=split($0,a,","); 
-      for(i=1;i<=n;i++){
-        if(a[i]~/^source=/)      {sub(/^source=/,"",a[i]);      src=a[i]}
-        else if(a[i]~/^destination=/){sub(/^destination=/,"",a[i]); dst=a[i]}
-        else if(a[i]=="readonly"||a[i]=="ro"||a[i]=="readonly=true"){ro=1}
+    function csv(s, f,   n, i, c, q, cur) {
+      n = 0; cur = ""; q = 0
+      for (i = 1; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        if (q) {
+          if (c == "\"") { if (substr(s, i + 1, 1) == "\"") { cur = cur "\""; i++ } else q = 0 }
+          else cur = cur c
+        } else if (c == "\"") q = 1
+        else if (c == ",") { f[++n] = cur; cur = "" }
+        else cur = cur c
       }
-      printf "%s:%s%s\n", src, dst, (ro?":ro":":rw")
+      f[++n] = cur
+      return n
     }
-    {prev=$0}
+    prev == "-v" { print }
+    prev == "--mount" {
+      n = csv($0, f); src = dst = ""; ro = 0
+      for (k = 1; k <= n; k++) {
+        if (f[k] ~ /^source=/)           src = substr(f[k], 8)
+        else if (f[k] ~ /^destination=/) dst = substr(f[k], 13)
+        else if (f[k] == "readonly" || f[k] == "ro") ro = 1
+      }
+      printf "%s:%s:%s\n", src, dst, (ro ? "ro" : "rw")
+    }
+    { prev = $0 }
   ' "$CAPTURE"
 }
 # The overlay lines for THIS launcher ($LAUNCHER), read-only.
@@ -135,6 +151,9 @@ launch "$TMP/link/.ai-containers" ..
 [[ "$(ro_overlays)" == "$LAUNCHER:/workspace/proj/.ai-containers:ro" ]] \
   && pass "T7 a launch through a symlinked path still gets the overlay" \
   || fail "T7 symlinked launch path (got: $(ro_overlays | tr '\n' ' '))"
+grep -qF 'is a symlink inside a writable mount' "$ERR" \
+  && fail "T7 ... and no symlink warning, since no mount contains $TMP/link (stderr: $(grep WARNING "$ERR" | tr '\n' ' '))" \
+  || pass "T7 ... and no symlink warning, since no mount contains the symlink"
 
 # ── T8: the launcher directory IS the mount (developing the engine itself) →
 # it cannot be read-only without making the work impossible; say so instead.
@@ -233,13 +252,61 @@ launch "$LAUNCHER" "$NEST"
 
 # ── T19: a mount whose ROOT is a launcher cannot be made read-only (it is the
 # mount); it stays writable and says so with a NOTE, rather than silently.
-launch "$LAUNCHER" "$OTHER"   # OTHER's working dir is /workspace/other; but mount it AS its launcher:
 EXTRA_MOUNTS="$OTHER/.ai-containers" launch "$LAUNCHER" "$TMP/app"
 obase="$(basename "$OTHER/.ai-containers")"   # ".ai-containers"
 [[ -z "$(mounts | grep -F "/workspace/$obase:" | grep ':ro$')" ]] \
   && grep -q "NOTE:.*holds a launcher" "$ERR" \
   && pass "T19 a mount rooted at a launcher stays writable and prints a NOTE" \
   || fail "T19 launcher-as-mount NOTE (mounts: $(mounts | grep -F "/workspace/$obase" | tr '\n' ' '); stderr: $(grep NOTE "$ERR" | tr '\n' ' '))"
+
+# ── T20: a file named sandbox.sh that is NOT a launcher (no sandbox-common.sh
+# beside it — any repo may have a script by that name), in a mount scanned
+# BEFORE the project, must not cost the project its overlay. sandbox.sh runs
+# under `set -euo pipefail`, and a scan that returned non-zero once ended the
+# whole candidate loop there — failing OPEN for every mount after it.
+STRAY="$TMP/stray"; mkdir -p "$STRAY/tool"; : > "$STRAY/tool/sandbox.sh"
+EXTRA_MOUNTS="$STRAY" launch "$LAUNCHER" ..
+[[ "$(ro_overlays)" == "$LAUNCHER:/workspace/proj/.ai-containers:ro" ]] \
+  && pass "T20 a stray sandbox.sh in an earlier mount does not drop the project's overlay" \
+  || fail "T20 stray sandbox.sh in an earlier mount (got: $(ro_overlays | tr '\n' ' '))"
+
+# ── T21: a launcher under a directory whose name holds a comma, a double quote
+# and a tab — characters an agent can put in a name. docker reads --mount as
+# CSV, so unquoted a ',' splits the field and the next launch fails; a tab
+# once corrupted the scan's tab-separated records.
+ODD="$TMP/odd"; oname='a,b"c'$'\t''d'; od="$ODD/$oname"
+mkdir -p "$od/.ai-containers"; : > "$od/.ai-containers/sandbox.sh"; : > "$od/.ai-containers/sandbox-common.sh"
+EXTRA_MOUNTS="$ODD" launch "$LAUNCHER" "$TMP/app"
+want="$(printf '%s\n' "$od:/workspace/odd/$oname:rw" "$od/.ai-containers:/workspace/odd/$oname/.ai-containers:ro")"
+[[ "$(mounts_under /workspace/odd/)" == "$want" ]] \
+  && pass "T21 a launcher under a name with , \" and a tab is pinned and overlaid intact" \
+  || fail "T21 odd name (got: $(mounts_under /workspace/odd/ | tr '\n\t' '|^'))"
+
+# ── T22: a symlink on the path this launcher was reached through, sitting in
+# a writable mount, cannot be pinned — the agent could replace it, and the next
+# `cd <that path>` on the host would land in the replacement. Say so.
+LINKS="$TMP/links"; mkdir -p "$LINKS"; ln -s "$PROJ" "$LINKS/proj"
+EXTRA_MOUNTS="$LINKS" launch "$LINKS/proj/.ai-containers" ..
+grep -qF "WARNING: $LINKS/proj is a symlink inside a writable mount" "$ERR" \
+  && pass "T22 a symlink on the launch path inside a writable mount is warned about" \
+  || fail "T22 symlink warning (stderr: $(tr '\n' ' ' <"$ERR"))"
+[[ "$(ro_overlays)" == "$LAUNCHER:/workspace/proj/.ai-containers:ro" ]] \
+  && pass "T22 ... and the real launcher is still overlaid" \
+  || fail "T22 real launcher overlay (got: $(ro_overlays | tr '\n' ' '))"
+
+# ── T23: launcher_dirs_in itself, on a launcher under a name holding a newline.
+# The fake docker above records one argument per line, so it cannot carry one;
+# the scan is checked directly instead. Read NUL-delimited, the name arrives
+# whole; read line by line, it would arrive as two halves, neither a launcher.
+NL="$TMP/nl"; nlname='x'$'\n''y'; mkdir -p "$NL/$nlname/.ai-containers"
+: > "$NL/$nlname/.ai-containers/sandbox.sh"; : > "$NL/$nlname/.ai-containers/sandbox-common.sh"
+got="$(bash -c '
+  set -euo pipefail
+  eval "$(awk "/^launcher_dirs_in\\(\\) \\{/,/^}\$/" "$1")"
+  out=(); launcher_dirs_in out "$2"; printf "%s\0" "${out[@]}"' _ "$ENGINE/sandbox.sh" "$NL" | tr '\0\n' '|^')"
+[[ "$got" == "$NL/x^y/.ai-containers|" ]] \
+  && pass "T23 launcher_dirs_in finds a launcher under a name with a newline, whole" \
+  || fail "T23 newline in a name (got: $got)"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

@@ -278,8 +278,10 @@ add_file_mount_if_exists() {
 # path the host reads. A mount point cannot be renamed (EBUSY), and a self-bind
 # changes nothing else about the directory. With the documented layout there is
 # nothing between: the project is the mount root and .ai-containers its child.
+# A SYMLINK on the path the host takes cannot be pinned that way, so one inside
+# a writable mount is warned about instead.
 #
-# launcher_ro_overlay <out-array> <this launcher's dir> <docker flag>...
+# launcher_ro_overlay <out-array> <this launcher's dir, as reached> <docker flag>...
 # Reads the `-v <src>:<dst>[:<opts>]` pairs among the flags. Only a writable bind
 # of a directory can expose a launcher: a named volume's source is a name and
 # holds a copy, a file mount holds no directory, and a :ro bind is read-only
@@ -287,85 +289,136 @@ add_file_mount_if_exists() {
 # component, so /x/pro does not contain /x/proj. A mount that IS a launcher —
 # an engine checkout as the working dir, or a mount rooted at a project's
 # .ai-containers — cannot be made read-only without making that work impossible,
-# so it is named with a NOTE instead. Candidates are handled shallowest-first:
+# so it is named with a NOTE instead. Launchers are handled shallowest-first:
 # once a directory is overlaid read-only, everything inside it already is, so a
 # launcher nested in another is skipped rather than pinned — a :rw pin there
-# would punch a writable hole in the read-only parent. Emitted as `--mount`, not
-# `-v`, so a `:` in a host path (which an agent can create) cannot wedge the run.
+# would punch a writable hole in the read-only parent.
+#
+# Robustness is part of the guarantee, because sandbox.sh runs under
+# `set -euo pipefail` and an agent can name directories: everything here stays
+# in arrays in this shell — no pipeline whose failure could end the loop early
+# and leave later mounts unprotected, no newline- or tab-separated text a name
+# could split — and every --mount value is CSV-quoted (_bind_mount_arg).
 launcher_ro_overlay() {
   # shellcheck disable=SC2178  # nameref: shellcheck does not model `local -n`
   local -n _ro=$1
-  local self="$2" spec src rest dst opts l rel at path part r skip
-  local -a parts binds=() ro_dsts=()
+  local reached="$2" self spec src rest dst opts l at pin path part r skip i depth max=0 d m p pp
+  local -a found bsrc=() bdst=() cl=() cat=() csrc=() cdst=() cdep=() ro_dsts=()
   local -A seen=()
   shift 2
+  self="$(cd "$reached" 2>/dev/null && pwd -P)" || self="$reached"
   while (( $# )); do
     if [[ "$1" != -v || $# -lt 2 ]]; then shift; continue; fi
     spec="$2"; shift 2
     src="${spec%%:*}"; rest="${spec#*:}"
     dst="${rest%%:*}"; opts=""
-    [[ "$rest" == *:* ]] && opts="${rest#*:}"
-    [[ ",$opts," == *,ro,* ]] && continue
-    [[ "$src" == /* && -d "$src" ]] || continue
+    if [[ "$rest" == *:* ]]; then opts="${rest#*:}"; fi
+    if [[ ",$opts," == *,ro,* ]]; then continue; fi
+    if [[ "$src" != /* || ! -d "$src" ]]; then continue; fi
     src="$(cd "$src" 2>/dev/null && pwd -P)" || continue
-    binds+=("$src"$'\t'"$dst")
+    bsrc+=("$src"); bdst+=("$dst")
   done
-  # Shallowest destination first, so an outer launcher's read-only overlay is
-  # recorded before anything nested in it is considered. LC_ALL=C so the sort is
-  # by byte, never a locale collation that could merge two distinct paths.
-  while IFS=$'\t' read -r at l src dst; do
-    skip=""
-    for r in ${ro_dsts[@]+"${ro_dsts[@]}"}; do
-      [[ "$at" == "$r" || "$at" == "$r"/* ]] && { skip=1; break; }
+
+  # A symlink on the path this launcher was reached through, inside a writable
+  # mount: the agent can replace it, and the host's next `cd` through it lands
+  # wherever the replacement points.
+  p=""; rest="${reached#/}"
+  while [[ -n "$rest" ]]; do
+    part="${rest%%/*}"
+    if [[ "$rest" == */* ]]; then rest="${rest#*/}"; else rest=""; fi
+    if [[ -z "$part" ]]; then continue; fi
+    p="$p/$part"
+    if [[ ! -L "$p" ]]; then continue; fi
+    pp="$(cd "${p%/*}/" 2>/dev/null && pwd -P)" || continue
+    for i in ${bsrc[@]+"${!bsrc[@]}"}; do
+      if [[ "$pp" == "${bsrc[i]}" || "$pp" == "${bsrc[i]}"/* ]]; then
+        printf 'WARNING: %s is a symlink inside a writable mount (%s); the agent can\n' "$p" "${bdst[i]}" >&2
+        printf '         replace it, and a later launch through it would run what replaced it.\n' >&2
+        printf '         Launch through the real path instead: %s\n' "$self" >&2
+        break
+      fi
     done
-    [[ -n "$skip" ]] && continue
-    if [[ "$l" == "$src" ]]; then
-      printf 'NOTE: %s holds a launcher and stays writable at %s;\n' "$l" "$dst" >&2
-      printf '      what changes there runs on the host at the next launch.\n' >&2
-      continue
-    fi
-    rel="${l#"$src"/}"
-    IFS=/ read -ra parts <<<"$rel"
-    path="$src"; at="$dst"
-    for part in "${parts[@]:0:${#parts[@]}-1}"; do
-      path="$path/$part"; at="$at/$part"
-      [[ -n "${seen[$at]:-}" ]] && continue
+  done
+
+  # Every launcher each mount exposes, with where it lands in the container.
+  for i in ${bsrc[@]+"${!bsrc[@]}"}; do
+    src="${bsrc[i]}"; dst="${bdst[i]}"
+    found=()
+    if [[ "$self" == "$src" || "$self" == "$src"/* ]]; then found+=("$self"); fi
+    launcher_dirs_in found "$src"
+    for l in ${found[@]+"${found[@]}"}; do
+      if [[ "$l" == "$src" ]]; then at="$dst"
+      elif [[ "$l" == "$src"/* ]]; then at="$dst/${l#"$src"/}"
+      else continue; fi
+      d="${at//[!\/]/}"
+      cl+=("$l"); cat+=("$at"); csrc+=("$src"); cdst+=("$dst"); cdep+=("${#d}")
+      if (( ${#d} > max )); then max=${#d}; fi
+    done
+  done
+
+  # Shallowest first, so an outer launcher's read-only overlay is recorded
+  # before anything nested in it is considered.
+  for (( depth = 0; depth <= max; depth++ )); do
+    for i in ${cat[@]+"${!cat[@]}"}; do
+      if (( cdep[i] != depth )); then continue; fi
+      at="${cat[i]}"; l="${cl[i]}"; src="${csrc[i]}"; dst="${cdst[i]}"
+      if [[ -n "${seen[$at]:-}" ]]; then continue; fi
+      skip=""
+      for r in ${ro_dsts[@]+"${ro_dsts[@]}"}; do
+        if [[ "$at" == "$r" || "$at" == "$r"/* ]]; then skip=1; break; fi
+      done
+      if [[ -n "$skip" ]]; then continue; fi
       seen[$at]=1
-      _ro+=(--mount "type=bind,source=$path,destination=$at")
+      if [[ "$l" == "$src" ]]; then
+        printf 'NOTE: %s holds a launcher and stays writable at %s;\n' "$l" "$dst" >&2
+        printf '      what changes there runs on the host at the next launch.\n' >&2
+        continue
+      fi
+      rest="${l#"$src"/}"; path="$src"; pin="$dst"
+      while [[ "$rest" == */* ]]; do
+        part="${rest%%/*}"; rest="${rest#*/}"
+        path="$path/$part"; pin="$pin/$part"
+        if [[ -n "${seen[$pin]:-}" ]]; then continue; fi
+        seen[$pin]=1
+        _bind_mount_arg m "$path" "$pin"
+        _ro+=(--mount "$m")
+      done
+      _bind_mount_arg m "$l" "$at" readonly
+      _ro+=(--mount "$m")
+      ro_dsts+=("$at")
+      printf 'READ-ONLY: %s  (launcher files; edit them on the host)\n' "$at" >&2
     done
-    at="$dst/$rel"
-    [[ -n "${seen[$at]:-}" ]] && continue
-    seen[$at]=1
-    _ro+=(--mount "type=bind,source=$l,destination=$at,readonly")
-    ro_dsts+=("$at")
-    printf 'READ-ONLY: %s  (launcher files; edit them on the host)\n' "$at" >&2
-  done < <(
-    for spec in ${binds[@]+"${binds[@]}"}; do
-      src="${spec%%$'\t'*}"; dst="${spec#*$'\t'}"
-      { [[ "$self" == "$src" || "$self" == "$src"/* ]] && printf '%s\n' "$self"
-        launcher_dirs_in "$src"; } \
-        | while IFS= read -r l; do
-            [[ "$l" == "$src" ]] && { printf '%s\t%s\t%s\t%s\n' "$dst" "$l" "$src" "$dst"; continue; }
-            [[ "$l" == "$src"/* ]] || continue
-            printf '%s\t%s\t%s\t%s\n' "$dst/${l#"$src"/}" "$l" "$src" "$dst"
-          done
-    done | LC_ALL=C sort -u
-  )
+  done
 }
-# launcher_dirs_in <dir>: every launcher directory at or below <dir> — matched by
-# CONTENT, a directory holding both sandbox.sh and sandbox-common.sh, which is
-# what the host runs `./sandbox.sh` from (a project's .ai-containers/ copy, or an
-# ai-containers checkout itself). To six levels down, pruning dependency and VCS
-# trees. Bounded because it runs on every launch over every writable mount;
-# measured at a few hundredths of a second over a ~/dev full of repos.
+
+# _bind_mount_arg <var> <source> <destination> [readonly]: one `--mount` value.
+# docker reads it as a CSV record, so each field is quoted and any '"' doubled;
+# unquoted, a ',' an agent puts in a directory name splits the field, and the
+# next launch fails until someone finds and renames it on the host.
+_bind_mount_arg() {
+  local s="source=$2" d="destination=$3"
+  printf -v "$1" 'type=bind,"%s","%s"%s' "${s//\"/\"\"}" "${d//\"/\"\"}" "${4:+,$4}"
+}
+
+# launcher_dirs_in <out-array> <dir>: appends every launcher directory below
+# <dir> — matched by CONTENT, a directory holding both sandbox.sh and
+# sandbox-common.sh, which is what the host runs `./sandbox.sh` from (a
+# project's .ai-containers/ copy, or an ai-containers checkout itself). To six
+# levels down, pruning dependency and VCS trees: it runs on every launch over
+# every writable mount, measured at a few hundredths of a second over a ~/dev
+# full of repos. NUL-delimited, and always returns 0 — see launcher_ro_overlay.
 launcher_dirs_in() {
-  local f d
-  while IFS= read -r f; do
-    d="${f%/sandbox.sh}"
-    [[ -f "$d/sandbox-common.sh" ]] && printf '%s\n' "$d"
-  done < <(find "$1" -mindepth 1 -maxdepth 7 \
-             \( -name node_modules -o -name .git -o -name vendor -o -name .venv -o -name target \) -prune \
-             -o -type f -name sandbox.sh -print 2>/dev/null)
+  # shellcheck disable=SC2178  # nameref: shellcheck does not model `local -n`
+  local -n _ldi_out=$1
+  local f
+  local -a hits=()
+  mapfile -d '' -t hits < <(find "$2" -mindepth 1 -maxdepth 7 \
+      \( -name node_modules -o -name .git -o -name vendor -o -name .venv -o -name target \) -prune \
+      -o -type f -name sandbox.sh -print0 2>/dev/null)
+  for f in ${hits[@]+"${hits[@]}"}; do
+    if [[ -f "${f%/sandbox.sh}/sandbox-common.sh" ]]; then _ldi_out+=("${f%/sandbox.sh}"); fi
+  done
+  return 0
 }
 
 # Seed a per-workspace writable working-copy volume from a repo's shared base
@@ -1209,7 +1262,7 @@ run_container() {
 
   # Last, once every bind mount is known: see launcher_ro_overlay.
   local launcher_ro_flags=()
-  launcher_ro_overlay launcher_ro_flags "$(cd "$script_dir" && pwd -P)" \
+  launcher_ro_overlay launcher_ro_flags "$script_dir" \
     ${output_mount_flags[@]+"${output_mount_flags[@]}"} \
     ${repo_mount_flags[@]+"${repo_mount_flags[@]}"} \
     ${extra_mount_flags[@]+"${extra_mount_flags[@]}"} \
