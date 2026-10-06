@@ -6,10 +6,10 @@
 #
 # The name says the PREDICATE, not a tier, because the selection IS a predicate:
 # patch_needs_rebuild() from lib-rebuild.sh. Filename and function agree so a
-# reader finds one from the other. Today that is twenty-five patches spanning THREE
-# tiers — mounts (410), volumes (630) and packages (the other twenty-three) —
+# reader finds one from the other. Today that is twenty-nine patches spanning THREE
+# tiers — mounts (410), volumes (630) and packages (the other twenty-seven) —
 # which is why no tier name fits: it covers 2 of the mounts and volumes tiers'
-# 20 mutations, and 23 of the packages tier's 24.
+# 20 mutations, and 27 of the packages tier's 28.
 #
 # WHY THIS EXISTS (backlog F36):
 #
@@ -33,9 +33,9 @@
 #
 # SELECTION IS DERIVED, NOT LISTED. A patch is in scope here when it needs a
 # rebuild AND its case is not in the network-mode/delivery tiers (which
-# demonstrate-network-delivery-tiers.sh owns). Today that is exactly twenty-five patches across
-# twelve cases and four image variants. A twenty-sixth that starts touching a build
-# input joins automatically; nothing here has to be remembered — 790-795 are the most
+# demonstrate-network-delivery-tiers.sh owns). Today that is exactly twenty-nine patches across
+# thirteen cases and four image variants. A thirtieth that starts touching a build
+# input joins automatically; nothing here has to be remembered — 800-803 are the most
 # recent to have joined that way, with no edit to this file's selection.
 #
 # OUTCOMES — a FAIL is the pass condition, as in the network demonstrator:
@@ -71,7 +71,7 @@
 # is the asymmetry in the two selectors, and is meant to stay.
 #
 # Usage:
-#   bash tests/integration/demonstrate-needs-rebuild.sh                 # all twenty-five
+#   bash tests/integration/demonstrate-needs-rebuild.sh                 # all twenty-nine
 #   bash tests/integration/demonstrate-needs-rebuild.sh 410 630         # only these
 #   bash tests/integration/demonstrate-needs-rebuild.sh --dry-run       # plan only, no docker
 #   bash tests/integration/demonstrate-needs-rebuild.sh --budget-minutes 45
