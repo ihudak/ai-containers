@@ -165,6 +165,9 @@ Environment variables:
   COPILOT_GITHUB_TOKEN  Forwarded for Copilot CLI auth. When unset, auto-extracted from
                         the group's gh hosts.yml so concurrent containers don't revoke
                         each other's Copilot sessions.
+  SKILL_CHAR_BUDGET     Characters Copilot CLI may spend listing skills to the model;
+                        a skill past the budget is listed by name only, without its
+                        description (default: 25000; Copilot's own default is 15000).
   PREVIEW_PORTS       Space-separated list of ports (or host:container pairs) to publish.
   CONTAINER_CPUS      CPU limit (default: 1.0).
   CONTAINER_MEMORY    Hard memory limit (default: 4g).
@@ -2281,6 +2284,10 @@ run_container() {
     -e RUBY_VERSIONS="$(versions_to_space "$(version_list ruby)")"
     -e AI_SERVICES="$(services_csv)"
     -e REPOS_PATH="${REPOS_PATH:-/workspace}"
+    # Copilot CLI lists skills for the model within this many characters (its
+    # own default is 15000) and lists a skill past it by name only, with no
+    # description. A default, not a constant: a host value wins, as for REPOS_PATH.
+    -e SKILL_CHAR_BUDGET="${SKILL_CHAR_BUDGET:-25000}"
     ${git_optional_locks_env[@]+"${git_optional_locks_env[@]}"}
     ${SELF_HEALING_ENABLED:+-e SELF_HEALING_ENABLED="$SELF_HEALING_ENABLED"}
     ${ALLOW_IPV6_BYPASS:+-e ALLOW_IPV6_BYPASS="$ALLOW_IPV6_BYPASS"}
