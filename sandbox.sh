@@ -284,11 +284,14 @@ add_file_mount_if_exists() {
 # changes nothing else about the directory. With the documented layout there is
 # nothing between: the project is the mount root and .ai-containers its child.
 # A SYMLINK on the path the host takes cannot be pinned that way, so one inside
-# a writable mount is warned about instead. A symlink INSIDE a launcher is
-# read-only with it, but what it points at is what the host reads, so a target
-# in a writable mount is protected like a launcher (and a directory target is
-# searched for links in turn); a link on the way there that itself sits in a
-# writable mount is warned about.
+# a writable mount is warned about instead. So is a symlink INSIDE a launcher
+# (this one included, mounted or not) whose way out leads into a writable mount
+# — to a file there, or through a link there the agent could repoint: the link
+# is read-only with the launcher, but what the host reads is at the other end.
+# A warning, not an overlay: turning link targets into mounts made mounts of
+# the wrong paths, file binds that break `git checkout` in a checkout whose
+# CLAUDE.md links to AGENTS.md, and scans with no bound. A link that stays
+# inside its own launcher is not reported.
 #
 # launcher_ro_overlay <out-array> <this launcher's dir, as reached> <docker flag>...
 # Reads the `-v <src>:<dst>[:<opts>]` pairs among the flags. Only a writable bind
@@ -313,14 +316,16 @@ launcher_ro_overlay() {
   # shellcheck disable=SC2178  # nameref: shellcheck does not model `local -n`
   local -n _ro=$1
   local reached="$2" self spec src rest dst opts l at pin path part r skip i k depth max=0 d p pp kind ok mf mv
-  local x f e tgt hop
+  local x f e q w
   local uid="${SANDBOX_UID:-$(id -u)}" gid="${SANDBOX_GID:-$(id -g)}" you
   local -a found unreadable cand bsrc=() bdst=() cl=() cat=() csrc=() cdst=() cdep=() ckind=() ro_dsts=() psrc pdst
-  local -a queue links hops
-  local -A seen=() queued=()
-  # The agent's identity decides what it can reach; find needs it numeric, and a
-  # find that errors out finds nothing — so refuse rather than search blind.
-  if [[ ! "$uid" =~ ^[0-9]+$ || ! "$gid" =~ ^[0-9]+$ ]]; then
+  local -a scan links walk prot
+  local -A seen=() scanned=()
+  # The agent's identity decides what it can reach; find needs it numeric (and
+  # within a 32-bit id — GNU find rejects 4294967295 and up), and a find that
+  # errors out finds nothing — so refuse rather than search blind.
+  if [[ ! "$uid" =~ ^[0-9]{1,10}$ || ! "$gid" =~ ^[0-9]{1,10}$ ]] \
+     || (( 10#$uid > 4294967294 || 10#$gid > 4294967294 )); then
     printf 'ERROR: SANDBOX_UID/SANDBOX_GID must be numeric (got %q / %q).\n' "$uid" "$gid" >&2
     exit 1
   fi
@@ -390,48 +395,48 @@ launcher_ro_overlay() {
     done
   done
 
-  # What a launcher's symlinks point at, wherever a writable mount exposes it.
-  # A worklist, because a directory target can hold links of its own.
-  queue=()
+  # Symlinks in a launcher whose way out leads into a writable mount. Scanned:
+  # this launcher, mounted or not, and every launcher found. Protected already
+  # (so not reported): a path inside a launcher or unlistable directory that is
+  # about to be overlaid read-only — i.e. not itself a mount root.
+  scan=("$self"); scanned[$self]=1; prot=()
   for i in ${cl[@]+"${!cl[@]}"}; do
-    if [[ "${ckind[i]}" == launcher && -z "${queued[${cl[i]}]:-}" ]]; then queued[${cl[i]}]=1; queue+=("${cl[i]}"); fi
+    if [[ "${cl[i]}" != "${csrc[i]}" ]]; then prot+=("${cl[i]}"); fi
+    if [[ "${ckind[i]}" == launcher && -z "${scanned[${cl[i]}]:-}" ]]; then
+      scanned[${cl[i]}]=1; scan+=("${cl[i]}")
+    fi
   done
-  while (( ${#queue[@]} )); do
-    x="${queue[0]}"; queue=("${queue[@]:1}")
+  for x in "${scan[@]}"; do
     links=()
-    mapfile -d '' -t links < <(find "$x" \( -name node_modules -o -name .git -o -name vendor -o -name .venv -o -name target \) -prune \
+    mapfile -d '' -t links < <(find "$x" -maxdepth 6 \( -name node_modules -o -name .git -o -name vendor -o -name .venv -o -name target \) -prune \
                                   -o -type l -print0 2>/dev/null)
     for f in ${links[@]+"${links[@]}"}; do
-      hops=(); tgt=""
-      mapfile -d '' -t hops < <(_symlink_chain "$f")
-      for e in ${hops[@]+"${hops[@]}"}; do
-        if [[ ! -L "$e" ]]; then tgt="$e"; continue; fi
-        # A link on the way that is not itself inside a launcher can be repointed.
-        hop=""
+      walk=()
+      mapfile -d '' -t walk < <(_link_walk "$f")
+      for e in ${walk[@]+"${walk[@]}"}; do
+        q="${e#=}"
+        # Inside this launcher: the link's own way stays home.
+        if [[ "$q" == "$x" || "$q" == "$x"/* ]]; then continue; fi
+        w=""
         for i in ${bsrc[@]+"${!bsrc[@]}"}; do
-          if [[ "$e" == "${bsrc[i]}"/* ]]; then hop="${bdst[i]}/${e#"${bsrc[i]}"/}"; break; fi
+          if [[ "$q" == "${bsrc[i]}" || "$q" == "${bsrc[i]}"/* ]]; then
+            w="${bdst[i]}${q#"${bsrc[i]}"}"; break
+          fi
         done
-        if [[ -z "$hop" ]]; then continue; fi
-        for k in ${queued[@]+"${!queued[@]}"}; do
-          if [[ "$e" == "$k"/* ]]; then hop=""; break; fi
+        if [[ -z "$w" ]]; then continue; fi
+        for r in ${prot[@]+"${prot[@]}"}; do
+          if [[ "$q" == "$r"/* ]]; then w=""; break; fi
         done
-        if [[ -n "$hop" ]]; then
-          printf 'WARNING: %s, which a launcher link passes through, is a symlink inside a\n' "$e" >&2
-          printf '         writable mount (%s): the agent can repoint it. Point the link at\n' "$hop" >&2
-          printf '         the real path instead.\n' >&2
+        if [[ -z "$w" ]]; then continue; fi
+        printf 'WARNING: launcher link %s leads into a writable mount: the agent can\n' "$f" >&2
+        if [[ "$e" == =* ]]; then
+          printf '         change %s (at %s), which the host reads through it.\n' "$q" "$w" >&2
+        else
+          printf '         repoint %s (at %s), a link on its way.\n' "$q" "$w" >&2
         fi
+        printf '         Replace the link with what it names, or mount that directory :ro.\n' >&2
+        break
       done
-      if [[ -z "$tgt" ]]; then continue; fi
-      for i in ${bsrc[@]+"${!bsrc[@]}"}; do
-        src="${bsrc[i]}"; dst="${bdst[i]}"
-        if [[ "$tgt" == "$src" ]]; then at="$dst"
-        elif [[ "$tgt" == "$src"/* ]]; then at="$dst/${tgt#"$src"/}"
-        else continue; fi
-        d="${at//[!\/]/}"
-        cl+=("$tgt"); cat+=("$at"); csrc+=("$src"); cdst+=("$dst"); cdep+=("${#d}"); ckind+=(linked)
-        if (( ${#d} > max )); then max=${#d}; fi
-      done
-      if [[ -d "$tgt" && -z "${queued[$tgt]:-}" ]]; then queued[$tgt]=1; queue+=("$tgt"); fi
     done
   done
 
@@ -449,13 +454,8 @@ launcher_ro_overlay() {
       if [[ -n "$skip" ]]; then continue; fi
       seen[$at]=1
       if [[ "$l" == "$src" ]]; then
-        if [[ "$kind" == linked ]]; then
-          printf 'NOTE: %s, which a launcher links to, is itself a writable mount at %s\n' "$l" "$dst" >&2
-          printf '      and stays writable; what changes there the host reads at the next launch.\n' >&2
-        else
-          printf 'NOTE: %s holds a launcher and stays writable at %s;\n' "$l" "$dst" >&2
-          printf '      what changes there runs on the host at the next launch.\n' >&2
-        fi
+        printf 'NOTE: %s holds a launcher and stays writable at %s;\n' "$l" "$dst" >&2
+        printf '      what changes there runs on the host at the next launch.\n' >&2
         continue
       fi
       # The pins this one needs, then whether docker can be handed all of them
@@ -493,8 +493,6 @@ launcher_ro_overlay() {
         else
           printf '         It is not yours: ask its owner, or mount it :ro yourself.\n' >&2
         fi
-      elif [[ "$kind" == linked ]]; then
-        printf 'READ-ONLY: %s  (a launcher links to it; edit it on the host)\n' "$at" >&2
       else
         printf 'READ-ONLY: %s  (launcher files; edit them on the host)\n' "$at" >&2
       fi
@@ -544,28 +542,35 @@ _mount_representable() {
   return 0
 }
 
-# _symlink_chain <link>: NUL-separated, every symlink on the way from <link> to
-# what it finally names (physical paths, <link> first), then that final path —
-# omitted when the chain dangles or loops. One hop at a time rather than
-# readlink -f, because a link on the way matters as much as where it ends.
-_symlink_chain() {
-  local p="$1" t d n=0
-  while [[ -L "$p" ]]; do
-    if (( ++n > 40 )); then return 0; fi
-    d="$(cd "${p%/*}/" 2>/dev/null && pwd -P)" || return 0
-    printf '%s\0' "$d/${p##*/}"
-    t="$(readlink "$p")" || return 0
-    case "$t" in /*) p="$t" ;; *) p="$d/$t" ;; esac
+# _link_walk <link>: resolves <link> the way the kernel does — one component at
+# a time, from a physical directory, so `..` steps out of where a link really
+# led rather than where its text pointed — and prints, NUL-separated, every
+# symlink met (its physical path; <link> first), then "=" and the final path,
+# which need not exist. Stops quietly after 40 links (a loop).
+_link_walk() {
+  local cur rest c t n=1
+  cur="$(cd "${1%/*}/" 2>/dev/null && pwd -P)" || return 0
+  c="${1##*/}"
+  printf '%s\0' "$cur/$c"
+  t="$(readlink "$cur/$c")" || return 0
+  if [[ "$t" == /* ]]; then cur=""; rest="${t#/}"; else rest="$t"; fi
+  while [[ -n "$rest" ]]; do
+    c="${rest%%/*}"
+    if [[ "$rest" == */* ]]; then rest="${rest#*/}"; else rest=""; fi
+    case "$c" in
+      ''|.) continue ;;
+      ..) cur="${cur%/*}"; continue ;;
+    esac
+    if [[ -L "$cur/$c" ]]; then
+      if (( ++n > 40 )); then return 0; fi
+      printf '%s\0' "$cur/$c"
+      t="$(readlink "$cur/$c")" || return 0
+      if [[ "$t" == /* ]]; then cur=""; rest="${t#/}${rest:+/$rest}"; else rest="$t${rest:+/$rest}"; fi
+    else
+      cur="$cur/$c"
+    fi
   done
-  if [[ -d "$p" ]]; then
-    p="$(cd "$p" 2>/dev/null && pwd -P)" || return 0
-  elif [[ -e "$p" ]]; then
-    d="$(cd "${p%/*}/" 2>/dev/null && pwd -P)" || return 0
-    p="$d/${p##*/}"
-  else
-    return 0
-  fi
-  printf '%s\0' "$p"
+  printf '=%s\0' "${cur:-/}"
 }
 
 # _utf8_valid <string>: is it UTF-8 as RFC 3629 — and Go, whose JSON encoding of

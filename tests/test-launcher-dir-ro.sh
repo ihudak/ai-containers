@@ -13,8 +13,9 @@
 # directory between a mount root and a launcher, and skips a launcher nested in
 # another (T9–T19); robust to stray files and odd names, and warns about a
 # symlink it cannot pin (T20–T23); never mounts a name docker would mangle, and
-# never scans blind past a directory you cannot list (T24–T28, T31), protects
-# what a launcher's symlinks point at (T29), and refuses a non-numeric identity (T30).
+# never scans blind past a directory you cannot list (T24–T28, T31), warns
+# about launcher links that lead into a writable mount (T29, T32, T33), and
+# refuses a non-numeric identity (T30).
 #
 # Hermetic: fake `docker` capturing the run args, no daemon. Integration cases
 # 450-launcher-dir-read-only and 455-launcher-dir-nested-mount check that the
@@ -458,46 +459,56 @@ grep -qxF -- "$SL/p/.ai-containers:/workspace/sl/p/.ai-containers:ro" <<<"$(moun
   || fail "T28 symlinked sandbox.sh (got: $(mounts | grep -F /workspace/sl | tr '\n' ' '))"
 
 # ── T29: symlinks INSIDE a launcher. The link is read-only with the launcher,
-# but its target is what the host reads: a target in a writable mount is
-# protected too — a file, a directory (searched for links in turn), at the end
-# of a relative or absolute link. A link on the way that itself sits in a
-# writable mount can be repointed, so it is warned about. A target outside
-# every mount needs nothing.
-LK="$TMP/lk"; mk_launcher "$LK/p"; mkdir -p "$LK/shared/tools.d" "$LK/deep"
-echo c > "$LK/shared/sandbox.conf"; echo r > "$LK/shared/real.conf"; echo d > "$LK/deep/inner.conf"
-ln -s ../../shared/sandbox.conf "$LK/p/.ai-containers/sandbox.conf"
-ln -s "$LK/shared/tools.d" "$LK/p/.ai-containers/tools.d"
-ln -s "$LK/deep/inner.conf" "$LK/shared/tools.d/inner.conf"
-ln -s real.conf "$LK/shared/hop"; ln -s ../../shared/hop "$LK/p/.ai-containers/hop.conf"
-ln -s "$ENGINE/AGENTS.md" "$LK/p/.ai-containers/outside.md"
+# but what the host reads is at its other end. When the way there leads into a
+# writable mount — to a file there, or through a link there the agent could
+# repoint — the launch warns, once per link, naming the first such place. It
+# does not overlay targets (that made wrong mounts and broke git checkouts).
+# Resolution is the kernel's, component by component: `sub/../x` steps out of
+# where `sub` really leads. A link staying inside its launcher, or ending
+# outside every mount, is not reported.
+LK="$TMP/lk"; mk_launcher "$LK/p"; A="$LK/p/.ai-containers"
+mkdir -p "$LK/shared/tools.d" "$LK/shared/subdir" "$LK/shared/config"
+echo c > "$LK/shared/sandbox.conf"; echo r > "$LK/shared/real.conf"; echo e > "$LK/shared/cfg.env"; echo k > "$LK/shared/config/sandbox.conf"
+ln -s ../../shared/sandbox.conf "$A/sandbox.conf"            # file in a writable mount
+ln -s "$LK/shared/tools.d" "$A/tools.d"                      # directory there, absolute link
+ln -s real.conf "$LK/shared/hop"; ln -s ../../shared/hop "$A/hop.conf"   # through a link there
+ln -s ../../shared/subdir "$A/sub"; ln -s sub/../cfg.env "$A/wrong.conf"  # `..` after a symlinked dir
+ln -s shared/config "$LK/config"; ln -s ../../config/sandbox.conf "$A/via.conf"  # symlinked component
+ln -s sandbox.sh "$A/alias.sh"                               # stays inside: silent
+ln -s "$ENGINE/AGENTS.md" "$A/outside.md"                    # outside every mount: silent
+mk_launcher "$LK/q"; ln -s ../../q/.ai-containers/sandbox-common.sh "$A/peer.sh"  # into another launcher, read-only already: silent
+ln -s loop2 "$LK/shared/loop1"; ln -s loop1 "$LK/shared/loop2"; ln -s ../../shared/loop1 "$A/loop.conf"
 EXTRA_MOUNTS="$LK" launch "$LAUNCHER" "$TMP/app"
-got="$(mounts_under /workspace/lk/ | sort)"
-want="$(printf '%s\n' \
-  "$LK/deep/inner.conf:/workspace/lk/deep/inner.conf:ro" \
-  "$LK/deep:/workspace/lk/deep:rw" \
-  "$LK/p/.ai-containers:/workspace/lk/p/.ai-containers:ro" \
-  "$LK/p:/workspace/lk/p:rw" \
-  "$LK/shared/real.conf:/workspace/lk/shared/real.conf:ro" \
-  "$LK/shared/sandbox.conf:/workspace/lk/shared/sandbox.conf:ro" \
-  "$LK/shared/tools.d:/workspace/lk/shared/tools.d:ro" \
-  "$LK/shared:/workspace/lk/shared:rw" | sort)"
-[[ "$got" == "$want" ]] \
-  && pass "T29 what a launcher's links point at, in a writable mount, is read-only too (file, dir, a link inside that dir)" \
-  || fail "T29 linked targets (got: $(tr '\n' ' ' <<<"$got"))"
-grep -qF "WARNING: $LK/shared/hop, which a launcher link passes through, is a symlink" "$ERR" \
-  && [[ "$(grep -c 'which a launcher link passes through' "$ERR")" -eq 1 ]] \
-  && pass "T29 a link on the way that sits in a writable mount is warned about — and only that one" \
-  || fail "T29 hop warning (stderr: $(grep -F 'passes through' "$ERR" | tr '\n' ' '))"
-
-# A launcher under a path with a space: its own links must not be mistaken for a
-# repointable link on the way (the launcher-membership test must not split it).
+[[ "$(mounts_under /workspace/lk/ | sort)" == "$(printf '%s\n' "$A:/workspace/lk/p/.ai-containers:ro" "$LK/p:/workspace/lk/p:rw" \
+                                                  "$LK/q/.ai-containers:/workspace/lk/q/.ai-containers:ro" "$LK/q:/workspace/lk/q:rw" | sort)" ]] \
+  && pass "T29 a launcher's links add no mounts (the two launchers are overlaid, nothing else)" \
+  || fail "T29 no mounts for link targets (got: $(mounts_under /workspace/lk/ | tr '\n' ' '))"
+t29() {  # $1 link name, $2 change|repoint, $3 the place named
+  grep -qF "WARNING: launcher link $A/$1 leads into a writable mount" "$ERR" \
+    && grep -qF "$2 $3 (at " <<<"$(grep -A1 -F "launcher link $A/$1 leads" "$ERR")"
+}
+ok=1
+t29 sandbox.conf change  "$LK/shared/sandbox.conf" || { ok=0; fail "T29 file target"; }
+t29 tools.d      change  "$LK/shared/tools.d"      || { ok=0; fail "T29 directory target"; }
+t29 hop.conf     repoint "$LK/shared/hop"          || { ok=0; fail "T29 a link on the way"; }
+t29 sub          change  "$LK/shared/subdir"       || { ok=0; fail "T29 symlinked dir member"; }
+t29 wrong.conf   change  "$LK/shared/cfg.env"      || { ok=0; fail "T29 sub/../x resolved as the kernel does"; }
+t29 via.conf     repoint "$LK/config"              || { ok=0; fail "T29 a symlinked component in a writable mount"; }
+t29 loop.conf    repoint "$LK/shared/loop1"        || { ok=0; fail "T29 a loop"; }
+[[ "$ok" -eq 1 ]] && pass "T29 each link leading into a writable mount is warned about, naming what the agent could change or repoint"
+[[ "$(grep -c 'leads into a writable mount' "$ERR")" -eq 7 ]] \
+  && ! grep -qF "$A/alias.sh" "$ERR" && ! grep -qF "$A/outside.md" "$ERR" && ! grep -qF "$A/peer.sh" "$ERR" \
+  && pass "T29 exactly once per link; one staying inside its launcher, into another (read-only) launcher, or out of every mount is silent" \
+  || fail "T29 warning count/silence (got $(grep -c 'leads into a writable mount' "$ERR"): $(grep -F 'leads into' "$ERR" | tr '\n' ' '))"
+# A launcher under a path with a space: its own link is not mistaken for a
+# repointable link on the way (membership must not split the path).
 SPL="$TMP/spl"; mk_launcher "$SPL/sp ace"; echo s > "$SPL/shared.conf"
 ln -s ../../shared.conf "$SPL/sp ace/.ai-containers/shared.conf"
 EXTRA_MOUNTS="$SPL" launch "$LAUNCHER" "$TMP/app"
-! grep -q 'which a launcher link passes through' "$ERR" \
-  && grep -qxF -- "$SPL/shared.conf:/workspace/spl/shared.conf:ro" <<<"$(mounts)" \
-  && pass "T29 a launcher under a path with a space: its link is followed, and not mistaken for a hop" \
-  || fail "T29 space in a launcher path (stderr: $(grep -F 'passes through' "$ERR" | tr '\n' ' '); mounts: $(mounts | grep -F "$SPL" | tr '\n' ' '))"
+[[ "$(grep -c 'leads into a writable mount' "$ERR")" -eq 1 ]] \
+  && grep -qF "change $SPL/shared.conf (at " <<<"$(grep -A1 -F "launcher link $SPL/sp ace/.ai-containers/shared.conf leads" "$ERR")" \
+  && pass "T29 a launcher under a path with a space: its link is followed out, and named once" \
+  || fail "T29 space in a launcher path (stderr: $(grep -A1 -F 'leads into' "$ERR" | tr '\n' ' '))"
 
 # ── T30: the agent's identity must be numeric; find would error on anything
 # else and the search would quietly find nothing. Refuse instead.
@@ -505,6 +516,11 @@ SANDBOX_UID=abc launch "$LAUNCHER" ..
 [[ ! -s "$CAPTURE" ]] && grep -qF 'ERROR: SANDBOX_UID/SANDBOX_GID must be numeric' "$ERR" \
   && pass "T30 a non-numeric SANDBOX_UID refuses the launch" \
   || fail "T30 non-numeric SANDBOX_UID (docker run reached: $([[ -s "$CAPTURE" ]] && echo yes || echo no); stderr: $(grep ERROR "$ERR" | tr '\n' ' '))"
+
+SANDBOX_UID=4294967296 launch "$LAUNCHER" ..
+[[ ! -s "$CAPTURE" ]] && grep -qF 'ERROR: SANDBOX_UID/SANDBOX_GID must be numeric' "$ERR" \
+  && pass "T30 ... and so does one beyond a 32-bit id, which find would reject" \
+  || fail "T30 SANDBOX_UID=4294967296 (docker run reached: $([[ -s "$CAPTURE" ]] && echo yes || echo no))"
 
 # ── T31: a directory you do not own, which you cannot list only because of a
 # SUPPLEMENTARY group the agent does not have (root:<group> 0705: your class is
@@ -524,6 +540,27 @@ if [[ "$(id -u)" -eq 0 ]] && command -v setpriv >/dev/null 2>&1; then
 else
   pass "T31 (needs root and setpriv to build another owner's directory; runs in the floor job)"
 fi
+
+# ── T32: the launcher you launch from is searched even when no mount holds it
+# (an @repo primary, or launching another project from the engine checkout): a
+# sandbox.env linked into a writable vault is what the host reads next time.
+SOLO="$TMP/solo/.ai-containers"; mkdir -p "$TMP/solo" "$TMP/vault32"; cp -R "$LAUNCHER" "$SOLO"
+rm -f "$SOLO/sandbox.env"; : > "$TMP/vault32/sandbox.env"; ln -s "$TMP/vault32/sandbox.env" "$SOLO/sandbox.env"
+VAULT_PATH="$TMP/vault32" launch "$SOLO" "$TMP/app"
+grep -qF "change $TMP/vault32/sandbox.env (at /workspace/vault/sandbox.env)" <<<"$(grep -A1 -F "launcher link $SOLO/sandbox.env leads into a writable mount" "$ERR")" \
+  && pass "T32 this launcher's own links are checked even when no mount holds it" \
+  || fail "T32 unmounted launcher's link (stderr: $(grep -A1 -F 'leads into' "$ERR" | tr '\n' ' '))"
+
+# ── T33: an engine checkout as the working dir is a writable mount root (NOTE)
+# whose CLAUDE.md-style links point inside it: no warning, and no file bind
+# that would make `git checkout` of the target fail with EBUSY.
+ln -s sandbox.sh "$LAUNCHER/CLAUDE-like.md"
+launch "$LAUNCHER" .
+rm -f "$LAUNCHER/CLAUDE-like.md"
+! grep -q 'leads into a writable mount' "$ERR" && [[ -z "$(ro_overlays)" ]] \
+  && ! grep -qF -- "$LAUNCHER/sandbox.sh:" <<<"$(mounts)" \
+  && pass "T33 links inside a checkout used as the working dir: no warning, no file bind" \
+  || fail "T33 engine-as-workdir links (stderr: $(grep -F 'leads into' "$ERR" | tr '\n' ' '); overlays: $(ro_overlays | tr '\n' ' '))"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

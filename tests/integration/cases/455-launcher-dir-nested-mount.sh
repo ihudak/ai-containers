@@ -29,7 +29,8 @@
 #
 # The project's launcher also holds a symlink into a writable sibling directory,
 # shared/. The link is read-only with the launcher, but the host reads what it
-# points at, so that file is read-only too — and shared/ around it is not.
+# points at, which the agent can still change: the launch says so. A warning,
+# not an overlay — mounting link targets broke more than it protected.
 #
 # Paired as everywhere in this tier: the parent and the pinned directory must
 # still accept writes, so "cannot move" cannot mean "nothing here works".
@@ -94,14 +95,12 @@ else
   pass "(this filesystem refuses a name that is not valid UTF-8; nothing to check)"
 fi
 
-# What a launcher's symlink points at is read-only; the directory around it is not.
-if agent_exec "$IT_CID" 'echo x >> /workspace/grp/shared/linked.conf' >/dev/null 2>&1
-then fail "agent cannot change what a launcher's symlink points at — the append SUCCEEDED"
-else pass "agent cannot change what a launcher's symlink points at"; fi
+# A launcher link into a writable directory is named at launch, with what it
+# leads to; the directory itself is left writable.
+grep -qF "change $grp/shared/linked.conf (at /workspace/grp/shared/linked.conf)" <<<"$(grep -A1 -F "launcher link $grp/proj/.ai-containers/linked.conf leads into a writable mount" "$IT_LAUNCH_ERR")" \
+  && pass "a launcher link into a writable directory is warned about, naming its target" \
+  || fail "a launcher link into a writable directory is warned about, naming its target"
 assert_writable "$IT_CID" /workspace/grp/shared
-[[ "$(cat "$grp/shared/linked.conf")" == linked ]] \
-  && pass "the host's linked file is unchanged" \
-  || fail "the host's linked file is unchanged — it now reads: $(tr '\n' ' ' <"$grp/shared/linked.conf")"
 
 # The directory between the mount root and the launcher stays where it is.
 if agent_exec "$IT_CID" 'mv /workspace/grp/proj /workspace/grp/proj.moved' >/dev/null 2>&1; then
