@@ -438,7 +438,7 @@ mkdir -p "$TMP/fp/r" "$TMP/fp/clean"
 mkdir -p "$TMP/fp/wtc" && "${G[@]}" -C "$TMP/fp/wtc" init -q && "${G[@]}" -C "$TMP/fp/wtc" config extensions.worktreeConfig true
 "${G[@]}" -C "$TMP/fp/wtc" config --worktree filter.x.smudge 'x-smudge'
 EXTRA_MOUNTS="$TMP/fp" launch "$TMP/app"
-grep -A1 -F 'NOTE: /workspace/fp/wtc/.git is protected for the first time' "$ERR" | grep -qF 'filter.x.smudge' \
+grep -qF 'filter.x.smudge' <<<"$(grep -A1 -F 'NOTE: /workspace/fp/wtc/.git is protected for the first time' "$ERR")" \
   && grep -qF "git config --file $TMP/fp/wtc/.git/config.worktree --list" "$ERR" \
   && pass "G26 a key set only in config.worktree is named, with config.worktree to review" \
   || fail "G26 config.worktree key (stderr: $(grep -A4 'wtc/.git is protected' "$ERR" | tr '\n' ' '))"
