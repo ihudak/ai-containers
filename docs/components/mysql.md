@@ -114,7 +114,7 @@ docker exec -it -u "$(id -u)" <container> mysql
 
 ## Cost
 
-About 340 MB of image (the server, ~250 MB, and the template, ~90 MB), 150 MB of RAM while idle, and under a second added to container start (measured with MySQL 8.0.46).
+About 285 MB of image (its layer, measured with `docker history`: the server ~195 MB and the template ~90 MB), 150 MB of RAM while idle, and under a second added to container start (measured with MySQL 8.0.46).
 
 ---
 
