@@ -1,0 +1,22 @@
+# case: 720-node-multiversion-nvm-use
+# what: the Dockerfile no longer runs link-node-globals.sh, so yarn, pnpm, bun and
+#       qmd stay only in the default node's bin directory -- the state every image
+#       shipped in before the fix. A non-interactive `docker exec … bash -c` cannot
+#       find any of them, and neither can a shell after `nvm use 20`.
+#
+#       Expected: the nvm-use and npmrc assertions PASS; all ten npm-global
+#       assertions FAIL.
+#
+diff --git a/Dockerfile b/Dockerfile
+index c915a6b..8d5b67d 100644
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -967,7 +967,7 @@ RUN if [ "$INSTALL_BUN" = "1" ]; then npm install -g bun; fi
+ # and a project's `nvm use 20` must not take it away. It must stay AFTER every
+ # `npm install -g` layer: tests/test-link-node-globals.sh checks the order.
+ COPY link-node-globals.sh /tmp/link-node-globals.sh
+-RUN bash /tmp/link-node-globals.sh --pin @tobilu/qmd && rm -f /tmp/link-node-globals.sh
++RUN rm -f /tmp/link-node-globals.sh  # MUTATION: the npm-global commands are never linked
+ 
+ # ── Optional: Kiro CLI ──────────────────────────────────────────────────────────
+ ARG INSTALL_KIRO=0

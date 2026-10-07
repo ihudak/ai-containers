@@ -17,6 +17,8 @@ CONTAINER_CPUS=2 CONTAINER_MEMORY=8g ./sandbox.sh restricted /path/to/repo
 
 The values must fit within the resources allocated to your Docker engine. On Colima the VM-level limits are set when starting Colima — for example `colima start --cpu 6 --memory 12 --disk 100`. If `CONTAINER_CPUS` exceeds the VM's CPU count, `docker run` fails with `range of CPUs is from 0.01 to N` and the container does not start. Resize Colima or lower the limit.
 
+**`CONTAINER_CPUS` limits CPU time; it does not change how many CPUs the container sees.** `--cpus` is a quota, so `nproc`, Node's `os.availableParallelism()` and anything else that counts CPUs still report every CPU the Docker engine has. A test runner that sizes its worker pool from that count starts one worker per engine CPU, and they all share the quota. Measured with `CONTAINER_CPUS=4` on a 16-CPU engine: vitest's default pool timed out 16 of 883 tests that all pass with `--maxWorkers=4`. Give the runner a worker count (`vitest --maxWorkers=4`, `jest --maxWorkers=4`, `pytest -n 4`, `make -j4`), or raise `CONTAINER_CPUS`.
+
 **Automatic reconciliation.** Before starting the container, `sandbox.sh` parses the three memory values and fixes inconsistent combinations so `docker run` does not fail mid-launch:
 
 - If `CONTAINER_MEMORY_RESERVATION` is greater than `CONTAINER_MEMORY`, it is lowered to the hard limit and a warning is printed (a soft limit above the hard limit is meaningless).

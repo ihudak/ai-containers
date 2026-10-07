@@ -1,0 +1,23 @@
+# case: 720-node-multiversion-nvm-use
+# what: qmd is no longer pinned to the default node: link-node-globals.sh links it
+#       like every other command, so after `nvm use 20` it runs under node 20,
+#       older than the 22 it requires. Whether it then still starts depends on the
+#       20.x nvm installed (20.9 cannot load it; 20.20 can), so the case asserts
+#       the node version rather than a crash.
+#
+#       Expected: every assertion PASSes except "after nvm use 20, qmd runs under
+#       ...", which names node 20 where the default node was wanted.
+#
+diff --git a/Dockerfile b/Dockerfile
+index c915a6b..7cb70ac 100644
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -967,7 +967,7 @@ RUN if [ "$INSTALL_BUN" = "1" ]; then npm install -g bun; fi
+ # and a project's `nvm use 20` must not take it away. It must stay AFTER every
+ # `npm install -g` layer: tests/test-link-node-globals.sh checks the order.
+ COPY link-node-globals.sh /tmp/link-node-globals.sh
+-RUN bash /tmp/link-node-globals.sh --pin @tobilu/qmd && rm -f /tmp/link-node-globals.sh
++RUN bash /tmp/link-node-globals.sh && rm -f /tmp/link-node-globals.sh
+ 
+ # ── Optional: Kiro CLI ──────────────────────────────────────────────────────────
+ ARG INSTALL_KIRO=0

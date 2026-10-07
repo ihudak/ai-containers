@@ -78,6 +78,8 @@ Both GraalVM variants also install the `native-image` toolchain.
 
 `pnpm=ON` installs pnpm globally via npm at build time rather than through corepack: corepack ships with Node, but the sandbox user cannot enable it at runtime because the nvm directory is root-owned.
 
+These tools, and `qmd`, are installed into the default (latest LTS) Node, and their commands are linked onto `/usr/local/bin`. So they run in a non-interactive shell (`docker exec … bash -c`) and after `nvm use` to another `node` version. `yarn` and `ng` then run under whichever Node is active, so native modules they build match it. `qmd` always runs under the default Node: it requires Node 22 or later, so a project's `nvm use 20` must not take it along.
+
 ### Other language runtimes
 
 | Key | Values | What it does |
