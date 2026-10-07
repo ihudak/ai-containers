@@ -168,6 +168,12 @@ Environment variables:
   SKILL_CHAR_BUDGET     Characters Copilot CLI may spend listing skills to the model;
                         a skill past the budget is listed by name only, without its
                         description (default: 25000; Copilot's own default is 15000).
+  SLASH_COMMAND_TOOL_CHAR_BUDGET
+                        Characters Claude Code may spend listing skills to the model;
+                        over it, every skill's description is shortened (default:
+                        40000; Claude Code's own is 8000 at a 200K context window).
+                        Overrides skillListingBudgetFraction in your Claude Code
+                        settings, so to change the budget in a container, set this.
   PREVIEW_PORTS       Space-separated list of ports (or host:container pairs) to publish.
   CONTAINER_CPUS      CPU limit (default: 1.0).
   CONTAINER_MEMORY    Hard memory limit (default: 4g).
@@ -2288,6 +2294,11 @@ run_container() {
     # own default is 15000) and lists a skill past it by name only, with no
     # description. A default, not a constant: a host value wins, as for REPOS_PATH.
     -e SKILL_CHAR_BUDGET="${SKILL_CHAR_BUDGET:-25000}"
+    # Claude Code's skill listing gets this many characters when it is set;
+    # otherwise context tokens x 4 x skillListingBudgetFraction (0.01: 8000 at a
+    # 200K window), and over budget every description is shortened. It overrides
+    # that settings fraction, so a host value wins here too.
+    -e SLASH_COMMAND_TOOL_CHAR_BUDGET="${SLASH_COMMAND_TOOL_CHAR_BUDGET:-40000}"
     ${git_optional_locks_env[@]+"${git_optional_locks_env[@]}"}
     ${SELF_HEALING_ENABLED:+-e SELF_HEALING_ENABLED="$SELF_HEALING_ENABLED"}
     ${ALLOW_IPV6_BYPASS:+-e ALLOW_IPV6_BYPASS="$ALLOW_IPV6_BYPASS"}
