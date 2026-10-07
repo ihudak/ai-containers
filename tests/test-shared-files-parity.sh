@@ -320,12 +320,60 @@ done
 # services.d) reaches the project that way; the allowlist-*.txt files are
 # generated into the build context by build.sh. (From the closed #272, whose
 # settings file would have broken every project build this way.)
+# The build-context sources of every COPY in a Dockerfile, one per line: every
+# field before the destination that is not an option. COPY --from= copies from
+# another stage, not the build context, and gives none. A COPY this cannot read
+# field by field — the JSON form, a line continuation, a heredoc — gives
+# UNREADABLE:<line>, which the caller fails on rather than skip what it cannot see.
+dockerfile_copy_sources() {  # $1=Dockerfile
+  awk '
+    toupper($1) != "COPY" { next }
+    /\\[ \t]*$/ || /<</ { print "UNREADABLE:" NR; next }
+    {
+      from = 0; n = 0
+      for (i = 2; i <= NF; i++) {
+        if ($i ~ /^--from=/) from = 1
+        else if ($i !~ /^--/) f[++n] = $i
+      }
+      if (n < 2 || f[1] ~ /^\[/) { print "UNREADABLE:" NR; next }
+      if (!from) for (i = 1; i < n; i++) print f[i]
+    }' "$1"
+}
+
+# The parser, against every COPY form it must read or refuse. Its first version
+# printed only the first source of `COPY a b /dest/`, so `b` was never checked —
+# the very build failure this guard exists to catch.
+mkdir -p "$TMP/copy-forms" || { printf 'SCAFFOLD-FAILED: mkdir copy-forms\n'; exit 1; }
+cat > "$TMP/copy-forms/Dockerfile" <<'DOCKERFILE'
+FROM scratch
+COPY one.sh /usr/local/bin/
+COPY two.sh three.sh /usr/local/bin/
+COPY --chown=1000:1000 --chmod=0755 four.sh /opt/four.sh
+COPY --from=builder /out/tool /usr/bin/tool
+copy five.sh /opt/
+COPY ["six.sh", "/opt/"]
+COPY seven.sh \
+     eight.sh /opt/
+COPY <<EOF /opt/inline.txt
+EOF
+DOCKERFILE
+got="$(dockerfile_copy_sources "$TMP/copy-forms/Dockerfile" | tr '\n' ' ')"
+want="one.sh two.sh three.sh four.sh five.sh UNREADABLE:7 UNREADABLE:8 UNREADABLE:10 "
+if [[ "$got" == "$want" ]]; then
+  pass "dockerfile_copy_sources reads every source of a COPY, skips --from, and refuses a form it cannot read"
+else
+  fail "dockerfile_copy_sources — want: $want got: $got"
+fi
+
 synced_dirs="$(sed -n 's|.*rsync -a.*"\${script_dir}/\([^/"]*\)/".*|\1|p' "$REPO_DIR/sync-to-projects.sh")"
 copies=0
 while read -r src; do
   [[ -n "$src" ]] || continue
   copies=$((copies + 1))
   case "$src" in
+    UNREADABLE:*)
+      fail "Dockerfile line ${src#UNREADABLE:}: a COPY the check cannot read field by field (JSON form, line continuation or heredoc) — write it as one plain COPY line, or teach dockerfile_copy_sources the form"
+      continue ;;
     allowlist-*.txt) continue ;;
   esac
   grep -qxF "$src" <<<"$synced_dirs" && continue
@@ -334,7 +382,7 @@ while read -r src; do
   else
     fail "Dockerfile COPY source $src reaches a synced project — add it to AI_CONTAINERS_SHARED_FILES, or every project build fails"
   fi
-done < <(awk '/^COPY / { for (i = 2; i < NF; i++) if ($i !~ /^--/) { print $i; break } }' "$REPO_DIR/Dockerfile")
+done < <(dockerfile_copy_sources "$REPO_DIR/Dockerfile")
 (( copies > 0 )) || fail "found no COPY in the Dockerfile — the COPY-source check verified nothing"
 
 printf '\n%d failure(s)\n' "$fails"; exit "$fails"
