@@ -8,6 +8,53 @@ The macOS Keychain context is still relevant if you use `AI_CONTAINER_GROUP=host
 
 > The `~/.ai-containers/` directory name is unrelated to the per-project `<project>/.ai-containers/` asset dirs created by `project-init.sh`. They never collide on disk because one lives under `$HOME` and the other under repo roots.
 
+## Claude Code bug: `--dangerously-skip-permissions` still asks for permission
+
+This is a **bug in Claude Code**, not in the container. Started with
+`claude --dangerously-skip-permissions`, Claude Code is supposed to run every
+tool call without asking. It doesn't: it keeps stopping for permission prompts,
+so an unattended session stalls until someone answers it. Setting
+`"skipDangerousModePermissionPrompt": true` doesn't help. It only skips the
+one-time warning shown when entering that mode, not the prompts after it.
+
+**Workaround:** add a `PermissionRequest` hook that approves every request. Put
+it in the Claude Code settings of the [container group](groups.md) you run in,
+`~/.ai-containers/<group>/.claude/settings.json` on the host (`default` unless
+you set `AI_CONTAINER_GROUP`). Merge it into the existing JSON rather than
+replacing the file:
+
+```json
+{
+  "hooks": {
+    "PermissionRequest": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PermissionRequest\",\"decision\":{\"behavior\":\"allow\"}}}'"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Restart Claude Code in the container to pick it up. Each group has its own
+settings, so add the hook to every group you use.
+
+Know what this does before adding it:
+
+- It approves **every** permission request in **every** Claude Code session of
+  that group, with or without `--dangerously-skip-permissions`. The container is
+  then the only boundary, which is the point of running agents here: use
+  `restricted` mode so egress stays deny-by-default.
+- **Don't add it to the `host` group.** That group mounts your real `~/.claude`,
+  so the hook would also approve everything for Claude Code running directly on
+  your machine, outside any container.
+- Remove it once Claude Code fixes the bug and the flag does its job again.
+
 ## Important notes
 
 - Plain `iptables` cannot pre-resolve wildcard domains such as `*.githubcopilot.com` or `*.kiro.dev` into IP addresses. The self-healing daemon handles this reactively by auto-allowing IPs whose resolved domains match wildcard patterns in `allowlist-proxy-domains.d/`. An upstream proxy provides proactive enforcement if available.
