@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## v0.10.1 — 2026-10-07
+
 ### Security
 
 - **The first launch that protects a repository also names the hooks it
