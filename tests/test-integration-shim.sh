@@ -78,9 +78,21 @@ scaffold_step() {   # <what> <command...>
   exit 1
 }
 scaffold_step "mkdir -p \$TMP/bin" mkdir -p "$TMP/bin"
+# `inspect` and `exec` are the shim's handover wait asking about the container;
+# they are answered, counted in $REC.polls, and never overwrite $REC. The answers
+# are scripted: FAKE_RUNNING (default true), FAKE_ROOT_POLLS (how many `exec`s
+# still find PID 1 as root, default 0), FAKE_RUN_RC (what `run` exits with).
 if ! cat > "$TMP/bin/realdocker" <<'EOF'
 #!/usr/bin/env bash
+case "$1" in
+  inspect) printf 'inspect\n' >> "$REC.polls"; printf '%s\n' "${FAKE_RUNNING:-true}"; exit 0 ;;
+  exec)    printf 'exec\n' >> "$REC.polls"
+           if (( $(grep -c '^exec$' "$REC.polls") <= ${FAKE_ROOT_POLLS:-0} )); then echo 0; else echo 1000; fi
+           exit 0 ;;
+esac
 printf '%s\n' "$@" > "$REC"
+[[ "$1" == run ]] && exit "${FAKE_RUN_RC:-0}"
+exit 0
 EOF
 then
   printf 'SCAFFOLD-FAILED: could not write the recorder at %s\n' "$TMP/bin/realdocker"
@@ -218,6 +230,61 @@ check "main run: launcher's own --name is stripped, shim's own wins" \
   "run|--label|ai-containers.it-run=unit|--name|it-launch-unit|-d|-i|--rm|-v|/a:/b:ro|ai-sandbox|" \
   "$(shim run -it --rm --name mission-control-99999 -v /a:/b:ro ai-sandbox)"
 
+# ── A run that mounts a verify directory waits for the handover ────────────────
+# Detached, sandbox.sh exits the moment the shim returns, and its EXIT trap
+# removes the directory mounted at /run/ai-launcher — while the entrypoint could
+# still be reading the manifest in it. Measured in CI, 2026-10-06: cases 450 and
+# 460 failed one run in four with "entrypoint never handed over"; with a 2 s
+# pause put into that window, every run failed, the kept log reading
+# "/run/ai-launcher/manifest: No such file or directory".
+#
+# $1=label, $2=expected polls ("inspect exec …"), $3=expected rc; the rest is
+# the shim's argv. IT_SETTLE=3 bounds a wait that should not have started (the
+# falsify tier's mutants: 3 s each instead of 20); p_timeout bounds one that
+# would never end.
+wait_case() {
+  local what="$1" want_polls="$2" want_rc="$3" rc got; shift 3
+  shim_scaffold_ok || exit 1
+  : > "$REC"; : > "$REC.polls"
+  IT_SETTLE=3 p_timeout 20 "$TMP/bin/docker" "$@" >/dev/null 2>&1; rc=$?
+  got="$(tr '\n' ' ' < "$REC.polls")"; got="${got% }"
+  check "$what: polls" "$want_polls" "$got"
+  check "$what: exit status" "$want_rc" "$rc"
+}
+VMOUNT=(-v /h/.ai-containers/.verify-1-2:/run/ai-launcher:ro)
+FAKE_ROOT_POLLS=2 wait_case "verify mount: returns once PID 1 has left root" \
+  "inspect exec inspect exec inspect exec" 0 run -it --rm "${VMOUNT[@]}" ai-sandbox
+check "verify mount: the run itself is rewritten as before" \
+  "run|--label|ai-containers.it-run=unit|--name|it-launch-unit|-d|-i|--rm|-v|/h/.ai-containers/.verify-1-2:/run/ai-launcher:ro|ai-sandbox|" \
+  "$(tr '\n' '|' < "$REC")"
+FAKE_ROOT_POLLS=0 wait_case "verify mount without :ro is recognised too" \
+  "inspect exec" 0 run -it --rm -v /h/v:/run/ai-launcher ai-sandbox
+FAKE_RUNNING=false FAKE_ROOT_POLLS=99 wait_case "verify mount: a container that stopped ends the wait" \
+  "inspect" 0 run -it --rm "${VMOUNT[@]}" ai-sandbox
+FAKE_ROOT_POLLS=99 wait_case "no verify mount: no wait" \
+  "" 0 run -it --rm -v /a:/run/ai-launcher-not:ro ai-sandbox
+FAKE_RUN_RC=125 FAKE_ROOT_POLLS=99 wait_case "a failed run: no wait, and its status is the shim's" \
+  "" 125 run -it --rm "${VMOUNT[@]}" ai-sandbox
+FAKE_RUN_RC=3 wait_case "no verify mount: the run's status is the shim's" \
+  "" 3 run -it --rm ai-sandbox
+# Bounded by IT_SETTLE: a PID 1 that never leaves root must not hold the case.
+shim_scaffold_ok || exit 1
+: > "$REC"; : > "$REC.polls"
+t0=$SECONDS
+FAKE_ROOT_POLLS=99999 IT_SETTLE=1 p_timeout 20 "$TMP/bin/docker" run -it --rm "${VMOUNT[@]}" ai-sandbox >/dev/null 2>&1; rc=$?
+el=$(( SECONDS - t0 ))
+if [[ "$rc" -eq 0 ]] && (( el <= 3 )) && grep -q '^exec$' "$REC.polls"; then
+  pass "verify mount: the wait gives up after IT_SETTLE (${el}s, rc 0)"
+else
+  fail "verify mount: the wait gives up after IT_SETTLE (took ${el}s, rc=$rc, polls: $(grep -c . "$REC.polls"))"
+fi
+# Without IT_LAUNCH_NAME there is nothing to ask about.
+shim_scaffold_ok || exit 1
+: > "$REC"; : > "$REC.polls"
+( unset IT_LAUNCH_NAME; export FAKE_ROOT_POLLS=99
+  p_timeout 20 "$TMP/bin/docker" run -it --rm "${VMOUNT[@]}" ai-sandbox >/dev/null 2>&1 )
+check "verify mount without IT_LAUNCH_NAME: no wait" "" "$(tr '\n' ' ' < "$REC.polls")"
+
 # ── Helper runs are labelled but NEVER renamed or detached ─────────────────────
 # seed_workcopy_volume's copy container and repo.sh's seeding containers are
 # synchronous and their output is parsed by the caller. Detaching one would
@@ -342,6 +409,12 @@ if [[ "$hit_file" != "sandbox.sh" || "$hits" == *" "* ]]; then
   printf '       marker or teach docker-shim.sh to tell them apart — and update\n'
   printf '       its header, which states this premise as verified.\n'
 fi
+
+# The handover wait keys on the verify mount's destination. Passed in any other
+# form (--mount, another path), the shim would stop waiting without a word, and
+# cases 450-465 would go back to failing one run in four.
+vm="$(grep -c -E -- '-v "[^"]*:/run/ai-launcher(:[a-z]+)?"' "$ENGINE_DIR/sandbox.sh")"
+check "sandbox.sh mounts its verify directory as -v <dir>:/run/ai-launcher, the form the shim waits on" "1" "$vm"
 
 # The scan must be capable of finding a violation, or it is decorative. Prove it
 # against a file that has one, rather than trusting a clean result.
