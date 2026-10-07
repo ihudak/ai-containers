@@ -459,8 +459,9 @@ RUN apt-get purge -y --auto-remove \
 # again with --auto-remove, so an image without ruby, db-clients or c-toolchain
 # had no `make` at all and `make test` failed. Installed here, it is marked
 # manual, so the later qmd-layer purge's --auto-remove does not reclaim it.
-# That last point is reasoned, not observed: no image the integration corpus
-# builds sets qmd=ON without KEEP_BUILD_TOOLCHAIN=1.
+# That last point is reasoned, not observed: the `agents` integration variant
+# does reach that purge (qmd=ON without KEEP_BUILD_TOOLCHAIN=1), but case 310,
+# which checks `make`, runs on the default image.
 #
 # bsdextrautils is the package that ships `column` (and `hexdump`) on noble.
 # Ubuntu names fd's binary `fdfind` to avoid a clash with an unrelated package,
@@ -598,12 +599,12 @@ RUN if [ "$INSTALL_WKHTMLTOPDF" = "1" ]; then \
 # apt marks them manual and `--auto-remove` does not reclaim them.
 #
 # THAT ARGUMENT IS REASONED, NOT OBSERVED, and this comment previously claimed
-# integration case 730 observed it. It does not: no image any case builds
-# reaches that purge at all — `native` sets KEEP_BUILD_TOOLCHAIN=1 (via ruby and
-# db-clients) and leaves qmd=OFF, so its condition is false there, and the same
-# was true of the wkhtmltopdf precedent cited as evidence. The one configuration
-# that exercises it is `playwright=ON qmd=ON` with no ruby/db-clients/c-toolchain,
-# which nothing in the corpus builds.
+# integration case 730 observed it. It does not: `native` sets
+# KEEP_BUILD_TOOLCHAIN=1 (via ruby and db-clients) and leaves qmd=OFF, so its
+# condition is false there, and the same was true of the wkhtmltopdf precedent
+# cited as evidence. `agents` reaches the purge, but with playwright=OFF. The one
+# configuration that exercises it is `playwright=ON qmd=ON` with no
+# ruby/db-clients/c-toolchain, which nothing in the corpus builds.
 #
 # The RESOLVED version is recorded at /etc/ai-containers-playwright-version. `ON`
 # means "latest at build time", so the image cannot otherwise say which
@@ -956,11 +957,17 @@ RUN if [ "$INSTALL_QMD" = "1" ]; then \
     fi
 
 ARG INSTALL_BUN=0
-RUN if [ "$INSTALL_BUN" = "1" ]; then \
-      npm install -g bun && \
-      BUN_NATIVE=$(find "$(npm root -g)/bun" -name "bun" -executable -type f 2>/dev/null | grep -v musl | head -1) && \
-      [ -n "$BUN_NATIVE" ] && ln -sf "$BUN_NATIVE" /usr/local/bin/bun || true; \
-    fi
+RUN if [ "$INSTALL_BUN" = "1" ]; then npm install -g bun; fi
+
+# ── The commands the npm-global layers above installed, on PATH for every shell ──
+# They land in the default node's bin directory, which only nvm puts on PATH:
+# not in a non-interactive `docker exec … bash -c`, and not after `nvm use` to
+# another version. link-node-globals.sh links each onto /usr/local/bin, and runs
+# qmd under the default node whatever nvm selects: it requires node 22 or later,
+# and a project's `nvm use 20` must not take it away. It must stay AFTER every
+# `npm install -g` layer: tests/test-link-node-globals.sh checks the order.
+COPY link-node-globals.sh /tmp/link-node-globals.sh
+RUN bash /tmp/link-node-globals.sh --pin @tobilu/qmd && rm -f /tmp/link-node-globals.sh
 
 # ── Optional: Kiro CLI ──────────────────────────────────────────────────────────
 ARG INSTALL_KIRO=0

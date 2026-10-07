@@ -79,7 +79,7 @@ done <<< "$tracked_sh"
 # be named. In-container scripts are excluded for a different reason: they never
 # execute on a host at all.
 in_container="entrypoint.sh rvm-reconcile.sh agent-tools-reconcile.sh
-  link-agent-tools.sh link-default-ruby.sh install-tools.sh
+  link-agent-tools.sh link-default-ruby.sh link-node-globals.sh install-tools.sh
   refresh-ipset-allowlist.sh capture-blocked-traffic.sh
   install-agent-skills.sh capture-agent-destinations.sh bash-floor.sh start-services.sh
   repo-git-reset.sh

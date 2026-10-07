@@ -37,6 +37,7 @@ AI_CONTAINERS_SHARED_FILES=(
   repo-git-reset.sh
   rvm-reconcile.sh link-default-ruby.sh
   agent-tools-reconcile.sh link-agent-tools.sh start-services.sh
+  link-node-globals.sh
   refresh-ipset-allowlist.sh capture-blocked-traffic.sh
   capture-agent-destinations.sh install-tools.sh install-agent-skills.sh
   extract-discovery.sh

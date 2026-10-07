@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # summary:  nvm can still switch Node versions once ~/.ai-tools holds the
-#           agent-tier npm packages
+#           agent-tier npm packages, and the commands the image's npm-global
+#           layers installed run after the switch and in a plain shell
 # tags:     packages slow needs-external
 # requires: docker launcher netadmin external
 # image:    agents
@@ -18,8 +19,8 @@
 # (which exits immediately on this wait's failure), THIS case also does not
 # exit early (`|| fail`, not `|| { fail; it_finish; }`) — it falls through
 # into the nvm-use loop and the npmrc check regardless. True bound:
-# ~900 (launcher_up) + ~10 (compound case, redundant wait) + ~10s (three
-# single, non-polling agent_exec calls) ≈ 920s.
+# ~900 (launcher_up) + ~10 (compound case, redundant wait) + ~30s (thirteen
+# single, non-polling agent_exec calls) ≈ 940s.
 #
 # That middle term was 900 until backlog F57 measured what it bought: nothing.
 # This header already called the wait REDUNDANT and said the condition "is
@@ -45,6 +46,14 @@
 # Needs a SECOND version to switch to, which is why the agents variant sets
 # node=22,20. With only the LTS installed this case would pass against a
 # one-element list.
+#
+# The second regression it covers was found by running real projects' test
+# suites in the sandbox: yarn, pnpm, bun and qmd are `npm install -g`'d into the
+# DEFAULT node, whose bin directory only nvm puts on PATH — so a non-interactive
+# `docker exec … bash -c` never had them, and `nvm use 20` took them away. A
+# Rails suite that shells out to `yarn install` failed 20 specs on that alone.
+# link-node-globals.sh now links them onto /usr/local/bin at build time; the
+# agents variant turns all four on so this case can see each one.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 
@@ -83,6 +92,50 @@ for v in 20 22; do
   else
     fail "nvm use $v FAILED — a baked npm prefix breaks nvm outright, it does not warn"
     printf '%s\n' "$out" | tail -5 | sed 's/^/     /'
+  fi
+done
+
+# The npm-global commands, in the two shells that lost them. Each check after
+# `nvm use 20` first proves the switch happened, or a node 22 shell would pass
+# it vacuously.
+for t in yarn pnpm bun qmd; do
+  if out="$(agent_exec "$IT_CID" "$t --version 2>&1")"; then
+    pass "$t runs in a non-interactive shell: $(printf '%s\n' "$out" | tail -1)"
+  else
+    fail "$t does not run in a non-interactive shell — the default node's bin directory is not on its PATH"
+    printf '%s\n' "$out" | tail -3 | sed 's/^/     /'
+  fi
+  if out="$(agent_exec "$IT_CID" 'source "${NVM_DIR:-/opt/nvm}/nvm.sh" >/dev/null 2>&1; nvm use 20 >/dev/null 2>&1
+      case "$(node --version)" in v20.*) ;; *) echo "nvm use 20 did not switch node (still $(node --version))"; exit 1 ;; esac
+      '"$t"' --version 2>&1')"; then
+    pass "$t runs after nvm use 20: $(printf '%s\n' "$out" | tail -1)"
+  else
+    fail "$t does not run after nvm use 20"
+    printf '%s\n' "$out" | tail -3 | sed 's/^/     /'
+  fi
+done
+
+# WHICH node runs them after `nvm use 20`, for the two that are node scripts.
+# yarn must follow the switch: a package manager builds native modules for the
+# node the project runs. qmd must not: it is a standalone tool that requires
+# node 22 or later, and node 20.9 cannot load it at all — but node 20.20 can,
+# so "qmd still runs" alone passes or fails by which 20.x nvm installed. This
+# asserts the version instead. A `--import` of a data: URL runs before the
+# command's own code and prints the version of the node running it;
+# /usr/local/bin/node is the nvm layer's link to the default node.
+for t in yarn qmd; do
+  out="$(agent_exec "$IT_CID" 'source "${NVM_DIR:-/opt/nvm}/nvm.sh" >/dev/null 2>&1; nvm use 20 >/dev/null 2>&1
+      printf "default=%s active=%s\n" "$(/usr/local/bin/node --version)" "$(node --version)"
+      NODE_OPTIONS="--import=data:text/javascript,console.error(process.version)" '"$t"' --version 2>&1')"
+  default="$(sed -n '1s/^default=\([^ ]*\) .*/\1/p' <<< "$out")"
+  active="$(sed -n '1s/.* active=//p' <<< "$out")"
+  ran="$(sed -n 2p <<< "$out")"
+  if [[ "$t" == qmd ]]; then want="$default"; else want="$active"; fi
+  if [[ "$active" == v20.* && "$default" != v20.* && -n "$ran" && "$ran" == "$want" ]]; then
+    pass "after nvm use 20, $t runs under $ran (default $default, active $active)"
+  else
+    fail "after nvm use 20, $t runs under ${ran:-nothing}, want $want (default ${default:-?}, active ${active:-?})"
+    printf '%s\n' "$out" | tail -3 | sed 's/^/     /'
   fi
 done
 

@@ -28,6 +28,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   opens a section. A key with no comment upstream still arrives bare, and keys
   a project already has are still never touched.
 
+### Fixed
+
+- **yarn, pnpm, bun, qmd and the Angular CLI's `ng` now run in every shell.**
+  They are installed into the default Node, whose directory only nvm puts on
+  `PATH`. A non-interactive `docker exec … bash -c` did not find them, and
+  neither did any shell after `nvm use` to another `node` version. A Rails
+  test suite that runs `yarn install` failed 20 specs on that alone. Their
+  commands are now linked onto `/usr/local/bin`, like `node` and `npm`. yarn
+  and `ng` run under whichever Node is active, so the native modules they build
+  match it. qmd always runs under the default Node: it requires Node 22 or
+  later, and Node 20.9 cannot load it. bun had a link of its own that never
+  worked. Rebuild the image to get the fix.
+
 ## v0.10.0 — 2026-10-07
 
 ### Security

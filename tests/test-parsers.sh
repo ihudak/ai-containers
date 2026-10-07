@@ -430,6 +430,7 @@ for f in project-init.sh projects.conf.example sandbox-common.sh sandbox.sh buil
          repo-git-reset.sh \
          bash-floor.sh host-preflight.sh shared-files.sh \
          rvm-reconcile.sh link-default-ruby.sh agent-tools-reconcile.sh link-agent-tools.sh \
+         link-node-globals.sh \
          Dockerfile Dockerfile.seed .dockerignore sandbox.conf \
          refresh-ipset-allowlist.sh capture-blocked-traffic.sh capture-agent-destinations.sh \
          extract-discovery.sh; do
