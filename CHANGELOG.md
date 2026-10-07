@@ -18,6 +18,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   everything in `hooks/` when `core.hooksPath` points elsewhere. A git-lfs or
   hook-manager repository shows the note once.
 
+### Changed
+
+- **A key `sync-to-projects.sh` adds to a project's `sandbox.conf` now brings
+  its explanation.** New keys used to arrive under a dated banner as a bare
+  `key=value`, so a project's file named an option without saying what it
+  does. Each appended key now carries the comment written above it in the
+  central `sandbox.conf`, starting from the section header when the comment
+  opens a section. A key with no comment upstream still arrives bare, and keys
+  a project already has are still never touched.
+
 ## v0.10.0 — 2026-10-07
 
 ### Security

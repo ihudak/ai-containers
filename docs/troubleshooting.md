@@ -55,6 +55,19 @@ Know what this does before adding it:
   your machine, outside any container.
 - Remove it once Claude Code fixes the bug and the flag does its job again.
 
+The bug is reported upstream, in several forms. Follow these to know when the
+hook can go:
+[#99899](https://github.com/anthropics/claude-code/issues/99899) (a deletion
+prompt stalls unattended bypass-mode runs indefinitely),
+[#99320](https://github.com/anthropics/claude-code/issues/99320) and
+[#99894](https://github.com/anthropics/claude-code/issues/99894) (that deletion
+check asks in bypass mode about commands that delete nothing),
+[#100005](https://github.com/anthropics/claude-code/issues/100005) (Write/Edit
+still asks in `--print` mode), and
+[#91811](https://github.com/anthropics/claude-code/issues/91811) /
+[#95401](https://github.com/anthropics/claude-code/issues/95401) (the VS Code
+extension ignores bypass mode).
+
 ## Important notes
 
 - Plain `iptables` cannot pre-resolve wildcard domains such as `*.githubcopilot.com` or `*.kiro.dev` into IP addresses. The self-healing daemon handles this reactively by auto-allowing IPs whose resolved domains match wildcard patterns in `allowlist-proxy-domains.d/`. An upstream proxy provides proactive enforcement if available.
