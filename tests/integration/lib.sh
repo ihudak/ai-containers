@@ -502,7 +502,8 @@ launcher_run() {  # $1=mode [$2=primary]
     # in that case would override the docker CLI's own built-in default —
     # worse than leaving DOCKER_HOST unexported entirely.
     [[ -n "$IT_DOCKER_HOST" ]] && export DOCKER_HOST="$IT_DOCKER_HOST"
-    export IT_REAL_DOCKER IT_LAUNCH_NAME IT_LABEL
+    # IT_SETTLE bounds the shim's wait for the entrypoint to hand over.
+    export IT_REAL_DOCKER IT_LAUNCH_NAME IT_LABEL IT_SETTLE
     export IMAGE_NAME="$IT_IMAGE"
     export AI_CONTAINER_GROUP_INIT="${AI_CONTAINER_GROUP_INIT:-clean}"
     exec bash "${IT_ENGINE_DIR:-$IT_REPO_DIR}/sandbox.sh" "$mode" ${primary:+"$primary"}

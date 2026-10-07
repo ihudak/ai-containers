@@ -92,6 +92,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **For contributors: integration cases 450 and 460 no longer fail one CI run
+  in four.** The test harness runs the launched container detached, so
+  `sandbox.sh` exited, and removed its launcher verify directory, while the
+  entrypoint was still reading the manifest in it; the entrypoint died, and
+  `--rm` erased the one line that said why. The harness now waits for the
+  entrypoint to hand over first. A real launch was never affected: it runs in
+  the foreground, so the directory outlives the container.
+
 - **In-container PostgreSQL provisioning.** Five bugs, each now covered by a
   test that fails without its fix:
   - `POSTGRES_DATABASES` naming the database that carries your own user's
