@@ -1,0 +1,19 @@
+# case: 810-mariadb-server-runs
+# what: the server binds every address instead of loopback only — invisible to
+#       an app, so only assertion 4 can catch it.
+#
+#       Expected: assertion 4 FAILs, naming the wildcard listener on 3306; the
+#       rest PASS.
+diff --git a/services.d/mariadb.sh b/services.d/mariadb.sh
+index 2462c89..7f033e5 100644
+--- a/services.d/mariadb.sh
++++ b/services.d/mariadb.sh
+@@ -55,7 +55,7 @@ svc_start() {  # <datadir> <logfile>
+   # pid, and waited for. The redo log matches the template's (8 MB), or the
+   # server would resize it at every start.
+   "$MYSQL_MYSQLD" --no-defaults --datadir="$datadir" --socket="$(_mysql_sock)" \
+-    --port="$MYSQL_PORT" --bind-address="$bind" \
++    --port="$MYSQL_PORT" --bind-address="*" \
+     --pid-file="$datadir/mariadbd.pid" --log-error="$logfile" \
+     --skip-log-bin --innodb-log-file-size=8388608 --innodb-flush-log-at-trx-commit=0 \
+     --innodb-doublewrite=OFF --secure-file-priv= ${cs[@]+"${cs[@]}"} \

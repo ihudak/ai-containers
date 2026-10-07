@@ -752,6 +752,60 @@ RUN if [ "$INSTALL_MYSQL" = "1" ]; then \
       test -x /usr/sbin/mysqld && test -x /usr/bin/mysql && test -f "$tpl/mysql.ibd"; \
     fi
 
+# ── Optional: MariaDB server (in-container, for tests) ─────────────────────────
+# MARIADB_SERIES: empty = skip; `ubuntu` (mariadb=ON) for Ubuntu's own
+# mariadb-server (10.11 on 24.04), or a release series (11.4) from MariaDB's own
+# repository, installed from THAT series only (mariadb-server=1:<series>.*). The
+# repository for a series is checked for before apt sees it, so a series MariaDB
+# does not publish for this release fails here, by name, not as an apt 404.
+# With db-clients=mysql, apt replaces MySQL's client with MariaDB's;
+# libmysqlclient-dev stays (measured). Ubuntu's client answers to `mysql` too;
+# MariaDB's own packages need mariadb-client-compat for that, so a pinned series
+# installs it — a script that runs `mysql` works either way.
+#
+# As for MySQL: the package's own /var/lib/mysql is emptied, and a TEMPLATE data
+# directory is initialised here, root with no password, the time zone tables
+# loaded, for the adapter to copy at start. Its redo log is 8 MB, not the 96 MB
+# default, so the copy is small; the adapter starts the server with the same
+# size. mariadbd has no --daemonize, so the bootstrap server is started in the
+# background and waited for — by answer, then by exit — before the snapshot.
+ARG MARIADB_SERIES=
+RUN if [ -n "$MARIADB_SERIES" ]; then \
+      apt-get update && \
+      pkgs=(mariadb-server) && \
+      if [ "$MARIADB_SERIES" != ubuntu ]; then \
+        codename="$(. /etc/os-release && printf '%s' "$VERSION_CODENAME")" && \
+        repo="https://dlm.mariadb.com/repo/mariadb-server/${MARIADB_SERIES}/repo/ubuntu" && \
+        if ! curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors -o /dev/null "$repo/dists/${codename}/Release"; then \
+          echo "ERROR: mariadb=${MARIADB_SERIES} in sandbox.conf: MariaDB publishes no ${MARIADB_SERIES} series for Ubuntu ${codename} ($repo)." >&2; \
+          exit 1; \
+        fi && \
+        curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors -o /usr/share/keyrings/mariadb-keyring-2019.gpg \
+          https://supplychain.mariadb.com/mariadb-keyring-2019.gpg && \
+        echo "deb [signed-by=/usr/share/keyrings/mariadb-keyring-2019.gpg] $repo ${codename} main" \
+          > "/etc/apt/sources.list.d/mariadb-${MARIADB_SERIES}.list" && \
+        apt-get update --error-on=any && \
+        pkgs=("mariadb-server=1:${MARIADB_SERIES}.*" "mariadb-client-compat=1:${MARIADB_SERIES}.*"); \
+      fi && \
+      apt-get install -y --no-install-recommends "${pkgs[@]}" tzdata && \
+      rm -rf /var/lib/apt/lists/* /var/lib/mysql/* && \
+      tpl=/usr/share/ai-containers/mariadb-template && bs=/tmp/mariadb-bootstrap && \
+      mkdir -p /usr/share/ai-containers "$bs" && chown mysql "$bs" && \
+      mariadb-install-db --no-defaults --user=mysql --datadir="$tpl" --auth-root-authentication-method=normal \
+        --skip-test-db --innodb-log-file-size=8388608 > "$bs/init.log" 2>&1 && \
+      ( mariadbd --no-defaults --user=mysql --datadir="$tpl" --skip-networking --socket="$bs/sock" \
+          --pid-file="$bs/pid" --log-error="$bs/err.log" --skip-log-bin --innodb-log-file-size=8388608 \
+          </dev/null >/dev/null 2>&1 & ) && \
+      for _ in $(seq 1 300); do mariadb-admin --no-defaults --socket="$bs/sock" -uroot ping >/dev/null 2>&1 && break; sleep 0.2; done && \
+      mariadb-tzinfo-to-sql /usr/share/zoneinfo 2>/dev/null | mariadb --no-defaults --socket="$bs/sock" -uroot mysql && \
+      mariadb-admin --no-defaults --socket="$bs/sock" -uroot shutdown && \
+      for _ in $(seq 1 300); do [ -e "$bs/pid" ] || break; sleep 0.2; done && \
+      [ ! -e "$bs/pid" ] && \
+      chmod -R a+rX "$tpl" && rm -rf "$bs" && \
+      test -x /usr/sbin/mariadbd && test -x /usr/bin/mariadb && test -e /usr/bin/mysql && \
+      test -f "$tpl/mysql/global_priv.frm"; \
+    fi
+
 # ── Optional: MongoDB server (in-container, for tests) ─────────────────────────
 # MONGO_SERIES: empty = skip; a release series (8.0 from mongo=ON, or a pinned
 # 8.2). From MongoDB's own repository, the one the db-clients=mongo layer uses.

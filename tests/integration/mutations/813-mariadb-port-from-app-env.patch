@@ -1,0 +1,20 @@
+# case: 810-mariadb-server-runs
+# what: the adapter reads an app's own MARIADB_PORT, which container.env hands to
+#       the start phase — the case sets MARIADB_PORT=7778 there, so the server
+#       moves off the port every client defaults to. The socket still works.
+#
+#       Expected: assertion 1 PASSes (socket); assertion 2 FAILs (nothing on
+#       127.0.0.1:3306) and so does 4 (no listener on 3306).
+diff --git a/services.d/mariadb.sh b/services.d/mariadb.sh
+index 2462c89..5d4d91e 100644
+--- a/services.d/mariadb.sh
++++ b/services.d/mariadb.sh
+@@ -23,7 +23,7 @@ MYSQL_MYSQLD="${AI_SERVICES_MARIADB_MARIADBD:-/usr/sbin/mariadbd}"
+ MYSQL_CLIENT="${AI_SERVICES_MARIADB_CLIENT:-/usr/bin/mariadb}"
+ MYSQL_TEMPLATE="${AI_SERVICES_MARIADB_TEMPLATE:-/usr/share/ai-containers/mariadb-template}"
+ MYSQL_SOCKET_DIR="${AI_SERVICES_MARIADB_SOCKET_DIR:-/var/run/mysqld}"
+-MYSQL_PORT="${AI_SERVICES_MARIADB_PORT:-3306}"
++MYSQL_PORT="${MARIADB_PORT:-${AI_SERVICES_MARIADB_PORT:-3306}}"
+ MYSQL_SELF="${AI_SERVICES_MARIADB_SELF:-$(id -un)}"
+ MYSQL_IF_INET6="${AI_SERVICES_MARIADB_IF_INET6:-/proc/net/if_inet6}"
+ # How many 0.1 s waits svc_start allows the server to answer: 30 s by default.

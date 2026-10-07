@@ -14,7 +14,7 @@ It is not [`db-clients`](db-clients.md): that key installs client libraries and 
 - **`ON`** — Ubuntu's own `mysql-server`, 8.0 on 24.04. Upstream support for 8.0 ended in April 2026; Ubuntu still ships its security fixes.
 - **No version can be pinned.** Ubuntu's archive carries one MySQL, so `./build.sh` refuses `mysql=8.4` rather than install 8.0 under another name. MySQL 8.4 is published only in Oracle's own repository, whose client packages replace Ubuntu's — and so would collide with `db-clients=mysql`.
 - **`ON` and `OFF` must be capitals.** `mysql=on` is refused rather than read as `OFF`.
-- **Not MariaDB.** Its SQL has drifted from MySQL 8's: MariaDB 10.11 (Ubuntu 24.04's) rejects MySQL 8's default collation `utf8mb4_0900_ai_ci` — which a MySQL 8 schema dump or a Rails `schema.rb` carries — the `->>` JSON operator, and `LATERAL` (measured). Test a MySQL app against MySQL.
+- **Not MariaDB.** Its SQL has drifted from MySQL 8's: MariaDB 10.11 (Ubuntu 24.04's) rejects MySQL 8's default collation `utf8mb4_0900_ai_ci` — which a MySQL 8 schema dump or a Rails `schema.rb` carries — the `->>` JSON operator, and `LATERAL` (measured). Test a MySQL app against MySQL; a project whose production runs MariaDB has [`mariadb`](mariadb.md). The two keys cannot both be on.
 
 ## Why it is baked into the image
 

@@ -527,6 +527,11 @@ case "$out" in
   *redis=ON*mysql=ON*mongo=ON*) pass "variant services turns on the in-container servers that need no toolchain (redis, mysql, mongo)" ;;
   *) fail "variant services overrides — got: $out" ;;
 esac
+out="$(bash "$TMP/callfn.sh" variant_overrides mariadb)"
+case "$out" in
+  *mariadb=11.4*db-clients=mysql*) pass "variant mariadb pins a series from MariaDB's repository, beside db-clients=mysql (mysql= cannot share its image)" ;;
+  *) fail "variant mariadb overrides — got: $out" ;;
+esac
 check "variant_image services is suffixed" \
   "ai-sandbox-it-services" "$(bash "$TMP/callfn.sh" variant_image services)"
 

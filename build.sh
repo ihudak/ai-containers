@@ -155,6 +155,34 @@ validate_config() {
       exit 1
     fi
   fi
+  # mariadb: ON is Ubuntu's own (10.11); a pin is a release SERIES, X.Y, from
+  # MariaDB's repository (dlm.mariadb.com/repo/mariadb-server/<series>), which
+  # carries several releases per series and installs the newest.
+  local md_val; md_val=$(get_versions mariadb)
+  if [[ -n "$md_val" && "$md_val" != "ON" && "$md_val" != "OFF" ]]; then
+    if [[ "$md_val" == *,* ]]; then
+      printf 'ERROR: mariadb only supports a single value (got: "%s").\n' "$md_val" >&2
+      printf '       Use ON (Ubuntu'"'"'s 10.11), a release series (e.g. 11.4), or OFF.\n' >&2
+      exit 1
+    elif [[ "${md_val^^}" == "ON" || "${md_val^^}" == "OFF" ]]; then
+      printf 'ERROR: mariadb value "%s" must be written in capitals (ON or OFF).\n' "$md_val" >&2
+      exit 1
+    elif [[ "$md_val" =~ ^([1-9][0-9]*\.[0-9]+)\.[0-9]+$ ]]; then
+      printf 'ERROR: mariadb=%s pins a release; pin the series instead: mariadb=%s\n' "$md_val" "${BASH_REMATCH[1]}" >&2
+      printf '       MariaDB'"'"'s repository is per series, and installs its newest release.\n' >&2
+      exit 1
+    elif [[ ! "$md_val" =~ ^[1-9][0-9]*\.[0-9]+$ ]]; then
+      printf 'ERROR: mariadb value "%s" is not ON, OFF or a release series (e.g. 11.4).\n' "$md_val" >&2
+      exit 1
+    fi
+  fi
+  # One server on localhost:3306 and /var/run/mysqld/mysqld.sock, and their
+  # packages conflict: the image can hold MySQL or MariaDB, not both.
+  if is_active mysql && is_active mariadb; then
+    printf 'ERROR: mysql and mariadb are both on; choose one.\n' >&2
+    printf '       Both serve localhost:3306 and /var/run/mysqld/mysqld.sock, and their packages conflict.\n' >&2
+    exit 1
+  fi
   local jvm_key jvm_val ver
   for jvm_key in openjdk graalvm-ce graalvm-oracle kotlin scala maven gradle; do
     jvm_val=$(version_list "$jvm_key")
@@ -369,6 +397,14 @@ build_args_from_config() {
   # installs mongosh from, and MongoDB's current major; not "newest", because
   # MongoDB's newer series on the same major (8.2, 8.3) are shorter-lived. A
   # pinned series passes verbatim; OFF and empty emit nothing, as for postgres.
+  # MariaDB: `ubuntu` for ON (Ubuntu's own package, no third-party repository),
+  # a pinned series verbatim (MariaDB's repository), nothing when OFF.
+  local md_raw; md_raw=$(get_versions mariadb)
+  if [[ "$md_raw" == "ON" ]]; then
+    _args+=(--build-arg "MARIADB_SERIES=ubuntu")
+  elif [[ -n "$md_raw" && "$md_raw" != "OFF" ]]; then
+    _args+=(--build-arg "MARIADB_SERIES=${md_raw}")
+  fi
   local mg_raw; mg_raw=$(get_versions mongo)
   if [[ "$mg_raw" == "ON" ]]; then
     _args+=(--build-arg "MONGO_SERIES=8.0")
