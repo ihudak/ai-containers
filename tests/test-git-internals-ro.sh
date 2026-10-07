@@ -438,16 +438,16 @@ mkdir -p "$TMP/fp/r" "$TMP/fp/clean"
 mkdir -p "$TMP/fp/wtc" && "${G[@]}" -C "$TMP/fp/wtc" init -q && "${G[@]}" -C "$TMP/fp/wtc" config extensions.worktreeConfig true
 "${G[@]}" -C "$TMP/fp/wtc" config --worktree filter.x.smudge 'x-smudge'
 EXTRA_MOUNTS="$TMP/fp" launch "$TMP/app"
-grep -qF 'filter.x.smudge' <<<"$(grep -A1 -F 'NOTE: /workspace/fp/wtc/.git is protected for the first time' "$ERR")" \
+grep -qF 'filter.x.smudge' <<<"$(grep -A1 -F 'NOTE: /workspace/fp/wtc/.git is protected for the first time, and its config' "$ERR")" \
   && grep -qF "git config --file $TMP/fp/wtc/.git/config.worktree --list" "$ERR" \
   && pass "G26 a key set only in config.worktree is named, with config.worktree to review" \
   || fail "G26 config.worktree key (stderr: $(grep -A4 'wtc/.git is protected' "$ERR" | tr '\n' ' '))"
-nl26="$(grep -A1 -F 'NOTE: /workspace/fp/r/.git is protected for the first time' "$ERR" | tail -1)"
+nl26="$(grep -A1 -F 'NOTE: /workspace/fp/r/.git is protected for the first time, and its config' "$ERR" | tail -1)"
 [[ "$nl26" == *core.sshcommand* && "$nl26" == *core.fsmonitor* && "$nl26" == *filter.lfs.clean* && "$nl26" == *alias.sh* ]] \
   && grep -qF "git config --file $TMP/fp/r/.git/config --list" "$ERR" \
   && pass "G26 the first protection names the keys that run programs, and how to review them" \
   || fail "G26 first-protection NOTE (got: $nl26; stderr: $(grep -A3 'first time' "$ERR" | tr '\n' ' '))"
-[[ "$nl26" != *alias.st* ]] && ! grep -q 'fp/clean/.git is protected for the first time' "$ERR" \
+[[ "$nl26" != *alias.st* ]] && ! grep -q 'fp/clean/.git is protected for the first time, and its config' "$ERR" \
   && pass "G26 a plain alias, and git's own fsmonitor daemon, are not named" \
   || fail "G26 benign keys named (got: $nl26; stderr: $(grep 'first time' "$ERR" | tr '\n' ' '))"
 ! grep -qF 'sekrit' "$ERR" && pass "G26 no value is printed" || fail "G26 a value was printed"
@@ -456,6 +456,52 @@ EXTRA_MOUNTS="$TMP/fp" launch "$TMP/app"
   && pass "G26 the next launch says nothing: the repository is already protected" \
   || fail "G26 repeated NOTE (rc=$LAUNCH_RC; stderr: $(grep 'first time' "$ERR" | tr '\n' ' '))"
 rm -rf "$TMP/fp"
+
+# ── G27: …and the hooks its hooks/ already holds ──────────────────────────────
+# A repository the agent made in a subdirectory arrives with whatever hooks it
+# put there, and protecting it freezes them. Only what git would run: a name
+# from githooks(5), executable (through a link, too). Nothing when
+# core.hooksPath sends git elsewhere; nothing on a later launch.
+mkdir -p "$TMP/fh/h" "$TMP/fh/hp" "$TMP/fh/none" "$TMP/fh/wtp"
+for r in h hp none wtp; do "${G[@]}" -C "$TMP/fh/$r" init -q; done
+for e in pre-commit post-checkout my-helper; do printf '#!/bin/sh\n' > "$TMP/fh/h/.git/hooks/$e"; done
+printf '#!/bin/sh\n' > "$TMP/fh/h/.git/hooks/pre-push"
+printf '#!/bin/sh\n' > "$TMP/fh-outside-pm"
+chmod 755 "$TMP/fh/h/.git/hooks/pre-commit" "$TMP/fh/h/.git/hooks/post-checkout" \
+  "$TMP/fh/h/.git/hooks/my-helper" "$TMP/fh-outside-pm"
+chmod 644 "$TMP/fh/h/.git/hooks/pre-push"
+ln -s "$TMP/fh-outside-pm" "$TMP/fh/h/.git/hooks/post-merge"
+ln -s "$TMP/fh-missing" "$TMP/fh/h/.git/hooks/post-rewrite"
+printf '#!/bin/sh\n' > "$TMP/fh/hp/.git/hooks/pre-commit"; chmod 755 "$TMP/fh/hp/.git/hooks/pre-commit"
+"${G[@]}" -C "$TMP/fh/hp" config core.hooksPath .githooks
+printf '#!/bin/sh\n' > "$TMP/fh/wtp/.git/hooks/pre-commit"; chmod 755 "$TMP/fh/wtp/.git/hooks/pre-commit"
+"${G[@]}" -C "$TMP/fh/wtp" config extensions.worktreeConfig true
+"${G[@]}" -C "$TMP/fh/wtp" config --worktree core.hooksPath .githooks
+# Without extensions.worktreeConfig git never reads config.worktree, so a
+# core.hooksPath there must not hide what hooks/ runs.
+mkdir -p "$TMP/fh/wtx" && "${G[@]}" -C "$TMP/fh/wtx" init -q
+printf '#!/bin/sh\n' > "$TMP/fh/wtx/.git/hooks/pre-commit"; chmod 755 "$TMP/fh/wtx/.git/hooks/pre-commit"
+"${G[@]}" config --file "$TMP/fh/wtx/.git/config.worktree" core.hooksPath .githooks
+EXTRA_MOUNTS="$TMP/fh" launch "$TMP/app"
+hk27="$(grep -A1 -F 'NOTE: /workspace/fh/h/.git is protected for the first time, and its hooks/' "$ERR" | tail -1)"
+[[ "$hk27" == *pre-commit* && "$hk27" == *post-checkout* && "$hk27" == *post-merge* ]] \
+  && grep -qF "ls -l $TMP/fh/h/.git/hooks" "$ERR" \
+  && pass "G27 the first protection names the hooks git would run, and how to review them" \
+  || fail "G27 hooks NOTE (got: $hk27; stderr: $(grep -A3 'first time' "$ERR" | tr '\n' ' '))"
+[[ -n "$hk27" && "$hk27" != *pre-push* && "$hk27" != *my-helper* && "$hk27" != *sample* && "$hk27" != *post-rewrite* ]] \
+  && pass "G27 a hook that is not executable, a name git never runs, a .sample and a dangling link are not named" \
+  || fail "G27 inert hooks named (got: $hk27)"
+! grep -qE 'fh/(hp|wtp|none)/\.git is protected for the first time, and its hooks/' "$ERR" \
+  && pass "G27 nothing when core.hooksPath (config or config.worktree) sends git elsewhere, or hooks/ holds only samples" \
+  || fail "G27 hooks NOTE where git runs none of them (stderr: $(grep -A1 'its hooks/' "$ERR" | tr '\n' ' '))"
+grep -qF 'pre-commit' <<<"$(grep -A1 -F 'NOTE: /workspace/fh/wtx/.git is protected for the first time, and its hooks/' "$ERR")" \
+  && pass "G27 a core.hooksPath in a config.worktree git does not read hides nothing" \
+  || fail "G27 ignored config.worktree hid the hooks (stderr: $(grep -A1 'wtx' "$ERR" | tr '\n' ' '))"
+EXTRA_MOUNTS="$TMP/fh" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -q 'its hooks/' "$ERR" \
+  && pass "G27 the next launch says nothing: the repository is already protected" \
+  || fail "G27 repeated hooks NOTE (rc=$LAUNCH_RC; stderr: $(grep -A1 'its hooks/' "$ERR" | tr '\n' ' '))"
+rm -rf "$TMP/fh" "$TMP/fh-outside-pm"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
