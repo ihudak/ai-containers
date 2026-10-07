@@ -639,6 +639,27 @@ launcher_ro_overlay() {
                 if [[ -f "$f" ]]; then printf '        git config --file %q --list\n' "$f" >&2; fi
               done
             fi
+            # The same moment freezes hooks/ as it is, and a repository the agent
+            # made in a subdirectory arrives with whatever hooks it put there:
+            # name those git runs — a name from githooks(5), executable (through
+            # a link too) — unless core.hooksPath sends git elsewhere. git reads
+            # config.worktree only with extensions.worktreeConfig on.
+            hp="$(_git_config_get "$g/config" core.hooksPath)" || hp=""
+            if [[ -z "$hp" && -f "$g/config.worktree" ]] && _git_config_bool "$g/config" extensions.worktreeConfig; then
+              hp="$(_git_config_get "$g/config.worktree" core.hooksPath)" || hp=""
+            fi
+            if [[ -z "$hp" && -d "$g/hooks" && ! -L "$g/hooks" ]]; then
+              eks=""
+              for e in "${git_hook_names[@]}"; do
+                if [[ -f "$g/hooks/$e" && -x "$g/hooks/$e" ]]; then eks+="${eks:+, }$e"; fi
+              done
+              if [[ -n "$eks" ]]; then
+                printf 'NOTE: %s is protected for the first time, and its hooks/ already\n' "$at" >&2
+                printf '      holds hooks your host'\''s git runs: %s.\n' "$eks" >&2
+                printf '      If you did not put them there, review them on the host:\n' >&2
+                printf '        ls -l %q\n' "$g/hooks" >&2
+              fi
+            fi
           fi
         elif [[ -f "$g/commondir" ]]; then
           cfg="$(cd "$g" 2>/dev/null && cd "$(cat commondir 2>/dev/null)" 2>/dev/null && pwd -P)/config" || cfg=""

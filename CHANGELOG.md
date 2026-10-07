@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Security
+
+- **The first launch that protects a repository also names the hooks it
+  already holds.** Alongside the config settings it already listed, it now
+  names the hooks in `.git/hooks/` that your host's git would run (names
+  only), with an `ls -l` to review them. That covers a `.git` an agent
+  created in a subdirectory: protecting it freezes whatever hooks it put
+  there, and until now nothing said so. Hooks git would not run are left out:
+  `.sample` files, names git never calls, files that are not executable, and
+  everything in `hooks/` when `core.hooksPath` points elsewhere. A git-lfs or
+  hook-manager repository shows the note once.
+
 ## v0.10.0 — 2026-10-07
 
 ### Security
