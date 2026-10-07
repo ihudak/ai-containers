@@ -136,17 +136,23 @@ remove_replaced_image() {
 
   local short="${old_id#sha256:}"; short="${short:0:12}"
 
+  # An inspect that FAILS means the image is already gone: Docker's containerd
+  # image store, Docker Desktop's default, deletes an image when a build moves
+  # its last tag away. The tag count is read only from an inspect that
+  # succeeded. It was `$(inspect … || printf '0')`, and Docker 29's inspect
+  # prints an empty line even when it fails, so that read "\n0", not "0", and
+  # every rebuild there reported a tag on an image that no longer existed.
   local tag_count
-  tag_count="$(docker image inspect --format '{{len .RepoTags}}' "$old_id" 2>/dev/null || printf '0')"
-  if [[ "$tag_count" != "0" ]]; then
-    printf 'NOTE: the replaced image %s still carries a tag — left in place.\n' "$short" >&2
-    return 0
-  fi
-
-  if docker rmi "$old_id" >/dev/null 2>&1; then
-    printf 'Removed the image this build replaced (%s).\n' "$short" >&2
-  else
-    printf 'NOTE: could not remove the replaced image %s (a container still references it). Reclaim later with: docker image prune\n' "$short" >&2
+  if tag_count="$(docker image inspect --format '{{len .RepoTags}}' "$old_id" 2>/dev/null)"; then
+    if [[ "$tag_count" != "0" ]]; then
+      printf 'NOTE: the replaced image %s still carries a tag — left in place.\n' "$short" >&2
+      return 0
+    fi
+    if docker rmi "$old_id" >/dev/null 2>&1; then
+      printf 'Removed the image this build replaced (%s).\n' "$short" >&2
+    else
+      printf 'NOTE: could not remove the replaced image %s (a container still references it). Reclaim later with: docker image prune\n' "$short" >&2
+    fi
   fi
   printf 'Tip: old build-cache records can be reclaimed with: docker builder prune --filter unused-for=720h\n' >&2
 }
