@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Fixed
+
+- **A rebuild no longer says it left the old image behind when it did not.**
+  On Docker Desktop, every `./build.sh` that replaced an image printed
+  `NOTE: the replaced image … still carries a tag — left in place`. Docker's
+  containerd image store had already deleted that image, and Docker 29's
+  `docker image inspect` prints an empty line even when the image is not
+  there, which the check read as a tag. Nothing was ever left behind; the note
+  was wrong, and it also kept the `docker builder prune` tip from showing.
+
 ## v0.10.1 — 2026-10-07
 
 ### Security

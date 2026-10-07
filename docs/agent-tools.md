@@ -14,7 +14,7 @@ The AI agents (Copilot CLI, Claude Code, Codex CLI, Gemini CLI), `graphify`, and
 
 or, for the tools that support it (`dtctl`/`dtmgd` accept an exact `x.y.z` in `sandbox.conf`), bump the pinned version by hand instead of rebuilding everything.
 
-Each rebuild that produces a new image also drops the image it replaced, so dangling layer sets do not accumulate per project. The cleanup is deliberately narrow: one explicit image ID, skipped if that image still carries a tag, and `docker rmi` without `--force` so an image a container still references is kept. Build-cache records are never touched automatically — reclaim them yourself when needed:
+Each rebuild that produces a new image also drops the image it replaced, so dangling layer sets do not accumulate per project. The cleanup is deliberately narrow: one explicit image ID, skipped if that image still carries a tag, and `docker rmi` without `--force` so an image a container still references is kept. On Docker Desktop's containerd image store the daemon has usually deleted the old image already, as the build moved its tag, and then there is nothing to remove or report. Build-cache records are never touched automatically — reclaim them yourself when needed:
 
 ```bash
 docker builder prune --filter unused-for=720h
