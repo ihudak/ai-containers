@@ -96,10 +96,29 @@ conf_set_version() {
   fi
 }
 
+# Print the comment block directly above KEY ($2) in FILE ($1), so an appended
+# key tells the project what it does: the run of '#' lines ending at the key,
+# starting at a '# ──' section header if the run reaches one, without the bare
+# '#' separators that open a block. Prints nothing for a key with no comment.
+conf_key_comment() {
+  awk -v k="$2" '
+    /^#/ { if ($0 ~ /^# ──/) n = 0; buf[++n] = $0; next }
+    index($0, k "=") == 1 {
+      i = 1
+      if (n && buf[1] ~ /^# ──/) { print buf[1]; i = 2 }
+      while (i <= n && buf[i] == "#") i++
+      for (; i <= n; i++) print buf[i]
+      exit
+    }
+    { n = 0 }
+  ' "$1"
+}
+
 # Reconcile a project's sandbox.conf ($2) against central ($1) using the hooks in
 # MIGRATIONS_DIR ($3):
 #   1. run every NNN-*.sh whose NNN > the project's recorded version, ascending;
-#   2. additively append any central key the project lacks, under one dated banner
+#   2. additively append any central key the project lacks, with its comment
+#      block (conf_key_comment), under one dated banner
 #      (a key the project already has is NEVER touched, whatever its value);
 #   3. unconditionally ensure the project's marker matches central's version.
 reconcile_sandbox_conf() {
@@ -131,7 +150,14 @@ reconcile_sandbox_conf() {
   if (( ${#added[@]} > 0 )); then
     {
       printf '\n# New options synced from upstream (%s)\n' "$(date +%Y-%m-%d)"
+      local block first=1
       for key in "${added[@]}"; do
+        block="$(conf_key_comment "$central" "$key")"
+        if [[ -n "$block" ]]; then
+          (( first )) || printf '\n'
+          printf '%s\n' "$block"
+        fi
+        first=0
         printf '%s=%s\n' "$key" "$(grep -E "^${key}=" "$central" | head -1 | cut -d= -f2-)"
       done
     } >> "$project"

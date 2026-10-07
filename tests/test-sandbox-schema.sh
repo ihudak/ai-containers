@@ -240,6 +240,47 @@ reconcile_sandbox_conf "$R_TMP/central.conf" "$R_TMP/nomarker.conf" "$R_TMP/migr
   && pass "reconcile: pre-marker file (v0) is backfilled to the current marker" \
   || fail "reconcile: pre-marker file (v0) is backfilled to the current marker"
 
+# An appended key carries central's comment block with it, so a project learns
+# what the option does: the section header the block starts under is kept, a
+# bare '#' separator left by the previous key is not, and a key with no comment
+# in central is appended bare.
+C_TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
+cat > "$C_TMP/central.conf" <<'EOF'
+# schema-version: 3
+copilot=ON
+
+# ── Servers ──────────────────
+# redis: ON starts a server.
+#   two-line comment.
+redis=OFF
+#
+# mysql: ON starts another.
+mysql=OFF
+bare=OFF
+EOF
+cat > "$C_TMP/project.conf" <<'EOF'
+# schema-version: 3
+copilot=ON
+EOF
+reconcile_sandbox_conf "$C_TMP/central.conf" "$C_TMP/project.conf" "$R_TMP/migrations" >/dev/null
+expected_tail="$(cat <<'EOF'
+# ── Servers ──────────────────
+# redis: ON starts a server.
+#   two-line comment.
+redis=OFF
+
+# mysql: ON starts another.
+mysql=OFF
+bare=OFF
+EOF
+)"
+actual_tail="$(sed -n '/^# New options synced from upstream/,$p' "$C_TMP/project.conf" | sed '1d;/^# schema-version:/d')"
+[[ "$actual_tail" == "$expected_tail" ]] \
+  && pass "reconcile: appended keys carry central's comment block" \
+  || fail "reconcile: appended keys carry central's comment block — got:
+$actual_tail"
+rm -rf "$C_TMP"
+
 # Regression test: conf_set_version's update-in-place branch (mktemp + mv) must
 # not silently drop the file's mode from 644 to mktemp's default 600.
 MODE_TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
