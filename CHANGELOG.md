@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## v0.10.0 — 2026-10-07
+
 ### Security
 
 - **An agent can no longer edit a launcher from inside the container.** The
