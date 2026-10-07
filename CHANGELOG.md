@@ -169,6 +169,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `SKILL_CHAR_BUDGET`, or `sandbox.env`/`sandbox.local.env` sets it, that value
   is passed instead. Like the other variables the launcher sets, it is refused
   from `container.env` with a warning.
+- **Claude Code describes every installed skill to the model too:
+  `SLASH_COMMAND_TOOL_CHAR_BUDGET=40000`.** Claude Code's skill listing gets
+  4 characters per token of the context window times
+  `skillListingBudgetFraction` (0.01 by default): 8,000 characters at a 200K
+  window, which every 200K subagent gets as well. Over budget it shortens every
+  skill's description, and `claude --debug` logs `Skill listing over budget`.
+  One measured plugin set needs about 31,100 characters. Every container now
+  gets `SLASH_COMMAND_TOOL_CHAR_BUDGET=40000`, the 1M-window default. If your
+  host exports `SLASH_COMMAND_TOOL_CHAR_BUDGET`, or `sandbox.env`/
+  `sandbox.local.env` sets it, that value is passed instead. **Behaviour
+  change:** the variable overrides `skillListingBudgetFraction` in your Claude
+  Code settings, so inside the container that setting no longer has any
+  effect. To choose a different budget there, export
+  `SLASH_COMMAND_TOOL_CHAR_BUDGET` on the host. Your settings file is not
+  changed. Like the other variables the launcher sets, it is refused from
+  `container.env` with a warning.
 
 ## v0.9.20 — 2026-10-05
 
