@@ -9,9 +9,10 @@
 # arguments arrived intact.
 set -uo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ENGINE="$REPO_DIR"; [[ -f "$REPO_DIR/base/entrypoint.sh" ]] && ENGINE="$REPO_DIR/base"
 # shellcheck source=portability.sh
 source "$REPO_DIR/tests/portability.sh"
-SCRIPT="$REPO_DIR/link-node-globals.sh"
+SCRIPT="$ENGINE/link-node-globals.sh"
 fails=0
 pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails+1)); }
@@ -183,7 +184,7 @@ o="$(NODE_LINK="$B/bin/node" LINK_DIR="$TMP/dest-nonode" bash "$SCRIPT" 2>&1)"; 
   || fail "refuses a node link that leads to no node (rc $r): $o"
 
 # ── The Dockerfile runs it after every npm-global layer ──
-DF_PATH="$REPO_DIR/Dockerfile"
+DF_PATH="$ENGINE/Dockerfile"
 # Line numbers of real (non-comment) lines; a comment that mentions either must not count.
 run_lines="$(awk '/^[[:space:]]*#/ {next} /bash \/tmp\/link-node-globals\.sh/ {print NR}' "$DF_PATH")"
 npm_lines="$(awk '/^[[:space:]]*#/ {next} /npm install -g/ {print NR}' "$DF_PATH")"
@@ -225,7 +226,7 @@ grep -qE -- '--pin @tobilu/qmd( |&|$)' <<< "$(grep -F 'bash /tmp/link-node-globa
 # The Dockerfile COPYs it from the build context, which in a project is its
 # .ai-containers/ copy: a project without it cannot build.
 # shellcheck source=../shared-files.sh
-source "$REPO_DIR/shared-files.sh"
+source "$ENGINE/shared-files.sh"
 case " ${AI_CONTAINERS_SHARED_FILES[*]} " in
   *" link-node-globals.sh "*) pass "link-node-globals.sh is a shared file" ;;
   *) fail "link-node-globals.sh is a shared file (the Dockerfile COPYs it)" ;;

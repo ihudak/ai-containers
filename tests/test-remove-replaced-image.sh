@@ -16,6 +16,7 @@
 set -uo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ENGINE="$REPO_DIR"; [[ -f "$REPO_DIR/base/entrypoint.sh" ]] && ENGINE="$REPO_DIR/base"
 
 fails=0
 pass() { printf 'PASS: %s\n' "$1"; }
@@ -26,7 +27,7 @@ trap 'rm -rf "$TMP"' EXIT
 export HOME="$TMP/home"; mkdir -p "$HOME"
 
 # shellcheck disable=SC1091
-source "$REPO_DIR/sandbox-common.sh"
+source "$ENGINE/sandbox-common.sh"
 
 CALLS="$TMP/calls.log"; export CALLS
 mkdir -p "$TMP/bin"
