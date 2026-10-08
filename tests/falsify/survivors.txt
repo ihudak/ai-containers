@@ -717,3 +717,19 @@ start-services.sh:return-flip:7e5bf7e6c027b98594f847c3eb39610a0731f9f0
   `$?`, so errexit-compatibility is not a property this script has.
   Same shape as entry 16. If `set -e` is ever added, re-measure: these become
   real assertions about failure handling.
+
+# ── 19 ────────────────────────────────────────────────────────────────────────
+GROUP: p_zombie's /proc read — a host without /proc never reaches the line
+tests/portability.sh:logic-flip:ab48601bc043d3f71135560f6f580cf13e73f33c
+tests/portability.sh:return-flip:ab48601bc043d3f71135560f6f580cf13e73f33c
+    s="$(cat "/proc/$1/stat" 2>/dev/null)" || return 1
+  damaged:  `&& return 1`, and `|| return 0`.
+  ENV-DEPENDENT: KILLED on Linux, where the /proc branch is driven with a `ps`
+  that always fails, and SURVIVED on macOS, which has no /proc: _P_PROC is 0
+  there, so the line never runs and no assertion on that host could reach it.
+  Neither verdict is wrong; the difference is the machine, as in entry 14.
+  Measured on the same commit: SURVIVED `none` on macOS (verify-on-host.sh
+  Phase 6, 2026-10-08); killed in CI's Linux corpus, whose ledger check would
+  otherwise have failed check B. The probe that chooses the branch is NOT
+  here: its inversion survived on macOS too until test-portability.sh asserted
+  `_P_PROC == 0` where there is no /proc, and it is now killed on both hosts.

@@ -96,6 +96,12 @@ if [[ -r /proc/self/stat ]]; then
   # that answers, not whichever one works on this host.
   mkdir -p "$TMP/nops"; printf '#!/bin/sh\nexit 1\n' > "$TMP/nops/ps"; chmod +x "$TMP/nops/ps"
   PATH="$TMP/nops:$PATH" zombie_checks /proc
+else
+  # … and where it does not, the probe must say so: the ps checks below force
+  # _P_PROC=0 themselves, so nothing else here would notice a probe that
+  # pointed every real caller at a /proc that is not there.
+  [[ "$_P_PROC" == 0 ]] && pass "p_zombie does not read /proc where there is none" \
+    || fail "p_zombie does not read /proc where there is none (_P_PROC=$_P_PROC)"
 fi
 if command -v ps >/dev/null 2>&1; then
   _p_proc_saved="$_P_PROC"; _P_PROC=0

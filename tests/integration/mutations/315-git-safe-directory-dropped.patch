@@ -1,0 +1,22 @@
+# case: 315-git-trusts-unowned-repo
+# what: the image's system-wide safe.directory=* is dropped, so git refuses a
+#       repository whose directory the running uid does not own -- every host
+#       bind on Colima, where a mount root shows as owned by root.
+#
+#       Expected: "a non-root uid runs git in a repository root owns" FAILs
+#       with "detected dubious ownership".
+#
+#       NEEDS A REBUILD. This patch changes the Dockerfile; see
+#       310-make-not-installed.patch for why --reuse-image would test an image
+#       that predates it.
+#
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -488,7 +488,6 @@
+ # scope, in the image: never the group's .gitconfig, which sandbox.sh replaces
+ # with the host's copy at every start, and which in the `host` group is the
+ # host's own file. Integration case 315 asserts it.
+-RUN git config --system --add safe.directory '*'
+ 
+ # ── Optional: kubectl ───────────────────────────────────────────────────────────
+ ARG INSTALL_KUBECTL=0

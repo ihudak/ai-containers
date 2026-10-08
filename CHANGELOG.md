@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Fixed
+
+- **git works in a host-path primary on Colima.** Every git command in a
+  directory mounted from a host path — the positional `[primary]`, an
+  `EXTRA_MOUNTS` entry — failed with `fatal: detected dubious ownership`,
+  because Colima reports a bind mount's root as owned by root inside the
+  container, though the host and the VM both show your uid. Repo volumes
+  (`@repo`, `REPOS`) were never affected: `repo.sh` chowns them. The image
+  now sets `safe.directory=*` in its own system git config — never in a
+  group's `.gitconfig` and never on the host. Everything writable under
+  `/workspace` is the agent's, and nothing in the container runs git as root;
+  run a `docker exec` into a container with `-u` as the agent, not as root.
+  Rebuild the image to pick it up.
+- **On a macOS host, a symlink target that ends in a newline is followed
+  exactly.** macOS `readlink` adds a newline only when the target does not
+  already end in one, so the launcher's link check stripped the target's own
+  and judged a different path. It now reads with `readlink -n`.
+
 ## v0.10.2 — 2026-10-07
 
 ### Fixed
