@@ -1297,12 +1297,14 @@ ei_out="$(PATH="$FAKE_BIN:$PATH" bash -c ". '$LIB'; launcher_engine_in '$EI_PROJ
 ei_missing=""
 # shellcheck source=shared-files.sh
 source "$REPO_DIR/shared-files.sh"
-for f in "${AI_CONTAINERS_SHARED_FILES[@]}" tools.d services.d; do
+ei_expect=("${AI_CONTAINERS_SHARED_FILES[@]}" tools.d)
+[[ ! -d "$REPO_DIR/services.d" ]] || ei_expect+=(services.d)
+for f in "${ei_expect[@]}"; do
   [[ -e "$EI_PROJ/.ai-containers/$f" ]] || ei_missing+=" $f"
 done
 [[ -z "$ei_missing" ]] \
-  && t_pass "launcher_engine_in copies every shared file plus tools.d and services.d" \
-  || t_fail "launcher_engine_in copies every shared file plus tools.d and services.d (missing:$ei_missing)"
+  && t_pass "launcher_engine_in copies every shared file plus tools.d, and services.d where the engine has one" \
+  || t_fail "launcher_engine_in copies every shared file plus tools.d, and services.d where the engine has one (missing:$ei_missing)"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

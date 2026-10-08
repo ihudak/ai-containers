@@ -519,10 +519,16 @@ _fr_flush_batch() {   # <dest-dir> <src-file>...
 falsify_seed_tree() {   # <repo> <dest> — tracked files + .git, nothing else
   local repo="$1" dest="$2"
   local -a files=() batch=()
-  local f d prev=""
-  if [[ ! -d "$repo/.git" ]]; then
-    fr_err "$repo has no .git directory — the oracles need a real git work tree"
+  local f d prev="" gitdir="" src
+  # A linked worktree's .git is a FILE naming its git directory, which shares the
+  # main repository's objects and refs: resolve both rather than demand a directory.
+  [[ -e "$repo/.git" ]] && gitdir="$(git -C "$repo" rev-parse --absolute-git-dir 2>/dev/null)"
+  if [[ -z "$gitdir" ]]; then
+    fr_err "$repo is not a git work tree — the oracles need a real one"
     return 1
+  fi
+  if [[ -d "$repo/.git" ]]; then src="$repo/.git"
+  else src="$(cd "$repo" && cd "$(git rev-parse --git-common-dir)" && pwd -P)" || return 1
   fi
   mkdir -p "$dest" || return 1
   mapfile -d '' -t files < <(cd "$repo" && git ls-files -z 2>/dev/null)
@@ -549,9 +555,17 @@ falsify_seed_tree() {   # <repo> <dest> — tracked files + .git, nothing else
   # the fallback would then produce $dest/.git/.git — a work tree whose git
   # directory is one level too deep, so every oracle that shells out to git in
   # the scratch tree fails for a reason having nothing to do with the mutant.
-  if ! cp -a "$repo/.git" "$dest/.git" 2>/dev/null; then
+  if ! cp -a "$src" "$dest/.git" 2>/dev/null; then
     rm -rf "$dest/.git"
-    cp -R "$repo/.git" "$dest/.git" || return 1
+    cp -R "$src" "$dest/.git" || return 1
+  fi
+  # From a linked worktree, the copy is the main repository's: give it this
+  # worktree's HEAD and index, and none of the main repository's worktree
+  # records. Copying the .git FILE instead would leave the scratch tree sharing
+  # the real worktree's index, which an oracle's git could rewrite.
+  if [[ "$src" != "$repo/.git" ]]; then
+    cp -p "$gitdir/HEAD" "$dest/.git/HEAD" && cp -p "$gitdir/index" "$dest/.git/index" || return 1
+    rm -rf "$dest/.git/worktrees"
   fi
   _fr_verify_seed "$repo" "$dest" "the pristine cache" || return 1
 }
