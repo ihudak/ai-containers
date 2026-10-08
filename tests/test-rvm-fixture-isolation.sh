@@ -193,6 +193,17 @@ else
   fail "an rvm-only directory is dropped outright, with no shadow built (scratch dirs went $before -> $after)"
 fi
 
+# A shadow that cannot be made is a failure, not a PATH silently missing a
+# directory. A scratch path UNDER A FILE makes mkdir fail with ENOTDIR, which
+# root cannot override — unlike a chmod, which root ignores.
+: > "$TMP/not-a-dir" || { printf 'SCAFFOLD-FAILED: cannot write %s\n' "$TMP/not-a-dir"; exit 1; }
+_="$(path_without_tool rvm "$TMP/not-a-dir/scratch" "$SHARED:$BENIGN")"; rc=$?
+if [[ "$rc" -ne 0 ]]; then
+  pass "a shadow directory that cannot be created fails the call (rc=$rc)"
+else
+  fail "a shadow directory that cannot be created fails the call — it returned 0"
+fi
+
 # ── The end-to-end assertion ──────────────────────────────────────────────────
 # The REAL fixture, run under a PATH that provides an rvm. This is the assertion
 # that fails on an unfixed tree, and the only one here that exercises the

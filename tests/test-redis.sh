@@ -248,7 +248,9 @@ took=$(( $(date +%s) - start ))
   && pass "D5 another server answering on the port is not this one: not ready (rc=$rc)" \
   || fail "D5 another server's answer taken for this one (rc=$rc, out='$out')"
 # AI_SERVICES_REDIS_TRIES bounds the wait: 3 tries is 0.3 s, never the 30 s default.
-[[ "$took" -le 5 ]] && pass "D5 AI_SERVICES_REDIS_TRIES bounds the wait (${took}s for 3 tries)" \
+# 15 s, not 5: half the 30 s an unbounded wait takes, so ignoring the bound still
+# fails, with room for a host loaded by a falsify run beside it (7-8 s measured).
+[[ "$took" -le 15 ]] && pass "D5 AI_SERVICES_REDIS_TRIES bounds the wait (${took}s for 3 tries)" \
   || fail "D5 AI_SERVICES_REDIS_TRIES ignored: 3 tries took ${took}s"
 
 # D6 — a server that never wrote its pid (the port was taken, so it exited) is
@@ -265,7 +267,7 @@ rd_reset
 start=$(date +%s)
 out="$(FAKE_MODE=dead RD_TRIES=300 rd svc_start "$FAKE/data" "$FAKE/log")"; rc=$?
 took=$(( $(date +%s) - start ))
-[[ "$rc" -ne 0 && "$out" == *"exited before answering"* && "$took" -le 5 ]] \
+[[ "$rc" -ne 0 && "$out" == *"exited before answering"* && "$took" -le 15 ]] \
   && pass "D7 a server that died after starting fails at once (${took}s), naming its pid" \
   || fail "D7 dead server (rc=$rc, took ${took}s, out='$out')"
 

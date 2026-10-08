@@ -652,6 +652,18 @@ else
   fail "--help prints usage and touches nothing (rc=$RC)"
 fi
 
+# file_bytes' fallback: every caller checks [[ -f ]] first, so `wc -c` failing
+# is unreachable through the script — but not through the function. A path that
+# is not there fails the redirect, as root too. It must print 0 and return 0:
+# callers assign it under `set -e` and add it into an arithmetic total.
+fb_out="$(bash -c 'eval "$(awk "/^file_bytes\\(\\) \\{/,/^}\$/" "$1")"; file_bytes "$2"' \
+  _ "$ENGINE_DIR/extract-discovery.sh" "$T/no-such-file")"; fb_rc=$?
+if [[ "$fb_rc" -eq 0 && "$fb_out" == 0 ]]; then
+  pass "file_bytes on a file it cannot read prints 0 and returns 0"
+else
+  fail "file_bytes on a file it cannot read prints 0 and returns 0 (rc=$fb_rc, out='$fb_out')"
+fi
+
 printf '\n%s\n' "----------------------------------------"
 if [[ "$fails" -eq 0 ]]; then
   printf 'test-extract-discovery.sh: all checks passed\n'
