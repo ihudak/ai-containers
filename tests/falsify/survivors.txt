@@ -326,17 +326,11 @@
 # The number is left occupied, for the reason entry 3 records.
 
 # ── 6 ─────────────────────────────────────────────────────────────────────────
-tests/lib-path-isolation.sh:return-flip:d6555dd140637d29787804dd93d1c2a81abb0833
-  :47  mkdir -p "$shadow" || return 1
-  the damages:  mkdir -p "$shadow" || return 0
-  GAP: reachable only when mkdir fails, and nothing in the suite makes it fail.
-  The shadow directory is created under a scratch dir the CALLER just created
-  successfully, so provoking this needs a read-only scratch or an exhausted
-  inode table -- a fixture that would test the OS rather than this function.
-  Killable in principle (pass a scratch path that cannot be written and assert
-  the non-zero return), and cheap; it is recorded as a gap rather than closed
-  because the value of that assertion is low next to the two the mutation tier
-  already forced into this file's design.
+# RETIRED 2026-10-08. lib-path-isolation.sh's `mkdir -p "$shadow" || return 1`
+# return-flip used to sit here as a GAP: "reachable only when mkdir fails". A
+# scratch path UNDER A REGULAR FILE makes mkdir fail with ENOTDIR, which root
+# cannot override (a chmod could not do it: root ignores modes), so
+# test-rvm-fixture-isolation.sh now asserts the non-zero return. KILLED.
 
 tests/lib-path-isolation.sh:logic-flip:aec066a8785ce432d2a7c5866f97dac16c664845
   :50  ln -sfn "$entry" "$shadow/$base" 2>/dev/null || true
@@ -627,25 +621,14 @@ tests/portability.sh:cond-negate:4fcb6275d979c49c1b9fe171b6e97b319b8e6c10
   required to survive check A's reason test.
 
 # ── 15 ────────────────────────────────────────────────────────────────────────
-GROUP: file_bytes' unreadable-file fallback — no test can make wc -c fail here
-extract-discovery.sh:return-flip:5186e1556592508df5a7495a0585775e1a319fb9
-  n="$(wc -c < "$1" 2>/dev/null)" || { printf '0'; return 0; }
-  damaged:  ... || { printf '0'; return 1; }
-  GAP: nothing makes `wc -c` fail on a path that `[[ -f ]]` has already
-  accepted, so the fallback branch never runs and its return value is never
-  observed. An assertion COULD exist — a file that exists but cannot be opened
-  would reach it — which is why this is a GAP and not an EQUIVALENT.
-  What stops it being written here is that the hermetic suite runs as root
-  inside the container image, and mode bits do not deny root: `chmod 000` on the
-  fixture changes nothing, so the test would pass vacuously on the machine it
-  most needs to run on. Writing it for a non-root host only would make the
-  verdict move with the machine, which is a different classification and a
-  worse trade than recording the debt plainly.
-  The `return 0` is deliberate, not incidental. Every caller assigns
-  `bytes="$(file_bytes …)"` under `set -e`, so a non-zero return kills the
-  script; and the `printf '0'` exists because an EMPTY result would make the
-  caller's `$(( total + ))` a syntax error rather than a wrong number. The
-  mutant damages exactly the half of that pair the tier can see.
+# RETIRED 2026-10-08. extract-discovery.sh's file_bytes `wc -c` fallback
+# return-flip used to sit here as a GAP: every caller checks [[ -f ]] first, so
+# the fallback looked unreachable while the suite runs as root. The function
+# itself is not guarded: test-extract-discovery.sh calls it on a path that is
+# not there, which fails the redirect for root too, and asserts it prints 0 and
+# returns 0. KILLED, with its logic-flip twin; extract-discovery.sh is 70/70.
+#
+# The number is left occupied, for the reason entry 3 records.
 
 # ── 16 ────────────────────────────────────────────────────────────────────────
 GROUP: repo-git-reset.sh runs without errexit, so three exit statuses are read by nothing

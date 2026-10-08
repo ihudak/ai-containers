@@ -241,12 +241,14 @@ start=$(date +%s); out="$(MD_TRIES=3 md svc_start "$FAKE/data" "$FAKE/log")"; rc
 [[ "$rc" -ne 0 && "$out" == *"did not answer"* && ! -f "$FAKE/sql.log" ]] \
   && pass "D6 another server answering on the socket is not this one: not ready, and no account is made on it" \
   || fail "D6 another server (rc=$rc, out='$out', sql: $(cat "$FAKE/sql.log" 2>/dev/null))"
-[[ "$took" -le 5 ]] && pass "D6 AI_SERVICES_MARIADB_TRIES bounds the wait (${took}s for 3 tries)" || fail "D6 tries ignored (${took}s)"
+# 15 s, not 5: half the 30 s an unbounded wait takes, so ignoring the bound still
+# fails, with room for a host loaded by a falsify run beside it (7-8 s measured).
+[[ "$took" -le 15 ]] && pass "D6 AI_SERVICES_MARIADB_TRIES bounds the wait (${took}s for 3 tries)" || fail "D6 tries ignored (${took}s)"
 
 # D7 — a server that exits at once (the port taken) fails at once, not after
 # the 30 s wait.
 md_reset; start=$(date +%s); out="$(FAKE_MODE=exit MD_TRIES=300 md svc_start "$FAKE/data" "$FAKE/log")"; rc=$?; took=$(( $(date +%s) - start ))
-[[ "$rc" -ne 0 && "$out" == *"exited before answering"* && "$took" -le 5 ]] \
+[[ "$rc" -ne 0 && "$out" == *"exited before answering"* && "$took" -le 15 ]] \
   && pass "D7 a server that exits before answering fails at once (${took}s), naming its pid" \
   || fail "D7 exited server (rc=$rc, took ${took}s, out='$out')"
 

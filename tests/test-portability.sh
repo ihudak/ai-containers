@@ -73,9 +73,12 @@ ln "$TMP/f" "$TMP/f.hard" 2>/dev/null && : > "$TMP/g"
 zombie_checks() {  # $1 = label
   local zparent zombie=0 _
   rm -f "$TMP/zpid"
-  bash -c 'sleep 0.3 & echo "$!" > "$1"; exec sleep 5' _ "$TMP/zpid" &
+  # Generous on purpose: the zombie exists from 0.3 s until the parent ends, and
+  # a loaded host (a falsify run beside it) must still catch it. The loop stops
+  # at the first sighting, and the parent is killed below, so this costs nothing.
+  bash -c 'sleep 0.3 & echo "$!" > "$1"; exec sleep 30' _ "$TMP/zpid" &
   zparent=$!
-  for _ in $(seq 1 30); do
+  for _ in $(seq 1 150); do
     [[ -s "$TMP/zpid" ]] && p_zombie "$(cat "$TMP/zpid")" && { zombie=1; break; }
     sleep 0.1
   done
