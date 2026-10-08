@@ -995,12 +995,13 @@ _path_walk() {
 }
 
 # _readlink_exact <var> <link>: a link's target, byte for byte — $(readlink)
-# alone would drop any trailing newlines the target itself ends with.
+# alone would drop any trailing newlines the target itself ends with. -n, not
+# stripping one newline after the fact: macOS readlink adds its newline only
+# when the target does not already end in one, so stripping ate the target's.
 _readlink_exact() {
   local out
-  out="$(readlink -- "$2" && printf x)" || return 1
-  out="${out%x}"
-  printf -v "$1" '%s' "${out%$'\n'}"
+  out="$(readlink -n -- "$2" && printf x)" || return 1
+  printf -v "$1" '%s' "${out%x}"
 }
 
 # _utf8_valid <string>: is it UTF-8 as RFC 3629 — and Go, whose JSON encoding of

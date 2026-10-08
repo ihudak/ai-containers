@@ -48,6 +48,7 @@ want="$(cd "$d" && pwd -P)"
 got="$(host_real_path "$TMP/link")"
 [[ "$got" == "$want" ]] && pass "host_real_path resolves a symlinked checkout to its target" \
   || fail "host_real_path resolves a symlinked checkout to its target: want '$want' got '$got'"
+# shellcheck disable=SC2218  # defined by the sourced host-preflight.sh; the later definition is a deliberate override
 got="$(host_real_path "$TMP/does-not-exist")"
 [[ "$got" == "$TMP/does-not-exist" ]] && pass "host_real_path returns an unresolvable path unchanged" \
   || fail "host_real_path returns an unresolvable path unchanged, got '$got'"

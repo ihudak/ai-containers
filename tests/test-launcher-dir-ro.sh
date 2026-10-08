@@ -394,13 +394,19 @@ fi
 # Valid UTF-8 must NOT be refused: a check that over-rejects leaves every
 # non-ASCII project unprotected. Cyrillic, an emoji (4 bytes), U+10FFFF.
 GOOD="$TMP/good"; gname=$'\xd0\xbf\xd1\x80\xd0\xbe\xd0\xb5\xd0\xba\xd1\x82'; ename=$'e\xf0\x9f\x98\x80'; mname=$'m\xf4\x8f\xbf\xbf'
-mk_launcher "$GOOD/$gname"; mk_launcher "$GOOD/$ename"; mk_launcher "$GOOD/$mname"
+# APFS refuses U+10FFFF, a noncharacter ("Illegal byte sequence"), so a name
+# the filesystem will not make is skipped, as the invalid-UTF-8 names above are.
+gmade=()
+for n in "$gname" "$ename" "$mname"; do
+  if mk_launcher "$GOOD/$n" 2>/dev/null; then gmade+=("$n")
+  else printf 'SKIP: T24 valid UTF-8 %q — this filesystem refuses it\n' "$n"; fi
+done
 EXTRA_MOUNTS="$GOOD" launch "$LAUNCHER" "$TMP/app"
 ok=1
-for n in "$gname" "$ename" "$mname"; do
+for n in "${gmade[@]}"; do
   grep -aqxF -- "-v $GOOD/$n/.ai-containers:/workspace/good/$n/.ai-containers:ro" <<<"$(raw_mounts)" || ok=0
 done
-[[ "$ok" -eq 1 ]] && ! grep -aq 'cannot protect' "$ERR" \
+[[ "$ok" -eq 1 && ${#gmade[@]} -gt 0 ]] && ! grep -aq 'cannot protect' "$ERR" \
   && pass "T24 valid non-ASCII names (Cyrillic, an emoji, U+10FFFF) are protected through -v" \
   || fail "T24 valid UTF-8 (mounts: $(raw_mounts | grep -aF "$GOOD" | tr '\n' ' '); stderr: $(grep -a WARNING "$ERR" | tr '\n' ' '))"
 # With a ':' (so --mount): Unicode whitespace at the end and a CR anywhere are
