@@ -76,7 +76,9 @@ source "$ENGINE/shared-files.sh"
 PROJ="$TMP/proj"; LAUNCHER="$PROJ/.ai-containers"
 mkdir -p "$LAUNCHER" "$TMP/app" "$TMP/pro"
 for f in "${AI_CONTAINERS_SHARED_FILES[@]}"; do cp -p "$ENGINE/$f" "$LAUNCHER/$f"; done
-cp -R "$ENGINE/tools.d" "$ENGINE/services.d" "$LAUNCHER/"
+cp -R "$ENGINE/tools.d" "$LAUNCHER/"
+# services.d only where the engine has one: mgd-ai-containers has no database servers.
+[[ ! -d "$ENGINE/services.d" ]] || cp -R "$ENGINE/services.d" "$LAUNCHER/"
 ln -s "$PROJ" "$TMP/link"
 
 # $1 = directory to launch from (the engine copy), $2 = primary. Extra env via

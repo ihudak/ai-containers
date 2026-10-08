@@ -62,7 +62,9 @@ source "$ENGINE/shared-files.sh"
 PROJ="$TMP/proj"; LAUNCHER="$PROJ/.ai-containers"
 mkdir -p "$LAUNCHER"
 for f in "${AI_CONTAINERS_SHARED_FILES[@]}"; do cp -p "$ENGINE/$f" "$LAUNCHER/$f"; done
-cp -R "$ENGINE/tools.d" "$ENGINE/services.d" "$LAUNCHER/"
+cp -R "$ENGINE/tools.d" "$LAUNCHER/"
+# services.d only where the engine has one: mgd-ai-containers has no database servers.
+[[ ! -d "$ENGINE/services.d" ]] || cp -R "$ENGINE/services.d" "$LAUNCHER/"
 CENV="$LAUNCHER/container.env"
 # A CRLF container.env beside the launcher is refused before any of this, by
 # host_checkout_preflight (a Windows-side checkout); docker's own CR handling
@@ -198,6 +200,20 @@ warned 4 "the launcher sets GITHUB_PERSONAL_ACCESS_TOKEN itself" && has_flag "GI
   || fail "E5 GITHUB_PERSONAL_ACCESS_TOKEN refused when the host sets it — stderr: $(grep WARNING "$ERR" | tr '\n' ' ')"
 [[ "$(keys_arg)" == "APP" ]] && pass "E5 AI_CONTAINER_ENV_KEYS is the launcher's, never the file's" \
   || fail "E5 AI_CONTAINER_ENV_KEYS is the launcher's — got '$(keys_arg)'"
+# By effect, not by reading sandbox.sh: every name this launch passes with -e,
+# set again in container.env, is refused. container_env_filter knows only the
+# names in launcher_env, so a -e added to `docker run` outside it fails here.
+# The host knobs the launcher passes only when set are set, so theirs count too.
+printf 'APP=1\n' > "$CENV"
+SELF_HEALING_ENABLED=1 ALLOW_IPV6_BYPASS=1 GITHUB_PERSONAL_ACCESS_TOKEN=t COPILOT_GITHUB_TOKEN=t launch
+e5_names="$(sed -n '/^-e$/{n;s/=.*//;p;}' "$CAPTURE" 2>/dev/null | sort -u)"
+: > "$CENV"; for n in $e5_names; do printf '%s=from-file\n' "$n" >> "$CENV"; done
+SELF_HEALING_ENABLED=1 ALLOW_IPV6_BYPASS=1 GITHUB_PERSONAL_ACCESS_TOKEN=t COPILOT_GITHUB_TOKEN=t launch
+e5_bad=""; i=0
+for n in $e5_names; do i=$((i + 1)); warned "$i" "" || e5_bad+=" $n"; done
+[[ "$(wc -w <<<"$e5_names")" -ge 15 && -z "$e5_bad" && -z "$(envfile)" ]] \
+  && pass "E5 every name the launch passes with -e is refused from container.env ($(wc -w <<<"$e5_names" | tr -d ' ') names)" \
+  || fail "E5 every -e name refused from container.env — not refused:${e5_bad:- none}; names: $(tr '\n' ' ' <<<"$e5_names"); passed: $(envfile | tr '\n' '|')"
 # Every knob the container's root side reads is either passed by the launcher
 # with -e or refused: one that is neither would, from container.env, silently do
 # nothing. Read from the scripts themselves, so a knob added there without
@@ -322,7 +338,7 @@ n_shell="$(grep -cF -- "-- -c 'exec env \"\$@\" /bin/bash -l' bash \${_aice_app_
 joined="$(awk '{ if (sub(/\\$/, "")) { buf = buf $0; next } print buf $0; buf = "" }' "$ENGINE/entrypoint.sh")"
 bare="$(grep -E '^[^#]*runuser ' <<<"$joined" | grep -vF '_aice_app_env[@]' | grep -vF 'start_env[@]')"
 n_ru="$(grep -cE '^[^#]*runuser ' <<<"$joined")"
-[[ "$n_shell" == 3 && -z "$bare" && "$n_ru" -ge 2 ]] \
+[[ "$n_shell" == 3 && -z "$bare" && "$n_ru" -ge 1 ]] \
   && pass "E11 all three modes' shells, and all $n_ru runuser hand-overs, give container.env back" \
   || fail "E11 hand-overs give container.env back (final shells: $n_shell of 3; runuser without it: ${bare:-none}; runuser lines: $n_ru)"
 

@@ -62,7 +62,9 @@ source "$ENGINE/shared-files.sh"
 PROJ="$TMP/proj"; LAUNCHER="$PROJ/.ai-containers"
 mkdir -p "$LAUNCHER" "$TMP/app"
 for f in "${AI_CONTAINERS_SHARED_FILES[@]}"; do cp -p "$ENGINE/$f" "$LAUNCHER/$f"; done
-cp -R "$ENGINE/tools.d" "$ENGINE/services.d" "$LAUNCHER/"
+cp -R "$ENGINE/tools.d" "$LAUNCHER/"
+# services.d only where the engine has one: mgd-ai-containers has no database servers.
+[[ ! -d "$ENGINE/services.d" ]] || cp -R "$ENGINE/services.d" "$LAUNCHER/"
 "${G[@]}" -C "$PROJ" init -q && printf 'x\n' > "$PROJ/README" && "${G[@]}" -C "$PROJ" add README \
   && "${G[@]}" -C "$PROJ" commit -qm init \
   || { printf 'SCAFFOLD-FAILED: cannot create the project repository\n'; exit 1; }

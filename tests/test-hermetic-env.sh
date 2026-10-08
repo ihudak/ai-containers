@@ -31,11 +31,29 @@ scrubs "$REPO_DIR/tests/run-all.sh" \
   && pass "run-all.sh unsets the developer's pointers for every test" \
   || fail "run-all.sh unsets ${need[*]} before running tests"
 
-# A test that EXECUTES sandbox.sh (not one that only reads its text).
+# A test that EXECUTES sandbox.sh (not one that only reads its text): only the
+# lines that run — no comment, no heredoc body (a fixture runme.sh written to a
+# file), no single-quoted string (a `grep -qxF './sandbox.sh "$@"'`) — and
+# sandbox.sh as the command, or what bash/exec runs.
+code_lines() {
+  awk '
+    hd != "" { t = $0; sub(/^\t+/, "", t); if (t == hd) hd = ""; next }
+    /^[[:space:]]*#/ { next }
+    {
+      line = $0
+      if (match(line, /<<-?[[:space:]]*["'"'"']?[A-Za-z_][A-Za-z_0-9]*/)) {
+        hd = substr(line, RSTART, RLENGTH); sub(/^<<-?[[:space:]]*["'"'"']?/, "", hd)
+      }
+      gsub(/'"'"'[^'"'"']*'"'"'/, "", line)
+      print line
+    }' "$1"
+}
 n=0; bad=""
 for f in "$REPO_DIR"/tests/test-*.sh; do
   [[ "$f" == "${BASH_SOURCE[0]}" || "${f##*/}" == test-hermetic-env.sh ]] && continue
-  if grep -qE '^[^#]*(bash|exec)[^#|]*sandbox\.sh["]?[[:space:]]+("?\$[0-9{]|restricted|open|discovery|--version|version|-V)|^[^#]*\./sandbox\.sh[[:space:]]+(restricted|open|discovery|"?\$)' "$f"; then
+  # Not `code_lines | grep -q`: under pipefail, grep's early exit kills awk and
+  # the match reads as a miss.
+  if grep -qE '^[^#]*(bash|exec)[^#|]*sandbox\.sh["]?[[:space:]]+("?\$[0-9{]|restricted|open|discovery|--version|version|-V)|(^|[;&|(]|then|do)[[:space:]]*("?\$\{?[A-Za-z_][A-Za-z_0-9]*\}?/|\./)sandbox\.sh"?[[:space:]]+(restricted|open|discovery|"?\$)' < <(code_lines "$f"); then
     n=$((n + 1))
     scrubs "$f" || bad+=" ${f##*/}"
   fi

@@ -468,8 +468,13 @@ launcher_engine_in() {  # $1=project dir → IT_ENGINE_DIR=$1/.ai-containers
   for f in "${AI_CONTAINERS_SHARED_FILES[@]}"; do
     cp -p "$IT_REPO_DIR/$f" "$dest/$f" || { fail "launcher_engine_in: cannot copy $f"; return 1; }
   done
-  cp -R "$IT_REPO_DIR/tools.d" "$IT_REPO_DIR/services.d" "$dest/" \
-    || { fail "launcher_engine_in: cannot copy tools.d/services.d"; return 1; }
+  cp -R "$IT_REPO_DIR/tools.d" "$dest/" \
+    || { fail "launcher_engine_in: cannot copy tools.d"; return 1; }
+  # services.d only where the engine has one: mgd-ai-containers has no database servers.
+  if [[ -d "$IT_REPO_DIR/services.d" ]]; then
+    cp -R "$IT_REPO_DIR/services.d" "$dest/" \
+      || { fail "launcher_engine_in: cannot copy services.d"; return 1; }
+  fi
   IT_ENGINE_DIR="$dest"
   return 0
 }
