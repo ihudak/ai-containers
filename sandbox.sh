@@ -308,12 +308,15 @@ add_file_mount_if_exists() {
 # holds a copy, a file mount holds no directory, and a :ro bind is read-only
 # already. Sources are canonicalised physically (`pwd -P`) and compared by path
 # component, so /x/pro does not contain /x/proj. A mount that IS a launcher —
-# an engine checkout as the working dir, or a mount rooted at a project's
+# one rooted at the engine itself (a checkout whose root holds the engine, as
+# the working dir, or an engine directory nested in a checkout, such as
+# mgd-ai-containers' base/, mounted on its own), or one rooted at a project's
 # .ai-containers — cannot be made read-only without making that work impossible,
-# so it is named with a NOTE instead. Launchers are handled shallowest-first:
-# once a directory is overlaid read-only, everything inside it already is, so a
-# launcher nested in another is skipped rather than pinned — a :rw pin there
-# would punch a writable hole in the read-only parent.
+# so it is named with a NOTE instead. An engine reached INSIDE a larger writable
+# mount is a launcher like any other and is overlaid. Launchers are handled
+# shallowest-first: once a directory is overlaid read-only, everything inside
+# it already is, so a launcher nested in another is skipped rather than pinned —
+# a :rw pin there would punch a writable hole in the read-only parent.
 #
 # Robustness is part of the guarantee, because sandbox.sh runs under
 # `set -euo pipefail` and an agent can name directories: everything here stays
