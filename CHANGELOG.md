@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## v0.10.4 — 2026-10-08
+
 ### Security
 
 - **Root's git no longer trusts the agent's repositories.** v0.10.3 fixed git
