@@ -220,6 +220,26 @@ setup_sandbox_user() {
   find "$home_dir" -xdev -exec chown "$uid:$gid" {} + 2>/dev/null || true
 
   sandbox_user="$(getent passwd "$uid" | cut -d: -f1)"
+  trust_repositories_for_sandbox_user
+}
+
+# git refuses a repository another user owns ("detected dubious ownership"), and
+# on Colima a host bind's mount root shows as owned by root in here, so git
+# refused every command in a host-path primary. Trust every repository for the
+# SANDBOX USER ONLY, in its own global config. Never in the image's system
+# config: root reads that too, and root's git would then run what an agent wrote
+# into a repository's .git/config (core.fsmonitor, a hook) the first time a
+# `docker exec` as root, docker's default here, ran git in it. That is root with
+# the container's NET_ADMIN, which can lift the firewall.
+#
+# ~/.config/git/config, not ~/.gitconfig: that one is the host's, mounted
+# read-only. Written AS the user, so root never writes into a directory the
+# agent owns. A failure costs git on Colima, not the start. Case 315 asserts both.
+trust_repositories_for_sandbox_user() {
+  # shellcheck disable=SC2016  # expanded by the user's shell, with its HOME
+  as_sandbox_user sh -c 'mkdir -p "$HOME/.config/git" &&
+    git config --file "$HOME/.config/git/config" --replace-all safe.directory "*"' \
+    || printf 'WARNING: could not set safe.directory for %s; git may refuse a mounted repository\n' "$sandbox_user" >&2
 }
 
 # /workspace is an in-image umbrella directory (root-owned by default) onto which

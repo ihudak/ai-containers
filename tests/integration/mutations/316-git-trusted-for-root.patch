@@ -1,0 +1,22 @@
+# case: 315-git-trusts-unowned-repo
+# what: safe.directory=* goes back into the image's SYSTEM git config, as
+#       v0.10.3 had it. Root reads that too, so root's git trusts the agent's
+#       repository and runs the core.fsmonitor the agent planted in it.
+#
+#       Expected: "root's git refuses a repository the agent owns, and runs
+#       nothing from it" FAILs, with the fsmonitor reported as run by uid 0.
+#
+#       NEEDS A REBUILD. This patch changes the Dockerfile; see
+#       310-make-not-installed.patch for why --reuse-image would test an image
+#       that predates it.
+#
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -483,6 +483,7 @@
+ # the first time a `docker exec` as root, docker's default here, ran git in it.
+ # v0.10.3 set it here and did exactly that. The user's own config carries it:
+ # entrypoint.sh: `trust_repositories_for_sandbox_user()`. Case 315 asserts both.
++RUN git config --system --add safe.directory '*'
+ 
+ # ── Optional: kubectl ───────────────────────────────────────────────────────────
+ ARG INSTALL_KUBECTL=0

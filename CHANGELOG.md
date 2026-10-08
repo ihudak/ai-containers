@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Security
+
+- **Root's git no longer trusts the agent's repositories.** v0.10.3 fixed git
+  on Colima by setting `safe.directory=*` in the image's system git config,
+  which root reads too. git's ownership check had been what kept root from
+  running settings someone else wrote into a repository, so from v0.10.3 a
+  `docker exec` without `-u` (root, since the image names no user) that ran
+  git in a repository the agent made, such as `git status` in a new
+  subdirectory or a writable repo volume, ran whatever command the agent had
+  put in its `core.fsmonitor`, as root, with the container's `NET_ADMIN`.
+  Repositories that existed at launch were not exposed, because their config
+  is mounted read-only. The setting now lives in the sandbox user's own
+  `~/.config/git/config`, written by the entrypoint as that user, so git on
+  Colima still works for the agent and root refuses as before. Rebuild the
+  image to pick it up.
+
+### Fixed
+
+- **The mutation tier seeds from a worktree of a bare repository.** The seed
+  copied the bare repository's `core.bare=true`, and git would not use the
+  scratch tree.
+
 ## v0.10.3 — 2026-10-08
 
 ### Fixed

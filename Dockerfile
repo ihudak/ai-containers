@@ -473,22 +473,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ln -s /usr/bin/fdfind /usr/local/bin/fd && \
     rm -rf /var/lib/apt/lists/*
 
-# ── git trusts every repository in the container ────────────────────────────────
-# git refuses a repository whose directory another user owns ("detected dubious
-# ownership"), and on Colima a host bind's mount root is reported as owned by
-# ROOT inside the container, though the host and the VM both show your uid: a
-# host-path primary or EXTRA_MOUNTS entry had git refusing every command there.
-# Repo volumes escaped it only because repo.sh chowns them.
-#
-# The check guards a user from running config planted by another. Here every
-# writable directory under /workspace is the agent's, what the user protects is
-# mounted read-only, and nothing in the container runs git as root (a `docker
-# exec` as root should not either; run it with -u as the agent). So `*`: git
-# 2.43 has no `/workspace/*` prefix form — measured, it still refuses. System
-# scope, in the image: never the group's .gitconfig, which sandbox.sh replaces
-# with the host's copy at every start, and which in the `host` group is the
-# host's own file. Integration case 315 asserts it.
-RUN git config --system --add safe.directory '*'
+# ── git's ownership check stays on for root ─────────────────────────────────────
+# No safe.directory in the image's system config. git refuses a repository
+# another user owns ("detected dubious ownership"), and on Colima a host bind's
+# mount root shows as owned by root inside the container, so the sandbox user
+# needs `*` (git 2.43 has no `/workspace/*` prefix form; measured, it still
+# refuses). But root reads the system config too, and root's git would then run
+# what an agent wrote into a repository's .git/config (core.fsmonitor, a hook)
+# the first time a `docker exec` as root, docker's default here, ran git in it.
+# v0.10.3 set it here and did exactly that. The user's own config carries it:
+# entrypoint.sh: `trust_repositories_for_sandbox_user()`. Case 315 asserts both.
 
 # ── Optional: kubectl ───────────────────────────────────────────────────────────
 ARG INSTALL_KUBECTL=0
