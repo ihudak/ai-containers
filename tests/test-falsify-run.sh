@@ -2334,4 +2334,30 @@ check "  … one that stays unmeasurable still FAILS, so the guard keeps its tee
 check "  … and one RED on undamaged code fails on the FIRST attempt, never retried" \
   "1|FAIL|no" "$(ctl_case red)"
 
+# ── seeding from a linked worktree ────────────────────────────────────────────
+# The worktree's .git is a FILE; the seed copies the common git directory and
+# gives it this worktree's HEAD and index. Of a bare repository too, whose
+# config says core.bare=true: copied as-is, git refuses to use the scratch tree.
+wt_G=(git -c user.name=t -c user.email=t@t -c init.defaultBranch=main)
+wt_dir="$TMP/wtseed"; mkdir -p "$wt_dir"
+"${wt_G[@]}" init -q "$wt_dir/main" && printf 'a\n' > "$wt_dir/main/f" \
+  && "${wt_G[@]}" -C "$wt_dir/main" add f && "${wt_G[@]}" -C "$wt_dir/main" commit -qm one \
+  && "${wt_G[@]}" -C "$wt_dir/main" worktree add -q -b wt "$wt_dir/wt" \
+  && printf 'b\n' > "$wt_dir/wt/g" && "${wt_G[@]}" -C "$wt_dir/wt" add g && "${wt_G[@]}" -C "$wt_dir/wt" commit -qm two \
+  && git clone -q --bare "$wt_dir/main" "$wt_dir/bare.git" \
+  && "${wt_G[@]}" -C "$wt_dir/bare.git" worktree add -q "$wt_dir/bwt" main \
+  || { printf 'SCAFFOLD-FAILED: cannot build the worktree fixtures\n'; exit 1; }
+wt_seed() {   # <worktree> <dest> → "<rc>|<branch>|<status>|<worktree records>"
+  ( set +u
+    # shellcheck source=/dev/null
+    source "$RUN" >/dev/null 2>&1
+    falsify_seed_tree "$1" "$2" >/dev/null 2>&1; rc=$?
+    printf '%s|%s|%s|%s' "$rc" "$(git -C "$2" rev-parse --abbrev-ref HEAD 2>&1)" \
+      "$(git -C "$2" status --porcelain 2>&1 | tr '\n' ' ')" "$(ls "$2/.git/worktrees" 2>/dev/null)" )
+}
+check "a linked worktree seeds a clean tree on the worktree's own branch" \
+  "0|wt||" "$(wt_seed "$wt_dir/wt" "$TMP/wtseed-dest")"
+check "  … and so does a linked worktree of a BARE repository" \
+  "0|main||" "$(wt_seed "$wt_dir/bwt" "$TMP/wtseed-bare-dest")"
+
 printf '\n%d failure(s)\n' "$fails"; exit "$fails"

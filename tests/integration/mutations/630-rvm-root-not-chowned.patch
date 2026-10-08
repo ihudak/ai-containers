@@ -1,11 +1,9 @@
 # case: 630-rvm-volume-writable
 # what: BOTH providers of the rvm mount-root chown are removed — chown_rvm_root and setup_sandbox_user's recursive find -xdev, which chowns a mount point without descending into it
 #
-diff --git a/entrypoint.sh b/entrypoint.sh
-index 25b5795..098b960 100755
 --- a/entrypoint.sh
 +++ b/entrypoint.sh
-@@ -32,7 +32,7 @@ chown_rvm_root() {
+@@ -71,7 +71,7 @@
    [[ -n "${RUBY_VERSIONS:-}" ]] || return 0
    local d="/home/$sandbox_user/.rvm"
    [[ -d "$d" ]] || return 0
@@ -14,7 +12,7 @@ index 25b5795..098b960 100755
  }
  
  # Bootstrap/reconcile the per-user rvm (~/.rvm, group-mounted) as the sandbox
-@@ -124,7 +124,7 @@ setup_sandbox_user() {
+@@ -217,7 +217,7 @@
    # volumes (.ssh, .copilot, .config/gh, .local/share/kiro-cli, etc.) by using
    # -xdev to stay on the same filesystem as $home_dir.
    chown "$uid:$gid" "$home_dir"
@@ -22,4 +20,4 @@ index 25b5795..098b960 100755
 +  : # MUTATION: the recursive home chown is gone too
  
    sandbox_user="$(getent passwd "$uid" | cut -d: -f1)"
- }
+   trust_repositories_for_sandbox_user

@@ -562,10 +562,13 @@ falsify_seed_tree() {   # <repo> <dest> — tracked files + .git, nothing else
   # From a linked worktree, the copy is the main repository's: give it this
   # worktree's HEAD and index, and none of the main repository's worktree
   # records. Copying the .git FILE instead would leave the scratch tree sharing
-  # the real worktree's index, which an oracle's git could rewrite.
+  # the real worktree's index, which an oracle's git could rewrite. A bare main
+  # repository's config says core.bare=true, and git will not use a work tree
+  # under it; _fr_verify_seed below catches it if this does not take.
   if [[ "$src" != "$repo/.git" ]]; then
     cp -p "$gitdir/HEAD" "$dest/.git/HEAD" && cp -p "$gitdir/index" "$dest/.git/index" || return 1
     rm -rf "$dest/.git/worktrees"
+    git --git-dir="$dest/.git" config core.bare false 2>/dev/null
   fi
   _fr_verify_seed "$repo" "$dest" "the pristine cache" || return 1
 }
