@@ -200,12 +200,16 @@ Agent dotfile directories are sourced from the active container group (`~/.ai-co
 | `<group>/.azure/` | `~/.azure` | read-write | `azure-cli` |
 | `<group>/.kube/` | `~/.kube` | read-write | `kubectl` |
 | `<group>/.yarn/` ³ | `~/.yarn` | read-write | `yarn` |
+| `<group>/.gradle/` ⁴ | `~/.gradle` | read-write | any JVM key (`openjdk`, `graalvm-ce`, `graalvm-oracle`, `kotlin`, `scala`, `maven`, `gradle`) |
+| `<group>/.m2/` ⁴ | `~/.m2` | read-write | any JVM key |
 
 ¹ `sandbox.sh` copies these files from `$HOME` into the group directory on every container start and mounts from the copy. This avoids a macOS VirtioFS issue where atomically replacing a file on the host (as git and most editors do) causes the bind-mounted view inside the container to become unreadable. If you edit either file while a container is running, restart the container to pick up the changes.
 
 ² Tool config dirs declared via `tools.d/` (`config_dir=` in the tool's descriptor — currently `dtctl`, `dtmgd`) are group-scoped like agent dotfiles. The first time a group needs one, it is seeded once from the host's copy at `$HOME` if one exists (otherwise created empty); every later run mounts the group's copy instead, so a sandboxed agent never writes to your real host config. A descriptor may list several space-separated paths in `config_dir=`, for a tool that splits its config and its credentials across two directories; each path is group-scoped and mounted.
 
 ³ `.aws`, `.azure`, `.kube` and `.yarn` were mounted straight from `$HOME` until they joined the group — they predate the group system. The first three are part of the slice a new group inherits when you bootstrap it `from:host` or `from:<group>`; `.yarn` is mounted but deliberately **not** copied, because it is a regenerable package cache (berry's reaches gigabytes) rather than a credential, the same call made for `.ai-tools`, `.rvm` and `.cache/ms-playwright`. A group that **already existed** before this change inherits nothing — it gets an empty directory, and the container starts with no AWS credentials and no kubeconfig until you copy them across once: `cp -a ~/.aws ~/.azure ~/.kube ~/.ai-containers/<group>/`.
+
+⁴ Containers run with `--rm`, so before these two were mounted every start downloaded the Gradle wrapper's distribution and every dependency again. Any JVM key turns them on, because `./gradlew` and `./mvnw` need only a JDK, not the `gradle`/`maven` keys. They are caches, so a bootstrapped group does not copy them; a `gradle.properties` or `settings.xml` holding repository credentials goes in the group's copy (`~/.ai-containers/<group>/.gradle/`, `.m2/`). Two containers of one group building at the same moment share Gradle's file locks, but Gradle asks a lock's holder to release it over loopback, which does not reach another container, so the second build can fail after Gradle's 60-second lock timeout. Restarts are unaffected.
 
 When `AI_CONTAINER_GROUP=host`, all group-scoped paths above are sourced directly from `$HOME` instead (including `.gitconfig`, `.gitignore_global`, and the tool config dirs).
 
