@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Gradle and Maven no longer download everything again on every start.**
+  Containers run with `--rm`, and `~/.gradle` and `~/.m2` lived in the
+  container layer, so `./gradlew build` after a restart fetched the Gradle
+  distribution and every dependency anew. Both are now group-scoped
+  (`~/.ai-containers/<group>/.gradle`, `.m2`) whenever any JVM key is set,
+  since `./gradlew` and `./mvnw` need only a JDK. They are caches, so a group
+  bootstrapped `from:host` or `from:<group>` starts with them empty. Two
+  containers of one group building at once can make the second wait out
+  Gradle's 60-second lock timeout, because Gradle's lock hand-off goes over
+  loopback, which does not cross containers. Nothing to rebuild.
 - **`REPOS_PATH` no longer hands the container a host path.** The plugins
   that read it run on the host too, so a host profile exporting
   `REPOS_PATH=~/dev/code` is ordinary, and the launcher forwarded that value
