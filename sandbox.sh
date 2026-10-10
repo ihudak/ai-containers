@@ -1505,6 +1505,39 @@ pointer_already_mounted_as() {
   return 1
 }
 
+# REPOS_PATH as the container must see it. The same plugins run on the host, so
+# a host profile exporting REPOS_PATH as a HOST directory is ordinary, and
+# forwarding it verbatim handed the container a path that does not exist there
+# (reported 2026-10-10). Everything the launcher mounts lands under /workspace,
+# so a value there is an in-container path and is kept. Any other value names a
+# host directory: it is mapped through the first host bind holding it (when
+# binds nest, each gives a path to the same files), or becomes /workspace when
+# none does, the usual case being a directory that HOLDS the mounted checkouts.
+#
+# $1 = configured value (may be empty), $2.. = docker mount flags. Echoes the
+# in-container path.
+repos_path_in_container() {
+  local val="$1"; shift
+  case "$val" in
+    "") printf '/workspace'; return 0 ;;
+    /workspace|/workspace/*) printf '%s' "$val"; return 0 ;;
+  esac
+  local host arg src dst
+  host="$(resolve_path "${val/#\~/$HOME}")"
+  for arg in "$@"; do
+    # A host bind's value is `/src:/workspace/<name>[:mode]`; a volume's source
+    # does not start with `/`, and holds no host directory to map.
+    [[ "$arg" == /*:/workspace* ]] || continue
+    src="${arg%%:/workspace*}"
+    dst="${arg#"$src:"}"; dst="${dst%%:*}"
+    if [[ "$host" == "$src" || "$host" == "$src"/* ]]; then
+      printf '%s%s' "$dst" "${host#"$src"}"
+      return 0
+    fi
+  done
+  printf '/workspace'
+}
+
 # Device and inode of a path, "<dev> <ino>": GNU `stat -c` or BSD `stat -f`
 # (macOS has only the latter). The platform is probed once, on `/` (always
 # searchable — a probe of `.` fails in an unsearchable working directory and
@@ -2316,6 +2349,15 @@ run_container() {
     fi
   fi
 
+  local repos_path_ctr
+  repos_path_ctr="$(repos_path_in_container "${REPOS_PATH:-}" \
+    ${extra_mount_flags[@]+"${extra_mount_flags[@]}"} \
+    ${repo_mount_flags[@]+"${repo_mount_flags[@]}"} \
+    ${vault_mount_flags[@]+"${vault_mount_flags[@]}"} \
+    ${specs_mount_flags[@]+"${specs_mount_flags[@]}"} \
+    ${docs_mount_flags[@]+"${docs_mount_flags[@]}"} \
+    ${arch_mount_flags[@]+"${arch_mount_flags[@]}"})"
+
   # Every -e this launch passes, in one array: container_env_filter reads the names
   # from it, so a key added here is refused from container.env with no second edit.
   local launcher_env=(
@@ -2333,7 +2375,7 @@ run_container() {
     -e AI_RUNTIME_TOOLS="$(runtime_tools_csv)"
     -e RUBY_VERSIONS="$(versions_to_space "$(version_list ruby)")"
     -e AI_SERVICES="$(services_csv)"
-    -e REPOS_PATH="${REPOS_PATH:-/workspace}"
+    -e REPOS_PATH="$repos_path_ctr"
     # Copilot CLI lists skills for the model within this many characters (its
     # own default is 15000) and lists a skill past it by name only, with no
     # description. A default, not a constant: a host value wins, as for REPOS_PATH.
