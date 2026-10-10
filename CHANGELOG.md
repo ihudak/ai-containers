@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Fixed
+
+- **`graphify` installs again on Python 3.15.** The image takes pyenv's
+  newest Python, which became 3.15.0 this week; graphify pins
+  `tree-sitter<0.26`, whose wheels stop at 3.14, so uv built it from source
+  and failed for want of `gcc` (the image has none unless `c-toolchain=ON`).
+  The container still started, with no `graphify`. A failed `uv tool install`
+  is now retried once on the previous Python minor, which uv downloads into
+  the group's `~/.ai-tools/uv/python` when the image lacks it, so the tool
+  survives restarts. The version is computed from the image's, so the next
+  CPython release needs no change. Rebuild the image to pick it up.
+
 ## v0.10.5 — 2026-10-10
 
 ### Added

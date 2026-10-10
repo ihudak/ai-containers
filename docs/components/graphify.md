@@ -1,6 +1,6 @@
 # graphify — code-to-knowledge-graph tool
 
-`graphify` transforms code, docs, and other files into interactive knowledge graphs using Claude AI. It is a Claude Code skill — the binary is installed into the image at build time, but the skill must be registered in `~/.claude/` once at runtime.
+`graphify` transforms code, docs, and other files into interactive knowledge graphs using Claude AI. It is a Claude Code skill — the binary installs at container start into the group's `~/.ai-tools` (see [Agent-tier tools](../agent-tools.md)), but the skill must be registered in `~/.claude/` once at runtime.
 
 ```bash
 graphify=ON    # install the graphify binary (PyPI package graphifyy — double-y)
@@ -14,6 +14,8 @@ graphify install   # registers the Claude Code skill; persists via the ~/.claude
 ```
 
 Because `~/.claude/` is bind-mounted from the host, running `graphify install` once inside any container makes the skill available in every subsequent container start without reinstalling.
+
+> **Note:** graphify depends on `tree-sitter`, which publishes compiled wheels and can lag a new CPython release. When the install fails on the image's Python, it is retried once on the previous minor, downloaded into the group's `~/.ai-tools/uv/python` if the image lacks it (see [Agent-tier tools](../agent-tools.md)).
 
 > **Note:** Persistence requires `claude-code=ON` in `sandbox.conf`, which is what provides the `~/.claude/` host bind-mount.
 

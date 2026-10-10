@@ -924,6 +924,7 @@ RUN install -d /etc/skel/.local/bin && \
     printf '%s\n' \
       'export UV_TOOL_DIR="$HOME/.ai-tools/uv"' \
       'export UV_TOOL_BIN_DIR="$HOME/.ai-tools/uv/bin"' \
+      'export UV_PYTHON_INSTALL_DIR="$HOME/.ai-tools/uv/python"' \
       'export PATH="$HOME/.local/bin:$PATH"' \
       'npm-agent-tools() { npm --prefix "$HOME/.ai-tools/npm" "$@"; }' \
       | tee /etc/profile.d/ai-tools.sh >> /etc/bash.bashrc
