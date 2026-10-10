@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## v0.10.5 — 2026-10-10
+
 ### Added
 
 - **`mkdocs=ON` installs MkDocs with the Material theme.** A project that
@@ -20,6 +22,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   already allowlisted, so it works in `restricted` mode. Existing projects get
   the key, as `mkdocs=OFF`, on their next sync; the reconcile and link scripts
   are baked into the image, so rebuild after turning it on (`./runme.sh` does).
+
 ### Fixed
 
 - **Gradle and Maven no longer download everything again on every start.**
