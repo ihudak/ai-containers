@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Fixed
+
+- **`REPOS_PATH` no longer hands the container a host path.** The plugins
+  that read it run on the host too, so a host profile exporting
+  `REPOS_PATH=~/dev/code` is ordinary, and the launcher forwarded that value
+  as it was: a path that does not exist in the container. A value under
+  `/workspace` is still kept; any other is now translated to where that host
+  directory appears in the container (the same place under a bind mount's
+  mount point when one holds it), or `/workspace` when none does, the usual
+  case being a directory that holds the mounted checkouts. Nothing to
+  rebuild: the launcher computes it at each start.
+
 ## v0.10.4 — 2026-10-08
 
 ### Security

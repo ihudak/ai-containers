@@ -15,8 +15,17 @@
 # the default and the env files stay pure override, which is also what makes the
 # ordinary precedence (inline > sandbox.local.env > sandbox.env) apply for free.
 #
-# SCOPE. The two facts that belong to THIS variable: the default is composed when
-# nothing is configured, and a configured value replaces it. The precedence
+# A HOST PATH IS TRANSLATED, NEVER FORWARDED. The same plugins run on the host,
+# so a host profile exporting REPOS_PATH=~/dev/code is ordinary — and sandbox.sh
+# forwarded it verbatim, handing the container a path that does not exist there.
+# Everything the launcher mounts lands under /workspace, so a value there is an
+# in-container path and is kept; any other value names a host directory and is
+# mapped through the bind mounts, falling back to /workspace when it is not
+# itself mounted (the usual case: a directory HOLDING the mounted checkouts).
+#
+# SCOPE. The facts that belong to THIS variable: the default is composed when
+# nothing is configured, an in-container value replaces it, and a host value is
+# translated. The precedence
 # BETWEEN sandbox.env and sandbox.local.env is load_env_defaults' behaviour and
 # is covered by tests/test-sandbox-env.sh; asserting it again here would need a
 # second isolated engine tree, the hand-picked-file-copy pattern that has already
@@ -93,6 +102,74 @@ if grep -qx "REPOS_PATH=/workspace/code" "$CAPTURE" && ! grep -qx "REPOS_PATH=/w
 else
   fail "configured REPOS_PATH overrides the default (got: $(grep '^REPOS_PATH=' "$CAPTURE" || echo '<absent>'))"
 fi
+teardown
+
+# Asserts the ONE REPOS_PATH line the container gets. Exactly one: a launcher
+# that passed both the translated value and the raw host one would leave which
+# wins to docker's argument order.
+expect_repos_path() {
+  local want="$1" label="$2" got
+  got="$(grep '^REPOS_PATH=' "$CAPTURE" || true)"
+  if [[ "$got" == "REPOS_PATH=$want" ]]; then
+    pass "$label"
+  else
+    fail "$label (want REPOS_PATH=$want, got: ${got:-<absent>})"
+  fi
+}
+
+# ── Case 3: a host directory HOLDING the mounted checkout → /workspace ───────
+# The reported setup: a host profile exports REPOS_PATH as the directory the
+# project lives in, and the project is the primary. That directory itself is
+# not mounted; what it holds is, under /workspace.
+setup
+mkdir -p "$TMP/code/app"
+export REPOS_PATH="$TMP/code"
+run_sandbox "$TMP/code/app"
+expect_repos_path /workspace "host directory holding the primary → REPOS_PATH=/workspace, not the host path"
+teardown
+
+# ── Case 4: a host directory that IS mounted → its mount point ───────────────
+setup
+mkdir -p "$TMP/code/app"
+export REPOS_PATH="$TMP/code"
+run_sandbox "$TMP/code"
+expect_repos_path /workspace/code "host directory mounted as the primary → its /workspace mount point"
+teardown
+
+# ── Case 5: a host directory INSIDE a mount → the same place under it ────────
+setup
+mkdir -p "$TMP/app" "$TMP/src/repos"
+export EXTRA_MOUNTS="$TMP/src"
+export REPOS_PATH="$TMP/src/repos"
+run_sandbox "$TMP/app"
+expect_repos_path /workspace/src/repos "host directory inside an EXTRA_MOUNTS path → the same subpath under its mount"
+teardown
+
+# ── Case 6: an unexpanded ~ (how sandbox.env/sandbox.local.env hand it over) ──
+# load_env_defaults stores values literally, so `REPOS_PATH=~/code` arrives with
+# the tilde intact — exactly as DOCS_PATH and friends can.
+setup
+mkdir -p "$HOME/code"
+# shellcheck disable=SC2088  # the unexpanded tilde IS the input under test
+export REPOS_PATH='~/code'
+run_sandbox "$HOME/code"
+expect_repos_path /workspace/code "a literal ~/ prefix is the host home, then translated"
+teardown
+
+# ── Case 7: a name merely SHARING a prefix is not inside the mount ───────────
+# $TMP/app-old is not under $TMP/app, and /workspaces is not under /workspace:
+# a string-prefix test without the separator would map or keep each.
+setup
+mkdir -p "$TMP/app" "$TMP/app-old"
+export REPOS_PATH="$TMP/app-old"
+run_sandbox "$TMP/app"
+expect_repos_path /workspace "a sibling sharing the mount's prefix is not inside it"
+teardown
+setup
+mkdir -p "$TMP/app"
+export REPOS_PATH=/workspaces
+run_sandbox "$TMP/app"
+expect_repos_path /workspace "/workspaces is a host path, not one under /workspace"
 teardown
 
 printf '\n%d failure(s)\n' "$fails"
