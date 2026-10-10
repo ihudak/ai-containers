@@ -23,6 +23,15 @@ ok=1
 [[ "$ok" == 1 ]] && pass "links all present tools (npm/uv/bin sources)" || fail "links all present tools"
 rm -rf "$h" "$d"
 
+# ── mkdocs is a uv tool like graphify, linked only when enabled ──
+h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; d="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
+mk_tool "$h" uv/bin/mkdocs
+AI_RUNTIME_TOOLS="mkdocs" bash "$REPO_DIR/link-agent-tools.sh" "$h" "$d" >/dev/null 2>&1
+[[ -L "$d/mkdocs" && "$(readlink "$d/mkdocs")" == "$h/.ai-tools/uv/bin/mkdocs" ]] && pass "links mkdocs from uv/bin" || fail "links mkdocs from uv/bin"
+AI_RUNTIME_TOOLS="vale" bash "$REPO_DIR/link-agent-tools.sh" "$h" "$d" >/dev/null 2>&1
+[[ ! -e "$d/mkdocs" && ! -L "$d/mkdocs" ]] && pass "mkdocs link dropped once mkdocs is not enabled" || fail "mkdocs link dropped once mkdocs is not enabled"
+rm -rf "$h" "$d"
+
 # ── Only links what exists (missing gemini is skipped, no dangling link) ──
 h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; d="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; mk_tool "$h" npm/bin/claude
 AI_RUNTIME_TOOLS="claude-code,gemini" bash "$REPO_DIR/link-agent-tools.sh" "$h" "$d" >/dev/null 2>&1

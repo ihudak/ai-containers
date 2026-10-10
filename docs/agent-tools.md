@@ -2,7 +2,7 @@
 
 ## Keeping tools up to date
 
-The AI agents (Copilot CLI, Claude Code, Codex CLI, Gemini CLI), `graphify`, and `vale` are **not** baked into the image at all — see [Agent-tier tools (`~/.ai-tools`)](#agent-tier-tools-ai-tools) below for how they stay current without ever rebuilding.
+The AI agents (Copilot CLI, Claude Code, Codex CLI, Gemini CLI), `graphify`, `vale` and `mkdocs` are **not** baked into the image at all — see [Agent-tier tools (`~/.ai-tools`)](#agent-tier-tools-ai-tools) below for how they stay current without ever rebuilding.
 
 **Kiro CLI** and every `tools.d`-described tool (`dtctl`, `dtmgd`, `acli`) *are* baked into the image at build time, and Docker caches those layers — a plain `./build.sh` will *not* pick up a newer release of any of them. To refresh, from your project's `.ai-containers/` directory:
 
@@ -22,7 +22,7 @@ docker builder prune --filter unused-for=720h
 
 ## Agent-tier tools (`~/.ai-tools`)
 
-Mirroring [Ruby (via rvm)](components/ruby.md): nothing agent-tier is baked into the image. Codex CLI, Gemini CLI, Copilot CLI, `graphify`, and `vale` install at **container start** into a per-user `~/.ai-tools` home (npm prefix `~/.ai-tools/npm`, `graphify`'s `uv` tool dir `~/.ai-tools/uv`, `vale`'s binary in `~/.ai-tools/bin`); **Claude Code** installs the same way but through its own **native** installer, into `~/.local/share/claude`. All of them are mounted from the active container **group** — the same mechanism as `~/.claude`/`~/.codex`/`~/.gemini` (see [Host configuration mounts](repos-and-mounts.md#host-configuration-mounts)) — so the install is shared by every project using that group and survives container restarts and rebuilds.
+Mirroring [Ruby (via rvm)](components/ruby.md): nothing agent-tier is baked into the image. Codex CLI, Gemini CLI, Copilot CLI, `graphify`, `vale` and `mkdocs` install at **container start** into a per-user `~/.ai-tools` home (npm prefix `~/.ai-tools/npm`, the `uv` tool dir `~/.ai-tools/uv` for `graphify` and `mkdocs`, `vale`'s binary in `~/.ai-tools/bin`); **Claude Code** installs the same way but through its own **native** installer, into `~/.local/share/claude`. All of them are mounted from the active container **group** — the same mechanism as `~/.claude`/`~/.codex`/`~/.gemini` (see [Host configuration mounts](repos-and-mounts.md#host-configuration-mounts)) — so the install is shared by every project using that group and survives container restarts and rebuilds.
 
 `agent-tools-reconcile.sh` (running as the sandbox user at container start, `flock`-guarded against concurrent same-group container starts) installs whichever enabled tools are missing. Because the install lives in a user-writable directory instead of a root-owned, read-only image layer, a tool can be brought up to date in place, with no rebuild — but **whether a tool can update itself is per-tool, and each row below was established by running it in a container**, not inferred from how it was installed:
 
@@ -34,6 +34,7 @@ Mirroring [Ruby (via rvm)](components/ruby.md): nothing agent-tier is baked into
 | Gemini CLI | no — ships no update mechanism at all | the reconcile re-installs it **on every container start** |
 | `graphify` | yes | `uv tool upgrade graphify` |
 | `vale` | no self-update | delete `~/.ai-tools/bin/vale` and restart the container |
+| `mkdocs` | yes | `uv tool upgrade mkdocs` (keeps `mkdocs-material` in its environment) |
 
 Updating Codex and Gemini on every start costs about **7 s** with a warm npm cache (~24 s cold), measured in-container.
 

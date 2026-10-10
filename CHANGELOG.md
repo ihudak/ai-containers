@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Added
+
+- **`mkdocs=ON` installs MkDocs with the Material theme.** A project that
+  builds or serves a docs site (a `/docs-init` scaffold checks for `mkdocs`
+  before it writes anything) had no way to get it: nothing installed it, and
+  the agent cannot either, since a `uv tool install` puts the binary in
+  `~/.ai-tools/uv/bin`, which is deliberately not on `PATH`. It is an
+  agent-tier tool like `graphify`: installed at container start into the
+  group's `~/.ai-tools` (`uv tool install mkdocs --with mkdocs-material`,
+  because a uv tool sees only what it was installed with), linked onto
+  `PATH`, kept current with `uv tool upgrade mkdocs`. Off by default; PyPI is
+  already allowlisted, so it works in `restricted` mode. Existing projects get
+  the key, as `mkdocs=OFF`, on their next sync.
+
 ## v0.10.4 — 2026-10-08
 
 ### Security

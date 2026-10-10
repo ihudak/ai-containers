@@ -34,7 +34,9 @@ EOF
 #!/usr/bin/env bash
 echo "uv \$*" >> "$home/calls.log"
 if [[ "\$1 \$2" == "tool install" ]]; then
-  d="\${UV_TOOL_BIN_DIR:-$home/.ai-tools/uv/bin}"; install -d "\$d"; printf '#!/bin/sh\n' > "\$d/graphify"; chmod +x "\$d/graphify"
+  # The executable a package provides: graphify's PyPI name is graphifyy.
+  case "\$3" in graphifyy) b=graphify ;; *) b="\$3" ;; esac
+  d="\${UV_TOOL_BIN_DIR:-$home/.ai-tools/uv/bin}"; install -d "\$d"; printf '#!/bin/sh\n' > "\$d/\$b"; chmod +x "\$d/\$b"
 fi
 exit 0
 EOF
@@ -135,6 +137,22 @@ h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; run_case
   && ! grep -q '@github/copilot' "$h/calls.log" \
   && ! grep -q 'uv tool install' "$h/calls.log"; } \
   && pass "idempotent: self-updating tools not reinstalled" || fail "idempotent: self-updating tools not reinstalled"
+rm -rf "$h"
+
+# ── mkdocs: installed WITH mkdocs-material, once ──
+# /docs-init scaffolds a site whose only requirement is mkdocs-material, and a
+# uv tool's environment holds only what it was installed with — so a bare
+# `uv tool install mkdocs` gives an mkdocs that cannot build that site.
+h="$(run_case "mkdocs")"
+grep -qx 'uv tool install mkdocs --with mkdocs-material' "$h/calls.log" \
+  && pass "installs mkdocs with mkdocs-material in its environment" \
+  || fail "installs mkdocs with mkdocs-material in its environment (calls: $(grep '^uv' "$h/calls.log" | tr '\n' ';'))"
+[[ -x "$h/.ai-tools/uv/bin/mkdocs" ]] && pass "mkdocs lands at .ai-tools/uv/bin/mkdocs" || fail "mkdocs lands at .ai-tools/uv/bin/mkdocs"
+: > "$h/calls.log"; run_case "mkdocs" "$h" >/dev/null
+! grep -q 'uv tool install' "$h/calls.log" && pass "idempotent: mkdocs not reinstalled" || fail "idempotent: mkdocs not reinstalled"
+rm -rf "$h"
+h="$(run_case "graphify")"
+! grep -q 'mkdocs' "$h/calls.log" && pass "mkdocs not installed when not enabled" || fail "mkdocs not installed when not enabled"
 rm -rf "$h"
 
 # ── A FRESH CONTAINER over a WARM GROUP: the case the block above cannot see ──

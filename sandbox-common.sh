@@ -267,7 +267,7 @@ enabled_agents_csv() {
 # stays baked). Consumed by sandbox.sh (-e AI_RUNTIME_TOOLS) and agent-tools-reconcile.sh.
 runtime_tools_csv() {
   local a out=()
-  for a in claude-code copilot codex gemini graphify vale; do
+  for a in claude-code copilot codex gemini graphify vale mkdocs; do
     is_enabled "$a" && out+=("$a")
   done
   local IFS=,; printf '%s' "${out[*]}"

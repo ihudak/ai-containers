@@ -37,6 +37,7 @@ srcs=(
   "gemini:gemini:$home_root/npm/bin/gemini"
   "graphify:graphify:$home_root/uv/bin/graphify"
   "vale:vale:$home_root/bin/vale"
+  "mkdocs:mkdocs:$home_root/uv/bin/mkdocs"
 )
 
 # Exact-member test against the comma list: `codex` must not match `codex-foo`.

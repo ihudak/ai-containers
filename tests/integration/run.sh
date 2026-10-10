@@ -249,7 +249,7 @@ IT_RUBY_VERSIONS="${IT_RUBY_VERSIONS:-3.3.6,3.4.5}"
 variant_overrides() {  # $1=variant → space-separated key=value; rc 1 if unknown
   case "$1" in
     default) printf '' ;;
-    agents)  printf 'copilot=ON claude-code=ON codex=ON gemini=ON graphify=ON vale=ON node=22,20 yarn=ON pnpm=ON bun=ON qmd=ON' ;;
+    agents)  printf 'copilot=ON claude-code=ON codex=ON gemini=ON graphify=ON vale=ON mkdocs=ON node=22,20 yarn=ON pnpm=ON bun=ON qmd=ON' ;;
     native)  printf 'db-clients=pg,mysql,mongo imagemagick=ON wkhtmltopdf=ON playwright=ON postgres=ON ruby=%s' "$IT_RUBY_VERSIONS" ;;
     services) printf 'redis=ON mysql=ON mongo=ON' ;;
     mariadb) printf 'mariadb=11.4 db-clients=mysql' ;;

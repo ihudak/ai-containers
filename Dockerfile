@@ -912,7 +912,7 @@ RUN chmod +x /usr/local/bin/link-default-ruby.sh
 # a command's own flags. `npm-agent-tools` is a shell function, not an exported env
 # var, so it preserves the `npm update -g` self-update workflow (see AGENTS.md)
 # without exporting NPM_CONFIG_PREFIX globally, which would trip that same nvm check.
-# The six tools (Claude Code, Codex, Gemini, Copilot, graphify, Vale) install at
+# The seven tools (Claude Code, Codex, Gemini, Copilot, graphify, Vale, MkDocs) install at
 # container start via agent-tools-reconcile.sh; nothing agent-tier is baked.
 #
 # THE TOOL HOME'S BIN DIRS ARE NOT ON PATH. ~/.ai-tools is shared by every project in

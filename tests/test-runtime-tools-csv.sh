@@ -24,6 +24,9 @@ ENABLED_SET="kiro"
 ENABLED_SET="graphify vale copilot codex"
 [[ "$(runtime_tools_csv)" == "copilot,codex,graphify,vale" ]] && pass "graphify+vale included" || fail "graphify+vale must be included"
 
+ENABLED_SET="mkdocs vale"
+[[ "$(runtime_tools_csv)" == "vale,mkdocs" ]] && pass "mkdocs included" || fail "mkdocs must be included (got '$(runtime_tools_csv)')"
+
 # The REAL implementation in sandbox-common.sh must match this contract.
 grep -q 'runtime_tools_csv()' "$REPO_DIR/sandbox-common.sh" && pass "sandbox-common.sh defines runtime_tools_csv" || fail "sandbox-common.sh must define runtime_tools_csv"
 grep -q 'AI_RUNTIME_TOOLS' "$REPO_DIR/sandbox.sh" && pass "sandbox.sh passes AI_RUNTIME_TOOLS" || fail "sandbox.sh must pass AI_RUNTIME_TOOLS"
