@@ -18,7 +18,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   because a uv tool sees only what it was installed with), linked onto
   `PATH`, kept current with `uv tool upgrade mkdocs`. Off by default; PyPI is
   already allowlisted, so it works in `restricted` mode. Existing projects get
-  the key, as `mkdocs=OFF`, on their next sync.
+  the key, as `mkdocs=OFF`, on their next sync; the reconcile and link scripts
+  are baked into the image, so rebuild after turning it on (`./runme.sh` does).
 
 ## v0.10.4 — 2026-10-08
 
