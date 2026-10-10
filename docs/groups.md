@@ -27,6 +27,8 @@ The default group is named `default`. Its directory is `~/.ai-containers/default
 │   ├── .azure/            ← ditto, when azure-cli= is ON
 │   ├── .kube/             ← kubeconfig, when kubectl= is ON
 │   ├── .yarn/             ← yarn home, when yarn= is ON (mounted, never copied)
+│   ├── .gradle/           ← Gradle user home, when any JVM key is set (mounted, never copied)
+│   ├── .m2/               ← Maven repository, ditto
 │   ├── .rvm/              ← rvm + Ruby versions/gems (only when ruby= is set)
 │   ├── .config/dtctl/    ← tools.d config dir, seeded once from $HOME if present
 │   └── .config/dtmgd/    ← ditto
@@ -59,7 +61,7 @@ Group 'docs' not found. Initialize from:
 
 Pick `1)` to copy the group-scoped dotfile slice from `default` (or whichever group is listed first). Pick `host` to copy from `$HOME`. Pick `<empty>` to start with an empty group (only `.ssh/` and `.agents/` are scaffolded). Pick `q` to abort.
 
-The slice is credentials and settings — the agent dotfile dirs, `.ssh`, `.agents`, the `tools.d` config dirs, and `.aws`/`.azure`/`.kube`. Regenerable installs and caches are group-scoped but **not** copied (`.ai-tools`, `.rvm`, `.local/share/claude`, `.cache/ms-playwright`, `.yarn`): cloning a group should not clone gigabytes that each tool rebuilds by itself.
+The slice is credentials and settings — the agent dotfile dirs, `.ssh`, `.agents`, the `tools.d` config dirs, and `.aws`/`.azure`/`.kube`. Regenerable installs and caches are group-scoped but **not** copied (`.ai-tools`, `.rvm`, `.local/share/claude`, `.cache/ms-playwright`, `.yarn`, `.gradle`, `.m2`): cloning a group should not clone gigabytes that each tool rebuilds by itself.
 
 **Non-interactive (no TTY or scripted use):**
 

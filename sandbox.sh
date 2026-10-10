@@ -2146,6 +2146,25 @@ run_container() {
     fi
     add_mount_if_exists config_mount_flags "$group_root/.cache/ms-playwright" "$dev_home/.cache/ms-playwright"
   fi
+  # Gradle's and Maven's user homes hold the wrapper distributions (~130 MB per
+  # Gradle version) and every dependency a build downloads; with --rm, a start
+  # without these mounts fetched all of it again. Gated on ANY JVM key, not on
+  # gradle=/maven=: gradlew and mvnw need only a JDK. Mounted but not copied by
+  # _copy_group_slice, being caches like .yarn — though gradle.properties and
+  # settings.xml can hold repository credentials, which this keeps in the group.
+  #
+  # Concurrent builds in two containers of one group share the file locks, but
+  # Gradle asks a lock's holder to release it over loopback, which does not cross
+  # containers: the second build can wait out Gradle's 60 s lock timeout.
+  if any_has_versions openjdk graalvm-ce graalvm-oracle kotlin scala maven gradle; then
+    local _jvm_dir
+    for _jvm_dir in .gradle .m2; do
+      if [[ "$group" != "host" ]]; then
+        install -d "$group_root/$_jvm_dir"
+      fi
+      add_mount_if_exists config_mount_flags "$group_root/$_jvm_dir" "$dev_home/$_jvm_dir"
+    done
+  fi
 
   # Resolve COPILOT_GITHUB_TOKEN from the group's gh hosts.yml if not set.
   local copilot_token="${COPILOT_GITHUB_TOKEN:-}"

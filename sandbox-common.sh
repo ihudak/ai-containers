@@ -672,7 +672,7 @@ ensure_group_scaffold() {
 _copy_group_slice() {
   local src="$1" dst="$2"
   # Credentials and settings only. A regenerable install or cache (.ai-tools,
-  # .rvm, .local/share/claude, .cache/ms-playwright, .yarn) is group-MOUNTED but
+  # .rvm, .local/share/claude, .cache/ms-playwright, .yarn, .gradle, .m2) is group-MOUNTED but
   # not copied: cloning a group should not clone gigabytes a tool rebuilds by
   # itself. .aws/.azure/.kube are on the credential side of that line.
   local paths=(.claude .claude.json .copilot .config/gh .kiro ".local/share/kiro-cli" .codex .gemini .agents .ssh .cache/qmd

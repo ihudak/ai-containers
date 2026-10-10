@@ -388,6 +388,63 @@ if [[ ! -e "$DST_ROOT/.yarn/marker" ]]; then
   pass "from:<group> bootstrap does NOT copy the .yarn cache either"; else fail "from:<group> bootstrap does NOT copy the .yarn cache either"; fi
 teardown
 
+# ── Case 13: a JDK makes ~/.gradle and ~/.m2 group-scoped ─────────────────────
+# Containers run with --rm, and these two hold the Gradle wrapper's
+# distributions and every downloaded dependency, so without the mounts each
+# start re-downloaded all of it (reported 2026-10-10: `./gradlew build` fetching
+# Gradle again after a restart). The gate is ANY JVM key, not gradle=/maven=:
+# gradlew and mvnw need only a JDK. The host copies make the "not from the bare
+# host home" assertion load-bearing, as in Case 10.
+JVM_CACHE_DIRS=(.gradle .m2)
+setup
+printf '# schema-version: 3\nalpha=OFF\nbeta=OFF\ngamma=OFF\nopenjdk=21.0.5\n' > "$SANDBOX_CONF"
+for _d in "${JVM_CACHE_DIRS[@]}"; do mkdir -p "$HOME/$_d"; done
+run_sandbox "$TMP/app"
+for _d in "${JVM_CACHE_DIRS[@]}"; do
+  if mounted "$GROUP_ROOT/$_d" "/home/dev/$_d"; then
+    pass "JDK on: $_d mounted from the group root"; else fail "JDK on: $_d mounted from the group root"; fi
+  if ! grep -qx -- "$HOME/$_d:/home/dev/$_d:rw" "$CAPTURE"; then
+    pass "JDK on: $_d not mounted from the bare host home"; else fail "JDK on: $_d not mounted from the bare host home"; fi
+done
+teardown
+
+# ── Case 13b: no JVM key → neither created nor mounted ────────────────────────
+# `openjdk=OFF` is the literal a user writes, and must read as off like `openjdk=`.
+setup
+printf '# schema-version: 3\nalpha=OFF\nbeta=OFF\ngamma=OFF\nopenjdk=OFF\n' > "$SANDBOX_CONF"
+run_sandbox "$TMP/app"
+for _d in "${JVM_CACHE_DIRS[@]}"; do
+  if [[ ! -e "$GROUP_ROOT/$_d" ]] && ! grep -q -- ":/home/dev/$_d:" "$CAPTURE"; then
+    pass "no JVM key: $_d neither created nor mounted"; else fail "no JVM key: $_d neither created nor mounted"; fi
+done
+teardown
+
+# ── Case 13c: `host` mounts them from $HOME; a bootstrap does not copy them ───
+setup
+printf '# schema-version: 3\nalpha=OFF\nbeta=OFF\ngamma=OFF\nmaven=3.9.9\n' > "$SANDBOX_CONF"
+for _d in "${JVM_CACHE_DIRS[@]}"; do mkdir -p "$HOME/$_d"; done
+export AI_CONTAINER_GROUP=host AI_CONTAINER_HOST_ACK=1
+run_sandbox "$TMP/app"
+for _d in "${JVM_CACHE_DIRS[@]}"; do
+  if mounted "$HOME/$_d" "/home/dev/$_d"; then
+    pass "host group: $_d mounted from \$HOME (gated on any JVM key, here maven=)"; else fail "host group: $_d mounted from \$HOME (gated on any JVM key, here maven=)"; fi
+done
+unset AI_CONTAINER_HOST_ACK
+teardown
+# Caches, like .yarn: a group cloned from the host starts with an empty one
+# rather than gigabytes of jars. The FILE is what tells the two apart, since
+# the launch install -d's the directory either way.
+setup
+printf '# schema-version: 3\nalpha=OFF\nbeta=OFF\ngamma=OFF\nopenjdk=21.0.5\n' > "$SANDBOX_CONF"
+for _d in "${JVM_CACHE_DIRS[@]}"; do mkdir -p "$HOME/$_d"; printf 'host\n' > "$HOME/$_d/marker"; done
+export AI_CONTAINER_GROUP_INIT=from:host
+run_sandbox "$TMP/app"
+for _d in "${JVM_CACHE_DIRS[@]}"; do
+  if [[ -d "$GROUP_ROOT/$_d" && ! -e "$GROUP_ROOT/$_d/marker" ]]; then
+    pass "from:host bootstrap does NOT copy the $_d cache"; else fail "from:host bootstrap does NOT copy the $_d cache"; fi
+done
+teardown
+
 # ── Hermeticity: the real home and repo are untouched ───────────────────────────
 if [[ ! -e "$REAL_HOME/.ai-containers/default/.gamma" ]]; then
   pass "real home untouched"; else fail "real home untouched"; fi
