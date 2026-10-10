@@ -138,6 +138,7 @@ These tools, and `qmd`, are installed into the default (latest LTS) Node, and th
 | `imagemagick` | ON / OFF | [ImageMagick](imagemagick.md) |
 | `wkhtmltopdf` | ON / OFF | [wkhtmltopdf](imagemagick.md) runtime libraries plus the standalone binary |
 | `vale` | ON / OFF | [Prose and style linter](vale.md) |
+| `mkdocs` | ON / OFF | [Documentation site generator, with the Material theme](mkdocs.md) |
 | `qmd` | ON / OFF | On-device markdown search, for use with `VAULT_PATH` |
 
 ## Schema versioning

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# summary:  all six agent-tier tools install behind the restricted firewall and
+# summary:  all seven agent-tier tools install behind the restricted firewall and
 #           resolve for the AGENT, in a non-login shell
 # tags:     packages security slow needs-external
 # requires: docker launcher netadmin external
@@ -32,7 +32,7 @@
 # polling a question that was settled before the first poll.
 #
 # So the compound upper bound is no longer ~900+900. It is ~900 (launcher_up)
-# + ~10 (this wait) + the two six-tool loops afterward (12 bounded docker
+# + ~10 (this wait) + the two seven-tool loops afterward (14 bounded docker
 # execs, ~30-40s) ≈ 950s.
 #
 # MEASURED on a real daemon after the change (2026-08-21): this case runs 93s
@@ -48,7 +48,7 @@
 # than from this arithmetic.
 #
 # THIS IS THE BLOCKING GATE. Nothing agent-tier is baked into the image: Copilot,
-# Claude Code, Codex, Gemini, graphify and vale install at container start into a
+# Claude Code, Codex, Gemini, graphify, vale and mkdocs install at container start into a
 # group-mounted ~/.ai-tools. So "the image built" says nothing about whether the
 # tools exist — the install happens later, over the network, THROUGH the
 # restricted firewall, and a missing allowlist fragment breaks it silently.
@@ -71,7 +71,7 @@ set -uo pipefail
 # entrypoint.sh runs run_agent_tools_reconcile BEFORE the exec that hands PID 1
 # to the sandbox user — the same position run_ruby_reconcile occupies (see case
 # 630). launcher_up's own pid-1-handover wait is therefore gated behind the
-# ENTIRE six-tool install completing, not just the firewall coming up. The 60s
+# ENTIRE seven-tool install completing, not just the firewall coming up. The 60s
 # network floor was never sized for four npm global installs, a uv tool install
 # and a vale download; raised here to the same 900s budget the
 # reconcile-completion wait below uses, so launcher_up does not fail-fast for a
@@ -101,7 +101,7 @@ launcher_up restricted || it_finish
 it_wait 10 docker exec "$IT_CID" bash -c "command -v claude >/dev/null" \
   || fail "claude is absent after the reconcile completed — entrypoint runs it before handover, so this is not a timeout"
 
-for b in claude codex gemini copilot graphify vale; do
+for b in claude codex gemini copilot graphify vale mkdocs; do
   assert_runs "$IT_CID" "$b"
 done
 
@@ -112,7 +112,7 @@ done
 # through the non-root uid link-agent-tools.sh's /usr/local/bin symlinks are
 # what make reachable at all — PATH from /etc/profile.d only covers login and
 # interactive shells, which this is neither.
-for b in claude codex gemini copilot graphify vale; do
+for b in claude codex gemini copilot graphify vale mkdocs; do
   if agent_exec "$IT_CID" "command -v $b >/dev/null 2>&1"; then
     pass "$b resolves for the agent in a non-login shell (link-agent-tools.sh)"
   else

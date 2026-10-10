@@ -1,8 +1,8 @@
 # case: 700-agent-tools-install-restricted
 # what: entrypoint.sh no longer runs link-agent-tools.sh (link_agent_tools becomes a
-#       no-op), so the six agent-tier tools still install into ~/.ai-tools but never
+#       no-op), so the seven agent-tier tools still install into ~/.ai-tools but never
 #       get symlinked onto /usr/local/bin -- a docker exec (non-login, non-interactive,
-#       root OR the agent uid) cannot resolve claude/codex/gemini/copilot/graphify/vale
+#       root OR the agent uid) cannot resolve claude/codex/gemini/copilot/graphify/vale/mkdocs
 #       at all, only a login shell sourcing /etc/profile.d/ai-tools.sh could.
 #
 diff --git a/entrypoint.sh b/entrypoint.sh

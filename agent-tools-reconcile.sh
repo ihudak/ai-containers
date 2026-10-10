@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # agent-tools-reconcile.sh — runs as the sandbox USER at container start. Installs the
-# enabled agent-tier tools (Claude Code, Codex, Gemini, Copilot, graphify, Vale) into
+# enabled agent-tier tools (Claude Code, Codex, Gemini, Copilot, graphify, Vale, MkDocs) into
 # the group-mounted ~/.ai-tools home on first use. Mostly INSTALL-IF-MISSING, because
 # keeping current is normally the tool's own job — but that only holds for tools that
 # CAN update themselves here, which was established by testing each one rather than
@@ -11,6 +11,7 @@
 #   gemini       has no update mechanism at all                          → UPDATE each start
 #   graphify     uv tool upgrade                                         → if-missing
 #   vale         pinned download                                         → if-missing
+#   mkdocs       uv tool upgrade                                         → if-missing
 # Concurrency-safe via flock on the shared mount. Offline-tolerant and non-fatal: a tool
 # that fails to install logs FAILED and is skipped, never blocking container start.
 # No `set -u` (parity with rvm-reconcile.sh; tolerate unset envs via ${VAR:-}).
@@ -129,11 +130,11 @@ install_claude_native() {
     || log "FAILED: native Claude Code install (skipped)"
 }
 
-install_uv() {    # $1=binary  $2=package
-  local bin="$1" pkg="$2"
+install_uv() {    # $1=binary  $2=package  $3..=extra `uv tool install` args
+  local bin="$1" pkg="$2"; shift 2
   if [[ -x "$UV_TOOL_BIN_DIR/$bin" ]]; then log "$bin already present"; return 0; fi
   log "installing $pkg (uv)…"
-  uv tool install "$pkg" || log "FAILED: uv tool install $pkg (skipped)"
+  uv tool install "$pkg" "$@" || log "FAILED: uv tool install $pkg $* (skipped)"
 }
 
 install_vale() {
@@ -167,6 +168,9 @@ for t in "${want[@]}"; do
     gemini)      update_npm  gemini "@google/gemini-cli" ;;
     graphify)    install_uv graphify "graphifyy" ;;
     vale)        install_vale ;;
+    # A uv tool's environment holds only what it was installed with, and a docs
+    # scaffold's one requirement is the Material theme.
+    mkdocs)      install_uv mkdocs mkdocs --with mkdocs-material ;;
     *)           log "unknown tool '$t' (skipped)" ;;
   esac
 done
