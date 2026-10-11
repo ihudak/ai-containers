@@ -9,9 +9,10 @@
 #   copilot      downloads its own GitHub release, self-updates in place → if-missing
 #   codex        its `update` runs bare `npm install -g` → EACCES 243    → UPDATE each start
 #   gemini       has no update mechanism at all                          → UPDATE each start
-#   graphify     uv tool upgrade                                         → if-missing
+#   graphify     uv tool upgrade                                         → if-missing (*)
 #   vale         pinned download                                         → if-missing
-#   mkdocs       uv tool upgrade                                         → if-missing
+#   mkdocs       uv tool upgrade                                         → if-missing (*)
+#   (*) retried once on the previous Python minor when the image's fails — install_uv
 # Concurrency-safe via flock on the shared mount. Offline-tolerant and non-fatal: a tool
 # that fails to install logs FAILED and is skipped, never blocking container start.
 # No `set -u` (parity with rvm-reconcile.sh; tolerate unset envs via ${VAR:-}).
@@ -39,6 +40,10 @@ log(){ printf '[agent-tools-reconcile] %s\n' "$*"; }
 # $NPM_CONFIG_PREFIX, never a command's own flags).
 export UV_TOOL_DIR="$home_root/uv"
 export UV_TOOL_BIN_DIR="$home_root/uv/bin"
+# A uv-managed Python (install_uv's fallback) lives in the tool home too: a tool's
+# environment links to its interpreter, so one kept in the container layer would
+# vanish on restart and take the tool with it.
+export UV_PYTHON_INSTALL_DIR="$home_root/uv/python"
 npm_prefix="$home_root/npm"
 npm_bin="$npm_prefix/bin"
 
@@ -130,11 +135,33 @@ install_claude_native() {
     || log "FAILED: native Claude Code install (skipped)"
 }
 
+# The image takes pyenv's NEWEST CPython, which runs weeks ahead of the compiled wheels
+# some packages publish, and it has no C compiler unless c-toolchain=ON — so a tool
+# with a dependency that has no wheel for that Python yet fails to build. Measured
+# 2026-10-10: Python 3.15.0 became pyenv's latest, graphify pins tree-sitter<0.26,
+# tree-sitter shipped wheels up to 3.14 only, and the install died with "Failed to
+# build tree-sitter==0.25.2 ... No such file or directory: 'gcc'".
+#
+# So a failed install is retried ONCE on the previous minor, which uv uses from the
+# image if it is there and otherwise downloads as a managed Python. The version is
+# computed from the image's own, so it needs no bump when the next CPython lands.
+#
+# The first attempt and the version probe say --no-managed-python: uv PREFERS managed
+# Pythons, and UV_PYTHON_INSTALL_DIR is shared by the group, so after one fallback
+# every later install would quietly move to the older interpreter.
 install_uv() {    # $1=binary  $2=package  $3..=extra `uv tool install` args
   local bin="$1" pkg="$2"; shift 2
   if [[ -x "$UV_TOOL_BIN_DIR/$bin" ]]; then log "$bin already present"; return 0; fi
   log "installing $pkg (uv)…"
-  uv tool install "$pkg" "$@" || log "FAILED: uv tool install $pkg $* (skipped)"
+  uv tool install "$pkg" "$@" --no-managed-python && return 0
+  local py major="" minor=""
+  py="$(uv python find --no-managed-python 2>/dev/null)"
+  [[ -n "$py" ]] && read -r major minor < <("$py" -c 'import sys; print(*sys.version_info[:2])' 2>/dev/null)
+  if [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ ]] && (( minor > 0 )); then
+    log "retrying $pkg on Python $major.$((minor - 1)): a dependency may have no wheel for $major.$minor yet…"
+    uv tool install "$pkg" "$@" --python "$major.$((minor - 1))" && return 0
+  fi
+  log "FAILED: uv tool install $pkg $* (skipped)"
 }
 
 install_vale() {

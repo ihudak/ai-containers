@@ -33,7 +33,15 @@ EOF
   cat > "$bin/uv" <<EOF
 #!/usr/bin/env bash
 echo "uv \$*" >> "$home/calls.log"
+echo "uv-saw-UV_PYTHON_INSTALL_DIR=\${UV_PYTHON_INSTALL_DIR:-}" >> "$home/calls.log"
+if [[ "\$1 \$2" == "python find" ]]; then echo "$bin/fakepython"; exit 0; fi
 if [[ "\$1 \$2" == "tool install" ]]; then
+  # UV_FAIL=default fails an install that names no --python, as the image's newest
+  # Python does when a dependency has no wheel for it yet; UV_FAIL=all fails every one.
+  case "\${UV_FAIL:-}" in
+    all) exit 1 ;;
+    default) [[ " \$* " == *" --python "* ]] || exit 1 ;;
+  esac
   # The executable a package provides: graphify's PyPI name is graphifyy.
   case "\$3" in graphifyy) b=graphify ;; *) b="\$3" ;; esac
   d="\${UV_TOOL_BIN_DIR:-$home/.ai-tools/uv/bin}"; install -d "\$d"; printf '#!/bin/sh\n' > "\$d/\$b"; chmod +x "\$d/\$b"
@@ -68,6 +76,8 @@ d=""; prev=""; for a in "\$@"; do [[ "\$prev" == "-C" ]] && d="\$a"; prev="\$a";
 exit 0
 EOF
   printf '#!/usr/bin/env bash\necho amd64\n' > "$bin/dpkg"
+  # The image's default Python, as `uv python find` reports it: 3.15.
+  printf '#!/usr/bin/env bash\necho "3 15"\n' > "$bin/fakepython"; chmod +x "$bin/fakepython"
   printf '#!/usr/bin/env bash\n[ "$1" = "-m" ] && echo x86_64 || echo Linux\n' > "$bin/uname"
   chmod +x "$bin/npm" "$bin/uv" "$bin/curl" "$bin/tar" "$bin/dpkg" "$bin/uname"
 }
@@ -77,7 +87,7 @@ run_case() {
   local want="$1" home="${2:-$(mktemp -d)}" npm_fail="${3:-0}"
   local bin; bin="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
   mk_stubs "$bin" "$home"
-  PATH="$bin:$PATH" HOME="$home" AI_RUNTIME_TOOLS="$want" NPM_FAIL="$npm_fail" \
+  PATH="$bin:$PATH" HOME="$home" AI_RUNTIME_TOOLS="$want" NPM_FAIL="$npm_fail" UV_FAIL="${UV_FAIL:-}" \
     bash "$REPO_DIR/agent-tools-reconcile.sh" >"$home/out.log" 2>&1
   rm -rf "$bin"
   printf '%s' "$home"
@@ -144,7 +154,7 @@ rm -rf "$h"
 # uv tool's environment holds only what it was installed with — so a bare
 # `uv tool install mkdocs` gives an mkdocs that cannot build that site.
 h="$(run_case "mkdocs")"
-grep -qx 'uv tool install mkdocs --with mkdocs-material' "$h/calls.log" \
+grep -qx 'uv tool install mkdocs --with mkdocs-material --no-managed-python' "$h/calls.log" \
   && pass "installs mkdocs with mkdocs-material in its environment" \
   || fail "installs mkdocs with mkdocs-material in its environment (calls: $(grep '^uv' "$h/calls.log" | tr '\n' ';'))"
 [[ -x "$h/.ai-tools/uv/bin/mkdocs" ]] && pass "mkdocs lands at .ai-tools/uv/bin/mkdocs" || fail "mkdocs lands at .ai-tools/uv/bin/mkdocs"
@@ -153,6 +163,40 @@ grep -qx 'uv tool install mkdocs --with mkdocs-material' "$h/calls.log" \
 rm -rf "$h"
 h="$(run_case "graphify")"
 ! grep -q 'mkdocs' "$h/calls.log" && pass "mkdocs not installed when not enabled" || fail "mkdocs not installed when not enabled"
+rm -rf "$h"
+
+# ── A dependency with no wheel for the image's Python: one retry, previous minor ──
+# The image takes pyenv's newest CPython, weeks ahead of the wheels some packages
+# publish, and has no C compiler. 2026-10-10: Python 3.15.0 arrived, graphify pins
+# tree-sitter<0.26, tree-sitter shipped wheels to 3.14 only, and the install died
+# building it from source ("No such file or directory: 'gcc'").
+h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
+UV_FAIL=default run_case "graphify,mkdocs" "$h" >/dev/null
+grep -qx 'uv tool install graphifyy --no-managed-python' "$h/calls.log" \
+  && pass "the first attempt uses the image's own Python, never a managed one" \
+  || fail "the first attempt uses the image's own Python, never a managed one"
+grep -qx 'uv tool install graphifyy --python 3.14' "$h/calls.log" \
+  && pass "a failed uv tool install is retried on the previous Python minor (3.15 → 3.14)" \
+  || fail "a failed uv tool install is retried on the previous Python minor (calls: $(grep '^uv tool' "$h/calls.log" | tr '\n' ';'))"
+grep -qx 'uv tool install mkdocs --with mkdocs-material --python 3.14' "$h/calls.log" \
+  && pass "the retry keeps the tool's own install arguments" \
+  || fail "the retry keeps the tool's own install arguments"
+[[ -x "$h/.ai-tools/uv/bin/graphify" ]] && pass "the retry installs the tool" || fail "the retry installs the tool"
+! grep -q 'FAILED' "$h/out.log" && pass "no FAILED when the retry succeeds" || fail "no FAILED when the retry succeeds"
+# A tool's environment links to its interpreter: a managed Python kept in the
+# container layer would vanish on restart and take the tool with it.
+grep -qx "uv-saw-UV_PYTHON_INSTALL_DIR=$h/.ai-tools/uv/python" "$h/calls.log" \
+  && pass "uv-managed Pythons go in the group's tool home" \
+  || fail "uv-managed Pythons go in the group's tool home"
+rm -rf "$h"
+h="$(run_case "graphify")"
+! grep -q -- '--python ' "$h/calls.log" && pass "no retry when the image's Python works" || fail "no retry when the image's Python works"
+rm -rf "$h"
+h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
+UV_FAIL=all run_case "graphify,vale" "$h" >/dev/null
+{ grep -q 'FAILED: uv tool install graphifyy' "$h/out.log" && [[ -x "$h/.ai-tools/bin/vale" ]]; } \
+  && pass "a failed retry is logged and non-fatal; other tools proceed" \
+  || fail "a failed retry is logged and non-fatal; other tools proceed"
 rm -rf "$h"
 
 # ── A FRESH CONTAINER over a WARM GROUP: the case the block above cannot see ──
