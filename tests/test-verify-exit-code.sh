@@ -488,6 +488,34 @@ else
     || fail "phase 5: the verdict names the floor suite as what failed"
 fi
 
+# ── The floor container on an SELinux daemon ──────────────────────────────────
+# It bind-mounts the checkout, which an SELinux daemon refuses a container unless
+# labelling is off (sandbox-common.sh: selinux_security_opt()). The stub's
+# `docker info` answers with what openSUSE Tumbleweed's daemon printed.
+r="$(mk_repo 0)"
+: > "$WITNESS_LOG"
+rc="$(run_verify "$r" 5 \
+  DOCKER_SECURITY_OPTIONS='["name=seccomp,profile=builtin","name=selinux","name=cgroupns"]')"
+floor_run="$(grep '^STUB:docker-run ' "$WITNESS_LOG")"
+if [[ "$floor_run" == *" --security-opt=label=disable "* || "$floor_run" == *" --security-opt label=disable "* ]]; then
+  pass "phase 5: the floor container runs with label=disable on an SELinux daemon"
+else
+  fail "phase 5: the floor container runs with label=disable on an SELinux daemon (rc=$rc, run: ${floor_run:-none}; $(tail -3 "$TMP/out.log" | tr '\n' ' '))"
+fi
+: > "$WITNESS_LOG"
+rc="$(run_verify "$r" 5)"
+floor_run="$(grep '^STUB:docker-run ' "$WITNESS_LOG")"
+if [[ -n "$floor_run" && "$floor_run" != *label=disable* ]]; then
+  pass "phase 5: the floor container keeps its label on a daemon without SELinux"
+else
+  fail "phase 5: the floor container keeps its label on a daemon without SELinux (rc=$rc, run: ${floor_run:-none})"
+fi
+rc="$(run_verify "$r" 5 SELINUX_LABEL=bogus)"
+expect_rc "phase 5: an unknown SELINUX_LABEL fails the phase" 1 "$rc"
+grep -q 'SELINUX_LABEL' "$TMP/out.log" \
+  && pass "phase 5: the failure names SELINUX_LABEL" \
+  || fail "phase 5: the failure names SELINUX_LABEL (got: $(tail -3 "$TMP/out.log" | tr '\n' ' '))"
+
 # ── A FAILED CORPUS MUST SAY WHY, NOT SHOW THE LAST TEN PROGRESS NOTES ────────
 # run.sh has two stderr channels and they are not equal: `falsify:` is routine
 # progress (one note per timed-out mutant — a loaded machine emits dozens) and

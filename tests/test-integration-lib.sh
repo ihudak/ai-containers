@@ -1306,5 +1306,42 @@ done
   && t_pass "launcher_engine_in copies every shared file plus tools.d, and services.d where the engine has one" \
   || t_fail "launcher_engine_in copies every shared file plus tools.d, and services.d where the engine has one (missing:$ei_missing)"
 
+# ── SELinux daemons: sandbox_up and dns_up pass run.sh's decision ─────────────
+# Both bind-mount a host path, and sandbox_up builds the restricted firewall: on
+# an SELinux daemon a labelled container can do neither (AGENTS.md "SELinux
+# daemons"), so every network case would fail on a host where the product works.
+# run.sh resolves the option once and exports it as IT_SELINUX_OPT.
+SU_LOG="$TMP/su-docker.log"
+SU_BIN="$TMP/su-bin"; mkdir -p "$SU_BIN"
+cat > "$SU_BIN/docker" <<'FAKE'
+#!/usr/bin/env bash
+case "$1" in
+  run)     printf '%s\n' "$*" >> "$SU_LOG"; echo fake-cid ;;
+  exec)    echo 1000 ;;        # _it_pid1_is_sandbox: PID 1 is the agent's uid
+  inspect) echo 10.0.0.9 ;;    # dns_up: the resolver's address
+esac
+exit 0
+FAKE
+chmod +x "$SU_BIN/docker"
+su_call() {  # $1=IT_SELINUX_OPT $2=lib.sh verb and args → its docker runs in $SU_LOG
+  : > "$SU_LOG"
+  SU_LOG="$SU_LOG" IT_SELINUX_OPT="$1" PATH="$SU_BIN:$PATH" \
+    bash -c ". '$LIB'; $2" >/dev/null 2>&1
+}
+SU_ADIR="$TMP/su-allow"; mkdir -p "$SU_ADIR"
+su_call --security-opt=label=disable "sandbox_up restricted '$SU_ADIR'"
+grep -q -- '--security-opt=label=disable .* unit-img$' "$SU_LOG" \
+  && t_pass "sandbox_up passes IT_SELINUX_OPT to its docker run" \
+  || t_fail "sandbox_up passes IT_SELINUX_OPT to its docker run (got: $(tr '\n' ';' < "$SU_LOG"))"
+su_call "" "sandbox_up restricted '$SU_ADIR'"
+grep -q -- ' unit-img$' "$SU_LOG" && ! grep -q -- 'label=disable' "$SU_LOG" \
+  && t_pass "sandbox_up with an empty IT_SELINUX_OPT passes nothing" \
+  || t_fail "sandbox_up with an empty IT_SELINUX_OPT passes nothing (got: $(tr '\n' ';' < "$SU_LOG"))"
+su_call --security-opt=label=disable "dns_up it.example 10.0.0.7"
+su_resolver="$(grep -- '/Corefile:ro' "$SU_LOG")"
+grep -q -- '--security-opt=label=disable .* unit-dns -conf' <<<"$su_resolver" \
+  && t_pass "dns_up passes IT_SELINUX_OPT to the resolver that reads its Corefile" \
+  || t_fail "dns_up passes IT_SELINUX_OPT to the resolver that reads its Corefile (got: $(tr '\n' ';' < "$SU_LOG"))"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

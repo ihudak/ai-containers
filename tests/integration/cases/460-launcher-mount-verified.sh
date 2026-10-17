@@ -29,8 +29,12 @@
 host_id() { p_dev_ino "$1" | tr ' ' ':'; }
 
 # ── which kind of host is this? ───────────────────────────────────────────────
+# IT_SELINUX_OPT here and in entry_run, as sandbox.sh passes it: an SELinux
+# daemon's labelled container cannot stat the probe, which would read as a host
+# that does not preserve device:inode
+# (tests/integration/run.sh: `resolve_selinux_opt()`).
 probe="$(it_scratch)/probe"; mkdir -p "$probe"
-ctr="$(docker run --rm --label "$IT_LABEL" -v "$probe:/p:ro" --entrypoint stat "$IT_IMAGE" -c '%d:%i' /p 2>/dev/null)"
+ctr="$(docker run --rm --label "$IT_LABEL" ${IT_SELINUX_OPT:+"$IT_SELINUX_OPT"} -v "$probe:/p:ro" --entrypoint stat "$IT_IMAGE" -c '%d:%i' /p 2>/dev/null)"
 if [[ -n "$ctr" && "$ctr" == "$(host_id "$probe")" ]]; then preserving=1; else preserving=0; fi
 printf '     (this daemon %s device:inode across a bind mount)\n' \
   "$([[ "$preserving" == 1 ]] && echo preserves || echo does NOT preserve)"
@@ -69,7 +73,7 @@ entry_run() {
   manino="$ino"; [[ "$2" == 0 ]] && manino=$((ino + 4096))
   printf '%s\0%s\0%s\0' "$dev" "$manino" "/workspace/dd" > "$vr/manifest"
   anchor="$(host_id "$vr")"; [[ "$1" == 0 ]] && anchor="999999:999999"
-  out="$(docker run --rm --label "$IT_LABEL" \
+  out="$(docker run --rm --label "$IT_LABEL" ${IT_SELINUX_OPT:+"$IT_SELINUX_OPT"} \
     -e DEV_CONTAINER_MODE=open -e SANDBOX_UID="$IT_LAUNCH_UID" -e SANDBOX_GID="$IT_LAUNCH_GID" \
     -e SANDBOX_USER=tester -e SANDBOX_GROUP=tester \
     -e AI_LAUNCHER_ANCHOR="$anchor" \

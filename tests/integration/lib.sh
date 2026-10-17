@@ -45,7 +45,7 @@ VAULT_PATH SPECS_PATH DOCS_PATH ARCHITECTURE_REPO_PATH \
 CONTAINER_CPUS CONTAINER_MEMORY CONTAINER_MEMORY_RESERVATION CONTAINER_MEMORY_SWAP \
 CONTAINER_NOFILE CONTAINER_SHM_SIZE CONTAINER_NAME \
 SELF_HEALING_ENABLED ALLOW_IPV6_BYPASS COPILOT_GITHUB_TOKEN GITHUB_PERSONAL_ACCESS_TOKEN \
-SKILL_CHAR_BUDGET SLASH_COMMAND_TOOL_CHAR_BUDGET SANDBOX_GIT_MAX"
+SKILL_CHAR_BUDGET SLASH_COMMAND_TOOL_CHAR_BUDGET SANDBOX_GIT_MAX SELINUX_LABEL"
 for _it_k in $IT_LAUNCHER_ENV_KEYS; do unset "$_it_k"; done
 unset _it_k
 
@@ -229,7 +229,9 @@ dns_up() {  # <fqdn> <ip> [<fqdn> <ip>…]
     printf '        fallthrough\n    }\n    errors\n}\n'
   } > "$d/Corefile"
   chmod 644 "$d/Corefile"
-  docker run -d --name "$name" --network "$IT_NET" --label "$IT_LABEL" \
+  # IT_SELINUX_OPT: an SELinux daemon's labelled container cannot read the
+  # Corefile (run.sh: `resolve_selinux_opt()`).
+  docker run -d --name "$name" --network "$IT_NET" --label "$IT_LABEL" ${IT_SELINUX_OPT:+"$IT_SELINUX_OPT"} \
     -v "$d/Corefile:/Corefile:ro" "$IT_DNS_IMAGE" -conf /Corefile \
     >/dev/null 2>&1 || { fail "dns_up: docker run failed"; return 1; }
   it_track "container:$name"
@@ -274,7 +276,10 @@ sandbox_up() {  # $1=mode $2=allowlist dir; remaining args go to docker run
     *) fail "sandbox_up: unknown mode '$mode'"; return 1 ;;
   esac
   local cid
-  cid="$(docker run -di --network "$IT_NET" --label "$IT_LABEL" $caps \
+  # IT_SELINUX_OPT, as sandbox.sh's own launch passes it: on an SELinux daemon a
+  # labelled container reads neither allowlist nor builds the firewall
+  # (run.sh: `resolve_selinux_opt()`).
+  cid="$(docker run -di --network "$IT_NET" --label "$IT_LABEL" $caps ${IT_SELINUX_OPT:+"$IT_SELINUX_OPT"} \
       -v "$adir:/it-allowlists:ro" \
       -e DEV_CONTAINER_MODE="$mode" \
       -e ALLOWLIST_DOMAINS_FILE=/it-allowlists/allowlist-domains.txt \

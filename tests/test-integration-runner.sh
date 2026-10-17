@@ -80,7 +80,10 @@ case "$1 ${2:-}" in
   # unset for callers that do not care.
   run\ *) printf '%s\n' "$*" >> "${FAKE_DOCKER_LOG:-/dev/null}"; exit 0 ;;
   rmi\ *) exit 0 ;;            # $2 is the image tag, not a fixed verb — glob it
-  info*) exit 0 ;;             # "docker info" alone leaves a trailing space in $2
+  # "docker info" alone leaves a trailing space in $2. Silent unless a test
+  # sets $FAKE_SECURITY_OPTIONS, which `info --format '{{json .SecurityOptions}}'`
+  # then answers (the SELinux block near the end).
+  info*) [[ -n "${FAKE_SECURITY_OPTIONS:-}" ]] && printf '%s\n' "$FAKE_SECURITY_OPTIONS"; exit 0 ;;
   *) echo "fake docker: unexpected call: $*" >&2; exit 99 ;;
 esac
 FAKE
@@ -1753,6 +1756,95 @@ if RS_LOG="$RS_LOG" PATH="$RS_BIN_NOOP:$PATH" \
   pass "it_reclaim_scratch is non-fatal when docker fails"
 else
   fail "it_reclaim_scratch is non-fatal when docker fails"
+fi
+
+# ── SELinux daemons: the harness's own containers decide as sandbox.sh does ───
+# On an SELinux daemon a labelled container cannot make the kernel load the
+# ipset/NFLOG modules and reads no host bind mount (AGENTS.md "SELinux
+# daemons"). probe_netadmin would report netadmin absent and the reclaim chown
+# would be refused: the whole security tier SKIPs on a host where the product
+# works. Both must pass what sandbox-common.sh: `selinux_security_opt()` prints,
+# and the cases get it from run.sh as IT_SELINUX_OPT.
+SE_SELINUX='["name=seccomp,profile=builtin","name=selinux","name=cgroupns"]'
+SE_APPARMOR='["name=apparmor","name=seccomp,profile=builtin","name=cgroupns"]'
+SE_LOG="$TMP/se-docker.log"
+SE_BIN="$TMP/se-bin"; mkdir -p "$SE_BIN"
+cat > "$SE_BIN/docker" <<'FAKE'
+#!/usr/bin/env bash
+case "$1" in
+  info) printf '%s\n' "$SE_SECURITY_OPTIONS" ;;
+  run)  printf '%s\n' "$*" >> "$SE_LOG" ;;
+esac
+exit 0
+FAKE
+chmod +x "$SE_BIN/docker"
+se_call() {  # $1=SecurityOptions JSON, rest=function + args → its docker runs in $SE_LOG
+  local opts="$1"; shift
+  : > "$SE_LOG"
+  SE_LOG="$SE_LOG" SE_SECURITY_OPTIONS="$opts" PATH="$SE_BIN:$PATH" \
+    "$TMP/callfn.sh" "$@" >/dev/null 2>&1
+}
+
+se_call "$SE_SELINUX" probe_netadmin
+if grep -q -- '--security-opt=label=disable' "$SE_LOG"; then
+  pass "probe_netadmin on an SELinux daemon runs unconfined, as the restricted sandbox does"
+else
+  fail "probe_netadmin on an SELinux daemon runs unconfined — got: $(tr '\n' ';' < "$SE_LOG")"
+fi
+se_call "$SE_APPARMOR" probe_netadmin
+if grep -q -- 'run ' "$SE_LOG" && ! grep -q -- 'label=disable' "$SE_LOG"; then
+  pass "probe_netadmin elsewhere keeps the daemon's confinement"
+else
+  fail "probe_netadmin elsewhere keeps the daemon's confinement — got: $(tr '\n' ';' < "$SE_LOG")"
+fi
+# The harness decides at auto whatever the developer exported: lib.sh clears
+# SELINUX_LABEL before every case, so the launcher's own containers decide at
+# auto, and a probe deciding differently would report on a container the cases
+# never start.
+SELINUX_LABEL=keep se_call "$SE_SELINUX" probe_netadmin
+if grep -q -- '--security-opt=label=disable' "$SE_LOG"; then
+  pass "an exported SELINUX_LABEL=keep does not change the harness's decision"
+else
+  fail "an exported SELINUX_LABEL=keep does not change the harness's decision — got: $(tr '\n' ';' < "$SE_LOG")"
+fi
+SELINUX_LABEL=disable se_call "$SE_APPARMOR" probe_netadmin
+if grep -q -- 'run ' "$SE_LOG" && ! grep -q -- 'label=disable' "$SE_LOG"; then
+  pass "an exported SELINUX_LABEL=disable does not change it either"
+else
+  fail "an exported SELINUX_LABEL=disable does not change it either — got: $(tr '\n' ';' < "$SE_LOG")"
+fi
+se_call "$SE_SELINUX" it_reclaim_scratch fake-variant-img "$RS_KEEP"
+if grep -q -- '--security-opt=label=disable .*--entrypoint chown fake-variant-img' "$SE_LOG"; then
+  pass "it_reclaim_scratch on an SELinux daemon can chown the scratch bind mount"
+else
+  fail "it_reclaim_scratch on an SELinux daemon can chown the scratch bind mount — got: $(tr '\n' ';' < "$SE_LOG")"
+fi
+
+# What the cases see. lib.sh's sandbox_up/dns_up and case 460 read it.
+SE_CASES="$TMP/se-cases"; mkdir -p "$SE_CASES"
+cat > "$SE_CASES/010-se.sh" <<'EOF'
+#!/usr/bin/env bash
+# summary:  synthetic: what IT_SELINUX_OPT a case receives
+# tags:     harness fast
+# requires: docker
+printf 'PASS: opt=[%s]\n' "${IT_SELINUX_OPT-unset}"
+EOF
+se_run() {  # $1=SecurityOptions JSON → run.sh's combined output
+  PATH="$FAKE_BIN:$PATH" IT_CASES_DIR="$SE_CASES" IT_SCRATCH="$TMP/se-scratch" \
+    IT_FORCE_CAPS=docker FAKE_SECURITY_OPTIONS="$1" \
+    bash "$RUN" --reuse-image --image fake-img -v 2>&1
+}
+out="$(se_run "$SE_SELINUX")"
+if grep -qF 'opt=[--security-opt=label=disable]' <<<"$out"; then
+  pass "a case on an SELinux daemon receives IT_SELINUX_OPT"
+else
+  fail "a case on an SELinux daemon receives IT_SELINUX_OPT — got: $(grep 'opt=' <<<"$out")"
+fi
+out="$(se_run "$SE_APPARMOR")"
+if grep -qF 'opt=[]' <<<"$out"; then
+  pass "a case elsewhere receives an empty IT_SELINUX_OPT"
+else
+  fail "a case elsewhere receives an empty IT_SELINUX_OPT — got: $(grep 'opt=' <<<"$out")"
 fi
 
 printf '\n%d failure(s)\n' "$fails"
