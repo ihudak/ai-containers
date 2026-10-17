@@ -175,10 +175,13 @@ expect_seed_flag() {  # $1=label  $2=a mount the run must carry
   fi
 }
 
+# repo.sh mounts the source's physical path, which differs from $TMP's under a
+# symlinked TMPDIR (CI's symlinked-TMPDIR job).
+SRC_REAL="$(cd "$TMP/src" && pwd -P)"
 repo auto "$SELINUX_DAEMON" add app "$TMP/src"
-expect_seed_flag "repo.sh add <path> seeds with label=disable" "$TMP/src:/src:ro"
+expect_seed_flag "repo.sh add <path> seeds with label=disable" "$SRC_REAL:/src:ro"
 repo auto "$SELINUX_DAEMON" sync app
-expect_seed_flag "repo.sh sync <path repo> mirrors with label=disable" "$TMP/src:/src:ro"
+expect_seed_flag "repo.sh sync <path repo> mirrors with label=disable" "$SRC_REAL:/src:ro"
 repo auto "$SELINUX_DAEMON" add lib git@example.com:org/lib.git
 expect_seed_flag "repo.sh add <git url> clones with label=disable" ".ssh:/root/.ssh-host:ro"
 repo auto "$SELINUX_DAEMON" sync lib
