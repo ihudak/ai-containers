@@ -432,6 +432,42 @@ repo_name_from_volume() {
   printf '%s\n' "$n"
 }
 
+# ── SELinux daemons ─────────────────────────────────────────────────────────────
+#
+# A Docker daemon with "selinux-enabled": true (openSUSE Tumbleweed and Fedora ship
+# it so) runs every container as container_t, which may read only files labelled
+# for containers. Measured on openSUSE Tumbleweed, Docker 29.7.2: a bind mount of a
+# host directory lists as `Permission denied` inside the container, and the
+# restricted-mode firewall cannot start, because container_t may not make the
+# kernel load ip_set_hash_net, nfnetlink_log or xt_NFLOG on first use (`ipset
+# create` reports "set type not supported"). AppArmor on Ubuntu blocks neither.
+#
+# selinux_security_opt prints the `docker run` option that runs a container
+# without an SELinux label, which fixes both, or prints nothing. Every docker run
+# that bind-mounts a host path passes it; a volume-to-volume copy has no reason
+# to. Not `:z`: that relabels the host directory itself — the user's real repos,
+# vault and specs, on every launch — and leaves the module loading refused.
+#
+# SELINUX_LABEL chooses: auto (the default, and an empty value) asks the daemon,
+# disable always passes the option, keep never does — for a host whose mounted
+# directories carry a container label and whose modules load at boot. Anything
+# else is refused, rc 1. A `docker info` that fails counts as no SELinux: the
+# docker run after it reports an unreachable daemon better than this could.
+selinux_security_opt() {
+  local opts
+  case "${SELINUX_LABEL:-auto}" in
+    keep)    return 0 ;;
+    disable) ;;
+    auto)
+      opts="$(docker info --format '{{json .SecurityOptions}}' 2>/dev/null)" || return 0
+      [[ "$opts" == *'"name=selinux"'* ]] || return 0 ;;
+    *)
+      printf 'ERROR: SELINUX_LABEL=%s — expected auto, disable or keep.\n' "$SELINUX_LABEL" >&2
+      return 1 ;;
+  esac
+  printf '%s\n' '--security-opt=label=disable'
+}
+
 # ── Ruby home (~/.rvm) volume ───────────────────────────────────────────────────
 #
 # ~/.rvm is backed by a Docker NAMED VOLUME, not a host bind mount, on EVERY
@@ -494,7 +530,9 @@ rvm_volume_ensure() {
   local legacy="$root/.rvm"
   if [[ -s "$legacy/scripts/rvm" ]]; then
     printf 'Migrating this group'"'"'s ~/.rvm into docker volume %s (one time)…\n' "$vol" >&2
-    if docker run --rm -v "$legacy:/src:ro" -v "$vol:/dst" \
+    local selinux_opt
+    if selinux_opt="$(selinux_security_opt)" \
+       && docker run --rm ${selinux_opt:+"$selinux_opt"} -v "$legacy:/src:ro" -v "$vol:/dst" \
          --entrypoint bash "$image" -c 'cp -a /src/. /dst/' >/dev/null 2>&1; then
       printf 'Migrated. The old directory is now unused; remove it when satisfied:\n  rm -rf %s\n' "$legacy" >&2
     else

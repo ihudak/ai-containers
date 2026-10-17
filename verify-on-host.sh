@@ -295,8 +295,14 @@ else
   # floor has no mapped image, which must fail loudly: running the "floor" suite
   # in whatever image `docker run ""` resolves to would verify nothing.
   floor_img="${AI_CONTAINERS_BASH_FLOOR_IMAGE:-}"
+  # The floor container bind-mounts the checkout, which an SELinux daemon denies
+  # a labelled container (sandbox-common.sh: selinux_security_opt()). Asked in a
+  # subshell, because sourcing the library loads sandbox.env and EXPORTS it, and
+  # nothing from it may reach the suites this script runs.
   if [[ -z "$floor_img" ]]; then
     phase_fail 5 "bash-floor.sh maps no container image to the declared floor — the floor suite did not run"
+  elif ! selinux_opt="$(source "$REPO/sandbox-common.sh" && selinux_security_opt)"; then
+    phase_fail 5 "could not decide the floor container's SELinux option (SELINUX_LABEL, sandbox-common.sh) — the floor suite did not run"
   else
     sub "running the suite at the declared floor ($floor_img, bash 5.1)"
     # This container runs as root (the image's default user) against a repo
@@ -354,7 +360,7 @@ else
     # being wrong about something above — is silent corruption of a real
     # checkout, discovered whenever someone next looks. That asymmetry is why
     # :ro wins even without a Docker-based end-to-end run to confirm it here.
-    docker run --rm -v "$REPO_ROOT:/w:ro" -w /w "$floor_img" bash -c \
+    docker run --rm ${selinux_opt:+"$selinux_opt"} -v "$REPO_ROOT:/w:ro" -w /w "$floor_img" bash -c \
       'apt-get update -qq && apt-get install -y -qq git rsync >/dev/null 2>&1 && \
        git config --global --add safe.directory /w && \
        git config --global --add safe.directory "*" && \

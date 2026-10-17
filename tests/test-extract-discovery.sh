@@ -94,6 +94,11 @@ mk_docker_stub() {   # $1 = path to write
 #!/usr/bin/env bash
 printf 'docker %s\n' "$*" >> "$STUB_DIR/docker-argv.log"
 
+if [[ "$1" == "info" ]]; then
+  printf '%s\n' "$STUB_SECURITY_OPTIONS"
+  exit 0
+fi
+
 if [[ "$1" == "image" ]]; then
   [[ "${STUB_IMAGE_MISSING:-0}" == "1" ]] && exit 1
   exit 0
@@ -141,10 +146,19 @@ STUB
 # kills them. IMAGE_NAME is unset explicitly instead, because it is FORWARDED
 # into these very containers — running the suite inside one would otherwise let
 # the host's image name beat the sandbox.env this test is checking.
+#
+# RUN_SECURITY_OPTIONS is what the stub's `docker info` reports: by default
+# Docker on Ubuntu, where AppArmor confines containers. RUN_SELINUX_LABEL is
+# always exported, empty meaning auto, so a value in the developer's shell does
+# not reach the run.
+APPARMOR_DAEMON='["name=apparmor","name=seccomp,profile=builtin","name=cgroupns"]'
+SELINUX_DAEMON='["name=seccomp,profile=builtin","name=selinux","name=cgroupns"]'
 OUT=""; RC=0
 RUN_IMAGE=""; RUN_IMAGE_MISSING=0; RUN_EXTRACT_FAIL=0; RUN_CAT_FAIL=0; RUN_STDIN=/dev/null
+RUN_SECURITY_OPTIONS="$APPARMOR_DAEMON"; RUN_SELINUX_LABEL=""
 reset_run_env() {
   RUN_IMAGE=""; RUN_IMAGE_MISSING=0; RUN_EXTRACT_FAIL=0; RUN_CAT_FAIL=0; RUN_STDIN=/dev/null
+  RUN_SECURITY_OPTIONS="$APPARMOR_DAEMON"; RUN_SELINUX_LABEL=""
 }
 run_in() {
   local tree="$1" cwd="$2"; shift 2
@@ -157,6 +171,8 @@ run_in() {
     export STUB_IMAGE_MISSING="$RUN_IMAGE_MISSING"
     export STUB_EXTRACT_FAIL="$RUN_EXTRACT_FAIL"
     export STUB_CAT_FAIL="$RUN_CAT_FAIL"
+    export STUB_SECURITY_OPTIONS="$RUN_SECURITY_OPTIONS"
+    export SELINUX_LABEL="$RUN_SELINUX_LABEL"
     export PATH="$tree/bin:$PATH"
     bash "$tree/engine/extract-discovery.sh" "$@" 2>&1 < "$RUN_STDIN"
   )"
@@ -363,6 +379,37 @@ else
   fail "runs capture-agent-destinations.sh as the entrypoint
 $argv"
 fi
+if grep -q 'label=disable' <<<"$argv"; then
+  fail "keeps the container's label on an AppArmor daemon
+$argv"
+else
+  pass "keeps the container's label on an AppArmor daemon"
+fi
+
+# An SELinux daemon refuses a container the capture directory's bind mount
+# unless labelling is off (sandbox-common.sh: selinux_security_opt()).
+T="$(fresh)"; reset_run_env
+RUN_SECURITY_OPTIONS="$SELINUX_DAEMON"
+run_in "$T" "$T/launch"
+extract_argv="$(grep -F -- "--entrypoint capture-agent-destinations.sh" "$T/docker-argv.log")"
+if [[ " $extract_argv " == *" --security-opt=label=disable "* || " $extract_argv " == *" --security-opt label=disable "* ]]; then
+  pass "runs the extract with label=disable on an SELinux daemon"
+else
+  fail "runs the extract with label=disable on an SELinux daemon (rc=$RC)
+${extract_argv:-$(cat "$T/docker-argv.log")}"
+fi
+
+T="$(fresh)"; reset_run_env
+RUN_SECURITY_OPTIONS="$SELINUX_DAEMON"; RUN_SELINUX_LABEL=bogus
+run_in "$T" "$T/launch"
+if [[ "$RC" -ne 0 ]] && grep -q 'SELINUX_LABEL' <<<"$OUT" \
+     && ! grep -qF -- "--entrypoint capture-agent-destinations.sh" "$T/docker-argv.log"; then
+  pass "an unknown SELINUX_LABEL stops before the extract runs"
+else
+  fail "an unknown SELINUX_LABEL stops before the extract runs (rc=$RC)
+$OUT"
+fi
+reset_run_env   # the sections below run with the defaults
 
 # ── 4. The coverage verdict ───────────────────────────────────────────────────
 

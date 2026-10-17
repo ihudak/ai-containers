@@ -95,8 +95,13 @@ fi
 case "\${1:-}" in
   run) exit "\${DOCKER_RUN_RC:-0}" ;;
   # Phase 0 gates on this one, and only for the phases that need a daemon, so a
-  # test that means to exercise that gate has to be able to fail it.
-  info) exit "\${DOCKER_INFO_RC:-0}" ;;
+  # test that means to exercise that gate has to be able to fail it. Phase 5
+  # also asks it for the daemon's SecurityOptions, to decide whether the floor
+  # container needs label=disable (sandbox-common.sh: selinux_security_opt());
+  # DOCKER_SECURITY_OPTIONS is that answer, by default a daemon with no SELinux.
+  info)
+    [[ "\$*" == *SecurityOptions* ]] && printf '%s\n' "\${DOCKER_SECURITY_OPTIONS:-[]}"
+    exit "\${DOCKER_INFO_RC:-0}" ;;
   *) exit 0 ;;
 esac
 EOF
@@ -288,6 +293,11 @@ mk_repo() {  # $1=build.sh exit code (default 0)  $2=1 to stamp a
   # has no -e), printing "bash-floor.sh: No such file or directory" into every
   # captured log without affecting the exit code this file asserts on.
   cp "$ENGINE_DIR/bash-floor.sh" "$r/bash-floor.sh"
+  # Phase 5 sources sandbox-common.sh (and through it tools-lib.sh) in a
+  # subshell, for the floor container's SELinux option. Without these the floor
+  # suite never runs and Phase 5 fails on every caller.
+  cp "$ENGINE_DIR/sandbox-common.sh" "$r/sandbox-common.sh"
+  cp "$ENGINE_DIR/tools-lib.sh" "$r/tools-lib.sh"
   printf '#!/usr/bin/env bash\necho "stub build (rc=%s)" >&2\nexit %s\n' \
     "$build_rc" "$build_rc" > "$r/build.sh"
   chmod +x "$r/build.sh"
@@ -399,7 +409,7 @@ run_verify() {  # $1=repo  $2=phases  [$3…=VAR=VALUE for the script's environm
   # applies its operands after its own -u options, so an argument still wins
   # over the removal — pinned by an assertion, not assumed.
   PATH="$TMP/bin:$PATH" REPO="$repo" PHASES="$phases" \
-    env -u FALSIFY_JOBS -u FALSIFY_TIMEOUT -u IT_EXTRA_ARGS "$@" \
+    env -u FALSIFY_JOBS -u FALSIFY_TIMEOUT -u IT_EXTRA_ARGS -u SELINUX_LABEL "$@" \
       bash "$repo/verify-on-host.sh" > "$TMP/out.log" 2>&1
   printf '%s' "$?"
 }

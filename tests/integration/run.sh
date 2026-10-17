@@ -418,10 +418,30 @@ detect_caps() {
   _caps_unknown=" $u "
 }
 
+# The option sandbox.sh passes on an SELinux daemon (AGENTS.md "SELinux
+# daemons"): there a labelled container cannot make the kernel load the
+# ipset/NFLOG modules and reads no host bind mount. The harness's own containers
+# that need either — probe_netadmin, it_reclaim_scratch, lib.sh's sandbox_up and
+# dns_up, case 460's — pass it too, or netadmin is reported absent and the
+# network tier fails on a host where the product works. Asked of the same
+# helper, at SELINUX_LABEL=auto whatever the developer exported: lib.sh clears
+# SELINUX_LABEL before every case, so the launcher's containers decide at auto
+# and the harness's must decide the same. From a subshell, because sourcing
+# sandbox-common.sh exports sandbox.env. Resolved on first use, not in the
+# export block below, because --list-caps reaches probe_netadmin before it.
+_selinux_resolved=0
+resolve_selinux_opt() {
+  [[ "$_selinux_resolved" -eq 1 ]] && return 0
+  IT_SELINUX_OPT="$(source "$REPO_DIR/sandbox-common.sh" >/dev/null && SELINUX_LABEL=auto selinux_security_opt)" \
+    || IT_SELINUX_OPT=""
+  _selinux_resolved=1
+}
+
 # Can a container here create an ipset and install match-set + NFLOG rules?
 # This is the single question the whole security tier rests on (see Task 0).
 probe_netadmin() {
-  docker run --rm --cap-add=NET_ADMIN --cap-add=NET_RAW --label "$IT_LABEL" \
+  resolve_selinux_opt
+  docker run --rm ${IT_SELINUX_OPT:+"$IT_SELINUX_OPT"} --cap-add=NET_ADMIN --cap-add=NET_RAW --label "$IT_LABEL" \
     --entrypoint bash "$IT_CAPS_IMAGE" -c '
       ipset create it_probe hash:net family inet   >/dev/null 2>&1 || exit 1
       iptables -A OUTPUT -m set --match-set it_probe dst -j ACCEPT >/dev/null 2>&1 || exit 1
@@ -785,7 +805,8 @@ it_reclaim_scratch() {   # <image> <dir>
   # slow, and where the thing fetched would then be run AS ROOT over a host bind
   # mount. A missing image must fail locally and warn, which is what the callers
   # already handle.
-  docker run --rm --pull=never -v "$dir:/scratch" --entrypoint chown "$img" \
+  resolve_selinux_opt
+  docker run --rm --pull=never ${IT_SELINUX_OPT:+"$IT_SELINUX_OPT"} -v "$dir:/scratch" --entrypoint chown "$img" \
     -R "$(id -u):$(id -g)" /scratch >/dev/null 2>&1 || true
   return 0
 }
@@ -1001,9 +1022,13 @@ if [[ "$do_dry_run" -eq 0 ]]; then
   # own "unbound variable" error, reported by run.sh as a bare nonzero exit with
   # no case-specific diagnosis. Found and fixed while writing those cases
   # (task 9), never exercised until then because no earlier case read the var.
+  #
+  # IT_SELINUX_OPT: see resolve_selinux_opt. Once per run rather than per case:
+  # a case would otherwise source sandbox-common.sh and ask the daemon each time.
+  resolve_selinux_opt
   export IT_RUN_ID IT_LABEL IT_SCRATCH IT_IMAGE IT_NET IT_DNS_IMAGE \
          IT_CONNECT_TIMEOUT IT_SETTLE IT_GENERATED_ALLOWLIST_DIR IT_REAL_DOCKER \
-         IT_DOCKER_HOST IT_RUBY_VERSIONS
+         IT_DOCKER_HOST IT_RUBY_VERSIONS IT_SELINUX_OPT
 fi  # do_dry_run -eq 0
 
 # --variant is validated HERE, once, rather than left to fall through to the

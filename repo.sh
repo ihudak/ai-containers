@@ -82,7 +82,16 @@ seed_dockerfile="${_here}/Dockerfile.seed"
 # Ensure the seed helper image exists, building it on demand from Dockerfile.seed.
 # If REPO_SEED_IMAGE points at an image that is already present we use it as-is
 # (and never try to build it).
+#
+# Also resolves seed_selinux_opt, which every seed container passes: each one
+# bind-mounts a host path — the source tree, or ~/.ssh for a git repo — and an
+# SELinux daemon denies that to a labelled container
+# (sandbox-common.sh: selinux_security_opt()). Here because every path that runs
+# one comes through here after its arguments are validated and before it creates
+# or removes anything, so an unknown SELINUX_LABEL leaves no half-made volume.
+seed_selinux_opt=""
 ensure_seed_image() {
+  seed_selinux_opt="$(selinux_security_opt)" || exit 1
   if docker image inspect "$seed_image" >/dev/null 2>&1; then
     return
   fi
@@ -117,7 +126,7 @@ seed_from_path() {
     exit 1
   fi
   printf 'Seeding volume "%s" from host path %s ...\n' "$vol" "$real"
-  docker run --rm --entrypoint bash \
+  docker run --rm --entrypoint bash ${seed_selinux_opt:+"$seed_selinux_opt"} \
     -v "$real":/src:ro \
     -v "$vol":/dst \
     "$seed_image" -c "cp -a /src/. /dst/ && chown -R ${host_uid}:${host_gid} /dst"
@@ -133,7 +142,7 @@ sync_from_path() {
   fi
   printf 'Syncing volume "%s" from host path %s ...\n' "$vol" "$real"
   # Prefer rsync (mirror with deletes) if available in the image; fall back to cp.
-  docker run --rm --entrypoint bash \
+  docker run --rm --entrypoint bash ${seed_selinux_opt:+"$seed_selinux_opt"} \
     -v "$real":/src:ro \
     -v "$vol":/dst \
     "$seed_image" -c '
@@ -150,7 +159,7 @@ sync_from_path() {
 seed_from_git() {
   local vol="$1" url="$2"
   printf 'Cloning %s into volume "%s" (auth via host ~/.ssh) ...\n' "$url" "$vol"
-  docker run --rm --entrypoint bash \
+  docker run --rm --entrypoint bash ${seed_selinux_opt:+"$seed_selinux_opt"} \
     -v "$HOME/.ssh":/root/.ssh-host:ro \
     -v "$vol":/dst \
     "$seed_image" -c '
@@ -167,7 +176,7 @@ seed_from_git() {
 sync_from_git() {
   local vol="$1"
   printf 'Pulling latest into volume "%s" (auth via host ~/.ssh) ...\n' "$vol"
-  docker run --rm --entrypoint bash \
+  docker run --rm --entrypoint bash ${seed_selinux_opt:+"$seed_selinux_opt"} \
     -v "$HOME/.ssh":/root/.ssh-host:ro \
     -v "$vol":/dst \
     "$seed_image" -c '
@@ -192,7 +201,7 @@ sync_from_git() {
 # image working with no rebuild.
 git_helper_run() {   # $1 = volume  $2... = repo-git-reset.sh arguments
   local vol="$1"; shift
-  docker run --rm --entrypoint bash \
+  docker run --rm --entrypoint bash ${seed_selinux_opt:+"$seed_selinux_opt"} \
     -v "$HOME/.ssh":/root/.ssh-host:ro \
     -v "${script_dir}/repo-git-reset.sh":/repo-git-reset.sh:ro \
     -v "$vol":/dst \

@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Fixed
+
+- **Linux hosts with SELinux work: openSUSE Tumbleweed, Fedora.** Their Docker
+  daemons confine containers with SELinux, and a confined container could read
+  none of the host directories the launcher mounts (`Permission denied` on the
+  project, the vault, the group's agent config), while restricted mode could
+  not build its firewall: the kernel would not load the `ipset` and NFLOG
+  modules for it (`set type not supported`). When `docker info` reports
+  SELinux, every container that mounts a host directory — `sandbox.sh`'s,
+  `repo.sh`'s seeding containers, `extract-discovery.sh`'s, the floor
+  suite `verify-on-host.sh` runs, and the integration suite's own — now runs
+  with `--security-opt label=disable`. SELinux then does not confine it, and
+  the sandbox relies on its firewall, capability drop and non-root shell.
+  Without it the integration suite failed its network cases there, or
+  skipped them all when the firewall modules were not loaded yet.
+  `SELINUX_LABEL=keep` keeps the label, for a host whose mounted directories
+  are labelled for containers; `disable` forces it off; anything else stops
+  the launch. `:z` was not used: it would relabel your real repositories on
+  every launch. Sync existing projects (`./sync-to-projects.sh`); no rebuild
+  is needed.
+
 ## v0.10.6 — 2026-10-11
 
 ### Fixed

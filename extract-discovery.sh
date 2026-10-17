@@ -251,8 +251,11 @@ printf 'capture: %s\n\n' "$capture_dir"
 # The capture directory is mounted AT the in-container capture path, rather than
 # mounting the whole launch directory at /workspace as the hand-typed command
 # does. Same result for the extract, and the container sees only the one
-# directory it reads.
+# directory it reads. On an SELinux daemon that bind mount is denied to a
+# labelled container (sandbox-common.sh: selinux_security_opt()).
+selinux_opt="$(selinux_security_opt)" || exit 1
 if ! docker run --rm --entrypoint capture-agent-destinations.sh \
+     ${selinux_opt:+"$selinux_opt"} \
      -v "$capture_dir:/workspace/.agent-discovery" \
      "$image" extract /workspace/.agent-discovery; then
   die "the extract failed inside $image. The pcap is untouched at $pcap."

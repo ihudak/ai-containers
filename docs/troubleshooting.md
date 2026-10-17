@@ -8,6 +8,36 @@ The macOS Keychain context is still relevant if you use `AI_CONTAINER_GROUP=host
 
 > The `~/.ai-containers/` directory name is unrelated to the per-project `<project>/.ai-containers/` asset dirs created by `project-init.sh`. They never collide on disk because one lives under `$HOME` and the other under repo roots.
 
+## Linux hosts with SELinux (openSUSE, Fedora)
+
+openSUSE Tumbleweed and Fedora run the Docker daemon with SELinux enabled: `docker info --format '{{json .SecurityOptions}}'` lists `name=selinux`. A container there runs as the SELinux type `container_t`, and that breaks this project in two places:
+
+- **Mounted host directories are unreadable.** `container_t` may read only files labelled for containers. Your project, vault and group directories carry your home directory's label, so inside the container `ls /workspace/<project>` prints `Permission denied`.
+- **Restricted mode cannot build its firewall.** The firewall needs the kernel modules `ip_set_hash_net`, `nfnetlink_log` and `xt_NFLOG`, which the kernel loads on first use, but not when a `container_t` process asks. `ipset create` then fails with `Kernel error received: set type not supported`.
+
+AppArmor, which confines containers on Ubuntu and Debian, blocks neither.
+
+**There is nothing to set up: the scripts detect it.** When the daemon reports SELinux, every container that mounts a host directory runs with `--security-opt label=disable`, which starts it as `spc_t`, a type SELinux does not confine. That covers `sandbox.sh`'s container, `repo.sh`'s seeding containers, `extract-discovery.sh`'s, the floor suite `verify-on-host.sh` runs, and the integration suite's own (`tests/integration/run.sh`). A container that only copies between Docker volumes mounts nothing from the host and keeps its label. What running unconfined costs is in the [security model](security.md#security-model-restricted-mode).
+
+The usual advice for this is the `:z` mount option. It is deliberately not used: it relabels the host directory itself, so every launch would relabel your real repositories, vault and specs, and it does nothing for the kernel modules.
+
+**`SELINUX_LABEL` overrides the detection.** Set it inline, in `sandbox.local.env`, or in your shell profile:
+
+| Value | Effect |
+|---|---|
+| `auto` (default) | Asks the daemon (`docker info`), and disables labelling only when it reports SELinux. |
+| `disable` | Always passes `--security-opt label=disable`. |
+| `keep` | Never passes it, so containers stay `container_t`. |
+
+Any other value stops the launch with an `ERROR:`. `keep` works only if you have labelled every directory the launch mounts for containers yourself (for example `chcon -R -t container_file_t <dir>`, or a `semanage fcontext` rule so the label survives a relabel): your project, the group under `~/.ai-containers/<group>/`, `VAULT_PATH`, `SPECS_PATH` and the rest. Restricted mode with `keep` also needs the three modules loaded before the container starts. A confined container can use them once they are loaded; it just cannot load them. Load them at every boot with:
+
+```
+# /etc/modules-load.d/ai-containers.conf
+ip_set_hash_net
+nfnetlink_log
+xt_NFLOG
+```
+
 ## Claude Code bug: `--dangerously-skip-permissions` still asks for permission
 
 This is a **bug in Claude Code**, not in the container. Started with

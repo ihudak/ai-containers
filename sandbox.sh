@@ -1579,6 +1579,12 @@ run_container() {
 
   local capabilities=(--cap-add=NET_ADMIN --cap-add=NET_RAW)
   [[ "$mode" == "open" ]] && capabilities=()
+  # Every launch bind-mounts host directories, and an SELinux daemon denies a
+  # labelled container both those and the firewall's kernel modules
+  # (sandbox-common.sh: selinux_security_opt()). Asked before anything is created,
+  # so an unknown SELINUX_LABEL refuses the launch cleanly.
+  local selinux_opt
+  selinux_opt="$(selinux_security_opt)" || exit 1
   local sandbox_username="${SANDBOX_USER:-$(id -un)}"
   local dev_home="/home/$sandbox_username"
 
@@ -2414,6 +2420,7 @@ run_container() {
   docker run -it --rm \
     --name "$container_name" \
     ${capabilities[@]+"${capabilities[@]}"} \
+    ${selinux_opt:+"$selinux_opt"} \
     ${shm_flags[@]+"${shm_flags[@]}"} \
     --add-host=host.docker.internal:host-gateway \
     ${app_env_flags[@]+"${app_env_flags[@]}"} \
