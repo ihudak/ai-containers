@@ -350,8 +350,9 @@ verify_launcher_mounts() {
   # to do: said, like the non-preserving case below, not skipped in silence.
   # Seen under SELinux with SELINUX_LABEL=keep, where a confined container
   # cannot read the verify directory unless ~/.ai-containers is labelled for
-  # containers. -r, not -f: a manifest that exists but cannot be read made the
-  # loop below read nothing, so nothing could mismatch.
+  # containers. -r, not -f: a manifest that exists but cannot be read passed -f,
+  # and the loop's redirect below then failed, which under set -e ended the
+  # entrypoint with a bare "Permission denied".
   if [[ ! -r /run/ai-launcher/manifest ]]; then
     printf 'NOTE: launcher mounts are not verified against a concurrent-container swap: /run/ai-launcher/manifest cannot be read (on an SELinux host with SELINUX_LABEL=keep, label ~/.ai-containers for containers; see docs/troubleshooting.md).\n' >&2
     return 0
