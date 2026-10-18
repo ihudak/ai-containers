@@ -22,6 +22,7 @@
 #   not:         a real launch comes up and NOTEs; a crafted mismatch is NOT
 #                refused (nothing here can be verified, and a launch must not be
 #                blocked for it).
+#   both:        an anchor with no manifest to read NOTEs and proceeds.
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 # shellcheck source=tests/portability.sh
 . "$(dirname "${BASH_SOURCE[0]}")/../../portability.sh"
@@ -106,6 +107,22 @@ if grep -q 'does not preserve device/inode' <<<"$out" \
   pass "an anchor that does not survive the mount: noted, not refused"
 else
   fail "the skip path notes and does not refuse (out: $(tr '\n' ' ' <<<"$out"))"
+fi
+
+# ── an anchor with no manifest to read → note and proceed, never in silence ──
+# sandbox.sh passes the anchor only with the manifest mount, so this is a check
+# that cannot run, not one with nothing to do. Under SELinux with
+# SELINUX_LABEL=keep a confined container cannot read a manifest in an
+# unlabelled ~/.ai-containers, and the entrypoint skipped the check without a
+# word. No manifest mount at all reaches the same test on every host.
+out="$(docker run --rm --label "$IT_LABEL" \
+  -e DEV_CONTAINER_MODE=open -e SANDBOX_UID="$IT_LAUNCH_UID" -e SANDBOX_GID="$IT_LAUNCH_GID" \
+  -e SANDBOX_USER=tester -e SANDBOX_GROUP=tester -e AI_LAUNCHER_ANCHOR=1:1 \
+  "$IT_IMAGE" 2>&1 </dev/null)"
+if grep -q 'manifest cannot be read' <<<"$out" && ! grep -q 'refusing to' <<<"$out"; then
+  pass "an anchor with no manifest to read: noted, not refused"
+else
+  fail "an anchor with no manifest to read must NOTE that nothing is verified (out: $(tr '\n' ' ' <<<"$out"))"
 fi
 
 it_finish

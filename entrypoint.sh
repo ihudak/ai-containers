@@ -344,7 +344,18 @@ apply_discovery_firewall() {
 # rather than refuse every launch. Nothing an agent writes can reach this: the
 # manifest and the anchor come from sandbox.sh's own -v/-e, not container.env.
 verify_launcher_mounts() {
-  [[ -n "${AI_LAUNCHER_ANCHOR:-}" && -f /run/ai-launcher/manifest ]] || return 0
+  [[ -n "${AI_LAUNCHER_ANCHOR:-}" ]] || return 0
+  # sandbox.sh passes the anchor only together with the manifest mount, so a
+  # manifest this cannot read is a check that cannot run, never one with nothing
+  # to do: said, like the non-preserving case below, not skipped in silence.
+  # Seen under SELinux with SELINUX_LABEL=keep, where a confined container
+  # cannot read the verify directory unless ~/.ai-containers is labelled for
+  # containers. -r, not -f: a manifest that exists but cannot be read made the
+  # loop below read nothing, so nothing could mismatch.
+  if [[ ! -r /run/ai-launcher/manifest ]]; then
+    printf 'NOTE: launcher mounts are not verified against a concurrent-container swap: /run/ai-launcher/manifest cannot be read (on an SELinux host with SELINUX_LABEL=keep, label ~/.ai-containers for containers; see docs/troubleshooting.md).\n' >&2
+    return 0
+  fi
   local got dev ino dst bad=0
   got="$(stat -c '%d:%i' /run/ai-launcher 2>/dev/null || true)"
   if [[ "$got" != "$AI_LAUNCHER_ANCHOR" ]]; then

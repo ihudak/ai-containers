@@ -94,11 +94,42 @@ out="$(run_case 0 0)"
   && pass "an anchor mismatch notes and skips, so a non-preserving filesystem still launches" \
   || fail "anchor mismatch notes and skips (got: $(tr '\n' ' ' <<<"$out"))"
 
-# 4) no anchor / no manifest → nothing to do
+# 4) no anchor / no manifest → nothing to do, and nothing to say
 # shellcheck source=/dev/null
-out="$( set -uo pipefail; source "$fn"; unset AI_LAUNCHER_ANCHOR; verify_launcher_mounts; printf 'rc=%s\n' "$?" 2>&1 )"
-[[ "$out" == *"rc=0"* ]] && pass "no anchor → nothing to verify, launch proceeds" \
+out="$( { set -uo pipefail; source "$fn"; unset AI_LAUNCHER_ANCHOR; verify_launcher_mounts; printf 'rc=%s\n' "$?"; } 2>&1 )"
+[[ "$out" == *"rc=0"* ]] && ! grep -q 'NOTE' <<<"$out" \
+  && pass "no anchor → nothing to verify, launch proceeds" \
   || fail "no anchor → nothing to verify (got: $out)"
+
+# 5) anchor set, manifest not there → a check that cannot run, said in a NOTE.
+# sandbox.sh sets the anchor only together with the manifest mount, so this is
+# never "nothing to verify". Under SELinux with SELINUX_LABEL=keep a confined
+# container cannot see a manifest in an unlabelled directory, and the entrypoint
+# used to return here in silence, the guard off and nothing saying so.
+rm -rf "$RUN"; mkdir -p "$RUN"
+# shellcheck source=/dev/null
+out="$( { set -uo pipefail; source "$fn"; AI_LAUNCHER_ANCHOR=1:1 verify_launcher_mounts; printf 'rc=%s\n' "$?"; } 2>&1 )"
+[[ "$out" == *"rc=0"* ]] && grep -q 'NOTE:.*manifest cannot be read' <<<"$out" \
+  && ! grep -q 'ERROR' <<<"$out" \
+  && pass "an anchor with no manifest notes that the mounts are not verified" \
+  || fail "an anchor with no manifest notes that the mounts are not verified (got: $(tr '\n' ' ' <<<"$out"))"
+
+# 6) anchor set, manifest there but unreadable → the same NOTE. Before, `-f`
+# passed, the read loop's redirect failed, and with no entry read nothing could
+# mismatch. Root reads a mode-000 file, so this needs an ordinary user.
+if [[ "$(id -u)" -ne 0 ]]; then
+  d="$TMP/unreadable"; rm -rf "$RUN" "$d"; mkdir -p "$RUN" "$d/dest"
+  read -r dev ino < <(p_dev_ino "$d/dest")
+  printf '%s\0%s\0%s\0' "$dev" "$((ino + 1000000))" "$d/dest" > "$RUN/manifest"
+  chmod 000 "$RUN/manifest"
+  anchor="$(p_dev_ino "$RUN" | tr ' ' ':')"
+  # shellcheck source=/dev/null
+  out="$( { set -uo pipefail; source "$fn"; AI_LAUNCHER_ANCHOR="$anchor" verify_launcher_mounts; printf 'rc=%s\n' "$?"; } 2>&1 )"
+  chmod 600 "$RUN/manifest"
+  [[ "$out" == *"rc=0"* ]] && grep -q 'NOTE:.*manifest cannot be read' <<<"$out" \
+    && pass "an unreadable manifest notes that the mounts are not verified" \
+    || fail "an unreadable manifest notes that the mounts are not verified (got: $(tr '\n' ' ' <<<"$out"))"
+fi
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

@@ -29,7 +29,7 @@ The usual advice for this is the `:z` mount option. It is deliberately not used:
 | `disable` | Always passes `--security-opt label=disable`. |
 | `keep` | Never passes it, so containers stay `container_t`. |
 
-Any other value stops the launch with an `ERROR:`. `keep` works only if you have labelled every directory the launch mounts for containers yourself (for example `chcon -R -t container_file_t <dir>`, or a `semanage fcontext` rule so the label survives a relabel): your project, the group under `~/.ai-containers/<group>/`, `VAULT_PATH`, `SPECS_PATH` and the rest. Restricted mode with `keep` also needs the three modules loaded before the container starts. A confined container can use them once they are loaded; it just cannot load them. Load them at every boot with:
+Any other value stops the launch with an `ERROR:`. `keep` works only if you have labelled every directory the launch mounts for containers yourself (for example `chcon -R -t container_file_t <dir>`, or a `semanage fcontext` rule so the label survives a relabel): your project, `~/.ai-containers` itself, `VAULT_PATH`, `SPECS_PATH` and the rest. Label `~/.ai-containers` itself, not only the group under it: each launch writes the record of its launcher mounts to a new `~/.ai-containers/.verify-*` directory, and a new directory takes its parent's label. If the container cannot read that record, the launch prints `NOTE: launcher mounts are not verified against a concurrent-container swap` and starts without the check. Restricted mode with `keep` also needs the three modules loaded before the container starts. A confined container can use them once they are loaded; it just cannot load them. Load them at every boot with:
 
 ```
 # /etc/modules-load.d/ai-containers.conf

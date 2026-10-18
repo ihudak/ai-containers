@@ -26,6 +26,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the launch. `:z` was not used: it would relabel your real repositories on
   every launch. Sync existing projects (`./sync-to-projects.sh`); no rebuild
   is needed.
+- **The launcher-mount check no longer turns itself off without a word.**
+  Each launch records the directories it mounts read-only, and the container
+  refuses to start if one was swapped before Docker mounted it. When the
+  container could not read that record, it skipped the check in silence. That
+  is what happens on an SELinux host with `SELINUX_LABEL=keep` when
+  `~/.ai-containers` is not labelled for containers. It now prints
+  `NOTE: launcher mounts are not verified against a concurrent-container swap`,
+  naming the cause. The `keep` instructions in `docs/troubleshooting.md` said
+  to label only the group under `~/.ai-containers`, which leads to exactly
+  this; they now say to label `~/.ai-containers` itself, so the record's new
+  directory inherits the label. Rebuild the image to pick it up.
 
 ## v0.10.6 — 2026-10-11
 
