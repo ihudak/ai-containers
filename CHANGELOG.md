@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## v0.10.7 — 2026-10-18
+
 ### Fixed
 
 - **Linux hosts with SELinux work: openSUSE Tumbleweed, Fedora.** Their Docker
