@@ -47,7 +47,14 @@ case_ln="$(grep -n '^case "$mode" in' "$ENGINE/entrypoint.sh" | head -1 | cut -d
   && pass "verify_launcher_mounts runs before the mode case" \
   || fail "verify_launcher_mounts runs before the mode case (call=$call_ln case=$case_ln)"
 
-# Extract the function and repoint its fixed base at $TMP/run.
+grep -qx 'set -euo pipefail' "$ENGINE/entrypoint.sh" \
+  && pass "the entrypoint runs under set -euo pipefail, as every case below does" \
+  || fail "the entrypoint runs under set -euo pipefail, as every case below does"
+
+# Extract the function and repoint its fixed base at $TMP/run. Every case runs
+# it under the entrypoint's own `set -euo pipefail`: without -e, a redirect that
+# fails reads nothing and carries on, where the entrypoint would stop, so a case
+# would describe a container that never existed.
 RUN="$TMP/run"
 fn="$TMP/fn.sh"
 awk '/^verify_launcher_mounts\(\) \{/,/^}$/' "$ENGINE/entrypoint.sh" \
@@ -64,7 +71,7 @@ run_case() {
   printf '%s\0%s\0%s\0' "$dev" "$ino" "$d/dest" > "$RUN/manifest"
   local anchor; anchor="$(p_dev_ino "$RUN" | tr ' ' ':')"
   [[ "$anchor_ok" == 0 ]] && anchor="999999:999999"
-  ( set -uo pipefail
+  ( set -euo pipefail
     # shellcheck source=/dev/null
     source "$fn"
     AI_LAUNCHER_ANCHOR="$anchor" verify_launcher_mounts
@@ -96,7 +103,7 @@ out="$(run_case 0 0)"
 
 # 4) no anchor / no manifest → nothing to do, and nothing to say
 # shellcheck source=/dev/null
-out="$( { set -uo pipefail; source "$fn"; unset AI_LAUNCHER_ANCHOR; verify_launcher_mounts; printf 'rc=%s\n' "$?"; } 2>&1 )"
+out="$( { set -euo pipefail; source "$fn"; unset AI_LAUNCHER_ANCHOR; verify_launcher_mounts; printf 'rc=%s\n' "$?"; } 2>&1 )"
 [[ "$out" == *"rc=0"* ]] && ! grep -q 'NOTE' <<<"$out" \
   && pass "no anchor → nothing to verify, launch proceeds" \
   || fail "no anchor → nothing to verify (got: $out)"
@@ -108,15 +115,16 @@ out="$( { set -uo pipefail; source "$fn"; unset AI_LAUNCHER_ANCHOR; verify_launc
 # used to return here in silence, the guard off and nothing saying so.
 rm -rf "$RUN"; mkdir -p "$RUN"
 # shellcheck source=/dev/null
-out="$( { set -uo pipefail; source "$fn"; AI_LAUNCHER_ANCHOR=1:1 verify_launcher_mounts; printf 'rc=%s\n' "$?"; } 2>&1 )"
+out="$( { set -euo pipefail; source "$fn"; AI_LAUNCHER_ANCHOR=1:1 verify_launcher_mounts; printf 'rc=%s\n' "$?"; } 2>&1 )"
 [[ "$out" == *"rc=0"* ]] && grep -q 'NOTE:.*manifest cannot be read' <<<"$out" \
   && ! grep -q 'ERROR' <<<"$out" \
   && pass "an anchor with no manifest notes that the mounts are not verified" \
   || fail "an anchor with no manifest notes that the mounts are not verified (got: $(tr '\n' ' ' <<<"$out"))"
 
 # 6) anchor set, manifest there but unreadable → the same NOTE. Before, `-f`
-# passed, the read loop's redirect failed, and with no entry read nothing could
-# mismatch. Root reads a mode-000 file, so this needs an ordinary user.
+# passed and the read loop's redirect failed, which under set -e ended the
+# entrypoint with a bare "Permission denied": no launch, and nothing saying why.
+# Root reads a mode-000 file, so this needs an ordinary user.
 if [[ "$(id -u)" -ne 0 ]]; then
   d="$TMP/unreadable"; rm -rf "$RUN" "$d"; mkdir -p "$RUN" "$d/dest"
   read -r dev ino < <(p_dev_ino "$d/dest")
@@ -124,7 +132,7 @@ if [[ "$(id -u)" -ne 0 ]]; then
   chmod 000 "$RUN/manifest"
   anchor="$(p_dev_ino "$RUN" | tr ' ' ':')"
   # shellcheck source=/dev/null
-  out="$( { set -uo pipefail; source "$fn"; AI_LAUNCHER_ANCHOR="$anchor" verify_launcher_mounts; printf 'rc=%s\n' "$?"; } 2>&1 )"
+  out="$( { set -euo pipefail; source "$fn"; AI_LAUNCHER_ANCHOR="$anchor" verify_launcher_mounts; printf 'rc=%s\n' "$?"; } 2>&1 )"
   chmod 600 "$RUN/manifest"
   [[ "$out" == *"rc=0"* ]] && grep -q 'NOTE:.*manifest cannot be read' <<<"$out" \
     && pass "an unreadable manifest notes that the mounts are not verified" \
