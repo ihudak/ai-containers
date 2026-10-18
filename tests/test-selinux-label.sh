@@ -29,6 +29,11 @@ unset VAULT_PATH SPECS_PATH DOCS_PATH ARCHITECTURE_REPO_PATH EXTRA_MOUNTS REPOS 
 unset REPO_VOLUME_PREFIX REPO_SEED_IMAGE
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# mgd-ai-containers keeps the engine under base/; resolve it, and refuse to run
+# against nothing.
+ENGINE_DIR="$REPO_DIR"
+[[ -f "$ENGINE_DIR/sandbox.sh" ]] || ENGINE_DIR="$REPO_DIR/base"
+[[ -f "$ENGINE_DIR/sandbox.sh" ]] || { printf 'SCAFFOLD-FAILED: no sandbox.sh under %s\n' "$REPO_DIR"; exit 1; }
 fails=0
 pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails + 1)); }
@@ -87,7 +92,7 @@ has_label_disable() {
 # the developer's own sandbox.local.env, which sourcing the library would load.
 opt_for() {  # $1=SELINUX_LABEL  $2=daemon's SecurityOptions → OPT, RC, ERR
   OPT="$(SELINUX_LABEL="$1" FAKE_SECURITY_OPTIONS="$2" \
-    bash -c 'source "$1/sandbox-common.sh" && selinux_security_opt' _ "$REPO_DIR" 2>"$TMP/err")"
+    bash -c 'source "$1/sandbox-common.sh" && selinux_security_opt' _ "$ENGINE_DIR" 2>"$TMP/err")"
   RC=$?
   ERR="$(cat "$TMP/err")"
 }
@@ -121,7 +126,7 @@ mkdir -p "$TMP/launch" "$TMP/app"
 launch() {  # $1=SELINUX_LABEL  $2=daemon → LAUNCH (the container's argv line), RC
   : > "$FAKE_RUN_LOG"
   ( cd "$TMP/launch" && SELINUX_LABEL="$1" FAKE_SECURITY_OPTIONS="$2" \
-      bash "$REPO_DIR/sandbox.sh" restricted "$TMP/app" ) >"$TMP/out" 2>"$TMP/err" </dev/null
+      bash "$ENGINE_DIR/sandbox.sh" restricted "$TMP/app" ) >"$TMP/out" 2>"$TMP/err" </dev/null
   RC=$?
   LAUNCH="$(grep -e '--cpus=' "$FAKE_RUN_LOG")"
 }
@@ -158,7 +163,7 @@ export REPO_BACKEND=volume
 mkdir -p "$TMP/src"
 repo() {  # $1=SELINUX_LABEL  $2=daemon  $3…=repo.sh args → RUNS, RC
   : > "$FAKE_RUN_LOG"
-  SELINUX_LABEL="$1" FAKE_SECURITY_OPTIONS="$2" bash "$REPO_DIR/repo.sh" "${@:3}" \
+  SELINUX_LABEL="$1" FAKE_SECURITY_OPTIONS="$2" bash "$ENGINE_DIR/repo.sh" "${@:3}" \
     >"$TMP/out" 2>"$TMP/err" </dev/null
   RC=$?
   RUNS="$(cat "$FAKE_RUN_LOG")"
@@ -211,7 +216,7 @@ unset REPO_BACKEND
 migrate() {  # $1=daemon → RUNS
   rm -f "$FAKE_VOLUMES_DIR"/ai-containers-rvm-*; : > "$FAKE_RUN_LOG"
   SELINUX_LABEL=auto FAKE_SECURITY_OPTIONS="$1" bash -c \
-    'source "$1/sandbox-common.sh" && rvm_volume_ensure old "$2" ai-sandbox' _ "$REPO_DIR" "$TMP/group-old" \
+    'source "$1/sandbox-common.sh" && rvm_volume_ensure old "$2" ai-sandbox' _ "$ENGINE_DIR" "$TMP/group-old" \
     >/dev/null 2>&1
   RUNS="$(cat "$FAKE_RUN_LOG")"
 }
