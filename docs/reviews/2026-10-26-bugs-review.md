@@ -14,7 +14,7 @@
 | # | Area | Findings | Feature gaps folded in | Highest |
 |---|---|---|---|---|
 | 1 | Host-side launcher: git internals + launcher overlay | GIT-1, LNCH-1, LNCH-3 (partly); LNCH-2 not reproducible (PLAT-1) | GAP-12 (only: follow includes inside included files) | HIGH |
-| 2 | Launcher config / env layers / credentials | ENV-1 … ENV-6 | — | HIGH |
+| 2 | Launcher config / env layers / credentials | ENV-1 … ENV-6 — all fixed | — | HIGH |
 | 3 | Container-start runtime tools (entrypoint root steps, reconciles) | RT-1 … RT-7 | stretch: GAP-1 for `link-default-ruby.sh`, `install-agent-skills.sh`, `agent-tools-reconcile.sh` | HIGH |
 | 4 | Host lifecycle scripts (project-init, sync, repo, group, report) | PRJ-1 … PRJ-9, DOC-1, DOC-3 | optional: GAP-6; stretch: GAP-1 for `group.sh` | MEDIUM |
 | 5 | In-container DB services | SVC-1 … SVC-3 | — | MEDIUM |
@@ -172,6 +172,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 ## 2. Launcher config, env layers and credentials
 
 ### ENV-1: A committed sandbox.env can still run code on the host. `env_key_denied` covers shell keys only, and `load_env_defaults` exports every other key to docker and git
+- **Status: FIXED (batch 2)** — `5e338f8`, widened by `9179d32` (machine-only keys, `--pull=never`) and `f3400e5` (`SANDBOX_WORKDIR` resolved through symlinks); tests in `tests/test-sandbox-env.sh`, T1.
 - Severity: HIGH (raised from MEDIUM in triage: host code execution from a file AGENTS.md calls inert, committed data). Confidence: CONFIRMED (reproduced)
 - Location: `sandbox-common.sh: \`env_key_denied()\``, `sandbox-common.sh: \`load_env_defaults()\``
 - Introduced: the deny-list approach predates the window. The window widened it (ca44e38, 987efac) but kept it limited to shell and loader keys.
@@ -183,6 +184,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Fix direction: give sandbox.env/sandbox.local.env an allow-list of the keys the launcher actually reads (IMAGE_NAME, AI_CONTAINER_*, CONTAINER_*, SANDBOX_*, EXTRA_MOUNTS, REPOS, the *_PATH pointers, …). If that is not done, at least deny `DOCKER_*`, `BUILDX_*`, `BUILDKIT_*`, `GIT_*` and `SSH_*`.
 
 ### ENV-2: repo.sh pastes SANDBOX_UID/SANDBOX_GID unvalidated into the `bash -c` scripts its seed containers run as root
+- **Status: FIXED (batch 2)** — `2e17c78`; `tests/test-repo-ids.sh`.
 - Severity: MEDIUM. Confidence: CONFIRMED (reproduced with a fake docker)
 - Location: `repo.sh: \`host_uid="${SANDBOX_UID:-$(id -u)}"\``. The value is used in `seed_from_path` (`-c "cp -a /src/. /dst/ && chown -R ${host_uid}:${host_gid} /dst"`), `sync_from_path` and `sync_from_git` (`chown -R '"${host_uid}:${host_gid}"' /dst'`).
 - Introduced: the code predates the window. The window added the numeric/range check (`must be numeric ids from 0 to 4294967294`) to `sandbox.sh: \`launcher_ro_overlay()\`` only, and AGENTS.md tells users to export the same values for repo.sh.
@@ -192,6 +194,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Fix direction: validate host_uid/host_gid in repo.sh with the same `^[0-9]{1,10}$` / ≤4294967294 rule. Better still, pass the value as a positional argument (`"$2"`), as `seed_from_git` already does.
 
 ### ENV-3: Tool config and credential dirs that are symlinks get copied as symlinks, so the "group copy" mounts the host's real directory read-write
+- **Status: FIXED (batch 2)** — `98731b2` (copy, never the link; a group link out is warned about, not refused); `tests/test-tool-config-mounts.sh` case 13.
 - Severity: MEDIUM. Confidence: CONFIRMED (reproduced with a fake docker)
 - Location: `sandbox.sh: \`cp -a "$HOME/$_cdir" "$group_root/$_cdir"\`` (tools.d `config_dir` seeding, multi-path loop added in the window). Also `sandbox-common.sh: \`_copy_group_slice()\`` (`cp -a "$from" "$dst/$p"`, which gained `.aws .azure .kube` in the window), together with `sandbox.sh: \`add_mount_if_exists()\``, which calls `resolve_path` and follows the link.
 - What's wrong: `cp -a` keeps a top-level symlink, so the group gets a symlink pointing at the host directory. `add_mount_if_exists` then resolves it and bind-mounts the host's real directory `:rw`. That breaks two documented promises: "a sandboxed agent never writes to the developer's real host config" (tools.d) and "a container can no longer write the developer's real AWS/Azure credentials" (.aws/.azure/.kube). Dotfile managers and hand-made links (`~/.aws -> ~/Dropbox/aws`, `~/.config/dtctl -> ~/dotfiles/…`) are common. The tools.d seeding runs for any existing group the first time the tool is enabled, not only for `from:host`. With a relative link (GNU stow), the copied link dangles instead: the mount is skipped with a WARNING and the seed is retried on every launch.
@@ -200,6 +203,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Fix direction: copy the link's target, not the link (`cp -RL`, or `cp -a "$from/." "$dst/$p/"` after `mkdir`). Before mounting, refuse or warn when a group path is a symlink leading outside the group root.
 
 ### ENV-4: When the host user is root, or SANDBOX_UID=0, the agent shell is root, and restricted mode's allowlist becomes agent-writable
+- **Status: FIXED (batch 2)** — `f2fe920`, hardened in `1255fc8`; T30, `tests/test-entrypoint-wiring.sh`. The entrypoint half needs a `./build.sh`.
 - Severity: MEDIUM (needs a root host user or an explicit SANDBOX_UID=0). Confidence: CONFIRMED from code in triage — `setup_sandbox_user()` finds UID 0 via `getent passwd "$uid"` and adopts `root`; nothing refuses it. Not run end-to-end.
 - Location: `sandbox.sh: \`launcher_ro_overlay()\`` accepts 0 (`must be numeric ids from 0 to 4294967294`); `-e SANDBOX_UID="${SANDBOX_UID:-$(id -u)}"`; `entrypoint.sh: \`setup_sandbox_user()\``; `exec capsh --drop=cap_net_admin,cap_net_raw --user="$sandbox_user"`.
 - What's wrong: AGENTS.md describes a "non-root agent shell". The capability reasoning relies on `capsh --user=` clearing the capability sets on the root→user setuid ("the agent shell ends up with no capabilities at all"). If sandbox.sh runs as root (a root WSL distro, a root CI box, `sudo ./sandbox.sh`), `id -u` is 0. The UID-0 user already exists, the name matches, and capsh switches 0→0, so only NET_ADMIN/NET_RAW leave the bounding set. The agent keeps CAP_DAC_OVERRIDE, CAP_KILL and the rest, and it owns every root-owned file. In restricted mode that includes `/tmp/allowlist-cidrs.txt` and `/tmp/allowlist-domains.txt`, which the root refresh loop re-reads every 60 s and loads into the ipset. Writing `0.0.0.0/1` and `128.0.0.0/1` there opens all egress with no NET_ADMIN needed. The agent can also kill the capture daemon.
@@ -208,6 +212,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Fix direction: refuse SANDBOX_UID=0 / SANDBOX_GID=0 in the launcher (and in the entrypoint, as defence in depth), or map a root host user to a fixed non-root UID with a warning.
 
 ### ENV-5: `host_checkout_preflight` never runs for the all-CRLF checkout it was written for, and it does not scan the baked `services.d/*.sh`
+- **Status: FIXED (batch 2)** — `8ba80ba` (scan extended; the all-CRLF limit is now documented rather than claimed).
 - Severity: LOW. Confidence: CONFIRMED (reproduced)
 - Location: `host-preflight.sh: \`host_crlf_files()\`` / `host_checkout_preflight()`, called after the caller has already been parsed and has sourced sandbox-common.sh and friends.
 - What's wrong: the header says it "catches a checkout made before" `.gitattributes`, and AGENTS.md says it "refuses a CRLF script … (a Windows-side checkout)". In such a checkout every script is CRLF, so the shebang or the first line fails before the preflight can print its explanation. The guard only works for a tree where just some non-sourced files are CRLF. Separately, `services.d/*.sh` is COPYed into the image (`COPY services.d /etc/ai-containers/services.d`) but is not in the scanned set (`"$dir"/*.sh "$dir"/Dockerfile* … tools.d/*.conf allowlist-*.d/*.txt`), so a CRLF adapter gets baked and fails at runtime.
@@ -215,6 +220,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Fix direction: reword the docs and header to the case it does cover (an individually edited fragment, descriptor or Dockerfile). Add `services.d/*.sh` (and `migrations/*.sh`) to the scan.
 
 ### ENV-6: A committed container.env can copy any host environment variable into the agent's shell with a bare `NAME` line
+- **Status: FIXED (batch 2)** — `9246cd8` (`SANDBOX_ENV_PASSTHROUGH`); E13.
 - Severity: LOW. Confidence: CONFIRMED (from code; documented docker behaviour)
 - Location: `sandbox.sh: \`container_env_filter()\``. A bare NAME is forwarded "for docker to look up in this environment".
 - What's wrong: the filter treats container.env as written by "whoever can commit to the project", yet it forwards a bare `GITHUB_TOKEN`, `AWS_SECRET_ACCESS_KEY` or `ANTHROPIC_API_KEY` line. docker fills these from the launching shell, so a host secret the launcher deliberately does not forward (build.sh's `GITHUB_TOKEN`, for example) reaches the agent. The agent can then use it or send it out through any allowlisted host. Only names the launcher passes with `-e` are refused.
