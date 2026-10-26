@@ -344,6 +344,142 @@ check "on: with nothing under it cannot be read: rc 2" 2 \
 check "comments and blank lines inside the on: block are skipped" 0 \
   "$(trig_rc "$(printf 'on:\n\n  # a comment\n  pull_request:\njobs:\n  x:\n    runs-on: y')")"
 
+# ── wf_if_true: the if: shapes the workflows use, under one event ─────────────
+# test-layer-containment.sh derives what each layer RUNS from the workflows
+# (TST-2), so it has to know whether a job or step runs for the layer's event.
+# It understands only the shapes these files use, and says so (rc 2) for
+# anything else rather than guessing. Every input is empty outside
+# workflow_dispatch, which is what makes the inputs.* forms decidable.
+ifrc() { wf_if_true "$1" "$2" 2>/dev/null; printf '%s' "$?"; }
+check "if: absent runs" 0 "$(ifrc '' schedule)"
+check "if: always() runs" 0 "$(ifrc 'always()' schedule)"
+check "if: success() runs on a green run" 0 "$(ifrc 'success()' pull_request)"
+check "if: failure() does not run on a green run" 1 "$(ifrc 'failure()' schedule)"
+check "event == matching" 0 "$(ifrc "github.event_name == 'schedule'" schedule)"
+check "event == other" 1 "$(ifrc "github.event_name == 'schedule'" pull_request)"
+check "event != other" 0 "$(ifrc "github.event_name != 'workflow_dispatch'" pull_request)"
+check "event != matching" 1 "$(ifrc "github.event_name != 'pull_request'" pull_request)"
+check "the \${{ }} wrapper is unwrapped" 0 "$(ifrc "\${{ github.event_name == 'schedule' }}" schedule)"
+check "a double-quoted value is unquoted" 0 "$(ifrc "\"github.event_name == 'schedule'\"" schedule)"
+check "inputs.x != 'v' is true when inputs are empty" 0 "$(ifrc "\${{ inputs.tags != 'packages' }}" schedule)"
+check "inputs.x == 'v' is false when inputs are empty" 1 "$(ifrc "inputs.tags == 'packages'" schedule)"
+check "inputs.* cannot be decided under workflow_dispatch" 2 "$(ifrc "inputs.tags != 'packages'" workflow_dispatch)"
+check "an expression it does not know is rc 2, not a guess" 2 "$(ifrc "contains(github.ref, 'main')" schedule)"
+check "a compound expression is rc 2" 2 "$(ifrc "always() && github.event_name == 'schedule'" schedule)"
+
+# ── wf_it_selections: what a workflow RUNS for one event (TST-2, GAP-5) ───────
+# The containment guard used to hold its own copy of each layer's run.sh
+# arguments; the PR copy was a literal and nightly was modelled as "everything
+# outside packages, plus every packages case", which no job ran: a packages
+# case with no image: header was credited to nightly while no nightly job
+# selected it. This reads every `tests/integration/run.sh` invocation from the
+# workflow itself, as the event sees it.
+cat > "$TMP/it.yml" <<'YAML'
+name: Fixture-it
+on:
+  schedule:
+    - cron: '1 2 * * *'
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      cases:
+        default: ''
+
+jobs:
+  caller:
+    if: github.event_name == 'schedule'
+    uses: ./.github/workflows/hermetic-checks.yml
+
+  full:
+    runs-on: x
+    if: ${{ inputs.tags != 'packages' }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Catalogue
+        run: ./tests/integration/run.sh --list
+
+      - name: Folded
+        run: >-
+          ./tests/integration/run.sh --require security
+          ${{ inputs.tags && format('--tags {0}', inputs.tags) || '' }}
+          --exclude packages${{ inputs.exclude && format(',{0}', inputs.exclude) || '' }}
+
+      - name: Diagnostics
+        if: failure()
+        run: |
+          ./tests/integration/run.sh --tags never-on-green
+
+  gated:
+    runs-on: x
+    steps:
+      - name: Dispatch only
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          args="--tags x"
+          ./tests/integration/run.sh $args
+
+      - name: Literal
+        if: github.event_name != 'workflow_dispatch'
+        run: |
+          # ./tests/integration/run.sh --tags commented-out
+          echo before
+          bash tests/integration/run.sh --tags fast --exclude needs-dns 2>&1 | tee log
+
+      - run: ./tests/integration/run.sh --tags packages --variant agents
+        if: always()
+
+  scheduled:
+    if: github.event_name == 'schedule'
+    runs-on: x
+    steps:
+      - name: Nightly only
+        run: ./tests/integration/run.sh --tags slow   # a trailing comment
+YAML
+
+check "wf_it_selections: the scheduled view" \
+  "$(printf '%s\n' 'full|Folded|--require security --exclude packages' \
+                   'gated|Literal|--tags fast --exclude needs-dns' \
+                   'gated|(unnamed step)|--tags packages --variant agents' \
+                   'scheduled|Nightly only|--tags slow')" \
+  "$(wf_it_selections "$TMP/it.yml" schedule)"
+
+check "wf_it_selections: the pull_request view drops the schedule-gated job" \
+  "$(printf '%s\n' 'full|Folded|--require security --exclude packages' \
+                   'gated|Literal|--tags fast --exclude needs-dns' \
+                   'gated|(unnamed step)|--tags packages --variant agents')" \
+  "$(wf_it_selections "$TMP/it.yml" pull_request)"
+
+out="$(wf_it_selections "$TMP/it.yml" push 2>&1)"; rc=$?
+check "wf_it_selections: a workflow the event does not trigger contributes nothing (rc 0)" "0|" "$rc|$out"
+
+fails_naming "wf_it_selections refuses workflow_dispatch, whose inputs are not empty" \
+  "workflow_dispatch" wf_it_selections "$TMP/it.yml" workflow_dispatch
+
+fails_naming "wf_it_selections fails loudly for a workflow file that does not exist" \
+  "no such workflow: $TMP/nosuchworkflow.yml" \
+  wf_it_selections "$TMP/nosuchworkflow.yml" schedule
+
+printf 'name: x\non: { schedule: [] }\njobs:\n  j:\n    runs-on: x\n    steps:\n      - run: ./tests/integration/run.sh --tags a\n' > "$TMP/it-on.yml"
+fails_naming "wf_it_selections fails when it cannot tell whether the event triggers the workflow" \
+  "cannot read the on: block" wf_it_selections "$TMP/it-on.yml" schedule
+
+printf 'on:\n  schedule:\njobs:\n  j:\n    runs-on: x\n    steps:\n      - name: Var\n        run: ./tests/integration/run.sh $ARGS\n' > "$TMP/it-var.yml"
+fails_naming "wf_it_selections fails, naming the step, on arguments it cannot render" \
+  "j/Var" wf_it_selections "$TMP/it-var.yml" schedule
+
+printf 'on:\n  schedule:\njobs:\n  j:\n    runs-on: x\n    steps:\n      - name: Bare\n        run: ./tests/integration/run.sh --tags ${{ inputs.tags }}\n' > "$TMP/it-bare.yml"
+fails_naming "wf_it_selections renders only the guarded inputs idiom, not a bare \${{ inputs.x }}" \
+  "j/Bare" wf_it_selections "$TMP/it-bare.yml" schedule
+
+printf "on:\n  schedule:\njobs:\n  j:\n    runs-on: x\n    steps:\n      - name: Odd\n        if: contains(github.ref, 'x')\n        run: ./tests/integration/run.sh --tags a\n" > "$TMP/it-if.yml"
+fails_naming "wf_it_selections fails, naming the step, on a step if: it cannot evaluate" \
+  "j/Odd" wf_it_selections "$TMP/it-if.yml" schedule
+
+printf "on:\n  schedule:\njobs:\n  j:\n    if: contains(github.ref, 'x')\n    runs-on: x\n    steps:\n      - name: Fine\n        run: ./tests/integration/run.sh --tags a\n" > "$TMP/it-jif.yml"
+fails_naming "wf_it_selections fails, naming the job, on a job if: it cannot evaluate" \
+  "job 'j'" wf_it_selections "$TMP/it-jif.yml" schedule
+
 # ── The registry ──────────────────────────────────────────────────────────────
 n_check="$(lc_rows check | grep -c .)"
 [[ "$n_check" -ge 1 ]] \

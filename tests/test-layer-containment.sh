@@ -405,11 +405,66 @@ else
   fail "suite-floor does not run $floor_img — the declared floor $floor is untested"
 fi
 
-# ── Integration-case containment, asked of run.sh rather than reimplemented ────
-sel() { bash "$RUN" --dry-run "$@" 2>/dev/null | grep -E '^[0-9]{3}-' | sort; }
-pr_set="$(sel --tags fast --exclude needs-external,needs-dns)"
-nightly_set="$( { sel --exclude packages; sel --tags packages; } | sort -u )"
-local_set="$(sel)"
+# ── Integration-case containment: DERIVED from the workflows, asked of run.sh ──
+# FIX ROUND 4 (TST-2, GAP-5). This section used to hold its own copy of each
+# layer's run.sh arguments: PR as a literal, nightly modelled as "everything
+# outside packages, plus every packages case". No nightly job runs the second
+# half — each packages job adds a --variant — so a packages case with no
+# image: header was credited to nightly while no job selected it. Demonstrated:
+# a planted 799 tagged `packages fast` was selected by the PR gate and by no
+# nightly job, and this printed "PR selection ⊆ nightly selection, 0
+# failure(s)". Deleting nightly's whole packages-services job, which takes
+# 785/790/800/810 out of every CI layer, also left it at 0 failures; so would
+# any edit to integration.yml's arguments.
+#
+# Now each layer is what its workflows run for its event: every
+# tests/integration/run.sh invocation in every workflow file the event
+# triggers, rendered as that event sees it
+# (tests/lib-layer-checks.sh: `wf_it_selections()`), each handed to
+# `run.sh --dry-run`, the union taken.
+# Nothing here names a workflow, a job or an argument. And nightly must hold
+# the WHOLE corpus, not merely the PR gate: nightly.yml's header promises that
+# "a case excluded on cost is still a case that RUNS", which is the property a
+# deleted job breaks while PR ⊆ nightly still holds.
+#
+# The local layer is still asked directly: verify-on-host.sh Phase 4 passes
+# run.sh no selection (`--require security` and the developer's own
+# IT_EXTRA_ARGS), so it is the whole corpus.
+sel_one() {  # <run.sh args…> → the cases that invocation selects, one per line, sorted; rc != 0 when run.sh refused
+  local out rc
+  out="$(bash "$RUN" --dry-run "$@" 2>/dev/null)"; rc=$?
+  (( rc == 0 )) || return "$rc"
+  grep -E '^[0-9]{3}-' <<<"$out" | LC_ALL=C sort
+}
+
+declare -A layer_cases=()
+for ev in pull_request schedule; do
+  n_sel=0; union=""
+  for wfile in "${workflow_files[@]}"; do
+    if ! sels="$(wf_it_selections "$wf_dir/$wfile" "$ev")"; then
+      fail "$ev: could not derive what $wfile runs (see stderr above) — this layer is not known"
+      continue
+    fi
+    while IFS='|' read -r job step args; do
+      [[ -n "$job" ]] || continue
+      n_sel=$((n_sel+1))
+      read -ra argv <<<"$args"
+      if cases="$(sel_one "${argv[@]}")" && [[ -n "$cases" ]]; then
+        pass "$ev: $wfile $job/$step runs run.sh $args ($(grep -c . <<<"$cases") case(s))"
+        union+="$cases"$'\n'
+      else
+        fail "$ev: $wfile $job/$step runs run.sh $args, which selects nothing (run.sh --dry-run refused it or printed no case)"
+      fi
+    done <<<"$sels"
+  done
+  if (( n_sel == 0 )); then
+    fail "no workflow runs tests/integration/run.sh on $ev — that layer derived to nothing, so nothing below can hold"
+  fi
+  layer_cases[$ev]="$(grep . <<<"$union" | LC_ALL=C sort -u)"
+done
+pr_set="${layer_cases[pull_request]}"
+nightly_set="${layer_cases[schedule]}"
+local_set="$(sel_one)"
 
 [[ -n "$pr_set" && -n "$nightly_set" && -n "$local_set" ]] \
   && pass "all three selections are non-empty" \
@@ -418,11 +473,16 @@ local_set="$(sel)"
 missing="$(comm -23 <(printf '%s\n' "$pr_set") <(printf '%s\n' "$nightly_set"))"
 [[ -z "$missing" ]] \
   && pass "PR selection ⊆ nightly selection" \
-  || fail "PR selection ⊄ nightly: $(printf '%s' "$missing" | tr '\n' ' ')"
+  || fail "PR selection ⊄ nightly — the PR gate runs case(s) no nightly job does: $(printf '%s' "$missing" | tr '\n' ' ')"
 
 missing="$(comm -23 <(printf '%s\n' "$nightly_set") <(printf '%s\n' "$local_set"))"
 [[ -z "$missing" ]] \
   && pass "nightly selection ⊆ local selection" \
   || fail "nightly selection ⊄ local: $(printf '%s' "$missing" | tr '\n' ' ')"
+
+missing="$(comm -23 <(printf '%s\n' "$local_set") <(printf '%s\n' "$nightly_set"))"
+[[ -z "$missing" ]] \
+  && pass "every case in the corpus runs nightly" \
+  || fail "case(s) no nightly job runs, so no CI layer runs them at all: $(printf '%s' "$missing" | tr '\n' ' ')"
 
 printf '\n%d failure(s)\n' "$fails"; exit "$fails"

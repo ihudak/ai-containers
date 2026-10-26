@@ -6,7 +6,7 @@
 #
 # CONTRACT: the sourcing file sets LAYER_CHECKS_CONF to the registry path before
 # sourcing. Provides lc_rows(), wf_jobs(), wf_steps(), wf_has_step(),
-# wf_job_key(), wf_triggers_on().
+# wf_job_key(), wf_triggers_on(), wf_if_true(), wf_it_selections().
 #
 # lc_rows is generic over the registry's row TYPE — it already serves `check`
 # and `setup` rows; the `workflow` row type (added to close the containment
@@ -266,4 +266,181 @@ wf_triggers_on() {  # $1=yaml  $2=trigger name (e.g. pull_request) → rc 0 pres
   rc=$?
   (( rc == 2 )) && echo "lib-layer-checks: cannot read the on: block of $f (no on: key, nothing under it, a flow map, or a flow list spanning lines)" >&2
   return "$rc"
+}
+
+# wf_if_true evaluates a job- or step-level `if:` for one event, on a run where
+# nothing has failed. A PREDICATE with a third answer, like wf_triggers_on: rc 0
+# runs, rc 1 does not, rc 2 "cannot evaluate". It knows only the shapes these
+# workflows use — none, always()/success()/failure()/cancelled(),
+# github.event_name ==/!= '<event>', and inputs.<name> ==/!= '<value>' — and
+# answers 2 for anything else, compound expressions included, rather than
+# guessing. The inputs forms are decidable only because every input is empty
+# outside workflow_dispatch, so under that event they are rc 2 too.
+wf_if_true() {  # $1=expression ('' = no if:)  $2=event → rc 0 runs, 1 does not, 2 cannot evaluate
+  local e="$1" ev="${2:?wf_if_true: event required}" op val
+  local re_ev="^github\.event_name[[:space:]]*(==|!=)[[:space:]]*'([A-Za-z_]+)'\$"
+  local re_in="^inputs\.[A-Za-z0-9_-]+[[:space:]]*(==|!=)[[:space:]]*'([^']+)'\$"
+  e="${e#"${e%%[![:space:]]*}"}"; e="${e%"${e##*[![:space:]]}"}"
+  [[ "$e" == \"*\" ]] && { e="${e#\"}"; e="${e%\"}"; }
+  if [[ "$e" == '${{'*'}}' ]]; then
+    e="${e#'${{'}"; e="${e%'}}'}"
+    e="${e#"${e%%[![:space:]]*}"}"; e="${e%"${e##*[![:space:]]}"}"
+  fi
+  case "$e" in
+    '')                    return 0 ;;
+    'always()'|'success()') return 0 ;;
+    'failure()'|'cancelled()') return 1 ;;
+  esac
+  if [[ "$e" =~ $re_ev ]]; then
+    op="${BASH_REMATCH[1]}"; val="${BASH_REMATCH[2]}"
+    if [[ "$op" == "==" ]]; then [[ "$ev" == "$val" ]] && return 0; return 1; fi
+    [[ "$ev" != "$val" ]] && return 0; return 1
+  fi
+  if [[ "$e" =~ $re_in && "$ev" != workflow_dispatch ]]; then
+    [[ "${BASH_REMATCH[1]}" == "!=" ]] && return 0; return 1
+  fi
+  return 2
+}
+
+# _wf_it_awk walks every step of every job and prints one record per
+# `tests/integration/run.sh` invocation in a step's `run:`, fields separated by
+# the ASCII unit separator (\037) — not a tab, which `read` treats as
+# whitespace and so collapses the empty field a step without an if: leaves:
+#   <job> US <step identity> US <step if:> US <arguments>
+# The run: value is decoded first — a literal block (|) line by line, a folded
+# block (>) joined into one line, a plain value as is — and comment lines are
+# dropped, so an invocation commented out in place is not one. Within the
+# arguments, the one ${{ }} idiom these workflows use to append a dispatch
+# input, `${{ inputs.X && format('…', inputs.X) || '' }}`, is rendered as the
+# empty string it is when nothing was dispatched; any other ${{ }} is left for
+# the caller to refuse. The arguments end at a trailing comment or at the
+# first shell operator — `run.sh … 2>&1 | tee log` passes run.sh nothing after
+# its last argument, and a digit run glued to a redirection is its fd. Same
+# indentation contract as _wf_awk.
+_wf_it_awk() {  # $1=yaml
+  awk -v sq="'" '
+    function val(s) {
+      sub(/^[A-Za-z][A-Za-z0-9_-]*:[[:space:]]*/, "", s)
+      sub(/^"/, "", s); sub(/"$/, "", s)
+      return s
+    }
+    function key(s) {
+      if (s ~ /^name:[[:space:]]/)      { nm = val(s) }
+      else if (s ~ /^uses:[[:space:]]/) { us = val(s) }
+      else if (s ~ /^if:[[:space:]]/)   { cond = val(s) }
+      else if (s ~ /^run:/) {
+        v = s; sub(/^run:[[:space:]]*/, "", v)
+        if (v ~ /^[|>]/) { inrun = 1; fold = (v ~ /^>/); nrun = 0 }
+        else { inrun = 0; nrun = 1; runl[1] = v; plain = 1 }
+      }
+    }
+    function scan(line,   p, a) {
+      if (line ~ /^[[:space:]]*#/) return
+      if (!match(line, /(^|[[:space:];&|(])(bash[[:space:]]+)?(\.\/)?tests\/integration\/run\.sh([[:space:]]|$)/)) return
+      p = index(substr(line, RSTART), "tests/integration/run.sh")
+      a = substr(line, RSTART + p - 1 + length("tests/integration/run.sh"))
+      gsub(idiom, "", a)
+      sub(/[[:space:]]#.*$/, "", a)
+      if (match(a, /(^|[[:space:]])[0-9]*[<>]|[;|&]/)) a = substr(a, 1, RSTART - 1)
+      sub(/^[[:space:]]+/, "", a); sub(/[[:space:]]+$/, "", a)
+      out = out jobname "\037" (nm != "" ? nm : (us != "" ? us : "(unnamed step)")) "\037" cond "\037" a "\n"
+    }
+    function flush(   i, j) {
+      if (started) {
+        if (fold) {
+          j = ""
+          for (i = 1; i <= nrun; i++) if (runl[i] != "") j = (j == "" ? runl[i] : j " " runl[i])
+          scan(j)
+        } else {
+          for (i = 1; i <= nrun; i++) scan(runl[i])
+        }
+        printf "%s", out
+      }
+      started = 0; nm = ""; us = ""; cond = ""; inrun = 0; fold = 0; nrun = 0; plain = 0; out = ""
+    }
+    BEGIN {
+      idiom = "\\$\\{\\{[[:space:]]*inputs\\.[A-Za-z0-9_-]+[[:space:]]*&&[[:space:]]*format\\(" sq "[^" sq "]*" sq ",[[:space:]]*inputs\\.[A-Za-z0-9_-]+\\)[[:space:]]*\\|\\|[[:space:]]*" sq sq "[[:space:]]*\\}\\}"
+      inj = 0; injob = 0; insteps = 0; started = 0
+    }
+    /^jobs:[[:space:]]*$/ { inj = 1; next }
+    inj && /^[^[:space:]#]/ { flush(); inj = 0; injob = 0; insteps = 0 }
+    inj && /^  [A-Za-z0-9_-]+:[[:space:]]*$/ {
+      flush()
+      jobname = $0; sub(/^  /, "", jobname); sub(/:[[:space:]]*$/, "", jobname)
+      injob = 1; insteps = 0; next
+    }
+    injob && /^    steps:[[:space:]]*$/ { insteps = 1; next }
+    injob && insteps && /^    [A-Za-z]/ { flush(); insteps = 0; next }
+    # A block scalar owns every line indented past the step keys, blank or not.
+    insteps && started && inrun && (/^[[:space:]]*$/ || /^          /) {
+      line = $0; sub(/^          /, "", line); runl[++nrun] = line; next
+    }
+    insteps && started && plain && /^          [^[:space:]]/ {
+      line = $0; sub(/^[[:space:]]+/, "", line); runl[1] = runl[1] " " line; next
+    }
+    insteps && /^      - / {
+      flush(); started = 1
+      line = $0; sub(/^      - /, "", line); key(line); next
+    }
+    insteps && started && /^        [A-Za-z]/ {
+      inrun = 0; plain = 0
+      line = $0; sub(/^        /, "", line); key(line); next
+    }
+    END { flush() }
+  ' "$1"
+}
+
+# wf_it_selections answers "which integration cases does this workflow run for
+# <event>" in the only terms run.sh can check: the arguments of each
+# `tests/integration/run.sh` invocation that actually runs, one line each,
+#   <job>|<step identity>|<arguments>
+# tests/test-layer-containment.sh hands each line to `run.sh --dry-run` and
+# takes the union as the layer (TST-2, GAP-5). Before, that test held its own
+# copy of the arguments, so editing a workflow's selection — or deleting a
+# whole nightly job — changed nothing it checked.
+#
+# A workflow the event does not trigger contributes nothing (rc 0, no output).
+# A job with a job-level `uses:` is a reusable-workflow call and is not
+# followed. Catalogue calls (--list, --list-caps) select nothing and are
+# skipped. Everything this cannot decide is rc 1 with the job and step named,
+# never a quiet omission: an on: it cannot read, an if: wf_if_true cannot
+# evaluate, arguments still holding ${{ }} after rendering, or holding any
+# shell expansion or quoting ($, `, quotes, backslash) — `run.sh $args` is
+# what a dispatch-only step does, which is why such steps must say so in an
+# if: this can evaluate. workflow_dispatch itself is refused: its inputs are
+# not empty, so nothing here renders it truthfully.
+wf_it_selections() {  # $1=yaml  $2=event → <job>|<step>|<args> per selection; rc 1 when it cannot decide one
+  local f="${1:?wf_it_selections: workflow path required}"
+  local ev="${2:?wf_it_selections: event required}"
+  local trc jrc src job step cond args jif bad=0
+  local -A jif_rc=()
+  case "$ev" in
+    workflow_dispatch|workflow_call)
+      echo "lib-layer-checks: wf_it_selections cannot render $ev: its inputs are not empty" >&2
+      return 1 ;;
+  esac
+  [[ -f "$f" ]] || { echo "lib-layer-checks: no such workflow: $f" >&2; return 1; }
+  wf_triggers_on "$f" "$ev"; trc=$?
+  (( trc == 1 )) && return 0
+  (( trc == 0 )) || return 1
+  while IFS=$'\037' read -r job step cond args; do
+    if [[ -z "${jif_rc[$job]:-}" ]]; then
+      jif="$(wf_job_key "$f" "$job" if 2>/dev/null)" || jif=""
+      wf_if_true "$jif" "$ev"; jif_rc[$job]=$?
+      [[ "${jif_rc[$job]}" == 2 ]] && { echo "lib-layer-checks: cannot evaluate job '$job' if: $jif ($f)" >&2; bad=1; }
+    fi
+    [[ "${jif_rc[$job]}" == 0 ]] || continue
+    wf_if_true "$cond" "$ev"; src=$?
+    (( src == 1 )) && continue
+    if (( src == 2 )); then
+      echo "lib-layer-checks: cannot evaluate step if: $cond — $job/$step ($f)" >&2; bad=1; continue
+    fi
+    if [[ "$args" == *'${{'* || "$args" == *[\$\`\"\'\\]* ]]; then
+      echo "lib-layer-checks: cannot render the run.sh arguments of $job/$step ($f): $args" >&2; bad=1; continue
+    fi
+    read -ra jrc <<<"$args"
+    case "${jrc[*]}" in --list|--list-caps) continue ;; esac
+    printf '%s|%s|%s\n' "$job" "$step" "${jrc[*]}"
+  done < <(_wf_it_awk "$f")
+  (( bad == 0 ))
 }
