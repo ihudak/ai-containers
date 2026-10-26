@@ -488,7 +488,7 @@ and required to define five functions:
 
 | Function | Contract |
 |---|---|
-| `svc_installed_version` | print the installed version, or nothing if this image lacks the server. Runs in both phases — in `prepare` as root with the scrubbed environment |
+| `svc_installed_version` | print the installed version, `unknown` if the server is there but cannot report one (a `mongod` that dies of SIGILL), or nothing if this image lacks the server — nothing means "rebuild", which cannot cure a binary that will not run. Runs in both phases — in `prepare` as root with the scrubbed environment |
 | `svc_runtime_dirs` | print extra absolute directories `prepare` must create, one per line |
 | `svc_start <datadir> <logfile>` | initialise and start; return 0 once it accepts connections. Its output goes to the log |
 | `svc_provision` | create what the adapter's env asks for; warn per bad entry; print the ready-line suffix on stdout. **Must return 0** — a non-zero is reported as a start failure |

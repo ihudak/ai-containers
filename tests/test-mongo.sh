@@ -212,7 +212,7 @@ EOF
 rm -f "$FAKE/noavx.calls"
 chmod +x "$FAKE/bin/mongod-noavx"
 got="$(AI_SERVICES_MONGO_MONGOD="$FAKE/bin/mongod-noavx" bash -c 'source "$1"; svc_installed_version' _ "$REPO_DIR/services.d/mongo.sh" 2>/dev/null)"
-[[ -n "$got" ]] && pass "D10 a mongod that cannot run still counts as installed (got '$got')" || fail "D10 a mongod that cannot run reads as not installed"
+[[ "$got" == unknown ]] && pass "D10 a mongod that cannot run still counts as installed, as 'unknown'" || fail "D10 a mongod that cannot run reads as '$got', not 'unknown'"
 rm -rf "$TMP_ROOT/state/mongo" "$TMP_ROOT/logs"; mkdir -p "$TMP_ROOT/state/mongo" "$TMP_ROOT/logs"
 out="$(AI_SERVICES=mongo=ON AI_SERVICES_DIR="$REPO_DIR/services.d" AI_SERVICES_STATE_ROOT="$TMP_ROOT/state" \
        AI_SERVICES_LOG_ROOT="$TMP_ROOT/logs" AI_SERVICES_MONGO_MONGOD="$FAKE/bin/mongod-noavx" \
