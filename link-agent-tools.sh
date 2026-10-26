@@ -43,17 +43,56 @@ srcs=(
 # Exact-member test against the comma list: `codex` must not match `codex-foo`.
 enabled() { [[ ",${AI_RUNTIME_TOOLS:-}," == *",$1,"* ]]; }
 
+# A node script linked as is runs under the ACTIVE node, so `nvm use 20` in a
+# project with node=20 left copilot on a node it does not support (bugs review
+# RT-6). Each npm-installed command that is a node script gets a wrapper running
+# it with the image's DEFAULT node, as link-node-globals.sh --pin does for qmd;
+# PATH is left alone, so the commands the agent runs keep the project's node.
+# NODE_LINK replaces /usr/local/bin/node (the nvm layer's link to the default
+# node) for the hermetic test.
+marker="# written by link-agent-tools.sh"
+default_node=""
+node_link="${NODE_LINK:-/usr/local/bin/node}"
+if [[ -L "$node_link" ]]; then
+  default_node="$(readlink "$node_link")"
+  [[ "$default_node" == /* ]] || default_node="$(dirname "$node_link")/$default_node"
+  [[ -x "$default_node" ]] || default_node=""
+fi
+sq() { printf "'%s'" "${1//\'/\'\\\'\'}"; }
+# node_script <npm bin entry>: the script it leads to, if that is a node script.
+node_script() {
+  local l="$1" t dir
+  [[ -L "$l" ]] || return 1
+  t="$(readlink "$l")"; [[ "$t" == /* ]] || t="$(dirname "$l")/$t"
+  dir="$(cd "$(dirname "$t")" 2>/dev/null && pwd -P)" || return 1
+  [[ -f "$dir/${t##*/}" && "$(head -n 1 "$dir/${t##*/}" 2>/dev/null)" == '#!'*node* ]] || return 1
+  printf '%s' "$dir/${t##*/}"
+}
+ours() { [[ -L "$1" ]] || { [[ -f "$1" ]] && [[ "$(sed -n 2p "$1")" == "$marker" ]]; }; }
+
 linked=""
 for entry in "${srcs[@]}"; do
   key="${entry%%:*}"; rest="${entry#*:}"
   name="${rest%%:*}"; path="${rest#*:}"
   if ! enabled "$key"; then
-    # A restarted container keeps /usr/local/bin; drop a link an earlier start made.
-    [[ -L "$bin_dest/$name" ]] && rm -f "$bin_dest/$name"
+    # A restarted container keeps /usr/local/bin; drop a link or wrapper an earlier start made.
+    ours "$bin_dest/$name" && rm -f "$bin_dest/$name"
     continue
   fi
   if [[ -x "$path" ]]; then
-    ln -sf "$path" "$bin_dest/$name"
+    script=""
+    [[ -n "$default_node" && "$path" == "$home_root/npm/bin/"* ]] && script="$(node_script "$path")"
+    if [[ -n "$script" ]]; then
+      rm -f "$bin_dest/$name"
+      {
+        printf '#!/bin/sh\n%s\n' "$marker"
+        printf '# %s runs under the default node whatever nvm selects.\n' "$name"
+        printf 'exec %s %s "$@"\n' "$(sq "$default_node")" "$(sq "$script")"
+      } > "$bin_dest/$name"
+      chmod 755 "$bin_dest/$name"
+    else
+      ln -sfn "$path" "$bin_dest/$name"
+    fi
     linked="${linked:+$linked }$name"
   fi
 done

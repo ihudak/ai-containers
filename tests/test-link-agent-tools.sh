@@ -80,6 +80,31 @@ path_line="$(grep -E "'export PATH=" "$REPO_DIR/Dockerfile" | grep -F 'ai-tools'
 [[ -z "$path_line" ]] && pass "Dockerfile does not put ~/.ai-tools bin dirs on PATH" \
   || fail "Dockerfile puts ~/.ai-tools bin dirs on PATH: $path_line"
 
+# ── RT-6: an npm agent CLI runs under the image's default node, whatever nvm selects ──
+# A node script linked as is runs under the ACTIVE node: `nvm use 20` in a
+# project with node=20 left copilot on a node it does not support (bugs review
+# RT-6). Like qmd (link-node-globals.sh --pin), each one gets a wrapper that
+# runs it with the default node; PATH is left alone, so the commands the agent
+# runs keep the node the project selected.
+h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; d="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
+n="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
+install -d "$n/v22/bin"; printf '#!/bin/sh\necho "node=$0 script=$1 rest=$2"\n' > "$n/v22/bin/node"; chmod +x "$n/v22/bin/node"
+ln -s "$n/v22/bin/node" "$n/node"
+pkg="$h/.ai-tools/npm/lib/node_modules/@github/copilot"; install -d "$pkg" "$h/.ai-tools/npm/bin"
+printf '#!/usr/bin/env node\n' > "$pkg/index.js"; chmod +x "$pkg/index.js"
+ln -s ../lib/node_modules/@github/copilot/index.js "$h/.ai-tools/npm/bin/copilot"
+mk_tool "$h" npm/bin/codex   # not a node script: a plain link, as before
+NODE_LINK="$n/node" AI_RUNTIME_TOOLS="copilot,codex" bash "$REPO_DIR/link-agent-tools.sh" "$h" "$d" >/dev/null 2>&1
+out="$("$d/copilot" hi 2>&1)"
+real_pkg="$(cd "$pkg" && pwd -P)"
+[[ ! -L "$d/copilot" && "$out" == "node=$n/v22/bin/node script=$real_pkg/index.js rest=hi" ]] \
+  && pass "an npm node-script CLI runs under the default node" \
+  || fail "copilot does not run under the default node (got: $out; link: $(readlink "$d/copilot"))"
+[[ -L "$d/codex" ]] && pass "  … a CLI that is not a node script stays a plain link" || fail "  … codex is no longer a link"
+NODE_LINK="$n/node" AI_RUNTIME_TOOLS="codex" bash "$REPO_DIR/link-agent-tools.sh" "$h" "$d" >/dev/null 2>&1
+[[ ! -e "$d/copilot" ]] && pass "  … and its wrapper is dropped once it is not enabled" || fail "  … the copilot wrapper survived disabling"
+rm -rf "$h" "$d" "$n"
+
 # ── Guards ──
 grep -qE '^set +-[a-z]*u|nounset' "$REPO_DIR/link-agent-tools.sh" && fail "must NOT enable nounset" || pass "does not enable nounset"
 
