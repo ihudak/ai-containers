@@ -341,6 +341,15 @@ check "a file with no on: key cannot be read: rc 2" 2 \
   "$(trig_rc "$(printf 'name: x\njobs:\n  x:\n    runs-on: y')")"
 check "on: with nothing under it cannot be read: rc 2" 2 \
   "$(trig_rc "$(printf 'on:\njobs:\n  x:\n    runs-on: y')")"
+# A plain scalar continued on the next line is the value, not a key.
+check "on: with a plain scalar on the next line naming the trigger" 0 \
+  "$(trig_rc "$(printf 'on:\n  pull_request\njobs:\n  x:\n    runs-on: y')")"
+check "on: with a plain scalar on the next line naming another trigger" 1 \
+  "$(trig_rc "$(printf 'on:\n  push\njobs:\n  x:\n    runs-on: y')")"
+# Only a MATCHED pair of quotes is stripped: a value that opens with a quote it
+# never closes is not the trigger name, whatever lies between.
+check "an unmatched leading double quote is not stripped" 1 "$(trig_rc 'on: "pull_requestx')"
+check "an unmatched leading single quote is not stripped" 1 "$(trig_rc "on: 'pull_requestx")"
 check "comments and blank lines inside the on: block are skipped" 0 \
   "$(trig_rc "$(printf 'on:\n\n  # a comment\n  pull_request:\njobs:\n  x:\n    runs-on: y')")"
 
@@ -463,6 +472,41 @@ fails_naming "wf_it_selections fails loudly for a workflow file that does not ex
 printf 'name: x\non: { schedule: [] }\njobs:\n  j:\n    runs-on: x\n    steps:\n      - run: ./tests/integration/run.sh --tags a\n' > "$TMP/it-on.yml"
 fails_naming "wf_it_selections fails when it cannot tell whether the event triggers the workflow" \
   "cannot read the on: block" wf_it_selections "$TMP/it-on.yml" schedule
+
+# A plain run: value is folded as YAML folds it: a line break is a space, a
+# BLANK line is a newline. So the second step below runs `run.sh --tags c` and
+# then a separate command, `--exclude d`, which run.sh never sees.
+cat > "$TMP/it-plain.yml" <<'YAML'
+on:
+  schedule:
+jobs:
+  j:
+    runs-on: x
+    steps:
+      - name: Continued
+        run: ./tests/integration/run.sh --tags a
+          --exclude b
+
+      - name: Broken by a blank line
+        run: ./tests/integration/run.sh --tags c
+
+          --exclude d
+
+      - name: Folded, broken by a blank line
+        run: >-
+          ./tests/integration/run.sh --tags e
+
+          --exclude f
+
+      - name: Folded, broken by a more-indented line
+        run: >-
+          ./tests/integration/run.sh --tags g
+            --exclude h
+YAML
+check "wf_it_selections folds plain and > values as YAML does, a blank or more-indented line ending the command" \
+  "$(printf '%s\n' 'j|Continued|--tags a --exclude b' 'j|Broken by a blank line|--tags c' \
+                   'j|Folded, broken by a blank line|--tags e' 'j|Folded, broken by a more-indented line|--tags g')" \
+  "$(wf_it_selections "$TMP/it-plain.yml" schedule)"
 
 printf 'on:\n  schedule:\njobs:\n  j:\n    runs-on: x\n    steps:\n      - name: Var\n        run: ./tests/integration/run.sh $ARGS\n' > "$TMP/it-var.yml"
 fails_naming "wf_it_selections fails, naming the step, on arguments it cannot render" \

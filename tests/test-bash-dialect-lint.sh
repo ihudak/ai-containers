@@ -195,6 +195,22 @@ vector "awk-interval: a sed after the pipe is not awk" "awk '{print}' f | sed -E
 vector "awk-interval: action braces are not intervals" "awk '{ print ${DOLLAR}1 } END { n++ }' f" 0
 vector "awk-interval: a double-quoted operand is not program text" "awk '{print}' \"a${LB}2}\""   0
 vector "awk-interval: a full-line shell comment"       "# awk '/x${LB}2}/' f"                     0
+# Where the shell command ends, and where quoting does — each of these was
+# found by damaging the scanner and watching nothing notice.
+vector "awk-interval: a ' inside a double-quoted -v value opens nothing" \
+  "awk -v x=\"it's\" '/y${LB}2}/' f"                                                             1
+vector "awk-interval: a # glued to a word is not a comment" \
+  "awk -F# '/x${LB}2}/' f"                                                                       1
+vector "awk-interval: quoted text in a trailing shell comment is not program text" \
+  "awk '{print}' f  # compare '${LB}2}'"                                                          0
+vector "awk-interval: ; ends the awk command" \
+  "awk '{print}' f; echo 'x${LB}2}'"                                                              0
+vector "awk-interval: && ends the awk command" \
+  "awk '{print}' f && echo 'x${LB}2}'"                                                            0
+vector "awk-interval: ) ends the awk command" \
+  "x=${DOLLAR}(awk '{print}' f) && y='z${LB}2}'"                                                   0
+vector "awk-interval: the line after a finished command is not awk" \
+  "awk '{print}' f${NL}sed -E 's/a${LB}2}/b/' g"                                                 0
 vector "awk-interval: a marker with a reason suppresses it" \
   "awk '/x${LB}2}/' f  # dialect-lint: allow awk-interval: test reason"                           0
 

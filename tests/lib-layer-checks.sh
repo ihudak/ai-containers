@@ -308,8 +308,9 @@ wf_if_true() {  # $1=expression ('' = no if:)  $2=event → rc 0 runs, 1 does no
 # whitespace and so collapses the empty field a step without an if: leaves:
 #   <job> US <step identity> US <step if:> US <arguments>
 # The run: value is decoded first — a literal block (|) line by line, a folded
-# block (>) joined into one line, a plain value as is — and comment lines are
-# dropped, so an invocation commented out in place is not one. Within the
+# block (>) or a plain value folded as YAML folds them, lines joined by a space
+# but a blank line kept as a newline — and comment lines are dropped, so an
+# invocation commented out in place is not one. Within the
 # arguments, the one ${{ }} idiom these workflows use to append a dispatch
 # input, `${{ inputs.X && format('…', inputs.X) || '' }}`, is rendered as the
 # empty string it is when nothing was dispatched; any other ${{ }} is left for
@@ -348,8 +349,14 @@ _wf_it_awk() {  # $1=yaml
     function flush(   i, j) {
       if (started) {
         if (fold) {
+          # Folded as YAML folds: lines join with a space, but a blank line is
+          # a newline, and a more-indented line keeps its own line.
           j = ""
-          for (i = 1; i <= nrun; i++) if (runl[i] != "") j = (j == "" ? runl[i] : j " " runl[i])
+          for (i = 1; i <= nrun; i++) {
+            if (runl[i] == "")               { scan(j); j = "" }
+            else if (runl[i] ~ /^[[:space:]]/) { scan(j); scan(runl[i]); j = "" }
+            else                             { j = (j == "" ? runl[i] : j " " runl[i]) }
+          }
           scan(j)
         } else {
           for (i = 1; i <= nrun; i++) scan(runl[i])
@@ -375,8 +382,12 @@ _wf_it_awk() {  # $1=yaml
     insteps && started && inrun && (/^[[:space:]]*$/ || /^          /) {
       line = $0; sub(/^          /, "", line); runl[++nrun] = line; next
     }
+    # A plain value folds: a continuation line joins with a space, a blank line
+    # is a newline, so what follows it is a separate command.
+    insteps && started && plain && /^[[:space:]]*$/ { runl[++nrun] = ""; next }
     insteps && started && plain && /^          [^[:space:]]/ {
-      line = $0; sub(/^[[:space:]]+/, "", line); runl[1] = runl[1] " " line; next
+      line = $0; sub(/^[[:space:]]+/, "", line)
+      runl[nrun] = (runl[nrun] == "" ? line : runl[nrun] " " line); next
     }
     insteps && /^      - / {
       flush(); started = 1

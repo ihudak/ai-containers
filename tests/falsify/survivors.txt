@@ -374,7 +374,8 @@ version.sh:logic-flip:9afb91ee98f1cddd278a3e14a10f165bc2ed3fb7
   statement is added after it or the `return 0` moves.
 
 tests/lib-layer-checks.sh:logic-flip:b6554f5a51c19c07a987509d2872c86e54d554ea
-  :78  insteps && started && /^        [A-Za-z]/ {
+  :87  insteps && started && /^        [A-Za-z]/ {   (_wf_awk)
+  :396 insteps && started && /^        [A-Za-z]/ {   (_wf_it_awk, same text, same identity)
   the damages:  insteps || started && /^        [A-Za-z]/ {
                 insteps && started || /^        [A-Za-z]/ {
   EQUIVALENT: no test can kill either, because the mutated awk program produces
@@ -397,6 +398,18 @@ tests/lib-layer-checks.sh:logic-flip:b6554f5a51c19c07a987509d2872c86e54d554ea
   demonstrated able to see a difference before its silence was believed. This
   is the only EQUIVALENT in this file; the claim is that the two programs are
   observably identical, not that nobody has written the test.
+  The second site (2026-10-26, TST-2) is _wf_it_awk's copy of the rule, whose
+  body also clears inrun/plain and whose key() also reacts to `if:` and `run:`.
+  The same invariant holds there — `started = 1` only in its `/^      - /` rule,
+  guarded by `insteps`; every clear of `insteps` calls flush() first — and the
+  extra firings stay inert on valid YAML, argued rather than sampled: every
+  line of a block or plain run: value is consumed by the rules above this one,
+  so what reaches it while `started` is a comment, a deeper key (`with:`'s
+  children) or a line no valid step holds, none of which begins one of key()'s
+  four keys after the 8-space strip; and a firing with `started == 0` (an
+  8-space `name:`/`run:` under a matrix or dispatch input) sets fields that
+  the next flush() discards unprinted. tests/test-layer-checks-parser.sh's
+  wf_it_selections fixtures pass with both re-associations applied.
 
 # ── 7 ─────────────────────────────────────────────────────────────────────────
 # RETIRED 2026-08-19. Three mutants in tests/integration/mutate.sh used to sit
