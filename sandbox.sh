@@ -343,6 +343,7 @@ launcher_ro_overlay() {
     p4-pre-submit post-index-change)
   local -A seen=() tried=() scanned=() pinned=()
   local nl no=0 lmax
+  local -a unchecked=()
   # The agent's identity decides what it can reach; find needs it numeric (and
   # within a 32-bit id — GNU find rejects 4294967295 and up), and a find that
   # errors out finds nothing — so refuse rather than search blind.
@@ -431,7 +432,7 @@ launcher_ro_overlay() {
     printf 'ERROR: the writable mounts hold more than %d launchers and unlistable directories\n' "$lmax" >&2
     printf '       to protect, and each adds bind mounts to every container start. Among them:\n' >&2
     for (( k = ${#cl[@]} - 1, x = 0; k >= 0 && x < 5; k--, x++ )); do
-      printf '         %s\n' "${cl[k]}" >&2
+      printf '         %q\n' "${cl[k]}" >&2
     done
     printf '       Remove the ones that are not yours, mount narrower directories or :ro,\n' >&2
     printf '       or raise SANDBOX_LAUNCHER_MAX if every one of them is yours.\n' >&2
@@ -613,7 +614,7 @@ launcher_ro_overlay() {
         for (( d = depth; d <= gmax && x < 5; d++ )); do
           for k2 in "${!ug[@]}"; do
             if (( udep[k2] == d && x < 5 )) && { (( d > depth )) || (( k2 >= k )); }; then
-              printf '         %s\n' "${ug[k2]}" >&2; x=$((x + 1))
+              printf '         %q\n' "${ug[k2]}" >&2; x=$((x + 1))
             fi
           done
         done
@@ -855,6 +856,9 @@ launcher_ro_overlay() {
       if [[ "${bsrc[i]}" == "$x" ]]; then inner=1; break; fi
     done
     if [[ -n "$inner" ]]; then continue; fi
+    # Past the shared budget, the rest are only named: planted launchers can
+    # use it up before a real one is reached, and that must show.
+    if [[ "$x" != "$self" ]] && (( no > 200 )); then unchecked+=("$x"); continue; fi
     nl=0
     links=()
     mapfile -d '' -t links < <(find "$x" -maxdepth 6 \
@@ -872,9 +876,8 @@ launcher_ro_overlay() {
           break
         fi
       elif (( ++no > 200 )); then
-        printf 'NOTE: the other launchers the writable mounts expose hold more than 200 symlinks between them;\n' >&2
-        printf '      only the first 200 were checked.\n' >&2
-        break 2
+        unchecked+=("$x")
+        break
       fi
       walk=()
       mapfile -d '' -t walk < <(_link_walk "$f")
@@ -891,6 +894,11 @@ launcher_ro_overlay() {
       printf '         Replace the link with what it names, or mount that directory :ro.\n' >&2
     done
   done
+  if (( ${#unchecked[@]} )); then
+    printf 'NOTE: the other launchers the writable mounts expose hold more than 200 symlinks between them;\n' >&2
+    printf '      not all the links of these were checked:\n' >&2
+    for x in "${unchecked[@]}"; do printf '        %q\n' "$x" >&2; done
+  fi
 }
 
 # _walk_exposed <how-var> <step-var> <at-var> <home> <step>...: called from

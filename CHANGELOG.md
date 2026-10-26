@@ -22,7 +22,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   200 link warnings to every launch (1,000 of them cost 78 s before
   `docker run`). Past `SANDBOX_LAUNCHER_MAX` (50) launchers and unlistable
   directories the launch is now refused, naming where, and the links of every
-  launcher but the one running share one budget of 200 (bugs review LNCH-1).
+  launcher but the one running share one budget of 200; any launcher whose links that
+  budget did not cover is named (bugs review LNCH-1).
 
 ## v0.10.7 — 2026-10-18
 

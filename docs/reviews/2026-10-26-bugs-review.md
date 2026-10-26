@@ -154,6 +154,14 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Evidence: from the code, a single anchor gates every entry, and the manifest entries can come from any filesystem. Case 460 probes only one scratch directory, so it cannot catch this.
 - Fix direction: anchor per device. For each distinct source `st_dev`, record one reference directory on that filesystem (for example the mount root, or the first source seen on that device). Skip with the NOTE only the entries whose reference does not survive the bind. Alternatively, on a mismatch, check the device of the mount root that holds the entry before calling it a swap.
 
+### LNCH-3: Agent-chosen paths are printed raw to the host terminal
+- Severity: LOW — Confidence: CONFIRMED (found while fixing batch 1, 2026-10-26; shown with T46's escape fixture)
+- Location: the `WARNING:`/`NOTE:`/`READ-ONLY:` lines throughout `sandbox.sh: \`launcher_ro_overlay()\`` and `git_dirs_in()`'s callers that print `%s` with a path found by scanning a writable mount — e.g. `printf 'WARNING: launcher link %s leads somewhere the agent can change:\n' "$f"`.
+- What's wrong: those paths are names the agent chose. A directory or link named with terminal escape sequences (`$'\e]0;…\a'`, OSC 52 clipboard writes, cursor movement) is written verbatim to the host's terminal on the next launch, where it can retitle the window, hide or rewrite the warnings around it, or on terminals that honour OSC 52 set the clipboard.
+- Failure scenario: the agent runs `mkdir -p "/workspace/proj/x"$'\e[2K\e[1A'` next to a real launcher link it wants unnoticed; the next launch's WARNING for that link is overwritten on screen.
+- Evidence: T46 (`tests/test-launcher-dir-ro.sh`) plants `z$'\e]0;pwned\a'`; with `%s` the refusal carried the raw ESC (`^[]0;pwned^G`). The two refusal listings (`SANDBOX_LAUNCHER_MAX`, `SANDBOX_GIT_MAX`) now use `%q` (batch 1); every other site still prints raw.
+- Fix direction: one helper that renders an agent-reachable path for the terminal (`%q`, or control characters replaced), used by every launcher message that prints a scanned path; a test that plants an escape in each message class.
+
 
 ## 2. Launcher config, env layers and credentials
 

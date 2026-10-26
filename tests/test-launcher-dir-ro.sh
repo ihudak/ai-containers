@@ -816,6 +816,13 @@ EXTRA_MOUNTS="$FAKE" launch "$LAUNCHER" "$TMP/app"
 [[ "$(grep -cE "^         $FAKE/" "$ERR")" -le 5 ]] \
   && pass "T46 the refusal names at most five of them" \
   || fail "T46 refusal floods (named: $(grep -cE "^         $FAKE/" "$ERR"))"
+# A name the agent chose reaches your terminal: quoted, never raw escapes.
+ESC46="$TMP/esc46"; mk_launcher "$ESC46/a"; mk_launcher "$ESC46/z"$'\e]0;pwned\a'
+SANDBOX_LAUNCHER_MAX=1 EXTRA_MOUNTS="$ESC46" launch "$LAUNCHER" "$TMP/app"
+! grep -q $'\e' "$ERR" && grep -q 'pwned' "$ERR" && grep -qF 'ERROR: the writable mounts hold more than 1' "$ERR" \
+  && pass "T46 a planted name in the refusal is quoted, not printed raw" \
+  || fail "T46 raw escape in the refusal (stderr: $(grep -A7 ERROR "$ERR" | cat -v | tr '\n' ' '))"
+rm -rf "$ESC46"
 SANDBOX_LAUNCHER_MAX=60 EXTRA_MOUNTS="$FAKE" launch "$LAUNCHER" "$TMP/app"
 [[ "$LAUNCH_RC" == 0 && -s "$CAPTURE" ]] \
   && pass "T46 raising SANDBOX_LAUNCHER_MAX lets the launch through" \
@@ -849,6 +856,14 @@ w46="$(grep -c 'leads somewhere the agent can change' "$ERR")"
   && [[ "$(grep -c 'hold more than 200 symlinks between them' "$ERR")" -eq 1 ]] \
   && pass "T46 the other launchers share one 200-link budget; this launcher's own links are still checked" \
   || fail "T46 link budget (warnings: $w46; stderr: $(grep -E 'more than 200|own46' "$ERR" | tr '\n' ' '))"
+# Planted launchers can use the budget up before a real one is reached, so
+# every launcher whose links went unchecked is named — never a silent stop.
+unc46="$(sed -n '/hold more than 200 symlinks between them/,/^[^ ]/p' "$ERR")"
+# 150 links each against a 200 budget: the first one walked is checked whole,
+# the other two are not — whichever order find hands them over in.
+[[ "$(grep -cE "^ +$FAKE/p[123]/\.ai-containers\$" <<<"$unc46")" -eq 2 ]] \
+  && pass "T46 the launchers whose links were not all checked are named" \
+  || fail "T46 unchecked launchers not named (stderr: $(tr '\n' ' ' <<<"$unc46"))"
 rm -rf "$FAKE"
 
 printf '\n%d failure(s)\n' "$fails"
