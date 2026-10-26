@@ -931,7 +931,14 @@ rm -rf "$ROOT48"
 # cursor movement could rewrite the warnings around it (LNCH-3).
 ESC48="$TMP/esc48"; mk_launcher "$ESC48/p"; mkdir -p "$ESC48/shared"; : > "$ESC48/shared/real.conf"
 ln -s ../../shared/real.conf "$ESC48/p/.ai-containers/x"$'\e]0;pwned48\a'".conf"
+# …and the C1 CSI (U+009B) and a right-to-left override (U+202E), as UTF-8 writes them.
+ln -s ../../shared/real.conf "$ESC48/p/.ai-containers/c1"$'\xc2\x9b'"pwned48c1.conf"
+ln -s ../../shared/real.conf "$ESC48/p/.ai-containers/bidi"$'\xe2\x80\xae'"pwned48bd.conf"
 EXTRA_MOUNTS="$ESC48" launch "$LAUNCHER" "$TMP/app"
+grep -q 'pwned48c1' "$ERR" && grep -q 'pwned48bd' "$ERR" \
+  && ! grep -q $'\xc2\x9b' "$ERR" && ! grep -q $'\xe2\x80\xae' "$ERR" \
+  && pass "T49 … nor a C1 control or a bidi override" \
+  || fail "T49 a C1 control or bidi override reached the terminal: $(grep -a pwned48 "$ERR" | od -c | head -3 | tr '\n' ' ')"
 grep -q 'pwned48' "$ERR" && ! grep -q $'\e' "$ERR" && ! grep -q $'\a' "$ERR" \
   && pass "T49 a planted link name in a launcher WARNING carries no raw control characters" \
   || fail "T49 raw control characters reached the terminal: $(grep -a pwned48 "$ERR" | cat -v | head -2 | tr '\n' ' ')"

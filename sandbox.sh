@@ -1090,8 +1090,20 @@ _bind_mount_arg() {
 # _term <text>: text a scan found — a name the agent chose — made safe to print on
 # the host's terminal: control characters become `?`, so an ESC ] 0 ; … BEL cannot
 # retitle the window or cursor moves rewrite the warnings around it (bugs review
-# LNCH-3). Non-ASCII names stay readable, unlike %q.
-_term() { local LC_ALL=C; printf '%s' "${1//[[:cntrl:]]/?}"; }
+# LNCH-3). C0 and DEL, the C1 controls as UTF-8 encodes them (U+009B is a CSI to
+# many terminals), and the bidi overrides and isolates that can make a warning
+# read as something else (security review of 7b23d2e). Bytes, not a locale's
+# classes, so it is the same everywhere; any other non-ASCII name stays readable,
+# unlike %q — a raw 0x80-0x9F byte is also a UTF-8 continuation byte, so a lone
+# one is left (a UTF-8 terminal does not take it for a control).
+_term() {
+  local LC_ALL=C s="$1"
+  s="${s//[[:cntrl:]]/?}"
+  s="${s//$'\xc2'[$'\x80'-$'\x9f']/?}"
+  s="${s//$'\xe2\x80'[$'\xaa'-$'\xae']/?}"
+  s="${s//$'\xe2\x81'[$'\xa6'-$'\xa9']/?}"
+  printf '%s' "$s"
+}
 
 _overlay_buildable() {
   local rest path pin

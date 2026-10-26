@@ -9,15 +9,15 @@
 #       writability control still PASS.
 #
 diff --git a/sandbox.sh b/sandbox.sh
-index 8abe9ab..5e9bb37 100755
+index 4f21cb3..422f82f 100755
 --- a/sandbox.sh
 +++ b/sandbox.sh
-@@ -819,7 +819,7 @@ launcher_ro_overlay() {
+@@ -993,7 +993,7 @@ launcher_ro_overlay() {
        # directory, say) stays home — read-only with the launcher, or the working
        # dir someone is deliberately editing.
        if ! _walk_exposed how q w "$x" ${walk[@]+"${walk[@]}"}; then continue; fi
--      printf 'WARNING: launcher link %s leads somewhere the agent can change:\n' "$f" >&2
+-      printf 'WARNING: launcher link %s leads somewhere the agent can change:\n' "$(_term "$f")" >&2
 +      continue
        case "$how" in
-         change)  printf '         it can change %s (at %s), which the host reads through it.\n' "$q" "$w" >&2 ;;
-         repoint) printf '         it can repoint %s (at %s), a link on its way.\n' "$q" "$w" >&2 ;;
+         change)  printf '         it can change %s (at %s), which the host reads through it.\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
+         repoint) printf '         it can repoint %s (at %s), a link on its way.\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
