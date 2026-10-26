@@ -137,13 +137,18 @@ done
 SBENV3="$PROJ3/.ai-containers/sandbox.env"
 sed -i.bak 's/^SANDBOX_MODE=.*/SANDBOX_MODE=restricted/; s/^SANDBOX_WORKDIR=.*/SANDBOX_WORKDIR=@app/' "$SBENV3" && rm -f "$SBENV3.bak"
 printf 'SELINUX_LABEL=keep\nPREVIEW_PORTS="3000 8080"\n' >> "$SBENV3"
-printf '%s\n\n\n\n\n\n\n\n\n\n\n' "$PROJ3" | bash "$SCRIPTS/project-init.sh" >/dev/null 2>&1
+reinit_out="$(printf '%s\n\n\n\n\n\n\n\n\n\n\n' "$PROJ3" | bash "$SCRIPTS/project-init.sh" 2>&1)"
+[[ "$reinit_out" == *"SANDBOX_WORKDIR=@app"*"sandbox.local.env"* ]] \
+  && pass "  … and the dropped SANDBOX_WORKDIR is named, with where it belongs" || fail "dropped SANDBOX_WORKDIR not reported"
 grep -qx 'SANDBOX_MODE=restricted' "$SBENV3" && ! grep -qx 'SANDBOX_MODE=open' "$SBENV3" \
   && pass "re-init keeps sandbox.env's SANDBOX_MODE" || fail "re-init reset SANDBOX_MODE ($(grep '^SANDBOX_MODE' "$SBENV3"))"
 grep -qx 'SELINUX_LABEL=keep' "$SBENV3" && grep -qx 'PREVIEW_PORTS="3000 8080"' "$SBENV3" \
   && pass "re-init keeps keys a user added to sandbox.env" || fail "re-init dropped added keys ($(tr '\n' ';' < "$SBENV3"))"
-grep -qx 'SANDBOX_WORKDIR=\.\.' "$SBENV3" && grep -qx 'SANDBOX_WORKDIR=@app' "$SBLOCAL3" \
-  && pass "a non-portable SANDBOX_WORKDIR moves to sandbox.local.env" || fail "SANDBOX_WORKDIR=@app lost on re-init"
+# A non-portable SANDBOX_WORKDIR is NOT moved to sandbox.local.env: sandbox.env is
+# committed, and copying its value into the machine-local file would launder what
+# a committer wrote into what the loader trusts (security review of 49ca941).
+grep -qx 'SANDBOX_WORKDIR=\.\.' "$SBENV3" && ! grep -q '^SANDBOX_WORKDIR=@app' "$SBLOCAL3" \
+  && pass "a non-portable SANDBOX_WORKDIR is not carried into sandbox.local.env" || fail "SANDBOX_WORKDIR=@app laundered into sandbox.local.env"
 # The earlier re-init above made sandbox.env.pre-init already, so this one is timestamped.
 grep -qlx 'SANDBOX_MODE=restricted' "$PROJ3/.ai-containers"/sandbox.env.pre-init* 2>/dev/null \
   && pass "re-init backs up sandbox.env" || fail "no sandbox.env backup on re-init"

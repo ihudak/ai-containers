@@ -438,9 +438,12 @@ portable_group="$group_name"
 # key a user added. Writing open/.. over them turned a restricted project open with
 # no trace — .ai-containers/ is gitignored by default (bugs review PRJ-3). The first
 # value of a key wins, as in load_env_defaults. A workdir other than the project
-# (..) is machine-local — the loader ignores it in sandbox.env — so it moves to
-# sandbox.local.env. The old file is backed up like sandbox.local.env.
-prev_mode=open prev_workdir_local="" kept_env=()
+# (..) is machine-local and the loader ignores it in sandbox.env; it is NOT copied
+# into sandbox.local.env, because sandbox.env is committed and that would make what
+# a committer wrote something this machine trusts (security review of 49ca941).
+# It is named instead, with where it belongs. The old file is backed up like
+# sandbox.local.env.
+prev_mode=open kept_env=()
 if [[ -f "${dest}/sandbox.env" ]]; then
   backup="${dest}/sandbox.env.pre-init"
   [[ -e "$backup" ]] && backup="${dest}/sandbox.env.pre-init.$(date -u +%Y%m%dT%H%M%SZ)"
@@ -454,7 +457,8 @@ if [[ -f "${dest}/sandbox.env" ]]; then
     env_seen[$k]=1
     case "$k" in
       SANDBOX_MODE)    prev_mode="${BASH_REMATCH[2]}" ;;
-      SANDBOX_WORKDIR) [[ "${BASH_REMATCH[2]}" == .. ]] || prev_workdir_local="${BASH_REMATCH[2]}" ;;
+      SANDBOX_WORKDIR)
+        [[ "${BASH_REMATCH[2]}" == .. ]] || printf '  NOTE: dropped SANDBOX_WORKDIR=%q from sandbox.env (only .. is portable); if this machine should use it, add it to sandbox.local.env yourself.\n' "${BASH_REMATCH[2]}" ;;
       IMAGE_NAME|AI_CONTAINER_GROUP|CONTAINER_CPUS|CONTAINER_MEMORY|CONTAINER_MEMORY_RESERVATION|CONTAINER_MEMORY_SWAP) ;;  # re-prompted
       *) kept_env+=("$line") ;;
     esac
@@ -528,7 +532,6 @@ EOF
   [[ "$group_name" == host ]] && printf 'AI_CONTAINER_GROUP=host\n'
   [[ -n "$group_init"   ]] && printf 'AI_CONTAINER_GROUP_INIT=%s\n' "$group_init"
   [[ -n "$extra_mounts" ]] && printf 'EXTRA_MOUNTS="%s"\n' "$extra_mounts"
-  [[ -n "$prev_workdir_local" ]] && printf 'SANDBOX_WORKDIR=%s\n' "$prev_workdir_local"
 } > "${dest}/sandbox.local.env"
 printf '  Wrote sandbox.local.env (machine-specific).\n'
 
