@@ -472,7 +472,10 @@ launcher_ro_overlay() {
   local -A lcand=() lcounted=()
   local lc=0 la
   for i in ${cl[@]+"${!cl[@]}"}; do
-    if [[ "${cl[i]}" != "${csrc[i]}" ]]; then lcand[${cat[i]}]=1; fi
+    # Only an overlay that can be MADE covers what is nested in it: a candidate
+    # _mount_representable refuses gets none, and discounting what it holds let
+    # 3,000 launchers under one pass a cap of 5 (review of the batch 1 hotfix; LNCH-4).
+    if [[ "${cl[i]}" != "${csrc[i]}" ]] && _mount_representable "${cl[i]}" "${cat[i]}"; then lcand[${cat[i]}]=1; fi
   done
   for l in ${cat[@]+"${cat[@]}"}; do
     [[ -z "${lcounted[$l]:-}" ]] || continue

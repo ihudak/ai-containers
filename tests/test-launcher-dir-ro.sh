@@ -847,6 +847,17 @@ SANDBOX_LAUNCHER_MAX=abc EXTRA_MOUNTS="$FAKE" launch "$LAUNCHER" "$TMP/app"
   && pass "T46 a SANDBOX_LAUNCHER_MAX that is not a number refuses the launch" \
   || fail "T46 bad SANDBOX_LAUNCHER_MAX (rc=$LAUNCH_RC; stderr: $(tr '\n' ' ' < "$ERR"))"
 rm -rf "$FAKE"
+# A candidate that cannot be mounted (a name that is not UTF-8) gets no overlay,
+# so it covers nothing: what is nested in it counts toward the cap. It was
+# discounted, and 3,000 launchers under one passed SANDBOX_LAUNCHER_MAX=5 with a
+# WARNING each (review of the batch 1 hotfix; LNCH-4).
+BAD47="$TMP/bad47"; mk_launcher "$BAD47/bad"$'\xff'
+for n in $(seq 1 8); do mk_launcher "$BAD47/bad"$'\xff'"/.ai-containers/n$n"; done
+SANDBOX_LAUNCHER_MAX=5 EXTRA_MOUNTS="$BAD47" launch "$LAUNCHER" "$TMP/app"
+[[ "$LAUNCH_RC" != 0 ]] && grep -qF 'ERROR: the writable mounts hold more than 5 launchers' "$ERR" \
+  && pass "T46 launchers nested in one that cannot be overlaid count toward the cap" \
+  || fail "T46 an unrepresentable launcher still discounts what it holds (rc=$LAUNCH_RC)"
+rm -rf "$BAD47"
 if [[ "$(id -u)" != 0 ]]; then
   UNR="$TMP/unr46"
   for n in $(seq 1 51); do mkdir -p "$UNR/d$n"; chmod 000 "$UNR/d$n"; done
