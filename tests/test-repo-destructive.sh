@@ -235,8 +235,12 @@ run_repo() {   # <args…> — repo.sh as a real subprocess; sets RC, OUT, ERR
   RC=$?
 }
 
-# What repo.sh asked docker to destroy, one per line, sorted.
-removed() { sed -n 's/^volume rm //p' "$DOCKER_LOG" | tr ' ' '\n' | grep -v '^--' | sort | tr '\n' '|'; }
+# What repo.sh asked docker to destroy, one per line, sorted IN BYTE ORDER: the
+# expected strings below are written that way, and a bare `sort` follows
+# LC_COLLATE. Under glibc's en_US.UTF-8 punctuation is ignored at the first
+# level, so `docs-archive--wc` sorts before `docs--wc` and every gc assertion
+# failed on a typical Linux desktop while CI (C.UTF-8) stayed green (TST-1).
+removed() { sed -n 's/^volume rm //p' "$DOCKER_LOG" | tr ' ' '\n' | grep -v '^--' | LC_ALL=C sort | tr '\n' '|'; }
 
 # ── 1. It refuses non-interactively without --yes, and destroys nothing ───────
 # stdin is /dev/null, so `[[ -t 0 ]]` is false — the shape a script or a CI job

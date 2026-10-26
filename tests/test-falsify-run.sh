@@ -1450,7 +1450,9 @@ seed_out="$( set +u
   FR_CACHE="$seed_cache"
   mkdir -p "$FR_WORK" "$FR_OUT"
   fr_seed_slot 0 >/dev/null 2>&1
-  find "$FR_WORK/w0" -type f 2>/dev/null | sed "s|^$FR_WORK/w0/||" | sort | tr '\n' ' ' )"
+  # Byte order, as the expected string is written: under en_US.UTF-8 a bare
+  # sort puts a/file1 before .github/ (TST-1).
+  find "$FR_WORK/w0" -type f 2>/dev/null | sed "s|^$FR_WORK/w0/||" | LC_ALL=C sort | tr '\n' ' ' )"
 check "a partial cp -a does not nest the seeded tree" \
   ".github/workflows/nightly.yml a/file1 " "$seed_out"
 

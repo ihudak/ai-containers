@@ -40,8 +40,30 @@ jobs:
         # carries does (see the shellcheck step): the install is the verdict.
         run: command -v rsync >/dev/null || { sudo apt-get update || true; sudo apt-get install -y rsync; }
 
+      # Under en_US.UTF-8, NOT the runner's C.UTF-8, because that is what a
+      # developer's Linux host runs and the suite must pass there too. glibc's
+      # en_US collation ignores punctuation at the first level, so a bare `sort`
+      # orders `docs-archive--wc` before `docs--wc`; two tests compared such a
+      # sort against byte-ordered literals, and failed on every en_US host while
+      # every CI job (C.UTF-8) stayed green (TST-1). suite-floor and
+      # suite-symlinked-tmp keep C.UTF-8, so both orders run on every PR.
+      #
+      # Asserted, not assumed: a locale that is missing, or that collates like
+      # C, would leave this a second C run that checks nothing new. The probe
+      # sorts `a-c` and `ab`: byte order puts `a-c` first, en_US puts `ab`.
       - name: Run tests
-        run: ./tests/run-all.sh
+        run: |
+          avail="$(locale -a)"
+          case "$avail" in
+            *en_US.utf8*|*en_US.UTF-8*) ;;
+            *) sudo locale-gen en_US.UTF-8 ;;
+          esac
+          first="$(printf 'a-c\nab\n' | LC_ALL=en_US.UTF-8 sort | head -n 1)"
+          if [ "$first" != "ab" ]; then
+            echo "::error::en_US.UTF-8 does not collate differently from C here (sorted first: '$first') — this run would check nothing the other suite jobs do not"
+            exit 1
+          fi
+          LC_ALL=en_US.UTF-8 ./tests/run-all.sh
 
       # The documented CI gate against a SILENT semantic sandbox.conf change.
       # BASE_REF must predate the change under review: the script's default HEAD
