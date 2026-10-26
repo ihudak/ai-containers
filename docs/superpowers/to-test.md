@@ -24,25 +24,30 @@ Made on Ubuntu 24.04 (aarch64) with GNU userland: bash 5.2.21, mawk
 
 ### macOS (BSD userland, `verify-on-host.sh` Phase 5)
 
-- [ ] **BSD `sed -i` in the nvm workflow test** (TST-8). The test renders the
+- [x] **BSD `sed -i` in the nvm workflow test** (TST-8). The test renders the
   workflow's `sed -i "s/…/" Dockerfile` as `sed -i.bak …`, because BSD sed
   treats the word after `-i` as a backup suffix.
   `bash tests/run-all.sh nvm-update-workflow` → PASS (4 assertions).
-- [ ] **The new awk readers under macOS awk** (TST-2, TST-6, GAP-5). These are
+  - 2026-10-26, macOS 26.7.1 (arm64), bash 5.3.20, BSD awk 20200816 and BSD sed first on PATH, at `3ffc58d`: PASS (4 assertions).
+- [x] **The new awk readers under macOS awk** (TST-2, TST-6, GAP-5). These are
   `wf_triggers_on`, `_wf_it_awk` (records separated by `\037`, `match`/`RSTART`)
   and `_wf_job_has_key` in `tests/lib-layer-checks.sh`.
   `bash tests/run-all.sh layer-checks-parser layer-containment` → both PASS.
-- [ ] **The awk-interval scan under macOS awk** (GAP-8, TST-5). macOS awk
+  - 2026-10-26, macOS 26.7.1 (arm64), bash 5.3.20, BSD awk 20200816 and BSD sed first on PATH, at `3ffc58d`: both PASS (101 and 46 assertions).
+- [x] **The awk-interval scan under macOS awk** (GAP-8, TST-5). macOS awk
   supports interval quantifiers itself; this checks the scanner, not the rule.
   `bash tests/run-all.sh bash-dialect-lint` → PASS, and
   `bash tests/bash-dialect-lint.sh` exits 0.
-- [ ] **The other new tests use BSD tools too.** test-minimal-conf.sh uses
+  - 2026-10-26, macOS 26.7.1 (arm64), bash 5.3.20, BSD awk 20200816 and BSD sed first on PATH, at `3ffc58d`: PASS (61 assertions), and the lint exits 0.
+- [x] **The other new tests use BSD tools too.** test-minimal-conf.sh uses
   `sed -E` and sources build.sh; test-demonstrate-needs-rebuild.sh uses `cp -R`,
   `git init -b` and an awk `--help` extraction.
   `bash tests/run-all.sh minimal-conf demonstrate-needs-rebuild` → both PASS.
-- [ ] **The whole suite under en_US.UTF-8** (TST-1). macOS collates UTF-8
+  - 2026-10-26, macOS 26.7.1 (arm64), bash 5.3.20, BSD awk 20200816 and BSD sed first on PATH, at `3ffc58d`: both PASS (29 and 10 assertions).
+- [x] **The whole suite under en_US.UTF-8** (TST-1). macOS collates UTF-8
   locales in code-point order, so nothing new is expected; this confirms it.
   `LC_ALL=en_US.UTF-8 bash tests/run-all.sh` → every test PASSes.
+  - 2026-10-26, macOS 26.7.1 (arm64), bash 5.3.20, BSD awk 20200816 and BSD sed first on PATH, at `3ffc58d`: 105 tests, 105 passed.
 
 ### Floor container (`ubuntu:22.04`, mawk 1.3.4-20200120)
 
@@ -64,12 +69,14 @@ docker run --rm -v "$PWD:/w:ro" -w /w ubuntu:22.04 bash -c '
   reason for that, and it was not available where the code was written.
   - 2026-10-26, Docker Desktop 29.9.2 on WSL2 (x86-64), `ubuntu:22.04` (mawk 1.3.4 20200120, bash 5.1.16, git 2.34.1), at `3ffc58d`: all 8 files PASS (101, 46, 61, 29, 4, 10, 88 and 7
     assertions).
-- [ ] **The TST-5 rows match what bash 5.1.16 rejects.** The review confirmed
+  - 2026-10-26, Colima (Docker 29.5.2) on macOS 26.7.1 (arm64), `ubuntu:22.04` (mawk 1.3.4 20200120, bash 5.1.16, git 2.34.1), at `3ffc58d`: all 8 files PASS, the same counts.
+- [x] **The TST-5 rows match what bash 5.1.16 rejects.** The review confirmed
   these on ubuntu:22.04; they were not re-checked during the fix.
   `docker run --rm ubuntu:22.04 bash -c 'x=1; echo "${x@k}"'` → `bad substitution`;
   `… bash -c 'shopt -s patsub_replacement'` → `invalid shell option name`;
   `… bash -c 'echo "${|REPLY=x;}"'` → `bad substitution`.
   - 2026-10-26, Docker Desktop 29.9.2 on WSL2 (x86-64), `ubuntu:22.04` (mawk 1.3.4 20200120, bash 5.1.16, git 2.34.1), at `3ffc58d`: all three refused as stated (rc 1 each).
+  - 2026-10-26, Colima (Docker 29.5.2) on macOS 26.7.1 (arm64), `ubuntu:22.04` (mawk 1.3.4 20200120, bash 5.1.16, git 2.34.1), at `3ffc58d`: all three refused with the stated messages.
 
 ### GitHub Actions (`ubuntu-24.04` runners)
 
@@ -109,6 +116,13 @@ docker run --rm -v "$PWD:/w:ro" -w /w ubuntu:22.04 bash -c '
     run did not stop: it printed its verdict and summary as if not
     interrupted. That is TST-13, fixed in `494ee11`; the hermetic test now
     checks that an interrupt ends the run.
+  - 2026-10-26, Colima (Docker 29.5.2) on macOS 26.7.1, at `3ffc58d`: the same
+    finding. With an INT during 786, the run went on to rebuild and run 787 and
+    788 and exited 0.
+  - 2026-10-27, same host, with this fix applied (the same code as `494ee11`):
+    INT during 786, with `ai-sandbox-it-services` present, ended the run with
+    exit 130 ten seconds later. No later patch started, `docker image inspect
+    ai-sandbox-it-services` then said "No such image", and the tree was clean.
 
 ### Root (the CI floor container, `verify-on-host.sh`'s floor container)
 
