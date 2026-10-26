@@ -20,10 +20,18 @@ mk_rvm() {
   done
 }
 
+# ldr <home> <dest>: the script as the entrypoint runs it, naming a probe user, with a
+# runuser that just runs the command as whoever runs this test. As root with no user
+# named the script verifies nothing (RT-1), and CI's floor job and Phase 5 run this
+# suite as root, so every case below must name one to test the same thing everywhere.
+fkr="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; trap 'rm -rf "$fkr"' EXIT
+printf '#!/bin/sh\n[ "$1" = -u ] && [ "$3" = -- ] || exit 2\nshift 3\nexec "$@"\n' > "$fkr/runuser"; chmod +x "$fkr/runuser"
+ldr() { PATH="$fkr:$PATH" bash "$REPO_DIR/link-default-ruby.sh" "$1" "$2" probe; }
+
 # ── Case 1: links the first requested present version's execs into the dest dir ──
 h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; d="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 mk_rvm "$h" "3.4.5" "ruby gem bundle bundler rake irb erb"
-RUBY_VERSIONS="3.4.5" bash "$REPO_DIR/link-default-ruby.sh" "$h" "$d" >/dev/null 2>&1
+RUBY_VERSIONS="3.4.5" ldr "$h" "$d" >/dev/null 2>&1
 ok=1
 for b in ruby gem bundle bundler rake irb erb; do
   [[ -L "$d/$b" && "$(readlink "$d/$b")" == "$h/.rvm/rubies/ruby-3.4.5/bin/$b" ]] || ok=0
@@ -35,7 +43,7 @@ rm -rf "$h" "$d"
 h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; d="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 mk_rvm "$h" "3.4.5" "ruby gem bundle"
 ln -s "ruby-3.4.5" "$h/.rvm/rubies/default"
-RUBY_VERSIONS="3.4.5" bash "$REPO_DIR/link-default-ruby.sh" "$h" "$d" >/dev/null 2>&1
+RUBY_VERSIONS="3.4.5" ldr "$h" "$d" >/dev/null 2>&1
 [[ -L "$d/ruby" && "$(readlink "$d/ruby")" == "$h/.rvm/rubies/default/bin/ruby" ]] \
   && pass "prefers rubies/default when the alias symlink exists" \
   || fail "prefers rubies/default when the alias symlink exists"
@@ -45,7 +53,7 @@ rm -rf "$h" "$d"
 # 3.3.6 requested first but NOT installed; 3.4.5 requested second and installed.
 h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; d="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 mk_rvm "$h" "3.4.5" "ruby gem bundle"
-RUBY_VERSIONS="3.3.6 3.4.5" bash "$REPO_DIR/link-default-ruby.sh" "$h" "$d" >/dev/null 2>&1
+RUBY_VERSIONS="3.3.6 3.4.5" ldr "$h" "$d" >/dev/null 2>&1
 [[ -L "$d/ruby" && "$(readlink "$d/ruby")" == "$h/.rvm/rubies/ruby-3.4.5/bin/ruby" ]] \
   && pass "falls back to the first PRESENT requested version (skips uninstalled 3.3.6)" \
   || fail "falls back to the first PRESENT requested version (skips uninstalled 3.3.6)"
@@ -54,13 +62,13 @@ rm -rf "$h" "$d"
 # ── Case 4: no RUBY_VERSIONS → no-op (creates nothing) ──
 h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; d="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 mk_rvm "$h" "3.4.5" "ruby gem bundle"
-( unset RUBY_VERSIONS; bash "$REPO_DIR/link-default-ruby.sh" "$h" "$d" ) >/dev/null 2>&1
+( unset RUBY_VERSIONS; ldr "$h" "$d" ) >/dev/null 2>&1
 [[ -z "$(ls -A "$d")" ]] && pass "no RUBY_VERSIONS is a no-op (dest dir stays empty)" || fail "no RUBY_VERSIONS is a no-op (dest dir stays empty)"
 rm -rf "$h" "$d"
 
 # ── Case 5: RUBY_VERSIONS set but no ruby installed → no-op, no crash ──
 h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; d="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }   # empty ~/.rvm (nothing installed yet)
-RUBY_VERSIONS="3.4.5" bash "$REPO_DIR/link-default-ruby.sh" "$h" "$d" >/dev/null 2>&1
+RUBY_VERSIONS="3.4.5" ldr "$h" "$d" >/dev/null 2>&1
 rc=$?
 [[ $rc -eq 0 && -z "$(ls -A "$d")" ]] && pass "no installed Ruby → clean no-op (exit 0, dest empty)" || fail "no installed Ruby → clean no-op (exit 0, dest empty)"
 rm -rf "$h" "$d"
@@ -68,7 +76,7 @@ rm -rf "$h" "$d"
 # ── Case 6: only links execs that exist (missing erb is skipped, not dangling) ──
 h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; d="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 mk_rvm "$h" "3.4.5" "ruby gem bundle"   # no rake/irb/erb
-RUBY_VERSIONS="3.4.5" bash "$REPO_DIR/link-default-ruby.sh" "$h" "$d" >/dev/null 2>&1
+RUBY_VERSIONS="3.4.5" ldr "$h" "$d" >/dev/null 2>&1
 [[ -L "$d/ruby" && ! -e "$d/erb" ]] \
   && pass "only links execs that exist (missing erb skipped, no dangling link)" \
   || fail "only links execs that exist (missing erb skipped, no dangling link)"
@@ -108,7 +116,7 @@ mk_rvm "$h" "3.4.5" "ruby gem bundle"
 install -d "$h/.rvm/gems/ruby-3.4.5@global/bin"
 printf '#!/bin/sh\n' > "$h/.rvm/gems/ruby-3.4.5@global/bin/ruby_executable_hooks"
 chmod +x "$h/.rvm/gems/ruby-3.4.5@global/bin/ruby_executable_hooks"
-RUBY_VERSIONS="3.4.5" bash "$REPO_DIR/link-default-ruby.sh" "$h" "$d" >/dev/null 2>&1
+RUBY_VERSIONS="3.4.5" ldr "$h" "$d" >/dev/null 2>&1
 [[ -L "$d/ruby_executable_hooks" \
    && "$(readlink "$d/ruby_executable_hooks")" == "$h/.rvm/gems/ruby-3.4.5@global/bin/ruby_executable_hooks" ]] \
   && pass "links ruby_executable_hooks from the @global gemset" \
@@ -120,7 +128,7 @@ h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; d="$(mkt
 mk_rvm "$h" "3.4.5" "ruby gem bundle"
 install -d "$h/.rvm/bin"
 printf '#!/bin/sh\n' > "$h/.rvm/bin/ruby_executable_hooks"; chmod +x "$h/.rvm/bin/ruby_executable_hooks"
-RUBY_VERSIONS="3.4.5" bash "$REPO_DIR/link-default-ruby.sh" "$h" "$d" >/dev/null 2>&1
+RUBY_VERSIONS="3.4.5" ldr "$h" "$d" >/dev/null 2>&1
 [[ -L "$d/ruby_executable_hooks" ]] \
   && pass "links ruby_executable_hooks from ~/.rvm/bin" \
   || fail "links ruby_executable_hooks from ~/.rvm/bin"
@@ -129,7 +137,7 @@ rm -rf "$h" "$d"
 # No hook anywhere → no dangling link (the glob must not be linked literally).
 h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; d="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 mk_rvm "$h" "3.4.5" "ruby gem bundle"
-RUBY_VERSIONS="3.4.5" bash "$REPO_DIR/link-default-ruby.sh" "$h" "$d" >/dev/null 2>&1
+RUBY_VERSIONS="3.4.5" ldr "$h" "$d" >/dev/null 2>&1
 [[ ! -e "$d/ruby_executable_hooks" && -z "$(find "$d" -name '*ruby_executable_hooks*' 2>/dev/null)" ]] \
   && pass "no hook present → no ruby_executable_hooks link created" \
   || fail "no hook present → no ruby_executable_hooks link created"
@@ -142,7 +150,7 @@ printf '#!/usr/bin/env definitely_not_on_path\n' > "$h/.rvm/rubies/ruby-3.4.5/bi
 chmod +x "$h/.rvm/rubies/ruby-3.4.5/bin/bundle"
 install -d "$h/.rvm/wrappers/default"
 printf '#!/bin/sh\n' > "$h/.rvm/wrappers/default/bundle"; chmod +x "$h/.rvm/wrappers/default/bundle"
-RUBY_VERSIONS="3.4.5" bash "$REPO_DIR/link-default-ruby.sh" "$h" "$d" >/dev/null 2>&1
+RUBY_VERSIONS="3.4.5" ldr "$h" "$d" >/dev/null 2>&1
 [[ "$(readlink "$d/bundle")" == "$h/.rvm/wrappers/default/bundle" ]] \
   && pass "a non-running binstub falls back to the rvm wrapper" \
   || fail "a non-running binstub falls back to the rvm wrapper (got: $(readlink "$d/bundle"))"
@@ -157,7 +165,7 @@ h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; d="$(mkt
 mk_rvm "$h" "3.4.5" "ruby gem"
 printf '#!/usr/bin/env definitely_not_on_path\n' > "$h/.rvm/rubies/ruby-3.4.5/bin/bundle"
 chmod +x "$h/.rvm/rubies/ruby-3.4.5/bin/bundle"
-out="$(RUBY_VERSIONS="3.4.5" bash "$REPO_DIR/link-default-ruby.sh" "$h" "$d" 2>&1)"
+out="$(RUBY_VERSIONS="3.4.5" ldr "$h" "$d" 2>&1)"
 [[ -L "$d/bundle" ]] \
   && pass "with no wrappers dir the direct link is still made (no worse than before)" \
   || fail "with no wrappers dir the direct link is still made"
@@ -209,7 +217,7 @@ ln -s "$v" "$h/.rvm/rubies/ruby-3.4.5/bin/ruby"
 install -d "$h/.rvm/wrappers/default"
 printf '#!/bin/sh\n' > "$h/.rvm/wrappers/default/ruby"; chmod +x "$h/.rvm/wrappers/default/ruby"
 ln -s "$v" "$d/gem"   # a link a previous start left, now leading to a directory
-RUBY_VERSIONS="3.4.5" bash "$REPO_DIR/link-default-ruby.sh" "$h" "$d" >/dev/null 2>&1
+RUBY_VERSIONS="3.4.5" ldr "$h" "$d" >/dev/null 2>&1
 [[ -z "$(ls -A "$v")" ]] && pass "no link is ever made inside a directory a link leads to" \
   || fail "root wrote into the directory a link leads to: $(ls -A "$v" | tr '\n' ' ')"
 [[ "$(readlink "$d/gem")" == "$h/.rvm/rubies/ruby-3.4.5/bin/gem" ]] && pass "  … and a stale link is replaced, not entered" \

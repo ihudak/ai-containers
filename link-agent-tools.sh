@@ -70,7 +70,8 @@ node_script() {
   # start (review of batch 3, finding 3).
   local head1
   [[ -f "$dir/${t##*/}" ]] || return 1
-  head1="$(timeout -k 1 5 head -c 256 "$dir/${t##*/}" 2>/dev/null)"; head1="${head1%%$'\n'*}"
+  local t5=(); command -v timeout >/dev/null 2>&1 && t5=(timeout -k 1 5)   # macOS has none
+  head1="$("${t5[@]}" head -c 256 "$dir/${t##*/}" 2>/dev/null | tr -d '\0')"; head1="${head1%%$'\n'*}"
   [[ "$head1" == '#!'*node* ]] || return 1
   printf '%s' "$dir/${t##*/}"
 }
