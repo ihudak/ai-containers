@@ -178,7 +178,12 @@ cleanup() {
     docker rmi -f "${variant_tags[@]}" >/dev/null 2>&1
   fi
 }
-trap cleanup EXIT INT TERM
+# An interrupt must END the run: a trap with no exit ran the cleanup and then
+# let the loop apply the next patch and rebuild for it. The EXIT trap does the
+# cleanup once, on every way out.
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 case_meta() {  # $1=case file, $2=key → first value or empty
   sed -n "s/^#[[:space:]]*$2:[[:space:]]*//p" "$1" | head -1

@@ -113,7 +113,12 @@ cleanup() {
     docker rmi -f "$IT_IMAGE" >/dev/null 2>&1
   fi
 }
-trap cleanup EXIT INT TERM
+# An interrupt must END the run: a trap with no exit ran the cleanup and then
+# let the loop apply the next patch and rebuild for it. The EXIT trap does the
+# cleanup once, on every way out.
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # ── Which patches only take effect on a rebuild ───────────────────────────────
 # build_time_inputs() and patch_needs_rebuild() live in lib-rebuild.sh, which was
