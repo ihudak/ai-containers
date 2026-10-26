@@ -40,6 +40,14 @@ inserted=0
 while IFS= read -r line || [[ -n "$line" ]]; do
   if [[ "$line" =~ ^openjdk-[0-9]+= ]]; then
     if (( inserted == 0 )); then
+      # The legacy keys named majors, and SDKMAN needs full patch versions, so
+      # build.sh refuses openjdk=21 by itself. The value is kept (a loud refusal
+      # beats a JDK silently dropped) and what to complete is said, here and on the
+      # console (bugs review PRJ-8).
+      if [[ -n "$merged" ]]; then
+        printf '# migrated from openjdk-<N>=ON: set full versions, e.g. openjdk=21.0.11\n' >> "$tmp"
+        printf 'NOTE: %s: migrated to openjdk=%s; set full versions (e.g. 21.0.11) before the next build.\n' "$file" "$merged" >&2
+      fi
       printf 'openjdk=%s\n' "$merged" >> "$tmp"
       inserted=1
     fi
