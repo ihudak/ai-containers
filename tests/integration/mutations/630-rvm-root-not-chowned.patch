@@ -20,4 +20,4 @@
 +  : # MUTATION: the recursive home chown is gone too
  
    sandbox_user="$(getent passwd "$uid" | cut -d: -f1)"
-   trust_repositories_for_sandbox_user
+   refuse_root_identity "$sandbox_user"

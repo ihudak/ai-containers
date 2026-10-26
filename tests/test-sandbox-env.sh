@@ -61,7 +61,7 @@ rmk
 mk; rm -f "$LOCAL"; printf 'IMAGE_NAME=x\n' > "$PORTABLE"
 ( unset IMAGE_NAME; apply; [[ "$IMAGE_NAME" == x ]] ) \
   && pass "missing sandbox.local.env is a clean no-op" || fail "missing sandbox.local.env is a clean no-op"
-rm -f "$PORTABLE"
+rmk
 
 # comments / blank / export prefix / surrounding quotes / non-assignment ignored
 mk
@@ -171,6 +171,7 @@ for w in ".:$PROJROOT/.ai-containers" "../sub:$PROJROOT/sub" "@app:@app" "../a/b
   printf 'SANDBOX_WORKDIR=%s\n' "${w%%:*}" > "$PORTABLE"
   ( unset SANDBOX_WORKDIR; apply; [[ "$SANDBOX_WORKDIR" == "${w#*:}" ]] ) 2>/dev/null || wbad+=" refused:${w%%:*}"
 done
+# shellcheck disable=SC2088  # '~/x' is a LITERAL value the loader must refuse, not a path to expand
 for w in ../.. ../../outside /abs "$MKD/outside" '~/x' '../a/../../outside' ../escape ../a/rel-escape ../missing; do
   printf 'SANDBOX_WORKDIR=%s\n' "$w" > "$PORTABLE"
   ( unset SANDBOX_WORKDIR; apply; [[ -z "${SANDBOX_WORKDIR:-}" ]] ) 2>/dev/null || wbad+=" accepted:$w"

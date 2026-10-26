@@ -13,10 +13,10 @@
 #
 --- a/entrypoint.sh
 +++ b/entrypoint.sh
-@@ -220,7 +220,6 @@
-   find "$home_dir" -xdev -exec chown "$uid:$gid" {} + 2>/dev/null || true
+@@ -221,7 +221,6 @@
  
    sandbox_user="$(getent passwd "$uid" | cut -d: -f1)"
+   refuse_root_identity "$sandbox_user"
 -  trust_repositories_for_sandbox_user
  }
  

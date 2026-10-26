@@ -188,10 +188,8 @@ for v in "SANDBOX_UID=0 SANDBOX_GID=1000" "SANDBOX_UID=1000 SANDBOX_GID=0" "SAND
   [[ "$rc" != 0 && "$out" != *reached* && "$out" == *'must not run as root'* ]] \
     && pass "the entrypoint refuses $v" || fail "entrypoint with $v (rc=$rc; out: $out)"
 done
-for v in "SANDBOX_UID=$(printf ' 0') SANDBOX_GID=1000"; do
-  out="$(env -i HOME="$TMP" PATH=/usr/bin:/bin SANDBOX_UID=' 0' SANDBOX_GID=1000 bash -c ". '$fn'; refuse_root_identity; echo reached" 2>&1)"; rc=$?
-  [[ "$rc" != 0 && "$out" != *reached* ]] && pass "the entrypoint refuses a padded SANDBOX_UID=' 0'" || fail "padded uid (rc=$rc; out: $out)"
-done
+out="$(env -i HOME="$TMP" PATH=/usr/bin:/bin SANDBOX_UID=' 0' SANDBOX_GID=1000 bash -c ". '$fn'; refuse_root_identity; echo reached" 2>&1)"; rc=$?
+[[ "$rc" != 0 && "$out" != *reached* ]] && pass "the entrypoint refuses a padded SANDBOX_UID=' 0'" || fail "padded uid (rc=$rc; out: $out)"
 out="$(env -i HOME="$TMP" PATH=/usr/bin:/bin SANDBOX_UID=1000 SANDBOX_GID=1000 bash -c ". '$fn'; refuse_root_identity; echo reached" 2>&1)"
 [[ "$out" == reached ]] && pass "the entrypoint lets a non-root identity through" || fail "entrypoint refused 1000:1000 ($out)"
 # And after the user is set up, whatever useradd made of the id: the user capsh
