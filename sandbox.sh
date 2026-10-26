@@ -2583,7 +2583,10 @@ run_container() {
     fi
   fi
 
-  docker run -it --rm \
+  # --pull=never: IMAGE_NAME may come from a committed sandbox.env, and an image
+  # this machine never built must not be fetched from a registry and run with
+  # the group's credentials mounted. ./build.sh (or runme.sh) builds it first.
+  docker run -it --rm --pull=never \
     --name "$container_name" \
     ${capabilities[@]+"${capabilities[@]}"} \
     ${selinux_opt:+"$selinux_opt"} \

@@ -5,7 +5,7 @@
 set -uo pipefail
 # Hermetic: the developer's own pointers must not reach a launch — sandbox.sh
 # mounts them writable and writes into the git repositories it protects there.
-unset VAULT_PATH SPECS_PATH DOCS_PATH ARCHITECTURE_REPO_PATH EXTRA_MOUNTS REPOS SANDBOX_ENV_FILE SANDBOX_WORKDIR
+unset VAULT_PATH SPECS_PATH DOCS_PATH ARCHITECTURE_REPO_PATH EXTRA_MOUNTS REPOS SANDBOX_ENV_FILE SANDBOX_WORKDIR PREVIEW_PORTS
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 fails=0; pass() { printf 'PASS: %s\n' "$1"; }; fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails+1)); }
 
@@ -14,7 +14,7 @@ bash -n "$REPO_DIR/sandbox.sh"        && pass "sandbox.sh bash -n"        || fai
 
 # Load the REAL load_env_defaults + its env_key_denied helper (extract just the
 # functions so the file's heavy top-level code does not run).
-eval "$(sed -n '/^env_key_denied()/,/^}/p;/^env_key_portable()/,/^}/p;/^env_key_tool_config()/,/^}/p;/^load_env_defaults()/,/^}/p' "$REPO_DIR/sandbox-common.sh")"
+eval "$(sed -n '/^env_key_denied()/,/^}/p;/^env_key_portable()/,/^}/p;/^env_key_machine_only()/,/^}/p;/^env_value_portable()/,/^}/p;/^env_key_tool_config()/,/^}/p;/^load_env_defaults()/,/^}/p' "$REPO_DIR/sandbox-common.sh")"
 type load_env_defaults >/dev/null 2>&1 && pass "load_env_defaults defined" || { fail "load_env_defaults defined"; printf '\n%d failure(s)\n' "$fails"; exit "$fails"; }
 type env_key_denied >/dev/null 2>&1 && pass "env_key_denied defined" || { fail "env_key_denied defined"; printf '\n%d failure(s)\n' "$fails"; exit "$fails"; }
 
@@ -60,8 +60,8 @@ rm -f "$PORTABLE"
 
 # comments / blank / export prefix / surrounding quotes / non-assignment ignored
 mk
-{ printf '# comment\n'; printf '\n'; printf 'export EXTRA_MOUNTS="/a /b"\n'; printf 'not an assignment\n'; } > "$PORTABLE"
-( unset EXTRA_MOUNTS; apply; [[ "$EXTRA_MOUNTS" == "/a /b" ]] ) \
+{ printf '# comment\n'; printf '\n'; printf 'export PREVIEW_PORTS="3000 8080"\n'; printf 'not an assignment\n'; } > "$PORTABLE"
+( unset PREVIEW_PORTS; apply; [[ "$PREVIEW_PORTS" == "3000 8080" ]] ) \
   && pass "export prefix + surrounding quotes handled" || fail "export prefix + surrounding quotes handled"
 # a stray command line must NOT execute
 # `mktemp -u` only invents a NAME, so a failure here is quieter and worse than
@@ -113,8 +113,8 @@ rmk
 
 # Surrounding double quotes are stripped only as a MATCHED pair, so a value that
 # legitimately contains a single quote character is not silently mangled.
-mk; printf 'EXTRA_MOUNTS=/a"b\n' > "$PORTABLE"
-( unset EXTRA_MOUNTS; apply; [[ "$EXTRA_MOUNTS" == '/a"b' ]] ) \
+mk; printf 'PREVIEW_PORTS=30"00\n' > "$PORTABLE"
+( unset PREVIEW_PORTS; apply; [[ "$PREVIEW_PORTS" == '30"00' ]] ) \
   && pass "an unmatched quote inside a value is preserved" || fail "an unmatched quote inside a value is preserved"
 rmk
 
@@ -126,10 +126,10 @@ rmk
 # machine-local sandbox.local.env, which nobody else writes, keeps the deny-list
 # plus the tool-config families.
 mk
-printf 'IMAGE_NAME=ok-img\nEXTRA_MOUNTS=/x\nSANDBOX_LAUNCHER_MAX=7\nDOCKER_CONFIG=./evil\nDOCKER_HOST=tcp://evil:2375\nGIT_SSH_COMMAND=evil\nREPO_SEED_IMAGE=evil/seed\nGITHUB_PERSONAL_ACCESS_TOKEN=ghp_planted\nFOO_BAR=1\n' > "$PORTABLE"
-out_p="$( ( unset IMAGE_NAME EXTRA_MOUNTS SANDBOX_LAUNCHER_MAX DOCKER_CONFIG DOCKER_HOST GIT_SSH_COMMAND REPO_SEED_IMAGE GITHUB_PERSONAL_ACCESS_TOKEN FOO_BAR
-  apply; printf 'GOT %s|%s|%s|%s|%s|%s|%s|%s|%s\n' "${IMAGE_NAME:-}" "${EXTRA_MOUNTS:-}" "${SANDBOX_LAUNCHER_MAX:-}" "${DOCKER_CONFIG:-}" "${DOCKER_HOST:-}" "${GIT_SSH_COMMAND:-}" "${REPO_SEED_IMAGE:-}" "${GITHUB_PERSONAL_ACCESS_TOKEN:-}" "${FOO_BAR:-}" ) 2>&1 )"
-grep -qxF 'GOT ok-img|/x|7||||||' <<<"$out_p" \
+printf 'IMAGE_NAME=ok-img\nPREVIEW_PORTS=3000\nSANDBOX_LAUNCHER_MAX=7\nDOCKER_CONFIG=./evil\nDOCKER_HOST=tcp://evil:2375\nGIT_SSH_COMMAND=evil\nREPO_SEED_IMAGE=evil/seed\nGITHUB_PERSONAL_ACCESS_TOKEN=ghp_planted\nFOO_BAR=1\n' > "$PORTABLE"
+out_p="$( ( unset IMAGE_NAME PREVIEW_PORTS SANDBOX_LAUNCHER_MAX DOCKER_CONFIG DOCKER_HOST GIT_SSH_COMMAND REPO_SEED_IMAGE GITHUB_PERSONAL_ACCESS_TOKEN FOO_BAR
+  apply; printf 'GOT %s|%s|%s|%s|%s|%s|%s|%s|%s\n' "${IMAGE_NAME:-}" "${PREVIEW_PORTS:-}" "${SANDBOX_LAUNCHER_MAX:-}" "${DOCKER_CONFIG:-}" "${DOCKER_HOST:-}" "${GIT_SSH_COMMAND:-}" "${REPO_SEED_IMAGE:-}" "${GITHUB_PERSONAL_ACCESS_TOKEN:-}" "${FOO_BAR:-}" ) 2>&1 )"
+grep -qxF 'GOT ok-img|3000|7||||||' <<<"$out_p" \
   && pass "sandbox.env sets the launcher's keys and nothing else (DOCKER_*, GIT_*, a seed image, a token, an unknown key)" \
   || fail "portable allow-list (got: $(grep GOT <<<"$out_p"))"
 [[ "$(grep -c "WARNING: ignoring .* in $PORTABLE" <<<"$out_p")" -eq 6 ]] && grep -qF 'sandbox.local.env' <<<"$out_p" \
@@ -137,6 +137,39 @@ grep -qxF 'GOT ok-img|/x|7||||||' <<<"$out_p" \
   || fail "portable warnings (got: $(grep WARNING <<<"$out_p" | tr '\n' ' '))"
 ! grep -qF 'ghp_planted' <<<"$out_p" \
   && pass "an ignored value is never printed" || fail "an ignored token value was printed"
+rmk
+# What exposes THIS machine is not the shared file's to choose either: a host
+# path to mount (EXTRA_MOUNTS, the *_PATH pointers, a working dir outside the
+# project), the host group (your real $HOME dotfiles), the agent's identity
+# (SANDBOX_UID=0 is a root shell), the file container.env is read from.
+mk
+printf 'EXTRA_MOUNTS=/home/you/.ssh:rw\nVAULT_PATH=/home/you\nDOCS_PATH=/etc\nSPECS_PATH=/x\nARCHITECTURE_REPO_PATH=/y\nSANDBOX_UID=0\nSANDBOX_GID=0\nSANDBOX_ENV_FILE=/home/you/.aws/credentials\nAI_CONTAINER_HOST_ACK=1\nAI_CONTAINER_GROUP_INIT=from:host\nAI_CONTAINER_GROUP=host\nSANDBOX_WORKDIR=/home/you\n' > "$PORTABLE"
+out_m="$( ( unset EXTRA_MOUNTS VAULT_PATH DOCS_PATH SPECS_PATH ARCHITECTURE_REPO_PATH SANDBOX_UID SANDBOX_GID SANDBOX_ENV_FILE AI_CONTAINER_HOST_ACK AI_CONTAINER_GROUP_INIT AI_CONTAINER_GROUP SANDBOX_WORKDIR
+  apply; printf 'GOT [%s%s%s%s%s%s%s%s%s%s%s%s]\n' "${EXTRA_MOUNTS:-}" "${VAULT_PATH:-}" "${DOCS_PATH:-}" "${SPECS_PATH:-}" "${ARCHITECTURE_REPO_PATH:-}" "${SANDBOX_UID:-}" "${SANDBOX_GID:-}" "${SANDBOX_ENV_FILE:-}" "${AI_CONTAINER_HOST_ACK:-}" "${AI_CONTAINER_GROUP_INIT:-}" "${AI_CONTAINER_GROUP:-}" "${SANDBOX_WORKDIR:-}" ) 2>&1 )"
+grep -qxF 'GOT []' <<<"$out_m" && [[ "$(grep -c "WARNING: ignoring" <<<"$out_m")" -eq 12 ]] \
+  && pass "sandbox.env cannot choose a host path, the host group, the agent's identity or the env file" \
+  || fail "machine-only keys from sandbox.env (got: $(grep GOT <<<"$out_m"); warnings: $(grep -c WARNING <<<"$out_m"))"
+rmk
+mk
+printf 'SANDBOX_WORKDIR=..\nAI_CONTAINER_GROUP=docs\n' > "$PORTABLE"
+( unset SANDBOX_WORKDIR AI_CONTAINER_GROUP; apply; [[ "$SANDBOX_WORKDIR" == .. && "$AI_CONTAINER_GROUP" == docs ]] ) 2>/dev/null \
+  && pass "sandbox.env still sets the working dir inside the project and a named group" \
+  || fail "portable SANDBOX_WORKDIR=.. / AI_CONTAINER_GROUP=docs refused"
+wbad=""
+for w in . ../sub @app ../a/b; do
+  printf 'SANDBOX_WORKDIR=%s\n' "$w" > "$PORTABLE"
+  ( unset SANDBOX_WORKDIR; apply; [[ "$SANDBOX_WORKDIR" == "$w" ]] ) 2>/dev/null || wbad+=" refused:$w"
+done
+for w in ../.. ../../x /abs '~/x' '../a/../../b' 'a/../..'; do
+  printf 'SANDBOX_WORKDIR=%s\n' "$w" > "$PORTABLE"
+  ( unset SANDBOX_WORKDIR; apply; [[ -z "${SANDBOX_WORKDIR:-}" ]] ) 2>/dev/null || wbad+=" accepted:$w"
+done
+[[ -z "$wbad" ]] && pass "a portable SANDBOX_WORKDIR is kept inside the project" \
+  || fail "portable SANDBOX_WORKDIR:$wbad"
+printf 'EXTRA_MOUNTS=/x\nSANDBOX_UID=1234\nAI_CONTAINER_GROUP=host\nSANDBOX_WORKDIR=/abs\n' > "$LOCAL"; : > "$PORTABLE"
+( unset EXTRA_MOUNTS SANDBOX_UID AI_CONTAINER_GROUP SANDBOX_WORKDIR; apply
+  [[ "$EXTRA_MOUNTS" == /x && "$SANDBOX_UID" == 1234 && "$AI_CONTAINER_GROUP" == host && "$SANDBOX_WORKDIR" == /abs ]] ) 2>/dev/null \
+  && pass "sandbox.local.env sets all of those" || fail "machine-only keys refused from sandbox.local.env"
 rmk
 mk
 printf 'GITHUB_TOKEN=ghp_mine\nREPO_SEED_IMAGE=my/seed\nFOO_BAR=1\nDOCKER_CONFIG=./evil\nBUILDX_CONFIG=./e\nBUILDKIT_HOST=tcp://e\nGIT_CONFIG_GLOBAL=./e\nSSH_AUTH_SOCK=/e\n' > "$LOCAL"
@@ -154,11 +187,11 @@ doc_keys="$(awk '/^\*\*Key env vars for `sandbox.sh`:\*\*/{f=1} f && /^## /{exit
 [[ -n "$doc_keys" ]] || { printf 'SCAFFOLD-FAILED: no keys read from AGENTS.md env table\n'; exit 1; }
 drift=""
 for k in $doc_keys; do
-  case "$k" in COPILOT_GITHUB_TOKEN|GITHUB_PERSONAL_ACCESS_TOKEN) continue ;; esac
-  env_key_portable "$k" || drift+=" $k"
+  env_key_portable "$k" || env_key_machine_only "$k" || drift+=" $k"
+  if env_key_portable "$k" && env_key_machine_only "$k"; then drift+=" (both)$k"; fi
 done
-[[ -z "$drift" ]] && pass "every launcher variable AGENTS.md documents is accepted from sandbox.env ($(wc -w <<<"$doc_keys") keys)" \
-  || fail "documented but not in the sandbox.env allow-list:$drift"
+[[ -z "$drift" ]] && pass "every launcher variable AGENTS.md documents is either portable or machine-only, never both ($(wc -w <<<"$doc_keys") keys)" \
+  || fail "documented but classified wrongly:$drift"
 
 # load ORDER in sandbox-common.sh: local before portable
 loc_ln=$(grep -n 'load_env_defaults .*sandbox\.local\.env' "$REPO_DIR/sandbox-common.sh" | head -1 | cut -d: -f1)

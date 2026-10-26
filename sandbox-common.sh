@@ -81,25 +81,60 @@ env_key_denied() {
 # build.sh / sandbox.sh / repo.sh run, and those read their own keys from it:
 # DOCKER_CONFIG made the docker CLI load a "plugin" committed beside it, and
 # `docker build` ran it as you (bugs review ENV-1). A deny-list cannot name every
-# such key in every tool; an allow-list of the launcher's own can.
-# tests/test-sandbox-env.sh holds this list to AGENTS.md's variable table.
-# Deliberately NOT here, so a committed file cannot set them for everyone who
-# runs it: the tokens (they would hand the agent the committer's identity), and
-# REPO_SEED_IMAGE (repo.sh runs that image with your ~/.ssh mounted). Both are
-# fine in sandbox.local.env.
+# such key in every tool; an allow-list of the launcher's own can. Of those, the
+# ones that expose THIS machine are not the shared file's to choose either
+# (env_key_machine_only). tests/test-sandbox-env.sh holds the two lists to
+# AGENTS.md's variable table: every variable there is in exactly one.
 env_key_portable() {
   case "$1" in
-    IMAGE_NAME|AI_CONTAINER_GROUP|AI_CONTAINER_GROUP_INIT|AI_CONTAINER_HOST_ACK|\
-    SANDBOX_MODE|SANDBOX_WORKDIR|SANDBOX_ENV_FILE|SANDBOX_CONF|\
-    SANDBOX_UID|SANDBOX_GID|SANDBOX_USER|SANDBOX_GROUP|SANDBOX_GIT_MAX|SANDBOX_LAUNCHER_MAX|\
+    IMAGE_NAME|AI_CONTAINER_GROUP|SANDBOX_MODE|SANDBOX_WORKDIR|SANDBOX_CONF|\
+    SANDBOX_GIT_MAX|SANDBOX_LAUNCHER_MAX|\
     CONTAINER_CPUS|CONTAINER_MEMORY|CONTAINER_MEMORY_RESERVATION|CONTAINER_MEMORY_SWAP|\
     CONTAINER_NOFILE|CONTAINER_SHM_SIZE|CONTAINER_NAME|\
-    REPOS|REPO_BACKEND|REPOS_PATH|REPO_VOLUME_PREFIX|EXTRA_MOUNTS|PREVIEW_PORTS|\
-    VAULT_PATH|SPECS_PATH|DOCS_PATH|ARCHITECTURE_REPO_PATH|\
+    REPOS|REPO_BACKEND|REPOS_PATH|REPO_VOLUME_PREFIX|PREVIEW_PORTS|\
     SELF_HEALING_ENABLED|ALLOW_IPV6_BYPASS|SELINUX_LABEL|\
     SKILL_CHAR_BUDGET|SLASH_COMMAND_TOOL_CHAR_BUDGET) return 0 ;;
   esac
   return 1
+}
+
+# Launcher variables that only sandbox.local.env or your shell may set: a host
+# path to mount (EXTRA_MOUNTS, the *_PATH pointers), the agent's identity
+# (SANDBOX_UID=0 is a root shell), the file container.env is read from, the
+# host group's bootstrap and acknowledgement, the tokens (the committer's
+# identity for the agent), and REPO_SEED_IMAGE (repo.sh runs it with ~/.ssh
+# mounted).
+env_key_machine_only() {
+  case "$1" in
+    EXTRA_MOUNTS|VAULT_PATH|SPECS_PATH|DOCS_PATH|ARCHITECTURE_REPO_PATH|\
+    SANDBOX_UID|SANDBOX_GID|SANDBOX_USER|SANDBOX_GROUP|SANDBOX_ENV_FILE|\
+    AI_CONTAINER_GROUP_INIT|AI_CONTAINER_HOST_ACK|\
+    COPILOT_GITHUB_TOKEN|GITHUB_PERSONAL_ACCESS_TOKEN|GITHUB_TOKEN|REPO_SEED_IMAGE) return 0 ;;
+  esac
+  return 1
+}
+
+# env_value_portable <key> <value>: the portable keys whose VALUE can still reach
+# past the project — the `host` group mounts your real $HOME dotfiles, and a
+# working dir is bind-mounted writable — are held inside it: SANDBOX_WORKDIR is
+# `@<repo>` or a relative path that stays in the project (`..` is its root).
+env_value_portable() {
+  local v="$2" rest part
+  case "$1" in
+    AI_CONTAINER_GROUP) [[ "$v" != host ]]; return ;;
+    SANDBOX_WORKDIR)
+      [[ "$v" == @* || "$v" == .. ]] && return 0
+      [[ -n "$v" && "$v" != /* && "$v" != '~'* ]] || return 1
+      rest="${v#../}"
+      [[ "$rest" == "$v" || "$v" == ../* ]] || return 1
+      while [[ -n "$rest" ]]; do
+        part="${rest%%/*}"
+        [[ "$part" != .. ]] || return 1
+        [[ "$rest" == */* ]] && rest="${rest#*/}" || rest=""
+      done
+      return 0 ;;
+  esac
+  return 0
 }
 
 # The machine-local sandbox.local.env is written by you, not by whoever can commit
@@ -139,6 +174,12 @@ load_env_defaults() {
       printf '         set it in your shell if you need it.\n' >&2
       continue
     fi
+    if [[ "$mode" != local ]] && env_key_machine_only "$key"; then
+      printf 'WARNING: ignoring %s=... in %s — a shared sandbox.env cannot set what exposes\n' \
+        "$key" "$file" >&2
+      printf '         this machine (a host path, an identity, a token); put it in sandbox.local.env or your shell.\n' >&2
+      continue
+    fi
     if [[ "$mode" != local ]] && ! env_key_portable "$key"; then
       printf 'WARNING: ignoring %s=... in %s — a shared sandbox.env sets only the launcher'\''s own\n' \
         "$key" "$file" >&2
@@ -148,6 +189,12 @@ load_env_defaults() {
     # Strip surrounding double quotes only as a MATCHED pair, so a value that legitimately
     # contains one quote (or is a bare `"`) is not silently mangled.
     if [[ ${#val} -ge 2 && "$val" == '"'*'"' ]]; then val="${val:1:${#val}-2}"; fi
+    if [[ "$mode" != local ]] && ! env_value_portable "$key" "$val"; then
+      printf 'WARNING: ignoring %s=... in %s — from a shared sandbox.env it must stay inside the\n' \
+        "$key" "$file" >&2
+      printf '         project (no host group, no working dir outside it); set it in sandbox.local.env.\n' >&2
+      continue
+    fi
     [[ -n "${!key+x}" ]] && continue             # already SET (inline env or earlier file) wins — even if empty
     printf -v "$key" '%s' "$val"
     # shellcheck disable=SC2163  # intentional dynamic export by name: $key holds the identifier just set via printf -v above

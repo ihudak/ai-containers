@@ -130,6 +130,12 @@ ro_overlays() { mounts | grep -F -- "$LAUNCHER:" | grep ':ro$'; }
 launch "$LAUNCHER" ..
 if [[ -s "$CAPTURE" ]]; then pass "T1 sandbox.sh reached docker run"
 else fail "T1 sandbox.sh reached docker run (no args captured)"; tail -5 "$ERR"; fi
+# IMAGE_NAME can come from a committed sandbox.env: an image this machine never
+# built must not be pulled from a registry and run with the group's credentials
+# mounted (bugs review ENV-1, the security review of 5e338f8).
+grep -qxF -- '--pull=never' "$CAPTURE" \
+  && pass "T1 the launch never pulls an image (--pull=never)" \
+  || fail "T1 docker run may pull the image (no --pull=never in the run args)"
 [[ "${LAUNCH_RC:-1}" -eq 0 ]] && pass "T1 the launcher exits 0 (cleanup/trap included)"   || fail "T1 the launcher exits 0 — got $LAUNCH_RC ($(tail -1 "$ERR"))"
 grep -qxF -- "$PROJ:/workspace/proj:rw" <<<"$(mounts)" \
   && pass "T1 the project itself is still mounted read-write" \

@@ -17,8 +17,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   anything else with a warning; move a token or any other machine-specific
   key into `sandbox.local.env`, which still accepts them but now refuses the
   `DOCKER_*`, `BUILDX_*`, `BUILDKIT_*`, `GIT_*` and `SSH_*` families (bugs review
-  ENV-1). **If your `sandbox.env` sets other keys, they now print a warning and
-  are ignored.**
+  ENV-1). It also cannot set what reaches into a machine — a host path to mount
+  (`EXTRA_MOUNTS`, `VAULT_PATH`, `SPECS_PATH`, `DOCS_PATH`,
+  `ARCHITECTURE_REPO_PATH`), `SANDBOX_UID`/`SANDBOX_GID`, `SANDBOX_ENV_FILE`, the
+  `host` group, a working dir outside the project — and the launch no longer
+  pulls an image it has not built (`--pull=never`). **If your `sandbox.env` sets
+  any of these, they now print a warning and are ignored: move them to
+  `sandbox.local.env`.**
 - **`repo.sh` refuses a `SANDBOX_UID`/`SANDBOX_GID` that is not a number.**
   It pasted the values into the shell script its seeding containers run as
   root — with your `~/.ssh` mounted, for a git repository — so a value such as
