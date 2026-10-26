@@ -380,7 +380,21 @@ verify_launcher_mounts() {
   fi
 }
 
+# The agent shell must not be root. capsh --user= drops every capability only on
+# a switch FROM root to another user; 0 to 0 keeps DAC_OVERRIDE, KILL and the
+# rest, and root owns the allowlist the refresh loop reloads every 60 s — two
+# CIDRs written there would open all egress (bugs review ENV-4). sandbox.sh
+# refuses such an identity; this catches a container started another way.
+refuse_root_identity() {
+  local uid="${SANDBOX_UID:-1000}" gid="${SANDBOX_GID:-1000}"
+  if [[ "$uid" =~ ^0+$ || "$gid" =~ ^0+$ ]]; then
+    printf 'ERROR: the agent must not run as root (SANDBOX_UID=%s, SANDBOX_GID=%s); refusing to start.\n' "$uid" "$gid" >&2
+    exit 1
+  fi
+}
+
 verify_launcher_mounts
+refuse_root_identity
 
 case "$mode" in
   restricted)

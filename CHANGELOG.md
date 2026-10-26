@@ -30,6 +30,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `1000 /dst; curl … | sh` ran there. They are now checked as `sandbox.sh`
   checks them, before any container starts, and passed to the script as an
   argument (bugs review ENV-2).
+- **The agent never runs as root.** Launched by a root host user — `sudo`, a
+  root WSL distro — or with `SANDBOX_UID=0`, the agent shell was root with
+  most of its capabilities, and could rewrite the allowlist the firewall
+  reloads every minute. `sandbox.sh` now refuses a UID or GID of 0 and says to
+  set a non-root `SANDBOX_UID`/`SANDBOX_GID`; the entrypoint refuses it as well
+  (rebuild with `./build.sh` to get that half) (bugs review ENV-4).
 - **A repository under a writable mount can no longer make the launcher run a
   program on the host.** Before each launch the launcher reads every
   repository's index with the host's git, to find its submodules. In a partial

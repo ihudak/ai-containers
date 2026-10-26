@@ -559,6 +559,15 @@ SANDBOX_UID=abc launch "$LAUNCHER" ..
 [[ ! -s "$CAPTURE" ]] && grep -qF 'ERROR: SANDBOX_UID/SANDBOX_GID must be numeric' "$ERR" \
   && pass "T30 a non-numeric SANDBOX_UID refuses the launch" \
   || fail "T30 non-numeric SANDBOX_UID (docker run reached: $([[ -s "$CAPTURE" ]] && echo yes || echo no); stderr: $(grep ERROR "$ERR" | tr '\n' ' '))"
+# Nor root: capsh switching 0 to 0 clears no capabilities, so the agent keeps
+# DAC_OVERRIDE and owns the allowlist the root refresh loop reloads every 60 s
+# (bugs review ENV-4). A root host user — sudo, a root WSL distro — included.
+for id47 in UID GID; do
+  if [[ "$id47" == UID ]]; then SANDBOX_UID=0 launch "$LAUNCHER" ..; else SANDBOX_GID=0 launch "$LAUNCHER" ..; fi
+  [[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && grep -qF 'ERROR: the agent must not run as root' "$ERR" \
+    && pass "T30 SANDBOX_$id47=0 refuses the launch" \
+    || fail "T30 SANDBOX_$id47=0 (rc=$LAUNCH_RC; docker run reached: $([[ -s "$CAPTURE" ]] && echo yes || echo no); stderr: $(grep ERROR "$ERR" | tr '\n' ' '))"
+done
 
 SANDBOX_UID=4294967296 launch "$LAUNCHER" ..
 [[ ! -s "$CAPTURE" ]] && grep -qF 'ERROR: SANDBOX_UID/SANDBOX_GID must be numeric' "$ERR" \

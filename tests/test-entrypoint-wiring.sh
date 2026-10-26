@@ -175,4 +175,22 @@ for m in restricted discovery open; do
     || fail "$m: run_services order (got: $order)"
 done
 
+# The agent shell must not be root: capsh switching 0 to 0 clears no
+# capabilities (bugs review ENV-4). sandbox.sh refuses it; the entrypoint does
+# too, for a container started some other way, before anything else runs.
+fn="$TMP/refuse_root_identity.sh"
+sed -n '/^refuse_root_identity()/,/^}/p' "$REPO_DIR/entrypoint.sh" > "$fn"
+[[ -s "$fn" ]] || fail "refuse_root_identity() not found in entrypoint.sh"
+for v in "SANDBOX_UID=0 SANDBOX_GID=1000" "SANDBOX_UID=1000 SANDBOX_GID=0" "SANDBOX_UID=00 SANDBOX_GID=1000"; do
+  out="$(env -i HOME="$TMP" PATH=/usr/bin:/bin $v bash -c ". '$fn'; refuse_root_identity; echo reached" 2>&1)"; rc=$?
+  [[ "$rc" != 0 && "$out" != *reached* && "$out" == *'must not run as root'* ]] \
+    && pass "the entrypoint refuses $v" || fail "entrypoint with $v (rc=$rc; out: $out)"
+done
+out="$(env -i HOME="$TMP" PATH=/usr/bin:/bin SANDBOX_UID=1000 SANDBOX_GID=1000 bash -c ". '$fn'; refuse_root_identity; echo reached" 2>&1)"
+[[ "$out" == reached ]] && pass "the entrypoint lets a non-root identity through" || fail "entrypoint refused 1000:1000 ($out)"
+first="$(grep -nE '^(verify_launcher_mounts|refuse_root_identity|case "\$mode" in)$' "$REPO_DIR/entrypoint.sh" | cut -d: -f2 | tr '\n' ' ')"
+[[ "$first" == "verify_launcher_mounts refuse_root_identity case \"\$mode\" in " ]] \
+  && pass "refuse_root_identity runs before any mode does anything" \
+  || fail "refuse_root_identity wiring (order: $first)"
+
 printf '\n%d failure(s)\n' "$fails"; exit "$fails"

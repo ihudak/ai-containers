@@ -358,6 +358,15 @@ launcher_ro_overlay() {
     printf 'ERROR: SANDBOX_UID/SANDBOX_GID must be numeric ids from 0 to 4294967294 (got %q / %q).\n' "$uid" "$gid" >&2
     exit 1
   fi
+  # Not root, either: capsh switching 0 to 0 clears no capabilities, so the
+  # agent would keep DAC_OVERRIDE and own the allowlist the root refresh loop
+  # reloads (bugs review ENV-4). A root host user lands here by default.
+  if (( 10#$uid == 0 || 10#$gid == 0 )); then
+    printf 'ERROR: the agent must not run as root (SANDBOX_UID=%s, SANDBOX_GID=%s).\n' "$uid" "$gid" >&2
+    printf '       Launching as root (sudo, a root WSL distro)? Set a non-root identity,\n' >&2
+    printf '       e.g. SANDBOX_UID=1000 SANDBOX_GID=1000, for repo.sh as well.\n' >&2
+    exit 1
+  fi
   you="$(id -u)"
   shift 3
   self="$(cd "$reached" 2>/dev/null && pwd -P)" || self="$reached"
