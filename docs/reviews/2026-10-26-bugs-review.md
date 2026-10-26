@@ -19,7 +19,7 @@
 | 3 | Container-start runtime tools (entrypoint root steps, reconciles) | RT-1 … RT-7 — all fixed; RT-8, RT-9 open | stretch: GAP-1 for `link-default-ruby.sh`, `install-agent-skills.sh`, `agent-tools-reconcile.sh` | HIGH |
 | 4 | Host lifecycle scripts (project-init, sync, repo, group, report) | PRJ-1 … PRJ-9, DOC-1, DOC-3, REPO-2 … REPO-4, REPO-7 — fixed (PRJ-7 with TST-1); REPO-5, 6, 8 … 12 open | optional: GAP-6; stretch: GAP-1 for `group.sh` | MEDIUM |
 | 5 | In-container DB services | SVC-1 … SVC-3 — all fixed (SVC-2's hardware check is PLAT-4); SVC-4 open | — | MEDIUM |
-| 6 | Build / Dockerfile / tools.d / config validation | BLD-1 … BLD-7, ENV-7 | — | MEDIUM |
+| 6 | Build / Dockerfile / tools.d / config validation | BLD-1 … BLD-7 — fixed; BLD-8 and ENV-7 open | — | MEDIUM |
 | 7 | Test harness and CI | TST-1 … TST-8 | GAP-5 (same fix as TST-2), GAP-8 (with TST-5), GAP-9 (with TST-3) | MEDIUM |
 | 8 | Docs (docs-only PR) | DOC-2, DOC-4 … DOC-13 | GAP-14 (overlaps DOC-6) | MEDIUM |
 | 9 | Launcher follow-ups (from the batch 1 hotfix review) | GIT-2 … GIT-5, LNCH-3 (the rest), LNCH-4 | — | MEDIUM |
@@ -466,6 +466,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 ## 6. Build, Dockerfile, tools.d and config validation
 
 ### BLD-1: db-clients=mongo layer can fail and still report a successful build
+- **Status: FIXED (batch 6)** — `1aea53e` (the arm fails the layer, `--error-on=any`, `test -x /usr/bin/mongosh`); `tests/test-dockerfile-layers.sh` runs the layer's own text; the real layer installed mongosh 2.14.0 in ubuntu:24.04.
 - Severity: MEDIUM — Confidence: CONFIRMED (shell semantics reproduced; not run in a docker build). **Triage correction:** the failure is silent only when a step *before* the final `apt-get install` fails (key fetch, `gpg --dearmor`, writing the list). The final `apt-get install` is the last command of the `&&` list, so `set -e` does stop on it: an "Unable to locate package" after a plain `apt-get update` that ignored a broken repo **does** fail the build. The fix direction is unchanged.
 - Location: `Dockerfile: \`apt-get update && apt-get install -y --no-install-recommends mongodb-mongosh ;;\`` (DB_CLIENTS layer)
 - Introduced: 286790e (pre-window). The window touched the neighbouring mongo work (e3c9b15) without fixing it.
@@ -475,6 +476,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Fix direction: Make the arm fail the layer, either `( … ) || exit 1` around it or `… || { echo "mongosh install failed" >&2; exit 1; }`. Also add `--error-on=any` and a final `test -x /usr/bin/mongosh`, as the server layer does.
 
 ### BLD-2: SDKMAN multi-version installs: a bad version that is not last is silently skipped
+- **Status: FIXED (batch 6)** — `1aea53e` (`|| exit 1` in all seven SDKMAN loops; real SDKMAN returns 1 for an unknown version, checked by the review); `tests/test-dockerfile-layers.sh`, made discriminating in `05fec4f`.
 - Severity: MEDIUM — Confidence: PLAUSIBLE (loop semantics reproduced; `sdk install`'s exit code on an unknown version not run here)
 - Location: `Dockerfile: \`for ver in $OPENJDK_VERSIONS; do sdk install java \${ver}-tem; done"\`` (the same pattern is in the graalce, graal, kotlin, scala, maven and gradle layers)
 - Introduced: 8c4bd08 (pre-window, untouched ancient code)
@@ -484,6 +486,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Fix direction: Use `bash -ec "…"`, or `sdk install … || exit 1` inside each loop.
 
 ### BLD-3: install=repo-file installs the binary as mode 0711 (not readable by the agent)
+- **Status: FIXED (batch 6)** — `aeffa17` (every install path sets 0755); `tests/test-tools-d.sh`. See BLD-8 for the assertions.
 - Severity: LOW — Confidence: CONFIRMED (reproduced)
 - Location: `install-tools.sh: \`if ! mv "$tmp" "$dest" || ! chmod +x "$dest"; then\`` in `install_repo_file()`
 - Introduced: in the window, with the repo-file install path
@@ -492,6 +495,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Fix direction: `chmod 0755 "$dest"` (or use `install -m 0755`). Add a test that asserts the other-read bit is set.
 
 ### BLD-4: Private release path still falls back to an anonymous API request with a stale token
+- **Status: FIXED (batch 6)** — `d4383c1` (`api_get … required` from the private release branch).
 - Severity: LOW — Confidence: CONFIRMED (reproduced)
 - Location: `install-tools.sh: \`if [ -z "$body" ] && [ -n "${AUTH_ARGS[*]+set}" ] && [ "${#AUTH_ARGS[@]}" -gt 0 ]; then\`` in `api_get()`, called from the `private=yes` branch of `install_one()`
 - Introduced: in the window (anonymous fallback in aa662ad; c4abf76 fixed only `install_repo_file`)
@@ -501,6 +505,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Fix direction: Pass a "no anonymous fallback" flag to `api_get` from the private branch, or check `TOOL_private` inside it.
 
 ### BLD-5: AGENTS.md says a pinned acli value is "refused"; it is installed as latest with a NOTE
+- **Status: FIXED (batch 6)** — `7e1771a` (a pin of an `install=url` tool without `${VERSION}` is refused; `latest` accepted in `05fec4f`); `tests/test-validate-config.sh`.
 - Severity: LOW — Confidence: CONFIRMED (reproduced)
 - Location: `install-tools.sh: \`echo "NOTE: ${name}=${version} cannot be pinned: its url= has no \${VERSION} placeholder." >&2\``; `build.sh: \`tool_versions_arg()\``; AGENTS.md: "so its grammar is `ON | OFF` and a pinned value is refused rather than silently ignored"
 - What's wrong: Nothing refuses the value. `validate_config` has no tools.d check, and `tool_versions_arg` passes `acli=1.3.22` through. `install_url` prints a NOTE that is easy to miss in the build log, then installs whatever `/latest/` currently serves. A user who reads AGENTS.md will think a pin was either honoured or rejected.
@@ -508,6 +513,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Fix direction: Refuse a non-ON/OFF value in `validate_config` for a tool whose `url=` has no `${VERSION}` (and whose install is not release), or correct AGENTS.md to describe the NOTE behaviour.
 
 ### BLD-6: A lowercase `off`/`on` passes validation for most keys; `ruby=off` brings back the exact ruby=OFF defect
+- **Status: FIXED (batch 6)** — `7e1771a`, moved into `check_config` (which `sandbox.sh` runs too, since ruby installs at run time) in `05fec4f`; `tests/test-validate-config.sh`.
 - Severity: LOW — Confidence: CONFIRMED (reproduced)
 - Location: `sandbox-common.sh: \`has_versions()\`` / `version_list()` (they normalise only the literal `OFF`); `build.sh: \`validate_config()\`` (case-checks only playwright and the server keys)
 - What's wrong: The OFF normalisation compares against the literal `OFF`, and `validate_config` adds case checks only for playwright, postgres, redis, mysql, mongo and mariadb.
@@ -520,12 +526,23 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Fix direction: Apply the playwright-style "must be written in capitals" check generically to every key whose value case-folds to ON/OFF.
 
 ### BLD-7: AGENTS.md says rust and go accept comma-separated version lists; they accept one value
+- **Status: FIXED (batch 6)** — `7e1771a` (a list is refused for rust and go; AGENTS.md corrected).
 - Severity: LOW — Confidence: CONFIRMED (from code)
 - Location: AGENTS.md: "Version-list components (`node`, `python`, `ruby`, `rust`, `go`) accept comma-separated version values"; `build.sh: \`_args+=(--build-arg "GO_VERSION=$ver")\`` and `RUST_TOOLCHAIN=$ver`
 - What's wrong: Neither value is split. `go=1.24.2,1.23.1` produces `https://go.dev/dl/go1.24.2,1.23.1.linux-amd64.tar.gz`, a 404. `rust=stable,nightly` gives `rustup --default-toolchain "stable,nightly"`. `validate_config` does not reject the comma, as it does for angular-cli and playwright. `sandbox.conf`'s own comments describe a single value.
 - Failure scenario: a user follows AGENTS.md and the build fails with an error that names a strange URL rather than the key.
 - Fix direction: Correct AGENTS.md, and add a comma refusal for rust and go in `validate_config`.
 
+
+### BLD-8: Leftovers of the batch 6 reviews
+- **Status: OPEN** (reviews of batch 6)
+- Severity: LOW/NIT
+- The `install=url` 0755 assertion does not catch a revert to `chmod +x`: the archive member is 0644 and the test runs under umask 022, so `+x` gives 0755 too. Run that install under `umask 077` (or make the member 0600). The release path's chmod has no mode assertion at all.
+- `check_config` now runs before `validate_config`, so the per-key lowercase messages in build.sh (playwright, postgres, redis, mysql, mongo, mariadb) are unreachable from `./build.sh`; users get the generic one, which still names the key. The per-server tests call `validate_config` alone and so assert messages no user sees. Delete the branches and route those tests through `check_config; validate_config`, or mark them unreachable.
+- The per-key loop in `check_config` costs ~0.1 s per launch and build on Linux (one `get_versions` fork set per key), likely more on macOS; a single pure-bash pass would do.
+- An unreadable sandbox.conf passes `check_config` (it tests `-f` only).
+- A synced project with a latent lowercase build-time key (`c-toolchain=on`) can no longer launch until it is fixed (intended; the message gives the corrected line). Worth a CHANGELOG line at the next release.
+- `--error-on=any` on the db-clients=mongo arm fails the build on any broken apt source (the same trade the PGDG, MariaDB and MongoDB server layers make).
 
 ## 7. Test harness and CI
 
