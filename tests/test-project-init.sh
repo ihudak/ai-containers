@@ -137,12 +137,15 @@ done
 SBENV3="$PROJ3/.ai-containers/sandbox.env"
 sed -i.bak 's/^SANDBOX_MODE=.*/SANDBOX_MODE=restricted/; s/^SANDBOX_WORKDIR=.*/SANDBOX_WORKDIR=@app/' "$SBENV3" && rm -f "$SBENV3.bak"
 printf 'SELINUX_LABEL=keep\nPREVIEW_PORTS="3000 8080"\n' >> "$SBENV3"
+# Lines the loader accepts with `export` or indentation are kept too (review of batch 4).
+printf 'export CONTAINER_NOFILE=4096:4096\n  SHM_NOTE_KEY=1\n' >> "$SBENV3"
 reinit_out="$(printf '%s\n\n\n\n\n\n\n\n\n\n\n' "$PROJ3" | bash "$SCRIPTS/project-init.sh" 2>&1)"
 [[ "$reinit_out" == *"SANDBOX_WORKDIR=@app"*"sandbox.local.env"* ]] \
   && pass "  … and the dropped SANDBOX_WORKDIR is named, with where it belongs" || fail "dropped SANDBOX_WORKDIR not reported"
 grep -qx 'SANDBOX_MODE=restricted' "$SBENV3" && ! grep -qx 'SANDBOX_MODE=open' "$SBENV3" \
   && pass "re-init keeps sandbox.env's SANDBOX_MODE" || fail "re-init reset SANDBOX_MODE ($(grep '^SANDBOX_MODE' "$SBENV3"))"
 grep -qx 'SELINUX_LABEL=keep' "$SBENV3" && grep -qx 'PREVIEW_PORTS="3000 8080"' "$SBENV3" \
+  && grep -q 'CONTAINER_NOFILE=4096:4096' "$SBENV3" && grep -q 'SHM_NOTE_KEY=1' "$SBENV3" \
   && pass "re-init keeps keys a user added to sandbox.env" || fail "re-init dropped added keys ($(tr '\n' ';' < "$SBENV3"))"
 # A non-portable SANDBOX_WORKDIR is NOT moved to sandbox.local.env: sandbox.env is
 # committed, and copying its value into the machine-local file would launder what

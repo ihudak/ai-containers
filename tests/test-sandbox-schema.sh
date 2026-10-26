@@ -108,7 +108,8 @@ fi
 H2N_TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 printf 'openjdk-21=ON\n' > "$H2N_TMP/sandbox.conf"
 h2n_out="$(bash "$REPO_DIR/migrations/002-openjdk-single-key.sh" "$H2N_TMP/sandbox.conf" 2>&1)"
-if [[ "$h2n_out" == *"openjdk=21"*"full"* ]] && grep -B1 -x 'openjdk=21' "$H2N_TMP/sandbox.conf" | grep -q '^#.*full'; then
+h2n_above="$(grep -B1 -x 'openjdk=21' "$H2N_TMP/sandbox.conf" | head -n 1)"
+if [[ "$h2n_out" == *"openjdk=21"*"full"* && "$h2n_above" == '#'*full* ]]; then
   pass "002 openjdk hook: says the migrated major needs a full version"
 else
   fail "002 openjdk hook: a major-only openjdk= is written with no notice (out: $h2n_out)"

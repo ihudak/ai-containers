@@ -427,6 +427,19 @@ grep -q "quotedproj.*'RESTRICTED'" <<<"$OUT" \
   || fail "single quotes stripped from a value the launcher reads literally
 $(grep quotedproj <<<"$OUT")"
 
+# The group column too: sandbox.local.env first (project-init writes the host group
+# there), and a host group in sandbox.env is ignored, as the loader ignores it.
+GRB="$TMP/grpbase"; mk_base "$GRB"
+mk_proj "$GRB" "$TMP/grphost" host open 1.0
+mk_proj "$GRB" "$TMP/grplocal" default open 1.0
+printf 'AI_CONTAINER_GROUP=work\n' > "$TMP/grplocal/.ai-containers/sandbox.local.env"
+run "$GRB/ai-containers-report.sh" --tsv
+grp_of() { awk -F'\t' -v p="$1" '$5 == p { print $4 }' <<<"$OUT"; }
+[[ "$(grp_of grphost)" == default && "$(grp_of grplocal)" == work ]] \
+  && pass "the group column reads sandbox.local.env first and ignores a portable host" \
+  || fail "group column: grphost=$(grp_of grphost) grplocal=$(grp_of grplocal)
+$OUT"
+
 printf '\n%s\n' "----------------------------------------"
 if [[ "$fails" -eq 0 ]]; then
   printf 'test-report.sh: all checks passed\n'; exit 0

@@ -461,7 +461,11 @@ if [[ -f "${dest}/sandbox.env" ]]; then
   printf '  Backed up existing sandbox.env → %s\n' "$(basename "$backup")"
   declare -A env_seen=()
   while IFS= read -r line || [[ -n "$line" ]]; do
-    [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]] || continue
+    # Matched as load_env_defaults reads it — no CR, leading space or `export` —
+    # and carried forward as written.
+    norm="${line%$'\r'}"; norm="${norm#"${norm%%[![:space:]]*}"}"
+    [[ "$norm" =~ ^export[[:space:]]+(.*)$ ]] && norm="${BASH_REMATCH[1]}"
+    [[ "$norm" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]] || continue
     k="${BASH_REMATCH[1]}"
     [[ -z "${env_seen[$k]:-}" ]] || continue
     env_seen[$k]=1

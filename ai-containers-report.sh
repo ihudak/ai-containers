@@ -157,19 +157,16 @@ display_path() {
 # Last effective `AI_CONTAINER_GROUP=...` in sandbox.env (comments and
 # AI_CONTAINER_GROUP_INIT ignored; quotes and trailing comments stripped).
 launcher_group() {
-  awk '
-    /^[[:space:]]*#/ { next }
-    /^[[:space:]]*(export[[:space:]]+)?AI_CONTAINER_GROUP[[:space:]]*=/ {
-      v = $0
-      sub(/^[^=]*=/, "", v)
-      sub(/[[:space:]]*#.*$/, "", v)
-      gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
-      gsub(/^"|"$/, "", v)
-      gsub(/^'\''|'\''$/, "", v)
-      val = v
-    }
-    END { if (val != "") print val }
-  ' "$1" 2>/dev/null
+  # As the launcher resolves it (review of batch 4): sandbox.local.env first, where
+  # project-init writes the host group, then sandbox.env, where the loader ignores
+  # a host group. env_var() reads both as load_env_defaults does.
+  local g
+  g="$(env_var "${1%/*}/sandbox.local.env" AI_CONTAINER_GROUP)"
+  if [ -z "$g" ]; then
+    g="$(env_var "$1" AI_CONTAINER_GROUP)"
+    [ "$g" != host ] || g=""
+  fi
+  printf '%s' "$g"
 }
 
 # Locate sandbox.env for a project (portable config, source of truth for group).

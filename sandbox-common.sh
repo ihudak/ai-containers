@@ -549,21 +549,29 @@ volumes_named() {
   done < <(docker volume ls --quiet --filter "name=$1" 2>/dev/null || true)
 }
 
-# A repo volume is a base volume when its name is exactly the base-volume name of
-# the repo its label names. A name alone cannot tell: repo `docs`'s working copy
-# `ui` and a repo named `docs--wc-ui` are both ai-containers-repo-docs--wc-ui.
+# repo_volume_kind <vol>: base | workcopy | other. Decided positively, by the repo
+# its label names: its base volume is exactly repo_volume_name(<repo>), a working
+# copy starts with that plus `--wc-`. A name alone cannot tell — repo `docs`'s
+# working copy `ui` and a repo named `docs--wc-ui` share a volume name — and
+# anything that is neither (a base volume under a nested prefix, say
+# prjx-repo-team-repo-x labelled x) is `other` and left alone: taking whatever was
+# not a base for a working copy let gc delete one (review of batch 4, finding 1).
 # Unlabelled (before labels existed), a `--wc-` in the name decides, as it did.
-repo_volume_is_base() {
+repo_volume_kind() {
   local r; r="$(docker_volume_label "$1" 'ai-containers.repo')"
-  if [[ -n "$r" ]]; then [[ "$1" == "$(repo_volume_name "$r")" ]]
-  else [[ "$1" != *--wc-* ]]; fi
+  if [[ -n "$r" ]]; then
+    if [[ "$1" == "$(repo_volume_name "$r")" ]]; then printf 'base\n'
+    elif [[ "$1" == "$(repo_volume_name "$r")--wc-"* ]]; then printf 'workcopy\n'
+    else printf 'other\n'; fi
+  elif [[ "$1" == *--wc-* ]]; then printf 'workcopy\n'
+  else printf 'base\n'; fi
 }
 
 # Echo each existing base repo volume name (EXCLUDING working copies), one/line.
 repo_base_volumes() {
   local v
   while IFS= read -r v; do
-    repo_volume_is_base "$v" && printf '%s\n' "$v"
+    [[ "$(repo_volume_kind "$v")" == base ]] && printf '%s\n' "$v"
   done < <(volumes_named "${repo_volume_prefix}-repo-")
   return 0
 }
@@ -580,7 +588,7 @@ repo_workcopy_volumes() {
     done < <(volumes_named "$(repo_volume_name "$name")--wc-")
   else
     while IFS= read -r v; do
-      repo_volume_is_base "$v" || printf '%s\n' "$v"
+      [[ "$(repo_volume_kind "$v")" == workcopy ]] && printf '%s\n' "$v"
     done < <(volumes_named "${repo_volume_prefix}-repo-")
   fi
   return 0

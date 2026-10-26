@@ -313,6 +313,14 @@ REPO_VOLUME_PREFIX=prj run_repo gc --yes
 [[ -f "$VOLS/myprj-repo-lib--wc-t" && ! -f "$VOLS/prj-repo-lib--wc-t" ]] \
   && pass "gc under one prefix removes only that prefix's working copies" \
   || fail "gc crossed prefixes ($(removed))"
+# A base volume under a nested prefix (prjx-repo-team-repo-x, labelled x) is
+# neither prjx's base volume of x nor a working copy of anything: skipped, never
+# taken for a working copy and deleted (review of batch 4, finding 1).
+setup_world
+: > "$VOLS/prjx-repo-team-repo-x"; printf 'ai-containers.repo=x\nai-containers.type=git\n' > "$VOLS/prjx-repo-team-repo-x.labels"
+REPO_VOLUME_PREFIX=prjx run_repo gc --yes
+[[ -f "$VOLS/prjx-repo-team-repo-x" ]] && pass "gc never takes a volume it cannot classify for a working copy" \
+  || fail "gc removed a base volume under a nested prefix ($(removed))"
 # A new name with `--` could be the very name of another repo's working copy.
 setup_world
 run_repo add app--wc-x "$TMP/hostsrc"
