@@ -198,6 +198,17 @@ export PATH
 unset VAULT_PATH SPECS_PATH DOCS_PATH ARCHITECTURE_REPO_PATH EXTRA_MOUNTS REPOS \
       SANDBOX_ENV_FILE SANDBOX_WORKDIR
 
+# AS ROOT, A NON-ROOT AGENT. sandbox.sh refuses a UID or GID of 0 for the agent
+# and takes both from `id` by default, so in a root container (the floor job,
+# verify-on-host.sh's floor container) every test that launches it stopped at
+# the refusal (TST-9). The suite runs as root there on purpose — some tests have
+# root-only branches — so the agent gets the identity the refusal itself
+# suggests, and only when the run named none. A test that checks the default
+# identity asks a fresh environment for it, not this one.
+if [ "$(id -u)" = 0 ] || [ "$(id -g)" = 0 ]; then
+  export SANDBOX_UID="${SANDBOX_UID:-1000}" SANDBOX_GID="${SANDBOX_GID:-1000}"
+fi
+
 for t in $selected; do
   name="$(basename "$t")"
   total=$((total + 1))

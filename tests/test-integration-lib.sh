@@ -289,8 +289,15 @@ fi
 # The launch identity must track what sandbox.sh actually passes (id -u/-g, or
 # the SANDBOX_UID/GID override). A hardcoded 1000 waits forever for a pid-1
 # handover that never comes on a CI runner whose user is 1001.
-t_check "IT_LAUNCH_UID follows the invoking user" "$(id -u)" "$IT_LAUNCH_UID"
-t_check "IT_LAUNCH_GID follows the invoking group" "$(id -g)" "$IT_LAUNCH_GID"
+# Both halves are asked of a fresh source, never of the identity this run
+# inherited: tests/run-all.sh exports a non-root override when it runs as root
+# (TST-9), so the run's own IT_LAUNCH_UID is not the invoking user's there.
+# shellcheck disable=SC1090  # $LIB is this suite's own lib.sh
+ids_default="$(unset SANDBOX_UID SANDBOX_GID; . "$LIB" >/dev/null 2>&1; printf '%s:%s' "$IT_LAUNCH_UID" "$IT_LAUNCH_GID")"
+# shellcheck disable=SC1090
+ids_override="$(SANDBOX_UID=4242 SANDBOX_GID=4343; . "$LIB" >/dev/null 2>&1; printf '%s:%s' "$IT_LAUNCH_UID" "$IT_LAUNCH_GID")"
+t_check "IT_LAUNCH_UID/GID follow the invoking user and group" "$(id -u):$(id -g)" "$ids_default"
+t_check "IT_LAUNCH_UID/GID follow a SANDBOX_UID/GID override" "4242:4343" "$ids_override"
 
 # launcher_prepare must REFUSE, not silently continue, when the real docker
 # cannot be resolved — otherwise the shim it installs would exit 127 on every
