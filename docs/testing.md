@@ -80,7 +80,8 @@ What has actually been run where, beyond CI's `ubuntu-24.04`. One row per run, n
 | Date | Platform | Checkout | Run | Result |
 |---|---|---|---|---|
 | 2026-10-26 | Windows + WSL2 (kernel 6.18.33.2-microsoft-standard-WSL2, Ubuntu distro), Docker Desktop 29.9.2 with WSL integration | `/mnt/c` (drvfs, 9p, no `metadata`: every file `0777`), at `41160a4` | Phase 5; `run.sh --tags fast` | Phase 5: 98/98 on the host and at the floor. Symlinked `TMPDIR`: 91/98 in the first run, then 98/98 when the same tree was run again. `fast`: 30/30. |
-| 2026-10-26 | same | ext4 (`~`), at `3581af0` | `verify-on-host.sh` (all phases) | Phase 4: 48/48, none skipped (`docker sidecar netadmin launcher dns multiruby`). Phase 6: ledger OK. Phase 5: 97/98, G28 (a real bug on every Linux, fixed in #313 and #315). Phase 7: not run, no `shellcheck` in the distro. |
+| 2026-10-26 | same | ext4 (`~`), at `d46b6ad` | Phase 7 | 209 scripts parse; dialect lint and shellcheck 0.11.0 (CI runs 0.9.0) clean. |
+| 2026-10-26 | same | ext4 (`~`), at `3581af0` | `verify-on-host.sh` (all phases) | Phase 4: 48/48, none skipped (`docker sidecar netadmin launcher dns multiruby`). Phase 6: ledger OK. Phase 5: 97/98, G28 (a real bug on every Linux, fixed in #313 and #315). Phase 7: not run, no `shellcheck` in the distro yet (see the row above). |
 
 **WSL2 notes.**
 - **IPv6 is enforced:** `ip6tables` (`v1.8.10 (nf_tables)`) works in the image, so the "IPv6 unrestricted" caveat under Network enforcement did not apply on this host.

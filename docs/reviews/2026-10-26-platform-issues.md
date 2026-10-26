@@ -55,7 +55,7 @@ and the constraints the fix must keep.
 
 ## PLAT-2: WSL2 — the corpus and the local layer have never been run
 
-- **Status: PARTLY DONE (2026-10-26).** Docker Desktop + WSL2, from ext4 and from `/mnt/c`. Results are in docs/testing.md under "Platforms exercised". The one failure that reproduced, G28, was a real bug on every Linux, fixed in #313 and #315. Still open: a Docker Engine installed natively in the distro, and Phase 7 with shellcheck installed.
+- **Status: PARTLY DONE (2026-10-26).** Docker Desktop + WSL2, from ext4 and from `/mnt/c`. Results are in docs/testing.md under "Platforms exercised". The one failure that reproduced, G28, was a real bug on every Linux, fixed in #313 and #315. Phase 7 since passed with shellcheck 0.11.0. Still open: a Docker Engine installed natively in the distro.
 
 - **Platform:** Windows + WSL2, both Docker Desktop and a native Engine in the distro if available.
 - **Source:** feature-gaps review GAP-13 (the increment-3 design records WSL2 as "expected, **never exercised**").
