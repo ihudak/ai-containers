@@ -224,10 +224,17 @@ git_helper_run() {   # $1 = volume  $2... = repo-git-reset.sh arguments
     printf "ERROR: volume %s is mounted read-write by a running container; stop it first.\n" "$vol" >&2
     return 1
   fi
-  # A memory limit, so nothing the agent left in the volume can make git exhaust
-  # the host's (review of fb1705e, Q3); REPO_HELPER_MEMORY raises it for a huge
-  # repository.
-  docker run --rm --memory "${REPO_HELPER_MEMORY:-4g}" --entrypoint bash ${seed_selinux_opt:+"$seed_selinux_opt"} \
+  # Bounded, so nothing the agent left in the volume can make git exhaust the
+  # host (review of fb1705e, Q3): memory, with swap capped to it (--memory alone
+  # lets swap double it), and processes (bugs review REPO-7). REPO_HELPER_MEMORY
+  # raises the memory for a huge repository; it reaches docker's argv, so it is
+  # checked to be a size first.
+  local mem="${REPO_HELPER_MEMORY:-4g}" rc=0
+  if [[ ! "$mem" =~ ^[1-9][0-9]*[kKmMgG]?$ ]]; then
+    printf "ERROR: REPO_HELPER_MEMORY=%q is not a size such as 4g or 8192m.\n" "$mem" >&2
+    return 1
+  fi
+  docker run --rm --memory "$mem" --memory-swap "$mem" --pids-limit 512 --entrypoint bash ${seed_selinux_opt:+"$seed_selinux_opt"} \
     -e AI_REPO_URL="$url" \
     -v "$HOME/.ssh":/root/.ssh-host:ro \
     -v "${script_dir}/repo-git-reset.sh":/repo-git-reset.sh:ro \
@@ -236,7 +243,12 @@ git_helper_run() {   # $1 = volume  $2... = repo-git-reset.sh arguments
       mkdir -p /root/.ssh && cp -a /root/.ssh-host/. /root/.ssh/ 2>/dev/null || true
       chmod 700 /root/.ssh; chmod 600 /root/.ssh/* 2>/dev/null || true
       export GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=accept-new"
-      exec bash /repo-git-reset.sh "$@"' _ "$@"
+      exec bash /repo-git-reset.sh "$@"' _ "$@" || rc=$?
+  if (( rc == 137 )); then
+    printf "ERROR: the git helper was killed (exit 137), most likely for exceeding its %s memory limit;\n" "$mem" >&2
+    printf "       raise REPO_HELPER_MEMORY (e.g. REPO_HELPER_MEMORY=8g) for a very large repository.\n" >&2
+  fi
+  return "$rc"
 }
 
 # Read-only pass: the helper clones the recorded remote privately, then reports

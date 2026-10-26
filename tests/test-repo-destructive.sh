@@ -138,6 +138,8 @@ fi
 # What the helper does to a real repository is asserted in
 # tests/test-repo-git-reset.sh, which runs it against real git.
 if [[ "$1" == "run" ]]; then
+  # HELPER_EXIT: the git helper's container exits with this status (137: OOM kill).
+  [[ -z "${HELPER_EXIT:-}" || "$*" != *repo-git-reset.sh* ]] || exit "$HELPER_EXIT"
   case "$*" in
     *" inspect /dst"*)
       # HELPER_NO_PRIMARY: the helper found no branch to reset onto — a detached
@@ -316,6 +318,25 @@ setup_world
 run_repo add app--wc-x "$TMP/hostsrc"
 [[ "$RC" != 0 ]] && grep -q -- '--' "$ERR" && pass "add refuses a repo name containing --" \
   || fail "add accepted app--wc-x (rc=$RC; $(tr '\n' ' ' < "$ERR"))"
+
+# ── 4c. REPO-7: the git helper's container is bounded in more than memory ─────
+# Memory only left swap (which --memory alone lets double it), processes and an
+# unvalidated REPO_HELPER_MEMORY; an OOM kill gave only the generic failure.
+setup_world
+run_repo sync docs
+helper_run="$(grep -- '/repo-git-reset.sh' "$DOCKER_LOG" | head -1)"
+[[ "$helper_run" == *"--memory 4g"* && "$helper_run" == *"--memory-swap 4g"* && "$helper_run" == *"--pids-limit"* ]] \
+  && pass "the git helper runs with --memory, --memory-swap and --pids-limit" \
+  || fail "the git helper's limits: $helper_run"
+setup_world
+REPO_HELPER_MEMORY='4g --privileged' run_repo sync docs
+[[ "$RC" != 0 ]] && ! grep -q -- '/repo-git-reset.sh' "$DOCKER_LOG" && grep -q 'REPO_HELPER_MEMORY' "$ERR" \
+  && pass "a REPO_HELPER_MEMORY that is not a size is refused before docker runs" \
+  || fail "REPO_HELPER_MEMORY not validated (rc=$RC; $(tr '\n' ' ' < "$ERR"))"
+setup_world
+HELPER_EXIT=137 run_repo sync docs
+grep -qi 'memory' "$ERR" && pass "an OOM-killed helper (exit 137) is reported as one" \
+  || fail "exit 137 not explained ($(tr '\n' ' ' < "$ERR"))"
 
 # ── 5. An unregistered name with no volume removes nothing ────────────────────
 setup_world
