@@ -364,9 +364,11 @@ never told says `unknown`.
 
 `nvm-version` is reported because it is **pinned rather than detected** — nvm's
 latest cannot be resolved at build time behind a rate limit, and
-`.github/workflows/update-nvm-version.yml` exists solely to keep the key current,
-so this field is that job's output. An empty key reports the Dockerfile's `ARG
-NVM_VERSION` default instead, labelled: the question is what the image will get.
+`.github/workflows/update-nvm-version.yml` exists solely to keep the Dockerfile's
+`ARG NVM_VERSION` current. The key is empty by default and defers to that ARG,
+so the field normally reports the job's output, labelled as the Dockerfile
+default: the question is what the image will get. A project that sets the key
+pins its own version, which the job never touches.
 
 `version.sh` is sourced by `sandbox.sh`, `project-init.sh` and
 `sync-to-projects.sh` **directly**, not via `sandbox-common.sh`. That was tried

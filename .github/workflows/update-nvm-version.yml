@@ -79,7 +79,6 @@ jobs:
             Automated update of nvm from `${{ steps.update.outputs.previous }}` to `${{ steps.latest.outputs.tag }}`.
 
             **Changed files:**
-            - `sandbox.conf` — `nvm-version` updated
             - `Dockerfile` — `ARG NVM_VERSION` default updated
 
             Release notes: https://github.com/nvm-sh/nvm/releases/tag/${{ steps.latest.outputs.tag }}
