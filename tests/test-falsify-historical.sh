@@ -142,18 +142,26 @@ ORACLE_LOG="$TMP/oracle.log"
 
 # ── the scratch trees ─────────────────────────────────────────────────────────
 # CACHE is pristine and only ever read from; WORK is the only tree written into.
+#
+# A tree that could not be seeded is the SCAFFOLD channel, not a FAIL: this
+# file's corpus is that tree, and with none it has measured nothing about the
+# tier. The likeliest cause is backlog F58, an empty `git ls-files` with every
+# file present; reported as FAIL it reads as the tier having lost a catch.
+# tests/test-lint-empty-corpus.sh drives this with an empty ls-files (GAP-9).
 CACHE="$TMP/pristine"
 WORK="$TMP/work"
 if falsify_seed_tree "$REPO_DIR" "$CACHE"; then
   h_pass "a pristine scratch tree was seeded from the repo (tracked files + .git)"
 else
-  h_fail "a pristine scratch tree was seeded — nothing below can run"
+  printf 'SCAFFOLD-FAILED: no pristine scratch tree could be seeded from the repo (see the error above) — nothing below can run\n'
+  fails=$((fails + 1))
   h_finish
 fi
 if { cp -a "$CACHE" "$WORK" 2>/dev/null || cp -R "$CACHE" "$WORK"; } && [[ -f "$WORK/$LIB_REL" ]]; then
   h_pass "a worker tree was seeded from it"
 else
-  h_fail "a worker tree was seeded from it"
+  printf 'SCAFFOLD-FAILED: no worker tree could be copied from the pristine one — nothing below can run\n'
+  fails=$((fails + 1))
   h_finish
 fi
 

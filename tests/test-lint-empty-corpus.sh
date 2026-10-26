@@ -22,10 +22,14 @@
 # verdict on the rule.
 #
 # Cheap by construction: these lints read files and fork nothing heavy, so
-# driving all three against a stub costs about a second. That is the whole
-# reason this guard can exist at all — the same rule in
-# tests/test-falsify-historical.sh is NOT pinned this way, because exercising it
-# there means a full run of nine real oracles.
+# driving all three against a stub costs about a second.
+#
+# tests/test-falsify-historical.sh is held to the same rule. Its corpus is the
+# scratch tree falsify_seed_tree copies from `git ls-files`, and an empty one
+# stops it at the seed, before the first of its nine real oracles, so its
+# refusal costs a second too (GAP-9). Its GREEN control is not repeated here:
+# the suite already runs it against the real corpus, and running it twice
+# would add its ~45 s for nothing.
 set -uo pipefail
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; trap 'rm -rf "$TMP"' EXIT
@@ -45,10 +49,11 @@ mkdir -p "$TMP/bin"
 } > "$TMP/bin/git"
 chmod +x "$TMP/bin/git"
 
-# Every lint whose corpus is `git ls-files`. Adding one here is how the rule
+# Every check whose corpus is `git ls-files`. Adding one here is how the rule
 # stays enforced for it; leaving it out is how a green that examined nothing
 # ships again.
-for t in test-array-key-expansion.sh test-grep-q-pipelines.sh test-bash-floor.sh; do
+for t in test-array-key-expansion.sh test-grep-q-pipelines.sh test-bash-floor.sh \
+         test-falsify-historical.sh; do
   [[ -f "$TESTS_DIR/$t" ]] || { fail "$t exists to be checked"; continue; }
   out="$(PATH="$TMP/bin:$PATH" bash "$TESTS_DIR/$t" 2>&1)"; rc=$?
   if (( rc == 0 )); then
