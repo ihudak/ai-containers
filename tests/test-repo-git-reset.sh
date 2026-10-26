@@ -757,6 +757,33 @@ if [[ "$RC" != 0 && "$OUT" == *"sub/.git"*"inside the checkout"* ]]; then pass "
 else fail "nested git directory accepted (rc=$RC; out: $OUT)"; fi
 grep -q -- 'diff-files --ignore-submodules=all' "$SCRIPT" \
   && pass "diff-files never opens a submodule's repository" || fail "diff-files without --ignore-submodules=all"
+# Staged changes live in the volume's index only: a change staged and then
+# undone in the file (status MM) looks clean to a fresh index, and sync replaced
+# the index with it (review of 82698a0, F1).
+W="$(mk_repo staged)"; S="$TMP/staged.seed"; commit_in "$S" st-new; g "$S" push -q origin main >/dev/null 2>&1
+printf 'staged\n' > "$W/first"; g "$W" add first; printf 'first\n' > "$W/first"
+run_script pull "$W"
+if [[ "$RC" != 0 && "$OUT" == *"staged changes"* && "$(g "$W" diff --cached --name-only)" == first ]]; then pass "pull refuses staged changes the worktree no longer shows"
+else fail "staged change lost or accepted (rc=$RC; out: $OUT)"; fi
+# A commit held by a ref outside heads and tags (refs/wip/*, refs/original,
+# a tool's keep refs) is dropped with .git: refused, loose or packed (F1).
+for packed in "" packed; do
+  W="$(mk_repo "wipref$packed")"
+  commit_in "$W" wip; g "$W" update-ref refs/wip/save HEAD; g "$W" reset -q --hard HEAD~1
+  [[ -z "$packed" ]] || g "$W" pack-refs --all
+  run_script pull "$W"
+  if [[ "$RC" != 0 && "$OUT" == *"refs/wip/save"* ]]; then pass "pull refuses a ref outside heads and tags${packed:+ (packed)}"
+  else fail "custom ref dropped by pull${packed:+ (packed)} (rc=$RC; out: $OUT)"; fi
+done
+# The volume checks fail closed: a directory find cannot search hides what is
+# inside it from them (review of 82698a0, F3).
+if [[ "$(id -u)" != 0 ]]; then
+  W="$(mk_repo locked)"; mkdir -p "$W/locked/sub"; chmod 000 "$W/locked"
+  run_script inspect "$W"
+  chmod 755 "$W/locked"
+  if [[ "$RC" != 0 && "$OUT" == *"cannot check"* ]]; then pass "a directory the checks cannot search refuses the volume"
+  else fail "unsearchable directory accepted (rc=$RC; out: $OUT)"; fi
+fi
 grep -qE -- '--memory[ =]' "$REPO_DIR/repo.sh" 2>/dev/null || grep -qE -- '--memory[ =]' "$(dirname "$SCRIPT")/repo.sh" \
   && pass "the seed containers that run git are given a memory limit" || fail "no --memory on the git helper's container"
 

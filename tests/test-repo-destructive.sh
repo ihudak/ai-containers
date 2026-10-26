@@ -151,6 +151,11 @@ if [[ "$1" == "run" ]]; then
       # HELPER_UNKNOWN_COUNT: a count the helper could not make.
       [[ -z "${HELPER_UNKNOWN_COUNT:-}" ]] || printf 'BRANCH|odd/branch|?|\nBRANCH|empty/branch||\n'
       exit 0 ;;
+    *" pull /dst"*)
+      # HELPER_PULL_WARN: sync kept the checkout but could not keep a tag.
+      [[ -z "${HELPER_PULL_WARN:-}" ]] || printf 'WARN|could not keep tag release/1\n'
+      printf 'AT|abc1234\n'
+      exit 0 ;;
     *" reset /dst"*)
       # HELPER_RESET_FAILS: the git reset failed inside the seed container. The
       # opposite obligation to the one above — a destructive command that could
@@ -710,6 +715,9 @@ else
   fail "sync: the host ~/.ssh is NOT mounted read-only: $(runs | head -1)"
 fi
 check "  … and no volume is removed by a sync" "" "$(removed)"
+HELPER_PULL_WARN=1 run_repo sync docs
+grep -q 'WARNING: could not keep tag release/1' "$ERR" && pass "  … and a ref the pull could not keep is reported" \
+  || fail "  … a pull WARN record is dropped (got: $(tr '\n' ' ' < "$ERR"))"
 
 setup_world
 run_repo sync localsrc

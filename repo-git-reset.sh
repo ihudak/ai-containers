@@ -91,13 +91,16 @@ trap '[[ -n "$WORK" ]] && rm -rf "$WORK"' EXIT
 # check_volume <dir>: the recorded URL is there, <dir>/.git is a real directory
 # holding only files and directories (the ref files below are read as text),
 # and nothing in the volume is a FIFO or device (git would block opening one).
+# Each search fails closed: a directory find cannot enter hides what is in it
+# (review of 82698a0, F3).
 check_volume() {
-  local dir="$1" gd="$1/.git" bad
+  local dir="$1" gd="$1/.git" bad nosearch
+  nosearch="cannot check $(shown "$dir"): find could not search all of it (an unreadable directory, or a path too long); refusing this repository"
   [[ -n "${AI_REPO_URL:-}" ]] || die "no recorded URL for this repository (AI_REPO_URL); refusing to run git on it"
   [[ -d "$gd" && ! -L "$gd" ]] || die "not a git repository: $(shown "$dir") (.git is missing, or is a file or link)"
-  bad="$(find "$gd" ! -type f ! -type d -print -quit 2>/dev/null)"
+  bad="$(find "$gd" ! -type f ! -type d -print -quit 2>/dev/null)" || die "$nosearch"
   [[ -z "$bad" ]] || die "$(shown "$bad") is not a regular file or directory; refusing this repository"
-  bad="$(find "$dir" -path "$gd" -prune -o \( -type p -o -type b -o -type c \) -print -quit 2>/dev/null)"
+  bad="$(find "$dir" -path "$gd" -prune -o \( -type p -o -type b -o -type c \) -print -quit 2>/dev/null)" || die "$nosearch"
   [[ -z "$bad" ]] || die "$(shown "$bad") is not a regular file or directory; refusing this repository"
   # Any .git below the top level is refused, whatever it is. git opens one
   # during checkout and status (where the remote has a submodule, say): a .git
@@ -105,7 +108,7 @@ check_volume() {
   # another, and a ref there linked to /dev/zero exhausted memory (review of
   # fb1705e, Q3; security review of 8f5e5b9). Nothing this helper seeds makes
   # one: submodules are never initialised in a volume.
-  bad="$(find "$dir" -path "$gd" -prune -o -name .git -print -quit 2>/dev/null)"
+  bad="$(find "$dir" -path "$gd" -prune -o -name .git -print -quit 2>/dev/null)" || die "$nosearch"
   [[ -z "$bad" ]] || die "$(shown "$bad") is a git repository inside the checkout; remove it (rm -rf from a container), then retry"
 }
 
@@ -147,6 +150,22 @@ volume_refs() {
   done < <(cut -c1-4200 "$gd/packed-refs")
 }
 volume_branches() { volume_refs "$1" heads; }
+
+# other_ref <dir>: the first ref outside refs/heads, refs/tags and refs/remotes
+# (refs/wip/*, refs/original/*, a tool's keep refs), loose or packed — what
+# replacing .git would drop with its commits (review of 82698a0, F1).
+other_ref() {
+  local gd="$1/.git" f oid ref
+  f="$(find "$gd/refs" -mindepth 1 -type f ! -path "$gd/refs/heads/*" ! -path "$gd/refs/tags/*" \
+    ! -path "$gd/refs/remotes/*" -print -quit 2>/dev/null)"
+  [[ -z "$f" ]] || { printf '%s' "${f#"$gd/"}"; return; }
+  [[ -f "$gd/packed-refs" ]] || return 0
+  while IFS=' ' read -r oid ref; do
+    [[ "$oid" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ && "$ref" == refs/* ]] || continue
+    case "$ref" in refs/heads/*|refs/tags/*|refs/remotes/*) continue ;; esac
+    printf '%s' "$ref"; return
+  done < <(cut -c1-4200 "$gd/packed-refs")
+}
 
 # volume_head <dir>: the checked-out branch's name, from HEAD as text; nothing
 # for a detached or unreadable HEAD.
@@ -290,6 +309,8 @@ cmd_pull() {
   [[ -z "$(volume_refs "$dir" notes)" ]] || die "the repository has git notes; push or remove them, or use reset"
   [[ -z "$(find "$gd/worktrees" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]] \
     || die "the repository has linked worktrees; remove them (git worktree remove), or use reset"
+  local other; other="$(other_ref "$dir")"
+  [[ -z "$other" ]] || die "$(shown "$other") holds commits sync would drop with .git; delete it, or use reset"
   local tname toid
   while IFS=$'\t' read -r tname toid; do
     [[ -n "$tname" ]] || continue
@@ -303,6 +324,21 @@ cmd_pull() {
   git --git-dir="$F/.git" --work-tree="$dir" update-index -q --ignore-submodules --refresh >/dev/null 2>&1 || true
   git --git-dir="$F/.git" --work-tree="$dir" diff-files --ignore-submodules=all --quiet \
     || die "the checkout has uncommitted changes; commit and push them, or use reset"
+  # What is staged lives in the volume's index alone, which the clone's fresh
+  # one cannot see (a change staged, then undone in the file). A copy is read
+  # against the tip by the clone's git; an index it cannot read is refused
+  # (review of 82698a0, F1).
+  if [[ -e "$gd/index" ]]; then
+    local irc=0
+    cp "$gd/index" "$WORK/volume-index" || die "cannot read the checkout's index"
+    GIT_INDEX_FILE="$WORK/volume-index" git --git-dir="$F/.git" diff-index --cached --quiet \
+      --ignore-submodules=all "${tip[$b]}" 2>/dev/null || irc=$?
+    case "$irc" in
+      0) ;;
+      1) die "the checkout has staged changes; commit and push them, or use reset" ;;
+      *) die "cannot read the checkout's index (split, sparse or damaged); use reset" ;;
+    esac
+  fi
   # A two-way merge from that commit to the remote's tip, as `pull --ff-only`
   # does, without --force: it refuses to overwrite an untracked file the remote
   # now tracks, and leaves every other untracked file alone.
@@ -313,7 +349,8 @@ cmd_pull() {
   git -C "$F" branch --quiet --set-upstream-to="origin/$b" "$b" >/dev/null 2>&1 || true
   for name in "${!tip[@]}"; do
     [[ "$name" == "$b" ]] && continue
-    command git check-ref-format "refs/heads/$name" >/dev/null 2>&1 || continue
+    command git check-ref-format "refs/heads/$name" >/dev/null 2>&1 \
+      || { printf 'WARN|could not keep branch %s (not a valid name)\n' "$(shown "$name")"; continue; }
     git -C "$F" update-ref "refs/heads/$name" "${tip[$name]}" || printf 'WARN|could not keep branch %s\n' "$(shown "$name")"
   done
   # Every local tag comes back at the value it had — the refusal above made sure
@@ -321,7 +358,8 @@ cmd_pull() {
   # of fb1705e, Q1).
   while IFS=$'\t' read -r tname toid; do
     [[ -n "$tname" ]] || continue
-    command git check-ref-format "refs/tags/$tname" >/dev/null 2>&1 || continue
+    command git check-ref-format "refs/tags/$tname" >/dev/null 2>&1 \
+      || { printf 'WARN|could not keep tag %s (not a valid name)\n' "$(shown "$tname")"; continue; }
     git -C "$F" update-ref "refs/tags/$tname" "$toid" || printf 'WARN|could not keep tag %s\n' "$(shown "$tname")"
   done < <(volume_refs "$dir" tags)
   install_git_dir "$dir"

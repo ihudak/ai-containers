@@ -190,7 +190,15 @@ sync_from_git() {
   local vol="$1" out
   printf 'Pulling latest into volume "%s" (auth via host ~/.ssh) ...\n' "$vol"
   out="$(git_helper_run "$vol" pull /dst "${host_uid}:${host_gid}")" || return 1
-  [[ "$out" != *'WARN|chown failed'* ]] || printf 'WARNING: could not chown the volume to %s\n' "${host_uid}:${host_gid}" >&2
+  # Every WARN record reaches the user: a ref sync could not keep is lost
+  # (review of 82698a0, F2).
+  local line
+  while IFS= read -r line; do
+    case "$line" in
+      'WARN|chown failed') printf 'WARNING: could not chown the volume to %s\n' "${host_uid}:${host_gid}" >&2 ;;
+      WARN\|*)            printf 'WARNING: %s\n' "${line#WARN|}" >&2 ;;
+    esac
+  done <<<"$out"
 }
 
 # The git half of `reset` lives in repo-git-reset.sh, mounted read-only into the
