@@ -1272,10 +1272,20 @@ git_dirs_in() {
     # From the work tree's root: run from a subdirectory (sandbox.sh runs from
     # .ai-containers), ls-files lists only what lies under it.
     # safe.directory='*': a repository another user owns would otherwise refuse
-    # to be read, and its submodules go unprotected; ls-files runs nothing from a
-    # repository's config once fsmonitor is off.
-    mapfile -d '' -t links < <(git -C "$top" -c core.fsmonitor=false -c safe.directory='*' \
-        --git-dir="$g" --work-tree="$top" ls-files -s -z 2>/dev/null)
+    # to be read, and its submodules go unprotected. fsmonitor off is not enough
+    # to make the read inert: in a partial clone with a sparse index, ls-files
+    # expands the index and fetches a missing tree from the promisor remote,
+    # running remote.<name>.uploadpack (the agent can set it). GIT_NO_LAZY_FETCH
+    # stops the fetch (git 2.44+), protocol.allow=never refuses every transport
+    # on any git; the read then fails, and is named (tests/test-git-internals-ro.sh G28).
+    mapfile -d '' -t links < <(GIT_NO_LAZY_FETCH=1 git -C "$top" -c core.fsmonitor=false \
+        -c protocol.allow=never -c safe.directory='*' \
+        --git-dir="$g" --work-tree="$top" ls-files -s -z 2>/dev/null || printf 'ls-files-failed\0')
+    if (( ${#links[@]} )) && [[ "${links[-1]}" == ls-files-failed ]]; then
+      links=()
+      printf 'WARNING: cannot read the index of %s; submodules recorded in it are not followed,\n' "$g" >&2
+      printf '         so a checkout of one that the scan does not reach is not protected.\n' >&2
+    fi
     for rec in ${links[@]+"${links[@]}"}; do
       mode="${rec%% *}"; path="${rec#*$'\t'}"
       [[ "$mode" == 160000 && -n "$path" ]] || continue

@@ -505,5 +505,45 @@ EXTRA_MOUNTS="$TMP/fh" launch "$TMP/app"
   || fail "G27 repeated hooks NOTE (rc=$LAUNCH_RC; stderr: $(grep -A1 'its hooks/' "$ERR" | tr '\n' ' '))"
 rm -rf "$TMP/fh" "$TMP/fh-outside-pm"
 
+# ── G28: reading the index runs no transport ──────────────────────────────────
+# git_dirs_in reads each repository's index with the host's git. In a partial
+# clone with a sparse index, ls-files expands the index, and a collapsed
+# directory whose tree is missing is fetched from the promisor remote — running
+# remote.<name>.uploadpack, which the agent can set. fsmonitor has nothing to do
+# with it. The agent's repository must be read without running anything.
+mkdir -p "$TMP/lz/evil/a" "$TMP/lz/evil/b"
+printf 'a\n' > "$TMP/lz/evil/a/f"; printf 'b\n' > "$TMP/lz/evil/b/f"
+"${G[@]}" -C "$TMP/lz/evil" init -q && "${G[@]}" -C "$TMP/lz/evil" add -A \
+  && "${G[@]}" -C "$TMP/lz/evil" commit -qm init \
+  && "${G[@]}" -C "$TMP/lz/evil" sparse-checkout init --cone --sparse-index \
+  && "${G[@]}" -C "$TMP/lz/evil" sparse-checkout set a \
+  || { printf 'SCAFFOLD-FAILED: cannot create the sparse repository\n'; exit 1; }
+lz_tree="$("${G[@]}" -C "$TMP/lz/evil" rev-parse HEAD:b)"
+rm -f "$TMP/lz/evil/.git/objects/${lz_tree:0:2}/${lz_tree:2}"
+"${G[@]}" -C "$TMP/lz/evil" config core.repositoryformatversion 1
+"${G[@]}" -C "$TMP/lz/evil" config extensions.partialClone origin
+"${G[@]}" -C "$TMP/lz/evil" config remote.origin.promisor true
+"${G[@]}" -C "$TMP/lz/evil" config remote.origin.url "file://$TMP/lz-nowhere"
+"${G[@]}" -C "$TMP/lz/evil" config remote.origin.uploadpack "touch $TMP/lz-PWNED; false"
+# Control: the same read without the launcher's guards does run it, so the
+# fixture really is one where ls-files fetches (on a git that lazy-fetches).
+( cd "$TMP/lz/evil" && git -c core.fsmonitor=false ls-files -s -z >/dev/null 2>&1 )
+if [[ -e "$TMP/lz-PWNED" ]]; then
+  rm -f "$TMP/lz-PWNED"
+  EXTRA_MOUNTS="$TMP/lz" launch "$TMP/app"
+  [[ ! -e "$TMP/lz-PWNED" ]] \
+    && pass "G28 reading a partial clone's sparse index runs no uploadpack on the host" \
+    || fail "G28 the launcher's ls-files ran the repository's remote.origin.uploadpack on the host"
+  [[ "$LAUNCH_RC" == 0 ]] && has_mount "$TMP/lz/evil/.git/config:/workspace/lz/evil/.git/config:ro" \
+    && pass "G28 that repository is still protected" \
+    || fail "G28 repository not protected (rc=$LAUNCH_RC; stderr: $(tr '\n' ' ' < "$ERR"))"
+  grep -qF "WARNING: cannot read the index of $TMP/lz/evil/.git" "$ERR" \
+    && pass "G28 the unreadable index is named: submodules under it are not followed" \
+    || fail "G28 no WARNING for the unreadable index (stderr: $(tr '\n' ' ' < "$ERR"))"
+else
+  printf 'SKIP: G28 this git (%s) does not lazy-fetch while reading a sparse index\n' "$(git --version)"
+fi
+rm -rf "$TMP/lz" "$TMP/lz-PWNED"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

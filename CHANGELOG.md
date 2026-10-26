@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Fixed
+
+- **A repository under a writable mount can no longer make the launcher run a
+  program on the host.** Before each launch the launcher reads every
+  repository's index with the host's git, to find its submodules. In a partial
+  clone with a sparse index that read fetched a missing tree from the promisor
+  remote, running `remote.<name>.uploadpack` from the repository's own config —
+  which the agent can write — as you, before the container started. The read
+  now runs with lazy fetch and every transport disabled; an index that cannot
+  be read without them is named in a `WARNING:` (bugs review GIT-1).
+
 ## v0.10.7 — 2026-10-18
 
 ### Fixed
