@@ -886,5 +886,29 @@ grep -qF "/workspace/proj/r46b/.git/config includes" "$ERR" && grep -qF "not fol
   || fail "G46 a 45-link include chain passed silently ($(grep -iE 'r46b|not followed' "$ERR" | head -3 | tr '\n' ' '))"
 rm -rf "$R46b" "$TMP/l46b"
 
+# ── G47: a .git file's gitdir: and a commondir are followed ──────────────────
+# The scan prunes node_modules/vendor/.venv/target and stops at depth 8, and a
+# .git FILE was mounted read-only but the git directory it names never visited:
+# `src/.git` = `gitdir: ../node_modules/x/g` left g's config and hooks writable,
+# and the host's git in src read them, on every launch (review of batch 9,
+# finding 4, HIGH). Followed, as gitlinks are.
+mkdir -p "$PROJ/src47" "$PROJ/node_modules/x47"
+"${G[@]}" init -q --bare "$PROJ/node_modules/x47/g"
+"${G[@]}" config --file "$PROJ/node_modules/x47/g/config" core.bare false
+printf 'gitdir: ../node_modules/x47/g\n' > "$PROJ/src47/.git"
+launch ..
+has_mount "$PROJ/node_modules/x47/g/config:/workspace/proj/node_modules/x47/g/config:ro" \
+  && pass "G47 the git directory a .git file names is protected, wherever the scan does not go" \
+  || fail "G47 gitdir: target left writable (mounts: $(grep -c node_modules "$CAPTURE"); stderr: $(grep -F x47 "$ERR" | head -2 | tr '\n' ' '))"
+# …and a linked worktree's commondir likewise.
+"${G[@]}" init -q --bare "$PROJ/node_modules/x47/common"
+mkdir -p "$PROJ/wt47"; printf '%s\n' "$PROJ/node_modules/x47/common" > "$PROJ/wt47/commondir"
+printf 'ref: refs/heads/main\n' > "$PROJ/wt47/HEAD"
+launch ..
+has_mount "$PROJ/node_modules/x47/common/config:/workspace/proj/node_modules/x47/common/config:ro" \
+  && pass "G47 the common directory a commondir names is protected too" \
+  || fail "G47 commondir target left writable (stderr: $(grep -F x47 "$ERR" | head -2 | tr '\n' ' '))"
+rm -rf "$PROJ/src47" "$PROJ/node_modules" "$PROJ/wt47"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

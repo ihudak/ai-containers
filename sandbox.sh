@@ -767,7 +767,9 @@ launcher_ro_overlay() {
           cdir=""; IFS= read -r -d '' cdir < <(head -c 4096 "$g/commondir" 2>/dev/null) || true
           while [[ "$cdir" == *[$'\r\n'] ]]; do cdir="${cdir%?}"; done
           cfg="$(cd "$g" 2>/dev/null && cd -P -- "$cdir" 2>/dev/null && pwd -P)" || cfg=""
-          cfg="${cfg:-$g/commondir-unresolved}/config"
+          # Not a path in the agent's tree, where it could plant one saying the
+          # extension is off (security review of the commondir fix): a host path nothing makes.
+          cfg="${cfg:-/nonexistent/ai-launcher-unresolved-commondir}/config"
         fi
         # A common config that cannot be read cannot say the extension is off, so
         # the placeholder is made, and config.worktree walked below, as if it were on.
@@ -1491,6 +1493,26 @@ _git_index_read() {
   return 0
 }
 
+# _gdi_follow <dir> <path> <mount root> <named by>: called from git_dirs_in, whose
+# _gdi_dirs and had it extends. <path>, relative to <dir> unless absolute, is
+# resolved physically, as git resolves a gitdir: or commondir; a git directory it
+# leads to inside <mount root> joins the queue. One that is not a git directory
+# there gets nothing made in it, and is named: git would refuse it, but an agent
+# could make it one by the next launch.
+_gdi_follow() {
+  local t
+  if [[ "$2" == /* ]]; then t="$2"; else t="$1/$2"; fi
+  t="$(cd -P -- "$t" 2>/dev/null && pwd -P)" || return 0
+  [[ "$t" == "$3" || "$t" == "$3"/* ]] || return 0
+  [[ -z "${had[$t]:-}" ]] || return 0
+  had[$t]=1
+  if [[ -f "$t/HEAD" ]] && { [[ -f "$t/config" && -d "$t/objects" ]] || [[ -f "$t/commondir" ]]; }; then
+    _gdi_dirs+=("$t")
+  else
+    printf 'WARNING: %s names %s, which is not a git directory; nothing there is protected.\n' "$(_term "$4")" "$(_term "$t")" >&2
+  fi
+}
+
 git_dirs_in() {
   # shellcheck disable=SC2178  # nameref: shellcheck does not model `local -n`
   local -n _gdi_dirs=$1 _gdi_files=$2 _gdi_links=$3 _gdi_unr=$4
@@ -1527,10 +1549,28 @@ git_dirs_in() {
   # index is read with git, fsmonitor off, so a config tampered with before this
   # protection existed runs nothing here; without git, only what the scan sees.
   for g in ${_gdi_dirs[@]+"${_gdi_dirs[@]}"}; do had[$g]=1; done
-  local n=0 top rec mode path
+  local n=0 nf=0 top rec mode path tgt
   local -a links=()
-  while (( n < ${#_gdi_dirs[@]} )); do
+  while (( n < ${#_gdi_dirs[@]} || nf < ${#_gdi_files[@]} )); do
+    # A .git FILE names the git directory git uses there (`gitdir: <path>`), and a
+    # linked worktree's commondir its common one; either can lie where the scan
+    # does not go (node_modules, past depth 8), and was mounted read-only while
+    # what it names stayed writable for the host's git to read (review of batch
+    # 9, finding 4; G47). Each is followed into the queue.
+    if (( nf < ${#_gdi_files[@]} )); then
+      f="${_gdi_files[nf]}"; nf=$((nf + 1))
+      tgt=""; IFS= read -r -d '' tgt < <(head -c 4096 "$f" 2>/dev/null) || true
+      while [[ "$tgt" == *[[:space:]] ]]; do tgt="${tgt%?}"; done
+      [[ "$tgt" == "gitdir: "* ]] || continue
+      _gdi_follow "${f%/*}" "${tgt#gitdir: }" "$5" "$f"
+      continue
+    fi
     g="${_gdi_dirs[n]}"; n=$((n + 1))
+    if [[ -f "$g/commondir" && ! -L "$g/commondir" ]]; then
+      tgt=""; IFS= read -r -d '' tgt < <(head -c 4096 "$g/commondir" 2>/dev/null) || true
+      while [[ "$tgt" == *[$'\r\n'] ]]; do tgt="${tgt%?}"; done
+      if [[ -n "$tgt" && "$tgt" != ./ && "$tgt" != . ]]; then _gdi_follow "$g" "$tgt" "$5" "$g/commondir"; fi
+    fi
     [[ -f "$g/config" && -d "$g/objects" ]] || continue
     top=""
     if [[ "$g" == */.git/modules/* ]]; then
