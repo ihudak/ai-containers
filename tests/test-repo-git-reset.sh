@@ -577,6 +577,38 @@ else
   fail "stale refs trusted (out: $(tr '\n' ' ' <<<"$OUT"))"
 fi
 
+# A symbolic ref under refs/remotes/origin survives fetch --prune; it must not
+# make unpushed work look pushed (security review of cbf90aa).
+W="$(mk_repo symref)"; g "$W" checkout -q -b work >/dev/null 2>&1; commit_in "$W" y1; commit_in "$W" y2
+g "$W" checkout -q main >/dev/null 2>&1; g "$W" symbolic-ref refs/remotes/origin/planted refs/heads/work
+run_script inspect "$W"
+if grep -qx 'BRANCH|work|2|' <<<"$OUT"; then pass "a planted symbolic ref under refs/remotes/origin hides no unpushed work"
+else fail "symbolic ref hid unpushed work (out: $(tr '\n' ' ' <<<"$OUT"))"; fi
+
+# The replace-ref cleanup is itself a ref update: an agent's reference-transaction
+# hook must not run through it (re-review of 61f7806, H1).
+W="$(mk_repo hookreplace)"; M2="$TMP/ran-hookreplace"
+g "$W" replace -f "$(g "$W" rev-parse HEAD)" "$(evil_commit "$W")"
+printf '#!/bin/sh\necho ran >> %s\n' "$M2" > "$W/.git/hooks/reference-transaction"; chmod +x "$W/.git/hooks/reference-transaction"
+run_script inspect "$W"
+if [[ ! -e "$M2" && -z "$(g "$W" for-each-ref refs/replace)" ]]; then pass "removing replace refs runs no hook"
+else fail "hook ran during replace-ref cleanup ($(cat "$M2" 2>/dev/null | wc -l) times)"; fi
+# A socket in the checkout does not hang git and clean -ffdx removes it, so it
+# is not refused; a FIFO is (re-review, H5).
+W="$(mk_repo sock)"
+if command -v python3 >/dev/null 2>&1; then
+  python3 -I -c 'import socket,sys; s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1])' "$W/app.sock"
+  run_script reset "$W" main
+  if [[ "$RC" == 0 ]]; then pass "a stale socket in the checkout does not refuse the reset"
+  else fail "socket refused (rc=$RC: $OUT)"; fi
+fi
+# The grafts setting must not bury a fetch error under git's deprecation hint.
+W="$(mk_repo hint)"
+AI_REPO_URL="$TMP/does-not-exist.git" run_script inspect "$W"
+if grep -q '^STALE|.*does not appear to be a git repository' <<<"$OUT" && ! grep -qi 'graft' <<<"$OUT"; then
+  pass "a failed fetch's STALE reason is git's error, not a grafts hint"
+else fail "STALE reason (out: $(grep STALE <<<"$OUT" | cut -c1-160))"; fi
+
 # pull: the fast-forward repo.sh sync runs, through the same guarded path.
 W="$(mk_repo pull)"
 S="$TMP/pull.seed"; commit_in "$S" newer; g "$S" push -q origin main >/dev/null 2>&1

@@ -63,7 +63,9 @@ die() { printf 'repo-git-reset: %s\n' "$1" >&2; exit 1; }
 export GIT_ALLOW_PROTOCOL="ssh:https:http:git:file"
 # Replace refs and grafts let the agent swap in its own content under a real
 # commit's id (re-review of the batch 2 fixes, G2).
-export GIT_NO_REPLACE_OBJECTS=1 GIT_GRAFT_FILE=/dev/null
+# The graft file is a path that never exists: an existing one, even /dev/null,
+# makes git print a deprecation hint into every fetch error (re-review, H4).
+export GIT_NO_REPLACE_OBJECTS=1 GIT_GRAFT_FILE=/nonexistent/ai-containers-no-grafts
 # No submodule recursion either: a submodule's config under .git/modules is not
 # rewritten, and fetch recurses "on demand" by default.
 # The remote is pinned on the command line too, which outranks every file in
@@ -91,9 +93,10 @@ guard_repo() {
   [[ -d "$gd" && ! -L "$gd" ]] || die "$gd is not a directory (a .git file or link can point anywhere)"
   bad="$(find "$gd" ! -type f ! -type d -print -quit 2>/dev/null)"
   [[ -z "$bad" ]] || die "$bad is not a regular file or directory; refusing to run git on this repository"
-  # The worktree is read too (.gitattributes on checkout): a FIFO, socket or
-  # device anywhere in it would hang git; links are a checkout's business.
-  bad="$(find "$dir" -path "$gd" -prune -o ! -type f ! -type d ! -type l -print -quit 2>/dev/null)"
+  # The worktree is read too (.gitattributes on checkout): a FIFO or device
+  # anywhere in it would hang git. A socket does not, and clean removes it;
+  # links are a checkout's business (re-review, H5).
+  bad="$(find "$dir" -path "$gd" -prune -o \( -type p -o -type b -o -type c \) -print -quit 2>/dev/null)"
   [[ -z "$bad" ]] || die "$bad is not a regular file or directory; refusing to run git on this repository"
   # Gone, not just cleaned: commondir and config.worktree send git to config of
   # the agent's choosing, remotes/ and branches/ name remotes, and alternates can
@@ -117,10 +120,15 @@ guard_repo() {
   command git config --file "$tmp" remote.origin.url "$AI_REPO_URL" || die "cannot rewrite $gd/config"
   command git config --file "$tmp" remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*' || die "cannot rewrite $gd/config"
   mv -f "$tmp" "$gd/config" || die "cannot replace $gd/config"
+  # Trusted for the root that runs here, then the replace refs go — through the
+  # guarded wrapper, since deleting a ref runs the reference-transaction hook,
+  # and only after safe.directory, without which git refuses a volume another
+  # uid owns and nothing is deleted (re-review of 61f7806, H1/H2).
+  mark_safe_directory "$dir"
   local r
   while IFS= read -r r; do
-    [[ -n "$r" ]] && command git -C "$dir" update-ref -d "$r" >/dev/null 2>&1
-  done < <(command git -C "$dir" for-each-ref --format='%(refname)' refs/replace/ 2>/dev/null)
+    [[ -n "$r" ]] && git -C "$dir" update-ref -d "$r" >/dev/null 2>&1
+  done < <(git -C "$dir" for-each-ref --format='%(refname)' refs/replace/ 2>/dev/null)
 }
 
 # `git config --global` would write to the invoking user's real ~/.gitconfig, so
@@ -178,6 +186,18 @@ cmd_inspect() {
   local fetched=1
   mark_safe_directory "$dir"
 
+  # A symbolic ref under refs/remotes/origin survives fetch --prune, and one the
+  # agent pointed at its own branch makes unpushed work count as pushed
+  # (security review of cbf90aa). Every symbolic ref there goes, but origin/HEAD
+  # pointing inside refs/remotes/origin — what set-head -a writes. Plain
+  # remote-tracking refs stay: the fetch overwrites them, and without one they
+  # still name the primary branch while the counts are reported unknown.
+  local r t
+  while IFS=$'\t' read -r r t; do
+    [[ -n "$t" ]] || continue
+    [[ "$r" == refs/remotes/origin/HEAD && "$t" == refs/remotes/origin/* && "$t" != refs/remotes/origin/HEAD ]] && continue
+    git -C "$dir" update-ref --no-deref -d "$r" >/dev/null 2>&1
+  done < <(git -C "$dir" for-each-ref --format='%(refname)%09%(symref)' refs/remotes/origin/ 2>/dev/null)
   if have_origin "$dir"; then
     local err
     if ! err="$(git -C "$dir" fetch --prune origin 2>&1)"; then

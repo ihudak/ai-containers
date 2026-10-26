@@ -149,7 +149,7 @@ if [[ "$1" == "run" ]]; then
       printf 'BRANCH|feat/unpushed|3|\n'
       printf 'BRANCH|fix/pushed|0|\n'
       # HELPER_UNKNOWN_COUNT: a count the helper could not make.
-      [[ -z "${HELPER_UNKNOWN_COUNT:-}" ]] || printf 'BRANCH|odd/branch|?|\n'
+      [[ -z "${HELPER_UNKNOWN_COUNT:-}" ]] || printf 'BRANCH|odd/branch|?|\nBRANCH|empty/branch||\n'
       exit 0 ;;
     *" reset /dst"*)
       # HELPER_RESET_FAILS: the git reset failed inside the seed container. The
@@ -391,7 +391,8 @@ unset INUSE_RW; setup_world
 # ── 8b''. a count the helper could not make is never read as "pushed" ─────────
 setup_world
 HELPER_UNKNOWN_COUNT=1 run_repo reset docs --yes
-if grep -qF 'DELETE odd/branch — unpushed count unknown' "$OUT" "$ERR" && ! grep -qF 'DELETE odd/branch — pushed' "$OUT" "$ERR"; then
+if grep -qF 'DELETE odd/branch — unpushed count unknown' "$OUT" "$ERR" && ! grep -qF 'DELETE odd/branch — pushed' "$OUT" "$ERR" \
+   && grep -qF 'DELETE empty/branch — unpushed count unknown' "$OUT" "$ERR"; then
   pass "an unknown unpushed count is flagged as possible unpushed work, not as pushed"
 else
   fail "unknown count rendered as pushed (out: $(cat "$OUT" "$ERR" | grep odd | tr '\n' ' '))"
