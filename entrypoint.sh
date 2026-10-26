@@ -86,12 +86,13 @@ run_ruby_reconcile() {
 
 # Expose the default Ruby on the global PATH (/usr/local/bin) so non-interactive,
 # non-login shells resolve ruby/gem/bundle without sourcing rvm. Runs as ROOT (this
-# writes /usr/local/bin) AFTER run_ruby_reconcile has set the default. Non-fatal.
+# writes /usr/local/bin) AFTER run_ruby_reconcile has set the default; its probes of
+# what it links run as the sandbox user, because ~/.rvm is the agent's (RT-1). Non-fatal.
 link_default_ruby() {
   [[ -n "${RUBY_VERSIONS:-}" ]] || return 0
   [[ -x /usr/local/bin/link-default-ruby.sh ]] || return 0
   env RUBY_VERSIONS="${RUBY_VERSIONS}" \
-    bash /usr/local/bin/link-default-ruby.sh "/home/$sandbox_user" || true
+    bash /usr/local/bin/link-default-ruby.sh "/home/$sandbox_user" /usr/local/bin "$sandbox_user" || true
 }
 
 # Bootstrap/reconcile the enabled agent-tier tools into the group-mounted ~/.ai-tools

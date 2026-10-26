@@ -166,5 +166,42 @@ grep -q 'WARNING: bundle does not run' <<<"$out" \
   || fail "with no wrappers dir the broken binstub is still reported (got: $out)"
 rm -rf "$h" "$d"
 
+# ── RT-1: nothing from ~/.rvm runs as root ─────────────────────────────────────
+# The entrypoint runs this script as root, in restricted mode with NET_ADMIN and
+# the firewall up, and ~/.rvm is the agent's to write: the verify step's
+# `<bin> --version` ran whatever the agent put there, as root (bugs review RT-1).
+# Given a probe user, every probe goes through runuser as that user…
+fk="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
+cat > "$fk/runuser" <<'FAKE'
+#!/bin/sh
+# runuser -u <user> -- <cmd…>: record who, then run the command marked.
+[ "$1" = -u ] && [ "$3" = -- ] || { echo "bad runuser args: $*" >&2; exit 2; }
+u="$2"; shift 3
+VIA_RUNUSER="$u" exec "$@"
+FAKE
+printf '#!/bin/sh\necho 0\n' > "$fk/id"   # a root launcher
+chmod +x "$fk/runuser" "$fk/id"
+h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; d="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
+mk_rvm "$h" "3.4.5" "gem"
+printf '#!/bin/sh\necho "ran as=${VIA_RUNUSER:-ROOT}" >> "%s/ran"\n' "$h" > "$h/.rvm/rubies/ruby-3.4.5/bin/ruby"
+chmod +x "$h/.rvm/rubies/ruby-3.4.5/bin/ruby"
+PATH="$fk:$PATH" RUBY_VERSIONS="3.4.5" bash "$REPO_DIR/link-default-ruby.sh" "$h" "$d" agentuser >/dev/null 2>&1
+[[ "$(cat "$h/ran" 2>/dev/null)" == "ran as=agentuser" && -L "$d/ruby" ]] \
+  && pass "with a probe user, a ruby from ~/.rvm is probed only as that user" \
+  || fail "probe not run through runuser as the user (ran: $(cat "$h/ran" 2>/dev/null | tr '\n' ' '))"
+# …and as root with none, nothing from ~/.rvm runs at all: the links are made
+# unverified, and that is said.
+rm -f "$h/ran"
+out="$(PATH="$fk:$PATH" RUBY_VERSIONS="3.4.5" bash "$REPO_DIR/link-default-ruby.sh" "$h" "$d" 2>&1)"
+[[ ! -e "$h/ran" && -L "$d/ruby" && "$out" == *"not verified"* ]] \
+  && pass "as root with no probe user, nothing from ~/.rvm is executed" \
+  || fail "root ran a binary from ~/.rvm (ran: $(cat "$h/ran" 2>/dev/null); out: $out)"
+rm -rf "$h" "$d" "$fk"
+# The entrypoint names the probe user.
+fn="$(sed -n '/^link_default_ruby()/,/^}/p' "$REPO_DIR/entrypoint.sh")"
+[[ "$fn" == *'link-default-ruby.sh "/home/$sandbox_user" /usr/local/bin "$sandbox_user"'* ]] \
+  && pass "entrypoint passes the sandbox user as the probe user" \
+  || fail "entrypoint's link_default_ruby does not pass the probe user: $fn"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

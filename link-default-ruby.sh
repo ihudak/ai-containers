@@ -17,6 +17,7 @@ set -o pipefail
 
 dev_home="${1:-$HOME}"
 bin_dest="${2:-/usr/local/bin}"   # override only for testing; entrypoint uses the default
+probe_user="${3:-}"               # who runs the verify step's --version probes
 rvm_root="$dev_home/.rvm"
 
 log(){ printf '[link-default-ruby] %s\n' "$*"; }
@@ -82,9 +83,25 @@ wrapdir=""
 for cand in "$rvm_root/wrappers/default" "$rvm_root"/wrappers/ruby-*; do
   if [[ -d "$cand" ]]; then wrapdir="$cand"; break; fi
 done
+#
+# Nothing under ~/.rvm is ever run as root: it is the agent's to write, and the
+# entrypoint runs this script as root, in restricted mode with the firewall up
+# and NET_ADMIN still held (bugs review RT-1). The probes run as the sandbox user
+# the entrypoint names, under a timeout; as root with no user named, the links
+# stay unverified.
+probe() {
+  local t=()
+  command -v timeout >/dev/null 2>&1 && t=(timeout 10)
+  if [[ -n "$probe_user" ]]; then runuser -u "$probe_user" -- env HOME="$dev_home" "${t[@]}" "$@"
+  else "${t[@]}" "$@"; fi
+}
+if [[ -z "$probe_user" && "$(id -u)" == 0 ]]; then
+  [[ -n "$linked" ]] && log "WARNING: running as root with no user to probe as; links not verified: $linked"
+  exit 0
+fi
 repaired=""
 for b in $linked; do
-  "$bin_dest/$b" --version >/dev/null 2>&1 && continue
+  probe "$bin_dest/$b" --version >/dev/null 2>&1 && continue
   if [[ -n "$wrapdir" && -x "$wrapdir/$b" ]]; then
     ln -sf "$wrapdir/$b" "$bin_dest/$b"
     repaired="${repaired:+$repaired }$b"
