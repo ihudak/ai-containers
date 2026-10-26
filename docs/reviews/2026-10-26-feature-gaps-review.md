@@ -17,7 +17,8 @@
 | GAP-12 (part) | 1 — git internals | Only following includes inside included files (`_git_include_paths`); the rest of GAP-12 is separate. |
 | GAP-6 | 4 — lifecycle scripts (optional) | Same files as DOC-3/PRJ-3; grows the batch. |
 | GAP-1 (part) | 3 and 4 (stretch) | Activate the deferred falsify targets for the files those batches fix: `link-default-ruby.sh`, `install-agent-skills.sh`, `agent-tools-reconcile.sh` (3); `group.sh` (4). |
-| GAP-1 (rest), 2, 3, 4, 7, 10, 11, 12 (rest), 13 | separate track | Larger design or falsify work, or investigation/manual runs rather than code changes. |
+| GAP-11, GAP-13 | platform log | PLAT-3 (macOS) and PLAT-2 (WSL2) in [2026-10-26-platform-issues.md](2026-10-26-platform-issues.md). |
+| GAP-1 (rest), 2, 3, 4, 7, 10, 12 (rest) | separate track | Larger design or falsify work, or investigation/manual runs rather than code changes. |
 
 A gap is something a design promised that is not in the code at the reviewed commit. Items that no longer make sense are listed under OBSOLETE with the reason, so they can be overruled. Items verified as done are listed at the end so coverage is visible.
 
@@ -124,7 +125,7 @@ A gap is something a design promised that is not in the code at the reviewed com
 
 ### GAP-11: The launcher-mount swap check is skipped on macOS Docker Desktop and Colima
 - Status: PARTIAL
-- Fix batch: separate track
+- Fix batch: platform log — PLAT-3 in [2026-10-26-platform-issues.md](2026-10-26-platform-issues.md) (needs that platform to run)
 - Source: AGENTS.md mount layout: "if its own `device:inode` does not survive the bind (a file-sharing layer such as macOS Docker Desktop or Colima), verification is skipped with a one-line `NOTE:`"
 - Area: launcher/mounts
 - Current state at HEAD: `verify_launcher_mounts()` works on Linux; case 460 checks whichever host it runs on. On macOS the swap race (a concurrent container replacing an overlay source with a symlink) goes unchecked.
@@ -144,7 +145,7 @@ A gap is something a design promised that is not in the code at the reviewed com
 
 ### GAP-13: WSL2 has never been run
 - Status: NOT DONE
-- Fix batch: separate track
+- Fix batch: platform log — PLAT-2 in [2026-10-26-platform-issues.md](2026-10-26-platform-issues.md) (needs that platform to run)
 - Source: 2026-08-10-integration-suite-increment-3-design.md: "WSL2 | expected, **never exercised** … Recorded as expected-and-unverified rather than supported"
 - Area: tests/CI
 - Current state at HEAD: host-preflight.sh warns about `/mnt/<drive>` checkouts and `ALLOW_IPV6_BYPASS` exists, but there is no recorded run of the corpus or the local layer on WSL2.

@@ -13,7 +13,7 @@
 
 | # | Area | Findings | Feature gaps folded in | Highest |
 |---|---|---|---|---|
-| 1 | Host-side launcher: git internals + launcher overlay | GIT-1, LNCH-1, LNCH-2 | GAP-12 (only: follow includes inside included files) | HIGH |
+| 1 | Host-side launcher: git internals + launcher overlay | GIT-1, LNCH-1, LNCH-3 (partly); LNCH-2 deferred → PLAT-1 | GAP-12 (only: follow includes inside included files) | HIGH |
 | 2 | Launcher config / env layers / credentials | ENV-1 … ENV-6 | — | HIGH |
 | 3 | Container-start runtime tools (entrypoint root steps, reconciles) | RT-1 … RT-7 | stretch: GAP-1 for `link-default-ruby.sh`, `install-agent-skills.sh`, `agent-tools-reconcile.sh` | HIGH |
 | 4 | Host lifecycle scripts (project-init, sync, repo, group, report) | PRJ-1 … PRJ-9, DOC-1, DOC-3 | optional: GAP-6; stretch: GAP-1 for `group.sh` | MEDIUM |
@@ -23,6 +23,8 @@
 | 8 | Docs (docs-only PR) | DOC-2, DOC-4 … DOC-13 | GAP-14 (overlaps DOC-6) | MEDIUM |
 
 Folded-in gaps are described in [2026-10-26-feature-gaps-review.md](2026-10-26-feature-gaps-review.md); each carries a matching `Fix batch:` line there. **Optional** = same files, but grows the batch; take it if the batch is small. **Stretch** = activate those files' deferred falsify targets in the same PR, so the new assertions are shown to be able to fail; it costs a mutation-score run per batch. The remaining gaps (GAP-2, 3, 4, 7, 10, 11, 13, and the rest of GAP-12) are a separate track.
+
+Platform-specific items that need another OS or hardware to reproduce are in [2026-10-26-platform-issues.md](2026-10-26-platform-issues.md) (PLAT-1 … PLAT-4).
 
 Duplicates merged: PRJ-2 is the same defect as DOC-1 (fix once, in batch 4); PRJ-7 is the same defect as TST-1 (fix once, in batch 7).
 
@@ -146,6 +148,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
   - Correct the AGENTS.md sentence.
 
 ### LNCH-2: The one anchor on `$HOME`'s filesystem stands in for launcher mounts on every other filesystem, so a non-preserving project filesystem is refused instead of skipped
+- **Status: DEFERRED (batch 1, 2026-10-26)** — needs a reproduction on Docker Desktop + WSL2 before any change; every candidate fix weakens the swap check. Tracked as PLAT-1 in [2026-10-26-platform-issues.md](2026-10-26-platform-issues.md).
 - Severity: MEDIUM — Confidence: PLAUSIBLE (reasoned, not reproduced: needs Docker Desktop + WSL2)
 - Location: `entrypoint.sh: \`verify_launcher_mounts()\``, which compares `got="$(stat -c '%d:%i' /run/ai-launcher ...` once against `AI_LAUNCHER_ANCHOR` and then requires every manifest entry to match. The anchor is set in `sandbox.sh` by `_launcher_verify_dir="$HOME/.ai-containers/.verify-$$-$RANDOM"`.
 - Introduced: a5e9948 / 7a4d5ae
@@ -385,6 +388,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Fix direction: run the adapters' client calls under `env -u MYSQL_HOST -u MYSQL_TCP_PORT -u MYSQL_PWD -u MYSQL_UNIX_PORT` and add `--protocol=SOCKET`. Do the same for `REDISCLI_AUTH` (redis-cli) and `PGHOSTADDR`/`PGSERVICE` (psql). Add a hermetic test that sets `MYSQL_HOST` and checks that the fake client's argv/env still targets the socket.
 
 ### SVC-2: On an x86-64 CPU without AVX, mongo is reported as "this image has no mongo server. Rebuild", not as a start failure with the log
+- Confirmation needs non-AVX hardware: tracked as PLAT-4 in [2026-10-26-platform-issues.md](2026-10-26-platform-issues.md). The hermetic half of the fix can be done in batch 5.
 - Severity: LOW — Confidence: PLAUSIBLE (not reproduced; needs a non-AVX CPU, e.g. a Proxmox/KVM guest with the `kvm64` CPU type)
 - Location: `services.d/mongo.sh: svc_installed_version()` (`"$MONGO_MONGOD" --version 2>/dev/null | sed -n …`), together with `start-services.sh: start_one()` (`warn "sandbox.conf has $name=$value, but this image has no $name server. Rebuild: ./build.sh"`)
 - Introduced: e3c9b15
