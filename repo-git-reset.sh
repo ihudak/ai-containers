@@ -147,8 +147,10 @@ volume_head() {
   return 0
 }
 
-# A name for the records: a | or a newline would split them.
-shown() { local n="${1//|/?}"; printf '%s' "${n//$'\n'/?}"; }
+# A name for the records and the terminal: a | or a newline would split the
+# records, and a name read from the volume's files is not bound by git's rules,
+# so any control character (an escape sequence) is shown as ? too.
+shown() { local n="${1//|/?}"; printf '%s' "${n//[[:cntrl:]]/?}"; }
 
 # on_remote <oid>: the commit is in the private clone and on a remote branch.
 on_remote() {

@@ -684,6 +684,14 @@ run_script pull "$W"
 if [[ "$RC" != 0 && -f "$W/mine" ]]; then pass "pull refuses a branch with commits of its own"
 else fail "pull of a diverged branch (rc=$RC; out: $OUT)"; fi
 
+# Branch names are read as file names, which git's rules do not bind: one holding
+# terminal escapes reaches the confirmation only as ? (security review of d9b56a8).
+W="$(mk_repo esc)"; cp "$W/.git/refs/heads/main" "$W/.git/refs/heads/x"$'\e]0;pwned\a'
+run_script inspect "$W"
+if [[ "$OUT" != *$'\e'* && "$OUT" != *$'\a'* ]] && grep -q '^BRANCH|x?]0;pwned?|' <<<"$OUT"; then
+  pass "control characters in a branch file's name are shown as ?"
+else fail "raw control characters in the records ($(cat -v <<<"$OUT" | tr '\n' ' '))"; fi
+
 printf '\n%s\n' "----------------------------------------"
 if [[ "$fails" -eq 0 ]]; then
   printf 'test-repo-git-reset.sh: all checks passed\n'; exit 0
