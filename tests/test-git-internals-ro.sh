@@ -923,9 +923,20 @@ rm -rf "$PROJ/wt47b" "$PROJ/cd47.txt"
 mkdir -p "$TMP/other47/node_modules" "$PROJ/xm47"; "${G[@]}" init -q --bare "$TMP/other47/node_modules/g"
 printf 'gitdir: %s\n' "$TMP/other47/node_modules/g" > "$PROJ/xm47/.git"
 EXTRA_MOUNTS="$TMP/other47" launch ..
-grep -qF "$PROJ/xm47/.git names $TMP/other47/node_modules/g, a git directory in another writable mount" "$ERR" \
-  && pass "G47 a gitdir: target in another writable mount is named" \
-  || fail "G47 a gitdir: target in another writable mount passed in silence ($(grep -F other47 "$ERR" | head -2 | tr '\n' ' '))"
+has_mount "$TMP/other47/node_modules/g/config:/workspace/other47/node_modules/g/config:ro" \
+  && ! grep -qF "a git directory in another writable mount" "$ERR" \
+  && pass "G47 a gitdir: target in another writable mount is protected in that mount's view" \
+  || fail "G47 cross-mount gitdir: target not protected ($(grep -F other47 "$ERR" | head -2 | tr '\n' ' '))"
+# A protected repository nested INSIDE the target puts read-only binds inside its
+# view, which made it look protected while its own config stayed writable
+# (review of 4e7da47, HIGH): protection is now recorded per git directory.
+"${G[@]}" init -q "$TMP/other47"; "${G[@]}" init -q "$TMP/other47/node_modules/g/sub"
+"${G[@]}" -C "$TMP/other47" update-index --add --cacheinfo "160000,$(printf '%040d' 1),node_modules/g/sub"
+EXTRA_MOUNTS="$TMP/other47" launch ..
+has_mount "$TMP/other47/node_modules/g/config:/workspace/other47/node_modules/g/config:ro" \
+  && pass "G47 a decoy repository nested in the target does not stand in for its protection" \
+  || fail "G47 decoy: the target's config left writable ($(grep -F 'node_modules/g' "$ERR" | head -2 | tr '\n' ' '))"
+rm -rf "$TMP/other47/.git" "$TMP/other47/node_modules/g/sub"
 # …but not when that mount's own scan protects it: a linked worktree as the
 # primary with its main checkout in EXTRA_MOUNTS is an ordinary layout, and the
 # WARNING fired for a git directory bound :ro just below it (review of dcf7dab).
@@ -942,9 +953,9 @@ rm -rf "$PROJ/wt47c"
 for n in 1 2 3 4 5 6; do mkdir -p "$PROJ/dec47/d$n"; printf 'gitdir: ../nothing%d\n' "$n" > "$PROJ/dec47/d$n/.git"; done
 mkdir -p "$PROJ/xm47"; printf 'gitdir: %s\n' "$TMP/other47/node_modules/g" > "$PROJ/xm47/.git"
 EXTRA_MOUNTS="$TMP/other47" launch ..
-grep -qF "$PROJ/xm47/.git names $TMP/other47/node_modules/g, a git directory in another writable mount" "$ERR" \
-  && pass "G47 the cross-mount WARNING survives the cap on the other kinds" \
-  || fail "G47 decoys suppressed the cross-mount WARNING"
+has_mount "$TMP/other47/node_modules/g/config:/workspace/other47/node_modules/g/config:ro" \
+  && pass "G47 decoy .git files do not keep a cross-mount target from being protected" \
+  || fail "G47 decoys kept the cross-mount target unprotected"
 rm -rf "$TMP/other47" "$PROJ/xm47" "$PROJ/dec47"
 # git strips only CR and LF from a .git file: `gitdir: g ` names the directory
 # `g ` (with its space), not g (security review of e2741b1).

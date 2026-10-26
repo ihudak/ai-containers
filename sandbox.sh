@@ -350,6 +350,7 @@ launcher_ro_overlay() {
   local uid="${SANDBOX_UID:-$(id -u)}" gid="${SANDBOX_GID:-$(id -g)}" you
   local -a found unreadable cand bsrc=() bdst=() cl=() cat=() csrc=() cdst=() cdep=() ckind=() ro_dsts=() psrc pdst
   local -a _xm_t=() _xm_by=() _xm_j=()
+  local -A gpv=()
   local -a scan links walk gdirs gfiles glinks gunr gro ug usrc udst udep ukind
   local g base what gmax gn gitmax cfg cdir hp hpd k2 first eks ik ip
   local -a ek inc pgd=() pga=() pgc=()
@@ -652,6 +653,18 @@ launcher_ro_overlay() {
     for g in ${gfiles[@]+"${gfiles[@]}"}; do ug+=("$g"); ukind+=(file); usrc+=("$src"); udst+=("$dst"); done
     for g in ${gunr[@]+"${gunr[@]}"}; do ug+=("$g"); ukind+=(unr); usrc+=("$src"); udst+=("$dst"); done
   done
+  # A git directory a .git file or commondir in one mount names inside ANOTHER
+  # writable bind is protected in that bind's view, as if its scan had found it;
+  # SANDBOX_GIT_MAX counts it like any other.
+  local -A uhave=()
+  local j
+  for k in ${ug[@]+"${!ug[@]}"}; do uhave[${ug[k]}|${usrc[k]}]=1; done
+  for k in ${_xm_t[@]+"${!_xm_t[@]}"}; do
+    j="${_xm_j[k]}"
+    [[ -z "${uhave[${_xm_t[k]}|${bsrc[j]}]:-}" ]] || continue
+    uhave[${_xm_t[k]}|${bsrc[j]}]=1
+    ug+=("${_xm_t[k]}"); ukind+=(dir); usrc+=("${bsrc[j]}"); udst+=("${bdst[j]}")
+  done
   for k in ${ug[@]+"${!ug[@]}"}; do
     at="${udst[k]}${ug[k]#"${usrc[k]}"}"; d="${at//[!\/]/}"
     udep+=("${#d}")
@@ -835,27 +848,38 @@ launcher_ro_overlay() {
         printf 'READ-ONLY: %s  (names the git directory your host'\''s git uses here)\n' "$(_term "$at")" >&2
       else
         printf 'READ-ONLY: %s: %s  (what your host'\''s git runs; change them on the host)\n' "$(_term "$at")" "$(_term "$what")" >&2
-        pgd+=("$g"); pga+=("$at"); pgc+=("$cfg")
+        pgd+=("$g"); pga+=("$at"); pgc+=("$cfg"); gpv[$at]=1
       fi
     done
   done
   # The git directories a .git file or commondir named in another writable mount:
   # named unless that mount's own view of them is read-only now.
+  # Protected means ITS binds were issued (gpv), or it lies under a read-only
+  # overlay — never merely that some read-only bind sits inside it, which a
+  # repository the agent nests in it provides (review of 4e7da47, HIGH). Each
+  # (target, mount) is judged; one is marked done only once named; twenty are
+  # named, then a count.
   local -A xm_done=()
-  local xv xr xs
+  local xv xr xs xn=0
   for k in ${_xm_t[@]+"${!_xm_t[@]}"}; do
-    [[ -z "${xm_done[${_xm_t[k]}]:-}" ]] || continue
-    xm_done[${_xm_t[k]}]=1
-    xv="${bdst[${_xm_j[k]}]}${_xm_t[k]#"${bsrc[${_xm_j[k]}]}"}"; xs=""
-    for xr in ${ro_dsts[@]+"${ro_dsts[@]}"}; do
-      # Protected: under a read-only overlay, or given its own read-only binds
-      # (config, commondir, hooks — a linked worktree's has no config).
-      if [[ "$xv" == "$xr" || "$xv" == "$xr"/* || "$xr" == "$xv"/* ]]; then xs=1; break; fi
-    done
+    xv="${bdst[${_xm_j[k]}]}${_xm_t[k]#"${bsrc[${_xm_j[k]}]}"}"
+    [[ -z "${xm_done[$xv]:-}" ]] || continue
+    xs="${gpv[$xv]:-}"
+    if [[ -z "$xs" ]]; then
+      for xr in ${ro_dsts[@]+"${ro_dsts[@]}"}; do
+        if [[ "$xv" == "$xr" || "$xv" == "$xr"/* ]]; then xs=1; break; fi
+      done
+    fi
     [[ -z "$xs" ]] || continue
-    printf 'WARNING: %s names %s, a git directory in another writable mount (%s),\n' "$(_term "${_xm_by[k]}")" "$(_term "${_xm_t[k]}")" "$(_term "${bdst[${_xm_j[k]}]}")" >&2
-    printf '         which this launch does not protect there: your host'\''s git reads it. Check it on the host.\n' >&2
+    xm_done[$xv]=1
+    if (( ++xn <= 20 )); then
+      printf 'WARNING: %s names %s, a git directory in another writable mount (%s),\n' "$(_term "${_xm_by[k]}")" "$(_term "${_xm_t[k]}")" "$(_term "${bdst[${_xm_j[k]}]}")" >&2
+      printf '         which could not be protected there: your host'\''s git reads it. Check it on the host.\n' >&2
+    fi
   done
+  if (( xn > 20 )); then
+    printf 'WARNING: … and %d more git directories in other writable mounts could not be protected.\n' "$((xn - 20))" >&2
+  fi
   if (( gn > 30 )); then
     printf 'NOTE: %d git directories were protected, each with its own bind mounts; that\n' "$gn" >&2
     printf '      adds seconds to every container start on Docker Desktop. Mount narrower\n' >&2
@@ -1556,12 +1580,12 @@ _gdi_follow() {
   # scan may never reach it (a pruned node_modules, the launcher's .agent-blocked
   # seen here under the read-only overlay), so it is named — this scan cannot
   # protect it there (re-review of batch 9, HIGH).
-  # Recorded, not warned about here: that mount's own scan may protect it (a
-  # linked worktree as the primary with its main checkout in EXTRA_MOUNTS), which
-  # is known only once every mount is done; launcher_ro_overlay then names each
-  # whose view there is not read-only, once, never capped (reviews of dcf7dab).
+  # Recorded: launcher_ro_overlay queues it for protection in that mount's view
+  # once every mount is scanned, unless that mount's own scan found it (a linked
+  # worktree as the primary with its main checkout in EXTRA_MOUNTS), and names it
+  # only if it could not be protected there (reviews of dcf7dab and 4e7da47).
   local _j
-  if [[ -f "$t/HEAD" ]]; then
+  if [[ -f "$t/HEAD" ]] && { [[ -f "$t/config" && -d "$t/objects" ]] || [[ -f "$t/commondir" ]]; }; then
     for _j in ${bsrc[@]+"${!bsrc[@]}"}; do
       [[ "${bsrc[_j]}" != "$3" ]] || continue
       if [[ "$t" == "${bsrc[_j]}" || "$t" == "${bsrc[_j]}"/* ]]; then
