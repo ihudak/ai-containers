@@ -868,6 +868,17 @@ SANDBOX_LAUNCHER_MAX=5 EXTRA_MOUNTS="$PIN47" launch "$LAUNCHER" "$TMP/app"
   && pass "T46 … and nested in one whose pins cannot be made" \
   || fail "T46 an unmountable pin still discounts what the launcher holds (rc=$LAUNCH_RC)"
 rm -rf "$PIN47"
+# …and counting them stays cheap: the test above, run per candidate before the
+# refusal, cost two od|awk pipelines a launcher — 2,000 planted ones took 52 s
+# to be refused, 1 s before it (review of batch 9, finding 1).
+MANY47="$TMP/many47"; for n in $(seq 1 2000); do mk_launcher "$MANY47/a/b/n$n"; done
+t47=$SECONDS
+SANDBOX_LAUNCHER_MAX=5 EXTRA_MOUNTS="$MANY47" launch "$LAUNCHER" "$TMP/app"
+t47=$((SECONDS - t47))
+[[ "$LAUNCH_RC" != 0 && "$t47" -lt 20 ]] && grep -qF 'ERROR: the writable mounts hold more than 5 launchers' "$ERR" \
+  && pass "T46 2,000 planted launchers are refused in seconds (${t47}s)" \
+  || fail "T46 counting 2,000 launchers took ${t47}s (rc=$LAUNCH_RC)"
+rm -rf "$MANY47"
 if [[ "$(id -u)" != 0 ]]; then
   UNR="$TMP/unr46"
   for n in $(seq 1 51); do mkdir -p "$UNR/d$n"; chmod 000 "$UNR/d$n"; done

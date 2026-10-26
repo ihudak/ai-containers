@@ -844,7 +844,47 @@ launch ..
 grep -qF "worktrees/w/config.worktree includes" "$ERR" \
   && pass "G45 a commondir through a link and .. is resolved as git does; its config.worktree is walked" \
   || fail "G45 config.worktree skipped (stderr: $(grep -F a45 "$ERR" | head -2 | tr '\n' ' '))"
+# Read as git reads it: every trailing CR and LF stripped, not one each.
+printf 's/..\r\r\n' > "$W45/commondir"
+launch ..
+grep -qF "worktrees/w/config.worktree includes" "$ERR" \
+  && pass "G45 … with every trailing CR and LF stripped, as git does" \
+  || fail "G45 a commondir with two trailing CRs is misread"
+# One that cannot be resolved fails closed: its placeholder is made (security
+# review of 99db199), so the agent cannot add a config.worktree after the launch.
+printf '%s\n' "$PROJ/nonexistent45" > "$W45/commondir"; rm -f "$W45/config.worktree"
+launch ..
+[[ -f "$W45/config.worktree" ]] \
+  && pass "G45 an unresolvable commondir still gets its config.worktree placeholder" \
+  || fail "G45 no config.worktree placeholder for an unresolvable commondir"
 rm -rf "$A45" "$C45"
+
+# ── G46: a walk through links has one step budget ────────────────────────────
+# The 128-component cap counted the include VALUE; each link on the way splices
+# its target in (a ~2,000-component `./././…`), and up to 40 links: one entry
+# took 14 s, and the budget allows 1,000 (review of batch 9, finding 2). The walk
+# now stops after 256 steps however they arrive, and says the way was not
+# followed to the end.
+R46="$PROJ/r46"; mkdir -p "$R46" "$PROJ/l46" && "${G[@]}" -C "$R46" init -q
+dots46="$(printf './%.0s' $(seq 1 2000))"
+for n in $(seq 1 40); do ln -s "${dots46}L$((n + 1))" "$PROJ/l46/L$n"; done
+for e in 1 2 3; do "${G[@]}" config --file "$R46/.git/config" --add include.path ../../l46/L1; done
+launch_timed 120
+[[ "$LAUNCH_RC" == 0 && "$LAUNCH_S" -lt 20 ]] && grep -qF "/workspace/proj/r46/.git/config includes ../../l46/L1" "$ERR" \
+  && pass "G46 a link chain on an include's way is cut short and named (${LAUNCH_S}s)" \
+  || fail "G46 link chain (rc=$LAUNCH_RC; ${LAUNCH_S}s; stderr: $(grep -iE 'includes|l46|not every' "$ERR" | head -4 | tr '\n' ' '))"
+rm -rf "$R46" "$PROJ/l46"
+# A chain OUTSIDE every mount, so no single step is the agent's to change, but 41
+# links long: the walk gave up past 40 and printed nothing, which read as safe.
+# A way not followed to the end is named.
+R46b="$PROJ/r46b"; mkdir -p "$R46b" "$TMP/l46b" && "${G[@]}" -C "$R46b" init -q
+for n in $(seq 1 45); do ln -s "L$((n + 1))" "$TMP/l46b/L$n"; done
+"${G[@]}" config --file "$R46b/.git/config" include.path "$TMP/l46b/L1"
+launch ..
+grep -qF "/workspace/proj/r46b/.git/config includes" "$ERR" && grep -qF "not followed to the end" "$ERR" \
+  && pass "G46 an include through more links than are followed is named, not taken for safe" \
+  || fail "G46 a 45-link include chain passed silently ($(grep -iE 'r46b|not followed' "$ERR" | head -3 | tr '\n' ' '))"
+rm -rf "$R46b" "$TMP/l46b"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

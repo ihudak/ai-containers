@@ -469,26 +469,36 @@ launcher_ro_overlay() {
   # Ancestors are walked per candidate, so this stays linear in the number found.
   # Keyed by where each lands in the container, so a directory two mounts expose
   # counts per mount, and an ancestor covers it only within the same mount.
-  local -A lcand=() lcounted=()
-  local lc=0 la
+  # Only an overlay that can be MADE covers what is nested in it, decided by the
+  # test the overlay loop uses: discounting what an unmountable one held let 3,000
+  # launchers under one pass a cap of 5 (review of the batch 1 hotfix, LNCH-4; a
+  # pin on the way counts too, security review of 019392c). Asked only of a
+  # candidate that is some other one's ancestor, once each, and the count stops
+  # past the cap: asked of every candidate up front it made 2,000 planted
+  # launchers take 52 s to refuse (review of batch 9, finding 1).
+  local -A lcand=() lcounted=() lbuild=()
+  local lc=0 la lj
   for i in ${cl[@]+"${!cl[@]}"}; do
-    # Only an overlay that can be MADE covers what is nested in it, decided by the
-    # test the overlay loop uses: discounting what an unmountable one held let
-    # 3,000 launchers under one pass a cap of 5 (review of the batch 1 hotfix,
-    # LNCH-4; a pin on the way counts too, security review of 019392c).
-    if [[ "${cl[i]}" != "${csrc[i]}" ]] && _overlay_buildable "${cl[i]}" "${cat[i]}" "${csrc[i]}" "${cdst[i]}"; then
-      lcand[${cat[i]}]=1
-    fi
+    if [[ "${cl[i]}" != "${csrc[i]}" && -z "${lcand[${cat[i]}]:-}" ]]; then lcand[${cat[i]}]="$i"; fi
   done
   for l in ${cat[@]+"${cat[@]}"}; do
     [[ -z "${lcounted[$l]:-}" ]] || continue
     lcounted[$l]=1
     la="${l%/*}"
     while [[ -n "$la" ]]; do
-      if [[ -n "${lcand[$la]:-}" ]]; then break; fi
+      if [[ -n "${lcand[$la]:-}" ]]; then
+        if [[ -z "${lbuild[$la]:-}" ]]; then
+          lj="${lcand[$la]}"; lbuild[$la]=no
+          if _overlay_buildable "${cl[lj]}" "${cat[lj]}" "${csrc[lj]}" "${cdst[lj]}"; then lbuild[$la]=yes; fi
+        fi
+        if [[ "${lbuild[$la]}" == yes ]]; then break; fi
+      fi
       la="${la%/*}"
     done
-    if [[ -z "$la" ]]; then lc=$((lc + 1)); fi
+    if [[ -z "$la" ]]; then
+      lc=$((lc + 1))
+      if (( lc > lmax )); then break; fi
+    fi
   done
   if (( lc > lmax )); then
     printf 'ERROR: the writable mounts hold more than %d launchers and unlistable directories\n' "$lmax" >&2
@@ -750,8 +760,14 @@ launcher_ro_overlay() {
           # trailing CR git strips: `cd` reads `s/..` lexically, which named the
           # worktree's own directory, with no config, while git used A/.git
           # (review of batch 9, finding 3; G45).
-          cdir="$(head -c 4096 "$g/commondir" 2>/dev/null)"; cdir="${cdir%$'\n'}"; cdir="${cdir%$'\r'}"
-          cfg="$(cd "$g" 2>/dev/null && cd -P -- "$cdir" 2>/dev/null && pwd -P)/config" || cfg=""
+          # Read as git reads it: up to the first NUL ($(...) would drop NULs and
+          # join what is around them), every trailing CR and LF stripped. One that
+          # cannot be resolved names a path that cannot exist, so both checks
+          # below fail closed (security review of 99db199).
+          cdir=""; IFS= read -r -d '' cdir < <(head -c 4096 "$g/commondir" 2>/dev/null) || true
+          while [[ "$cdir" == *[$'\r\n'] ]]; do cdir="${cdir%?}"; done
+          cfg="$(cd "$g" 2>/dev/null && cd -P -- "$cdir" 2>/dev/null && pwd -P)" || cfg=""
+          cfg="${cfg:-$g/commondir-unresolved}/config"
         fi
         # A common config that cannot be read cannot say the extension is off, so
         # the placeholder is made, and config.worktree walked below, as if it were on.
@@ -872,6 +888,7 @@ launcher_ro_overlay() {
           change)  printf '      it can change %s (at %s), which the hook runs.\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
           repoint) printf '      it can repoint %s (at %s), a link on its way.\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
           replace) printf '      it can replace %s (at %s) with a link; the way steps out of it (..).\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
+          unchecked) printf '      its way out was not followed to the end (too many steps or links), so it is not known to be safe.\n' >&2 ;;
         esac
         printf '      Check it before a git commit on the host, or replace the link with what it names.\n' >&2
       done
@@ -941,6 +958,7 @@ launcher_ro_overlay() {
           change)  printf '         it can write %s (at %s), which git reads as part of that config.\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
           repoint) printf '         it can repoint %s (at %s), a link on its way.\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
           replace) printf '         it can replace %s (at %s) with a link; the way steps out of it (..).\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
+          unchecked) printf '         its way out was not followed to the end (too many steps or links), so it is not known to be safe.\n' >&2 ;;
         esac
         printf '         It can set what your host'\''s git runs. Move what it sets into %s on the host.\n' "${f##*/}" >&2
       done
@@ -1005,6 +1023,7 @@ launcher_ro_overlay() {
         change)  printf '         it can change %s (at %s), which the host reads through it.\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
         repoint) printf '         it can repoint %s (at %s), a link on its way.\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
         replace) printf '         it can replace %s (at %s) with a link; the way steps out of it (..).\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
+        unchecked) printf '         its way out was not followed to the end (too many steps or links), so it is not known to be safe.\n' >&2 ;;
       esac
       printf '         Replace the link with what it names, or mount that directory :ro.\n' >&2
     done
@@ -1033,6 +1052,7 @@ _walk_exposed() {
   shift 4
   for _we_e in "$@"; do
     case "$_we_e" in
+      \?*) _we_how=unchecked; _we_step="${_we_e#\?}"; _we_at="$_we_step"; return 0 ;;
       =*) _we_h=change;  _we_q="${_we_e#=}" ;;
       ^*) _we_h=replace; _we_q="${_we_e#^}" ;;
       *)  _we_h=repoint; _we_q="$_we_e" ;;
@@ -1160,9 +1180,15 @@ _link_walk() {
 # <physical dir>, printed as _link_walk prints it — for a path that is not a
 # link's target, such as a file a git config includes.
 _path_walk() {
-  local cur="$1" rest c t n="${3:-0}"
+  local cur="$1" rest c t n="${3:-0}" steps=0
   if [[ "$2" == /* ]]; then cur=""; rest="${2#/}"; else rest="$2"; fi
   while [[ -n "$rest" ]]; do
+    # One budget for every step, however it arrives: each link splices its target
+    # in, so a short value through 40 links of `./././…` cost 14 s (review of batch
+    # 9, finding 2). Cut short — here, or past 40 links — the walk ends `?<where>`,
+    # which _walk_exposed takes for a step the agent can change: a way not
+    # followed to the end is not known to be safe.
+    if (( ++steps > 256 )); then printf '?%s\0' "${cur:-/}"; return 0; fi
     c="${rest%%/*}"
     if [[ "$rest" == */* ]]; then rest="${rest#*/}"; else rest=""; fi
     case "$c" in
@@ -1170,7 +1196,7 @@ _path_walk() {
       ..) if [[ -n "$cur" ]]; then printf '^%s\0' "$cur"; fi; cur="${cur%/*}"; continue ;;
     esac
     if [[ -L "$cur/$c" ]]; then
-      if (( ++n > 40 )); then return 0; fi
+      if (( ++n > 40 )); then printf '?%s\0' "$cur/$c"; return 0; fi
       printf '%s\0' "$cur/$c"
       _readlink_exact t "$cur/$c" || return 0
       if [[ "$t" == /* ]]; then cur=""; rest="${t#/}${rest:+/$rest}"; else rest="$t${rest:+/$rest}"; fi
@@ -1197,6 +1223,10 @@ _readlink_exact() {
 # (above U+10FFFF) and five-byte forms, which Go rejects. Bytes are read as
 # decimal numbers, so neither the locale nor the awk in use can change the answer.
 _utf8_valid() {
+  # ASCII is valid UTF-8, decided in bash: the pipeline below costs two processes,
+  # and the launcher asks this of every launcher it counts (review of batch 9).
+  local LC_ALL=C
+  [[ "$1" != *[$'\x80'-$'\xff']* ]] && return 0
   printf '%s' "$1" | od -An -v -tu1 | awk '
     { for (i = 1; i <= NF; i++) b[n++] = $i + 0 }
     END {

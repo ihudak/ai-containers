@@ -860,7 +860,7 @@ Each fix batch was reviewed by an independent reviewer before it was merged, and
 ### LNCH-4: An unrepresentable launcher candidate is not overlaid, yet everything nested in it is discounted from `SANDBOX_LAUNCHER_MAX`
 - **Status: OPEN** (review of the batch 1 hotfix, F2)
 - Severity: LOW. Confidence: CONFIRMED (reproduced)
-- Location: sandbox.sh: `lcand[${cat[i]}]=1`.
+- Location: sandbox.sh: `lcand[${cat[i]}]="$i"` (as fixed; it read `lcand[${cat[i]}]=1` before batch 9).
 - What's wrong: the rule is that only an overlay that is actually made covers what is nested in it. Mount roots are excluded from `lcand`, but a candidate that `_mount_representable` rejects is not. It gets "cannot protect … stays writable" and no overlay, yet its nested launchers are not counted.
 - Evidence: a launcher named `bad$'\xff'` holding 3,000 nested launchers, with `SANDBOX_LAUNCHER_MAX=5`, exited 0 after 14 s with 3,001 WARNINGs. No extra bind mounts were made, because every nested path is unrepresentable too. The damage is a flood of WARNINGs that buries real ones, which is what the cap exists to bound.
 - Fix direction: decide representability before counting, or count the overlays actually emitted.
