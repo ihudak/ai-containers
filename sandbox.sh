@@ -342,7 +342,7 @@ launcher_ro_overlay() {
     fsmonitor-watchman p4-changelist p4-prepare-changelist p4-post-changelist
     p4-pre-submit post-index-change)
   local -A seen=() tried=() scanned=() pinned=()
-  local nl
+  local nl no=0 lmax
   # The agent's identity decides what it can reach; find needs it numeric (and
   # within a 32-bit id — GNU find rejects 4294967295 and up), and a find that
   # errors out finds nothing — so refuse rather than search blind.
@@ -416,6 +416,27 @@ launcher_ro_overlay() {
       if (( ${#d} > max )); then max=${#d}; fi
     done
   done
+
+  # Two empty files make a launcher, and the agent can make unlistable
+  # directories, so how many there are is the agent's to decide; each costs bind
+  # mounts on every start and a pass of the loops below. Past
+  # SANDBOX_LAUNCHER_MAX, refuse — as SANDBOX_GIT_MAX does — naming where, since
+  # the agent could have planted them (tests/test-launcher-dir-ro.sh T46).
+  lmax="${SANDBOX_LAUNCHER_MAX:-50}"
+  if [[ ! "$lmax" =~ ^[1-9][0-9]{0,5}$ ]]; then
+    printf 'ERROR: SANDBOX_LAUNCHER_MAX must be a whole number from 1 to 999999 (got %q).\n' "$lmax" >&2
+    exit 1
+  fi
+  if (( ${#cl[@]} > lmax )); then
+    printf 'ERROR: the writable mounts hold more than %d launchers and unlistable directories\n' "$lmax" >&2
+    printf '       to protect, and each adds bind mounts to every container start. Among them:\n' >&2
+    for (( k = ${#cl[@]} - 1, x = 0; k >= 0 && x < 5; k--, x++ )); do
+      printf '         %s\n' "${cl[k]}" >&2
+    done
+    printf '       Remove the ones that are not yours, mount narrower directories or :ro,\n' >&2
+    printf '       or raise SANDBOX_LAUNCHER_MAX if every one of them is yours.\n' >&2
+    exit 1
+  fi
 
   # Every launcher in play: this one, mounted or not, and every one found.
   scan=("$self"); scanned[$self]=1
@@ -825,8 +846,9 @@ launcher_ro_overlay() {
   # writable by design, said so with a NOTE, and its links are the agent's to
   # make. Links that sit in a writable bind inside a launcher (an output
   # directory) are the agent's too, so they are not walked; links that point
-  # INTO one are. At most 200 links per launcher, so nothing the agent can
-  # write makes every later launch slow.
+  # INTO one are. At most 200 links of this launcher, and 200 of all the
+  # others between them, so nothing the agent can write makes every later
+  # launch slow — it decides how many other launchers there are (T38, T46).
   for x in "${scan[@]}"; do
     inner=""
     for i in ${bsrc[@]+"${!bsrc[@]}"}; do
@@ -844,9 +866,15 @@ launcher_ro_overlay() {
         if [[ "${bsrc[i]}" == "$x"/* && "$f" == "${bsrc[i]}"/* ]]; then inner=1; break; fi
       done
       if [[ -n "$inner" ]]; then continue; fi
-      if (( ++nl > 200 )); then
-        printf 'NOTE: %s holds more than 200 symlinks; only the first 200 were checked.\n' "$x" >&2
-        break
+      if [[ "$x" == "$self" ]]; then
+        if (( ++nl > 200 )); then
+          printf 'NOTE: %s holds more than 200 symlinks; only the first 200 were checked.\n' "$x" >&2
+          break
+        fi
+      elif (( ++no > 200 )); then
+        printf 'NOTE: the other launchers the writable mounts expose hold more than 200 symlinks between them;\n' >&2
+        printf '      only the first 200 were checked.\n' >&2
+        break 2
       fi
       walk=()
       mapfile -d '' -t walk < <(_link_walk "$f")

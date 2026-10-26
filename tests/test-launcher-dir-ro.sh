@@ -18,7 +18,8 @@
 # names a writable mount inside a launcher (T40), records every launcher
 # mount for the entrypoint to re-verify against a concurrent-container swap (T41,
 # T42), works with a BSD-only stat (T43) from any working directory (T45), sweeps
-# only stale verify dirs and never fatally (T44), and
+# only stale verify dirs and never fatally (T44), bounds what the agent can plant
+# per launch (T46), and
 # refuses a non-numeric identity (T30).
 #
 # Hermetic: fake `docker` capturing the run args, no daemon. Integration cases
@@ -44,7 +45,7 @@ trap 'chmod -R u+rwx "$TMP" 2>/dev/null; rm -rf "$TMP"; export HOME="$REAL_HOME"
 export HOME="$TMP/home"; mkdir -p "$HOME"
 export AI_CONTAINER_GROUP=default AI_CONTAINER_GROUP_INIT=clean SANDBOX_USER=tester
 unset CONTAINER_NAME EXTRA_MOUNTS REPOS VAULT_PATH SPECS_PATH DOCS_PATH ARCHITECTURE_REPO_PATH \
-      SANDBOX_MODE SANDBOX_WORKDIR SANDBOX_ENV_FILE
+      SANDBOX_MODE SANDBOX_WORKDIR SANDBOX_ENV_FILE SANDBOX_LAUNCHER_MAX
 CAPTURE="$TMP/docker-args.txt"
 mkdir -p "$TMP/bin"
 cat > "$TMP/bin/docker" <<DOCKER
@@ -665,8 +666,8 @@ MANY="$TMP/many"; mk_launcher "$MANY/p"; mkdir -p "$MANY/w"
 for n in $(seq 1 205); do ln -s "../../w/f$n" "$MANY/p/.ai-containers/l$n"; done
 EXTRA_MOUNTS="$MANY" launch "$LAUNCHER" "$TMP/app"
 [[ "$(grep -c 'leads somewhere the agent can change' "$ERR")" -eq 200 ]] \
-  && grep -qF "NOTE: $MANY/p/.ai-containers holds more than 200 symlinks; only the first 200 were checked." "$ERR" \
-  && pass "T38 at most 200 links per launcher are walked, and the cap is named" \
+  && grep -qF "NOTE: the other launchers the writable mounts expose hold more than 200 symlinks between them;" "$ERR" \
+  && pass "T38 at most 200 links of the other launchers are walked, and the cap is named" \
   || fail "T38 cap (warnings: $(grep -c 'leads somewhere' "$ERR"); stderr: $(grep -F 'more than 200' "$ERR"))"
 
 # ── T39: a launcher nested in one that cannot be overlaid needs that outer
@@ -798,6 +799,57 @@ if [[ "$(id -u)" -ne 0 ]]; then
 else
   printf 'SKIP: T45 — chmod does not constrain root\n'
 fi
+
+# ── T46: the agent decides how many launchers there are — two empty files make
+# one — so what it plants is bounded per LAUNCH, not per launcher. Past
+# SANDBOX_LAUNCHER_MAX (50) launchers and unlistable directories to overlay, the
+# launch is refused, naming where; the links of every launcher but this one
+# share one budget of 200, and this launcher keeps its own.
+FAKE="$TMP/fake46"; mkdir -p "$FAKE/w"
+for n in $(seq 1 51); do mk_launcher "$FAKE/p$n"; done
+EXTRA_MOUNTS="$FAKE" launch "$LAUNCHER" "$TMP/app"
+[[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] \
+  && grep -qF 'ERROR: the writable mounts hold more than 50 launchers and unlistable directories' "$ERR" \
+  && grep -qE "^         $FAKE/p[0-9]+/\.ai-containers\$" "$ERR" && grep -qF 'raise SANDBOX_LAUNCHER_MAX' "$ERR" \
+  && pass "T46 past SANDBOX_LAUNCHER_MAX the launch is refused, naming where" \
+  || fail "T46 cap not enforced (rc=$LAUNCH_RC; stderr: $(grep -A3 ERROR "$ERR" | tr '\n' ' '))"
+[[ "$(grep -cE "^         $FAKE/" "$ERR")" -le 5 ]] \
+  && pass "T46 the refusal names at most five of them" \
+  || fail "T46 refusal floods (named: $(grep -cE "^         $FAKE/" "$ERR"))"
+SANDBOX_LAUNCHER_MAX=60 EXTRA_MOUNTS="$FAKE" launch "$LAUNCHER" "$TMP/app"
+[[ "$LAUNCH_RC" == 0 && -s "$CAPTURE" ]] \
+  && pass "T46 raising SANDBOX_LAUNCHER_MAX lets the launch through" \
+  || fail "T46 raised cap still refused (rc=$LAUNCH_RC; stderr: $(grep -A2 ERROR "$ERR" | tr '\n' ' '))"
+SANDBOX_LAUNCHER_MAX=abc EXTRA_MOUNTS="$FAKE" launch "$LAUNCHER" "$TMP/app"
+[[ "$LAUNCH_RC" != 0 ]] && grep -qF 'ERROR: SANDBOX_LAUNCHER_MAX must be a whole number from 1 to 999999' "$ERR" \
+  && pass "T46 a SANDBOX_LAUNCHER_MAX that is not a number refuses the launch" \
+  || fail "T46 bad SANDBOX_LAUNCHER_MAX (rc=$LAUNCH_RC; stderr: $(tr '\n' ' ' < "$ERR"))"
+rm -rf "$FAKE"
+if [[ "$(id -u)" != 0 ]]; then
+  UNR="$TMP/unr46"
+  for n in $(seq 1 51); do mkdir -p "$UNR/d$n"; chmod 000 "$UNR/d$n"; done
+  EXTRA_MOUNTS="$UNR" launch "$LAUNCHER" "$TMP/app"
+  [[ "$LAUNCH_RC" != 0 ]] && grep -qF 'ERROR: the writable mounts hold more than 50 launchers and unlistable directories' "$ERR" \
+    && pass "T46 unlistable directories count toward the same limit" \
+    || fail "T46 unlistable dirs not capped (rc=$LAUNCH_RC; stderr: $(grep -A2 ERROR "$ERR" | tr '\n' ' '))"
+  chmod -R u+rwx "$UNR"; rm -rf "$UNR"
+else
+  printf 'SKIP: T46 unlistable directories — chmod does not constrain root\n'
+fi
+FAKE="$TMP/fake46l"; mkdir -p "$FAKE/w"
+for n in 1 2 3; do
+  mk_launcher "$FAKE/p$n"
+  for m in $(seq 1 150); do ln -s "../../w/f$m" "$FAKE/p$n/.ai-containers/l$m"; done
+done
+ln -s "$FAKE/w/own" "$LAUNCHER/own46.conf"
+EXTRA_MOUNTS="$FAKE" launch "$LAUNCHER" "$TMP/app"
+rm -f "$LAUNCHER/own46.conf"
+w46="$(grep -c 'leads somewhere the agent can change' "$ERR")"
+[[ "$w46" -eq 201 ]] && grep -qF "WARNING: launcher link $LAUNCHER/own46.conf leads somewhere" "$ERR" \
+  && [[ "$(grep -c 'hold more than 200 symlinks between them' "$ERR")" -eq 1 ]] \
+  && pass "T46 the other launchers share one 200-link budget; this launcher's own links are still checked" \
+  || fail "T46 link budget (warnings: $w46; stderr: $(grep -E 'more than 200|own46' "$ERR" | tr '\n' ' '))"
+rm -rf "$FAKE"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

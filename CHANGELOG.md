@@ -16,6 +16,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   which the agent can write — as you, before the container started. The read
   now runs with lazy fetch and every transport disabled; an index that cannot
   be read without them is named in a `WARNING:` (bugs review GIT-1).
+- **What an agent plants can no longer make every later launch slow and noisy.**
+  Two empty files make a directory count as a launcher, so an agent could plant
+  hundreds, each adding a read-only bind mount, a `READ-ONLY:` line and up to
+  200 link warnings to every launch (1,000 of them cost 78 s before
+  `docker run`). Past `SANDBOX_LAUNCHER_MAX` (50) launchers and unlistable
+  directories the launch is now refused, naming where, and the links of every
+  launcher but the one running share one budget of 200 (bugs review LNCH-1).
 
 ## v0.10.7 — 2026-10-18
 
