@@ -1276,10 +1276,12 @@ git_dirs_in() {
     # to make the read inert: in a partial clone with a sparse index, ls-files
     # expands the index and fetches a missing tree from the promisor remote,
     # running remote.<name>.uploadpack (the agent can set it). GIT_NO_LAZY_FETCH
-    # stops the fetch (git 2.44+), protocol.allow=never refuses every transport
-    # on any git; the read then fails, and is named (tests/test-git-internals-ro.sh G28).
-    mapfile -d '' -t links < <(GIT_NO_LAZY_FETCH=1 git -C "$top" -c core.fsmonitor=false \
-        -c protocol.allow=never -c safe.directory='*' \
+    # stops the fetch (git 2.44+); GIT_ALLOW_PROTOCOL=none refuses every
+    # transport on any git — not `-c protocol.allow=never`, which a repository's
+    # own protocol.<name>.allow=always overrides. The read then fails, and is
+    # named (tests/test-git-internals-ro.sh G28).
+    mapfile -d '' -t links < <(GIT_NO_LAZY_FETCH=1 GIT_ALLOW_PROTOCOL=none git -C "$top" \
+        -c core.fsmonitor=false -c safe.directory='*' \
         --git-dir="$g" --work-tree="$top" ls-files -s -z 2>/dev/null || printf 'ls-files-failed\0')
     if (( ${#links[@]} )) && [[ "${links[-1]}" == ls-files-failed ]]; then
       links=()

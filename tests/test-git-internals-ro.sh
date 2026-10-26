@@ -525,6 +525,8 @@ rm -f "$TMP/lz/evil/.git/objects/${lz_tree:0:2}/${lz_tree:2}"
 "${G[@]}" -C "$TMP/lz/evil" config remote.origin.promisor true
 "${G[@]}" -C "$TMP/lz/evil" config remote.origin.url "file://$TMP/lz-nowhere"
 "${G[@]}" -C "$TMP/lz/evil" config remote.origin.uploadpack "touch $TMP/lz-PWNED; false"
+# A repository's own per-protocol setting beats a command-line protocol.allow.
+"${G[@]}" -C "$TMP/lz/evil" config protocol.file.allow always
 # Control: the same read without the launcher's guards does run it, so the
 # fixture really is one where ls-files fetches (on a git that lazy-fetches).
 ( cd "$TMP/lz/evil" && git -c core.fsmonitor=false ls-files -s -z >/dev/null 2>&1 )
