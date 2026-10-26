@@ -70,11 +70,27 @@ _mysql_join() {  # <item…> → "a, b, c"
   printf '%s' "$out"
 }
 
+# _mysql_client <args…> — the admin client, with none of the app's MYSQL_* or
+# LIBMYSQL_* variables. container.env reaches `start`, and the client reads them
+# itself — --no-defaults turns off option files, not these: MYSQL_HOST sends it
+# over TCP to that host whatever --socket says, MYSQL_TCP_PORT picks the port,
+# MYSQL_PWD a password root does not have (measured, mysql 8.0 and mariadb
+# 10.11). --protocol=SOCKET is no help: with MYSQL_HOST set, MySQL refuses it
+# ("Wrong or unknown protocol") and MariaDB ignores it.
+_mysql_client() {
+  local v
+  local -a drop=()
+  for v in $(compgen -e); do
+    case "$v" in MYSQL_*|LIBMYSQL_*) drop+=(-u "$v") ;; esac
+  done
+  env ${drop[@]+"${drop[@]}"} "$MYSQL_CLIENT" "$@"
+}
+
 # _mysql_sql <statement> — run it as root over the socket. Prints the client's
 # error text (one line) on failure and returns its status.
 _mysql_sql() {
   local err rc
-  err="$("$MYSQL_CLIENT" --no-defaults -uroot --socket="$(_mysql_sock)" -e "$1" 2>&1 >/dev/null)"
+  err="$(_mysql_client --no-defaults -uroot --socket="$(_mysql_sock)" -e "$1" 2>&1 >/dev/null)"
   rc=$?
   (( rc == 0 )) || printf '%s' "${err//$'\n'/ }"
   return "$rc"

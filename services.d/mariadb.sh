@@ -30,9 +30,10 @@ MYSQL_IF_INET6="${AI_SERVICES_MARIADB_IF_INET6:-/proc/net/if_inet6}"
 MARIADB_TRIES="${AI_SERVICES_MARIADB_TRIES:-300}"
 [[ "$MARIADB_TRIES" =~ ^[1-9][0-9]*$ ]] || MARIADB_TRIES=300
 
-# The pid file of the server answering on the socket, from the server itself.
+# The pid file of the server answering on the socket, from the server itself —
+# through _mysql_client, so an app's MYSQL_HOST cannot point the probe elsewhere.
 _mariadb_pid_file() {
-  "$MYSQL_CLIENT" --no-defaults -uroot --socket="$(_mysql_sock)" -N -B -e 'SELECT @@pid_file' 2>/dev/null
+  _mysql_client --no-defaults -uroot --socket="$(_mysql_sock)" -N -B -e 'SELECT @@pid_file' 2>/dev/null
 }
 
 svc_start() {  # <datadir> <logfile>

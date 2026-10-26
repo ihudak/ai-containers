@@ -481,7 +481,7 @@ minus the runner's test-only path overrides (`AI_SERVICES_DIR`,
 `AI_SERVICES_STATE_ROOT`, `AI_SERVICES_LOG_ROOT`), so `prepare` and `start` agree
 on the directories. An adapter's own test knobs are namespaced
 `AI_SERVICES_<NAME>_*` (`AI_SERVICES_PG_PORT`, …), never a name an app might set:
-`start` sees all of the rest of `container.env`.
+`start` sees all of the rest of `container.env`. So does every client an adapter runs, and clients read their own variables over their command line: `MYSQL_HOST` sends `mysql` over TCP whatever `--socket` says, and `PGHOSTADDR` does the same to `psql` (measured). An adapter's admin client therefore runs without the app's variables of that client's family (`services.d/mysql.sh: _mysql_client()`, `services.d/postgres.sh: _pg_sql()`). `redis-cli` needs no such care: an app's `REDISCLI_AUTH` draws an AUTH error and `INFO` still answers.
 
 Each server is an **adapter**, `services.d/<name>.sh`, sourced in its own subshell
 and required to define five functions:

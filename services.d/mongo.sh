@@ -25,9 +25,33 @@ MONGO_IF_INET6="${AI_SERVICES_MONGO_IF_INET6:-/proc/net/if_inet6}"
 # keeps it beside an app and its test runner.
 MONGO_CACHE_GB="${AI_SERVICES_MONGO_CACHE_GB:-0.25}"
 
+# Installed is the binary being there. A mongod that cannot run — MongoDB 5.0 and
+# later die of SIGILL at start-up on an x86-64 CPU without AVX, `--version`
+# included — is still installed, so it reads as `unknown` and its start fails,
+# saying why; an empty version would tell the user to rebuild, which cures
+# nothing.
 svc_installed_version() {
+  local v
   [[ -x "$MONGO_MONGOD" ]] || return 0
-  "$MONGO_MONGOD" --version 2>/dev/null | sed -n 's/^db version v\([0-9][0-9.]*\).*/\1/p'
+  v="$("$MONGO_MONGOD" --version 2>/dev/null | sed -n 's/^db version v\([0-9][0-9.]*\).*/\1/p')"
+  printf '%s' "${v:-unknown}"
+}
+
+# _mongo_runs — succeeds when mongod can run at all; otherwise prints why, for
+# the log the runner shows.
+_mongo_runs() {
+  local rc sig
+  "$MONGO_MONGOD" --version >/dev/null 2>&1 && return 0
+  rc=$?
+  if (( rc > 128 )); then
+    sig="$(kill -l "$((rc - 128))" 2>/dev/null)"
+    printf 'mongod cannot run here: --version ended with exit %s (SIG%s)' "$rc" "${sig:-?}"
+    [[ "$sig" == ILL ]] && printf ' — an Illegal instruction: MongoDB 5.0 and later need a CPU with AVX on x86-64'
+    printf '\n'
+  else
+    printf 'mongod cannot run here: --version ended with exit %s\n' "$rc"
+  fi
+  return 1
 }
 
 # Nothing outside its data directory: the pid file and log live where the runner
@@ -37,6 +61,7 @@ svc_runtime_dirs() { :; }
 svc_start() {  # <datadir> <logfile>
   local datadir="$1" logfile="$2" bind="127.0.0.1"
   local -a v6=()
+  _mongo_runs || return 1
   # ::1 as well where the container has an IPv6 loopback — a client that looks
   # up `localhost` as ::1 first (Node 17 and later) must not be refused — and
   # only there.

@@ -16,7 +16,7 @@ It is not [`db-clients`](db-clients.md)`=mongo`: that installs `mongosh` only. T
 - **A release series** (`8.2`) — any series MongoDB publishes for Ubuntu 24.04: 8.0, 8.2 and 8.3 as of 2026-10, and none before 8.0. The build installs the newest release of that series, from that series only, and fails, naming the series, if MongoDB does not publish it for this Ubuntu.
 - **Not a release, not a bare major.** `mongo=8.0.32` is refused with `mongo=8.0` to pin instead — the repository installs the newest of its series — and `mongo=8` with `mongo=8.0`.
 - **`ON` and `OFF` must be capitals.**
-- **x86-64 needs AVX.** Every MongoDB since 5.0 does; a CPU or an emulator without it stops `mongod` with `Illegal instruction`, and the start says it failed, with the log. Apple silicon runs the arm64 build and is unaffected.
+- **x86-64 needs AVX.** Every MongoDB since 5.0 does; a CPU or an emulator without it stops `mongod` with `Illegal instruction`, and the start says it failed, with the log: `mongod cannot run here: --version ended with exit 132 (SIGILL)`, naming AVX. A rebuild does not help there. Apple silicon runs the arm64 build and is unaffected.
 
 ## Why it is baked into the image
 

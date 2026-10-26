@@ -171,6 +171,12 @@ EOF
 # statement is recorded, and fails on FAKE_SQL_FAIL as the client does.
 cat > "$FAKE/bin/mariadb" <<'EOF'
 #!/usr/bin/env bash
+# What the real client does with an app's MYSQL_HOST (measured, mariadb 10.11):
+# it connects over TCP to that host whatever --socket says.
+compgen -e | grep -E '^(MYSQL|LIBMYSQL)_' >> "$FAKE_DIR/client.env"
+if [[ -n "${MYSQL_HOST:-}" ]]; then
+  printf "ERROR 2005 (HY000): Unknown server host '%s' (-2)\n" "$MYSQL_HOST" >&2; exit 1
+fi
 sql=""
 for a in "$@"; do printf '%s\n' "$a" >> "$FAKE_DIR/client.args"; done
 while (( $# )); do [[ "$1" == -e ]] && { sql="$2"; shift; }; shift; done
@@ -197,7 +203,7 @@ md() {
     source "$REPO_DIR/services.d/mariadb.sh"
     "$@" )
 }
-md_reset() { rm -f "$FAKE"/{calls,mariadbd.args,client.args,sql.log,pid_file,answer.pid_file}; rm -rf "$FAKE/data"; mkdir -p "$FAKE/data"; }
+md_reset() { rm -f "$FAKE"/{calls,mariadbd.args,client.args,client.env,sql.log,pid_file,answer.pid_file}; rm -rf "$FAKE/data"; mkdir -p "$FAKE/data"; }
 calls()   { if [[ -f "$FAKE/calls" ]]; then tr '\n' ' ' < "$FAKE/calls"; fi; }
 sql_has() { grep -qxF -- "$1" "$FAKE/sql.log" 2>/dev/null; }
 has_arg() { grep -qxF -- "$1" "$FAKE/mariadbd.args" 2>/dev/null; }
@@ -272,6 +278,19 @@ md_reset; MD_PORT=13306 md svc_start "$FAKE/data" "$FAKE/log" >/dev/null
 has_arg --port=13306 && pass "D10 AI_SERVICES_MARIADB_PORT moves the server" || fail "D10 port knob"
 md_reset; ( export MYSQL_PORT=7777 MARIADB_PORT=7778 AI_SERVICES_MYSQL_PORT=7779; md svc_start "$FAKE/data" "$FAKE/log" >/dev/null )
 has_arg --port=3306 && pass "D10 an app's MYSQL_PORT / MARIADB_PORT, and MySQL's own knob, do not move it" || fail "D10 ($(grep port "$FAKE/mariadbd.args"))"
+
+# D12 — an app's own connection variables cannot point the readiness probe or the
+# provisioning at another server (SVC-1): with MYSQL_HOST reaching the client,
+# the probe never saw this server and the start spun out its whole wait.
+md_reset
+out="$(export MYSQL_HOST=db MYSQL_TCP_PORT=3307 MYSQL_PWD=app-secret MYSQL_USERS=bob MYSQL_DATABASES=app
+       MD_TRIES=5 md svc_start "$FAKE/data" "$FAKE/log" && md svc_provision)"; rc=$?
+[[ "$rc" -eq 0 && "$out" == *"users: bob"* && "$out" == *"databases: app"* ]] \
+  && pass "D12 with the app's MYSQL_HOST and friends set, the start and the provisioning still succeed" \
+  || fail "D12 app connection env (rc=$rc, out='$out')"
+[[ -f "$FAKE/client.args" && ! -s "$FAKE/client.env" ]] \
+  && pass "D12 none of the app's MYSQL_*/LIBMYSQL_* variables reach MariaDB's client" \
+  || fail "D12 the client saw: $(tr '\n' ' ' < "$FAKE/client.env" 2>/dev/null)"
 
 # D11 — through the runner: the ready line, and the stale-image warning a pin gets.
 md_reset; mkdir -p "$TMP_ROOT/state/mariadb" "$TMP_ROOT/logs"

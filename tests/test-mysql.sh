@@ -143,6 +143,12 @@ EOF
 # the way mysql does — message on stderr, exit 1.
 cat > "$FAKE/bin/mysql" <<'EOF'
 #!/usr/bin/env bash
+# What the real client does with an app's connection variables (measured, mysql
+# 8.0.46): MYSQL_HOST sends it over TCP to that host whatever --socket says.
+compgen -e | grep -E '^(MYSQL|LIBMYSQL)_' >> "$FAKE_DIR/client.env"
+if [[ -n "${MYSQL_HOST:-}" ]]; then
+  printf "ERROR 2005 (HY000): Unknown MySQL server host '%s' (-2)\n" "$MYSQL_HOST" >&2; exit 1
+fi
 sql=""
 for a in "$@"; do printf '%s\n' "$a" >> "$FAKE_DIR/client.args"; done
 while (( $# )); do [[ "$1" == -e ]] && { sql="$2"; shift; }; shift; done
@@ -166,7 +172,7 @@ my() {
     source "$REPO_DIR/services.d/mysql.sh"
     "$@" )
 }
-my_reset() { rm -f "$FAKE"/{calls,mysqld.args,client.args,sql.log}; rm -rf "$FAKE/data"; mkdir -p "$FAKE/data"; }
+my_reset() { rm -f "$FAKE"/{calls,mysqld.args,client.args,client.env,sql.log}; rm -rf "$FAKE/data"; mkdir -p "$FAKE/data"; }
 calls()    { if [[ -f "$FAKE/calls" ]]; then tr '\n' ' ' < "$FAKE/calls"; fi; }
 sql_has()  { grep -qxF -- "$1" "$FAKE/sql.log" 2>/dev/null; }
 has_arg()  { grep -qxF -- "$1" "$FAKE/mysqld.args" 2>/dev/null; }
@@ -276,6 +282,20 @@ for u in "reporting:pw" "root" "app_user, root ,x:y"; do
     && pass "D12 MYSQL_USERS='$u' gives root no password: the endpoint still says root has none" \
     || fail "D12 MYSQL_USERS='$u' endpoint (got '$(MYSQL_USERS="$u" my svc_endpoint)')"
 done
+
+# D15 — an app's own connection variables reach neither the start nor the
+# provisioning: container.env reaches `start`, and the client obeys MYSQL_HOST,
+# MYSQL_TCP_PORT, MYSQL_PWD and MYSQL_UNIX_PORT over its own --socket (SVC-1).
+my_reset
+out="$(export MYSQL_HOST=db MYSQL_TCP_PORT=3307 MYSQL_PWD=app-secret MYSQL_UNIX_PORT=/tmp/app.sock \
+              LIBMYSQL_PLUGIN_DIR=/tmp/app-plugins MYSQL_USERS=bob MYSQL_DATABASES=app
+       my svc_start "$FAKE/data" "$FAKE/log" && my svc_provision)"; rc=$?
+[[ "$rc" -eq 0 && "$out" == *"users: bob"* && "$out" == *"databases: app"* ]] \
+  && pass "D15 with the app's MYSQL_HOST and friends set, the start and the provisioning still succeed" \
+  || fail "D15 app connection env (rc=$rc, out='$out')"
+[[ -f "$FAKE/client.args" && ! -s "$FAKE/client.env" ]] \
+  && pass "D15 none of the app's MYSQL_*/LIBMYSQL_* variables reach the admin client" \
+  || fail "D15 the client saw: $(tr '\n' ' ' < "$FAKE/client.env" 2>/dev/null)"
 
 # D13 — the port knob moves it; an app's own MYSQL_PORT does not.
 my_reset; MY_PORT=13306 my svc_start "$FAKE/data" "$FAKE/log" >/dev/null

@@ -201,6 +201,29 @@ out="$(AI_SERVICES=mongo=8.0 AI_SERVICES_DIR="$REPO_DIR/services.d" AI_SERVICES_
   && pass "D9 start-services.sh prints 'mongo 8.0.32 ready on mongodb://localhost:27017', and mongo=8.0 matches 8.0.32" \
   || fail "D9 the runner's ready line (got: $out)"
 
+# D10 — a mongod that cannot run here (x86-64 without AVX: MongoDB 5.0 and
+# later die of SIGILL at start-up, `--version` included) is a start failure that
+# says why, never "no mongo server, rebuild", which a rebuild cannot cure (SVC-2).
+cat > "$FAKE/bin/mongod-noavx" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "${1:-}" >> "$FAKE_DIR/noavx.calls"
+kill -ILL $$
+EOF
+rm -f "$FAKE/noavx.calls"
+chmod +x "$FAKE/bin/mongod-noavx"
+got="$(AI_SERVICES_MONGO_MONGOD="$FAKE/bin/mongod-noavx" bash -c 'source "$1"; svc_installed_version' _ "$REPO_DIR/services.d/mongo.sh" 2>/dev/null)"
+[[ -n "$got" ]] && pass "D10 a mongod that cannot run still counts as installed (got '$got')" || fail "D10 a mongod that cannot run reads as not installed"
+rm -rf "$TMP_ROOT/state/mongo" "$TMP_ROOT/logs"; mkdir -p "$TMP_ROOT/state/mongo" "$TMP_ROOT/logs"
+out="$(AI_SERVICES=mongo=ON AI_SERVICES_DIR="$REPO_DIR/services.d" AI_SERVICES_STATE_ROOT="$TMP_ROOT/state" \
+       AI_SERVICES_LOG_ROOT="$TMP_ROOT/logs" AI_SERVICES_MONGO_MONGOD="$FAKE/bin/mongod-noavx" \
+       AI_SERVICES_MONGO_IF_INET6="$FAKE/inet6-no" FAKE_DIR="$FAKE" bash "$REPO_DIR/start-services.sh" start 2>&1)"
+[[ "$out" == *"mongo failed to start"* && "$out" == *"exit 132"* && "$out" == *SIGILL* && "$out" == *AVX* && "$out" != *Rebuild* ]] \
+  && pass "D10 through the runner: 'failed to start', with the exit status, SIGILL and the AVX hint in the log tail" \
+  || fail "D10 no-AVX start (got: $out)"
+[[ -s "$FAKE/noavx.calls" ]] && ! grep -vqx -- --version "$FAKE/noavx.calls" \
+  && pass "D10 a mongod known not to run is never started: only --version was tried" \
+  || fail "D10 the adapter started a mongod that cannot run (calls: $(tr '\n' ' ' < "$FAKE/noavx.calls" 2>/dev/null))"
+
 # ── Part E: the Dockerfile layer's shape ──────────────────────────────────────
 DF="$REPO_DIR/Dockerfile"
 layer="$(awk '/^ARG MONGO_SERIES=$/{grab=1} grab{print} grab && /^$/{exit}' "$DF")"

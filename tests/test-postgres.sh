@@ -180,6 +180,13 @@ EOF
 # FAKE_PSQL_FAIL, the way psql does — message on stderr, exit 1.
 cat > "$FAKE/lib/18/bin/psql" <<'EOF'
 #!/usr/bin/env bash
+# What the real psql does with an app's libpq variables (measured, psql 16):
+# PGHOSTADDR, or a PGSERVICE entry with hostaddr=, sends it over TCP whatever -h
+# says.
+compgen -e | grep -E '^PG' >> "$FAKE_DIR/psql.env"
+if [[ -n "${PGHOSTADDR:-}" ]]; then
+  printf 'psql: error: connection to server at "%s", port 5432 failed: Connection refused\n' "$PGHOSTADDR" >&2; exit 2
+fi
 sql="" user=""
 while (( $# )); do
   case "$1" in -c) sql="$2"; shift ;; -U) user="$2"; shift ;; esac
@@ -207,7 +214,7 @@ pg() {
     source "$REPO_DIR/services.d/postgres.sh"
     "$@" )
 }
-pg_reset() { rm -f "$FAKE"/{sql.log,psql.users,initdb.args,pg_ctl.args,calls}; rm -rf "$FAKE/data"; }
+pg_reset() { rm -f "$FAKE"/{sql.log,psql.users,psql.env,initdb.args,pg_ctl.args,calls}; rm -rf "$FAKE/data"; }
 calls()    { if [[ -f "$FAKE/calls" ]]; then tr '\n' ' ' < "$FAKE/calls"; fi; }
 sql_has()   { grep -qxF -- "$1" "$FAKE/sql.log" 2>/dev/null; }
 sql_count() { if [[ -f "$FAKE/sql.log" ]]; then grep -c . "$FAKE/sql.log"; else printf '0'; fi; }
@@ -305,9 +312,9 @@ pg_reset; POSTGRES_ROLES='x; drop table y,Mixed,,ok_role' pg svc_provision >/dev
 [[ "$(sql_count)" -eq 1 ]] && sql_has 'CREATE ROLE "ok_role" SUPERUSER LOGIN' \
   && pass "D8 only the valid role reaches SQL" \
   || fail "D8 only the valid role reaches SQL (sql: $(cat "$FAKE/sql.log" 2>/dev/null))"
-[[ "$(grep -c 'is not a valid role name' "$FAKE/err")" -eq 3 ]] \
+[[ "$(grep -c 'is not a valid role name' "$FAKE/err")" -eq 2 ]] \
   && grep -qF "'x; drop table y'" "$FAKE/err" && grep -qF "'Mixed'" "$FAKE/err" \
-  && pass "D8 each invalid entry (including an empty one) is warned about by value" \
+  && pass "D8 each invalid entry is warned about by value (an empty one is skipped: D23)" \
   || fail "D8 warnings (got: $(cat "$FAKE/err"))"
 
 # D9 — the superuser's own name and a repeat are skipped quietly (Review Focus 3).
@@ -441,6 +448,31 @@ pg_reset; POSTGRES_ROLES=app_user POSTGRES_DATABASES='x_db:ghost,x_db:app_user' 
 sql_has 'CREATE DATABASE "x_db" OWNER "app_user"' && ! grep -q 'two owners' "$FAKE/err" \
   && pass "D21 a listing refused for its owner does not shadow a valid one" \
   || fail "D21 refused then valid (sql: $(cat "$FAKE/sql.log" 2>/dev/null); err: $(cat "$FAKE/err"))"
+
+# D22 — an app's own libpq variables reach neither the start nor the
+# provisioning (SVC-1): container.env reaches `start`, and psql obeys PGHOSTADDR,
+# PGSERVICE and PGOPTIONS over its own -h/-p/-U/-d.
+pg_reset
+out="$(export PGHOSTADDR=127.0.0.2 PGSERVICE=app PGOPTIONS='-c default_transaction_read_only=on' \
+              PGPASSWORD=app-secret POSTGRES_ROLES=bob POSTGRES_DATABASES=app
+       pg svc_start "$FAKE/data" "$FAKE/log" && pg svc_provision)"; rc=$?
+[[ "$rc" -eq 0 && "$out" == *"roles: bob"* && "$out" == *"databases: app"* ]] \
+  && pass "D22 with the app's PGHOSTADDR and friends set, the start and the provisioning still succeed" \
+  || fail "D22 app libpq env (rc=$rc, out='$out')"
+[[ -f "$FAKE/sql.log" && ! -s "$FAKE/psql.env" ]] \
+  && pass "D22 none of the app's PG* variables reach the admin psql" \
+  || fail "D22 psql saw: $(tr '\n' ' ' < "$FAKE/psql.env" 2>/dev/null)"
+
+# D23 — an empty entry (`a,,b`, a trailing `, `) is skipped without a warning,
+# as services.d/mysql.sh and the runner's own AI_SERVICES split skip one; a
+# malformed one (`:owner`) is still named (SVC-3).
+pg_reset
+out="$(POSTGRES_ROLES='app_user,,other, ' POSTGRES_DATABASES='db1,, ,:app_user' pg svc_provision 2>"$FAKE/err")"
+[[ "$out" == "; roles: app_user, other; databases: db1" ]] && ! grep -qF "''" "$FAKE/err" \
+  && grep -qF "POSTGRES_DATABASES: ':app_user' is not name or name:owner" "$FAKE/err" \
+  && [[ "$(grep -c WARNING "$FAKE/err")" -eq 1 ]] \
+  && pass "D23 empty entries are skipped silently; a malformed ':owner' is still warned about" \
+  || fail "D23 empty entries (out='$out'; err: $(tr '\n' '|' < "$FAKE/err"))"
 
 # ── Part E: the Dockerfile layer's shape ──────────────────────────────────────
 # Shape only: that it BUILDS is integration case 780. These pin the properties

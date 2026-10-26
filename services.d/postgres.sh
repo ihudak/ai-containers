@@ -64,10 +64,18 @@ _pg_join() {  # <item…> → "a, b, c"
 }
 
 # _pg_sql <statement> — run it as the superuser over the socket. Prints psql's
-# error text (one line) on failure and returns psql's status.
+# error text (one line) on failure and returns psql's status. psql runs with
+# none of the app's PG* variables: container.env reaches `start`, and libpq reads
+# them itself — PGHOSTADDR, or a PGSERVICE entry with hostaddr=, sends it over
+# TCP whatever -h says (measured, psql 16), and PGOPTIONS reaches the server.
+# Everything psql needs is on its command line.
 _pg_sql() {
-  local err rc
-  err="$("$(_pg_bin)/psql" -X -q -v ON_ERROR_STOP=1 -h "$PG_SOCKET_DIR" -p "$PG_PORT" \
+  local err rc v
+  local -a drop=()
+  for v in $(compgen -e); do
+    case "$v" in PG*) drop+=(-u "$v") ;; esac
+  done
+  err="$(env ${drop[@]+"${drop[@]}"} "$(_pg_bin)/psql" -X -q -v ON_ERROR_STOP=1 -h "$PG_SOCKET_DIR" -p "$PG_PORT" \
            -U "$PG_SUPERUSER" -d postgres -c "$1" 2>&1 >/dev/null)"
   rc=$?
   (( rc == 0 )) || printf '%s' "${err//$'\n'/ }"
@@ -126,6 +134,7 @@ svc_provision() {
   IFS=',' read -ra entries <<< "${POSTGRES_ROLES:-}"
   for entry in "${entries[@]}"; do
     name="$(_pg_trim "$entry")"
+    [[ -n "$name" ]] || continue   # `a,,b`, or a trailing `, `
     # Known names first: the superuser's own name is not held to the pattern
     # (a macOS John.Doe), and listing it must not draw a warning.
     _pg_in "$name" "${known[@]}" && continue   # the superuser itself, or a repeat
@@ -147,6 +156,7 @@ svc_provision() {
   IFS=',' read -ra entries <<< "${POSTGRES_DATABASES:-}"
   for entry in "${entries[@]}"; do
     entry="$(_pg_trim "$entry")"
+    [[ -n "$entry" ]] || continue
     # Each half trimmed on its own, so `myapp_test : app_user` reads as written.
     name="$(_pg_trim "${entry%%:*}")"
     owner="$PG_SUPERUSER"

@@ -81,7 +81,7 @@ test:
 DATABASE_URL=mysql2://root@127.0.0.1:3306/myapp_test
 ```
 
-**Moving from a database on the host?** Remove the old settings from `container.env`. A `DATABASE_URL`, `DB_HOST` or `MYSQL_HOST` still pointing at `host.docker.internal` is read before any default, so the app keeps talking to the old server — or, in restricted mode, to nothing. A `MYSQL_PORT` there does not move this server: it stays on 3306.
+**Moving from a database on the host?** Remove the old settings from `container.env`. A `DATABASE_URL`, `DB_HOST` or `MYSQL_HOST` still pointing at `host.docker.internal` is read before any default, so the app keeps talking to the old server — or, in restricted mode, to nothing. A `MYSQL_PORT` there does not move this server: it stays on 3306. Nor do the client's own `MYSQL_HOST`, `MYSQL_TCP_PORT`, `MYSQL_PWD` or `MYSQL_UNIX_PORT` reach the start: the accounts and databases are always made on this server, over its socket.
 
 ## The data is thrown away
 
