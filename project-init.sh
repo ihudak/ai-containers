@@ -179,6 +179,12 @@ ensure_ai_containers_ignored() {
   [[ "${AI_CONTAINERS_NO_GITIGNORE:-0}" == "1" ]] && return 0
   git -C "$project_path" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
   git -C "$project_path" check-ignore -q .ai-containers 2>/dev/null && return 0
+  # If the project intentionally TRACKS .ai-containers/ (any file under it is in the
+  # git index), never add an ignore rule — it would silently hide newly-synced files
+  # from commits. Makes AI_CONTAINERS_NO_GITIGNORE=1 unnecessary for tracked layouts.
+  # The same code as sync-to-projects.sh's copy (tests/test-project-init.sh compares
+  # them; this one lacked the check, bugs review PRJ-4).
+  [[ -n "$(git -C "$project_path" ls-files -- .ai-containers 2>/dev/null | head -1)" ]] && return 0
   local gi="${project_path}/.gitignore"
   # Guarantee a trailing newline before appending to an existing, non-empty file.
   if [[ -f "$gi" && -s "$gi" && -n "$(tail -c1 "$gi" 2>/dev/null)" ]]; then

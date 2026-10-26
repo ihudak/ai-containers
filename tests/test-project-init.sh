@@ -154,6 +154,22 @@ for f in sandbox.env.pre-init sandbox.env.pre-init.20260101T000000Z; do
   (cd "$gi_repo" && git check-ignore -q "$f") && pass "the inner .gitignore ignores $f" || fail "the inner .gitignore does not ignore $f"
 done
 
+# PRJ-4: a project that TRACKS .ai-containers/ (the documented "version the portable
+# config" layout) must not get the ignore rule back on a re-init: it hides every
+# file not yet tracked from `git add`. sync-to-projects.sh already checked; init did not.
+PROJ4="$TMP/proj/tracked"; mkdir -p "$PROJ4/.ai-containers"; git -C "$PROJ4" init -q
+printf 'IMAGE_NAME=tracked-ai-container\n' > "$PROJ4/.ai-containers/sandbox.env"
+git -C "$PROJ4" add .ai-containers/sandbox.env
+printf '%s\n\n\n\n\n\n\n\n\n\n\n' "$PROJ4" | bash "$SCRIPTS/project-init.sh" >/dev/null 2>&1
+! grep -qx '/.ai-containers/' "$PROJ4/.gitignore" 2>/dev/null \
+  && pass "init adds no ignore rule to a project that tracks .ai-containers/" \
+  || fail "init ignored a tracked .ai-containers/ ($(cat "$PROJ4/.gitignore"))"
+# One function, two copies: they must not drift again.
+fn_of() { sed -n '/^ensure_ai_containers_ignored()/,/^}/p' "$1" | grep -v '^[[:space:]]*#'; }
+[[ "$(fn_of "$SCRIPTS/project-init.sh")" == "$(fn_of "$SCRIPTS/sync-to-projects.sh")" ]] \
+  && pass "init's and sync's ensure_ai_containers_ignored are the same code" \
+  || fail "ensure_ai_containers_ignored differs between project-init.sh and sync-to-projects.sh"
+
 # ── Group picker (step 6) ─────────────────────────────────────────────────────
 # The group prompt lists existing groups by number; anything else is a name, and
 # a name with no directory is confirmed before it becomes a new group. Each run
