@@ -110,11 +110,14 @@ marker_allows() {
 # cannot see them. This walks each file: from an awk command word (gawk, mawk,
 # nawk included) to the end of that command — a `|`, `;`, `&`, `)` or comment
 # outside quotes, or the end of a line not continued with a backslash — and
-# collects the text of every single-quoted argument, across lines, honouring
-# `'\''` and double quotes. A line whose collected text holds `{` digits `}`
-# (or `{n,}`, `{n,m}`) is reported. A full-line shell comment never starts a
-# program. What it reads is the program text, awk comments included; a line
-# that only names the construct takes the usual marker (rule id awk-interval).
+# collects the text of every quoted argument: single-quoted across lines,
+# honouring `'\''`; double-quoted within its line, because a program can be
+# double-quoted and a -v value becomes a regex the moment the program matches
+# against it. A line whose collected text holds `{` digits `}` (or `{n,}`,
+# `{n,m}`) is reported. A full-line shell comment never starts a program. What
+# it reads is every quoted argument, awk comments and a double-quoted file
+# operand included; a line that only names the construct takes the usual
+# marker (rule id awk-interval).
 awk_interval_lines() {  # $1=file → lineno:text for each line whose awk program text holds an interval
   awk -v sq="'" '
     function cmdstart(s) { return match(s, /(^|[[:space:];|&(`])[gmn]?awk([[:space:]]|$)/) }
@@ -130,7 +133,8 @@ awk_interval_lines() {  # $1=file → lineno:text for each line whose awk progra
       while (i <= n) {
         c = substr(line, i, 1)
         if (inq) { if (c == sq) inq = 0; else prog = prog c; i++; continue }
-        if (dq)  { if (c == "\\") i++; else if (c == "\"") dq = 0; i++; continue }
+        if (dq)  { if (c == "\\") { prog = prog substr(line, i, 2); i += 2; continue }
+                   if (c == "\"") dq = 0; else prog = prog c; i++; continue }
         if (c == "\\") { i += 2; continue }
         if (c == sq)   { inq = 1; i++; continue }
         if (c == "\"") { dq = 1; i++; continue }

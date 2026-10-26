@@ -95,4 +95,37 @@ else
 fi
 check "every key comes back, none dropped" "$n" "$(grep -cE '^[a-z0-9-]+=' <<<"$out")"
 
+# ── Every image variant's conf is one build.sh accepts ────────────────────────
+# What run.sh actually builds is the minimal conf plus a variant's overrides,
+# so each is put through build.sh's own validate_config: from the all-pinned
+# conf above, the review's mysql-and-mariadb refusal is exactly what a leaked
+# pin produces. Variants and overrides are run.sh's, asked rather than copied.
+variants="$(
+  # shellcheck disable=SC2034  # read by run.sh, sourced on the next lines
+  IT_SOURCE_ONLY=1
+  set --
+  # shellcheck source=integration/run.sh
+  source "$REPO_DIR/tests/integration/run.sh" >/dev/null 2>&1 || exit 1
+  # shellcheck disable=SC2086  # KNOWN_VARIANTS is run.sh's space-separated list
+  for v in $KNOWN_VARIANTS; do printf '%s|%s\n' "$v" "$(variant_overrides "$v")"; done )"
+n_var="$(grep -c . <<<"$variants")"
+(( n_var >= 5 )) && pass "run.sh names $n_var image variants" \
+  || fail "run.sh names $n_var image variants — the check below would prove little"
+while IFS='|' read -r v overrides; do
+  [[ -n "$v" ]] || continue
+  # shellcheck disable=SC2086  # overrides are run.sh's space-separated key=value list
+  bash "$MINIMAL" "$TMP/pinned.conf" $overrides > "$TMP/variant.conf"
+  err="$( set +u
+    export SANDBOX_CONF="$TMP/variant.conf"
+    # shellcheck source=../build.sh
+    source "$ENGINE_DIR/build.sh" >/dev/null 2>&1 || { echo "build.sh could not be sourced"; exit 1; }
+    validate_config 2>&1 >/dev/null )"; rc=$?
+  if (( rc == 0 )); then
+    pass "variant $v: build.sh's validate_config accepts the minimal conf with its overrides"
+  else
+    reason="$(grep -m 1 '^ERROR' <<<"$err")"
+    fail "variant $v: build.sh's validate_config refuses the minimal conf with its overrides: ${reason:-$(head -n 1 <<<"$err")}"
+  fi
+done <<<"$variants"
+
 printf '\n%d failure(s)\n' "$fails"; exit "$fails"

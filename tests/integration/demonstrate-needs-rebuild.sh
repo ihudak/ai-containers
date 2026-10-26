@@ -160,7 +160,10 @@ mapfile -t variant_tags < <(
   # shellcheck disable=SC2034  # read by run.sh, sourced on the next lines
   IT_SOURCE_ONLY=1
   set --
-  # shellcheck source=tests/integration/run.sh
+  # NOT followed (/dev/null): run.sh sources sandbox-common.sh, whose
+  # `local … out=()` shellcheck would then take for this file's own `out`
+  # string, warning SC2178/SC2128 at every use of it below.
+  # shellcheck source=/dev/null
   source "$RUN" >/dev/null 2>&1 || exit 1
   # shellcheck disable=SC2086  # KNOWN_VARIANTS is run.sh's space-separated list
   for v in $KNOWN_VARIANTS; do variant_image "$v"; printf '\n'; done )

@@ -15,7 +15,11 @@
 # only new rows in tests/layer-checks.conf.
 #
 # EVERY function here fails loudly and non-zero on an empty result, AND on an
-# input file that is not there. That is the whole point: a parser returning
+# input file that is not there — except where empty is an ordinary answer: the
+# predicates (wf_has_step, wf_triggers_on, wf_if_true) and wf_it_selections,
+# for which a workflow that runs no integration case is normal. Their callers
+# hold the vacuity check (tests/test-layer-containment.sh fails a layer that
+# derived to nothing). That is the whole point: a parser returning
 # nothing quietly would make its consumer iterate zero rows and report success
 # having verified nothing -- the exact defect the guard this feeds was written
 # to catch.
@@ -216,19 +220,25 @@ wf_triggers_on() {  # $1=yaml  $2=trigger name (e.g. pull_request) → rc 0 pres
       return s
     }
     function nocomment(s) { sub(/^#.*$/, "", s); sub(/[[:space:]]+#.*$/, "", s); return s }
+    # A whole value on one line: a flow list, a flow map (unreadable), or a
+    # scalar. Used for the rest of the `on:` line and for a value that starts
+    # on the line after it.
+    function oneline(rest,   n, a, i) {
+      if (substr(rest, 1, 1) == "[") {
+        if (substr(rest, length(rest), 1) != "]") { bad = 1; return }
+        n = split(substr(rest, 2, length(rest) - 2), a, ",")
+        for (i = 1; i <= n; i++) if (unq(a[i]) == trig) found = 1
+        return
+      }
+      if (substr(rest, 1, 1) == "{") { bad = 1; return }
+      if (unq(rest) == trig) found = 1
+    }
     BEGIN { state = 0; seen = 0; first = 0; found = 0; bad = 0 }
     state == 0 && ($0 ~ /^("on"|on):/ || index($0, sq "on" sq ":") == 1) {
       seen = 1
       rest = $0; sub(/^[^:]*:/, "", rest); rest = trim(nocomment(rest))
       if (rest == "") { state = 1; next }
-      if (substr(rest, 1, 1) == "[") {
-        if (substr(rest, length(rest), 1) != "]") { bad = 1; exit }
-        n = split(substr(rest, 2, length(rest) - 2), a, ",")
-        for (i = 1; i <= n; i++) if (unq(a[i]) == trig) found = 1
-        exit
-      }
-      if (substr(rest, 1, 1) == "{") { bad = 1; exit }
-      if (unq(rest) == trig) found = 1
+      oneline(rest)
       exit
     }
     state == 1 {
@@ -242,8 +252,8 @@ wf_triggers_on() {  # $1=yaml  $2=trigger name (e.g. pull_request) → rc 0 pres
       if (!first) {
         first = 1; base = ind
         isseq = (body ~ /^-([[:space:]]|$)/)
-        # No colon: a plain scalar continued on the next line (`on:\n  push`).
-        if (!isseq && body !~ /:([[:space:]]|$)/) { if (unq(body) == trig) found = 1; exit }
+        # A flow collection, or a plain scalar (no colon), on the next line.
+        if (!isseq && (substr(body, 1, 1) == "[" || substr(body, 1, 1) == "{" || body !~ /:([[:space:]]|$)/)) { oneline(trim(body)); exit }
       }
       if (ind < base) exit
       if (ind > base) next
@@ -306,7 +316,7 @@ wf_if_true() {  # $1=expression ('' = no if:)  $2=event → rc 0 runs, 1 does no
 # `tests/integration/run.sh` invocation in a step's `run:`, fields separated by
 # the ASCII unit separator (\037) — not a tab, which `read` treats as
 # whitespace and so collapses the empty field a step without an if: leaves:
-#   <job> US <step identity> US <step if:> US <arguments>
+#   <job> US <step identity> US <step if:> US <guarded: 1|0> US <arguments>
 # The run: value is decoded first — a literal block (|) line by line, a folded
 # block (>) or a plain value folded as YAML folds them, lines joined by a space
 # but a blank line kept as a newline — and comment lines are dropped, so an
@@ -335,16 +345,28 @@ _wf_it_awk() {  # $1=yaml
         else { inrun = 0; nrun = 1; runl[1] = v; plain = 1 }
       }
     }
-    function scan(line,   p, a) {
+    # scan() reads one shell line. guarded: whether the shell may skip the
+    # invocation — something other than `bash`, `env` or assignments before it
+    # on its line, or an earlier line of the same value that opened a compound
+    # command (if, case, a loop) or ended in an operator that carries on into
+    # the next line. ctl() records the second after each line is scanned.
+    function ctl(line) {
+      if (line ~ /^[[:space:]]*#/) return
+      if (line ~ /(^|[[:space:];&|(])(if|then|else|elif|case|for|while|until|do|select)([[:space:];]|$)/ ||
+          line ~ /(&&|[|]|\\)[[:space:]]*$/) ctlseen = 1
+    }
+    function scan(line,   p, a, pre, g) {
       if (line ~ /^[[:space:]]*#/) return
       if (!match(line, /(^|[[:space:];&|(])(bash[[:space:]]+)?(\.\/)?tests\/integration\/run\.sh([[:space:]]|$)/)) return
       p = index(substr(line, RSTART), "tests/integration/run.sh")
+      pre = substr(line, 1, RSTART + p - 2); sub(/\.\/$/, "", pre)
+      g = ctlseen || pre !~ /^[[:space:]]*(([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*|env|bash)[[:space:]]+)*$/
       a = substr(line, RSTART + p - 1 + length("tests/integration/run.sh"))
       gsub(idiom, "", a)
       sub(/[[:space:]]#.*$/, "", a)
       if (match(a, /(^|[[:space:]])[0-9]*[<>]|[;|&]/)) a = substr(a, 1, RSTART - 1)
       sub(/^[[:space:]]+/, "", a); sub(/[[:space:]]+$/, "", a)
-      out = out jobname "\037" (nm != "" ? nm : (us != "" ? us : "(unnamed step)")) "\037" cond "\037" a "\n"
+      out = out jobname "\037" (nm != "" ? nm : (us != "" ? us : "(unnamed step)")) "\037" cond "\037" g "\037" a "\n"
     }
     function flush(   i, j) {
       if (started) {
@@ -353,17 +375,17 @@ _wf_it_awk() {  # $1=yaml
           # a newline, and a more-indented line keeps its own line.
           j = ""
           for (i = 1; i <= nrun; i++) {
-            if (runl[i] == "")               { scan(j); j = "" }
-            else if (runl[i] ~ /^[[:space:]]/) { scan(j); scan(runl[i]); j = "" }
+            if (runl[i] == "")               { scan(j); ctl(j); j = "" }
+            else if (runl[i] ~ /^[[:space:]]/) { scan(j); ctl(j); scan(runl[i]); ctl(runl[i]); j = "" }
             else                             { j = (j == "" ? runl[i] : j " " runl[i]) }
           }
           scan(j)
         } else {
-          for (i = 1; i <= nrun; i++) scan(runl[i])
+          for (i = 1; i <= nrun; i++) { scan(runl[i]); ctl(runl[i]) }
         }
         printf "%s", out
       }
-      started = 0; nm = ""; us = ""; cond = ""; inrun = 0; fold = 0; nrun = 0; plain = 0; out = ""
+      started = 0; nm = ""; us = ""; cond = ""; inrun = 0; fold = 0; nrun = 0; plain = 0; out = ""; ctlseen = 0
     }
     BEGIN {
       idiom = "\\$\\{\\{[[:space:]]*inputs\\.[A-Za-z0-9_-]+[[:space:]]*&&[[:space:]]*format\\(" sq "[^" sq "]*" sq ",[[:space:]]*inputs\\.[A-Za-z0-9_-]+\\)[[:space:]]*\\|\\|[[:space:]]*" sq sq "[[:space:]]*\\}\\}"
@@ -401,6 +423,21 @@ _wf_it_awk() {  # $1=yaml
   ' "$1"
 }
 
+# _wf_job_has_key: does the named job carry this job-level key, in any form
+# (a scalar, a flow list, a block list)? wf_job_key needs a value on the key's
+# own line, and `needs:` is often a block list.
+_wf_job_has_key() {  # $1=yaml  $2=job id  $3=key → rc 0 when present
+  awk -v job="$2" -v key="$3" '
+    /^jobs:[[:space:]]*$/ { inj = 1; next }
+    inj && /^[^[:space:]#]/ { inj = 0; injob = 0 }
+    inj && /^  [A-Za-z0-9_-]+:[[:space:]]*$/ {
+      cur = $0; sub(/^  /, "", cur); sub(/:[[:space:]]*$/, "", cur); injob = (cur == job); next
+    }
+    injob && index($0, "    " key ":") == 1 { found = 1; exit }
+    END { exit !found }
+  ' "$1"
+}
+
 # wf_it_selections answers "which integration cases does this workflow run for
 # <event>" in the only terms run.sh can check: the arguments of each
 # `tests/integration/run.sh` invocation that actually runs, one line each,
@@ -415,11 +452,17 @@ _wf_it_awk() {  # $1=yaml
 # followed. Catalogue calls (--list, --list-caps) select nothing and are
 # skipped. Everything this cannot decide is rc 1 with the job and step named,
 # never a quiet omission: an on: it cannot read, an if: wf_if_true cannot
-# evaluate, arguments still holding ${{ }} after rendering, or holding any
-# shell expansion or quoting ($, `, quotes, backslash) — `run.sh $args` is
-# what a dispatch-only step does, which is why such steps must say so in an
-# if: this can evaluate. workflow_dispatch itself is refused: its inputs are
-# not empty, so nothing here renders it truthfully.
+# evaluate, a job with needs:, an invocation the shell may skip (a shell `if`
+# or `&&` around it — the shape integration.yml's Run step had), arguments
+# still holding ${{ }} after rendering, or holding any shell expansion or
+# quoting ($, `, quotes, backslash) — `run.sh $args` is what a dispatch-only
+# step does, which is why such steps must say so in an if: this can evaluate.
+# Over-counting is the failure that matters: it credits a layer with cases it
+# never runs, while under-counting fails the "every case runs nightly" check
+# loudly. workflow_dispatch itself is refused: its inputs are not empty, so
+# nothing here renders it truthfully.
+# Every selection it COULD decide is printed even when it returns 1, so a
+# caller can fail for the one it could not and still use the rest.
 wf_it_selections() {  # $1=yaml  $2=event → <job>|<step>|<args> per selection; rc 1 when it cannot decide one
   local f="${1:?wf_it_selections: workflow path required}"
   local ev="${2:?wf_it_selections: event required}"
@@ -434,17 +477,27 @@ wf_it_selections() {  # $1=yaml  $2=event → <job>|<step>|<args> per selection;
   wf_triggers_on "$f" "$ev"; trc=$?
   (( trc == 1 )) && return 0
   (( trc == 0 )) || return 1
-  while IFS=$'\037' read -r job step cond args; do
+  while IFS=$'\037' read -r job step cond guarded args; do
     if [[ -z "${jif_rc[$job]:-}" ]]; then
       jif="$(wf_job_key "$f" "$job" if 2>/dev/null)" || jif=""
       wf_if_true "$jif" "$ev"; jif_rc[$job]=$?
       [[ "${jif_rc[$job]}" == 2 ]] && { echo "lib-layer-checks: cannot evaluate job '$job' if: $jif ($f)" >&2; bad=1; }
+      # needs: makes the job wait on others and skip when they are skipped;
+      # nothing here follows that, so a selection behind it is not counted.
+      if [[ "${jif_rc[$job]}" == 0 ]] && _wf_job_has_key "$f" "$job" needs; then
+        echo "lib-layer-checks: job '$job' has needs:, which this reader does not evaluate ($f)" >&2
+        jif_rc[$job]=2; bad=1
+      fi
     fi
     [[ "${jif_rc[$job]}" == 0 ]] || continue
     wf_if_true "$cond" "$ev"; src=$?
     (( src == 1 )) && continue
     if (( src == 2 )); then
       echo "lib-layer-checks: cannot evaluate step if: $cond — $job/$step ($f)" >&2; bad=1; continue
+    fi
+    if [[ "$guarded" == 1 ]]; then
+      echo "lib-layer-checks: the run.sh invocation in $job/$step runs under a shell condition this reader cannot evaluate ($f)" >&2
+      bad=1; continue
     fi
     if [[ "$args" == *'${{'* || "$args" == *[\$\`\"\'\\]* ]]; then
       echo "lib-layer-checks: cannot render the run.sh arguments of $job/$step ($f): $args" >&2; bad=1; continue

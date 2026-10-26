@@ -11,8 +11,9 @@
 #   the nvm VERSION      sandbox.conf's `nvm-version=`, which is pinned because
 #                        nvm's latest cannot be detected at build time behind a
 #                        rate limit — .github/workflows/update-nvm-version.yml
-#                        exists solely to keep it current, so reporting it is
-#                        reporting the output of that job.
+#                        exists solely to keep the Dockerfile's ARG NVM_VERSION
+#                        current, which the empty default reports, so reporting
+#                        it is normally reporting the output of that job.
 #
 # The engine release is the one that can LIE, and these tests are mostly about
 # that: a project copy reports what it was told at sync time, and a copy that

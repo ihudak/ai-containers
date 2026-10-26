@@ -441,9 +441,11 @@ declare -A layer_cases=()
 for ev in pull_request schedule; do
   n_sel=0; union=""
   for wfile in "${workflow_files[@]}"; do
+    # A refusal fails this test, but what WAS read still counts: dropping the
+    # whole file would bury the one step it could not read under a cascade of
+    # containment failures about every case the file's other jobs run.
     if ! sels="$(wf_it_selections "$wf_dir/$wfile" "$ev")"; then
-      fail "$ev: could not derive what $wfile runs (see stderr above) — this layer is not known"
-      continue
+      fail "$ev: could not derive everything $wfile runs (see stderr above) — this layer is not fully known"
     fi
     while IFS='|' read -r job step args; do
       [[ -n "$job" ]] || continue
@@ -466,21 +468,23 @@ pr_set="${layer_cases[pull_request]}"
 nightly_set="${layer_cases[schedule]}"
 local_set="$(sel_one)"
 
+# Sorted and compared in byte order alike: comm follows LC_COLLATE, and the PR
+# gate's suite job runs under en_US.UTF-8.
 [[ -n "$pr_set" && -n "$nightly_set" && -n "$local_set" ]] \
   && pass "all three selections are non-empty" \
   || fail "a selection came back empty — containment below would pass vacuously"
 
-missing="$(comm -23 <(printf '%s\n' "$pr_set") <(printf '%s\n' "$nightly_set"))"
+missing="$(LC_ALL=C comm -23 <(printf '%s\n' "$pr_set") <(printf '%s\n' "$nightly_set"))"
 [[ -z "$missing" ]] \
   && pass "PR selection ⊆ nightly selection" \
   || fail "PR selection ⊄ nightly — the PR gate runs case(s) no nightly job does: $(printf '%s' "$missing" | tr '\n' ' ')"
 
-missing="$(comm -23 <(printf '%s\n' "$nightly_set") <(printf '%s\n' "$local_set"))"
+missing="$(LC_ALL=C comm -23 <(printf '%s\n' "$nightly_set") <(printf '%s\n' "$local_set"))"
 [[ -z "$missing" ]] \
   && pass "nightly selection ⊆ local selection" \
   || fail "nightly selection ⊄ local: $(printf '%s' "$missing" | tr '\n' ' ')"
 
-missing="$(comm -23 <(printf '%s\n' "$local_set") <(printf '%s\n' "$nightly_set"))"
+missing="$(LC_ALL=C comm -23 <(printf '%s\n' "$local_set") <(printf '%s\n' "$nightly_set"))"
 [[ -z "$missing" ]] \
   && pass "every case in the corpus runs nightly" \
   || fail "case(s) no nightly job runs, so no CI layer runs them at all: $(printf '%s' "$missing" | tr '\n' ' ')"

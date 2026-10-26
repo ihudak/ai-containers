@@ -193,7 +193,14 @@ vector "awk-interval: grep -E is not awk"              "grep -E '^[0-9]${LB}3}-'
 vector "awk-interval: [[ =~ ]] is not awk"             "[[ ${DOLLAR}x =~ ^[0-9]${LB}3}${DOLLAR} ]]" 0
 vector "awk-interval: a sed after the pipe is not awk" "awk '{print}' f | sed -E 's/a${LB}2}/b/'" 0
 vector "awk-interval: action braces are not intervals" "awk '{ print ${DOLLAR}1 } END { n++ }' f" 0
-vector "awk-interval: a double-quoted operand is not program text" "awk '{print}' \"a${LB}2}\""   0
+# Double-quoted arguments are read too: a program can be double-quoted, and a
+# -v value is a dynamic regex as soon as the program matches against it. A
+# double-quoted FILE operand holding an interval is flagged as well — the
+# linter's accepted false positive, in the safe direction.
+vector "awk-interval: a double-quoted program"         "awk \"/^[0-9]${LB}3}-/\" f"            1
+vector "awk-interval: a -v value used as a regex"       "awk -v re=\"^[0-9]${LB}3}\" '${DOLLAR}0 ~ re' f" 1
+vector "awk-interval: a double-quoted operand is read too (accepted false positive)" \
+  "awk '{print}' \"a${LB}2}\""                                                                1
 vector "awk-interval: a full-line shell comment"       "# awk '/x${LB}2}/' f"                     0
 # Where the shell command ends, and where quoting does — each of these was
 # found by damaging the scanner and watching nothing notice.

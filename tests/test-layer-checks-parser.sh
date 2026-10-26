@@ -346,6 +346,13 @@ check "on: with a plain scalar on the next line naming the trigger" 0 \
   "$(trig_rc "$(printf 'on:\n  pull_request\njobs:\n  x:\n    runs-on: y')")"
 check "on: with a plain scalar on the next line naming another trigger" 1 \
   "$(trig_rc "$(printf 'on:\n  push\njobs:\n  x:\n    runs-on: y')")"
+# A flow collection may sit on the line after `on:` as well as on it.
+check "on: with a flow list on the next line holding the trigger" 0 \
+  "$(trig_rc "$(printf 'on:\n  [push, pull_request]\njobs:\n  x:\n    runs-on: y')")"
+check "on: with a flow list on the next line without it" 1 \
+  "$(trig_rc "$(printf 'on:\n  [push]\njobs:\n  x:\n    runs-on: y')")"
+check "on: with a flow map on the next line cannot be read: rc 2" 2 \
+  "$(trig_rc "$(printf 'on:\n  {pull_request: {}}\njobs:\n  x:\n    runs-on: y')")"
 # Only a MATCHED pair of quotes is stripped: a value that opens with a quote it
 # never closes is not the trigger name, whatever lies between.
 check "an unmatched leading double quote is not stripped" 1 "$(trig_rc 'on: "pull_requestx')"
@@ -519,6 +526,41 @@ fails_naming "wf_it_selections renders only the guarded inputs idiom, not a bare
 printf "on:\n  schedule:\njobs:\n  j:\n    runs-on: x\n    steps:\n      - name: Odd\n        if: contains(github.ref, 'x')\n        run: ./tests/integration/run.sh --tags a\n" > "$TMP/it-if.yml"
 fails_naming "wf_it_selections fails, naming the step, on a step if: it cannot evaluate" \
   "j/Odd" wf_it_selections "$TMP/it-if.yml" schedule
+
+# An invocation the SHELL may skip is not one the reader can count: under a
+# shell `if` on the event (the shape integration.yml's Run step had), after
+# `cond &&`, or in a job that needs another job, it fails by job and step
+# rather than crediting the layer with cases it may never run. A plain prefix —
+# `bash`, `env`, an assignment — is still read.
+cat > "$TMP/it-guarded.yml" <<'YAML'
+on:
+  schedule:
+jobs:
+  j:
+    runs-on: x
+    steps:
+      - name: Plain prefixes
+        run: FOO=1 env BAR=2 bash ./tests/integration/run.sh --tags a
+YAML
+check "wf_it_selections reads past bash, env and assignments" \
+  "j|Plain prefixes|--tags a" "$(wf_it_selections "$TMP/it-guarded.yml" schedule)"
+guarded_case() {  # $1=label $2=step name $3=run: line(s), indented for a step
+  printf 'on:\n  schedule:\njobs:\n  j:\n    runs-on: x\n    steps:\n      - name: %s\n        run: %s\n' "$2" "$3" > "$TMP/it-g.yml"
+  fails_naming "$1" "j/$2" wf_it_selections "$TMP/it-g.yml" schedule
+}
+guarded_case "a shell if on the same line is refused" "One line" \
+  'if [ "${{ github.event_name }}" = workflow_dispatch ]; then ./tests/integration/run.sh --tags a; fi'
+guarded_case "cond && run.sh is refused" "And" 'true && ./tests/integration/run.sh --tags a'
+guarded_case "a shell if on an earlier line is refused" "Multi" \
+  "$(printf '|\n          if [ -n "$X" ]; then\n            ./tests/integration/run.sh --tags a\n          fi')"
+guarded_case "a condition continued onto the invocation's line is refused" "Cont" \
+  "$(printf '|\n          [ -n "$X" ] ||\n            ./tests/integration/run.sh --tags a')"
+printf 'on:\n  schedule:\njobs:\n  gate:\n    if: github.event_name == '"'"'workflow_dispatch'"'"'\n    runs-on: x\n    steps:\n      - run: echo gate\n  j:\n    needs: gate\n    runs-on: x\n    steps:\n      - name: After gate\n        run: ./tests/integration/run.sh --tags a\n' > "$TMP/it-needs.yml"
+fails_naming "a job with needs: is refused, naming it" "job 'j'" wf_it_selections "$TMP/it-needs.yml" schedule
+# The dispatch-only shape is still fine: its step if: skips it first.
+printf 'on:\n  pull_request:\njobs:\n  j:\n    runs-on: x\n    steps:\n      - name: Dispatch\n        if: github.event_name == '"'"'workflow_dispatch'"'"'\n        run: |\n          [ -n "$T" ] && args="--tags $T"\n          ./tests/integration/run.sh $args\n      - name: Run\n        run: ./tests/integration/run.sh --tags fast\n' > "$TMP/it-disp.yml"
+check "a conditional invocation in a step the event skips is no error" \
+  "j|Run|--tags fast" "$(wf_it_selections "$TMP/it-disp.yml" pull_request)"
 
 printf "on:\n  schedule:\njobs:\n  j:\n    if: contains(github.ref, 'x')\n    runs-on: x\n    steps:\n      - name: Fine\n        run: ./tests/integration/run.sh --tags a\n" > "$TMP/it-jif.yml"
 fails_naming "wf_it_selections fails, naming the job, on a job if: it cannot evaluate" \

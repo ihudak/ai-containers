@@ -67,9 +67,13 @@ cp "$REPO_DIR/Dockerfile" "$REPO_DIR/sandbox.conf" "$TMP/r/" \
 current="$(sed -n 's/^ARG NVM_VERSION=//p' "$TMP/r/Dockerfile")"
 [[ -n "$current" ]] || { printf 'SCAFFOLD-FAILED: the Dockerfile has no ARG NVM_VERSION= line\n'; exit 1; }
 
-# Render the two step outputs the script reads, as GitHub would.
+# Render the two step outputs the script reads, as GitHub would. `sed -i ` is
+# GNU's form; BSD sed (stock macOS, where verify-on-host.sh runs this suite)
+# takes the next word as -i's suffix, so the step is given `-i.bak`, which both
+# accept. The .bak file is untracked and git diff does not list it.
 sed -e 's/\${{ steps\.latest\.outputs\.tag }}/v9.9.9/g' \
     -e "s/\${{ steps\.current\.outputs\.dockerfile }}/$current/g" \
+    -e 's/sed -i /sed -i.bak /g' \
     "$TMP/step.sh" > "$TMP/rendered.sh"
 if grep -q '\${{' "$TMP/rendered.sh"; then
   fail "every \${{ }} in the step is rendered (left: $(grep -o '\${{[^}]*}}' "$TMP/rendered.sh" | head -n 1))"

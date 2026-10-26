@@ -45,8 +45,9 @@ jobs:
       # en_US collation ignores punctuation at the first level, so a bare `sort`
       # orders `docs-archive--wc` before `docs--wc`; two tests compared such a
       # sort against byte-ordered literals, and failed on every en_US host while
-      # every CI job (C.UTF-8) stayed green (TST-1). suite-floor and
-      # suite-symlinked-tmp keep C.UTF-8, so both orders run on every PR.
+      # every CI job (C.UTF-8) stayed green (TST-1). suite-floor (no locale
+      # set, so POSIX) and suite-symlinked-tmp (C.UTF-8) keep byte order, so
+      # both orders run on every PR.
       #
       # Asserted, not assumed: a locale that is missing, or that collates like
       # C, would leave this a second C run that checks nothing new. The probe

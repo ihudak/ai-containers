@@ -14,8 +14,9 @@
 #   nvm VERSION     sandbox.conf's `nvm-version=`. This one is pinned rather than
 #                   detected because nvm's latest cannot be resolved at build
 #                   time behind a rate limit; .github/workflows/update-nvm-version.yml
-#                   exists solely to keep it current, so reporting it is
-#                   reporting that job's output. An EMPTY value is not "no nvm" —
+#                   exists solely to keep the Dockerfile's ARG NVM_VERSION
+#                   current, which the empty default reports, so reporting it is
+#                   normally reporting that job's output. An EMPTY value is not "no nvm" —
 #                   it means the Dockerfile's own ARG default applies, and the
 #                   report says which, because the question being asked is what
 #                   the IMAGE will get, not what the file happens to contain.

@@ -650,7 +650,7 @@ rule makes the stale and obsolete checks vacuous for unselected files. And
 
 ## F14 — no mechanical guard against awk interval quantifiers — **FIXED 2026-10-26**
 
-**FIXED 2026-10-26** (GAP-8). `tests/bash-dialect-lint.sh` has an `awk-interval` rule that is not version-gated. It follows each awk command's single-quoted program text across lines, honouring `'\''` and double quotes, and refuses a line whose program text holds `{n}`, `{n,}` or `{n,m}`. The "unreliable by regex" objection below held for a per-line grep; it does not hold for a scan that keeps quote state from line to line. Vectors are in `tests/test-bash-dialect-lint.sh`.
+**FIXED 2026-10-26** (GAP-8). `tests/bash-dialect-lint.sh` has an `awk-interval` rule that is not version-gated. It reads every quoted argument of each awk command — single-quoted text across lines, honouring `'\''`, and double-quoted text within its line, so a double-quoted program or a `-v` value used as a regex counts — and refuses a line whose text holds `{n}`, `{n,}` or `{n,m}`. The "unreliable by regex" objection below held for a per-line grep; it does not hold for a scan that keeps quote state from line to line. Vectors are in `tests/test-bash-dialect-lint.sh`.
 
 The original entry:
 
