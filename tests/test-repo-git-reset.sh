@@ -259,10 +259,12 @@ else
   fail "an unreachable remote is reported as STALE
 $OUT"
 fi
-if grep -q '^PRIMARY|main$' <<<"$OUT"; then
-  pass "… and the primary branch is still resolved, from the refs already there"
+# Nothing in the volume names the primary or proves a branch pushed: the refs
+# there are the agent's to write. Without the remote, neither is claimed.
+if ! grep -q '^PRIMARY|' <<<"$OUT" && grep -qx 'BRANCH|feat/x|?|current' <<<"$OUT"; then
+  pass "… with no primary claimed and every count unknown"
 else
-  fail "… and the primary branch is still resolved, from the refs already there
+  fail "… with no primary claimed and every count unknown
 $OUT"
 fi
 stale_line="$(grep '^STALE|' <<<"$OUT")"
@@ -272,11 +274,13 @@ else
   fail "the STALE reason is one line — a multi-line git error corrupts parsing
 $stale_line"
 fi
+printf 'edit\n' > "$W/a"
 run_script reset "$W" main
-if [[ "$RC" -eq 0 && "$(g "$W" symbolic-ref --short HEAD)" == "main" ]]; then
-  pass "reset still works offline — clean slate, just not a fresh one"
+if [[ "$RC" -ne 0 && "$OUT" == *"cannot clone the recorded remote"* && "$(cat "$W/a")" == edit ]] \
+   && [[ "$(g "$W" symbolic-ref --short HEAD)" == "feat/x" ]]; then
+  pass "reset refuses offline, and leaves the checkout exactly as it was"
 else
-  fail "reset still works offline (rc=$RC)
+  fail "offline reset (rc=$RC)
 $OUT"
 fi
 
@@ -286,20 +290,21 @@ W="$TMP/noremote"; git init -q --initial-branch=main "$W" >/dev/null 2>&1
 commit_in "$W" first
 g "$W" checkout -q -b side >/dev/null 2>&1
 commit_in "$W" side-file
-# The recorded URL becomes origin, and here it leads nowhere: the fetch fails,
-# which STALE reports, and the checked-out branch is all there is to go by.
+# The recorded URL is the only remote, whatever the .git says, and here it leads
+# nowhere: STALE says so, both branches are listed, and nothing is claimed.
 run_script inspect "$W"
-if grep -q '^STALE|' <<<"$OUT" && grep -q '^PRIMARY|side$' <<<"$OUT"; then
-  pass "with no origin, the checked-out branch is the primary and STALE says why"
+if grep -q '^STALE|' <<<"$OUT" && ! grep -q '^PRIMARY|' <<<"$OUT" \
+   && grep -qx 'BRANCH|side|?|current' <<<"$OUT" && grep -qx 'BRANCH|main|?|' <<<"$OUT"; then
+  pass "with no reachable remote, STALE says why, the branches are listed, and no primary is claimed"
 else
-  fail "with no origin, the checked-out branch is the primary and STALE says why
+  fail "with no reachable remote
 $OUT"
 fi
 run_script reset "$W" main
-if [[ "$RC" -eq 0 ]] && [[ "$(g "$W" for-each-ref --format='%(refname:short)' refs/heads/)" == "main" ]]; then
-  pass "with no origin, reset still lands on the named branch and drops the rest"
+if [[ "$RC" -ne 0 && "$(g "$W" for-each-ref --format='%(refname:short)' refs/heads/ | wc -l)" -eq 2 ]]; then
+  pass "… and reset refuses it, deleting nothing"
 else
-  fail "with no origin, reset still lands on the named branch and drops the rest (rc=$RC)
+  fail "reset without a remote (rc=$RC)
 $OUT"
 fi
 
@@ -332,7 +337,7 @@ fi
 
 W="$(mk_repo nosuch)"
 run_script reset "$W" nonexistent-branch
-if [[ "$RC" -ne 0 ]] && grep -q 'no local or remote branch named' <<<"$OUT"; then
+if [[ "$RC" -ne 0 ]] && grep -q 'the remote has no branch named' <<<"$OUT"; then
   pass "a primary branch that exists nowhere is refused, not invented"
 else
   fail "a primary branch that exists nowhere is refused, not invented (rc=$RC)
@@ -468,7 +473,7 @@ fi
 W="$(mk_repo gitfile)"
 mv "$W/.git" "$TMP/gitfile-real.git"; printf 'gitdir: %s\n' "$TMP/gitfile-real.git" > "$W/.git"
 run_script inspect "$W"
-if [[ "$RC" != 0 && "$OUT" == *"not a directory"* ]]; then pass "a .git FILE (pointing anywhere) is refused"
+if [[ "$RC" != 0 && "$OUT" == *"is a file or link"* ]]; then pass "a .git FILE (pointing anywhere) is refused"
 else fail ".git file accepted (rc=$RC: $OUT)"; fi
 
 # The remote is the one repo.sh recorded, not the one the .git names: the agent
@@ -478,9 +483,11 @@ W="$(mk_repo pinned)"; mk_repo other >/dev/null
 git -C "$W" remote set-url origin "$TMP/other.git"
 git -C "$W" remote add extra "$TMP/other.git"
 run_script inspect "$W"
+grep -qx 'PRIMARY|main' <<<"$OUT" || fail "inspect read the remote the .git names (out: $(tr '\n' ' ' <<<"$OUT"))"
+run_script reset "$W" main
 if [[ "$(git -C "$W" remote get-url origin)" == "$TMP/pinned.git" ]] && ! git -C "$W" remote get-url extra >/dev/null 2>&1 \
    && [[ "$(git config --file "$W/.git/config" --get remote.origin.fetch)" == '+refs/heads/*:refs/remotes/origin/*' ]]; then
-  pass "the remote is pinned to the recorded URL, with the standard refspec, and no other remote kept"
+  pass "the remote is the recorded URL, with the standard refspec, and no other remote is kept"
 else
   fail "remote not pinned (origin: $(git -C "$W" remote get-url origin); remotes: $(git -C "$W" remote | tr '\n' ' '))"
 fi
@@ -501,7 +508,7 @@ S2="$TMP/secret.seed"; commit_in "$S2" SECRET-CONTENT; g "$S2" push -q origin ma
 rm -f "$W/.git/config"; mkdir -p "$W/.git/remotes" "$W/.git/branches"
 printf 'URL: %s\nPull: refs/heads/*:refs/remotes/origin/*\n' "$TMP/secret.git" > "$W/.git/remotes/origin"
 printf '%s\n' "$TMP/secret.git" > "$W/.git/branches/origin"
-run_script inspect "$W"
+run_script inspect "$W"; run_script reset "$W" main
 log_l="$(git -C "$W" log --all --format=%s 2>/dev/null)"
 if [[ $'\n'"$log_l"$'\n' != *$'\nadd SECRET-CONTENT\n'* ]] \
    && [[ ! -e "$W/.git/remotes" && ! -e "$W/.git/branches" ]]; then
@@ -585,13 +592,13 @@ run_script inspect "$W"
 if grep -qx 'BRANCH|work|2|' <<<"$OUT"; then pass "a planted symbolic ref under refs/remotes/origin hides no unpushed work"
 else fail "symbolic ref hid unpushed work (out: $(tr '\n' ' ' <<<"$OUT"))"; fi
 
-# … and one that cannot be deleted (a .lock beside it) leaves every count unknown
-# rather than trusted (security review of f6368d6).
+# … nor with a .lock beside it (security review of f6368d6): the volume's refs
+# are never what a count is made against.
 W="$(mk_repo symlock)"; g "$W" checkout -q -b work >/dev/null 2>&1; commit_in "$W" z1
 g "$W" checkout -q main >/dev/null 2>&1; g "$W" symbolic-ref refs/remotes/origin/planted refs/heads/work
 : > "$W/.git/refs/remotes/origin/planted.lock"
 run_script inspect "$W"
-if grep -qx 'BRANCH|work|?|' <<<"$OUT"; then pass "a planted symbolic ref that cannot be removed makes every count unknown"
+if grep -qx 'BRANCH|work|1|' <<<"$OUT"; then pass "a planted symbolic ref that cannot be removed hides no unpushed work"
 else fail "undeletable symref trusted (out: $(tr '\n' ' ' <<<"$OUT"))"; fi
 
 # The replace-ref cleanup is itself a ref update: an agent's reference-transaction
@@ -599,8 +606,9 @@ else fail "undeletable symref trusted (out: $(tr '\n' ' ' <<<"$OUT"))"; fi
 W="$(mk_repo hookreplace)"; M2="$TMP/ran-hookreplace"
 g "$W" replace -f "$(g "$W" rev-parse HEAD)" "$(evil_commit "$W")"
 printf '#!/bin/sh\necho ran >> %s\n' "$M2" > "$W/.git/hooks/reference-transaction"; chmod +x "$W/.git/hooks/reference-transaction"
-run_script inspect "$W"
-if [[ ! -e "$M2" && -z "$(g "$W" for-each-ref refs/replace)" ]]; then pass "removing replace refs runs no hook"
+run_script inspect "$W"; run_script reset "$W" main
+if [[ ! -e "$M2" && -z "$(g "$W" for-each-ref refs/replace)" && ! -e "$W/.git/hooks/reference-transaction" ]]; then
+  pass "a replace ref and a hook in the volume's .git run nothing, and are gone after reset"
 else fail "hook ran during replace-ref cleanup ($(cat "$M2" 2>/dev/null | wc -l) times)"; fi
 # A socket in the checkout does not hang git and clean -ffdx removes it, so it
 # is not refused; a FIFO is (re-review, H5).
@@ -614,8 +622,8 @@ fi
 # The grafts setting must not bury a fetch error under git's deprecation hint.
 W="$(mk_repo hint)"
 AI_REPO_URL="$TMP/does-not-exist.git" run_script inspect "$W"
-if grep -q '^STALE|.*does not appear to be a git repository' <<<"$OUT" && ! grep -qi 'graft' <<<"$OUT"; then
-  pass "a failed fetch's STALE reason is git's error, not a grafts hint"
+if grep -q '^STALE|fatal: repository .*does-not-exist.git' <<<"$OUT" && ! grep -qi 'graft' <<<"$OUT"; then
+  pass "an unreachable remote's STALE reason is git's error, not a grafts hint"
 else fail "STALE reason (out: $(grep STALE <<<"$OUT" | cut -c1-160))"; fi
 
 # pull: the fast-forward repo.sh sync runs, through the same guarded path.
@@ -626,6 +634,55 @@ run_script pull "$W"
 if [[ "$RC" == 0 && -f "$W/newer" && ! -e "$M" ]]; then pass "pull fast-forwards, and runs nothing the .git holds"
 else fail "pull (rc=$RC; newer: $([[ -f "$W/newer" ]] && echo yes || echo no); ran: $(cat "$M" 2>/dev/null); out: $OUT)"; fi
 rm -f "$M"
+
+# ── The redesign's own promises ──────────────────────────────────────────────
+# R1 of the review of f6368d6: a dangling symbolic ref for origin/main and a
+# .lock that stops set-head made reset keep the agent's commit on main. Nothing
+# in the volume's .git is read for that decision any more.
+W="$(mk_repo dangle)"; commit_in "$W" evil.txt
+g "$W" symbolic-ref refs/remotes/origin/main refs/heads/nonexistent
+rm -f "$W/.git/refs/remotes/origin/HEAD"; : > "$W/.git/refs/remotes/origin/HEAD.lock"
+tip_r="$(git -C "$TMP/dangle.git" rev-parse --short main)"
+run_script inspect "$W"; grep -qx 'PRIMARY|main' <<<"$OUT" || fail "dangle: no PRIMARY (out: $(tr '\n' ' ' <<<"$OUT"))"
+grep -qx 'BRANCH|main|1|current' <<<"$OUT" || fail "dangle: main's unpushed commit not counted (out: $(tr '\n' ' ' <<<"$OUT"))"
+run_script reset "$W" main
+if [[ "$OUT" == *"AT|$tip_r"* && ! -e "$W/evil.txt" && "$(git -C "$W" rev-parse --short HEAD)" == "$tip_r" ]]; then
+  pass "planted refs and locks cannot keep reset off the remote's tip"
+else
+  fail "reset landed off the remote tip (out: $(tr '\n' ' ' <<<"$OUT"))"
+fi
+if [[ -z "$(git -C "$W" for-each-ref refs/remotes/origin/HEAD.lock 2>/dev/null)" && ! -e "$W/.git/refs/remotes/origin/HEAD.lock" ]]; then
+  pass "… and after reset the .git is the fresh clone's, nothing the agent left"
+else fail "agent's .git leftovers survived reset"; fi
+
+# sync keeps what it can and refuses what it cannot: untracked files and pushed
+# branches stay; an edit, an unpushed branch or a diverged branch refuses.
+W="$(mk_repo keep)"; S="$TMP/keep.seed"
+commit_in "$S" upstream-new; g "$S" push -q origin main >/dev/null 2>&1
+printf 'scratch\n' > "$W/untracked.txt"
+g "$W" branch --track shared origin/shared >/dev/null 2>&1
+run_script pull "$W"
+if [[ "$RC" == 0 && -f "$W/upstream-new" && -f "$W/untracked.txt" ]] && g "$W" show-ref --verify --quiet refs/heads/shared; then
+  pass "pull fast-forwards, keeping untracked files and branches already on the remote"
+else fail "pull lost something (rc=$RC; out: $OUT)"; fi
+W="$(mk_repo dirty)"; S="$TMP/dirty.seed"
+commit_in "$S" newer2; g "$S" push -q origin main >/dev/null 2>&1
+printf 'edited\n' > "$W/first"
+run_script pull "$W"
+if [[ "$RC" != 0 && "$OUT" == *"uncommitted changes"* && "$(cat "$W/first")" == edited ]]; then
+  pass "pull refuses a checkout with uncommitted changes, and keeps them"
+else fail "pull over uncommitted changes (rc=$RC; out: $OUT)"; fi
+W="$(mk_repo unpushed)"
+g "$W" checkout -q -b local-work >/dev/null 2>&1; commit_in "$W" lw; g "$W" checkout -q main >/dev/null 2>&1
+run_script pull "$W"
+if [[ "$RC" != 0 && "$OUT" == *"local-work has commits on no remote"* ]] && g "$W" show-ref --verify --quiet refs/heads/local-work; then
+  pass "pull refuses while a local branch holds unpushed work, and keeps it"
+else fail "pull with an unpushed branch (rc=$RC; out: $OUT)"; fi
+W="$(mk_repo diverged)"; S="$TMP/diverged.seed"
+commit_in "$W" mine; commit_in "$S" theirs; g "$S" push -q origin main >/dev/null 2>&1
+run_script pull "$W"
+if [[ "$RC" != 0 && -f "$W/mine" ]]; then pass "pull refuses a branch with commits of its own"
+else fail "pull of a diverged branch (rc=$RC; out: $OUT)"; fi
 
 printf '\n%s\n' "----------------------------------------"
 if [[ "$fails" -eq 0 ]]; then

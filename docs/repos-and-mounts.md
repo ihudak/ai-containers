@@ -43,7 +43,7 @@ Repo volumes are **global**: there is **one volume per repo name**, shared by co
 
 **`sync --all` is the one to remember.** A repo volume does not track its source — it holds whatever was there when you seeded or last synced it (see *Repo volumes shadow the host* below). `./repo.sh sync --all` brings every registered repo up to date in one command: `git pull` for git sources, an `rsync -a --delete` mirror for path sources. Run it when you sit down to work, or after pulling on the host, rather than syncing repos one at a time. It leaves existing `:rwcopy` working copies alone, because they may hold uncommitted work — see the note below on refreshing those.
 
-`reset` is the "start clean" button, and it is a *full* reset rather than a tidy-up of wherever you happen to be standing. For a git source it fetches (pruning), works out the remote's **primary branch**, checks that branch out at the remote's tip, discards uncommitted changes and untracked/ignored files (`clean -ffdx`, so build output and `node_modules` go too), and **deletes every other local branch**. For a path source it re-mirrors from the host source. Either way it removes any `:rwcopy` working copies. Reset every registered repo at once with `./repo.sh reset --all`. (The Linux `bind` backend is left untouched — its "volume" is your live host checkout — and `reset` just prints how to clean it yourself.)
+`reset` is the "start clean" button, and it is a *full* reset rather than a tidy-up of wherever you happen to be standing. For a git source it clones the source afresh, takes the remote's **primary branch**, makes the volume a checkout of that branch at the remote's tip, discards uncommitted changes and untracked/ignored files (`clean -ffdx`, so build output and `node_modules` go too), and **deletes every other local branch**. For a path source it re-mirrors from the host source. Either way it removes any `:rwcopy` working copies. Reset every registered repo at once with `./repo.sh reset --all`. (The Linux `bind` backend is left untouched — its "volume" is your live host checkout — and `reset` just prints how to clean it yourself.)
 
 **The primary branch is asked for, never assumed.** It comes from the remote's own `HEAD` (refreshed with `git remote set-head origin -a`, so a default branch renamed since you cloned is picked up), falling back to `origin/main`, then `origin/master`, and finally to whatever is checked out. Nothing hardcodes `main`: a repo whose default is `master`, `trunk`, or `develop` lands on its own default.
 
@@ -70,9 +70,9 @@ Resetting volume "ai-containers-repo-app" to a clean checkout on "master" ...
   OK: app reset to a clean state.
 ```
 
-**If the fetch fails, reset still cleans.** No network, no credentials, or a remote that has gone away leaves you with a warning and a local reset: the tree ends up clean and on the primary branch, at the remote tip **as last fetched**. The final line says `STALE — fetch failed` so you know the slate is clean but not fresh.
+**Reset needs the remote.** No network, no credentials, or a remote that has gone away leaves the repo **untouched**, with the reason in the summary (`STALE`). Each run clones the source afresh rather than trusting the volume's own `.git`, which an agent with the repo mounted `:rw` could have rigged; so it takes as long as a clone, and it refuses while a running container mounts the volume read-write.
 
-`reset` differs from `sync` in what it protects: `sync` is `git pull --ff-only` and keeps your branches and your work; `reset` keeps nothing.
+`reset` differs from `sync` in what it protects: `sync` fast-forwards the checked-out branch and keeps your untracked files and your other branches, and **refuses** rather than pull around anything it could lose — uncommitted changes, a branch with commits on no remote branch, or a branch that has diverged; `reset` keeps nothing.
 
 `add` refuses to overwrite an existing repo — use `sync` to refresh or `rm` first. Authentication for `git-url` sources uses your **host `~/.ssh`** (mounted read-only into a short-lived seeding container); local-path sources need no credentials.
 

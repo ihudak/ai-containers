@@ -8,21 +8,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- **`repo.sh sync` and `reset` no longer run what an agent wrote into a repo
-  volume's `.git`.** They run git as root, with your SSH keys, on a repository
-  the agent can write through any `:rw` repo volume, so a `core.fsmonitor`, an
-  include, a filter or a hook planted there ran with your keys in reach. The
-  `.git` is now checked and its config cut to what a fetch and a checkout need
-  before git touches it, and git runs with hooks and fsmonitor off. A `.git`
-  that is a file or holds a FIFO is refused. `repo.sh sync` of a git repo now
-  pulls through the same helper (review of batch 2). It fetches only from the
-  URL `repo.sh add` recorded, whatever the `.git` names (a deleted config with
-  a legacy `.git/remotes` file included), never recurses into submodules,
-  and refuses while a running container mounts the volume read-write. `reset`
-  lands on the remote's tip by its full name, so a tag or branch the agent
-  named `origin/main` cannot redirect it; replace refs and grafts are ignored
-  and removed; unpushed work is counted against `origin` only, and a count
-  that cannot be made is shown as unknown, never as "pushed".
+- **`repo.sh sync` and `reset` no longer run git on a repo volume's own `.git`.**
+  They ran git as root, with your SSH keys, on a repository the agent can
+  write through any `:rw` repo volume, so what it planted in `.git` — a
+  `core.fsmonitor`, an include, a hook, a remote pointing at another of your
+  private repositories, a tag or replace ref that redirected the reset — ran
+  or steered them. Each run now clones the URL `repo.sh add` recorded into a
+  private directory and works from that clone; the volume's `.git` is replaced
+  by the clone's. **Changed:** `reset` needs the remote (offline, it leaves the
+  repo untouched instead of resetting to the last fetched state), and `sync`
+  refuses when the checkout has uncommitted changes or a branch has unpushed
+  or diverged commits, instead of pulling around them. Both refuse while a
+  running container mounts the volume read-write (review of batch 2).
 - **A committed `sandbox.env` can no longer run code on your machine through
   docker or git.** It refused the keys that control the shell, but exported
   every other key into docker, git and every tool the launcher runs —
