@@ -580,5 +580,51 @@ else
 fi
 rm -rf "$TMP/lz" "$TMP/lz-PWNED"
 
+# ── G31: what an agent-made repository holds cannot make the launch slow ──────
+# Its .git/config is overlaid read-only, so the include walk follows it as safe —
+# but every byte of it is the agent's. Includes of the same file spelled two
+# ways (./config, .//config) made the walk exponential: 15 s with two, past
+# five minutes with four (the review of b3d2362). Each file is read once per
+# launch, however it is spelled, and the reads are bounded.
+launch_timed() {  # $1 = seconds; leaves LAUNCH_RC (124 on timeout) and LAUNCH_S
+  local t0=$SECONDS
+  rm -f "$CAPTURE" "$CAPTURE.manifest"
+  p_timeout "$1" bash -c 'cd "$1" && exec bash ./sandbox.sh restricted ..' _ "$LAUNCHER" >/dev/null 2>"$ERR" </dev/null
+  LAUNCH_RC=$?; LAUNCH_S=$((SECONDS - t0))
+}
+mkdir -p "$PROJ/inc31" && "${G[@]}" -C "$PROJ/inc31" init -q
+for sp in ./config .//config .///config ../.git/config; do
+  "${G[@]}" config --file "$PROJ/inc31/.git/config" --add include.path "$sp"
+done
+launch_timed 60
+[[ "$LAUNCH_RC" == 0 && "$LAUNCH_S" -lt 20 ]] \
+  && pass "G31 self-includes spelled four ways do not slow the launch (${LAUNCH_S}s)" \
+  || fail "G31 include walk (rc=$LAUNCH_RC; ${LAUNCH_S}s)"
+rm -rf "$PROJ/inc31"
+
+# ── G32: an include the agent points at a FIFO cannot hang the launch ─────────
+# The index read is git's, and git reads the repository's config — includes and
+# all — before it reads the index: a FIFO there blocked it in open() forever,
+# and /dev/stdin made it parse what you type. The index is read without the
+# repository's config.
+mkdir -p "$PROJ/fifo32" && "${G[@]}" -C "$PROJ/fifo32" init -q && mkfifo "$PROJ/fifo32/pipe"
+"${G[@]}" config --file "$PROJ/fifo32/.git/config" include.path ../pipe
+launch_timed 60
+[[ "$LAUNCH_RC" == 0 ]] && pass "G32 a FIFO include does not hang the launch (${LAUNCH_S}s)" \
+  || fail "G32 FIFO include (rc=$LAUNCH_RC; ${LAUNCH_S}s; stderr: $(tail -2 "$ERR" | tr '\n' ' '))"
+# Release any reader a failed run left blocked on it, then clean up.
+( exec 3<>"$PROJ/fifo32/pipe" ) 2>/dev/null; rm -rf "$PROJ/fifo32"
+
+# ── G33: the index warning names an agent-chosen path quoted ─────────────────
+mkdir -p "$PROJ/x33"$'\e]0;pwned\a' && "${G[@]}" -C "$PROJ/x33"$'\e]0;pwned\a' init -q
+printf 'garbage' > "$PROJ/x33"$'\e]0;pwned\a/.git/index'
+launch ..
+# Only this message: the rest of LNCH-3 (READ-ONLY: and friends) is still open.
+idx33="$(grep 'cannot read the index of' "$ERR")"
+[[ -n "$idx33" && "$idx33" != *$'\e'* ]] \
+  && pass "G33 the unreadable-index WARNING quotes the path the agent chose" \
+  || fail "G33 index WARNING (stderr: $(grep -A1 'index of' "$ERR" | cat -v | tr '\n' ' '))"
+rm -rf "$PROJ/x33"$'\e]0;pwned\a'
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

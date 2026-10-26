@@ -342,7 +342,11 @@ launcher_ro_overlay() {
     fsmonitor-watchman p4-changelist p4-prepare-changelist p4-post-changelist
     p4-pre-submit post-index-change)
   local -A seen=() tried=() scanned=() pinned=()
-  local nl no=0 lmax
+  local nl no=0 lmax ireads=0
+  # Included git config files already read, by device:inode — however they are
+  # spelled — across the whole launch (review of b3d2362: `./config` and
+  # `.//config` made the walk exponential).
+  local -A iseen_all=()
   local -a unchecked=()
   # The agent's identity decides what it can reach; find needs it numeric (and
   # within a 32-bit id — GNU find rejects 4294967295 and up), and a find that
@@ -428,7 +432,24 @@ launcher_ro_overlay() {
     printf 'ERROR: SANDBOX_LAUNCHER_MAX must be a whole number from 1 to 999999 (got %q).\n' "$lmax" >&2
     exit 1
   fi
-  if (( ${#cl[@]} > lmax )); then
+  # Counted as overlays, not as finds: each distinct directory once, however many
+  # mounts expose it, and none nested in another candidate — its overlay covers
+  # it (review of 643d9bd). Ancestors are walked per candidate, so this stays
+  # linear in the number found.
+  local -A lcand=() lcounted=()
+  local lc=0 la
+  for l in ${cl[@]+"${cl[@]}"}; do lcand[$l]=1; done
+  for l in ${cl[@]+"${cl[@]}"}; do
+    [[ -z "${lcounted[$l]:-}" ]] || continue
+    lcounted[$l]=1
+    la="${l%/*}"
+    while [[ -n "$la" ]]; do
+      if [[ -n "${lcand[$la]:-}" ]]; then break; fi
+      la="${la%/*}"
+    done
+    if [[ -z "$la" ]]; then lc=$((lc + 1)); fi
+  done
+  if (( lc > lmax )); then
     printf 'ERROR: the writable mounts hold more than %d launchers and unlistable directories\n' "$lmax" >&2
     printf '       to protect, and each adds bind mounts to every container start. Among them:\n' >&2
     for (( k = ${#cl[@]} - 1, x = 0; k >= 0 && x < 5; k--, x++ )); do
@@ -819,8 +840,8 @@ launcher_ro_overlay() {
     for f in "$g/config" "$g/config.worktree"; do
       if [[ ! -f "$f" || -L "$f" ]]; then continue; fi
       local -a ifile=("$f") idep=(0)
-      local -A iseen=(["$f"]=1)
-      local ii=0 icur itgt
+      local ii=0 icur itgt ikey
+      ikey="$(_launcher_dev_ino "$f")" && iseen_all[$ikey]=1
       while (( ii < ${#ifile[@]} )); do
       icur="${ifile[ii]}"; ii=$((ii + 1))
       inc=()
@@ -835,15 +856,24 @@ launcher_ro_overlay() {
         mapfile -d '' -t walk < <(_path_walk "$(cd "${icur%/*}" 2>/dev/null && pwd -P)" "$ip")
         if ! _walk_exposed how q w "" ${walk[@]+"${walk[@]}"}; then
           if [[ "$ip" == /* ]]; then itgt="$ip"; else itgt="${icur%/*}/$ip"; fi
-          if [[ -f "$itgt" && -z "${iseen[$itgt]:-}" ]] && (( idep[ii - 1] < 10 )); then
-            iseen[$itgt]=1; ifile+=("$itgt"); idep+=("$((idep[ii - 1] + 1))")
+          if [[ -f "$itgt" ]] && (( idep[ii - 1] < 10 )) && ikey="$(_launcher_dev_ino "$itgt")" \
+             && [[ -z "${iseen_all[$ikey]:-}" ]]; then
+            iseen_all[$ikey]=1
+            if (( ++ireads > 200 )); then
+              if (( ireads == 201 )); then
+                printf 'NOTE: the protected git configs include more than 200 files between them;\n' >&2
+                printf '      includes past those were not followed.\n' >&2
+              fi
+            else
+              ifile+=("$itgt"); idep+=("$((idep[ii - 1] + 1))")
+            fi
           fi
           continue
         fi
         if [[ "$icur" == "$f" ]]; then
           printf 'WARNING: %s/%s includes %s (%s), which the agent can redirect:\n' "$at" "${f##*/}" "$ip" "$ik" >&2
         else
-          printf 'WARNING: %s/%s includes %s (%s in %s), which the agent can redirect:\n' "$at" "${f##*/}" "$ip" "$ik" "$icur" >&2
+          printf 'WARNING: %s/%s includes %q (%s in %q), which the agent can redirect:\n' "$at" "${f##*/}" "$ip" "$ik" "$icur" >&2
         fi
         case "$how" in
           change)  printf '         it can write %s (at %s), which git reads as part of that config.\n' "$q" "$w" >&2 ;;
@@ -853,7 +883,6 @@ launcher_ro_overlay() {
         printf '         It can set what your host'\''s git runs. Move what it sets into %s on the host.\n' "${f##*/}" >&2
       done
       done
-      unset iseen
     done
   done
 
@@ -1270,6 +1299,43 @@ launcher_dirs_in() {
 # to seven levels down, so a checkout's own .git is found to six, as launchers
 # are; dependency trees are pruned outside .git, and a .git's object store, refs
 # and logs, which hold nothing that runs. NUL-delimited; always returns 0.
+# _git_index_read <records-out> <gitdir> <worktree>: the index's records (`ls-files
+# -s -z`), read by the host's git WITHOUT the repository: GIT_DIR is a throwaway
+# empty repository of the launcher's own, and only GIT_INDEX_FILE is the real
+# one. The agent can write a repository's config — an agent-made repository's
+# whole — and git reads it, includes and all, before the index: a FIFO include
+# hung the launch, /dev/stdin read what you typed, and in a partial clone the
+# read fetched a missing tree and ran remote.<name>.uploadpack (GIT-1; review of
+# b3d2362). No object store is given either (an alternates file can be a FIFO
+# too), so a sparse index, which needs trees to expand, cannot be read: that
+# fails, as does any `error:`/`fatal:` git prints while exiting 0 (git 2.34 does
+# on a partial read). A missing index records nothing. Fails on any of those.
+_git_index_read() {
+  # shellcheck disable=SC2178  # nameref: shellcheck does not model `local -n`
+  local -n _gir_out=$1
+  local g="$2" top="$3" fmt
+  _gir_out=()
+  [[ -e "$g/index" ]] || return 0
+  [[ -f "$g/index" ]] || return 1
+  fmt="$(_git_file_config "$g/config" extensions.objectformat 2>/dev/null)" || fmt=sha1
+  [[ "$fmt" =~ ^[a-z0-9]{1,16}$ ]] || return 1
+  if [[ -z "$_gir_tmp" ]]; then
+    _gir_tmp="$(mktemp -d "${TMPDIR:-/tmp}/ai-launcher-index.XXXXXX")" || { _gir_tmp=""; return 1; }
+  fi
+  if [[ ! -d "$_gir_tmp/$fmt/.git" ]]; then
+    GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+      git init -q --object-format="$fmt" "$_gir_tmp/$fmt" >/dev/null 2>&1 || return 1
+  fi
+  # LC_ALL=C keeps git's error:/fatal: prefixes untranslated (d39480b).
+  mapfile -d '' -t _gir_out < <(LC_ALL=C GIT_DIR="$_gir_tmp/$fmt/.git" GIT_INDEX_FILE="$g/index" \
+      GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_NO_LAZY_FETCH=1 GIT_ALLOW_PROTOCOL=none \
+      git -C "$top" -c core.fsmonitor=false --work-tree="$top" ls-files -s -z 2>"$_gir_tmp/err" \
+      || printf 'ls-files-failed\0')
+  if (( ${#_gir_out[@]} )) && [[ "${_gir_out[-1]}" == ls-files-failed ]]; then _gir_out=(); return 1; fi
+  if grep -qE '^(error|fatal):' "$_gir_tmp/err" 2>/dev/null; then _gir_out=(); return 1; fi
+  return 0
+}
+
 git_dirs_in() {
   # shellcheck disable=SC2178  # nameref: shellcheck does not model `local -n`
   local -n _gdi_dirs=$1 _gdi_files=$2 _gdi_links=$3 _gdi_unr=$4
@@ -1325,28 +1391,9 @@ git_dirs_in() {
     fi
     command -v git >/dev/null 2>&1 || continue
     links=()
-    # From the work tree's root: run from a subdirectory (sandbox.sh runs from
-    # .ai-containers), ls-files lists only what lies under it.
-    # safe.directory='*': a repository another user owns would otherwise refuse
-    # to be read, and its submodules go unprotected. fsmonitor off is not enough
-    # to make the read inert: in a partial clone with a sparse index, ls-files
-    # expands the index and fetches a missing tree from the promisor remote,
-    # running remote.<name>.uploadpack (the agent can set it). GIT_NO_LAZY_FETCH
-    # stops the fetch (git 2.44+); GIT_ALLOW_PROTOCOL=none refuses every
-    # transport on any git — not `-c protocol.allow=never`, which a repository's
-    # own protocol.<name>.allow=always overrides. The read then fails, and is
-    # named (tests/test-git-internals-ro.sh G28). Not by exit status alone: a
-    # tree it cannot fetch is an `error:` line, and ls-files goes on to exit 0
-    # with the entries under that tree left out (measured, git 2.34 to 2.53).
-    # LC_ALL=C keeps that prefix untranslated.
-    mapfile -d '' -t links < <({ err="$(LC_ALL=C GIT_NO_LAZY_FETCH=1 GIT_ALLOW_PROTOCOL=none git -C "$top" \
-        -c core.fsmonitor=false -c safe.directory='*' \
-        --git-dir="$g" --work-tree="$top" ls-files -s -z 2>&1 >&3)" \
-        && [[ $'\n'"$err" != *$'\n'error:* && $'\n'"$err" != *$'\n'fatal:* ]] \
-        || printf 'ls-files-failed\0'; } 3>&1)
-    if (( ${#links[@]} )) && [[ "${links[-1]}" == ls-files-failed ]]; then
+    if ! _git_index_read links "$g" "$top"; then
       links=()
-      printf 'WARNING: cannot read the index of %s; submodules recorded in it are not followed,\n' "$g" >&2
+      printf 'WARNING: cannot read the index of %q; submodules recorded in it are not followed,\n' "$g" >&2
       printf '         so a checkout of one that the scan does not reach is not protected.\n' >&2
     fi
     for rec in ${links[@]+"${links[@]}"}; do
@@ -1645,7 +1692,8 @@ _launcher_verify_dir=""
 # A named group's directory, which launcher_ro_overlay does not scan for git
 # repositories (the host's git never runs there). Set by run_container.
 _git_skip_root=""
-trap 'rm -rf "${_launcher_verify_dir:-}" 2>/dev/null' EXIT
+_gir_tmp=""
+trap 'rm -rf "${_launcher_verify_dir:-}" "${_gir_tmp:-}" 2>/dev/null' EXIT
 
 run_container() {
   check_config

@@ -866,5 +866,16 @@ unc46="$(sed -n '/hold more than 200 symlinks between them/,/^[^ ]/p' "$ERR")"
   || fail "T46 unchecked launchers not named (stderr: $(tr '\n' ' ' <<<"$unc46"))"
 rm -rf "$FAKE"
 
+# ── T47: the limit counts what is overlaid, not every launcher found. One
+# read-only overlay covers whatever is nested inside it, so launchers there
+# cost nothing (review of 643d9bd).
+NEST47="$TMP/nest47"; mk_launcher "$NEST47/outer"
+for n in 1 2 3; do mk_launcher "$NEST47/outer/.ai-containers/in$n"; done
+SANDBOX_LAUNCHER_MAX=1 EXTRA_MOUNTS="$NEST47" launch "$LAUNCHER" "$TMP/app"
+[[ "$LAUNCH_RC" == 0 && -s "$CAPTURE" ]] && ! grep -q 'ERROR: the writable mounts hold more than' "$ERR" \
+  && pass "T47 launchers nested in one overlay count as that one overlay" \
+  || fail "T47 nested launchers counted (rc=$LAUNCH_RC; stderr: $(grep -A3 ERROR "$ERR" | tr '\n' ' '))"
+rm -rf "$NEST47"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

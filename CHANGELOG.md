@@ -15,7 +15,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   remote, running `remote.<name>.uploadpack` from the repository's own config —
   which the agent can write — as you, before the container started. The read
   now runs with lazy fetch and every transport disabled; an index that cannot
-  be read without them is named in a `WARNING:` (bugs review GIT-1).
+  be read without them is named in a `WARNING:` (bugs review GIT-1). Since
+  the independent review of that fix, the index is read without the
+  repository at all — through an empty repository of the launcher's own — so
+  nothing the agent writes in a repository's config is read: an include of a
+  FIFO no longer hangs the launch, and git 2.34, which exits 0 on a partial
+  read, still gets the warning.
 - **What an agent plants can no longer make every later launch slow and noisy.**
   Two empty files make a directory count as a launcher, so an agent could plant
   hundreds, each adding a read-only bind mount, a `READ-ONLY:` line and up to
@@ -23,7 +28,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `docker run`). Past `SANDBOX_LAUNCHER_MAX` (50) launchers and unlistable
   directories the launch is now refused, naming where, and the links of every
   launcher but the one running share one budget of 200; any launcher whose links that
-  budget did not cover is named (bugs review LNCH-1).
+  budget did not cover is named (bugs review LNCH-1). The limit counts
+  overlays, so launchers nested inside one another count once.
 - **An include the agent can write is found two files down, and cannot be
   silenced.** A protected git config that includes a file the agent can write
   gets a `WARNING:`; an include inside an included file did not. The chain is
@@ -31,6 +37,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   git it ran there read the project's config first: an include loop written
   into the file that config includes made each of those reads fail, and every
   include warning disappear. The config files are now read as plain files.
+  Each included file is read once per launch, however its path is spelled,
+  and at most 200 per launch: two spellings of a self-include made the first
+  version of this walk take minutes.
 
 ## v0.10.7 — 2026-10-18
 
