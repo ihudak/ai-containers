@@ -64,7 +64,7 @@ A gap is something a design promised that is not in the code at the reviewed com
 - Suggested approach: add `stmt-delete` to generate.sh behind an opt-in per-target field, and enable it nightly for the targets that score highest (mutate.sh, tools-lib.sh).
 
 ### GAP-5: The layer-containment guard checks a hand-maintained copy of the workflow selection args
-- Status: NOT DONE
+- Status: DONE (batch 7) — `be63670`, with TST-2: there is no copy to maintain any more. The guard derives each layer's run.sh arguments from the workflows themselves (`wf_it_selections()` in tests/lib-layer-checks.sh) and fails by job and step on anything it cannot decide.
 - Fix batch: 7 — tests/CI (same fix as TST-2)
 - Source: execution-layers-and-portability-design.md: "Each workflow keeps its own selection arguments; the guard reads them and checks containment". Plan 2026-08-11-execution-layers-and-portability.md: "teaching the guard to read `--tags`/`--exclude` out of the workflow YAML instead of a maintained-by-hand copy … is real follow-up work"
 - Area: tests/CI
@@ -94,7 +94,7 @@ A gap is something a design promised that is not in the code at the reviewed com
 - Suggested approach: test Codex's standalone GitHub-release binary in a restricted-mode container, the way Claude Code's native path was tested. If it updates itself, switch it to install-if-missing.
 
 ### GAP-8: No mechanical guard against awk interval quantifiers (falsify backlog F14)
-- Status: PARTIAL
+- Status: DONE (batch 7) — `17b073f`, widened in `9142ea4`, `931c3fc` and `b3f18d7`: rule `awk-interval` in tests/bash-dialect-lint.sh reads every quoted argument of an awk command (single-quoted across lines, double-quoted within the line), with the usual marker as the escape hatch. Backlog F14 is marked FIXED.
 - Fix batch: 7 — tests/CI (with TST-5)
 - Source: 2026-08-14-falsify-backlog.md F14: "ACCEPTED: a prose guard, weaker than this repo's norm and recorded as such"
 - Area: tests/CI
@@ -104,7 +104,7 @@ A gap is something a design promised that is not in the code at the reviewed com
 - Suggested approach: add a dialect-lint rule matching `{[0-9]` inside single-quoted `awk '…'` arguments, with the existing `# dialect-lint: allow` escape hatch.
 
 ### GAP-9: The empty-corpus rule is not pinned for test-falsify-historical.sh
-- Status: NOT DONE
+- Status: DONE (batch 7) — `269f77d`: tests/test-lint-empty-corpus.sh drives test-falsify-historical.sh with an empty `git ls-files`. It stops at the seed before any oracle runs, so it costs about a second, and it now says SCAFFOLD-FAILED.
 - Fix batch: 7 — tests/CI (with TST-3)
 - Source: tests/test-lint-empty-corpus.sh header: "the same rule in tests/test-falsify-historical.sh is NOT pinned this way, because exercising it there means a full run of nine real oracles"
 - Area: tests/CI

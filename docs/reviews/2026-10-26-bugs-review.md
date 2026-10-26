@@ -20,7 +20,7 @@
 | 4 | Host lifecycle scripts (project-init, sync, repo, group, report) | PRJ-1 … PRJ-9, DOC-1, DOC-3, REPO-2 … REPO-4, REPO-7 — fixed (PRJ-7 with TST-1); REPO-5, 6, 8 … 12 open | optional: GAP-6; stretch: GAP-1 for `group.sh` | MEDIUM |
 | 5 | In-container DB services | SVC-1 … SVC-3 — all fixed (SVC-2's hardware check is PLAT-4); SVC-4 open | — | MEDIUM |
 | 6 | Build / Dockerfile / tools.d / config validation | BLD-1 … BLD-7 — fixed; BLD-8 and ENV-7 open | — | MEDIUM |
-| 7 | Test harness and CI | TST-1 … TST-8 | GAP-5 (same fix as TST-2), GAP-8 (with TST-5), GAP-9 (with TST-3) | MEDIUM |
+| 7 | Test harness and CI | TST-1 … TST-8 — all fixed (PRJ-7 with TST-1); TST-12 found and fixed; TST-9 … TST-11 open | GAP-5 (same fix as TST-2), GAP-8 (with TST-5), GAP-9 (with TST-3) — all done | MEDIUM |
 | 8 | Docs (docs-only PR) | DOC-2, DOC-4 … DOC-13 | GAP-14 (overlaps DOC-6) | MEDIUM |
 | 9 | Launcher follow-ups (from the batch 1 hotfix review) | GIT-2 … GIT-5, LNCH-3 (the rest), LNCH-4 | — | MEDIUM |
 
@@ -382,7 +382,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Fix direction: make `env_var` keep the first match and the same literal value semantics as `load_env_defaults`, and replace `DEFAULT-OPEN` with something like `UNSET (usage)`.
 
 ### PRJ-7: The `repo.sh gc` tests fail under glibc `en_US.UTF-8`; this is a test bug, not a product bug
-- **Status:** left to batch 7, which fixes it with TST-1.
+- **Status: FIXED (batch 7)** — with TST-1: `142dc84`, and `aa0c70b` for the second sort in the same file.
 - **Duplicate of TST-1** (which also covers the second affected test, `tests/test-falsify-run.sh`); fix once (batch 7).
 - Severity: LOW — Confidence: CONFIRMED
 - Location: `tests/test-repo-destructive.sh: \`removed() { sed -n 's/^volume rm //p' "$DOCKER_LOG" | tr ' ' '\n' | grep -v '^--' | sort | tr '\n' '|'; }\``
@@ -547,6 +547,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 ## 7. Test harness and CI
 
 ### TST-1: Hermetic suite fails on a developer host with an en_US.UTF-8 locale (two tests compare a locale `sort` against C-ordered literals)
+- **Status: FIXED (batch 7)** — `142dc84`, `aa0c70b` (`LC_ALL=C sort` in both helpers and in `summary_vols`). The `suite` job now runs under `en_US.UTF-8` (asserted to collate differently from C), so the class stays caught; `tests/run-all.sh` deliberately does not pin the locale.
 - Severity: MEDIUM — Confidence: CONFIRMED (reproduced)
 - Location: `tests/test-repo-destructive.sh: \`removed() { sed -n 's/^volume rm //p' "$DOCKER_LOG" | tr ' ' '\n' | grep -v '^--' | sort | tr '\n' '|'; }\``; `tests/test-falsify-run.sh: \`find "$FR_WORK/w0" -type f 2>/dev/null | sed "s|^$FR_WORK/w0/||" | sort | tr '\n' ' ' )"\``
 - Introduced: 92c40dd / 8b9ad30 (2026-08-20/21, test-repo-destructive); the test-falsify-run.sh assertion is in the same class.
@@ -564,6 +565,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Fix direction: use `LC_ALL=C sort` in both helpers. Optionally also export `LC_ALL=C` (or `LC_COLLATE=C`) per test in run-all.sh, and add a run under a non-C locale to the suite so the class stays caught.
 
 ### TST-2: Layer-containment models nightly wrongly — a PR-selected case that no nightly job runs still passes "PR ⊆ nightly"
+- **Status: FIXED (batch 7)** — `be63670` (each layer is the union of one `run.sh --dry-run` per `tests/integration/run.sh` invocation its event runs, read from the workflows by `wf_it_selections()`; nightly must hold the whole corpus; integration.yml's Run step split by event), hardened in `892cdaf` (run: values folded as YAML folds them), `9142ea4`, `931c3fc`, `b3f18d7` and `b0692d7` (an invocation the shell may skip, or in a job with `needs:`, is refused by name). Tests in `tests/test-layer-checks-parser.sh`; the review's planted 799 and the deleted packages-services job both fail the guard.
 - Severity: MEDIUM — Confidence: CONFIRMED (reproduced)
 - Location: `tests/test-layer-containment.sh: \`nightly_set="$( { sel --exclude packages; sel --tags packages; } | sort -u )"\``, and `pr_set="$(sel --tags fast --exclude needs-external,needs-dns)"`
 - Introduced: 482f30a (pre-window). The window added the `services`/`mariadb` variants and the `packages-services` job without updating the model.
@@ -578,6 +580,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
   - Or assert explicitly that `sel --tags packages` equals the union over the variant jobs.
 
 ### TST-3: check-ledger excuses a genuine SURVIVOR when any sibling mutant of the same identity was UNPROVEN
+- **Status: FIXED (batch 7)** — `e84d08a` (the exemption needs every non-killed record of the identity to be UNPROVEN); `tests/test-falsify-ledger.sh` demonstration 5, both record orders.
 - Severity: MEDIUM — Confidence: CONFIRMED (reproduced with a synthetic run record)
 - Location: `tests/falsify/check-ledger.sh: \`cl_check_run()\``. The relevant code is `if [[ -n "${CL_UNPROVEN[$ident]:-}" ]]; then cl_note "UNPROVEN, not required to be classified: …"`. `cl_read_run()` sets `CL_UNPROVEN[$ident]=1` per identity, not per damage.
 - Introduced: 9ce2506 (2026-08-16). The window's ratchet relies on it.
@@ -587,6 +590,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Fix direction: exempt only identities where every non-KILLED record is UNPROVEN, i.e. track SURVIVED separately from UNPROVEN and require an entry whenever at least one record is SURVIVED.
 
 ### TST-4: tests/integration/minimal-conf.sh lets pinned values of newer keys through, so the developer's sandbox.conf leaks into the corpus images
+- **Status: FIXED (batch 7)** — `e09a674` (every key with a value becomes OFF; nvm-version, not a component, becomes empty), plus a per-variant `validate_config` check in `9142ea4`; new `tests/test-minimal-conf.sh`, partly derived from the real sandbox.conf.
 - Severity: LOW — Confidence: CONFIRMED (reproduced)
 - Location: `tests/integration/minimal-conf.sh: \`s/^(node|python|ruby|rust|go|openjdk|graalvm-ce|graalvm-oracle|kotlin|scala|maven|gradle|db-clients|angular-cli)=.*/\1=/\``
 - Introduced: when `postgres=`, `mariadb=`, `mongo=`, `playwright=` (version grammars) and the tools.d keys landed. None was added to this list.
@@ -596,6 +600,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Fix direction: reset every non-empty value of every key to OFF or empty, not only `ON` and a hand-kept list. Or derive the list from build.sh's `validate_config`.
 
 ### TST-5: bash-dialect-lint lets post-floor constructs through (`${x@k}`, `${| …;}`, `shopt -s patsub_replacement`)
+- **Status: FIXED (batch 7)** — `17b073f` (`@k` in its own 5.2 row, the 5.3 REPLY form, `patsub_replacement`, subscripted and positional/special parameters; regexes may use alternation). The bash 5.1.16 behaviour is in docs/superpowers/to-test.md for the floor container.
 - Severity: LOW — Confidence: CONFIRMED (reproduced on ubuntu:22.04 / 24.04)
 - Location: `tests/bash-dialect-lint.sh: \`'5 1|case-mod-expansion|\$\{[A-Za-z_][A-Za-z0-9_]*@[UuLKk]\}|case-modifying parameter expansion (@U/@u/@L/@K/@k)'\``, and `'5 3|dollar-brace-space|\$\{[[:space:]]|…'`
 - What's wrong:
@@ -607,6 +612,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Fix direction: split `@k` into a `5 2` row, add `\$\{\|` (5.3) and `patsub_replacement` (5.2) rows, and allow a `[...]` subscript in the expansion regexes.
 
 ### TST-6: wf_triggers_on misses three of GitHub's four `on:` spellings, so an `exempt` workflow row's "VERIFIED not pull_request-triggered" claim can be false
+- **Status: FIXED (batch 7)** — `6b6873c` (scalar, flow list, sequence and block map at any indentation; rc 2 for what it cannot read, which fails an exempt row), and in `9142ea4` a flow collection on the line after `on:`.
 - Severity: LOW — Confidence: CONFIRMED (reproduced)
 - Location: `tests/lib-layer-checks.sh: \`wf_triggers_on()\``. It only matches `on:` on its own line followed by a key indented exactly two spaces.
 - What's wrong: it misses `on: pull_request`, `on: [push, pull_request]`, `on:` followed by `- pull_request`, and any indentation other than two spaces. test-layer-containment.sh calls this the verification that makes `coverage=exempt` "not merely trusted".
@@ -615,6 +621,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Fix direction: also match the scalar and flow-list forms, and the `- name` sequence form, at any indentation. Or fail an exempt row whose `on:` is not in the one parsed shape.
 
 ### TST-7: demonstrate-needs-rebuild.sh `--help` prints the wrong lines; its cleanup leaks services/mariadb images; docs count is stale
+- **Status: FIXED (batch 7)** — `59c182d` (`--help` from the `# Usage:` marker; the cleanup removes every tag run.sh's `variant_image()` gives; counts dropped), and in `9142ea4` a shellcheck source directive the full-tree gate needs. New `tests/test-demonstrate-needs-rebuild.sh`; the real interrupt on a Docker host is in docs/superpowers/to-test.md.
 - Severity: LOW — Confidence: CONFIRMED
 - Location:
   - `tests/integration/demonstrate-needs-rebuild.sh: \`-h|--help)         sed -n '68,74p' "${BASH_SOURCE[0]}"; exit 0 ;;\``
@@ -627,6 +634,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Fix direction: print the help from a marker, list the tags with `variant_image` over all known variants, and drop the hardcoded counts.
 
 ### TST-8: update-nvm-version.yml PR body claims it changed sandbox.conf
+- **Status: FIXED (batch 7)** — `1413b60` (bullet dropped; AGENTS.md and docs/configuration.md reworded), made BSD-sed-safe in `9142ea4`. New `tests/test-nvm-update-workflow.sh` runs the job's own step against a scratch copy.
 - Severity: LOW — Confidence: CONFIRMED
 - Location: `.github/workflows/update-nvm-version.yml: \`- \`sandbox.conf\` — \`nvm-version\` updated\``
 - Introduced: f7cdc3c (2026-08-31). It made the job edit only the Dockerfile and left the PR body template as it was.
@@ -654,6 +662,12 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Location: `tests/falsify/survivors.txt` against `repo-git-reset.sh`, an active target since batch 2 redesigned it.
 - What's wrong: 19 identities (cond-negate, logic-flip and return-flip) SURVIVED with no entry, and the entry `repo-git-reset.sh:logic-flip:bfefa9b0411d327b435d5cd8264b421dfcb5d714` names a mutant that no longer exists.
 - Fix direction: kill or classify each survivor and delete the stale entry, in the same PR as batch 4's changes to `repo-git-reset.sh`, then re-score that target.
+
+### TST-12: test-mongo.sh's no-AVX fake dumps core into the repository
+- **Status: FIXED (batch 7)** — `5a4305b` (the fake sets `ulimit -c 0` before `kill -ILL $$`).
+- Severity: LOW — Confidence: CONFIRMED (found as an untracked `core` after a full suite run while fixing batch 7; `bash tests/run-all.sh test-mongo` reproduces it wherever core dumps are on).
+- Location: `tests/test-mongo.sh: \`kill -ILL $$\``
+- What's wrong: D10's fake mongod sends itself a real SIGILL, and the kernel writes a `core` file into the working directory, which under `tests/run-all.sh` is the repository root. Nothing removes it, and `git status` shows it.
 
 ## 8. Documentation vs code
 
