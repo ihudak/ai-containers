@@ -35,6 +35,7 @@ usage() {
 Usage:
   repo-git-reset.sh inspect <dir>
   repo-git-reset.sh reset   <dir> <primary-branch> [<uid>:<gid>]
+  repo-git-reset.sh pull    <dir> [<uid>:<gid>]
 
 inspect  Fetch (pruning), then report on stdout, one record per line:
            PRIMARY|<branch>
@@ -51,6 +52,43 @@ EOF
 }
 
 die() { printf 'repo-git-reset: %s\n' "$1" >&2; exit 1; }
+
+# This runs as ROOT in the seed container, with the host's ~/.ssh keys and an
+# open network, on a .git the agent can write through any :rw repo volume (the
+# launcher's git-internals overlay covers host binds, not volumes). So nothing
+# that .git holds may run: every git here goes through this wrapper — hooks
+# pointed at nowhere, fsmonitor off, only network transports (and file, for a
+# local remote) — and guard_repo cuts the config to what a fetch and a checkout
+# need before any git touches it.
+export GIT_ALLOW_PROTOCOL="ssh:https:http:git:file"
+git() { command git -c core.hooksPath=/dev/null -c core.fsmonitor=false "$@"; }
+
+# guard_repo <dir>: refuse a .git that is not a plain directory, or that holds
+# anything but files and directories (a FIFO or device hangs git; a symlink can
+# lead anywhere); drop commondir and config.worktree, which send git to config
+# of the agent's choosing; and rewrite config to the keys below — with no
+# include, filter, alias, hook path, fsmonitor, ssh command or uploadpack left
+# in it to run.
+guard_repo() {
+  local dir="$1" gd="$1/.git" bad k v tmp
+  [[ -d "$gd" && ! -L "$gd" ]] || die "$gd is not a directory (a .git file or link can point anywhere)"
+  bad="$(find "$gd" ! -type f ! -type d -print -quit 2>/dev/null)"
+  [[ -z "$bad" ]] || die "$bad is not a regular file or directory; refusing to run git on this repository"
+  rm -f "$gd/commondir" "$gd/config.worktree"
+  [[ -f "$gd/config" ]] || return 0
+  tmp="$gd/config.sanitised.$$"
+  : > "$tmp" || die "cannot write $tmp"
+  while IFS= read -r -d '' k; do
+    v="${k#*$'\n'}"; k="${k%%$'\n'*}"
+    case "$k" in
+      core.repositoryformatversion|core.filemode|core.bare|core.logallrefupdates|\
+      core.ignorecase|core.precomposeunicode|core.symlinks|extensions.objectformat|\
+      remote.*.url|remote.*.fetch|branch.*.remote|branch.*.merge)
+        command git config --file "$tmp" --add "$k" "$v" || die "cannot rewrite $gd/config" ;;
+    esac
+  done < <(command git config --file "$gd/config" --null --list 2>/dev/null)
+  mv -f "$tmp" "$gd/config" || die "cannot replace $gd/config"
+}
 
 # `git config --global` would write to the invoking user's real ~/.gitconfig, so
 # it is done only as root — which is exactly the container case it exists for
@@ -100,7 +138,8 @@ detect_primary() {  # $1 = dir  → echoes a branch name; 1 if there is none
 cmd_inspect() {
   local dir="${1:-}"
   [[ -n "$dir" ]] || { usage >&2; die "inspect needs a directory"; }
-  [[ -d "$dir/.git" || -f "$dir/.git" ]] || die "not a git repository: $dir"
+  [[ -e "$dir/.git" ]] || die "not a git repository: $dir"
+  guard_repo "$dir"
   mark_safe_directory "$dir"
 
   if have_origin "$dir"; then
@@ -136,7 +175,8 @@ cmd_inspect() {
 cmd_reset() {
   local dir="${1:-}" primary="${2:-}" owner="${3:-}"
   [[ -n "$dir" && -n "$primary" ]] || { usage >&2; die "reset needs a directory and a primary branch"; }
-  [[ -d "$dir/.git" || -f "$dir/.git" ]] || die "not a git repository: $dir"
+  [[ -e "$dir/.git" ]] || die "not a git repository: $dir"
+  guard_repo "$dir"
   mark_safe_directory "$dir"
 
   # Where the primary branch should end up. With a remote-tracking ref, that is
@@ -182,9 +222,22 @@ cmd_reset() {
   return 0
 }
 
+# pull: the fast-forward `repo.sh sync` runs, through the same guard.
+cmd_pull() {
+  local dir="${1:-}" owner="${2:-}"
+  [[ -n "$dir" ]] || { usage >&2; die "pull needs a directory"; }
+  [[ -e "$dir/.git" ]] || die "not a git repository: $dir"
+  guard_repo "$dir"
+  mark_safe_directory "$dir"
+  git -C "$dir" pull --ff-only || die "pull --ff-only failed"
+  if [[ -n "$owner" ]]; then chown -R "$owner" "$dir" || printf 'WARN|chown failed\n'; fi
+  printf 'AT|%s\n' "$(git -C "$dir" rev-parse --short HEAD 2>/dev/null)"
+}
+
 case "${1:-}" in
   inspect) shift; cmd_inspect "$@" ;;
   reset)   shift; cmd_reset   "$@" ;;
+  pull)    shift; cmd_pull    "$@" ;;
   -h|--help|help) usage ;;
   *) usage >&2; exit 1 ;;
 esac

@@ -411,6 +411,68 @@ else
   fail "… and the reset itself still happened"
 fi
 
+# ── The helper runs as ROOT in the seed container, with your ~/.ssh keys and an
+# open network, on a .git the agent can write through any :rw repo volume — the
+# launcher's git-internals overlay covers host binds, not volumes. Nothing that
+# .git holds may run: not config keys, not includes, not hooks (bugs-review
+# re-review of batch 2, F6). The config is cut to the keys a fetch and a
+# checkout need, and a .git holding anything but files and directories, or not
+# a directory at all, is refused.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/portability.sh"
+W="$(mk_repo poisoned)"
+M="$TMP/ran-poisoned"
+printf 'x\n' > "$TMP/evil.gitconfig"
+git -C "$W" config core.fsmonitor "sh -c 'echo fsmonitor >> $M'"
+git -C "$W" config include.path "$TMP/evil.gitconfig"
+git config --file "$TMP/evil.gitconfig" core.fsmonitor "sh -c 'echo include >> $M'"
+git -C "$W" config filter.evil.smudge "sh -c 'echo smudge >> $M; cat'"
+printf '* filter=evil\n' > "$W/.git/info/attributes"
+for h in post-checkout post-merge reference-transaction pre-auto-gc post-rewrite; do
+  printf '#!/bin/sh\necho %s >> %s\n' "$h" "$M" > "$W/.git/hooks/$h"; chmod +x "$W/.git/hooks/$h"
+done
+url_before="$(git -C "$W" remote get-url origin)"
+run_script inspect "$W"; out_i="$OUT"
+run_script reset "$W" main; out_r="$OUT"
+if [[ ! -e "$M" ]]; then pass "nothing the .git holds runs: config keys, an include, a filter, hooks"
+else fail "the agent's .git ran: $(tr '\n' ' ' < "$M")"; fi
+if [[ "$out_r" == *"ON|main"* && "$(git -C "$W" remote get-url origin)" == "$url_before" ]]; then
+  pass "… and the reset still works, with the remote kept"
+else
+  fail "reset after sanitising (out: $out_r)"
+fi
+if ! git config --file "$W/.git/config" --get core.fsmonitor >/dev/null && ! git config --file "$W/.git/config" --get include.path >/dev/null \
+   && ! git config --file "$W/.git/config" --get filter.evil.smudge >/dev/null; then
+  pass "the config is cut to what a fetch and a checkout need"
+else
+  fail "dangerous keys survived: $(git config --file "$W/.git/config" --list | tr '\n' ' ')"
+fi
+rm -f "$M"
+
+W="$(mk_repo fifo)"
+mkfifo "$W/.git/refs/heads/evil"
+p_timeout 20 "$SCRIPT" inspect "$W" >"$TMP/fifo.out" 2>&1; rc=$?
+if [[ "$rc" != 0 && "$rc" != 124 ]] && grep -q 'not a regular file or directory' "$TMP/fifo.out"; then
+  pass "a FIFO in .git is refused, not read (no hang)"
+else
+  fail "FIFO in .git (rc=$rc: $(tr '\n' ' ' < "$TMP/fifo.out"))"
+fi
+( exec 3<>"$W/.git/refs/heads/evil" ) 2>/dev/null
+
+W="$(mk_repo gitfile)"
+mv "$W/.git" "$TMP/gitfile-real.git"; printf 'gitdir: %s\n' "$TMP/gitfile-real.git" > "$W/.git"
+run_script inspect "$W"
+if [[ "$RC" != 0 && "$OUT" == *"not a directory"* ]]; then pass "a .git FILE (pointing anywhere) is refused"
+else fail ".git file accepted (rc=$RC: $OUT)"; fi
+
+# pull: the fast-forward repo.sh sync runs, through the same guarded path.
+W="$(mk_repo pull)"
+S="$TMP/pull.seed"; commit_in "$S" newer; g "$S" push -q origin main >/dev/null 2>&1
+git -C "$W" config core.fsmonitor "sh -c 'echo fsmonitor >> $M'"
+run_script pull "$W"
+if [[ "$RC" == 0 && -f "$W/newer" && ! -e "$M" ]]; then pass "pull fast-forwards, and runs nothing the .git holds"
+else fail "pull (rc=$RC; newer: $([[ -f "$W/newer" ]] && echo yes || echo no); ran: $(cat "$M" 2>/dev/null); out: $OUT)"; fi
+rm -f "$M"
+
 printf '\n%s\n' "----------------------------------------"
 if [[ "$fails" -eq 0 ]]; then
   printf 'test-repo-git-reset.sh: all checks passed\n'; exit 0

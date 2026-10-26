@@ -181,24 +181,15 @@ seed_from_git() {
       chown -R "$2" /dst' _ "$url" "${host_uid}:${host_gid}"
 }
 
-# Pull latest into an existing git volume.
+# Pull latest into an existing git volume — through repo-git-reset.sh's pull, so
+# the same guard that keeps reset from running anything the agent wrote into a
+# :rw volume's .git (hooks, fsmonitor, includes, filters) covers it too; this
+# container holds your ~/.ssh keys.
 sync_from_git() {
-  local vol="$1"
+  local vol="$1" out
   printf 'Pulling latest into volume "%s" (auth via host ~/.ssh) ...\n' "$vol"
-  docker run --rm --entrypoint bash ${seed_selinux_opt:+"$seed_selinux_opt"} \
-    -v "$HOME/.ssh":/root/.ssh-host:ro \
-    -v "$vol":/dst \
-    "$seed_image" -c '
-      set -e
-      mkdir -p /root/.ssh && cp -a /root/.ssh-host/. /root/.ssh/ 2>/dev/null || true
-      chmod 700 /root/.ssh; chmod 600 /root/.ssh/* 2>/dev/null || true
-      export GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=accept-new"
-      # The volume was chowned to the host UID after the initial clone, but this
-      # helper runs as root — mark it safe so git does not refuse with
-      # "detected dubious ownership".
-      git config --global --add safe.directory /dst
-      git -C /dst pull --ff-only
-      chown -R "$1" /dst' _ "${host_uid}:${host_gid}"
+  out="$(git_helper_run "$vol" pull /dst "${host_uid}:${host_gid}")" || return 1
+  [[ "$out" != *'WARN|chown failed'* ]] || printf 'WARNING: could not chown the volume to %s\n' "${host_uid}:${host_gid}" >&2
 }
 
 # The git half of `reset` lives in repo-git-reset.sh, mounted read-only into the
