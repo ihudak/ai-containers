@@ -21,6 +21,12 @@ set -o pipefail
 tools="${AI_RUNTIME_TOOLS:-}"
 [[ -z "${tools//,/}" ]] && exit 0        # nothing enabled → nothing to do
 
+# From /, not the entrypoint's working directory: that is the project, and uv reads
+# a .python-version, a .venv and a uv.toml there — the fallback's `uv python find`
+# took the project's Python for the image's, and failed outright on one the image
+# lacks (bugs review RT-4). Not $HOME either: in the host group it may hold a pin.
+cd / || exit 0
+
 home_root="$HOME/.ai-tools"
 mkdir -p "$home_root/npm" "$home_root/uv/bin" "$home_root/bin"
 
@@ -151,15 +157,30 @@ install_claude_native() {
 # every later install would quietly move to the older interpreter.
 install_uv() {    # $1=binary  $2=package  $3..=extra `uv tool install` args
   local bin="$1" pkg="$2"; shift 2
-  if [[ -x "$UV_TOOL_BIN_DIR/$bin" ]]; then log "$bin already present"; return 0; fi
-  log "installing $pkg (uv)…"
-  uv tool install "$pkg" "$@" --no-managed-python && return 0
+  # Present means it can run: a tool's environment links to the interpreter it was
+  # installed with, which a rebuild onto a newer patch release removes from the
+  # image while the entry point stays executable (bugs review RT-3). uv links the
+  # entry point from the tool's own bin/, where `python` is that interpreter.
+  local reinstall=() entry envpy
+  if [[ -x "$UV_TOOL_BIN_DIR/$bin" ]]; then
+    entry="$(readlink -f "$UV_TOOL_BIN_DIR/$bin" 2>/dev/null)"
+    envpy="${entry%/*}/python"
+    if [[ -n "$entry" && -L "$envpy" && ! -x "$envpy" ]]; then
+      log "$bin is installed against a Python this image no longer has; reinstalling…"
+      reinstall=(--reinstall)
+    else
+      log "$bin already present"; return 0
+    fi
+  else
+    log "installing $pkg (uv)…"
+  fi
+  uv tool install "$pkg" "$@" --no-managed-python "${reinstall[@]}" && return 0
   local py major="" minor=""
   py="$(uv python find --no-managed-python 2>/dev/null)"
   [[ -n "$py" ]] && read -r major minor < <("$py" -c 'import sys; print(*sys.version_info[:2])' 2>/dev/null)
   if [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ ]] && (( minor > 0 )); then
     log "retrying $pkg on Python $major.$((minor - 1)): a dependency may have no wheel for $major.$minor yet…"
-    uv tool install "$pkg" "$@" --python "$major.$((minor - 1))" && return 0
+    uv tool install "$pkg" "$@" --python "$major.$((minor - 1))" "${reinstall[@]}" && return 0
   fi
   log "FAILED: uv tool install $pkg $* (skipped)"
 }

@@ -34,6 +34,7 @@ EOF
 #!/usr/bin/env bash
 echo "uv \$*" >> "$home/calls.log"
 echo "uv-saw-UV_PYTHON_INSTALL_DIR=\${UV_PYTHON_INSTALL_DIR:-}" >> "$home/calls.log"
+echo "uv-cwd=\$PWD" >> "$home/calls.log"
 if [[ "\$1 \$2" == "python find" ]]; then echo "$bin/fakepython"; exit 0; fi
 if [[ "\$1 \$2" == "tool install" ]]; then
   # UV_FAIL=default fails an install that names no --python, as the image's newest
@@ -192,6 +193,33 @@ rm -rf "$h"
 h="$(run_case "graphify")"
 ! grep -q -- '--python ' "$h/calls.log" && pass "no retry when the image's Python works" || fail "no retry when the image's Python works"
 rm -rf "$h"
+# RT-3: a uv tool's environment links to the interpreter it was installed with,
+# behind pyenv's shim (/opt/pyenv/versions/3.15.0/bin/python3). ~/.ai-tools
+# outlives the image, so after a rebuild onto 3.15.1 that link dangles, while
+# the entry point in uv/bin is still an executable file: "already present" for
+# ever, and `graphify` dies with "bad interpreter" (bugs review RT-3).
+h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
+install -d "$h/.ai-tools/uv/graphifyy/bin" "$h/.ai-tools/uv/bin"
+ln -s "$h/gone/versions/3.15.0/bin/python3" "$h/.ai-tools/uv/graphifyy/bin/python"
+printf '#!%s\n' "$h/.ai-tools/uv/graphifyy/bin/python" > "$h/.ai-tools/uv/graphifyy/bin/graphify"
+chmod +x "$h/.ai-tools/uv/graphifyy/bin/graphify"
+ln -s ../graphifyy/bin/graphify "$h/.ai-tools/uv/bin/graphify"
+run_case "graphify" "$h" >/dev/null
+grep -qx 'uv tool install graphifyy --no-managed-python --reinstall' "$h/calls.log" \
+  && pass "a uv tool whose interpreter is gone is reinstalled" \
+  || fail "a uv tool whose interpreter is gone is not repaired (calls: $(grep '^uv tool' "$h/calls.log" | tr '\n' ';'); out: $(tr '\n' ';' < "$h/out.log"))"
+rm -rf "$h"
+# RT-4: the reconcile runs in the entrypoint's working directory, the project,
+# and uv honours a .python-version, a .venv and a uv.toml there: the fallback's
+# `uv python find` read the project's Python, not the image's, and failed
+# outright on a version the image lacks (bugs review RT-4).
+h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
+proj="$(mktemp -d)"; echo 3.12 > "$proj/.python-version"
+(cd "$proj" && UV_FAIL=default run_case "graphify" "$h" >/dev/null)
+grep -q '^uv-cwd=' "$h/calls.log" && ! grep -q '^uv-cwd=[^/]\|^uv-cwd=/.' "$h/calls.log" \
+  && pass "uv runs from /, never from the project's directory" \
+  || fail "uv ran in the project's directory ($(grep '^uv-cwd' "$h/calls.log" | sort -u | tr '\n' ';'))"
+rm -rf "$h" "$proj"
 h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 UV_FAIL=all run_case "graphify,vale" "$h" >/dev/null
 { grep -q 'FAILED: uv tool install graphifyy' "$h/out.log" && [[ -x "$h/.ai-tools/bin/vale" ]]; } \
