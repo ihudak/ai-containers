@@ -65,7 +65,13 @@ node_script() {
   [[ -L "$l" ]] || return 1
   t="$(readlink "$l")"; [[ "$t" == /* ]] || t="$(dirname "$l")/$t"
   dir="$(cd "$(dirname "$t")" 2>/dev/null && pwd -P)" || return 1
-  [[ -f "$dir/${t##*/}" && "$(head -n 1 "$dir/${t##*/}" 2>/dev/null)" == '#!'*node* ]] || return 1
+  # Root reads a file of the group-shared tool home: only its first 256 bytes, under
+  # a timeout, so a huge file with no newline or a FIFO swapped in cannot stall the
+  # start (review of batch 3, finding 3).
+  local head1
+  [[ -f "$dir/${t##*/}" ]] || return 1
+  head1="$(timeout -k 1 5 head -c 256 "$dir/${t##*/}" 2>/dev/null)"; head1="${head1%%$'\n'*}"
+  [[ "$head1" == '#!'*node* ]] || return 1
   printf '%s' "$dir/${t##*/}"
 }
 ours() { [[ -L "$1" ]] || { [[ -f "$1" ]] && [[ "$(sed -n 2p "$1")" == "$marker" ]]; }; }

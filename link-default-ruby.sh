@@ -45,8 +45,10 @@ fi
 
 linked=""
 for b in ruby gem bundle bundler rake irb erb; do
-  if [[ -x "$bindir/$b" ]]; then
-    ln -sf "$bindir/$b" "$bin_dest/$b"
+  # -n and no directory: `ln -sf` onto a link to a directory makes the link INSIDE
+  # it, which the agent chooses (review of batch 3, finding 1).
+  if [[ -x "$bindir/$b" && ! -d "$bindir/$b" ]]; then
+    ln -sfn "$bindir/$b" "$bin_dest/$b"
     linked="${linked:+$linked }$b"
   fi
 done
@@ -62,10 +64,10 @@ log "linked default Ruby from $bindir into $bin_dest: ${linked:-none}"
 hook=""
 for cand in "$rvm_root/bin/ruby_executable_hooks" "$rvm_root"/gems/*@global/bin/ruby_executable_hooks \
             "$rvm_root"/gems/*/bin/ruby_executable_hooks; do
-  if [[ -x "$cand" ]]; then hook="$cand"; break; fi
+  if [[ -x "$cand" && ! -d "$cand" ]]; then hook="$cand"; break; fi
 done
 if [[ -n "$hook" ]]; then
-  ln -sf "$hook" "$bin_dest/ruby_executable_hooks"
+  ln -sfn "$hook" "$bin_dest/ruby_executable_hooks"
   log "linked ruby_executable_hooks from $hook"
 fi
 
@@ -91,7 +93,7 @@ done
 # stay unverified.
 probe() {
   local t=()
-  command -v timeout >/dev/null 2>&1 && t=(timeout 10)
+  command -v timeout >/dev/null 2>&1 && t=(timeout -k 2 10)   # -k: a probe may ignore TERM
   if [[ -n "$probe_user" ]]; then runuser -u "$probe_user" -- env HOME="$dev_home" "${t[@]}" "$@"
   else "${t[@]}" "$@"; fi
 }
@@ -102,8 +104,8 @@ fi
 repaired=""
 for b in $linked; do
   probe "$bin_dest/$b" --version >/dev/null 2>&1 && continue
-  if [[ -n "$wrapdir" && -x "$wrapdir/$b" ]]; then
-    ln -sf "$wrapdir/$b" "$bin_dest/$b"
+  if [[ -n "$wrapdir" && -x "$wrapdir/$b" && ! -d "$wrapdir/$b" ]]; then
+    ln -sfn "$wrapdir/$b" "$bin_dest/$b"
     repaired="${repaired:+$repaired }$b"
   else
     log "WARNING: $b does not run and no rvm wrapper is available to fall back to"

@@ -197,6 +197,26 @@ out="$(PATH="$fk:$PATH" RUBY_VERSIONS="3.4.5" bash "$REPO_DIR/link-default-ruby.
   && pass "as root with no probe user, nothing from ~/.rvm is executed" \
   || fail "root ran a binary from ~/.rvm (ran: $(cat "$h/ran" 2>/dev/null); out: $out)"
 rm -rf "$h" "$d" "$fk"
+# Root's links never go THROUGH a link to a directory. `ln -sf src dest`, when
+# dest is a link to a directory, makes dest/<name> inside that directory: an
+# agent made ~/.rvm/rubies/<v>/bin/ruby a link to a directory, the first ln put
+# /usr/local/bin/ruby on it, and the wrapper repair then wrote a root-owned link
+# into the directory the agent chose (review of batch 3, finding 1).
+h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; d="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
+v="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
+mk_rvm "$h" "3.4.5" "gem"
+ln -s "$v" "$h/.rvm/rubies/ruby-3.4.5/bin/ruby"
+install -d "$h/.rvm/wrappers/default"
+printf '#!/bin/sh\n' > "$h/.rvm/wrappers/default/ruby"; chmod +x "$h/.rvm/wrappers/default/ruby"
+ln -s "$v" "$d/gem"   # a link a previous start left, now leading to a directory
+RUBY_VERSIONS="3.4.5" bash "$REPO_DIR/link-default-ruby.sh" "$h" "$d" >/dev/null 2>&1
+[[ -z "$(ls -A "$v")" ]] && pass "no link is ever made inside a directory a link leads to" \
+  || fail "root wrote into the directory a link leads to: $(ls -A "$v" | tr '\n' ' ')"
+[[ "$(readlink "$d/gem")" == "$h/.rvm/rubies/ruby-3.4.5/bin/gem" ]] && pass "  … and a stale link is replaced, not entered" \
+  || fail "  … stale gem link not replaced (got: $(readlink "$d/gem"))"
+[[ ! -d "$d/ruby" ]] && pass "  … and a directory is not linked as a command" \
+  || fail "  … /usr/local/bin/ruby leads to a directory"
+rm -rf "$h" "$d" "$v"
 # The entrypoint names the probe user.
 fn="$(sed -n '/^link_default_ruby()/,/^}/p' "$REPO_DIR/entrypoint.sh")"
 [[ "$fn" == *'link-default-ruby.sh "/home/$sandbox_user" /usr/local/bin "$sandbox_user"'* ]] \

@@ -70,7 +70,7 @@ install_npm() {   # $1=binary  $2=package
 # self-updates in place, verified working behind the restricted firewall.
 # Cost measured in-container: ~7s for four packages with a warm cache, ~24s cold.
 #
-# Only when the registry has a newer version than the one installed: a reinstall
+# Only when the registry's version differs from the one installed: a reinstall
 # re-extracts the package in place, under any sibling container of the group that
 # is running it right now (bugs review RT-7), and that cost ~7s a start for
 # nothing. An unreachable registry keeps what is installed.
@@ -246,10 +246,11 @@ done
 # "No native install" is no executable version, as install_claude_native decides it —
 # never a missing directory: sandbox.sh makes and mounts ~/.local/share/claude for
 # every named group with claude-code on, so that test never fired (bugs review RT-5).
-native_claude_present() {
-  local _v
-  for _v in "$HOME/.local/share/claude/versions"/*; do [[ -x "$_v" ]] && return 0; done
-  return 1
+native_claude_present() {   # the highest version is executable, as install_claude_native asks
+  local versions="$HOME/.local/share/claude/versions" latest="" _v
+  [[ -d "$versions" ]] || return 1
+  while IFS= read -r _v; do latest="$_v"; done < <(cd "$versions" && printf '%s\n' * | sort -V)
+  [[ -n "$latest" && -x "$versions/$latest" ]]
 }
 if [[ ",$tools," == *",claude-code,"* ]] && ! native_claude_present && [[ -x "$npm_bin/claude" ]]; then
   mkdir -p "$HOME/.local/bin"

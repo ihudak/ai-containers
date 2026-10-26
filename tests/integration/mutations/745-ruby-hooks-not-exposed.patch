@@ -23,10 +23,10 @@
 #       found something else.
 #
 diff --git a/link-default-ruby.sh b/link-default-ruby.sh
-index 9e95c4b..ad3b9f3 100755
+index 06f4195..0af2845 100755
 --- a/link-default-ruby.sh
 +++ b/link-default-ruby.sh
-@@ -51,62 +51,3 @@ for b in ruby gem bundle bundler rake irb erb; do
+@@ -53,62 +53,3 @@ for b in ruby gem bundle bundler rake irb erb; do
    fi
  done
  log "linked default Ruby from $bindir into $bin_dest: ${linked:-none}"
@@ -41,10 +41,10 @@ index 9e95c4b..ad3b9f3 100755
 -hook=""
 -for cand in "$rvm_root/bin/ruby_executable_hooks" "$rvm_root"/gems/*@global/bin/ruby_executable_hooks \
 -            "$rvm_root"/gems/*/bin/ruby_executable_hooks; do
--  if [[ -x "$cand" ]]; then hook="$cand"; break; fi
+-  if [[ -x "$cand" && ! -d "$cand" ]]; then hook="$cand"; break; fi
 -done
 -if [[ -n "$hook" ]]; then
--  ln -sf "$hook" "$bin_dest/ruby_executable_hooks"
+-  ln -sfn "$hook" "$bin_dest/ruby_executable_hooks"
 -  log "linked ruby_executable_hooks from $hook"
 -fi
 -
@@ -70,7 +70,7 @@ index 9e95c4b..ad3b9f3 100755
 -# stay unverified.
 -probe() {
 -  local t=()
--  command -v timeout >/dev/null 2>&1 && t=(timeout 10)
+-  command -v timeout >/dev/null 2>&1 && t=(timeout -k 2 10)   # -k: a probe may ignore TERM
 -  if [[ -n "$probe_user" ]]; then runuser -u "$probe_user" -- env HOME="$dev_home" "${t[@]}" "$@"
 -  else "${t[@]}" "$@"; fi
 -}
@@ -81,8 +81,8 @@ index 9e95c4b..ad3b9f3 100755
 -repaired=""
 -for b in $linked; do
 -  probe "$bin_dest/$b" --version >/dev/null 2>&1 && continue
--  if [[ -n "$wrapdir" && -x "$wrapdir/$b" ]]; then
--    ln -sf "$wrapdir/$b" "$bin_dest/$b"
+-  if [[ -n "$wrapdir" && -x "$wrapdir/$b" && ! -d "$wrapdir/$b" ]]; then
+-    ln -sfn "$wrapdir/$b" "$bin_dest/$b"
 -    repaired="${repaired:+$repaired }$b"
 -  else
 -    log "WARNING: $b does not run and no rvm wrapper is available to fall back to"
