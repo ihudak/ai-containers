@@ -672,6 +672,9 @@ if [[ "$(printf '%s\n2.40\n' "$ver36" | sort -V | head -1)" == 2.40 ]] && comman
     ! grep -qF "$TMP/victim36" "$CAPTURE" && [[ ! -e "$TMP/victim36/.git/commondir" ]] \
       && pass "G36 a gitlink path with .. in it is not followed out of the mount" \
       || fail "G36 gitlink escaped the mount (mounts: $(grep -F victim36 "$CAPTURE" | tr '\n' ' '); commondir: $(ls "$TMP/victim36/.git/commondir" 2>&1))"
+    # …and not in silence (GIT-3): a skipped gitlink is a checkout left unprotected.
+    grep -qF "records a submodule at ../../victim36" "$ERR" \
+      && pass "G36 … and the skipped gitlink is named" || fail "G36 skipped gitlink not named ($(grep -F victim36 "$ERR" | tr '\n' ' '))"
   else
     printf 'SKIP: G36 this git does not list the hand-made entry\n'
   fi
@@ -728,6 +731,58 @@ grep -qF "WARNING: cannot read the index of $TMP/cut/r/.git" "$ERR" \
   && pass "G39 an index read that died mid-record, with nothing on stderr, is named" \
   || fail "G39 a cut-off read passed for complete (rc=$LAUNCH_RC; stderr: $(tr '\n' ' ' < "$ERR"))"
 rm -rf "$TMP/cut" "$TMP/bin39"
+
+# ── G40-G42: the include walk is bounded per LAUNCH, not only per config ──────
+# 100 entries per config, two configs per git directory and up to 200 planted git
+# directories, and _path_walk quadratic in a path's components: 150 planted repos
+# took 81 s, one config of 100 deep paths 54 s (review of the batch 1 hotfix; GIT-2).
+# G40: entries across many configs share one launch budget, and hitting it is named.
+for n in $(seq 1 25); do
+  mkdir -p "$PROJ/b40/r$n" && "${G[@]}" -C "$PROJ/b40/r$n" init -q
+  { printf '[include]\n'; for m in $(seq 1 90); do printf '\tpath = /nonexistent40/f%d\n' "$m"; done; } >> "$PROJ/b40/r$n/.git/config"
+done
+launch_timed 120
+[[ "$LAUNCH_RC" == 0 ]] && grep -q "not every include of /workspace/proj/b40/r[0-9]*/.git/config was followed" "$ERR" \
+  && pass "G40 include entries across many configs share a launch budget, and the cut is named (${LAUNCH_S}s)" \
+  || fail "G40 launch-wide include budget (rc=$LAUNCH_RC; ${LAUNCH_S}s; stderr: $(grep -c 'not every include' "$ERR") cut warnings)"
+rm -rf "$PROJ/b40"
+# G41: a path with hundreds of components is not walked step by step; the config is
+# named as not fully checked.
+mkdir -p "$PROJ/d41" && "${G[@]}" -C "$PROJ/d41" init -q
+deep41="$(printf 'a/%.0s' $(seq 1 600))f"
+"${G[@]}" config --file "$PROJ/d41/.git/config" include.path "$deep41"
+launch_timed 60
+[[ "$LAUNCH_RC" == 0 && "$LAUNCH_S" -lt 20 ]] && grep -qF "not every include of /workspace/proj/d41/.git/config was followed" "$ERR" \
+  && pass "G41 a 600-component include path is not walked, and the config is named (${LAUNCH_S}s)" \
+  || fail "G41 deep include path (rc=$LAUNCH_RC; ${LAUNCH_S}s; stderr: $(grep -F d41 "$ERR" | head -2 | tr '\n' ' '))"
+rm -rf "$PROJ/d41"
+# G42: git reads config.worktree only with extensions.worktreeConfig on, so an
+# include there is not the host's git's input otherwise — and not walked.
+mkdir -p "$PROJ/w42" && "${G[@]}" -C "$PROJ/w42" init -q
+"${G[@]}" config --file "$PROJ/w42/.git/config.worktree" include.path "$PROJ/w42-evil.gitconfig"
+launch ..
+! grep -qF "w42/.git/config.worktree includes" "$ERR" \
+  && pass "G42 config.worktree is not walked while extensions.worktreeConfig is off" \
+  || fail "G42 config.worktree walked with worktreeConfig off"
+"${G[@]}" -C "$PROJ/w42" config extensions.worktreeConfig true
+launch ..
+grep -qF "w42/.git/config.worktree includes" "$ERR" \
+  && pass "G42 … and is, once extensions.worktreeConfig is on" \
+  || fail "G42 config.worktree not walked with worktreeConfig on (stderr: $(grep -F w42 "$ERR" | head -2 | tr '\n' ' '))"
+rm -rf "$PROJ/w42"
+
+# ── G43: a gitlink whose checkout is not where the index says is named ───────
+# Skipped, rightly — a link on the way could send the protection elsewhere — but
+# it used to be skipped in silence, so a real checkout reached through a link (or
+# a case or NFC/NFD difference on macOS) got no protection and no word (GIT-3).
+mkdir -p "$PROJ/l43/real" && "${G[@]}" -C "$PROJ/l43" init -q
+"${G[@]}" -C "$PROJ/l43" update-index --add --cacheinfo "160000,$(printf '%040d' 1),sub"
+ln -s real "$PROJ/l43/sub"
+launch ..
+grep -qF "submodule sub of $PROJ/l43/.git is not where its index says" "$ERR" \
+  && pass "G43 a gitlink reached through a link is skipped and named" \
+  || fail "G43 gitlink through a link skipped silently ($(grep -F l43 "$ERR" | head -2 | tr '\n' ' '))"
+rm -rf "$PROJ/l43"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

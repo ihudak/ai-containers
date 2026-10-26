@@ -366,7 +366,7 @@ launcher_ro_overlay() {
   # repository's walk never marks a file read for another's (security review of
   # c0d48d9). At most 20 per config and 1000 per launch; past either, that
   # config is named in a WARNING rather than skipped in silence.
-  local nl no=0 lmax ireads=0
+  local nl no=0 lmax ireads=0 ients=0
   local -a unchecked=()
   # The agent's identity decides what it can reach; find needs it numeric (and
   # within a 32-bit id — GNU find rejects 4294967295 and up), and a find that
@@ -872,11 +872,16 @@ launcher_ro_overlay() {
     # included file the agent cannot reach can include one it can, so the chain
     # is followed from every file found safe, to git's own depth of 10; a file
     # the agent can reach is named, not read (tests/test-git-internals-ro.sh G29).
+    # Bounded per LAUNCH as well as per config: two configs per git directory and
+    # up to SANDBOX_GIT_MAX planted git directories made 150 repos take 81 s (review
+    # of the batch 1 hotfix; GIT-2). config.worktree only where git reads it.
+    local -A iseen=()
     for f in "$g/config" "$g/config.worktree"; do
       if [[ ! -f "$f" || -L "$f" ]]; then continue; fi
+      if [[ "$f" == */config.worktree ]] && ! _git_config_bool "$g/config" extensions.worktreeConfig; then continue; fi
       local -a ifile=("$f") idep=(0)
-      local ii=0 icur itgt ikey inr=0 ient=0 icut=""
-      unset iseen; local -A iseen=()
+      local ii=0 icur itgt ikey inr=0 ient=0 icut="" icomp
+      iseen=()
       ikey="$(_launcher_dev_ino "$f")" && iseen[$ikey]=1
       while (( ii < ${#ifile[@]} )); do
       icur="${ifile[ii]}"; ii=$((ii + 1))
@@ -885,10 +890,17 @@ launcher_ro_overlay() {
       for e in ${inc[@]+"${inc[@]}"}; do
         # Entries, not only files: each costs a walk, and one config can hold
         # thousands (re-review of c0d48d9; G38).
-        if (( ++ient > 100 )); then icut=1; ii=${#ifile[@]}; break; fi
+        if (( ++ient > 100 || ++ients > 1000 )); then icut=1; ii=${#ifile[@]}; break; fi
         ik="${e%%$'\n'*}"; ip=""
         if [[ "$e" == *$'\n'* ]]; then ip="${e#*$'\n'}"; fi
         if [[ -z "$ip" ]]; then continue; fi
+        # A value git cannot open (longer than PATH_MAX) includes nothing. One with
+        # hundreds of components is not walked step by step — _path_walk is
+        # quadratic in them (100 such entries took 54 s) — and is left unchecked,
+        # which the cut WARNING says.
+        if (( ${#ip} > 4096 )); then continue; fi
+        icomp="${ip//[!\/]/}"
+        if (( ${#icomp} > 128 )); then icut=1; continue; fi
         # shellcheck disable=SC2088  # '~/'* matches a LITERAL leading ~/ in the config value, expanded by hand
         case "$ip" in '~/'*) ip="$HOME/${ip#\~/}" ;; esac
         walk=()
@@ -921,7 +933,7 @@ launcher_ro_overlay() {
       done
       done
       if [[ -n "$icut" ]]; then
-        printf 'WARNING: not every include of %q was followed (100 entries and 20 files per config, 1000 per launch);\n' "$at/${f##*/}" >&2
+        printf 'WARNING: not every include of %q was followed (100 entries and 20 files per config, 1000 of each per launch, 128 path components);\n' "$at/${f##*/}" >&2
         printf '         what the rest set was not checked. Review them: git config --file %q --list --show-origin --includes\n' "$f" >&2
       fi
     done
@@ -1464,11 +1476,20 @@ git_dirs_in() {
       # as ../../victim as is: a path that steps out (.., ., an empty or
       # absolute component), or that a link on the way sends elsewhere, is not
       # followed (re-review of c0d48d9; tests/test-git-internals-ro.sh G36).
-      case "/$path/" in */../*|*/./*|*//*) continue ;; esac
+      # Named, not skipped in silence: a skipped gitlink is a checkout this launch
+      # does not protect (review of the batch 1 hotfix; GIT-3).
+      case "/$path/" in */../*|*/./*|*//*)
+        printf 'WARNING: the index of %q records a submodule at %q, which steps out of it; not followed.\n' "$g" "$path" >&2
+        continue ;;
+      esac
       co="$top/$path"; f="$co/.git"
       [[ "$co" == "$5"/* ]] || continue
       if [[ -e "$co" || -L "$co" ]]; then
-        [[ "$(cd "$co" 2>/dev/null && pwd -P)" == "$co" ]] || continue
+        if [[ "$(cd "$co" 2>/dev/null && pwd -P)" != "$co" ]]; then
+          printf 'WARNING: submodule %q of %q is not where its index says (a link on the way, a case or\n' "$path" "$g" >&2
+          printf '         Unicode difference, or a directory you cannot search); its checkout is not protected.\n' >&2
+          continue
+        fi
       fi
       if [[ -L "$f" ]]; then
         [[ -n "${had[$f]:-}" ]] || { _gdi_links+=("$f"); had[$f]=1; }
