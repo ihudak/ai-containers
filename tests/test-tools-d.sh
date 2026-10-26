@@ -481,6 +481,11 @@ if grep -qx 'Accept: application/vnd.github.raw' "$CURL_LOG"; then
   pass "repo-file: raw media type requested"; else fail "repo-file: raw media type requested"; fi
 if [[ -x "$TOOLS_BIN_DIR/ext-cli" ]]; then
   pass "repo-file: binary installed executable"; else fail "repo-file: binary installed executable"; fi
+# BLD-3: the file comes from mktemp (0600) and `chmod +x` made it 0711: the sandbox
+# user could exec an ELF but not read a script binary, `file` or `sha256sum` it.
+ext_mode="$(p_stat_mode "$TOOLS_BIN_DIR/ext-cli")"
+[[ "$ext_mode" == 755 ]] && pass "repo-file: binary installed 0755, readable by everyone" \
+  || fail "repo-file: binary installed $ext_mode, not 0755"
 
 # An explicit ref (from the sandbox.conf value) must reach the URL.
 : > "$CURL_LOG"; rm -f "$TOOLS_BIN_DIR/ext-cli"

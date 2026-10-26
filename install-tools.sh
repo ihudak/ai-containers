@@ -170,7 +170,9 @@ install_repo_file() {
   esac
   # Failures here are why this is checked: an unwritable BIN_DIR would otherwise
   # print "Installed" while nothing was installed.
-  if ! mv "$tmp" "$dest" || ! chmod +x "$dest"; then
+  # 0755, not +x: mktemp made the file 0600, and +x gave 0711, which the sandbox user
+  # can exec as an ELF but not read (a script binary failed; bugs review BLD-3).
+  if ! mv "$tmp" "$dest" || ! chmod 0755 "$dest"; then
     echo "WARNING: could not install ${name} to ${dest} — skipping." >&2
     rm -f "$tmp"
     return 0
@@ -265,7 +267,7 @@ install_url() {
       ;;
   esac
 
-  if ! mv "$found" "${BIN_DIR}/${binary}" || ! chmod +x "${BIN_DIR}/${binary}"; then
+  if ! mv "$found" "${BIN_DIR}/${binary}" || ! chmod 0755 "${BIN_DIR}/${binary}"; then
     echo "WARNING: could not install ${name} to ${BIN_DIR}/${binary} — skipping." >&2
     rm -rf "$work"; return 0
   fi
@@ -379,7 +381,7 @@ install_one() {
       return 0
     fi
   fi
-  chmod +x "${BIN_DIR}/${binary}"
+  chmod 0755 "${BIN_DIR}/${binary}"
   echo "Installed ${name} ${tag}"
 }
 
