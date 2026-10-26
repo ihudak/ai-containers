@@ -295,7 +295,7 @@ fi
 # shellcheck disable=SC1090  # $LIB is this suite's own lib.sh
 ids_default="$(unset SANDBOX_UID SANDBOX_GID; . "$LIB" >/dev/null 2>&1; printf '%s:%s' "$IT_LAUNCH_UID" "$IT_LAUNCH_GID")"
 # shellcheck disable=SC1090
-ids_override="$(SANDBOX_UID=4242 SANDBOX_GID=4343; . "$LIB" >/dev/null 2>&1; printf '%s:%s' "$IT_LAUNCH_UID" "$IT_LAUNCH_GID")"
+ids_override="$(export SANDBOX_UID=4242 SANDBOX_GID=4343; . "$LIB" >/dev/null 2>&1; printf '%s:%s' "$IT_LAUNCH_UID" "$IT_LAUNCH_GID")"
 t_check "IT_LAUNCH_UID/GID follow the invoking user and group" "$(id -u):$(id -g)" "$ids_default"
 t_check "IT_LAUNCH_UID/GID follow a SANDBOX_UID/GID override" "4242:4343" "$ids_override"
 
