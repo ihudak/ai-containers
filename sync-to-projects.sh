@@ -224,7 +224,7 @@ ensure_inner_gitignore() {
     printf '\n' >> "$gi"
   fi
   for pat in '.agent-blocked/' '.agent-discovery/' 'sandbox.local.env' 'sandbox.local.env.pre-init*' 'sandbox.env.pre-init*' \
-             '*.pre-migrate' \
+             '*.pre-migrate' '*.pre-migrate.*' \
              'allowlist-domains.txt' 'allowlist-proxy-domains.txt' 'allowlist-cidrs.txt' \
              'allowlist-domains.d/custom.txt' 'allowlist-proxy-domains.d/custom.txt' \
              'allowlist-cidrs.d/custom.txt'; do

@@ -155,7 +155,8 @@ grep -qlx 'SANDBOX_MODE=restricted' "$PROJ3/.ai-containers"/sandbox.env.pre-init
 # By the inner .gitignore itself: the project's root one ignores all of .ai-containers/
 # here, which says nothing for a project that tracks it.
 gi_repo="$TMP/gi-check"; rm -rf "$gi_repo"; git init -q "$gi_repo"; cp "$PROJ3/.ai-containers/.gitignore" "$gi_repo/.gitignore"
-for f in sandbox.env.pre-init sandbox.env.pre-init.20260101T000000Z; do
+# PRJ-9: migrate-runme.sh's second-generation backups are *.pre-migrate.<ts>.
+for f in sandbox.env.pre-init sandbox.env.pre-init.20260101T000000Z runme.sh.pre-migrate sandbox.local.env.pre-migrate.20260101T000000Z; do
   (cd "$gi_repo" && git check-ignore -q "$f") && pass "the inner .gitignore ignores $f" || fail "the inner .gitignore does not ignore $f"
 done
 
