@@ -49,6 +49,7 @@ Everything else.
 ## 1. Host-side launcher: git internals
 
 ### GIT-1: Host command execution — the launcher runs `git ls-files` on an agent-controlled repo, which triggers a promisor lazy-fetch that executes `remote.*.uploadpack`
+- **Status: FIXED (batch 1)** — `f3ddb69`, hardened in `1c26919` (`GIT_NO_LAZY_FETCH=1 GIT_ALLOW_PROTOCOL=none`; test G28).
 - Severity: HIGH — Confidence: CONFIRMED (reproduced 3/3, host-side)
 - Location: `sandbox.sh: git_dirs_in()` — `mapfile -d '' -t links < <(git -C "$top" -c core.fsmonitor=false -c safe.directory='*' --git-dir="$g" --work-tree="$top" ls-files -s -z 2>/dev/null)`
 - Introduced: 91fac80 (gitlink/submodule discovery via `ls-files`, within the review window)
@@ -125,6 +126,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 ## 1. Host-side launcher: read-only launcher overlay and mount verification
 
 ### LNCH-1: An agent can plant any number of fake launchers or unlistable directories, and each one adds a bind mount, warnings and launch time with no upper limit
+- **Status: FIXED (batch 1)** — `643d9bd`, `c5f6fcc` (`SANDBOX_LAUNCHER_MAX`, shared link budget naming what it skipped; test T46).
 - Severity: MEDIUM — Confidence: CONFIRMED
 - Location: `sandbox.sh: \`launcher_dirs_in()\`` (matches any directory holding `sandbox.sh` + `sandbox-common.sh`, and any unlistable directory the agent can reach). Also `sandbox.sh: \`launcher_ro_overlay()\``: the depth loop, the `ro_dsts` skip scan, and the per-launcher link scan `if (( ++nl > 200 )); then`.
 - Introduced: the overlay and unreadable handling (window). The 200-links-per-launcher cap and T38 came later in the window and do not close this.
@@ -158,6 +160,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Fix direction: anchor per device. For each distinct source `st_dev`, record one reference directory on that filesystem (for example the mount root, or the first source seen on that device). Skip with the NOTE only the entries whose reference does not survive the bind. Alternatively, on a mismatch, check the device of the mount root that holds the entry before calling it a swap.
 
 ### LNCH-3: Agent-chosen paths are printed raw to the host terminal
+- **Status: PARTLY FIXED (batch 1)** — the two refusal listings use `%q` (`c5f6fcc`); the remaining messages are open.
 - Severity: LOW — Confidence: CONFIRMED (found while fixing batch 1, 2026-10-26; shown with T46's escape fixture)
 - Location: the `WARNING:`/`NOTE:`/`READ-ONLY:` lines throughout `sandbox.sh: \`launcher_ro_overlay()\`` and `git_dirs_in()`'s callers that print `%s` with a path found by scanning a writable mount — e.g. `printf 'WARNING: launcher link %s leads somewhere the agent can change:\n' "$f"`.
 - What's wrong: those paths are names the agent chose. A directory or link named with terminal escape sequences (`$'\e]0;…\a'`, OSC 52 clipboard writes, cursor movement) is written verbatim to the host's terminal on the next launch, where it can retitle the window, hide or rewrite the warnings around it, or on terminals that honour OSC 52 set the clipboard.

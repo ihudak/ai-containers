@@ -139,7 +139,7 @@ A gap is something a design promised that is not in the code at the reviewed com
 - Source: AGENTS.md: "**Not covered**: configuration poisoned **before** this protection existed …; a file that an included file includes in turn; and a `.git` the agent **creates** in a subdirectory"
 - Area: launcher/mounts
 - Current state at HEAD: these are documented. The first protected launch names the exec keys (`_git_exec_keys()`) and the existing hooks, and a non-`./` `commondir` refuses the launch.
-- What's missing: following a second-level `include.path`; protection, or at least a warning on the next launch, for a `.git` the agent created after the scan; and an exec-key report for repositories an earlier engine protected (the record says those "get no list").
+- Batch 1 (`b3d2362`): nested includes are now followed (test G29), and the config reads can no longer be silenced by an include loop (G30). Still missing below: protection, or at least a warning on the next launch, for a `.git` the agent created after the scan; and an exec-key report for repositories an earlier engine protected (the record says those "get no list").
 - Value / priority: MEDIUM. The host's git runs whatever these files hold.
 - Suggested approach: walk includes recursively with a depth bound (git's own limit is 10). On exit, rescan the writable mounts for git directories that are new since launch and print a `WARNING:` naming them.
 
