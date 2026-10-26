@@ -6,10 +6,10 @@
 #
 # The name says the PREDICATE, not a tier, because the selection IS a predicate:
 # patch_needs_rebuild() from lib-rebuild.sh. Filename and function agree so a
-# reader finds one from the other. Today that is thirty-four patches spanning THREE
-# tiers — mounts (410), volumes (630) and packages (the other thirty-two) —
-# which is why no tier name fits: it covers 2 of the mounts and volumes tiers'
-# 20 mutations, and 32 of the packages tier's 33.
+# reader finds one from the other. The selection spans three tiers — mounts
+# (410), volumes (630) and nearly all of packages — which is why no tier name
+# fits. `--dry-run` lists what it selects today; no count is written here,
+# because every count this header used to carry went stale (TST-7).
 #
 # WHY THIS EXISTS (backlog F36):
 #
@@ -33,10 +33,10 @@
 #
 # SELECTION IS DERIVED, NOT LISTED. A patch is in scope here when it needs a
 # rebuild AND its case is not in the network-mode/delivery tiers (which
-# demonstrate-network-delivery-tiers.sh owns). Today that is exactly thirty-four patches across
-# fourteen cases and five image variants. A thirty-fifth that starts touching a build
-# input joins automatically; nothing here has to be remembered — 810-814 are the most
-# recent to have joined that way, with no edit to this file's selection.
+# demonstrate-network-delivery-tiers.sh owns). A new patch that starts touching a
+# build input joins automatically; nothing here has to be remembered — 810-814
+# are the most recent to have joined that way, with no edit to this file's
+# selection.
 #
 # OUTCOMES — a FAIL is the pass condition, as in the network demonstrator:
 #   DEMONSTRATED   the case FAILed with a real `FAIL:` assertion line
@@ -53,8 +53,8 @@
 # no mutated image can outlive its own patch. That is a
 # stronger guarantee than rebuilding a clean one afterwards, and it is why this
 # script does not need demonstrate-network-delivery-tiers.sh's restore dance. The cleanup
-# trap still removes all three tags, because an interrupt can land between the
-# build and run.sh's own disposal.
+# trap still removes every variant's tag, because an interrupt can land between
+# the build and run.sh's own disposal.
 #
 # COST. The packages tier costs tens of minutes per case: the `native` variant
 # compiles every IT_RUBY_VERSIONS entry from source at CONTAINER START, and the
@@ -71,7 +71,7 @@
 # is the asymmetry in the two selectors, and is meant to stay.
 #
 # Usage:
-#   bash tests/integration/demonstrate-needs-rebuild.sh                 # all thirty-four
+#   bash tests/integration/demonstrate-needs-rebuild.sh                 # every selected patch
 #   bash tests/integration/demonstrate-needs-rebuild.sh 410 630         # only these
 #   bash tests/integration/demonstrate-needs-rebuild.sh --dry-run       # plan only, no docker
 #   bash tests/integration/demonstrate-needs-rebuild.sh --budget-minutes 45
@@ -118,7 +118,11 @@ while [[ $# -gt 0 ]]; do
     --dry-run)         dry_run=1; shift ;;
     --budget-minutes)  budget_min="$2"; shift 2 ;;
     --variant)         want_variant="$2"; shift 2 ;;
-    -h|--help)         sed -n '68,74p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    # From the `# Usage:` marker to the end of the header, not a line range:
+    # a range rots with every edit above it, and this one had come to print
+    # the tail of the NAMING paragraph (TST-7).
+    -h|--help)         awk '/^# Usage:/ { on = 1 } on && !/^#/ { exit } on { sub(/^# ?/, ""); print }' \
+                         "${BASH_SOURCE[0]}"; exit 0 ;;
     -*) printf 'demonstrate-needs-rebuild.sh: unknown option %s\n' "$1" >&2; exit 2 ;;
     *)  wanted+=("$1"); shift ;;
   esac
@@ -146,13 +150,29 @@ fi
 
 # ── Always revert, and never leave a mutated image ────────────────────────────
 # run.sh disposes of its own image when --keep is absent, but an interrupt can
-# land between the build and that disposal. All three variant tags, because a
-# selected case can be on any of them.
+# land between the build and that disposal. Every variant's tag, because a
+# selected case can be on any of them — asked of run.sh, whose KNOWN_VARIANTS
+# and variant_image() are the authority. A hand-written list here named three
+# of five, so an interrupted services or mariadb rebuild left its image behind
+# (TST-7). Sourced in a subshell with IT_SOURCE_ONLY, which stops run.sh before
+# anything that touches docker, so none of its names reach this script.
+mapfile -t variant_tags < <(
+  # shellcheck disable=SC2034  # read by run.sh, sourced on the next lines
+  IT_SOURCE_ONLY=1
+  set --
+  # shellcheck source=tests/integration/run.sh
+  source "$RUN" >/dev/null 2>&1 || exit 1
+  # shellcheck disable=SC2086  # KNOWN_VARIANTS is run.sh's space-separated list
+  for v in $KNOWN_VARIANTS; do variant_image "$v"; printf '\n'; done )
+if [[ "${#variant_tags[@]}" -eq 0 ]]; then
+  printf 'demonstrate-needs-rebuild.sh: could not read the image variants from %s — cannot tell which images to clean up.\n' "$RUN" >&2
+  exit 1
+fi
 cleanup() {
   bash "$MUT" revert >/dev/null 2>&1
   git -C "$REPO_DIR" checkout -- "$CASES_DIR" 2>/dev/null
   if [[ "$dry_run" -eq 0 ]]; then
-    docker rmi -f "$IT_IMAGE" "$IT_IMAGE-agents" "$IT_IMAGE-native" >/dev/null 2>&1
+    docker rmi -f "${variant_tags[@]}" >/dev/null 2>&1
   fi
 }
 trap cleanup EXIT INT TERM
