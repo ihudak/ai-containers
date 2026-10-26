@@ -62,6 +62,15 @@ EOF
 # and running as different users) causes ownership mismatches in mounted repos.
 host_uid="${SANDBOX_UID:-$(id -u)}"
 host_gid="${SANDBOX_GID:-$(id -g)}"
+# They come from the environment or a committed sandbox.env, and they reach the
+# seed containers' root scripts, so they are checked here, before any docker
+# command, by the rule sandbox.sh applies — and handed to those scripts as an
+# argument, never as text (bugs review ENV-2; tests/test-repo-ids.sh).
+if [[ ! "$host_uid" =~ ^[0-9]{1,10}$ || ! "$host_gid" =~ ^[0-9]{1,10}$ ]] \
+   || (( 10#$host_uid > 4294967294 || 10#$host_gid > 4294967294 )); then
+  printf 'ERROR: SANDBOX_UID/SANDBOX_GID must be numeric ids from 0 to 4294967294 (got %q / %q).\n' "$host_uid" "$host_gid" >&2
+  exit 1
+fi
 
 # Format a unix epoch as a human date, portable across BSD (macOS) and GNU date.
 fmt_epoch() {
@@ -129,7 +138,7 @@ seed_from_path() {
   docker run --rm --entrypoint bash ${seed_selinux_opt:+"$seed_selinux_opt"} \
     -v "$real":/src:ro \
     -v "$vol":/dst \
-    "$seed_image" -c "cp -a /src/. /dst/ && chown -R ${host_uid}:${host_gid} /dst"
+    "$seed_image" -c 'cp -a /src/. /dst/ && chown -R "$1" /dst' _ "${host_uid}:${host_gid}"
 }
 
 # Refresh a volume from its local host path source.
@@ -152,7 +161,7 @@ sync_from_path() {
         echo "NOTE: rsync not in image; using cp -a (updates/adds only, no deletions)." >&2
         cp -a /src/. /dst/
       fi
-      chown -R '"${host_uid}:${host_gid}"' /dst'
+      chown -R "$1" /dst' _ "${host_uid}:${host_gid}"
 }
 
 # Clone a git URL into a fresh volume, authenticating with the host ~/.ssh.
@@ -189,7 +198,7 @@ sync_from_git() {
       # "detected dubious ownership".
       git config --global --add safe.directory /dst
       git -C /dst pull --ff-only
-      chown -R '"${host_uid}:${host_gid}"' /dst'
+      chown -R "$1" /dst' _ "${host_uid}:${host_gid}"
 }
 
 # The git half of `reset` lives in repo-git-reset.sh, mounted read-only into the

@@ -19,6 +19,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `DOCKER_*`, `BUILDX_*`, `BUILDKIT_*`, `GIT_*` and `SSH_*` families (bugs review
   ENV-1). **If your `sandbox.env` sets other keys, they now print a warning and
   are ignored.**
+- **`repo.sh` refuses a `SANDBOX_UID`/`SANDBOX_GID` that is not a number.**
+  It pasted the values into the shell script its seeding containers run as
+  root — with your `~/.ssh` mounted, for a git repository — so a value such as
+  `1000 /dst; curl … | sh` ran there. They are now checked as `sandbox.sh`
+  checks them, before any container starts, and passed to the script as an
+  argument (bugs review ENV-2).
 - **A repository under a writable mount can no longer make the launcher run a
   program on the host.** Before each launch the launcher reads every
   repository's index with the host's git, to find its submodules. In a partial
