@@ -71,6 +71,8 @@ and the constraints the fix must keep.
 
 ## PLAT-4: x86-64 without AVX — mongo reports "no server, rebuild"
 
+- **Status: hermetic fix landed (batch 5, `657cb29`); hardware confirmation open.** On a non-AVX host the fixed image should print `WARNING: mongo failed to start — log: …` with `mongod cannot run here: --version ended with exit 132 (SIGILL) — … need a CPU with AVX on x86-64` in the log tail, and no "Rebuild". Seeing that closes PLAT-4; seeing "no mongo server. Rebuild" on an image built from `657cb29` or later reopens SVC-2.
+
 - **Platform:** an x86-64 machine or VM whose CPU lacks AVX — e.g. a Proxmox/KVM guest with CPU type `kvm64` or `qemu64`. Check with `grep -c avx /proc/cpuinfo` (0 = no AVX).
 - **Source:** bugs review SVC-2 (LOW, PLAUSIBLE). Hardware-specific rather than OS-specific, logged here because it equally cannot be reproduced on the review machine.
 - **Reproduce:** `mongo=ON` in `sandbox.conf`, `./build.sh`, launch. A reproduction prints `sandbox.conf has mongo=ON, but this image has no mongo server. Rebuild: ./build.sh` — and the same after a rebuild — while `docker run --rm --entrypoint mongod <image> --version` exits 132 (SIGILL).

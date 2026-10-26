@@ -18,7 +18,7 @@
 | 2 | Launcher config / env layers / credentials | ENV-1 … ENV-6 — all fixed; REPO-1 found and fixed | — | HIGH |
 | 3 | Container-start runtime tools (entrypoint root steps, reconciles) | RT-1 … RT-7 — all fixed; RT-8, RT-9 open | stretch: GAP-1 for `link-default-ruby.sh`, `install-agent-skills.sh`, `agent-tools-reconcile.sh` | HIGH |
 | 4 | Host lifecycle scripts (project-init, sync, repo, group, report) | PRJ-1 … PRJ-9, DOC-1, DOC-3, REPO-2 … REPO-10 | optional: GAP-6; stretch: GAP-1 for `group.sh` | MEDIUM |
-| 5 | In-container DB services | SVC-1 … SVC-3 | — | MEDIUM |
+| 5 | In-container DB services | SVC-1 … SVC-3 — all fixed (SVC-2's hardware check is PLAT-4); SVC-4 open | — | MEDIUM |
 | 6 | Build / Dockerfile / tools.d / config validation | BLD-1 … BLD-7, ENV-7 | — | MEDIUM |
 | 7 | Test harness and CI | TST-1 … TST-8 | GAP-5 (same fix as TST-2), GAP-8 (with TST-5), GAP-9 (with TST-3) | MEDIUM |
 | 8 | Docs (docs-only PR) | DOC-2, DOC-4 … DOC-13 | GAP-14 (overlaps DOC-6) | MEDIUM |
@@ -400,6 +400,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 ## 5. In-container DB services
 
 ### SVC-1: The MySQL/MariaDB admin client obeys the app's `MYSQL_HOST` / `MYSQL_TCP_PORT` / `MYSQL_PWD` from container.env, so the start fails or the admin SQL goes to another server
+- **Status: FIXED (batch 5)** — `657cb29`. The admin client runs without the app's `MYSQL_*`/`LIBMYSQL_*` (`services.d/mysql.sh: _mysql_client()`, used by MariaDB's readiness probe too) or `PG*` variables (`services.d/postgres.sh: _pg_sql()`). Not `--protocol=SOCKET`: measured, with `MYSQL_HOST` set MySQL 8.0 refuses it (`ERROR 2047 Wrong or unknown protocol`) and MariaDB 10.11 ignores it. Redis left as it is: with `REDISCLI_AUTH` set, `redis-cli` prints the AUTH error and `INFO` still answers (rc 0), so readiness is unaffected. Tests: mysql D15, mariadb D12, postgres D22.
 - Severity: MEDIUM — Confidence: CONFIRMED (client behaviour reproduced; the adapter consequence follows from the code)
 - Location: `services.d/mysql.sh: _mysql_sql()` (`"$MYSQL_CLIENT" --no-defaults -uroot --socket="$(_mysql_sock)" -e "$1"`), `services.d/mariadb.sh: _mariadb_pid_file()` (same flags)
 - Introduced: bc86420 (mysql), b058bed (mariadb)
@@ -421,6 +422,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Fix direction: run the adapters' client calls under `env -u MYSQL_HOST -u MYSQL_TCP_PORT -u MYSQL_PWD -u MYSQL_UNIX_PORT` and add `--protocol=SOCKET`. Do the same for `REDISCLI_AUTH` (redis-cli) and `PGHOSTADDR`/`PGSERVICE` (psql). Add a hermetic test that sets `MYSQL_HOST` and checks that the fake client's argv/env still targets the socket.
 
 ### SVC-2: On an x86-64 CPU without AVX, mongo is reported as "this image has no mongo server. Rebuild", not as a start failure with the log
+- **Status: FIXED (batch 5, hermetic half)** — `657cb29`, `a49e562`. A `mongod` that cannot run reads as `unknown`, and its start fails before the server is launched, logging the exit status, the signal and the AVX hint; the adapter contract in AGENTS.md allows `unknown`. Test: mongo D10 (a fake that dies of SIGILL). Confirmation on real non-AVX hardware is still PLAT-4.
 - Confirmation needs non-AVX hardware: tracked as PLAT-4 in [2026-10-26-platform-issues.md](2026-10-26-platform-issues.md). The hermetic half of the fix can be done in batch 5.
 - Severity: LOW — Confidence: PLAUSIBLE (not reproduced; needs a non-AVX CPU, e.g. a Proxmox/KVM guest with the `kvm64` CPU type)
 - Location: `services.d/mongo.sh: svc_installed_version()` (`"$MONGO_MONGOD" --version 2>/dev/null | sed -n …`), together with `start-services.sh: start_one()` (`warn "sandbox.conf has $name=$value, but this image has no $name server. Rebuild: ./build.sh"`)
@@ -430,6 +432,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Fix direction: decide "installed" by `[[ -x "$MONGO_MONGOD" ]]`, and if the version probe then fails, report it (for example "mongod exists but cannot run: exit 132 (Illegal instruction — needs AVX)"). Alternatively, correct the doc.
 
 ### SVC-3: Empty entries in `POSTGRES_ROLES` / `POSTGRES_DATABASES` warn about `''`
+- **Status: FIXED (batch 5)** — `657cb29`. Empty entries are skipped quietly; `:owner` is still warned about. Test: postgres D23; D8 no longer counts the empty entry.
 - Severity: LOW — Confidence: CONFIRMED (reproduced)
 - Location: `services.d/postgres.sh: svc_provision()`. Neither loop has an empty-entry skip; mysql.sh has `[[ -n "$entry" ]] || continue`.
 - Introduced: d337c61 / d7cdb75
@@ -442,6 +445,14 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
   ```
 - Fix direction: add `[[ -n "$name" ]] || continue` (and the same on the trimmed entry) to both loops, as mysql.sh does.
 
+
+### SVC-4: MariaDB's character-set probe reads an app's `MYSQL_HOME` and the sandbox user's `~/.my.cnf`
+- **Status: OPEN** (review of batch 5, LOW-1; predates batch 5)
+- Severity: LOW — Confidence: CONFIRMED (measured in ubuntu:24.04 with mariadb-server 10.11)
+- Location: `services.d/mariadb.sh: svc_start()`, the `"$MYSQL_MYSQLD" --print-defaults` call that reads back the package's character-set options.
+- What's wrong: that call has neither `--no-defaults` nor `--defaults-file`, so it also reads `$MYSQL_HOME/my.cnf` or `$MARIADB_HOME/my.cnf` (both settable from `container.env`) and `~/.my.cnf`. A `character-set-server`/`collation-server` there is kept by the `mapfile`, comes later on `mariadbd`'s command line and wins; a bad value stops the server from starting.
+- Evidence: with `[mysqld] character-set-server=bogus` in `/tmp/mh/my.cnf`, `MYSQL_HOME=/tmp/mh mariadbd --print-defaults` printed `--character-set-server=utf8mb4 --collation-server=utf8mb4_general_ci --character-set-server=bogus …`; with `--defaults-file=/etc/mysql/my.cnf` added, only the package's two.
+- Fix direction: `--defaults-file=/etc/mysql/my.cnf --print-defaults` (made overridable for the tests, like the adapter's other paths), after checking that path for a pinned series from MariaDB's own repository, which the review did not.
 
 ## 6. Build, Dockerfile, tools.d and config validation
 
