@@ -349,6 +349,7 @@ launcher_ro_overlay() {
   local x f e q w c safe inner how
   local uid="${SANDBOX_UID:-$(id -u)}" gid="${SANDBOX_GID:-$(id -g)}" you
   local -a found unreadable cand bsrc=() bdst=() cl=() cat=() csrc=() cdst=() cdep=() ckind=() ro_dsts=() psrc pdst
+  local -a _xm_t=() _xm_by=() _xm_j=()
   local -a scan links walk gdirs gfiles glinks gunr gro ug usrc udst udep ukind
   local g base what gmax gn gitmax cfg cdir hp hpd k2 first eks ik ip
   local -a ek inc pgd=() pga=() pgc=()
@@ -837,6 +838,23 @@ launcher_ro_overlay() {
         pgd+=("$g"); pga+=("$at"); pgc+=("$cfg")
       fi
     done
+  done
+  # The git directories a .git file or commondir named in another writable mount:
+  # named unless that mount's own view of them is read-only now.
+  local -A xm_done=()
+  local xv xr xs
+  for k in ${_xm_t[@]+"${!_xm_t[@]}"}; do
+    [[ -z "${xm_done[${_xm_t[k]}]:-}" ]] || continue
+    xm_done[${_xm_t[k]}]=1
+    xv="${bdst[${_xm_j[k]}]}${_xm_t[k]#"${bsrc[${_xm_j[k]}]}"}"; xs=""
+    for xr in ${ro_dsts[@]+"${ro_dsts[@]}"}; do
+      # Protected: under a read-only overlay, or given its own read-only binds
+      # (config, commondir, hooks — a linked worktree's has no config).
+      if [[ "$xv" == "$xr" || "$xv" == "$xr"/* || "$xr" == "$xv"/* ]]; then xs=1; break; fi
+    done
+    [[ -z "$xs" ]] || continue
+    printf 'WARNING: %s names %s, a git directory in another writable mount (%s),\n' "$(_term "${_xm_by[k]}")" "$(_term "${_xm_t[k]}")" "$(_term "${bdst[${_xm_j[k]}]}")" >&2
+    printf '         which this launch does not protect there: your host'\''s git reads it. Check it on the host.\n' >&2
   done
   if (( gn > 30 )); then
     printf 'NOTE: %d git directories were protected, each with its own bind mounts; that\n' "$gn" >&2
@@ -1538,14 +1556,16 @@ _gdi_follow() {
   # scan may never reach it (a pruned node_modules, the launcher's .agent-blocked
   # seen here under the read-only overlay), so it is named — this scan cannot
   # protect it there (re-review of batch 9, HIGH).
+  # Recorded, not warned about here: that mount's own scan may protect it (a
+  # linked worktree as the primary with its main checkout in EXTRA_MOUNTS), which
+  # is known only once every mount is done; launcher_ro_overlay then names each
+  # whose view there is not read-only, once, never capped (reviews of dcf7dab).
   local _j
-  if [[ -f "$t/HEAD" && -z "${had[$t]:-}" ]]; then
+  if [[ -f "$t/HEAD" ]]; then
     for _j in ${bsrc[@]+"${!bsrc[@]}"}; do
       [[ "${bsrc[_j]}" != "$3" ]] || continue
       if [[ "$t" == "${bsrc[_j]}" || "$t" == "${bsrc[_j]}"/* ]]; then
-        (( ++_gdi_warned <= 5 )) && printf 'WARNING: %s names %s, a git directory in another writable mount (%s),\n' "$(_term "$4")" "$(_term "$t")" "$(_term "${bdst[_j]}")" >&2
-        (( _gdi_warned <= 5 )) && printf '         which this launch does not protect there: your host'\''s git reads it. Check it on the host.\n' >&2
-        break
+        _xm_t+=("$t"); _xm_by+=("$4"); _xm_j+=("$_j")
       fi
     done
   fi
@@ -1685,7 +1705,7 @@ git_dirs_in() {
     fi
   done
   if (( _gdi_warned > 5 )); then
-    printf 'WARNING: … and %d more .git files or commondirs in %q name what this launch cannot protect.\n' "$((_gdi_warned - 5))" "$(_term "$5")" >&2
+    printf 'WARNING: … and %d more .git files or commondirs in %s name what this launch cannot protect.\n' "$((_gdi_warned - 5))" "$(_term "$5")" >&2
   fi
   return 0
 }

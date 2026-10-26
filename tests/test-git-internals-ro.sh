@@ -926,7 +926,26 @@ EXTRA_MOUNTS="$TMP/other47" launch ..
 grep -qF "$PROJ/xm47/.git names $TMP/other47/node_modules/g, a git directory in another writable mount" "$ERR" \
   && pass "G47 a gitdir: target in another writable mount is named" \
   || fail "G47 a gitdir: target in another writable mount passed in silence ($(grep -F other47 "$ERR" | head -2 | tr '\n' ' '))"
-rm -rf "$TMP/other47" "$PROJ/xm47"
+# …but not when that mount's own scan protects it: a linked worktree as the
+# primary with its main checkout in EXTRA_MOUNTS is an ordinary layout, and the
+# WARNING fired for a git directory bound :ro just below it (review of dcf7dab).
+"${G[@]}" -C "$TMP/other47" init -q -b main main && "${G[@]}" -C "$TMP/other47/main" commit -q --allow-empty -m init \
+  && "${G[@]}" -C "$TMP/other47/main" worktree add -q "$PROJ/wt47c" -b feat \
+  || { printf 'SCAFFOLD-FAILED: cannot create the G47 worktree\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/other47/main" launch ..
+! grep -qF "a git directory in another writable mount" "$ERR" \
+  && pass "G47 a target the other mount's own scan protects is not named" \
+  || fail "G47 false 'another writable mount' WARNING ($(grep -F 'another writable mount' "$ERR" | head -1))"
+rm -rf "$PROJ/wt47c"
+# Five decoys that name nothing do not push the real one into a count: it has
+# its own path, once per target, never capped (security review of 82183d8).
+for n in 1 2 3 4 5 6; do mkdir -p "$PROJ/dec47/d$n"; printf 'gitdir: ../nothing%d\n' "$n" > "$PROJ/dec47/d$n/.git"; done
+mkdir -p "$PROJ/xm47"; printf 'gitdir: %s\n' "$TMP/other47/node_modules/g" > "$PROJ/xm47/.git"
+EXTRA_MOUNTS="$TMP/other47" launch ..
+grep -qF "$PROJ/xm47/.git names $TMP/other47/node_modules/g, a git directory in another writable mount" "$ERR" \
+  && pass "G47 the cross-mount WARNING survives the cap on the other kinds" \
+  || fail "G47 decoys suppressed the cross-mount WARNING"
+rm -rf "$TMP/other47" "$PROJ/xm47" "$PROJ/dec47"
 # git strips only CR and LF from a .git file: `gitdir: g ` names the directory
 # `g ` (with its space), not g (security review of e2741b1).
 mkdir -p "$PROJ/sp47"; "${G[@]}" init -q --bare "$PROJ/node_modules/x47/g "
