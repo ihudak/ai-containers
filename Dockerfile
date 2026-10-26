@@ -174,17 +174,20 @@ RUN if [ "$INSTALL_SDKMAN" = "1" ]; then \
       chmod -R a+rX "$SDKMAN_DIR"; \
     fi
 # Install each requested JVM candidate in a separate RUN so layer caching is useful.
+# `|| exit 1` in every loop below: the nested `bash -c` does not get the SHELL's -e,
+# so a loop's status was its LAST iteration's, and a bad version that was not last
+# built green without it (bugs review BLD-2; tests/test-dockerfile-layers.sh).
 RUN if [ "$INSTALL_SDKMAN" = "1" ] && [ -n "$OPENJDK_VERSIONS" ]; then \
       bash -c "source $SDKMAN_DIR/bin/sdkman-init.sh && \
-        for ver in $OPENJDK_VERSIONS; do sdk install java \${ver}-tem; done"; \
+        for ver in $OPENJDK_VERSIONS; do sdk install java \${ver}-tem || exit 1; done"; \
     fi
 RUN if [ "$INSTALL_SDKMAN" = "1" ] && [ -n "$GRAALVM_VERSIONS" ]; then \
       bash -c "source $SDKMAN_DIR/bin/sdkman-init.sh && \
-        for ver in $GRAALVM_VERSIONS; do sdk install java \${ver}-graalce; done"; \
+        for ver in $GRAALVM_VERSIONS; do sdk install java \${ver}-graalce || exit 1; done"; \
     fi
 RUN if [ "$INSTALL_SDKMAN" = "1" ] && [ -n "$GRAALVM_ORACLE_VERSIONS" ]; then \
       bash -c "source $SDKMAN_DIR/bin/sdkman-init.sh && \
-        for ver in $GRAALVM_ORACLE_VERSIONS; do sdk install java \${ver}-graal; done"; \
+        for ver in $GRAALVM_ORACLE_VERSIONS; do sdk install java \${ver}-graal || exit 1; done"; \
     fi
 # Set the default JDK once after all JVM installs to avoid race conditions.
 # Priority: first OpenJDK version > first GraalVM CE > first GraalVM Oracle.
@@ -214,24 +217,24 @@ RUN if [ "$INSTALL_SDKMAN" = "1" ]; then \
     fi
 RUN if [ "$INSTALL_SDKMAN" = "1" ] && [ -n "$KOTLIN_VERSIONS" ]; then \
       bash -c "source $SDKMAN_DIR/bin/sdkman-init.sh && \
-        for ver in $KOTLIN_VERSIONS; do sdk install kotlin \$ver; done" && \
+        for ver in $KOTLIN_VERSIONS; do sdk install kotlin \$ver || exit 1; done" && \
       ln -sf "$SDKMAN_DIR/candidates/kotlin/current/bin/kotlin"  /usr/local/bin/kotlin && \
       ln -sf "$SDKMAN_DIR/candidates/kotlin/current/bin/kotlinc" /usr/local/bin/kotlinc; \
     fi
 RUN if [ "$INSTALL_SDKMAN" = "1" ] && [ -n "$SCALA_VERSIONS" ]; then \
       bash -c "source $SDKMAN_DIR/bin/sdkman-init.sh && \
-        for ver in $SCALA_VERSIONS; do sdk install scala \$ver; done" && \
+        for ver in $SCALA_VERSIONS; do sdk install scala \$ver || exit 1; done" && \
       ln -sf "$SDKMAN_DIR/candidates/scala/current/bin/scala"  /usr/local/bin/scala && \
       ln -sf "$SDKMAN_DIR/candidates/scala/current/bin/scalac" /usr/local/bin/scalac; \
     fi
 RUN if [ "$INSTALL_SDKMAN" = "1" ] && [ -n "$MAVEN_VERSIONS" ]; then \
       bash -c "source $SDKMAN_DIR/bin/sdkman-init.sh && \
-        for ver in $MAVEN_VERSIONS; do sdk install maven \$ver; done" && \
+        for ver in $MAVEN_VERSIONS; do sdk install maven \$ver || exit 1; done" && \
       ln -sf "$SDKMAN_DIR/candidates/maven/current/bin/mvn" /usr/local/bin/mvn; \
     fi
 RUN if [ "$INSTALL_SDKMAN" = "1" ] && [ -n "$GRADLE_VERSIONS" ]; then \
       bash -c "source $SDKMAN_DIR/bin/sdkman-init.sh && \
-        for ver in $GRADLE_VERSIONS; do sdk install gradle \$ver; done" && \
+        for ver in $GRADLE_VERSIONS; do sdk install gradle \$ver || exit 1; done" && \
       ln -sf "$SDKMAN_DIR/candidates/gradle/current/bin/gradle" /usr/local/bin/gradle; \
     fi
 # Make SDKMAN available in all bash shells
@@ -524,7 +527,11 @@ RUN if [ "$INSTALL_GITHUB_CLI" = "1" ]; then \
 # ── DB client libraries + CLIs (general, reusable) ──────────────────────────────
 # DB_CLIENTS: space-separated subset of {pg mysql mongo}. Installs CLIENT/dev
 # libs and shells ONLY — never database servers. libpq/mysql are Ubuntu-main;
-# mongosh comes from MongoDB's official apt repo.
+# mongosh comes from MongoDB's official apt repo. The mongo arm is one && list in
+# a for/case followed by `rm …; fi`, so under -e a failure in it was ignored and
+# the layer exited 0 without mongosh: it now fails the layer explicitly, loads
+# the index fail-closed and checks the binary, as the mongo= server layer does
+# (bugs review BLD-1; tests/test-dockerfile-layers.sh).
 ARG DB_CLIENTS=""
 RUN if [ -n "$DB_CLIENTS" ]; then \
       apt-get update; \
@@ -535,11 +542,13 @@ RUN if [ -n "$DB_CLIENTS" ]; then \
           mysql) \
             apt-get install -y --no-install-recommends default-libmysqlclient-dev default-mysql-client ;; \
           mongo) \
-            curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors https://pgp.mongodb.com/server-8.0.asc \
-              | gpg --dearmor -o /usr/share/keyrings/mongodb-server-8.0.gpg && \
-            echo "deb [ signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg ] https://repo.mongodb.org/apt/ubuntu noble/mongodb-org/8.0 multiverse" \
-              > /etc/apt/sources.list.d/mongodb-org-8.0.list && \
-            apt-get update && apt-get install -y --no-install-recommends mongodb-mongosh ;; \
+            { curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors https://pgp.mongodb.com/server-8.0.asc \
+                | gpg --dearmor -o /usr/share/keyrings/mongodb-server-8.0.gpg && \
+              echo "deb [ signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg ] https://repo.mongodb.org/apt/ubuntu noble/mongodb-org/8.0 multiverse" \
+                > /etc/apt/sources.list.d/mongodb-org-8.0.list && \
+              apt-get update --error-on=any && apt-get install -y --no-install-recommends mongodb-mongosh && \
+              test -x /usr/bin/mongosh; } \
+              || { echo "ERROR: db-clients=mongo: installing mongosh failed" >&2; exit 1; } ;; \
           *) echo "WARNING: unknown db-client '$c' — skipping" >&2 ;; \
         esac; \
       done; \
