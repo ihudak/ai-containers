@@ -58,35 +58,43 @@ docker run --rm -v "$PWD:/w:ro" -w /w ubuntu:22.04 bash -c '
     lint-empty-corpus'
 ```
 
-- [ ] **The new awk code under the floor mawk** (TST-2, TST-6, GAP-5, GAP-8):
+- [x] **The new awk code under the floor mawk** (TST-2, TST-6, GAP-5, GAP-8):
   every file in the command above → PASS. The awk code avoids interval
   quantifiers and bracket expressions that open with `[`. This mawk is the
   reason for that, and it was not available where the code was written.
+  - 2026-10-26, Docker Desktop 29.9.2 on WSL2 (x86-64), `ubuntu:22.04` (mawk 1.3.4 20200120, bash 5.1.16, git 2.34.1), at `3ffc58d`: all 8 files PASS (101, 46, 61, 29, 4, 10, 88 and 7
+    assertions).
 - [ ] **The TST-5 rows match what bash 5.1.16 rejects.** The review confirmed
   these on ubuntu:22.04; they were not re-checked during the fix.
   `docker run --rm ubuntu:22.04 bash -c 'x=1; echo "${x@k}"'` → `bad substitution`;
   `… bash -c 'shopt -s patsub_replacement'` → `invalid shell option name`;
   `… bash -c 'echo "${|REPLY=x;}"'` → `bad substitution`.
+  - 2026-10-26, Docker Desktop 29.9.2 on WSL2 (x86-64), `ubuntu:22.04` (mawk 1.3.4 20200120, bash 5.1.16, git 2.34.1), at `3ffc58d`: all three refused as stated (rc 1 each).
 
 ### GitHub Actions (`ubuntu-24.04` runners)
 
-- [ ] **The `suite` job under en_US.UTF-8** (TST-1). Its "Run tests" step
+- [x] **The `suite` job under en_US.UTF-8** (TST-1). Its "Run tests" step
   generates the locale if the runner lacks it, and refuses to run if the locale
   sorts like C. In the first `Tests` run after the merge, that step logs no
   `::error::`, and the suite passes there exactly as it does in
   `suite-symlinked-tmp`.
-- [ ] **integration.yml's split Run step** (TST-2, GAP-5). On a push to main,
+  - 2026-10-26, `Tests` run 40405941031 at `3ffc58d`: the step printed no
+    `::error::` and the suite passed, 105 of 105, as `suite-symlinked-tmp` did.
+- [x] **integration.yml's split Run step** (TST-2, GAP-5). On a push to main,
   `Run` runs `--tags fast --exclude needs-external,needs-dns --require security`
   and `Run (workflow_dispatch)` is skipped. A manual dispatch
   (`gh workflow run integration.yml -f tags=fast`) runs `Run (workflow_dispatch)`,
   whose log prints `run.sh  --tags fast --exclude needs-external,needs-dns,packages --require security`,
   and skips `Run`.
+  - 2026-10-26 at `3ffc58d`: push run 40405940986 ran `Run` and skipped
+    `Run (workflow_dispatch)`; dispatch run 40408666668 did the reverse and
+    printed exactly that line. Both green.
 - [ ] **The nvm bump PR body** (TST-8). The next automated
   `chore: update nvm to …` PR lists only `Dockerfile` under **Changed files**.
 
 ### Docker host (Linux, or Colima / Docker Desktop on a Mac)
 
-- [ ] **demonstrate-needs-rebuild.sh cleans up every variant's image when
+- [x] **demonstrate-needs-rebuild.sh cleans up every variant's image when
   interrupted** (TST-7). Run `bash tests/integration/demonstrate-needs-rebuild.sh 785`
   (the services variant). Wait until the build has FINISHED and the case is
   running: the tag exists only then, so an interrupt during the build passes
@@ -94,12 +102,19 @@ docker run --rm -v "$PWD:/w:ro" -w /w ubuntu:22.04 bash -c '
   ai-sandbox-it-services` succeeds, press Ctrl-C, and run it again: it must now
   fail ("No such image"). The hermetic test checks this with a stub docker
   only.
+  - 2026-10-26, Docker Desktop 29.9.2 on WSL2, at `3ffc58d`, with patch 786
+    (case 785, services). SIGINT went to the run's process group while the case
+    container ran from `ai-sandbox-it-services`. Afterwards `docker image inspect
+    ai-sandbox-it-services` said "No such image", so the cleanup works. But the
+    run did not stop: it printed its verdict and summary as if not
+    interrupted. That is TST-13, fixed in `494ee11`; the hermetic test now
+    checks that an interrupt ends the run.
 
 ### Root (the CI floor container, `verify-on-host.sh`'s floor container)
 
-- [ ] **The hermetic suite as root.** This is NOT fixed by batch 7 — it is
+- [x] **The hermetic suite as root.** This was NOT fixed by batch 7 — it was
   logged as open items TST-9 and TST-10 in
-  `docs/reviews/2026-10-26-bugs-review.md`.
+  `docs/reviews/2026-10-26-bugs-review.md`, and a follow-up fixed both.
   `suite-floor` runs the suite as root and has failed on main since batch 2:
   - 19 launcher tests stop at sandbox.sh's refusal of UID 0 (ENV-4).
   - test-repo-git-reset.sh fails because git 2.34 and 2.43 create an empty
@@ -107,3 +122,7 @@ docker run --rm -v "$PWD:/w:ro" -w /w ubuntu:22.04 bash -c '
 
   Once that is fixed, the floor command above, run without a file filter, should
   PASS every test.
+  - 2026-10-26, Docker Desktop 29.9.2 on WSL2, `ubuntu:22.04` as root, with the
+    follow-up fixes (`bf820bd`, `4cdd310`): the floor command without a filter
+    gives 106 tests, 106 passed. At `3ffc58d`, CI's floor job had 20 failures,
+    the 19 above plus test-repo-git-reset.sh.

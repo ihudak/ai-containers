@@ -20,7 +20,7 @@
 | 4 | Host lifecycle scripts (project-init, sync, repo, group, report) | PRJ-1 … PRJ-9, DOC-1, DOC-3, REPO-2 … REPO-4, REPO-7 — fixed (PRJ-7 with TST-1); REPO-5, 6, 8 … 12 open | optional: GAP-6; stretch: GAP-1 for `group.sh` | MEDIUM |
 | 5 | In-container DB services | SVC-1 … SVC-3 — all fixed (SVC-2's hardware check is PLAT-4); SVC-4 open | — | MEDIUM |
 | 6 | Build / Dockerfile / tools.d / config validation | BLD-1 … BLD-7 — fixed; BLD-8 and ENV-7 open | — | MEDIUM |
-| 7 | Test harness and CI | TST-1 … TST-8 — all fixed (PRJ-7 with TST-1); TST-12 found and fixed; TST-9 … TST-11 open | GAP-5 (same fix as TST-2), GAP-8 (with TST-5), GAP-9 (with TST-3) — all done | MEDIUM |
+| 7 | Test harness and CI | TST-1 … TST-8 — all fixed (PRJ-7 with TST-1); TST-12 found and fixed; TST-9, TST-10 and TST-13 fixed in a follow-up; TST-11, TST-14, TST-15 open | GAP-5 (same fix as TST-2), GAP-8 (with TST-5), GAP-9 (with TST-3) — all done | MEDIUM |
 | 8 | Docs (docs-only PR) | DOC-2, DOC-4 … DOC-13 | GAP-14 (overlaps DOC-6) | MEDIUM |
 | 9 | Launcher follow-ups (from the batch 1 hotfix review) | GIT-2 … GIT-5, LNCH-3 (the rest), LNCH-4 | — | MEDIUM |
 
@@ -642,7 +642,8 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Fix direction: drop the sandbox.conf bullet, and reword the AGENTS.md sentence to say the job maintains `ARG NVM_VERSION`.
 
 ### TST-9: The hermetic suite cannot run as root since batch 2, so `suite-floor` and Phase 5's floor container fail 19 tests
-- **Status: OPEN** (found while fixing batch 7; existed before it, from ENV-4's fix in batch 2)
+- **Status: FIXED (batch 7 follow-up)** — `bf820bd`. `tests/run-all.sh` exports `SANDBOX_UID=1000 SANDBOX_GID=1000` when it runs as root and the run named neither, so the suite still runs as root and the root-only branches still run. test-integration-lib.sh now checks the default identity and an override each on a fresh source of lib.sh, so it no longer depends on what the run exported; test-falsify-historical.sh, whose oracle it is, passes with it. test-launcher-dir-ro.sh T46 passed as root with the export, so the third breakage in "Not the fix" was a non-root effect. Measured as root in `ubuntu:22.04`. New `tests/test-run-all-root-identity.sh` (a fake `id`).
+- Found while fixing batch 7; it existed before, from ENV-4's fix in batch 2.
 - Severity: HIGH (the floor job has been red since batch 2 merged, so it cannot flag a new floor regression; its other ~80 tests still run and pass) — Confidence: CONFIRMED from CI: `Tests` runs 40386214831 (`0065450`) and 40392002312 (`1a1b701`), job "Shell test suite (bash floor)".
 - Location: `sandbox.sh: \`ERROR: the agent must not run as root (SANDBOX_UID=%s, SANDBOX_GID=%s).\``; `.github/workflows/hermetic-checks.yml`'s `suite-floor` job, and `verify-on-host.sh`'s floor `docker run`, both run `./tests/run-all.sh` as root in `ubuntu:22.04`.
 - What's wrong: ENV-4's fix refuses a root agent identity, and `sandbox.sh` takes the identity from `id -u` by default. In a root container every test that launches `sandbox.sh` without setting `SANDBOX_UID`/`SANDBOX_GID` stops at the refusal. The 19 are test-architecture-path, container-name, docs-path, env-file, git-internals-ro, launcher-dir-ro, mariadb, mode-capabilities, mode-output-mounts, mongo, mysql, playwright, postgres, redis, repos-path, selinux-label, skill-char-budget, tool-config-mounts and tools-d. The suite is meant to run as root there: several tests have root-only branches (test-launcher-dir-ro.sh's `setpriv` cases).
@@ -650,14 +651,15 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Fix direction: decide per test. Either a launching test sets a non-root identity of its own when `id -u` is 0, or the floor runs move to a non-root user and the root-only branches get a root run of their own. Verify as root (docs/superpowers/to-test.md, batch 7, "Root").
 
 ### TST-10: test-repo-git-reset.sh fails wherever git still creates `.git/branches` (git 2.34 and 2.43, so the floor image and Ubuntu 24.04)
-- **Status: OPEN** (found while fixing batch 7; existed before it, from batch 2's REPO-1 redesign)
+- **Status: FIXED (batch 7 follow-up)** — `4cdd310`. The helper clones with `--template=`, so the clone's `.git`, and with it the volume's after a reset, has no `branches/`, `description`, `info/` or sample hooks. The assertion is unchanged.
+- Found while fixing batch 7; it existed before, from batch 2's REPO-1 redesign.
 - Severity: MEDIUM (red on a stock Ubuntu 22.04 or 24.04 host and in the floor job; CI's `suite` job, on GitHub's own git build, passes it) — Confidence: CONFIRMED (reproduced at `0065450` and at `1a1b701`, git 2.43.0).
 - Location: `tests/test-repo-git-reset.sh: \`&& [[ ! -e "$W/.git/remotes" && ! -e "$W/.git/branches" ]]; then\``
 - What's wrong: the assertion checks that a reset leaves no legacy `.git/remotes` or `.git/branches` behind. `reset` replaces the volume's `.git` with a fresh clone's, and git 2.34 and 2.43 still put an empty `branches/` in every new repository from their default template (`git init` lists `branches config description HEAD hooks info objects refs`). The reset worked: the secret commit was not fetched. The failure is `FAIL: legacy remote file was used (log: add first add shared-file ; out: ON|main …)`.
 - Fix direction: clone with an empty template (`--template=` / `init.templateDir`), which also drops the sample hooks, or assert that `branches/` names no remote rather than that it is absent. Belongs with batch 4's repo-helper work (`repo-git-reset.sh`).
 
 ### TST-11: The ledger ratchet has failed on main since batch 2 with 19 unclassified repo-git-reset.sh survivors and one stale entry
-- **Status: OPEN** (found while fixing batch 7; existed before it)
+- **Status: OPEN** (found while fixing batch 7; existed before it). At `3ffc58d` (`Tests` run 40405941031) the job reports 22 problems: 20 `repo-git-reset.sh` survivors, the stale entry, and one new survivor, `ai-containers-report.sh:logic-flip:d964be591e6317022ad2b9c48f545682f57006ef`, which came with batch 4's change to that script. A run of the `repo-git-reset.sh` target alone as a non-root user (WSL2, after `4cdd310`) gives the same 20 plus two that CI kills, both on the root-only lines `[[ "$(id -u)" == "0" ]] || return 1` and `git config --global --add safe.directory "$1"`. Those two are ENV-DEPENDENT, and the fix must classify them that way.
 - Severity: MEDIUM (the falsify job is red, so a new survivor anywhere would not stand out) — Confidence: CONFIRMED from CI: `Tests` run 40386214831, job "Mutation tier (falsify) + survivor-ledger ratchet", `20 problem(s)`.
 - Location: `tests/falsify/survivors.txt` against `repo-git-reset.sh`, an active target since batch 2 redesigned it.
 - What's wrong: 19 identities (cond-negate, logic-flip and return-flip) SURVIVED with no entry, and the entry `repo-git-reset.sh:logic-flip:bfefa9b0411d327b435d5cd8264b421dfcb5d714` names a mutant that no longer exists.
@@ -668,6 +670,27 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Severity: LOW — Confidence: CONFIRMED (found as an untracked `core` after a full suite run while fixing batch 7; `bash tests/run-all.sh test-mongo` reproduces it wherever core dumps are on).
 - Location: `tests/test-mongo.sh: \`kill -ILL $$\``
 - What's wrong: D10's fake mongod sends itself a real SIGILL, and the kernel writes a `core` file into the working directory, which under `tests/run-all.sh` is the repository root. Nothing removes it, and `git status` shows it.
+
+### TST-13: An interrupt does not stop either demonstrator; the cleanup runs and the next patch is applied and rebuilt
+- **Status: FIXED (batch 7 follow-up)** — `494ee11`. `trap cleanup EXIT`, with INT exiting 130 and TERM 143, in both demonstrators. test-demonstrate-needs-rebuild.sh interrupts a run while a stub docker stands in for the build and requires exit 130 with no later step.
+- Severity: LOW — Confidence: CONFIRMED (found running docs/superpowers/to-test.md's TST-7 interrupt on a Docker host).
+- Location: `tests/integration/demonstrate-needs-rebuild.sh` and `tests/integration/demonstrate-network-delivery-tiers.sh`, both `trap cleanup EXIT INT TERM` before the fix (from bc83027, 2026-08-21).
+- What's wrong: a trap on INT that does not exit runs the handler and lets the script go on. The cleanup reverts the mutation and removes the images, and then the loop starts the next patch: Ctrl-C during a multi-patch run applies the next mutation and starts its rebuild. Each further Ctrl-C costs one more patch.
+- Evidence: a script with that trap and a three-step loop, interrupted in step 1, printed "cleanup ran" and then ran steps 2 and 3. The new hermetic check, before the fix: rc 1, with the preflight reported FAILED after the interrupt.
+
+### TST-14: `wf_it_selections` silently skips a quoted `run:` value
+- **Status: OPEN** (found by the batch 7 follow-up review)
+- Severity: LOW (an omission in nightly still fails the whole-corpus check, so PR ⊆ nightly still holds) — Confidence: CONFIRMED (reproduced with a fixture workflow)
+- Location: `tests/lib-layer-checks.sh: \`_wf_it_awk()\``. Its `scan()` needs a space, `;`, `&`, `|` or `(` before `tests/integration/run.sh`, and `key()` does not unquote a `run:` value.
+- What's wrong: `run: "./tests/integration/run.sh --tags quoted"`, `run: '…'` and `run: bash -c './tests/integration/run.sh …'` give no record and no refusal. The function's header says everything it cannot decide is rc 1, never a quiet omission.
+- Fix direction: refuse a `run:` line that mentions `tests/integration/run.sh` and yields no record, or unquote scalar `run:` values before scanning.
+
+### TST-15: `wf_triggers_on` treats `pull_request_target` and `merge_group` as not PR-triggered
+- **Status: OPEN** (found by the batch 7 follow-up review; a design choice batch 7 wrote down, in the parser test's "pull_request_target is not pull_request" vectors)
+- Severity: LOW — Confidence: CONFIRMED (by the test's own vectors)
+- Location: `tests/lib-layer-checks.sh: \`wf_triggers_on()\``
+- What's wrong: a workflow on `pull_request_target` or `merge_group` that runs checks on every PR or merge can be registered `exempt` and passes as "verified NOT pull_request-triggered". That is the bypass TST-6 closed, moved to a sibling trigger.
+- Fix direction: have an `exempt` row also refuse `pull_request_target` and `merge_group`, or rename the claim to what is checked.
 
 ## 8. Documentation vs code
 
