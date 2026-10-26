@@ -471,6 +471,10 @@ jobs:
       # workstation and by NOTHING in CI. That is a real coverage gap, not a
       # hypothetical one, and this comment is where it must be recorded: a
       # trade-off written only in a design doc is a trade-off nobody will find.
+      # The switch is not a one-line edit any more: test-layer-containment.sh
+      # requires nightly to run every case in the corpus, and fails every PR,
+      # naming 750 and any other `needs-multiruby` case, until it can tell a
+      # declared local-only case from a forgotten one. Give it that first.
       - name: Packages tier (native variant)
         run: >-
           ./tests/integration/run.sh --tags packages --variant native --require packages
