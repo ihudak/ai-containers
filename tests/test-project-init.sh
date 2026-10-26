@@ -176,6 +176,20 @@ fn_of() { sed -n '/^ensure_ai_containers_ignored()/,/^}/p' "$1" | grep -v '^[[:s
   && pass "init's and sync's ensure_ai_containers_ignored are the same code" \
   || fail "ensure_ai_containers_ignored differs between project-init.sh and sync-to-projects.sh"
 
+# DOC-3: AGENTS.md documents `./project-init.sh /path/to/myproject [optional-name]`,
+# but the arguments were ignored, and with no terminal the first prompt's failed
+# read ended the script with exit 1 and no output at all. The arguments are now the
+# defaults of the path and name prompts, and running out of input says why.
+PROJ5="$TMP/proj/byarg"; mkdir -p "$PROJ5"; git -C "$PROJ5" init -q
+printf '\n\n\n\n\n\n\n\n\n\n\n' | bash "$SCRIPTS/project-init.sh" "$PROJ5" argname >/dev/null 2>&1
+grep -qx 'IMAGE_NAME=argname-ai-container' "$PROJ5/.ai-containers/sandbox.env" 2>/dev/null \
+  && pass "project-init.sh takes the path and name from its arguments as defaults" \
+  || fail "project-init.sh ignored its arguments ($(cat "$PROJ5/.ai-containers/sandbox.env" 2>/dev/null | head -3 | tr '\n' ';'))"
+eof_err="$(bash "$SCRIPTS/project-init.sh" "$TMP/proj/none" x </dev/null 2>&1 >/dev/null)"; eof_rc=$?
+[[ "$eof_rc" != 0 && "$eof_err" == *"interactive"* ]] \
+  && pass "running out of input fails with a message, not silently" \
+  || fail "no-input run (rc=$eof_rc) said: '$eof_err'"
+
 # ── Group picker (step 6) ─────────────────────────────────────────────────────
 # The group prompt lists existing groups by number; anything else is a name, and
 # a name with no directory is confirmed before it becomes a new group. Each run

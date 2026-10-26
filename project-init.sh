@@ -128,14 +128,23 @@ host_checkout_preflight "$script_dir" || exit 1
 
 # ── Prompt helpers ─────────────────────────────────────────────────────────────
 
+# Every answer comes from a terminal. With stdin closed (a script, an agent), a read
+# that failed used to end the script under set -e with exit 1 and no output at all
+# (bugs review DOC-3); now it says so. A last line without a newline still counts.
+eof_die() {
+  printf '\nERROR: project-init.sh is interactive, and its input ended at: %s\n' "$1" >&2
+  printf '       Run it in a terminal; ./project-init.sh <path> [name] prefills the first two answers.\n' >&2
+  exit 1
+}
+
 prompt_with_default() {
   # Usage: prompt_with_default "Question" "default" varname
-  local q="$1" def="$2" varname="$3" reply
+  local q="$1" def="$2" varname="$3" reply=""
   if [[ -n "$def" ]]; then
-    read -r -p "$q [$def]: " reply
+    read -r -p "$q [$def]: " reply || [[ -n "$reply" ]] || eof_die "$q"
     printf -v "$varname" '%s' "${reply:-$def}"
   else
-    read -r -p "$q: " reply
+    read -r -p "$q: " reply || [[ -n "$reply" ]] || eof_die "$q"
     printf -v "$varname" '%s' "$reply"
   fi
 }
@@ -235,7 +244,8 @@ mem_ge() {
 # ── 1. Project path ────────────────────────────────────────────────────────────
 
 while true; do
-  prompt_with_default "Project path" "" project_path_input
+  # ./project-init.sh [path] [name]: the arguments are the first two defaults.
+  prompt_with_default "Project path" "${1:-}" project_path_input
   if [[ -z "$project_path_input" ]]; then
     printf '  Path is required.\n' >&2
     continue
@@ -249,7 +259,7 @@ done
 
 # ── 2. Project name ────────────────────────────────────────────────────────────
 
-default_name="$(basename "$project_path")"
+default_name="${2:-$(basename "$project_path")}"
 prompt_with_default "Project name" "$default_name" project_name
 
 # ── 3. Image name ──────────────────────────────────────────────────────────────
@@ -307,7 +317,7 @@ while [[ -z "$group_name" ]]; do
     [[ -d "$HOME/.ai-containers/$label" ]] || label+=" (new)"
     printf '  %d) %s\n' "$((i+1))" "$label"
   done
-  read -r -p "Pick a number, or type a name for a new group [1]: " reply || exit 1
+  read -r -p "Pick a number, or type a name for a new group [1]: " reply || [[ -n "$reply" ]] || eof_die "the group"
   [[ -z "$reply" ]] && reply=1
   # No leading zero: bash arithmetic would read "08" as octal. An out-of-range
   # number falls through to the name branch, so a numeric group name can still
@@ -319,7 +329,7 @@ while [[ -z "$group_name" ]]; do
   elif [[ "$reply" == "host" || -d "$HOME/.ai-containers/$reply" ]]; then
     group_name="$reply"
   else
-    read -r -p "Group '$reply' does not exist. Create it? [y/N]: " confirm || exit 1
+    read -r -p "Group '$reply' does not exist. Create it? [y/N]: " confirm || [[ -n "$confirm" ]] || eof_die "creating group $reply"
     case "$confirm" in
       y|Y|yes|YES) group_name="$reply" ;;
     esac
@@ -353,7 +363,7 @@ if [[ "$group_name" != "host" && ! -d "$group_root" ]]; then
   done
 
   while true; do
-    read -r -p "[1]: " reply
+    reply=""; read -r -p "[1]: " reply || [[ -n "$reply" ]] || eof_die "the group's first contents"
     [[ -z "$reply" ]] && reply=1
     if [[ "$reply" =~ ^[0-9]+$ ]] && (( reply >= 1 && reply <= ${#init_values[@]} )); then
       group_init="${init_values[$((reply-1))]}"
@@ -565,7 +575,7 @@ printf '  Ensured %s/.gitignore covers outputs and generated files.\n' "$(basena
 
 write_launcher=1
 if [[ -f "$launch_script" ]]; then
-  read -r -p "  $(basename "$launch_script") already exists. Overwrite? [y/N]: " ow
+  ow=""; read -r -p "  $(basename "$launch_script") already exists. Overwrite? [y/N]: " ow || [[ -n "$ow" ]] || eof_die "overwriting $(basename "$launch_script")"
   case "$ow" in
     y|Y|yes|YES) write_launcher=1 ;;
     *) write_launcher=0 ;;
