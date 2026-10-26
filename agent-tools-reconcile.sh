@@ -231,7 +231,15 @@ done
 # in the same group may be running against it right now. Gated on claude-code being ON
 # here: the npm copy is in the group's shared tool home, so its mere presence says only
 # that SOME project in the group enabled it.
-if [[ ",$tools," == *",claude-code,"* && ! -d "$HOME/.local/share/claude" && -x "$npm_bin/claude" ]]; then
+# "No native install" is no executable version, as install_claude_native decides it —
+# never a missing directory: sandbox.sh makes and mounts ~/.local/share/claude for
+# every named group with claude-code on, so that test never fired (bugs review RT-5).
+native_claude_present() {
+  local _v
+  for _v in "$HOME/.local/share/claude/versions"/*; do [[ -x "$_v" ]] && return 0; done
+  return 1
+}
+if [[ ",$tools," == *",claude-code,"* ]] && ! native_claude_present && [[ -x "$npm_bin/claude" ]]; then
   mkdir -p "$HOME/.local/bin"
   ln -sf "$npm_bin/claude" "$HOME/.local/bin/claude"
   log "using leftover npm Claude ($npm_bin/claude) — no native install present"

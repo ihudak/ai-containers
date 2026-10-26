@@ -278,8 +278,12 @@ rm -rf "$h"
 
 # ── A group still carrying the pre-native npm Claude keeps working ──
 # Those groups exist (~300 MB under ~/.ai-tools/npm) and are deliberately not deleted, so
-# the fallback must fire ONLY when no native install is present.
+# the fallback must fire ONLY when no native install is present. sandbox.sh makes
+# and mounts ~/.local/share/claude (and .local/state/claude) for every named group
+# with claude-code on, so "absent" means no version in it, never no directory: a
+# test without the directory modelled a state that cannot occur (bugs review RT-5).
 h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
+install -d "$h/.local/share/claude" "$h/.local/state/claude"
 install -d "$h/.ai-tools/npm/bin"; printf '#!/bin/sh\n' > "$h/.ai-tools/npm/bin/claude"; chmod +x "$h/.ai-tools/npm/bin/claude"
 bin="$(mktemp -d)"; mk_stubs "$bin" "$h"
 PATH="$bin:$PATH" HOME="$h" AI_RUNTIME_TOOLS="claude-code" CLAUDE_FAIL=1 \
@@ -287,6 +291,19 @@ PATH="$bin:$PATH" HOME="$h" AI_RUNTIME_TOOLS="claude-code" CLAUDE_FAIL=1 \
 rm -rf "$bin"
 { [[ -L "$h/.local/bin/claude" ]] && [[ "$(readlink "$h/.local/bin/claude")" == "$h/.ai-tools/npm/bin/claude" ]]; } \
   && pass "leftover npm claude is used when the native install is absent" || fail "leftover npm claude is used when the native install is absent"
+rm -rf "$h"
+# …and never once a native version is there, whatever else the directory holds.
+h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
+install -d "$h/.local/share/claude/versions" "$h/.local/state/claude" "$h/.ai-tools/npm/bin"
+printf '#!/bin/sh\n' > "$h/.local/share/claude/versions/2.1.0"; chmod +x "$h/.local/share/claude/versions/2.1.0"
+printf '#!/bin/sh\n' > "$h/.ai-tools/npm/bin/claude"; chmod +x "$h/.ai-tools/npm/bin/claude"
+bin="$(mktemp -d)"; mk_stubs "$bin" "$h"
+PATH="$bin:$PATH" HOME="$h" AI_RUNTIME_TOOLS="claude-code" CLAUDE_FAIL=1 \
+  bash "$REPO_DIR/agent-tools-reconcile.sh" >"$h/out.log" 2>&1
+rm -rf "$bin"
+[[ "$(readlink "$h/.local/bin/claude" 2>/dev/null)" != "$h/.ai-tools/npm/bin/claude" ]] && ! grep -q 'leftover npm Claude' "$h/out.log" \
+  && pass "leftover npm claude is NOT used once a native version exists" \
+  || fail "leftover npm claude shadows the native install ($(readlink "$h/.local/bin/claude"))"
 rm -rf "$h"
 
 # ── ...but NOT when claude-code is OFF: the npm copy is in the GROUP's tool home, so a
