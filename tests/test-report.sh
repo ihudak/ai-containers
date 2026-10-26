@@ -403,6 +403,30 @@ else
 $OUT"
 fi
 
+# PRJ-6: the report must read sandbox.env as load_env_defaults does — the FIRST
+# value of a key wins, and a value is literal (only a matched pair of double
+# quotes is stripped) — or it reports a mode the launcher does not run. An unset
+# mode makes sandbox.sh print usage, not run open.
+DUPB="$TMP/dupbase"; mk_base "$DUPB"
+mk_proj "$DUPB" "$TMP/dupproj" default open 1.0
+printf 'SANDBOX_MODE=restricted\n' >> "$TMP/dupproj/.ai-containers/sandbox.env"
+mk_proj "$DUPB" "$TMP/unsetproj" default '' 1.0
+sed -i.bak '/^SANDBOX_MODE=/d' "$TMP/unsetproj/.ai-containers/sandbox.env" && rm -f "$TMP/unsetproj/.ai-containers/sandbox.env.bak"
+mk_proj "$DUPB" "$TMP/quotedproj" default "'restricted'" 1.0
+run "$DUPB/ai-containers-report.sh" --tsv
+dup_mode="$(awk -F'\t' '$0 ~ /dupproj/ { for (i=1;i<=NF;i++) if ($i ~ /^(OPEN|RESTRICTED)$/) print $i }' <<<"$OUT")"
+[[ "$dup_mode" == OPEN ]] && pass "a key set twice reports the first value, as the launcher uses" \
+  || fail "duplicate SANDBOX_MODE reported as '$dup_mode' (launcher runs open)
+$OUT"
+grep -q 'unsetproj.*UNSET (usage)' <<<"$OUT" && ! grep -q 'DEFAULT-OPEN' <<<"$OUT" \
+  && pass "an unset mode is reported as UNSET (usage), not open" \
+  || fail "unset mode mislabelled
+$OUT"
+grep -q "quotedproj.*'RESTRICTED'" <<<"$OUT" \
+  && pass "a single-quoted value is reported literally, as the launcher reads it" \
+  || fail "single quotes stripped from a value the launcher reads literally
+$(grep quotedproj <<<"$OUT")"
+
 printf '\n%s\n' "----------------------------------------"
 if [[ "$fails" -eq 0 ]]; then
   printf 'test-report.sh: all checks passed\n'; exit 0

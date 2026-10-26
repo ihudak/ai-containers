@@ -184,19 +184,20 @@ find_launcher() {
 # identifier. Empty when the file is absent or sets no active value. The `=`
 # anchor keeps CONTAINER_MEMORY from matching CONTAINER_MEMORY_RESERVATION etc.
 env_var() {
+  # Read as sandbox-common.sh: load_env_defaults() reads it: the FIRST value of a key
+  # wins (it sets only what is unset), and the value is literal — a trailing
+  # `# comment` and single quotes are part of it; only a matched pair of double
+  # quotes is stripped. Taking the last value reported a mode the launcher does
+  # not run (bugs review PRJ-6).
   awk -v name="$2" '
-    BEGIN { re = "^[[:space:]]*(export[[:space:]]+)?" name "[[:space:]]*=" }
-    /^[[:space:]]*#/ { next }
-    $0 ~ re {
-      v = $0
-      sub(/^[^=]*=/, "", v)
-      sub(/[[:space:]]*#.*$/, "", v)
-      gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
-      gsub(/^"|"$/, "", v)
-      gsub(/^'\''|'\''$/, "", v)
-      val = v
+    { sub(/\r$/, ""); sub(/^[[:space:]]+/, "") }
+    $0 == "" || /^#/ { next }
+    /^export[[:space:]]/ { sub(/^export[[:space:]]+/, "") }
+    index($0, name "=") == 1 {
+      v = substr($0, length(name) + 2)
+      if (length(v) >= 2 && v ~ /^".*"$/) v = substr(v, 2, length(v) - 2)
+      print v; exit
     }
-    END { if (val != "") print val }
   ' "$1" 2>/dev/null
 }
 
@@ -210,19 +211,19 @@ resolve_env_var() {
 }
 
 # Map a raw SANDBOX_MODE value to a report label. Unset in both env files reports
-# as DEFAULT-OPEN (the implicit "open" default).
+# as UNSET (usage): sandbox.sh then prints its usage and launches nothing.
 network_mode_label() {
   case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
     open)       printf 'OPEN' ;;
     discovery)  printf 'DISCOVERY' ;;
     restricted) printf 'RESTRICTED' ;;
-    "")         printf 'DEFAULT-OPEN' ;;
+    "")         printf 'UNSET (usage)' ;;
     *)          printf '%s' "$1" | tr '[:lower:]' '[:upper:]' ;;
   esac
 }
 
 # Effective network-mode label for a project: sandbox.local.env SANDBOX_MODE
-# overrides the portable sandbox.env value; DEFAULT-OPEN when neither sets it.
+# overrides the portable sandbox.env value; UNSET (usage) when neither sets it.
 resolve_network_mode() {
   network_mode_label "$(resolve_env_var "$1" SANDBOX_MODE)"
 }
