@@ -293,6 +293,10 @@ cmd_add() {
   local name="$1" source="${2:-}"
   [[ -z "$name" || -z "$source" ]] && { printf 'ERROR: usage: ./repo.sh add <name> <host-path|git-url>\n' >&2; exit 1; }
   validate_repo_name "$name" || exit 1
+  # A new name may not hold `--`: repo `app`'s working copy `ui` is the volume
+  # ai-containers-repo-app--wc-ui, which is also repo `app--wc-ui`'s base volume
+  # (bugs review PRJ-5). Only new names: an existing one is still synced and removed.
+  [[ "$name" != *--* ]] || { printf "ERROR: repo name '%s' contains '--', which working-copy volume names use; choose another.\n" "$name" >&2; exit 1; }
 
   if repo_is_registered "$name"; then
     printf "ERROR: repo '%s' is already registered.\n" "$name" >&2
@@ -527,7 +531,7 @@ cmd_rm() {
 
   local vol; vol="$(repo_volume_name "$name")"
   # Find any per-workspace writable working copies.
-  local workcopies; workcopies="$(docker volume ls --quiet --filter "name=${vol}--wc-" 2>/dev/null || true)"
+  local workcopies; workcopies="$(repo_workcopy_volumes "$name")"
   local has_base=0
   docker volume inspect "$vol" >/dev/null 2>&1 && has_base=1
 
@@ -584,7 +588,7 @@ reset_one() {
   ensure_seed_image
   # Drop per-workspace writable working copies (that is where active edits live).
   local workcopies wc
-  workcopies="$(docker volume ls --quiet --filter "name=${vol}--wc-" 2>/dev/null || true)"
+  workcopies="$(repo_workcopy_volumes "$name")"
   for wc in $workcopies; do
     docker volume rm "$wc" >/dev/null 2>&1 && printf '  %s: removed working copy %s\n' "$name" "$wc" || true
   done

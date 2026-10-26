@@ -537,22 +537,53 @@ docker_volume_label() {
   docker volume inspect --format "{{if .Labels}}{{index .Labels \"${key}\"}}{{end}}" "$vol" 2>/dev/null || true
 }
 
+# Echo each existing volume whose name STARTS WITH <prefix>, exactly. Docker's
+# `name=` filter is an unanchored regex, so it is only a coarse pre-filter here:
+# under REPO_VOLUME_PREFIX=prj it also returned myprj-repo-*, and a `.` in a prefix
+# matched any character — and rm, reset and gc delete what discovery returns
+# (bugs review PRJ-5).
+volumes_named() {
+  local v
+  while IFS= read -r v; do
+    [[ -n "$v" && "$v" == "$1"* ]] && printf '%s\n' "$v"
+  done < <(docker volume ls --quiet --filter "name=$1" 2>/dev/null || true)
+}
+
+# A repo volume is a base volume when its name is exactly the base-volume name of
+# the repo its label names. A name alone cannot tell: repo `docs`'s working copy
+# `ui` and a repo named `docs--wc-ui` are both ai-containers-repo-docs--wc-ui.
+# Unlabelled (before labels existed), a `--wc-` in the name decides, as it did.
+repo_volume_is_base() {
+  local r; r="$(docker_volume_label "$1" 'ai-containers.repo')"
+  if [[ -n "$r" ]]; then [[ "$1" == "$(repo_volume_name "$r")" ]]
+  else [[ "$1" != *--wc-* ]]; fi
+}
+
 # Echo each existing base repo volume name (EXCLUDING working copies), one/line.
 repo_base_volumes() {
-  docker volume ls --quiet --filter "name=${repo_volume_prefix}-repo-" 2>/dev/null \
-    | grep -v -- '--wc-' || true
+  local v
+  while IFS= read -r v; do
+    repo_volume_is_base "$v" && printf '%s\n' "$v"
+  done < <(volumes_named "${repo_volume_prefix}-repo-")
+  return 0
 }
 
 # Echo existing working-copy volume names, one per line.
-#   $1 (optional) = repo name → only that repo's working copies; else all repos'.
+#   $1 (optional) = repo name → only that repo's working copies (named
+#   <base>--wc-*, and labelled as that repo's when labelled); else all repos'.
 repo_workcopy_volumes() {
-  local name="${1:-}"
+  local name="${1:-}" v r
   if [[ -n "$name" ]]; then
-    docker volume ls --quiet --filter "name=$(repo_volume_name "$name")--wc-" 2>/dev/null || true
+    while IFS= read -r v; do
+      r="$(docker_volume_label "$v" 'ai-containers.repo')"
+      [[ -z "$r" || "$r" == "$name" ]] && printf '%s\n' "$v"
+    done < <(volumes_named "$(repo_volume_name "$name")--wc-")
   else
-    docker volume ls --quiet --filter "name=${repo_volume_prefix}-repo-" 2>/dev/null \
-      | grep -- '--wc-' || true
+    while IFS= read -r v; do
+      repo_volume_is_base "$v" || printf '%s\n' "$v"
+    done < <(volumes_named "${repo_volume_prefix}-repo-")
   fi
+  return 0
 }
 
 # Echo the repo name backing a base volume: prefer the label, fall back to
@@ -630,7 +661,7 @@ rvm_volume_name() {
 
 # Echo every existing rvm volume name, one per line.
 rvm_volumes() {
-  docker volume ls --quiet --filter "name=${repo_volume_prefix}-rvm-" 2>/dev/null || true
+  volumes_named "${repo_volume_prefix}-rvm-"
 }
 
 # Echo the group backing an rvm volume: prefer the label, fall back to stripping

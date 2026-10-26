@@ -287,6 +287,36 @@ check "rm --yes removes the registry entry" "" \
 check "  … and leaves the other two" "2" \
   "$(grep -cE '^(docs-archive|cluster)\|' "$HOME/.ai-containers/repos.conf" 2>/dev/null)"
 
+# ── 4b. PRJ-5: discovery decides by exact prefix and by label, not a regex ────
+# Docker's `name=` filter is an unanchored regex. A repo registered as
+# `docs--wc-ui` (names allowed `--`) has a base volume that matched `docs`'s
+# working-copy filter, so `rm docs`, `reset docs` and `gc` deleted it; and under
+# REPO_VOLUME_PREFIX=prj, `myprj-repo-*` matched too (bugs review PRJ-5).
+setup_world
+: > "$VOLS/ai-containers-repo-docs--wc-ui"
+printf 'ai-containers.repo=docs--wc-ui\nai-containers.type=git\nai-containers.source=git@x:ui.git\n' > "$VOLS/ai-containers-repo-docs--wc-ui.labels"
+run_repo rm docs --yes
+[[ -f "$VOLS/ai-containers-repo-docs--wc-ui" ]] && pass "rm docs leaves a repo whose name begins docs--wc- alone" \
+  || fail "rm docs removed the base volume of repo docs--wc-ui ($(removed))"
+setup_world
+: > "$VOLS/ai-containers-repo-docs--wc-ui"
+printf 'ai-containers.repo=docs--wc-ui\nai-containers.type=git\n' > "$VOLS/ai-containers-repo-docs--wc-ui.labels"
+run_repo gc --yes
+[[ -f "$VOLS/ai-containers-repo-docs--wc-ui" ]] && pass "gc does not take a base volume for a working copy" \
+  || fail "gc removed the base volume of repo docs--wc-ui ($(removed))"
+setup_world
+: > "$VOLS/myprj-repo-lib--wc-t"; printf 'ai-containers.repo=lib\n' > "$VOLS/myprj-repo-lib--wc-t.labels"
+: > "$VOLS/prj-repo-lib--wc-t"; printf 'ai-containers.repo=lib\n' > "$VOLS/prj-repo-lib--wc-t.labels"
+REPO_VOLUME_PREFIX=prj run_repo gc --yes
+[[ -f "$VOLS/myprj-repo-lib--wc-t" && ! -f "$VOLS/prj-repo-lib--wc-t" ]] \
+  && pass "gc under one prefix removes only that prefix's working copies" \
+  || fail "gc crossed prefixes ($(removed))"
+# A new name with `--` could be the very name of another repo's working copy.
+setup_world
+run_repo add app--wc-x "$TMP/hostsrc"
+[[ "$RC" != 0 ]] && grep -q -- '--' "$ERR" && pass "add refuses a repo name containing --" \
+  || fail "add accepted app--wc-x (rc=$RC; $(tr '\n' ' ' < "$ERR"))"
+
 # ── 5. An unregistered name with no volume removes nothing ────────────────────
 setup_world
 run_repo rm no-such-repo --yes
