@@ -11,18 +11,20 @@
 
 ## Fix batches (one PR per area)
 
-| # | Area | Findings | Highest |
-|---|---|---|---|
-| 1 | Host-side launcher: git internals + launcher overlay | GIT-1, LNCH-1, LNCH-2 | HIGH |
-| 2 | Launcher config / env layers / credentials | ENV-1 … ENV-6 | HIGH |
-| 3 | Container-start runtime tools (entrypoint root steps, reconciles) | RT-1 … RT-7 | HIGH |
-| 4 | Host lifecycle scripts (project-init, sync, repo, group, report) | PRJ-1 … PRJ-9, DOC-1, DOC-3 | MEDIUM |
-| 5 | In-container DB services | SVC-1 … SVC-3 | MEDIUM |
-| 6 | Build / Dockerfile / tools.d / config validation | BLD-1 … BLD-7 | MEDIUM |
-| 7 | Test harness and CI | TST-1 … TST-8 | MEDIUM |
-| 8 | Docs (docs-only PR) | DOC-2, DOC-4 … DOC-13 | MEDIUM |
+| # | Area | Findings | Feature gaps folded in | Highest |
+|---|---|---|---|---|
+| 1 | Host-side launcher: git internals + launcher overlay | GIT-1, LNCH-1, LNCH-2 | GAP-12 (only: follow includes inside included files) | HIGH |
+| 2 | Launcher config / env layers / credentials | ENV-1 … ENV-6 | — | HIGH |
+| 3 | Container-start runtime tools (entrypoint root steps, reconciles) | RT-1 … RT-7 | stretch: GAP-1 for `link-default-ruby.sh`, `install-agent-skills.sh`, `agent-tools-reconcile.sh` | HIGH |
+| 4 | Host lifecycle scripts (project-init, sync, repo, group, report) | PRJ-1 … PRJ-9, DOC-1, DOC-3 | optional: GAP-6; stretch: GAP-1 for `group.sh` | MEDIUM |
+| 5 | In-container DB services | SVC-1 … SVC-3 | — | MEDIUM |
+| 6 | Build / Dockerfile / tools.d / config validation | BLD-1 … BLD-7 | — | MEDIUM |
+| 7 | Test harness and CI | TST-1 … TST-8 | GAP-5 (same fix as TST-2), GAP-8 (with TST-5), GAP-9 (with TST-3) | MEDIUM |
+| 8 | Docs (docs-only PR) | DOC-2, DOC-4 … DOC-13 | GAP-14 (overlaps DOC-6) | MEDIUM |
 
-Duplicates merged: PRJ-2 is the same defect as DOC-1 (fix once, in batch 4); PRJ-7 is the same defect as TST-1 (fix once, in batch 7). Related feature gaps: TST-2 ↔ GAP-5, DOC-6 ↔ GAP-14.
+Folded-in gaps are described in [2026-10-26-feature-gaps-review.md](2026-10-26-feature-gaps-review.md); each carries a matching `Fix batch:` line there. **Optional** = same files, but grows the batch; take it if the batch is small. **Stretch** = activate those files' deferred falsify targets in the same PR, so the new assertions are shown to be able to fail; it costs a mutation-score run per batch. The remaining gaps (GAP-2, 3, 4, 7, 10, 11, 13, and the rest of GAP-12) are a separate track.
+
+Duplicates merged: PRJ-2 is the same defect as DOC-1 (fix once, in batch 4); PRJ-7 is the same defect as TST-1 (fix once, in batch 7).
 
 ### HIGH — fix first
 

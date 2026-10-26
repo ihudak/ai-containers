@@ -4,13 +4,27 @@
 - **Last reviewed commit:** `bec1c57` (`bec1c5737acdc549143e2c55e4a4b945ae27a287`, main, 2026-10-18 — "Merge pull request #312")
 - **Scope:** every design, plan and backlog in the repository, wherever written — `docs/superpowers/specs/`, `docs/superpowers/plans/`, the follow-up and falsify backlogs, `tests/falsify/survivors.txt` / `targets.conf`, AGENTS.md, README.md, `docs/`, CHANGELOG.md, and TODO/deferred/follow-up markers in code.
 - **Companion:** [2026-10-26-bugs-review.md](2026-10-26-bugs-review.md) (defects; doc errors that mislead users are filed there as `DOC-*`).
-- **Grouping:** each gap carries an `Area:`; a fixer batching by area can take every gap with the same Area in one PR.
+- **Grouping:** each gap carries an `Area:` and a `Fix batch:` line. Gaps that touch the same code as a bug batch in the companion file are folded into that batch; the rest are a separate track.
+
+## Fix-batch mapping
+
+| Gap | Fix batch (bugs review) | How |
+|---|---|---|
+| GAP-5 | 7 — tests/CI | Root cause of TST-2: read the run.sh args from the workflows; one fix closes both. |
+| GAP-8 | 7 — tests/CI | One more rule in `tests/bash-dialect-lint.sh`, next to TST-5. |
+| GAP-9 | 7 — tests/CI | Same falsify plumbing as TST-3. |
+| GAP-14 | 8 — docs | Docs-only edits; the `mode=`/`agents=` item is DOC-6. |
+| GAP-12 (part) | 1 — git internals | Only following includes inside included files (`_git_include_paths`); the rest of GAP-12 is separate. |
+| GAP-6 | 4 — lifecycle scripts (optional) | Same files as DOC-3/PRJ-3; grows the batch. |
+| GAP-1 (part) | 3 and 4 (stretch) | Activate the deferred falsify targets for the files those batches fix: `link-default-ruby.sh`, `install-agent-skills.sh`, `agent-tools-reconcile.sh` (3); `group.sh` (4). |
+| GAP-1 (rest), 2, 3, 4, 7, 10, 11, 12 (rest), 13 | separate track | Larger design or falsify work, or investigation/manual runs rather than code changes. |
 
 A gap is something a design promised that is not in the code at the reviewed commit. Items that no longer make sense are listed under OBSOLETE with the reason, so they can be overruled. Items verified as done are listed at the end so coverage is visible.
 
 
 ### GAP-1: Falsify "stage 2" — the nine named targets were never activated
 - Status: NOT DONE
+- Fix batch: 3 and 4, stretch — only `link-default-ruby.sh`, `install-agent-skills.sh`, `agent-tools-reconcile.sh` (batch 3) and `group.sh` (batch 4); the other five targets are a separate track
 - Source: docs/superpowers/specs/2026-08-11-falsify-mutation-tier-design.md: "The nine that meet (1) and await a later stage are named in `targets.conf`: `check-sandbox-version.sh`, `group.sh`, `migrate-runme.sh`, `capture-blocked-traffic.sh`, `link-agent-tools.sh`, `link-default-ruby.sh`, `agent-tools-reconcile.sh`, `rvm-reconcile.sh`, `install-agent-skills.sh`. They are the obvious stage 2"
 - Area: tests/CI
 - Current state at HEAD: all nine are still `#DEFERRED|…|EXECUTED-WHOLE|…|-|dedicated oracle, executed whole …; qualifies under the stage-1 rule but is not in the increment-5 set` in tests/falsify/targets.conf. The active set did grow (services.d/*, start-services.sh, extract-discovery.sh, repo-git-reset.sh, version.sh, …), but by new files, not these nine.
@@ -20,6 +34,7 @@ A gap is something a design promised that is not in the code at the reviewed com
 
 ### GAP-2: The large diffuse falsify targets are still deferred (sandbox.sh first)
 - Status: PARTIAL
+- Fix batch: separate track
 - Source: same design: "The large diffuse targets (`sandbox.sh`, `tests/integration/{lib,run}.sh`, `repo.sh`, `sandbox-common.sh` …) … enter in later increments, one at a time"
 - Area: tests/CI
 - Current state at HEAD: still `#DEFERRED`: sandbox.sh (`193 killed / 74 SURVIVED over 50 lines`), repo.sh (`58 DISTINCT SURVIVING IDENTITIES`, explicitly "closed to the practical limit", not scheduled), sandbox-common.sh ("what it needs next is a MEASURED minimal killing set"), build.sh, install-tools.sh, tests/integration/{lib,run,minimal-conf}.sh, verify-on-host.sh, bump-sandbox-version.sh and the three migrations. The sandbox.sh row says its remaining security-adjacent survivors are "403, which needs a registered repo" and "691/702, the rvm branch, which needs `docker volume` support in this test's fake docker".
@@ -29,6 +44,7 @@ A gap is something a design promised that is not in the code at the reviewed com
 
 ### GAP-3: Container-side firewall and capture scripts have no hermetic oracle; entrypoint.sh's row is stale
 - Status: NOT DONE
+- Fix batch: separate track
 - Source: tests/falsify/targets.conf GREPPED-ONLY block: "Every one of them is a container-side script … that no hermetic test runs"
 - Area: tests/CI (entrypoint/firewall)
 - Current state at HEAD: `refresh-ipset-allowlist.sh|GREPPED-ONLY|-` and `capture-agent-destinations.sh|GREPPED-ONLY|-` are covered only by integration cases (020/030/300, 120/220). `entrypoint.sh|GREPPED-ONLY|test-entrypoint-wiring.sh` understates the coverage: tests/test-launcher-verify.sh and tests/test-env-file.sh extract and *run* `verify_launcher_mounts` and `stash_app_env` under the entrypoint's `set -euo pipefail`. derive-targets.sh's textual resolution cannot see function extraction, so this execution is invisible to the gate.
@@ -38,6 +54,7 @@ A gap is something a design promised that is not in the code at the reviewed com
 
 ### GAP-4: The `stmt-delete` operator and the per-target `stream-flip` gate were never built
 - Status: NOT DONE
+- Fix batch: separate track
 - Source: falsify-mutation-tier-design.md operator table: "`stmt-delete`, enabled per-target on a measured score | Nightly" / "full matrix, on the host | Local (Phase 6)"; and stream-flip "may return as an opt-in per-target operator gated on a measured score"
 - Area: tests/CI
 - Current state at HEAD: tests/falsify/generate.sh has `FALSIFY_ALL_OPERATORS="cond-negate logic-flip return-flip cmp-flip stream-flip"` and no stmt-delete at all. `stream-flip` is opt-in globally via `FALSIFY_OPERATORS`, not per target. Nightly runs the same falsify job as PR (via hermetic-checks.yml), and verify-on-host.sh Phase 6 calls `falsify/run.sh --jobs "$fl_jobs" --timeout "$fl_timeout"` with the default operators.
@@ -47,6 +64,7 @@ A gap is something a design promised that is not in the code at the reviewed com
 
 ### GAP-5: The layer-containment guard checks a hand-maintained copy of the workflow selection args
 - Status: NOT DONE
+- Fix batch: 7 — tests/CI (same fix as TST-2)
 - Source: execution-layers-and-portability-design.md: "Each workflow keeps its own selection arguments; the guard reads them and checks containment". Plan 2026-08-11-execution-layers-and-portability.md: "teaching the guard to read `--tags`/`--exclude` out of the workflow YAML instead of a maintained-by-hand copy … is real follow-up work"
 - Area: tests/CI
 - Current state at HEAD: tests/test-layer-containment.sh hardcodes `pr_set="$(sel --tags fast --exclude needs-external,needs-dns)"` and `nightly_set="$( { sel --exclude packages; sel --tags packages; } | sort -u )"`. The real args are in integration.yml (`args="--tags fast --exclude needs-external,needs-dns --require security"`) and nightly.yml.
@@ -56,6 +74,7 @@ A gap is something a design promised that is not in the code at the reviewed com
 
 ### GAP-6: Changes to the generated `runme.sh` template never reach existing projects
 - Status: NOT DONE
+- Fix batch: 4 — lifecycle scripts (optional)
 - Source: sandbox-conf-schema-migrations-design.md "Out of scope": "The per-project generated launcher … if the launcher template later gains a new exported variable, already-initialized projects' launchers don't get it … deliberately deferred to a possible future design"
 - Area: project/repo/group
 - Current state at HEAD: the thin launcher (project-init.sh: `emit_launcher()`) narrowed the problem but did not close it. sync-to-projects.sh only rewrites a stale self-call (`sed -i.bak 's#\./runme\.sh#./sandbox.sh#g'`) and never regenerates the launcher. Concretely, the `--version` short-circuit (`-V|--version|version) exec ./sandbox.sh --version`, CHANGELOG: "the generated launcher short-circuits **before** its own `./build.sh`") is missing from every launcher generated before it, so `./runme.sh --version` there runs a build first.
@@ -65,6 +84,7 @@ A gap is something a design promised that is not in the code at the reviewed com
 
 ### GAP-7: Codex and Gemini still cannot update themselves (the regression doc's open question)
 - Status: NOT DONE
+- Fix batch: separate track
 - Source: docs/superpowers/specs/2026-08-22-agent-autoupdate-regression.md "Open question": "Whether the same treatment is available for the other three CLIs … Not investigated; recorded so it is not mistaken for settled."
 - Area: runtime-tools
 - Current state at HEAD: Claude Code installs natively; Copilot updates itself. For Codex and Gemini the reconcile reinstalls them on **every start** (AGENTS.md table, "~7s with a warm npm cache (~24s cold)").
@@ -74,6 +94,7 @@ A gap is something a design promised that is not in the code at the reviewed com
 
 ### GAP-8: No mechanical guard against awk interval quantifiers (falsify backlog F14)
 - Status: PARTIAL
+- Fix batch: 7 — tests/CI (with TST-5)
 - Source: 2026-08-14-falsify-backlog.md F14: "ACCEPTED: a prose guard, weaker than this repo's norm and recorded as such"
 - Area: tests/CI
 - Current state at HEAD: a prose warning in tests/portability.sh's header. tests/bash-dialect-lint.sh has no awk rule. The floor run (mawk on ubuntu:22.04) catches it late.
@@ -83,6 +104,7 @@ A gap is something a design promised that is not in the code at the reviewed com
 
 ### GAP-9: The empty-corpus rule is not pinned for test-falsify-historical.sh
 - Status: NOT DONE
+- Fix batch: 7 — tests/CI (with TST-3)
 - Source: tests/test-lint-empty-corpus.sh header: "the same rule in tests/test-falsify-historical.sh is NOT pinned this way, because exercising it there means a full run of nine real oracles"
 - Area: tests/CI
 - Current state at HEAD: three lints are driven against an empty `git ls-files`; the historical gate is not.
@@ -92,6 +114,7 @@ A gap is something a design promised that is not in the code at the reviewed com
 
 ### GAP-10: F58's trigger (an empty `git ls-files` under load) was never identified
 - Status: PARTIAL
+- Fix batch: separate track
 - Source: falsify backlog F58: "GUARD FIXED; the TRIGGER is still unidentified"
 - Area: tests/CI
 - Current state at HEAD: the guard (one derivation, reported as `SCAFFOLD-FAILED`) is in place, and test-lint-empty-corpus.sh covers its siblings. The cause was never found. F64 later found a trap in a forked child deleting the scratch directory, which may be the same mechanism, but no one checked.
@@ -101,6 +124,7 @@ A gap is something a design promised that is not in the code at the reviewed com
 
 ### GAP-11: The launcher-mount swap check is skipped on macOS Docker Desktop and Colima
 - Status: PARTIAL
+- Fix batch: separate track
 - Source: AGENTS.md mount layout: "if its own `device:inode` does not survive the bind (a file-sharing layer such as macOS Docker Desktop or Colima), verification is skipped with a one-line `NOTE:`"
 - Area: launcher/mounts
 - Current state at HEAD: `verify_launcher_mounts()` works on Linux; case 460 checks whichever host it runs on. On macOS the swap race (a concurrent container replacing an overlay source with a symlink) goes unchecked.
@@ -110,6 +134,7 @@ A gap is something a design promised that is not in the code at the reviewed com
 
 ### GAP-12: Known holes in the git-internals protection
 - Status: PARTIAL
+- Fix batch: 1 — git internals, for following includes inside included files only; the post-launch `.git` warning and the exec-key report for earlier-protected repos are a separate track
 - Source: AGENTS.md: "**Not covered**: configuration poisoned **before** this protection existed …; a file that an included file includes in turn; and a `.git` the agent **creates** in a subdirectory"
 - Area: launcher/mounts
 - Current state at HEAD: these are documented. The first protected launch names the exec keys (`_git_exec_keys()`) and the existing hooks, and a non-`./` `commondir` refuses the launch.
@@ -119,6 +144,7 @@ A gap is something a design promised that is not in the code at the reviewed com
 
 ### GAP-13: WSL2 has never been run
 - Status: NOT DONE
+- Fix batch: separate track
 - Source: 2026-08-10-integration-suite-increment-3-design.md: "WSL2 | expected, **never exercised** … Recorded as expected-and-unverified rather than supported"
 - Area: tests/CI
 - Current state at HEAD: host-preflight.sh warns about `/mnt/<drive>` checkouts and `ALLOW_IPV6_BYPASS` exists, but there is no recorded run of the corpus or the local layer on WSL2.
@@ -128,6 +154,7 @@ A gap is something a design promised that is not in the code at the reviewed com
 
 ### GAP-14: Doc and comment drift found during the audit
 - Status: PARTIAL
+- Fix batch: 8 — docs (overlaps DOC-6)
 - Source: various live docs
 - Area: docs
 - Current state at HEAD:
