@@ -164,6 +164,47 @@ assert_has "4: exactly one finding" '1 problem(s)' "$out"
 assert_has "4: the failure names the obsolete identity" "$ID_K" "$out"
 only_signature "4" "$SIG_OBSOLETE"
 
+# ── DEMONSTRATION 5: UNPROVEN excuses only an identity with no survivor ───────
+# An identity is file:operator:sha1(line), so one identity can carry several
+# DISTINCT damages (a line with two `||`, repeated identical lines). The
+# UNPROVEN exemption — an oracle timing out is a property of the machine, so a
+# timed-out mutant is not REQUIRED to be classified — was keyed on the
+# identity, and one timed-out damage excused a genuine survivor beside it
+# (TST-3). Under load, a real GAP then went through with no entry.
+U='4444444444444444444444444444444444444444'
+ID_U="alpha.sh:logic-flip:$U"
+RUN_U="$TMP/run-unproven.txt"
+cat > "$RUN_U" <<EOF
+RUN|repo=/fix|conf=/fix/targets.conf|jobs=1|timeout=60|operators=<default>|targets=1|mutants=1
+BASELINE|alpha.sh|test-alpha.sh|PASS|11
+MUTANT|UNPROVEN|$ID_U|test-alpha.sh|1|20|timeout|60000|  c && d && e
+TARGET|alpha.sh|test-alpha.sh|1|0|0|1|30
+TOTAL|1|1|0|0|1|50|40
+EOF
+EMPTY_LEDGER="$(mk_ledger d5 "# records nothing")"
+run_gate "$EMPTY_LEDGER" "$RUN_U"
+check "5: an identity whose only non-kill timed out needs no entry" "0" "$rc"
+assert_has "5: … and is still counted in the success line" '1 unproven unclassified' "$out"
+
+for order in survived-first unproven-first; do
+  RUN_M="$TMP/run-mixed-$order.txt"
+  if [[ "$order" == survived-first ]]; then
+    m1="MUTANT|SURVIVED|$ID_U|test-alpha.sh|1|20|none|12|  c || d && e"
+    m2="MUTANT|UNPROVEN|$ID_U|test-alpha.sh|2|20|timeout|60000|  c && d || e"
+  else
+    m1="MUTANT|UNPROVEN|$ID_U|test-alpha.sh|1|20|timeout|60000|  c && d || e"
+    m2="MUTANT|SURVIVED|$ID_U|test-alpha.sh|2|20|none|12|  c || d && e"
+  fi
+  printf '%s\n' \
+    "RUN|repo=/fix|conf=/fix/targets.conf|jobs=1|timeout=60|operators=<default>|targets=1|mutants=2" \
+    "BASELINE|alpha.sh|test-alpha.sh|PASS|11" "$m1" "$m2" \
+    "TARGET|alpha.sh|test-alpha.sh|2|0|1|1|30" "TOTAL|1|2|0|1|1|50|40" > "$RUN_M"
+  run_gate "$EMPTY_LEDGER" "$RUN_M"
+  check "5 ($order): a survivor beside a timed-out sibling of the same identity fails the gate" "1" "$rc"
+  assert_has "5 ($order): the failure names the identity" "$ID_U" "$out"
+  only_signature "5 ($order)" "$SIG_MISSING"
+done
+
 # ── The gate must not pass having checked nothing ─────────────────────────────
 NORUN="$TMP/no-target.txt"
 cat > "$NORUN" <<EOF

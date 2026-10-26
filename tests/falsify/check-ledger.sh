@@ -278,6 +278,7 @@ cl_check_classification() {   # <ledger file>
 # ── the run output ────────────────────────────────────────────────────────────
 declare -A CL_SURVIVED=()    # identity → count of DISTINCT surviving damages
 declare -A CL_UNPROVEN=()    # identity → 1 when at least one record was UNPROVEN
+declare -A CL_HAS_SURV=()    # identity → 1 when at least one record was SURVIVED
 declare -A CL_SEEN=()        # identity → 1 when the run generated it at all
 declare -A CL_SURV_TEXT=()   # "identity|text" → 1, the F10 dedupe key
 declare -A CL_SCOPE=()       # target file → 1
@@ -286,7 +287,7 @@ CL_MUTANTS=0
 cl_read_run() {   # <run output file or ->
   local src="$1" line rest verdict ident text target
   CL_SURVIVED=(); CL_SEEN=(); CL_SURV_TEXT=(); CL_SCOPE=(); CL_MUTANTS=0
-  CL_UNPROVEN=()
+  CL_UNPROVEN=(); CL_HAS_SURV=()
   while IFS= read -r line || [[ -n "$line" ]]; do
     case "$line" in
       'TARGET|'*)
@@ -326,6 +327,7 @@ cl_read_run() {   # <run output file or ->
           # "SURVIVED" on an unproven mutant would send a reader hunting for a
           # missing assertion when the truth is that the oracle never finished.
           [[ "$verdict" == "UNPROVEN" ]] && CL_UNPROVEN["$ident"]=1
+          [[ "$verdict" == "SURVIVED" ]] && CL_HAS_SURV["$ident"]=1
         fi
         ;;
     esac
@@ -357,7 +359,13 @@ cl_check_run() {   # <ledger file>
       # ratchet. It is still REPORTED, loudly, and an entry for one is still
       # ACCEPTED, so a mutant that hangs everywhere can be classified
       # deliberately; it is only the REQUIREMENT that is dropped.
-      if [[ -n "${CL_UNPROVEN[$ident]:-}" ]]; then
+      #
+      # Only where EVERY non-killed record of the identity is UNPROVEN. An
+      # identity is file:operator:sha1(line), and one line can carry several
+      # distinct damages; keyed on the identity alone, one timed-out sibling
+      # excused a genuine SURVIVED beside it, so under load a real gap went
+      # through unclassified (TST-3).
+      if [[ -n "${CL_UNPROVEN[$ident]:-}" && -z "${CL_HAS_SURV[$ident]:-}" ]]; then
         cl_note "UNPROVEN, not required to be classified: $ident (the oracle timed out; machine-dependent)"
         CL_UNPROVEN_UNCLASSIFIED=$(( CL_UNPROVEN_UNCLASSIFIED + 1 ))
       else
