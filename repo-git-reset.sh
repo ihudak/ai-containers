@@ -119,11 +119,14 @@ check_volume() {
 
 # fresh_clone: clone AI_REPO_URL, without a checkout, into a private directory;
 # sets F. Fails with git's first error line on stderr's place, in CLONE_ERR.
+# With no template (--template=): the clone's .git becomes the volume's, and a
+# template brings sample hooks and, from git 2.34 and 2.43 at least, an empty
+# legacy branches/ that reset is meant to leave no trace of (TST-10).
 F="" CLONE_ERR=""
 fresh_clone() {
   WORK="$(mktemp -d "${TMPDIR:-/tmp}/repo-git.XXXXXX")" || die "cannot make a private directory"
   F="$WORK/clone"
-  if ! git clone --quiet --no-checkout -- "$AI_REPO_URL" "$F" 2>"$WORK/err"; then
+  if ! git clone --quiet --no-checkout --template= -- "$AI_REPO_URL" "$F" 2>"$WORK/err"; then
     CLONE_ERR="$(tr '\n' ' ' < "$WORK/err" | cut -c1-200)"
     return 1
   fi
