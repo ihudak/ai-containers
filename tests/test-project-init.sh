@@ -129,6 +129,31 @@ for f in sandbox.local.env.pre-init \
   fi
 done
 
+# PRJ-3: re-init rewrote sandbox.env with SANDBOX_MODE=open and SANDBOX_WORKDIR=..
+# — neither is prompted — and dropped every key a user added, with no backup: a
+# restricted project silently came back open. The mode and every other key the
+# file held are kept; a non-portable workdir moves to sandbox.local.env (the
+# loader ignores it in sandbox.env); the old file is backed up and git-ignored.
+SBENV3="$PROJ3/.ai-containers/sandbox.env"
+sed -i.bak 's/^SANDBOX_MODE=.*/SANDBOX_MODE=restricted/; s/^SANDBOX_WORKDIR=.*/SANDBOX_WORKDIR=@app/' "$SBENV3" && rm -f "$SBENV3.bak"
+printf 'SELINUX_LABEL=keep\nPREVIEW_PORTS="3000 8080"\n' >> "$SBENV3"
+printf '%s\n\n\n\n\n\n\n\n\n\n\n' "$PROJ3" | bash "$SCRIPTS/project-init.sh" >/dev/null 2>&1
+grep -qx 'SANDBOX_MODE=restricted' "$SBENV3" && ! grep -qx 'SANDBOX_MODE=open' "$SBENV3" \
+  && pass "re-init keeps sandbox.env's SANDBOX_MODE" || fail "re-init reset SANDBOX_MODE ($(grep '^SANDBOX_MODE' "$SBENV3"))"
+grep -qx 'SELINUX_LABEL=keep' "$SBENV3" && grep -qx 'PREVIEW_PORTS="3000 8080"' "$SBENV3" \
+  && pass "re-init keeps keys a user added to sandbox.env" || fail "re-init dropped added keys ($(tr '\n' ';' < "$SBENV3"))"
+grep -qx 'SANDBOX_WORKDIR=\.\.' "$SBENV3" && grep -qx 'SANDBOX_WORKDIR=@app' "$SBLOCAL3" \
+  && pass "a non-portable SANDBOX_WORKDIR moves to sandbox.local.env" || fail "SANDBOX_WORKDIR=@app lost on re-init"
+# The earlier re-init above made sandbox.env.pre-init already, so this one is timestamped.
+grep -qlx 'SANDBOX_MODE=restricted' "$PROJ3/.ai-containers"/sandbox.env.pre-init* 2>/dev/null \
+  && pass "re-init backs up sandbox.env" || fail "no sandbox.env backup on re-init"
+# By the inner .gitignore itself: the project's root one ignores all of .ai-containers/
+# here, which says nothing for a project that tracks it.
+gi_repo="$TMP/gi-check"; rm -rf "$gi_repo"; git init -q "$gi_repo"; cp "$PROJ3/.ai-containers/.gitignore" "$gi_repo/.gitignore"
+for f in sandbox.env.pre-init sandbox.env.pre-init.20260101T000000Z; do
+  (cd "$gi_repo" && git check-ignore -q "$f") && pass "the inner .gitignore ignores $f" || fail "the inner .gitignore does not ignore $f"
+done
+
 # ── Group picker (step 6) ─────────────────────────────────────────────────────
 # The group prompt lists existing groups by number; anything else is a name, and
 # a name with no directory is confirmed before it becomes a new group. Each run

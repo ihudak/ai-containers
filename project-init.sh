@@ -428,6 +428,32 @@ fi
 # sandbox.local.env below and the portable file keeps the default group.
 portable_group="$group_name"
 [[ "$group_name" == host ]] && portable_group=default
+# On a re-init, keep what is not re-prompted: SANDBOX_MODE, SANDBOX_WORKDIR and every
+# key a user added. Writing open/.. over them turned a restricted project open with
+# no trace — .ai-containers/ is gitignored by default (bugs review PRJ-3). The first
+# value of a key wins, as in load_env_defaults. A workdir other than the project
+# (..) is machine-local — the loader ignores it in sandbox.env — so it moves to
+# sandbox.local.env. The old file is backed up like sandbox.local.env.
+prev_mode=open prev_workdir_local="" kept_env=()
+if [[ -f "${dest}/sandbox.env" ]]; then
+  backup="${dest}/sandbox.env.pre-init"
+  [[ -e "$backup" ]] && backup="${dest}/sandbox.env.pre-init.$(date -u +%Y%m%dT%H%M%SZ)"
+  cp "${dest}/sandbox.env" "$backup"
+  printf '  Backed up existing sandbox.env → %s\n' "$(basename "$backup")"
+  declare -A env_seen=()
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]] || continue
+    k="${BASH_REMATCH[1]}"
+    [[ -z "${env_seen[$k]:-}" ]] || continue
+    env_seen[$k]=1
+    case "$k" in
+      SANDBOX_MODE)    prev_mode="${BASH_REMATCH[2]}" ;;
+      SANDBOX_WORKDIR) [[ "${BASH_REMATCH[2]}" == .. ]] || prev_workdir_local="${BASH_REMATCH[2]}" ;;
+      IMAGE_NAME|AI_CONTAINER_GROUP|CONTAINER_CPUS|CONTAINER_MEMORY|CONTAINER_MEMORY_RESERVATION|CONTAINER_MEMORY_SWAP) ;;  # re-prompted
+      *) kept_env+=("$line") ;;
+    esac
+  done < "${dest}/sandbox.env"
+fi
 {
   cat <<EOF
 # sandbox.env — PORTABLE launcher config for ${project_name}'s AI sandbox.
@@ -437,9 +463,13 @@ CONTAINER_CPUS=${container_cpus}
 CONTAINER_MEMORY=${container_memory}
 CONTAINER_MEMORY_RESERVATION=${container_memory_reservation}
 CONTAINER_MEMORY_SWAP=${container_memory_swap}
-SANDBOX_MODE=open
+SANDBOX_MODE=${prev_mode}
 SANDBOX_WORKDIR=..
 EOF
+  if (( ${#kept_env[@]} )); then
+    printf '# Kept from the previous sandbox.env:\n'
+    printf '%s\n' "${kept_env[@]}"
+  fi
   cat <<'EOF'
 # Machine-specific settings belong in sandbox.local.env (gitignored), NOT here:
 #   EXTRA_MOUNTS="/abs/path /another:ro"   # host bind mounts (Linux-native; absolute paths)
@@ -455,9 +485,10 @@ printf '  Wrote sandbox.env (portable config).\n'
 # group-bootstrap directive (e.g. from:host), so it belongs here, not in the shared
 # portable file; EXTRA_MOUNTS holds this machine's absolute bind paths.
 #
-# Back up an existing file first: this write is unconditional, and unlike sandbox.env
-# (whose values are all re-prompted), nothing here is ever re-asked — a hand-added
-# REPOS=/SANDBOX_WORKDIR=@app/SANDBOX_MODE= would otherwise be silently lost.
+# Back up an existing file first: this write is unconditional, and nothing here is
+# ever re-asked — a hand-added REPOS=/SANDBOX_WORKDIR=@app/SANDBOX_MODE= would
+# otherwise be silently lost. (sandbox.env is backed up too, and keeps what it is
+# not re-asked for; see above.)
 # NEVER clobber an existing backup. A fixed backup filename plus a plain `cp`
 # means the SECOND re-init overwrites the first backup, and the original
 # hand-edited EXTRA_MOUNTS/REPOS from before the first re-init is gone with no
@@ -491,6 +522,7 @@ EOF
   [[ "$group_name" == host ]] && printf 'AI_CONTAINER_GROUP=host\n'
   [[ -n "$group_init"   ]] && printf 'AI_CONTAINER_GROUP_INIT=%s\n' "$group_init"
   [[ -n "$extra_mounts" ]] && printf 'EXTRA_MOUNTS="%s"\n' "$extra_mounts"
+  [[ -n "$prev_workdir_local" ]] && printf 'SANDBOX_WORKDIR=%s\n' "$prev_workdir_local"
 } > "${dest}/sandbox.local.env"
 printf '  Wrote sandbox.local.env (machine-specific).\n'
 
@@ -510,7 +542,7 @@ gi="${dest}/.gitignore"
 if [[ -f "$gi" && -s "$gi" && -n "$(tail -c1 "$gi" 2>/dev/null)" ]]; then
   printf '\n' >> "$gi"
 fi
-for pat in '.agent-blocked/' '.agent-discovery/' 'sandbox.local.env' 'sandbox.local.env.pre-init*' \
+for pat in '.agent-blocked/' '.agent-discovery/' 'sandbox.local.env' 'sandbox.local.env.pre-init*' 'sandbox.env.pre-init*' \
            '*.pre-migrate' \
            'allowlist-domains.txt' 'allowlist-proxy-domains.txt' 'allowlist-cidrs.txt' \
            'allowlist-domains.d/custom.txt' 'allowlist-proxy-domains.d/custom.txt' 'allowlist-cidrs.d/custom.txt'; do
