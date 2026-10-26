@@ -1591,6 +1591,7 @@ git_dirs_in() {
       printf 'WARNING: cannot read the index of %q; submodules recorded in it are not followed,\n' "$g" >&2
       printf '         so a checkout of one that the scan does not reach is not protected.\n' >&2
     fi
+    local gskip=0
     for rec in ${links[@]+"${links[@]}"}; do
       mode="${rec%% *}"; path="${rec#*$'\t'}"
       [[ "$mode" == 160000 && -n "$path" ]] || continue
@@ -1600,16 +1601,22 @@ git_dirs_in() {
       # followed (re-review of c0d48d9; tests/test-git-internals-ro.sh G36).
       # Named, not skipped in silence: a skipped gitlink is a checkout this launch
       # does not protect (review of the batch 1 hotfix; GIT-3).
+      # Five named per index, then a count: the index is the agent's, and one with
+      # 100,000 such entries printed 100,000 WARNINGs (review of batch 9, finding 5).
       case "/$path/" in */../*|*/./*|*//*)
-        printf 'WARNING: the index of %q records a submodule at %q, which steps out of it; not followed.\n' "$g" "$path" >&2
+        if (( ++gskip <= 5 )); then
+          printf 'WARNING: the index of %q records a submodule at %q, which steps out of it; not followed.\n' "$g" "$path" >&2
+        fi
         continue ;;
       esac
       co="$top/$path"; f="$co/.git"
       [[ "$co" == "$5"/* ]] || continue
       if [[ -e "$co" || -L "$co" ]]; then
         if [[ "$(cd "$co" 2>/dev/null && pwd -P)" != "$co" ]]; then
-          printf 'WARNING: submodule %q of %q is not where its index says (a link on the way, a case or\n' "$path" "$g" >&2
-          printf '         Unicode difference, or a directory you cannot search); its checkout is not protected.\n' >&2
+          if (( ++gskip <= 5 )); then
+            printf 'WARNING: submodule %q of %q is not where its index says (a link on the way, a case or\n' "$path" "$g" >&2
+            printf '         Unicode difference, or a directory you cannot search); its checkout is not protected.\n' >&2
+          fi
           continue
         fi
       fi
@@ -1621,6 +1628,9 @@ git_dirs_in() {
         _gdi_dirs+=("$f"); had[$f]=1
       fi
     done
+    if (( gskip > 5 )); then
+      printf 'WARNING: … and %d more submodules of %q were not followed, for the same reasons.\n' "$((gskip - 5))" "$g" >&2
+    fi
   done
   return 0
 }

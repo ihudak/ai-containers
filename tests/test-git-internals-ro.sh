@@ -910,5 +910,18 @@ has_mount "$PROJ/node_modules/x47/common/config:/workspace/proj/node_modules/x47
   || fail "G47 commondir target left writable (stderr: $(grep -F x47 "$ERR" | head -2 | tr '\n' ' '))"
 rm -rf "$PROJ/src47" "$PROJ/node_modules" "$PROJ/wt47"
 
+# ── G48: skipped gitlinks are named a few at a time ──────────────────────────
+# Every skipped gitlink got its own WARNING, and the index is the agent's: one
+# with 100,000 entries printed 100,000 lines, burying a real WARNING (review of
+# batch 9, finding 5). The first five are named, then one line says how many more.
+mkdir -p "$PROJ/f48" && "${G[@]}" -C "$PROJ/f48" init -q
+for n in $(seq 1 30); do mkdir -p "$PROJ/f48/real$n"; ln -s "real$n" "$PROJ/f48/s$n"
+  "${G[@]}" -C "$PROJ/f48" update-index --add --cacheinfo "160000,$(printf '%040d' 1),s$n"; done
+launch ..
+[[ "$(grep -c 'is not where its index says' "$ERR")" -le 5 ]] && grep -qF "and 25 more submodules of $PROJ/f48/.git" "$ERR" \
+  && pass "G48 30 skipped gitlinks give five WARNINGs and a count" \
+  || fail "G48 skipped-gitlink WARNINGs ($(grep -c 'is not where its index says' "$ERR") named; $(grep -F 'more submodules' "$ERR"))"
+rm -rf "$PROJ/f48"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
