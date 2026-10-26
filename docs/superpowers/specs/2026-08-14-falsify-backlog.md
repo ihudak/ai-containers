@@ -648,7 +648,11 @@ rule makes the stale and obsolete checks vacuous for unselected files. And
 `run.sh`'s exit status is a separate signal from its stdout, so a naive
 `run.sh | check-ledger.sh -` discards it — capture to a file and check both.
 
-## F14 — no mechanical guard against awk interval quantifiers — **ACCEPTED: a prose guard, weaker than this repo's norm and recorded as such**
+## F14 — no mechanical guard against awk interval quantifiers — **FIXED 2026-10-26**
+
+**FIXED 2026-10-26** (GAP-8). `tests/bash-dialect-lint.sh` has an `awk-interval` rule that is not version-gated. It follows each awk command's single-quoted program text across lines, honouring `'\''` and double quotes, and refuses a line whose program text holds `{n}`, `{n,}` or `{n,m}`. The "unreliable by regex" objection below held for a per-line grep; it does not hold for a scan that keeps quote state from line to line. Vectors are in `tests/test-bash-dialect-lint.sh`.
+
+The original entry:
 
 The floor run caught `/^[0-9a-f]{40}$/` in `tests/test-falsify-generate.sh`:
 ubuntu:22.04's mawk has intervals disabled, so the pattern matched no sha1 and

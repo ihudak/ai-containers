@@ -18,7 +18,9 @@
 # rather than erroring. ubuntu:24.04 mawk and macOS awk both support intervals,
 # so this is invisible everywhere except the floor. Write
 # `length($3) == 40 && $3 ~ /^[0-9a-f]+$/` instead. `grep -E` and bash `[[ =~ ]]`
-# are unaffected — both honour intervals reliably.
+# are unaffected — both honour intervals reliably. tests/bash-dialect-lint.sh
+# refuses one in an awk program (rule awk-interval), so this is caught at lint
+# time now rather than by the floor run.
 
 # GNU `stat -f` is NOT an invalid option that falls through — it means
 # --file-system, so on GNU the old `stat -c … || stat -f …` fallback did not

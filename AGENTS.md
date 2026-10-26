@@ -658,6 +658,8 @@ What 5.1 excludes, and the symlinked-`TMPDIR` arm that stands in for a Mac CI ca
 
 The reason is required and checked for, not merely documented by convention — a marker with nothing after the colon suppresses nothing. This exists because the three bash versions actually in play here are all *different*: the container and CI run 5.2, a developer's Mac typically runs 5.3 via Homebrew, and the floor is 5.1 — a construct written comfortably on the host (e.g. `${ cmd; }` value substitution, 5.3-only) would sail through review and die at container start with nothing else comparing the three.
 
+It also refuses an interval quantifier (`{n}`, `{n,m}`) in an awk program, rule `awk-interval`: the floor container's mawk 1.3.4-20200120 reads one as literal text, so the regex silently matches nothing, and before this only the floor run caught it. That rule is not tied to a bash version. It follows each awk command's single-quoted program text across lines, and a line that only names the construct takes the same marker.
+
 ### `run.sh --dry-run` vs `--list`
 
 `--dry-run` applies the current selection and prints the case basenames it would run, then exits — no image, no container, no docker call. **`--list` is deliberately unchanged**: it catalogues the whole corpus regardless of any selection flag. Redefining what an existing flag means while keeping its name is the failure mode this project refuses everywhere. Detail, and why `--dry-run` is what makes the containment invariant checkable, in [docs/testing.md](docs/testing.md).

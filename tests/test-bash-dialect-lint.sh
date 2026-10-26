@@ -145,6 +145,59 @@ vector "5.0 EPOCHREALTIME allowed"       'echo "$EPOCHREALTIME"'              0
 vector "4.4 \${var@Q} allowed"           'echo "${x@Q}"'                      0
 vector "4.3 local -n allowed"            'f() { local -n r=$1; }'             0
 
+# ── Constructs the table missed (TST-5) ───────────────────────────────────────
+# @k is bash 5.2 — 5.1.16 says `bad substitution` — but sat in the 5.1 row with
+# @U/@u/@L/@K, so the floor let it through. The 5.3 form that substitutes into
+# REPLY (dollar, brace, pipe) has no space after the brace, so the brace-space
+# rule missed it. patsub_replacement
+# (5.2) had no row; `shopt -u` of it fails on 5.1 just as `-s` does. Neither
+# expansion rule allowed a subscript or a positional/special parameter, so
+# ${a[@]@Q} and its kin were never matched at all. Built with DOLLAR so this
+# file's own lines do not carry the constructs.
+vector "5.2 @k rejected (it is not 5.1)"         "echo \"${DOLLAR}{x@k}\""       1
+vector "5.2 @k on an array element rejected"     "echo \"${DOLLAR}{a[0]@k}\""    1
+vector "5.2 @k on a whole array rejected"        "echo \"${DOLLAR}{a[@]@k}\""    1
+vector "5.2 @k on the positional parameters"     "echo \"${DOLLAR}{@@k}\""       1
+vector "5.1 @U still allowed (at floor)"         "echo \"${DOLLAR}{x@U}\""       0
+vector "5.3 value substitution into REPLY"       "x=${DOLLAR}{|REPLY=hi;}"       1
+vector "5.2 shopt -s patsub_replacement"         'shopt -s patsub_replacement'   1  # dialect-lint: allow patsub_replacement: intentional bad-code test vector, not real usage
+vector "5.2 shopt -u patsub_replacement"         'shopt -u patsub_replacement'   1  # dialect-lint: allow patsub_replacement: intentional bad-code test vector, not real usage
+# The subscript and parameter forms of the at-floor rules, seen by lowering the
+# floor below them. The linter skips its own bash-floor.sh when both are set.
+AI_CONTAINERS_BASH_FLOOR_MAJOR=4 AI_CONTAINERS_BASH_FLOOR_MINOR=3 \
+  vector "4.4 @Q on a whole array rejected below 4.4"   "echo \"${DOLLAR}{a[@]@Q}\""  1
+AI_CONTAINERS_BASH_FLOOR_MAJOR=4 AI_CONTAINERS_BASH_FLOOR_MINOR=3 \
+  vector "4.4 @Q on the positional parameters below 4.4" "echo \"${DOLLAR}{@@Q}\""     1
+AI_CONTAINERS_BASH_FLOOR_MAJOR=5 AI_CONTAINERS_BASH_FLOOR_MINOR=0 \
+  vector "5.1 @U on an array element rejected below 5.1" "echo \"${DOLLAR}{a[1]@U}\""  1
+AI_CONTAINERS_BASH_FLOOR_MAJOR=5 AI_CONTAINERS_BASH_FLOOR_MINOR=0 \
+  vector "5.1 @U on a positional parameter below 5.1"   "echo \"${DOLLAR}{1@U}\""     1
+
+# ── awk interval quantifiers (GAP-8, backlog F14) ─────────────────────────────
+# Not a bash construct: ubuntu:22.04's mawk 1.3.4-20200120, the awk in the
+# floor container, has interval quantifiers disabled, so a {n} in an awk regex
+# matches literally and the regex silently matches nothing. It was caught only
+# by the floor run, late. The rule reads the text of single-quoted awk
+# programs, which span lines, and nothing else. LB builds the brace so these
+# source lines do not hold the construct.
+LB='{'
+NL=$'\n'
+vector "awk-interval: a one-line program"              "awk '/^[0-9a-f]${LB}40}${DOLLAR}/' f"   1
+vector "awk-interval: a later line of a program" \
+  "out=\"${DOLLAR}(awk -v x=\"${DOLLAR}y\" '${NL}  ${DOLLAR}1 ~ /^a${LB}2,}${DOLLAR}/ { print }${NL}' f)\""  1
+vector "awk-interval: a '\\'' quote does not end the program" \
+  "awk '{ print \"'\\''\" } /x${LB}2}/' f"                                                     1
+vector "awk-interval: a backslash-continued command"  "awk -F: \\${NL}  '/x${LB}2}/' f"         1
+vector "awk-interval: the second awk of a pipeline"   "awk '{print}' f | awk '/x${LB}3}/'"      1
+vector "awk-interval: grep -E is not awk"              "grep -E '^[0-9]${LB}3}-' f"             0
+vector "awk-interval: [[ =~ ]] is not awk"             "[[ ${DOLLAR}x =~ ^[0-9]${LB}3}${DOLLAR} ]]" 0
+vector "awk-interval: a sed after the pipe is not awk" "awk '{print}' f | sed -E 's/a${LB}2}/b/'" 0
+vector "awk-interval: action braces are not intervals" "awk '{ print ${DOLLAR}1 } END { n++ }' f" 0
+vector "awk-interval: a double-quoted operand is not program text" "awk '{print}' \"a${LB}2}\""   0
+vector "awk-interval: a full-line shell comment"       "# awk '/x${LB}2}/' f"                     0
+vector "awk-interval: a marker with a reason suppresses it" \
+  "awk '/x${LB}2}/' f  # dialect-lint: allow awk-interval: test reason"                           0
+
 # A `#` that is parameter-expansion prefix removal (${var#pattern}) must not
 # hide a real violation later on the same line.
 vector "#-prefix expansion does not mask a later violation" \
