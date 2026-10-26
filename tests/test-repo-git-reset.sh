@@ -723,6 +723,30 @@ run_script inspect "$W"
 if grep -qx 'BRANCH|elsewhere|?|' <<<"$OUT"; then pass "inspect does not follow the volume's own alternates out of it"
 else fail "volume alternates followed (out: $(tr '\n' ' ' <<<"$OUT"))"; fi
 
+# Tags live only in .git, which sync replaces: each local tag comes back at the
+# value it had — one on a pushed commit, one re-pointed with tag -f — as
+# `git pull --ff-only` would have left them (review of fb1705e, Q1).
+W="$(mk_repo keeptag)"; S="$TMP/keeptag.seed"; commit_in "$S" kt-new; g "$S" push -q origin main >/dev/null 2>&1
+g "$W" tag mylabel HEAD
+run_script pull "$W"
+if [[ "$RC" == 0 && "$(g "$W" rev-parse -q --verify refs/tags/mylabel 2>/dev/null)" == "$(g "$W" rev-parse HEAD~1)" ]]; then
+  pass "a local tag on a pushed commit survives sync, at its own commit"
+else fail "local tag lost by sync (rc=$RC; tags: $(g "$W" tag -l | tr '\n' ' '); out: $OUT)"; fi
+# Messages on stderr carry names from the volume too (Q2).
+W="$(mk_repo escerr)"; printf 'ref: refs/heads/z\e]0;pwned\a\n' > "$W/.git/HEAD"
+run_script pull "$W"
+if [[ "$RC" != 0 && "$OUT" != *$'\e'* && "$OUT" != *$'\a'* ]]; then pass "a name in an error message is shown as ?, not raw"
+else fail "raw control characters in an error (out: $(cat -v <<<"$OUT"))"; fi
+# A git directory the agent puts anywhere in the worktree (where the remote has
+# a submodule, say) is read by git during checkout: it holds only regular files
+# and directories too, or the volume is refused (Q3).
+W="$(mk_repo subgit)"; mkdir -p "$W/sub/.git/refs/heads"; ln -s /dev/zero "$W/sub/.git/refs/heads/x"
+run_script reset "$W" main
+if [[ "$RC" != 0 && "$OUT" == *"sub/.git/refs/heads/x is not a regular file or directory"* ]]; then pass "a link inside a nested .git is refused"
+else fail "nested .git link (rc=$RC; out: $OUT)"; fi
+grep -qE -- '--memory[ =]' "$REPO_DIR/repo.sh" 2>/dev/null || grep -qE -- '--memory[ =]' "$(dirname "$SCRIPT")/repo.sh" \
+  && pass "the seed containers that run git are given a memory limit" || fail "no --memory on the git helper's container"
+
 # Branch names are read as file names, which git's rules do not bind: one holding
 # terminal escapes reaches the confirmation only as ? (security review of d9b56a8).
 W="$(mk_repo esc)"; cp "$W/.git/refs/heads/main" "$W/.git/refs/heads/x"$'\e]0;pwned\a'

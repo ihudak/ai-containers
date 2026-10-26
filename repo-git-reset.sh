@@ -94,11 +94,16 @@ trap '[[ -n "$WORK" ]] && rm -rf "$WORK"' EXIT
 check_volume() {
   local dir="$1" gd="$1/.git" bad
   [[ -n "${AI_REPO_URL:-}" ]] || die "no recorded URL for this repository (AI_REPO_URL); refusing to run git on it"
-  [[ -d "$gd" && ! -L "$gd" ]] || die "not a git repository: $dir (.git is missing, or is a file or link)"
+  [[ -d "$gd" && ! -L "$gd" ]] || die "not a git repository: $(shown "$dir") (.git is missing, or is a file or link)"
   bad="$(find "$gd" ! -type f ! -type d -print -quit 2>/dev/null)"
-  [[ -z "$bad" ]] || die "$bad is not a regular file or directory; refusing this repository"
+  [[ -z "$bad" ]] || die "$(shown "$bad") is not a regular file or directory; refusing this repository"
   bad="$(find "$dir" -path "$gd" -prune -o \( -type p -o -type b -o -type c \) -print -quit 2>/dev/null)"
-  [[ -z "$bad" ]] || die "$bad is not a regular file or directory; refusing this repository"
+  [[ -z "$bad" ]] || die "$(shown "$bad") is not a regular file or directory; refusing this repository"
+  # A git directory anywhere in the worktree (where the remote has a submodule,
+  # say) is read by git during checkout: the same rule as for .git itself
+  # (review of fb1705e, Q3 — a ref linked to /dev/zero exhausted memory).
+  bad="$(find "$dir" -path "$gd" -prune -o \( -name .git -type l -o -path '*/.git/*' ! -type f ! -type d \) -print -quit 2>/dev/null)"
+  [[ -z "$bad" ]] || die "$(shown "$bad") is not a regular file or directory; refusing this repository"
 }
 
 # fresh_clone: clone AI_REPO_URL, without a checkout, into a private directory;
@@ -136,7 +141,7 @@ volume_refs() {
     seen[$name]=1
     [[ "$oid" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] || oid='?'
     printf '%s\t%s\n' "$name" "$oid"
-  done < <(cut -c1-300 "$gd/packed-refs")
+  done < <(cut -c1-4200 "$gd/packed-refs")
 }
 volume_branches() { volume_refs "$1" heads; }
 
@@ -210,10 +215,12 @@ cmd_inspect() {
 # beside the old one first, so a copy that fails (a full disk) leaves the old
 # .git in place rather than none (review of d9b56a8, P4).
 install_git_dir() {
-  rm -rf "$1/.git.new" || die "could not clear $1/.git.new"
-  cp -a "$F/.git" "$1/.git.new" || { rm -rf "$1/.git.new"; die "could not copy the new .git"; }
-  rm -rf "$1/.git" || die "could not remove the old .git"
-  mv "$1/.git.new" "$1/.git" || die "could not install the new .git"
+  local stage
+  stage="$(mktemp -d "$1/.git-install.XXXXXX")" || die "could not stage the new .git"
+  cp -a "$F/.git" "$stage/.git" || { rm -rf "$stage"; die "could not copy the new .git"; }
+  rm -rf "$1/.git" || { rm -rf "$stage"; die "could not remove the old .git"; }
+  mv "$stage/.git" "$1/.git" || die "could not install the new .git (it is in $stage)"
+  rmdir "$stage"
 }
 
 cmd_reset() {
@@ -261,9 +268,9 @@ cmd_pull() {
   local -A tip=()
   local name oid
   while IFS=$'\t' read -r name oid; do [[ -n "$name" ]] && tip[$name]="$oid"; done < <(volume_branches "$dir")
-  [[ -n "${tip[$b]:-}" && "${tip[$b]}" != '?' ]] || die "cannot read the tip of $b"
+  [[ -n "${tip[$b]:-}" && "${tip[$b]}" != '?' ]] || die "cannot read the tip of $(shown "$b")"
   fresh_clone || die "cannot clone the recorded remote: ${CLONE_ERR}"
-  git -C "$F" show-ref --verify --quiet "refs/remotes/origin/$b" || die "the remote has no branch named $b"
+  git -C "$F" show-ref --verify --quiet "refs/remotes/origin/$b" || die "the remote has no branch named $(shown "$b")"
   # Nothing may be lost: every local branch is already on the remote, and the
   # checked-out one is behind (or at) the remote's tip of the same name.
   for name in "${!tip[@]}"; do
@@ -271,7 +278,7 @@ cmd_pull() {
       || die "branch $(shown "$name") has commits on no remote branch; push it, or use reset"
   done
   git -C "$F" merge-base --is-ancestor "${tip[$b]}" "refs/remotes/origin/$b" \
-    || die "$b has diverged from the remote; push it, or use reset"
+    || die "$(shown "$b") has diverged from the remote; push it, or use reset"
   # Nor anything else that lives only in .git, which is replaced (review of
   # d9b56a8, P1): a stash, notes, linked worktrees, a tag on no remote.
   local gd="$dir/.git"
@@ -289,7 +296,7 @@ cmd_pull() {
   mark_safe_directory "$dir"
   # The worktree must match its branch's commit: compared by the clone's git,
   # with its own config, against the volume's files.
-  git --git-dir="$F/.git" --work-tree="$dir" read-tree "${tip[$b]}" || die "could not read $b"
+  git --git-dir="$F/.git" --work-tree="$dir" read-tree "${tip[$b]}" || die "could not read $(shown "$b")"
   git --git-dir="$F/.git" --work-tree="$dir" update-index -q --refresh >/dev/null 2>&1 || true
   git --git-dir="$F/.git" --work-tree="$dir" diff-files --quiet \
     || die "the checkout has uncommitted changes; commit and push them, or use reset"
@@ -297,15 +304,23 @@ cmd_pull() {
   # does, without --force: it refuses to overwrite an untracked file the remote
   # now tracks, and leaves every other untracked file alone.
   git --git-dir="$F/.git" --work-tree="$dir" read-tree -m -u "${tip[$b]}" "refs/remotes/origin/$b" \
-    || die "could not fast-forward $b without overwriting files in the checkout (an untracked file the remote now tracks?)"
-  git -C "$F" update-ref "refs/heads/$b" "refs/remotes/origin/$b" || die "could not move $b"
-  git -C "$F" symbolic-ref HEAD "refs/heads/$b" || die "could not check out $b"
+    || die "could not fast-forward $(shown "$b") without overwriting files in the checkout (an untracked file the remote now tracks?)"
+  git -C "$F" update-ref "refs/heads/$b" "refs/remotes/origin/$b" || die "could not move $(shown "$b")"
+  git -C "$F" symbolic-ref HEAD "refs/heads/$b" || die "could not check out $(shown "$b")"
   git -C "$F" branch --quiet --set-upstream-to="origin/$b" "$b" >/dev/null 2>&1 || true
   for name in "${!tip[@]}"; do
     [[ "$name" == "$b" ]] && continue
     command git check-ref-format "refs/heads/$name" >/dev/null 2>&1 || continue
     git -C "$F" update-ref "refs/heads/$name" "${tip[$name]}" || printf 'WARN|could not keep branch %s\n' "$(shown "$name")"
   done
+  # Every local tag comes back at the value it had — the refusal above made sure
+  # its object is in the clone — as `pull --ff-only` would have left it (review
+  # of fb1705e, Q1).
+  while IFS=$'\t' read -r tname toid; do
+    [[ -n "$tname" ]] || continue
+    command git check-ref-format "refs/tags/$tname" >/dev/null 2>&1 || continue
+    git -C "$F" update-ref "refs/tags/$tname" "$toid" || printf 'WARN|could not keep tag %s\n' "$(shown "$tname")"
+  done < <(volume_refs "$dir" tags)
   install_git_dir "$dir"
   if [[ -n "$owner" ]]; then chown -R "$owner" "$dir" || printf 'WARN|chown failed\n'; fi
   printf 'AT|%s\n' "$(git -C "$F" rev-parse --short HEAD 2>/dev/null)"

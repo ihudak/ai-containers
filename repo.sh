@@ -216,7 +216,10 @@ git_helper_run() {   # $1 = volume  $2... = repo-git-reset.sh arguments
     printf "ERROR: volume %s is mounted read-write by a running container; stop it first.\n" "$vol" >&2
     return 1
   fi
-  docker run --rm --entrypoint bash ${seed_selinux_opt:+"$seed_selinux_opt"} \
+  # A memory limit, so nothing the agent left in the volume can make git exhaust
+  # the host's (review of fb1705e, Q3); REPO_HELPER_MEMORY raises it for a huge
+  # repository.
+  docker run --rm --memory "${REPO_HELPER_MEMORY:-4g}" --entrypoint bash ${seed_selinux_opt:+"$seed_selinux_opt"} \
     -e AI_REPO_URL="$url" \
     -v "$HOME/.ssh":/root/.ssh-host:ro \
     -v "${script_dir}/repo-git-reset.sh":/repo-git-reset.sh:ro \
