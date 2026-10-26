@@ -227,6 +227,24 @@ else
   fail "reconcile: second run is a no-op (no dup keys, marker unchanged)"
 fi
 
+# PRJ-2 / DOC-1: sandbox.conf says a component is turned off by commenting it out,
+# so a commented key is the project's choice, not a missing key: appending the
+# upstream default turned copilot back on. Only `#key=` and `# key=` count; an
+# indented example in a comment (`#   graalvm-ce=25.0.2`) does not.
+cat > "$R_TMP/commented.conf" <<'EOF'
+# schema-version: 3
+#copilot=ON
+# bun=ON
+#   graalvm-ce=25.0.2   (an example from a comment)
+graalvm-oracle=
+EOF
+out="$(reconcile_sandbox_conf "$R_TMP/central.conf" "$R_TMP/commented.conf" "$R_TMP/migrations")"
+if ! grep -qE '^(copilot|bun)=' "$R_TMP/commented.conf" && grep -qx 'graalvm-ce=' "$R_TMP/commented.conf"; then
+  pass "reconcile: a commented-out key stays off; an indented example does not hide a key"
+else
+  fail "reconcile: a commented-out key was re-enabled, or an example hid a key ($out; $(tr '\n' ';' < "$R_TMP/commented.conf"))"
+fi
+
 # Marker backfill: a project file with NO marker is treated as version 0 and
 # gets the marker on reconcile even when it needs no key additions.
 cat > "$R_TMP/nomarker.conf" <<'EOF'

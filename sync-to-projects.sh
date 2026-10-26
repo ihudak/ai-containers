@@ -144,7 +144,11 @@ reconcile_sandbox_conf() {
   local added=() key
   while IFS= read -r key; do
     [[ -z "$key" ]] && continue
-    grep -qE "^${key}=" "$project" 2>/dev/null || added+=("$key")
+    # A commented-out key is the project's choice, not a missing key: sandbox.conf
+    # says commenting a component out turns it off, and appending the upstream
+    # default turned it back on (bugs review PRJ-2/DOC-1). `#key=` and `# key=`
+    # only, so an indented example in a comment (`#   openjdk=21.0.11`) hides nothing.
+    grep -qE "^(# ?)?${key}=" "$project" 2>/dev/null || added+=("$key")
   done < <(grep -E '^[A-Za-z0-9_-]+=' "$central" | sed -E 's/^([A-Za-z0-9_-]+)=.*/\1/')
 
   if (( ${#added[@]} > 0 )); then
