@@ -998,10 +998,12 @@ grep -q 'docs-archive' "$OUT" \
 # against every volume repo.sh actually asked docker to destroy. Equality is the
 # property that makes the summary consent rather than decoration; either
 # direction failing is a different, and equally real, defect.
+# Byte order, like removed(): the two are compared as strings, so a collation
+# difference between them is a mismatch that names no defect (TST-1).
 summary_vols() {
   { sed -n 's/^ *- base volume: *//p' "$OUT"
     sed -n 's/^ *\(ai-containers-repo-[^ ]*\)$/\1/p' "$OUT"
-  } | sort -u | tr '\n' '|'
+  } | LC_ALL=C sort -u | tr '\n' '|'
 }
 check "the volumes named in the summary are EXACTLY those removed" "$(summary_vols)" "$(removed)"
 
