@@ -350,7 +350,7 @@ launcher_ro_overlay() {
   local uid="${SANDBOX_UID:-$(id -u)}" gid="${SANDBOX_GID:-$(id -g)}" you
   local -a found unreadable cand bsrc=() bdst=() cl=() cat=() csrc=() cdst=() cdep=() ckind=() ro_dsts=() psrc pdst
   local -a scan links walk gdirs gfiles glinks gunr gro ug usrc udst udep ukind
-  local g base what gmax gn gitmax cfg hp hpd k2 first eks ik ip
+  local g base what gmax gn gitmax cfg cdir hp hpd k2 first eks ik ip
   local -a ek inc pgd=() pga=() pgc=()
   # The hooks git runs, by name (githooks(5)); anything else in hooks/ is inert.
   local -a git_hook_names=(applypatch-msg pre-applypatch post-applypatch pre-commit
@@ -746,10 +746,17 @@ launcher_ro_overlay() {
             fi
           fi
         elif [[ -f "$g/commondir" ]]; then
-          cfg="$(cd "$g" 2>/dev/null && cd "$(cat commondir 2>/dev/null)" 2>/dev/null && pwd -P)/config" || cfg=""
+          # Physically, as git resolves it (strbuf_add_real_path), and without the
+          # trailing CR git strips: `cd` reads `s/..` lexically, which named the
+          # worktree's own directory, with no config, while git used A/.git
+          # (review of batch 9, finding 3; G45).
+          cdir="$(head -c 4096 "$g/commondir" 2>/dev/null)"; cdir="${cdir%$'\n'}"; cdir="${cdir%$'\r'}"
+          cfg="$(cd "$g" 2>/dev/null && cd -P -- "$cdir" 2>/dev/null && pwd -P)/config" || cfg=""
         fi
+        # A common config that cannot be read cannot say the extension is off, so
+        # the placeholder is made, and config.worktree walked below, as if it were on.
         if [[ -n "$cfg" && ! -e "$g/config.worktree" && ! -L "$g/config.worktree" ]]; then
-          if _git_config_bool "$cfg" extensions.worktreeConfig; then
+          if [[ ! -f "$cfg" ]] || _git_config_bool "$cfg" extensions.worktreeConfig; then
             ( set -C; : > "$g/config.worktree" ) 2>/dev/null || true
           fi
         fi
@@ -883,8 +890,8 @@ launcher_ro_overlay() {
       if [[ ! -f "$f" || -L "$f" ]]; then continue; fi
       # From the config git reads extensions from: the common one, for a linked
       # worktree's git directory, which has none of its own (security review of
-      # 1978dff). Unresolved, it is walked.
-      if [[ "$f" == */config.worktree && -n "$cfg" ]] && ! _git_config_bool "$cfg" extensions.worktreeConfig; then continue; fi
+      # 1978dff). One that is not a readable file cannot say it is off: walked.
+      if [[ "$f" == */config.worktree && -f "$cfg" ]] && ! _git_config_bool "$cfg" extensions.worktreeConfig; then continue; fi
       local -a ifile=("$f") idep=(0)
       local ii=0 icur itgt ikey inr=0 ient=0 icut="" icomp
       iseen=()

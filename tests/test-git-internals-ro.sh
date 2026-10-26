@@ -826,5 +826,25 @@ else
   printf 'SKIP: G44 needs timeout(1)\n'
 fi
 
+# ── G45: a commondir is resolved as git resolves it, physically ──────────────
+# bash's `cd` reads `s/..` lexically, git physically: with s a link into
+# A/.git/refs, git's common directory is A/.git while bash's was the worktree's
+# own directory, which has no config — so config.worktree was skipped although
+# git reads it, and its include was never named (review of batch 9, finding 3).
+A45="$PROJ/a45"; mkdir -p "$A45" && "${G[@]}" -C "$A45" init -q && printf 'x\n' > "$A45/f" \
+  && "${G[@]}" -C "$A45" add f && "${G[@]}" -C "$A45" commit -qm init \
+  && "${G[@]}" -C "$A45" config extensions.worktreeConfig true \
+  || { printf 'SCAFFOLD-FAILED: cannot create the G45 repository\n'; exit 1; }
+W45="$A45/.git/worktrees/w"; C45="$PROJ/c45"; mkdir -p "$W45" "$C45"
+ln -s "$A45/.git/refs" "$W45/s"; printf 's/..\n' > "$W45/commondir"
+printf 'ref: refs/heads/master\n' > "$W45/HEAD"; printf '%s/.git\n' "$C45" > "$W45/gitdir"
+printf 'gitdir: %s\n' "$W45" > "$C45/.git"
+"${G[@]}" config --file "$W45/config.worktree" include.path "$PROJ/evil45.gitconfig"
+launch ..
+grep -qF "worktrees/w/config.worktree includes" "$ERR" \
+  && pass "G45 a commondir through a link and .. is resolved as git does; its config.worktree is walked" \
+  || fail "G45 config.worktree skipped (stderr: $(grep -F a45 "$ERR" | head -2 | tr '\n' ' '))"
+rm -rf "$A45" "$C45"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
