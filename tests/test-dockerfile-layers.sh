@@ -45,11 +45,19 @@ for spec in 'OPENJDK_VERSIONS|sdk install java \${ver}-tem' 'GRAALVM_VERSIONS|-g
   # The links after the loop write /usr/local/bin, which a non-root run could not:
   # redirected, or every case here would fail for that reason alone.
   text="${text//\/usr\/local\/bin/$TMP/localbin}"; mkdir -p "$TMP/localbin"
+  # Both runs, so a layer that fails for any OTHER reason (a missing init script,
+  # a path it cannot write) cannot pass the bad-version case (review of batch 6).
+  : > "$TMP/sdk.log"
+  env -i PATH="$PATH" HOME="$TMP" SDKMAN_DIR="$TMP/sdkman" INSTALL_SDKMAN=1 "$var=1.0.0 2.0.0" \
+    bash -euo pipefail -c "$text" >/dev/null 2>&1
+  rc=$?
+  [[ "$rc" == 0 && "$(grep -c '^sdk install' "$TMP/sdk.log")" == 2 ]] && pass "$var: the layer installs every good version" \
+    || fail "$var: the layer failed with good versions (rc=$rc; $(tr '\n' ';' < "$TMP/sdk.log"))"
   : > "$TMP/sdk.log"
   env -i PATH="$PATH" HOME="$TMP" SDKMAN_DIR="$TMP/sdkman" INSTALL_SDKMAN=1 "$var=1.0.99 2.0.0" \
     bash -euo pipefail -c "$text" >/dev/null 2>&1
   rc=$?
-  [[ "$rc" != 0 ]] && pass "$var: a failed install that is not the last fails the layer" \
+  [[ "$rc" != 0 ]] && grep -q '1\.0\.99' "$TMP/sdk.log" && pass "$var: a failed install that is not the last fails the layer" \
     || fail "$var: the layer succeeded although '1.0.99' failed ($(tr '\n' ';' < "$TMP/sdk.log"))"
 done
 

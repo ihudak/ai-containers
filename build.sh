@@ -218,20 +218,6 @@ validate_config() {
       esac
     done
   fi
-  # Every key, last, so the key-specific messages above win for their own keys:
-  # ON and OFF are compared literally everywhere (is_enabled, is_active,
-  # version_list), so a lowercase on/off is read as a version. `ruby=off` brought
-  # back the ruby=OFF defect — `rvm install off` on every start — `dtctl=on` was a
-  # download of tag "von", and `c-toolchain=on` was silently OFF (bugs review BLD-6).
-  local _key _rest _val
-  while IFS='=' read -r _key _rest; do
-    _val="$(get_versions "$_key")"
-    if [[ "$_val" != ON && "$_val" != OFF ]] && [[ "${_val^^}" == ON || "${_val^^}" == OFF ]]; then
-      printf 'ERROR: %s=%s must be written in capitals (ON or OFF).\n' "$_key" "$_val" >&2
-      printf '       Lowercase is not the boolean: it is read as a version.\n' >&2
-      exit 1
-    fi
-  done < <(grep -E '^[A-Za-z0-9_-]+=' "$config_file")
   # rust and go take ONE value (a toolchain, a release); a list became a 404 URL or
   # a toolchain named "stable,nightly", naming neither key (bugs review BLD-7).
   local _one
@@ -250,7 +236,7 @@ validate_config() {
     # shellcheck disable=SC2154  # TOOL_install/TOOL_url: set by tools_read_descriptor() in tools-lib.sh (sourced)
     [[ "$TOOL_install" == url && "$TOOL_url" != *'${VERSION}'* ]] || continue
     _tv="$(get_versions "$_tool")"
-    if [[ -n "$_tv" && "$_tv" != ON && "$_tv" != OFF ]]; then
+    if [[ -n "$_tv" && "$_tv" != ON && "$_tv" != OFF && "$_tv" != latest ]]; then
       printf 'ERROR: %s=%s cannot be pinned: its download URL has no version in it.\n' "$_tool" "$_tv" >&2
       printf '       Use ON (whatever the vendor serves as latest) or OFF.\n' >&2
       exit 1

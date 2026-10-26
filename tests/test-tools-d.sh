@@ -690,6 +690,8 @@ if [[ -z "$(ls -A "$TMPDIR" 2>/dev/null)" ]]; then
 # archive member is mode 644).
 if [[ -x "$BIN_DIR/vend-cli" ]]; then
   pass "install=url: installed binary made executable"; else fail "install=url: installed binary made executable"; fi
+[[ "$(p_stat_mode "$BIN_DIR/vend-cli")" == 755 ]] && pass "install=url: binary installed 0755 (BLD-3)" \
+  || fail "install=url: binary installed $(p_stat_mode "$BIN_DIR/vend-cli"), not 0755"
 # curl must be invoked with -f, or an HTTP error page would be installed as the
 # binary, and with a retry so a flaky CDN does not fail the build.
 if grep -qx -- '-fsSL' "$CURL_LOG" && grep -qx -- '--retry' "$CURL_LOG"; then

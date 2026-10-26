@@ -316,6 +316,21 @@ check_config() {
     printf 'ERROR: duplicate key(s) in %s:\n%s\n' "$config_file" "$dups" >&2
     exit 1
   fi
+  # ON and OFF are compared literally everywhere (is_enabled, is_active,
+  # version_list), so a lowercase on/off is read as a version: `ruby=off` brought
+  # back the ruby=OFF defect — `rvm install off` on every start — `dtctl=on` was a
+  # download of tag "von", and `c-toolchain=on` was silently OFF (bugs review
+  # BLD-6). Here and not in build.sh's validate_config alone: ruby installs at run
+  # time, so sandbox.sh must refuse it too (review of batch 6).
+  local _key _rest _val
+  while IFS='=' read -r _key _rest; do
+    _val="$(get_versions "$_key")"
+    if [[ "$_val" != ON && "$_val" != OFF ]] && [[ "${_val^^}" == ON || "${_val^^}" == OFF ]]; then
+      printf 'ERROR: %s=%s must be written in capitals: %s=%s.\n' "$_key" "$_val" "$_key" "${_val^^}" >&2
+      printf '       Lowercase is not the boolean: it is read as a version.\n' >&2
+      exit 1
+    fi
+  done < <(grep -E '^[A-Za-z0-9_-]+=' "$config_file")
 }
 
 # Returns empty string if the key is absent or has no value.
