@@ -20,7 +20,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   repository at all — through an empty repository of the launcher's own — so
   nothing the agent writes in a repository's config is read: an include of a
   FIFO no longer hangs the launch, and git 2.34, which exits 0 on a partial
-  read, still gets the warning.
+  read, still gets the warning. A gitlink path the index records is followed
+  only while it stays inside the mount (a hand-written `../../x` reached a
+  repository outside every mount, and the launcher wrote into it), and a split
+  index whose shared part is a FIFO is refused rather than read.
 - **What an agent plants can no longer make every later launch slow and noisy.**
   Two empty files make a directory count as a launcher, so an agent could plant
   hundreds, each adding a read-only bind mount, a `READ-ONLY:` line and up to
@@ -38,7 +41,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   into the file that config includes made each of those reads fail, and every
   include warning disappear. The config files are now read as plain files.
   Each included file is read once per config, however its path is spelled,
-  and at most 20 per config and 1000 per launch, with a warning naming any
+  and at most 100 include entries and 20 files per config and 1000 files per
+  launch are followed, with a warning naming any
   config whose includes were not all followed: two spellings of a
   self-include made the first version of this walk take minutes.
 

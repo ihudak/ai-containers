@@ -572,7 +572,7 @@ if [[ -e "$TMP/lz-PWNED" ]]; then
   [[ "$LAUNCH_RC" == 0 ]] && has_mount "$TMP/lz/evil/.git/config:/workspace/lz/evil/.git/config:ro" \
     && pass "G28 that repository is still protected" \
     || fail "G28 repository not protected (rc=$LAUNCH_RC; stderr: $(tr '\n' ' ' < "$ERR"))"
-  grep -qF "WARNING: cannot read the index of $TMP/lz/evil/.git" "$ERR" \
+    grep -qF "WARNING: cannot read the index of $TMP/lz/evil/.git" "$ERR" \
     && pass "G28 the unreadable index is named: submodules under it are not followed" \
     || fail "G28 no WARNING for the unreadable index (stderr: $(tr '\n' ' ' < "$ERR"))"
 else
@@ -653,6 +653,58 @@ grep -qF "WARNING: not every include of /workspace/proj/many35/.git/config was f
   && pass "G35 a config past its include budget is named, not skipped in silence" \
   || fail "G35 budget silent (stderr: $(grep -iE 'include' "$ERR" | tr '\n' ' '))"
 rm -rf "$PROJ/many35" "$TMP/inc35"
+
+# ── G36: a gitlink path from the index stays inside the mount ─────────────────
+# The index is the agent's to write, and git reads a hand-made entry such as
+# `../../victim` without complaint. Followed as is, it made the launcher pin and
+# overlay a repository outside every mount — and write a commondir into it
+# (re-review of c0d48d9). Built with index.skipHash, so the patched bytes need no
+# new checksum; git before 2.40 rejects such an index as corrupt instead.
+ver36="$(git --version | awk '{print $3}')"
+if [[ "$(printf '%s\n2.40\n' "$ver36" | sort -V | head -1)" == 2.40 ]] && command -v perl >/dev/null 2>&1; then
+  mkdir -p "$TMP/victim36" "$PROJ/dd36" && "${G[@]}" -C "$TMP/victim36" init -q && "${G[@]}" -C "$PROJ/dd36" init -q
+  "${G[@]}" -C "$PROJ/dd36" -c index.skipHash=true update-index --add \
+    --cacheinfo "160000,$(printf '%040d' 1),aa/bb/victim36"
+  perl -0777 -pi -e 's{aa/bb/victim36}{../../victim36}' "$PROJ/dd36/.git/index"
+  ls36="$(git -C "$PROJ/dd36" ls-files -s 2>/dev/null)"
+  if [[ "$ls36" == *'../../victim36'* ]]; then
+    launch ..
+    ! grep -qF "$TMP/victim36" "$CAPTURE" && [[ ! -e "$TMP/victim36/.git/commondir" ]] \
+      && pass "G36 a gitlink path with .. in it is not followed out of the mount" \
+      || fail "G36 gitlink escaped the mount (mounts: $(grep -F victim36 "$CAPTURE" | tr '\n' ' '); commondir: $(ls "$TMP/victim36/.git/commondir" 2>&1))"
+  else
+    printf 'SKIP: G36 this git does not list the hand-made entry\n'
+  fi
+  rm -rf "$TMP/victim36" "$PROJ/dd36"
+else
+  printf 'SKIP: G36 needs git 2.40+ (index.skipHash) and perl; this is git %s\n' "$ver36"
+fi
+
+# ── G37: a split index's shared part cannot hang the read either ──────────────
+mkdir -p "$PROJ/si37" && "${G[@]}" -C "$PROJ/si37" init -q && printf 'x\n' > "$PROJ/si37/f" \
+  && "${G[@]}" -C "$PROJ/si37" add f && "${G[@]}" -C "$PROJ/si37" update-index --split-index
+si37="$(ls "$PROJ/si37/.git"/sharedindex.* 2>/dev/null | head -1)"
+if [[ -n "$si37" ]]; then
+  rm -f "$si37" && mkfifo "$si37"
+  launch_timed 60
+  [[ "$LAUNCH_RC" == 0 ]] && grep -qF "cannot read the index of $PROJ/si37/.git" "$ERR" \
+    && pass "G37 a FIFO shared index does not hang the launch, and is named (${LAUNCH_S}s)" \
+    || fail "G37 split index FIFO (rc=$LAUNCH_RC; ${LAUNCH_S}s; stderr: $(grep -F si37 "$ERR" | tr '\n' ' '))"
+  ( exec 3<>"$si37" ) 2>/dev/null
+else
+  fail "G37 SCAFFOLD: update-index --split-index made no sharedindex file"
+fi
+rm -rf "$PROJ/si37"
+
+# ── G38: many include entries in one config cannot make the launch slow ───────
+mkdir -p "$PROJ/many38" && "${G[@]}" -C "$PROJ/many38" init -q
+{ printf '[include]\n'; for n in $(seq 1 5000); do printf '\tpath = /nonexistent38/f%d\n' "$n"; done; } >> "$PROJ/many38/.git/config"
+launch_timed 120
+[[ "$LAUNCH_RC" == 0 && "$LAUNCH_S" -lt 15 ]] \
+  && grep -qF "WARNING: not every include of /workspace/proj/many38/.git/config was followed" "$ERR" \
+  && pass "G38 5000 include entries in one config cost seconds, and are named (${LAUNCH_S}s)" \
+  || fail "G38 include entries (rc=$LAUNCH_RC; ${LAUNCH_S}s; stderr: $(grep -F many38 "$ERR" | head -2 | tr '\n' ' '))"
+rm -rf "$PROJ/many38"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

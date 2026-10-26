@@ -440,12 +440,14 @@ launcher_ro_overlay() {
   # not overlaid (it stays writable, with a NOTE), so it covers nothing: the
   # agent can write those two files there (security review of c0d48d9).
   # Ancestors are walked per candidate, so this stays linear in the number found.
+  # Keyed by where each lands in the container, so a directory two mounts expose
+  # counts per mount, and an ancestor covers it only within the same mount.
   local -A lcand=() lcounted=()
   local lc=0 la
   for i in ${cl[@]+"${!cl[@]}"}; do
-    if [[ "${cl[i]}" != "${csrc[i]}" ]]; then lcand[${cl[i]}]=1; fi
+    if [[ "${cl[i]}" != "${csrc[i]}" ]]; then lcand[${cat[i]}]=1; fi
   done
-  for l in ${cl[@]+"${cl[@]}"}; do
+  for l in ${cat[@]+"${cat[@]}"}; do
     [[ -z "${lcounted[$l]:-}" ]] || continue
     lcounted[$l]=1
     la="${l%/*}"
@@ -846,7 +848,7 @@ launcher_ro_overlay() {
     for f in "$g/config" "$g/config.worktree"; do
       if [[ ! -f "$f" || -L "$f" ]]; then continue; fi
       local -a ifile=("$f") idep=(0)
-      local ii=0 icur itgt ikey inr=0 icut=""
+      local ii=0 icur itgt ikey inr=0 ient=0 icut=""
       unset iseen; local -A iseen=()
       ikey="$(_launcher_dev_ino "$f")" && iseen[$ikey]=1
       while (( ii < ${#ifile[@]} )); do
@@ -854,6 +856,9 @@ launcher_ro_overlay() {
       inc=()
       mapfile -d '' -t inc < <(_git_include_paths "$icur")
       for e in ${inc[@]+"${inc[@]}"}; do
+        # Entries, not only files: each costs a walk, and one config can hold
+        # thousands (re-review of c0d48d9; G38).
+        if (( ++ient > 100 )); then icut=1; ii=${#ifile[@]}; break; fi
         ik="${e%%$'\n'*}"; ip=""
         if [[ "$e" == *$'\n'* ]]; then ip="${e#*$'\n'}"; fi
         if [[ -z "$ip" ]]; then continue; fi
@@ -876,9 +881,9 @@ launcher_ro_overlay() {
           continue
         fi
         if [[ "$icur" == "$f" ]]; then
-          printf 'WARNING: %s/%s includes %q (%s), which the agent can redirect:\n' "$at" "${f##*/}" "$ip" "$ik" >&2
+          printf 'WARNING: %q includes %q (%s), which the agent can redirect:\n' "$at/${f##*/}" "$ip" "$ik" >&2
         else
-          printf 'WARNING: %s/%s includes %q (%s in %q), which the agent can redirect:\n' "$at" "${f##*/}" "$ip" "$ik" "$icur" >&2
+          printf 'WARNING: %q includes %q (%s in %q), which the agent can redirect:\n' "$at/${f##*/}" "$ip" "$ik" "$icur" >&2
         fi
         case "$how" in
           change)  printf '         it can write %s (at %s), which git reads as part of that config.\n' "$q" "$w" >&2 ;;
@@ -889,7 +894,7 @@ launcher_ro_overlay() {
       done
       done
       if [[ -n "$icut" ]]; then
-        printf 'WARNING: not every include of %s/%s was followed (20 files per config, 1000 per launch);\n' "$at" "${f##*/}" >&2
+        printf 'WARNING: not every include of %q was followed (100 entries and 20 files per config, 1000 per launch);\n' "$at/${f##*/}" >&2
         printf '         what the rest set was not checked. Review them: git config --file %q --list --show-origin --includes\n' "$f" >&2
       fi
     done
@@ -1326,6 +1331,16 @@ _git_index_read() {
   _gir_out=()
   [[ -e "$g/index" ]] || return 0
   [[ -f "$g/index" ]] || return 1
+  # A split index reads its shared part from beside it, a file the agent can
+  # make a FIFO too (re-review of c0d48d9; G37).
+  local si
+  for si in "$g"/sharedindex.*; do
+    if [[ ( -e "$si" || -L "$si" ) && ! -f "$si" ]]; then return 1; fi
+  done
+  # A sparse index cannot be read this way: even with --sparse, git checks the
+  # objects of a sparse index as it loads it, and handing it the object store
+  # would hand it files the agent can make FIFOs. It fails, and is named; the
+  # cost is that a sparse-index repository's gitlinks are not followed.
   fmt="$(_git_file_config "$g/config" extensions.objectformat 2>/dev/null)" || fmt=sha1
   [[ "$fmt" =~ ^[a-z0-9]{1,16}$ ]] || return 1
   if [[ -z "$_gir_tmp" ]]; then
@@ -1408,8 +1423,16 @@ git_dirs_in() {
     for rec in ${links[@]+"${links[@]}"}; do
       mode="${rec%% *}"; path="${rec#*$'\t'}"
       [[ "$mode" == 160000 && -n "$path" ]] || continue
+      # The index is the agent's to write, and git reads a hand-made entry such
+      # as ../../victim as is: a path that steps out (.., ., an empty or
+      # absolute component), or that a link on the way sends elsewhere, is not
+      # followed (re-review of c0d48d9; tests/test-git-internals-ro.sh G36).
+      case "/$path/" in */../*|*/./*|*//*) continue ;; esac
       co="$top/$path"; f="$co/.git"
       [[ "$co" == "$5"/* ]] || continue
+      if [[ -e "$co" || -L "$co" ]]; then
+        [[ "$(cd "$co" 2>/dev/null && pwd -P)" == "$co" ]] || continue
+      fi
       if [[ -L "$f" ]]; then
         [[ -n "${had[$f]:-}" ]] || { _gdi_links+=("$f"); had[$f]=1; }
       elif [[ -f "$f" ]]; then
