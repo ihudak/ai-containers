@@ -167,21 +167,44 @@ printf 'SANDBOX_WORKDIR=..\nAI_CONTAINER_GROUP=docs\n' > "$PORTABLE"
   && pass "sandbox.env still sets the working dir (resolved to the project, wherever you launch from) and a named group" \
   || fail "portable SANDBOX_WORKDIR=.. / AI_CONTAINER_GROUP=docs (got: $( ( unset SANDBOX_WORKDIR; apply; printf '%s' "${SANDBOX_WORKDIR:-}" ) 2>&1 ))"
 wbad=""
-for w in ".:$PROJROOT/.ai-containers" "../sub:$PROJROOT/sub" "@app:@app" "../a/b:$PROJROOT/a/b" "../a/b/..:$PROJROOT/a"; do
+# Only the project itself. `.` is the launcher's own directory, mounted writable
+# — the agent could then edit what the host runs at the next launch — and a
+# subdirectory or @repo is this machine's choice, not the shared file's (the
+# review of batch 2: F1, F3, F10).
+for w in "..:$PROJROOT" "../:$PROJROOT" "../a/..:$PROJROOT"; do
   printf 'SANDBOX_WORKDIR=%s\n' "${w%%:*}" > "$PORTABLE"
   ( unset SANDBOX_WORKDIR; apply; [[ "$SANDBOX_WORKDIR" == "${w#*:}" ]] ) 2>/dev/null || wbad+=" refused:${w%%:*}"
 done
 # shellcheck disable=SC2088  # '~/x' is a LITERAL value the loader must refuse, not a path to expand
-for w in ../.. ../../outside /abs "$MKD/outside" '~/x' '../a/../../outside' ../escape ../a/rel-escape ../missing; do
+for w in . ../sub @app ../a/b ../.ai-containers ../.. ../../outside /abs "$MKD/outside" '~/x' '../a/../../outside' ../escape ../a/rel-escape ../missing; do
   printf 'SANDBOX_WORKDIR=%s\n' "$w" > "$PORTABLE"
   ( unset SANDBOX_WORKDIR; apply; [[ -z "${SANDBOX_WORKDIR:-}" ]] ) 2>/dev/null || wbad+=" accepted:$w"
 done
-[[ -z "$wbad" ]] && pass "a portable SANDBOX_WORKDIR is kept inside the project, symlinks followed" \
+[[ -z "$wbad" ]] && pass "a portable SANDBOX_WORKDIR is the project and nothing else, symlinks followed" \
   || fail "portable SANDBOX_WORKDIR:$wbad"
 printf 'EXTRA_MOUNTS=/x\nSANDBOX_UID=1234\nAI_CONTAINER_GROUP=host\nSANDBOX_WORKDIR=/abs\n' > "$LOCAL"; : > "$PORTABLE"
 ( unset EXTRA_MOUNTS SANDBOX_UID AI_CONTAINER_GROUP SANDBOX_WORKDIR; apply
   [[ "$EXTRA_MOUNTS" == /x && "$SANDBOX_UID" == 1234 && "$AI_CONTAINER_GROUP" == host && "$SANDBOX_WORKDIR" == /abs ]] ) 2>/dev/null \
   && pass "sandbox.local.env sets all of those" || fail "machine-only keys refused from sandbox.local.env"
+rmk
+# Also machine-only: REPOS mounts registered repos — on Linux, live binds of host
+# checkouts — and REPO_VOLUME_PREFIX decides which volumes repo.sh deletes;
+# SANDBOX_CONF is read before these files load, so from them it steered only
+# --version. IMAGE_NAME cannot be the seed image repo.sh runs as root with your
+# ~/.ssh (the review of batch 2: F3, F7, F9).
+mk
+printf 'REPOS=infra:rw\nREPO_VOLUME_PREFIX=other\nSANDBOX_CONF=/x.conf\nIMAGE_NAME=ai-containers-seed\n' > "$PORTABLE"
+( unset REPOS REPO_VOLUME_PREFIX SANDBOX_CONF IMAGE_NAME REPO_SEED_IMAGE; apply
+  [[ -z "${REPOS:-}${REPO_VOLUME_PREFIX:-}${SANDBOX_CONF:-}${IMAGE_NAME:-}" ]] ) 2>/dev/null \
+  && pass "sandbox.env cannot set REPOS, REPO_VOLUME_PREFIX, SANDBOX_CONF, or the seed image as IMAGE_NAME" \
+  || fail "portable REPOS/REPO_VOLUME_PREFIX/SANDBOX_CONF/IMAGE_NAME=seed accepted"
+printf 'IMAGE_NAME=my/seed\n' > "$PORTABLE"
+( unset IMAGE_NAME; export REPO_SEED_IMAGE=my/seed; apply; [[ -z "${IMAGE_NAME:-}" ]] ) 2>/dev/null \
+  && pass "… nor a REPO_SEED_IMAGE override" || fail "portable IMAGE_NAME equal to REPO_SEED_IMAGE accepted"
+printf 'REPOS=infra:rw\n' > "$LOCAL"; printf 'IMAGE_NAME=proj-ai\n' > "$PORTABLE"
+( unset REPOS IMAGE_NAME REPO_SEED_IMAGE; apply; [[ "$REPOS" == infra:rw && "$IMAGE_NAME" == proj-ai ]] ) 2>/dev/null \
+  && pass "sandbox.local.env still sets REPOS, and sandbox.env an ordinary IMAGE_NAME" \
+  || fail "REPOS from local / ordinary IMAGE_NAME refused"
 rmk
 mk
 printf 'GITHUB_TOKEN=ghp_mine\nREPO_SEED_IMAGE=my/seed\nFOO_BAR=1\nDOCKER_CONFIG=./evil\nBUILDX_CONFIG=./e\nBUILDKIT_HOST=tcp://e\nGIT_CONFIG_GLOBAL=./e\nSSH_AUTH_SOCK=/e\n' > "$LOCAL"

@@ -27,11 +27,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `DOCKER_*`, `BUILDX_*`, `BUILDKIT_*`, `GIT_*` and `SSH_*` families (bugs review
   ENV-1). It also cannot set what reaches into a machine — a host path to mount
   (`EXTRA_MOUNTS`, `VAULT_PATH`, `SPECS_PATH`, `DOCS_PATH`,
-  `ARCHITECTURE_REPO_PATH`), `SANDBOX_UID`/`SANDBOX_GID`, `SANDBOX_ENV_FILE`, the
-  `host` group, a working dir outside the project — and the launch no longer
-  pulls an image it has not built (`--pull=never`). **If your `sandbox.env` sets
+  `ARCHITECTURE_REPO_PATH`), `REPOS`, `SANDBOX_UID`/`SANDBOX_GID`,
+  `SANDBOX_ENV_FILE`, the `host` group, a working dir other than the project
+  itself (`..`) — and no `docker run` of the project image pulls one it has
+  not built (`--pull=never`). **If your `sandbox.env` sets
   any of these, they now print a warning and are ignored: move them to
-  `sandbox.local.env`.**
+  `sandbox.local.env`.** `project-init.sh` and `migrate-runme.sh` now write the
+  `host` group there themselves; for a project made earlier with `host`, move
+  that line from `sandbox.env` to `sandbox.local.env` by hand.
 - **`repo.sh` refuses a `SANDBOX_UID`/`SANDBOX_GID` that is not a number.**
   It pasted the values into the shell script its seeding containers run as
   root — with your `~/.ssh` mounted, for a git repository — so a value such as
@@ -43,14 +46,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   most of its capabilities, and could rewrite the allowlist the firewall
   reloads every minute. `sandbox.sh` now refuses a UID or GID of 0 and says to
   set a non-root `SANDBOX_UID`/`SANDBOX_GID`; the entrypoint refuses it as well
-  (rebuild with `./build.sh` to get that half) (bugs review ENV-4).
+  (rebuild with `./build.sh` to get that half) (bugs review ENV-4). The refusal
+  comes before anything else, so no group is created and no credential copied
+  for a launch that is going to be refused.
 - **A symlinked `~/.aws`, `~/.ssh` or tool config dir is copied into the group,
   not linked.** The copy kept the link, so the group's "copy" was your real
   directory, mounted read-write — the agent could change your real
   credentials, which the group exists to prevent. New copies take what the
   link points at; a group that already holds such a link is named in a
   warning on every launch, with the command that replaces it with a copy
-  (bugs review ENV-3).
+  (bugs review ENV-3). A dangling link an older copy left behind is replaced
+  by a real copy instead of failing with `mkdir: File exists` on every launch.
 - **A committed `container.env` can no longer copy your tokens into the agent's
   shell.** A line holding only a name (`GITHUB_TOKEN`) makes docker fill it
   from the shell you launch from, so whoever wrote the file chose which of

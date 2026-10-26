@@ -143,7 +143,13 @@ run_init() {
   { printf '%s\n\n\n\n\n\n\n' "$proj"; printf '%s\n' "$@"; printf '\n\n\n'; } \
     | HOME="$home" bash "$SCRIPTS/project-init.sh" >"$proj.out" 2>"$proj.err"
 }
-group_of() { sed -n 's/^AI_CONTAINER_GROUP=//p' "$1/.ai-containers/sandbox.env"; }
+# The group the launcher will use: sandbox.local.env wins, as load_env_defaults
+# reads it first.
+group_of() {
+  local g; g="$(sed -n 's/^AI_CONTAINER_GROUP=//p' "$1/.ai-containers/sandbox.local.env")"
+  [[ -n "$g" ]] || g="$(sed -n 's/^AI_CONTAINER_GROUP=//p' "$1/.ai-containers/sandbox.env")"
+  printf '%s' "$g"
+}
 init_of()  { sed -n 's/^AI_CONTAINER_GROUP_INIT=//p' "$1/.ai-containers/sandbox.local.env"; }
 check() {  # $1=label $2=actual $3=expected
   [[ "$2" == "$3" ]] && pass "$1" || fail "$1 (got '$2', want '$3')"
@@ -209,6 +215,13 @@ check "picker: Enter still means default, not whatever sorts first" "$(group_of 
 run_init "$HG" "$G/host" "host" "$TMP"
 check "picker: typed host selects the host sentinel" "$(group_of "$G/host")" "host"
 check "picker: host needs no bootstrap" "$(init_of "$G/host")" ""
+# The host group is this machine's $HOME, which a shared sandbox.env cannot
+# select (the loader ignores it there): it goes in sandbox.local.env (review of
+# batch 2, F4).
+! grep -q '^AI_CONTAINER_GROUP=host' "$G/host/.ai-containers/sandbox.env" \
+  && grep -qx 'AI_CONTAINER_GROUP=host' "$G/host/.ai-containers/sandbox.local.env" \
+  && pass "picker: host is written to sandbox.local.env, not the shared sandbox.env" \
+  || fail "picker: host group written to sandbox.env ($(grep AI_CONTAINER_GROUP "$G/host/.ai-containers/"sandbox*.env | tr '\n' ' '))"
 grep -q '^EXTRA_MOUNTS=' "$G/host/.ai-containers/sandbox.local.env" \
   && pass "picker: host asks no confirmation" || fail "picker: host asks no confirmation"
 ! grep -qE '^  [0-9]+\) host' "$G/host.out" && pass "picker: host is not a listed row" || fail "picker: host is not a listed row"

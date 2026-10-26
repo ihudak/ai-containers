@@ -423,11 +423,16 @@ fi
 # Portable launcher config (tracked/shareable — same on any machine). Loaded by
 # sandbox-common.sh so build.sh / sandbox.sh / repo.sh / the thin runme.sh all agree.
 # Precedence: inline env > sandbox.local.env > sandbox.env. Not overwritten by sync.
+# The host group is this machine's real $HOME, which a shared sandbox.env cannot
+# choose (load_env_defaults ignores it there), so that choice goes in
+# sandbox.local.env below and the portable file keeps the default group.
+portable_group="$group_name"
+[[ "$group_name" == host ]] && portable_group=default
 {
   cat <<EOF
 # sandbox.env — PORTABLE launcher config for ${project_name}'s AI sandbox.
 IMAGE_NAME=${image_name}
-AI_CONTAINER_GROUP=${group_name}
+AI_CONTAINER_GROUP=${portable_group}
 CONTAINER_CPUS=${container_cpus}
 CONTAINER_MEMORY=${container_memory}
 CONTAINER_MEMORY_RESERVATION=${container_memory_reservation}
@@ -483,6 +488,7 @@ fi
 #   open        unrestricted egress, no capture
 #SANDBOX_MODE=open
 EOF
+  [[ "$group_name" == host ]] && printf 'AI_CONTAINER_GROUP=host\n'
   [[ -n "$group_init"   ]] && printf 'AI_CONTAINER_GROUP_INIT=%s\n' "$group_init"
   [[ -n "$extra_mounts" ]] && printf 'EXTRA_MOUNTS="%s"\n' "$extra_mounts"
 } > "${dest}/sandbox.local.env"

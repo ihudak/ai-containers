@@ -1588,7 +1588,7 @@ seed_workcopy_volume() {
   docker volume create "${labels[@]}" "$wc_vol" >/dev/null
   # --entrypoint bash bypasses entrypoint.sh (which ignores args and would run the
   # firewall/restricted flow). cp -a preserves the ownership set on the base volume.
-  docker run --rm --entrypoint bash \
+  docker run --rm --pull=never --entrypoint bash \
     -v "$base_vol":/src:ro \
     -v "$wc_vol":/dst \
     "$image_name" -c 'cp -a /src/. /dst/'
@@ -1764,8 +1764,28 @@ _git_skip_root=""
 _gir_tmp=""
 trap 'rm -rf "${_launcher_verify_dir:-}" "${_gir_tmp:-}" 2>/dev/null' EXIT
 
+# The agent's identity: numeric, within a 32-bit id, and never root — capsh
+# switching 0 to 0 clears no capabilities (bugs review ENV-4). Checked first in
+# run_container, before a group is made or a credential copied (review of
+# batch 2, F8), and again where launcher_ro_overlay feeds the ids to find.
+validate_sandbox_ids() {
+  local uid="${SANDBOX_UID:-$(id -u)}" gid="${SANDBOX_GID:-$(id -g)}"
+  if [[ ! "$uid" =~ ^[0-9]{1,10}$ || ! "$gid" =~ ^[0-9]{1,10}$ ]] \
+     || (( 10#$uid > 4294967294 || 10#$gid > 4294967294 )); then
+    printf 'ERROR: SANDBOX_UID/SANDBOX_GID must be numeric ids from 0 to 4294967294 (got %q / %q).\n' "$uid" "$gid" >&2
+    exit 1
+  fi
+  if (( 10#$uid == 0 || 10#$gid == 0 )); then
+    printf 'ERROR: the agent must not run as root (SANDBOX_UID=%s, SANDBOX_GID=%s).\n' "$uid" "$gid" >&2
+    printf '       Launching as root (sudo, a root WSL distro)? Set a non-root identity,\n' >&2
+    printf '       e.g. SANDBOX_UID=1000 SANDBOX_GID=1000, for repo.sh as well.\n' >&2
+    exit 1
+  fi
+}
+
 run_container() {
   check_config
+  validate_sandbox_ids
   local mode="$1"
   local primary_arg="${2:-}"
   # Host directory where sandbox.sh was invoked. Agent outputs (.agent-blocked,
@@ -2354,6 +2374,12 @@ run_container() {
     read -ra _cdirs <<< "$TOOL_config_dir"
     for _cdir in "${_cdirs[@]}"; do
       if [[ "$group" != "host" ]]; then
+        # A dangling link here is what the old `cp -a` of a relative link left:
+        # the launcher's own artefact, so it is replaced, not tripped over.
+        if [[ -L "$group_root/$_cdir" && ! -e "$group_root/$_cdir" ]]; then
+          printf 'NOTE: replacing the dangling link %q in the group with a copy.\n' "$group_root/$_cdir" >&2
+          rm -f "$group_root/$_cdir"
+        fi
         if [[ ! -e "$group_root/$_cdir" && -e "$HOME/$_cdir" ]]; then
           install -d "$(dirname "$group_root/$_cdir")"
           _copy_dereferenced "$HOME/$_cdir" "$group_root/$_cdir"

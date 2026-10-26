@@ -87,11 +87,11 @@ env_key_denied() {
 # AGENTS.md's variable table: every variable there is in exactly one.
 env_key_portable() {
   case "$1" in
-    IMAGE_NAME|AI_CONTAINER_GROUP|SANDBOX_MODE|SANDBOX_WORKDIR|SANDBOX_CONF|\
+    IMAGE_NAME|AI_CONTAINER_GROUP|SANDBOX_MODE|SANDBOX_WORKDIR|\
     SANDBOX_GIT_MAX|SANDBOX_LAUNCHER_MAX|\
     CONTAINER_CPUS|CONTAINER_MEMORY|CONTAINER_MEMORY_RESERVATION|CONTAINER_MEMORY_SWAP|\
     CONTAINER_NOFILE|CONTAINER_SHM_SIZE|CONTAINER_NAME|\
-    REPOS|REPO_BACKEND|REPOS_PATH|REPO_VOLUME_PREFIX|PREVIEW_PORTS|\
+    REPO_BACKEND|REPOS_PATH|PREVIEW_PORTS|\
     SELF_HEALING_ENABLED|ALLOW_IPV6_BYPASS|SELINUX_LABEL|\
     SKILL_CHAR_BUDGET|SLASH_COMMAND_TOOL_CHAR_BUDGET) return 0 ;;
   esac
@@ -103,13 +103,16 @@ env_key_portable() {
 # (SANDBOX_UID=0 is a root shell), the file container.env is read from, the
 # host group's bootstrap and acknowledgement, the tokens (the committer's
 # identity for the agent), and REPO_SEED_IMAGE (repo.sh runs it with ~/.ssh
-# mounted).
+# mounted). And REPOS (on Linux a registered repo is a live bind of a host
+# checkout), REPO_VOLUME_PREFIX (which volumes repo.sh deletes), SANDBOX_CONF (a
+# per-invocation override: it is read before these files load).
 env_key_machine_only() {
   case "$1" in
     EXTRA_MOUNTS|VAULT_PATH|SPECS_PATH|DOCS_PATH|ARCHITECTURE_REPO_PATH|\
     SANDBOX_UID|SANDBOX_GID|SANDBOX_USER|SANDBOX_GROUP|SANDBOX_ENV_FILE|SANDBOX_ENV_PASSTHROUGH|\
     AI_CONTAINER_GROUP_INIT|AI_CONTAINER_HOST_ACK|\
-    COPILOT_GITHUB_TOKEN|GITHUB_PERSONAL_ACCESS_TOKEN|GITHUB_TOKEN|REPO_SEED_IMAGE) return 0 ;;
+    COPILOT_GITHUB_TOKEN|GITHUB_PERSONAL_ACCESS_TOKEN|GITHUB_TOKEN|REPO_SEED_IMAGE|\
+    REPOS|REPO_VOLUME_PREFIX|SANDBOX_CONF) return 0 ;;
   esac
   return 1
 }
@@ -122,6 +125,9 @@ env_key_machine_only() {
 env_value_portable() {
   case "$1" in
     AI_CONTAINER_GROUP) [[ "$2" != host ]]; return ;;
+    # The seed image is run as root with your ~/.ssh mounted (repo.sh); a build
+    # tagged with its name would replace it.
+    IMAGE_NAME) [[ "$2" != ai-containers-seed && "$2" != "${REPO_SEED_IMAGE:-ai-containers-seed}" ]]; return ;;
   esac
   return 0
 }
@@ -129,17 +135,19 @@ env_value_portable() {
 # env_portable_workdir <env-file> <value>: prints the physical path a portable
 # SANDBOX_WORKDIR names — resolved from the env file's directory (a project's
 # .ai-containers), every symlink followed — and succeeds only if it is the
-# project (that directory's parent) or inside it; `@<repo>` passes as is. The
-# caller exports what this prints, so sandbox.sh mounts exactly what was checked,
-# wherever it is launched from (tests/test-sandbox-env.sh).
+# project itself (that directory's parent). Nothing else: `.` is the launcher's
+# own directory, which would be mounted writable for the agent to edit what the
+# host runs next, a subdirectory could be swapped for a link between this check
+# and the mount, and `@<repo>` is this machine's registry (the review of batch
+# 2). The caller exports what this prints, so sandbox.sh mounts exactly what was
+# checked, wherever it is launched from (tests/test-sandbox-env.sh).
 env_portable_workdir() {
   local base root real
-  if [[ "$2" == @* ]]; then printf '%s' "$2"; return 0; fi
-  [[ -n "$2" && "$2" != /* && "$2" != '~'* ]] || return 1
+  [[ -n "$2" && "$2" != /* && "$2" != '~'* && "$2" != @* ]] || return 1
   base="$(cd "$(dirname "$1")" 2>/dev/null && pwd -P)" || return 1
   root="$(cd "$base/.." 2>/dev/null && pwd -P)" || return 1
   real="$(cd "$base" 2>/dev/null && cd "$2" 2>/dev/null && pwd -P)" || return 1
-  [[ "$real" == "$root" || "$real" == "$root"/* ]] || return 1
+  [[ "$real" == "$root" ]] || return 1
   printf '%s' "$real"
 }
 
@@ -197,15 +205,15 @@ load_env_defaults() {
     if [[ ${#val} -ge 2 && "$val" == '"'*'"' ]]; then val="${val:1:${#val}-2}"; fi
     if [[ "$mode" != local && "$key" == SANDBOX_WORKDIR ]]; then
       if ! val="$(env_portable_workdir "$file" "$val")"; then
-        printf 'WARNING: ignoring SANDBOX_WORKDIR=... in %s — from a shared sandbox.env it must be\n' "$file" >&2
-        printf '         @<repo> or a directory inside the project; set it in sandbox.local.env.\n' >&2
+        printf 'WARNING: ignoring SANDBOX_WORKDIR=... in %s — from a shared sandbox.env it can only be\n' "$file" >&2
+        printf '         the project (..); set any other working dir in sandbox.local.env.\n' >&2
         continue
       fi
     fi
     if [[ "$mode" != local ]] && ! env_value_portable "$key" "$val"; then
       printf 'WARNING: ignoring %s=... in %s — from a shared sandbox.env it must stay inside the\n' \
         "$key" "$file" >&2
-      printf '         project (not the host group); set it in sandbox.local.env.\n' >&2
+      printf '         project (not the host group, not the seed image); set it in sandbox.local.env.\n' >&2
       continue
     fi
     [[ -n "${!key+x}" ]] && continue             # already SET (inline env or earlier file) wins — even if empty
@@ -643,7 +651,7 @@ rvm_volume_ensure() {
     printf 'Migrating this group'"'"'s ~/.rvm into docker volume %s (one time)…\n' "$vol" >&2
     local selinux_opt
     if selinux_opt="$(selinux_security_opt)" \
-       && docker run --rm ${selinux_opt:+"$selinux_opt"} -v "$legacy:/src:ro" -v "$vol:/dst" \
+       && docker run --rm --pull=never ${selinux_opt:+"$selinux_opt"} -v "$legacy:/src:ro" -v "$vol:/dst" \
          --entrypoint bash "$image" -c 'cp -a /src/. /dst/' >/dev/null 2>&1; then
       printf 'Migrated. The old directory is now unused; remove it when satisfied:\n  rm -rf %s\n' "$legacy" >&2
     else
@@ -658,6 +666,18 @@ rvm_volume_ensure() {
 }
 
 # Returns 0 if any running container currently mounts docker volume $1.
+# docker_volume_mounted_rw <volume>: a running container mounts it read-write —
+# so an agent there can rewrite it while the host works on it.
+docker_volume_mounted_rw() {
+  local cid rw
+  while IFS= read -r cid; do
+    [[ -n "$cid" ]] || continue
+    rw="$(docker inspect --format '{{range .Mounts}}{{if eq .Name "'"$1"'"}}{{.RW}} {{end}}{{end}}' "$cid" 2>/dev/null || true)"
+    [[ "$rw" == *true* ]] && return 0
+  done < <(docker ps --quiet --filter "volume=$1" 2>/dev/null || true)
+  return 1
+}
+
 docker_volume_in_use() {
   [[ -n "$(docker ps --quiet --filter "volume=$1" 2>/dev/null || true)" ]]
 }

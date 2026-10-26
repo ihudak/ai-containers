@@ -198,7 +198,9 @@ process_project() {
   {
     printf '# sandbox.env — PORTABLE launcher config for %s'"'"'s AI sandbox.\n' "$project_name"
     printf 'IMAGE_NAME=%s\n' "$image_name"
-    printf 'AI_CONTAINER_GROUP=%s\n' "$group_name"
+    # The host group is this machine's $HOME, which a shared sandbox.env cannot
+    # choose (load_env_defaults ignores it there): it goes to sandbox.local.env.
+    if [[ "$group_name" == host ]]; then printf 'AI_CONTAINER_GROUP=default\n'; else printf 'AI_CONTAINER_GROUP=%s\n' "$group_name"; fi
     printf 'CONTAINER_CPUS=%s\n' "$container_cpus"
     printf 'CONTAINER_MEMORY=%s\n' "$container_memory"
     printf 'CONTAINER_MEMORY_RESERVATION=%s\n' "$container_memory_reservation"
@@ -214,13 +216,14 @@ process_project() {
 EOF
   } > "${dest}/sandbox.env"
 
-  if [[ -n "$extra_mounts" || -n "$group_init" || -n "$repos" ]]; then
+  if [[ -n "$extra_mounts" || -n "$group_init" || -n "$repos" || "$group_name" == host ]]; then
     {
       cat <<'EOF'
 # sandbox.local.env — THIS MACHINE's launcher config (gitignored, not shared).
 # Overrides sandbox.env (loaded at higher precedence). Machine/platform-specific:
 # absolute bind paths, named-volume repos, the group bootstrap, workdir/resource overrides.
 EOF
+      [[ "$group_name" == host ]] && printf 'AI_CONTAINER_GROUP=host\n'
       [[ -n "$group_init"   ]] && printf 'AI_CONTAINER_GROUP_INIT=%s\n' "$group_init"
       [[ -n "$extra_mounts" ]] && printf 'EXTRA_MOUNTS="%s"\n' "$extra_mounts"
       [[ -n "$repos"        ]] && printf 'REPOS="%s"\n' "$repos"

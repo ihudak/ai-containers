@@ -478,6 +478,36 @@ printf 'agent-wrote\n' > "$GROUP_ROOT/.aws/credentials"
   && pass "writing the group copy leaves the host's real credentials alone" \
   || fail "the group copy is still the host directory"
 teardown
+# A refused identity is refused before anything is done: no group created, no
+# credential copied (review of batch 2, F8).
+setup
+mkdir -p "$HOME/.aws"; printf 'x\n' > "$HOME/.aws/credentials"
+printf '# schema-version: 3\nalpha=OFF\nbeta=OFF\ngamma=OFF\naws-cli=ON\n' > "$SANDBOX_CONF"
+export AI_CONTAINER_GROUP_INIT=from:host
+SANDBOX_UID=0 run_sandbox "$TMP/app"
+if [[ "$RC" != 0 && ! -e "$GROUP_ROOT" ]] && grep -q 'must not run as root' "$ERR"; then
+  pass "a root identity is refused before the group is created or credentials copied"
+else
+  fail "uid 0 refused late (rc=$RC; group exists: $([[ -e "$GROUP_ROOT" ]] && echo yes || echo no))"
+fi
+teardown
+# The old copy of a RELATIVE link (GNU stow) left a dangling link in the group:
+# it is replaced by a real copy, not stumbled over with `mkdir: File exists` on
+# every launch (review of batch 2, F5).
+setup
+printf '# schema-version: 3\nalpha=ON\nbeta=OFF\ngamma=OFF\n' > "$SANDBOX_CONF"
+mkdir -p "$TMP/dotfiles/alpha" "$HOME/.config" "$GROUP_ROOT/.config"
+printf 'alpha-real\n' > "$TMP/dotfiles/alpha/conf"
+ln -s ../../dotfiles/alpha "$HOME/.config/alpha"
+ln -s ../../dotfiles/alpha "$GROUP_ROOT/.config/alpha"   # what cp -a made: dangling from inside the group
+run_sandbox "$TMP/app"
+if [[ -d "$GROUP_ROOT/.config/alpha" && ! -L "$GROUP_ROOT/.config/alpha" && -f "$GROUP_ROOT/.config/alpha/conf" ]] \
+   && ! grep -q 'File exists' "$ERR" && mounted "$GROUP_ROOT/.config/alpha" "/home/dev/.config/alpha"; then
+  pass "a dangling link an older copy left in the group is replaced by a real copy"
+else
+  fail "dangling group link (group: $(ls -ld "$GROUP_ROOT/.config/alpha" 2>&1); stderr: $(grep -E 'File exists|alpha' "$ERR" | tr '\n' ' '))"
+fi
+teardown
 # A group seeded before this fix already holds such a link: its mount is named
 # in a WARNING on every launch, with the copy that fixes it.
 setup

@@ -254,7 +254,7 @@ printf 'capture: %s\n\n' "$capture_dir"
 # directory it reads. On an SELinux daemon that bind mount is denied to a
 # labelled container (sandbox-common.sh: selinux_security_opt()).
 selinux_opt="$(selinux_security_opt)" || exit 1
-if ! docker run --rm --entrypoint capture-agent-destinations.sh \
+if ! docker run --rm --pull=never --entrypoint capture-agent-destinations.sh \
      ${selinux_opt:+"$selinux_opt"} \
      -v "$capture_dir:/workspace/.agent-discovery" \
      "$image" extract /workspace/.agent-discovery; then
@@ -278,7 +278,7 @@ printf '\n%s DNS queries, %s TLS SNI hostnames.\n' "$(count_lines "$dns_out")" "
 # comparison is against what restricted mode would actually enforce — not
 # against a re-derivation of it here.
 read_from_image() {  # $1 = in-image path
-  docker run --rm --entrypoint /bin/cat "$image" "$1" 2>/dev/null || true
+  docker run --rm --pull=never --entrypoint /bin/cat "$image" "$1" 2>/dev/null || true
 }
 
 # Strip comments, blanks and surrounding whitespace — the same normalisation
