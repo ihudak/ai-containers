@@ -183,27 +183,87 @@ wf_job_key() {  # $1=yaml  $2=job id  $3=job-level key (e.g. uses, if) → value
 # wf_triggers_on is a PREDICATE, unlike every function above it — "the trigger
 # is absent" is an ordinary, expected outcome (most workflows do not trigger on
 # pull_request), not an empty-result error, so it does not follow this file's
-# fail-loudly-on-empty convention. Only a missing file/arg is a loud failure;
-# a genuine "no" is a quiet rc=1.
+# fail-loudly-on-empty convention. A genuine "no" is a quiet rc=1. A missing
+# file/arg, and an `on:` it cannot read, are rc=2 with a message: "cannot tell"
+# must never be mistaken for "no".
 #
 # Added for tests/test-layer-containment.sh to VERIFY a `workflow` row's
 # `coverage=exempt` claim against the file's own `on:` block, rather than
 # trusting its <why> prose — the same effect-over-text-presence standard this
 # project applies everywhere else (see AGENTS.md: "the suite asserts effect,
-# not configuration"). Narrow reader, like _wf_awk: matches only the BLOCK form
-# `on:\n  <trigger>:`, which is the shape every workflow in this repo uses, not
-# flow-style `on: [push, pull_request]`. A line inside a step's `run:` script
-# that merely mentions the trigger name (e.g. a comment) must NOT count — the
-# scan is bounded to the on: block by column-0 lines ending it, same rule
-# wf_jobs/wf_steps use to bound the jobs: block.
-wf_triggers_on() {  # $1=yaml  $2=trigger name (e.g. pull_request) → rc 0 present, rc 1 absent
+# not configuration"). It reads every spelling GitHub accepts for the trigger
+# list: a scalar (`on: pull_request`), a one-line flow list
+# (`on: [push, pull_request]`), a `- name` sequence and a block map, each at any
+# indentation, with keys and entries quoted or not. It used to read only the
+# block map at exactly two spaces, so `on: [push, pull_request]` passed an
+# exempt row as "verified NOT pull_request-triggered" (TST-6). What it still
+# cannot read — a flow list spanning lines, a flow map, an `on:` with nothing
+# under it, a file with no `on:` at all — is rc=2. Only the first level of the
+# block counts: `pull_request:` nested under another trigger is not a trigger,
+# and neither is the word inside a step's `run:` script, since the scan stops
+# at the next column-0 key.
+wf_triggers_on() {  # $1=yaml  $2=trigger name (e.g. pull_request) → rc 0 present, 1 absent, 2 cannot tell
   local f="${1:?wf_triggers_on: workflow path required}"
-  local trig="${2:?wf_triggers_on: trigger name required}"
-  [[ -f "$f" ]] || { echo "lib-layer-checks: no such workflow: $f" >&2; return 1; }
-  awk -v trig="$trig" '
-    /^on:[[:space:]]*$/ { ion = 1; next }
-    ion && /^[^[:space:]#]/ { ion = 0 }
-    ion && $0 ~ ("^  " trig ":") { found = 1 }
-    END { exit !found }
+  local trig="${2:?wf_triggers_on: trigger name required}" rc
+  [[ -f "$f" ]] || { echo "lib-layer-checks: no such workflow: $f" >&2; return 2; }
+  awk -v trig="$trig" -v sq="'" '
+    function trim(s) { sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s); return s }
+    function unq(s) {
+      s = trim(s)
+      if (length(s) >= 2 && ((substr(s, 1, 1) == "\"" && substr(s, length(s), 1) == "\"") ||
+                             (substr(s, 1, 1) == sq && substr(s, length(s), 1) == sq)))
+        s = substr(s, 2, length(s) - 2)
+      return s
+    }
+    function nocomment(s) { sub(/^#.*$/, "", s); sub(/[[:space:]]+#.*$/, "", s); return s }
+    BEGIN { state = 0; seen = 0; first = 0; found = 0; bad = 0 }
+    state == 0 && ($0 ~ /^("on"|on):/ || index($0, sq "on" sq ":") == 1) {
+      seen = 1
+      rest = $0; sub(/^[^:]*:/, "", rest); rest = trim(nocomment(rest))
+      if (rest == "") { state = 1; next }
+      if (substr(rest, 1, 1) == "[") {
+        if (substr(rest, length(rest), 1) != "]") { bad = 1; exit }
+        n = split(substr(rest, 2, length(rest) - 2), a, ",")
+        for (i = 1; i <= n; i++) if (unq(a[i]) == trig) found = 1
+        exit
+      }
+      if (substr(rest, 1, 1) == "{") { bad = 1; exit }
+      if (unq(rest) == trig) found = 1
+      exit
+    }
+    state == 1 {
+      if ($0 ~ /^[[:space:]]*(#.*)?$/) next
+      # A column-0 key ends the block. A column-0 "- " does not: a sequence may
+      # sit at its parent key indentation.
+      if ($0 ~ /^[^[:space:]-]/) exit
+      line = $0
+      match(line, /^[[:space:]]*/); ind = RLENGTH
+      body = nocomment(substr(line, ind + 1))
+      if (!first) {
+        first = 1; base = ind
+        isseq = (body ~ /^-([[:space:]]|$)/)
+        # No colon: a plain scalar continued on the next line (`on:\n  push`).
+        if (!isseq && body !~ /:([[:space:]]|$)/) { if (unq(body) == trig) found = 1; exit }
+      }
+      if (ind < base) exit
+      if (ind > base) next
+      if (isseq) {
+        if (body !~ /^-([[:space:]]|$)/) { bad = 1; exit }
+        v = body; sub(/^-[[:space:]]*/, "", v)
+        if (unq(v) == trig) found = 1
+      } else {
+        if (body ~ /^-([[:space:]]|$)/) { bad = 1; exit }
+        k = body; sub(/[[:space:]]*:([[:space:]].*)?$/, "", k)
+        if (unq(k) == trig) found = 1
+      }
+      next
+    }
+    END {
+      if (bad || !seen || (state == 1 && !first)) exit 2
+      exit !found
+    }
   ' "$f"
+  rc=$?
+  (( rc == 2 )) && echo "lib-layer-checks: cannot read the on: block of $f (no on: key, nothing under it, a flow map, or a flow list spanning lines)" >&2
+  return "$rc"
 }

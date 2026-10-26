@@ -169,11 +169,14 @@ while IFS='|' read -r wfile coverage why; do
       pass "workflow row '$wfile' declares coverage=$coverage"
       ;;
     exempt)
-      if wf_triggers_on "$wf_target" pull_request; then
-        fail "workflow row '$wfile' claims coverage=exempt but $wfile DOES trigger on pull_request — it is part of the PR gate and needs coverage=classified or coverage=cases, not exempt"
-      else
-        pass "workflow row '$wfile' claims coverage=exempt and $wfile is verified NOT pull_request-triggered"
-      fi
+      # Three outcomes, not two: rc 2 is "the on: block could not be read",
+      # and an exempt claim nobody could check must not pass as verified.
+      wf_triggers_on "$wf_target" pull_request; trig_rc=$?
+      case "$trig_rc" in
+        0) fail "workflow row '$wfile' claims coverage=exempt but $wfile DOES trigger on pull_request — it is part of the PR gate and needs coverage=classified or coverage=cases, not exempt" ;;
+        1) pass "workflow row '$wfile' claims coverage=exempt and $wfile is verified NOT pull_request-triggered" ;;
+        *) fail "workflow row '$wfile' claims coverage=exempt, but $wfile's on: block could not be read, so the claim is unverified (see stderr above)" ;;
+      esac
       ;;
     *)
       fail "workflow row '$wfile' (tests/layer-checks.conf) has unrecognised coverage '$coverage' (want classified, cases, or exempt)"

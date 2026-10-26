@@ -289,11 +289,60 @@ else
   pass "wf_triggers_on ignores a trigger name mentioned outside the on: block"
 fi
 
-if wf_triggers_on "$TMP/nosuchworkflow.yml" pull_request >/dev/null 2>&1; then
-  fail "wf_triggers_on reported success for a workflow file that does not exist"
-else
-  pass "wf_triggers_on fails for a workflow file that does not exist"
-fi
+# rc 2, not 1: a missing file is "cannot tell", and the containment guard fails
+# an exempt row on 2 where it would pass it on 1.
+wf_triggers_on "$TMP/nosuchworkflow.yml" pull_request >/dev/null 2>&1
+check "wf_triggers_on reports a workflow file that does not exist as rc 2 (cannot tell)" 2 "$?"
+fails_naming "wf_triggers_on names the missing workflow file" \
+  "no such workflow: $TMP/nosuchworkflow.yml" \
+  wf_triggers_on "$TMP/nosuchworkflow.yml" pull_request
+
+# ── wf_triggers_on: every spelling GitHub accepts (TST-6) ─────────────────────
+# The reader used to match only `on:` alone on its line followed by a key at
+# exactly two spaces. A workflow written `on: [push, pull_request]` that runs
+# ./tests/run-all.sh, registered as coverage=exempt, then passed as "verified
+# NOT pull_request-triggered" — the bypass the registry exists to close. Each
+# spelling below is one GitHub accepts; each gets a positive and a negative.
+# A shape the reader does not understand is rc 2, never a quiet "no": an exempt
+# claim that cannot be checked must not pass as verified.
+trig_rc() {  # $1=yaml body → wf_triggers_on's rc for pull_request
+  printf '%s\n' "$1" > "$TMP/trig.yml"
+  wf_triggers_on "$TMP/trig.yml" pull_request 2>/dev/null
+  printf '%s' "$?"
+}
+check "on: <scalar> naming the trigger" 0 "$(trig_rc 'on: pull_request')"
+check "on: <scalar> naming another trigger" 1 "$(trig_rc 'on: push')"
+check "on: <scalar> with a trailing comment" 0 "$(trig_rc 'on: pull_request  # gate')"
+check "on: [flow, list] holding the trigger" 0 "$(trig_rc 'on: [push, pull_request]')"
+check "on: [flow, list] with quoted entries" 0 "$(trig_rc "on: [ 'push', \"pull_request\" ]")"
+check "on: [flow, list] without the trigger" 1 "$(trig_rc 'on: [push, workflow_dispatch]')"
+check "on: followed by a - sequence holding the trigger" 0 \
+  "$(trig_rc "$(printf 'on:\n  - push\n  - pull_request\njobs:\n  x:\n    runs-on: y')")"
+check "on: followed by an unindented - sequence (valid YAML)" 0 \
+  "$(trig_rc "$(printf 'on:\n- push\n- pull_request\njobs:\n  x:\n    runs-on: y')")"
+check "on: followed by a - sequence without the trigger" 1 \
+  "$(trig_rc "$(printf 'on:\n  - push\njobs:\n  x:\n    runs-on: y')")"
+check "on: block map indented four spaces" 0 \
+  "$(trig_rc "$(printf 'on:\n    push:\n    pull_request:\n        branches: [main]\njobs:\n  x:\n    runs-on: y')")"
+check "on: block map: a deeper key of the same name is not a trigger" 1 \
+  "$(trig_rc "$(printf 'on:\n  workflow_run:\n    types:\n      pull_request:\njobs:\n  x:\n    runs-on: y')")"
+check "on: block map with a quoted key" 0 \
+  "$(trig_rc "$(printf "on:\n  'pull_request':\njobs:\n  x:\n    runs-on: y")")"
+check "a quoted \"on\": key" 0 \
+  "$(trig_rc "$(printf '"on":\n  pull_request:\njobs:\n  x:\n    runs-on: y')")"
+check "pull_request_target is not pull_request (block map)" 1 \
+  "$(trig_rc "$(printf 'on:\n  pull_request_target:\njobs:\n  x:\n    runs-on: y')")"
+check "pull_request_target is not pull_request (flow list)" 1 "$(trig_rc 'on: [pull_request_target]')"
+check "pull_request_target is not pull_request (scalar)" 1 "$(trig_rc 'on: pull_request_target')"
+check "a flow list spanning lines cannot be read: rc 2, not a quiet no" 2 \
+  "$(trig_rc "$(printf 'on: [push,\n  pull_request]\njobs:\n  x:\n    runs-on: y')")"
+check "a flow map cannot be read: rc 2" 2 "$(trig_rc 'on: { push: { branches: [main] } }')"
+check "a file with no on: key cannot be read: rc 2" 2 \
+  "$(trig_rc "$(printf 'name: x\njobs:\n  x:\n    runs-on: y')")"
+check "on: with nothing under it cannot be read: rc 2" 2 \
+  "$(trig_rc "$(printf 'on:\njobs:\n  x:\n    runs-on: y')")"
+check "comments and blank lines inside the on: block are skipped" 0 \
+  "$(trig_rc "$(printf 'on:\n\n  # a comment\n  pull_request:\njobs:\n  x:\n    runs-on: y')")"
 
 # ── The registry ──────────────────────────────────────────────────────────────
 n_check="$(lc_rows check | grep -c .)"
