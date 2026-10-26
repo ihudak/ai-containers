@@ -14,12 +14,12 @@ bash -n "$REPO_DIR/sandbox.sh"        && pass "sandbox.sh bash -n"        || fai
 
 # Load the REAL load_env_defaults + its env_key_denied helper (extract just the
 # functions so the file's heavy top-level code does not run).
-eval "$(sed -n '/^env_key_denied()/,/^}/p;/^load_env_defaults()/,/^}/p' "$REPO_DIR/sandbox-common.sh")"
+eval "$(sed -n '/^env_key_denied()/,/^}/p;/^env_key_portable()/,/^}/p;/^env_key_tool_config()/,/^}/p;/^load_env_defaults()/,/^}/p' "$REPO_DIR/sandbox-common.sh")"
 type load_env_defaults >/dev/null 2>&1 && pass "load_env_defaults defined" || { fail "load_env_defaults defined"; printf '\n%d failure(s)\n' "$fails"; exit "$fails"; }
 type env_key_denied >/dev/null 2>&1 && pass "env_key_denied defined" || { fail "env_key_denied defined"; printf '\n%d failure(s)\n' "$fails"; exit "$fails"; }
 
 # Apply exactly as sandbox-common.sh does: local first, then portable.
-apply() { load_env_defaults "$LOCAL"; load_env_defaults "$PORTABLE"; }
+apply() { load_env_defaults "$LOCAL" local; load_env_defaults "$PORTABLE" portable; }
 # This file runs under `set -uo pipefail` with NO errexit, so an unguarded
 # mktemp leaves an EMPTY path and every assertion after it measures the
 # wreckage rather than the loader (falsify backlog F31). SCAFFOLD-FAILED: is the
@@ -117,6 +117,48 @@ mk; printf 'EXTRA_MOUNTS=/a"b\n' > "$PORTABLE"
 ( unset EXTRA_MOUNTS; apply; [[ "$EXTRA_MOUNTS" == '/a"b' ]] ) \
   && pass "an unmatched quote inside a value is preserved" || fail "an unmatched quote inside a value is preserved"
 rmk
+
+# ── The committed sandbox.env takes only the launcher's own keys ─────────────
+# Every key it sets is exported into docker, git and every tool the launcher
+# runs. A deny-list of shell keys left the rest open: DOCKER_CONFIG made the
+# docker CLI load a "plugin" committed next to it, and `docker build` ran it as
+# you (bugs review ENV-1). So the portable file is an ALLOW-list; the
+# machine-local sandbox.local.env, which nobody else writes, keeps the deny-list
+# plus the tool-config families.
+mk
+printf 'IMAGE_NAME=ok-img\nEXTRA_MOUNTS=/x\nSANDBOX_LAUNCHER_MAX=7\nDOCKER_CONFIG=./evil\nDOCKER_HOST=tcp://evil:2375\nGIT_SSH_COMMAND=evil\nREPO_SEED_IMAGE=evil/seed\nGITHUB_PERSONAL_ACCESS_TOKEN=ghp_planted\nFOO_BAR=1\n' > "$PORTABLE"
+out_p="$( ( unset IMAGE_NAME EXTRA_MOUNTS SANDBOX_LAUNCHER_MAX DOCKER_CONFIG DOCKER_HOST GIT_SSH_COMMAND REPO_SEED_IMAGE GITHUB_PERSONAL_ACCESS_TOKEN FOO_BAR
+  apply; printf 'GOT %s|%s|%s|%s|%s|%s|%s|%s|%s\n' "${IMAGE_NAME:-}" "${EXTRA_MOUNTS:-}" "${SANDBOX_LAUNCHER_MAX:-}" "${DOCKER_CONFIG:-}" "${DOCKER_HOST:-}" "${GIT_SSH_COMMAND:-}" "${REPO_SEED_IMAGE:-}" "${GITHUB_PERSONAL_ACCESS_TOKEN:-}" "${FOO_BAR:-}" ) 2>&1 )"
+grep -qxF 'GOT ok-img|/x|7||||||' <<<"$out_p" \
+  && pass "sandbox.env sets the launcher's keys and nothing else (DOCKER_*, GIT_*, a seed image, a token, an unknown key)" \
+  || fail "portable allow-list (got: $(grep GOT <<<"$out_p"))"
+[[ "$(grep -c "WARNING: ignoring .* in $PORTABLE" <<<"$out_p")" -eq 6 ]] && grep -qF 'sandbox.local.env' <<<"$out_p" \
+  && pass "each key it ignores is named once, with where it belongs instead" \
+  || fail "portable warnings (got: $(grep WARNING <<<"$out_p" | tr '\n' ' '))"
+! grep -qF 'ghp_planted' <<<"$out_p" \
+  && pass "an ignored value is never printed" || fail "an ignored token value was printed"
+rmk
+mk
+printf 'GITHUB_TOKEN=ghp_mine\nREPO_SEED_IMAGE=my/seed\nFOO_BAR=1\nDOCKER_CONFIG=./evil\nBUILDX_CONFIG=./e\nBUILDKIT_HOST=tcp://e\nGIT_CONFIG_GLOBAL=./e\nSSH_AUTH_SOCK=/e\n' > "$LOCAL"
+out_l="$( ( unset GITHUB_TOKEN REPO_SEED_IMAGE FOO_BAR DOCKER_CONFIG BUILDX_CONFIG BUILDKIT_HOST GIT_CONFIG_GLOBAL SSH_AUTH_SOCK
+  apply; printf 'GOT %s|%s|%s|%s|%s|%s|%s|%s\n' "${GITHUB_TOKEN:-}" "${REPO_SEED_IMAGE:-}" "${FOO_BAR:-}" "${DOCKER_CONFIG:-}" "${BUILDX_CONFIG:-}" "${BUILDKIT_HOST:-}" "${GIT_CONFIG_GLOBAL:-}" "${SSH_AUTH_SOCK:-}" ) 2>&1 )"
+grep -qxF 'GOT ghp_mine|my/seed|1|||||' <<<"$out_l" \
+  && pass "sandbox.local.env keeps any key but the shell's and the tool-config families (DOCKER_*, BUILDX_*, BUILDKIT_*, GIT_*, SSH_*)" \
+  || fail "local deny-list (got: $(grep GOT <<<"$out_l"))"
+rmk
+# The allow-list must not drift from what the launcher documents: every variable
+# in AGENTS.md's sandbox.sh table is either accepted from sandbox.env or one of
+# the few kept to the machine (the tokens).
+doc_keys="$(awk '/^\*\*Key env vars for `sandbox.sh`:\*\*/{f=1} f && /^## /{exit} f' "$REPO_DIR/AGENTS.md" \
+  | grep -oE '^\| `[A-Z][A-Z0-9_]*`' | grep -oE '[A-Z][A-Z0-9_]*')"
+[[ -n "$doc_keys" ]] || { printf 'SCAFFOLD-FAILED: no keys read from AGENTS.md env table\n'; exit 1; }
+drift=""
+for k in $doc_keys; do
+  case "$k" in COPILOT_GITHUB_TOKEN|GITHUB_PERSONAL_ACCESS_TOKEN) continue ;; esac
+  env_key_portable "$k" || drift+=" $k"
+done
+[[ -z "$drift" ]] && pass "every launcher variable AGENTS.md documents is accepted from sandbox.env ($(wc -w <<<"$doc_keys") keys)" \
+  || fail "documented but not in the sandbox.env allow-list:$drift"
 
 # load ORDER in sandbox-common.sh: local before portable
 loc_ln=$(grep -n 'load_env_defaults .*sandbox\.local\.env' "$REPO_DIR/sandbox-common.sh" | head -1 | cut -d: -f1)

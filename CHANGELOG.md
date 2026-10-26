@@ -8,6 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A committed `sandbox.env` can no longer run code on your machine through
+  docker or git.** It refused the keys that control the shell, but exported
+  every other key into docker, git and every tool the launcher runs —
+  `DOCKER_CONFIG=./ci` in a pull request made the next `./build.sh` run a
+  "docker plugin" committed beside it, with your `GITHUB_TOKEN`. The shared
+  `sandbox.env` now accepts only the launcher's own variables and ignores
+  anything else with a warning; move a token or any other machine-specific
+  key into `sandbox.local.env`, which still accepts them but now refuses the
+  `DOCKER_*`, `BUILDX_*`, `BUILDKIT_*`, `GIT_*` and `SSH_*` families (bugs review
+  ENV-1). **If your `sandbox.env` sets other keys, they now print a warning and
+  are ignored.**
 - **A repository under a writable mount can no longer make the launcher run a
   program on the host.** Before each launch the launcher reads every
   repository's index with the host's git, to find its submodules. In a partial

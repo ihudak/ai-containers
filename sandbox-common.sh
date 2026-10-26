@@ -76,8 +76,47 @@ env_key_denied() {
   return 1
 }
 
+# The committed sandbox.env may set only what the launcher itself reads. Every key
+# it sets is exported into the environment of docker, git and every tool
+# build.sh / sandbox.sh / repo.sh run, and those read their own keys from it:
+# DOCKER_CONFIG made the docker CLI load a "plugin" committed beside it, and
+# `docker build` ran it as you (bugs review ENV-1). A deny-list cannot name every
+# such key in every tool; an allow-list of the launcher's own can.
+# tests/test-sandbox-env.sh holds this list to AGENTS.md's variable table.
+# Deliberately NOT here, so a committed file cannot set them for everyone who
+# runs it: the tokens (they would hand the agent the committer's identity), and
+# REPO_SEED_IMAGE (repo.sh runs that image with your ~/.ssh mounted). Both are
+# fine in sandbox.local.env.
+env_key_portable() {
+  case "$1" in
+    IMAGE_NAME|AI_CONTAINER_GROUP|AI_CONTAINER_GROUP_INIT|AI_CONTAINER_HOST_ACK|\
+    SANDBOX_MODE|SANDBOX_WORKDIR|SANDBOX_ENV_FILE|SANDBOX_CONF|\
+    SANDBOX_UID|SANDBOX_GID|SANDBOX_USER|SANDBOX_GROUP|SANDBOX_GIT_MAX|SANDBOX_LAUNCHER_MAX|\
+    CONTAINER_CPUS|CONTAINER_MEMORY|CONTAINER_MEMORY_RESERVATION|CONTAINER_MEMORY_SWAP|\
+    CONTAINER_NOFILE|CONTAINER_SHM_SIZE|CONTAINER_NAME|\
+    REPOS|REPO_BACKEND|REPOS_PATH|REPO_VOLUME_PREFIX|EXTRA_MOUNTS|PREVIEW_PORTS|\
+    VAULT_PATH|SPECS_PATH|DOCS_PATH|ARCHITECTURE_REPO_PATH|\
+    SELF_HEALING_ENABLED|ALLOW_IPV6_BYPASS|SELINUX_LABEL|\
+    SKILL_CHAR_BUDGET|SLASH_COMMAND_TOOL_CHAR_BUDGET) return 0 ;;
+  esac
+  return 1
+}
+
+# The machine-local sandbox.local.env is written by you, not by whoever can commit
+# to the project, so it may carry other keys (a token, a seed image). Not the
+# families whose tools load code or credentials by path, though: no launcher
+# setting needs them, and they are where the next planted plugin would come from.
+env_key_tool_config() {
+  case "$1" in
+    DOCKER_*|BUILDX_*|BUILDKIT_*|GIT_*|SSH_*) return 0 ;;
+  esac
+  return 1
+}
+
+# load_env_defaults <file> [portable|local]: portable (the default, the strict
+# one) accepts only env_key_portable keys; local refuses env_key_tool_config ones.
 load_env_defaults() {
-  local file="$1" line key val
+  local file="$1" mode="${2:-portable}" line key val
   [[ -f "$file" ]] || return 0
   while IFS= read -r line || [[ -n "$line" ]]; do
     line="${line%$'\r'}"                         # tolerate a CRLF-authored file
@@ -94,6 +133,18 @@ load_env_defaults() {
         "$key" "$file" >&2
       continue
     fi
+    if [[ "$mode" == local ]] && env_key_tool_config "$key"; then
+      printf 'WARNING: ignoring %s=... in %s — that key configures docker, git or ssh, not the launcher;\n' \
+        "$key" "$file" >&2
+      printf '         set it in your shell if you need it.\n' >&2
+      continue
+    fi
+    if [[ "$mode" != local ]] && ! env_key_portable "$key"; then
+      printf 'WARNING: ignoring %s=... in %s — a shared sandbox.env sets only the launcher'\''s own\n' \
+        "$key" "$file" >&2
+      printf '         keys; put it in sandbox.local.env (this machine) or your shell.\n' >&2
+      continue
+    fi
     # Strip surrounding double quotes only as a MATCHED pair, so a value that legitimately
     # contains one quote (or is a bare `"`) is not silently mangled.
     if [[ ${#val} -ge 2 && "$val" == '"'*'"' ]]; then val="${val:1:${#val}-2}"; fi
@@ -103,8 +154,8 @@ load_env_defaults() {
     export "$key"
   done < "$file"
 }
-load_env_defaults "${script_dir}/sandbox.local.env"   # this machine (higher precedence)
-load_env_defaults "${script_dir}/sandbox.env"         # portable defaults
+load_env_defaults "${script_dir}/sandbox.local.env" local     # this machine (higher precedence)
+load_env_defaults "${script_dir}/sandbox.env" portable        # portable defaults
 # shellcheck disable=SC2034  # consumed by sandbox.sh/build.sh, which source this file
 image_name="${IMAGE_NAME:-ai-sandbox}"
 
