@@ -16,7 +16,7 @@
 |---|---|---|---|---|
 | 1 | Host-side launcher: git internals + launcher overlay | GIT-1, LNCH-1, LNCH-3 (partly) — fixed; LNCH-2 not reproducible (PLAT-1) | GAP-12 (only: follow includes inside included files) | HIGH |
 | 2 | Launcher config / env layers / credentials | ENV-1 … ENV-6 — all fixed; REPO-1 found and fixed | — | HIGH |
-| 3 | Container-start runtime tools (entrypoint root steps, reconciles) | RT-1 … RT-7 | stretch: GAP-1 for `link-default-ruby.sh`, `install-agent-skills.sh`, `agent-tools-reconcile.sh` | HIGH |
+| 3 | Container-start runtime tools (entrypoint root steps, reconciles) | RT-1 … RT-7 — all fixed; RT-8, RT-9 open | stretch: GAP-1 for `link-default-ruby.sh`, `install-agent-skills.sh`, `agent-tools-reconcile.sh` | HIGH |
 | 4 | Host lifecycle scripts (project-init, sync, repo, group, report) | PRJ-1 … PRJ-9, DOC-1, DOC-3, REPO-2 … REPO-10 | optional: GAP-6; stretch: GAP-1 for `group.sh` | MEDIUM |
 | 5 | In-container DB services | SVC-1 … SVC-3 | — | MEDIUM |
 | 6 | Build / Dockerfile / tools.d / config validation | BLD-1 … BLD-7, ENV-7 | — | MEDIUM |
@@ -232,6 +232,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 ## 3. Container-start runtime tools
 
 ### RT-1: link-default-ruby.sh runs agent-writable binaries as root, before the capability drop, so the restricted firewall can be lifted
+- **Status: FIXED (batch 3)** — `38cf74e`. The probes run as the sandbox user (`runuser`, the user's HOME, `timeout -k 2 10`); as root with no user named, nothing from `~/.rvm` runs. The review of batch 3 found that `ln -sf` onto a link to a directory wrote inside it; every `ln` is now `-sfn` and a directory is never linked (`ce33ed9`). Tests run as root too (`59a7690`): `tests/test-ruby-wrapper.sh`; mutations 740 and 745 regenerated. Verified as root in ubuntu:24.04. Integration case 740 not re-run (needs an rvm image build).
 - Triage: re-verified — in the `restricted)` arm of entrypoint.sh, `apply_restricted_firewall` runs first and `link_default_ruby` later calls the script with no `runuser`, before `exec capsh`; the script's `"$bin_dest/$b" --version` executes the symlinked rvm binaries.
 - Severity: HIGH — Confidence: CONFIRMED (the execution is reproduced; that it runs as root is read from entrypoint.sh)
 - Location: `link-default-ruby.sh: \`"$bin_dest/$b" --version >/dev/null 2>&1 && continue\``, called from `entrypoint.sh: \`link_default_ruby()\`` (`env RUBY_VERSIONS=... bash /usr/local/bin/link-default-ruby.sh` with no runuser)
@@ -242,6 +243,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Fix direction: never execute anything from `~/.rvm` as root. Run the `--version` probe as the sandbox user (`runuser -u "$sandbox_user" -- "$bin_dest/$b" --version`), or move the verify-and-repoint decision into rvm-reconcile.sh, which runs as the user, and keep root to `ln` only.
 
 ### RT-2: install-agent-skills.sh's stamp ignores which agents are enabled, so a newly enabled agent never gets skills
+- **Status: FIXED (batch 3)** — `bfe1349` (one stamp line set per target: the cross-client skill and each agent); `tests/test-agent-skills.sh`.
 - Severity: MEDIUM — Confidence: CONFIRMED (reproduced)
 - Location: `install-agent-skills.sh: \`current_stamp()\`` and `main()`'s `[ "$(cat "$STAMP" 2>/dev/null)" = "$want" ] && exit 0`
 - Introduced: before the window (the file was touched in f028ce0)
@@ -251,6 +253,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Fix direction: include the sorted `AI_AGENTS_ENABLED` set in the stamp. Better still, record a stamp per agent, so a group shared by projects with different agent sets is not reinstalled on every alternation.
 
 ### RT-3: installed uv tools die when the image's Python changes, and the presence check never repairs them
+- **Status: FIXED (batch 3)** — `ddaf54f` (a dangling `bin/python` behind the entry point triggers `--reinstall`; verified with uv 0.13.5); `tests/test-agent-tools-reconcile.sh`.
 - Severity: MEDIUM — Confidence: CONFIRMED (mechanism reproduced with a pyenv-style shim; not run in an image)
 - Location: `agent-tools-reconcile.sh: \`install_uv()\`` — `if [[ -x "$UV_TOOL_BIN_DIR/$bin" ]]; then log "$bin already present"; return 0; fi`
 - Introduced: 23e6ad6 (before the window). The window adds mkdocs and the fallback on top of it (17f7ca5, 69c3463).
@@ -260,6 +263,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Fix direction: make the presence check prove the tool runs, for example that its venv's `bin/python` resolves or `"$UV_TOOL_BIN_DIR/$bin" --version` succeeds. If it does not, reinstall with `uv tool install --reinstall`, which then goes through the same previous-minor fallback.
 
 ### RT-4: the previous-minor fallback reads the PROJECT's Python, not the image's
+- **Status: FIXED (batch 3)** — `ddaf54f` (the reconcile runs from `/`).
 - Severity: MEDIUM — Confidence: CONFIRMED for `uv python find` (reproduced); PLAUSIBLE for the pyenv-shim effect on the first attempt
 - Location: `agent-tools-reconcile.sh: \`py="$(uv python find --no-managed-python 2>/dev/null)"\``
 - Introduced: 69c3463 (in the window)
@@ -272,6 +276,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Fix direction: `cd /` (not `$HOME`, which in the host group may hold its own pin) at the top of agent-tools-reconcile.sh, or at least around the probe and the uv calls.
 
 ### RT-5: the leftover-npm-Claude fallback cannot fire in any named group, and its test models a state that cannot occur
+- **Status: FIXED (batch 3)** — `16266d7`, aligned with `install_claude_native` in `ce33ed9` (the highest version must be executable); the test now makes the mounted directories.
 - Severity: LOW — Confidence: CONFIRMED (from code)
 - Location: `agent-tools-reconcile.sh: \`! -d "$HOME/.local/share/claude" && -x "$npm_bin/claude"\``; `sandbox.sh: \`"$group_root/.local/share/claude" "$group_root/.local/state/claude"\`` (`install -d`, then mounted)
 - Introduced: 2354abc (before the window). 33c2b44 in the window edited the condition.
@@ -280,6 +285,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Fix direction: key the condition on "no executable version under `~/.local/share/claude/versions`", the same predicate `install_claude_native` uses, and pre-create the directory in the test.
 
 ### RT-6: Copilot and Gemini run under whichever node is active, so `nvm use 20` can break them
+- **Status: FIXED (batch 3)** — `77f265e` (a wrapper runs each npm node-script CLI under the default node; `PATH` untouched), bounded read and no `timeout(1)` dependency in `ce33ed9`/`59a7690`; `tests/test-link-agent-tools.sh`.
 - Severity: LOW — Confidence: PLAUSIBLE (based on the upstream `engines` minimums; not run)
 - Location: `link-agent-tools.sh: \`"copilot:copilot:$home_root/npm/bin/copilot"\`` (a plain symlink to npm's `#!/usr/bin/env node` launcher)
 - Introduced: 23e6ad6 / 33c2b44
@@ -288,12 +294,28 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Fix direction: write a wrapper for the npm agent CLIs that runs them under the node they were installed with, the same way link-node-globals.sh `--pin` does for qmd.
 
 ### RT-7: updating Codex/Gemini on every start rewrites a package that sibling containers may be running
+- **Status: FIXED (batch 3)** — `6836894` (reinstalled only when `npm view` differs from `npm ls`; an unreachable registry keeps the installed copy; parsing verified with npm 10).
 - Severity: LOW — Confidence: PLAUSIBLE
 - Location: `agent-tools-reconcile.sh: \`update_npm()\``
 - What's wrong: flock serialises only the reconcile scripts, not the tools themselves. The leftover-Claude comment refuses to delete the npm copy because "other containers in the same group may be running against it right now". Yet `npm install -g --prefix ~/.ai-tools/npm @google/gemini-cli` re-extracts the package in place on every start of any container in the group.
 - Failure scenario: Gemini is running in container A. Container B in the same group starts and replaces `lib/node_modules/@google/gemini-cli`, and a module A's node process loads lazily mid-replacement is missing or a different version.
 - Fix direction: skip the reinstall when the installed version already equals `npm view <pkg> version`, which also saves the ~7 s per start. Otherwise accept the risk and document it.
 
+
+### RT-8: The user-level steps before the capability drop can leave a process with the full bounding set
+- **Status: OPEN** (review of batch 3, finding 4; not new: `rvm-reconcile.sh`, `agent-tools-reconcile.sh` and `install-agent-skills.sh` already run agent-controlled code at the same stage)
+- Severity: LOW. Confidence: CONFIRMED that the process survives; no route to root found in the ubuntu:24.04 base (its setuid binaries need a password; root's is locked). The full image's `dumpcap` file capabilities were not checked.
+- Location: entrypoint.sh: `as_sandbox_user()`; link-default-ruby.sh: `probe()`.
+- What's wrong: these steps run as the sandbox user via `runuser`, before `exec capsh` removes NET_ADMIN/NET_RAW from the bounding set. A `setsid` daemon forked there escapes `timeout` and keeps that bounding set into the session. A setuid-root or file-capability binary would then grant the capabilities back.
+- Fix direction: run every user-level step before the drop through `setpriv --no-new-privs --bounding-set -net_admin,-net_raw` (or `capsh --drop=… --user=…`), so nothing started there can regain them.
+
+### RT-9: Nits left by the batch 3 reviews
+- **Status: OPEN** (reviews of batch 3)
+- Severity: NIT
+- The skills stamp is rewritten without a lock: two containers of a group starting together can lose each other's lines, which costs one harmless reinstall.
+- `ln -sfn` still makes the link inside a real directory standing at `/usr/local/bin/<name>`. Only root could make one and nothing does; `ln -sfT` would close it.
+- Stripping NULs from the shebang read makes `#!\0/usr/bin/node` count as a node script; harmless, the wrapper runs as the user.
+- Test gaps: the non-root, no-probe-user branch of `probe()` is no longer exercised; no case checks that a binstub that runs stays a direct link when a wrapper for it exists (pre-existing); no case covers the bounded read in `node_script` (FIFO, oversize file).
 
 ## 4. Host lifecycle scripts
 
