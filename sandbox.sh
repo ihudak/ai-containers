@@ -1493,6 +1493,23 @@ _git_index_read() {
   return 0
 }
 
+# _lex_norm <absolute path>: the path with . and .. resolved by name alone, no link
+# followed — what it says, to compare with where it physically leads.
+_lex_norm() {
+  local -a out=() parts=()
+  local p
+  IFS=/ read -r -a parts <<< "${1#/}"
+  for p in ${parts[@]+"${parts[@]}"}; do
+    case "$p" in
+      ''|.) ;;
+      ..) if (( ${#out[@]} )); then unset 'out[-1]'; fi ;;
+      *) out+=("$p") ;;
+    esac
+  done
+  local IFS=/
+  printf '/%s' "${out[*]}"
+}
+
 # _gdi_follow <dir> <path> <mount root> <named by>: called from git_dirs_in, whose
 # _gdi_dirs and had it extends. <path>, relative to <dir> unless absolute, is
 # resolved physically, as git resolves a gitdir: or commondir; a git directory it
@@ -1500,9 +1517,23 @@ _git_index_read() {
 # there gets nothing made in it, and is named: git would refuse it, but an agent
 # could make it one by the next launch.
 _gdi_follow() {
-  local t
+  local t lex
   if [[ "$2" == /* ]]; then t="$2"; else t="$1/$2"; fi
-  t="$(cd -P -- "$t" 2>/dev/null && pwd -P)" || return 0
+  lex="$(_lex_norm "$t")"
+  # A target the agent can still make, or reach through a link it can repoint,
+  # cannot be protected now; it is named, never passed in silence (security
+  # review of e2741b1).
+  if ! t="$(cd -P -- "$t" 2>/dev/null && pwd -P)"; then
+    if [[ "$lex" == "$3"/* ]]; then
+      printf 'WARNING: %s names %s, which does not exist; if the agent makes it, your host'\''s git\n' "$(_term "$4")" "$(_term "$lex")" >&2
+      printf '         reads it unprotected until the next launch.\n' >&2
+    fi
+    return 0
+  fi
+  if [[ "$lex" != "$t" && "$lex" == "$3"/* ]]; then
+    printf 'WARNING: %s reaches %s through a link inside the mount, which the agent can repoint\n' "$(_term "$4")" "$(_term "$t")" >&2
+    printf '         to a git directory this launch did not protect. Name the real path in it instead.\n' >&2
+  fi
   [[ "$t" == "$3" || "$t" == "$3"/* ]] || return 0
   [[ -z "${had[$t]:-}" ]] || return 0
   had[$t]=1
@@ -1559,8 +1590,10 @@ git_dirs_in() {
     # 9, finding 4; G47). Each is followed into the queue.
     if (( nf < ${#_gdi_files[@]} )); then
       f="${_gdi_files[nf]}"; nf=$((nf + 1))
+      # Only CR and LF stripped, as git does: `gitdir: g ` names `g ` (security
+      # review of e2741b1).
       tgt=""; IFS= read -r -d '' tgt < <(head -c 4096 "$f" 2>/dev/null) || true
-      while [[ "$tgt" == *[[:space:]] ]]; do tgt="${tgt%?}"; done
+      while [[ "$tgt" == *[$'\r\n'] ]]; do tgt="${tgt%?}"; done
       [[ "$tgt" == "gitdir: "* ]] || continue
       _gdi_follow "${f%/*}" "${tgt#gitdir: }" "$5" "$f"
       continue

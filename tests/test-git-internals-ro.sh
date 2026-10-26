@@ -908,7 +908,25 @@ launch ..
 has_mount "$PROJ/node_modules/x47/common/config:/workspace/proj/node_modules/x47/common/config:ro" \
   && pass "G47 the common directory a commondir names is protected too" \
   || fail "G47 commondir target left writable (stderr: $(grep -F x47 "$ERR" | head -2 | tr '\n' ' '))"
-rm -rf "$PROJ/src47" "$PROJ/node_modules" "$PROJ/wt47"
+# git strips only CR and LF from a .git file: `gitdir: g ` names the directory
+# `g ` (with its space), not g (security review of e2741b1).
+mkdir -p "$PROJ/sp47"; "${G[@]}" init -q --bare "$PROJ/node_modules/x47/g "
+"${G[@]}" config --file "$PROJ/node_modules/x47/g /config" core.bare false
+printf 'gitdir: ../node_modules/x47/g \r\n' > "$PROJ/sp47/.git"
+launch ..
+has_mount "$PROJ/node_modules/x47/g /config:/workspace/proj/node_modules/x47/g /config:ro" \
+  && pass "G47 a gitdir: is read as git reads it (only CR and LF stripped)" \
+  || fail "G47 gitdir: with a trailing space misread (stderr: $(grep -F x47 "$ERR" | head -2 | tr '\n' ' '))"
+# A target that does not exist yet, or one reached through a link the agent can
+# repoint, cannot be protected; it is named, never passed in silence.
+mkdir -p "$PROJ/miss47"; printf 'gitdir: ../node_modules/x47/later\n' > "$PROJ/miss47/.git"
+mkdir -p "$PROJ/lnk47"; ln -s node_modules/x47 "$PROJ/via47"; printf 'gitdir: ../via47/g\n' > "$PROJ/lnk47/.git"
+launch ..
+grep -qF "names $PROJ/node_modules/x47/later, which does not exist" "$ERR" \
+  && pass "G47 a gitdir: naming nothing yet is named" || fail "G47 missing gitdir: target silent ($(grep -F later "$ERR" | head -1))"
+grep -qF "$PROJ/lnk47/.git reaches $PROJ/node_modules/x47/g through a link" "$ERR" \
+  && pass "G47 a gitdir: reached through a link is named" || fail "G47 gitdir: through a link silent ($(grep -F lnk47 "$ERR" | head -1))"
+rm -rf "$PROJ/src47" "$PROJ/node_modules" "$PROJ/wt47" "$PROJ/sp47" "$PROJ/miss47" "$PROJ/lnk47" "$PROJ/via47"
 
 # ── G48: skipped gitlinks are named a few at a time ──────────────────────────
 # Every skipped gitlink got its own WARNING, and the index is the agent's: one
