@@ -54,6 +54,23 @@ chmod +x "$TMP/bin/faketool"
 bash "$REPO_DIR/install-agent-skills.sh"
 grep -q "skills install --for claude --global --force" "$CALLS" && pass "version bump re-installs" || fail "version bump re-installs"
 
+# RT-2: the stamp is shared by every project in the group (~/.agents is group-
+# mounted), so it must know WHICH agents got the skills, not only which tool
+# versions: an agent enabled later got none until a tool's version changed.
+export HOME="$TMP/home-rt2"; mkdir -p "$HOME"
+AI_AGENTS_ENABLED="claude-code" bash "$REPO_DIR/install-agent-skills.sh" >/dev/null
+: > "$CALLS"
+AI_AGENTS_ENABLED="claude-code,copilot" bash "$REPO_DIR/install-agent-skills.sh" >/dev/null
+grep -q "skills install --for copilot --global --force" "$CALLS" && pass "a newly enabled agent gets the skills" \
+  || fail "a newly enabled agent got no skills (calls: $(tr '\n' ';' < "$CALLS"))"
+grep -q -- "--for claude " "$CALLS" && fail "an agent already done was reinstalled ($(tr '\n' ';' < "$CALLS"))" \
+  || pass "  … and only that agent is installed"
+# A group shared by projects with different agent sets is not reinstalled on
+# every alternation between them.
+: > "$CALLS"
+AI_AGENTS_ENABLED="claude-code" bash "$REPO_DIR/install-agent-skills.sh" >/dev/null
+[[ ! -s "$CALLS" ]] && pass "alternating agent sets reinstalls nothing" || fail "alternation reinstalled ($(tr '\n' ';' < "$CALLS"))"
+
 # Fallback path: a tool that supports ONLY `--version` (no `version` subcommand)
 # must still yield a non-empty stamp so its skills install. Fresh HOME → no stamp.
 cat > "$TOOLS_D_DIR/flagtool.conf" <<'EOF'

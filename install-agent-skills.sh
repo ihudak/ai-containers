@@ -43,14 +43,16 @@ current_stamp() {
   done < <(tools_list_names) | sort
 }
 
+# install_for_tool <name> <agents csv> <cross: 1|0> — for the --for agent names
+# given (already mapped), and the cross-client skill when <cross> is 1.
 install_for_tool() {
-  local name="$1" agents_csv="$2"
+  local name="$1" agents_csv="$2" cross="$3"
   tools_read_descriptor "$name" || return 0
   [ "$TOOL_skills" = "yes" ] || return 0
   command -v "$TOOL_binary" >/dev/null 2>&1 || return 0
   local bin="$TOOL_binary" installed=() key agent
 
-  if [ -n "$TOOL_skills_crossclient" ]; then
+  if [ "$cross" = 1 ] && [ -n "$TOOL_skills_crossclient" ]; then
     # shellcheck disable=SC2086
     if "$bin" skills install $TOOL_skills_crossclient --global --force >/dev/null 2>&1; then
       installed+=("cross-client")
@@ -60,7 +62,7 @@ install_for_tool() {
   local IFS=','; read -ra _agents <<< "$agents_csv"
   for key in "${_agents[@]}"; do
     [ -n "$key" ] || continue
-    agent="$(map_agent "$key")"
+    agent="$key"
     if "$bin" skills install --for "$agent" --global --force >/dev/null 2>&1; then
       installed+=("$agent")
     fi
@@ -73,17 +75,50 @@ install_for_tool() {
   fi
 }
 
+# The stamp holds one "<target><TAB>name=version" line per target and tool, a
+# target being the cross-client skill or one agent. ~/.agents is group-mounted,
+# so projects with different agents share it: a target is installed when its own
+# lines differ from what is installed now, and an agent enabled later gets the
+# skills although no tool version changed (bugs review RT-2). A stamp from
+# before targets (no TAB) matches no target, so everything installs once.
+target_stamp() {  # <target> — that target's lines, without the prefix
+  [ -f "$STAMP" ] || return 0
+  local t line; t="$1"
+  while IFS= read -r line; do
+    case "$line" in "$t"$'\t'*) printf '%s\n' "${line#*$'\t'}" ;; esac
+  done < "$STAMP"
+}
+
 main() {
   local want; want="$(current_stamp)"
-  if [ -f "$STAMP" ] && [ "$(cat "$STAMP" 2>/dev/null)" = "$want" ]; then
-    exit 0
-  fi
+  local targets=(cross-client) key t todo=() agents="" cross=0
+  local IFS=','; read -ra _keys <<< "${AI_AGENTS_ENABLED:-}"; unset IFS
+  for key in "${_keys[@]}"; do [ -n "$key" ] && targets+=("$(map_agent "$key")"); done
+  for t in "${targets[@]}"; do
+    [ -f "$STAMP" ] && [ "$(target_stamp "$t")" = "$want" ] && continue
+    todo+=("$t")
+    if [ "$t" = cross-client ]; then cross=1; else agents="${agents:+$agents,}$t"; fi
+  done
+  [ "${#todo[@]}" -gt 0 ] || exit 0
   echo "Installing agent skills..."
   local name
   while IFS= read -r name; do
-    install_for_tool "$name" "${AI_AGENTS_ENABLED:-}"
+    install_for_tool "$name" "$agents" "$cross"
   done < <(tools_list_names)
-  printf '%s\n' "$want" > "$STAMP" 2>/dev/null || true
+  # Keep every other target's lines (another project's agents), replace these.
+  local new="" line keep
+  if [ -f "$STAMP" ]; then
+    while IFS= read -r line; do
+      case "$line" in *$'\t'*) ;; *) continue ;; esac
+      keep=1
+      for t in "${todo[@]}"; do case "$line" in "$t"$'\t'*) keep=0 ;; esac; done
+      [ "$keep" = 1 ] && new="$new$line"$'\n'
+    done < "$STAMP"
+  fi
+  for t in "${todo[@]}"; do
+    while IFS= read -r line; do [ -n "$line" ] && new="$new$t"$'\t'"$line"$'\n'; done <<< "$want"
+  done
+  printf '%s' "$new" > "$STAMP" 2>/dev/null || true
 }
 
 # BY BEHAVIOUR, NOT BY STRING (#218): `return` succeeds outside a function only
