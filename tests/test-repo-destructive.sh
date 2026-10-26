@@ -83,6 +83,13 @@ case "$1 $2" in
     for a in "$@"; do case "$a" in volume=*) v="${a#volume=}" ;; esac; done
     [[ -n "$v" ]] && grep -qx -- "$v" "$INUSE" 2>/dev/null && printf 'fake-container-id\n'
     exit 0 ;;
+  "inspect fake-container-id"|"inspect --format"*)
+    # The mount query of docker_volume_mounted_rw: RW for every volume listed in
+    # $INUSE_RW, false for the rest of $INUSE.
+    fmt="$3"; vol="${fmt#*eq .Name \"}"; vol="${vol%%\"*}"
+    if grep -qx -- "$vol" "${INUSE_RW:-/dev/null}" 2>/dev/null; then printf 'true \n'
+    elif grep -qx -- "$vol" "$INUSE" 2>/dev/null; then printf 'false \n'; fi
+    exit 0 ;;
   "volume ls")
     substr=""
     for a in "$@"; do case "$a" in name=*) substr="${a#name=}" ;; esac; done
@@ -191,6 +198,12 @@ setup_world() {
   : > "$VOLS/ai-containers-repo-cluster"
   : > "$INUSE"
   # Labels are what `gc` reads to report a working copy's repo and launch dir.
+  # Base volumes carry their source URL, as repo_base_volume_create labels them;
+  # the git helper fetches from that and nothing else.
+  for b in docs docs-archive cluster; do
+    printf 'ai-containers.repo=%s\nai-containers.type=git\nai-containers.source=git@x:%s.git\n' "$b" "$b" \
+      > "$VOLS/ai-containers-repo-$b.labels"
+  done
   for wc in docs--wc-projA docs--wc-projB docs-archive--wc-projA; do
     printf 'ai-containers.repo=%s\nai-containers.launch-dir=/tmp/%s\n' "${wc%%--wc-*}" "$wc" \
       > "$VOLS/ai-containers-repo-$wc.labels"
@@ -346,6 +359,32 @@ else
   fail "the primary branch from the inspection is the one reset is given
 $(grep '^run ' "$DOCKER_LOG" | head -3)"
 fi
+
+# ── 8b'. the helper fetches only from the URL repo.sh recorded, and never while
+# an agent has the volume mounted read-write (it could rewrite the .git between
+# the helper's check and git reading it) — review of batch 2, F6 follow-up.
+if grep -qF -- '-e AI_REPO_URL=git@x:docs.git' "$DOCKER_LOG"; then
+  pass "the git helper is handed the volume's recorded source URL"
+else
+  fail "the git helper is not handed the recorded URL (log: $(grep -F repo-git-reset "$DOCKER_LOG" | head -1))"
+fi
+setup_world
+export INUSE_RW="$TMP/inuse-rw.txt"
+printf 'ai-containers-repo-docs\n' > "$INUSE"; printf 'ai-containers-repo-docs\n' > "$INUSE_RW"
+run_repo reset docs --yes
+if grep -qF 'is mounted read-write by a running container' "$ERR" && ! grep -qF 'repo-git-reset.sh:/repo-git-reset.sh:ro' "$DOCKER_LOG"; then
+  pass "reset runs no git on a volume a running container mounts read-write"
+else
+  fail "reset ran git on a read-write-mounted volume (stderr: $(tr '\n' ' ' < "$ERR"))"
+fi
+: > "$INUSE_RW"
+run_repo reset docs --yes
+if ! grep -qF 'is mounted read-write' "$ERR" && grep -qF 'repo-git-reset.sh:/repo-git-reset.sh:ro' "$DOCKER_LOG"; then
+  pass "… but a read-only mount does not stop it"
+else
+  fail "a read-only mount stopped reset (stderr: $(tr '\n' ' ' < "$ERR"))"
+fi
+unset INUSE_RW; setup_world
 
 # ── 8c. the summary names the branches, and marks the ones carrying work ──────
 #

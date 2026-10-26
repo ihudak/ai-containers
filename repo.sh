@@ -200,8 +200,22 @@ sync_from_git() {
 # Mounting (rather than baking into Dockerfile.seed) keeps every existing seed
 # image working with no rebuild.
 git_helper_run() {   # $1 = volume  $2... = repo-git-reset.sh arguments
-  local vol="$1"; shift
+  local vol="$1" url; shift
+  # The URL repo.sh recorded at `add` — a volume label, which nothing inside a
+  # container can change — is the one remote the helper fetches from.
+  url="$(docker_volume_label "$vol" 'ai-containers.source')"
+  if [[ -z "$url" ]]; then
+    printf "ERROR: volume %s carries no recorded source URL; re-register it with ./repo.sh add.\n" "$vol" >&2
+    return 1
+  fi
+  # An agent with the volume mounted read-write could rewrite its .git between
+  # the helper's check and git reading it, so not while one runs.
+  if docker_volume_mounted_rw "$vol"; then
+    printf "ERROR: volume %s is mounted read-write by a running container; stop it first.\n" "$vol" >&2
+    return 1
+  fi
   docker run --rm --entrypoint bash ${seed_selinux_opt:+"$seed_selinux_opt"} \
+    -e AI_REPO_URL="$url" \
     -v "$HOME/.ssh":/root/.ssh-host:ro \
     -v "${script_dir}/repo-git-reset.sh":/repo-git-reset.sh:ro \
     -v "$vol":/dst \

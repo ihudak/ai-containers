@@ -61,7 +61,12 @@ die() { printf 'repo-git-reset: %s\n' "$1" >&2; exit 1; }
 # local remote) — and guard_repo cuts the config to what a fetch and a checkout
 # need before any git touches it.
 export GIT_ALLOW_PROTOCOL="ssh:https:http:git:file"
-git() { command git -c core.hooksPath=/dev/null -c core.fsmonitor=false "$@"; }
+# No submodule recursion either: a submodule's config under .git/modules is not
+# rewritten, and fetch recurses "on demand" by default.
+git() {
+  command git -c core.hooksPath=/dev/null -c core.fsmonitor=false \
+    -c fetch.recurseSubmodules=false -c submodule.recurse=false "$@"
+}
 
 # guard_repo <dir>: refuse a .git that is not a plain directory, or that holds
 # anything but files and directories (a FIFO or device hangs git; a symlink can
@@ -71,6 +76,10 @@ git() { command git -c core.hooksPath=/dev/null -c core.fsmonitor=false "$@"; }
 # in it to run.
 guard_repo() {
   local dir="$1" gd="$1/.git" bad k v tmp
+  # The one remote is the URL repo.sh recorded when it registered the repo (the
+  # volume's own label), never what the .git names: the agent could point origin
+  # at any repository your SSH key reads, and fetch it into a volume it reads.
+  [[ -n "${AI_REPO_URL:-}" ]] || die "no recorded URL for this repository (AI_REPO_URL); refusing to run git on it"
   [[ -d "$gd" && ! -L "$gd" ]] || die "$gd is not a directory (a .git file or link can point anywhere)"
   bad="$(find "$gd" ! -type f ! -type d -print -quit 2>/dev/null)"
   [[ -z "$bad" ]] || die "$bad is not a regular file or directory; refusing to run git on this repository"
@@ -82,11 +91,14 @@ guard_repo() {
     v="${k#*$'\n'}"; k="${k%%$'\n'*}"
     case "$k" in
       core.repositoryformatversion|core.filemode|core.bare|core.logallrefupdates|\
-      core.ignorecase|core.precomposeunicode|core.symlinks|extensions.objectformat|\
-      remote.*.url|remote.*.fetch|branch.*.remote|branch.*.merge)
+      core.ignorecase|core.precomposeunicode|core.symlinks|extensions.objectformat|branch.*.merge)
         command git config --file "$tmp" --add "$k" "$v" || die "cannot rewrite $gd/config" ;;
+      branch.*.remote)
+        [[ "$v" == origin ]] && { command git config --file "$tmp" --add "$k" "$v" || die "cannot rewrite $gd/config"; } ;;
     esac
   done < <(command git config --file "$gd/config" --null --list 2>/dev/null)
+  command git config --file "$tmp" remote.origin.url "$AI_REPO_URL" || die "cannot rewrite $gd/config"
+  command git config --file "$tmp" remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*' || die "cannot rewrite $gd/config"
   mv -f "$tmp" "$gd/config" || die "cannot replace $gd/config"
 }
 
@@ -229,7 +241,7 @@ cmd_pull() {
   [[ -e "$dir/.git" ]] || die "not a git repository: $dir"
   guard_repo "$dir"
   mark_safe_directory "$dir"
-  git -C "$dir" pull --ff-only || die "pull --ff-only failed"
+  git -C "$dir" pull --ff-only --no-recurse-submodules origin || die "pull --ff-only failed"
   if [[ -n "$owner" ]]; then chown -R "$owner" "$dir" || printf 'WARN|chown failed\n'; fi
   printf 'AT|%s\n' "$(git -C "$dir" rev-parse --short HEAD 2>/dev/null)"
 }

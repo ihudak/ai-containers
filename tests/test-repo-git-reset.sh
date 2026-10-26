@@ -33,7 +33,10 @@ command -v git >/dev/null 2>&1 || { printf 'SCAFFOLD-FAILED: no git\n'; exit 1; 
 bash -n "$SCRIPT" && pass "repo-git-reset.sh bash -n" || fail "repo-git-reset.sh bash -n"
 
 TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
-trap 'rm -rf "$TMP"' EXIT
+# Owned by this shell only: p_timeout forks, and a child's EXIT must not delete
+# the fixture this script is still using.
+TMP_OWNER="$BASHPID"
+trap '[[ "$BASHPID" == "$TMP_OWNER" ]] && rm -rf "$TMP"' EXIT
 
 # Isolated git identity/config: these tests must not read or write the
 # developer's real ~/.gitconfig, and must not depend on what it says.
@@ -70,8 +73,10 @@ mk_repo() {
   printf '%s' "$work"
 }
 
+# The helper fetches only from the URL repo.sh pins (AI_REPO_URL, from the
+# volume's own label): here, the bare remote mk_repo made beside each checkout.
 run_script() {  # $@ -> OUT / RC
-  OUT="$("$SCRIPT" "$@" 2>&1)"; RC=$?
+  OUT="$(AI_REPO_URL="${AI_REPO_URL-${2:-}.git}" "$SCRIPT" "$@" 2>&1)"; RC=$?
 }
 OUT=""; RC=0
 
@@ -281,8 +286,10 @@ W="$TMP/noremote"; git init -q --initial-branch=main "$W" >/dev/null 2>&1
 commit_in "$W" first
 g "$W" checkout -q -b side >/dev/null 2>&1
 commit_in "$W" side-file
+# The recorded URL becomes origin, and here it leads nowhere: the fetch fails,
+# which STALE reports, and the checked-out branch is all there is to go by.
 run_script inspect "$W"
-if grep -q '^STALE|no "origin" remote' <<<"$OUT" && grep -q '^PRIMARY|side$' <<<"$OUT"; then
+if grep -q '^STALE|' <<<"$OUT" && grep -q '^PRIMARY|side$' <<<"$OUT"; then
   pass "with no origin, the checked-out branch is the primary and STALE says why"
 else
   fail "with no origin, the checked-out branch is the primary and STALE says why
@@ -431,7 +438,7 @@ for h in post-checkout post-merge reference-transaction pre-auto-gc post-rewrite
   printf '#!/bin/sh\necho %s >> %s\n' "$h" "$M" > "$W/.git/hooks/$h"; chmod +x "$W/.git/hooks/$h"
 done
 url_before="$(git -C "$W" remote get-url origin)"
-run_script inspect "$W"; out_i="$OUT"
+run_script inspect "$W"
 run_script reset "$W" main; out_r="$OUT"
 if [[ ! -e "$M" ]]; then pass "nothing the .git holds runs: config keys, an include, a filter, hooks"
 else fail "the agent's .git ran: $(tr '\n' ' ' < "$M")"; fi
@@ -450,7 +457,7 @@ rm -f "$M"
 
 W="$(mk_repo fifo)"
 mkfifo "$W/.git/refs/heads/evil"
-p_timeout 20 "$SCRIPT" inspect "$W" >"$TMP/fifo.out" 2>&1; rc=$?
+AI_REPO_URL="$TMP/fifo.git" p_timeout 20 "$SCRIPT" inspect "$W" >"$TMP/fifo.out" 2>&1; rc=$?
 if [[ "$rc" != 0 && "$rc" != 124 ]] && grep -q 'not a regular file or directory' "$TMP/fifo.out"; then
   pass "a FIFO in .git is refused, not read (no hang)"
 else
@@ -463,6 +470,28 @@ mv "$W/.git" "$TMP/gitfile-real.git"; printf 'gitdir: %s\n' "$TMP/gitfile-real.g
 run_script inspect "$W"
 if [[ "$RC" != 0 && "$OUT" == *"not a directory"* ]]; then pass "a .git FILE (pointing anywhere) is refused"
 else fail ".git file accepted (rc=$RC: $OUT)"; fi
+
+# The remote is the one repo.sh recorded, not the one the .git names: the agent
+# could point origin at any repository your SSH key reads, and the next sync
+# would fetch it into a volume it reads (security review of 6f5dd80).
+W="$(mk_repo pinned)"; mk_repo other >/dev/null
+git -C "$W" remote set-url origin "$TMP/other.git"
+git -C "$W" remote add extra "$TMP/other.git"
+run_script inspect "$W"
+if [[ "$(git -C "$W" remote get-url origin)" == "$TMP/pinned.git" ]] && ! git -C "$W" remote get-url extra >/dev/null 2>&1 \
+   && [[ "$(git config --file "$W/.git/config" --get remote.origin.fetch)" == '+refs/heads/*:refs/remotes/origin/*' ]]; then
+  pass "the remote is pinned to the recorded URL, with the standard refspec, and no other remote kept"
+else
+  fail "remote not pinned (origin: $(git -C "$W" remote get-url origin); remotes: $(git -C "$W" remote | tr '\n' ' '))"
+fi
+AI_REPO_URL="" run_script inspect "$W"
+if [[ "$RC" != 0 && "$OUT" == *"no recorded URL"* ]]; then pass "without a recorded URL the helper runs no git at all"
+else fail "helper ran without AI_REPO_URL (rc=$RC: $OUT)"; fi
+if grep -qF -- '-c fetch.recurseSubmodules=false' "$SCRIPT" && grep -qF -- '-c submodule.recurse=false' "$SCRIPT"; then
+  pass "submodules are never recursed into (their config is not sanitised)"
+else
+  fail "the git wrapper does not turn submodule recursion off"
+fi
 
 # pull: the fast-forward repo.sh sync runs, through the same guarded path.
 W="$(mk_repo pull)"

@@ -68,7 +68,10 @@ case "$1" in
   run) printf '%s\n' "$*" >> "$FAKE_RUN_LOG"; exit 0 ;;
   volume)
     case "$2" in
-      inspect) [[ -f "$FAKE_VOLUMES_DIR/${*: -1}" ]] || exit 1; printf '\n'; exit 0 ;;
+      # A base volume's recorded source, as repo.sh labels it at `add`.
+      inspect) [[ -f "$FAKE_VOLUMES_DIR/${*: -1}" ]] || exit 1
+               case "$*" in *ai-containers.source*) printf 'git@example.invalid:lib.git\n' ;; *) printf '\n' ;; esac
+               exit 0 ;;
       create)  : > "$FAKE_VOLUMES_DIR/${*: -1}"; exit 0 ;;
       *)       exit 0 ;;
     esac ;;
