@@ -573,12 +573,45 @@ if [[ -e "$TMP/lz-PWNED" ]]; then
     && pass "G28 that repository is still protected" \
     || fail "G28 repository not protected (rc=$LAUNCH_RC; stderr: $(tr '\n' ' ' < "$ERR"))"
   grep -qF "WARNING: cannot read the index of $TMP/lz/evil/.git" "$ERR" \
-    && pass "G28 the unreadable index is named: submodules under it are not followed" \
+    && pass "G28 the unreadable index is named: submodules in the unread part are not followed" \
     || fail "G28 no WARNING for the unreadable index (stderr: $(tr '\n' ' ' < "$ERR"))"
 else
   printf 'SKIP: G28 this git (%s) does not lazy-fetch while reading a sparse index\n' "$(git --version)"
 fi
 rm -rf "$TMP/lz" "$TMP/lz-PWNED"
+
+# ── G31: one unreadable tree does not switch off the rest of the index ─────────
+# The agent can make a tree unfetchable on purpose. A submodule the index lists
+# outside it — here under vendor/, which the scan prunes by name — must still be
+# followed. With this index git 2.53 segfaults expanding it and prints nothing,
+# so it is the retry with --sparse that lists the gitlink.
+mkdir -p "$TMP/lz2/evil/a/vendor/sub" "$TMP/lz2/evil/b"
+printf 'a\n' > "$TMP/lz2/evil/a/f"; printf 'b\n' > "$TMP/lz2/evil/b/f"
+printf 'gitdir: ../../../.git/modules/sub\n' > "$TMP/lz2/evil/a/vendor/sub/.git"
+"${G[@]}" -C "$TMP/lz2/evil" init -q && "${G[@]}" -C "$TMP/lz2/evil" add -A \
+  && "${G[@]}" -C "$TMP/lz2/evil" update-index --add --cacheinfo "160000,$(printf '%040d' 1),a/vendor/sub" \
+  && "${G[@]}" -C "$TMP/lz2/evil" commit -qm init \
+  && "${G[@]}" -C "$TMP/lz2/evil" sparse-checkout init --cone --sparse-index \
+  && "${G[@]}" -C "$TMP/lz2/evil" sparse-checkout set a 2>/dev/null \
+  || { printf 'SCAFFOLD-FAILED: cannot create the sparse repository with a gitlink\n'; exit 1; }
+lz_tree="$("${G[@]}" -C "$TMP/lz2/evil" rev-parse HEAD:b)"
+rm -f "$TMP/lz2/evil/.git/objects/${lz_tree:0:2}/${lz_tree:2}"
+"${G[@]}" -C "$TMP/lz2/evil" config core.repositoryformatversion 1
+"${G[@]}" -C "$TMP/lz2/evil" config extensions.partialClone origin
+"${G[@]}" -C "$TMP/lz2/evil" config remote.origin.promisor true
+"${G[@]}" -C "$TMP/lz2/evil" config remote.origin.url "file://$TMP/lz-nowhere"
+if git -C "$TMP/lz2/evil" ls-files --sparse >/dev/null 2>&1; then
+  EXTRA_MOUNTS="$TMP/lz2" launch "$TMP/app"
+  grep -qF "WARNING: cannot read the index of $TMP/lz2/evil/.git" "$ERR" \
+    && pass "G31 the partly unreadable index is named" \
+    || fail "G31 no WARNING for the unreadable index (stderr: $(tr '\n' ' ' < "$ERR"))"
+  has_mount "$TMP/lz2/evil/a/vendor/sub/.git:/workspace/lz2/evil/a/vendor/sub/.git:ro" \
+    && pass "G31 a submodule the index lists outside the unreadable tree is still protected" \
+    || fail "G31 the listed submodule was dropped with the unread tree (git mounts: $(git_mounts | tr '\n' ' '))"
+else
+  printf 'SKIP: G31 this git (%s) has no ls-files --sparse\n' "$(git --version)"
+fi
+rm -rf "$TMP/lz2"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

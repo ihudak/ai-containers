@@ -1257,6 +1257,25 @@ launcher_dirs_in() {
   return 0
 }
 
+# _git_index_records <work-tree> <git-dir> <array-out> [ls-files args...]: the
+# index's `ls-files -s -z` records, read with nothing able to run (see
+# git_dirs_in()), into <array-out>; a read that failed ends with the element
+# `ls-files-failed`. Not by exit status alone: a tree it cannot fetch is an
+# `error:` line, and ls-files goes on to exit 0 with the entries under that tree
+# left out (measured, git 2.34 to 2.53); a git that crashes loses what it had
+# buffered. LC_ALL=C keeps the prefix untranslated. The marker starts with a NUL
+# so a record cut off mid-write cannot absorb it.
+_git_index_records() {
+  # shellcheck disable=SC2178  # nameref: shellcheck does not model `local -n`
+  local -n _gir_out="$3"
+  local err
+  mapfile -d '' -t _gir_out < <({ err="$(LC_ALL=C GIT_NO_LAZY_FETCH=1 GIT_ALLOW_PROTOCOL=none git -C "$1" \
+      -c core.fsmonitor=false -c safe.directory='*' \
+      --git-dir="$2" --work-tree="$1" ls-files -s -z "${@:4}" 2>&1 >&3)" \
+      && [[ $'\n'"$err" != *$'\n'error:* && $'\n'"$err" != *$'\n'fatal:* ]] \
+      || printf '\0ls-files-failed\0'; } 3>&1)
+}
+
 # git_dirs_in <gitdirs-out> <gitfiles-out> <links-out> <unreadable-out> <dir>: appends every
 # git directory below <dir>, matched by CONTENT — a directory holding HEAD and
 # either config and objects/ (a repository's own, bare or not, or a submodule's
@@ -1335,19 +1354,18 @@ git_dirs_in() {
     # stops the fetch (git 2.44+); GIT_ALLOW_PROTOCOL=none refuses every
     # transport on any git — not `-c protocol.allow=never`, which a repository's
     # own protocol.<name>.allow=always overrides. The read then fails, and is
-    # named (tests/test-git-internals-ro.sh G28). Not by exit status alone: a
-    # tree it cannot fetch is an `error:` line, and ls-files goes on to exit 0
-    # with the entries under that tree left out (measured, git 2.34 to 2.53).
-    # LC_ALL=C keeps that prefix untranslated.
-    mapfile -d '' -t links < <({ err="$(LC_ALL=C GIT_NO_LAZY_FETCH=1 GIT_ALLOW_PROTOCOL=none git -C "$top" \
-        -c core.fsmonitor=false -c safe.directory='*' \
-        --git-dir="$g" --work-tree="$top" ls-files -s -z 2>&1 >&3)" \
-        && [[ $'\n'"$err" != *$'\n'error:* && $'\n'"$err" != *$'\n'fatal:* ]] \
-        || printf 'ls-files-failed\0'; } 3>&1)
+    # named (tests/test-git-internals-ro.sh G28). The agent can make one tree
+    # unreadable on purpose, and that must not switch off every other submodule
+    # the index lists, so a failed read is retried with --sparse, which lists a
+    # collapsed directory as one entry instead of expanding it (git 2.36+); a
+    # gitlink inside such a directory is still not seen, hence the WARNING.
+    _git_index_records "$top" "$g" links
     if (( ${#links[@]} )) && [[ "${links[-1]}" == ls-files-failed ]]; then
-      links=()
-      printf 'WARNING: cannot read the index of %s; submodules recorded in it are not followed,\n' "$g" >&2
-      printf '         so a checkout of one that the scan does not reach is not protected.\n' >&2
+      _git_index_records "$top" "$g" links --sparse
+      [[ "${links[-1]:-}" != ls-files-failed ]] || unset 'links[-1]'
+      printf 'WARNING: cannot read the index of %s in full; submodules recorded in the part it\n' "$g" >&2
+      printf '         could not read are not followed, so a checkout of one that the scan does\n' >&2
+      printf '         not reach is not protected.\n' >&2
     fi
     for rec in ${links[@]+"${links[@]}"}; do
       mode="${rec%% *}"; path="${rec#*$'\t'}"
