@@ -380,7 +380,7 @@ launcher_ro_overlay() {
   # agent would keep DAC_OVERRIDE and own the allowlist the root refresh loop
   # reloads (bugs review ENV-4). A root host user lands here by default.
   if (( 10#$uid == 0 || 10#$gid == 0 )); then
-    printf 'ERROR: the agent must not run as root (SANDBOX_UID=%s, SANDBOX_GID=%s).\n' "$uid" "$gid" >&2
+    printf 'ERROR: the agent must not run as root (SANDBOX_UID=%s, SANDBOX_GID=%s).\n' "$(_term "$uid")" "$(_term "$gid")" >&2
     printf '       Launching as root (sudo, a root WSL distro)? Set a non-root identity,\n' >&2
     printf '       e.g. SANDBOX_UID=1000 SANDBOX_GID=1000, for repo.sh as well.\n' >&2
     exit 1
@@ -400,8 +400,8 @@ launcher_ro_overlay() {
     # and cannot be overlaid either (it IS the mount). -r/-x ask the kernel, so
     # ACLs and supplementary groups count.
     if [[ ! -r "$src" || ! -x "$src" ]]; then
-      printf 'ERROR: %s cannot be listed by you, so the launcher cannot check it for\n' "$src" >&2
-      printf '       launchers before mounting it writable at %s.\n' "$dst" >&2
+      printf 'ERROR: %s cannot be listed by you, so the launcher cannot check it for\n' "$(_term "$src")" >&2
+      printf '       launchers before mounting it writable at %s.\n' "$(_term "$dst")" >&2
       printf '       Make it listable (chmod u+rx, if it is yours), or mount it :ro.\n' >&2
       exit 1
     fi
@@ -422,9 +422,9 @@ launcher_ro_overlay() {
     pp="$(cd "${p%/*}/" 2>/dev/null && pwd -P)" || continue
     for i in ${bsrc[@]+"${!bsrc[@]}"}; do
       if [[ "$pp" == "${bsrc[i]}" || "$pp" == "${bsrc[i]}"/* ]]; then
-        printf 'WARNING: %s is a symlink inside a writable mount (%s); the agent can\n' "$p" "${bdst[i]}" >&2
+        printf 'WARNING: %s is a symlink inside a writable mount (%s); the agent can\n' "$(_term "$p")" "$(_term "${bdst[i]}")" >&2
         printf '         replace it, and a later launch through it would run what replaced it.\n' >&2
-        printf '         Launch through the real path instead: %s\n' "$self" >&2
+        printf '         Launch through the real path instead: %s\n' "$(_term "$self")" >&2
         break
       fi
     done
@@ -472,10 +472,13 @@ launcher_ro_overlay() {
   local -A lcand=() lcounted=()
   local lc=0 la
   for i in ${cl[@]+"${!cl[@]}"}; do
-    # Only an overlay that can be MADE covers what is nested in it: a candidate
-    # _mount_representable refuses gets none, and discounting what it holds let
-    # 3,000 launchers under one pass a cap of 5 (review of the batch 1 hotfix; LNCH-4).
-    if [[ "${cl[i]}" != "${csrc[i]}" ]] && _mount_representable "${cl[i]}" "${cat[i]}"; then lcand[${cat[i]}]=1; fi
+    # Only an overlay that can be MADE covers what is nested in it, decided by the
+    # test the overlay loop uses: discounting what an unmountable one held let
+    # 3,000 launchers under one pass a cap of 5 (review of the batch 1 hotfix,
+    # LNCH-4; a pin on the way counts too, security review of 019392c).
+    if [[ "${cl[i]}" != "${csrc[i]}" ]] && _overlay_buildable "${cl[i]}" "${cat[i]}" "${csrc[i]}" "${cdst[i]}"; then
+      lcand[${cat[i]}]=1
+    fi
   done
   for l in ${cat[@]+"${cat[@]}"}; do
     [[ -z "${lcounted[$l]:-}" ]] || continue
@@ -513,7 +516,7 @@ launcher_ro_overlay() {
     for x in "${scan[@]}"; do
       if [[ "${bsrc[i]}" != "$x"/* ]]; then continue; fi
       case "${bsrc[i]#"$x"/}" in .agent-blocked|.agent-discovery) continue ;; esac
-      printf 'NOTE: %s, part of launcher %s, is mounted writable at %s;\n' "${bsrc[i]}" "$x" "${bdst[i]}" >&2
+      printf 'NOTE: %s, part of launcher %s, is mounted writable at %s;\n' "$(_term "${bsrc[i]}")" "$(_term "$x")" "$(_term "${bdst[i]}")" >&2
       printf '      what changes there the host reads at the next launch.\n' >&2
       break
     done
@@ -534,7 +537,7 @@ launcher_ro_overlay() {
       if [[ -n "$skip" ]]; then continue; fi
       if [[ "$l" == "$src" ]]; then
         seen[$at]=1
-        printf 'NOTE: %s holds a launcher and stays writable at %s;\n' "$l" "$dst" >&2
+        printf 'NOTE: %s holds a launcher and stays writable at %s;\n' "$(_term "$l")" "$(_term "$dst")" >&2
         printf '      what changes there runs on the host at the next launch.\n' >&2
         continue
       fi
@@ -548,12 +551,9 @@ launcher_ro_overlay() {
         if [[ -z "${seen[$pin]:-}" ]]; then psrc+=("$path"); pdst+=("$pin"); fi
       done
       ok=1
-      if ! _mount_representable "$l" "$at"; then ok=""; fi
-      for k in ${psrc[@]+"${!psrc[@]}"}; do
-        if [[ -n "$ok" ]] && ! _mount_representable "${psrc[k]}" "${pdst[k]}"; then ok=""; fi
-      done
+      _overlay_buildable "$l" "$at" "$src" "$dst" || ok=""
       if [[ -z "$ok" ]]; then
-        printf 'WARNING: cannot protect %s: docker cannot be handed that name intact,\n' "$l" >&2
+        printf 'WARNING: cannot protect %s: docker cannot be handed that name intact,\n' "$(_term "$l")" >&2
         printf '         so it stays writable. Rename it on the host.\n' >&2
         continue
       fi
@@ -567,15 +567,15 @@ launcher_ro_overlay() {
       seen[$at]=1
       ro_dsts+=("$at")
       if [[ "$kind" == unreadable ]]; then
-        printf 'WARNING: %s cannot be listed by you, so it cannot be checked for\n' "$l" >&2
-        printf '         launchers; it is mounted read-only at %s.\n' "$at" >&2
+        printf 'WARNING: %s cannot be listed by you, so it cannot be checked for\n' "$(_term "$l")" >&2
+        printf '         launchers; it is mounted read-only at %s.\n' "$(_term "$at")" >&2
         if [[ -O "$l" ]]; then
           printf '         Restore: chmod u+rx %q\n' "$l" >&2
         else
           printf '         It is not yours: ask its owner, or mount it :ro yourself.\n' >&2
         fi
       else
-        printf 'READ-ONLY: %s  (launcher files; edit them on the host)\n' "$at" >&2
+        printf 'READ-ONLY: %s  (launcher files; edit them on the host)\n' "$(_term "$at")" >&2
       fi
     done
   done
@@ -622,7 +622,7 @@ launcher_ro_overlay() {
     src="${bsrc[i]}"; dst="${bdst[i]}"
     if [[ -n "${_git_skip_root:-}" && ( "$src" == "$_git_skip_root" || "$src" == "$_git_skip_root"/* ) ]]; then continue; fi
     if [[ "$src" == */.git/* ]]; then
-      printf 'NOTE: %s lies inside a git directory and is mounted writable at %s;\n' "$src" "$dst" >&2
+      printf 'NOTE: %s lies inside a git directory and is mounted writable at %s;\n' "$(_term "$src")" "$(_term "$dst")" >&2
       printf '      your host'\''s git may run what changes there.\n' >&2
     fi
     gdirs=(); gfiles=(); glinks=(); gunr=()
@@ -633,7 +633,7 @@ launcher_ro_overlay() {
         if [[ "$at" == "$r" || "$at" == "$r"/* ]]; then skip=1; break; fi
       done
       if [[ -n "$skip" ]]; then continue; fi
-      printf 'WARNING: %s is a symlink inside a writable mount (%s); the agent can\n' "$f" "$dst" >&2
+      printf 'WARNING: %s is a symlink inside a writable mount (%s); the agent can\n' "$(_term "$f")" "$(_term "$dst")" >&2
       printf '         replace it with a git directory of its own, and your host'\''s git would\n' >&2
       printf '         run that one'\''s hooks there. Replace the link with what it names.\n' >&2
     done
@@ -699,7 +699,7 @@ launcher_ro_overlay() {
           # configuration and hooks, and git never writes one here: refuse, rather
           # than mount the redirect read-only and launch.
           if [[ -f "$g/commondir" && ! -L "$g/commondir" && "$(cat "$g/commondir" 2>/dev/null)" != "./" ]]; then
-            printf 'ERROR: %s sends git to %q for this repository'\''s\n' "$g/commondir" "$(head -c 200 "$g/commondir" 2>/dev/null)" >&2
+            printf 'ERROR: %s sends git to %q for this repository'\''s\n' "$(_term "$g/commondir")" "$(head -c 200 "$g/commondir" 2>/dev/null)" >&2
             printf '       configuration and hooks, and git never writes one in a repository'\''s own git\n' >&2
             printf '       directory. If you did not make it, remove it on the host and launch again.\n' >&2
             exit 1
@@ -716,8 +716,8 @@ launcher_ro_overlay() {
             if (( ${#ek[@]} )); then
               eks=""
               for e in "${ek[@]}"; do eks+="${eks:+, }$e"; done
-              printf 'NOTE: %s is protected for the first time, and its config already sets\n' "$at" >&2
-              printf '      what makes your host'\''s git run programs: %s.\n' "$eks" >&2
+              printf 'NOTE: %s is protected for the first time, and its config already sets\n' "$(_term "$at")" >&2
+              printf '      what makes your host'\''s git run programs: %s.\n' "$(_term "$eks")" >&2
               printf '      If you did not set them yourself, review them on the host:\n' >&2
               for f in "$g/config" "$g/config.worktree"; do
                 if [[ -f "$f" ]]; then printf '        git config --file %q --list\n' "$f" >&2; fi
@@ -738,8 +738,8 @@ launcher_ro_overlay() {
                 if [[ -f "$g/hooks/$e" && -x "$g/hooks/$e" ]]; then eks+="${eks:+, }$e"; fi
               done
               if [[ -n "$eks" ]]; then
-                printf 'NOTE: %s is protected for the first time, and its hooks/ already\n' "$at" >&2
-                printf '      holds hooks your host'\''s git runs: %s.\n' "$eks" >&2
+                printf 'NOTE: %s is protected for the first time, and its hooks/ already\n' "$(_term "$at")" >&2
+                printf '      holds hooks your host'\''s git runs: %s.\n' "$(_term "$eks")" >&2
                 printf '      If you did not put them there, review them on the host:\n' >&2
                 printf '        ls -l %q\n' "$g/hooks" >&2
               fi
@@ -755,12 +755,12 @@ launcher_ro_overlay() {
         fi
         for f in config config.worktree commondir hooks; do
           if [[ -L "$g/$f" ]]; then
-            printf 'WARNING: %s is a symlink, which cannot be mounted read-only in place;\n' "$g/$f" >&2
+            printf 'WARNING: %s is a symlink, which cannot be mounted read-only in place;\n' "$(_term "$g/$f")" >&2
             printf '         what it leads to is what your host'\''s git reads. Replace the link with it.\n' >&2
           elif [[ -e "$g/$f" ]]; then
             gro+=("$g/$f")
           elif [[ "$f" == hooks || "$f" == commondir ]] && [[ -d "$g/objects" ]]; then
-            printf 'WARNING: %s has no %s and one could not be made; the agent could make it.\n' "$g" "$f" >&2
+            printf 'WARNING: %s has no %s and one could not be made; the agent could make it.\n' "$(_term "$g")" "$(_term "$f")" >&2
           fi
         done
       fi
@@ -783,7 +783,7 @@ launcher_ro_overlay() {
         if ! _mount_representable "$f" "$dst${f#"$src"}"; then ok=""; fi
       done
       if [[ -z "$ok" ]]; then
-        printf 'WARNING: cannot protect the git internals of %s: docker cannot be handed\n' "$g" >&2
+        printf 'WARNING: cannot protect the git internals of %s: docker cannot be handed\n' "$(_term "$g")" >&2
         printf '         that name intact, so they stay writable. Rename it on the host.\n' >&2
         continue
       fi
@@ -802,13 +802,13 @@ launcher_ro_overlay() {
         if [[ "$f" != "$g" ]]; then what+="${what:+, }${f##*/}"; fi
       done
       if [[ "$kind" == unr ]]; then
-        printf 'WARNING: %s cannot be listed by you, so what it holds cannot be\n' "$g" >&2
-        printf '         protected one by one; it is mounted read-only whole at %s.\n' "$at" >&2
+        printf 'WARNING: %s cannot be listed by you, so what it holds cannot be\n' "$(_term "$g")" >&2
+        printf '         protected one by one; it is mounted read-only whole at %s.\n' "$(_term "$at")" >&2
         printf '         Restore: chmod u+rx %q\n' "$g" >&2
       elif [[ "$kind" == file ]]; then
-        printf 'READ-ONLY: %s  (names the git directory your host'\''s git uses here)\n' "$at" >&2
+        printf 'READ-ONLY: %s  (names the git directory your host'\''s git uses here)\n' "$(_term "$at")" >&2
       else
-        printf 'READ-ONLY: %s: %s  (what your host'\''s git runs; change them on the host)\n' "$at" "$what" >&2
+        printf 'READ-ONLY: %s: %s  (what your host'\''s git runs; change them on the host)\n' "$(_term "$at")" "$(_term "$what")" >&2
         pgd+=("$g"); pga+=("$at"); pgc+=("$cfg")
       fi
     done
@@ -844,7 +844,7 @@ launcher_ro_overlay() {
           if [[ "$x" == "$r" || "$x" == "$r"/* ]]; then safe=1; break; fi
         done
         if [[ -n "$safe" ]]; then continue; fi
-        printf 'NOTE: %s runs its git hooks from %s (core.hooksPath), which the agent\n' "$at" "$x" >&2
+        printf 'NOTE: %s runs its git hooks from %s (core.hooksPath), which the agent\n' "$(_term "$at")" "$(_term "$x")" >&2
         printf '      can change; hook managers keep those scripts gitignored (husky'\''s .husky/_),\n' >&2
         printf '      so a change need not show in git status. Check them before a git commit on the host.\n' >&2
         break
@@ -860,11 +860,11 @@ launcher_ro_overlay() {
         walk=()
         mapfile -d '' -t walk < <(_link_walk "$f")
         if ! _walk_exposed how q w "" ${walk[@]+"${walk[@]}"}; then continue; fi
-        printf 'NOTE: %s/hooks/%s, a hook your host'\''s git runs, is a link the agent can redirect:\n' "$at" "$e" >&2
+        printf 'NOTE: %s/hooks/%s, a hook your host'\''s git runs, is a link the agent can redirect:\n' "$(_term "$at")" "$(_term "$e")" >&2
         case "$how" in
-          change)  printf '      it can change %s (at %s), which the hook runs.\n' "$q" "$w" >&2 ;;
-          repoint) printf '      it can repoint %s (at %s), a link on its way.\n' "$q" "$w" >&2 ;;
-          replace) printf '      it can replace %s (at %s) with a link; the way steps out of it (..).\n' "$q" "$w" >&2 ;;
+          change)  printf '      it can change %s (at %s), which the hook runs.\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
+          repoint) printf '      it can repoint %s (at %s), a link on its way.\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
+          replace) printf '      it can replace %s (at %s) with a link; the way steps out of it (..).\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
         esac
         printf '      Check it before a git commit on the host, or replace the link with what it names.\n' >&2
       done
@@ -926,14 +926,14 @@ launcher_ro_overlay() {
           continue
         fi
         if [[ "$icur" == "$f" ]]; then
-          printf 'WARNING: %q includes %q (%s), which the agent can redirect:\n' "$at/${f##*/}" "$ip" "$ik" >&2
+          printf 'WARNING: %q includes %q (%s), which the agent can redirect:\n' "$(_term "$at/${f##*/}")" "$(_term "$ip")" "$(_term "$ik")" >&2
         else
-          printf 'WARNING: %q includes %q (%s in %q), which the agent can redirect:\n' "$at/${f##*/}" "$ip" "$ik" "$icur" >&2
+          printf 'WARNING: %q includes %q (%s in %q), which the agent can redirect:\n' "$(_term "$at/${f##*/}")" "$(_term "$ip")" "$(_term "$ik")" "$(_term "$icur")" >&2
         fi
         case "$how" in
-          change)  printf '         it can write %s (at %s), which git reads as part of that config.\n' "$q" "$w" >&2 ;;
-          repoint) printf '         it can repoint %s (at %s), a link on its way.\n' "$q" "$w" >&2 ;;
-          replace) printf '         it can replace %s (at %s) with a link; the way steps out of it (..).\n' "$q" "$w" >&2 ;;
+          change)  printf '         it can write %s (at %s), which git reads as part of that config.\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
+          repoint) printf '         it can repoint %s (at %s), a link on its way.\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
+          replace) printf '         it can replace %s (at %s) with a link; the way steps out of it (..).\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
         esac
         printf '         It can set what your host'\''s git runs. Move what it sets into %s on the host.\n' "${f##*/}" >&2
       done
@@ -980,7 +980,7 @@ launcher_ro_overlay() {
       if [[ -n "$inner" ]]; then continue; fi
       if [[ "$x" == "$self" ]]; then
         if (( ++nl > 200 )); then
-          printf 'NOTE: %s holds more than 200 symlinks; only the first 200 were checked.\n' "$x" >&2
+          printf 'NOTE: %s holds more than 200 symlinks; only the first 200 were checked.\n' "$(_term "$x")" >&2
           break
         fi
       elif (( ++no > 200 )); then
@@ -993,11 +993,11 @@ launcher_ro_overlay() {
       # directory, say) stays home — read-only with the launcher, or the working
       # dir someone is deliberately editing.
       if ! _walk_exposed how q w "$x" ${walk[@]+"${walk[@]}"}; then continue; fi
-      printf 'WARNING: launcher link %s leads somewhere the agent can change:\n' "$f" >&2
+      printf 'WARNING: launcher link %s leads somewhere the agent can change:\n' "$(_term "$f")" >&2
       case "$how" in
-        change)  printf '         it can change %s (at %s), which the host reads through it.\n' "$q" "$w" >&2 ;;
-        repoint) printf '         it can repoint %s (at %s), a link on its way.\n' "$q" "$w" >&2 ;;
-        replace) printf '         it can replace %s (at %s) with a link; the way steps out of it (..).\n' "$q" "$w" >&2 ;;
+        change)  printf '         it can change %s (at %s), which the host reads through it.\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
+        repoint) printf '         it can repoint %s (at %s), a link on its way.\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
+        replace) printf '         it can replace %s (at %s) with a link; the way steps out of it (..).\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
       esac
       printf '         Replace the link with what it names, or mount that directory :ro.\n' >&2
     done
@@ -1083,6 +1083,27 @@ _bind_mount_arg() {
 # host directory. And not, through `--mount`, a value ending in whitespace
 # (docker refuses it — Go's unicode.IsSpace, so NBSP and U+3000 too) or holding
 # a CR (its CSV reader folds CRLF to LF).
+# _overlay_buildable <launcher> <its destination> <mount source> <mount destination>:
+# can docker be handed the overlay and every pin between the mount root and it,
+# intact? One test for the overlay loop and for SANDBOX_LAUNCHER_MAX's count, so
+# the count cannot credit an overlay the loop will not make.
+# _term <text>: text a scan found — a name the agent chose — made safe to print on
+# the host's terminal: control characters become `?`, so an ESC ] 0 ; … BEL cannot
+# retitle the window or cursor moves rewrite the warnings around it (bugs review
+# LNCH-3). Non-ASCII names stay readable, unlike %q.
+_term() { local LC_ALL=C; printf '%s' "${1//[[:cntrl:]]/?}"; }
+
+_overlay_buildable() {
+  local rest path pin
+  _mount_representable "$1" "$2" || return 1
+  rest="${1#"$3"/}"; path="$3"; pin="$4"
+  while [[ "$rest" == */* ]]; do
+    path="$path/${rest%%/*}"; pin="$pin/${rest%%/*}"; rest="${rest#*/}"
+    _mount_representable "$path" "$pin" || return 1
+  done
+  return 0
+}
+
 _mount_representable() {
   local v w
   for v in "$1" "$2"; do

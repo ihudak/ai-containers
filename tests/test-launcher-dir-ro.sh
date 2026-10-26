@@ -858,6 +858,16 @@ SANDBOX_LAUNCHER_MAX=5 EXTRA_MOUNTS="$BAD47" launch "$LAUNCHER" "$TMP/app"
   && pass "T46 launchers nested in one that cannot be overlaid count toward the cap" \
   || fail "T46 an unrepresentable launcher still discounts what it holds (rc=$LAUNCH_RC)"
 rm -rf "$BAD47"
+# The same when only a PIN on the way cannot be handed to docker (a parent named
+# `x: `): the overlay loop refuses the whole candidate, so counting must too
+# (security review of 019392c).
+PIN47="$TMP/pin47"; mkdir -p "$PIN47/x: "; mk_launcher "$PIN47/x: /p"
+for n in $(seq 1 8); do mk_launcher "$PIN47/x: /p/.ai-containers/n$n"; done
+SANDBOX_LAUNCHER_MAX=5 EXTRA_MOUNTS="$PIN47" launch "$LAUNCHER" "$TMP/app"
+[[ "$LAUNCH_RC" != 0 ]] && grep -qF 'ERROR: the writable mounts hold more than 5 launchers' "$ERR" \
+  && pass "T46 … and nested in one whose pins cannot be made" \
+  || fail "T46 an unmountable pin still discounts what the launcher holds (rc=$LAUNCH_RC)"
+rm -rf "$PIN47"
 if [[ "$(id -u)" != 0 ]]; then
   UNR="$TMP/unr46"
   for n in $(seq 1 51); do mkdir -p "$UNR/d$n"; chmod 000 "$UNR/d$n"; done
@@ -914,6 +924,18 @@ SANDBOX_LAUNCHER_MAX=2 EXTRA_MOUNTS="$ROOT48" launch "$LAUNCHER" "$TMP/app"
   && pass "T48 launchers under a mount-root launcher, which is not overlaid, each count" \
   || fail "T48 mount-root launcher hid its nested ones from the limit (rc=$LAUNCH_RC; stderr: $(grep -E 'ERROR|NOTE' "$ERR" | tr '\n' ' '))"
 rm -rf "$ROOT48"
+
+# ── T49: names the agent chose reach your terminal without their escapes ──────
+# The refusal listings used %q (T46); every other launcher message printed a
+# scanned path raw, so a name with ESC ] 0 ; … BEL retitled the terminal, and
+# cursor movement could rewrite the warnings around it (LNCH-3).
+ESC48="$TMP/esc48"; mk_launcher "$ESC48/p"; mkdir -p "$ESC48/shared"; : > "$ESC48/shared/real.conf"
+ln -s ../../shared/real.conf "$ESC48/p/.ai-containers/x"$'\e]0;pwned48\a'".conf"
+EXTRA_MOUNTS="$ESC48" launch "$LAUNCHER" "$TMP/app"
+grep -q 'pwned48' "$ERR" && ! grep -q $'\e' "$ERR" && ! grep -q $'\a' "$ERR" \
+  && pass "T49 a planted link name in a launcher WARNING carries no raw control characters" \
+  || fail "T49 raw control characters reached the terminal: $(grep -a pwned48 "$ERR" | cat -v | head -2 | tr '\n' ' ')"
+rm -rf "$ESC48"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
