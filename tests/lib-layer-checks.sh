@@ -348,15 +348,16 @@ _wf_it_awk() {  # $1=yaml
     # scan() reads one shell line. guarded: whether the shell may skip the
     # invocation — something other than `bash`, `env` or assignments before it
     # on its line, or an earlier line of the same value that may change what
-    # runs next: a compound command (if, case, a loop), `&&` or `||`, an `exit`
-    # or `return`, a function definition, or a line ending in `|`, `\` or `{`.
+    # runs next: a compound command (if, case, a loop), `&&` or `||`, an `exit`,
+    # `return` or `exec`, a function definition, a heredoc (`<<`: what follows
+    # is text), or a line ending in `|`, `\` or `{`.
     # ctl() records the second after each line is scanned. It is deliberately
     # coarse: a closed `if … fi`, `timeout 600 run.sh`, or a keyword inside an
     # echo also count, and are refused loudly rather than read.
     function ctl(line) {
       if (line ~ /^[[:space:]]*#/) return
-      if (line ~ /(^|[[:space:];&|(])(if|then|else|elif|case|for|while|until|do|select|exit|return|function)([[:space:];]|$)/ ||
-          line ~ /&&|[|][|]/ || line ~ /[A-Za-z_][A-Za-z0-9_]*[[:space:]]*[(][)]/ ||
+      if (line ~ /(^|[[:space:];&|(])(if|then|else|elif|case|for|while|until|do|select|exit|return|exec|function)([[:space:];]|$)/ ||
+          line ~ /&&|[|][|]|<</ || line ~ /[A-Za-z_][A-Za-z0-9_]*[[:space:]]*[(][)]/ ||
           line ~ /([|]|\\|[{])[[:space:]]*$/) ctlseen = 1
     }
     function scan(line,   p, a, pre, g) {
