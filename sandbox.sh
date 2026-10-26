@@ -878,7 +878,10 @@ launcher_ro_overlay() {
     local -A iseen=()
     for f in "$g/config" "$g/config.worktree"; do
       if [[ ! -f "$f" || -L "$f" ]]; then continue; fi
-      if [[ "$f" == */config.worktree ]] && ! _git_config_bool "$g/config" extensions.worktreeConfig; then continue; fi
+      # From the config git reads extensions from: the common one, for a linked
+      # worktree's git directory, which has none of its own (security review of
+      # 1978dff). Unresolved, it is walked.
+      if [[ "$f" == */config.worktree && -n "$cfg" ]] && ! _git_config_bool "$cfg" extensions.worktreeConfig; then continue; fi
       local -a ifile=("$f") idep=(0)
       local ii=0 icur itgt ikey inr=0 ient=0 icut="" icomp
       iseen=()
@@ -1400,9 +1403,15 @@ _git_index_read() {
   # LC_ALL=C keeps git's error:/fatal: prefixes untranslated (d39480b). The
   # marker starts with a NUL: a git that dies mid-record, printing nothing on
   # stderr, would otherwise glue it onto the cut-off record and pass (G39).
+  # Bounded where timeout(1) exists: the FIFO checks above are check-then-use, and
+  # a concurrent container could swap the index for a FIFO after them, which
+  # blocked the launch for ever (review of the batch 1 hotfix; GIT-4, G44). A
+  # timeout is a read that failed. macOS has no timeout(1); there it is unbounded.
+  local _gir_t=()
+  command -v timeout >/dev/null 2>&1 && _gir_t=(timeout -k 2 10)
   mapfile -d '' -t _gir_out < <(LC_ALL=C GIT_DIR="$_gir_tmp/$fmt/.git" GIT_INDEX_FILE="$g/index" \
       GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_NO_LAZY_FETCH=1 GIT_ALLOW_PROTOCOL=none \
-      git -C "$top" -c core.fsmonitor=false --work-tree="$top" ls-files -s -z 2>"$_gir_tmp/err" \
+      ${_gir_t[@]+"${_gir_t[@]}"} git -C "$top" -c core.fsmonitor=false --work-tree="$top" ls-files -s -z 2>"$_gir_tmp/err" \
       || printf '\0ls-files-failed\0')
   if (( ${#_gir_out[@]} )) && [[ "${_gir_out[-1]}" == ls-files-failed ]]; then _gir_out=(); return 1; fi
   if grep -qE '^(error|fatal):' "$_gir_tmp/err" 2>/dev/null; then _gir_out=(); return 1; fi

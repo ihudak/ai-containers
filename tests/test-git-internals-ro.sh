@@ -770,6 +770,21 @@ grep -qF "w42/.git/config.worktree includes" "$ERR" \
   && pass "G42 … and is, once extensions.worktreeConfig is on" \
   || fail "G42 config.worktree not walked with worktreeConfig on (stderr: $(grep -F w42 "$ERR" | head -2 | tr '\n' ' '))"
 rm -rf "$PROJ/w42"
+# …and for a LINKED worktree git reads the extension from the common config, not
+# from .git/worktrees/<name>/config, which it does not have (security review of
+# 1978dff): its config.worktree is walked when the main repository turns it on.
+mkdir -p "$PROJ/m42" && "${G[@]}" -C "$PROJ/m42" init -q && printf 'x\n' > "$PROJ/m42/f" \
+  && "${G[@]}" -C "$PROJ/m42" add f && "${G[@]}" -C "$PROJ/m42" commit -qm init \
+  && "${G[@]}" -C "$PROJ/m42" worktree add -q "$PROJ/m42-wt" \
+  && "${G[@]}" -C "$PROJ/m42" config extensions.worktreeConfig true \
+  || { printf 'SCAFFOLD-FAILED: cannot create the G42 worktree\n'; exit 1; }
+wtgd="$(ls -d "$PROJ/m42/.git/worktrees"/* | head -1)"
+"${G[@]}" config --file "$wtgd/config.worktree" include.path "$PROJ/m42-evil.gitconfig"
+launch ..
+grep -qF "$(basename "$wtgd")/config.worktree includes" "$ERR" \
+  && pass "G42 a linked worktree's config.worktree is walked when the common config turns it on" \
+  || fail "G42 linked worktree's config.worktree skipped (stderr: $(grep -F m42 "$ERR" | head -2 | tr '\n' ' '))"
+rm -rf "$PROJ/m42" "$PROJ/m42-wt"
 
 # ── G43: a gitlink whose checkout is not where the index says is named ───────
 # Skipped, rightly — a link on the way could send the protection elsewhere — but
@@ -783,6 +798,33 @@ grep -qF "submodule sub of $PROJ/l43/.git is not where its index says" "$ERR" \
   && pass "G43 a gitlink reached through a link is skipped and named" \
   || fail "G43 gitlink through a link skipped silently ($(grep -F l43 "$ERR" | head -2 | tr '\n' ' '))"
 rm -rf "$PROJ/l43"
+
+# ── G44: an index read that hangs is bounded ────────────────────────────────
+# The FIFO checks are check-then-use: a concurrent container can swap the index
+# or a sharedindex file for a FIFO after them, and ls-files then blocked the
+# launch for ever (GIT-4). The read runs under timeout(1) where there is one;
+# macOS has none, so there it stays unbounded.
+if command -v timeout >/dev/null 2>&1; then
+  mkdir -p "$TMP/hang/r" "$TMP/bin44"
+  "${G[@]}" -C "$TMP/hang/r" init -q && printf 'x\n' > "$TMP/hang/r/f" && "${G[@]}" -C "$TMP/hang/r" add f \
+    || { printf 'SCAFFOLD-FAILED: cannot create the G44 repository\n'; exit 1; }
+  real_git="$(command -v git)"
+  cat > "$TMP/bin44/git" <<EOF44
+#!/usr/bin/env bash
+for a in "\$@"; do [[ "\$a" == ls-files ]] && exec sleep 120; done
+exec "$real_git" "\$@"
+EOF44
+  chmod +x "$TMP/bin44/git"
+  t44=$SECONDS
+  PATH="$TMP/bin44:$PATH" EXTRA_MOUNTS="$TMP/hang" launch "$TMP/app"
+  t44=$((SECONDS - t44))
+  (( t44 < 60 )) && grep -qF "WARNING: cannot read the index of $TMP/hang/r/.git" "$ERR" \
+    && pass "G44 an index read that hangs is cut off and named (${t44}s)" \
+    || fail "G44 a hanging index read held the launch ${t44}s (stderr: $(grep -F hang/r "$ERR" | head -1))"
+  rm -rf "$TMP/hang" "$TMP/bin44"
+else
+  printf 'SKIP: G44 needs timeout(1)\n'
+fi
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
