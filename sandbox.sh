@@ -1350,11 +1350,13 @@ _git_index_read() {
     GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
       git init -q --object-format="$fmt" "$_gir_tmp/$fmt" >/dev/null 2>&1 || return 1
   fi
-  # LC_ALL=C keeps git's error:/fatal: prefixes untranslated (d39480b).
+  # LC_ALL=C keeps git's error:/fatal: prefixes untranslated (d39480b). The
+  # marker starts with a NUL: a git that dies mid-record, printing nothing on
+  # stderr, would otherwise glue it onto the cut-off record and pass (G39).
   mapfile -d '' -t _gir_out < <(LC_ALL=C GIT_DIR="$_gir_tmp/$fmt/.git" GIT_INDEX_FILE="$g/index" \
       GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_NO_LAZY_FETCH=1 GIT_ALLOW_PROTOCOL=none \
       git -C "$top" -c core.fsmonitor=false --work-tree="$top" ls-files -s -z 2>"$_gir_tmp/err" \
-      || printf 'ls-files-failed\0')
+      || printf '\0ls-files-failed\0')
   if (( ${#_gir_out[@]} )) && [[ "${_gir_out[-1]}" == ls-files-failed ]]; then _gir_out=(); return 1; fi
   if grep -qE '^(error|fatal):' "$_gir_tmp/err" 2>/dev/null; then _gir_out=(); return 1; fi
   return 0

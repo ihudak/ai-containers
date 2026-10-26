@@ -706,5 +706,28 @@ launch_timed 120
   || fail "G38 include entries (rc=$LAUNCH_RC; ${LAUNCH_S}s; stderr: $(grep -F many38 "$ERR" | head -2 | tr '\n' ' '))"
 rm -rf "$PROJ/many38"
 
+# ── G39: a git that dies mid-record is still named ────────────────────────────
+# A git that crashes loses what it had buffered, and may stop in the middle of a
+# record and print nothing on stderr (no error:/fatal: line). The failure marker
+# must not be glued onto that cut-off record, or the read passes for complete.
+mkdir -p "$TMP/cut/r" "$TMP/bin39"
+"${G[@]}" -C "$TMP/cut/r" init -q && printf 'x\n' > "$TMP/cut/r/f" \
+  && "${G[@]}" -C "$TMP/cut/r" add f && "${G[@]}" -C "$TMP/cut/r" commit -qm init \
+  || { printf 'SCAFFOLD-FAILED: cannot create the G39 repository\n'; exit 1; }
+real_git="$(command -v git)"
+cat > "$TMP/bin39/git" <<EOF39
+#!/usr/bin/env bash
+for a in "\$@"; do
+  [[ "\$a" == ls-files ]] && { printf '160000 %040d 0\tvendor/cu' 1; exit 139; }
+done
+exec "$real_git" "\$@"
+EOF39
+chmod +x "$TMP/bin39/git"
+PATH="$TMP/bin39:$PATH" EXTRA_MOUNTS="$TMP/cut" launch "$TMP/app"
+grep -qF "WARNING: cannot read the index of $TMP/cut/r/.git" "$ERR" \
+  && pass "G39 an index read that died mid-record, with nothing on stderr, is named" \
+  || fail "G39 a cut-off read passed for complete (rc=$LAUNCH_RC; stderr: $(tr '\n' ' ' < "$ERR"))"
+rm -rf "$TMP/cut" "$TMP/bin39"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
