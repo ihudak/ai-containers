@@ -145,7 +145,8 @@ awk_interval_lines() {  # $1=file → lineno:text for each line whose awk progra
         }
         i++
       }
-      if (prog ~ /\{[0-9]+(,[0-9]*)?\}/) print NR ":" $0
+      # Not after a `$`: `${1}` in double-quoted text is a shell parameter.
+      if (prog ~ /(^|[^$])\{[0-9]+(,[0-9]*)?\}/) print NR ":" $0
       if (!inq && live && line ~ /\\$/) cont = 1
       if (!inq) dq = 0
     }

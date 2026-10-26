@@ -555,6 +555,16 @@ guarded_case "a shell if on an earlier line is refused" "Multi" \
   "$(printf '|\n          if [ -n "$X" ]; then\n            ./tests/integration/run.sh --tags a\n          fi')"
 guarded_case "a condition continued onto the invocation's line is refused" "Cont" \
   "$(printf '|\n          [ -n "$X" ] ||\n            ./tests/integration/run.sh --tags a')"
+# An earlier line that may end the script, or that defines a function the
+# invocation sits in, is the same thing in another spelling (second review).
+guarded_case "|| exit on an earlier line is refused" "OrExit" \
+  "$(printf '|\n          [ "${{ github.event_name }}" = workflow_dispatch ] || exit 0\n          ./tests/integration/run.sh --tags a')"
+guarded_case "&& exit on an earlier line is refused" "AndExit" \
+  "$(printf '|\n          test "$E" != x && exit 0\n          ./tests/integration/run.sh --tags a')"
+guarded_case "a bare exit on an earlier line is refused" "Exit" \
+  "$(printf '|\n          echo skipped; exit 0\n          ./tests/integration/run.sh --tags a')"
+guarded_case "an invocation inside a function body is refused" "Func" \
+  "$(printf '|\n          go() {\n            ./tests/integration/run.sh --tags a\n          }')"
 printf 'on:\n  schedule:\njobs:\n  gate:\n    if: github.event_name == '"'"'workflow_dispatch'"'"'\n    runs-on: x\n    steps:\n      - run: echo gate\n  j:\n    needs: gate\n    runs-on: x\n    steps:\n      - name: After gate\n        run: ./tests/integration/run.sh --tags a\n' > "$TMP/it-needs.yml"
 fails_naming "a job with needs: is refused, naming it" "job 'j'" wf_it_selections "$TMP/it-needs.yml" schedule
 # The dispatch-only shape is still fine: its step if: skips it first.

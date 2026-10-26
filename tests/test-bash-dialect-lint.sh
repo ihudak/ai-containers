@@ -199,6 +199,11 @@ vector "awk-interval: action braces are not intervals" "awk '{ print ${DOLLAR}1 
 # linter's accepted false positive, in the safe direction.
 vector "awk-interval: a double-quoted program"         "awk \"/^[0-9]${LB}3}-/\" f"            1
 vector "awk-interval: a -v value used as a regex"       "awk -v re=\"^[0-9]${LB}3}\" '${DOLLAR}0 ~ re' f" 1
+# …but a braced shell parameter in that text is not an interval.
+vector "awk-interval: \${1} in a -v value is a shell parameter, not an interval" \
+  "awk -v key=\"${DOLLAR}${LB}1}\" '${DOLLAR}1 == key' \"${DOLLAR}${LB}2}\""                 0
+vector "awk-interval: \${3} in a double-quoted path is a shell parameter" \
+  "awk '{print}' \"${DOLLAR}dir/${DOLLAR}${LB}3}.txt\""                                         0
 vector "awk-interval: a double-quoted operand is read too (accepted false positive)" \
   "awk '{print}' \"a${LB}2}\""                                                                1
 vector "awk-interval: a full-line shell comment"       "# awk '/x${LB}2}/' f"                     0

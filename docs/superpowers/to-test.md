@@ -88,10 +88,12 @@ docker run --rm -v "$PWD:/w:ro" -w /w ubuntu:22.04 bash -c '
 
 - [ ] **demonstrate-needs-rebuild.sh cleans up every variant's image when
   interrupted** (TST-7). Run `bash tests/integration/demonstrate-needs-rebuild.sh 785`
-  (the services variant), press Ctrl-C while the image builds, then run
-  `docker images --format '{{.Repository}}' | grep '^ai-sandbox-it'`. Expect no
-  `ai-sandbox-it-services` left, and none of the other variant tags. The
-  hermetic test checks this with a stub docker only.
+  (the services variant). Wait until the build has FINISHED and the case is
+  running: the tag exists only then, so an interrupt during the build passes
+  with the old three-tag cleanup too. Confirm `docker image inspect
+  ai-sandbox-it-services` succeeds, press Ctrl-C, and run it again: it must now
+  fail ("No such image"). The hermetic test checks this with a stub docker
+  only.
 
 ### Root (the CI floor container, `verify-on-host.sh`'s floor container)
 
