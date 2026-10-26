@@ -115,26 +115,32 @@ env_key_machine_only() {
 }
 
 # env_value_portable <key> <value>: the portable keys whose VALUE can still reach
-# past the project — the `host` group mounts your real $HOME dotfiles, and a
-# working dir is bind-mounted writable — are held inside it: SANDBOX_WORKDIR is
-# `@<repo>` or a relative path that stays in the project (`..` is its root).
+# past the project are held inside it. The `host` group mounts your real $HOME
+# dotfiles. A working dir is bind-mounted writable, so it is checked as a PATH,
+# not as text: a repository can commit a symlink, and `../link` would pass any
+# check on the spelling (env_portable_workdir).
 env_value_portable() {
-  local v="$2" rest part
   case "$1" in
-    AI_CONTAINER_GROUP) [[ "$v" != host ]]; return ;;
-    SANDBOX_WORKDIR)
-      [[ "$v" == @* || "$v" == .. ]] && return 0
-      [[ -n "$v" && "$v" != /* && "$v" != '~'* ]] || return 1
-      rest="${v#../}"
-      [[ "$rest" == "$v" || "$v" == ../* ]] || return 1
-      while [[ -n "$rest" ]]; do
-        part="${rest%%/*}"
-        [[ "$part" != .. ]] || return 1
-        [[ "$rest" == */* ]] && rest="${rest#*/}" || rest=""
-      done
-      return 0 ;;
+    AI_CONTAINER_GROUP) [[ "$2" != host ]]; return ;;
   esac
   return 0
+}
+
+# env_portable_workdir <env-file> <value>: prints the physical path a portable
+# SANDBOX_WORKDIR names — resolved from the env file's directory (a project's
+# .ai-containers), every symlink followed — and succeeds only if it is the
+# project (that directory's parent) or inside it; `@<repo>` passes as is. The
+# caller exports what this prints, so sandbox.sh mounts exactly what was checked,
+# wherever it is launched from (tests/test-sandbox-env.sh).
+env_portable_workdir() {
+  local base root real
+  if [[ "$2" == @* ]]; then printf '%s' "$2"; return 0; fi
+  [[ -n "$2" && "$2" != /* && "$2" != '~'* ]] || return 1
+  base="$(cd "$(dirname "$1")" 2>/dev/null && pwd -P)" || return 1
+  root="$(cd "$base/.." 2>/dev/null && pwd -P)" || return 1
+  real="$(cd "$base" 2>/dev/null && cd "$2" 2>/dev/null && pwd -P)" || return 1
+  [[ "$real" == "$root" || "$real" == "$root"/* ]] || return 1
+  printf '%s' "$real"
 }
 
 # The machine-local sandbox.local.env is written by you, not by whoever can commit
@@ -189,10 +195,17 @@ load_env_defaults() {
     # Strip surrounding double quotes only as a MATCHED pair, so a value that legitimately
     # contains one quote (or is a bare `"`) is not silently mangled.
     if [[ ${#val} -ge 2 && "$val" == '"'*'"' ]]; then val="${val:1:${#val}-2}"; fi
+    if [[ "$mode" != local && "$key" == SANDBOX_WORKDIR ]]; then
+      if ! val="$(env_portable_workdir "$file" "$val")"; then
+        printf 'WARNING: ignoring SANDBOX_WORKDIR=... in %s — from a shared sandbox.env it must be\n' "$file" >&2
+        printf '         @<repo> or a directory inside the project; set it in sandbox.local.env.\n' >&2
+        continue
+      fi
+    fi
     if [[ "$mode" != local ]] && ! env_value_portable "$key" "$val"; then
       printf 'WARNING: ignoring %s=... in %s — from a shared sandbox.env it must stay inside the\n' \
         "$key" "$file" >&2
-      printf '         project (no host group, no working dir outside it); set it in sandbox.local.env.\n' >&2
+      printf '         project (not the host group); set it in sandbox.local.env.\n' >&2
       continue
     fi
     [[ -n "${!key+x}" ]] && continue             # already SET (inline env or earlier file) wins — even if empty

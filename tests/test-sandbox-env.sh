@@ -14,7 +14,7 @@ bash -n "$REPO_DIR/sandbox.sh"        && pass "sandbox.sh bash -n"        || fai
 
 # Load the REAL load_env_defaults + its env_key_denied helper (extract just the
 # functions so the file's heavy top-level code does not run).
-eval "$(sed -n '/^env_key_denied()/,/^}/p;/^env_key_portable()/,/^}/p;/^env_key_machine_only()/,/^}/p;/^env_value_portable()/,/^}/p;/^env_key_tool_config()/,/^}/p;/^load_env_defaults()/,/^}/p' "$REPO_DIR/sandbox-common.sh")"
+eval "$(sed -n '/^env_key_denied()/,/^}/p;/^env_key_portable()/,/^}/p;/^env_key_machine_only()/,/^}/p;/^env_value_portable()/,/^}/p;/^env_portable_workdir()/,/^}/p;/^env_key_tool_config()/,/^}/p;/^load_env_defaults()/,/^}/p' "$REPO_DIR/sandbox-common.sh")"
 type load_env_defaults >/dev/null 2>&1 && pass "load_env_defaults defined" || { fail "load_env_defaults defined"; printf '\n%d failure(s)\n' "$fails"; exit "$fails"; }
 type env_key_denied >/dev/null 2>&1 && pass "env_key_denied defined" || { fail "env_key_denied defined"; printf '\n%d failure(s)\n' "$fails"; exit "$fails"; }
 
@@ -26,11 +26,16 @@ apply() { load_env_defaults "$LOCAL" local; load_env_defaults "$PORTABLE" portab
 # channel tests/run-all.sh and the mutation tier both read to say "this run
 # never got as far as asserting", instead of scoring the wall of failures that
 # follows as a real result.
+# Laid out as project-init.sh lays them out — <project>/.ai-containers/ — because a
+# portable SANDBOX_WORKDIR is judged against the project that holds the file.
 mk() {
-  LOCAL="$(mktemp)"    || { printf 'SCAFFOLD-FAILED: mktemp (LOCAL env file)\n'; exit 1; }
-  PORTABLE="$(mktemp)" || { printf 'SCAFFOLD-FAILED: mktemp (PORTABLE env file)\n'; exit 1; }
+  MKD="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d (env files)\n'; exit 1; }
+  MKD="$(cd "$MKD" && pwd -P)"; PROJROOT="$MKD/proj"
+  mkdir -p "$PROJROOT/.ai-containers" || { printf 'SCAFFOLD-FAILED: mkdir (env files)\n'; exit 1; }
+  LOCAL="$PROJROOT/.ai-containers/sandbox.local.env"; PORTABLE="$PROJROOT/.ai-containers/sandbox.env"
+  : > "$LOCAL"; : > "$PORTABLE"
 }
-rmk() { rm -f "$LOCAL" "$PORTABLE"; }
+rmk() { rm -rf "$MKD"; }
 
 # precedence: inline > local > portable
 mk; printf 'CONTAINER_MEMORY=2g\n' > "$PORTABLE"; printf 'CONTAINER_MEMORY=4g\n' > "$LOCAL"
@@ -151,20 +156,26 @@ grep -qxF 'GOT []' <<<"$out_m" && [[ "$(grep -c "WARNING: ignoring" <<<"$out_m")
   || fail "machine-only keys from sandbox.env (got: $(grep GOT <<<"$out_m"); warnings: $(grep -c WARNING <<<"$out_m"))"
 rmk
 mk
+# A relative SANDBOX_WORKDIR is resolved where sandbox.env is — following any
+# symlink, since a repository can commit one — and accepted only inside the
+# project; what is exported is that physical path, so sandbox.sh mounts exactly
+# what was checked.
+mkdir -p "$PROJROOT/sub" "$PROJROOT/a/b" "$MKD/outside"
+ln -s "$MKD/outside" "$PROJROOT/escape"; ln -s ../outside "$PROJROOT/a/rel-escape"
 printf 'SANDBOX_WORKDIR=..\nAI_CONTAINER_GROUP=docs\n' > "$PORTABLE"
-( unset SANDBOX_WORKDIR AI_CONTAINER_GROUP; apply; [[ "$SANDBOX_WORKDIR" == .. && "$AI_CONTAINER_GROUP" == docs ]] ) 2>/dev/null \
-  && pass "sandbox.env still sets the working dir inside the project and a named group" \
-  || fail "portable SANDBOX_WORKDIR=.. / AI_CONTAINER_GROUP=docs refused"
+( unset SANDBOX_WORKDIR AI_CONTAINER_GROUP; cd "$MKD/outside"; apply; [[ "$SANDBOX_WORKDIR" == "$PROJROOT" && "$AI_CONTAINER_GROUP" == docs ]] ) 2>/dev/null \
+  && pass "sandbox.env still sets the working dir (resolved to the project, wherever you launch from) and a named group" \
+  || fail "portable SANDBOX_WORKDIR=.. / AI_CONTAINER_GROUP=docs (got: $( ( unset SANDBOX_WORKDIR; apply; printf '%s' "${SANDBOX_WORKDIR:-}" ) 2>&1 ))"
 wbad=""
-for w in . ../sub @app ../a/b; do
-  printf 'SANDBOX_WORKDIR=%s\n' "$w" > "$PORTABLE"
-  ( unset SANDBOX_WORKDIR; apply; [[ "$SANDBOX_WORKDIR" == "$w" ]] ) 2>/dev/null || wbad+=" refused:$w"
+for w in ".:$PROJROOT/.ai-containers" "../sub:$PROJROOT/sub" "@app:@app" "../a/b:$PROJROOT/a/b" "../a/b/..:$PROJROOT/a"; do
+  printf 'SANDBOX_WORKDIR=%s\n' "${w%%:*}" > "$PORTABLE"
+  ( unset SANDBOX_WORKDIR; apply; [[ "$SANDBOX_WORKDIR" == "${w#*:}" ]] ) 2>/dev/null || wbad+=" refused:${w%%:*}"
 done
-for w in ../.. ../../x /abs '~/x' '../a/../../b' 'a/../..'; do
+for w in ../.. ../../outside /abs "$MKD/outside" '~/x' '../a/../../outside' ../escape ../a/rel-escape ../missing; do
   printf 'SANDBOX_WORKDIR=%s\n' "$w" > "$PORTABLE"
   ( unset SANDBOX_WORKDIR; apply; [[ -z "${SANDBOX_WORKDIR:-}" ]] ) 2>/dev/null || wbad+=" accepted:$w"
 done
-[[ -z "$wbad" ]] && pass "a portable SANDBOX_WORKDIR is kept inside the project" \
+[[ -z "$wbad" ]] && pass "a portable SANDBOX_WORKDIR is kept inside the project, symlinks followed" \
   || fail "portable SANDBOX_WORKDIR:$wbad"
 printf 'EXTRA_MOUNTS=/x\nSANDBOX_UID=1234\nAI_CONTAINER_GROUP=host\nSANDBOX_WORKDIR=/abs\n' > "$LOCAL"; : > "$PORTABLE"
 ( unset EXTRA_MOUNTS SANDBOX_UID AI_CONTAINER_GROUP SANDBOX_WORKDIR; apply
