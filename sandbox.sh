@@ -1335,10 +1335,15 @@ git_dirs_in() {
     # stops the fetch (git 2.44+); GIT_ALLOW_PROTOCOL=none refuses every
     # transport on any git — not `-c protocol.allow=never`, which a repository's
     # own protocol.<name>.allow=always overrides. The read then fails, and is
-    # named (tests/test-git-internals-ro.sh G28).
-    mapfile -d '' -t links < <(GIT_NO_LAZY_FETCH=1 GIT_ALLOW_PROTOCOL=none git -C "$top" \
+    # named (tests/test-git-internals-ro.sh G28). Not by exit status alone: a
+    # tree it cannot fetch is an `error:` line, and ls-files goes on to exit 0
+    # with the entries under that tree left out (measured, git 2.34 to 2.53).
+    # LC_ALL=C keeps that prefix untranslated.
+    mapfile -d '' -t links < <({ err="$(LC_ALL=C GIT_NO_LAZY_FETCH=1 GIT_ALLOW_PROTOCOL=none git -C "$top" \
         -c core.fsmonitor=false -c safe.directory='*' \
-        --git-dir="$g" --work-tree="$top" ls-files -s -z 2>/dev/null || printf 'ls-files-failed\0')
+        --git-dir="$g" --work-tree="$top" ls-files -s -z 2>&1 >&3)" \
+        && [[ $'\n'"$err" != *$'\n'error:* && $'\n'"$err" != *$'\n'fatal:* ]] \
+        || printf 'ls-files-failed\0'; } 3>&1)
     if (( ${#links[@]} )) && [[ "${links[-1]}" == ls-files-failed ]]; then
       links=()
       printf 'WARNING: cannot read the index of %s; submodules recorded in it are not followed,\n' "$g" >&2

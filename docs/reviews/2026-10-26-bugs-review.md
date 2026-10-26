@@ -49,7 +49,7 @@ Everything else.
 ## 1. Host-side launcher: git internals
 
 ### GIT-1: Host command execution — the launcher runs `git ls-files` on an agent-controlled repo, which triggers a promisor lazy-fetch that executes `remote.*.uploadpack`
-- **Status: FIXED (batch 1)** — `f3ddb69`, hardened in `1c26919` (`GIT_NO_LAZY_FETCH=1 GIT_ALLOW_PROTOCOL=none`; test G28).
+- **Status: FIXED (batch 1)** — `f3ddb69`, hardened in `1c26919` (`GIT_NO_LAZY_FETCH=1 GIT_ALLOW_PROTOCOL=none`; test G28). `1c26919` left the unreadable-index `WARNING:` silent: with every transport refused, `ls-files` logs `error: Could not read <tree>` and exits 0 with the entries under that tree left out (git 2.34, 2.43, 2.47, 2.49, 2.53), and only the exit status was checked, so G28's third assertion failed on every Linux. Found on the WSL2 PLAT-2 run (2026-10-26); the read now also counts an `error:`/`fatal:` line as a failure.
 - Severity: HIGH — Confidence: CONFIRMED (reproduced 3/3, host-side)
 - Location: `sandbox.sh: git_dirs_in()` — `mapfile -d '' -t links < <(git -C "$top" -c core.fsmonitor=false -c safe.directory='*' --git-dir="$g" --work-tree="$top" ls-files -s -z 2>/dev/null)`
 - Introduced: 91fac80 (gitlink/submodule discovery via `ls-files`, within the review window)
