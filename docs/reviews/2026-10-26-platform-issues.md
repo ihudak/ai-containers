@@ -17,7 +17,7 @@ and the constraints the fix must keep.
 
 | ID | Platform | Source | What |
 |---|---|---|---|
-| PLAT-1 | Windows + WSL2 + Docker Desktop | bug LNCH-2 | A project under `/mnt/c` may be refused at every launch by the mount-swap check |
+| PLAT-1 | Windows + WSL2 + Docker Desktop | bug LNCH-2 | A project under `/mnt/c` may be refused at every launch by the mount-swap check — **not reproducible**, closed |
 | PLAT-2 | Windows + WSL2 | gap GAP-13 | The integration corpus and the local layer have never been run on WSL2 |
 | PLAT-3 | macOS (Docker Desktop, Colima) | gap GAP-11 | The mount-swap check is skipped there altogether |
 | PLAT-4 | x86-64 CPU without AVX | bug SVC-2 | `mongo=ON` reports "no mongo server, rebuild" instead of the real failure |
@@ -25,6 +25,13 @@ and the constraints the fix must keep.
 ---
 
 ## PLAT-1: WSL2 — a project on `/mnt/<drive>` may be refused at every launch
+
+- **Status: CLOSED — NOT REPRODUCIBLE (2026-10-26).** No code changed. Run on Windows + WSL2 (kernel 6.18.33.2-microsoft-standard-WSL2, Ubuntu distro), Docker Desktop 29.9.2 with WSL integration, image built from `ed6287f`:
+  - **Primitive:** the claim's mechanism does not hold. Docker Desktop binds the distro's **own** drvfs mount, not a second mount of `C:` — the container's `/proc/self/mountinfo` shows the bind on `0:70`, the same 9p superblock as the distro's `/mnt/c`. `stat -c '%d:%i'` of a directory under `/mnt/c` is identical on the host and in the container (`70:34621422135717400` both), as it is for ext4 under `~/.ai-containers` (`2096:260327` both).
+  - **Step 3** (`/mnt/c/tmp/plat1`, `./sandbox.sh restricted ..`): started. No `ERROR`, and no `does not preserve device/inode` NOTE, so verification ran. The manifest read back from `/run/ai-launcher/manifest` held drvfs entries (`70 43065671436781336 /workspace/plat1/.ai-containers`, the repo's `.git`, `config`, `commondir`, `hooks`) beside ext4 ones (the vault's and specs' `.git` internals, device `2096`); every one matched. Host `stat` of the launcher: `70:43065671436781336`; in the container: the same.
+  - **Step 4** (control under `~/plat1-control`): started, every entry on `2096` matched.
+  - **The check still bites on drvfs:** a directory renamed away and recreated under `/mnt/c` gets a new inode, and the container sees the new one (`70:44473046320591098` recorded, `70:24206847997423872` after the swap), so a swap there is detected rather than masked.
+  - **Not covered:** a native Docker Engine installed inside the distro (the different case named below), and a setup where a launcher source reaches the daemon through a file-sharing layer while `$HOME` does not. LNCH-2's reasoning stays sound for such a host, but none has been seen; reopen with the `expected`/`got` pairs if one is.
 
 - **Platform:** Windows 10/11, WSL2 distro (Ubuntu), Docker Desktop with WSL integration. Not a native Docker Engine installed inside the distro — that one sees drvfs directly and is a different case worth recording too.
 - **Source:** bugs review LNCH-2 (MEDIUM, PLAUSIBLE). Deferred from batch 1 by decision: no fix without a reproduction, because every candidate fix weakens the concurrent-swap check.

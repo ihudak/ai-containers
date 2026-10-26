@@ -13,7 +13,7 @@
 
 | # | Area | Findings | Feature gaps folded in | Highest |
 |---|---|---|---|---|
-| 1 | Host-side launcher: git internals + launcher overlay | GIT-1, LNCH-1, LNCH-3 (partly); LNCH-2 deferred → PLAT-1 | GAP-12 (only: follow includes inside included files) | HIGH |
+| 1 | Host-side launcher: git internals + launcher overlay | GIT-1, LNCH-1, LNCH-3 (partly); LNCH-2 not reproducible (PLAT-1) | GAP-12 (only: follow includes inside included files) | HIGH |
 | 2 | Launcher config / env layers / credentials | ENV-1 … ENV-6 | — | HIGH |
 | 3 | Container-start runtime tools (entrypoint root steps, reconciles) | RT-1 … RT-7 | stretch: GAP-1 for `link-default-ruby.sh`, `install-agent-skills.sh`, `agent-tools-reconcile.sh` | HIGH |
 | 4 | Host lifecycle scripts (project-init, sync, repo, group, report) | PRJ-1 … PRJ-9, DOC-1, DOC-3 | optional: GAP-6; stretch: GAP-1 for `group.sh` | MEDIUM |
@@ -150,7 +150,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
   - Correct the AGENTS.md sentence.
 
 ### LNCH-2: The one anchor on `$HOME`'s filesystem stands in for launcher mounts on every other filesystem, so a non-preserving project filesystem is refused instead of skipped
-- **Status: DEFERRED (batch 1, 2026-10-26)** — needs a reproduction on Docker Desktop + WSL2 before any change; every candidate fix weakens the swap check. Tracked as PLAT-1 in [2026-10-26-platform-issues.md](2026-10-26-platform-issues.md).
+- **Status: NOT REPRODUCIBLE (2026-10-26)** — run as PLAT-1 on Docker Desktop + WSL2 with the project on `/mnt/c`: Docker Desktop binds the distro's own drvfs mount, so device:inode survive the bind, verification runs over the drvfs entries and passes. No code changed; details in [2026-10-26-platform-issues.md](2026-10-26-platform-issues.md).
 - Severity: MEDIUM — Confidence: PLAUSIBLE (reasoned, not reproduced: needs Docker Desktop + WSL2)
 - Location: `entrypoint.sh: \`verify_launcher_mounts()\``, which compares `got="$(stat -c '%d:%i' /run/ai-launcher ...` once against `AI_LAUNCHER_ANCHOR` and then requires every manifest entry to match. The anchor is set in `sandbox.sh` by `_launcher_verify_dir="$HOME/.ai-containers/.verify-$$-$RANDOM"`.
 - Introduced: a5e9948 / 7a4d5ae
