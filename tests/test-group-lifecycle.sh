@@ -205,5 +205,15 @@ out="$(run_group rm keepme < /dev/null)"
   && pass "rm without --yes on a non-TTY does not delete" \
   || fail "rm without --yes on a non-TTY does not delete (got: $out)"
 
+# PRJ-1: the name is spliced into a path handed to rm -rf, so it is validated as
+# every other entry point validates a group name: `rm ../dev` deleted ~/dev.
+mkdir -p "$FAKE_HOME/victim"; echo keep > "$FAKE_HOME/victim/data"
+for bad in ../victim default/ 'a b' .hidden UPPER; do
+  out="$(run_group rm "$bad" --yes)"; rc=$?
+  [[ "$rc" != 0 && -f "$FAKE_HOME/victim/data" && "$out" == *"Invalid"* ]] \
+    && pass "rm refuses the group name '$bad'" \
+    || fail "rm accepted the group name '$bad' (rc=$rc; out: $out)"
+done
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

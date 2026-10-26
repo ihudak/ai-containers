@@ -143,6 +143,9 @@ cmd_rm() {
     printf 'ERROR: the "host" group is your real $HOME, not a managed directory — refusing.\n' >&2
     exit 1
   fi
+  # Before any path is built: the name goes into an rm -rf, and `rm ../dev` deleted
+  # ~/dev (bugs review PRJ-1). Every group was made under this rule.
+  validate_group_name "$name"
 
   local dir="$groups_root/$name"
   local vol; vol="$(rvm_volume_name "$name")"

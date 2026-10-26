@@ -255,7 +255,7 @@ Attach them at run time with `REPOS="cluster:ro lib:ro app:rw" ./sandbox.sh rest
 ./group.sh rm   <group> [--yes]  # remove a group: its directory AND its rvm volume
 ./group.sh gc   [--yes]          # remove rvm volumes whose group directory is gone
 ```
-A group owns a directory (`~/.ai-containers/<group>/`) **and**, once `ruby=` is set, a Docker volume for its Ruby home — so `rm -rf` alone orphans a multi-GB volume. `group.sh rm` removes both; `gc` cleans up after a manual `rm -rf`. It refuses while a running container mounts the volume, refuses the `host` group, and never touches repo volumes (global, `repo.sh` owns them).
+A group owns a directory (`~/.ai-containers/<group>/`) **and**, once `ruby=` is set, a Docker volume for its Ruby home — so `rm -rf` alone orphans a multi-GB volume. `group.sh rm` removes both; `gc` cleans up after a manual `rm -rf`. It refuses while a running container mounts the volume, refuses the `host` group and any name that is not a valid group name (it would leave `~/.ai-containers` in an `rm -rf`), and never touches repo volumes (global, `repo.sh` owns them).
 
 **Initialise a new project** (copies shared files, writes `sandbox.env`, generates launch script, registers in `projects.conf`, and adds `/.ai-containers/` to the project's root `.gitignore`):
 ```bash
