@@ -17,7 +17,7 @@
 | 1 | Host-side launcher: git internals + launcher overlay | GIT-1, LNCH-1, LNCH-3 (partly) — fixed; LNCH-2 not reproducible (PLAT-1) | GAP-12 (only: follow includes inside included files) | HIGH |
 | 2 | Launcher config / env layers / credentials | ENV-1 … ENV-6 — all fixed; REPO-1 found and fixed | — | HIGH |
 | 3 | Container-start runtime tools (entrypoint root steps, reconciles) | RT-1 … RT-7 — all fixed; RT-8, RT-9 open | stretch: GAP-1 for `link-default-ruby.sh`, `install-agent-skills.sh`, `agent-tools-reconcile.sh` | HIGH |
-| 4 | Host lifecycle scripts (project-init, sync, repo, group, report) | PRJ-1 … PRJ-9, DOC-1, DOC-3, REPO-2 … REPO-10 | optional: GAP-6; stretch: GAP-1 for `group.sh` | MEDIUM |
+| 4 | Host lifecycle scripts (project-init, sync, repo, group, report) | PRJ-1 … PRJ-9, DOC-1, DOC-3, REPO-2 … REPO-4, REPO-7 — fixed (PRJ-7 with TST-1); REPO-5, 6, 8 … 12 open | optional: GAP-6; stretch: GAP-1 for `group.sh` | MEDIUM |
 | 5 | In-container DB services | SVC-1 … SVC-3 — all fixed (SVC-2's hardware check is PLAT-4); SVC-4 open | — | MEDIUM |
 | 6 | Build / Dockerfile / tools.d / config validation | BLD-1 … BLD-7, ENV-7 | — | MEDIUM |
 | 7 | Test harness and CI | TST-1 … TST-8 | GAP-5 (same fix as TST-2), GAP-8 (with TST-5), GAP-9 (with TST-3) | MEDIUM |
@@ -320,6 +320,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 ## 4. Host lifecycle scripts
 
 ### PRJ-1: `group.sh rm` never validates the group name, so `rm -rf` reaches outside `~/.ai-containers`
+- **Status: FIXED (batch 4)** — `c548b0e` (`validate_group_name` before any path); `tests/test-group-lifecycle.sh`.
 - Severity: MEDIUM — Confidence: CONFIRMED
 - Location: `group.sh: \`cmd_rm()\`` (`local dir="$groups_root/$name"` … `rm -rf "$dir"`)
 - Introduced: pre-window (group.sh creation). The window touched group.sh through sandbox-common (c029d8a).
@@ -329,6 +330,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Fix direction: call `validate_group_name "$name"` (or `valid_group_name`, which returns instead of exiting) at the top of `cmd_rm`, before any path is built.
 
 ### PRJ-2: Sync re-enables a component the project turned off by commenting it out, as sandbox.conf tells users to do
+- **Status: FIXED (batch 4)** — `a3ff97a` (a `#key=` / `# key=` line counts as the project's; an indented example does not); `tests/test-sandbox-schema.sh`.
 - **Duplicate of DOC-1** — two reviewers found it independently; fix once (batch 4).
 - Severity: MEDIUM — Confidence: CONFIRMED
 - Location: `sync-to-projects.sh: \`reconcile_sandbox_conf()\`` (`grep -qE "^${key}=" "$project" 2>/dev/null || added+=("$key")`)
@@ -339,6 +341,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Fix direction: treat a commented `^#[[:space:]]*key=` line as "the project has this key" and do not append it, or write OFF for it. Separately, drop "or comment out" from the sandbox.conf header.
 
 ### PRJ-3: Re-running project-init.sh silently resets `SANDBOX_MODE` (restricted → open) and `SANDBOX_WORKDIR`, with no backup
+- **Status: FIXED (batch 4)** — `1e25ddf` (keeps `SANDBOX_MODE` and added keys, backs up `sandbox.env`), `2ee809b` (a non-portable `SANDBOX_WORKDIR` is dropped with a NOTE rather than moved into `sandbox.local.env`: the automated security review of `1e25ddf` flagged that as laundering committed config into trusted config), `b681c97` (lines matched as the loader reads them); `tests/test-project-init.sh`.
 - Severity: MEDIUM — Confidence: CONFIRMED
 - Location: `project-init.sh: \`SANDBOX_MODE=open\`` in the unconditional `} > "${dest}/sandbox.env"` heredoc. The comment beside it reads `unlike sandbox.env (whose values are all re-prompted)`.
 - Introduced: 8555b1d / 3853c17 (pre-window). project-init.sh was touched in the window (9e67226, aeb218a, f8414ab).
@@ -348,6 +351,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Fix direction: when sandbox.env already exists, keep its existing `SANDBOX_MODE`/`SANDBOX_WORKDIR`, offer them as prompt defaults, and carry unknown keys forward. At minimum, back it up as is done for sandbox.local.env.
 
 ### PRJ-4: project-init.sh adds `/.ai-containers/` to `.gitignore` even in a project that tracks `.ai-containers/`
+- **Status: FIXED (batch 4)** — `b0d18f6` (init has sync's tracked-layout check; a test compares the two copies).
 - Severity: LOW — Confidence: CONFIRMED
 - Location: `project-init.sh: \`ensure_ai_containers_ignored()\``. Compare with the same-named function in sync-to-projects.sh, which has `git -C "$project_path" ls-files -- .ai-containers`.
 - Introduced: 78a6175 added the tracked-layout guard to sync only (pre-window).
@@ -356,6 +360,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Fix direction: keep one copy of the function, with the `ls-files` guard, in a sourced file, or add the guard to project-init's copy.
 
 ### PRJ-5: Repo/rvm volume discovery uses unanchored Docker `name=` filters; `rm`, `reset` and `gc` delete volumes belonging to other repos or prefixes
+- **Status: FIXED (batch 4)** — `ecc4893` (exact prefix match in bash, base/working copy by label, `--` refused in new names); the review of batch 4 found it took any unclassifiable volume for a working copy, so `gc` deleted a base volume under a nested prefix — classified positively in `b681c97`. `tests/test-repo-destructive.sh`; mutation 620 regenerated.
 - Severity: MEDIUM — Confidence: CONFIRMED
 - Location: `sandbox-common.sh: \`repo_workcopy_volumes()\``, `sandbox-common.sh: \`repo_base_volumes()\``, `sandbox-common.sh: \`rvm_volumes()\``, `repo.sh: \`cmd_rm()\`` / `repo.sh: \`reset_one()\`` (`docker volume ls --quiet --filter "name=${vol}--wc-"`)
 - Introduced: pre-window (label/registry design). These paths are called by the window's reset/rm code.
@@ -367,6 +372,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Fix direction: anchor the filters (`name=^${prefix}-repo-`, `name=^${vol}--wc-`), then confirm each result by its labels or an exact prefix match in bash. Forbid `--` in repo names, or use a working-copy separator that `validate_repo_name` cannot produce.
 
 ### PRJ-6: ai-containers-report.sh reads the LAST value of a key, but the launcher uses the FIRST, so the network mode can be misreported
+- **Status: FIXED (batch 4)** — `0940160` (first value, literal values, `UNSET (usage)`), group column in `b681c97`; `tests/test-report.sh`. Two edge cases remain in REPO-12.
 - Severity: LOW — Confidence: CONFIRMED
 - Location: `ai-containers-report.sh: \`env_var()\`` (`END { if (val != "") print val }`, last match wins) vs `sandbox-common.sh: \`load_env_defaults()\`` (`[[ -n "${!key+x}" ]] && continue`, first match wins within a file)
 - Introduced: pre-window. AGENTS.md says the report resolves "the same precedence sandbox-common.sh applies".
@@ -376,6 +382,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Fix direction: make `env_var` keep the first match and the same literal value semantics as `load_env_defaults`, and replace `DEFAULT-OPEN` with something like `UNSET (usage)`.
 
 ### PRJ-7: The `repo.sh gc` tests fail under glibc `en_US.UTF-8`; this is a test bug, not a product bug
+- **Status:** left to batch 7, which fixes it with TST-1.
 - **Duplicate of TST-1** (which also covers the second affected test, `tests/test-falsify-run.sh`); fix once (batch 7).
 - Severity: LOW — Confidence: CONFIRMED
 - Location: `tests/test-repo-destructive.sh: \`removed() { sed -n 's/^volume rm //p' "$DOCKER_LOG" | tr ' ' '\n' | grep -v '^--' | sort | tr '\n' '|'; }\``
@@ -384,6 +391,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Fix direction: `LC_ALL=C sort` in `removed()`, and in the `sort -u` near the end of the same file.
 
 ### PRJ-8: Migration 002 writes a major-only `openjdk=21`, which build.sh then refuses
+- **Status: FIXED (batch 4)** — `3349604` (the value is kept, so `build.sh` still refuses it, but the hook now writes a comment and prints a NOTE saying what to complete).
 - Severity: LOW — Confidence: CONFIRMED (from code)
 - Location: `migrations/002-openjdk-single-key.sh: \`printf 'openjdk=%s\n' "$merged"\`` vs `build.sh` (`looks like a major version only`)
 - Introduced: 24e093a (pre-window).
@@ -391,6 +399,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Fix direction: have the hook map each major to a full identifier or emit an empty value plus a comment, or have it print a notice that the value must be completed.
 
 ### PRJ-9: Timestamped `*.pre-migrate.<ts>` backups are not gitignored
+- **Status: FIXED (batch 4)** — `0213e86` (`*.pre-migrate.*` in init's and sync's patterns).
 - Severity: LOW — Confidence: CONFIRMED (from code)
 - Location: `migrate-runme.sh: \`bk="${f}.pre-migrate.$(date -u +%Y%m%dT%H%M%SZ)"\`` vs the ignore pattern `'*.pre-migrate'` in project-init.sh and `sync-to-projects.sh: \`ensure_inner_gitignore()\``
 - What's wrong: the `.pre-init` backups have a wildcard pattern (`sandbox.local.env.pre-init*`); the second-generation `.pre-migrate.<ts>` backups do not. Those backups include `sandbox.local.env.pre-migrate.<ts>` (this machine's absolute mount paths) and the old fat runme.sh. In a project that tracks `.ai-containers/`, they show up as committable.
@@ -612,6 +621,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 ## 8. Documentation vs code
 
 ### DOC-1: sandbox.conf says commenting out a key disables it, but the next sync turns it back on
+- **Status: FIXED (batch 4)** — with PRJ-2, `a3ff97a`; sandbox.conf's header now says sync never re-adds a commented-out key.
 - Severity: MEDIUM — Confidence: CONFIRMED (reproduced)
 - Location: `sandbox.conf: \`# Boolean components: set to ON to include, OFF (or comment out) to exclude.\``; `sync-to-projects.sh: \`grep -qE "^${key}=" "$project" 2>/dev/null || added+=("$key")\``
 - Introduced: the header comment came in 96481ce (2026-04). It became wrong with a2ea3df (2026-07-24), which added the reconcile.
@@ -632,6 +642,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Fix direction: point to `c-toolchain=ON` and to docs/components/c-toolchain.md.
 
 ### DOC-3: AGENTS.md says `project-init.sh` takes a path and a name, but it ignores all arguments
+- **Status: FIXED (batch 4)** — `09fe510` (the arguments prefill the path and name prompts; input that runs out fails with a message); AGENTS.md says it is interactive.
 - Severity: MEDIUM (raised from LOW in triage: scripted use exits 1 with no output; verified that project-init.sh never reads its positional arguments). Fix batch 4, not docs-only: either implement the documented arguments or change every documented call — Confidence: CONFIRMED (reproduced)
 - Location:
   - `AGENTS.md: \`./project-init.sh /path/to/myproject [optional-name]\``
@@ -775,21 +786,21 @@ Each fix batch was reviewed by an independent reviewer before it was merged, and
 - Fix direction: refuse a portable `IMAGE_NAME` that contains a registry host or `/`. Or warn, or refuse, when the existing tag carries no `ai-containers.*` label from this project. Or derive the name from the project.
 
 ### REPO-2: `sync` drops an `am`, merge, cherry-pick or revert that is still in progress
-- **Status: OPEN** (re-review of `80a35d0`, #1)
+- **Status: FIXED (batch 4)** — `ec17745` (pull refuses `rebase-apply/`, `rebase-merge/`, `sequencer/`, `MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`, `BISECT_START`).
 - Severity: LOW. Confidence: CONFIRMED (reproduced)
 - Location: repo-git-reset.sh: `cmd_pull()`.
 - What's wrong: `.git` is replaced, and with it `rebase-apply/`, `rebase-merge/`, `sequencer/`, `MERGE_HEAD`, `CHERRY_PICK_HEAD` and `REVERT_HEAD`. With `git am` stopped on patch 1 of 2, `pull` returned 0 and the two patches, which existed only in `rebase-apply/`, were gone. `git pull --ff-only` keeps that state.
 - Fix direction: refuse when any of those names, or `BISECT_START`, exists in `.git`.
 
 ### REPO-3: A split index is refused with "use reset", which wipes far more than a sync would
-- **Status: OPEN** (re-review of `80a35d0`, #2)
+- **Status: PARTLY FIXED (batch 4)** — `ec17745`: the refusal names `git update-index --no-split-index`; reading a split index from its copy is still not done.
 - Severity: LOW. Confidence: CONFIRMED (reproduced)
 - Location: repo-git-reset.sh: `cmd_pull()` (the staged-changes check reads a copy of the index without its `sharedindex.*`).
 - What's wrong: a clean checkout with `core.splitIndex` on cannot be synced. The suggested `reset` drops untracked files and every other local branch.
 - Fix direction: copy the regular `sharedindex.<oid>` the index names beside the copy, or tell the user to run `git update-index --no-split-index`.
 
 ### REPO-4: A reftable repository is misread by every mode, and `reset` deletes its branches without listing them
-- **Status: OPEN** (re-review of `80a35d0`, #3; existed before the window)
+- **Status: FIXED (batch 4)** — `ec17745` (every mode refuses a reftable repository; checked against one made by git 2.56).
 - Severity: LOW for now. It becomes MEDIUM if git makes reftable the default. Confidence: CONFIRMED (reproduced)
 - Location: repo-git-reset.sh: `volume_refs()`, `cmd_inspect()`.
 - What's wrong: a reftable `.git` has a stub file at `refs/heads` and no loose or packed refs.
@@ -813,7 +824,7 @@ Each fix batch was reviewed by an independent reviewer before it was merged, and
 - Fix direction: on failure after the merge, run a reverse `read-tree -m -u <remote tip> <old tip>`. Or say in the error that `reset` is the way out.
 
 ### REPO-7: The git helper's container has a memory limit and nothing else
-- **Status: OPEN** (review of `82698a0`, #6)
+- **Status: FIXED (batch 4)** — `0c15b88` (`--memory-swap`, `--pids-limit 512`, `REPO_HELPER_MEMORY` validated, documented and machine-only, exit 137 named). No time limit yet; Docker's 6 MB minimum is left to Docker's own refusal.
 - Severity: LOW. Confidence: CONFIRMED (from code)
 - Location: repo.sh: `git_helper_run()` (`--memory "${REPO_HELPER_MEMORY:-4g}"`).
 - What's wrong: there is no `--memory-swap`, no `--pids-limit` and no time limit. `REPO_HELPER_MEMORY` is neither validated nor documented. An out-of-memory kill gives only the generic failure message.
@@ -852,6 +863,25 @@ Each fix batch was reviewed by an independent reviewer before it was merged, and
   - a `.git` symlink.
   Two more gaps: the fail-closed `find` test runs only when not root, and the hermetic suite runs the host's git (2.56), not the seed image's (2.45).
 
+
+### REPO-11: `repo.sh rm`/`reset` act on a base volume whose label names another repo
+- **Status: OPEN** (re-review of batch 4, finding 1; existed before the window)
+- Severity: LOW. Confidence: CONFIRMED (reproduced)
+- Location: repo.sh: `cmd_rm()` and `reset_one()` (the base volume is `repo_volume_name "$name"`, checked by name only).
+- What's wrong: under a nested prefix the names collide. `repo.sh rm team-repo-x --yes` deleted repo `x`'s base volume of prefix `<p>-repo-team`, labelled `ai-containers.repo=x`, and left its working copy behind. You have to type the colliding name, and the prompt names the volume.
+- Fix direction: refuse when the base volume's `ai-containers.repo` label differs from the name given, in both `rm` and `reset`.
+
+### REPO-12: Leftovers of the batch 4 reviews
+- **Status: OPEN** (reviews of batch 4)
+- Severity: LOW/NIT
+- The report's group column still differs from the launcher in two cases:
+  - an empty `AI_CONTAINER_GROUP=` in `sandbox.local.env` (the launcher uses `default`, the report the `sandbox.env` group);
+  - `host` then another group in `sandbox.env` (the launcher skips the refused `host` and uses the second).
+  The fix is to have `env_var` report presence apart from the value, and to keep scanning past a refused value. An empty value in `sandbox.local.env` is treated as unset by the report in general.
+- Stale comments above `launcher_group` and `env_var` in ai-containers-report.sh; the note "sets no AI_CONTAINER_GROUP" also shows when the group was ignored or empty.
+- A legacy unlabelled base volume named `<repo>--wc-*` is still taken for a working copy.
+- Each volume now costs one to three `docker volume inspect` calls in discovery.
+- The re-init carry-forward writes a kept line verbatim, a CRLF line included (harmless: the loader strips the CR); the test does not pin verbatim against normalised.
 ---
 
 # Appendix: what each reviewer checked and cleared
