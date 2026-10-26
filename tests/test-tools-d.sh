@@ -1251,6 +1251,24 @@ if grep -q 'retrying anonymously' "$TMP/priv.out"; then
 else
   pass "  … and it does not print the stale-token diagnostic for a private tool"
 fi
+# BLD-4: the same rule for a PRIVATE RELEASE tool. Its release lookup goes through
+# api_get, whose anonymous pass fired for every caller: three authenticated
+# attempts, then a guaranteed-404 anonymous one and the stale-token diagnostic.
+cat > "$TOOLS_D_DIR/ext.conf" <<'EOF'
+repo=acme/secret
+binary=ext-cli
+private=yes
+EOF
+scaffold_file "write ext.conf (private release, stale token)" "$TOOLS_D_DIR/ext.conf"
+: > "$STALE_LOG"
+PATH="$FAKEBIN:$PATH" install_one ext latest >"$TMP/privrel.out" 2>&1 || true
+_r_auth="$(grep -c 'Authorization:' "$STALE_LOG" 2>/dev/null)"; _r_auth="${_r_auth:-0}"
+_r_anon="$(grep -vc 'Authorization:' "$STALE_LOG" 2>/dev/null)"; _r_anon="${_r_anon:-0}"
+if (( _r_auth >= 1 && _r_anon == 0 )) && ! grep -q 'retrying anonymously' "$TMP/privrel.out"; then
+  pass "a PRIVATE release tool does not retry anonymously either"
+else
+  fail "a PRIVATE release tool retried anonymously — saw $_r_auth authenticated and $_r_anon anonymous request(s); $(tr '\n' ' ' < "$TMP/privrel.out")"
+fi
 
 unset -f sleep
 

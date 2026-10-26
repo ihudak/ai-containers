@@ -55,9 +55,11 @@ fi
 # a guaranteed-failing request and a misleading diagnostic to a case already
 # reported correctly.
 
-# api_get <url> — GET the GitHub API with retries; echo body (empty on failure).
+# api_get <url> [required] — GET the GitHub API with retries; echo body (empty on
+# failure). `required`: the token is a requirement, not headroom (a private repo),
+# so there is no anonymous pass (bugs review BLD-4).
 api_get() {
-  local url="$1" body="" i
+  local url="$1" token_required="${2:-}" body="" i
   for i in 1 2 3; do
     body=$(curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors ${AUTH_ARGS[@]+"${AUTH_ARGS[@]}"} \
              -H "Accept: application/vnd.github+json" "$url") && [ -n "$body" ] && break
@@ -78,7 +80,8 @@ api_get() {
   # — spending twice the rate-limit budget on exactly the path where it is
   # already short, and breaking the "three attempts" contract this function's
   # own tests pin.
-  if [ -z "$body" ] && [ -n "${AUTH_ARGS[*]+set}" ] && [ "${#AUTH_ARGS[@]}" -gt 0 ]; then
+  if [ -z "$body" ] && [ "$token_required" != required ] \
+     && [ -n "${AUTH_ARGS[*]+set}" ] && [ "${#AUTH_ARGS[@]}" -gt 0 ]; then
     echo "  API request failed with a credential; retrying anonymously (is GITHUB_TOKEN stale?)" >&2
     body=$(curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors \
              -H "Accept: application/vnd.github+json" "$url") || body=""
@@ -337,8 +340,8 @@ install_one() {
   local tag an
   if [ "$private" = "yes" ]; then
     local api="https://api.github.com/repos/${repo}/releases" release_json
-    if [ "$version" = "latest" ]; then release_json=$(api_get "${api}/latest")
-    else release_json=$(api_get "${api}/tags/v${version#v}"); fi
+    if [ "$version" = "latest" ]; then release_json=$(api_get "${api}/latest" required)
+    else release_json=$(api_get "${api}/tags/v${version#v}" required); fi
     tag=$(printf '%s' "$release_json" | jq -r '.tag_name // empty')
     [ -n "$tag" ] || { echo "WARNING: could not resolve ${name} release — skipping." >&2; return 0; }
     an=$(asset_name "$binary" "$tag")
