@@ -99,11 +99,14 @@ check_volume() {
   [[ -z "$bad" ]] || die "$(shown "$bad") is not a regular file or directory; refusing this repository"
   bad="$(find "$dir" -path "$gd" -prune -o \( -type p -o -type b -o -type c \) -print -quit 2>/dev/null)"
   [[ -z "$bad" ]] || die "$(shown "$bad") is not a regular file or directory; refusing this repository"
-  # A git directory anywhere in the worktree (where the remote has a submodule,
-  # say) is read by git during checkout: the same rule as for .git itself
-  # (review of fb1705e, Q3 — a ref linked to /dev/zero exhausted memory).
-  bad="$(find "$dir" -path "$gd" -prune -o \( -name .git -type l -o -path '*/.git/*' ! -type f ! -type d \) -print -quit 2>/dev/null)"
-  [[ -z "$bad" ]] || die "$(shown "$bad") is not a regular file or directory; refusing this repository"
+  # Any .git below the top level is refused, whatever it is. git opens one
+  # during checkout and status (where the remote has a submodule, say): a .git
+  # file sends it to a directory named inside, a git directory's commondir to
+  # another, and a ref there linked to /dev/zero exhausted memory (review of
+  # fb1705e, Q3; security review of 8f5e5b9). Nothing this helper seeds makes
+  # one: submodules are never initialised in a volume.
+  bad="$(find "$dir" -path "$gd" -prune -o -name .git -print -quit 2>/dev/null)"
+  [[ -z "$bad" ]] || die "$(shown "$bad") is a git repository inside the checkout; remove it (rm -rf from a container), then retry"
 }
 
 # fresh_clone: clone AI_REPO_URL, without a checkout, into a private directory;
@@ -297,8 +300,8 @@ cmd_pull() {
   # The worktree must match its branch's commit: compared by the clone's git,
   # with its own config, against the volume's files.
   git --git-dir="$F/.git" --work-tree="$dir" read-tree "${tip[$b]}" || die "could not read $(shown "$b")"
-  git --git-dir="$F/.git" --work-tree="$dir" update-index -q --refresh >/dev/null 2>&1 || true
-  git --git-dir="$F/.git" --work-tree="$dir" diff-files --quiet \
+  git --git-dir="$F/.git" --work-tree="$dir" update-index -q --ignore-submodules --refresh >/dev/null 2>&1 || true
+  git --git-dir="$F/.git" --work-tree="$dir" diff-files --ignore-submodules=all --quiet \
     || die "the checkout has uncommitted changes; commit and push them, or use reset"
   # A two-way merge from that commit to the remote's tip, as `pull --ff-only`
   # does, without --force: it refuses to overwrite an untracked file the remote

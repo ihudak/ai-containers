@@ -742,8 +742,21 @@ else fail "raw control characters in an error (out: $(cat -v <<<"$OUT"))"; fi
 # and directories too, or the volume is refused (Q3).
 W="$(mk_repo subgit)"; mkdir -p "$W/sub/.git/refs/heads"; ln -s /dev/zero "$W/sub/.git/refs/heads/x"
 run_script reset "$W" main
-if [[ "$RC" != 0 && "$OUT" == *"sub/.git/refs/heads/x is not a regular file or directory"* ]]; then pass "a link inside a nested .git is refused"
+if [[ "$RC" != 0 && "$OUT" == *"sub/.git"*"inside the checkout"* ]]; then pass "a nested .git holding a link is refused"
 else fail "nested .git link (rc=$RC; out: $OUT)"; fi
+# Any .git below the top level is refused, whatever it is: a .git FILE redirects
+# git (gitdir:) to a directory the agent chose, and a nested git directory's
+# commondir to another, either of them anywhere (security review of 8f5e5b9).
+W="$(mk_repo subgitfile)"; mkdir -p "$W/sub" "$TMP/elsewhere"; printf 'gitdir: %s\n' "$TMP/elsewhere" > "$W/sub/.git"
+run_script reset "$W" main
+if [[ "$RC" != 0 && "$OUT" == *"sub/.git"*"inside the checkout"* ]]; then pass "a nested .git file (gitdir: redirect) is refused"
+else fail "nested .git file accepted (rc=$RC; out: $OUT)"; fi
+W="$(mk_repo subgitdir)"; git init -q "$W/sub"; printf '%s\n' "$TMP/elsewhere" > "$W/sub/.git/commondir"
+run_script pull "$W"
+if [[ "$RC" != 0 && "$OUT" == *"sub/.git"*"inside the checkout"* ]]; then pass "a nested git directory (commondir) is refused"
+else fail "nested git directory accepted (rc=$RC; out: $OUT)"; fi
+grep -q -- 'diff-files --ignore-submodules=all' "$SCRIPT" \
+  && pass "diff-files never opens a submodule's repository" || fail "diff-files without --ignore-submodules=all"
 grep -qE -- '--memory[ =]' "$REPO_DIR/repo.sh" 2>/dev/null || grep -qE -- '--memory[ =]' "$(dirname "$SCRIPT")/repo.sh" \
   && pass "the seed containers that run git are given a memory limit" || fail "no --memory on the git helper's container"
 
