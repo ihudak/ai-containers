@@ -425,6 +425,39 @@ grep -qF "includes ../other.gitconfig (includeif.gitdir:/x/.path)" "$ERR" \
   || fail "G25 quiet includes (stderr: $(grep 'includes' "$ERR" | tr '\n' ' '))"
 "${G[@]}" -C "$PROJ" config --unset-all include.path; "${G[@]}" -C "$PROJ" config --remove-section 'includeIf.gitdir:/x/'
 
+# ── G29: an include inside an included file is followed ───────────────────────
+# A file the agent cannot reach can still include one it can: git reads the
+# whole chain as the config. Followed from every file that is itself safe, to
+# git's own depth (10), and a loop ends.
+mkdir -p "$TMP/inc29"
+"${G[@]}" config --file "$TMP/inc29/a.gitconfig" include.path "$TMP/inc29/b.gitconfig"
+"${G[@]}" config --file "$TMP/inc29/b.gitconfig" include.path ../proj/nested29.gitconfig
+"${G[@]}" config --file "$TMP/inc29/b.gitconfig" --add include.path "$TMP/inc29/a.gitconfig"
+"${G[@]}" -C "$PROJ" config include.path "$TMP/inc29/a.gitconfig"
+launch ..
+grep -qF "WARNING: /workspace/proj/.git/config includes ../proj/nested29.gitconfig (include.path in $TMP/inc29/b.gitconfig), which the agent can redirect:" "$ERR" \
+  && grep -qF "it can write $PROJ/nested29.gitconfig (at /workspace/proj/nested29.gitconfig)" "$ERR" \
+  && pass "G29 an include two files down, into the writable project, is named with the file that includes it" \
+  || fail "G29 nested include (rc=$LAUNCH_RC; stderr: $(grep -A1 'includes' "$ERR" | tr '\n' ' '))"
+[[ "$LAUNCH_RC" == 0 && "$(grep -c 'nested29.gitconfig (include.path' "$ERR")" -eq 1 ]] \
+  && pass "G29 an include loop ends, and each include is named once" \
+  || fail "G29 loop (rc=$LAUNCH_RC; named: $(grep -c 'nested29' "$ERR"))"
+"${G[@]}" -C "$PROJ" config --unset-all include.path; rm -rf "$TMP/inc29"
+
+# ── G30: what the agent writes in an included file cannot silence the check ───
+# The launcher runs from inside the project, and a git started there reads the
+# project's config — includes and all — before anything else. An include loop in
+# the writable file the config includes made every such git die, and every
+# include WARNING with it. The config files are read as files, never as the
+# repository the launcher happens to sit in.
+"${G[@]}" -C "$PROJ" config include.path ../shared30.gitconfig
+"${G[@]}" config --file "$PROJ/shared30.gitconfig" include.path shared30.gitconfig
+launch ..
+grep -qF "WARNING: /workspace/proj/.git/config includes ../shared30.gitconfig (include.path), which the agent can redirect:" "$ERR" \
+  && pass "G30 an include loop in the writable included file does not silence its WARNING" \
+  || fail "G30 include WARNING silenced (rc=$LAUNCH_RC; stderr: $(grep -E 'includes|fatal' "$ERR" | tr '\n' ' '))"
+"${G[@]}" -C "$PROJ" config --unset-all include.path; rm -f "$PROJ/shared30.gitconfig"
+
 # ── G26: the launch that first protects a repository names what its config ────
 # already runs — the one moment that can only be what was set before the
 # protection existed. Once: a later launch says nothing. Names, never values.

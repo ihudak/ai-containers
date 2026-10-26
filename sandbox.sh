@@ -812,11 +812,19 @@ launcher_ro_overlay() {
     fi
     # A file the config includes is read as part of it, so it can set anything
     # the config can — core.fsmonitor, core.hooksPath — from wherever it lies.
-    # git resolves a relative path from the including file's directory.
+    # git resolves a relative path from the including file's directory. An
+    # included file the agent cannot reach can include one it can, so the chain
+    # is followed from every file found safe, to git's own depth of 10; a file
+    # the agent can reach is named, not read (tests/test-git-internals-ro.sh G29).
     for f in "$g/config" "$g/config.worktree"; do
       if [[ ! -f "$f" || -L "$f" ]]; then continue; fi
+      local -a ifile=("$f") idep=(0)
+      local -A iseen=(["$f"]=1)
+      local ii=0 icur itgt
+      while (( ii < ${#ifile[@]} )); do
+      icur="${ifile[ii]}"; ii=$((ii + 1))
       inc=()
-      mapfile -d '' -t inc < <(_git_include_paths "$f")
+      mapfile -d '' -t inc < <(_git_include_paths "$icur")
       for e in ${inc[@]+"${inc[@]}"}; do
         ik="${e%%$'\n'*}"; ip=""
         if [[ "$e" == *$'\n'* ]]; then ip="${e#*$'\n'}"; fi
@@ -824,9 +832,19 @@ launcher_ro_overlay() {
         # shellcheck disable=SC2088  # '~/'* matches a LITERAL leading ~/ in the config value, expanded by hand
         case "$ip" in '~/'*) ip="$HOME/${ip#\~/}" ;; esac
         walk=()
-        mapfile -d '' -t walk < <(_path_walk "$(cd "${f%/*}" 2>/dev/null && pwd -P)" "$ip")
-        if ! _walk_exposed how q w "" ${walk[@]+"${walk[@]}"}; then continue; fi
-        printf 'WARNING: %s/%s includes %s (%s), which the agent can redirect:\n' "$at" "${f##*/}" "$ip" "$ik" >&2
+        mapfile -d '' -t walk < <(_path_walk "$(cd "${icur%/*}" 2>/dev/null && pwd -P)" "$ip")
+        if ! _walk_exposed how q w "" ${walk[@]+"${walk[@]}"}; then
+          if [[ "$ip" == /* ]]; then itgt="$ip"; else itgt="${icur%/*}/$ip"; fi
+          if [[ -f "$itgt" && -z "${iseen[$itgt]:-}" ]] && (( idep[ii - 1] < 10 )); then
+            iseen[$itgt]=1; ifile+=("$itgt"); idep+=("$((idep[ii - 1] + 1))")
+          fi
+          continue
+        fi
+        if [[ "$icur" == "$f" ]]; then
+          printf 'WARNING: %s/%s includes %s (%s), which the agent can redirect:\n' "$at" "${f##*/}" "$ip" "$ik" >&2
+        else
+          printf 'WARNING: %s/%s includes %s (%s in %s), which the agent can redirect:\n' "$at" "${f##*/}" "$ip" "$ik" "$icur" >&2
+        fi
         case "$how" in
           change)  printf '         it can write %s (at %s), which git reads as part of that config.\n' "$q" "$w" >&2 ;;
           repoint) printf '         it can repoint %s (at %s), a link on its way.\n' "$q" "$w" >&2 ;;
@@ -834,6 +852,8 @@ launcher_ro_overlay() {
         esac
         printf '         It can set what your host'\''s git runs. Move what it sets into %s on the host.\n' "${f##*/}" >&2
       done
+      done
+      unset iseen
     done
   done
 
@@ -1347,7 +1367,7 @@ git_dirs_in() {
 _git_config_bool() {
   local v
   if command -v git >/dev/null 2>&1; then
-    v="$(git config --file "$1" --type=bool --get "$2" 2>/dev/null)" || return 1
+    v="$(_git_file_config "$1" --type=bool --get "$2" 2>/dev/null)" || return 1
     [[ "$v" == true ]]; return
   fi
   awk -v sec="${2%.*}" -v key="${2##*.}" '
@@ -1369,7 +1389,7 @@ _git_config_bool() {
 _git_config_get() {
   local v
   if command -v git >/dev/null 2>&1; then
-    v="$(git config --file "$1" --get "$2" 2>/dev/null)" || return 1
+    v="$(_git_file_config "$1" --get "$2" 2>/dev/null)" || return 1
     printf '%s' "$v"; return 0
   fi
   awk -v sec="${2%.*}" -v key="${2##*.}" '
@@ -1408,8 +1428,19 @@ _git_exec_keys() {
       esac
       had[$k]=1
       printf '%s\0' "$k"
-    done < <(git config --file "$f" --null --list 2>/dev/null)
+    done < <(_git_file_config "$f" --null --list 2>/dev/null)
   done
+}
+
+# _git_file_config <config-file> <git-config-args>...: git config on one FILE,
+# never on the repository the launcher happens to run from. A git started inside
+# a repository reads its config first — includes and all — and the launcher runs
+# from inside the project, whose config can include a file the agent writes: an
+# include loop there made every such call die, silencing every check built on it
+# (tests/test-git-internals-ro.sh G30). GIT_DIR=/dev/null stops the discovery.
+_git_file_config() {
+  local f="$1"; shift
+  GIT_DIR=/dev/null git config --file "$f" "$@"
 }
 
 # _git_include_paths <config-file>: every include.path and includeIf.*.path the
@@ -1417,7 +1448,7 @@ _git_exec_keys() {
 # since one that does not hold today may hold tomorrow. With no git, none.
 _git_include_paths() {
   command -v git >/dev/null 2>&1 || return 0
-  git config --file "$1" --null --get-regexp '^include(if\..*)?\.path$' 2>/dev/null || true
+  _git_file_config "$1" --null --get-regexp '^include(if\..*)?\.path$' 2>/dev/null || true
 }
 
 # Seed a per-workspace writable working-copy volume from a repo's shared base

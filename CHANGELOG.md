@@ -24,6 +24,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   directories the launch is now refused, naming where, and the links of every
   launcher but the one running share one budget of 200; any launcher whose links that
   budget did not cover is named (bugs review LNCH-1).
+- **An include the agent can write is found two files down, and cannot be
+  silenced.** A protected git config that includes a file the agent can write
+  gets a `WARNING:`; an include inside an included file did not. The chain is
+  now followed. And because the launcher runs from inside the project, every
+  git it ran there read the project's config first: an include loop written
+  into the file that config includes made each of those reads fail, and every
+  include warning disappear. The config files are now read as plain files.
 
 ## v0.10.7 — 2026-10-18
 
