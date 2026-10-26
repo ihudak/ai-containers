@@ -822,7 +822,7 @@ Each fix batch was reviewed by an independent reviewer before it was merged, and
 ### GIT-2: The include walk is bounded per config but not per launch, so planted repositories can make every launch take minutes or hours
 - **Status: OPEN** (review of the batch 1 hotfix, F1)
 - Severity: MEDIUM. Confidence: CONFIRMED (measured)
-- Location: sandbox.sh: `if (( ++ient > 100 )); then icut=1` (`ient` is reset for each `config` and `config.worktree`), and `_path_walk()`.
+- Location: sandbox.sh: `if (( ++ient > 100 || ++ients > 1000 ))` (as fixed; before batch 9 it read `++ient > 100` alone, reset for each `config` and `config.worktree`), and `_path_walk()`.
 - What's wrong: there are three problems.
   - Each config gets 100 include entries, and each git directory has two configs. `config.worktree` is walked whenever it exists, even with `extensions.worktreeConfig` off, when the host's git never reads it. A launch can protect up to `SANDBOX_GIT_MAX` (200) git directories, and the agent can plant all of them. The 1000-files-per-launch budget limits files, not entries.
   - `_path_walk` is quadratic in the number of path components, because it strips one component per step with `rest="${rest#*/}"`.
