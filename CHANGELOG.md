@@ -29,7 +29,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   directories the launch is now refused, naming where, and the links of every
   launcher but the one running share one budget of 200; any launcher whose links that
   budget did not cover is named (bugs review LNCH-1). The limit counts
-  overlays, so launchers nested inside one another count once.
+  overlays, so launchers nested inside one that is overlaid count once.
 - **An include the agent can write is found two files down, and cannot be
   silenced.** A protected git config that includes a file the agent can write
   gets a `WARNING:`; an include inside an included file did not. The chain is
@@ -37,9 +37,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   git it ran there read the project's config first: an include loop written
   into the file that config includes made each of those reads fail, and every
   include warning disappear. The config files are now read as plain files.
-  Each included file is read once per launch, however its path is spelled,
-  and at most 200 per launch: two spellings of a self-include made the first
-  version of this walk take minutes.
+  Each included file is read once per config, however its path is spelled,
+  and at most 20 per config and 1000 per launch, with a warning naming any
+  config whose includes were not all followed: two spellings of a
+  self-include made the first version of this walk take minutes.
 
 ## v0.10.7 — 2026-10-18
 

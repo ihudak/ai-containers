@@ -626,5 +626,33 @@ idx33="$(grep 'cannot read the index of' "$ERR")"
   || fail "G33 index WARNING (stderr: $(grep -A1 'index of' "$ERR" | cat -v | tr '\n' ' '))"
 rm -rf "$PROJ/x33"$'\e]0;pwned\a'
 
+# ── G34: one repository's walk cannot hide another's. A planted repository
+# that includes the same shared file must not mark it read for the launch: the
+# user's repository that includes it is still checked, and named (security
+# review of c0d48d9).
+mkdir -p "$TMP/inc34" "$PROJ/b34" "$PROJ/deep34/a"
+"${G[@]}" config --file "$TMP/inc34/shared.gitconfig" include.path ../proj/w34.gitconfig
+"${G[@]}" -C "$PROJ/b34" init -q && "${G[@]}" -C "$PROJ/deep34/a" init -q
+"${G[@]}" config --file "$PROJ/b34/.git/config" include.path "$TMP/inc34/shared.gitconfig"
+"${G[@]}" config --file "$PROJ/deep34/a/.git/config" include.path "$TMP/inc34/shared.gitconfig"
+launch ..
+grep -qF "WARNING: /workspace/proj/deep34/a/.git/config includes ../proj/w34.gitconfig" "$ERR" \
+  && grep -qF "WARNING: /workspace/proj/b34/.git/config includes ../proj/w34.gitconfig" "$ERR" \
+  && pass "G34 a shared include is checked for every repository that includes it" \
+  || fail "G34 one walk hid another (stderr: $(grep 'w34' "$ERR" | tr '\n' ' '))"
+rm -rf "$TMP/inc34" "$PROJ/b34" "$PROJ/deep34"
+
+# ── G35: a config whose includes are not all followed says so ─────────────────
+mkdir -p "$PROJ/many35" "$TMP/inc35" && "${G[@]}" -C "$PROJ/many35" init -q
+for n in $(seq 1 25); do
+  : > "$TMP/inc35/f$n.gitconfig"
+  "${G[@]}" config --file "$PROJ/many35/.git/config" --add include.path "$TMP/inc35/f$n.gitconfig"
+done
+launch ..
+grep -qF "WARNING: not every include of /workspace/proj/many35/.git/config was followed" "$ERR" \
+  && pass "G35 a config past its include budget is named, not skipped in silence" \
+  || fail "G35 budget silent (stderr: $(grep -iE 'include' "$ERR" | tr '\n' ' '))"
+rm -rf "$PROJ/many35" "$TMP/inc35"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

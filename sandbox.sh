@@ -342,11 +342,13 @@ launcher_ro_overlay() {
     fsmonitor-watchman p4-changelist p4-prepare-changelist p4-post-changelist
     p4-pre-submit post-index-change)
   local -A seen=() tried=() scanned=() pinned=()
+  # Included git config files read: each once per protected config, keyed by
+  # device:inode however it is spelled (review of b3d2362: `./config` and
+  # `.//config` made the walk exponential) — per config, not per launch, so one
+  # repository's walk never marks a file read for another's (security review of
+  # c0d48d9). At most 20 per config and 1000 per launch; past either, that
+  # config is named in a WARNING rather than skipped in silence.
   local nl no=0 lmax ireads=0
-  # Included git config files already read, by device:inode — however they are
-  # spelled — across the whole launch (review of b3d2362: `./config` and
-  # `.//config` made the walk exponential).
-  local -A iseen_all=()
   local -a unchecked=()
   # The agent's identity decides what it can reach; find needs it numeric (and
   # within a 32-bit id — GNU find rejects 4294967295 and up), and a find that
@@ -433,12 +435,16 @@ launcher_ro_overlay() {
     exit 1
   fi
   # Counted as overlays, not as finds: each distinct directory once, however many
-  # mounts expose it, and none nested in another candidate — its overlay covers
-  # it (review of 643d9bd). Ancestors are walked per candidate, so this stays
-  # linear in the number found.
+  # mounts expose it, and none nested in another candidate that IS overlaid — its
+  # overlay covers it (review of 643d9bd). A mount root that holds a launcher is
+  # not overlaid (it stays writable, with a NOTE), so it covers nothing: the
+  # agent can write those two files there (security review of c0d48d9).
+  # Ancestors are walked per candidate, so this stays linear in the number found.
   local -A lcand=() lcounted=()
   local lc=0 la
-  for l in ${cl[@]+"${cl[@]}"}; do lcand[$l]=1; done
+  for i in ${cl[@]+"${!cl[@]}"}; do
+    if [[ "${cl[i]}" != "${csrc[i]}" ]]; then lcand[${cl[i]}]=1; fi
+  done
   for l in ${cl[@]+"${cl[@]}"}; do
     [[ -z "${lcounted[$l]:-}" ]] || continue
     lcounted[$l]=1
@@ -840,8 +846,9 @@ launcher_ro_overlay() {
     for f in "$g/config" "$g/config.worktree"; do
       if [[ ! -f "$f" || -L "$f" ]]; then continue; fi
       local -a ifile=("$f") idep=(0)
-      local ii=0 icur itgt ikey
-      ikey="$(_launcher_dev_ino "$f")" && iseen_all[$ikey]=1
+      local ii=0 icur itgt ikey inr=0 icut=""
+      unset iseen; local -A iseen=()
+      ikey="$(_launcher_dev_ino "$f")" && iseen[$ikey]=1
       while (( ii < ${#ifile[@]} )); do
       icur="${ifile[ii]}"; ii=$((ii + 1))
       inc=()
@@ -857,21 +864,19 @@ launcher_ro_overlay() {
         if ! _walk_exposed how q w "" ${walk[@]+"${walk[@]}"}; then
           if [[ "$ip" == /* ]]; then itgt="$ip"; else itgt="${icur%/*}/$ip"; fi
           if [[ -f "$itgt" ]] && (( idep[ii - 1] < 10 )) && ikey="$(_launcher_dev_ino "$itgt")" \
-             && [[ -z "${iseen_all[$ikey]:-}" ]]; then
-            iseen_all[$ikey]=1
-            if (( ++ireads > 200 )); then
-              if (( ireads == 201 )); then
-                printf 'NOTE: the protected git configs include more than 200 files between them;\n' >&2
-                printf '      includes past those were not followed.\n' >&2
-              fi
+             && [[ -z "${iseen[$ikey]:-}" ]]; then
+            iseen[$ikey]=1
+            if (( inr >= 20 || ireads >= 1000 )); then
+              icut=1
             else
+              inr=$((inr + 1)); ireads=$((ireads + 1))
               ifile+=("$itgt"); idep+=("$((idep[ii - 1] + 1))")
             fi
           fi
           continue
         fi
         if [[ "$icur" == "$f" ]]; then
-          printf 'WARNING: %s/%s includes %s (%s), which the agent can redirect:\n' "$at" "${f##*/}" "$ip" "$ik" >&2
+          printf 'WARNING: %s/%s includes %q (%s), which the agent can redirect:\n' "$at" "${f##*/}" "$ip" "$ik" >&2
         else
           printf 'WARNING: %s/%s includes %q (%s in %q), which the agent can redirect:\n' "$at" "${f##*/}" "$ip" "$ik" "$icur" >&2
         fi
@@ -883,6 +888,10 @@ launcher_ro_overlay() {
         printf '         It can set what your host'\''s git runs. Move what it sets into %s on the host.\n' "${f##*/}" >&2
       done
       done
+      if [[ -n "$icut" ]]; then
+        printf 'WARNING: not every include of %s/%s was followed (20 files per config, 1000 per launch);\n' "$at" "${f##*/}" >&2
+        printf '         what the rest set was not checked. Review them: git config --file %q --list --show-origin --includes\n' "$f" >&2
+      fi
     done
   done
 

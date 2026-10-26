@@ -877,5 +877,17 @@ SANDBOX_LAUNCHER_MAX=1 EXTRA_MOUNTS="$NEST47" launch "$LAUNCHER" "$TMP/app"
   || fail "T47 nested launchers counted (rc=$LAUNCH_RC; stderr: $(grep -A3 ERROR "$ERR" | tr '\n' ' '))"
 rm -rf "$NEST47"
 
+# ── T48: … but only an overlay that is MADE covers what is nested in it. A
+# writable mount whose root holds a launcher stays writable (with a NOTE), so
+# every launcher nested in it gets an overlay of its own and counts — the agent
+# can write those two files at the root (security review of c0d48d9).
+ROOT48="$TMP/root48"; mkdir -p "$ROOT48"; : > "$ROOT48/sandbox.sh"; : > "$ROOT48/sandbox-common.sh"
+for n in 1 2 3; do mk_launcher "$ROOT48/p$n"; done
+SANDBOX_LAUNCHER_MAX=2 EXTRA_MOUNTS="$ROOT48" launch "$LAUNCHER" "$TMP/app"
+[[ "$LAUNCH_RC" != 0 ]] && grep -qF 'ERROR: the writable mounts hold more than 2 launchers' "$ERR" \
+  && pass "T48 launchers under a mount-root launcher, which is not overlaid, each count" \
+  || fail "T48 mount-root launcher hid its nested ones from the limit (rc=$LAUNCH_RC; stderr: $(grep -E 'ERROR|NOTE' "$ERR" | tr '\n' ' '))"
+rm -rf "$ROOT48"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
