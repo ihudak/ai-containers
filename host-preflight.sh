@@ -11,8 +11,11 @@
 #   `$'\r': command not found` partway through; an allowlist fragment with CRLF
 #   is worse, because `example.com\r` resolves to nothing and the domain is
 #   silently NOT allowed. The repo's .gitattributes pins LF for fresh clones;
-#   this catches a checkout made before it, or a file edited afterwards. Only
-#   files the engine executes or bakes are scanned — sandbox.conf and
+#   this catches a FILE that went CRLF afterwards — an edited fragment,
+#   descriptor, adapter or Dockerfile — while the scripts that source this one
+#   are still LF. It cannot catch a checkout where every script is CRLF: the
+#   entry point itself dies first (`env: 'bash\r'`), before it can source this.
+#   Only files the engine executes or bakes are scanned — sandbox.conf and
 #   sandbox*.env are parsed CR-tolerantly and are left alone.
 #
 # WSL /mnt/<drive> — WARNED. A checkout on the Windows filesystem works, but
@@ -39,6 +42,7 @@ host_crlf_files() {
   local restore; restore="$(shopt -p nullglob)"
   shopt -s nullglob
   files=("$dir"/*.sh "$dir"/Dockerfile* "$dir"/container.env
+         "$dir"/services.d/*.sh "$dir"/migrations/*.sh
          "$dir"/tools.d/*.conf "$dir"/allowlist-*.d/*.txt)
   eval "$restore"
   for f in "${files[@]}"; do

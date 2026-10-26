@@ -29,6 +29,11 @@ printf '#!/bin/bash\r\necho ok\r\n' > "$d/bad.sh"
 printf 'example.com\r\n' > "$d/allowlist-domains.d/custom.txt"
 printf 'repo=x/y\r\n' > "$d/tools.d/t.conf"
 printf 'FROM x\r\n' > "$d/Dockerfile"
+# services.d adapters are baked into the image and sourced there; migration hooks
+# run on the host. Both are scripts, CRLF breaks both (bugs review ENV-5).
+mkdir -p "$d/services.d" "$d/migrations"
+printf 'svc_endpoint() { :; }\r\n' > "$d/services.d/db.sh"
+printf '#!/usr/bin/env bash\r\n' > "$d/migrations/009-x.sh"
 # LC_ALL=C, not a bare sort: host_crlf_files returns an unordered set, so the
 # sort is the test's own normalisation — and `sort` collates by LOCALE. The
 # expectation below is in byte order (uppercase first), which is what CI's
@@ -38,8 +43,8 @@ printf 'FROM x\r\n' > "$d/Dockerfile"
 # /bin/true divergences tests/portability.sh exists for — the product is right,
 # the test's assumption was not.
 got="$(host_crlf_files "$d" | LC_ALL=C sort | tr '\n' ' ')"
-want="Dockerfile allowlist-domains.d/custom.txt bad.sh tools.d/t.conf "
-[[ "$got" == "$want" ]] && pass "CRLF found in scripts, Dockerfile, tools.d and allowlist fragments" \
+want="Dockerfile allowlist-domains.d/custom.txt bad.sh migrations/009-x.sh services.d/db.sh tools.d/t.conf "
+[[ "$got" == "$want" ]] && pass "CRLF found in scripts, Dockerfile, services.d, migrations, tools.d and allowlist fragments" \
   || fail "CRLF found in scripts, Dockerfile, tools.d and allowlist fragments: want '$want' got '$got'"
 
 # ── host_real_path (the real one; later sections override it) ────────────────
@@ -61,7 +66,8 @@ host_checkout_preflight "$d" 2>"$TMP/err"; rc=$?
 grep -q "sed -i 's/\\\\r\$//'" "$TMP/err" && pass "the refusal names the fix" \
   || fail "the refusal names the fix: $(cat "$TMP/err")"
 
-rm "$d/bad.sh" "$d/allowlist-domains.d/custom.txt" "$d/tools.d/t.conf" "$d/Dockerfile"
+rm "$d/bad.sh" "$d/allowlist-domains.d/custom.txt" "$d/tools.d/t.conf" "$d/Dockerfile" \
+   "$d/services.d/db.sh" "$d/migrations/009-x.sh"
 host_checkout_preflight "$d" 2>"$TMP/err"; rc=$?
 [[ "$rc" -eq 0 && ! -s "$TMP/err" ]] && pass "a healthy non-WSL checkout passes silently" \
   || fail "a healthy non-WSL checkout passes silently (rc=$rc): $(cat "$TMP/err")"

@@ -49,6 +49,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   your secrets the agent got. Such a line is now refused with a warning unless
   `SANDBOX_ENV_PASSTHROUGH` — in `sandbox.local.env` or your shell — lists the
   name (bugs review ENV-6).
+- **The CRLF check covers the database adapters and migration hooks too**, and
+  says what it cannot catch: a checkout where every script has Windows line
+  endings fails on its own first line before any check runs (bugs review
+  ENV-5).
 - **A repository under a writable mount can no longer make the launcher run a
   program on the host.** Before each launch the launcher reads every
   repository's index with the host's git, to find its submodules. In a partial
