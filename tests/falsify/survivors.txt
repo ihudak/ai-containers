@@ -374,8 +374,8 @@ version.sh:logic-flip:9afb91ee98f1cddd278a3e14a10f165bc2ed3fb7
   statement is added after it or the `return 0` moves.
 
 tests/lib-layer-checks.sh:logic-flip:b6554f5a51c19c07a987509d2872c86e54d554ea
-  :87  insteps && started && /^        [A-Za-z]/ {   (_wf_awk)
-  :396 insteps && started && /^        [A-Za-z]/ {   (_wf_it_awk, same text, same identity)
+  :91  insteps && started && /^        [A-Za-z]/ {   (_wf_awk)
+  :418 insteps && started && /^        [A-Za-z]/ {   (_wf_it_awk, same text, same identity)
   the damages:  insteps || started && /^        [A-Za-z]/ {
                 insteps && started || /^        [A-Za-z]/ {
   EQUIVALENT: no test can kill either, because the mutated awk program produces

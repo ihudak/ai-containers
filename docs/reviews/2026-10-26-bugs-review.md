@@ -633,7 +633,27 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - What's wrong: every automated PR tells the reviewer sandbox.conf was changed when it never is. AGENTS.md's "`update-nvm-version.yml` exists solely to keep the key current" is also stale: the key is empty by design now, and the job keeps the Dockerfile ARG current.
 - Fix direction: drop the sandbox.conf bullet, and reword the AGENTS.md sentence to say the job maintains `ARG NVM_VERSION`.
 
+### TST-9: The hermetic suite cannot run as root since batch 2, so `suite-floor` and Phase 5's floor container fail 19 tests
+- **Status: OPEN** (found while fixing batch 7; existed before it, from ENV-4's fix in batch 2)
+- Severity: HIGH (the bash-floor layer has verified nothing since batch 2 merged) — Confidence: CONFIRMED from CI: `Tests` runs 40386214831 (`0065450`) and 40392002312 (`1a1b701`), job "Shell test suite (bash floor)".
+- Location: `sandbox.sh: \`ERROR: the agent must not run as root (SANDBOX_UID=%s, SANDBOX_GID=%s).\``; `.github/workflows/hermetic-checks.yml`'s `suite-floor` job, and `verify-on-host.sh`'s floor `docker run`, both run `./tests/run-all.sh` as root in `ubuntu:22.04`.
+- What's wrong: ENV-4's fix refuses a root agent identity, and `sandbox.sh` takes the identity from `id -u` by default. In a root container every test that launches `sandbox.sh` without setting `SANDBOX_UID`/`SANDBOX_GID` stops at the refusal. The 19 are test-architecture-path, container-name, docs-path, env-file, git-internals-ro, launcher-dir-ro, mariadb, mode-capabilities, mode-output-mounts, mongo, mysql, playwright, postgres, redis, repos-path, selinux-label, skill-char-budget, tool-config-mounts and tools-d. The suite is meant to run as root there: several tests have root-only branches (test-launcher-dir-ro.sh's `setpriv` cases).
+- Not the fix, measured: exporting `SANDBOX_UID=1000 SANDBOX_GID=1000` for the whole run (what the refusal tells a root user to do) breaks three other tests that expect the identity to follow the invoking user: test-integration-lib.sh (`IT_LAUNCH_UID follows the invoking user`), test-launcher-dir-ro.sh T46, and test-falsify-historical.sh, whose oracle is test-integration-lib.sh. Measured as a non-root user with the variables exported; no root environment was available to measure as root.
+- Fix direction: decide per test. Either a launching test sets a non-root identity of its own when `id -u` is 0, or the floor runs move to a non-root user and the root-only branches get a root run of their own. Verify as root (docs/superpowers/to-test.md, batch 7, "Root").
 
+### TST-10: test-repo-git-reset.sh fails wherever git still creates `.git/branches` (git 2.34 and 2.43, so the floor image and Ubuntu 24.04)
+- **Status: OPEN** (found while fixing batch 7; existed before it, from batch 2's REPO-1 redesign)
+- Severity: MEDIUM (red on a stock Ubuntu 22.04 or 24.04 host and in the floor job; CI's `suite` job, on GitHub's own git build, passes it) — Confidence: CONFIRMED (reproduced at `0065450` and at `1a1b701`, git 2.43.0).
+- Location: `tests/test-repo-git-reset.sh: \`&& [[ ! -e "$W/.git/remotes" && ! -e "$W/.git/branches" ]]; then\``
+- What's wrong: the assertion checks that a reset leaves no legacy `.git/remotes` or `.git/branches` behind. `reset` replaces the volume's `.git` with a fresh clone's, and git 2.34 and 2.43 still put an empty `branches/` in every new repository from their default template (`git init` lists `branches config description HEAD hooks info objects refs`). The reset worked: the secret commit was not fetched. The failure is `FAIL: legacy remote file was used (log: add first add shared-file ; out: ON|main …)`.
+- Fix direction: clone with an empty template (`--template=` / `init.templateDir`), which also drops the sample hooks, or assert that `branches/` names no remote rather than that it is absent. Belongs with batch 4's repo-helper work (`repo-git-reset.sh`).
+
+### TST-11: The ledger ratchet has failed on main since batch 2 with 19 unclassified repo-git-reset.sh survivors and one stale entry
+- **Status: OPEN** (found while fixing batch 7; existed before it)
+- Severity: MEDIUM (the falsify job is red, so a new survivor anywhere would not stand out) — Confidence: CONFIRMED from CI: `Tests` run 40386214831, job "Mutation tier (falsify) + survivor-ledger ratchet", `20 problem(s)`.
+- Location: `tests/falsify/survivors.txt` against `repo-git-reset.sh`, an active target since batch 2 redesigned it.
+- What's wrong: 19 identities (cond-negate, logic-flip and return-flip) SURVIVED with no entry, and the entry `repo-git-reset.sh:logic-flip:bfefa9b0411d327b435d5cd8264b421dfcb5d714` names a mutant that no longer exists.
+- Fix direction: kill or classify each survivor and delete the stale entry, in the same PR as batch 4's changes to `repo-git-reset.sh`, then re-score that target.
 
 ## 8. Documentation vs code
 

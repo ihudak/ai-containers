@@ -46,7 +46,7 @@ Made on Ubuntu 24.04 (aarch64) with GNU userland: bash 5.2.21, mawk
 
 ### Floor container (`ubuntu:22.04`, mawk 1.3.4-20200120)
 
-The floor job is red on main for reasons that predate batch 7 (see "Root" below).
+The floor job is red on main for reasons that predate batch 7 (TST-9, TST-10; see "Root" below).
 Until that is fixed, run these files on their own:
 
 ```
@@ -96,7 +96,8 @@ docker run --rm -v "$PWD:/w:ro" -w /w ubuntu:22.04 bash -c '
 ### Root (the CI floor container, `verify-on-host.sh`'s floor container)
 
 - [ ] **The hermetic suite as root.** This is NOT fixed by batch 7 — it is
-  logged as an open item in `docs/reviews/2026-10-26-bugs-review.md`.
+  logged as open items TST-9 and TST-10 in
+  `docs/reviews/2026-10-26-bugs-review.md`.
   `suite-floor` runs the suite as root and has failed on main since batch 2:
   - 19 launcher tests stop at sandbox.sh's refusal of UID 0 (ENV-4).
   - test-repo-git-reset.sh fails because git 2.34 and 2.43 create an empty
