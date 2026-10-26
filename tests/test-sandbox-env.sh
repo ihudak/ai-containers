@@ -14,7 +14,7 @@ bash -n "$REPO_DIR/sandbox.sh"        && pass "sandbox.sh bash -n"        || fai
 
 # Load the REAL load_env_defaults + its env_key_denied helper (extract just the
 # functions so the file's heavy top-level code does not run).
-eval "$(sed -n '/^env_key_denied()/,/^}/p;/^env_key_portable()/,/^}/p;/^env_key_machine_only()/,/^}/p;/^env_value_portable()/,/^}/p;/^env_portable_workdir()/,/^}/p;/^env_key_tool_config()/,/^}/p;/^load_env_defaults()/,/^}/p' "$REPO_DIR/sandbox-common.sh")"
+eval "$(sed -n '/^env_key_denied()/,/^}/p;/^env_key_portable()/,/^}/p;/^env_key_machine_only()/,/^}/p;/^env_value_portable()/,/^}/p;/^_image_repo()/,/^}/p;/^env_portable_workdir()/,/^}/p;/^env_key_tool_config()/,/^}/p;/^load_env_defaults()/,/^}/p' "$REPO_DIR/sandbox-common.sh")"
 type load_env_defaults >/dev/null 2>&1 && pass "load_env_defaults defined" || { fail "load_env_defaults defined"; printf '\n%d failure(s)\n' "$fails"; exit "$fails"; }
 type env_key_denied >/dev/null 2>&1 && pass "env_key_denied defined" || { fail "env_key_denied defined"; printf '\n%d failure(s)\n' "$fails"; exit "$fails"; }
 
@@ -201,6 +201,21 @@ printf 'REPOS=infra:rw\nREPO_VOLUME_PREFIX=other\nSANDBOX_CONF=/x.conf\nIMAGE_NA
 printf 'IMAGE_NAME=my/seed\n' > "$PORTABLE"
 ( unset IMAGE_NAME; export REPO_SEED_IMAGE=my/seed; apply; [[ -z "${IMAGE_NAME:-}" ]] ) 2>/dev/null \
   && pass "… nor a REPO_SEED_IMAGE override" || fail "portable IMAGE_NAME equal to REPO_SEED_IMAGE accepted"
+# Docker reads one image under many names: a tag, the default registry,
+# library/, a digest (security review of 0b40d6c).
+sbad=""
+for v in ai-containers-seed:latest docker.io/ai-containers-seed docker.io/library/ai-containers-seed:latest \
+         index.docker.io/library/ai-containers-seed library/ai-containers-seed \
+         "ai-containers-seed@sha256:$(printf '%064d' 0)"; do
+  printf 'IMAGE_NAME=%s\n' "$v" > "$PORTABLE"
+  ( unset IMAGE_NAME REPO_SEED_IMAGE; apply; [[ -z "${IMAGE_NAME:-}" ]] ) 2>/dev/null || sbad+=" $v"
+done
+printf 'IMAGE_NAME=my/seed:dev\n' > "$PORTABLE"
+( unset IMAGE_NAME; export REPO_SEED_IMAGE=docker.io/my/seed; apply; [[ -z "${IMAGE_NAME:-}" ]] ) 2>/dev/null || sbad+=" my/seed:dev(override)"
+printf 'IMAGE_NAME=ai-containers-seeder\n' > "$PORTABLE"
+( unset IMAGE_NAME REPO_SEED_IMAGE; apply; [[ "${IMAGE_NAME:-}" == ai-containers-seeder ]] ) 2>/dev/null || sbad+=" (refused)ai-containers-seeder"
+[[ -z "$sbad" ]] && pass "the seed image is recognised under any of its names, and only it" \
+  || fail "seed image names:$sbad"
 printf 'REPOS=infra:rw\n' > "$LOCAL"; printf 'IMAGE_NAME=proj-ai\n' > "$PORTABLE"
 ( unset REPOS IMAGE_NAME REPO_SEED_IMAGE; apply; [[ "$REPOS" == infra:rw && "$IMAGE_NAME" == proj-ai ]] ) 2>/dev/null \
   && pass "sandbox.local.env still sets REPOS, and sandbox.env an ordinary IMAGE_NAME" \

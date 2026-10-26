@@ -117,6 +117,20 @@ env_key_machine_only() {
   return 1
 }
 
+# _image_repo <reference>: the repository a docker image reference names, as
+# docker resolves it — lowercased, without a digest or tag, and without the
+# default registry and its library/ namespace — so `ai-containers-seed:latest`
+# and `docker.io/library/ai-containers-seed` compare equal to the seed image
+# (security review of 0b40d6c).
+_image_repo() {
+  local r="${1,,}" last
+  r="${r%%@*}"
+  last="${r##*/}"
+  [[ "$last" == *:* ]] && r="${r%:*}"
+  r="${r#docker.io/}"; r="${r#index.docker.io/}"; r="${r#library/}"
+  printf '%s' "$r"
+}
+
 # env_value_portable <key> <value>: the portable keys whose VALUE can still reach
 # past the project are held inside it. The `host` group mounts your real $HOME
 # dotfiles. A working dir is bind-mounted writable, so it is checked as a PATH,
@@ -127,7 +141,10 @@ env_value_portable() {
     AI_CONTAINER_GROUP) [[ "$2" != host ]]; return ;;
     # The seed image is run as root with your ~/.ssh mounted (repo.sh); a build
     # tagged with its name would replace it.
-    IMAGE_NAME) [[ "$2" != ai-containers-seed && "$2" != "${REPO_SEED_IMAGE:-ai-containers-seed}" ]]; return ;;
+    IMAGE_NAME)
+      local mine seed
+      mine="$(_image_repo "$2")"; seed="$(_image_repo "${REPO_SEED_IMAGE:-ai-containers-seed}")"
+      [[ "$mine" != ai-containers-seed && "$mine" != "$seed" ]]; return ;;
   esac
   return 0
 }
