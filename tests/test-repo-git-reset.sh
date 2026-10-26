@@ -691,6 +691,11 @@ run_script inspect "$W"
 if [[ "$OUT" != *$'\e'* && "$OUT" != *$'\a'* ]] && grep -q '^BRANCH|x?]0;pwned?|' <<<"$OUT"; then
   pass "control characters in a branch file's name are shown as ?"
 else fail "raw control characters in the records ($(cat -v <<<"$OUT" | tr '\n' ' '))"; fi
+W="$(mk_repo c1)"; cp "$W/.git/refs/heads/main" "$W/.git/refs/heads/y"$'\xc2\x9b'"31m"
+run_script inspect "$W"
+if [[ "$OUT" != *$'\xc2\x9b'* && "$OUT" != *$'\x9b'* ]] && grep -q '^BRANCH|y??31m|' <<<"$OUT"; then
+  pass "an 8-bit (C1) control sequence in a branch file's name is shown as ?"
+else fail "C1 control in the records ($(cat -v <<<"$OUT" | tr '\n' ' '))"; fi
 
 printf '\n%s\n' "----------------------------------------"
 if [[ "$fails" -eq 0 ]]; then

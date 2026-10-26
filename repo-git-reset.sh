@@ -149,8 +149,9 @@ volume_head() {
 
 # A name for the records and the terminal: a | or a newline would split the
 # records, and a name read from the volume's files is not bound by git's rules,
-# so any control character (an escape sequence) is shown as ? too.
-shown() { local n="${1//|/?}"; printf '%s' "${n//[[:cntrl:]]/?}"; }
+# so anything but printable ASCII is shown as ? too — in the C locale, so 8-bit
+# (C1) controls such as \x9b are caught, which [:cntrl:] misses in UTF-8.
+shown() { local LC_ALL=C n="${1//|/?}"; printf '%s' "${n//[^[:print:]]/?}"; }
 
 # on_remote <oid>: the commit is in the private clone and on a remote branch.
 on_remote() {
