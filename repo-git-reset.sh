@@ -98,6 +98,11 @@ check_volume() {
   nosearch="cannot check $(shown "$dir"): find could not search all of it (an unreadable directory, or a path too long); refusing this repository"
   [[ -n "${AI_REPO_URL:-}" ]] || die "no recorded URL for this repository (AI_REPO_URL); refusing to run git on it"
   [[ -d "$gd" && ! -L "$gd" ]] || die "not a git repository: $(shown "$dir") (.git is missing, or is a file or link)"
+  # The refs are read as files (volume_refs), which the reftable format has none
+  # of: inspect named no branch at risk and reset then deleted them all (bugs
+  # review REPO-4).
+  [[ ! -e "$gd/reftable" && ( ! -e "$gd/refs/heads" || -d "$gd/refs/heads" ) ]] \
+    || die "$(shown "$dir") uses the reftable ref format, which this helper cannot read; refusing this repository"
   bad="$(find "$gd" ! -type f ! -type d -print -quit 2>/dev/null)" || die "$nosearch"
   [[ -z "$bad" ]] || die "$(shown "$bad") is not a regular file or directory; refusing this repository"
   bad="$(find "$dir" -path "$gd" -prune -o \( -type p -o -type b -o -type c \) -print -quit 2>/dev/null)" || die "$nosearch"
@@ -307,6 +312,14 @@ cmd_pull() {
   [[ ! -e "$gd/refs/stash" && ! -e "$gd/logs/refs/stash" ]] && ! grep -qs ' refs/stash$' "$gd/packed-refs" \
     || die "the repository has a stash; apply or drop it, or use reset"
   [[ -z "$(volume_refs "$dir" notes)" ]] || die "the repository has git notes; push or remove them, or use reset"
+  # An operation stopped halfway lives only in .git: a stopped `git am` lost the
+  # patches only rebase-apply/ held, which `git pull --ff-only` keeps (bugs review
+  # REPO-2).
+  local op
+  for op in rebase-apply rebase-merge sequencer MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD BISECT_START; do
+    [[ ! -e "$gd/$op" && ! -L "$gd/$op" ]] \
+      || die "an operation is in progress ($op in .git): finish or abort it, or use reset"
+  done
   [[ -z "$(find "$gd/worktrees" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]] \
     || die "the repository has linked worktrees; remove them (git worktree remove), or use reset"
   local other; other="$(other_ref "$dir")"
@@ -336,7 +349,12 @@ cmd_pull() {
     case "$irc" in
       0) ;;
       1) die "the checkout has staged changes; commit and push them, or use reset" ;;
-      *) die "cannot read the checkout's index (split, sparse or damaged); use reset" ;;
+      *)
+        # A split index needs its sharedindex file, which the copy lacks; "use reset"
+        # alone wiped far more than a sync (bugs review REPO-3).
+        [[ -z "$(find "$gd" -maxdepth 1 -name 'sharedindex.*' -print -quit 2>/dev/null)" ]] \
+          || die "the checkout's index is split (core.splitIndex); run \`git update-index --no-split-index\` in it, then sync again"
+        die "cannot read the checkout's index (sparse or damaged); use reset" ;;
     esac
   fi
   # A two-way merge from that commit to the remote's tip, as `pull --ff-only`

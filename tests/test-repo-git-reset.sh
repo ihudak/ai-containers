@@ -775,6 +775,36 @@ for packed in "" packed; do
   if [[ "$RC" != 0 && "$OUT" == *"refs/wip/save"* ]]; then pass "pull refuses a ref outside heads and tags${packed:+ (packed)}"
   else fail "custom ref dropped by pull${packed:+ (packed)} (rc=$RC; out: $OUT)"; fi
 done
+# REPO-2: an operation still in progress lives only in .git, which sync replaces:
+# a stopped `git am` lost the patches only rebase-apply/ held. Refused, as
+# `git pull --ff-only` would have kept them.
+for st in rebase-apply rebase-merge sequencer MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD BISECT_START; do
+  W="$(mk_repo "inprog-$st")"
+  case "$st" in rebase-*|sequencer) mkdir -p "$W/.git/$st"; : > "$W/.git/$st/x" ;; *) g "$W" rev-parse HEAD > "$W/.git/$st" ;; esac
+  run_script pull "$W"
+  if [[ "$RC" != 0 && "$OUT" == *"in progress"* ]]; then pass "pull refuses while $st says an operation is in progress"
+  else fail "pull ignored $st (rc=$RC; out: $OUT)"; fi
+done
+# REPO-4: a reftable repository has a stub refs/heads FILE and no loose or packed
+# refs, so every mode misread it — inspect named no branch at risk and reset then
+# deleted them. Refused in every mode.
+W="$(mk_repo reftable)"; rm -rf "$W/.git/refs/heads"; : > "$W/.git/refs/heads"; mkdir -p "$W/.git/reftable"
+for mode in inspect pull; do
+  run_script "$mode" "$W"
+  if [[ "$RC" != 0 && "$OUT" == *"reftable"* ]]; then pass "$mode refuses a reftable repository"
+  else fail "$mode misread a reftable repository (rc=$RC; out: $OUT)"; fi
+done
+run_script reset "$W" main
+[[ "$RC" != 0 && "$OUT" == *"reftable"* ]] && pass "reset refuses a reftable repository" || fail "reset ran on a reftable repository (rc=$RC; out: $OUT)"
+
+# REPO-3: a split index cannot be read from its copy, and "use reset" wiped far
+# more than a sync: say how to make it readable instead.
+W="$(mk_repo splitidx)"; S="$TMP/splitidx.seed"; commit_in "$S" si-new; g "$S" push -q origin main >/dev/null 2>&1
+g "$W" update-index --split-index
+run_script pull "$W"
+if [[ "$RC" != 0 && "$OUT" == *"--no-split-index"* ]]; then pass "a split index is refused with how to unsplit it"
+else fail "split-index refusal gives no way out but reset (rc=$RC; out: $OUT)"; fi
+
 # The volume checks fail closed: a directory find cannot search hides what is
 # inside it from them (review of 82698a0, F3).
 if [[ "$(id -u)" != 0 ]]; then
