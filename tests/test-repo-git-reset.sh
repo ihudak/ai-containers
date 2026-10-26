@@ -585,6 +585,15 @@ run_script inspect "$W"
 if grep -qx 'BRANCH|work|2|' <<<"$OUT"; then pass "a planted symbolic ref under refs/remotes/origin hides no unpushed work"
 else fail "symbolic ref hid unpushed work (out: $(tr '\n' ' ' <<<"$OUT"))"; fi
 
+# … and one that cannot be deleted (a .lock beside it) leaves every count unknown
+# rather than trusted (security review of f6368d6).
+W="$(mk_repo symlock)"; g "$W" checkout -q -b work >/dev/null 2>&1; commit_in "$W" z1
+g "$W" checkout -q main >/dev/null 2>&1; g "$W" symbolic-ref refs/remotes/origin/planted refs/heads/work
+: > "$W/.git/refs/remotes/origin/planted.lock"
+run_script inspect "$W"
+if grep -qx 'BRANCH|work|?|' <<<"$OUT"; then pass "a planted symbolic ref that cannot be removed makes every count unknown"
+else fail "undeletable symref trusted (out: $(tr '\n' ' ' <<<"$OUT"))"; fi
+
 # The replace-ref cleanup is itself a ref update: an agent's reference-transaction
 # hook must not run through it (re-review of 61f7806, H1).
 W="$(mk_repo hookreplace)"; M2="$TMP/ran-hookreplace"

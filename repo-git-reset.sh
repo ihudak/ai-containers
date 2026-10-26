@@ -193,11 +193,17 @@ cmd_inspect() {
   # remote-tracking refs stay: the fetch overwrites them, and without one they
   # still name the primary branch while the counts are reported unknown.
   local r t
-  while IFS=$'\t' read -r r t; do
-    [[ -n "$t" ]] || continue
-    [[ "$r" == refs/remotes/origin/HEAD && "$t" == refs/remotes/origin/* && "$t" != refs/remotes/origin/HEAD ]] && continue
-    git -C "$dir" update-ref --no-deref -d "$r" >/dev/null 2>&1
-  done < <(git -C "$dir" for-each-ref --format='%(refname)%09%(symref)' refs/remotes/origin/ 2>/dev/null)
+  planted_symrefs() {
+    git -C "$dir" for-each-ref --format='%(refname)%09%(symref)' refs/remotes/origin/ 2>/dev/null \
+      | while IFS=$'\t' read -r r t; do
+          [[ -n "$t" ]] || continue
+          [[ "$r" == refs/remotes/origin/HEAD && "$t" == refs/remotes/origin/* && "$t" != refs/remotes/origin/HEAD ]] && continue
+          printf '%s\n' "$r"
+        done
+  }
+  while IFS= read -r r; do
+    [[ -n "$r" ]] && git -C "$dir" update-ref --no-deref -d "$r" >/dev/null 2>&1
+  done < <(planted_symrefs)
   if have_origin "$dir"; then
     local err
     if ! err="$(git -C "$dir" fetch --prune origin 2>&1)"; then
@@ -210,6 +216,9 @@ cmd_inspect() {
     printf 'STALE|no "origin" remote — nothing to fetch from\n'
     fetched=""
   fi
+  # One that could not be removed (a .lock beside it, say) is still there, and a
+  # count made against it is not trusted (security review of f6368d6).
+  [[ -z "$(planted_symrefs)" ]] || fetched=""
 
   local primary
   if primary="$(detect_primary "$dir")"; then
