@@ -565,6 +565,18 @@ if [[ "$rc" != 124 ]] && grep -q 'not a regular file or directory' "$TMP/af.out"
 else fail "worktree FIFO (rc=$rc: $(tr '\n' ' ' < "$TMP/af.out"))"; fi
 ( exec 3<>"$W/.gitattributes" ) 2>/dev/null
 
+# refs/remotes/origin is the agent's to write; a successful fetch overwrites it
+# with the remote's tips, but a failed one leaves it as planted — so then no
+# count is trusted (security review of 61f7806).
+W="$(mk_repo staleref)"; g "$W" checkout -q -b work >/dev/null 2>&1; commit_in "$W" s1
+g "$W" update-ref refs/remotes/origin/work work; g "$W" checkout -q main >/dev/null 2>&1
+AI_REPO_URL="$TMP/does-not-exist.git" run_script inspect "$W"
+if grep -q '^STALE|' <<<"$OUT" && grep -qx 'BRANCH|work|?|' <<<"$OUT"; then
+  pass "after a failed fetch every unpushed count is unknown, not read from planted refs"
+else
+  fail "stale refs trusted (out: $(tr '\n' ' ' <<<"$OUT"))"
+fi
+
 # pull: the fast-forward repo.sh sync runs, through the same guarded path.
 W="$(mk_repo pull)"
 S="$TMP/pull.seed"; commit_in "$S" newer; g "$S" push -q origin main >/dev/null 2>&1

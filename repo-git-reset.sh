@@ -173,17 +173,22 @@ cmd_inspect() {
   [[ -n "$dir" ]] || { usage >&2; die "inspect needs a directory"; }
   [[ -e "$dir/.git" ]] || die "not a git repository: $dir"
   guard_repo "$dir"
+  # refs/remotes/origin is the agent's to write. A fetch overwrites it with the
+  # remote's tips; without one, no count made against it is trusted.
+  local fetched=1
   mark_safe_directory "$dir"
 
   if have_origin "$dir"; then
     local err
     if ! err="$(git -C "$dir" fetch --prune origin 2>&1)"; then
+      fetched=""
       # One line, and the first one: a multi-line git error would corrupt the
       # record-per-line contract this output is parsed under.
       printf 'STALE|%s\n' "$(printf '%s' "$err" | tr '\n' ' ' | cut -c1-200)"
     fi
   else
     printf 'STALE|no "origin" remote — nothing to fetch from\n'
+    fetched=""
   fi
 
   local primary
@@ -203,8 +208,7 @@ cmd_inspect() {
     # Against origin only: refs under another remote's name are the agent's to
     # plant. A count that fails is `?`, never 0 (re-review, G3/G4).
     unpushed="$(git -C "$dir" rev-list --count "refs/heads/$b" --not --remotes=origin 2>/dev/null)" || unpushed='?'
-    [[ "$unpushed" =~ ^[0-9]+$ ]] || unpushed='?'
-    unpushed="${unpushed//[^0-9]/}"
+    [[ "$unpushed" =~ ^[0-9]+$ && -n "$fetched" ]] || unpushed='?'
     flags=""
     [[ "$b" == "$current" ]] && flags="current"
     printf 'BRANCH|%s|%s|%s\n' "${b//|/?}" "$unpushed" "$flags"
