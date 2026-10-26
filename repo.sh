@@ -181,10 +181,11 @@ seed_from_git() {
       chown -R "$2" /dst' _ "$url" "${host_uid}:${host_gid}"
 }
 
-# Pull latest into an existing git volume — through repo-git-reset.sh's pull, so
-# the same guard that keeps reset from running anything the agent wrote into a
-# :rw volume's .git (hooks, fsmonitor, includes, filters) covers it too; this
-# container holds your ~/.ssh keys.
+# Pull latest into an existing git volume — through repo-git-reset.sh's pull,
+# which, like reset, never runs git on the volume's own .git (a :rw volume's is
+# the agent's to write, and this container holds your ~/.ssh keys): it clones
+# afresh, fast-forwards the checkout from that clone, and refuses whatever it
+# could lose.
 sync_from_git() {
   local vol="$1" out
   printf 'Pulling latest into volume "%s" (auth via host ~/.ssh) ...\n' "$vol"
@@ -227,20 +228,20 @@ git_helper_run() {   # $1 = volume  $2... = repo-git-reset.sh arguments
       exec bash /repo-git-reset.sh "$@"' _ "$@"
 }
 
-# Read-only pass: fetch, then report the primary branch and every local branch
-# with the number of its commits that are on no remote. This is what the
-# confirmation prompt is built from, which is why the FETCH lives here — a
-# "not on any remote" count read from stale refs would understate the loss at
-# exactly the moment the user is deciding whether to accept it.
+# Read-only pass: the helper clones the recorded remote privately, then reports
+# the remote's primary branch and every local branch with the number of its
+# commits on no remote branch (`?` when it cannot tell). This is what the
+# confirmation prompt is built from; the volume itself is not changed.
 inspect_git() {   # $1 = volume  → the helper's records on stdout
   git_helper_run "$1" inspect /dst
 }
 
-# Destructive pass: put the checkout on $2 at its remote tip, discard local
-# changes and untracked/ignored files, and delete every other local branch.
-# Deliberately does NOT fetch — it acts on what inspect_git already fetched, and
-# is handed the branch NAME the prompt displayed so that what was approved is
-# what happens.
+# Destructive pass: the volume becomes a clean checkout of $2 at the remote's
+# tip — its whole .git replaced by a fresh clone's, so local changes, untracked
+# and ignored files, other branches, stashes, tags on no remote and per-repo
+# config all go. It clones again, so it lands on the tip at reset time, which a
+# force-push since the prompt could have moved. It is handed the branch NAME the
+# prompt displayed, so what was approved is what happens.
 reset_git() {   # $1 = volume  $2 = primary branch
   local vol="$1" primary="$2" out line kind rest on="" at=""
   printf 'Resetting volume "%s" to a clean checkout on "%s" ...\n' "$vol" "$primary"

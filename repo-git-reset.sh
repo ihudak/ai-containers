@@ -113,36 +113,39 @@ fresh_clone() {
   fi
 }
 
-# volume_branches <dir>: "<name>\t<oid>" per local branch, read from the ref
-# files as text — a loose ref wins over packed-refs, as in git — with `?` for an
-# oid that is not one (a symbolic ref, or garbage).
-volume_branches() {
-  local gd="$1/.git" f name line oid ref
+# volume_refs <dir> <kind>: "<name>\t<oid>" per ref under refs/<kind>/ (heads,
+# tags, notes), read from the ref files as text — a loose ref wins over
+# packed-refs, as in git — with `?` for an oid that is not one (a symbolic ref,
+# or garbage). Only the first 200 bytes of a file are read: the agent writes
+# them, and a ref is a line of hex.
+volume_refs() {
+  local gd="$1/.git" kind="$2" f name line oid ref
   local -A seen=()
   while IFS= read -r -d '' f; do
-    name="${f#"$gd/refs/heads/"}"
-    IFS= read -r line < "$f" || true
+    name="${f#"$gd/refs/$kind/"}"
+    line="$(head -c 200 "$f" 2>/dev/null)"; line="${line%%$'\n'*}"
     if [[ "$line" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]]; then oid="$line"; else oid='?'; fi
     seen[$name]=1
     printf '%s\t%s\n' "$name" "$oid"
-  done < <(find "$gd/refs/heads" -type f -print0 2>/dev/null)
+  done < <(find "$gd/refs/$kind" -type f -print0 2>/dev/null)
   [[ -f "$gd/packed-refs" ]] || return 0
   while IFS=' ' read -r oid ref; do
-    [[ "$ref" == refs/heads/* ]] || continue
-    name="${ref#refs/heads/}"
+    [[ "$ref" == "refs/$kind/"* ]] || continue
+    name="${ref#"refs/$kind/"}"
     [[ -z "${seen[$name]:-}" ]] || continue
     seen[$name]=1
     [[ "$oid" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] || oid='?'
     printf '%s\t%s\n' "$name" "$oid"
-  done < "$gd/packed-refs"
+  done < <(cut -c1-300 "$gd/packed-refs")
 }
+volume_branches() { volume_refs "$1" heads; }
 
 # volume_head <dir>: the checked-out branch's name, from HEAD as text; nothing
 # for a detached or unreadable HEAD.
 volume_head() {
   local line
   [[ -f "$1/.git/HEAD" ]] || return 0
-  IFS= read -r line < "$1/.git/HEAD" || true
+  line="$(head -c 300 "$1/.git/HEAD" 2>/dev/null)"; line="${line%%$'\n'*}"
   [[ "$line" == 'ref: refs/heads/'* ]] && printf '%s' "${line#ref: refs/heads/}"
   return 0
 }
@@ -181,15 +184,20 @@ cmd_inspect() {
     printf 'STALE|%s\n' "${CLONE_ERR:-the recorded remote could not be cloned}"
   else
     primary="$(remote_primary)" && printf 'PRIMARY|%s\n' "$primary"
-    # The volume's objects, for counting — objects only, no config or refs.
-    [[ -d "$dir/.git/objects" ]] && printf '%s\n' "$dir/.git/objects" > "$F/.git/objects/info/alternates"
+    # The volume's objects, for counting — objects only, no config or refs — and
+    # not when the volume names alternates of its own, which git would follow
+    # out of the volume (review of d9b56a8, P3): then the counts are unknown.
+    if [[ -d "$dir/.git/objects" && ! -s "$dir/.git/objects/info/alternates" && ! -s "$dir/.git/objects/info/http-alternates" ]]; then
+      printf '%s\n' "$dir/.git/objects" > "$F/.git/objects/info/alternates"
+    fi
   fi
   local name oid unpushed flags
   while IFS=$'\t' read -r name oid; do
     [[ -n "$name" ]] || continue
     unpushed='?'
     if [[ -n "$cloned" && "$oid" != '?' ]]; then
-      unpushed="$(git -C "$F" -c core.commitGraph=false rev-list --count "$oid" --not --remotes=origin 2>/dev/null)" || unpushed='?'
+      unpushed="$(git -C "$F" -c core.commitGraph=false -c core.multiPackIndex=false \
+        rev-list --count "$oid" --not --remotes=origin 2>/dev/null)" || unpushed='?'
       [[ "$unpushed" =~ ^[0-9]+$ ]] || unpushed='?'
     fi
     flags=""; [[ "$name" == "$current" ]] && flags="current"
@@ -198,10 +206,14 @@ cmd_inspect() {
   return 0
 }
 
-# install_git_dir <dir>: the private clone's .git becomes the volume's.
+# install_git_dir <dir>: the private clone's .git becomes the volume's — copied
+# beside the old one first, so a copy that fails (a full disk) leaves the old
+# .git in place rather than none (review of d9b56a8, P4).
 install_git_dir() {
+  rm -rf "$1/.git.new" || die "could not clear $1/.git.new"
+  cp -a "$F/.git" "$1/.git.new" || { rm -rf "$1/.git.new"; die "could not copy the new .git"; }
   rm -rf "$1/.git" || die "could not remove the old .git"
-  cp -a "$F/.git" "$1/.git" || die "could not install the new .git"
+  mv "$1/.git.new" "$1/.git" || die "could not install the new .git"
 }
 
 cmd_reset() {
@@ -260,6 +272,20 @@ cmd_pull() {
   done
   git -C "$F" merge-base --is-ancestor "${tip[$b]}" "refs/remotes/origin/$b" \
     || die "$b has diverged from the remote; push it, or use reset"
+  # Nor anything else that lives only in .git, which is replaced (review of
+  # d9b56a8, P1): a stash, notes, linked worktrees, a tag on no remote.
+  local gd="$dir/.git"
+  [[ ! -e "$gd/refs/stash" && ! -e "$gd/logs/refs/stash" ]] && ! grep -qs ' refs/stash$' "$gd/packed-refs" \
+    || die "the repository has a stash; apply or drop it, or use reset"
+  [[ -z "$(volume_refs "$dir" notes)" ]] || die "the repository has git notes; push or remove them, or use reset"
+  [[ -z "$(find "$gd/worktrees" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]] \
+    || die "the repository has linked worktrees; remove them (git worktree remove), or use reset"
+  local tname toid
+  while IFS=$'\t' read -r tname toid; do
+    [[ -n "$tname" ]] || continue
+    [[ "$toid" != '?' ]] && git -C "$F" cat-file -e "$toid" 2>/dev/null \
+      || die "tag $(shown "$tname") is on no remote; push it, or use reset"
+  done < <(volume_refs "$dir" tags)
   mark_safe_directory "$dir"
   # The worktree must match its branch's commit: compared by the clone's git,
   # with its own config, against the volume's files.
@@ -267,8 +293,14 @@ cmd_pull() {
   git --git-dir="$F/.git" --work-tree="$dir" update-index -q --refresh >/dev/null 2>&1 || true
   git --git-dir="$F/.git" --work-tree="$dir" diff-files --quiet \
     || die "the checkout has uncommitted changes; commit and push them, or use reset"
-  git --git-dir="$F/.git" --work-tree="$dir" checkout --quiet --force -B "$b" "refs/remotes/origin/$b" \
-    || die "could not fast-forward $b"
+  # A two-way merge from that commit to the remote's tip, as `pull --ff-only`
+  # does, without --force: it refuses to overwrite an untracked file the remote
+  # now tracks, and leaves every other untracked file alone.
+  git --git-dir="$F/.git" --work-tree="$dir" read-tree -m -u "${tip[$b]}" "refs/remotes/origin/$b" \
+    || die "could not fast-forward $b without overwriting files in the checkout (an untracked file the remote now tracks?)"
+  git -C "$F" update-ref "refs/heads/$b" "refs/remotes/origin/$b" || die "could not move $b"
+  git -C "$F" symbolic-ref HEAD "refs/heads/$b" || die "could not check out $b"
+  git -C "$F" branch --quiet --set-upstream-to="origin/$b" "$b" >/dev/null 2>&1 || true
   for name in "${!tip[@]}"; do
     [[ "$name" == "$b" ]] && continue
     command git check-ref-format "refs/heads/$name" >/dev/null 2>&1 || continue

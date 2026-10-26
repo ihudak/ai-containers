@@ -70,9 +70,9 @@ Resetting volume "ai-containers-repo-app" to a clean checkout on "master" ...
   OK: app reset to a clean state.
 ```
 
-**Reset needs the remote.** No network, no credentials, or a remote that has gone away leaves the repo **untouched**, with the reason in the summary (`STALE`). Each run clones the source afresh rather than trusting the volume's own `.git`, which an agent with the repo mounted `:rw` could have rigged; so it takes as long as a clone, and it refuses while a running container mounts the volume read-write.
+**Reset needs the remote.** No network, no credentials, or a remote that has gone away leaves the repo **untouched**, with the reason in the summary (`STALE`). Each run clones the source afresh rather than trusting the volume's own `.git`, which an agent with the repo mounted `:rw` could have rigged; so it takes as long as a clone, and it refuses while a running container mounts the volume read-write. It replaces the volume's whole `.git`, so stashes, tags that are on no remote, git notes and the repo's own config go with the branches, and there is no reflog to undo it from.
 
-`reset` differs from `sync` in what it protects: `sync` fast-forwards the checked-out branch and keeps your untracked files and your other branches, and **refuses** rather than pull around anything it could lose — uncommitted changes, a branch with commits on no remote branch, or a branch that has diverged; `reset` keeps nothing.
+`reset` differs from `sync` in what it protects: `sync` fast-forwards the checked-out branch and keeps your untracked files and your other branches, and **refuses** rather than pull around anything it could lose — uncommitted changes, a branch with commits on no remote branch, a branch that has diverged, an untracked file the remote now tracks, a stash, git notes, a linked worktree, or a tag that is on no remote; `reset` keeps nothing.
 
 `add` refuses to overwrite an existing repo — use `sync` to refresh or `rm` first. Authentication for `git-url` sources uses your **host `~/.ssh`** (mounted read-only into a short-lived seeding container); local-path sources need no credentials.
 

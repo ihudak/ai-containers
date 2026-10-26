@@ -684,6 +684,45 @@ run_script pull "$W"
 if [[ "$RC" != 0 && -f "$W/mine" ]]; then pass "pull refuses a branch with commits of its own"
 else fail "pull of a diverged branch (rc=$RC; out: $OUT)"; fi
 
+# sync must lose nothing the old `git pull --ff-only` kept (review of d9b56a8, P1):
+# an untracked file the remote now tracks, a stash, a tag on no remote, a linked
+# worktree — each refuses, and is kept.
+W="$(mk_repo collide)"; S="$TMP/collide.seed"
+commit_in "$S" notes.txt; g "$S" push -q origin main >/dev/null 2>&1
+printf 'mine\n' > "$W/notes.txt"
+run_script pull "$W"
+if [[ "$RC" != 0 && "$(cat "$W/notes.txt")" == mine ]]; then pass "pull refuses to overwrite an untracked file the remote now tracks"
+else fail "pull overwrote an untracked file (rc=$RC; notes: $(cat "$W/notes.txt"); out: $OUT)"; fi
+W="$(mk_repo stash)"; S="$TMP/stash.seed"; commit_in "$S" s-new; g "$S" push -q origin main >/dev/null 2>&1
+printf 'wip\n' > "$W/first"; g "$W" stash -q
+run_script pull "$W"
+if [[ "$RC" != 0 && "$OUT" == *stash* ]] && g "$W" rev-parse -q --verify refs/stash >/dev/null; then pass "pull refuses while a stash would be lost"
+else fail "pull with a stash (rc=$RC; out: $OUT)"; fi
+W="$(mk_repo ltag)"; S="$TMP/ltag.seed"; commit_in "$S" t-new; g "$S" push -q origin main >/dev/null 2>&1
+g "$W" tag -a -m mine v-local; commit_in "$W" only-local; g "$W" tag lone; g "$W" reset -q --hard HEAD~1
+run_script pull "$W"
+if [[ "$RC" != 0 && "$OUT" == *tag* ]] && g "$W" rev-parse -q --verify refs/tags/lone >/dev/null; then pass "pull refuses while a tag on no remote would be lost"
+else fail "pull with a local tag (rc=$RC; out: $OUT)"; fi
+W="$(mk_repo wt)"; S="$TMP/wt.seed"; commit_in "$S" w-new; g "$S" push -q origin main >/dev/null 2>&1
+g "$W" worktree add -q "$TMP/wt-linked" shared >/dev/null 2>&1
+run_script pull "$W"
+if [[ "$RC" != 0 && "$OUT" == *worktree* ]]; then pass "pull refuses while a linked worktree would be cut off"
+else fail "pull with a linked worktree (rc=$RC; out: $OUT)"; fi
+# A failed install never leaves the volume without a .git (P4); a ref file with
+# no newline and no end is read only so far (P6).
+W="$(mk_repo hugeref)"; head -c 5000000 /dev/zero | tr '\0' a > "$W/.git/refs/heads/huge"
+run_script inspect "$W"
+if [[ "$RC" == 0 ]] && grep -qx 'BRANCH|huge|?|' <<<"$OUT"; then pass "a ref file that is not a ref is read only as far as needed, and counted unknown"
+else fail "huge ref file (rc=$RC; out: $(head -c 300 <<<"$OUT"))"; fi
+# The volume's own alternates are not followed for the counts (P3).
+W="$(mk_repo altout)"; mkdir -p "$TMP/elsewhere"; git init -q "$TMP/elsewhere"; commit_in "$TMP/elsewhere" far
+oid_far="$(g "$TMP/elsewhere" rev-parse HEAD)"
+printf '%s\n' "$TMP/elsewhere/.git/objects" > "$W/.git/objects/info/alternates"
+printf '%s\n' "$oid_far" > "$W/.git/refs/heads/elsewhere"
+run_script inspect "$W"
+if grep -qx 'BRANCH|elsewhere|?|' <<<"$OUT"; then pass "inspect does not follow the volume's own alternates out of it"
+else fail "volume alternates followed (out: $(tr '\n' ' ' <<<"$OUT"))"; fi
+
 # Branch names are read as file names, which git's rules do not bind: one holding
 # terminal escapes reaches the confirmation only as ? (security review of d9b56a8).
 W="$(mk_repo esc)"; cp "$W/.git/refs/heads/main" "$W/.git/refs/heads/x"$'\e]0;pwned\a'
