@@ -1599,7 +1599,9 @@ git_dirs_in() {
       continue
     fi
     g="${_gdi_dirs[n]}"; n=$((n + 1))
-    if [[ -f "$g/commondir" && ! -L "$g/commondir" ]]; then
+    # A commondir that is a link is read through, as git reads it; the protection
+    # step names the link itself, which the agent can repoint (security review).
+    if [[ -f "$g/commondir" ]]; then
       tgt=""; IFS= read -r -d '' tgt < <(head -c 4096 "$g/commondir" 2>/dev/null) || true
       while [[ "$tgt" == *[$'\r\n'] ]]; do tgt="${tgt%?}"; done
       if [[ -n "$tgt" && "$tgt" != ./ && "$tgt" != . ]]; then _gdi_follow "$g" "$tgt" "$5" "$g/commondir"; fi
