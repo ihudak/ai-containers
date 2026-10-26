@@ -917,6 +917,16 @@ has_mount "$PROJ/node_modules/x47/c2/config:/workspace/proj/node_modules/x47/c2/
   && pass "G47 a commondir that is a link is read through, as git reads it" \
   || fail "G47 a linked commondir's target left writable (stderr: $(grep -F c2 "$ERR" | head -2 | tr '\n' ' '))"
 rm -rf "$PROJ/wt47b" "$PROJ/cd47.txt"
+# A target in ANOTHER writable mount (a pruned node_modules of an EXTRA_MOUNTS
+# directory, the launcher's own .agent-blocked) is not this mount's scan to
+# protect, and was passed in silence: it is named (re-review of batch 9, HIGH).
+mkdir -p "$TMP/other47/node_modules" "$PROJ/xm47"; "${G[@]}" init -q --bare "$TMP/other47/node_modules/g"
+printf 'gitdir: %s\n' "$TMP/other47/node_modules/g" > "$PROJ/xm47/.git"
+EXTRA_MOUNTS="$TMP/other47" launch ..
+grep -qF "$PROJ/xm47/.git names $TMP/other47/node_modules/g, a git directory in another writable mount" "$ERR" \
+  && pass "G47 a gitdir: target in another writable mount is named" \
+  || fail "G47 a gitdir: target in another writable mount passed in silence ($(grep -F other47 "$ERR" | head -2 | tr '\n' ' '))"
+rm -rf "$TMP/other47" "$PROJ/xm47"
 # git strips only CR and LF from a .git file: `gitdir: g ` names the directory
 # `g ` (with its space), not g (security review of e2741b1).
 mkdir -p "$PROJ/sp47"; "${G[@]}" init -q --bare "$PROJ/node_modules/x47/g "

@@ -1524,22 +1524,37 @@ _gdi_follow() {
   # cannot be protected now; it is named, never passed in silence (security
   # review of e2741b1).
   if ! t="$(cd -P -- "$t" 2>/dev/null && pwd -P)"; then
-    if [[ "$lex" == "$3"/* ]]; then
+    if [[ "$lex" == "$3"/* ]] && (( ++_gdi_warned <= 5 )); then
       printf 'WARNING: %s names %s, which does not exist; if the agent makes it, your host'\''s git\n' "$(_term "$4")" "$(_term "$lex")" >&2
       printf '         reads it unprotected until the next launch.\n' >&2
     fi
     return 0
   fi
-  if [[ "$lex" != "$t" && "$lex" == "$3"/* ]]; then
+  if [[ "$lex" != "$t" && "$lex" == "$3"/* ]] && (( ++_gdi_warned <= 5 )); then
     printf 'WARNING: %s reaches %s through a link inside the mount, which the agent can repoint\n' "$(_term "$4")" "$(_term "$t")" >&2
     printf '         to a git directory this launch did not protect. Name the real path in it instead.\n' >&2
+  fi
+  # Inside ANOTHER writable bind (bsrc, launcher_ro_overlay's): that mount's own
+  # scan may never reach it (a pruned node_modules, the launcher's .agent-blocked
+  # seen here under the read-only overlay), so it is named — this scan cannot
+  # protect it there (re-review of batch 9, HIGH).
+  local _j
+  if [[ -f "$t/HEAD" && -z "${had[$t]:-}" ]]; then
+    for _j in ${bsrc[@]+"${!bsrc[@]}"}; do
+      [[ "${bsrc[_j]}" != "$3" ]] || continue
+      if [[ "$t" == "${bsrc[_j]}" || "$t" == "${bsrc[_j]}"/* ]]; then
+        (( ++_gdi_warned <= 5 )) && printf 'WARNING: %s names %s, a git directory in another writable mount (%s),\n' "$(_term "$4")" "$(_term "$t")" "$(_term "${bdst[_j]}")" >&2
+        (( _gdi_warned <= 5 )) && printf '         which this launch does not protect there: your host'\''s git reads it. Check it on the host.\n' >&2
+        break
+      fi
+    done
   fi
   [[ "$t" == "$3" || "$t" == "$3"/* ]] || return 0
   [[ -z "${had[$t]:-}" ]] || return 0
   had[$t]=1
   if [[ -f "$t/HEAD" ]] && { [[ -f "$t/config" && -d "$t/objects" ]] || [[ -f "$t/commondir" ]]; }; then
     _gdi_dirs+=("$t")
-  else
+  elif (( ++_gdi_warned <= 5 )); then
     printf 'WARNING: %s names %s, which is not a git directory; nothing there is protected.\n' "$(_term "$4")" "$(_term "$t")" >&2
   fi
 }
@@ -1580,7 +1595,9 @@ git_dirs_in() {
   # index is read with git, fsmonitor off, so a config tampered with before this
   # protection existed runs nothing here; without git, only what the scan sees.
   for g in ${_gdi_dirs[@]+"${_gdi_dirs[@]}"}; do had[$g]=1; done
-  local n=0 nf=0 top rec mode path tgt
+  # _gdi_follow's WARNINGs: five named, then a count — every .git file is the
+  # agent's to write (re-review of batch 9).
+  local n=0 nf=0 top rec mode path tgt _gdi_warned=0
   local -a links=()
   while (( n < ${#_gdi_dirs[@]} || nf < ${#_gdi_files[@]} )); do
     # A .git FILE names the git directory git uses there (`gitdir: <path>`), and a
@@ -1667,6 +1684,9 @@ git_dirs_in() {
       printf 'WARNING: … and %d more submodules of %q were not followed, for the same reasons.\n' "$((gskip - 5))" "$g" >&2
     fi
   done
+  if (( _gdi_warned > 5 )); then
+    printf 'WARNING: … and %d more .git files or commondirs in %q name what this launch cannot protect.\n' "$((_gdi_warned - 5))" "$(_term "$5")" >&2
+  fi
   return 0
 }
 
