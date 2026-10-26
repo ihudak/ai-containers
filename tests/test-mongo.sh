@@ -204,9 +204,13 @@ out="$(AI_SERVICES=mongo=8.0 AI_SERVICES_DIR="$REPO_DIR/services.d" AI_SERVICES_
 # D10 — a mongod that cannot run here (x86-64 without AVX: MongoDB 5.0 and
 # later die of SIGILL at start-up, `--version` included) is a start failure that
 # says why, never "no mongo server, rebuild", which a rebuild cannot cure (SVC-2).
+# `ulimit -c 0` first: the signal is real, and where core dumps are on it
+# otherwise leaves a `core` in the working directory — the repository root,
+# under tests/run-all.sh.
 cat > "$FAKE/bin/mongod-noavx" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "${1:-}" >> "$FAKE_DIR/noavx.calls"
+ulimit -c 0
 kill -ILL $$
 EOF
 rm -f "$FAKE/noavx.calls"
