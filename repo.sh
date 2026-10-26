@@ -670,7 +670,12 @@ collect_inspections() {   # $@ = repo names
       br="${entry%%|*}"; rest="${entry#*|}"
       unpushed="${rest%%|*}"
       [[ "$br" == "$primary" ]] && continue
-      if [[ "${unpushed:-0}" -gt 0 ]]; then
+      # A count the helper could not make (`?`) is never read as 0 — that is the
+      # branch a summary saying "pushed" would lose.
+      if [[ ! "${unpushed:-0}" =~ ^[0-9]+$ ]]; then
+        RESET_SUMMARY+=("      DELETE ${br} — unpushed count unknown  <-- may hold unpushed work")
+        RESET_AT_RISK=$(( RESET_AT_RISK + 1 ))
+      elif [[ "${unpushed:-0}" -gt 0 ]]; then
         RESET_SUMMARY+=("      DELETE ${br} — ${unpushed} commit(s) not on any remote  <-- unpushed work")
         RESET_AT_RISK=$(( RESET_AT_RISK + 1 ))
       else

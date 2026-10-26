@@ -515,7 +515,10 @@ W="$(mk_repo alt)"
 mkdir -p "$W/evil/info" && mkfifo "$W/evil/info/alternates"
 printf '%s\n' "$W/evil" > "$W/.git/objects/info/alternates"
 AI_REPO_URL="$TMP/alt.git" p_timeout 20 "$SCRIPT" inspect "$W" >"$TMP/alt.out" 2>&1; rc=$?
-if [[ "$rc" != 124 && ! -e "$W/.git/objects/info/alternates" ]]; then pass "objects/info/alternates is dropped, so a FIFO behind it hangs nothing"
+# Either guard stops it: the FIFO in the worktree is refused, or the alternates
+# file that leads to it is dropped. What must never happen is the hang.
+if [[ "$rc" != 124 ]] && { [[ ! -e "$W/.git/objects/info/alternates" ]] || grep -q 'not a regular file or directory' "$TMP/alt.out"; }; then
+  pass "an alternates chain to a FIFO hangs nothing"
 else fail "alternates (rc=$rc: $(tr '\n' ' ' < "$TMP/alt.out"))"; fi
 ( exec 3<>"$W/evil/info/alternates" ) 2>/dev/null
 # A branch named like an option is a refname the agent can write; it is never
@@ -526,6 +529,41 @@ run_script inspect "$W"
 run_script reset "$W" main
 if [[ ! -e "$TMP/dash-pwned" ]]; then pass "a branch named --output=… is not parsed as an option"
 else fail "a branch name was parsed as an option ($TMP/dash-pwned was written)"; fi
+
+# reset promises the remote's tip and a clean slate; refs the agent can write
+# must not redirect it (re-review of the batch 2 fixes, G1-G5).
+evil_commit() {  # $1 = repo → a commit whose f says EVIL, on no branch
+  local t; t="$(printf 'EVIL\n' | git -C "$1" hash-object -w --stdin)"
+  t="$(printf '100644 blob %s\tfirst\n' "$t" | git -C "$1" mktree)"
+  git -C "$1" commit-tree "$t" -m evil </dev/null
+}
+W="$(mk_repo tagjack)"; g "$W" tag origin/main "$(evil_commit "$W")"
+run_script inspect "$W"; run_script reset "$W" main
+if [[ "$(cat "$W/first")" == first ]]; then pass "a tag named origin/<primary> does not take over reset's target"
+else fail "reset landed on the agent's tag (first: $(cat "$W/first"); out: $OUT)"; fi
+W="$(mk_repo replace)"; g "$W" replace -f "$(g "$W" rev-parse origin/main)" "$(evil_commit "$W")"
+run_script inspect "$W"; run_script reset "$W" main
+if [[ "$(cat "$W/first")" == first && -z "$(g "$W" for-each-ref refs/replace)" ]]; then
+  pass "a replace ref neither swaps reset's content nor survives it"
+else fail "replace ref (first: $(cat "$W/first"); refs: $(g "$W" for-each-ref refs/replace | tr '\n' ' '))"; fi
+W="$(mk_repo ambig)"; g "$W" checkout -q -b rel >/dev/null 2>&1; commit_in "$W" r1; commit_in "$W" r2
+g "$W" checkout -q main >/dev/null 2>&1; g "$W" tag rel main
+run_script inspect "$W"
+if grep -qx 'BRANCH|rel|2|' <<<"$OUT"; then pass "a branch that shares its name with a tag is reported by its name, with its unpushed count"
+else fail "ambiguous branch (out: $(tr '\n' ' ' <<<"$OUT"))"; fi
+run_script reset "$W" main
+if ! g "$W" show-ref --verify --quiet refs/heads/rel && grep -qx 'DELETED|rel' <<<"$OUT"; then pass "… and reset really deletes it"
+else fail "reset of ambiguous branch (out: $(tr '\n' ' ' <<<"$OUT"))"; fi
+W="$(mk_repo hide)"; g "$W" checkout -q -b work >/dev/null 2>&1; commit_in "$W" w1; commit_in "$W" w2; commit_in "$W" w3
+g "$W" update-ref refs/remotes/elsewhere/work work; g "$W" checkout -q main >/dev/null 2>&1
+run_script inspect "$W"
+if grep -qx 'BRANCH|work|3|' <<<"$OUT"; then pass "unpushed work is counted against origin, not refs the agent can plant"
+else fail "unpushed count fooled (out: $(tr '\n' ' ' <<<"$OUT"))"; fi
+W="$(mk_repo attrfifo)"; mkfifo "$W/.gitattributes"
+AI_REPO_URL="$TMP/attrfifo.git" p_timeout 20 "$SCRIPT" reset "$W" main >"$TMP/af.out" 2>&1; rc=$?
+if [[ "$rc" != 124 ]] && grep -q 'not a regular file or directory' "$TMP/af.out"; then pass "a FIFO in the worktree is refused, not read (no hang)"
+else fail "worktree FIFO (rc=$rc: $(tr '\n' ' ' < "$TMP/af.out"))"; fi
+( exec 3<>"$W/.gitattributes" ) 2>/dev/null
 
 # pull: the fast-forward repo.sh sync runs, through the same guarded path.
 W="$(mk_repo pull)"

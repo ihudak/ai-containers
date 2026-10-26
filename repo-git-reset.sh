@@ -61,6 +61,9 @@ die() { printf 'repo-git-reset: %s\n' "$1" >&2; exit 1; }
 # local remote) — and guard_repo cuts the config to what a fetch and a checkout
 # need before any git touches it.
 export GIT_ALLOW_PROTOCOL="ssh:https:http:git:file"
+# Replace refs and grafts let the agent swap in its own content under a real
+# commit's id (re-review of the batch 2 fixes, G2).
+export GIT_NO_REPLACE_OBJECTS=1 GIT_GRAFT_FILE=/dev/null
 # No submodule recursion either: a submodule's config under .git/modules is not
 # rewritten, and fetch recurses "on demand" by default.
 # The remote is pinned on the command line too, which outranks every file in
@@ -68,7 +71,7 @@ export GIT_ALLOW_PROTOCOL="ssh:https:http:git:file"
 # .git/branches entry for origin (re-review of b86cfe6).
 git() {
   command git -c core.hooksPath=/dev/null -c core.fsmonitor=false \
-    -c fetch.recurseSubmodules=false -c submodule.recurse=false \
+    -c fetch.recurseSubmodules=false -c submodule.recurse=false -c core.useReplaceRefs=false \
     ${AI_REPO_URL:+-c "remote.origin.url=$AI_REPO_URL"} \
     ${AI_REPO_URL:+-c "remote.origin.fetch=+refs/heads/*:refs/remotes/origin/*"} "$@"
 }
@@ -88,11 +91,15 @@ guard_repo() {
   [[ -d "$gd" && ! -L "$gd" ]] || die "$gd is not a directory (a .git file or link can point anywhere)"
   bad="$(find "$gd" ! -type f ! -type d -print -quit 2>/dev/null)"
   [[ -z "$bad" ]] || die "$bad is not a regular file or directory; refusing to run git on this repository"
+  # The worktree is read too (.gitattributes on checkout): a FIFO, socket or
+  # device anywhere in it would hang git; links are a checkout's business.
+  bad="$(find "$dir" -path "$gd" -prune -o ! -type f ! -type d ! -type l -print -quit 2>/dev/null)"
+  [[ -z "$bad" ]] || die "$bad is not a regular file or directory; refusing to run git on this repository"
   # Gone, not just cleaned: commondir and config.worktree send git to config of
   # the agent's choosing, remotes/ and branches/ name remotes, and alternates can
   # chain into the worktree, where a FIFO hangs git — a fresh clone has none.
   rm -rf "$gd/commondir" "$gd/config.worktree" "$gd/remotes" "$gd/branches" \
-         "$gd/objects/info/alternates" "$gd/objects/info/http-alternates"
+         "$gd/objects/info/alternates" "$gd/objects/info/http-alternates" "$gd/info/grafts"
   [[ ! -e "$gd/config" || -f "$gd/config" ]] || die "$gd/config is not a regular file"
   [[ -e "$gd/config" ]] || : > "$gd/config"
   tmp="$gd/config.sanitised.$$"
@@ -110,6 +117,10 @@ guard_repo() {
   command git config --file "$tmp" remote.origin.url "$AI_REPO_URL" || die "cannot rewrite $gd/config"
   command git config --file "$tmp" remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*' || die "cannot rewrite $gd/config"
   mv -f "$tmp" "$gd/config" || die "cannot replace $gd/config"
+  local r
+  while IFS= read -r r; do
+    [[ -n "$r" ]] && command git -C "$dir" update-ref -d "$r" >/dev/null 2>&1
+  done < <(command git -C "$dir" for-each-ref --format='%(refname)' refs/replace/ 2>/dev/null)
 }
 
 # `git config --global` would write to the invoking user's real ~/.gitconfig, so
@@ -189,12 +200,15 @@ cmd_inspect() {
     # Branch names are refnames the agent can write: git gets the full refname,
     # so one spelled like an option (--output=…) is never parsed as one, and a |
     # is shown as ? so it cannot split these records (re-review of b86cfe6).
-    unpushed="$(git -C "$dir" rev-list --count "refs/heads/$b" --not --remotes 2>/dev/null)"
+    # Against origin only: refs under another remote's name are the agent's to
+    # plant. A count that fails is `?`, never 0 (re-review, G3/G4).
+    unpushed="$(git -C "$dir" rev-list --count "refs/heads/$b" --not --remotes=origin 2>/dev/null)" || unpushed='?'
+    [[ "$unpushed" =~ ^[0-9]+$ ]] || unpushed='?'
     unpushed="${unpushed//[^0-9]/}"
     flags=""
     [[ "$b" == "$current" ]] && flags="current"
-    printf 'BRANCH|%s|%s|%s\n' "${b//|/?}" "${unpushed:-0}" "$flags"
-  done < <(git -C "$dir" for-each-ref --format='%(refname:short)' refs/heads/ 2>/dev/null)
+    printf 'BRANCH|%s|%s|%s\n' "${b//|/?}" "$unpushed" "$flags"
+  done < <(git -C "$dir" for-each-ref --format='%(refname:lstrip=2)' refs/heads/ 2>/dev/null)
 }
 
 cmd_reset() {
@@ -209,21 +223,19 @@ cmd_reset() {
   # the remote's tip; without one (no remote, or a purely local repo) the branch
   # keeps its own tip — reset still cleans the tree and drops the other
   # branches, it just has nothing newer to move to.
-  local target="$primary"
+  # Full refnames throughout: a short `origin/main` resolves to a tag or a
+  # branch of that name before the remote-tracking ref, and the agent can make
+  # either (re-review of the batch 2 fixes, G1).
+  local target=""
   if git -C "$dir" show-ref --verify --quiet "refs/remotes/origin/$primary"; then
-    target="origin/$primary"
-  fi
-
-  if git -C "$dir" show-ref --verify --quiet "refs/heads/$primary"; then
-    git -C "$dir" checkout --force "$primary" >/dev/null 2>&1 \
-      || die "could not check out $primary"
-  elif [[ "$target" != "$primary" ]]; then
-    # The remote has it and we do not: create it tracking the remote.
-    git -C "$dir" checkout --force -B "$primary" "$target" >/dev/null 2>&1 \
-      || die "could not create $primary from $target"
+    target="refs/remotes/origin/$primary"
+  elif git -C "$dir" show-ref --verify --quiet "refs/heads/$primary"; then
+    target="refs/heads/$primary"
   else
     die "no local or remote branch named $primary"
   fi
+  git -C "$dir" checkout --force -B "$primary" "$target" >/dev/null 2>&1 \
+    || die "could not check out $primary at $target"
 
   git -C "$dir" reset --hard "$target" >/dev/null 2>&1 || die "could not reset to $target"
   git -C "$dir" clean -ffdx >/dev/null 2>&1 || die "could not clean the working tree"
@@ -238,7 +250,7 @@ cmd_reset() {
     else
       printf 'KEPT|%s|could not delete\n' "${b//|/?}"
     fi
-  done < <(git -C "$dir" for-each-ref --format='%(refname:short)' refs/heads/ 2>/dev/null)
+  done < <(git -C "$dir" for-each-ref --format='%(refname:lstrip=2)' refs/heads/ 2>/dev/null)
 
   printf 'ON|%s\n' "$primary"
   printf 'AT|%s\n' "$(git -C "$dir" rev-parse --short HEAD 2>/dev/null)"

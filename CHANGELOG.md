@@ -18,7 +18,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   pulls through the same helper (review of batch 2). It fetches only from the
   URL `repo.sh add` recorded, whatever the `.git` names (a deleted config with
   a legacy `.git/remotes` file included), never recurses into submodules,
-  and refuses while a running container mounts the volume read-write.
+  and refuses while a running container mounts the volume read-write. `reset`
+  lands on the remote's tip by its full name, so a tag or branch the agent
+  named `origin/main` cannot redirect it; replace refs and grafts are ignored
+  and removed; unpushed work is counted against `origin` only, and a count
+  that cannot be made is shown as unknown, never as "pushed".
 - **A committed `sandbox.env` can no longer run code on your machine through
   docker or git.** It refused the keys that control the shell, but exported
   every other key into docker, git and every tool the launcher runs —

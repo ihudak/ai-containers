@@ -148,6 +148,8 @@ if [[ "$1" == "run" ]]; then
       printf 'BRANCH|main|0|current\n'
       printf 'BRANCH|feat/unpushed|3|\n'
       printf 'BRANCH|fix/pushed|0|\n'
+      # HELPER_UNKNOWN_COUNT: a count the helper could not make.
+      [[ -z "${HELPER_UNKNOWN_COUNT:-}" ]] || printf 'BRANCH|odd/branch|?|\n'
       exit 0 ;;
     *" reset /dst"*)
       # HELPER_RESET_FAILS: the git reset failed inside the seed container. The
@@ -385,6 +387,16 @@ else
   fail "a read-only mount stopped reset (stderr: $(tr '\n' ' ' < "$ERR"))"
 fi
 unset INUSE_RW; setup_world
+
+# ── 8b''. a count the helper could not make is never read as "pushed" ─────────
+setup_world
+HELPER_UNKNOWN_COUNT=1 run_repo reset docs --yes
+if grep -qF 'DELETE odd/branch — unpushed count unknown' "$OUT" "$ERR" && ! grep -qF 'DELETE odd/branch — pushed' "$OUT" "$ERR"; then
+  pass "an unknown unpushed count is flagged as possible unpushed work, not as pushed"
+else
+  fail "unknown count rendered as pushed (out: $(cat "$OUT" "$ERR" | grep odd | tr '\n' ' '))"
+fi
+setup_world
 
 # ── 8c. the summary names the branches, and marks the ones carrying work ──────
 #
