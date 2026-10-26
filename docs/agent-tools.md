@@ -30,13 +30,13 @@ Mirroring [Ruby (via rvm)](components/ruby.md): nothing agent-tier is baked into
 | --- | --- | --- |
 | Claude Code | **yes** — native installer, no npm involved | `claude update`, or automatically |
 | Copilot CLI | **yes** — downloads its own GitHub release | automatic; `copilot update` to force |
-| Codex CLI | no — its `update` shells out to a bare `npm install -g` and fails `EACCES` | the reconcile re-installs it **on every container start** |
-| Gemini CLI | no — ships no update mechanism at all | the reconcile re-installs it **on every container start** |
+| Codex CLI | no — its `update` shells out to a bare `npm install -g` and fails `EACCES` | the reconcile installs a newer published version at container start |
+| Gemini CLI | no — ships no update mechanism at all | the reconcile installs a newer published version at container start |
 | `graphify` | yes | `uv tool upgrade graphify` |
 | `vale` | no self-update | delete `~/.ai-tools/bin/vale` and restart the container |
 | `mkdocs` | yes | `uv tool upgrade mkdocs` (keeps `mkdocs-material` in its environment) |
 
-Updating Codex and Gemini on every start costs about **7 s** with a warm npm cache (~24 s cold), measured in-container.
+On every start the reconcile asks the npm registry for Codex's and Gemini's latest version, and reinstalls only when that is newer than the installed one. A reinstall costs about **7 s** with a warm npm cache (~24 s cold), measured in-container. It is skipped when the version is already current, because reinstalling rewrites the package under any other container of the group that is running it. When the registry cannot be reached, the installed version is kept.
 
 **`graphify` and `mkdocs` fall back to the previous Python minor.** The image always carries pyenv's newest Python and, unless `c-toolchain=ON`, no C compiler. For a few weeks after each new CPython release, some packages have no prebuilt wheel for it yet, and installing them from source fails. When the reconcile's `uv tool install` fails, it retries once on the previous minor (3.14 while the image has 3.15). uv uses that Python from the image if it is there, and otherwise downloads it into the group's `~/.ai-tools/uv/python`, so the tool keeps working across restarts. This is what keeps `graphify` installable on Python 3.15: its `tree-sitter` dependency had no 3.15 wheels at release.
 

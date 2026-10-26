@@ -25,8 +25,17 @@ case "\$*" in
   *@anthropic-ai/claude-code*) b=claude ;; *@github/copilot*) b=copilot ;;
   *@openai/codex*) b=codex ;; *@google/gemini-cli*) b=gemini ;; *) b="" ;;
 esac
+# The registry's latest version (NPM_LATEST), and what an install records, which
+# \`npm ls\` reports back; NPM_VIEW_FAIL=1 is an unreachable registry.
+if [[ "\$1" == "view" ]]; then [[ "\${NPM_VIEW_FAIL:-0}" == 1 ]] && exit 1; echo "\${NPM_LATEST:-1.0.0}"; exit 0; fi
+if [[ "\$1" == "ls" && -n "\$b" ]]; then
+  for a in "\$@"; do [[ "\$a" == @* ]] && pkg="\$a"; done
+  [[ -f "$home/.ai-tools/npm/.ver-\$b" ]] && echo "└── \$pkg@\$(cat "$home/.ai-tools/npm/.ver-\$b")"
+  exit 0
+fi
 if [[ "\$1" == "install" && -n "\$b" ]]; then
   install -d "$home/.ai-tools/npm/bin"; printf '#!/bin/sh\n' > "$home/.ai-tools/npm/bin/\$b"; chmod +x "$home/.ai-tools/npm/bin/\$b"
+  echo "\${NPM_LATEST:-1.0.0}" > "$home/.ai-tools/npm/.ver-\$b"
 fi
 exit 0
 EOF
@@ -89,6 +98,7 @@ run_case() {
   local bin; bin="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
   mk_stubs "$bin" "$home"
   PATH="$bin:$PATH" HOME="$home" AI_RUNTIME_TOOLS="$want" NPM_FAIL="$npm_fail" UV_FAIL="${UV_FAIL:-}" \
+    NPM_LATEST="${NPM_LATEST:-1.0.0}" NPM_VIEW_FAIL="${NPM_VIEW_FAIL:-0}" \
     bash "$REPO_DIR/agent-tools-reconcile.sh" >"$home/out.log" 2>&1
   rm -rf "$bin"
   printf '%s' "$home"
@@ -264,16 +274,27 @@ run_case "claude-code" "$h" >/dev/null
   || fail "the newest version wins by VERSION order, not string order (got: $(readlink "$h/.local/bin/claude" 2>/dev/null || echo none))"
 rm -rf "$h"
 
-# ── NOT idempotent, deliberately: codex and gemini are UPDATED every start ──
+# ── codex and gemini are kept at the registry's LATEST version ──
 # Neither can self-update in this environment — codex's own `update` shells out to a bare
 # `npm install -g` and dies EACCES 243, and gemini ships no updater at all — so the
-# reconcile is what keeps them current. A second run MUST re-issue their installs; if this
-# ever starts passing as "idempotent", those two have silently frozen at whatever version
-# the group first saw, which is the exact defect this pair of cases exists to separate.
-h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; run_case "codex,gemini" "$h" >/dev/null; : > "$h/calls.log"; run_case "codex,gemini" "$h" >/dev/null
+# reconcile is what keeps them current. A newer published version MUST be installed; if
+# this ever stops, those two have silently frozen at whatever version the group first saw.
+h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; run_case "codex,gemini" "$h" >/dev/null; : > "$h/calls.log"
+NPM_LATEST=1.1.0 run_case "codex,gemini" "$h" >/dev/null
 { grep -q 'npm install -g --prefix .*@openai/codex' "$h/calls.log" \
   && grep -q 'npm install -g --prefix .*@google/gemini-cli' "$h/calls.log"; } \
-  && pass "codex and gemini are re-installed (updated) on every run" || fail "codex and gemini are re-installed (updated) on every run"
+  && pass "codex and gemini are updated when a newer version is published" || fail "codex and gemini are not updated to a newer version"
+# RT-7: …but not re-extracted in place when already current: a sibling container in
+# the group may be running the package that a reinstall rewrites under it (bugs
+# review RT-7), and it cost ~7 s per start.
+: > "$h/calls.log"; NPM_LATEST=1.1.0 run_case "codex,gemini" "$h" >/dev/null
+! grep -q 'npm install' "$h/calls.log" && pass "a current codex/gemini is not reinstalled" \
+  || fail "a current codex/gemini is reinstalled ($(grep '^npm' "$h/calls.log" | tr '\n' ';'))"
+# An unreachable registry keeps what is installed, rather than failing a reinstall.
+: > "$h/calls.log"; NPM_VIEW_FAIL=1 run_case "codex,gemini" "$h" >/dev/null
+{ ! grep -q 'npm install' "$h/calls.log" && ! grep -q 'FAILED' "$h/out.log"; } \
+  && pass "an unreachable registry keeps the installed codex/gemini" \
+  || fail "an unreachable registry reinstalled or failed ($(tr '\n' ';' < "$h/out.log"))"
 rm -rf "$h"
 
 # ── A group still carrying the pre-native npm Claude keeps working ──

@@ -7,8 +7,8 @@
 # assumed:
 #   claude-code  native install (~/.local/share/claude), self-updates    → if-missing
 #   copilot      downloads its own GitHub release, self-updates in place → if-missing
-#   codex        its `update` runs bare `npm install -g` → EACCES 243    → UPDATE each start
-#   gemini       has no update mechanism at all                          → UPDATE each start
+#   codex        its `update` runs bare `npm install -g` → EACCES 243    → UPDATE if newer
+#   gemini       has no update mechanism at all                          → UPDATE if newer
 #   graphify     uv tool upgrade                                         → if-missing (*)
 #   vale         pinned download                                         → if-missing
 #   mkdocs       uv tool upgrade                                         → if-missing (*)
@@ -69,8 +69,20 @@ install_npm() {   # $1=binary  $2=package
 # Copilot is deliberately NOT in this set: it downloads its own release from GitHub and
 # self-updates in place, verified working behind the restricted firewall.
 # Cost measured in-container: ~7s for four packages with a warm cache, ~24s cold.
+#
+# Only when the registry has a newer version than the one installed: a reinstall
+# re-extracts the package in place, under any sibling container of the group that
+# is running it right now (bugs review RT-7), and that cost ~7s a start for
+# nothing. An unreachable registry keeps what is installed.
 update_npm() {    # $1=binary  $2=package
-  local bin="$1" pkg="$2"
+  local bin="$1" pkg="$2" cur="" latest=""
+  if [[ -x "$npm_bin/$bin" ]]; then
+    cur="$(npm ls -g --prefix "$npm_prefix" --depth=0 "$pkg" 2>/dev/null | sed -n "s|.*$pkg@\([^ ]*\).*|\1|p" | head -n 1)"
+    if ! latest="$(npm view "$pkg" version 2>/dev/null | tail -n 1)" || [[ -z "$latest" ]]; then
+      log "$bin: the registry cannot be reached; keeping ${cur:-the installed version}"; return 0
+    fi
+    if [[ -n "$cur" && "$cur" == "$latest" ]]; then log "$bin is current ($cur)"; return 0; fi
+  fi
   log "updating $pkg…"
   npm install -g --prefix "$npm_prefix" "$pkg" \
     || log "FAILED: npm install -g --prefix $npm_prefix $pkg (skipped)"
