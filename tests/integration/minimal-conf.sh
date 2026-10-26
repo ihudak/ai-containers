@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # minimal-conf.sh <source sandbox.conf> [key=value…] → a minimal conf on stdout
 #
-# Every optional component OFF and every version list emptied. Two callers, one
-# definition, deliberately:
+# Every component OFF, whatever value it held, and nvm-version back to the
+# Dockerfile default. Two callers, one definition, deliberately:
 #
 #   run.sh build_image  — the firewall does not know which fragment a domain
 #                         came from, so proving admit/drop once proves it for
@@ -41,7 +41,19 @@ shift || true
 tmp="$(mktemp)" || { printf 'minimal-conf.sh: mktemp failed — refusing to emit a config, because an empty one would be accepted silently\n' >&2; exit 1; }
 trap 'rm -f "$tmp"' EXIT
 
-sed -E 's/^([a-z0-9-]+)=ON$/\1=OFF/; s/^(node|python|ruby|rust|go|openjdk|graalvm-ce|graalvm-oracle|kotlin|scala|maven|gradle|db-clients|angular-cli)=.*/\1=/' \
+# EVERY key with a value becomes OFF — ON, a pinned version, a version list,
+# whatever it holds — because OFF is "off" for every component: the boolean
+# keys, the pinned-version keys (postgres, mariadb, mongo, playwright, the
+# tools.d keys) and the version-list keys alike
+# (sandbox-common.sh: `version_list()`). This used to reset `=ON` and a hand-kept list of
+# version-list keys, so each key added since kept a pinned value: postgres=16
+# put a server into every corpus image, and mariadb=11.4 made the services
+# variant refuse to build beside mysql=ON (TST-4).
+#
+# nvm-version is the one key that is not a component. Its empty value means
+# the Dockerfile's default; OFF would reach the build as NVM_VERSION=OFF. It
+# is reset first, so the second expression no longer matches it.
+sed -E 's/^nvm-version=.*/nvm-version=/; s/^([a-z0-9-]+)=.+$/\1=OFF/' \
   "$src" > "$tmp"
 
 for kv in "$@"; do
