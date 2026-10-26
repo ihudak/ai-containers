@@ -181,13 +181,24 @@ done
 fn="$TMP/refuse_root_identity.sh"
 sed -n '/^refuse_root_identity()/,/^}/p' "$REPO_DIR/entrypoint.sh" > "$fn"
 [[ -s "$fn" ]] || fail "refuse_root_identity() not found in entrypoint.sh"
-for v in "SANDBOX_UID=0 SANDBOX_GID=1000" "SANDBOX_UID=1000 SANDBOX_GID=0" "SANDBOX_UID=00 SANDBOX_GID=1000"; do
+for v in "SANDBOX_UID=0 SANDBOX_GID=1000" "SANDBOX_UID=1000 SANDBOX_GID=0" "SANDBOX_UID=00 SANDBOX_GID=1000" \
+         "SANDBOX_UID=+0 SANDBOX_GID=1000" "SANDBOX_UID=-0 SANDBOX_GID=1000" "SANDBOX_UID=0x0 SANDBOX_GID=1000" \
+         "SANDBOX_UID=4294967296 SANDBOX_GID=1000"; do
   out="$(env -i HOME="$TMP" PATH=/usr/bin:/bin $v bash -c ". '$fn'; refuse_root_identity; echo reached" 2>&1)"; rc=$?
   [[ "$rc" != 0 && "$out" != *reached* && "$out" == *'must not run as root'* ]] \
     && pass "the entrypoint refuses $v" || fail "entrypoint with $v (rc=$rc; out: $out)"
 done
+for v in "SANDBOX_UID=$(printf ' 0') SANDBOX_GID=1000"; do
+  out="$(env -i HOME="$TMP" PATH=/usr/bin:/bin SANDBOX_UID=' 0' SANDBOX_GID=1000 bash -c ". '$fn'; refuse_root_identity; echo reached" 2>&1)"; rc=$?
+  [[ "$rc" != 0 && "$out" != *reached* ]] && pass "the entrypoint refuses a padded SANDBOX_UID=' 0'" || fail "padded uid (rc=$rc; out: $out)"
+done
 out="$(env -i HOME="$TMP" PATH=/usr/bin:/bin SANDBOX_UID=1000 SANDBOX_GID=1000 bash -c ". '$fn'; refuse_root_identity; echo reached" 2>&1)"
 [[ "$out" == reached ]] && pass "the entrypoint lets a non-root identity through" || fail "entrypoint refused 1000:1000 ($out)"
+# And after the user is set up, whatever useradd made of the id: the user capsh
+# switches to must not resolve to uid 0.
+grep -qF 'refuse_root_identity "$sandbox_user"' "$REPO_DIR/entrypoint.sh" \
+  && pass "setup_sandbox_user re-checks the user it made before anyone switches to it" \
+  || fail "no post-setup uid check in entrypoint.sh"
 first="$(grep -nE '^(verify_launcher_mounts|refuse_root_identity|case "\$mode" in)$' "$REPO_DIR/entrypoint.sh" | cut -d: -f2 | tr '\n' ' ')"
 [[ "$first" == "verify_launcher_mounts refuse_root_identity case \"\$mode\" in " ]] \
   && pass "refuse_root_identity runs before any mode does anything" \

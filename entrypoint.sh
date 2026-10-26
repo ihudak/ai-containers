@@ -220,6 +220,7 @@ setup_sandbox_user() {
   find "$home_dir" -xdev -exec chown "$uid:$gid" {} + 2>/dev/null || true
 
   sandbox_user="$(getent passwd "$uid" | cut -d: -f1)"
+  refuse_root_identity "$sandbox_user"
   trust_repositories_for_sandbox_user
 }
 
@@ -385,10 +386,20 @@ verify_launcher_mounts() {
 # rest, and root owns the allowlist the refresh loop reloads every 60 s — two
 # CIDRs written there would open all egress (bugs review ENV-4). sandbox.sh
 # refuses such an identity; this catches a container started another way.
+# Strictly numeric first, as sandbox.sh checks it, then compared as a number:
+# useradd and getent parse ids their own way, so `+0` or ` 0` must not get past a
+# check on the spelling. With a user name, the check is on what that user
+# resolves to, after setup_sandbox_user made it.
 refuse_root_identity() {
   local uid="${SANDBOX_UID:-1000}" gid="${SANDBOX_GID:-1000}"
-  if [[ "$uid" =~ ^0+$ || "$gid" =~ ^0+$ ]]; then
-    printf 'ERROR: the agent must not run as root (SANDBOX_UID=%s, SANDBOX_GID=%s); refusing to start.\n' "$uid" "$gid" >&2
+  if [[ -n "${1:-}" ]]; then
+    uid="$(id -u "$1" 2>/dev/null)" || uid=0
+    gid="$(id -g "$1" 2>/dev/null)" || gid=0
+  fi
+  if [[ ! "$uid" =~ ^[0-9]{1,10}$ || ! "$gid" =~ ^[0-9]{1,10}$ ]] \
+     || (( 10#$uid == 0 || 10#$gid == 0 || 10#$uid > 4294967294 || 10#$gid > 4294967294 )); then
+    printf 'ERROR: the agent must not run as root: SANDBOX_UID/SANDBOX_GID must be numeric ids from 1 to\n' >&2
+    printf '       4294967294 (got %q / %q); refusing to start.\n' "$uid" "$gid" >&2
     exit 1
   fi
 }
