@@ -1200,7 +1200,13 @@ container_env_filter() {
   local file="$1"
   local -n _cef_lines="$2" _cef_keys="$3"
   shift 3
-  local -A launcher=() seen=()
+  local -A launcher=() seen=() passthrough=()
+  # A bare NAME takes the value docker finds in THIS shell, so it is the host's
+  # secret, not the file's: only names this machine lists pass that way
+  # (SANDBOX_ENV_PASSTHROUGH, machine-only; bugs review ENV-6).
+  local _pt; local -a _pts=()
+  read -ra _pts <<< "${SANDBOX_ENV_PASSTHROUGH:-}"
+  for _pt in ${_pts[@]+"${_pts[@]}"}; do passthrough[$_pt]=1; done
   local prev="" a
   for a in "$@"; do
     [[ "$prev" == -e ]] && launcher["${a%%=*}"]=1
@@ -1245,6 +1251,8 @@ container_env_filter() {
     elif ! [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then why="its name is not a shell variable name"
     elif env_key_denied "$name"; then why="$name acts on the container's first process before it can be set aside"
     elif [[ -n "${launcher[$name]:-}" ]]; then why="the launcher sets $name itself"
+    elif [[ "$line" != *=* && -z "${passthrough[$name]:-}" ]]; then
+      why="$name takes its value from this machine's environment; list it in SANDBOX_ENV_PASSTHROUGH (sandbox.local.env) to pass it"
     else
       case "$name" in
         HOME|USER|LOGNAME) why="the container sets $name for the sandbox user" ;;

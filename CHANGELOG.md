@@ -43,6 +43,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   link points at; a group that already holds such a link is named in a
   warning on every launch, with the command that replaces it with a copy
   (bugs review ENV-3).
+- **A committed `container.env` can no longer copy your tokens into the agent's
+  shell.** A line holding only a name (`GITHUB_TOKEN`) makes docker fill it
+  from the shell you launch from, so whoever wrote the file chose which of
+  your secrets the agent got. Such a line is now refused with a warning unless
+  `SANDBOX_ENV_PASSTHROUGH` — in `sandbox.local.env` or your shell — lists the
+  name (bugs review ENV-6).
 - **A repository under a writable mount can no longer make the launcher run a
   program on the host.** Before each launch the launcher reads every
   repository's index with the host's git, to find its submodules. In a partial

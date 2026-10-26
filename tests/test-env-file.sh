@@ -31,7 +31,7 @@ trap '[[ "$BASHPID" == "$TMP_OWNER" ]] && { rm -rf "$TMP"; export HOME="$REAL_HO
 
 export HOME="$TMP/home"; mkdir -p "$HOME"
 export AI_CONTAINER_GROUP=default AI_CONTAINER_GROUP_INIT=clean SANDBOX_USER=tester
-unset CONTAINER_NAME EXTRA_MOUNTS REPOS VAULT_PATH SPECS_PATH DOCS_PATH ARCHITECTURE_REPO_PATH \
+unset SANDBOX_ENV_PASSTHROUGH CONTAINER_NAME EXTRA_MOUNTS REPOS VAULT_PATH SPECS_PATH DOCS_PATH ARCHITECTURE_REPO_PATH \
       SANDBOX_MODE SANDBOX_WORKDIR SANDBOX_ENV_FILE GITHUB_PERSONAL_ACCESS_TOKEN COPILOT_GITHUB_TOKEN \
       SELF_HEALING_ENABLED ALLOW_IPV6_BYPASS
 CAPTURE="$TMP/docker-args.txt"
@@ -92,7 +92,7 @@ nwarnings() { grep -c '^WARNING: .* not passed to the container' "$ERR"; }
 # this environment; duplicates passed in order, so docker keeps the last.
 ENVF="$AENV"
 printf '\xef\xbb\xbfFIRST=1\n# a comment\n\n  \xc2\xa0INDENT=nbsp\nCRLF=x\r\nQUOTED="5"\nHASH=a # b\nTRAIL=a b  \nBARE_SET\nBARE_UNSET\nDUP=1\nDUP=2\nLAST=end' > "$AENV"
-BARE_SET=hostval SANDBOX_ENV_FILE="$AENV" launch
+BARE_SET=hostval SANDBOX_ENV_PASSTHROUGH="BARE_SET BARE_UNSET" SANDBOX_ENV_FILE="$AENV" launch
 want=$'FIRST=1\nINDENT=nbsp\nCRLF=x\nQUOTED="5"\nHASH=a # b\nTRAIL=a b  \nBARE_SET\nBARE_UNSET\nDUP=1\nDUP=2\nLAST=end'
 [[ "$LAUNCH_RC" == 0 ]] && ran && pass "E1 a well-formed container.env launches" \
   || fail "E1 a well-formed container.env launches (rc=$LAUNCH_RC; $(tr '\n' ' ' <"$ERR"))"
@@ -234,6 +234,26 @@ loose="$(envfile | sed 's/=.*//' | tr '\n' ' ')"
 cat "$ERR" > "$TMP/all-err"
 grep -q 's3cr3t' "$TMP/all-err" && fail "E6 a refused value was printed: $(grep s3cr3t "$TMP/all-err" | head -2)" \
   || pass "E6 no warning prints a value"
+
+# ── E13: a bare NAME is the HOST's value, so it needs this machine's consent ──
+# docker fills `NAME` from the launching shell, and container.env is written by
+# whoever can commit to the project: a bare GITHUB_TOKEN line handed the agent a
+# host secret the launcher deliberately keeps from it (bugs review ENV-6). Bare
+# names pass only when SANDBOX_ENV_PASSTHROUGH — machine-only, never from a
+# committed sandbox.env — lists them.
+ENVF="$CENV"
+printf 'APP=1\nGITHUB_TOKEN\nAWS_SECRET_ACCESS_KEY\nDB_PASSWORD\n' > "$CENV"
+GITHUB_TOKEN=ghp_host AWS_SECRET_ACCESS_KEY=aws_host DB_PASSWORD=pw launch
+warned 2 "GITHUB_TOKEN takes its value from this machine's environment; list it in SANDBOX_ENV_PASSTHROUGH" \
+  && warned 3 "AWS_SECRET_ACCESS_KEY takes its value" && warned 4 "DB_PASSWORD takes its value" \
+  && [[ "$(envfile)" == "APP=1" ]] \
+  && pass "E13 a bare NAME is refused unless this machine lists it" \
+  || fail "E13 bare names (envfile: $(envfile | tr '\n' '|'); stderr: $(grep WARNING "$ERR" | tr '\n' ' '))"
+SANDBOX_ENV_PASSTHROUGH="DB_PASSWORD" GITHUB_TOKEN=ghp_host DB_PASSWORD=pw launch
+[[ "$(envfile)" == $'APP=1\nDB_PASSWORD' ]] && warned 2 "GITHUB_TOKEN takes its value" \
+  && pass "E13 SANDBOX_ENV_PASSTHROUGH lets exactly the names it lists through, bare" \
+  || fail "E13 passthrough (envfile: $(envfile | tr '\n' '|'))"
+! grep -qE 'ghp_host|aws_host' "$ERR" && pass "E13 no host value is printed" || fail "E13 a host value was printed"
 
 # ── E7: nothing passed → no --env-file and no key list at all ─────────────────
 printf 'PATH=/x\nHOME=/y\n' > "$CENV"
