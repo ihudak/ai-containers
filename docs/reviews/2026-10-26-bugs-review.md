@@ -5,6 +5,7 @@
 - **Window reviewed:** everything changed since 2026-09-01 — `8f32aa1` (last commit before Sep 1) .. `bec1c57`: 200 non-merge commits, 212 files. Pre-window code the window relies on was in scope where a reviewer hit a real defect; such findings say "Introduced: … (before the window)".
 - **Rule:** only defects present at `bec1c57`. Anything introduced and fixed again inside the window is not listed.
 - **Method:** eight area reviewers plus a docs-vs-code reviewer, run in parallel against the diff and the code at HEAD. Each finding was then triaged; the HIGH ones were re-checked against the code by the coordinator. Hermetic suite at HEAD: 98/98 under C.UTF-8, 96/98 under en_US.UTF-8 (TST-1). Falsify corpus + `check-ledger.sh --strict`: green. All 78 integration mutation patches apply.
+- **Updated 2026-10-26:** batches 1 and 2 are merged (main `e426e09`). Section 9 lists what the reviews of those fixes found and left open, reviewed up to `e426e09`. Status lines cite the commits as merged.
 - **Companion:** [2026-10-26-feature-gaps-review.md](2026-10-26-feature-gaps-review.md).
 - **Confidence:** CONFIRMED = reproduced, or unambiguous from the code. PLAUSIBLE = strong reasoning, not reproduced (usually needs hardware or a platform not available here); verify before fixing.
 - **Citations** are by snippet, per AGENTS.md "Citing code". Scratch repro paths mentioned in entries were session-local and may no longer exist; each entry describes its repro in full.
@@ -13,14 +14,15 @@
 
 | # | Area | Findings | Feature gaps folded in | Highest |
 |---|---|---|---|---|
-| 1 | Host-side launcher: git internals + launcher overlay | GIT-1, LNCH-1, LNCH-3 (partly); LNCH-2 not reproducible (PLAT-1) | GAP-12 (only: follow includes inside included files) | HIGH |
-| 2 | Launcher config / env layers / credentials | ENV-1 … ENV-6 — all fixed | — | HIGH |
+| 1 | Host-side launcher: git internals + launcher overlay | GIT-1, LNCH-1, LNCH-3 (partly) — fixed; LNCH-2 not reproducible (PLAT-1) | GAP-12 (only: follow includes inside included files) | HIGH |
+| 2 | Launcher config / env layers / credentials | ENV-1 … ENV-6 — all fixed; REPO-1 found and fixed | — | HIGH |
 | 3 | Container-start runtime tools (entrypoint root steps, reconciles) | RT-1 … RT-7 | stretch: GAP-1 for `link-default-ruby.sh`, `install-agent-skills.sh`, `agent-tools-reconcile.sh` | HIGH |
-| 4 | Host lifecycle scripts (project-init, sync, repo, group, report) | PRJ-1 … PRJ-9, DOC-1, DOC-3 | optional: GAP-6; stretch: GAP-1 for `group.sh` | MEDIUM |
+| 4 | Host lifecycle scripts (project-init, sync, repo, group, report) | PRJ-1 … PRJ-9, DOC-1, DOC-3, REPO-2 … REPO-10 | optional: GAP-6; stretch: GAP-1 for `group.sh` | MEDIUM |
 | 5 | In-container DB services | SVC-1 … SVC-3 | — | MEDIUM |
-| 6 | Build / Dockerfile / tools.d / config validation | BLD-1 … BLD-7 | — | MEDIUM |
+| 6 | Build / Dockerfile / tools.d / config validation | BLD-1 … BLD-7, ENV-7 | — | MEDIUM |
 | 7 | Test harness and CI | TST-1 … TST-8 | GAP-5 (same fix as TST-2), GAP-8 (with TST-5), GAP-9 (with TST-3) | MEDIUM |
 | 8 | Docs (docs-only PR) | DOC-2, DOC-4 … DOC-13 | GAP-14 (overlaps DOC-6) | MEDIUM |
+| 9 | Launcher follow-ups (from the batch 1 hotfix review) | GIT-2 … GIT-5, LNCH-3 (the rest), LNCH-4 | — | MEDIUM |
 
 Folded-in gaps are described in [2026-10-26-feature-gaps-review.md](2026-10-26-feature-gaps-review.md); each carries a matching `Fix batch:` line there. **Optional** = same files, but grows the batch; take it if the batch is small. **Stretch** = activate those files' deferred falsify targets in the same PR, so the new assertions are shown to be able to fail; it costs a mutation-score run per batch. The remaining gaps (GAP-2, 3, 4, 7, 10, 11, 13, and the rest of GAP-12) are a separate track.
 
@@ -38,7 +40,7 @@ Duplicates merged: PRJ-2 is the same defect as DOC-1 (fix once, in batch 4); PRJ
 
 ### MEDIUM
 
-ENV-2, ENV-3, ENV-4, LNCH-1, LNCH-2, RT-2, RT-3, RT-4, SVC-1, BLD-1, BLD-2, PRJ-1, PRJ-3, PRJ-5, DOC-1 (=PRJ-2), DOC-2, DOC-3, TST-1 (=PRJ-7), TST-2, TST-3.
+GIT-2, ENV-2, ENV-3, ENV-4, LNCH-1, LNCH-2, RT-2, RT-3, RT-4, SVC-1, BLD-1, BLD-2, PRJ-1, PRJ-3, PRJ-5, DOC-1 (=PRJ-2), DOC-2, DOC-3, TST-1 (=PRJ-7), TST-2, TST-3.
 
 ### LOW
 
@@ -172,7 +174,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 ## 2. Launcher config, env layers and credentials
 
 ### ENV-1: A committed sandbox.env can still run code on the host. `env_key_denied` covers shell keys only, and `load_env_defaults` exports every other key to docker and git
-- **Status: FIXED (batch 2)** — `5e338f8`, widened by `9179d32` (machine-only keys, `--pull=never`) and `f3400e5` (`SANDBOX_WORKDIR` resolved through symlinks); tests in `tests/test-sandbox-env.sh`, T1.
+- **Status: FIXED (batch 2)** — `a8824e8`, widened by `9fe4e35` (machine-only keys, `--pull=never`), `6a2424e` (`SANDBOX_WORKDIR` resolved through symlinks), `7b55eb3` (only `..` is portable; every project-image `docker run` passes `--pull=never`, `tests/test-pull-never.sh`) and `6b2cbc7` (the seed image under any of its names); tests in `tests/test-sandbox-env.sh`, T1.
 - Severity: HIGH (raised from MEDIUM in triage: host code execution from a file AGENTS.md calls inert, committed data). Confidence: CONFIRMED (reproduced)
 - Location: `sandbox-common.sh: \`env_key_denied()\``, `sandbox-common.sh: \`load_env_defaults()\``
 - Introduced: the deny-list approach predates the window. The window widened it (ca44e38, 987efac) but kept it limited to shell and loader keys.
@@ -184,7 +186,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Fix direction: give sandbox.env/sandbox.local.env an allow-list of the keys the launcher actually reads (IMAGE_NAME, AI_CONTAINER_*, CONTAINER_*, SANDBOX_*, EXTRA_MOUNTS, REPOS, the *_PATH pointers, …). If that is not done, at least deny `DOCKER_*`, `BUILDX_*`, `BUILDKIT_*`, `GIT_*` and `SSH_*`.
 
 ### ENV-2: repo.sh pastes SANDBOX_UID/SANDBOX_GID unvalidated into the `bash -c` scripts its seed containers run as root
-- **Status: FIXED (batch 2)** — `2e17c78`; `tests/test-repo-ids.sh`.
+- **Status: FIXED (batch 2)** — `01018ef`; `tests/test-repo-ids.sh`.
 - Severity: MEDIUM. Confidence: CONFIRMED (reproduced with a fake docker)
 - Location: `repo.sh: \`host_uid="${SANDBOX_UID:-$(id -u)}"\``. The value is used in `seed_from_path` (`-c "cp -a /src/. /dst/ && chown -R ${host_uid}:${host_gid} /dst"`), `sync_from_path` and `sync_from_git` (`chown -R '"${host_uid}:${host_gid}"' /dst'`).
 - Introduced: the code predates the window. The window added the numeric/range check (`must be numeric ids from 0 to 4294967294`) to `sandbox.sh: \`launcher_ro_overlay()\`` only, and AGENTS.md tells users to export the same values for repo.sh.
@@ -194,7 +196,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Fix direction: validate host_uid/host_gid in repo.sh with the same `^[0-9]{1,10}$` / ≤4294967294 rule. Better still, pass the value as a positional argument (`"$2"`), as `seed_from_git` already does.
 
 ### ENV-3: Tool config and credential dirs that are symlinks get copied as symlinks, so the "group copy" mounts the host's real directory read-write
-- **Status: FIXED (batch 2)** — `98731b2` (copy, never the link; a group link out is warned about, not refused); `tests/test-tool-config-mounts.sh` case 13.
+- **Status: FIXED (batch 2)** — `9b0da59`, dangling group links repaired in `7b55eb3` (copy, never the link; a group link out is warned about, not refused); `tests/test-tool-config-mounts.sh` case 13.
 - Severity: MEDIUM. Confidence: CONFIRMED (reproduced with a fake docker)
 - Location: `sandbox.sh: \`cp -a "$HOME/$_cdir" "$group_root/$_cdir"\`` (tools.d `config_dir` seeding, multi-path loop added in the window). Also `sandbox-common.sh: \`_copy_group_slice()\`` (`cp -a "$from" "$dst/$p"`, which gained `.aws .azure .kube` in the window), together with `sandbox.sh: \`add_mount_if_exists()\``, which calls `resolve_path` and follows the link.
 - What's wrong: `cp -a` keeps a top-level symlink, so the group gets a symlink pointing at the host directory. `add_mount_if_exists` then resolves it and bind-mounts the host's real directory `:rw`. That breaks two documented promises: "a sandboxed agent never writes to the developer's real host config" (tools.d) and "a container can no longer write the developer's real AWS/Azure credentials" (.aws/.azure/.kube). Dotfile managers and hand-made links (`~/.aws -> ~/Dropbox/aws`, `~/.config/dtctl -> ~/dotfiles/…`) are common. The tools.d seeding runs for any existing group the first time the tool is enabled, not only for `from:host`. With a relative link (GNU stow), the copied link dangles instead: the mount is skipped with a WARNING and the seed is retried on every launch.
@@ -203,7 +205,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Fix direction: copy the link's target, not the link (`cp -RL`, or `cp -a "$from/." "$dst/$p/"` after `mkdir`). Before mounting, refuse or warn when a group path is a symlink leading outside the group root.
 
 ### ENV-4: When the host user is root, or SANDBOX_UID=0, the agent shell is root, and restricted mode's allowlist becomes agent-writable
-- **Status: FIXED (batch 2)** — `f2fe920`, hardened in `1255fc8`; T30, `tests/test-entrypoint-wiring.sh`. The entrypoint half needs a `./build.sh`.
+- **Status: FIXED (batch 2)** — `974faba`, hardened in `24b2223` and `7b55eb3` (checked before any side effect); T30, `tests/test-entrypoint-wiring.sh`. The entrypoint half needs a `./build.sh`.
 - Severity: MEDIUM (needs a root host user or an explicit SANDBOX_UID=0). Confidence: CONFIRMED from code in triage — `setup_sandbox_user()` finds UID 0 via `getent passwd "$uid"` and adopts `root`; nothing refuses it. Not run end-to-end.
 - Location: `sandbox.sh: \`launcher_ro_overlay()\`` accepts 0 (`must be numeric ids from 0 to 4294967294`); `-e SANDBOX_UID="${SANDBOX_UID:-$(id -u)}"`; `entrypoint.sh: \`setup_sandbox_user()\``; `exec capsh --drop=cap_net_admin,cap_net_raw --user="$sandbox_user"`.
 - What's wrong: AGENTS.md describes a "non-root agent shell". The capability reasoning relies on `capsh --user=` clearing the capability sets on the root→user setuid ("the agent shell ends up with no capabilities at all"). If sandbox.sh runs as root (a root WSL distro, a root CI box, `sudo ./sandbox.sh`), `id -u` is 0. The UID-0 user already exists, the name matches, and capsh switches 0→0, so only NET_ADMIN/NET_RAW leave the bounding set. The agent keeps CAP_DAC_OVERRIDE, CAP_KILL and the rest, and it owns every root-owned file. In restricted mode that includes `/tmp/allowlist-cidrs.txt` and `/tmp/allowlist-domains.txt`, which the root refresh loop re-reads every 60 s and loads into the ipset. Writing `0.0.0.0/1` and `128.0.0.0/1` there opens all egress with no NET_ADMIN needed. The agent can also kill the capture daemon.
@@ -212,7 +214,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Fix direction: refuse SANDBOX_UID=0 / SANDBOX_GID=0 in the launcher (and in the entrypoint, as defence in depth), or map a root host user to a fixed non-root UID with a warning.
 
 ### ENV-5: `host_checkout_preflight` never runs for the all-CRLF checkout it was written for, and it does not scan the baked `services.d/*.sh`
-- **Status: FIXED (batch 2)** — `8ba80ba` (scan extended; the all-CRLF limit is now documented rather than claimed).
+- **Status: FIXED (batch 2)** — `aa10888` (scan extended; the all-CRLF limit is now documented rather than claimed).
 - Severity: LOW. Confidence: CONFIRMED (reproduced)
 - Location: `host-preflight.sh: \`host_crlf_files()\`` / `host_checkout_preflight()`, called after the caller has already been parsed and has sourced sandbox-common.sh and friends.
 - What's wrong: the header says it "catches a checkout made before" `.gitattributes`, and AGENTS.md says it "refuses a CRLF script … (a Windows-side checkout)". In such a checkout every script is CRLF, so the shebang or the first line fails before the preflight can print its explanation. The guard only works for a tree where just some non-sourced files are CRLF. Separately, `services.d/*.sh` is COPYed into the image (`COPY services.d /etc/ai-containers/services.d`) but is not in the scanned set (`"$dir"/*.sh "$dir"/Dockerfile* … tools.d/*.conf allowlist-*.d/*.txt`), so a CRLF adapter gets baked and fails at runtime.
@@ -220,7 +222,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Fix direction: reword the docs and header to the case it does cover (an individually edited fragment, descriptor or Dockerfile). Add `services.d/*.sh` (and `migrations/*.sh`) to the scan.
 
 ### ENV-6: A committed container.env can copy any host environment variable into the agent's shell with a bare `NAME` line
-- **Status: FIXED (batch 2)** — `9246cd8` (`SANDBOX_ENV_PASSTHROUGH`); E13.
+- **Status: FIXED (batch 2)** — `0343e6f` (`SANDBOX_ENV_PASSTHROUGH`); E13.
 - Severity: LOW. Confidence: CONFIRMED (from code; documented docker behaviour)
 - Location: `sandbox.sh: \`container_env_filter()\``. A bare NAME is forwarded "for docker to look up in this environment".
 - What's wrong: the filter treats container.env as written by "whoever can commit to the project", yet it forwards a bare `GITHUB_TOKEN`, `AWS_SECRET_ACCESS_KEY` or `ANTHROPIC_API_KEY` line. docker fills these from the launching shell, so a host secret the launcher deliberately does not forward (build.sh's `GITHUB_TOKEN`, for example) reaches the agent. The agent can then use it or send it out through any allowlisted host. Only names the launcher passes with `-e` are refused.
@@ -676,6 +678,146 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Location: `AGENTS.md: \`Optional components: \`copilot\`, ...\``
 - What's wrong: both are sandbox.conf keys and are documented later in the file, but this list, which is presented as the whole set, leaves them out. The version-list keys (`node`, `python`, `ruby`, `rust`, `go`, `nvm-version`) are covered separately, so they are fine.
 
+## 9. Found while fixing batches 1 and 2
+
+Each fix batch was reviewed by an independent reviewer before it was merged, and every HIGH and MEDIUM those reviews found was fixed in the batch (batch 1 hotfix `5bbaacc` … `944eb0c`; batch 2 `a8824e8` … `e426e09`). What follows is what those reviews found and the batches left open, plus REPO-1, the one large defect batch 2 found and fixed outside its own findings. **Reviewed up to `e426e09`** (main, 2026-10-26).
+
+### REPO-1: `repo.sh sync`/`reset` ran git as root, with the host's `~/.ssh` and an open network, on a `.git` the agent can write
+- **Status: FIXED (batch 2)** — `1eac805` … `e426e09`; redesigned in `2a8d666` so that git never runs on the volume's own `.git`. Tests are in `tests/test-repo-git-reset.sh`, plus an end-to-end run as root in the seed image.
+- Severity: HIGH. Confidence: CONFIRMED (reproduced: a deleted `.git/config` let a sync fetch any repository the host SSH key could read; `core.fsmonitor`, hooks, `commondir`, alternates, replace refs and planted symbolic refs each reached root in turn).
+- Introduced: before the window. It was found by the batch 2 review (finding F6 of the first round).
+- What changed: every mode of `repo-git-reset.sh` clones the volume's `ai-containers.source` URL into a private directory. The volume's refs are read as plain files, and its worktree is used only as a worktree. `reset` and `sync` finish by replacing the volume's `.git`. The rest of this section lists the LOWs that redesign left.
+
+### GIT-2: The include walk is bounded per config but not per launch, so planted repositories can make every launch take minutes or hours
+- **Status: OPEN** (review of the batch 1 hotfix, F1)
+- Severity: MEDIUM. Confidence: CONFIRMED (measured)
+- Location: sandbox.sh: `if (( ++ient > 100 )); then icut=1` (`ient` is reset for each `config` and `config.worktree`), and `_path_walk()`.
+- What's wrong: there are three problems.
+  - Each config gets 100 include entries, and each git directory has two configs. `config.worktree` is walked whenever it exists, even with `extensions.worktreeConfig` off, when the host's git never reads it. A launch can protect up to `SANDBOX_GIT_MAX` (200) git directories, and the agent can plant all of them. The 1000-files-per-launch budget limits files, not entries.
+  - `_path_walk` is quadratic in the number of path components, because it strips one component per step with `rest="${rest#*/}"`.
+  - A config with exactly 100 entries never trips the cut, so it gets no WARNING.
+- Evidence: the reviewer measured the launch time in three setups.
+  - 150 planted repositories, each with 100 `include.path = /nonexistent/fN` lines in both configs, took 81 s to launch (13 s without the includes).
+  - One config with 100 entries of 2,000 components each took 54 s.
+  - One config with 10 entries of 8,000 components each took 71 s.
+- Fix direction: add a launch-wide entry budget beside the file budget, with a WARNING when it is hit. Treat an include value longer than PATH_MAX as inert. Bound the steps of `_path_walk`/`_link_walk`, and treat an entry that hits the bound as exposed, with a warning. Walk `config.worktree` only where `extensions.worktreeConfig` is on, as the hooks check already does. G38 should plant many repositories and long paths, because its timing half alone does not catch a removed cap (5000 entries took 12 s, under its 15 s threshold).
+
+### GIT-3: A gitlink skipped by the path checks is skipped silently
+- **Status: OPEN** (review of the batch 1 hotfix, F3)
+- Severity: LOW. Confidence: PLAUSIBLE
+- Location: sandbox.sh: `git_dirs_in()` (the `*/../*|*/./*|*//*` case and the `pwd -P` comparison on each gitlink path).
+- What's wrong: the skip is correct for an agent-written index. It also fires, with nothing printed, in three legitimate cases:
+  - a checkout whose on-disk name differs from the index (case on APFS, NFC against NFD on HFS+);
+  - a submodule directory the launching user cannot search;
+  - a checkout the user replaced with a symlink.
+  If such a checkout sits under a pruned `vendor/` with an embedded `.git` directory, it is not protected, and nothing says so. The other "not followed" paths here do warn. Related and already documented under "Not covered" in AGENTS.md: a sparse index's gitlinks are not followed either.
+- Fix direction: print a `WARNING:` naming the gitlink whenever either check skips one.
+
+### GIT-4: A concurrent container can swap the index or a sharedindex file for a FIFO between the check and the read
+- **Status: OPEN** (review of the batch 1 hotfix, F4)
+- Severity: LOW. Confidence: PLAUSIBLE (with the guard removed, G37's hang ran to the 60 s timeout)
+- Location: sandbox.sh: `_git_index_read()` (the `sharedindex` regular-file test, then `ls-files`).
+- What's wrong: the guard checks, then uses. A second container on the same tree can replace `sharedindex.*`, or `index` itself, with a FIFO after the `-f` test, and the unbounded `ls-files` then hangs the launch. The gitlink `pwd -P` check has the same window against the host-side writes that follow it (`commondir`, `hooks/`, `config.worktree`). Mount time does not re-verify those writes, but what they write is benign.
+- Fix direction: run the `ls-files` under a watchdog like the services runner's, and treat a timeout as an unreadable index.
+
+### GIT-5: Nits in the include walk
+- **Status: OPEN** (review of the batch 1 hotfix, F5)
+- Severity: NIT
+- `ient > 100` counts empty-value entries too.
+- `unset iseen; local -A iseen=()` deletes a caller's or a global `iseen` on the first pass (checked on bash 5.1 and 5.3). None exists today. `local -A iseen=()` followed by `iseen=()` avoids it.
+
+### LNCH-4: An unrepresentable launcher candidate is not overlaid, yet everything nested in it is discounted from `SANDBOX_LAUNCHER_MAX`
+- **Status: OPEN** (review of the batch 1 hotfix, F2)
+- Severity: LOW. Confidence: CONFIRMED (reproduced)
+- Location: sandbox.sh: `lcand[${cat[i]}]=1`.
+- What's wrong: the rule is that only an overlay that is actually made covers what is nested in it. Mount roots are excluded from `lcand`, but a candidate that `_mount_representable` rejects is not. It gets "cannot protect … stays writable" and no overlay, yet its nested launchers are not counted.
+- Evidence: a launcher named `bad$'\xff'` holding 3,000 nested launchers, with `SANDBOX_LAUNCHER_MAX=5`, exited 0 after 14 s with 3,001 WARNINGs. No extra bind mounts were made, because every nested path is unrepresentable too. The damage is a flood of WARNINGs that buries real ones, which is what the cap exists to bound.
+- Fix direction: decide representability before counting, or count the overlays actually emitted.
+
+### ENV-7: A committed `IMAGE_NAME` can retag another project's image
+- **Status: OPEN** (batch 2 review, F7 of the first round and F6 of the second; existed before the window)
+- Severity: LOW. Confidence: PLAUSIBLE (from code)
+- Location: build.sh: `remove_replaced_image`. sandbox-common.sh: `env_value_portable()` refuses only the seed image.
+- What's wrong: `IMAGE_NAME` stays portable. A committed `sandbox.env` can name a sibling project's tag, or a base image such as `ubuntu:24.04`. `./build.sh` then retags it with an image built from this project's `sandbox.conf` and `allowlist-*.d/custom.txt`, and removes the old image. The other project's next restricted launch then runs with this project's allowlist, and gets only a provenance warning.
+- Fix direction: refuse a portable `IMAGE_NAME` that contains a registry host or `/`. Or warn, or refuse, when the existing tag carries no `ai-containers.*` label from this project. Or derive the name from the project.
+
+### REPO-2: `sync` drops an `am`, merge, cherry-pick or revert that is still in progress
+- **Status: OPEN** (re-review of `80a35d0`, #1)
+- Severity: LOW. Confidence: CONFIRMED (reproduced)
+- Location: repo-git-reset.sh: `cmd_pull()`.
+- What's wrong: `.git` is replaced, and with it `rebase-apply/`, `rebase-merge/`, `sequencer/`, `MERGE_HEAD`, `CHERRY_PICK_HEAD` and `REVERT_HEAD`. With `git am` stopped on patch 1 of 2, `pull` returned 0 and the two patches, which existed only in `rebase-apply/`, were gone. `git pull --ff-only` keeps that state.
+- Fix direction: refuse when any of those names, or `BISECT_START`, exists in `.git`.
+
+### REPO-3: A split index is refused with "use reset", which wipes far more than a sync would
+- **Status: OPEN** (re-review of `80a35d0`, #2)
+- Severity: LOW. Confidence: CONFIRMED (reproduced)
+- Location: repo-git-reset.sh: `cmd_pull()` (the staged-changes check reads a copy of the index without its `sharedindex.*`).
+- What's wrong: a clean checkout with `core.splitIndex` on cannot be synced. The suggested `reset` drops untracked files and every other local branch.
+- Fix direction: copy the regular `sharedindex.<oid>` the index names beside the copy, or tell the user to run `git update-index --no-split-index`.
+
+### REPO-4: A reftable repository is misread by every mode, and `reset` deletes its branches without listing them
+- **Status: OPEN** (re-review of `80a35d0`, #3; existed before the window)
+- Severity: LOW for now. It becomes MEDIUM if git makes reftable the default. Confidence: CONFIRMED (reproduced)
+- Location: repo-git-reset.sh: `volume_refs()`, `cmd_inspect()`.
+- What's wrong: a reftable `.git` has a stub file at `refs/heads` and no loose or packed refs.
+  - `inspect` lists `BRANCH|/dst/.git/refs/heads|?|` and never names the real branches, so the confirmation shows none of them at risk.
+  - `reset` then deletes them.
+  - `pull` refuses with a misleading "cannot read the tip of .invalid".
+- Fix direction: refuse any mode when `.git/reftable` exists or `refs/heads` is not a directory, with a message saying why.
+
+### REPO-5: Refusing every nested `.git` also blocks common legitimate checkouts
+- **Status: OPEN** (review of `82698a0`, #4)
+- Severity: LOW. Confidence: CONFIRMED
+- Location: repo-git-reset.sh: `check_volume()` (`-name .git`).
+- What's wrong: initialised submodules, `pip install -e` checkouts under `src/`, and clones inside ignored directories all block `inspect`, `reset` and `sync`. That includes `reset`, which would delete them anyway.
+- Fix direction: in `reset` (or `inspect`), list the nested `.git` paths, and after confirmation remove them with `rm -rf` before any git runs, so git never reads them. `sync` keeps refusing them.
+
+### REPO-6: `pull` is not atomic once the worktree has been fast-forwarded
+- **Status: OPEN** (review of `82698a0`, #5)
+- Severity: LOW. Confidence: PLAUSIBLE
+- Location: repo-git-reset.sh: `read-tree -m -u`, then `install_git_dir()`.
+- What's wrong: a failure after the two-way merge leaves the worktree at the new tip under the old `.git`, for example a full disk while the new `.git` is copied. The old `.git` is intact, because the stage-then-swap holds, but the checkout now looks like reverse uncommitted changes, and every later sync refuses.
+- Fix direction: on failure after the merge, run a reverse `read-tree -m -u <remote tip> <old tip>`. Or say in the error that `reset` is the way out.
+
+### REPO-7: The git helper's container has a memory limit and nothing else
+- **Status: OPEN** (review of `82698a0`, #6)
+- Severity: LOW. Confidence: CONFIRMED (from code)
+- Location: repo.sh: `git_helper_run()` (`--memory "${REPO_HELPER_MEMORY:-4g}"`).
+- What's wrong: there is no `--memory-swap`, no `--pids-limit` and no time limit. `REPO_HELPER_MEMORY` is neither validated nor documented. An out-of-memory kill gives only the generic failure message.
+- Fix direction: add `--memory-swap` equal to the memory, a `--pids-limit`, and a watchdog. Validate the value, document the key, and name exit 137 as an out-of-memory kill.
+
+### REPO-8: `reset`'s confirmation lists branches only, and nothing a reset removes can be undone
+- **Status: OPEN** (batch 2 review, P2; partly documented: AGENTS.md says per-repo config and reflogs are replaced)
+- Severity: LOW. Confidence: CONFIRMED
+- Location: repo-git-reset.sh: `cmd_inspect()`; repo.sh's rendering of its records.
+- What's wrong: replacing `.git` also removes the stash, local tags, notes, reflogs and objects that nothing else references. A tag holding the only reference to a commit disappears without being mentioned. Before batch 2, a mistaken reset could be recovered from the reflog until the next gc. It no longer can.
+- Fix direction: `inspect` emits `STASH|<n>` and `TAG|<name>|<on-remote>` records, and repo.sh renders them in the confirmation.
+
+### REPO-9: `sync` drops other branches' upstream tracking and other remotes
+- **Status: OPEN** (batch 2 review of `fb1705e`; documented as "per-repo config is replaced")
+- Severity: LOW. Confidence: CONFIRMED
+- Location: repo-git-reset.sh: `--set-upstream-to="origin/$b"` (only the checked-out branch is re-tracked).
+- What's wrong: every other branch loses its upstream, and every remote except `origin` is dropped with its `refs/remotes`. That is recoverable by re-fetching, but surprising after a "sync".
+- Fix direction: restore the upstream of each branch that has a same-named branch on `origin`. Other remotes stay a documented loss, because their URLs are agent-written config.
+
+### REPO-10: Nits in the repo helper
+- **Status: OPEN** (reviews of `82698a0` and `80a35d0`)
+- Severity: NIT
+- A newline in a loose ref's file name splits the helper's output into fake `BRANCH|` records. Names are shown sanitised, but the record structure is not.
+- `--ignore-submodules=all` hides a gitlink replaced by a symlink, so `pull` succeeds and keeps the link. `reset` does not recreate an empty gitlink directory.
+- An intent-to-add entry (`git add -N`) is refused as a staged change, although nothing would be lost.
+- `diff-index --cached` trusts the index's cache-tree extension, so a hand-crafted index can hide staged entries. Only the agent's own data is at stake.
+- `sync_from_git` drops record types it does not recognise. Unlike `reset_git`, it does not print them verbatim.
+- A packed ref longer than the `cut -c1-4200` limit is truncated rather than refused.
+- The index copy has no size or time bound.
+- Ignored files the remote now tracks are overwritten, as `git pull --ff-only` also does. The docs' "an untracked file the remote now tracks" reads as covering every untracked file.
+- Tests missing:
+  - `diff-index` exiting 128;
+  - intent-to-add and unmerged entries;
+  - operations still in progress;
+  - nesting more than one level deep;
+  - a `.git` symlink.
+  Two more gaps: the fail-closed `find` test runs only when not root, and the hermetic suite runs the host's git (2.56), not the seed image's (2.45).
 
 ---
 
