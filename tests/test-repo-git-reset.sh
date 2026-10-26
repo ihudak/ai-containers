@@ -493,6 +493,40 @@ else
   fail "the git wrapper does not turn submodule recursion off"
 fi
 
+# With .git/config deleted, git falls back to a legacy .git/remotes/origin (or
+# .git/branches/origin) for the remote: the pin must not depend on a config file
+# being there to rewrite (re-review of b86cfe6).
+W="$(mk_repo legacy)"; mk_repo secret >/dev/null
+S2="$TMP/secret.seed"; commit_in "$S2" SECRET-CONTENT; g "$S2" push -q origin main >/dev/null 2>&1
+rm -f "$W/.git/config"; mkdir -p "$W/.git/remotes" "$W/.git/branches"
+printf 'URL: %s\nPull: refs/heads/*:refs/remotes/origin/*\n' "$TMP/secret.git" > "$W/.git/remotes/origin"
+printf '%s\n' "$TMP/secret.git" > "$W/.git/branches/origin"
+run_script inspect "$W"
+log_l="$(git -C "$W" log --all --format=%s 2>/dev/null)"
+if [[ $'\n'"$log_l"$'\n' != *$'\nadd SECRET-CONTENT\n'* ]] \
+   && [[ ! -e "$W/.git/remotes" && ! -e "$W/.git/branches" ]]; then
+  pass "a deleted config with a legacy remotes file still fetches only the recorded URL"
+else
+  fail "legacy remote file was used (log: $(git -C "$W" log --all --format=%s 2>&1 | tr '\n' ' '); out: $OUT)"
+fi
+# An alternates chain into the worktree can end in a FIFO the scan of .git never
+# sees: a seed clone has no alternates, so the file is not kept (re-review, F2).
+W="$(mk_repo alt)"
+mkdir -p "$W/evil/info" && mkfifo "$W/evil/info/alternates"
+printf '%s\n' "$W/evil" > "$W/.git/objects/info/alternates"
+AI_REPO_URL="$TMP/alt.git" p_timeout 20 "$SCRIPT" inspect "$W" >"$TMP/alt.out" 2>&1; rc=$?
+if [[ "$rc" != 124 && ! -e "$W/.git/objects/info/alternates" ]]; then pass "objects/info/alternates is dropped, so a FIFO behind it hangs nothing"
+else fail "alternates (rc=$rc: $(tr '\n' ' ' < "$TMP/alt.out"))"; fi
+( exec 3<>"$W/evil/info/alternates" ) 2>/dev/null
+# A branch named like an option is a refname the agent can write; it is never
+# handed to git where an option is parsed (re-review, F3).
+W="$(mk_repo dash)"
+g "$W" update-ref "refs/heads/--output=$TMP/dash-pwned" HEAD
+run_script inspect "$W"
+run_script reset "$W" main
+if [[ ! -e "$TMP/dash-pwned" ]]; then pass "a branch named --output=… is not parsed as an option"
+else fail "a branch name was parsed as an option ($TMP/dash-pwned was written)"; fi
+
 # pull: the fast-forward repo.sh sync runs, through the same guarded path.
 W="$(mk_repo pull)"
 S="$TMP/pull.seed"; commit_in "$S" newer; g "$S" push -q origin main >/dev/null 2>&1

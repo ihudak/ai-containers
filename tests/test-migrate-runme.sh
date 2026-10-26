@@ -138,6 +138,15 @@ after="$(ls "$proj2/.ai-containers" | sort | tr '\n' ' ')"
   && pass "--dry-run writes nothing" \
   || fail "--dry-run writes nothing (before: $before / after: $after)"
 
+# The first migration's launcher ran `restricted @app`: a working dir other than
+# the project itself is this machine's, which a shared sandbox.env cannot set —
+# it lands in sandbox.local.env (re-review of 3529f22, F4).
+! grep -q '^SANDBOX_WORKDIR=@app' "$proj/.ai-containers/sandbox.env" \
+  && grep -qx 'SANDBOX_WORKDIR=@app' "$proj/.ai-containers/sandbox.local.env" 2>/dev/null \
+  && grep -qx 'SANDBOX_WORKDIR=..' "$proj/.ai-containers/sandbox.env" \
+  && pass "a non-portable working dir migrates into sandbox.local.env" \
+  || fail "workdir after migration: $(grep -h SANDBOX_WORKDIR "$proj/.ai-containers/"sandbox*.env 2>&1 | tr '\n' ' ')"
+
 # ── An old launcher in the host group ───────────────────────────────────────────
 # The host group is this machine's $HOME, which the shared sandbox.env cannot
 # select, so the migration writes it to sandbox.local.env (review of batch 2, F4).

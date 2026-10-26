@@ -63,9 +63,14 @@ die() { printf 'repo-git-reset: %s\n' "$1" >&2; exit 1; }
 export GIT_ALLOW_PROTOCOL="ssh:https:http:git:file"
 # No submodule recursion either: a submodule's config under .git/modules is not
 # rewritten, and fetch recurses "on demand" by default.
+# The remote is pinned on the command line too, which outranks every file in
+# .git: with config deleted, git would otherwise read a legacy .git/remotes or
+# .git/branches entry for origin (re-review of b86cfe6).
 git() {
   command git -c core.hooksPath=/dev/null -c core.fsmonitor=false \
-    -c fetch.recurseSubmodules=false -c submodule.recurse=false "$@"
+    -c fetch.recurseSubmodules=false -c submodule.recurse=false \
+    ${AI_REPO_URL:+-c "remote.origin.url=$AI_REPO_URL"} \
+    ${AI_REPO_URL:+-c "remote.origin.fetch=+refs/heads/*:refs/remotes/origin/*"} "$@"
 }
 
 # guard_repo <dir>: refuse a .git that is not a plain directory, or that holds
@@ -83,8 +88,13 @@ guard_repo() {
   [[ -d "$gd" && ! -L "$gd" ]] || die "$gd is not a directory (a .git file or link can point anywhere)"
   bad="$(find "$gd" ! -type f ! -type d -print -quit 2>/dev/null)"
   [[ -z "$bad" ]] || die "$bad is not a regular file or directory; refusing to run git on this repository"
-  rm -f "$gd/commondir" "$gd/config.worktree"
-  [[ -f "$gd/config" ]] || return 0
+  # Gone, not just cleaned: commondir and config.worktree send git to config of
+  # the agent's choosing, remotes/ and branches/ name remotes, and alternates can
+  # chain into the worktree, where a FIFO hangs git — a fresh clone has none.
+  rm -rf "$gd/commondir" "$gd/config.worktree" "$gd/remotes" "$gd/branches" \
+         "$gd/objects/info/alternates" "$gd/objects/info/http-alternates"
+  [[ ! -e "$gd/config" || -f "$gd/config" ]] || die "$gd/config is not a regular file"
+  [[ -e "$gd/config" ]] || : > "$gd/config"
   tmp="$gd/config.sanitised.$$"
   : > "$tmp" || die "cannot write $tmp"
   while IFS= read -r -d '' k; do
@@ -176,17 +186,21 @@ cmd_inspect() {
     [[ -n "$b" ]] || continue
     # Commits reachable from this branch and from NO remote-tracking ref. This
     # is the number that decides whether deleting the branch destroys work.
-    unpushed="$(git -C "$dir" rev-list --count "$b" --not --remotes 2>/dev/null)"
+    # Branch names are refnames the agent can write: git gets the full refname,
+    # so one spelled like an option (--output=…) is never parsed as one, and a |
+    # is shown as ? so it cannot split these records (re-review of b86cfe6).
+    unpushed="$(git -C "$dir" rev-list --count "refs/heads/$b" --not --remotes 2>/dev/null)"
     unpushed="${unpushed//[^0-9]/}"
     flags=""
     [[ "$b" == "$current" ]] && flags="current"
-    printf 'BRANCH|%s|%s|%s\n' "$b" "${unpushed:-0}" "$flags"
+    printf 'BRANCH|%s|%s|%s\n' "${b//|/?}" "${unpushed:-0}" "$flags"
   done < <(git -C "$dir" for-each-ref --format='%(refname:short)' refs/heads/ 2>/dev/null)
 }
 
 cmd_reset() {
   local dir="${1:-}" primary="${2:-}" owner="${3:-}"
   [[ -n "$dir" && -n "$primary" ]] || { usage >&2; die "reset needs a directory and a primary branch"; }
+  [[ "$primary" != -* ]] || die "refusing a primary branch named like an option: $primary"
   [[ -e "$dir/.git" ]] || die "not a git repository: $dir"
   guard_repo "$dir"
   mark_safe_directory "$dir"
@@ -219,10 +233,10 @@ cmd_reset() {
   local b deleted=0
   while IFS= read -r b; do
     [[ -n "$b" && "$b" != "$primary" ]] || continue
-    if git -C "$dir" branch -D "$b" >/dev/null 2>&1; then
-      printf 'DELETED|%s\n' "$b"; deleted=$(( deleted + 1 ))
+    if git -C "$dir" update-ref -d "refs/heads/$b" >/dev/null 2>&1; then
+      printf 'DELETED|%s\n' "${b//|/?}"; deleted=$(( deleted + 1 ))
     else
-      printf 'KEPT|%s|could not delete\n' "$b"
+      printf 'KEPT|%s|could not delete\n' "${b//|/?}"
     fi
   done < <(git -C "$dir" for-each-ref --format='%(refname:short)' refs/heads/ 2>/dev/null)
 

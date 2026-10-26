@@ -5,11 +5,12 @@
 # with repo volumes mounted, before the launch's own run (review of batch 2, F2).
 #
 # Structural, not behavioural: these runs sit behind repo volumes and an rvm
-# migration that a hermetic fake cannot drive cheaply. Each `docker run`
-# statement is joined across its continuation lines, and any that names the
-# project image — "$image_name", "$image", "${IMAGE_NAME…}" — must carry
-# --pull=never. A statement naming no image variable is the seed image or a
-# fixed base, which repo.sh / verify-on-host.sh build or pin themselves.
+# migration that a hermetic fake cannot drive cheaply. Each `docker run` (or
+# `docker container run`) statement is joined across its continuation lines, and
+# every one must carry --pull=never unless it runs the seed image, which repo.sh
+# builds locally itself (ensure_seed_image) — an allow-list, so a run added later
+# under any spelling of the image fails here until it is decided (re-review of
+# 3529f22).
 set -uo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENGINE_DIR="$REPO_DIR"
@@ -24,26 +25,23 @@ statements() {
     function flush() { if (cur != "") print FILENAME ":" start ": " cur; cur = "" }
     /^[[:space:]]*#/ { next }
     cur != "" { cur = cur " " $0; if ($0 !~ /\\$/) flush(); next }
-    /docker run/ { start = FNR; cur = $0; if ($0 !~ /\\$/) flush() }
+    /docker (container )?run/ { start = FNR; cur = $0; if ($0 !~ /\\$/) flush() }
   ' "$1"
 }
 
 seen=0
-for f in sandbox.sh sandbox-common.sh extract-discovery.sh; do
+for f in sandbox.sh sandbox-common.sh extract-discovery.sh repo.sh; do
   [[ -f "$ENGINE_DIR/$f" ]] || { fail "SCAFFOLD: $f not found under $ENGINE_DIR"; continue; }
   while IFS= read -r st; do
-    case "$st" in
-      *'"$image_name"'*|*'"$image"'*|*'${IMAGE_NAME'*|*'"$IMAGE_NAME"'*) ;;
-      *) continue ;;
-    esac
     seen=$((seen + 1))
     if [[ "$st" == *--pull=never* ]]; then pass "--pull=never: ${st%%: *}"
-    else fail "a docker run of the project image may pull it: ${st:0:160}"; fi
+    elif [[ "$st" == *'$seed_image'* ]]; then pass "seed image (built locally by repo.sh): ${st%%: *}"
+    else fail "a docker run without --pull=never: ${st:0:160}"; fi
   done < <(statements "$ENGINE_DIR/$f")
 done
 # The scan must have found the runs it exists for, or it verified nothing.
-(( seen >= 4 )) && pass "found $seen docker runs of the project image" \
-  || fail "found only $seen docker runs of the project image — the scan is broken"
+(( seen >= 10 )) && pass "found $seen docker runs" \
+  || fail "found only $seen docker runs — the scan is broken"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

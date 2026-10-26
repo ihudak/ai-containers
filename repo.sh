@@ -205,7 +205,8 @@ git_helper_run() {   # $1 = volume  $2... = repo-git-reset.sh arguments
   # container can change — is the one remote the helper fetches from.
   url="$(docker_volume_label "$vol" 'ai-containers.source')"
   if [[ -z "$url" ]]; then
-    printf "ERROR: volume %s carries no recorded source URL; re-register it with ./repo.sh add.\n" "$vol" >&2
+    printf "ERROR: volume %s carries no recorded source URL (no ai-containers.source label), so its\n" "$vol" >&2
+    printf "       git is not run. Re-create it: ./repo.sh rm <name>, then ./repo.sh add <name> <url>.\n" >&2
     return 1
   fi
   # An agent with the volume mounted read-write could rewrite its .git between

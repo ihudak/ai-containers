@@ -206,7 +206,9 @@ process_project() {
     printf 'CONTAINER_MEMORY_RESERVATION=%s\n' "$container_memory_reservation"
     printf 'CONTAINER_MEMORY_SWAP=%s\n' "$container_memory_swap"
     printf 'SANDBOX_MODE=%s\n' "$mode"
-    printf 'SANDBOX_WORKDIR=%s\n' "$workdir"
+    # Only the project itself is portable; any other working dir (@repo, a
+    # subdirectory, a host path) is this machine's and goes to sandbox.local.env.
+    printf 'SANDBOX_WORKDIR=..\n'
     [[ -n "$preview_ports" ]] && printf 'PREVIEW_PORTS="%s"\n' "$preview_ports"
     cat <<'EOF'
 # Machine-specific settings belong in sandbox.local.env (gitignored), NOT here:
@@ -216,7 +218,7 @@ process_project() {
 EOF
   } > "${dest}/sandbox.env"
 
-  if [[ -n "$extra_mounts" || -n "$group_init" || -n "$repos" || "$group_name" == host ]]; then
+  if [[ -n "$extra_mounts" || -n "$group_init" || -n "$repos" || "$group_name" == host || "$workdir" != .. ]]; then
     {
       cat <<'EOF'
 # sandbox.local.env — THIS MACHINE's launcher config (gitignored, not shared).
@@ -224,6 +226,7 @@ EOF
 # absolute bind paths, named-volume repos, the group bootstrap, workdir/resource overrides.
 EOF
       [[ "$group_name" == host ]] && printf 'AI_CONTAINER_GROUP=host\n'
+      [[ "$workdir" != .. ]] && printf 'SANDBOX_WORKDIR=%s\n' "$workdir"
       [[ -n "$group_init"   ]] && printf 'AI_CONTAINER_GROUP_INIT=%s\n' "$group_init"
       [[ -n "$extra_mounts" ]] && printf 'EXTRA_MOUNTS="%s"\n' "$extra_mounts"
       [[ -n "$repos"        ]] && printf 'REPOS="%s"\n' "$repos"

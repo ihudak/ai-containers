@@ -15,7 +15,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `.git` is now checked and its config cut to what a fetch and a checkout need
   before git touches it, and git runs with hooks and fsmonitor off. A `.git`
   that is a file or holds a FIFO is refused. `repo.sh sync` of a git repo now
-  pulls through the same helper (review of batch 2).
+  pulls through the same helper (review of batch 2). It fetches only from the
+  URL `repo.sh add` recorded, whatever the `.git` names (a deleted config with
+  a legacy `.git/remotes` file included), never recurses into submodules,
+  and refuses while a running container mounts the volume read-write.
 - **A committed `sandbox.env` can no longer run code on your machine through
   docker or git.** It refused the keys that control the shell, but exported
   every other key into docker, git and every tool the launcher runs —
