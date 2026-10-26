@@ -18,7 +18,7 @@ and the constraints the fix must keep.
 | ID | Platform | Source | What |
 |---|---|---|---|
 | PLAT-1 | Windows + WSL2 + Docker Desktop | bug LNCH-2 | A project under `/mnt/c` may be refused at every launch by the mount-swap check — **not reproducible**, closed |
-| PLAT-2 | Windows + WSL2 | gap GAP-13 | The integration corpus and the local layer have never been run on WSL2 |
+| PLAT-2 | Windows + WSL2 | gap GAP-13 | The integration corpus and the local layer have never been run on WSL2 — **Docker Desktop half done**; native Engine open |
 | PLAT-3 | macOS (Docker Desktop, Colima) | gap GAP-11 | The mount-swap check is skipped there altogether |
 | PLAT-4 | x86-64 CPU without AVX | bug SVC-2 | `mongo=ON` reports "no mongo server, rebuild" instead of the real failure |
 
@@ -54,6 +54,8 @@ and the constraints the fix must keep.
 - Extend `tests/test-launcher-verify.sh` (hermetic) and case `460-launcher-mount-verified`, which today probes one scratch directory only.
 
 ## PLAT-2: WSL2 — the corpus and the local layer have never been run
+
+- **Status: PARTLY DONE (2026-10-26).** Docker Desktop + WSL2, from ext4 and from `/mnt/c`. Results are in docs/testing.md under "Platforms exercised". The one failure that reproduced, G28, was a real bug on every Linux, fixed in #313 and #315. Still open: a Docker Engine installed natively in the distro, and Phase 7 with shellcheck installed.
 
 - **Platform:** Windows + WSL2, both Docker Desktop and a native Engine in the distro if available.
 - **Source:** feature-gaps review GAP-13 (the increment-3 design records WSL2 as "expected, **never exercised**").
