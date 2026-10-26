@@ -568,6 +568,10 @@ guarded_case "an invocation inside a heredoc body is refused" "Heredoc" \
   "$(printf '|\n          cat >> "$GITHUB_STEP_SUMMARY" <<EOF\n          ./tests/integration/run.sh --tags a\n          EOF')"
 guarded_case "an invocation after exec is refused" "Exec" \
   "$(printf '|\n          exec echo disabled\n          ./tests/integration/run.sh --tags a')"
+# A subshell body: the definition line ends in `(`, not `{`, so only the
+# `name()` rule sees it.
+guarded_case "an invocation inside a subshell function body is refused" "SubFunc" \
+  "$(printf '|\n          go() (\n            ./tests/integration/run.sh --tags a\n          )')"
 guarded_case "an invocation inside a function body is refused" "Func" \
   "$(printf '|\n          go() {\n            ./tests/integration/run.sh --tags a\n          }')"
 printf 'on:\n  schedule:\njobs:\n  gate:\n    if: github.event_name == '"'"'workflow_dispatch'"'"'\n    runs-on: x\n    steps:\n      - run: echo gate\n  j:\n    needs: gate\n    runs-on: x\n    steps:\n      - name: After gate\n        run: ./tests/integration/run.sh --tags a\n' > "$TMP/it-needs.yml"
