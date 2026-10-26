@@ -818,6 +818,19 @@ ensure_group_scaffold() {
 }
 
 # Copy the group-scoped slice of dotfiles from $src into $dst.
+# _copy_dereferenced <from> <to>: copy a group path as what it IS, not as the
+# link it may be. `cp -a` keeps a top-level symlink, and ~/.aws -> ~/Dropbox/aws
+# (a dotfile manager, a hand-made link) then became a group "copy" pointing at
+# the host's real directory, which the container mounted read-write (bugs
+# review ENV-3). Links INSIDE the directory are kept as they are.
+_copy_dereferenced() {
+  if [[ -d "$1" ]]; then
+    mkdir -p "$2" && cp -a "$1/." "$2/"
+  else
+    cp -pL "$1" "$2"
+  fi
+}
+
 _copy_group_slice() {
   local src="$1" dst="$2"
   # Credentials and settings only. A regenerable install or cache (.ai-tools,
@@ -842,7 +855,7 @@ _copy_group_slice() {
     from="$src/$p"
     if [[ -e "$from" ]]; then
       mkdir -p "$(dirname "$dst/$p")"
-      cp -a "$from" "$dst/$p"
+      _copy_dereferenced "$from" "$dst/$p"
     fi
   done
 }

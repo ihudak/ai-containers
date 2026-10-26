@@ -36,6 +36,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   reloads every minute. `sandbox.sh` now refuses a UID or GID of 0 and says to
   set a non-root `SANDBOX_UID`/`SANDBOX_GID`; the entrypoint refuses it as well
   (rebuild with `./build.sh` to get that half) (bugs review ENV-4).
+- **A symlinked `~/.aws`, `~/.ssh` or tool config dir is copied into the group,
+  not linked.** The copy kept the link, so the group's "copy" was your real
+  directory, mounted read-write — the agent could change your real
+  credentials, which the group exists to prevent. New copies take what the
+  link points at; a group that already holds such a link is named in a
+  warning on every launch, with the command that replaces it with a copy
+  (bugs review ENV-3).
 - **A repository under a writable mount can no longer make the launcher run a
   program on the host.** Before each launch the launcher reads every
   repository's index with the host's git, to find its submodules. In a partial

@@ -449,5 +449,45 @@ teardown
 if [[ ! -e "$REAL_HOME/.ai-containers/default/.gamma" ]]; then
   pass "real home untouched"; else fail "real home untouched"; fi
 
+# ── Case 13: a credential dir that is a SYMLINK on the host (dotfile managers,
+# ~/.aws -> ~/Dropbox/aws) is copied as what it points to. cp -a kept the link,
+# so the group's "copy" pointed at the host's real directory and the container
+# mounted that read-write (bugs review ENV-3).
+setup
+printf '# schema-version: 3\nalpha=ON\nbeta=OFF\ngamma=OFF\naws-cli=ON\n' > "$SANDBOX_CONF"
+mkdir -p "$TMP/dotfiles/aws" "$TMP/dotfiles/alpha"
+printf 'aws-real\n' > "$TMP/dotfiles/aws/credentials"; printf 'alpha-real\n' > "$TMP/dotfiles/alpha/conf"
+ln -s "$TMP/dotfiles/aws" "$HOME/.aws"
+mkdir -p "$HOME/.config"; ln -s ../../dotfiles/alpha "$HOME/.config/alpha"
+export AI_CONTAINER_GROUP_INIT=from:host
+run_sandbox "$TMP/app"
+if [[ -d "$GROUP_ROOT/.aws" && ! -L "$GROUP_ROOT/.aws" && -f "$GROUP_ROOT/.aws/credentials" ]] \
+   && mounted "$GROUP_ROOT/.aws" "/home/dev/.aws" && ! grep -qF "$TMP/dotfiles" "$CAPTURE"; then
+  pass "a symlinked ~/.aws is copied into the group as a directory, and the group copy is mounted"
+else
+  fail "symlinked ~/.aws (group .aws: $(ls -ld "$GROUP_ROOT/.aws" 2>&1); mounts: $(grep -F '.aws' "$CAPTURE" | tr '\n' ' '))"
+fi
+if [[ -d "$GROUP_ROOT/.config/alpha" && ! -L "$GROUP_ROOT/.config/alpha" && -f "$GROUP_ROOT/.config/alpha/conf" ]] \
+   && mounted "$GROUP_ROOT/.config/alpha" "/home/dev/.config/alpha"; then
+  pass "a tool's config_dir that is a relative symlink is seeded as a directory too"
+else
+  fail "symlinked config_dir (group: $(ls -ld "$GROUP_ROOT/.config/alpha" 2>&1); mounts: $(grep -F 'alpha' "$CAPTURE" | tr '\n' ' '))"
+fi
+printf 'agent-wrote\n' > "$GROUP_ROOT/.aws/credentials"
+[[ "$(cat "$TMP/dotfiles/aws/credentials")" == aws-real ]] \
+  && pass "writing the group copy leaves the host's real credentials alone" \
+  || fail "the group copy is still the host directory"
+teardown
+# A group seeded before this fix already holds such a link: its mount is named
+# in a WARNING on every launch, with the copy that fixes it.
+setup
+printf '# schema-version: 3\nalpha=OFF\nbeta=OFF\ngamma=OFF\naws-cli=ON\n' > "$SANDBOX_CONF"
+mkdir -p "$TMP/dotfiles/aws" "$GROUP_ROOT"; ln -s "$TMP/dotfiles/aws" "$GROUP_ROOT/.aws"
+run_sandbox "$TMP/app"
+grep -qF "WARNING: $GROUP_ROOT/.aws is a link out of the group" "$ERR" \
+  && pass "a group path that links out of the group is named in a WARNING" \
+  || fail "no WARNING for a group link out (stderr: $(tr '\n' ' ' < "$ERR"))"
+teardown
+
 printf '\n%s failure(s)\n' "$fails"
 (( fails == 0 )) || exit 1

@@ -240,11 +240,28 @@ validate_memory_limits() {
 
 # ── Mount helpers ────────────────────────────────────────────────────────────────
 
+# A group's own directories are meant to keep the agent away from your real
+# config; one that is a link out of the group (left by an older copy, or made by
+# hand) mounts what it points at instead. Named on every launch, not refused:
+# a link made on purpose — a group sharing your real ~/.ssh — is yours to keep.
+# run_container sets _group_guard_root for every group but `host`.
+_group_guard_root=""
+_warn_group_link_out() {
+  local original_src="$1" src="$2" groot
+  [[ -n "$_group_guard_root" && "$original_src" == "$_group_guard_root"/* ]] || return 0
+  groot="$(resolve_path "$_group_guard_root")"
+  [[ "$src" == "$groot" || "$src" == "$groot"/* ]] && return 0
+  printf 'WARNING: %s is a link out of the group, to %s;\n' "$original_src" "$src" >&2
+  printf '         the container gets that directory, writable, not a copy of it. To keep a copy:\n' >&2
+  printf '           rm %q && cp -a %q %q\n' "$original_src" "$src/." "$original_src/" >&2
+}
+
 add_mount_if_exists() {
   local -n _flags=$1
   local original_src="$2" dst="$3" opts="${4:-rw}"
   local src
   src="$(resolve_path "$original_src")"
+  _warn_group_link_out "$original_src" "$src"
   if [[ -d "$src" ]]; then
     _flags+=(-v "$src:$dst:$opts")
   else
@@ -258,6 +275,7 @@ add_file_mount_if_exists() {
   local original_src="$2" dst="$3" opts="${4:-rw}"
   local src
   src="$(resolve_path "$original_src")"
+  [[ -f "$src" ]] && _warn_group_link_out "$original_src" "$src"
   if [[ -f "$src" ]]; then
     _flags+=(-v "$src:$dst:$opts")
   fi
@@ -2175,6 +2193,7 @@ run_container() {
   else
     mkdir -p "$HOME/.ai-containers"
     group_root="$HOME/.ai-containers/$group"
+    _group_guard_root="$group_root"
     ensure_group_exists "$group" "$group_root"
     ensure_group_scaffold "$group_root"
     _git_skip_root="$(cd "$group_root" 2>/dev/null && pwd -P)" || _git_skip_root=""
@@ -2329,7 +2348,7 @@ run_container() {
       if [[ "$group" != "host" ]]; then
         if [[ ! -e "$group_root/$_cdir" && -e "$HOME/$_cdir" ]]; then
           install -d "$(dirname "$group_root/$_cdir")"
-          cp -a "$HOME/$_cdir" "$group_root/$_cdir"
+          _copy_dereferenced "$HOME/$_cdir" "$group_root/$_cdir"
         else
           install -d "$group_root/$_cdir"
         fi
