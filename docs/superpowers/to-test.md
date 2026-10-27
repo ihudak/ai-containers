@@ -124,6 +124,55 @@ docker run --rm -v "$PWD:/w:ro" -w /w ubuntu:22.04 bash -c '
     exit 130 ten seconds later. No later patch started, `docker image inspect
     ai-sandbox-it-services` then said "No such image", and the tree was clean.
 
+### Linux host (falsify; no Docker needed)
+
+- [ ] **TST-11: the survivor ledger is green again.** This is a FIX to make, not
+  only a check. It is listed here because it should be done on Linux: falsify
+  costs about a second per mutant there and about twenty on macOS
+  (AGENTS.md, "Measuring the falsify tier"). It also needs both a non-root and a
+  root run, because two of its verdicts depend on who runs it. The finding,
+  with the identities and the fix direction, is TST-11 in
+  `docs/reviews/2026-10-26-bugs-review.md`.
+
+  The state at `47cc91f`: CI's "Mutation tier (falsify) + survivor-ledger
+  ratchet" job (`Tests` run 40426674115) gives 22 `ERROR:` lines, the same 22 as
+  at `49d8392` and `3ffc58d`. They break down as follows:
+  - 20 `repo-git-reset.sh` survivors with no entry in `tests/falsify/survivors.txt`
+  - the stale entry `repo-git-reset.sh:logic-flip:bfefa9b0411d327b435d5cd8264b421dfcb5d714`
+  - `ai-containers-report.sh:logic-flip:d964be591e6317022ad2b9c48f545682f57006ef`,
+    which came with batch 4's change to that script
+
+  Steps:
+  1. Score each target as a non-root user, the way CI does. `--target` takes
+     one file, and a second `--target` replaces the first, so run it once per
+     target:
+     ```
+     for t in repo-git-reset.sh ai-containers-report.sh; do
+       bash tests/falsify/run.sh --target "$t" --jobs auto --timeout 120 > "/tmp/fz-$t.txt"
+       bash tests/falsify/check-ledger.sh --run-output "/tmp/fz-$t.txt" \
+         --ledger tests/falsify/survivors.txt --strict
+     done
+     ```
+     check-ledger.sh judges only the targets in the run, so a partial run is
+     fine. Expect the 22 above between the two, plus the two below that only a
+     non-root run shows.
+  2. Repeat step 1 as root, e.g. in `ubuntu:22.04` with git installed. The two
+     survivors on the root-only lines `[[ "$(id -u)" == "0" ]] || return 1` and
+     `git config --global --add safe.directory "$1"` are killed there. Classify
+     those two `ENV-DEPENDENT:`.
+  3. For every other survivor, either add an assertion to
+     `tests/test-repo-git-reset.sh` (or `tests/test-report.sh`, the oracle for
+     ai-containers-report.sh in `tests/falsify/targets.conf`)
+     that kills it, or classify it `GAP:` or `EQUIVALENT:` with a reason. Read
+     the GAP / EQUIVALENT / ENV-DEPENDENT rules at the top of survivors.txt
+     first. Delete the stale entry.
+  4. Re-run step 1 (and step 2 for the ENV-DEPENDENT pair). check-ledger.sh
+     must exit 0 in both. Run `bash tests/run-all.sh`. It must pass, and so must
+     the new assertions, which must also have been seen failing against the
+     mutant they kill.
+  5. Push. The authority is CI: the falsify job of the next `Tests` run on main
+     must be green.
+
 ### Root (the CI floor container, `verify-on-host.sh`'s floor container)
 
 - [x] **The hermetic suite as root.** This was NOT fixed by batch 7 — it was
