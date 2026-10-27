@@ -1127,5 +1127,40 @@ launch ..
   || fail "G56 index read per referrer ($(grep -cF "cannot read the index of $wt56" "$ERR") WARNINGs)"
 rm -rf "$M56" "$PROJ/lw56" "$PROJ/dec56"
 
+# ── G57: more .git files naming one git directory than are followed refuses ───
+# Past twenty the rest were skipped with a WARNING, and the agent can mint decoys
+# that sort before the real one: its checkout's submodules were then not checked
+# (automated security review of 3edee25). Refused, as SANDBOX_GIT_MAX refuses.
+M57="$PROJ/main57"; "${G[@]}" init -q "$M57" && "${G[@]}" -C "$M57" commit -q --allow-empty -m s \
+  && "${G[@]}" -C "$M57" worktree add -q "$PROJ/lw57" || { printf 'SCAFFOLD-FAILED: cannot create the G57 worktree\n'; exit 1; }
+wt57="$(ls -d "$M57/.git/worktrees"/* | head -1)"
+for n in $(seq 1 21); do mkdir -p "$PROJ/dec57/d$n"; printf 'gitdir: %s\n' "$wt57" > "$PROJ/dec57/d$n/.git"; done
+launch ..
+[[ "$LAUNCH_RC" != 0 ]] && grep -qF "ERROR: more than 20 .git files name $wt57" "$ERR" \
+  && pass "G57 more than twenty .git files naming one git directory refuse the launch" \
+  || fail "G57 decoy referrers past the cap did not refuse (rc=$LAUNCH_RC; $(grep -F 'more than 20' "$ERR" | head -1))"
+rm -rf "$M57" "$PROJ/lw57" "$PROJ/dec57"
+# ── G58: a git directory waiting for a worktree is retried until none turns up ─
+# A directory with no worktree yet was retried once; the .git file naming it can
+# turn up later still, through an index read only after another such retry —
+# nested submodules without core.worktree under pruned vendor/ directories
+# (automated security review of 3edee25).
+U58="$TMP/up58"; S58="$TMP/us58"; T58="$TMP/ut58"
+for r in "$U58" "$S58" "$T58"; do "${G[@]}" init -q "$r" && "${G[@]}" -C "$r" commit -q --allow-empty -m r; done
+M58="$PROJ/main58"; "${G[@]}" init -q "$M58" \
+  && "${G[@]}" -C "$M58" -c protocol.file.allow=always submodule -q add "$U58" vendor/a && "${G[@]}" -C "$M58" commit -q -m a \
+  && "${G[@]}" -C "$M58/vendor/a" -c protocol.file.allow=always submodule -q add "$S58" vendor/b \
+  && "${G[@]}" -C "$M58/vendor/a" commit -q -m b \
+  && "${G[@]}" clone -q "$T58" "$M58/vendor/a/vendor/b/vendor/c" && "${G[@]}" -C "$M58/vendor/a/vendor/b" add vendor/c 2>/dev/null \
+  && "${G[@]}" -C "$M58/vendor/a/vendor/b" commit -q -m c \
+  || { printf 'SCAFFOLD-FAILED: cannot create the G58 repository\n'; exit 1; }
+for d in "$M58/.git/modules/vendor/a" "$M58/.git/modules/vendor/a/modules/vendor/b"; do
+  "${G[@]}" config -f "$d/config" --unset core.worktree; done
+launch ..
+has_mount "$M58/vendor/a/vendor/b/vendor/c/.git/config:/workspace/proj/main58/vendor/a/vendor/b/vendor/c/.git/config:ro" \
+  && pass "G58 nested submodules without core.worktree are read until nothing new turns up" \
+  || fail "G58 a nested submodule's index was dropped before its .git file turned up"
+rm -rf "$U58" "$S58" "$T58" "$M58"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

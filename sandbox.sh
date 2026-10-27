@@ -1731,11 +1731,13 @@ git_dirs_in() {
   # agent's to write (re-review of batch 9).
   local n=0 nf=0 top rec mode path tgt _gdi_warned=0
   local -a gtop_g=() gtop_d=() tops=() _gdi_ionly=()
-  local -A ionly_had=()
+  local -A ionly_had=() gpend=()
+  local gchanged
   local ni=0
   local -A tseen=()
   local q
   local -a links=()
+  while :; do
   while (( n < ${#_gdi_dirs[@]} || nf < ${#_gdi_files[@]} || ni < ${#_gdi_ionly[@]} )); do
     # A .git FILE names the git directory git uses there (`gitdir: <path>`), and a
     # linked worktree's commondir its common one; either can lie where the scan
@@ -1788,19 +1790,25 @@ git_dirs_in() {
       for (( q = 0; q < ${#gtop_g[@]}; q++ )); do
         [[ "${gtop_g[q]}" == "$g" && -z "${tseen[${gtop_d[q]}]:-}" ]] || continue
         tseen[${gtop_d[q]}]=1
+        # Refused past twenty, as SANDBOX_GIT_MAX refuses: skipping the rest let
+        # decoys that sort first leave the real checkout unchecked (automated
+        # security review of 3edee25). No real tree has that many.
         if (( ${#tops[@]} >= 20 )); then
-          printf 'WARNING: more than 20 .git files name %s; the submodules of the rest are not checked.\n' "$(_term "$g")" >&2
-          break
+          printf 'ERROR: more than 20 .git files name %s; refusing the launch.\n' "$(_term "$g")" >&2
+          printf '       Remove the ones that are not yours (find the files with: grep -rl --include=.git %q .).\n' "$g" >&2
+          exit 1
         fi
         tops+=("${gtop_d[q]}")
       done
     fi
-    # None yet: the .git file naming it may turn up later (through an index); it is
-    # tried once more after everything else.
+    # None yet: the .git file naming it may turn up later (through an index read
+    # later still), so it waits, and is retried until no waiting one gains one
+    # (automated security review of 3edee25).
     if (( ${#tops[@]} == 0 )); then
-      if [[ -z "${ionly_had[$g]:-}" ]]; then ionly_had[$g]=1; _gdi_ionly+=("$g"); fi
+      gpend[$g]=1
       continue
     fi
+    unset 'gpend[$g]' 
     for top in "${tops[@]}"; do
       if [[ "$g" == */.git/modules/* && -f "$top/.git" && ! -L "$top/.git" && -z "${had[$top/.git]:-}" ]] \
          && [[ "$top" == "$5" || "$top" == "$5"/* ]]; then
@@ -1859,9 +1867,23 @@ git_dirs_in() {
       printf 'WARNING: … and %d more submodules of %q were not followed, for the same reasons.\n' "$((gskip - 5))" "$g" >&2
     fi
   done
+  # Every waiting git directory that has gained a worktree is read; repeated
+  # until none does.
+  gchanged=""
+  for g in ${gpend[@]+"${!gpend[@]}"}; do
+    for (( q = 0; q < ${#gtop_g[@]}; q++ )); do
+      if [[ "${gtop_g[q]}" == "$g" ]]; then unset 'gpend[$g]'; _gdi_ionly+=("$g"); gchanged=1; break; fi
+    done
+  done
+  [[ -n "$gchanged" ]] || break
+  done
   if (( _gdi_warned > 5 )); then
     printf 'WARNING: … and %d more .git files or commondirs in %s name what this launch cannot protect.\n' "$((_gdi_warned - 5))" "$(_term "$5")" >&2
   fi
+  for g in ${gpend[@]+"${!gpend[@]}"}; do
+    [[ -f "$g/index" ]] || continue
+    printf 'WARNING: no worktree is known for %s, so the submodules its index records are not followed.\n' "$(_term "$g")" >&2
+  done
   return 0
 }
 
