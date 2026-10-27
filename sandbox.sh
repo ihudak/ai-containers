@@ -349,7 +349,7 @@ launcher_ro_overlay() {
   local x f e q w c safe inner how
   local uid="${SANDBOX_UID:-$(id -u)}" gid="${SANDBOX_GID:-$(id -g)}" you
   local -a found unreadable cand bsrc=() bdst=() cl=() cat=() csrc=() cdst=() cdep=() ckind=() ro_dsts=() psrc pdst
-  local -a _xm_t=() _xm_by=() _xm_j=()
+  local -a _xm_t=() _xm_by=() _xm_j=() ro_srcs=()
   local -A gpv=()
   local -a scan links walk gdirs gfiles glinks gunr gro ug usrc udst udep ukind
   local g base what gmax gn gitmax cfg cdir hp hpd k2 first eks ik ip
@@ -578,6 +578,7 @@ launcher_ro_overlay() {
       _ro+=("$mf" "$mv"); _vrfy+=("$l" "$at")
       seen[$at]=1
       ro_dsts+=("$at")
+      [[ "$kind" == unreadable ]] || ro_srcs+=("$l")
       if [[ "$kind" == unreadable ]]; then
         printf 'WARNING: %s cannot be listed by you, so it cannot be checked for\n' "$(_term "$l")" >&2
         printf '         launchers; it is mounted read-only at %s.\n' "$(_term "$at")" >&2
@@ -878,9 +879,18 @@ launcher_ro_overlay() {
         x="$dst${f#"$src"}"
         _bind_mount_arg mf mv "$f" "$x" ro
         _ro+=("$mf" "$mv"); _vrfy+=("$f" "$x")
-        seen[$x]=1; ro_dsts+=("$x")
+        seen[$x]=1; ro_dsts+=("$x"); ro_srcs+=("$f")
+        [[ -d "$f" ]] || launcher_ro_files+=("$f")
         if [[ "$f" != "$g" ]]; then what+="${what:+, }${f##*/}"; fi
       done
+      if [[ "$kind" == unr && -x "$g" ]]; then
+        # Searchable but not listable: git still opens what is inside by name, and
+        # what is inside cannot be checked for a FIFO the agent writes through the
+        # read-only bind (review of 56c91c4, HIGH; G66). Refused.
+        printf 'ERROR: %s can be searched but not listed by you, so what your host'\''s git reads in\n' "$(_term "$g")" >&2
+        printf '       it cannot be checked; refusing the launch. Restore: chmod u+rx %q\n' "$g" >&2
+        exit 1
+      fi
       if [[ "$kind" == unr ]]; then
         printf 'WARNING: %s cannot be listed by you, so what it holds cannot be\n' "$(_term "$g")" >&2
         printf '         protected one by one; it is mounted read-only whole at %s.\n' "$(_term "$at")" >&2
@@ -1133,6 +1143,30 @@ launcher_ro_overlay() {
     printf '      not all the links of these were checked:\n' >&2
     for x in "${unchecked[@]}"; do printf '        %q\n' "$x" >&2; done
   fi
+  # A read-only bind does not make a FIFO read-only: the agent can still open one
+  # for writing through it, and feed the host's git, or a launcher the host runs,
+  # whatever it reads there — reproduced (reviews of 455fa85 and 56c91c4, HIGH;
+  # G65-G67). Any FIFO or device in what is bound read-only refuses the launch,
+  # as does a directory there that cannot be searched for one.
+  local fx
+  for x in ${ro_srcs[@]+"${ro_srcs[@]}"}; do
+    fx=""
+    if [[ -p "$x" || -b "$x" || -c "$x" ]]; then fx="$x"
+    elif [[ -d "$x" ]]; then
+      # One you cannot search (chmod 000) hides nothing your host's git can read.
+      [[ -x "$x" ]] || continue
+      # From /: find fails where the launch's working directory cannot be searched (T45).
+      if ! fx="$(cd / && find "$x" \( -type p -o -type b -o -type c \) -print -quit 2>/dev/null)"; then
+        printf 'ERROR: %s, bound read-only, cannot be searched for FIFOs; refusing the launch.\n' "$(_term "$x")" >&2
+        exit 1
+      fi
+    fi
+    [[ -n "$fx" ]] || continue
+    printf 'ERROR: %s is a FIFO or device inside what this launch binds read-only; refusing the launch.\n' "$(_term "$fx")" >&2
+    printf '       The agent could still write into it, and what reads it on the host would get that.\n' >&2
+    printf '       Remove it on the host (rm %q).\n' "$fx" >&2
+    exit 1
+  done
 }
 
 # _walk_exposed <how-var> <step-var> <at-var> <home> <step>...: called from
@@ -1618,7 +1652,8 @@ _git_index_read() {
 # for a git directory, so the agent could add a config the host's git then read
 # (automated security review of 4a4e30c).
 _is_git_dir() {
-  [[ -f "$1/HEAD" ]] && { [[ -d "$1/objects" && -d "$1/refs" ]] || [[ -f "$1/commondir" ]]; }
+  # A HEAD that is a link counts too: git takes one (review of 56c91c4; G68).
+  [[ -f "$1/HEAD" || -L "$1/HEAD" ]] && { [[ -d "$1/objects" && -d "$1/refs" ]] || [[ -f "$1/commondir" ]]; }
 }
 # _is_common_dir <dir>: what git takes for the common directory a commondir names
 # — objects/ and refs/; a HEAD is a worktree's, not needed here (automated
@@ -1737,7 +1772,7 @@ git_dirs_in() {
       \( \( \( -name node_modules -o -name vendor -o -name .venv -o -name target \) ! -path '*/.git/*' \) \
          -o -path '*/.git/objects' -o -path '*/.git/refs' -o -path '*/.git/logs' \
          -o -path '*/.git/modules/*/objects' -o -path '*/.git/modules/*/refs' -o -path '*/.git/modules/*/logs' \) -prune \
-      -o -type f -name HEAD -print0 \
+      -o -name HEAD \( -type f -o -type l \) -print0 \
       -o -name .git \( -type f -o -type l -o -type d \) -print0 \
       -o -type d -path '*/.git/*' -print0 2>/dev/null)
   for f in ${hits[@]+"${hits[@]}"}; do
@@ -3043,7 +3078,7 @@ run_container() {
   printf 'Container name: %s\n' "$container_name" >&2
 
   # Last, once every bind mount is known: see launcher_ro_overlay.
-  local launcher_ro_flags=() launcher_verify=()
+  local launcher_ro_flags=() launcher_verify=() launcher_ro_files=()
   launcher_ro_overlay launcher_ro_flags launcher_verify "$script_dir" \
     ${output_mount_flags[@]+"${output_mount_flags[@]}"} \
     ${repo_mount_flags[@]+"${repo_mount_flags[@]}"} \
@@ -3084,19 +3119,22 @@ run_container() {
         fi
       done < <(find "$HOME/.ai-containers" -mindepth 1 -maxdepth 1 -type d -name '.verify-*' -mmin +60 -print0 2>/dev/null)
       local _i _vsrc _vdst _vdev _vino
+      # The read-only FILE binds the git-internals pass made, checked again where
+      # their inodes are recorded: a concurrent container could swap one for a
+      # FIFO after the pass (review of 455fa85). Tagged there, not guessed from
+      # names, which also matched a worktree named config (review of 56c91c4).
+      local -A _vrof=()
+      for _vsrc in ${launcher_ro_files[@]+"${launcher_ro_files[@]}"}; do _vrof[$_vsrc]=1; done
       : > "$_vdir/manifest"
       for (( _i = 0; _i < ${#launcher_verify[@]}; _i += 2 )); do
         _vsrc="${launcher_verify[_i]}"; _vdst="${launcher_verify[_i+1]}"
         # Checked again where the inode is recorded: a concurrent container could
         # swap a protected config for a FIFO after the overlay pass, and the
         # entrypoint only compares inodes with these (review of 455fa85).
-        case "${_vsrc##*/}" in
-          config|config.worktree|commondir)
-            if [[ "$_vsrc" == */.git/* || "$_vsrc" == */.git ]] && [[ ! -f "$_vsrc" || -L "$_vsrc" ]] && [[ -e "$_vsrc" || -L "$_vsrc" ]]; then
-              printf 'ERROR: %s is no longer a regular file; refusing the launch.\n' "$(_term "$_vsrc")" >&2
-              exit 1
-            fi ;;
-        esac
+        if [[ -n "${_vrof[$_vsrc]:-}" ]] && [[ -p "$_vsrc" || -b "$_vsrc" || -c "$_vsrc" || -L "$_vsrc" || ! -e "$_vsrc" ]]; then
+          printf 'ERROR: %s is no longer what was checked; refusing the launch.\n' "$(_term "$_vsrc")" >&2
+          exit 1
+        fi
         if read -r _vdev _vino < <(_launcher_dev_ino "$_vsrc"); then :; else _vdev=0; _vino=0; fi
         printf '%s\0%s\0%s\0' "$_vdev" "$_vino" "$_vdst" >> "$_vdir/manifest"
       done

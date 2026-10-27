@@ -1266,5 +1266,44 @@ for v in config commondir; do
   ( exec 3<>"$PROJ/ff65/.git/$v" ) 2>/dev/null; rm -rf "$PROJ/ff65"
 done
 
+# ── G66-G69: a read-only bind does not make a FIFO read-only ────────────────
+# On Linux a FIFO under a read-only bind can still be opened for writing, so the
+# agent could feed the host's git a config through any FIFO in what the launcher
+# binds read-only: reproduced through an unlistable .git, a .git inside a planted
+# launcher (review of 56c91c4, HIGH). Any FIFO or device in a read-only bind
+# source refuses the launch, as does a git directory searchable but not listable.
+if [[ "$(id -u)" != 0 ]]; then
+  mkdir -p "$PROJ/u66" && "${G[@]}" -C "$PROJ/u66" init -q && rm -f "$PROJ/u66/.git/config" \
+    && mkfifo "$PROJ/u66/.git/config" && chmod 0300 "$PROJ/u66/.git"
+  launch_timed 60
+  [[ "$LAUNCH_RC" != 0 && "$LAUNCH_RC" != 124 ]] && grep -qF "u66/.git" "$ERR" \
+    && pass "G66 a searchable but unlistable .git refuses the launch" \
+    || fail "G66 unlistable .git with a FIFO config (rc=$LAUNCH_RC; $(grep -F u66 "$ERR" | head -1))"
+  chmod 0755 "$PROJ/u66/.git"; ( exec 3<>"$PROJ/u66/.git/config" ) 2>/dev/null; rm -rf "$PROJ/u66"
+fi
+mkdir -p "$PROJ/tools67/x"; : > "$PROJ/tools67/x/sandbox.sh"; : > "$PROJ/tools67/x/sandbox-common.sh"
+"${G[@]}" init -q "$PROJ/tools67/x" && rm -f "$PROJ/tools67/x/.git/config" && mkfifo "$PROJ/tools67/x/.git/config"
+launch_timed 60
+[[ "$LAUNCH_RC" != 0 && "$LAUNCH_RC" != 124 ]] && grep -qF "tools67/x/.git/config" "$ERR" \
+  && pass "G67 a FIFO inside a planted launcher's read-only overlay refuses the launch" \
+  || fail "G67 FIFO under a launcher overlay (rc=$LAUNCH_RC; $(grep -F tools67 "$ERR" | head -1))"
+( exec 3<>"$PROJ/tools67/x/.git/config" ) 2>/dev/null; rm -rf "$PROJ/tools67"
+# G68: git takes a symlinked HEAD; one the agent made was never taken for a git
+# directory, so its config stayed writable, silently (review of 56c91c4, HIGH).
+mkdir -p "$PROJ/h68" && "${G[@]}" -C "$PROJ/h68" init -q && rm -f "$PROJ/h68/.git/HEAD" && ln -s refs/heads/main "$PROJ/h68/.git/HEAD"
+launch ..
+has_mount "$PROJ/h68/.git/config:/workspace/proj/h68/.git/config:ro" \
+  && pass "G68 a git directory whose HEAD is a symlink is protected" \
+  || fail "G68 symlinked-HEAD repository left writable"
+rm -rf "$PROJ/h68"
+# G69: a worktree or submodule named config is not taken for a FIFO config (the
+# recheck matched names; review of 56c91c4).
+M69="$PROJ/main69"; "${G[@]}" init -q "$M69" && "${G[@]}" -C "$M69" commit -q --allow-empty -m s \
+  && "${G[@]}" -C "$M69" worktree add -q "$PROJ/config" || { printf 'SCAFFOLD-FAILED: G69\n'; exit 1; }
+launch ..
+[[ "$LAUNCH_RC" == 0 ]] && pass "G69 a worktree named config launches" \
+  || fail "G69 a worktree named config refused (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
+rm -rf "$M69" "$PROJ/config"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
