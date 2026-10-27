@@ -558,10 +558,13 @@ launcher_ro_overlay() {
       # read-only overlay — and cannot be checked, so the launch is refused, as for
       # such a git directory (automated security review of c687370; T46). One the
       # launching user cannot search either hides nothing it can open by name.
-      # Only one the agent owns: it cannot chmod another user's, and that refusal
-      # hit an ordinary 0711 home directory (review of 7b41327; T25b).
+      # Only one the agent could have written into: its own, or one its group or
+      # the other bits let it write and search. Another user's it cannot write — an
+      # ordinary 0711 home directory, which this refused (review of 7b41327; T25b)
+      # — keeps the overlay and the WARNING (automated security review of
+      # cd83cb7; T25d).
       if [[ "$kind" == unreadable && -x "$l" ]] \
-         && [[ -n "$(cd / && find "$l" -maxdepth 0 -user "$uid" -print 2>/dev/null)" ]]; then
+         && [[ -n "$(cd / && find "$l" -maxdepth 0 \( -user "$uid" -o \( -group "$gid" -perm -0030 \) -o -perm -0003 \) -print 2>/dev/null)" ]]; then
         printf 'ERROR: %s can be searched but not listed by you, so what is inside it cannot be\n' "$(_term "$l")" >&2
         printf '       checked for a FIFO the agent could write through a read-only overlay; refusing the launch.\n' >&2
         if [[ -O "$l" ]]; then

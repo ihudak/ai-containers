@@ -471,6 +471,19 @@ if [[ "$(id -u)" -ne 0 ]]; then
   [[ "$LAUNCH_RC" == 0 && "$(mounts_under /workspace/own/)" == "$OWN/srch:/workspace/own/srch:ro" ]] \
     && pass "T25b one the agent can search but does not own is mounted read-only; T25c one it cannot enter is left alone" \
     || fail "T25b/c agent-reach (got: $(mounts_under /workspace/own/ | tr '\n' ' '); stderr: $(grep -F "$OWN" "$ERR" | tr '\n' ' '))"
+  # Not the agent's, but writable and searchable by it through its group or the
+  # other bits: it could have planted a FIFO there, so refused (automated
+  # security review of cd83cb7).
+  OWN2="$TMP/own2g"; OWN3="$TMP/own2o"; mk_launcher "$OWN2/grp/p"; mk_launcher "$OWN3/oth/p"
+  chmod 0331 "$OWN2/grp"; chmod 0303 "$OWN3/oth"
+  SANDBOX_UID=4242 SANDBOX_GID="$(id -g)" EXTRA_MOUNTS="$OWN2" launch "$LAUNCHER" "$TMP/app"
+  rc_g=$LAUNCH_RC; err_g="$(grep -F ERROR "$ERR" | head -1)"
+  SANDBOX_UID=4242 SANDBOX_GID=4343 EXTRA_MOUNTS="$OWN3" launch "$LAUNCHER" "$TMP/app"
+  rc_o=$LAUNCH_RC; err_o="$(grep -F ERROR "$ERR" | head -1)"
+  chmod 0755 "$OWN2/grp" "$OWN3/oth"
+  [[ "$rc_g" != 0 && "$err_g" == *"can be searched but not listed"* && "$rc_o" != 0 && "$err_o" == *"can be searched but not listed"* ]] \
+    && pass "T25d one the agent can write through its group or the other bits refuses the launch" \
+    || fail "T25d agent-writable, not the agent's (group rc=$rc_g: $err_g; other rc=$rc_o: $err_o)"
 else
   printf 'SKIP: T25b/c — as root every directory can be listed\n'
 fi
