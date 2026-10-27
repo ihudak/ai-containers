@@ -553,6 +553,21 @@ launcher_ro_overlay() {
         printf '      what changes there runs on the host at the next launch.\n' >&2
         continue
       fi
+      # Searchable but not listable: what is inside can still be opened by name — a
+      # FIFO sandbox.sh the host runs at the next launch, written through the
+      # read-only overlay — and cannot be checked, so the launch is refused, as for
+      # such a git directory (automated security review of c687370; T46). One the
+      # launching user cannot search either hides nothing it can open by name.
+      if [[ "$kind" == unreadable && -x "$l" ]]; then
+        printf 'ERROR: %s can be searched but not listed by you, so what is inside it cannot be\n' "$(_term "$l")" >&2
+        printf '       checked for a FIFO the agent could write through a read-only overlay; refusing the launch.\n' >&2
+        if [[ -O "$l" ]]; then
+          printf '       Restore: chmod u+rx %q\n' "$l" >&2
+        else
+          printf '       It is not yours: ask its owner, or mount it :ro yourself.\n' >&2
+        fi
+        exit 1
+      fi
       # The pins this one needs, then whether docker can be handed all of them
       # and the overlay intact — all or nothing, never a partial set.
       psrc=(); pdst=()
@@ -738,10 +753,10 @@ launcher_ro_overlay() {
         # would feed the host's git whatever it reads there, fsmonitor and all —
         # reproduced (automated security review of 455fa85 and its review, HIGH;
         # G65). hooks/ must be a directory for the same reason.
-        for f in config config.worktree commondir hooks; do
+        for f in HEAD config config.worktree commondir hooks; do
           [[ -e "$g/$f" && ! -L "$g/$f" ]] || continue
           if [[ "$f" == hooks && -d "$g/$f" ]] || [[ "$f" != hooks && -f "$g/$f" ]]; then continue; fi
-          printf 'ERROR: %s is not a regular file%s; refusing the launch.\n' "$(_term "$g/$f")" "$([[ "$f" == hooks ]] && printf ' or directory')" >&2
+          printf 'ERROR: %s is not a %s; refusing the launch.\n' "$(_term "$g/$f")" "$([[ "$f" == hooks ]] && printf directory || printf 'regular file')" >&2
           printf '       Through a read-only bind the agent could still write into it, and your host'\''s git\n' >&2
           printf '       would read what it writes. Remove it on the host (rm %q).\n' "$g/$f" >&2
           exit 1
@@ -1148,25 +1163,45 @@ launcher_ro_overlay() {
   # whatever it reads there — reproduced (reviews of 455fa85 and 56c91c4, HIGH;
   # G65-G67). Any FIFO or device in what is bound read-only refuses the launch,
   # as does a directory there that cannot be searched for one.
-  local fx
+  # What stays writable inside an overlay — the agent's output directories — is
+  # not searched: nothing on the host reads it, and a FIFO or a mode-000
+  # directory the agent left there refused every later launch (review of
+  # c687370; T50).
+  local fx ferr pat
+  local -a prune
+  ferr="$(mktemp "${TMPDIR:-/tmp}/ai-launcher-find.XXXXXX")" || { printf 'ERROR: cannot make a temporary file\n' >&2; exit 1; }
   for x in ${ro_srcs[@]+"${ro_srcs[@]}"}; do
     fx=""
     if [[ -p "$x" || -b "$x" || -c "$x" ]]; then fx="$x"
     elif [[ -d "$x" ]]; then
       # One you cannot search (chmod 000) hides nothing your host's git can read.
       [[ -x "$x" ]] || continue
+      prune=()
+      for i in ${bsrc[@]+"${!bsrc[@]}"}; do
+        [[ "${bsrc[i]}" == "$x"/* ]] || continue
+        # find -path takes a pattern: its metacharacters are escaped.
+        pat="${bsrc[i]//\\/\\\\}"; pat="${pat//\*/\\*}"; pat="${pat//\?/\\?}"; pat="${pat//\[/\\[}"
+        prune+=(-path "$pat" -o)
+      done
       # From /: find fails where the launch's working directory cannot be searched (T45).
-      if ! fx="$(cd / && find "$x" \( -type p -o -type b -o -type c \) -print -quit 2>/dev/null)"; then
-        printf 'ERROR: %s, bound read-only, cannot be searched for FIFOs; refusing the launch.\n' "$(_term "$x")" >&2
-        exit 1
-      fi
+      if (( ${#prune[@]} )); then
+        unset 'prune[${#prune[@]}-1]'
+        fx="$(cd / && find "$x" \( "${prune[@]}" \) -prune -o \( -type p -o -type b -o -type c \) -print -quit 2>"$ferr")"
+      else
+        fx="$(cd / && find "$x" \( -type p -o -type b -o -type c \) -print -quit 2>"$ferr")"
+      fi || {
+        printf 'ERROR: %s, bound read-only, cannot be searched for FIFOs; refusing the launch:\n' "$(_term "$x")" >&2
+        printf '       %s\n' "$(_term "$(head -c 512 "$ferr" | head -n 1)")" >&2
+        rm -f "$ferr"; exit 1
+      }
     fi
     [[ -n "$fx" ]] || continue
     printf 'ERROR: %s is a FIFO or device inside what this launch binds read-only; refusing the launch.\n' "$(_term "$fx")" >&2
     printf '       The agent could still write into it, and what reads it on the host would get that.\n' >&2
     printf '       Remove it on the host (rm %q).\n' "$fx" >&2
-    exit 1
+    rm -f "$ferr"; exit 1
   done
+  rm -f "$ferr"
 }
 
 # _walk_exposed <how-var> <step-var> <at-var> <home> <step>...: called from
@@ -1653,7 +1688,8 @@ _git_index_read() {
 # (automated security review of 4a4e30c).
 _is_git_dir() {
   # A HEAD that is a link counts too: git takes one (review of 56c91c4; G68).
-  [[ -f "$1/HEAD" || -L "$1/HEAD" ]] && { [[ -d "$1/objects" && -d "$1/refs" ]] || [[ -f "$1/commondir" ]]; }
+  # A FIFO counts as well, so that it is refused rather than hidden (G70).
+  [[ ( -e "$1/HEAD" || -L "$1/HEAD" ) && ! -d "$1/HEAD" ]] && { [[ -d "$1/objects" && -d "$1/refs" ]] || [[ -f "$1/commondir" ]]; }
 }
 # _is_common_dir <dir>: what git takes for the common directory a commondir names
 # — objects/ and refs/; a HEAD is a worktree's, not needed here (automated
@@ -1772,7 +1808,7 @@ git_dirs_in() {
       \( \( \( -name node_modules -o -name vendor -o -name .venv -o -name target \) ! -path '*/.git/*' \) \
          -o -path '*/.git/objects' -o -path '*/.git/refs' -o -path '*/.git/logs' \
          -o -path '*/.git/modules/*/objects' -o -path '*/.git/modules/*/refs' -o -path '*/.git/modules/*/logs' \) -prune \
-      -o -name HEAD \( -type f -o -type l \) -print0 \
+      -o -name HEAD ! -type d -print0 \
       -o -name .git \( -type f -o -type l -o -type d \) -print0 \
       -o -type d -path '*/.git/*' -print0 2>/dev/null)
   for f in ${hits[@]+"${hits[@]}"}; do

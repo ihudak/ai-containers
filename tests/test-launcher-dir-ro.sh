@@ -432,7 +432,10 @@ EXTRA_MOUNTS="$COL" launch "$LAUNCHER" "$TMP/app"
 
 # ── T25: a directory the agent owns but has made unreadable cannot be looked
 # inside, so a launcher in it would go unseen and stay writable at the next
-# launch. It is treated as one: overlaid read-only, its parents pinned, warned.
+# launch. One you can still search (0311) is refused: a FIFO inside it can be
+# opened by name and written through a read-only overlay (automated security
+# review of c687370). One you cannot search either (0200) is treated as a
+# launcher: overlaid read-only, its parents pinned, warned.
 LOCK="$TMP/lockp"; mk_launcher "$LOCK/inner/proj2"; chmod 0311 "$LOCK/inner"
 EXTRA_MOUNTS="$LOCK" launch "$LAUNCHER" "$TMP/app"
 if [[ "$(id -u)" -eq 0 ]]; then
@@ -442,10 +445,16 @@ if [[ "$(id -u)" -eq 0 ]]; then
     && pass "T25 (as root) a 0311 directory hides nothing: the launcher in it is found" \
     || fail "T25 as root (got: $(mounts_under /workspace/lockp/ | tr '\n' ' '))"
 else
-  [[ "$(mounts_under /workspace/lockp/)" == "$LOCK/inner:/workspace/lockp/inner:ro" ]] \
+  [[ "$LAUNCH_RC" != 0 ]] && grep -qF "ERROR: $LOCK/inner can be searched but not listed by you" "$ERR" \
+    && grep -qF 'Restore: chmod u+rx' "$ERR" \
+    && pass "T25 a directory of the agent's you can search but not list refuses the launch" \
+    || fail "T25 searchable unlistable directory (rc=$LAUNCH_RC; stderr: $(grep -F "$LOCK" "$ERR" | tr '\n' ' '))"
+  chmod 0200 "$LOCK/inner"
+  EXTRA_MOUNTS="$LOCK" launch "$LAUNCHER" "$TMP/app"
+  [[ "$LAUNCH_RC" == 0 && "$(mounts_under /workspace/lockp/)" == "$LOCK/inner:/workspace/lockp/inner:ro" ]] \
     && grep -qF "WARNING: $LOCK/inner cannot be listed by you" "$ERR" && grep -qF 'Restore: chmod u+rx' "$ERR" \
-    && pass "T25 a directory of the agent's you cannot list is mounted read-only, with a warning" \
-    || fail "T25 unlistable directory (got: $(mounts_under /workspace/lockp/ | tr '\n' ' '); stderr: $(grep -F "$LOCK" "$ERR" | tr '\n' ' '))"
+    && pass "T25 one you cannot search either is mounted read-only, with a warning" \
+    || fail "T25 unsearchable directory (rc=$LAUNCH_RC; got: $(mounts_under /workspace/lockp/ | tr '\n' ' '); stderr: $(grep -F "$LOCK" "$ERR" | tr '\n' ' '))"
 fi
 chmod 0755 "$LOCK/inner"
 
@@ -457,8 +466,9 @@ if [[ "$(id -u)" -ne 0 ]]; then
   OWN="$TMP/own"; mk_launcher "$OWN/srch/p"; mk_launcher "$OWN/shut/p"; chmod 0311 "$OWN/srch"; chmod 0310 "$OWN/shut"
   SANDBOX_UID=4242 SANDBOX_GID=4343 EXTRA_MOUNTS="$OWN" launch "$LAUNCHER" "$TMP/app"
   chmod 0755 "$OWN/srch" "$OWN/shut"
-  [[ "$(mounts_under /workspace/own/)" == "$OWN/srch:/workspace/own/srch:ro" ]] \
-    && pass "T25b one the agent can search but you cannot list is mounted read-only; T25c one it cannot enter is left alone" \
+  [[ "$LAUNCH_RC" != 0 ]] && grep -qF "ERROR: $OWN/srch can be searched but not listed by you" "$ERR" \
+    && ! grep -qF "$OWN/shut" "$ERR" \
+    && pass "T25b one the agent can search but you cannot list refuses the launch; T25c one it cannot enter is left alone" \
     || fail "T25b/c agent-reach (got: $(mounts_under /workspace/own/ | tr '\n' ' '); stderr: $(grep -F "$OWN" "$ERR" | tr '\n' ' '))"
 else
   printf 'SKIP: T25b/c — as root every directory can be listed\n'
@@ -858,6 +868,18 @@ SANDBOX_LAUNCHER_MAX=5 EXTRA_MOUNTS="$BAD47" launch "$LAUNCHER" "$TMP/app"
   && pass "T46 launchers nested in one that cannot be overlaid count toward the cap" \
   || fail "T46 an unrepresentable launcher still discounts what it holds (rc=$LAUNCH_RC)"
 rm -rf "$BAD47"
+# A launcher candidate you can search but not list can hide a FIFO by name — a
+# sandbox.sh the host runs at the next launch, written through the read-only
+# overlay — so it refuses, as such a git directory does (automated security
+# review of c687370). One nobody can search (chmod 000) keeps the WARNING.
+if [[ "$(id -u)" != 0 ]]; then
+  SRCH47="$TMP/srch47"; mkdir -p "$SRCH47/d"; chmod 0300 "$SRCH47/d"
+  EXTRA_MOUNTS="$SRCH47" launch "$LAUNCHER" "$TMP/app"
+  [[ "$LAUNCH_RC" != 0 ]] && grep -qF "can be searched but not listed" "$ERR" \
+    && pass "T46 a launcher candidate searchable but not listable refuses the launch" \
+    || fail "T46 searchable unlistable directory not refused (rc=$LAUNCH_RC)"
+  chmod 0755 "$SRCH47/d"; rm -rf "$SRCH47"
+fi
 # The same when only a PIN on the way cannot be handed to docker (a parent named
 # `x: `): the overlay loop refuses the whole candidate, so counting must too
 # (security review of 019392c).
@@ -954,6 +976,25 @@ grep -q 'pwned48' "$ERR" && ! grep -q $'\e' "$ERR" && ! grep -q $'\a' "$ERR" \
   && pass "T49 a planted link name in a launcher WARNING carries no raw control characters" \
   || fail "T49 raw control characters reached the terminal: $(grep -a pwned48 "$ERR" | cat -v | head -2 | tr '\n' ' ')"
 rm -rf "$ESC48"
+
+# ── T50: the FIFO check does not search what stays writable inside an overlay:
+# nothing on the host reads the agent's output directories, and a FIFO or a
+# mode-000 directory there refused every later launch (review of c687370). One
+# elsewhere in the overlay is still refused, naming the directory it could not
+# search.
+mkdir -p "$LAUNCHER/.agent-blocked"; mkfifo "$LAUNCHER/.agent-blocked/f50"; mkdir -p "$LAUNCHER/.agent-blocked/d50"; chmod 000 "$LAUNCHER/.agent-blocked/d50"
+launch "$LAUNCHER" "$PROJ"
+[[ "$LAUNCH_RC" == 0 ]] && pass "T50 a FIFO or a 000 directory in .agent-blocked does not refuse the launch" \
+  || fail "T50 .agent-blocked contents refused the launch (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
+chmod 755 "$LAUNCHER/.agent-blocked/d50"; rm -rf "$LAUNCHER/.agent-blocked/f50" "$LAUNCHER/.agent-blocked/d50"
+if [[ "$(id -u)" != 0 ]]; then
+  mkdir -p "$LAUNCHER/tools.d/d50"; chmod 000 "$LAUNCHER/tools.d/d50"
+  launch "$LAUNCHER" "$PROJ"
+  [[ "$LAUNCH_RC" != 0 ]] && grep -qF "$LAUNCHER/tools.d/d50" "$ERR" \
+    && pass "T50 a directory the FIFO check cannot search is named in the refusal" \
+    || fail "T50 unsearchable directory in an overlay (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
+  chmod 755 "$LAUNCHER/tools.d/d50"; rm -rf "$LAUNCHER/tools.d/d50"
+fi
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

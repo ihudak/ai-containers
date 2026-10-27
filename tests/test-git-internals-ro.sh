@@ -1305,5 +1305,14 @@ launch ..
   || fail "G69 a worktree named config refused (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
 rm -rf "$M69" "$PROJ/config"
 
+# ── G70: a FIFO HEAD hid the repository from the scan, silently, and the host's
+# git accepts one while something writes it (review of c687370, HIGH).
+mkdir -p "$PROJ/h70" && "${G[@]}" -C "$PROJ/h70" init -q && rm -f "$PROJ/h70/.git/HEAD" && mkfifo "$PROJ/h70/.git/HEAD"
+launch_timed 60
+[[ "$LAUNCH_RC" != 0 && "$LAUNCH_RC" != 124 ]] && grep -qF "h70/.git/HEAD" "$ERR" \
+  && pass "G70 a FIFO HEAD refuses the launch" \
+  || fail "G70 FIFO HEAD (rc=$LAUNCH_RC; $(grep -F h70 "$ERR" | head -1))"
+( exec 3<>"$PROJ/h70/.git/HEAD" ) 2>/dev/null; rm -rf "$PROJ/h70"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
