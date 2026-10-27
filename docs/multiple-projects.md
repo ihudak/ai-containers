@@ -123,8 +123,8 @@ on the next build. An image built before this existed carries no label and is
 never warned about, since an absent stamp is not evidence of drift.
 
 **`sandbox.conf` is covered too, but not by digesting the file.** The file
-holds more than what the build uses — comments, the order of its lines, a key
-left at its default — and digesting it whole would demand a rebuild after an
+holds more than what the build uses — comments, the order of its lines, and
+keys for tools installed at container start, such as `mkdocs=` — and digesting it whole would demand a rebuild after an
 edit that rebuilds nothing. A warning that fires when nothing is wrong is one you
 learn to dismiss, and it takes the true ones with it. (The network mode is not in
 `sandbox.conf` at all: it is `SANDBOX_MODE` in `sandbox.env`.)

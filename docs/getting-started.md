@@ -95,7 +95,7 @@ Do this **before** you initialise, and the first container start already has the
 
 ### Set `GITHUB_TOKEN` on the host
 
-Every build clones from github.com, whatever you enable: nvm's installer and pyenv's (four repositories) `git clone` at build time. When GitHub throttles anonymous traffic from your host, those clones fail with `fatal: could not read Username for 'https://github.com'` — a 401 on a public repository, which looks like a network fault rather than a missing token. The `tools.d` tools (`dtctl`, `dtmgd`) also resolve "latest" through the GitHub API, which allows 60 unauthenticated calls an hour; a pinned version (`dtctl=0.25.0`) makes no call at all. The token is optional, but it is the headroom that keeps both working.
+Every build clones from github.com, whatever you enable: nvm's installer and pyenv's (four repositories) `git clone` at build time. When GitHub throttles anonymous traffic from your host, those clones fail with `fatal: could not read Username for 'https://github.com'` — a 401 on a public repository, which looks like a network fault rather than a missing token. The `tools.d` tools (`dtctl`, `dtmgd`) also resolve "latest" through the GitHub API, which allows 60 unauthenticated calls an hour; a pinned version (`dtctl=0.25.0`) makes no API call at all. The token is optional, but it is the headroom that keeps both working.
 
 If you have `gh` installed and authenticated, there is nothing to do: `runme.sh` resolves a token with `gh auth token` automatically. Otherwise export one:
 

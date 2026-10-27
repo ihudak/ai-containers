@@ -168,7 +168,7 @@ check "the warning never fails the launch" "0" "$?"
 
 # ── the config digest: build-time keys only ──────────────────────────────────
 # sandbox.conf is not in the payload digest, and must not be: it mixes
-# build-time keys with runtime ones, and a warning that fires when `mode=`
+# build-time keys with runtime ones, and a warning that fires when `mkdocs=`
 # changes — which rebuilds nothing — is a warning people learn to dismiss,
 # taking the true ones with it. So what is digested is what build.sh DERIVES
 # from the config: the --build-arg list, which contains every build-time key by
@@ -194,11 +194,19 @@ if [[ -f "$ENGINE_DIR/sandbox.conf" && -f "$ENGINE_DIR/build.sh" ]]; then
     else
       fail "a build-time key (ruby=) moves the config digest"
     fi
-    # A RUNTIME key. `mode=` picks the firewall the container starts under and
-    # rebuilds nothing, so it must leave the digest alone.
-    sed 's/^mode=.*/mode=open/' "$ENGINE_DIR/sandbox.conf" > "$TMP/mode.conf"
-    check "a runtime-only key (mode=) leaves the config digest alone" \
-      "$base_cfg" "$(cfg_of "$TMP/mode.conf")"
+    # A RUNTIME key. `mkdocs=` is installed at container start into the
+    # group's ~/.ai-tools and rebuilds nothing, so it must leave the digest
+    # alone. The edit is checked to have changed the file: this once toggled a
+    # `mode=` key sandbox.conf does not have, and compared the file with an
+    # identical copy (batch 8 review).
+    if grep -q '^mkdocs=ON' "$ENGINE_DIR/sandbox.conf"; then mk=OFF; else mk=ON; fi
+    sed "s/^mkdocs=.*/mkdocs=$mk/" "$ENGINE_DIR/sandbox.conf" > "$TMP/mkdocs.conf"
+    if cmp -s "$ENGINE_DIR/sandbox.conf" "$TMP/mkdocs.conf"; then
+      fail "the runtime-key fixture changes sandbox.conf (no mkdocs= line to toggle)"
+    else
+      check "a runtime-only key (mkdocs=) leaves the config digest alone" \
+        "$base_cfg" "$(cfg_of "$TMP/mkdocs.conf")"
+    fi
   fi
   reallabels="$(ai_containers_provenance_labels "$ENGINE_DIR" 2026-01-01T00:00:00Z)"
   grep -q "ai-containers.config-digest=" <<<"$reallabels" \

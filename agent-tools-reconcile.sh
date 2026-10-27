@@ -10,7 +10,7 @@
 #   codex        its `update` runs bare `npm install -g` → EACCES 243    → UPDATE if newer
 #   gemini       has no update mechanism at all                          → UPDATE if newer
 #   graphify     uv tool upgrade                                         → if-missing (*)
-#   vale         latest at first install, never refreshed (delete to update) → if-missing
+#   vale         latest at first install, never refreshed                → if-missing
 #   mkdocs       uv tool upgrade                                         → if-missing (*)
 #   (*) retried once on the previous Python minor when the image's fails — install_uv
 # Concurrency-safe via flock on the shared mount. Offline-tolerant and non-fatal: a tool

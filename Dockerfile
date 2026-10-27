@@ -944,7 +944,7 @@ COPY agent-tools-reconcile.sh /usr/local/bin/agent-tools-reconcile.sh
 COPY link-agent-tools.sh /usr/local/bin/link-agent-tools.sh
 RUN chmod +x /usr/local/bin/agent-tools-reconcile.sh /usr/local/bin/link-agent-tools.sh
 
-# ── Agent CLIs are NOT baked — they install at container start into ~/.ai-tools ──
+# ── Agent CLIs other than Kiro are NOT baked — they install at container start ──
 
 ARG ANGULAR_CLI_VERSION=""
 RUN if [ -n "$ANGULAR_CLI_VERSION" ] && [ "$ANGULAR_CLI_VERSION" != "OFF" ]; then \

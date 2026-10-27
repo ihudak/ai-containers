@@ -17,7 +17,7 @@ graphify install   # registers the Claude Code skill; persists in the group's ~/
 
 > **Note:** graphify depends on `tree-sitter`, which publishes compiled wheels and can lag a new CPython release. When the install fails on the image's Python, it is retried once on the previous minor, downloaded into the group's `~/.ai-tools/uv/python` if the image lacks it (see [Agent-tier tools](../agent-tools.md)).
 
-> **Note:** Persistence requires `claude-code=ON` in `sandbox.conf`, which is what provides the `~/.claude/` host bind-mount.
+> **Note:** Persistence requires `claude-code=ON` in `sandbox.conf`, which is what mounts the group's `~/.claude/`.
 
 > **Note:** Only the Anthropic API (`api.anthropic.com`) is allowlisted by default. graphify also supports Google Gemini, OpenAI, DeepSeek, Moonshot/Kimi, AWS Bedrock, and Ollama — if you configure graphify with a non-Anthropic provider, add its API domain to `allowlist-domains.d/custom.txt` and rebuild.
 

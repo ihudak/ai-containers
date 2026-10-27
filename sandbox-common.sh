@@ -1100,12 +1100,10 @@ ai_containers_sha256() {   # stdin → 64 hex, or rc 1 when the host has no dige
 #                            differ from every other's by construction.
 #   sandbox.conf, sandbox*.env
 #                            they mix build-time keys (ruby=, db-clients=) with
-#                            runtime ones (mode=, agents=). Including them would
-#                            demand a rebuild after changing `mode=`, which
-#                            rebuilds nothing; excluding them means a changed
-#                            `ruby=` is NOT caught here. That is a known gap,
-#                            stated rather than hidden — build.sh already prints
-#                            the component set it is building.
+#                            runtime ones (mkdocs=, the other agent CLIs).
+#                            Including them would demand a rebuild after changing
+#                            `mkdocs=`, which rebuilds nothing. A changed `ruby=`
+#                            is caught by the config digest below instead.
 ai_containers_payload_files() {   # <dir> → one relative path per line, sorted
   local dir="$1"
   [[ -d "$dir" ]] || return 0
@@ -1141,16 +1139,17 @@ ai_containers_payload_digest() {   # <dir> → 64 hex, or rc 1 if it cannot be c
 # WHAT THE CONFIG ASKED FOR, as distinct from what the files contain.
 #
 # sandbox.conf is deliberately OUTSIDE the payload digest above, because it mixes
-# build-time keys (ruby=, db-clients=, c-toolchain=) with runtime ones (mode=,
-# agents=). Digesting the file would demand a rebuild after changing `mode=`,
+# build-time keys (ruby=, db-clients=, c-toolchain=) with runtime ones (mkdocs=,
+# the other agent CLIs). Digesting the file would demand a rebuild after
+# changing `mkdocs=`,
 # which rebuilds nothing — and a warning that fires when nothing is wrong is a
 # warning people learn to dismiss, taking the true ones with it.
 #
 # So this digests what build.sh DERIVES from the config rather than the config
 # itself: the --build-arg list, which contains every build-time key by
 # construction and no runtime key at all. Measured on this repo's own
-# sandbox.conf: changing `ruby=` moves the digest, changing `mode=` between
-# restricted and open leaves it byte-identical.
+# sandbox.conf: changing `ruby=` moves the digest, changing `mkdocs=` between
+# ON and OFF leaves it byte-identical.
 #
 # Self-maintaining, which is the point — a build-time key added later becomes a
 # build arg and enters this digest with no list to update anywhere.

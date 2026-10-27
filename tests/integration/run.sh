@@ -1097,7 +1097,7 @@ for f in $(all_cases); do
 done
 
 # ── Legitimate empty selection: known --cases naming a sibling job's variant ───
-# Task 11c: nightly.yml's packages-agents/packages-native jobs both thread the
+# Task 11c: nightly.yml's packages-* jobs (agents, native, services) all thread the
 # SAME workflow_dispatch `cases` input into `--tags packages --variant <name>
 # ${cases:+--cases <cases>}`. A dispatch plan built around one variant's case
 # names (e.g. `--cases 700-agent-tools-install-restricted`, an agents-tier

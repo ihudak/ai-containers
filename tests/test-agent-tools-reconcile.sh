@@ -151,13 +151,13 @@ n_prefix_calls="$(grep -cE -- '--prefix[[:space:]]+[^[:space:]]*/\.ai-tools/npm(
 rm -rf "$h"
 
 # ── Idempotent for the tools that can keep THEMSELVES current ──
-# claude-code (native, self-updates), copilot (self-updates), graphify and vale are
-# install-if-missing, so a second run on the same home must not re-fetch them.
+# claude-code (native, self-updates), copilot (self-updates), graphify (uv tool
+# upgrade) and vale (never refreshed) are install-if-missing, so a second run on the same home must not re-fetch them.
 h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; run_case "claude-code,copilot,graphify,vale" "$h" >/dev/null; : > "$h/calls.log"; run_case "claude-code,copilot,graphify,vale" "$h" >/dev/null
 { ! grep -q 'claude\.ai/install\.sh' "$h/calls.log" \
   && ! grep -q '@github/copilot' "$h/calls.log" \
   && ! grep -q 'uv tool install' "$h/calls.log"; } \
-  && pass "idempotent: self-updating tools not reinstalled" || fail "idempotent: self-updating tools not reinstalled"
+  && pass "idempotent: install-if-missing tools not reinstalled" || fail "idempotent: install-if-missing tools not reinstalled"
 rm -rf "$h"
 
 # ── mkdocs: installed WITH mkdocs-material, once ──

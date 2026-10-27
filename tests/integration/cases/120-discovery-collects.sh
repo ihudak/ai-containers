@@ -43,7 +43,7 @@ else
   fail "the pcap is non-empty after outbound traffic"
 fi
 
-# Drive the REAL extraction path — the one the README tells users to run —
+# Drive the REAL extraction path — the one AGENTS.md and the docs tell users to run —
 # rather than reimplementing tshark here. A case that parses the pcap itself
 # would keep passing after `stop`/`extract_capture` broke.
 docker exec "$IT_CID" /usr/local/bin/capture-agent-destinations.sh \

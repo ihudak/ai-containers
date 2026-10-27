@@ -37,8 +37,8 @@ The default group is named `default`. Its directory is `~/.ai-containers/default
 
 A group's Ruby home (`~/.rvm` in the container: rvm, every Ruby version and its
 gems, only when `ruby=` is set) is **not** in this directory. It is the Docker
-volume `ai-containers-rvm-<group>`, on every platform except the `host` group,
-which mounts your real `~/.rvm`. Removing or backing up the group directory does
+volume `ai-containers-rvm-<group>`, on every platform. The `host` group is the
+exception: it mounts your real `~/.rvm`. Removing or backing up the group directory does
 not touch it: `./group.sh rm <group>` removes both, and `./group.sh gc` collects a
 volume whose directory was deleted by hand.
 
