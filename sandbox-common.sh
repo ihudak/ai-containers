@@ -1100,7 +1100,9 @@ ai_containers_sha256() {   # stdin → 64 hex, or rc 1 when the host has no dige
 #                            differ from every other's by construction.
 #   sandbox.conf, sandbox*.env
 #                            they mix build-time keys (ruby=, db-clients=) with
-#                            runtime ones (mkdocs=, the other agent CLIs).
+#                            runtime ones (mkdocs=, and the agent CLIs installed
+#                            at container start; not kiro=, which is baked, nor
+#                            copilot=, which adds the GitHub CLI to the build).
 #                            Including them would demand a rebuild after changing
 #                            `mkdocs=`, which rebuilds nothing. A changed `ruby=`
 #                            is caught by the config digest below instead.
@@ -1140,9 +1142,8 @@ ai_containers_payload_digest() {   # <dir> → 64 hex, or rc 1 if it cannot be c
 #
 # sandbox.conf is deliberately OUTSIDE the payload digest above, because it mixes
 # build-time keys (ruby=, db-clients=, c-toolchain=) with runtime ones (mkdocs=,
-# the other agent CLIs). Digesting the file would demand a rebuild after
-# changing `mkdocs=`,
-# which rebuilds nothing — and a warning that fires when nothing is wrong is a
+# and the agent CLIs installed at container start). Digesting the file would
+# demand a rebuild after changing `mkdocs=`, which rebuilds nothing — and a warning that fires when nothing is wrong is a
 # warning people learn to dismiss, taking the true ones with it.
 #
 # So this digests what build.sh DERIVES from the config rather than the config

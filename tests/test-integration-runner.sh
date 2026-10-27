@@ -684,7 +684,7 @@ fi
 rm -f "$CASES/150-variant-agents.sh" "$CASES/151-variant-native.sh" "$CASES/152-variant-default.sh"
 
 # ── --cases CLI selector ────────────────────────────────────────────────────────
-# Task 11b: nightly.yml's packages-agents/packages-native jobs hardcode `--tags
+# Task 11b: nightly.yml's packages-* jobs (agents, native, services) hardcode `--tags
 # packages --variant <name> --require packages` and never read any
 # workflow_dispatch input, so a mutation demonstration cannot select just the
 # ONE case a patch targets — every other case sharing that variant runs

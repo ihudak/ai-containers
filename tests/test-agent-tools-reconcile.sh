@@ -150,9 +150,10 @@ n_prefix_calls="$(grep -cE -- '--prefix[[:space:]]+[^[:space:]]*/\.ai-tools/npm(
   || fail "all 3 npm installs pass --prefix .../.ai-tools/npm explicitly (got $n_prefix_calls, want 3)"
 rm -rf "$h"
 
-# ── Idempotent for the tools that can keep THEMSELVES current ──
+# ── Idempotent for the install-if-missing tools ──
 # claude-code (native, self-updates), copilot (self-updates), graphify (uv tool
-# upgrade) and vale (never refreshed) are install-if-missing, so a second run on the same home must not re-fetch them.
+# upgrade) and vale (never refreshed) are install-if-missing, so a second run on
+# the same home must not re-fetch them.
 h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; run_case "claude-code,copilot,graphify,vale" "$h" >/dev/null; : > "$h/calls.log"; run_case "claude-code,copilot,graphify,vale" "$h" >/dev/null
 { ! grep -q 'claude\.ai/install\.sh' "$h/calls.log" \
   && ! grep -q '@github/copilot' "$h/calls.log" \

@@ -34,7 +34,7 @@ on:
         required: false
         default: ''
       # Unlike tags/exclude above (integration-full only), this feeds the
-      # packages-agents/packages-native jobs, whose own selection is otherwise
+      # packages-agents/packages-native/packages-services jobs, whose own selection is otherwise
       # hardcoded (`--tags packages --variant <name>`) and reads no input at
       # all — every case sharing that variant runs on every dispatch,
       # regardless of which mutation.patch is applied to the tree. A mutation
@@ -96,7 +96,7 @@ jobs:
     # guard firing here would not mean anything is broken; it would mean this
     # job and the dispatcher agreed to select nothing, and the failure would
     # read as a broken corpus rather than as the redundant-request it is —
-    # packages-agents and packages-native already run exactly that selection,
+    # the packages-* jobs already run exactly that selection,
     # in full, every night. Skipping is not `continue-on-error`: the job
     # simply never claims to have checked anything, which is the honest
     # report for "coverage lives in the two dedicated jobs instead".
@@ -157,11 +157,11 @@ jobs:
         run: ./tests/integration/run.sh --list
 
       # `--exclude packages` is BAKED IN, always, not left to inputs.exclude:
-      # the packages tier (7 cases, two image variants) is now owned by the
-      # packages-agents/packages-native jobs below, which run it in parallel
+      # the packages tier is now owned by the packages-agents, packages-native
+      # and packages-services jobs below, which run it in parallel
       # beside this one. Without this exclusion, a scheduled run (no inputs at
-      # all) would select those seven cases HERE too, build both new variant
-      # images inside this single serial job, and very likely blow
+      # all) would select those cases HERE too, build every variant image
+      # inside this single serial job, and very likely blow
       # `timeout-minutes: 90` on their own — killing the whole corpus run and
       # reporting nothing about the network/mounts/groups/volumes cases this
       # job exists for. `inputs.exclude` still composes ON TOP of the baked

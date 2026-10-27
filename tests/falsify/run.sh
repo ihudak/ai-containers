@@ -461,7 +461,8 @@ falsify_exit_kills() {   # <oracle exit status> → 0 when that status is a kill
 # that as 128+N. That is not the driver counting failures; it is the process
 # being shot, and the two were indistinguishable to falsify_exit_kills above.
 #
-# The trigger is not hypothetical. The tier runs `--jobs $(nproc)` workers, each
+# The trigger is not hypothetical. The tier ran `--jobs $(nproc)` workers (CI and
+# verify-on-host.sh now pass `--jobs auto`, which reads the quota), each
 # running a WHOLE `run-all.sh`, and on a memory-capped host the kernel picks one
 # and SIGKILLs it: this container's own cgroup reports `oom_kill 7` against an
 # 8 GiB `memory.max`. `wait` then returns 137, no FAIL: line was ever printed,

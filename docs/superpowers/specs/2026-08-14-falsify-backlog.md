@@ -16,9 +16,8 @@ other.
 What remains recorded here is deliberately not open work: 24 DEFERRED rows in
 `tests/falsify/targets.conf`, each carrying its own reason, and any `GAP:`
 entries in `tests/falsify/survivors.txt` (none on 2026-10-27; there were 4
-when this was written). A GAP is a
-mutant nothing kills TODAY and one could — acknowledged, bounded, and
-ratcheted, which is the opposite of forgotten.
+when this was written). A GAP is a mutant nothing kills TODAY and one could —
+acknowledged, bounded, and ratcheted, which is the opposite of forgotten.
 
 ---
 

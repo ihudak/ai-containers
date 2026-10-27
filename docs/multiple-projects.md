@@ -124,16 +124,18 @@ never warned about, since an absent stamp is not evidence of drift.
 
 **`sandbox.conf` is covered too, but not by digesting the file.** The file
 holds more than what the build uses — comments, the order of its lines, and
-keys for tools installed at container start, such as `mkdocs=` — and digesting it whole would demand a rebuild after an
-edit that rebuilds nothing. A warning that fires when nothing is wrong is one you
-learn to dismiss, and it takes the true ones with it. (The network mode is not in
-`sandbox.conf` at all: it is `SANDBOX_MODE` in `sandbox.env`.)
+keys for tools installed at container start, such as `mkdocs=` — and digesting
+it whole would demand a rebuild after an edit that rebuilds nothing. A warning
+that fires when nothing is wrong is one you learn to dismiss, and it takes the
+true ones with it. (The network mode is not in `sandbox.conf` at all: it is
+`SANDBOX_MODE` in `sandbox.env`.)
 
 So a second label, `ai-containers.config-digest`, records what `build.sh`
 *derives* from the config: the `--build-arg` list, which contains every
 build-time key by construction and nothing else. Change `ruby=` and the
-launcher says so; reorder the file or rewrite a comment and it stays quiet. A build-time key added to the tool in future is covered automatically,
-because it becomes a build arg with no list to update.
+launcher says so; reorder the file or rewrite a comment and it stays quiet. A
+build-time key added to the tool in future is covered automatically, because it
+becomes a build arg with no list to update.
 
 The two are reported separately, because they mean different things:
 
