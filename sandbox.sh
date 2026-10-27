@@ -1781,7 +1781,9 @@ git_dirs_in() {
           _gdi_follow "$up" "${tgt#gitdir: }" "$5" "$up/.git"
           if ! _in_writable "$up/.git"; then
             tgt="${tgt#gitdir: }"; [[ "$tgt" == /* ]] || tgt="$up/$tgt"
-            tgt="$(cd -P -- "$tgt" 2>/dev/null && pwd -P)" && gquiet[$tgt]=1
+            # The git directory it names too: one in the agent's reach is its to make
+            # unreadable (automated security review of 1a30bb4).
+            if tgt="$(cd -P -- "$tgt" 2>/dev/null && pwd -P)" && ! _in_writable "$tgt"; then gquiet[$tgt]=1; fi
           fi
         fi
       fi
