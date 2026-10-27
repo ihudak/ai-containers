@@ -501,6 +501,21 @@ if [[ "$(id -u)" -ne 0 ]]; then
   else
     printf 'SKIP: T25e — no setfacl\n'
   fi
+  # T25f: fails closed where ls cannot say there is no ACL — macOS prints @ in
+  # place of a + when there are extended attributes too, and an ls that fails
+  # says nothing (automated security review of 64f8841). A shim ls answers for
+  # this one directory and passes everything else through.
+  OWN5="$TMP/own2f"; mk_launcher "$OWN5/srch/p"; chmod 0311 "$OWN5/srch"
+  SHIM="$TMP/lsshim"; mkdir -p "$SHIM"
+  printf '#!/bin/bash\nfor a; do last="$a"; done\nif [[ "$last" == %q ]]; then\n  [[ "$LS_SHIM" == fail ]] && exit 1\n  printf "drwx--x--x@ 2 u g 64 Jan 1 00:00 %%s\\n" "$last"; exit 0\nfi\nexec %q "$@"\n' \
+    "$OWN5/srch" "$(command -v ls)" > "$SHIM/ls"; chmod +x "$SHIM/ls"
+  for v in at fail; do
+    LS_SHIM=$v PATH="$SHIM:$PATH" SANDBOX_UID=4242 SANDBOX_GID=4343 EXTRA_MOUNTS="$OWN5" launch "$LAUNCHER" "$TMP/app"
+    [[ "$LAUNCH_RC" != 0 ]] && grep -qF "ERROR: $OWN5/srch can be searched but not listed" "$ERR" \
+      && pass "T25f an ls that shows $v refuses the launch" \
+      || fail "T25f ls $v (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
+  done
+  chmod 0755 "$OWN5/srch"
 else
   printf 'SKIP: T25b/c — as root every directory can be listed\n'
 fi

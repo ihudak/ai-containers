@@ -566,17 +566,20 @@ launcher_ro_overlay() {
       # cd83cb7; T25d).
       # One with an ACL counts too: an entry can let the agent write whatever the
       # mode bits say, and those entries are not read here (automated security
-      # review of 63503a9; T25e). ls marks one with a + after the mode, GNU and BSD.
+      # review of 63503a9; T25e). Plain only when ls shows the bare mode, or GNU's
+      # SELinux-context '.' after it: a +, macOS's @ (it hides a +), anything
+      # else, or an ls that fails counts as one (automated security review of
+      # 64f8841).
       aclm="$(cd / && LC_ALL=C ls -ld "$l" 2>/dev/null)" || aclm=""; aclm="${aclm%% *}"
       if [[ "$kind" == unreadable && -x "$l" ]] \
-         && { [[ "$aclm" == *+ ]] \
+         && { ! [[ "$aclm" =~ ^d[-rwxsStT]{9}\.?$ ]] \
               || [[ -n "$(cd / && find "$l" -maxdepth 0 \( -user "$uid" -o \( -group "$gid" -perm -0030 \) -o -perm -0003 \) -print 2>/dev/null)" ]]; }; then
         printf 'ERROR: %s can be searched but not listed by you, so what is inside it cannot be\n' "$(_term "$l")" >&2
         printf '       checked for a FIFO the agent could write through a read-only overlay; refusing the launch.\n' >&2
         if [[ -O "$l" ]]; then
           printf '       Restore: chmod u+rx %q\n' "$l" >&2
         else
-          printf '       It is not yours: ask its owner, or mount it :ro yourself.\n' >&2
+          printf '       It is not yours: ask its owner to make it listable, or leave it out of the writable mounts.\n' >&2
         fi
         exit 1
       fi
@@ -612,7 +615,7 @@ launcher_ro_overlay() {
         if [[ -O "$l" ]]; then
           printf '         Restore: chmod u+rx %q\n' "$l" >&2
         else
-          printf '         It is not yours: ask its owner, or mount it :ro yourself.\n' >&2
+          printf '         It is not yours: ask its owner to make it listable, or leave it out of the writable mounts.\n' >&2
         fi
       else
         printf 'READ-ONLY: %s  (launcher files; edit them on the host)\n' "$(_term "$at")" >&2
@@ -920,7 +923,12 @@ launcher_ro_overlay() {
         # what is inside cannot be checked for a FIFO the agent writes through the
         # read-only bind (review of 56c91c4, HIGH; G66). Refused.
         printf 'ERROR: %s can be searched but not listed by you, so what your host'\''s git reads in\n' "$(_term "$g")" >&2
-        printf '       it cannot be checked; refusing the launch. Restore: chmod u+rx %q\n' "$g" >&2
+        printf '       it cannot be checked; refusing the launch.\n' >&2
+        if [[ -O "$g" ]]; then
+          printf '       Restore: chmod u+rx %q\n' "$g" >&2
+        else
+          printf '       It is not yours: ask its owner to make it listable, or leave it out of the writable mounts.\n' >&2
+        fi
         exit 1
       fi
       if [[ "$kind" == unr ]]; then
@@ -1838,8 +1846,10 @@ git_dirs_in() {
       fi
       continue
     fi
-    # A link is a HEAD whatever it leads to: git never follows one, and HEAD ->
-    # refs/heads was taken for a directory (review of 7b41327, HIGH; G71).
+    # A link is a HEAD whatever it leads to: git takes one whose text starts
+    # refs/ without following it, and HEAD -> refs/heads was taken for a
+    # directory (review of 7b41327, HIGH; G71). Taking every link over-accepts,
+    # which only protects more.
     if [[ -d "$f" && ! -L "$f" ]]; then
       if [[ ! -r "$f" || ! -x "$f" ]]; then _gdi_unr+=("$f"); fi
       continue
