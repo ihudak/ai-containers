@@ -656,14 +656,39 @@ launcher_ro_overlay() {
   # A git directory a .git file or commondir in one mount names inside ANOTHER
   # writable bind is protected in that bind's view, as if its scan had found it;
   # SANDBOX_GIT_MAX counts it like any other.
+  # Keyed by where each lands in the container, so a directory two mounts expose
+  # is protected in both views. Followed until nothing new turns up: a queued
+  # target's own commondir names a git directory too, which was left writable
+  # (review of 4a4e30c, HIGH). One inside the group's own directories, which are
+  # not scanned because tools re-clone what they hold, is protected all the same
+  # — left writable, the host's git would read it — and named.
   local -A uhave=()
-  local j
-  for k in ${ug[@]+"${!ug[@]}"}; do uhave[${ug[k]}|${usrc[k]}]=1; done
-  for k in ${_xm_t[@]+"${!_xm_t[@]}"}; do
-    j="${_xm_j[k]}"
-    [[ -z "${uhave[${_xm_t[k]}|${bsrc[j]}]:-}" ]] || continue
-    uhave[${_xm_t[k]}|${bsrc[j]}]=1
-    ug+=("${_xm_t[k]}"); ukind+=(dir); usrc+=("${bsrc[j]}"); udst+=("${bdst[j]}")
+  local j jj xq=0 xt xv2 cdt xgw=0
+  for k in ${ug[@]+"${!ug[@]}"}; do uhave[${udst[k]}${ug[k]#"${usrc[k]}"}]=1; done
+  while (( xq < ${#_xm_t[@]} )); do
+    xt="${_xm_t[xq]}"; j="${_xm_j[xq]}"; xq=$((xq + 1))
+    xv2="${bdst[j]}${xt#"${bsrc[j]}"}"
+    [[ -z "${uhave[$xv2]:-}" ]] || continue
+    uhave[$xv2]=1
+    ug+=("$xt"); ukind+=(dir); usrc+=("${bsrc[j]}"); udst+=("${bdst[j]}")
+    if [[ -n "${_git_skip_root:-}" && "$xt" == "$_git_skip_root"/* ]] && (( ++xgw <= 5 )); then
+      printf 'NOTE: %s, named by a .git file or commondir, lies inside the container group'\''s own directories;\n' "$(_term "$xt")" >&2
+      printf '      it is protected there, so a tool that deletes and re-clones it may fail with Resource busy.\n' >&2
+    fi
+    if [[ -f "$xt/commondir" ]]; then
+      cdt=""; IFS= read -r -d '' cdt < <(head -c 4096 "$xt/commondir" 2>/dev/null) || true
+      while [[ "$cdt" == *[$'\r\n'] ]]; do cdt="${cdt%?}"; done
+      if [[ -n "$cdt" && "$cdt" != ./ && "$cdt" != . ]]; then
+        [[ "$cdt" == /* ]] || cdt="$xt/$cdt"
+        if cdt="$(cd -P -- "$cdt" 2>/dev/null && pwd -P)" && _is_git_dir "$cdt"; then
+          for jj in ${bsrc[@]+"${!bsrc[@]}"}; do
+            if [[ "$cdt" == "${bsrc[jj]}" || "$cdt" == "${bsrc[jj]}"/* ]]; then
+              _xm_t+=("$cdt"); _xm_by+=("$xt/commondir"); _xm_j+=("$jj")
+            fi
+          done
+        fi
+      fi
+    fi
   done
   for k in ${ug[@]+"${!ug[@]}"}; do
     at="${udst[k]}${ug[k]#"${usrc[k]}"}"; d="${at//[!\/]/}"
@@ -710,8 +735,11 @@ launcher_ro_overlay() {
         base="${g%/*}"; gro=("$g")      # a .git file, or read-only whole: pin what is above it
       else
         base="$g"
-        if [[ -d "$g/objects" && -f "$g/config" ]]; then
+        if [[ -d "$g/objects" ]] && { [[ -f "$g/config" ]] || [[ ! -e "$g/commondir" && ! -L "$g/commondir" ]]; }; then
           cfg="$g/config"
+          # A repository git reads with no config of its own gets an empty one, as
+          # commondir gets ./ — or the agent could add one after the launch (G49).
+          if [[ ! -e "$g/config" && ! -L "$g/config" ]]; then ( set -C; : > "$g/config" ) 2>/dev/null || true; fi
           # git makes hooks/ at init, but a repository can lack it — and then the
           # agent could make it.
           if [[ ! -e "$g/hooks" && ! -L "$g/hooks" ]]; then mkdir "$g/hooks" 2>/dev/null || true; fi
@@ -1535,6 +1563,14 @@ _git_index_read() {
   return 0
 }
 
+# _is_git_dir <dir>: what git takes for a git directory — HEAD, with objects/ and
+# refs/ or a commondir. Not a config: git needs none, and one without was not taken
+# for a git directory, so the agent could add a config the host's git then read
+# (automated security review of 4a4e30c).
+_is_git_dir() {
+  [[ -f "$1/HEAD" ]] && { [[ -d "$1/objects" && -d "$1/refs" ]] || [[ -f "$1/commondir" ]]; }
+}
+
 # _lex_norm <absolute path>: the path with . and .. resolved by name alone, no link
 # followed — what it says, to compare with where it physically leads.
 _lex_norm() {
@@ -1585,7 +1621,7 @@ _gdi_follow() {
   # worktree as the primary with its main checkout in EXTRA_MOUNTS), and names it
   # only if it could not be protected there (reviews of dcf7dab and 4e7da47).
   local _j
-  if [[ -f "$t/HEAD" ]] && { [[ -f "$t/config" && -d "$t/objects" ]] || [[ -f "$t/commondir" ]]; }; then
+  if _is_git_dir "$t"; then
     for _j in ${bsrc[@]+"${!bsrc[@]}"}; do
       [[ "${bsrc[_j]}" != "$3" ]] || continue
       if [[ "$t" == "${bsrc[_j]}" || "$t" == "${bsrc[_j]}"/* ]]; then
@@ -1596,7 +1632,7 @@ _gdi_follow() {
   [[ "$t" == "$3" || "$t" == "$3"/* ]] || return 0
   [[ -z "${had[$t]:-}" ]] || return 0
   had[$t]=1
-  if [[ -f "$t/HEAD" ]] && { [[ -f "$t/config" && -d "$t/objects" ]] || [[ -f "$t/commondir" ]]; }; then
+  if _is_git_dir "$t"; then
     _gdi_dirs+=("$t")
   elif (( ++_gdi_warned <= 5 )); then
     printf 'WARNING: %s names %s, which is not a git directory; nothing there is protected.\n' "$(_term "$4")" "$(_term "$t")" >&2
@@ -1629,7 +1665,7 @@ git_dirs_in() {
       continue
     fi
     g="${f%/HEAD}"
-    if [[ ( -f "$g/config" && -d "$g/objects" ) || -f "$g/commondir" ]]; then _gdi_dirs+=("$g"); fi
+    if _is_git_dir "$g"; then _gdi_dirs+=("$g"); fi
   done
   # Submodules the scan cannot see — a vendor/ is pruned by name, and submodules
   # commonly live in one: an absorbed one's checkout through its git directory's
@@ -1667,7 +1703,7 @@ git_dirs_in() {
       while [[ "$tgt" == *[$'\r\n'] ]]; do tgt="${tgt%?}"; done
       if [[ -n "$tgt" && "$tgt" != ./ && "$tgt" != . ]]; then _gdi_follow "$g" "$tgt" "$5" "$g/commondir"; fi
     fi
-    [[ -f "$g/config" && -d "$g/objects" ]] || continue
+    [[ -d "$g/objects" ]] || continue
     top=""
     if [[ "$g" == */.git/modules/* ]]; then
       wt="$(_git_config_get "$g/config" core.worktree)" || wt=""
@@ -1720,7 +1756,7 @@ git_dirs_in() {
         [[ -n "${had[$f]:-}" ]] || { _gdi_links+=("$f"); had[$f]=1; }
       elif [[ -f "$f" ]]; then
         [[ -n "${had[$f]:-}" ]] || { _gdi_files+=("$f"); had[$f]=1; }
-      elif [[ -d "$f" && -f "$f/HEAD" && -f "$f/config" && -d "$f/objects" && -z "${had[$f]:-}" ]]; then
+      elif [[ -d "$f" && -z "${had[$f]:-}" ]] && _is_git_dir "$f"; then
         _gdi_dirs+=("$f"); had[$f]=1
       fi
     done

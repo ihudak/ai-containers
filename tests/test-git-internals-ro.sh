@@ -990,5 +990,49 @@ launch ..
   || fail "G48 skipped-gitlink WARNINGs ($(grep -c 'is not where its index says' "$ERR") named; $(grep -F 'more submodules' "$ERR"))"
 rm -rf "$PROJ/f48"
 
+# ── G49: a git directory is what git takes for one ───────────────────────────
+# git needs HEAD, objects/ and refs/, not a config: one without was not taken for
+# a git directory, so nothing was protected and the agent could add a config the
+# host's git then reads (automated security review of 4a4e30c). It is protected,
+# with an empty config made as a placeholder, as commondir is.
+mkdir -p "$PROJ/nc49" && "${G[@]}" -C "$PROJ/nc49" init -q && rm -f "$PROJ/nc49/.git/config"
+launch ..
+[[ -f "$PROJ/nc49/.git/config" ]] && has_mount "$PROJ/nc49/.git/config:/workspace/proj/nc49/.git/config:ro" \
+  && pass "G49 a git directory with no config is protected, with an empty config made for it" \
+  || fail "G49 config-less git directory left unprotected (stderr: $(grep -F nc49 "$ERR" | head -2 | tr '\n' ' '))"
+rm -rf "$PROJ/nc49"
+# ── G50: what a protected cross-mount target names is followed too ───────────
+# A queued target is protected, but its commondir was never followed, so the
+# common directory it names (with the config and hooks git reads) stayed
+# writable, silently (review of 4a4e30c, HIGH).
+B50="$TMP/b50"; mkdir -p "$B50/node_modules/x"; "${G[@]}" init -q --bare "$B50/node_modules/x/main"
+"${G[@]}" config --file "$B50/node_modules/x/main/config" core.bare false
+mkdir -p "$B50/node_modules/x/wt"; printf '../main\n' > "$B50/node_modules/x/wt/commondir"
+printf 'ref: refs/heads/main\n' > "$B50/node_modules/x/wt/HEAD"
+mkdir -p "$PROJ/src50"; printf 'gitdir: %s\n' "$B50/node_modules/x/wt" > "$PROJ/src50/.git"
+EXTRA_MOUNTS="$B50" launch ..
+has_mount "$B50/node_modules/x/main/config:/workspace/b50/node_modules/x/main/config:ro" \
+  && pass "G50 the common directory of a cross-mount target is protected too" \
+  || fail "G50 cross-mount target's common directory left writable (stderr: $(grep -F b50 "$ERR" | head -3 | tr '\n' ' '))"
+# One mounted twice (EXTRA_MOUNTS and VAULT_PATH) is protected in both views.
+EXTRA_MOUNTS="$B50" VAULT_PATH="$B50" launch ..
+has_mount "$B50/node_modules/x/main/config:/workspace/vault/node_modules/x/main/config:ro" \
+  && has_mount "$B50/node_modules/x/main/config:/workspace/b50/node_modules/x/main/config:ro" \
+  && pass "G50 a directory mounted twice is protected in both views" \
+  || fail "G50 a second view left writable"
+rm -rf "$B50" "$PROJ/src50"
+# ── G51: a target in a named group's directories is protected, and said so ───
+# The group's own directories are not scanned — tools re-clone what they hold, and
+# a pin there turns that into Resource busy — but a .git file can name one. It is
+# protected (left writable, the host's git would run it), and named, so a failed
+# re-clone has an explanation (review of 4a4e30c).
+GR51="$HOME/.ai-containers/default/.agents/m51"; mkdir -p "$GR51"; "${G[@]}" init -q --bare "$GR51/.git"
+mkdir -p "$PROJ/src51"; printf 'gitdir: %s\n' "$GR51/.git" > "$PROJ/src51/.git"
+launch ..
+grep -qF "inside the container group's own directories" "$ERR" \
+  && pass "G51 protecting a git directory in the group's directories is named" \
+  || fail "G51 group-directory protection not named (stderr: $(grep -F m51 "$ERR" | head -2 | tr '\n' ' '))"
+rm -rf "$GR51" "$PROJ/src51"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
