@@ -360,6 +360,102 @@ check "an unmatched leading single quote is not stripped" 1 "$(trig_rc "on: 'pul
 check "comments and blank lines inside the on: block are skipped" 0 \
   "$(trig_rc "$(printf 'on:\n\n  # a comment\n  pull_request:\njobs:\n  x:\n    runs-on: y')")"
 
+# ── wf_reaches_prs: what a coverage=exempt row is checked against ─────────────
+# test-layer-containment.sh passes an exempt row only on rc 1 here. The repo's
+# own exempt workflows use none of the sibling triggers, so these fixtures are
+# what pins the list (TST-17): drop a trigger from it, or let any push through,
+# and one of them goes red. J is a job body every fixture shares.
+J="$(printf 'jobs:\n  x:\n    runs-on: y')"
+reach_rc() {  # $1=on: block → wf_reaches_prs's rc
+  printf '%s\n%s\n' "$1" "$J" > "$TMP/reach.yml"
+  wf_reaches_prs "$TMP/reach.yml" >/dev/null 2>&1
+  printf '%s' "$?"
+}
+check "reaches: pull_request" 0 "$(reach_rc 'on: pull_request')"
+check "reaches: pull_request_target (TST-15)" 0 "$(reach_rc "$(printf 'on:\n  pull_request_target:')")"
+check "reaches: merge_group (TST-15)" 0 "$(reach_rc 'on: [merge_group]')"
+check "reaches: workflow_run, whatever workflows: it names (TST-16)" 0 \
+  "$(reach_rc "$(printf 'on:\n  workflow_run:\n    workflows: [Tests]\n    types: [completed]')")"
+check "reaches: push with no filter, scalar (TST-16)" 0 "$(reach_rc 'on: push')"
+check "reaches: push with no filter, flow list" 0 "$(reach_rc 'on: [push, workflow_dispatch]')"
+check "reaches: push with no filter, block map" 0 "$(reach_rc "$(printf 'on:\n  push:\n  schedule:\n    - cron: x')")"
+check "reaches: push with a paths filter only" 0 \
+  "$(reach_rc "$(printf 'on:\n  push:\n    paths:\n      - docs/**')")"
+check "reaches: push with branches-ignore" 0 \
+  "$(reach_rc "$(printf 'on:\n  push:\n    branches-ignore: [main]')")"
+check "reaches: push on a branch glob" 0 \
+  "$(reach_rc "$(printf 'on:\n  push:\n    branches:\n      - main\n      - '"'"'feature/*'"'"'')")"
+check "reaches: push with an empty branches:" 0 \
+  "$(reach_rc "$(printf 'on:\n  push:\n    branches:')")"
+check "reaches: push with tags and a branch glob" 0 \
+  "$(reach_rc "$(printf 'on:\n  push:\n    tags: [v*]\n    branches: [\"**\"]')")"
+# An allow-list: a trigger not known to stay off PRs counts, whatever it is.
+for trig in pull_request_review pull_request_review_comment issue_comment create check_suite check_run status some_future_event; do
+  check "reaches: $trig (not on the allow-list)" 0 "$(reach_rc "on: [schedule, $trig]")"
+done
+check "reaches: issue_comment with types:" 0 \
+  "$(reach_rc "$(printf 'on:\n  issue_comment:\n    types: [created]')")"
+check "does not reach: repository_dispatch and release" 1 \
+  "$(reach_rc "$(printf 'on:\n  repository_dispatch:\n  release:\n    types: [published]')")"
+check "cannot tell: an on: list naming nothing" 2 "$(reach_rc 'on: []')"
+check "reaches: push: null is a push with no filter" 0 "$(reach_rc "$(printf 'on:\n  push: null')")"
+check "reaches: push: ~ is a push with no filter" 0 "$(reach_rc "$(printf 'on:\n  push: ~')")"
+check "reaches: tags with branches-ignore" 0 \
+  "$(reach_rc "$(printf 'on:\n  push:\n    tags: [v1]\n    branches-ignore: [main]')")"
+for g in 'dev?' 'dev+' 'dev[12]' '!main'; do
+  check "reaches: push on branch pattern $g" 0 \
+    "$(reach_rc "$(printf 'on:\n  push:\n    branches: [main, "%s"]' "$g")")"
+done
+check "does not reach: push on tags-ignore only" 1 \
+  "$(reach_rc "$(printf 'on:\n  push:\n    tags-ignore: [v0]')")"
+check "does not reach: a double-quoted plain branch name" 1 \
+  "$(reach_rc "$(printf 'on:\n  push:\n    branches: ["main"]')")"
+check "does not reach: a single-quoted plain branch name" 1 \
+  "$(reach_rc "$(printf 'on:\n  push:\n    branches:\n      - '"'"'main'"'"'')")"
+check "cannot tell: a key deeper than the filter level" 2 \
+  "$(reach_rc "$(printf 'on:\n  push:\n    branches:\n      - main\n      foo: bar')")"
+check "cannot tell: a flow list given as a list item" 2 \
+  "$(reach_rc "$(printf 'on:\n  push:\n    branches:\n      - [main]')")"
+check "cannot tell: a flow map given as a list item" 2 \
+  "$(reach_rc "$(printf 'on:\n  push:\n    branches:\n      - {a: b}')")"
+check "cannot tell: a list item with no filter key above it" 2 \
+  "$(reach_rc "$(printf 'on:\n  push:\n    - main')")"
+# A quoted filter key is the key; an unmatched quote is not stripped.
+check "does not reach: a double-quoted tags key" 1 "$(reach_rc "$(printf 'on:\n  push:\n    "tags": [v1]')")"
+check "does not reach: a single-quoted tags key" 1 "$(reach_rc "$(printf "on:\n  push:\n    'tags': [v1]")")"
+check "reaches: an unmatched double quote leaves an unknown key" 0 "$(reach_rc "$(printf 'on:\n  push:\n    "tagsx: [v1]')")"
+check "reaches: an unmatched single quote leaves an unknown key" 0 "$(reach_rc "$(printf "on:\n  push:\n    'tagsx: [v1]")")"
+check "does not reach: lines before on: are not the on: block" 1 \
+  "$(reach_rc "$(printf 'name: x\n\non:\n  push:\n    tags: [v1]')")"
+# An empty branches: still counts as a branch filter that can match anything,
+# before another key and at the end of the block.
+check "reaches: an empty branches: before tags:" 0 \
+  "$(reach_rc "$(printf 'on:\n  push:\n    branches:\n    tags: [v1]')")"
+check "reaches: an empty branches: after tags:" 0 \
+  "$(reach_rc "$(printf 'on:\n  push:\n    tags: [v1]\n    branches:')")"
+check "does not reach: schedule and workflow_dispatch" 1 \
+  "$(reach_rc "$(printf 'on:\n  schedule:\n    - cron: x\n  workflow_dispatch:')")"
+check "does not reach: push on tags only (release.yml's shape)" 1 \
+  "$(reach_rc "$(printf 'on:\n  push:\n    tags:\n      - '"'"'v[0-9]+.[0-9]+.[0-9]+'"'"'')")"
+check "does not reach: push on named branches" 1 \
+  "$(reach_rc "$(printf 'on:\n  push:\n    branches: [main, \"release\"]\n    paths: [src/**]')")"
+check "does not reach: a sequence item at the key indentation is the key value" 1 \
+  "$(reach_rc "$(printf 'on:\n  push:\n    branches:\n    - main')")"
+check "reaches: workflow_call (a callee runs whenever its caller does)" 0 \
+  "$(reach_rc "$(printf 'on:\n  workflow_call:')")"
+check "cannot tell: a push given as a flow map" 2 \
+  "$(reach_rc "$(printf 'on:\n  push: {branches: [main]}')")"
+check "cannot tell: a branches flow list spanning lines" 2 \
+  "$(reach_rc "$(printf 'on:\n  push:\n    branches: [main,\n      dev]')")"
+check "cannot tell: an unreadable on: block" 2 "$(reach_rc 'on: { push: {} }')"
+printf '%s\n%s\n' 'on: [push, workflow_dispatch]' "$J" > "$TMP/reach.yml"
+why="$(wf_reaches_prs "$TMP/reach.yml" 2>/dev/null)"
+[[ "$why" == *'no branch filter'* ]] && pass "reaches: the answer names why (got: $why)" \
+  || fail "reaches: the answer names why (got: '$why')"
+printf '%s\n%s\n' "$(printf 'on:\n  push: {branches: [main]}')" "$J" > "$TMP/reach.yml"
+fails_naming "wf_reaches_prs names a push filter it cannot read" "cannot read the push filters" \
+  wf_reaches_prs "$TMP/reach.yml"
+
 # ── wf_if_true: the if: shapes the workflows use, under one event ─────────────
 # test-layer-containment.sh derives what each layer RUNS from the workflows
 # (TST-2), so it has to know whether a job or step runs for the layer's event.
@@ -453,6 +549,10 @@ jobs:
         run: ./tests/integration/run.sh --tags slow   # a trailing comment
 YAML
 
+# The caller job's callee: a local workflow that runs no integration case.
+printf 'on:\n  workflow_call:\njobs:\n  lint:\n    runs-on: x\n    steps:\n      - run: bash tests/run-all.sh\n' > "$TMP/hermetic-checks.yml"
+wf_it_selections "$TMP/it.yml" schedule >/dev/null
+check "wf_it_selections: the scheduled view decides every job, the callee included (rc 0)" 0 "$?"
 check "wf_it_selections: the scheduled view" \
   "$(printf '%s\n' 'full|Folded|--require security --exclude packages' \
                    'gated|Literal|--tags fast --exclude needs-dns' \
@@ -522,6 +622,23 @@ fails_naming "wf_it_selections fails, naming the step, on arguments it cannot re
 printf 'on:\n  schedule:\njobs:\n  j:\n    runs-on: x\n    steps:\n      - name: Bare\n        run: ./tests/integration/run.sh --tags ${{ inputs.tags }}\n' > "$TMP/it-bare.yml"
 fails_naming "wf_it_selections renders only the guarded inputs idiom, not a bare \${{ inputs.x }}" \
   "j/Bare" wf_it_selections "$TMP/it-bare.yml" schedule
+
+# A job-level uses: is not followed, so a callee that runs cases would drop
+# out of the layer unseen: refused unless the callee is a local workflow that
+# names run.sh nowhere. A caller gated off the event is not asked.
+printf 'on:\n  workflow_call:\njobs:\n  it:\n    runs-on: x\n    steps:\n      - run: ./tests/integration/run.sh --tags fast\n' > "$TMP/callee-it.yml"
+printf 'on:\n  pull_request:\njobs:\n  fast:\n    uses: ./.github/workflows/callee-it.yml\n' > "$TMP/it-uses.yml"
+fails_naming "wf_it_selections refuses a job calling a workflow that runs run.sh" \
+  "job 'fast' calls ./.github/workflows/callee-it.yml" wf_it_selections "$TMP/it-uses.yml" pull_request
+printf 'on:\n  pull_request:\njobs:\n  fast:\n    uses: some/repo/.github/workflows/x.yml@v1\n' > "$TMP/it-remote.yml"
+fails_naming "wf_it_selections refuses a job calling a workflow in another repository" \
+  "job 'fast' calls some/repo" wf_it_selections "$TMP/it-remote.yml" pull_request
+printf 'on:\n  pull_request:\njobs:\n  fast:\n    uses: ./.github/workflows/nosuch.yml\n' > "$TMP/it-missing.yml"
+fails_naming "wf_it_selections refuses a job calling a local workflow that is not there" \
+  "job 'fast' calls ./.github/workflows/nosuch.yml" wf_it_selections "$TMP/it-missing.yml" pull_request
+printf "on:\n  pull_request:\n  schedule:\njobs:\n  fast:\n    if: github.event_name == 'schedule'\n    uses: ./.github/workflows/callee-it.yml\n" > "$TMP/it-uses-gated.yml"
+out="$(wf_it_selections "$TMP/it-uses-gated.yml" pull_request 2>&1)"; rc=$?
+check "wf_it_selections: a caller gated off the event is not asked (rc 0, nothing)" "0|" "$rc|$out"
 
 printf "on:\n  schedule:\njobs:\n  j:\n    runs-on: x\n    steps:\n      - name: Odd\n        if: contains(github.ref, 'x')\n        run: ./tests/integration/run.sh --tags a\n" > "$TMP/it-if.yml"
 fails_naming "wf_it_selections fails, naming the step, on a step if: it cannot evaluate" \

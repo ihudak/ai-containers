@@ -20,9 +20,9 @@
 | 2 | Launcher config / env layers / credentials | ENV-1 … ENV-6 — all fixed; REPO-1 found and fixed | — | HIGH |
 | 3 | Container-start runtime tools (entrypoint root steps, reconciles) | RT-1 … RT-7 — all fixed; RT-8, RT-9 open | stretch: GAP-1 for `link-default-ruby.sh`, `install-agent-skills.sh`, `agent-tools-reconcile.sh` | HIGH |
 | 4 | Host lifecycle scripts (project-init, sync, repo, group, report) | PRJ-1 … PRJ-9, DOC-1, DOC-3, REPO-2 … REPO-4, REPO-7 — fixed (PRJ-7 with TST-1); REPO-5, 6, 8 … 12 open | optional: GAP-6; stretch: GAP-1 for `group.sh` | MEDIUM |
-| 5 | In-container DB services | SVC-1 … SVC-4 — all fixed (SVC-2's hardware check is PLAT-4) | — | MEDIUM |
+| 5 | In-container DB services | SVC-1 … SVC-4 — all fixed (SVC-2's hardware check is PLAT-4); SVC-5 fixed in a follow-up | — | MEDIUM |
 | 6 | Build / Dockerfile / tools.d / config validation | BLD-1 … BLD-7 — fixed; BLD-8 and ENV-7 open | — | MEDIUM |
-| 7 | Test harness and CI | TST-1 … TST-8 — all fixed (PRJ-7 with TST-1); TST-12 found and fixed; TST-9, TST-10 and TST-13 fixed in a follow-up, TST-11 in another, TST-14 and TST-15 in a third | GAP-5 (same fix as TST-2), GAP-8 (with TST-5), GAP-9 (with TST-3) — all done | MEDIUM |
+| 7 | Test harness and CI | TST-1 … TST-8 — all fixed (PRJ-7 with TST-1); TST-12 found and fixed; TST-9, TST-10 and TST-13 fixed in a follow-up, TST-11 in another, TST-14 and TST-15 in a third, TST-16 and TST-17 in a fourth; TST-18 … TST-21 open | GAP-5 (same fix as TST-2), GAP-8 (with TST-5), GAP-9 (with TST-3) — all done | MEDIUM |
 | 8 | Docs (docs-only PR) | DOC-2, DOC-4 … DOC-13 — all fixed, with the same drift its reviews found elsewhere (a provenance check that could not fail among it) | GAP-14 (overlaps DOC-6) — done | MEDIUM |
 | 9 | Launcher follow-ups (from the batch 1 hotfix review) | GIT-2 … GIT-5, LNCH-3 (the rest), LNCH-4 — all fixed; the HIGHs its reviews found fixed with them; leftovers open in section 10 | — | MEDIUM |
 
@@ -1184,25 +1184,55 @@ Batch 9 (`9bd3729` … `6a0b37f`) went through 19 review rounds. Every HIGH and 
 ## 11. Found while fixing TST-14, TST-15 and SVC-4
 
 ### SVC-5: a MariaDB package without `/etc/mysql/my.cnf` would start latin1 with no message
-- **Status: OPEN** (review of the SVC-4 fix, LOW-1)
+- **Status: FIXED** (2026-10-27). The Dockerfile mariadb layer's closing checks now include `test -f /etc/mysql/my.cnf`, which follows the alternatives link, so a missing or dangling file fails the build. `tests/test-mariadb.sh` Part E reads the path from `services.d/mariadb.sh`'s `MARIADB_DEFAULTS=` default and requires the layer to test that same path; red with the check removed. Mutation `814-mariadb-no-client-compat` had that line as context and was updated; it applies.
 - Severity: LOW. Confidence: PLAUSIBLE (every series measured ships the file: Ubuntu's 10.11, and 10.6, 10.11, 11.4 and 11.8 from MariaDB's repository, each a link to `mariadb.cnf`)
 - Location: `services.d/mariadb.sh: svc_start()`, the `--defaults-file="$MARIADB_DEFAULTS" --print-defaults` probe
 - What's wrong: a missing file makes the probe exit 1 with its error on `/dev/null`; `cs` is empty and the server starts with no character-set options — latin1 before 11.8. Before SVC-4 a missing file had the same effect.
 - Fix direction: add `test -e /etc/mysql/my.cnf` to the Dockerfile mariadb layer's closing checks, so the build fails instead (that line is mutation `814-mariadb-no-client-compat`'s context, so regenerate it too).
 
 ### TST-16: an `exempt` row on `workflow_run` or an unfiltered `push` still verifies
-- **Status: OPEN** (review of the TST-14/15 fix, LOW-5)
+- **Status: FIXED** (2026-10-27). The exempt check is now `tests/lib-layer-checks.sh: wf_reaches_prs()`, an ALLOW-list: rc 1 only when every trigger `_wf_triggers()` lists (the `wf_triggers_on` reader in a list mode) is `schedule`, `workflow_dispatch`, `repository_dispatch` or `release`, or a `push` kept off PR branches by `_wf_push_filters()` — tags filters with no branch filter, or a `branches:` list of plain names. A glob in a branch pattern, `branches-ignore`, a paths filter alone or no filter counts. The first version listed PR triggers instead, and its review measured `pull_request_review`, `issue_comment`, `create`, `check_suite` and `status` passing as exempt: the TST-6 → TST-15 → TST-16 bypass moving one sibling further, which an allow-list ends. Its re-review found `workflow_call` on that list letting a reusable workflow pass as exempt though it runs whenever a `pull_request` caller does, while `wf_it_selections()` skipped the caller's job-level `uses:` in silence, so the callee's cases dropped out of the PR layer unseen. `workflow_call` is off the list, and `wf_it_selections()` now refuses a job-level `uses:` unless the callee is a local workflow that names `tests/integration/run.sh` nowhere (`hermetic-checks.yml` is), with fixtures for a callee that runs cases, a remote one, a missing one, and a caller gated off the event. The PR layer's integration cases are derived from `pull_request`, `pull_request_target` and `merge_group` together. Demonstrated by hand-adding `workflow_run`, then `push: branches: ["**"]`, to `release.yml` (the containment test fails naming each) and by turning `integration.yml`'s `pull_request` into `merge_group` (its cases still count in the PR layer).
 - Severity: LOW. Confidence: PLAUSIBLE (from code)
 - Location: `tests/test-layer-containment.sh: for trig in pull_request pull_request_target merge_group; do`
 - What's wrong: `workflow_run` (fired by a PR workflow finishing) and an `on: push` with no branch filter also run on every PR branch push from the same repository, and neither is checked. Separately, the PR layer derives cases for `pull_request` only, so a `cases` workflow triggered only by `merge_group` or `pull_request_target` adds nothing to the PR set. That is harmless while "every case runs nightly" keeps PR ⊆ nightly.
 - Fix direction: refuse `workflow_run` in an exempt row, and `push` unless its `branches:` filter excludes PR branches. Derive the PR layer from all three PR triggers.
 
 ### TST-17: nothing automated pins the exempt-row trigger loop
-- **Status: OPEN** (review of the TST-14/15 fix, LOW-4)
+- **Status: FIXED** (2026-10-27, with TST-16). The predicate moved into `wf_reaches_prs()` and is driven by fixture workflows in `tests/test-layer-checks-parser.sh` — the allow-list, each sibling trigger, every push filter shape, and the shapes it refuses. Shortening the trigger handling, letting every push through, ignoring branch globs or ignoring tags-only filters each turned them red. The falsify target scores 260 killed of 266; the first version left 12 unledgered survivors in the new awk, which the review found, and the killing fixtures were added for all but one, ledgered EQUIVALENT (entry 22). What is still pinned only by the repo's own workflows is the test's mapping of the verdict to pass/fail (TST-19).
 - Severity: LOW. Confidence: CONFIRMED (TST-15's demonstration was a hand edit of `release.yml`)
 - Location: `tests/test-layer-containment.sh`, the `exempt)` branch
 - What's wrong: the loop runs only over the repo's own workflows, none of which uses the sibling triggers, so cutting it back to `pull_request` alone keeps the suite green. The parser test's vectors cover `wf_triggers_on()`, not this loop.
 - Fix direction: move the exempt check into a function in `tests/lib-layer-checks.sh` and drive it from fixture workflows in `tests/test-layer-checks-parser.sh`.
+
+## 12. Found while fixing SVC-5, TST-16 and TST-17
+
+### TST-18: a push on plain branch names is taken as never reaching a PR
+- **Status: OPEN** (review of the TST-16 fix, LOW-1)
+- Severity: LOW. Confidence: CONFIRMED (by design, written in `wf_reaches_prs()`'s header)
+- Location: `tests/lib-layer-checks.sh: wf_reaches_prs()`, `(( wide )) || return 1`
+- What's wrong: `on: push: branches: [dev]` is rc 1, but a PR opened from `dev` runs that workflow on every push to it. No workflow here has that shape: the exempt ones are tag-only or have no push.
+- Fix direction: count only the repository's default branch as off PRs, or refuse any branch filter in an exempt row.
+
+### TST-19: the containment test's verdict mapping is pinned only by the repo's own workflows
+- **Status: OPEN** (review of the TST-16 fix, LOW-3)
+- Severity: LOW. Confidence: CONFIRMED (both exempt workflows give rc 1, so the `0)` and `*)` arms never run in the suite)
+- Location: `tests/test-layer-containment.sh`, the `exempt)` branch's `case "$ex_rc"`
+- What's wrong: turning the `0)` arm into a pass keeps the suite green. The hand edits of `release.yml` showed it working once.
+- Fix direction: move the row verdict (classified/cases/exempt → pass or the failure text) into a lib function and drive it with fixture rows.
+
+### TST-20: the PR layer's cases and the exempt check define "PR-triggered" differently
+- **Status: OPEN** (review of the TST-16 fix, LOW-4)
+- Severity: LOW. Confidence: CONFIRMED (from code); harmless while "every case runs nightly" holds
+- Location: `tests/test-layer-containment.sh: layer_events`
+- What's wrong: cases are derived for `pull_request`, `pull_request_target` and `merge_group`, while `wf_reaches_prs()` also counts `workflow_run`, an unfiltered `push` and any unknown trigger. A `cases` workflow on `push` alone adds nothing to the PR set.
+- Fix direction: derive the PR set from the same predicate, once `wf_it_selections()` can render `push`.
+
+### TST-21: smaller gaps in the push-filter reader
+- **Status: OPEN** (review of the TST-16 fix, LOW-5; and `tests/layer-checks.conf`)
+- Severity: LOW. Confidence: CONFIRMED
+- Location: `tests/lib-layer-checks.sh: _wf_push_filters()`; `tests/layer-checks.conf`, the `workflow` row-type comment
+- What's wrong: a quoted comma inside a flow list is split (`branches: ['a,b']` reads as `'a` and `b'`); the answer stays conservative unless the halves hide a glob. And `tests/layer-checks.conf` still says the exempt claim is checked by `wf_triggers_on`; it is kept byte-identical with mgd-ai-containers' copy, so it changes there and here together.
+- Fix direction: split flow lists outside quotes; update the comment in both repositories at once.
 
 ---
 

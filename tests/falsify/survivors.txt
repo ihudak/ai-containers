@@ -788,3 +788,18 @@ ai-containers-report.sh:logic-flip:d964be591e6317022ad2b9c48f545682f57006ef
   rule came with batch 4's change to this function (0940160, PRJ-6). It is kept
   because it says what the reader skips, and deleting it would change no
   behaviour either.
+
+# ── 22 ────────────────────────────────────────────────────────────────────────
+GROUP: _wf_push_filters' first-line exit is decided again by wf_reaches_prs
+tests/lib-layer-checks.sh:logic-flip:45bdb0871b8873acdba488019e94fd8713c001c0
+    if (body ~ /^-([[:space:]]|$)/ || substr(body, 1, 1) == "[" || body !~ /:([[:space:]]|$)/) exit
+  damaged:  either `||` turned into `&&`, so a first line that is a list item
+  or a flow list and holds a colon no longer exits.
+  EQUIVALENT: only such a line tells the two programs apart, and no such
+  workflow reaches this reader. wf_reaches_prs() calls _wf_push_filters()
+  only after _wf_triggers() has read the same block, and only when every
+  trigger it named is on the allow-list. A list item or flow list holding a
+  colon yields a trigger name holding a colon (`- push: x` is `push: x`).
+  No name on the allow-list has a colon, so wf_reaches_prs returns rc 0 for it
+  before this reader runs. Without a colon, every form exits either way, through
+  the third test. Added with TST-16 (2026-10-27).

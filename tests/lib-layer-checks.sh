@@ -6,7 +6,8 @@
 #
 # CONTRACT: the sourcing file sets LAYER_CHECKS_CONF to the registry path before
 # sourcing. Provides lc_rows(), wf_jobs(), wf_steps(), wf_has_step(),
-# wf_job_key(), wf_triggers_on(), wf_if_true(), wf_it_selections().
+# wf_job_key(), wf_triggers_on(), wf_reaches_prs(), wf_if_true(),
+# wf_it_selections().
 #
 # lc_rows is generic over the registry's row TYPE — it already serves `check`
 # and `setup` rows; the `workflow` row type (added to close the containment
@@ -16,8 +17,9 @@
 #
 # EVERY function here fails loudly and non-zero on an empty result, AND on an
 # input file that is not there — except where empty is an ordinary answer: the
-# predicates (wf_has_step, wf_triggers_on, wf_if_true) and wf_it_selections,
-# for which a workflow that runs no integration case is normal. Their callers
+# predicates (wf_has_step, wf_triggers_on, wf_reaches_prs, wf_if_true) and
+# wf_it_selections, for which a workflow that runs no integration case is
+# normal. Their callers
 # hold the vacuity check (tests/test-layer-containment.sh fails a layer that
 # derived to nothing). That is the whole point: a parser returning
 # nothing quietly would make its consumer iterate zero rows and report success
@@ -208,9 +210,20 @@ wf_job_key() {  # $1=yaml  $2=job id  $3=job-level key (e.g. uses, if) → value
 # at the next column-0 key.
 wf_triggers_on() {  # $1=yaml  $2=trigger name (e.g. pull_request) → rc 0 present, 1 absent, 2 cannot tell
   local f="${1:?wf_triggers_on: workflow path required}"
-  local trig="${2:?wf_triggers_on: trigger name required}" rc
+  local trig="${2:?wf_triggers_on: trigger name required}"
+  _wf_on_awk "$f" "$trig" 0
+}
+
+# _wf_triggers lists every trigger the on: block names, one per line, read by
+# the same reader as wf_triggers_on. rc 2 when it cannot read the block.
+_wf_triggers() {  # $1=yaml → trigger names; rc 0 read, 2 cannot tell
+  _wf_on_awk "$1" "" 1
+}
+
+_wf_on_awk() {  # $1=yaml  $2=trigger name  $3=1 to list every trigger instead
+  local f="$1" trig="$2" list="$3" rc
   [[ -f "$f" ]] || { echo "lib-layer-checks: no such workflow: $f" >&2; return 2; }
-  awk -v trig="$trig" -v sq="'" '
+  awk -v trig="$trig" -v list="$list" -v sq="'" '
     function trim(s) { sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s); return s }
     function unq(s) {
       s = trim(s)
@@ -220,6 +233,11 @@ wf_triggers_on() {  # $1=yaml  $2=trigger name (e.g. pull_request) → rc 0 pres
       return s
     }
     function nocomment(s) { sub(/^#.*$/, "", s); sub(/[[:space:]]+#.*$/, "", s); return s }
+    function hit(s) {
+      s = unq(s)
+      if (list) { if (s != "") print s; found = 1 }
+      else if (s == trig) found = 1
+    }
     # A whole value on one line: a flow list, a flow map (unreadable), or a
     # scalar. Used for the rest of the `on:` line and for a value that starts
     # on the line after it.
@@ -227,11 +245,11 @@ wf_triggers_on() {  # $1=yaml  $2=trigger name (e.g. pull_request) → rc 0 pres
       if (substr(rest, 1, 1) == "[") {
         if (substr(rest, length(rest), 1) != "]") { bad = 1; return }
         n = split(substr(rest, 2, length(rest) - 2), a, ",")
-        for (i = 1; i <= n; i++) if (unq(a[i]) == trig) found = 1
+        for (i = 1; i <= n; i++) hit(a[i])
         return
       }
       if (substr(rest, 1, 1) == "{") { bad = 1; return }
-      if (unq(rest) == trig) found = 1
+      hit(rest)
     }
     BEGIN { state = 0; seen = 0; first = 0; found = 0; bad = 0 }
     state == 0 && ($0 ~ /^("on"|on):/ || index($0, sq "on" sq ":") == 1) {
@@ -260,22 +278,161 @@ wf_triggers_on() {  # $1=yaml  $2=trigger name (e.g. pull_request) → rc 0 pres
       if (isseq) {
         if (body !~ /^-([[:space:]]|$)/) { bad = 1; exit }
         v = body; sub(/^-[[:space:]]*/, "", v)
-        if (unq(v) == trig) found = 1
+        hit(v)
       } else {
         if (body ~ /^-([[:space:]]|$)/) { bad = 1; exit }
         k = body; sub(/[[:space:]]*:([[:space:]].*)?$/, "", k)
-        if (unq(k) == trig) found = 1
+        hit(k)
       }
       next
     }
     END {
       if (bad || !seen || (state == 1 && !first)) exit 2
-      exit !found
+      exit (list ? 0 : !found)
     }
   ' "$f"
   rc=$?
   (( rc == 2 )) && echo "lib-layer-checks: cannot read the on: block of $f (no on: key, nothing under it, a flow map, or a flow list spanning lines)" >&2
   return "$rc"
+}
+
+# _wf_push_filters prints the filters of a workflow's push trigger, one
+# <key>|<entry> line per entry (branches, branches-ignore, tags, paths, …), and
+# nothing for a push with none. The caller has already found push in the on:
+# block with wf_triggers_on. rc 2 for a shape it cannot read: a flow map, a
+# flow list spanning lines, a sequence where a key belongs, a key deeper than
+# the filter level.
+_wf_push_filters() {  # $1=yaml → <key>|<entry> per entry; rc 2 cannot tell
+  awk -v sq="'" '
+    function trim(s) { sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s); return s }
+    function unq(s) {
+      s = trim(s)
+      if (length(s) >= 2 && ((substr(s, 1, 1) == "\"" && substr(s, length(s), 1) == "\"") ||
+                             (substr(s, 1, 1) == sq && substr(s, length(s), 1) == sq)))
+        s = substr(s, 2, length(s) - 2)
+      return s
+    }
+    function nocomment(s) { sub(/^#.*$/, "", s); sub(/[[:space:]]+#.*$/, "", s); return s }
+    # The value on the same line as a filter key: a flow list or a scalar.
+    function entries(k, v,   n, a, i) {
+      v = trim(v)
+      if (v == "") { pending = k; return }
+      if (substr(v, 1, 1) == "{") { bad = 1; return }
+      if (substr(v, 1, 1) == "[") {
+        if (substr(v, length(v), 1) != "]") { bad = 1; return }
+        n = split(substr(v, 2, length(v) - 2), a, ",")
+        for (i = 1; i <= n; i++) if (trim(a[i]) != "") print k "|" unq(a[i])
+        return
+      }
+      print k "|" unq(v)
+    }
+    BEGIN { state = 0; first = 0; inpush = 0; cind = -1; cur = ""; pending = ""; bad = 0 }
+    state == 0 && ($0 ~ /^("on"|on):/ || index($0, sq "on" sq ":") == 1) {
+      rest = $0; sub(/^[^:]*:/, "", rest); rest = trim(nocomment(rest))
+      if (rest == "") { state = 1; next }
+      # A scalar or a flow list names push with no filters.
+      if (substr(rest, 1, 1) == "{") bad = 1
+      exit
+    }
+    state == 1 {
+      if ($0 ~ /^[[:space:]]*(#.*)?$/) next
+      if ($0 ~ /^[^[:space:]-]/) exit
+      line = $0
+      match(line, /^[[:space:]]*/); ind = RLENGTH
+      body = trim(nocomment(substr(line, ind + 1)))
+      if (!first) {
+        first = 1; base = ind
+        # A sequence, a flow collection or a scalar names push with no filters.
+        if (body ~ /^-([[:space:]]|$)/ || substr(body, 1, 1) == "[" || body !~ /:([[:space:]]|$)/) exit
+        if (substr(body, 1, 1) == "{") { bad = 1; exit }
+      }
+      if (ind < base) exit
+      if (ind == base) {
+        if (inpush) exit
+        k = body; sub(/[[:space:]]*:([[:space:]].*)?$/, "", k)
+        if (unq(k) != "push") next
+        v = body; sub(/^[^:]*:/, "", v); v = trim(v)
+        if (v == "" || v == "null" || v == "~") { inpush = 1; next }
+        bad = 1; exit
+      }
+      if (!inpush) next
+      if (cind < 0) cind = ind
+      isitem = (body ~ /^-([[:space:]]|$)/)
+      if (isitem && ind >= cind && pending != "") { cur = pending; pending = "" }
+      if (isitem && ind >= cind && cur != "") {
+        v = body; sub(/^-[[:space:]]*/, "", v)
+        if (substr(v, 1, 1) == "[" || substr(v, 1, 1) == "{") { bad = 1; exit }
+        print cur "|" unq(v)
+        next
+      }
+      if (ind != cind || isitem) { bad = 1; exit }
+      if (pending != "") print pending "|"
+      cur = ""; pending = ""
+      k = body; sub(/[[:space:]]*:([[:space:]].*)?$/, "", k)
+      v = body; sub(/^[^:]*:/, "", v)
+      entries(unq(k), v)
+      if (bad) exit
+      next
+    }
+    END {
+      if (pending != "") print pending "|"
+      if (bad) exit 2
+    }
+  ' "$1"
+}
+
+# wf_reaches_prs decides a `coverage=exempt` row: whether the workflow runs on
+# what a pull request does. A PREDICATE with a third answer, like
+# wf_triggers_on: rc 0 it does (stdout names the trigger and why), rc 1 it does
+# not, rc 2 cannot tell (stderr says what). It is an ALLOW-list: rc 1 only when
+# every trigger is one that never fires on PR activity — schedule,
+# workflow_dispatch, repository_dispatch, release — or a push
+# kept off PR branches. Any other trigger counts, named or not: checking a list
+# of PR triggers instead moved the bypass to each sibling in turn —
+# pull_request_target and merge_group (TST-15), workflow_run and an unfiltered
+# push (TST-16), then pull_request_review, issue_comment, create, check_suite.
+# workflow_call is not on it: a reusable workflow runs whenever its caller
+# does, a pull_request caller included.
+# A push is kept off PR branches when it has tags filters and no branch filter
+# (a tag push only), or a branches: list of plain names. A branch pattern
+# holding a glob character, a branches-ignore, a paths filter alone or no
+# filter at all counts. A plain name is taken at its word: a PR opened from a
+# branch it names would run the workflow (bugs review TST-18).
+wf_reaches_prs() {  # $1=yaml → rc 0 reaches PRs (stdout: why), 1 does not, 2 cannot tell
+  local f="${1:?wf_reaches_prs: workflow path required}" trigs trig push=0 filters key entry
+  local branches=0 wide=0 ignore=0 tags=0 pat=""
+  trigs="$(_wf_triggers "$f")" || return 2
+  [[ -n "$trigs" ]] || { echo "lib-layer-checks: the on: block of $f names no trigger" >&2; return 2; }
+  while IFS= read -r trig; do
+    case "$trig" in
+      # Per GitHub's event docs, none of these fires on PR activity.
+      schedule|workflow_dispatch|repository_dispatch|release) ;;
+      push) push=1 ;;
+      *) echo "$trig: not a trigger known to stay off pull requests"; return 0 ;;
+    esac
+  done <<<"$trigs"
+  (( push )) || return 1
+  if ! filters="$(_wf_push_filters "$f")"; then
+    echo "lib-layer-checks: cannot read the push filters of $f (a flow map, a flow list spanning lines, or a shape other than <filter>: <list>)" >&2
+    return 2
+  fi
+  while IFS='|' read -r key entry; do
+    case "$key" in
+      branches)
+        branches=1
+        if [[ -z "$entry" || "$entry" == *['*?[!+']* ]]; then wide=1; pat="${pat:-${entry:-<empty>}}"; fi ;;
+      branches-ignore) ignore=1 ;;
+      tags|tags-ignore) tags=1 ;;
+    esac
+  done <<<"$filters"
+  if (( ignore )); then echo "push (branches-ignore: every other branch, PR branches included)"; return 0; fi
+  if (( branches )); then
+    (( wide )) || return 1
+    echo "push (branches: '$pat' can match a PR branch)"; return 0
+  fi
+  (( tags )) && return 1
+  echo "push (no branch filter: every branch push, PR branches included)"
+  return 0
 }
 
 # wf_if_true evaluates a job- or step-level `if:` for one event, on a run where
@@ -469,7 +626,8 @@ _wf_job_has_key() {  # $1=yaml  $2=job id  $3=key → rc 0 when present
 #
 # A workflow the event does not trigger contributes nothing (rc 0, no output).
 # A job with a job-level `uses:` is a reusable-workflow call and is not
-# followed. Catalogue calls (--list, --list-caps) select nothing and are
+# followed: it is rc 1 unless the callee is a local workflow that names
+# tests/integration/run.sh nowhere, which is what hermetic-checks.yml is. Catalogue calls (--list, --list-caps) select nothing and are
 # skipped. Everything this cannot decide is rc 1 with the job and step named,
 # never a quiet omission: an on: it cannot read, an if: wf_if_true cannot
 # evaluate, a job with needs:, a line naming run.sh in any form other than a
@@ -488,7 +646,7 @@ _wf_job_has_key() {  # $1=yaml  $2=job id  $3=key → rc 0 when present
 wf_it_selections() {  # $1=yaml  $2=event → <job>|<step>|<args> per selection; rc 1 when it cannot decide one
   local f="${1:?wf_it_selections: workflow path required}"
   local ev="${2:?wf_it_selections: event required}"
-  local trc jrc src job step cond args jif bad=0
+  local trc jrc src job step cond args jif uses callee bad=0
   local -A jif_rc=()
   case "$ev" in
     workflow_dispatch|workflow_call)
@@ -532,5 +690,19 @@ wf_it_selections() {  # $1=yaml  $2=event → <job>|<step>|<args> per selection;
     case "${jrc[*]}" in --list|--list-caps) continue ;; esac
     printf '%s|%s|%s\n' "$job" "$step" "${jrc[*]}"
   done < <(_wf_it_awk "$f")
+  while IFS= read -r job; do
+    [[ -n "$job" ]] || continue
+    uses="$(wf_job_key "$f" "$job" uses 2>/dev/null)" || continue
+    [[ -n "$uses" ]] || continue
+    jif="$(wf_job_key "$f" "$job" if 2>/dev/null)" || jif=""
+    wf_if_true "$jif" "$ev"; src=$?
+    (( src == 1 )) && continue
+    callee=""
+    [[ "$uses" == ./.github/workflows/* ]] && callee="$(dirname "$f")/${uses#./.github/workflows/}"
+    if [[ -z "$callee" || ! -f "$callee" ]] || [[ -n "$(_wf_it_awk "$callee")" ]]; then
+      echo "lib-layer-checks: job '$job' calls $uses, which this reader does not follow, and it is not a local workflow that runs no tests/integration/run.sh ($f)" >&2
+      bad=1
+    fi
+  done < <(wf_jobs "$f" 2>/dev/null)
   (( bad == 0 ))
 }

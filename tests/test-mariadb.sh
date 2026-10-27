@@ -341,6 +341,10 @@ grep -qF -- '--skip-networking' <<<"$layer" && pass "E the bootstrap server list
 grep -qF 'mariadb-tzinfo-to-sql /usr/share/zoneinfo' <<<"$layer" && pass "E the time zone tables are loaded" || fail "E zones"
 grep -qF '[ ! -e "$bs/pid" ]' <<<"$layer" && pass "E the layer waits for the bootstrap server to exit before it is snapshot" || fail "E waits for exit"
 grep -qF 'test -e /usr/bin/mysql' <<<"$layer" && pass "E the build fails unless \`mysql\` runs MariaDB's client" || fail "E mysql link check"
+defaults="$(sed -n 's/^MARIADB_DEFAULTS="${AI_SERVICES_MARIADB_DEFAULTS_FILE:-\(.*\)}"$/\1/p' "$REPO_DIR/services.d/mariadb.sh")"
+[[ -n "$defaults" ]] && grep -qF "test -f $defaults &&" <<<"$layer" \
+  && pass "E the build fails unless the option file the adapter reads its character set from ($defaults) exists" \
+  || fail "E option file check (adapter default: '${defaults}')"
 
 # ── Part G: shipping to projects ───────────────────────────────────────────────
 payload="$(bash -c 'source "$1/sandbox-common.sh" >/dev/null 2>&1; ai_containers_payload_files "$1"' _ "$REPO_DIR")"

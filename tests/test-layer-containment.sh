@@ -120,10 +120,11 @@ source "$LIB_LAYER_CHECKS"
 # `workflow` row in tests/layer-checks.conf for every one of them; and drive
 # the classification loop below from the rows marked `coverage=classified`
 # instead of the two-name literal. A `coverage=exempt` row's claim ("this
-# workflow never runs on pull_request — nor pull_request_target or
-# merge_group — so the containment invariant does not apply") is not merely
+# workflow never runs on what a pull request does — pull_request,
+# pull_request_target, merge_group, workflow_run or a push that reaches PR
+# branches — so the containment invariant does not apply") is not merely
 # trusted — it is VERIFIED against the file's own `on:`
-# block via wf_triggers_on(), the same effect-over-text-presence standard this
+# block via wf_reaches_prs(), the same effect-over-text-presence standard this
 # file applies everywhere else (its stub-repo section above, its job-level-key
 # reads instead of whole-file greps).
 wf_dir="$REPO_DIR/.github/workflows"
@@ -172,20 +173,16 @@ while IFS='|' read -r wfile coverage why; do
     exempt)
       # Three outcomes, not two: rc 2 is "the on: block could not be read",
       # and an exempt claim nobody could check must not pass as verified.
-      # pull_request_target and merge_group run on every PR or merge just as
-      # pull_request does, so a workflow on either is part of the gate too;
-      # checking pull_request alone moved the TST-6 bypass to a sibling
-      # trigger (TST-15).
-      ex_rc=1
-      for trig in pull_request pull_request_target merge_group; do
-        wf_triggers_on "$wf_target" "$trig"; trig_rc=$?
-        case "$trig_rc" in
-          0) fail "workflow row '$wfile' claims coverage=exempt but $wfile DOES trigger on $trig — it is part of the PR gate and needs coverage=classified or coverage=cases, not exempt"; ex_rc=0; break ;;
-          1) ;;
-          *) fail "workflow row '$wfile' claims coverage=exempt, but $wfile's on: block could not be read, so the claim is unverified (see stderr above)"; ex_rc=2; break ;;
-        esac
-      done
-      (( ex_rc == 1 )) && pass "workflow row '$wfile' claims coverage=exempt and $wfile is verified NOT triggered by pull_request, pull_request_target or merge_group"
+      # wf_reaches_prs() counts every trigger a pull request sets off, not
+      # pull_request alone: checking that one moved the TST-6 bypass to a
+      # sibling trigger (TST-15), and workflow_run or an unfiltered push did
+      # the same (TST-16).
+      why_pr="$(wf_reaches_prs "$wf_target")"; ex_rc=$?
+      case "$ex_rc" in
+        0) fail "workflow row '$wfile' claims coverage=exempt but $wfile runs on pull requests ($why_pr) — it is part of the PR gate and needs coverage=classified or coverage=cases, not exempt" ;;
+        1) pass "workflow row '$wfile' claims coverage=exempt and $wfile is verified to run on nothing a pull request sets off" ;;
+        *) fail "workflow row '$wfile' claims coverage=exempt, but $wfile's triggers could not be read, so the claim is unverified (see stderr above)" ;;
+      esac
       ;;
     *)
       fail "workflow row '$wfile' (tests/layer-checks.conf) has unrecognised coverage '$coverage' (want classified, cases, or exempt)"
@@ -426,11 +423,14 @@ fi
 # 785/790/800/810 out of every CI layer, also left it at 0 failures; so would
 # any edit to integration.yml's arguments.
 #
-# Now each layer is what its workflows run for its event: every
-# tests/integration/run.sh invocation in every workflow file the event
+# Now each layer is what its workflows run for its events: every
+# tests/integration/run.sh invocation in every workflow file an event
 # triggers, rendered as that event sees it
 # (tests/lib-layer-checks.sh: `wf_it_selections()`), each handed to
-# `run.sh --dry-run`, the union taken.
+# `run.sh --dry-run`, the union taken. The PR layer's events are the three a
+# pull request sets off — pull_request, pull_request_target, merge_group — so a
+# workflow on a sibling trigger adds its cases to the PR set rather than
+# nothing (TST-16).
 # Nothing here names a workflow, a job or an argument. And nightly must hold
 # the WHOLE corpus, not merely the PR gate: nightly.yml's header promises that
 # "a case excluded on cost is still a case that RUNS", which is the property a
@@ -446,32 +446,37 @@ sel_one() {  # <run.sh args…> → the cases that invocation selects, one per l
   grep -E '^[0-9]{3}-' <<<"$out" | LC_ALL=C sort
 }
 
-declare -A layer_cases=()
-for ev in pull_request schedule; do
+declare -A layer_cases=() layer_events=(
+  [pull_request]="pull_request pull_request_target merge_group"
+  [schedule]="schedule"
+)
+for layer in pull_request schedule; do
   n_sel=0; union=""
-  for wfile in "${workflow_files[@]}"; do
-    # A refusal fails this test, but what WAS read still counts: dropping the
-    # whole file would bury the one step it could not read under a cascade of
-    # containment failures about every case the file's other jobs run.
-    if ! sels="$(wf_it_selections "$wf_dir/$wfile" "$ev")"; then
-      fail "$ev: could not derive everything $wfile runs (see stderr above) — this layer is not fully known"
-    fi
-    while IFS='|' read -r job step args; do
-      [[ -n "$job" ]] || continue
-      n_sel=$((n_sel+1))
-      read -ra argv <<<"$args"
-      if cases="$(sel_one "${argv[@]}")" && [[ -n "$cases" ]]; then
-        pass "$ev: $wfile $job/$step runs run.sh $args ($(grep -c . <<<"$cases") case(s))"
-        union+="$cases"$'\n'
-      else
-        fail "$ev: $wfile $job/$step runs run.sh $args, which selects nothing (run.sh --dry-run refused it or printed no case)"
+  for ev in ${layer_events[$layer]}; do
+    for wfile in "${workflow_files[@]}"; do
+      # A refusal fails this test, but what WAS read still counts: dropping the
+      # whole file would bury the one step it could not read under a cascade of
+      # containment failures about every case the file's other jobs run.
+      if ! sels="$(wf_it_selections "$wf_dir/$wfile" "$ev")"; then
+        fail "$ev: could not derive everything $wfile runs (see stderr above) — this layer is not fully known"
       fi
-    done <<<"$sels"
+      while IFS='|' read -r job step args; do
+        [[ -n "$job" ]] || continue
+        n_sel=$((n_sel+1))
+        read -ra argv <<<"$args"
+        if cases="$(sel_one "${argv[@]}")" && [[ -n "$cases" ]]; then
+          pass "$ev: $wfile $job/$step runs run.sh $args ($(grep -c . <<<"$cases") case(s))"
+          union+="$cases"$'\n'
+        else
+          fail "$ev: $wfile $job/$step runs run.sh $args, which selects nothing (run.sh --dry-run refused it or printed no case)"
+        fi
+      done <<<"$sels"
+    done
   done
   if (( n_sel == 0 )); then
-    fail "no workflow runs tests/integration/run.sh on $ev — that layer derived to nothing, so nothing below can hold"
+    fail "no workflow runs tests/integration/run.sh on ${layer_events[$layer]} — that layer derived to nothing, so nothing below can hold"
   fi
-  layer_cases[$ev]="$(grep . <<<"$union" | LC_ALL=C sort -u)"
+  layer_cases[$layer]="$(grep . <<<"$union" | LC_ALL=C sort -u)"
 done
 pr_set="${layer_cases[pull_request]}"
 nightly_set="${layer_cases[schedule]}"

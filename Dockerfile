@@ -790,6 +790,8 @@ RUN if [ "$INSTALL_MYSQL" = "1" ]; then \
 # default, so the copy is small; the adapter starts the server with the same
 # size. mariadbd has no --daemonize, so the bootstrap server is started in the
 # background and waited for — by answer, then by exit — before the snapshot.
+# The adapter reads the package's character set from /etc/mysql/my.cnf, so the
+# build fails without it: a server started with none serves latin1 before 11.8.
 ARG MARIADB_SERIES=
 RUN if [ -n "$MARIADB_SERIES" ]; then \
       apt-get update && \
@@ -824,7 +826,7 @@ RUN if [ -n "$MARIADB_SERIES" ]; then \
       [ ! -e "$bs/pid" ] && \
       chmod -R a+rX "$tpl" && rm -rf "$bs" && \
       test -x /usr/sbin/mariadbd && test -x /usr/bin/mariadb && test -e /usr/bin/mysql && \
-      test -f "$tpl/mysql/global_priv.frm"; \
+      test -f /etc/mysql/my.cnf && test -f "$tpl/mysql/global_priv.frm"; \
     fi
 
 # ── Optional: MongoDB server (in-container, for tests) ─────────────────────────
