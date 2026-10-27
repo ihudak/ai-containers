@@ -644,28 +644,52 @@ tests/portability.sh:cond-negate:4fcb6275d979c49c1b9fe171b6e97b319b8e6c10
 # The number is left occupied, for the reason entry 3 records.
 
 # ── 16 ────────────────────────────────────────────────────────────────────────
-GROUP: repo-git-reset.sh runs without errexit, so three exit statuses are read by nothing
-repo-git-reset.sh:logic-flip:bfefa9b0411d327b435d5cd8264b421dfcb5d714
+GROUP: repo-git-reset.sh runs without errexit, so these exit statuses are read by nothing
 repo-git-reset.sh:logic-flip:da75d440c51f5672ad89c0e7e363aefa7f22b546
+repo-git-reset.sh:logic-flip:a5150090977d3eae14afcf82ea20cf80bb674e45
+repo-git-reset.sh:logic-flip:1f3c44cda354438a983e74871d1fa80ce30170d0
 repo-git-reset.sh:return-flip:cebd950b015708fbfa3e5da46dd8d1c4827578b9
-  git -C "$dir" remote set-head origin -a >/dev/null 2>&1 || true
+repo-git-reset.sh:return-flip:b0efa2e821599ba0486d07566c82033a71591e15
+repo-git-reset.sh:return-flip:c58fded937f10de7cac0d87b49895241c22ac3a9
+repo-git-reset.sh:return-flip:06d3d9b2060dd51343d5f19f0e531f15c507e3d1
   git config --global --add safe.directory "$1" >/dev/null 2>&1 || true
-  [[ "$(id -u)" == "0" ]] || return 0
-  damaged:  the first two become `&& true`; the third returns 1 instead of 0.
+  git … update-index -q --ignore-submodules --refresh >/dev/null 2>&1 || true
+  git -C "$F" branch --quiet --set-upstream-to="origin/$b" "$b" >/dev/null 2>&1 || true
+  [[ "$(id -u)" == "0" ]] || return 0              (mark_safe_directory)
+  [[ -f "$gd/packed-refs" ]] || return 0           (volume_refs and other_ref)
+  [[ -f "$1/.git/HEAD" ]] || return 0              (volume_head)
+  return 0                                         (the end of volume_head)
+  damaged:  the first three become `&& true`; the rest return 1 instead of 0.
   EQUIVALENT: no test could kill these, because nothing anywhere reads the
   status they change. This file sets `set -uo pipefail` and deliberately NOT
   `-e` — its error path is the explicit `die`, so a failing statement does not
   end the script and `|| true` versus `&& true` differ only in a value that is
-  then discarded. `mark_safe_directory` is likewise invoked as a bare statement,
-  so whether its early return says 0 or 1 is unobservable.
+  then discarded. The first is mark_safe_directory's last statement, so it is
+  that function's status, and `mark_safe_directory` is invoked as a bare
+  statement; the other two are not last in theirs. volume_refs and
+  volume_head are read only through `< <(…)` or `$(…)`, whose status is
+  dropped: `local x; x="$(volume_head …)"` keeps an assignment's status, and
+  nothing tests it. other_ref is read the same way. Their output is the
+  same either way.
   This is a claim about the two ENDS of the chain, not just the middle: the
   status is not read at the call site AND it cannot reach `set -e`, so there is
   no observer left. Contrast entry 15, where the same-looking `|| true` in
   extract-discovery.sh WAS killable — that script runs under `set -e`, and the
   fix there was to give the status a reader rather than to file it here.
-  The three are one entry because they are one fact. If `set -e` is ever added
-  to this file, that fact stops being true and all three should be re-measured:
-  they would become real, killable assertions about failure handling.
+  They are one entry because they are one fact. If `set -e` is ever added
+  to this file, that fact stops being true and all of them should be
+  re-measured: they would become real, killable assertions about failure
+  handling. `return 0` shares its identity with entry 18's start-services.sh
+  one only by text; the file part keeps them apart. Within this file it also
+  names cmd_inspect's and cmd_reset's trailing `return 0`, which are KILLED: each
+  is the script's exit status. Only volume_head's survives.
+  History (TST-11): until 2026-10-27 this entry also held
+  `repo-git-reset.sh:logic-flip:bfefa9b0411d327b435d5cd8264b421dfcb5d714`, the
+  `remote set-head origin -a … || true` line, which the batch 2 redesign removed
+  (the helper clones afresh, so there is no volume origin to repair). Batch 2
+  also made the file an active target, and its new survivors went unfiled; the
+  ratchet was red from then until this entry and entries 20 and 21 filed them,
+  and assertions in tests/test-repo-git-reset.sh killed the other fourteen.
 
 # ── 17 ────────────────────────────────────────────────────────────────────────
 GROUP: legacy_launchers' early return, in a script without errexit
@@ -729,3 +753,38 @@ tests/portability.sh:return-flip:ab48601bc043d3f71135560f6f580cf13e73f33c
   otherwise have failed check B. The probe that chooses the branch is NOT
   here: its inversion survived on macOS too until test-portability.sh asserted
   `_P_PROC == 0` where there is no /proc, and it is now killed on both hosts.
+
+# ── 20 ────────────────────────────────────────────────────────────────────────
+GROUP: inspect's unpushed count is guarded twice, and either guard alone gives '?'
+repo-git-reset.sh:logic-flip:32431e659d38deead4af297715701e4c493d4218
+    if [[ -n "$cloned" && "$oid" != '?' ]]; then
+  damaged:  `||` — the count is attempted when only one of the two holds.
+  EQUIVALENT: both ways out of the guard print the same `?`. With no clone, F
+  names a directory git clone removed when it failed, so `git -C "$F" rev-list`
+  fails and the count falls back to `?`. With an oid of `?`, `rev-list --count ?`
+  fails too. Not because `?` is no revision: git reads it as a pathspec (it holds a
+  glob character), and then refuses the `--not` that follows it ("option '--not'
+  must come before non-option arguments", 2.34 and 2.53). This verdict therefore
+  rests on ARGUMENT ORDER: with `--not --remotes=origin` before "$oid" the count
+  would be 0, the record would say so, and a test could kill the mutant. Reorder
+  that call and this entry must be re-measured. Either failure takes the `|| unpushed='?'` fallback,
+  and the regex check that follows does the same. So the BRANCH record is
+  byte-identical, and no test could tell the guard from its damage. The guard
+  saves a doomed git call, not a wrong answer. A clone killed by a signal, which
+  leaves its directory behind, would still fail in rev-list: it has no refs
+  under origin and may lack the object.
+
+# ── 21 ────────────────────────────────────────────────────────────────────────
+GROUP: env_var's skip rule for blank and comment lines is also implied by its match
+ai-containers-report.sh:logic-flip:d964be591e6317022ad2b9c48f545682f57006ef
+    $0 == "" || /^#/ { next }
+  damaged:  `$0 == "" && /^#/ { next }`, which never matches, so blank and
+  comment lines fall through to the rules below.
+  EQUIVALENT: neither kind of line can satisfy any later rule. The match is
+  `index($0, name "=") == 1`, and NAME is a plain identifier, so a matching line
+  starts with a letter or `_`, never with `#` and never empty. The export rule
+  is anchored at `^export[[:space:]]`, which a `#` line cannot begin with either,
+  and that rule only edits the line. The output is the same for every input. The
+  rule came with batch 4's change to this function (0940160, PRJ-6). It is kept
+  because it says what the reader skips, and deleting it would change no
+  behaviour either.

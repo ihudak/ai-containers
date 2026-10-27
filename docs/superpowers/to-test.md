@@ -126,7 +126,7 @@ docker run --rm -v "$PWD:/w:ro" -w /w ubuntu:22.04 bash -c '
 
 ### Linux host (falsify; no Docker needed)
 
-- [ ] **TST-11: the survivor ledger is green again.** This is a FIX to make, not
+- [x] **TST-11: the survivor ledger is green again.** This is a FIX to make, not
   only a check. It is listed here because it should be done on Linux: falsify
   costs about a second per mutant there and about twenty on macOS
   (AGENTS.md, "Measuring the falsify tier"). It also needs both a non-root and a
@@ -172,6 +172,21 @@ docker run --rm -v "$PWD:/w:ro" -w /w ubuntu:22.04 bash -c '
      mutant they kill.
   5. Push. The authority is CI: the falsify job of the next `Tests` run on main
      must be green.
+  - 2026-10-27, WSL2 (x86-64), at `222999e` plus the fix:
+    - Step 1 as uid 1000 (bash 5.2, git 2.53) found exactly CI's 22. A 23rd,
+      `cond-negate:8d5915a…`, is a `while ! read` that never ends. It is
+      UNPROVEN, which needs no entry.
+    - Step 2 as root in `ubuntu:22.04` (git 2.34.1) gave the same survivors.
+      This step was expected to find two that only non-root runs show, on the
+      root-only lines. It found none: both mutants survive either way, because
+      nothing reads their status. They were already EQUIVALENT in entry 16, so
+      nothing is ENV-DEPENDENT.
+    - Step 3: new assertions in test-repo-git-reset.sh kill 14. Entry 16 now
+      holds seven statuses nothing reads, and entries 20 and 21 file the other
+      two EQUIVALENT. The stale entry is deleted.
+    - Step 4: check-ledger.sh `--strict` exits 0 for both targets, as root and
+      as non-root. repo-git-reset.sh is 174 killed, 9 filed and 2 UNPROVEN of
+      185; ai-containers-report.sh is 57 killed and 2 filed of 59.
 
 ### Root (the CI floor container, `verify-on-host.sh`'s floor container)
 

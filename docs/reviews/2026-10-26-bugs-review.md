@@ -20,7 +20,7 @@
 | 4 | Host lifecycle scripts (project-init, sync, repo, group, report) | PRJ-1 … PRJ-9, DOC-1, DOC-3, REPO-2 … REPO-4, REPO-7 — fixed (PRJ-7 with TST-1); REPO-5, 6, 8 … 12 open | optional: GAP-6; stretch: GAP-1 for `group.sh` | MEDIUM |
 | 5 | In-container DB services | SVC-1 … SVC-3 — all fixed (SVC-2's hardware check is PLAT-4); SVC-4 open | — | MEDIUM |
 | 6 | Build / Dockerfile / tools.d / config validation | BLD-1 … BLD-7 — fixed; BLD-8 and ENV-7 open | — | MEDIUM |
-| 7 | Test harness and CI | TST-1 … TST-8 — all fixed (PRJ-7 with TST-1); TST-12 found and fixed; TST-9, TST-10 and TST-13 fixed in a follow-up; TST-11, TST-14, TST-15 open | GAP-5 (same fix as TST-2), GAP-8 (with TST-5), GAP-9 (with TST-3) — all done | MEDIUM |
+| 7 | Test harness and CI | TST-1 … TST-8 — all fixed (PRJ-7 with TST-1); TST-12 found and fixed; TST-9, TST-10 and TST-13 fixed in a follow-up, TST-11 in another; TST-14, TST-15 open | GAP-5 (same fix as TST-2), GAP-8 (with TST-5), GAP-9 (with TST-3) — all done | MEDIUM |
 | 8 | Docs (docs-only PR) | DOC-2, DOC-4 … DOC-13 | GAP-14 (overlaps DOC-6) | MEDIUM |
 | 9 | Launcher follow-ups (from the batch 1 hotfix review) | GIT-2 … GIT-5, LNCH-3 (the rest), LNCH-4 | — | MEDIUM |
 
@@ -659,7 +659,19 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Fix direction: clone with an empty template (`--template=` / `init.templateDir`), which also drops the sample hooks, or assert that `branches/` names no remote rather than that it is absent. Belongs with batch 4's repo-helper work (`repo-git-reset.sh`).
 
 ### TST-11: The ledger ratchet has failed on main since batch 2 with 19 unclassified repo-git-reset.sh survivors and one stale entry
-- **Status: OPEN** (found while fixing batch 7; existed before it). At `3ffc58d` (`Tests` run 40405941031) the job reports 22 problems: 20 `repo-git-reset.sh` survivors, the stale entry, and one new survivor, `ai-containers-report.sh:logic-flip:d964be591e6317022ad2b9c48f545682f57006ef`, which came with batch 4's change to that script. A run of the `repo-git-reset.sh` target alone as a non-root user (WSL2, after `4cdd310`) gives the same 20 plus two that CI kills, both on the root-only lines `[[ "$(id -u)" == "0" ]] || return 1` and `git config --global --add safe.directory "$1"`. Those two are ENV-DEPENDENT, and the fix must classify them that way.
+- **Status: FIXED (TST-11 follow-up, 2026-10-27).** New assertions in `tests/test-repo-git-reset.sh` kill 14 of the 20 survivors. They cover:
+  - the guess loop, which the old 5c case never reached, because the fresh clone does not read the volume's origin;
+  - a primary that is not a branch name;
+  - the clone's default branch, which reset must not leave behind;
+  - a `reftable/` directory beside a `refs/heads` directory;
+  - an unreadable tip;
+  - stash traces without a reflog;
+  - packed-refs lines that hold no ref;
+  - the WARN lines a clean pull must not print;
+  - the chown that pull runs, observed through a stub on PATH.
+
+  Ledger entry 16 now holds the seven statuses nothing reads, and the stale `bfefa9b0…` entry is gone. Entry 20 is inspect's double-guarded count, and entry 21 is the report's `d964be5…`, both EQUIVALENT. A root run in `ubuntu:22.04` gave the same verdicts as the non-root one, so nothing needed ENV-DEPENDENT.
+- Original finding (found while fixing batch 7; existed before it). Superseded in one point: its claim that the two root-only mutants are killed in CI and must be ENV-DEPENDENT was measured wrong. They survive as root too, and stay EQUIVALENT in entry 16. At `3ffc58d` (`Tests` run 40405941031) the job reports 22 problems: 20 `repo-git-reset.sh` survivors, the stale entry, and one new survivor, `ai-containers-report.sh:logic-flip:d964be591e6317022ad2b9c48f545682f57006ef`, which came with batch 4's change to that script. A run of the `repo-git-reset.sh` target alone as a non-root user (WSL2, after `4cdd310`) gives the same 20 plus two that CI kills, both on the root-only lines `[[ "$(id -u)" == "0" ]] || return 1` and `git config --global --add safe.directory "$1"`. Those two are ENV-DEPENDENT, and the fix must classify them that way.
 - Severity: MEDIUM (the falsify job is red, so a new survivor anywhere would not stand out) — Confidence: CONFIRMED from CI: `Tests` run 40386214831, job "Mutation tier (falsify) + survivor-ledger ratchet", `20 problem(s)`.
 - Location: `tests/falsify/survivors.txt` against `repo-git-reset.sh`, an active target since batch 2 redesigned it.
 - What's wrong: 19 identities (cond-negate, logic-flip and return-flip) SURVIVED with no entry, and the entry `repo-git-reset.sh:logic-flip:bfefa9b0411d327b435d5cd8264b421dfcb5d714` names a mutant that no longer exists.

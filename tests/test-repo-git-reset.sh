@@ -189,6 +189,15 @@ if [[ "$(g "$W" symbolic-ref --short HEAD)" == "shared" ]]; then
 else
   fail "reset honours the primary branch it was given (on $(g "$W" symbolic-ref --short HEAD))"
 fi
+# The clone checks out the remote's HEAD branch (main) as well; reset deletes
+# it from the clone before installing its .git, or the volume keeps a branch
+# that it was asked to drop.
+remaining="$(g "$W" for-each-ref --format='%(refname:short)' refs/heads/ | tr '\n' ' ')"
+if [[ "$remaining" == "shared " ]]; then
+  pass "… and the remote's default branch is not left behind beside it"
+else
+  fail "… and the remote's default branch is not left behind beside it (left: $remaining)"
+fi
 
 # ── 4. a primary branch that exists only on the remote ────────────────────────
 
@@ -232,17 +241,29 @@ fi
 
 # ── 5c. no origin/HEAD to read: the main/master guesses ──────────────────────
 #
-# origin exists but is unreachable and its HEAD ref is gone, so `set-head -a`
-# cannot restore it and the guess loop is the only thing left. Nothing else in
-# this file reaches that loop.
+# The helper clones the recorded URL afresh, so the volume's own origin is never
+# read. The guess loop runs when the REMOTE's HEAD names a branch it does not
+# have: the clone then records no origin/HEAD. This case used to delete the
+# volume's origin/HEAD instead, which the fresh clone never sees, so it went
+# through origin/HEAD and reached no guess (TST-11). Nothing else in this file
+# reaches that loop.
 W="$(mk_repo guessing)"
-g "$W" symbolic-ref -d refs/remotes/origin/HEAD >/dev/null 2>&1
-g "$W" remote set-url origin "$TMP/does-not-exist.git" >/dev/null 2>&1
+git -C "$TMP/guessing.git" symbolic-ref HEAD refs/heads/gone
 run_script inspect "$W"
-if grep -q '^PRIMARY|main$' <<<"$OUT"; then
+if [[ "$RC" -eq 0 ]] && grep -qx 'PRIMARY|main' <<<"$OUT"; then
   pass "with no origin/HEAD, the first EXISTING guess is used"
 else
-  fail "with no origin/HEAD, the first existing guess is used
+  fail "with no origin/HEAD, the first existing guess is used (rc=$RC)
+$OUT"
+fi
+# Neither guess exists: no PRIMARY at all, rather than an empty one.
+W="$(mk_repo guessnone trunk)"
+git -C "$TMP/guessnone.git" symbolic-ref HEAD refs/heads/gone
+run_script inspect "$W"
+if [[ "$RC" -eq 0 ]] && ! grep -q '^PRIMARY|' <<<"$OUT"; then
+  pass "with no origin/HEAD and no main or master, no primary branch is named"
+else
+  fail "with no origin/HEAD and no main or master, no primary branch is named (rc=$RC)
 $OUT"
 fi
 
@@ -367,6 +388,19 @@ else
   fail "reset without a primary branch is refused by the argument guard (rc=$RC)
 $OUT"
 fi
+
+# A primary that is not a branch name is refused by name, before the clone: a
+# leading dash (which check-ref-format refuses as well, so the dash test is not
+# what kills it), and a name git's own rules refuse.
+for bad in -x 'a..b'; do
+  run_script reset "$W" "$bad"
+  if [[ "$RC" -ne 0 ]] && grep -qF "not a branch name: $bad" <<<"$OUT"; then
+    pass "reset refuses the primary '$bad' as not a branch name"
+  else
+    fail "reset refuses the primary '$bad' as not a branch name (rc=$RC)
+$OUT"
+  fi
+done
 
 run_script frobnicate "$W"
 if [[ "$RC" -ne 0 ]]; then pass "an unknown subcommand is refused"; else fail "an unknown subcommand is refused"; fi
@@ -665,6 +699,49 @@ run_script pull "$W"
 if [[ "$RC" == 0 && -f "$W/upstream-new" && -f "$W/untracked.txt" ]] && g "$W" show-ref --verify --quiet refs/heads/shared; then
   pass "pull fast-forwards, keeping untracked files and branches already on the remote"
 else fail "pull lost something (rc=$RC; out: $OUT)"; fi
+# Keeping `shared` and passing no owner are both quiet: a WARN here means a
+# branch it kept, or a chown it was never asked for, was reported as a failure.
+if ! grep -q '^WARN|' <<<"$OUT"; then pass "… and a clean pull warns about nothing"
+else fail "a clean pull printed a WARN (out: $OUT)"; fi
+# With an owner, as repo.sh passes one: chowning to yourself works unprivileged.
+W="$(mk_repo pullowned)"; S="$TMP/pullowned.seed"
+commit_in "$S" po-new; g "$S" push -q origin main >/dev/null 2>&1
+run_script pull "$W" "$(id -u):$(id -g)"
+if [[ "$RC" == 0 && -f "$W/po-new" ]] && ! grep -q '^WARN|' <<<"$OUT"; then
+  pass "pull applies a valid owner without complaint"
+else fail "pull with a valid owner (rc=$RC; out: $OUT)"; fi
+# Chowning to yourself changes nothing on disk, so whether pull ran chown at all
+# is read from a chown on PATH that records its arguments and then runs the real
+# one: called with the owner when given one, never without.
+mkdir -p "$TMP/chown-bin"; real_chown="$(command -v chown)"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\nexec "%s" "$@"\n' "$TMP/chown.log" "$real_chown" > "$TMP/chown-bin/chown"
+chmod +x "$TMP/chown-bin/chown"
+for given in yes no; do
+  W="$(mk_repo "pullchown-$given")"; S="$TMP/pullchown-$given.seed"
+  commit_in "$S" pc-new; g "$S" push -q origin main >/dev/null 2>&1
+  : > "$TMP/chown.log"
+  if [[ "$given" == yes ]]; then PATH="$TMP/chown-bin:$PATH" run_script pull "$W" "$(id -u):$(id -g)"
+  else PATH="$TMP/chown-bin:$PATH" run_script pull "$W"; fi
+  calls="$(cat "$TMP/chown.log")"
+  if [[ "$given" == yes ]]; then want="-R $(id -u):$(id -g) $W" what="pull chowns the checkout to the owner it is given"
+  else want="" what="pull runs no chown when given no owner"; fi
+  if [[ "$RC" == 0 && "$calls" == "$want" ]]; then pass "$what"
+  else fail "pull's chown calls with owner given=$given (rc=$RC; calls: '$calls'; want: '$want'; out: $OUT)"; fi
+done
+# The tip of the checked-out branch must be readable: a ref file holding no
+# object id is refused by name, before anything is cloned.
+W="$(mk_repo badtip)"; printf 'garbage\n' > "$W/.git/refs/heads/main"
+run_script pull "$W"
+if [[ "$RC" != 0 && "$OUT" == *"cannot read the tip of main"* ]]; then pass "pull refuses a checked-out branch whose tip it cannot read"
+else fail "pull with an unreadable tip (rc=$RC; out: $OUT)"; fi
+# A packed ref outside heads, tags and remotes is refused only when it holds an
+# object id: a line that is not a ref, or names nothing, drops no commit.
+W="$(mk_repo junkpacked)"; S="$TMP/junkpacked.seed"
+commit_in "$S" jp-new; g "$S" push -q origin main >/dev/null 2>&1
+printf 'not-an-oid refs/wip/junk\n%s HEAD\n' "$(g "$W" rev-parse HEAD)" >> "$W/.git/packed-refs"
+run_script pull "$W"
+if [[ "$RC" == 0 && -f "$W/jp-new" ]]; then pass "pull ignores packed-refs lines that hold no ref"
+else fail "pull refused on packed-refs lines that hold no ref (rc=$RC; out: $OUT)"; fi
 W="$(mk_repo dirty)"; S="$TMP/dirty.seed"
 commit_in "$S" newer2; g "$S" push -q origin main >/dev/null 2>&1
 printf 'edited\n' > "$W/first"
@@ -698,6 +775,22 @@ printf 'wip\n' > "$W/first"; g "$W" stash -q
 run_script pull "$W"
 if [[ "$RC" != 0 && "$OUT" == *stash* ]] && g "$W" rev-parse -q --verify refs/stash >/dev/null; then pass "pull refuses while a stash would be lost"
 else fail "pull with a stash (rc=$RC; out: $OUT)"; fi
+# A stash is any one of its three traces: the ref without its reflog, or the ref
+# packed with no loose file and no reflog.
+for shape in noreflog packed; do
+  W="$(mk_repo "stash-$shape")"; S="$TMP/stash-$shape.seed"; commit_in "$S" s-new; g "$S" push -q origin main >/dev/null 2>&1
+  printf 'wip\n' > "$W/first"; g "$W" stash -q
+  if [[ "$shape" == packed ]]; then
+    g "$W" pack-refs --all
+    [[ ! -e "$W/.git/refs/stash" ]] || fail "SCAFFOLD: pack-refs --all left refs/stash loose; the packed case tests nothing"
+  fi
+  rm -f "$W/.git/logs/refs/stash"
+  run_script pull "$W"
+  # By its own message: other_ref() refuses refs/stash too, as a ref outside
+  # heads and tags, so "*stash*" alone passes without this check.
+  if [[ "$RC" != 0 && "$OUT" == *"the repository has a stash"* ]]; then pass "pull refuses a stash ($shape)"
+  else fail "pull with a stash ($shape; rc=$RC; out: $OUT)"; fi
+done
 W="$(mk_repo ltag)"; S="$TMP/ltag.seed"; commit_in "$S" t-new; g "$S" push -q origin main >/dev/null 2>&1
 g "$W" tag -a -m mine v-local; commit_in "$W" only-local; g "$W" tag lone; g "$W" reset -q --hard HEAD~1
 run_script pull "$W"
@@ -732,6 +825,8 @@ run_script pull "$W"
 if [[ "$RC" == 0 && "$(g "$W" rev-parse -q --verify refs/tags/mylabel 2>/dev/null)" == "$(g "$W" rev-parse HEAD~1)" ]]; then
   pass "a local tag on a pushed commit survives sync, at its own commit"
 else fail "local tag lost by sync (rc=$RC; tags: $(g "$W" tag -l | tr '\n' ' '); out: $OUT)"; fi
+if ! grep -q '^WARN|' <<<"$OUT"; then pass "… and keeping it warns about nothing"
+else fail "keeping a tag printed a WARN (out: $OUT)"; fi
 # Messages on stderr carry names from the volume too (Q2).
 W="$(mk_repo escerr)"; printf 'ref: refs/heads/z\e]0;pwned\a\n' > "$W/.git/HEAD"
 run_script pull "$W"
@@ -796,6 +891,12 @@ for mode in inspect pull; do
 done
 run_script reset "$W" main
 [[ "$RC" != 0 && "$OUT" == *"reftable"* ]] && pass "reset refuses a reftable repository" || fail "reset ran on a reftable repository (rc=$RC; out: $OUT)"
+# A reftable/ directory is enough, whatever refs/heads is: here it is still the
+# usual directory.
+W="$(mk_repo reftable-dir)"; mkdir -p "$W/.git/reftable"
+run_script inspect "$W"
+[[ "$RC" != 0 && "$OUT" == *"reftable"* ]] && pass "a reftable/ directory beside a refs/heads directory is refused" \
+  || fail "a reftable/ directory beside refs/heads was accepted (rc=$RC; out: $OUT)"
 
 # REPO-3: a split index cannot be read from its copy, and "use reset" wiped far
 # more than a sync: say how to make it readable instead.
