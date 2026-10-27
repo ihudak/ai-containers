@@ -466,9 +466,10 @@ if [[ "$(id -u)" -ne 0 ]]; then
   OWN="$TMP/own"; mk_launcher "$OWN/srch/p"; mk_launcher "$OWN/shut/p"; chmod 0311 "$OWN/srch"; chmod 0310 "$OWN/shut"
   SANDBOX_UID=4242 SANDBOX_GID=4343 EXTRA_MOUNTS="$OWN" launch "$LAUNCHER" "$TMP/app"
   chmod 0755 "$OWN/srch" "$OWN/shut"
-  [[ "$LAUNCH_RC" != 0 ]] && grep -qF "ERROR: $OWN/srch can be searched but not listed by you" "$ERR" \
-    && ! grep -qF "$OWN/shut" "$ERR" \
-    && pass "T25b one the agent can search but you cannot list refuses the launch; T25c one it cannot enter is left alone" \
+  # Not the agent's: it cannot chmod it, so the overlay and WARNING, not the
+  # refusal, which hit another user's 0711 directory (review of 7b41327).
+  [[ "$LAUNCH_RC" == 0 && "$(mounts_under /workspace/own/)" == "$OWN/srch:/workspace/own/srch:ro" ]] \
+    && pass "T25b one the agent can search but does not own is mounted read-only; T25c one it cannot enter is left alone" \
     || fail "T25b/c agent-reach (got: $(mounts_under /workspace/own/ | tr '\n' ' '); stderr: $(grep -F "$OWN" "$ERR" | tr '\n' ' '))"
 else
   printf 'SKIP: T25b/c — as root every directory can be listed\n'

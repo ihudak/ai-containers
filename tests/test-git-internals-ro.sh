@@ -1314,5 +1314,15 @@ launch_timed 60
   || fail "G70 FIFO HEAD (rc=$LAUNCH_RC; $(grep -F h70 "$ERR" | head -1))"
 ( exec 3<>"$PROJ/h70/.git/HEAD" ) 2>/dev/null; rm -rf "$PROJ/h70"
 
+# ── G71: a HEAD that is a link to a directory: git takes any HEAD link whose
+# text starts refs/ without following it, and the scan took it for a directory,
+# protecting nothing (review of 7b41327, HIGH).
+mkdir -p "$PROJ/h71" && "${G[@]}" -C "$PROJ/h71" init -q && rm -f "$PROJ/h71/.git/HEAD" && ln -s refs/heads "$PROJ/h71/.git/HEAD"
+launch ..
+has_mount "$PROJ/h71/.git/config:/workspace/proj/h71/.git/config:ro" \
+  && pass "G71 a git directory whose HEAD links to a directory is protected" \
+  || fail "G71 HEAD -> refs/heads left the repository writable (rc=$LAUNCH_RC)"
+rm -rf "$PROJ/h71"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

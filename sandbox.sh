@@ -558,7 +558,10 @@ launcher_ro_overlay() {
       # read-only overlay — and cannot be checked, so the launch is refused, as for
       # such a git directory (automated security review of c687370; T46). One the
       # launching user cannot search either hides nothing it can open by name.
-      if [[ "$kind" == unreadable && -x "$l" ]]; then
+      # Only one the agent owns: it cannot chmod another user's, and that refusal
+      # hit an ordinary 0711 home directory (review of 7b41327; T25b).
+      if [[ "$kind" == unreadable && -x "$l" ]] \
+         && [[ -n "$(cd / && find "$l" -maxdepth 0 -user "$uid" -print 2>/dev/null)" ]]; then
         printf 'ERROR: %s can be searched but not listed by you, so what is inside it cannot be\n' "$(_term "$l")" >&2
         printf '       checked for a FIFO the agent could write through a read-only overlay; refusing the launch.\n' >&2
         if [[ -O "$l" ]]; then
@@ -757,8 +760,13 @@ launcher_ro_overlay() {
           [[ -e "$g/$f" && ! -L "$g/$f" ]] || continue
           if [[ "$f" == hooks && -d "$g/$f" ]] || [[ "$f" != hooks && -f "$g/$f" ]]; then continue; fi
           printf 'ERROR: %s is not a %s; refusing the launch.\n' "$(_term "$g/$f")" "$([[ "$f" == hooks ]] && printf directory || printf 'regular file')" >&2
-          printf '       Through a read-only bind the agent could still write into it, and your host'\''s git\n' >&2
-          printf '       would read what it writes. Remove it on the host (rm %q).\n' "$g/$f" >&2
+          if [[ "$f" == HEAD ]]; then
+            printf '       The agent could write into it, and your host'\''s git would read what it writes.\n' >&2
+            printf '       Replace it on the host with a regular file, e.g. printf '\''ref: refs/heads/main\\n'\'' > %q\n' "$g/$f" >&2
+          else
+            printf '       Through a read-only bind the agent could still write into it, and your host'\''s git\n' >&2
+            printf '       would read what it writes. Remove it on the host (rm %q).\n' "$g/$f" >&2
+          fi
           exit 1
         done
         # The commondir read only when it is a regular file: a FIFO there blocked it
@@ -1689,7 +1697,9 @@ _git_index_read() {
 _is_git_dir() {
   # A HEAD that is a link counts too: git takes one (review of 56c91c4; G68).
   # A FIFO counts as well, so that it is refused rather than hidden (G70).
-  [[ ( -e "$1/HEAD" || -L "$1/HEAD" ) && ! -d "$1/HEAD" ]] && { [[ -d "$1/objects" && -d "$1/refs" ]] || [[ -f "$1/commondir" ]]; }
+  # A link counts whatever it leads to, a directory too (G71).
+  [[ -L "$1/HEAD" ]] || [[ -e "$1/HEAD" && ! -d "$1/HEAD" ]] || return 1
+  { [[ -d "$1/objects" && -d "$1/refs" ]] || [[ -f "$1/commondir" ]]; }
 }
 # _is_common_dir <dir>: what git takes for the common directory a commondir names
 # — objects/ and refs/; a HEAD is a worktree's, not needed here (automated
@@ -1819,7 +1829,9 @@ git_dirs_in() {
       fi
       continue
     fi
-    if [[ -d "$f" ]]; then
+    # A link is a HEAD whatever it leads to: git never follows one, and HEAD ->
+    # refs/heads was taken for a directory (review of 7b41327, HIGH; G71).
+    if [[ -d "$f" && ! -L "$f" ]]; then
       if [[ ! -r "$f" || ! -x "$f" ]]; then _gdi_unr+=("$f"); fi
       continue
     fi
