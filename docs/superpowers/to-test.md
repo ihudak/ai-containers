@@ -187,6 +187,8 @@ docker run --rm -v "$PWD:/w:ro" -w /w ubuntu:22.04 bash -c '
     - Step 4: check-ledger.sh `--strict` exits 0 for both targets, as root and
       as non-root. repo-git-reset.sh is 174 killed, 9 filed and 2 UNPROVEN of
       185; ai-containers-report.sh is 57 killed and 2 filed of 59.
+    - Step 5: `Tests` run 40462816092 on `3d4f1af`. The falsify job is green
+      for the first time since batch 2, and every other job is green too.
 
 ### Root (the CI floor container, `verify-on-host.sh`'s floor container)
 
