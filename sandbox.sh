@@ -1674,7 +1674,9 @@ _gdi_follow() {
     gref[$t|$1]=1; gtop_g+=("$t"); gtop_d+=("$1")
     # A referrer for one already read: read it again, with this worktree too — a
     # decoy found first was otherwise the only one (review of 4e91bf3).
-    if [[ -n "${gread[$t]:-}" ]]; then unset 'gread[$t]'; _gdi_ionly+=("$t"); fi
+    # Only one that takes its worktrees from referrers: a */.git, or a .git/modules/*
+    # with core.worktree, is read the same either way (review of 4a800a9).
+    if [[ -n "${gread[$t]:-}" && -n "${greftop[$t]:-}" ]]; then unset 'gread[$t]'; _gdi_ionly+=("$t"); fi
   fi
   # A git directory outside this mount, reached from a .git file in it, that is
   # not a */.git or .git/modules one: its index is read here, against that .git
@@ -1751,7 +1753,7 @@ git_dirs_in() {
   local n=0 nf=0 top rec mode path tgt _gdi_warned=0
   local -a gtop_g=() gtop_d=() tops=() _gdi_ionly=()
   local qq
-  local -A ionly_had=() gpend=() gquiet=() gread=() gref=()
+  local -A ionly_had=() gpend=() gquiet=() gread=() gref=() greftop=() gwarned=()
   local gchanged up=""
   local ni=0
   # The repository a mount sits in, when the mount is a subdirectory of one: its
@@ -1763,16 +1765,25 @@ git_dirs_in() {
   # (a sparse index), and is not named on every launch.
   up="${5%/*}"
   while [[ -n "$up" ]]; do
-    if [[ -e "$up/.git" && ! -L "$up/.git" ]]; then
+    # A directory or a regular file only: a FIFO planted as .git blocked the read
+    # for ever (automated security review of 4a800a9; G64). Quiet only where the
+    # .git itself is out of every writable bind.
+    if [[ ( -d "$up/.git" || -f "$up/.git" ) && ! -L "$up/.git" ]]; then
       if [[ -d "$up/.git" ]]; then
         if _is_git_dir "$up/.git" && [[ -z "${ionly_had[$up/.git]:-}" ]]; then
           ionly_had[$up/.git]=1; _gdi_ionly+=("$up/.git")
-          _in_writable "$up" || gquiet[$up/.git]=1
+          _in_writable "$up/.git" || gquiet[$up/.git]=1
         fi
       else
         tgt=""; IFS= read -r -d '' tgt < <(head -c 4096 "$up/.git" 2>/dev/null) || true
         while [[ "$tgt" == *[$'\r\n'] ]]; do tgt="${tgt%?}"; done
-        [[ "$tgt" != "gitdir: "* ]] || _gdi_follow "$up" "${tgt#gitdir: }" "$5" "$up/.git"
+        if [[ "$tgt" == "gitdir: "* ]]; then
+          _gdi_follow "$up" "${tgt#gitdir: }" "$5" "$up/.git"
+          if ! _in_writable "$up/.git"; then
+            tgt="${tgt#gitdir: }"; [[ "$tgt" == /* ]] || tgt="$up/$tgt"
+            tgt="$(cd -P -- "$tgt" 2>/dev/null && pwd -P)" && gquiet[$tgt]=1
+          fi
+        fi
       fi
       _in_writable "$up" || break
     fi
@@ -1857,6 +1868,7 @@ git_dirs_in() {
         tops+=("${gtop_d[q]}")
       done
     fi
+    if [[ "$g" != */.git && ! ( "$g" == */.git/modules/* && -n "$top" ) ]]; then greftop[$g]=1; fi
     # None yet: the .git file naming it may turn up later (through an index read
     # later still), so it waits, and is retried until no waiting one gains one
     # (automated security review of 3edee25).
@@ -1877,8 +1889,10 @@ git_dirs_in() {
     links=()
     gread[$g]=1
     if ! _git_index_read links "$g" "${tops[0]}"; then
+      [[ -z "${greftop[$g]:-}" || -z "${gwarned[$g]:-}" ]] || continue
       links=()
       if [[ -z "${gquiet[$g]:-}" ]]; then
+        gwarned[$g]=1
         printf 'WARNING: cannot read the index of %q; submodules recorded in it are not followed,\n' "$g" >&2
         printf '         so a checkout of one that the scan does not reach is not protected.\n' >&2
       fi

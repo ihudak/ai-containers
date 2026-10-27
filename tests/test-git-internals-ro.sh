@@ -1239,5 +1239,14 @@ launch ..
   || fail "G63 ordinary repositories warn every launch ($(grep -F 'no worktree is known' "$ERR"))"
 rm -rf "$S63" "$A63" "$TMP/outside63"
 
+# ── G64: a FIFO planted as .git above a mount cannot hang the walk up ───────
+# The walk read any .git that was not a directory, and a FIFO there blocked the
+# read for ever (automated security review of 4a800a9).
+mkdir -p "$PROJ/f64/sub"; mkfifo "$PROJ/f64/.git"
+EXTRA_MOUNTS="$PROJ/f64/sub" launch_timed 60
+[[ "$LAUNCH_RC" != 124 ]] && pass "G64 a FIFO .git above a nested mount does not hang the launch (${LAUNCH_S}s)" \
+  || fail "G64 the walk up hung on a FIFO .git"
+( exec 3<>"$PROJ/f64/.git" ) 2>/dev/null; rm -rf "$PROJ/f64"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
