@@ -1082,5 +1082,50 @@ has_mount "$M53/vendor/lib/.git/config:/workspace/proj/main53/vendor/lib/.git/co
   || fail "G53 the embedded submodule was left writable by a decoy .git file"
 rm -rf "$U53" "$M53"
 
+# ── G54/G55: an index read is never skipped for want of a worktree ──────────
+# G54: a .git/modules/* directory without core.worktree, which git reads against
+# the directory of the .git file naming it, got none, so its index was never read
+# and an embedded submodule under a pruned vendor/ stayed writable, silently
+# (review of 8b3e0c5, MEDIUM; existed before).
+U54="$TMP/up54"; "${G[@]}" init -q "$U54" && "${G[@]}" -C "$U54" commit -q --allow-empty -m u
+S54="$TMP/us54"; "${G[@]}" init -q "$S54" && "${G[@]}" -C "$S54" commit -q --allow-empty -m s
+M54="$PROJ/main54"; "${G[@]}" init -q "$M54" \
+  && "${G[@]}" -C "$M54" -c protocol.file.allow=always submodule -q add "$U54" vendor/lib && "${G[@]}" -C "$M54" commit -q -m s \
+  && "${G[@]}" clone -q "$S54" "$M54/vendor/lib/vendor/sub" && "${G[@]}" -C "$M54/vendor/lib" add vendor/sub 2>/dev/null \
+  && "${G[@]}" -C "$M54/vendor/lib" commit -q -m n \
+  && "${G[@]}" config -f "$M54/.git/modules/vendor/lib/config" --unset core.worktree \
+  || { printf 'SCAFFOLD-FAILED: cannot create the G54 repository\n'; exit 1; }
+launch ..
+has_mount "$M54/vendor/lib/vendor/sub/.git/config:/workspace/proj/main54/vendor/lib/vendor/sub/.git/config:ro" \
+  && pass "G54 a submodule's git directory without core.worktree is read against its .git file's directory" \
+  || fail "G54 an index with no core.worktree was never read"
+rm -rf "$U54" "$S54" "$M54"
+# G55: a linked worktree in another writable mount than its main repository: only
+# this mount sees the .git file naming its git directory, so this mount reads it.
+U55="$TMP/up55"; "${G[@]}" init -q "$U55" && "${G[@]}" -C "$U55" commit -q --allow-empty -m u
+M55="$TMP/main55"; "${G[@]}" init -q "$M55" && "${G[@]}" -C "$M55" commit -q --allow-empty -m s \
+  && "${G[@]}" -C "$M55" worktree add -q "$PROJ/lw55" \
+  && "${G[@]}" clone -q "$U55" "$PROJ/lw55/vendor/lib" && "${G[@]}" -C "$PROJ/lw55" add vendor/lib 2>/dev/null \
+  && "${G[@]}" -C "$PROJ/lw55" commit -q -m n || { printf 'SCAFFOLD-FAILED: cannot create the G55 worktree\n'; exit 1; }
+EXTRA_MOUNTS="$M55" launch ..
+has_mount "$PROJ/lw55/vendor/lib/.git/config:/workspace/proj/lw55/vendor/lib/.git/config:ro" \
+  && pass "G55 a linked worktree's submodules are read when its main repository is in another mount" \
+  || fail "G55 a cross-mount linked worktree's index was never read"
+rm -rf "$U55" "$M55" "$PROJ/lw55"
+
+# ── G56: an index is read once, however many .git files name its directory ───
+# Read once per referrer, every decoy .git file the agent planted cost another
+# read and repeated each WARNING: 50 decoys gave 51 identical lines (review of
+# 8b3e0c5).
+M56="$PROJ/main56"; "${G[@]}" init -q "$M56" && "${G[@]}" -C "$M56" commit -q --allow-empty -m s \
+  && "${G[@]}" -C "$M56" worktree add -q "$PROJ/lw56" || { printf 'SCAFFOLD-FAILED: cannot create the G56 worktree\n'; exit 1; }
+wt56="$(ls -d "$M56/.git/worktrees"/* | head -1)"; printf 'garbage' > "$wt56/index"
+for n in $(seq 1 10); do mkdir -p "$PROJ/dec56/d$n"; printf 'gitdir: %s\n' "$wt56" > "$PROJ/dec56/d$n/.git"; done
+launch ..
+[[ "$(grep -cF "cannot read the index of $wt56" "$ERR")" == 1 ]] \
+  && pass "G56 ten .git files naming one git directory read its index once" \
+  || fail "G56 index read per referrer ($(grep -cF "cannot read the index of $wt56" "$ERR") WARNINGs)"
+rm -rf "$M56" "$PROJ/lw56" "$PROJ/dec56"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
