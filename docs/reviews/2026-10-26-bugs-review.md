@@ -22,7 +22,7 @@
 | 4 | Host lifecycle scripts (project-init, sync, repo, group, report) | PRJ-1 … PRJ-9, DOC-1, DOC-3, REPO-2 … REPO-4, REPO-7 — fixed (PRJ-7 with TST-1); REPO-5, 6, 8 … 12 open | optional: GAP-6; stretch: GAP-1 for `group.sh` | MEDIUM |
 | 5 | In-container DB services | SVC-1 … SVC-3 — all fixed (SVC-2's hardware check is PLAT-4); SVC-4 open | — | MEDIUM |
 | 6 | Build / Dockerfile / tools.d / config validation | BLD-1 … BLD-7 — fixed; BLD-8 and ENV-7 open | — | MEDIUM |
-| 7 | Test harness and CI | TST-1 … TST-8 — all fixed (PRJ-7 with TST-1); TST-12 found and fixed; TST-9, TST-10 and TST-13 fixed in a follow-up, TST-11 in another; TST-14, TST-15 open | GAP-5 (same fix as TST-2), GAP-8 (with TST-5), GAP-9 (with TST-3) — all done | MEDIUM |
+| 7 | Test harness and CI | TST-1 … TST-8 — all fixed (PRJ-7 with TST-1); TST-12 found and fixed; TST-9, TST-10 and TST-13 fixed in a follow-up, TST-11 in another, TST-14 and TST-15 in a third | GAP-5 (same fix as TST-2), GAP-8 (with TST-5), GAP-9 (with TST-3) — all done | MEDIUM |
 | 8 | Docs (docs-only PR) | DOC-2, DOC-4 … DOC-13 — all fixed, with the same drift its reviews found elsewhere (a provenance check that could not fail among it) | GAP-14 (overlaps DOC-6) — done | MEDIUM |
 | 9 | Launcher follow-ups (from the batch 1 hotfix review) | GIT-2 … GIT-5, LNCH-3 (the rest), LNCH-4 — all fixed; the HIGHs its reviews found fixed with them; leftovers open in section 10 | — | MEDIUM |
 
@@ -694,14 +694,16 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Evidence: a script with that trap and a three-step loop, interrupted in step 1, printed "cleanup ran" and then ran steps 2 and 3. The new hermetic check, before the fix: rc 1, with the preflight reported FAILED after the interrupt.
 
 ### TST-14: `wf_it_selections` silently skips a quoted `run:` value
-- **Status: OPEN** (found by the batch 7 follow-up review)
+- **Status: FIXED** (TST-14/15 follow-up, 2026-10-27). `_wf_it_awk()`'s `scan()` now records with guarded `?` any line that has `integration` before `run.sh` but is not a plain invocation — quoted, inside `bash -c`, through a variable (`"$GITHUB_WORKSPACE"/tests/…`), `cd tests/integration && ./run.sh`, a doubled slash, a plain-text mention outside a comment — and one holding a second invocation after the first one's arguments end; `wf_it_selections()` refuses it naming the step. A file named after the script past the arguments (`| tee tests/integration/run.sh.log`) is not a second invocation. It refuses rather than unquotes: each of those shapes needs its own reading, and a refusal is what the header promises for anything it cannot decide. Eight `unread_case` vectors in `tests/test-layer-checks-parser.sh` and one for the `tee` shape; the first five were each red on the old parser. A second invocation on one line was a sibling omission the review did not list: `run.sh --tags a; run.sh --tags b` recorded only `--tags a`. The review of this fix found no HIGH or MEDIUM; its two LOWs left open are TST-16 and TST-17.
+- Found by the batch 7 follow-up review
 - Severity: LOW (an omission in nightly still fails the whole-corpus check, so PR ⊆ nightly still holds) — Confidence: CONFIRMED (reproduced with a fixture workflow)
 - Location: `tests/lib-layer-checks.sh: \`_wf_it_awk()\``. Its `scan()` needs a space, `;`, `&`, `|` or `(` before `tests/integration/run.sh`, and `key()` does not unquote a `run:` value.
 - What's wrong: `run: "./tests/integration/run.sh --tags quoted"`, `run: '…'` and `run: bash -c './tests/integration/run.sh …'` give no record and no refusal. The function's header says everything it cannot decide is rc 1, never a quiet omission.
 - Fix direction: refuse a `run:` line that mentions `tests/integration/run.sh` and yields no record, or unquote scalar `run:` values before scanning.
 
 ### TST-15: `wf_triggers_on` treats `pull_request_target` and `merge_group` as not PR-triggered
-- **Status: OPEN** (found by the batch 7 follow-up review; a design choice batch 7 wrote down, in the parser test's "pull_request_target is not pull_request" vectors)
+- **Status: FIXED** (TST-14/15 follow-up, 2026-10-27). The predicate is unchanged — `pull_request_target` still is not `pull_request`, as the parser's vectors say — and the claim that relied on it is widened instead: `tests/test-layer-containment.sh` now verifies an `exempt` row against `pull_request`, `pull_request_target` and `merge_group`, failing on the first it triggers on or on an unreadable `on:`. Demonstrated by adding each trigger to `release.yml`: the fixed test fails naming it; the old one passed `merge_group` as "verified NOT pull_request-triggered". `tests/layer-checks.conf`'s row-type comment still says "never runs on pull_request"; it is kept byte-identical with mgd-ai-containers' copy, so it changes there and here together.
+- Found by the batch 7 follow-up review; a design choice batch 7 wrote down, in the parser test's "pull_request_target is not pull_request" vectors
 - Severity: LOW — Confidence: CONFIRMED (by the test's own vectors)
 - Location: `tests/lib-layer-checks.sh: \`wf_triggers_on()\``
 - What's wrong: a workflow on `pull_request_target` or `merge_group` that runs checks on every PR or merge can be registered `exempt` and passes as "verified NOT pull_request-triggered". That is the bypass TST-6 closed, moved to a sibling trigger.
@@ -1177,6 +1179,22 @@ Batch 9 (`9bd3729` … `6a0b37f`) went through 19 review rounds. Every HIGH and 
 - What's wrong: the temporary file is made even when `ro_srcs` is empty, and the launcher's own message does not name TMPDIR. `_git_index_read` depends on TMPDIR the same way.
 - Failure scenario: a stale TMPDIR in the user's shell stops every launch, and the message does not say why.
 - Fix direction: make the file only when there is something to search, and name `${TMPDIR:-/tmp}` in the error.
+
+## 11. Found while fixing TST-14 and TST-15
+
+### TST-16: an `exempt` row on `workflow_run` or an unfiltered `push` still verifies
+- **Status: OPEN** (review of the TST-14/15 fix, LOW-5)
+- Severity: LOW. Confidence: PLAUSIBLE (from code)
+- Location: `tests/test-layer-containment.sh: for trig in pull_request pull_request_target merge_group; do`
+- What's wrong: `workflow_run` (fired by a PR workflow finishing) and an `on: push` with no branch filter also run on every PR branch push from the same repository, and neither is checked. Separately, the PR layer derives cases for `pull_request` only, so a `cases` workflow triggered only by `merge_group` or `pull_request_target` adds nothing to the PR set. That is harmless while "every case runs nightly" keeps PR ⊆ nightly.
+- Fix direction: refuse `workflow_run` in an exempt row, and `push` unless its `branches:` filter excludes PR branches. Derive the PR layer from all three PR triggers.
+
+### TST-17: nothing automated pins the exempt-row trigger loop
+- **Status: OPEN** (review of the TST-14/15 fix, LOW-4)
+- Severity: LOW. Confidence: CONFIRMED (TST-15's demonstration was a hand edit of `release.yml`)
+- Location: `tests/test-layer-containment.sh`, the `exempt)` branch
+- What's wrong: the loop runs only over the repo's own workflows, none of which uses the sibling triggers, so cutting it back to `pull_request` alone keeps the suite green. The parser test's vectors cover `wf_triggers_on()`, not this loop.
+- Fix direction: move the exempt check into a function in `tests/lib-layer-checks.sh` and drive it from fixture workflows in `tests/test-layer-checks-parser.sh`.
 
 ---
 

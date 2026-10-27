@@ -120,8 +120,9 @@ source "$LIB_LAYER_CHECKS"
 # `workflow` row in tests/layer-checks.conf for every one of them; and drive
 # the classification loop below from the rows marked `coverage=classified`
 # instead of the two-name literal. A `coverage=exempt` row's claim ("this
-# workflow never runs on pull_request, so the containment invariant does not
-# apply") is not merely trusted — it is VERIFIED against the file's own `on:`
+# workflow never runs on pull_request — nor pull_request_target or
+# merge_group — so the containment invariant does not apply") is not merely
+# trusted — it is VERIFIED against the file's own `on:`
 # block via wf_triggers_on(), the same effect-over-text-presence standard this
 # file applies everywhere else (its stub-repo section above, its job-level-key
 # reads instead of whole-file greps).
@@ -171,12 +172,20 @@ while IFS='|' read -r wfile coverage why; do
     exempt)
       # Three outcomes, not two: rc 2 is "the on: block could not be read",
       # and an exempt claim nobody could check must not pass as verified.
-      wf_triggers_on "$wf_target" pull_request; trig_rc=$?
-      case "$trig_rc" in
-        0) fail "workflow row '$wfile' claims coverage=exempt but $wfile DOES trigger on pull_request — it is part of the PR gate and needs coverage=classified or coverage=cases, not exempt" ;;
-        1) pass "workflow row '$wfile' claims coverage=exempt and $wfile is verified NOT pull_request-triggered" ;;
-        *) fail "workflow row '$wfile' claims coverage=exempt, but $wfile's on: block could not be read, so the claim is unverified (see stderr above)" ;;
-      esac
+      # pull_request_target and merge_group run on every PR or merge just as
+      # pull_request does, so a workflow on either is part of the gate too;
+      # checking pull_request alone moved the TST-6 bypass to a sibling
+      # trigger (TST-15).
+      ex_rc=1
+      for trig in pull_request pull_request_target merge_group; do
+        wf_triggers_on "$wf_target" "$trig"; trig_rc=$?
+        case "$trig_rc" in
+          0) fail "workflow row '$wfile' claims coverage=exempt but $wfile DOES trigger on $trig — it is part of the PR gate and needs coverage=classified or coverage=cases, not exempt"; ex_rc=0; break ;;
+          1) ;;
+          *) fail "workflow row '$wfile' claims coverage=exempt, but $wfile's on: block could not be read, so the claim is unverified (see stderr above)"; ex_rc=2; break ;;
+        esac
+      done
+      (( ex_rc == 1 )) && pass "workflow row '$wfile' claims coverage=exempt and $wfile is verified NOT triggered by pull_request, pull_request_target or merge_group"
       ;;
     *)
       fail "workflow row '$wfile' (tests/layer-checks.conf) has unrecognised coverage '$coverage' (want classified, cases, or exempt)"

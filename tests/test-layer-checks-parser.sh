@@ -574,6 +574,28 @@ guarded_case "an invocation inside a subshell function body is refused" "SubFunc
   "$(printf '|\n          go() (\n            ./tests/integration/run.sh --tags a\n          )')"
 guarded_case "an invocation inside a function body is refused" "Func" \
   "$(printf '|\n          go() {\n            ./tests/integration/run.sh --tags a\n          }')"
+# A line that names run.sh in a form the reader cannot read gave no record and
+# no refusal before TST-14: a quoted scalar, a `bash -c '…'` string, a second
+# invocation after `;` on the same line. Each is refused, naming the step —
+# by the "names tests/integration/run.sh" message, not the guarded one.
+unread_case() {  # $1=label $2=step name $3=run: value
+  printf 'on:\n  schedule:\njobs:\n  j:\n    runs-on: x\n    steps:\n      - name: %s\n        run: %s\n' "$2" "$3" > "$TMP/it-u.yml"
+  fails_naming "$1" "j/$2 names tests/integration/run.sh" wf_it_selections "$TMP/it-u.yml" schedule
+}
+unread_case "a double-quoted run: value is refused" "Dq" '"./tests/integration/run.sh --tags quoted"'
+unread_case "a single-quoted run: value is refused" "Sq" "'./tests/integration/run.sh --tags quoted'"
+unread_case "an invocation inside bash -c is refused" "BashC" "bash -c './tests/integration/run.sh --tags a'"
+unread_case "a second invocation on one line is refused" "Two" \
+  './tests/integration/run.sh --tags a; ./tests/integration/run.sh --tags b'
+unread_case "a second invocation in a block line is refused" "TwoBlock" \
+  "$(printf '|\n          ./tests/integration/run.sh --tags a && ./tests/integration/run.sh --tags b')"
+unread_case "an invocation through a variable is refused" "Var" '"$GITHUB_WORKSPACE"/tests/integration/run.sh --tags a'
+unread_case "cd tests/integration && ./run.sh is refused" "Cd" 'cd tests/integration && ./run.sh --tags a'
+unread_case "a doubled slash is refused" "Slash" 'tests//integration/run.sh --tags a'
+# A file named after run.sh past the arguments is not a second invocation.
+printf 'on:\n  schedule:\njobs:\n  j:\n    runs-on: x\n    steps:\n      - name: Tee\n        run: ./tests/integration/run.sh --tags a 2>&1 | tee tests/integration/run.sh.log\n' > "$TMP/it-tee.yml"
+check "a log file named after run.sh past the arguments is no second invocation" \
+  "j|Tee|--tags a" "$(wf_it_selections "$TMP/it-tee.yml" schedule)"
 printf 'on:\n  schedule:\njobs:\n  gate:\n    if: github.event_name == '"'"'workflow_dispatch'"'"'\n    runs-on: x\n    steps:\n      - run: echo gate\n  j:\n    needs: gate\n    runs-on: x\n    steps:\n      - name: After gate\n        run: ./tests/integration/run.sh --tags a\n' > "$TMP/it-needs.yml"
 fails_naming "a job with needs: is refused, naming it" "job 'j'" wf_it_selections "$TMP/it-needs.yml" schedule
 # The dispatch-only shape is still fine: its step if: skips it first.

@@ -316,7 +316,7 @@ wf_if_true() {  # $1=expression ('' = no if:)  $2=event → rc 0 runs, 1 does no
 # `tests/integration/run.sh` invocation in a step's `run:`, fields separated by
 # the ASCII unit separator (\037) — not a tab, which `read` treats as
 # whitespace and so collapses the empty field a step without an if: leaves:
-#   <job> US <step identity> US <step if:> US <guarded: 1|0> US <arguments>
+#   <job> US <step identity> US <step if:> US <guarded: 1|0|?> US <arguments>
 # The run: value is decoded first — a literal block (|) line by line, a folded
 # block (>) or a plain value folded as YAML folds them, lines joined by a space
 # but a blank line kept as a newline — and comment lines are dropped, so an
@@ -360,18 +360,33 @@ _wf_it_awk() {  # $1=yaml
           line ~ /&&|[|][|]|<</ || line ~ /[A-Za-z_][A-Za-z0-9_]*[[:space:]]*[(][)]/ ||
           line ~ /([|]|\\|[{])[[:space:]]*$/) ctlseen = 1
     }
-    function scan(line,   p, a, pre, g) {
+    # A line that names run.sh in any other way — quoted
+    # (`run: "./tests/integration/run.sh …"`), inside `bash -c '…'`, through a
+    # variable or `cd tests/integration && ./run.sh`, or a second invocation
+    # after the arguments of the first end — is recorded with guarded "?" for
+    # the caller to refuse, never dropped (TST-14). Any line with `integration`
+    # before `run.sh` counts as naming it, so a plain-text mention outside a
+    # comment is refused too.
+    function rec(g, a) {
+      out = out jobname "\037" (nm != "" ? nm : (us != "" ? us : "(unnamed step)")) "\037" cond "\037" g "\037" a "\n"
+    }
+    function scan(line,   p, a, pre, g, t) {
       if (line ~ /^[[:space:]]*#/) return
-      if (!match(line, /(^|[[:space:];&|(])(bash[[:space:]]+)?(\.\/)?tests\/integration\/run\.sh([[:space:]]|$)/)) return
+      if (line !~ /integration.*run\.sh/) return
+      if (!match(line, /(^|[[:space:];&|(])(bash[[:space:]]+)?(\.\/)?tests\/integration\/run\.sh([[:space:]]|$)/)) { rec("?", line); return }
       p = index(substr(line, RSTART), "tests/integration/run.sh")
       pre = substr(line, 1, RSTART + p - 2); sub(/\.\/$/, "", pre)
       g = ctlseen || pre !~ /^[[:space:]]*(([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*|env|bash)[[:space:]]+)*$/
       a = substr(line, RSTART + p - 1 + length("tests/integration/run.sh"))
       gsub(idiom, "", a)
       sub(/[[:space:]]#.*$/, "", a)
-      if (match(a, /(^|[[:space:]])[0-9]*[<>]|[;|&]/)) a = substr(a, 1, RSTART - 1)
+      # What follows the arguments may hold a second invocation; a file named
+      # after it (`| tee tests/integration/run.sh.log`) is not one.
+      t = ""
+      if (match(a, /(^|[[:space:]])[0-9]*[<>]|[;|&]/)) { t = substr(a, RSTART); a = substr(a, 1, RSTART - 1) }
+      if (t ~ /(^|[^A-Za-z0-9_.\/-])(\.\/)?tests\/integration\/run\.sh([^A-Za-z0-9_.-]|$)/ || t ~ /integration[^[:space:]]*[[:space:]]*&&.*run\.sh/) { rec("?", line); return }
       sub(/^[[:space:]]+/, "", a); sub(/[[:space:]]+$/, "", a)
-      out = out jobname "\037" (nm != "" ? nm : (us != "" ? us : "(unnamed step)")) "\037" cond "\037" g "\037" a "\n"
+      rec(g, a)
     }
     function flush(   i, j) {
       if (started) {
@@ -457,7 +472,9 @@ _wf_job_has_key() {  # $1=yaml  $2=job id  $3=key → rc 0 when present
 # followed. Catalogue calls (--list, --list-caps) select nothing and are
 # skipped. Everything this cannot decide is rc 1 with the job and step named,
 # never a quiet omission: an on: it cannot read, an if: wf_if_true cannot
-# evaluate, a job with needs:, an invocation the shell may skip (a shell `if`
+# evaluate, a job with needs:, a line naming run.sh in any form other than a
+# plain invocation (quoted, inside `bash -c`, through a variable, a second one
+# on the line), an invocation the shell may skip (a shell `if`
 # or `&&` around it — the shape integration.yml's Run step had), arguments
 # still holding ${{ }} after rendering, or holding any shell expansion or
 # quoting ($, `, quotes, backslash) — `run.sh $args` is what a dispatch-only
@@ -499,6 +516,10 @@ wf_it_selections() {  # $1=yaml  $2=event → <job>|<step>|<args> per selection;
     (( src == 1 )) && continue
     if (( src == 2 )); then
       echo "lib-layer-checks: cannot evaluate step if: $cond — $job/$step ($f)" >&2; bad=1; continue
+    fi
+    if [[ "$guarded" == '?' ]]; then
+      echo "lib-layer-checks: $job/$step names tests/integration/run.sh in a form this reader cannot read — quoted, inside bash -c, through a variable, a second invocation on the line, or any other form than a plain invocation ($f): $args" >&2
+      bad=1; continue
     fi
     if [[ "$guarded" == 1 ]]; then
       echo "lib-layer-checks: the run.sh invocation in $job/$step runs under a shell condition this reader cannot evaluate ($f)" >&2
