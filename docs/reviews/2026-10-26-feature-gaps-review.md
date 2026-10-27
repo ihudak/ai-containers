@@ -154,7 +154,7 @@ A gap is something a design promised that is not in the code at the reviewed com
 - Suggested approach: run `bash ./verify-on-host.sh` once on a WSL2 host and record the result in docs/testing.md.
 
 ### GAP-14: Doc and comment drift found during the audit
-- Status: PARTIAL
+- Status: DONE (batch 8) — `4d53bc9` … `5da9aeb`; every item listed below is fixed (the `integration.yml` trigger note was already gone).
 - Fix batch: 8 — docs (overlaps DOC-6)
 - Source: various live docs
 - Area: docs

@@ -7,6 +7,7 @@
 - **Method:** eight area reviewers plus a docs-vs-code reviewer, run in parallel against the diff and the code at HEAD. Each finding was then triaged; the HIGH ones were re-checked against the code by the coordinator. Hermetic suite at HEAD: 98/98 under C.UTF-8, 96/98 under en_US.UTF-8 (TST-1). Falsify corpus + `check-ledger.sh --strict`: green. All 78 integration mutation patches apply.
 - **Updated 2026-10-26:** batches 1 and 2 are merged (main `e426e09`). Section 9 lists what the reviews of those fixes found and left open, reviewed up to `e426e09`. Status lines cite the commits as merged.
 - **Updated 2026-10-27:** batch 9 is merged (main `6a0b37f`). Section 10 lists what its 19 review rounds left open, reviewed up to `6a0b37f`.
+- **Updated 2026-10-27:** batch 8 is merged (main `5da9aeb`); its two reviews left nothing open.
 - **Companion:** [2026-10-26-feature-gaps-review.md](2026-10-26-feature-gaps-review.md).
 - **Confidence:** CONFIRMED = reproduced, or unambiguous from the code. PLAUSIBLE = strong reasoning, not reproduced (usually needs hardware or a platform not available here); verify before fixing.
 - **Citations** are by snippet, per AGENTS.md "Citing code". Scratch repro paths mentioned in entries were session-local and may no longer exist; each entry describes its repro in full.
@@ -22,7 +23,7 @@
 | 5 | In-container DB services | SVC-1 … SVC-3 — all fixed (SVC-2's hardware check is PLAT-4); SVC-4 open | — | MEDIUM |
 | 6 | Build / Dockerfile / tools.d / config validation | BLD-1 … BLD-7 — fixed; BLD-8 and ENV-7 open | — | MEDIUM |
 | 7 | Test harness and CI | TST-1 … TST-8 — all fixed (PRJ-7 with TST-1); TST-12 found and fixed; TST-9, TST-10 and TST-13 fixed in a follow-up, TST-11 in another; TST-14, TST-15 open | GAP-5 (same fix as TST-2), GAP-8 (with TST-5), GAP-9 (with TST-3) — all done | MEDIUM |
-| 8 | Docs (docs-only PR) | DOC-2, DOC-4 … DOC-13 | GAP-14 (overlaps DOC-6) | MEDIUM |
+| 8 | Docs (docs-only PR) | DOC-2, DOC-4 … DOC-13 — all fixed, with the same drift its reviews found elsewhere (a provenance check that could not fail among it) | GAP-14 (overlaps DOC-6) — done | MEDIUM |
 | 9 | Launcher follow-ups (from the batch 1 hotfix review) | GIT-2 … GIT-5, LNCH-3 (the rest), LNCH-4 — all fixed; the HIGHs its reviews found fixed with them; leftovers open in section 10 | — | MEDIUM |
 
 Folded-in gaps are described in [2026-10-26-feature-gaps-review.md](2026-10-26-feature-gaps-review.md); each carries a matching `Fix batch:` line there. **Optional** = same files, but grows the batch; take it if the batch is small. **Stretch** = activate those files' deferred falsify targets in the same PR, so the new assertions are shown to be able to fail; it costs a mutation-score run per batch. The remaining gaps (GAP-2, 3, 4, 7, 10, 11, 13, and the rest of GAP-12) are a separate track.
@@ -722,6 +723,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Fix direction: either change the comment to say "set OFF", or have the reconcile treat `^#\s*key=` as present.
 
 ### DOC-2: troubleshooting.md tells users to edit the Dockerfile to compile native gems; the right setting is `c-toolchain=ON`
+- **Status: FIXED (batch 8)** — `4d53bc9` … `5da9aeb`.
 - Severity: MEDIUM — Confidence: CONFIRMED
 - Location: `docs/troubleshooting.md: \`add \`build-essential\` back to the Dockerfile if you need to install such gems at runtime\``
 - Introduced: 41e820c (the README split). It went stale when 1c5e937 added `c-toolchain`.
@@ -743,6 +745,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Fix direction: either fix the usage lines (it is interactive only), or accept positional defaults.
 
 ### DOC-4: sandbox.conf says vale "self-updates in place"; it never updates
+- **Status: FIXED (batch 8)** — `4d53bc9` … `5da9aeb`.
 - Severity: LOW — Confidence: CONFIRMED
 - Location: `sandbox.conf: \`(agent-tools-reconcile.sh), so \`--no-cache\` does not refresh it and it\`` / `self-updates in place`. AGENTS.md's agent-tier table row says `` `vale` | pinned download ``, and the reconcile header says `vale         pinned download`.
 - Introduced: 4dc252c (sandbox.conf) and 2354abc (AGENTS.md).
@@ -751,6 +754,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Fix direction: in both places, say "latest at first install, no self-update" and give the delete-and-restart method.
 
 ### DOC-5: AGENTS.md and the docs point to README.md sections that no longer exist
+- **Status: FIXED (batch 8)** — `4d53bc9` … `5da9aeb`.
 - Severity: LOW — Confidence: CONFIRMED
 - Location:
   - `AGENTS.md: \`see the README "sandbox.conf schema versioning" section\`` (twice)
@@ -765,6 +769,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Fix direction: point each reference at the docs/ file that now holds the section.
 
 ### DOC-6: multiple-projects.md names sandbox.conf "runtime keys" `mode=` and `agents=` that do not exist
+- **Status: FIXED (batch 8)** — `4d53bc9` … `5da9aeb`.
 - Severity: LOW — Confidence: CONFIRMED
 - Location: `docs/multiple-projects.md: \`build-time keys (\`ruby=\`, \`db-clients=\`) with runtime ones (\`mode=\`, \`agents=\`),\``
 - Introduced: e930d21
@@ -773,6 +778,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Fix direction: drop the example, or name `SANDBOX_MODE` in sandbox.env.
 
 ### DOC-7: docs describe `<group>/.rvm/` as a directory, but it is a Docker volume
+- **Status: FIXED (batch 8)** — `4d53bc9` … `5da9aeb`.
 - Severity: LOW — Confidence: CONFIRMED
 - Location: the `.rvm/` entry in the layout tree in docs/groups.md, and the `<group>/.rvm/` row in the mount table in docs/repos-and-mounts.md.
 - What's wrong: for every group except `host`, `sandbox.sh` mounts the volume `ai-containers-rvm-<group>`: `sandbox.sh: \`config_mount_flags+=(-v "$rvm_vol:$dev_home/.rvm")\``.
@@ -780,32 +786,38 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Fix direction: describe it as a volume and point to `group.sh`.
 
 ### DOC-8: getting-started.md names the wrong GitHub downloads as the reason to set `GITHUB_TOKEN`
+- **Status: FIXED (batch 8)** — `4d53bc9` … `5da9aeb`.
 - Severity: LOW — Confidence: CONFIRMED
 - What's wrong: it says vale and goreleaser are fetched from GitHub releases at build time. Vale installs at container start, and goreleaser comes from its apt repository. The real reason, the nvm and pyenv `git clone`s (see the README and AGENTS.md), is not mentioned there.
 - Failure scenario: a user without those two tools concludes the token does not apply to them. They then hit the anonymous-throttling 401.
 
 ### DOC-9: resources.md says the resource variables apply to `restricted` and `discovery` only
+- **Status: FIXED (batch 8)** — `4d53bc9` … `5da9aeb`.
 - Severity: LOW — Confidence: CONFIRMED
 - Location: `docs/resources.md: \`These variables affect \`restricted\` and \`discovery\` runs only\``
 - What's wrong: `sandbox.sh` passes `--cpus` and the memory and nofile limits in every mode, including `open`.
 
 ### DOC-10: overview.md lists "Ruby (via rvm)" among what the Dockerfile builds
+- **Status: FIXED (batch 8)** — `4d53bc9` … `5da9aeb`.
 - Severity: LOW — Confidence: CONFIRMED
 - What's wrong: Ruby is installed at container start into the group's rvm volume. Nothing Ruby-related is baked into the image, as AGENTS.md itself states.
 
 ### DOC-11: components/README.md says no agent CLI is baked into the image; Kiro is
+- **Status: FIXED (batch 8)** — `4d53bc9` … `5da9aeb`.
 - Severity: LOW — Confidence: CONFIRMED
 - Location: `docs/components/README.md: \`The agent CLIs themselves are **not baked into the image**\``. This sits under a table that includes `kiro`.
 - What's wrong: Kiro is baked (`Dockerfile: \`ARG INSTALL_KIRO=0\``), and the runtime list leaves it out (`sandbox-common.sh: \`for a in claude-code copilot codex gemini graphify vale mkdocs\``).
 - Failure scenario: a user restarts the container or runs a plain `./build.sh` to get a newer Kiro. Only `./build.sh --no-cache` refreshes it.
 
 ### DOC-12: graphify.md says `~/.claude` is mounted from the host, so the skill appears "in every subsequent container"
+- **Status: FIXED (batch 8)** — `4d53bc9` … `5da9aeb`.
 - Severity: LOW — Confidence: CONFIRMED
 - Location: `docs/components/graphify.md: \`Because \`~/.claude/\` is bind-mounted from the host\``
 - What's wrong: the mount comes from the group (`"$group_root/.claude"`). It is the host's own `~/.claude` only when `AI_CONTAINER_GROUP=host`.
 - Failure scenario: `graphify install` in a `default`-group container does not reach other groups, or Claude Code on the host.
 
 ### DOC-13: AGENTS.md's list of optional components omits `acli` and `db-clients`
+- **Status: FIXED (batch 8)** — `4d53bc9` … `5da9aeb`.
 - Severity: LOW — Confidence: CONFIRMED
 - Location: `AGENTS.md: \`Optional components: \`copilot\`, ...\``
 - What's wrong: both are sandbox.conf keys and are documented later in the file, but this list, which is presented as the whole set, leaves them out. The version-list keys (`node`, `python`, `ruby`, `rust`, `go`, `nvm-version`) are covered separately, so they are fine.
