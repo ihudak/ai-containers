@@ -578,7 +578,7 @@ YAML
 
 # The caller job's callee: a local workflow that runs no integration case.
 printf 'on:\n  workflow_call:\njobs:\n  lint:\n    runs-on: x\n    steps:\n      - run: bash tests/run-all.sh\n' > "$TMP/hermetic-checks.yml"
-wf_it_selections "$TMP/it.yml" schedule >/dev/null
+( wf_it_selections "$TMP/it.yml" schedule ) >/dev/null 2>&1
 check "wf_it_selections: the scheduled view decides every job, the callee included (rc 0)" 0 "$?"
 check "wf_it_selections: the scheduled view" \
   "$(printf '%s\n' 'full|Folded|--require security --exclude packages' \
