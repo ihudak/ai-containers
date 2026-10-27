@@ -134,7 +134,7 @@ ai_services_case 'mariadb=OFF'   ''              "mariadb=OFF → AI_SERVICES em
 # because D10 sets each on purpose and must be the only thing that does.
 unset AI_SERVICES_MARIADB_MARIADBD AI_SERVICES_MARIADB_CLIENT AI_SERVICES_MARIADB_TEMPLATE \
       AI_SERVICES_MARIADB_SOCKET_DIR AI_SERVICES_MARIADB_PORT AI_SERVICES_MARIADB_SELF \
-      AI_SERVICES_MARIADB_IF_INET6 AI_SERVICES_MARIADB_TRIES \
+      AI_SERVICES_MARIADB_IF_INET6 AI_SERVICES_MARIADB_TRIES AI_SERVICES_MARIADB_DEFAULTS_FILE \
       AI_SERVICES_MYSQL_MYSQLD AI_SERVICES_MYSQL_CLIENT AI_SERVICES_MYSQL_TEMPLATE AI_SERVICES_MYSQL_SOCKET_DIR \
       AI_SERVICES_MYSQL_PORT AI_SERVICES_MYSQL_SELF AI_SERVICES_MYSQL_IF_INET6 \
       MYSQL_USERS MYSQL_DATABASES MYSQL_PORT MARIADB_PORT FAKE_MODE FAKE_SQL_FAIL
@@ -146,16 +146,23 @@ printf '00000000000000000000000000000001 01 80 10 80       lo\n' > "$FAKE/inet6-
 
 # The fake server: --version and --print-defaults answer as MariaDB 11.4's do
 # (its package config sets the character set, the collation, and options that
-# must NOT be passed back, such as --socket); a start records its argv and, by
+# must NOT be passed back, such as --socket) — and, asked with no --defaults-file,
+# also an app's own character set, as the real one reads $MYSQL_HOME/my.cnf and
+# ~/.my.cnf then (SVC-4, measured); a start records its argv and, by
 # FAKE_MODE, stays up as the server (`ok`, exec'ing a sleep so the adapter's pid
 # is the server's) or exits at once (`exit`, a port already taken).
 cat > "$FAKE/bin/mariadbd" <<'EOF'
 #!/usr/bin/env bash
+df=""
+[[ "${1:-}" == --defaults-file=* ]] && { df="${1#--defaults-file=}"; shift; }
 case "${1:-}" in
   --version) printf 'mariadbd  Ver 11.4.13-MariaDB-ubu2404 for debian-linux-gnu on x86_64 (mariadb.org binary distribution)\n'; exit 0 ;;
   --print-defaults)
+    printf '%s\n' "$df" > "$FAKE_DIR/defaults_file"
     printf 'mariadbd would have been started with the following arguments:\n'
-    printf -- '--socket=/run/mysqld/mysqld.sock --expire_logs_days=10 --character-set-server=utf8mb4 --character-set-collations=utf8mb4=uca1400_ai_ci\n'
+    printf -- '--socket=/run/mysqld/mysqld.sock --expire_logs_days=10 --character-set-server=utf8mb4 --character-set-collations=utf8mb4=uca1400_ai_ci'
+    [[ -n "$df" ]] || printf -- ' --character-set-server=bogus'
+    printf '\n'
     exit 0 ;;
 esac
 printf '%s\n' "$@" > "$FAKE_DIR/mariadbd.args"
@@ -198,12 +205,13 @@ md() {
            AI_SERVICES_MARIADB_TEMPLATE="${MD_TEMPLATE:-$FAKE/template}" AI_SERVICES_MARIADB_SOCKET_DIR="$FAKE/sock" \
            AI_SERVICES_MARIADB_PORT="${MD_PORT:-3306}" AI_SERVICES_MARIADB_SELF="${MD_SELF:-alice}" \
            AI_SERVICES_MARIADB_IF_INET6="${MD_INET6:-$FAKE/inet6-no}" AI_SERVICES_MARIADB_TRIES="${MD_TRIES:-50}" \
+           AI_SERVICES_MARIADB_DEFAULTS_FILE="$FAKE/my.cnf" \
            FAKE_DIR="$FAKE" FAKE_MODE="${FAKE_MODE:-ok}" FAKE_SQL_FAIL="${FAKE_SQL_FAIL:-}"
     # shellcheck source=../services.d/mariadb.sh
     source "$REPO_DIR/services.d/mariadb.sh"
     "$@" )
 }
-md_reset() { rm -f "$FAKE"/{calls,mariadbd.args,client.args,client.env,sql.log,pid_file,answer.pid_file}; rm -rf "$FAKE/data"; mkdir -p "$FAKE/data"; }
+md_reset() { rm -f "$FAKE"/{calls,defaults_file,mariadbd.args,client.args,client.env,sql.log,pid_file,answer.pid_file}; rm -rf "$FAKE/data"; mkdir -p "$FAKE/data"; }
 calls()   { if [[ -f "$FAKE/calls" ]]; then tr '\n' ' ' < "$FAKE/calls"; fi; }
 sql_has() { grep -qxF -- "$1" "$FAKE/sql.log" 2>/dev/null; }
 has_arg() { grep -qxF -- "$1" "$FAKE/mariadbd.args" 2>/dev/null; }
@@ -228,6 +236,9 @@ done
 has_arg --character-set-server=utf8mb4 && has_arg --character-set-collations=utf8mb4=uca1400_ai_ci \
   && pass "D4 the package's own character set and collation are passed back (run bare, 10.11 serves latin1)" \
   || fail "D4 character set from the package defaults (args: $(tr '\n' ' ' < "$FAKE/mariadbd.args"))"
+[[ "$(cat "$FAKE/defaults_file" 2>/dev/null)" == "$FAKE/my.cnf" ]] && ! has_arg --character-set-server=bogus \
+  && pass "D4b the character-set probe reads only the package's option file, not an app's MYSQL_HOME or ~/.my.cnf (SVC-4)" \
+  || fail "D4b probe defaults file (got '$(cat "$FAKE/defaults_file" 2>/dev/null)'; args: $(tr '\n' ' ' < "$FAKE/mariadbd.args"))"
 ! has_arg --socket=/run/mysqld/mysqld.sock && ! has_arg --expire_logs_days=10 && ! has_arg --daemonize \
   && pass "D4 nothing else of the package defaults is passed, and no --daemonize (mariadbd has none)" \
   || fail "D4 stray args (args: $(tr '\n' ' ' < "$FAKE/mariadbd.args"))"
@@ -299,7 +310,7 @@ runner() {  # $1 = AI_SERVICES value
   AI_SERVICES_LOG_ROOT="$TMP_ROOT/logs" AI_SERVICES_MARIADB_MARIADBD="$FAKE/bin/mariadbd" \
   AI_SERVICES_MARIADB_CLIENT="$FAKE/bin/mariadb" AI_SERVICES_MARIADB_TEMPLATE="$FAKE/template" \
   AI_SERVICES_MARIADB_SOCKET_DIR="$FAKE/sock" AI_SERVICES_MARIADB_SELF=alice AI_SERVICES_MARIADB_IF_INET6="$FAKE/inet6-no" \
-  FAKE_DIR="$FAKE" MYSQL_USERS=app_user MYSQL_DATABASES=myapp_test bash "$REPO_DIR/start-services.sh" start 2>&1
+  AI_SERVICES_MARIADB_DEFAULTS_FILE="$FAKE/my.cnf" FAKE_DIR="$FAKE" MYSQL_USERS=app_user MYSQL_DATABASES=myapp_test bash "$REPO_DIR/start-services.sh" start 2>&1
 }
 out="$(runner mariadb=11.4)"
 [[ "$out" == *"mariadb 11.4.13 ready on localhost:3306 (socket $FAKE/sock/mysqld.sock), root and alice with no password; users: app_user; databases: myapp_test"* && "$out" != *WARNING* ]] \

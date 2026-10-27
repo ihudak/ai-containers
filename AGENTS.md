@@ -136,7 +136,10 @@ background and is ready only when the server answering on the socket reports
 **this** start's `@@pid_file`. `--no-defaults` also drops the package's character
 set (bare 10.11 serves latin1), so the package's own `character-set-server` /
 `collation-server` / `character-set-collations` are read back from
-`--print-defaults` — the official images' utf8mb4 settings, per series. Its
+`--defaults-file=/etc/mysql/my.cnf --print-defaults` — the official images'
+utf8mb4 settings, per series. Only that file and what it includes: without `--defaults-file` the
+probe also read `$MYSQL_HOME/my.cnf` (settable from `container.env`) and
+`~/.my.cnf`, whose character set came later and won (bugs review SVC-4). Its
 integration case runs on its own `mariadb` image variant. User docs:
 `docs/components/mariadb.md`.
 

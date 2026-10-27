@@ -20,7 +20,7 @@
 | 2 | Launcher config / env layers / credentials | ENV-1 … ENV-6 — all fixed; REPO-1 found and fixed | — | HIGH |
 | 3 | Container-start runtime tools (entrypoint root steps, reconciles) | RT-1 … RT-7 — all fixed; RT-8, RT-9 open | stretch: GAP-1 for `link-default-ruby.sh`, `install-agent-skills.sh`, `agent-tools-reconcile.sh` | HIGH |
 | 4 | Host lifecycle scripts (project-init, sync, repo, group, report) | PRJ-1 … PRJ-9, DOC-1, DOC-3, REPO-2 … REPO-4, REPO-7 — fixed (PRJ-7 with TST-1); REPO-5, 6, 8 … 12 open | optional: GAP-6; stretch: GAP-1 for `group.sh` | MEDIUM |
-| 5 | In-container DB services | SVC-1 … SVC-3 — all fixed (SVC-2's hardware check is PLAT-4); SVC-4 open | — | MEDIUM |
+| 5 | In-container DB services | SVC-1 … SVC-4 — all fixed (SVC-2's hardware check is PLAT-4) | — | MEDIUM |
 | 6 | Build / Dockerfile / tools.d / config validation | BLD-1 … BLD-7 — fixed; BLD-8 and ENV-7 open | — | MEDIUM |
 | 7 | Test harness and CI | TST-1 … TST-8 — all fixed (PRJ-7 with TST-1); TST-12 found and fixed; TST-9, TST-10 and TST-13 fixed in a follow-up, TST-11 in another, TST-14 and TST-15 in a third | GAP-5 (same fix as TST-2), GAP-8 (with TST-5), GAP-9 (with TST-3) — all done | MEDIUM |
 | 8 | Docs (docs-only PR) | DOC-2, DOC-4 … DOC-13 — all fixed, with the same drift its reviews found elsewhere (a provenance check that could not fail among it) | GAP-14 (overlaps DOC-6) — done | MEDIUM |
@@ -458,7 +458,8 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 
 
 ### SVC-4: MariaDB's character-set probe reads an app's `MYSQL_HOME` and the sandbox user's `~/.my.cnf`
-- **Status: OPEN** (review of batch 5, LOW-1; predates batch 5)
+- **Status: FIXED** (2026-10-27). The probe is now `"$MYSQL_MYSQLD" --defaults-file="$MARIADB_DEFAULTS" --print-defaults`, the file `/etc/mysql/my.cnf` (`AI_SERVICES_MARIADB_DEFAULTS_FILE` for the tests). The path was checked for both shapes: Ubuntu 24.04's 10.11 and MariaDB's 11.4 (the official `mariadb:11.4` image, built from MariaDB's repository) each have it as an alternatives link to `mariadb.cnf`, and with `MYSQL_HOME` pointing at a `character-set-server=bogus` file and the same line in `~/.my.cnf`, the bare probe printed `bogus` twice, the fixed one the package's options only. The hermetic fake now answers a probe without `--defaults-file` as the real one does; D4 asserts the file and the absence of the app's value, red on the old adapter. The falsify target scores 12 killed of 12. Mutation `813-mariadb-port-from-app-env` was regenerated for the moved context. The review of this fix found no HIGH or MEDIUM; its LOW left open is SVC-5.
+- Found by the review of batch 5, LOW-1; predates batch 5
 - Severity: LOW — Confidence: CONFIRMED (measured in ubuntu:24.04 with mariadb-server 10.11)
 - Location: `services.d/mariadb.sh: svc_start()`, the `"$MYSQL_MYSQLD" --print-defaults` call that reads back the package's character-set options.
 - What's wrong: that call has neither `--no-defaults` nor `--defaults-file`, so it also reads `$MYSQL_HOME/my.cnf` or `$MARIADB_HOME/my.cnf` (both settable from `container.env`) and `~/.my.cnf`. A `character-set-server`/`collation-server` there is kept by the `mapfile`, comes later on `mariadbd`'s command line and wins; a bad value stops the server from starting.
@@ -694,7 +695,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Evidence: a script with that trap and a three-step loop, interrupted in step 1, printed "cleanup ran" and then ran steps 2 and 3. The new hermetic check, before the fix: rc 1, with the preflight reported FAILED after the interrupt.
 
 ### TST-14: `wf_it_selections` silently skips a quoted `run:` value
-- **Status: FIXED** (TST-14/15 follow-up, 2026-10-27). `_wf_it_awk()`'s `scan()` now records with guarded `?` any line that has `integration` before `run.sh` but is not a plain invocation — quoted, inside `bash -c`, through a variable (`"$GITHUB_WORKSPACE"/tests/…`), `cd tests/integration && ./run.sh`, a doubled slash, a plain-text mention outside a comment — and one holding a second invocation after the first one's arguments end; `wf_it_selections()` refuses it naming the step. A file named after the script past the arguments (`| tee tests/integration/run.sh.log`) is not a second invocation. It refuses rather than unquotes: each of those shapes needs its own reading, and a refusal is what the header promises for anything it cannot decide. Eight `unread_case` vectors in `tests/test-layer-checks-parser.sh` and one for the `tee` shape; the first five were each red on the old parser. A second invocation on one line was a sibling omission the review did not list: `run.sh --tags a; run.sh --tags b` recorded only `--tags a`. The review of this fix found no HIGH or MEDIUM; its two LOWs left open are TST-16 and TST-17.
+- **Status: FIXED** (TST-14/15 follow-up, 2026-10-27). `_wf_it_awk()`'s `scan()` now records with guarded `?` any line where `integration` comes before the script name (run.sh) but is not a plain invocation — quoted, inside `bash -c`, through a variable (`"$GITHUB_WORKSPACE"/tests/…`), a `cd` into `tests/integration` before the script, a doubled slash, a plain-text mention outside a comment — and one holding a second invocation after the first one's arguments end; `wf_it_selections()` refuses it naming the step. A file named after the script past the arguments (`| tee tests/integration/run.sh.log`) is not a second invocation. It refuses rather than unquotes: each of those shapes needs its own reading, and a refusal is what the header promises for anything it cannot decide. Eight `unread_case` vectors in `tests/test-layer-checks-parser.sh` and one for the `tee` shape; the first five were each red on the old parser. A second invocation on one line was a sibling omission the review did not list: `run.sh --tags a; run.sh --tags b` recorded only `--tags a`. The review of this fix found no HIGH or MEDIUM; its two LOWs left open are TST-16 and TST-17.
 - Found by the batch 7 follow-up review
 - Severity: LOW (an omission in nightly still fails the whole-corpus check, so PR ⊆ nightly still holds) — Confidence: CONFIRMED (reproduced with a fixture workflow)
 - Location: `tests/lib-layer-checks.sh: \`_wf_it_awk()\``. Its `scan()` needs a space, `;`, `&`, `|` or `(` before `tests/integration/run.sh`, and `key()` does not unquote a `run:` value.
@@ -1180,7 +1181,14 @@ Batch 9 (`9bd3729` … `6a0b37f`) went through 19 review rounds. Every HIGH and 
 - Failure scenario: a stale TMPDIR in the user's shell stops every launch, and the message does not say why.
 - Fix direction: make the file only when there is something to search, and name `${TMPDIR:-/tmp}` in the error.
 
-## 11. Found while fixing TST-14 and TST-15
+## 11. Found while fixing TST-14, TST-15 and SVC-4
+
+### SVC-5: a MariaDB package without `/etc/mysql/my.cnf` would start latin1 with no message
+- **Status: OPEN** (review of the SVC-4 fix, LOW-1)
+- Severity: LOW. Confidence: PLAUSIBLE (every series measured ships the file: Ubuntu's 10.11, and 10.6, 10.11, 11.4 and 11.8 from MariaDB's repository, each a link to `mariadb.cnf`)
+- Location: `services.d/mariadb.sh: svc_start()`, the `--defaults-file="$MARIADB_DEFAULTS" --print-defaults` probe
+- What's wrong: a missing file makes the probe exit 1 with its error on `/dev/null`; `cs` is empty and the server starts with no character-set options — latin1 before 11.8. Before SVC-4 a missing file had the same effect.
+- Fix direction: add `test -e /etc/mysql/my.cnf` to the Dockerfile mariadb layer's closing checks, so the build fails instead (that line is mutation `814-mariadb-no-client-compat`'s context, so regenerate it too).
 
 ### TST-16: an `exempt` row on `workflow_run` or an unfiltered `push` still verifies
 - **Status: OPEN** (review of the TST-14/15 fix, LOW-5)

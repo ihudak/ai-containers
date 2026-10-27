@@ -26,6 +26,11 @@ MYSQL_SOCKET_DIR="${AI_SERVICES_MARIADB_SOCKET_DIR:-/var/run/mysqld}"
 MYSQL_PORT="${AI_SERVICES_MARIADB_PORT:-3306}"
 MYSQL_SELF="${AI_SERVICES_MARIADB_SELF:-$(id -un)}"
 MYSQL_IF_INET6="${AI_SERVICES_MARIADB_IF_INET6:-/proc/net/if_inet6}"
+# The package's own option file: the character-set probe reads it and what it
+# includes (mariadb.conf.d/, conf.d/), nothing else.
+# The same path for Ubuntu's 10.11 and a series from MariaDB's repository (an
+# alternatives link to mariadb.cnf in both; measured).
+MARIADB_DEFAULTS="${AI_SERVICES_MARIADB_DEFAULTS_FILE:-/etc/mysql/my.cnf}"
 # How many 0.1 s waits svc_start allows the server to answer: 30 s by default.
 MARIADB_TRIES="${AI_SERVICES_MARIADB_TRIES:-300}"
 [[ "$MARIADB_TRIES" =~ ^[1-9][0-9]*$ ]] || MARIADB_TRIES=300
@@ -50,7 +55,10 @@ svc_start() {  # <datadir> <logfile>
   # defaults and passed back — what the official mariadb image, built from the
   # same packages, serves: utf8mb4 with utf8mb4_general_ci on Ubuntu's 10.11,
   # with utf8mb4_uca1400_ai_ci (character-set-collations) on MariaDB's 11.4.
-  mapfile -t cs < <("$MYSQL_MYSQLD" --print-defaults 2>/dev/null | tr ' ' '\n' \
+  # Only the package's file: without --defaults-file the probe also reads
+  # $MYSQL_HOME/my.cnf and $MARIADB_HOME/my.cnf, which container.env can set,
+  # and ~/.my.cnf, and a character set there came later and won (SVC-4).
+  mapfile -t cs < <("$MYSQL_MYSQLD" --defaults-file="$MARIADB_DEFAULTS" --print-defaults 2>/dev/null | tr ' ' '\n' \
                      | grep -E '^--(character-set-server|collation-server|character-set-collations)=')
   # No --daemonize in mariadbd: it is started in the background, with its own
   # pid, and waited for. The redo log matches the template's (8 MB), or the
