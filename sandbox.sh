@@ -732,8 +732,10 @@ launcher_ro_overlay() {
         base="${g%/*}"; gro=("$g")      # a .git file, or read-only whole: pin what is above it
       else
         base="$g"
+        # The commondir read only when it is a regular file: a FIFO there blocked it
+        # (review of 1a30bb4; G65). $(...) strips the newline, so ./ is all there is.
         if [[ -d "$g/objects" ]] && { [[ -f "$g/config" ]] || [[ ! -e "$g/commondir" && ! -L "$g/commondir" ]] \
-             || [[ "$(head -c 16 "$g/commondir" 2>/dev/null)" == $'./\n' || "$(head -c 16 "$g/commondir" 2>/dev/null)" == ./ ]]; }; then
+             || { [[ -f "$g/commondir" ]] && [[ "$(head -c 16 "$g/commondir" 2>/dev/null)" == ./ ]]; }; }; then
           cfg="$g/config"
           # A repository git reads with no config of its own gets an empty one, as
           # commondir gets ./ — or the agent could add one after the launch (G49).
@@ -1986,6 +1988,7 @@ _git_config_bool() {
     v="$(_git_file_config "$1" --type=bool --get "$2" 2>/dev/null)" || return 1
     [[ "$v" == true ]]; return
   fi
+  [[ -f "$1" ]] || return 1
   awk -v sec="${2%.*}" -v key="${2##*.}" '
     /^[[:space:]]*\[/ { s = tolower($0); gsub(/[][[:space:]]/, "", s); insec = (s == tolower(sec)); next }
     insec {
@@ -2008,6 +2011,7 @@ _git_config_get() {
     v="$(_git_file_config "$1" --get "$2" 2>/dev/null)" || return 1
     printf '%s' "$v"; return 0
   fi
+  [[ -f "$1" ]] || return 1
   awk -v sec="${2%.*}" -v key="${2##*.}" '
     /^[[:space:]]*\[/ { s = tolower($0); gsub(/[][[:space:]]/, "", s); insec = (s == tolower(sec)); next }
     insec {
@@ -2056,6 +2060,10 @@ _git_exec_keys() {
 # (tests/test-git-internals-ro.sh G30). GIT_DIR=/dev/null stops the discovery.
 _git_file_config() {
   local f="$1"; shift
+  # A regular file only (-f follows a link to one): git config blocks on a FIFO,
+  # and a directory the agent made a git directory of can hold one as its config
+  # (review of 1a30bb4; G65).
+  [[ -f "$f" ]] || return 1
   GIT_DIR=/dev/null git config --file "$f" "$@"
 }
 

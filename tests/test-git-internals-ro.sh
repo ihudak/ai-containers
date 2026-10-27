@@ -1248,5 +1248,19 @@ EXTRA_MOUNTS="$PROJ/f64/sub" launch_timed 60
   || fail "G64 the walk up hung on a FIFO .git"
 ( exec 3<>"$PROJ/f64/.git" ) 2>/dev/null; rm -rf "$PROJ/f64"
 
+# ── G65: a git directory's config or commondir as a FIFO cannot hang a launch ─
+# Since a config is no longer required to take a directory for a git directory,
+# one the agent made with a FIFO config, or commondir, hung every read of it:
+# hooksPath, objectformat, core.worktree, the own-repository test (review of
+# 1a30bb4, MEDIUM; a regression from 236d347).
+for v in config commondir; do
+  mkdir -p "$PROJ/ff65/.git/objects" "$PROJ/ff65/.git/refs"; printf 'ref: refs/heads/main\n' > "$PROJ/ff65/.git/HEAD"
+  mkfifo "$PROJ/ff65/.git/$v"
+  launch_timed 60
+  [[ "$LAUNCH_RC" != 124 ]] && pass "G65 a FIFO $v in a git directory does not hang the launch (${LAUNCH_S}s)" \
+    || fail "G65 a FIFO $v hung the launch"
+  ( exec 3<>"$PROJ/ff65/.git/$v" ) 2>/dev/null; rm -rf "$PROJ/ff65"
+done
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
