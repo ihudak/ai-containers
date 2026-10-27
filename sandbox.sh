@@ -1575,14 +1575,26 @@ _git_index_read() {
   # a concurrent container could swap the index for a FIFO after them, which
   # blocked the launch for ever (review of the batch 1 hotfix; GIT-4, G44). A
   # timeout is a read that failed. macOS has no timeout(1); there it is unbounded.
-  local _gir_t=()
+  # Read once per launch, into a file: ls-files lists the same whatever worktree
+  # it is given, so a second mount reading one index reuses the first read, and
+  # mapfile reads a file in blocks where it read a pipe a byte at a time — 100k
+  # entries cost seconds a read (review of 4e91bf3). A git that exited non-zero,
+  # a cut-off record included, is a failed read (G39).
+  local _gir_t=() _gir_f _gir_rc
   command -v timeout >/dev/null 2>&1 && _gir_t=(timeout -k 2 10)
-  mapfile -d '' -t _gir_out < <(LC_ALL=C GIT_DIR="$_gir_tmp/$fmt/.git" GIT_INDEX_FILE="$g/index" \
+  _gir_f="${_gir_cache[$g]:-}"
+  if [[ -z "$_gir_f" ]]; then
+    _gir_f="$_gir_tmp/idx.${#_gir_cache[@]}"; _gir_cache[$g]="$_gir_f"
+    _gir_rc=0
+    LC_ALL=C GIT_DIR="$_gir_tmp/$fmt/.git" GIT_INDEX_FILE="$g/index" \
       GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_NO_LAZY_FETCH=1 GIT_ALLOW_PROTOCOL=none \
-      ${_gir_t[@]+"${_gir_t[@]}"} git -C "$top" -c core.fsmonitor=false --work-tree="$top" ls-files -s -z 2>"$_gir_tmp/err" \
-      || printf '\0ls-files-failed\0')
-  if (( ${#_gir_out[@]} )) && [[ "${_gir_out[-1]}" == ls-files-failed ]]; then _gir_out=(); return 1; fi
-  if grep -qE '^(error|fatal):' "$_gir_tmp/err" 2>/dev/null; then _gir_out=(); return 1; fi
+      ${_gir_t[@]+"${_gir_t[@]}"} git -C "$top" -c core.fsmonitor=false --work-tree="$top" ls-files -s -z \
+      >"$_gir_f" 2>"$_gir_f.err" || _gir_rc=$?
+    if (( _gir_rc == 0 )) && grep -qE '^(error|fatal):' "$_gir_f.err" 2>/dev/null; then _gir_rc=1; fi
+    printf '%s' "$_gir_rc" > "$_gir_f.rc"
+  fi
+  if [[ "$(cat "$_gir_f.rc" 2>/dev/null)" != 0 ]]; then _gir_out=(); return 1; fi
+  mapfile -d '' -t _gir_out < "$_gir_f"
   return 0
 }
 
@@ -1658,7 +1670,12 @@ _gdi_follow() {
   # were never read; review of 236d347).
   # Every referrer is kept: one .git file must not choose the worktree a git
   # directory's index is read against (review of 3c754aa, HIGH).
-  if [[ "$4" == */.git ]]; then gtop_g+=("$t"); gtop_d+=("$1"); fi
+  if [[ "$4" == */.git && -z "${gref[$t|$1]:-}" ]]; then
+    gref[$t|$1]=1; gtop_g+=("$t"); gtop_d+=("$1")
+    # A referrer for one already read: read it again, with this worktree too — a
+    # decoy found first was otherwise the only one (review of 4e91bf3).
+    if [[ -n "${gread[$t]:-}" ]]; then unset 'gread[$t]'; _gdi_ionly+=("$t"); fi
+  fi
   # A git directory outside this mount, reached from a .git file in it, that is
   # not a */.git or .git/modules one: its index is read here, against that .git
   # file's directory, which is this mount's — no other mount's scan sees the
@@ -1733,22 +1750,31 @@ git_dirs_in() {
   # agent's to write (re-review of batch 9).
   local n=0 nf=0 top rec mode path tgt _gdi_warned=0
   local -a gtop_g=() gtop_d=() tops=() _gdi_ionly=()
-  local -A ionly_had=() gpend=()
+  local qq
+  local -A ionly_had=() gpend=() gquiet=() gread=() gref=()
   local gchanged up=""
   local ni=0
   # The repository a mount sits in, when the mount is a subdirectory of one: its
   # index, outside the mount and out of the agent's reach, records submodules
   # inside it that the scan prunes (review of 3edee25; G60). Index only.
+  # Past every .git inside a writable bind, which the agent could have planted
+  # between a nested mount and the real repository (review of 4e91bf3), to the
+  # first one outside them all. An unreadable one out there is the user's own
+  # (a sparse index), and is not named on every launch.
   up="${5%/*}"
   while [[ -n "$up" ]]; do
-    if [[ -d "$up/.git" && ! -L "$up/.git" ]]; then
-      if _is_git_dir "$up/.git"; then ionly_had[$up/.git]=1; _gdi_ionly+=("$up/.git"); fi
-      break
-    elif [[ -f "$up/.git" && ! -L "$up/.git" ]]; then
-      tgt=""; IFS= read -r -d '' tgt < <(head -c 4096 "$up/.git" 2>/dev/null) || true
-      while [[ "$tgt" == *[$'\r\n'] ]]; do tgt="${tgt%?}"; done
-      [[ "$tgt" != "gitdir: "* ]] || _gdi_follow "$up" "${tgt#gitdir: }" "$5" "$up/.git"
-      break
+    if [[ -e "$up/.git" && ! -L "$up/.git" ]]; then
+      if [[ -d "$up/.git" ]]; then
+        if _is_git_dir "$up/.git" && [[ -z "${ionly_had[$up/.git]:-}" ]]; then
+          ionly_had[$up/.git]=1; _gdi_ionly+=("$up/.git")
+          _in_writable "$up" || gquiet[$up/.git]=1
+        fi
+      else
+        tgt=""; IFS= read -r -d '' tgt < <(head -c 4096 "$up/.git" 2>/dev/null) || true
+        while [[ "$tgt" == *[$'\r\n'] ]]; do tgt="${tgt%?}"; done
+        [[ "$tgt" != "gitdir: "* ]] || _gdi_follow "$up" "${tgt#gitdir: }" "$5" "$up/.git"
+      fi
+      _in_writable "$up" || break
     fi
     up="${up%/*}"
   done
@@ -1805,6 +1831,16 @@ git_dirs_in() {
     # cannot replace one (review of 3c754aa).
     if (( ${#tops[@]} == 0 )); then
       tseen=()
+      # A linked worktree's git directory points back at its checkout's .git file
+      # (gitdir): one more candidate, inside this mount — a decoy pointer adds a
+      # checkout to check, no more.
+      if [[ -f "$g/gitdir" ]]; then
+        tgt=""; IFS= read -r -d '' tgt < <(head -c 4096 "$g/gitdir" 2>/dev/null) || true
+        while [[ "$tgt" == *[$'\r\n'] ]]; do tgt="${tgt%?}"; done
+        tgt="${tgt%/.git}"
+        if [[ "$tgt" == /* && -d "$tgt" ]] && tgt="$(cd -P -- "$tgt" 2>/dev/null && pwd -P)" \
+           && [[ "$tgt" == "$5" || "$tgt" == "$5"/* ]]; then tseen[$tgt]=1; tops+=("$tgt"); fi
+      fi
       for (( q = 0; q < ${#gtop_g[@]}; q++ )); do
         [[ "${gtop_g[q]}" == "$g" && -z "${tseen[${gtop_d[q]}]:-}" ]] || continue
         tseen[${gtop_d[q]}]=1
@@ -1812,8 +1848,10 @@ git_dirs_in() {
         # decoys that sort first leave the real checkout unchecked (automated
         # security review of 3edee25). No real tree has that many.
         if (( ${#tops[@]} >= 20 )); then
-          printf 'ERROR: more than 20 .git files name %s; refusing the launch.\n' "$(_term "$g")" >&2
-          printf '       Remove the ones that are not yours (find the files with: grep -rl --include=.git %q .).\n' "$g" >&2
+          printf 'ERROR: more than 20 .git files in %s name %s; refusing the launch.\n' "$(_term "$5")" "$(_term "$g")" >&2
+          printf '       Among them, in:\n' >&2
+          for (( qq = 0; qq < 5 && qq < ${#tops[@]}; qq++ )); do printf '         %s\n' "$(_term "${tops[qq]}")" >&2; done
+          printf '       Remove the .git files that are not yours.\n' >&2
           exit 1
         fi
         tops+=("${gtop_d[q]}")
@@ -1826,7 +1864,7 @@ git_dirs_in() {
       gpend[$g]=1
       continue
     fi
-    unset 'gpend[$g]' 
+    unset 'gpend[$g]'
     for top in "${tops[@]}"; do
       if [[ "$g" == */.git/modules/* && -f "$top/.git" && ! -L "$top/.git" && -z "${had[$top/.git]:-}" ]] \
          && [[ "$top" == "$5" || "$top" == "$5"/* ]]; then
@@ -1837,10 +1875,13 @@ git_dirs_in() {
     # Read once: what ls-files lists does not depend on the worktree, and a read
     # per referrer let each planted .git file cost another (review of 8b3e0c5).
     links=()
+    gread[$g]=1
     if ! _git_index_read links "$g" "${tops[0]}"; then
       links=()
-      printf 'WARNING: cannot read the index of %q; submodules recorded in it are not followed,\n' "$g" >&2
-      printf '         so a checkout of one that the scan does not reach is not protected.\n' >&2
+      if [[ -z "${gquiet[$g]:-}" ]]; then
+        printf 'WARNING: cannot read the index of %q; submodules recorded in it are not followed,\n' "$g" >&2
+        printf '         so a checkout of one that the scan does not reach is not protected.\n' >&2
+      fi
     fi
     local gskip=0
     for rec in ${links[@]+"${links[@]}"}; do
@@ -1898,9 +1939,24 @@ git_dirs_in() {
   if (( _gdi_warned > 5 )); then
     printf 'WARNING: … and %d more .git files or commondirs in %s name what this launch cannot protect.\n' "$((_gdi_warned - 5))" "$(_term "$5")" >&2
   fi
+  # Named only if its index records a submodule: a removed or deinit'd submodule,
+  # or a linked worktree checked out outside every mount, is ordinary (review of
+  # 4e91bf3). ls-files lists the same whatever worktree, so $g serves as one.
   for g in ${gpend[@]+"${!gpend[@]}"}; do
     [[ -f "$g/index" ]] || continue
-    printf 'WARNING: no worktree is known for %s, so the submodules its index records are not followed.\n' "$(_term "$g")" >&2
+    # A linked worktree checked out where the agent cannot write is not its to steer.
+    if [[ -f "$g/gitdir" ]]; then
+      tgt=""; IFS= read -r -d '' tgt < <(head -c 4096 "$g/gitdir" 2>/dev/null) || true
+      while [[ "$tgt" == *[$'\r\n'] ]]; do tgt="${tgt%?}"; done
+      if [[ "$tgt" == /* ]] && ! _in_writable "$tgt"; then continue; fi
+    fi
+    links=()
+    _git_index_read links "$g" "$g" || continue
+    for rec in ${links[@]+"${links[@]}"}; do
+      [[ "${rec%% *}" == 160000 ]] || continue
+      printf 'WARNING: no worktree is known for %s, so the submodules its index records are not followed.\n' "$(_term "$g")" >&2
+      break
+    done
   done
   return 0
 }
@@ -2185,6 +2241,7 @@ _launcher_verify_dir=""
 # repositories (the host's git never runs there). Set by run_container.
 _git_skip_root=""
 _gir_tmp=""
+declare -A _gir_cache=()   # git directory → its read index, once per launch
 trap 'rm -rf "${_launcher_verify_dir:-}" "${_gir_tmp:-}" 2>/dev/null' EXIT
 
 # The agent's identity: numeric, within a 32-bit id, and never root — capsh

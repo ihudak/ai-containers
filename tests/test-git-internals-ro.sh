@@ -1136,7 +1136,7 @@ M57="$PROJ/main57"; "${G[@]}" init -q "$M57" && "${G[@]}" -C "$M57" commit -q --
 wt57="$(ls -d "$M57/.git/worktrees"/* | head -1)"
 for n in $(seq 1 21); do mkdir -p "$PROJ/dec57/d$n"; printf 'gitdir: %s\n' "$wt57" > "$PROJ/dec57/d$n/.git"; done
 launch ..
-[[ "$LAUNCH_RC" != 0 ]] && grep -qF "ERROR: more than 20 .git files name $wt57" "$ERR" \
+[[ "$LAUNCH_RC" != 0 ]] && grep -qF "ERROR: more than 20 .git files in $PROJ name $wt57" "$ERR" \
   && pass "G57 more than twenty .git files naming one git directory refuse the launch" \
   || fail "G57 decoy referrers past the cap did not refuse (rc=$LAUNCH_RC; $(grep -F 'more than 20' "$ERR" | head -1))"
 rm -rf "$M57" "$PROJ/lw57" "$PROJ/dec57"
@@ -1189,6 +1189,55 @@ has_mount "$M60/src/vendor/lib/.git/config:/workspace/src/vendor/lib/.git/config
   && pass "G60 a subdirectory of a repository mounted alone has the submodules in it protected" \
   || fail "G60 a lone subdirectory's submodule left writable"
 rm -rf "$S60" "$M60"
+
+# ── G61: a .git the agent plants cannot stop the walk to the enclosing one ───
+# With a writable mount nested in another (the project, plus EXTRA_MOUNTS of a
+# subdirectory of it), the agent can plant a .git between the two; the walk up
+# stopped there and never read the project's index, leaving a submodule under
+# the nested mount's pruned vendor/ writable in its view (review of 4e91bf3).
+S61="$TMP/us61"; "${G[@]}" init -q "$S61" && "${G[@]}" -C "$S61" commit -q --allow-empty -m s
+mkdir -p "$PROJ/a61/b"; "${G[@]}" clone -q "$S61" "$PROJ/a61/b/vendor/x" \
+  && "${G[@]}" -C "$PROJ" add a61/b/vendor/x 2>/dev/null || { printf 'SCAFFOLD-FAILED: G61\n'; exit 1; }
+mkdir "$PROJ/a61/.git"
+EXTRA_MOUNTS="$PROJ/a61/b" launch ..
+has_mount "$PROJ/a61/b/vendor/x/.git/config:/workspace/b/vendor/x/.git/config:ro" \
+  && pass "G61 a planted .git between two mounts does not hide the enclosing repository" \
+  || fail "G61 the walk stopped at a planted .git"
+"${G[@]}" -C "$PROJ" rm -q --cached a61/b/vendor/x >/dev/null 2>&1; rm -rf "$S61" "$PROJ/a61"
+# ── G62: a referrer that turns up after a git directory was read is used too ──
+# A decoy found first made a git directory without core.worktree be read against
+# the decoy alone; the real checkout, found later through an index, was never
+# used (review of 4e91bf3).
+U62="$TMP/up62"; S62="$TMP/us62"
+for r in "$U62" "$S62"; do "${G[@]}" init -q "$r" && "${G[@]}" -C "$r" commit -q --allow-empty -m r; done
+M62="$PROJ/main62"; "${G[@]}" init -q "$M62" \
+  && "${G[@]}" -C "$M62" -c protocol.file.allow=always submodule -q add "$U62" vendor/lib && "${G[@]}" -C "$M62" commit -q -m s \
+  && "${G[@]}" clone -q "$S62" "$M62/vendor/lib/vendor/sub" && "${G[@]}" -C "$M62/vendor/lib" add vendor/sub 2>/dev/null \
+  && "${G[@]}" -C "$M62/vendor/lib" commit -q -m n \
+  && "${G[@]}" config -f "$M62/.git/modules/vendor/lib/config" --unset core.worktree \
+  || { printf 'SCAFFOLD-FAILED: G62\n'; exit 1; }
+mkdir -p "$PROJ/decoy62"; printf 'gitdir: ../main62/.git/modules/vendor/lib\n' > "$PROJ/decoy62/.git"
+launch ..
+has_mount "$M62/vendor/lib/vendor/sub/.git/config:/workspace/proj/main62/vendor/lib/vendor/sub/.git/config:ro" \
+  && pass "G62 a referrer found after a git directory was read is read against too" \
+  || fail "G62 a late referrer was never used"
+rm -rf "$U62" "$S62" "$M62" "$PROJ/decoy62"
+# ── G63: ordinary repositories do not warn on every launch ───────────────────
+# A submodule removed with git rm, one deinit'd, and a linked worktree checked
+# out outside every mount each have a git directory with no known worktree; only
+# one whose index records a submodule is worth naming (review of 4e91bf3).
+S63="$TMP/us63"; "${G[@]}" init -q "$S63" && "${G[@]}" -C "$S63" commit -q --allow-empty -m s
+A63="$PROJ/app63"; "${G[@]}" init -q "$A63" && "${G[@]}" -C "$A63" commit -q --allow-empty -m i \
+  && "${G[@]}" -C "$A63" -c protocol.file.allow=always submodule -q add "$S63" gone \
+  && "${G[@]}" -C "$A63" -c protocol.file.allow=always submodule -q add "$S63" dein && "${G[@]}" -C "$A63" commit -q -m n \
+  && "${G[@]}" -C "$A63" rm -q gone && "${G[@]}" -C "$A63" commit -q -m rm \
+  && "${G[@]}" -C "$A63" submodule -q deinit dein && "${G[@]}" -C "$A63" worktree add -q "$TMP/outside63" \
+  || { printf 'SCAFFOLD-FAILED: G63\n'; exit 1; }
+launch ..
+! grep -qF "no worktree is known" "$ERR" \
+  && pass "G63 removed, deinit'd and outside-worktree git directories do not warn" \
+  || fail "G63 ordinary repositories warn every launch ($(grep -F 'no worktree is known' "$ERR"))"
+rm -rf "$S63" "$A63" "$TMP/outside63"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
