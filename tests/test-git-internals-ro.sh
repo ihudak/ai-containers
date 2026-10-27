@@ -1162,5 +1162,33 @@ has_mount "$M58/vendor/a/vendor/b/vendor/c/.git/config:/workspace/proj/main58/ve
   || fail "G58 a nested submodule's index was dropped before its .git file turned up"
 rm -rf "$U58" "$S58" "$T58" "$M58"
 
+# ── G59/G60: the repository a mount sits in is read too ─────────────────────
+# G59: a submodule checkout mounted on its own: its git directory is the
+# superproject's .git/modules/<name>, outside the mount, and its index (with its
+# own submodules) was never read (review of 3edee25, MEDIUM).
+U59="$TMP/up59"; S59="$TMP/us59"
+for r in "$U59" "$S59"; do "${G[@]}" init -q "$r" && "${G[@]}" -C "$r" commit -q --allow-empty -m r; done
+M59="$TMP/main59"; "${G[@]}" init -q "$M59" \
+  && "${G[@]}" -C "$M59" -c protocol.file.allow=always submodule -q add "$U59" sub && "${G[@]}" -C "$M59" commit -q -m s \
+  && "${G[@]}" clone -q "$S59" "$M59/sub/vendor/lib" && "${G[@]}" -C "$M59/sub" add vendor/lib 2>/dev/null \
+  && "${G[@]}" -C "$M59/sub" commit -q -m l || { printf 'SCAFFOLD-FAILED: cannot create the G59 repository\n'; exit 1; }
+EXTRA_MOUNTS="$M59/sub" launch ..
+has_mount "$M59/sub/vendor/lib/.git/config:/workspace/sub/vendor/lib/.git/config:ro" \
+  && pass "G59 a submodule checkout mounted alone has its own submodules protected" \
+  || fail "G59 a lone submodule checkout's submodule left writable"
+rm -rf "$U59" "$S59" "$M59"
+# G60: a subdirectory of a repository mounted alone: the enclosing repository's
+# index, outside the mount, records the submodules inside it — one under a
+# pruned vendor/ is found nowhere else.
+S60="$TMP/us60"; "${G[@]}" init -q "$S60" && "${G[@]}" -C "$S60" commit -q --allow-empty -m s
+M60="$TMP/main60"; "${G[@]}" init -q "$M60" && "${G[@]}" clone -q "$S60" "$M60/src/vendor/lib" \
+  && "${G[@]}" -C "$M60" add src/vendor/lib 2>/dev/null && "${G[@]}" -C "$M60" commit -q -m l \
+  || { printf 'SCAFFOLD-FAILED: cannot create the G60 repository\n'; exit 1; }
+EXTRA_MOUNTS="$M60/src" launch ..
+has_mount "$M60/src/vendor/lib/.git/config:/workspace/src/vendor/lib/.git/config:ro" \
+  && pass "G60 a subdirectory of a repository mounted alone has the submodules in it protected" \
+  || fail "G60 a lone subdirectory's submodule left writable"
+rm -rf "$S60" "$M60"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

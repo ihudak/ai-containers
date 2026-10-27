@@ -1664,7 +1664,9 @@ _gdi_follow() {
   # file's directory, which is this mount's — no other mount's scan sees the
   # referrer (a linked worktree in another mount than its main repository;
   # review of 8b3e0c5). It is protected by launcher_ro_overlay's queue.
-  if [[ "$4" == */.git && "$t" != "$3" && "$t" != "$3"/* && "$t" != */.git && "$t" != */.git/modules/* \
+  # A .git/modules/* one too: a submodule checkout mounted alone has its git
+  # directory in the superproject, outside the mount (review of 3edee25).
+  if [[ "$4" == */.git && "$t" != "$3" && "$t" != "$3"/* && "$t" != */.git \
         && -z "${ionly_had[$t]:-}" ]] && _is_git_dir "$t"; then
     ionly_had[$t]=1; _gdi_ionly+=("$t")
   fi
@@ -1732,8 +1734,24 @@ git_dirs_in() {
   local n=0 nf=0 top rec mode path tgt _gdi_warned=0
   local -a gtop_g=() gtop_d=() tops=() _gdi_ionly=()
   local -A ionly_had=() gpend=()
-  local gchanged
+  local gchanged up=""
   local ni=0
+  # The repository a mount sits in, when the mount is a subdirectory of one: its
+  # index, outside the mount and out of the agent's reach, records submodules
+  # inside it that the scan prunes (review of 3edee25; G60). Index only.
+  up="${5%/*}"
+  while [[ -n "$up" ]]; do
+    if [[ -d "$up/.git" && ! -L "$up/.git" ]]; then
+      if _is_git_dir "$up/.git"; then ionly_had[$up/.git]=1; _gdi_ionly+=("$up/.git"); fi
+      break
+    elif [[ -f "$up/.git" && ! -L "$up/.git" ]]; then
+      tgt=""; IFS= read -r -d '' tgt < <(head -c 4096 "$up/.git" 2>/dev/null) || true
+      while [[ "$tgt" == *[$'\r\n'] ]]; do tgt="${tgt%?}"; done
+      [[ "$tgt" != "gitdir: "* ]] || _gdi_follow "$up" "${tgt#gitdir: }" "$5" "$up/.git"
+      break
+    fi
+    up="${up%/*}"
+  done
   local -A tseen=()
   local q
   local -a links=()
