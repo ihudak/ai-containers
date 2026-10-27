@@ -47,7 +47,7 @@ Every key in `sandbox.conf`. Keys with more to say than a line link to their own
 | `kiro` | ON / OFF | Kiro CLI |
 | `graphify` | ON / OFF | [Code-to-knowledge-graph tool](graphify.md) |
 
-The agent CLIs themselves are **not baked into the image** — they install at container start into a group-mounted `~/.ai-tools`. See [Agent-tier tools](../agent-tools.md).
+Every agent CLI here except Kiro is **not baked into the image** — they install at container start into a group-mounted `~/.ai-tools`. See [Agent-tier tools](../agent-tools.md). **Kiro is baked** at build time, and Docker caches its layer: neither a restart nor a plain `./build.sh` picks up a newer Kiro; `./build.sh --no-cache` does.
 
 ### Java / JVM (via SDKMAN)
 

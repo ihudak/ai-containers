@@ -17,7 +17,7 @@
 #   A project's sandbox.conf is reconciled against this repo's on every sync:
 #   pending migrations/ hooks run, any new upstream keys are appended (a key the
 #   project already set is never touched), and the '# schema-version:' marker is
-#   ensured. See README "sandbox.conf schema versioning".
+#   ensured. See docs/multiple-projects.md "sandbox.conf schema versioning".
 set -euo pipefail
 # shellcheck source=bash-floor.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bash-floor.sh"

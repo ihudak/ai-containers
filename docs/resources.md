@@ -44,7 +44,7 @@ CONTAINER_MEMORY=8g CONTAINER_MEMORY_SWAP=8g ./sandbox.sh restricted /path/to/re
 
 A small amount of swap (e.g. memory `8g`, swap `10g` → 2g of swap) is only worth it if you hit occasional short memory spikes during large builds and would rather absorb a brief slowdown than have the build killed. Unlimited swap (`-1`) is not recommended: it hides genuine memory leaks and can drag the whole host down.
 
-These variables affect `restricted` and `discovery` runs only; the `build` step is unaffected.
+These variables apply to every run, `restricted`, `discovery` and `open` alike; the image build is unaffected.
 
 > **Note on defaults:** the launcher defaults above (`1.0` CPU / `4g` memory) are the minimum for a single agent doing light work. For comfortable day-to-day use with one of the agents plus a real build toolchain, `CONTAINER_CPUS=4` and `CONTAINER_MEMORY=8g` (with `CONTAINER_MEMORY_SWAP=8g`) is a better starting point. See the per-agent minimums below.
 

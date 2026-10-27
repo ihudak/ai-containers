@@ -46,7 +46,7 @@ cat > "$hook" <<'SKEL'
 #!/usr/bin/env bash
 # Migration NNN: <describe the semantic change — rename / split / removal>.
 #
-# Rules (see README "sandbox.conf schema versioning"):
+# Rules (see docs/multiple-projects.md "sandbox.conf schema versioning"):
 #   - Idempotent: check your own precondition and `exit 0` if already applied.
 #   - Touch ONLY key=value lines, never comment text.
 #   - The target project's sandbox.conf path arrives as $1.

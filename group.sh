@@ -6,7 +6,7 @@ set -euo pipefail
 # A container group is a named directory under ~/.ai-containers/<group>/ holding
 # the agent dotfile trees (.claude, .codex, .copilot, .config/gh, .ssh, .agents, …)
 # that get mounted into the container. Selected at run time with
-# AI_CONTAINER_GROUP; see the README "Container groups" section.
+# AI_CONTAINER_GROUP; see docs/groups.md.
 #
 # A group used to be ONLY a directory, so `rm -rf ~/.ai-containers/<group>` was the
 # whole story. That stopped being true when the group's Ruby home (~/.rvm) moved to

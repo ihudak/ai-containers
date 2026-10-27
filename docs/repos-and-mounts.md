@@ -192,7 +192,7 @@ Agent dotfile directories are sourced from the active container group (`~/.ai-co
 | `<group>/.claude.json` | `~/.claude.json` | read-write | `claude-code` |
 | `<group>/.codex/` | `~/.codex` | read-write | `codex` |
 | `<group>/.gemini/` | `~/.gemini` | read-write | `gemini` |
-| `<group>/.rvm/` | `~/.rvm` | read-write | `ruby` |
+| Docker volume `ai-containers-rvm-<group>` (the `host` group: `$HOME/.rvm`) | `~/.rvm` | read-write | `ruby` |
 | `<group>/.ai-tools/` | `~/.ai-tools` | read-write | any of `claude-code`/`copilot`/`codex`/`gemini`/`graphify`/`vale`/`mkdocs` |
 | `<group>/.config/dtctl/` ² | `~/.config/dtctl` | read-write | `dtctl` |
 | `<group>/.config/dtmgd/` ² | `~/.config/dtmgd` | read-write | `dtmgd` |

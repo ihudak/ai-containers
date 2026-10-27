@@ -29,12 +29,18 @@ The default group is named `default`. Its directory is `~/.ai-containers/default
 │   ├── .yarn/             ← yarn home, when yarn= is ON (mounted, never copied)
 │   ├── .gradle/           ← Gradle user home, when any JVM key is set (mounted, never copied)
 │   ├── .m2/               ← Maven repository, ditto
-│   ├── .rvm/              ← rvm + Ruby versions/gems (only when ruby= is set)
 │   ├── .config/dtctl/    ← tools.d config dir, seeded once from $HOME if present
 │   └── .config/dtmgd/    ← ditto
 ├── docs/               ← custom group, same shape
 └── java-backend/       ← another custom group
 ```
+
+A group's Ruby home (`~/.rvm` in the container: rvm, every Ruby version and its
+gems, only when `ruby=` is set) is **not** in this directory. It is the Docker
+volume `ai-containers-rvm-<group>`, on every platform except the `host` group,
+which mounts your real `~/.rvm`. Removing or backing up the group directory does
+not touch it: `./group.sh rm <group>` removes both, and `./group.sh gc` collects a
+volume whose directory was deleted by hand.
 
 ## Group-name rules
 

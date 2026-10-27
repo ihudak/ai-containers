@@ -55,7 +55,7 @@ v0.7.0-5-gefce88  3       ihudak   ihudak-claude-plugins  DISCOVERY  4.0   8g/4g
 **`VERSION` and `SCHEMA` are per project, not per base** — that is the point of reporting them. A project's `.ai-containers/` is a working *copy*, and it drifts from the base it was made from until someone runs `sync-to-projects.sh`. The row above is the case worth catching: two projects from one base, on different engine releases and different schema versions, because only one of them has been synced recently.
 
 - **`VERSION`** is the `engine-version` file `project-init.sh` / `sync-to-projects.sh` write into the copy at copy time. It is the same number [`./runme.sh --version`](configuration.md#reporting-versions) reports inside that project, from the same function.
-- **`SCHEMA`** is the `# schema-version:` marker in that project's own `sandbox.conf`, which says which [migrations](../README.md) it has had applied.
+- **`SCHEMA`** is the `# schema-version:` marker in that project's own `sandbox.conf`, which says which [migrations](#sandboxconf-schema-versioning) it has had applied.
 - **`unknown`** means the copy was never told — it predates the `engine-version` file, or has no `sandbox.conf`. It is not a guess: a copy is never asked its enclosing project's git tags, which would report a version belonging to an entirely different tree.
 - **`n/a`** means the registry entry's path does not exist, so nothing could be read at all.
 
@@ -122,17 +122,17 @@ That is what you should expect to see immediately after a sync, and it clears
 on the next build. An image built before this existed carries no label and is
 never warned about, since an absent stamp is not evidence of drift.
 
-**`sandbox.conf` is covered too, but not by digesting the file.** It mixes
-build-time keys (`ruby=`, `db-clients=`) with runtime ones (`mode=`, `agents=`),
-and digesting it whole would demand a rebuild after changing `mode=`, which
-rebuilds nothing — a warning that fires when nothing is wrong is one you learn
-to dismiss, and it takes the true ones with it.
+**`sandbox.conf` is covered too, but not by digesting the file.** The file
+holds more than what the build uses — comments, the order of its lines, a key
+left at its default — and digesting it whole would demand a rebuild after an
+edit that rebuilds nothing. A warning that fires when nothing is wrong is one you
+learn to dismiss, and it takes the true ones with it. (The network mode is not in
+`sandbox.conf` at all: it is `SANDBOX_MODE` in `sandbox.env`.)
 
 So a second label, `ai-containers.config-digest`, records what `build.sh`
 *derives* from the config: the `--build-arg` list, which contains every
-build-time key by construction and no runtime key at all. Change `ruby=` and the
-launcher says so; switch `mode=` between `restricted` and `open` and it stays
-quiet. A build-time key added to the tool in future is covered automatically,
+build-time key by construction and nothing else. Change `ruby=` and the
+launcher says so; reorder the file or rewrite a comment and it stays quiet. A build-time key added to the tool in future is covered automatically,
 because it becomes a build arg with no list to update.
 
 The two are reported separately, because they mean different things:
