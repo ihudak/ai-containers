@@ -177,13 +177,18 @@ jobs:
   falsify:
     name: Mutation tier (falsify) + survivor-ledger ratchet
     runs-on: ubuntu-24.04
-    # 249 mutants over 9 targets: ~3.4 min at --jobs 6 / --timeout 60 on a
-    # 12-core machine. Eleven of those mutants time out BY CONSTRUCTION (they
-    # damage a read loop into never terminating), so --timeout is a straight
-    # multiplier on wall clock rather than a ceiling nothing reaches: at
-    # --timeout 120 those eleven alone cost 1320 worker-seconds. 45 minutes is
-    # headroom over a slow 2-4 vCPU runner, not an estimate of the run.
-    timeout-minutes: 45
+    # 1161 mutants over 25 targets: 36-41 min here (--jobs auto -> 4), measured
+    # 2026-10-27. Targets run one after another, so the job is the sum of every
+    # target's wall clock, and it grows with the code under test:
+    # repo-git-reset.sh alone went from 59 mutants in 26 s to 185 in ~11 min
+    # over batch 2. Some mutants time out BY CONSTRUCTION (they damage a read
+    # loop into never terminating), so --timeout is a straight multiplier on
+    # wall clock rather than a ceiling nothing reaches. The old cap of 45
+    # cancelled three runs that day, one on a docs-only commit whose tree had
+    # passed in 36 min the run before: the runner alone moves this job by a
+    # quarter. 90 is headroom, not an estimate. If the run nears it again,
+    # split the corpus rather than raising this further.
+    timeout-minutes: 90
 
     steps:
       - uses: actions/checkout@v7
