@@ -484,6 +484,23 @@ if [[ "$(id -u)" -ne 0 ]]; then
   [[ "$rc_g" != 0 && "$err_g" == *"can be searched but not listed"* && "$rc_o" != 0 && "$err_o" == *"can be searched but not listed"* ]] \
     && pass "T25d one the agent can write through its group or the other bits refuses the launch" \
     || fail "T25d agent-writable, not the agent's (group rc=$rc_g: $err_g; other rc=$rc_o: $err_o)"
+  # One with an ACL: an entry can let the agent write whatever the mode bits say,
+  # and those entries are not read here, so it is refused (automated security
+  # review of 63503a9).
+  if command -v setfacl >/dev/null 2>&1; then
+    OWN4="$TMP/own2a"; mk_launcher "$OWN4/acl/p"; chmod 0311 "$OWN4/acl"
+    if setfacl -m u:4242:wx "$OWN4/acl" 2>/dev/null; then
+      SANDBOX_UID=4242 SANDBOX_GID=4343 EXTRA_MOUNTS="$OWN4" launch "$LAUNCHER" "$TMP/app"
+      [[ "$LAUNCH_RC" != 0 ]] && grep -qF "ERROR: $OWN4/acl can be searched but not listed" "$ERR" \
+        && pass "T25e one with an ACL refuses the launch" \
+        || fail "T25e ACL directory (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
+    else
+      printf 'SKIP: T25e — this filesystem takes no ACL\n'
+    fi
+    chmod 0755 "$OWN4/acl"
+  else
+    printf 'SKIP: T25e — no setfacl\n'
+  fi
 else
   printf 'SKIP: T25b/c — as root every directory can be listed\n'
 fi

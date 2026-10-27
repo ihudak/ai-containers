@@ -350,6 +350,7 @@ launcher_ro_overlay() {
   local uid="${SANDBOX_UID:-$(id -u)}" gid="${SANDBOX_GID:-$(id -g)}" you
   local -a found unreadable cand bsrc=() bdst=() cl=() cat=() csrc=() cdst=() cdep=() ckind=() ro_dsts=() psrc pdst
   local -a _xm_t=() _xm_by=() _xm_j=() ro_srcs=()
+  local aclm
   local -A gpv=()
   local -a scan links walk gdirs gfiles glinks gunr gro ug usrc udst udep ukind
   local g base what gmax gn gitmax cfg cdir hp hpd k2 first eks ik ip
@@ -563,8 +564,13 @@ launcher_ro_overlay() {
       # ordinary 0711 home directory, which this refused (review of 7b41327; T25b)
       # — keeps the overlay and the WARNING (automated security review of
       # cd83cb7; T25d).
+      # One with an ACL counts too: an entry can let the agent write whatever the
+      # mode bits say, and those entries are not read here (automated security
+      # review of 63503a9; T25e). ls marks one with a + after the mode, GNU and BSD.
+      aclm="$(cd / && LC_ALL=C ls -ld "$l" 2>/dev/null)" || aclm=""; aclm="${aclm%% *}"
       if [[ "$kind" == unreadable && -x "$l" ]] \
-         && [[ -n "$(cd / && find "$l" -maxdepth 0 \( -user "$uid" -o \( -group "$gid" -perm -0030 \) -o -perm -0003 \) -print 2>/dev/null)" ]]; then
+         && { [[ "$aclm" == *+ ]] \
+              || [[ -n "$(cd / && find "$l" -maxdepth 0 \( -user "$uid" -o \( -group "$gid" -perm -0030 \) -o -perm -0003 \) -print 2>/dev/null)" ]]; }; then
         printf 'ERROR: %s can be searched but not listed by you, so what is inside it cannot be\n' "$(_term "$l")" >&2
         printf '       checked for a FIFO the agent could write through a read-only overlay; refusing the launch.\n' >&2
         if [[ -O "$l" ]]; then
