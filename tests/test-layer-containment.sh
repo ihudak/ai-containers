@@ -142,51 +142,13 @@ fi
 declare -A wf_row_file=()
 while IFS='|' read -r wfile coverage why; do
   wf_row_file["$wfile"]=1
-  wf_target="$wf_dir/$wfile"
-
-  if [[ ! -f "$wf_target" ]]; then
-    # `classified`/`cases` assert the guard DEPENDS on this file (the
-    # classification loop or the integration-case section relies on it
-    # existing), so a missing file there is a genuine defect. `exempt` asserts
-    # a NEGATIVE — "this file, if present, is not part of the PR gate" — and
-    # with no file to make that claim about, the row is inert, not stale: skip
-    # it silently rather than failing. See the `workflow` row-type block in
-    # tests/layer-checks.conf for why this asymmetry exists (this file is
-    # shared byte-identically with a sibling repo holding a different
-    # workflow set).
-    if [[ "$coverage" == "exempt" ]]; then
-      continue
-    fi
-    fail "workflow row '$wfile' (tests/layer-checks.conf) names a file that does not exist at $wf_target — this registry row is stale"
-    continue
-  fi
-
-  if [[ -z "$why" ]]; then
-    fail "workflow row '$wfile' (tests/layer-checks.conf) has an empty <why> field — classify it meaningfully, the same standard setup rows are held to"
-    continue
-  fi
-
-  case "$coverage" in
-    classified|cases)
-      pass "workflow row '$wfile' declares coverage=$coverage"
-      ;;
-    exempt)
-      # Three outcomes, not two: rc 2 is "the on: block could not be read",
-      # and an exempt claim nobody could check must not pass as verified.
-      # wf_reaches_prs() counts every trigger a pull request sets off, not
-      # pull_request alone: checking that one moved the TST-6 bypass to a
-      # sibling trigger (TST-15), and workflow_run or an unfiltered push did
-      # the same (TST-16).
-      why_pr="$(wf_reaches_prs "$wf_target")"; ex_rc=$?
-      case "$ex_rc" in
-        0) fail "workflow row '$wfile' claims coverage=exempt but $wfile runs on pull requests ($why_pr) — it is part of the PR gate and needs coverage=classified or coverage=cases, not exempt" ;;
-        1) pass "workflow row '$wfile' claims coverage=exempt and $wfile is verified to run on nothing a pull request sets off" ;;
-        *) fail "workflow row '$wfile' claims coverage=exempt, but $wfile's triggers could not be read, so the claim is unverified (see stderr above)" ;;
-      esac
-      ;;
-    *)
-      fail "workflow row '$wfile' (tests/layer-checks.conf) has unrecognised coverage '$coverage' (want classified, cases, or exempt)"
-      ;;
+  # The verdict is tests/lib-layer-checks.sh: `wf_row_verdict()`, so fixture
+  # rows can drive every branch of it (TST-19); this only maps its status.
+  msg="$(wf_row_verdict "$wf_dir" "$wfile" "$coverage" "$why")"; v=$?
+  case "$v" in
+    0) pass "$msg" ;;
+    3) ;;
+    *) fail "$msg" ;;
   esac
 done < <(lc_rows workflow)
 
@@ -427,10 +389,13 @@ fi
 # tests/integration/run.sh invocation in every workflow file an event
 # triggers, rendered as that event sees it
 # (tests/lib-layer-checks.sh: `wf_it_selections()`), each handed to
-# `run.sh --dry-run`, the union taken. The PR layer's events are the three a
-# pull request sets off — pull_request, pull_request_target, merge_group — so a
-# workflow on a sibling trigger adds its cases to the PR set rather than
-# nothing (TST-16).
+# `run.sh --dry-run`, the union taken. The PR layer's events are, per
+# workflow, what tests/lib-layer-checks.sh: `wf_pr_events()` lists — the
+# triggers the exempt check counts as PR activity, a push that reaches PR
+# branches included — so the layer and that check cannot disagree (TST-16,
+# TST-20). workflow_call is not rendered: a callee runs through its caller,
+# whose job-level uses: wf_it_selections() refuses unless the callee runs no
+# integration case.
 # Nothing here names a workflow, a job or an argument. And nightly must hold
 # the WHOLE corpus, not merely the PR gate: nightly.yml's header promises that
 # "a case excluded on cost is still a case that RUNS", which is the property a
@@ -446,14 +411,18 @@ sel_one() {  # <run.sh args…> → the cases that invocation selects, one per l
   grep -E '^[0-9]{3}-' <<<"$out" | LC_ALL=C sort
 }
 
-declare -A layer_cases=() layer_events=(
-  [pull_request]="pull_request pull_request_target merge_group"
-  [schedule]="schedule"
-)
+declare -A layer_cases=()
 for layer in pull_request schedule; do
   n_sel=0; union=""
-  for ev in ${layer_events[$layer]}; do
-    for wfile in "${workflow_files[@]}"; do
+  for wfile in "${workflow_files[@]}"; do
+    if [[ "$layer" == schedule ]]; then
+      evs=schedule
+    elif ! evs="$(wf_pr_events "$wf_dir/$wfile")"; then
+      # The events it could decide still count, as a refusal below does.
+      fail "$layer: could not tell every event of $wfile that is PR activity (see stderr above) — this layer is not fully known"
+    fi
+    while IFS= read -r ev; do
+      [[ -n "$ev" && "$ev" != workflow_call ]] || continue
       # A refusal fails this test, but what WAS read still counts: dropping the
       # whole file would bury the one step it could not read under a cascade of
       # containment failures about every case the file's other jobs run.
@@ -471,10 +440,10 @@ for layer in pull_request schedule; do
           fail "$ev: $wfile $job/$step runs run.sh $args, which selects nothing (run.sh --dry-run refused it or printed no case)"
         fi
       done <<<"$sels"
-    done
+    done <<<"$evs"
   done
   if (( n_sel == 0 )); then
-    fail "no workflow runs tests/integration/run.sh on ${layer_events[$layer]} — that layer derived to nothing, so nothing below can hold"
+    fail "no workflow runs tests/integration/run.sh for the $layer layer — it derived to nothing, so nothing below can hold"
   fi
   layer_cases[$layer]="$(grep . <<<"$union" | LC_ALL=C sort -u)"
 done

@@ -393,6 +393,10 @@ check "reaches: push with tags and a branch glob" 0 \
 for trig in pull_request_review pull_request_review_comment issue_comment create check_suite check_run status some_future_event; do
   check "reaches: $trig (not on the allow-list)" 0 "$(reach_rc "on: [schedule, $trig]")"
 done
+printf '%s\n%s\n' 'on: [schedule, pull_request_review]' "$J" > "$TMP/reach.yml"
+why="$(wf_reaches_prs "$TMP/reach.yml" 2>/dev/null)"
+[[ "$why" == 'pull_request_review: not a trigger known to stay off pull requests' ]] \
+  && pass "reaches: an unknown trigger is named as one" || fail "reaches: an unknown trigger is named as one (got: '$why')"
 check "reaches: issue_comment with types:" 0 \
   "$(reach_rc "$(printf 'on:\n  issue_comment:\n    types: [created]')")"
 check "does not reach: repository_dispatch and release" 1 \
@@ -482,6 +486,82 @@ why="$(wf_reaches_prs "$TMP/reach.yml" 2>/dev/null)"
 printf '%s\n%s\n' "$(printf 'on:\n  push: {branches: [main]}')" "$J" > "$TMP/reach.yml"
 fails_naming "wf_reaches_prs names a push filter it cannot read" "cannot read the push filters" \
   wf_reaches_prs "$TMP/reach.yml"
+
+# ── wf_pr_events: the events the PR layer derives cases from (TST-20) ────────
+# The same rules as wf_reaches_prs, as a list: every trigger off the
+# allow-list, and push only when it reaches PR branches.
+pr_events() {  # $1=on: block → "<rc>|<events, space-separated>"
+  local out
+  printf '%s\n%s\n' "$1" "$J" > "$TMP/ev.yml"
+  out="$(wf_pr_events "$TMP/ev.yml" 2>/dev/null)"
+  printf '%s|%s' "$?" "$(tr '\n' ' ' <<<"$out" | sed 's/ $//')"
+}
+check "pr events: the PR triggers, in order, the allow-list dropped" "0|pull_request merge_group workflow_run" \
+  "$(pr_events 'on: [schedule, pull_request, release, merge_group, workflow_run, workflow_dispatch]')"
+check "pr events: a push reaching PR branches" "0|push pull_request" \
+  "$(pr_events "$(printf 'on:\n  push:\n    branches: [main]\n  pull_request:')")"
+check "pr events: a tag-only push is not one" "0|" \
+  "$(pr_events "$(printf 'on:\n  push:\n    tags: [v1]\n  schedule:\n    - cron: x')")"
+check "pr events: an unknown trigger is one" "0|issue_comment" "$(pr_events 'on: [issue_comment]')"
+check "pr events: unreadable push filters" "2|" \
+  "$(pr_events "$(printf 'on:\n  push: {branches: [main]}')")"
+check "pr events: an on: naming nothing" "2|" "$(pr_events 'on: []')"
+# A PR trigger settles the answer even beside push filters it cannot read,
+# and the events it could decide are still listed.
+check "reaches: pull_request beside an unreadable push" 0 \
+  "$(reach_rc "$(printf 'on:\n  push: {branches: [main]}\n  pull_request:')")"
+check "reaches: pull_request before an unreadable push" 0 \
+  "$(reach_rc "$(printf 'on:\n  pull_request:\n  push: {branches: [main]}')")"
+check "cannot tell: an unreadable push beside schedule only" 2 \
+  "$(reach_rc "$(printf 'on:\n  schedule:\n    - cron: x\n  push: {branches: [main]}')")"
+check "pr events: an unreadable push keeps what was decided" "2|pull_request" \
+  "$(pr_events "$(printf 'on:\n  push: {branches: [main]}\n  pull_request:')")"
+# A quoted entry may hold a comma (TST-21): it is one entry, not two.
+check "pr events: a quoted comma in an on: flow list" "0|x,y issue_comment" \
+  "$(pr_events "on: [schedule, \"x,y\", issue_comment]")"
+printf '%s\n%s\n' "on: [schedule, 'push, pull_request']" "$J" > "$TMP/ev.yml"
+check "trigger list: a quoted comma does not split the entry" "schedule|push, pull_request" \
+  "$(_wf_triggers "$TMP/ev.yml" | paste -sd'|')"
+printf '%s\n%s\n' "$(printf "on:\n  push:\n    branches: ['a,b', \"c\"]")" "$J" > "$TMP/ev.yml"
+check "push filters: a quoted comma does not split the entry" "branches|a,b;branches|c" \
+  "$(_wf_push_filters "$TMP/ev.yml" | paste -sd';')"
+# A quote opens a quoted entry only as its first character.
+printf '%s\n%s\n' "$(printf "on:\n  push:\n    tags: [it's, main]")" "$J" > "$TMP/ev.yml"
+check "push filters: a quote inside a plain word is a character" "tags|it's;tags|main" \
+  "$(_wf_push_filters "$TMP/ev.yml" | paste -sd';')"
+check "cannot tell: an unterminated quote in a push filter list" 2 \
+  "$(reach_rc "$(printf "on:\n  push:\n    tags: ['v1, v2]")")"
+check "cannot tell: an unterminated quote in an on: flow list" 2 \
+  "$(reach_rc "on: [schedule, 'x, pull_request]")"
+
+# ── wf_row_verdict: a workflow row against the workflow directory (TST-19) ────
+# The repository's own rows reach only the passing branches, so the failing
+# ones are pinned here: an exempt row on a PR-triggered or unreadable workflow,
+# a stale row, an empty <why>, an unknown coverage, and the inert exempt row.
+mkdir -p "$TMP/rows"
+printf 'on: [pull_request]\n%s\n' "$J" > "$TMP/rows/pr.yml"
+printf 'on:\n  schedule:\n    - cron: x\n%s\n' "$J" > "$TMP/rows/nightly.yml"
+printf 'on: { push: {} }\n%s\n' "$J" > "$TMP/rows/odd.yml"
+row() {  # $1=file $2=coverage $3=why → "<rc>|<message>"
+  local m; m="$(wf_row_verdict "$TMP/rows" "$1" "$2" "$3" 2>/dev/null)"
+  printf '%s|%s' "$?" "$m"
+}
+row_check() {  # $1=label $2=want rc $3=want message substring $4.. = row
+  local label="$1" want="$2" sub="$3" got; shift 3
+  got="$(row "$@")"
+  if [[ "${got%%|*}" == "$want" && "${got#*|}" == *"$sub"* ]]; then pass "$label"
+  else fail "$label (wanted rc $want and '*$sub*', got '$got')"; fi
+}
+row_check "row: classified holds" 0 "declares coverage=classified" pr.yml classified "the gate"
+row_check "row: cases holds" 0 "declares coverage=cases" pr.yml cases "runs cases"
+row_check "row: exempt on a scheduled workflow holds" 0 "verified to run on nothing" nightly.yml exempt "nightly only"
+row_check "row: exempt on a PR workflow fails, naming the trigger" 1 "runs on pull requests (pull_request)" pr.yml exempt "claims to be off PRs"
+row_check "row: exempt on unreadable triggers fails" 1 "could not be read" odd.yml exempt "unreadable"
+row_check "row: exempt for a missing file is inert" 3 "does not have" gone.yml exempt "a sibling repo's file"
+row_check "row: classified for a missing file is stale" 1 "this registry row is stale" gone.yml classified "gone"
+row_check "row: cases for a missing file is stale" 1 "this registry row is stale" gone.yml cases "gone"
+row_check "row: an empty <why> fails" 1 "empty <why> field" nightly.yml exempt ""
+row_check "row: an unknown coverage fails" 1 "unrecognised coverage 'skip'" nightly.yml skip "why"
 
 # ── wf_if_true: the if: shapes the workflows use, under one event ─────────────
 # test-layer-containment.sh derives what each layer RUNS from the workflows

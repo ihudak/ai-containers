@@ -6,8 +6,8 @@
 #
 # CONTRACT: the sourcing file sets LAYER_CHECKS_CONF to the registry path before
 # sourcing. Provides lc_rows(), wf_jobs(), wf_steps(), wf_has_step(),
-# wf_job_key(), wf_triggers_on(), wf_reaches_prs(), wf_if_true(),
-# wf_it_selections().
+# wf_job_key(), wf_triggers_on(), wf_reaches_prs(), wf_pr_events(),
+# wf_row_verdict(), wf_if_true(), wf_it_selections().
 #
 # lc_rows is generic over the registry's row TYPE — it already serves `check`
 # and `setup` rows; the `workflow` row type (added to close the containment
@@ -233,6 +233,23 @@ _wf_on_awk() {  # $1=yaml  $2=trigger name  $3=1 to list every trigger instead
       return s
     }
     function nocomment(s) { sub(/^#.*$/, "", s); sub(/[[:space:]]+#.*$/, "", s); return s }
+    # Splits a flow list on the commas outside quotes, as YAML does: a quoted
+    # entry may hold a comma. A quote opens one only as the first character of
+    # an entry (a quote inside a plain word is a character); one left open is
+    # unreadable. Returns the entry count; entries go in a.
+    function splitq(s, a,   n, i, c, q, cur) {
+      n = 0; q = ""; cur = ""
+      for (i = 1; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        if (q != "") { if (c == q) q = ""; cur = cur c; continue }
+        if ((c == "\"" || c == sq) && trim(cur) == "") { q = c; cur = cur c; continue }
+        if (c == ",") { a[++n] = cur; cur = ""; continue }
+        cur = cur c
+      }
+      a[++n] = cur
+      if (q != "") bad = 1
+      return n
+    }
     function hit(s) {
       s = unq(s)
       if (list) { if (s != "") print s; found = 1 }
@@ -244,7 +261,7 @@ _wf_on_awk() {  # $1=yaml  $2=trigger name  $3=1 to list every trigger instead
     function oneline(rest,   n, a, i) {
       if (substr(rest, 1, 1) == "[") {
         if (substr(rest, length(rest), 1) != "]") { bad = 1; return }
-        n = split(substr(rest, 2, length(rest) - 2), a, ",")
+        n = splitq(substr(rest, 2, length(rest) - 2), a)
         for (i = 1; i <= n; i++) hit(a[i])
         return
       }
@@ -313,6 +330,23 @@ _wf_push_filters() {  # $1=yaml → <key>|<entry> per entry; rc 2 cannot tell
       return s
     }
     function nocomment(s) { sub(/^#.*$/, "", s); sub(/[[:space:]]+#.*$/, "", s); return s }
+    # Splits a flow list on the commas outside quotes, as YAML does: a quoted
+    # entry may hold a comma. A quote opens one only as the first character of
+    # an entry (a quote inside a plain word is a character); one left open is
+    # unreadable. Returns the entry count; entries go in a.
+    function splitq(s, a,   n, i, c, q, cur) {
+      n = 0; q = ""; cur = ""
+      for (i = 1; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        if (q != "") { if (c == q) q = ""; cur = cur c; continue }
+        if ((c == "\"" || c == sq) && trim(cur) == "") { q = c; cur = cur c; continue }
+        if (c == ",") { a[++n] = cur; cur = ""; continue }
+        cur = cur c
+      }
+      a[++n] = cur
+      if (q != "") bad = 1
+      return n
+    }
     # The value on the same line as a filter key: a flow list or a scalar.
     function entries(k, v,   n, a, i, m) {
       v = trim(v)
@@ -322,7 +356,7 @@ _wf_push_filters() {  # $1=yaml → <key>|<entry> per entry; rc 2 cannot tell
         if (substr(v, length(v), 1) != "]") { bad = 1; return }
         # An empty list still names its filter: branches-ignore: [] ignores
         # nothing, so the push runs on every branch.
-        n = split(substr(v, 2, length(v) - 2), a, ",")
+        n = splitq(substr(v, 2, length(v) - 2), a)
         m = 0
         for (i = 1; i <= n; i++) if (trim(a[i]) != "") { print k "|" unq(a[i]); m++ }
         if (!m) print k "|"
@@ -404,19 +438,51 @@ _wf_push_filters() {  # $1=yaml → <key>|<entry> per entry; rc 2 cannot tell
 # to say, not this file's (bugs review TST-18). A paths filter alone, or no
 # filter at all, counts too.
 wf_reaches_prs() {  # $1=yaml → rc 0 reaches PRs (stdout: why), 1 does not, 2 cannot tell
-  local f="${1:?wf_reaches_prs: workflow path required}" trigs trig push=0 filters key entry
-  local branches="" ignore=0 tags=0
+  local f="${1:?wf_reaches_prs: workflow path required}" evs ev rc
+  evs="$(wf_pr_events "$f")"; rc=$?
+  # A trigger other than push is named first, as the clearer answer, and it
+  # settles the answer even when the push filters cannot be read.
+  while IFS= read -r ev; do
+    case "$ev" in
+      push) ;;
+      pull_request|pull_request_target|merge_group|workflow_run|workflow_call) echo "$ev"; return 0 ;;
+      *) [[ -n "$ev" ]] || continue
+         echo "$ev: not a trigger known to stay off pull requests"; return 0 ;;
+    esac
+  done <<<"$evs"
+  (( rc == 0 )) || return 2
+  [[ -n "$evs" ]] || return 1
+  _wf_push_reaches "$f"
+}
+
+# wf_pr_events lists the triggers of a workflow that make it run on what a
+# pull request does, by wf_reaches_prs's rules: every trigger off the
+# allow-list, and push when its filters do not keep it off PR branches. The
+# containment test derives the PR layer's cases from these events, so the
+# layer and the exempt check cannot disagree on what is PR-triggered (TST-20).
+# rc 2 when the triggers or the push filters cannot be read; the events it
+# could decide are printed all the same, so a caller can still use them.
+wf_pr_events() {  # $1=yaml → event names, one per line; rc 0 read, 2 cannot tell
+  local f="${1:?wf_pr_events: workflow path required}" trigs trig rc bad=0
   trigs="$(_wf_triggers "$f")" || return 2
   [[ -n "$trigs" ]] || { echo "lib-layer-checks: the on: block of $f names no trigger" >&2; return 2; }
   while IFS= read -r trig; do
     case "$trig" in
       # Per GitHub's event docs, none of these fires on PR activity.
       schedule|workflow_dispatch|repository_dispatch|release) ;;
-      push) push=1 ;;
-      *) echo "$trig: not a trigger known to stay off pull requests"; return 0 ;;
+      push)
+        _wf_push_reaches "$f" >/dev/null; rc=$?
+        (( rc == 0 )) && echo push
+        (( rc == 2 )) && bad=1 ;;
+      *) echo "$trig" ;;
     esac
   done <<<"$trigs"
-  (( push )) || return 1
+  (( bad == 0 )) || return 2
+}
+
+# _wf_push_reaches is wf_reaches_prs for a workflow's push trigger alone.
+_wf_push_reaches() {  # $1=yaml → rc 0 reaches PRs (stdout: why), 1 does not, 2 cannot tell
+  local f="$1" filters key entry branches="" ignore=0 tags=0
   if ! filters="$(_wf_push_filters "$f")"; then
     echo "lib-layer-checks: cannot read the push filters of $f (a flow map, a flow list spanning lines, or a shape other than <filter>: <list>)" >&2
     return 2
@@ -435,6 +501,57 @@ wf_reaches_prs() {  # $1=yaml → rc 0 reaches PRs (stdout: why), 1 does not, 2 
   (( tags )) && return 1
   echo "push (no branch filter: every branch push, PR branches included)"
   return 0
+}
+
+# wf_row_verdict decides one `workflow` row of tests/layer-checks.conf
+# against the workflow directory: rc 0 it holds, rc 1 it does not, rc 3 it is
+# inert (an exempt row naming a file this repository does not have), with the
+# message on stdout either way. tests/test-layer-containment.sh only maps the
+# status; the decision sits here so fixture rows can drive every branch
+# (TST-19): the repository's own rows reach only the passing ones.
+wf_row_verdict() {  # $1=workflow dir  $2=file  $3=coverage  $4=why → message; rc 0 pass, 1 fail, 3 inert
+  local dir="$1" wfile="$2" coverage="$3" why="$4" target why_pr rc
+  target="$dir/$wfile"
+  if [[ ! -f "$target" ]]; then
+    # `classified`/`cases` assert the guard DEPENDS on this file (the
+    # classification loop or the integration-case section relies on it
+    # existing), so a missing file there is a genuine defect. `exempt` asserts
+    # a NEGATIVE — "this file, if present, is not part of the PR gate" — and
+    # with no file to make that claim about, the row is inert, not stale. See
+    # the `workflow` row-type block in tests/layer-checks.conf for why this
+    # asymmetry exists (that file is shared byte-identically with a sibling
+    # repo holding a different workflow set).
+    if [[ "$coverage" == "exempt" ]]; then
+      echo "workflow row '$wfile' claims coverage=exempt for a file this repository does not have"
+      return 3
+    fi
+    echo "workflow row '$wfile' (tests/layer-checks.conf) names a file that does not exist at $target — this registry row is stale"
+    return 1
+  fi
+  if [[ -z "$why" ]]; then
+    echo "workflow row '$wfile' (tests/layer-checks.conf) has an empty <why> field — classify it meaningfully, the same standard setup rows are held to"
+    return 1
+  fi
+  case "$coverage" in
+    classified|cases)
+      echo "workflow row '$wfile' declares coverage=$coverage"
+      return 0 ;;
+    exempt)
+      # Three outcomes, not two: rc 2 is "the triggers could not be read",
+      # and an exempt claim nobody could check must not pass as verified.
+      why_pr="$(wf_reaches_prs "$target")"; rc=$?
+      case "$rc" in
+        0) echo "workflow row '$wfile' claims coverage=exempt but $wfile runs on pull requests ($why_pr) — it is part of the PR gate and needs coverage=classified or coverage=cases, not exempt"
+           return 1 ;;
+        1) echo "workflow row '$wfile' claims coverage=exempt and $wfile is verified to run on nothing a pull request sets off"
+           return 0 ;;
+        *) echo "workflow row '$wfile' claims coverage=exempt, but $wfile's triggers could not be read, so the claim is unverified (see stderr above)"
+           return 1 ;;
+      esac ;;
+    *)
+      echo "workflow row '$wfile' (tests/layer-checks.conf) has unrecognised coverage '$coverage' (want classified, cases, or exempt)"
+      return 1 ;;
+  esac
 }
 
 # wf_if_true evaluates a job- or step-level `if:` for one event, on a run where

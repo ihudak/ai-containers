@@ -22,7 +22,7 @@
 | 4 | Host lifecycle scripts (project-init, sync, repo, group, report) | PRJ-1 … PRJ-9, DOC-1, DOC-3, REPO-2 … REPO-4, REPO-7 — fixed (PRJ-7 with TST-1); REPO-5, 6, 8 … 12 open | optional: GAP-6; stretch: GAP-1 for `group.sh` | MEDIUM |
 | 5 | In-container DB services | SVC-1 … SVC-4 — all fixed (SVC-2's hardware check is PLAT-4); SVC-5 fixed in a follow-up | — | MEDIUM |
 | 6 | Build / Dockerfile / tools.d / config validation | BLD-1 … BLD-7 — fixed; BLD-8 and ENV-7 open | — | MEDIUM |
-| 7 | Test harness and CI | TST-1 … TST-8 — all fixed (PRJ-7 with TST-1); TST-12 found and fixed; TST-9, TST-10 and TST-13 fixed in a follow-up, TST-11 in another, TST-14 and TST-15 in a third, TST-16 and TST-17 in a fourth, TST-18 in a fifth; TST-19 … TST-21 open | GAP-5 (same fix as TST-2), GAP-8 (with TST-5), GAP-9 (with TST-3) — all done | MEDIUM |
+| 7 | Test harness and CI | TST-1 … TST-8 — all fixed (PRJ-7 with TST-1); TST-12 found and fixed; TST-9, TST-10 and TST-13 fixed in a follow-up, TST-11 in another, TST-14 and TST-15 in a third, TST-16 and TST-17 in a fourth, TST-18 in a fifth, TST-19 … TST-21 in a sixth (TST-21's `layer-checks.conf` comment waits for mgd-ai-containers) | GAP-5 (same fix as TST-2), GAP-8 (with TST-5), GAP-9 (with TST-3) — all done | MEDIUM |
 | 8 | Docs (docs-only PR) | DOC-2, DOC-4 … DOC-13 — all fixed, with the same drift its reviews found elsewhere (a provenance check that could not fail among it) | GAP-14 (overlaps DOC-6) — done | MEDIUM |
 | 9 | Launcher follow-ups (from the batch 1 hotfix review) | GIT-2 … GIT-5, LNCH-3 (the rest), LNCH-4 — all fixed; the HIGHs its reviews found fixed with them; leftovers open in section 10 | — | MEDIUM |
 
@@ -1214,21 +1214,21 @@ Batch 9 (`9bd3729` … `6a0b37f`) went through 19 review rounds. Every HIGH and 
 - Fix direction: count only the repository's default branch as off PRs, or refuse any branch filter in an exempt row.
 
 ### TST-19: the containment test's verdict mapping is pinned only by the repo's own workflows
-- **Status: OPEN** (review of the TST-16 fix, LOW-3)
+- **Status: FIXED** (2026-10-28). The row verdict is `tests/lib-layer-checks.sh: wf_row_verdict()` (rc 0 holds, 1 fails, 3 inert, the message on stdout); the test only maps the status. Fixture rows in `tests/test-layer-checks-parser.sh` drive every branch: an exempt row on a PR-triggered and on an unreadable workflow, a stale classified and cases row, an empty `<why>`, an unknown coverage, the inert exempt row. Turning the exempt-on-PR arm into a pass, or the inert row into one, each turned them red. The fixture also caught `pull_request` reported as "not a trigger known to stay off pull requests"; known PR triggers are now named plainly.
 - Severity: LOW. Confidence: CONFIRMED (both exempt workflows give rc 1, so the `0)` and `*)` arms never run in the suite)
 - Location: `tests/test-layer-containment.sh`, the `exempt)` branch's `case "$ex_rc"`
 - What's wrong: turning the `0)` arm into a pass keeps the suite green. The hand edits of `release.yml` showed it working once.
 - Fix direction: move the row verdict (classified/cases/exempt → pass or the failure text) into a lib function and drive it with fixture rows.
 
 ### TST-20: the PR layer's cases and the exempt check define "PR-triggered" differently
-- **Status: OPEN** (review of the TST-16 fix, LOW-4)
+- **Status: FIXED** (2026-10-28). `wf_pr_events()` lists, per workflow, the triggers `wf_reaches_prs()` counts as PR activity (every trigger off the allow-list, and push when it reaches PR branches); `wf_reaches_prs()` is built on it and the containment test derives the PR layer's cases from it, skipping only `workflow_call`, whose callers' `uses:` `wf_it_selections()` already refuses unless the callee runs no case. Demonstrated by deleting `pull_request:` from `integration.yml`: main's code failed "that layer derived to nothing"; now its push to `main` (counted since TST-18) derives the same 30 cases. Its review found the first version dropping what it had decided when push filters could not be read: `on: {push: {branches: [main]}, pull_request:}` (a flow-map push) made the workflow add no cases and the exempt check answer "cannot tell" though `pull_request` settles it. `wf_pr_events()` now lists every event it could decide and returns 2 at the end, `wf_reaches_prs()` answers from a non-push event first, and the containment test fails but still uses the events listed, as it already did for a step it could not read; fixtures for both orders were red on the first version.
 - Severity: LOW. Confidence: CONFIRMED (from code); harmless while "every case runs nightly" holds
 - Location: `tests/test-layer-containment.sh: layer_events`
 - What's wrong: cases are derived for `pull_request`, `pull_request_target` and `merge_group`, while `wf_reaches_prs()` also counts `workflow_run`, an unfiltered `push` and any unknown trigger. A `cases` workflow on `push` alone adds nothing to the PR set.
 - Fix direction: derive the PR set from the same predicate, once `wf_it_selections()` can render `push`.
 
 ### TST-21: smaller gaps in the push-filter reader
-- **Status: OPEN** (review of the TST-16 fix, LOW-5; and `tests/layer-checks.conf`)
+- **Status: PARTLY FIXED** (2026-10-28). Both readers split a flow list on the commas outside quotes (`splitq()` in `_wf_on_awk()` and in `_wf_push_filters()`), so `branches: ['a,b']` is one entry and `on: [schedule, 'push, pull_request']` names no push. A quote opens a quoted entry only as its first character (`tags: [it's, main]` is two entries), and one left open makes the list unreadable (rc 2), as the review asked; fixtures for both and for `wf_pr_events()` were red with the plain `split`, green under mawk 1.3.4 and gawk. Still open: the `tests/layer-checks.conf` comment that names `wf_triggers_on`, which changes in mgd-ai-containers and here together.
 - Severity: LOW. Confidence: CONFIRMED
 - Location: `tests/lib-layer-checks.sh: _wf_push_filters()`; `tests/layer-checks.conf`, the `workflow` row-type comment
 - What's wrong: a quoted comma inside a flow list is split (`branches: ['a,b']` reads as `'a` and `b'`); the answer stays conservative unless the halves hide a glob. And `tests/layer-checks.conf` still says the exempt claim is checked by `wf_triggers_on`; it is kept byte-identical with mgd-ai-containers' copy, so it changes there and here together.
