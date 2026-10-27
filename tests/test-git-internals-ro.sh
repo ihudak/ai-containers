@@ -1257,8 +1257,12 @@ for v in config commondir; do
   mkdir -p "$PROJ/ff65/.git/objects" "$PROJ/ff65/.git/refs"; printf 'ref: refs/heads/main\n' > "$PROJ/ff65/.git/HEAD"
   mkfifo "$PROJ/ff65/.git/$v"
   launch_timed 60
-  [[ "$LAUNCH_RC" != 124 ]] && pass "G65 a FIFO $v in a git directory does not hang the launch (${LAUNCH_S}s)" \
-    || fail "G65 a FIFO $v hung the launch"
+  # Refused, not just skipped: a FIFO mounted read-only can still be written, so
+  # the agent would feed the host's git whatever config it reads there
+  # (automated security review of 455fa85).
+  [[ "$LAUNCH_RC" != 124 && "$LAUNCH_RC" != 0 ]] && grep -qF "ff65/.git/$v is not a regular file" "$ERR" \
+    && pass "G65 a FIFO $v in a git directory refuses the launch, without hanging (${LAUNCH_S}s)" \
+    || fail "G65 a FIFO $v (rc=$LAUNCH_RC; $(grep -F ff65 "$ERR" | head -1))"
   ( exec 3<>"$PROJ/ff65/.git/$v" ) 2>/dev/null; rm -rf "$PROJ/ff65"
 done
 

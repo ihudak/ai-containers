@@ -732,6 +732,19 @@ launcher_ro_overlay() {
         base="${g%/*}"; gro=("$g")      # a .git file, or read-only whole: pin what is above it
       else
         base="$g"
+        # A config, config.worktree or commondir that is not a regular file (a FIFO)
+        # is refused: a FIFO mounted read-only can still be written, so the agent
+        # would feed the host's git whatever it reads there, fsmonitor and all —
+        # reproduced (automated security review of 455fa85 and its review, HIGH;
+        # G65). hooks/ must be a directory for the same reason.
+        for f in config config.worktree commondir hooks; do
+          [[ -e "$g/$f" && ! -L "$g/$f" ]] || continue
+          if [[ "$f" == hooks && -d "$g/$f" ]] || [[ "$f" != hooks && -f "$g/$f" ]]; then continue; fi
+          printf 'ERROR: %s is not a regular file%s; refusing the launch.\n' "$(_term "$g/$f")" "$([[ "$f" == hooks ]] && printf ' or directory')" >&2
+          printf '       Through a read-only bind the agent could still write into it, and your host'\''s git\n' >&2
+          printf '       would read what it writes. Remove it on the host (rm %q).\n' "$g/$f" >&2
+          exit 1
+        done
         # The commondir read only when it is a regular file: a FIFO there blocked it
         # (review of 1a30bb4; G65). $(...) strips the newline, so ./ is all there is.
         if [[ -d "$g/objects" ]] && { [[ -f "$g/config" ]] || [[ ! -e "$g/commondir" && ! -L "$g/commondir" ]] \
@@ -3074,6 +3087,16 @@ run_container() {
       : > "$_vdir/manifest"
       for (( _i = 0; _i < ${#launcher_verify[@]}; _i += 2 )); do
         _vsrc="${launcher_verify[_i]}"; _vdst="${launcher_verify[_i+1]}"
+        # Checked again where the inode is recorded: a concurrent container could
+        # swap a protected config for a FIFO after the overlay pass, and the
+        # entrypoint only compares inodes with these (review of 455fa85).
+        case "${_vsrc##*/}" in
+          config|config.worktree|commondir)
+            if [[ "$_vsrc" == */.git/* || "$_vsrc" == */.git ]] && [[ ! -f "$_vsrc" || -L "$_vsrc" ]] && [[ -e "$_vsrc" || -L "$_vsrc" ]]; then
+              printf 'ERROR: %s is no longer a regular file; refusing the launch.\n' "$(_term "$_vsrc")" >&2
+              exit 1
+            fi ;;
+        esac
         if read -r _vdev _vino < <(_launcher_dev_ino "$_vsrc"); then :; else _vdev=0; _vino=0; fi
         printf '%s\0%s\0%s\0' "$_vdev" "$_vino" "$_vdst" >> "$_vdir/manifest"
       done
