@@ -406,11 +406,32 @@ for g in 'dev?' 'dev+' 'dev[12]' '!main'; do
   check "reaches: push on branch pattern $g" 0 \
     "$(reach_rc "$(printf 'on:\n  push:\n    branches: [main, "%s"]' "$g")")"
 done
+# An empty flow list still names its filter.
+check "reaches: tags with an empty branches-ignore: []" 0 \
+  "$(reach_rc "$(printf 'on:\n  push:\n    tags: [v1]\n    branches-ignore: []')")"
+check "reaches: tags with an empty branches: [ ]" 0 \
+  "$(reach_rc "$(printf 'on:\n  push:\n    tags: [v1]\n    branches: [ ]')")"
+printf '%s\n%s\n' "$(printf 'on:\n  push:\n    branches: []')" "$J" > "$TMP/reach.yml"
+why="$(wf_reaches_prs "$TMP/reach.yml" 2>/dev/null)"
+[[ "$why" == *"branches: '<empty>'"* ]] && pass "reaches: an empty branches: [] is named as a branch filter" \
+  || fail "reaches: an empty branches: [] is named as a branch filter (got: '$why')"
+# A compact sequence at the key indentation belongs to that key: the answer
+# names its first entry.
+printf '%s\n%s\n' "$(printf 'on:\n  push:\n    tags: [v1]\n    branches:\n    - main')" "$J" > "$TMP/reach.yml"
+why="$(wf_reaches_prs "$TMP/reach.yml" 2>/dev/null)"
+[[ "$why" == *"branches: 'main'"* ]] && pass "reaches: the answer names the first branch of a compact sequence" \
+  || fail "reaches: the answer names the first branch of a compact sequence (got: '$why')"
+printf '%s\n%s\n' "$(printf "on:\n  push:\n    branches: ['dev', \"main\"]")" "$J" > "$TMP/reach.yml"
+why="$(wf_reaches_prs "$TMP/reach.yml" 2>/dev/null)"
+[[ "$why" == *"branches: 'dev'"* ]] && pass "reaches: a quoted branch name is named unquoted" \
+  || fail "reaches: a quoted branch name is named unquoted (got: '$why')"
+check "does not reach: a tags filter given as a plain scalar" 1 \
+  "$(reach_rc "$(printf 'on:\n  push:\n    tags: v1')")"
 check "does not reach: push on tags-ignore only" 1 \
   "$(reach_rc "$(printf 'on:\n  push:\n    tags-ignore: [v0]')")"
-check "does not reach: a double-quoted plain branch name" 1 \
+check "reaches: a double-quoted plain branch name" 0 \
   "$(reach_rc "$(printf 'on:\n  push:\n    branches: ["main"]')")"
-check "does not reach: a single-quoted plain branch name" 1 \
+check "reaches: a single-quoted plain branch name" 0 \
   "$(reach_rc "$(printf 'on:\n  push:\n    branches:\n      - '"'"'main'"'"'')")"
 check "cannot tell: a key deeper than the filter level" 2 \
   "$(reach_rc "$(printf 'on:\n  push:\n    branches:\n      - main\n      foo: bar')")"
@@ -437,10 +458,16 @@ check "does not reach: schedule and workflow_dispatch" 1 \
   "$(reach_rc "$(printf 'on:\n  schedule:\n    - cron: x\n  workflow_dispatch:')")"
 check "does not reach: push on tags only (release.yml's shape)" 1 \
   "$(reach_rc "$(printf 'on:\n  push:\n    tags:\n      - '"'"'v[0-9]+.[0-9]+.[0-9]+'"'"'')")"
-check "does not reach: push on named branches" 1 \
+# A PR can be opened from any branch, so a plain name counts as much as a glob
+# (TST-18): a push on dev runs on every commit of a PR from dev.
+check "reaches: push on named branches (TST-18)" 0 \
   "$(reach_rc "$(printf 'on:\n  push:\n    branches: [main, \"release\"]\n    paths: [src/**]')")"
+check "reaches: push on named branches with tags too" 0 \
+  "$(reach_rc "$(printf 'on:\n  push:\n    tags: [v1]\n    branches:\n      - dev')")"
 check "does not reach: a sequence item at the key indentation is the key value" 1 \
-  "$(reach_rc "$(printf 'on:\n  push:\n    branches:\n    - main')")"
+  "$(reach_rc "$(printf 'on:\n  push:\n    tags:\n    - v1')")"
+check "reaches: a sequence item at the key indentation belongs to that key" 0 \
+  "$(reach_rc "$(printf 'on:\n  push:\n    tags: [v1]\n    branches:\n    - main')")"
 check "reaches: workflow_call (a callee runs whenever its caller does)" 0 \
   "$(reach_rc "$(printf 'on:\n  workflow_call:')")"
 check "cannot tell: a push given as a flow map" 2 \

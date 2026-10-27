@@ -314,14 +314,18 @@ _wf_push_filters() {  # $1=yaml → <key>|<entry> per entry; rc 2 cannot tell
     }
     function nocomment(s) { sub(/^#.*$/, "", s); sub(/[[:space:]]+#.*$/, "", s); return s }
     # The value on the same line as a filter key: a flow list or a scalar.
-    function entries(k, v,   n, a, i) {
+    function entries(k, v,   n, a, i, m) {
       v = trim(v)
       if (v == "") { pending = k; return }
       if (substr(v, 1, 1) == "{") { bad = 1; return }
       if (substr(v, 1, 1) == "[") {
         if (substr(v, length(v), 1) != "]") { bad = 1; return }
+        # An empty list still names its filter: branches-ignore: [] ignores
+        # nothing, so the push runs on every branch.
         n = split(substr(v, 2, length(v) - 2), a, ",")
-        for (i = 1; i <= n; i++) if (trim(a[i]) != "") print k "|" unq(a[i])
+        m = 0
+        for (i = 1; i <= n; i++) if (trim(a[i]) != "") { print k "|" unq(a[i]); m++ }
+        if (!m) print k "|"
         return
       }
       print k "|" unq(v)
@@ -393,14 +397,15 @@ _wf_push_filters() {  # $1=yaml → <key>|<entry> per entry; rc 2 cannot tell
 # push (TST-16), then pull_request_review, issue_comment, create, check_suite.
 # workflow_call is not on it: a reusable workflow runs whenever its caller
 # does, a pull_request caller included.
-# A push is kept off PR branches when it has tags filters and no branch filter
-# (a tag push only), or a branches: list of plain names. A branch pattern
-# holding a glob character, a branches-ignore, a paths filter alone or no
-# filter at all counts. A plain name is taken at its word: a PR opened from a
-# branch it names would run the workflow (bugs review TST-18).
+# A push is kept off PR branches only when it has tags filters and no branch
+# filter: a tag push only. Any branches: or branches-ignore counts, plain names
+# included: a PR can be opened from any branch, so a push on `dev` runs on every
+# commit of a PR from dev, and which branch is the default one is the remote's
+# to say, not this file's (bugs review TST-18). A paths filter alone, or no
+# filter at all, counts too.
 wf_reaches_prs() {  # $1=yaml → rc 0 reaches PRs (stdout: why), 1 does not, 2 cannot tell
   local f="${1:?wf_reaches_prs: workflow path required}" trigs trig push=0 filters key entry
-  local branches=0 wide=0 ignore=0 tags=0 pat=""
+  local branches="" ignore=0 tags=0
   trigs="$(_wf_triggers "$f")" || return 2
   [[ -n "$trigs" ]] || { echo "lib-layer-checks: the on: block of $f names no trigger" >&2; return 2; }
   while IFS= read -r trig; do
@@ -418,17 +423,14 @@ wf_reaches_prs() {  # $1=yaml → rc 0 reaches PRs (stdout: why), 1 does not, 2 
   fi
   while IFS='|' read -r key entry; do
     case "$key" in
-      branches)
-        branches=1
-        if [[ -z "$entry" || "$entry" == *['*?[!+']* ]]; then wide=1; pat="${pat:-${entry:-<empty>}}"; fi ;;
+      branches) branches="${branches:-${entry:-<empty>}}" ;;
       branches-ignore) ignore=1 ;;
       tags|tags-ignore) tags=1 ;;
     esac
   done <<<"$filters"
   if (( ignore )); then echo "push (branches-ignore: every other branch, PR branches included)"; return 0; fi
-  if (( branches )); then
-    (( wide )) || return 1
-    echo "push (branches: '$pat' can match a PR branch)"; return 0
+  if [[ -n "$branches" ]]; then
+    echo "push (branches: '$branches' — a PR can be opened from any branch a push runs on)"; return 0
   fi
   (( tags )) && return 1
   echo "push (no branch filter: every branch push, PR branches included)"
