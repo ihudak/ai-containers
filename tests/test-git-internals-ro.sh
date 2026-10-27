@@ -1065,5 +1065,22 @@ has_mount "$PROJ/lw52/vendor/lib/.git:/workspace/proj/lw52/vendor/lib/.git:ro" \
   || fail "G52 linked worktree's submodule .git left writable"
 rm -rf "$U52" "$M52" "$PROJ/lw52"
 
+# ── G53: a .git file cannot choose a repository's worktree ──────────────────
+# The last .git file to name a git directory chose the worktree its index was read
+# against: `decoy/.git` = `gitdir: ../.git` made the project's own index read
+# against decoy/, so an embedded submodule under a pruned vendor/ was skipped in
+# silence, its config writable (review of 3c754aa, HIGH). A .git directory's
+# worktree is where it lies; for a linked worktree's, every candidate is read.
+U53="$TMP/up53"; "${G[@]}" init -q "$U53" && "${G[@]}" -C "$U53" commit -q --allow-empty -m u
+M53="$PROJ/main53"; "${G[@]}" init -q "$M53" && "${G[@]}" clone -q "$U53" "$M53/vendor/lib" \
+  && { "${G[@]}" -C "$M53" -c protocol.file.allow=always submodule -q add "$U53" vendor/lib 2>/dev/null || "${G[@]}" -C "$M53" add vendor/lib; } \
+  && "${G[@]}" -C "$M53" commit -q -m s || { printf 'SCAFFOLD-FAILED: cannot create the G53 repository\n'; exit 1; }
+mkdir -p "$M53/decoy"; printf 'gitdir: ../.git\n' > "$M53/decoy/.git"
+launch ..
+has_mount "$M53/vendor/lib/.git/config:/workspace/proj/main53/vendor/lib/.git/config:ro" \
+  && pass "G53 a decoy .git file does not change which worktree a repository's index is read against" \
+  || fail "G53 the embedded submodule was left writable by a decoy .git file"
+rm -rf "$U53" "$M53"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

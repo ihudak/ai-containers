@@ -918,6 +918,9 @@ launcher_ro_overlay() {
   if (( xgw > 5 )); then
     printf 'NOTE: … and %d more in the container group'\''s own directories.\n' "$((xgw - 5))" >&2
   fi
+  if (( _gdi_warned > 5 )); then
+    printf 'WARNING: … and %d more commondirs of git directories in other mounts name what this launch cannot protect.\n' "$((_gdi_warned - 5))" >&2
+  fi
   if (( gn > 30 )); then
     printf 'NOTE: %d git directories were protected, each with its own bind mounts; that\n' "$gn" >&2
     printf '      adds seconds to every container start on Docker Desktop. Mount narrower\n' >&2
@@ -1546,7 +1549,17 @@ _git_index_read() {
   # objects of a sparse index as it loads it, and handing it the object store
   # would hand it files the agent can make FIFOs. It fails, and is named; the
   # cost is that a sparse-index repository's gitlinks are not followed.
-  fmt="$(_git_file_config "$g/config" extensions.objectformat 2>/dev/null)" || fmt=sha1
+  # From the common directory's config for a linked worktree's git directory,
+  # which has none of its own: a sha256 repository was read as sha1 and failed
+  # (review of 3c754aa).
+  local fcfg="$g/config" fcd=""
+  if [[ ! -f "$fcfg" && -f "$g/commondir" ]]; then
+    IFS= read -r -d '' fcd < <(head -c 4096 "$g/commondir" 2>/dev/null) || true
+    while [[ "$fcd" == *[$'\r\n'] ]]; do fcd="${fcd%?}"; done
+    [[ "$fcd" == /* ]] || fcd="$g/$fcd"
+    fcd="$(cd -P -- "$fcd" 2>/dev/null && pwd -P)" && fcfg="$fcd/config"
+  fi
+  fmt="$(_git_file_config "$fcfg" extensions.objectformat 2>/dev/null)" || fmt=sha1
   [[ "$fmt" =~ ^[a-z0-9]{1,16}$ ]] || return 1
   if [[ -z "$_gir_tmp" ]]; then
     _gir_tmp="$(mktemp -d "${TMPDIR:-/tmp}/ai-launcher-index.XXXXXX")" || { _gir_tmp=""; return 1; }
@@ -1643,7 +1656,9 @@ _gdi_follow() {
   # Named by a .git file: its directory is that git directory's worktree, whose
   # index records its submodules (a linked worktree's or a separate git dir's
   # were never read; review of 236d347).
-  if [[ "$4" == */.git ]]; then gtop[$t]="$1"; fi
+  # Every referrer is kept: one .git file must not choose the worktree a git
+  # directory's index is read against (review of 3c754aa, HIGH).
+  if [[ "$4" == */.git ]]; then gtop_g+=("$t"); gtop_d+=("$1"); fi
   local _ok=""
   if [[ "$4" == */commondir ]]; then _is_common_dir "$t" && _ok=1; else _is_git_dir "$t" && _ok=1; fi
   # Inside ANOTHER writable bind: recorded, and protected in that bind's view by
@@ -1706,7 +1721,9 @@ git_dirs_in() {
   # _gdi_follow's WARNINGs: five named, then a count — every .git file is the
   # agent's to write (re-review of batch 9).
   local n=0 nf=0 top rec mode path tgt _gdi_warned=0
-  local -A gtop=()
+  local -a gtop_g=() gtop_d=() tops=()
+  local -A tseen=()
+  local q
   local -a links=()
   while (( n < ${#_gdi_dirs[@]} || nf < ${#_gdi_files[@]} )); do
     # A .git FILE names the git directory git uses there (`gitdir: <path>`), and a
@@ -1732,67 +1749,78 @@ git_dirs_in() {
       while [[ "$tgt" == *[$'\r\n'] ]]; do tgt="${tgt%?}"; done
       if [[ -n "$tgt" && "$tgt" != ./ && "$tgt" != . ]]; then _gdi_follow "$g" "$tgt" "$5" "$g/commondir"; fi
     fi
-    top=""
-    if [[ -n "${gtop[$g]:-}" ]]; then
-      top="${gtop[$g]}"
-    elif [[ "$g" == */.git/modules/* ]]; then
+    # The worktree its index is read against: where a .git directory lies, a
+    # submodule's core.worktree, and only for a git directory that is neither (a
+    # linked worktree's, a separate git dir) the directories of the .git files
+    # naming it — each of them, once, so a decoy adds a worktree to check and
+    # cannot replace one (review of 3c754aa, HIGH; G53).
+    tops=(); top=""
+    if [[ "$g" == */.git/modules/* ]]; then
       wt="$(_git_config_get "$g/config" core.worktree)" || wt=""
       if [[ -n "$wt" ]]; then top="$(cd "$g" 2>/dev/null && cd "$wt" 2>/dev/null && pwd -P)" || top=""; fi
+      [[ -z "$top" ]] || tops=("$top")
     elif [[ "$g" == */.git ]]; then
-      top="${g%/.git}"
+      tops=("${g%/.git}")
+    else
+      tseen=()
+      for (( q = 0; q < ${#gtop_g[@]}; q++ )); do
+        [[ "${gtop_g[q]}" == "$g" && -z "${tseen[${gtop_d[q]}]:-}" ]] || continue
+        tseen[${gtop_d[q]}]=1; tops+=("${gtop_d[q]}")
+      done
     fi
-    [[ -n "$top" ]] || continue
-    if [[ "$g" == */.git/modules/* && -f "$top/.git" && ! -L "$top/.git" && -z "${had[$top/.git]:-}" ]] \
-       && [[ "$top" == "$5" || "$top" == "$5"/* ]]; then
-      _gdi_files+=("$top/.git"); had[$top/.git]=1
-    fi
-    command -v git >/dev/null 2>&1 || continue
-    links=()
-    if ! _git_index_read links "$g" "$top"; then
-      links=()
-      printf 'WARNING: cannot read the index of %q; submodules recorded in it are not followed,\n' "$g" >&2
-      printf '         so a checkout of one that the scan does not reach is not protected.\n' >&2
-    fi
-    local gskip=0
-    for rec in ${links[@]+"${links[@]}"}; do
-      mode="${rec%% *}"; path="${rec#*$'\t'}"
-      [[ "$mode" == 160000 && -n "$path" ]] || continue
-      # The index is the agent's to write, and git reads a hand-made entry such
-      # as ../../victim as is: a path that steps out (.., ., an empty or
-      # absolute component), or that a link on the way sends elsewhere, is not
-      # followed (re-review of c0d48d9; tests/test-git-internals-ro.sh G36).
-      # Named, not skipped in silence: a skipped gitlink is a checkout this launch
-      # does not protect (review of the batch 1 hotfix; GIT-3).
-      # Five named per index, then a count: the index is the agent's, and one with
-      # 100,000 such entries printed 100,000 WARNINGs (review of batch 9, finding 5).
-      case "/$path/" in */../*|*/./*|*//*)
-        if (( ++gskip <= 5 )); then
-          printf 'WARNING: the index of %q records a submodule at %q, which steps out of it; not followed.\n' "$g" "$path" >&2
-        fi
-        continue ;;
-      esac
-      co="$top/$path"; f="$co/.git"
-      [[ "$co" == "$5"/* ]] || continue
-      if [[ -e "$co" || -L "$co" ]]; then
-        if [[ "$(cd "$co" 2>/dev/null && pwd -P)" != "$co" ]]; then
-          if (( ++gskip <= 5 )); then
-            printf 'WARNING: submodule %q of %q is not where its index says (a link on the way, a case or\n' "$path" "$g" >&2
-            printf '         Unicode difference, or a directory you cannot search); its checkout is not protected.\n' >&2
-          fi
-          continue
-        fi
+    for top in ${tops[@]+"${tops[@]}"}; do
+      if [[ "$g" == */.git/modules/* && -f "$top/.git" && ! -L "$top/.git" && -z "${had[$top/.git]:-}" ]] \
+         && [[ "$top" == "$5" || "$top" == "$5"/* ]]; then
+        _gdi_files+=("$top/.git"); had[$top/.git]=1
       fi
-      if [[ -L "$f" ]]; then
-        [[ -n "${had[$f]:-}" ]] || { _gdi_links+=("$f"); had[$f]=1; }
-      elif [[ -f "$f" ]]; then
-        [[ -n "${had[$f]:-}" ]] || { _gdi_files+=("$f"); had[$f]=1; }
-      elif [[ -d "$f" && -z "${had[$f]:-}" ]] && _is_git_dir "$f"; then
-        _gdi_dirs+=("$f"); had[$f]=1
+      command -v git >/dev/null 2>&1 || continue
+      links=()
+      if ! _git_index_read links "$g" "$top"; then
+        links=()
+        printf 'WARNING: cannot read the index of %q; submodules recorded in it are not followed,\n' "$g" >&2
+        printf '         so a checkout of one that the scan does not reach is not protected.\n' >&2
+      fi
+      local gskip=0
+      for rec in ${links[@]+"${links[@]}"}; do
+        mode="${rec%% *}"; path="${rec#*$'\t'}"
+        [[ "$mode" == 160000 && -n "$path" ]] || continue
+        # The index is the agent's to write, and git reads a hand-made entry such
+        # as ../../victim as is: a path that steps out (.., ., an empty or
+        # absolute component), or that a link on the way sends elsewhere, is not
+        # followed (re-review of c0d48d9; tests/test-git-internals-ro.sh G36).
+        # Named, not skipped in silence: a skipped gitlink is a checkout this launch
+        # does not protect (review of the batch 1 hotfix; GIT-3).
+        # Five named per index, then a count: the index is the agent's, and one with
+        # 100,000 such entries printed 100,000 WARNINGs (review of batch 9, finding 5).
+        case "/$path/" in */../*|*/./*|*//*)
+          if (( ++gskip <= 5 )); then
+            printf 'WARNING: the index of %q records a submodule at %q, which steps out of it; not followed.\n' "$g" "$path" >&2
+          fi
+          continue ;;
+        esac
+        co="$top/$path"; f="$co/.git"
+        [[ "$co" == "$5"/* ]] || continue
+        if [[ -e "$co" || -L "$co" ]]; then
+          if [[ "$(cd "$co" 2>/dev/null && pwd -P)" != "$co" ]]; then
+            if (( ++gskip <= 5 )); then
+              printf 'WARNING: submodule %q of %q is not where its index says (a link on the way, a case or\n' "$path" "$g" >&2
+              printf '         Unicode difference, or a directory you cannot search); its checkout is not protected.\n' >&2
+            fi
+            continue
+          fi
+        fi
+        if [[ -L "$f" ]]; then
+          [[ -n "${had[$f]:-}" ]] || { _gdi_links+=("$f"); had[$f]=1; }
+        elif [[ -f "$f" ]]; then
+          [[ -n "${had[$f]:-}" ]] || { _gdi_files+=("$f"); had[$f]=1; }
+        elif [[ -d "$f" && -z "${had[$f]:-}" ]] && _is_git_dir "$f"; then
+          _gdi_dirs+=("$f"); had[$f]=1
+        fi
+      done
+      if (( gskip > 5 )); then
+        printf 'WARNING: … and %d more submodules of %q were not followed, for the same reasons.\n' "$((gskip - 5))" "$g" >&2
       fi
     done
-    if (( gskip > 5 )); then
-      printf 'WARNING: … and %d more submodules of %q were not followed, for the same reasons.\n' "$((gskip - 5))" "$g" >&2
-    fi
   done
   if (( _gdi_warned > 5 )); then
     printf 'WARNING: … and %d more .git files or commondirs in %s name what this launch cannot protect.\n' "$((_gdi_warned - 5))" "$(_term "$5")" >&2
