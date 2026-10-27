@@ -663,7 +663,7 @@ launcher_ro_overlay() {
   # not scanned because tools re-clone what they hold, is protected all the same
   # — left writable, the host's git would read it — and named.
   local -A uhave=()
-  local j jj xq=0 xt xv2 cdt xgw=0
+  local j jj xq=0 xt xv2 cdt _gdi_warned=0
   for k in ${ug[@]+"${!ug[@]}"}; do uhave[${udst[k]}${ug[k]#"${usrc[k]}"}]=1; done
   while (( xq < ${#_xm_t[@]} )); do
     xt="${_xm_t[xq]}"; j="${_xm_j[xq]}"; xq=$((xq + 1))
@@ -671,21 +671,18 @@ launcher_ro_overlay() {
     [[ -z "${uhave[$xv2]:-}" ]] || continue
     uhave[$xv2]=1
     ug+=("$xt"); ukind+=(dir); usrc+=("${bsrc[j]}"); udst+=("${bdst[j]}")
-    if [[ -n "${_git_skip_root:-}" && "$xt" == "$_git_skip_root"/* ]] && (( ++xgw <= 5 )); then
-      printf 'NOTE: %s, named by a .git file or commondir, lies inside the container group'\''s own directories;\n' "$(_term "$xt")" >&2
-      printf '      it is protected there, so a tool that deletes and re-clones it may fail with Resource busy.\n' >&2
-    fi
     if [[ -f "$xt/commondir" ]]; then
       cdt=""; IFS= read -r -d '' cdt < <(head -c 4096 "$xt/commondir" 2>/dev/null) || true
       while [[ "$cdt" == *[$'\r\n'] ]]; do cdt="${cdt%?}"; done
-      if [[ -n "$cdt" && "$cdt" != ./ && "$cdt" != . ]]; then
-        [[ "$cdt" == /* ]] || cdt="$xt/$cdt"
-        if cdt="$(cd -P -- "$cdt" 2>/dev/null && pwd -P)" && _is_git_dir "$cdt"; then
+      if [[ -n "$cdt" && "$cdt" != ./ && "$cdt" != . ]] && _gd_resolve "$xt" "$cdt" "$xt/commondir" cdt; then
+        if _is_common_dir "$cdt"; then
           for jj in ${bsrc[@]+"${!bsrc[@]}"}; do
             if [[ "$cdt" == "${bsrc[jj]}" || "$cdt" == "${bsrc[jj]}"/* ]]; then
               _xm_t+=("$cdt"); _xm_by+=("$xt/commondir"); _xm_j+=("$jj")
             fi
           done
+        elif _in_writable "$cdt" && (( ++_gdi_warned <= 5 )); then
+          printf 'WARNING: %s names %s, which is not a git directory; nothing there is protected.\n' "$(_term "$xt/commondir")" "$(_term "$cdt")" >&2
         fi
       fi
     fi
@@ -735,7 +732,8 @@ launcher_ro_overlay() {
         base="${g%/*}"; gro=("$g")      # a .git file, or read-only whole: pin what is above it
       else
         base="$g"
-        if [[ -d "$g/objects" ]] && { [[ -f "$g/config" ]] || [[ ! -e "$g/commondir" && ! -L "$g/commondir" ]]; }; then
+        if [[ -d "$g/objects" ]] && { [[ -f "$g/config" ]] || [[ ! -e "$g/commondir" && ! -L "$g/commondir" ]] \
+             || [[ "$(head -c 16 "$g/commondir" 2>/dev/null)" == $'./\n' || "$(head -c 16 "$g/commondir" 2>/dev/null)" == ./ ]]; }; then
           cfg="$g/config"
           # A repository git reads with no config of its own gets an empty one, as
           # commondir gets ./ — or the agent could add one after the launch (G49).
@@ -888,11 +886,20 @@ launcher_ro_overlay() {
   # (target, mount) is judged; one is marked done only once named; twenty are
   # named, then a count.
   local -A xm_done=()
-  local xv xr xs xn=0
+  local xv xr xs xn=0 xgw=0
   for k in ${_xm_t[@]+"${!_xm_t[@]}"}; do
     xv="${bdst[${_xm_j[k]}]}${_xm_t[k]#"${bsrc[${_xm_j[k]}]}"}"
     [[ -z "${xm_done[$xv]:-}" ]] || continue
     xs="${gpv[$xv]:-}"
+    if [[ -n "$xs" && -n "${_git_skip_root:-}" && "${_xm_t[k]}" == "$_git_skip_root"/* ]]; then
+      xm_done[$xv]=1
+      if (( ++xgw <= 5 )); then
+        printf 'NOTE: %s names %s, inside the container group'\''s own directories, which this launch\n' "$(_term "${_xm_by[k]}")" "$(_term "${_xm_t[k]}")" >&2
+        printf '      protected there: a tool that deletes and re-clones it may fail with Resource busy.\n' >&2
+        printf '      If that .git file is not yours, remove it on the host.\n' >&2
+      fi
+      continue
+    fi
     if [[ -z "$xs" ]]; then
       for xr in ${ro_dsts[@]+"${ro_dsts[@]}"}; do
         if [[ "$xv" == "$xr" || "$xv" == "$xr"/* ]]; then xs=1; break; fi
@@ -907,6 +914,9 @@ launcher_ro_overlay() {
   done
   if (( xn > 20 )); then
     printf 'WARNING: … and %d more git directories in other writable mounts could not be protected.\n' "$((xn - 20))" >&2
+  fi
+  if (( xgw > 5 )); then
+    printf 'NOTE: … and %d more in the container group'\''s own directories.\n' "$((xgw - 5))" >&2
   fi
   if (( gn > 30 )); then
     printf 'NOTE: %d git directories were protected, each with its own bind mounts; that\n' "$gn" >&2
@@ -1570,6 +1580,39 @@ _git_index_read() {
 _is_git_dir() {
   [[ -f "$1/HEAD" ]] && { [[ -d "$1/objects" && -d "$1/refs" ]] || [[ -f "$1/commondir" ]]; }
 }
+# _is_common_dir <dir>: what git takes for the common directory a commondir names
+# — objects/ and refs/; a HEAD is a worktree's, not needed here (automated
+# security review of 236d347).
+_is_common_dir() { [[ -d "$1/objects" && -d "$1/refs" ]]; }
+# _in_writable <path>: inside one of launcher_ro_overlay's writable binds (bsrc).
+_in_writable() {
+  local _w
+  for _w in ${bsrc[@]+"${bsrc[@]}"}; do [[ "$1" == "$_w" || "$1" == "$_w"/* ]] && return 0; done
+  return 1
+}
+# _gd_resolve <dir> <path> <named by> <out-var>: resolve a gitdir:/commondir value
+# as git does (physically, relative to <dir>), into <out-var>; a target the agent
+# could still make, or reach through a link it can repoint, inside any writable
+# bind, is named (capped by the caller's _gdi_warned). Fails if nothing resolves.
+_gd_resolve() {
+  local -n _gr_out=$4
+  local _gr_t _gr_lex
+  _gr_out=""
+  if [[ "$2" == /* ]]; then _gr_t="$2"; else _gr_t="$1/$2"; fi
+  _gr_lex="$(_lex_norm "$_gr_t")"
+  if ! _gr_t="$(cd -P -- "$_gr_t" 2>/dev/null && pwd -P)"; then
+    if _in_writable "$_gr_lex" && (( ++_gdi_warned <= 5 )); then
+      printf 'WARNING: %s names %s, which does not exist; if the agent makes it, your host'\''s git\n' "$(_term "$3")" "$(_term "$_gr_lex")" >&2
+      printf '         reads it unprotected until the next launch.\n' >&2
+    fi
+    return 1
+  fi
+  if [[ "$_gr_lex" != "$_gr_t" ]] && _in_writable "$_gr_lex" && (( ++_gdi_warned <= 5 )); then
+    printf 'WARNING: %s reaches %s through a link inside the mount, which the agent can repoint\n' "$(_term "$3")" "$(_term "$_gr_t")" >&2
+    printf '         to a git directory this launch did not protect. Name the real path in it instead.\n' >&2
+  fi
+  _gr_out="$_gr_t"
+}
 
 # _lex_norm <absolute path>: the path with . and .. resolved by name alone, no link
 # followed — what it says, to compare with where it physically leads.
@@ -1595,33 +1638,18 @@ _lex_norm() {
 # there gets nothing made in it, and is named: git would refuse it, but an agent
 # could make it one by the next launch.
 _gdi_follow() {
-  local t lex
-  if [[ "$2" == /* ]]; then t="$2"; else t="$1/$2"; fi
-  lex="$(_lex_norm "$t")"
-  # A target the agent can still make, or reach through a link it can repoint,
-  # cannot be protected now; it is named, never passed in silence (security
-  # review of e2741b1).
-  if ! t="$(cd -P -- "$t" 2>/dev/null && pwd -P)"; then
-    if [[ "$lex" == "$3"/* ]] && (( ++_gdi_warned <= 5 )); then
-      printf 'WARNING: %s names %s, which does not exist; if the agent makes it, your host'\''s git\n' "$(_term "$4")" "$(_term "$lex")" >&2
-      printf '         reads it unprotected until the next launch.\n' >&2
-    fi
-    return 0
-  fi
-  if [[ "$lex" != "$t" && "$lex" == "$3"/* ]] && (( ++_gdi_warned <= 5 )); then
-    printf 'WARNING: %s reaches %s through a link inside the mount, which the agent can repoint\n' "$(_term "$4")" "$(_term "$t")" >&2
-    printf '         to a git directory this launch did not protect. Name the real path in it instead.\n' >&2
-  fi
-  # Inside ANOTHER writable bind (bsrc, launcher_ro_overlay's): that mount's own
-  # scan may never reach it (a pruned node_modules, the launcher's .agent-blocked
-  # seen here under the read-only overlay), so it is named — this scan cannot
-  # protect it there (re-review of batch 9, HIGH).
-  # Recorded: launcher_ro_overlay queues it for protection in that mount's view
-  # once every mount is scanned, unless that mount's own scan found it (a linked
-  # worktree as the primary with its main checkout in EXTRA_MOUNTS), and names it
-  # only if it could not be protected there (reviews of dcf7dab and 4e7da47).
+  local t
+  _gd_resolve "$1" "$2" "$4" t || return 0
+  # Named by a .git file: its directory is that git directory's worktree, whose
+  # index records its submodules (a linked worktree's or a separate git dir's
+  # were never read; review of 236d347).
+  if [[ "$4" == */.git ]]; then gtop[$t]="$1"; fi
+  local _ok=""
+  if [[ "$4" == */commondir ]]; then _is_common_dir "$t" && _ok=1; else _is_git_dir "$t" && _ok=1; fi
+  # Inside ANOTHER writable bind: recorded, and protected in that bind's view by
+  # launcher_ro_overlay once every mount is scanned (reviews of dcf7dab, 4e7da47).
   local _j
-  if _is_git_dir "$t"; then
+  if [[ -n "$_ok" ]]; then
     for _j in ${bsrc[@]+"${!bsrc[@]}"}; do
       [[ "${bsrc[_j]}" != "$3" ]] || continue
       if [[ "$t" == "${bsrc[_j]}" || "$t" == "${bsrc[_j]}"/* ]]; then
@@ -1632,7 +1660,7 @@ _gdi_follow() {
   [[ "$t" == "$3" || "$t" == "$3"/* ]] || return 0
   [[ -z "${had[$t]:-}" ]] || return 0
   had[$t]=1
-  if _is_git_dir "$t"; then
+  if [[ -n "$_ok" ]]; then
     _gdi_dirs+=("$t")
   elif (( ++_gdi_warned <= 5 )); then
     printf 'WARNING: %s names %s, which is not a git directory; nothing there is protected.\n' "$(_term "$4")" "$(_term "$t")" >&2
@@ -1678,6 +1706,7 @@ git_dirs_in() {
   # _gdi_follow's WARNINGs: five named, then a count — every .git file is the
   # agent's to write (re-review of batch 9).
   local n=0 nf=0 top rec mode path tgt _gdi_warned=0
+  local -A gtop=()
   local -a links=()
   while (( n < ${#_gdi_dirs[@]} || nf < ${#_gdi_files[@]} )); do
     # A .git FILE names the git directory git uses there (`gitdir: <path>`), and a
@@ -1703,9 +1732,10 @@ git_dirs_in() {
       while [[ "$tgt" == *[$'\r\n'] ]]; do tgt="${tgt%?}"; done
       if [[ -n "$tgt" && "$tgt" != ./ && "$tgt" != . ]]; then _gdi_follow "$g" "$tgt" "$5" "$g/commondir"; fi
     fi
-    [[ -d "$g/objects" ]] || continue
     top=""
-    if [[ "$g" == */.git/modules/* ]]; then
+    if [[ -n "${gtop[$g]:-}" ]]; then
+      top="${gtop[$g]}"
+    elif [[ "$g" == */.git/modules/* ]]; then
       wt="$(_git_config_get "$g/config" core.worktree)" || wt=""
       if [[ -n "$wt" ]]; then top="$(cd "$g" 2>/dev/null && cd "$wt" 2>/dev/null && pwd -P)" || top=""; fi
     elif [[ "$g" == */.git ]]; then

@@ -1001,6 +1001,14 @@ launch ..
   && pass "G49 a git directory with no config is protected, with an empty config made for it" \
   || fail "G49 config-less git directory left unprotected (stderr: $(grep -F nc49 "$ERR" | head -2 | tr '\n' ' '))"
 rm -rf "$PROJ/nc49"
+# …including one our ./ commondir placeholder marks (made by an earlier launch).
+mkdir -p "$PROJ/nc49b" && "${G[@]}" -C "$PROJ/nc49b" init -q && rm -f "$PROJ/nc49b/.git/config"
+printf './\n' > "$PROJ/nc49b/.git/commondir"
+launch ..
+[[ -f "$PROJ/nc49b/.git/config" ]] && has_mount "$PROJ/nc49b/.git/config:/workspace/proj/nc49b/.git/config:ro" \
+  && pass "G49 … and one whose commondir is our ./ placeholder" \
+  || fail "G49 config-less repository with ./ commondir left unprotected"
+rm -rf "$PROJ/nc49b"
 # ── G50: what a protected cross-mount target names is followed too ───────────
 # A queued target is protected, but its commondir was never followed, so the
 # common directory it names (with the config and hooks git reads) stayed
@@ -1020,6 +1028,12 @@ has_mount "$B50/node_modules/x/main/config:/workspace/vault/node_modules/x/main/
   && has_mount "$B50/node_modules/x/main/config:/workspace/b50/node_modules/x/main/config:ro" \
   && pass "G50 a directory mounted twice is protected in both views" \
   || fail "G50 a second view left writable"
+# A queued target's commondir naming nothing yet is named, as in one mount.
+printf '../later50\n' > "$B50/node_modules/x/wt/commondir"
+EXTRA_MOUNTS="$B50" launch ..
+grep -qF "names $B50/node_modules/x/later50, which does not exist" "$ERR" \
+  && pass "G50 a queued target's commondir that names nothing is named" \
+  || fail "G50 a queued target's dangling commondir passed in silence ($(grep -F later50 "$ERR" | head -1))"
 rm -rf "$B50" "$PROJ/src50"
 # ── G51: a target in a named group's directories is protected, and said so ───
 # The group's own directories are not scanned — tools re-clone what they hold, and
@@ -1029,10 +1043,27 @@ rm -rf "$B50" "$PROJ/src50"
 GR51="$HOME/.ai-containers/default/.agents/m51"; mkdir -p "$GR51"; "${G[@]}" init -q --bare "$GR51/.git"
 mkdir -p "$PROJ/src51"; printf 'gitdir: %s\n' "$GR51/.git" > "$PROJ/src51/.git"
 launch ..
-grep -qF "inside the container group's own directories" "$ERR" \
+grep -qF "inside the container group's own directories" "$ERR" && grep -qF "$PROJ/src51/.git" "$ERR" \
   && pass "G51 protecting a git directory in the group's directories is named" \
   || fail "G51 group-directory protection not named (stderr: $(grep -F m51 "$ERR" | head -2 | tr '\n' ' '))"
 rm -rf "$GR51" "$PROJ/src51"
+
+# ── G52: a linked worktree's submodules are followed ────────────────────────
+# The index was read only for */.git and .git/modules directories, and a linked
+# worktree's git directory, which has no objects/, was skipped: a submodule in a
+# pruned vendor/ of a linked worktree kept a writable .git file the agent could
+# point at a git directory of its own (review of 236d347, HIGH; existed before).
+U52="$TMP/up52"; "${G[@]}" init -q "$U52" && "${G[@]}" -C "$U52" commit -q --allow-empty -m u
+M52="$PROJ/main52"; "${G[@]}" init -q "$M52" \
+  && "${G[@]}" -C "$M52" -c protocol.file.allow=always submodule -q add "$U52" vendor/lib \
+  && "${G[@]}" -C "$M52" commit -q -m s && "${G[@]}" -C "$M52" worktree add -q "$PROJ/lw52" \
+  && "${G[@]}" -C "$PROJ/lw52" -c protocol.file.allow=always submodule -q update --init \
+  || { printf 'SCAFFOLD-FAILED: cannot create the G52 worktree\n'; exit 1; }
+launch ..
+has_mount "$PROJ/lw52/vendor/lib/.git:/workspace/proj/lw52/vendor/lib/.git:ro" \
+  && pass "G52 a submodule of a linked worktree, under a pruned vendor/, is protected" \
+  || fail "G52 linked worktree's submodule .git left writable"
+rm -rf "$U52" "$M52" "$PROJ/lw52"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
