@@ -13,6 +13,18 @@ SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 # team member without rebuilding.
 
 # ── Essential packages ──────────────────────────────────────────────────────────
+# libatomic1 is for node: from Node 26 the official Linux binaries (x64 and
+# arm64) link libatomic.so.1, which ubuntu:24.04 does not ship (Node 24 did not
+# need it). The pyenv layer's build-essential pulls it in as a gcc dependency,
+# and the cleanup purge's --auto-remove takes it away again. Without it here,
+# once Node 26 became the LTS (2026-10-28), an image with none of yarn, pnpm,
+# bun, angular-cli or playwright built with a node that died at exec
+# ("libatomic.so.1: cannot open shared object file"), npm and every
+# npm-installed agent with it; an image with one of them failed to build at
+# that layer's npm; only KEEP_BUILD_TOOLCHAIN images, whose toolchain layer
+# brings build-essential back, were unaffected. Installed here, it is manual
+# and survives both purges. Case 310 runs node, npm and npx; mutation
+# 311-libatomic-not-installed drops it.
 RUN apt-get update && apt-get install -y --no-install-recommends \
   ca-certificates curl gnupg lsb-release \
   git vim grep mc jq \
@@ -22,6 +34,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   openssh-client \
   libcap2-bin \
   unzip zip \
+  libatomic1 \
   tcpdump \
   tshark && \
   rm -rf /var/lib/apt/lists/*
@@ -960,9 +973,10 @@ RUN if [ -n "$ANGULAR_CLI_VERSION" ] && [ "$ANGULAR_CLI_VERSION" != "OFF" ]; the
 ARG INSTALL_YARN=0
 RUN if [ "$INSTALL_YARN" = "1" ]; then npm install -g yarn; fi
 
-# pnpm — installed globally as root at build time (mirrors yarn). corepack ships
-# with Node, but a non-root sandbox user can't `corepack enable` / `npm i -g` at
-# runtime because the nvm Node dir is root-owned, so pnpm is baked in instead.
+# pnpm — installed globally as root at build time (mirrors yarn). corepack shipped
+# with Node until Node 26, which no longer bundles it, and either way a non-root
+# sandbox user can't `corepack enable` / `npm i -g` at runtime because the nvm
+# Node dir is root-owned, so pnpm is baked in instead.
 ARG INSTALL_PNPM=0
 RUN if [ "$INSTALL_PNPM" = "1" ]; then npm install -g pnpm; fi
 

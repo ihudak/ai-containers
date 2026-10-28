@@ -557,6 +557,13 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - What's wrong: Node 26.13.0 became LTS ("Lithium") on 2026-10-28. For a while nodejs.org listed it in `index.tab` while nvm found no checksum for its tarball (`Provided checksum to compare to is empty.`), so nvm refused the binary, fell back to a source build, which failed too, and the five attempts (about 2.5 minutes of backoff) all failed the same way. At 18:30 UTC the same layer installed it with `Checksums matched!`. Anyone building the image in that window, not only CI, gets a failed build whose message points at nvm rather than at the release.
 - Fix direction: on that message, fall back to the previous LTS line (`nvm install --lts=<previous codename>`, or the newest LTS that `nvm ls-remote --lts` lists before it) and say so, rather than retrying the same release; or note the symptom beside the `GITHUB_TOKEN` advice so a failed build is recognised.
 
+### BLD-10: from Node 26, the image's default node dies at exec: libatomic1 is purged with build-essential
+- **Status: FIXED** (2026-10-28). `libatomic1` is installed in the essentials layer, so it is manual and survives both `--auto-remove` purges. Case 310 now runs `node`, `npm` and `npx` (`assert_runs`, which needs `--version` to execute); new mutation `311-libatomic-not-installed` drops the package, and against it case 310 fails on exactly `node`, `npm` and `npx` ("libatomic.so.1: cannot open shared object file") while the other eleven tools pass, on an image built with `--no-cache` (a cache from before 2026-10-28 hands back Node 24 in the nvm layer and the case passes, which the patch header now says). The fixed tree passes cases 000, 310 and 440, whose node servers had never listened. Its review measured the rest: Node 26.13.0 needs `libatomic.so.1` on linux-x64 and linux-arm64 alike (Node 24.22.2 on neither) and nothing else noble lacks; under it qmd, yarn, pnpm, bun, Angular CLI and the Copilot, Codex and Gemini CLIs install and run; nothing in the engine pins the Node major.
+- Severity: HIGH. Confidence: CONFIRMED (Integration's re-run on `7b9314d`: every case with a node sidecar, and 440's dev server, timed out; reproduced in ubuntu:24.04)
+- Location: `Dockerfile: libatomic1`, in the essentials layer; the cleanup layer's `apt-get purge -y --auto-remove`
+- What was wrong: Node 26 became the LTS on 2026-10-28, and its official binaries link `libatomic.so.1`, which ubuntu:24.04 does not ship. The nvm layer installs it without running it; the pyenv layer's `build-essential` brings the library in as a gcc dependency, and the cleanup purge removes it again. An image with none of yarn, pnpm, bun, angular-cli or playwright built with a `node` that died at exec ("libatomic.so.1: cannot open shared object file"), taking `npm`, qmd and every npm-installed agent with it; one with any of them failed to build at that layer's `npm`; only `KEEP_BUILD_TOOLCHAIN` images were unaffected. An image built on 2026-10-28 before this fix needs a rebuild.
+- Left open: Node 26 no longer bundles corepack, so a project that ran `corepack` in an interactive shell now gets `command not found`, and the sandbox user cannot install it into the root-owned nvm directory (`npx corepack` works). The three texts that said corepack ships with Node are corrected; whether to install it in the nvm layer is not decided here.
+
 ## 7. Test harness and CI
 
 ### TST-1: Hermetic suite fails on a developer host with an en_US.UTF-8 locale (two tests compare a locale `sort` against C-ordered literals)
@@ -1243,6 +1250,13 @@ Batch 9 (`9bd3729` … `6a0b37f`) went through 19 review rounds. Every HIGH and 
 - Location: `tests/lib-layer-checks.sh: _wf_push_filters()`; `tests/layer-checks.conf`, the `workflow` row-type comment
 - What's wrong: a quoted comma inside a flow list is split (`branches: ['a,b']` reads as `'a` and `b'`); the answer stays conservative unless the halves hide a glob. And `tests/layer-checks.conf` still says the exempt claim is checked by `wf_triggers_on`; it is kept byte-identical with mgd-ai-containers' copy, so it changes there and here together.
 - Fix direction: split flow lists outside quotes; update the comment in both repositories at once.
+
+### TST-22: `assert_runs` prints an ELF binary's bytes as its "shebang"
+- **Status: OPEN** (2026-10-28, seen in the BLD-10 demonstration; cosmetic)
+- Severity: LOW. Confidence: CONFIRMED (case 310 against mutation `311-libatomic-not-installed`)
+- Location: `tests/integration/lib.sh: assert_runs()`, the diagnostic printed after `FAILED TO RUN`
+- What's wrong: for a binary that fails to run, the dump reads the target's first line as a shebang whatever it is, so for `node`, an ELF file, it prints raw bytes and bash warns `command substitution: ignored null byte in input` into the case's output. The `error:` line beneath it still names the cause.
+- Fix direction: print `shebang:` only when the first two bytes are `#!`, and say `ELF binary` otherwise.
 
 ## 13. Found while fixing LNCH-14, GIT-16, GIT-17 and GIT-18
 

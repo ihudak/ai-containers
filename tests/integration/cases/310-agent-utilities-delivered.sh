@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# summary:  the shell utilities agents reach for are on PATH in the image, and run
+# summary:  the shell utilities and the node toolchain agents reach for are on PATH in the image, and run
 # tags:     delivery fast
 # requires: docker
 #
@@ -20,6 +20,12 @@
 # list empties it out of the default image while every other tool still passes.
 # That is mutation 310-make-not-installed.
 #
+# `node`, `npm` and `npx` are not from that layer, but every npm-installed agent
+# and qmd runs on them, and they can break the same way: from Node 26 the binary
+# needs libatomic.so.1, which only the pyenv layer's build-essential brought in,
+# and the cleanup purge took it away, so `node --version` died at exec while
+# node was still on PATH. That is mutation 311-libatomic-not-installed.
+#
 # A bare container on `sleep`, not sandbox_up: these binaries are image
 # contents, so the entrypoint, the firewall and the agent shell are all beside
 # the point, and booting them would only add time and ways to fail first.
@@ -30,7 +36,7 @@ cid="$(docker run -d --label "$IT_LABEL" --entrypoint sleep "$IT_IMAGE" infinity
   || { fail "docker run failed: $cid"; it_finish; }
 it_track "container:$cid"
 
-for b in rg fd tree file column bc make sqlite3 zstd xxd less; do
+for b in rg fd tree file column bc make sqlite3 zstd xxd less node npm npx; do
   assert_runs "$cid" "$b"
 done
 

@@ -14,7 +14,8 @@
 #       opposite belief anyway.
 #
 #       Expected: exactly ONE assertion fails, `make is on PATH`, and the other
-#       ten tools still pass. Any other failure means something else changed
+#       tools still pass (ten when demonstrated below; thirteen since node, npm
+#       and npx joined). Any other failure means something else changed
 #       -- and a run where make PASSES means some other default-image package
 #       pulls make back in, which would make this patch demonstrate nothing.
 #
@@ -32,7 +33,7 @@
 diff --git a/Dockerfile b/Dockerfile
 --- a/Dockerfile
 +++ b/Dockerfile
-@@ -467,7 +467,7 @@
+@@ -484,7 +484,7 @@
  # and that package is not installed, so `fd` is linked to it. Integration case
  # 310 asserts every tool here is on PATH and runs.
  RUN apt-get update && apt-get install -y --no-install-recommends \

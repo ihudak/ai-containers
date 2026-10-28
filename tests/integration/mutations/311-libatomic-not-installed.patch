@@ -1,0 +1,45 @@
+# case: 310-agent-utilities-delivered
+# what: libatomic1 is dropped from the essentials layer as unused -- nothing
+#       else in the Dockerfile uses it, and every image built before Node 26
+#       became the LTS (2026-10-28) ran node without it.
+#
+#       From Node 26 the official Linux node binaries link libatomic.so.1. The
+#       pyenv layer's build-essential brings the library in as a gcc
+#       dependency, and the cleanup purge's --auto-remove takes it away again.
+#       The default variant runs node in no layer, so it still builds: the
+#       finished image keeps node on PATH, and `node --version` dies at exec
+#       with "libatomic.so.1: cannot open shared object file", npm and npx
+#       with it. (A variant with yarn, pnpm, bun, angular-cli or playwright
+#       fails to build instead, at that layer's npm.)
+#
+#       Expected: exactly THREE assertions fail, `node`, `npm` and `npx` FAILED
+#       TO RUN, and the other eleven tools still pass. A run where node RUNS
+#       means the default variant installed a node that does not need the
+#       library (the LTS moved, or the variant kept build-essential), or some
+#       other default-image package pulls libatomic1 back in, and this patch
+#       then demonstrates nothing.
+#
+#       Demonstrated locally on 2026-10-28: this patch applied, the default
+#       variant's minimal sandbox.conf, `./build.sh --no-cache` (nvm installed
+#       v26.13.0), then `run.sh --reuse-image --cases
+#       310-agent-utilities-delivered` against that image. Exactly that --
+#       `node`, `npm` and `npx` FAILED TO RUN on "libatomic.so.1: cannot open
+#       shared object file", the other eleven PASSed.
+#
+#       NEEDS A REBUILD, like 310-make-not-installed: it changes the Dockerfile.
+#       And WITHOUT THE CACHE: with this patch applied the Dockerfile is the one
+#       from before the fix up to the nvm layer, so a build cache from before
+#       2026-10-28 hands back an nvm layer holding Node 24, which needs no
+#       libatomic, and the case passes having demonstrated nothing. That
+#       happened on the first local try (case 310 PASSed in 27 s).
+diff --git a/Dockerfile b/Dockerfile
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -34,7 +34,6 @@
+   openssh-client \
+   libcap2-bin \
+   unzip zip \
+-  libatomic1 \
+   tcpdump \
+   tshark && \
+   rm -rf /var/lib/apt/lists/*
