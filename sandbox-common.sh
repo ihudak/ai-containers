@@ -918,6 +918,25 @@ repo_effective_backend() {
 
 # ── Group helpers ────────────────────────────────────────────────────────────────
 
+# host_group_source <dir> — print which of <dir>'s env files sets AI_CONTAINER_GROUP
+# to `host`, as the launcher reads them: by load_env_defaults itself, in its order
+# (sandbox.local.env first), the first file that sets the key at all deciding. So a
+# line it ignores (`AI_CONTAINER_GROUP = host`) or does not keep (a second one) is
+# never named (LNCH-20). Prints nothing when neither file does. For the NOTE that
+# build.sh and the launch print before refusing the group: runme.sh runs build.sh
+# first, so both must (review of 9700c64).
+host_group_source() {
+  local f mode val
+  for f in "$1/sandbox.local.env" "$1/sandbox.env"; do
+    [[ -f "$f" ]] || continue
+    mode=portable; [[ "$f" == */sandbox.local.env ]] && mode=local
+    val="$( unset AI_CONTAINER_GROUP; load_env_defaults "$f" "$mode" 2>/dev/null; printf '%s' "${AI_CONTAINER_GROUP-<unset>}" )"
+    [[ "$val" == '<unset>' ]] && continue
+    [[ "$val" == host ]] && printf '%s\n' "$f"
+    return 0
+  done
+}
+
 validate_group_name() {
   local name="$1"
   # The host group mounted your real $HOME dot-directories read-write; it is gone.

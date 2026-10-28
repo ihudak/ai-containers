@@ -2736,20 +2736,10 @@ run_container() {
   # at, your real $HOME's dot-directories among them, as the removed host group
   # did — and the git scan, which skips the group's own directories, skipped what
   # lay under the link's target (G92).
-  local group="${AI_CONTAINER_GROUP:-default}" _gsf _gmode _gval
+  local group="${AI_CONTAINER_GROUP:-default}" _gsf
   if [[ "$group" == host ]]; then
-    # Name the file whose line the loader kept — the first file, in its order,
-    # that sets the key at all, read by load_env_defaults itself, so a line it
-    # ignores (`AI_CONTAINER_GROUP = host`) or does not keep (a second one) is
-    # never named (LNCH-20).
-    for _gsf in "$script_dir/sandbox.local.env" "$script_dir/sandbox.env"; do
-      [[ -f "$_gsf" ]] || continue
-      _gmode=portable; [[ "$_gsf" == */sandbox.local.env ]] && _gmode=local
-      _gval="$( unset AI_CONTAINER_GROUP; load_env_defaults "$_gsf" "$_gmode" 2>/dev/null; printf '%s' "${AI_CONTAINER_GROUP-<unset>}" )"
-      [[ "$_gval" == '<unset>' ]] && continue
-      [[ "$_gval" == host ]] && printf 'NOTE: AI_CONTAINER_GROUP=host is set in %s.\n' "$(_term "$_gsf")" >&2
-      break
-    done
+    _gsf="$(host_group_source "$script_dir")"
+    [[ -z "$_gsf" ]] || printf 'NOTE: AI_CONTAINER_GROUP=host is set in %s.\n' "$(_term "$_gsf")" >&2
   fi
   validate_group_name "$group"
   local _gr="$HOME/.ai-containers/$group" _glt _ghome _gpar _ghid

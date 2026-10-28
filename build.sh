@@ -531,6 +531,10 @@ build_image() {
   # The group the launch will refuse — `host`, or a name that is no group — is
   # refused here too: runme.sh builds first, and the whole image was built for a
   # launch that could not start (LNCH-20).
+  if [[ "${AI_CONTAINER_GROUP:-}" == host ]]; then
+    local _gsf; _gsf="$(host_group_source "$script_dir")"
+    [[ -z "$_gsf" ]] || printf 'NOTE: AI_CONTAINER_GROUP=host is set in %s.\n' "$_gsf" >&2
+  fi
   validate_group_name "${AI_CONTAINER_GROUP:-default}"
   local build_image_name="${1:-$image_name}"
   local build_args=()

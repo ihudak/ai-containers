@@ -289,10 +289,15 @@ warn_host_group() {
     mode=portable; [[ "$f" == */sandbox.local.env ]] && mode=local
     val="$(env -u AI_CONTAINER_GROUP bash -c '
       eval "$(sed -n "/^[A-Za-z_][A-Za-z0-9_]*() *{/,/^}/p" "$1")"
+      declare -F load_env_defaults >/dev/null || { printf "<error>"; exit 0; }
       load_env_defaults "$2" "$3" 2>/dev/null
       printf "%s" "${AI_CONTAINER_GROUP-<unset>}"
     ' _ "${script_dir}/sandbox-common.sh" "$f" "$mode")" || val='<unset>'
     [[ "$val" == '<unset>' ]] && continue
+    if [[ "$val" == '<error>' ]]; then
+      printf '  NOTE: could not check AI_CONTAINER_GROUP in %s: this engine'\''s loader did not load.\n' "$f"
+      break
+    fi
     if [[ "$val" == host ]]; then
       printf '  WARNING: %s sets AI_CONTAINER_GROUP=host, which is no longer supported:\n' "$f"
       printf '           every launch is refused until that line names a group (AI_CONTAINER_GROUP=mine);\n'

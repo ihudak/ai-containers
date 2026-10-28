@@ -491,6 +491,14 @@ hout="$(sync_project "$PROJ" 2>&1)"
 ! grep -qF 'AI_CONTAINER_GROUP=host' <<<"$hout" \
   && pass "sync says nothing when sandbox.local.env's group wins over sandbox.env's host" \
   || fail "sync warned about a sandbox.env host group that sandbox.local.env overrides"
+# sandbox.env alone setting it is named — also when the shell exports another
+# group, which the launcher would honour but which says nothing about the file.
+if [[ -f "$TMP/hl.bak" ]]; then cp "$TMP/hl.bak" "$hl"; else rm -f "$hl"; fi
+if [[ -f "$hl" ]]; then { grep -v '^AI_CONTAINER_GROUP' "$hl" || true; } > "$TMP/hl.tmp"; cp "$TMP/hl.tmp" "$hl"; rm -f "$TMP/hl.tmp"; fi
+hout="$(AI_CONTAINER_GROUP=other sync_project "$PROJ" 2>&1)"
+grep -qF "$se sets AI_CONTAINER_GROUP=host" <<<"$hout" \
+  && pass "sync names a sandbox.env that alone sets the host group, whatever the shell exports" \
+  || fail "sync missed a host group set in sandbox.env alone ($(grep -i 'host' <<<"$hout" | head -1))"
 cp "$TMP/se.bak" "$se"; rm -f "$TMP/se.bak"
 if [[ -f "$TMP/hl.bak" ]]; then cp "$TMP/hl.bak" "$hl"; else rm -f "$hl"; fi
 rm -f "$TMP/hl.bak"

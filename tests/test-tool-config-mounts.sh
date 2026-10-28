@@ -499,12 +499,14 @@ teardown
 # lines of their own. The menu itself needs a terminal; the list is its own function.
 MT="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 mkdir -p "$MT/.ai-containers"/{default,host,.verify-1-2,Bad_Name,new,mine,other}
+# Newest first, not by name: `mine` is made older than `other`.
+touch -t 202001010000 "$MT/.ai-containers/mine"; touch -t 202101010000 "$MT/.ai-containers/other"
 menu="$(HOME="$MT" bash -c '
   eval "$(sed -n "/^[A-Za-z_][A-Za-z0-9_]*() *{/,/^}/p" "$1")"
   group_menu_choices new
-' _ "$REPO_DIR/sandbox-common.sh" 2>&1 | LC_ALL=C sort | tr '\n' ' ')"
-[[ "$menu" == "mine other " ]] \
-  && pass "the bootstrap menu lists only selectable groups" || fail "the bootstrap menu lists only selectable groups (got: $menu)"
+' _ "$REPO_DIR/sandbox-common.sh" 2>&1 | tr '\n' ' ')"
+[[ "$menu" == "other mine " ]] \
+  && pass "the bootstrap menu lists only selectable groups, newest first" || fail "the bootstrap menu lists only selectable groups, newest first (got: $menu)"
 rm -rf "$MT"
 
 printf '\n%s failure(s)\n' "$fails"

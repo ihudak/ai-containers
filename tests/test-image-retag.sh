@@ -204,6 +204,14 @@ rm -f "$E"/allowlist-*.txt
   && [[ ! -e "$E/allowlist-domains.txt" ]] \
   && pass "build.sh refuses the removed host group before anything is built or written" \
   || fail "build.sh and the host group (rc=$rh; $(head -1 "$TMP/build.err"); docker build called: $(grep -c '^build ' "$DOCKER_LOG"))"
+# runme.sh runs build.sh first, so it is build.sh that must name the file to edit
+# (review of 9700c64).
+printf 'AI_CONTAINER_GROUP=host\n' > "$E/sandbox.local.env"
+( cd "$E" && unset AI_CONTAINER_GROUP && bash ./build.sh other:tag ) >/dev/null 2>"$TMP/build.err"; rh=$?
+[[ "$rh" != 0 ]] && grep -q 'NOTE: AI_CONTAINER_GROUP=host is set in .*/sandbox\.local\.env' "$TMP/build.err" \
+  && pass "build.sh names the file that sets the host group" \
+  || fail "build.sh did not name the file that sets the host group (rc=$rh; $(head -2 "$TMP/build.err" | tr '\n' ' '))"
+rm -f "$E/sandbox.local.env"
 rm -f "$E"/allowlist-*.txt
 
 # The other half (from main's ENV-7 tests): a tag no image carries yet reaches
