@@ -1070,15 +1070,15 @@ Batch 9 (`9bd3729` … `6a0b37f`) went through 19 review rounds. Every HIGH and 
 - Fix direction: print `$co` instead of `$path`. Keep one budget per top, or name the real top's failures first.
 
 ### GIT-16: the index-read timeout is not applied on macOS, even where `gtimeout` exists
-- **Status: OPEN** (batch 9 review, original review finding #9 NIT)
+- **Status: FIXED** (2026-10-28). The index read probes `gtimeout` first, then `timeout` (both are GNU coreutils' and take the same arguments), and AGENTS.md says so. G44 now also runs with a recording `gtimeout` on `PATH` and requires it to bound the hanging read; red with the old probe. Not run on a Mac.
 - Severity: NIT. Confidence: PLAUSIBLE (from code)
-- Location: sandbox.sh: `command -v timeout >/dev/null 2>&1 && _gir_t=(timeout -k 2 10)`
+- Location: `sandbox.sh: _git_index_read()`, its timeout probe (then `timeout` only)
 - What's wrong: macOS has no `timeout(1)`, so the GIT-4 bound on the index read does not apply there. Homebrew coreutils installs `gtimeout`, which is not probed.
 - Failure scenario: on a Mac, a concurrent container swaps an index for a FIFO after the check, and the launch blocks for ever.
 - Fix direction: also probe `gtimeout`, and update the "not on macOS" wording in AGENTS.md.
 
 ### GIT-17: `CDPATH` is not cleared before `cd "$wt"` resolves a relative `core.worktree`
-- **Status: OPEN** (batch 9 review, round r2 finding #7)
+- **Status: FIXED** (2026-10-28). `sandbox.sh` unsets `CDPATH` at the top, not per function: an exported `CDPATH` also makes `cd` print the directory, into every `$(cd … && pwd)` in the launcher. Hermetic G72 in `tests/test-git-internals-ro.sh`: a submodule whose `core.worktree` is a bare relative name, with a nested submodule under a pruned `vendor/` that only its index finds; with `CDPATH` pointing at a decoy, the nested `.git` file lost its read-only bind on the old code.
 - Severity: NIT. Confidence: PLAUSIBLE (from code)
 - Location: sandbox.sh: `cd "$wt" 2>/dev/null && pwd -P`
 - What's wrong: a relative `core.worktree` that does not start with `./` or `../` is resolved through the host shell's exported `CDPATH`. `sandbox.env` refuses `CDPATH`, but the user's own shell may export it. The commondir case fails closed (r2 checked this). This one can misplace the top, and with it the gitlink paths.
@@ -1086,9 +1086,9 @@ Batch 9 (`9bd3729` … `6a0b37f`) went through 19 review rounds. Every HIGH and 
 - Fix direction: `local CDPATH=` at the top of `git_dirs_in` and `launcher_ro_overlay`.
 
 ### GIT-18: `_lex_norm` truncates a path at a newline
-- **Status: OPEN** (batch 9 review, round r2 finding #3)
+- **Status: FIXED** (2026-10-28). `_lex_norm()` splits by `${rest%%/*}`, as `_path_walk()` does. Hermetic G73: a `.git` file in a directory named `a<LF>b` naming `../real73` gave the spurious "through a link" `WARNING:` on the old code and gives none now.
 - Severity: NIT. Confidence: PLAUSIBLE (from code)
-- Location: sandbox.sh: `IFS=/ read -r -a parts <<< "${1#/}"`
+- Location: `sandbox.sh: _lex_norm()`, its split (then an `IFS=/ read`)
 - What's wrong: `read` stops at the first newline, so a `.git` file whose directory name holds a newline gets a truncated lexical path. That gives a spurious "through a link" WARNING, or a "does not exist" WARNING naming the wrong path. The follow decision uses the physical path, so this is cosmetic.
 - Failure scenario: the agent names a directory `a<LF>b` and plants a `.git` file in it. The user sees a misleading WARNING.
 - Fix direction: split with a `${p%%/*}` loop, as `_path_walk` does.
@@ -1174,9 +1174,9 @@ Batch 9 (`9bd3729` … `6a0b37f`) went through 19 review rounds. Every HIGH and 
 - Fix direction: compute it inside the `kind == unreadable && -x` test.
 
 ### LNCH-14: `mktemp` runs on every launch, and a bad TMPDIR refuses every launch
-- **Status: OPEN** (batch 9 review, round r16 finding #5)
+- **Status: FIXED** (2026-10-28). The FIFO search makes its temporary file only when something is bound read-only, and its refusal names the directory: `cannot make a temporary file in <dir> (TMPDIR) …`. `_git_index_read()`, which needs a temporary directory too, says once per launch that it could not make one and that indexes are not read. Hermetic T51 in `tests/test-launcher-dir-ro.sh` (a stale TMPDIR launches when nothing is read-only, and is named when something is), red on the old code.
 - Severity: NIT. Confidence: CONFIRMED (reproduced: `TMPDIR=/nonexistent` gives rc=1 with "ERROR: cannot make a temporary file". GNU mktemp's own line names the template, so the path shows there)
-- Location: sandbox.sh: `printf 'ERROR: cannot make a temporary file\n' >&2`
+- Location: `sandbox.sh: launcher_ro_overlay()`, the FIFO search's temporary file
 - What's wrong: the temporary file is made even when `ro_srcs` is empty, and the launcher's own message does not name TMPDIR. `_git_index_read` depends on TMPDIR the same way.
 - Failure scenario: a stale TMPDIR in the user's shell stops every launch, and the message does not say why.
 - Fix direction: make the file only when there is something to search, and name `${TMPDIR:-/tmp}` in the error.
@@ -1233,6 +1233,22 @@ Batch 9 (`9bd3729` … `6a0b37f`) went through 19 review rounds. Every HIGH and 
 - Location: `tests/lib-layer-checks.sh: _wf_push_filters()`; `tests/layer-checks.conf`, the `workflow` row-type comment
 - What's wrong: a quoted comma inside a flow list is split (`branches: ['a,b']` reads as `'a` and `b'`); the answer stays conservative unless the halves hide a glob. And `tests/layer-checks.conf` still says the exempt claim is checked by `wf_triggers_on`; it is kept byte-identical with mgd-ai-containers' copy, so it changes there and here together.
 - Fix direction: split flow lists outside quotes; update the comment in both repositories at once.
+
+## 13. Found while fixing LNCH-14, GIT-16, GIT-17 and GIT-18
+
+### GIT-20: the other entry points still resolve their own directory through `CDPATH`
+- **Status: OPEN** (review of the GIT-17 fix, LOW)
+- Severity: LOW. Confidence: PLAUSIBLE (from code)
+- Location: `build.sh`, `repo.sh`, `group.sh`, `project-init.sh`, `sync-to-projects.sh`, `extract-discovery.sh`: each resolves its directory with `cd "$(dirname "${BASH_SOURCE[0]}")" && pwd` and leaves `CDPATH` set.
+- What's wrong: `sandbox.sh` now unsets `CDPATH`; the others do not. A relative invocation (`bash sub/build.sh`) with an exported `CDPATH` that also holds a `sub/` resolves there, and `cd` prints the directory too, so the captured path comes back as two lines.
+- Fix direction: the same `unset CDPATH` at the top of each entry point, with one test that runs an entry point under a decoy `CDPATH`.
+
+### LNCH-15: the once-per-launch "cannot make a temporary directory" WARNING is not asserted
+- **Status: OPEN** (review of the LNCH-14 fix, LOW)
+- Severity: LOW. Confidence: CONFIRMED (no test names it)
+- Location: `sandbox.sh: _git_index_read()`, its `mktemp -d` failure branch
+- What's wrong: T51 checks the FIFO search's refusal only. Where a git directory is protected, the launch is refused by that search anyway, so the warning matters only for an index read with nothing bound read-only.
+- Fix direction: assert the warning, once, in T51's second arm.
 
 ---
 

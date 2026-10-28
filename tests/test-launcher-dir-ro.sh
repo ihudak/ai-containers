@@ -1042,5 +1042,16 @@ if [[ "$(id -u)" != 0 ]]; then
   chmod 755 "$LAUNCHER/tools.d/d50"; rm -rf "$LAUNCHER/tools.d/d50"
 fi
 
+# ── T51: a stale TMPDIR (LNCH-14). The FIFO search needs a temporary file only
+# when something is bound read-only; a launch that binds nothing read-only must
+# not be stopped by it, and one that does is refused naming the TMPDIR.
+TMPDIR="$TMP/no-such-tmp51" launch "$LAUNCHER" "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && pass "T51 a stale TMPDIR does not refuse a launch that binds nothing read-only" \
+  || fail "T51 a stale TMPDIR refused a launch with nothing to search (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
+TMPDIR="$TMP/no-such-tmp51" launch "$LAUNCHER" "$PROJ"
+[[ "$LAUNCH_RC" != 0 ]] && grep -qF "in $TMP/no-such-tmp51 (TMPDIR)" "$ERR" \
+  && pass "T51 a stale TMPDIR refuses a launch with read-only binds, naming the TMPDIR" \
+  || fail "T51 the refusal does not name the TMPDIR (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

@@ -821,6 +821,21 @@ EOF44
   (( t44 < 60 )) && grep -qF "WARNING: cannot read the index of $TMP/hang/r/.git" "$ERR" \
     && pass "G44 an index read that hangs is cut off and named (${t44}s)" \
     || fail "G44 a hanging index read held the launch ${t44}s (stderr: $(grep -F hang/r "$ERR" | head -1))"
+  # On a Mac, timeout(1) is Homebrew's gtimeout; a launcher that probed only
+  # timeout left the read unbounded there (GIT-16). A gtimeout on PATH is used.
+  real_timeout="$(command -v timeout)"
+  cat > "$TMP/bin44/gtimeout" <<EOF44
+#!/usr/bin/env bash
+: > "$TMP/bin44/gtimeout.used"
+exec "$real_timeout" "\$@"
+EOF44
+  chmod +x "$TMP/bin44/gtimeout"
+  t44=$SECONDS
+  PATH="$TMP/bin44:$PATH" EXTRA_MOUNTS="$TMP/hang" launch "$TMP/app"
+  t44=$((SECONDS - t44))
+  [[ -e "$TMP/bin44/gtimeout.used" ]] && (( t44 < 60 )) \
+    && pass "G44 a gtimeout on PATH bounds the read (${t44}s)" \
+    || fail "G44 gtimeout was not used (${t44}s; used: $([[ -e "$TMP/bin44/gtimeout.used" ]] && echo yes || echo no))"
   rm -rf "$TMP/hang" "$TMP/bin44"
 else
   printf 'SKIP: G44 needs timeout(1)\n'
@@ -1323,6 +1338,47 @@ has_mount "$PROJ/h71/.git/config:/workspace/proj/h71/.git/config:ro" \
   && pass "G71 a git directory whose HEAD links to a directory is protected" \
   || fail "G71 HEAD -> refs/heads left the repository writable (rc=$LAUNCH_RC)"
 rm -rf "$PROJ/h71"
+
+# ── G72: CDPATH (GIT-17). A submodule's relative core.worktree with no ./ or
+# ../ is resolved by `cd`, which an exported CDPATH redirects — and makes print
+# the directory it went to. Here core.worktree=wt72 names a link in the
+# submodule's git directory to its checkout, and a nested submodule under
+# vendor/ (pruned by the scan; its own git directory has no core.worktree) is
+# found only through that checkout's index, so a misplaced worktree loses it.
+U72="$TMP/up72"; S72="$TMP/us72"; M72="$TMP/m72"; D72="$TMP/decoy72"
+for r in "$U72" "$S72"; do "${G[@]}" init -q "$r" && "${G[@]}" -C "$r" commit -q --allow-empty -m r; done
+mkdir -p "$D72/wt72"
+"${G[@]}" init -q "$M72" \
+  && "${G[@]}" -C "$M72" -c protocol.file.allow=always submodule -q add "$U72" vendor/a && "${G[@]}" -C "$M72" commit -q -m a \
+  && "${G[@]}" -C "$M72/vendor/a" -c protocol.file.allow=always submodule -q add "$S72" vendor/b \
+  && "${G[@]}" -C "$M72/vendor/a" commit -q -m b \
+  && ln -s "$M72/vendor/a" "$M72/.git/modules/vendor/a/wt72" \
+  && "${G[@]}" config -f "$M72/.git/modules/vendor/a/config" core.worktree wt72 \
+  && "${G[@]}" config -f "$M72/.git/modules/vendor/a/modules/vendor/b/config" --unset core.worktree \
+  || { printf 'SCAFFOLD-FAILED: cannot create the G72 repository\n'; exit 1; }
+want72="$M72/vendor/a/vendor/b/.git:/workspace/m72/vendor/a/vendor/b/.git:ro"
+EXTRA_MOUNTS="$M72" launch "$TMP/app"
+has_mount "$want72" && pass "G72 (control) a nested submodule found through a relative core.worktree is protected" \
+  || fail "G72 control: no $want72 (git mounts: $(git_mounts | grep m72 | tr '\n' ' '))"
+CDPATH="$D72" EXTRA_MOUNTS="$M72" launch "$TMP/app"
+has_mount "$want72" && pass "G72 an exported CDPATH does not move a relative core.worktree" \
+  || fail "G72 with CDPATH set, $want72 is missing (git mounts: $(git_mounts | grep m72 | tr '\n' ' '))"
+rm -rf "$U72" "$S72" "$M72" "$D72"
+
+# ── G73: a newline in a directory name (GIT-18). A .git file there naming its
+# git directory relatively was given a lexical path cut at the newline, which
+# never matched the physical one: a spurious "through a link" WARNING.
+M73="$TMP/m73"; NL73="$M73/a"$'\n'"b"
+mkdir -p "$NL73" && "${G[@]}" init -q --bare "$M73/real73" \
+  && printf 'gitdir: ../real73\n' > "$NL73/.git" \
+  || { printf 'SCAFFOLD-FAILED: cannot create the G73 repository\n'; exit 1; }
+EXTRA_MOUNTS="$M73" launch "$TMP/app"
+grep -q 'reaches .*real73 through a link' "$ERR" \
+  && fail "G73 a newline in the .git file's directory gave a spurious link WARNING: $(grep -a 'through a link' "$ERR" | head -1)" \
+  || pass "G73 a newline in a directory name does not cut its lexical path"
+grep -qF "$M73/real73/config:/workspace/m73/real73/config:ro" <<<"$(mounts)" \
+  && pass "G73 (control) the git directory it names is protected" || fail "G73 control: real73 not protected"
+rm -rf "$M73"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# A CDPATH exported by the user's shell sends a relative `cd` elsewhere and makes
+# it print the directory, into every $(cd … && pwd) here: a submodule's relative
+# core.worktree resolved under the wrong directory (bugs review GIT-17).
+unset CDPATH
 
 # sandbox.sh — run the AI sandbox container.
 #
@@ -1194,7 +1198,15 @@ launcher_ro_overlay() {
   # c687370; T50).
   local fx ferr pat
   local -a prune
-  ferr="$(mktemp "${TMPDIR:-/tmp}/ai-launcher-find.XXXXXX")" || { printf 'ERROR: cannot make a temporary file\n' >&2; exit 1; }
+  # Made only when there is something to search, so a stale TMPDIR in the
+  # user's shell does not stop launches that bind nothing read-only (LNCH-14).
+  ferr=""
+  if (( ${#ro_srcs[@]} )); then
+    ferr="$(mktemp "${TMPDIR:-/tmp}/ai-launcher-find.XXXXXX")" || {
+      printf 'ERROR: cannot make a temporary file in %s (TMPDIR) to search the read-only mounts for FIFOs\n' "$(_term "${TMPDIR:-/tmp}")" >&2
+      exit 1
+    }
+  fi
   for x in ${ro_srcs[@]+"${ro_srcs[@]}"}; do
     fx=""
     if [[ -p "$x" || -b "$x" || -c "$x" ]]; then fx="$x"
@@ -1671,7 +1683,14 @@ _git_index_read() {
   fmt="$(_git_file_config "$fcfg" extensions.objectformat 2>/dev/null)" || fmt=sha1
   [[ "$fmt" =~ ^[a-z0-9]{1,16}$ ]] || return 1
   if [[ -z "$_gir_tmp" ]]; then
-    _gir_tmp="$(mktemp -d "${TMPDIR:-/tmp}/ai-launcher-index.XXXXXX")" || { _gir_tmp=""; return 1; }
+    _gir_tmp="$(mktemp -d "${TMPDIR:-/tmp}/ai-launcher-index.XXXXXX")" || {
+      _gir_tmp=""
+      if [[ -z "$_gir_tmp_warned" ]]; then
+        _gir_tmp_warned=1
+        printf 'WARNING: cannot make a temporary directory in %s (TMPDIR); git indexes are not read, so the submodules they record are not followed\n' "$(_term "${TMPDIR:-/tmp}")" >&2
+      fi
+      return 1
+    }
   fi
   if [[ ! -d "$_gir_tmp/$fmt/.git" ]]; then
     GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
@@ -1683,14 +1702,18 @@ _git_index_read() {
   # Bounded where timeout(1) exists: the FIFO checks above are check-then-use, and
   # a concurrent container could swap the index for a FIFO after them, which
   # blocked the launch for ever (review of the batch 1 hotfix; GIT-4, G44). A
-  # timeout is a read that failed. macOS has no timeout(1); there it is unbounded.
+  # timeout is a read that failed. macOS has no timeout(1): there it is bounded
+  # only where Homebrew coreutils put gtimeout on PATH, and unbounded otherwise.
   # Read once per launch, into a file: ls-files lists the same whatever worktree
   # it is given, so a second mount reading one index reuses the first read, and
   # mapfile reads a file in blocks where it read a pipe a byte at a time — 100k
   # entries cost seconds a read (review of 4e91bf3). A git that exited non-zero,
   # a cut-off record included, is a failed read (G39).
   local _gir_t=() _gir_f _gir_rc
-  command -v timeout >/dev/null 2>&1 && _gir_t=(timeout -k 2 10)
+  # gtimeout first: it is Homebrew coreutils' name for the same GNU tool, the
+  # only one a Mac has (GIT-16).
+  if command -v gtimeout >/dev/null 2>&1; then _gir_t=(gtimeout -k 2 10)
+  elif command -v timeout >/dev/null 2>&1; then _gir_t=(timeout -k 2 10); fi
   _gir_f="${_gir_cache[$g]:-}"
   if [[ -z "$_gir_f" ]]; then
     _gir_f="$_gir_tmp/idx.${#_gir_cache[@]}"; _gir_cache[$g]="$_gir_f"
@@ -1755,10 +1778,12 @@ _gd_resolve() {
 # _lex_norm <absolute path>: the path with . and .. resolved by name alone, no link
 # followed — what it says, to compare with where it physically leads.
 _lex_norm() {
-  local -a out=() parts=()
-  local p
-  IFS=/ read -r -a parts <<< "${1#/}"
-  for p in ${parts[@]+"${parts[@]}"}; do
+  local -a out=()
+  local p rest="${1#/}"
+  # Split by expansion, not `read`, which stops at a newline (GIT-18).
+  while [[ -n "$rest" ]]; do
+    p="${rest%%/*}"
+    if [[ "$rest" == */* ]]; then rest="${rest#*/}"; else rest=""; fi
     case "$p" in
       ''|.) ;;
       ..) if (( ${#out[@]} )); then unset 'out[-1]'; fi ;;
@@ -2379,7 +2404,7 @@ _launcher_verify_dir=""
 # A named group's directory, which launcher_ro_overlay does not scan for git
 # repositories (the host's git never runs there). Set by run_container.
 _git_skip_root=""
-_gir_tmp=""
+_gir_tmp="" _gir_tmp_warned=""
 declare -A _gir_cache=()   # git directory → its read index, once per launch
 trap 'rm -rf "${_launcher_verify_dir:-}" "${_gir_tmp:-}" 2>/dev/null' EXIT
 
