@@ -1033,7 +1033,7 @@ Batch 9 (`9bd3729` … `6a0b37f`) went through 19 review rounds. Every HIGH and 
 - Fix direction: route these reads through one bounded helper (`timeout 2`, or a non-blocking open), and treat a timeout as unreadable.
 
 ### GIT-11: the launcher writes `config`, `commondir` and `hooks/` into config-less repository fixtures a project tracks
-- **Status: FIXED (batch 11)** — `1953888`: every bare repository gets the placeholders, a tracked test fixture too; `SANDBOX_GIT_FIXTURES`, which exempted listed fixtures (batch 10, `86427b0`), was dropped, because a committed list could name a bare repository you push to (LNCH-16; the user's choice). AGENTS.md says to ignore `<fixture>.git/commondir` and `<fixture>.git/config` in the project's `.gitignore`, and `config.worktree` where the fixture turns `extensions.worktreeConfig` on (G79).
+- **Status: FIXED (batch 11)** — `04e56e3`: every bare repository gets the placeholders, a tracked test fixture too; `SANDBOX_GIT_FIXTURES`, which exempted listed fixtures (batch 10, `86427b0`), was dropped, because a committed list could name a bare repository you push to (LNCH-16; the user's choice). AGENTS.md says to ignore `<fixture>.git/commondir` and `<fixture>.git/config` in the project's `.gitignore`, and `config.worktree` where the fixture turns `extensions.worktreeConfig` on (G79).
 - Severity: LOW. Confidence: CONFIRMED (reproduced: the fixture repro; after a launch, `git status` shows `?? testdata/fixture.git/commondir` and `?? testdata/fixture.git/config`)
 - Location: sandbox.sh: `if [[ ! -e "$g/config" && ! -L "$g/config" ]]; then ( set -C; : > "$g/config" ) 2>/dev/null || true; fi`
 - What's wrong: any HEAD + `objects/` + `refs/` directory is protected, so a tracked test fixture with no config gets permanent untracked placeholder files. AGENTS.md does not mention this.
@@ -1281,7 +1281,7 @@ Batch 9 (`9bd3729` … `6a0b37f`) went through 19 review rounds. Every HIGH and 
 Batch 10 went through seven review rounds, a review of its merge with main and one of the fixes that review asked for (`162d4c3`, `708742d`); every HIGH and MEDIUM they found was fixed or, where the user chose, designed out (GIT-13). What they left open:
 
 ### GIT-21: a bare repository created mid-session can borrow a listed fixture's exemption
-- **Status: CLOSED (batch 11)** — `1953888`: no longer applies; there is no fixture exemption to borrow (GIT-11).
+- **Status: CLOSED (batch 11)** — `04e56e3`: no longer applies; there is no fixture exemption to borrow (GIT-11).
 - Severity: LOW. Confidence: PLAUSIBLE (reproduced with the fixture loop alone, not end to end)
 - Location: sandbox.sh, the `SANDBOX_GIT_FIXTURES` loop in `launcher_ro_overlay()` (removed in batch 11)
 - What's wrong: a bare repository no launch has protected yet (one you create during a session) can be moved by the agent onto a listed `SANDBOX_GIT_FIXTURES` path, with a link left at its old path. The next launch takes the fixture path, a real directory now, for the fixture; the scan does not follow the link, and your `git push` goes through it into a repository with no placeholders and no first-protection NOTE.
@@ -1302,7 +1302,7 @@ Batch 10 went through seven review rounds, a review of its merge with main and o
 - Fix direction: refuse when the nearest existing ancestor is an empty mount point, or accept it as the NOTE says.
 
 ### LNCH-16: `SANDBOX_GIT_FIXTURES` is portable, so a commit can name a repository you push to
-- **Status: FIXED (batch 11)** — `1953888`: `SANDBOX_GIT_FIXTURES` was removed, not made machine-only: every bare repository gets its placeholders (GIT-11; the user's choice). The entry below said "the same trust as a committed `SANDBOX_GIT_MAX`", which was wrong: raising that cap protects more repositories, while this key was the only committed one that turned protection off.
+- **Status: FIXED (batch 11)** — `04e56e3`: `SANDBOX_GIT_FIXTURES` was removed, not made machine-only: every bare repository gets its placeholders (GIT-11; the user's choice). The entry below said "the same trust as a committed `SANDBOX_GIT_MAX`", which was wrong: raising that cap protects more repositories, while this key was the only committed one that turned protection off.
 - Severity: LOW. Confidence: CONFIRMED (by design)
 - Location: sandbox-common.sh, `env_key_portable()` (the key removed in batch 11)
 - What's wrong: a team can commit the fixture list, which is the point; a malicious commit that you pull can list a bare repository you push to, which then gets no placeholders. The same trust as a committed `SANDBOX_GIT_MAX`. Entries are plain paths inside the project with no link on the way.
@@ -1362,6 +1362,23 @@ Batch 10 went through seven review rounds, a review of its merge with main and o
 - Location: `sandbox.sh: _agent_bits_writable()`, the ls-based ACL fallback
 - What's wrong: with no `getfacl`, only GNU's or a BSD `ls` is trusted to say a directory has no ACL (LNCH-6); uutils' `ls`, the default `ls` of recent Ubuntu releases, is neither, so the check fails closed and a directory nobody but its owner can write counts as agent-writable — a launch over one that is searchable but unlistable is refused where it need not be. It fails closed, so it costs usability, not safety. LNCH-18 already notes that this branch is untested in CI.
 - Fix direction: measure whether uutils' `ls -ld` marks an ACL with `+` and trust it if it does; otherwise say in the refusal that installing `acl` (`getfacl`) lets the check decide. Make T25g's vectors independent of the host's `ls`, as T25h's shim does.
+
+### LNCH-19: the group checks compare physical paths, not device:inode
+- **Status: OPEN** (review of `305d655`)
+- Severity: LOW. Confidence: CONFIRMED (a bind mount of `$HOME` onto `~/.ai-containers/bm`, inside `unshare -rm`, launched and mounted the real `~/.ssh`)
+- Location: sandbox.sh: `run_container()`, the "is your home directory" refusal
+- What's wrong: the group directory is compared with `$HOME` by `pwd -P`, so an alias that is the same directory by another path — a bind mount, a macOS firmlink, another case on a case-insensitive filesystem — is not caught. Each needs a deliberate setup, usually root, and the agent cannot create `~/.ai-containers/<group>`.
+- Fix direction: compare `_launcher_dev_ino()` of the two instead.
+
+### LNCH-20: batch 11 leftovers
+- **Status: OPEN** (reviews of batch 11, LOW and NIT)
+- Severity: LOW (the first three) and NIT
+- `build.sh` does not check the group, so a `host` project's `runme.sh` builds the whole image before the launch refuses it.
+- No test pins that the group checks run before the `REPOS` `:rwcopy` volume and the output directories are made; G92 would pass with them moved back down.
+- The group-bootstrap menu's new filter (no `host`, no hidden directories) has no test: the menu needs a terminal.
+- The host-group greps accept `AI_CONTAINER_GROUP = host`, which the loader ignores, and flag a file whose first `AI_CONTAINER_GROUP=` line, the one the loader keeps, names another group.
+- No test covers the greps' `export` prefix or exact match, nor the link refusal's "another group" and "leads nowhere" hints.
+- The "another group" hint can name a directory that is not a valid group (`.verify-*`); "It leads nowhere" also covers a link to a file or an unsearchable directory; the "another disk" advice is printed for a link into `$HOME`, where it does not fit (it prints no command).
 
 ---
 
