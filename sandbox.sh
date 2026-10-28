@@ -1496,7 +1496,6 @@ _q() {
   printf "\$'%s'" "$qo"
 }
 
-
 _overlay_buildable() {
   local rest path pin
   _mount_representable "$1" "$2" || return 1
