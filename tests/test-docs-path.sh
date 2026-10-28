@@ -35,12 +35,25 @@ setup() {
   mkdir -p "$TMP/bin"
   cat > "$TMP/bin/docker" <<DOCKER
 #!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$TMP/docker-calls.txt"
 if [[ "\$1" == "run" ]]; then shift; printf '%s\n' "\$@" > "$CAPTURE"; exit 0; fi
 # Volume queries succeed with no output: a registered repo's volume counts as
 # PRESENT, so a volume-backed repo can be exercised without a daemon. Without
 # this, sandbox.sh stops at "its docker volume is missing" before reaching any
 # mount decision, and a case meant to test that decision never gets there.
-if [[ "\$1" == "volume" ]]; then exit 0; fi
+# A label query answers the volume's entry in FAKE_LABELS ("vol=owner ..."), else
+# FAKE_REPO_LABEL (empty by default: an unlabelled volume). FAKE_WC_MISSING makes
+# a working copy absent, so :rwcopy seeds it.
+if [[ "\$1" == "volume" ]]; then
+  vol="\${!#}"
+  if [[ "\$*" == *Labels* ]]; then
+    lbl="\${FAKE_REPO_LABEL:-}"
+    for kv in \${FAKE_LABELS:-}; do [[ "\${kv%%=*}" == "\$vol" ]] && lbl="\${kv#*=}"; done
+    printf '%s\n' "\$lbl"; exit 0
+  fi
+  [[ "\$2" == inspect && "\$vol" == *--wc-* && -n "\${FAKE_WC_MISSING:-}" ]] && exit 1
+  exit 0
+fi
 exit 1
 DOCKER
   chmod +x "$TMP/bin/docker"
@@ -308,6 +321,53 @@ if [[ "$RC" -ne 0 ]] && grep -q "name 'docs' is used by" "$ERR"; then
   pass "a DIFFERENT git repository colliding on 'docs' is still refused"
 else
   fail "a DIFFERENT git repository colliding on 'docs' is still refused (rc=$RC)"
+fi
+teardown
+
+# REPO-13: a repo volume is attached by name, and under a nested
+# REPO_VOLUME_PREFIX two repos' names collide. A base volume labelled for
+# another repo is refused, never handed to the agent; its own label, or none
+# (a volume made before labels), attaches as before.
+setup
+mkdir -p "$TMP/app" "$TMP/lib13"
+register_git_repo lib13 "git@example.invalid:lib13.git" "$TMP/lib13"
+export REPOS="lib13:rw"
+FAKE_REPO_LABEL=other run_sandbox "$TMP/app"
+if [[ "$RC" -ne 0 && ! -s "$CAPTURE" ]] && grep -q "labelled for repo 'other'" "$ERR"; then
+  pass "REPO-13 a repo volume labelled for another repo is refused, and nothing is launched"
+else
+  fail "REPO-13 another repo's volume was attached (rc=$RC; $(grep -c 'repo-lib13' "$CAPTURE") mount(s); $(head -1 "$ERR"))"
+fi
+: > "$CAPTURE"
+FAKE_REPO_LABEL=lib13 run_sandbox "$TMP/app"
+[[ "$RC" -eq 0 ]] && grep -q 'ai-containers-repo-lib13:/workspace/lib13' "$CAPTURE" \
+  && pass "REPO-13 a repo volume labelled for itself attaches" \
+  || fail "REPO-13 a correctly labelled repo volume did not attach (rc=$RC; $(head -1 "$ERR"))"
+: > "$CAPTURE"
+FAKE_REPO_LABEL='' run_sandbox "$TMP/app"
+[[ "$RC" -eq 0 ]] && grep -q 'ai-containers-repo-lib13:/workspace/lib13' "$CAPTURE" \
+  && pass "REPO-13 an unlabelled repo volume attaches as before" \
+  || fail "REPO-13 an unlabelled repo volume did not attach (rc=$RC; $(head -1 "$ERR"))"
+# :rwcopy reuses an existing working copy, and working-copy names collide under
+# a nested prefix too: one labelled for another repo is refused.
+: > "$CAPTURE"
+export REPOS="lib13:rwcopy"
+FAKE_LABELS="$(printf 'ai-containers-repo-lib13=lib13')" FAKE_REPO_LABEL=other run_sandbox "$TMP/app"
+if [[ "$RC" -ne 0 && ! -s "$CAPTURE" ]] && grep -q "lib13--wc-.* is labelled for repo 'other'" "$ERR"; then
+  pass "REPO-13 a :rwcopy working copy labelled for another repo is refused"
+else
+  fail "REPO-13 another repo's working copy was attached (rc=$RC; $(head -1 "$ERR"))"
+fi
+# Every entry is checked before any is seeded: a refused later entry leaves no
+# working copy made for an earlier one.
+mkdir -p "$TMP/good13"; register_git_repo good13 "git@example.invalid:good13.git" "$TMP/good13"
+: > "$CAPTURE"; : > "$TMP/docker-calls.txt"
+export REPOS="good13:rwcopy lib13:rw"
+FAKE_WC_MISSING=1 FAKE_LABELS="ai-containers-repo-good13=good13 ai-containers-repo-lib13=other" run_sandbox "$TMP/app"
+if [[ "$RC" -ne 0 ]] && ! grep -q '^volume create' "$TMP/docker-calls.txt" && ! grep -q '^run' "$TMP/docker-calls.txt"; then
+  pass "REPO-13 a refused later entry: nothing was seeded or run for an earlier one"
+else
+  fail "REPO-13 seeding ran before a later entry was refused (rc=$RC; $(grep -E '^(volume create|run)' "$TMP/docker-calls.txt" | head -2 | tr '\n' ';'))"
 fi
 teardown
 

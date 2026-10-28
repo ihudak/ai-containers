@@ -582,7 +582,8 @@ cmd_rm() {
         printf '       "%s" has no base volume of its own under this prefix.\n' "$name" >&2
       fi
       if repo_is_registered "$name"; then
-        printf '       To drop only the registry entry for "%s", delete its line from %s.\n' "$name" "$repo_registry_file" >&2
+        printf '       To drop only the registry entry for "%s", delete its line from %s;\n' "$name" "$repo_registry_file" >&2
+        printf '       its own working copies, if any: ./repo.sh gc --repo %s\n' "$name" >&2
       fi
       exit 1
     fi

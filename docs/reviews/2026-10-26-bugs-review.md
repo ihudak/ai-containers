@@ -1328,14 +1328,14 @@ Batch 10 went through seven review rounds, a review of its merge with main and o
 ## 16. Found while fixing REPO-11
 
 ### REPO-13: an attached repo is mounted by its volume's name, whatever its label says
-- **Status: OPEN** (review of the REPO-11 fix, LOW)
+- **Status: FIXED** (2026-10-28). Before the `REPOS` attach loop, `sandbox.sh` checks every entry with `_repo_volume_foreign()`: the base volume of each volume-backed entry, and for `:rwcopy` the working copy too, which is reused if it exists and whose `<base>--wc-<tag>` name collides the same way. One labelled for another repo refuses the launch, naming the prefix it belongs to, before any working copy is seeded or anything mounted — the first version checked inside the loop, after an earlier entry's copy had been seeded, and not the working copy at all (its review). The loop is the one place repo volumes are mounted: the `@repo` working directory and the `DOCS_PATH`/`SPECS_PATH`/`ARCHITECTURE_REPO_PATH` `@name` forms are entries in it. Hermetic, `tests/test-docs-path.sh` (its fake `docker` answers labels per volume and logs every call): a foreign base volume, a foreign working copy, and `good:rwcopy bad:rw` seeding nothing — each red on the old code, which attached the other repo's volume `:rw`; its own label and none attach as before.
 - Severity: LOW. Confidence: PLAUSIBLE (from code; the same collision REPO-11 reproduced)
 - Location: `sandbox.sh`, the `REPOS` attach, which checks `repo_volume_exists` only
 - What's wrong: with a registered `docs` whose base volume is labelled for another repo (a nested `REPO_VOLUME_PREFIX`), `REPOS="docs:rw"` mounts that other repo's volume read-write for the agent, `:rwcopy` seeds a copy from it, and `:ro` shows its content as `docs`. Unlike `rm`, this hands another repo's data to the agent.
 - Fix direction: refuse the launch when the base volume's `ai-containers.repo` label names another repo, as `repo.sh: foreign_base_owner()` does.
 
 ### REPO-14: `rm`'s refusal over another repo's volume does not mention the name's own working copies
-- **Status: OPEN** (review of the REPO-11 fix, NIT)
+- **Status: FIXED** (2026-10-28). The refusal names `./repo.sh gc --repo <name>` for the name's own working copies; asserted in `tests/test-repo-destructive.sh`.
 - Severity: NIT
 - Location: `repo.sh: cmd_rm()`, the foreign-owner refusal
 - What's wrong: it says how to drop the registry line, not that the name's own labelled working copies stay; `./repo.sh gc --repo <name>` removes them.

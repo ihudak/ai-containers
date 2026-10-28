@@ -47,6 +47,21 @@ parse_pointer_spec() {  # $1=raw value  $2=default mode  $3=allow_suffix(1|0)
 # For a @name pointer, echo "name:mode" to append to the repo list — UNLESS 'name'
 # is already listed, in which case echo nothing (the existing REPOS/@primary entry
 # wins) and note a mode divergence on stderr. Pass the current repo list as $3...
+# _repo_volume_foreign <repo> <volume>: refuse the launch (exit 1) when <volume>
+# exists and its ai-containers.repo label names a repo other than <repo>; the
+# message names the prefix the volume belongs to where its name shows it.
+_repo_volume_foreign() {
+  local owner; owner="$(docker_volume_label "$2" ai-containers.repo)"
+  [[ -z "$owner" || "$owner" == "$1" ]] && return 0
+  printf "ERROR: repo '%s': volume %s is labelled for repo '%s'; refusing to attach it.\n" "$1" "$2" "$owner" >&2
+  local base="${2%--wc-*}"
+  if [[ "$base" == *"-repo-$owner" ]]; then
+    printf "       It is repo '%s' of REPO_VOLUME_PREFIX=%s, whose name collides with '%s' here.\n" "$owner" "${base%-repo-"$owner"}" "$1" >&2
+  fi
+  printf "       Attach '%s' under its own prefix; to use the name '%s' here, register it again under another name.\n" "$owner" "$1" >&2
+  exit 1
+}
+
 pointer_repo_entry() {  # $1=name  $2=mode  $3..=current repos_list entries
   local name="$1" mode="$2"; shift 2
   local e existing_mode
@@ -2909,6 +2924,20 @@ run_container() {
   fi
   if [[ ${#repos_list[@]} -gt 0 ]]; then
     local ws_tag; ws_tag="$(sanitize_volume_token "$(basename "$launch_dir")")_$(printf '%s' "$launch_dir" | cksum | tr -cd '0-9' | cut -c1-8)"
+    # Every entry's volumes are checked before ANY is seeded or mounted: a repo
+    # volume is found by name, and under a nested REPO_VOLUME_PREFIX two repos'
+    # names collide, a working copy's (`<base>--wc-<tag>`) as much as a base
+    # volume's. Attaching would hand the agent ANOTHER repo's data, :rw included
+    # (bugs review REPO-13; repo.sh refuses it the same way, REPO-11). An
+    # unlabelled volume, made before labels, names no owner.
+    local _pe _pn _pm _prec
+    for _pe in "${repos_list[@]}"; do
+      _pn="${_pe%%:*}"; _pm="${_pe##*:}"
+      _prec="$(repo_registry_lookup "$_pn" 2>/dev/null)" || continue
+      [[ "$(repo_record_backend "$_prec")" == "bind" ]] && continue
+      _repo_volume_foreign "$_pn" "$(repo_volume_name "$_pn")"
+      [[ "$_pm" == "rwcopy" ]] && _repo_volume_foreign "$_pn" "$(repo_workcopy_volume_name "$_pn" "$ws_tag")"
+    done
     for entry in "${repos_list[@]}"; do
       local rname rmode
       rname="${entry%%:*}"

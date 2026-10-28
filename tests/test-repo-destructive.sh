@@ -332,8 +332,8 @@ setup_world
 printf 'ai-containers.repo=other\nai-containers.type=git\nai-containers.source=git@x:other.git\n' > "$VOLS/ai-containers-repo-docs.labels"
 run_repo rm docs --yes
 [[ "$RC" != 0 && -f "$VOLS/ai-containers-repo-docs" ]] && grep -q 'labelled for repo "other"' "$ERR" \
-  && ! grep -q '^volume rm' "$DOCKER_LOG" \
-  && pass "rm refuses a base volume labelled for another repo, and removes nothing" \
+  && ! grep -q '^volume rm' "$DOCKER_LOG" && grep -qF './repo.sh gc --repo docs' "$ERR" \
+  && pass "rm refuses a base volume labelled for another repo, removes nothing, and names gc for its own copies" \
   || fail "rm acted on another repo's volume (rc=$RC; removed: $(removed); $(tr '\n' ' ' < "$ERR"))"
 setup_world
 printf 'ai-containers.repo=other\nai-containers.type=git\nai-containers.source=git@x:other.git\n' > "$VOLS/ai-containers-repo-docs.labels"
