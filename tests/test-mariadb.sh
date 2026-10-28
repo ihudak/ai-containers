@@ -66,7 +66,7 @@ done
 VC_TMP="$(mktemp -d "$TMP_ROOT/vc.XXXXXX")" || { printf 'SCAFFOLD-FAILED: mktemp\n'; exit 1; }
 vc() {  # $1 = sandbox.conf body → sets VC_RC and VC_OUT
   printf '# schema-version: 4\n%s\n' "$1" > "$VC_TMP/sandbox.conf"
-  VC_OUT="$(SANDBOX_CONF="$VC_TMP/sandbox.conf" bash -c "source '$REPO_DIR/build.sh'; validate_config" 2>&1)"
+  VC_OUT="$(SANDBOX_CONF="$VC_TMP/sandbox.conf" bash -c "source '$REPO_DIR/build.sh'; check_config; validate_config" 2>&1)"
   VC_RC=$?
 }
 for good in ON OFF '' 10.11 11.4 12.3; do

@@ -37,8 +37,8 @@ current_stamp() {
     # dtctl/dtmgd/junoctl (cobra CLIs) expose a `version` subcommand, not a
     # --version flag; fall back to the flag for tools that use that form.
     local ver
-    ver="$("$TOOL_binary" version 2>/dev/null | head -1)"
-    [ -n "$ver" ] || ver="$("$TOOL_binary" --version 2>/dev/null | head -1)"
+    ver="$("$TOOL_binary" version 2>/dev/null 9>&- | head -1)"
+    [ -n "$ver" ] || ver="$("$TOOL_binary" --version 2>/dev/null 9>&- | head -1)"
     printf '%s=%s\n' "$name" "$ver"
   done < <(tools_list_names) | sort
 }
@@ -54,7 +54,7 @@ install_for_tool() {
 
   if [ "$cross" = 1 ] && [ -n "$TOOL_skills_crossclient" ]; then
     # shellcheck disable=SC2086
-    if "$bin" skills install $TOOL_skills_crossclient --global --force >/dev/null 2>&1; then
+    if "$bin" skills install $TOOL_skills_crossclient --global --force >/dev/null 2>&1 9>&-; then
       installed+=("cross-client")
     fi
   fi
@@ -63,7 +63,7 @@ install_for_tool() {
   for key in "${_agents[@]}"; do
     [ -n "$key" ] || continue
     agent="$key"
-    if "$bin" skills install --for "$agent" --global --force >/dev/null 2>&1; then
+    if "$bin" skills install --for "$agent" --global --force >/dev/null 2>&1 9>&-; then
       installed+=("$agent")
     fi
   done
@@ -89,7 +89,45 @@ target_stamp() {  # <target> — that target's lines, without the prefix
   done < "$STAMP"
 }
 
+# take_lock: ~/.agents is group-mounted, so two containers of a group starting
+# together read the stamp, install, and rewrite it, and without a lock one of
+# them dropped the other's lines (bugs review RT-9). Held on fd 9 for the whole
+# read-install-write. Losing it costs one harmless reinstall, so it is never a
+# reason to hold up container start: no flock, a lock path that is a link or not
+# a regular file (a FIFO would block the open itself), or a holder that keeps it
+# past the wait means installing unlocked, with a NOTE.
+take_lock() {
+  local lock="$HOME/.agents/.ai-containers-skills.lock" wait="${AI_CONTAINERS_SKILLS_LOCK_WAIT:-60}" rc
+  # A test knob, and container.env reaches this step: anything but a number is 60.
+  [[ "$wait" =~ ^[0-9]{1,4}$ ]] || wait=60
+  if ! command -v flock >/dev/null 2>&1; then
+    echo "NOTE: no flock(1); installing agent skills without the lock." >&2
+    return 0
+  fi
+  if [ -L "$lock" ] || { [ -e "$lock" ] && [ ! -f "$lock" ]; }; then
+    echo "NOTE: $lock is not a regular file; installing agent skills without the lock." >&2
+    return 0
+  fi
+  { exec 9>>"$lock"; } 2>/dev/null || return 0
+  # -E 75: "held by another" apart from any other failure (a filesystem with no
+  # lock support), which must not be reported as a wait.
+  flock -n -E 75 9; rc=$?
+  (( rc == 0 )) && return 0
+  if (( rc == 75 )); then
+    echo "Another container in this group is installing agent skills — waiting (up to ${wait}s)…"
+    flock -w "$wait" -E 75 9; rc=$?
+    (( rc == 0 )) && return 0
+  fi
+  if (( rc == 75 )); then
+    echo "NOTE: the agent skills lock is still held after ${wait}s; installing without it." >&2
+  else
+    echo "NOTE: cannot lock $lock; installing agent skills without the lock." >&2
+  fi
+  exec 9>&-
+}
+
 main() {
+  take_lock
   local want; want="$(current_stamp)"
   local targets=(cross-client) key t todo=() agents="" cross=0
   local IFS=','; read -ra _keys <<< "${AI_AGENTS_ENABLED:-}"; unset IFS

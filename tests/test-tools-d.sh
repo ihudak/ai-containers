@@ -675,7 +675,9 @@ chmod +x "$FAKEBIN/curl"
 scaffold_exec "fake curl (serves the nested archive)" "$FAKEBIN/curl"
 
 : > "$CURL_LOG"; rm -f "$BIN_DIR/vend-cli"
-out="$(PATH="$FAKEBIN:$PATH" OS=linux ARCH=arm64 install_one vend latest 2>&1)"
+# Under umask 077 (BLD-8): with the usual 022, `chmod +x` on the 0644 member also
+# gives 0755, so the 0755 assertion below could not tell it from `chmod 0755`.
+out="$(umask 077; PATH="$FAKEBIN:$PATH" OS=linux ARCH=arm64 install_one vend latest 2>&1)"
 if grep -qx 'https://vendor.example/linux/latest/vend_linux_arm64.tar.gz' "$CURL_LOG"; then
   pass "install=url: \${OS}/\${ARCH} expanded in the URL"
 else
@@ -696,6 +698,30 @@ if [[ -x "$BIN_DIR/vend-cli" ]]; then
 # binary, and with a retry so a flaky CDN does not fail the build.
 if grep -qx -- '-fsSL' "$CURL_LOG" && grep -qx -- '--retry' "$CURL_LOG"; then
   pass "install=url: curl uses -f and retries"; else fail "install=url: curl flags ($(tr '\n' ' ' < "$CURL_LOG"))"; fi
+
+# --- install=release (the default): the installed binary is 0755 too --------
+# BLD-8: its `chmod 0755` had no assertion at all. A pinned version needs no API
+# call; the fake curl prints the archive for the release-download URL, whose
+# member is 0644, and the install runs under umask 077 so `chmod +x` would show.
+cat > "$TOOLS_D_DIR/rel.conf" <<'EOF'
+repo=example/rel
+binary=rel-cli
+EOF
+scaffold_file "write rel.conf (release install)" "$TOOLS_D_DIR/rel.conf"
+REL="$TMP/rel-src"; mkdir -p "$REL" "$TMP/relbin"
+printf '#!/bin/sh\necho rel 1.0.0\n' > "$REL/rel-cli"; chmod 644 "$REL/rel-cli"
+( cd "$REL" && tar czf "$TMP/rel.tar.gz" rel-cli )
+scaffold_file "tar the release fixture" "$TMP/rel.tar.gz"
+printf '#!/usr/bin/env bash\nfor a in "$@"; do case "$a" in */releases/download/*) cat "%s"; exit 0 ;; esac; done\nexit 22\n' "$TMP/rel.tar.gz" > "$TMP/relbin/curl"
+chmod +x "$TMP/relbin/curl"
+rm -f "$BIN_DIR/rel-cli"
+out="$(umask 077; PATH="$TMP/relbin:$FAKEBIN:$PATH" OS=linux ARCH=amd64 install_one rel 1.0.0 2>&1)"
+if [[ -x "$BIN_DIR/rel-cli" ]] && [[ "$(p_stat_mode "$BIN_DIR/rel-cli")" == 755 ]]; then
+  pass "install=release: binary installed 0755 under umask 077 (BLD-8)"
+else
+  fail "install=release: binary installed $(p_stat_mode "$BIN_DIR/rel-cli" 2>/dev/null || echo none), not 0755 ($out)"
+fi
+rm -f "$TOOLS_D_DIR/rel.conf" "$BIN_DIR/rel-cli"
 
 # A bare (non-archive) URL is the binary itself.
 printf 'binary=vend-cli\ninstall=url\nurl=https://vendor.example/bin/vend-cli\n' > "$TOOLS_D_DIR/vend.conf"

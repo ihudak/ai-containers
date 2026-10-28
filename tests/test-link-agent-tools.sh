@@ -2,6 +2,8 @@
 # Drives link-agent-tools.sh against a FAKE ~/.ai-tools tree + a throwaway dest dir.
 set -uo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=portability.sh
+source "$REPO_DIR/tests/portability.sh"
 fails=0
 pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails+1)); }
@@ -103,6 +105,30 @@ real_pkg="$(cd "$pkg" && pwd -P)"
 [[ -L "$d/codex" ]] && pass "  … a CLI that is not a node script stays a plain link" || fail "  … codex is no longer a link"
 NODE_LINK="$n/node" AI_RUNTIME_TOOLS="codex" bash "$REPO_DIR/link-agent-tools.sh" "$h" "$d" >/dev/null 2>&1
 [[ ! -e "$d/copilot" ]] && pass "  … and its wrapper is dropped once it is not enabled" || fail "  … the copilot wrapper survived disabling"
+rm -rf "$h" "$d" "$n"
+
+# ── RT-9: node_script reads only the first 256 bytes, and never a FIFO ──
+# Root reads a file of the group-shared tool home, which the agent can write.
+# A shebang whose `node` lies past byte 256 is not seen as a node script (the
+# read is bounded), and a FIFO where the script should be is not opened at all,
+# so the link step neither hangs nor wraps it.
+h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; d="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
+n="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
+install -d "$n/v22/bin"; printf '#!/bin/sh\n' > "$n/v22/bin/node"; chmod +x "$n/v22/bin/node"; ln -s "$n/v22/bin/node" "$n/node"
+pkg="$h/.ai-tools/npm/lib/node_modules/@github/copilot"; install -d "$pkg" "$h/.ai-tools/npm/bin"
+{ printf '#!/usr/bin/env '; printf '%300s' ''; printf 'node\n'; } > "$pkg/index.js"; chmod +x "$pkg/index.js"
+ln -s ../lib/node_modules/@github/copilot/index.js "$h/.ai-tools/npm/bin/copilot"
+NODE_LINK="$n/node" AI_RUNTIME_TOOLS="copilot" bash "$REPO_DIR/link-agent-tools.sh" "$h" "$d" >/dev/null 2>&1
+[[ -L "$d/copilot" ]] && pass "RT-9 a shebang whose node lies past byte 256 is not read as a node script" \
+  || fail "RT-9 node_script read past its 256-byte bound (copilot was wrapped)"
+# Executable, so the link step's own -x test does not skip it before node_script
+# runs; under p_timeout, because macOS has no timeout(1) for node_script's own.
+rm -f "$pkg/index.js" "$d/copilot"; mkfifo -m 755 "$pkg/index.js"
+t9=$SECONDS
+NODE_LINK="$n/node" AI_RUNTIME_TOOLS="copilot" p_timeout 30 bash "$REPO_DIR/link-agent-tools.sh" "$h" "$d" >/dev/null 2>&1; rc=$?
+t9=$((SECONDS - t9))
+[[ "$rc" != 124 && "$t9" -lt 3 && ! -f "$d/copilot" ]] && pass "RT-9 a FIFO where the script should be is not opened (${t9}s)" \
+  || fail "RT-9 a FIFO in the tool home held the link step (rc $rc, ${t9}s)"
 rm -rf "$h" "$d" "$n"
 
 # ── Guards ──

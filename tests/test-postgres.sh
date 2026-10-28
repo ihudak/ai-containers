@@ -68,7 +68,7 @@ done
 VC_TMP="$(mktemp -d "$TMP_ROOT/vc.XXXXXX")" || { printf 'SCAFFOLD-FAILED: mktemp\n'; exit 1; }
 vc() {  # $1 = postgres value → sets VC_RC and VC_OUT
   printf '# schema-version: 4\npostgres=%s\n' "$1" > "$VC_TMP/sandbox.conf"
-  VC_OUT="$(SANDBOX_CONF="$VC_TMP/sandbox.conf" bash -c "source '$REPO_DIR/build.sh'; validate_config" 2>&1)"
+  VC_OUT="$(SANDBOX_CONF="$VC_TMP/sandbox.conf" bash -c "source '$REPO_DIR/build.sh'; check_config; validate_config" 2>&1)"
   VC_RC=$?
 }
 

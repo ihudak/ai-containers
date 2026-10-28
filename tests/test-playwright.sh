@@ -102,7 +102,7 @@ got="$(build_arg_for 'playwright=ON' RUBY_RUNTIME)"
 # the failure reads as a registry error about a package named "1.50.0,1.58.2".
 VC_TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 printf '# schema-version: 4\nplaywright=1.50.0,1.58.2\n' > "$VC_TMP/sandbox.conf"
-vc_out="$(SANDBOX_CONF="$VC_TMP/sandbox.conf" bash -c "source '$REPO_DIR/build.sh'; validate_config" 2>&1)"
+vc_out="$(SANDBOX_CONF="$VC_TMP/sandbox.conf" bash -c "source '$REPO_DIR/build.sh'; check_config; validate_config" 2>&1)"
 vc_rc=$?
 if (( vc_rc != 0 )) && [[ "$vc_out" == *playwright* ]]; then
   pass "validate_config rejects a comma-separated playwright value, by name"
@@ -115,7 +115,7 @@ fi
 # as `npx playwright@on` — an npm 404 naming neither this key nor this file.
 for bad in on off On oFF; do
   printf '# schema-version: 4\nplaywright=%s\n' "$bad" > "$VC_TMP/sandbox.conf"
-  vc_out="$(SANDBOX_CONF="$VC_TMP/sandbox.conf" bash -c "source '$REPO_DIR/build.sh'; validate_config" 2>&1)"
+  vc_out="$(SANDBOX_CONF="$VC_TMP/sandbox.conf" bash -c "source '$REPO_DIR/build.sh'; check_config; validate_config" 2>&1)"
   if (( $? != 0 )) && [[ "$vc_out" == *playwright* ]]; then
     pass "validate_config rejects playwright=$bad (capitals required)"
   else
@@ -128,7 +128,7 @@ done
 # would refuse `next` and `beta`, which are real things to want here.
 for good in next beta 1.62.1; do
   printf '# schema-version: 4\nplaywright=%s\n' "$good" > "$VC_TMP/sandbox.conf"
-  if SANDBOX_CONF="$VC_TMP/sandbox.conf" bash -c "source '$REPO_DIR/build.sh'; validate_config" >/dev/null 2>&1; then
+  if SANDBOX_CONF="$VC_TMP/sandbox.conf" bash -c "source '$REPO_DIR/build.sh'; check_config; validate_config" >/dev/null 2>&1; then
     pass "validate_config accepts playwright=$good (npm dist-tags stay usable)"
   else
     fail "validate_config accepts playwright=$good (npm dist-tags stay usable)"
@@ -138,7 +138,7 @@ done
 # The control: a single pinned version must NOT be rejected, or the check above
 # would be satisfied by a validate_config that refuses everything.
 printf '# schema-version: 4\nplaywright=1.58.2\n' > "$VC_TMP/sandbox.conf"
-if SANDBOX_CONF="$VC_TMP/sandbox.conf" bash -c "source '$REPO_DIR/build.sh'; validate_config" >/dev/null 2>&1; then
+if SANDBOX_CONF="$VC_TMP/sandbox.conf" bash -c "source '$REPO_DIR/build.sh'; check_config; validate_config" >/dev/null 2>&1; then
   pass "validate_config accepts a single pinned playwright version"
 else
   fail "validate_config accepts a single pinned playwright version"

@@ -44,17 +44,14 @@ EOF
 
 # validate_server_on_off <key> <what Ubuntu 24.04 carries>: a server key whose
 # only values are ON and OFF, because Ubuntu's archive carries one version of it.
-# A version could not be honoured, so it is refused rather than ignored; a
-# lowercase on/off would otherwise read as OFF without a word.
+# A version could not be honoured, so it is refused rather than ignored. A
+# lowercase on/off never reaches here: check_config, which build_image runs
+# first, refuses it for every key (bugs review BLD-8).
 validate_server_on_off() {
   local v; v=$(get_versions "$1")
   [[ -z "$v" || "$v" == "ON" || "$v" == "OFF" ]] && return 0
-  if [[ "${v^^}" == "ON" || "${v^^}" == "OFF" ]]; then
-    printf 'ERROR: %s value "%s" must be written in capitals (ON or OFF).\n' "$1" "$v" >&2
-  else
-    printf 'ERROR: %s value "%s" is not ON or OFF.\n' "$1" "$v" >&2
-    printf '       Ubuntu 24.04 carries one %s, so a version cannot be pinned.\n' "$2" >&2
-  fi
+  printf 'ERROR: %s value "%s" is not ON or OFF.\n' "$1" "$v" >&2
+  printf '       Ubuntu 24.04 carries one %s, so a version cannot be pinned.\n' "$2" >&2
   exit 1
 }
 
@@ -79,25 +76,15 @@ validate_config() {
     printf '       Use ON (latest at build time), a single version (e.g. 1.58.2), or OFF.\n' >&2
     exit 1
   fi
-  # is_active compares against the LITERAL ON/OFF, so `playwright=on` is not a
-  # boolean here — it is read as a version and reaches the build as
-  # `npx playwright@on`, whose npm 404 names neither this key nor this file.
-  # Deliberately narrow: `next` and `beta` are real npm dist-tags and must keep
-  # working, so only a case-variant of the two words this key already reserves
-  # is refused.
-  if [[ "$pw_val" != "ON" && "$pw_val" != "OFF" ]] \
-     && [[ "${pw_val^^}" == "ON" || "${pw_val^^}" == "OFF" ]]; then
-    printf 'ERROR: playwright value "%s" must be written in capitals (ON or OFF).\n' "$pw_val" >&2
-    printf '       Lowercase is read as a version and becomes `npx playwright@%s`.\n' "$pw_val" >&2
-    exit 1
-  fi
+  # A lowercase on/off (read as a version, `npx playwright@on`) is refused by
+  # check_config, which build_image runs first, for every key (BLD-8).
   # postgres names ONE server major (spec D6/D7). Checked here because every
   # mistake below otherwise surfaces as an apt error inside the build — "Unable to
   # locate package postgresql-on" — which names neither this key nor this file.
-  # Order matters: a list, then a case-variant of the two reserved words, then a
-  # leading zero (017 would reach the layer as postgresql-017, which PGDG does not
-  # have), then a minor (with the major to pin instead), then anything that is
-  # not a number.
+  # Order matters: a list, then a leading zero (017 would reach the layer as
+  # postgresql-017, which PGDG does not have), then a minor (with the major to
+  # pin instead), then anything that is not a number. A lowercase on/off is
+  # check_config's, which build_image runs first (BLD-8).
   local pg_val; pg_val=$(get_versions postgres)
   if [[ -n "$pg_val" && "$pg_val" != "ON" && "$pg_val" != "OFF" ]]; then
     local pg_major="${pg_val%%.*}"
@@ -105,9 +92,6 @@ validate_config() {
     if [[ "$pg_val" == *,* ]]; then
       printf 'ERROR: postgres only supports a single value (got: "%s").\n' "$pg_val" >&2
       printf '       Use ON (newest major at build time), a major version (e.g. 17), or OFF.\n' >&2
-      exit 1
-    elif [[ "${pg_val^^}" == "ON" || "${pg_val^^}" == "OFF" ]]; then
-      printf 'ERROR: postgres value "%s" must be written in capitals (ON or OFF).\n' "$pg_val" >&2
       exit 1
     elif [[ "$pg_val" =~ ^0[0-9]*$ ]]; then
       if [[ -n "$pg_major" ]]; then
@@ -141,9 +125,6 @@ validate_config() {
       printf 'ERROR: mongo only supports a single value (got: "%s").\n' "$mg_val" >&2
       printf '       Use ON (the 8.0 series), a release series (e.g. 8.2), or OFF.\n' >&2
       exit 1
-    elif [[ "${mg_val^^}" == "ON" || "${mg_val^^}" == "OFF" ]]; then
-      printf 'ERROR: mongo value "%s" must be written in capitals (ON or OFF).\n' "$mg_val" >&2
-      exit 1
     elif [[ "$mg_val" =~ ^([1-9][0-9]*\.[0-9]+)\.[0-9]+$ ]]; then
       printf 'ERROR: mongo=%s pins a release; pin the series instead: mongo=%s\n' "$mg_val" "${BASH_REMATCH[1]}" >&2
       printf '       MongoDB'"'"'s repository is per series, and installs its newest release.\n' >&2
@@ -164,9 +145,6 @@ validate_config() {
     if [[ "$md_val" == *,* ]]; then
       printf 'ERROR: mariadb only supports a single value (got: "%s").\n' "$md_val" >&2
       printf '       Use ON (Ubuntu'"'"'s 10.11), a release series (e.g. 11.4), or OFF.\n' >&2
-      exit 1
-    elif [[ "${md_val^^}" == "ON" || "${md_val^^}" == "OFF" ]]; then
-      printf 'ERROR: mariadb value "%s" must be written in capitals (ON or OFF).\n' "$md_val" >&2
       exit 1
     elif [[ "$md_val" =~ ^([1-9][0-9]*\.[0-9]+)\.[0-9]+$ ]]; then
       printf 'ERROR: mariadb=%s pins a release; pin the series instead: mariadb=%s\n' "$md_val" "${BASH_REMATCH[1]}" >&2

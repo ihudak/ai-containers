@@ -65,5 +65,17 @@ refuses 'acli' 'acli=1.3.22'
 accepts 'acli=ON' 'dtctl=0.25.0'
 accepts 'acli=latest'   # latest is not a pin; install_url treats it as unpinned
 
+# BLD-8: an unreadable sandbox.conf is refused, not read as one with every key
+# unset. Root reads any file, so this is a non-root check.
+if [[ "$(id -u)" != 0 ]]; then
+  cp "$ENGINE_DIR/sandbox.conf" "$TMP/unreadable.conf"; chmod 000 "$TMP/unreadable.conf"
+  out="$(SANDBOX_CONF="$TMP/unreadable.conf" bash -c "source '$ENGINE_DIR/build.sh'; check_config" 2>&1)"; rc=$?
+  chmod 600 "$TMP/unreadable.conf"
+  [[ "$rc" != 0 && "$out" == *"cannot be read"* ]] && pass "an unreadable sandbox.conf is refused by name (BLD-8)" \
+    || fail "an unreadable sandbox.conf passed check_config (rc $rc: $out)"
+else
+  printf 'SKIP: the unreadable sandbox.conf check needs a non-root run\n'
+fi
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

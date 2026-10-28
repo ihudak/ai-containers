@@ -163,13 +163,16 @@ printf '#!/usr/bin/env definitely_not_on_path\n' > "$h/.rvm/rubies/ruby-3.4.5/bi
 chmod +x "$h/.rvm/rubies/ruby-3.4.5/bin/bundle"
 install -d "$h/.rvm/wrappers/default"
 printf '#!/bin/sh\n' > "$h/.rvm/wrappers/default/bundle"; chmod +x "$h/.rvm/wrappers/default/bundle"
+# ruby has a wrapper too, so "keeps its direct link" below is a choice the
+# script made, not the only link it could make (bugs review RT-9).
+printf '#!/bin/sh\n' > "$h/.rvm/wrappers/default/ruby"; chmod +x "$h/.rvm/wrappers/default/ruby"
 RUBY_VERSIONS="3.4.5" ldr "$h" "$d" >/dev/null 2>&1
 [[ "$(readlink "$d/bundle")" == "$h/.rvm/wrappers/default/bundle" ]] \
   && pass "a non-running binstub falls back to the rvm wrapper" \
   || fail "a non-running binstub falls back to the rvm wrapper (got: $(readlink "$d/bundle"))"
 # …while a binstub that DOES run keeps the direct link (wrappers cost a bash exec).
 [[ "$(readlink "$d/ruby")" == "$h/.rvm/rubies/ruby-3.4.5/bin/ruby" ]] \
-  && pass "a working binstub keeps its direct link" \
+  && pass "a working binstub keeps its direct link, though a wrapper for it exists" \
   || fail "a working binstub keeps its direct link (got: $(readlink "$d/ruby"))"
 rm -rf "$h" "$d"
 
@@ -249,6 +252,29 @@ fn="$(sed -n '/^link_default_ruby()/,/^}/p' "$REPO_DIR/entrypoint.sh")"
 [[ "$fn" == *'link-default-ruby.sh "/home/$sandbox_user" /usr/local/bin "$sandbox_user"'* ]] \
   && pass "entrypoint passes the sandbox user as the probe user" \
   || fail "entrypoint's link_default_ruby does not pass the probe user: $fn"
+
+# ── RT-9: not root and no probe user named → the probes run as the caller ───
+# The other cases name a probe user (the entrypoint's, as root) or run as root
+# with none (nothing verified). This branch — an ordinary user, no user named —
+# runs each probe directly, and a broken binstub is still repaired.
+if [[ "$(id -u)" != 0 ]]; then
+  h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; d="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
+  mk_rvm "$h" "3.4.5" "ruby"
+  printf '#!/usr/bin/env definitely_not_on_path\n' > "$h/.rvm/rubies/ruby-3.4.5/bin/bundle"; chmod +x "$h/.rvm/rubies/ruby-3.4.5/bin/bundle"
+  install -d "$h/.rvm/wrappers/default"
+  printf '#!/bin/sh\n' > "$h/.rvm/wrappers/default/bundle"; chmod +x "$h/.rvm/wrappers/default/bundle"
+  printf '#!/bin/sh\n' > "$h/.rvm/wrappers/default/ruby"; chmod +x "$h/.rvm/wrappers/default/ruby"
+  out="$(PATH="$fkr:$PATH" RUBY_VERSIONS="3.4.5" bash "$REPO_DIR/link-default-ruby.sh" "$h" "$d" 2>&1)"
+  # Both outcomes of a probe: the broken bundle is repaired, and the working
+  # ruby — which has a wrapper too — keeps its direct link, so the probes ran.
+  [[ "$(readlink "$d/bundle")" == "$h/.rvm/wrappers/default/bundle" \
+     && "$(readlink "$d/ruby")" == "$h/.rvm/rubies/ruby-3.4.5/bin/ruby" && "$out" != *"not verified"* ]] \
+    && pass "RT-9 as an ordinary user with no probe user, the probes run: a broken binstub is repaired, a working one kept" \
+    || fail "RT-9 the no-probe-user, non-root branch did not probe (bundle -> $(readlink "$d/bundle"), ruby -> $(readlink "$d/ruby"); $out)"
+  rm -rf "$h" "$d"
+else
+  printf 'SKIP: RT-9 the non-root, no-probe-user branch of probe() needs a non-root run\n'
+fi
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

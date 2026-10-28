@@ -315,6 +315,13 @@ check_config() {
     printf 'ERROR: sandbox.conf not found in %s\n' "$script_dir" >&2
     exit 1
   fi
+  # Readable too: every read below is `grep … 2>/dev/null`, so an unreadable file
+  # passed as one with no keys set, and built or launched with nothing on
+  # (bugs review BLD-8).
+  if [[ ! -r "$config_file" ]]; then
+    printf 'ERROR: %s cannot be read\n' "$config_file" >&2
+    exit 1
+  fi
 
   # One-time whole-file scan for a duplicated key=value line (e.g. from a bad
   # manual edit or an interrupted reconcile). Deliberately done here rather than
