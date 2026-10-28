@@ -3305,9 +3305,14 @@ run_container() {
   # --pull=never: IMAGE_NAME may come from a committed sandbox.env, and an image
   # this machine never built must not be fetched from a registry and run with
   # the group's credentials mounted. ./build.sh (or runme.sh) builds it first.
+  # --security-opt=no-new-privileges: every process in the container, a
+  # `docker exec` session included, starts unable to gain privileges through a
+  # setuid-root or file-capability binary. The entrypoint gives the agent shell
+  # the same flag itself (RT-10); an exec session is outside that tree (RT-11).
   docker run -it --rm --pull=never \
     --name "$container_name" \
     ${capabilities[@]+"${capabilities[@]}"} \
+    --security-opt=no-new-privileges \
     ${selinux_opt:+"$selinux_opt"} \
     ${shm_flags[@]+"${shm_flags[@]}"} \
     --add-host=host.docker.internal:host-gateway \

@@ -279,6 +279,11 @@ sandbox_up() {  # $1=mode $2=allowlist dir; remaining args go to docker run
   # IT_SELINUX_OPT, as sandbox.sh's own launch passes it: on an SELinux daemon a
   # labelled container reads neither allowlist nor builds the firewall
   # (run.sh: `resolve_selinux_opt()`).
+  # Deliberately NOT --security-opt=no-new-privileges, which sandbox.sh passes
+  # (RT-11): it sets the flag on PID 1 by itself, so cases 070/230/240 could no
+  # longer see the entrypoint's own `capsh --no-new-privs` go missing (RT-10).
+  # --cap-add is mirrored because the image needs it to work; this is not.
+  # Case 250 checks the option through sandbox.sh itself (launcher_up).
   cid="$(docker run -di --network "$IT_NET" --label "$IT_LABEL" $caps ${IT_SELINUX_OPT:+"$IT_SELINUX_OPT"} \
       -v "$adir:/it-allowlists:ro" \
       -e DEV_CONTAINER_MODE="$mode" \

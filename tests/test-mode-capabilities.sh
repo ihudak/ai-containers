@@ -132,5 +132,17 @@ else
   sed 's/^/       /' "$TMP/err.txt" | tail -5
 fi
 
+# Every mode: --security-opt=no-new-privileges, which reaches `docker exec`
+# sessions too (bugs review RT-11). This checks the flag; case 250 checks the
+# effect, through sandbox.sh in a real container.
+for m in restricted discovery open; do
+  run_mode "$m"
+  if capture_ok && grep -qx -- '--security-opt=no-new-privileges' "$CAPTURE"; then
+    pass "$m passes --security-opt=no-new-privileges"
+  else
+    fail "$m does not pass --security-opt=no-new-privileges"
+  fi
+done
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

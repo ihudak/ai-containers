@@ -1,0 +1,20 @@
+# case: 250-exec-session-no-new-privs
+# what: sandbox.sh stops passing --security-opt=no-new-privileges, so a
+#       `docker exec` session into the container runs with NoNewPrivs 0 and can
+#       run the image's setuid-root binaries for real (bugs review RT-11). The
+#       agent shell keeps its own flag from the entrypoint (RT-10), so 250's
+#       PID 1 assertion still passes; its two exec-session NoNewPrivs
+#       assertions fail, and so does the effect one: the setuid-root `id` copy
+#       reports uid 0. No rebuild needed: sandbox.sh runs on the host.
+#
+diff --git a/sandbox.sh b/sandbox.sh
+--- a/sandbox.sh
++++ b/sandbox.sh
+@@ -3312,7 +3312,6 @@
+   docker run -it --rm --pull=never \
+     --name "$container_name" \
+     ${capabilities[@]+"${capabilities[@]}"} \
+-    --security-opt=no-new-privileges \
+     ${selinux_opt:+"$selinux_opt"} \
+     ${shm_flags[@]+"${shm_flags[@]}"} \
+     --add-host=host.docker.internal:host-gateway \
