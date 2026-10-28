@@ -471,6 +471,29 @@ if [[ -f "$TMP/hl.bak" ]]; then cp "$TMP/hl.bak" "$hl"; else rm -f "$hl"; fi
 hout="$(sync_project "$PROJ" 2>&1)"
 ! grep -qF 'AI_CONTAINER_GROUP=host' <<<"$hout" && pass "…and says nothing for a project without it" \
   || fail "sync warned about a host group that is not set"
+# The file is read as the launcher reads it (LNCH-20): an exported, quoted value is
+# the host group; a line with spaces round `=`, which the loader ignores, or a
+# second line after the one it keeps, is not.
+printf 'export AI_CONTAINER_GROUP="host"\n' >> "$hl"
+hout="$(sync_project "$PROJ" 2>&1)"
+grep -qF "$hl sets AI_CONTAINER_GROUP=host" <<<"$hout" \
+  && pass "sync names an exported, quoted host group" || fail "sync missed an exported, quoted host group"
+if [[ -f "$TMP/hl.bak" ]]; then cp "$TMP/hl.bak" "$hl"; else rm -f "$hl"; fi
+printf 'AI_CONTAINER_GROUP=mine\nAI_CONTAINER_GROUP=host\nAI_CONTAINER_GROUP = host\n' >> "$hl"
+hout="$(sync_project "$PROJ" 2>&1)"
+! grep -qF 'AI_CONTAINER_GROUP=host' <<<"$hout" \
+  && pass "sync says nothing for lines the loader ignores or does not keep" \
+  || fail "sync warned about a host group the launcher never reads"
+# …and a sandbox.local.env that names another group wins over a sandbox.env's host.
+se="$PROJ/.ai-containers/sandbox.env"; cp "$se" "$TMP/se.bak"
+printf 'AI_CONTAINER_GROUP=host\n' >> "$se"
+hout="$(sync_project "$PROJ" 2>&1)"
+! grep -qF 'AI_CONTAINER_GROUP=host' <<<"$hout" \
+  && pass "sync says nothing when sandbox.local.env's group wins over sandbox.env's host" \
+  || fail "sync warned about a sandbox.env host group that sandbox.local.env overrides"
+cp "$TMP/se.bak" "$se"; rm -f "$TMP/se.bak"
+if [[ -f "$TMP/hl.bak" ]]; then cp "$TMP/hl.bak" "$hl"; else rm -f "$hl"; fi
+rm -f "$TMP/hl.bak"
 
 snapshot_real_projects "$REAL_PROJECT_SNAPSHOTS/after.txt"
 if diff -q "$REAL_PROJECT_SNAPSHOTS/before.txt" "$REAL_PROJECT_SNAPSHOTS/after.txt" >/dev/null 2>&1; then

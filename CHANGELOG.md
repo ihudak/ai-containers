@@ -53,6 +53,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The group checks are tighter and say more** (bugs review LNCH-19,
+  LNCH-20). A group directory that is `$HOME` under another path — a bind
+  mount, a macOS firmlink, another case of the name — is refused, as one that
+  is `$HOME` by path already was: the two are compared by device and inode.
+  `./build.sh` refuses `AI_CONTAINER_GROUP=host` (and any name that is no
+  group) before building, where it built the whole image for a launch that
+  was then refused. The NOTE naming the file that sets the host group, and
+  `sync-to-projects.sh`'s warning, now read the files as the launcher does:
+  `AI_CONTAINER_GROUP = host`, which the loader ignores, a second line after
+  the one it keeps, and a `sandbox.env` overridden by `sandbox.local.env` are
+  no longer named. A refused group link now says it leads to something that
+  is not a directory, rather than nowhere, for a file; names another group
+  only when the target is one; and, for a link into `$HOME`, says to remove
+  it rather than to move groups to another disk. The bootstrap menu's list of
+  groups to copy from is its own function, `group_menu_choices`, now tested.
+
 - **The launcher protects more of what your host's git reads, and refuses
   instead of warning where the agent could slip something past it.** An agent
   that moved a repository's `HEAD` (or a submodule's `objects/`) aside hid it

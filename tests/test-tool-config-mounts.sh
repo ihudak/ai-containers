@@ -493,5 +493,19 @@ grep -qF "WARNING: $GROUP_ROOT/.aws is a link out of the group" "$ERR" \
   || fail "no WARNING for a group link out (stderr: $(tr '\n' ' ' < "$ERR"))"
 teardown
 
+# ── The bootstrap menu offers only groups a launch could select (LNCH-20) ───────
+# Not `host` (refused), not a hidden directory (the launcher's own .verify-*), not
+# a name that is no group, nor `default` or the group being made, which have
+# lines of their own. The menu itself needs a terminal; the list is its own function.
+MT="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
+mkdir -p "$MT/.ai-containers"/{default,host,.verify-1-2,Bad_Name,new,mine,other}
+menu="$(HOME="$MT" bash -c '
+  eval "$(sed -n "/^[A-Za-z_][A-Za-z0-9_]*() *{/,/^}/p" "$1")"
+  group_menu_choices new
+' _ "$REPO_DIR/sandbox-common.sh" 2>&1 | LC_ALL=C sort | tr '\n' ' ')"
+[[ "$menu" == "mine other " ]] \
+  && pass "the bootstrap menu lists only selectable groups" || fail "the bootstrap menu lists only selectable groups (got: $menu)"
+rm -rf "$MT"
+
 printf '\n%s failure(s)\n' "$fails"
 (( fails == 0 )) || exit 1

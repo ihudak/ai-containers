@@ -278,16 +278,28 @@ backfill_launcher_cdpath() {
 
 # The host group is gone, and project-init.sh wrote it into sandbox.local.env:
 # every launch of such a project is refused, so name the file (review of batch 11).
+# The files are read by this engine's own load_env_defaults, in the launcher's order
+# (sandbox.local.env first, the first file that sets the key decides), so a line
+# the loader ignores or does not keep is never named (LNCH-20). Its functions are
+# lifted out rather than the file sourced: sourcing loads the env files beside it.
 warn_host_group() {
-  local f
+  local f mode val
   for f in "$1/sandbox.local.env" "$1/sandbox.env"; do
     [[ -f "$f" ]] || continue
-    if grep -qE "^[[:space:]]*(export[[:space:]]+)?AI_CONTAINER_GROUP[[:space:]]*=[[:space:]]*[\"']?host[\"']?[[:space:]]*(#.*)?$" "$f"; then
+    mode=portable; [[ "$f" == */sandbox.local.env ]] && mode=local
+    val="$(env -u AI_CONTAINER_GROUP bash -c '
+      eval "$(sed -n "/^[A-Za-z_][A-Za-z0-9_]*() *{/,/^}/p" "$1")"
+      load_env_defaults "$2" "$3" 2>/dev/null
+      printf "%s" "${AI_CONTAINER_GROUP-<unset>}"
+    ' _ "${script_dir}/sandbox-common.sh" "$f" "$mode")" || val='<unset>'
+    [[ "$val" == '<unset>' ]] && continue
+    if [[ "$val" == host ]]; then
       printf '  WARNING: %s sets AI_CONTAINER_GROUP=host, which is no longer supported:\n' "$f"
       printf '           every launch is refused until that line names a group (AI_CONTAINER_GROUP=mine);\n'
       printf '           for a new group made as a copy of your $HOME'\''s credentials, also set\n'
       printf '           AI_CONTAINER_GROUP_INIT=from:host in sandbox.local.env.\n'
     fi
+    break
   done
 }
 

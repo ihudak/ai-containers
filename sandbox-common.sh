@@ -984,6 +984,22 @@ _copy_group_slice() {
   done
 }
 
+# group_menu_choices <group> — the existing groups the bootstrap menu offers to copy
+# from, newest first, one per line: group names only — not `host`, which is
+# refused, nor a hidden directory (the launcher's own .verify-*), which no launch
+# could select — and not `default` or <group> itself, which have lines of their own.
+group_menu_choices() {
+  local group="$1" dir name
+  while IFS= read -r -d '' dir; do
+    name="$(basename "$dir")"
+    [[ "$name" == "default" || "$name" == "$group" ]] && continue
+    [[ "$name" != host && "$name" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] || continue
+    printf '%s\n' "$name"
+  done < <(find "$HOME/.ai-containers" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null \
+           | xargs -0 ls -dt 2>/dev/null \
+           | while IFS= read -r d; do printf '%s\0' "$d"; done)
+}
+
 ensure_group_exists() {
   local group="$1" root="$2"
   if [[ -d "$root" ]]; then
@@ -1037,17 +1053,11 @@ ensure_group_exists() {
   else
     option_labels+=("host — a copy of \$HOME's")
   fi
-  while IFS= read -r -d '' dir; do
-    local name; name="$(basename "$dir")"
-    [[ "$name" == "default" || "$name" == "$group" ]] && continue
-    # Group names only: not `host`, which is refused, nor a hidden directory
-    # (the launcher's own .verify-*), which no launch could select.
-    [[ "$name" != host && "$name" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] || continue
+  local name
+  while IFS= read -r name; do
     options+=("$name")
     option_labels+=("$name")
-  done < <(find "$HOME/.ai-containers" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null \
-           | xargs -0 ls -dt 2>/dev/null \
-           | while IFS= read -r d; do printf '%s\0' "$d"; done)
+  done < <(group_menu_choices "$group")
   options+=("<empty>")
   option_labels+=("<empty>")
 

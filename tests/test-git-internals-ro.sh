@@ -40,6 +40,7 @@ CAPTURE="$TMP/docker-args.txt"
 mkdir -p "$TMP/bin"
 cat > "$TMP/bin/docker" <<DOCKER
 #!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$CAPTURE.calls"
 if [[ "\$1" == "run" ]]; then
   shift; printf '%s\n' "\$@" > "$CAPTURE"
   prev=""
@@ -71,7 +72,7 @@ cp -R "$ENGINE/tools.d" "$LAUNCHER/"
 
 ERR="$TMP/err.txt"
 launch() {  # $1 = primary; extra env via the caller's `VAR=x launch …`
-  rm -f "$CAPTURE" "$CAPTURE.manifest"
+  rm -f "$CAPTURE" "$CAPTURE.manifest" "$CAPTURE.calls"
   ( cd "$LAUNCHER" && bash ./sandbox.sh restricted "$1" ) >/dev/null 2>"$ERR" </dev/null
   LAUNCH_RC=$?
 }
@@ -1715,12 +1716,47 @@ rm -rf "$PROJ/b88.git" "$TMP/out88"
 # one way left to mount the real dot-directories, and the scan, which skips the
 # group's own directories, then skipped every repository under the link's
 # target too (review of batch 11). A link is refused before anything is made…
+# …before anything is made: no docker call at all (not even `docker info`), and
+# no output directory in the launch directory (LNCH-20).
 mkdir -p "$TMP/elsewhere92"; ln -s "$TMP/elsewhere92" "$HOME/.ai-containers/g92"
+rm -rf "$LAUNCHER/.agent-blocked"
 AI_CONTAINER_GROUP=g92 launch ..
 [[ "$LAUNCH_RC" != 0 && ! -e "$CAPTURE" ]] && grep -qF 'is a link' "$ERR" \
   && pass "G92 a group directory that is a link refuses the launch, before docker" \
   || fail "G92 a linked group directory (rc=$LAUNCH_RC; $(grep -E 'ERROR|link' "$ERR" | head -2 | tr '\n' ' '))"
+[[ ! -e "$CAPTURE.calls" && ! -e "$LAUNCHER/.agent-blocked" ]] \
+  && pass "G92 …and before any docker call or output directory" \
+  || fail "G92 the linked-group refusal came late (docker: $(tr '\n' ';' < "$CAPTURE.calls" 2>/dev/null); .agent-blocked: $([[ -e "$LAUNCHER/.agent-blocked" ]] && echo made))"
+grep -qF 'link ~/.ai-containers itself' "$ERR" \
+  && pass "G92 a link elsewhere says to link ~/.ai-containers itself" || fail "G92 the hint for a link elsewhere ($(grep -v ERROR "$ERR" | head -2 | tr '\n' ' '))"
 rm -f "$HOME/.ai-containers/g92"; rm -rf "$TMP/elsewhere92"
+# The hint follows where the link leads (LNCH-20): nowhere; a file; another group;
+# a directory there that is no group; somewhere inside $HOME.
+ln -s "$TMP/nowhere92" "$HOME/.ai-containers/n92"
+AI_CONTAINER_GROUP=n92 launch ..
+[[ "$LAUNCH_RC" != 0 ]] && grep -qF 'leads nowhere' "$ERR" \
+  && pass "G92 a dangling group link says it leads nowhere" || fail "G92 the hint for a dangling link ($(grep -v ERROR "$ERR" | head -2 | tr '\n' ' '))"
+rm -f "$HOME/.ai-containers/n92"
+: > "$TMP/file92"; ln -s "$TMP/file92" "$HOME/.ai-containers/f92"
+AI_CONTAINER_GROUP=f92 launch ..
+[[ "$LAUNCH_RC" != 0 ]] && ! grep -qF 'leads nowhere' "$ERR" && grep -qF 'not a directory' "$ERR" \
+  && pass "G92 a group link to a file says so, not that it leads nowhere" || fail "G92 the hint for a link to a file ($(grep -v ERROR "$ERR" | head -2 | tr '\n' ' '))"
+rm -f "$HOME/.ai-containers/f92" "$TMP/file92"
+mkdir -p "$HOME/.ai-containers/other92"; ln -s "$HOME/.ai-containers/other92" "$HOME/.ai-containers/o92"
+AI_CONTAINER_GROUP=o92 launch ..
+[[ "$LAUNCH_RC" != 0 ]] && grep -qF 'use AI_CONTAINER_GROUP=other92' "$ERR" && grep -qF 'from:other92' "$ERR" \
+  && pass "G92 a group link to another group names that group" || fail "G92 the hint for a link to another group ($(grep -v ERROR "$ERR" | head -2 | tr '\n' ' '))"
+rm -f "$HOME/.ai-containers/o92"; rm -rf "$HOME/.ai-containers/other92"
+mkdir -p "$HOME/.ai-containers/.verify-92"; ln -s "$HOME/.ai-containers/.verify-92" "$HOME/.ai-containers/v92"
+AI_CONTAINER_GROUP=v92 launch ..
+[[ "$LAUNCH_RC" != 0 ]] && ! grep -qF 'AI_CONTAINER_GROUP=.verify' "$ERR" \
+  && pass "G92 a link to a directory that is no group does not offer it as one" || fail "G92 a .verify-* directory offered as a group ($(grep -v ERROR "$ERR" | head -2 | tr '\n' ' '))"
+rm -f "$HOME/.ai-containers/v92"; rm -rf "$HOME/.ai-containers/.verify-92"
+mkdir -p "$HOME/sub92"; ln -s "$HOME/sub92" "$HOME/.ai-containers/s92"
+AI_CONTAINER_GROUP=s92 launch ..
+[[ "$LAUNCH_RC" != 0 ]] && ! grep -qF 'another disk' "$ERR" && grep -qF "rm $HOME/.ai-containers/s92" "$ERR" \
+  && pass "G92 a link into \$HOME says to remove it, not to move groups to another disk" || fail "G92 the hint for a link into \$HOME ($(grep -v ERROR "$ERR" | head -2 | tr '\n' ' '))"
+rm -f "$HOME/.ai-containers/s92"; rm -rf "$HOME/sub92"
 # Linked to $HOME itself — the case the check exists for — the way out is a
 # group made as a copy (from:host), never `cp -a $HOME/.`, which copies the whole
 # home, every other group included (review of 18011da).
@@ -1738,6 +1774,24 @@ HOME="$H92" AI_CONTAINER_GROUP=me launch ..
   && pass "G92 a group directory that resolves to \$HOME is refused" \
   || fail "G92 a group directory resolving to \$HOME (rc=$LAUNCH_RC; $(grep -E 'ERROR' "$ERR" | head -1))"
 rm -rf "$TMP/h92"
+# …and so is one that is $HOME under another path — a bind mount, a macOS firmlink,
+# another case on a case-insensitive filesystem — told apart by device:inode, not
+# by path (LNCH-19). A `stat` that reports $HOME's for the group stands in for the
+# alias, which needs root to make.
+mkdir -p "$HOME/.ai-containers/al92" "$TMP/shim92"
+cat > "$TMP/shim92/stat" <<SHIM
+#!/usr/bin/env bash
+real="\$(PATH="${PATH#"$TMP/bin:"}" command -v stat)"
+a=()
+for x in "\$@"; do case "\$x" in "$HOME/.ai-containers/al92"|"$HOME/.ai-containers/al92/.") a+=("$HOME") ;; *) a+=("\$x") ;; esac; done
+exec "\$real" "\${a[@]}"
+SHIM
+chmod +x "$TMP/shim92/stat"
+PATH="$TMP/shim92:$PATH" AI_CONTAINER_GROUP=al92 launch ..
+[[ "$LAUNCH_RC" != 0 && ! -e "$CAPTURE" ]] && grep -qF 'is your home directory' "$ERR" \
+  && pass "G92 a group directory that is \$HOME by device:inode is refused" \
+  || fail "G92 a group directory aliasing \$HOME (rc=$LAUNCH_RC; $(grep -E 'ERROR' "$ERR" | head -1))"
+rm -rf "$HOME/.ai-containers/al92" "$TMP/shim92"
 # A committed sandbox.env that names the host group, which the loader once
 # ignored, now refuses the launch, naming the file (review of batch 11).
 [[ -f "$LAUNCHER/sandbox.env" ]] && cp "$LAUNCHER/sandbox.env" "$TMP/se92.bak"
@@ -1746,6 +1800,23 @@ printf 'AI_CONTAINER_GROUP=host\n' >> "$LAUNCHER/sandbox.env"
 grep -qF "AI_CONTAINER_GROUP=host is set in $LAUNCHER/sandbox.env" "$ERR" && grep -qF 'from:host' "$ERR" && [[ ! -e "$CAPTURE" ]] \
   && pass "G92 a committed sandbox.env naming the host group refuses the launch, naming the file" \
   || fail "G92 host group from sandbox.env ($(grep -E 'ERROR|NOTE' "$ERR" | head -2 | tr '\n' ' '))"
+# The file named is the one whose line the loader kept (LNCH-20): not a
+# sandbox.local.env whose `AI_CONTAINER_GROUP = host` the loader ignores…
+[[ -f "$LAUNCHER/sandbox.local.env" ]] && cp "$LAUNCHER/sandbox.local.env" "$TMP/sl92.bak"
+printf 'AI_CONTAINER_GROUP = host\n' >> "$LAUNCHER/sandbox.local.env"
+( unset AI_CONTAINER_GROUP; launch .. )
+grep -qF "AI_CONTAINER_GROUP=host is set in $LAUNCHER/sandbox.env" "$ERR" && ! grep -qF "set in $LAUNCHER/sandbox.local.env" "$ERR" \
+  && pass "G92 the NOTE names the file the loader read the host group from" \
+  || fail "G92 the NOTE named a line the loader ignores ($(grep -E 'NOTE' "$ERR" | head -1))"
+# …and a sandbox.local.env that exports it quoted is the one named.
+if [[ -f "$TMP/sl92.bak" ]]; then cp "$TMP/sl92.bak" "$LAUNCHER/sandbox.local.env"; else rm -f "$LAUNCHER/sandbox.local.env"; fi
+printf 'export AI_CONTAINER_GROUP="host"\n' >> "$LAUNCHER/sandbox.local.env"
+( unset AI_CONTAINER_GROUP; launch .. )
+grep -qF "AI_CONTAINER_GROUP=host is set in $LAUNCHER/sandbox.local.env" "$ERR" \
+  && pass "G92 an exported, quoted host group in sandbox.local.env is named" \
+  || fail "G92 the NOTE for an exported host group ($(grep -E 'NOTE' "$ERR" | head -1))"
+if [[ -f "$TMP/sl92.bak" ]]; then cp "$TMP/sl92.bak" "$LAUNCHER/sandbox.local.env"; else rm -f "$LAUNCHER/sandbox.local.env"; fi
+rm -f "$TMP/sl92.bak"
 if [[ -f "$TMP/se92.bak" ]]; then cp "$TMP/se92.bak" "$LAUNCHER/sandbox.env"; else rm -f "$LAUNCHER/sandbox.env"; fi
 # …and a repository mounted into /workspace from inside the group's directory is
 # protected: only the group's own mounts are skipped, not every source under it.

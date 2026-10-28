@@ -195,6 +195,17 @@ rm -f "$E/sandbox.local.env"; : > "$DOCKER_LOG"
   || fail "user-chosen names (local: $r1, shell: $r2, other argument: $r3, committed argument: $r4)"
 rm -f "$E"/allowlist-*.txt
 
+# A project still on the removed host group is refused by build.sh too, before
+# docker build: runme.sh builds first, and the whole image was built for a launch
+# that is refused (LNCH-20).
+: > "$DOCKER_LOG"
+( cd "$E" && AI_CONTAINER_GROUP=host bash ./build.sh other:tag ) >/dev/null 2>"$TMP/build.err"; rh=$?
+[[ "$rh" != 0 ]] && grep -qF 'AI_CONTAINER_GROUP=host is no longer supported' "$TMP/build.err" && ! reached \
+  && [[ ! -e "$E/allowlist-domains.txt" ]] \
+  && pass "build.sh refuses the removed host group before anything is built or written" \
+  || fail "build.sh and the host group (rc=$rh; $(head -1 "$TMP/build.err"); docker build called: $(grep -c '^build ' "$DOCKER_LOG"))"
+rm -f "$E"/allowlist-*.txt
+
 # The other half (from main's ENV-7 tests): a tag no image carries yet reaches
 # docker build, labelled with the project.
 cat > "$TMP/bin/docker" <<'FAKE3'

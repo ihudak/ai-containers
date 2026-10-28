@@ -528,6 +528,10 @@ preflight_private_tools() {
 build_image() {
   check_config
   validate_config
+  # The group the launch will refuse — `host`, or a name that is no group — is
+  # refused here too: runme.sh builds first, and the whole image was built for a
+  # launch that could not start (LNCH-20).
+  validate_group_name "${AI_CONTAINER_GROUP:-default}"
   local build_image_name="${1:-$image_name}"
   local build_args=()
   # Never another project's tag, or a base image's (ENV-7) — checked before

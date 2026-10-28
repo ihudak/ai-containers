@@ -98,7 +98,7 @@ AI_CONTAINER_GROUP=mine AI_CONTAINER_GROUP_INIT=from:host ./sandbox.sh restricte
 
 The group then holds a copy. What the agent changes there never reaches your real dotfiles.
 
-For the same reason a group directory must be a directory of its own: one that is a link (to `$HOME`, or to another group) is refused, as is one that turns out to be `$HOME` itself. To keep groups on another disk, make `~/.ai-containers` itself the link.
+For the same reason a group directory must be a directory of its own: one that is a link (to `$HOME`, or to another group) is refused, as is one that turns out to be `$HOME` itself, whatever path leads there (a bind mount or a firmlink counts). The refusal says where the link leads and what to do instead. To keep groups on another disk, make `~/.ai-containers` itself the link. `./build.sh` refuses `AI_CONTAINER_GROUP=host` too, so a project still on it is not built for a launch that cannot start.
 
 ## One-time login inside a fresh group
 

@@ -2736,18 +2736,28 @@ run_container() {
   # at, your real $HOME's dot-directories among them, as the removed host group
   # did — and the git scan, which skips the group's own directories, skipped what
   # lay under the link's target (G92).
-  local group="${AI_CONTAINER_GROUP:-default}" _gsf
+  local group="${AI_CONTAINER_GROUP:-default}" _gsf _gmode _gval
   if [[ "$group" == host ]]; then
+    # Name the file whose line the loader kept — the first file, in its order,
+    # that sets the key at all, read by load_env_defaults itself, so a line it
+    # ignores (`AI_CONTAINER_GROUP = host`) or does not keep (a second one) is
+    # never named (LNCH-20).
     for _gsf in "$script_dir/sandbox.local.env" "$script_dir/sandbox.env"; do
-      if [[ -f "$_gsf" ]] && grep -qE "^[[:space:]]*(export[[:space:]]+)?AI_CONTAINER_GROUP[[:space:]]*=[[:space:]]*[\"']?host[\"']?[[:space:]]*(#.*)?$" "$_gsf"; then
-        printf 'NOTE: AI_CONTAINER_GROUP=host is set in %s.\n' "$(_term "$_gsf")" >&2
-        break
-      fi
+      [[ -f "$_gsf" ]] || continue
+      _gmode=portable; [[ "$_gsf" == */sandbox.local.env ]] && _gmode=local
+      _gval="$( unset AI_CONTAINER_GROUP; load_env_defaults "$_gsf" "$_gmode" 2>/dev/null; printf '%s' "${AI_CONTAINER_GROUP-<unset>}" )"
+      [[ "$_gval" == '<unset>' ]] && continue
+      [[ "$_gval" == host ]] && printf 'NOTE: AI_CONTAINER_GROUP=host is set in %s.\n' "$(_term "$_gsf")" >&2
+      break
     done
   fi
   validate_group_name "$group"
-  local _gr="$HOME/.ai-containers/$group" _glt _ghome _gpar
+  local _gr="$HOME/.ai-containers/$group" _glt _ghome _gpar _ghid
   _ghome="$(cd "$HOME" 2>/dev/null && pwd -P)" || _ghome=""
+  # $HOME's device:inode: an alias of it by another path — a bind mount, a macOS
+  # firmlink, another case on a case-insensitive filesystem — has the same pair
+  # where its path differs (LNCH-19).
+  _ghid="$(_launcher_dev_ino "$HOME/.")" || _ghid=""
   if [[ -L "$_gr" ]]; then
     _glt="$(cd "$_gr" 2>/dev/null && pwd -P)" || _glt=""
     _gpar="$(cd "$HOME/.ai-containers" 2>/dev/null && pwd -P)" || _gpar=""
@@ -2756,15 +2766,21 @@ run_container() {
     printf '       through a link the container gets whatever it points at, writable.\n' >&2
     # The way out depends on where it leads: `cp -a` of $HOME would copy the whole
     # home, every other group with it (review of 18011da; G92).
-    if [[ -z "$_glt" ]]; then
+    if [[ ! -e "$_gr" ]]; then
       printf '       It leads nowhere: remove it (rm %s) and launch again.\n' "$(_q "$_gr")" >&2
-    elif [[ "$_glt" == "$_ghome" ]]; then
+    elif [[ -z "$_glt" ]]; then
+      printf '       It leads to something that is not a directory you can enter: remove it (rm %s)\n' "$(_q "$_gr")" >&2
+      printf '       and launch again.\n' >&2
+    elif [[ "$_glt" == "$_ghome" ]] || { [[ -n "$_ghid" ]] && [[ "$(_launcher_dev_ino "$_gr/.")" == "$_ghid" ]]; }; then
       printf '       It leads to your home directory. Remove it (rm %s) and launch with\n' "$(_q "$_gr")" >&2
       printf '       AI_CONTAINER_GROUP_INIT=from:host, which makes the group as a copy of your credentials.\n' >&2
-    elif [[ "${_glt%/*}" == "$_gpar" ]]; then
+    elif [[ "${_glt%/*}" == "$_gpar" && "${_glt##*/}" =~ ^[a-z0-9][a-z0-9-]{0,31}$ && "${_glt##*/}" != host ]]; then
       printf '       It leads to the group %s: use AI_CONTAINER_GROUP=%s, or remove the link (rm %s)\n' \
         "$(_q "${_glt##*/}")" "$(_q "${_glt##*/}")" "$(_q "$_gr")" >&2
       printf '       and launch with AI_CONTAINER_GROUP_INIT=from:%s for a copy of it.\n' "$(_q "${_glt##*/}")" >&2
+    elif [[ -n "$_ghome" && "$_glt" == "$_ghome"/* ]]; then
+      # Inside $HOME: a directory of yours, the group's own made beside it.
+      printf '       Remove the link (rm %s) and launch again: the group is made as a directory of its own.\n' "$(_q "$_gr")" >&2
     else
       printf '       To keep groups on another disk, link ~/.ai-containers itself, not one group.\n' >&2
     fi
@@ -2773,7 +2789,8 @@ run_container() {
   # A group directory that IS your home by another route — ~/.ai-containers moved
   # to $HOME's parent and the group named after $HOME — mounts the real
   # dot-directories as surely as a link (review of 18011da; G92).
-  if [[ -n "$_ghome" && -d "$_gr" && "$(cd "$_gr" 2>/dev/null && pwd -P)" == "$_ghome" ]]; then
+  if [[ -d "$_gr" ]] && { { [[ -n "$_ghome" ]] && [[ "$(cd "$_gr" 2>/dev/null && pwd -P)" == "$_ghome" ]]; } \
+       || { [[ -n "$_ghid" ]] && [[ "$(_launcher_dev_ino "$_gr/.")" == "$_ghid" ]]; }; }; then
     printf 'ERROR: the group directory %s is your home directory; the container would get your\n' "$(_q "$_gr")" >&2
     printf '       real dot-directories, writable. Pick another group name, or move ~/.ai-containers.\n' >&2
     exit 1
