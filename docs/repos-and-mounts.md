@@ -12,6 +12,22 @@ bash ./sandbox.sh restricted /path/to/myproject-backend
 
 Each path is mounted at `/workspace/<basename>` inside the container.
 
+A long list is easier to read one entry per line. In `sandbox.local.env`, where the lists belong, a double-quoted value may span lines; blank lines and `#` comment lines inside it are skipped, and the entries are joined with single spaces, so the result is exactly the one-line form. The same works for `REPOS` and every other list.
+
+```bash
+EXTRA_MOUNTS="
+  # reference code, read-only
+  ~/dev/reference-docs:ro
+  ~/dev/shared-lib:ro
+  # edited here
+  ~/dev/myproject-ui
+"
+```
+
+The value opens only when its opening quote is the only quote on the line, and it ends at the first line that ends with `"`. A value that is never closed is ignored with a warning, and so is everything after it in the file.
+
+`project-init.sh` writes `EXTRA_MOUNTS` this way whenever you give it two or more mounts. To convert the projects you already have, run `./multiline-env.sh` from this repository (`--dry-run` shows the change first). It rewrites the one-line `EXTRA_MOUNTS`, `REPOS` and `PREVIEW_PORTS` in each registered project's `sandbox.local.env`, keeps every other line, and backs the old file up as `sandbox.local.env.pre-multiline`. It skips a project whose `.ai-containers/` copy of the engine is too old to read the new layout, so run `./sync-to-projects.sh` first. It never touches `sandbox.env`: that file is shared, and a teammate on an older engine would read a multi-line list as a bare `"`.
+
 > **macOS performance note.** `EXTRA_MOUNTS` (and a host-path positional argument) are host **bind mounts**. On macOS, Docker runs inside a Linux VM and host directories are shared over a virtualized filesystem (virtiofs), which adds a large per-syscall penalty — metadata operations can be ~30–50× slower than native in-VM storage. For small or occasionally-read directories this is fine. For **large repositories that agents scan heavily** (reading thousands of files), use **repo volumes** instead — see the next section. On Linux the bind-mount penalty does not apply.
 
 ## Shared repo volumes (native speed) — `repo.sh` and `REPOS`

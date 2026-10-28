@@ -27,7 +27,7 @@ for d in work decoy; do
 done
 
 ENTRY_POINTS=(sandbox.sh build.sh repo.sh group.sh project-init.sh sync-to-projects.sh
-  extract-discovery.sh migrate-runme.sh ai-containers-report.sh release-title.sh
+  extract-discovery.sh migrate-runme.sh multiline-env.sh ai-containers-report.sh release-title.sh
   changelog-coverage.sh changelog-section.sh check-sandbox-version.sh bump-sandbox-version.sh)
 # Sourced only, from entry points above that already unset CDPATH.
 LIBS=(sandbox-common.sh version.sh)

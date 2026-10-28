@@ -98,6 +98,24 @@ EOF
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 projects_conf="${script_dir}/projects.conf"
 
+# emit_env_list KEY VALUE — print KEY="VALUE" for a whitespace-separated list, one
+# entry per line once there are two or more, so a long EXTRA_MOUNTS stays readable.
+# load_env_defaults (sandbox-common.sh) joins the lines back into the one-line value.
+# KEY may carry an `export ` prefix; it is printed as given. Also used by
+# multiline-env.sh, which sources this file.
+emit_env_list() {
+  local key="$1" entry
+  local -a entries=()
+  read -r -a entries <<<"$2"
+  if (( ${#entries[@]} < 2 )); then
+    printf '%s="%s"\n' "$key" "$2"
+    return 0
+  fi
+  printf '%s="\n' "$key"
+  for entry in "${entries[@]}"; do printf '  %s\n' "$entry"; done
+  printf '"\n'
+}
+
 # SOURCING GUARD — placed AFTER the globals above and BEFORE the first
 # interactive prompt, deliberately. A sourcing caller (migrate-runme.sh) needs
 # emit_launcher() *and* script_dir/projects_conf, but must not run the wizard:
@@ -547,7 +565,7 @@ fi
 #SANDBOX_MODE=open
 EOF
   [[ -n "$group_init"   ]] && printf 'AI_CONTAINER_GROUP_INIT=%s\n' "$group_init"
-  [[ -n "$extra_mounts" ]] && printf 'EXTRA_MOUNTS="%s"\n' "$extra_mounts"
+  [[ -n "$extra_mounts" ]] && emit_env_list EXTRA_MOUNTS "$extra_mounts"
 } > "${dest}/sandbox.local.env"
 printf '  Wrote sandbox.local.env (machine-specific).\n'
 
@@ -568,7 +586,7 @@ if [[ -f "$gi" && -s "$gi" && -n "$(tail -c1 "$gi" 2>/dev/null)" ]]; then
   printf '\n' >> "$gi"
 fi
 for pat in '.agent-blocked/' '.agent-discovery/' 'sandbox.local.env' 'sandbox.local.env.pre-init*' 'sandbox.env.pre-init*' \
-           '*.pre-migrate' '*.pre-migrate.*' \
+           '*.pre-migrate' '*.pre-migrate.*' '*.pre-multiline' '*.pre-multiline.*' \
            'allowlist-domains.txt' 'allowlist-proxy-domains.txt' 'allowlist-cidrs.txt' \
            'allowlist-domains.d/custom.txt' 'allowlist-proxy-domains.d/custom.txt' 'allowlist-cidrs.d/custom.txt'; do
   if [[ ! -f "$gi" ]] || ! grep -qxF "$pat" "$gi" 2>/dev/null; then

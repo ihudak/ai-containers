@@ -83,6 +83,20 @@ SBLOCAL="$PROJ2/.ai-containers/sandbox.local.env"
 ! grep -q 'EXTRA_MOUNTS' "$PROJ2/.ai-containers/runme.sh"      && pass "EXTRA_MOUNTS not baked into runme.sh"     || fail "EXTRA_MOUNTS not baked into runme.sh"
 ! grep -q '^EXTRA_MOUNTS=' "$PROJ2/.ai-containers/sandbox.env" && pass "EXTRA_MOUNTS not in portable sandbox.env" || fail "EXTRA_MOUNTS not in portable sandbox.env"
 
+grep -qxF "EXTRA_MOUNTS=\"$TMP\"" "$SBLOCAL" && pass "a single extra mount stays on one line" || fail "a single extra mount stays on one line"
+
+# Two or more mounts are written one per line, and the real loader must read them
+# back as the one-line value the wizard was given.
+PROJ2B="$TMP/proj/twomounts"; mkdir -p "$PROJ2B"; git -C "$PROJ2B" init -q
+printf '%s\n\n\n\n\n\n\n\n\n%s\n' "$PROJ2B" "$TMP $TMP/proj:ro" | bash "$SCRIPTS/project-init.sh" >/dev/null 2>&1
+SBLOCAL2B="$PROJ2B/.ai-containers/sandbox.local.env"
+want_2b="$(printf 'EXTRA_MOUNTS="\n  %s\n  %s\n"' "$TMP" "$TMP/proj:ro")"
+[[ "$(grep -A3 '^EXTRA_MOUNTS=' "$SBLOCAL2B" 2>/dev/null)" == "$want_2b" ]] \
+  && pass "two or more extra mounts are written one per line" || fail "two or more extra mounts are written one per line"
+got_2b="$(bash -c 'eval "$(sed -n "/^[A-Za-z_][A-Za-z0-9_]*() *{/,/^}/p" "$1")"; unset EXTRA_MOUNTS; load_env_defaults "$2" local 2>&1; printf %s "${EXTRA_MOUNTS-unset}"' _ "$SCRIPTS/sandbox-common.sh" "$SBLOCAL2B")"
+[[ "$got_2b" == "$TMP $TMP/proj:ro" ]] \
+  && pass "the loader reads the one-per-line mounts back as the one-line value" || fail "the loader reads the one-per-line mounts back (got: $got_2b)"
+
 # A third project reusing the already-bootstrapped "default" group, with no extra
 # mounts either → group_init AND extra_mounts are both empty. sandbox.local.env must
 # still be written (previously it was skipped entirely in this case), and its header

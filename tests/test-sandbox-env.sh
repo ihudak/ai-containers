@@ -252,6 +252,75 @@ done
 [[ -z "$drift" ]] && pass "every launcher variable AGENTS.md documents is either portable or machine-only, never both ($(wc -w <<<"$doc_keys") keys)" \
   || fail "documented but classified wrongly:$drift"
 
+# A double-quoted value may span lines, so a long list (EXTRA_MOUNTS, REPOS) can
+# be written one entry per line. It must arrive EXACTLY as the one-line form
+# would — single-space separated — because the lists are split by consumers
+# that are not all split_env_list.
+mk
+printf 'EXTRA_MOUNTS="\n  /a:ro\n\n  # a comment between entries\n\t/b\n  /c:rw\n"\nIMAGE_NAME=after\n' > "$LOCAL"
+( unset EXTRA_MOUNTS IMAGE_NAME; apply; [[ "$EXTRA_MOUNTS" == "/a:ro /b /c:rw" ]] ) \
+  && pass "multi-line value joins its entries with single spaces" || fail "multi-line value joins its entries with single spaces"
+( unset EXTRA_MOUNTS IMAGE_NAME; apply; [[ "$IMAGE_NAME" == after ]] ) \
+  && pass "a key after a multi-line value is still parsed" || fail "a key after a multi-line value is still parsed"
+rmk
+
+# Text on the opening and closing lines belongs to the value too.
+mk; printf 'export REPOS="docs:ro\n  cluster:ro\n  agent:ro"\n' > "$LOCAL"
+( unset REPOS; apply; [[ "$REPOS" == "docs:ro cluster:ro agent:ro" ]] ) \
+  && pass "multi-line value keeps text on its opening and closing lines" || fail "multi-line value keeps text on its opening and closing lines"
+rmk
+
+mk; printf 'EXTRA_MOUNTS="\r\n  /a\r\n  /b\r\n"\r\n' > "$LOCAL"
+( unset EXTRA_MOUNTS; apply; [[ "$EXTRA_MOUNTS" == "/a /b" ]] ) \
+  && pass "multi-line value tolerates CRLF" || fail "multi-line value tolerates CRLF"
+rmk
+
+# Only a value whose ONLY quote is the opening one continues. A single-line value
+# that merely starts with a quote keeps its old literal meaning, and must not
+# swallow the lines after it.
+mk; printf 'FOO="a" b\nIMAGE_NAME=next\n' > "$LOCAL"
+( unset FOO IMAGE_NAME; apply; [[ "$FOO" == '"a" b' && "$IMAGE_NAME" == next ]] ) \
+  && pass "a one-line value with an inner quote is not continued" || fail "a one-line value with an inner quote is not continued"
+rmk
+
+# Precedence still holds, and an ignored multi-line value is still CONSUMED: its
+# continuation lines must not be read as assignments of their own.
+mk; printf 'EXTRA_MOUNTS="\n  /from-file\n  REPOS=smuggled\n"\nIMAGE_NAME=after\n' > "$LOCAL"
+( unset REPOS IMAGE_NAME; export EXTRA_MOUNTS=/inline; apply
+  [[ "$EXTRA_MOUNTS" == /inline && -z "${REPOS+x}" && "$IMAGE_NAME" == after ]] ) \
+  && pass "an already-set key consumes its multi-line value unused" || fail "an already-set key consumes its multi-line value unused"
+printf 'BASH_ENV="\n  /x\n  REPOS=smuggled\n"\nIMAGE_NAME=after\n' > "$LOCAL"
+( unset BASH_ENV REPOS IMAGE_NAME; apply 2>/dev/null
+  [[ -z "${BASH_ENV:-}" && -z "${REPOS+x}" && "$IMAGE_NAME" == after ]] ) \
+  && pass "a refused key consumes its multi-line value unused" || fail "a refused key consumes its multi-line value unused"
+rmk
+
+# A shared sandbox.env cannot set a machine-only list by spreading it over lines:
+# the value is read in full first and then refused as one, so nothing inside it —
+# here a portable key and a token — is ever parsed as an assignment of its own.
+mk; printf 'EXTRA_MOUNTS="\n  /x\n  SANDBOX_MODE=open\n  GITHUB_TOKEN=leak\n"\nIMAGE_NAME=after\n' > "$PORTABLE"
+out_mo="$( ( unset EXTRA_MOUNTS SANDBOX_MODE GITHUB_TOKEN IMAGE_NAME; apply
+  printf 'EXTRA_MOUNTS=%s SANDBOX_MODE=%s GITHUB_TOKEN=%s IMAGE_NAME=[%s]\n' \
+    "${EXTRA_MOUNTS+set}" "${SANDBOX_MODE+set}" "${GITHUB_TOKEN+set}" "${IMAGE_NAME:-}" ) 2>&1 )"
+grep -q 'EXTRA_MOUNTS= SANDBOX_MODE= GITHUB_TOKEN= IMAGE_NAME=\[after\]' <<<"$out_mo" \
+  && pass "a multi-line machine-only value in sandbox.env is refused whole, lines inside included" \
+  || fail "a multi-line machine-only value in sandbox.env is refused whole (got: $out_mo)"
+grep -q 'WARNING.*EXTRA_MOUNTS' <<<"$out_mo" \
+  && pass "and the refusal names the key" || fail "and the refusal names the key"
+rmk
+
+# A value never closed is refused with a warning — never stored as a bare `"`.
+mk; printf 'IMAGE_NAME=before\nEXTRA_MOUNTS="\n  /a\n  /b\n' > "$LOCAL"
+out_open="$( ( unset EXTRA_MOUNTS IMAGE_NAME; apply
+  printf 'EXTRA_MOUNTS=[%s] set=%s IMAGE_NAME=[%s]\n' "${EXTRA_MOUNTS:-}" "${EXTRA_MOUNTS+yes}" "${IMAGE_NAME:-}" ) 2>&1 )"
+grep -q 'EXTRA_MOUNTS=\[\] set= ' <<<"$out_open" \
+  && pass "an unterminated multi-line value is not set" || fail "an unterminated multi-line value is not set (got: $out_open)"
+grep -q 'WARNING.*EXTRA_MOUNTS' <<<"$out_open" \
+  && pass "an unterminated multi-line value warns, naming the key" || fail "an unterminated multi-line value warns, naming the key"
+grep -q 'IMAGE_NAME=\[before\]' <<<"$out_open" \
+  && pass "keys before an unterminated value are kept" || fail "keys before an unterminated value are kept"
+rmk
+
 # load ORDER in sandbox-common.sh: local before portable
 loc_ln=$(grep -n 'load_env_defaults .*sandbox\.local\.env' "$REPO_DIR/sandbox-common.sh" | head -1 | cut -d: -f1)
 por_ln=$(grep -n 'load_env_defaults .*/sandbox\.env' "$REPO_DIR/sandbox-common.sh" | head -1 | cut -d: -f1)
