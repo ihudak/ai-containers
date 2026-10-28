@@ -38,6 +38,7 @@ fi
 
 assert_no_capability "$IT_CID" cap_net_admin
 assert_no_capability "$IT_CID" cap_net_raw
+assert_no_new_privs "$IT_CID"
 
 # The bit and the EFFECT are different claims. A capability can be absent from
 # CapEff while some other path still lets the user change the ruleset (a setuid

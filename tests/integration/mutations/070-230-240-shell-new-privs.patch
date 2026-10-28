@@ -1,0 +1,37 @@
+# case: 070-restricted-drops-capabilities
+# case: 230-discovery-drops-capabilities
+# case: 240-open-drops-capabilities
+# what: every mode's `exec capsh` loses --no-new-privs, so the agent shell runs
+#       with NoNewPrivs 0 and a setuid-root binary the image ships would make it
+#       euid 0 (bugs review RT-10). Its capabilities are dropped as before, so
+#       each case passes its assert_no_capability lines and fails only its
+#       assert_no_new_privs. One mutation, three cases: the flag is the same
+#       line in all three branches. Needs a rebuild: entrypoint.sh is COPYed.
+#
+diff --git a/entrypoint.sh b/entrypoint.sh
+--- a/entrypoint.sh
++++ b/entrypoint.sh
+@@ -455,7 +455,6 @@
+ 
+     exec capsh \
+       --drop=cap_net_admin,cap_net_raw \
+-      --no-new-privs \
+       --user="$sandbox_user" \
+       -- -c 'exec env "$@" /bin/bash -l' bash ${_aice_app_env[@]+"${_aice_app_env[@]}"}
+     ;;
+@@ -503,7 +502,6 @@
+ 
+     exec capsh \
+       --drop=cap_net_admin \
+-      --no-new-privs \
+       --user="$sandbox_user" \
+       -- -c 'exec env "$@" /bin/bash -l' bash ${_aice_app_env[@]+"${_aice_app_env[@]}"}
+     ;;
+@@ -527,7 +525,6 @@
+ 
+     exec capsh \
+       --drop=cap_net_admin,cap_net_raw \
+-      --no-new-privs \
+       --user="$sandbox_user" \
+       -- -c 'exec env "$@" /bin/bash -l' bash ${_aice_app_env[@]+"${_aice_app_env[@]}"}
+     ;;

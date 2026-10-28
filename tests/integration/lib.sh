@@ -885,6 +885,20 @@ assert_log_contains() {  # $1=cid $2=ERE
   if grep -qE "$2" <<<"$_alc_logs"; then pass "container log matches: $2"
   else fail "container log matches: $2"; fi
 }
+# assert_no_new_privs <cid>: the agent shell (PID 1, after the entrypoint's
+# exec capsh) runs with no_new_privs, so no setuid-root or file-capability
+# binary can raise it (bugs review RT-10). Read from /proc/1/status, as
+# pid1_caps reads CapEff: a fresh exec would report its own flag.
+assert_no_new_privs() {  # $1=cid
+  local v
+  v="$(docker exec "$1" sed -n 's/^NoNewPrivs:[[:space:]]*//p' /proc/1/status 2>/dev/null)"
+  case "$v" in
+    1) pass "agent shell runs with no_new_privs" ;;
+    0) fail "agent shell runs WITHOUT no_new_privs (NoNewPrivs: 0) — a setuid-root binary would make it root" ;;
+    *) fail "cannot read the agent shell's NoNewPrivs [${v:-<empty>}]" ;;
+  esac
+}
+
 # A "capability is absent" claim is a NEGATIVE assertion, and a negative built on
 # a substring search passes for two very different reasons: the capability really
 # is gone, or the string we searched was never a capability list at all. The

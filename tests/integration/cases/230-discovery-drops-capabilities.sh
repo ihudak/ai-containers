@@ -68,5 +68,6 @@ fi
 
 assert_no_capability "$IT_CID" cap_net_admin
 assert_no_capability "$IT_CID" cap_net_raw
+assert_no_new_privs "$IT_CID"
 
 it_finish

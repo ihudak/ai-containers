@@ -11,30 +11,29 @@
 # NOTE: entrypoint.sh is COPYed into the image, so this patch needs a rebuild to
 # take effect — never --reuse-image.
 diff --git a/entrypoint.sh b/entrypoint.sh
-index 9d5fe92..639f6a3 100755
 --- a/entrypoint.sh
 +++ b/entrypoint.sh
-@@ -387,7 +387,7 @@ case "$mode" in
-     exec capsh \
+@@ -457,7 +457,7 @@
        --drop=cap_net_admin,cap_net_raw \
+       --no-new-privs \
        --user="$sandbox_user" \
 -      -- -c 'exec env "$@" /bin/bash -l' bash ${_aice_app_env[@]+"${_aice_app_env[@]}"}
 +      -- -l
      ;;
    discovery)
      apply_discovery_firewall
-@@ -434,7 +434,7 @@ case "$mode" in
-     exec capsh \
+@@ -505,7 +505,7 @@
        --drop=cap_net_admin \
+       --no-new-privs \
        --user="$sandbox_user" \
 -      -- -c 'exec env "$@" /bin/bash -l' bash ${_aice_app_env[@]+"${_aice_app_env[@]}"}
 +      -- -l
      ;;
    open)
      setup_sandbox_user
-@@ -457,7 +457,7 @@ case "$mode" in
-     exec capsh \
+@@ -529,7 +529,7 @@
        --drop=cap_net_admin,cap_net_raw \
+       --no-new-privs \
        --user="$sandbox_user" \
 -      -- -c 'exec env "$@" /bin/bash -l' bash ${_aice_app_env[@]+"${_aice_app_env[@]}"}
 +      -- -l

@@ -40,7 +40,10 @@ stash_app_env
 # setsid daemon escapes its timeout — lives on into the session, and with the
 # full bounding set a setuid-root or file-capability binary could hand those
 # capabilities back (bugs review RT-8). Root drops them; runuser then switches
-# user as before.
+# user as before. The agent shell itself starts with no_new_privs too — each
+# mode's `exec capsh` passes --no-new-privs — so no setuid-root binary the image
+# ships can make it euid 0, which could rewrite the root-owned allowlist the
+# refresh loop reloads (RT-10).
 _user_step=(setpriv '--bounding-set=-net_admin,-net_raw' --no-new-privs --)
 
 # runuser … -- <command> as the sandbox user, with container.env given back.
@@ -452,6 +455,7 @@ case "$mode" in
 
     exec capsh \
       --drop=cap_net_admin,cap_net_raw \
+      --no-new-privs \
       --user="$sandbox_user" \
       -- -c 'exec env "$@" /bin/bash -l' bash ${_aice_app_env[@]+"${_aice_app_env[@]}"}
     ;;
@@ -499,6 +503,7 @@ case "$mode" in
 
     exec capsh \
       --drop=cap_net_admin \
+      --no-new-privs \
       --user="$sandbox_user" \
       -- -c 'exec env "$@" /bin/bash -l' bash ${_aice_app_env[@]+"${_aice_app_env[@]}"}
     ;;
@@ -522,6 +527,7 @@ case "$mode" in
 
     exec capsh \
       --drop=cap_net_admin,cap_net_raw \
+      --no-new-privs \
       --user="$sandbox_user" \
       -- -c 'exec env "$@" /bin/bash -l' bash ${_aice_app_env[@]+"${_aice_app_env[@]}"}
     ;;

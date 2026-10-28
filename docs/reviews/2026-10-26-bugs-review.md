@@ -1260,11 +1260,18 @@ Batch 9 (`9bd3729` … `6a0b37f`) went through 19 review rounds. Every HIGH and 
 ## 14. Found while fixing RT-8
 
 ### RT-10: the agent shell itself has no `no_new_privs`
-- **Status: OPEN** (review of the RT-8 fix; pre-existing)
+- **Status: FIXED** (2026-10-28). Each mode's `exec capsh` passes `--no-new-privs` before `--user=` — in the image, so it holds however the container is started, rather than as a `sandbox.sh` option the harness would only mirror. Measured with the image's `capsh`: `--drop=… --no-new-privs --user=probe` gives `CapEff 0`, `NoNewPrivs 1` (after `--user=` works the same; the order is not load-bearing). Its review measured git over ssh, `ssh-agent`, gpg, git, node and python unchanged, `unshare -U` refused by Docker's seccomp either way, and discovery-mode `ping` still working through the unprivileged ICMP socket `ping_group_range` allows — the fix direction below expected it to stop. Cases `070`, `230` and `240` now `assert_no_new_privs` on PID 1 (`tests/integration/lib.sh`), and mutation `070-230-240-shell-new-privs` removes the flag from all three branches. Mutations `240-open-keeps-capabilities` (its ambient raise still lands `cap_net_raw` under `no_new_privs`, measured) and `322-app-env-not-given-back` were regenerated for the new line.
 - Severity: MEDIUM. Confidence: PLAUSIBLE (no exploitable setuid binary known; the mechanism measured)
 - Location: `entrypoint.sh`, the final `exec capsh` of each mode; `sandbox.sh`, the `docker run` options
 - What's wrong: the user steps before the drop now run with `no_new_privs` (RT-8), but the shell they hand over to does not, and its bounding set still holds Docker's defaults (`CAP_SETUID`, `CAP_DAC_OVERRIDE`, `CAP_CHOWN`, …). A setuid-root binary the image ships (`passwd`, `chsh`, `mount`, `su`, `ssh-keysign`, …) run from that shell, with any bug in it, is euid 0, which can rewrite the root-owned `/tmp/allowlist-cidrs.txt` the refresh loop reloads every 60 s: the firewall opened without NET_ADMIN.
 - Fix direction: `sandbox.sh` passes `--security-opt=no-new-privileges` (measured by the review: `runuser` and `capsh` still work, the root entrypoint loses nothing; discovery-mode `ping`, a file-capability binary, stops working), or `setpriv --no-new-privs --` in front of each `exec capsh`, or the setuid bits stripped at build time.
+
+### RT-11: a `docker exec -u` session does not get `no_new_privs`
+- **Status: OPEN** (review of the RT-10 fix, LOW)
+- Severity: LOW. Confidence: CONFIRMED (measured: PID 1 `NoNewPrivs: 1`, a `docker exec -u probe` shell `NoNewPrivs: 0`, `/usr/bin/passwd` still setuid)
+- Location: `sandbox.sh`, the `docker run` options
+- What's wrong: RT-10 sets the flag on the agent shell, and a `docker exec` session is a fresh process from the daemon, outside that tree. AGENTS.md already says to run one as the agent (`-u`), not root; as the agent it can still exec a setuid-root binary.
+- Fix direction: `sandbox.sh` passes `--security-opt=no-new-privileges` too, which the daemon applies to `docker exec` as well. Measured by the review: the root entrypoint still works under it (`setpriv … runuser`, `capsh --user=`), and `dumpcap`/`tshark` carry no file capabilities, so capture is unaffected. Needs the harness's `sandbox_up` to mirror it, as it mirrors `--cap-add`.
 
 ---
 

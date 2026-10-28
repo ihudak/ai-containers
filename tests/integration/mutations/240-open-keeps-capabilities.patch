@@ -22,7 +22,10 @@
 #
 #       The ambient set is the one path that survives a root→non-root setuid and
 #       lands in EFFECTIVE, so it is the only damage found that both reaches
-#       240's assertion and leaves the case otherwise runnable. --keep=1 is
+#       240's assertion and leaves the case otherwise runnable. It keeps
+#       --no-new-privs (RT-10): measured, the ambient raise still lands
+#       cap_net_raw in CapEff (00002000) with NoNewPrivs 1, so the damage is
+#       unchanged. --keep=1 is
 #       required for it: --addamb needs the capability in permitted, which only
 #       KEEPCAPS preserves past the --user. The option ORDER matters and matches
 #       the measurement above; do not reorder it.
@@ -33,15 +36,15 @@
 #       automatically.
 #
 diff --git a/entrypoint.sh b/entrypoint.sh
-index 9d5fe92..9a5b686 100755
 --- a/entrypoint.sh
 +++ b/entrypoint.sh
-@@ -455,8 +455,10 @@ case "$mode" in
+@@ -526,9 +526,11 @@
      run_services
  
      exec capsh \
 -      --drop=cap_net_admin,cap_net_raw \
 +      --keep=1 \
+       --no-new-privs \
        --user="$sandbox_user" \
 +      --inh=cap_net_raw \
 +      --addamb=cap_net_raw \
