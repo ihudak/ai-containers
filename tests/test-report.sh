@@ -414,13 +414,18 @@ mk_proj "$DUPB" "$TMP/unsetproj" default '' 1.0
 sed -i.bak '/^SANDBOX_MODE=/d' "$TMP/unsetproj/.ai-containers/sandbox.env" && rm -f "$TMP/unsetproj/.ai-containers/sandbox.env.bak"
 mk_proj "$DUPB" "$TMP/quotedproj" default "'restricted'" 1.0
 # An assignment written inside a multi-line value is part of that value: the
-# launcher reads `open` here, so the report must not take the hidden line.
+# launcher reads `open` here, so the report must not take the hidden line. The
+# value opens with text on its first line, so a reader that took ANOTHER key's
+# value for the one asked for would report `4000:4000` as the mode.
 mk_proj "$DUPB" "$TMP/hiddenproj" default open 1.0
-{ printf 'PREVIEW_PORTS="\nSANDBOX_MODE=restricted\n"\n'; cat "$TMP/hiddenproj/.ai-containers/sandbox.env"; } > "$TMP/hidden.env" \
+{ printf 'PREVIEW_PORTS="4000:4000\nSANDBOX_MODE=restricted\n"\n'; cat "$TMP/hiddenproj/.ai-containers/sandbox.env"; } > "$TMP/hidden.env" \
   && mv "$TMP/hidden.env" "$TMP/hiddenproj/.ai-containers/sandbox.env"
-# A multi-line value of a key the report shows is joined, as the launcher joins it.
+# A multi-line value of a key the report shows is joined exactly as the launcher
+# joins it: a `#` line inside is skipped, and the closing `"` on a line of its own
+# adds nothing, so the field is `2.5` — not `# cores 2.5`, not `2.5 ` or ` 2.5`.
 mk_proj "$DUPB" "$TMP/joinedproj" default open 1.0
-sed -i.bak 's/^CONTAINER_CPUS=.*/CONTAINER_CPUS="\n  2.5\n"/' "$TMP/joinedproj/.ai-containers/sandbox.env" && rm -f "$TMP/joinedproj/.ai-containers/sandbox.env.bak"
+awk '/^CONTAINER_CPUS=/ { printf "CONTAINER_CPUS=\"\n  # cores\n  2.5\n\"\n"; next } { print }' \
+  "$TMP/joinedproj/.ai-containers/sandbox.env" > "$TMP/joined.env" && mv "$TMP/joined.env" "$TMP/joinedproj/.ai-containers/sandbox.env"
 run "$DUPB/ai-containers-report.sh" --tsv
 dup_mode="$(awk -F'\t' '$0 ~ /dupproj/ { for (i=1;i<=NF;i++) if ($i ~ /^(OPEN|RESTRICTED)$/) print $i }' <<<"$OUT")"
 [[ "$dup_mode" == OPEN ]] && pass "a key set twice reports the first value, as the launcher uses" \
@@ -430,13 +435,14 @@ grep -q 'unsetproj.*UNSET (usage)' <<<"$OUT" && ! grep -q 'DEFAULT-OPEN' <<<"$OU
   && pass "an unset mode is reported as UNSET (usage), not open" \
   || fail "unset mode mislabelled
 $OUT"
-hidden_mode="$(awk -F'\t' '$0 ~ /hiddenproj/ { for (i=1;i<=NF;i++) if ($i ~ /^(OPEN|RESTRICTED)$/) print $i }' <<<"$OUT")"
+hidden_mode="$(awk -F'\t' '$5 == "hiddenproj" { print $6 }' <<<"$OUT")"
 [[ "$hidden_mode" == OPEN ]] && pass "an assignment inside a multi-line value is not read as a key" \
   || fail "a mode hidden inside a multi-line value was reported as '$hidden_mode' (launcher runs open)
 $(grep hiddenproj <<<"$OUT")"
-grep -qE 'joinedproj.*[[:space:]]2\.5([[:space:]]|$)' <<<"$OUT" \
+joined_cpus="$(awk -F'\t' '$5 == "joinedproj" { print $7 }' <<<"$OUT")"
+[[ "$joined_cpus" == 2.5 ]] \
   && pass "a multi-line value of a reported key is joined, as the launcher joins it" \
-  || fail "a multi-line CONTAINER_CPUS was not read as 2.5
+  || fail "a multi-line CONTAINER_CPUS was read as '$joined_cpus', not '2.5'
 $(grep joinedproj <<<"$OUT")"
 grep -q "quotedproj.*'RESTRICTED'" <<<"$OUT" \
   && pass "a single-quoted value is reported literally, as the launcher reads it" \
