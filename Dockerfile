@@ -973,8 +973,8 @@ RUN if [ -n "$ANGULAR_CLI_VERSION" ] && [ "$ANGULAR_CLI_VERSION" != "OFF" ]; the
 ARG INSTALL_YARN=0
 RUN if [ "$INSTALL_YARN" = "1" ]; then npm install -g yarn; fi
 
-# pnpm — installed globally as root at build time (mirrors yarn). corepack shipped
-# with Node until Node 26, which no longer bundles it, and either way a non-root
+# pnpm — installed globally as root at build time (mirrors yarn). Node 24 and
+# earlier bundle corepack and Node 26 does not, and either way a non-root
 # sandbox user can't `corepack enable` / `npm i -g` at runtime because the nvm
 # Node dir is root-owned, so pnpm is baked in instead.
 ARG INSTALL_PNPM=0

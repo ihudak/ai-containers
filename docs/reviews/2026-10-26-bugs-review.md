@@ -562,7 +562,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - Severity: HIGH. Confidence: CONFIRMED (Integration's re-run on `7b9314d`: every case with a node sidecar, and 440's dev server, timed out; reproduced in ubuntu:24.04)
 - Location: `Dockerfile: libatomic1`, in the essentials layer; the cleanup layer's `apt-get purge -y --auto-remove`
 - What was wrong: Node 26 became the LTS on 2026-10-28, and its official binaries link `libatomic.so.1`, which ubuntu:24.04 does not ship. The nvm layer installs it without running it; the pyenv layer's `build-essential` brings the library in as a gcc dependency, and the cleanup purge removes it again. An image with none of yarn, pnpm, bun, angular-cli or playwright built with a `node` that died at exec ("libatomic.so.1: cannot open shared object file"), taking `npm`, qmd and every npm-installed agent with it; one with any of them failed to build at that layer's `npm`; only `KEEP_BUILD_TOOLCHAIN` images were unaffected. An image built on 2026-10-28 before this fix needs a rebuild.
-- Left open: Node 26 no longer bundles corepack, so a project that ran `corepack` in an interactive shell now gets `command not found`, and the sandbox user cannot install it into the root-owned nvm directory (`npx corepack` works). The three texts that said corepack ships with Node are corrected; whether to install it in the nvm layer is not decided here.
+- Corepack, decided 2026-10-28 (the user, on a measured recommendation): **not installed**. Node 26 no longer bundles it (Node 24 does); nothing in the engine uses it (`link-node-globals.sh` skips it, no layer runs it), and `corepack enable` never worked for the sandbox user, whose nvm directory is root-owned. Measured as a non-root user in the Node 26 image: `npm install -g corepack` fails `EACCES`; `npx corepack` (0.36.0, cached in `~/.npm`, not group-mounted), a project devDependency (persists in the workspace), `npm install -g --prefix ~/.local` (`~/.local/bin` is on PATH, not mounted) and `corepack enable --install-directory ~/bin` with a pinned `pnpm@9.15.0` all work. The routes are in `docs/components/README.md`; `node=24` gives a project the bundled one. Group-mounting `~/.npm` would make npm's cache and `npx` persist, a separate, optional change.
 
 ## 7. Test harness and CI
 
@@ -1296,6 +1296,13 @@ Batch 9 (`9bd3729` … `6a0b37f`) went through 19 review rounds. Every HIGH and 
 - Location: `sandbox.sh`, the `docker run` options
 - What's wrong: RT-10 sets the flag on the agent shell, and a `docker exec` session is a fresh process from the daemon, outside that tree. AGENTS.md already says to run one as the agent (`-u`), not root; as the agent it can still exec a setuid-root binary.
 - Fix direction: `sandbox.sh` passes `--security-opt=no-new-privileges` too, which the daemon applies to `docker exec` as well. Measured by the review: the root entrypoint still works under it (`setpriv … runuser`, `capsh --user=`), and `dumpcap`/`tshark` carry no file capabilities, so capture is unaffected. (This said the harness's `sandbox_up` should mirror it, as it mirrors `--cap-add`. Wrong, as the fix's review showed: the option sets the flag on PID 1 by itself, which would have hidden RT-10's from cases 070/230/240.)
+
+### RT-12: `/etc/profile.d/ai-tools.sh` breaks a POSIX `sh` login shell
+- **Status: OPEN** (2026-10-28, found while measuring corepack for BLD-10)
+- Severity: LOW. Confidence: CONFIRMED (`su - u` of a user whose shell is `/bin/sh`, in the Node 26 image)
+- Location: `Dockerfile: npm-agent-tools()`, the function the image writes into `/etc/profile.d/ai-tools.sh`
+- What's wrong: `/etc/profile` sources every `/etc/profile.d/*.sh` in whatever shell reads it, and dash cannot parse a function name with a hyphen, so a `sh -l` login (or `su -` to a user whose shell is `sh`) stops with `/etc/profile.d/ai-tools.sh: Syntax error: Bad function name`, before the rest of that file and of `/etc/profile` runs. The sandbox user's shell is bash (`entrypoint.sh: useradd_matching_host_uid -M -s /bin/bash`), so the agent shell and `bash -l` are unaffected; a `docker exec … sh -l` is not.
+- Fix direction: define the function only under bash (`[ -n "${BASH_VERSION:-}" ] &&` before it, or move it to `/etc/bash.bashrc` beside nvm), and say why where it is written.
 
 ## 15. Found while fixing batch 10
 

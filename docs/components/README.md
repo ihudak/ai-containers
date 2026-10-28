@@ -76,7 +76,15 @@ Both GraalVM variants also install the `native-image` toolchain.
 | `bun` | ON / OFF | Bun runtime and package manager |
 | `angular-cli` | ON / version / OFF | Angular CLI, **single version only**. Adds ~300–500 MB |
 
-`pnpm=ON` installs pnpm globally via npm at build time rather than through corepack: corepack shipped with Node until Node 26, which no longer bundles it, and the sandbox user could not enable it at runtime anyway because the nvm directory is root-owned.
+`pnpm=ON` installs pnpm globally via npm at build time rather than through corepack: Node 24 and earlier bundle corepack and Node 26 does not, and the sandbox user could not enable it at runtime anyway because the nvm directory is root-owned.
+
+The image does not install corepack. A project that uses it has three routes, none of which needs root:
+
+- `npx corepack …` works anywhere. It is downloaded again in each new container, because npm's cache (`~/.npm`) is not group-mounted.
+- `npm install --save-dev corepack` keeps it in the project's `node_modules`, so it persists with the project; run it as `npx corepack` or `./node_modules/.bin/corepack`.
+- `node=24` in `sandbox.conf` installs Node 24 beside the default, with its bundled corepack, after `nvm use 24` in an interactive shell.
+
+`corepack enable --install-directory ~/bin` works too, as the sandbox user. The shims and the package managers corepack downloads (`~/.cache/node/corepack`) live in the container layer and are gone when it exits. The npm registry is in the base allowlist; Yarn 2 and later fetched through corepack may also need Yarn's own host, which is allowlisted only with `yarn=ON`.
 
 These tools, and `qmd`, are installed into the default (latest LTS) Node, and their commands are linked onto `/usr/local/bin`. So they run in a non-interactive shell (`docker exec … bash -c`) and after `nvm use` to another `node` version. `yarn` and `ng` then run under whichever Node is active, so native modules they build match it. `qmd` always runs under the default Node: it requires Node 22 or later, so a project's `nvm use 20` must not take it along.
 
