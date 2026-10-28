@@ -550,6 +550,13 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 - A synced project with a latent lowercase build-time key (`c-toolchain=on`) can no longer launch until it is fixed (intended; the message gives the corrected line). Worth a CHANGELOG line at the next release.
 - `--error-on=any` on the db-clients=mongo arm fails the build on any broken apt source (the same trade the PGDG, MariaDB and MongoDB server layers make).
 
+### BLD-9: a Node LTS release day can fail every image build for hours: nvm finds no checksum to compare
+- **Status: OPEN** (2026-10-28, seen in CI)
+- Severity: LOW. Confidence: CONFIRMED (Integration on `7652fb5` and `7b9314d`, 17:14 and 17:37 UTC; the build log in the `it-diagnostics` artifact)
+- Location: `Dockerfile: nvm bootstrap failed after 5 attempts`, the nvm layer's retry loop around `nvm install --lts`
+- What's wrong: Node 26.13.0 became LTS ("Lithium") on 2026-10-28. For a while nodejs.org listed it in `index.tab` while nvm found no checksum for its tarball (`Provided checksum to compare to is empty.`), so nvm refused the binary, fell back to a source build, which failed too, and the five attempts (about 2.5 minutes of backoff) all failed the same way. At 18:30 UTC the same layer installed it with `Checksums matched!`. Anyone building the image in that window, not only CI, gets a failed build whose message points at nvm rather than at the release.
+- Fix direction: on that message, fall back to the previous LTS line (`nvm install --lts=<previous codename>`, or the newest LTS that `nvm ls-remote --lts` lists before it) and say so, rather than retrying the same release; or note the symptom beside the `GITHUB_TOKEN` advice so a failed build is recognised.
+
 ## 7. Test harness and CI
 
 ### TST-1: Hermetic suite fails on a developer host with an en_US.UTF-8 locale (two tests compare a locale `sort` against C-ordered literals)
@@ -1355,6 +1362,13 @@ Batch 10 went through seven review rounds, a review of its merge with main and o
 - Location: `repo.sh: collect_inspections()`, which reads `< <(inspect_git …)` and never sees its exit status
 - What's wrong: `STASH` and `TAG` are the last records, so a helper killed after the `BRANCH` records (137, out of memory) leaves the summary without them, and reset goes on; only the helper's ERROR on stderr says so.
 - Fix direction: have the helper end with an `END|` record and treat a summary without one as unknown, at risk.
+
+### REPO-17: `check_volume()` and `nested_in()` match the volume's own `.git` with `find -path`, a glob
+- **Status: OPEN** (review of the REPO-5 fix, INFO; the refuse mode predates it)
+- Severity: LOW. Confidence: CONFIRMED (from code; the reviewer's probe)
+- Location: `repo-git-reset.sh: nested_in()`, `-path "$1/.git" -prune`, and the same `-path "$gd"` in `check_volume()`
+- What's wrong: `-path` takes a glob, so a volume path holding `[`, `*` or `?` does not prune its own top-level `.git`, which is then listed as nested and, by `reset`, removed before the clone's `.git` replaces it. Production always passes `/dst`, so it cannot happen there; only a direct run of the helper on such a path, as a test does, would meet it.
+- Fix direction: `cd` into the volume and use `-path ./.git`, or escape the glob characters in the pattern.
 
 ### LNCH-21: under uutils coreutils with no `getfacl`, an unlistable directory is always taken for agent-writable
 - **Status: FIXED** (2026-10-28). `_agent_bits_writable()` trusts uutils' `ls` beside GNU's and BSD's where there is no `getfacl`: measured in ubuntu:25.10 (uutils 0.2.2) and ubuntu:26.04 (0.10.0, this host's) with `setfacl`, it prints `+` for an ACL (access, default-only, masked, group; ext4, tmpfs, overlay — its review) and the bare mode otherwise. Its `+` marks any extended attribute, so it can only over-report; but its `.` for a security context takes the place of the `+`, where GNU's keeps the `+`, so from uutils only the bare mode is taken as plain (no packaged Ubuntu build prints `.`; its review). The `(uutils coreutils)` string first appears in 0.1.0, after ACL marking (0.0.24), so no trusted version misses an ACL; older builds print no such string and still fail closed, and a build that names itself so with a number before 0.1.0 is not trusted either (automated security review; T25i's `0.0.23` shim). New T25i runs the rule in a `PATH` of `find`, a `uname` that says Linux and a shim `ls` that says it is uutils, so neither the host's `ls`, its `getfacl` nor its kernel decides: plain is not counted, `+` and `.` are (red on the old code on every host). T25g passes on this host again.
