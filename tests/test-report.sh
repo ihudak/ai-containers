@@ -413,6 +413,14 @@ printf 'SANDBOX_MODE=restricted\n' >> "$TMP/dupproj/.ai-containers/sandbox.env"
 mk_proj "$DUPB" "$TMP/unsetproj" default '' 1.0
 sed -i.bak '/^SANDBOX_MODE=/d' "$TMP/unsetproj/.ai-containers/sandbox.env" && rm -f "$TMP/unsetproj/.ai-containers/sandbox.env.bak"
 mk_proj "$DUPB" "$TMP/quotedproj" default "'restricted'" 1.0
+# An assignment written inside a multi-line value is part of that value: the
+# launcher reads `open` here, so the report must not take the hidden line.
+mk_proj "$DUPB" "$TMP/hiddenproj" default open 1.0
+{ printf 'PREVIEW_PORTS="\nSANDBOX_MODE=restricted\n"\n'; cat "$TMP/hiddenproj/.ai-containers/sandbox.env"; } > "$TMP/hidden.env" \
+  && mv "$TMP/hidden.env" "$TMP/hiddenproj/.ai-containers/sandbox.env"
+# A multi-line value of a key the report shows is joined, as the launcher joins it.
+mk_proj "$DUPB" "$TMP/joinedproj" default open 1.0
+sed -i.bak 's/^CONTAINER_CPUS=.*/CONTAINER_CPUS="\n  2.5\n"/' "$TMP/joinedproj/.ai-containers/sandbox.env" && rm -f "$TMP/joinedproj/.ai-containers/sandbox.env.bak"
 run "$DUPB/ai-containers-report.sh" --tsv
 dup_mode="$(awk -F'\t' '$0 ~ /dupproj/ { for (i=1;i<=NF;i++) if ($i ~ /^(OPEN|RESTRICTED)$/) print $i }' <<<"$OUT")"
 [[ "$dup_mode" == OPEN ]] && pass "a key set twice reports the first value, as the launcher uses" \
@@ -422,6 +430,14 @@ grep -q 'unsetproj.*UNSET (usage)' <<<"$OUT" && ! grep -q 'DEFAULT-OPEN' <<<"$OU
   && pass "an unset mode is reported as UNSET (usage), not open" \
   || fail "unset mode mislabelled
 $OUT"
+hidden_mode="$(awk -F'\t' '$0 ~ /hiddenproj/ { for (i=1;i<=NF;i++) if ($i ~ /^(OPEN|RESTRICTED)$/) print $i }' <<<"$OUT")"
+[[ "$hidden_mode" == OPEN ]] && pass "an assignment inside a multi-line value is not read as a key" \
+  || fail "a mode hidden inside a multi-line value was reported as '$hidden_mode' (launcher runs open)
+$(grep hiddenproj <<<"$OUT")"
+grep -qE 'joinedproj.*[[:space:]]2\.5([[:space:]]|$)' <<<"$OUT" \
+  && pass "a multi-line value of a reported key is joined, as the launcher joins it" \
+  || fail "a multi-line CONTAINER_CPUS was not read as 2.5
+$(grep joinedproj <<<"$OUT")"
 grep -q "quotedproj.*'RESTRICTED'" <<<"$OUT" \
   && pass "a single-quoted value is reported literally, as the launcher reads it" \
   || fail "single quotes stripped from a value the launcher reads literally

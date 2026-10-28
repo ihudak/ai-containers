@@ -182,13 +182,27 @@ env_var() {
   # wins (it sets only what is unset), and the value is literal — a trailing
   # `# comment` and single quotes are part of it; only a matched pair of double
   # quotes is stripped. Taking the last value reported a mode the launcher does
-  # not run (bugs review PRJ-6).
+  # not run (bugs review PRJ-6). A value whose only quote is its opening one runs on
+  # to the line that ends with `"`, its lines trimmed and joined by single spaces,
+  # blank and `#` lines inside skipped: an assignment written INSIDE such a value is
+  # part of it, not a key, or a sandbox.env could show this report a mode the
+  # launcher never reads.
   awk -v name="$2" '
     { sub(/\r$/, ""); sub(/^[[:space:]]+/, "") }
+    open {
+      sub(/[[:space:]]+$/, "")
+      if ($0 == "" || /^#/) next
+      if (/"$/) { open = 0; sub(/"$/, ""); sub(/[[:space:]]+$/, "") }
+      if (mine && $0 != "") v = (v == "" ? $0 : v " " $0)
+      if (!open && mine) { print v; exit }
+      next
+    }
     $0 == "" || /^#/ { next }
     /^export[[:space:]]/ { sub(/^export[[:space:]]+/, "") }
-    index($0, name "=") == 1 {
-      v = substr($0, length(name) + 2)
+    /^[A-Za-z_][A-Za-z0-9_]*=/ {
+      k = substr($0, 1, index($0, "=") - 1); v = substr($0, index($0, "=") + 1)
+      if (v ~ /^"[^"]*$/) { open = 1; mine = (k == name); v = substr(v, 2); sub(/[[:space:]]+$/, "", v); next }
+      if (k != name) next
       if (length(v) >= 2 && v ~ /^".*"$/) v = substr(v, 2, length(v) - 2)
       print v; exit
     }

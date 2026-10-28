@@ -49,7 +49,9 @@ source "${script_dir}/tools-lib.sh"
 # inline > local > portable is achieved by loading local BEFORE portable (first writer
 # wins). File-format constraints (machine-generated files always satisfy these; noted for
 # hand-editors): values are LITERAL — `$VAR`/`$(...)` are NOT expanded; comments must be on
-# their own line (a `#` after a value is part of the value); use LF line endings.
+# their own line (a `#` after a value is part of the value); use LF line endings. A
+# double-quoted value may span lines (one list entry per line; blank and `#` lines
+# inside are skipped) — see the comment in load_env_defaults.
 #
 # Keys that would hand control of the SHELL to the file are refused (env_key_denied).
 # Parsing alone is not enough for that: `sandbox.env` is designed to be COMMITTED and
@@ -182,7 +184,7 @@ env_key_tool_config() {
 # load_env_defaults <file> [portable|local]: portable (the default, the strict
 # one) accepts only env_key_portable keys; local refuses env_key_tool_config ones.
 load_env_defaults() {
-  local file="$1" mode="${2:-portable}" line key val
+  local file="$1" mode="${2:-portable}" line key val part open
   [[ -f "$file" ]] || return 0
   while IFS= read -r line || [[ -n "$line" ]]; do
     line="${line%$'\r'}"                         # tolerate a CRLF-authored file
@@ -194,6 +196,30 @@ load_env_defaults() {
     [[ "$line" == *=* ]] || continue
     key="${line%%=*}"; val="${line#*=}"
     [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+    # A value whose ONLY quote is its opening one continues on the following lines, up
+    # to the line that ends with the closing quote — so a long list (EXTRA_MOUNTS, REPOS)
+    # can be written one entry per line. Every line is trimmed, blank and `#` lines
+    # inside are skipped, and the rest are joined with single spaces: the value arrives
+    # exactly as its one-line form would. It is read in full BEFORE the key is refused
+    # or found already set, so its continuation lines are never parsed as assignments.
+    if [[ "$val" == '"'* && "${val:1}" != *'"'* ]]; then
+      open=1; val="${val:1}"; val="${val%"${val##*[![:space:]]}"}"
+      while IFS= read -r part || [[ -n "$part" ]]; do
+        part="${part%$'\r'}"
+        part="${part#"${part%%[![:space:]]*}"}"; part="${part%"${part##*[![:space:]]}"}"
+        [[ -z "$part" || "$part" == '#'* ]] && continue
+        if [[ "$part" == *'"' ]]; then
+          part="${part%\"}"; part="${part%"${part##*[![:space:]]}"}"; open=0
+        fi
+        [[ -n "$part" ]] && val="${val:+$val }$part"
+        (( open )) || break
+      done
+      if (( open )); then
+        printf 'WARNING: ignoring %s=" in %s — its closing quote never comes, so the rest of the file was read as its value.\n' \
+          "$key" "$file" >&2
+        return 0
+      fi
+    fi
     # Removed keys say so, from either file: moved to sandbox.local.env they would
     # do nothing (review of batch 11; CHANGELOG).
     case "$key" in
@@ -225,7 +251,7 @@ load_env_defaults() {
       continue
     fi
     # Strip surrounding double quotes only as a MATCHED pair, so a value that legitimately
-    # contains one quote (or is a bare `"`) is not silently mangled.
+    # contains one quote is not silently mangled.
     if [[ ${#val} -ge 2 && "$val" == '"'*'"' ]]; then val="${val:1:${#val}-2}"; fi
     if [[ "$mode" != local && "$key" == SANDBOX_WORKDIR ]]; then
       if ! val="$(env_portable_workdir "$file" "$val")"; then
