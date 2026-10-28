@@ -346,7 +346,13 @@ cmd_add() {
   ensure_seed_image
   if docker volume inspect "$vol" >/dev/null 2>&1; then
     printf "ERROR: docker volume '%s' already exists but '%s' is not registered.\n" "$vol" "$name" >&2
-    printf "       Remove the stray volume first: docker volume rm %s\n" "$vol" >&2
+    local owner; owner="$(foreign_base_owner "$name" "$vol")"
+    if [[ -n "$owner" ]]; then
+      # Not stray: another repo's, under a prefix whose names collide (REPO-11).
+      printf "       It is labelled for repo '%s' — not yours to remove. Choose another name.\n" "$owner" >&2
+    else
+      printf "       Remove the stray volume first: docker volume rm %s\n" "$vol" >&2
+    fi
     exit 1
   fi
 
@@ -378,6 +384,14 @@ sync_one() {
   if [[ "$backend" == "bind" ]]; then
     [[ -d "$source" ]] || printf "  WARNING: %s: bind-mount source no longer exists: %s\n" "$name" "$source" >&2
     printf '  %s: bind-mount backend — source %s is live; nothing to sync.\n' "$name" "$source"
+    return 0
+  fi
+
+  # Another repo's base volume is not this one's to rsync --delete or pull into
+  # (REPO-11). A missing volume names no owner, so it is still re-seeded.
+  local owner; owner="$(foreign_base_owner "$name" "$vol")"
+  if [[ -n "$owner" ]]; then
+    printf '  SKIP %s: volume %s is labelled for repo "%s"; left untouched.\n' "$name" "$vol" "$owner" >&2
     return 0
   fi
 
@@ -531,6 +545,18 @@ cmd_list() {
   done <<< "$names"
 }
 
+# foreign_base_owner <name> <vol>: the repo another than <name> that <vol>'s
+# ai-containers.repo label names, or nothing. A volume is found by name, and
+# under a nested REPO_VOLUME_PREFIX two repos' names collide: `rm team-repo-x`
+# deleted repo x's base volume of prefix <p>-repo-team, labelled x (bugs review
+# REPO-11). An unlabelled volume — one made before labels — names no owner.
+foreign_base_owner() {
+  local owner
+  owner="$(docker_volume_label "$2" ai-containers.repo)"
+  [[ -n "$owner" && "$owner" != "$1" ]] && printf '%s' "$owner"
+  return 0
+}
+
 cmd_rm() {
   local name="$1" assume_yes=0
   [[ "${2:-}" == "--yes" ]] && assume_yes=1
@@ -545,8 +571,22 @@ cmd_rm() {
   local vol; vol="$(repo_volume_name "$name")"
   # Find any per-workspace writable working copies.
   local workcopies; workcopies="$(repo_workcopy_volumes "$name")"
-  local has_base=0
+  local has_base=0 owner
   docker volume inspect "$vol" >/dev/null 2>&1 && has_base=1
+  if (( has_base )); then
+    owner="$(foreign_base_owner "$name" "$vol")"
+    if [[ -n "$owner" ]]; then
+      printf 'ERROR: volume %s is labelled for repo "%s", not "%s"; refusing to remove it.\n' "$vol" "$owner" "$name" >&2
+      if [[ "$vol" == *"-repo-$owner" ]]; then
+        printf '       It is repo "%s" of REPO_VOLUME_PREFIX=%s, whose name collides with this one;\n' "$owner" "${vol%-repo-"$owner"}" >&2
+        printf '       "%s" has no base volume of its own under this prefix.\n' "$name" >&2
+      fi
+      if repo_is_registered "$name"; then
+        printf '       To drop only the registry entry for "%s", delete its line from %s.\n' "$name" "$repo_registry_file" >&2
+      fi
+      exit 1
+    fi
+  fi
 
   printf 'About to remove repo "%s":\n' "$name"
   if (( has_base )); then
@@ -595,6 +635,14 @@ reset_one() {
   if [[ "$backend" == "bind" ]]; then
     printf '  %s: bind-mount backend — host source %s is live; not touching host files.\n' "$name" "$source"
     printf '         Clean it directly, e.g.: git -C %s reset --hard && git -C %s clean -ffdx\n' "$source" "$source"
+    return 0
+  fi
+
+  # Before anything is removed: a base volume that belongs to another repo is not
+  # this one's to reset (REPO-11).
+  local owner; owner="$(foreign_base_owner "$name" "$vol")"
+  if [[ -n "$owner" ]]; then
+    printf '  SKIP %s: volume %s is labelled for repo "%s"; left untouched.\n' "$name" "$vol" "$owner" >&2
     return 0
   fi
 
@@ -655,6 +703,13 @@ collect_inspections() {   # $@ = repo names
       RESET_SUMMARY+=("  - ${name}: bind-mount backend — host source untouched")
       continue
     fi
+    # Before the type branches, so a path repo on another repo's volume is not
+    # announced as re-mirrored (a missing volume names no owner).
+    local owner; owner="$(foreign_base_owner "$name" "$vol")"
+    if [[ -n "$owner" ]]; then
+      RESET_SUMMARY+=("  - ${name}: ${vol} is labelled for repo '${owner}' — will be left untouched")
+      continue
+    fi
     if [[ "$type" != "git" ]]; then
       RESET_SUMMARY+=("  - ${name}: re-mirrored from its host source (no branches)")
       continue
@@ -683,7 +738,9 @@ collect_inspections() {   # $@ = repo names
     [[ -n "$stale"   ]] && RESET_STALE["$name"]="$stale"
 
     if [[ -z "$primary" ]]; then
-      RESET_SUMMARY+=("  - ${name}: no branch to reset onto (detached HEAD, no usable remote) — will be left untouched")
+      # Its working copies are still removed, as reset_one does for every repo
+      # it resets: only the base volume's checkout is skipped.
+      RESET_SUMMARY+=("  - ${name}: no branch to reset onto (detached HEAD, no usable remote) — its base volume will be left untouched; its working copies are still removed")
       continue
     fi
     # Built as a plain variable, not inlined as $( … ): a command substitution

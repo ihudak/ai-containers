@@ -325,6 +325,64 @@ setup_world
 REPO_VOLUME_PREFIX=prjx run_repo gc --yes
 [[ -f "$VOLS/prjx-repo-team-repo-x" ]] && pass "gc never takes a volume it cannot classify for a working copy" \
   || fail "gc removed a base volume under a nested prefix ($(removed))"
+# REPO-11: a base volume is found by name, and under a nested prefix two repos'
+# names collide; `rm` and `reset` refuse a volume labelled for another repo.
+# Simulated by relabelling docs's base volume: what matters is the label.
+setup_world
+printf 'ai-containers.repo=other\nai-containers.type=git\nai-containers.source=git@x:other.git\n' > "$VOLS/ai-containers-repo-docs.labels"
+run_repo rm docs --yes
+[[ "$RC" != 0 && -f "$VOLS/ai-containers-repo-docs" ]] && grep -q 'labelled for repo "other"' "$ERR" \
+  && ! grep -q '^volume rm' "$DOCKER_LOG" \
+  && pass "rm refuses a base volume labelled for another repo, and removes nothing" \
+  || fail "rm acted on another repo's volume (rc=$RC; removed: $(removed); $(tr '\n' ' ' < "$ERR"))"
+setup_world
+printf 'ai-containers.repo=other\nai-containers.type=git\nai-containers.source=git@x:other.git\n' > "$VOLS/ai-containers-repo-docs.labels"
+run_repo reset docs --yes
+[[ -f "$VOLS/ai-containers-repo-docs" ]] && ! grep -q '^volume rm' "$DOCKER_LOG" \
+  && ! grep -q -- '/repo-git-reset.sh' "$DOCKER_LOG" && grep -q "labelled for repo" "$OUT" "$ERR" \
+  && pass "reset leaves a base volume labelled for another repo untouched, its working copies too" \
+  || fail "reset acted on another repo's volume (rc=$RC; removed: $(removed); helper: $(grep -c -- '/repo-git-reset.sh' "$DOCKER_LOG"))"
+# sync too: a git repo's pull and a path repo's rsync --delete would act on
+# another repo's volume (review of the REPO-11 fix).
+setup_world
+printf 'ai-containers.repo=other\nai-containers.type=git\nai-containers.source=git@x:other.git\n' > "$VOLS/ai-containers-repo-docs.labels"
+run_repo sync docs
+! grep -q -- '/repo-git-reset.sh' "$DOCKER_LOG" && ! grep -q 'ai-containers-repo-docs:' "$DOCKER_LOG" && grep -q 'labelled for repo "other"' "$ERR" \
+  && pass "sync leaves a git repo's base volume labelled for another repo untouched" \
+  || fail "sync acted on another repo's volume (helper: $(grep -c -- '/repo-git-reset.sh' "$DOCKER_LOG"); $(tr '\n' ' ' < "$ERR"))"
+setup_world
+printf 'ai-containers.repo=other\nai-containers.type=path\n' > "$VOLS/ai-containers-repo-docs.labels"
+sed -i.bak 's#^docs|git|git@x:docs.git|#docs|path|'"$TMP"'/hostsrc|#' "$HOME/.ai-containers/repos.conf" && rm -f "$HOME/.ai-containers/repos.conf.bak"
+run_repo sync docs
+! grep -q 'ai-containers-repo-docs:' "$DOCKER_LOG" && grep -q 'labelled for repo "other"' "$ERR" \
+  && pass "sync does not rsync a path repo into a volume labelled for another repo" \
+  || fail "sync mirrored into another repo's volume ($(grep 'ai-containers-repo-docs:' "$DOCKER_LOG" | head -1))"
+run_repo reset docs --yes
+grep -q "labelled for repo 'other' — will be left untouched" "$OUT" && ! grep -q 'docs: re-mirrored' "$OUT" \
+  && ! grep -q 'ai-containers-repo-docs:' "$DOCKER_LOG" \
+  && pass "reset's summary says a path repo on another repo's volume is left untouched, and it is" \
+  || fail "reset's summary for a path repo on another repo's volume ($(grep 'docs' "$OUT" | head -2 | tr '\n' ' '))"
+# The real collision: under REPO_VOLUME_PREFIX=prjx, `team-repo-x` names the
+# base volume of repo x of prefix prjx-repo-team. rm names that prefix.
+setup_world
+: > "$VOLS/prjx-repo-team-repo-x"; printf 'ai-containers.repo=x\nai-containers.type=git\n' > "$VOLS/prjx-repo-team-repo-x.labels"
+REPO_VOLUME_PREFIX=prjx run_repo rm team-repo-x --yes
+[[ "$RC" != 0 && -f "$VOLS/prjx-repo-team-repo-x" ]] && grep -q 'REPO_VOLUME_PREFIX=prjx-repo-team' "$ERR" \
+  && pass "rm refuses the colliding name and names the prefix the volume belongs to" \
+  || fail "rm under a nested prefix (rc=$RC; removed: $(removed); $(tr '\n' ' ' < "$ERR"))"
+# add over that name refuses, as before, and no longer tells the user to remove
+# what is another repo's volume.
+REPO_VOLUME_PREFIX=prjx run_repo add team-repo-x git@x:t.git
+[[ "$RC" != 0 && -f "$VOLS/prjx-repo-team-repo-x" ]] && grep -q "labelled for repo 'x'" "$ERR" && ! grep -q 'docker volume rm' "$ERR" \
+  && pass "add over a colliding name says the volume is another repo's, not stray" \
+  || fail "add's message over another repo's volume ($(tr '\n' ' ' < "$ERR"))"
+# An unlabelled volume (made before labels) names no owner: removed as before.
+setup_world
+rm -f "$VOLS/ai-containers-repo-docs.labels"
+run_repo rm docs --yes
+[[ "$RC" == 0 && ! -f "$VOLS/ai-containers-repo-docs" ]] \
+  && pass "rm still removes an unlabelled legacy base volume" \
+  || fail "rm refused an unlabelled base volume (rc=$RC; $(tr '\n' ' ' < "$ERR"))"
 # A new name with `--` could be the very name of another repo's working copy.
 setup_world
 run_repo add app--wc-x "$TMP/hostsrc"
@@ -1167,6 +1225,11 @@ fi
 grep -q 'no branch to reset onto' "$OUT" \
   && pass 'the run says WHY the repo was left untouched' \
   || fail "the run does not explain the skip (stdout: $(tr '\n' ' ' < "$OUT"))"
+# …and the summary the user approves says the working copies still go, since
+# they do (review of the REPO-11 fix: it said the repo would be left untouched).
+grep -q 'its working copies are still removed' "$OUT" && grep -q '^volume rm.*docs--wc-projA' "$DOCKER_LOG" \
+  && pass 'the summary says the working copies are still removed, and they are' \
+  || fail "the no-primary summary and what reset removes disagree ($(grep 'no branch' "$OUT" | head -1))"
 unset HELPER_NO_PRIMARY
 
 # ── AND THE CONVERSE: a reset that FAILED must not report success ─────────────

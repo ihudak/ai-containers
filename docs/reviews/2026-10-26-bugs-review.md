@@ -970,7 +970,7 @@ Each fix batch was reviewed by an independent reviewer before it was merged, and
 
 
 ### REPO-11: `repo.sh rm`/`reset` act on a base volume whose label names another repo
-- **Status: OPEN** (re-review of batch 4, finding 1; existed before the window)
+- **Status: FIXED** (2026-10-28). `repo.sh: foreign_base_owner()` reads the base volume's `ai-containers.repo` label; `cmd_rm()` refuses one labelled for another repo before its prompt, and `reset` lists it as left untouched (`collect_inspections()`, without inspecting it) and skips it in `reset_one()` before anything is removed, its working copies included. `sync_one()` skips it too — its review found `sync` running `rsync --delete` and a `chown` into another repo's volume, or the `pull` helper — and `add` no longer calls such a volume stray. `rm`'s refusal names the prefix the volume belongs to and how to drop the registry entry alone. Reset's summary checks it before the path branch (it announced a path repo on another repo's volume as re-mirrored), and its no-primary line now says the working copies are still removed, which they are, by design. An unlabelled volume names no owner and is handled as before; a docker error between the existence check and the label read would let one through, accepted. Hermetic, in `tests/test-repo-destructive.sh`, each red on the old code: with `docs`'s base volume relabelled for `other`, the old code's `rm docs --yes` removed it and both working copies, and `reset` ran the git helper on it four times and removed the working copies; now neither removes anything.
 - Severity: LOW. Confidence: CONFIRMED (reproduced)
 - Location: repo.sh: `cmd_rm()` and `reset_one()` (the base volume is `repo_volume_name "$name"`, checked by name only).
 - What's wrong: under a nested prefix the names collide. `repo.sh rm team-repo-x --yes` deleted repo `x`'s base volume of prefix `<p>-repo-team`, labelled `ai-containers.repo=x`, and left its working copy behind. You have to type the colliding name, and the prompt names the volume.
@@ -1324,6 +1324,29 @@ Batch 10 went through seven review rounds, a review of its merge with main and o
 - Location: sandbox.sh: `_agent_bits_writable()`, its branch for a host with no `getfacl`
 - What's wrong: Linux hosts have `getfacl`, T25h's busybox arm puts a fake `getfacl` on `PATH`, and the floor containers run as root, which skips T25. On macOS, which has no `getfacl`, T25g runs the branch with BSD `ls` only, so the part that refuses any other `ls` is reached by no test.
 - Fix direction: a T25 arm with a `PATH` that has no `getfacl`, built from links to the tools the launch needs.
+
+## 16. Found while fixing REPO-11
+
+### REPO-13: an attached repo is mounted by its volume's name, whatever its label says
+- **Status: OPEN** (review of the REPO-11 fix, LOW)
+- Severity: LOW. Confidence: PLAUSIBLE (from code; the same collision REPO-11 reproduced)
+- Location: `sandbox.sh`, the `REPOS` attach, which checks `repo_volume_exists` only
+- What's wrong: with a registered `docs` whose base volume is labelled for another repo (a nested `REPO_VOLUME_PREFIX`), `REPOS="docs:rw"` mounts that other repo's volume read-write for the agent, `:rwcopy` seeds a copy from it, and `:ro` shows its content as `docs`. Unlike `rm`, this hands another repo's data to the agent.
+- Fix direction: refuse the launch when the base volume's `ai-containers.repo` label names another repo, as `repo.sh: foreign_base_owner()` does.
+
+### REPO-14: `rm`'s refusal over another repo's volume does not mention the name's own working copies
+- **Status: OPEN** (review of the REPO-11 fix, NIT)
+- Severity: NIT
+- Location: `repo.sh: cmd_rm()`, the foreign-owner refusal
+- What's wrong: it says how to drop the registry line, not that the name's own labelled working copies stay; `./repo.sh gc --repo <name>` removes them.
+- Fix direction: name that command in the message.
+
+### LNCH-19: under uutils coreutils with no `getfacl`, an unlistable directory is always taken for agent-writable
+- **Status: OPEN** (found running the local gates, 2026-10-28)
+- Severity: LOW. Confidence: CONFIRMED (this host: `ls (uutils coreutils) 0.10.0`, no `getfacl`; `tests/test-launcher-dir-ro.sh` T25g fails `plain grp-other-gid` on clean main; CI's GNU `ls` passes it)
+- Location: `sandbox.sh: _agent_bits_writable()`, the ls-based ACL fallback
+- What's wrong: with no `getfacl`, only GNU's or a BSD `ls` is trusted to say a directory has no ACL (LNCH-6); uutils' `ls`, the default `ls` of recent Ubuntu releases, is neither, so the check fails closed and a directory nobody but its owner can write counts as agent-writable — a launch over one that is searchable but unlistable is refused where it need not be. It fails closed, so it costs usability, not safety. LNCH-18 already notes that this branch is untested in CI.
+- Fix direction: measure whether uutils' `ls -ld` marks an ACL with `+` and trust it if it does; otherwise say in the refusal that installing `acl` (`getfacl`) lets the check decide. Make T25g's vectors independent of the host's `ls`, as T25h's shim does.
 
 ---
 
