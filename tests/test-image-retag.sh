@@ -95,6 +95,12 @@ check '{"maintainer":"ubuntu"}'
 check 'null'
 [[ "$rc" != 0 ]] && pass "an image with no labels at all is not retagged" || fail "no labels (rc=$rc: $err)"
 
+# The label is a KEY: the same text inside another label's value is not one
+# (review of the batch 10 merge). JSON escapes the quotes inside a value.
+check '{"maintainer":"see \"ai-containers.project\" docs"}'
+[[ "$rc" != 0 ]] && pass "ai-containers. inside another label's value does not pass for an ai-containers label" \
+  || fail "label text in a value (rc=$rc: $err)"
+
 # An image ai-containers built before v0.6.0 added its labels carries only the
 # Dockerfile's image title; it is rebuilt, with the NOTE (carried over from the
 # ENV-7 fix on main).
@@ -108,6 +114,11 @@ check '{"ai-containers.built-at":"x"}'
   && pass "an image built before the project label is rebuilt, with a NOTE" \
   || fail "pre-label image (rc=$rc: $err)"
 
+# A symlinked engine copy is the same project: the label is the physical path
+# (carried over from main's ENV-7 tests).
+mkdir -p "$TMP/linkdir"; ln -s "$ME" "$TMP/linkdir/lnk"
+grep -qxF -- "ai-containers.project=$ME" <<<"$(ai_containers_provenance_labels "$TMP/linkdir/lnk" 2026-01-01T00:00:00Z)" \
+  && pass "a symlinked engine copy records the same project" || fail "symlinked engine copy"
 # Every build is stamped with the project it came from.
 grep -qxF -- "ai-containers.project=$ME" <<<"$(ai_containers_provenance_labels "$ME" 2026-01-01T00:00:00Z)" \
   && pass "the labels carry the project's own directory" || fail "no project label"
@@ -149,9 +160,27 @@ exit 0
 FAKE2
 chmod +x "$TMP/bin/docker"; export DOCKER_LOG="$TMP/docker.log"; : > "$DOCKER_LOG"
 ( cd "$E" && unset IMAGE_NAME && bash ./build.sh ) >/dev/null 2>"$TMP/build.err"; brc=$?
+# …and before anything is written: the allowlists are generated after the guard
+# (review of the batch 10 merge; main's ENV-7 tests checked this).
 [[ "$brc" != 0 ]] && grep -qF 'did not build' "$TMP/build.err" && ! grep -q '^build ' "$DOCKER_LOG" \
-  && pass "build.sh refuses to retag a base image a committed sandbox.env names, before docker build" \
+  && [[ ! -e "$E/allowlist-domains.txt" ]] \
+  && pass "build.sh refuses to retag a base image a committed sandbox.env names, before anything is written" \
   || fail "build.sh retag guard (rc=$brc; $(grep -E 'ERROR|did not' "$TMP/build.err" | head -1); docker build called: $(grep -c '^build ' "$DOCKER_LOG"))"
+
+# The other half (from main's ENV-7 tests): a tag no image carries yet reaches
+# docker build, labelled with the project.
+cat > "$TMP/bin/docker" <<'FAKE3'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$DOCKER_LOG"
+case "$1 ${2:-}" in "image inspect") printf '\n'; exit 1 ;; esac
+exit 0
+FAKE3
+chmod +x "$TMP/bin/docker"; : > "$DOCKER_LOG"
+( cd "$E" && unset IMAGE_NAME && bash ./build.sh ) >/dev/null 2>"$TMP/build.err"; brc=$?
+Ep="$(cd "$E" && pwd -P)"
+grep -q '^build ' "$DOCKER_LOG" && grep -qF -- "ai-containers.project=$Ep" "$DOCKER_LOG" \
+  && pass "build.sh builds a new tag, labelled with its project" \
+  || fail "build.sh new tag (rc=$brc; $(grep -E 'ERROR' "$TMP/build.err" | head -1))"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

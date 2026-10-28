@@ -552,6 +552,9 @@ build_image() {
   validate_config
   local build_image_name="${1:-$image_name}"
   local build_args=()
+  # Never another project's tag, or a base image's (ENV-7) — checked before
+  # anything is written, the allowlists included (review of the batch 10 merge).
+  ai_containers_build_retag_guard "$build_image_name" "$script_dir" || exit 1
 
   generate_allowlists
   build_args_from_config build_args
@@ -572,8 +575,6 @@ build_image() {
   # Image this tag pointed at before the build, so the replaced layer set can be
   # dropped afterwards instead of accumulating as a dangling image.
   local old_image_id
-  # Never another project's tag, or a base image's (ENV-7).
-  ai_containers_build_retag_guard "$build_image_name" "$script_dir" || exit 1
   old_image_id="$(docker image inspect --format '{{.Id}}' "$build_image_name" 2>/dev/null || true)"
 
   # PROVENANCE, as LABELS rather than a file in the image: a label costs no

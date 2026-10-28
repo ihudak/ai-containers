@@ -1942,8 +1942,8 @@ _gd_resolve() {
 }
 
 # _timeout_prefix [seconds]: the command that bounds a read (10 s by default), or
-# nothing where there is none — `timeout`, or Homebrew coreutils' `gtimeout` on
-# macOS (GIT-16; G75).
+# nothing where there is none — Homebrew coreutils' `gtimeout`, else `timeout`
+# (GIT-16; G44, G75).
 _timeout_prefix() {
   # gtimeout first: Homebrew coreutils' name for the same GNU tool (G44, G75).
   if command -v gtimeout >/dev/null 2>&1; then printf 'gtimeout -k 2 %s' "${1:-10}"

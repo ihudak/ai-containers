@@ -1206,13 +1206,18 @@ ai_containers_config_digest() {   # <dir> → 64 hex, or rc 1 when it cannot be 
 ai_containers_retag_check() {
   local labels proj
   labels="$(docker image inspect --format '{{json .Config.Labels}}' "$1" 2>/dev/null)" || return 0
+  # Keys, not text: JSON escapes the quotes inside a value, so a key is what
+  # follows an unescaped { or , (review of the batch 10 merge).
+  local ours=""
+  [[ "$labels" == *'{"ai-containers.'* || "$labels" == *',"ai-containers.'* ]] && ours=1
   # One built before v0.6.0 added these labels carries only the Dockerfile's
   # image title (from the ENV-7 fix on main).
-  if [[ "$labels" != *'"ai-containers.'* && "$labels" == *'"org.opencontainers.image.title":"AI Sandbox Container"'* ]]; then
+  if [[ -z "$ours" ]] && [[ "$labels" == *'{"org.opencontainers.image.title":"AI Sandbox Container"'* \
+       || "$labels" == *',"org.opencontainers.image.title":"AI Sandbox Container"'* ]]; then
     printf 'NOTE: %s was built before images recorded their project; rebuilding it here.\n' "$(_ac_term "$1")" >&2
     return 0
   fi
-  if [[ "$labels" != *'"ai-containers.'* ]]; then
+  if [[ -z "$ours" ]]; then
     printf 'ERROR: IMAGE_NAME=%s names an image this tool did not build (it carries no ai-containers\n' "$(_ac_term "$1")" >&2
     printf '       labels); refusing to retag it. Set IMAGE_NAME in sandbox.local.env to a name of your own.\n' >&2
     return 1
