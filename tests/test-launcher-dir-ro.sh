@@ -535,6 +535,21 @@ if [[ "$(id -u)" -ne 0 ]]; then
   fi
   LS_SHIM=at PATH="$SHIM:$PATH" _agent_bits_writable "$OWN5/srch" 4242 4343 || r25+=" at-missed"
   LS_SHIM=fail PATH="$SHIM:$PATH" _agent_bits_writable "$OWN5/srch" 4242 4343 || r25+=" fail-missed"
+  # T25i: uutils' ls marks an ACL with +, so with no getfacl it is trusted too
+  # (LNCH-21) — but not its `.`, which takes the place of a + where a security
+  # context is set. Run where neither the host's ls, its getfacl nor its kernel
+  # can decide: a PATH of find, a uname that says Linux (on a Mac the version
+  # check is skipped), and a shim ls that says it is uutils.
+  UU="$TMP/uu25"; mkdir -p "$UU"
+  ln -sf "$(command -v find)" "$UU/find"
+  printf '#!/bin/sh\necho Linux\n' > "$UU/uname"; chmod +x "$UU/uname"
+  printf '#!/bin/sh\ncase "$1" in --version) echo "ls (uutils coreutils) 0.10.0"; exit 0;; esac\nprintf "%%s 2 u g 64 Jan 1 00:00 %%s\\n" "$UU_MODE" "$2"\n' > "$UU/ls"; chmod +x "$UU/ls"
+  UU_MODE="d-wx--x--x" PATH="$UU" _agent_bits_writable "$B25/plain" 4242 4343 && r25+=" uutils-plain-counted"
+  UU_MODE="d-wx--x--x+" PATH="$UU" _agent_bits_writable "$B25/plain" 4242 4343 || r25+=" uutils-acl-missed"
+  UU_MODE="d-wx--x--x." PATH="$UU" _agent_bits_writable "$B25/plain" 4242 4343 || r25+=" uutils-dot-trusted"
+  # A uutils that reports a version before 0.1.0 is not trusted (fails closed).
+  sed 's/0\.10\.0/0.0.23/' "$UU/ls" > "$UU/ls.old" && mv "$UU/ls.old" "$UU/ls" && chmod +x "$UU/ls"
+  UU_MODE="d-wx--x--x" PATH="$UU" _agent_bits_writable "$B25/plain" 4242 4343 || r25+=" uutils-old-trusted"
   # T25h: an ls that does not mark ACLs (busybox; GNU's on CIFS) is not taken at
   # its word (LNCH-6). getfacl decides where there is one, and one that fails
   # counts as an ACL; with no getfacl, only GNU's or a BSD ls is trusted.

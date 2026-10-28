@@ -1420,12 +1420,18 @@ _agent_could_write() {
 # _agent_bits_writable <dir> <agent uid> <agent gid>: the mode and ACL half of it,
 # apart from yours, so each can be tested on its own (T25g).
 _agent_bits_writable() {
-  local m a
+  local m a uu=0
   # An ACL entry can grant the agent write access whatever the mode says. getfacl,
   # where there is one, lists them: any beyond user::, group::, other:: and
   # mask:: counts, and a getfacl that fails counts too. Without it, only the +
-  # that GNU's and BSD's ls print is there to go by: busybox prints none, so an
-  # ls that is neither counts as one that saw an ACL (LNCH-6; T25g).
+  # that GNU's, BSD's and uutils' ls print is there to go by: busybox prints
+  # none, so any other ls counts as one that saw an ACL (LNCH-6; T25g). uutils is
+  # the default ls of recent Ubuntu releases (26.04: 0.10.0, measured with
+  # setfacl: `d-wx-wx--x+`, plain `d-wx--x--x`); left out, every unlistable
+  # directory there counted as agent-writable (LNCH-21; T25i). Its + marks any
+  # extended attribute, an ACL included, so it can only over-report — but its
+  # `.` for a security context takes the place of the +, where GNU's keeps the +,
+  # so from uutils only the bare mode is plain.
   if command -v getfacl >/dev/null 2>&1; then
     a="$(cd / && getfacl -c -- "$1" 2>/dev/null)" || return 0
     while IFS= read -r m; do
@@ -1434,11 +1440,19 @@ _agent_bits_writable() {
   else
     case "$(uname -s 2>/dev/null)" in
       Darwin|*BSD|DragonFly) ;;
-      *) [[ "$(cd / && ls --version 2>/dev/null)" == *"GNU coreutils"* ]] || return 0 ;;
+      *) case "$(cd / && ls --version 2>/dev/null)" in
+           *"GNU coreutils"*) ;;
+           # 0.1.0 or later: the release that first prints this name came after
+           # ACL marking (0.0.24); a build naming itself so with an older number
+           # is not taken at its word (automated security review of LNCH-21).
+           *"(uutils coreutils) "[1-9]*|*"(uutils coreutils) 0."[1-9]*) uu=1 ;;
+           *) return 0 ;;
+         esac ;;
     esac
   fi
   m="$(cd / && LC_ALL=C ls -ld "$1" 2>/dev/null)" || m=""; m="${m%% *}"
-  [[ "$m" =~ ^d[-rwxsStT]{9}\.?$ ]] || return 0
+  if (( uu )); then [[ "$m" =~ ^d[-rwxsStT]{9}$ ]] || return 0
+  else [[ "$m" =~ ^d[-rwxsStT]{9}\.?$ ]] || return 0; fi
   [[ -n "$(cd / && find "$1" -maxdepth 0 \( -user "$2" -o \( -group "$3" -perm -0030 \) -o -perm -0003 \) -print 2>/dev/null)" ]]
 }
 
