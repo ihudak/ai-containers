@@ -442,8 +442,11 @@ $OUT"
 
 # …and says, in the notes, that such a project's launches are refused.
 run "$GRB/ai-containers-report.sh"
-grep -qF 'AI_CONTAINER_GROUP=host is no longer supported' <<<"$OUT" \
-  && pass "a project on the removed host group gets a note" || fail "no note for a host-group project
+# On ITS line, and not on the other project's: the note's text anywhere in the
+# output passed with the test inverted (falsify, cond-negate:26fdc694).
+grep -q '^  - grphost (.*AI_CONTAINER_GROUP=host is no longer supported' <<<"$OUT" \
+  && ! grep -q '^  - grplocal (.*AI_CONTAINER_GROUP=host is no longer supported' <<<"$OUT" \
+  && pass "a project on the removed host group gets a note, and only that project" || fail "no note, or the wrong project's, for a host-group project
 $OUT"
 
 printf '\n%s\n' "----------------------------------------"
