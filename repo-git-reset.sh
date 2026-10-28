@@ -52,6 +52,10 @@ inspect  Clone the recorded remote privately, then report on stdout, one
            BRANCH|<name>|<unpushed>|<flags> one per local branch of the volume
            STASH|<entries>                 only when the volume has a stash
            TAG|<name>|<kept>|<on-remote>   one per local tag of the volume
+           NESTED|<path>                   a git repository inside the checkout, which reset removes
+           NESTED-MORE|<n>                 how many more past the first 50
+         reset: DELETED|<branch>, ON|<branch>, AT|<commit>, DELETED-COUNT|<n>,
+           REMOVED|<path> for each git repository inside the checkout it removed
          `unpushed` counts that branch's commits on no remote branch, `?` when
          it cannot be counted. `flags` is `current` for the checked-out branch.
 
@@ -116,7 +120,7 @@ trap '[[ -n "$WORK" ]] && rm -rf "$WORK"' EXIT
 # Each search fails closed: a directory find cannot enter hides what is in it
 # (review of 82698a0, F3).
 check_volume() {
-  local dir="$1" gd="$1/.git" bad nosearch
+  local dir="$1" gd="$1/.git" bad nosearch nested="${2:-refuse}"
   nosearch="cannot check $(shown "$dir"): find could not search all of it (an unreadable directory, or a path too long); refusing this repository"
   [[ -n "${AI_REPO_URL:-}" ]] || die "no recorded URL for this repository (AI_REPO_URL); refusing to run git on it"
   [[ -d "$gd" && ! -L "$gd" ]] || die "not a git repository: $(shown "$dir") (.git is missing, or is a file or link)"
@@ -135,8 +139,52 @@ check_volume() {
   # another, and a ref there linked to /dev/zero exhausted memory (review of
   # fb1705e, Q3; security review of 8f5e5b9). Nothing this helper seeds makes
   # one: submodules are never initialised in a volume.
-  bad="$(find "$dir" -path "$gd" -prune -o -name .git -print -quit 2>/dev/null)" || die "$nosearch"
-  [[ -z "$bad" ]] || die "$(shown "$bad") is a git repository inside the checkout; remove it (rm -rf from a container), then retry"
+  # `reset` deletes them anyway, as untracked content, so it lists them for the
+  # confirmation (inspect: NESTED records) and removes them before any git runs,
+  # so git never reads one (bugs review REPO-5: initialised submodules, an
+  # editable install's clone, a clone in an ignored directory blocked reset).
+  # find follows no link, so one that is a link is removed as a link.
+  case "$nested" in
+    refuse)
+      bad="$(find "$dir" -path "$gd" -prune -o -name .git -print -quit 2>/dev/null)" || die "$nosearch"
+      [[ -z "$bad" ]] || die "$(shown "$bad") is a git repository inside the checkout; remove it (rm -rf from a container), or reset, which lists and removes it, then retry" ;;
+    list)
+      local -a found=(); local p n=0
+      nested_in "$dir" found
+      for p in ${found[@]+"${found[@]}"}; do
+        n=$(( n + 1 ))
+        (( n <= 50 )) && printf 'NESTED|%s\n' "$(shown "${p#"$dir/"}")"
+      done
+      (( n > 50 )) && printf 'NESTED-MORE|%s\n' "$(( n - 50 ))" ;;
+    defer) NESTED_PENDING=1 ;;   # reset removes them itself, once it knows it will go ahead
+  esac
+}
+
+# nested_in <dir> <array>: every .git below <dir>'s top level, link or not, into
+# <array>. find follows no link, so a path through a linked directory is never
+# one; the find's status is waited for, since a process substitution's is not
+# seen (review of REPO-5).
+nested_in() {
+  local -n _ni_out="$2"
+  mapfile -d '' _ni_out < <(find "$1" -path "$1/.git" -prune -o -name .git -prune -print0 2>/dev/null)
+  wait "$!" || die "cannot check $(shown "$1"): find could not search all of it (an unreadable directory, or a path too long); refusing this repository"
+}
+
+# remove_nested <dir>: reset's removal of the git repositories inside the
+# checkout, right before the first git that uses the volume as a worktree, so
+# none is ever read and none is removed by a reset that cannot go ahead (bugs
+# review REPO-5). Each is named in a REMOVED record.
+remove_nested() {
+  local -a found=(); local p bad
+  nested_in "$1" found
+  for p in ${found[@]+"${found[@]}"}; do
+    rm -rf -- "$p" || die "could not remove $(shown "${p#"$1/"}"), a git repository inside the checkout"
+    printf 'REMOVED|%s\n' "$(shown "${p#"$1/"}")"
+  done
+  bad="$(find "$1" -path "$1/.git" -prune -o -name .git -print -quit 2>/dev/null)" \
+    || die "cannot check $(shown "$1"): find could not search all of it; refusing this repository"
+  [[ -z "$bad" ]] || die "$(shown "$bad") is a git repository inside the checkout, and is still there after removing them; refusing"
+  NESTED_PENDING=""
 }
 
 # fresh_clone: clone AI_REPO_URL, without a checkout, into a private directory;
@@ -147,6 +195,8 @@ check_volume() {
 F="" CLONE_ERR=""
 # Set by pull between its fast-forward and the removal of the old .git (die()).
 UNDO_DIR="" UNDO_FROM="" UNDO_TO=""
+# Set by check_volume's defer mode until remove_nested has run (reset).
+NESTED_PENDING=""
 fresh_clone() {
   WORK="$(mktemp -d "${TMPDIR:-/tmp}/repo-git.XXXXXX")" || die "cannot make a private directory"
   F="$WORK/clone"
@@ -235,7 +285,7 @@ remote_primary() {
 cmd_inspect() {
   local dir="${1:-}"
   [[ -n "$dir" ]] || { usage >&2; die "inspect needs a directory"; }
-  check_volume "$dir"
+  check_volume "$dir" list
   local current; current="$(volume_head "$dir")"
   local cloned=1 primary
   if ! fresh_clone; then
@@ -316,13 +366,17 @@ cmd_reset() {
   [[ -n "$dir" && -n "$primary" ]] || { usage >&2; die "reset needs a directory and a primary branch"; }
   [[ "$primary" != -* ]] && command git check-ref-format --branch "$primary" >/dev/null 2>&1 \
     || die "not a branch name: $primary"
-  check_volume "$dir"
+  check_volume "$dir" defer
   local -a before=()
   local name oid
   while IFS=$'\t' read -r name oid; do [[ -n "$name" ]] && before+=("$name"); done < <(volume_branches "$dir")
   fresh_clone || die "cannot clone the recorded remote: ${CLONE_ERR}"
   git -C "$F" show-ref --verify --quiet "refs/remotes/origin/$primary" \
     || die "the remote has no branch named $primary"
+  remove_nested "$dir"
+  # The first git that uses the volume as a worktree: never while a deferred
+  # removal has not run (a guard against an edit that drops the call).
+  [[ -z "$NESTED_PENDING" ]] || die "the git repositories inside the checkout were not removed; refusing"
   mark_safe_directory "$dir"
   # The volume is only a worktree here: the clone's git checks the remote's tree
   # out into it, then removes everything else — .git is never touched by clean.

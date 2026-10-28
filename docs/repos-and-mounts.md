@@ -58,7 +58,7 @@ About to RESET the following repo(s) to a clean state:
       DROP the stash (1 entr(y/ies))  <-- not kept by reset
       DROP tag v0.9-rc — not on the remote (the commit it marks is on a remote branch)
 
-WARNING: 3 item(s) above (branches, a stash, tags) hold work that is on no remote.
+WARNING: 3 item(s) above (branches, a stash, tags, repositories) hold work that is on no remote.
          Resetting discards it. Push it first if you want it.
 ```
 

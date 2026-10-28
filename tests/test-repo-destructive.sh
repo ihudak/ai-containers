@@ -155,6 +155,8 @@ if [[ "$1" == "run" ]]; then
       [[ -z "${HELPER_UNKNOWN_COUNT:-}" ]] || printf 'BRANCH|odd/branch|?|\nBRANCH|empty/branch||\n'
       # HELPER_LOSSES: a stash and tags, as the helper reports them (REPO-8).
       [[ -z "${HELPER_LOSSES:-}" ]] || printf 'STASH|2\nTAG|v1|yes|yes\nTAG|onpushed|no|yes\nTAG|lonely|no|no\nTAG|murky|?|?\n'
+      # HELPER_NESTED: git repositories inside the checkout (REPO-5).
+      [[ -z "${HELPER_NESTED:-}" ]] || printf 'NESTED|vendor/lib/.git\nNESTED-MORE|3\n'
       exit 0 ;;
     *" pull /dst"*)
       # HELPER_PULL_WARN: sync kept the checkout but could not keep a tag.
@@ -1246,6 +1248,15 @@ grep -qF 'DROP the stash (2 entr(y/ies))' "$OUT" && grep -qF 'DROP tag onpushed 
   && grep -q 'WARNING: 4 item(s) above' "$OUT" \
   && pass "reset's summary names the stash and the tags it drops, and counts what is lost" \
   || fail "reset's summary of a stash and tags ($(grep -E 'DROP|WARNING' "$OUT" | tr '\n' ';'))"
+
+# REPO-5: reset removes git repositories inside the checkout, so its summary
+# names each one and counts it at risk.
+setup_world
+HELPER_NESTED=1 run_repo reset docs --yes
+grep -qF 'REMOVE vendor/lib/.git — a git repository inside the checkout' "$OUT" \
+  && grep -qF 'REMOVE 3 more git repositories inside the checkout' "$OUT" && grep -q 'WARNING: 5 item(s) above' "$OUT" \
+  && pass "reset's summary names the nested repositories it removes, and counts them" \
+  || fail "reset's summary of nested repositories ($(grep -E 'REMOVE|WARNING' "$OUT" | tr '\n' ';'))"
 
 # The primary branch is moved to the remote's tip, so its own unpushed commits
 # are lost like a deleted branch's: named and counted, never skipped.

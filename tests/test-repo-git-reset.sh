@@ -958,19 +958,84 @@ run_script pull "$W"
 if [[ "$RC" != 0 && "$OUT" != *$'\e'* && "$OUT" != *$'\a'* ]]; then pass "a name in an error message is shown as ?, not raw"
 else fail "raw control characters in an error (out: $(cat -v <<<"$OUT"))"; fi
 # A git directory the agent puts anywhere in the worktree (where the remote has
-# a submodule, say) is read by git during checkout: it holds only regular files
-# and directories too, or the volume is refused (Q3).
+# a submodule, say) is read by git during checkout (Q3), and a .git FILE
+# redirects git (gitdir:) to a directory the agent chose (security review of
+# 8f5e5b9). sync refuses either; reset, which deletes them anyway, removes them
+# before any git runs, so neither is ever read (REPO-5): the link to /dev/zero
+# is not followed, and what the gitdir: file names is left alone.
 W="$(mk_repo subgit)"; mkdir -p "$W/sub/.git/refs/heads"; ln -s /dev/zero "$W/sub/.git/refs/heads/x"
+run_script pull "$W"
+if [[ "$RC" != 0 && "$OUT" == *"sub/.git"*"inside the checkout"* ]]; then pass "sync refuses a nested .git holding a link"
+else fail "sync over a nested .git link (rc=$RC; out: $OUT)"; fi
 run_script reset "$W" main
-if [[ "$RC" != 0 && "$OUT" == *"sub/.git"*"inside the checkout"* ]]; then pass "a nested .git holding a link is refused"
-else fail "nested .git link (rc=$RC; out: $OUT)"; fi
-# Any .git below the top level is refused, whatever it is: a .git FILE redirects
-# git (gitdir:) to a directory the agent chose, and a nested git directory's
-# commondir to another, either of them anywhere (security review of 8f5e5b9).
-W="$(mk_repo subgitfile)"; mkdir -p "$W/sub" "$TMP/elsewhere"; printf 'gitdir: %s\n' "$TMP/elsewhere" > "$W/sub/.git"
+if [[ "$RC" == 0 && ! -e "$W/sub/.git" && -z "$(git -C "$W" status --porcelain)" ]]; then pass "reset removes a nested .git holding a link, and git never reads it"
+else fail "reset over a nested .git link (rc=$RC; left: $([[ -e "$W/sub/.git" ]] && echo yes || echo no); out: $OUT)"; fi
+W="$(mk_repo subgitfile)"; mkdir -p "$W/sub" "$TMP/elsewhere"; : > "$TMP/elsewhere/keep"; printf 'gitdir: %s\n' "$TMP/elsewhere" > "$W/sub/.git"
+run_script pull "$W"
+if [[ "$RC" != 0 && "$OUT" == *"sub/.git"*"inside the checkout"* ]]; then pass "sync refuses a nested .git file (gitdir: redirect)"
+else fail "sync over a nested .git file (rc=$RC; out: $OUT)"; fi
+run_script inspect "$W"
+if [[ "$RC" == 0 ]] && grep -qx 'NESTED|sub/.git' <<<"$OUT" && ! grep -q '^NESTED-MORE|' <<<"$OUT"; then pass "inspect lists a nested .git for reset's confirmation"
+else fail "inspect's NESTED record (rc=$RC; out: $OUT)"; fi
 run_script reset "$W" main
-if [[ "$RC" != 0 && "$OUT" == *"sub/.git"*"inside the checkout"* ]]; then pass "a nested .git file (gitdir: redirect) is refused"
-else fail "nested .git file accepted (rc=$RC; out: $OUT)"; fi
+if [[ "$RC" == 0 && ! -e "$W/sub/.git" && -e "$TMP/elsewhere/keep" ]]; then pass "reset removes a nested .git file and leaves what it names alone"
+else fail "reset over a nested .git file (rc=$RC; elsewhere kept: $([[ -e "$TMP/elsewhere/keep" ]] && echo yes || echo no); out: $OUT)"; fi
+# Past 50 the listing stops and says how many more.
+W="$(mk_repo manynested)"
+for i in $(seq 1 52); do mkdir -p "$W/n$i/.git"; done
+run_script inspect "$W"
+if [[ "$RC" == 0 && "$(grep -c '^NESTED|' <<<"$OUT")" == 50 ]] && grep -qx 'NESTED-MORE|2' <<<"$OUT"; then pass "inspect lists 50 nested repositories and counts the rest"
+else fail "inspect's listing past 50 ($(grep -c '^NESTED|' <<<"$OUT") listed; $(grep NESTED-MORE <<<"$OUT"))"; fi
+# Removed BEFORE git uses the volume as a worktree, not left to `clean`: where the
+# remote has a gitlink at sub, checkout reads sub/.git, and a gitdir: there to a
+# repository whose config includes a FIFO outside the volume hung it (review of
+# REPO-5). Run under a timeout: a hang is the failure.
+W="$(mk_repo gitlink)"
+S="$TMP/gitlink.seed"
+g "$S" update-index --add --cacheinfo "160000,$(g "$S" rev-parse HEAD),sub" >/dev/null 2>&1
+g "$S" commit -q -m gitlink >/dev/null 2>&1; g "$S" push -q origin main >/dev/null 2>&1
+git init -q --bare "$TMP/evil.git"; mkfifo "$TMP/evil.fifo"
+printf '[include]\n\tpath = %s\n' "$TMP/evil.fifo" >> "$TMP/evil.git/config"
+mkdir -p "$W/sub"; printf 'gitdir: %s\n' "$TMP/evil.git" > "$W/sub/.git"
+# Bounded on a regression: a git blocked opening the FIFO is released after 20 s
+# by a writer (O_RDWR never blocks), reads nothing and goes on, so the test fails
+# instead of hanging the suite. p_timeout alone is not enough: the orphaned git
+# keeps the capture's pipe open.
+( sleep 20; exec 3<>"$TMP/evil.fifo"; sleep 1 ) &
+fifo_writer=$!
+t5=$SECONDS
+OUT="$(AI_REPO_URL="$TMP/gitlink.git" p_timeout 60 "$SCRIPT" reset "$W" main 2>&1)"; RC=$?
+t5=$((SECONDS - t5))
+kill "$fifo_writer" 2>/dev/null; wait "$fifo_writer" 2>/dev/null
+if [[ "$RC" == 0 && ! -e "$W/sub/.git" && "$t5" -lt 15 ]] && grep -qx 'REMOVED|sub/.git' <<<"$OUT"; then
+  pass "reset removes a nested .git before checkout reads it, and names it"
+else
+  fail "reset read a nested .git, or did not remove it (rc=$RC; ${t5}s; $OUT)"
+fi
+# find follows no link: a linked directory holding a .git outside the volume is
+# neither listed nor removed.
+W="$(mk_repo linkparent)"; mkdir -p "$TMP/outside/.git"; : > "$TMP/outside/.git/precious"
+ln -s "$TMP/outside" "$W/lnk"
+run_script inspect "$W"
+nested_listed="$(grep -c '^NESTED|' <<<"$OUT")"
+run_script reset "$W" main
+if [[ "$nested_listed" == 0 && "$RC" == 0 && -e "$TMP/outside/.git/precious" ]]; then
+  pass "a .git reached through a linked directory is neither listed nor removed"
+else
+  fail "a .git through a linked directory (listed: $nested_listed; rc=$RC; kept: $([[ -e "$TMP/outside/.git/precious" ]] && echo yes || echo no))"
+fi
+# A reset that cannot go ahead removes nothing: the nested repo survives an
+# unreachable remote.
+W="$(mk_repo nestnoremote)"; mkdir -p "$W/vendor/lib/.git"; : > "$W/vendor/lib/.git/keep"
+AI_REPO_URL="$TMP/does-not-exist.git" run_script reset "$W" main
+if [[ "$RC" != 0 && -e "$W/vendor/lib/.git/keep" ]]; then pass "a reset that cannot clone the remote removes no nested repository"
+else fail "a failed reset removed a nested repository (rc=$RC)"; fi
+# A nested .git that is a link is removed as a link: its target survives.
+W="$(mk_repo sublink)"; mkdir -p "$W/sub" "$TMP/linktarget/.git"; : > "$TMP/linktarget/.git/HEAD"
+ln -s "$TMP/linktarget/.git" "$W/sub/.git"
+run_script reset "$W" main
+if [[ "$RC" == 0 && ! -e "$W/sub/.git" && ! -L "$W/sub/.git" && -e "$TMP/linktarget/.git/HEAD" ]]; then pass "a nested .git that is a link is removed as a link, its target kept"
+else fail "reset over a nested .git link (rc=$RC; target kept: $([[ -e "$TMP/linktarget/.git/HEAD" ]] && echo yes || echo no); out: $OUT)"; fi
 W="$(mk_repo subgitdir)"; git init -q "$W/sub"; printf '%s\n' "$TMP/elsewhere" > "$W/sub/.git/commondir"
 run_script pull "$W"
 if [[ "$RC" != 0 && "$OUT" == *"sub/.git"*"inside the checkout"* ]]; then pass "a nested git directory (commondir) is refused"

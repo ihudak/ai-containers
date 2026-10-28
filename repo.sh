@@ -276,16 +276,17 @@ reset_git() {   # $1 = volume  $2 = primary branch
   # translated here, so the protocol stays machine-readable and the terminal
   # stays prose. stderr is deliberately NOT captured — the helper's `die`
   # messages should reach the user unaltered and immediately.
-  if ! out="$(git_helper_run "$vol" reset /dst "$primary" "${host_uid}:${host_gid}")"; then
-    printf '  ERROR: the git reset failed inside the seed container.\n' >&2
-    return 1
-  fi
+  # Rendered whether or not it succeeds: a reset that fails after removing the
+  # git repositories inside the checkout still says which (REPO-5).
+  local rc=0
+  out="$(git_helper_run "$vol" reset /dst "$primary" "${host_uid}:${host_gid}")" || rc=$?
 
   while IFS= read -r line; do
     [[ -n "$line" ]] || continue
     kind="${line%%|*}"; rest="${line#*|}"
     case "$kind" in
       DELETED)       printf '  removed branch %s\n' "$rest" ;;
+      REMOVED)       printf '  removed the git repository inside the checkout at %s\n' "$rest" ;;
       KEPT)          printf '  WARNING: kept branch %s — %s\n' "${rest%%|*}" "${rest#*|}" >&2 ;;
       WARN)          printf '  WARNING: %s\n' "$rest" >&2 ;;
       ON)            on="$rest" ;;
@@ -298,6 +299,10 @@ reset_git() {   # $1 = volume  $2 = primary branch
     esac
   done <<< "$out"
 
+  if (( rc != 0 )); then
+    printf '  ERROR: the git reset failed inside the seed container.\n' >&2
+    return 1
+  fi
   [[ -n "$on" ]] && printf '  now on %s%s\n' "$on" "${at:+ at $at}"
   return 0
 }
@@ -721,7 +726,7 @@ collect_inspections() {   # $@ = repo names
     fi
 
     ensure_seed_image
-    local branches=() tags=() primary="" stale="" stash_n=""
+    local branches=() tags=() nested=() primary="" stale="" stash_n="" nested_more=""
     while IFS= read -r line; do
       kind="${line%%|*}"; rest="${line#*|}"
       case "$kind" in
@@ -734,6 +739,8 @@ collect_inspections() {   # $@ = repo names
           ;;
         STASH) stash_n="$rest" ;;
         TAG)   tags+=("$rest") ;;
+        NESTED) nested+=("$rest") ;;
+        NESTED-MORE) nested_more="$rest" ;;
       esac
     done < <(inspect_git "$vol")
 
@@ -784,6 +791,18 @@ collect_inspections() {   # $@ = repo names
         RESET_SUMMARY+=("      DELETE ${br} — pushed")
       fi
     done
+    # A git repository inside the checkout (an initialised submodule, an editable
+    # install's clone) is removed before reset runs git; its own history is not
+    # on this repository's remote, so it is counted at risk (REPO-5).
+    local np
+    for np in ${nested[@]+"${nested[@]}"}; do
+      RESET_SUMMARY+=("      REMOVE ${np} — a git repository inside the checkout  <-- its history is not on this repo's remote")
+      RESET_AT_RISK=$(( RESET_AT_RISK + 1 ))
+    done
+    if [[ -n "$nested_more" ]]; then
+      RESET_SUMMARY+=("      REMOVE ${nested_more} more git repositories inside the checkout  <-- not listed")
+      [[ "$nested_more" =~ ^[0-9]+$ ]] && RESET_AT_RISK=$(( RESET_AT_RISK + nested_more )) || RESET_AT_RISK=$(( RESET_AT_RISK + 1 ))
+    fi
     # Besides branches, replacing .git loses the stash and any tag the remote
     # does not have (bugs review REPO-8); a tag can hold the only reference to a
     # commit, and none of it can be undone.
@@ -857,10 +876,11 @@ cmd_reset() {
   printf 'About to RESET the following repo(s) to a clean state:\n'
   local l; for l in "${RESET_SUMMARY[@]}"; do printf '%s\n' "$l"; done
   printf 'This DISCARDS uncommitted changes and untracked/ignored files (git: reset --hard\n'
-  printf '+ clean -ffdx; path: rsync mirror), DELETES the local branches, the stash and the\n'
-  printf 'tags listed above, and removes any :rwcopy working copies. Cannot be undone.\n'
+  printf '+ clean -ffdx; path: rsync mirror), DELETES the local branches, the stash, the\n'
+  printf 'tags and the nested repositories listed above, and removes any :rwcopy working\n'
+  printf 'copies. Cannot be undone.\n'
   if (( RESET_AT_RISK > 0 )); then
-    printf '\nWARNING: %s item(s) above (branches, a stash, tags) hold work that is on no remote.\n' "$RESET_AT_RISK"
+    printf '\nWARNING: %s item(s) above (branches, a stash, tags, repositories) hold work that is on no remote.\n' "$RESET_AT_RISK"
     printf '         Resetting discards it. Push it first if you want it.\n\n'
   fi
 
