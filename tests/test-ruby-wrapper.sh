@@ -26,6 +26,19 @@ mk_rvm() {
 # suite as root, so every case below must name one to test the same thing everywhere.
 fkr="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; trap 'rm -rf "$fkr"' EXIT
 printf '#!/bin/sh\n[ "$1" = -u ] && [ "$3" = -- ] || exit 2\nshift 3\nexec "$@"\n' > "$fkr/runuser"; chmod +x "$fkr/runuser"
+# A setpriv that records its options (RT-8) and runs what follows `--`: a real
+# one cannot drop from the bounding set unless it runs as root.
+mk_setpriv() {  # $1=dir
+  cat > "$1/setpriv" <<'SP'
+#!/bin/sh
+opts=""; while [ "$#" -gt 0 ] && [ "$1" != -- ]; do opts="$opts $1"; shift; done
+[ "$1" = -- ] || { echo "setpriv: no --" >&2; exit 2; }; shift
+[ -z "${SETPRIV_LOG:-}" ] || echo "$opts" >> "$SETPRIV_LOG"
+exec "$@"
+SP
+  chmod +x "$1/setpriv"
+}
+mk_setpriv "$fkr"
 ldr() { PATH="$fkr:$PATH" bash "$REPO_DIR/link-default-ruby.sh" "$1" "$2" probe; }
 
 # ── Case 1: links the first requested present version's execs into the dest dir ──
@@ -189,14 +202,20 @@ VIA_RUNUSER="$u" exec "$@"
 FAKE
 printf '#!/bin/sh\necho 0\n' > "$fk/id"   # a root launcher
 chmod +x "$fk/runuser" "$fk/id"
+mk_setpriv "$fk"
 h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; d="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 mk_rvm "$h" "3.4.5" "gem"
 printf '#!/bin/sh\necho "ran as=${VIA_RUNUSER:-ROOT}" >> "%s/ran"\n' "$h" > "$h/.rvm/rubies/ruby-3.4.5/bin/ruby"
 chmod +x "$h/.rvm/rubies/ruby-3.4.5/bin/ruby"
-PATH="$fk:$PATH" RUBY_VERSIONS="3.4.5" bash "$REPO_DIR/link-default-ruby.sh" "$h" "$d" agentuser >/dev/null 2>&1
+SETPRIV_LOG="$h/setpriv.log" PATH="$fk:$PATH" RUBY_VERSIONS="3.4.5" bash "$REPO_DIR/link-default-ruby.sh" "$h" "$d" agentuser >/dev/null 2>&1
 [[ "$(cat "$h/ran" 2>/dev/null)" == "ran as=agentuser" && -L "$d/ruby" ]] \
   && pass "with a probe user, a ruby from ~/.rvm is probed only as that user" \
   || fail "probe not run through runuser as the user (ran: $(cat "$h/ran" 2>/dev/null | tr '\n' ' '))"
+# …with NET_ADMIN and NET_RAW out of its bounding set and no_new_privs, so
+# nothing the probe starts can regain them (RT-8).
+[[ -s "$h/setpriv.log" ]] && ! grep -vqxF ' --bounding-set=-net_admin,-net_raw --no-new-privs' "$h/setpriv.log" \
+  && pass "every probe drops NET_ADMIN/NET_RAW from its bounding set and sets no_new_privs" \
+  || fail "a probe ran without the RT-8 setpriv (log: $(tr '\n' ';' < "$h/setpriv.log" 2>/dev/null))"
 # …and as root with none, nothing from ~/.rvm runs at all: the links are made
 # unverified, and that is said.
 rm -f "$h/ran"

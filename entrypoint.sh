@@ -35,9 +35,17 @@ stash_app_env() {
 }
 stash_app_env
 
+# Every user-level step before the final capsh starts with NET_ADMIN and NET_RAW
+# gone from its bounding set and no_new_privs set. What such a step starts — a
+# setsid daemon escapes its timeout — lives on into the session, and with the
+# full bounding set a setuid-root or file-capability binary could hand those
+# capabilities back (bugs review RT-8). Root drops them; runuser then switches
+# user as before.
+_user_step=(setpriv '--bounding-set=-net_admin,-net_raw' --no-new-privs --)
+
 # runuser … -- <command> as the sandbox user, with container.env given back.
 as_sandbox_user() {
-  runuser -u "$sandbox_user" -- env ${_aice_app_env[@]+"${_aice_app_env[@]}"} "$@"
+  "${_user_step[@]}" runuser -u "$sandbox_user" -- env ${_aice_app_env[@]+"${_aice_app_env[@]}"} "$@"
 }
 
 mode="${DEV_CONTAINER_MODE:-restricted}"
@@ -142,7 +150,7 @@ run_services() {
       *) start_env+=("$kv") ;;
     esac
   done
-  runuser -u "$sandbox_user" -- env -u AI_SERVICES_DIR -u AI_SERVICES_STATE_ROOT -u AI_SERVICES_LOG_ROOT \
+  "${_user_step[@]}" runuser -u "$sandbox_user" -- env -u AI_SERVICES_DIR -u AI_SERVICES_STATE_ROOT -u AI_SERVICES_LOG_ROOT \
     ${start_env[@]+"${start_env[@]}"} /usr/local/bin/start-services.sh start || true
 }
 

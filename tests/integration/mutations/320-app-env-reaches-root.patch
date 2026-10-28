@@ -12,14 +12,13 @@
 # NOTE: entrypoint.sh is COPYed into the image, so this patch needs a rebuild to
 # take effect — never --reuse-image.
 diff --git a/entrypoint.sh b/entrypoint.sh
-index d1ecb18..289be67 100755
 --- a/entrypoint.sh
 +++ b/entrypoint.sh
-@@ -27,7 +27,6 @@ stash_app_env() {
+@@ -33,7 +33,6 @@
    done
    unset AI_CONTAINER_ENV_KEYS
  }
 -stash_app_env
  
- # runuser … -- <command> as the sandbox user, with container.env given back.
- as_sandbox_user() {
+ # Every user-level step before the final capsh starts with NET_ADMIN and NET_RAW
+ # gone from its bounding set and no_new_privs set. What such a step starts — a

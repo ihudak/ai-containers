@@ -113,6 +113,22 @@ grep -q 'AI_SERVICES_RUNNER' "$REPO_DIR/entrypoint.sh" \
 # run_services is extracted by name and run with its fixed runner path pointed
 # at a fake that records the environment it was given. runuser is a stub that
 # checks its `-u <user> --` shape and runs the rest; everything else is real.
+# as_sandbox_user is every other user step before the capability drop (the
+# skill installs, the reconciles, the git config): each one starts with NET_ADMIN
+# and NET_RAW out of its bounding set and no_new_privs set, so nothing it leaves
+# running can regain them through a setuid or file-capability binary (RT-8).
+asu_out="$(
+  eval "$(grep -m1 '^_user_step=' "$REPO_DIR/entrypoint.sh")"
+  eval "$(awk '/^as_sandbox_user\(\) \{/,/^\}/' "$REPO_DIR/entrypoint.sh")"
+  setpriv() { local o=""; while (( $# )) && [[ "$1" != -- ]]; do o+=" $1"; shift; done; shift; printf 'setpriv:%s\n' "$o"; "$@"; }
+  runuser() { [[ "${1:-}" == -u && "${2:-}" == alice && "${3:-}" == -- ]] || return 97; shift 3; "$@"; }
+  sandbox_user=alice; _aice_app_env=(APP=1)
+  as_sandbox_user sh -c 'echo "ran APP=$APP"'
+)"
+[[ "$asu_out" == $'setpriv: --bounding-set=-net_admin,-net_raw --no-new-privs\nran APP=1' ]] \
+  && pass "as_sandbox_user drops NET_ADMIN/NET_RAW and sets no_new_privs before runuser (RT-8)" \
+  || fail "as_sandbox_user without the RT-8 setpriv (got: $(tr '\n' ';' <<<"$asu_out"))"
+
 rs_fn="$TMP/run-services.sh"; rs_fake="$TMP/fake-start-services.sh"
 cat > "$rs_fake" <<FAKE
 #!/bin/sh
@@ -129,6 +145,8 @@ else
   rm -f "$TMP"/env.*
   ( # shellcheck source=/dev/null
     source "$rs_fn"
+    eval "$(grep -m1 '^_user_step=' "$REPO_DIR/entrypoint.sh")"
+    setpriv() { local o=""; while (( $# )) && [[ "$1" != -- ]]; do o+=" $1"; shift; done; shift; echo "$o" >> "$TMP/setpriv.log"; "$@"; }
     runuser() { [[ "${1:-}" == -u && "${2:-}" == alice && "${3:-}" == -- ]] || return 97; shift 3; "$@"; }
     # shellcheck disable=SC2034  # read by the extracted run_services, which shellcheck cannot see
     sandbox_user=alice
@@ -155,6 +173,9 @@ else
     grep -qE '^AI_SERVICES_(DIR|STATE_ROOT|LOG_ROOT)=' <<<"$start_env" \
       && fail "start receives no AI_SERVICES_DIR/_STATE_ROOT/_LOG_ROOT" \
       || pass "start receives no AI_SERVICES_DIR/_STATE_ROOT/_LOG_ROOT"
+    [[ "$(cat "$TMP/setpriv.log" 2>/dev/null)" == ' --bounding-set=-net_admin,-net_raw --no-new-privs' ]] \
+      && pass "start runs with NET_ADMIN/NET_RAW out of its bounding set and no_new_privs (RT-8)" \
+      || fail "start ran without the RT-8 setpriv (log: $(cat "$TMP/setpriv.log" 2>/dev/null))"
     grep -qx 'POSTGRES_ROLES=app_user' <<<"$start_env" \
       && pass "start still receives container.env (POSTGRES_ROLES), which it needs" \
       || fail "start still receives container.env (POSTGRES_ROLES)"

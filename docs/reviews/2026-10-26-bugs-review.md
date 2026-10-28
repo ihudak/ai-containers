@@ -305,7 +305,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 
 
 ### RT-8: The user-level steps before the capability drop can leave a process with the full bounding set
-- **Status: OPEN** (review of batch 3, finding 4; not new: `rvm-reconcile.sh`, `agent-tools-reconcile.sh` and `install-agent-skills.sh` already run agent-controlled code at the same stage)
+- **Status: FIXED** (2026-10-28). Every user-level step before the final `capsh` starts through `setpriv --bounding-set=-net_admin,-net_raw --no-new-privs --` in front of its `runuser`: `entrypoint.sh: as_sandbox_user()` (the skill installs, both reconciles, the git config), the services `start` in `run_services()`, and `link-default-ruby.sh: probe()`. Root drops the two capabilities from the bounding set, then `runuser` switches user as before, so its environment handling is unchanged. Measured in ubuntu:24.04 run with `--cap-add NET_ADMIN --cap-add NET_RAW`: `runuser` alone gives `CapBnd: a80435fb, NoNewPrivs: 0`; through `setpriv`, `a80405fb` (bits 12 and 13 gone) and `NoNewPrivs: 1`, `runuser` and its PAM session work under it, and a `setsid` child keeps the reduced set. Hermetic: `tests/test-entrypoint-wiring.sh` runs `as_sandbox_user` and the services start with a recording `setpriv`, `tests/test-ruby-wrapper.sh` the probes; each red on the old code. The integration corpus runs the real entrypoint through these steps in every mode.
 - Severity: LOW. Confidence: CONFIRMED that the process survives; no route to root found in the ubuntu:24.04 base (its setuid binaries need a password; root's is locked). The full image's `dumpcap` file capabilities were not checked.
 - Location: entrypoint.sh: `as_sandbox_user()`; link-default-ruby.sh: `probe()`.
 - What's wrong: these steps run as the sandbox user via `runuser`, before `exec capsh` removes NET_ADMIN/NET_RAW from the bounding set. A `setsid` daemon forked there escapes `timeout` and keeps that bounding set into the session. A setuid-root or file-capability binary would then grant the capabilities back.
@@ -1256,6 +1256,15 @@ Batch 9 (`9bd3729` … `6a0b37f`) went through 19 review rounds. Every HIGH and 
 - Location: `sandbox.sh: _git_index_read()`, its `mktemp -d` failure branch
 - What's wrong: T51 checks the FIFO search's refusal only. Where a git directory is protected, the launch is refused by that search anyway, so the warning matters only for an index read with nothing bound read-only.
 - Fix direction: assert the warning, once, in T51's second arm.
+
+## 14. Found while fixing RT-8
+
+### RT-10: the agent shell itself has no `no_new_privs`
+- **Status: OPEN** (review of the RT-8 fix; pre-existing)
+- Severity: MEDIUM. Confidence: PLAUSIBLE (no exploitable setuid binary known; the mechanism measured)
+- Location: `entrypoint.sh`, the final `exec capsh` of each mode; `sandbox.sh`, the `docker run` options
+- What's wrong: the user steps before the drop now run with `no_new_privs` (RT-8), but the shell they hand over to does not, and its bounding set still holds Docker's defaults (`CAP_SETUID`, `CAP_DAC_OVERRIDE`, `CAP_CHOWN`, …). A setuid-root binary the image ships (`passwd`, `chsh`, `mount`, `su`, `ssh-keysign`, …) run from that shell, with any bug in it, is euid 0, which can rewrite the root-owned `/tmp/allowlist-cidrs.txt` the refresh loop reloads every 60 s: the firewall opened without NET_ADMIN.
+- Fix direction: `sandbox.sh` passes `--security-opt=no-new-privileges` (measured by the review: `runuser` and `capsh` still work, the root entrypoint loses nothing; discovery-mode `ping`, a file-capability binary, stops working), or `setpriv --no-new-privs --` in front of each `exec capsh`, or the setuid bits stripped at build time.
 
 ---
 

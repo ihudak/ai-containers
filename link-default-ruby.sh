@@ -94,7 +94,11 @@ done
 probe() {
   local t=()
   command -v timeout >/dev/null 2>&1 && t=(timeout -k 2 10)   # -k: a probe may ignore TERM
-  if [[ -n "$probe_user" ]]; then runuser -u "$probe_user" -- env HOME="$dev_home" "${t[@]}" "$@"
+  # As the entrypoint's other user steps: NET_ADMIN and NET_RAW out of the
+  # bounding set, no_new_privs, so nothing a probe starts can regain them (RT-8).
+  if [[ -n "$probe_user" ]]; then
+    setpriv --bounding-set=-net_admin,-net_raw --no-new-privs -- \
+      runuser -u "$probe_user" -- env HOME="$dev_home" "${t[@]}" "$@"
   else "${t[@]}" "$@"; fi
 }
 if [[ -z "$probe_user" && "$(id -u)" == 0 ]]; then

@@ -453,7 +453,7 @@ In all three modes `run_services` is the last step before the `capsh` exec, so t
 in-container servers' ready lines are the last output before the prompt — see
 [In-container database servers](#in-container-database-servers).
 
-Background daemons are forked **before** `exec capsh` so they retain root capabilities despite the exec. `run_agent_skill_install` runs as the sandbox user (via `runuser`) in all three modes, right before the `capsh` exec — see [Automatic Agent Skill installation](#automatic-agent-skill-installation) below.
+Background daemons are forked **before** `exec capsh` so they retain root capabilities despite the exec. The user-level steps that also run before it — the skill installs, the reconciles, services' `start`, `link-default-ruby.sh`'s probes — run agent-controlled code, and whatever they leave running outlives them (a `setsid` child escapes a `timeout`), so each starts through `setpriv --bounding-set=-net_admin,-net_raw --no-new-privs -- runuser …` (`entrypoint.sh: as_sandbox_user()`): nothing it starts can regain those two capabilities through a setuid or file-capability binary (bugs review RT-8; measured in ubuntu:24.04: `CapBnd` loses bits 12 and 13, `NoNewPrivs: 1`, inherited by a `setsid` child). `run_agent_skill_install` runs as the sandbox user (via `runuser`) in all three modes, right before the `capsh` exec — see [Automatic Agent Skill installation](#automatic-agent-skill-installation) below.
 
 ### Automatic Agent Skill installation
 
