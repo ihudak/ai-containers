@@ -87,7 +87,7 @@ g2="$(FAKE_LABELS='{"maintainer":"ubuntu"}' bash -c 'source "$1/sandbox-common.s
 [[ "$g1" == rc=0 && "$g2" == rc=1 ]] && pass "only an IMAGE_NAME from the committed sandbox.env is checked" \
   || fail "the guard (local: $g1, committed: $g2)"
 # The guard compares physical paths: this project's own image, rebuilt through a
-# link to it, is not "another project" (review of a368fcb).
+# link to it, is not "another project" (review of 162d4c3).
 mkdir -p "$TMP/via"; ln -s "$ME" "$TMP/via/me"
 g3="$(FAKE_LABELS='{"ai-containers.built-at":"x","ai-containers.project":"'"$ME"'"}' bash -c 'source "$1/sandbox-common.sh" >/dev/null 2>&1; ai_containers_image_portable=1; ai_containers_build_retag_guard img:tag "$2"; echo "rc=$?"' _ "$ENGINE" "$TMP/via/me" 2>/dev/null | tail -1)"
 [[ "$g3" == rc=0 ]] && pass "the project's own image, rebuilt through a link to it, passes" || fail "own image through a link ($g3)"
@@ -114,7 +114,7 @@ check '{"org.opencontainers.image.title":"AI Sandbox Container"}'
   && pass "an image built before ai-containers labelled its images is rebuilt, with a NOTE" \
   || fail "pre-v0.6.0 image (rc=$rc: $err)"
 # …as a real one carries it: after other keys, which docker sorts before it
-# (review of a368fcb).
+# (review of 162d4c3).
 check '{"maintainer":"x","org.opencontainers.image.description":"y","org.opencontainers.image.source":"z","org.opencontainers.image.title":"AI Sandbox Container"}'
 [[ "$rc" == 0 ]] && pass "the pre-v0.6.0 title is found after other keys" || fail "pre-v0.6.0 title after other keys (rc=$rc: $err)"
 # An ai-containers key after another key is ours too.
@@ -163,7 +163,7 @@ E="$TMP/eng"; mkdir -p "$E"
   || cp -R "$ENGINE"/. "$E/"
 # cp -R (BSD cp has no --parents) also copies a built checkout's generated
 # allowlists, which the "writes nothing" check below must not find (review of
-# a368fcb).
+# 162d4c3).
 rm -f "$E"/allowlist-*.txt
 printf 'IMAGE_NAME=ubuntu:24.04\n' > "$E/sandbox.env"; rm -f "$E/sandbox.local.env"
 cat > "$TMP/bin/docker" <<'FAKE2'
@@ -184,8 +184,9 @@ chmod +x "$TMP/bin/docker"; export DOCKER_LOG="$TMP/docker.log"; : > "$DOCKER_LO
   || fail "build.sh retag guard (rc=$brc; $(grep -E 'ERROR|did not' "$TMP/build.err" | head -1); docker build called: $(grep -c '^build ' "$DOCKER_LOG"))"
 
 # The same base image named where the user chose it is built: in
-# sandbox.local.env (which wins over sandbox.env), inline in the shell, or as
-# build.sh's argument (review of a368fcb).
+# sandbox.local.env (which wins over sandbox.env), inline in the shell, or a
+# different name given as build.sh's argument; the committed name given as the
+# argument is still checked (reviews of 162d4c3 and f596986).
 reached() { grep -q '^build ' "$DOCKER_LOG"; }
 : > "$DOCKER_LOG"; printf 'IMAGE_NAME=ubuntu:24.04\n' > "$E/sandbox.local.env"
 ( cd "$E" && unset IMAGE_NAME && bash ./build.sh ) >/dev/null 2>"$TMP/build.err"; r1=$?; reached && r1=built
@@ -193,9 +194,11 @@ rm -f "$E/sandbox.local.env"; : > "$DOCKER_LOG"
 ( cd "$E" && IMAGE_NAME=ubuntu:24.04 bash ./build.sh ) >/dev/null 2>"$TMP/build.err"; r2=$?; reached && r2=built
 : > "$DOCKER_LOG"
 ( cd "$E" && unset IMAGE_NAME && bash ./build.sh other:tag ) >/dev/null 2>"$TMP/build.err"; r3=$?; reached && r3=built
-[[ "$r1" == built && "$r2" == built && "$r3" == built ]] \
-  && pass "an IMAGE_NAME from sandbox.local.env, the shell or build.sh's argument is not checked" \
-  || fail "user-chosen names (local: $r1, shell: $r2, argument: $r3; $(grep -E 'ERROR' "$TMP/build.err" | head -1))"
+: > "$DOCKER_LOG"
+( cd "$E" && unset IMAGE_NAME && bash ./build.sh ubuntu:24.04 ) >/dev/null 2>"$TMP/build.err"; r4=$?; reached && r4=built
+[[ "$r1" == built && "$r2" == built && "$r3" == built && "$r4" == 1 ]] \
+  && pass "an IMAGE_NAME from sandbox.local.env, the shell or a different argument is built; the committed one as the argument is checked" \
+  || fail "user-chosen names (local: $r1, shell: $r2, other argument: $r3, committed argument: $r4)"
 rm -f "$E"/allowlist-*.txt
 
 # The other half (from main's ENV-7 tests): a tag no image carries yet reaches

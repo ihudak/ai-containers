@@ -884,7 +884,7 @@ Each fix batch was reviewed by an independent reviewer before it was merged, and
 - Fix direction: decide representability before counting, or count the overlays actually emitted.
 
 ### ENV-7: A committed `IMAGE_NAME` can retag another project's image
-- **Status: FIXED (batch 10)** — `86427b0`, `162d4c3`: for an `IMAGE_NAME` the committed `sandbox.env` chose (`ai_containers_build_retag_guard()`), `build.sh` refuses, before anything is written, to retag an image with no `ai-containers.*` label key (one built before v0.6.0 is recognised by the Dockerfile's title and rebuilt with a NOTE) or one whose `ai-containers.project` label names another project that still exists, is not an absolute path, or lies under a directory you cannot search; one built before that label, or for a project path that no longer exists, is rebuilt with a NOTE. A committed `IMAGE_NAME` is a local name, no `/`; a name given as `build.sh`'s argument is not checked (`86427b0` checked it; fixed after the review of `162d4c3`). The user's choice was to refuse another project's image, so this replaces the warning the fix on main (`c89f1d5`) gave (tests/test-image-retag.sh, which runs `build.sh` against a fake `docker`).
+- **Status: FIXED (batch 10)** — `86427b0`, `162d4c3`: for an `IMAGE_NAME` the committed `sandbox.env` chose (`ai_containers_build_retag_guard()`), `build.sh` refuses, before anything is written, to retag an image with no `ai-containers.*` label key (one built before v0.6.0 is recognised by the Dockerfile's title and rebuilt with a NOTE) or one whose `ai-containers.project` label names another project that still exists, is not an absolute path, or lies under a directory you cannot search; one built before that label, or for a project path that no longer exists, is rebuilt with a NOTE. A committed `IMAGE_NAME` is a local name, no `/`; a different name given as `build.sh`'s argument is not checked (`86427b0` checked it; fixed after the review of `162d4c3`). The user's choice was to refuse another project's image, so this replaces the warning the fix on main (`c89f1d5`) gave (tests/test-image-retag.sh, which runs `build.sh` against a fake `docker`).
 - Severity: LOW. Confidence: PLAUSIBLE (from code)
 - Location: build.sh: `remove_replaced_image`. sandbox-common.sh: `env_value_portable()` refuses only the seed image.
 - What's wrong: `IMAGE_NAME` stays portable. A committed `sandbox.env` can name a sibling project's tag, or a base image such as `ubuntu:24.04`. `./build.sh` then retags it with an image built from this project's `sandbox.conf` and `allowlist-*.d/custom.txt`, and removes the old image. The other project's next restricted launch then runs with this project's allowlist, and gets only a provenance warning.
@@ -1112,7 +1112,7 @@ Batch 9 (`9bd3729` … `6a0b37f`) went through 19 review rounds. Every HIGH and 
 - Fix direction: also refuse when `[[ -O "$l" ]]`. You can always fix your own directory, and the hint already says how.
 
 ### LNCH-6: an ACL is invisible where `ls` does not mark one (busybox, CIFS)
-- **Status: FIXED (batch 10)** — `86427b0`: `getfacl` decides where there is one (T25e, T25g); otherwise only GNU's or a BSD `ls` is trusted, which no test reaches (LNCH-18).
+- **Status: FIXED (batch 10)** — `86427b0`: `getfacl` decides where there is one (T25e, T25g); otherwise only GNU's or a BSD `ls` is trusted (T25g on macOS, which has no `getfacl`); refusing any other `ls` there is not tested (LNCH-18).
 - Severity: LOW. Confidence: CONFIRMED (reproduced in r18: busybox `ls -ld` printed `d-wx-wx--x` for a directory with `setfacl -m u:4242:wx`, where GNU printed `d-wx-wx--x+`. The code is unchanged)
 - Location: sandbox.sh: `a="$(cd / && getfacl -c -- "$1" 2>/dev/null)" || return 0`
 - What's wrong: ACLs are detected only through the `+` that GNU and BSD `ls` print. busybox prints none, and GNU prints none for CIFS ACLs, so the bare mode passes. The group bits shown are then the ACL mask, judged against the directory's group, not the agent's.
@@ -1307,13 +1307,6 @@ Batch 10 went through seven review rounds, a review of its merge with main and o
 - What's wrong: a team can commit the fixture list, which is the point; a malicious commit that you pull can list a bare repository you push to, which then gets no placeholders. The same trust as a committed `SANDBOX_GIT_MAX`. Entries are plain paths inside the project with no link on the way.
 - Fix direction: make it machine-only (`env_key_machine_only`) if a committed list is not wanted.
 
-### LNCH-18: the "only GNU's or a BSD `ls` is trusted" branch is reached by no test
-- **Status: OPEN** (review of `162d4c3`, finding #5)
-- Severity: LOW. Confidence: CONFIRMED (a mutant that trusts any `ls` there passes `tests/test-launcher-dir-ro.sh`)
-- Location: sandbox.sh: `_agent_bits_writable()`, its branch for a host with no `getfacl`
-- What's wrong: the CI and developer hosts have `getfacl`, and T25h's busybox arm puts a fake `getfacl` on `PATH`, so the branch that trusts only GNU's or a BSD `ls` never runs under test.
-- Fix direction: a T25 arm with a `PATH` that has no `getfacl`, built from links to the tools the launch needs.
-
 ### LNCH-17: nits
 - **Status: OPEN** (batch 10 reviews, NITs)
 - Severity: NIT
@@ -1324,6 +1317,13 @@ Batch 10 went through seven review rounds, a review of its merge with main and o
 - G90 and G91 keep their old numbers inside, in variable and path names (`U72`, `M72`, `real73`) (merge review).
 - The line that opens `_rd_errfd` at the top of `sandbox.sh` has no test of its own; `_rd_fail()`'s tests reach it only through a launch.
 - Where the verify directory's inode does not survive the bind (macOS Docker Desktop, Colima), the NOTE that verification is skipped prints on every launch, so the output directories batch 10 added to the manifest are not verified there either.
+
+### LNCH-18: with no `getfacl`, refusing an `ls` that is neither GNU's nor BSD's is not tested
+- **Status: OPEN** (review of `162d4c3`, finding #5)
+- Severity: LOW. Confidence: CONFIRMED (a mutant that trusts any `ls` there passes `tests/test-launcher-dir-ro.sh`)
+- Location: sandbox.sh: `_agent_bits_writable()`, its branch for a host with no `getfacl`
+- What's wrong: Linux hosts have `getfacl`, T25h's busybox arm puts a fake `getfacl` on `PATH`, and the floor containers run as root, which skips T25. On macOS, which has no `getfacl`, T25g runs the branch with BSD `ls` only, so the part that refuses any other `ls` is reached by no test.
+- Fix direction: a T25 arm with a `PATH` that has no `getfacl`, built from links to the tools the launch needs.
 
 ---
 

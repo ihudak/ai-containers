@@ -554,8 +554,8 @@ build_image() {
   local build_args=()
   # Never another project's tag, or a base image's (ENV-7) — checked before
   # anything is written, the allowlists included (review of the batch 10 merge),
-  # and only for the name the committed sandbox.env chose: one given as the
-  # argument is the user's (review of a368fcb).
+  # and only for the name the committed sandbox.env chose: a different name
+  # given as the argument is the user's (review of 162d4c3).
   if [[ "$build_image_name" == "$image_name" ]]; then
     ai_containers_build_retag_guard "$build_image_name" "$script_dir" || exit 1
   fi
