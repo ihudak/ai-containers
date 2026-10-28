@@ -1400,14 +1400,14 @@ Batch 10 went through seven review rounds, a review of its merge with main and o
 - Fix direction: measure whether uutils' `ls -ld` marks an ACL with `+` and trust it if it does; otherwise say in the refusal that installing `acl` (`getfacl`) lets the check decide. Make T25g's vectors independent of the host's `ls`, as T25h's shim does.
 
 ### LNCH-19: the group checks compare physical paths, not device:inode
-- **Status: OPEN** (review of `305d655`)
+- **Status: FIXED** (batch 12, `e2905c5`): the group directory is also compared with `$HOME` by `_launcher_dev_ino()`, both through a trailing `/.`; tested with a `stat` shim standing in for the alias (G92).
 - Severity: LOW. Confidence: CONFIRMED (a bind mount of `$HOME` onto `~/.ai-containers/bm`, inside `unshare -rm`, launched and mounted the real `~/.ssh`)
 - Location: sandbox.sh: `run_container()`, the "is your home directory" refusal
 - What's wrong: the group directory is compared with `$HOME` by `pwd -P`, so an alias that is the same directory by another path — a bind mount, a macOS firmlink, another case on a case-insensitive filesystem — is not caught. Each needs a deliberate setup, usually root, and the agent cannot create `~/.ai-containers/<group>`.
 - Fix direction: compare `_launcher_dev_ino()` of the two instead.
 
 ### LNCH-20: batch 11 leftovers
-- **Status: OPEN** (reviews of batch 11, LOW and NIT)
+- **Status: FIXED** (batch 12, `e2905c5`, `f15b6dc`, `82a9dab`): build.sh runs `validate_group_name` and prints the NOTE naming the file (`host_group_source()`, shared with the launch); the launch's NOTE and sync-to-projects.sh's warning read the files with `load_env_defaults` in the launcher's order, sync's only after its loader reads a probe back; each link-refusal hint follows the target; the menu's list is `group_menu_choices()`, tested; G92 pins the checks before any docker call or output directory. Left as is (NIT): a FUSE mount of `$HOME` (its own st_dev) is not caught; with the shell exporting `host` and a file saying it too, the NOTE names the file.
 - Severity: LOW (the first three) and NIT
 - `build.sh` does not check the group, so a `host` project's `runme.sh` builds the whole image before the launch refuses it.
 - No test pins that the group checks run before the `REPOS` `:rwcopy` volume and the output directories are made; G92 would pass with them moved back down.
