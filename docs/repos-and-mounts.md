@@ -47,16 +47,19 @@ Repo volumes are **global**: there is **one volume per repo name**, shared by co
 
 **The primary branch is asked for, never assumed.** It comes from the remote's own `HEAD` (refreshed with `git remote set-head origin -a`, so a default branch renamed since you cloned is picked up), falling back to `origin/main`, then `origin/master`, and finally to whatever is checked out. Nothing hardcodes `main`: a repo whose default is `master`, `trunk`, or `develop` lands on its own default.
 
-**It tells you what it will delete before it deletes it.** Every run — including `--yes` — prints the branch it will switch to and each local branch it will drop, marking those carrying commits that are on **no remote**:
+**It tells you what it will delete before it deletes it.** Every run — including `--yes` — prints the branch it will switch to — with any commits of its own that are on no remote, since it is moved to the remote's tip — and each local branch it will drop, marking those carrying commits that are on **no remote**, and the stash and any tag the remote does not have — a tag can hold the only reference to a commit:
 
 ```
 About to RESET the following repo(s) to a clean state:
   - app: switches to 'main'
+      MOVE main to the remote's tip — 1 commit(s) not on any remote  <-- unpushed work
       DELETE feat/parser — 3 commit(s) not on any remote  <-- unpushed work
       DELETE fix/typo — pushed
+      DROP the stash (1 entr(y/ies))  <-- not kept by reset
+      DROP tag v0.9-rc — not on the remote (the commit it marks is on a remote branch)
 
-WARNING: 1 branch(es) above carry commits that are on no remote. Deleting
-         them discards those commits. Push them first if you want them.
+WARNING: 3 item(s) above (branches, a stash, tags) hold work that is on no remote.
+         Resetting discards it. Push it first if you want it.
 ```
 
 It is **destructive and cannot be undone**, so it prompts for confirmation unless you pass `--yes`. The counts are measured *after* the fetch, so "not on any remote" reflects what the remote has now, not what this volume last saw.

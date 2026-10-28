@@ -50,6 +50,8 @@ inspect  Clone the recorded remote privately, then report on stdout, one
            PRIMARY|<branch>                the remote's default branch
            STALE|<reason>                  only when the remote could not be cloned
            BRANCH|<name>|<unpushed>|<flags> one per local branch of the volume
+           STASH|<entries>                 only when the volume has a stash
+           TAG|<name>|<kept>|<on-remote>   one per local tag of the volume
          `unpushed` counts that branch's commits on no remote branch, `?` when
          it cannot be counted. `flags` is `current` for the checked-out branch.
 
@@ -238,6 +240,36 @@ cmd_inspect() {
     flags=""; [[ "$name" == "$current" ]] && flags="current"
     printf 'BRANCH|%s|%s|%s\n' "$(shown "$name")" "$unpushed" "$flags"
   done < <(volume_branches "$dir")
+  # What else replacing .git loses besides branches, for the confirmation (bugs
+  # review REPO-8): the stash, with its entry count, and every local tag — kept
+  # when the remote has it at the same object (the clone brings it back), and
+  # whether the commit it marks is on a remote branch, since a tag can hold the
+  # only reference to one.
+  local gd="$dir/.git" n kept on
+  if [[ -e "$gd/refs/stash" || -e "$gd/logs/refs/stash" ]] || grep -qs ' refs/stash$' "$gd/packed-refs"; then
+    n="$(grep -c . "$gd/logs/refs/stash" 2>/dev/null)" || n=""
+    [[ "$n" =~ ^[1-9][0-9]*$ ]] || n='?'
+    printf 'STASH|%s\n' "$n"
+  fi
+  while IFS=$'\t' read -r name oid; do
+    [[ -n "$name" ]] || continue
+    kept='?'; on='?'
+    # Unknown without a clone or an object name read from the tag: a failed git
+    # call here would read as "no", and an empty oid matched a missing tag as
+    # "kept". show-ref, not rev-parse: a name holding revision syntax (`v1:a`)
+    # must name a ref, never resolve to an object.
+    if [[ "$oid" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] && [[ -n "$cloned" ]]; then
+      if [[ "$(git -C "$F" show-ref --verify -s "refs/tags/$name" 2>/dev/null)" == "$oid" ]]; then
+        kept=yes; on=yes
+      else
+        # Only for a tag reset drops: a history walk per tag made a repo with a
+        # thousand tags take half a minute to inspect (review of REPO-8).
+        kept=no
+        if on_remote "$oid"; then on=yes; else on=no; fi
+      fi
+    fi
+    printf 'TAG|%s|%s|%s\n' "$(shown "$name")" "$kept" "$on"
+  done < <(volume_refs "$dir" tags)
   return 0
 }
 

@@ -147,11 +147,14 @@ if [[ "$1" == "run" ]]; then
       # still report SUCCESS: a skip is not a failure, and under --all one such
       # repo must not fail the whole run.
       [[ -n "${HELPER_NO_PRIMARY:-}" ]] || printf 'PRIMARY|main\n'
-      printf 'BRANCH|main|0|current\n'
+      # HELPER_MAIN_UNPUSHED: commits on the primary branch itself on no remote.
+      printf 'BRANCH|main|%s|current\n' "${HELPER_MAIN_UNPUSHED:-0}"
       printf 'BRANCH|feat/unpushed|3|\n'
       printf 'BRANCH|fix/pushed|0|\n'
       # HELPER_UNKNOWN_COUNT: a count the helper could not make.
       [[ -z "${HELPER_UNKNOWN_COUNT:-}" ]] || printf 'BRANCH|odd/branch|?|\nBRANCH|empty/branch||\n'
+      # HELPER_LOSSES: a stash and tags, as the helper reports them (REPO-8).
+      [[ -z "${HELPER_LOSSES:-}" ]] || printf 'STASH|2\nTAG|v1|yes|yes\nTAG|onpushed|no|yes\nTAG|lonely|no|no\nTAG|murky|?|?\n'
       exit 0 ;;
     *" pull /dst"*)
       # HELPER_PULL_WARN: sync kept the checkout but could not keep a tag.
@@ -548,7 +551,7 @@ else
   fail "… and says which branch the checkout will end up on
 $(cat "$OUT")"
 fi
-if grep -q 'carry commits that are on no remote' "$OUT"; then
+if grep -q 'hold work that is on no remote' "$OUT"; then
   pass "unpushed work raises an explicit warning above the confirmation"
 else
   fail "unpushed work raises an explicit warning above the confirmation
@@ -1231,6 +1234,30 @@ grep -q 'its working copies are still removed' "$OUT" && grep -q '^volume rm.*do
   && pass 'the summary says the working copies are still removed, and they are' \
   || fail "the no-primary summary and what reset removes disagree ($(grep 'no branch' "$OUT" | head -1))"
 unset HELPER_NO_PRIMARY
+
+# REPO-8: the summary the user approves names the stash and the tags reset
+# drops, and counts what is on no remote in its WARNING; a tag the remote has
+# (the clone brings it back) is not listed.
+setup_world
+HELPER_LOSSES=1 run_repo reset docs --yes
+grep -qF 'DROP the stash (2 entr(y/ies))' "$OUT" && grep -qF 'DROP tag onpushed — not on the remote (the commit it marks is on a remote branch)' "$OUT" \
+  && grep -qF 'DROP tag lonely — not on the remote, and the commit it marks is on no remote branch' "$OUT" && ! grep -q 'tag v1' "$OUT" \
+  && grep -qF 'DROP tag murky — whether the remote has it, or its commit, is unknown' "$OUT" \
+  && grep -q 'WARNING: 4 item(s) above' "$OUT" \
+  && pass "reset's summary names the stash and the tags it drops, and counts what is lost" \
+  || fail "reset's summary of a stash and tags ($(grep -E 'DROP|WARNING' "$OUT" | tr '\n' ';'))"
+
+# The primary branch is moved to the remote's tip, so its own unpushed commits
+# are lost like a deleted branch's: named and counted, never skipped.
+setup_world
+HELPER_MAIN_UNPUSHED=2 run_repo reset docs --yes
+grep -qF "MOVE main to the remote's tip — 2 commit(s) not on any remote" "$OUT" && grep -q 'WARNING: 2 item(s) above' "$OUT" \
+  && pass "reset names and counts the primary branch's own unpushed commits" \
+  || fail "reset's summary of the primary branch's unpushed commits ($(grep -E 'main|WARNING' "$OUT" | tr '\n' ';'))"
+setup_world
+run_repo reset docs --yes
+! grep -q 'MOVE main' "$OUT" && pass "  … and says nothing of it when the primary branch is pushed" \
+  || fail "  … a pushed primary branch was reported as moved"
 
 # ── AND THE CONVERSE: a reset that FAILED must not report success ─────────────
 # repo.sh runs under `set -euo pipefail`, so reset_one's non-zero return does

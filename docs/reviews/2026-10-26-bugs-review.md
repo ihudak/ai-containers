@@ -936,7 +936,7 @@ Each fix batch was reviewed by an independent reviewer before it was merged, and
 - Fix direction: add `--memory-swap` equal to the memory, a `--pids-limit`, and a watchdog. Validate the value, document the key, and name exit 137 as an out-of-memory kill.
 
 ### REPO-8: `reset`'s confirmation lists branches only, and nothing a reset removes can be undone
-- **Status: OPEN** (batch 2 review, P2; partly documented: AGENTS.md says per-repo config and reflogs are replaced)
+- **Status: FIXED** (2026-10-28). `repo-git-reset.sh: cmd_inspect()` emits `STASH|<entries>` and, per local tag, `TAG|<name>|<kept>|<commit on a remote branch>` — kept when the fresh clone has it at the same object, so reset brings it back. `repo.sh: collect_inspections()` lists the stash and every tag not kept in the confirmation, and counts the stash, a tag whose commit is on no remote branch, and an unknown one in the WARNING with unpushed branches. Its review found two more: the primary branch's own unpushed commits were skipped by the summary although reset moves it to the remote's tip, so they were lost unannounced (older than this fix) — now a `MOVE <primary> to the remote's tip — N commit(s) not on any remote` line, counted at risk; and a history walk per tag (1000 tags: 32 s to inspect) — the walk now runs only for a tag reset drops. A tag whose object name could not be read (a hand-written name with a newline) is unknown, not matched as kept, and `show-ref --verify` is asked rather than `rev-parse`, which resolved revision syntax in a name. Reflogs and unreferenced objects are still replaced unannounced, as AGENTS.md says. Hermetic: real git in `tests/test-repo-git-reset.sh` (a stash; tags on an unpushed commit, on a pushed one, and pushed themselves), the summary in `tests/test-repo-destructive.sh`; both red on the old code. `docs/repos-and-mounts.md`'s sample shows them.
 - Severity: LOW. Confidence: CONFIRMED
 - Location: repo-git-reset.sh: `cmd_inspect()`; repo.sh's rendering of its records.
 - What's wrong: replacing `.git` also removes the stash, local tags, notes, reflogs and objects that nothing else references. A tag holding the only reference to a commit disappears without being mentioned. Before batch 2, a mistaken reset could be recovered from the reflog until the next gc. It no longer can.
@@ -1340,6 +1340,20 @@ Batch 10 went through seven review rounds, a review of its merge with main and o
 - Location: `repo.sh: cmd_rm()`, the foreign-owner refusal
 - What's wrong: it says how to drop the registry line, not that the name's own labelled working copies stay; `./repo.sh gc --repo <name>` removes them.
 - Fix direction: name that command in the message.
+
+### REPO-15: some dropped tags are labelled more cautiously than they are
+- **Status: OPEN** (review of the REPO-8 fix, LOW)
+- Severity: LOW. Confidence: CONFIRMED (measured by the review)
+- Location: `repo-git-reset.sh: cmd_inspect()`, the `TAG|` record
+- What's wrong: a local tag on a commit only a remote *tag* reaches is reported lost and counted (`no|no`), though the clone keeps that commit; a tag the remote has at another object is described as "not on the remote" where the remote's version replaces it; with the volume's own alternates file an unreachable commit is `no`, not `?`. Each errs toward warning.
+- Fix direction: test reachability from `refs/tags/` of the clone too, and name the moved-tag case.
+
+### REPO-16: a helper killed during `inspect` leaves reset's summary silent about what it did not report
+- **Status: OPEN** (review of the REPO-8 fix, LOW; the structure predates it)
+- Severity: LOW. Confidence: PLAUSIBLE (from code)
+- Location: `repo.sh: collect_inspections()`, which reads `< <(inspect_git …)` and never sees its exit status
+- What's wrong: `STASH` and `TAG` are the last records, so a helper killed after the `BRANCH` records (137, out of memory) leaves the summary without them, and reset goes on; only the helper's ERROR on stderr says so.
+- Fix direction: have the helper end with an `END|` record and treat a summary without one as unknown, at risk.
 
 ### LNCH-19: under uutils coreutils with no `getfacl`, an unlistable directory is always taken for agent-writable
 - **Status: OPEN** (found running the local gates, 2026-10-28)

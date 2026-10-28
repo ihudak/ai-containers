@@ -121,6 +121,55 @@ else
 $OUT"
 fi
 
+# ── 1b. inspect: the stash and the tags replacing .git loses (REPO-8) ───────────
+W="$(mk_repo losses)"
+g "$W" checkout -q -b feat/local >/dev/null 2>&1; commit_in "$W" a
+g "$W" tag lonely >/dev/null 2>&1                          # on a commit no remote has
+g "$W" tag -a -m ann annlonely >/dev/null 2>&1             # annotated, on the same commit
+g "$W" checkout -q main >/dev/null 2>&1
+g "$W" tag onpushed >/dev/null 2>&1                        # local tag, pushed commit
+g "$W" tag shipped >/dev/null 2>&1; g "$W" push -q origin shipped >/dev/null 2>&1
+printf 'wip\n' >> "$W/first"; g "$W" stash -q >/dev/null 2>&1
+run_script inspect "$W"
+grep -qx 'STASH|1' <<<"$OUT" && pass "inspect reports the stash and its entry count" \
+  || fail "inspect reports the stash
+$OUT"
+grep -qx 'TAG|lonely|no|no' <<<"$OUT" && grep -qx 'TAG|onpushed|no|yes' <<<"$OUT" && grep -qx 'TAG|shipped|yes|yes' <<<"$OUT" \
+  && grep -qx 'TAG|annlonely|no|no' <<<"$OUT" \
+  && pass "inspect reports each tag: kept by the remote, and whether its commit is on a remote branch" \
+  || fail "inspect's TAG records
+$OUT"
+# A hand-written tag file whose name ends in a newline splits into a record with
+# no object name: unknown, never matched as "kept" (review of REPO-8).
+W="$(mk_repo tagnl)"
+g "$W" checkout -q -b feat/x >/dev/null 2>&1; commit_in "$W" a
+g "$W" rev-parse HEAD > "$W/.git/refs/tags/wip"$'\n'
+g "$W" checkout -q main >/dev/null 2>&1
+run_script inspect "$W"
+grep -qx 'TAG|wip|?|?' <<<"$OUT" && ! grep -q '^TAG|.*|yes|' <<<"$OUT" \
+  && pass "a tag name with a newline is reported unknown, not kept" \
+  || fail "a tag name with a newline
+$OUT"
+# A stash whose reflog is gone is still a stash (its count unknown).
+W="$(mk_repo stashnolog)"
+printf 'wip\n' >> "$W/first"; g "$W" stash -q >/dev/null 2>&1; rm -f "$W/.git/logs/refs/stash"
+run_script inspect "$W"
+grep -qx 'STASH|?' <<<"$OUT" && pass "inspect reports a stash with no reflog, its count unknown" \
+  || fail "inspect missed a stash with no reflog
+$OUT"
+# With the remote gone nothing about a tag is known: never a guessed "no".
+W="$(mk_repo tagoffline)"
+g "$W" tag t1 >/dev/null 2>&1; rm -rf "$TMP/tagoffline.git"
+run_script inspect "$W"
+grep -qx 'TAG|t1|?|?' <<<"$OUT" && pass "with the remote unreachable, a tag's state is unknown, not 'no'" \
+  || fail "a tag's state with the remote unreachable
+$OUT"
+W="$(mk_repo nolosses)"
+run_script inspect "$W"
+! grep -q '^STASH|' <<<"$OUT" && ! grep -q '^TAG|' <<<"$OUT" && pass "no stash and no tags: no such records" \
+  || fail "spurious STASH/TAG records
+$OUT"
+
 # ── 2. reset: on primary, at the remote tip, other branches gone ──────────────
 
 W="$(mk_repo doreset)"

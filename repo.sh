@@ -721,7 +721,7 @@ collect_inspections() {   # $@ = repo names
     fi
 
     ensure_seed_image
-    local branches=() primary="" stale=""
+    local branches=() tags=() primary="" stale="" stash_n=""
     while IFS= read -r line; do
       kind="${line%%|*}"; rest="${line#*|}"
       case "$kind" in
@@ -732,6 +732,8 @@ collect_inspections() {   # $@ = repo names
           unpushed="${rest%%|*}"; flags="${rest#*|}"
           branches+=("${br}|${unpushed}|${flags}")
           ;;
+        STASH) stash_n="$rest" ;;
+        TAG)   tags+=("$rest") ;;
       esac
     done < <(inspect_git "$vol")
 
@@ -748,11 +750,24 @@ collect_inspections() {   # $@ = repo names
     # that exits non-zero sets the status of the assignment containing it, and
     # under `set -e` that ends the script — here, on the ordinary path where
     # the fetch SUCCEEDED and $stale is empty.
-    local stale_note=""
+    local stale_note="" entry
     [[ -n "$stale" ]] && stale_note=" (STALE: fetch failed)"
     RESET_SUMMARY+=("  - ${name}: switches to '${primary}'${stale_note}")
+    # The primary branch is moved to the remote's tip, so commits it has that no
+    # remote has are lost exactly like a deleted branch's: they were skipped here
+    # with no warning (review of REPO-8).
+    for entry in "${branches[@]}"; do
+      br="${entry%%|*}"; rest="${entry#*|}"; unpushed="${rest%%|*}"
+      [[ "$br" == "$primary" ]] || continue
+      if [[ ! "$unpushed" =~ ^[0-9]+$ ]]; then
+        RESET_SUMMARY+=("      MOVE ${br} to the remote's tip — unpushed count unknown  <-- may hold unpushed work")
+        RESET_AT_RISK=$(( RESET_AT_RISK + 1 ))
+      elif [[ "$unpushed" -gt 0 ]]; then
+        RESET_SUMMARY+=("      MOVE ${br} to the remote's tip — ${unpushed} commit(s) not on any remote  <-- unpushed work")
+        RESET_AT_RISK=$(( RESET_AT_RISK + 1 ))
+      fi
+    done
 
-    local entry
     for entry in "${branches[@]}"; do
       br="${entry%%|*}"; rest="${entry#*|}"
       unpushed="${rest%%|*}"
@@ -767,6 +782,31 @@ collect_inspections() {   # $@ = repo names
         RESET_AT_RISK=$(( RESET_AT_RISK + 1 ))
       else
         RESET_SUMMARY+=("      DELETE ${br} — pushed")
+      fi
+    done
+    # Besides branches, replacing .git loses the stash and any tag the remote
+    # does not have (bugs review REPO-8); a tag can hold the only reference to a
+    # commit, and none of it can be undone.
+    if [[ -n "$stash_n" ]]; then
+      if [[ "$stash_n" =~ ^[0-9]+$ ]]; then
+        RESET_SUMMARY+=("      DROP the stash (${stash_n} entr(y/ies))  <-- not kept by reset")
+      else
+        RESET_SUMMARY+=("      DROP the stash (entries unknown)  <-- not kept by reset")
+      fi
+      RESET_AT_RISK=$(( RESET_AT_RISK + 1 ))
+    fi
+    local tg tname tkept ton
+    for tg in ${tags[@]+"${tags[@]}"}; do
+      tname="${tg%%|*}"; tg="${tg#*|}"; tkept="${tg%%|*}"; ton="${tg#*|}"
+      [[ "$tkept" == yes ]] && continue
+      if [[ "$ton" == yes ]]; then
+        RESET_SUMMARY+=("      DROP tag ${tname} — not on the remote (the commit it marks is on a remote branch)")
+      elif [[ "$tkept" == '?' || "$ton" == '?' ]]; then
+        RESET_SUMMARY+=("      DROP tag ${tname} — whether the remote has it, or its commit, is unknown  <-- may be lost")
+        RESET_AT_RISK=$(( RESET_AT_RISK + 1 ))
+      else
+        RESET_SUMMARY+=("      DROP tag ${tname} — not on the remote, and the commit it marks is on no remote branch  <-- lost")
+        RESET_AT_RISK=$(( RESET_AT_RISK + 1 ))
       fi
     done
   done
@@ -817,11 +857,11 @@ cmd_reset() {
   printf 'About to RESET the following repo(s) to a clean state:\n'
   local l; for l in "${RESET_SUMMARY[@]}"; do printf '%s\n' "$l"; done
   printf 'This DISCARDS uncommitted changes and untracked/ignored files (git: reset --hard\n'
-  printf '+ clean -ffdx; path: rsync mirror), DELETES the local branches listed above, and\n'
-  printf 'removes any :rwcopy working copies. Cannot be undone.\n'
+  printf '+ clean -ffdx; path: rsync mirror), DELETES the local branches, the stash and the\n'
+  printf 'tags listed above, and removes any :rwcopy working copies. Cannot be undone.\n'
   if (( RESET_AT_RISK > 0 )); then
-    printf '\nWARNING: %s branch(es) above carry commits that are on no remote. Deleting\n' "$RESET_AT_RISK"
-    printf '         them discards those commits. Push them first if you want them.\n\n'
+    printf '\nWARNING: %s item(s) above (branches, a stash, tags) hold work that is on no remote.\n' "$RESET_AT_RISK"
+    printf '         Resetting discards it. Push it first if you want it.\n\n'
   fi
 
   if (( ! assume_yes )); then
