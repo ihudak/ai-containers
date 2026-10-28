@@ -374,7 +374,7 @@ launcher_ro_overlay() {
   local -a _xm_t=() _xm_by=() _xm_j=() ro_srcs=()
   local -A gpv=()
   local -a scan links walk gdirs gfiles glinks gunr gro ug usrc udst udep ukind
-  local g base what gmax gn gitmax cfg cdir hp hpd k2 first eks ik ip ph
+  local g base what gmax gn gitmax cfg cdir hp hpd k2 first eks ik ip
   local -a ek inc pgd=() pga=() pgc=()
   local -A seen=() tried=() scanned=() pinned=()
   # Included git config files read: each once per protected config, keyed by
@@ -673,29 +673,8 @@ launcher_ro_overlay() {
   # — but a cap leaving the rest writable could be filled by the agent to push a
   # real repository past it, so past 200 the launch is refused instead. A named
   # group's own directories are not scanned: the host's git never runs there.
-  # The bare repositories you list as fixtures, as physical paths, each a path
-  # inside the project (this launcher directory's parent): split without
-  # globbing, and an absolute path, a .., a glob, or one that leads out of the
-  # project is not a fixture (GIT-11; G79; automated security review of 1cb7aaa).
-  local -A fixt=()
-  local fxp fxr fxroot
-  local -a fxl=()
-  fxroot="$(cd "$self/.." 2>/dev/null && pwd -P)" || fxroot=""
-  read -r -a fxl <<< "${SANDBOX_GIT_FIXTURES:-}"
-  for fxp in ${fxl[@]+"${fxl[@]}"}; do
-    case "/$fxp/" in
-      //*|*/../*|*'*'*|*'?'*|*'['*)
-        printf 'WARNING: SANDBOX_GIT_FIXTURES entry %s is not a path inside the project; it is not a fixture.\n' "$(_q "$fxp")" >&2
-        continue ;;
-    esac
-    fxr="$(cd "$fxroot/$fxp" 2>/dev/null && pwd -P)" || continue
-    # Physically where it says: a link anywhere on the way, which the agent can
-    # plant in the project, made its target a fixture, a repository you push to
-    # among them (automated security review of 3dd1288; G79).
-    if [[ -n "$fxroot" && "$fxr" == "$(_lex_norm "$fxroot/$fxp")" && "$fxr" == "$fxroot"/* ]]; then fixt[$fxr]=1
-    else printf 'WARNING: SANDBOX_GIT_FIXTURES entry %s passes through a link or leads out of the project; it is not a fixture.\n' "$(_q "$fxp")" >&2
-    fi
-  done
+  # Every bare repository gets the placeholders, a tracked test fixture too: a
+  # list that exempted fixtures could name one you push to (GIT-11, LNCH-16; G79).
   # Read before the scan, which stops following past it (GIT-9; G83).
   gitmax="${SANDBOX_GIT_MAX:-200}"
   if [[ ! "$gitmax" =~ ^[1-9][0-9]{0,5}$ ]]; then
@@ -740,10 +719,6 @@ launcher_ro_overlay() {
   for k in ${ug[@]+"${!ug[@]}"}; do uhave[${udst[k]}${ug[k]#"${usrc[k]}"}]=1; done
   while (( xq < ${#_xm_t[@]} )); do
     xt="${_xm_t[xq]}"; j="${_xm_j[xq]}"; xq=$((xq + 1))
-    # Reached from another mount, a .git file's or a commondir's: one the host's
-    # git uses, so it gets its placeholders, unlike a bare repository only the
-    # scan finds (GIT-11; automated security review of 26dd7cf; G81).
-    _gdi_named[$xt]=1
     xv2="${bdst[j]}${xt#"${bsrc[j]}"}"
     [[ -z "${uhave[$xv2]:-}" ]] || continue
     uhave[$xv2]=1
@@ -811,7 +786,7 @@ launcher_ro_overlay() {
         printf '       if every one of them is yours.\n' >&2
         exit 1
       fi
-      gro=(); cfg=""; ph=1
+      gro=(); cfg=""
       if [[ "$kind" != dir ]]; then
         base="${g%/*}"; gro=("$g")      # a .git file, or read-only whole: pin what is above it
       else
@@ -839,26 +814,14 @@ launcher_ro_overlay() {
         if [[ -d "$g/objects" ]] && { [[ -f "$g/config" ]] || [[ ! -e "$g/commondir" && ! -L "$g/commondir" ]] \
              || { [[ -f "$g/commondir" ]] && [[ "$(_rd 16 "$g/commondir" 2>/dev/null)" == ./ ]]; }; }; then
           cfg="$g/config"
-          # A bare repository only the scan found — not a .git, not inside one, and
-          # named by no .git file or commondir — that you list in
-          # SANDBOX_GIT_FIXTURES is a fixture, and the placeholders made its tree
-          # dirty at every first launch. It gets none; what it has is still bound
-          # read-only (GIT-11; G79). Every other gets them, a repository you push
-          # to among them (G87, G89). Nothing inside a repository marks a fixture:
-          # the agent writes it all, the index that says what is tracked included
-          # (automated security reviews of 98ed1b3); sandbox.env, in the launcher
-          # directory, it sees read-only.
-          ph=1
-          if [[ "$g" != */.git && "$g" != */.git/* && "${g%/*}" != */worktrees && -z "${_gdi_named[$g]:-}" \
-                && -n "${fixt[$g]:-}" ]]; then ph=""; fi
           # A repository git reads with no config of its own gets an empty one, as
           # commondir gets ./ — or the agent could add one after the launch (G49).
-          if [[ -n "$ph" && ! -e "$g/config" && ! -L "$g/config" ]]; then ( set -C; : > "$g/config" ) 2>/dev/null || true; fi
+          if [[ ! -e "$g/config" && ! -L "$g/config" ]]; then ( set -C; : > "$g/config" ) 2>/dev/null || true; fi
           # git makes hooks/ at init, but a repository can lack it — and then the
           # agent could make it.
-          if [[ -n "$ph" && ! -e "$g/hooks" && ! -L "$g/hooks" ]]; then mkdir "$g/hooks" 2>/dev/null || true; fi
+          if [[ ! -e "$g/hooks" && ! -L "$g/hooks" ]]; then mkdir "$g/hooks" 2>/dev/null || true; fi
           first=""
-          if [[ -n "$ph" && ! -e "$g/commondir" && ! -L "$g/commondir" ]]; then
+          if [[ ! -e "$g/commondir" && ! -L "$g/commondir" ]]; then
             if ( set -C; printf './\n' > "$g/commondir" ) 2>/dev/null; then first=1; fi
           fi
           # Anything but our ./ sends the host's git elsewhere for this repository's
@@ -929,7 +892,7 @@ launcher_ro_overlay() {
         fi
         # A common config that cannot be read cannot say the extension is off, so
         # the placeholder is made, and config.worktree walked below, as if it were on.
-        if [[ -n "$cfg" && -n "$ph" && ! -e "$g/config.worktree" && ! -L "$g/config.worktree" ]]; then
+        if [[ -n "$cfg" && ! -e "$g/config.worktree" && ! -L "$g/config.worktree" ]]; then
           if [[ ! -f "$cfg" ]] || _git_config_bool "$cfg" extensions.worktreeConfig; then
             ( set -C; : > "$g/config.worktree" ) 2>/dev/null || true
           fi
@@ -940,7 +903,7 @@ launcher_ro_overlay() {
             printf '         what it leads to is what your host'\''s git reads. Replace the link with it.\n' >&2
           elif [[ -e "$g/$f" ]]; then
             gro+=("$g/$f")
-          elif [[ "$f" == hooks || "$f" == commondir ]] && [[ -d "$g/objects" && -n "$ph" ]]; then
+          elif [[ "$f" == hooks || "$f" == commondir ]] && [[ -d "$g/objects" ]]; then
             printf 'WARNING: %s has no %s and one could not be made; the agent could make it.\n' "$(_term "$g")" "$(_term "$f")" >&2
           fi
         done
@@ -2047,7 +2010,6 @@ _gdi_follow() {
   # launcher_ro_overlay once every mount is scanned (reviews of dcf7dab, 4e7da47).
   local _j
   if [[ -n "$_ok" ]]; then
-    _gdi_named[$t]=1
     for _j in ${bsrc[@]+"${!bsrc[@]}"}; do
       [[ "${bsrc[_j]}" != "$3" ]] || continue
       if [[ "$t" == "${bsrc[_j]}" || "$t" == "${bsrc[_j]}"/* ]]; then
@@ -2718,7 +2680,6 @@ _launcher_verify_dir=""
 _git_skip_root=""
 _gir_tmp="" _gir_tmp_warned=""
 declare -A _gir_cache=()   # git directory → its read index, once per launch
-declare -A _gdi_named=()   # git directories a .git file or commondir names (GIT-11)
 _fs_deadline=""             # the FIFO search's deadline, once per launch (_ro_fifo_search)
 # The hooks git runs, by name (githooks(5)); anything else in hooks/ is inert.
 git_hook_names=(applypatch-msg pre-applypatch post-applypatch pre-commit

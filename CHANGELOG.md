@@ -23,9 +23,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   with `getfacl`, counts); inside the agent's own output directories such a
   directory only warns. A `.git` you can search but not list refuses the
   launch, whoever owns it. Every bare repository gets the launcher's
-  placeholder files wherever it is found, one you push to among them; list test
-  fixtures in the new `SANDBOX_GIT_FIXTURES` (in `sandbox.env`) to keep them
-  clean. An output directory
+  placeholder files wherever it is found, one you push to among them, and so
+  does a test fixture a project tracks: ignore `<fixture>.git/commondir` and
+  `<fixture>.git/config` in the project's `.gitignore`. An output directory
   (`.agent-blocked`, `.agent-discovery`) that is a link is refused, even one
   you made on purpose (bugs review section 10).
 - **`./build.sh` no longer retags another project's image, or a base image,

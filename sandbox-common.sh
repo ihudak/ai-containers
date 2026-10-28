@@ -88,7 +88,7 @@ env_key_denied() {
 env_key_portable() {
   case "$1" in
     IMAGE_NAME|AI_CONTAINER_GROUP|SANDBOX_MODE|SANDBOX_WORKDIR|\
-    SANDBOX_GIT_MAX|SANDBOX_LAUNCHER_MAX|SANDBOX_GIT_FIXTURES|\
+    SANDBOX_GIT_MAX|SANDBOX_LAUNCHER_MAX|\
     CONTAINER_CPUS|CONTAINER_MEMORY|CONTAINER_MEMORY_RESERVATION|CONTAINER_MEMORY_SWAP|\
     CONTAINER_NOFILE|CONTAINER_SHM_SIZE|CONTAINER_NAME|\
     REPO_BACKEND|REPOS_PATH|PREVIEW_PORTS|\
@@ -141,17 +141,6 @@ env_value_portable() {
     AI_CONTAINER_GROUP) [[ "$2" != host ]]; return ;;
     # The seed image is run as root with your ~/.ssh mounted (repo.sh); a build
     # tagged with its name would replace it.
-    SANDBOX_GIT_FIXTURES)
-      # Paths inside the project only: a fixture gets no placeholders, so an
-      # absolute path, a .. or a glob in a committed list could reach a bare
-      # repository you push to (automated security review of 1cb7aaa).
-      local fe
-      local -a fl=()
-      read -r -a fl <<< "$2"
-      for fe in ${fl[@]+"${fl[@]}"}; do
-        case "/$fe/" in //*|*/../*|*'*'*|*'?'*|*'['*) return 1 ;; esac
-      done
-      return 0 ;;
     IMAGE_NAME)
       local mine seed
       mine="$(_image_repo "$2")"; seed="$(_image_repo "${REPO_SEED_IMAGE:-ai-containers-seed}")"

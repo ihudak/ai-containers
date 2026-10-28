@@ -1499,47 +1499,31 @@ has_mount "$M78/.git/modules/sub/config:/workspace/proj/m78/.git/modules/sub/con
   || fail "G78 objects/ or a bare worktree's HEAD hid it (git mounts: $(git_mounts | grep -E 'modules/sub|b78' | tr '\n' ' '))"
 rm -rf "$U78" "$M78" "$PROJ/w78" "$PROJ/b78.git" "$PROJ/bw78"
 
-# ── G79: a bare repository only the scan finds gets no placeholders ──────────
-# A project that tracks a config-less fixture (testdata/fixture.git) got config,
-# commondir and hooks/ written into it at every first launch, a dirty tree; the
-# host's git reads such a fixture only when run inside it (GIT-11). One a .git
-# file names still gets them (G49 covers a repository's own).
-# What marks a fixture is that you list it in SANDBOX_GIT_FIXTURES (sandbox.env,
-# which the agent sees read-only): nothing inside a repository is out of the
-# agent's reach, the index that says what is tracked included (automated
-# security reviews of 98ed1b3; the user's choice). Two fixtures, one
-# config-less and one as `git init --bare` left it, both listed.
+# ── G79: a tracked bare fixture gets its placeholders; .gitignore keeps it clean
+# A project that tracks a config-less fixture (testdata/fixture.git) gets config,
+# commondir and hooks/ written into it at its first protected launch (GIT-11).
+# Nothing can exempt one: the SANDBOX_GIT_FIXTURES list that did was dropped,
+# because a committed list could name a bare repository you push to, which the
+# host's git runs (LNCH-16, GIT-21; the user's choice). Two fixtures, one
+# config-less and one as `git init --bare` left it, minus its config; the old
+# key, set anyway, changes nothing. The empty hooks/ is not shown by git, so two
+# .gitignore lines leave the project's status clean.
 mkdir -p "$PROJ/td79" && "${G[@]}" init -q --bare "$PROJ/td79/fx.git" \
   && rm -rf "$PROJ/td79/fx.git/config" "$PROJ/td79/fx.git/hooks" "$PROJ/td79/fx.git/description" "$PROJ/td79/fx.git/info" \
   && "${G[@]}" init -q --bare "$PROJ/td79/full.git" && rm -f "$PROJ/td79/full.git/config" \
   && "${G[@]}" -C "$PROJ" add -f td79 && "${G[@]}" -C "$PROJ" commit -q -m fixtures79 || { printf 'SCAFFOLD-FAILED: G79\n'; exit 1; }
-before79="$(cd "$PROJ/td79" && find . | LC_ALL=C sort)"
 SANDBOX_GIT_FIXTURES="td79/fx.git td79/full.git" launch ..
-after79="$(cd "$PROJ/td79" && find . | LC_ALL=C sort)"
-[[ "$before79" == "$after79" ]] && ! grep -qF 'td79/fx.git has no' "$ERR" && ! grep -qF 'td79/full.git has no' "$ERR" \
-  && pass "G79 a bare repository listed in SANDBOX_GIT_FIXTURES is left as it is, without a WARNING" \
-  || fail "G79 placeholders written into a fixture (new: $(comm -13 <(printf '%s\n' "$before79") <(printf '%s\n' "$after79") | tr '\n' ' '); $(grep -F td79 "$ERR" | head -1))"
-# An entry that leaves the project, whichever way it is spelled, is not a fixture
-# (automated security review of 1cb7aaa).
-rm -f "$PROJ/td79/full.git/commondir"
-SANDBOX_GIT_FIXTURES="td79/../td79/full.git $PROJ/td79/full.git td79/f*.git" launch ..
-[[ -f "$PROJ/td79/full.git/commondir" ]] && grep -qF 'SANDBOX_GIT_FIXTURES' "$ERR" \
-  && pass "G79 an entry with .., an absolute path or a glob is not a fixture, and is named" \
-  || fail "G79 a fixture entry outside the rule was taken"
-rm -f "$PROJ/td79/full.git/commondir" "$PROJ/td79/full.git/config"
-# …nor a listed path the agent turned into a link to another bare repository in
-# the project, one you push to say (automated security review of 3dd1288).
-ln -s full.git "$PROJ/td79/lnk.git"
-SANDBOX_GIT_FIXTURES="td79/lnk.git" launch ..
-[[ -f "$PROJ/td79/full.git/commondir" ]] && grep -qF 'td79/lnk.git' "$ERR" \
-  && pass "G79 a listed fixture path that is a link is not a fixture, and is named" \
-  || fail "G79 a link in the fixture list made its target a fixture"
-rm -f "$PROJ/td79/lnk.git" "$PROJ/td79/full.git/commondir" "$PROJ/td79/full.git/config"
-# G89: one tracked but not listed gets them: the agent could mark a repository
-# you push to as tracked before its first protected launch.
-launch ..
-[[ -f "$PROJ/td79/full.git/commondir" ]] && pass "G89 a tracked bare repository not listed as a fixture gets its placeholders" \
-  || fail "G89 a tracked, unlisted bare repository was left without placeholders"
+ok79=1
+for r in fx full; do
+  [[ -f "$PROJ/td79/$r.git/commondir" && -f "$PROJ/td79/$r.git/config" ]] || ok79=""
+  has_mount "$PROJ/td79/$r.git/commondir:/workspace/proj/td79/$r.git/commondir:ro" || ok79=""
+done
+[[ -n "$ok79" ]] && pass "G79 a tracked bare fixture gets its placeholders, SANDBOX_GIT_FIXTURES or not" \
+  || fail "G79 a fixture was left without placeholders ($(git_mounts | grep td79 | tr '\n' ' '))"
+printf 'td79/*.git/commondir\ntd79/*.git/config\n' > "$PROJ/td79/.gitignore.79"
+st79="$("${G[@]}" -C "$PROJ" -c core.excludesFile="$PROJ/td79/.gitignore.79" status --porcelain --untracked-files=all -- td79 2>&1)"
+[[ "$st79" == "?? td79/.gitignore.79" ]] && pass "G79 two .gitignore lines leave the fixtures' status clean" \
+  || fail "G79 status with the ignore lines: $(tr '\n' ' ' <<<"$st79")"
 "${G[@]}" -C "$PROJ" rm -rq --cached td79 && "${G[@]}" -C "$PROJ" commit -q -m unfixtures79; rm -rf "$PROJ/td79"
 
 # ── G80: a gitdir rewritten to a path that does not exist is named ───────────
@@ -1702,12 +1686,11 @@ rm -rf "$TMP/nogit86" "$TMP/big86.config" "$TMP/o86" "$TMP/e86" "$fns86"
 # A bare repository you push to — say ./remote.git in the project — is one the
 # host's git runs: the agent wrote a commondir into one that had none, pointing
 # at a copy with its own post-receive, and the next `git push` ran it (review of
-# the batch 10 branch, under GIT-11). Only one listed in SANDBOX_GIT_FIXTURES is
-# left without them (G79).
+# the batch 10 branch, under GIT-11). Nothing exempts one (G79).
 "${G[@]}" init -q --bare "$PROJ/remote87.git"
 launch ..
 [[ -f "$PROJ/remote87.git/commondir" ]] && has_mount "$PROJ/remote87.git/commondir:/workspace/proj/remote87.git/commondir:ro" \
-  && pass "G87 a bare repository only the scan finds, not listed as a fixture, gets its placeholders" \
+  && pass "G87 a bare repository only the scan finds gets its placeholders" \
   || fail "G87 a pushed-to bare repository was left without a commondir ($(git_mounts | grep remote87 | tr '\n' ' '))"
 rm -rf "$PROJ/remote87.git"
 

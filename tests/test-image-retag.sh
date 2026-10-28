@@ -144,16 +144,10 @@ env_value_portable IMAGE_NAME my-proj-img || r+=" plain-refused"
 env_value_portable IMAGE_NAME my-proj-img:dev || r+=" tag-refused"
 [[ -z "$r" ]] && pass "a portable IMAGE_NAME is a local name: no registry host, no namespace" || fail "IMAGE_NAME rule:$r"
 
-# SANDBOX_GIT_FIXTURES leaves bare repositories without placeholders, so a
-# committed one names paths inside the project only: no absolute path, no .., no
-# glob (automated security review of 1cb7aaa).
-r=""
-env_value_portable SANDBOX_GIT_FIXTURES "testdata/fx.git sub/other.git" || r+=" plain-refused"
-env_value_portable SANDBOX_GIT_FIXTURES "/home/me/remote.git" && r+=" absolute"
-env_value_portable SANDBOX_GIT_FIXTURES "td/../../remote.git" && r+=" dotdot"
-env_value_portable SANDBOX_GIT_FIXTURES "td/*.git" && r+=" glob"
-env_value_portable SANDBOX_GIT_FIXTURES "td/[ab].git" && r+=" bracket"
-[[ -z "$r" ]] && pass "a portable SANDBOX_GIT_FIXTURES names paths inside the project only" || fail "SANDBOX_GIT_FIXTURES rule:$r"
+# SANDBOX_GIT_FIXTURES is gone: a committed list could exempt a bare repository
+# you push to from its placeholders (LNCH-16). sandbox.env ignores it now.
+env_key_portable SANDBOX_GIT_FIXTURES && fail "SANDBOX_GIT_FIXTURES is still a portable key" \
+  || pass "SANDBOX_GIT_FIXTURES is no longer a portable key"
 
 # build.sh itself runs the guard, before docker build: an engine copy whose
 # committed sandbox.env names a base image is refused, and docker build is never

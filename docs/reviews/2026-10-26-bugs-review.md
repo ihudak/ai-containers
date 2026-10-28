@@ -1032,9 +1032,9 @@ Batch 9 (`9bd3729` … `6a0b37f`) went through 19 review rounds. Every HIGH and 
 - Fix direction: route these reads through one bounded helper (`timeout 2`, or a non-blocking open), and treat a timeout as unreadable.
 
 ### GIT-11: the launcher writes `config`, `commondir` and `hooks/` into config-less repository fixtures a project tracks
-- **Status: FIXED (batch 10)** — `86427b0`: every bare repository gets the placeholders, except one only the scan finds (not a `.git`, not inside one, named by no `.git` file or `commondir`) that the new portable `SANDBOX_GIT_FIXTURES` lists — paths inside the project with no link on the way (the user's choice; G79, G87, G89).
+- **Status: FIXED (batch 11)** — `@B11@`: every bare repository gets the placeholders, a tracked test fixture too; `SANDBOX_GIT_FIXTURES`, which exempted listed fixtures (batch 10, `86427b0`), was dropped, because a committed list could name a bare repository you push to (LNCH-16; the user's choice). AGENTS.md says to ignore `<fixture>.git/commondir` and `<fixture>.git/config` in the project's `.gitignore` (G79).
 - Severity: LOW. Confidence: CONFIRMED (reproduced: the fixture repro; after a launch, `git status` shows `?? testdata/fixture.git/commondir` and `?? testdata/fixture.git/config`)
-- Location: sandbox.sh: `if [[ -n "$ph" && ! -e "$g/config" && ! -L "$g/config" ]]; then ( set -C; : > "$g/config" ) 2>/dev/null || true; fi`
+- Location: sandbox.sh: `if [[ ! -e "$g/config" && ! -L "$g/config" ]]; then ( set -C; : > "$g/config" ) 2>/dev/null || true; fi`
 - What's wrong: any HEAD + `objects/` + `refs/` directory is protected, so a tracked test fixture with no config gets permanent untracked placeholder files. AGENTS.md does not mention this.
 - Failure scenario: a project tracks `testdata/fixture.git/` with no config. After one launch its tree is dirty, and a test that relies on the fixture having no config behaves differently.
 - Fix direction: no security fix is needed. Document it beside the placeholder text in AGENTS.md (add the files to the fixture's `.gitignore`). Or make the `config` placeholder only where a `.git` file or an index names the directory, or where it is named `.git`.
@@ -1280,9 +1280,9 @@ Batch 9 (`9bd3729` … `6a0b37f`) went through 19 review rounds. Every HIGH and 
 Batch 10 went through seven review rounds, a review of its merge with main and one of the fixes that review asked for (`162d4c3`, `708742d`); every HIGH and MEDIUM they found was fixed or, where the user chose, designed out (GIT-13). What they left open:
 
 ### GIT-21: a bare repository created mid-session can borrow a listed fixture's exemption
-- **Status: OPEN** (batch 10 review, round 5 finding #1)
+- **Status: CLOSED (batch 11)** — `@B11@`: no longer applies; there is no fixture exemption to borrow (GIT-11).
 - Severity: LOW. Confidence: PLAUSIBLE (reproduced with the fixture loop alone, not end to end)
-- Location: sandbox.sh: `if [[ -n "$fxroot" && "$fxr" == "$(_lex_norm "$fxroot/$fxp")" && "$fxr" == "$fxroot"/* ]]; then fixt[$fxr]=1`
+- Location: sandbox.sh, the `SANDBOX_GIT_FIXTURES` loop in `launcher_ro_overlay()` (removed in batch 11)
 - What's wrong: a bare repository no launch has protected yet (one you create during a session) can be moved by the agent onto a listed `SANDBOX_GIT_FIXTURES` path, with a link left at its old path. The next launch takes the fixture path, a real directory now, for the fixture; the scan does not follow the link, and your `git push` goes through it into a repository with no placeholders and no first-protection NOTE.
 - Fix direction: print the first-protection exec-key and hooks NOTE for fixtures too, or warn when a link in a writable mount leads to a listed fixture. AGENTS.md already lists a repository the agent creates before its first protection as not covered.
 
@@ -1301,9 +1301,9 @@ Batch 10 went through seven review rounds, a review of its merge with main and o
 - Fix direction: refuse when the nearest existing ancestor is an empty mount point, or accept it as the NOTE says.
 
 ### LNCH-16: `SANDBOX_GIT_FIXTURES` is portable, so a commit can name a repository you push to
-- **Status: ACCEPTED** (the user's choice; automated security review of the merge)
+- **Status: FIXED (batch 11)** — `@B11@`: `SANDBOX_GIT_FIXTURES` was removed, not made machine-only: every bare repository gets its placeholders (GIT-11; the user's choice). The entry below said "the same trust as a committed `SANDBOX_GIT_MAX`", which was wrong: raising that cap protects more repositories, while this key was the only committed one that turned protection off.
 - Severity: LOW. Confidence: CONFIRMED (by design)
-- Location: sandbox-common.sh: `SANDBOX_GIT_MAX|SANDBOX_LAUNCHER_MAX|SANDBOX_GIT_FIXTURES|`
+- Location: sandbox-common.sh, `env_key_portable()` (the key removed in batch 11)
 - What's wrong: a team can commit the fixture list, which is the point; a malicious commit that you pull can list a bare repository you push to, which then gets no placeholders. The same trust as a committed `SANDBOX_GIT_MAX`. Entries are plain paths inside the project with no link on the way.
 - Fix direction: make it machine-only (`env_key_machine_only`) if a committed list is not wanted.
 
