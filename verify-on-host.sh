@@ -83,6 +83,7 @@
 # Phase 4 delegates to the runtime integration corpus, which uses its own
 # throwaway image tags and group directories.
 set -uo pipefail
+unset CDPATH  # a relative cd follows it and prints the directory (bugs review GIT-17, GIT-20)
 
 REPO="${REPO:-$PWD}"
 LOG_PREFIX="[host-verify]"

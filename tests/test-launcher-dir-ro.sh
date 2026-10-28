@@ -1052,6 +1052,17 @@ TMPDIR="$TMP/no-such-tmp51" launch "$LAUNCHER" "$PROJ"
 [[ "$LAUNCH_RC" != 0 ]] && grep -qF "in $TMP/no-such-tmp51 (TMPDIR)" "$ERR" \
   && pass "T51 a stale TMPDIR refuses a launch with read-only binds, naming the TMPDIR" \
   || fail "T51 the refusal does not name the TMPDIR (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
+# The index read needs a temporary directory too: it says so once per launch,
+# naming the TMPDIR, rather than once per index (LNCH-15). Two repositories
+# with an index each, so "once" is tested.
+for r in r51a r51b; do
+  mkdir -p "$TMP/g51/$r" && git -C "$TMP/g51/$r" init -q && : > "$TMP/g51/$r/f" && git -C "$TMP/g51/$r" add f
+done
+TMPDIR="$TMP/no-such-tmp51" EXTRA_MOUNTS="$TMP/g51" launch "$LAUNCHER" "$TMP/app"
+[[ "$(grep -cF "cannot make a temporary directory in $TMP/no-such-tmp51 (TMPDIR)" "$ERR")" == 1 ]] \
+  && pass "T51 the index read names the TMPDIR it could not use, once" \
+  || fail "T51 the index read's TMPDIR warning (count: $(grep -cF 'cannot make a temporary directory' "$ERR"))"
+rm -rf "$TMP/g51"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

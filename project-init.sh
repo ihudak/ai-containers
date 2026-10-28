@@ -15,6 +15,7 @@
 # first command to apply to the whole file):
 # shellcheck disable=SC2154
 set -euo pipefail
+unset CDPATH  # a relative cd follows it and prints the directory (bugs review GIT-17, GIT-20)
 # shellcheck source=bash-floor.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bash-floor.sh"
 # shellcheck source=host-preflight.sh
@@ -62,6 +63,8 @@ emit_launcher() {  # $1=destination path  $2=project name
 # project-init.sh (re-run it to regenerate). Config lives in sandbox.env (portable) and
 # sandbox.local.env (this machine); precedence inline > local > portable.
 set -euo pipefail
+# A CDPATH from your shell would send this cd to another project's launcher.
+unset CDPATH
 cd "\$(dirname "\${BASH_SOURCE[0]}")"
 
 # Build-time GitHub token for private tool downloads. build.sh passes it to docker build

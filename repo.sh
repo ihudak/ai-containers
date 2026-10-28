@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+unset CDPATH  # a relative cd follows it and prints the directory (bugs review GIT-17, GIT-20)
 
 # repo.sh — manage shared, native-speed repo volumes for the AI sandbox.
 #

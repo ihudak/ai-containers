@@ -37,6 +37,7 @@
 # about — never `rm -rf` on a directory handed in — the same narrow-cleanup
 # discipline remove_replaced_image() follows in sandbox-common.sh.
 set -euo pipefail
+unset CDPATH  # a relative cd follows it and prints the directory (bugs review GIT-17, GIT-20)
 
 _here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=SCRIPTDIR/sandbox-common.sh

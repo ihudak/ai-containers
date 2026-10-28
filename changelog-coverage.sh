@@ -35,6 +35,7 @@
 # Unreleased is empty. That condition needs no judgement and was the actual
 # failure both times.
 set -uo pipefail
+unset CDPATH  # a relative cd follows it and prints the directory (bugs review GIT-17, GIT-20)
 
 # The declared bash floor, as every entry point here does: this is run by a
 # human before tagging, and finding out from a release that it ran under an

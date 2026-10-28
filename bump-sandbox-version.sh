@@ -10,6 +10,7 @@
 #
 # Usage: ./bump-sandbox-version.sh <slug>      (e.g. graalvm-split)
 set -euo pipefail
+unset CDPATH  # a relative cd follows it and prints the directory (bugs review GIT-17, GIT-20)
 # shellcheck source=bash-floor.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bash-floor.sh"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

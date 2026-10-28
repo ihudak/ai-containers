@@ -61,4 +61,27 @@ migrate_launcher_naming "$dest3"
 [[ -f "$dest3/runme.sh" ]]           || { echo "FAIL: runme.sh was deleted"; fail=1; }
 [[ -f "$dest3/proj3-container.sh" ]] || { echo "FAIL: legacy container.sh was deleted/renamed"; fail=1; }
 
+# ── 4. backfill_launcher_cdpath: a thin runme.sh generated before GIT-20 gets
+# `unset CDPATH` just before its cd, once; one without that cd is left alone ──
+dest4="$TMP/proj4/.ai-containers"; mkdir -p "$dest4"
+cp "$dest1/runme.sh" "$dest4/runme.sh"; chmod 755 "$dest4/runme.sh"
+backfill_launcher_cdpath "$dest4" >/dev/null
+cdl='cd "$(dirname "${BASH_SOURCE[0]}")"'
+prev="$(grep -B1 -xF "$cdl" "$dest4/runme.sh" | head -1)"
+[[ "$prev" == "unset CDPATH" ]] || { echo "FAIL: unset CDPATH not inserted just before the cd (line before it: '$prev')"; fail=1; }
+[[ "$(p_stat_mode "$dest4/runme.sh")" == 755 ]] || { echo "FAIL: backfill changed runme.sh's mode"; fail=1; }
+before4="$(p_sha1 "$dest4/runme.sh")"
+out4="$(backfill_launcher_cdpath "$dest4")"
+[[ "$before4" == "$(p_sha1 "$dest4/runme.sh")" && -z "$out4" ]] || { echo "FAIL: a second backfill changed runme.sh or reported a change"; fail=1; }
+before3="$(p_sha1 "$dest3/runme.sh")"
+backfill_launcher_cdpath "$dest3" >/dev/null
+[[ "$before3" == "$(p_sha1 "$dest3/runme.sh")" ]] || { echo "FAIL: backfill touched a runme.sh with no self-cd"; fail=1; }
+# The launcher project-init.sh generates now needs no backfill.
+# shellcheck disable=SC1090
+( source "$SCRIPT_DIR/project-init.sh" 2>/dev/null; emit_launcher "$TMP/gen-runme.sh" gen )
+before5="$(p_sha1 "$TMP/gen-runme.sh")"; mkdir -p "$TMP/gen/.ai-containers"; cp "$TMP/gen-runme.sh" "$TMP/gen/.ai-containers/runme.sh"
+backfill_launcher_cdpath "$TMP/gen/.ai-containers" >/dev/null
+[[ "$before5" == "$(p_sha1 "$TMP/gen/.ai-containers/runme.sh")" ]] && grep -qx 'unset CDPATH' "$TMP/gen-runme.sh" \
+  || { echo "FAIL: the generated runme.sh lacks unset CDPATH, or backfill changed it"; fail=1; }
+
 (( fail == 0 )) && echo "PASS: launcher migration (repoint-only, never deletes or renames)" || exit 1

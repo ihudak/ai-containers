@@ -16,6 +16,7 @@
 # whole premise is that the notes were written before the tag was cut, so
 # publishing silence would defeat the change rather than degrade gracefully.
 set -uo pipefail
+unset CDPATH  # a relative cd follows it and prints the directory (bugs review GIT-17, GIT-20)
 
 # The declared bash floor, in one place, as every other entry point does it.
 # This script uses mapfile, `printf -v` and array slicing, and its whole job is

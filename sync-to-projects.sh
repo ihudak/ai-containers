@@ -19,6 +19,7 @@
 #   project already set is never touched), and the '# schema-version:' marker is
 #   ensured. See docs/multiple-projects.md "sandbox.conf schema versioning".
 set -euo pipefail
+unset CDPATH  # a relative cd follows it and prints the directory (bugs review GIT-17, GIT-20)
 # shellcheck source=bash-floor.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bash-floor.sh"
 # shellcheck source=host-preflight.sh
@@ -253,6 +254,28 @@ migrate_launcher_naming() {
   fi
 }
 
+# A thin runme.sh generated before GIT-20 cd's to its own directory with the
+# user's CDPATH still set: run as `bash .ai-containers/runme.sh`, a CDPATH
+# holding another project's `.ai-containers` sends it there, and it builds and
+# starts THAT project, with no error. Insert the unset just before that cd —
+# idempotent, in place, and only in a launcher that has the cd line.
+backfill_launcher_cdpath() {
+  local f="$1/runme.sh"
+  local cdline='cd "$(dirname "${BASH_SOURCE[0]}")"'
+  [[ -f "$f" ]] || return 0
+  grep -qF "$cdline" "$f" || return 0
+  ! grep -q '^unset CDPATH' "$f" || return 0
+  awk -v cdline="$cdline" '
+    !done && index($0, cdline) == 1 {
+      print "# A CDPATH from your shell would send this cd to another project'"'"'s launcher."
+      print "unset CDPATH"
+      done = 1
+    }
+    { print }
+  ' "$f" > "$f.tmp" && cat "$f.tmp" > "$f" && rm -f "$f.tmp"
+  printf '  Added `unset CDPATH` to runme.sh (bugs review GIT-20).\n'
+}
+
 sync_project() {
   local project_path="$1"
   local dest="${project_path}/.ai-containers"
@@ -281,6 +304,7 @@ sync_project() {
 
   # Migrate legacy runme.sh<->launcher naming before copying shared files.
   migrate_launcher_naming "$dest"
+  backfill_launcher_cdpath "$dest"
 
   # Shared scripts and build files — the list lives in shared-files.sh, the
   # single definition project-init.sh also sources (see there).

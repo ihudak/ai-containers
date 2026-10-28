@@ -1237,14 +1237,14 @@ Batch 9 (`9bd3729` … `6a0b37f`) went through 19 review rounds. Every HIGH and 
 ## 13. Found while fixing LNCH-14, GIT-16, GIT-17 and GIT-18
 
 ### GIT-20: the other entry points still resolve their own directory through `CDPATH`
-- **Status: OPEN** (review of the GIT-17 fix, LOW)
+- **Status: FIXED** (2026-10-28). Every host entry point that resolves its own directory unsets `CDPATH` right after its `set` line: the six named here and `migrate-runme.sh`, `ai-containers-report.sh`, `release-title.sh`, `changelog-coverage.sh`, `changelog-section.sh`, `check-sandbox-version.sh` and `bump-sandbox-version.sh`. The in-container link scripts `cd` to absolute paths only, which `CDPATH` never redirects. New hermetic `tests/test-cdpath.sh` runs each of the 14 as `bash eng/<script>` with `CDPATH` naming a decoy `eng/`, and requires the first file it sources to be its own; the 13 changed here each failed on the old code, with the path printed twice. Its review found the one that failed silently: the `runme.sh` that `project-init.sh: emit_launcher()` generates, run as `bash .ai-containers/runme.sh` with a `CDPATH` holding another project's `.ai-containers`, built and started THAT project with no error. The generated launcher now unsets `CDPATH` before its `cd` (so does `migrate-runme.sh`, which reuses it), and `sync-to-projects.sh: backfill_launcher_cdpath()` inserts the line into launchers generated before, in place and once (`tests/test-launcher-migration.sh` case 4). `tests/test-cdpath.sh` runs a generated `runme.sh` against a decoy (red on the old launcher), and fails for any root script that resolves its own directory but is in neither its entry-point list nor its two sourced libraries. `verify-on-host.sh` and `capture-on-host.sh` unset it too.
 - Severity: LOW. Confidence: PLAUSIBLE (from code)
 - Location: `build.sh`, `repo.sh`, `group.sh`, `project-init.sh`, `sync-to-projects.sh`, `extract-discovery.sh`: each resolves its directory with `cd "$(dirname "${BASH_SOURCE[0]}")" && pwd` and leaves `CDPATH` set.
 - What's wrong: `sandbox.sh` now unsets `CDPATH`; the others do not. A relative invocation (`bash sub/build.sh`) with an exported `CDPATH` that also holds a `sub/` resolves there, and `cd` prints the directory too, so the captured path comes back as two lines.
 - Fix direction: the same `unset CDPATH` at the top of each entry point, with one test that runs an entry point under a decoy `CDPATH`.
 
 ### LNCH-15: the once-per-launch "cannot make a temporary directory" WARNING is not asserted
-- **Status: OPEN** (review of the LNCH-14 fix, LOW)
+- **Status: FIXED** (2026-10-28). T51 now launches over two repositories with an index each under the stale TMPDIR and requires the warning exactly once; with the once-only guard removed it counted 2.
 - Severity: LOW. Confidence: CONFIRMED (no test names it)
 - Location: `sandbox.sh: _git_index_read()`, its `mktemp -d` failure branch
 - What's wrong: T51 checks the FIFO search's refusal only. Where a git directory is protected, the launch is refused by that search anyway, so the warning matters only for an index read with nothing bound read-only.

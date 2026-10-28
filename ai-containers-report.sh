@@ -58,6 +58,7 @@
 #   AI_CONTAINERS_PATH_MAP   same as --path-map (space-separated list)
 
 set -uo pipefail
+unset CDPATH  # a relative cd follows it and prints the directory (bugs review GIT-17, GIT-20)
 
 # The directory this script lives in IS the base it reports on by default, and
 # it is where bash-floor.sh sits beside it.

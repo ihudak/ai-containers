@@ -36,6 +36,7 @@
 #                              "commit"  lightweight: fall back to the tag name
 #                              error     not present at all: fail loudly
 set -uo pipefail
+unset CDPATH  # a relative cd follows it and prints the directory (bugs review GIT-17, GIT-20)
 
 _here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=SCRIPTDIR/bash-floor.sh

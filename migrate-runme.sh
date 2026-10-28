@@ -26,6 +26,7 @@
 # are copied to *.pre-migrate — the per-project .ai-containers/ tree is
 # gitignored in its own repo, so these backups are the only safety net.
 set -euo pipefail
+unset CDPATH  # a relative cd follows it and prints the directory (bugs review GIT-17, GIT-20)
 # shellcheck source=bash-floor.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bash-floor.sh"
 
