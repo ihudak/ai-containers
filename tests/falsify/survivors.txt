@@ -652,21 +652,27 @@ repo-git-reset.sh:return-flip:cebd950b015708fbfa3e5da46dd8d1c4827578b9
 repo-git-reset.sh:return-flip:b0efa2e821599ba0486d07566c82033a71591e15
 repo-git-reset.sh:return-flip:c58fded937f10de7cac0d87b49895241c22ac3a9
 repo-git-reset.sh:return-flip:06d3d9b2060dd51343d5f19f0e531f15c507e3d1
+repo-git-reset.sh:logic-flip:ba96bc5c1e6cd853fba23e56089b13f2a3833a98
   git config --global --add safe.directory "$1" >/dev/null 2>&1 || true
   git … update-index -q --ignore-submodules --refresh >/dev/null 2>&1 || true
   git -C "$F" branch --quiet --set-upstream-to="origin/$b" "$b" >/dev/null 2>&1 || true
+  git -C "$F" branch --quiet --set-upstream-to="origin/$name" "$name" >/dev/null 2>&1 || true
+                                                   (REPO-9: the last statement of an
+                                                   `if` body in a loop, whose status
+                                                   nothing reads either)
   [[ "$(id -u)" == "0" ]] || return 0              (mark_safe_directory)
   [[ -f "$gd/packed-refs" ]] || return 0           (volume_refs and other_ref)
   [[ -f "$1/.git/HEAD" ]] || return 0              (volume_head)
   return 0                                         (the end of volume_head)
-  damaged:  the first three become `&& true`; the rest return 1 instead of 0.
+  damaged:  the first four become `&& true`; the rest return 1 instead of 0.
   EQUIVALENT: no test could kill these, because nothing anywhere reads the
   status they change. This file sets `set -uo pipefail` and deliberately NOT
   `-e` — its error path is the explicit `die`, so a failing statement does not
   end the script and `|| true` versus `&& true` differ only in a value that is
   then discarded. The first is mark_safe_directory's last statement, so it is
   that function's status, and `mark_safe_directory` is invoked as a bare
-  statement; the other two are not last in theirs. volume_refs and
+  statement; the next two are not last in theirs, and the REPO-9 one is last in
+  an `if` body whose status nothing reads. volume_refs and
   volume_head are read only through `< <(…)` or `$(…)`, whose status is
   dropped: `local x; x="$(volume_head …)"` keeps an assignment's status, and
   nothing tests it. other_ref is read the same way. Their output is the

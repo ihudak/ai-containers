@@ -718,6 +718,82 @@ if [[ "$RC" == 0 && -f "$W/newer" && ! -e "$M" ]]; then pass "pull fast-forwards
 else fail "pull (rc=$RC; newer: $([[ -f "$W/newer" ]] && echo yes || echo no); ran: $(cat "$M" 2>/dev/null); out: $OUT)"; fi
 rm -f "$M"
 
+# REPO-9: a branch other than the checked-out one keeps tracking its namesake on
+# origin; only the checked-out one was re-tracked.
+W="$(mk_repo track)"
+g "$W" checkout -q -b shared origin/shared >/dev/null 2>&1; g "$W" checkout -q main >/dev/null 2>&1
+S="$TMP/track.seed"; commit_in "$S" newer; g "$S" push -q origin main >/dev/null 2>&1
+run_script pull "$W"
+if [[ "$RC" == 0 && "$(git -C "$W" config branch.shared.merge)" == refs/heads/shared \
+      && "$(git -C "$W" config branch.shared.remote)" == origin ]]; then
+  pass "pull keeps every branch's upstream on origin, not only the checked-out one's"
+else
+  fail "pull dropped another branch's upstream (rc=$RC; shared.merge: $(git -C "$W" config branch.shared.merge))"
+fi
+
+# …but not a branch that diverged from its namesake (merged elsewhere, then the
+# remote's force-pushed): tracking it would report "diverged".
+W="$(mk_repo trackdiv)"
+S="$TMP/trackdiv.seed"; commit_in "$S" newer; g "$S" push -q origin main >/dev/null 2>&1
+g "$W" fetch -q origin >/dev/null 2>&1; g "$W" branch -f shared origin/main >/dev/null 2>&1
+g "$W" config --unset branch.shared.merge >/dev/null 2>&1
+run_script pull "$W"
+if [[ "$RC" == 0 && -z "$(git -C "$W" config branch.shared.merge)" ]]; then
+  pass "pull gives no upstream to a branch that is not behind its namesake on origin"
+else
+  fail "pull tracked a diverged branch (rc=$RC; shared.merge: $(git -C "$W" config branch.shared.merge); $OUT)"
+fi
+
+# REPO-6: a failure after the fast-forward, while the new .git is copied in,
+# puts the checkout back rather than leaving it at the remote's tip under the
+# old .git. A cp that fails on that one copy stands in for a full disk.
+W="$(mk_repo undo)"
+S="$TMP/undo.seed"; commit_in "$S" newer; g "$S" push -q origin main >/dev/null 2>&1
+mkdir -p "$TMP/cp-bin"
+printf '#!/bin/sh\nfor a in "$@"; do case "$a" in */.git-install.*) exit 1 ;; esac; done\nexec %s "$@"\n' "$(command -v cp)" > "$TMP/cp-bin/cp"
+chmod +x "$TMP/cp-bin/cp"
+before="$(git -C "$W" rev-parse HEAD)"
+PATH="$TMP/cp-bin:$PATH" run_script pull "$W"
+if [[ "$RC" != 0 && ! -e "$W/newer" && -z "$(git -C "$W" status --porcelain)" \
+      && "$(git -C "$W" rev-parse HEAD)" == "$before" && "$OUT" == *"put back as it was"* ]]; then
+  pass "a pull that fails after the fast-forward puts the checkout back, and says so"
+else
+  fail "a failed pull left the checkout (rc=$RC; newer: $([[ -e "$W/newer" ]] && echo yes || echo no); status: $(git -C "$W" status --porcelain | head -2 | tr '\n' ' '); $OUT)"
+fi
+
+# Once the old .git is being removed it is not whole, and the fast-forward is not
+# undone: the new .git, which matches the checkout, is kept and named, and the
+# move it names gives a clean checkout (review of the REPO-6 fix).
+W="$(mk_repo mvfail)"
+S="$TMP/mvfail.seed"; commit_in "$S" newer; g "$S" push -q origin main >/dev/null 2>&1
+mkdir -p "$TMP/mv-bin"
+printf '#!/bin/sh\nfor a in "$@"; do case "$a" in */.git-install.*/.git) exit 1 ;; esac; done\nexec %s "$@"\n' "$(command -v mv)" > "$TMP/mv-bin/mv"
+chmod +x "$TMP/mv-bin/mv"
+PATH="$TMP/mv-bin:$PATH" run_script pull "$W"
+stage="$(sed -n 's/.*: mv \(.*\.git-install\.[^ ]*\/\.git\) .*/\1/p' <<<"$OUT" | head -1)"
+if [[ "$RC" != 0 && "$OUT" != *"put back"* && -n "$stage" && -d "$stage" && -e "$W/newer" ]] \
+   && mv "$stage" "$W/.git" && [[ -z "$(git -C "$W" status --porcelain)" ]]; then
+  pass "a failed install keeps the new .git, names the move, and the move gives a clean checkout"
+else
+  fail "a failed install (rc=$RC; stage: ${stage:-none}; $OUT)"
+fi
+if [[ "$(id -u)" != 0 ]]; then
+  W="$(mk_repo rmfail)"
+  S="$TMP/rmfail.seed"; commit_in "$S" newer; g "$S" push -q origin main >/dev/null 2>&1
+  mkdir -p "$W/.git/keep"; : > "$W/.git/keep/f"; chmod 555 "$W/.git/keep"
+  run_script pull "$W"
+  stage="$(sed -n 's/.*then: mv \(.*\.git-install\.[^ ]*\/\.git\) .*/\1/p' <<<"$OUT" | head -1)"
+  chmod 755 "$W/.git/keep"
+  if [[ "$RC" != 0 && "$OUT" != *"put back"* && -n "$stage" && -d "$stage" ]] \
+     && rm -rf "$W/.git" && mv "$stage" "$W/.git" && [[ -z "$(git -C "$W" status --porcelain)" ]]; then
+    pass "a partly removed old .git keeps the new one and names the way to finish"
+  else
+    fail "a partly removed old .git (rc=$RC; stage: ${stage:-none}; $OUT)"
+  fi
+else
+  printf 'SKIP: the partly-removed .git case needs a non-root run\n'
+fi
+
 # ── The redesign's own promises ──────────────────────────────────────────────
 # R1 of the review of f6368d6: a dangling symbolic ref for origin/main and a
 # .lock that stops set-head made reset keep the agent's commit on main. Nothing

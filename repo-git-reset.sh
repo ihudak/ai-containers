@@ -66,7 +66,27 @@ pull     Fast-forward the checked-out branch to the remote's tip, keeping
 EOF
 }
 
-die() { printf 'repo-git-reset: %s\n' "$1" >&2; exit 1; }
+die() {
+  local msg="$1" d="${UNDO_DIR:-}"
+  # pull fast-forwards the worktree before it installs the new .git. A failure
+  # after that left the checkout at the remote's tip under the old .git, where
+  # it reads as uncommitted changes and every later sync refuses it (bugs review
+  # REPO-6): put the worktree back, or say that reset is the way out. Only while
+  # the old .git is whole: install_git_dir clears this before it removes it.
+  if [[ -n "$d" ]]; then
+    UNDO_DIR=""
+    if undo_fast_forward "$d" "$UNDO_FROM" "$UNDO_TO"; then
+      msg+="; the checkout was put back as it was"
+    else
+      msg+="; the checkout could not be put back, so its files may be at the remote's tip under the old .git — run reset to start clean"
+    fi
+  fi
+  printf 'repo-git-reset: %s\n' "$msg" >&2; exit 1
+}
+# undo_fast_forward <dir> <from> <to>: the two-way merge pull made, reversed.
+undo_fast_forward() {
+  git --git-dir="$F/.git" --work-tree="$1" read-tree -m -u "$2" "$3" >/dev/null 2>&1
+}
 
 # Every git here runs on the private clone, whose config and hooks are its own.
 # Still: hooks pointed nowhere, fsmonitor off, no submodule recursion, only
@@ -125,6 +145,8 @@ check_volume() {
 # template brings sample hooks and, from git 2.34 and 2.43 at least, an empty
 # legacy branches/ that reset is meant to leave no trace of (TST-10).
 F="" CLONE_ERR=""
+# Set by pull between its fast-forward and the removal of the old .git (die()).
+UNDO_DIR="" UNDO_FROM="" UNDO_TO=""
 fresh_clone() {
   WORK="$(mktemp -d "${TMPDIR:-/tmp}/repo-git.XXXXXX")" || die "cannot make a private directory"
   F="$WORK/clone"
@@ -280,8 +302,12 @@ install_git_dir() {
   local stage
   stage="$(mktemp -d "$1/.git-install.XXXXXX")" || die "could not stage the new .git"
   cp -a "$F/.git" "$stage/.git" || { rm -rf "$stage"; die "could not copy the new .git"; }
-  rm -rf "$1/.git" || { rm -rf "$stage"; die "could not remove the old .git"; }
-  mv "$stage/.git" "$1/.git" || die "could not install the new .git (it is in $stage)"
+  # Past this point the old .git is not whole, so the fast-forward is not undone
+  # (review of the REPO-6 fix): the worktree matches the new .git, which is kept
+  # and named until it is in place.
+  UNDO_DIR=""
+  rm -rf "$1/.git" || die "could not remove all of the old .git; the new one, matching the checkout, is in $stage/.git — from a root container with the volume at $1, remove $1/.git, then: mv $stage/.git $1/.git ; then ./repo.sh sync"
+  mv "$stage/.git" "$1/.git" || die "could not install the new .git, which matches the checkout — from a root container with the volume at $1: mv $stage/.git $1/.git ; then ./repo.sh sync"
   rmdir "$stage"
 }
 
@@ -397,6 +423,9 @@ cmd_pull() {
   # now tracks, and leaves every other untracked file alone.
   git --git-dir="$F/.git" --work-tree="$dir" read-tree -m -u "${tip[$b]}" "refs/remotes/origin/$b" \
     || die "could not fast-forward $(shown "$b") without overwriting files in the checkout (an untracked file the remote now tracks?)"
+  # From here a failure undoes the fast-forward (die), until install_git_dir
+  # starts removing the old .git.
+  UNDO_FROM="$(git -C "$F" rev-parse "refs/remotes/origin/$b")" UNDO_TO="${tip[$b]}" UNDO_DIR="$dir"
   git -C "$F" update-ref "refs/heads/$b" "refs/remotes/origin/$b" || die "could not move $(shown "$b")"
   git -C "$F" symbolic-ref HEAD "refs/heads/$b" || die "could not check out $(shown "$b")"
   git -C "$F" branch --quiet --set-upstream-to="origin/$b" "$b" >/dev/null 2>&1 || true
@@ -404,7 +433,17 @@ cmd_pull() {
     [[ "$name" == "$b" ]] && continue
     command git check-ref-format "refs/heads/$name" >/dev/null 2>&1 \
       || { printf 'WARN|could not keep branch %s (not a valid name)\n' "$(shown "$name")"; continue; }
-    git -C "$F" update-ref "refs/heads/$name" "${tip[$name]}" || printf 'WARN|could not keep branch %s\n' "$(shown "$name")"
+    git -C "$F" update-ref "refs/heads/$name" "${tip[$name]}" || { printf 'WARN|could not keep branch %s\n' "$(shown "$name")"; continue; }
+    # Only the checked-out branch was re-tracked; every other one lost its
+    # upstream (bugs review REPO-9). One with a same-named branch on origin
+    # tracks it again; other remotes stay a documented loss (their URLs are
+    # config the agent wrote).
+    # Only where the branch is behind or at it: one that diverged from its
+    # namesake (merged elsewhere, then force-pushed) would report "diverged".
+    if git -C "$F" show-ref --verify -q "refs/remotes/origin/$name" \
+       && git -C "$F" merge-base --is-ancestor "${tip[$name]}" "refs/remotes/origin/$name"; then
+      git -C "$F" branch --quiet --set-upstream-to="origin/$name" "$name" >/dev/null 2>&1 || true
+    fi
   done
   # Every local tag comes back at the value it had — the refusal above made sure
   # its object is in the clone — as `pull --ff-only` would have left it (review

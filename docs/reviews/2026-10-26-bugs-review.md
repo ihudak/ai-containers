@@ -922,7 +922,7 @@ Each fix batch was reviewed by an independent reviewer before it was merged, and
 - Fix direction: in `reset` (or `inspect`), list the nested `.git` paths, and after confirmation remove them with `rm -rf` before any git runs, so git never reads them. `sync` keeps refusing them.
 
 ### REPO-6: `pull` is not atomic once the worktree has been fast-forwarded
-- **Status: OPEN** (review of `82698a0`, #5)
+- **Status: FIXED** (2026-10-28). After the fast-forward, `pull` records how to undo it (`UNDO_DIR`, `UNDO_FROM`, `UNDO_TO`, initialised empty so nothing comes in from the environment), and `die()` runs the reverse two-way merge before it exits: the checkout is put back, and the message says so — or that it could not be, and `reset` is the way out. `install_git_dir()` clears it before it removes the old `.git`: its review found the first version undoing the worktree after the old `.git` was gone and saying "put back as it was" over a volume with no `.git`. From there the new `.git`, which matches the checkout, is kept — a partly failed removal deleted it — and the error names the `mv` that installs it; tested for a failing `mv` and, non-root, a partly removed `.git`, each red on the old helper, and following the named move gives a clean checkout. `tests/test-repo-git-reset.sh` fails the copy of the new `.git` with a `cp` shim: the checkout ends at its old commit with nothing changed (red on the old helper, which left the remote's new file behind under the old `.git`).
 - Severity: LOW. Confidence: PLAUSIBLE
 - Location: repo-git-reset.sh: `read-tree -m -u`, then `install_git_dir()`.
 - What's wrong: a failure after the two-way merge leaves the worktree at the new tip under the old `.git`, for example a full disk while the new `.git` is copied. The old `.git` is intact, because the stage-then-swap holds, but the checkout now looks like reverse uncommitted changes, and every later sync refuses.
@@ -943,7 +943,7 @@ Each fix batch was reviewed by an independent reviewer before it was merged, and
 - Fix direction: `inspect` emits `STASH|<n>` and `TAG|<name>|<on-remote>` records, and repo.sh renders them in the confirmation.
 
 ### REPO-9: `sync` drops other branches' upstream tracking and other remotes
-- **Status: OPEN** (batch 2 review of `fb1705e`; documented as "per-repo config is replaced")
+- **Status: FIXED** (2026-10-28). `pull` sets each kept branch's upstream to its same-named branch on `origin` where there is one and the branch is behind or at it (not one that diverged from it, which would report "diverged"; its review), as it did for the checked-out branch alone; other remotes stay a documented loss. `tests/test-repo-git-reset.sh`: a second branch tracking `origin/shared` still does after a sync (red on the old helper, which left it untracked). The new `|| true` joins the ledger's EQUIVALENT group for the existing one.
 - Severity: LOW. Confidence: CONFIRMED
 - Location: repo-git-reset.sh: `--set-upstream-to="origin/$b"` (only the checked-out branch is re-tracked).
 - What's wrong: every other branch loses its upstream, and every remote except `origin` is dropped with its `refs/remotes`. That is recoverable by re-fetching, but surprising after a "sync".
