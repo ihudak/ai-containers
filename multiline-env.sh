@@ -24,8 +24,9 @@
 # load_env_defaults cannot read a multi-line value — run sync-to-projects.sh
 # first. That is checked by running the project's loader on a probe file, not by
 # looking for a version string. The converted file is read back with the same
-# loader before it is written, and the project is left alone unless every list
-# comes back as the same entries.
+# loader before it is written, and the project is left alone unless every key
+# reads back the same (a list as the same entries). A line inside a multi-line
+# value, a list line included, is part of that value and is kept as it is.
 #
 # Before writing, the old file is copied to sandbox.local.env.pre-multiline
 # (timestamped instead when that backup already exists, so a second run never
@@ -49,6 +50,9 @@ default_projects_conf="$projects_conf"
 
 # One line holding a list key and its double-quoted value, optionally `export`ed.
 list_line_re='^[[:space:]]*(export[[:space:]]+)?(EXTRA_MOUNTS|REPOS|PREVIEW_PORTS)="([^"]*)"[[:space:]]*$'
+# A line that opens a multi-line value, as load_env_defaults reads one: any key, a
+# bare opening quote. The lines up to the one ending in `"` belong to that value.
+open_line_re='^[[:space:]]*(export[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*="[[:space:]]*$'
 
 dry_run=0
 projects_conf_arg=""
@@ -57,7 +61,9 @@ paths=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run) dry_run=1; shift ;;
-    --projects-conf) projects_conf_arg="${2:-}"; shift 2 ;;
+    --projects-conf)
+      [[ $# -ge 2 ]] || { printf 'ERROR: --projects-conf needs a path\n' >&2; exit 1; }
+      projects_conf_arg="$2"; shift 2 ;;
     --projects-conf=*) projects_conf_arg="${1#*=}"; shift ;;
     -h|--help)
       printf 'Usage: %s [--dry-run] [--projects-conf <path>] [<project-path> ...]\n' "$(basename "$0")"
@@ -77,21 +83,26 @@ if [[ ${#paths[@]} -eq 0 ]]; then
   done < "$target_conf"
 fi
 
-# load_with <sandbox-common.sh> <env-file> — print each list key the file sets, as
-# KEY=<entries joined by single spaces>, read by THAT engine copy's own loader, as a
-# sandbox.local.env (`local`; a loader that has no modes ignores the argument). The
-# file's functions are lifted out rather than the file sourced: sourcing runs its top
-# level, which loads the env files beside it. All of them, because the loader calls
-# helpers whose names differ between engine versions.
+# load_with <sandbox-common.sh> <env-file> — print every key the file sets, read by
+# THAT engine copy's own loader, as a sandbox.local.env (`local`; a loader that has
+# no modes ignores the argument): a list as KEY=<entries joined by single spaces>,
+# any other key exactly. Every key, not only the lists, so a conversion that changes
+# what ANY key reads is caught. Run with an empty environment, so nothing the
+# caller exported is taken for set. The file's functions are lifted out rather than
+# the file sourced: sourcing runs its top level, which loads the env files beside
+# it. All of them, because the loader calls helpers whose names differ between
+# engine versions.
 load_with() {
-  bash -c '
+  env -i PATH="$PATH" HOME="$HOME" bash -c '
     eval "$(sed -n "/^[A-Za-z_][A-Za-z0-9_]*() *{/,/^}/p" "$1")"
-    unset EXTRA_MOUNTS REPOS PREVIEW_PORTS
+    before=" $(compgen -e | tr "\n" " ") "
     load_env_defaults "$2" local 2>/dev/null
-    for k in EXTRA_MOUNTS REPOS PREVIEW_PORTS; do
-      [[ -n "${!k+x}" ]] || continue
-      read -r -a e <<<"${!k}"
-      printf "%s=%s\n" "$k" "${e[*]}"
+    for k in $(compgen -e | LC_ALL=C sort); do
+      [[ "$before" == *" $k "* ]] && continue
+      case "$k" in
+        EXTRA_MOUNTS|REPOS|PREVIEW_PORTS) read -r -a e <<<"${!k}"; printf "%s=%s\n" "$k" "${e[*]}" ;;
+        *) printf "%s=%q\n" "$k" "${!k}" ;;
+      esac
     done
   ' _ "$1" "$2"
 }
@@ -114,7 +125,7 @@ process_project() {
   local project_path="$1"
   local dest="${project_path}/.ai-containers"
   local file="${dest}/sandbox.local.env"
-  local line prefix key value new changed=0
+  local line prefix key value new changed=0 inval=0 t
   local -a entries
 
   printf '%s\n' "$project_path"
@@ -132,6 +143,16 @@ process_project() {
 
   new=""
   while IFS= read -r line || [[ -n "$line" ]]; do
+    # Inside a multi-line value every line is part of it, kept as it is: a list
+    # line there is not a list (a value left open runs on to it).
+    if (( inval )); then
+      t="${line%$'\r'}"; t="${t#"${t%%[![:space:]]*}"}"; t="${t%"${t##*[![:space:]]}"}"
+      [[ -n "$t" && "$t" != '#'* && "$t" == *'"' ]] && inval=0
+      new+="${line}"$'\n'; continue
+    fi
+    if [[ "${line%$'\r'}" =~ $open_line_re ]]; then
+      inval=1; new+="${line}"$'\n'; continue
+    fi
     if [[ "$line" =~ $list_line_re ]]; then
       prefix="${BASH_REMATCH[1]:+export }"; key="${BASH_REMATCH[2]}"; value="${BASH_REMATCH[3]}"
       read -r -a entries <<<"$value"
@@ -166,7 +187,7 @@ process_project() {
   after="$(load_with "${dest}/sandbox-common.sh" "$candidate")"
   if [[ "$before" != "$after" ]]; then
     rm -f "$candidate"
-    printf '  ERROR the converted file would not read back the same lists — left unchanged\n' >&2
+    printf '  ERROR the converted file would not read back the same values — left unchanged\n' >&2
     return 1
   fi
 
@@ -182,6 +203,11 @@ process_project() {
   # (noclobber still opens an existing FIFO or device, so the name is checked for
   # anything at all first). umask 077: sandbox.local.env may hold a token, and the
   # copy must not be readable where the file is not.
+  if [[ ! -w "$file" ]]; then
+    rm -f "$candidate"
+    printf '  ERROR sandbox.local.env is not writable — left unchanged\n' >&2
+    return 1
+  fi
   local backup="${file}.pre-multiline"
   [[ -e "$backup" || -L "$backup" ]] && backup="${backup}.$(date -u +%Y%m%dT%H%M%SZ)"
   if [[ -e "$backup" || -L "$backup" ]] || ! ( umask 077; set -C; cat "$file" > "$backup" ) 2>/dev/null; then
@@ -198,7 +224,7 @@ process_project() {
   fi
   if ! cat "$candidate" > "$file"; then   # keeps the file's own mode and owner
     rm -f "$candidate"
-    printf '  ERROR could not write sandbox.local.env — it is unchanged; the backup %s can be removed\n' "$(basename "$backup")" >&2
+    printf '  ERROR could not write sandbox.local.env — if it is damaged, restore it from %s\n' "$(basename "$backup")" >&2
     return 1
   fi
   rm -f "$candidate"

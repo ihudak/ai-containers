@@ -213,6 +213,8 @@ if [[ "$(id -u)" != 0 ]]; then
   [[ "$rc14" != 0 ]] && grep -q 'ERROR' <<<"$out14" && grep -q 'Converted: 0' <<<"$out14" \
     && pass "a file that cannot be written is reported as an error, and the run fails" \
     || fail "a file that cannot be written is reported as an error (rc=$rc14): $out14"
+  n14="$(find "$P14/.ai-containers" -name 'sandbox.local.env.pre-multiline*' | wc -l | tr -d ' ')"
+  [[ "$n14" == 0 ]] && pass "and it leaves no backup behind" || fail "and it leaves no backup behind (found $n14)"
 else
   pass "a file that cannot be written is reported as an error — skipped as root"
 fi
@@ -229,6 +231,36 @@ out15="$(PATH="$TMP/shim15:$PATH" convert "$P15")"; rc15=$?
 [[ ! -e "$TMP/planted-15" && "$(cat "$F15")" == "$(printf '%s' "$FIXTURE")" && "$rc15" != 0 ]] && grep -q 'backup' <<<"$out15" \
   && pass "a backup name taken by a dangling link is refused, the file left alone" \
   || fail "a backup name taken by a dangling link is refused (rc=$rc15): $out15"
+
+# A FIFO at both backup names: noclobber would open it and block, so the name is
+# refused for being taken at all. Bounded by timeout, so a regression fails, not hangs.
+if command -v timeout >/dev/null 2>&1 && command -v mkfifo >/dev/null 2>&1; then
+  P16="$(new_project sixteen)"; F16="$P16/.ai-containers/sandbox.local.env"
+  printf '%s' "$FIXTURE" > "$F16"
+  mkfifo "$F16.pre-multiline" "$F16.pre-multiline.20260101T000000Z"
+  out16="$(PATH="$TMP/shim15:$PATH" timeout 20 bash "$ENGINE_DIR/multiline-env.sh" "$P16" </dev/null 2>&1)"; rc16=$?
+  [[ "$rc16" != 0 && "$rc16" != 124 && "$(cat "$F16")" == "$(printf '%s' "$FIXTURE")" ]] && grep -q 'backup' <<<"$out16" \
+    && pass "a backup name taken by a FIFO is refused, not opened" \
+    || fail "a backup name taken by a FIFO is refused, not opened (rc=$rc16): $out16"
+else
+  pass "a backup name taken by a FIFO is refused — skipped, no timeout/mkfifo"
+fi
+
+# ── A line inside a value left open is part of that value, not a list to convert ─
+# Here SANDBOX_MODE's value runs on to the REPOS line, as the loader reads it, so
+# that line must stay as it is; the EXTRA_MOUNTS after it is a list of its own.
+P17="$(new_project seventeen)"; F17="$P17/.ai-containers/sandbox.local.env"
+printf 'SANDBOX_MODE="\nREPOS="a b"\nEXTRA_MOUNTS="/x /y"\n' > "$F17"
+want17="$(read_back "$F17" 2>/dev/null)"
+convert "$P17" >/dev/null
+[[ "$(read_back "$F17" 2>/dev/null)" == "$want17" ]] && grep -qx 'REPOS="a b"' "$F17" && grep -qx '  /y' "$F17" \
+  && pass "a list line inside an open value is left alone; the lists after it are converted" \
+  || fail "a list line inside an open value is left alone — got:
+$(cat "$F17")"
+
+out18="$(convert --projects-conf)"; rc18=$?
+[[ "$rc18" != 0 ]] && grep -q 'projects-conf' <<<"$out18" \
+  && pass "--projects-conf with no path is an error that says so" || fail "--projects-conf with no path is an error that says so (rc=$rc18): $out18"
 
 # ── With no paths it works through --projects-conf ──────────────────────────────
 P8="$(new_project eight)"; F8="$P8/.ai-containers/sandbox.local.env"
