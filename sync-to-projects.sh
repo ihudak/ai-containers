@@ -282,10 +282,11 @@ warn_host_group() {
   local f
   for f in "$1/sandbox.local.env" "$1/sandbox.env"; do
     [[ -f "$f" ]] || continue
-    if grep -qE "^[[:space:]]*AI_CONTAINER_GROUP[[:space:]]*=[[:space:]]*[\"']?host[\"']?[[:space:]]*(#.*)?$" "$f"; then
+    if grep -qE "^[[:space:]]*(export[[:space:]]+)?AI_CONTAINER_GROUP[[:space:]]*=[[:space:]]*[\"']?host[\"']?[[:space:]]*(#.*)?$" "$f"; then
       printf '  WARNING: %s sets AI_CONTAINER_GROUP=host, which is no longer supported:\n' "$f"
-      printf '           every launch is refused until that line names a group, e.g.\n'
-      printf '           AI_CONTAINER_GROUP=mine plus AI_CONTAINER_GROUP_INIT=from:host for a new one.\n'
+      printf '           every launch is refused until that line names a group (AI_CONTAINER_GROUP=mine);\n'
+      printf '           for a new group made as a copy of your $HOME'\''s credentials, also set\n'
+      printf '           AI_CONTAINER_GROUP_INIT=from:host in sandbox.local.env.\n'
     fi
   done
 }

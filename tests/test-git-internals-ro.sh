@@ -1721,6 +1721,23 @@ AI_CONTAINER_GROUP=g92 launch ..
   && pass "G92 a group directory that is a link refuses the launch, before docker" \
   || fail "G92 a linked group directory (rc=$LAUNCH_RC; $(grep -E 'ERROR|link' "$ERR" | head -2 | tr '\n' ' '))"
 rm -f "$HOME/.ai-containers/g92"; rm -rf "$TMP/elsewhere92"
+# Linked to $HOME itself — the case the check exists for — the way out is a
+# group made as a copy (from:host), never `cp -a $HOME/.`, which copies the whole
+# home, every other group included (review of 18011da).
+ln -s "$HOME" "$HOME/.ai-containers/h92"
+AI_CONTAINER_GROUP=h92 launch ..
+[[ "$LAUNCH_RC" != 0 ]] && grep -qF 'AI_CONTAINER_GROUP_INIT=from:host' "$ERR" && ! grep -qF 'cp -a' "$ERR" \
+  && pass "G92 a group linked to \$HOME is refused, pointing at from:host, not a cp of the home" \
+  || fail "G92 the hint for a group linked to \$HOME ($(grep -E 'ERROR|cp|from:host' "$ERR" | head -3 | tr '\n' ' '))"
+rm -f "$HOME/.ai-containers/h92"
+# …and a group directory that is $HOME by another route — ~/.ai-containers moved
+# to $HOME's parent, the group named after $HOME — is refused too.
+H92="$TMP/h92/me"; mkdir -p "$H92"; ln -s "$TMP/h92" "$H92/.ai-containers"
+HOME="$H92" AI_CONTAINER_GROUP=me launch ..
+[[ "$LAUNCH_RC" != 0 && ! -e "$CAPTURE" ]] && grep -qF 'is your home directory' "$ERR" \
+  && pass "G92 a group directory that resolves to \$HOME is refused" \
+  || fail "G92 a group directory resolving to \$HOME (rc=$LAUNCH_RC; $(grep -E 'ERROR' "$ERR" | head -1))"
+rm -rf "$TMP/h92"
 # A committed sandbox.env that names the host group, which the loader once
 # ignored, now refuses the launch, naming the file (review of batch 11).
 [[ -f "$LAUNCHER/sandbox.env" ]] && cp "$LAUNCHER/sandbox.env" "$TMP/se92.bak"

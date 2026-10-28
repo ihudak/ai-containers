@@ -165,6 +165,7 @@ teardown
 # group bootstrapped from:host replaces it (the user's choice).
 setup
 mkdir -p "$HOME/.gamma" "$HOME/.config/gamma-cli" "$HOME/.config/alpha"
+# The old acknowledgement is set on purpose: it no longer lets anything through.
 export AI_CONTAINER_GROUP=host AI_CONTAINER_HOST_ACK=1
 run_sandbox "$TMP/app"
 if [[ "$RC" != 0 && ! -s "$CAPTURE" ]] && grep -qF 'AI_CONTAINER_GROUP_INIT=from:host' "$ERR"; then

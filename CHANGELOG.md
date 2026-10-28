@@ -9,8 +9,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Removed
 
 - **`AI_CONTAINER_GROUP=host` is gone, and a launch with it is refused.** It
-  mounted your real `~/.ssh`, `~/.aws`, `~/.kube`, `~/.config/gh`, `~/.claude`
-  and `~/.gitconfig` read-write into the container, where every other group
+  mounted your real `~/.ssh`, `~/.aws`, `~/.kube`, `~/.config/gh` and
+  `~/.claude` read-write (and `~/.gitconfig` read-only) into the container, where every other group
   gives the agent a copy, and on macOS it half-worked anyway (Keychain-held
   tokens, rvm). The refusal names the replacement: a named group bootstrapped
   once as a copy, `AI_CONTAINER_GROUP=mine AI_CONTAINER_GROUP_INIT=from:host`.
@@ -18,11 +18,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `project-init.sh` refuses a typed `host` and asks again, and
   `migrate-runme.sh` moves a host-group launcher to the default group, saying
   how to start it from your `$HOME`'s credentials. A group directory that is a
-  link (to `$HOME`, say) is refused too. **Action needed** for a project made
-  with the `host` group: `project-init.sh` wrote `AI_CONTAINER_GROUP=host` into
-  its `.ai-containers/sandbox.local.env`; replace that line with a group name,
-  plus `AI_CONTAINER_GROUP_INIT=from:host` for a new group. `sync-to-projects.sh`
-  names every such project.
+  link (to `$HOME`, say), or that is `$HOME` by another route, is refused too.
+  **Action needed** for a project made with the `host` group: its
+  `.ai-containers/sandbox.local.env` (or, from v0.10.7 and earlier,
+  `sandbox.env`) sets `AI_CONTAINER_GROUP=host`; replace it with a group name,
+  and for a new group made as a copy add `AI_CONTAINER_GROUP_INIT=from:host` to
+  `sandbox.local.env`. `sync-to-projects.sh` names every such project.
 
 ### Fixed
 

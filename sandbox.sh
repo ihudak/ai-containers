@@ -2676,8 +2676,10 @@ _launcher_dev_ino() {
 # the EXIT trap below. A global, not a run_container local, so the trap can see
 # it, and guarded with :- so `set -u` is satisfied when no dir was made.
 _launcher_verify_dir=""
-# A named group's directory, which launcher_ro_overlay does not scan for git
-# repositories (the host's git never runs there). Set by run_container.
+# The group's directory, physical: launcher_ro_overlay does not scan the group's
+# own mounts (those outside /workspace) for git repositories, since the host's git
+# never runs there; a directory mounted into /workspace from inside it is scanned
+# like any other (G92). Set by run_container.
 _git_skip_root=""
 _gir_tmp="" _gir_tmp_warned=""
 declare -A _gir_cache=()   # git directory → its read index, once per launch
@@ -2723,25 +2725,43 @@ run_container() {
   local group="${AI_CONTAINER_GROUP:-default}" _gsf
   if [[ "$group" == host ]]; then
     for _gsf in "$script_dir/sandbox.local.env" "$script_dir/sandbox.env"; do
-      if [[ -f "$_gsf" ]] && grep -qE "^[[:space:]]*AI_CONTAINER_GROUP[[:space:]]*=[[:space:]]*[\"']?host" "$_gsf"; then
+      if [[ -f "$_gsf" ]] && grep -qE "^[[:space:]]*(export[[:space:]]+)?AI_CONTAINER_GROUP[[:space:]]*=[[:space:]]*[\"']?host[\"']?[[:space:]]*(#.*)?$" "$_gsf"; then
         printf 'NOTE: AI_CONTAINER_GROUP=host is set in %s.\n' "$(_term "$_gsf")" >&2
         break
       fi
     done
   fi
   validate_group_name "$group"
-  if [[ -L "$HOME/.ai-containers/$group" ]]; then
-    local _glt
-    _glt="$(cd "$HOME/.ai-containers/$group" 2>/dev/null && pwd -P)" || _glt=""
+  local _gr="$HOME/.ai-containers/$group" _glt _ghome _gpar
+  _ghome="$(cd "$HOME" 2>/dev/null && pwd -P)" || _ghome=""
+  if [[ -L "$_gr" ]]; then
+    _glt="$(cd "$_gr" 2>/dev/null && pwd -P)" || _glt=""
+    _gpar="$(cd "$HOME/.ai-containers" 2>/dev/null && pwd -P)" || _gpar=""
     printf 'ERROR: the group directory %s is a link%s; a group must be a directory of its own:\n' \
-      "$(_q "$HOME/.ai-containers/$group")" "${_glt:+ (to $(_q "$_glt"))}" >&2
+      "$(_q "$_gr")" "${_glt:+ (to $(_q "$_glt"))}" >&2
     printf '       through a link the container gets whatever it points at, writable.\n' >&2
-    if [[ -n "$_glt" ]]; then
-      printf '       To keep what is there as a copy: rm %s && cp -a %s %s\n' "$(_q "$HOME/.ai-containers/$group")" \
-        "$(_q "$_glt/.")" "$(_q "$HOME/.ai-containers/$group/")" >&2
+    # The way out depends on where it leads: `cp -a` of $HOME would copy the whole
+    # home, every other group with it (review of 18011da; G92).
+    if [[ -z "$_glt" ]]; then
+      printf '       It leads nowhere: remove it (rm %s) and launch again.\n' "$(_q "$_gr")" >&2
+    elif [[ "$_glt" == "$_ghome" ]]; then
+      printf '       It leads to your home directory. Remove it (rm %s) and launch with\n' "$(_q "$_gr")" >&2
+      printf '       AI_CONTAINER_GROUP_INIT=from:host, which makes the group as a copy of your credentials.\n' >&2
+    elif [[ "${_glt%/*}" == "$_gpar" ]]; then
+      printf '       It leads to the group %s: use AI_CONTAINER_GROUP=%s, or remove the link (rm %s)\n' \
+        "$(_q "${_glt##*/}")" "$(_q "${_glt##*/}")" "$(_q "$_gr")" >&2
+      printf '       and launch with AI_CONTAINER_GROUP_INIT=from:%s for a copy of it.\n' "$(_q "${_glt##*/}")" >&2
     else
-      printf '       It leads nowhere: remove it (rm %s) and launch again.\n' "$(_q "$HOME/.ai-containers/$group")" >&2
+      printf '       To keep groups on another disk, link ~/.ai-containers itself, not one group.\n' >&2
     fi
+    exit 1
+  fi
+  # A group directory that IS your home by another route — ~/.ai-containers moved
+  # to $HOME's parent and the group named after $HOME — mounts the real
+  # dot-directories as surely as a link (review of 18011da; G92).
+  if [[ -n "$_ghome" && -d "$_gr" && "$(cd "$_gr" 2>/dev/null && pwd -P)" == "$_ghome" ]]; then
+    printf 'ERROR: the group directory %s is your home directory; the container would get your\n' "$(_q "$_gr")" >&2
+    printf '       real dot-directories, writable. Pick another group name, or move ~/.ai-containers.\n' >&2
     exit 1
   fi
   local mode="$1"
