@@ -118,7 +118,9 @@ grep -qxF "ai-containers.built-at=2026-01-01T00:00:00Z" <<<"$labels" \
 # the honest answer, and inventing one would be worse than silence.
 grep -q "source-commit" <<<"$labels" \
   && fail "no source-commit outside a git checkout" || pass "no source-commit outside a git checkout"
-check "every label is preceded by its --label flag" "2" "$(grep -cx -- '--label' <<<"$labels")"
+grep -qxF "ai-containers.project=$(cd "$A" && pwd -P)" <<<"$labels" \
+  && pass "the labels carry the project the image is for (ENV-7)" || fail "the labels carry the project"
+check "every label is preceded by its --label flag" "3" "$(grep -cx -- '--label' <<<"$labels")"
 
 # And the other half of that branch: when the assets ARE a checkout, the commit
 # is recorded. Untested, this is the case that silently stops working — the
@@ -132,7 +134,7 @@ if [[ -d "$G/.git" ]]; then
   grep -qxF "ai-containers.source-commit=$gcommit" <<<"$glabels" \
     && pass "a git checkout records the commit it was built from" \
     || fail "a git checkout records the commit it was built from"
-  check "a git checkout carries all three labels" "3" "$(grep -cx -- '--label' <<<"$glabels")"
+  check "a git checkout carries all four labels" "4" "$(grep -cx -- '--label' <<<"$glabels")"
 else
   printf 'SKIP: git could not create a fixture repo\n'
 fi

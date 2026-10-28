@@ -258,6 +258,41 @@ seed_image="${REPO_SEED_IMAGE:-ai-containers-seed}"
 ai_containers_root="${HOME}/.ai-containers"
 repo_registry_file="${ai_containers_root}/repos.conf"
 
+# ai_containers_project_id <dir>: what the ai-containers.project label records
+# for the engine copy in <dir> — its physical path, so a symlink to it is the
+# same project.
+ai_containers_project_id() {
+  (cd "$1" 2>/dev/null && pwd -P)
+}
+
+# image_retag_guard <image> <project id>: run before build.sh builds into
+# <image> (bugs review ENV-7). IMAGE_NAME is portable, so a committed
+# sandbox.env can name any tag — a base image such as ubuntu:24.04, or a
+# sibling project's — and the build retags it with an image made from THIS
+# project's sandbox.conf and allowlist, then remove_replaced_image deletes the
+# image the tag held. A tag whose image ai-containers did not build is refused
+# (rc 1): one is ai-containers' if it carries ai-containers.built-at, or —
+# built before v0.6.0 added that label — the Dockerfile's own image title. One
+# built for another project (ai-containers.project) is warned about by name and
+# built: every project that leaves IMAGE_NAME at its default shares ai-sandbox.
+# A tag that does not exist yet, or one built before the project label, passes.
+image_retag_guard() {
+  local image="$1" project="$2" out built owner title
+  out="$(docker image inspect --format '{{index .Config.Labels "ai-containers.built-at"}}|{{index .Config.Labels "org.opencontainers.image.title"}}|{{index .Config.Labels "ai-containers.project"}}' "$image" 2>/dev/null)" || return 0
+  built="${out%%|*}"; out="${out#*|}"; title="${out%%|*}"; owner="${out#*|}"
+  if [[ -z "$built" && "$title" != "AI Sandbox Container" ]]; then
+    printf 'ERROR: the image tag %q holds an image ai-containers did not build (no ai-containers labels).\n' "$image" >&2
+    printf '       Building would retag it with this project'\''s image and delete the image it holds now.\n' >&2
+    printf '       Build under another name (IMAGE_NAME in sandbox.env, or ./build.sh <name>), or remove it if it is yours: docker rmi %q\n' "$image" >&2
+    return 1
+  fi
+  if [[ -n "$owner" && "$owner" != "$project" ]]; then
+    printf 'WARNING: the image tag %q holds an image built for %q; this build replaces it with one for %q.\n' "$image" "$owner" "$project" >&2
+    printf '         That project'\''s next launch runs this image and this allowlist. Give each project its own IMAGE_NAME in sandbox.env.\n' >&2
+  fi
+  return 0
+}
+
 # Drop the image a rebuild has just replaced, so a dangling layer set does not
 # accumulate per rebuild, per project (an ordinary rebuild leaves a few hundred
 # MB behind; a --no-cache rebuild leaves the whole multi-GB image dangling).
@@ -1191,6 +1226,11 @@ ai_containers_provenance_labels() {   # <dir> [<iso-8601 utc>] → one --label a
     printf '%s\n' "--label" "ai-containers.config-digest=$digest"
   fi
   printf '%s\n' "--label" "ai-containers.built-at=$now"
+  # Which project this image is for, so building another project into the same
+  # tag can say whose image it replaces (image_retag_guard, ENV-7).
+  local project
+  project="$(ai_containers_project_id "$dir")" && [[ -n "$project" ]] \
+    && printf '%s\n' "--label" "ai-containers.project=$project"
   # Only when the assets ARE a git checkout. A project's .ai-containers/ is a
   # copy with no history, which is exactly the case this exists for: no commit
   # recorded there is the honest answer, not a missing feature.

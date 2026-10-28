@@ -552,6 +552,9 @@ build_image() {
   validate_config
   local build_image_name="${1:-$image_name}"
   local build_args=()
+  # A tag ai-containers did not build is not replaced (ENV-7) — checked before
+  # anything is written.
+  image_retag_guard "$build_image_name" "$(ai_containers_project_id "$script_dir")" || exit 1
 
   generate_allowlists
   build_args_from_config build_args

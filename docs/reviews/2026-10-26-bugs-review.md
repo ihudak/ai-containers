@@ -882,7 +882,7 @@ Each fix batch was reviewed by an independent reviewer before it was merged, and
 - Fix direction: decide representability before counting, or count the overlays actually emitted.
 
 ### ENV-7: A committed `IMAGE_NAME` can retag another project's image
-- **Status: OPEN** (batch 2 review, F7 of the first round and F6 of the second; existed before the window)
+- **Status: FIXED** (2026-10-28). `build.sh: build_image()` runs `sandbox-common.sh: image_retag_guard()` before it builds: an existing tag with no `ai-containers.built-at` label (`ubuntu:24.04`, any image ai-containers did not build) is refused with the way out; one built for another project — the new `ai-containers.project` label, the engine copy's physical path, stamped with the other provenance labels — gets a `WARNING:` naming both projects and is built, since projects that keep the default `IMAGE_NAME` share `ai-sandbox` (the user's choice over refusing both). A tag built before the project label passes silently, and so does one built before v0.6.0 added `ai-containers.built-at`, recognised by the Dockerfile's own `org.opencontainers.image.title` (its review found those refused at first: a plain `./build.sh` over a months-old `ai-sandbox`). The guard runs before `generate_allowlists`, so a refused build writes nothing. Accepted, as chosen: a sibling project's tag is still only warned about, so its next launch runs this project's image and allowlist; and an image the user built `FROM ai-sandbox` inherits the labels and passes. Hermetic `tests/test-image-retag.sh`: the guard's five cases, the label, and `build.sh` itself against a fake `docker` — refused before any `docker build` over a foreign tag (red without the guard), built with the label over its own.
 - Severity: LOW. Confidence: PLAUSIBLE (from code)
 - Location: build.sh: `remove_replaced_image`. sandbox-common.sh: `env_value_portable()` refuses only the seed image.
 - What's wrong: `IMAGE_NAME` stays portable. A committed `sandbox.env` can name a sibling project's tag, or a base image such as `ubuntu:24.04`. `./build.sh` then retags it with an image built from this project's `sandbox.conf` and `allowlist-*.d/custom.txt`, and removes the old image. The other project's next restricted launch then runs with this project's allowlist, and gets only a provenance warning.
@@ -1242,6 +1242,13 @@ Batch 9 (`9bd3729` … `6a0b37f`) went through 19 review rounds. Every HIGH and 
 - Location: `build.sh`, `repo.sh`, `group.sh`, `project-init.sh`, `sync-to-projects.sh`, `extract-discovery.sh`: each resolves its directory with `cd "$(dirname "${BASH_SOURCE[0]}")" && pwd` and leaves `CDPATH` set.
 - What's wrong: `sandbox.sh` now unsets `CDPATH`; the others do not. A relative invocation (`bash sub/build.sh`) with an exported `CDPATH` that also holds a `sub/` resolves there, and `cd` prints the directory too, so the captured path comes back as two lines.
 - Fix direction: the same `unset CDPATH` at the top of each entry point, with one test that runs an entry point under a decoy `CDPATH`.
+
+### ENV-8: the `ai-containers.project` label publishes the project's path with a pushed image
+- **Status: OPEN** (review of the ENV-7 fix, LOW-2)
+- Severity: LOW. Confidence: CONFIRMED (the label is the engine copy's physical path)
+- Location: `sandbox-common.sh: ai_containers_provenance_labels()`, the `ai-containers.project` label
+- What's wrong: `docker push` of an image sends `/home/<user>/<dir>/.ai-containers` to the registry: the user name and directory names. `built-at` and `source-commit` were already there, but this is the first personal field. A teammate's first rebuild over a pulled image also warns "built for /home/alice/…".
+- Fix direction: a hash of the path, looked up in `projects.conf` to name the other project in the warning, or the project's name alone.
 
 ### LNCH-15: the once-per-launch "cannot make a temporary directory" WARNING is not asserted
 - **Status: FIXED** (2026-10-28). T51 now launches over two repositories with an index each under the stale TMPDIR and requires the warning exactly once; with the once-only guard removed it counted 2.
