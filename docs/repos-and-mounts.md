@@ -24,7 +24,7 @@ EXTRA_MOUNTS="
 "
 ```
 
-The value opens only when its opening quote is the only quote on the line, and it ends at the first line that ends with `"`. A value that is never closed is ignored with a warning, and so is everything after it in the file.
+The value opens only when the opening quote stands alone (`EXTRA_MOUNTS="` and nothing after it), and it ends at the first line that ends with `"`. A line inside that looks like an assignment (`REPOS=...`) is read as part of the value, with a warning: it usually means the closing quote is missing. A value that is never closed is ignored with a warning, and so is everything after it in the file.
 
 `project-init.sh` writes `EXTRA_MOUNTS` this way whenever you give it two or more mounts. To convert the projects you already have, run `./multiline-env.sh` from this repository (`--dry-run` shows the change first). It rewrites the one-line `EXTRA_MOUNTS`, `REPOS` and `PREVIEW_PORTS` in each registered project's `sandbox.local.env`, keeps every other line, and backs the old file up as `sandbox.local.env.pre-multiline`. It skips a project whose `.ai-containers/` copy of the engine is too old to read the new layout, so run `./sync-to-projects.sh` first. It never touches `sandbox.env`: that file is shared, and a teammate on an older engine would read a multi-line list as a bare `"`.
 

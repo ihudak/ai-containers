@@ -396,7 +396,7 @@ else
   fail "--help prints the header (rc=$RC)"
 fi
 # The removed flags must not linger in the help text.
-if ! grep -qE '\-\-dev-root|\-\-depth' <<<"$OUT"; then
+if ! grep -qE -e '--dev-root|--depth' <<<"$OUT"; then
   pass "the removed --dev-root/--depth are gone from the help"
 else
   fail "the removed --dev-root/--depth are gone from the help
@@ -415,11 +415,16 @@ sed -i.bak '/^SANDBOX_MODE=/d' "$TMP/unsetproj/.ai-containers/sandbox.env" && rm
 mk_proj "$DUPB" "$TMP/quotedproj" default "'restricted'" 1.0
 # An assignment written inside a multi-line value is part of that value: the
 # launcher reads `open` here, so the report must not take the hidden line. The
-# value opens with text on its first line, so a reader that took ANOTHER key's
-# value for the one asked for would report `4000:4000` as the mode.
+# value's first entry is 4000:4000, so a reader that took ANOTHER key's value for
+# the one asked for would report `4000:4000` as the mode.
 mk_proj "$DUPB" "$TMP/hiddenproj" default open 1.0
-{ printf 'PREVIEW_PORTS="4000:4000\nSANDBOX_MODE=restricted\n"\n'; cat "$TMP/hiddenproj/.ai-containers/sandbox.env"; } > "$TMP/hidden.env" \
+{ printf 'PREVIEW_PORTS="\n4000:4000\nSANDBOX_MODE=restricted\n"\n'; cat "$TMP/hiddenproj/.ai-containers/sandbox.env"; } > "$TMP/hidden.env" \
   && mv "$TMP/hidden.env" "$TMP/hiddenproj/.ai-containers/sandbox.env"
+# Only a bare opening quote opens a value: one that lost its closing quote is one
+# line, so the launcher reads the SANDBOX_MODE after it, and so must the report.
+mk_proj "$DUPB" "$TMP/typoproj" default open 1.0
+{ printf 'PREVIEW_PORTS="4000:4000\nSANDBOX_MODE=restricted\n'; cat "$TMP/typoproj/.ai-containers/sandbox.env"; } > "$TMP/typo.env" \
+  && mv "$TMP/typo.env" "$TMP/typoproj/.ai-containers/sandbox.env"
 # A multi-line value of a key the report shows is joined exactly as the launcher
 # joins it: a `#` line inside is skipped, and the closing `"` on a line of its own
 # adds nothing, so the field is `2.5` — not `# cores 2.5`, not `2.5 ` or ` 2.5`.
@@ -439,6 +444,10 @@ hidden_mode="$(awk -F'\t' '$5 == "hiddenproj" { print $6 }' <<<"$OUT")"
 [[ "$hidden_mode" == OPEN ]] && pass "an assignment inside a multi-line value is not read as a key" \
   || fail "a mode hidden inside a multi-line value was reported as '$hidden_mode' (launcher runs open)
 $(grep hiddenproj <<<"$OUT")"
+typo_mode="$(awk -F'\t' '$5 == "typoproj" { print $6 }' <<<"$OUT")"
+[[ "$typo_mode" == RESTRICTED ]] && pass "a value with text after its only quote is one line, as the launcher reads it" \
+  || fail "a value that lost its closing quote swallowed the mode: reported '$typo_mode' (launcher runs restricted)
+$(grep typoproj <<<"$OUT")"
 joined_cpus="$(awk -F'\t' '$5 == "joinedproj" { print $7 }' <<<"$OUT")"
 [[ "$joined_cpus" == 2.5 ]] \
   && pass "a multi-line value of a reported key is joined, as the launcher joins it" \

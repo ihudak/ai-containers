@@ -195,6 +195,41 @@ convert "$P12" >/dev/null
 [[ "$(cat "$TMP/planted-existing")" == precious ]] \
   && pass "a link to an existing file at the backup name is not written through" || fail "a link to an existing file at the backup name is not written through"
 
+# ── The backup is as private as the file: sandbox.local.env may hold a token ─────
+P13="$(new_project thirteen)"; F13="$P13/.ai-containers/sandbox.local.env"
+printf '%s' "$FIXTURE" > "$F13"; chmod 600 "$F13"
+( umask 022; convert "$P13" >/dev/null )
+mode13="$(ls -l "$F13.pre-multiline" 2>/dev/null | cut -c1-10)"
+[[ "$mode13" == -rw------- ]] && pass "the backup of a 0600 file is not readable by others" \
+  || fail "the backup of a 0600 file is not readable by others (got: $mode13)"
+
+# ── A write that fails is an error, never a success ──────────────────────────────
+# Root writes a 0400 file anyway, so this needs an unprivileged run.
+if [[ "$(id -u)" != 0 ]]; then
+  P14="$(new_project fourteen)"; F14="$P14/.ai-containers/sandbox.local.env"
+  printf '%s' "$FIXTURE" > "$F14"; chmod 400 "$F14"
+  out14="$(convert "$P14")"; rc14=$?
+  chmod 600 "$F14"
+  [[ "$rc14" != 0 ]] && grep -q 'ERROR' <<<"$out14" && grep -q 'Converted: 0' <<<"$out14" \
+    && pass "a file that cannot be written is reported as an error, and the run fails" \
+    || fail "a file that cannot be written is reported as an error (rc=$rc14): $out14"
+else
+  pass "a file that cannot be written is reported as an error — skipped as root"
+fi
+
+# ── A backup name already taken twice over is refused, never written through ─────
+# A `date` shim pins the timestamped name, so the second name is taken too: by a
+# dangling link, which only noclobber or a check before writing stops.
+P15="$(new_project fifteen)"; F15="$P15/.ai-containers/sandbox.local.env"
+printf '%s' "$FIXTURE" > "$F15"
+printf 'first\n' > "$F15.pre-multiline"
+ln -s "$TMP/planted-15" "$F15.pre-multiline.20260101T000000Z"
+mkdir -p "$TMP/shim15"; printf '#!/bin/sh\necho 20260101T000000Z\n' > "$TMP/shim15/date"; chmod +x "$TMP/shim15/date"
+out15="$(PATH="$TMP/shim15:$PATH" convert "$P15")"; rc15=$?
+[[ ! -e "$TMP/planted-15" && "$(cat "$F15")" == "$(printf '%s' "$FIXTURE")" && "$rc15" != 0 ]] && grep -q 'backup' <<<"$out15" \
+  && pass "a backup name taken by a dangling link is refused, the file left alone" \
+  || fail "a backup name taken by a dangling link is refused (rc=$rc15): $out15"
+
 # ── With no paths it works through --projects-conf ──────────────────────────────
 P8="$(new_project eight)"; F8="$P8/.ai-containers/sandbox.local.env"
 printf '%s' "$FIXTURE" > "$F8"

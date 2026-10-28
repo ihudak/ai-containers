@@ -11,15 +11,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **A list in `sandbox.local.env` can be written one entry per line.** A long
   `EXTRA_MOUNTS` or `REPOS` had to sit on a single line, because the loader
   read the file a line at a time: a value broken over lines arrived as a bare
-  `"` and its other lines were dropped without a word. A double-quoted value
-  whose only quote is its opening one now continues to the line that ends
-  with `"`. Each line is trimmed, blank and `#` lines inside are skipped, and
-  the entries are joined with single spaces, so every consumer sees exactly
-  the one-line form. A value that never closes is ignored with a warning
-  rather than stored. `sandbox.env` is parsed the same way, though the
-  lists belong in `sandbox.local.env`. One-line values
-  read as before, except a bare `KEY="`, which used to be stored as `"` and
-  now opens a multi-line value.
+  `"` and its other lines were dropped without a word. A value that is a
+  bare opening quote, `KEY="` alone on its line, now continues to the line
+  that ends with `"`. Each line is trimmed, blank and `#` lines inside are
+  skipped, and the entries are joined with single spaces. A line inside that
+  looks like an assignment is warned about, since a value left open swallows
+  it. A value that never closes is ignored with a warning, and so is
+  everything after it in the file. `sandbox.env` is parsed the same way,
+  though the lists belong in `sandbox.local.env`. One-line values read as
+  before, `KEY="text` with its closing quote missing included; only a bare
+  `KEY="`, which used to be stored as `"`, now opens a multi-line value.
 - **`project-init.sh` writes two or more extra mounts one per line.** A single
   mount stays on one line.
 - **`multiline-env.sh` converts existing projects.** Run from this repository,
@@ -28,8 +29,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the old file up as `sandbox.local.env.pre-multiline`. `--dry-run` shows the
   change as a diff. It skips a project whose engine copy cannot read the new
   layout yet (run `./sync-to-projects.sh` first), reads every converted file
-  back before writing it, never writes through a symbolic link, and never
-  touches the shared `sandbox.env`.
+  back before writing it, never writes through a symbolic link, keeps the
+  backup readable by you alone, exits non-zero when a project could not be
+  converted, and never touches the shared `sandbox.env`.
 ### Removed
 
 - **`AI_CONTAINER_GROUP=host` is gone, and a launch with it is refused.** It

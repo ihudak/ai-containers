@@ -184,7 +184,7 @@ env_key_tool_config() {
 # load_env_defaults <file> [portable|local]: portable (the default, the strict
 # one) accepts only env_key_portable keys; local refuses env_key_tool_config ones.
 load_env_defaults() {
-  local file="$1" mode="${2:-portable}" line key val part open
+  local file="$1" mode="${2:-portable}" line key val part open joined
   [[ -f "$file" ]] || return 0
   while IFS= read -r line || [[ -n "$line" ]]; do
     line="${line%$'\r'}"                         # tolerate a CRLF-authored file
@@ -196,18 +196,28 @@ load_env_defaults() {
     [[ "$line" == *=* ]] || continue
     key="${line%%=*}"; val="${line#*=}"
     [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
-    # A value whose ONLY quote is its opening one continues on the following lines, up
-    # to the line that ends with the closing quote — so a long list (EXTRA_MOUNTS, REPOS)
-    # can be written one entry per line. Every line is trimmed, blank and `#` lines
-    # inside are skipped, and the rest are joined with single spaces: the value arrives
-    # exactly as its one-line form would. It is read in full BEFORE the key is refused
-    # or found already set, so its continuation lines are never parsed as assignments.
-    if [[ "$val" == '"'* && "${val:1}" != *'"'* ]]; then
-      open=1; val="${val:1}"; val="${val%"${val##*[![:space:]]}"}"
+    # A value that is a bare opening quote (`KEY="`, trailing blanks allowed) continues
+    # on the following lines, up to the line that ends with the closing quote — so a
+    # long list (EXTRA_MOUNTS, REPOS) can be written one entry per line. Every line is
+    # trimmed, blank and `#` lines inside are skipped, and the rest are joined with
+    # single spaces. It is read in full BEFORE the key is refused or found already set,
+    # so its continuation lines are never parsed as assignments. Only a BARE quote
+    # opens one: `KEY="text` with its closing quote lost to a typo stays one line, as
+    # it always was, rather than running on to the next one-line `X="..."` and
+    # swallowing every key on the way (review of PR #317). A line inside that looks
+    # like an assignment is warned about, since a value left open swallows those.
+    joined=0
+    if [[ "$val" =~ ^\"[[:space:]]*$ ]]; then
+      open=1; joined=1; val=""
       while IFS= read -r part || [[ -n "$part" ]]; do
         part="${part%$'\r'}"
         part="${part#"${part%%[![:space:]]*}"}"; part="${part%"${part##*[![:space:]]}"}"
         [[ -z "$part" || "$part" == '#'* ]] && continue
+        if [[ "$part" =~ ^(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)= ]]; then
+          printf 'WARNING: %s=" in %s holds a line that looks like an assignment (%s=...); it is read as\n' \
+            "$key" "$file" "${BASH_REMATCH[2]}" >&2
+          printf '         part of the value. If %s should have ended before it, close the quote.\n' "$key" >&2
+        fi
         if [[ "$part" == *'"' ]]; then
           part="${part%\"}"; part="${part%"${part##*[![:space:]]}"}"; open=0
         fi
@@ -251,8 +261,9 @@ load_env_defaults() {
       continue
     fi
     # Strip surrounding double quotes only as a MATCHED pair, so a value that legitimately
-    # contains one quote is not silently mangled.
-    if [[ ${#val} -ge 2 && "$val" == '"'*'"' ]]; then val="${val:1:${#val}-2}"; fi
+    # contains one quote is not silently mangled. A joined value already lost its
+    # quotes; what its entries carry is kept, as the report's reader keeps it.
+    if (( ! joined )) && [[ ${#val} -ge 2 && "$val" == '"'*'"' ]]; then val="${val:1:${#val}-2}"; fi
     if [[ "$mode" != local && "$key" == SANDBOX_WORKDIR ]]; then
       if ! val="$(env_portable_workdir "$file" "$val")"; then
         printf 'WARNING: ignoring SANDBOX_WORKDIR=... in %s — from a shared sandbox.env it can only be\n' "$file" >&2

@@ -264,10 +264,43 @@ printf 'EXTRA_MOUNTS="\n  /a:ro\n\n  # a comment between entries\n\t/b\n  /c:rw\
   && pass "a key after a multi-line value is still parsed" || fail "a key after a multi-line value is still parsed"
 rmk
 
-# Text on the opening and closing lines belongs to the value too.
-mk; printf 'export REPOS="docs:ro\n  cluster:ro\n  agent:ro"\n' > "$LOCAL"
+# Text on the closing line belongs to the value too.
+mk; printf 'export REPOS="\n  docs:ro\n  cluster:ro\n  agent:ro"\n' > "$LOCAL"
 ( unset REPOS; apply; [[ "$REPOS" == "docs:ro cluster:ro agent:ro" ]] ) \
-  && pass "multi-line value keeps text on its opening and closing lines" || fail "multi-line value keeps text on its opening and closing lines"
+  && pass "multi-line value keeps text on its closing line" || fail "multi-line value keeps text on its closing line"
+rmk
+
+# Only a bare opening quote opens a value (review of PR #317): a value that lost its
+# closing quote by a typo would otherwise run on to the next line that ends with
+# `"` — any one-line assignment — and swallow every key on the way, unwarned.
+mk; printf 'CONTAINER_NAME="myproj\nEXTRA_MOUNTS="/a /b"\nSANDBOX_MODE=restricted\n' > "$LOCAL"
+( unset CONTAINER_NAME EXTRA_MOUNTS SANDBOX_MODE; apply
+  [[ "$CONTAINER_NAME" == '"myproj' && "$EXTRA_MOUNTS" == "/a /b" && "$SANDBOX_MODE" == restricted ]] ) \
+  && pass "a value with text after its only quote is one line, as before" || fail "a value with text after its only quote is one line, as before"
+rmk
+
+# A value left open by mistake swallows the assignments after it, so one inside a
+# value is warned about, naming it — and the value is still read as written.
+mk; printf 'EXTRA_MOUNTS="\n  /a\nSANDBOX_MODE="open"\nIMAGE_NAME=after\n' > "$LOCAL"
+out_sw="$( ( unset EXTRA_MOUNTS SANDBOX_MODE IMAGE_NAME; apply
+  printf 'EXTRA_MOUNTS=[%s] SANDBOX_MODE=%s\n' "${EXTRA_MOUNTS:-}" "${SANDBOX_MODE+set}" ) 2>&1 )"
+grep -q 'EXTRA_MOUNTS=\[/a SANDBOX_MODE="open\] SANDBOX_MODE=$' <<<"$out_sw" \
+  && pass "an assignment inside a multi-line value is part of it" || fail "an assignment inside a multi-line value is part of it (got: $out_sw)"
+grep -q 'WARNING.*EXTRA_MOUNTS.*SANDBOX_MODE=' <<<"$out_sw" \
+  && pass "and is warned about, naming both keys" || fail "and is warned about, naming both keys (got: $out_sw)"
+rmk
+
+# The joined value is used as joined: the matched-pair strip of a one-line value
+# does not apply, as the report's reader does not apply it either.
+mk; printf 'REPOS="\n  "a\n  b""\n' > "$LOCAL"
+( unset REPOS; apply 2>/dev/null; [[ "$REPOS" == '"a b"' ]] ) \
+  && pass "a joined value keeps quotes its entries carry" || fail "a joined value keeps quotes its entries carry"
+rmk
+
+# A portable key's VALUE check sees the joined value.
+mk; printf 'IMAGE_NAME="\n  ghcr.io/x/y\n"\n' > "$PORTABLE"
+( unset IMAGE_NAME; apply 2>/dev/null; [[ -z "${IMAGE_NAME+x}" ]] ) \
+  && pass "a multi-line portable value is checked as joined" || fail "a multi-line portable value is checked as joined"
 rmk
 
 mk; printf 'EXTRA_MOUNTS="\r\n  /a\r\n  /b\r\n"\r\n' > "$LOCAL"
@@ -286,7 +319,7 @@ rmk
 # Precedence still holds, and an ignored multi-line value is still CONSUMED: its
 # continuation lines must not be read as assignments of their own.
 mk; printf 'EXTRA_MOUNTS="\n  /from-file\n  REPOS=smuggled\n"\nIMAGE_NAME=after\n' > "$LOCAL"
-( unset REPOS IMAGE_NAME; export EXTRA_MOUNTS=/inline; apply
+( unset REPOS IMAGE_NAME; export EXTRA_MOUNTS=/inline; apply 2>/dev/null
   [[ "$EXTRA_MOUNTS" == /inline && -z "${REPOS+x}" && "$IMAGE_NAME" == after ]] ) \
   && pass "an already-set key consumes its multi-line value unused" || fail "an already-set key consumes its multi-line value unused"
 printf 'BASH_ENV="\n  /x\n  REPOS=smuggled\n"\nIMAGE_NAME=after\n' > "$LOCAL"

@@ -29,8 +29,10 @@
 #
 # Before writing, the old file is copied to sandbox.local.env.pre-multiline
 # (timestamped instead when that backup already exists, so a second run never
-# overwrites the first one). Nothing is written through a symbolic link: a linked
-# sandbox.local.env is skipped, and the backup is created with noclobber.
+# overwrites the first one), readable by you alone: the file may hold a token.
+# Nothing is written through a symbolic link: a linked sandbox.local.env is skipped,
+# checked again just before it is written, and the backup is created with noclobber.
+# The run exits non-zero when any project could not be converted.
 set -euo pipefail
 unset CDPATH  # a relative cd follows it and prints the directory (bugs review GIT-17, GIT-20)
 # shellcheck source=bash-floor.sh
@@ -106,6 +108,7 @@ reads_multiline() {
 
 count_converted=0
 count_skipped=0
+count_failed=0
 
 process_project() {
   local project_path="$1"
@@ -154,7 +157,11 @@ process_project() {
 
   local candidate before after
   candidate="$(mktemp)" || return 1
-  printf '%s' "$new" > "$candidate"
+  if ! printf '%s' "$new" > "$candidate"; then
+    rm -f "$candidate"
+    printf '  ERROR could not write a temporary file — left unchanged\n' >&2
+    return 1
+  fi
   before="$(load_with "${dest}/sandbox-common.sh" "$file")"
   after="$(load_with "${dest}/sandbox-common.sh" "$candidate")"
   if [[ "$before" != "$after" ]]; then
@@ -170,26 +177,44 @@ process_project() {
     ((++count_converted)); return 0
   fi
 
-  # The backup is created with noclobber, so a name already taken — by a file, or by
-  # a link, dangling or not — fails instead of being written through.
+  # The backup is created with noclobber, so a name already taken by a regular file
+  # or by a link — dangling or not — fails instead of being written through
+  # (noclobber still opens an existing FIFO or device, so the name is checked for
+  # anything at all first). umask 077: sandbox.local.env may hold a token, and the
+  # copy must not be readable where the file is not.
   local backup="${file}.pre-multiline"
   [[ -e "$backup" || -L "$backup" ]] && backup="${backup}.$(date -u +%Y%m%dT%H%M%SZ)"
-  if ! ( set -C; cat "$file" > "$backup" ) 2>/dev/null; then
+  if [[ -e "$backup" || -L "$backup" ]] || ! ( umask 077; set -C; cat "$file" > "$backup" ) 2>/dev/null; then
     rm -f "$candidate"
     printf '  ERROR could not create the backup %s — left unchanged\n' "$(basename "$backup")" >&2
     return 1
   fi
-  cat "$candidate" > "$file"          # keeps the file's own mode and owner
+  # Checked again here: the loader runs above took time, and the directory may be
+  # one an agent can write.
+  if [[ -L "$file" || ! -f "$file" ]]; then
+    rm -f "$candidate"
+    printf '  ERROR sandbox.local.env changed into a link or a non-file while converting — left alone\n' >&2
+    return 1
+  fi
+  if ! cat "$candidate" > "$file"; then   # keeps the file's own mode and owner
+    rm -f "$candidate"
+    printf '  ERROR could not write sandbox.local.env — it is unchanged; the backup %s can be removed\n' "$(basename "$backup")" >&2
+    return 1
+  fi
   rm -f "$candidate"
   printf '  Wrote sandbox.local.env (old file backed up as %s).\n' "$(basename "$backup")"
   ((++count_converted))
 }
 
 for p in "${paths[@]}"; do
-  process_project "$p" || printf '  ERROR processing %s — see message above.\n' "$p" >&2
+  if ! process_project "$p"; then
+    ((++count_failed))
+    printf '  ERROR processing %s — see message above.\n' "$p" >&2
+  fi
 done
 
-printf '\nDone. Converted: %d  Skipped: %d\n' "$count_converted" "$count_skipped"
+printf '\nDone. Converted: %d  Skipped: %d  Failed: %d\n' "$count_converted" "$count_skipped" "$count_failed"
 if (( dry_run )); then
   printf '(dry-run: nothing was written)\n'
 fi
+(( count_failed == 0 ))
