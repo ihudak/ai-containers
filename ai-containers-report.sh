@@ -300,6 +300,8 @@ printf '%s\n' "$bases" | while IFS= read -r base_raw; do
         if [ -z "$group" ]; then
           group="default"
           note="sandbox.env sets no AI_CONTAINER_GROUP (implicit default)"
+        elif [ "$group" = host ]; then
+          note="AI_CONTAINER_GROUP=host is no longer supported: every launch is refused until it names a group"
         fi
       else
         group="n/a"

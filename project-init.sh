@@ -51,7 +51,8 @@ existing_groups() {
   for d in "$HOME/.ai-containers"/*/; do
     [[ -d "$d" ]] || continue
     name="$(basename "$d")"
-    if valid_group_name "$name"; then printf '%s\n' "$name"; fi
+    # Not `host`, which every launch refuses, even as a leftover directory.
+    if valid_group_name "$name" && [[ "$name" != host ]]; then printf '%s\n' "$name"; fi
   done | LC_ALL=C sort
 }
 

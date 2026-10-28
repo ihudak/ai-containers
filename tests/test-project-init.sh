@@ -288,5 +288,11 @@ grep -qF 'from:host' "$G/host.err" \
 grep -q '^EXTRA_MOUNTS=' "$G/host/.ai-containers/sandbox.local.env" \
   && pass "picker: the run goes on after the refusal" || fail "picker: the run stopped after the refusal"
 ! grep -qE '^  [0-9]+\) host' "$G/host.out" && pass "picker: host is not a listed row" || fail "picker: host is not a listed row"
+# …not even when a directory of that name is left in ~/.ai-containers: picked, it
+# would write a group every launch refuses (review of batch 11).
+HH="$TMP/home-hostdir"; mkdir -p "$HH/.ai-containers/"{default,host}
+run_init "$HH" "$G/hostdir" ""
+! grep -qE '^  [0-9]+\) host' "$G/hostdir.out" && pass "picker: a leftover host directory is not listed" \
+  || fail "picker: a leftover host directory is listed ($(grep -E '^  [0-9]+\)' "$G/hostdir.out" | tr '\n' ' '))"
 
 [[ "$fails" -eq 0 ]] && { echo "ALL PASS"; exit 0; } || { echo "$fails FAILED"; exit 1; }

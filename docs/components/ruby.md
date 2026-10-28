@@ -95,13 +95,13 @@ then downloaded from GitHub over hosts `base.txt` already covers
 and its signature verified against the rvm signing keys pre-seeded into
 `/etc/skel/.gnupg` at build time.
 
-That seeding covers the usual case but not every case, which is why
-`keyserver.ubuntu.com` is allowlisted rather than left out. `entrypoint.sh`
-populates a new home with `cp -rn /etc/skel/.` — **no-clobber** — so a group
-whose home already carries its own `~/.gnupg` keyring keeps it, and never
-receives the rvm keys: a group bootstrapped `from:host` with a `~/.gnupg` among
-what it copied, say. There the installer falls back to fetching the keys, and
-the allowlist entry is what lets it.
+`keyserver.ubuntu.com` is still allowlisted. `entrypoint.sh` populates a new
+home with `cp -rn /etc/skel/.` — **no-clobber** — so a home that already
+carried its own `~/.gnupg` kept it and never received the rvm keys, and the
+installer fetched them from there. The removed `host` group, which mounted your
+real `$HOME`, was that case; nothing else mounts or copies a `~/.gnupg`, so every
+home now gets the seeded keys. The entry stays until a restricted-mode bootstrap
+without it has been measured.
 
 rvm also HEAD-probes all three of its prebuilt-binary mirrors on **every**
 `rvm install`, whichever Ruby you asked for, so those are allowlisted too:

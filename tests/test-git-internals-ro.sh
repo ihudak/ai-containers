@@ -1710,5 +1710,36 @@ has_mount "$PROJ/b88.git/worktrees/wt/commondir:/workspace/proj/b88.git/worktree
   || fail "G88 only the commondir marked it, and the scan missed it ($(git_mounts | grep b88 | tr '\n' ' '))"
 rm -rf "$PROJ/b88.git" "$TMP/out88"
 
+# ── G92: a group directory that is a link is refused; the group skip is narrow ─
+# With the host group gone, ~/.ai-containers/<group> as a link to $HOME was the
+# one way left to mount the real dot-directories, and the scan, which skips the
+# group's own directories, then skipped every repository under the link's
+# target too (review of batch 11). A link is refused before anything is made…
+mkdir -p "$TMP/elsewhere92"; ln -s "$TMP/elsewhere92" "$HOME/.ai-containers/g92"
+AI_CONTAINER_GROUP=g92 launch ..
+[[ "$LAUNCH_RC" != 0 && ! -e "$CAPTURE" ]] && grep -qF 'is a link' "$ERR" \
+  && pass "G92 a group directory that is a link refuses the launch, before docker" \
+  || fail "G92 a linked group directory (rc=$LAUNCH_RC; $(grep -E 'ERROR|link' "$ERR" | head -2 | tr '\n' ' '))"
+rm -f "$HOME/.ai-containers/g92"; rm -rf "$TMP/elsewhere92"
+# A committed sandbox.env that names the host group, which the loader once
+# ignored, now refuses the launch, naming the file (review of batch 11).
+[[ -f "$LAUNCHER/sandbox.env" ]] && cp "$LAUNCHER/sandbox.env" "$TMP/se92.bak"
+printf 'AI_CONTAINER_GROUP=host\n' >> "$LAUNCHER/sandbox.env"
+( unset AI_CONTAINER_GROUP; launch .. )
+grep -qF "AI_CONTAINER_GROUP=host is set in $LAUNCHER/sandbox.env" "$ERR" && grep -qF 'from:host' "$ERR" && [[ ! -e "$CAPTURE" ]] \
+  && pass "G92 a committed sandbox.env naming the host group refuses the launch, naming the file" \
+  || fail "G92 host group from sandbox.env ($(grep -E 'ERROR|NOTE' "$ERR" | head -2 | tr '\n' ' '))"
+if [[ -f "$TMP/se92.bak" ]]; then cp "$TMP/se92.bak" "$LAUNCHER/sandbox.env"; else rm -f "$LAUNCHER/sandbox.env"; fi
+# …and a repository mounted into /workspace from inside the group's directory is
+# protected: only the group's own mounts are skipped, not every source under it.
+mkdir -p "$HOME/.ai-containers/default/work92" && "${G[@]}" init -q "$HOME/.ai-containers/default/work92/r" \
+  || { printf 'SCAFFOLD-FAILED: G92\n'; exit 1; }
+w92="$(cd "$HOME/.ai-containers/default/work92" && pwd -P)"
+EXTRA_MOUNTS="$w92" launch "$TMP/app"
+has_mount "$w92/r/.git/hooks:/workspace/work92/r/.git/hooks:ro" \
+  && pass "G92 a repository mounted from inside the group's directory is still protected" \
+  || fail "G92 a repository under the group's directory was skipped ($(git_mounts | grep work92 | tr '\n' ' '))"
+rm -rf "$HOME/.ai-containers/default/work92"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

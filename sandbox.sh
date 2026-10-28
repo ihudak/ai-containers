@@ -682,7 +682,10 @@ launcher_ro_overlay() {
   ug=(); usrc=(); udst=(); udep=(); ukind=(); gmax=0
   for i in ${bsrc[@]+"${!bsrc[@]}"}; do
     src="${bsrc[i]}"; dst="${bdst[i]}"
-    if [[ -n "${_git_skip_root:-}" && ( "$src" == "$_git_skip_root" || "$src" == "$_git_skip_root"/* ) ]]; then continue; fi
+    # The group's own mounts only: a directory mounted into /workspace from inside
+    # the group's directory is the agent's to write like any other (G92).
+    if [[ -n "${_git_skip_root:-}" && ( "$src" == "$_git_skip_root" || "$src" == "$_git_skip_root"/* ) \
+          && "$dst" != /workspace && "$dst" != /workspace/* ]]; then continue; fi
     if [[ "$src" == */.git/* ]]; then
       printf 'NOTE: %s lies inside a git directory and is mounted writable at %s;\n' "$(_term "$src")" "$(_term "$dst")" >&2
       printf '      your host'\''s git may run what changes there.\n' >&2
@@ -2711,6 +2714,36 @@ validate_sandbox_ids() {
 run_container() {
   check_config
   validate_sandbox_ids
+  # The group is checked before anything is made: a REPOS :rwcopy volume, the
+  # output directories (review of batch 11). `host` is refused, and so is a group
+  # directory that is a link: through one the container gets whatever it points
+  # at, your real $HOME's dot-directories among them, as the removed host group
+  # did — and the git scan, which skips the group's own directories, skipped what
+  # lay under the link's target (G92).
+  local group="${AI_CONTAINER_GROUP:-default}" _gsf
+  if [[ "$group" == host ]]; then
+    for _gsf in "$script_dir/sandbox.local.env" "$script_dir/sandbox.env"; do
+      if [[ -f "$_gsf" ]] && grep -qE "^[[:space:]]*AI_CONTAINER_GROUP[[:space:]]*=[[:space:]]*[\"']?host" "$_gsf"; then
+        printf 'NOTE: AI_CONTAINER_GROUP=host is set in %s.\n' "$(_term "$_gsf")" >&2
+        break
+      fi
+    done
+  fi
+  validate_group_name "$group"
+  if [[ -L "$HOME/.ai-containers/$group" ]]; then
+    local _glt
+    _glt="$(cd "$HOME/.ai-containers/$group" 2>/dev/null && pwd -P)" || _glt=""
+    printf 'ERROR: the group directory %s is a link%s; a group must be a directory of its own:\n' \
+      "$(_q "$HOME/.ai-containers/$group")" "${_glt:+ (to $(_q "$_glt"))}" >&2
+    printf '       through a link the container gets whatever it points at, writable.\n' >&2
+    if [[ -n "$_glt" ]]; then
+      printf '       To keep what is there as a copy: rm %s && cp -a %s %s\n' "$(_q "$HOME/.ai-containers/$group")" \
+        "$(_q "$_glt/.")" "$(_q "$HOME/.ai-containers/$group/")" >&2
+    else
+      printf '       It leads nowhere: remove it (rm %s) and launch again.\n' "$(_q "$HOME/.ai-containers/$group")" >&2
+    fi
+    exit 1
+  fi
   local mode="$1"
   local primary_arg="${2:-}"
   # Host directory where sandbox.sh was invoked. Agent outputs (.agent-blocked,
@@ -3157,10 +3190,7 @@ run_container() {
       "$qmd_joined" >&2
   fi
 
-  # ── Group resolution ─────────────────────────────────────────────────────────
-  local group="${AI_CONTAINER_GROUP:-default}"
-  validate_group_name "$group"
-
+  # ── Group resolution (the name was checked at the top) ─────────────────────
   local group_root
   mkdir -p "$HOME/.ai-containers"
   group_root="$HOME/.ai-containers/$group"

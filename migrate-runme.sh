@@ -154,12 +154,10 @@ process_project() {
   # The host group, which mounted the real $HOME dot-directories, is gone: the
   # project moves to the default group, which can start as a copy of them.
   if [[ "$group_name" == host ]]; then
-    printf '  NOTE: the old launcher used AI_CONTAINER_GROUP=host, which is no longer supported;
-'
-    printf '        this project moves to the default group. To start a group as a copy of your
-'
-    printf '        $HOME'\''s credentials, set AI_CONTAINER_GROUP_INIT=from:host before its first launch.
-'
+    printf '  NOTE: the old launcher used AI_CONTAINER_GROUP=host, which is no longer supported;\n'
+    printf '        this project moves to the default group. For a group that starts as a copy of\n'
+    printf '        your $HOME'\''s credentials, set in sandbox.local.env a NEW group name with\n'
+    printf '        AI_CONTAINER_GROUP_INIT=from:host (it applies only when the group is first made).\n'
     group_name=default
   fi
   if ! valid_group_name "$group_name"; then

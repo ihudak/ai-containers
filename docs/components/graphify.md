@@ -13,7 +13,7 @@ graphify=OFF   # skip (default)
 graphify install   # registers the Claude Code skill; persists in the group's ~/.claude
 ```
 
-`~/.claude/` is mounted from the container group (`~/.ai-containers/<group>/.claude` on the host), so running `graphify install` once makes the skill available in every later container of the **same group** without reinstalling. It does not reach other groups, or Claude Code on the host — unless the group is `host`, which mounts your real `~/.claude`.
+`~/.claude/` is mounted from the container group (`~/.ai-containers/<group>/.claude` on the host), so running `graphify install` once makes the skill available in every later container of the **same group** without reinstalling. It does not reach other groups, or Claude Code on the host.
 
 > **Note:** graphify depends on `tree-sitter`, which publishes compiled wheels and can lag a new CPython release. When the install fails on the image's Python, it is retried once on the previous minor, downloaded into the group's `~/.ai-tools/uv/python` if the image lacks it (see [Agent-tier tools](../agent-tools.md)).
 

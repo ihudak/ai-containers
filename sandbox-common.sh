@@ -194,6 +194,13 @@ load_env_defaults() {
     [[ "$line" == *=* ]] || continue
     key="${line%%=*}"; val="${line#*=}"
     [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+    # Removed keys say so, from either file: moved to sandbox.local.env they would
+    # do nothing (review of batch 11; CHANGELOG).
+    case "$key" in
+      SANDBOX_GIT_FIXTURES|AI_CONTAINER_HOST_ACK)
+        printf 'WARNING: ignoring %s=... in %s — that key was removed and is no longer used.\n' "$key" "$file" >&2
+        continue ;;
+    esac
     if env_key_denied "$key"; then
       printf 'WARNING: ignoring %s=... in %s — that key controls the shell, not the launcher.\n' \
         "$key" "$file" >&2
@@ -996,6 +1003,9 @@ ensure_group_exists() {
   while IFS= read -r -d '' dir; do
     local name; name="$(basename "$dir")"
     [[ "$name" == "default" || "$name" == "$group" ]] && continue
+    # Group names only: not `host`, which is refused, nor a hidden directory
+    # (the launcher's own .verify-*), which no launch could select.
+    [[ "$name" != host && "$name" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] || continue
     options+=("$name")
     option_labels+=("$name")
   done < <(find "$HOME/.ai-containers" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null \

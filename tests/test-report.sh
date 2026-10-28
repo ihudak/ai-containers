@@ -440,6 +440,12 @@ grp_of() { awk -F'\t' -v p="$1" '$5 == p { print $4 }' <<<"$OUT"; }
   || fail "group column: grphost=$(grp_of grphost) grplocal=$(grp_of grplocal)
 $OUT"
 
+# …and says, in the notes, that such a project's launches are refused.
+run "$GRB/ai-containers-report.sh"
+grep -qF 'AI_CONTAINER_GROUP=host is no longer supported' <<<"$OUT" \
+  && pass "a project on the removed host group gets a note" || fail "no note for a host-group project
+$OUT"
+
 printf '\n%s\n' "----------------------------------------"
 if [[ "$fails" -eq 0 ]]; then
   printf 'test-report.sh: all checks passed\n'; exit 0

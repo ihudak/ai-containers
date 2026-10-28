@@ -187,6 +187,15 @@ printf 'EXTRA_MOUNTS=/x\nSANDBOX_UID=1234\nAI_CONTAINER_GROUP=work\nSANDBOX_WORK
   [[ "$EXTRA_MOUNTS" == /x && "$SANDBOX_UID" == 1234 && "$AI_CONTAINER_GROUP" == work && "$SANDBOX_WORKDIR" == /abs ]] ) 2>/dev/null \
   && pass "sandbox.local.env sets all of those" || fail "machine-only keys refused from sandbox.local.env"
 rmk
+# Keys that were removed say so, from either file, rather than "move it to
+# sandbox.local.env", where they would do nothing (review of batch 11).
+mk
+printf 'SANDBOX_GIT_FIXTURES=td/a.git\n' > "$PORTABLE"; printf 'AI_CONTAINER_HOST_ACK=1\n' > "$LOCAL"
+out_r="$( ( unset SANDBOX_GIT_FIXTURES AI_CONTAINER_HOST_ACK; apply; printf 'GOT [%s%s]\n' "${SANDBOX_GIT_FIXTURES:-}" "${AI_CONTAINER_HOST_ACK:-}" ) 2>&1 )"
+grep -qxF 'GOT []' <<<"$out_r" && [[ "$(grep -c 'no longer used' <<<"$out_r")" -eq 2 ]] \
+  && pass "a removed key is ignored from either file, saying it is no longer used" \
+  || fail "removed keys: $(tr '\n' ' ' <<<"$out_r")"
+rmk
 # Also machine-only: REPOS mounts registered repos — on Linux, live binds of host
 # checkouts — and REPO_VOLUME_PREFIX decides which volumes repo.sh deletes;
 # SANDBOX_CONF is read before these files load, so from them it steered only

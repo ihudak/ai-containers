@@ -456,6 +456,22 @@ grep -q 'projects.conf not found\|No projects registered' <<<"$cli_out" \
   && pass "real ./projects.conf md5sum unchanged after the full suite" \
   || fail "real ./projects.conf md5sum unchanged after the full suite"
 
+# ── A project still on the removed host group is named ──────────────────────────
+# project-init.sh wrote AI_CONTAINER_GROUP=host into sandbox.local.env; every
+# launch of such a project is now refused, so the sync says where to change it
+# (review of batch 11).
+hl="$PROJ/.ai-containers/sandbox.local.env"
+[[ -f "$hl" ]] && cp "$hl" "$TMP/hl.bak"
+printf 'AI_CONTAINER_GROUP=host\n' >> "$hl"
+hout="$(sync_project "$PROJ" 2>&1)"
+grep -qF "$hl sets AI_CONTAINER_GROUP=host" <<<"$hout" && grep -qF 'from:host' <<<"$hout" \
+  && pass "sync names a project whose sandbox.local.env still sets the host group" \
+  || fail "sync did not name the host group ($(grep -i host <<<"$hout" | head -2 | tr '\n' ' '))"
+if [[ -f "$TMP/hl.bak" ]]; then cp "$TMP/hl.bak" "$hl"; else rm -f "$hl"; fi
+hout="$(sync_project "$PROJ" 2>&1)"
+! grep -qF 'AI_CONTAINER_GROUP=host' <<<"$hout" && pass "…and says nothing for a project without it" \
+  || fail "sync warned about a host group that is not set"
+
 snapshot_real_projects "$REAL_PROJECT_SNAPSHOTS/after.txt"
 if diff -q "$REAL_PROJECT_SNAPSHOTS/before.txt" "$REAL_PROJECT_SNAPSHOTS/after.txt" >/dev/null 2>&1; then
   pass "no real registered project directory was modified"

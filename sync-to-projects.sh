@@ -276,6 +276,20 @@ backfill_launcher_cdpath() {
   printf '  Added `unset CDPATH` to runme.sh (bugs review GIT-20).\n'
 }
 
+# The host group is gone, and project-init.sh wrote it into sandbox.local.env:
+# every launch of such a project is refused, so name the file (review of batch 11).
+warn_host_group() {
+  local f
+  for f in "$1/sandbox.local.env" "$1/sandbox.env"; do
+    [[ -f "$f" ]] || continue
+    if grep -qE "^[[:space:]]*AI_CONTAINER_GROUP[[:space:]]*=[[:space:]]*[\"']?host[\"']?[[:space:]]*(#.*)?$" "$f"; then
+      printf '  WARNING: %s sets AI_CONTAINER_GROUP=host, which is no longer supported:\n' "$f"
+      printf '           every launch is refused until that line names a group, e.g.\n'
+      printf '           AI_CONTAINER_GROUP=mine plus AI_CONTAINER_GROUP_INIT=from:host for a new one.\n'
+    fi
+  done
+}
+
 sync_project() {
   local project_path="$1"
   local dest="${project_path}/.ai-containers"
@@ -330,6 +344,7 @@ sync_project() {
 
   # sandbox.env — never overwritten; backfilled from the launcher if missing.
   backfill_sandbox_env "$dest"
+  warn_host_group "$dest"
 
   # Keep sandbox.local.env (this machine's absolute paths) and the generated allowlists
   # out of git, including for a project that deliberately tracks .ai-containers/.

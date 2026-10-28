@@ -1033,7 +1033,7 @@ Batch 9 (`9bd3729` … `6a0b37f`) went through 19 review rounds. Every HIGH and 
 - Fix direction: route these reads through one bounded helper (`timeout 2`, or a non-blocking open), and treat a timeout as unreadable.
 
 ### GIT-11: the launcher writes `config`, `commondir` and `hooks/` into config-less repository fixtures a project tracks
-- **Status: FIXED (batch 11)** — `1953888`: every bare repository gets the placeholders, a tracked test fixture too; `SANDBOX_GIT_FIXTURES`, which exempted listed fixtures (batch 10, `86427b0`), was dropped, because a committed list could name a bare repository you push to (LNCH-16; the user's choice). AGENTS.md says to ignore `<fixture>.git/commondir` and `<fixture>.git/config` in the project's `.gitignore` (G79).
+- **Status: FIXED (batch 11)** — `1953888`: every bare repository gets the placeholders, a tracked test fixture too; `SANDBOX_GIT_FIXTURES`, which exempted listed fixtures (batch 10, `86427b0`), was dropped, because a committed list could name a bare repository you push to (LNCH-16; the user's choice). AGENTS.md says to ignore `<fixture>.git/commondir` and `<fixture>.git/config` in the project's `.gitignore`, and `config.worktree` where the fixture turns `extensions.worktreeConfig` on (G79).
 - Severity: LOW. Confidence: CONFIRMED (reproduced: the fixture repro; after a launch, `git status` shows `?? testdata/fixture.git/commondir` and `?? testdata/fixture.git/config`)
 - Location: sandbox.sh: `if [[ ! -e "$g/config" && ! -L "$g/config" ]]; then ( set -C; : > "$g/config" ) 2>/dev/null || true; fi`
 - What's wrong: any HEAD + `objects/` + `refs/` directory is protected, so a tracked test fixture with no config gets permanent untracked placeholder files. AGENTS.md does not mention this.

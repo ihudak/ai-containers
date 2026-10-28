@@ -29,11 +29,11 @@ www.ruby-lang.org
 
 # The rvm signing keys are pre-seeded into /etc/skel/.gnupg at build, so a FRESH
 # home verifies the installer without a keyserver. entrypoint.sh populates a home
-# with `cp -rn` (no-clobber), so a group that already carries its own ~/.gnupg
-# keyring keeps it and never receives them — the `host` group, mounting the real
-# $HOME, is the case that matters. There the installer fetches the keys, and this
-# is what lets it. Do not drop it because "the keys are baked in": they are baked
-# into skel, not into every home.
+# with `cp -rn` (no-clobber), so a home that already carried its own ~/.gnupg
+# kept it and the installer fetched the keys from here: the host group, which
+# mounted the real $HOME, was that case, and it is gone. Nothing else mounts or
+# copies a ~/.gnupg, so every home now gets the seeded keys. Kept until a
+# restricted-mode bootstrap without it has been measured.
 keyserver.ubuntu.com
 
 # rvm's PREBUILT-BINARY mirrors. There are THREE, and rvm HEAD-probes ALL of

@@ -17,7 +17,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `from:host` stays; `AI_CONTAINER_HOST_ACK` is no longer read.
   `project-init.sh` refuses a typed `host` and asks again, and
   `migrate-runme.sh` moves a host-group launcher to the default group, saying
-  how to start it from your `$HOME`'s credentials.
+  how to start it from your `$HOME`'s credentials. A group directory that is a
+  link (to `$HOME`, say) is refused too. **Action needed** for a project made
+  with the `host` group: `project-init.sh` wrote `AI_CONTAINER_GROUP=host` into
+  its `.ai-containers/sandbox.local.env`; replace that line with a group name,
+  plus `AI_CONTAINER_GROUP_INIT=from:host` for a new group. `sync-to-projects.sh`
+  names every such project.
 
 ### Fixed
 
@@ -38,7 +43,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   launch, whoever owns it. Every bare repository gets the launcher's
   placeholder files wherever it is found, one you push to among them, and so
   does a test fixture a project tracks: ignore `<fixture>.git/commondir` and
-  `<fixture>.git/config` in the project's `.gitignore`. An output directory
+  `<fixture>.git/config` in the project's `.gitignore` (and
+  `<fixture>.git/config.worktree` where the fixture turns
+  `extensions.worktreeConfig` on). An output directory
   (`.agent-blocked`, `.agent-discovery`) that is a link is refused, even one
   you made on purpose (bugs review section 10).
 - **`./build.sh` no longer retags another project's image, or a base image,
@@ -73,13 +80,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   ENV-1). It also cannot set what reaches into a machine — a host path to mount
   (`EXTRA_MOUNTS`, `VAULT_PATH`, `SPECS_PATH`, `DOCS_PATH`,
   `ARCHITECTURE_REPO_PATH`), `REPOS`, `SANDBOX_UID`/`SANDBOX_GID`,
-  `SANDBOX_ENV_FILE`, the `host` group, a working dir other than the project
+  `SANDBOX_ENV_FILE`, a working dir other than the project
   itself (`..`) — and no `docker run` of the project image pulls one it has
   not built (`--pull=never`). **If your `sandbox.env` sets
   any of these, they now print a warning and are ignored: move them to
-  `sandbox.local.env`.** `project-init.sh` and `migrate-runme.sh` now write the
-  `host` group there themselves; for a project made earlier with `host`, move
-  that line from `sandbox.env` to `sandbox.local.env` by hand.
+  `sandbox.local.env`.** (The `host` group is gone altogether; see Removed.)
 - **`repo.sh` refuses a `SANDBOX_UID`/`SANDBOX_GID` that is not a number.**
   It pasted the values into the shell script its seeding containers run as
   root — with your `~/.ssh` mounted, for a git repository — so a value such as

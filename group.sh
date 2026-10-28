@@ -40,8 +40,8 @@ Notes:
     'rm' removes both; deleting the directory by hand orphans the volume ('gc'
     cleans those up afterwards).
   - 'rm' refuses while a running container still mounts the group's rvm volume.
-  - The 'host' group is not a directory under ~/.ai-containers (it means "mount my
-    real $HOME"), so it is never listed or removed here.
+  - 'host' is not a group (it once meant "mount my real $HOME", and is no longer
+    supported), so it is never removed here.
   - Repo volumes are NOT touched: they are global, shared across every group, and
     managed with ./repo.sh.
 EOF
