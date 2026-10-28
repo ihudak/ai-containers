@@ -8,13 +8,12 @@
 #       still takes its config and hooks from .git itself" FAIL. The hook,
 #       config and rename assertions still PASS: everything else is intact.
 diff --git a/sandbox.sh b/sandbox.sh
-index 8abe9ab..64b1fa9 100755
 --- a/sandbox.sh
 +++ b/sandbox.sh
-@@ -600,7 +600,7 @@ launcher_ro_overlay() {
-           if [[ ! -e "$g/hooks" && ! -L "$g/hooks" ]]; then mkdir "$g/hooks" 2>/dev/null || true; fi
+@@ -809,7 +809,7 @@
+           if [[ -n "$ph" && ! -e "$g/hooks" && ! -L "$g/hooks" ]]; then mkdir "$g/hooks" 2>/dev/null || true; fi
            first=""
-           if [[ ! -e "$g/commondir" && ! -L "$g/commondir" ]]; then
+           if [[ -n "$ph" && ! -e "$g/commondir" && ! -L "$g/commondir" ]]; then
 -            if ( set -C; printf './\n' > "$g/commondir" ) 2>/dev/null; then first=1; fi
 +            :
            fi

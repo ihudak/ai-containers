@@ -794,7 +794,7 @@ mkdir -p "$PROJ/l43/real" && "${G[@]}" -C "$PROJ/l43" init -q
 "${G[@]}" -C "$PROJ/l43" update-index --add --cacheinfo "160000,$(printf '%040d' 1),sub"
 ln -s real "$PROJ/l43/sub"
 launch ..
-grep -qF "submodule sub of $PROJ/l43/.git is not where its index says" "$ERR" \
+grep -qF "submodule $PROJ/l43/sub of $PROJ/l43/.git is not where its index says" "$ERR" \
   && pass "G43 a gitlink reached through a link is skipped and named" \
   || fail "G43 gitlink through a link skipped silently ($(grep -F l43 "$ERR" | head -2 | tr '\n' ' '))"
 rm -rf "$PROJ/l43"
@@ -1339,7 +1339,7 @@ has_mount "$PROJ/h71/.git/config:/workspace/proj/h71/.git/config:ro" \
   || fail "G71 HEAD -> refs/heads left the repository writable (rc=$LAUNCH_RC)"
 rm -rf "$PROJ/h71"
 
-# ── G72: CDPATH (GIT-17). A submodule's relative core.worktree with no ./ or
+# ── G90: CDPATH (GIT-17). A submodule's relative core.worktree with no ./ or
 # ../ is resolved by `cd`, which an exported CDPATH redirects — and makes print
 # the directory it went to. Here core.worktree=wt72 names a link in the
 # submodule's git directory to its checkout, and a nested submodule under
@@ -1355,30 +1355,377 @@ mkdir -p "$D72/wt72"
   && ln -s "$M72/vendor/a" "$M72/.git/modules/vendor/a/wt72" \
   && "${G[@]}" config -f "$M72/.git/modules/vendor/a/config" core.worktree wt72 \
   && "${G[@]}" config -f "$M72/.git/modules/vendor/a/modules/vendor/b/config" --unset core.worktree \
-  || { printf 'SCAFFOLD-FAILED: cannot create the G72 repository\n'; exit 1; }
+  || { printf 'SCAFFOLD-FAILED: cannot create the G90 repository\n'; exit 1; }
 want72="$M72/vendor/a/vendor/b/.git:/workspace/m72/vendor/a/vendor/b/.git:ro"
 EXTRA_MOUNTS="$M72" launch "$TMP/app"
-has_mount "$want72" && pass "G72 (control) a nested submodule found through a relative core.worktree is protected" \
-  || fail "G72 control: no $want72 (git mounts: $(git_mounts | grep m72 | tr '\n' ' '))"
+has_mount "$want72" && pass "G90 (control) a nested submodule found through a relative core.worktree is protected" \
+  || fail "G90 control: no $want72 (git mounts: $(git_mounts | grep m72 | tr '\n' ' '))"
 CDPATH="$D72" EXTRA_MOUNTS="$M72" launch "$TMP/app"
-has_mount "$want72" && pass "G72 an exported CDPATH does not move a relative core.worktree" \
-  || fail "G72 with CDPATH set, $want72 is missing (git mounts: $(git_mounts | grep m72 | tr '\n' ' '))"
+has_mount "$want72" && pass "G90 an exported CDPATH does not move a relative core.worktree" \
+  || fail "G90 with CDPATH set, $want72 is missing (git mounts: $(git_mounts | grep m72 | tr '\n' ' '))"
 rm -rf "$U72" "$S72" "$M72" "$D72"
 
-# ── G73: a newline in a directory name (GIT-18). A .git file there naming its
+# ── G91: a newline in a directory name (GIT-18). A .git file there naming its
 # git directory relatively was given a lexical path cut at the newline, which
 # never matched the physical one: a spurious "through a link" WARNING.
 M73="$TMP/m73"; NL73="$M73/a"$'\n'"b"
 mkdir -p "$NL73" && "${G[@]}" init -q --bare "$M73/real73" \
   && printf 'gitdir: ../real73\n' > "$NL73/.git" \
-  || { printf 'SCAFFOLD-FAILED: cannot create the G73 repository\n'; exit 1; }
+  || { printf 'SCAFFOLD-FAILED: cannot create the G91 repository\n'; exit 1; }
 EXTRA_MOUNTS="$M73" launch "$TMP/app"
 grep -q 'reaches .*real73 through a link' "$ERR" \
-  && fail "G73 a newline in the .git file's directory gave a spurious link WARNING: $(grep -a 'through a link' "$ERR" | head -1)" \
-  || pass "G73 a newline in a directory name does not cut its lexical path"
+  && fail "G91 a newline in the .git file's directory gave a spurious link WARNING: $(grep -a 'through a link' "$ERR" | head -1)" \
+  || pass "G91 a newline in a directory name does not cut its lexical path"
 grep -qF "$M73/real73/config:/workspace/m73/real73/config:ro" <<<"$(mounts)" \
-  && pass "G73 (control) the git directory it names is protected" || fail "G73 control: real73 not protected"
+  && pass "G91 (control) the git directory it names is protected" || fail "G91 control: real73 not protected"
 rm -rf "$M73"
+
+# Loads one function from the launcher, which cannot be sourced whole (it runs).
+load_fn() { eval "$(awk -v f="$1() {" 'index($0, f) == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox.sh")"; }
+
+# ── G72: entries that cost nothing to check do not spend the launch's budget ──
+# Empty include.path values were counted toward the 1000 entries per launch,
+# so planted repositories cut the walk of every later config, yours included
+# (GIT-19).
+for n in $(seq 1 12); do
+  "${G[@]}" init -q "$PROJ/e72/r$n" && for _ in $(seq 1 99); do printf '[include]\n\tpath =\n'; done >> "$PROJ/e72/r$n/.git/config"
+done
+# Yours is deeper than the planted ones, so it is walked after them.
+: > "$TMP/shared72.gitconfig"; "${G[@]}" init -q "$PROJ/z72/a/b/mine" \
+  && "${G[@]}" -C "$PROJ/z72/a/b/mine" config include.path "$TMP/shared72.gitconfig"
+launch ..
+! grep -qF "not every include of /workspace/proj/z72/a/b/mine/.git/config was followed" "$ERR" \
+  && pass "G72 empty include entries in planted repositories do not cut the walk of yours" \
+  || fail "G72 the launch budget was spent by empty entries"
+rm -rf "$PROJ/e72" "$PROJ/z72" "$TMP/shared72.gitconfig"
+
+# ── G73: an exported CDPATH does not move a submodule's worktree ─────────────
+# A relative core.worktree with no ./ was resolved through the host shell's
+# CDPATH, which put the worktree elsewhere and left an embedded submodule's
+# config writable (GIT-17).
+U73="$TMP/up73"; "${G[@]}" init -q "$U73" && "${G[@]}" -C "$U73" commit -q --allow-empty -m u
+M73="$PROJ/m73"; g73="$M73/.git/modules/sub"
+"${G[@]}" init -q "$M73" && mkdir -p "$M73/.git/modules" && "${G[@]}" init -q --separate-git-dir="$g73" "$g73/co73" \
+  && "${G[@]}" -C "$g73/co73" commit -q --allow-empty -m i && "${G[@]}" clone -q "$U73" "$g73/co73/vendor/lib" \
+  && "${G[@]}" -C "$g73/co73" add vendor/lib 2>/dev/null && "${G[@]}" -C "$g73/co73" commit -q -m s \
+  && "${G[@]}" --git-dir="$g73" config core.worktree co73 || { printf 'SCAFFOLD-FAILED: G73\n'; exit 1; }
+mkdir -p "$TMP/cd73/co73"
+CDPATH="${CD73-$TMP/cd73}" launch ..
+has_mount "$g73/co73/vendor/lib/.git/config:/workspace/proj/m73/.git/modules/sub/co73/vendor/lib/.git/config:ro" \
+  && pass "G73 an exported CDPATH does not move the worktree a relative core.worktree names" \
+  || fail "G73 CDPATH moved the worktree (git mounts: $(git_mounts | grep m73 | tr '\n' ' '))"
+rm -rf "$U73" "$M73" "$TMP/cd73"
+
+# ── G74: _lex_norm keeps a component that holds a newline whole (GIT-18) ──────
+load_fn _lex_norm
+got74="$(_lex_norm "/a/b"$'\n'"c/./d/../e")"
+[[ "$got74" == "/a/b"$'\n'"c/e" ]] && pass "G74 _lex_norm keeps a newline inside a component" \
+  || fail "G74 _lex_norm truncated a path at a newline (got $(printf %q "$got74"))"
+
+# ── G75: the index-read timeout uses gtimeout where there is no timeout ───────
+# macOS has no timeout(1); Homebrew's coreutils installs gtimeout (GIT-16).
+load_fn _timeout_prefix
+mkdir -p "$TMP/tp75"; printf '#!/bin/sh\nexec "$@"\n' > "$TMP/tp75/gtimeout"; chmod +x "$TMP/tp75/gtimeout"
+got75="$(PATH="$TMP/tp75" _timeout_prefix 2>/dev/null)"
+[[ "$got75" == "gtimeout -k 2 10" ]] && pass "G75 the index read is bounded by gtimeout where there is no timeout" \
+  || fail "G75 gtimeout not used (got '$got75')"
+rm -rf "$TMP/tp75"
+
+# ── G76: the unlistable hint names the right way back ────────────────────────
+# chmod for yours; the sandbox identity's for one SANDBOX_UID owns (LNCH-12); its
+# owner otherwise (GIT-14, which printed chmod for another user's .git). As a
+# non-root user, / is another user's: root's, the "sandbox identity" when 0 is
+# passed as SANDBOX_UID. Root owns /, so as root the other two cannot be told
+# apart here.
+load_fn _term; load_fn _q; load_fn _unlistable_hint
+mkdir -p "$TMP/h76"
+h76a="$(_unlistable_hint "$TMP/h76" '' 4242 2>&1)"
+if [[ "$(id -u)" != 0 ]]; then
+  h76b="$(_unlistable_hint / '' 0 2>&1)"; h76c="$(_unlistable_hint / '' 4242 2>&1)"
+else
+  h76b="It belongs to the sandbox identity (SANDBOX_UID=0)"; h76c="It is not yours"
+fi
+[[ "$h76a" == "Restore: chmod u+rx $TMP/h76" && "$h76b" == *"It belongs to the sandbox identity (SANDBOX_UID=0)"* && "$h76c" == "It is not yours"* ]] \
+  && pass "G76 the unlistable hint is chmod for yours, the sandbox identity's for SANDBOX_UID's, the owner's otherwise" \
+  || fail "G76 unlistable hint (yours: $h76a | sandbox's: $h76b | other: $h76c)"
+rm -rf "$TMP/h76"
+
+# ── G77: a repository whose HEAD the agent removed stays protected ───────────
+# A git directory was recognised only by its HEAD, which is not bound, so `mv
+# .git/HEAD .git/H` in one session left the next launch binding nothing; the
+# agent put HEAD back and wrote the config the host's git then ran (GIT-7). A
+# .git directory is protected whatever its HEAD, and a bare one a .git file
+# names by the commondir placeholder an earlier launch made. A bare one only the
+# scan finds gets no placeholder (GIT-11; G79), so it is not covered.
+"${G[@]}" init -q "$PROJ/h77" && "${G[@]}" init -q --bare "$PROJ/b77.git" \
+  && mkdir -p "$PROJ/w77" && printf 'gitdir: ../b77.git\n' > "$PROJ/w77/.git"
+launch ..
+mv "$PROJ/h77/.git/HEAD" "$PROJ/h77/.git/H"; mv "$PROJ/b77.git/HEAD" "$PROJ/b77.git/H"
+launch ..
+has_mount "$PROJ/h77/.git/config:/workspace/proj/h77/.git/config:ro" \
+  && has_mount "$PROJ/b77.git/config:/workspace/proj/b77.git/config:ro" \
+  && pass "G77 a repository, or a bare one a .git file names, whose HEAD was removed is still protected" \
+  || fail "G77 a removed HEAD hid the repository (git mounts: $(git_mounts | grep -E 'h77|b77' | tr '\n' ' '))"
+rm -rf "$PROJ/h77" "$PROJ/b77.git" "$PROJ/w77"
+
+# ── G78: a linked worktree's or a submodule's git directory without its HEAD ─
+# G77's fix covered a .git directory and a bare one, but not the git directories
+# inside a .git: one under .git/worktrees or .git/modules whose HEAD the agent
+# removed was still dropped (automated security review of 855d205, HIGH).
+U78="$TMP/up78"; "${G[@]}" init -q "$U78" && "${G[@]}" -C "$U78" commit -q --allow-empty -m u
+M78="$PROJ/m78"; "${G[@]}" init -q "$M78" && "${G[@]}" -C "$M78" commit -q --allow-empty -m i \
+  && "${G[@]}" -C "$M78" worktree add -q "$PROJ/w78" \
+  && "${G[@]}" -C "$M78" -c protocol.file.allow=always submodule -q add "$U78" sub 2>/dev/null \
+  && "${G[@]}" -C "$M78" commit -q -m s || { printf 'SCAFFOLD-FAILED: G78\n'; exit 1; }
+launch ..
+mv "$M78/.git/worktrees/w78/HEAD" "$M78/.git/worktrees/w78/H"; mv "$M78/.git/modules/sub/HEAD" "$M78/.git/modules/sub/H"
+launch ..
+has_mount "$M78/.git/worktrees/w78/commondir:/workspace/proj/m78/.git/worktrees/w78/commondir:ro" \
+  && has_mount "$M78/.git/modules/sub/config:/workspace/proj/m78/.git/modules/sub/config:ro" \
+  && pass "G78 a linked worktree's and a submodule's git directory stay protected without their HEAD" \
+  || fail "G78 a removed HEAD hid an inner git directory (git mounts: $(git_mounts | grep -E 'worktrees/w78|modules/sub' | tr '\n' ' '))"
+# …nor without objects/ (the agent can move it aside as it can HEAD), nor a
+# linked worktree of a bare repository (automated security review of 7429d87).
+mv "$M78/.git/modules/sub/objects" "$M78/.git/modules/sub/O"
+"${G[@]}" init -q --bare "$PROJ/b78.git" && "${G[@]}" --git-dir="$PROJ/b78.git" commit-tree -m x "$("${G[@]}" --git-dir="$PROJ/b78.git" write-tree)" >/dev/null 2>&1
+"${G[@]}" --git-dir="$PROJ/b78.git" update-ref refs/heads/main "$("${G[@]}" --git-dir="$PROJ/b78.git" commit-tree -m x "$("${G[@]}" --git-dir="$PROJ/b78.git" write-tree)")" \
+  && "${G[@]}" --git-dir="$PROJ/b78.git" worktree add -q "$PROJ/bw78" main 2>/dev/null || { printf 'SCAFFOLD-FAILED: G78 bare worktree\n'; exit 1; }
+launch ..
+mv "$PROJ/b78.git/worktrees/bw78/HEAD" "$PROJ/b78.git/worktrees/bw78/H"
+launch ..
+has_mount "$M78/.git/modules/sub/config:/workspace/proj/m78/.git/modules/sub/config:ro" \
+  && has_mount "$PROJ/b78.git/worktrees/bw78/commondir:/workspace/proj/b78.git/worktrees/bw78/commondir:ro" \
+  && pass "G78 a submodule's git directory without objects/, and a bare repository's worktree without HEAD, stay protected" \
+  || fail "G78 objects/ or a bare worktree's HEAD hid it (git mounts: $(git_mounts | grep -E 'modules/sub|b78' | tr '\n' ' '))"
+rm -rf "$U78" "$M78" "$PROJ/w78" "$PROJ/b78.git" "$PROJ/bw78"
+
+# ── G79: a bare repository only the scan finds gets no placeholders ──────────
+# A project that tracks a config-less fixture (testdata/fixture.git) got config,
+# commondir and hooks/ written into it at every first launch, a dirty tree; the
+# host's git reads such a fixture only when run inside it (GIT-11). One a .git
+# file names still gets them (G49 covers a repository's own).
+# What marks a fixture is that you list it in SANDBOX_GIT_FIXTURES (sandbox.env,
+# which the agent sees read-only): nothing inside a repository is out of the
+# agent's reach, the index that says what is tracked included (automated
+# security reviews of 98ed1b3; the user's choice). Two fixtures, one
+# config-less and one as `git init --bare` left it, both listed.
+mkdir -p "$PROJ/td79" && "${G[@]}" init -q --bare "$PROJ/td79/fx.git" \
+  && rm -rf "$PROJ/td79/fx.git/config" "$PROJ/td79/fx.git/hooks" "$PROJ/td79/fx.git/description" "$PROJ/td79/fx.git/info" \
+  && "${G[@]}" init -q --bare "$PROJ/td79/full.git" && rm -f "$PROJ/td79/full.git/config" \
+  && "${G[@]}" -C "$PROJ" add -f td79 && "${G[@]}" -C "$PROJ" commit -q -m fixtures79 || { printf 'SCAFFOLD-FAILED: G79\n'; exit 1; }
+before79="$(cd "$PROJ/td79" && find . | LC_ALL=C sort)"
+SANDBOX_GIT_FIXTURES="td79/fx.git td79/full.git" launch ..
+after79="$(cd "$PROJ/td79" && find . | LC_ALL=C sort)"
+[[ "$before79" == "$after79" ]] && ! grep -qF 'td79/fx.git has no' "$ERR" && ! grep -qF 'td79/full.git has no' "$ERR" \
+  && pass "G79 a bare repository listed in SANDBOX_GIT_FIXTURES is left as it is, without a WARNING" \
+  || fail "G79 placeholders written into a fixture (new: $(comm -13 <(printf '%s\n' "$before79") <(printf '%s\n' "$after79") | tr '\n' ' '); $(grep -F td79 "$ERR" | head -1))"
+# An entry that leaves the project, whichever way it is spelled, is not a fixture
+# (automated security review of 1cb7aaa).
+rm -f "$PROJ/td79/full.git/commondir"
+SANDBOX_GIT_FIXTURES="td79/../td79/full.git $PROJ/td79/full.git td79/f*.git" launch ..
+[[ -f "$PROJ/td79/full.git/commondir" ]] && grep -qF 'SANDBOX_GIT_FIXTURES' "$ERR" \
+  && pass "G79 an entry with .., an absolute path or a glob is not a fixture, and is named" \
+  || fail "G79 a fixture entry outside the rule was taken"
+rm -f "$PROJ/td79/full.git/commondir" "$PROJ/td79/full.git/config"
+# …nor a listed path the agent turned into a link to another bare repository in
+# the project, one you push to say (automated security review of 3dd1288).
+ln -s full.git "$PROJ/td79/lnk.git"
+SANDBOX_GIT_FIXTURES="td79/lnk.git" launch ..
+[[ -f "$PROJ/td79/full.git/commondir" ]] && grep -qF 'td79/lnk.git' "$ERR" \
+  && pass "G79 a listed fixture path that is a link is not a fixture, and is named" \
+  || fail "G79 a link in the fixture list made its target a fixture"
+rm -f "$PROJ/td79/lnk.git" "$PROJ/td79/full.git/commondir" "$PROJ/td79/full.git/config"
+# G89: one tracked but not listed gets them: the agent could mark a repository
+# you push to as tracked before its first protected launch.
+launch ..
+[[ -f "$PROJ/td79/full.git/commondir" ]] && pass "G89 a tracked bare repository not listed as a fixture gets its placeholders" \
+  || fail "G89 a tracked, unlisted bare repository was left without placeholders"
+"${G[@]}" -C "$PROJ" rm -rq --cached td79 && "${G[@]}" -C "$PROJ" commit -q -m unfixtures79; rm -rf "$PROJ/td79"
+
+# ── G80: a gitdir rewritten to a path that does not exist is named ───────────
+# A linked worktree checked out under a pruned vendor/ is found through its
+# gitdir back-pointer; one the agent rewrote to an absolute path outside every
+# mount was taken for a worktree checked out elsewhere, and its submodules went
+# unprotected in silence even when that path did not exist (GIT-6).
+U80="$TMP/up80"; "${G[@]}" init -q "$U80" && "${G[@]}" -C "$U80" commit -q --allow-empty -m u
+M80="$PROJ/m80"; "${G[@]}" init -q "$M80" && "${G[@]}" -C "$M80" commit -q --allow-empty -m i \
+  && "${G[@]}" -C "$M80" worktree add -q "$PROJ/vendor/wt80" \
+  && "${G[@]}" clone -q "$U80" "$PROJ/vendor/wt80/x" && "${G[@]}" -C "$PROJ/vendor/wt80" add x 2>/dev/null \
+  && "${G[@]}" -C "$PROJ/vendor/wt80" commit -q -m s || { printf 'SCAFFOLD-FAILED: G80\n'; exit 1; }
+printf '%s\n' "/nonexistent80/elsewhere/.git" > "$M80/.git/worktrees/wt80/gitdir"
+launch ..
+grep -qF "no worktree is known for $M80/.git/worktrees/wt80" "$ERR" \
+  && pass "G80 a worktree whose gitdir names a path that does not exist is named" \
+  || fail "G80 a rewritten gitdir silenced the worktree ($(grep -F wt80 "$ERR" | head -1))"
+# …nor one naming an existing file outside the mounts that is not the worktree's
+# .git: any path the agent picks exists somewhere (automated security review of
+# 3fd28c7). A worktree really checked out outside every mount, its .git file
+# naming this git directory back, stays quiet.
+mkdir -p "$TMP/out80"; printf 'x\n' > "$TMP/out80/hostname"
+printf '%s\n' "$TMP/out80/hostname" > "$M80/.git/worktrees/wt80/gitdir"
+launch ..
+warned80=0; grep -qF "no worktree is known for $M80/.git/worktrees/wt80" "$ERR" && warned80=1
+mkdir -p "$TMP/out80/wt"; printf 'gitdir: %s\n' "$M80/.git/worktrees/wt80" > "$TMP/out80/wt/.git"
+printf '%s\n' "$TMP/out80/wt/.git" > "$M80/.git/worktrees/wt80/gitdir"
+launch ..
+quiet80=0; grep -qF "no worktree is known for $M80/.git/worktrees/wt80" "$ERR" || quiet80=1
+# …but not the worktree's own .git inside the mount, written as a path that leaves
+# the mounts and comes back with .. (automated security review of efbfcc3).
+printf '%s\n' "$TMP/out80/../proj/vendor/wt80/.git" > "$M80/.git/worktrees/wt80/gitdir"
+launch ..
+# The back-pointer then names the worktree physically, so its submodule must be
+# protected — or, failing that, named.
+[[ "$warned80" == 1 && "$quiet80" == 1 ]] \
+  && { has_mount "$PROJ/vendor/wt80/x/.git/config:/workspace/proj/vendor/wt80/x/.git/config:ro" \
+       || grep -qF "no worktree is known for $M80/.git/worktrees/wt80" "$ERR"; } \
+  && pass "G80 … nor one naming an unrelated file, or a mount's own .git by way of ..; a worktree checked out outside the mounts stays quiet" \
+  || fail "G80 gitdir check (unrelated file warned: $warned80; real one quiet: $quiet80; by way of ..: $(grep -F wt80 "$ERR" | head -1))"
+rm -rf "$U80" "$M80" "$PROJ/vendor/wt80" "$TMP/out80"; rmdir "$PROJ/vendor" 2>/dev/null || true
+
+# ── G81: a bare repository another mount's worktree uses keeps its placeholders
+# GIT-11 exempts a bare repository only the scan finds; one a linked worktree's
+# commondir reaches from another writable mount is one the host's git uses, and
+# was exempted too, where that mount's own scan cannot see it (a pruned
+# node_modules) (automated security review of 26dd7cf, MEDIUM).
+X81="$TMP/x81"; mkdir -p "$X81/node_modules" && "${G[@]}" init -q --bare "$X81/node_modules/b81.git" \
+  && "${G[@]}" --git-dir="$X81/node_modules/b81.git" update-ref refs/heads/main "$("${G[@]}" --git-dir="$X81/node_modules/b81.git" commit-tree -m x "$("${G[@]}" --git-dir="$X81/node_modules/b81.git" write-tree)")" \
+  && "${G[@]}" --git-dir="$X81/node_modules/b81.git" worktree add -q "$PROJ/w81" main 2>/dev/null || { printf 'SCAFFOLD-FAILED: G81\n'; exit 1; }
+EXTRA_MOUNTS="$X81" launch ..
+[[ -f "$X81/node_modules/b81.git/commondir" ]] && has_mount "$X81/node_modules/b81.git/config:/workspace/x81/node_modules/b81.git/config:ro" \
+  && pass "G81 a bare repository a worktree in another mount uses gets its placeholders" \
+  || fail "G81 the bare common directory was exempted (commondir: $([[ -f "$X81/node_modules/b81.git/commondir" ]] && echo made || echo missing); $(git_mounts | grep b81 | tr '\n' ' '))"
+rm -rf "$X81" "$PROJ/w81"
+
+# ── G82: gitlinks cost one resolve per index, and are followed up to 1000 ────
+# Each (gitlink, worktree top) pair forked a subshell when its checkout existed,
+# and nothing capped the gitlinks followed, so an index of the agent's with
+# thousands of them, and planted .git files naming the worktree, cost minutes
+# (GIT-8).
+M82="$PROJ/m82"; "${G[@]}" init -q "$M82" && "${G[@]}" -C "$M82" commit -q --allow-empty -m i \
+  && "${G[@]}" -C "$M82" worktree add -q "$PROJ/vendor/wt82" || { printf 'SCAFFOLD-FAILED: G82\n'; exit 1; }
+sha82="$("${G[@]}" -C "$M82" rev-parse HEAD)"
+for n in $(seq 1 1500); do printf '160000 %s\tl%d\n' "$sha82" "$n"; mkdir -p "$PROJ/vendor/wt82/l$n"; done \
+  | "${G[@]}" -C "$PROJ/vendor/wt82" update-index --index-info
+for n in $(seq 1 19); do mkdir -p "$PROJ/d82/$n"; printf 'gitdir: %s\n' "$M82/.git/worktrees/wt82" > "$PROJ/d82/$n/.git"; done
+launch_timed 120
+# Past the cap the launch is refused, not warned about: the agent could write
+# 1001 gitlinks with the one it wants unprotected last (automated security
+# review of the batch 10 branch, MEDIUM), as SANDBOX_GIT_MAX refuses.
+[[ "$LAUNCH_RC" != 0 && "$LAUNCH_RC" != 124 && "$LAUNCH_S" -lt 30 ]] && grep -qF "ERROR: the index of" "$ERR" && grep -qF "records more than 1000 submodules" "$ERR" \
+  && pass "G82 1500 gitlinks under 20 worktree tops cost seconds, and past 1000 the launch is refused (${LAUNCH_S}s)" \
+  || fail "G82 gitlinks (rc=$LAUNCH_RC; ${LAUNCH_S}s; $(grep -F 'more than 1000' "$ERR" | head -1))"
+rm -rf "$M82" "$PROJ/vendor/wt82" "$PROJ/d82"; rmdir "$PROJ/vendor" 2>/dev/null || true
+
+# ── G83: past SANDBOX_GIT_MAX the scan stops reading indexes ─────────────────
+# Every planted repository was followed and its index read before the protection
+# loop counted it, so 20k of them cost minutes before the refusal they were
+# always going to get (GIT-9). Each unreadable index prints a WARNING when read.
+if [[ "$(id -u)" != 0 ]]; then
+  for n in $(seq 1 50); do "${G[@]}" init -q "$PROJ/p83/r$n" && : > "$PROJ/p83/r$n/.git/index" && chmod 000 "$PROJ/p83/r$n/.git/index"; done
+  SANDBOX_GIT_MAX=5 launch ..
+  nw83="$(grep -c 'cannot read the index of' "$ERR")"
+  [[ "$LAUNCH_RC" != 0 && "$nw83" -le 10 ]] && grep -qF 'more than 5 git directories' "$ERR" \
+    && pass "G83 past SANDBOX_GIT_MAX the scan stops reading indexes ($nw83 read for 50 repositories)" \
+    || fail "G83 indexes read past the limit (rc=$LAUNCH_RC; $nw83 read; $(grep -F 'git directories' "$ERR" | head -1))"
+  chmod -R u+rwx "$PROJ/p83"; rm -rf "$PROJ/p83"
+else
+  printf 'SKIP: G83 — chmod does not constrain root\n'
+fi
+
+# ── G84: a small git file swapped for a FIFO cannot hang the read ───────────
+# .git files, commondir, gitdir and config are checked as regular files, then
+# read; a concurrent container can swap one for a FIFO in between, which blocked
+# the launch for ever. Each read is bounded (_rd, and _git_file_config) (GIT-10).
+load_fn _timeout_prefix; load_fn _rd_prep; load_fn _rd; _rd_t=(); _rd_init=""
+# The bound alone, here in the test's own shell: _rd_fail would signal it (G86).
+_rd_fail() { :; }
+if [[ -n "$(_timeout_prefix)" ]]; then
+  mkfifo "$TMP/f84"; t84=$SECONDS
+  _rd 4096 "$TMP/f84" >/dev/null 2>&1; d84=$((SECONDS - t84))
+  ( exec 3<>"$TMP/f84" ) 2>/dev/null; rm -f "$TMP/f84"
+  (( d84 <= 6 )) && pass "G84 a read of a FIFO swapped in for a small git file is cut off (${d84}s)" \
+    || fail "G84 a FIFO read took ${d84}s"
+else
+  printf 'SKIP: G84 — no timeout or gtimeout here\n'
+fi
+
+# ── G85: a scan that stopped past SANDBOX_GIT_MAX refuses the launch ─────────
+# The scan's stop counts what it queued; the refusal counted what the protection
+# loop binds, which skips a repository under a read-only overlay. Ten planted
+# inside a launcher stopped the scan, then counted for nothing, and the launch
+# went ahead with what came after them unfollowed (automated security review
+# of 630f5b0, HIGH).
+L85="$PROJ/l85"; mkdir -p "$L85"; : > "$L85/sandbox.sh"; : > "$L85/sandbox-common.sh"
+for n in $(seq 1 10); do "${G[@]}" init -q "$L85/r$n"; done
+SANDBOX_GIT_MAX=5 launch ..
+[[ "$LAUNCH_RC" != 0 ]] && grep -qF 'more than 5 git directories' "$ERR" \
+  && pass "G85 a scan stopped past SANDBOX_GIT_MAX refuses the launch, whatever the protection loop would count" \
+  || fail "G85 a stopped scan let the launch go ahead (rc=$LAUNCH_RC)"
+rm -rf "$L85"
+
+# ── G86: a read cut off by its bound refuses the launch, it is not "unset" ──
+# G84's bound turned a hang into a key read as absent, which fails open for the
+# checks that read a config (automated security review of 116129d, HIGH); and
+# the awk fallback, where there is no git, read only the first MiB of a config
+# (MEDIUM). Either now signals the launcher (USR1), which refuses. Each case runs
+# as its own process, as the launcher does: the signal goes to $$.
+fns86="$TMP/fns86.sh"
+for f86 in _term _timeout_prefix _rd_prep _rd _rd_fail _git_file_config _git_config_bool; do
+  awk -v f="$f86() {" 'index($0, f) == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox.sh"
+done > "$fns86"; printf '_rd_t=(); _rd_init=""\nexec {_rd_errfd}>&2\ntrap "exit 3" USR1\n' >> "$fns86"
+if [[ -n "$(_timeout_prefix)" ]]; then
+  mkfifo "$TMP/f86"
+  # 2>/dev/null, as every real caller has: the ERROR still reaches the launcher's
+  # stderr (review of the batch 10 branch: it was silent).
+  bash -c 'source "$1"; _rd 4096 "$2" >/dev/null 2>/dev/null; echo continued' _ "$fns86" "$TMP/f86" >"$TMP/o86" 2>"$TMP/e86"; rc86=$?
+  ( exec 3<>"$TMP/f86" ) 2>/dev/null; rm -f "$TMP/f86"
+  [[ "$rc86" == 3 && ! -s "$TMP/o86" ]] && grep -qF 'could not be read' "$TMP/e86" \
+    && pass "G86 a small git file whose read is cut off stops the launch" \
+    || fail "G86 cut-off read (rc=$rc86; $(cat "$TMP/o86" "$TMP/e86" | tr '\n' ' '))"
+fi
+mkdir -p "$TMP/nogit86"; for t in awk head wc timeout gtimeout uname tr mktemp rm; do p86="$(command -v "$t" 2>/dev/null)" && ln -sf "$p86" "$TMP/nogit86/$t"; done
+# Past the cap in plain bytes, and in NUL bytes, which a shell variable drops
+# (automated security review of 37c5ace).
+for pad86 in '#' 'NUL'; do
+  if [[ "$pad86" == NUL ]]; then
+    { printf '[extensions]\n\tworktreeConfig = false\n'; head -c 1100000 /dev/zero; printf '\n'; } > "$TMP/big86.config"
+  else
+    { printf '[extensions]\n\tworktreeConfig = false\n'; head -c 1100000 /dev/zero | tr '\0' '#'; printf '\n'; } > "$TMP/big86.config"
+  fi
+  PATH="$TMP/nogit86" "$BASH" -c 'source "$1"; _git_config_bool "$2" extensions.worktreeConfig; echo continued' _ "$fns86" "$TMP/big86.config" >"$TMP/o86" 2>"$TMP/e86"; rc86=$?
+  [[ "$rc86" == 3 && ! -s "$TMP/o86" ]] && pass "G86 the awk fallback refuses a config past its read cap ($pad86 padding)" \
+    || fail "G86 awk fallback on a big config, $pad86 padding (rc=$rc86; $(cat "$TMP/o86" "$TMP/e86" | tr '\n' ' '))"
+done
+rm -rf "$TMP/nogit86" "$TMP/big86.config" "$TMP/o86" "$TMP/e86" "$fns86"
+
+# ── G87: a bare repository git made gets its placeholders, fixture or not ───
+# A bare repository you push to — say ./remote.git in the project — is one the
+# host's git runs: the agent wrote a commondir into one that had none, pointing
+# at a copy with its own post-receive, and the next `git push` ran it (review of
+# the batch 10 branch, under GIT-11). Only one listed in SANDBOX_GIT_FIXTURES is
+# left without them (G79).
+"${G[@]}" init -q --bare "$PROJ/remote87.git"
+launch ..
+[[ -f "$PROJ/remote87.git/commondir" ]] && has_mount "$PROJ/remote87.git/commondir:/workspace/proj/remote87.git/commondir:ro" \
+  && pass "G87 a bare repository only the scan finds, not listed as a fixture, gets its placeholders" \
+  || fail "G87 a pushed-to bare repository was left without a commondir ($(git_mounts | grep remote87 | tr '\n' ' '))"
+rm -rf "$PROJ/remote87.git"
+
+# ── G88: a bare repository's worktree, checked out outside every mount ──────
+# Its git directory (b88.git/worktrees/wt) is not under a .git, and no .git file
+# in a mount names it: once its HEAD is moved aside, only its commondir marks
+# it, which the scan must report (review of the batch 10 branch: deleting that
+# clause passed every test).
+"${G[@]}" init -q --bare "$PROJ/b88.git" \
+  && "${G[@]}" --git-dir="$PROJ/b88.git" update-ref refs/heads/main "$("${G[@]}" --git-dir="$PROJ/b88.git" commit-tree -m x "$("${G[@]}" --git-dir="$PROJ/b88.git" write-tree)")" \
+  && "${G[@]}" --git-dir="$PROJ/b88.git" worktree add -q "$TMP/out88/wt" main 2>/dev/null || { printf 'SCAFFOLD-FAILED: G88\n'; exit 1; }
+launch ..
+mv "$PROJ/b88.git/worktrees/wt/HEAD" "$PROJ/b88.git/worktrees/wt/H"
+launch ..
+has_mount "$PROJ/b88.git/worktrees/wt/commondir:/workspace/proj/b88.git/worktrees/wt/commondir:ro" \
+  && pass "G88 a bare repository's worktree checked out outside the mounts stays protected without its HEAD" \
+  || fail "G88 only the commondir marked it, and the scan missed it ($(git_mounts | grep b88 | tr '\n' ' '))"
+rm -rf "$PROJ/b88.git" "$TMP/out88"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

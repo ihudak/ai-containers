@@ -466,10 +466,12 @@ if [[ "$(id -u)" -ne 0 ]]; then
   OWN="$TMP/own"; mk_launcher "$OWN/srch/p"; mk_launcher "$OWN/shut/p"; chmod 0311 "$OWN/srch"; chmod 0310 "$OWN/shut"
   SANDBOX_UID=4242 SANDBOX_GID=4343 EXTRA_MOUNTS="$OWN" launch "$LAUNCHER" "$TMP/app"
   chmod 0755 "$OWN/srch" "$OWN/shut"
-  # Not the agent's: it cannot chmod it, so the overlay and WARNING, not the
-  # refusal, which hit another user's 0711 directory (review of 7b41327).
-  [[ "$LAUNCH_RC" == 0 && "$(mounts_under /workspace/own/)" == "$OWN/srch:/workspace/own/srch:ro" ]] \
-    && pass "T25b one the agent can search but does not own is mounted read-only; T25c one it cannot enter is left alone" \
+  # Yours, though the agent's identity is another: on a file share that remaps
+  # ownership (Docker Desktop, Colima) what the agent makes shows up as yours, so
+  # it is refused, and you can always fix your own (LNCH-5). Another user's the
+  # agent cannot write keeps the overlay and the WARNING (review of 7b41327).
+  [[ "$LAUNCH_RC" != 0 ]] && grep -qF "ERROR: $OWN/srch can be searched but not listed" "$ERR" && ! grep -qF "$OWN/shut" "$ERR" \
+    && pass "T25b one you own that the agent can search refuses the launch; T25c one it cannot enter is left alone" \
     || fail "T25b/c agent-reach (got: $(mounts_under /workspace/own/ | tr '\n' ' '); stderr: $(grep -F "$OWN" "$ERR" | tr '\n' ' '))"
   # Not the agent's, but writable and searchable by it through its group or the
   # other bits: it could have planted a FIFO there, so refused (automated
@@ -516,6 +518,38 @@ if [[ "$(id -u)" -ne 0 ]]; then
       || fail "T25f ls $v (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
   done
   chmod 0755 "$OWN5/srch"
+  # T25g: the mode and ACL half on its own. T25d-f now refuse also because the
+  # directory is yours (LNCH-5), so each rule of _agent_bits_writable is checked
+  # directly, against an agent that is not you.
+  eval "$(awk 'index($0, "_agent_bits_writable() {") == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox.sh")"
+  B25="$TMP/bits25"; mkdir -p "$B25/plain" "$B25/grp" "$B25/oth" "$B25/acl"
+  chmod 0311 "$B25/plain"; chmod 0331 "$B25/grp"; chmod 0303 "$B25/oth"; chmod 0311 "$B25/acl"
+  g25="$(id -g)"; r25=""
+  _agent_bits_writable "$B25/plain" 4242 4343 && r25+=" plain"
+  _agent_bits_writable "$B25/grp" 4242 4343 && r25+=" grp-other-gid"
+  _agent_bits_writable "$B25/grp" 4242 "$g25" || r25+=" grp-missed"
+  _agent_bits_writable "$B25/oth" 4242 4343 || r25+=" oth-missed"
+  _agent_bits_writable "$B25/plain" "$(id -u)" 4343 || r25+=" own-uid-missed"
+  if command -v setfacl >/dev/null 2>&1 && setfacl -m u:4242:wx "$B25/acl" 2>/dev/null; then
+    _agent_bits_writable "$B25/acl" 4242 4343 || r25+=" acl-missed"
+  fi
+  LS_SHIM=at PATH="$SHIM:$PATH" _agent_bits_writable "$OWN5/srch" 4242 4343 || r25+=" at-missed"
+  LS_SHIM=fail PATH="$SHIM:$PATH" _agent_bits_writable "$OWN5/srch" 4242 4343 || r25+=" fail-missed"
+  # T25h: an ls that does not mark ACLs (busybox; GNU's on CIFS) is not taken at
+  # its word (LNCH-6). getfacl decides where there is one, and one that fails
+  # counts as an ACL; with no getfacl, only GNU's or a BSD ls is trusted.
+  BB="$TMP/bb25"; mkdir -p "$BB"
+  printf '#!/bin/sh\ncase "$1" in --version) echo "BusyBox v1.36"; exit 1;; esac\nprintf "d-wx--x--x 2 u g 64 Jan 1 00:00 %%s\\n" "$2"\n' > "$BB/ls"
+  printf '#!/bin/sh\nexit 1\n' > "$BB/getfacl"; chmod +x "$BB/ls" "$BB/getfacl"
+  PATH="$BB:$PATH" _agent_bits_writable "$B25/plain" 4242 4343 || r25+=" busybox-ls-failing-getfacl-trusted"
+  if command -v setfacl >/dev/null 2>&1 && command -v getfacl >/dev/null 2>&1 && setfacl -m u:4242:wx "$B25/acl" 2>/dev/null; then
+    mkdir -p "$BB/l"; cp "$BB/ls" "$BB/l/ls"
+    PATH="$BB/l:$PATH" _agent_bits_writable "$B25/acl" 4242 4343 || r25+=" acl-unmarked-by-ls-missed"
+    _agent_bits_writable "$B25/plain" 4242 4343 && r25+=" plain-with-getfacl"
+  fi
+  chmod -R u+rwx "$B25"
+  [[ -z "$r25" ]] && pass "T25g the mode, group, other, ACL and ls rules each decide on their own" \
+    || fail "T25g _agent_bits_writable:$r25"
 else
   printf 'SKIP: T25b/c — as root every directory can be listed\n'
 fi
@@ -793,13 +827,20 @@ done
 # nothing under /workspace is a verify source
 [[ "${vline%%:*}" != /workspace/* ]] && pass "T41 the verify source is never under /workspace" || fail "T41 verify source is under /workspace: $vline"
 
-# ── T42: no launcher mounts (no writable mount contains a launcher) → no verify
-# mount and no anchor at all; nothing to guard.
-launch "$LAUNCHER" "$TMP/app"
+# ── T42: nothing to guard → no verify mount and no anchor at all. An open-mode
+# launch has no output directories, and here no writable mount holds a
+# launcher. (A restricted launch always guards its .agent-blocked: T61.)
+: > "$CAPTURE"; ( cd "$LAUNCHER" && bash ./sandbox.sh open "$TMP/app" ) >/dev/null 2>"$ERR" </dev/null
 [[ -z "$(mounts | grep ':/run/ai-launcher:ro$' || true)" ]] \
   && [[ -z "$(awk 'prev=="-e"{print} {prev=$0}' "$CAPTURE" | grep '^AI_LAUNCHER_ANCHOR=' || true)" ]] \
-  && pass "T42 a launch with no launcher mounts adds no verify mount or anchor" \
+  && pass "T42 a launch with nothing to guard adds no verify mount or anchor" \
   || fail "T42 spurious verify machinery (mounts: $(mounts | grep -F /run/ai-launcher | tr '\n' ' '))"
+# …and a restricted one guards only its output directory.
+launch "$LAUNCHER" "$TMP/app"
+[[ "$(tr '\0' '\n' < "$CAPTURE.manifest" 2>/dev/null | grep -c '^/workspace/')" == 1 ]] \
+  && grep -qxF /workspace/.agent-blocked <<<"$(tr '\0' '\n' < "$CAPTURE.manifest" 2>/dev/null)" \
+  && pass "T42 a restricted launch with no launcher mounts guards only its .agent-blocked" \
+  || fail "T42 restricted manifest ($(tr '\0' '\n' < "$CAPTURE.manifest" 2>/dev/null | grep '^/workspace/' | tr '\n' ' '))"
 
 # ── T43: the host launcher must not use GNU-only `stat -c` (macOS has only BSD
 # `stat -f`). A shim that rejects -c and serves -f stands in for a BSD host:
@@ -1063,6 +1104,136 @@ TMPDIR="$TMP/no-such-tmp51" EXTRA_MOUNTS="$TMP/g51" launch "$LAUNCHER" "$TMP/app
   && pass "T51 the index read names the TMPDIR it could not use, once" \
   || fail "T51 the index read's TMPDIR warning (count: $(grep -cF 'cannot make a temporary directory' "$ERR"))"
 rm -rf "$TMP/g51"
+
+# ── T52: %q prints a bidi override raw, so every scanned name goes through _q ─
+# glibc counts U+202A-U+202E and U+2066-U+2069 printable, and %q passed them to
+# the terminal, reordering the name a refusal or a hint points at (LNCH-8).
+B52="$TMP/bidi52"; for n in 1 2 3; do mk_launcher "$B52/p$n"$'\xe2\x80\xae'"x"; done
+SANDBOX_LAUNCHER_MAX=1 EXTRA_MOUNTS="$B52" launch "$LAUNCHER" "$TMP/app"
+rc52=$LAUNCH_RC; raw52=0; grep -q $'\xe2\x80\xae' "$ERR" && raw52=1
+rm -rf "$B52"; mk_launcher "$B52/q"; mkdir -p "$B52/q/.ai-containers/d"$'\xe2\x81\xa6'"z"; mkfifo "$B52/q/.ai-containers/d"$'\xe2\x81\xa6'"z/f"
+EXTRA_MOUNTS="$B52" launch "$LAUNCHER" "$TMP/app"
+grep -q $'\xe2\x81\xa6' "$ERR" && raw52=$((raw52 + 2))
+# …and the rm hint stays exact when pasted: `$'…'` with the bytes escaped, never
+# a `?` in their place, which an unquoted paste reads as a glob (automated
+# security review of f999f25).
+[[ "$rc52" != 0 && "$LAUNCH_RC" != 0 && "$raw52" == 0 ]] && grep -qF 'Remove it on the host (rm ' "$ERR" \
+  && { grep -qF '\342\201\246' "$ERR" || grep -qF '\xe2\x81\xa6' "$ERR"; } \
+  && ! grep -qF 'd?z' <<<"$(grep -F 'Remove it on the host (rm ' "$ERR")" \
+  && pass "T52 a bidi override in a refusal listing or an rm hint does not reach the terminal" \
+  || fail "T52 bidi reached the terminal (listing rc=$rc52, rm rc=$LAUNCH_RC, raw=$raw52; $(grep -aF 'rm ' "$ERR" | head -1))"
+rm -rf "$B52"
+
+# ── T53: a stale TMPDIR stops only a launch that needs a temporary file ──────
+# The FIFO search's file was made on every launch, and the error did not say
+# which directory it could not write (LNCH-14).
+TMPDIR=/nonexistent53 launch "$LAUNCHER" "$TMP/app"; rc53a=$LAUNCH_RC
+TMPDIR=/nonexistent53 launch "$LAUNCHER" "$PROJ"
+[[ "$rc53a" == 0 && "$LAUNCH_RC" != 0 ]] && grep -qF '/nonexistent53' "$ERR" && grep -qF 'TMPDIR' "$ERR" \
+  && pass "T53 a bad TMPDIR stops only a launch with something to search, and is named" \
+  || fail "T53 bad TMPDIR (nothing to search rc=$rc53a; to search rc=$LAUNCH_RC: $(grep -F ERROR "$ERR" | head -1))"
+
+# ── T55: what the agent leaves in its output directories cannot block a launch
+# .agent-blocked is a writable mount root of its own, so a 0100 or 0311
+# directory the agent made there was refused as an unlistable candidate on
+# every later launch; the host reads that directory only as data (LNCH-9).
+if [[ "$(id -u)" != 0 ]]; then
+  mkdir -p "$LAUNCHER/.agent-blocked/d55" "$LAUNCHER/.agent-blocked/e55"; chmod 0100 "$LAUNCHER/.agent-blocked/d55"; chmod 0311 "$LAUNCHER/.agent-blocked/e55"
+  launch "$LAUNCHER" "$TMP/app"; rc55a=$LAUNCH_RC
+  chmod 0755 "$LAUNCHER/.agent-blocked/d55" "$LAUNCHER/.agent-blocked/e55"; rm -rf "$LAUNCHER/.agent-blocked/d55" "$LAUNCHER/.agent-blocked/e55"
+  # …and launched from the project root, where the output directories are the
+  # project's own and the project mount reaches them too (review of the batch 10
+  # branch).
+  mkdir -p "$PROJ/.agent-blocked/e55"; chmod 0311 "$PROJ/.agent-blocked/e55"; : > "$CAPTURE"
+  ( cd "$PROJ" && bash ./.ai-containers/sandbox.sh restricted "$PROJ" ) >/dev/null 2>"$ERR" </dev/null; LAUNCH_RC=$?
+  chmod 0755 "$PROJ/.agent-blocked/e55"; rm -rf "$PROJ/.agent-blocked" "$PROJ/.agent-discovery"
+  [[ "$rc55a" == 0 && "$LAUNCH_RC" == 0 ]] && pass "T55 an unlistable directory the agent left in .agent-blocked does not refuse the launch, whichever mount reaches it" \
+    || fail "T55 .agent-blocked blocked the launch (own mount rc=$rc55a; project root rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
+fi
+
+# ── T56, T57: the FIFO search is bounded, and runs again just before docker ──
+# It walked every file of every read-only source with no bound, the agent
+# deciding how many (LNCH-10); and a FIFO a concurrent container made after it,
+# before docker ran, went unseen (LNCH-11). A stand-in find answers for the FIFO
+# search only (the one with -quit) and passes everything else through.
+FS="$TMP/fshim"; mkdir -p "$FS"; REALFIND="$(command -v find)"
+printf '#!/bin/bash\ncase " $* " in *" -quit "*) printf "%%s\\n" "$*" >> %q; [[ "${FIND_SHIM:-}" == slow ]] && exit 124;; esac\nexec %q "$@"\n' \
+  "$TMP/fshim.log" "$REALFIND" > "$FS/find"; chmod +x "$FS/find"
+: > "$TMP/fshim.log"; FIND_SHIM=slow PATH="$FS:$PATH" launch "$LAUNCHER" "$PROJ"
+[[ "$LAUNCH_RC" != 0 ]] && grep -qF "could not be searched for FIFOs within" "$ERR" && grep -qF "$LAUNCHER" "$ERR" \
+  && pass "T56 a FIFO search that runs out of time refuses the launch, naming the directory" \
+  || fail "T56 unbounded FIFO search (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
+: > "$TMP/fshim.log"; PATH="$FS:$PATH" launch "$LAUNCHER" "$PROJ"
+n57="$(grep -cF -- "$LAUNCHER " "$TMP/fshim.log")"
+[[ "$LAUNCH_RC" == 0 && "$n57" -ge 2 ]] \
+  && pass "T57 the FIFO search runs again just before docker ($n57 searches of the launcher)" \
+  || fail "T57 FIFO re-search (rc=$LAUNCH_RC; $n57 searches of the launcher)"
+rm -rf "$FS" "$TMP/fshim.log"
+
+# ── T58: a FIFO inside .git/objects is searched for too ──────────────────────
+# git reads objects/info/alternates, and the packs, so skipping .git/objects let
+# the agent feed the host's git which object stores it uses (automated security
+# review of f1817ce).
+mk_launcher "$TMP/obj58/p"; git init -q "$TMP/obj58/p/.ai-containers" 2>/dev/null \
+  && mkfifo "$TMP/obj58/p/.ai-containers/.git/objects/info/alternates"
+EXTRA_MOUNTS="$TMP/obj58" launch "$LAUNCHER" "$TMP/app"
+[[ "$LAUNCH_RC" != 0 ]] && grep -qF 'objects/info/alternates is a FIFO' "$ERR" \
+  && pass "T58 a FIFO at .git/objects/info/alternates refuses the launch" \
+  || fail "T58 FIFO in .git/objects (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
+( exec 3<>"$TMP/obj58/p/.ai-containers/.git/objects/info/alternates" ) 2>/dev/null; rm -rf "$TMP/obj58"
+
+# ── T59: the FIFO search has one budget per launch ──────────────────────────
+# 30 s per source, with the agent deciding how many sources there are, and a
+# second run before docker, let planted launchers each kept just under 30 s make
+# a launch take hours (review of the batch 10 branch). One budget covers both
+# runs; spent, the launch is refused. Started here with it already spent.
+fns59="$TMP/fns59.sh"
+for f59 in _term _q _timeout_prefix _ro_fifo_search; do
+  awk -v f="$f59() {" 'index($0, f) == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox.sh"
+done > "$fns59"
+mkdir -p "$TMP/src59"
+bash -c 'source "$1"; srcs=("$2"); rw=(); _fs_deadline=$((SECONDS - 1)); _ro_fifo_search srcs rw; echo continued' _ "$fns59" "$TMP/src59" >"$TMP/o59" 2>"$TMP/e59"; rc59=$?
+[[ "$rc59" != 0 && ! -s "$TMP/o59" ]] && grep -qF 'budget' "$TMP/e59" \
+  && pass "T59 a FIFO search past the launch's budget refuses the launch" \
+  || fail "T59 FIFO search budget (rc=$rc59; $(cat "$TMP/o59" "$TMP/e59" | tr '\n' ' '))"
+rm -rf "$fns59" "$TMP/src59" "$TMP/o59" "$TMP/e59"
+
+# ── T60: an output directory that is a link refuses the launch ──────────────
+# The launch dir's .agent-blocked is mounted writable at /workspace/.agent-
+# blocked, and docker follows a link there: launched from the project root, a
+# link the agent left in an earlier session mounted wherever it pointed — a
+# launcher, ~/.ssh — writable for the agent (automated security review of
+# 8da6755). A link, or anything but a directory, is refused, before docker.
+mkdir -p "$TMP/target60"; rm -rf "$PROJ/.agent-blocked"; ln -s "$TMP/target60" "$PROJ/.agent-blocked"; : > "$CAPTURE"
+( cd "$PROJ" && bash ./.ai-containers/sandbox.sh restricted "$PROJ" ) >/dev/null 2>"$ERR" </dev/null; LAUNCH_RC=$?
+[[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && grep -qF '.agent-blocked' "$ERR" && ! grep -qF "$TMP/target60" "$CAPTURE" \
+  && pass "T60 an output directory that is a link refuses the launch, before docker" \
+  || fail "T60 a linked output directory (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1); mounted: $(grep -c target60 "$CAPTURE"))"
+rm -f "$PROJ/.agent-blocked"; rm -rf "$TMP/target60"
+
+# ── T61: the output directories join the verify manifest ────────────────────
+# T60 checks them before docker, but a concurrent container of the same project
+# could swap .agent-blocked for a link in between; recorded by device:inode, a
+# swap is refused by the entrypoint like any overlay's (automated security
+# review of 1665dce; review of the batch 10 branch, reproduced). Restricted
+# mode's .agent-blocked and discovery mode's .agent-discovery alike.
+ok61=""
+for m61 in restricted discovery; do
+  : > "$CAPTURE"; rm -f "$CAPTURE.manifest"
+  ( cd "$PROJ" && bash ./.ai-containers/sandbox.sh "$m61" "$PROJ" ) >/dev/null 2>"$ERR" </dev/null
+  d61=/workspace/.agent-blocked; [[ "$m61" == discovery ]] && d61=/workspace/.agent-discovery
+  # …with the directory's own device:inode, which is what the entrypoint compares
+  # (a 0 0 passed the name-only check; review of the batch 10 branch).
+  want61="$(p_dev_ino "$PROJ/${d61#/workspace/}")"; got61=""
+  mapfile -d '' -t man61 < "$CAPTURE.manifest" 2>/dev/null || man61=()
+  for (( i61 = 0; i61 + 2 < ${#man61[@]}; i61 += 3 )); do
+    [[ "${man61[i61+2]}" == "$d61" ]] && got61="${man61[i61]} ${man61[i61+1]}"
+  done
+  [[ -n "$got61" && "$got61" == "$want61" ]] && ok61+=" $m61"
+done
+rm -rf "$PROJ/.agent-blocked" "$PROJ/.agent-discovery"
+[[ "$ok61" == " restricted discovery" ]] && pass "T61 each output directory is recorded in the verify manifest, in both modes" \
+  || fail "T61 output directories in the manifest (recorded for:$ok61)"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

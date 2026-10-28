@@ -8,6 +8,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The launcher protects more of what your host's git reads, and refuses
+  instead of warning where the agent could slip something past it.** An agent
+  that moved a repository's `HEAD` (or a submodule's `objects/`) aside hid it
+  from the next launch; any directory with a `commondir` now counts, and a
+  `.git`, or a worktree's or submodule's git directory inside one, is protected
+  whatever its `HEAD` holds. Small git files the agent can write (`.git` files,
+  `commondir`, `gitdir`, a config) are read under a time bound, and one whose
+  read is cut off refuses the launch. The search for FIFOs in what the launch
+  binds read-only is bounded (90 s per launch) and runs again just before
+  docker. **Changed:** a launch is now refused when an index records more than
+  1000 submodules, when a scan passes `SANDBOX_GIT_MAX`, when a directory you
+  can search but not list is yours or one the agent could write (an ACL, read
+  with `getfacl`, counts); inside the agent's own output directories such a
+  directory only warns. A `.git` you can search but not list refuses the
+  launch, whoever owns it. Every bare repository gets the launcher's
+  placeholder files wherever it is found, one you push to among them; list test
+  fixtures in the new `SANDBOX_GIT_FIXTURES` (in `sandbox.env`) to keep them
+  clean. An output directory
+  (`.agent-blocked`, `.agent-discovery`) that is a link is refused, even one
+  you made on purpose (bugs review section 10).
+- **`./build.sh` no longer retags another project's image, or a base image,
+  that a committed `sandbox.env` names.** Images now record their project
+  (`ai-containers.project`), and a committed `IMAGE_NAME` that names an image
+  this tool did not build, or another project's, is refused; one built for a
+  project path that no longer exists (a project that moved) is rebuilt with a
+  NOTE. **Changed:** a committed `IMAGE_NAME` must be a local name — one with a
+  `/` (a registry or a namespace) is ignored with a WARNING; set such a name in
+  `sandbox.local.env` (bugs review ENV-7).
 - **`repo.sh sync` and `reset` no longer run git on a repo volume's own `.git`.**
   They ran git as root, with your SSH keys, on a repository the agent can
   write through any `:rw` repo volume, so what it planted in `.git` — a

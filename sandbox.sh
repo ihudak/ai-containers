@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# A CDPATH exported by the user's shell sends a relative `cd` elsewhere and makes
-# it print the directory, into every $(cd … && pwd) here: a submodule's relative
-# core.worktree resolved under the wrong directory (bugs review GIT-17).
+# A relative `cd` would search the host shell's CDPATH first, which moved a
+# relative core.worktree somewhere else (GIT-17; G73).
 unset CDPATH
+# A bounded read that was cut off signals this process from a subshell (_rd_fail),
+# and says why on the stderr saved here: every caller sends its own to /dev/null.
+exec {_rd_errfd}>&2
+trap 'exit 1' USR1
 
 # sandbox.sh — run the AI sandbox container.
 #
@@ -257,7 +260,7 @@ _warn_group_link_out() {
   [[ "$src" == "$groot" || "$src" == "$groot"/* ]] && return 0
   printf 'WARNING: %s is a link out of the group, to %s;\n' "$original_src" "$src" >&2
   printf '         the container gets that directory, writable, not a copy of it. To keep a copy:\n' >&2
-  printf '           rm %q && cp -a %q %q\n' "$original_src" "$src/." "$original_src/" >&2
+  printf '           rm %s && cp -a %s %s\n' "$(_q "$original_src")" "$(_q "$src/.")" "$(_q "$original_src/")" >&2
 }
 
 add_mount_if_exists() {
@@ -354,18 +357,10 @@ launcher_ro_overlay() {
   local uid="${SANDBOX_UID:-$(id -u)}" gid="${SANDBOX_GID:-$(id -g)}" you
   local -a found unreadable cand bsrc=() bdst=() cl=() cat=() csrc=() cdst=() cdep=() ckind=() ro_dsts=() psrc pdst
   local -a _xm_t=() _xm_by=() _xm_j=() ro_srcs=()
-  local aclm
   local -A gpv=()
   local -a scan links walk gdirs gfiles glinks gunr gro ug usrc udst udep ukind
-  local g base what gmax gn gitmax cfg cdir hp hpd k2 first eks ik ip
+  local g base what gmax gn gitmax cfg cdir hp hpd k2 first eks ik ip ph
   local -a ek inc pgd=() pga=() pgc=()
-  # The hooks git runs, by name (githooks(5)); anything else in hooks/ is inert.
-  local -a git_hook_names=(applypatch-msg pre-applypatch post-applypatch pre-commit
-    pre-merge-commit prepare-commit-msg commit-msg post-commit pre-rebase post-checkout
-    post-merge pre-push pre-receive update proc-receive post-receive post-update
-    reference-transaction push-to-checkout pre-auto-gc post-rewrite sendemail-validate
-    fsmonitor-watchman p4-changelist p4-prepare-changelist p4-post-changelist
-    p4-pre-submit post-index-change)
   local -A seen=() tried=() scanned=() pinned=()
   # Included git config files read: each once per protected config, keyed by
   # device:inode however it is spelled (review of b3d2362: `./config` and
@@ -437,6 +432,15 @@ launcher_ro_overlay() {
     done
   done
 
+  # The agent's output directories, by source (LNCH-9).
+  local -a outsrc=()
+  local inout ox
+  for i in ${bsrc[@]+"${!bsrc[@]}"}; do
+    # By name too: run_container refuses an output directory that is a link, so
+    # its source is the directory itself (automated security review of 8da6755).
+    case "${bdst[i]}" in /workspace/.agent-blocked|/workspace/.agent-discovery)
+      [[ "${bsrc[i]##*/}" == "${bdst[i]##*/}" ]] && outsrc+=("${bsrc[i]}") ;; esac
+  done
   # Every launcher each mount exposes — and every directory there it cannot
   # see into — with where it lands in the container.
   for i in ${bsrc[@]+"${!bsrc[@]}"}; do
@@ -511,7 +515,7 @@ launcher_ro_overlay() {
     printf 'ERROR: the writable mounts hold more than %d launchers and unlistable directories\n' "$lmax" >&2
     printf '       to protect, and each adds bind mounts to every container start. Among them:\n' >&2
     for (( k = ${#cl[@]} - 1, x = 0; k >= 0 && x < 5; k--, x++ )); do
-      printf '         %q\n' "${cl[k]}" >&2
+      printf '         %s\n' "$(_q "${cl[k]}")" >&2
     done
     printf '       Remove the ones that are not yours, mount narrower directories or :ro,\n' >&2
     printf '       or raise SANDBOX_LAUNCHER_MAX if every one of them is yours.\n' >&2
@@ -563,28 +567,22 @@ launcher_ro_overlay() {
       # read-only overlay — and cannot be checked, so the launch is refused, as for
       # such a git directory (automated security review of c687370; T46). One the
       # launching user cannot search either hides nothing it can open by name.
-      # Only one the agent could have written into: its own, or one its group or
-      # the other bits let it write and search. Another user's it cannot write — an
-      # ordinary 0711 home directory, which this refused (review of 7b41327; T25b)
-      # — keeps the overlay and the WARNING (automated security review of
-      # cd83cb7; T25d).
-      # One with an ACL counts too: an entry can let the agent write whatever the
-      # mode bits say, and those entries are not read here (automated security
-      # review of 63503a9; T25e). Plain only when ls shows the bare mode, or GNU's
-      # SELinux-context '.' after it: a +, macOS's @ (it hides a +), anything
-      # else, or an ls that fails counts as one (automated security review of
-      # 64f8841).
-      aclm="$(cd / && LC_ALL=C ls -ld "$l" 2>/dev/null)" || aclm=""; aclm="${aclm%% *}"
-      if [[ "$kind" == unreadable && -x "$l" ]] \
-         && { ! [[ "$aclm" =~ ^d[-rwxsStT]{9}\.?$ ]] \
-              || [[ -n "$(cd / && find "$l" -maxdepth 0 \( -user "$uid" -o \( -group "$gid" -perm -0030 \) -o -perm -0003 \) -print 2>/dev/null)" ]]; }; then
+      # Only one the agent could have written into (_agent_could_write). Another
+      # user's it cannot write — an ordinary 0711 home directory, which this
+      # refused (review of 7b41327; T25b) — keeps the overlay and the WARNING
+      # (automated security review of cd83cb7; T25d).
+      # Not in the agent's own output directories, whichever mount reaches them:
+      # the host reads them only as data, and an unlistable one the agent left
+      # there refused every later launch (LNCH-9; T55). It keeps the overlay and
+      # the WARNING.
+      inout=""
+      for ox in ${outsrc[@]+"${outsrc[@]}"}; do
+        if [[ "$l" == "$ox" || "$l" == "$ox"/* ]]; then inout=1; break; fi
+      done
+      if [[ "$kind" == unreadable && -x "$l" && -z "$inout" ]] && _agent_could_write "$l" "$uid" "$gid"; then
         printf 'ERROR: %s can be searched but not listed by you, so what is inside it cannot be\n' "$(_term "$l")" >&2
         printf '       checked for a FIFO the agent could write through a read-only overlay; refusing the launch.\n' >&2
-        if [[ -O "$l" ]]; then
-          printf '       Restore: chmod u+rx %q\n' "$l" >&2
-        else
-          printf '       It is not yours: ask its owner to make it listable, or leave it out of the writable mounts.\n' >&2
-        fi
+        _unlistable_hint "$l" '       ' "$uid"
         exit 1
       fi
       # The pins this one needs, then whether docker can be handed all of them
@@ -616,11 +614,7 @@ launcher_ro_overlay() {
       if [[ "$kind" == unreadable ]]; then
         printf 'WARNING: %s cannot be listed by you, so it cannot be checked for\n' "$(_term "$l")" >&2
         printf '         launchers; it is mounted read-only at %s.\n' "$(_term "$at")" >&2
-        if [[ -O "$l" ]]; then
-          printf '         Restore: chmod u+rx %q\n' "$l" >&2
-        else
-          printf '         It is not yours: ask its owner to make it listable, or leave it out of the writable mounts.\n' >&2
-        fi
+        _unlistable_hint "$l" '         ' "$uid"
       else
         printf 'READ-ONLY: %s  (launcher files; edit them on the host)\n' "$(_term "$at")" >&2
       fi
@@ -664,6 +658,35 @@ launcher_ro_overlay() {
   # — but a cap leaving the rest writable could be filled by the agent to push a
   # real repository past it, so past 200 the launch is refused instead. A named
   # group's own directories are not scanned: the host's git never runs there.
+  # The bare repositories you list as fixtures, as physical paths, each a path
+  # inside the project (this launcher directory's parent): split without
+  # globbing, and an absolute path, a .., a glob, or one that leads out of the
+  # project is not a fixture (GIT-11; G79; automated security review of 1cb7aaa).
+  local -A fixt=()
+  local fxp fxr fxroot
+  local -a fxl=()
+  fxroot="$(cd "$self/.." 2>/dev/null && pwd -P)" || fxroot=""
+  read -r -a fxl <<< "${SANDBOX_GIT_FIXTURES:-}"
+  for fxp in ${fxl[@]+"${fxl[@]}"}; do
+    case "/$fxp/" in
+      //*|*/../*|*'*'*|*'?'*|*'['*)
+        printf 'WARNING: SANDBOX_GIT_FIXTURES entry %s is not a path inside the project; it is not a fixture.\n' "$(_q "$fxp")" >&2
+        continue ;;
+    esac
+    fxr="$(cd "$fxroot/$fxp" 2>/dev/null && pwd -P)" || continue
+    # Physically where it says: a link anywhere on the way, which the agent can
+    # plant in the project, made its target a fixture, a repository you push to
+    # among them (automated security review of 3dd1288; G79).
+    if [[ -n "$fxroot" && "$fxr" == "$(_lex_norm "$fxroot/$fxp")" && "$fxr" == "$fxroot"/* ]]; then fixt[$fxr]=1
+    else printf 'WARNING: SANDBOX_GIT_FIXTURES entry %s passes through a link or leads out of the project; it is not a fixture.\n' "$(_q "$fxp")" >&2
+    fi
+  done
+  # Read before the scan, which stops following past it (GIT-9; G83).
+  gitmax="${SANDBOX_GIT_MAX:-200}"
+  if [[ ! "$gitmax" =~ ^[1-9][0-9]{0,5}$ ]]; then
+    printf 'ERROR: SANDBOX_GIT_MAX must be a whole number from 1 to 999999 (got %q).\n' "$gitmax" >&2
+    exit 1
+  fi
   ug=(); usrc=(); udst=(); udep=(); ukind=(); gmax=0
   for i in ${bsrc[@]+"${!bsrc[@]}"}; do
     src="${bsrc[i]}"; dst="${bdst[i]}"
@@ -702,12 +725,16 @@ launcher_ro_overlay() {
   for k in ${ug[@]+"${!ug[@]}"}; do uhave[${udst[k]}${ug[k]#"${usrc[k]}"}]=1; done
   while (( xq < ${#_xm_t[@]} )); do
     xt="${_xm_t[xq]}"; j="${_xm_j[xq]}"; xq=$((xq + 1))
+    # Reached from another mount, a .git file's or a commondir's: one the host's
+    # git uses, so it gets its placeholders, unlike a bare repository only the
+    # scan finds (GIT-11; automated security review of 26dd7cf; G81).
+    _gdi_named[$xt]=1
     xv2="${bdst[j]}${xt#"${bsrc[j]}"}"
     [[ -z "${uhave[$xv2]:-}" ]] || continue
     uhave[$xv2]=1
     ug+=("$xt"); ukind+=(dir); usrc+=("${bsrc[j]}"); udst+=("${bdst[j]}")
     if [[ -f "$xt/commondir" ]]; then
-      cdt=""; IFS= read -r -d '' cdt < <(head -c 4096 "$xt/commondir" 2>/dev/null) || true
+      cdt=""; IFS= read -r -d '' cdt < <(_rd 4096 "$xt/commondir" 2>/dev/null) || true
       while [[ "$cdt" == *[$'\r\n'] ]]; do cdt="${cdt%?}"; done
       if [[ -n "$cdt" && "$cdt" != ./ && "$cdt" != . ]] && _gd_resolve "$xt" "$cdt" "$xt/commondir" cdt; then
         if _is_common_dir "$cdt"; then
@@ -728,9 +755,16 @@ launcher_ro_overlay() {
     if (( ${#d} > gmax )); then gmax=${#d}; fi
   done
   gn=0
-  gitmax="${SANDBOX_GIT_MAX:-200}"
-  if [[ ! "$gitmax" =~ ^[1-9][0-9]{0,5}$ ]]; then
-    printf 'ERROR: SANDBOX_GIT_MAX must be a whole number from 1 to 999999 (got %q).\n' "$gitmax" >&2
+  # A scan that stopped past SANDBOX_GIT_MAX (GIT-9) did not follow everything, so
+  # the launch is refused here, whatever the protection loop below would count:
+  # it does not count what is skipped there, and a launch with submodules left
+  # unfollowed must not go ahead (automated security review of 630f5b0, HIGH; G83).
+  if (( ${#_gdi_over[@]} )); then
+    printf 'ERROR: the writable mounts hold more than %d git directories to protect, and\n' "$gitmax" >&2
+    printf '       each adds bind mounts to every container start. Among those past the limit:\n' >&2
+    for x in "${_gdi_over[@]:0:5}"; do printf '         %s\n' "$(_q "$x")" >&2; done
+    printf '       Mount narrower directories, or mount them :ro, or raise SANDBOX_GIT_MAX\n' >&2
+    printf '       if every one of them is yours.\n' >&2
     exit 1
   fi
   for (( depth = 0; depth <= gmax; depth++ )); do
@@ -754,7 +788,7 @@ launcher_ro_overlay() {
         for (( d = depth; d <= gmax && x < 5; d++ )); do
           for k2 in "${!ug[@]}"; do
             if (( udep[k2] == d && x < 5 )) && { (( d > depth )) || (( k2 >= k )); }; then
-              printf '         %q\n' "${ug[k2]}" >&2; x=$((x + 1))
+              printf '         %s\n' "$(_q "${ug[k2]}")" >&2; x=$((x + 1))
             fi
           done
         done
@@ -762,7 +796,7 @@ launcher_ro_overlay() {
         printf '       if every one of them is yours.\n' >&2
         exit 1
       fi
-      gro=(); cfg=""
+      gro=(); cfg=""; ph=1
       if [[ "$kind" != dir ]]; then
         base="${g%/*}"; gro=("$g")      # a .git file, or read-only whole: pin what is above it
       else
@@ -778,33 +812,45 @@ launcher_ro_overlay() {
           printf 'ERROR: %s is not a %s; refusing the launch.\n' "$(_term "$g/$f")" "$([[ "$f" == hooks ]] && printf directory || printf 'regular file')" >&2
           if [[ "$f" == HEAD ]]; then
             printf '       The agent could write into it, and your host'\''s git would read what it writes.\n' >&2
-            printf '       Replace it on the host with a regular file, e.g. printf '\''ref: refs/heads/main\\n'\'' > %q\n' "$g/$f" >&2
+            printf '       Replace it on the host with a regular file, e.g. printf '\''ref: refs/heads/main\\n'\'' > %s\n' "$(_q "$g/$f")" >&2
           else
             printf '       Through a read-only bind the agent could still write into it, and your host'\''s git\n' >&2
-            printf '       would read what it writes. Remove it on the host (rm %q).\n' "$g/$f" >&2
+            printf '       would read what it writes. Remove it on the host (rm %s).\n' "$(_q "$g/$f")" >&2
           fi
           exit 1
         done
         # The commondir read only when it is a regular file: a FIFO there blocked it
         # (review of 1a30bb4; G65). $(...) strips the newline, so ./ is all there is.
         if [[ -d "$g/objects" ]] && { [[ -f "$g/config" ]] || [[ ! -e "$g/commondir" && ! -L "$g/commondir" ]] \
-             || { [[ -f "$g/commondir" ]] && [[ "$(head -c 16 "$g/commondir" 2>/dev/null)" == ./ ]]; }; }; then
+             || { [[ -f "$g/commondir" ]] && [[ "$(_rd 16 "$g/commondir" 2>/dev/null)" == ./ ]]; }; }; then
           cfg="$g/config"
+          # A bare repository only the scan found — not a .git, not inside one, and
+          # named by no .git file or commondir — that you list in
+          # SANDBOX_GIT_FIXTURES is a fixture, and the placeholders made its tree
+          # dirty at every first launch. It gets none; what it has is still bound
+          # read-only (GIT-11; G79). Every other gets them, a repository you push
+          # to among them (G87, G89). Nothing inside a repository marks a fixture:
+          # the agent writes it all, the index that says what is tracked included
+          # (automated security reviews of 98ed1b3); sandbox.env, in the launcher
+          # directory, it sees read-only.
+          ph=1
+          if [[ "$g" != */.git && "$g" != */.git/* && "${g%/*}" != */worktrees && -z "${_gdi_named[$g]:-}" \
+                && -n "${fixt[$g]:-}" ]]; then ph=""; fi
           # A repository git reads with no config of its own gets an empty one, as
           # commondir gets ./ — or the agent could add one after the launch (G49).
-          if [[ ! -e "$g/config" && ! -L "$g/config" ]]; then ( set -C; : > "$g/config" ) 2>/dev/null || true; fi
+          if [[ -n "$ph" && ! -e "$g/config" && ! -L "$g/config" ]]; then ( set -C; : > "$g/config" ) 2>/dev/null || true; fi
           # git makes hooks/ at init, but a repository can lack it — and then the
           # agent could make it.
-          if [[ ! -e "$g/hooks" && ! -L "$g/hooks" ]]; then mkdir "$g/hooks" 2>/dev/null || true; fi
+          if [[ -n "$ph" && ! -e "$g/hooks" && ! -L "$g/hooks" ]]; then mkdir "$g/hooks" 2>/dev/null || true; fi
           first=""
-          if [[ ! -e "$g/commondir" && ! -L "$g/commondir" ]]; then
+          if [[ -n "$ph" && ! -e "$g/commondir" && ! -L "$g/commondir" ]]; then
             if ( set -C; printf './\n' > "$g/commondir" ) 2>/dev/null; then first=1; fi
           fi
           # Anything but our ./ sends the host's git elsewhere for this repository's
           # configuration and hooks, and git never writes one here: refuse, rather
           # than mount the redirect read-only and launch.
-          if [[ -f "$g/commondir" && ! -L "$g/commondir" && "$(cat "$g/commondir" 2>/dev/null)" != "./" ]]; then
-            printf 'ERROR: %s sends git to %q for this repository'\''s\n' "$(_term "$g/commondir")" "$(head -c 200 "$g/commondir" 2>/dev/null)" >&2
+          if [[ -f "$g/commondir" && ! -L "$g/commondir" && "$(_rd 4096 "$g/commondir" 2>/dev/null)" != "./" ]]; then
+            printf 'ERROR: %s sends git to %s for this repository'\''s\n' "$(_term "$g/commondir")" "$(_q "$(_rd 200 "$g/commondir" 2>/dev/null)")" >&2
             printf '       configuration and hooks, and git never writes one in a repository'\''s own git\n' >&2
             printf '       directory. If you did not make it, remove it on the host and launch again.\n' >&2
             exit 1
@@ -825,7 +871,7 @@ launcher_ro_overlay() {
               printf '      what makes your host'\''s git run programs: %s.\n' "$(_term "$eks")" >&2
               printf '      If you did not set them yourself, review them on the host:\n' >&2
               for f in "$g/config" "$g/config.worktree"; do
-                if [[ -f "$f" ]]; then printf '        git config --file %q --list\n' "$f" >&2; fi
+                if [[ -f "$f" ]]; then printf '        git config --file %s --list\n' "$(_q "$f")" >&2; fi
               done
             fi
             # The same moment freezes hooks/ as it is, and a repository the agent
@@ -846,7 +892,7 @@ launcher_ro_overlay() {
                 printf 'NOTE: %s is protected for the first time, and its hooks/ already\n' "$(_term "$at")" >&2
                 printf '      holds hooks your host'\''s git runs: %s.\n' "$(_term "$eks")" >&2
                 printf '      If you did not put them there, review them on the host:\n' >&2
-                printf '        ls -l %q\n' "$g/hooks" >&2
+                printf '        ls -l %s\n' "$(_q "$g/hooks")" >&2
               fi
             fi
           fi
@@ -859,7 +905,7 @@ launcher_ro_overlay() {
           # join what is around them), every trailing CR and LF stripped. One that
           # cannot be resolved names a path that cannot exist, so both checks
           # below fail closed (security review of 99db199).
-          cdir=""; IFS= read -r -d '' cdir < <(head -c 4096 "$g/commondir" 2>/dev/null) || true
+          cdir=""; IFS= read -r -d '' cdir < <(_rd 4096 "$g/commondir" 2>/dev/null) || true
           while [[ "$cdir" == *[$'\r\n'] ]]; do cdir="${cdir%?}"; done
           cfg="$(cd "$g" 2>/dev/null && cd -P -- "$cdir" 2>/dev/null && pwd -P)" || cfg=""
           # Not a path in the agent's tree, where it could plant one saying the
@@ -868,7 +914,7 @@ launcher_ro_overlay() {
         fi
         # A common config that cannot be read cannot say the extension is off, so
         # the placeholder is made, and config.worktree walked below, as if it were on.
-        if [[ -n "$cfg" && ! -e "$g/config.worktree" && ! -L "$g/config.worktree" ]]; then
+        if [[ -n "$cfg" && -n "$ph" && ! -e "$g/config.worktree" && ! -L "$g/config.worktree" ]]; then
           if [[ ! -f "$cfg" ]] || _git_config_bool "$cfg" extensions.worktreeConfig; then
             ( set -C; : > "$g/config.worktree" ) 2>/dev/null || true
           fi
@@ -879,7 +925,7 @@ launcher_ro_overlay() {
             printf '         what it leads to is what your host'\''s git reads. Replace the link with it.\n' >&2
           elif [[ -e "$g/$f" ]]; then
             gro+=("$g/$f")
-          elif [[ "$f" == hooks || "$f" == commondir ]] && [[ -d "$g/objects" ]]; then
+          elif [[ "$f" == hooks || "$f" == commondir ]] && [[ -d "$g/objects" && -n "$ph" ]]; then
             printf 'WARNING: %s has no %s and one could not be made; the agent could make it.\n' "$(_term "$g")" "$(_term "$f")" >&2
           fi
         done
@@ -925,20 +971,20 @@ launcher_ro_overlay() {
       if [[ "$kind" == unr && -x "$g" ]]; then
         # Searchable but not listable: git still opens what is inside by name, and
         # what is inside cannot be checked for a FIFO the agent writes through the
-        # read-only bind (review of 56c91c4, HIGH; G66). Refused.
+        # read-only bind (review of 56c91c4, HIGH; G66). Refused, whoever owns it:
+        # binding another user's whole needed its config proved inert, and each
+        # review found another way it was not — exec keys, sendemail recipients,
+        # a remote URL naming a repository the agent makes (GIT-13; the user's
+        # choice, reviews of the batch 10 branch).
         printf 'ERROR: %s can be searched but not listed by you, so what your host'\''s git reads in\n' "$(_term "$g")" >&2
         printf '       it cannot be checked; refusing the launch.\n' >&2
-        if [[ -O "$g" ]]; then
-          printf '       Restore: chmod u+rx %q\n' "$g" >&2
-        else
-          printf '       It is not yours: ask its owner to make it listable, or leave it out of the writable mounts.\n' >&2
-        fi
+        _unlistable_hint "$g" '       ' "$uid"
         exit 1
       fi
       if [[ "$kind" == unr ]]; then
         printf 'WARNING: %s cannot be listed by you, so what it holds cannot be\n' "$(_term "$g")" >&2
         printf '         protected one by one; it is mounted read-only whole at %s.\n' "$(_term "$at")" >&2
-        printf '         Restore: chmod u+rx %q\n' "$g" >&2
+        _unlistable_hint "$g" '         ' "$uid"
       elif [[ "$kind" == file ]]; then
         printf 'READ-ONLY: %s  (names the git directory your host'\''s git uses here)\n' "$(_term "$at")" >&2
       else
@@ -1074,7 +1120,10 @@ launcher_ro_overlay() {
       for e in ${inc[@]+"${inc[@]}"}; do
         # Entries, not only files: each costs a walk, and one config can hold
         # thousands (re-review of c0d48d9; G38).
-        if (( ++ient > 100 || ++ients > 1000 )); then icut=1; ii=${#ifile[@]}; break; fi
+        # The launch's budget counts only what is walked: empty and oversized values
+        # cost nothing, and planted repositories spent it on them, cutting the walk
+        # of every later config (GIT-19; G72). They still count per config.
+        if (( ++ient > 100 )); then icut=1; ii=${#ifile[@]}; break; fi
         ik="${e%%$'\n'*}"; ip=""
         if [[ "$e" == *$'\n'* ]]; then ip="${e#*$'\n'}"; fi
         if [[ -z "$ip" ]]; then continue; fi
@@ -1083,6 +1132,7 @@ launcher_ro_overlay() {
         # quadratic in them (100 such entries took 54 s) — and is left unchecked,
         # which the cut WARNING says.
         if (( ${#ip} > 4096 )); then continue; fi
+        if (( ++ients > 1000 )); then icut=1; ii=${#ifile[@]}; break; fi
         icomp="${ip//[!\/]/}"
         if (( ${#icomp} > 128 )); then icut=1; continue; fi
         # shellcheck disable=SC2088  # '~/'* matches a LITERAL leading ~/ in the config value, expanded by hand
@@ -1104,9 +1154,9 @@ launcher_ro_overlay() {
           continue
         fi
         if [[ "$icur" == "$f" ]]; then
-          printf 'WARNING: %q includes %q (%s), which the agent can redirect:\n' "$(_term "$at/${f##*/}")" "$(_term "$ip")" "$(_term "$ik")" >&2
+          printf 'WARNING: %s includes %s (%s), which the agent can redirect:\n' "$(_q "$at/${f##*/}")" "$(_q "$ip")" "$(_term "$ik")" >&2
         else
-          printf 'WARNING: %q includes %q (%s in %q), which the agent can redirect:\n' "$(_term "$at/${f##*/}")" "$(_term "$ip")" "$(_term "$ik")" "$(_term "$icur")" >&2
+          printf 'WARNING: %s includes %s (%s in %s), which the agent can redirect:\n' "$(_q "$at/${f##*/}")" "$(_q "$ip")" "$(_term "$ik")" "$(_q "$icur")" >&2
         fi
         case "$how" in
           change)  printf '         it can write %s (at %s), which git reads as part of that config.\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
@@ -1118,8 +1168,8 @@ launcher_ro_overlay() {
       done
       done
       if [[ -n "$icut" ]]; then
-        printf 'WARNING: not every include of %q was followed (100 entries and 20 files per config, 1000 of each per launch, 128 path components);\n' "$at/${f##*/}" >&2
-        printf '         what the rest set was not checked. Review them: git config --file %q --list --show-origin --includes\n' "$f" >&2
+        printf 'WARNING: not every include of %s was followed (100 entries and 20 files per config, 1000 of each per launch, 128 path components);\n' "$(_q "$at/${f##*/}")" >&2
+        printf '         what the rest set was not checked. Review them: git config --file %s --list --show-origin --includes\n' "$(_q "$f")" >&2
       fi
     done
   done
@@ -1185,7 +1235,7 @@ launcher_ro_overlay() {
   if (( ${#unchecked[@]} )); then
     printf 'NOTE: the other launchers the writable mounts expose hold more than 200 symlinks between them;\n' >&2
     printf '      not all the links of these were checked:\n' >&2
-    for x in "${unchecked[@]}"; do printf '        %q\n' "$x" >&2; done
+    for x in "${unchecked[@]}"; do printf '        %s\n' "$(_q "$x")" >&2; done
   fi
   # A read-only bind does not make a FIFO read-only: the agent can still open one
   # for writing through it, and feed the host's git, or a launcher the host runs,
@@ -1196,37 +1246,73 @@ launcher_ro_overlay() {
   # not searched: nothing on the host reads it, and a FIFO or a mode-000
   # directory the agent left there refused every later launch (review of
   # c687370; T50).
-  local fx ferr pat
-  local -a prune
-  # Made only when there is something to search, so a stale TMPDIR in the
-  # user's shell does not stop launches that bind nothing read-only (LNCH-14).
-  ferr=""
-  if (( ${#ro_srcs[@]} )); then
-    ferr="$(mktemp "${TMPDIR:-/tmp}/ai-launcher-find.XXXXXX")" || {
-      printf 'ERROR: cannot make a temporary file in %s (TMPDIR) to search the read-only mounts for FIFOs\n' "$(_term "${TMPDIR:-/tmp}")" >&2
+  # Handed back for the search again just before docker runs (LNCH-11).
+  launcher_ro_dirs=(${ro_srcs[@]+"${ro_srcs[@]}"}); launcher_rw_srcs=(${bsrc[@]+"${bsrc[@]}"})
+  _ro_fifo_search ro_srcs bsrc
+}
+
+# _ro_fifo_search <read-only sources> <writable mount sources>: refuses the launch
+# if any FIFO or device is in what is bound read-only — see the end of
+# launcher_ro_overlay. Run there, and again just before docker runs: a
+# concurrent container with one of those directories writable could make a FIFO
+# in between (LNCH-11; T57). Bounded at 30 s, past which the launch is refused
+# naming the directory, since the agent decides how many files a planted
+# launcher holds (LNCH-10; T56), and 90 s per launch over both runs (T59).
+_ro_fifo_search() {
+  local -n _fs_src=$1 _fs_rw=$2
+  local x i fx ferr="" pat frc left
+  local -a prune ft=()
+  # One budget per launch, over both runs: 30 s a source let planted launchers,
+  # each kept just under it, make a launch take hours (review of the batch 10
+  # branch; T59). Each search gets what is left, at most 30 s.
+  [[ -n "${_fs_deadline:-}" ]] || _fs_deadline=$((SECONDS + 90))
+  # Made only when there is something to search, and its error names TMPDIR: a
+  # stale one in your shell stopped every launch, unnamed (LNCH-14; T53).
+  if (( ${#_fs_src[@]} )); then
+    ferr="$(mktemp "${TMPDIR:-/tmp}/ai-launcher-find.XXXXXX" 2>/dev/null)" || {
+      printf 'ERROR: cannot make a temporary file in %s (TMPDIR); set TMPDIR to a writable directory.\n' "$(_q "${TMPDIR:-/tmp}")" >&2
       exit 1
     }
   fi
-  for x in ${ro_srcs[@]+"${ro_srcs[@]}"}; do
+  for x in ${_fs_src[@]+"${_fs_src[@]}"}; do
     fx=""
     if [[ -p "$x" || -b "$x" || -c "$x" ]]; then fx="$x"
     elif [[ -d "$x" ]]; then
       # One you cannot search (chmod 000) hides nothing your host's git can read.
       [[ -x "$x" ]] || continue
+      left=$((_fs_deadline - SECONDS))
+      if (( left <= 0 )); then
+        printf 'ERROR: the search for FIFOs in what this launch binds read-only ran past its 90 s budget,\n' >&2
+        printf '       at %s; refusing the launch. Something there holds very many files:\n' "$(_term "$x")" >&2
+        printf '       mount narrower directories, or mount them :ro.\n' >&2
+        rm -f "$ferr"; exit 1
+      fi
+      (( left <= 30 )) || left=30
+      read -r -a ft <<< "$(_timeout_prefix "$left") "
       prune=()
-      for i in ${bsrc[@]+"${!bsrc[@]}"}; do
-        [[ "${bsrc[i]}" == "$x"/* ]] || continue
+      for i in ${_fs_rw[@]+"${!_fs_rw[@]}"}; do
+        [[ "${_fs_rw[i]}" == "$x"/* ]] || continue
         # find -path takes a pattern: its metacharacters are escaped.
-        pat="${bsrc[i]//\\/\\\\}"; pat="${pat//\*/\\*}"; pat="${pat//\?/\\?}"; pat="${pat//\[/\\[}"
+        pat="${_fs_rw[i]//\\/\\\\}"; pat="${pat//\*/\\*}"; pat="${pat//\?/\\?}"; pat="${pat//\[/\\[}"
         prune+=(-path "$pat" -o)
       done
       # From /: find fails where the launch's working directory cannot be searched (T45).
+      # Nothing of a git directory is skipped: git reads objects/info/alternates
+      # and the packs (automated security review of f1817ce); the 30 s bound is
+      # what keeps the search short.
+      frc=0
       if (( ${#prune[@]} )); then
         unset 'prune[${#prune[@]}-1]'
-        fx="$(cd / && find "$x" \( "${prune[@]}" \) -prune -o \( -type p -o -type b -o -type c \) -print -quit 2>"$ferr")"
+        fx="$(cd / && "${ft[@]}" find "$x" \( "${prune[@]}" \) -prune -o \( -type p -o -type b -o -type c \) -print -quit 2>"$ferr")" || frc=$?
       else
-        fx="$(cd / && find "$x" \( -type p -o -type b -o -type c \) -print -quit 2>"$ferr")"
-      fi || {
+        fx="$(cd / && "${ft[@]}" find "$x" \( -type p -o -type b -o -type c \) -print -quit 2>"$ferr")" || frc=$?
+      fi
+      if (( frc == 124 || frc == 137 )); then
+        printf 'ERROR: %s, bound read-only, could not be searched for FIFOs within %s s; refusing the launch.\n' "$(_term "$x")" "$left" >&2
+        printf '       Something there holds very many files: mount narrower directories, or mount it :ro.\n' >&2
+        rm -f "$ferr"; exit 1
+      fi
+      (( frc == 0 )) || {
         printf 'ERROR: %s, bound read-only, cannot be searched for FIFOs; refusing the launch:\n' "$(_term "$x")" >&2
         printf '       %s\n' "$(_term "$(head -c 512 "$ferr" | head -n 1)")" >&2
         rm -f "$ferr"; exit 1
@@ -1235,7 +1321,7 @@ launcher_ro_overlay() {
     [[ -n "$fx" ]] || continue
     printf 'ERROR: %s is a FIFO or device inside what this launch binds read-only; refusing the launch.\n' "$(_term "$fx")" >&2
     printf '       The agent could still write into it, and what reads it on the host would get that.\n' >&2
-    printf '       Remove it on the host (rm %q).\n' "$fx" >&2
+    printf '       Remove it on the host (rm %s).\n' "$(_q "$fx")" >&2
     rm -f "$ferr"; exit 1
   done
   rm -f "$ferr"
@@ -1337,6 +1423,79 @@ _term() {
   s="${s//$'\xe2\x81'[$'\xa6'-$'\xa9']/?}"
   printf '%s' "$s"
 }
+
+# _agent_could_write <dir> <agent uid> <agent gid>: whether the agent may have
+# written into a directory the launcher can search but not list, so that what is
+# inside (a FIFO, a repository) cannot be trusted unseen. Only the directory's own
+# mode is judged; a writable directory inside another user's is not seen
+# (LNCH-7). It could if the agent owns it, or its group (the agent's) or the
+# other bits give write and search; if it is yours (LNCH-5: a file share that
+# remaps ownership, as Docker Desktop and Colima do, shows what the agent made as
+# yours, and you can always fix your own); or if it may carry an ACL, whose
+# entries are not read: plain only when ls shows the bare mode, or GNU's
+# SELinux-context '.' after it — a +, macOS's @ (it hides a +), anything else, or
+# an ls that fails counts as one (automated security reviews of 63503a9, 64f8841).
+_agent_could_write() {
+  [[ -O "$1" ]] || _agent_bits_writable "$@"
+}
+# _agent_bits_writable <dir> <agent uid> <agent gid>: the mode and ACL half of it,
+# apart from yours, so each can be tested on its own (T25g).
+_agent_bits_writable() {
+  local m a
+  # An ACL entry can grant the agent write access whatever the mode says. getfacl,
+  # where there is one, lists them: any beyond user::, group::, other:: and
+  # mask:: counts, and a getfacl that fails counts too. Without it, only the +
+  # that GNU's and BSD's ls print is there to go by: busybox prints none, so an
+  # ls that is neither counts as one that saw an ACL (LNCH-6; T25g).
+  if command -v getfacl >/dev/null 2>&1; then
+    a="$(cd / && getfacl -c -- "$1" 2>/dev/null)" || return 0
+    while IFS= read -r m; do
+      case "$m" in ''|user::*|group::*|other::*|mask::*) ;; *) return 0 ;; esac
+    done <<< "$a"
+  else
+    case "$(uname -s 2>/dev/null)" in
+      Darwin|*BSD|DragonFly) ;;
+      *) [[ "$(cd / && ls --version 2>/dev/null)" == *"GNU coreutils"* ]] || return 0 ;;
+    esac
+  fi
+  m="$(cd / && LC_ALL=C ls -ld "$1" 2>/dev/null)" || m=""; m="${m%% *}"
+  [[ "$m" =~ ^d[-rwxsStT]{9}\.?$ ]] || return 0
+  [[ -n "$(cd / && find "$1" -maxdepth 0 \( -user "$2" -o \( -group "$3" -perm -0030 \) -o -perm -0003 \) -print 2>/dev/null)" ]]
+}
+
+# _unlistable_hint <dir> <indent> <agent uid>: how to make a directory listable —
+# chmod it if it is yours, chown or sudo it back if the sandbox identity you chose
+# owns it (LNCH-12), otherwise ask its owner (GIT-14).
+_unlistable_hint() {
+  if [[ -O "$1" ]]; then
+    printf '%sRestore: chmod u+rx %s\n' "$2" "$(_q "$1")" >&2
+  elif [[ -n "$(cd / && find "$1" -maxdepth 0 -user "$3" -print 2>/dev/null)" ]]; then
+    printf '%sIt belongs to the sandbox identity (SANDBOX_UID=%s): sudo chmod u+rx %s, or chown it back.\n' "$2" "$3" "$(_q "$1")" >&2
+  else
+    printf '%sIt is not yours: ask its owner to make it listable, or leave it out of the writable mounts.\n' "$2" >&2
+  fi
+}
+
+# _q <name>: a name quoted for the shell, as %q quotes it, safe to show and to
+# paste. glibc counts the bidi overrides printable, and %q passed them to the
+# terminal (LNCH-8; T52); replacing them with `?`, as _term does, made a pasted
+# `rm` a glob (automated security review of f999f25). A name %q cannot render
+# for the terminal is written as $'…' with every byte past the plainest ASCII
+# as \xHH, which bash turns back into exactly that name.
+_q() {
+  local qs qi qc qo="" LC_ALL=C
+  qs="$(printf '%q' "$1")"
+  if [[ "$(_term "$qs")" == "$qs" ]]; then printf '%s' "$qs"; return 0; fi
+  for (( qi = 0; qi < ${#1}; qi++ )); do
+    qc="${1:qi:1}"
+    case "$qc" in
+      [A-Za-z0-9/._+,:@%=-]) qo+="$qc" ;;
+      *) qo+="$(printf '\\x%02x' "'$qc")" ;;
+    esac
+  done
+  printf "\$'%s'" "$qo"
+}
+
 
 _overlay_buildable() {
   local rest path pin
@@ -1675,7 +1834,7 @@ _git_index_read() {
   # (review of 3c754aa).
   local fcfg="$g/config" fcd=""
   if [[ ! -f "$fcfg" && -f "$g/commondir" ]]; then
-    IFS= read -r -d '' fcd < <(head -c 4096 "$g/commondir" 2>/dev/null) || true
+    IFS= read -r -d '' fcd < <(_rd 4096 "$g/commondir" 2>/dev/null) || true
     while [[ "$fcd" == *[$'\r\n'] ]]; do fcd="${fcd%?}"; done
     [[ "$fcd" == /* ]] || fcd="$g/$fcd"
     fcd="$(cd -P -- "$fcd" 2>/dev/null && pwd -P)" && fcfg="$fcd/config"
@@ -1710,10 +1869,7 @@ _git_index_read() {
   # entries cost seconds a read (review of 4e91bf3). A git that exited non-zero,
   # a cut-off record included, is a failed read (G39).
   local _gir_t=() _gir_f _gir_rc
-  # gtimeout first: it is Homebrew coreutils' name for the same GNU tool, the
-  # only one a Mac has (GIT-16).
-  if command -v gtimeout >/dev/null 2>&1; then _gir_t=(gtimeout -k 2 10)
-  elif command -v timeout >/dev/null 2>&1; then _gir_t=(timeout -k 2 10); fi
+  read -r -a _gir_t <<< "$(_timeout_prefix)"
   _gir_f="${_gir_cache[$g]:-}"
   if [[ -z "$_gir_f" ]]; then
     _gir_f="$_gir_tmp/idx.${#_gir_cache[@]}"; _gir_cache[$g]="$_gir_f"
@@ -1735,6 +1891,16 @@ _git_index_read() {
 # for a git directory, so the agent could add a config the host's git then read
 # (automated security review of 4a4e30c).
 _is_git_dir() {
+  # A regular commondir alone is enough, whatever HEAD, objects/ and refs/ hold:
+  # git writes one in every linked worktree's directory, an earlier launch made
+  # the ./ placeholder in every other it protected, and either is then bound
+  # read-only, a mount point the agent cannot remove. HEAD, objects/ and refs/
+  # are not, so moving one aside in one session hid the directory from the next
+  # launch (GIT-7; G77, G78; automated security reviews of 855d205, 7429d87).
+  # Taking a planted commondir too only protects more. A bare repository only the
+  # scan finds gets no placeholder (GIT-11), so one whose HEAD is removed is not
+  # found again — the trade-off GIT-11 accepted.
+  if [[ -f "$1/commondir" && ! -L "$1/commondir" ]]; then return 0; fi
   # A HEAD that is a link counts too: git takes one (review of 56c91c4; G68).
   # A FIFO counts as well, so that it is refused rather than hidden (G70).
   # A link counts whatever it leads to, a directory too (G71).
@@ -1775,12 +1941,46 @@ _gd_resolve() {
   _gr_out="$_gr_t"
 }
 
+# _timeout_prefix [seconds]: the command that bounds a read (10 s by default), or
+# nothing where there is none — `timeout`, or Homebrew coreutils' `gtimeout` on
+# macOS (GIT-16; G75).
+_timeout_prefix() {
+  # gtimeout first: Homebrew coreutils' name for the same GNU tool (G44, G75).
+  if command -v gtimeout >/dev/null 2>&1; then printf 'gtimeout -k 2 %s' "${1:-10}"
+  elif command -v timeout >/dev/null 2>&1; then printf 'timeout -k 2 %s' "${1:-10}"
+  fi
+}
+
+# _rd <bytes> <file>: the first <bytes> of a small file the agent can write — a
+# .git file, a commondir, a gitdir, a config — read in at most 2 s. It is checked
+# as a regular file first, but a concurrent container can swap it for a FIFO
+# between the check and the open, which blocked the launch for ever (GIT-10).
+_rd_t=(); _rd_init=""
+_rd_prep() { [[ -n "$_rd_init" ]] || { read -r -a _rd_t <<< "$(_timeout_prefix 2) "; _rd_init=1; }; }
+_rd() {
+  local rc=0
+  _rd_prep
+  "${_rd_t[@]}" head -c "$1" -- "$2" || rc=$?
+  if (( rc == 124 || rc == 137 )); then _rd_fail "$2"; return 1; fi
+  return "$rc"
+}
+# _rd_fail <file>: a bounded read that was cut off, or a config too big to read
+# whole, is not an absent key — read as one, it failed open (automated security
+# review of 116129d). The reads run in $(…) and <(…), where exit ends only the
+# subshell, so the launcher itself is signalled; its USR1 trap refuses the launch.
+_rd_fail() {
+  # To the launcher's own stderr: every caller sends its stderr to /dev/null, and
+  # the refusal was silent (review of the batch 10 branch; G86).
+  printf 'ERROR: %s could not be read within its bound (a FIFO swapped in, or too big); refusing the launch.\n' "$(_term "$1")" >&"${_rd_errfd:-2}"
+  kill -s USR1 "$$" 2>/dev/null || true
+}
+
 # _lex_norm <absolute path>: the path with . and .. resolved by name alone, no link
 # followed — what it says, to compare with where it physically leads.
 _lex_norm() {
   local -a out=()
   local p rest="${1#/}"
-  # Split by expansion, not `read`, which stops at a newline (GIT-18).
+  # Split by hand: `read` stopped at a newline inside a component (GIT-18; G74).
   while [[ -n "$rest" ]]; do
     p="${rest%%/*}"
     if [[ "$rest" == */* ]]; then rest="${rest#*/}"; else rest=""; fi
@@ -1833,6 +2033,7 @@ _gdi_follow() {
   # launcher_ro_overlay once every mount is scanned (reviews of dcf7dab, 4e7da47).
   local _j
   if [[ -n "$_ok" ]]; then
+    _gdi_named[$t]=1
     for _j in ${bsrc[@]+"${!bsrc[@]}"}; do
       [[ "${bsrc[_j]}" != "$3" ]] || continue
       if [[ "$t" == "${bsrc[_j]}" || "$t" == "${bsrc[_j]}"/* ]]; then
@@ -1853,7 +2054,7 @@ _gdi_follow() {
 git_dirs_in() {
   # shellcheck disable=SC2178  # nameref: shellcheck does not model `local -n`
   local -n _gdi_dirs=$1 _gdi_files=$2 _gdi_links=$3 _gdi_unr=$4
-  local f g wt co
+  local f g wt co rel back
   local -a hits=()
   local -A had=()
   mapfile -d '' -t hits < <(find "$5" -mindepth 1 -maxdepth 8 \
@@ -1861,6 +2062,7 @@ git_dirs_in() {
          -o -path '*/.git/objects' -o -path '*/.git/refs' -o -path '*/.git/logs' \
          -o -path '*/.git/modules/*/objects' -o -path '*/.git/modules/*/refs' -o -path '*/.git/modules/*/logs' \) -prune \
       -o -name HEAD ! -type d -print0 \
+      -o -name commondir -type f -print0 \
       -o -name .git \( -type f -o -type l -o -type d \) -print0 \
       -o -type d -path '*/.git/*' -print0 2>/dev/null)
   for f in ${hits[@]+"${hits[@]}"}; do
@@ -1868,6 +2070,12 @@ git_dirs_in() {
       if [[ -L "$f" ]]; then _gdi_links+=("$f")
       elif [[ -f "$f" ]]; then _gdi_files+=("$f"); had[$f]=1
       elif [[ -d "$f" && ( ! -r "$f" || ! -x "$f" ) ]]; then _gdi_unr+=("$f")
+      # A .git directory is protected whatever its HEAD holds: HEAD is not bound,
+      # and `mv .git/HEAD .git/H` in one session hid the repository from the next
+      # launch (GIT-7; G77). Queued once; its HEAD, if any, is skipped below.
+      # Seven levels at most, as for one found by its HEAD (G12).
+      elif [[ -d "$f" && -z "${had[$f]:-}" ]] && { rel="${f#"$5"/}"; rel="${rel//[!\/]/}"; (( ${#rel} < 7 )); }; then
+        _gdi_dirs+=("$f"); had[$f]=1
       fi
       continue
     fi
@@ -1876,11 +2084,25 @@ git_dirs_in() {
     # directory (review of 7b41327, HIGH; G71). Taking every link over-accepts,
     # which only protects more.
     if [[ -d "$f" && ! -L "$f" ]]; then
-      if [[ ! -r "$f" || ! -x "$f" ]]; then _gdi_unr+=("$f"); fi
+      if [[ ! -r "$f" || ! -x "$f" ]]; then _gdi_unr+=("$f")
+      # The git directories inside a .git count whatever their HEAD holds, as the
+      # .git itself does: a linked worktree's (it has a commondir or a gitdir) and
+      # a submodule's (objects/ and refs/). One whose HEAD the agent removed was
+      # dropped (automated security review of 855d205, HIGH; G78).
+      # A worktree's under any git directory (a bare repository's too) has a
+      # commondir or a gitdir; a submodule's has any of what git keeps there.
+      elif [[ -z "${had[$f]:-}" ]]; then
+        if [[ "${f%/*}" == */worktrees ]] && [[ -f "$f/commondir" || -f "$f/gitdir" ]]; then
+          _gdi_dirs+=("$f"); had[$f]=1
+        elif [[ "$f" == */.git/modules/* ]] && [[ -d "$f/objects" || -d "$f/refs" || -f "$f/config" \
+               || -d "$f/hooks" || -f "$f/index" || -f "$f/commondir" ]]; then
+          _gdi_dirs+=("$f"); had[$f]=1
+        fi
+      fi
       continue
     fi
-    g="${f%/HEAD}"
-    if _is_git_dir "$g"; then _gdi_dirs+=("$g"); fi
+    g="${f%/*}"
+    if [[ -z "${had[$g]:-}" ]] && _is_git_dir "$g"; then _gdi_dirs+=("$g"); had[$g]=1; fi
   done
   # Submodules the scan cannot see — a vendor/ is pruned by name, and submodules
   # commonly live in one: an absorbed one's checkout through its git directory's
@@ -1917,7 +2139,7 @@ git_dirs_in() {
           _in_writable "$up/.git" || gquiet[$up/.git]=1
         fi
       else
-        tgt=""; IFS= read -r -d '' tgt < <(head -c 4096 "$up/.git" 2>/dev/null) || true
+        tgt=""; IFS= read -r -d '' tgt < <(_rd 4096 "$up/.git" 2>/dev/null) || true
         while [[ "$tgt" == *[$'\r\n'] ]]; do tgt="${tgt%?}"; done
         if [[ "$tgt" == "gitdir: "* ]]; then
           _gdi_follow "$up" "${tgt#gitdir: }" "$5" "$up/.git"
@@ -1936,8 +2158,12 @@ git_dirs_in() {
   local -A tseen=()
   local q
   local -a links=()
+  local gover=""
   while :; do
   while (( n < ${#_gdi_dirs[@]} || nf < ${#_gdi_files[@]} || ni < ${#_gdi_ionly[@]} )); do
+    # Past SANDBOX_GIT_MAX the launch is refused anyway: following on, and
+    # reading an index per planted repository, cost minutes first (GIT-9; G83).
+    if (( ${#_gdi_dirs[@]} > ${gitmax:-200} )); then gover=1; _gdi_over+=("${_gdi_dirs[@]:${gitmax:-200}:5}"); break 2; fi
     # A .git FILE names the git directory git uses there (`gitdir: <path>`), and a
     # linked worktree's commondir its common one; either can lie where the scan
     # does not go (node_modules, past depth 8), and was mounted read-only while
@@ -1947,7 +2173,7 @@ git_dirs_in() {
       f="${_gdi_files[nf]}"; nf=$((nf + 1))
       # Only CR and LF stripped, as git does: `gitdir: g ` names `g ` (security
       # review of e2741b1).
-      tgt=""; IFS= read -r -d '' tgt < <(head -c 4096 "$f" 2>/dev/null) || true
+      tgt=""; IFS= read -r -d '' tgt < <(_rd 4096 "$f" 2>/dev/null) || true
       while [[ "$tgt" == *[$'\r\n'] ]]; do tgt="${tgt%?}"; done
       [[ "$tgt" == "gitdir: "* ]] || continue
       _gdi_follow "${f%/*}" "${tgt#gitdir: }" "$5" "$f"
@@ -1961,7 +2187,7 @@ git_dirs_in() {
       # A commondir that is a link is read through, as git reads it; the protection
       # step names the link itself, which the agent can repoint (security review).
       if [[ -f "$g/commondir" ]]; then
-        tgt=""; IFS= read -r -d '' tgt < <(head -c 4096 "$g/commondir" 2>/dev/null) || true
+        tgt=""; IFS= read -r -d '' tgt < <(_rd 4096 "$g/commondir" 2>/dev/null) || true
         while [[ "$tgt" == *[$'\r\n'] ]]; do tgt="${tgt%?}"; done
         if [[ -n "$tgt" && "$tgt" != ./ && "$tgt" != . ]]; then _gdi_follow "$g" "$tgt" "$5" "$g/commondir"; fi
       fi
@@ -1990,7 +2216,7 @@ git_dirs_in() {
       # (gitdir): one more candidate, inside this mount — a decoy pointer adds a
       # checkout to check, no more.
       if [[ -f "$g/gitdir" ]]; then
-        tgt=""; IFS= read -r -d '' tgt < <(head -c 4096 "$g/gitdir" 2>/dev/null) || true
+        tgt=""; IFS= read -r -d '' tgt < <(_rd 4096 "$g/gitdir" 2>/dev/null) || true
         while [[ "$tgt" == *[$'\r\n'] ]]; do tgt="${tgt%?}"; done
         tgt="${tgt%/.git}"
         if [[ "$tgt" == /* && -d "$tgt" ]] && tgt="$(cd -P -- "$tgt" 2>/dev/null && pwd -P)" \
@@ -2037,14 +2263,43 @@ git_dirs_in() {
       links=()
       if [[ -z "${gquiet[$g]:-}" ]]; then
         gwarned[$g]=1
-        printf 'WARNING: cannot read the index of %q; submodules recorded in it are not followed,\n' "$g" >&2
+        printf 'WARNING: cannot read the index of %s; submodules recorded in it are not followed,\n' "$(_q "$g")" >&2
         printf '         so a checkout of one that the scan does not reach is not protected.\n' >&2
       fi
     fi
-    local gskip=0
+    local gskip=0 gnl=0 r
+    local -a gco=() gphys=()
+    local -A gres=()
+    # Where each existing checkout physically is, resolved in ONE subshell per
+    # index: a $(cd; pwd -P) per (gitlink, worktree top) pair, with 20 tops the
+    # agent can plant, cost minutes for an index of its with thousands of
+    # gitlinks; and an index with more than 1000 refuses the launch (GIT-8; G82).
+    for rec in ${links[@]+"${links[@]}"}; do
+      [[ "${rec%% *}" == 160000 ]] || continue
+      # Past 1000 the launch is refused, as past SANDBOX_GIT_MAX: the agent writes
+      # the index, and a cut that only warned left the gitlink it put last
+      # unprotected (automated security review of the batch 10 branch; G82).
+      if (( ++gnl > 1000 )); then
+        printf 'ERROR: the index of %s records more than 1000 submodules; refusing the launch:\n' "$(_q "$g")" >&2
+        printf '       a checkout of one past them would not be protected. Mount narrower directories, or :ro.\n' >&2
+        exit 1
+      fi
+      path="${rec#*$'\t'}"
+      for top in "${tops[@]}"; do
+        co="$top/$path"
+        if [[ "$co" == "$5"/* ]] && [[ -e "$co" || -L "$co" ]]; then gco+=("$co"); fi
+      done
+    done
+    if (( ${#gco[@]} )); then
+      mapfile -d '' -t gphys < <(cd / && for r in "${gco[@]}"; do
+        if cd -P -- "$r" 2>/dev/null; then printf '%s\0' "$PWD"; else printf '\0'; fi; done)
+      for (( r = 0; r < ${#gco[@]}; r++ )); do gres[${gco[r]}]="${gphys[r]:-}"; done
+    fi
+    gnl=0
     for rec in ${links[@]+"${links[@]}"}; do
       mode="${rec%% *}"; path="${rec#*$'\t'}"
       [[ "$mode" == 160000 && -n "$path" ]] || continue
+      (( ++gnl <= 1000 )) || break
       # The index is the agent's to write, and git reads a hand-made entry such
       # as ../../victim as is: a path that steps out (.., ., an empty or
       # absolute component), or that a link on the way sends elsewhere, is not
@@ -2055,7 +2310,7 @@ git_dirs_in() {
       # 100,000 such entries printed 100,000 WARNINGs (review of batch 9, finding 5).
       case "/$path/" in */../*|*/./*|*//*)
         if (( ++gskip <= 5 )); then
-          printf 'WARNING: the index of %q records a submodule at %q, which steps out of it; not followed.\n' "$g" "$path" >&2
+          printf 'WARNING: the index of %s records a submodule at %s, which steps out of it; not followed.\n' "$(_q "$g")" "$(_q "$path")" >&2
         fi
         continue ;;
       esac
@@ -2063,9 +2318,9 @@ git_dirs_in() {
         co="$top/$path"; f="$co/.git"
         [[ "$co" == "$5"/* ]] || continue
         if [[ -e "$co" || -L "$co" ]]; then
-          if [[ "$(cd "$co" 2>/dev/null && pwd -P)" != "$co" ]]; then
+          if [[ "${gres[$co]:-}" != "$co" ]]; then
             if (( ++gskip <= 5 )); then
-              printf 'WARNING: submodule %q of %q is not where its index says (a link on the way, a case or\n' "$path" "$g" >&2
+              printf 'WARNING: submodule %s of %s is not where its index says (a link on the way, a case or\n' "$(_q "$co")" "$(_q "$g")" >&2
               printf '         Unicode difference, or a directory you cannot search); its checkout is not protected.\n' >&2
             fi
             continue
@@ -2081,7 +2336,7 @@ git_dirs_in() {
       done
     done
     if (( gskip > 5 )); then
-      printf 'WARNING: … and %d more submodules of %q were not followed, for the same reasons.\n' "$((gskip - 5))" "$g" >&2
+      printf 'WARNING: … and %d more submodules of %s were not followed, for the same reasons.\n' "$((gskip - 5))" "$(_q "$g")" >&2
     fi
   done
   # Every waiting git directory that has gained a worktree is read; repeated
@@ -2101,12 +2356,27 @@ git_dirs_in() {
   # or a linked worktree checked out outside every mount, is ordinary (review of
   # 4e91bf3). ls-files lists the same whatever worktree, so $g serves as one.
   for g in ${gpend[@]+"${!gpend[@]}"}; do
+    [[ -z "$gover" ]] || break
     [[ -f "$g/index" ]] || continue
     # A linked worktree checked out where the agent cannot write is not its to steer.
     if [[ -f "$g/gitdir" ]]; then
-      tgt=""; IFS= read -r -d '' tgt < <(head -c 4096 "$g/gitdir" 2>/dev/null) || true
+      tgt=""; IFS= read -r -d '' tgt < <(_rd 4096 "$g/gitdir" 2>/dev/null) || true
       while [[ "$tgt" == *[$'\r\n'] ]]; do tgt="${tgt%?}"; done
-      if [[ "$tgt" == /* ]] && ! _in_writable "$tgt"; then continue; fi
+      # Only a real one: the agent can rewrite gitdir, and a path that leads
+      # nowhere (GIT-6), or to any existing file (automated security review of
+      # 3fd28c7), silenced the worktree's submodules. Quiet only for a regular
+      # .git file outside every writable mount whose own gitdir: names this git
+      # directory back (G80).
+      # Physically where it says: a .. or a link on the way made a .git inside a
+      # writable mount pass as outside them (automated security review of efbfcc3).
+      if [[ "$tgt" == /* && "${tgt##*/}" == .git && -f "$tgt" && ! -L "$tgt" ]] \
+         && [[ "$(cd -P -- "${tgt%/*}" 2>/dev/null && pwd -P)/.git" == "$tgt" ]] && ! _in_writable "$tgt"; then
+        back=""; IFS= read -r -d '' back < <(_rd 4096 "$tgt" 2>/dev/null) || true
+        while [[ "$back" == *[$'\r\n'] ]]; do back="${back%?}"; done
+        back="${back#gitdir: }"
+        if [[ "$back" != /* ]]; then back="${tgt%/*}/$back"; fi
+        if [[ "$(cd "$back" 2>/dev/null && pwd -P)" == "$g" ]]; then continue; fi
+      fi
     fi
     links=()
     _git_index_read links "$g" "$g" || continue
@@ -2129,7 +2399,16 @@ _git_config_bool() {
     [[ "$v" == true ]]; return
   fi
   [[ -f "$1" ]] || return 1
-  awk -v sec="${2%.*}" -v key="${2##*.}" '
+  # Read once, whole or not at all: a config past the cap would be read in part,
+  # a second read could see another file (automated security review of
+  # 677aa12), and a shell variable drops NUL bytes, so the bytes are counted in
+  # a private snapshot and awk parses that same copy (review of 37c5ace).
+  local snap rc=0
+  snap="$(mktemp "${TMPDIR:-/tmp}/ai-launcher-cfg.XXXXXX" 2>/dev/null)" || { _rd_fail "$1"; return 1; }
+  if ! _rd 1048577 "$1" > "$snap" || (( $(wc -c < "$snap") > 1048576 )); then rm -f "$snap"; _rd_fail "$1"; return 1; fi
+  # Byte-wise, as git compares names: a UTF-8 locale's tolower folds more
+  # (automated security review of 511b5e1).
+  LC_ALL=C awk -v sec="${2%.*}" -v key="${2##*.}" '
     /^[[:space:]]*\[/ { s = tolower($0); gsub(/[][[:space:]]/, "", s); insec = (s == tolower(sec)); next }
     insec {
       line = $0; sub(/^[[:space:]]+/, "", line); sub(/[[:space:]]*([#;].*)?$/, "", line)
@@ -2139,7 +2418,9 @@ _git_config_bool() {
       v = tolower(substr(line, n + 1)); gsub(/[[:space:]]/, "", v)
       r = (v == "true" || v == "yes" || v == "on" || (v ~ /^-?[0-9]+$/ && v + 0 != 0))
     }
-    END { exit !r }' "$1" 2>/dev/null
+    END { exit !r }' "$snap" 2>/dev/null || rc=$?
+  rm -f "$snap"
+  return "$rc"
 }
 
 # _git_config_get <config-file> <key>: a key's value from one git config file —
@@ -2152,7 +2433,16 @@ _git_config_get() {
     printf '%s' "$v"; return 0
   fi
   [[ -f "$1" ]] || return 1
-  awk -v sec="${2%.*}" -v key="${2##*.}" '
+  # Read once, whole or not at all: a config past the cap would be read in part,
+  # a second read could see another file (automated security review of
+  # 677aa12), and a shell variable drops NUL bytes, so the bytes are counted in
+  # a private snapshot and awk parses that same copy (review of 37c5ace).
+  local snap rc=0
+  snap="$(mktemp "${TMPDIR:-/tmp}/ai-launcher-cfg.XXXXXX" 2>/dev/null)" || { _rd_fail "$1"; return 1; }
+  if ! _rd 1048577 "$1" > "$snap" || (( $(wc -c < "$snap") > 1048576 )); then rm -f "$snap"; _rd_fail "$1"; return 1; fi
+  # Byte-wise, as git compares names: a UTF-8 locale's tolower folds more
+  # (automated security review of 511b5e1).
+  LC_ALL=C awk -v sec="${2%.*}" -v key="${2##*.}" '
     /^[[:space:]]*\[/ { s = tolower($0); gsub(/[][[:space:]]/, "", s); insec = (s == tolower(sec)); next }
     insec {
       line = $0; sub(/^[[:space:]]+/, "", line)
@@ -2162,7 +2452,9 @@ _git_config_get() {
       v = substr(line, n + 1); sub(/^[[:space:]]+/, "", v); sub(/[[:space:]]+$/, "", v)
       print v; found = 1; exit
     }
-    END { exit !found }' "$1" 2>/dev/null
+    END { exit !found }' "$snap" 2>/dev/null || rc=$?
+  rm -f "$snap"
+  return "$rc"
 }
 
 # _git_exec_keys <config-file>...: the keys these git config files set that make
@@ -2173,7 +2465,7 @@ _git_config_get() {
 # when it starts with '!'. A file that does not exist sets nothing.
 _git_exec_keys() {
   local f rec k v
-  local re='^(core\.(fsmonitor|hookspath|sshcommand|editor|pager|askpass|gitproxy|alternaterefscommand)|sequence\.editor|pager\..+|diff\.external|diff\..+\.(command|textconv)|merge\..+\.driver|filter\..+\.(clean|smudge|process)|credential\.(.+\.)?helper|gpg\.(.+\.)?program|remote\..+\.(uploadpack|receivepack)|(difftool|mergetool|man|browser)\..+\.(cmd|path)|web\.browser|include\.path|includeif\..+\.path|alias\..+|submodule\..+\.update)$'
+  local re='^(core\.(fsmonitor|hookspath|sshcommand|editor|pager|askpass|gitproxy|alternaterefscommand)|sequence\.editor|pager\..+|diff\.external|diff\..+\.(command|textconv)|merge\..+\.driver|filter\..+\.(clean|smudge|process)|credential\.(.+\.)?helper|gpg\.(.+\.)?program|remote\..+\.(uploadpack|receivepack)|(difftool|mergetool|man|browser)\..+\.(cmd|path)|web\.browser|include\.path|includeif\..+\.path|alias\..+|submodule\..+\.update|trailer\..+\.(command|cmd)|gpg\.ssh\.defaultkeycommand|sendemail\.(.+\.)?(tocmd|cccmd|headercmd|sendmailcmd|smtpserver)|protocol\.(ext\.)?allow|imap\.tunnel|instaweb\.httpd|guitool\..+\.cmd|interactive\.difffilter|tar\..+\.command)$'
   local -A had=()
   command -v git >/dev/null 2>&1 || return 0
   for f in "$@"; do
@@ -2185,6 +2477,8 @@ _git_exec_keys() {
       case "$k" in
         core.fsmonitor) if [[ "${v,,}" =~ ^(true|false|yes|no|on|off|-?[0-9]+)?$ ]]; then continue; fi ;;
         alias.*|submodule.*.update) if [[ "$v" != '!'* ]]; then continue; fi ;;
+        # A path runs a program; a host name does not (review of the batch 10 branch).
+        sendemail.smtpserver|sendemail.*.smtpserver) if [[ "$v" != /* ]]; then continue; fi ;;
       esac
       had[$k]=1
       printf '%s\0' "$k"
@@ -2204,7 +2498,11 @@ _git_file_config() {
   # and a directory the agent made a git directory of can hold one as its config
   # (review of 1a30bb4; G65).
   [[ -f "$f" ]] || return 1
-  GIT_DIR=/dev/null git config --file "$f" "$@"
+  _rd_prep
+  local rc=0
+  GIT_DIR=/dev/null "${_rd_t[@]}" git config --file "$f" "$@" || rc=$?
+  if (( rc == 124 || rc == 137 )); then _rd_fail "$f"; return 1; fi
+  return "$rc"
 }
 
 # _git_include_paths <config-file>: every include.path and includeIf.*.path the
@@ -2406,6 +2704,16 @@ _launcher_verify_dir=""
 _git_skip_root=""
 _gir_tmp="" _gir_tmp_warned=""
 declare -A _gir_cache=()   # git directory → its read index, once per launch
+declare -A _gdi_named=()   # git directories a .git file or commondir names (GIT-11)
+_fs_deadline=""             # the FIFO search's deadline, once per launch (_ro_fifo_search)
+# The hooks git runs, by name (githooks(5)); anything else in hooks/ is inert.
+git_hook_names=(applypatch-msg pre-applypatch post-applypatch pre-commit
+  pre-merge-commit prepare-commit-msg commit-msg post-commit pre-rebase post-checkout
+  post-merge pre-push pre-receive update proc-receive post-receive post-update
+  reference-transaction push-to-checkout pre-auto-gc post-rewrite sendemail-validate
+  fsmonitor-watchman p4-changelist p4-prepare-changelist p4-post-changelist
+  p4-pre-submit post-index-change)
+_gdi_over=()               # git directories past SANDBOX_GIT_MAX where a scan stopped (GIT-9)
 trap 'rm -rf "${_launcher_verify_dir:-}" "${_gir_tmp:-}" 2>/dev/null' EXIT
 
 # The agent's identity: numeric, within a 32-bit id, and never root — capsh
@@ -2454,15 +2762,23 @@ run_container() {
   local dev_home="/home/$sandbox_username"
 
   # Agent outputs → host launch dir, surfaced under the /workspace umbrella.
-  local output_mount_flags=()
-  if [[ "$mode" == "discovery" ]]; then
-    capture_enabled="1"
-    mkdir -p "$launch_dir/.agent-discovery"
-    output_mount_flags+=(-v "$launch_dir/.agent-discovery:/workspace/.agent-discovery")
-  elif [[ "$mode" == "restricted" ]]; then
-    mkdir -p "$launch_dir/.agent-blocked"
-    output_mount_flags+=(-v "$launch_dir/.agent-blocked:/workspace/.agent-blocked")
-  fi
+  # Mounted writable, and docker follows a link there: one the agent left in the
+  # launch dir in an earlier session (launched from the project root, the launch
+  # dir is the agent's to write) mounted wherever it pointed — a launcher, ~/.ssh
+  # — writable for the agent (automated security review of 8da6755; T60). A link,
+  # or anything but a directory, refuses the launch.
+  local output_mount_flags=() output_dirs=() _od
+  for _od in .agent-discovery .agent-blocked; do
+    [[ "$mode" == discovery && "$_od" == .agent-discovery ]] || [[ "$mode" == restricted && "$_od" == .agent-blocked ]] || continue
+    if [[ -L "$launch_dir/$_od" ]] || { [[ -e "$launch_dir/$_od" ]] && [[ ! -d "$launch_dir/$_od" ]]; }; then
+      printf 'ERROR: %s is not a directory (a link, or something else), and it would be mounted\n' "$(_term "$launch_dir/$_od")" >&2
+      printf '       writable for the agent wherever it leads; refusing the launch. Remove it on the host.\n' >&2
+      exit 1
+    fi
+    mkdir -p "$launch_dir/$_od"
+    output_mount_flags+=(-v "$launch_dir/$_od:/workspace/$_od"); output_dirs+=("$_od")
+  done
+  [[ "$mode" != discovery ]] || capture_enabled="1"
   # open: no firewall capture, no output mounts.
 
   # Names already claimed under the /workspace umbrella (collision detection).
@@ -3021,7 +3337,7 @@ run_container() {
         # A dangling link here is what the old `cp -a` of a relative link left:
         # the launcher's own artefact, so it is replaced, not tripped over.
         if [[ -L "$group_root/$_cdir" && ! -e "$group_root/$_cdir" ]]; then
-          printf 'NOTE: replacing the dangling link %q in the group with a copy.\n' "$group_root/$_cdir" >&2
+          printf 'NOTE: replacing the dangling link %s in the group with a copy.\n' "$(_q "$group_root/$_cdir")" >&2
           rm -f "$group_root/$_cdir"
         fi
         if [[ ! -e "$group_root/$_cdir" && -e "$HOME/$_cdir" ]]; then
@@ -3170,7 +3486,8 @@ run_container() {
   printf 'Container name: %s\n' "$container_name" >&2
 
   # Last, once every bind mount is known: see launcher_ro_overlay.
-  local launcher_ro_flags=() launcher_verify=() launcher_ro_files=()
+  # shellcheck disable=SC2034  # launcher_ro_dirs/launcher_rw_srcs: set by launcher_ro_overlay, read through _ro_fifo_search's namerefs
+  local launcher_ro_flags=() launcher_verify=() launcher_ro_files=() launcher_ro_dirs=() launcher_rw_srcs=()
   launcher_ro_overlay launcher_ro_flags launcher_verify "$script_dir" \
     ${output_mount_flags[@]+"${output_mount_flags[@]}"} \
     ${repo_mount_flags[@]+"${repo_mount_flags[@]}"} \
@@ -3194,6 +3511,13 @@ run_container() {
   # preserve them (some file-sharing layers), and the entrypoint says so and
   # skips rather than refusing every launch.
   local launcher_verify_flags=() launcher_anchor_env=()
+  # Again, just before docker: a FIFO made since the overlay pass (LNCH-11).
+  _ro_fifo_search launcher_ro_dirs launcher_rw_srcs
+  # The output directories join the manifest: checked for a link above, they
+  # could be swapped for one before docker resolves them, by a concurrent
+  # container of the same project; the entrypoint refuses a swap as for any
+  # overlay (review of the batch 10 branch, reproduced; T61).
+  for _od in ${output_dirs[@]+"${output_dirs[@]}"}; do launcher_verify+=("$launch_dir/$_od" "/workspace/$_od"); done
   if (( ${#launcher_verify[@]} )); then
     _launcher_verify_dir="$HOME/.ai-containers/.verify-$$-$RANDOM"
     local _vdir="$_launcher_verify_dir"

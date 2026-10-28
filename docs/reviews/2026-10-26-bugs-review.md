@@ -838,7 +838,7 @@ Each fix batch was reviewed by an independent reviewer before it was merged, and
 ### GIT-2: The include walk is bounded per config but not per launch, so planted repositories can make every launch take minutes or hours
 - **Status: FIXED (batch 9)** — `9bd3729` … `6a0b37f`: a launch-wide budget of 1000 include entries with a WARNING when it is hit; values over PATH_MAX inert; `_path_walk`/`_link_walk` bounded at 256 steps and 40 links, past which a way is reported as not followed to the end; `config.worktree` walked only where `extensions.worktreeConfig` is on, or when the common config cannot be read (test G38 and G40 on). Reviewed over 19 rounds; what those left open is GIT-6 on, in section 10.
 - Severity: MEDIUM. Confidence: CONFIRMED (measured)
-- Location: sandbox.sh: `if (( ++ient > 100 || ++ients > 1000 ))` (as fixed; before batch 9 it read `++ient > 100` alone, reset for each `config` and `config.worktree`), and `_path_walk()`.
+- Location: sandbox.sh: `if (( ++ient > 100 )); then icut=1; ii=${#ifile[@]}; break; fi` and `if (( ++ients > 1000 )); then icut=1; ii=${#ifile[@]}; break; fi` (as fixed; the launch-wide count was added in batch 9, and moved after the empty-value skip in batch 10), and `_path_walk()`.
 - What's wrong: there are three problems.
   - Each config gets 100 include entries, and each git directory has two configs. `config.worktree` is walked whenever it exists, even with `extensions.worktreeConfig` off, when the host's git never reads it. A launch can protect up to `SANDBOX_GIT_MAX` (200) git directories, and the agent can plant all of them. The 1000-files-per-launch budget limits files, not entries.
   - `_path_walk` is quadratic in the number of path components, because it strips one component per step with `rest="${rest#*/}"`.
@@ -992,7 +992,7 @@ Batch 9 (`9bd3729` … `6a0b37f`) went through 19 review rounds. Every HIGH and 
 ### GIT-6: rewriting a linked worktree's `gitdir` back-pointer silences protection of its submodules
 - **Status: OPEN** (batch 9 review, round r11 finding #2; carried as r12 finding #4)
 - Severity: LOW. Confidence: CONFIRMED (reproduced: the gdsil repro gives 4 binds on `vendor/wt/x/.git`; with `GD=1`, 0 binds and no WARNING)
-- Location: sandbox.sh: `if [[ "$tgt" == /* ]] && ! _in_writable "$tgt"; then continue; fi`
+- Location: sandbox.sh: `if [[ "$(cd "$back" 2>/dev/null && pwd -P)" == "$g" ]]; then continue; fi`
 - What's wrong: the "no worktree is known" WARNING is skipped when a worktree's `gitdir` names an absolute path outside every writable bind. It is skipped even when that path does not exist. `gitdir` is not a protected file, so the agent can rewrite it.
 - Failure scenario: a linked worktree is checked out under a pruned `app/vendor/wt`, and its index records an embedded repo `x`. The agent writes `/elsewhere/.git` into `.git/worktrees/wt/gitdir`. The next launch makes no binds for `vendor/wt/x/.git` and prints nothing. `x`'s config and hooks stay writable for the host's git.
 - Fix direction: stay silent only when the target exists and is outside every writable bind. Otherwise keep the WARNING. Note: the agent can get the same effect by deleting the gitlink from the worktree's own writable index, so this narrows a gap but does not close it.
@@ -1008,7 +1008,7 @@ Batch 9 (`9bd3729` … `6a0b37f`) went through 19 review rounds. Every HIGH and 
 ### GIT-8: the gitlink follow costs one subshell per (gitlink, worktree top), with no per-index budget
 - **Status: OPEN** (batch 9 review, round r9 finding #4; also r2 finding #4 and the original batch 9 review finding #5)
 - Severity: LOW. Confidence: CONFIRMED (reproduced: the biglinks repro, 20k gitlinks, takes 16 s with 19 decoy `.git` files naming the worktree and 1 s with none. r9 measured 83 s for 5k gitlinks × 20 tops when the checkouts exist)
-- Location: sandbox.sh: `if [[ "$(cd "$co" 2>/dev/null && pwd -P)" != "$co" ]]; then`
+- Location: sandbox.sh: `if [[ "${gres[$co]:-}" != "$co" ]]; then`
 - What's wrong: for each gitlink, the loop runs once per top (up to 20, any of them a `.git` file the agent planted). It forks a `$(cd; pwd -P)` subshell whenever the checkout path exists. Nothing caps the gitlinks followed per index.
 - Failure scenario: the agent writes 100k gitlinks into a writable worktree index, plants 19 `.git` files naming that worktree, and `mkdir`s the checkout paths. Every later launch takes tens of minutes. It still succeeds, and nothing is refused.
 - Fix direction: resolve `co` without forking (a `cd -P` in the current shell, restoring the directory). Or cap the gitlinks followed per index (about 1,000), with a WARNING past the cap.
@@ -1024,7 +1024,7 @@ Batch 9 (`9bd3729` … `6a0b37f`) went through 19 review rounds. Every HIGH and 
 ### GIT-10: small agent-writable git files are read with no time bound after a `-f` check
 - **Status: OPEN** (batch 9 review, original review finding #7; r13 finding #2; r3 finding #3)
 - Severity: LOW. Confidence: PLAUSIBLE (from code; needs a race, not reproduced)
-- Location: sandbox.sh: `GIT_DIR=/dev/null git config --file "$f" "$@"`
+- Location: sandbox.sh: `GIT_DIR=/dev/null "${_rd_t[@]}" git config --file "$f" "$@" || rc=$?`
 - What's wrong: only the index read is wrapped in `timeout`. Config reads (`_git_file_config` and its callers: `core.worktree`, `extensions.*`, includes, exec keys) and the `head -c 4096` reads of `.git` files, `commondir` and `gitdir` all run after a `-f` test, with no bound.
 - Failure scenario: a second container on an overlapping writable tree swaps one of these files for a FIFO between the test and the open. The launch then blocks for ever. This is a DoS only, because the launcher runs nothing it reads.
 - Fix direction: route these reads through one bounded helper (`timeout 2`, or a non-blocking open), and treat a timeout as unreadable.
@@ -1032,7 +1032,7 @@ Batch 9 (`9bd3729` … `6a0b37f`) went through 19 review rounds. Every HIGH and 
 ### GIT-11: the launcher writes `config`, `commondir` and `hooks/` into config-less repository fixtures a project tracks
 - **Status: OPEN** (batch 9 review, round r6 finding #4)
 - Severity: LOW. Confidence: CONFIRMED (reproduced: the fixture repro; after a launch, `git status` shows `?? testdata/fixture.git/commondir` and `?? testdata/fixture.git/config`)
-- Location: sandbox.sh: `if [[ ! -e "$g/config" && ! -L "$g/config" ]]; then ( set -C; : > "$g/config" ) 2>/dev/null || true; fi`
+- Location: sandbox.sh: `if [[ -n "$ph" && ! -e "$g/config" && ! -L "$g/config" ]]; then ( set -C; : > "$g/config" ) 2>/dev/null || true; fi`
 - What's wrong: any HEAD + `objects/` + `refs/` directory is protected, so a tracked test fixture with no config gets permanent untracked placeholder files. AGENTS.md does not mention this.
 - Failure scenario: a project tracks `testdata/fixture.git/` with no config. After one launch its tree is dirty, and a test that relies on the fixture having no config behaves differently.
 - Fix direction: no security fix is needed. Document it beside the placeholder text in AGENTS.md (add the files to the fixture's `.gitignore`). Or make the `config` placeholder only where a `.git` file or an index names the directory, or where it is named `.git`.
@@ -1056,7 +1056,7 @@ Batch 9 (`9bd3729` … `6a0b37f`) went through 19 review rounds. Every HIGH and 
 ### GIT-14: the git-side "cannot be listed" WARNING always prints `chmod u+rx`, even for another user's `.git`
 - **Status: OPEN** (batch 9 review, round r18 finding #4)
 - Severity: NIT. Confidence: CONFIRMED (reproduced: `gitown.sh M=0700`, owned by uid 1234, prints `Restore: chmod u+rx …/.git`)
-- Location: sandbox.sh: `printf '         Restore: chmod u+rx %q\n' "$g" >&2`
+- Location: sandbox.sh: `_unlistable_hint "$g" '         ' "$uid"`
 - What's wrong: the other three unlistable hints switch on `-O`. This one does not, so it tells the user to run a command they cannot run.
 - Failure scenario: a user with another user's 0700 `.git` in the tree is told to `chmod` it, which fails.
 - Fix direction: switch on `[[ -O "$g" ]]`, as the refusal branch does, and print the "It is not yours" text otherwise.
@@ -1064,7 +1064,7 @@ Batch 9 (`9bd3729` … `6a0b37f`) went through 19 review rounds. Every HIGH and 
 ### GIT-15: decoy worktree tops share the five-per-index gitlink WARNING budget
 - **Status: OPEN** (batch 9 review, round r9 finding #3)
 - Severity: NIT. Confidence: PLAUSIBLE (from code)
-- Location: sandbox.sh: `printf 'WARNING: submodule %q of %q is not where its index says`
+- Location: sandbox.sh: `printf 'WARNING: submodule %s of %s is not where its index says`
 - What's wrong: `gskip` counts across every (gitlink, top) pair. The message names the gitlink path and the git directory, but not the top or the resolved checkout. A decoy top can fill the five named slots, or raise a false alarm for a gitlink that is fine under the real top. No protection is lost: following continues and the count is printed. The agent can also fill the budget directly through the worktree index it writes.
 - Failure scenario: the user sees five WARNINGs about decoy checkouts and a bare "… and N more". The real one is only in the count.
 - Fix direction: print `$co` instead of `$path`. Keep one budget per top, or name the real top's failures first.
@@ -1072,7 +1072,7 @@ Batch 9 (`9bd3729` … `6a0b37f`) went through 19 review rounds. Every HIGH and 
 ### GIT-16: the index-read timeout is not applied on macOS, even where `gtimeout` exists
 - **Status: FIXED** (2026-10-28). The index read probes `gtimeout` first, then `timeout` (both are GNU coreutils' and take the same arguments), and AGENTS.md says so. G44 now also runs with a recording `gtimeout` on `PATH` and requires it to bound the hanging read; red with the old probe. Not run on a Mac.
 - Severity: NIT. Confidence: PLAUSIBLE (from code)
-- Location: `sandbox.sh: _git_index_read()`, its timeout probe (then `timeout` only)
+- Location: sandbox.sh: `read -r -a _gir_t <<< "$(_timeout_prefix)"`
 - What's wrong: macOS has no `timeout(1)`, so the GIT-4 bound on the index read does not apply there. Homebrew coreutils installs `gtimeout`, which is not probed.
 - Failure scenario: on a Mac, a concurrent container swaps an index for a FIFO after the check, and the launch blocks for ever.
 - Fix direction: also probe `gtimeout`, and update the "not on macOS" wording in AGENTS.md.
@@ -1088,7 +1088,7 @@ Batch 9 (`9bd3729` … `6a0b37f`) went through 19 review rounds. Every HIGH and 
 ### GIT-18: `_lex_norm` truncates a path at a newline
 - **Status: FIXED** (2026-10-28). `_lex_norm()` splits by `${rest%%/*}`, as `_path_walk()` does. Hermetic G73: a `.git` file in a directory named `a<LF>b` naming `../real73` gave the spurious "through a link" `WARNING:` on the old code and gives none now.
 - Severity: NIT. Confidence: PLAUSIBLE (from code)
-- Location: `sandbox.sh: _lex_norm()`, its split (then an `IFS=/ read`)
+- Location: sandbox.sh: `if [[ "$rest" == */* ]]; then rest="${rest#*/}"; else rest=""; fi`
 - What's wrong: `read` stops at the first newline, so a `.git` file whose directory name holds a newline gets a truncated lexical path. That gives a spurious "through a link" WARNING, or a "does not exist" WARNING naming the wrong path. The follow decision uses the physical path, so this is cosmetic.
 - Failure scenario: the agent names a directory `a<LF>b` and plants a `.git` file in it. The user sees a misleading WARNING.
 - Fix direction: split with a `${p%%/*}` loop, as `_path_walk` does.
@@ -1096,7 +1096,7 @@ Batch 9 (`9bd3729` … `6a0b37f`) went through 19 review rounds. Every HIGH and 
 ### GIT-19: the include budget counts empty and oversized entries, so planted repositories can spend it
 - **Status: OPEN** (batch 9 review, original review finding #9 NIT)
 - Severity: NIT. Confidence: PLAUSIBLE (from code)
-- Location: sandbox.sh: `if (( ++ient > 100 || ++ients > 1000 )); then icut=1; ii=${#ifile[@]}; break; fi`
+- Location: sandbox.sh: `if (( ++ients > 1000 )); then icut=1; ii=${#ifile[@]}; break; fi`
 - What's wrong: the per-launch counter is incremented before the empty-value and over-4096-byte `continue`s. Entries that cost nothing to check use up the budget.
 - Failure scenario: the agent plants repositories with 1,000 empty `include.path` entries. Every later config, the user's own included, gets the "not every include was followed" WARNING. It is named, as designed, but the agent pays nothing for it.
 - Fix direction: count only the entries that are actually walked.
@@ -1104,7 +1104,7 @@ Batch 9 (`9bd3729` … `6a0b37f`) went through 19 review rounds. Every HIGH and 
 ### LNCH-5: an unlistable directory the agent made can pass as yours under a remapping file share with `SANDBOX_UID` overridden
 - **Status: OPEN** (batch 9 review, round r18 finding #1)
 - Severity: LOW. Confidence: CONFIRMED (reproduced, host side only: your own 0311 directory with `SANDBOX_UID=4242` gives rc=0, the overlay and a WARNING, not a refusal. The macOS ownership remap itself was reasoned, not run)
-- Location: sandbox.sh: `find "$l" -maxdepth 0 \( -user "$uid" -o \( -group "$gid" -perm -0030 \) -o -perm -0003 \) -print`
+- Location: sandbox.sh: `[[ -O "$1" ]] || _agent_bits_writable "$@"`
 - What's wrong: on Docker Desktop or Colima, files the agent creates appear on the host as owned by the launching user, not by `SANDBOX_UID`. With `SANDBOX_UID` overridden, `-user "$uid"` misses a 0311 directory the agent made, so the directory is overlaid instead of refused.
 - Failure scenario: the agent plants a FIFO in a directory, then sets the directory to 0311. Later launches overlay it read-only with a WARNING. The agent can still open the FIFO by name through the overlay.
 - Fix direction: also refuse when `[[ -O "$l" ]]`. You can always fix your own directory, and the hint already says how.
@@ -1112,7 +1112,7 @@ Batch 9 (`9bd3729` … `6a0b37f`) went through 19 review rounds. Every HIGH and 
 ### LNCH-6: an ACL is invisible where `ls` does not mark one (busybox, CIFS)
 - **Status: OPEN** (batch 9 review, round r18 finding #2)
 - Severity: LOW. Confidence: CONFIRMED (reproduced in r18: busybox `ls -ld` printed `d-wx-wx--x` for a directory with `setfacl -m u:4242:wx`, where GNU printed `d-wx-wx--x+`. The code is unchanged)
-- Location: sandbox.sh: `[[ "$aclm" =~ ^d[-rwxsStT]{9}\.?$ ]]`
+- Location: sandbox.sh: `a="$(cd / && getfacl -c -- "$1" 2>/dev/null)" || return 0`
 - What's wrong: ACLs are detected only through the `+` that GNU and BSD `ls` print. busybox prints none, and GNU prints none for CIFS ACLs, so the bare mode passes. The group bits shown are then the ACL mask, judged against the directory's group, not the agent's.
 - Failure scenario: on an Alpine host, a directory the agent can write through an ACL entry gets the overlay and a WARNING instead of a refusal.
 - Fix direction: treat an `ls` that is neither GNU nor BSD (for example one that resolves to busybox) as unknown, and fail closed. Or, where `getfacl` exists, refuse on any entry beyond `user::`, `group::` and `other::`.
@@ -1120,7 +1120,7 @@ Batch 9 (`9bd3729` … `6a0b37f`) went through 19 review rounds. Every HIGH and 
 ### LNCH-7: only the unlistable directory's own mode is judged, not an agent-writable subdirectory inside it
 - **Status: OPEN** (batch 9 review, round r18 finding #3; pre-existing)
 - Severity: LOW. Confidence: PLAUSIBLE (from code; r18 built the layout with the own repro)
-- Location: sandbox.sh: `# Only one the agent could have written into: its own, or one its group or`
+- Location: sandbox.sh: `# mode is judged; a writable directory inside another user's is not seen`
 - What's wrong: another user's 0711 directory `d` holding a 0777 `d/sub` gets the overlay. A FIFO planted earlier in `d/sub` (by a run that mounted `d/sub` writable itself) is not found, and can be opened through the read-only overlay.
 - Failure scenario: it needs names the agent cannot list, and a host user who runs a launcher inside another user's tree. That is the same class as content poisoned before the protection existed, which AGENTS.md lists as not covered.
 - Fix direction: none is needed. Optionally, have the comment and AGENTS.md say that only the directory's own mode is judged.
@@ -1128,7 +1128,7 @@ Batch 9 (`9bd3729` … `6a0b37f`) went through 19 review rounds. Every HIGH and 
 ### LNCH-8: `%q` sites still print bidi override characters raw (LNCH-3 residue)
 - **Status: OPEN** (batch 9 review, original review finding #8)
 - Severity: LOW. Confidence: CONFIRMED (reproduced: under C.UTF-8, bash 5.3's `printf %q` prints U+202E as the raw bytes `e2 80 ae`)
-- Location: sandbox.sh: `printf '         %q\n' "${cl[k]}" >&2`
+- Location: sandbox.sh: `printf '         %s\n' "$(_q "${cl[k]}")" >&2`
 - What's wrong: `_term` replaces C0, C1 and the bidi overrides, but many messages print scanned names with a bare `%q`. glibc counts U+202A–U+202E and U+2066–U+2069 as printable, so `%q` passes them through. Launcher sites: both refusal listings (`cl[k]`, `ug[k2]`), every `Restore: chmod u+rx %q`, `rm %q`, and the unchecked-launchers NOTE. Git sites: `cannot read the index of %q`, both gitlink WARNINGs (which print `$path` straight from the agent's index), `not every include of %q` / `git config --file %q`, `ls -l %q`, and `sends git to %q` (commondir contents).
 - Failure scenario: the agent names a directory or a gitlink path with U+202E. The user's terminal shows a reordered name, so the WARNING or refusal points at a path that looks like something else.
 - Fix direction: `$(_term "$(printf %q "$x")")`, or a small `_q` helper used at every `%q` site.
@@ -1136,7 +1136,7 @@ Batch 9 (`9bd3729` … `6a0b37f`) went through 19 review rounds. Every HIGH and 
 ### LNCH-9: the agent can make every later launch refuse with a 0100 or 0311 directory in `.agent-blocked/`
 - **Status: OPEN** (batch 9 review, round r16 finding #3)
 - Severity: LOW. Confidence: CONFIRMED (reproduced: `blkfifo.sh V=dir000 DM=0100` gives rc=1, "…/.agent-blocked/d can be searched but not listed by you")
-- Location: sandbox.sh: `if [[ "$kind" == unreadable && -x "$l" ]]`
+- Location: sandbox.sh: `[[ "${bsrc[i]##*/}" == "${bdst[i]##*/}" ]] && outsrc+=("${bsrc[i]}") ;; esac`
 - What's wrong: the FIFO find now prunes the output directories, but `.agent-blocked` is itself a writable mount root. `launcher_dirs_in` scans it, and the unlistable refusal fires for a directory the agent leaves there. Nothing on the host reads that directory as code.
 - Failure scenario: in the default layout the agent runs `mkdir d; chmod 0100 d` in `/workspace/.agent-blocked`. Every later launch refuses until the user fixes it. The message names the directory and gives `chmod u+rx`. The agent could force a correct refusal in the primary anyway.
 - Fix direction: skip the `.agent-blocked` and `.agent-discovery` mount roots in the unlistable scan, or only WARN there.
@@ -1144,7 +1144,7 @@ Batch 9 (`9bd3729` … `6a0b37f`) went through 19 review rounds. Every HIGH and 
 ### LNCH-10: the FIFO find over read-only sources has no prune and no bound
 - **Status: OPEN** (batch 9 review, round r15 finding #4)
 - Severity: LOW. Confidence: PLAUSIBLE (r15 measured a 2 s launch for a planted launcher holding 200,000 files; the code is unchanged)
-- Location: sandbox.sh: `fx="$(cd / && find "$x" \( -type p -o -type b -o -type c \) -print -quit 2>"$ferr")"`
+- Location: sandbox.sh: `fx="$(cd / && "${ft[@]}" find "$x" \( -type p -o -type b -o -type c \) -print -quit 2>"$ferr")" || frc=$?`
 - What's wrong: every file under every launcher overlay and every bound git internal is walked, the engine checkout's `.git/objects` included. The agent controls the size, up to 50 launchers.
 - Failure scenario: the agent fills planted launchers with millions of files. Every launch is slower, but nothing hangs.
 - Fix direction: a file-count or time bound, past which the launch is refused with the directory named. Or prune `.git/objects`.
@@ -1160,7 +1160,7 @@ Batch 9 (`9bd3729` … `6a0b37f`) went through 19 review rounds. Every HIGH and 
 ### LNCH-12: the "It is not yours" hint is wrong when the sandbox identity owns the directory
 - **Status: OPEN** (batch 9 review, round r17 finding #2)
 - Severity: NIT. Confidence: PLAUSIBLE (reproduced in r17 with the own repro case A, `SANDBOX_UID=4242` owning a 0711 directory; the hint code is unchanged)
-- Location: sandbox.sh: `printf '       It is not yours: ask its owner to make it listable, or leave it out of the writable mounts.\n' >&2`
+- Location: sandbox.sh: `It belongs to the sandbox identity (SANDBOX_UID=%s)`
 - What's wrong: the refusal is correct, but when the owner is the `SANDBOX_UID` you chose, the hint tells you to ask its owner.
 - Failure scenario: a user with an overridden `SANDBOX_UID` gets advice that does not apply. The useful step is `sudo chmod u+rx`, or a `chown` back.
 - Fix direction: add a third branch for a directory owned by `SANDBOX_UID`.
@@ -1168,7 +1168,7 @@ Batch 9 (`9bd3729` … `6a0b37f`) went through 19 review rounds. Every HIGH and 
 ### LNCH-13: `aclm` is computed for every candidate, though only the unlistable branch uses it
 - **Status: OPEN** (batch 9 review, round r18 finding #5)
 - Severity: NIT. Confidence: PLAUSIBLE (from code)
-- Location: sandbox.sh: `aclm="$(cd / && LC_ALL=C ls -ld "$l" 2>/dev/null)" || aclm=""; aclm="${aclm%% *}"`
+- Location: sandbox.sh: `m="$(cd / && LC_ALL=C ls -ld "$1" 2>/dev/null)" || m=""; m="${m%% *}"`
 - What's wrong: one `ls` fork runs per launcher candidate, launchers included. The cost is bounded by SANDBOX_LAUNCHER_MAX.
 - Failure scenario: none beyond a few extra forks per launch.
 - Fix direction: compute it inside the `kind == unreadable && -x` test.
@@ -1176,7 +1176,7 @@ Batch 9 (`9bd3729` … `6a0b37f`) went through 19 review rounds. Every HIGH and 
 ### LNCH-14: `mktemp` runs on every launch, and a bad TMPDIR refuses every launch
 - **Status: FIXED** (2026-10-28). The FIFO search makes its temporary file only when something is bound read-only, and its refusal names the directory: `cannot make a temporary file in <dir> (TMPDIR) …`. `_git_index_read()`, which needs a temporary directory too, says once per launch that it could not make one and that indexes are not read. Hermetic T51 in `tests/test-launcher-dir-ro.sh` (a stale TMPDIR launches when nothing is read-only, and is named when something is), red on the old code.
 - Severity: NIT. Confidence: CONFIRMED (reproduced: `TMPDIR=/nonexistent` gives rc=1 with "ERROR: cannot make a temporary file". GNU mktemp's own line names the template, so the path shows there)
-- Location: `sandbox.sh: launcher_ro_overlay()`, the FIFO search's temporary file
+- Location: sandbox.sh: `printf 'ERROR: cannot make a temporary file in %s (TMPDIR); set TMPDIR to a writable directory.\n'`
 - What's wrong: the temporary file is made even when `ro_srcs` is empty, and the launcher's own message does not name TMPDIR. `_git_index_read` depends on TMPDIR the same way.
 - Failure scenario: a stale TMPDIR in the user's shell stops every launch, and the message does not say why.
 - Fix direction: make the file only when there is something to search, and name `${TMPDIR:-/tmp}` in the error.

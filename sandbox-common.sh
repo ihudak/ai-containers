@@ -88,7 +88,7 @@ env_key_denied() {
 env_key_portable() {
   case "$1" in
     IMAGE_NAME|AI_CONTAINER_GROUP|SANDBOX_MODE|SANDBOX_WORKDIR|\
-    SANDBOX_GIT_MAX|SANDBOX_LAUNCHER_MAX|\
+    SANDBOX_GIT_MAX|SANDBOX_LAUNCHER_MAX|SANDBOX_GIT_FIXTURES|\
     CONTAINER_CPUS|CONTAINER_MEMORY|CONTAINER_MEMORY_RESERVATION|CONTAINER_MEMORY_SWAP|\
     CONTAINER_NOFILE|CONTAINER_SHM_SIZE|CONTAINER_NAME|\
     REPO_BACKEND|REPOS_PATH|PREVIEW_PORTS|\
@@ -141,10 +141,23 @@ env_value_portable() {
     AI_CONTAINER_GROUP) [[ "$2" != host ]]; return ;;
     # The seed image is run as root with your ~/.ssh mounted (repo.sh); a build
     # tagged with its name would replace it.
+    SANDBOX_GIT_FIXTURES)
+      # Paths inside the project only: a fixture gets no placeholders, so an
+      # absolute path, a .. or a glob in a committed list could reach a bare
+      # repository you push to (automated security review of 1cb7aaa).
+      local fe
+      local -a fl=()
+      read -r -a fl <<< "$2"
+      for fe in ${fl[@]+"${fl[@]}"}; do
+        case "/$fe/" in //*|*/../*|*'*'*|*'?'*|*'['*) return 1 ;; esac
+      done
+      return 0 ;;
     IMAGE_NAME)
       local mine seed
       mine="$(_image_repo "$2")"; seed="$(_image_repo "${REPO_SEED_IMAGE:-ai-containers-seed}")"
-      [[ "$mine" != ai-containers-seed && "$mine" != "$seed" ]]; return ;;
+      # A local name only: a registry host or a namespace names an image this
+      # project does not own (ENV-7).
+      [[ "$2" != */* && "$mine" != ai-containers-seed && "$mine" != "$seed" ]]; return ;;
   esac
   return 0
 }
@@ -237,6 +250,8 @@ load_env_defaults() {
     printf -v "$key" '%s' "$val"
     # shellcheck disable=SC2163  # intentional dynamic export by name: $key holds the identifier just set via printf -v above
     export "$key"
+    # A committed IMAGE_NAME is the one build.sh checks before retagging (ENV-7).
+    if [[ "$mode" != local && "$key" == IMAGE_NAME ]]; then ai_containers_image_portable=1; fi
   done < "$file"
 }
 load_env_defaults "${script_dir}/sandbox.local.env" local     # this machine (higher precedence)
@@ -257,41 +272,6 @@ seed_image="${REPO_SEED_IMAGE:-ai-containers-seed}"
 # by containers in any group.
 ai_containers_root="${HOME}/.ai-containers"
 repo_registry_file="${ai_containers_root}/repos.conf"
-
-# ai_containers_project_id <dir>: what the ai-containers.project label records
-# for the engine copy in <dir> — its physical path, so a symlink to it is the
-# same project.
-ai_containers_project_id() {
-  (cd "$1" 2>/dev/null && pwd -P)
-}
-
-# image_retag_guard <image> <project id>: run before build.sh builds into
-# <image> (bugs review ENV-7). IMAGE_NAME is portable, so a committed
-# sandbox.env can name any tag — a base image such as ubuntu:24.04, or a
-# sibling project's — and the build retags it with an image made from THIS
-# project's sandbox.conf and allowlist, then remove_replaced_image deletes the
-# image the tag held. A tag whose image ai-containers did not build is refused
-# (rc 1): one is ai-containers' if it carries ai-containers.built-at, or —
-# built before v0.6.0 added that label — the Dockerfile's own image title. One
-# built for another project (ai-containers.project) is warned about by name and
-# built: every project that leaves IMAGE_NAME at its default shares ai-sandbox.
-# A tag that does not exist yet, or one built before the project label, passes.
-image_retag_guard() {
-  local image="$1" project="$2" out built owner title
-  out="$(docker image inspect --format '{{index .Config.Labels "ai-containers.built-at"}}|{{index .Config.Labels "org.opencontainers.image.title"}}|{{index .Config.Labels "ai-containers.project"}}' "$image" 2>/dev/null)" || return 0
-  built="${out%%|*}"; out="${out#*|}"; title="${out%%|*}"; owner="${out#*|}"
-  if [[ -z "$built" && "$title" != "AI Sandbox Container" ]]; then
-    printf 'ERROR: the image tag %q holds an image ai-containers did not build (no ai-containers labels).\n' "$image" >&2
-    printf '       Building would retag it with this project'\''s image and delete the image it holds now.\n' >&2
-    printf '       Build under another name (IMAGE_NAME in sandbox.env, or ./build.sh <name>), or remove it if it is yours: docker rmi %q\n' "$image" >&2
-    return 1
-  fi
-  if [[ -n "$owner" && "$owner" != "$project" ]]; then
-    printf 'WARNING: the image tag %q holds an image built for %q; this build replaces it with one for %q.\n' "$image" "$owner" "$project" >&2
-    printf '         That project'\''s next launch runs this image and this allowlist. Give each project its own IMAGE_NAME in sandbox.env.\n' >&2
-  fi
-  return 0
-}
 
 # Drop the image a rebuild has just replaced, so a dangling layer set does not
 # accumulate per rebuild, per project (an ordinary rebuild leaves a few hundred
@@ -1216,6 +1196,75 @@ ai_containers_config_digest() {   # <dir> → 64 hex, or rc 1 when it cannot be 
 # The stamp itself, as a pure function of a directory and a clock, so it can be
 # asserted without building an image — build_image only has to append what this
 # returns.
+# ai_containers_retag_check <image> <project dir>: whether ./build.sh may move this
+# tag to an image built here. IMAGE_NAME is portable, so a committed sandbox.env
+# can name another project's tag, or a base image such as ubuntu:24.04: the build
+# then retagged it with this project's sandbox.conf and allowlist, and removed
+# the old image (ENV-7). A tag no image carries is fine; so is an image this
+# project built; one built before the project label existed passes with a NOTE.
+# One with no ai-containers labels, or another project's, is refused.
+ai_containers_retag_check() {
+  local labels proj
+  labels="$(docker image inspect --format '{{json .Config.Labels}}' "$1" 2>/dev/null)" || return 0
+  # One built before v0.6.0 added these labels carries only the Dockerfile's
+  # image title (from the ENV-7 fix on main).
+  if [[ "$labels" != *'"ai-containers.'* && "$labels" == *'"org.opencontainers.image.title":"AI Sandbox Container"'* ]]; then
+    printf 'NOTE: %s was built before images recorded their project; rebuilding it here.\n' "$(_ac_term "$1")" >&2
+    return 0
+  fi
+  if [[ "$labels" != *'"ai-containers.'* ]]; then
+    printf 'ERROR: IMAGE_NAME=%s names an image this tool did not build (it carries no ai-containers\n' "$(_ac_term "$1")" >&2
+    printf '       labels); refusing to retag it. Set IMAGE_NAME in sandbox.local.env to a name of your own.\n' >&2
+    return 1
+  fi
+  proj="$(docker image inspect --format '{{index .Config.Labels "ai-containers.project"}}' "$1" 2>/dev/null)" || proj=""
+  proj="${proj%$'\n'}"
+  if [[ -z "$proj" || "$proj" == "<no value>" ]]; then
+    printf 'NOTE: %s was built before images recorded their project; rebuilding it here.\n' "$(_ac_term "$1")" >&2
+    return 0
+  fi
+  # A project that has moved leaves its old path behind: nothing is there to
+  # overwrite (review of the batch 10 branch).
+  # This tool writes an absolute path; anything else is not its label, and the
+  # walk below spun on one with no / (automated security review of 818cb3e).
+  if [[ "$proj" != /* ]]; then
+    printf 'ERROR: IMAGE_NAME=%s carries a project label this tool did not write (%s); refusing to retag it.\n' "$(_ac_term "$1")" "$(_ac_term "$proj")" >&2
+    return 1
+  fi
+  # Gone only if the nearest ancestor that does exist can be searched: one under
+  # a directory you cannot enter (another user's home) only looks absent.
+  local up="${proj%/*}"
+  while [[ -n "$up" && ! -e "$up" ]]; do up="${up%/*}"; done
+  if [[ "$proj" != "$2" && ! -e "$proj" ]] && [[ -z "$up" || -x "$up" ]]; then
+    printf 'NOTE: %s was built for %s, which no longer exists; rebuilding it for this project.\n' "$(_ac_term "$1")" "$(_ac_term "$proj")" >&2
+    return 0
+  fi
+  if [[ "$proj" != "$2" ]]; then
+    printf 'ERROR: IMAGE_NAME=%s is the image of another project, %s; refusing to retag it.\n' "$(_ac_term "$1")" "$(_ac_term "$proj")" >&2
+    printf '       Set IMAGE_NAME in sandbox.local.env to a name of your own, or remove that image.\n' >&2
+    return 1
+  fi
+  return 0
+}
+
+# _ac_term <text>: an image's label or name rendered for the terminal, control
+# and bidi characters replaced (labels are whoever built the image's to write).
+_ac_term() {
+  local LC_ALL=C s="$1"
+  s="${s//[[:cntrl:]]/?}"; s="${s//$'\xc2'[$'\x80'-$'\x9f']/?}"
+  s="${s//$'\xe2\x80'[$'\xaa'-$'\xae']/?}"; s="${s//$'\xe2\x81'[$'\xa6'-$'\xa9']/?}"
+  printf '%s' "$s"
+}
+
+# ai_containers_build_retag_guard <image> <project dir>: the ENV-7 check, for an
+# IMAGE_NAME a committed sandbox.env chose. One you set in sandbox.local.env or
+# your shell is yours, as is a second clone's or a test harness's (review of the
+# batch 10 branch).
+ai_containers_build_retag_guard() {
+  [[ -n "${ai_containers_image_portable:-}" ]] || return 0
+  ai_containers_retag_check "$1" "$(cd "$2" && pwd -P)"
+}
+
 ai_containers_provenance_labels() {   # <dir> [<iso-8601 utc>] → one --label arg per line
   local dir="$1" now="${2:-}" digest commit
   [[ -n "$now" ]] || now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -1226,11 +1275,9 @@ ai_containers_provenance_labels() {   # <dir> [<iso-8601 utc>] → one --label a
     printf '%s\n' "--label" "ai-containers.config-digest=$digest"
   fi
   printf '%s\n' "--label" "ai-containers.built-at=$now"
-  # Which project this image is for, so building another project into the same
-  # tag can say whose image it replaces (image_retag_guard, ENV-7).
-  local project
-  project="$(ai_containers_project_id "$dir")" && [[ -n "$project" ]] \
-    && printf '%s\n' "--label" "ai-containers.project=$project"
+  # The project this image is built for: a committed IMAGE_NAME can name another
+  # project's tag, and ai_containers_retag_check refuses to overwrite it (ENV-7).
+  printf '%s\n' "--label" "ai-containers.project=$(cd "$dir" 2>/dev/null && pwd -P)"
   # Only when the assets ARE a git checkout. A project's .ai-containers/ is a
   # copy with no history, which is exactly the case this exists for: no commit
   # recorded there is the honest answer, not a missing feature.
