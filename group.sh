@@ -141,7 +141,7 @@ cmd_rm() {
   done
   [[ -n "$name" ]] || { printf 'ERROR: usage: ./group.sh rm <group> [--yes]\n' >&2; exit 1; }
   if [[ "$name" == "host" ]]; then
-    printf 'ERROR: the "host" group is your real $HOME, not a managed directory — refusing.\n' >&2
+    printf 'ERROR: "host" is not a group (it named your real $HOME, and is no longer supported) — refusing.\n' >&2
     exit 1
   fi
   # Before any path is built: the name goes into an rm -rf, and `rm ../dev` deleted

@@ -41,9 +41,6 @@ Practical consequences:
   [`./group.sh rm <group>`](../groups.md), which removes the directory and
   the volume together. `./group.sh gc` cleans up volumes orphaned by a manual
   `rm -rf`.
-- `AI_CONTAINER_GROUP=host` keeps the plain bind mount, because that group's
-  whole contract is "mount my real `$HOME`". On macOS that means rvm cannot
-  bootstrap in the `host` group at all — use a named group for Ruby work.
 
 At container start, an additive reconcile (`rvm-reconcile.sh`, run as the
 sandbox user and `flock`-guarded against concurrent same-group container
@@ -102,10 +99,9 @@ That seeding covers the usual case but not every case, which is why
 `keyserver.ubuntu.com` is allowlisted rather than left out. `entrypoint.sh`
 populates a new home with `cp -rn /etc/skel/.` — **no-clobber** — so a group
 whose home already carries its own `~/.gnupg` keyring keeps it, and never
-receives the rvm keys. The `host` group is the concrete case: its whole contract
-is to mount your real `$HOME`, which usually has a keyring already. There the
-installer falls back to fetching the keys, and the allowlist entry is what lets
-it.
+receives the rvm keys: a group bootstrapped `from:host` with a `~/.gnupg` among
+what it copied, say. There the installer falls back to fetching the keys, and
+the allowlist entry is what lets it.
 
 rvm also HEAD-probes all three of its prebuilt-binary mirrors on **every**
 `rvm install`, whichever Ruby you asked for, so those are allowlisted too:

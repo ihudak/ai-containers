@@ -24,7 +24,7 @@ tools="${AI_RUNTIME_TOOLS:-}"
 # From /, not the entrypoint's working directory: that is the project, and uv reads
 # a .python-version, a .venv and a uv.toml there — the fallback's `uv python find`
 # took the project's Python for the image's, and failed outright on one the image
-# lacks (bugs review RT-4). Not $HOME either: in the host group it may hold a pin.
+# lacks (bugs review RT-4). Not $HOME either: a group's home may hold a pin.
 cd / || exit 0
 
 home_root="$HOME/.ai-tools"

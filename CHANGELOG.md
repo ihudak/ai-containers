@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Removed
+
+- **`AI_CONTAINER_GROUP=host` is gone, and a launch with it is refused.** It
+  mounted your real `~/.ssh`, `~/.aws`, `~/.kube`, `~/.config/gh`, `~/.claude`
+  and `~/.gitconfig` read-write into the container, where every other group
+  gives the agent a copy, and on macOS it half-worked anyway (Keychain-held
+  tokens, rvm). The refusal names the replacement: a named group bootstrapped
+  once as a copy, `AI_CONTAINER_GROUP=mine AI_CONTAINER_GROUP_INIT=from:host`.
+  `from:host` stays; `AI_CONTAINER_HOST_ACK` is no longer read.
+  `project-init.sh` refuses a typed `host` and asks again, and
+  `migrate-runme.sh` moves a host-group launcher to the default group, saying
+  how to start it from your `$HOME`'s credentials.
+
 ### Fixed
 
 - **The launcher protects more of what your host's git reads, and refuses

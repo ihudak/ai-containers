@@ -8,13 +8,11 @@
 diff --git a/sandbox.sh b/sandbox.sh
 --- a/sandbox.sh
 +++ b/sandbox.sh
-@@ -849,10 +849,8 @@
+@@ -3232,8 +3232,8 @@
      fi
    fi
    if [[ -n "$(runtime_tools_csv)" ]]; then
--    if [[ "$group" != "host" ]]; then
--      install -d "$group_root/.ai-tools"
--    fi
+-    install -d "$group_root/.ai-tools"
 -    add_mount_if_exists config_mount_flags "$group_root/.ai-tools" "$dev_home/.ai-tools"
 +    : # MUTATION: ~/.ai-tools is never mounted from the group — every container
 +      # installs the agent-tier tools from scratch instead of reusing them.

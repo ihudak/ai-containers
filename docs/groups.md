@@ -37,8 +37,7 @@ The default group is named `default`. Its directory is `~/.ai-containers/default
 
 A group's Ruby home (`~/.rvm` in the container: rvm, every Ruby version and its
 gems, only when `ruby=` is set) is **not** in this directory. It is the Docker
-volume `ai-containers-rvm-<group>`, on every platform. The `host` group is the
-exception: it mounts your real `~/.rvm`, if it exists. Removing or backing up the group directory does
+volume `ai-containers-rvm-<group>`, on every platform. Removing or backing up the group directory does
 not touch it: `./group.sh rm <group>` removes both, and `./group.sh gc` collects a
 volume whose directory was deleted by hand.
 
@@ -58,7 +57,7 @@ When you reference a group that does not yet exist, `sandbox.sh` asks how to ini
 ```
 Group 'docs' not found. Initialize from:
   1) default            (recommended, if it exists)
-  2) host
+  2) host — a copy of $HOME's
   3) <other custom groups, mtime-sorted>
   N) <empty>
   q) cancel
@@ -84,30 +83,20 @@ AI_CONTAINER_GROUP=docs AI_CONTAINER_GROUP_INIT=from:host ./sandbox.sh restricte
 
 Without `AI_CONTAINER_GROUP_INIT`, a non-TTY invocation for a missing group exits with an error and prints the hint.
 
-## The `host` group
+## No `host` group
 
-`AI_CONTAINER_GROUP=host` is a special sentinel meaning "mount agent dotfiles directly from `$HOME`". No `~/.ai-containers/host/` directory is created.
+`AI_CONTAINER_GROUP=host` used to mean "mount agent dotfiles directly from `$HOME`". It is gone, and the launcher refuses it:
 
-**On Linux**, this restores the behavior that was the default before container groups were introduced — no warning, no prompt.
+- It handed the agent your **real** `~/.ssh`, `~/.aws`, `~/.kube`, `~/.config/gh` and `~/.claude`, read-write, where every other group gives it a copy.
+- On macOS it only half-worked: Claude Code, GitHub Copilot CLI, Kiro CLI and GitHub CLI keep their OAuth tokens in the Keychain, which a Linux container cannot read, and rvm cannot bootstrap on a bind mount there.
 
-**On macOS**, `sandbox.sh` prints the following warning and prompts for explicit confirmation before starting the container:
+To start a group with your `$HOME`'s credentials, bootstrap it once from them:
 
-```
-WARNING: AI_CONTAINER_GROUP=host on macOS
-
-The following tools store OAuth in the macOS Keychain and
-will NOT have working credentials in the container:
-  - Claude Code        (~/.claude)
-  - GitHub Copilot CLI (~/.copilot)
-  - Kiro CLI           (~/.kiro)  [also: per-arch bun binary conflict]
-  - GitHub CLI         (~/.config/gh)
-
-Codex, Gemini, and other dirs are unaffected.
+```bash
+AI_CONTAINER_GROUP=mine AI_CONTAINER_GROUP_INIT=from:host ./sandbox.sh restricted /path
 ```
 
-Respond `yes` to continue. For non-interactive use, set `AI_CONTAINER_HOST_ACK=1`.
-
-The warning exists because those tools store OAuth tokens in the macOS Keychain rather than in their dotfile dirs. A Linux container cannot access the Keychain, so the container would start with no credentials for those tools. The default `default` group avoids this entirely by storing all credentials in `~/.ai-containers/default/` using file-based auth that works on both platforms.
+The group then holds a copy. What the agent changes there never reaches your real dotfiles.
 
 ## One-time login inside a fresh group
 
@@ -166,8 +155,7 @@ it. Use `group.sh`, which removes both halves together:
 ```
 
 `group.sh rm` refuses while a running container still mounts the group's
-volume, and refuses the `host` group (which is your real `$HOME`, not a managed
-directory). It never touches repo volumes — those are global and shared across
+volume, and refuses `host`, which is not a group. It never touches repo volumes — those are global and shared across
 every group; manage them with [`repo.sh`](repos-and-mounts.md#shared-repo-volumes-native-speed--reposh-and-repos).
 
 `cp -a` duplicates the *directory* only. The copy starts with an empty Ruby
@@ -175,7 +163,9 @@ home and recompiles its configured versions on first use.
 
 ## Migration notes for upgrading users
 
-**Linux users** will see the bootstrap prompt on first run after upgrade, because `~/.ai-containers/default/` does not exist yet. Choose `host` or another existing source to initialize from. To restore the previous behavior without any prompt, set `AI_CONTAINER_GROUP=host` permanently in your shell profile.
+**Linux users** will see the bootstrap prompt on first run after upgrade, because `~/.ai-containers/default/` does not exist yet. Choose `host` (a copy of your `$HOME`'s credentials) or another existing source to initialize from, or set `AI_CONTAINER_GROUP_INIT=from:host` to skip the prompt.
+
+**`AI_CONTAINER_GROUP=host` has been removed.** A launch with it is refused, naming the replacement: a named group bootstrapped with `AI_CONTAINER_GROUP_INIT=from:host` (see [No `host` group](#no-host-group)). `AI_CONTAINER_HOST_ACK` is no longer read.
 
 **`SSH_SCOPE_DIR` has been removed.** If you have it set, `sandbox.sh` prints a deprecation note to stderr and ignores the variable. To migrate: copy your custom SSH keys into `~/.ai-containers/<group>/.ssh/`, or initialize a group with `AI_CONTAINER_GROUP_INIT=from:host` to copy them automatically. See `CHANGELOG.md` for details.
 

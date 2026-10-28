@@ -114,14 +114,12 @@ Related scripts:
 
 Environment variables:
   IMAGE_NAME          Image to run (default: ai-sandbox).
-  AI_CONTAINER_GROUP  Group name selecting which dotfile tree to mount (default: default).
-                      Use 'host' to mount directly from $HOME. Use any lowercase name
-                      (a-z, 0-9, dashes; max 32 chars) to select ~/.ai-containers/<group>/.
+  AI_CONTAINER_GROUP  Group name selecting which dotfile tree to mount (default: default):
+                      a lowercase name (a-z, 0-9, dashes; max 32 chars) selecting
+                      ~/.ai-containers/<group>/. 'host' is refused.
   AI_CONTAINER_GROUP_INIT
                       Non-interactive override for first-time group bootstrap:
-                        clean | from:host | from:<name>
-  AI_CONTAINER_HOST_ACK
-                      Set to 1 to skip the macOS host-group interactive acknowledgement.
+                        clean | from:host (a copy of your $HOME's) | from:<name>
   SANDBOX_UID / SANDBOX_GID / SANDBOX_USER / SANDBOX_GROUP
                       Override the container user identity (default: detected from host).
   REPOS               Space-separated list of REGISTERED repo volumes to attach under
@@ -266,7 +264,7 @@ validate_memory_limits() {
 # config; one that is a link out of the group (left by an older copy, or made by
 # hand) mounts what it points at instead. Named on every launch, not refused:
 # a link made on purpose — a group sharing your real ~/.ssh — is yours to keep.
-# run_container sets _group_guard_root for every group but `host`.
+# run_container sets _group_guard_root.
 _group_guard_root=""
 _warn_group_link_out() {
   local original_src="$1" src="$2" groot
@@ -3164,17 +3162,12 @@ run_container() {
   validate_group_name "$group"
 
   local group_root
-  if [[ "$group" == "host" ]]; then
-    [[ "$(uname -s)" == "Darwin" ]] && require_host_ack
-    group_root="$HOME"
-  else
-    mkdir -p "$HOME/.ai-containers"
-    group_root="$HOME/.ai-containers/$group"
-    _group_guard_root="$group_root"
-    ensure_group_exists "$group" "$group_root"
-    ensure_group_scaffold "$group_root"
-    _git_skip_root="$(cd "$group_root" 2>/dev/null && pwd -P)" || _git_skip_root=""
-  fi
+  mkdir -p "$HOME/.ai-containers"
+  group_root="$HOME/.ai-containers/$group"
+  _group_guard_root="$group_root"
+  ensure_group_exists "$group" "$group_root"
+  ensure_group_scaffold "$group_root"
+  _git_skip_root="$(cd "$group_root" 2>/dev/null && pwd -P)" || _git_skip_root=""
 
   # ── Credential mounts (enabled components only) ──────────────────────────────
   # Stage git config files into the group directory before mounting. Docker Desktop
@@ -3182,14 +3175,10 @@ run_container() {
   # replace the file after the container starts the old inode gets link count 0 and
   # reads fail. Mounting from the group dir (which nothing replaces while running)
   # avoids this. The copy is refreshed on every container start.
-  local gitconfig_src="$HOME/.gitconfig"
-  local gitignore_src="$HOME/.gitignore_global"
-  if [[ "$group" != "host" ]]; then
-    [[ -f "$HOME/.gitconfig"        ]] && cp "$HOME/.gitconfig"        "$group_root/.gitconfig"        2>/dev/null || true
-    [[ -f "$HOME/.gitignore_global" ]] && cp "$HOME/.gitignore_global" "$group_root/.gitignore_global" 2>/dev/null || true
-    gitconfig_src="$group_root/.gitconfig"
-    gitignore_src="$group_root/.gitignore_global"
-  fi
+  [[ -f "$HOME/.gitconfig"        ]] && cp "$HOME/.gitconfig"        "$group_root/.gitconfig"        2>/dev/null || true
+  [[ -f "$HOME/.gitignore_global" ]] && cp "$HOME/.gitignore_global" "$group_root/.gitignore_global" 2>/dev/null || true
+  local gitconfig_src="$group_root/.gitconfig"
+  local gitignore_src="$group_root/.gitignore_global"
   local config_mount_flags=()
   add_mount_if_exists      config_mount_flags "$group_root/.ssh"         "$dev_home/.ssh"
   add_mount_if_exists      config_mount_flags "$group_root/.agents"      "$dev_home/.agents"
@@ -3197,30 +3186,22 @@ run_container() {
   add_file_mount_if_exists config_mount_flags "$gitignore_src"           "$dev_home/.gitignore_global" ro
 
   if any_enabled github-cli copilot; then
-    if [[ "$group" != "host" ]]; then
-      install -d "$group_root/.config/gh"
-    fi
+    install -d "$group_root/.config/gh"
     add_mount_if_exists config_mount_flags "$group_root/.config/gh" "$dev_home/.config/gh"
   fi
   if is_enabled copilot; then
-    if [[ "$group" != "host" ]]; then
-      install -d "$group_root/.copilot"
-    fi
+    install -d "$group_root/.copilot"
     add_mount_if_exists config_mount_flags "$group_root/.copilot" "$dev_home/.copilot"
   fi
   if is_enabled kiro; then
-    if [[ "$group" != "host" ]]; then
-      install -d "$group_root/.kiro" "$group_root/.local/share/kiro-cli"
-    fi
+    install -d "$group_root/.kiro" "$group_root/.local/share/kiro-cli"
     add_mount_if_exists config_mount_flags "$group_root/.kiro"                  "$dev_home/.kiro"
     add_mount_if_exists config_mount_flags "$group_root/.local/share/kiro-cli"  "$dev_home/.local/share/kiro-cli"
   fi
   if is_enabled claude-code; then
-    if [[ "$group" != "host" ]]; then
-      install -d "$group_root/.claude" \
-                 "$group_root/.local/share/claude" "$group_root/.local/state/claude"
-      [[ -e "$group_root/.claude.json" ]] || printf '{}\n' > "$group_root/.claude.json"
-    fi
+    install -d "$group_root/.claude" \
+               "$group_root/.local/share/claude" "$group_root/.local/state/claude"
+    [[ -e "$group_root/.claude.json" ]] || printf '{}\n' > "$group_root/.claude.json"
     add_mount_if_exists      config_mount_flags "$group_root/.claude"      "$dev_home/.claude"
     add_file_mount_if_exists config_mount_flags "$group_root/.claude.json" "$dev_home/.claude.json"
     # Claude Code installs natively (agent-tools-reconcile.sh): ~/.local/share/claude holds
@@ -3232,40 +3213,26 @@ run_container() {
     add_mount_if_exists config_mount_flags "$group_root/.local/state/claude" "$dev_home/.local/state/claude"
   fi
   if is_enabled codex; then
-    if [[ "$group" != "host" ]]; then
-      install -d "$group_root/.codex"
-    fi
+    install -d "$group_root/.codex"
     add_mount_if_exists config_mount_flags "$group_root/.codex" "$dev_home/.codex"
   fi
   if is_enabled gemini; then
-    if [[ "$group" != "host" ]]; then
-      install -d "$group_root/.gemini"
-    fi
+    install -d "$group_root/.gemini"
     add_mount_if_exists config_mount_flags "$group_root/.gemini" "$dev_home/.gemini"
   fi
   if is_active ruby; then
-    if [[ "$group" == "host" ]]; then
-      # The host group's contract is "mount my real $HOME dirs" — honour it rather
-      # than silently substituting a volume for one of them. Consequence on macOS:
-      # rvm cannot bootstrap in the host group (see the tar/virtiofs note on
-      # rvm_volume_name in sandbox-common.sh); use a named group for Ruby work.
-      add_mount_if_exists config_mount_flags "$group_root/.rvm" "$dev_home/.rvm"
+    # A docker volume, never a bind mount — a bind mount cannot host an rvm
+    # install on macOS at all. rvm_volume_ensure creates it on first use and
+    # migrates a pre-volume ~/.rvm across if one is there.
+    local rvm_vol
+    if rvm_vol="$(rvm_volume_ensure "$group" "$group_root" "$image_name")"; then
+      config_mount_flags+=(-v "$rvm_vol:$dev_home/.rvm")
     else
-      # Named groups get a docker volume, never a bind mount — a bind mount cannot
-      # host an rvm install on macOS at all. rvm_volume_ensure creates it on first
-      # use and migrates a pre-volume ~/.rvm across if one is there.
-      local rvm_vol
-      if rvm_vol="$(rvm_volume_ensure "$group" "$group_root" "$image_name")"; then
-        config_mount_flags+=(-v "$rvm_vol:$dev_home/.rvm")
-      else
-        printf 'WARNING: no rvm volume for group %s — Ruby will be unavailable.\n' "$group" >&2
-      fi
+      printf 'WARNING: no rvm volume for group %s — Ruby will be unavailable.\n' "$group" >&2
     fi
   fi
   if [[ -n "$(runtime_tools_csv)" ]]; then
-    if [[ "$group" != "host" ]]; then
-      install -d "$group_root/.ai-tools"
-    fi
+    install -d "$group_root/.ai-tools"
     add_mount_if_exists config_mount_flags "$group_root/.ai-tools" "$dev_home/.ai-tools"
   fi
   # .yarn/.aws/.azure/.kube are group-scoped like every dir above. They were
@@ -3282,27 +3249,19 @@ run_container() {
   # .yarn is mounted but deliberately not copied, being a regenerable package
   # cache like .ai-tools and .cache/ms-playwright rather than a credential.
   if is_enabled yarn; then
-    if [[ "$group" != "host" ]]; then
-      install -d "$group_root/.yarn"
-    fi
+    install -d "$group_root/.yarn"
     add_mount_if_exists config_mount_flags "$group_root/.yarn" "$dev_home/.yarn"
   fi
   if is_enabled aws-cli; then
-    if [[ "$group" != "host" ]]; then
-      install -d "$group_root/.aws"
-    fi
+    install -d "$group_root/.aws"
     add_mount_if_exists config_mount_flags "$group_root/.aws" "$dev_home/.aws"
   fi
   if is_enabled azure-cli; then
-    if [[ "$group" != "host" ]]; then
-      install -d "$group_root/.azure"
-    fi
+    install -d "$group_root/.azure"
     add_mount_if_exists config_mount_flags "$group_root/.azure" "$dev_home/.azure"
   fi
   if is_enabled kubectl; then
-    if [[ "$group" != "host" ]]; then
-      install -d "$group_root/.kube"
-    fi
+    install -d "$group_root/.kube"
     add_mount_if_exists config_mount_flags "$group_root/.kube" "$dev_home/.kube"
   fi
   # Tool config dirs (dtctl/dtmgd/...) are group-scoped like agent
@@ -3322,29 +3281,23 @@ run_container() {
     # descriptor containing a metacharacter would expand against the launch dir.
     read -ra _cdirs <<< "$TOOL_config_dir"
     for _cdir in "${_cdirs[@]}"; do
-      if [[ "$group" != "host" ]]; then
-        # A dangling link here is what the old `cp -a` of a relative link left:
-        # the launcher's own artefact, so it is replaced, not tripped over.
-        if [[ -L "$group_root/$_cdir" && ! -e "$group_root/$_cdir" ]]; then
-          printf 'NOTE: replacing the dangling link %s in the group with a copy.\n' "$(_q "$group_root/$_cdir")" >&2
-          rm -f "$group_root/$_cdir"
-        fi
-        if [[ ! -e "$group_root/$_cdir" && -e "$HOME/$_cdir" ]]; then
-          install -d "$(dirname "$group_root/$_cdir")"
-          _copy_dereferenced "$HOME/$_cdir" "$group_root/$_cdir"
-        else
-          install -d "$group_root/$_cdir"
-        fi
-        add_mount_if_exists config_mount_flags "$group_root/$_cdir" "$dev_home/$_cdir"
-      else
-        add_mount_if_exists config_mount_flags "$HOME/$_cdir" "$dev_home/$_cdir"
+      # A dangling link here is what the old `cp -a` of a relative link left:
+      # the launcher's own artefact, so it is replaced, not tripped over.
+      if [[ -L "$group_root/$_cdir" && ! -e "$group_root/$_cdir" ]]; then
+        printf 'NOTE: replacing the dangling link %s in the group with a copy.\n' "$(_q "$group_root/$_cdir")" >&2
+        rm -f "$group_root/$_cdir"
       fi
+      if [[ ! -e "$group_root/$_cdir" && -e "$HOME/$_cdir" ]]; then
+        install -d "$(dirname "$group_root/$_cdir")"
+        _copy_dereferenced "$HOME/$_cdir" "$group_root/$_cdir"
+      else
+        install -d "$group_root/$_cdir"
+      fi
+      add_mount_if_exists config_mount_flags "$group_root/$_cdir" "$dev_home/$_cdir"
     done
   done < <(tools_list_names)
   if is_enabled qmd; then
-    if [[ "$group" != "host" ]]; then
-      install -d "$group_root/.cache/qmd"
-    fi
+    install -d "$group_root/.cache/qmd"
     add_mount_if_exists config_mount_flags "$group_root/.cache/qmd" "$dev_home/.cache/qmd"
   fi
   # Playwright's browser binaries (~500 MB) are NOT baked into the image — only
@@ -3357,9 +3310,7 @@ run_container() {
   # is_active, NOT is_enabled: the key is ON | x.y.z | OFF, and a pinned version
   # is just as on as ON.
   if is_active playwright; then
-    if [[ "$group" != "host" ]]; then
-      install -d "$group_root/.cache/ms-playwright"
-    fi
+    install -d "$group_root/.cache/ms-playwright"
     add_mount_if_exists config_mount_flags "$group_root/.cache/ms-playwright" "$dev_home/.cache/ms-playwright"
   fi
   # Gradle's and Maven's user homes hold the wrapper distributions (~130 MB per
@@ -3375,9 +3326,7 @@ run_container() {
   if any_has_versions openjdk graalvm-ce graalvm-oracle kotlin scala maven gradle; then
     local _jvm_dir
     for _jvm_dir in .gradle .m2; do
-      if [[ "$group" != "host" ]]; then
-        install -d "$group_root/$_jvm_dir"
-      fi
+      install -d "$group_root/$_jvm_dir"
       add_mount_if_exists config_mount_flags "$group_root/$_jvm_dir" "$dev_home/$_jvm_dir"
     done
   fi

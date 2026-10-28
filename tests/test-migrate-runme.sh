@@ -148,8 +148,9 @@ after="$(ls "$proj2/.ai-containers" | sort | tr '\n' ' ')"
   || fail "workdir after migration: $(grep -h SANDBOX_WORKDIR "$proj/.ai-containers/"sandbox*.env 2>&1 | tr '\n' ' ')"
 
 # ── An old launcher in the host group ───────────────────────────────────────────
-# The host group is this machine's $HOME, which the shared sandbox.env cannot
-# select, so the migration writes it to sandbox.local.env (review of batch 2, F4).
+# The host group, which mounted this machine's real $HOME dot-directories, is
+# gone: the migration moves the project to the default group and says how to
+# start one from those files (AI_CONTAINER_GROUP_INIT=from:host).
 hproj="$TMP/hproj"; mkdir -p "$hproj/.ai-containers"
 cat > "$hproj/.ai-containers/runme.sh" <<'OLD'
 #!/usr/bin/env bash
@@ -158,11 +159,12 @@ export AI_CONTAINER_GROUP=host
 ./build.sh
 ./sandbox.sh restricted ..
 OLD
-( cd "$ENGINE_DIR" && bash ./migrate-runme.sh --projects-conf "$TMP/projects.conf" "$hproj" </dev/null >/dev/null 2>&1 )
-! grep -q '^AI_CONTAINER_GROUP=host' "$hproj/.ai-containers/sandbox.env" \
-  && grep -qx 'AI_CONTAINER_GROUP=host' "$hproj/.ai-containers/sandbox.local.env" 2>/dev/null \
-  && pass "a host-group launcher migrates its group into sandbox.local.env" \
-  || fail "host group after migration: $(grep -h AI_CONTAINER_GROUP "$hproj/.ai-containers/"sandbox*.env 2>&1 | tr '\n' ' ')"
+hout="$( cd "$ENGINE_DIR" && bash ./migrate-runme.sh --projects-conf "$TMP/projects.conf" "$hproj" </dev/null 2>&1 )"
+grep -qx 'AI_CONTAINER_GROUP=default' "$hproj/.ai-containers/sandbox.env" \
+  && ! grep -qs '^AI_CONTAINER_GROUP=host' "$hproj/.ai-containers/sandbox.env" "$hproj/.ai-containers/sandbox.local.env" \
+  && grep -qF 'AI_CONTAINER_GROUP_INIT=from:host' <<<"$hout" \
+  && pass "a host-group launcher migrates to the default group, saying how to start it from \$HOME" \
+  || fail "host group after migration: $(grep -h AI_CONTAINER_GROUP "$hproj/.ai-containers/"sandbox*.env 2>&1 | tr '\n' ' '); $(grep -F host <<<"$hout" | head -2 | tr '\n' ' ')"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

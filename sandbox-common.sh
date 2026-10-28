@@ -100,8 +100,8 @@ env_key_portable() {
 
 # Launcher variables that only sandbox.local.env or your shell may set: a host
 # path to mount (EXTRA_MOUNTS, the *_PATH pointers), the agent's identity
-# (SANDBOX_UID=0 is a root shell), the file container.env is read from, the
-# host group's bootstrap and acknowledgement, the tokens (the committer's
+# (SANDBOX_UID=0 is a root shell), the file container.env is read from, a
+# group's bootstrap (from:host copies your $HOME's), the tokens (the committer's
 # identity for the agent), and REPO_SEED_IMAGE (repo.sh runs it with ~/.ssh
 # mounted). And REPOS (on Linux a registered repo is a live bind of a host
 # checkout), REPO_VOLUME_PREFIX (which volumes repo.sh deletes), SANDBOX_CONF (a
@@ -110,7 +110,7 @@ env_key_machine_only() {
   case "$1" in
     EXTRA_MOUNTS|VAULT_PATH|SPECS_PATH|DOCS_PATH|ARCHITECTURE_REPO_PATH|\
     SANDBOX_UID|SANDBOX_GID|SANDBOX_USER|SANDBOX_GROUP|SANDBOX_ENV_FILE|SANDBOX_ENV_PASSTHROUGH|\
-    AI_CONTAINER_GROUP_INIT|AI_CONTAINER_HOST_ACK|\
+    AI_CONTAINER_GROUP_INIT|\
     COPILOT_GITHUB_TOKEN|GITHUB_PERSONAL_ACCESS_TOKEN|GITHUB_TOKEN|REPO_SEED_IMAGE|\
     REPOS|REPO_VOLUME_PREFIX|REPO_HELPER_MEMORY|SANDBOX_CONF) return 0 ;;
   esac
@@ -132,13 +132,11 @@ _image_repo() {
 }
 
 # env_value_portable <key> <value>: the portable keys whose VALUE can still reach
-# past the project are held inside it. The `host` group mounts your real $HOME
-# dotfiles. A working dir is bind-mounted writable, so it is checked as a PATH,
-# not as text: a repository can commit a symlink, and `../link` would pass any
-# check on the spelling (env_portable_workdir).
+# past the project are held inside it. A working dir is bind-mounted writable,
+# so it is checked as a PATH, not as text: a repository can commit a symlink, and
+# `../link` would pass any check on the spelling (env_portable_workdir).
 env_value_portable() {
   case "$1" in
-    AI_CONTAINER_GROUP) [[ "$2" != host ]]; return ;;
     # The seed image is run as root with your ~/.ssh mounted (repo.sh); a build
     # tagged with its name would replace it.
     IMAGE_NAME)
@@ -232,7 +230,7 @@ load_env_defaults() {
     if [[ "$mode" != local ]] && ! env_value_portable "$key" "$val"; then
       printf 'WARNING: ignoring %s=... in %s — from a shared sandbox.env it must stay inside the\n' \
         "$key" "$file" >&2
-      printf '         project (not the host group, not the seed image); set it in sandbox.local.env.\n' >&2
+      printf '         project (not the seed image, not a registry name); set it in sandbox.local.env.\n' >&2
       continue
     fi
     [[ -n "${!key+x}" ]] && continue             # already SET (inline env or earlier file) wins — even if empty
@@ -878,39 +876,19 @@ repo_effective_backend() {
 
 validate_group_name() {
   local name="$1"
+  # The host group mounted your real $HOME dot-directories read-write; it is gone.
+  # A group bootstrapped from them once is the replacement (the user's choice).
+  if [[ "$name" == host ]]; then
+    echo "ERROR: AI_CONTAINER_GROUP=host is no longer supported: it mounted your real \$HOME" >&2
+    echo "       dot-directories (~/.ssh, ~/.aws, ~/.claude, ...) read-write into the container." >&2
+    echo "       Use a named group that starts as a copy of them instead, e.g." >&2
+    echo "         AI_CONTAINER_GROUP=mine AI_CONTAINER_GROUP_INIT=from:host" >&2
+    exit 1
+  fi
   [[ "$name" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] || {
     echo "Invalid AI_CONTAINER_GROUP='$name'. Allowed: lowercase letters, digits, dashes; 1-32 chars; must start with alphanum." >&2
     exit 1
   }
-}
-
-print_macos_host_warning() {
-  cat >&2 <<'EOF'
-WARNING: AI_CONTAINER_GROUP=host on macOS
-
-The following tools store OAuth in the macOS Keychain and
-will NOT have working credentials in the container:
-  - Claude Code        (~/.claude)
-  - GitHub Copilot CLI (~/.copilot)
-  - Kiro CLI           (~/.kiro)  [also: per-arch bun binary conflict]
-  - GitHub CLI         (~/.config/gh)
-
-Codex, Gemini, and other dirs are unaffected.
-EOF
-}
-
-require_host_ack() {
-  if [[ "${AI_CONTAINER_HOST_ACK:-0}" == "1" ]]; then
-    return
-  elif [[ -t 0 ]]; then
-    print_macos_host_warning
-    read -r -p "Type 'yes' to continue, anything else to abort: " reply
-    [[ "$reply" == "yes" ]] || { echo "Aborted." >&2; exit 1; }
-  else
-    print_macos_host_warning
-    echo "Aborting: stdin is not a TTY and AI_CONTAINER_HOST_ACK=1 is not set." >&2
-    exit 1
-  fi
 }
 
 ensure_group_scaffold() {
@@ -1011,9 +989,9 @@ ensure_group_exists() {
   fi
   options+=("host")
   if (( default_exists == 0 )); then
-    option_labels+=("host (recommended)")
+    option_labels+=("host — a copy of \$HOME's (recommended)")
   else
-    option_labels+=("host")
+    option_labels+=("host — a copy of \$HOME's")
   fi
   while IFS= read -r -d '' dir; do
     local name; name="$(basename "$dir")"

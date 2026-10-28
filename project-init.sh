@@ -304,8 +304,8 @@ done
 # Enter still means `default`. Anything that is not a row number is a group
 # NAME, and a name with no directory is confirmed before it is accepted: this
 # used to be free text, and a mistyped name went straight on to the "Initialize
-# from" menu below as a brand-new group, with no way back. `host` is not listed
-# (it mounts the real $HOME), but typing it still selects it.
+# from" menu below as a brand-new group, with no way back. `host` is refused: it
+# mounted the real $HOME and is gone, but a new group can start as a copy of it.
 
 group_choices=(default)
 while IFS= read -r name; do
@@ -329,7 +329,10 @@ while [[ -z "$group_name" ]]; do
     group_name="${group_choices[$((reply-1))]}"
   elif ! valid_group_name "$reply"; then
     printf '  Invalid group. Allowed: lowercase letters, digits, dashes; 1-32 chars; must start with alphanum.\n' >&2
-  elif [[ "$reply" == "host" || -d "$HOME/.ai-containers/$reply" ]]; then
+  elif [[ "$reply" == "host" ]]; then
+    printf '  The host group, which mounted your real $HOME dot-directories, is no longer supported.\n' >&2
+    printf '  Pick or name a group; a new one can start as a copy of them (from:host, asked next).\n' >&2
+  elif [[ -d "$HOME/.ai-containers/$reply" ]]; then
     group_name="$reply"
   else
     read -r -p "Group '$reply' does not exist. Create it? [y/N]: " confirm || [[ -n "$confirm" ]] || eof_die "creating group $reply"
@@ -343,7 +346,7 @@ done
 
 group_init=""
 group_root="$HOME/.ai-containers/$group_name"
-if [[ "$group_name" != "host" && ! -d "$group_root" ]]; then
+if [[ ! -d "$group_root" ]]; then
   printf "\nGroup '%s' does not exist yet. Initialize from:\n" "$group_name"
 
   init_values=()
@@ -352,7 +355,7 @@ if [[ "$group_name" != "host" && ! -d "$group_root" ]]; then
   if [[ -d "$HOME/.ai-containers/default" && "$group_name" != "default" ]]; then
     init_values+=("from:default"); init_labels+=("default (recommended)")
   fi
-  init_values+=("from:host"); init_labels+=("host (\$HOME)")
+  init_values+=("from:host"); init_labels+=("host — a copy of \$HOME's")
 
   while IFS= read -r name; do
     [[ "$name" == "default" || "$name" == "$group_name" ]] && continue
@@ -442,11 +445,7 @@ fi
 # Portable launcher config (tracked/shareable — same on any machine). Loaded by
 # sandbox-common.sh so build.sh / sandbox.sh / repo.sh / the thin runme.sh all agree.
 # Precedence: inline env > sandbox.local.env > sandbox.env. Not overwritten by sync.
-# The host group is this machine's real $HOME, which a shared sandbox.env cannot
-# choose (load_env_defaults ignores it there), so that choice goes in
-# sandbox.local.env below and the portable file keeps the default group.
 portable_group="$group_name"
-[[ "$group_name" == host ]] && portable_group=default
 # On a re-init, keep what is not re-prompted: SANDBOX_MODE, SANDBOX_WORKDIR and every
 # key a user added. Writing open/.. over them turned a restricted project open with
 # no trace — .ai-containers/ is gitignored by default (bugs review PRJ-3). The first
@@ -546,7 +545,6 @@ fi
 #   open        unrestricted egress, no capture
 #SANDBOX_MODE=open
 EOF
-  [[ "$group_name" == host ]] && printf 'AI_CONTAINER_GROUP=host\n'
   [[ -n "$group_init"   ]] && printf 'AI_CONTAINER_GROUP_INIT=%s\n' "$group_init"
   [[ -n "$extra_mounts" ]] && printf 'EXTRA_MOUNTS="%s"\n' "$extra_mounts"
 } > "${dest}/sandbox.local.env"

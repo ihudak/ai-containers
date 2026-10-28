@@ -276,18 +276,17 @@ grep -qxF '  2) alpha' "$G/alpha.out" \
   && pass "picker: the other groups follow default, still sorted" || fail "picker: the other groups follow default, still sorted"
 check "picker: Enter still means default, not whatever sorts first" "$(group_of "$G/alpha")" "default"
 
-run_init "$HG" "$G/host" "host" "$TMP"
-check "picker: typed host selects the host sentinel" "$(group_of "$G/host")" "host"
-check "picker: host needs no bootstrap" "$(init_of "$G/host")" ""
-# The host group is this machine's $HOME, which a shared sandbox.env cannot
-# select (the loader ignores it there): it goes in sandbox.local.env (review of
-# batch 2, F4).
-! grep -q '^AI_CONTAINER_GROUP=host' "$G/host/.ai-containers/sandbox.env" \
-  && grep -qx 'AI_CONTAINER_GROUP=host' "$G/host/.ai-containers/sandbox.local.env" \
-  && pass "picker: host is written to sandbox.local.env, not the shared sandbox.env" \
-  || fail "picker: host group written to sandbox.env ($(grep AI_CONTAINER_GROUP "$G/host/.ai-containers/"sandbox*.env | tr '\n' ' '))"
+# The host group, which mounted the real $HOME dot-directories, is gone: typing
+# it is refused, saying how to start a group from them, and the picker asks
+# again (here Enter: default).
+run_init "$HG" "$G/host" "host" "" "$TMP"
+check "picker: typed host is refused, and the next answer is taken" "$(group_of "$G/host")" "default"
+grep -qF 'from:host' "$G/host.err" \
+  && pass "picker: the refusal says to start a group from \$HOME instead" || fail "picker: host refusal ($(head -3 "$G/host.err" | tr '\n' ' '))"
+! grep -qs '^AI_CONTAINER_GROUP=host' "$G/host/.ai-containers/sandbox.env" "$G/host/.ai-containers/sandbox.local.env" \
+  && pass "picker: host is written nowhere" || fail "picker: host was written ($(grep AI_CONTAINER_GROUP "$G/host/.ai-containers/"sandbox*.env | tr '\n' ' '))"
 grep -q '^EXTRA_MOUNTS=' "$G/host/.ai-containers/sandbox.local.env" \
-  && pass "picker: host asks no confirmation" || fail "picker: host asks no confirmation"
+  && pass "picker: the run goes on after the refusal" || fail "picker: the run stopped after the refusal"
 ! grep -qE '^  [0-9]+\) host' "$G/host.out" && pass "picker: host is not a listed row" || fail "picker: host is not a listed row"
 
 [[ "$fails" -eq 0 ]] && { echo "ALL PASS"; exit 0; } || { echo "$fails FAILED"; exit 1; }

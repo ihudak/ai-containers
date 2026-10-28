@@ -151,6 +151,17 @@ process_project() {
   image_name="${image_name:-${project_name}-ai-container}"
 
   group_name="${vals[AI_CONTAINER_GROUP]:-default}"
+  # The host group, which mounted the real $HOME dot-directories, is gone: the
+  # project moves to the default group, which can start as a copy of them.
+  if [[ "$group_name" == host ]]; then
+    printf '  NOTE: the old launcher used AI_CONTAINER_GROUP=host, which is no longer supported;
+'
+    printf '        this project moves to the default group. To start a group as a copy of your
+'
+    printf '        $HOME'\''s credentials, set AI_CONTAINER_GROUP_INIT=from:host before its first launch.
+'
+    group_name=default
+  fi
   if ! valid_group_name "$group_name"; then
     printf '  WARN: parsed AI_CONTAINER_GROUP=%s looks invalid — check sandbox.env after migration.\n' "$group_name"
   fi
@@ -199,9 +210,7 @@ process_project() {
   {
     printf '# sandbox.env — PORTABLE launcher config for %s'"'"'s AI sandbox.\n' "$project_name"
     printf 'IMAGE_NAME=%s\n' "$image_name"
-    # The host group is this machine's $HOME, which a shared sandbox.env cannot
-    # choose (load_env_defaults ignores it there): it goes to sandbox.local.env.
-    if [[ "$group_name" == host ]]; then printf 'AI_CONTAINER_GROUP=default\n'; else printf 'AI_CONTAINER_GROUP=%s\n' "$group_name"; fi
+    printf 'AI_CONTAINER_GROUP=%s\n' "$group_name"
     printf 'CONTAINER_CPUS=%s\n' "$container_cpus"
     printf 'CONTAINER_MEMORY=%s\n' "$container_memory"
     printf 'CONTAINER_MEMORY_RESERVATION=%s\n' "$container_memory_reservation"
@@ -219,14 +228,13 @@ process_project() {
 EOF
   } > "${dest}/sandbox.env"
 
-  if [[ -n "$extra_mounts" || -n "$group_init" || -n "$repos" || "$group_name" == host || "$workdir" != .. ]]; then
+  if [[ -n "$extra_mounts" || -n "$group_init" || -n "$repos" || "$workdir" != .. ]]; then
     {
       cat <<'EOF'
 # sandbox.local.env — THIS MACHINE's launcher config (gitignored, not shared).
 # Overrides sandbox.env (loaded at higher precedence). Machine/platform-specific:
 # absolute bind paths, named-volume repos, the group bootstrap, workdir/resource overrides.
 EOF
-      [[ "$group_name" == host ]] && printf 'AI_CONTAINER_GROUP=host\n'
       [[ "$workdir" != .. ]] && printf 'SANDBOX_WORKDIR=%s\n' "$workdir"
       [[ -n "$group_init"   ]] && printf 'AI_CONTAINER_GROUP_INIT=%s\n' "$group_init"
       [[ -n "$extra_mounts" ]] && printf 'EXTRA_MOUNTS="%s"\n' "$extra_mounts"

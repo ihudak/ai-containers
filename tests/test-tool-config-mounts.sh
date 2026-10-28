@@ -9,7 +9,7 @@
 #   - the fetch mode (install=release vs install=repo-file) has no bearing on
 #     mounting — only the tool's sandbox.conf key does;
 #   - the host home is used as a one-time seed, never re-seeded afterwards;
-#   - AI_CONTAINER_GROUP=host mounts straight from $HOME.
+#   - AI_CONTAINER_GROUP=host, which mounted straight from $HOME, is refused.
 #
 # Uses a fake `docker` on PATH to capture the assembled `docker run` args
 # without launching a container, plus a synthetic TOOLS_D_DIR/SANDBOX_CONF so
@@ -160,14 +160,16 @@ if [[ "$(cat "$HOME/.gamma/credentials.yaml")" == "token: host-changed" ]]; then
   pass "host copy left untouched"; else fail "host copy left untouched"; fi
 teardown
 
-# ── Case 6: AI_CONTAINER_GROUP=host mounts straight from $HOME ──────────────────
+# ── Case 6: AI_CONTAINER_GROUP=host is refused, and nothing is mounted ────────
+# It mounted your real $HOME dot-directories read-write; it was removed, and a
+# group bootstrapped from:host replaces it (the user's choice).
 setup
 mkdir -p "$HOME/.gamma" "$HOME/.config/gamma-cli" "$HOME/.config/alpha"
 export AI_CONTAINER_GROUP=host AI_CONTAINER_HOST_ACK=1
 run_sandbox "$TMP/app"
-if mounted "$HOME/.gamma" "/home/dev/.gamma"; then
-  pass "host group: mounted from \$HOME"; else fail "host group: mounted from \$HOME"; fi
-if [[ ! -d "$HOME/.ai-containers/host" ]]; then
+if [[ "$RC" != 0 && ! -s "$CAPTURE" ]] && grep -qF 'AI_CONTAINER_GROUP_INIT=from:host' "$ERR"; then
+  pass "host group: refused before docker, naming the from:host replacement"; else fail "host group: refused before docker (rc=$RC; $(head -2 "$ERR" | tr '\n' ' '))"; fi
+if [[ ! -e "$HOME/.ai-containers/host" ]]; then
   pass "host group: no group dir created"; else fail "host group: no group dir created"; fi
 unset AI_CONTAINER_HOST_ACK
 teardown
@@ -237,17 +239,6 @@ if ! grep -qx -- "$HOME/.gitignore_global:/home/dev/.gitignore_global:ro" "$CAPT
   pass "named group: the HOST .gitignore_global is not the mount source"; else fail "named group: the HOST .gitignore_global is not the mount source"; fi
 teardown
 
-# ── Case 9b: …and `host` still means the host, which is the control ────────────
-setup
-printf 'name = host-identity\n' > "$HOME/.gitconfig"
-printf 'host-ignores\n'         > "$HOME/.gitignore_global"
-export AI_CONTAINER_GROUP=host AI_CONTAINER_HOST_ACK=1
-run_sandbox "$TMP/app"
-if mounted_ro "$HOME/.gitconfig" "/home/dev/.gitconfig"; then
-  pass "host group: .gitconfig mounted straight from \$HOME"; else fail "host group: .gitconfig mounted straight from \$HOME"; fi
-unset AI_CONTAINER_HOST_ACK
-teardown
-
 # ── Case 10: every BUILT-IN config dir is group-scoped, one assertion each ─────
 # The tools.d descriptors above go through one code path; these twelve are
 # hardcoded in run_container, each with its own `if [[ "$group" != "host" ]];
@@ -281,21 +272,14 @@ if [[ -z "$_leaked" ]]; then
   pass "named group: no built-in config dir is mounted from the bare host home"; else fail "named group: no built-in config dir is mounted from the bare host home —$_leaked"; fi
 teardown
 
-# ── Case 10b: `host` mounts the same twelve straight from $HOME ───────────────
+# ── Case 10b: `host` no longer mounts the twelve straight from $HOME ────────
 setup
 printf '# schema-version: 3\nalpha=OFF\nbeta=OFF\ngamma=OFF\ngithub-cli=ON\ncopilot=ON\nkiro=ON\nclaude-code=ON\ncodex=ON\ngemini=ON\nqmd=ON\naws-cli=ON\nazure-cli=ON\nkubectl=ON\nyarn=ON\n' > "$SANDBOX_CONF"
 for _d in "${BUILTIN_DIRS[@]}"; do mkdir -p "$HOME/$_d"; done
-export AI_CONTAINER_GROUP=host AI_CONTAINER_HOST_ACK=1
+export AI_CONTAINER_GROUP=host
 run_sandbox "$TMP/app"
-_missing=""
-for _d in "${BUILTIN_DIRS[@]}"; do
-  mounted "$HOME/$_d" "/home/dev/$_d" || _missing="$_missing $_d"
-done
-if [[ -z "$_missing" ]]; then
-  pass "host group: every built-in config dir mounted from \$HOME"; else fail "host group: every built-in config dir mounted from \$HOME — missing:$_missing"; fi
-if [[ ! -d "$HOME/.ai-containers/host" ]]; then
-  pass "host group: no group root is created behind the user's back"; else fail "host group: no group root is created behind the user's back"; fi
-unset AI_CONTAINER_HOST_ACK
+if [[ "$RC" != 0 && ! -s "$CAPTURE" ]]; then
+  pass "host group: no built-in config dir is mounted from \$HOME"; else fail "host group: launched (rc=$RC)"; fi
 teardown
 
 # ── Case 11: the REPOS mode gate accepts exactly three modes ──────────────────
@@ -419,18 +403,7 @@ for _d in "${JVM_CACHE_DIRS[@]}"; do
 done
 teardown
 
-# ── Case 13c: `host` mounts them from $HOME; a bootstrap does not copy them ───
-setup
-printf '# schema-version: 3\nalpha=OFF\nbeta=OFF\ngamma=OFF\nmaven=3.9.9\n' > "$SANDBOX_CONF"
-for _d in "${JVM_CACHE_DIRS[@]}"; do mkdir -p "$HOME/$_d"; done
-export AI_CONTAINER_GROUP=host AI_CONTAINER_HOST_ACK=1
-run_sandbox "$TMP/app"
-for _d in "${JVM_CACHE_DIRS[@]}"; do
-  if mounted "$HOME/$_d" "/home/dev/$_d"; then
-    pass "host group: $_d mounted from \$HOME (gated on any JVM key, here maven=)"; else fail "host group: $_d mounted from \$HOME (gated on any JVM key, here maven=)"; fi
-done
-unset AI_CONTAINER_HOST_ACK
-teardown
+# ── Case 13c: a from:host bootstrap does not copy them ─────────────────────
 # Caches, like .yarn: a group cloned from the host starts with an empty one
 # rather than gigabytes of jars. The FILE is what tells the two apart, since
 # the launch install -d's the directory either way.

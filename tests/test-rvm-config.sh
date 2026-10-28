@@ -32,14 +32,14 @@ rm -rf "$F1"
 bash -n "$REPO_DIR/sandbox.sh" && pass "sandbox.sh bash -n" || fail "sandbox.sh bash -n"
 # ~/.rvm is no longer a directory in the group: a named group gets a docker volume
 # (a bind mount cannot host an rvm install on macOS — see tests/test-rvm-volume.sh,
-# which owns the volume assertions). The bind mount survives ONLY inside the
-# host-group branch, whose contract is "mount my real $HOME".
+# which owns the volume assertions). The host group, whose bind mount of the
+# real ~/.rvm was the one exception, is gone.
 grep -q 'install -d "\$group_root/.rvm"' "$REPO_DIR/sandbox.sh" \
   && fail "sandbox.sh must NOT create a bind-mount .rvm dir (it is a volume now)" \
   || pass "sandbox.sh no longer creates a bind-mount .rvm dir"
 grep -q 'add_mount_if_exists config_mount_flags "\$group_root/.rvm"' "$REPO_DIR/sandbox.sh" \
-  && pass "sandbox.sh still bind-mounts .rvm for the host group" \
-  || fail "sandbox.sh still bind-mounts .rvm for the host group"
+  && fail "sandbox.sh must never bind-mount .rvm (the host group that did is gone)" \
+  || pass "sandbox.sh never bind-mounts .rvm"
 grep -q 'RUBY_VERSIONS=' "$REPO_DIR/sandbox.sh" \
   && pass "sandbox.sh passes RUBY_VERSIONS" || fail "sandbox.sh passes RUBY_VERSIONS"
 

@@ -195,7 +195,7 @@ Agent dotfile directories are sourced from the active container group (`~/.ai-co
 | `<group>/.claude.json` | `~/.claude.json` | read-write | `claude-code` |
 | `<group>/.codex/` | `~/.codex` | read-write | `codex` |
 | `<group>/.gemini/` | `~/.gemini` | read-write | `gemini` |
-| Docker volume `ai-containers-rvm-<group>` (the `host` group: `$HOME/.rvm`) | `~/.rvm` | read-write | `ruby` |
+| Docker volume `ai-containers-rvm-<group>` | `~/.rvm` | read-write | `ruby` |
 | `<group>/.ai-tools/` | `~/.ai-tools` | read-write | any of `claude-code`/`copilot`/`codex`/`gemini`/`graphify`/`vale`/`mkdocs` |
 | `<group>/.config/dtctl/` ² | `~/.config/dtctl` | read-write | `dtctl` |
 | `<group>/.config/dtmgd/` ² | `~/.config/dtmgd` | read-write | `dtmgd` |
@@ -214,7 +214,7 @@ Agent dotfile directories are sourced from the active container group (`~/.ai-co
 
 ⁴ Containers run with `--rm`, so before these two were mounted every start downloaded the Gradle wrapper's distribution and every dependency again. Any JVM key turns them on, because `./gradlew` and `./mvnw` need only a JDK, not the `gradle`/`maven` keys. They are caches, so a bootstrapped group does not copy them; a `gradle.properties` or `settings.xml` holding repository credentials goes in the group's copy (`~/.ai-containers/<group>/.gradle/`, `.m2/`). Two containers of one group building at the same moment share Gradle's file locks, but Gradle asks a lock's holder to release it over loopback, which does not reach another container, so the second build can fail after Gradle's 60-second lock timeout. Restarts are unaffected.
 
-When `AI_CONTAINER_GROUP=host`, all group-scoped paths above are sourced directly from `$HOME` instead (including `.gitconfig`, `.gitignore_global`, and the tool config dirs).
+Nothing above is mounted from `$HOME` itself: the `host` group that did is gone, and a group bootstrapped `from:host` starts as a copy instead.
 
 ---
 

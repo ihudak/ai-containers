@@ -158,15 +158,11 @@ display_path() {
 # Last effective `AI_CONTAINER_GROUP=...` in sandbox.env (comments and
 # AI_CONTAINER_GROUP_INIT ignored; quotes and trailing comments stripped).
 launcher_group() {
-  # As the launcher resolves it (review of batch 4): sandbox.local.env first, where
-  # project-init writes the host group, then sandbox.env, where the loader ignores
-  # a host group. env_var() reads both as load_env_defaults does.
+  # As the launcher resolves it (review of batch 4): sandbox.local.env first, then
+  # sandbox.env. env_var() reads both as load_env_defaults does.
   local g
   g="$(env_var "${1%/*}/sandbox.local.env" AI_CONTAINER_GROUP)"
-  if [ -z "$g" ]; then
-    g="$(env_var "$1" AI_CONTAINER_GROUP)"
-    [ "$g" != host ] || g=""
-  fi
+  [ -n "$g" ] || g="$(env_var "$1" AI_CONTAINER_GROUP)"
   printf '%s' "$g"
 }
 

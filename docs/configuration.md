@@ -21,11 +21,10 @@ container:
 | Variable | Purpose | Default | In container |
 |---|---|---|---|
 | `IMAGE_NAME` | Image tag to run. Persisted per project in `.ai-containers/sandbox.env`. | `ai-sandbox` | forwarded |
-| `AI_CONTAINER_GROUP` | Which dotfile tree (group) to mount: `default`, `host` (mounts `$HOME`), or a custom `~/.ai-containers/<name>/`. | `default` | — |
-| `AI_CONTAINER_GROUP_INIT` | Non-interactive first-time group bootstrap: `clean` \| `from:host` \| `from:<name>`. | interactive prompt | — |
+| `AI_CONTAINER_GROUP` | Which dotfile tree (group) to mount: `default` or a custom `~/.ai-containers/<name>/`. `host`, which mounted your real `$HOME` dot-directories, is refused; bootstrap a group `from:host` instead. | `default` | — |
+| `AI_CONTAINER_GROUP_INIT` | Non-interactive first-time group bootstrap: `clean` \| `from:host` (a one-time copy of your `$HOME`'s credentials) \| `from:<name>`. | interactive prompt | — |
 | `SANDBOX_MODE` | Default network mode for a bare `./sandbox.sh` (`open` \| `discovery` \| `restricted`). Set in `sandbox.env`; a positional arg or inline env wins. | `open` (via `sandbox.env`) | — |
 | `SANDBOX_WORKDIR` | Default primary working dir for a bare `./sandbox.sh` (`..`, a host path, or `@repo`). Set in `sandbox.env`; override per-machine in `sandbox.local.env`. | `..` (via `sandbox.env`) | — |
-| `AI_CONTAINER_HOST_ACK` | Set `1` to skip the macOS `host`-group acknowledgement. Ignored on Linux. | `0` | — |
 | `SANDBOX_UID` / `SANDBOX_GID` / `SANDBOX_USER` / `SANDBOX_GROUP` | Override the container user identity. | detected from host (`id`) | forwarded |
 | `REPOS` | Space-separated **registered** repo volumes to attach under `/workspace/<name>`; append `:ro` (default), `:rw`, or `:rwcopy`. Register first with `./repo.sh add`. | none | mount |
 | `REPO_BACKEND` | How a repo is backed: `auto` \| `volume` \| `bind` (chosen at `repo.sh add` time). | `auto` | — |

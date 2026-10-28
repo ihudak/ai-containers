@@ -28,9 +28,9 @@ log(){ printf '[rvm-reconcile] %s\n' "$*"; }
 # First run for a fresh group: user-install rvm into ~/.rvm (rvm signing keys are
 # pre-seeded into /etc/skel/.gnupg at build, so a fresh home needs no keyserver
 # fetch — but entrypoint.sh populates a home with `cp -rn`, so a group that
-# already carries its own ~/.gnupg keyring keeps it and does NOT get them. The
-# `host` group, which mounts the real $HOME, is the case that matters; that is
-# why keyserver.ubuntu.com stays allowlisted). A half-written ~/.rvm from an
+# already carries its own ~/.gnupg keyring keeps it and does NOT get them — one
+# bootstrapped from:host with a keyring among what it copied, say; that is why
+# keyserver.ubuntu.com stays allowlisted). A half-written ~/.rvm from an
 # interrupted or offline earlier run must be RE-bootstrapped, not sourced: sourcing a
 # broken rvm makes every later `rvm` call a "command not found" and every version fail,
 # on every subsequent start, with no way out short of deleting the group's ~/.rvm by hand.

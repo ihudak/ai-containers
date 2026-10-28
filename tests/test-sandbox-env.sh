@@ -145,14 +145,14 @@ grep -qxF 'GOT ok-img|3000|7||||||' <<<"$out_p" \
 rmk
 # What exposes THIS machine is not the shared file's to choose either: a host
 # path to mount (EXTRA_MOUNTS, the *_PATH pointers, a working dir outside the
-# project), the host group (your real $HOME dotfiles), the agent's identity
+# project), the agent's identity
 # (SANDBOX_UID=0 is a root shell), the file container.env is read from.
 mk
-printf 'EXTRA_MOUNTS=/home/you/.ssh:rw\nVAULT_PATH=/home/you\nDOCS_PATH=/etc\nSPECS_PATH=/x\nARCHITECTURE_REPO_PATH=/y\nSANDBOX_UID=0\nSANDBOX_GID=0\nSANDBOX_ENV_FILE=/home/you/.aws/credentials\nAI_CONTAINER_HOST_ACK=1\nAI_CONTAINER_GROUP_INIT=from:host\nAI_CONTAINER_GROUP=host\nSANDBOX_WORKDIR=/home/you\n' > "$PORTABLE"
-out_m="$( ( unset EXTRA_MOUNTS VAULT_PATH DOCS_PATH SPECS_PATH ARCHITECTURE_REPO_PATH SANDBOX_UID SANDBOX_GID SANDBOX_ENV_FILE AI_CONTAINER_HOST_ACK AI_CONTAINER_GROUP_INIT AI_CONTAINER_GROUP SANDBOX_WORKDIR
-  apply; printf 'GOT [%s%s%s%s%s%s%s%s%s%s%s%s]\n' "${EXTRA_MOUNTS:-}" "${VAULT_PATH:-}" "${DOCS_PATH:-}" "${SPECS_PATH:-}" "${ARCHITECTURE_REPO_PATH:-}" "${SANDBOX_UID:-}" "${SANDBOX_GID:-}" "${SANDBOX_ENV_FILE:-}" "${AI_CONTAINER_HOST_ACK:-}" "${AI_CONTAINER_GROUP_INIT:-}" "${AI_CONTAINER_GROUP:-}" "${SANDBOX_WORKDIR:-}" ) 2>&1 )"
-grep -qxF 'GOT []' <<<"$out_m" && [[ "$(grep -c "WARNING: ignoring" <<<"$out_m")" -eq 12 ]] \
-  && pass "sandbox.env cannot choose a host path, the host group, the agent's identity or the env file" \
+printf 'EXTRA_MOUNTS=/home/you/.ssh:rw\nVAULT_PATH=/home/you\nDOCS_PATH=/etc\nSPECS_PATH=/x\nARCHITECTURE_REPO_PATH=/y\nSANDBOX_UID=0\nSANDBOX_GID=0\nSANDBOX_ENV_FILE=/home/you/.aws/credentials\nAI_CONTAINER_HOST_ACK=1\nAI_CONTAINER_GROUP_INIT=from:host\nSANDBOX_WORKDIR=/home/you\n' > "$PORTABLE"
+out_m="$( ( unset EXTRA_MOUNTS VAULT_PATH DOCS_PATH SPECS_PATH ARCHITECTURE_REPO_PATH SANDBOX_UID SANDBOX_GID SANDBOX_ENV_FILE AI_CONTAINER_HOST_ACK AI_CONTAINER_GROUP_INIT SANDBOX_WORKDIR
+  apply; printf 'GOT [%s%s%s%s%s%s%s%s%s%s%s]\n' "${EXTRA_MOUNTS:-}" "${VAULT_PATH:-}" "${DOCS_PATH:-}" "${SPECS_PATH:-}" "${ARCHITECTURE_REPO_PATH:-}" "${SANDBOX_UID:-}" "${SANDBOX_GID:-}" "${SANDBOX_ENV_FILE:-}" "${AI_CONTAINER_HOST_ACK:-}" "${AI_CONTAINER_GROUP_INIT:-}" "${SANDBOX_WORKDIR:-}" ) 2>&1 )"
+grep -qxF 'GOT []' <<<"$out_m" && [[ "$(grep -c "WARNING: ignoring" <<<"$out_m")" -eq 11 ]] \
+  && pass "sandbox.env cannot choose a host path, the agent's identity or the env file" \
   || fail "machine-only keys from sandbox.env (got: $(grep GOT <<<"$out_m"); warnings: $(grep -c WARNING <<<"$out_m"))"
 rmk
 mk
@@ -182,9 +182,9 @@ for w in . ../sub @app ../a/b ../.ai-containers ../.. ../../outside /abs "$MKD/o
 done
 [[ -z "$wbad" ]] && pass "a portable SANDBOX_WORKDIR is the project and nothing else, symlinks followed" \
   || fail "portable SANDBOX_WORKDIR:$wbad"
-printf 'EXTRA_MOUNTS=/x\nSANDBOX_UID=1234\nAI_CONTAINER_GROUP=host\nSANDBOX_WORKDIR=/abs\n' > "$LOCAL"; : > "$PORTABLE"
+printf 'EXTRA_MOUNTS=/x\nSANDBOX_UID=1234\nAI_CONTAINER_GROUP=work\nSANDBOX_WORKDIR=/abs\n' > "$LOCAL"; : > "$PORTABLE"
 ( unset EXTRA_MOUNTS SANDBOX_UID AI_CONTAINER_GROUP SANDBOX_WORKDIR; apply
-  [[ "$EXTRA_MOUNTS" == /x && "$SANDBOX_UID" == 1234 && "$AI_CONTAINER_GROUP" == host && "$SANDBOX_WORKDIR" == /abs ]] ) 2>/dev/null \
+  [[ "$EXTRA_MOUNTS" == /x && "$SANDBOX_UID" == 1234 && "$AI_CONTAINER_GROUP" == work && "$SANDBOX_WORKDIR" == /abs ]] ) 2>/dev/null \
   && pass "sandbox.local.env sets all of those" || fail "machine-only keys refused from sandbox.local.env"
 rmk
 # Also machine-only: REPOS mounts registered repos — on Linux, live binds of host

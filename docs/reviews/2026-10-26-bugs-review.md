@@ -9,6 +9,7 @@
 - **Updated 2026-10-27:** batch 9 is merged (main `6a0b37f`). Section 10 lists what its 19 review rounds left open, reviewed up to `6a0b37f`.
 - **Updated 2026-10-27:** batch 8 is merged (main `5da9aeb`); its two reviews left nothing open.
 - **Updated 2026-10-28:** batch 10, the section 10 leftovers, is merged (main `86427b0` and the commits after it). Section 15 lists what its reviews left open, reviewed up to `708742d`.
+- **Updated 2026-10-28:** batch 11 removes `SANDBOX_GIT_FIXTURES` (GIT-11, GIT-21, LNCH-16) and the `host` group, which mounted the real `$HOME` dot-directories read-write (the user's choice; see the CHANGELOG).
 - **Companion:** [2026-10-26-feature-gaps-review.md](2026-10-26-feature-gaps-review.md).
 - **Confidence:** CONFIRMED = reproduced, or unambiguous from the code. PLAUSIBLE = strong reasoning, not reproduced (usually needs hardware or a platform not available here); verify before fixing.
 - **Citations** are by snippet, per AGENTS.md "Citing code". Scratch repro paths mentioned in entries were session-local and may no longer exist; each entry describes its repro in full.
@@ -1032,7 +1033,7 @@ Batch 9 (`9bd3729` … `6a0b37f`) went through 19 review rounds. Every HIGH and 
 - Fix direction: route these reads through one bounded helper (`timeout 2`, or a non-blocking open), and treat a timeout as unreadable.
 
 ### GIT-11: the launcher writes `config`, `commondir` and `hooks/` into config-less repository fixtures a project tracks
-- **Status: FIXED (batch 11)** — `@B11@`: every bare repository gets the placeholders, a tracked test fixture too; `SANDBOX_GIT_FIXTURES`, which exempted listed fixtures (batch 10, `86427b0`), was dropped, because a committed list could name a bare repository you push to (LNCH-16; the user's choice). AGENTS.md says to ignore `<fixture>.git/commondir` and `<fixture>.git/config` in the project's `.gitignore` (G79).
+- **Status: FIXED (batch 11)** — `1953888`: every bare repository gets the placeholders, a tracked test fixture too; `SANDBOX_GIT_FIXTURES`, which exempted listed fixtures (batch 10, `86427b0`), was dropped, because a committed list could name a bare repository you push to (LNCH-16; the user's choice). AGENTS.md says to ignore `<fixture>.git/commondir` and `<fixture>.git/config` in the project's `.gitignore` (G79).
 - Severity: LOW. Confidence: CONFIRMED (reproduced: the fixture repro; after a launch, `git status` shows `?? testdata/fixture.git/commondir` and `?? testdata/fixture.git/config`)
 - Location: sandbox.sh: `if [[ ! -e "$g/config" && ! -L "$g/config" ]]; then ( set -C; : > "$g/config" ) 2>/dev/null || true; fi`
 - What's wrong: any HEAD + `objects/` + `refs/` directory is protected, so a tracked test fixture with no config gets permanent untracked placeholder files. AGENTS.md does not mention this.
@@ -1280,7 +1281,7 @@ Batch 9 (`9bd3729` … `6a0b37f`) went through 19 review rounds. Every HIGH and 
 Batch 10 went through seven review rounds, a review of its merge with main and one of the fixes that review asked for (`162d4c3`, `708742d`); every HIGH and MEDIUM they found was fixed or, where the user chose, designed out (GIT-13). What they left open:
 
 ### GIT-21: a bare repository created mid-session can borrow a listed fixture's exemption
-- **Status: CLOSED (batch 11)** — `@B11@`: no longer applies; there is no fixture exemption to borrow (GIT-11).
+- **Status: CLOSED (batch 11)** — `1953888`: no longer applies; there is no fixture exemption to borrow (GIT-11).
 - Severity: LOW. Confidence: PLAUSIBLE (reproduced with the fixture loop alone, not end to end)
 - Location: sandbox.sh, the `SANDBOX_GIT_FIXTURES` loop in `launcher_ro_overlay()` (removed in batch 11)
 - What's wrong: a bare repository no launch has protected yet (one you create during a session) can be moved by the agent onto a listed `SANDBOX_GIT_FIXTURES` path, with a link left at its old path. The next launch takes the fixture path, a real directory now, for the fixture; the scan does not follow the link, and your `git push` goes through it into a repository with no placeholders and no first-protection NOTE.
@@ -1301,7 +1302,7 @@ Batch 10 went through seven review rounds, a review of its merge with main and o
 - Fix direction: refuse when the nearest existing ancestor is an empty mount point, or accept it as the NOTE says.
 
 ### LNCH-16: `SANDBOX_GIT_FIXTURES` is portable, so a commit can name a repository you push to
-- **Status: FIXED (batch 11)** — `@B11@`: `SANDBOX_GIT_FIXTURES` was removed, not made machine-only: every bare repository gets its placeholders (GIT-11; the user's choice). The entry below said "the same trust as a committed `SANDBOX_GIT_MAX`", which was wrong: raising that cap protects more repositories, while this key was the only committed one that turned protection off.
+- **Status: FIXED (batch 11)** — `1953888`: `SANDBOX_GIT_FIXTURES` was removed, not made machine-only: every bare repository gets its placeholders (GIT-11; the user's choice). The entry below said "the same trust as a committed `SANDBOX_GIT_MAX`", which was wrong: raising that cap protects more repositories, while this key was the only committed one that turned protection off.
 - Severity: LOW. Confidence: CONFIRMED (by design)
 - Location: sandbox-common.sh, `env_key_portable()` (the key removed in batch 11)
 - What's wrong: a team can commit the fixture list, which is the point; a malicious commit that you pull can list a bare repository you push to, which then gets no placeholders. The same trust as a committed `SANDBOX_GIT_MAX`. Entries are plain paths inside the project with no link on the way.

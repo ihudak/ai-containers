@@ -4,7 +4,7 @@
 
 The previous platform-specific behavior — where macOS redirected Claude Code, Copilot CLI, Kiro CLI, and GitHub CLI mounts to `~/.ai-containers/` while Linux kept them under `$HOME` — has been replaced by the unified container-group system described above. Both platforms now use the same group-root logic (`~/.ai-containers/<group>/` by default).
 
-The macOS Keychain context is still relevant if you use `AI_CONTAINER_GROUP=host`. Those four tools store OAuth tokens in the Keychain rather than in their dotfile dirs, which is why the `host` group on macOS prints a warning and requires explicit acknowledgement. With the default `default` group, credentials are stored in `~/.ai-containers/default/` as plain files, and there is no Keychain barrier.
+The `host` group, which mounted `$HOME`'s dot-directories directly, is gone; on macOS it only half-worked, because Claude Code, Copilot CLI, Kiro CLI and GitHub CLI keep their OAuth tokens in the Keychain, which a Linux container cannot read. Every group stores credentials as files in `~/.ai-containers/<group>/`, which works on both platforms.
 
 > The `~/.ai-containers/` directory name is unrelated to the per-project `<project>/.ai-containers/` asset dirs created by `project-init.sh`. They never collide on disk because one lives under `$HOME` and the other under repo roots.
 
@@ -80,8 +80,8 @@ Know what this does before adding it:
   that group, with or without `--dangerously-skip-permissions`. The container is
   then the only boundary, which is the point of running agents here: use
   `restricted` mode so egress stays deny-by-default.
-- **Don't add it to the `host` group.** That group mounts your real `~/.claude`,
-  so the hook would also approve everything for Claude Code running directly on
+- **Add it to the group's `~/.claude`, never your own.** In `~/.claude` on the
+  host it would also approve everything for Claude Code running directly on
   your machine, outside any container.
 - Remove it once Claude Code fixes the bug and the flag does its job again.
 
