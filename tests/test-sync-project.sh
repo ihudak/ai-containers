@@ -499,6 +499,16 @@ hout="$(AI_CONTAINER_GROUP=other sync_project "$PROJ" 2>&1)"
 grep -qF "$se sets AI_CONTAINER_GROUP=host" <<<"$hout" \
   && pass "sync names a sandbox.env that alone sets the host group, whatever the shell exports" \
   || fail "sync missed a host group set in sandbox.env alone ($(grep -i 'host' <<<"$hout" | head -1))"
+# A loader that does not work — here a helper it calls is not lifted out, as a
+# one-line or spaced definition would not be — must say the check could not run,
+# not report the group unset (review of d6dd1e8).
+mkdir -p "$TMP/brokeneng"
+sed 's/^env_key_portable() {/env_key_portable () {/' "$REPO_DIR/sandbox-common.sh" > "$TMP/brokeneng/sandbox-common.sh"
+hout="$(script_dir="$TMP/brokeneng" warn_host_group "$PROJ/.ai-containers" 2>&1)"
+grep -qF 'could not check AI_CONTAINER_GROUP' <<<"$hout" \
+  && pass "sync says when its loader could not check the group" \
+  || fail "sync stayed silent with a loader that does not work (got: $hout)"
+rm -rf "$TMP/brokeneng"
 cp "$TMP/se.bak" "$se"; rm -f "$TMP/se.bak"
 if [[ -f "$TMP/hl.bak" ]]; then cp "$TMP/hl.bak" "$hl"; else rm -f "$hl"; fi
 rm -f "$TMP/hl.bak"

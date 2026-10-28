@@ -59,7 +59,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   is `$HOME` by path already was: the two are compared by device and inode.
   `./build.sh` refuses `AI_CONTAINER_GROUP=host` (and any name that is no
   group) before building, where it built the whole image for a launch that
-  was then refused. The NOTE naming the file that sets the host group, and
+  was then refused, and names the file that sets it, as the launch does. The NOTE naming the file that sets the host group, and
   `sync-to-projects.sh`'s warning, now read the files as the launcher does:
   `AI_CONTAINER_GROUP = host`, which the loader ignores, a second line after
   the one it keeps, and a `sandbox.env` overridden by `sandbox.local.env` are

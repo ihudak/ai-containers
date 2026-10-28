@@ -289,7 +289,14 @@ warn_host_group() {
     mode=portable; [[ "$f" == */sandbox.local.env ]] && mode=local
     val="$(env -u AI_CONTAINER_GROUP bash -c '
       eval "$(sed -n "/^[A-Za-z_][A-Za-z0-9_]*() *{/,/^}/p" "$1")"
-      declare -F load_env_defaults >/dev/null || { printf "<error>"; exit 0; }
+      # A working check, not a name check: a helper the loader calls that was not
+      # lifted out is "command not found" with stderr discarded, and the key would
+      # read as unset. So the loader must first read a probe back (review of d6dd1e8).
+      probe="$(mktemp)" || { printf "<error>"; exit 0; }
+      printf "AI_CONTAINER_GROUP=probe\n" > "$probe"
+      got="$( load_env_defaults "$probe" portable 2>/dev/null; printf "%s" "${AI_CONTAINER_GROUP-}" )"
+      rm -f "$probe"
+      [[ "$got" == probe ]] || { printf "<error>"; exit 0; }
       load_env_defaults "$2" "$3" 2>/dev/null
       printf "%s" "${AI_CONTAINER_GROUP-<unset>}"
     ' _ "${script_dir}/sandbox-common.sh" "$f" "$mode")" || val='<unset>'
