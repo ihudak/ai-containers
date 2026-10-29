@@ -7,6 +7,8 @@ updates:
     schedule:
       interval: weekly
     ignore:
-      # A new Ubuntu LTS is a platform migration, made on purpose, not a bump.
+      # Ubuntu is never bumped automatically. Dependabot reads 24.04 -> 24.10 as
+      # a minor update, but 24.10 is a 9-month interim release (end of life, its
+      # archive gone), and moving to a new LTS is a migration made on purpose.
+      # The 24.04 tag itself is republished with security fixes.
       - dependency-name: ubuntu
-        update-types: ["version-update:semver-major"]
