@@ -190,7 +190,10 @@ seed_from_git() {
 sync_from_git() {
   local vol="$1" out
   printf 'Pulling latest into volume "%s" (auth via host ~/.ssh) ...\n' "$vol"
-  out="$(git_helper_run "$vol" pull /dst "${host_uid}:${host_gid}")" || return 1
+  # Rendered whether or not the helper succeeds, as reset_git does: a failure
+  # after `WARN|could not keep branch X` still says so (review of REPO-10).
+  local rc=0
+  out="$(git_helper_run "$vol" pull /dst "${host_uid}:${host_gid}")" || rc=$?
   # Every WARN record reaches the user: a ref sync could not keep is lost
   # (review of 82698a0, F2).
   local line
@@ -198,8 +201,13 @@ sync_from_git() {
     case "$line" in
       'WARN|chown failed') printf 'WARNING: could not chown the volume to %s\n' "${host_uid}:${host_gid}" >&2 ;;
       WARN\|*)            printf 'WARNING: %s\n' "${line#WARN|}" >&2 ;;
+      AT\|*|'')           ;;
+      # Verbatim, as reset_git does: a record type added to the helper later
+      # must still reach the user (REPO-10).
+      *)                  printf '  %s\n' "$line" ;;
     esac
   done <<<"$out"
+  return "$rc"
 }
 
 # The git half of `reset` lives in repo-git-reset.sh, mounted read-only into the
@@ -726,7 +734,7 @@ collect_inspections() {   # $@ = repo names
     fi
 
     ensure_seed_image
-    local branches=() tags=() nested=() primary="" stale="" stash_n="" nested_more=""
+    local branches=() tags=() nested=() primary="" stale="" stash_n="" nested_more="" ended=""
     while IFS= read -r line; do
       kind="${line%%|*}"; rest="${line#*|}"
       case "$kind" in
@@ -741,6 +749,7 @@ collect_inspections() {   # $@ = repo names
         TAG)   tags+=("$rest") ;;
         NESTED) nested+=("$rest") ;;
         NESTED-MORE) nested_more="$rest" ;;
+        END) ended=1 ;;
       esac
     done < <(inspect_git "$vol")
 
@@ -760,6 +769,14 @@ collect_inspections() {   # $@ = repo names
     local stale_note="" entry
     [[ -n "$stale" ]] && stale_note=" (STALE: fetch failed)"
     RESET_SUMMARY+=("  - ${name}: switches to '${primary}'${stale_note}")
+    # The helper's last record. Without it the inspection was cut short (the
+    # helper killed, out of memory say), and whatever it had not reported yet —
+    # the branches after the last one listed, the stash, the tags — is unknown
+    # (REPO-16).
+    if [[ -z "$ended" ]]; then
+      RESET_SUMMARY+=("      INSPECTION CUT SHORT — branches, the stash and tags it did not report are unknown  <-- may hold unpushed work")
+      RESET_AT_RISK=$(( RESET_AT_RISK + 1 ))
+    fi
     # The primary branch is moved to the remote's tip, so commits it has that no
     # remote has are lost exactly like a deleted branch's: they were skipped here
     # with no warning (review of REPO-8).
@@ -818,13 +835,26 @@ collect_inspections() {   # $@ = repo names
     for tg in ${tags[@]+"${tags[@]}"}; do
       tname="${tg%%|*}"; tg="${tg#*|}"; tkept="${tg%%|*}"; ton="${tg#*|}"
       [[ "$tkept" == yes ]] && continue
-      if [[ "$ton" == yes ]]; then
-        RESET_SUMMARY+=("      DROP tag ${tname} — not on the remote (the commit it marks is on a remote branch)")
+      if [[ "$tkept" == same ]]; then
+        RESET_SUMMARY+=("      REPLACE tag ${tname} with the remote's, which marks the same commit (this tag's own object, its message or signature, is not kept)")
+      elif [[ "$tkept" == moved ]]; then
+        # The remote's tag of that name replaces this one (REPO-15).
+        if [[ "$ton" == yes ]]; then
+          RESET_SUMMARY+=("      REPLACE tag ${tname} with the remote's, which marks another commit (this one's commit is kept by the remote)")
+        elif [[ "$ton" == '?' ]]; then
+          RESET_SUMMARY+=("      REPLACE tag ${tname} with the remote's, which marks another commit — whether the remote keeps this one's commit is unknown  <-- may be lost")
+          RESET_AT_RISK=$(( RESET_AT_RISK + 1 ))
+        else
+          RESET_SUMMARY+=("      REPLACE tag ${tname} with the remote's, which marks another commit — this one's commit is on no remote branch or tag  <-- lost")
+          RESET_AT_RISK=$(( RESET_AT_RISK + 1 ))
+        fi
+      elif [[ "$ton" == yes ]]; then
+        RESET_SUMMARY+=("      DROP tag ${tname} — not on the remote (the commit it marks is kept by the remote, on a branch or tag)")
       elif [[ "$tkept" == '?' || "$ton" == '?' ]]; then
         RESET_SUMMARY+=("      DROP tag ${tname} — whether the remote has it, or its commit, is unknown  <-- may be lost")
         RESET_AT_RISK=$(( RESET_AT_RISK + 1 ))
       else
-        RESET_SUMMARY+=("      DROP tag ${tname} — not on the remote, and the commit it marks is on no remote branch  <-- lost")
+        RESET_SUMMARY+=("      DROP tag ${tname} — not on the remote, and the commit it marks is on no remote branch or tag  <-- lost")
         RESET_AT_RISK=$(( RESET_AT_RISK + 1 ))
       fi
     done

@@ -157,10 +157,18 @@ if [[ "$1" == "run" ]]; then
       [[ -z "${HELPER_LOSSES:-}" ]] || printf 'STASH|2\nTAG|v1|yes|yes\nTAG|onpushed|no|yes\nTAG|lonely|no|no\nTAG|murky|?|?\n'
       # HELPER_NESTED: git repositories inside the checkout (REPO-5).
       [[ -z "${HELPER_NESTED:-}" ]] || printf 'NESTED|vendor/lib/.git\nNESTED-MORE|3\n'
+      # HELPER_MOVED: tags the remote has at another object (REPO-15).
+      [[ -z "${HELPER_MOVED:-}" ]] || printf 'TAG|mvkept|moved|yes\nTAG|mvlost|moved|no\nTAG|mvmurky|moved|?\nTAG|retyped|same|yes\n'
+      # HELPER_NO_END: the helper was cut short before its last record (REPO-16).
+      [[ -n "${HELPER_NO_END:-}" ]] || printf 'END|inspect\n'
       exit 0 ;;
     *" pull /dst"*)
       # HELPER_PULL_WARN: sync kept the checkout but could not keep a tag.
       [[ -z "${HELPER_PULL_WARN:-}" ]] || printf 'WARN|could not keep tag release/1\n'
+      # HELPER_PULL_NEW: a record type this repo.sh does not know (REPO-10).
+      [[ -z "${HELPER_PULL_NEW:-}" ]] || printf 'SOMETHING-NEW|kept a thing\n'
+      # HELPER_PULL_FAILS_LATE: a warning, then a failure (review of REPO-10).
+      [[ -z "${HELPER_PULL_FAILS_LATE:-}" ]] || { printf 'WARN|could not keep branch odd\n'; exit 1; }
       printf 'AT|abc1234\n'
       exit 0 ;;
     *" reset /dst"*)
@@ -844,6 +852,14 @@ check "  … and no volume is removed by a sync" "" "$(removed)"
 HELPER_PULL_WARN=1 run_repo sync docs
 grep -q 'WARNING: could not keep tag release/1' "$ERR" && pass "  … and a ref the pull could not keep is reported" \
   || fail "  … a pull WARN record is dropped (got: $(tr '\n' ' ' < "$ERR"))"
+HELPER_PULL_FAILS_LATE=1 run_repo sync docs
+[[ "$RC" != 0 ]] && grep -q 'WARNING: could not keep branch odd' "$ERR" \
+  && pass "  … and a failed pull still reports the warnings it made first" \
+  || fail "  … a failed pull dropped its warnings (rc=$RC; got: $(tr '\n' ' ' < "$ERR"))"
+HELPER_PULL_NEW=1 run_repo sync docs
+grep -qF 'SOMETHING-NEW|kept a thing' "$OUT" && ! grep -q 'AT|' "$OUT" \
+  && pass "  … a record type sync does not know reaches the user verbatim, AT stays quiet (REPO-10)" \
+  || fail "  … sync dropped an unknown record, or printed AT (got: $(tr '\n' ' ' < "$OUT"))"
 
 setup_world
 run_repo sync localsrc
@@ -1242,12 +1258,37 @@ unset HELPER_NO_PRIMARY
 # (the clone brings it back) is not listed.
 setup_world
 HELPER_LOSSES=1 run_repo reset docs --yes
-grep -qF 'DROP the stash (2 entr(y/ies))' "$OUT" && grep -qF 'DROP tag onpushed — not on the remote (the commit it marks is on a remote branch)' "$OUT" \
-  && grep -qF 'DROP tag lonely — not on the remote, and the commit it marks is on no remote branch' "$OUT" && ! grep -q 'tag v1' "$OUT" \
+grep -qF 'DROP the stash (2 entr(y/ies))' "$OUT" && grep -qF 'DROP tag onpushed — not on the remote (the commit it marks is kept by the remote, on a branch or tag)' "$OUT" \
+  && grep -qF 'DROP tag lonely — not on the remote, and the commit it marks is on no remote branch or tag' "$OUT" && ! grep -q 'tag v1' "$OUT" \
   && grep -qF 'DROP tag murky — whether the remote has it, or its commit, is unknown' "$OUT" \
   && grep -q 'WARNING: 4 item(s) above' "$OUT" \
   && pass "reset's summary names the stash and the tags it drops, and counts what is lost" \
   || fail "reset's summary of a stash and tags ($(grep -E 'DROP|WARNING' "$OUT" | tr '\n' ';'))"
+
+# REPO-15: a tag the remote has at another object is replaced, not dropped, and
+# is at risk only when the remote does not keep the commit it marked.
+setup_world
+HELPER_MOVED=1 run_repo reset docs --yes
+grep -qF "REPLACE tag mvkept with the remote's, which marks another commit (this one's commit is kept by the remote)" "$OUT" \
+  && grep -qF "REPLACE tag mvlost with the remote's, which marks another commit — this one's commit is on no remote branch or tag  <-- lost" "$OUT" \
+  && grep -qF "REPLACE tag mvmurky with the remote's, which marks another commit — whether the remote keeps this one's commit is unknown" "$OUT" \
+  && grep -qF "REPLACE tag retyped with the remote's, which marks the same commit" "$OUT" \
+  && ! grep -q 'DROP tag mv' "$OUT" && grep -q 'WARNING: 3 item(s) above' "$OUT" \
+  && pass "reset's summary says a moved tag is replaced, and counts it only when its commit is lost" \
+  || fail "reset's summary of moved tags ($(grep -E 'tag mv|WARNING' "$OUT" | tr '\n' ';'))"
+
+# REPO-16: an inspection with no END record was cut short, so what it did not
+# report is unknown: said so, and counted at risk.
+setup_world
+HELPER_NO_END=1 run_repo reset docs --yes
+grep -qF 'INSPECTION CUT SHORT — branches, the stash and tags it did not report are unknown' "$OUT" \
+  && grep -q 'WARNING: 2 item(s) above' "$OUT" \
+  && pass "reset's summary flags an inspection that was cut short, and counts it at risk" \
+  || fail "reset's summary of a cut-short inspection ($(grep -E 'CUT|WARNING' "$OUT" | tr '\n' ';'))"
+setup_world
+run_repo reset docs --yes
+! grep -q 'CUT SHORT' "$OUT" && pass "  … and says nothing of it when the inspection finished" \
+  || fail "a finished inspection was flagged as cut short"
 
 # REPO-5: reset removes git repositories inside the checkout, so its summary
 # names each one and counts it at risk.

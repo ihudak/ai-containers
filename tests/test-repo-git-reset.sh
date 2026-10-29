@@ -139,16 +139,129 @@ grep -qx 'TAG|lonely|no|no' <<<"$OUT" && grep -qx 'TAG|onpushed|no|yes' <<<"$OUT
   && pass "inspect reports each tag: kept by the remote, and whether its commit is on a remote branch" \
   || fail "inspect's TAG records
 $OUT"
-# A hand-written tag file whose name ends in a newline splits into a record with
-# no object name: unknown, never matched as "kept" (review of REPO-8).
+[[ "$(tail -n 1 <<<"$OUT")" == 'END|inspect' ]] && pass "inspect's last record is END (REPO-16)" \
+  || fail "inspect's output does not end with END|inspect
+$OUT"
+# REPO-15: what the clone keeps, through the remote's tags as well as its
+# branches; a tag the remote has at another object is "moved".
+W="$(mk_repo tagkeep)"
+g "$W" checkout -q -b feat/rt >/dev/null 2>&1; commit_in "$W" rt
+g "$W" tag rt-remote >/dev/null 2>&1; g "$W" push -q origin rt-remote >/dev/null 2>&1   # only a remote TAG reaches it
+g "$W" tag alsohere >/dev/null 2>&1                                                   # local tag, same commit
+commit_in "$W" lost; g "$W" tag mvlost-src >/dev/null 2>&1                            # a commit no remote has
+g "$W" checkout -q main >/dev/null 2>&1
+g "$W" tag mvkept >/dev/null 2>&1; g "$W" tag mvlost >/dev/null 2>&1
+g "$W" push -q origin mvkept mvlost >/dev/null 2>&1
+g "$W" tag -f mvkept origin/shared >/dev/null 2>&1                                    # moved; its commit is on a remote branch
+g "$W" tag -f mvlost mvlost-src >/dev/null 2>&1                                       # moved; its commit is on no remote ref
+g "$W" tag -d mvlost-src >/dev/null 2>&1
+run_script inspect "$W"
+grep -qx 'TAG|alsohere|no|yes' <<<"$OUT" && grep -qx 'TAG|rt-remote|yes|yes' <<<"$OUT" \
+  && grep -qx 'BRANCH|feat/rt|1|' <<<"$OUT" \
+  && pass "a tag on a commit only a remote tag reaches is kept by the remote, not lost, nor counted unpushed" \
+  || fail "a tag on a commit a remote tag reaches
+$OUT"
+grep -qx 'TAG|mvkept|moved|yes' <<<"$OUT" && grep -qx 'TAG|mvlost|moved|no' <<<"$OUT" \
+  && pass "a tag the remote has at another object is reported moved, with whether its commit is kept" \
+  || fail "a tag the remote has at another object
+$OUT"
+# With alternates of the volume's own its objects are not linked into the clone,
+# so a commit the clone cannot see is unknown, never "no".
+W="$(mk_repo tagalt)"
+g "$W" checkout -q -b feat/alt >/dev/null 2>&1; commit_in "$W" alt; g "$W" tag alt >/dev/null 2>&1
+g "$W" checkout -q main >/dev/null 2>&1
+mkdir -p "$TMP/tagalt.extra/objects"; printf '%s\n' "$TMP/tagalt.extra/objects" > "$W/.git/objects/info/alternates"
+run_script inspect "$W"
+grep -qx 'TAG|alt|no|?' <<<"$OUT" && pass "a tag whose commit the clone cannot see is unknown, not lost" \
+  || fail "a tag whose commit the clone cannot see
+$OUT"
+# The volume's objects are an alternate store in inspect, and git reads a
+# commit-graph from an alternate too. One the agent forged, giving the remote
+# tip a local-only commit as its parent, makes rev-list walk into that commit,
+# so a branch whose work is on no remote counted 0 unpushed, and reset deleted
+# it as pushed; the counts read no commit-graph. (for-each-ref --contains, which
+# on_remote uses, is not fooled by this forgery on git 2.56; on_remote reads no
+# commit-graph either, as defence.) The graph's first-parent field is rewritten
+# by a small script (python3; skipped without it, as the socket check below is).
+if command -v python3 >/dev/null 2>&1; then
+  CG_FORGE="$TMP/cg-forge.py"
+  cat > "$CG_FORGE" <<'FORGE'
+# cg-forge.py <commit-graph> <commit-hex> <new-parent-hex>: rewrite <commit>'s
+# first parent in a commit-graph file to <new-parent>, and its trailing hash.
+import hashlib, struct, sys
+path, target, parent = sys.argv[1], bytes.fromhex(sys.argv[2]), bytes.fromhex(sys.argv[3])
+d = bytearray(open(path, 'rb').read())
+assert d[:4] == b'CGPH', 'not a commit-graph'
+hl = 20 if d[5] == 1 else 32
+chunks = {}
+for i in range(d[6] + 1):
+    off = 8 + 12 * i
+    chunks[bytes(d[off:off + 4])] = struct.unpack('>Q', bytes(d[off + 4:off + 12]))[0]
+n = struct.unpack('>I', bytes(d[chunks[b'OIDF'] + 255 * 4:chunks[b'OIDF'] + 256 * 4]))[0]
+oids = [bytes(d[chunks[b'OIDL'] + i * hl:chunks[b'OIDL'] + (i + 1) * hl]) for i in range(n)]
+rec = chunks[b'CDAT'] + oids.index(target) * (hl + 16)
+d[rec + hl:rec + hl + 4] = struct.pack('>I', oids.index(parent))
+d[-hl:] = (hashlib.sha1 if hl == 20 else hashlib.sha256)(bytes(d[:-hl])).digest()
+open(path, 'wb').write(d)
+FORGE
+  W="$(mk_repo cgforge)"; S="$TMP/cgforge.seed"
+  commit_in "$S" c2; commit_in "$S" c3; g "$S" push -q origin main >/dev/null 2>&1
+  g "$W" pull -q --ff-only >/dev/null 2>&1
+  g "$W" checkout -q -b loc "$(g "$W" rev-list --max-parents=0 HEAD)" >/dev/null 2>&1
+  printf 'l\n' > "$W/l"; g "$W" add l
+  GIT_COMMITTER_DATE='2001-01-01T00:00:00Z' GIT_AUTHOR_DATE='2001-01-01T00:00:00Z' g "$W" commit -qm local >/dev/null 2>&1
+  g "$W" tag cgtag; lc="$(g "$W" rev-parse HEAD)"; g "$W" checkout -q main >/dev/null 2>&1
+  g "$W" -c commitGraph.generationVersion=1 commit-graph write --reachable >/dev/null 2>&1
+  chmod u+w "$W/.git/objects/info/commit-graph"                    # git writes it read-only
+  python3 -I "$CG_FORGE" "$W/.git/objects/info/commit-graph" "$(g "$W" rev-parse origin/main)" "$lc"
+  if [[ "$(g "$W" rev-list --count "$lc" --not --remotes=origin)" == 0 \
+        && "$(g "$W" -c core.commitGraph=false rev-list --count "$lc" --not --remotes=origin)" == 1 ]]; then
+    run_script inspect "$W"
+    grep -qx 'BRANCH|loc|1|' <<<"$OUT" && grep -qx 'TAG|cgtag|no|no' <<<"$OUT" \
+      && pass "a forged commit-graph in the volume does not make local work look pushed" \
+      || fail "a forged commit-graph in the volume
+$OUT"
+  else
+    fail "commit-graph fixture: the forged graph does not make rev-list walk into $lc"
+  fi
+else
+  printf 'SKIP: the forged commit-graph check needs python3\n'
+fi
+# A hand-written tag file whose name ends in a newline is one record, its state
+# unknown, never matched as "kept" (review of REPO-8; one record since REPO-10).
 W="$(mk_repo tagnl)"
 g "$W" checkout -q -b feat/x >/dev/null 2>&1; commit_in "$W" a
 g "$W" rev-parse HEAD > "$W/.git/refs/tags/wip"$'\n'
 g "$W" checkout -q main >/dev/null 2>&1
 run_script inspect "$W"
-grep -qx 'TAG|wip|?|?' <<<"$OUT" && ! grep -q '^TAG|.*|yes|' <<<"$OUT" \
-  && pass "a tag name with a newline is reported unknown, not kept" \
+grep -qx 'TAG|wip?|?|?' <<<"$OUT" && [[ "$(grep -c '^TAG|' <<<"$OUT")" == 1 ]] && ! grep -q '^TAG|.*|yes|' <<<"$OUT" \
+  && pass "a tag name with a newline is one record, reported unknown, not kept" \
   || fail "a tag name with a newline
+$OUT"
+# REPO-10: a branch file named with a newline split into a fake BRANCH record
+# (here one claiming a pushed branch named "fake"); it is one record, unknown.
+W="$(mk_repo branchnl)"
+g "$W" rev-parse HEAD > "$W/.git/refs/heads/feat"$'\n'"fake"
+run_script inspect "$W"
+grep -qx 'BRANCH|feat?fake|?|' <<<"$OUT" && ! grep -q '^BRANCH|fake|' <<<"$OUT" \
+  && pass "a branch name with a newline is one record, not two" \
+  || fail "a branch name with a newline
+$OUT"
+W="$(mk_repo branchtab)"
+g "$W" rev-parse HEAD > "$W/.git/refs/heads/feat"$'\t'"fake"
+run_script inspect "$W"
+grep -qx 'BRANCH|feat?fake|?|' <<<"$OUT" && ! grep -q '^BRANCH|feat|' <<<"$OUT" \
+  && pass "a branch name with a tab is one record, its state unknown" \
+  || fail "a branch name with a tab
+$OUT"
+# A tag the remote has at another object but on the same commit (lightweight
+# here, annotated there) is "same": its commit is kept.
+W="$(mk_repo tagsame)"; S="$TMP/tagsame.seed"
+g "$S" tag -a -m 'the release' v1 >/dev/null 2>&1; g "$S" push -q origin v1 >/dev/null 2>&1
+g "$W" tag v1 "$(g "$S" rev-parse 'v1^{commit}')" >/dev/null 2>&1
+run_script inspect "$W"
+grep -qx 'TAG|v1|same|yes' <<<"$OUT" && pass "a tag the remote has as another object on the same commit is reported same" \
+  || fail "a retyped tag on the same commit
 $OUT"
 # A stash whose reflog is gone is still a stash (its count unknown).
 W="$(mk_repo stashnolog)"
@@ -163,6 +276,9 @@ g "$W" tag t1 >/dev/null 2>&1; rm -rf "$TMP/tagoffline.git"
 run_script inspect "$W"
 grep -qx 'TAG|t1|?|?' <<<"$OUT" && pass "with the remote unreachable, a tag's state is unknown, not 'no'" \
   || fail "a tag's state with the remote unreachable
+$OUT"
+[[ "$(tail -n 1 <<<"$OUT")" == 'END|inspect' ]] && pass "  … and a STALE inspection still ends with END" \
+  || fail "a STALE inspection does not end with END|inspect
 $OUT"
 W="$(mk_repo nolosses)"
 run_script inspect "$W"
@@ -558,6 +674,23 @@ mv "$W/.git" "$TMP/gitfile-real.git"; printf 'gitdir: %s\n' "$TMP/gitfile-real.g
 run_script inspect "$W"
 if [[ "$RC" != 0 && "$OUT" == *"is a file or link"* ]]; then pass "a .git FILE (pointing anywhere) is refused"
 else fail ".git file accepted (rc=$RC: $OUT)"; fi
+
+W="$(mk_repo gitlink-top)"
+mv "$W/.git" "$TMP/gitlink-top-real.git"; ln -s "$TMP/gitlink-top-real.git" "$W/.git"
+run_script inspect "$W"
+if [[ "$RC" != 0 && "$OUT" == *"is a file or link"* ]]; then pass "a .git that is a symlink is refused"
+else fail ".git symlink accepted (rc=$RC: $OUT)"; fi
+# Nested more than one level: a repository inside a nested one is listed and
+# removed too, and sync refuses it.
+W="$(mk_repo nest2)"; mkdir -p "$W/a/.git" "$W/a/b/c/.git"
+run_script inspect "$W"
+if grep -qx 'NESTED|a/.git' <<<"$OUT" && grep -qx 'NESTED|a/b/c/.git' <<<"$OUT"; then pass "inspect lists a repository nested inside a nested one"
+else fail "two levels of nesting (out: $OUT)"; fi
+run_script pull "$W"
+[[ "$RC" != 0 && "$OUT" == *"inside the checkout"* ]] && pass "  … sync refuses them" || fail "sync and two levels of nesting (rc=$RC; out: $OUT)"
+run_script reset "$W" main
+if [[ "$RC" == 0 && ! -e "$W/a/.git" && ! -e "$W/a/b/c/.git" ]]; then pass "  … and reset removes both"
+else fail "reset and two levels of nesting (rc=$RC; out: $OUT)"; fi
 
 # The remote is the one repo.sh recorded, not the one the .git names: the agent
 # could point origin at any repository your SSH key reads, and the next sync
@@ -1030,6 +1163,26 @@ W="$(mk_repo nestnoremote)"; mkdir -p "$W/vendor/lib/.git"; : > "$W/vendor/lib/.
 AI_REPO_URL="$TMP/does-not-exist.git" run_script reset "$W" main
 if [[ "$RC" != 0 && -e "$W/vendor/lib/.git/keep" ]]; then pass "a reset that cannot clone the remote removes no nested repository"
 else fail "a failed reset removed a nested repository (rc=$RC)"; fi
+# REPO-17: the volume's own path is matched literally. find -path takes a glob,
+# so in a directory named gl[o]b* the top-level .git was not pruned: inspect
+# listed it as nested and reset removed it. sync too: other_ref, unquoted, took
+# refs/heads/main for a ref outside heads and tags and refused.
+W="$(mk_repo 'pull gl[o]b*')"; S="$TMP/pull gl[o]b*.seed"; commit_in "$S" pg-new; g "$S" push -q origin main >/dev/null 2>&1
+run_script pull "$W"
+[[ "$RC" == 0 && -e "$W/pg-new" ]] && pass "pull in a volume path holding glob characters" \
+  || fail "pull in a volume path holding glob characters (rc=$RC; out: $OUT)"
+run_script inspect "$W/"
+[[ "$RC" != 0 && "$OUT" == *"must not end in a slash"* ]] && pass "a volume path ending in a slash is refused" \
+  || fail "a volume path ending in a slash (rc=$RC; out: $OUT)"
+W="$(mk_repo 'gl[o]b*')"
+run_script inspect "$W"
+nested_listed="$(grep -c '^NESTED' <<<"$OUT")"
+run_script reset "$W" main
+if [[ "$nested_listed" == 0 && "$RC" == 0 ]] && ! grep -q '^REMOVED|' <<<"$OUT" && [[ "$(g "$W" branch --show-current 2>/dev/null)" == main ]]; then
+  pass "a volume path holding glob characters keeps its own .git"
+else
+  fail "a volume path holding glob characters (listed: $nested_listed; rc=$RC; $OUT)"
+fi
 # A nested .git that is a link is removed as a link: its target survives.
 W="$(mk_repo sublink)"; mkdir -p "$W/sub" "$TMP/linktarget/.git"; : > "$TMP/linktarget/.git/HEAD"
 ln -s "$TMP/linktarget/.git" "$W/sub/.git"
@@ -1050,6 +1203,308 @@ printf 'staged\n' > "$W/first"; g "$W" add first; printf 'first\n' > "$W/first"
 run_script pull "$W"
 if [[ "$RC" != 0 && "$OUT" == *"staged changes"* && "$(g "$W" diff --cached --name-only)" == first ]]; then pass "pull refuses staged changes the worktree no longer shows"
 else fail "staged change lost or accepted (rc=$RC; out: $OUT)"; fi
+# REPO-10: diff-index trusts an index's cache-tree, so a hand-crafted index can
+# hide a staged entry: d/f's object name is rewritten in the file itself, past
+# git, which would have invalidated d/'s cached tree, and the trailing checksum
+# recomputed. The check now reads the entries into a fresh index.
+W="$(mk_repo cachetree)"; S="$TMP/cachetree.seed"
+mkdir -p "$S/d"; printf 'one\n' > "$S/d/f"; g "$S" add d/f; g "$S" commit -q -m d; g "$S" push -q origin main >/dev/null 2>&1
+g "$W" pull -q --ff-only >/dev/null 2>&1
+commit_in "$S" ct-new; g "$S" push -q origin main >/dev/null 2>&1
+g "$W" update-index --index-version 2; g "$W" write-tree >/dev/null      # d/f first, every cached tree valid
+two="$(printf 'two\n' | g "$W" hash-object -w --stdin)"
+idx="$W/.git/index"
+[[ "$(g "$W" ls-files | head -n 1)" == d/f ]] || fail "cache-tree fixture: d/f is not the first entry"
+# Entry 1's object name sits after the 12-byte header and 40 bytes of stat data.
+printf "$(sed 's/../\\x&/g' <<<"$two")" | dd of="$idx" bs=1 seek=52 conv=notrunc 2>/dev/null
+n=$(( $(wc -c < "$idx") - 20 )); head -c "$n" "$idx" > "$TMP/ct.body"
+printf "$(p_sha1 "$TMP/ct.body" | sed 's/../\\x&/g')" | dd of="$idx" bs=1 seek="$n" conv=notrunc 2>/dev/null
+if [[ "$(g "$W" ls-files -s d/f | cut -d' ' -f2)" != "$two" ]] || ! g "$W" diff-index --cached --quiet HEAD; then
+  fail "cache-tree fixture: the hand-written index is not the one this test needs ($(g "$W" ls-files -s d/f))"
+fi
+run_script pull "$W"
+if [[ "$RC" != 0 && "$OUT" == *"staged changes"* ]]; then pass "pull refuses a staged entry its index's cache-tree hides"
+else fail "a staged entry hidden by the cache-tree went unseen (rc=$RC; out: $OUT)"; fi
+# Intent to add (`git add -N`) stages nothing that sync would lose: accepted,
+# and the file kept. An unmerged entry is refused by name.
+W="$(mk_repo ita)"; S="$TMP/ita.seed"; commit_in "$S" ita-new; g "$S" push -q origin main >/dev/null 2>&1
+printf 'draft\n' > "$W/draft.txt"; g "$W" add -N draft.txt
+run_script pull "$W"
+if [[ "$RC" == 0 && "$(cat "$W/draft.txt")" == draft && -e "$W/ita-new" ]]; then pass "pull accepts an intent-to-add entry, keeping the file"
+else fail "pull and an intent-to-add entry (rc=$RC; out: $OUT)"; fi
+W="$(mk_repo unmerged)"; S="$TMP/unmerged.seed"; commit_in "$S" um-new; g "$S" push -q origin main >/dev/null 2>&1
+oid="$(g "$W" rev-parse HEAD:first)"
+printf '100644 %s 1\tfirst\n100644 %s 2\tfirst\n100644 %s 3\tfirst\n' "$oid" "$oid" "$oid" | g "$W" update-index --index-info
+run_script pull "$W"
+if [[ "$RC" != 0 && "$OUT" == *"unmerged entries"* ]]; then pass "pull refuses unmerged index entries, by name"
+else fail "pull and unmerged entries (rc=$RC; out: $OUT)"; fi
+# Only an ADDED empty blob is an intent to add: a tracked file staged as empty
+# is a staged change like any other.
+W="$(mk_repo stagedempty)"; S="$TMP/stagedempty.seed"; commit_in "$S" se-new; g "$S" push -q origin main >/dev/null 2>&1
+: > "$W/first"; g "$W" add first; printf 'first\n' > "$W/first"
+run_script pull "$W"
+if [[ "$RC" != 0 && "$OUT" == *"staged changes"* ]]; then pass "pull refuses a tracked file staged as empty"
+else fail "a tracked file staged as empty went unseen (rc=$RC; out: $OUT)"; fi
+# An index git cannot read at all is refused, not taken as clean.
+W="$(mk_repo badindex)"; S="$TMP/badindex.seed"; commit_in "$S" bi-new; g "$S" push -q origin main >/dev/null 2>&1
+printf 'DIRC garbage\n' > "$W/.git/index"
+run_script pull "$W"
+if [[ "$RC" != 0 && "$OUT" == *"cannot read the checkout's index"* ]]; then pass "pull refuses an index it cannot read"
+else fail "pull and a damaged index (rc=$RC; out: $OUT)"; fi
+# An ignored file the remote now tracks was overwritten in silence, as
+# `git pull --ff-only` does; sync keeps it (REPO-10).
+W="$(mk_repo ignored)"; S="$TMP/ignored.seed"
+printf 'build/\n' > "$S/.gitignore"; g "$S" add .gitignore; g "$S" commit -q -m ignore; g "$S" push -q origin main >/dev/null 2>&1
+g "$W" pull -q --ff-only >/dev/null 2>&1
+mkdir -p "$S/build"; printf "remote's\n" > "$S/build/out"; g "$S" add -f build/out; g "$S" commit -q -m out; g "$S" push -q origin main >/dev/null 2>&1
+mkdir -p "$W/build"; printf 'mine\n' > "$W/build/out"
+run_script pull "$W"
+if [[ "$RC" != 0 && "$(cat "$W/build/out")" == mine && "$OUT" == *"untracked or ignored"* ]]; then pass "pull refuses to overwrite an ignored file the remote now tracks"
+else fail "pull and an ignored file the remote now tracks (rc=$RC; content: $(cat "$W/build/out"); out: $OUT)"; fi
+# What the remote turns from a directory into something else: clean, it is no
+# obstacle (the review of REPO-10 found these refused, where `git pull` takes
+# them); holding an ignored file, it is refused and the file kept.
+for kind in file link gitlink; do
+  W="$(mk_repo "dirto$kind")"; S="$TMP/dirto$kind.seed"
+  mkdir -p "$S/foo"; printf 'a\n' > "$S/foo/a"; g "$S" add foo; g "$S" commit -q -m foo; g "$S" push -q origin main >/dev/null 2>&1
+  g "$W" pull -q --ff-only >/dev/null 2>&1
+  g "$S" rm -q -r foo
+  case "$kind" in
+    file)    printf 'now a file\n' > "$S/foo"; g "$S" add foo ;;
+    link)    ln -s first "$S/foo"; g "$S" add foo ;;
+    gitlink) g "$S" update-index --add --cacheinfo "160000,$(g "$S" rev-parse HEAD),foo" ;;
+  esac
+  g "$S" commit -q -m "foo becomes a $kind"; g "$S" push -q origin main >/dev/null 2>&1
+  run_script pull "$W"
+  [[ "$RC" == 0 ]] && pass "pull fast-forwards a directory the remote turns into a $kind" \
+    || fail "pull refused a directory turned into a $kind (rc=$RC; out: $OUT)"
+done
+W="$(mk_repo dirtofileign)"; S="$TMP/dirtofileign.seed"
+mkdir -p "$S/foo"; printf 'a\n' > "$S/foo/a"; printf 'out.o\n' > "$S/.gitignore"; g "$S" add -A; g "$S" commit -q -m foo; g "$S" push -q origin main >/dev/null 2>&1
+g "$W" pull -q --ff-only >/dev/null 2>&1; printf 'built\n' > "$W/foo/out.o"
+g "$S" rm -q -r foo; printf 'now a file\n' > "$S/foo"; g "$S" add foo; g "$S" commit -q -m file; g "$S" push -q origin main >/dev/null 2>&1
+run_script pull "$W"
+if [[ "$RC" != 0 && "$(cat "$W/foo/out.o" 2>/dev/null)" == built && "$OUT" == *"holds untracked or ignored files"* ]]; then
+  pass "pull refuses a directory the remote turns into a file while it holds an ignored file, and keeps it"
+else fail "pull and an ignored file in a directory turned into a file (rc=$RC; out: $OUT)"; fi
+# A rename over a tracked compatibility link: the tip has doc/ and docs -> doc;
+# the remote removes the link and moves doc to docs.
+W="$(mk_repo compatlink)"; S="$TMP/compatlink.seed"
+mkdir -p "$S/doc"; printf 'g\n' > "$S/doc/guide.md"; ln -s doc "$S/docs"; g "$S" add -A; g "$S" commit -q -m doc; g "$S" push -q origin main >/dev/null 2>&1
+g "$W" pull -q --ff-only >/dev/null 2>&1
+g "$S" rm -q docs; g "$S" mv doc docs; g "$S" commit -q -m rename; g "$S" push -q origin main >/dev/null 2>&1
+run_script pull "$W"
+if [[ "$RC" == 0 && -f "$W/docs/guide.md" && ! -L "$W/docs" ]]; then pass "pull fast-forwards a rename over a tracked link"
+else fail "pull and a rename over a tracked link (rc=$RC; out: $OUT)"; fi
+# A submodule UNDER a directory the remote turns into a link: ls-files -o never
+# lists a submodule's directory, and read-tree deleted it with the directory
+# above, files and all (second review of REPO-10, M-1).
+W="$(mk_repo subunder)"; S="$TMP/subunder.seed"
+mkdir -p "$S/tp"; printf 'r\n' > "$S/tp/README"; g "$S" add tp
+g "$S" update-index --add --cacheinfo "160000,$(g "$S" rev-parse HEAD),tp/libfoo"; g "$S" commit -q -m tp; g "$S" push -q origin main >/dev/null 2>&1
+g "$W" pull -q --ff-only >/dev/null 2>&1; mkdir -p "$W/tp/libfoo"; printf 'patched\n' > "$W/tp/libfoo/foo.c"
+g "$S" rm -q -r --cached tp; rm -rf "$S/tp"; ln -s first "$S/tp"; g "$S" add tp; g "$S" commit -q -m link; g "$S" push -q origin main >/dev/null 2>&1
+run_script pull "$W"
+if [[ "$RC" != 0 && "$(cat "$W/tp/libfoo/foo.c" 2>/dev/null)" == patched && "$OUT" == *"submodule's directory holding files"* ]]; then
+  pass "pull refuses a directory turned into a link while a submodule's directory under it holds files, and keeps them"
+else fail "pull and a submodule's files under a directory turned into a link (rc=$RC; out: $OUT)"; fi
+# The same where the submodule's files are all there is to lose, under a
+# directory named like pathspec magic: the submodules under it are listed with
+# literal pathspecs too, or `:x/` matched none and they went (third review).
+W="$(mk_repo oddsub)"; S="$TMP/oddsub.seed"
+mkdir -p "$S/:x"; printf 'r\n' > "$S/:x/README"; g "$S" add ./:x
+g "$S" update-index --add --cacheinfo "160000,$(g "$S" rev-parse HEAD),:x/libfoo"; g "$S" commit -q -m odd; g "$S" push -q origin main >/dev/null 2>&1
+g "$W" pull -q --ff-only >/dev/null 2>&1; mkdir -p "$W/:x/libfoo"; printf 'patched\n' > "$W/:x/libfoo/foo.c"
+g "$S" rm -q -r --cached ./:x; rm -rf "$S/:x"; printf 'now a file\n' > "$S/:x"; g "$S" add ./:x; g "$S" commit -q -m file; g "$S" push -q origin main >/dev/null 2>&1
+[[ -f "$S/:x" ]] || fail "oddsub fixture: the remote's :x is not a file"
+run_script pull "$W"
+if [[ "$RC" != 0 && "$(cat "$W/:x/libfoo/foo.c" 2>/dev/null)" == patched ]]; then
+  pass "pull refuses the same under a directory named like pathspec magic (:x)"
+else fail "pull and a submodule's files under :x (rc=$RC; out: $OUT)"; fi
+# A submodule's directory under a retyped directory that holds only directories
+# is no obstacle.
+W="$(mk_repo subunderdirs)"; S="$TMP/subunderdirs.seed"
+mkdir -p "$S/tp"; printf 'r\n' > "$S/tp/README"; g "$S" add tp
+g "$S" update-index --add --cacheinfo "160000,$(g "$S" rev-parse HEAD),tp/libfoo"; g "$S" commit -q -m tp; g "$S" push -q origin main >/dev/null 2>&1
+g "$W" pull -q --ff-only >/dev/null 2>&1; mkdir -p "$W/tp/libfoo/build/out"
+g "$S" rm -q -r --cached tp; rm -rf "$S/tp"; ln -s first "$S/tp"; g "$S" add tp; g "$S" commit -q -m link; g "$S" push -q origin main >/dev/null 2>&1
+run_script pull "$W"
+[[ "$RC" == 0 && -L "$W/tp" ]] && pass "  … and fast-forwards when that directory holds only directories" \
+  || fail "pull and a submodule directory of directories under a retyped directory (rc=$RC; out: $OUT)"
+# A parent the tip tracks as a DIRECTORY, holding only a submodule, can be an
+# ignored file in the checkout (diff-files ignores submodules); the remote's new
+# file under it would replace it (third review).
+W="$(mk_repo parenttree)"; S="$TMP/parenttree.seed"
+printf 'c\n' > "$S/.gitignore"; g "$S" add .gitignore
+g "$S" update-index --add --cacheinfo "160000,$(g "$S" rev-parse HEAD),c/sub"; g "$S" commit -q -m c; g "$S" push -q origin main >/dev/null 2>&1
+g "$W" pull -q --ff-only >/dev/null 2>&1; rm -rf "$W/c"; printf 'mine\n' > "$W/c"
+mkdir -p "$S/c"; printf 'x\n' > "$S/c/x"; g "$S" add -f c/x; g "$S" commit -q -m cx; g "$S" push -q origin main >/dev/null 2>&1
+run_script pull "$W"
+if [[ "$RC" != 0 && -f "$W/c" && "$(cat "$W/c")" == mine ]]; then pass "pull refuses an ignored file where the tip has a directory of only a submodule"
+else fail "pull and an ignored file over a submodule-only directory (rc=$RC; out: $OUT)"; fi
+# A directory the remote turns into a submodule keeps its untracked files, as
+# git does, so it fast-forwards; an ignored LINK standing at that path instead
+# is replaced, so it is refused (third review).
+W="$(mk_repo dirtosub)"; S="$TMP/dirtosub.seed"
+mkdir -p "$S/foo"; printf 'a\n' > "$S/foo/a"; g "$S" add foo; g "$S" commit -q -m foo; g "$S" push -q origin main >/dev/null 2>&1
+g "$W" pull -q --ff-only >/dev/null 2>&1; printf 'mine\n' > "$W/foo/untracked.txt"
+g "$S" rm -q -r --cached foo; rm -rf "$S/foo"; g "$S" update-index --add --cacheinfo "160000,$(g "$S" rev-parse HEAD),foo"
+g "$S" commit -q -m submodule; g "$S" push -q origin main >/dev/null 2>&1
+run_script pull "$W"
+[[ "$RC" == 0 && "$(cat "$W/foo/untracked.txt" 2>/dev/null)" == mine ]] \
+  && pass "pull fast-forwards a directory turned into a submodule, keeping its untracked files" \
+  || fail "pull and a directory turned into a submodule (rc=$RC; out: $OUT)"
+W="$(mk_repo linktosub)"; S="$TMP/linktosub.seed"
+printf 'p\n' > "$S/.gitignore"; g "$S" add .gitignore
+g "$S" update-index --add --cacheinfo "160000,$(g "$S" rev-parse HEAD),p/inner"; g "$S" commit -q -m p; g "$S" push -q origin main >/dev/null 2>&1
+# A link to nothing: read-tree refuses one that leads to a file by itself.
+g "$W" pull -q --ff-only >/dev/null 2>&1; rm -rf "$W/p"; ln -s "precious target" "$W/p"
+g "$S" rm -q -r --cached p; g "$S" update-index --add --cacheinfo "160000,$(g "$S" rev-parse HEAD),p"; g "$S" commit -q -m sub; g "$S" push -q origin main >/dev/null 2>&1
+run_script pull "$W"
+if [[ "$RC" != 0 && -L "$W/p" && "$(readlink "$W/p")" == "precious target" ]]; then pass "  … and refuses an ignored link standing where that directory was"
+else fail "pull and an ignored link turned over by a submodule (rc=$RC; out: $OUT)"; fi
+# And an ignored file standing where the tip has an EMPTY tree (plumbing makes
+# one) that the remote turns into a submodule.
+W="$(mk_repo emptytosub)"; S="$TMP/emptytosub.seed"
+printf '/p\n' > "$S/.gitignore"; g "$S" add .gitignore; g "$S" commit -q -m ignore
+et="$(g "$S" hash-object -t tree -w /dev/null)"
+c="$(g "$S" commit-tree "$( { g "$S" ls-tree HEAD; printf '040000 tree %s\tp\n' "$et"; } | g "$S" mktree)" -p HEAD -m emptytree)"
+g "$S" reset -q --hard "$c"; g "$S" push -q origin main >/dev/null 2>&1
+g "$W" pull -q --ff-only >/dev/null 2>&1; printf 'precious notes\n' > "$W/p"
+g "$S" update-index --add --cacheinfo "160000,$(g "$S" rev-parse HEAD),p"; g "$S" commit -q -m sub; g "$S" push -q origin main >/dev/null 2>&1
+run_script pull "$W"
+if [[ "$RC" != 0 && -f "$W/p" && "$(cat "$W/p")" == "precious notes" ]]; then pass "  … and an ignored file standing where the tip has an empty tree"
+else fail "pull and an ignored file over an empty tree turned into a submodule (rc=$RC; out: $OUT)"; fi
+# Each git and find in the walk fails closed: one made to fail refuses, where
+# its empty output read as "nothing in the way" (third review). A PATH shim
+# fails the one call named in FAIL_ON.
+mkdir -p "$TMP/walk-bin"
+cat > "$TMP/walk-bin/git" <<SHIM
+#!/bin/sh
+case "\$*" in *"\$FAIL_ON"*) exit 1 ;; esac
+exec $(command -v git) "\$@"
+SHIM
+cat > "$TMP/walk-bin/find" <<SHIM
+#!/bin/sh
+case "\$*" in *"\$FAIL_ON"*) exit 1 ;; esac
+exec $(command -v find) "\$@"
+SHIM
+chmod +x "$TMP/walk-bin/git" "$TMP/walk-bin/find"
+W="$(mk_repo walkfail)"; S="$TMP/walkfail.seed"
+mkdir -p "$S/foo"; printf 'a\n' > "$S/foo/a"; g "$S" add foo
+g "$S" update-index --add --cacheinfo "160000,$(g "$S" rev-parse HEAD),foo/sub"; g "$S" commit -q -m foo; g "$S" push -q origin main >/dev/null 2>&1
+g "$W" pull -q --ff-only >/dev/null 2>&1; mkdir -p "$W/foo/sub"
+g "$S" rm -q -r --cached foo; rm -rf "$S/foo"; printf 'f\n' > "$S/foo"; g "$S" add foo; g "$S" commit -q -m file; g "$S" push -q origin main >/dev/null 2>&1
+for f in "diff-tree -r -z --raw:cannot list what the remote changes" "ls-files -o:cannot list the untracked files" \
+         "ls-tree -r -z:cannot list the submodules" "-mindepth 1 ! -type d:cannot search"; do
+  FAIL_ON="${f%%:*}" PATH="$TMP/walk-bin:$PATH" run_script pull "$W"
+  if [[ "$RC" != 0 && "$OUT" == *"${f#*:}"* ]]; then pass "the walk refuses when \`${f%%:*}\` fails"
+  else fail "the walk with \`${f%%:*}\` failing (rc=$RC; out: $OUT)"; fi
+done
+run_script pull "$W"
+[[ "$RC" == 0 ]] && pass "  … and that fixture fast-forwards with nothing failing" || fail "walkfail fixture (rc=$RC; out: $OUT)"
+# An odd name through the same check, ignored file and all: the paths are
+# literal pathspecs, so `:x` is a directory, not pathspec magic.
+W="$(mk_repo oddname)"; S="$TMP/oddname.seed"
+mkdir -p "$S/:x"; printf 'a\n' > "$S/:x/a"; printf 'out.o\n' > "$S/.gitignore"; g "$S" add -A; g "$S" commit -q -m odd; g "$S" push -q origin main >/dev/null 2>&1
+g "$W" pull -q --ff-only >/dev/null 2>&1; printf 'built\n' > "$W/:x/out.o"
+# ./:x, not :x: a pathspec that starts with a colon is magic to the fixture's git too.
+g "$S" rm -q -r ./:x; printf 'now a file\n' > "$S/:x"; g "$S" add ./:x; g "$S" commit -q -m file; g "$S" push -q origin main >/dev/null 2>&1
+[[ -f "$S/:x" ]] || fail "oddname fixture: the remote's :x is not a file"
+run_script pull "$W"
+if [[ "$RC" != 0 && "$(cat "$W/:x/out.o" 2>/dev/null)" == built && "$OUT" == *"holds untracked or ignored files"* ]]; then
+  pass "pull refuses the same for a directory named like pathspec magic (:x)"
+else fail "pull and an ignored file in a directory named :x (rc=$RC; out: $OUT)"; fi
+# A tracked file the remote turns into a link is a clean replacement, and an
+# empty untracked directory where the remote adds a file holds nothing to lose.
+W="$(mk_repo filetolink)"; S="$TMP/filetolink.seed"
+g "$S" rm -q first; ln -s shared-file "$S/first"; g "$S" add first; g "$S" commit -q -m link; g "$S" push -q origin main >/dev/null 2>&1
+run_script pull "$W"
+[[ "$RC" == 0 && -L "$W/first" ]] && pass "pull fast-forwards a tracked file the remote turns into a link" \
+  || fail "pull refused a tracked file turned into a link (rc=$RC; out: $OUT)"
+W="$(mk_repo emptydir)"; S="$TMP/emptydir.seed"
+mkdir -p "$W/added/inner"; commit_in "$S" added; g "$S" push -q origin main >/dev/null 2>&1
+run_script pull "$W"
+[[ "$RC" == 0 && -f "$W/added" ]] && pass "pull fast-forwards over an empty untracked directory where the remote adds a file" \
+  || fail "pull refused an empty directory in the way (rc=$RC; out: $OUT)"
+# A submodule the remote turns into a file deleted the untracked files in its
+# directory (review of REPO-10): refused, and kept; an empty one is no obstacle.
+for has in files empty; do
+  W="$(mk_repo "subtofile$has")"; S="$TMP/subtofile$has.seed"
+  g "$S" update-index --add --cacheinfo "160000,$(g "$S" rev-parse HEAD),sub"; g "$S" commit -q -m sub; g "$S" push -q origin main >/dev/null 2>&1
+  g "$W" pull -q --ff-only >/dev/null 2>&1; mkdir -p "$W/sub"
+  [[ "$has" == empty ]] || printf 'precious\n' > "$W/sub/precious.c"
+  g "$S" rm -q --cached sub; printf 'now a file\n' > "$S/sub"; g "$S" add sub; g "$S" commit -q -m file; g "$S" push -q origin main >/dev/null 2>&1
+  run_script pull "$W"
+  if [[ "$has" == files ]]; then
+    if [[ "$RC" != 0 && "$(cat "$W/sub/precious.c" 2>/dev/null)" == precious && "$OUT" == *"submodule's directory holding files"* ]]; then
+      pass "pull refuses a submodule the remote turns into a file while its directory holds files, and keeps them"
+    else fail "pull and files in a submodule's directory (rc=$RC; out: $OUT)"; fi
+  else
+    [[ "$RC" == 0 && -f "$W/sub" ]] && pass "  … and fast-forwards it when the directory is empty" \
+      || fail "pull and an empty submodule directory turned into a file (rc=$RC; out: $OUT)"
+  fi
+done
+# The index bound, on a sparse file: nothing is written, and busybox's find
+# (no M suffix) is what the seed image has, which case 640 runs this under.
+W="$(mk_repo bigindex)"; S="$TMP/bigindex.seed"; commit_in "$S" bx-new; g "$S" push -q origin main >/dev/null 2>&1
+rm -f "$W/.git/index"; dd if=/dev/zero of="$W/.git/index" bs=1048576 count=0 seek=600 2>/dev/null
+run_script pull "$W"
+if [[ "$RC" != 0 && "$OUT" == *"larger than 512 MiB"* ]]; then pass "pull refuses an index larger than 512 MiB"
+else fail "pull and a 600 MiB index (rc=$RC; out: $OUT)"; fi
+# A NEW file staged with content is a staged change: only the empty blob is an
+# intent to add.
+W="$(mk_repo stagednew)"; S="$TMP/stagednew.seed"; commit_in "$S" sn-new; g "$S" push -q origin main >/dev/null 2>&1
+printf 'staged\n' > "$W/new.txt"; g "$W" add new.txt; printf 'changed\n' > "$W/new.txt"
+run_script pull "$W"
+if [[ "$RC" != 0 && "$OUT" == *"staged changes"* ]]; then pass "pull refuses a new file staged with content"
+else fail "a new file staged with content went unseen (rc=$RC; out: $OUT)"; fi
+# A parent of a path the remote adds: an ignored FILE there is in the way and
+# refused, kept; an untracked DIRECTORY of other files is not, and stays.
+W="$(mk_repo parentfile)"; S="$TMP/parentfile.seed"
+printf 'x\n' > "$S/.gitignore"; g "$S" add .gitignore; g "$S" commit -q -m ignore; g "$S" push -q origin main >/dev/null 2>&1
+g "$W" pull -q --ff-only >/dev/null 2>&1
+printf 'my x\n' > "$W/x"
+mkdir -p "$S/x"; printf 'y\n' > "$S/x/y"; printf '!x/\n' > "$S/.gitignore"; g "$S" add -A; g "$S" commit -q -m xy; g "$S" push -q origin main >/dev/null 2>&1
+run_script pull "$W"
+if [[ "$RC" != 0 && -f "$W/x" && "$(cat "$W/x")" == "my x" && "$OUT" == *"where the remote now has a directory"* ]]; then
+  pass "pull refuses an ignored file where the remote adds a directory, and keeps it"
+else fail "pull and an ignored file where the remote adds a directory (rc=$RC; out: $OUT)"; fi
+W="$(mk_repo parentdir)"; S="$TMP/parentdir.seed"
+mkdir -p "$W/newdir"; printf 'mine\n' > "$W/newdir/other"
+mkdir -p "$S/newdir"; printf 'a\n' > "$S/newdir/a"; g "$S" add newdir/a; g "$S" commit -q -m newdir; g "$S" push -q origin main >/dev/null 2>&1
+run_script pull "$W"
+if [[ "$RC" == 0 && "$(cat "$W/newdir/other")" == mine && -f "$W/newdir/a" ]]; then
+  pass "pull fast-forwards past an untracked directory the remote adds files to, keeping it"
+else fail "pull and an untracked directory the remote adds files to (rc=$RC; out: $OUT)"; fi
+# A submodule's path turned into a link was kept by sync, --ignore-submodules
+# hiding it (REPO-10).
+W="$(mk_repo gitlinkpath)"; S="$TMP/gitlinkpath.seed"
+g "$S" update-index --add --cacheinfo "160000,$(g "$S" rev-parse HEAD),sub"; g "$S" commit -q -m gitlink; g "$S" push -q origin main >/dev/null 2>&1
+g "$W" pull -q --ff-only >/dev/null 2>&1; mkdir -p "$W/sub"
+commit_in "$S" gl-new; g "$S" push -q origin main >/dev/null 2>&1
+rmdir "$W/sub"; ln -s "$TMP" "$W/sub"
+run_script pull "$W"
+if [[ "$RC" != 0 && -L "$W/sub" && "$OUT" == *"is a submodule"* ]]; then pass "pull refuses a submodule's path that is a link"
+else fail "pull and a submodule's path that is a link (rc=$RC; out: $OUT)"; fi
+rm -f "$W/sub"; printf 'a file\n' > "$W/sub"
+run_script pull "$W"
+if [[ "$RC" != 0 && -f "$W/sub" && "$OUT" == *"is a submodule"* ]]; then pass "  … and one that is a regular file"
+else fail "pull and a submodule's path that is a file (rc=$RC; out: $OUT)"; fi
+rm -f "$W/sub"; mkdir "$W/sub"
+run_script pull "$W"
+[[ "$RC" == 0 ]] && pass "  … and accepts it as the empty directory it should be" || fail "pull and an empty submodule directory (rc=$RC; out: $OUT)"
+# A packed-refs line longer than the readers' 4200-byte cut is refused by sync,
+# which keeps refs by name, not read as another ref's name; inspect and reset,
+# where a cut name is only shown, still work (reset is the way out).
+W="$(mk_repo longref)"; g "$W" pack-refs --all
+printf '%s refs/heads/%s\n' "$(g "$W" rev-parse HEAD)" "$(head -c 4300 /dev/zero | tr '\0' a)" >> "$W/.git/packed-refs"
+run_script pull "$W"
+if [[ "$RC" != 0 && "$OUT" == *"longer than 4200 bytes"* ]]; then pass "a packed-refs line longer than 4200 bytes is refused"
+else fail "a long packed-refs line (rc=$RC; out: $OUT)"; fi
+run_script inspect "$W"; irc=$RC
+run_script reset "$W" main
+[[ "$irc" == 0 && "$RC" == 0 ]] && pass "  … while inspect and reset still work on it" || fail "inspect/reset and a long packed-refs line (inspect rc=$irc; reset rc=$RC; $OUT)"
 # A commit held by a ref outside heads and tags (refs/wip/*, refs/original,
 # a tool's keep refs) is dropped with .git: refused, loose or packed (F1).
 for packed in "" packed; do

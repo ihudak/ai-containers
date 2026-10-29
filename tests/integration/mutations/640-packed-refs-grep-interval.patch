@@ -1,0 +1,32 @@
+# case: 640-repo-helper-in-seed-image
+# what: the packed-refs length check goes back to grep '^.\{4201\}', as it was
+#       first written for REPO-10. On the host's GNU grep that works, and
+#       tests/test-repo-git-reset.sh passes. In the seed image, musl's regex
+#       allows no count past 255: grep calls the pattern an error, exits 2, and
+#       the `&& lrc=3` never runs, so the check passes a line it should refuse.
+#
+#       Expected: both runs fail on exactly one assertion, `a long packed-refs
+#       line` (the mutant sends grep's own error to /dev/null, as the real
+#       code's awk does); the rest of the test file passes in the seed image. A run where that assertion PASSES means the
+#       seed image's grep accepts the count (a different libc, or GNU grep
+#       installed), and this patch then demonstrates nothing.
+#
+#       Demonstrated locally on 2026-10-29 (mutate.sh apply, then run.sh --cases
+#       640-repo-helper-in-seed-image): exactly that -- in both runs, root and
+#       user, `a long packed-refs line` FAILed and nothing else did; on the
+#       tree without the patch the case PASSed both.
+#
+#       No rebuild of the sandbox image needed: the case builds the seed image
+#       from Dockerfile.seed and mounts the helper from the tree.
+diff --git a/repo-git-reset.sh b/repo-git-reset.sh
+--- a/repo-git-reset.sh
++++ b/repo-git-reset.sh
+@@ -473,7 +473,7 @@
+   # but 0 refuses, a failed awk included.
+   if [[ -f "$dir/.git/packed-refs" ]]; then
+     local lrc=0
+-    LC_ALL=C awk 'length($0) > 4200 { exit 3 }' "$dir/.git/packed-refs" 2>/dev/null || lrc=$?
++    LC_ALL=C grep -q '^.\{4201\}' "$dir/.git/packed-refs" 2>/dev/null && lrc=3
+     case "$lrc" in
+       0) ;;
+       3) die "$(shown "$dir")'s packed-refs has a line longer than 4200 bytes; use reset" ;;

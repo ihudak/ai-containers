@@ -809,3 +809,18 @@ tests/lib-layer-checks.sh:logic-flip:45bdb0871b8873acdba488019e94fd8713c001c0
   No name on the allow-list has a colon, so wf_reaches_prs returns rc 0 for it
   before this reader runs. Without a colon, every form exits either way, through
   the third test. Added with TST-16 (2026-10-27).
+
+# ── 23 ────────────────────────────────────────────────────────────────────────
+GROUP: the nested-submodule loop's directory test is decided earlier by the gitlink-path check
+repo-git-reset.sh:logic-flip:a805d45219901a76b7c8d1241009544ee4267789
+        if [[ -d "$dir/$sub" && ! -L "$dir/$sub" ]]; then
+  damaged:  `-d … || ! -L …`, which also holds for a regular file and for a
+  link to a directory at the submodule's path; find then searches nothing
+  below it, so such a path reads as empty instead of as something in the way.
+  EQUIVALENT: neither can reach this loop. Before the walk, cmd_pull refuses
+  every gitlink of the tip whose path in the checkout is a link or anything
+  but a directory ("is a submodule in … but not a directory"), and this loop
+  lists only the tip's gitlinks. A directory, the one shape that gets here,
+  satisfies both forms. Added with the second review of REPO-10 (2026-10-29),
+  whose M-1 fix this loop is; the two negations of the same test are KILLED
+  by the "submodule's directory holds only directories" case.

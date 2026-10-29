@@ -72,11 +72,14 @@ About to RESET the following repo(s) to a clean state:
       DELETE feat/parser — 3 commit(s) not on any remote  <-- unpushed work
       DELETE fix/typo — pushed
       DROP the stash (1 entr(y/ies))  <-- not kept by reset
-      DROP tag v0.9-rc — not on the remote (the commit it marks is on a remote branch)
+      DROP tag v0.9-rc — not on the remote (the commit it marks is kept by the remote, on a branch or tag)
+      REPLACE tag v1.0 with the remote's, which marks another commit (this one's commit is kept by the remote)
 
 WARNING: 3 item(s) above (branches, a stash, tags, repositories) hold work that is on no remote.
          Resetting discards it. Push it first if you want it.
 ```
+
+A summary whose inspection was cut short (the helper killed, out of memory say) says so in an `INSPECTION CUT SHORT` line, counted at risk: whatever it had not listed yet is unknown, not absent.
 
 It is **destructive and cannot be undone**, so it prompts for confirmation unless you pass `--yes`. The counts are measured *after* the fetch, so "not on any remote" reflects what the remote has now, not what this volume last saw.
 
@@ -91,7 +94,7 @@ Resetting volume "ai-containers-repo-app" to a clean checkout on "master" ...
 
 **Reset needs the remote.** No network, no credentials, or a remote that has gone away leaves the repo **untouched**, with the reason in the summary (`STALE`). Each run clones the source afresh rather than trusting the volume's own `.git`, which an agent with the repo mounted `:rw` could have rigged; so it takes as long as a clone, and it refuses while a running container mounts the volume read-write. It replaces the volume's whole `.git`, so stashes, tags that are on no remote, git notes and the repo's own config go with the branches, and there is no reflog to undo it from.
 
-`reset` differs from `sync` in what it protects: `sync` fast-forwards the checked-out branch and keeps your untracked files and your other branches, and **refuses** rather than pull around anything it could lose — uncommitted changes, a branch with commits on no remote branch, a branch that has diverged, an untracked file the remote now tracks (an *ignored* one is overwritten, as `git pull` does), a stash, git notes, a linked worktree, or a tag that is on no remote; `reset` keeps nothing.
+`reset` differs from `sync` in what it protects: `sync` fast-forwards the checked-out branch and keeps your untracked files and your other branches, and **refuses** rather than pull around anything it could lose — uncommitted or staged changes, a branch with commits on no remote branch or tag, a branch that has diverged, an untracked or ignored file in anything the fast-forward would replace — where the remote now tracks a path, or inside a directory or submodule the remote turns into a file (`git pull` overwrites an ignored one and deletes what a submodule's directory holds; `sync` refuses) — a submodule's path that is a link or a file, an unfinished merge's unmerged entries, a stash, git notes, a linked worktree, or a tag that is on no remote; `reset` keeps nothing.
 
 `add` refuses to overwrite an existing repo — use `sync` to refresh or `rm` first. Authentication for `git-url` sources uses your **host `~/.ssh`** (mounted read-only into a short-lived seeding container); local-path sources need no credentials.
 

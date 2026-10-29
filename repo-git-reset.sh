@@ -46,17 +46,23 @@ Usage:
   repo-git-reset.sh pull    <dir> [<uid>:<gid>]
 
 inspect  Clone the recorded remote privately, then report on stdout, one
-         record per line:
+         record per line, in this order:
+           NESTED|<path>                   a git repository inside the checkout, which reset removes
+           NESTED-MORE|<n>                 how many more past the first 50
            PRIMARY|<branch>                the remote's default branch
            STALE|<reason>                  only when the remote could not be cloned
            BRANCH|<name>|<unpushed>|<flags> one per local branch of the volume
            STASH|<entries>                 only when the volume has a stash
-           TAG|<name>|<kept>|<on-remote>   one per local tag of the volume
-           NESTED|<path>                   a git repository inside the checkout, which reset removes
-           NESTED-MORE|<n>                 how many more past the first 50
+           TAG|<name>|<kept>|<on-remote>   one per local tag of the volume:
+                                           <kept> yes, no, moved (the remote has
+                                           it on another commit), same (on the
+                                           same commit, another tag object) or ?;
+                                           <on-remote> yes when the remote keeps
+                                           its commit
+           END|inspect                     last, once everything was reported
          reset: DELETED|<branch>, ON|<branch>, AT|<commit>, DELETED-COUNT|<n>,
            REMOVED|<path> for each git repository inside the checkout it removed
-         `unpushed` counts that branch's commits on no remote branch, `?` when
+         `unpushed` counts that branch's commits on no remote branch or tag, `?` when
          it cannot be counted. `flags` is `current` for the checked-out branch.
 
 reset    Make the volume a clean checkout of the remote's <primary-branch>:
@@ -65,8 +71,9 @@ reset    Make the volume a clean checkout of the remote's <primary-branch>:
 
 pull     Fast-forward the checked-out branch to the remote's tip, keeping
          untracked files and every branch already on the remote. Refused when
-         the checkout has uncommitted changes or any local branch has commits
-         on no remote branch.
+         the checkout has uncommitted or staged changes, any local branch has
+         commits on no remote branch or tag, or anything the fast-forward would
+         replace holds untracked or ignored files.
 EOF
 }
 
@@ -119,8 +126,27 @@ trap '[[ -n "$WORK" ]] && rm -rf "$WORK"' EXIT
 # and nothing in the volume is a FIFO or device (git would block opening one).
 # Each search fails closed: a directory find cannot enter hides what is in it
 # (review of 82698a0, F3).
+# glob_quoted <str> <var>: <str> with the characters fnmatch treats specially
+# escaped, so find -path matches it literally. A volume path holding [, * or ?
+# did not prune its own .git, which reset then removed as nested (REPO-17).
+# A loop, not ${s//…/\\&}: that replacement is bash 5.2's, past the floor.
+glob_quoted() {
+  local -n _gq_out="$2"
+  local s="$1" c i
+  _gq_out=""
+  for (( i = 0; i < ${#s}; i++ )); do
+    c="${s:i:1}"
+    case "$c" in
+      '*'|'?'|'['|']'|'\') _gq_out+="\\$c" ;;
+      *) _gq_out+="$c" ;;
+    esac
+  done
+}
+
 check_volume() {
-  local dir="$1" gd="$1/.git" bad nosearch nested="${2:-refuse}"
+  local dir="$1" gd="$1/.git" gq bad nosearch nested="${2:-refuse}"
+  [[ "$dir" != */ ]] || die "the volume path must not end in a slash: $(shown "$dir")"
+  glob_quoted "$gd" gq
   nosearch="cannot check $(shown "$dir"): find could not search all of it (an unreadable directory, or a path too long); refusing this repository"
   [[ -n "${AI_REPO_URL:-}" ]] || die "no recorded URL for this repository (AI_REPO_URL); refusing to run git on it"
   [[ -d "$gd" && ! -L "$gd" ]] || die "not a git repository: $(shown "$dir") (.git is missing, or is a file or link)"
@@ -131,7 +157,7 @@ check_volume() {
     || die "$(shown "$dir") uses the reftable ref format, which this helper cannot read; refusing this repository"
   bad="$(find "$gd" ! -type f ! -type d -print -quit 2>/dev/null)" || die "$nosearch"
   [[ -z "$bad" ]] || die "$(shown "$bad") is not a regular file or directory; refusing this repository"
-  bad="$(find "$dir" -path "$gd" -prune -o \( -type p -o -type b -o -type c \) -print -quit 2>/dev/null)" || die "$nosearch"
+  bad="$(find "$dir" -path "$gq" -prune -o \( -type p -o -type b -o -type c \) -print -quit 2>/dev/null)" || die "$nosearch"
   [[ -z "$bad" ]] || die "$(shown "$bad") is not a regular file or directory; refusing this repository"
   # Any .git below the top level is refused, whatever it is. git opens one
   # during checkout and status (where the remote has a submodule, say): a .git
@@ -146,7 +172,7 @@ check_volume() {
   # find follows no link, so one that is a link is removed as a link.
   case "$nested" in
     refuse)
-      bad="$(find "$dir" -path "$gd" -prune -o -name .git -print -quit 2>/dev/null)" || die "$nosearch"
+      bad="$(find "$dir" -path "$gq" -prune -o -name .git -print -quit 2>/dev/null)" || die "$nosearch"
       [[ -z "$bad" ]] || die "$(shown "$bad") is a git repository inside the checkout; remove it (rm -rf from a container), or reset, which lists and removes it, then retry" ;;
     list)
       local -a found=(); local p n=0
@@ -166,7 +192,8 @@ check_volume() {
 # seen (review of REPO-5).
 nested_in() {
   local -n _ni_out="$2"
-  mapfile -d '' _ni_out < <(find "$1" -path "$1/.git" -prune -o -name .git -prune -print0 2>/dev/null)
+  local _ni_gq; glob_quoted "$1/.git" _ni_gq
+  mapfile -d '' _ni_out < <(find "$1" -path "$_ni_gq" -prune -o -name .git -prune -print0 2>/dev/null)
   wait "$!" || die "cannot check $(shown "$1"): find could not search all of it (an unreadable directory, or a path too long); refusing this repository"
 }
 
@@ -175,13 +202,14 @@ nested_in() {
 # none is ever read and none is removed by a reset that cannot go ahead (bugs
 # review REPO-5). Each is named in a REMOVED record.
 remove_nested() {
-  local -a found=(); local p bad
+  local -a found=(); local p bad gq
+  glob_quoted "$1/.git" gq
   nested_in "$1" found
   for p in ${found[@]+"${found[@]}"}; do
     rm -rf -- "$p" || die "could not remove $(shown "${p#"$1/"}"), a git repository inside the checkout"
     printf 'REMOVED|%s\n' "$(shown "${p#"$1/"}")"
   done
-  bad="$(find "$1" -path "$1/.git" -prune -o -name .git -print -quit 2>/dev/null)" \
+  bad="$(find "$1" -path "$gq" -prune -o -name .git -print -quit 2>/dev/null)" \
     || die "cannot check $(shown "$1"): find could not search all of it; refusing this repository"
   [[ -z "$bad" ]] || die "$(shown "$bad") is a git repository inside the checkout, and is still there after removing them; refusing"
   NESTED_PENDING=""
@@ -218,6 +246,10 @@ volume_refs() {
     name="${f#"$gd/refs/$kind/"}"
     line="$(head -c 200 "$f" 2>/dev/null)"; line="${line%%$'\n'*}"
     if [[ "$line" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]]; then oid="$line"; else oid='?'; fi
+    # These records are one per line, tab-separated: a file name holding either
+    # split into records of its own, a fake BRANCH among them (REPO-10). Such a
+    # name is shown with ? for them, its state unknown.
+    if [[ "$name" == *[$'\n\t']* ]]; then name="${name//[$'\n\t']/?}"; oid='?'; fi
     seen[$name]=1
     printf '%s\t%s\n' "$name" "$oid"
   done < <(find "$gd/refs/$kind" -type f -print0 2>/dev/null)
@@ -225,6 +257,7 @@ volume_refs() {
   while IFS=' ' read -r oid ref; do
     [[ "$ref" == "refs/$kind/"* ]] || continue
     name="${ref#"refs/$kind/"}"
+    if [[ "$name" == *$'\t'* ]]; then name="${name//$'\t'/?}"; oid='?'; fi
     [[ -z "${seen[$name]:-}" ]] || continue
     seen[$name]=1
     [[ "$oid" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] || oid='?'
@@ -237,9 +270,10 @@ volume_branches() { volume_refs "$1" heads; }
 # (refs/wip/*, refs/original/*, a tool's keep refs), loose or packed — what
 # replacing .git would drop with its commits (review of 82698a0, F1).
 other_ref() {
-  local gd="$1/.git" f oid ref
-  f="$(find "$gd/refs" -mindepth 1 -type f ! -path "$gd/refs/heads/*" ! -path "$gd/refs/tags/*" \
-    ! -path "$gd/refs/remotes/*" -print -quit 2>/dev/null)"
+  local gd="$1/.git" f oid ref rq
+  glob_quoted "$gd/refs" rq
+  f="$(find "$gd/refs" -mindepth 1 -type f ! -path "$rq/heads/*" ! -path "$rq/tags/*" \
+    ! -path "$rq/remotes/*" -print -quit 2>/dev/null)"
   [[ -z "$f" ]] || { printf '%s' "${f#"$gd/"}"; return; }
   [[ -f "$gd/packed-refs" ]] || return 0
   while IFS=' ' read -r oid ref; do
@@ -265,10 +299,19 @@ volume_head() {
 # (C1) controls such as \x9b are caught, which [:cntrl:] misses in UTF-8.
 shown() { local LC_ALL=C n="${1//|/?}"; printf '%s' "${n//[^[:print:]]/?}"; }
 
-# on_remote <oid>: the commit is in the private clone and on a remote branch.
+# on_remote <oid>: 0 when the private clone keeps the commit — on a remote
+# branch, or on a tag of the remote's, which the clone fetched (REPO-15: a tag
+# on a commit only a remote tag reaches was reported lost); 1 when it does not;
+# 2 when the clone cannot see the commit at all, so that is unknown: the
+# volume's objects are not linked when it names alternates of its own.
+# The commit-graph is off, as for the branch counts: in inspect the volume's
+# objects are an alternate store, and git reads a commit-graph from there too,
+# so one the agent wrote could make a local-only commit look kept (automated
+# security review of REPO-15).
 on_remote() {
-  git -C "$F" cat-file -e "$1^{commit}" 2>/dev/null || return 1
-  [[ -n "$(git -C "$F" for-each-ref --count=1 --contains "$1" --format=x refs/remotes/origin/ 2>/dev/null)" ]]
+  local -a cg=(-c core.commitGraph=false -c core.multiPackIndex=false)
+  git -C "$F" "${cg[@]}" cat-file -e "$1^{commit}" 2>/dev/null || return 2
+  [[ -n "$(git -C "$F" "${cg[@]}" for-each-ref --count=1 --contains "$1" --format=x refs/remotes/origin/ refs/tags/ 2>/dev/null)" ]]
 }
 
 remote_primary() {
@@ -306,7 +349,7 @@ cmd_inspect() {
     unpushed='?'
     if [[ -n "$cloned" && "$oid" != '?' ]]; then
       unpushed="$(git -C "$F" -c core.commitGraph=false -c core.multiPackIndex=false \
-        rev-list --count "$oid" --not --remotes=origin 2>/dev/null)" || unpushed='?'
+        rev-list --count "$oid" --not --remotes=origin --tags 2>/dev/null)" || unpushed='?'
       [[ "$unpushed" =~ ^[0-9]+$ ]] || unpushed='?'
     fi
     flags=""; [[ "$name" == "$current" ]] && flags="current"
@@ -317,7 +360,7 @@ cmd_inspect() {
   # when the remote has it at the same object (the clone brings it back), and
   # whether the commit it marks is on a remote branch, since a tag can hold the
   # only reference to one.
-  local gd="$dir/.git" n kept on
+  local gd="$dir/.git" n kept on theirs
   if [[ -e "$gd/refs/stash" || -e "$gd/logs/refs/stash" ]] || grep -qs ' refs/stash$' "$gd/packed-refs"; then
     n="$(grep -c . "$gd/logs/refs/stash" 2>/dev/null)" || n=""
     [[ "$n" =~ ^[1-9][0-9]*$ ]] || n='?'
@@ -331,17 +374,34 @@ cmd_inspect() {
     # "kept". show-ref, not rev-parse: a name holding revision syntax (`v1:a`)
     # must name a ref, never resolve to an object.
     if [[ "$oid" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] && [[ -n "$cloned" ]]; then
-      if [[ "$(git -C "$F" show-ref --verify -s "refs/tags/$name" 2>/dev/null)" == "$oid" ]]; then
+      theirs="$(git -C "$F" show-ref --verify -s "refs/tags/$name" 2>/dev/null)" || theirs=""
+      if [[ "$theirs" == "$oid" ]]; then
         kept=yes; on=yes
       else
         # Only for a tag reset drops: a history walk per tag made a repo with a
-        # thousand tags take half a minute to inspect (review of REPO-8).
-        kept=no
-        if on_remote "$oid"; then on=yes; else on=no; fi
+        # thousand tags take half a minute to inspect (review of REPO-8). One
+        # the remote has at another object is replaced by the remote's, not
+        # simply dropped (REPO-15).
+        kept=no; [[ -n "$theirs" ]] && kept=moved
+        # The remote's names the same commit through another object (one tag
+        # lightweight, the other annotated, or two annotations): the commit is
+        # kept, only this tag's own object is not (review of REPO-15).
+        if [[ "$kept" == moved ]]; then
+          local mine_c theirs_c
+          mine_c="$(git -C "$F" rev-parse -q --verify "$oid^{commit}" 2>/dev/null)" || mine_c=""
+          theirs_c="$(git -C "$F" rev-parse -q --verify "refs/tags/$name^{commit}" 2>/dev/null)" || theirs_c=""
+          [[ -n "$mine_c" && "$mine_c" == "$theirs_c" ]] && kept=same
+        fi
+        on_remote "$oid"
+        case $? in 0) on=yes ;; 1) on=no ;; *) on='?' ;; esac
       fi
     fi
     printf 'TAG|%s|%s|%s\n' "$(shown "$name")" "$kept" "$on"
   done < <(volume_refs "$dir" tags)
+  # Last, so a reader can tell a finished inspection from one cut short: repo.sh
+  # reads these records through a process substitution and never sees this
+  # script's exit status (REPO-16).
+  printf 'END|inspect\n'
   return 0
 }
 
@@ -405,6 +465,21 @@ cmd_pull() {
   local dir="${1:-}" owner="${2:-}"
   [[ -n "$dir" ]] || { usage >&2; die "pull needs a directory"; }
   check_volume "$dir"
+  # The readers cut each packed-refs line at 4200 bytes, so a longer one would be
+  # read as another ref's name, and sync keeps refs by name (REPO-10). Only here:
+  # in inspect and reset a cut name is only shown, and reset is the way out every
+  # refusal below names. awk, not grep '^.\{4201\}': musl's regex allows no count
+  # past 255, the pattern was an error there, and the check passed. Any status
+  # but 0 refuses, a failed awk included.
+  if [[ -f "$dir/.git/packed-refs" ]]; then
+    local lrc=0
+    LC_ALL=C awk 'length($0) > 4200 { exit 3 }' "$dir/.git/packed-refs" 2>/dev/null || lrc=$?
+    case "$lrc" in
+      0) ;;
+      3) die "$(shown "$dir")'s packed-refs has a line longer than 4200 bytes; use reset" ;;
+      *) die "cannot read $(shown "$dir")'s packed-refs; use reset" ;;
+    esac
+  fi
   local b; b="$(volume_head "$dir")"
   [[ -n "$b" ]] || die "the checkout is not on a branch (detached HEAD): nothing to fast-forward"
   local -A tip=()
@@ -417,7 +492,7 @@ cmd_pull() {
   # checked-out one is behind (or at) the remote's tip of the same name.
   for name in "${!tip[@]}"; do
     [[ "${tip[$name]}" != '?' ]] && on_remote "${tip[$name]}" \
-      || die "branch $(shown "$name") has commits on no remote branch; push it, or use reset"
+      || die "branch $(shown "$name") has commits on no remote branch or tag; push it, or use reset"
   done
   git -C "$F" merge-base --is-ancestor "${tip[$b]}" "refs/remotes/origin/$b" \
     || die "$(shown "$b") has diverged from the remote; push it, or use reset"
@@ -452,26 +527,141 @@ cmd_pull() {
   git --git-dir="$F/.git" --work-tree="$dir" update-index -q --ignore-submodules --refresh >/dev/null 2>&1 || true
   git --git-dir="$F/.git" --work-tree="$dir" diff-files --ignore-submodules=all --quiet \
     || die "the checkout has uncommitted changes; commit and push them, or use reset"
+  # --ignore-submodules=all also hides a submodule's path turned into a link or
+  # a file, which sync then kept (REPO-10): the branch's submodules must still
+  # be directories in the checkout, or absent.
+  local rec p
+  while IFS= read -r -d '' rec; do
+    [[ "$rec" == "160000 "* ]] || continue
+    p="${rec#*$'\t'}"
+    [[ ( -d "$dir/$p" && ! -L "$dir/$p" ) || ( ! -e "$dir/$p" && ! -L "$dir/$p" ) ]] \
+      || die "$(shown "$p") is a submodule in $(shown "$b") but not a directory in the checkout; restore it, or use reset"
+  done < <(git -C "$F" ls-tree -r -z "${tip[$b]}")
   # What is staged lives in the volume's index alone, which the clone's fresh
   # one cannot see (a change staged, then undone in the file). A copy is read
   # against the tip by the clone's git; an index it cannot read is refused
   # (review of 82698a0, F1).
   if [[ -e "$gd/index" ]]; then
-    local irc=0
+    # Bounded: the agent writes this file, and it is copied (REPO-10). A real
+    # index of 400,000 files is about 50 MiB.
+    # k, not M: busybox find has no M suffix, and the error read as "small
+    # enough" (review of REPO-10). A find that fails refuses.
+    local big
+    big="$(find "$gd/index" -size +524288k -print -quit 2>/dev/null)" \
+      || die "cannot check the size of the checkout's index; use reset"
+    [[ -z "$big" ]] || die "the checkout's index is larger than 512 MiB; refusing to read it (use reset)"
     cp "$gd/index" "$WORK/volume-index" || die "cannot read the checkout's index"
-    GIT_INDEX_FILE="$WORK/volume-index" git --git-dir="$F/.git" diff-index --cached --quiet \
-      --ignore-submodules=all "${tip[$b]}" 2>/dev/null || irc=$?
-    case "$irc" in
-      0) ;;
-      1) die "the checkout has staged changes; commit and push them, or use reset" ;;
-      *)
-        # A split index needs its sharedindex file, which the copy lacks; "use reset"
-        # alone wiped far more than a sync (bugs review REPO-3).
-        [[ -z "$(find "$gd" -maxdepth 1 -name 'sharedindex.*' -print -quit 2>/dev/null)" ]] \
-          || die "the checkout's index is split (core.splitIndex); run \`git update-index --no-split-index\` in it, then sync again"
-        die "cannot read the checkout's index (sparse or damaged); use reset" ;;
+    # Its ENTRIES, into a fresh index: diff-index trusts an index's cache-tree
+    # extension, so a hand-crafted one could hide staged entries (REPO-10). A
+    # fresh index has none, and --index-info needs no object the clone lacks.
+    if ! GIT_INDEX_FILE="$WORK/volume-index" git --git-dir="$F/.git" ls-files -s -z > "$WORK/index-entries" 2>/dev/null; then
+      # A split index needs its sharedindex file, which the copy lacks; "use reset"
+      # alone wiped far more than a sync (bugs review REPO-3).
+      [[ -z "$(find "$gd" -maxdepth 1 -name 'sharedindex.*' -print -quit 2>/dev/null)" ]] \
+        || die "the checkout's index is split (core.splitIndex); run \`git update-index --no-split-index\` in it, then sync again"
+      die "cannot read the checkout's index (sparse or damaged); use reset"
+    fi
+    GIT_INDEX_FILE="$WORK/fresh-index" git --git-dir="$F/.git" update-index -z --index-info < "$WORK/index-entries" 2>/dev/null \
+      || die "cannot read the checkout's index (damaged); use reset"
+    local raw empty staged
+    raw="$(GIT_INDEX_FILE="$WORK/fresh-index" git --git-dir="$F/.git" diff-index --cached --raw --no-abbrev \
+      --ignore-submodules=all "${tip[$b]}" 2>/dev/null)" || die "cannot compare the checkout's index with $(shown "$b"); use reset"
+    empty="$(git --git-dir="$F/.git" hash-object -t blob --stdin < /dev/null)"
+    # An added entry of the empty blob is what `git add -N` (intent to add)
+    # stages: nothing would be lost, and it was refused (REPO-10). An unmerged
+    # entry is an operation stopped halfway, named as such.
+    staged="$(awk -F'\t' -v e="$empty" '
+      $0 == "" { next }
+      { n = split($1, m, " "); st = m[n]
+        if (st == "A" && m[4] == e) next
+        if (st == "U") { print "unmerged"; exit }
+        print "staged"; exit }' <<<"$raw")"
+    case "$staged" in
+      unmerged) die "the checkout's index has unmerged entries (a merge or rebase stopped halfway); finish or abort it, or use reset" ;;
+      staged)   die "the checkout has staged changes; commit and push them, or use reset" ;;
     esac
   fi
+  # What the fast-forward replaces must hold nothing but what the branch tracks.
+  # read-tree refuses to overwrite an untracked file, but it replaced an IGNORED
+  # one in silence, as `git pull --ff-only` does, and it deleted whatever a
+  # submodule's directory held when the remote turned that path, or a directory
+  # above it, into something else (REPO-10 and its reviews). Each path the
+  # remote adds or retypes is walked from the top, following no link:
+  #  - a parent that is a link or not a directory ends the walk: in the way
+  #    unless the branch tracks it as a file or a link, which git replaces
+  #    cleanly (a tracked compatibility link a rename moves over); a submodule's
+  #    path that is not a directory was refused above;
+  #  - the path itself: absent, or a directory of nothing but directories, is
+  #    fine; a former submodule's directory must hold no file; a path the branch
+  #    tracks as a tree, unless it is a directory becoming a submodule (git keeps
+  #    its files then), must hold no untracked or ignored file, and no submodule
+  #    of the branch's under it any file; anything else is in the way.
+  # Every git and find below fails closed: a failure read as "nothing there"
+  # would let read-tree delete what it found (review of REPO-10, L-2).
+  git -C "$F" diff-tree -r -z --raw --no-renames "${tip[$b]}" "refs/remotes/origin/$b" > "$WORK/changes" \
+    || die "cannot list what the remote changes in $(shown "$b"); use reset"
+  local meta st srcmode dstmode c rest ttype found sub sm
+  while IFS= read -r -d '' meta && IFS= read -r -d '' p; do
+    st="${meta##* }"; srcmode="${meta%% *}"; srcmode="${srcmode#:}"
+    dstmode="${meta#* }"; dstmode="${dstmode%% *}"
+    [[ "$st" == A || "$st" == T ]] || continue
+    c=""; rest="$p"
+    while [[ "$rest" == */* ]]; do
+      c="${c:+$c/}${rest%%/*}"; rest="${rest#*/}"
+      [[ -d "$dir/$c" && ! -L "$dir/$c" ]] && continue
+      if [[ -e "$dir/$c" || -L "$dir/$c" ]]; then
+        ttype="$(git -C "$F" cat-file -t "${tip[$b]}:$c" 2>/dev/null)" || ttype=""
+        [[ -n "$ttype" && "$ttype" != tree ]] \
+          || die "$(shown "$c") is in the checkout, untracked or ignored, where the remote now has a directory; move it aside, or use reset"
+      fi
+      continue 2
+    done
+    [[ -e "$dir/$p" || -L "$dir/$p" ]] || continue
+    # A directory holding nothing but directories (empty ones included) is no
+    # obstacle: there is nothing in it to lose (review of REPO-10, L-3).
+    if [[ -d "$dir/$p" && ! -L "$dir/$p" ]]; then
+      found="$(find "$dir/$p" -mindepth 1 ! -type d -print -quit 2>/dev/null)" \
+        || die "cannot search $(shown "$p") in the checkout; use reset"
+    else
+      found=x
+    fi
+    if [[ "$srcmode" == 160000 ]]; then
+      [[ -z "$found" ]] \
+        || die "$(shown "$p") is a submodule's directory holding files, and the remote turns it into something else; move them aside, or use reset"
+      continue
+    fi
+    [[ "$st" == T ]] && continue                        # a file or link the branch tracks, clean
+    [[ -n "$found" ]] || continue
+    ttype="$(git -C "$F" cat-file -t "${tip[$b]}:$p" 2>/dev/null)" || ttype=""
+    if [[ "$ttype" == tree ]]; then
+      # git keeps a DIRECTORY's files when the path becomes a submodule; an
+      # ignored file or link standing there instead is replaced (third review).
+      [[ "$dstmode" == 160000 && -d "$dir/$p" && ! -L "$dir/$p" ]] && continue
+      # No -z: only emptiness is tested, and a NUL in $( ) is a bash warning.
+      found="$(GIT_LITERAL_PATHSPECS=1 git --git-dir="$F/.git" --work-tree="$dir" ls-files -o -- "$p" 2>/dev/null)" \
+        || die "cannot list the untracked files in $(shown "$p"); use reset"
+      [[ -z "$found" ]] \
+        || die "$(shown "$p") holds untracked or ignored files, and the remote turns that directory into something else; move them aside, or use reset"
+      # ls-files -o never looks inside a submodule's directory, and read-tree
+      # deletes it with the directory above (review of REPO-10, M-1).
+      GIT_LITERAL_PATHSPECS=1 git -C "$F" ls-tree -r -z "${tip[$b]}" -- "$p/" > "$WORK/subs" \
+        || die "cannot list the submodules in $(shown "$p"); use reset"
+      while IFS= read -r -d '' sm; do
+        [[ "$sm" == "160000 "* ]] || continue
+        sub="${sm#*$'\t'}"
+        [[ -e "$dir/$sub" || -L "$dir/$sub" ]] || continue
+        found=x
+        if [[ -d "$dir/$sub" && ! -L "$dir/$sub" ]]; then
+          found="$(find "$dir/$sub" -mindepth 1 ! -type d -print -quit 2>/dev/null)" \
+            || die "cannot search $(shown "$sub") in the checkout; use reset"
+        fi
+        [[ -z "$found" ]] \
+          || die "$(shown "$sub") is a submodule's directory holding files, and the remote turns $(shown "$p") into something else; move them aside, or use reset"
+      done < "$WORK/subs"
+      continue
+    fi
+    die "$(shown "$p") is in the checkout, untracked or ignored, and the remote now tracks it; move it aside, or use reset"
+  done < "$WORK/changes"
   # A two-way merge from that commit to the remote's tip, as `pull --ff-only`
   # does, without --force: it refuses to overwrite an untracked file the remote
   # now tracks, and leaves every other untracked file alone.
