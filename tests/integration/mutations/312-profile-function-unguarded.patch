@@ -1,0 +1,37 @@
+# case: 310-agent-utilities-delivered
+# what: npm-agent-tools goes back into /etc/profile.d/ai-tools.sh as a plain
+#       function definition, as it was before RT-12: the name with a hyphen is
+#       what a bash user types, and the line works in every bash shell.
+#
+#       /etc/profile sources /etc/profile.d/*.sh in whatever shell reads it, and
+#       dash parses a whole command before running any of it, so the hyphen is
+#       a syntax error there: `sh -l` prints "Syntax error: Bad function name"
+#       and stops reading the file, the rest of /etc/profile with it.
+#
+#       Expected: exactly ONE assertion fails, `a POSIX sh login shell starts
+#       cleanly`; the npm-agent-tools assertions (bash login, its arguments,
+#       interactive bash) and every
+#       tool still pass. A run where the sh assertion PASSES means /bin/sh is
+#       not dash in the image (bash as sh reads the name), and this patch then
+#       demonstrates nothing.
+#
+#       Demonstrated locally on 2026-10-29 (mutate.sh apply, rebuilt image,
+#       run.sh --cases 310-agent-utilities-delivered): exactly that -- `a
+#       POSIX sh login shell` FAILed on "Syntax error: Bad function name",
+#       the other fifteen PASSed; without the patch all sixteen PASSed. Again
+#       after the review added three npm-agent-tools assertions: the sh one
+#       FAILed, the other seventeen PASSed; without the patch all eighteen.
+#
+#       NEEDS A REBUILD: it changes the Dockerfile.
+diff --git a/Dockerfile b/Dockerfile
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -962,7 +962,7 @@
+       'export UV_TOOL_BIN_DIR="$HOME/.ai-tools/uv/bin"' \
+       'export UV_PYTHON_INSTALL_DIR="$HOME/.ai-tools/uv/python"' \
+       'export PATH="$HOME/.local/bin:$PATH"' \
+-      'if [ -n "${BASH_VERSION:-}" ] && ! shopt -oq posix; then eval '\''npm-agent-tools() { npm --prefix "$HOME/.ai-tools/npm" "$@"; }'\''; fi' \
++      'npm-agent-tools() { npm --prefix "$HOME/.ai-tools/npm" "$@"; }' \
+       | tee /etc/profile.d/ai-tools.sh >> /etc/bash.bashrc
+ 
+ # Ship the runtime agent-tool scripts (invoked by entrypoint: reconcile as the sandbox

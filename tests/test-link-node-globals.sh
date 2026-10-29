@@ -161,6 +161,12 @@ expect_refusal "refuses to replace a file it did not make" "$P" "$DF" "$DF/yarn 
 DL="$TMP/dest-foreign-link"; mkdir -p "$DL"; ln -s /bin/true "$DL/bun"
 expect_refusal "refuses to replace a link it did not make" "$P" "$DL" "$DL/bun already exists"
 
+# A real directory there too: `ln -sfn` would make the link inside it (BSD ln
+# has no -T; bugs review RT-9). The same refusal covers it.
+DD="$TMP/dest-foreign-dir"; mkdir -p "$DD/yarn"
+expect_refusal "refuses a directory standing where a command goes" "$P" "$DD" "$DD/yarn already exists"
+[[ -z "$(ls -A "$DD/yarn")" ]] && pass "  … and links nothing inside it" || fail "  … something was linked inside the directory: $(ls -A "$DD/yarn")"
+
 DW="$TMP/dest-foreign-wrapper"; mkdir -p "$DW"; printf '#!/bin/sh\nexec true\n' > "$DW/qmd"
 expect_refusal "refuses to replace a script that is not its wrapper" "$P" "$DW" "$DW/qmd already exists" --pin @tobilu/qmd
 

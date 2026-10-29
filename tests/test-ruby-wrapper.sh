@@ -72,6 +72,31 @@ RUBY_VERSIONS="3.3.6 3.4.5" ldr "$h" "$d" >/dev/null 2>&1
   || fail "falls back to the first PRESENT requested version (skips uninstalled 3.3.6)"
 rm -rf "$h" "$d"
 
+# ── RT-9: a real directory at a destination is never linked into ──
+# `ln -sfn` onto a real directory makes the link INSIDE it; BSD ln has no -T,
+# so the script checks, warns and links the rest.
+h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; d="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
+mk_rvm "$h" "3.4.5" "ruby gem bundle"
+mkdir -p "$d/gem"
+out="$(RUBY_VERSIONS="3.4.5" ldr "$h" "$d" 2>&1)"
+[[ -d "$d/gem" && ! -L "$d/gem" && -z "$(ls -A "$d/gem")" && -L "$d/ruby" && "$out" == *"is a directory"* ]] \
+  && pass "RT-9 a directory at a destination is left alone, with a warning, and the rest link" \
+  || fail "RT-9 a directory at a destination (inside: $(ls -A "$d/gem" 2>&1); $out)"
+grep -q 'linked default Ruby from .*: ruby bundle$' <<<"$out" \
+  && pass "  … and is not counted as linked" || fail "  … the refused name was counted as linked: $(grep 'linked default' <<<"$out")"
+rm -rf "$h" "$d"
+# The hook too: a directory at ruby_executable_hooks is not linked into, and the
+# log does not say it was.
+h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; d="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
+mk_rvm "$h" "3.4.5" "ruby gem bundle"
+install -d "$h/.rvm/bin"; printf '#!/bin/sh\n' > "$h/.rvm/bin/ruby_executable_hooks"; chmod +x "$h/.rvm/bin/ruby_executable_hooks"
+mkdir -p "$d/ruby_executable_hooks"
+out="$(RUBY_VERSIONS="3.4.5" ldr "$h" "$d" 2>&1)"
+[[ -z "$(ls -A "$d/ruby_executable_hooks")" && "$out" == *"ruby_executable_hooks is a directory"* && "$out" != *"linked ruby_executable_hooks"* ]] \
+  && pass "RT-9 a directory at ruby_executable_hooks is not linked into, nor logged as linked" \
+  || fail "RT-9 a directory at ruby_executable_hooks (inside: $(ls -A "$d/ruby_executable_hooks" 2>&1); $out)"
+rm -rf "$h" "$d"
+
 # ── Case 4: no RUBY_VERSIONS → no-op (creates nothing) ──
 h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; d="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 mk_rvm "$h" "3.4.5" "ruby gem bundle"

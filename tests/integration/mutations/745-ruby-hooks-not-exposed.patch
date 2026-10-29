@@ -25,7 +25,7 @@
 diff --git a/link-default-ruby.sh b/link-default-ruby.sh
 --- a/link-default-ruby.sh
 +++ b/link-default-ruby.sh
-@@ -53,66 +53,3 @@
+@@ -60,64 +60,3 @@
    fi
  done
  log "linked default Ruby from $bindir into $bin_dest: ${linked:-none}"
@@ -43,8 +43,7 @@ diff --git a/link-default-ruby.sh b/link-default-ruby.sh
 -  if [[ -x "$cand" && ! -d "$cand" ]]; then hook="$cand"; break; fi
 -done
 -if [[ -n "$hook" ]]; then
--  ln -sfn "$hook" "$bin_dest/ruby_executable_hooks"
--  log "linked ruby_executable_hooks from $hook"
+-  link_bin "$hook" "$bin_dest/ruby_executable_hooks" && log "linked ruby_executable_hooks from $hook"
 -fi
 -
 -# Verify each link actually RUNS, and fall back to rvm's own wrapper for any that
@@ -85,8 +84,7 @@ diff --git a/link-default-ruby.sh b/link-default-ruby.sh
 -for b in $linked; do
 -  probe "$bin_dest/$b" --version >/dev/null 2>&1 && continue
 -  if [[ -n "$wrapdir" && -x "$wrapdir/$b" && ! -d "$wrapdir/$b" ]]; then
--    ln -sfn "$wrapdir/$b" "$bin_dest/$b"
--    repaired="${repaired:+$repaired }$b"
+-    link_bin "$wrapdir/$b" "$bin_dest/$b" && repaired="${repaired:+$repaired }$b"
 -  else
 -    log "WARNING: $b does not run and no rvm wrapper is available to fall back to"
 -  fi

@@ -7,10 +7,10 @@
 diff --git a/Dockerfile b/Dockerfile
 --- a/Dockerfile
 +++ b/Dockerfile
-@@ -682,7 +682,8 @@ RUN chmod +x /usr/local/bin/link-default-ruby.sh
- # directory on PATH exposes all of it, and `copilot` ran in a project with copilot=OFF.
- # link-agent-tools.sh links exactly this project's AI_RUNTIME_TOOLS into /usr/local/bin,
- # which every shell already has, so that is the one route onto PATH.
+@@ -956,7 +956,8 @@
+ # refuses the name too. `if`, not `&&`, so sourcing the file under dash still
+ # returns 0. Case 310 runs both, and tests/test-profile-scripts.sh runs the
+ # lines below under dash, bash and posix-mode bash.
 -RUN install -d /etc/skel/.local/bin && \
 +RUN printf 'prefix=${HOME}/.ai-tools/npm\n' > /etc/skel/.npmrc && \
 +    install -d /etc/skel/.local/bin && \

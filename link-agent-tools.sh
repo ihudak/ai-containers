@@ -71,7 +71,9 @@ node_script() {
   local head1
   [[ -f "$dir/${t##*/}" ]] || return 1
   local t5=(); command -v timeout >/dev/null 2>&1 && t5=(timeout -k 1 5)   # macOS has none
-  head1="$("${t5[@]}" head -c 256 "$dir/${t##*/}" 2>/dev/null | tr -d '\0')"; head1="${head1%%$'\n'*}"
+  # A NUL ends the line, as it ends the interpreter's name for the kernel:
+  # stripping it made `#!\0/usr/bin/node` count as a node script (RT-9).
+  head1="$("${t5[@]}" head -c 256 "$dir/${t##*/}" 2>/dev/null | tr '\0' '\n')"; head1="${head1%%$'\n'*}"
   [[ "$head1" == '#!'*node* ]] || return 1
   printf '%s' "$dir/${t##*/}"
 }
@@ -87,6 +89,14 @@ for entry in "${srcs[@]}"; do
     continue
   fi
   if [[ -x "$path" ]]; then
+    # A real directory at the destination: `ln -sfn` makes the link INSIDE it,
+    # and a wrapper would be written into it and chmod it. BSD ln has no -T,
+    # and the hermetic suite runs this on macOS too, so it is checked here
+    # (bugs review RT-9). Skipped with a warning: a start never fails here.
+    if [[ -d "$bin_dest/$name" && ! -L "$bin_dest/$name" ]]; then
+      log "WARNING: $bin_dest/$name is a directory; $name is not linked"
+      continue
+    fi
     script=""
     [[ -n "$default_node" && "$path" == "$home_root/npm/bin/"* ]] && script="$(node_script "$path")"
     if [[ -n "$script" ]]; then

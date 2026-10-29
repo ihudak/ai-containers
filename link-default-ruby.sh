@@ -21,6 +21,13 @@ probe_user="${3:-}"               # who runs the verify step's --version probes
 rvm_root="$dev_home/.rvm"
 
 log(){ printf '[link-default-ruby] %s\n' "$*"; }
+# link_bin <target> <dest>: `ln -sfn`, except over a real directory at <dest>, which
+# it would make the link inside. BSD ln has no -T, and the hermetic suite runs
+# this on macOS too (bugs review RT-9). Skipped with a warning, status 1.
+link_bin() {
+  if [[ -d "$2" && ! -L "$2" ]]; then log "WARNING: $2 is a directory; not linked"; return 1; fi
+  ln -sfn "$1" "$2"
+}
 
 # Resolve the default Ruby's bin dir. Prefer rvm's own 'default' alias symlink when the
 # installed rvm creates it; otherwise fall back to the first requested version that is
@@ -48,7 +55,7 @@ for b in ruby gem bundle bundler rake irb erb; do
   # -n and no directory: `ln -sf` onto a link to a directory makes the link INSIDE
   # it, which the agent chooses (review of batch 3, finding 1).
   if [[ -x "$bindir/$b" && ! -d "$bindir/$b" ]]; then
-    ln -sfn "$bindir/$b" "$bin_dest/$b"
+    link_bin "$bindir/$b" "$bin_dest/$b" || continue
     linked="${linked:+$linked }$b"
   fi
 done
@@ -67,8 +74,7 @@ for cand in "$rvm_root/bin/ruby_executable_hooks" "$rvm_root"/gems/*@global/bin/
   if [[ -x "$cand" && ! -d "$cand" ]]; then hook="$cand"; break; fi
 done
 if [[ -n "$hook" ]]; then
-  ln -sfn "$hook" "$bin_dest/ruby_executable_hooks"
-  log "linked ruby_executable_hooks from $hook"
+  link_bin "$hook" "$bin_dest/ruby_executable_hooks" && log "linked ruby_executable_hooks from $hook"
 fi
 
 # Verify each link actually RUNS, and fall back to rvm's own wrapper for any that
@@ -109,8 +115,7 @@ repaired=""
 for b in $linked; do
   probe "$bin_dest/$b" --version >/dev/null 2>&1 && continue
   if [[ -n "$wrapdir" && -x "$wrapdir/$b" && ! -d "$wrapdir/$b" ]]; then
-    ln -sfn "$wrapdir/$b" "$bin_dest/$b"
-    repaired="${repaired:+$repaired }$b"
+    link_bin "$wrapdir/$b" "$bin_dest/$b" && repaired="${repaired:+$repaired }$b"
   else
     log "WARNING: $b does not run and no rvm wrapper is available to fall back to"
   fi

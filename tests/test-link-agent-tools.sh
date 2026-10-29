@@ -131,6 +131,61 @@ t9=$((SECONDS - t9))
   || fail "RT-9 a FIFO in the tool home held the link step (rc $rc, ${t9}s)"
 rm -rf "$h" "$d" "$n"
 
+TMP_LINKDIR="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; rmdir "$TMP_LINKDIR"
+# ── RT-9: a NUL in the shebang ends it, as it does for the kernel ──
+# Stripping NULs made `#!\0/usr/bin/node` read as `#!/usr/bin/node`, a node
+# script, and wrapped it.
+h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; d="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
+n="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
+install -d "$n/v22/bin"; printf '#!/bin/sh\n' > "$n/v22/bin/node"; chmod +x "$n/v22/bin/node"; ln -s "$n/v22/bin/node" "$n/node"
+pkg="$h/.ai-tools/npm/lib/node_modules/@github/copilot"; install -d "$pkg" "$h/.ai-tools/npm/bin"
+printf '#!\000/usr/bin/env node\n' > "$pkg/index.js"; chmod +x "$pkg/index.js"
+ln -s ../lib/node_modules/@github/copilot/index.js "$h/.ai-tools/npm/bin/copilot"
+NODE_LINK="$n/node" AI_RUNTIME_TOOLS="copilot" bash "$REPO_DIR/link-agent-tools.sh" "$h" "$d" >/dev/null 2>&1
+[[ -L "$d/copilot" ]] && pass "RT-9 a shebang with a NUL after #! is not read as a node script" \
+  || fail "RT-9 a NUL in the shebang was stripped (copilot was wrapped)"
+rm -rf "$h" "$d" "$n"
+
+# ── RT-9: a real directory at the destination is never linked into ──
+# `ln -sfn` onto a real directory makes the link INSIDE it, and a wrapper would
+# be written into it; BSD ln has no -T, so the script checks. The other tools
+# still link.
+h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; d="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
+mk_tool "$h" npm/bin/claude; mk_tool "$h" bin/vale
+mkdir -p "$d/claude"
+out="$(AI_RUNTIME_TOOLS="claude-code,vale" bash "$REPO_DIR/link-agent-tools.sh" "$h" "$d" 2>&1)"; rc=$?
+[[ "$rc" == 0 && -d "$d/claude" && ! -L "$d/claude" && -z "$(ls -A "$d/claude")" && -L "$d/vale" && "$out" == *"is a directory"* ]] \
+  && pass "RT-9 a directory at a tool's destination is left alone, with a warning, and the others link" \
+  || fail "RT-9 a directory at the destination (rc $rc; inside: $(ls -A "$d/claude" 2>&1); out: $out)"
+rm -rf "$h" "$d"
+# The same for a tool that gets a WRAPPER (a node script): its `rm -f` and
+# redirect would fail on a directory and then chmod it 755. And a LINK to a
+# directory standing there is replaced, not entered.
+h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; d="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
+n="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
+install -d "$n/v22/bin"; printf '#!/bin/sh\n' > "$n/v22/bin/node"; chmod +x "$n/v22/bin/node"; ln -s "$n/v22/bin/node" "$n/node"
+pkg="$h/.ai-tools/npm/lib/node_modules/@github/copilot"; install -d "$pkg" "$h/.ai-tools/npm/bin"
+printf '#!/usr/bin/env node\n' > "$pkg/index.js"; chmod +x "$pkg/index.js"
+ln -s ../lib/node_modules/@github/copilot/index.js "$h/.ai-tools/npm/bin/copilot"
+mkdir -m 700 "$d/copilot"
+out="$(NODE_LINK="$n/node" AI_RUNTIME_TOOLS="copilot" bash "$REPO_DIR/link-agent-tools.sh" "$h" "$d" 2>&1)"
+[[ -d "$d/copilot" && -z "$(ls -A "$d/copilot")" && "$(p_stat_mode "$d/copilot")" == 700 && "$out" == *"is a directory"* ]] \
+  && pass "RT-9 a directory where a wrapper goes is left alone, its mode untouched" \
+  || fail "RT-9 a directory where a wrapper goes (mode $(p_stat_mode "$d/copilot"); inside: $(ls -A "$d/copilot" 2>&1); $out)"
+rmdir "$d/copilot"; mkdir -p "$TMP_LINKDIR"; ln -s "$TMP_LINKDIR" "$d/copilot"
+NODE_LINK="$n/node" AI_RUNTIME_TOOLS="copilot" bash "$REPO_DIR/link-agent-tools.sh" "$h" "$d" >/dev/null 2>&1
+[[ -f "$d/copilot" && ! -L "$d/copilot" && -z "$(ls -A "$TMP_LINKDIR")" ]] \
+  && pass "RT-9 a link to a directory where a wrapper goes is replaced, not entered" \
+  || fail "RT-9 a link to a directory at the destination (dest: $(ls -la "$d/copilot" 2>&1); target holds: $(ls -A "$TMP_LINKDIR"))"
+# A restarted container finds its own wrapper there, a regular file: it is
+# rewritten, not refused as if it were in the way. A different default node this
+# time, so a wrapper left as it was would still name the old one.
+install -d "$n/v24/bin"; printf '#!/bin/sh\n' > "$n/v24/bin/node"; chmod +x "$n/v24/bin/node"; ln -sfn "$n/v24/bin/node" "$n/node"
+out="$(NODE_LINK="$n/node" AI_RUNTIME_TOOLS="copilot" bash "$REPO_DIR/link-agent-tools.sh" "$h" "$d" 2>&1)"; rc=$?
+[[ "$rc" == 0 && "$out" != *"is a directory"* ]] && grep -qF "$(cd "$n/v24/bin" && pwd -P)/node" "$d/copilot" \
+  && pass "  … and a second start rewrites its own wrapper" || fail "  … a second start and its own wrapper (rc $rc; $out; $(cat "$d/copilot"))"
+rm -rf "$h" "$d" "$n" "$TMP_LINKDIR"
+
 # ── Guards ──
 grep -qE '^set +-[a-z]*u|nounset' "$REPO_DIR/link-agent-tools.sh" && fail "must NOT enable nounset" || pass "does not enable nounset"
 

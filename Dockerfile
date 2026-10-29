@@ -908,11 +908,15 @@ RUN if [ "$RUBY_RUNTIME" = "1" ]; then \
       # the line below sets no umask. Capturing the umask before sourcing is also
       # what rvm expects a loader to do (__rvm_call_with_restored_umask restores it),
       # so this is the correct loader, not just a way to silence the check.
+      # Only under bash, as an `if`: /etc/profile reads this file in any POSIX
+      # shell, dash has no `source` (`sh -l` said "source: not found" for a
+      # user with ~/.rvm), and a trailing `[ -s … ] && …` made sourcing it
+      # return 1 for one without (review of RT-12; tests/test-profile-scripts.sh).
       printf '%s\n%s\n' \
         '[ -n "${rvm_stored_umask:-}" ] || export rvm_stored_umask=$(umask)' \
-        '[ -s "$HOME/.rvm/scripts/rvm" ] && source "$HOME/.rvm/scripts/rvm"' \
+        'if [ -n "${BASH_VERSION:-}" ] && [ -s "$HOME/.rvm/scripts/rvm" ]; then source "$HOME/.rvm/scripts/rvm"; fi' \
         > /etc/profile.d/rvm.sh && \
-      printf '\n%s\n' '[ -s "$HOME/.rvm/scripts/rvm" ] && source "$HOME/.rvm/scripts/rvm"' \
+      printf '\n%s\n' 'if [ -s "$HOME/.rvm/scripts/rvm" ]; then source "$HOME/.rvm/scripts/rvm"; fi' \
         >> /etc/bash.bashrc; \
     fi
 
@@ -944,13 +948,21 @@ RUN chmod +x /usr/local/bin/link-default-ruby.sh
 # directory on PATH exposes all of it, and `copilot` ran in a project with copilot=OFF.
 # link-agent-tools.sh links exactly this project's AI_RUNTIME_TOOLS into /usr/local/bin,
 # which every shell already has, so that is the one route onto PATH.
+#
+# npm-agent-tools is defined through eval, and only under bash: /etc/profile
+# sources this file in whatever shell reads it, dash parses a whole command
+# before running any of it, and a hyphen in a function name is a syntax error
+# to it, so `sh -l` stopped right here (bugs review RT-12); bash in posix mode
+# refuses the name too. `if`, not `&&`, so sourcing the file under dash still
+# returns 0. Case 310 runs both, and tests/test-profile-scripts.sh runs the
+# lines below under dash, bash and posix-mode bash.
 RUN install -d /etc/skel/.local/bin && \
     printf '%s\n' \
       'export UV_TOOL_DIR="$HOME/.ai-tools/uv"' \
       'export UV_TOOL_BIN_DIR="$HOME/.ai-tools/uv/bin"' \
       'export UV_PYTHON_INSTALL_DIR="$HOME/.ai-tools/uv/python"' \
       'export PATH="$HOME/.local/bin:$PATH"' \
-      'npm-agent-tools() { npm --prefix "$HOME/.ai-tools/npm" "$@"; }' \
+      'if [ -n "${BASH_VERSION:-}" ] && ! shopt -oq posix; then eval '\''npm-agent-tools() { npm --prefix "$HOME/.ai-tools/npm" "$@"; }'\''; fi' \
       | tee /etc/profile.d/ai-tools.sh >> /etc/bash.bashrc
 
 # Ship the runtime agent-tool scripts (invoked by entrypoint: reconcile as the sandbox

@@ -778,9 +778,15 @@ assert_runs() {  # $1=cid $2=binary — asserts the binary is on PATH AND EXECUT
     return 0
   fi
   fail "$2 is present but FAILED TO RUN"
+  # The first line is a shebang only when the file starts with #!: an ELF's first
+  # "line" is raw bytes, NULs among them, which bash warns about (TST-22). Each
+  # probe drops NULs before $( ) sees them, a zero-filled file's included;
+  # head -c 4 | tail -c 3 reads "ELF" past the leading 0x7f.
   docker exec "$1" bash -c \
-    "p=\$(command -v $2); printf '     path:    %s -> %s\n' \"\$p\" \"\$(readlink -f \"\$p\")\";
-     printf '     shebang: %s\n' \"\$(head -1 \"\$(readlink -f \"\$p\")\" 2>/dev/null)\"" 2>&1
+    "p=\$(command -v $2); r=\$(readlink -f \"\$p\"); printf '     path:    %s -> %s\n' \"\$p\" \"\$r\";
+     if [ \"\$(head -c 2 \"\$r\" 2>/dev/null | tr -d '\\000')\" = '#!' ]; then printf '     shebang: %s\n' \"\$(head -1 \"\$r\" 2>/dev/null)\";
+     elif [ \"\$(head -c 4 \"\$r\" 2>/dev/null | tail -c 3 | tr -d '\\000')\" = ELF ]; then printf '     binary:  ELF\n';
+     else printf '     shebang: none\n'; fi" 2>&1
   printf '     error:   %s\n' "$(printf '%s\n' "$out" | head -1)"
   return 1
 }

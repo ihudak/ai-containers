@@ -40,4 +40,23 @@ for b in rg fd tree file column bc make sqlite3 zstd xxd less node npm npx; do
   assert_runs "$cid" "$b"
 done
 
+# /etc/profile sources /etc/profile.d/*.sh in whatever shell reads it. A
+# function named npm-agent-tools is a syntax error to dash, so a POSIX `sh -l`
+# stopped there, the rest of /etc/profile unread (bugs review RT-12); bash must
+# still define it. That is mutation 312-profile-function-unguarded.
+out="$(docker exec "$cid" sh -l -c 'echo sh-login-ok' 2>&1)"
+[[ "$out" == sh-login-ok ]] && pass "a POSIX sh login shell starts cleanly" \
+  || fail "a POSIX sh login shell: $out"
+out="$(docker exec "$cid" bash -l -c 'type -t npm-agent-tools' 2>&1)"
+[[ "$out" == function ]] && pass "npm-agent-tools is defined in a bash login shell" \
+  || fail "npm-agent-tools in a bash login shell: $out"
+# … forwarding its arguments intact (a re-quoted eval dropped them all), and in
+# an interactive shell too, from /etc/bash.bashrc.
+out="$(docker exec "$cid" bash -l -c 'npm() { printf "[%s]" "$@"; }; npm-agent-tools "a b"' 2>&1)"
+[[ "$out" == "[--prefix][/root/.ai-tools/npm][a b]" ]] && pass "npm-agent-tools forwards its arguments intact" \
+  || fail "npm-agent-tools arguments: $out"
+out="$(docker exec "$cid" bash -i -c 'type -t npm-agent-tools' 2>/dev/null)"
+[[ "$out" == function ]] && pass "npm-agent-tools is defined in an interactive bash" \
+  || fail "npm-agent-tools in an interactive bash: $out"
+
 it_finish

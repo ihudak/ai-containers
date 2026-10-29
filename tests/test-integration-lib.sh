@@ -1106,6 +1106,7 @@ AR_ABSENT="$TMP/ar-absent"; mkdir -p "$AR_ABSENT"    # nothing on the container 
 AR_BROKEN="$TMP/ar-broken"; mkdir -p "$AR_BROKEN"    # exits non-zero, prints NOTHING
 AR_SHEBANG="$TMP/ar-shebang"; mkdir -p "$AR_SHEBANG" # the real binstub shape
 AR_OK="$TMP/ar-ok"; mkdir -p "$AR_OK"                # answers --version and exits 0
+AR_ELF="$TMP/ar-elf"; mkdir -p "$AR_ELF"              # an ELF that cannot run here (TST-22)
 
 # Silent AND non-zero: the head-exit-status bug's blind spot exactly. `head`
 # succeeds on this binary's empty output, so the buggy form reports it as a
@@ -1118,7 +1119,10 @@ printf '#!/bin/sh\nexit 3\n' > "$AR_BROKEN/$AR_TOOL"
 printf '#!/usr/bin/env it-fake-missing-interp\nprint 1\n' > "$AR_SHEBANG/$AR_TOOL"
 # Two lines on purpose: the PASS line must carry only the first.
 printf '#!/bin/sh\nprintf "%%s\\n" "it-fake-tool 1.2.3" "SECOND-LINE-MUST-NOT-APPEAR"\n' > "$AR_OK/$AR_TOOL"
-chmod +x "$AR_BROKEN/$AR_TOOL" "$AR_SHEBANG/$AR_TOOL" "$AR_OK/$AR_TOOL"
+# An ELF header, NULs and all, and nothing an exec could use: the kernel
+# refuses it, as it does a binary built for another machine.
+printf '\177ELF\002\001\001\000\000\000\000\000\000\000\000\000' > "$AR_ELF/$AR_TOOL"
+chmod +x "$AR_BROKEN/$AR_TOOL" "$AR_SHEBANG/$AR_TOOL" "$AR_OK/$AR_TOOL" "$AR_ELF/$AR_TOOL"
 
 # IT_DOCKER_HOST is pinned (to empty) so lib.sh's source-time resolution block
 # short-circuits instead of reaching the fake docker with a `context inspect`
@@ -1199,6 +1203,36 @@ else
   # The line is for whoever reads the file's own output, and for a grep.
   printf 'SKIP: the shebang-dump assertion — /usr/bin/readlink here has no -f (macOS < 12.3)\n'
 fi
+
+# 3b. The dump's other shapes, behind the same readlink -f guard: each needs the
+#     resolved path (TST-22 and its review).
+if PATH="/usr/bin:/bin" readlink -f / >/dev/null 2>&1; then
+  # 3b. An ELF that fails to run: the dump says ELF, and prints no shebang, which
+  #     for a binary was raw bytes and a bash warning about NULs (TST-22).
+  out="$(ar_run "$AR_ELF")"
+  ar_has "$out" "FAIL: $AR_TOOL is present but FAILED TO RUN" && ar_has "$out" 'binary:  ELF' \
+    && ! ar_has "$out" 'shebang:' && ! ar_has "$out" 'null byte' \
+    && t_pass "the failure dump names an ELF binary as such, with no shebang and no NUL warning" \
+    || t_fail "the failure dump for an ELF binary (got: $out)"
+  # And a script with no #! line says so, rather than printing its first line.
+  AR_NOSHEBANG="$TMP/ar-noshebang"; mkdir -p "$AR_NOSHEBANG"
+  printf 'exit 3\n' > "$AR_NOSHEBANG/$AR_TOOL"; chmod +x "$AR_NOSHEBANG/$AR_TOOL"
+  out="$(ar_run "$AR_NOSHEBANG")"
+  ar_has "$out" 'shebang: none' && ! ar_has "$out" 'shebang: exit' \
+    && t_pass "the failure dump says a script has no shebang line" \
+    || t_fail "the failure dump for a script with no shebang (got: $out)"
+
+  # A file that starts with NULs (a truncated or corrupt binary): no NUL warning.
+  AR_ZERO="$TMP/ar-zero"; mkdir -p "$AR_ZERO"
+  head -c 64 /dev/zero > "$AR_ZERO/$AR_TOOL"; chmod +x "$AR_ZERO/$AR_TOOL"
+  out="$(ar_run "$AR_ZERO")"
+  ar_has "$out" 'shebang: none' && ! ar_has "$out" 'null byte' \
+    && t_pass "the failure dump for a zero-filled file says no shebang, with no NUL warning" \
+    || t_fail "the failure dump for a zero-filled file (got: $out)"
+else
+  printf 'SKIP: the ELF/no-shebang dump assertions — /usr/bin/readlink here has no -f (macOS < 12.3)\n'
+fi
+
 
 # 4. Present and working → PASS, rc 0, and only the FIRST line of --version.
 out="$(ar_run "$AR_OK")"
