@@ -9,7 +9,7 @@
 # NOTE: these seeding containers run as a plain `docker run`, NOT through
 # entrypoint.sh, so the deny-by-default firewall does not apply to them — the
 # git clone/pull over the network behaves exactly as before.
-FROM alpine:3.20
+FROM alpine:3.24
 
 # git + openssh-client: clone/pull over ssh:// and https://
 # rsync: mirror-with-deletes for path-source `repo.sh sync`

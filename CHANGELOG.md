@@ -208,6 +208,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   config whose includes were not all followed: two spellings of a
   self-include made the first version of this walk take minutes.
 
+### Security
+
+- **The seed image is built on Alpine 3.24, for CVE-2026-111497.** Alpine 3.20,
+  which is past end of life, ships `brotli-libs` 1.1.0, which git's libcurl
+  links and which is affected; 3.24 ships the fixed 1.2.1. `repo.sh` builds the
+  seed image only when it is missing, so remove the old one with
+  `docker rmi ai-containers-seed` and the next `repo.sh` command rebuilds it.
+  The sandbox image needs no change: its nvm layer installs the newest Node LTS
+  and Ubuntu 24.04's `libbrotli1` carries the fix, but an image built from an
+  older cache still has the affected versions. Rebuild it with
+  `./build.sh --no-cache`.
+
 ## v0.10.7 — 2026-10-18
 
 ### Fixed
