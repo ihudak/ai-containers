@@ -557,6 +557,12 @@ if [[ "$(id -u)" -ne 0 ]]; then
   printf '#!/bin/sh\ncase "$1" in --version) echo "BusyBox v1.36"; exit 1;; esac\nprintf "d-wx--x--x 2 u g 64 Jan 1 00:00 %%s\\n" "$2"\n' > "$BB/ls"
   printf '#!/bin/sh\nexit 1\n' > "$BB/getfacl"; chmod +x "$BB/ls" "$BB/getfacl"
   PATH="$BB:$PATH" _agent_bits_writable "$B25/plain" 4242 4343 || r25+=" busybox-ls-failing-getfacl-trusted"
+  # …and with no getfacl at all, an ls that is not GNU's, BSD's or uutils' is not
+  # trusted either (LNCH-18): the same PATH of find and a Linux uname as T25i, with
+  # the busybox ls — so neither the host's getfacl nor its ls decides.
+  NB="$TMP/nb25"; mkdir -p "$NB"
+  ln -sf "$(command -v find)" "$NB/find"; cp "$UU/uname" "$BB/ls" "$NB/"
+  PATH="$NB" _agent_bits_writable "$B25/plain" 4242 4343 || r25+=" unknown-ls-without-getfacl-trusted"
   if command -v setfacl >/dev/null 2>&1 && command -v getfacl >/dev/null 2>&1 && setfacl -m u:4242:wx "$B25/acl" 2>/dev/null; then
     mkdir -p "$BB/l"; cp "$BB/ls" "$BB/l/ls"
     PATH="$BB/l:$PATH" _agent_bits_writable "$B25/acl" 4242 4343 || r25+=" acl-unmarked-by-ls-missed"

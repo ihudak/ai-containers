@@ -1297,6 +1297,31 @@ if [[ "$(id -u)" != 0 ]]; then
     || fail "G66 unlistable .git with a FIFO config (rc=$LAUNCH_RC; $(grep -F u66 "$ERR" | head -1))"
   chmod 0755 "$PROJ/u66/.git"; ( exec 3<>"$PROJ/u66/.git/config" ) 2>/dev/null; rm -rf "$PROJ/u66"
 fi
+# …and so is ANOTHER user's (GIT-22): binding one whole was tried and dropped,
+# and a check that put ownership back into the condition passed G66, whose .git
+# is the launching user's. Only root can make another user's directory, so this
+# runs where the suite runs as root (the floor container): the tree is handed to
+# one uid, the .git to another, and the launch runs as the first.
+if [[ "$(id -u)" == 0 ]] && command -v setpriv >/dev/null 2>&1; then
+  mkdir -p "$PROJ/u22" && "${G[@]}" -C "$PROJ/u22" init -q || { printf 'SCAFFOLD-FAILED: G66b\n'; exit 1; }
+  chown -R 4100:4100 "$TMP" && chown -R 4200:4200 "$PROJ/u22/.git" && chmod 0711 "$PROJ/u22/.git" \
+    || { printf 'SCAFFOLD-FAILED: G66b chown\n'; exit 1; }
+  # The directories above $TMP (run-all.sh's scratch root) are root's 0700: let the
+  # launching uid through them for this launch, and put each back after.
+  a22=(); d22="$(dirname "$TMP")"
+  while [[ "$d22" != / ]]; do
+    if [[ -n "$(find "$d22" -maxdepth 0 ! -perm -o+x 2>/dev/null)" ]]; then chmod o+x "$d22" && a22+=("$d22"); fi
+    d22="$(dirname "$d22")"
+  done
+  rm -f "$CAPTURE" "$CAPTURE.manifest" "$CAPTURE.calls"
+  ( cd "$LAUNCHER" && setpriv --reuid=4100 --regid=4100 --clear-groups bash ./sandbox.sh restricted .. ) >/dev/null 2>"$ERR" </dev/null
+  LAUNCH_RC=$?
+  for d22 in "${a22[@]}"; do chmod o-x "$d22"; done
+  chown -R 0:0 "$TMP"; rm -rf "$PROJ/u22"
+  [[ "$LAUNCH_RC" != 0 && ! -e "$CAPTURE" ]] && grep -qF "u22/.git" "$ERR" && grep -qF 'can be searched but not listed' "$ERR" \
+    && pass "G66b another user's searchable but unlistable .git refuses the launch" \
+    || fail "G66b another user's unlistable .git (rc=$LAUNCH_RC; $(head -3 "$ERR" | tr '\n' ' '))"
+fi
 mkdir -p "$PROJ/tools67/x"; : > "$PROJ/tools67/x/sandbox.sh"; : > "$PROJ/tools67/x/sandbox-common.sh"
 "${G[@]}" init -q "$PROJ/tools67/x" && rm -f "$PROJ/tools67/x/.git/config" && mkfifo "$PROJ/tools67/x/.git/config"
 launch_timed 60
@@ -1342,44 +1367,44 @@ rm -rf "$PROJ/h71"
 
 # ── G90: CDPATH (GIT-17). A submodule's relative core.worktree with no ./ or
 # ../ is resolved by `cd`, which an exported CDPATH redirects — and makes print
-# the directory it went to. Here core.worktree=wt72 names a link in the
+# the directory it went to. Here core.worktree=wt90 names a link in the
 # submodule's git directory to its checkout, and a nested submodule under
 # vendor/ (pruned by the scan; its own git directory has no core.worktree) is
 # found only through that checkout's index, so a misplaced worktree loses it.
-U72="$TMP/up72"; S72="$TMP/us72"; M72="$TMP/m72"; D72="$TMP/decoy72"
-for r in "$U72" "$S72"; do "${G[@]}" init -q "$r" && "${G[@]}" -C "$r" commit -q --allow-empty -m r; done
-mkdir -p "$D72/wt72"
-"${G[@]}" init -q "$M72" \
-  && "${G[@]}" -C "$M72" -c protocol.file.allow=always submodule -q add "$U72" vendor/a && "${G[@]}" -C "$M72" commit -q -m a \
-  && "${G[@]}" -C "$M72/vendor/a" -c protocol.file.allow=always submodule -q add "$S72" vendor/b \
-  && "${G[@]}" -C "$M72/vendor/a" commit -q -m b \
-  && ln -s "$M72/vendor/a" "$M72/.git/modules/vendor/a/wt72" \
-  && "${G[@]}" config -f "$M72/.git/modules/vendor/a/config" core.worktree wt72 \
-  && "${G[@]}" config -f "$M72/.git/modules/vendor/a/modules/vendor/b/config" --unset core.worktree \
+U90="$TMP/up90"; S90="$TMP/us90"; M90="$TMP/m90"; D90="$TMP/decoy90"
+for r in "$U90" "$S90"; do "${G[@]}" init -q "$r" && "${G[@]}" -C "$r" commit -q --allow-empty -m r; done
+mkdir -p "$D90/wt90"
+"${G[@]}" init -q "$M90" \
+  && "${G[@]}" -C "$M90" -c protocol.file.allow=always submodule -q add "$U90" vendor/a && "${G[@]}" -C "$M90" commit -q -m a \
+  && "${G[@]}" -C "$M90/vendor/a" -c protocol.file.allow=always submodule -q add "$S90" vendor/b \
+  && "${G[@]}" -C "$M90/vendor/a" commit -q -m b \
+  && ln -s "$M90/vendor/a" "$M90/.git/modules/vendor/a/wt90" \
+  && "${G[@]}" config -f "$M90/.git/modules/vendor/a/config" core.worktree wt90 \
+  && "${G[@]}" config -f "$M90/.git/modules/vendor/a/modules/vendor/b/config" --unset core.worktree \
   || { printf 'SCAFFOLD-FAILED: cannot create the G90 repository\n'; exit 1; }
-want72="$M72/vendor/a/vendor/b/.git:/workspace/m72/vendor/a/vendor/b/.git:ro"
-EXTRA_MOUNTS="$M72" launch "$TMP/app"
-has_mount "$want72" && pass "G90 (control) a nested submodule found through a relative core.worktree is protected" \
-  || fail "G90 control: no $want72 (git mounts: $(git_mounts | grep m72 | tr '\n' ' '))"
-CDPATH="$D72" EXTRA_MOUNTS="$M72" launch "$TMP/app"
-has_mount "$want72" && pass "G90 an exported CDPATH does not move a relative core.worktree" \
-  || fail "G90 with CDPATH set, $want72 is missing (git mounts: $(git_mounts | grep m72 | tr '\n' ' '))"
-rm -rf "$U72" "$S72" "$M72" "$D72"
+want90="$M90/vendor/a/vendor/b/.git:/workspace/m90/vendor/a/vendor/b/.git:ro"
+EXTRA_MOUNTS="$M90" launch "$TMP/app"
+has_mount "$want90" && pass "G90 (control) a nested submodule found through a relative core.worktree is protected" \
+  || fail "G90 control: no $want90 (git mounts: $(git_mounts | grep m90 | tr '\n' ' '))"
+CDPATH="$D90" EXTRA_MOUNTS="$M90" launch "$TMP/app"
+has_mount "$want90" && pass "G90 an exported CDPATH does not move a relative core.worktree" \
+  || fail "G90 with CDPATH set, $want90 is missing (git mounts: $(git_mounts | grep m90 | tr '\n' ' '))"
+rm -rf "$U90" "$S90" "$M90" "$D90"
 
 # ── G91: a newline in a directory name (GIT-18). A .git file there naming its
 # git directory relatively was given a lexical path cut at the newline, which
 # never matched the physical one: a spurious "through a link" WARNING.
-M73="$TMP/m73"; NL73="$M73/a"$'\n'"b"
-mkdir -p "$NL73" && "${G[@]}" init -q --bare "$M73/real73" \
-  && printf 'gitdir: ../real73\n' > "$NL73/.git" \
+M91="$TMP/m91"; NL91="$M91/a"$'\n'"b"
+mkdir -p "$NL91" && "${G[@]}" init -q --bare "$M91/real91" \
+  && printf 'gitdir: ../real91\n' > "$NL91/.git" \
   || { printf 'SCAFFOLD-FAILED: cannot create the G91 repository\n'; exit 1; }
-EXTRA_MOUNTS="$M73" launch "$TMP/app"
-grep -q 'reaches .*real73 through a link' "$ERR" \
+EXTRA_MOUNTS="$M91" launch "$TMP/app"
+grep -q 'reaches .*real91 through a link' "$ERR" \
   && fail "G91 a newline in the .git file's directory gave a spurious link WARNING: $(grep -a 'through a link' "$ERR" | head -1)" \
   || pass "G91 a newline in a directory name does not cut its lexical path"
-grep -qF "$M73/real73/config:/workspace/m73/real73/config:ro" <<<"$(mounts)" \
-  && pass "G91 (control) the git directory it names is protected" || fail "G91 control: real73 not protected"
-rm -rf "$M73"
+grep -qF "$M91/real91/config:/workspace/m91/real91/config:ro" <<<"$(mounts)" \
+  && pass "G91 (control) the git directory it names is protected" || fail "G91 control: real91 not protected"
+rm -rf "$M91"
 
 # Loads one function from the launcher, which cannot be sourced whole (it runs).
 load_fn() { eval "$(awk -v f="$1() {" 'index($0, f) == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox.sh")"; }

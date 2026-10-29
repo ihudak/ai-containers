@@ -53,6 +53,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`./build.sh` no longer takes a project on an unmounted drive for a moved
+  one** (bugs review ENV-9). A committed `IMAGE_NAME` whose image was built
+  for a project path that is not there was rebuilt for this project, on the
+  reasoning that the project had moved. When the nearest directory of that
+  path that does exist is empty, as the mount point of a drive that is not
+  mounted is, the build is now refused, saying to mount it, remove the
+  image, or set `IMAGE_NAME` in `sandbox.local.env`.
+
 - **The group checks are tighter and say more** (bugs review LNCH-19,
   LNCH-20). A group directory that is `$HOME` under another path — a bind
   mount, a macOS firmlink, another case of the name — is refused, as one that

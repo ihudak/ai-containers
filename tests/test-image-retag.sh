@@ -62,6 +62,15 @@ check '{"ai-containers.built-at":"x","ai-containers.project":"'"$TMP/gone/.ai-co
   && pass "an image built for a path that no longer exists (a moved project) is rebuilt, with a NOTE" \
   || fail "moved project (rc=$rc: $err)"
 
+# …but a path under an empty directory is not proof either: it is what a drive
+# that is not mounted leaves behind (ENV-9).
+mkdir -p "$TMP/mnt9"
+check '{"ai-containers.built-at":"x","ai-containers.project":"'"$TMP/mnt9/drive/proj/.ai-containers"'"}'
+[[ "$rc" != 0 ]] && grep -qF "$TMP/mnt9" <<<"$err" && grep -qF 'mount' <<<"$err" \
+  && pass "an image built for a path under an empty directory (an unmounted drive) is not taken for a moved project" \
+  || fail "path under an empty directory (rc=$rc: $err)"
+rmdir "$TMP/mnt9"
+
 # …but a path you cannot stat is not proof it moved: under another user's 0700
 # home it only looks absent (review of the batch 10 branch).
 if [[ "$(id -u)" != 0 ]]; then

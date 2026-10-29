@@ -1290,6 +1290,19 @@ ai_containers_retag_check() {
   # a directory you cannot enter (another user's home) only looks absent.
   local up="${proj%/*}"
   while [[ -n "$up" && ! -e "$up" ]]; do up="${up%/*}"; done
+  # Nor one whose nearest existing ancestor is an EMPTY directory: that is what a
+  # drive that is not mounted leaves — its mount point — so the project may be
+  # there once it is (ENV-9). A parent you emptied by hand looks the same; the
+  # message says what to do then.
+  if [[ "$proj" != "$2" && ! -e "$proj" && -n "$up" && -d "$up" && -r "$up" ]] \
+     && [[ -z "$(find "$up" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]]; then
+    printf 'ERROR: IMAGE_NAME=%s was built for %s, which is not there, and %s is empty:\n' \
+      "$(_ac_term "$1")" "$(_ac_term "$proj")" "$(_ac_term "$up")" >&2
+    printf '       a drive that is not mounted looks like that; refusing to retag it. Mount it and build\n' >&2
+    printf '       that project, or, if it is gone, remove the image (docker rmi %s), or set IMAGE_NAME\n' "$(_ac_term "$1")" >&2
+    printf '       in sandbox.local.env to a name of your own.\n' >&2
+    return 1
+  fi
   if [[ "$proj" != "$2" && ! -e "$proj" ]] && [[ -z "$up" || -x "$up" ]]; then
     printf 'NOTE: %s was built for %s, which no longer exists; rebuilding it for this project.\n' "$(_ac_term "$1")" "$(_ac_term "$proj")" >&2
     return 0

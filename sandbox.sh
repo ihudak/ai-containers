@@ -1838,7 +1838,7 @@ _git_index_read() {
       _gir_tmp=""
       if [[ -z "$_gir_tmp_warned" ]]; then
         _gir_tmp_warned=1
-        printf 'WARNING: cannot make a temporary directory in %s (TMPDIR); git indexes are not read, so the submodules they record are not followed\n' "$(_term "${TMPDIR:-/tmp}")" >&2
+        printf 'WARNING: cannot make a temporary directory in %s (TMPDIR); git indexes are not read, so the submodules they record are not followed\n' "$(_q "${TMPDIR:-/tmp}")" >&2
       fi
       return 1
     }
