@@ -576,6 +576,9 @@ build_image() {
     < <(ai_containers_provenance_labels "$script_dir")
 
   docker build "${build_args[@]}" -t "$build_image_name" "$script_dir"
+  # The id the image carries, with its path, for another project's build to name
+  # (ENV-8).
+  ai_containers_project_record "$(cd "$script_dir" && pwd -P)"
 
   # Only after a successful build: clean up the image it replaced.
   local new_image_id

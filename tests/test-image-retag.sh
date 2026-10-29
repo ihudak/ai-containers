@@ -6,6 +6,10 @@
 #
 # A fake `docker` answers `image inspect` from FAKE_LABELS: `none` (no such
 # image), or the JSON docker prints for .Config.Labels.
+#
+# The project label is the id of the project's path since ENV-8, looked up in
+# ~/.ai-containers/image-projects.conf; an image built before carries the path.
+# The checks that judge another project run for both.
 set -uo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -16,11 +20,16 @@ pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails + 1)); }
 
 TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
-trap 'rm -rf "$TMP"' EXIT
+# Guarded: p_timeout forks, and a child that inherits an unguarded trap removes
+# the fixture when it is killed (tests/test-exit-trap-ownership.sh).
+TMP_OWNER="$BASHPID"
+trap '[[ "$BASHPID" == "$TMP_OWNER" ]] && rm -rf "$TMP"' EXIT
 export HOME="$TMP/home"; mkdir -p "$HOME"
 
 # shellcheck disable=SC1091
 source "$ENGINE/sandbox-common.sh"
+# shellcheck source=portability.sh
+source "$REPO_DIR/tests/portability.sh"
 
 mkdir -p "$TMP/bin"
 cat > "$TMP/bin/docker" <<'FAKE'
@@ -40,6 +49,23 @@ export PATH="$TMP/bin:$PATH"
 
 ME="$TMP/proj/.ai-containers"; mkdir -p "$ME"; ME="$(cd "$ME" && pwd -P)"
 
+# bounded <fifo> <command…>: the command's output, run for at most 10 s. A FIFO
+# that code under test should not open blocks a subshell it forked, which
+# p_timeout's kill does not reach; its output goes to a file so it holds no
+# pipe of this test's, and opening the FIFO read-write lets it go on, so a
+# regression fails here rather than hanging the suite.
+bounded() {
+  local fifo="$1" rc i; shift
+  p_timeout 10 "$@" > "$TMP/bounded.out" 2>&1; rc=$?
+  if [[ "$rc" == 124 ]]; then
+    for i in 1 2 3; do
+      if [[ -p "$fifo" ]]; then { exec 3<>"$fifo"; exec 3>&-; } 2>/dev/null; fi
+      sleep 1
+    done
+  fi
+  cat "$TMP/bounded.out"
+}
+
 # check LABELS → sets rc and err
 check() { err="$(FAKE_LABELS="$1" ai_containers_retag_check img:tag "$ME" 2>&1)"; rc=$?; }
 
@@ -49,35 +75,50 @@ check none
 check '{"ai-containers.built-at":"x","ai-containers.project":"'"$ME"'"}'
 [[ "$rc" == 0 && -z "$err" ]] && pass "this project's own image is rebuilt" || fail "own image (rc=$rc: $err)"
 
+# lab <path>: the project label for <path> in the form under test ($KIND): the
+# path, or its id, recorded with the path as build.sh records it.
+lab() {
+  if [[ "$KIND" == path ]]; then printf '%s' "$1"; return; fi
+  ai_containers_project_record "$1"
+  ai_containers_project_id "$1"
+}
+for KIND in path id; do
 SIB="$TMP/sib/.ai-containers"; mkdir -p "$SIB"
-check '{"ai-containers.built-at":"x","ai-containers.project":"'"$SIB"'"}'
+check '{"ai-containers.built-at":"x","ai-containers.project":"'"$(lab "$SIB")"'"}'
 [[ "$rc" != 0 ]] && grep -qF "$SIB" <<<"$err" \
-  && pass "another project's image is not retagged, and the project is named" \
-  || fail "another project's image (rc=$rc: $err)"
+  && pass "[$KIND] another project's image is not retagged, and the project is named" \
+  || fail "[$KIND] another project's image (rc=$rc: $err)"
 
 # A project that moved left its old path behind: nothing there to overwrite
 # (review of the batch 10 branch).
-check '{"ai-containers.built-at":"x","ai-containers.project":"'"$TMP/gone/.ai-containers"'"}'
-[[ "$rc" == 0 ]] && grep -qF 'no longer exists' <<<"$err" \
-  && pass "an image built for a path that no longer exists (a moved project) is rebuilt, with a NOTE" \
-  || fail "moved project (rc=$rc: $err)"
+check '{"ai-containers.built-at":"x","ai-containers.project":"'"$(lab "$TMP/gone/.ai-containers")"'"}'
+[[ "$rc" == 0 ]] && grep -qF 'no longer exists' <<<"$err" && grep -qF "$TMP/gone" <<<"$err" \
+  && pass "[$KIND] an image built for a path that no longer exists (a moved project) is rebuilt, with a NOTE" \
+  || fail "[$KIND] moved project (rc=$rc: $err)"
 
 # …but a path under an empty directory is not proof either: it is what a drive
 # that is not mounted leaves behind (ENV-9).
 mkdir -p "$TMP/mnt9"
-check '{"ai-containers.built-at":"x","ai-containers.project":"'"$TMP/mnt9/drive/proj/.ai-containers"'"}'
+check '{"ai-containers.built-at":"x","ai-containers.project":"'"$(lab "$TMP/mnt9/drive/proj/.ai-containers")"'"}'
 [[ "$rc" != 0 ]] && grep -qF "$TMP/mnt9" <<<"$err" && grep -qF 'mount' <<<"$err" \
-  && pass "an image built for a path under an empty directory (an unmounted drive) is not taken for a moved project" \
-  || fail "path under an empty directory (rc=$rc: $err)"
+  && pass "[$KIND] an image built for a path under an empty directory (an unmounted drive) is not taken for a moved project" \
+  || fail "[$KIND] path under an empty directory (rc=$rc: $err)"
 rmdir "$TMP/mnt9"
 # A nearest existing directory that is a LINK to one with entries is not empty:
 # `find` given a link as its start does not follow it (review of 837daef).
 mkdir -p "$TMP/real9/other"; ln -s "$TMP/real9" "$TMP/lnk9"
-check '{"ai-containers.built-at":"x","ai-containers.project":"'"$TMP/lnk9/proj/.ai-containers"'"}'
+check '{"ai-containers.built-at":"x","ai-containers.project":"'"$(lab "$TMP/lnk9/proj/.ai-containers")"'"}'
 [[ "$rc" == 0 ]] && grep -qF 'no longer exists' <<<"$err" \
-  && pass "a path under a link to a directory with entries is still a moved project" \
-  || fail "a path under a linked, non-empty directory (rc=$rc: $err)"
+  && pass "[$KIND] a path under a link to a directory with entries is still a moved project" \
+  || fail "[$KIND] a path under a linked, non-empty directory (rc=$rc: $err)"
 rm -rf "$TMP/real9" "$TMP/lnk9"
+# A path holding | is named whole: the id ends at the first one (review of the
+# fix, L4).
+SIBP="$TMP/a|b/.ai-containers"; mkdir -p "$SIBP"
+check '{"ai-containers.built-at":"x","ai-containers.project":"'"$(lab "$SIBP")"'"}'
+[[ "$rc" != 0 ]] && grep -qF "$SIBP" <<<"$err" \
+  && pass "[$KIND] another project whose path holds | is named whole" \
+  || fail "[$KIND] a project path with | (rc=$rc: $err)"
 # Where a drive's mount point goes away with it — macOS /Volumes/<drive>, Linux
 # /media/<user>/<drive> or /run/media/<user>/<drive> — the nearest existing
 # directory is the removable-media root, which holds other drives (review of 837daef).
@@ -90,17 +131,96 @@ for d in /home/u /mnt /Volumes/x/y /media/u/drive /; do _ac_removable_root "$d" 
 # home it only looks absent (review of the batch 10 branch).
 if [[ "$(id -u)" != 0 ]]; then
   mkdir -p "$TMP/locked/proj/.ai-containers"; chmod 000 "$TMP/locked"
-  check '{"ai-containers.built-at":"x","ai-containers.project":"'"$TMP/locked/proj/.ai-containers"'"}'
+  check '{"ai-containers.built-at":"x","ai-containers.project":"'"$(lab "$TMP/locked/proj/.ai-containers")"'"}'
   chmod 755 "$TMP/locked"
-  [[ "$rc" != 0 ]] && pass "an image built for a path this user cannot see is not taken for a moved project" \
-    || fail "unstatable project path (rc=$rc: $err)"
+  [[ "$rc" != 0 ]] && pass "[$KIND] an image built for a path this user cannot see is not taken for a moved project" \
+    || fail "[$KIND] unstatable project path (rc=$rc: $err)"
 fi
+done
+
+# The id alone (ENV-8). This project's own is recognised with no record at all:
+# the record may have been removed, and the id is computed, not looked up…
+rm -f "$HOME/.ai-containers/image-projects.conf"
+check '{"ai-containers.built-at":"x","ai-containers.project":"'"$(ai_containers_project_id "$ME")"'"}'
+[[ "$rc" == 0 && -z "$err" ]] && pass "this project's own id is recognised with no record" || fail "own id with no record (rc=$rc: $err)"
+# …but one made with a key since lost names nothing, the record included: a
+# record line counts only if its id is its path's (review of the fix, M2).
+old_id="$(ai_containers_project_id "$ME")"; ai_containers_project_record "$ME"
+mv "$HOME/.ai-containers/project-id.key" "$TMP/key.saved"
+check '{"ai-containers.built-at":"x","ai-containers.project":"'"$old_id"'"}'
+[[ "$rc" != 0 ]] && grep -qF 'project-id.key' <<<"$err" \
+  && pass "an id made with a key since lost is refused, naming the key" \
+  || fail "an id from a lost key (rc=$rc: $err)"
+mv -f "$TMP/key.saved" "$HOME/.ai-containers/project-id.key"; rm -f "$HOME/.ai-containers/image-projects.conf"
+# A damaged or hand-edited record names nothing: another project that still
+# exists is refused whatever its line has become, and an append after a last
+# line with no newline starts a line of its own (review of the fix, M2).
+REC="$HOME/.ai-containers/image-projects.conf"; SIB_ID="$(ai_containers_project_id "$SIB")"
+bad=""
+for dmg in crlf space conflict unterminated; do
+  case "$dmg" in
+    crlf)  printf '%s|%s\r\n' "$SIB_ID" "$SIB" > "$REC" ;;
+    space) printf '%s|%s \n' "$SIB_ID" "$SIB" > "$REC" ;;
+    conflict) printf '%s|%s\n' "$SIB_ID" "$TMP/nonexistent/x" > "$REC"; ai_containers_project_record "$SIB" ;;
+    unterminated) printf '# a line with no newline' > "$REC"; ai_containers_project_record "$SIB" ;;
+  esac
+  check '{"ai-containers.built-at":"x","ai-containers.project":"'"$SIB_ID"'"}'
+  [[ "$rc" != 0 ]] || bad+=" $dmg"
+  if [[ "$dmg" == conflict || "$dmg" == unterminated ]]; then grep -qF "$SIB" <<<"$err" || bad+=" $dmg:unnamed"; fi
+done
+[[ -z "$bad" ]] && pass "a damaged or conflicting record line cannot turn a refusal into a rebuild" || fail "record damage:$bad"
+rm -f "$REC"
+# An id no record names was built on another machine, or by another user of this
+# docker: there is no path to judge, and it is refused, naming the record.
+ai_containers_project_record "$SIB"
+check '{"ai-containers.built-at":"x","ai-containers.project":"sha256:'"$(printf 'elsewhere' | ai_containers_sha256)"'"}'
+[[ "$rc" != 0 ]] && grep -qF 'image-projects.conf' <<<"$err" && grep -qF 'another machine' <<<"$err" && ! grep -qF "$SIB" <<<"$err" \
+  && pass "an id no record names (another machine's project) is not retagged, and the record is named" \
+  || fail "unrecorded id (rc=$rc: $err)"
+# An id is 64 lowercase hex digits after sha256:; anything else is not this tool's.
+bad=""
+for v in "sha256:xyz" "sha256:$(printf '%064d' 0)0" "sha256:$(printf '%064d' 0 | tr 0 A)" "sha256:"; do
+  check '{"ai-containers.built-at":"x","ai-containers.project":"'"$v"'"}'
+  [[ "$rc" != 0 ]] && grep -qF 'did not write' <<<"$err" || bad+=" $v:$rc"
+done
+[[ -z "$bad" ]] && pass "a malformed id is a label this tool did not write" || fail "malformed ids:$bad"
+# A record that is a FIFO hangs neither the lookup nor the record (review of the
+# fix, L2), and one that cannot be written is passed by in silence.
+mkdir -p "$HOME/.ai-containers"; rm -f "$REC"; mkfifo "$REC"
+t0=$SECONDS
+out="$(bounded "$REC" bash -c 'source "$1/sandbox-common.sh" >/dev/null 2>&1; ai_containers_project_record "$2"; ai_containers_project_path "$3"; echo "rc=$?"' _ "$ENGINE" "$SIB" "$SIB_ID")"
+[[ "$out" == rc=1 && $((SECONDS - t0)) -lt 10 ]] && pass "a record that is a FIFO is neither read nor written" \
+  || fail "a FIFO record (in $((SECONDS - t0))s: $out)"
+rm -f "$REC"
+# Under build.sh's set -euo pipefail: one that cannot be read ended the build in
+# silence after docker build (second review of the fix, M1).
+if [[ "$(id -u)" != 0 ]]; then
+  bad=""
+  for m in 444 000; do
+    printf '# mode %s\n' "$m" > "$REC"; chmod "$m" "$REC"
+    out="$(bash -c 'set -euo pipefail; source "$1/sandbox-common.sh" >/dev/null 2>&1
+      ai_containers_project_record "$2"; ai_containers_project_path "$3" || echo "rc=$?"; echo done' _ "$ENGINE" "$SIB" "$SIB_ID" 2>&1)"
+    chmod 644 "$REC"
+    [[ "$out" == $'rc=1\ndone' ]] || bad+=" $m:[$out]"
+  done
+  [[ -z "$bad" ]] && pass "a record that cannot be written or read is passed by in silence, under set -e" \
+    || fail "an unwritable or unreadable record:$bad"
+  rm -f "$REC"
+fi
+# The record holds one line per project, and none for a path it could not give
+# back whole.
+: > "$HOME/.ai-containers/image-projects.conf"
+ai_containers_project_record "$SIB"; ai_containers_project_record "$SIB"; ai_containers_project_record "$TMP/new"$'\n'"line"
+n="$(grep -c . "$HOME/.ai-containers/image-projects.conf")"
+grep -qxF -- "$(ai_containers_project_id "$SIB")|$SIB" "$HOME/.ai-containers/image-projects.conf" && [[ "$n" == 1 ]] \
+  && pass "the record holds each project once, as id|path, and no path with a newline" \
+  || fail "the record ($n lines: $(cat "$HOME/.ai-containers/image-projects.conf"))"
 
 # A project label that is not an absolute path is not one this tool wrote, and
 # the walk up for a moved project spun on it for ever (automated security
 # review of 818cb3e).
 t0=$SECONDS
-err="$(FAKE_LABELS='{"ai-containers.built-at":"x","ai-containers.project":"relative"}' timeout 10 bash -c 'source "$1/sandbox-common.sh" >/dev/null 2>&1; ai_containers_retag_check img:tag "$2"' _ "$ENGINE" "$ME" 2>&1)"; rc=$?
+err="$(FAKE_LABELS='{"ai-containers.built-at":"x","ai-containers.project":"relative"}' p_timeout 10 bash -c 'source "$1/sandbox-common.sh" >/dev/null 2>&1; ai_containers_retag_check img:tag "$2"' _ "$ENGINE" "$ME" 2>&1)"; rc=$?
 [[ "$rc" != 0 && "$rc" != 124 && $((SECONDS - t0)) -lt 10 ]] && pass "a project label that is not an absolute path is refused, promptly" \
   || fail "relative project label (rc=$rc in $((SECONDS - t0))s: $err)"
 
@@ -150,14 +270,53 @@ check '{"ai-containers.built-at":"x"}'
   && pass "an image built before the project label is rebuilt, with a NOTE" \
   || fail "pre-label image (rc=$rc: $err)"
 
-# A symlinked engine copy is the same project: the label is the physical path
+# A symlinked engine copy is the same project: the id is of the physical path
 # (carried over from main's ENV-7 tests).
+ME_ID="$(ai_containers_project_id "$ME")"
 mkdir -p "$TMP/linkdir"; ln -s "$ME" "$TMP/linkdir/lnk"
-grep -qxF -- "ai-containers.project=$ME" <<<"$(ai_containers_provenance_labels "$TMP/linkdir/lnk" 2026-01-01T00:00:00Z)" \
+grep -qxF -- "ai-containers.project=$ME_ID" <<<"$(ai_containers_provenance_labels "$TMP/linkdir/lnk" 2026-01-01T00:00:00Z)" \
   && pass "a symlinked engine copy records the same project" || fail "symlinked engine copy"
-# Every build is stamped with the project it came from.
-grep -qxF -- "ai-containers.project=$ME" <<<"$(ai_containers_provenance_labels "$ME" 2026-01-01T00:00:00Z)" \
-  && pass "the labels carry the project's own directory" || fail "no project label"
+# Every build is stamped with the project it came from, by its id: `docker push`
+# publishes every label, and the path names the user and their directories
+# (ENV-8). No label carries the path, and the id is keyed: not the plain SHA-256
+# of the path, which anyone who guessed the path could confirm.
+lbls="$(ai_containers_provenance_labels "$ME" 2026-01-01T00:00:00Z)"
+[[ "$ME_ID" == sha256:* && ${#ME_ID} == 71 && "$ME_ID" != "sha256:$(printf '%s' "$ME" | ai_containers_sha256)" ]] \
+  && grep -qxF -- "ai-containers.project=$ME_ID" <<<"$lbls" && ! grep -qF -- "$TMP" <<<"$lbls" \
+  && pass "the labels name the project by a keyed id, and carry no path" || fail "project label ($ME_ID): $lbls"
+# The key is this user's: made once, 0600, and another key gives another id.
+key="$HOME/.ai-containers/project-id.key"
+other_id="$(HOME="$TMP/home2" bash -c 'source "$1/sandbox-common.sh" >/dev/null 2>&1; ai_containers_project_id "$2"' _ "$ENGINE" "$ME")"
+[[ "$(p_stat_mode "$key")" == 600 && "$(ai_containers_project_id "$ME")" == "$ME_ID" \
+   && "$other_id" == sha256:* && "$other_id" != "$ME_ID" ]] \
+  && pass "the id's key is this user's, 0600, and stable; another key gives another id" \
+  || fail "the id's key (mode $(p_stat_mode "$key"); again: $(ai_containers_project_id "$ME"); other: $other_id)"
+# A key that is not one this tool made gives no id, promptly and quietly: a FIFO,
+# a directory, a short or uppercase one, one it cannot read (second review of
+# the fix, L3, L5); and where hard links fail, the key is made all the same.
+mv "$key" "$TMP/key.saved"; bad=""
+for k in fifo dir short upper unreadable; do
+  case "$k" in
+    fifo) mkfifo "$key" ;; dir) mkdir "$key" ;;
+    short) printf 'abc\n' > "$key" ;; upper) printf '%064d\n' 0 | tr 0 A > "$key" ;;
+    unreadable) printf '%064d\n' 0 > "$key"; chmod 000 "$key" ;;
+  esac
+  [[ "$k" == unreadable && "$(id -u)" == 0 ]] && { rm -f "$key"; continue; }
+  out="$(bounded "$key" bash -c 'source "$1/sandbox-common.sh" >/dev/null 2>&1; ai_containers_project_id "$2"; echo "rc=$?"' _ "$ENGINE" "$ME")"
+  [[ "$out" == rc=1 ]] || bad+=" $k:[$out]"
+  chmod 644 "$key" 2>/dev/null; rm -rf "$key"
+done
+mv "$TMP/key.saved" "$key"
+nolink="$(HOME="$TMP/home3" bash -c 'source "$1/sandbox-common.sh" >/dev/null 2>&1; ln() { return 1; }
+  ai_containers_project_id "$2"' _ "$ENGINE" "$ME" 2>&1)"
+[[ "$nolink" == sha256:* ]] && nolink="$(p_stat_mode "$TMP/home3/.ai-containers/project-id.key")"
+[[ -z "$bad" && "$nolink" == 600 ]] && pass "a key this tool did not make gives no id; with no hard links one is still made, 0600" \
+  || fail "keys:$bad; with no hard links: $nolink"
+# With no id to give, the image records no project, and the build says so
+# (review of the fix, L1).
+nolab="$( ( ai_containers_sha256() { return 1; }; ai_containers_provenance_labels "$ME" 2026-01-01T00:00:00Z ) 2>&1)"
+grep -qF 'WARNING: this image records no project' <<<"$nolab" && ! grep -qF 'ai-containers.project=' <<<"$nolab" \
+  && pass "an image built with no id to give says it records no project" || fail "no id: $nolab"
 
 # A committed IMAGE_NAME names a local image: a registry host or a namespace is
 # refused from sandbox.env (sandbox.local.env and the shell are yours).
@@ -247,11 +406,20 @@ case "$1 ${2:-}" in "image inspect") printf '\n'; exit 1 ;; esac
 exit 0
 FAKE3
 chmod +x "$TMP/bin/docker"; : > "$DOCKER_LOG"
-( cd "$E" && unset IMAGE_NAME && bash ./build.sh ) >/dev/null 2>"$TMP/build.err"; brc=$?
+# Through a link to the engine copy: the record holds the physical path, as the
+# label's id is of it (review of the fix, L4). Builds above recorded it already.
+ln -s "$E" "$TMP/elink"; rm -f "$HOME/.ai-containers/image-projects.conf"
+( cd "$TMP/elink" && unset IMAGE_NAME && bash ./build.sh ) >/dev/null 2>"$TMP/build.err"; brc=$?
 Ep="$(cd "$E" && pwd -P)"
-grep -q '^build ' "$DOCKER_LOG" && grep -qF -- "ai-containers.project=$Ep" "$DOCKER_LOG" \
-  && pass "build.sh builds a new tag, labelled with its project" \
+Ep_ID="$(ai_containers_project_id "$Ep")"
+grep -q '^build ' "$DOCKER_LOG" && grep -qF -- "ai-containers.project=$Ep_ID" "$DOCKER_LOG" \
+  && ! grep -qF -- "ai-containers.project=$Ep" "$DOCKER_LOG" \
+  && pass "build.sh builds a new tag, labelled with its project's id" \
   || fail "build.sh new tag (rc=$brc; $(grep -E 'ERROR' "$TMP/build.err" | head -1))"
+# …and records the id with the path, so that another project's build can name it.
+grep -qxF -- "$Ep_ID|$Ep" "$HOME/.ai-containers/image-projects.conf" \
+  && pass "build.sh records the project's id and path in ~/.ai-containers/image-projects.conf" \
+  || fail "build.sh did not record the project ($(cat "$HOME/.ai-containers/image-projects.conf" 2>&1))"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

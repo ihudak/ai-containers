@@ -1352,16 +1352,96 @@ ai_containers_config_digest() {   # <dir> → 64 hex, or rc 1 when it cannot be 
   )
 }
 
-# The stamp itself, as a pure function of a directory and a clock, so it can be
-# asserted without building an image — build_image only has to append what this
-# returns.
+# The project an image was built for. The ai-containers.project label names it
+# by an id, never the engine copy's path: `docker push` publishes every label,
+# and the path names the user and their directories (ENV-8). The id is a SHA-256
+# of a random key of this user's and the physical path: unkeyed, anyone who
+# guessed the path could confirm it (review of the fix, M1). build.sh records
+# each id with its path in ~/.ai-containers/image-projects.conf, where
+# ai_containers_retag_check() looks up another project's; an image built before
+# carries the path itself.
+image_projects_file="${ai_containers_root}/image-projects.conf"
+project_id_key_file="${ai_containers_root}/project-id.key"
+
+# _ac_project_key: the key, 64 hex, made on first use (0600). A complete file is
+# linked into place, so a concurrent build reads all of it or none; where the
+# filesystem has no hard links it is created exclusively instead, and a build
+# that reads it before it is written has no id (review of the fix, L4).
+_ac_project_key() {
+  local k="" t
+  if [[ ! -e "$project_id_key_file" && ! -L "$project_id_key_file" ]]; then
+    mkdir -p "$ai_containers_root" 2>/dev/null || return 1
+    k="$(od -An -tx1 -N32 /dev/urandom 2>/dev/null | tr -d ' \n')"
+    [[ ${#k} == 64 ]] || return 1
+    t="$(mktemp "$ai_containers_root/.project-id.key.XXXXXX" 2>/dev/null)" || return 1
+    if ! { printf '%s\n' "$k" > "$t" && ln "$t" "$project_id_key_file"; } 2>/dev/null; then
+      ( set -C; umask 077; printf '%s\n' "$k" > "$project_id_key_file" ) 2>/dev/null || true
+    fi
+    rm -f "$t"
+  fi
+  [[ -f "$project_id_key_file" ]] || return 1
+  { IFS= read -r k < "$project_id_key_file"; } 2>/dev/null || return 1
+  [[ ${#k} == 64 && "$k" != *[!0-9a-f]* ]] || return 1
+  printf '%s' "$k"
+}
+
+ai_containers_project_id() {   # <physical dir> → sha256:<64 hex>, or rc 1
+  local k h
+  k="$(_ac_project_key)" || return 1
+  h="$(printf '%s\n%s' "$k" "$1" | ai_containers_sha256)" || return 1
+  [[ ${#h} == 64 ]] || return 1
+  printf 'sha256:%s' "$h"
+}
+
+# ai_containers_project_record <physical dir>: add its id|path line, once, on a
+# line of its own. A path that a line cannot give back whole (a newline) is not
+# recorded; nor is anything when the record cannot be written, which leaves
+# another project's build unable to name this one, and so refused. Quiet, and
+# never fails the build.
+ai_containers_project_record() {
+  local dir="$1" line last=""
+  [[ "$dir" == /* && "$dir" != *$'\n'* ]] || return 0
+  line="$(ai_containers_project_id "$dir")" || return 0
+  line+="|$dir"
+  # Not a FIFO, nor one it cannot read and write: under build.sh's set -e a
+  # failed read ended the build in silence (second review of the fix, M1).
+  [[ ! -e "$image_projects_file" || ( -f "$image_projects_file" && -r "$image_projects_file" \
+     && -w "$image_projects_file" ) ]] || return 0
+  grep -qxF -- "$line" "$image_projects_file" 2>/dev/null && return 0
+  mkdir -p "$ai_containers_root" 2>/dev/null || return 0
+  if [[ ! -e "$image_projects_file" ]]; then
+    line="# ai-containers: the project each image id names (build.sh). id|path"$'\n'"$line"
+  else
+    { last="$(tail -c 1 "$image_projects_file")" || last=""; } 2>/dev/null
+    if [[ -n "$last" ]]; then line=$'\n'"$line"; fi
+  fi
+  { printf '%s\n' "$line" >> "$image_projects_file"; } 2>/dev/null || true
+  return 0
+}
+
+# ai_containers_project_path <id>: the path recorded for <id>, or rc 1. A line
+# counts only if <id> is its path's id: one damaged, edited by hand, or made
+# with a key since replaced names nothing, and the build is refused (review of
+# the fix, M2).
+ai_containers_project_path() {
+  local line=""
+  [[ -f "$image_projects_file" && -r "$image_projects_file" ]] || return 1
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "${line%%|*}" == "$1" ]] || continue
+    if [[ "$(ai_containers_project_id "${line#*|}")" == "$1" ]]; then printf '%s' "${line#*|}"; return 0; fi
+  done < "$image_projects_file"
+  return 1
+}
+
 # ai_containers_retag_check <image> <project dir>: whether ./build.sh may move this
 # tag to an image built here. IMAGE_NAME is portable, so a committed sandbox.env
 # can name another project's tag, or a base image such as ubuntu:24.04: the build
 # then retagged it with this project's sandbox.conf and allowlist, and removed
 # the old image (ENV-7). A tag no image carries is fine; so is an image this
 # project built; one built before the project label existed passes with a NOTE.
-# One with no ai-containers labels, or another project's, is refused.
+# One with no ai-containers labels, or another project's, is refused, and so is
+# one whose id no record names: built on another machine, or by another user
+# of this docker, it cannot be judged (ENV-8).
 ai_containers_retag_check() {
   local labels proj
   labels="$(docker image inspect --format '{{json .Config.Labels}}' "$1" 2>/dev/null)" || return 0
@@ -1386,6 +1466,21 @@ ai_containers_retag_check() {
   if [[ -z "$proj" || "$proj" == "<no value>" ]]; then
     printf 'NOTE: %s was built before images recorded their project; rebuilding it here.\n' "$(_ac_term "$1")" >&2
     return 0
+  fi
+  # An id: this project's, or another's path from the record, judged below as a
+  # path label is (ENV-8). One with no record has no path to judge.
+  if [[ "$proj" == sha256:* && ${#proj} == 71 && "${proj#sha256:}" != *[!0-9a-f]* ]]; then
+    [[ "$proj" == "$(ai_containers_project_id "$2")" ]] && return 0
+    local recorded
+    if ! recorded="$(ai_containers_project_path "$proj")"; then
+      printf 'ERROR: IMAGE_NAME=%s was built for a project ~/.ai-containers/image-projects.conf does not name:\n' "$(_ac_term "$1")" >&2
+      printf '       on another machine, by another user of this docker or under another HOME, or with a key\n' >&2
+      printf '       (~/.ai-containers/project-id.key) since lost; refusing to retag it. Remove the image\n' >&2
+      printf '       (docker rmi %s), set IMAGE_NAME in sandbox.local.env to a name of your own, or replace\n' "$(_ac_term "$1")" >&2
+      printf '       it anyway: IMAGE_NAME=%s ./build.sh\n' "$(_ac_term "$1")" >&2
+      return 1
+    fi
+    proj="$recorded"
   fi
   # A project that has moved leaves its old path behind: nothing is there to
   # overwrite (review of the batch 10 branch).
@@ -1461,6 +1556,9 @@ ai_containers_build_retag_guard() {
   ai_containers_retag_check "$1" "$(cd "$2" && pwd -P)"
 }
 
+# The stamp itself, as a pure function of a directory and a clock, so it can be
+# asserted without building an image — build_image only has to append what this
+# returns.
 ai_containers_provenance_labels() {   # <dir> [<iso-8601 utc>] → one --label arg per line
   local dir="$1" now="${2:-}" digest commit
   [[ -n "$now" ]] || now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -1473,7 +1571,16 @@ ai_containers_provenance_labels() {   # <dir> [<iso-8601 utc>] → one --label a
   printf '%s\n' "--label" "ai-containers.built-at=$now"
   # The project this image is built for: a committed IMAGE_NAME can name another
   # project's tag, and ai_containers_retag_check refuses to overwrite it (ENV-7).
-  printf '%s\n' "--label" "ai-containers.project=$(cd "$dir" 2>/dev/null && pwd -P)"
+  # Its id, not its path (ENV-8). Without one the image records no project, which
+  # any project may then replace: said, not silent (review of the fix, L1).
+  local proj
+  if proj="$(cd "$dir" 2>/dev/null && pwd -P)" && proj="$(ai_containers_project_id "$proj")"; then
+    printf '%s\n' "--label" "ai-containers.project=$proj"
+  else
+    printf 'WARNING: this image records no project, so another project whose sandbox.env names its tag can\n' >&2
+    printf '         replace it: there is no sha256sum or shasum, or ~/.ai-containers/project-id.key cannot be\n' >&2
+    printf '         made or read (if it is there, remove it, and the next build makes a new one).\n' >&2
+  fi
   # Only when the assets ARE a git checkout. A project's .ai-containers/ is a
   # copy with no history, which is exactly the case this exists for: no commit
   # recorded there is the honest answer, not a missing feature.

@@ -170,9 +170,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (`ai-containers.project`), and a committed `IMAGE_NAME` that names an image
   this tool did not build, or another project's, is refused; one built for a
   project path that no longer exists (a project that moved) is rebuilt with a
-  NOTE. **Changed:** a committed `IMAGE_NAME` must be a local name — one with a
-  `/` (a registry or a namespace) is ignored with a WARNING; set such a name in
-  `sandbox.local.env` (bugs review ENV-7).
+  NOTE. The label is a hash of the project's path keyed with a random key of
+  yours (`~/.ai-containers/project-id.key`), so a pushed image neither
+  publishes your user and directory names nor lets anyone confirm a guess at
+  them. `./build.sh` keeps each with its path in
+  `~/.ai-containers/image-projects.conf`, and an image whose project that file
+  does not name (built on another machine, by another user, or with a key
+  since lost) is refused too, saying how to remove, rename or replace it
+  (bugs review ENV-8). **Changed:** a committed `IMAGE_NAME` must be a local
+  name — one with a `/` (a registry or a namespace) is ignored with a WARNING;
+  set such a name in `sandbox.local.env` (bugs review ENV-7).
 - **`repo.sh sync` and `reset` no longer run git on a repo volume's own `.git`.**
   They ran git as root, with your SSH keys, on a repository the agent can
   write through any `:rw` repo volume, so what it planted in `.git` — a

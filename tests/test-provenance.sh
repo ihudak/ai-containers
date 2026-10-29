@@ -41,6 +41,8 @@ check() { if [[ "$2" == "$3" ]]; then pass "$1"; else fail "$1"$'\n'"  expected:
 # The helpers are sourced, not re-implemented: a copy here could agree with
 # itself while disagreeing with the launcher, which is the failure this whole
 # file is about.
+# A HOME of its own: the project label's key is made there (ENV-8).
+export HOME="$TMP/home"; mkdir -p "$HOME"
 # shellcheck source=/dev/null
 source "$ENGINE_DIR/sandbox-common.sh" >/dev/null 2>&1
 
@@ -118,8 +120,8 @@ grep -qxF "ai-containers.built-at=2026-01-01T00:00:00Z" <<<"$labels" \
 # the honest answer, and inventing one would be worse than silence.
 grep -q "source-commit" <<<"$labels" \
   && fail "no source-commit outside a git checkout" || pass "no source-commit outside a git checkout"
-grep -qxF "ai-containers.project=$(cd "$A" && pwd -P)" <<<"$labels" \
-  && pass "the labels carry the project the image is for (ENV-7)" || fail "the labels carry the project"
+grep -qxF "ai-containers.project=$(ai_containers_project_id "$(cd "$A" && pwd -P)")" <<<"$labels" \
+  && pass "the labels carry the project the image is for, by its id (ENV-7, ENV-8)" || fail "the labels carry the project"
 check "every label is preceded by its --label flag" "3" "$(grep -cx -- '--label' <<<"$labels")"
 
 # And the other half of that branch: when the assets ARE a checkout, the commit
