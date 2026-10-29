@@ -77,5 +77,31 @@ else
   printf 'SKIP: the unreadable sandbox.conf check needs a non-root run\n'
 fi
 
+# BLD-8: check_config reads each value from its own line, as get_versions reads
+# it, so spacing, an inline comment and a CR are cut the same way…
+refuses 'ruby' 'ruby=  off   # a comment'
+refuses 'dtctl' $'dtctl=on\r'
+refuses 'ruby' $'ruby=\toff'
+accepts 'ruby=OFF   # capitals, commented' 'dtctl=0.25.0=x'
+# The value is everything after the FIRST `=`: `3.4.5=off` is not `off`.
+cp "$ENGINE_DIR/sandbox.conf" "$TMP/sandbox.conf"; sed -i.bak '/^ruby=/d' "$TMP/sandbox.conf" && rm -f "$TMP/sandbox.conf.bak"
+printf 'ruby=3.4.5=off\n' >> "$TMP/sandbox.conf"
+out="$(SANDBOX_CONF="$TMP/sandbox.conf" bash -c "source '$ENGINE_DIR/sandbox-common.sh'; check_config" 2>&1)"; rc=$?
+[[ "$rc" == 0 ]] && pass "check_config reads a value from the first =, as get_versions does" || fail "check_config and ruby=3.4.5=off (rc $rc: $out)"
+# …and without a process per key: three per key cost about 0.2 s of every launch
+# and build. Shims count grep, sed, cut and head: the duplicate check's grep and
+# sed and the key list's grep, whatever the number of keys.
+mkdir -p "$TMP/grep-bin"
+for tool in grep sed cut head; do
+  printf '#!/bin/sh\necho %s >> "%s"\nexec %s "$@"\n' "$tool" "$TMP/grep-calls" "$(command -v "$tool")" > "$TMP/grep-bin/$tool"
+  chmod +x "$TMP/grep-bin/$tool"
+done
+cp "$ENGINE_DIR/sandbox.conf" "$TMP/sandbox.conf"; : > "$TMP/grep-calls"
+out="$(SANDBOX_CONF="$TMP/sandbox.conf" bash -c "source '$ENGINE_DIR/sandbox-common.sh'; PATH='$TMP/grep-bin':\$PATH; check_config" 2>&1)"; rc=$?
+calls="$(wc -l < "$TMP/grep-calls" | tr -d ' ')"
+keys="$(grep -cE '^[A-Za-z0-9_-]+=' "$TMP/sandbox.conf")"
+[[ "$rc" == 0 && "$calls" -le 3 && "$keys" -gt 20 ]] && pass "check_config runs $calls of grep, sed, cut and head for $keys keys (BLD-8)" \
+  || fail "check_config ran $calls of grep, sed, cut and head for $keys keys (rc $rc: $out)"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

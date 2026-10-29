@@ -218,7 +218,7 @@ expected_shared_files=(
   link-node-globals.sh
   refresh-ipset-allowlist.sh
   capture-blocked-traffic.sh capture-agent-destinations.sh
-  install-tools.sh install-agent-skills.sh
+  install-tools.sh install-agent-skills.sh install-node-lts.sh
   extract-discovery.sh
 )
 derived_sorted="$(printf '%s\n' "${derived_shared_files[@]}" | sort | tr '\n' ' ')"

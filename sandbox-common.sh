@@ -375,9 +375,17 @@ check_config() {
   # download of tag "von", and `c-toolchain=on` was silently OFF (bugs review
   # BLD-6). Here and not in build.sh's validate_config alone: ruby installs at run
   # time, so sandbox.sh must refuse it too (review of batch 6).
-  local _key _rest _val
-  while IFS='=' read -r _key _rest; do
-    _val="$(get_versions "$_key")"
+  # Each value read from its own line in bash, as get_versions() reads it (the
+  # text after the first `=`, an inline comment cut, whitespace trimmed): the
+  # duplicate check above leaves one line per key, so it is that key's value.
+  # Calling get_versions() per key cost three processes each, about 0.1 s per
+  # launch and build on Linux (bugs review BLD-8).
+  local _line _key _val
+  while IFS= read -r _line; do
+    _key="${_line%%=*}"; _val="${_line#*=}"
+    _val="${_val%%#*}"
+    _val="${_val#"${_val%%[![:space:]]*}"}"
+    _val="${_val%"${_val##*[![:space:]]}"}"
     if [[ "$_val" != ON && "$_val" != OFF ]] && [[ "${_val^^}" == ON || "${_val^^}" == OFF ]]; then
       printf 'ERROR: %s=%s must be written in capitals: %s=%s.\n' "$_key" "$_val" "$_key" "${_val^^}" >&2
       printf '       Lowercase is not the boolean: it is read as a version.\n' >&2

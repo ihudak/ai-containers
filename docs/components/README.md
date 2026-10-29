@@ -28,7 +28,7 @@ openjdk=21.0.11,25.0.2
 
 Leaving the key empty (`key=`) skips the component. Because the same file holds boolean keys, an explicit **`key=OFF` is accepted on a version-list key too, and means exactly the same as empty** — so `ruby=OFF` skips Ruby rather than being read as a version named "OFF".
 
-Two runtimes have an always-on baseline that you get whether you ask or not, because the AI agents need them: **latest LTS Node** and **latest stable Python**. A version list adds versions *alongside* that baseline; it does not replace it.
+Two runtimes have an always-on baseline that you get whether you ask or not, because the AI agents need them: **latest LTS Node** and **latest stable Python**. A version list adds versions *alongside* that baseline; it does not replace it. On the day a Node release becomes LTS, nodejs.org can list it before its checksums are published; a build then gets the LTS release before it, with a `WARNING:` in the build log, and `./build.sh --no-cache` later picks up the newest.
 
 JVM versions must be **SDKMAN identifiers**, which are full patch versions — `21.0.11`, not `21`. Run `sdk list java` inside a container to see what is available.
 

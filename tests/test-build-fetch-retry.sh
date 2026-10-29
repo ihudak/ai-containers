@@ -265,8 +265,14 @@ check_layer() {  # $1 name  $2 raw extraction
 
 check_layer nvm "$(extract_layer '^ARG NVM_VERSION=' 'ln -sf .*/npx /usr/local/bin/npx' "$REPO_DIR/Dockerfile")"
 nvm_run="$LAYER_BODY"
+# The loop lives in install-node-lts.sh, which the layer runs (BLD-9): read with
+# the layer, or the reset below is not seen. tests/test-install-node-lts.sh
+# drives that loop itself.
+if [[ "$nvm_run" == *"bash /tmp/install-node-lts.sh"* ]]; then
+  nvm_run+=$'\n'"$(cat "$REPO_DIR/install-node-lts.sh")"
+fi
 if [[ -n "$nvm_run" ]]; then
-  if grep -q 'for attempt in' <<< "$nvm_run"; then
+  if grep -qE 'for attempt in|for \(\( attempt' <<< "$nvm_run"; then
     pass "  … and the installer runs inside a retry loop, not just its download"
   else
     fail "  … and the installer runs inside a retry loop, not just its download — nvm's install.sh git-clones from github.com with no retry of its own, so a rate-limited clone fails the whole build (measured 2026-09-02)"

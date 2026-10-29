@@ -39,6 +39,6 @@ AI_CONTAINERS_SHARED_FILES=(
   agent-tools-reconcile.sh link-agent-tools.sh start-services.sh
   link-node-globals.sh
   refresh-ipset-allowlist.sh capture-blocked-traffic.sh
-  capture-agent-destinations.sh install-tools.sh install-agent-skills.sh
+  capture-agent-destinations.sh install-tools.sh install-agent-skills.sh install-node-lts.sh
   extract-discovery.sh
 )

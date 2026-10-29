@@ -40,7 +40,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   rm -rf /var/lib/apt/lists/*
 
 # ── nvm + Node.js ───────────────────────────────────────────────────────────────
-# nvm is always installed; the latest LTS is always present (required by AI agents).
+# nvm is always installed; the latest LTS is always present (required by AI agents),
+# or, on the day a release becomes LTS before its checksums are published, the LTS
+# release before it, with a WARNING (install-node-lts.sh; bugs review BLD-9).
 # NODE_EXTRA_VERSIONS: space-separated list of additional versions to install.
 ARG NODE_EXTRA_VERSIONS=""
 ENV NVM_DIR=/opt/nvm
@@ -81,15 +83,14 @@ ARG NVM_VERSION=v0.40.8
 #
 # v0.9.9 decided a build-time fetch must survive a transient failure;
 # tests/test-build-fetch-retry.sh enforces that for every `curl` and CANNOT see a
-# fetch a vendor's own installer makes. This loop is where that gap is closed for
-# the one installer with recorded failures.
-#
-# A CLEAN SLATE PER ATTEMPT is load-bearing: a half-finished clone leaves
-# $NVM_DIR/.git behind, and install.sh then takes its "already installed" branch
-# and fetches into a repository that may be broken — so a retry over the debris
-# of the previous attempt is not a retry. `nvm install --lts` sits inside the
-# loop for the same reason the clone does (it downloads from nodejs.org) and is
-# idempotent given that reset.
+# fetch a vendor's own installer makes. install-node-lts.sh's loop is where that
+# gap is closed for the one installer with recorded failures: a clean slate per
+# attempt (a half-finished clone leaves $NVM_DIR/.git, which install.sh takes
+# for an installed nvm), `nvm install --lts` inside it, and, from the third
+# attempt, the previous LTS line when only the newest will not install (on the
+# day a line becomes LTS its checksums can lag; bugs review BLD-9). A script,
+# not inline, so tests/test-install-node-lts.sh can drive it.
+COPY install-node-lts.sh /tmp/install-node-lts.sh
 RUN --mount=type=secret,id=github_token \
     # MODE AT CREATION, not by umask afterwards. `: > file` creates it with the
     # DEFAULT umask (0644 for root) and a later redirect does NOT change an
@@ -134,18 +135,8 @@ RUN --mount=type=secret,id=github_token \
         -o /tmp/nvm-install.sh \
         "https://raw.githubusercontent.com/nvm-sh/nvm/${NVM_VERSION}/install.sh"; \
     fi && \
-    for attempt in 1 2 3 4 5; do \
-      rm -rf "$NVM_DIR"; mkdir -p "$NVM_DIR"; \
-      if PROFILE=/dev/null bash /tmp/nvm-install.sh && \
-         bash -c "source $NVM_DIR/nvm.sh && nvm install --lts && nvm alias default 'lts/*'"; then \
-        break; \
-      fi; \
-      if [ "$attempt" = 5 ]; then \
-        echo "nvm bootstrap failed after 5 attempts" >&2; exit 1; \
-      fi; \
-      sleep $((attempt * 15)); \
-    done && \
-    rm -f /tmp/nvm-install.sh /tmp/gh-curl.cfg && \
+    bash /tmp/install-node-lts.sh /tmp/nvm-install.sh && \
+    rm -f /tmp/nvm-install.sh /tmp/gh-curl.cfg /tmp/install-node-lts.sh && \
     # Install any extra versions requested
     if [ -n "$NODE_EXTRA_VERSIONS" ]; then \
       for ver in $NODE_EXTRA_VERSIONS; do \
@@ -159,7 +150,7 @@ RUN --mount=type=secret,id=github_token \
         done; \
       done; \
     fi && \
-    # Symlink the default (latest LTS) node/npm/npx into PATH for non-nvm shells
+    # Symlink the default node/npm/npx into PATH for non-nvm shells
     bash -c "source $NVM_DIR/nvm.sh && \
       ln -sf \$(nvm which default) /usr/local/bin/node && \
       ln -sf \$(dirname \$(nvm which default))/npm /usr/local/bin/npm && \
