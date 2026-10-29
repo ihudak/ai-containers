@@ -1416,6 +1416,17 @@ Batch 10 went through seven review rounds, a review of its merge with main and o
 - No test covers the greps' `export` prefix or exact match, nor the link refusal's "another group" and "leads nowhere" hints.
 - The "another group" hint can name a directory that is not a valid group (`.verify-*`); "It leads nowhere" also covers a link to a file or an unsearchable directory; the "another disk" advice is printed for a link into `$HOME`, where it does not fit (it prints no command).
 
+## 17. Found while demonstrating the regenerated mutation patches
+
+Batch 11 regenerated patches 467, 500, 510 and 710. Each was applied and its case run against an image built from `76ea3ef` (2026-10-29): 467 turns case 465 red, 500 turns 500 red, 510 turns 510 red, each on the assertions its header names; the unpatched cases pass.
+
+### TST-23: case 710 no longer notices that the group's `~/.ai-tools` is not mounted
+- **Status: FIXED** (2026-10-29). The first container writes a marker into `~/.ai-tools` as the agent (`agent_exec`), and the second must find it; no tool is required for that, so a failed vale download cannot fail the case. The patch's own description, which said the second container would not find claude, now says what it breaks. Against `710-ai-tools-not-group-mounted` the case now fails on that assertion; unpatched it passes (4 assertions).
+- Severity: LOW. Confidence: CONFIRMED (the patch applied, case 710 passed with 3 assertions in 406 s)
+- Location: `tests/integration/cases/710-agent-tools-reused-not-reinstalled.sh`
+- What's wrong: since `35b8342` (2026-08-24) the case watched only Claude Code, which installs natively under `~/.local/share/claude`, a mount of its own. The mutation drops the `~/.ai-tools` mount, which the case no longer looked at, so it survived, and nothing verified that a group's npm, uv and vale tools are reused. Batch 11 regenerated the patch's context only; the gap is older. An mtime check on vale was tried first and also passed against the mutation: the release tarball's mtime survives extraction.
+- Fix direction: done as above.
+
 ---
 
 # Appendix: what each reviewer checked and cleared

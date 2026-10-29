@@ -1,9 +1,11 @@
 # case: 710-agent-tools-reused-not-reinstalled
 # what: sandbox.sh drops the ~/.ai-tools mount entirely, so the group's npm/uv/vale
 #       tool home is never bind-mounted into the container -- every launch installs
-#       the six agent-tier tools into an ephemeral, per-container ~/.ai-tools instead
-#       of reusing the group's persisted one, so a second container in the same
-#       group re-downloads everything rather than finding claude already there.
+#       the npm/uv/vale agent-tier tools into an ephemeral, per-container ~/.ai-tools
+#       instead of reusing the group's persisted one, so a second container in the
+#       same group re-downloads them, and does not find the marker case 710 left in
+#       ~/.ai-tools. (Claude Code installs natively under ~/.local/share/claude, a
+#       mount of its own, and is still found: TST-23.)
 #
 diff --git a/sandbox.sh b/sandbox.sh
 --- a/sandbox.sh

@@ -37,11 +37,13 @@
 # 2400s leaves ~470s of real margin over it, not an arithmetic coincidence.
 #
 # The whole reason ~/.ai-tools is group-mounted rather than baked. If reuse
-# breaks, nothing FAILS — every container just pays a full six-tool network
-# install at every start, which looks like slowness rather than a bug and would
-# never be noticed. Asserting the effect (the installed binary's own mtime,
-# not the mount configuration) is what makes it observable — see the mtime_of
-# comment below for why that specific signal replaced an earlier log-grep one.
+# breaks, nothing FAILS — every container just pays a full network install of
+# the agent-tier tools at every start, which looks like slowness rather than a
+# bug and would never be noticed. Asserting the effect, not the mount
+# configuration, is what makes it observable: claude's installed binary keeps
+# its mtime (see the mtime_of comment below for why that signal replaced an
+# earlier log-grep one), and a marker the first container leaves in ~/.ai-tools
+# is there for the second (TST-23).
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 
@@ -112,6 +114,18 @@ IT_SETTLE=900
 # The version is resolved AFTER the first launch rather than hardcoded, because
 # which version is current is upstream's business, not this case's.
 claude_versions="$IT_LAUNCH_HOME_IN/.local/share/claude/versions"
+# …and ~/.ai-tools, the group's tool home for everything npm, uv and vale
+# install, is a mount of its own: claude alone stopped covering it when Claude
+# Code moved out, and the mutation that drops it (710-ai-tools-not-group-mounted)
+# survived this case from then on. Not an mtime this time: vale, the obvious
+# binary there, is unpacked from its release tarball, which keeps the archive's
+# own mtime, so a fresh install reads exactly like a reused one (measured: the
+# mutation passed an mtime check). Instead the first container leaves a marker
+# in ~/.ai-tools, as the agent, and the second must find it: a ~/.ai-tools of
+# the container's own cannot hold what another container wrote. No tool is
+# required for that, so a failed vale download (case 700 covers each tool)
+# cannot fail this case.
+marker="$IT_LAUNCH_HOME_IN/.ai-tools/.it-710-reuse-marker"
 mtime_of() { docker exec "$1" bash -c "stat -c %Y '$2' 2>/dev/null"; }
 
 fixture_scope_init || it_finish
@@ -142,6 +156,12 @@ if [[ -z "$first_mtime" ]]; then
   it_finish
 fi
 pass "the first start installed claude natively ($claude_bin)"
+if ! agent_exec "$first" "test -d '$IT_LAUNCH_HOME_IN/.ai-tools' && : > '$marker'"; then
+  fail "the first start has no ~/.ai-tools the agent can write ($marker)"
+  docker exec "$first" bash -c "ls -la '$IT_LAUNCH_HOME_IN/.ai-tools' '$IT_LAUNCH_HOME_IN/.ai-tools/bin' 2>&1" | sed 's/^/       /' || true
+  it_diagnose "$first"
+  it_finish
+fi
 docker rm -f "$first" >/dev/null 2>&1 || true
 
 launcher_up restricted || it_finish
@@ -159,6 +179,11 @@ elif [[ "$second_mtime" == "$first_mtime" ]]; then
   pass "the second start reused the group's tool home (mtime unchanged: $first_mtime)"
 else
   fail "the second start RE-INSTALLED claude — the group's tool home was not reused (mtime $first_mtime -> $second_mtime)"
+fi
+if docker exec "$IT_CID" test -e "$marker"; then
+  pass "the second start reused the group's ~/.ai-tools (the first container's marker is there)"
+else
+  fail "the second start did not get the group's ~/.ai-tools: the first container's marker is missing ($marker)"
 fi
 assert_runs "$IT_CID" claude
 
