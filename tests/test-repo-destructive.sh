@@ -91,13 +91,32 @@ case "$1 $2" in
     elif grep -qx -- "$vol" "$INUSE" 2>/dev/null; then printf 'false \n'; fi
     exit 0 ;;
   "volume ls")
-    substr=""
-    for a in "$@"; do case "$a" in name=*) substr="${a#name=}" ;; esac; done
+    substr=""; fmt=""; prev=""
+    for a in "$@"; do
+      case "$a" in name=*) substr="${a#name=}" ;; esac
+      [[ "$prev" == --format ]] && fmt="$a"
+      prev="$a"
+    done
+    # FAKE_LS_NO_FORMAT: a docker that prints names alone, whatever --format says,
+    # as every other fake in the suite does (the label table's fallback).
+    [[ -z "${FAKE_LS_NO_FORMAT:-}" ]] || fmt=""
+    # FAKE_LS_FAILS: a listing that fails when asked for the label table.
+    [[ -z "${FAKE_LS_FAILS:-}" || -z "$fmt" ]] || exit 1
     for f in "$VOLS"/*; do
       [[ -f "$f" ]] || continue
       b="$(basename "$f")"
       [[ "$b" == *.labels ]] && continue          # sidecar, not a volume
-      [[ -z "$substr" || "$b" == *"$substr"* ]] && printf '%s\n' "$b"
+      [[ -z "$substr" || "$b" == *"$substr"* ]] || continue
+      if [[ -z "$fmt" ]]; then printf '%s\n' "$b"; continue; fi
+      # --format '{{.Name}}{{"\x1f"}}{{json (.Label "k")}}…': the name, then each
+      # label as a JSON string (none in this world needs escaping).
+      line="$b"; rest="$fmt"
+      while [[ "$rest" == *'.Label "'* ]]; do
+        rest="${rest#*.Label \"}"; key="${rest%%\"*}"; val=""
+        [[ -f "$VOLS/$b.labels" ]] && val="$(grep "^${key}=" "$VOLS/$b.labels" 2>/dev/null | head -1 | cut -d= -f2-)"
+        line+=$'\x1f'"\"$val\""
+      done
+      printf '%s\n' "$line"
     done
     exit 0 ;;
   "volume create")
@@ -1043,6 +1062,74 @@ run_repo gc
 grep -qE 'ai-containers-repo-docs--wc-projA +docs +/tmp/docs--wc-projA' "$OUT" \
   && pass "gc's table shows each copy's repo and launch dir, from its labels" \
   || fail "gc's table shows each copy's repo and launch dir (got: $(tr '\n' '|' < "$OUT"))"
+
+# ── 30b. one `volume ls` for the labels, the same answers (REPO-12) ─────────────
+# list, gc and reindex read their labels from one `docker volume ls --format`
+# instead of an inspect per volume and label; with a docker whose ls ignores
+# --format they inspect as before, and say the same either way.
+inspects() { grep -cE '^volume (inspect|ls)' "$DOCKER_LOG"; }
+# The world, with what the table must also get right (its review, L3): a
+# registered repo with no volume (MISSING), an unlabelled working copy, a base
+# under a nested prefix labelled for another repo (`other`), a lookalike outside
+# the prefix that docker's unanchored filter still returns, and p_9 beside p_10.
+setup_world_ab() {
+  setup_world
+  printf 'ghost|git|git@x:ghost.git|1700000000|1700000000|volume\n' >> "$HOME/.ai-containers/repos.conf"
+  : > "$VOLS/ai-containers-repo-cluster--wc-old"
+  : > "$VOLS/ai-containers-repo-team-repo-x"; printf 'ai-containers.repo=x\n' > "$VOLS/ai-containers-repo-team-repo-x.labels"
+  : > "$VOLS/xai-containers-repo-foo"; printf 'ai-containers.repo=foo\n' > "$VOLS/xai-containers-repo-foo.labels"
+  for wc in docs--wc-p_9 docs--wc-p_10; do
+    : > "$VOLS/ai-containers-repo-$wc"; printf 'ai-containers.repo=docs\nai-containers.launch-dir=/tmp/%s\n' "$wc" > "$VOLS/ai-containers-repo-$wc.labels"
+  done
+}
+for cmd in "list" "list --copies" "gc" "reindex"; do
+  setup_world_ab
+  # shellcheck disable=SC2086  # the command's words, split on purpose
+  FAKE_LS_NO_FORMAT=1 run_repo $cmd; old_out="$(cat "$OUT")"; old_inspects="$(inspects)"
+  setup_world_ab
+  # A listing that fails leaves no table: the same output as the fallback.
+  # shellcheck disable=SC2086
+  FAKE_LS_FAILS=1 run_repo $cmd; failed_out="$(cat "$OUT")"
+  setup_world_ab
+  # shellcheck disable=SC2086
+  run_repo $cmd; new_out="$(cat "$OUT")"; new_inspects="$(inspects)"
+  [[ "$failed_out" == "$old_out" ]] && pass "  … repo.sh $cmd with the table's listing failing says the same as without it" \
+    || fail "repo.sh $cmd with the listing failing differs"
+  if [[ "$new_out" == "$old_out" && "$new_inspects" == 1 && "$old_inspects" -gt 1 ]]; then
+    pass "repo.sh $cmd reads its volumes from one volume ls: the same output, 1 docker volume call (was $old_inspects)"
+  else
+    fail "repo.sh $cmd and the label table (volume calls $old_inspects -> $new_inspects; same output: $([[ "$new_out" == "$old_out" ]] && echo yes || echo no))
+$new_out"
+  fi
+done
+
+# The deleting forms remove exactly what they removed before.
+for cmd in "gc --yes" "gc --repo docs --yes" "gc --unused --yes"; do
+  setup_world_ab; printf 'ai-containers-repo-docs--wc-projA\n' > "$INUSE"
+  # shellcheck disable=SC2086
+  FAKE_LS_NO_FORMAT=1 run_repo $cmd; old_out="$(cat "$OUT")"; old_rm="$(removed)"
+  setup_world_ab; printf 'ai-containers-repo-docs--wc-projA\n' > "$INUSE"
+  # shellcheck disable=SC2086
+  run_repo $cmd; new_out="$(cat "$OUT")"; new_rm="$(removed)"
+  [[ "$new_out" == "$old_out" && "$new_rm" == "$old_rm" && -n "$new_rm" ]] \
+    && pass "repo.sh $cmd removes exactly what it removed without the table ($new_rm)" \
+    || fail "repo.sh $cmd and the label table (removed $old_rm -> $new_rm)"
+done
+
+# The table's coverage, asked directly: a key it does not load, and a prefix it
+# does not cover, go to docker; a volume it covers but does not list is absent,
+# without asking docker.
+setup_world_ab
+cov="$(PATH="$FAKE_BIN:$PATH" bash -c '
+  source "$1/sandbox-common.sh"; docker_volume_labels_load; : > "$DOCKER_LOG"
+  docker_volume_label ai-containers-repo-docs ai-containers.type >/dev/null; a="$(grep -c . "$DOCKER_LOG")"
+  docker_volume_label ai-containers-repo-docs some.other.key >/dev/null; b="$(grep -c "^volume inspect" "$DOCKER_LOG")"
+  volumes_named other-prefix-repo- >/dev/null; c="$(grep -c "^volume ls" "$DOCKER_LOG")"
+  docker_volume_present ai-containers-repo-ghost && p=yes || p=no
+  docker_volume_present ai-containers-repo-docs && q=yes || q=no
+  printf "%s %s %s %s %s %s" "$a" "$b" "$c" "$p" "$q" "$(grep -c . "$DOCKER_LOG")"' _ "$ENGINE_DIR" 2>&1)"
+[[ "$cov" == "0 1 1 no yes 2" ]] && pass "the label table answers only for what it covers (a loaded key, the repo prefix)" \
+  || fail "the label table's coverage (got: $cov; want: 0 1 1 no yes 2)"
 
 # ── 31. …and admits when it does not know ────────────────────────────────────
 # An unlabelled volume is exactly the one a reader most needs flagged: it cannot

@@ -498,6 +498,7 @@ cmd_list() {
     esac
     shift
   done
+  docker_volume_labels_load
   repo_registry_ensure
   # The size probe runs `du` inside the seed helper image; build it on demand.
   (( show_sizes )) && ensure_seed_image
@@ -541,7 +542,7 @@ cmd_list() {
     fi
     if [[ "$backend" == "bind" ]]; then
       if [[ -d "$source" ]]; then state="bind"; else state="bind!"; fi
-    elif docker volume inspect "$vol" >/dev/null 2>&1; then
+    elif docker_volume_present "$vol"; then
       state="present"
     else
       state="MISSING"
@@ -551,8 +552,15 @@ cmd_list() {
     wc_count="$(repo_workcopy_volumes "$name" | grep -c . || true)"
     size_str=""
     if (( show_sizes )) && [[ "$state" == "present" ]]; then
-      size="$(docker run --rm --entrypoint sh -v "$vol":/v "$seed_image" -c 'du -sh /v 2>/dev/null | cut -f1' 2>/dev/null || echo '?')"
-      size_str="  (${size})"
+      # Asked again right before `docker run -v`, which would make a volume that
+      # went since the label table was loaded, empty and unlabelled (review of
+      # the table, L1).
+      if docker volume inspect "$vol" >/dev/null 2>&1; then
+        size="$(docker run --rm --entrypoint sh -v "$vol":/v "$seed_image" -c 'du -sh /v 2>/dev/null | cut -f1' 2>/dev/null || echo '?')"
+        size_str="  (${size})"
+      else
+        state="MISSING"
+      fi
     fi
     printf '%-16s %-5s %-8s %-19s %-3s %s%s\n' "$name" "${type:-?}" "$state" "$synced_h" "$wc_count" "$source" "$size_str"
   done <<< "$names"
@@ -955,6 +963,7 @@ cmd_gc() {
   done
   [[ -n "$target_repo" ]] && { validate_repo_name "$target_repo" || exit 1; }
 
+  docker_volume_labels_load
   local all; all="$(repo_workcopy_volumes "$target_repo")"
   if [[ -z "$all" ]]; then
     printf 'No working copies%s found.\n' "${target_repo:+ for repo \"$target_repo\"}"
@@ -1012,6 +1021,7 @@ cmd_gc() {
 # anything.
 cmd_reindex() {
   repo_registry_ensure
+  docker_volume_labels_load
   local now; now="$(date +%s)"
   local count=0 vol name type source record added synced
   while IFS= read -r vol; do

@@ -608,9 +608,72 @@ repo_base_volume_create() {
 }
 
 # Echo a single label value from a docker volume ('' if absent or volume gone).
+# From docker_volume_labels_load()'s table when it covers that volume and key (a
+# repo volume it does not list did not exist, and has none), else by an inspect.
 docker_volume_label() {
   local vol="$1" key="$2"
+  if _vl_covers "$vol" && [[ " ${_vl_keys[*]} " == *" $key "* ]]; then
+    printf '%s' "${_vl_cache["$vol|$key"]-}"
+    return 0
+  fi
   docker volume inspect --format "{{if .Labels}}{{index .Labels \"${key}\"}}{{end}}" "$vol" 2>/dev/null || true
+}
+
+# docker_volume_present <vol>: the volume exists, by the table when it covers it.
+docker_volume_present() {
+  if _vl_covers "$1"; then [[ -n "${_vl_known[$1]+x}" ]]; return; fi
+  docker volume inspect "$1" >/dev/null 2>&1
+}
+
+# _vl_covers <vol>: the table is loaded and lists every volume <vol> could be.
+_vl_covers() { [[ -n "$_vl_loaded" && "$1" == "$_vl_loaded"* ]]; }
+
+# docker_volume_labels_load: the labels of every repo volume, by one
+# `docker volume ls`, into a table docker_volume_label(), docker_volume_present()
+# and volumes_named() read. Discovery and the tables of `repo.sh list`, `gc` and
+# `reindex` read one to three labels of each volume, an inspect each, about 28 ms
+# apiece (REPO-12). Run it in the shell that then reads: the command
+# substitutions those reads run in inherit the table, where one filled inside
+# them would die with it. The table COVERS every volume under the repo prefix,
+# so one it does not list did not exist when it was loaded (`_vl_covers`). A
+# key it does not load, a name outside the prefix, a failed listing, and a
+# `docker` whose `volume ls` ignores --format all go to docker, as before.
+#
+# Each value is printed as JSON, so none can hold a newline or the 0x1f between
+# fields: a launch directory with a newline forged whole records otherwise (its
+# review, M2). A value that needed any escaping drops the table altogether. The
+# names keep docker's order (`_vl_names`), which sorts them naturally, `p_9`
+# before `p_10`; a sort here differed by locale (its review, M1).
+_vl_keys=(ai-containers.repo ai-containers.type ai-containers.workcopy ai-containers.source ai-containers.launch-dir)
+declare -gA _vl_cache=() _vl_known=()
+declare -ga _vl_names=()
+_vl_loaded=""
+docker_volume_labels_load() {
+  local fmt k line i out v
+  local -a f=()
+  fmt='{{.Name}}'
+  for k in "${_vl_keys[@]}"; do fmt+='{{"\x1f"}}{{json (.Label "'"$k"'")}}'; done
+  _vl_cache=() _vl_known=() _vl_names=() _vl_loaded=""
+  out="$(docker volume ls --filter "name=${repo_volume_prefix}-repo-" --format "$fmt" 2>/dev/null)" || return 0
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    # A `docker volume ls` that printed names alone ignored --format: no table.
+    if [[ "$line" != *$'\x1f'* ]]; then _vl_cache=() _vl_known=() _vl_names=(); return 0; fi
+    IFS=$'\x1f' read -r -a f <<<"$line"
+    [[ "${f[0]}" == "${repo_volume_prefix}-repo-"* ]] || continue
+    for (( i = 0; i < ${#_vl_keys[@]}; i++ )); do
+      v="${f[i+1]-}"
+      # A JSON string with nothing escaped in it, or no table at all.
+      if [[ "$v" != '"'*'"' || ${#v} -lt 2 || "${v:1:${#v}-2}" == *[\\\"]* ]]; then
+        _vl_cache=() _vl_known=() _vl_names=(); return 0
+      fi
+      _vl_cache["${f[0]}|${_vl_keys[i]}"]="${v:1:${#v}-2}"
+    done
+    _vl_known["${f[0]}"]=1
+    _vl_names+=("${f[0]}")
+  done <<<"$out"
+  _vl_loaded="${repo_volume_prefix}-repo-"
+  return 0
 }
 
 # Echo each existing volume whose name STARTS WITH <prefix>, exactly. Docker's
@@ -620,6 +683,14 @@ docker_volume_label() {
 # (bugs review PRJ-5).
 volumes_named() {
   local v
+  # From the label table when it lists every volume that could match, in the
+  # order docker gave them.
+  if _vl_covers "$1"; then
+    for v in ${_vl_names[@]+"${_vl_names[@]}"}; do
+      if [[ "$v" == "$1"* ]]; then printf '%s\n' "$v"; fi
+    done
+    return 0
+  fi
   while IFS= read -r v; do
     [[ -n "$v" && "$v" == "$1"* ]] && printf '%s\n' "$v"
   done < <(docker volume ls --quiet --filter "name=$1" 2>/dev/null || true)
