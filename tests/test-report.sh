@@ -431,6 +431,11 @@ mk_proj "$DUPB" "$TMP/typoproj" default open 1.0
 mk_proj "$DUPB" "$TMP/joinedproj" default open 1.0
 awk '/^CONTAINER_CPUS=/ { printf "CONTAINER_CPUS=\"\n  # cores\n  2.5\n\"\n"; next } { print }' \
   "$TMP/joinedproj/.ai-containers/sandbox.env" > "$TMP/joined.env" && mv "$TMP/joined.env" "$TMP/joinedproj/.ai-containers/sandbox.env"
+# A multi-line value whose closing quote never comes is ignored by the launcher,
+# so the report shows the key as unset (`n/a`), not the lines it read so far.
+mk_proj "$DUPB" "$TMP/openproj" default open 1.0
+awk '/^CONTAINER_CPUS=/ { printf "CONTAINER_CPUS=\"\n  2.5\n"; next } { print }' \
+  "$TMP/openproj/.ai-containers/sandbox.env" > "$TMP/open.env" && mv "$TMP/open.env" "$TMP/openproj/.ai-containers/sandbox.env"
 run "$DUPB/ai-containers-report.sh" --tsv
 dup_mode="$(awk -F'\t' '$0 ~ /dupproj/ { for (i=1;i<=NF;i++) if ($i ~ /^(OPEN|RESTRICTED)$/) print $i }' <<<"$OUT")"
 [[ "$dup_mode" == OPEN ]] && pass "a key set twice reports the first value, as the launcher uses" \
@@ -453,6 +458,11 @@ joined_cpus="$(awk -F'\t' '$5 == "joinedproj" { print $7 }' <<<"$OUT")"
   && pass "a multi-line value of a reported key is joined, as the launcher joins it" \
   || fail "a multi-line CONTAINER_CPUS was read as '$joined_cpus', not '2.5'
 $(grep joinedproj <<<"$OUT")"
+open_cpus="$(awk -F'\t' '$5 == "openproj" { print $7 }' <<<"$OUT")"
+[[ "$open_cpus" == n/a ]] \
+  && pass "a multi-line value left open is not reported, as the launcher ignores it" \
+  || fail "an unterminated multi-line CONTAINER_CPUS was read as '$open_cpus', not 'n/a'
+$(grep openproj <<<"$OUT")"
 grep -q "quotedproj.*'RESTRICTED'" <<<"$OUT" \
   && pass "a single-quoted value is reported literally, as the launcher reads it" \
   || fail "single quotes stripped from a value the launcher reads literally
