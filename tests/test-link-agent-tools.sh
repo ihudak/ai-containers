@@ -182,7 +182,9 @@ NODE_LINK="$n/node" AI_RUNTIME_TOOLS="copilot" bash "$REPO_DIR/link-agent-tools.
 # time, so a wrapper left as it was would still name the old one.
 install -d "$n/v24/bin"; printf '#!/bin/sh\n' > "$n/v24/bin/node"; chmod +x "$n/v24/bin/node"; ln -sfn "$n/v24/bin/node" "$n/node"
 out="$(NODE_LINK="$n/node" AI_RUNTIME_TOOLS="copilot" bash "$REPO_DIR/link-agent-tools.sh" "$h" "$d" 2>&1)"; rc=$?
-[[ "$rc" == 0 && "$out" != *"is a directory"* ]] && grep -qF "$(cd "$n/v24/bin" && pwd -P)/node" "$d/copilot" \
+# The link's target as written, as link-agent-tools.sh reads it (one readlink):
+# not `pwd -P`, which resolves a symlinked TMPDIR the wrapper never does.
+[[ "$rc" == 0 && "$out" != *"is a directory"* ]] && grep -qF "$n/v24/bin/node" "$d/copilot" \
   && pass "  … and a second start rewrites its own wrapper" || fail "  … a second start and its own wrapper (rc $rc; $out; $(cat "$d/copilot"))"
 rm -rf "$h" "$d" "$n" "$TMP_LINKDIR"
 
