@@ -1316,14 +1316,14 @@ Batch 10 went through seven review rounds, a review of its merge with main and o
 - Fix direction: print the first-protection exec-key and hooks NOTE for fixtures too, or warn when a link in a writable mount leads to a listed fixture. AGENTS.md already lists a repository the agent creates before its first protection as not covered.
 
 ### GIT-22: nothing tests that another user's unlistable `.git` is refused
-- **Status: OPEN** (batch 10 review of `1e67064`, finding #1)
+- **Status: FIXED** (batch 13, `837daef`, `3a4848e`): G66b, where the suite runs as root (the floor container), hands the tree to one uid and a 0711 `.git` to another and launches as the first through `setpriv`; a mutant that puts ownership back into the refusal fails it.
 - Severity: LOW. Confidence: CONFIRMED (no test makes a directory another user owns)
 - Location: sandbox.sh: `if [[ "$kind" == unr && -x "$g" ]]; then`
 - What's wrong: G66 uses a `.git` of the launching user's; one that put an ownership check back into the condition would pass both suites. A non-root test cannot make another user's directory.
 - Fix direction: an integration case run as root, or a falsify survivor entry.
 
 ### ENV-9: an unmounted drive's empty mount point passes for a moved project
-- **Status: OPEN** (batch 10 review, round 3 finding #9)
+- **Status: FIXED** (batch 13, `837daef`, `3a4848e`): refused when the nearest existing directory is empty or a removable-media root (`_ac_removable_root()`: `/Volumes`, `/media/<user>`, `/run/media/<user>`). A parent emptied by moving its only project out is refused the same way; the message says how to go on.
 - Severity: NIT. Confidence: PLAUSIBLE (from code)
 - Location: sandbox-common.sh: `while [[ -n "$up" && ! -e "$up" ]]; do up="${up%/*}"; done`
 - What's wrong: a project on a drive that is not mounted looks gone, so a committed `IMAGE_NAME` naming its image is rebuilt with the NOTE rather than refused.
@@ -1337,7 +1337,7 @@ Batch 10 went through seven review rounds, a review of its merge with main and o
 - Fix direction: make it machine-only (`env_key_machine_only`) if a committed list is not wanted.
 
 ### LNCH-17: nits
-- **Status: OPEN** (batch 10 reviews, NITs)
+- **Status: CLOSED** (batch 13, `837daef`), item by item: the uutils `ls` one was fixed as LNCH-21 (`42afd37`); the TMPDIR WARNING now quotes with `_q` like the ERROR beside it; G90 and G91 use their own numbers in their names. Accepted as they are: `_q()`'s `\xHH` fallback stays as a guard for a bash whose `%q` lets a control byte through; the doubled tests stay, since each pins a different review's case; `_rd_errfd` is reached by G86, whose cut-off read refuses the launch through `_rd_fail()`; the macOS verification NOTE on every launch is deliberate, so a skipped check is never silent.
 - Severity: NIT
 - On a host with no `getfacl` whose `ls` is uutils, every unlistable directory fails closed (round 1).
 - `_q()`'s `\xHH` fallback cannot be reached where bash's `%q` already escapes high bytes under `LC_ALL=C` (round 1).
@@ -1348,7 +1348,7 @@ Batch 10 went through seven review rounds, a review of its merge with main and o
 - Where the verify directory's inode does not survive the bind (macOS Docker Desktop, Colima), the NOTE that verification is skipped prints on every launch, so the output directories batch 10 added to the manifest are not verified there either.
 
 ### LNCH-18: with no `getfacl`, refusing an `ls` that is neither GNU's nor BSD's is not tested
-- **Status: OPEN** (review of `162d4c3`, finding #5)
+- **Status: FIXED** (batch 13, `837daef`): T25g has an arm with no `getfacl` and a busybox `ls` on a `PATH` of its own, so the refusal is reached on every host.
 - Severity: LOW. Confidence: CONFIRMED (a mutant that trusts any `ls` there passes `tests/test-launcher-dir-ro.sh`)
 - Location: sandbox.sh: `_agent_bits_writable()`, its branch for a host with no `getfacl`
 - What's wrong: Linux hosts have `getfacl`, T25h's busybox arm puts a fake `getfacl` on `PATH`, and the floor containers run as root, which skips T25. On macOS, which has no `getfacl`, T25g runs the branch with BSD `ls` only, so the part that refuses any other `ls` is reached by no test.
