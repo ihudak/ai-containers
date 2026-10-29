@@ -155,14 +155,13 @@ display_path() {
   printf '%s' "$_dp"
 }
 
-# Last effective `AI_CONTAINER_GROUP=...` in sandbox.env (comments and
-# AI_CONTAINER_GROUP_INIT ignored; quotes and trailing comments stripped).
+# The project's AI_CONTAINER_GROUP as the launcher resolves it (review of batch
+# 4): sandbox.local.env first, then sandbox.env, each read as load_env_defaults()
+# reads it (env_var() below). A key the local file sets, even empty, hides
+# sandbox.env's, as it does for the launcher, which then uses `default` (REPO-12).
 launcher_group() {
-  # As the launcher resolves it (review of batch 4): sandbox.local.env first, then
-  # sandbox.env. env_var() reads both as load_env_defaults does.
   local g
-  g="$(env_var "${1%/*}/sandbox.local.env" AI_CONTAINER_GROUP)"
-  [ -n "$g" ] || g="$(env_var "$1" AI_CONTAINER_GROUP)"
+  g="$(env_var "${1%/*}/sandbox.local.env" AI_CONTAINER_GROUP)" || g="$(env_var "$1" AI_CONTAINER_GROUP)"
   printf '%s' "$g"
 }
 
@@ -173,10 +172,12 @@ find_launcher() {
   printf '%s' "$_d/sandbox.env"
 }
 
-# Last effective `NAME=...` value in an env file (comments, quotes and trailing
-# comments stripped; a leading `export ` is tolerated). NAME must be a plain
-# identifier. Empty when the file is absent or sets no active value. The `=`
-# anchor keeps CONTAINER_MEMORY from matching CONTAINER_MEMORY_RESERVATION etc.
+# The value of `NAME=...` in an env file, as load_env_defaults() reads it (see
+# below); a leading `export ` is tolerated, and NAME must be a plain identifier.
+# Exits 0 when the file sets NAME, its value empty or not, and non-zero when it
+# does not or the file is absent: an empty value is a value, which hides the next
+# file's (REPO-12). The `=` anchor keeps CONTAINER_MEMORY from matching
+# CONTAINER_MEMORY_RESERVATION and the like.
 env_var() {
   # Read as sandbox-common.sh: load_env_defaults() reads it: the FIRST value of a key
   # wins (it sets only what is unset), and the value is literal — a trailing
@@ -194,7 +195,7 @@ env_var() {
       if ($0 == "" || /^#/) next
       if (/"$/) { open = 0; sub(/"$/, ""); sub(/[[:space:]]+$/, "") }
       if (mine && $0 != "") v = (v == "" ? $0 : v " " $0)
-      if (!open && mine) { print v; exit }
+      if (!open && mine) { print v; found = 1; exit }
       next
     }
     $0 == "" || /^#/ { next }
@@ -204,17 +205,19 @@ env_var() {
       if (v ~ /^"[[:space:]]*$/) { open = 1; mine = (k == name); v = ""; next }
       if (k != name) next
       if (length(v) >= 2 && v ~ /^".*"$/) v = substr(v, 2, length(v) - 2)
-      print v; exit
+      print v; found = 1; exit
     }
+    END { exit !found }
   ' "$1" 2>/dev/null
 }
 
-# Effective value of NAME for a project: this-machine's sandbox.local.env
-# overrides the portable sandbox.env. Empty when neither sets it.
+# Effective value of NAME for a project: this machine's sandbox.local.env
+# overrides the portable sandbox.env, as for the launcher; a key it sets EMPTY
+# overrides too (REPO-12). Empty when neither sets it, or when the one that
+# decides sets it empty.
 resolve_env_var() {
   _dir="$1/.ai-containers"
-  _val="$(env_var "$_dir/sandbox.local.env" "$2")"
-  [ -n "$_val" ] || _val="$(env_var "$_dir/sandbox.env" "$2")"
+  _val="$(env_var "$_dir/sandbox.local.env" "$2")" || _val="$(env_var "$_dir/sandbox.env" "$2")"
   printf '%s' "$_val"
 }
 
@@ -313,7 +316,7 @@ printf '%s\n' "$bases" | while IFS= read -r base_raw; do
         group="$(launcher_group "$launcher")"
         if [ -z "$group" ]; then
           group="default"
-          note="sandbox.env sets no AI_CONTAINER_GROUP (implicit default)"
+          note="no AI_CONTAINER_GROUP, or an empty one (the default group)"
         elif [ "$group" = host ]; then
           note="AI_CONTAINER_GROUP=host is no longer supported: every launch is refused until it names a group"
         fi

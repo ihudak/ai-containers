@@ -632,15 +632,37 @@ volumes_named() {
 # anything that is neither (a base volume under a nested prefix, say
 # prjx-repo-team-repo-x labelled x) is `other` and left alone: taking whatever was
 # not a base for a working copy let gc delete one (review of batch 4, finding 1).
-# Unlabelled (before labels existed), a `--wc-` in the name decides, as it did.
+# Unlabelled (before labels existed), a `--wc-` in the name decides, as it did,
+# unless the registry says otherwise (unlabelled_owner() below).
 repo_volume_kind() {
   local r; r="$(docker_volume_label "$1" 'ai-containers.repo')"
   if [[ -n "$r" ]]; then
     if [[ "$1" == "$(repo_volume_name "$r")" ]]; then printf 'base\n'
     elif [[ "$1" == "$(repo_volume_name "$r")--wc-"* ]]; then printf 'workcopy\n'
     else printf 'other\n'; fi
-  elif [[ "$1" == *--wc-* ]]; then printf 'workcopy\n'
+  elif [[ "$1" == *--wc-* ]]; then
+    case "$(unlabelled_owner "$1")" in base\ *) printf 'base\n' ;; *) printf 'workcopy\n' ;; esac
   else printf 'base\n'; fi
+}
+
+# unlabelled_owner <vol>: for a volume with no ai-containers.repo label (made
+# before labels), whose it is by the registry: `base <repo>` when it is exactly a
+# registered repo's base volume, else `workcopy <repo>` for the registered repo
+# whose base is its longest `<base>--wc-` prefix, or `workcopy` alone. A repo
+# named docs--wc-ui, from before `--` was refused in names, has a base that reads
+# as docs' working copy ui, and gc, rm and reset of docs deleted it (REPO-12).
+# Names are compared as text: a registered name is [a-z0-9-]+, which
+# repo_volume_name() leaves as it is, so no process per repo is needed.
+unlabelled_owner() {
+  local stem n best=""
+  stem="${1#"${repo_volume_prefix}-repo-"}"
+  [[ "$stem" != "$1" ]] || { printf 'workcopy\n'; return 0; }
+  while IFS= read -r n; do
+    [[ -n "$n" ]] || continue
+    [[ "$stem" == "$n" ]] && { printf 'base %s\n' "$n"; return 0; }
+    [[ "$stem" == "$n--wc-"* && ${#n} -gt ${#best} ]] && best="$n"
+  done < <(repo_registry_names)
+  printf 'workcopy%s\n' "${best:+ $best}"
 }
 
 # Echo each existing base repo volume name (EXCLUDING working copies), one/line.
@@ -656,11 +678,19 @@ repo_base_volumes() {
 #   $1 (optional) = repo name → only that repo's working copies (named
 #   <base>--wc-*, and labelled as that repo's when labelled); else all repos'.
 repo_workcopy_volumes() {
-  local name="${1:-}" v r
+  local name="${1:-}" v r o
   if [[ -n "$name" ]]; then
     while IFS= read -r v; do
       r="$(docker_volume_label "$v" 'ai-containers.repo')"
-      [[ -z "$r" || "$r" == "$name" ]] && printf '%s\n' "$v"
+      if [[ -n "$r" ]]; then
+        [[ "$r" == "$name" ]] && printf '%s\n' "$v"
+        continue
+      fi
+      # Unlabelled: this repo's only when the registry gives it to no other, and
+      # it is no registered repo's base (REPO-12, its review: rm, reset and gc
+      # --repo of docs deleted the base of a legacy repo docs--wc-ui).
+      o="$(unlabelled_owner "$v")"
+      [[ "$o" == workcopy || "$o" == "workcopy $name" ]] && printf '%s\n' "$v"
     done < <(volumes_named "$(repo_volume_name "$name")--wc-")
   else
     while IFS= read -r v; do

@@ -153,6 +153,12 @@ sed -i.bak 's/^SANDBOX_MODE=.*/SANDBOX_MODE=restricted/; s/^SANDBOX_WORKDIR=.*/S
 printf 'SELINUX_LABEL=keep\nPREVIEW_PORTS="3000 8080"\n' >> "$SBENV3"
 # Lines the loader accepts with `export` or indentation are kept too (review of batch 4).
 printf 'export CONTAINER_NOFILE=4096:4096\n  SHM_NOTE_KEY=1\n' >> "$SBENV3"
+# A CRLF line too: it is carried forward AS WRITTEN, CR and all (the loader
+# strips one CR when it reads it), not normalised (REPO-12).
+printf 'CRLF_NOTE_KEY=2\r\n' >> "$SBENV3"
+# A multi-line value, then a key after it: only its `KEY="` line was carried, so
+# the value never closed and swallowed the rest (review of REPO-12).
+printf 'MULTI_NOTE_KEY="\n  first\n  second\n"\nAFTER_MULTI_KEY=3\n' >> "$SBENV3"
 reinit_out="$(printf '%s\n\n\n\n\n\n\n\n\n\n\n' "$PROJ3" | bash "$SCRIPTS/project-init.sh" 2>&1)"
 [[ "$reinit_out" == *"SANDBOX_WORKDIR=@app"*"sandbox.local.env"* ]] \
   && pass "  … and the dropped SANDBOX_WORKDIR is named, with where it belongs" || fail "dropped SANDBOX_WORKDIR not reported"
@@ -161,6 +167,12 @@ grep -qx 'SANDBOX_MODE=restricted' "$SBENV3" && ! grep -qx 'SANDBOX_MODE=open' "
 grep -qx 'SELINUX_LABEL=keep' "$SBENV3" && grep -qx 'PREVIEW_PORTS="3000 8080"' "$SBENV3" \
   && grep -q 'CONTAINER_NOFILE=4096:4096' "$SBENV3" && grep -q 'SHM_NOTE_KEY=1' "$SBENV3" \
   && pass "re-init keeps keys a user added to sandbox.env" || fail "re-init dropped added keys ($(tr '\n' ';' < "$SBENV3"))"
+ml="$(awk '/^MULTI_NOTE_KEY="$/ { p = 1 } p { print } p && /^"$/ { exit }' "$SBENV3")"
+[[ "$ml" == $'MULTI_NOTE_KEY="\n  first\n  second\n"' ]] && grep -qx 'AFTER_MULTI_KEY=3' "$SBENV3" \
+  && pass "  … a multi-line value whole, and the key after it" \
+  || fail "re-init and a multi-line value (got: $(tr '\n' ';' < "$SBENV3"))"
+grep -qx $'CRLF_NOTE_KEY=2\r' "$SBENV3" && pass "  … a CRLF line as written, CR and all" \
+  || fail "re-init did not carry the CRLF line verbatim ($(grep CRLF_NOTE_KEY "$SBENV3" | od -c | head -2 | tr '\n' ' '))"
 # A non-portable SANDBOX_WORKDIR is NOT moved to sandbox.local.env: sandbox.env is
 # committed, and copying its value into the machine-local file would launder what
 # a committer wrote into what the loader trusts (security review of 49ca941).

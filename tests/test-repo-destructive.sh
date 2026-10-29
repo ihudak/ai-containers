@@ -323,6 +323,39 @@ printf 'ai-containers.repo=docs--wc-ui\nai-containers.type=git\n' > "$VOLS/ai-co
 run_repo gc --yes
 [[ -f "$VOLS/ai-containers-repo-docs--wc-ui" ]] && pass "gc does not take a base volume for a working copy" \
   || fail "gc removed the base volume of repo docs--wc-ui ($(removed))"
+# …nor an UNLABELLED one, from before labels, when the registry has that repo
+# (REPO-12): the name alone reads as docs' working copy ui. An unlabelled copy
+# of a repo the registry does not name that way is still a working copy.
+setup_world
+: > "$VOLS/ai-containers-repo-docs--wc-ui"
+printf 'docs--wc-ui|git|git@x:docs--wc-ui.git|1700000000|1700000000|volume\n' >> "$HOME/.ai-containers/repos.conf"
+rm -f "$VOLS"/ai-containers-repo-docs--wc-projA.labels
+run_repo gc --yes
+[[ -f "$VOLS/ai-containers-repo-docs--wc-ui" && ! -f "$VOLS/ai-containers-repo-docs--wc-projA" ]] \
+  && pass "gc leaves an unlabelled base volume the registry names, and still collects an unlabelled working copy" \
+  || fail "gc and unlabelled volumes (removed: $(removed))"
+# …and so does every command that collects ONE repo's working copies: rm, reset
+# and gc --repo of docs deleted docs--wc-ui's base (review of REPO-12).
+for cmd in "rm docs --yes" "reset docs --yes" "gc --repo docs --yes"; do
+  setup_world
+  : > "$VOLS/ai-containers-repo-docs--wc-ui"
+  printf 'docs--wc-ui|git|git@x:docs--wc-ui.git|1700000000|1700000000|volume\n' >> "$HOME/.ai-containers/repos.conf"
+  # shellcheck disable=SC2086  # the command's words, split on purpose
+  run_repo $cmd
+  [[ -f "$VOLS/ai-containers-repo-docs--wc-ui" ]] && pass "  … $cmd leaves the legacy repo's base" \
+    || fail "$cmd removed docs--wc-ui's base (removed: $(removed))"
+done
+# A legacy repo's own unlabelled working copy is its, not docs': the registered
+# repo with the longest base prefix owns it.
+setup_world
+: > "$VOLS/ai-containers-repo-docs--wc-ui"; : > "$VOLS/ai-containers-repo-docs--wc-ui--wc-x_12345678"
+printf 'docs--wc-ui|git|git@x:docs--wc-ui.git|1700000000|1700000000|volume\n' >> "$HOME/.ai-containers/repos.conf"
+run_repo gc --repo docs --yes
+docs_kept="$([[ -f "$VOLS/ai-containers-repo-docs--wc-ui--wc-x_12345678" ]] && echo yes || echo no)"
+run_repo gc --repo docs--wc-ui --yes
+[[ "$docs_kept" == yes && ! -f "$VOLS/ai-containers-repo-docs--wc-ui--wc-x_12345678" && -f "$VOLS/ai-containers-repo-docs--wc-ui" ]] \
+  && pass "an unlabelled copy of a legacy repo is that repo's, not docs'" \
+  || fail "the legacy repo's own copy (kept by gc --repo docs: $docs_kept; removed: $(removed))"
 setup_world
 : > "$VOLS/myprj-repo-lib--wc-t"; printf 'ai-containers.repo=lib\n' > "$VOLS/myprj-repo-lib--wc-t.labels"
 : > "$VOLS/prj-repo-lib--wc-t"; printf 'ai-containers.repo=lib\n' > "$VOLS/prj-repo-lib--wc-t.labels"

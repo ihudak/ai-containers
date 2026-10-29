@@ -481,21 +481,35 @@ if [[ -f "${dest}/sandbox.env" ]]; then
   cp "${dest}/sandbox.env" "$backup"
   printf '  Backed up existing sandbox.env → %s\n' "$(basename "$backup")"
   declare -A env_seen=()
+  open="" open_keep=""
   while IFS= read -r line || [[ -n "$line" ]]; do
+    # Inside a value that a bare opening quote began, the lines up to the one
+    # that ends with `"` belong to it, as load_env_defaults reads them: carried
+    # with their key, or dropped with it. Only the `KEY="` line was kept, so the
+    # value never closed and every key after it was lost (review of REPO-12).
+    if [[ -n "$open" ]]; then
+      [[ -n "$open_keep" ]] && kept_env+=("$line")
+      norm="${line%$'\r'}"; norm="${norm%"${norm##*[![:space:]]}"}"
+      [[ "$norm" == *'"' ]] && open="" open_keep=""
+      continue
+    fi
     # Matched as load_env_defaults reads it — no CR, leading space or `export` —
     # and carried forward as written.
     norm="${line%$'\r'}"; norm="${norm#"${norm%%[![:space:]]*}"}"
     [[ "$norm" =~ ^export[[:space:]]+(.*)$ ]] && norm="${BASH_REMATCH[1]}"
     [[ "$norm" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]] || continue
-    k="${BASH_REMATCH[1]}"
-    [[ -z "${env_seen[$k]:-}" ]] || continue
+    k="${BASH_REMATCH[1]}" v0="${BASH_REMATCH[2]}"   # before the next match overwrites them
+    # A bare opening quote (trailing blanks allowed) opens a multi-line value.
+    [[ "$v0" =~ ^\"[[:space:]]*$ ]] && open=1
+    if [[ -n "${env_seen[$k]:-}" ]]; then open_keep=""; continue; fi
     env_seen[$k]=1
+    open_keep=""
     case "$k" in
-      SANDBOX_MODE)    prev_mode="${BASH_REMATCH[2]}" ;;
+      SANDBOX_MODE)    prev_mode="$v0" ;;
       SANDBOX_WORKDIR)
-        [[ "${BASH_REMATCH[2]}" == .. ]] || printf '  NOTE: dropped SANDBOX_WORKDIR=%q from sandbox.env (only .. is portable); if this machine should use it, add it to sandbox.local.env yourself.\n' "${BASH_REMATCH[2]}" ;;
+        [[ "$v0" == .. ]] || printf '  NOTE: dropped SANDBOX_WORKDIR=%q from sandbox.env (only .. is portable); if this machine should use it, add it to sandbox.local.env yourself.\n' "$v0" ;;
       IMAGE_NAME|AI_CONTAINER_GROUP|CONTAINER_CPUS|CONTAINER_MEMORY|CONTAINER_MEMORY_RESERVATION|CONTAINER_MEMORY_SWAP) ;;  # re-prompted
-      *) kept_env+=("$line") ;;
+      *) kept_env+=("$line"); [[ -n "$open" ]] && open_keep=1 ;;
     esac
   done < "${dest}/sandbox.env"
 fi

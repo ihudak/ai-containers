@@ -474,11 +474,41 @@ GRB="$TMP/grpbase"; mk_base "$GRB"
 mk_proj "$GRB" "$TMP/grphost" host open 1.0
 mk_proj "$GRB" "$TMP/grplocal" default open 1.0
 printf 'AI_CONTAINER_GROUP=work\n' > "$TMP/grplocal/.ai-containers/sandbox.local.env"
+# An EMPTY value in sandbox.local.env is a value: the launcher, which reads that
+# file first, then uses `default`, and never sandbox.env's group (REPO-12). The
+# same for any key: an empty CONTAINER_CPUS there hides sandbox.env's 4.0.
+mk_proj "$GRB" "$TMP/grpempty" work open 4.0
+printf 'AI_CONTAINER_GROUP=\nCONTAINER_CPUS=\n' > "$TMP/grpempty/.ai-containers/sandbox.local.env"
 run "$GRB/ai-containers-report.sh" --tsv
 grp_of() { awk -F'\t' -v p="$1" '$5 == p { print $4 }' <<<"$OUT"; }
+cpu_of() { awk -F'\t' -v p="$1" '$5 == p { print $7 }' <<<"$OUT"; }
 [[ "$(grp_of grphost)" == host && "$(grp_of grplocal)" == work ]] \
   && pass "the group column reads sandbox.local.env first, and shows a host group as written" \
   || fail "group column: grphost=$(grp_of grphost) grplocal=$(grp_of grplocal)
+$OUT"
+[[ "$(grp_of grpempty)" == default && "$(cpu_of grpempty)" == n/a ]] \
+  && pass "an empty value in sandbox.local.env hides sandbox.env's, as for the launcher" \
+  || fail "an empty local value: group=$(grp_of grpempty) cpus=$(cpu_of grpempty)
+$OUT"
+# The common case: a sandbox.local.env as project-init writes it, comments and a
+# multi-line EXTRA_MOUNTS, setting none of the keys the report reads. Each comes
+# from sandbox.env, through env_var's "not set" status (review of REPO-12).
+mk_proj "$GRB" "$TMP/grpinit" work restricted 4.0
+printf '# sandbox.local.env\n#SANDBOX_MODE=open\nEXTRA_MOUNTS="\n  /srv/a:ro\n  /srv/b\n"\n' > "$TMP/grpinit/.ai-containers/sandbox.local.env"
+# A closed multi-line value for a key the report reads, in the local file: it wins.
+mk_proj "$GRB" "$TMP/grpmulti" work open 4.0
+printf 'SANDBOX_MODE="\n  restricted\n"\n' > "$TMP/grpmulti/.ai-containers/sandbox.local.env"
+run "$GRB/ai-containers-report.sh" --tsv
+mode_of() { awk -F'\t' -v p="$1" '$5 == p { print $6 }' <<<"$OUT"; }
+mem_of() { awk -F'\t' -v p="$1" '$5 == p { print $8 }' <<<"$OUT"; }
+[[ "$(grp_of grpinit)" == work && "$(mode_of grpinit)" == RESTRICTED && "$(cpu_of grpinit)" == 4.0 && "$(mem_of grpinit)" == 8g/4g/8g ]] \
+  && pass "a local file that sets none of them leaves every column to sandbox.env" \
+  || fail "a project-init-shaped local file: $(grep grpinit <<<"$OUT")"
+[[ "$(mode_of grpmulti)" == RESTRICTED ]] && pass "  … and a multi-line value the local file closes wins" \
+  || fail "a multi-line local value: $(grep grpmulti <<<"$OUT")"
+run "$GRB/ai-containers-report.sh"
+grep -q '^  - grpempty (.*no AI_CONTAINER_GROUP, or an empty one (the default group)' <<<"$OUT" \
+  && pass "  … and the empty group's note says so" || fail "no note for the empty group
 $OUT"
 
 # …and says, in the notes, that such a project's launches are refused.
