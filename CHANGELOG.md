@@ -32,6 +32,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   back before writing it, never writes through a symbolic link, keeps the
   backup readable by you alone, exits non-zero when a project could not be
   converted, and never touches the shared `sandbox.env`.
+### Changed
+
+- **A lowercase `on` or `off` in `sandbox.conf` is refused** (bugs review
+  BLD-6, BLD-8). `ON` and `OFF` are compared literally, so `c-toolchain=on`
+  was silently OFF, `ruby=off` installed a Ruby named `off` on every start and
+  `dtctl=on` downloaded a tag named `von`. `./build.sh` and `./sandbox.sh` now
+  stop with the corrected line (`ruby=OFF`). A synced project with such a key
+  cannot launch until it is fixed.
+
+- **On the day a Node release becomes LTS, the image gets the LTS release before
+  it instead of failing to build** (bugs review BLD-9). nodejs.org can list the
+  release before its checksums are published, and nvm refuses the binary
+  (`Provided checksum to compare to is empty.`): on 2026-10-28 every build
+  failed for over an hour. After two such failures the build installs the
+  previous LTS release and says so in a `WARNING:`; any other failure still
+  fails the build. Docker caches the layer, so `./build.sh --no-cache` later
+  picks up the newest.
+
+- **`check_config` is about 25 times faster**, saving about 0.2 s on every
+  launch and build (bugs review BLD-8). **`repo.sh list`, `gc` and `reindex`
+  make one `docker volume` call** instead of up to three per volume (about 28 ms
+  each).
+
+- **Node 26 no longer bundles corepack, and the image does not install it.**
+  `npx corepack`, a project devDependency, or `node=24` (Node 24 still bundles
+  it) are the ways in; see `docs/components/README.md`.
+
 ### Removed
 
 - **`AI_CONTAINER_GROUP=host` is gone, and a launch with it is refused.** It
@@ -52,6 +79,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `sandbox.local.env`. `sync-to-projects.sh` names every such project.
 
 ### Fixed
+
+- **Images built on 2026-10-28 before the fix had a `node` that would not
+  start** (bugs review BLD-10). Node 26's binary links `libatomic.so.1`, which
+  the image's cleanup step removed with the build toolchain; `npm` and every
+  npm-installed agent failed with it, and an image with yarn, pnpm, bun,
+  angular-cli or playwright failed to build. `libatomic1` is now installed in
+  its own right. Rebuild any image from that afternoon.
+
+- **`repo.sh sync` refuses rather than delete what a fast-forward would**
+  (bugs review REPO-10). It overwrote an ignored file where the remote now
+  tracks one, and deleted the files in a directory or a submodule's directory
+  that the remote turned into a file or a link, as `git pull --ff-only` does.
+  It also refuses staged changes a hand-made index could hide, a submodule path
+  that is a link or a file, unmerged entries, an index over 512 MiB and a
+  packed-refs line it would cut; an intent-to-add entry no longer counts as a
+  staged change.
+
+- **`repo.sh reset`'s summary is complete** (bugs review REPO-15, REPO-16,
+  REPO-17). A summary whose inspection was cut short says so, counted at risk;
+  a tag the remote has at another commit is shown as replaced; a commit kept
+  only by one of the remote's tags is no longer counted as lost; and a
+  repository whose path holds `[`, `*` or `?` keeps its own `.git`. Git
+  repositories inside the checkout are listed and removed by `reset` (REPO-5).
+
+- **`repo.sh rm`, `reset` and `gc` no longer delete the base volume of a legacy
+  repo named like `docs--wc-ui`** (bugs review REPO-12). Made before volumes
+  were labelled, it read as `docs`' working copy `ui`.
+
+- **`sh -l` works in the image** (bugs review RT-12). `/etc/profile.d/ai-tools.sh`
+  and `/etc/profile.d/rvm.sh` stopped a POSIX login shell with a syntax error
+  and `source: not found`; both now do their work only under bash.
+
+- **The report shows a key that `sandbox.local.env` sets empty as the launcher
+  reads it** (bugs review REPO-12): an empty `AI_CONTAINER_GROUP=` there means
+  the `default` group, not `sandbox.env`'s. **Re-init keeps a multi-line value
+  in `sandbox.env` whole**: only its first line was kept, and every key after it
+  was lost.
 
 - **`./build.sh` no longer takes a project on an unmounted drive for a moved
   one** (bugs review ENV-9). A committed `IMAGE_NAME` whose image was built
