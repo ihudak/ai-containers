@@ -1302,7 +1302,10 @@ fi
 # is the launching user's. Only root can make another user's directory, so this
 # runs where the suite runs as root (the floor container): the tree is handed to
 # one uid, the .git to another, and the launch runs as the first.
-if [[ "$(id -u)" == 0 ]] && command -v setpriv >/dev/null 2>&1; then
+if [[ "$(id -u)" == 0 ]] && ! command -v setpriv >/dev/null 2>&1; then
+  printf 'SKIP: G66b — needs setpriv to launch as another user\n'
+elif [[ "$(id -u)" == 0 ]]; then
+  o22="$(id -u):$(id -g)"
   mkdir -p "$PROJ/u22" && "${G[@]}" -C "$PROJ/u22" init -q || { printf 'SCAFFOLD-FAILED: G66b\n'; exit 1; }
   chown -R 4100:4100 "$TMP" && chown -R 4200:4200 "$PROJ/u22/.git" && chmod 0711 "$PROJ/u22/.git" \
     || { printf 'SCAFFOLD-FAILED: G66b chown\n'; exit 1; }
@@ -1314,11 +1317,13 @@ if [[ "$(id -u)" == 0 ]] && command -v setpriv >/dev/null 2>&1; then
     d22="$(dirname "$d22")"
   done
   rm -f "$CAPTURE" "$CAPTURE.manifest" "$CAPTURE.calls"
-  ( cd "$LAUNCHER" && setpriv --reuid=4100 --regid=4100 --clear-groups bash ./sandbox.sh restricted .. ) >/dev/null 2>"$ERR" </dev/null
+  p_timeout 60 setpriv --reuid=4100 --regid=4100 --clear-groups bash -c 'cd "$1" && exec bash ./sandbox.sh restricted ..' _ "$LAUNCHER" >/dev/null 2>"$ERR" </dev/null
   LAUNCH_RC=$?
   for d22 in "${a22[@]}"; do chmod o-x "$d22"; done
-  chown -R 0:0 "$TMP"; rm -rf "$PROJ/u22"
-  [[ "$LAUNCH_RC" != 0 && ! -e "$CAPTURE" ]] && grep -qF "u22/.git" "$ERR" && grep -qF 'can be searched but not listed' "$ERR" \
+  chown -R "$o22" "$TMP"; rm -rf "$PROJ/u22"
+  # The git refusal's own line, not the launcher scan's, which shares its opening.
+  [[ "$LAUNCH_RC" != 0 && "$LAUNCH_RC" != 124 && ! -e "$CAPTURE" ]] \
+    && grep -qF "u22/.git can be searched but not listed by you, so what your host" "$ERR" \
     && pass "G66b another user's searchable but unlistable .git refuses the launch" \
     || fail "G66b another user's unlistable .git (rc=$LAUNCH_RC; $(head -3 "$ERR" | tr '\n' ' '))"
 fi

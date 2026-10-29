@@ -70,6 +70,21 @@ check '{"ai-containers.built-at":"x","ai-containers.project":"'"$TMP/mnt9/drive/
   && pass "an image built for a path under an empty directory (an unmounted drive) is not taken for a moved project" \
   || fail "path under an empty directory (rc=$rc: $err)"
 rmdir "$TMP/mnt9"
+# A nearest existing directory that is a LINK to one with entries is not empty:
+# `find` given a link as its start does not follow it (review of 837daef).
+mkdir -p "$TMP/real9/other"; ln -s "$TMP/real9" "$TMP/lnk9"
+check '{"ai-containers.built-at":"x","ai-containers.project":"'"$TMP/lnk9/proj/.ai-containers"'"}'
+[[ "$rc" == 0 ]] && grep -qF 'no longer exists' <<<"$err" \
+  && pass "a path under a link to a directory with entries is still a moved project" \
+  || fail "a path under a linked, non-empty directory (rc=$rc: $err)"
+rm -rf "$TMP/real9" "$TMP/lnk9"
+# Where a drive's mount point goes away with it — macOS /Volumes/<drive>, Linux
+# /media/<user>/<drive> or /run/media/<user>/<drive> — the nearest existing
+# directory is the removable-media root, which holds other drives (review of 837daef).
+rr=""
+for d in /Volumes /media /media/u /media/u/ /run/media /run/media/u; do _ac_removable_root "$d" || rr+=" $d:no"; done
+for d in /home/u /mnt /Volumes/x/y /media/u/drive /; do _ac_removable_root "$d" && rr+=" $d:yes"; done
+[[ -z "$rr" ]] && pass "the removable-media roots are recognised, and only they" || fail "removable-media roots:$rr"
 
 # …but a path you cannot stat is not proof it moved: under another user's 0700
 # home it only looks absent (review of the batch 10 branch).

@@ -58,8 +58,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   for a project path that is not there was rebuilt for this project, on the
   reasoning that the project had moved. When the nearest directory of that
   path that does exist is empty, as the mount point of a drive that is not
-  mounted is, the build is now refused, saying to mount it, remove the
-  image, or set `IMAGE_NAME` in `sandbox.local.env`.
+  mounted is, or is where removable drives are mounted (`/Volumes` on macOS,
+  `/media/<user>`, `/run/media/<user>`), the build is now refused, saying to
+  mount it, remove the image, or set `IMAGE_NAME` in `sandbox.local.env`. A
+  parent you emptied by moving its only project out is refused the same way.
 
 - **The group checks are tighter and say more** (bugs review LNCH-19,
   LNCH-20). A group directory that is `$HOME` under another path — a bind

@@ -1290,14 +1290,20 @@ ai_containers_retag_check() {
   # a directory you cannot enter (another user's home) only looks absent.
   local up="${proj%/*}"
   while [[ -n "$up" && ! -e "$up" ]]; do up="${up%/*}"; done
-  # Nor one whose nearest existing ancestor is an EMPTY directory: that is what a
-  # drive that is not mounted leaves — its mount point — so the project may be
-  # there once it is (ENV-9). A parent you emptied by hand looks the same; the
-  # message says what to do then.
-  if [[ "$proj" != "$2" && ! -e "$proj" && -n "$up" && -d "$up" && -r "$up" ]] \
-     && [[ -z "$(find "$up" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]]; then
-    printf 'ERROR: IMAGE_NAME=%s was built for %s, which is not there, and %s is empty:\n' \
-      "$(_ac_term "$1")" "$(_ac_term "$proj")" "$(_ac_term "$up")" >&2
+  # Nor one under a drive that may only be unmounted (ENV-9): where its mount point
+  # stays, the nearest existing directory is that mount point, EMPTY; where it goes
+  # with the drive (macOS /Volumes/<drive>, /media/<user>/<drive>), it is the
+  # removable-media root. A parent you emptied by hand looks the same as the first;
+  # the message says what to do then. Emptiness by a glob, which follows a link as
+  # the path does and has no failure to mistake for "empty" (review of 837daef).
+  local _why=""
+  if [[ "$proj" != "$2" && ! -e "$proj" && -n "$up" && -d "$up" && -r "$up" ]]; then
+    if _ac_removable_root "$up"; then _why="is where removable drives are mounted"
+    elif ( shopt -s nullglob dotglob; e=("$up"/*); (( ${#e[@]} == 0 )) ); then _why="is empty"; fi
+  fi
+  if [[ -n "$_why" ]]; then
+    printf 'ERROR: IMAGE_NAME=%s was built for %s, which is not there, and %s %s:\n' \
+      "$(_ac_term "$1")" "$(_ac_term "$proj")" "$(_ac_term "$up")" "$_why" >&2
     printf '       a drive that is not mounted looks like that; refusing to retag it. Mount it and build\n' >&2
     printf '       that project, or, if it is gone, remove the image (docker rmi %s), or set IMAGE_NAME\n' "$(_ac_term "$1")" >&2
     printf '       in sandbox.local.env to a name of your own.\n' >&2
@@ -1313,6 +1319,19 @@ ai_containers_retag_check() {
     return 1
   fi
   return 0
+}
+
+# _ac_removable_root <dir>: is <dir> where removable drives get their mount points,
+# made on mount and removed on unmount — macOS /Volumes, udisks' /media/<user> and
+# /run/media/<user> (and /media, /run/media themselves)? A missing project path
+# whose nearest existing directory is one of them may be on a drive not mounted.
+_ac_removable_root() {
+  local d="${1%/}"
+  case "$d" in
+    /Volumes|/media|/run/media) return 0 ;;
+    /media/*|/run/media/*) [[ "${d#/*media/}" != */* ]] ;;
+    *) return 1 ;;
+  esac
 }
 
 # _ac_term <text>: an image's label or name rendered for the terminal, control
