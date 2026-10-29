@@ -1,4 +1,4 @@
-FROM ubuntu:24.04
+FROM ubuntu:24.10
 LABEL org.opencontainers.image.title="AI Sandbox Container" \
       org.opencontainers.image.description="Isolated Docker workspace for AI coding agents with deny-by-default firewall" \
       org.opencontainers.image.source="https://github.com/ihudak/ai-containers" \
