@@ -1299,7 +1299,7 @@ ai_containers_retag_check() {
   local _why=""
   if [[ "$proj" != "$2" && ! -e "$proj" && -n "$up" && -d "$up" && -r "$up" ]]; then
     if _ac_removable_root "$up"; then _why="is where removable drives are mounted"
-    elif ( shopt -s nullglob dotglob; e=("$up"/*); (( ${#e[@]} == 0 )) ); then _why="is empty"; fi
+    elif ( shopt -s nullglob dotglob; _ac_ents=("$up"/*); (( ${#_ac_ents[@]} == 0 )) ); then _why="is empty"; fi
   fi
   if [[ -n "$_why" ]]; then
     printf 'ERROR: IMAGE_NAME=%s was built for %s, which is not there, and %s %s:\n' \
