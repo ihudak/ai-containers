@@ -96,6 +96,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   packed-refs line it would cut; an intent-to-add entry no longer counts as a
   staged change.
 
+- **`repo.sh sync` reads a split index** (bugs review REPO-3). A checkout with
+  `core.splitIndex` on was refused, at first with `use reset` (which drops
+  untracked files and every other branch), then with the
+  `git update-index --no-split-index` that made it readable. The shared part
+  the index names is now read with it, so its staged changes are still found.
+
 - **`repo.sh reset`'s summary is complete** (bugs review REPO-15, REPO-16,
   REPO-17). A summary whose inspection was cut short says so, counted at risk;
   a tag the remote has at another commit is shown as replaced; a commit kept

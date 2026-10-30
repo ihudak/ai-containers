@@ -554,12 +554,31 @@ cmd_pull() {
     # Its ENTRIES, into a fresh index: diff-index trusts an index's cache-tree
     # extension, so a hand-crafted one could hide staged entries (REPO-10). A
     # fresh index has none, and --index-info needs no object the clone lacks.
-    if ! GIT_INDEX_FILE="$WORK/volume-index" git --git-dir="$F/.git" ls-files -s -z > "$WORK/index-entries" 2>/dev/null; then
-      # A split index needs its sharedindex file, which the copy lacks; "use reset"
-      # alone wiped far more than a sync (bugs review REPO-3).
-      [[ -z "$(find "$gd" -maxdepth 1 -name 'sharedindex.*' -print -quit 2>/dev/null)" ]] \
-        || die "the checkout's index is split (core.splitIndex); run \`git update-index --no-split-index\` in it, then sync again"
-      die "cannot read the checkout's index (sparse or damaged); use reset"
+    # git's errors are kept to their last 4 KiB: it prints a line for each
+    # extension it ignores, which an index the agent wrote makes about three
+    # times its size (review of the REPO-3 fix).
+    local ierr shared="" isz
+    if ! ierr="$( { LC_ALL=C GIT_INDEX_FILE="$WORK/volume-index" git --git-dir="$F/.git" ls-files -s -z \
+        > "$WORK/index-entries"; } 2>&1 | tail -c 4096)"; then
+      # A split index (core.splitIndex) keeps most of its entries in the
+      # sharedindex.<oid> it names, in .git beside it, and git also looks for
+      # that file beside the index it reads: copied there, the copy reads whole
+      # (bugs review REPO-3; "use reset" wiped far more than a sync). The name is
+      # the one git could not open; only a regular file of that name in .git is
+      # copied, the two together bounded as the index alone was, and git checks
+      # only that its trailing checksum is the one named.
+      if [[ "$ierr" == */sharedindex.* ]]; then shared="${ierr##*/sharedindex.}"; shared="${shared%%[!0-9a-f]*}"; fi
+      [[ ${#shared} == 40 || ${#shared} == 64 ]] || die "cannot read the checkout's index (sparse or damaged); use reset"
+      shared="sharedindex.$shared"
+      [[ -f "$gd/$shared" && ! -L "$gd/$shared" ]] \
+        || die "the checkout's index is split (core.splitIndex), and its $shared is missing or not a file; use reset"
+      isz="$(wc -c < "$WORK/volume-index")" || die "cannot check the size of the checkout's index; use reset"
+      big="$(find "$gd/$shared" -size +$(( 524288 - (isz + 1023) / 1024 ))k -print -quit 2>/dev/null)" \
+        || die "cannot check the size of the checkout's $shared; use reset"
+      [[ -z "$big" ]] || die "the checkout's index and its $shared are larger than 512 MiB together; refusing to read them (use reset)"
+      cp "$gd/$shared" "$WORK/$shared" || die "cannot read the checkout's $shared"
+      GIT_INDEX_FILE="$WORK/volume-index" git --git-dir="$F/.git" ls-files -s -z > "$WORK/index-entries" 2>/dev/null \
+        || die "cannot read the checkout's split index (damaged); use reset"
     fi
     GIT_INDEX_FILE="$WORK/fresh-index" git --git-dir="$F/.git" update-index -z --index-info < "$WORK/index-entries" 2>/dev/null \
       || die "cannot read the checkout's index (damaged); use reset"

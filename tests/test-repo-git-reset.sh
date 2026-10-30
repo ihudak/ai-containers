@@ -1543,13 +1543,75 @@ run_script inspect "$W"
 [[ "$RC" != 0 && "$OUT" == *"reftable"* ]] && pass "a reftable/ directory beside a refs/heads directory is refused" \
   || fail "a reftable/ directory beside refs/heads was accepted (rc=$RC; out: $OUT)"
 
-# REPO-3: a split index cannot be read from its copy, and "use reset" wiped far
-# more than a sync: say how to make it readable instead.
+# REPO-3: a split index (core.splitIndex) is read with the sharedindex file it
+# names, copied beside the copy: refusing it with "use reset" wiped far more
+# than a sync. A staged change is found wherever it lies, in the shared part
+# (staged, then split) or in the split index itself (split, then staged).
 W="$(mk_repo splitidx)"; S="$TMP/splitidx.seed"; commit_in "$S" si-new; g "$S" push -q origin main >/dev/null 2>&1
 g "$W" update-index --split-index
 run_script pull "$W"
-if [[ "$RC" != 0 && "$OUT" == *"--no-split-index"* ]]; then pass "a split index is refused with how to unsplit it"
-else fail "split-index refusal gives no way out but reset (rc=$RC; out: $OUT)"; fi
+if [[ "$RC" == 0 && -f "$W/si-new" ]]; then pass "a split index is read, and the checkout fast-forwarded"
+else fail "pull and a split index (rc=$RC; out: $OUT)"; fi
+for order in staged-then-split split-then-staged; do
+  W="$(mk_repo "si-$order")"; S="$TMP/si-$order.seed"; commit_in "$S" sx-new; g "$S" push -q origin main >/dev/null 2>&1
+  [[ "$order" == split-then-staged ]] && g "$W" update-index --split-index
+  printf 'staged\n' > "$W/first"; g "$W" add first; printf 'first\n' > "$W/first"
+  [[ "$order" == staged-then-split ]] && g "$W" update-index --split-index
+  run_script pull "$W"
+  if [[ "$RC" != 0 && "$OUT" == *"staged changes"* && ! -e "$W/sx-new" ]]; then pass "a split index's staged change is found ($order)"
+  else fail "a split index's staged change ($order; rc=$RC; out: $OUT)"; fi
+done
+# The shared part must be a regular file of that name, and the two parts are
+# bounded together as the index alone was: missing, a directory, or 512 MiB
+# beside the split index (a sparse file) is refused, a link as anything in .git
+# that is neither file nor directory is, and one that is not an index, or whose
+# trailing checksum is not the one named, is refused as damaged.
+for how in missing dir link big other trailer; do
+  W="$(mk_repo "si-$how")"; S="$TMP/si-$how.seed"; commit_in "$S" sy-new; g "$S" push -q origin main >/dev/null 2>&1
+  g "$W" update-index --split-index; sf="$(ls "$W"/.git/sharedindex.* | head -n 1)"
+  case "$how" in
+    missing) rm -f "$sf" ;;
+    dir) rm -f "$sf"; mkdir "$sf" ;;
+    link) mv "$sf" "$TMP/si-$how.shared"; ln -s "$TMP/si-$how.shared" "$sf" ;;
+    big) rm -f "$sf"; dd if=/dev/zero of="$sf" bs=1048576 count=0 seek=512 2>/dev/null ;;
+    other) printf 'not an index\n' > "$sf" ;;
+    # The trailer's last byte is the name's last two hex digits: write another.
+    trailer) if [[ "${sf: -2}" == ff ]]; then printf '\376'; else printf '\377'; fi \
+      | dd of="$sf" bs=1 seek="$(( $(wc -c < "$sf") - 1 ))" conv=notrunc 2>/dev/null ;;
+  esac
+  run_script pull "$W"
+  case "$how" in
+    missing|dir) want="is missing or not a file" ;; link) want="is not a regular file or directory" ;;
+    big) want="larger than 512 MiB together" ;; other|trailer) want="split index (damaged)" ;;
+  esac
+  if [[ "$RC" != 0 && "$OUT" == *"$want"* && ! -e "$W/sy-new" ]]; then pass "a split index whose shared part is $how is refused"
+  else fail "a split index whose shared part is $how (rc=$RC; out: $OUT)"; fi
+done
+# A SHA-256 repository names its shared part with 64 hex digits.
+W="$(GIT_DEFAULT_HASH=sha256 mk_repo si-sha256)"; S="$TMP/si-sha256.seed"; commit_in "$S" s2-new; g "$S" push -q origin main >/dev/null 2>&1
+g "$W" update-index --split-index
+run_script pull "$W"
+if [[ "$(g "$W" rev-parse --show-object-format 2>/dev/null)" == sha256 && "$RC" == 0 && -f "$W/s2-new" ]]; then
+  pass "a SHA-256 repository's split index is read, and the checkout fast-forwarded"
+else fail "pull and a SHA-256 split index (rc=$RC; out: $OUT)"; fi
+# git's errors are bounded: it prints a line for each extension it ignores,
+# about three times the index's size, and the first version read them whole. An
+# 8 MiB index of them, ended by one git refuses, under a 150 MB address space:
+# read whole, the helper ran out of memory; bounded, it needs a sixth of that
+# (review of the REPO-3 fix). Small, as this file is the falsify tier's oracle.
+W="$(mk_repo si-noisy)"; S="$TMP/si-noisy.seed"; commit_in "$S" sn2-new; g "$S" push -q origin main >/dev/null 2>&1
+printf 'ZZZZ\0\0\0\0' > "$TMP/ext"
+for _ in $(seq 20); do cat "$TMP/ext" "$TMP/ext" > "$TMP/ext2"; mv "$TMP/ext2" "$TMP/ext"; done
+{ printf 'DIRC\0\0\0\2\0\0\0\0'; cat "$TMP/ext"; printf 'zzzz\0\0\0\0%020d' 0; } > "$W/.git/index"; rm -f "$TMP/ext"
+OUT="$(AI_REPO_URL="$W.git" bash -c 'ulimit -v 150000 2>/dev/null; exec "$@"' _ "$SCRIPT" pull "$W" 2>&1)"; RC=$?
+if [[ "$RC" != 0 && "$OUT" == *"sparse or damaged"* ]]; then pass "pull refuses an 8 MiB index of ignored extensions within 150 MB, its errors bounded"
+else fail "pull and an index of ignored extensions (rc=$RC; ${OUT:0:300})"; fi
+# An index git cannot read that names no shared part is damaged, not split.
+W="$(mk_repo si-none)"; S="$TMP/si-none.seed"; commit_in "$S" sz-new; g "$S" push -q origin main >/dev/null 2>&1
+printf 'DIRC but not an index\n' > "$W/.git/index"
+run_script pull "$W"
+if [[ "$RC" != 0 && "$OUT" == *"cannot read the checkout's index (sparse or damaged)"* ]]; then pass "a damaged index that is not split is refused as damaged"
+else fail "a damaged index that is not split (rc=$RC; out: $OUT)"; fi
 
 # The volume checks fail closed: a directory find cannot search hides what is
 # inside it from them (review of 82698a0, F3).
