@@ -165,6 +165,26 @@ backfill_launcher_cdpath "$d" >/dev/null
 [[ "$(p_stat_mode "$d/runme.sh")" == 750 ]] && pass "backfill keeps runme.sh's mode (750)" \
   || fail "backfill keeps runme.sh's mode (750): $(p_stat_mode "$d/runme.sh")"
 
+# Every mode survives a rewrite: read/write bits through the create's umask,
+# execute bits added after.
+for m in 640 604 711 755 750 700; do
+  d="$(newproj "mode$m")"; render 2 "fip.srv" > "$d/runme.sh"; chmod "$m" "$d/runme.sh"
+  reconcile_launcher "$d" >/dev/null 2>&1
+  got="$(p_stat_mode "$d/runme.sh")"
+  [[ "$got" == "$m" ]] || fail "regeneration keeps mode $m (got $got)"
+done
+pass "regeneration keeps modes 640 604 711 755 750 700"
+# A temp name taken by a link is not written through (the exclusive create fails).
+printf 'victim\n' > "$TMP/victim2"; printf 'new\n' > "$TMP/src"
+d="$(newproj excl)"; render 2 "fip.srv" > "$d/runme.sh"
+mktemp() { if [[ "${1:-}" == -u ]]; then printf '%s\n' "$d/.runme.sh.TAKEN"; else command mktemp "$@"; fi; }
+ln -s "$TMP/victim2" "$d/.runme.sh.TAKEN"
+_launcher_write "$TMP/src" "$d/runme.sh" rwxr-xr-x; rc=$?
+unset -f mktemp
+[[ $rc -ne 0 && "$(cat "$TMP/victim2")" == victim && -L "$d/.runme.sh.TAKEN" ]] \
+  && pass "_launcher_write fails, writing nothing, when its temp name is a link" \
+  || fail "_launcher_write fails, writing nothing, when its temp name is a link (rc=$rc, victim=$(cat "$TMP/victim2"))"
+
 # ── 8c. A file over 64 KiB is not read further, and is kept ──
 d="$(newproj huge)"; { render 4 "fip.srv"; head -c 70000 /dev/zero | tr '\0' '#'; printf '\nexport IMAGE_NAME=x\n'; } > "$d/runme.sh"
 before="$(p_sha1 "$d/runme.sh")"

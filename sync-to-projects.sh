@@ -240,6 +240,70 @@ ensure_inner_gitignore() {
   return 0
 }
 
+# ── runme.sh: read once, write by rename ──────────────────────────────────────
+# A project's .ai-containers/ is overlaid read-only for the agent, but not when
+# it is itself a writable mount root, and the agent has your UID. So nothing
+# here opens runme.sh by path twice, or writes into that directory by path:
+# _launcher_read opens it once, checks that open is the regular file the path
+# names, and copies at most 64 KiB to a private directory outside the project;
+# everything is decided and built from that copy, and _launcher_write creates a
+# fresh name beside runme.sh in one exclusive open, fills it through that open,
+# and renames it over runme.sh. The one change made by path afterwards adds
+# execute bits, which through a link swapped in meanwhile can widen nothing.
+# Not covered: a runme.sh swapped for a FIFO between the check and the open
+# blocks the sync (bash cannot open without blocking).
+
+# _launcher_read FILE OUT — copy FILE to OUT through one open; set
+# _launcher_perms to its rwx string. 0, or 1 (not a regular file, a link, the
+# open is not the path's file, unreadable), or 2 (over 64 KiB).
+_launcher_perms=""
+_launcher_read() {
+  local f="$1" out="$2" fd size
+  [[ -f "$f" && ! -L "$f" ]] || return 1
+  exec {fd}<"$f" 2>/dev/null || return 1
+  if [[ ! -L "$f" && -f "/dev/fd/$fd" && "$f" -ef "/dev/fd/$fd" ]] \
+     && head -c 65537 <&"$fd" > "$out" \
+     && _launcher_perms="$(ls -lnL "/dev/fd/$fd" 2>/dev/null | cut -c2-10)" \
+     && [[ "$_launcher_perms" == [r-][w-]?[r-][w-]?[r-][w-]? ]]; then
+    exec {fd}<&-
+  else
+    exec {fd}<&-; return 1
+  fi
+  size="$(wc -c < "$out" | tr -d ' ')"
+  (( size <= 65536 )) || return 2
+  return 0
+}
+
+# _launcher_write SRC FILE PERMS — put SRC's bytes at FILE with PERMS (rwx string).
+_launcher_write() {
+  local src="$1" f="$2" p="$3" t um=0 x="" c i
+  t="$(mktemp -u "$(dirname "$f")/.runme.sh.XXXXXX")" || return 1
+  # Read and write bits through the umask of the create; execute bits after.
+  for (( i = 0; i < 9; i++ )); do
+    c="${p:i:1}"
+    case "$i" in
+      0|3|6) [[ "$c" == r ]] || um=$(( um | (0400 >> i) )) ;;
+      1|4|7) [[ "$c" == w ]] || um=$(( um | (0400 >> i) )) ;;
+      *)     [[ "$c" == [xst] ]] && x+="${x:+,}$(printf '%s' ugo | cut -c$(( i / 3 + 1 )))+x" ;;
+    esac
+  done
+  # noclobber: O_EXCL, so a name taken meanwhile (a file, a link) fails the create.
+  if ! ( umask "$(printf '%o' "$um")"; set -C; cat "$src" > "$t" ) 2>/dev/null \
+     || [[ -L "$t" || ! -f "$t" ]]; then
+    [[ -f "$t" && ! -L "$t" ]] && rm -f "$t"
+    return 1
+  fi
+  if [[ -n "$x" ]]; then chmod "$x" "$t" 2>/dev/null || { rm -f "$t"; return 1; }; fi
+  _launcher_replace "$t" "$f" || { rm -f "$t"; return 1; }
+}
+
+# _launcher_replace TMP FILE — rename TMP over FILE without following FILE if
+# it has become a link meanwhile. A plain `mv` moves INTO a directory a link
+# there points at; GNU's -T and BSD's -h replace the link itself instead.
+_launcher_replace() {
+  mv -T -f "$1" "$2" 2>/dev/null || mv -h -f "$1" "$2" 2>/dev/null
+}
+
 # Repoint a launcher's stale ./runme.sh self-call to ./sandbox.sh (idempotent, safe: only
 # rewrites in place, never deletes or renames anything). An earlier revision of this
 # function also auto-deleted any runme.sh lacking an `export IMAGE_NAME=` marker,
@@ -252,56 +316,49 @@ ensure_inner_gitignore() {
 #
 # Comment lines are left alone: until GAP-6 this rewrote every `./runme.sh`,
 # so the template's own "SANDBOX_MODE=restricted ./runme.sh" hint became
-# "./sandbox.sh". A link is not followed (sed -i would replace it with a file).
+# "./sandbox.sh". Read and written as above, never through a link.
 migrate_launcher_naming() {
-  local dest="$1"
-  if [[ -f "${dest}/runme.sh" && ! -L "${dest}/runme.sh" ]]; then
-    sed -i.bak '/^[[:space:]]*#/!s#\./runme\.sh#./sandbox.sh#g' "${dest}/runme.sh" && rm -f "${dest}/runme.sh.bak"
+  local f="$1/runme.sh" tmpd
+  [[ -f "$f" && ! -L "$f" ]] || return 0
+  tmpd="$(mktemp -d)" || return 0
+  if _launcher_read "$f" "$tmpd/orig"; then
+    sed '/^[[:space:]]*#/!s#\./runme\.sh#./sandbox.sh#g' "$tmpd/orig" > "$tmpd/new" \
+      && ! cmp -s "$tmpd/orig" "$tmpd/new" \
+      && { _launcher_write "$tmpd/new" "$f" "$_launcher_perms" \
+           || printf '  NOTE: could not repoint the ./runme.sh self-call in runme.sh.\n'; }
   fi
+  rm -rf "$tmpd"
+  return 0
 }
 
 # A thin runme.sh generated before GIT-20 cd's to its own directory with the
 # user's CDPATH still set: run as `bash .ai-containers/runme.sh`, a CDPATH
 # holding another project's `.ai-containers` sends it there, and it builds and
 # starts THAT project, with no error. Insert the unset just before that cd —
-# idempotent, and only in a launcher that has the cd line. Written to a fresh
-# file beside it and renamed over it (_launcher_replace): a predictable
-# runme.sh.tmp, which this once used, could be a link planted by the agent.
+# idempotent, and only in a launcher that has the cd line. Read and written as
+# above: it once wrote a predictable runme.sh.tmp, which could be a planted link.
 backfill_launcher_cdpath() {
-  local f="$1/runme.sh" tmp
+  local f="$1/runme.sh" tmpd
   local cdline='cd "$(dirname "${BASH_SOURCE[0]}")"'
   [[ -f "$f" && ! -L "$f" ]] || return 0
-  grep -qF "$cdline" "$f" || return 0
-  ! grep -q '^unset CDPATH' "$f" || return 0
-  { tmp="$(_launcher_new "$1" "$f")" && awk -v cdline="$cdline" '
-    !done && index($0, cdline) == 1 {
-      print "# A CDPATH from your shell would send this cd to another project'"'"'s launcher."
-      print "unset CDPATH"
-      done = 1
-    }
-    { print }
-  ' "$f" > "$tmp" && _launcher_replace "$tmp" "$f"; } || {
-    rm -f "${tmp:-}"
-    printf '  NOTE: could not add `unset CDPATH` to runme.sh; it is left as it was.\n'
-    return 0
-  }
-  printf '  Added `unset CDPATH` to runme.sh (bugs review GIT-20).\n'
-}
-
-# _launcher_new DIR FILE — print a fresh file in DIR holding FILE's mode
-# (cp -p onto the mktemp file), for _launcher_replace to rename over FILE.
-_launcher_new() {
-  local t
-  t="$(mktemp "$1/.runme.sh.XXXXXX")" || return 1
-  cp -p "$2" "$t" || { rm -f "$t"; return 1; }
-  printf '%s' "$t"
-}
-
-# _launcher_replace TMP FILE — rename TMP over FILE without following FILE if
-# it has become a link meanwhile. A plain `mv` moves INTO a directory a link
-# there points at; GNU's -T and BSD's -h replace the link itself instead.
-_launcher_replace() {
-  mv -T -f "$1" "$2" 2>/dev/null || mv -h -f "$1" "$2" 2>/dev/null
+  tmpd="$(mktemp -d)" || return 0
+  if _launcher_read "$f" "$tmpd/orig" && grep -qF "$cdline" "$tmpd/orig" \
+     && ! grep -q '^unset CDPATH' "$tmpd/orig"; then
+    if awk -v cdline="$cdline" '
+      !done && index($0, cdline) == 1 {
+        print "# A CDPATH from your shell would send this cd to another project'"'"'s launcher."
+        print "unset CDPATH"
+        done = 1
+      }
+      { print }
+    ' "$tmpd/orig" > "$tmpd/new" && _launcher_write "$tmpd/new" "$f" "$_launcher_perms"; then
+      printf '  Added `unset CDPATH` to runme.sh (bugs review GIT-20).\n'
+    else
+      printf '  NOTE: could not add `unset CDPATH` to runme.sh; it is left as it was.\n'
+    fi
+  fi
+  rm -rf "$tmpd"
+  return 0
 }
 
 # reconcile_launcher DEST — bring DEST/runme.sh up to the launcher template
@@ -314,7 +371,6 @@ _launcher_replace() {
 # Returns 0 when there is nothing more to do (no runme.sh, already current,
 # regenerated) and 1 when the launcher is kept as it is, after saying why: the
 # caller then runs the legacy in-place repairs on it, as before.
-# Never writes through a link: the file is replaced by a rename.
 _launcher_old_sync() {  # stdin → stdout
   # shellcheck disable=SC2016  # the cd line is matched as text
   sed 's#\./runme\.sh#./sandbox.sh#g' | awk -v cdline='cd "$(dirname "${BASH_SOURCE[0]}")"' '
@@ -334,7 +390,7 @@ _launcher_old_sync() {  # stdin → stdout
 reconcile_launcher() {
   local dest="$1" f="$1/runme.sh" tpl_dir="${script_dir}/launcher-templates"
   local ph='@@PROJECT_NAME@@' pre='# runme.sh — launch the AI sandbox for ' suf='. Thin wrapper generated by'
-  local line2 name n=0 i match="" tmpd tmp size
+  local line2 name n=0 i match="" tmpd rc
   [[ -e "$f" || -L "$f" ]] || return 0
   while [[ -f "${tpl_dir}/$((n + 1)).tmpl" ]]; do n=$((n + 1)); done
   (( n > 0 )) || { printf '  NOTE: no launcher-templates/ beside this script; runme.sh is not checked.\n'; return 1; }
@@ -342,24 +398,28 @@ reconcile_launcher() {
     printf '  NOTE: runme.sh is a link or not a regular file, so it is not regenerated: %s\n' "$f"
     return 1
   fi
-  # An agent can write this file: a huge one is not read, and is no launcher of ours.
-  size="$(wc -c < "$f" 2>/dev/null | tr -d ' ')" || size=""
-  if [[ -z "$size" ]] || (( size > 65536 )); then
-    _launcher_edited_note "$f" "$tpl_dir/$n.tmpl"; return 1
+  tmpd="$(mktemp -d)" || { printf '  NOTE: cannot make a temporary directory; runme.sh is not checked.\n'; return 1; }
+  _launcher_read "$f" "$tmpd/orig"; rc=$?
+  if (( rc == 1 )); then
+    rm -rf "$tmpd"
+    printf '  NOTE: runme.sh could not be read as a regular file, so it is not regenerated: %s\n' "$f"
+    return 1
   fi
-  if grep -qE '^[[:space:]]*export[[:space:]]+IMAGE_NAME=' "$f" 2>/dev/null; then
+  # An agent can write this file: a huge one is not read, and is no launcher of ours.
+  if (( rc == 2 )); then rm -rf "$tmpd"; _launcher_edited_note "$f" "$tpl_dir/$n.tmpl"; return 1; fi
+  if grep -qE '^[[:space:]]*export[[:space:]]+IMAGE_NAME=' "$tmpd/orig"; then
+    rm -rf "$tmpd"
     printf '  NOTE: runme.sh exports IMAGE_NAME, so it is a launcher from before the thin one\n'
     printf '        (./migrate-runme.sh %q replaces it) or an edited one; it is left as it is.\n' "$(dirname "$dest")"
     return 1
   fi
-  line2="$(sed -n 2p "$f" 2>/dev/null)" || line2=""
+  line2="$(sed -n 2p "$tmpd/orig")" || line2=""
   if [[ "$line2" != "$pre"*"$suf" ]]; then
-    _launcher_edited_note "$f" "$tpl_dir/$n.tmpl"; return 1
+    rm -rf "$tmpd"; _launcher_edited_note "$f" "$tpl_dir/$n.tmpl"; return 1
   fi
   name="${line2#"$pre"}"; name="${name%"$suf"}"
-  tmpd="$(mktemp -d)" || { printf '  NOTE: cannot make a temporary directory; runme.sh is not checked.\n'; return 1; }
   # The launcher with its name put back to the placeholder: line 1, line 2, the rest.
-  if ! { head -n 1 "$f" && printf '%s%s%s\n' "$pre" "$ph" "$suf" && tail -n +3 "$f"; } > "$tmpd/canon" 2>/dev/null; then
+  if ! { head -n 1 "$tmpd/orig" && printf '%s%s%s\n' "$pre" "$ph" "$suf" && tail -n +3 "$tmpd/orig"; } > "$tmpd/canon"; then
     rm -rf "$tmpd"; _launcher_edited_note "$f" "$tpl_dir/$n.tmpl"; return 1
   fi
   if cmp -s "$tmpd/canon" "$tpl_dir/$n.tmpl"; then rm -rf "$tmpd"; return 0; fi
@@ -374,17 +434,13 @@ reconcile_launcher() {
       cmp -s "$tmpd/canon.old" "$tmpd/tpl.old" && { match="$i"; break; }
     done
   fi
-  rm -rf "$tmpd"
-  if [[ -z "$match" ]]; then _launcher_edited_note "$f" "$tpl_dir/$n.tmpl"; return 1; fi
-  # Written beside it with its mode, then renamed over it: a link put there
-  # meanwhile is replaced, not followed.
-  # emit_launcher's own chmod +x would widen a 0700 launcher: it writes a private
-  # file, whose text is then copied in.
-  tmp="$(_launcher_new "$dest" "$f")" || { printf '  NOTE: cannot write in %s; runme.sh is not regenerated.\n' "$dest"; return 1; }
-  tmpd="$(mktemp -d)" || { rm -f "$tmp"; printf '  NOTE: cannot make a temporary directory; runme.sh is not regenerated.\n'; return 1; }
+  if [[ -z "$match" ]]; then rm -rf "$tmpd"; _launcher_edited_note "$f" "$tpl_dir/$n.tmpl"; return 1; fi
+  # Built in the private directory (emit_launcher's own chmod +x lands there),
+  # then written with the launcher's own mode.
   # shellcheck disable=SC1091  # project-init.sh sits beside this script
-  if ( source "${script_dir}/project-init.sh" && emit_launcher "$tmpd/runme.sh" "$name" ) \
-     && cat "$tmpd/runme.sh" > "$tmp" && rm -rf "$tmpd" && _launcher_replace "$tmp" "$f"; then
+  if ( source "${script_dir}/project-init.sh" && emit_launcher "$tmpd/new" "$name" ) \
+     && _launcher_write "$tmpd/new" "$f" "$_launcher_perms"; then
+    rm -rf "$tmpd"
     if [[ "$match" == "$n" ]]; then
       printf '  Rewrote runme.sh as launcher template %s: it differed only in what earlier syncs\n' "$n"
       printf '        change (`unset CDPATH`, `./runme.sh` in comments, the final newline) (GAP-6).\n'
@@ -393,7 +449,7 @@ reconcile_launcher() {
     fi
     return 0
   fi
-  rm -f "$tmp"; rm -rf "$tmpd"
+  rm -rf "$tmpd"
   printf '  NOTE: could not regenerate runme.sh (launcher template %s); it is left as it was.\n' "$match"
   return 1
 }
