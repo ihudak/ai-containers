@@ -1430,16 +1430,16 @@ Batch 11 regenerated patches 467, 500, 510 and 710. Each was applied and its cas
 
 ## 18. Found while fixing GAP-6
 
-GAP-6's reviews (an Opus reviewer over three rounds, and an automated security review) hardened every write to `runme.sh`: it is read once through a checked open and replaced by an exclusive create and a rename (sync-to-projects.sh: `_launcher_read()`, `_launcher_write()`). They found that the rest of `sync_project` still opens files in the project's `.ai-containers/` by path.
+GAP-6's reviews (an Opus reviewer over three rounds, and an automated security review) hardened every write to `runme.sh`: it is read once through a checked open and replaced by an exclusive create and a rename (project-files.sh: `_proj_read()`, `_proj_write()`). They found that the rest of `sync_project` still opens files in the project's `.ai-containers/` by path.
 
 ### PRJ-10: sync writes and reads the project's other files by path, through a link the agent can plant
-- **Status: OPEN**
+- **Status: FIXED** (2026-11-02). Every file sync writes in a project goes through project-files.sh: `_proj_write()` (built privately, one exclusive create beside the target, renamed in): the shared files (with the engine copy's mode), `engine-version`, `sandbox.env`, `sandbox.conf` (reconciled on a private copy read through `_proj_read()`, which the migration hooks get) and both `.gitignore`s. A linked `sandbox.conf` or project `.gitignore` is named in a `NOTE:` and left; a linked inner `.gitignore` is replaced by a file of the patterns; a dangling `sandbox.env` link is replaced by the backfilled file, never written through. The `sandbox.env` backfill reads only regular files, each through `_proj_read`. The fragment directories are rsynced as `<dir>` into the copy, not `<dir>/` into `<dir>/`, so a link there is replaced by a real directory. `ensure_ai_containers_ignored`, two copies in project-init.sh and sync-to-projects.sh, is one definition there. Wider than first logged: `cp` of the shared files and the project's root `.gitignore`, which the agent can always write, were affected too. `tests/test-sync-no-follow.sh` (10 checks fail on the old code; a FIFO hung the backfill).
 - Severity: LOW. Confidence: CONFIRMED by reading the code (not exploited)
 - Location: sync-to-projects.sh: `backfill_sandbox_env()` (`grep … "$dest"/*.sh`, `cat > "${dest}/sandbox.env" <<EOF`), `conf_set_version()` and the reconcile (`cat "$tmp" > "$f"`, `>> "$f"`), `ensure_inner_gitignore()` (`>> "$gi"`)
 - Introduced: before the window (the reconcile and backfills predate it).
 - What's wrong: the agent cannot write `.ai-containers/` while the launcher overlays it read-only. It can when that directory is itself a writable mount root, which the launch allows with a `NOTE:`, and the agent has your UID. Then a `sandbox.conf`, `.gitignore` or (in a project that predates it) `sandbox.env` replaced by a link to a host file makes the next sync write into that file, and a link or FIFO among `*.sh` is read by the `sandbox.env` backfill (a FIFO hangs the sync).
 - Failure scenario: `.ai-containers` mounted writable; the agent runs `ln -sf ~/.bashrc .ai-containers/.gitignore` after deleting a required pattern; the next `./sync-to-projects.sh` appends `sandbox.local.env` and the other patterns to `~/.bashrc`.
-- Fix direction: route these writes through `_launcher_read`/`_launcher_write` (generalised beyond `runme.sh`), or refuse a project whose `.ai-containers` entries are links or not regular files before syncing it.
+- Fix direction: done as above.
 
 ---
 

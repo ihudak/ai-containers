@@ -20,6 +20,8 @@ unset CDPATH  # a relative cd follows it and prints the directory (bugs review G
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bash-floor.sh"
 # shellcheck source=host-preflight.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/host-preflight.sh"
+# shellcheck source=project-files.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/project-files.sh"
 
 valid_group_name() {
   # Mirrors validate_group_name() in sandbox-common.sh.
@@ -209,35 +211,6 @@ expand_path() {
   printf '%s' "$result"
 }
 
-# Ensure the project's root .gitignore ignores its .ai-containers/ working copy.
-# The per-project .ai-containers/ is a synced copy of the central repo and the
-# launcher embeds machine-specific absolute paths (EXTRA_MOUNTS), so it should
-# not be committed to the project. Idempotent, git-repos only; to keep it under
-# version control instead (e.g. to share sandbox config with a team), remove the
-# added line. Honour AI_CONTAINERS_NO_GITIGNORE=1 to skip entirely.
-ensure_ai_containers_ignored() {
-  local project_path="$1"
-  [[ "${AI_CONTAINERS_NO_GITIGNORE:-0}" == "1" ]] && return 0
-  git -C "$project_path" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
-  git -C "$project_path" check-ignore -q .ai-containers 2>/dev/null && return 0
-  # If the project intentionally TRACKS .ai-containers/ (any file under it is in the
-  # git index), never add an ignore rule — it would silently hide newly-synced files
-  # from commits. Makes AI_CONTAINERS_NO_GITIGNORE=1 unnecessary for tracked layouts.
-  # The same code as sync-to-projects.sh's copy (tests/test-project-init.sh compares
-  # them; this one lacked the check, bugs review PRJ-4).
-  [[ -n "$(git -C "$project_path" ls-files -- .ai-containers 2>/dev/null | head -1)" ]] && return 0
-  local gi="${project_path}/.gitignore"
-  # Guarantee a trailing newline before appending to an existing, non-empty file.
-  if [[ -f "$gi" && -s "$gi" && -n "$(tail -c1 "$gi" 2>/dev/null)" ]]; then
-    printf '\n' >> "$gi"
-  fi
-  {
-    printf '# AI sandbox tooling — local working copy synced from the central ai-containers repo\n'
-    printf '# (the launcher embeds machine-specific paths). Remove this line to version it instead.\n'
-    printf '/.ai-containers/\n'
-  } >> "$gi"
-  printf '  Added /.ai-containers/ to %s/.gitignore\n' "$(basename "$project_path")"
-}
 
 # Parse a docker-style memory string (e.g. 512m, 2g, 1073741824, or -1) into bytes.
 # Echoes the byte count (or "-1") and returns 0; returns 1 on parse failure.

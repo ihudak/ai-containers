@@ -26,6 +26,8 @@ unset CDPATH  # a relative cd follows it and prints the directory (bugs review G
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bash-floor.sh"
 # shellcheck source=host-preflight.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/host-preflight.sh"
+# shellcheck source=project-files.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/project-files.sh"
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 projects_conf="${script_dir}/projects.conf"
@@ -46,27 +48,36 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/version.sh"
 # sandbox.env existed. Never overwrites an existing file. The image name is read
 # from the project's generated launcher (export IMAGE_NAME=...).
 backfill_sandbox_env() {
-  local dest="$1"
+  local dest="$1" tmpd f val
+  # A dangling link there is replaced by the file (_proj_write renames), never written through.
   [[ -f "${dest}/sandbox.env" ]] && return 0
 
   local img=""
   # Find a launcher's literal IMAGE_NAME. We scan all *.sh (launcher names are
   # not always "<name>-container.sh") and keep the first `export IMAGE_NAME=`
   # whose value is a literal — skipping templates like the `${project_name}-...`
-  # line in a copied project-init.sh.
-  while IFS= read -r val; do
-    [[ -z "$val" || "$val" == *'$'* ]] && continue
-    img="$val"; break
-  done < <(grep -hE '^[[:space:]]*export[[:space:]]+IMAGE_NAME=' "$dest"/*.sh 2>/dev/null \
-            | sed -E 's/^[^=]*=//; s/^["'\'']//; s/["'\'']$//')
+  # line in a copied project-init.sh. Only regular files, each read through
+  # _proj_read: a FIFO among them hung the sync, and a link was read through.
+  tmpd="$(mktemp -d)" || return 0
+  for f in "$dest"/*.sh; do
+    [[ -f "$f" && ! -L "$f" ]] || continue
+    _proj_read "$f" "$tmpd/sh" 8388608 || continue
+    while IFS= read -r val; do
+      [[ -z "$val" || "$val" == *'$'* ]] && continue
+      img="$val"; break
+    done < <(grep -hE '^[[:space:]]*export[[:space:]]+IMAGE_NAME=' "$tmpd/sh" 2>/dev/null \
+              | sed -E 's/^[^=]*=//; s/^["'\'']//; s/["'\'']$//')
+    [[ -n "$img" ]] && break
+  done
 
   if [[ -z "$img" ]]; then
+    rm -rf "$tmpd"
     printf '  WARN  could not determine IMAGE_NAME — sandbox.env not written.\n'
     printf '        Create %s/sandbox.env manually with: IMAGE_NAME=<your-image>\n' "$dest"
     return 0
   fi
 
-  cat > "${dest}/sandbox.env" <<EOF
+  cat > "$tmpd/env" <<EOF
 # sandbox.env — persisted environment for this project's AI sandbox.
 # Read by sandbox-common.sh so build.sh / sandbox.sh / repo.sh agree on the image
 # name (hence the repo-volume names) even when run outside the launcher. An
@@ -74,7 +85,12 @@ backfill_sandbox_env() {
 # Not overwritten by sync-to-projects.sh.
 IMAGE_NAME=${img}
 EOF
-  printf '  Wrote sandbox.env (IMAGE_NAME=%s).\n' "$img"
+  if _proj_write "$tmpd/env" "${dest}/sandbox.env" "$(_perms_new)"; then
+    printf '  Wrote sandbox.env (IMAGE_NAME=%s).\n' "$img"
+  else
+    printf '  NOTE: could not write %s/sandbox.env (IMAGE_NAME=%s).\n' "$dest" "$img"
+  fi
+  rm -rf "$tmpd"
 }
 
 # Echo the schema-version integer recorded in a sandbox.conf ($1); 0 if absent.
@@ -176,34 +192,26 @@ reconcile_sandbox_conf() {
   conf_set_version "$project" "$central_version"
 }
 
-# Ensure the project's root .gitignore ignores its .ai-containers/ working copy.
-# The per-project .ai-containers/ is a synced copy of the central repo and the
-# launcher embeds machine-specific absolute paths (EXTRA_MOUNTS), so it should
-# not be committed to the project. A project that already TRACKS .ai-containers/
-# (any file under it in the git index) is left untouched — no ignore rule is added,
-# so a deliberately version-controlled working copy keeps working with no override.
-# Idempotent, git-repos only; to keep an untracked copy under version control
-# instead, remove the added line. AI_CONTAINERS_NO_GITIGNORE=1 skips this entirely.
-ensure_ai_containers_ignored() {
-  local project_path="$1"
-  [[ "${AI_CONTAINERS_NO_GITIGNORE:-0}" == "1" ]] && return 0
-  git -C "$project_path" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
-  git -C "$project_path" check-ignore -q .ai-containers 2>/dev/null && return 0
-  # If the project intentionally TRACKS .ai-containers/ (any file under it is in the
-  # git index), never add an ignore rule — it would silently hide newly-synced files
-  # from commits. Makes AI_CONTAINERS_NO_GITIGNORE=1 unnecessary for tracked layouts.
-  [[ -n "$(git -C "$project_path" ls-files -- .ai-containers 2>/dev/null | head -1)" ]] && return 0
-  local gi="${project_path}/.gitignore"
-  if [[ -f "$gi" && -s "$gi" && -n "$(tail -c1 "$gi" 2>/dev/null)" ]]; then
-    printf '\n' >> "$gi"
+# sync_sandbox_conf DEST — reconcile DEST/sandbox.conf through a private copy:
+# read through _proj_read, reconciled (and its hooks run) there, renamed back in
+# with its own mode if anything changed. A link or non-file is named and left.
+sync_sandbox_conf() {
+  local f="$1/sandbox.conf" tmpd perms
+  [[ -e "$f" || -L "$f" ]] || return 0
+  tmpd="$(mktemp -d)" || { printf 'ERROR: mktemp -d failed\n' >&2; return 1; }
+  if ! _proj_read "$f" "$tmpd/sandbox.conf" 4194304; then
+    rm -rf "$tmpd"; _proj_note_skip "$f" "it is not reconciled"; return 0
   fi
-  {
-    printf '# AI sandbox tooling — local working copy synced from the central ai-containers repo\n'
-    printf '# (the launcher embeds machine-specific paths). Remove this line to version it instead.\n'
-    printf '/.ai-containers/\n'
-  } >> "$gi"
-  printf '  Added /.ai-containers/ to %s/.gitignore\n' "$(basename "$project_path")"
+  perms="$_proj_perms"
+  cp "$tmpd/sandbox.conf" "$tmpd/orig"
+  reconcile_sandbox_conf "${script_dir}/sandbox.conf" "$tmpd/sandbox.conf" "${script_dir}/migrations"
+  if ! cmp -s "$tmpd/orig" "$tmpd/sandbox.conf"; then
+    _proj_write "$tmpd/sandbox.conf" "$f" "$perms" \
+      || { rm -rf "$tmpd"; printf 'ERROR: could not write %s\n' "$f" >&2; return 1; }
+  fi
+  rm -rf "$tmpd"
 }
+
 
 # Ensure the project's INNER .ai-containers/.gitignore covers the generated/local files.
 #
@@ -220,104 +228,40 @@ ensure_inner_gitignore() {
   # different function above) makes shellcheck's array/scalar tracking — which
   # isn't scope-aware — falsely flag this unrelated scalar as SC2178/SC2128.
   # Renaming sidesteps the collision instead of suppressing a real pattern.
-  local gi="${dest}/.gitignore" pat did_add=0
-  # Guarantee a trailing newline before appending to an existing, non-empty file
-  # (otherwise the first appended pattern gets glued onto the file's last line).
-  if [[ -f "$gi" && -s "$gi" && -n "$(tail -c1 "$gi" 2>/dev/null)" ]]; then
-    printf '\n' >> "$gi"
+  # Built privately and renamed in (PRJ-10). This file is sync's: a link there
+  # is replaced by a file of the patterns; anything else not a file is named.
+  local gi="${dest}/.gitignore" pat did_add=0 tmpd perms
+  tmpd="$(mktemp -d)" || return 0
+  perms="$(_perms_new)"; : > "$tmpd/gi"
+  if [[ -e "$gi" && ! -L "$gi" ]]; then
+    if ! _proj_read "$gi" "$tmpd/gi" 4194304; then
+      rm -rf "$tmpd"; _proj_note_skip "$gi" "its patterns are not backfilled"; return 0
+    fi
+    perms="$_proj_perms"
   fi
+  # Guarantee a trailing newline before appending to a non-empty file
+  # (otherwise the first appended pattern gets glued onto the file's last line).
+  if [[ -s "$tmpd/gi" && -n "$(tail -c1 "$tmpd/gi")" ]]; then printf '\n' >> "$tmpd/gi"; fi
   for pat in '.agent-blocked/' '.agent-discovery/' 'sandbox.local.env' 'sandbox.local.env.pre-init*' 'sandbox.env.pre-init*' \
              '*.pre-migrate' '*.pre-migrate.*' '*.pre-multiline' '*.pre-multiline.*' \
              'allowlist-domains.txt' 'allowlist-proxy-domains.txt' 'allowlist-cidrs.txt' \
              'allowlist-domains.d/custom.txt' 'allowlist-proxy-domains.d/custom.txt' \
              'allowlist-cidrs.d/custom.txt'; do
-    if [[ ! -f "$gi" ]] || ! grep -qxF "$pat" "$gi" 2>/dev/null; then
-      printf '%s\n' "$pat" >> "$gi"
+    if ! grep -qxF "$pat" "$tmpd/gi"; then
+      printf '%s\n' "$pat" >> "$tmpd/gi"
       did_add=1
     fi
   done
-  (( did_add )) && printf '  Backfilled .ai-containers/.gitignore patterns.\n'
-  return 0
-}
-
-# ── runme.sh: read once, write by rename ──────────────────────────────────────
-# A project's .ai-containers/ is overlaid read-only for the agent, but not when
-# it is itself a writable mount root, and the agent has your UID. So nothing
-# here opens runme.sh by path twice, or writes into that directory by path:
-# _launcher_read opens it once, checks that open is the regular file the path
-# names, and copies at most 64 KiB to a private directory outside the project;
-# everything is decided and built from that copy, and _launcher_write creates a
-# fresh name beside runme.sh in one exclusive open, fills it through that open,
-# and renames it over runme.sh. Its execute bits are set through that open too
-# (/dev/fd/N); only where chmod cannot use it (not Linux) is the name re-checked
-# and used, and that can add execute bits, never read or write ones.
-# Not covered: a runme.sh swapped for a FIFO between the check and the open
-# blocks the sync (bash cannot open without blocking).
-
-# _launcher_read FILE OUT — copy FILE to OUT through one open; set
-# _launcher_perms to its rwx string. 0, or 1 (not a regular file, a link, the
-# open is not the path's file, unreadable), or 2 (over 64 KiB).
-_launcher_perms=""
-_launcher_read() {
-  local f="$1" out="$2" fd size
-  [[ -f "$f" && ! -L "$f" ]] || return 1
-  # Braced: on a bare exec the 2>/dev/null would stay on the shell, and every
-  # later error of the sync would vanish.
-  { exec {fd}<"$f"; } 2>/dev/null || return 1
-  if [[ ! -L "$f" && -f "/dev/fd/$fd" && "$f" -ef "/dev/fd/$fd" ]] \
-     && head -c 65537 <&"$fd" > "$out" \
-     && _launcher_perms="$(ls -lnL "/dev/fd/$fd" 2>/dev/null | cut -c2-10)" \
-     && [[ "$_launcher_perms" == [r-][w-]?[r-][w-]?[r-][w-]? ]]; then
-    exec {fd}<&-
-  else
-    exec {fd}<&-; return 1
+  [[ -L "$gi" ]] && did_add=1
+  if (( did_add )); then
+    if _proj_write "$tmpd/gi" "$gi" "$perms"; then
+      printf '  Backfilled .ai-containers/.gitignore patterns.\n'
+    else
+      printf '  NOTE: could not backfill %s\n' "$gi"
+    fi
   fi
-  size="$(wc -c < "$out" | tr -d ' ')"
-  (( size <= 65536 )) || return 2
+  rm -rf "$tmpd"
   return 0
-}
-
-# _launcher_write SRC FILE PERMS — put SRC's bytes at FILE with PERMS (rwx string).
-_launcher_write() {
-  local src="$1" f="$2" p="$3" t um=0 x="" c i
-  t="$(mktemp -u "$(dirname "$f")/.runme.sh.XXXXXX")" || return 1
-  # Read and write bits through the umask of the create; execute bits after.
-  for (( i = 0; i < 9; i++ )); do
-    c="${p:i:1}"
-    case "$i" in
-      0|3|6) [[ "$c" == r ]] || um=$(( um | (0400 >> i) )) ;;
-      1|4|7) [[ "$c" == w ]] || um=$(( um | (0400 >> i) )) ;;
-      *)     [[ "$c" == [xst] ]] && x+="${x:+,}$(printf '%s' ugo | cut -c$(( i / 3 + 1 )))+x" ;;
-    esac
-  done
-  # noclobber: O_EXCL on a name that does not exist, so a file or a link put
-  # there meanwhile fails the create. An existing FIFO or device (or a link to
-  # one) is opened without O_EXCL — bash allows that — but the name is a
-  # mktemp -u one nothing else knows, and such a target fails the checks below
-  # and is never renamed in. The open is kept: bytes and execute bits go through it.
-  local w="" ok=1 old_umask had_c=""
-  old_umask="$(umask)"; [[ "$-" == *C* ]] && had_c=1
-  umask "$(printf '%o' "$um")"; set -C
-  { exec {w}>"$t"; } 2>/dev/null || ok=0
-  umask "$old_umask"; [[ -n "$had_c" ]] || set +C
-  (( ok )) || return 1
-  if [[ -L "$t" || ! -f "$t" || ! "$t" -ef "/dev/fd/$w" ]] || ! cat "$src" >&"$w"; then ok=0
-  # /dev/fd/N is the opened file on Linux whatever the name now is; where chmod
-  # cannot go through it, the name is checked to still be that file first.
-  elif [[ -n "$x" ]] && ! chmod "$x" "/dev/fd/$w" 2>/dev/null \
-       && ! { [[ ! -L "$t" && "$t" -ef "/dev/fd/$w" ]] && chmod "$x" "$t" 2>/dev/null; }; then ok=0
-  fi
-  exec {w}>&-
-  if (( ok )) && _launcher_replace "$t" "$f"; then return 0; fi
-  [[ -f "$t" && ! -L "$t" ]] && rm -f "$t"
-  return 1
-}
-
-# _launcher_replace TMP FILE — rename TMP over FILE without following FILE if
-# it has become a link meanwhile. A plain `mv` moves INTO a directory a link
-# there points at; GNU's -T and BSD's -h replace the link itself instead.
-_launcher_replace() {
-  mv -T -f "$1" "$2" 2>/dev/null || mv -h -f "$1" "$2" 2>/dev/null
 }
 
 # Repoint a launcher's stale ./runme.sh self-call to ./sandbox.sh (idempotent, safe: only
@@ -337,10 +281,10 @@ migrate_launcher_naming() {
   local f="$1/runme.sh" tmpd
   [[ -f "$f" && ! -L "$f" ]] || return 0
   tmpd="$(mktemp -d)" || return 0
-  if _launcher_read "$f" "$tmpd/orig"; then
+  if _proj_read "$f" "$tmpd/orig"; then
     sed '/^[[:space:]]*#/!s#\./runme\.sh#./sandbox.sh#g' "$tmpd/orig" > "$tmpd/new" \
       && ! cmp -s "$tmpd/orig" "$tmpd/new" \
-      && { _launcher_write "$tmpd/new" "$f" "$_launcher_perms" \
+      && { _proj_write "$tmpd/new" "$f" "$_proj_perms" \
            || printf '  NOTE: could not repoint the ./runme.sh self-call in runme.sh.\n'; }
   fi
   rm -rf "$tmpd"
@@ -358,7 +302,7 @@ backfill_launcher_cdpath() {
   local cdline='cd "$(dirname "${BASH_SOURCE[0]}")"'
   [[ -f "$f" && ! -L "$f" ]] || return 0
   tmpd="$(mktemp -d)" || return 0
-  if _launcher_read "$f" "$tmpd/orig" && grep -qF "$cdline" "$tmpd/orig" \
+  if _proj_read "$f" "$tmpd/orig" && grep -qF "$cdline" "$tmpd/orig" \
      && ! grep -q '^unset CDPATH' "$tmpd/orig"; then
     if awk -v cdline="$cdline" '
       !done && index($0, cdline) == 1 {
@@ -367,7 +311,7 @@ backfill_launcher_cdpath() {
         done = 1
       }
       { print }
-    ' "$tmpd/orig" > "$tmpd/new" && _launcher_write "$tmpd/new" "$f" "$_launcher_perms"; then
+    ' "$tmpd/orig" > "$tmpd/new" && _proj_write "$tmpd/new" "$f" "$_proj_perms"; then
       printf '  Added `unset CDPATH` to runme.sh (bugs review GIT-20).\n'
     else
       printf '  NOTE: could not add `unset CDPATH` to runme.sh; it is left as it was.\n'
@@ -415,7 +359,7 @@ reconcile_launcher() {
     return 1
   fi
   tmpd="$(mktemp -d)" || { printf '  NOTE: cannot make a temporary directory; runme.sh is not checked.\n'; return 1; }
-  _launcher_read "$f" "$tmpd/orig"; rc=$?
+  _proj_read "$f" "$tmpd/orig"; rc=$?
   if (( rc == 1 )); then
     rm -rf "$tmpd"
     printf '  NOTE: runme.sh could not be read as a regular file, so it is not regenerated: %s\n' "$f"
@@ -455,7 +399,7 @@ reconcile_launcher() {
   # then written with the launcher's own mode.
   # shellcheck disable=SC1091  # project-init.sh sits beside this script
   if ( source "${script_dir}/project-init.sh" && emit_launcher "$tmpd/new" "$name" ) \
-     && _launcher_write "$tmpd/new" "$f" "$_launcher_perms"; then
+     && _proj_write "$tmpd/new" "$f" "$_proj_perms"; then
     rm -rf "$tmpd"
     if [[ "$match" == "$n" ]]; then
       printf '  Rewrote runme.sh as launcher template %s: it differed only in what earlier syncs\n' "$n"
@@ -532,14 +476,15 @@ sync_project() {
   printf 'Syncing → %s\n' "$dest"
 
   # Allowlist fragment directories (exclude custom.txt)
-  rsync -a --exclude='custom.txt' \
-    "${script_dir}/allowlist-domains.d/"       "${dest}/allowlist-domains.d/"
-  rsync -a --exclude='custom.txt' \
-    "${script_dir}/allowlist-proxy-domains.d/" "${dest}/allowlist-proxy-domains.d/"
-  rsync -a --exclude='custom.txt' \
-    "${script_dir}/allowlist-cidrs.d/"         "${dest}/allowlist-cidrs.d/"
-  rsync -a "${script_dir}/tools.d/" "${dest}/tools.d/"
-  rsync -a "${script_dir}/services.d/" "${dest}/services.d/"
+  # Each directory named WITHOUT a trailing slash on either side: rsync then
+  # updates dest/<dir> itself, and replaces a link there with a real directory
+  # instead of writing through it (with `dir/ → dest/dir/` it followed the
+  # link; PRJ-10). rsync also replaces a link among the files, never follows it.
+  rsync -a --exclude='custom.txt' "${script_dir}/allowlist-domains.d"       "${dest}"
+  rsync -a --exclude='custom.txt' "${script_dir}/allowlist-proxy-domains.d" "${dest}"
+  rsync -a --exclude='custom.txt' "${script_dir}/allowlist-cidrs.d"         "${dest}"
+  rsync -a "${script_dir}/tools.d" "${dest}"
+  rsync -a "${script_dir}/services.d" "${dest}"
 
   # Bring an unedited runme.sh to the current template (GAP-6); a launcher that
   # is not one gets the legacy in-place repairs it always got.
@@ -550,15 +495,28 @@ sync_project() {
 
   # Shared scripts and build files — the list lives in shared-files.sh, the
   # single definition project-init.sh also sources (see there).
+  # Written by rename with the engine copy's mode, never `cp` onto the old name,
+  # which wrote through a link there (PRJ-10).
   for f in "${AI_CONTAINERS_SHARED_FILES[@]}"; do
     if [[ -f "${script_dir}/${f}" ]]; then
-      cp "${script_dir}/${f}" "${dest}/${f}"
+      _proj_write "${script_dir}/${f}" "${dest}/${f}" "$(_perms_of "${script_dir}/${f}")" \
+        || { printf 'ERROR: could not write %s\n' "${dest}/${f}" >&2; return 1; }
     fi
   done
 
   # Refresh the recorded engine version — a sync makes the copy a copy of THIS
   # tree, so the number it reports must move with it (see version_record()).
-  version_record "${script_dir}" "${dest}"
+  # Recorded privately, then renamed in.
+  local vtmp
+  vtmp="$(mktemp -d)" || { printf 'ERROR: mktemp -d failed\n' >&2; return 1; }
+  version_record "${script_dir}" "$vtmp"
+  if [[ -f "$vtmp/engine-version" ]]; then
+    _proj_write "$vtmp/engine-version" "${dest}/engine-version" "$(_perms_new)" \
+      || printf '  NOTE: could not record the engine version in %s\n' "$dest"
+  else
+    rm -f "${dest}/engine-version"
+  fi
+  rm -rf "$vtmp"
 
   # README documents central-repo orchestration (project-init/sync) that doesn't
   # exist in a child working copy. Children are leaves: runtime files only.
@@ -566,9 +524,8 @@ sync_project() {
 
   # sandbox.conf reconcile — migrate + additively backfill, never clobber a key
   # the project already set. Marker is ensured unconditionally (see spec §1, §3).
-  if [[ -f "${dest}/sandbox.conf" ]]; then
-    reconcile_sandbox_conf "${script_dir}/sandbox.conf" "${dest}/sandbox.conf" "${script_dir}/migrations"
-  fi
+  # Reconciled on a private copy, which the hooks get, and renamed in (PRJ-10).
+  sync_sandbox_conf "$dest"
 
   # sandbox.env — never overwritten; backfilled from the launcher if missing.
   backfill_sandbox_env "$dest"

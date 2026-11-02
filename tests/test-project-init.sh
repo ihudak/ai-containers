@@ -199,11 +199,17 @@ printf '%s\n\n\n\n\n\n\n\n\n\n\n' "$PROJ4" | bash "$SCRIPTS/project-init.sh" >/d
 ! grep -qx '/.ai-containers/' "$PROJ4/.gitignore" 2>/dev/null \
   && pass "init adds no ignore rule to a project that tracks .ai-containers/" \
   || fail "init ignored a tracked .ai-containers/ ($(cat "$PROJ4/.gitignore"))"
-# One function, two copies: they must not drift again.
-fn_of() { sed -n '/^ensure_ai_containers_ignored()/,/^}/p' "$1" | grep -v '^[[:space:]]*#'; }
-[[ "$(fn_of "$SCRIPTS/project-init.sh")" == "$(fn_of "$SCRIPTS/sync-to-projects.sh")" ]] \
-  && pass "init's and sync's ensure_ai_containers_ignored are the same code" \
-  || fail "ensure_ai_containers_ignored differs between project-init.sh and sync-to-projects.sh"
+# One function, one definition (project-files.sh), which both scripts load:
+# it was two copies a test compared (PRJ-4), and both wrote by path (PRJ-10).
+defs="$(cd "$SCRIPTS" && grep -l '^ensure_ai_containers_ignored()' project-files.sh project-init.sh sync-to-projects.sh)"
+loaded=1
+for s in project-init.sh sync-to-projects.sh; do
+  # shellcheck disable=SC2016  # matched as text
+  grep -qF 'source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/project-files.sh"' "$SCRIPTS/$s" || loaded=0
+done
+[[ "$defs" == project-files.sh && $loaded -eq 1 ]] \
+  && pass "ensure_ai_containers_ignored is defined once, in project-files.sh, which init and sync source" \
+  || fail "ensure_ai_containers_ignored is defined once, in project-files.sh, which init and sync source (defined in: $defs)"
 
 # DOC-3: AGENTS.md documents `./project-init.sh /path/to/myproject [optional-name]`,
 # but the arguments were ignored, and with no terminal the first prompt's failed

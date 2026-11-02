@@ -151,10 +151,10 @@ backfill_launcher_cdpath "$d" >/dev/null
 # A runme.sh that became a link to a directory is replaced, not moved into.
 d="$(newproj dirlink)"; mkdir -p "$TMP/hostdir"; ln -s "$TMP/hostdir" "$d/runme.sh"
 printf 'new\n' > "$d/.new"
-_launcher_replace "$d/.new" "$d/runme.sh"
+_proj_replace "$d/.new" "$d/runme.sh"
 [[ ! -L "$d/runme.sh" && "$(cat "$d/runme.sh" 2>/dev/null)" == new && -z "$(ls -A "$TMP/hostdir")" ]] \
-  && pass "_launcher_replace replaces a link to a directory instead of moving into it" \
-  || fail "_launcher_replace replaces a link to a directory instead of moving into it: $(ls -lA "$d" "$TMP/hostdir")"
+  && pass "_proj_replace replaces a link to a directory instead of moving into it" \
+  || fail "_proj_replace replaces a link to a directory instead of moving into it: $(ls -lA "$d" "$TMP/hostdir")"
 # The mode is kept (and the result stays executable).
 d="$(newproj mode)"; render 2 "fip.srv" > "$d/runme.sh"; chmod 700 "$d/runme.sh"
 reconcile_launcher "$d" >/dev/null 2>&1
@@ -179,11 +179,11 @@ printf 'victim\n' > "$TMP/victim2"; printf 'new\n' > "$TMP/src"
 d="$(newproj excl)"; render 2 "fip.srv" > "$d/runme.sh"
 mktemp() { if [[ "${1:-}" == -u ]]; then printf '%s\n' "$d/.runme.sh.TAKEN"; else command mktemp "$@"; fi; }
 ln -s "$TMP/victim2" "$d/.runme.sh.TAKEN"
-_launcher_write "$TMP/src" "$d/runme.sh" rwxr-xr-x; rc=$?
+_proj_write "$TMP/src" "$d/runme.sh" rwxr-xr-x; rc=$?
 unset -f mktemp
 [[ $rc -ne 0 && "$(cat "$TMP/victim2")" == victim && -L "$d/.runme.sh.TAKEN" ]] \
-  && pass "_launcher_write fails, writing nothing, when its temp name is a link" \
-  || fail "_launcher_write fails, writing nothing, when its temp name is a link (rc=$rc, victim=$(cat "$TMP/victim2"))"
+  && pass "_proj_write fails, writing nothing, when its temp name is a link" \
+  || fail "_proj_write fails, writing nothing, when its temp name is a link (rc=$rc, victim=$(cat "$TMP/victim2"))"
 
 # The name swapped for a link after the create: the execute bits still land on
 # the file that was created, never on the link's target. `cat` stands in for the
@@ -191,7 +191,7 @@ unset -f mktemp
 printf 'secret\n' > "$TMP/victim3"; chmod 600 "$TMP/victim3"
 d="$(newproj swap)"; render 2 "fip.srv" > "$d/runme.sh"
 cat() { command cat "$@"; local t; for t in "$d"/.runme.sh.*; do [[ -f "$t" && ! -L "$t" ]] && mv "$t" "$TMP/created" && ln -s "$TMP/victim3" "$t"; done; }
-_launcher_write "$TMP/src" "$d/runme.sh" rwxr-xr-x >/dev/null 2>&1
+_proj_write "$TMP/src" "$d/runme.sh" rwxr-xr-x >/dev/null 2>&1
 unset -f cat
 [[ "$(p_stat_mode "$TMP/victim3")" == 600 ]] && pass "execute bits never reach a link swapped in for the temp name" \
   || fail "execute bits never reach a link swapped in for the temp name (victim mode $(p_stat_mode "$TMP/victim3"))"

@@ -365,7 +365,7 @@ else
   fail "dockerfile_copy_sources — want: $want got: $got"
 fi
 
-synced_dirs="$(sed -n 's|.*rsync -a.*"\${script_dir}/\([^/"]*\)/".*|\1|p' "$REPO_DIR/sync-to-projects.sh")"
+synced_dirs="$(sed -n 's|.*rsync -a.*"\${script_dir}/\([^/"]*\)/\{0,1\}".*|\1|p' "$REPO_DIR/sync-to-projects.sh")"
 copies=0
 while read -r src; do
   [[ -n "$src" ]] || continue
