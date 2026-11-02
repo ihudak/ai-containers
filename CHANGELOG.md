@@ -311,15 +311,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
-- **`project-init.sh` and `sync-to-projects.sh` no longer write through a link
-  in a project.** The agent can write the project, and its `.ai-containers/`
-  when that is a writable mount. A `.gitignore`, `sandbox.conf`, shared script
-  or fragment directory replaced by a link to one of your files had the next
-  sync append to or overwrite that file, and a FIFO among the `*.sh` files hung
-  the `sandbox.env` backfill. Every file they write there is now built
-  privately and renamed in, and every file they read is read once through a
+- **`sync-to-projects.sh` no longer writes through a link in a project.** The
+  agent can write the project, and its `.ai-containers/` when that is a
+  writable mount. A `.gitignore`, `sandbox.conf`, shared script or fragment
+  directory replaced by a link to one of your files had the next sync append
+  to or overwrite that file, and a FIFO among the `*.sh` files hung the
+  `sandbox.env` backfill. Every file sync writes there is now built privately
+  and renamed in, and the files it decides from are read once through a
   checked open; a linked `sandbox.conf` or project `.gitignore` is named and
-  left alone (bugs review PRJ-10).
+  left alone. A write that fails no longer stops the sync of the projects
+  after it: it is an `ERROR:`, and the run exits 1 (bugs review PRJ-10).
 
 - **The seed image is built on Alpine 3.24, for CVE-2026-111497.** Alpine 3.20,
   which is past end of life, ships `brotli-libs` 1.1.0, which git's libcurl

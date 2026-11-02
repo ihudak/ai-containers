@@ -192,6 +192,15 @@ reconcile_sandbox_conf() {
   conf_set_version "$project" "$central_version"
 }
 
+# sync_error MESSAGE — report a write that failed and carry on: one project an
+# agent can write (a directory planted where a shared file goes) must not stop
+# the projects after it from being synced. The run exits 1 at the end.
+_sync_errors=0
+sync_error() {
+  printf 'ERROR: %s\n' "$1" >&2
+  _sync_errors=$((_sync_errors + 1))
+}
+
 # sync_sandbox_conf DEST — reconcile DEST/sandbox.conf through a private copy:
 # read through _proj_read, reconciled (and its hooks run) there, renamed back in
 # with its own mode if anything changed. A link or non-file is named and left.
@@ -206,8 +215,7 @@ sync_sandbox_conf() {
   cp "$tmpd/sandbox.conf" "$tmpd/orig"
   reconcile_sandbox_conf "${script_dir}/sandbox.conf" "$tmpd/sandbox.conf" "${script_dir}/migrations"
   if ! cmp -s "$tmpd/orig" "$tmpd/sandbox.conf"; then
-    _proj_write "$tmpd/sandbox.conf" "$f" "$perms" \
-      || { rm -rf "$tmpd"; printf 'ERROR: could not write %s\n' "$f" >&2; return 1; }
+    _proj_write "$tmpd/sandbox.conf" "$f" "$perms" || sync_error "could not write $f"
   fi
   rm -rf "$tmpd"
 }
@@ -462,6 +470,7 @@ warn_host_group() {
 sync_project() {
   local project_path="$1"
   local dest="${project_path}/.ai-containers"
+  local errors_before="$_sync_errors"
 
   if [[ ! -d "$project_path" ]]; then
     printf '  SKIP  %s — directory not found\n' "$project_path"
@@ -500,7 +509,7 @@ sync_project() {
   for f in "${AI_CONTAINERS_SHARED_FILES[@]}"; do
     if [[ -f "${script_dir}/${f}" ]]; then
       _proj_write "${script_dir}/${f}" "${dest}/${f}" "$(_perms_of "${script_dir}/${f}")" \
-        || { printf 'ERROR: could not write %s\n' "${dest}/${f}" >&2; return 1; }
+        || sync_error "could not write ${dest}/${f}"
     fi
   done
 
@@ -538,7 +547,7 @@ sync_project() {
   # Keep the project's .ai-containers/ working copy out of the project's repo.
   ensure_ai_containers_ignored "$project_path"
 
-  printf '  OK\n'
+  if (( _sync_errors > errors_before )); then printf '  INCOMPLETE (see ERROR above)\n'; else printf '  OK\n'; fi
 }
 
 # Allow tests to source this file for its reconcile helpers without running a sync.
@@ -569,6 +578,7 @@ if [[ $# -ge 1 ]]; then
     exit 1
   }
   sync_project "$project_path"
+  (( _sync_errors == 0 )) || exit 1
   exit 0
 fi
 
@@ -590,4 +600,9 @@ done < "$projects_conf"
 if [[ $count -eq 0 ]]; then
   printf 'No projects registered in projects.conf.\n'
   printf 'Run ./project-init.sh <project-path> to register one.\n'
+fi
+
+if (( _sync_errors > 0 )); then
+  printf '%d write(s) failed; see the ERROR lines above.\n' "$_sync_errors" >&2
+  exit 1
 fi

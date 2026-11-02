@@ -21,9 +21,10 @@ export GIT_CONFIG_GLOBAL="$TMP/home/.gitconfig" GIT_CONFIG_NOSYSTEM=1
 source "$REPO_DIR/sync-to-projects.sh"
 set +e  # it turns errexit on; the checks below read non-zero returns
 
-V="$TMP/victims"; mkdir -p "$V/dir"
+V="$TMP/victims"; DIRS="allowlist-domains.d allowlist-proxy-domains.d allowlist-cidrs.d tools.d services.d"
+for x in $DIRS; do mkdir -p "$V/dir-$x"; done
 for f in rootgi innergi conf engine shared; do printf 'victim %s\n' "$f" > "$V/$f"; chmod 600 "$V/$f"; done
-snap() { local f; for f in "$V"/*; do [[ -f "$f" ]] && printf '%s %s %s\n' "$f" "$(p_sha1 "$f")" "$(p_stat_mode "$f")"; done; ls -A "$V/dir"; }
+snap() { local f x; for f in "$V"/*; do [[ -f "$f" ]] && printf '%s %s %s\n' "$f" "$(p_sha1 "$f")" "$(p_stat_mode "$f")"; done; for x in $DIRS; do ls -A "$V/dir-$x"; done; }
 
 proj="$TMP/proj"; d="$proj/.ai-containers"; mkdir -p "$d"
 git -C "$proj" init -q
@@ -32,23 +33,30 @@ ln -s "$V/rootgi"  "$proj/.gitignore"
 ln -s "$V/innergi" "$d/.gitignore"
 ln -s "$V/engine"  "$d/engine-version"
 ln -s "$V/shared"  "$d/sandbox.sh"
-ln -s "$V/dir"     "$d/allowlist-domains.d"
+for x in $DIRS; do ln -s "$V/dir-$x" "$d/$x"; done
 ln -s "$V/created" "$d/sandbox.env"          # dangling: must not be created
+# …and a launcher the sandbox.env backfill takes IMAGE_NAME from, so it writes.
+printf '#!/usr/bin/env bash\nexport IMAGE_NAME=linked-proj\n./sandbox.sh\n' > "$d/zz-old.sh"
 before="$(snap)"
 
 out="$(sync_project "$proj" 2>&1)"; rc=$?
 [[ $rc -eq 0 ]] && pass "sync_project exits 0 over planted links" || fail "sync_project exits 0 over planted links: $out"
 [[ "$before" == "$(snap)" ]] && pass "no file or directory a link pointed at was written, created or chmod'ed" \
   || fail "no file or directory a link pointed at was written, created or chmod'ed: $(diff <(printf '%s\n' "$before") <(snap))"
-[[ ! -e "$V/created" ]] && pass "a dangling sandbox.env link creates nothing" || fail "a dangling sandbox.env link creates nothing"
+[[ ! -e "$V/created" && -f "$d/sandbox.env" && ! -L "$d/sandbox.env" ]] && grep -qx 'IMAGE_NAME=linked-proj' "$d/sandbox.env" \
+  && pass "a dangling sandbox.env link is replaced by the backfilled file, not written through" \
+  || fail "a dangling sandbox.env link is replaced by the backfilled file, not written through"
 
 # What sync owns is replaced by a real file or directory; what it reads it does not follow.
 [[ -f "$d/sandbox.sh" && ! -L "$d/sandbox.sh" ]] && cmp -s "$d/sandbox.sh" "$REPO_DIR/sandbox.sh" \
   && pass "a linked shared file is replaced by the engine's copy" || fail "a linked shared file is replaced by the engine's copy"
 [[ "$(p_stat_mode "$d/sandbox.sh")" == "$(p_stat_mode "$REPO_DIR/sandbox.sh")" ]] \
   && pass "a shared file gets the engine copy's mode" || fail "a shared file gets the engine copy's mode ($(p_stat_mode "$d/sandbox.sh"))"
-[[ -d "$d/allowlist-domains.d" && ! -L "$d/allowlist-domains.d" && -f "$d/allowlist-domains.d/base.txt" ]] \
-  && pass "a linked fragment directory is replaced by a real one" || fail "a linked fragment directory is replaced by a real one"
+for x in $DIRS; do
+  [[ -d "$d/$x" && ! -L "$d/$x" && ! -e "$d/$x/$x" ]] && diff -rq -x custom.txt "$REPO_DIR/$x" "$d/$x" >/dev/null \
+    && pass "a linked $x is replaced by a real copy, with no nested $x/$x" \
+    || fail "a linked $x is replaced by a real copy, with no nested $x/$x"
+done
 [[ -f "$d/engine-version" && ! -L "$d/engine-version" || ! -e "$d/engine-version" ]] \
   && pass "engine-version is written as a file of its own (or removed), never through its link" \
   || fail "engine-version is written as a file of its own (or removed), never through its link"
@@ -109,6 +117,18 @@ grep -qx '/.ai-containers/' "$proj3/.gitignore" && [[ ! -L "$proj3/.gitignore" ]
   || fail "a project with no .gitignore gets one ignoring /.ai-containers/"
 leftover="$(find "$proj3" "$d3" -maxdepth 1 -name '.*.??????' 2>/dev/null)"
 [[ -z "$leftover" ]] && pass "no temporary files are left in the project" || fail "no temporary files are left in the project: $leftover"
+
+# ── The real script, all projects, under its own set -e: a directory planted
+# where a shared file goes is an ERROR for that project, the next is still
+# synced, and the run exits 1 ──
+E="$TMP/engine"; mkdir -p "$E"
+rsync -a --exclude='.git' --exclude='tests' --exclude='docs' --exclude='projects.conf' "$REPO_DIR/" "$E/"
+pa="$TMP/pa"; pb="$TMP/pb"; mkdir -p "$pa/.ai-containers/build.sh" "$pb/.ai-containers"
+printf '%s\n%s\n' "$pa" "$pb" > "$E/projects.conf"
+out="$(bash "$E/sync-to-projects.sh" 2>&1)"; rc=$?
+[[ $rc -eq 1 && "$out" == *"ERROR: could not write $pa/.ai-containers/build.sh"* && -f "$pb/.ai-containers/sandbox.sh" && "$out" == *INCOMPLETE* ]] \
+  && pass "a failed write is an ERROR for its project, later projects are synced, and the run exits 1" \
+  || fail "a failed write is an ERROR for its project, later projects are synced, and the run exits 1 (rc=$rc): $out"
 
 (( fails == 0 )) || { printf '%d failure(s)\n' "$fails"; exit 1; }
 printf 'All sync no-follow checks passed.\n'

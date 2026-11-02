@@ -425,7 +425,7 @@ fails=$(( fails + $(grep -c '^FAIL' "$TMP/common.out") ))
 # reconcile scripts. It is kept aligned anyway: a fixture that silently diverges
 # from the thing it fixtures stops resembling the case it claims to reproduce.
 SCRIPTS="$TMP/scripts"; mkdir -p "$SCRIPTS"
-for f in project-init.sh projects.conf.example sandbox-common.sh sandbox.sh build.sh \
+for f in project-init.sh project-files.sh projects.conf.example sandbox-common.sh sandbox.sh build.sh \
          repo.sh group.sh entrypoint.sh tools-lib.sh install-tools.sh install-agent-skills.sh \
          repo-git-reset.sh \
          bash-floor.sh host-preflight.sh shared-files.sh \

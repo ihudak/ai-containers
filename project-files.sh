@@ -101,10 +101,10 @@ _perms_new() {
   printf '%s' "$out"
 }
 
-# _proj_note_skip FILE WHAT — say FILE was left alone because it is a link or
-# not a regular file, so WHAT did not happen.
+# _proj_note_skip FILE WHAT — say FILE was left alone because it is a link,
+# not a regular file, or over _proj_read's bound, so WHAT did not happen.
 _proj_note_skip() {
-  printf '  NOTE: %s is a link or not a regular file, so %s: %s\n' "$(basename "$1")" "$2" "$1"
+  printf '  NOTE: %s is a link, not a regular file, or too large to read, so %s: %s\n' "$(basename "$1")" "$2" "$1"
 }
 
 # Ensure the project's root .gitignore ignores its .ai-containers/ working copy.
