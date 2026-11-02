@@ -124,9 +124,12 @@ leftover="$(find "$proj3" "$d3" -maxdepth 1 -name '.*.??????' 2>/dev/null)"
 E="$TMP/engine"; mkdir -p "$E"
 rsync -a --exclude='.git' --exclude='tests' --exclude='docs' --exclude='projects.conf' "$REPO_DIR/" "$E/"
 pa="$TMP/pa"; pb="$TMP/pb"; mkdir -p "$pa/.ai-containers/build.sh" "$pb/.ai-containers"
+# …and a non-empty directory where a fragment file goes, which rsync cannot replace.
+mkdir -p "$pa/.ai-containers/tools.d/dtctl.conf/x"
 printf '%s\n%s\n' "$pa" "$pb" > "$E/projects.conf"
 out="$(bash "$E/sync-to-projects.sh" 2>&1)"; rc=$?
-[[ $rc -eq 1 && "$out" == *"ERROR: could not write $pa/.ai-containers/build.sh"* && -f "$pb/.ai-containers/sandbox.sh" && "$out" == *INCOMPLETE* ]] \
+[[ $rc -eq 1 && "$out" == *"ERROR: could not write $pa/.ai-containers/build.sh"* && "$out" == *"ERROR: could not sync $pa/.ai-containers/tools.d"* \
+   && -f "$pb/.ai-containers/sandbox.sh" && "$out" == *INCOMPLETE* ]] \
   && pass "a failed write is an ERROR for its project, later projects are synced, and the run exits 1" \
   || fail "a failed write is an ERROR for its project, later projects are synced, and the run exits 1 (rc=$rc): $out"
 

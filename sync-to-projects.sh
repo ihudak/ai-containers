@@ -489,11 +489,12 @@ sync_project() {
   # updates dest/<dir> itself, and replaces a link there with a real directory
   # instead of writing through it (with `dir/ → dest/dir/` it followed the
   # link; PRJ-10). rsync also replaces a link among the files, never follows it.
-  rsync -a --exclude='custom.txt' "${script_dir}/allowlist-domains.d"       "${dest}"
-  rsync -a --exclude='custom.txt' "${script_dir}/allowlist-proxy-domains.d" "${dest}"
-  rsync -a --exclude='custom.txt' "${script_dir}/allowlist-cidrs.d"         "${dest}"
-  rsync -a "${script_dir}/tools.d" "${dest}"
-  rsync -a "${script_dir}/services.d" "${dest}"
+  # A failure (something planted rsync cannot replace) is that project's ERROR.
+  rsync -a --exclude='custom.txt' "${script_dir}/allowlist-domains.d"       "${dest}" || sync_error "could not sync ${dest}/allowlist-domains.d"
+  rsync -a --exclude='custom.txt' "${script_dir}/allowlist-proxy-domains.d" "${dest}" || sync_error "could not sync ${dest}/allowlist-proxy-domains.d"
+  rsync -a --exclude='custom.txt' "${script_dir}/allowlist-cidrs.d"         "${dest}" || sync_error "could not sync ${dest}/allowlist-cidrs.d"
+  rsync -a "${script_dir}/tools.d" "${dest}"    || sync_error "could not sync ${dest}/tools.d"
+  rsync -a "${script_dir}/services.d" "${dest}" || sync_error "could not sync ${dest}/services.d"
 
   # Bring an unedited runme.sh to the current template (GAP-6); a launcher that
   # is not one gets the legacy in-place repairs it always got.
