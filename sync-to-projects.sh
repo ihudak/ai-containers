@@ -248,8 +248,9 @@ ensure_inner_gitignore() {
 # names, and copies at most 64 KiB to a private directory outside the project;
 # everything is decided and built from that copy, and _launcher_write creates a
 # fresh name beside runme.sh in one exclusive open, fills it through that open,
-# and renames it over runme.sh. The one change made by path afterwards adds
-# execute bits, which through a link swapped in meanwhile can widen nothing.
+# and renames it over runme.sh. Its execute bits are set through that open too
+# (/dev/fd/N); only where chmod cannot use it (not Linux) is the name re-checked
+# and used, and that can add execute bits, never read or write ones.
 # Not covered: a runme.sh swapped for a FIFO between the check and the open
 # blocks the sync (bash cannot open without blocking).
 
@@ -260,7 +261,9 @@ _launcher_perms=""
 _launcher_read() {
   local f="$1" out="$2" fd size
   [[ -f "$f" && ! -L "$f" ]] || return 1
-  exec {fd}<"$f" 2>/dev/null || return 1
+  # Braced: on a bare exec the 2>/dev/null would stay on the shell, and every
+  # later error of the sync would vanish.
+  { exec {fd}<"$f"; } 2>/dev/null || return 1
   if [[ ! -L "$f" && -f "/dev/fd/$fd" && "$f" -ef "/dev/fd/$fd" ]] \
      && head -c 65537 <&"$fd" > "$out" \
      && _launcher_perms="$(ls -lnL "/dev/fd/$fd" 2>/dev/null | cut -c2-10)" \
@@ -287,14 +290,27 @@ _launcher_write() {
       *)     [[ "$c" == [xst] ]] && x+="${x:+,}$(printf '%s' ugo | cut -c$(( i / 3 + 1 )))+x" ;;
     esac
   done
-  # noclobber: O_EXCL, so a name taken meanwhile (a file, a link) fails the create.
-  if ! ( umask "$(printf '%o' "$um")"; set -C; cat "$src" > "$t" ) 2>/dev/null \
-     || [[ -L "$t" || ! -f "$t" ]]; then
-    [[ -f "$t" && ! -L "$t" ]] && rm -f "$t"
-    return 1
+  # noclobber: O_EXCL on a name that does not exist, so a file or a link put
+  # there meanwhile fails the create. An existing FIFO or device (or a link to
+  # one) is opened without O_EXCL — bash allows that — but the name is a
+  # mktemp -u one nothing else knows, and such a target fails the checks below
+  # and is never renamed in. The open is kept: bytes and execute bits go through it.
+  local w="" ok=1 old_umask had_c=""
+  old_umask="$(umask)"; [[ "$-" == *C* ]] && had_c=1
+  umask "$(printf '%o' "$um")"; set -C
+  { exec {w}>"$t"; } 2>/dev/null || ok=0
+  umask "$old_umask"; [[ -n "$had_c" ]] || set +C
+  (( ok )) || return 1
+  if [[ -L "$t" || ! -f "$t" || ! "$t" -ef "/dev/fd/$w" ]] || ! cat "$src" >&"$w"; then ok=0
+  # /dev/fd/N is the opened file on Linux whatever the name now is; where chmod
+  # cannot go through it, the name is checked to still be that file first.
+  elif [[ -n "$x" ]] && ! chmod "$x" "/dev/fd/$w" 2>/dev/null \
+       && ! { [[ ! -L "$t" && "$t" -ef "/dev/fd/$w" ]] && chmod "$x" "$t" 2>/dev/null; }; then ok=0
   fi
-  if [[ -n "$x" ]]; then chmod "$x" "$t" 2>/dev/null || { rm -f "$t"; return 1; }; fi
-  _launcher_replace "$t" "$f" || { rm -f "$t"; return 1; }
+  exec {w}>&-
+  if (( ok )) && _launcher_replace "$t" "$f"; then return 0; fi
+  [[ -f "$t" && ! -L "$t" ]] && rm -f "$t"
+  return 1
 }
 
 # _launcher_replace TMP FILE — rename TMP over FILE without following FILE if

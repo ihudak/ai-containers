@@ -185,6 +185,25 @@ unset -f mktemp
   && pass "_launcher_write fails, writing nothing, when its temp name is a link" \
   || fail "_launcher_write fails, writing nothing, when its temp name is a link (rc=$rc, victim=$(cat "$TMP/victim2"))"
 
+# The name swapped for a link after the create: the execute bits still land on
+# the file that was created, never on the link's target. `cat` stands in for the
+# moment between the write and the chmod.
+printf 'secret\n' > "$TMP/victim3"; chmod 600 "$TMP/victim3"
+d="$(newproj swap)"; render 2 "fip.srv" > "$d/runme.sh"
+cat() { command cat "$@"; local t; for t in "$d"/.runme.sh.*; do [[ -f "$t" && ! -L "$t" ]] && mv "$t" "$TMP/created" && ln -s "$TMP/victim3" "$t"; done; }
+_launcher_write "$TMP/src" "$d/runme.sh" rwxr-xr-x >/dev/null 2>&1
+unset -f cat
+[[ "$(p_stat_mode "$TMP/victim3")" == 600 ]] && pass "execute bits never reach a link swapped in for the temp name" \
+  || fail "execute bits never reach a link swapped in for the temp name (victim mode $(p_stat_mode "$TMP/victim3"))"
+rm -f "$d"/.runme.sh.*
+
+# A read leaves the shell's stderr where it was (an `exec … 2>/dev/null` once
+# sent every later error of the sync to /dev/null).
+d="$(newproj stderr)"; render 2 "fip.srv" > "$d/runme.sh"
+out="$( { reconcile_launcher "$d" >/dev/null; backfill_launcher_cdpath "$d" >/dev/null; migrate_launcher_naming "$d"; echo stderr-probe >&2; } 2>&1 )"
+[[ "$out" == *stderr-probe* ]] && pass "stderr still reaches the terminal after the launcher repairs" \
+  || fail "stderr still reaches the terminal after the launcher repairs (got: $out)"
+
 # ── 8c. A file over 64 KiB is not read further, and is kept ──
 d="$(newproj huge)"; { render 4 "fip.srv"; head -c 70000 /dev/zero | tr '\0' '#'; printf '\nexport IMAGE_NAME=x\n'; } > "$d/runme.sh"
 before="$(p_sha1 "$d/runme.sh")"
