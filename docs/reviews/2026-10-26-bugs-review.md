@@ -10,7 +10,7 @@
 - **Updated 2026-10-27:** batch 8 is merged (main `5da9aeb`); its two reviews left nothing open.
 - **Updated 2026-10-28:** batch 10, the section 10 leftovers, is merged (main `86427b0` and the commits after it). Section 15 lists what its reviews left open, reviewed up to `708742d`.
 - **Updated 2026-10-28:** batch 11 removes `SANDBOX_GIT_FIXTURES` (GIT-11, GIT-21, LNCH-16) and the `host` group, which mounted the real `$HOME` dot-directories read-write (the user's choice; see the CHANGELOG).
-- **Updated 2026-11-02:** GAP-6 (feature gaps review) is on main (`90f0417`..`1ca06cf`). Section 18 lists what its reviews left open (PRJ-10, since fixed; PRJ-11), reviewed up to `1ca06cf` and, for PRJ-10's fix, `eb102c8`.
+- **Updated 2026-11-02:** GAP-6 (feature gaps review) is on main (`90f0417`..`1ca06cf`). Section 18 lists what its reviews left open (PRJ-10, since fixed; PRJ-11), reviewed up to `1ca06cf` and, for PRJ-10's fix, `18fb842`.
 - **Companion:** [2026-10-26-feature-gaps-review.md](2026-10-26-feature-gaps-review.md).
 - **Confidence:** CONFIRMED = reproduced, or unambiguous from the code. PLAUSIBLE = strong reasoning, not reproduced (usually needs hardware or a platform not available here); verify before fixing.
 - **Citations** are by snippet, per AGENTS.md "Citing code". Scratch repro paths mentioned in entries were session-local and may no longer exist; each entry describes its repro in full.
