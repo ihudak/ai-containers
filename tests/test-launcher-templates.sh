@@ -2,7 +2,7 @@
 # GAP-6: sync-to-projects.sh brings a project's generated runme.sh up to the
 # current template while nobody has edited it, and leaves an edited one alone.
 #
-# launcher-templates/<n>.sh holds every thin launcher project-init.sh has ever
+# launcher-templates/<n>.tmpl holds every thin launcher project-init.sh has ever
 # generated, the project name replaced by @@PROJECT_NAME@@; the highest number is
 # the one emit_launcher() writes now. reconcile_launcher() recognises a launcher
 # as one of them — as generated, or as earlier syncs left it (their sed turned
@@ -34,7 +34,7 @@ emit() {
 }
 # render N NAME — template N with the project's name in it (literal, any bytes).
 render() {
-  local s; s="$(cat "$TPL/$1.sh"; printf x)"; s="${s%x}"
+  local s; s="$(cat "$TPL/$1.tmpl"; printf x)"; s="${s%x}"
   printf '%s' "${s//"$PH"/"$2"}"
 }
 # What earlier syncs did to a launcher in place, modelled from their code
@@ -51,16 +51,16 @@ old_sync() {
 newproj() { local d="$TMP/$1/.ai-containers"; mkdir -p "$d"; printf '%s' "$d"; }
 
 # ── 1. The templates: numbered 1..N, distinct, and N is what emit_launcher writes ──
-n=0; while [[ -f "$TPL/$((n+1)).sh" ]]; do n=$((n+1)); done
+n=0; while [[ -f "$TPL/$((n+1)).tmpl" ]]; do n=$((n+1)); done
 count="$(find "$TPL" -type f | wc -l | tr -d ' ')"
 (( n >= 4 && count == n )) && pass "launcher-templates holds 1..$n and nothing else" \
   || fail "launcher-templates holds 1..N and nothing else (N=$n, files=$count)"
 emit "$PH" "$TMP/now.sh"
-cmp -s "$TMP/now.sh" "$TPL/$n.sh" && pass "emit_launcher writes launcher-templates/$n.sh" \
-  || fail "emit_launcher writes launcher-templates/$n.sh — a changed template needs a new numbered file: $(diff "$TPL/$n.sh" "$TMP/now.sh" | head -5)"
+cmp -s "$TMP/now.sh" "$TPL/$n.tmpl" && pass "emit_launcher writes launcher-templates/$n.tmpl" \
+  || fail "emit_launcher writes launcher-templates/$n.tmpl — a changed template needs a new numbered file: $(diff "$TPL/$n.tmpl" "$TMP/now.sh" | head -5)"
 grep -qF "(launcher template $n)" "$TMP/now.sh" && pass "the launcher names its template number ($n)" \
   || fail "the launcher names its template number ($n)"
-dups="$(for f in "$TPL"/*.sh; do p_sha1 "$f"; done | sort | uniq -d)"
+dups="$(for f in "$TPL"/*.tmpl; do p_sha1 "$f"; done | sort | uniq -d)"
 [[ -z "$dups" ]] && pass "no two templates are the same" || fail "no two templates are the same"
 
 # ── 2. Every earlier template, as generated and as old syncs left it, is replaced ──
@@ -99,7 +99,7 @@ d="$(newproj edited)"; render 2 "fip.srv" > "$d/runme.sh"
 sed -i.bak 's|^#\./build.sh --no-cache|./build.sh --no-cache|' "$d/runme.sh"; rm -f "$d/runme.sh.bak"
 before="$(p_sha1 "$d/runme.sh")"
 out="$(reconcile_launcher "$d" 2>&1)"; rc=$?
-[[ $rc -ne 0 && "$before" == "$(p_sha1 "$d/runme.sh")" && "$out" == *"edited"* && "$out" == *"launcher-templates/$n.sh"* ]] \
+[[ $rc -ne 0 && "$before" == "$(p_sha1 "$d/runme.sh")" && "$out" == *"edited"* && "$out" == *"launcher-templates/$n.tmpl"* ]] \
   && pass "an edited launcher is kept, named as edited, with the template to compare" \
   || fail "an edited launcher is kept, named as edited, with the template to compare (rc=$rc, out=$out)"
 
@@ -139,6 +139,47 @@ migrate_launcher_naming "$d"
 [[ "$(sed -n 2p "$d/runme.sh")" == '# One-off:  SANDBOX_MODE=restricted ./runme.sh' && "$(sed -n 3p "$d/runme.sh")" == './sandbox.sh discovery ..' ]] \
   && pass "migrate_launcher_naming repoints the self-call and leaves comments alone" \
   || fail "migrate_launcher_naming repoints the self-call and leaves comments alone: $(cat "$d/runme.sh")"
+
+# ── 8b. Writes go to a fresh file renamed over runme.sh, never through a link ──
+# backfill once wrote runme.sh.tmp, a name the agent could plant as a link.
+d="$(newproj planted)"; render 2 "fip.srv" > "$d/runme.sh"; printf '# edited\n' >> "$d/runme.sh"
+printf 'victim\n' > "$TMP/victim"; ln -s "$TMP/victim" "$d/runme.sh.tmp"
+backfill_launcher_cdpath "$d" >/dev/null
+[[ "$(cat "$TMP/victim")" == victim ]] && grep -qx 'unset CDPATH' "$d/runme.sh" \
+  && pass "backfill neither writes through a planted runme.sh.tmp nor fails to add unset CDPATH" \
+  || fail "backfill neither writes through a planted runme.sh.tmp nor fails to add unset CDPATH: victim=$(cat "$TMP/victim")"
+# A runme.sh that became a link to a directory is replaced, not moved into.
+d="$(newproj dirlink)"; mkdir -p "$TMP/hostdir"; ln -s "$TMP/hostdir" "$d/runme.sh"
+printf 'new\n' > "$d/.new"
+_launcher_replace "$d/.new" "$d/runme.sh"
+[[ ! -L "$d/runme.sh" && "$(cat "$d/runme.sh" 2>/dev/null)" == new && -z "$(ls -A "$TMP/hostdir")" ]] \
+  && pass "_launcher_replace replaces a link to a directory instead of moving into it" \
+  || fail "_launcher_replace replaces a link to a directory instead of moving into it: $(ls -lA "$d" "$TMP/hostdir")"
+# The mode is kept (and the result stays executable).
+d="$(newproj mode)"; render 2 "fip.srv" > "$d/runme.sh"; chmod 700 "$d/runme.sh"
+reconcile_launcher "$d" >/dev/null 2>&1
+[[ "$(p_stat_mode "$d/runme.sh")" == 700 ]] && pass "regeneration keeps runme.sh's mode (700)" \
+  || fail "regeneration keeps runme.sh's mode (700): $(p_stat_mode "$d/runme.sh")"
+d="$(newproj modeb)"; render 2 "fip.srv" > "$d/runme.sh"; printf '# edited\n' >> "$d/runme.sh"; chmod 750 "$d/runme.sh"
+backfill_launcher_cdpath "$d" >/dev/null
+[[ "$(p_stat_mode "$d/runme.sh")" == 750 ]] && pass "backfill keeps runme.sh's mode (750)" \
+  || fail "backfill keeps runme.sh's mode (750): $(p_stat_mode "$d/runme.sh")"
+
+# ── 8c. A file over 64 KiB is not read further, and is kept ──
+d="$(newproj huge)"; { render 4 "fip.srv"; head -c 70000 /dev/zero | tr '\0' '#'; printf '\nexport IMAGE_NAME=x\n'; } > "$d/runme.sh"
+before="$(p_sha1 "$d/runme.sh")"
+out="$(reconcile_launcher "$d" 2>&1)"; rc=$?
+[[ $rc -ne 0 && "$before" == "$(p_sha1 "$d/runme.sh")" && "$out" == *edited* && "$out" != *migrate-runme* ]] \
+  && pass "a runme.sh over 64 KiB is kept unread past its size" \
+  || fail "a runme.sh over 64 KiB is kept unread past its size (rc=$rc, out=$out)"
+
+# ── 8d. The current template as an old sync would leave it is rewritten, and says so plainly ──
+d="$(newproj cur-old)"; render 4 "fip.srv" | grep -v -e '^unset CDPATH$' -e "^# A CDPATH from your shell" > "$d/runme.sh"
+out="$(reconcile_launcher "$d" 2>&1)"; rc=$?
+emit "fip.srv" "$TMP/want.sh"
+[[ $rc -eq 0 && "$out" == *"Rewrote runme.sh as launcher template $n"* ]] && cmp -s "$d/runme.sh" "$TMP/want.sh" \
+  && pass "template $n missing what syncs add is rewritten, named as such" \
+  || fail "template $n missing what syncs add is rewritten, named as such (rc=$rc, out=$out)"
 
 # ── 9. End to end: sync_project regenerates an old launcher ──
 proj="$TMP/e2e"; mkdir -p "$proj/.ai-containers"

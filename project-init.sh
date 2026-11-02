@@ -57,7 +57,7 @@ existing_groups() {
 # emit_launcher() that had never existed — every run died at "command not found"
 # (silently, because the source happened before its own argument parsing).
 #
-# CHANGING THE TEMPLATE: add it as launcher-templates/<n+1>.sh (the project name
+# CHANGING THE TEMPLATE: add it as launcher-templates/<n+1>.tmpl (the project name
 # written @@PROJECT_NAME@@) and bump the "(launcher template n)" below to match.
 # sync-to-projects.sh: `reconcile_launcher()` replaces a project's launcher only
 # when it is one of those files, so a template missing from there strands every
