@@ -10,6 +10,7 @@
 - **Updated 2026-10-27:** batch 8 is merged (main `5da9aeb`); its two reviews left nothing open.
 - **Updated 2026-10-28:** batch 10, the section 10 leftovers, is merged (main `86427b0` and the commits after it). Section 15 lists what its reviews left open, reviewed up to `708742d`.
 - **Updated 2026-10-28:** batch 11 removes `SANDBOX_GIT_FIXTURES` (GIT-11, GIT-21, LNCH-16) and the `host` group, which mounted the real `$HOME` dot-directories read-write (the user's choice; see the CHANGELOG).
+- **Updated 2026-11-02:** GAP-6 (feature gaps review) is on main (`90f0417`..`1ca06cf`). Section 18 lists what its reviews left open (PRJ-10), reviewed up to `1ca06cf`.
 - **Companion:** [2026-10-26-feature-gaps-review.md](2026-10-26-feature-gaps-review.md).
 - **Confidence:** CONFIRMED = reproduced, or unambiguous from the code. PLAUSIBLE = strong reasoning, not reproduced (usually needs hardware or a platform not available here); verify before fixing.
 - **Citations** are by snippet, per AGENTS.md "Citing code". Scratch repro paths mentioned in entries were session-local and may no longer exist; each entry describes its repro in full.
@@ -1426,6 +1427,19 @@ Batch 11 regenerated patches 467, 500, 510 and 710. Each was applied and its cas
 - Location: `tests/integration/cases/710-agent-tools-reused-not-reinstalled.sh`
 - What's wrong: since `35b8342` (2026-08-24) the case watched only Claude Code, which installs natively under `~/.local/share/claude`, a mount of its own. The mutation drops the `~/.ai-tools` mount, which the case no longer looked at, so it survived, and nothing verified that a group's npm, uv and vale tools are reused. Batch 11 regenerated the patch's context only; the gap is older. An mtime check on vale was tried first and also passed against the mutation: the release tarball's mtime survives extraction.
 - Fix direction: done as above.
+
+## 18. Found while fixing GAP-6
+
+GAP-6's reviews (an Opus reviewer over three rounds, and an automated security review) hardened every write to `runme.sh`: it is read once through a checked open and replaced by an exclusive create and a rename (sync-to-projects.sh: `_launcher_read()`, `_launcher_write()`). They found that the rest of `sync_project` still opens files in the project's `.ai-containers/` by path.
+
+### PRJ-10: sync writes and reads the project's other files by path, through a link the agent can plant
+- **Status: OPEN**
+- Severity: LOW. Confidence: CONFIRMED by reading the code (not exploited)
+- Location: sync-to-projects.sh: `backfill_sandbox_env()` (`grep … "$dest"/*.sh`, `cat > "${dest}/sandbox.env" <<EOF`), `conf_set_version()` and the reconcile (`cat "$tmp" > "$f"`, `>> "$f"`), `ensure_inner_gitignore()` (`>> "$gi"`)
+- Introduced: before the window (the reconcile and backfills predate it).
+- What's wrong: the agent cannot write `.ai-containers/` while the launcher overlays it read-only. It can when that directory is itself a writable mount root, which the launch allows with a `NOTE:`, and the agent has your UID. Then a `sandbox.conf`, `.gitignore` or (in a project that predates it) `sandbox.env` replaced by a link to a host file makes the next sync write into that file, and a link or FIFO among `*.sh` is read by the `sandbox.env` backfill (a FIFO hangs the sync).
+- Failure scenario: `.ai-containers` mounted writable; the agent runs `ln -sf ~/.bashrc .ai-containers/.gitignore` after deleting a required pattern; the next `./sync-to-projects.sh` appends `sandbox.local.env` and the other patterns to `~/.bashrc`.
+- Fix direction: route these writes through `_launcher_read`/`_launcher_write` (generalised beyond `runme.sh`), or refuse a project whose `.ai-containers` entries are links or not regular files before syncing it.
 
 ---
 

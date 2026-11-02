@@ -74,7 +74,7 @@ A gap is something a design promised that is not in the code at the reviewed com
 - Suggested approach: put each layer's `tests/integration/run.sh` args in one place (tests/layer-checks.conf, or an env file the workflows `source`), and have both the workflow and the guard read it.
 
 ### GAP-6: Changes to the generated `runme.sh` template never reach existing projects
-- Status: NOT DONE
+- Status: DONE (2026-11-02) — `90f0417`, `123dd75`, `799f959`, `1ca06cf`. `launcher-templates/<n>.tmpl` records every thin launcher `project-init.sh` has generated (the name written `@@PROJECT_NAME@@`); the launcher names its template number (now 4). sync-to-projects.sh: `reconcile_launcher()` regenerates a `runme.sh` that is one of them, as generated or as earlier syncs left it, and keeps an edited, fat or linked one with a `NOTE:` naming the `diff` to compare. The old self-call repair no longer rewrites comments (it had turned the template's `./runme.sh` hints into `./sandbox.sh` in every synced project). Every write to `runme.sh` reads it once through a checked open and replaces it by an exclusive create and a rename; its reviews' leftover, the project's other files written by path, is bugs review PRJ-10. `tests/test-launcher-templates.sh`, each check killed by a demonstrated mutant.
 - Fix batch: 4 — lifecycle scripts (optional)
 - Source: sandbox-conf-schema-migrations-design.md "Out of scope": "The per-project generated launcher … if the launcher template later gains a new exported variable, already-initialized projects' launchers don't get it … deliberately deferred to a possible future design"
 - Area: project/repo/group
