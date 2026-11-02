@@ -437,6 +437,12 @@ sync_project() {
   fi
 
   printf 'Syncing → %s\n' "$dest"
+  # Held open for this project: every _proj_write is refused once the path no
+  # longer names this directory (project-files.sh: `proj_dest_pin()`).
+  if ! proj_dest_pin "$dest"; then
+    sync_error "cannot hold $dest open; not synced"
+    return 0
+  fi
 
   # Allowlist fragment directories (exclude custom.txt)
   # Each directory named WITHOUT a trailing slash on either side: rsync then
@@ -493,6 +499,7 @@ sync_project() {
   # Keep the project's .ai-containers/ working copy out of the project's repo.
   ensure_ai_containers_ignored "$project_path"
 
+  proj_dest_unpin
   if (( _sync_errors > errors_before )); then printf '  INCOMPLETE (see ERROR above)\n'; else printf '  OK\n'; fi
 }
 

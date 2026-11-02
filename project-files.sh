@@ -48,6 +48,10 @@ _proj_read() {
 # _proj_write SRC FILE PERMS — put SRC's bytes at FILE with PERMS (rwx string).
 _proj_write() {
   local src="$1" f="$2" p="$3" t um=0 x="" c i
+  if ! _proj_dest_same; then
+    printf 'ERROR: %s is no longer the directory this run started in (renamed, or replaced by a link); not writing %s\n' "$_proj_dest" "$f" >&2
+    return 1
+  fi
   t="$(mktemp -u "$(dirname "$f")/.$(basename "$f").XXXXXX")" || return 1
   # Read and write bits through the umask of the create; execute bits after.
   for (( i = 0; i < 9; i++ )); do
@@ -150,6 +154,30 @@ ensure_ai_containers_ignored() {
     printf '  NOTE: could not add /.ai-containers/ to %s\n' "$gi"
   fi
   rm -rf "$tmpd"
+}
+
+# proj_dest_pin DEST / proj_dest_unpin — hold DEST (a project's .ai-containers,
+# checked by proj_dest_ok and made) open, so _proj_write can refuse every write
+# once the path no longer names that directory: a re-init waits at its Overwrite
+# prompt for as long as you take, and DEST renamed and replaced by a link
+# meanwhile carried the launcher wherever the link pointed (review of PRJ-11).
+# A rename inside a running container fails (EBUSY: the launcher overlays it);
+# this covers what runs outside one. What is left is the instant between the
+# check and the create.
+_proj_dest="" _proj_dest_fd=""
+proj_dest_pin() {
+  proj_dest_unpin
+  { exec {_proj_dest_fd}<"$1"; } 2>/dev/null || { _proj_dest_fd=""; return 1; }
+  _proj_dest="$1"
+  _proj_dest_same || { proj_dest_unpin; return 1; }
+}
+proj_dest_unpin() {
+  if [[ -n "$_proj_dest_fd" ]]; then exec {_proj_dest_fd}<&-; fi
+  _proj_dest="" _proj_dest_fd=""
+}
+_proj_dest_same() {
+  [[ -z "$_proj_dest_fd" ]] && return 0
+  [[ ! -L "$_proj_dest" && -d "$_proj_dest" && "$_proj_dest" -ef "/dev/fd/$_proj_dest_fd" ]]
 }
 
 # proj_dest_ok DEST — 0 when DEST (a project's .ai-containers) is a real

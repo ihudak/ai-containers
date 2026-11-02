@@ -418,6 +418,7 @@ launch_script="${dest}/runme.sh"
 proj_dest_ok "$dest" || exit 1
 printf '\nInitialising %s → %s\n' "$project_name" "$dest"
 mkdir -p "$dest"
+proj_dest_ok "$dest" && proj_dest_pin "$dest" || { printf 'ERROR: cannot hold %s open\n' "$dest" >&2; exit 1; }
 
 # <dir> into the copy, not <dir>/ into <dir>/: a link there is replaced, not followed.
 rsync -a --exclude='custom.txt' "${script_dir}/allowlist-domains.d"       "${dest}"
@@ -484,7 +485,10 @@ env_perms="$(_perms_new)"
 if [[ -L "${dest}/sandbox.env" || ( -e "${dest}/sandbox.env" && ! -f "${dest}/sandbox.env" ) ]]; then
   _proj_note_skip "${dest}/sandbox.env" "it is not backed up or read, and is replaced"
 elif [[ -e "${dest}/sandbox.env" ]] && ! _proj_read "${dest}/sandbox.env" "$init_tmp/sandbox.env" 16777216; then
-  _proj_note_skip "${dest}/sandbox.env" "it is not backed up or read, and is replaced"
+  # A regular file that cannot be read (mode 000, over 16 MiB): replacing it
+  # would lose its kept keys with no backup, so stop, as for sandbox.local.env.
+  printf 'ERROR: cannot read %s/sandbox.env to back it up; fix its permissions and re-run.\n' "$dest" >&2
+  exit 1
 elif [[ -e "${dest}/sandbox.env" ]]; then
   env_perms="$_proj_perms"
   backup="${dest}/sandbox.env.pre-init"
@@ -621,8 +625,13 @@ done
 
 # Ensure the project's .ai-containers/.gitignore covers outputs + generated files:
 # the same function sync runs, from project-files.sh.
-ensure_inner_gitignore "$dest" >/dev/null
-printf '  Ensured %s/.gitignore covers outputs and generated files.\n' "$(basename "$dest")"
+# Its NOTEs are shown; only its "Backfilled" line is replaced by this one.
+gi_out="$(ensure_inner_gitignore "$dest")"
+if [[ "$gi_out" == *NOTE* ]]; then
+  printf '%s\n' "$gi_out"
+else
+  printf '  Ensured %s/.gitignore covers outputs and generated files.\n' "$(basename "$dest")"
+fi
 
 # ── Write launcher ─────────────────────────────────────────────────────────────
 
