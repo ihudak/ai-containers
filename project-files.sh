@@ -151,3 +151,101 @@ ensure_ai_containers_ignored() {
   fi
   rm -rf "$tmpd"
 }
+
+# proj_dest_ok DEST — 0 when DEST (a project's .ai-containers) is a real
+# directory or absent; otherwise say why and return 1. A link there would carry
+# every write below it somewhere else.
+proj_dest_ok() {
+  if [[ -L "$1" ]]; then
+    printf 'ERROR: %s is a link; refusing to write through it. Replace it with a directory.\n' "$1" >&2
+    return 1
+  fi
+  if [[ -e "$1" && ! -d "$1" ]]; then
+    printf 'ERROR: %s is not a directory.\n' "$1" >&2
+    return 1
+  fi
+  return 0
+}
+
+# proj_backup FILE BACKUP — copy FILE to BACKUP (a fresh name) through
+# _proj_read and _proj_write, with FILE's mode: a .pre-init or .pre-migrate
+# backup made with cp copied whatever a link there pointed at into the project.
+# 1 when FILE is a link, not a regular file, too large or unreadable.
+proj_backup() {
+  local tmpd rc=0
+  tmpd="$(mktemp -d)" || return 1
+  if _proj_read "$1" "$tmpd/f" 16777216; then
+    _proj_write "$tmpd/f" "$2" "$_proj_perms" || rc=1
+  else
+    rc=1
+  fi
+  rm -rf "$tmpd"
+  return "$rc"
+}
+
+# proj_version_record SRC DEST — version_record (version.sh) into a private
+# directory, then renamed in as DEST/engine-version, or a stale one removed.
+proj_version_record() {
+  local tmpd
+  tmpd="$(mktemp -d)" || return 0
+  version_record "$1" "$tmpd"
+  if [[ -f "$tmpd/engine-version" ]]; then
+    _proj_write "$tmpd/engine-version" "$2/engine-version" "$(_perms_new)" \
+      || printf '  NOTE: could not record the engine version in %s\n' "$2"
+  else
+    rm -f "$2/engine-version"
+  fi
+  rm -rf "$tmpd"
+  return 0
+}
+
+# Ensure the project's INNER .ai-containers/.gitignore covers the generated/local files.
+#
+# project-init.sh seeds this list, but sync must backfill it too: a project initialised
+# before a pattern existed never gets it otherwise. This matters most for
+# `sandbox.local.env`, which holds THIS MACHINE's absolute mount paths and is the one file
+# in the working copy that must never be committed. Its only protection is this inner
+# ignore file — and for the layout ensure_ai_containers_ignored deliberately leaves alone
+# (a project that TRACKS .ai-containers/), the root .gitignore protects nothing at all.
+# Idempotent: appends only patterns that are not already listed verbatim.
+ensure_inner_gitignore() {
+  local dest="$1"
+  # did_add, not added: reconcile_sandbox_conf's `local added=()` (an array,
+  # different function above) makes shellcheck's array/scalar tracking — which
+  # isn't scope-aware — falsely flag this unrelated scalar as SC2178/SC2128.
+  # Renaming sidesteps the collision instead of suppressing a real pattern.
+  # Built privately and renamed in (PRJ-10). This file is sync's: a link there
+  # is replaced by a file of the patterns; anything else not a file is named.
+  local gi="${dest}/.gitignore" pat did_add=0 tmpd perms
+  tmpd="$(mktemp -d)" || return 0
+  perms="$(_perms_new)"; : > "$tmpd/gi"
+  if [[ -e "$gi" && ! -L "$gi" ]]; then
+    if ! _proj_read "$gi" "$tmpd/gi" 4194304; then
+      rm -rf "$tmpd"; _proj_note_skip "$gi" "its patterns are not backfilled"; return 0
+    fi
+    perms="$_proj_perms"
+  fi
+  # Guarantee a trailing newline before appending to a non-empty file
+  # (otherwise the first appended pattern gets glued onto the file's last line).
+  if [[ -s "$tmpd/gi" && -n "$(tail -c1 "$tmpd/gi")" ]]; then printf '\n' >> "$tmpd/gi"; fi
+  for pat in '.agent-blocked/' '.agent-discovery/' 'sandbox.local.env' 'sandbox.local.env.pre-init*' 'sandbox.env.pre-init*' \
+             '*.pre-migrate' '*.pre-migrate.*' '*.pre-multiline' '*.pre-multiline.*' \
+             'allowlist-domains.txt' 'allowlist-proxy-domains.txt' 'allowlist-cidrs.txt' \
+             'allowlist-domains.d/custom.txt' 'allowlist-proxy-domains.d/custom.txt' \
+             'allowlist-cidrs.d/custom.txt'; do
+    if ! grep -qxF "$pat" "$tmpd/gi"; then
+      printf '%s\n' "$pat" >> "$tmpd/gi"
+      did_add=1
+    fi
+  done
+  [[ -L "$gi" ]] && did_add=1
+  if (( did_add )); then
+    if _proj_write "$tmpd/gi" "$gi" "$perms"; then
+      printf '  Backfilled .ai-containers/.gitignore patterns.\n'
+    else
+      printf '  NOTE: could not backfill %s\n' "$gi"
+    fi
+  fi
+  rm -rf "$tmpd"
+  return 0
+}

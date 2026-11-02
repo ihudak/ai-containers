@@ -106,6 +106,18 @@ EOF
   chmod +x "$dest_path"
 }
 
+# proj_emit_launcher DEST NAME — emit_launcher into a private directory, then
+# renamed in over DEST with the mode emit_launcher gave it, by
+# project-files.sh: `_proj_write()` — `cat >` onto the old name wrote through a link there.
+proj_emit_launcher() {
+  local tmpd rc=0
+  tmpd="$(mktemp -d)" || return 1
+  emit_launcher "$tmpd/runme.sh" "$2" \
+    && _proj_write "$tmpd/runme.sh" "$1" "$(_perms_of "$tmpd/runme.sh")" || rc=1
+  rm -rf "$tmpd"
+  return "$rc"
+}
+
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 projects_conf="${script_dir}/projects.conf"
@@ -400,17 +412,19 @@ extra_mounts="${extra_mounts% }"
 dest="${project_path}/.ai-containers"
 launch_script="${dest}/runme.sh"
 
+# Every write below goes through project-files.sh, as sync's do: the agent can
+# write the project, and this directory when it is a writable mount, so nothing
+# is written by path or through a link there (bugs review PRJ-11).
+proj_dest_ok "$dest" || exit 1
 printf '\nInitialising %s → %s\n' "$project_name" "$dest"
 mkdir -p "$dest"
 
-rsync -a --exclude='custom.txt' \
-  "${script_dir}/allowlist-domains.d/"       "${dest}/allowlist-domains.d/"
-rsync -a --exclude='custom.txt' \
-  "${script_dir}/allowlist-proxy-domains.d/" "${dest}/allowlist-proxy-domains.d/"
-rsync -a --exclude='custom.txt' \
-  "${script_dir}/allowlist-cidrs.d/"         "${dest}/allowlist-cidrs.d/"
-rsync -a "${script_dir}/tools.d/" "${dest}/tools.d/"
-rsync -a "${script_dir}/services.d/" "${dest}/services.d/"
+# <dir> into the copy, not <dir>/ into <dir>/: a link there is replaced, not followed.
+rsync -a --exclude='custom.txt' "${script_dir}/allowlist-domains.d"       "${dest}"
+rsync -a --exclude='custom.txt' "${script_dir}/allowlist-proxy-domains.d" "${dest}"
+rsync -a --exclude='custom.txt' "${script_dir}/allowlist-cidrs.d"         "${dest}"
+rsync -a "${script_dir}/tools.d" "${dest}"
+rsync -a "${script_dir}/services.d" "${dest}"
 
 # Shared scripts and build files — the list lives in shared-files.sh, the
 # single definition sync-to-projects.sh also sources (see there). These were
@@ -428,17 +442,23 @@ source "${script_dir}/shared-files.sh"
 # source bash-floor.sh directly.
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/version.sh"
 for f in "${AI_CONTAINERS_SHARED_FILES[@]}"; do
-  [[ -f "${script_dir}/${f}" ]] && cp "${script_dir}/${f}" "${dest}/${f}"
+  if [[ -f "${script_dir}/${f}" ]]; then
+    _proj_write "${script_dir}/${f}" "${dest}/${f}" "$(_perms_of "${script_dir}/${f}")" \
+      || { printf 'ERROR: could not write %s\n' "${dest}/${f}" >&2; exit 1; }
+  fi
 done
 
 # Record which engine tree this copy came from, at the moment it was copied.
 # The copy is not a git repo, so `--version` has no other way to know; without
 # this it reports `unknown`, which is honest but not useful. Non-fatal by
 # design — see version_record().
-version_record "${script_dir}" "${dest}"
+proj_version_record "${script_dir}" "${dest}"
 
-if [[ ! -f "${dest}/sandbox.conf" ]]; then
-  cp "${script_dir}/sandbox.conf" "${dest}/sandbox.conf"
+if [[ -L "${dest}/sandbox.conf" || ( -e "${dest}/sandbox.conf" && ! -f "${dest}/sandbox.conf" ) ]]; then
+  _proj_note_skip "${dest}/sandbox.conf" "it is kept as it is"
+elif [[ ! -e "${dest}/sandbox.conf" ]]; then
+  _proj_write "${script_dir}/sandbox.conf" "${dest}/sandbox.conf" "$(_perms_new)" \
+    || { printf 'ERROR: could not write %s/sandbox.conf\n' "$dest" >&2; exit 1; }
   printf '  Copied sandbox.conf — edit it to choose components before building.\n'
 else
   printf '  sandbox.conf already exists — skipping (not overwritten).\n'
@@ -458,10 +478,19 @@ portable_group="$group_name"
 # It is named instead, with where it belongs. The old file is backed up like
 # sandbox.local.env.
 prev_mode=open kept_env=()
-if [[ -f "${dest}/sandbox.env" ]]; then
+init_tmp="$(mktemp -d)" || { printf 'ERROR: mktemp -d failed\n' >&2; exit 1; }
+trap 'rm -rf "$init_tmp"' EXIT
+env_perms="$(_perms_new)"
+if [[ -L "${dest}/sandbox.env" || ( -e "${dest}/sandbox.env" && ! -f "${dest}/sandbox.env" ) ]]; then
+  _proj_note_skip "${dest}/sandbox.env" "it is not backed up or read, and is replaced"
+elif [[ -e "${dest}/sandbox.env" ]] && ! _proj_read "${dest}/sandbox.env" "$init_tmp/sandbox.env" 16777216; then
+  _proj_note_skip "${dest}/sandbox.env" "it is not backed up or read, and is replaced"
+elif [[ -e "${dest}/sandbox.env" ]]; then
+  env_perms="$_proj_perms"
   backup="${dest}/sandbox.env.pre-init"
-  [[ -e "$backup" ]] && backup="${dest}/sandbox.env.pre-init.$(date -u +%Y%m%dT%H%M%SZ)"
-  cp "${dest}/sandbox.env" "$backup"
+  [[ -e "$backup" || -L "$backup" ]] && backup="${dest}/sandbox.env.pre-init.$(date -u +%Y%m%dT%H%M%SZ)"
+  _proj_write "$init_tmp/sandbox.env" "$backup" "$env_perms" \
+    || { printf 'ERROR: could not back up sandbox.env to %s\n' "$backup" >&2; exit 1; }
   printf '  Backed up existing sandbox.env → %s\n' "$(basename "$backup")"
   declare -A env_seen=()
   open="" open_keep=""
@@ -494,7 +523,7 @@ if [[ -f "${dest}/sandbox.env" ]]; then
       IMAGE_NAME|AI_CONTAINER_GROUP|CONTAINER_CPUS|CONTAINER_MEMORY|CONTAINER_MEMORY_RESERVATION|CONTAINER_MEMORY_SWAP) ;;  # re-prompted
       *) kept_env+=("$line"); [[ -n "$open" ]] && open_keep=1 ;;
     esac
-  done < "${dest}/sandbox.env"
+  done < "$init_tmp/sandbox.env"
 fi
 {
   cat <<EOF
@@ -518,7 +547,9 @@ EOF
 #   REPOS="app:rw lib:ro"                  # named-volume repos (./repo.sh add; macOS perf)
 #   SANDBOX_WORKDIR=@app                   # named-volume working dir (macOS)
 EOF
-} > "${dest}/sandbox.env"
+} > "$init_tmp/new.env"
+_proj_write "$init_tmp/new.env" "${dest}/sandbox.env" "$env_perms" \
+  || { printf 'ERROR: could not write %s/sandbox.env\n' "$dest" >&2; exit 1; }
 printf '  Wrote sandbox.env (portable config).\n'
 
 # Machine-specific config → sandbox.local.env (gitignored). Always written (even with
@@ -536,13 +567,23 @@ printf '  Wrote sandbox.env (portable config).\n'
 # hand-edited EXTRA_MOUNTS/REPOS from before the first re-init is gone with no
 # warning printed either time. Fall back to a timestamped name, which is both
 # non-destructive and self-documenting about when it was taken.
-if [[ -f "${dest}/sandbox.local.env" ]]; then
+# Through project-files.sh: a cp of a sandbox.local.env linked to a file of
+# yours put that file in a backup the agent can read (PRJ-11). Its mode is kept
+# for the backup and the new file, since it may hold a token.
+local_perms="$(_perms_new)"
+if [[ -L "${dest}/sandbox.local.env" || ( -e "${dest}/sandbox.local.env" && ! -f "${dest}/sandbox.local.env" ) ]]; then
+  _proj_note_skip "${dest}/sandbox.local.env" "it is not backed up, and is replaced"
+elif [[ -e "${dest}/sandbox.local.env" ]]; then
   backup="${dest}/sandbox.local.env.pre-init"
-  if [[ -e "$backup" ]]; then
+  if [[ -e "$backup" || -L "$backup" ]]; then
     backup="${dest}/sandbox.local.env.pre-init.$(date -u +%Y%m%dT%H%M%SZ)"
   fi
-  cp "${dest}/sandbox.local.env" "$backup"
-  printf '  Backed up existing sandbox.local.env → %s\n' "$(basename "$backup")"
+  if proj_backup "${dest}/sandbox.local.env" "$backup"; then
+    local_perms="$_proj_perms"   # as read through the one open, not from the backup's name
+    printf '  Backed up existing sandbox.local.env → %s\n' "$(basename "$backup")"
+  else
+    printf 'ERROR: could not back up sandbox.local.env to %s\n' "$backup" >&2; exit 1
+  fi
 fi
 {
   cat <<'EOF'
@@ -563,39 +604,30 @@ fi
 EOF
   [[ -n "$group_init"   ]] && printf 'AI_CONTAINER_GROUP_INIT=%s\n' "$group_init"
   [[ -n "$extra_mounts" ]] && emit_env_list EXTRA_MOUNTS "$extra_mounts"
-} > "${dest}/sandbox.local.env"
+} > "$init_tmp/new.local.env"
+_proj_write "$init_tmp/new.local.env" "${dest}/sandbox.local.env" "$local_perms" \
+  || { printf 'ERROR: could not write %s/sandbox.local.env\n' "$dest" >&2; exit 1; }
 printf '  Wrote sandbox.local.env (machine-specific).\n'
 
 for dir in allowlist-domains.d allowlist-proxy-domains.d allowlist-cidrs.d; do
   custom="${dest}/${dir}/custom.txt"
   example="${dest}/${dir}/custom.txt.example"
-  if [[ ! -f "$custom" && -f "$example" ]]; then
-    cp "$example" "$custom"
+  # Not -f: a dangling link is not a missing file, and is never written through.
+  if [[ ! -e "$custom" && ! -L "$custom" && -f "$example" ]] \
+     && _proj_write "${script_dir}/${dir}/custom.txt.example" "$custom" "$(_perms_new)"; then
     printf '  Created %s/%s/custom.txt from template.\n' "$(basename "$dest")" "$dir"
   fi
 done
 
-# Ensure the project's .ai-containers/.gitignore covers outputs + generated files.
-gi="${dest}/.gitignore"
-# Guarantee a trailing newline before appending to an existing, non-empty file
-# (otherwise the first appended pattern gets glued onto the file's last line).
-if [[ -f "$gi" && -s "$gi" && -n "$(tail -c1 "$gi" 2>/dev/null)" ]]; then
-  printf '\n' >> "$gi"
-fi
-for pat in '.agent-blocked/' '.agent-discovery/' 'sandbox.local.env' 'sandbox.local.env.pre-init*' 'sandbox.env.pre-init*' \
-           '*.pre-migrate' '*.pre-migrate.*' '*.pre-multiline' '*.pre-multiline.*' \
-           'allowlist-domains.txt' 'allowlist-proxy-domains.txt' 'allowlist-cidrs.txt' \
-           'allowlist-domains.d/custom.txt' 'allowlist-proxy-domains.d/custom.txt' 'allowlist-cidrs.d/custom.txt'; do
-  if [[ ! -f "$gi" ]] || ! grep -qxF "$pat" "$gi" 2>/dev/null; then
-    printf '%s\n' "$pat" >> "$gi"
-  fi
-done
+# Ensure the project's .ai-containers/.gitignore covers outputs + generated files:
+# the same function sync runs, from project-files.sh.
+ensure_inner_gitignore "$dest" >/dev/null
 printf '  Ensured %s/.gitignore covers outputs and generated files.\n' "$(basename "$dest")"
 
 # ── Write launcher ─────────────────────────────────────────────────────────────
 
 write_launcher=1
-if [[ -f "$launch_script" ]]; then
+if [[ -e "$launch_script" || -L "$launch_script" ]]; then
   ow=""; read -r -p "  $(basename "$launch_script") already exists. Overwrite? [y/N]: " ow || [[ -n "$ow" ]] || eof_die "overwriting $(basename "$launch_script")"
   case "$ow" in
     y|Y|yes|YES) write_launcher=1 ;;
@@ -604,7 +636,8 @@ if [[ -f "$launch_script" ]]; then
 fi
 
 if (( write_launcher )); then
-  emit_launcher "$launch_script" "$project_name"
+  proj_emit_launcher "$launch_script" "$project_name" \
+    || { printf 'ERROR: could not write %s\n' "$launch_script" >&2; exit 1; }
   printf '  Wrote %s\n' "$(basename "$launch_script")"
 else
   printf '  Kept existing %s.\n' "$(basename "$launch_script")"

@@ -321,6 +321,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   checked open; a linked `sandbox.conf` or project `.gitignore` is named and
   left alone. A write that fails no longer stops the sync of the projects
   after it: it is an `ERROR:`, and the run exits 1 (bugs review PRJ-10).
+- **`project-init.sh` and `migrate-runme.sh` do the same.** Re-initialising a
+  project whose `sandbox.local.env` the agent had replaced by a link to a
+  0600 file of yours copied that file into `sandbox.local.env.pre-init`, where
+  the agent could read it, and then overwrote it; the other files were
+  written through their links too. Backups, `sandbox.env`,
+  `sandbox.local.env`, the shared files, `custom.txt` and `runme.sh` are now
+  written by rename, the old launcher is read through one checked open, and
+  a `.ai-containers` that is itself a link is refused (bugs review PRJ-11).
 
 - **The seed image is built on Alpine 3.24, for CVE-2026-111497.** Alpine 3.20,
   which is past end of life, ships `brotli-libs` 1.1.0, which git's libcurl

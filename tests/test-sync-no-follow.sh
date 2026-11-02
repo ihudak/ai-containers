@@ -118,6 +118,14 @@ grep -qx '/.ai-containers/' "$proj3/.gitignore" && [[ ! -L "$proj3/.gitignore" ]
 leftover="$(find "$proj3" "$d3" -maxdepth 1 -name '.*.??????' 2>/dev/null)"
 [[ -z "$leftover" ]] && pass "no temporary files are left in the project" || fail "no temporary files are left in the project: $leftover"
 
+# ── A .ai-containers that is itself a link is not synced into ──
+proj6="$TMP/proj6"; mkdir -p "$proj6" "$V/dir-dest"; ln -s "$V/dir-dest" "$proj6/.ai-containers"
+out="$(sync_project "$proj6" 2>&1)"
+[[ -z "$(ls -A "$V/dir-dest")" && "$out" == *ERROR*"is a link"* ]] \
+  && pass "a .ai-containers that is a link is an ERROR and nothing is written through it" \
+  || fail "a .ai-containers that is a link is an ERROR and nothing is written through it: $out"
+_sync_errors=0
+
 # ── The real script, all projects, under its own set -e: a directory planted
 # where a shared file goes is an ERROR for that project, the next is still
 # synced, and the run exits 1 ──

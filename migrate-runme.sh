@@ -120,6 +120,15 @@ process_project() {
   local dest="${project_path}/.ai-containers"
   local old_runme="${dest}/runme.sh"
 
+  # Nothing in a project is read or written by path, or through a link the
+  # agent planted (bugs review PRJ-11): the old launcher and sandbox.env are
+  # read once into a private copy, every write goes through project-files.sh.
+  proj_dest_ok "$dest" || return 1
+  if [[ -L "$old_runme" ]]; then
+    printf '  SKIP  %s — runme.sh is a link; not read\n' "$project_path"
+    ((++count_skipped))
+    return 0
+  fi
   if [[ ! -f "$old_runme" ]]; then
     printf '  SKIP  %s — no .ai-containers/runme.sh\n' "$project_path"
     ((++count_skipped))
@@ -133,10 +142,21 @@ process_project() {
 
   printf '\n=== %s ===\n' "$project_path"
 
+  local mtmp
+  mtmp="$(mktemp -d)" || return 1
+  if ! _proj_read "$old_runme" "$mtmp/runme.sh" 16777216; then
+    rm -rf "$mtmp"
+    printf '  SKIP  %s — runme.sh could not be read as a regular file\n' "$project_path"
+    ((++count_skipped))
+    return 0
+  fi
+  [[ -f "${dest}/sandbox.env" && ! -L "${dest}/sandbox.env" ]] \
+    && _proj_read "${dest}/sandbox.env" "$mtmp/sandbox.env" 16777216 || : > "$mtmp/sandbox.env"
+
   local -A vals
   local build_nocache mode workdir
-  parse_exports "$old_runme"
-  parse_invocation "$old_runme"
+  parse_exports "$mtmp/runme.sh"
+  parse_invocation "$mtmp/runme.sh"
 
   local project_name image_name group_name container_cpus container_memory
   local container_memory_reservation container_memory_swap preview_ports
@@ -145,8 +165,8 @@ process_project() {
   project_name="$(basename "$project_path")"
 
   image_name="${vals[IMAGE_NAME]:-}"
-  if [[ -z "$image_name" && -f "${dest}/sandbox.env" ]]; then
-    image_name="$(grep -m1 '^IMAGE_NAME=' "${dest}/sandbox.env" 2>/dev/null | cut -d= -f2-)"
+  if [[ -z "$image_name" ]]; then
+    image_name="$(grep -m1 '^IMAGE_NAME=' "$mtmp/sandbox.env" 2>/dev/null | cut -d= -f2-)"
   fi
   image_name="${image_name:-${project_name}-ai-container}"
 
@@ -189,6 +209,7 @@ process_project() {
 
   if (( dry_run )); then
     printf '  [dry-run] would write sandbox.env, sandbox.local.env (if applicable), and a thin runme.sh.\n'
+    rm -rf "$mtmp"
     ((++count_migrated))
     return 0
   fi
@@ -198,10 +219,13 @@ process_project() {
     # Same no-clobber rule as project-init.sh's .pre-init backup: a second
     # migration of the same project must not overwrite the first backup, which
     # is the only copy of the original launcher.
-    if [[ -f "$f" ]]; then
+    # A link is not followed: it is named, and replaced by what is written below.
+    if [[ -L "$f" ]]; then
+      printf '  NOTE: %s is a link; it is not backed up, and is replaced\n' "$f"
+    elif [[ -f "$f" ]]; then
       bk="${f}.pre-migrate"
-      [[ -e "$bk" ]] && bk="${f}.pre-migrate.$(date -u +%Y%m%dT%H%M%SZ)"
-      cp "$f" "$bk"
+      [[ -e "$bk" || -L "$bk" ]] && bk="${f}.pre-migrate.$(date -u +%Y%m%dT%H%M%SZ)"
+      proj_backup "$f" "$bk" || { rm -rf "$mtmp"; printf 'ERROR: could not back up %s\n' "$f" >&2; return 1; }
     fi
   done
 
@@ -224,7 +248,9 @@ process_project() {
 #   REPOS="app:rw lib:ro"                  # named-volume repos (./repo.sh add; macOS perf)
 #   SANDBOX_WORKDIR=@app                   # named-volume working dir (macOS)
 EOF
-  } > "${dest}/sandbox.env"
+  } > "$mtmp/new.env"
+  _proj_write "$mtmp/new.env" "${dest}/sandbox.env" "$(_perms_new)" \
+    || { rm -rf "$mtmp"; printf 'ERROR: could not write %s/sandbox.env\n' "$dest" >&2; return 1; }
 
   if [[ -n "$extra_mounts" || -n "$group_init" || -n "$repos" || "$workdir" != .. ]]; then
     {
@@ -237,14 +263,18 @@ EOF
       [[ -n "$group_init"   ]] && printf 'AI_CONTAINER_GROUP_INIT=%s\n' "$group_init"
       [[ -n "$extra_mounts" ]] && printf 'EXTRA_MOUNTS="%s"\n' "$extra_mounts"
       [[ -n "$repos"        ]] && printf 'REPOS="%s"\n' "$repos"
-    } > "${dest}/sandbox.local.env"
+    } > "$mtmp/new.local.env"
+    _proj_write "$mtmp/new.local.env" "${dest}/sandbox.local.env" "$(_perms_new)" \
+      || { rm -rf "$mtmp"; printf 'ERROR: could not write %s/sandbox.local.env\n' "$dest" >&2; return 1; }
   else
     rm -f "${dest}/sandbox.local.env"
   fi
 
   # emit_launcher <dest-path> <project-name>. This previously passed a single
   # argument to a function that did not exist at all — see the header note.
-  emit_launcher "${dest}/runme.sh" "$project_name"
+  proj_emit_launcher "${dest}/runme.sh" "$project_name" \
+    || { rm -rf "$mtmp"; printf 'ERROR: could not write %s/runme.sh\n' "$dest" >&2; return 1; }
+  rm -rf "$mtmp"
 
   printf '  Wrote sandbox.env, %s, and a thin runme.sh (old files backed up as *.pre-migrate).\n' \
     "$([[ -f "${dest}/sandbox.local.env" ]] && echo sandbox.local.env || echo '(no sandbox.local.env needed)')"

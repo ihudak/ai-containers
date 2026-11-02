@@ -221,57 +221,6 @@ sync_sandbox_conf() {
 }
 
 
-# Ensure the project's INNER .ai-containers/.gitignore covers the generated/local files.
-#
-# project-init.sh seeds this list, but sync must backfill it too: a project initialised
-# before a pattern existed never gets it otherwise. This matters most for
-# `sandbox.local.env`, which holds THIS MACHINE's absolute mount paths and is the one file
-# in the working copy that must never be committed. Its only protection is this inner
-# ignore file — and for the layout ensure_ai_containers_ignored deliberately leaves alone
-# (a project that TRACKS .ai-containers/), the root .gitignore protects nothing at all.
-# Idempotent: appends only patterns that are not already listed verbatim.
-ensure_inner_gitignore() {
-  local dest="$1"
-  # did_add, not added: reconcile_sandbox_conf's `local added=()` (an array,
-  # different function above) makes shellcheck's array/scalar tracking — which
-  # isn't scope-aware — falsely flag this unrelated scalar as SC2178/SC2128.
-  # Renaming sidesteps the collision instead of suppressing a real pattern.
-  # Built privately and renamed in (PRJ-10). This file is sync's: a link there
-  # is replaced by a file of the patterns; anything else not a file is named.
-  local gi="${dest}/.gitignore" pat did_add=0 tmpd perms
-  tmpd="$(mktemp -d)" || return 0
-  perms="$(_perms_new)"; : > "$tmpd/gi"
-  if [[ -e "$gi" && ! -L "$gi" ]]; then
-    if ! _proj_read "$gi" "$tmpd/gi" 4194304; then
-      rm -rf "$tmpd"; _proj_note_skip "$gi" "its patterns are not backfilled"; return 0
-    fi
-    perms="$_proj_perms"
-  fi
-  # Guarantee a trailing newline before appending to a non-empty file
-  # (otherwise the first appended pattern gets glued onto the file's last line).
-  if [[ -s "$tmpd/gi" && -n "$(tail -c1 "$tmpd/gi")" ]]; then printf '\n' >> "$tmpd/gi"; fi
-  for pat in '.agent-blocked/' '.agent-discovery/' 'sandbox.local.env' 'sandbox.local.env.pre-init*' 'sandbox.env.pre-init*' \
-             '*.pre-migrate' '*.pre-migrate.*' '*.pre-multiline' '*.pre-multiline.*' \
-             'allowlist-domains.txt' 'allowlist-proxy-domains.txt' 'allowlist-cidrs.txt' \
-             'allowlist-domains.d/custom.txt' 'allowlist-proxy-domains.d/custom.txt' \
-             'allowlist-cidrs.d/custom.txt'; do
-    if ! grep -qxF "$pat" "$tmpd/gi"; then
-      printf '%s\n' "$pat" >> "$tmpd/gi"
-      did_add=1
-    fi
-  done
-  [[ -L "$gi" ]] && did_add=1
-  if (( did_add )); then
-    if _proj_write "$tmpd/gi" "$gi" "$perms"; then
-      printf '  Backfilled .ai-containers/.gitignore patterns.\n'
-    else
-      printf '  NOTE: could not backfill %s\n' "$gi"
-    fi
-  fi
-  rm -rf "$tmpd"
-  return 0
-}
-
 # Repoint a launcher's stale ./runme.sh self-call to ./sandbox.sh (idempotent, safe: only
 # rewrites in place, never deletes or renames anything). An earlier revision of this
 # function also auto-deleted any runme.sh lacking an `export IMAGE_NAME=` marker,
@@ -477,6 +426,11 @@ sync_project() {
     return
   fi
 
+  # A link there would carry every write below somewhere else (PRJ-11).
+  if [[ -L "$dest" ]]; then
+    sync_error "$dest is a link; not synced. Replace it with a directory."
+    return 0
+  fi
   if [[ ! -d "$dest" ]]; then
     printf '  SKIP  %s — .ai-containers not found (run project-init.sh first)\n' "$project_path"
     return
@@ -517,16 +471,7 @@ sync_project() {
   # Refresh the recorded engine version — a sync makes the copy a copy of THIS
   # tree, so the number it reports must move with it (see version_record()).
   # Recorded privately, then renamed in.
-  local vtmp
-  vtmp="$(mktemp -d)" || { printf 'ERROR: mktemp -d failed\n' >&2; return 1; }
-  version_record "${script_dir}" "$vtmp"
-  if [[ -f "$vtmp/engine-version" ]]; then
-    _proj_write "$vtmp/engine-version" "${dest}/engine-version" "$(_perms_new)" \
-      || printf '  NOTE: could not record the engine version in %s\n' "$dest"
-  else
-    rm -f "${dest}/engine-version"
-  fi
-  rm -rf "$vtmp"
+  proj_version_record "${script_dir}" "${dest}"
 
   # README documents central-repo orchestration (project-init/sync) that doesn't
   # exist in a child working copy. Children are leaves: runtime files only.
