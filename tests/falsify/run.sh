@@ -4,10 +4,22 @@
 # noticed. A mutant nothing noticed — a SURVIVOR — is evidence that an assertion
 # is missing or cannot fail.
 #
-#   bash tests/falsify/run.sh [--target <file>] [--jobs N|auto] [--timeout S]
+#   bash tests/falsify/run.sh [--target <file>] [--exclude-target <file>] [--list-targets]
+#                            [--jobs N|auto] [--timeout S]
 #                            [--operators <list>] [--max-unproven-pct N]
 #                            [--max-assertless N] [--controls N]
 #
+#   --exclude-target <file> every active target BUT this one: the complement of
+#                           --target <file>, so a run of each covers the corpus
+#                           exactly once whatever is added to it later. That is
+#                           how CI splits the corpus over two jobs. A name that
+#                           matches no active row is refused, as for --target:
+#                           a typo would silently run the file twice. An
+#                           empty name is refused for both options.
+#   --list-targets          print the targets the selection chose, one per
+#                           line, and run nothing. tests/test-falsify-shards.sh
+#                           drives CI's falsify step through it to prove the
+#                           shards cover the corpus exactly once.
 #   --jobs auto             workers = min(what the OS reports, the cgroup CPU
 #                           quota). `nproc` reads the affinity mask and does not
 #                           see a `--cpus` quota, so it over-reports inside a
@@ -375,6 +387,8 @@ fr_cpu_budget() {   # workers this host can actually run: min(reported, quota, p
 FR_JOBS="${FALSIFY_JOBS:-1}"
 FR_TIMEOUT="${FALSIFY_TIMEOUT:-60}"
 FR_TARGET=""
+FR_EXCLUDE=""
+FR_LIST_TARGETS=0
 
 # The suite driver, as a repo-relative path DERIVED from where this file lives,
 # not hardcoded: upstream keeps tests/ at the repo root, the mgd port keeps the
@@ -1723,7 +1737,7 @@ FR_TARGETS=()
 FR_ORACLES=()
 
 fr_load_targets() {
-  local kind lineno target category oracle skipped=0
+  local kind lineno target category oracle skipped=0 excluded=0 targeted=0 in_target
   # The 6th and 7th fields (functions, reason) belong to the DEFERRED/EXCLUDED
   # grammar; an ACTIVE row never carries them, so they are read into `_`.
   while IFS='|' read -r kind lineno target category oracle _; do
@@ -1739,9 +1753,19 @@ fr_load_targets() {
         fr_err "$FR_CONF:$lineno: $target has category '${category:-<empty>}', which this runner does not know"
         return 2 ;;
     esac
+    # Both filters are judged on every row, so each can say on its own that it
+    # matched nothing, whatever the other one did.
+    in_target=1
     if [[ -n "$FR_TARGET" && "$target" != "$FR_TARGET" && "${target##*/}" != "$FR_TARGET" ]]; then
+      in_target=0
+    else
+      targeted=$(( targeted + 1 ))
+    fi
+    if [[ -n "$FR_EXCLUDE" && ( "$target" == "$FR_EXCLUDE" || "${target##*/}" == "$FR_EXCLUDE" ) ]]; then
+      excluded=$(( excluded + 1 ))
       continue
     fi
+    (( in_target )) || continue
     if [[ ! -f "$FR_REPO/$target" ]]; then
       fr_err "$FR_CONF:$lineno: $target does not exist under $FR_REPO"
       return 2
@@ -1754,9 +1778,17 @@ fr_load_targets() {
     FR_ORACLES+=("$oracle")
   done < <(bash "$FR_DERIVE" --rows "$FR_CONF")
   (( skipped > 0 )) && fr_warn "skipped $skipped GREPPED-ONLY row(s): the suite never executes them, so every mutant would survive as noise"
+  if [[ -n "$FR_TARGET" ]] && (( targeted == 0 )); then
+    fr_err "--target $FR_TARGET matches no active row in $FR_CONF"
+    return 2
+  fi
+  if [[ -n "$FR_EXCLUDE" ]] && (( excluded == 0 )); then
+    fr_err "--exclude-target $FR_EXCLUDE matches no active row in $FR_CONF"
+    return 2
+  fi
   if (( ${#FR_TARGETS[@]} == 0 )); then
-    if [[ -n "$FR_TARGET" ]]; then
-      fr_err "--target $FR_TARGET matches no active row in $FR_CONF"
+    if [[ -n "$FR_TARGET" && -n "$FR_EXCLUDE" ]]; then
+      fr_err "--target $FR_TARGET with --exclude-target $FR_EXCLUDE leaves no active row in $FR_CONF"
     else
       fr_err "$FR_CONF has no active EXECUTED-WHOLE row — there is nothing to mutate"
     fi
@@ -1775,7 +1807,14 @@ falsify_main() {
 
   while (( $# > 0 )); do
     case "$1" in
-      --target) FR_TARGET="${2:-}"; shift 2 || return 2 ;;
+      # An EMPTY name is refused, not read as "no filter": a selection whose
+      # value went missing (an unset variable in a CI step) would otherwise run
+      # the whole corpus in every shard.
+      --target|--exclude-target)
+        if [[ -z "${2:-}" ]]; then fr_err "$1 needs a file name"; return 2; fi
+        if [[ "$1" == --target ]]; then FR_TARGET="$2"; else FR_EXCLUDE="$2"; fi
+        shift 2 ;;
+      --list-targets) FR_LIST_TARGETS=1; shift ;;
       --jobs) FR_JOBS="${2:-}"; shift 2 || return 2 ;;
       --controls) FR_CONTROLS="${2:-}"; shift 2 || return 2 ;;
       --max-unproven-pct) FR_MAX_UNPROVEN_PCT="${2:-}"; shift 2 || return 2 ;;
@@ -1830,6 +1869,10 @@ falsify_main() {
   if [[ ! -f "$FR_GENERATE" ]]; then fr_err "no generator at $FR_GENERATE"; return 2; fi
 
   fr_load_targets || return 2
+  if (( FR_LIST_TARGETS )); then
+    printf '%s\n' "${FR_TARGETS[@]}"
+    return 0
+  fi
 
   FR_SCRATCH="$(mktemp -d)" || return 1
   # CONFINED TO THE OWNING PROCESS. fr_run_mutant and fr_run_control are

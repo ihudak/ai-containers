@@ -175,10 +175,10 @@ jobs:
         run: ./tests/run-all.sh
 
   falsify:
-    name: Mutation tier (falsify) + survivor-ledger ratchet
+    name: Mutation tier (falsify) + survivor-ledger ratchet (${{ matrix.shard }})
     runs-on: ubuntu-24.04
-    # 1161 mutants over 25 targets: 36-41 min here (--jobs auto -> 4), measured
-    # 2026-10-27. Targets run one after another, so the job is the sum of every
+    # History: 1161 mutants over 25 targets took 36-41 min here (--jobs auto ->
+    # 4), measured 2026-10-27, in one job. Targets run one after another, so the job is the sum of every
     # target's wall clock, and it grows with the code under test:
     # repo-git-reset.sh alone went from 59 mutants in 26 s to 185 in ~11 min
     # over batch 2. Some mutants time out BY CONSTRUCTION (they damage a read
@@ -186,9 +186,30 @@ jobs:
     # wall clock rather than a ceiling nothing reaches. The old cap of 45
     # cancelled three runs that day, one on a docs-only commit whose tree had
     # passed in 36 min the run before: the runner alone moves this job by a
-    # quarter. 90 is headroom, not an estimate. If the run nears it again,
-    # split the corpus rather than raising this further.
+    # quarter. 90 is headroom, not an estimate.
+    #
+    # It neared it again, so the corpus is SPLIT, as planned: on 2026-10-30 the
+    # whole run took 4,639 s on its last green pass and was cancelled at the cap
+    # on 5 of 12 runs, repo-git-reset.sh alone taking 2,700 s of it (325
+    # mutants). That target runs in one shard and every other one in the
+    # other, as `--target X` and `--exclude-target X` of the SAME name, so the
+    # two cover the corpus exactly once whatever is added to it later — a
+    # target list per shard would leave a new target in neither;
+    # tests/test-falsify-shards.sh runs the step below once per shard to prove
+    # it. Each shard scores the ledger against its own run; check-ledger.sh's
+    # scope rule skips (and says it skips) every entry for a file its run did
+    # not measure, which for an active target is the other shard's. The
+    # --max-unproven-pct bound is per shard now, which is stricter: on the last
+    # green single run that target had 4 unproven of 325 (1.2%), the rest 8 of
+    # 1171. If one shard nears the cap, split again by the same rule rather
+    # than raising this.
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [repo-git-reset, rest]
+    env:
+      FALSIFY_SPLIT_TARGET: repo-git-reset.sh
 
     steps:
       - uses: actions/checkout@v7
@@ -223,13 +244,21 @@ jobs:
       # without ever printing FAIL:", so a machine slow enough turns a KILL into
       # an unclassified survivor and fails this gate for a reason that is not
       # about the tree. The slowest legitimate mutant measured 14.1 s, so 120
-      # leaves ~8x for a loaded shared runner. No --target, no --operators: the
-      # scope rule makes the stale/obsolete checks vacuous for any file a
-      # partial run did not measure, so this gate is only honest over the whole
-      # corpus.
+      # leaves ~8x for a loaded shared runner. No --operators, and no hand-kept
+      # list of targets: the scope rule makes the stale/obsolete checks vacuous
+      # for any file a partial run did not measure, so this gate is honest only
+      # if the shards' selections, together, are the whole corpus — which
+      # --target X and --exclude-target X are.
       - name: Run the falsify mutation corpus
+        env:
+          SHARD: ${{ matrix.shard }}
         run: |
           rc=0
+          case "$SHARD" in
+            repo-git-reset) select=(--target "$FALSIFY_SPLIT_TARGET") ;;
+            rest) select=(--exclude-target "$FALSIFY_SPLIT_TARGET") ;;
+            *) echo "unknown falsify shard: $SHARD" >&2; exit 2 ;;
+          esac
           # --jobs auto, NOT $(nproc): nproc reads the affinity MASK and does
           # not see a `--cpus` cgroup quota, so it over-reports wherever one is
           # in force and the tier oversubscribes itself. Measured on a quota'd
@@ -256,7 +285,7 @@ jobs:
           # column that names them was being written and never read. Both repos
           # measure 0 today; 0 is therefore a floor that costs nothing to hold
           # and is only satisfiable by oracles that report what they found.
-          bash tests/falsify/run.sh --jobs auto --timeout 120 --max-unproven-pct 10 \
+          bash tests/falsify/run.sh "${select[@]}" --jobs auto --timeout 120 --max-unproven-pct 10 \
             --max-assertless 0 \
             > "$RUNNER_TEMP/falsify-run.txt" || rc=$?
           # run.sh's STDOUT is the record the ratchet reads; its EXIT STATUS is

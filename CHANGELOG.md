@@ -46,6 +46,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   converted, and never touches the shared `sandbox.env`.
 ### Changed
 
+- **CI runs the falsify mutation tier in two jobs.** The single job reached
+  its 90-minute cap and was cancelled on 5 of 12 runs, with no verdict;
+  `repo-git-reset.sh` alone took 45 of its 77 minutes. It now runs in one job
+  and every other target in another, through the new `tests/falsify/run.sh
+  --exclude-target <file>`, the complement of `--target <file>`, so the two
+  cover the corpus exactly once whatever is added to it. Each job scores the
+  survivor ledger against its own run, and `tests/test-falsify-shards.sh` runs
+  the CI step once per shard to check that the two cover the corpus exactly
+  once. An `--exclude-target` that names no active target is refused, and so
+  is an empty `--target` or `--exclude-target`, which used to select the
+  whole corpus.
+
 - **A lowercase `on` or `off` in `sandbox.conf` is refused** (bugs review
   BLD-6, BLD-8). `ON` and `OFF` are compared literally, so `c-toolchain=on`
   was silently OFF, `ruby=off` installed a Ruby named `off` on every start and

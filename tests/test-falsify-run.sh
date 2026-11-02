@@ -373,6 +373,7 @@ CONF_SCAFFAIL="$(conf scaffail 'fixture-lib.sh|EXECUTED-WHOLE|test-fx-scaffold-a
 CONF_SET="$(conf set 'fixture-lib.sh|EXECUTED-WHOLE|test-fx-blind.sh,test-fx-a.sh')"
 CONF_PARTIAL="$(conf partial 'fixture-lib.sh|EXECUTED-PARTIAL|test-fx-a.sh|fx_bigger')"
 CONF_GREPPED="$(conf grepped 'fixture-lib.sh|GREPPED-ONLY|test-fx-a.sh')"
+CONF_TWO="$(printf 'fixture-lib.sh|EXECUTED-WHOLE|test-fx-a.sh\nfixture-slow.sh|EXECUTED-WHOLE|test-fx-slow.sh\n' > "$TMP/two.conf"; printf '%s' "$TMP/two.conf")"
 
 PRISTINE_CK="$(cksum < "$FX/fixture-lib.sh" | tr -d ' ')"
 
@@ -1257,6 +1258,33 @@ check "--jobs 0 is refused (exit 2)" "2" "$FX_RC"
 fx_run "$RUN" "$CONF_A" "$FX" "$TMP/wit-x" --nonsense
 check "an unknown option is refused (exit 2)" "2" "$FX_RC"
 
+# ── 12b. --exclude-target is --target's complement ───────────────────────────
+# CI splits the corpus over two jobs, one with --target X and one with
+# --exclude-target X, so the pair must cover every active row exactly once.
+# fixture-slow.sh is the row left out: excluding it must leave fixture-lib.sh
+# measured and fixture-slow.sh not even baselined.
+fx_run "$RUN" "$CONF_TWO" "$FX" "$TMP/wit-excl" --jobs 2 --controls 0 --exclude-target fixture-slow.sh
+check "--exclude-target runs the rest of the corpus (exit 0)" "0" "$FX_RC"
+check "  … measuring the target it did not name" "1" "$(grep -c '^TARGET|fixture-lib.sh|' <<< "$FX_OUT")"
+check "  … and never touching the one it did" "0" "$(grep -c 'fixture-slow.sh' <<< "$FX_OUT")"
+fx_run "$RUN" "$CONF_TWO" "$FX" "$TMP/wit-excl2" --jobs 1 --controls 0 --exclude-target nosuch.sh
+check "--exclude-target naming no active row is refused (exit 2)" "2" "$FX_RC"
+grep -q 'exclude-target nosuch.sh matches no active row' <<< "$FX_ERR" \
+  && pass "  … naming the filter that matched nothing, not running the whole corpus" \
+  || fail "  … naming the filter that matched nothing, not running the whole corpus: $FX_ERR"
+fx_run "$RUN" "$CONF_TWO" "$FX" "$TMP/wit-excl3" --jobs 1 --controls 0 \
+  --target fixture-lib.sh --exclude-target fixture-lib.sh
+check "--target and --exclude-target of one file select nothing and are refused (exit 2)" "2" "$FX_RC"
+fx_run "$RUN" "$CONF_TWO" "$FX" "$TMP/wit-excl4" --jobs 1 --controls 0 --exclude-target ''
+check "an empty --exclude-target is refused (exit 2), not read as no filter" "2" "$FX_RC"
+fx_run "$RUN" "$CONF_TWO" "$FX" "$TMP/wit-excl5" --jobs 1 --controls 0 --target ''
+check "an empty --target is refused (exit 2), not read as no filter" "2" "$FX_RC"
+fx_run "$RUN" "$CONF_TWO" "$FX" "$TMP/wit-excl6" --jobs 1 --controls 0 \
+  --target nosuch.sh --exclude-target fixture-slow.sh
+grep -q -- '--target nosuch.sh matches no active row' <<< "$FX_ERR" \
+  && pass "a --target that matches nothing is named as such beside a valid --exclude-target" \
+  || fail "a --target that matches nothing is named as such beside a valid --exclude-target: $FX_ERR"
+
 # ── 13. The REAL targets.conf is what an unfiltered run would read ────────────
 # No mutants are run here: --target with a name no active row carries must fail
 # before any oracle does, against the real map.
@@ -1265,6 +1293,12 @@ check "--target with no matching active row is refused (exit 2)" "2" "$rc"
 grep -q 'matches no active row' <<< "$out" \
   && pass "  … naming the filter that matched nothing" \
   || fail "  … naming the filter that matched nothing: $out"
+# --exclude-target matches a target in a subdirectory by its basename, as
+# --target does, and --list-targets runs nothing.
+out="$(bash "$RUN" --list-targets --exclude-target postgres.sh 2>/dev/null)"; rc=$?
+check "--list-targets exits 0" "0" "$rc"
+check "  … and --exclude-target postgres.sh drops services.d/postgres.sh" "0" "$(grep -c '^services.d/postgres.sh$' <<< "$out")"
+check "  … keeping its neighbour services.d/redis.sh" "1" "$(grep -c '^services.d/redis.sh$' <<< "$out")"
 n_active="$(bash "$TESTS_DIR/falsify/derive-targets.sh" --rows "$TESTS_DIR/falsify/targets.conf" \
             | awk -F'|' '$1 == "ACTIVE" && $4 == "EXECUTED-WHOLE"' | grep -c .)"
 if [[ "$n_active" -ge 1 ]]; then
