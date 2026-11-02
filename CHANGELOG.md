@@ -8,6 +8,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`sync-to-projects.sh` regenerates an unedited `runme.sh`.** A fix to the
+  generated launcher never reached a project initialised before it: a launcher
+  from before `--version` built an image to answer `./runme.sh --version`. Sync
+  now rewrites `runme.sh` with the current template when it is still exactly a
+  launcher `project-init.sh` generated, or one earlier syncs edited in place,
+  and keeps an edited one with a `NOTE:` naming the `diff` to compare it with.
+  Every template there has been is kept in `launcher-templates/`, and the
+  launcher now names its template number. The old in-place self-call repair no
+  longer rewrites comments: it had turned the template's
+  `SANDBOX_MODE=restricted ./runme.sh` hint into `./sandbox.sh` in every synced
+  project (feature gaps review GAP-6).
+
 - **A list in `sandbox.local.env` can be written one entry per line.** A long
   `EXTRA_MOUNTS` or `REPOS` had to sit on a single line, because the loader
   read the file a line at a time: a value broken over lines arrived as a bare
