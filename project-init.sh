@@ -480,7 +480,9 @@ portable_group="$group_name"
 # sandbox.local.env.
 prev_mode=open kept_env=()
 init_tmp="$(mktemp -d)" || { printf 'ERROR: mktemp -d failed\n' >&2; exit 1; }
-trap 'rm -rf "$init_tmp"' EXIT
+init_tmp_owner="$BASHPID"
+# Only in this process: a forked child inherits the trap and would remove it.
+trap '[[ "$BASHPID" == "$init_tmp_owner" ]] && rm -rf "$init_tmp"' EXIT
 env_perms="$(_perms_new)"
 if [[ -L "${dest}/sandbox.env" || ( -e "${dest}/sandbox.env" && ! -f "${dest}/sandbox.env" ) ]]; then
   _proj_note_skip "${dest}/sandbox.env" "it is not backed up or read, and is replaced"

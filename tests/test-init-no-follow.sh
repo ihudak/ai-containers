@@ -12,7 +12,10 @@ fails=0
 pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails+1)); }
 
-TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; trap 'rm -rf "$TMP"' EXIT
+TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; TMP_OWNER="$BASHPID"
+# Only this process removes the fixture: the race case forks a child, which
+# would inherit an unguarded trap (tests/test-exit-trap-ownership.sh).
+trap '[[ "$BASHPID" == "$TMP_OWNER" ]] && rm -rf "$TMP"' EXIT
 export HOME="$TMP/home"; mkdir -p "$HOME"
 export GIT_CONFIG_GLOBAL="$TMP/home/.gitconfig" GIT_CONFIG_NOSYSTEM=1
 unset VAULT_PATH SPECS_PATH DOCS_PATH ARCHITECTURE_REPO_PATH EXTRA_MOUNTS REPOS SANDBOX_ENV_FILE SANDBOX_WORKDIR AI_CONTAINER_GROUP
@@ -153,6 +156,19 @@ printf 'GITHUB_TOKEN=mine\n' > "$d6/sandbox.local.env"; chmod 600 "$d6/sandbox.l
 [[ "$(p_stat_mode "$d6/sandbox.local.env")" == 600 && "$(p_stat_mode "$d6/sandbox.local.env.pre-migrate")" == 600 ]] \
   && pass "migrate-runme keeps sandbox.local.env's 0600 mode, in the backup and the new file" \
   || fail "migrate-runme keeps sandbox.local.env's 0600 mode ($(p_stat_mode "$d6/sandbox.local.env") $(p_stat_mode "$d6/sandbox.local.env.pre-migrate"))"
+# An unreadable sandbox.env stops that project's migration and is kept.
+if [[ "$(id -u)" != 0 ]]; then
+  proj9="$TMP/proj9"; d9="$proj9/.ai-containers"; mkdir -p "$d9"
+  printf '#!/usr/bin/env bash\nexport IMAGE_NAME=p9\n./sandbox.sh open ..\n' > "$d9/runme.sh"
+  printf 'PREVIEW_PORTS="3000"\n' > "$d9/sandbox.env"; chmod 000 "$d9/sandbox.env"
+  out="$(cd "$E" && bash ./migrate-runme.sh --projects-conf "$TMP/none.conf" "$proj9" </dev/null 2>&1)"
+  chmod 644 "$d9/sandbox.env"
+  grep -qx 'PREVIEW_PORTS="3000"' "$d9/sandbox.env" && [[ "$out" == *ERROR*sandbox.env* && ! -e "$d9/runme.sh.pre-migrate" ]] \
+    && pass "an unreadable sandbox.env stops that project's migration and is kept" \
+    || fail "an unreadable sandbox.env stops that project's migration and is kept: $out"
+else
+  pass "an unreadable sandbox.env stops the migration (not checkable as root)"
+fi
 # A .ai-containers that is itself a link is not migrated into.
 proj8="$TMP/proj8"; mkdir -p "$proj8" "$V/dir-mig"
 printf '#!/usr/bin/env bash\nexport IMAGE_NAME=p8\n./sandbox.sh open ..\n' > "$V/dir-mig/runme.sh"

@@ -154,7 +154,14 @@ process_project() {
 
   : > "$mtmp/sandbox.env"
   if [[ -f "${dest}/sandbox.env" && ! -L "${dest}/sandbox.env" ]]; then
-    _proj_read "${dest}/sandbox.env" "$mtmp/sandbox.env" 16777216 && env_perms="$_proj_perms" || : > "$mtmp/sandbox.env"
+    # A regular file that cannot be read is not replaced with no backup: that
+    # project stops here, as a re-init does (only a link or non-file is replaced).
+    if ! _proj_read "${dest}/sandbox.env" "$mtmp/sandbox.env" 16777216; then
+      rm -rf "$mtmp"
+      printf 'ERROR: cannot read %s/sandbox.env to back it up; fix its permissions and re-run.\n' "$dest" >&2
+      return 1
+    fi
+    env_perms="$_proj_perms"
   fi
 
   local -A vals
@@ -230,7 +237,7 @@ process_project() {
     [[ -e "$bk" || -L "$bk" ]] && bk="${bk}.$(date -u +%Y%m%dT%H%M%SZ)"
     _proj_write "$mtmp/sandbox.env" "$bk" "$env_perms" || { rm -rf "$mtmp"; proj_dest_unpin; printf 'ERROR: could not back up %s/sandbox.env\n' "$dest" >&2; return 1; }
   elif [[ -e "${dest}/sandbox.env" || -L "${dest}/sandbox.env" ]]; then
-    printf '  NOTE: %s/sandbox.env is a link or could not be read; it is not backed up, and is replaced\n' "$dest"
+    printf '  NOTE: %s/sandbox.env is a link or not a regular file; it is not backed up, and is replaced\n' "$dest"
   fi
   bk="${old_runme}.pre-migrate"
   [[ -e "$bk" || -L "$bk" ]] && bk="${bk}.$(date -u +%Y%m%dT%H%M%SZ)"
