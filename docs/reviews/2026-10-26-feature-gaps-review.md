@@ -84,13 +84,13 @@ A gap is something a design promised that is not in the code at the reviewed com
 - Suggested approach: stamp the template with a version comment, and have sync-to-projects.sh rewrite a launcher whose stamp is older and whose body matches that version's text exactly.
 
 ### GAP-7: Codex and Gemini still cannot update themselves (the regression doc's open question)
-- Status: NOT DONE
+- Status: PARTLY DONE (2026-11-02 refresh). Since `6836894` (bugs review RT-7) the reconcile no longer reinstalls them on every start: it compares `npm ls` with `npm view` and reinstalls only when the registry's version differs, so a start with a current install costs one registry query. What is left is the research below: whether either has a standalone install that updates itself, which would make them install-if-missing like Claude Code.
 - Fix batch: separate track
 - Source: docs/superpowers/specs/2026-08-22-agent-autoupdate-regression.md "Open question": "Whether the same treatment is available for the other three CLIs … Not investigated; recorded so it is not mistaken for settled."
 - Area: runtime-tools
-- Current state at HEAD: Claude Code installs natively; Copilot updates itself. For Codex and Gemini the reconcile reinstalls them on **every start** (AGENTS.md table, "~7s with a warm npm cache (~24s cold)").
+- Current state at HEAD: Claude Code installs natively; Copilot updates itself. For Codex and Gemini the reconcile updates them at start when the published version differs (AGENTS.md table; a reinstall costs ~7s warm, ~24s cold, and now happens only when there is a new release).
 - What's missing: no one has checked whether Codex or Gemini have a native or standalone install that could update itself.
-- Value / priority: LOW. It works today, at a few seconds per container start.
+- Value / priority: LOW. It works today; the cost is a registry query per start and a reinstall per release.
 - Suggested approach: test Codex's standalone GitHub-release binary in a restricted-mode container, the way Claude Code's native path was tested. If it updates itself, switch it to install-if-missing.
 
 ### GAP-8: No mechanical guard against awk interval quantifiers (falsify backlog F14)
