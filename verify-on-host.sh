@@ -361,7 +361,10 @@ else
     # being wrong about something above — is silent corruption of a real
     # checkout, discovered whenever someone next looks. That asymmetry is why
     # :ro wins even without a Docker-based end-to-end run to confirm it here.
-    docker run --rm ${selinux_opt:+"$selinux_opt"} -v "$REPO_ROOT:/w:ro" -w /w "$floor_img" bash -c \
+    # --init, as CI's suite-floor job: without it PID 1 is the bash below, which
+    # never reaps orphans, and `kill -0` is true for a zombie, so the capture
+    # tests saw fakes that had exited as still running (bd0901f).
+    docker run --rm --init ${selinux_opt:+"$selinux_opt"} -v "$REPO_ROOT:/w:ro" -w /w "$floor_img" bash -c \
       'apt-get update -qq && apt-get install -y -qq git rsync >/dev/null 2>&1 && \
        git config --global --add safe.directory /w && \
        git config --global --add safe.directory "*" && \
