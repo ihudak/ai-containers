@@ -22,7 +22,7 @@ and the constraints the fix must keep.
 | PLAT-3 | macOS (Docker Desktop, Colima) | gap GAP-11 | The mount-swap check is skipped there altogether |
 | PLAT-4 | x86-64 CPU without AVX | bug SVC-2 | `mongo=ON` reports "no mongo server, rebuild" instead of the real failure |
 | PLAT-5 | macOS (BSD userland) | bugs PRJ-10, PRJ-11 | The no-follow file writes take their non-Linux branches there, and nobody has run them |
-| PLAT-6 | Windows + WSL2 + Docker Desktop | bugs PRJ-10, PRJ-11 | Re-run the hermetic suite at current `main`: the new no-follow tests rename, open `/dev/fd/N` and `noclobber`-create on drvfs |
+| PLAT-6 | Windows + WSL2 + Docker Desktop | bugs PRJ-10, PRJ-11 | Re-run the hermetic suite at current `main`: the new no-follow tests rename, open `/dev/fd/N` and `noclobber`-create on drvfs — **done**, passed (TST-25 found and fixed) |
 
 ## Who picks up what (updated 2026-11-03)
 
@@ -116,7 +116,7 @@ first, then fix test-first.
 
 ## PLAT-6: WSL2 + Docker Desktop — re-run the hermetic suite at current `main`
 
-- **Status: OPEN.**
+- **Status: DONE** (2026-11-03, at `037e64c`; both runs are in docs/testing.md's "Platforms exercised"). The no-follow writes pass on drvfs and on ext4: `tests/test-sync-no-follow.sh` and `tests/test-init-no-follow.sh` passed on the host and with a symlinked `TMPDIR` from `/mnt/c`, and the drvfs flake did not recur. One failure reproduced: `tests/test-init-no-follow.sh` at the floor, from both checkouts. It is a test bug unrelated to WSL, filed as bugs review TST-25 and fixed by `024c9f8`. The full ext4 run with that fix passed every phase.
 - **Picked up by:** the **WSL agent**.
 - **Platform:** Windows + WSL2 + Docker Desktop, as in PLAT-1/PLAT-2.
 - **Why again:** the last WSL run was at `3581af0`. Since then, PRJ-10 and PRJ-11 added tests/test-sync-no-follow.sh and tests/test-init-no-follow.sh, and project-files.sh. Every project file is now written by a `noclobber` create, a rename (`mv -T`), and a mode set through `/dev/fd/N`. drvfs (9p, every file `0777`, no `metadata` option) may treat each of those differently from ext4. The drvfs flake recorded in docs/testing.md came from the same class of operations.

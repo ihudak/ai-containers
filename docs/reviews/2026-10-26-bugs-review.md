@@ -1465,6 +1465,16 @@ The falsify work (2026-11-03) activated nine targets, added the `stmt-delete` op
 - What's wrong: rvm reads `rvm_path` before `HOME`, and a developer shell with rvm installed exports it from its startup files, so overriding `HOME` did not confine rvm code: under a mutant, the reconcile worked in the real `~/.rvm`. No case stubbed `curl` except the bootstrap ones, though `run_case`'s comment said it did, and one case added the same day (`f7e6fad`, the `exit 0` assertion) ran with the host's `PATH` outright: a mutant that skipped the empty-versions exit, or the "rvm is installed" check, downloaded the rvm installer from get.rvm.io and ran it, which started a `keyboxd` that outlived the run. CI has no rvm, so only a developer host could see either.
 - Fix direction: done as above.
 
+## 20. Found while running PLAT-6
+
+### TST-25: test-init-no-follow.sh cannot set itself up when run as root over another user's checkout
+- **Status: FIXED** (2026-11-03) by `024c9f8` (#324), which makes the engine copy with `rsync -a --no-owner --no-group`, so as root it is root's and as a normal user nothing changes. PLAT-6 found the same defect independently, and made the same fix, which was dropped as a duplicate. In `ubuntu:22.04` as root, the test alone failed with `fatal: detected dubious ownership in repository at '/tmp/…/engine'`, from the ext4 checkout and from a `/mnt/c` one. With the fix it passes there and as a normal user.
+- Severity: LOW (one test; but it kept CI's `suite-floor` and a local Phase 5 red). Confidence: CONFIRMED (reproduced from both checkouts)
+- Location: `tests/test-init-no-follow.sh`, the engine copy (`rsync -a --no-owner --no-group --exclude='.git'`)
+- Introduced: `6ce12fb` (PRJ-11), with the test.
+- What's wrong: CI's `suite-floor` and `verify-on-host.sh`'s floor container run the suite as root over a checkout another user owns: uid 1001 for the runner, the developer's uid 1000 locally. As root, `rsync -a` keeps that owner on the copy, so git refuses to commit in it. Both environments trust every repository through `safe.directory`, but in the global config, which the test replaces with a `GIT_CONFIG_GLOBAL` of its own. So the scaffold failed (`SCAFFOLD-FAILED: engine repository`). `tests/test-sync-no-follow.sh` makes the same copy but runs no git in it.
+- Fix direction: done as above.
+
 ## GIT
 
 
