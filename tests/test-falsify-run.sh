@@ -1614,12 +1614,14 @@ sel_decide() {   # <scenario> → the runs, then the result records
       [[ "$sc" == reseedfail ]] && return 1
       cp "$d/cache/t.sh" "$d/work/w0/t.sh"; : > "$d/fp"
     }
-    # The second write fails (writefail); every other write is the real one.
+    # The first write fails (writefail1), or the second (writefail,
+    # writefailforeign); every other write is the real one.
     eval "orig_$(declare -f falsify_write_mutant)"
     nw=0
     falsify_write_mutant() {
       nw=$(( nw + 1 ))
-      if [[ "$sc" == writefail ]] && (( nw == 2 )); then printf 'trunc\n' > "$2"; return 1; fi
+      if [[ "$sc" == writefail1 ]] && (( nw == 1 )); then printf 'trunc\n' > "$2"; return 1; fi
+      if [[ "$sc" == writefail* && "$sc" != writefail1 ]] && (( nw == 2 )); then printf 'trunc\n' > "$2"; return 1; fi
       orig_falsify_write_mutant "$@"
     }
     # artefact: the scratch cannot hold a file, which falsify_verdict asks
@@ -1638,7 +1640,7 @@ sel_decide() {   # <scenario> → the runs, then the result records
       scafftime)  ans[b.sh]="143 1 SCAFFOLD-FAILED: b"; ans[a.sh,b.sh,c.sh]="1 0 FAIL: a" ;;
       exit)       ans[b.sh]="1 0 died"; ans[a.sh,b.sh,c.sh]="1 0 FAIL: a" ;;
       debris|reseedfail) ans[b.sh]="0 0 PASS: b"; ans[a.sh,c.sh]="0 0 PASS: a" ;;
-      writefail|foreign) ans[b.sh]="0 0 PASS: b"; ans[a.sh,c.sh]="0 0 PASS: a" ;;
+      writefail*|foreign) ans[b.sh]="0 0 PASS: b"; ans[a.sh,c.sh]="0 0 PASS: a" ;;
     esac
     nr=0
     # shellcheck disable=SC2034  # the FALSIFY_* it sets are read by fr_run_mutant
@@ -1649,13 +1651,13 @@ sel_decide() {   # <scenario> → the runs, then the result records
       FALSIFY_RC="${a%% *}"; a="${a#* }"; FALSIFY_TIMED_OUT="${a%% *}"
       printf '%s\n' "${a#* }" > "$3"
       FALSIFY_MS=1000; FALSIFY_FOREIGN_FLAG=""; FALSIFY_TOKEN="tok$nr"
-      if [[ "$sc" == foreign ]] && (( nr == 1 )); then FALSIFY_FOREIGN_FLAG=other; fi
+      if [[ "$sc" == foreign || "$sc" == writefailforeign ]] && (( nr == 1 )); then FALSIFY_FOREIGN_FLAG=other; fi
       if [[ "$sc" == debris || "$sc" == reseedfail ]]; then printf 'dirty\n' > "$d/fp"; fi
       return 0
     }
     fr_run_mutant 0 t.sh a.sh,b.sh,c.sh 1 2 cond-negate deadbeef MUTATED "$d/res"
     cat "$d/calls"; cut -d'|' -f1-7 "$d/res"
-    if [[ "$sc" == writefail ]]; then printf 'tree %s\n' "$(sed -n 2p "$d/work/w0/t.sh")"; fi
+    if [[ "$sc" == writefail* ]]; then printf 'tree %s\n' "$(sed -n 2p "$d/work/w0/t.sh")"; fi
     rm -rf "$d" )
 }
 check "  … a subset that kills with an assertion decides alone, on the whole set's clock" \
@@ -1679,11 +1681,19 @@ check "  … and so does one whose own setup broke" \
 check "  … a subset that timed out AND broke its setup is re-run with the whole set" \
   "run b.sh 15 MUTATED|run a.sh,b.sh,c.sh 15 MUTATED|KILLED|exit+failline" \
   "$(sel_decide scafftime | awk -F'|' '/^run / { print } $1 == "MUTANT" { print $2 "|" $7 }' | paste -sd'|' -)"
-check "  … a slot that cannot be re-seeded before the second run says so" \
-  "NOTE|reseed-failed" "$(sel_decide reseedfail | awk -F'|' '$1 == "NOTE" && $2 == "reseed-failed" { print $1 "|" $2; exit }')"
+sd_out="$(sel_decide reseedfail)"
+check "  … a slot that cannot be re-seeded before the second run says so, and is not tried again after it" \
+  "1|1" \
+  "$(grep -c '^NOTE|reseed-failed|.*after the selected subset' <<< "$sd_out")|$(grep -c '^reseed$' <<< "$sd_out")"
 check "  … a second write that fails records no verdict, says so, and leaves the target restored" \
   "NOTE|write-failed|tree two" \
   "$(sel_decide writefail | awk -F'|' '$1 == "MUTANT" { print "MUTANT" } $1 == "NOTE" { print $1 "|" $2 } /^tree / { print }' | paste -sd'|' -)"
+check "  … a FIRST write that fails leaves the target restored too, and runs nothing" \
+  "NOTE|write-failed|tree two" \
+  "$(sel_decide writefail1 | awk -F'|' '/^run / { print "run" } $1 == "MUTANT" { print "MUTANT" } $1 == "NOTE" { print $1 "|" $2 } /^tree / { print }' | paste -sd'|' -)"
+check "  … and a failed second write still reports the first run's foreign flag, once, with its token" \
+  "1|tok1" \
+  "$(sel_decide writefailforeign | grep '^NOTE|foreign-timeout-flag|' | awk 'END { printf "%d|", NR } { t = $NF } END { print t }')"
 check "  … and a foreign flag the FIRST run saw is reported with that run's token" \
   "NOTE|foreign-timeout-flag|t.sh:cond-negate:deadbeef|slot 0 held a timeout flag armed by other, not by this invocation, whose own token was tok1" \
   "$(sel_decide foreign | grep '^NOTE|foreign-timeout-flag|')"

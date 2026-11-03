@@ -20,7 +20,10 @@
 #                           the set (NOTE|selection-miss when a survivor's rest
 #                           kills); anything else by the whole set
 #                           (NOTE|selection-rerun after either). So every
-#                           verdict is the whole set's. A test red on its own on
+#                           verdict is the whole set's, except that after a
+#                           timeout a FAIL: line from the rest is a kill even if
+#                           the whole set would have hung before printing it. A
+#                           test red on its own on
 #                           the pristine tree turns selection off for its
 #                           target. A line no test
 #                           traced (inside a command bash reports at another of
@@ -1305,6 +1308,7 @@ fr_run_mutant() {   # <slot> <target> <oracle> <seq> <lineno> <op> <sha> <text> 
 
   if ! falsify_write_mutant "$FR_CACHE/$target" "$tree/$target" "$lineno" "$text"; then
     printf 'NOTE|write-failed|%s|could not apply the mutant to %s\n' "$ident" "$tree/$target" > "$res"
+    _fr_slot_restore "$slot" "$target" "$ident" "$res"
     return 0
   fi
 
@@ -1320,7 +1324,8 @@ fr_run_mutant() {   # <slot> <target> <oracle> <seq> <lineno> <op> <sha> <text> 
   #     verdict is the recorded one (a miss, NOTE|selection-miss, if it kills);
   #   - a subset that TIMES OUT is followed by the rest of the set too: the
   #     whole set would hang on the same test, so all the rest can add is a
-  #     FAIL: line, which makes it a kill (a timeout with a FAIL: line is one).
+  #     FAIL: line, which makes it a kill (a timeout with a FAIL: line is one),
+  #     or an UNPROVEN of its own for a broken scaffold or scratch.
   #     The whole set would show that line only if its test sorts before the
   #     one that hangs, so this can turn the set's UNPROVEN into a kill by a
   #     real assertion; never the other way. Running the whole set instead
@@ -1368,7 +1373,7 @@ fr_run_mutant() {   # <slot> <target> <oracle> <seq> <lineno> <op> <sha> <text> 
         pre_note="NOTE|reseed|$ident|the selected subset left the worker tree changed; slot $slot re-seeded before the rest of the set ran"
       else
         falsify_tree_fingerprint "$tree" > "$FR_OUT/w$slot.porcelain"
-        pre_note="NOTE|reseed-failed|$ident|slot $slot could NOT be re-seeded after the selected subset; the rest of the set ran against a tree that is not the repo"
+        pre_note="NOTE|reseed-failed|$ident|slot $slot could NOT be re-seeded after the selected subset; what ran next ran against a tree that is not the repo"
       fi
     fi
     if ! falsify_write_mutant "$FR_CACHE/$target" "$tree/$target" "$lineno" "$text"; then
@@ -1384,7 +1389,9 @@ fr_run_mutant() {   # <slot> <target> <oracle> <seq> <lineno> <op> <sha> <text> 
         # scaffold or a scratch that could not hold a file, which the whole
         # set would be too (both are checked before a FAIL: line counts).
         if [[ "$FALSIFY_VERDICT" == KILLED && "$FALSIFY_SIGNAL" == *failline* ]]; then
-          FALSIFY_SIGNAL="$sel_signal+failline"
+          # Not "$sel_signal+failline": a subset that was UNPROVEN for an
+          # artefact can carry failline already, and the kill is the rest's.
+          FALSIFY_SIGNAL="timeout+failline"
         elif [[ "$FALSIFY_VERDICT" == UNPROVEN && ( "$FALSIFY_SIGNAL" == *scaffold || "$FALSIFY_SIGNAL" == *artefact ) ]]; then
           FALSIFY_SIGNAL="$sel_signal+${FALSIFY_SIGNAL##*+}"
         else
@@ -1425,8 +1432,16 @@ fr_run_mutant() {   # <slot> <target> <oracle> <seq> <lineno> <op> <sha> <text> 
     fr_foreign_note "$ident" "$slot" "$FALSIFY_FOREIGN_FLAG" "$FALSIFY_TOKEN" >> "$res"
   fi
 
-  # Restore FIRST, then ask whether anything else in the tree moved. An oracle
-  # that left debris behind would make every later mutant in this slot a lie.
+  _fr_slot_restore "$slot" "$target" "$ident" "$res"
+  return 0
+}
+
+# Restore FIRST, then ask whether anything else in the tree moved. An oracle
+# that left debris behind would make every later mutant in this slot a lie.
+# Also after a write that failed: one cut short can leave the target truncated.
+_fr_slot_restore() {   # <slot> <target> <ident> <resultfile>
+  local slot="$1" target="$2" ident="$3" res="$4" tree
+  tree="$(fr_slot_tree "$slot")"
   cp -Pp "$FR_CACHE/$target" "$tree/$target"
   if [[ "$(falsify_tree_fingerprint "$tree")" != "$(cat "$FR_OUT/w$slot.porcelain")" ]]; then
     # A reseed that FAILS must not be reported as one that worked, and must not
@@ -1444,7 +1459,6 @@ fr_run_mutant() {   # <slot> <target> <oracle> <seq> <lineno> <op> <sha> <text> 
         "$ident" "$slot" >> "$res"
     fi
   fi
-  return 0
 }
 
 # ── one CONTROL run: the pristine oracle, under load ──────────────────────────
