@@ -120,4 +120,23 @@ for b in claude codex gemini copilot graphify vale mkdocs; do
   fi
 done
 
+# Codex is the STANDALONE install, and its own update works behind the firewall
+# (agent-tools-reconcile.sh: install_codex_standalone()). An npm copy's `codex
+# update` runs a bare `npm install -g` and dies EACCES 243, which is why the npm
+# install was left; a standalone one re-runs OpenAI's installer, which needs
+# chatgpt.com and releases.openai.com from allowlist-domains.d/codex.txt. Run as
+# the agent: the install is the group's ~/.codex, the agent's to update.
+l="$(docker exec "$IT_CID" readlink /usr/local/bin/codex 2>/dev/null)"
+if [[ "$l" == */.codex/packages/standalone/current/bin/codex ]]; then
+  pass "codex is the standalone install, linked through current"
+else
+  fail "codex is the standalone install, linked through current (/usr/local/bin/codex -> ${l:-nothing})"
+fi
+out="$(agent_exec "$IT_CID" "codex update" 2>&1)"; rc=$?
+if [[ "$rc" -eq 0 && "$out" == *"Installing standalone package"* ]]; then
+  pass "codex update runs the standalone installer behind the restricted firewall"
+else
+  fail "codex update behind the restricted firewall (rc $rc): $(printf '%s' "$out" | tail -n 5 | tr '\n' ' ')"
+fi
+
 it_finish

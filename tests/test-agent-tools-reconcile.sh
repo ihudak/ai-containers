@@ -76,6 +76,23 @@ install -d "\$HOME/.local/share/claude/versions/9.9.9" "\$HOME/.local/state/clau
 printf '#!/bin/sh\n' > "\$HOME/.local/bin/claude"; chmod +x "\$HOME/.local/bin/claude"
 INNER
   exit 0;; esac; done
+# Codex's STANDALONE installer is fetched whole and then run with sh, so this stub
+# emits a script that does what the real one does where the reconcile looks: a
+# release under \$CODEX_HOME/packages/standalone/releases, \`current\` naming it, and
+# the link in ~/.local/bin. CODEX_FAIL=fetch fails the download, CODEX_FAIL=run
+# emits a script that exits non-zero, CODEX_FAIL=empty one that exits 0 and
+# installs nothing.
+for a in "\$@"; do case "\$a" in *chatgpt.com/codex/install.sh)
+  case "\${CODEX_FAIL:-}" in fetch) exit 22 ;; run) echo 'exit 1'; exit 0 ;; empty) echo 'exit 0'; exit 0 ;; esac
+  cat <<'INNER'
+echo "codex-installer-saw CODEX_HOME=\$CODEX_HOME CODEX_NON_INTERACTIVE=\$CODEX_NON_INTERACTIVE PATH=\$PATH" >> "\$HOME/calls.log"
+r="\$CODEX_HOME/packages/standalone/releases/9.9.9-x86_64-unknown-linux-musl"
+mkdir -p "\$r/bin" "\$HOME/.local/bin"
+printf '#!/bin/sh\n' > "\$r/bin/codex"; chmod +x "\$r/bin/codex"
+ln -sfn "\$r" "\$CODEX_HOME/packages/standalone/current"
+ln -sfn "\$CODEX_HOME/packages/standalone/current/bin/codex" "\$HOME/.local/bin/codex"
+INNER
+  exit 0;; esac; done
 prev=""; for a in "\$@"; do [[ "\$prev" == "-o" ]] && : > "\$a"; prev="\$a"; done
 exit 0
 EOF
@@ -99,6 +116,7 @@ run_case() {
   local bin; bin="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
   mk_stubs "$bin" "$home"
   PATH="$bin:$PATH" HOME="$home" AI_RUNTIME_TOOLS="$want" NPM_FAIL="$npm_fail" UV_FAIL="${UV_FAIL:-}" \
+    CODEX_FAIL="${CODEX_FAIL:-}" \
     NPM_LATEST="${NPM_LATEST:-1.0.0}" NPM_VIEW_FAIL="${NPM_VIEW_FAIL:-0}" \
     NPM_VIEW_EMPTY="${NPM_VIEW_EMPTY:-0}" FAKEPY_OUT="${FAKEPY_OUT:-3 15}" \
     bash "$REPO_DIR/agent-tools-reconcile.sh" >"$home/out.log" 2>&1
@@ -126,7 +144,16 @@ grep -q "curl-saw-PATH=.*$h/\.local/bin" "$c" \
   || fail "the native installer sees ~/.local/bin on PATH, so it does not warn about it"
 ! grep -q 'npm install .*@anthropic-ai/claude-code' "$c" && pass "claude-code is NOT installed via npm" || fail "claude-code is NOT installed via npm"
 grep -q 'npm install -g --prefix .*@github/copilot' "$c"           && pass "installs copilot"     || fail "installs copilot"
-grep -q 'npm install -g --prefix .*@openai/codex' "$c"             && pass "installs codex"       || fail "installs codex"
+# Codex installs STANDALONE, never through npm, both directions asserted as for Claude
+# Code: an npm copy's `codex update` runs a bare `npm install -g` and dies EACCES.
+grep -q 'curl .*chatgpt\.com/codex/install\.sh' "$c" && [[ -x "$h/.codex/packages/standalone/current/bin/codex" ]] \
+  && pass "installs codex standalone" || fail "installs codex standalone"
+! grep -q 'npm .*@openai/codex' "$c" && pass "codex is NOT installed via npm" || fail "codex is NOT installed via npm"
+# Into the group-mounted Codex home, non-interactively, told that ~/.local/bin is on
+# PATH (it otherwise appends a PATH line to a profile).
+grep -q "codex-installer-saw CODEX_HOME=$h/\.codex CODEX_NON_INTERACTIVE=1 PATH=$h/\.local/bin:" "$c" \
+  && pass "the codex installer runs non-interactively into ~/.codex, with ~/.local/bin on PATH" \
+  || fail "the codex installer's environment ($(grep codex-installer-saw "$c"))"
 grep -q 'npm install -g --prefix .*@google/gemini-cli' "$c"        && pass "installs gemini"      || fail "installs gemini"
 grep -q 'uv tool install graphifyy' "$c"                && pass "installs graphify"    || fail "installs graphify"
 grep -q 'tar ' "$c"                                     && pass "installs vale (tar)"  || fail "installs vale (tar)"
@@ -153,12 +180,13 @@ grep -q 'tar ' "$c"                                     && pass "installs vale (
 # Bug 1: every npm install must target ~/.ai-tools/npm via an explicit --prefix flag,
 # NOT a baked ~/.npmrc — a baked prefix makes nvm's nvm_die_on_prefix fail `nvm use
 # <version>` outright (see agent-tools-reconcile.sh / AGENTS.md "Agent-tier tools").
-# THREE, not four: claude-code left the npm set when it moved to the native installer.
+# TWO, not four: claude-code left the npm set when it moved to the native installer,
+# and codex when it moved to the standalone one.
 # The number is asserted rather than a mere ">0" because the failure this guards against
 # is an EXTRA npm call reappearing, not a missing one.
 n_prefix_calls="$(grep -cE -- '--prefix[[:space:]]+[^[:space:]]*/\.ai-tools/npm([[:space:]]|$)' "$c")"
-[[ "$n_prefix_calls" -eq 3 ]] && pass "all 3 npm installs pass --prefix .../.ai-tools/npm explicitly ($n_prefix_calls)" \
-  || fail "all 3 npm installs pass --prefix .../.ai-tools/npm explicitly (got $n_prefix_calls, want 3)"
+[[ "$n_prefix_calls" -eq 2 ]] && pass "both npm installs pass --prefix .../.ai-tools/npm explicitly ($n_prefix_calls)" \
+  || fail "both npm installs pass --prefix .../.ai-tools/npm explicitly (got $n_prefix_calls, want 2)"
 rm -rf "$h"
 
 # ── Idempotent for the install-if-missing tools ──
@@ -362,32 +390,63 @@ run_case "claude-code" "$h" >/dev/null
   || fail "an empty versions directory counted as installed (launcher: $(readlink "$h/.local/bin/claude" 2>/dev/null || echo none))"
 rm -rf "$h"
 
-# ── codex and gemini are kept at the registry's LATEST version ──
-# Neither can self-update in this environment — codex's own `update` shells out to a bare
-# `npm install -g` and dies EACCES 243, and gemini ships no updater at all — so the
-# reconcile is what keeps them current. A newer published version MUST be installed; if
-# this ever stops, those two have silently frozen at whatever version the group first saw.
+# ── A standalone codex is install-if-missing: `codex update` keeps it current ──
+h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; run_case "codex" "$h" >/dev/null; : > "$h/calls.log"
+NPM_LATEST=1.1.0 run_case "codex" "$h" >/dev/null
+{ ! grep -q 'chatgpt\.com/codex' "$h/calls.log" && ! grep -q '^npm' "$h/calls.log" \
+  && grep -q 'codex already present (standalone, 9\.9\.9)' "$h/out.log"; } \
+  && pass "an installed standalone codex is not reinstalled, and named with its version" \
+  || fail "an installed standalone codex was reinstalled or not named ($(tr '\n' ';' < "$h/out.log"))"
+rm -rf "$h"
+# Each way the install can fail is FAILED, and non-fatal: a download that fails, an
+# installer that fails, and one that exits 0 having installed nothing.
+for f in fetch run empty; do
+  h="$(CODEX_FAIL=$f run_case "codex,graphify")"
+  { grep -q 'FAILED: standalone Codex install' "$h/out.log" && grep -q 'uv tool install graphifyy' "$h/calls.log" \
+    && [[ "$(cat "$h/rc")" == 0 ]]; } \
+    && pass "a codex install that fails ($f) is FAILED, non-fatal; other tools proceed" \
+    || fail "a codex install that fails ($f): $(tr '\n' ';' < "$h/out.log")"
+  rm -rf "$h"
+done
+# A group provisioned before this change keeps its npm Codex until the standalone
+# install succeeds, and says so; one without an npm Codex does not claim one.
+h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
+install -d "$h/.ai-tools/npm/bin"; printf '#!/bin/sh\n' > "$h/.ai-tools/npm/bin/codex"; chmod +x "$h/.ai-tools/npm/bin/codex"
+CODEX_FAIL=fetch run_case "codex" "$h" >/dev/null
+grep -q "using the npm Codex in $h/\.ai-tools/npm/bin until the standalone install succeeds" "$h/out.log" \
+  && pass "a failed standalone install names the npm Codex still in use" \
+  || fail "a failed standalone install does not name the npm Codex ($(tr '\n' ';' < "$h/out.log"))"
+rm -rf "$h"
+h="$(CODEX_FAIL=fetch run_case "codex")"
+! grep -q 'using the npm Codex' "$h/out.log" && pass "no npm Codex, none claimed" || fail "an npm Codex claimed where there is none"
+rm -rf "$h"
+
+# ── gemini is kept at the registry's LATEST version ──
+# It cannot update itself in this environment — its auto-update runs a bare `npm install
+# -g`, the command that dies EACCES 243 on nvm's root-owned prefix — so the reconcile is
+# what keeps it current. A newer published version MUST be installed; if this ever
+# stops, it has silently frozen at whatever version the group first saw.
 h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; run_case "codex,gemini" "$h" >/dev/null; : > "$h/calls.log"
 NPM_LATEST=1.1.0 run_case "codex,gemini" "$h" >/dev/null
-{ grep -q 'npm install -g --prefix .*@openai/codex' "$h/calls.log" \
+{ ! grep -q 'npm .*@openai/codex' "$h/calls.log" \
   && grep -q 'npm install -g --prefix .*@google/gemini-cli' "$h/calls.log"; } \
-  && pass "codex and gemini are updated when a newer version is published" || fail "codex and gemini are not updated to a newer version"
+  && pass "gemini is updated when a newer version is published (codex is not, through npm)" || fail "gemini is not updated to a newer version, or codex is through npm"
 # RT-7: …but not re-extracted in place when already current: a sibling container in
 # the group may be running the package that a reinstall rewrites under it (bugs
 # review RT-7), and it cost ~7 s per start.
 : > "$h/calls.log"; NPM_LATEST=1.1.0 run_case "codex,gemini" "$h" >/dev/null
-! grep -q 'npm install' "$h/calls.log" && pass "a current codex/gemini is not reinstalled" \
-  || fail "a current codex/gemini is reinstalled ($(grep '^npm' "$h/calls.log" | tr '\n' ';'))"
+! grep -q 'npm install' "$h/calls.log" && pass "a current gemini is not reinstalled" \
+  || fail "a current gemini is reinstalled ($(grep '^npm' "$h/calls.log" | tr '\n' ';'))"
 # An unreachable registry keeps what is installed, rather than failing a reinstall.
 : > "$h/calls.log"; NPM_VIEW_FAIL=1 run_case "codex,gemini" "$h" >/dev/null
 { ! grep -q 'npm install' "$h/calls.log" && ! grep -q 'FAILED' "$h/out.log"; } \
-  && pass "an unreachable registry keeps the installed codex/gemini" \
+  && pass "an unreachable registry keeps the installed gemini" \
   || fail "an unreachable registry reinstalled or failed ($(tr '\n' ';' < "$h/out.log"))"
 # A registry that answers with no version is as good as unreachable: keep what is
 # installed rather than reinstall against an empty "latest".
 : > "$h/calls.log"; NPM_VIEW_EMPTY=1 run_case "codex,gemini" "$h" >/dev/null
-{ ! grep -q 'npm install' "$h/calls.log" && grep -q 'codex: the registry cannot be reached; keeping 1.1.0' "$h/out.log"; } \
-  && pass "a registry that reports no version keeps the installed codex/gemini" \
+{ ! grep -q 'npm install' "$h/calls.log" && grep -q 'gemini: the registry cannot be reached; keeping 1.1.0' "$h/out.log"; } \
+  && pass "a registry that reports no version keeps the installed gemini" \
   || fail "a registry that reports no version reinstalled ($(tr '\n' ';' < "$h/out.log"))"
 rm -rf "$h"
 
@@ -449,13 +508,13 @@ rm -rf "$h"
 h="$(run_case "")"; { [[ ! -s "$h/calls.log" ]] && [[ "$(cat "$h/rc")" == 0 ]]; } && pass "empty AI_RUNTIME_TOOLS is a no-op, exit 0" || fail "empty AI_RUNTIME_TOOLS is a no-op, exit 0 (rc $(cat "$h/rc"))"; rm -rf "$h"
 
 # ── Selective: only codex requested → only codex installed ──
-h="$(run_case "codex")"; { grep -q 'npm install -g --prefix .*@openai/codex' "$h/calls.log" && ! grep -q '@google/gemini-cli' "$h/calls.log"; } && pass "installs only requested tools" || fail "installs only requested tools"; rm -rf "$h"
+h="$(run_case "codex")"; { grep -q 'chatgpt\.com/codex/install\.sh' "$h/calls.log" && ! grep -q '@google/gemini-cli' "$h/calls.log"; } && pass "installs only requested tools" || fail "installs only requested tools"; rm -rf "$h"
 
 # ── Offline npm: FAILED logged, non-fatal, other tools still attempted ──
-# Driven through codex, not claude-code: claude-code no longer touches npm, so NPM_FAIL
-# would not reach it and this case would assert nothing while still reporting a pass.
-h="$(run_case "codex,graphify" "" 1)"
-{ grep -q 'FAILED' "$h/out.log" && grep -q 'uv tool install graphifyy' "$h/calls.log"; } && pass "npm failure is non-fatal; other tools proceed" || fail "npm failure is non-fatal; other tools proceed"; rm -rf "$h"
+# Driven through gemini: claude-code and codex no longer touch npm, so NPM_FAIL would
+# not reach them and this case would assert nothing while still reporting a pass.
+h="$(run_case "gemini,graphify" "" 1)"
+{ grep -q 'FAILED: npm install' "$h/out.log" && grep -q 'uv tool install graphifyy' "$h/calls.log"; } && pass "npm failure is non-fatal; other tools proceed" || fail "npm failure is non-fatal; other tools proceed"; rm -rf "$h"
 
 # ── Offline native installer: FAILED logged, non-fatal, other tools still attempted ──
 # The claude-code equivalent of the case above. Without it, a broken native install would

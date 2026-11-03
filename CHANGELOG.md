@@ -46,6 +46,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   converted, and never touches the shared `sandbox.env`.
 ### Changed
 
+- **Codex installs standalone and updates itself.** The container start used to
+  install Codex through npm and reinstall it whenever the registry published a
+  new version, because the npm copy's own `codex update` runs a bare `npm install
+  -g` and fails on nvm's root-owned prefix. Codex now comes from OpenAI's
+  standalone installer, into the group's `~/.codex/packages/standalone`, once.
+  `codex update` then re-runs that installer: measured 0.165.0 to 0.166.0 in 15 s,
+  and case `700-agent-tools-install-restricted` runs it behind the restricted
+  firewall. Rebuild the image to get it: `releases.openai.com` joined the Codex
+  allowlist. The installer keeps two releases, about 940 MB where the npm
+  package was 456 MB. A group's npm Codex is not deleted and is used only while
+  no standalone install is present. docs/agent-tools.md has the `rm -rf` that
+  reclaims it. Gemini has no such install and is still updated at start
+  (feature-gaps review GAP-7).
 - **CI runs the falsify mutation tier in two jobs.** The single job reached
   its 90-minute cap and was cancelled on 5 of 12 runs, with no verdict;
   `repo-git-reset.sh` alone took 45 of its 77 minutes. It now runs in one job

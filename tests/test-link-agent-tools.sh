@@ -69,6 +69,23 @@ AI_RUNTIME_TOOLS="claude-code" bash "$REPO_DIR/link-agent-tools.sh" "$h" "$d" >/
 [[ -L "$d/claude" && ! -L "$d/copilot" ]] && pass "stale link for a disabled tool is removed" || fail "stale link for a disabled tool is removed"
 rm -rf "$h" "$d"
 
+# ── Codex: the standalone install wins over a leftover npm copy, linked through
+# `current`, so `codex update` re-points it without a restart; the npm copy is linked
+# only while there is no standalone install. ──
+h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; d="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
+mk_tool "$h" npm/bin/codex
+AI_RUNTIME_TOOLS="codex" bash "$REPO_DIR/link-agent-tools.sh" "$h" "$d" >/dev/null 2>&1
+[[ "$(readlink "$d/codex")" == "$h/.ai-tools/npm/bin/codex" ]] && pass "codex: the npm copy is linked while there is no standalone install" \
+  || fail "codex: the npm copy is not linked without a standalone install ($(readlink "$d/codex"))"
+rel="$h/.codex/packages/standalone/releases/9.9.9-x86_64-unknown-linux-musl"
+install -d "$rel/bin"; printf '#!/bin/sh\n' > "$rel/bin/codex"; chmod +x "$rel/bin/codex"
+ln -s "$rel" "$h/.codex/packages/standalone/current"
+AI_RUNTIME_TOOLS="codex" bash "$REPO_DIR/link-agent-tools.sh" "$h" "$d" >/dev/null 2>&1
+[[ "$(readlink "$d/codex")" == "$h/.codex/packages/standalone/current/bin/codex" ]] \
+  && pass "codex: the standalone install wins, linked through current" \
+  || fail "codex: not linked through the standalone current ($(readlink "$d/codex"))"
+rm -rf "$h" "$d"
+
 # ── The key is matched exactly, not as a substring of another entry ──
 h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; d="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 mk_tool "$h" npm/bin/codex

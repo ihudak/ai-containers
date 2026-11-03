@@ -27,13 +27,19 @@ log(){ printf '[link-agent-tools] %s\n' "$*"; }
 # one that can self-update, so it must win whenever both are present.
 claude_src="$dev_home/.local/bin/claude"
 [[ -x "$claude_src" ]] || claude_src="$home_root/npm/bin/claude"
+# Codex installs STANDALONE into the group-mounted ~/.codex (agent-tools-reconcile.sh:
+# install_codex_standalone()), and the link goes through `current`, not to the release
+# it names today, so it follows `codex update` without a restart. A leftover npm copy
+# is the fallback, as for Claude Code.
+codex_src="$dev_home/.codex/packages/standalone/current/bin/codex"
+[[ -x "$codex_src" ]] || codex_src="$home_root/npm/bin/codex"
 
 # sandbox.conf key → tool binary → its location under the group home (npm prefix, uv
 # bin, or plain bin).
 srcs=(
   "claude-code:claude:$claude_src"
   "copilot:copilot:$home_root/npm/bin/copilot"
-  "codex:codex:$home_root/npm/bin/codex"
+  "codex:codex:$codex_src"
   "gemini:gemini:$home_root/npm/bin/gemini"
   "graphify:graphify:$home_root/uv/bin/graphify"
   "vale:vale:$home_root/bin/vale"

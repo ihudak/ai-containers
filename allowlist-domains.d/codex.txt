@@ -5,3 +5,6 @@ openai.com
 # ChatGPT plan auth (Sign in with ChatGPT flow)
 chatgpt.com
 auth.openai.com
+# Standalone install and `codex update`: chatgpt.com/codex/install.sh redirects here,
+# and the installer downloads the release from here (agent-tools-reconcile.sh)
+releases.openai.com

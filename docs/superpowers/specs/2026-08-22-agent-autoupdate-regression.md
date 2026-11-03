@@ -138,3 +138,12 @@ stubs; the Host Agent has to confirm a built container installs natively, resolv
 Whether the same treatment is available for the other three CLIs, or whether
 `npm-agent-tools update -g` stays their answer permanently. Not investigated;
 recorded so it is not mistaken for settled.
+
+**Answered 2026-11-03** (feature-gaps review GAP-7). Codex: yes. OpenAI's
+standalone installer puts it under `~/.codex/packages/standalone`, and a
+standalone Codex's `update` re-runs that installer instead of npm. Measured in a
+container, as a non-root user, 0.165.0 to 0.166.0 in 15 s. The reconcile now
+installs it that way, install-if-missing. Gemini: no. Its only binaries are for
+macOS, and its auto-update runs a bare `npm install -g`, so the reconcile keeps
+updating it at start. The status line above still describes Codex as of
+2026-08-23.

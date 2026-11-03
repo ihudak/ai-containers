@@ -7,8 +7,8 @@
 # assumed:
 #   claude-code  native install (~/.local/share/claude), self-updates    → if-missing
 #   copilot      downloads its own GitHub release, self-updates in place → if-missing
-#   codex        its `update` runs bare `npm install -g` → EACCES 243    → UPDATE if newer
-#   gemini       has no update mechanism at all                          → UPDATE if newer
+#   codex        standalone install (~/.codex/packages), `codex update`   → if-missing
+#   gemini       its auto-update runs bare `npm install -g` → EACCES     → UPDATE if newer
 #   graphify     uv tool upgrade                                         → if-missing (*)
 #   vale         latest at first install, never refreshed                → if-missing
 #   mkdocs       uv tool upgrade                                         → if-missing (*)
@@ -61,13 +61,15 @@ install_npm() {   # $1=binary  $2=package
 }
 
 # Keep a package at the LATEST published version rather than merely present. Used only
-# for the tools that cannot keep themselves current, and the distinction is measured:
-#   * codex's own `update` shells out to a bare `npm install -g @openai/codex`, which
-#     resolves to nvm's root-owned prefix and dies EACCES (`exit status: 243`).
-#   * gemini ships no update mechanism at all — nothing matching update/upgrade in its
-#     --help.
+# for the tool that cannot keep itself current, gemini: nothing in its --help updates
+# it, and the auto-update its interactive UI runs (packages/cli/src/utils/
+# installationInfo.ts, read 2026-11-03) is a bare `npm install -g
+# @google/gemini-cli@latest` for anything it takes for a global npm install: the
+# command measured to die EACCES on nvm's root-owned prefix when codex ran it (`exit
+# status: 243`; not run for gemini). Its only other build is a macOS binary.
 # Copilot is deliberately NOT in this set: it downloads its own release from GitHub and
-# self-updates in place, verified working behind the restricted firewall.
+# self-updates in place, verified working behind the restricted firewall. Nor is codex
+# any more: it installs standalone and updates itself (install_codex_standalone).
 # Cost measured in-container: ~7s for four packages with a warm cache, ~24s cold.
 #
 # Only when the registry's version differs from the one installed: a reinstall
@@ -105,7 +107,7 @@ update_npm() {    # $1=binary  $2=package
 # recorded in blocked-domains.txt), and `nvm use` still passes afterwards.
 #
 # Install-if-missing, keyed on the native install dir: keeping it current is `claude
-# update`'s job, which — unlike codex and gemini — actually works.
+# update`'s job, which — unlike gemini's — actually works.
 install_claude_native() {
   # THE PRESENCE CHECK MUST KEY ON WHAT PERSISTS. ~/.local/share/claude is
   # group-mounted and survives the container; ~/.local/bin is NOT — it lives in
@@ -154,6 +156,50 @@ install_claude_native() {
   export PATH="$HOME/.local/bin:$PATH"
   curl -fsSL https://claude.ai/install.sh | bash \
     || log "FAILED: native Claude Code install (skipped)"
+}
+
+# Codex installs STANDALONE, from OpenAI's own installer, for the reason Claude Code
+# installs natively. Installed through npm, its `update` runs a bare `npm install -g
+# @openai/codex`, which resolves to nvm's root-owned prefix and dies EACCES (`exit
+# status: 243`). A standalone install's `update` re-runs the installer instead
+# (codex-rs/tui/src/update_action.rs: UpdateAction::StandaloneUnix), and Codex knows
+# it is one by its own path: under $CODEX_HOME/packages/standalone/releases.
+# Measured 2026-11-03 in a container, as a non-root user: 0.165.0 installed, `codex
+# update` brought 0.166.0 in 15 s and edited no profile. The releases land in
+# ~/.codex/packages/standalone/releases/<version>-<target>, `current` names the one
+# in use, and ~/.codex is the Codex home sandbox.sh group-mounts, so the install
+# persists and `codex update` replaces it in place. The installer keeps the current
+# release and the one before it, and removes older ones that no process of the
+# container running it uses; a sibling container still running one two releases old
+# keeps its binary but loses the helpers beside it. Hosts: chatgpt.com, which
+# redirects to releases.openai.com (both in allowlist-domains.d/codex.txt), and
+# GitHub's releases only if releases.openai.com fails.
+#
+# Install-if-missing, keyed on `current`, which persists: keeping it current is
+# `codex update`'s job. The script is fetched whole and then run, as `codex update`
+# does, so a download cut short runs nothing. Its link goes to ~/.local/bin, where
+# `codex update` puts it too; that directory does not persist, which does not matter,
+# because link-agent-tools.sh links /usr/local/bin/codex through `current` itself.
+# ~/.local/bin is on the installer's PATH for the reason it is on Claude's: otherwise
+# it appends a PATH line to a profile, which is on PATH in every shell the user gets.
+install_codex_standalone() {
+  local cur="$HOME/.codex/packages/standalone/current" s
+  if [[ -x "$cur/bin/codex" ]]; then
+    s="$(readlink "$cur")"; s="${s##*/}"
+    log "codex already present (standalone, ${s%%-*})"
+    return 0
+  fi
+  log "installing Codex (standalone installer)…"
+  if s="$(curl -fsSL --connect-timeout 10 --max-time 60 https://chatgpt.com/codex/install.sh)" \
+     && PATH="$HOME/.local/bin:$PATH" CODEX_HOME="$HOME/.codex" CODEX_NON_INTERACTIVE=1 \
+          sh -c "$s" && [[ -x "$cur/bin/codex" ]]; then
+    return 0
+  fi
+  log "FAILED: standalone Codex install (skipped)"
+  # A group provisioned before this change carries the npm Codex. It is not deleted,
+  # since another container of the group may be running it, and link-agent-tools.sh
+  # links it while no standalone install is there.
+  [[ -x "$npm_bin/codex" ]] && log "using the npm Codex in $npm_bin until the standalone install succeeds"
 }
 
 # The image takes pyenv's NEWEST CPython, which runs weeks ahead of the compiled wheels
@@ -227,7 +273,7 @@ for t in "${want[@]}"; do
   case "$t" in
     claude-code) install_claude_native ;;
     copilot)     install_npm copilot "@github/copilot" ;;
-    codex)       update_npm  codex "@openai/codex" ;;
+    codex)       install_codex_standalone ;;
     gemini)      update_npm  gemini "@google/gemini-cli" ;;
     graphify)    install_uv graphify "graphifyy" ;;
     vale)        install_vale ;;
