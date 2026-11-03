@@ -345,6 +345,154 @@ exit 1
 SCAFFAIL
 chmod +x "$FX/tests/test-fx-scaffold-and-fail.sh"
 
+# ── the oracle-selection fixture (GAP-2) ───────────────────────────────────────
+# One target, two functions, two oracles, built so selection has all three
+# outcomes to show. test-fx-sel-one asserts on sel_one and merely CALLS sel_two,
+# so the trace says it covers both. test-fx-sel-mixed sources the target (so its
+# trace is not empty: the top-level line) but runs sel_two only through a
+# RENAMED copy, which the trace cannot attribute, and that is where it asserts.
+#   sel_one's mutants:  selected {one}, killed by it — the subset alone decides.
+#   sel_two's mutants:  selected {one}, which survives; the confirmation runs the
+#                       rest of the set {mixed}, which kills — a selection miss,
+#                       and the verdict is the full set's.
+# Two more oracles exercise the coverage pass itself, on sel_three:
+#   test-fx-sel-strict  runs the target from a `bash -c` under `set -eu`, where
+#                       BASH_SOURCE is empty at the top level. The trace prompt
+#                       must expand there, or the traced run dies after the
+#                       source (-u makes the failed expansion an error, -e makes
+#                       the error fatal) and maps one line (sandbox.sh's test-parsers.sh
+#                       did exactly that: 23 lines, and a selection miss on every
+#                       function it asserts).
+#   test-fx-sel-shy     goes red when traced (it checks `$-`). A map from a run
+#                       that went red is not the test's coverage, so it must
+#                       count as ALL rather than as the lines it reached.
+#   test-fx-sel-copy    runs only a renamed copy, so its trace is empty (ALL).
+#                       Listed AHEAD of traced oracles it must not shift their
+#                       maps onto each other: the pass once told oracles apart
+#                       by the first line of each one's file, which an empty
+#                       file does not have.
+# And two commands bash reports at ONE line of several, so the lines it does not
+# report are traced by nobody:
+#   sel_four            an awk program over several lines, reported at the line
+#                       the command starts on; its mutant is on a later line.
+#   sel_five            a condition whose `||` opens its second line, reported
+#                       at the line it ends on; its mutant is on the first.
+#   test-fx-sel-four    asserts on both. Each untraced line must go to the
+#                       oracles that traced the nearest statement above or below
+#                       it in the same function, not only to the ALL ones.
+# And one oracle whose trace is empty for the opposite reason:
+#   test-fx-sel-bystander  never runs or reads the target, so it passes with the
+#                       target gutted. It can kill no mutant and must be selected
+#                       for none (NONE), where test-fx-sel-copy, which fails
+#                       gutted, stays ALL. sandbox.sh has two: 82 s of every
+#                       mutant's subset in the 2026-11-03 sample.
+cat > "$FX/fixture-sel.sh" <<'EOF'
+#!/usr/bin/env bash
+SEL_LOADED=1
+sel_one() {
+  [[ "$1" == x ]] && echo one-yes || echo one-no
+}
+sel_two() {
+  [[ "$1" == y ]] && echo two-yes || echo two-no
+}
+sel_three() {
+  [[ "$1" == z ]] && echo three-yes || echo three-no
+}
+sel_four() {
+  printf '%s\n' "$1" | awk '
+    { if ($1 > 5 && $1 < 100) print "four-big"
+      else print "four-small" }'
+}
+sel_five() {
+  if [[ "$1" == w
+        || "$1" == v ]]; then echo five-yes; else echo five-no; fi
+}
+EOF
+cat > "$FX/tests/test-fx-sel-bystander.sh" <<'EOF'
+#!/usr/bin/env bash
+set -uo pipefail
+FX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ -f "$FX_DIR/fixture-sel.sh" ]]; then printf 'PASS: the fixture is there\n'; exit 0; fi
+printf 'FAIL: no fixture\n'; exit 1
+EOF
+cat > "$FX/tests/test-fx-sel-four.sh" <<'EOF'
+#!/usr/bin/env bash
+set -uo pipefail
+FX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=/dev/null
+source "$FX_DIR/fixture-sel.sh"
+got="$(sel_four 9) $(sel_four 1) $(sel_five w) $(sel_five v) $(sel_five q)"
+if [[ "$got" == "four-big four-small five-yes five-yes five-no" ]]; then printf 'PASS: sel_four, sel_five\n'; exit 0; fi
+printf 'FAIL: sel_four, sel_five (got %s)\n' "$got"; exit 1
+EOF
+cat > "$FX/tests/test-fx-sel-one.sh" <<'EOF'
+#!/usr/bin/env bash
+set -uo pipefail
+FX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=/dev/null
+source "$FX_DIR/fixture-sel.sh"
+sel_two y >/dev/null; sel_two n >/dev/null
+if [[ "$(sel_one x)" == one-yes && "$(sel_one z)" == one-no ]]; then printf 'PASS: sel_one\n'; exit 0; fi
+printf 'FAIL: sel_one\n'; exit 1
+EOF
+cat > "$FX/tests/test-fx-sel-mixed.sh" <<'EOF'
+#!/usr/bin/env bash
+set -uo pipefail
+FX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=/dev/null
+source "$FX_DIR/fixture-sel.sh"
+d="$(mktemp -d)"; cp "$FX_DIR/fixture-sel.sh" "$d/renamed-copy.sh"
+got="$(bash -c 'source "$1"; sel_two y; sel_two n' _ "$d/renamed-copy.sh" | tr '\n' ' ')"
+rm -rf "$d"
+if [[ "$got" == "two-yes two-no " ]]; then printf 'PASS: sel_two\n'; exit 0; fi
+printf 'FAIL: sel_two (got %s)\n' "$got"; exit 1
+EOF
+cat > "$FX/tests/test-fx-sel-strict.sh" <<'EOF'
+#!/usr/bin/env bash
+set -uo pipefail
+FX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+got="$(bash -c 'set -eu; source "$1"; sel_three z; sel_three q' _ "$FX_DIR/fixture-sel.sh" | tr '\n' ' ')"
+if [[ "$got" == "three-yes three-no " ]]; then printf 'PASS: sel_three\n'; exit 0; fi
+printf 'FAIL: sel_three (got %s)\n' "$got"; exit 1
+EOF
+cat > "$FX/tests/test-fx-sel-shy.sh" <<'EOF'
+#!/usr/bin/env bash
+set -uo pipefail
+FX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=/dev/null
+source "$FX_DIR/fixture-sel.sh"
+case "$-" in *x*) printf 'FAIL: traced\n'; exit 1 ;; esac
+if [[ "$(sel_three z)" == three-yes ]]; then printf 'PASS: sel_three, untraced\n'; exit 0; fi
+printf 'FAIL: sel_three\n'; exit 1
+EOF
+cat > "$FX/tests/test-fx-sel-copy.sh" <<'EOF'
+#!/usr/bin/env bash
+set -uo pipefail
+FX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+d="$(mktemp -d)"; cp "$FX_DIR/fixture-sel.sh" "$d/renamed-copy.sh"
+got="$(bash -c 'source "$1"; sel_three z' _ "$d/renamed-copy.sh")"
+rm -rf "$d"
+if [[ "$got" == three-yes ]]; then printf 'PASS: sel_three via a copy\n'; exit 0; fi
+printf 'FAIL: sel_three via a copy\n'; exit 1
+EOF
+# ── an oracle that outlives an interrupted run unless the run kills it ────────
+# Green at once on its first run (the baseline); every later run (a mutant, in
+# a worker) records its own pid and its child's, then waits. Case 12e TERMs
+# run.sh while a worker is in one, and the run must take both down with it.
+# A WORKER, not the baseline: the baseline runs in the owning shell, whose own
+# post-wait group kill already reaps it; a worker dies of the TERM first.
+cat > "$FX/tests/test-fx-linger.sh" <<'EOF'
+#!/usr/bin/env bash
+n=0; [[ -f "${FX_LINGER_COUNT:?}" ]] && n="$(cat "$FX_LINGER_COUNT")"
+n=$(( n + 1 )); printf '%s' "$n" > "$FX_LINGER_COUNT"
+if (( n == 1 )); then printf 'PASS: baseline\n'; exit 0; fi
+printf '%s\n' "$$" >> "${FX_LINGER_PIDS:?}"
+sleep 60 &
+printf '%s\n' "$!" >> "$FX_LINGER_PIDS"
+wait
+printf 'PASS: lingered\n'
+EOF
+
 ( cd "$FX" && git init -q -b main . >/dev/null 2>&1 || git init -q . >/dev/null 2>&1
   git add -A && git -c user.email=t@example -c user.name=t commit -qm fixture ) >/dev/null 2>&1
 if ( cd "$FX" && git rev-parse HEAD >/dev/null 2>&1 ); then
@@ -1330,6 +1478,107 @@ check "a deep row on an EXECUTED-PARTIAL target runs (exit 0)" "0" "$FX_RC"
 check "  … over its named functions only" "4" "$(awk -F'|' '$1 == "MUTANT" { print $6 }' <<< "$FX_OUT" | sort -u | tr -d '\n')"
 FALSIFY_DEEP_CONF="$DEEP_OK" fx_run "$RUN" "$CONF_TWO" "$FX" "$TMP/wit-deep6" --jobs 1 --deep --target fixture-slow.sh
 check "--deep with a selection the deep map does not cover is refused (exit 2)" "2" "$FX_RC"
+
+# ── 12d. --select-oracles: run only the oracles whose trace covers the line ───
+# (GAP-2.) Verdicts must be the FULL set's: a selected subset that kills is a
+# kill of the full set; one that survives is confirmed by the rest of the set.
+CONF_SEL="$(conf sel 'fixture-sel.sh|EXECUTED-WHOLE|test-fx-sel-one.sh,test-fx-sel-mixed.sh,test-fx-sel-strict.sh,test-fx-sel-shy.sh')"
+fx_run "$RUN" "$CONF_SEL" "$FX" "$TMP/wit-sel-full" --jobs 1 --controls 0
+full_verdicts="$(awk -F'|' '$1 == "MUTANT" { print $3 "|" $2 }' <<< "$FX_OUT" | sort)"
+fx_run "$RUN" "$CONF_SEL" "$FX" "$TMP/wit-sel" --jobs 1 --controls 0 --select-oracles
+check "--select-oracles runs (exit 0)" "0" "$FX_RC"
+sel_verdicts="$(awk -F'|' '$1 == "MUTANT" { print $3 "|" $2 }' <<< "$FX_OUT" | sort)"
+[[ -n "$sel_verdicts" && "$sel_verdicts" == "$full_verdicts" ]] \
+  && pass "  … and every verdict is the one the full oracle set gives" \
+  || fail "  … verdicts differ from the full set's — full: $(tr '\n' ' ' <<< "$full_verdicts") selected: $(tr '\n' ' ' <<< "$sel_verdicts")"
+# shy went red under the trace, so it is ALL: always selected. strict and mixed
+# do not reach sel_one and are left out.
+check "  … a sel_one mutant is decided by the one oracle that traced it, plus the always-selected" \
+  "test-fx-sel-one.sh,test-fx-sel-shy.sh" \
+  "$(awk -F'|' '$1 == "MUTANT" && $6 == 4 { print $4; exit }' <<< "$FX_OUT")"
+[[ "$(grep -c '^NOTE|selection-miss|fixture-sel.sh:' <<< "$FX_OUT")" -ge 1 ]] \
+  && pass "  … a sel_two mutant the selected oracle missed is confirmed by the rest of the set, and the miss is recorded" \
+  || fail "  … no selection-miss recorded for sel_two (out: $(grep -E '^(MUTANT|NOTE)\|' <<< "$FX_OUT" | tr '\n' ' '))"
+grep -q '^NOTE|selection|fixture-sel.sh|' <<< "$FX_OUT" \
+  && pass "  … and the coverage pass reports what it mapped" \
+  || fail "  … the coverage pass reported nothing"
+sel_note="$(grep '^NOTE|selection|fixture-sel.sh|' <<< "$FX_OUT")"
+check "  … a run under set -u from a bash -c is traced to the end (the prompt expands with no BASH_SOURCE)" \
+  "test-fx-sel-strict.sh=2" "$(grep -o 'test-fx-sel-strict.sh=[^ ]*' <<< "$sel_note")"
+check "  … and an oracle that goes red when traced counts as covering every line" \
+  "test-fx-sel-shy.sh=ALL(red-when-traced)" "$(grep -o 'test-fx-sel-shy.sh=[^ ]*' <<< "$sel_note")"
+CONF_SEL_ORDER="$(conf selorder 'fixture-sel.sh|EXECUTED-WHOLE|test-fx-sel-copy.sh,test-fx-sel-one.sh,test-fx-sel-mixed.sh')"
+fx_run "$RUN" "$CONF_SEL_ORDER" "$FX" "$TMP/wit-sel-order" --jobs 1 --controls 0 --select-oracles
+check "  … an untraced oracle listed first shifts no map: a sel_one mutant is decided by {copy, one}" \
+  "test-fx-sel-copy.sh,test-fx-sel-one.sh" "$(awk -F'|' '$1 == "MUTANT" && $6 == 4 { print $4; exit }' <<< "$FX_OUT")"
+CONF_SEL_ML="$(conf selml 'fixture-sel.sh|EXECUTED-WHOLE|test-fx-sel-bystander.sh,test-fx-sel-copy.sh,test-fx-sel-four.sh,test-fx-sel-one.sh')"
+fx_run "$RUN" "$CONF_SEL_ML" "$FX" "$TMP/wit-sel-ml" --jobs 1 --controls 0 --select-oracles
+sel_note="$(grep '^NOTE|selection|fixture-sel.sh|' <<< "$FX_OUT")"
+check "  … an untraced oracle that passes with the target gutted is NONE" \
+  "test-fx-sel-bystander.sh=NONE(passes-gutted)" "$(grep -o 'test-fx-sel-bystander.sh=[^ ]*' <<< "$sel_note")"
+check "  … one that fails gutted stays ALL" \
+  "test-fx-sel-copy.sh=ALL" "$(grep -o 'test-fx-sel-copy.sh=[^ ]*' <<< "$sel_note")"
+check "  … and a NONE oracle is selected for no mutant: sel_one's go to {copy, one}" \
+  "test-fx-sel-copy.sh,test-fx-sel-one.sh" \
+  "$(awk -F'|' '$1 == "MUTANT" && $6 == 4 { print $4 }' <<< "$FX_OUT" | sort -u | tr '\n' ' ' | sed 's/ $//')"
+check "  … a line inside a multi-line awk program (bash reports its first line) goes to the oracle that ran the command" \
+  "test-fx-sel-copy.sh,test-fx-sel-four.sh" \
+  "$(awk -F'|' '$1 == "MUTANT" && $6 == 14 { print $4 }' <<< "$FX_OUT" | sort -u | tr '\n' ' ' | sed 's/ $//')"
+check "  … and a condition's first line (bash reports its last) to the oracle that ran the condition" \
+  "test-fx-sel-copy.sh,test-fx-sel-four.sh" \
+  "$(awk -F'|' '$1 == "MUTANT" && $6 == 18 { print $4 }' <<< "$FX_OUT" | sort -u | tr '\n' ' ' | sed 's/ $//')"
+check "  … both killed" "KILLED" \
+  "$(awk -F'|' '$1 == "MUTANT" && ($6 == 14 || $6 == 18) { print $2 }' <<< "$FX_OUT" | sort -u | tr '\n' ' ' | sed 's/ $//')"
+fx_run "$RUN" "$CONF_A" "$FX" "$TMP/wit-sel1" --jobs 1 --controls 0 --select-oracles
+check "  … a single-oracle row is run as before (exit 0)" "0" "$FX_RC"
+check "  … with no coverage pass for it" "0" "$(grep -c '^NOTE|selection|' <<< "$FX_OUT")"
+
+# ── 12e. AN INTERRUPTED RUN ENDS, AND TAKES ITS ORACLES WITH IT ──────────────
+# Each oracle leads its own process group (set -m, so a timeout can kill its
+# whole tree), which a TERM to run.sh does not reach. Measured 2026-11-03: a
+# TERMed --select-oracles run left a dozen oracle groups running, and its trap
+# RETURNED, so the dispatch loop went on starting mutants into the scratch the
+# trap had just deleted.
+lg_pids="$TMP/linger.pids"; : > "$lg_pids"
+lg_tmp="$TMP/linger-tmp"; mkdir -p "$lg_tmp"
+CONF_LINGER="$(conf linger 'fixture-lib.sh|EXECUTED-WHOLE|test-fx-linger.sh')"
+FALSIFY_REPO="$FX" FALSIFY_CONF="$CONF_LINGER" TMPDIR="$lg_tmp" \
+FX_LINGER_PIDS="$lg_pids" FX_LINGER_COUNT="$TMP/linger.count" \
+  bash "$RUN" --jobs 1 --controls 0 --timeout 300 > "$TMP/linger.out" 2>&1 &
+lg_run=$!
+for _ in $(seq 1 300); do
+  [[ "$(grep -c . "$lg_pids")" -ge 2 ]] && break
+  sleep 0.1
+done
+if [[ "$(grep -c . "$lg_pids")" -ge 2 ]]; then
+  kill -TERM "$lg_run"
+  # BOUNDED: a run whose trap returns goes on dispatching mutants, each of
+  # which lingers here for a minute.
+  for _ in $(seq 1 100); do kill -0 "$lg_run" 2>/dev/null || break; sleep 0.1; done
+  if kill -0 "$lg_run" 2>/dev/null; then
+    kill -KILL "$lg_run" 2>/dev/null; wait "$lg_run" 2>/dev/null
+    lg_rc="still running 10s after the TERM"
+  else
+    wait "$lg_run"; lg_rc=$?
+  fi
+  check "an interrupted run exits on the signal (128+TERM), not on what it does next" "143" "$lg_rc"
+  lg_alive=""
+  for _ in $(seq 1 50); do
+    lg_alive=""
+    while IFS= read -r p; do kill -0 "$p" 2>/dev/null && lg_alive+=" $p"; done < "$lg_pids"
+    [[ -z "$lg_alive" ]] && break
+    sleep 0.1
+  done
+  [[ -z "$lg_alive" ]] \
+    && pass "  … and the oracle it was running is gone, its children with it" \
+    || fail "  … the oracle outlived the run:$lg_alive"
+  check "  … and its scratch is gone" "" "$(find "$lg_tmp" -mindepth 1 -maxdepth 1 -name 'tmp.*' 2>/dev/null)"
+else
+  fail "the lingering oracle never started (out: $(tail -3 "$TMP/linger.out" | tr '\n' ' '))"
+  kill -TERM "$lg_run" 2>/dev/null; wait "$lg_run" 2>/dev/null
+fi
+# Whatever the verdict, nothing of this case may outlive it.
+while IFS= read -r p; do kill -KILL "$p" 2>/dev/null; done < "$lg_pids"
 
 # ── 13. The REAL targets.conf is what an unfiltered run would read ────────────
 # No mutants are run here: --target with a name no active row carries must fail
