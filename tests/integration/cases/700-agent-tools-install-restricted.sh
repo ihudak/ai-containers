@@ -132,8 +132,11 @@ if [[ "$l" == */.codex/packages/standalone/current/bin/codex ]]; then
 else
   fail "codex is the standalone install, linked through current (/usr/local/bin/codex -> ${l:-nothing})"
 fi
+# The release is current here, so the installer resolves the latest version's
+# metadata over the network and downloads nothing: "Resolved version" is the part
+# that crossed the firewall, and the success line is Codex's own.
 out="$(agent_exec "$IT_CID" "codex update" 2>&1)"; rc=$?
-if [[ "$rc" -eq 0 && "$out" == *"Installing standalone package"* ]]; then
+if [[ "$rc" -eq 0 && "$out" == *"Resolved version: "* && "$out" == *"Update ran successfully"* ]]; then
   pass "codex update runs the standalone installer behind the restricted firewall"
 else
   fail "codex update behind the restricted firewall (rc $rc): $(printf '%s' "$out" | tail -n 5 | tr '\n' ' ')"

@@ -53,8 +53,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   standalone installer, into the group's `~/.codex/packages/standalone`, once.
   `codex update` then re-runs that installer: measured 0.165.0 to 0.166.0 in 15 s,
   and case `700-agent-tools-install-restricted` runs it behind the restricted
-  firewall. Rebuild the image to get it: `releases.openai.com` joined the Codex
-  allowlist. The installer keeps two releases, about 940 MB where the npm
+  firewall. Rebuild the image to get it. `releases.openai.com` joined the Codex
+  allowlist, which is what admits it with `SELF_HEALING_ENABLED=0`. The installer keeps two releases, about 940 MB where the npm
   package was 456 MB. A group's npm Codex is not deleted and is used only while
   no standalone install is present. docs/agent-tools.md has the `rm -rf` that
   reclaims it. Gemini has no such install and is still updated at start

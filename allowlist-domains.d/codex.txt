@@ -6,5 +6,8 @@ openai.com
 chatgpt.com
 auth.openai.com
 # Standalone install and `codex update`: chatgpt.com/codex/install.sh redirects here,
-# and the installer downloads the release from here (agent-tools-reconcile.sh)
+# and the installer downloads the release from here (agent-tools-reconcile.sh).
+# The proxy fragment's *.openai.com admits it too, but only by self-healing after a
+# first blocked connection; with SELF_HEALING_ENABLED=0 this line is what lets the
+# install through (measured with case 700, 2026-11-03).
 releases.openai.com

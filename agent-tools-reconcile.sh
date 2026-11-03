@@ -172,8 +172,9 @@ install_claude_native() {
 # release and the one before it, and removes older ones that no process of the
 # container running it uses; a sibling container still running one two releases old
 # keeps its binary but loses the helpers beside it. Hosts: chatgpt.com, which
-# redirects to releases.openai.com (both in allowlist-domains.d/codex.txt), and
-# GitHub's releases only if releases.openai.com fails.
+# redirects to releases.openai.com (both in allowlist-domains.d/codex.txt; the
+# second is what admits it with self-healing off), and GitHub's releases only if
+# releases.openai.com fails.
 #
 # Install-if-missing, keyed on `current`, which persists: keeping it current is
 # `codex update`'s job. The script is fetched whole and then run, as `codex update`
