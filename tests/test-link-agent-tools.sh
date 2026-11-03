@@ -188,6 +188,60 @@ out="$(NODE_LINK="$n/node" AI_RUNTIME_TOOLS="copilot" bash "$REPO_DIR/link-agent
   && pass "  … and a second start rewrites its own wrapper" || fail "  … a second start and its own wrapper (rc $rc; $out; $(cat "$d/copilot"))"
 rm -rf "$h" "$d" "$n" "$TMP_LINKDIR"
 
+# ── The summary line: printed when the project enables tools, and only then ──
+h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; d="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
+mk_tool "$h" npm/bin/claude; mk_tool "$h" bin/vale
+out="$(AI_RUNTIME_TOOLS="claude-code,vale,gemini" bash "$REPO_DIR/link-agent-tools.sh" "$h" "$d" 2>&1)"
+[[ "$out" == "[link-agent-tools] linked agent tools into $d: claude vale" ]] \
+  && pass "logs exactly the tools it linked" || fail "logs exactly the tools it linked (got: $out)"
+out="$( (unset AI_RUNTIME_TOOLS; bash "$REPO_DIR/link-agent-tools.sh" "$h" "$d") 2>&1)"
+[[ -z "$out" ]] && pass "  … and logs nothing when no tool is enabled" || fail "  … logged with no tool enabled (got: $out)"
+
+# ── A file at a disabled tool's destination that this script did not write stays ──
+# Only a link or a wrapper carrying the marker is "ours" to drop; /usr/local/bin may
+# hold a `copilot` someone else installed.
+printf '#!/bin/sh\necho not ours\n' > "$d/copilot"
+printf '#!/bin/sh\n# written by link-agent-tools.sh\n' > "$d/codex"
+AI_RUNTIME_TOOLS="vale" bash "$REPO_DIR/link-agent-tools.sh" "$h" "$d" >/dev/null 2>&1
+[[ -f "$d/copilot" && ! -e "$d/codex" ]] \
+  && pass "a disabled tool's foreign file is kept, its own wrapper dropped" \
+  || fail "a disabled tool's foreign file is kept, its own wrapper dropped (copilot: $(cat "$d/copilot" 2>&1); codex: $(ls -l "$d/codex" 2>&1))"
+rm -rf "$h" "$d"
+
+# ── Only an npm-installed command is wrapped: vale, under bin/, stays a plain link ──
+# even when it leads to a node script and a default node is there to wrap it with.
+h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; d="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
+n="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
+install -d "$n/v22/bin"; printf '#!/bin/sh\n' > "$n/v22/bin/node"; chmod +x "$n/v22/bin/node"; ln -s "$n/v22/bin/node" "$n/node"
+install -d "$h/.ai-tools/lib" "$h/.ai-tools/bin"
+printf '#!/usr/bin/env node\n' > "$h/.ai-tools/lib/vale.js"; chmod +x "$h/.ai-tools/lib/vale.js"
+ln -s ../lib/vale.js "$h/.ai-tools/bin/vale"
+NODE_LINK="$n/node" AI_RUNTIME_TOOLS="vale" bash "$REPO_DIR/link-agent-tools.sh" "$h" "$d" >/dev/null 2>&1
+[[ -L "$d/vale" && "$(readlink "$d/vale")" == "$h/.ai-tools/bin/vale" ]] \
+  && pass "a node script outside the npm prefix is linked, not wrapped" \
+  || fail "a node script outside the npm prefix is linked, not wrapped ($(ls -l "$d/vale" 2>&1))"
+
+# ── With no timeout(1) on PATH (macOS), the shebang is still read unbounded ──
+# node_script bounds its read with timeout only where there is one; where there is
+# none it must read without it, not run a timeout that is not there.
+pkg="$h/.ai-tools/npm/lib/node_modules/@github/copilot"; install -d "$pkg" "$h/.ai-tools/npm/bin"
+printf '#!/usr/bin/env node\n' > "$pkg/index.js"; chmod +x "$pkg/index.js"
+ln -s ../lib/node_modules/@github/copilot/index.js "$h/.ai-tools/npm/bin/copilot"
+nt="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
+for c in readlink dirname head tr sed rm chmod ln; do
+  cp_src="$(command -v "$c")" || { printf 'SCAFFOLD-FAILED: no %s\n' "$c"; exit 1; }
+  ln -s "$cp_src" "$nt/$c"
+done
+if [[ -e "$nt/timeout" ]] || PATH="$nt" command -v timeout >/dev/null 2>&1; then
+  fail "SCAFFOLD: timeout is still reachable on the reduced PATH"
+else
+  NODE_LINK="$n/node" AI_RUNTIME_TOOLS="copilot" PATH="$nt" "$BASH" "$REPO_DIR/link-agent-tools.sh" "$h" "$d" >/dev/null 2>&1
+  [[ -f "$d/copilot" && ! -L "$d/copilot" ]] && grep -qF "$n/v22/bin/node" "$d/copilot" \
+    && pass "with no timeout(1) on PATH a node-script CLI is still wrapped" \
+    || fail "with no timeout(1) on PATH a node-script CLI is still wrapped ($(ls -l "$d/copilot" 2>&1))"
+fi
+rm -rf "$h" "$d" "$n" "$nt"
+
 # ── Guards ──
 grep -qE '^set +-[a-z]*u|nounset' "$REPO_DIR/link-agent-tools.sh" && fail "must NOT enable nounset" || pass "does not enable nounset"
 

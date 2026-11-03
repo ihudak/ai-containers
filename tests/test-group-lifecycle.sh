@@ -13,6 +13,10 @@
 set -uo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=portability.sh
+source "$REPO_DIR/tests/portability.sh"
+# shellcheck source=portability.sh
+source "$REPO_DIR/tests/portability.sh"
 
 fails=0
 pass() { printf 'PASS: %s\n' "$1"; }
@@ -55,12 +59,15 @@ case "$1" in
         for a in "$@"; do case "$a" in name=*) substr="${a#name=}" ;; esac; done
         for f in "$FAKE_VOLUMES_DIR"/*; do
           [[ -f "$f" ]] || continue
-          case "$f" in *.labels) continue ;; esac
+          case "$f" in *.labels|*.rmfail) continue ;; esac
           bn="$(basename "$f")"
           case "$bn" in *"$substr"*) printf '%s\n' "$bn" ;; esac
         done
         exit 0 ;;
-      rm) rm -f "$FAKE_VOLUMES_DIR/${3}" "$FAKE_VOLUMES_DIR/${3}.labels"; exit 0 ;;
+      # A <name>.rmfail marker makes the removal fail, as a volume docker will
+      # not let go of does.
+      rm) [[ -f "$FAKE_VOLUMES_DIR/${3}.rmfail" ]] && exit 1
+          rm -f "$FAKE_VOLUMES_DIR/${3}" "$FAKE_VOLUMES_DIR/${3}.labels"; exit 0 ;;
       *) exit 0 ;;
     esac ;;
   ps)
@@ -214,6 +221,157 @@ for bad in ../victim default/ 'a b' .hidden UPPER; do
     && pass "rm refuses the group name '$bad'" \
     || fail "rm accepted the group name '$bad' (rc=$rc; out: $out)"
 done
+
+# ── Exit statuses: every refusal is a FAILURE to the caller ─────────────────────
+# A script driving group.sh (or a human's `&&` chain) reads success as "done". Each
+# usage error, unknown name and refused removal must therefore exit non-zero, and
+# the two clean no-ops (an empty list, nothing to collect) must exit zero.
+for spec in "list --bogus" "rm --bogus keepme" "rm keepme docs" "rm" "gc --bogus" "frobnicate" \
+            "rm nosuchgroup --yes"; do
+  # shellcheck disable=SC2086  # the spec is split into arguments on purpose
+  out="$(run_group $spec)"; rc=$?
+  [[ "$rc" -ne 0 && "$out" == *ERROR* ]] \
+    && pass "\`group.sh $spec\` fails with an ERROR" \
+    || fail "\`group.sh $spec\` fails with an ERROR (rc=$rc; out: $out)"
+done
+[[ -d "$FAKE_HOME/.ai-containers/keepme" && -d "$FAKE_HOME/.ai-containers/docs" ]] \
+  && pass "  … and none of those removed a group" \
+  || fail "  … a refused rm removed a group"
+
+# rm refused while the volume is in use: non-zero, and nothing removed.
+mkdir -p "$FAKE_HOME/.ai-containers/busy2"; mkvol "ai-containers-rvm-busy2" "busy2"
+printf 'ai-containers-rvm-busy2' > "$FAKE_RUNNING_VOL"
+out="$(run_group rm busy2 --yes)"; rc=$?
+[[ "$rc" -ne 0 && -d "$FAKE_HOME/.ai-containers/busy2" && -f "$FAKE_VOLUMES_DIR/ai-containers-rvm-busy2" ]] \
+  && pass "rm of an in-use group exits non-zero and removes nothing" \
+  || fail "rm of an in-use group exits non-zero and removes nothing (rc=$rc; out: $out)"
+
+# list marks exactly the volume a running container uses as "(in use)".
+out="$(run_group list)"
+grep -qE '^busy2 +ai-containers-rvm-busy2 +present \(in use\)$' <<<"$out" \
+  && pass "list marks an in-use rvm volume '(in use)'" \
+  || fail "list marks an in-use rvm volume '(in use)' (got: $out)"
+: > "$FAKE_RUNNING_VOL"
+out="$(run_group list)"
+grep -qE '^busy2 +ai-containers-rvm-busy2 +present$' <<<"$out" \
+  && pass "  … and does not mark one nothing uses" \
+  || fail "  … and does not mark one nothing uses (got: $out)"
+
+# A volume docker will not remove: rm stops non-zero, says so, and keeps the
+# directory (deleting it would orphan the volume this script exists to prevent).
+: > "$FAKE_VOLUMES_DIR/ai-containers-rvm-busy2.rmfail"
+out="$(run_group rm busy2 --yes)"; rc=$?
+[[ "$rc" -ne 0 && "$out" == *"could not remove volume"* && -d "$FAKE_HOME/.ai-containers/busy2" ]] \
+  && pass "rm whose volume removal fails exits non-zero and leaves the directory" \
+  || fail "rm whose volume removal fails exits non-zero and leaves the directory (rc=$rc; out: $out)"
+rm -f "$FAKE_VOLUMES_DIR/ai-containers-rvm-busy2.rmfail"
+
+# What rm lists before asking is what it will remove: the directory line only
+# when there is a directory, the volume line only when there is a volume.
+dir_line="  directory  $FAKE_HOME/.ai-containers/busy2"
+vol_line="  rvm volume ai-containers-rvm-busy2 (installed rubies and gems)"
+out="$(run_group rm busy2 --yes)"; rc=$?
+[[ "$rc" -eq 0 && "$out" == *"$dir_line"* && "$out" == *"$vol_line"* ]] \
+  && pass "rm lists both the directory and the volume it removes" \
+  || fail "rm lists both the directory and the volume it removes (rc=$rc; out: $out)"
+mkdir -p "$FAKE_HOME/.ai-containers/onlydir"
+out="$(run_group rm onlydir --yes)"
+[[ "$out" == *"  directory  $FAKE_HOME/.ai-containers/onlydir"* && "$out" != *"rvm volume"* ]] \
+  && pass "rm of a directory-only group lists no volume" \
+  || fail "rm of a directory-only group lists no volume (got: $out)"
+mkvol "ai-containers-rvm-onlyvol" "onlyvol"
+out="$(run_group rm onlyvol --yes)"
+[[ "$out" == *"  rvm volume ai-containers-rvm-onlyvol"* && "$out" != *"  directory  "* \
+   && ! -f "$FAKE_VOLUMES_DIR/ai-containers-rvm-onlyvol" ]] \
+  && pass "rm of a volume-only group lists no directory, and removes the volume" \
+  || fail "rm of a volume-only group lists no directory, and removes the volume (got: $out)"
+
+# No TTY and no --yes: refused with the reason, non-zero — even when "y" is
+# waiting on stdin, because a piped "y" is not a person answering.
+mkdir -p "$FAKE_HOME/.ai-containers/piped"
+out="$(printf 'y\n' | run_group rm piped)"; rc=$?
+[[ "$rc" -ne 0 && "$out" == *"stdin is not a TTY"* && -d "$FAKE_HOME/.ai-containers/piped" ]] \
+  && pass "rm on a non-TTY refuses a piped 'y', non-zero, naming the TTY" \
+  || fail "rm on a non-TTY refuses a piped 'y', non-zero, naming the TTY (rc=$rc; out: $out)"
+
+# gc: the same refusal for orphans, then a clean collection prints no warning,
+# and a volume docker will not remove is warned about.
+mkvol "ai-containers-rvm-orph" "orph"
+out="$(printf 'y\n' | run_group gc)"; rc=$?
+[[ "$rc" -ne 0 && "$out" == *"stdin is not a TTY"* && -f "$FAKE_VOLUMES_DIR/ai-containers-rvm-orph" ]] \
+  && pass "gc on a non-TTY refuses, non-zero, and keeps the orphan" \
+  || fail "gc on a non-TTY refuses, non-zero, and keeps the orphan (rc=$rc; out: $out)"
+out="$(run_group gc --yes)"; rc=$?
+[[ "$rc" -eq 0 && "$out" == *"Removed ai-containers-rvm-orph"* && "$out" != *WARNING* ]] \
+  && pass "gc that removes every orphan prints no WARNING" \
+  || fail "gc that removes every orphan prints no WARNING (rc=$rc; out: $out)"
+mkvol "ai-containers-rvm-stuck" "stuck"; : > "$FAKE_VOLUMES_DIR/ai-containers-rvm-stuck.rmfail"
+out="$(run_group gc --yes)"
+[[ "$out" == *"WARNING: could not remove ai-containers-rvm-stuck"* && "$out" != *"Removed ai-containers-rvm-stuck"* ]] \
+  && pass "gc warns about a volume it could not remove" \
+  || fail "gc warns about a volume it could not remove (got: $out)"
+rm -f "$FAKE_VOLUMES_DIR/ai-containers-rvm-stuck" "$FAKE_VOLUMES_DIR/ai-containers-rvm-stuck".*
+out="$(run_group gc --yes)"; rc=$?
+[[ "$rc" -eq 0 && "$out" == *"Nothing to collect"* ]] \
+  && pass "gc with nothing to collect exits zero" \
+  || fail "gc with nothing to collect exits zero (rc=$rc; out: $out)"
+
+# list with no ~/.ai-containers at all: a clean, successful no-op.
+out="$(HOME="$TMP/empty-home" PATH="$FAKE_BIN:$PATH" FAKE_VOLUMES_DIR="$FAKE_VOLUMES_DIR" \
+  FAKE_RUNNING_VOL="$FAKE_RUNNING_VOL" bash "$REPO_DIR/group.sh" list 2>&1)"; rc=$?
+[[ "$rc" -eq 0 && "$out" == *"No container groups yet"* ]] \
+  && pass "list with no groups root exits zero and says so" \
+  || fail "list with no groups root exits zero and says so (rc=$rc; out: $out)"
+
+# ── THE CONFIRMATION, ON A REAL TTY ─────────────────────────────────────────────
+# Everything above runs without a terminal, so confirm()'s interactive branch —
+# `read -r -p … [y/N]` and the answer it accepts — is reached only here. "y" and
+# "Y" remove; anything else ("n") aborts non-zero and removes nothing. The yes
+# cases also prove the answer reached the prompt, which the no case rests on.
+if ! command -v script >/dev/null 2>&1; then
+  printf 'SKIP: no script(1) on this host, so the confirmation prompt cannot be reached\n'
+else
+  # The answer is sent when the prompt appears (polled, not a fixed sleep, which
+  # would be load-sensitive). Both waits also end as soon as group.sh has exited
+  # (the .done marker): a damaged group.sh that never prompts must fail this
+  # case at once, not after the 30 s + 10 s bounds, which pushed the falsify
+  # tier's mutants past its per-mutant timeout.
+  answer_when_prompted() {   # <answer> <transcript>: write once the prompt is up
+    local ans="$1" out="$2" i=0
+    while (( i < 600 )); do
+      grep -q 'y/N' "$out" 2>/dev/null && break; [[ -e "$out.done" ]] && return 0
+      sleep 0.05; i=$((i+1))
+    done
+    printf '%s\n' "$ans"
+    i=0   # hold stdin open until the pty has echoed the answer
+    while (( i < 200 )); do
+      grep -q "N\] $ans" "$out" 2>/dev/null && break; [[ -e "$out.done" ]] && return 0
+      sleep 0.05; i=$((i+1))
+    done
+    sleep 0.1
+  }
+  run_group_pty() {   # <answer> <args…>; sets RC and OUT
+    local ans="$1"; shift
+    OUT="$TMP/pty-out.txt"; : > "$OUT"; rm -f "$OUT.done"
+    answer_when_prompted "$ans" "$OUT" \
+      | ( export HOME="$FAKE_HOME" PATH="$FAKE_BIN:$PATH" FAKE_VOLUMES_DIR FAKE_RUNNING_VOL
+          p_pty bash "$REPO_DIR/group.sh" "$@"; r=$?; : > "$OUT.done"; exit "$r" ) > "$OUT" 2>&1
+    RC=$?
+  }
+  for ans in y Y; do
+    g="tty-$([[ "$ans" == y ]] && echo lower || echo upper)"   # a group name is lowercase
+    mkdir -p "$FAKE_HOME/.ai-containers/$g"
+    run_group_pty "$ans" rm "$g"
+    [[ "$RC" -eq 0 && ! -d "$FAKE_HOME/.ai-containers/$g" ]] \
+      && pass "rm answered '$ans' on a tty removes the group" \
+      || fail "rm answered '$ans' on a tty removes the group (rc=$RC; out: $(tr -d '\r' < "$OUT" | tr '\n' ' '))"
+  done
+  mkdir -p "$FAKE_HOME/.ai-containers/ttyn"
+  run_group_pty n rm ttyn
+  [[ "$RC" -ne 0 && -d "$FAKE_HOME/.ai-containers/ttyn" ]] && grep -q 'Aborted' "$OUT" \
+    && pass "rm answered 'n' on a tty aborts non-zero and removes nothing" \
+    || fail "rm answered 'n' on a tty aborts non-zero and removes nothing (rc=$RC; out: $(tr -d '\r' < "$OUT" | tr '\n' ' '))"
+fi
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
