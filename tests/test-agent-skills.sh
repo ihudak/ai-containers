@@ -34,16 +34,39 @@ chmod +x "$TMP/bin/faketool"
 export PATH="$TMP/bin:$PATH"
 export AI_AGENTS_ENABLED="claude-code,copilot"
 
-bash "$REPO_DIR/install-agent-skills.sh"
+out1="$(bash "$REPO_DIR/install-agent-skills.sh")"; printf '%s\n' "$out1"
 grep -q "skills install --for cross-client --global --force" "$CALLS" && pass "cross-client" || fail "cross-client"
+# The per-tool line names exactly the targets whose install succeeded, in order.
+[[ "$out1" == *"faketool → cross-client,claude,copilot"* ]] && pass "the report names every target installed" \
+  || fail "the report does not name the targets installed ($out1)"
 grep -q "skills install --for claude --global --force"       "$CALLS" && pass "claude mapped" || fail "claude mapped"
 grep -q "skills install --for copilot --global --force"      "$CALLS" && pass "copilot" || fail "copilot"
 [[ -f "$HOME/.agents/.ai-containers-skills-stamp" ]] && pass "stamp written" || fail "stamp written"
 
-# Second run with unchanged version → no new calls (stamp hit).
+# Second run with unchanged version → no new calls (stamp hit), and nothing to
+# do is still a success: a non-zero exit would fail container start.
 : > "$CALLS"
-bash "$REPO_DIR/install-agent-skills.sh"
+bash "$REPO_DIR/install-agent-skills.sh"; rc=$?
 [[ ! -s "$CALLS" ]] && pass "stamp no-op" || fail "stamp no-op ($(cat "$CALLS"))"
+[[ "$rc" -eq 0 ]] && pass "a stamp hit exits 0" || fail "a stamp hit exits $rc"
+
+# No descriptor library: skip, and never fail start.
+out0="$(TOOLS_LIB="$TMP/no-such-lib.sh" bash "$REPO_DIR/install-agent-skills.sh" 2>&1)"; rc=$?
+[[ "$rc" -eq 0 && "$out0" == *"descriptor library not found"* ]] && pass "a missing descriptor library is skipped, exit 0" \
+  || fail "a missing descriptor library (rc=$rc; $out0)"
+
+# Sourced (as a library), it defines its functions and runs nothing.
+export HOME="$TMP/home-src"; mkdir -p "$HOME"; : > "$CALLS"
+( source "$REPO_DIR/install-agent-skills.sh" ) >/dev/null 2>&1
+[[ ! -s "$CALLS" && ! -e "$HOME/.agents/.ai-containers-skills-stamp" ]] && pass "sourcing it runs nothing" \
+  || fail "sourcing it ran main (calls: $(tr '\n' ';' < "$CALLS"))"
+
+# A stamp that cannot be written (here a directory) costs a reinstall next
+# start, never the start itself.
+export HOME="$TMP/home-stampdir"; mkdir -p "$HOME/.agents/.ai-containers-skills-stamp"
+bash "$REPO_DIR/install-agent-skills.sh" >/dev/null 2>&1; rc=$?
+[[ "$rc" -eq 0 ]] && pass "an unwritable stamp never fails start" || fail "an unwritable stamp failed start (rc=$rc)"
+export HOME="$TMP/home"
 
 # Version bump (via the `version` subcommand) → stamp mismatches → installs
 # re-run despite an existing stamp. Guards the real bug this replaced: a bogus
@@ -70,6 +93,8 @@ grep -q "skills install --for copilot --global --force" "$CALLS" && pass "a newl
   || fail "a newly enabled agent got no skills (calls: $(tr '\n' ';' < "$CALLS"))"
 grep -q -- "--for claude " "$CALLS" && fail "an agent already done was reinstalled ($(tr '\n' ';' < "$CALLS"))" \
   || pass "  … and only that agent is installed"
+grep -q -- "--for cross-client" "$CALLS" && fail "the cross-client skill, already done, was reinstalled ($(tr '\n' ';' < "$CALLS"))" \
+  || pass "  … and the cross-client skill, already done, is not"
 # A group shared by projects with different agent sets is not reinstalled on
 # every alternation between them.
 : > "$CALLS"
@@ -111,8 +136,10 @@ exit 1   # every skills-install attempt fails
 EOF
 chmod +x "$TMP/bin/badtool"
 export HOME="$TMP/home2"; mkdir -p "$HOME"
-bash "$REPO_DIR/install-agent-skills.sh"; rc=$?
+outb="$(bash "$REPO_DIR/install-agent-skills.sh")"; rc=$?; printf '%s\n' "$outb"
 [[ "$rc" -eq 0 ]] && pass "failing tool never fails start" || fail "failing tool never fails start (rc=$rc)"
+[[ "$outb" == *"badtool → (no supported agents)"* ]] && pass "a tool whose every install failed is reported as such" \
+  || fail "a tool whose every install failed was not reported as such ($outb)"
 [[ -f "$HOME/.agents/.ai-containers-skills-stamp" ]] && pass "stamp written despite failing tool" || fail "stamp after failing tool"
 
 # RT-9: the stamp is rewritten under a lock. Stock macOS has no flock(1): the
