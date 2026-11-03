@@ -26,6 +26,9 @@
 #   #4  9b64bd3  a conjunct an unrelated line satisfied  NOT CAUGHT — no
 #                                                         operator can damage
 #                                                         the value it reads
+#                                                         (stmt-delete deletes
+#                                                         the whole line, label
+#                                                         and all; not the hole)
 #
 # Every row is PINNED, not aspirational. This file goes red if the tier's
 # detection power changes IN EITHER DIRECTION: a lost catch fails its SURVIVED /
@@ -455,10 +458,18 @@ h4_line=""
 locate_one "#4: assert_runs' error line in lib.sh" "$CACHE/$LIB_REL" 'error:   %s' && h4_line="$LOC"
 
 if [[ -n "$h4_line" ]]; then
+  # stmt-delete (GAP-4) reaches the line, but it deletes the whole printf, the
+  # LABEL with the value, and an assertion on the label then fails: that is not
+  # the hole. The hole needs a mutant that KEEPS `error:   ` and loses what
+  # follows, and that is what must stay at zero until a value-damage operator
+  # exists.
   n_at_line="$(FALSIFY_OPERATORS="$ALL_OPS" bash "$GEN" "$CACHE/$LIB_REL" 2>/dev/null \
-               | cut -f2 | grep -cx "$h4_line")"
-  h_check "#4: the generator emits ZERO mutants for it under the FULL operator set ($ALL_OPS)" \
+               | awk -F'\t' -v l="$h4_line" '$2 == l && index($4, "error:   ") { n++ } END { print n + 0 }')"
+  h_check "#4: under the FULL operator set ($ALL_OPS) no mutant keeps its label and damages only the value" \
     "0" "$n_at_line"
+  n_sd="$(FALSIFY_OPERATORS=stmt-delete bash "$GEN" "$CACHE/$LIB_REL" 2>/dev/null \
+          | awk -F'\t' -v l="$h4_line" '$2 == l && $4 ~ /^[[:space:]]*:$/ { n++ } END { print n + 0 }')"
+  h_check "#4: stmt-delete reaches the line only as a whole-line deletion, label included" "1" "$n_sd"
   n_total="$(FALSIFY_OPERATORS="$ALL_OPS" bash "$GEN" "$CACHE/$LIB_REL" 2>/dev/null | grep -c .)"
   if [[ "$n_total" -gt 0 ]]; then
     h_pass "#4: … and that zero is about the LINE, not the operators — lib.sh yields $n_total mutants overall"

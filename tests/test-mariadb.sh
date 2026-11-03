@@ -33,7 +33,11 @@ cleanup() {
   fi
   rm -rf "$TMP_ROOT"
 }
-trap cleanup EXIT
+# Confined to the owning process: this file forks (fakes started in the
+# background), and a child running this trap would remove the fixture the
+# test is still using (tests/test-exit-trap-ownership.sh).
+TRAP_OWNER="$BASHPID"
+trap '[[ "$BASHPID" == "$TRAP_OWNER" ]] && cleanup' EXIT
 
 # ── Part A: sandbox.conf value → MARIADB_SERIES build arg ──────────────────────
 md_build_args() {  # $1 = sandbox.conf body → every docker build arg, one per line

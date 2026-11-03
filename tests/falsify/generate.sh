@@ -94,35 +94,37 @@ _FALSIFY_PREV_CONT=0
 # the other operators are deliberately left as they were, so their corpus and
 # every ledger identity stay the same.
 _FALSIFY_IN_LITERAL=0
-_FALSIFY_LIT_SQ=0
-_FALSIFY_LIT_DQ=0
-_FALSIFY_LIT_ARR=0
+_FALSIFY_LIT_ST=""
 
-# Carries quote and array-literal state from one physical line to the next.
-# Coarse on purpose (it serves one operator's "skip this line" decision): a
-# `#` at the start of a word ends the line outside quotes, `\` escapes outside
-# single quotes, and `(` straight after `=` opens an array literal that the
-# matching `)` closes.
+# Carries quote and array-literal state from one physical line to the next, as
+# a stack of open contexts: S '…', A $'…' (backslash escapes), D "…", C a $(…)
+# opened inside "…", R an array literal `=(…)`, P a ( nested in C or R. Coarse
+# on purpose — it serves one operator's "skip this line" decision — and
+# deliberately silent at the top level: a multi-line `( … )` subshell or
+# `x=$( … )` holds commands, so neither is a literal. A `#` starts a comment at
+# the start of a word or after ; & | ( ), as in bash.
 _falsify_literal_track() {   # <line>
-  local line="$1" n=${#1} i=0 c prev=" "
-  _FALSIFY_IN_LITERAL=$(( _FALSIFY_LIT_SQ || _FALSIFY_LIT_DQ || _FALSIFY_LIT_ARR > 0 ))
+  local line="$1" n=${#1} i=0 c prev=" " top
+  [[ -n "$_FALSIFY_LIT_ST" ]] && _FALSIFY_IN_LITERAL=1 || _FALSIFY_IN_LITERAL=0
   while (( i < n )); do
-    c="${line:i:1}"
-    if (( _FALSIFY_LIT_SQ )); then
-      [[ "$c" == "'" ]] && _FALSIFY_LIT_SQ=0
-    elif (( _FALSIFY_LIT_DQ )); then
-      if [[ "$c" == '\' ]]; then i=$(( i + 2 )); prev=x; continue; fi
-      [[ "$c" == '"' ]] && _FALSIFY_LIT_DQ=0
-    else
-      case "$c" in
-        '\') i=$(( i + 2 )); prev=x; continue ;;
-        "'") _FALSIFY_LIT_SQ=1 ;;
-        '"') _FALSIFY_LIT_DQ=1 ;;
-        '#') [[ "$prev" == [[:space:]] ]] && break ;;
-        '(') [[ "$prev" == '=' ]] && _FALSIFY_LIT_ARR=$(( _FALSIFY_LIT_ARR + 1 )) ;;
-        ')') (( _FALSIFY_LIT_ARR > 0 )) && _FALSIFY_LIT_ARR=$(( _FALSIFY_LIT_ARR - 1 )) ;;
-      esac
-    fi
+    c="${line:i:1}"; top="${_FALSIFY_LIT_ST: -1}"
+    case "$top" in
+      S) [[ "$c" == "'" ]] && _FALSIFY_LIT_ST="${_FALSIFY_LIT_ST%?}" ;;
+      A) if [[ "$c" == '\' ]]; then i=$(( i + 2 )); prev=x; continue; fi
+         [[ "$c" == "'" ]] && _FALSIFY_LIT_ST="${_FALSIFY_LIT_ST%?}" ;;
+      D) if [[ "$c" == '\' ]]; then i=$(( i + 2 )); prev=x; continue; fi
+         if [[ "$c" == '"' ]]; then _FALSIFY_LIT_ST="${_FALSIFY_LIT_ST%?}"
+         elif [[ "$c" == '(' && "$prev" == '$' ]]; then _FALSIFY_LIT_ST+=C; fi ;;
+      *) case "$c" in
+           '\') i=$(( i + 2 )); prev=x; continue ;;
+           "'") if [[ "$prev" == '$' ]]; then _FALSIFY_LIT_ST+=A; else _FALSIFY_LIT_ST+=S; fi ;;
+           '"') _FALSIFY_LIT_ST+=D ;;
+           '#') [[ "$prev" == [[:space:]\;\&\|\(\)] ]] && break ;;
+           '(') if [[ "$prev" == '=' ]]; then _FALSIFY_LIT_ST+=R
+                elif [[ -n "$top" ]]; then _FALSIFY_LIT_ST+=P; fi ;;
+           ')') [[ -n "$top" ]] && _FALSIFY_LIT_ST="${_FALSIFY_LIT_ST%?}" ;;
+         esac ;;
+    esac
     prev="$c"; i=$(( i + 1 ))
   done
 }
@@ -478,7 +480,10 @@ falsify_scan_line() {   # $1 = raw line text, $2 = incoming span depth (default 
       code="${code%"${code##*[![:space:]]}"}"          # rstrip
       local lead="${code%%[![:space:]]*}" body
       body="${code#"$lead"}"
-      if (( ! _FALSIFY_PREV_CONT && ! _FALSIFY_IN_LITERAL && ! sq && ! dq && ${#SCAN_HEREDOC[@]} == 0 )) \
+      # Open at the END of the line, by the tracker's reading (which knows
+      # `$'…'`; this scanner's sq/dq does not, and is the default operators').
+      if (( ! _FALSIFY_PREV_CONT && ! _FALSIFY_IN_LITERAL && ${#SCAN_HEREDOC[@]} == 0 )) \
+         && [[ -z "$_FALSIFY_LIT_ST" ]] \
          && [[ -n "$body" && "$body" != ':' ]] \
          && [[ ! "$body" =~ ^(if|then|elif|else|fi|for|while|until|do|done|case|esac|in|select|function|time|\{|\}|\(|\)|!)([[:space:]]|$) ]] \
          && [[ ! "$body" =~ ^[^[:space:]\(\)]*\)([[:space:]]|$) ]] \
@@ -520,7 +525,7 @@ falsify_generate() {   # <file>
   local idx lineno line trimmed sha k h dash delim cand
   local carry_depth=0
   _FALSIFY_PREV_CONT=0
-  _FALSIFY_IN_LITERAL=0; _FALSIFY_LIT_SQ=0; _FALSIFY_LIT_DQ=0; _FALSIFY_LIT_ARR=0
+  _FALSIFY_IN_LITERAL=0; _FALSIFY_LIT_ST=""
   FALSIFY_MUTANTS=0
   FALSIFY_DISCARDED=0
 

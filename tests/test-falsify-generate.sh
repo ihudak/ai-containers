@@ -564,11 +564,22 @@ printf '%s
 [[ -z "$x" ]] && return 1
 (( n++ ))
 echo after
+b=(
+  $(seq 3)
+  'elem'
+)
+echo $'it\'s'
+echo one;# don't
+echo two
+v="$(
+  echo "it's"
+)"
+echo three
 EOF
 sd2_lines="$(FALSIFY_OPERATORS='stmt-delete' gen "$TMP/sd2.sh" | cut -f2 | tr '\n' ' ')"
-[[ "$sd2_lines" == "12 13 14 " ]] \
+[[ "$sd2_lines" == "12 13 14 19 20 21 25 " ]] \
   && pass "stmt-delete skips array literals and multi-line strings, and takes one-line guards" \
-  || fail "stmt-delete skips array literals and multi-line strings, and takes one-line guards (12 13 14) — got: ${sd2_lines:-none}"
+  || fail "stmt-delete skips array literals and multi-line strings, and takes one-line guards (12 13 14 19 20 21 25) — got: ${sd2_lines:-none}"
 sd_all="$(FALSIFY_OPERATORS="$ALL_OPS,stmt-delete" gen "$TMP/sd.sh" | grep -c '^stmt-delete' || true)"
 [[ "$sd_all" == "7" ]] \
   && pass "stmt-delete composes with the other operators (7 mutants alongside them)" \

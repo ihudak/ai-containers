@@ -52,7 +52,11 @@ cleanup() {
   for g in "${LAUNCHED[@]}"; do kill -KILL -- "-$g" 2>/dev/null; done
   rm -rf "$TMP"
 }
-trap cleanup EXIT
+# Confined to the owning process: this file forks (fakes started in the
+# background), and a child running this trap would remove the fixture the
+# test is still using (tests/test-exit-trap-ownership.sh).
+TRAP_OWNER="$BASHPID"
+trap '[[ "$BASHPID" == "$TRAP_OWNER" ]] && cleanup' EXIT
 
 bash -n "$REPO_DIR/capture-blocked-traffic.sh" \
   && pass "capture-blocked-traffic.sh bash -n" || fail "capture-blocked-traffic.sh bash -n"
