@@ -125,6 +125,22 @@ wait
   && pass "a .ai-containers swapped for a link at the Overwrite prompt is not written through" \
   || fail "a .ai-containers swapped for a link at the Overwrite prompt is not written through (rc=$rc): $(ls -A "$V/dir-swap") $(tail -3 "$TMP/init7.out")"
 
+# ── 2c. ... and replaced by another real directory: only the held descriptor
+# tells the two apart (on macOS by inode, /dev/fd reporting fdescfs's device) ──
+projS="$TMP/projS"; dS="$projS/.ai-containers"; mkdir -p "$projS"; git -C "$projS" init -q
+printf '%s\n\n\n\n\n\n\n\n\n\n' "$projS" | bash "$E/project-init.sh" >/dev/null 2>&1
+mkfifo "$TMP/answersS"
+( exec 3>"$TMP/answersS"
+  printf '%s\n\n\n\n\n\n\n\n\n\n' "$projS" >&3
+  for _ in $(seq 300); do grep -q 'Overwrite?' "$TMP/initS.out" 2>/dev/null && break; sleep 0.1; done
+  mv "$dS" "$projS/moved"; mkdir "$dS"
+  printf 'y\n' >&3 ) &
+bash "$E/project-init.sh" < "$TMP/answersS" > "$TMP/initS.out" 2>&1; rc=$?
+wait
+[[ $rc -ne 0 && -z "$(ls -A "$dS")" ]] && grep -q 'no longer the directory' "$TMP/initS.out" \
+  && pass "a .ai-containers swapped for another directory at the Overwrite prompt is not written into" \
+  || fail "a .ai-containers swapped for another directory at the Overwrite prompt is not written into (rc=$rc): $(ls -A "$dS") $(tail -3 "$TMP/initS.out")"
+
 # ── 3. A .ai-containers that is itself a link is refused ──
 proj3="$TMP/proj3"; mkdir -p "$proj3" "$V/dir-dest"; git -C "$proj3" init -q
 ln -s "$V/dir-dest" "$proj3/.ai-containers"

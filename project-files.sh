@@ -26,15 +26,44 @@
 # _proj_perms to its rwx string. 0, or 1 (not a regular file, a link, the
 # open is not the path's file, unreadable), or 2 (over MAX bytes, default 64 KiB).
 _proj_perms=""
+
+# _proj_fd_is PATH FD — 0 when PATH names the file open on FD. Linux's
+# /dev/fd/N is a link into /proc, so -ef compares the file itself. macOS's is
+# a node of fdescfs, whose stat carries fdescfs's device and only the inode of
+# the open file, so -ef never matched there and every project was refused; there
+# the inode is compared alone. A file swapped in on the same filesystem has
+# another inode, and its inode is not the swapper's to pick.
+_proj_fd_is() {
+  local fd="/dev/fd/$2" a b
+  [[ "$1" -ef "$fd" ]] && return 0
+  [[ -L "$fd" ]] && return 1
+  read -r a _ < <(ls -di "$1" 2>/dev/null) || return 1
+  read -r b _ < <(ls -di "$fd" 2>/dev/null) || return 1
+  [[ -n "$a" && "$a" == "$b" ]]
+}
+
+# _proj_fd_perms PATH FD — the rwx string of the file open on FD, which PATH
+# names. fdescfs reports the descriptor's open mode (r--r--r-- for a read), not
+# the file's, so off Linux the mode is read by name and the name checked again.
+_proj_fd_perms() {
+  local p
+  if [[ -L "/dev/fd/$2" ]]; then
+    ls -lnL "/dev/fd/$2" 2>/dev/null | cut -c2-10
+    return
+  fi
+  p="$(ls -ln "$1" 2>/dev/null | cut -c2-10)" || return 1
+  [[ ! -L "$1" ]] && _proj_fd_is "$1" "$2" && printf '%s\n' "$p"
+}
+
 _proj_read() {
   local f="$1" out="$2" max="${3:-65536}" fd size
   [[ -f "$f" && ! -L "$f" ]] || return 1
   # Braced: on a bare exec the 2>/dev/null would stay on the shell, and every
   # later error of the sync would vanish.
   { exec {fd}<"$f"; } 2>/dev/null || return 1
-  if [[ ! -L "$f" && -f "/dev/fd/$fd" && "$f" -ef "/dev/fd/$fd" ]] \
+  if [[ ! -L "$f" && -f "/dev/fd/$fd" ]] && _proj_fd_is "$f" "$fd" \
      && head -c "$(( max + 1 ))" <&"$fd" > "$out" \
-     && _proj_perms="$(ls -lnL "/dev/fd/$fd" 2>/dev/null | cut -c2-10)" \
+     && _proj_perms="$(_proj_fd_perms "$f" "$fd")" \
      && [[ "$_proj_perms" == [r-][w-]?[r-][w-]?[r-][w-]? ]]; then
     exec {fd}<&-
   else
@@ -73,11 +102,13 @@ _proj_write() {
   { exec {w}>"$t"; } 2>/dev/null || ok=0
   umask "$old_umask"; [[ -n "$had_c" ]] || set +C
   (( ok )) || return 1
-  if [[ -L "$t" || ! -f "$t" || ! "$t" -ef "/dev/fd/$w" ]] || ! cat "$src" >&"$w"; then ok=0
+  if [[ -L "$t" || ! -f "$t" ]] || ! _proj_fd_is "$t" "$w" || ! cat "$src" >&"$w"; then ok=0
   # /dev/fd/N is the opened file on Linux whatever the name now is; where chmod
   # cannot go through it, the name is checked to still be that file first.
-  elif [[ -n "$x" ]] && ! chmod "$x" "/dev/fd/$w" 2>/dev/null \
-       && ! { [[ ! -L "$t" && "$t" -ef "/dev/fd/$w" ]] && chmod "$x" "$t" 2>/dev/null; }; then ok=0
+  # Only a link is gone through: chmod on macOS's fdescfs node reckons u+x from
+  # the descriptor's mode (-w------- for this write) and sets the file to that.
+  elif [[ -n "$x" ]] && ! { [[ -L "/dev/fd/$w" ]] && chmod "$x" "/dev/fd/$w" 2>/dev/null; } \
+       && ! { [[ ! -L "$t" ]] && _proj_fd_is "$t" "$w" && chmod "$x" "$t" 2>/dev/null; }; then ok=0
   fi
   exec {w}>&-
   if (( ok )) && _proj_replace "$t" "$f"; then return 0; fi
@@ -89,7 +120,11 @@ _proj_write() {
 # it has become a link meanwhile. A plain `mv` moves INTO a directory a link
 # there points at; GNU's -T and BSD's -h replace the link itself instead.
 _proj_replace() {
-  mv -T -f "$1" "$2" 2>/dev/null || mv -h -f "$1" "$2" 2>/dev/null
+  mv -T -f "$1" "$2" 2>/dev/null && return 0
+  # BSD mv -h replaces a link, but moves INTO a real directory and succeeds,
+  # where GNU's -T refuses; a directory planted there is a failed write.
+  [[ -d "$2" && ! -L "$2" ]] && return 1
+  mv -h -f "$1" "$2" 2>/dev/null
 }
 
 # _perms_of FILE — FILE's rwx string (a file of this engine's, not a project's).
@@ -177,7 +212,7 @@ proj_dest_unpin() {
 }
 _proj_dest_same() {
   [[ -z "$_proj_dest_fd" ]] && return 0
-  [[ ! -L "$_proj_dest" && -d "$_proj_dest" && "$_proj_dest" -ef "/dev/fd/$_proj_dest_fd" ]]
+  [[ ! -L "$_proj_dest" && -d "$_proj_dest" ]] && _proj_fd_is "$_proj_dest" "$_proj_dest_fd"
 }
 
 # proj_dest_ok DEST — 0 when DEST (a project's .ai-containers) is a real
