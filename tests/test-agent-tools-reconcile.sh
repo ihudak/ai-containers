@@ -312,6 +312,15 @@ run_case "claude-code" "$h" >/dev/null
 [[ "$(readlink "$h/.local/bin/claude" 2>/dev/null)" == "$h/.local/share/claude/versions/9.9.100" ]] \
   && pass "a leftover partial download (<v>.tmp.*) is never linked as the launcher" \
   || fail "a leftover partial download (<v>.tmp.*) is never linked as the launcher (got: $(readlink "$h/.local/bin/claude" 2>/dev/null || echo none))"
+# Strict X.Y.Z: names with fewer or more dotted parts sort above 9.9.100 too.
+for name in 10 9.9.100.1; do
+  printf '#!/bin/sh\n' > "$h/.local/share/claude/versions/$name"; chmod +x "$h/.local/share/claude/versions/$name"
+done
+rm -f "$h/.local/bin/claude"; : > "$h/calls.log"
+run_case "claude-code" "$h" >/dev/null
+[[ "$(readlink "$h/.local/bin/claude" 2>/dev/null)" == "$h/.local/share/claude/versions/9.9.100" ]] \
+  && pass "a non-X.Y.Z entry (10, 9.9.100.1) is never linked as the launcher" \
+  || fail "a non-X.Y.Z entry (10, 9.9.100.1) is never linked as the launcher (got: $(readlink "$h/.local/bin/claude" 2>/dev/null || echo none))"
 rm -rf "$h"
 # …nor counted as a native install, which would keep the leftover npm Claude
 # from being used when the partial is the only thing in versions/.
@@ -327,6 +336,22 @@ rm -rf "$bin"
   && pass "a partial download alone does not count as a native install" \
   || fail "a partial download alone does not count as a native install (got: $(readlink "$h/.local/bin/claude" 2>/dev/null || echo none))"
 rm -rf "$h"
+# Strict X.Y.Z: an entry with fewer or more dotted parts is not a version either,
+# neither as the launcher nor as proof of a native install.
+for name in 2 2.1 2.1.0.1; do
+  h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
+  install -d "$h/.local/share/claude/versions" "$h/.local/state/claude" "$h/.ai-tools/npm/bin"
+  printf '#!/bin/sh\n' > "$h/.local/share/claude/versions/$name"; chmod +x "$h/.local/share/claude/versions/$name"
+  printf '#!/bin/sh\n' > "$h/.ai-tools/npm/bin/claude"; chmod +x "$h/.ai-tools/npm/bin/claude"
+  bin="$(mktemp -d)"; mk_stubs "$bin" "$h"
+  PATH="$bin:$PATH" HOME="$h" AI_RUNTIME_TOOLS="claude-code" CLAUDE_FAIL=1 \
+    bash "$REPO_DIR/agent-tools-reconcile.sh" >"$h/out.log" 2>&1
+  rm -rf "$bin"
+  [[ "$(readlink "$h/.local/bin/claude" 2>/dev/null)" == "$h/.ai-tools/npm/bin/claude" ]] \
+    && pass "a non-X.Y.Z entry ('$name') is not a native install" \
+    || fail "a non-X.Y.Z entry ('$name') is not a native install (got: $(readlink "$h/.local/bin/claude" 2>/dev/null || echo none))"
+  rm -rf "$h"
+done
 # An EMPTY versions directory (sandbox.sh makes and mounts its parent) holds no
 # version: the glob comes back literal, and that must not count as installed.
 h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }

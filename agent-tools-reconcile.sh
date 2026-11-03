@@ -131,7 +131,7 @@ install_claude_native() {
     # Only strict X.Y.Z names: an interrupted `claude update` leaves a partial
     # download like 2.1.312.tmp.298.<ts>.1 that sort -V ranks ABOVE 2.1.312, and
     # linking that truncated binary makes claude fail with "is truncated".
-    while IFS= read -r _v; do latest="$_v"; done < <(cd "$versions" && printf '%s\n' * | grep -E '^[0-9]+(\.[0-9]+)*$' | sort -V)
+    while IFS= read -r _v; do latest="$_v"; done < <(cd "$versions" && printf '%s\n' * | grep -E '^[0-9]+(\.[0-9]+){2}$' | sort -V)
   fi
   if [[ -n "$latest" && -x "$versions/$latest" ]]; then
     mkdir -p "$HOME/.local/bin"
@@ -252,7 +252,7 @@ done
 native_claude_present() {   # the highest version is executable, as install_claude_native asks
   local versions="$HOME/.local/share/claude/versions" latest="" _v
   [[ -d "$versions" ]] || return 1
-  while IFS= read -r _v; do latest="$_v"; done < <(cd "$versions" && printf '%s\n' * | grep -E '^[0-9]+(\.[0-9]+)*$' | sort -V)
+  while IFS= read -r _v; do latest="$_v"; done < <(cd "$versions" && printf '%s\n' * | grep -E '^[0-9]+(\.[0-9]+){2}$' | sort -V)
   [[ -n "$latest" && -x "$versions/$latest" ]]
 }
 if [[ ",$tools," == *",claude-code,"* ]] && ! native_claude_present && [[ -x "$npm_bin/claude" ]]; then
