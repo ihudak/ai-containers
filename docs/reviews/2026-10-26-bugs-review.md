@@ -12,6 +12,7 @@
 - **Updated 2026-10-28:** batch 11 removes `SANDBOX_GIT_FIXTURES` (GIT-11, GIT-21, LNCH-16) and the `host` group, which mounted the real `$HOME` dot-directories read-write (the user's choice; see the CHANGELOG).
 - **Updated 2026-11-02:** GAP-6 (feature gaps review) is on main (`90f0417`..`1ca06cf`). Section 18 lists what its reviews left open (PRJ-10, since fixed; PRJ-11), reviewed up to `1ca06cf` and, for PRJ-10's fix, `18fb842`.
 - **Updated 2026-11-03:** section 19, found while doing GAP-1/3/4 (falsify), has TST-24, FIXED.
+- **Updated 2026-11-03:** section 21, found while measuring GAP-2's oracle selection on sandbox.sh: TST-26, FIXED; GIT-23, open.
 - **Companion:** [2026-10-26-feature-gaps-review.md](2026-10-26-feature-gaps-review.md).
 - **Confidence:** CONFIRMED = reproduced, or unambiguous from the code. PLAUSIBLE = strong reasoning, not reproduced (usually needs hardware or a platform not available here); verify before fixing.
 - **Citations** are by snippet, per AGENTS.md "Citing code". Scratch repro paths mentioned in entries were session-local and may no longer exist; each entry describes its repro in full.
@@ -1474,6 +1475,27 @@ The falsify work (2026-11-03) activated nine targets, added the `stmt-delete` op
 - Introduced: `6ce12fb` (PRJ-11), with the test.
 - What's wrong: CI's `suite-floor` and `verify-on-host.sh`'s floor container run the suite as root over a checkout another user owns: uid 1001 for the runner, the developer's uid 1000 locally. As root, `rsync -a` keeps that owner on the copy, so git refuses to commit in it. Both environments trust every repository through `safe.directory`, but in the global config, which the test replaces with a `GIT_CONFIG_GLOBAL` of its own. So the scaffold failed (`SCAFFOLD-FAILED: engine repository`). `tests/test-sync-no-follow.sh` makes the same copy but runs no git in it.
 - Fix direction: done as above.
+
+## 21. Found while measuring GAP-2
+
+A sample of sandbox.sh's mutants (174, `--jobs 10 --timeout 180`) run with `run.sh --select-oracles` on 2026-11-03, on the Linux developer host, at `12e2064`.
+
+### TST-26: falsify's TIMEOUT note named `--timeout`, not the clock the set ran against
+- **Status: FIXED** (2026-11-03). Each mutant's worker records the clock its set ran against (`FR_PID_CLOCK`), and the note prints it. Two checks in `tests/test-falsify-run.sh` section 11: a two-test set that hangs at `--timeout 1` must say "2s". A `--select-oracles` subset of one test that prints `FAIL:` and then hangs must say "2s" too, though its record names one test. The first was seen failing on the old code; the second against a variant that read the clock from the record.
+- Severity: LOW (a report line; no verdict changed). Confidence: CONFIRMED (in the sample's stderr)
+- Location: `tests/falsify/run.sh`, `fr_harvest()`
+- Introduced: `92abb5f` (2026-08-21), which scaled the clock with the set's size and left the note naming `${FR_TIMEOUT}`.
+- What's wrong: the clock is `--timeout` times the set's size (`fr_effective_timeout()`), and the note exists to show that a timeout ran at least as long as its clock (backlog F50). For a 24-test set at `--timeout 180` it printed "ran 4321.0s against a 180s clock (killed before the clock ran out)", so the relationship it was meant to show read as inverted.
+- Fix direction: done as above.
+
+### GIT-23: the 2 s read bound refuses a launch under load, and the refusal blames a FIFO
+- **Status: OPEN.**
+- Severity: LOW for the launcher (only a config of thousands of entries comes near the bound, and the refusal can be retried); it also makes `test-git-internals-ro.sh` load-sensitive, which a falsify run counts against its kills. Confidence: CONFIRMED (once, under load; not reproduced on demand)
+- Location: `sandbox.sh`, `_git_file_config()` (`GIT_DIR=/dev/null "${_rd_t[@]}" git config --file "$f" "$@" || rc=$?`) and `_rd_fail()`
+- Introduced: `86427b0` (batch 10, G84/G86), which put every small git file read under a 2 s bound.
+- What's wrong: `_git_file_config()` reads a protected config with `git config --file` under `timeout 2`, and a read cut off refuses the launch through `_rd_fail()`, as it should for a FIFO. But the bound is a time, so a regular file that is only slow to parse is refused too. In the sample, one of the two control runs (the pristine set, under the run's own 10 workers) failed in G38, whose config holds 5,000 include entries: `ERROR: …/proj/many38/.git/config could not be read within its bound (a FIFO swapped in, or too big); refusing the launch.` The file was neither a FIFO nor over the size limit. The run then exited 1 ("1 of 2 control run(s) FAILED"), and a mutant scored KILLED in that run may have been killed by the machine.
+- Failure scenario: a launch on a host busy enough that `git config --list` of a large config takes over 2 s, such as a parallel test run, or a slow filesystem (WSL drvfs, a network home). The launch is refused, and the message names a cause that did not happen.
+- Fix direction: on a cut-off read of a path that is still a regular file within the size limit, retry once with a longer bound before refusing, and say which happened ("took longer than 2 s" vs "not a regular file"). The FIFO case stays a refusal: a FIFO never becomes readable in time. G38's own 15 s threshold is load-sensitive in the same way.
 
 ## GIT
 
