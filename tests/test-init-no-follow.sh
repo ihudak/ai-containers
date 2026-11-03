@@ -22,7 +22,10 @@ unset VAULT_PATH SPECS_PATH DOCS_PATH ARCHITECTURE_REPO_PATH EXTRA_MOUNTS REPOS 
 
 # An engine copy, so projects.conf and the shared files land in TMP.
 E="$TMP/engine"; mkdir -p "$E"
-rsync -a --exclude='.git' --exclude='tests' --exclude='docs' --exclude='projects.conf' "$REPO_DIR/" "$E/"
+# --no-owner/--no-group: as root (the bash-floor CI job, whose checkout is the
+# runner's uid 1001) -a would hand $E itself to 1001, and git — with this test's
+# empty global config — refuses it as "dubious ownership".
+rsync -a --no-owner --no-group --exclude='.git' --exclude='tests' --exclude='docs' --exclude='projects.conf' "$REPO_DIR/" "$E/"
 # A git repository with a tag, so its version is known and engine-version is written.
 git -C "$E" init -q && git -C "$E" add -A \
   && git -C "$E" -c user.email=t@example.invalid -c user.name=t commit -qm engine && git -C "$E" tag v9.9.9 \
