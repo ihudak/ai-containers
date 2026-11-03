@@ -542,7 +542,8 @@ falsify_generate() {   # <file>
   local -a pcode=()
   local fname h hk ind found pi pdash pdelim pcand
   if [[ -n "${FALSIFY_FUNCTIONS:-}" ]]; then
-    local -a phq=()
+    local -a phq=() fnames=()
+    _FALSIFY_LIT_ST=""
     for (( pi = 0; pi < ${#lines[@]}; pi++ )); do
       pcode[pi]=""
       if (( ${#phq[@]} > 0 )); then
@@ -551,12 +552,19 @@ falsify_generate() {   # <file>
         [[ "$pcand" == "$pdelim" ]] && phq=("${phq[@]:1}")
         continue
       fi
+      # A line that starts inside a multi-line string (an awk program) is
+      # data: a `}` there is not the function's closing brace.
+      _falsify_literal_track "${lines[pi]}"
+      (( _FALSIFY_IN_LITERAL )) && continue
       [[ "${lines[pi]}" =~ ^[[:space:]]*(#|$) ]] && continue
       falsify_scan_line "${lines[pi]}" 0
       pcode[pi]="${lines[pi]:0:SCAN_CODE_END}"
       for h in "${SCAN_HEREDOC[@]}"; do phq+=("$h"); done
     done
-    for fname in ${FALSIFY_FUNCTIONS//,/ }; do
+    _FALSIFY_LIT_ST=""; _FALSIFY_IN_LITERAL=0
+    # Split on commas, never on whitespace with globbing: `f*` is not a name.
+    IFS=',' read -r -a fnames <<<"$FALSIFY_FUNCTIONS"
+    for fname in "${fnames[@]}"; do
       if [[ ! "$fname" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
         printf 'falsify: %s: FALSIFY_FUNCTIONS entry %s is not a function name\n' "$file" "$fname" >&2
         return 2

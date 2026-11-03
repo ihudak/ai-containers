@@ -25,7 +25,11 @@
 #                  kind `extract`, naming the functions; it counts for those
 #                  functions, not the file's top level, and the walk does not
 #                  continue into the file. An extraction only read, a range
-#                  that deletes, a redirect target: none of them count
+#                  that deletes, a redirect target: none of them count. A
+#                  helper co-extracted with a function that calls it is NOT
+#                  credited unless the test calls it too (the body is in the
+#                  target, not the test, and is not read): an EXECUTED-PARTIAL
+#                  row listing such a helper is refused, loudly, not missed
 #                a path handed to `bash -c BODY _ <path>` whose body runs it as
 #                  "$1"/"$@" (tests/test-parsers.sh and tests/test-tools-d.sh
 #                   reach sandbox.sh only this way)
@@ -388,11 +392,17 @@ _ft_refs() {  # $1 = absolute file
             s2 = T[j]
             while (match(s2, /\/\^[A-Za-z_][A-Za-z0-9_]*/)) {
               nm = substr(s2, RSTART + 2, RLENGTH - 2)
+              negated = (RSTART > 1 && substr(s2, RSTART - 1, 1) == "!")
               rest2 = substr(s2, RSTART + RLENGTH)
               s2 = rest2
+              if (negated) continue
               if (rest2 !~ /^(\\?\(\\?\))[^\/]*\/,\/\^/) continue
               after = rest2; sub(/^[^\/]*\/,\/\^[^\/]*\//, "", after)
-              if (after ~ /^[ \t]*[d!]/) continue
+              # sed `!d` deletes everything BUT the range: an extraction. A
+              # bare `d`, `{d}`, awk `{next}`, or any other `!` drops it.
+              if (after !~ /^[ \t]*![ \t]*d/) {
+                if (after ~ /^[ \t]*(d|!|[{][ \t]*(d|next))/) continue
+              }
               fns = fns (fns == "" ? "" : ",") nm
             }
             j++
@@ -422,7 +432,9 @@ _ft_refs() {  # $1 = absolute file
         if (trim(raw) == hd) { hd = ""; next }
         # A heredoc body is data for every reference rule; only the names it
         # calls are collected, for an extraction it may be the driver of.
+        ds = DOLLARSEEN
         NOEMIT = 1; n = tokenize(raw, T); walk(T, n, start, 0, 0); delete T; NOEMIT = 0
+        DOLLARSEEN = ds
         next
       }
       # ── multi-line single-quoted strings ──────────────────────────────────
@@ -864,7 +876,9 @@ ft_check() {  # $1=conf
           "$conf" "$lineno" "$target" >&2
         problems=$((problems + 1))
       else
-        for fn in ${funcs//,/ }; do
+        local -a flist=()
+        IFS=',' read -r -a flist <<<"$funcs"
+        for fn in "${flist[@]}"; do
           if [[ ! "$fn" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
             printf 'ERROR: %s:%s: %s names "%s", which is not a function name\n' \
               "$conf" "$lineno" "$target" "$fn" >&2
@@ -906,7 +920,7 @@ ft_check() {  # $1=conf
           for mo in "${mos[@]}"; do
             mran=0
             [[ -n "${D_WHOLE[$target|$mo]:-}" ]] && mran=1
-            for mf in ${funcs//,/ }; do [[ -n "${D_EXTRACT_FN[$target|$mo|$mf]:-}" ]] && mran=1; done
+            for mf in "${flist[@]}"; do [[ -n "${D_EXTRACT_FN[$target|$mo|$mf]:-}" ]] && mran=1; done
             if (( ! mran )); then
               printf 'ERROR: %s:%s: %s names oracle %s, which runs none of the functions the row lists — it can kill none of its mutants\n' \
                 "$conf" "$lineno" "$target" "$mo" >&2

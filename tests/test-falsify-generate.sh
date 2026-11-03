@@ -638,6 +638,27 @@ fn2="$(FALSIFY_FUNCTIONS=cleanup bash "$GEN" "$TMP/fn2.sh" 2>"$TMP/fn2.err" | cu
 grep -q 'unit cleanup = lines 6-8' "$TMP/fn2.err" \
   && pass "each function's span is printed, so a short unit can be seen" \
   || fail "each function's span is printed — stderr: $(cat "$TMP/fn2.err")"
+# A `}` at the function's indentation INSIDE a multi-line string (an awk
+# program) does not end the unit.
+cat > "$TMP/fn3.sh" <<'EOF'
+#!/usr/bin/env bash
+f() {
+  awk '
+}
+'
+  [[ -n "$1" ]] && echo x
+}
+EOF
+fn3="$(FALSIFY_FUNCTIONS=f bash "$GEN" "$TMP/fn3.sh" 2>"$TMP/fn3.err" | cut -f2 | sort -un | tr '\n' ' ')"
+[[ "$fn3" == "6 " ]] && grep -q 'unit f = lines 2-7' "$TMP/fn3.err" \
+  && pass "a brace inside a multi-line string does not end the unit (2-7, mutant on 6)" \
+  || fail "a brace inside a multi-line string does not end the unit — got: ${fn3:-none}; $(cat "$TMP/fn3.err")"
+# A list is split on commas, never glob-expanded: `f*` is not a name.
+mkdir -p "$TMP/globdir"; : > "$TMP/globdir/f"   # `f*` would expand to exactly `f` here
+( cd "$TMP/globdir" && FALSIFY_FUNCTIONS='f*' bash "$GEN" "$TMP/fn3.sh" >/dev/null 2>"$TMP/fn3g.err" ); rc=$?
+[[ "$rc" -eq 2 ]] && grep -q 'not a function name' "$TMP/fn3g.err" \
+  && pass "a FALSIFY_FUNCTIONS entry is never glob-expanded into a name" \
+  || fail "a FALSIFY_FUNCTIONS entry is never glob-expanded into a name — rc=$rc: $(cat "$TMP/fn3g.err")"
 FALSIFY_FUNCTIONS='fx.c' bash "$GEN" "$TMP/fn.sh" >/dev/null 2>"$TMP/fn.err"; rc=$?
 [[ "$rc" -eq 2 ]] && grep -q 'not a function name' "$TMP/fn.err" \
   && pass "a FALSIFY_FUNCTIONS entry that is not a name is refused (exit 2)" \

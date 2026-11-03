@@ -514,7 +514,7 @@ mkdir -p "$FIX/tests" "$FIX/bin"
 for f in sourced.sh parsed-only.sh shellchecked.sh grepped.sh heredoc-named.sh \
          aliased.sh var-path.sh transitive.sh never-mentioned.sh \
          printf-sourced.sh printf-prose.sh argv-sourced.sh argv-not-dragged.sh \
-         awk-read.sh redir-out.sh; do
+         awk-read.sh redir-out.sh v-opnd.sh f-opnd.sh argv-heredoc.sh; do
   printf '#!/usr/bin/env bash\n: %s\n' "$f" > "$FIX/$f"
 done
 cat > "$FIX/sourced.sh" <<'FIXEOF'
@@ -546,6 +546,12 @@ fx_e() {
 }
 fx_f() {
   echo f
+}
+fx_g() {
+  echo g
+}
+fx_h() {
+  echo h
 }
 FIXEOF
 cat > "$FIX/tests/test-other.sh" <<'FIXEOF'
@@ -581,6 +587,15 @@ fx_e
 awk '/^fx_f\(\)/{print} /^fx_a\(\) \{/,/^}$/{print}' "$REPO_DIR/extracted.sh" > /dev/null
 fx_f
 sed -n '/^fx_a()/,/^}/p' "$REPO_DIR/extracted.sh" > "$REPO_DIR/redir-out.sh"
+awk -v o="$REPO_DIR/v-opnd.sh" -f "$REPO_DIR/f-opnd.sh" '/^fx_a\(\) \{/,/^}$/' "$REPO_DIR/extracted.sh"
+eval "$(sed '/^fx_g()/,/^}/!d' "$REPO_DIR/extracted.sh")"
+fx_g
+sed '/^fx_h()/,/^}/{d}' "$REPO_DIR/extracted.sh" > /dev/null
+fx_h
+bash -c 'source "$1"; cat <<IN
+bash -c "echo inner"
+IN
+' _ "$REPO_DIR/argv-heredoc.sh"
 awk '{ print }' "$REPO_DIR/awk-read.sh" > /dev/null
 cat > "$REPO_DIR/written-stub.sh" <<'INNER'
 bash /elsewhere/heredoc-named.sh
@@ -592,10 +607,12 @@ git -C "$FIX" add -A 2>/dev/null
 
 synth_want="$(cat <<'WANT'
 aliased.sh|EXECUTED
+argv-heredoc.sh|EXECUTED
 argv-not-dragged.sh|NOT-EXECUTED
 argv-sourced.sh|EXECUTED
 awk-read.sh|NOT-EXECUTED
 extracted.sh|EXECUTED
+f-opnd.sh|NOT-EXECUTED
 grepped.sh|NOT-EXECUTED
 heredoc-named.sh|NOT-EXECUTED
 never-mentioned.sh|NOT-EXECUTED
@@ -606,6 +623,7 @@ redir-out.sh|NOT-EXECUTED
 shellchecked.sh|NOT-EXECUTED
 sourced.sh|EXECUTED
 transitive.sh|EXECUTED
+v-opnd.sh|NOT-EXECUTED
 var-path.sh|EXECUTED
 WANT
 )"
@@ -646,10 +664,13 @@ check "  a function extracted by an awk or sed range is executed" \
   "EXECUTED" "$(synth_verdict extracted.sh)"
 check "  a plain awk read of a file is not" "NOT-EXECUTED" "$(synth_verdict awk-read.sh)"
 check "  a redirect target of an extraction is not an extracted file" "NOT-EXECUTED" "$(synth_verdict redir-out.sh)"
+check "  an awk -v value is not an extracted file" "NOT-EXECUTED" "$(synth_verdict v-opnd.sh)"
+check "  an awk -f program file is not an extracted file" "NOT-EXECUTED" "$(synth_verdict f-opnd.sh)"
+check "  a bash -c body's argument survives a heredoc inside the body" "EXECUTED" "$(synth_verdict argv-heredoc.sh)"
 synth_ev="$(FALSIFY_REPO="$FIX" FALSIFY_TESTS_DIR="$FIX/tests" bash "$DERIVE" --evidence 2>/dev/null)"
 synth_fns="$(awk -F'|' '$1 == "extracted.sh" && $2 == "test-synth.sh" && $4 == "extract" { print $6 }' <<<"$synth_ev" | tr ',' '\n' | sort -u | tr '\n' ' ')"
 check "  test-synth.sh is credited with exactly the functions it extracts AND calls (not one only read, deleted, or beside a range)" \
-  "fx_a fx_c " "$synth_fns"
+  "fx_a fx_c fx_g " "$synth_fns"
 grep -qE '^extracted\.sh\|test-synth\.sh\|tests/test-synth\.sh:[0-9]+\|extract\|.*\|fx_a$' <<<"$synth_ev" \
   && pass "  … and the evidence names the extracted function" \
   || fail "  … and the evidence names the extracted function: $(grep extract <<<"$synth_ev")"
@@ -668,6 +689,9 @@ parsed-only.sh|GREPPED-ONLY|-
 printf-prose.sh|GREPPED-ONLY|-
 printf-sourced.sh|EXECUTED-WHOLE|test-synth.sh
 redir-out.sh|GREPPED-ONLY|-
+v-opnd.sh|GREPPED-ONLY|-
+f-opnd.sh|GREPPED-ONLY|-
+argv-heredoc.sh|EXECUTED-WHOLE|test-synth.sh
 shellchecked.sh|GREPPED-ONLY|-
 sourced.sh|EXECUTED-WHOLE|test-synth.sh
 transitive.sh|EXECUTED-WHOLE|test-synth.sh
@@ -687,7 +711,7 @@ extracted.sh|EXECUTED-WHOLE|test-synth.sh")"
 grep -q 'extracted.sh is EXECUTED-WHOLE, but its oracles only extract functions from it' <<<"$out" \
   && pass "EXECUTED-WHOLE for a file the oracles only extract from is refused" \
   || fail "EXECUTED-WHOLE for a file the oracles only extract from is refused: $out"
-for rd in fx_d fx_e fx_f; do
+for rd in fx_d fx_e fx_f fx_h; do
   out="$(synth_conf "p-$rd" "$synth_rows
 extracted.sh|EXECUTED-PARTIAL|test-synth.sh|fx_a,$rd")"
   grep -q "names function $rd, which none of its oracles runs" <<<"$out" \
