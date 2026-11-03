@@ -1694,7 +1694,12 @@ fr_run_control() {   # <slot> <target> <oracle> <n> <resultfile>
 # ── the worker pool ───────────────────────────────────────────────────────────
 declare -A FR_PID_SLOT=()
 declare -A FR_PID_RESULT=()
-# What `wait` said about each finished worker. Parallel to the two maps above
+# The clock each mutant's oracle ran against, for its TIMEOUT note: --timeout
+# times the size of the target's WHOLE set (fr_effective_timeout()), which is
+# also the clock a --select-oracles subset runs against, so the record's own
+# oracle field, a subset there, cannot give it.
+declare -A FR_PID_CLOCK=()
+# What `wait` said about each finished worker. Kept beside the maps above
 # and populated by fr_wait_for_slot, because the status is the ONLY thing that
 # distinguishes a worker that gave up from one that was killed — see
 # fr_exit_cause.
@@ -1755,7 +1760,10 @@ fr_harvest() {   # <pid> — print that mutant's records and tally them
   local line f2 f3 f7 c_target c_oracle c_sig c_ms co_line rs_detail
   local cause
   cause="$(fr_exit_cause "${FR_PID_STATUS[$pid]:-}")"
-  unset "FR_PID_SLOT[$pid]" "FR_PID_RESULT[$pid]" "FR_PID_STATUS[$pid]"
+  # `?` rather than --timeout when a launch site set none: falling back to
+  # --timeout would bring back, in silence, the wrong clock this map replaced.
+  local clock="${FR_PID_CLOCK[$pid]:-?}"
+  unset "FR_PID_SLOT[$pid]" "FR_PID_RESULT[$pid]" "FR_PID_STATUS[$pid]" "FR_PID_CLOCK[$pid]"
   FR_FREE_SLOTS+=("$slot")
   if [[ ! -s "$res" ]]; then
     fr_err "a mutant worker produced no verdict at all (slot $slot; $cause) — not counted as a kill"
@@ -1798,9 +1806,9 @@ fr_harvest() {   # <pid> — print that mutant's records and tally them
             # as long as its clock, and anything else is the tier reporting a
             # verdict it did not observe.
             if [[ "$f2" == "UNPROVEN" ]]; then
-              fr_warn "TIMEOUT: the oracle ran $(fr_secs "$f8") against a ${FR_TIMEOUT}s clock (UNPROVEN — nothing was observed asserting): $f3"
+              fr_warn "TIMEOUT: the oracle ran $(fr_secs "$f8") against a ${clock}s clock (UNPROVEN — nothing was observed asserting): $f3"
             else
-              fr_warn "TIMEOUT: the oracle ran $(fr_secs "$f8") against a ${FR_TIMEOUT}s clock (killed before the clock ran out): $f3"
+              fr_warn "TIMEOUT: the oracle ran $(fr_secs "$f8") against a ${clock}s clock (killed before the clock ran out): $f3"
             fi ;;
         esac
         # A signal death is UNPROVEN, and silently so it would look like an
@@ -2302,7 +2310,7 @@ fr_usage() { sed -n '2,/^# ── end of --help/p' "${BASH_SOURCE[0]}" | sed '$d
 # ── main ──────────────────────────────────────────────────────────────────────
 falsify_main() {
   local i n target oracle mutants total=0 t_run t_target skipped_n
-  local n_mut ctl_at ctl_n ci ctl_pos cslot cres
+  local n_mut ctl_at ctl_n ci ctl_pos cslot cres set_clock
   local seq op lineno sha text slot res rc=0
   local FR_OPERATORS_FLAG=0
 
@@ -2547,6 +2555,7 @@ falsify_main() {
     # the (( )) below die with "syntax error in expression" on a target whose
     # mutant list came back empty.
     n_mut="$(grep -c . "$mutants" 2>/dev/null)"; n_mut="${n_mut:-0}"
+    set_clock="$(fr_effective_timeout "$oracle")"
     ctl_at=""
     if (( FR_CONTROLS > 0 && n_mut > 0 )); then
       for (( ci = 1; ci <= FR_CONTROLS; ci++ )); do
@@ -2569,6 +2578,7 @@ falsify_main() {
       fr_run_mutant "$slot" "$target" "$oracle" "$seq" "$lineno" "$op" "$sha" "$text" "$res" &
       FR_PID_SLOT["$!"]="$slot"
       FR_PID_RESULT["$!"]="$res"
+      FR_PID_CLOCK["$!"]="$set_clock"
 
       # A control goes into a slot of its own, right after the mutant at this
       # position, so it competes with the same workers rather than waiting for

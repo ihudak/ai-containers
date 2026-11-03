@@ -166,6 +166,21 @@ else
   sleep 300
 fi
 EOF
+# The same, saying so before it hangs: a kill with a FAIL: line that then runs
+# out of the clock (KILLED, timeout+failline).
+cat > "$FX/tests/test-fx-slow-fail.sh" <<'EOF'
+#!/usr/bin/env bash
+set -uo pipefail
+FX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=/dev/null
+source "$FX_DIR/fixture-slow.sh"
+if fxs_ok; then
+  printf 'PASS: fxs_ok succeeded\n'
+else
+  printf 'FAIL: fxs_ok failed\n'
+  sleep 300
+fi
+EOF
 
 # Oracle F — its workspace collapses when its target is mutated. Green on the
 # pristine tree (it must be: run.sh refuses to measure a target whose baseline
@@ -887,6 +902,40 @@ else
 fi
 check "  … counted as unproven, NOT as a kill, in TOTAL" "1" \
   "$(grep -c '^TOTAL|1|1|0|0|1|1|100|' <<< "$FX_OUT")"
+
+# The clock a set runs against is --timeout times the set's size
+# (fr_effective_timeout()), and the note must name THAT clock. With one oracle
+# the two are the same number, which is why the check above cannot tell them
+# apart; a 24-test set measured at --timeout 180 printed "ran 4321.0s against a
+# 180s clock (killed before the clock ran out)" — the relationship this note
+# exists to show, inverted. A two-test set at --timeout 1 runs against 2s.
+CONF_SLOW2="$(conf slow2 'fixture-slow.sh|EXECUTED-WHOLE|test-fx-sel-bystander.sh,test-fx-slow.sh')"
+fx_run "$RUN" "$CONF_SLOW2" "$FX" "$TMP/wit-slow2" --jobs 1 --timeout 1
+check "a two-test set that hangs is UNPROVEN" "UNPROVEN" "$(fx_verdict "$FX_OUT" 'return 1')"
+grep -qE 'TIMEOUT: the oracle ran [0-9]+\.[0-9]s against a 2s clock \(UNPROVEN' <<< "$FX_ERR" \
+  && pass "  … and its note names the set's clock, 2s, not --timeout's 1s" \
+  || fail "  … and its note names the set's clock, 2s, not --timeout's 1s: $FX_ERR"
+to_ran="$(sed -n 's/.*the oracle ran \([0-9][0-9]*\)\.[0-9]s against a \([0-9][0-9]*\)s clock.*/\1 \2/p' <<< "$FX_ERR" | head -1)"
+[[ -n "$to_ran" ]] && (( ${to_ran% *} >= ${to_ran#* } )) \
+  && pass "  … and it ran at least that long (${to_ran% *}s vs ${to_ran#* }s)" \
+  || fail "  … and it ran at least that long (got '${to_ran:-nothing}')"
+# Under --select-oracles a subset that kills decides alone, and its record names
+# the SUBSET: here test-fx-slow-fail.sh (the bystander never runs the target, so
+# it is NONE), which prints its FAIL: line and then hangs on the whole set's
+# clock. The note must still say 2s, which the record's oracle field, one test,
+# cannot give: the sandbox.sh measurement's two such kills said "180s".
+CONF_SLOW2F="$(conf slow2f 'fixture-slow.sh|EXECUTED-WHOLE|test-fx-sel-bystander.sh,test-fx-slow-fail.sh')"
+fx_run "$RUN" "$CONF_SLOW2F" "$FX" "$TMP/wit-slow2f" --jobs 1 --timeout 1 --select-oracles
+check "  … under --select-oracles, a one-test subset that kills and then hangs decides alone" \
+  "KILLED|test-fx-slow-fail.sh" \
+  "$(awk -F'|' '$1 == "MUTANT" { print $2 "|" $4 }' <<< "$FX_OUT")"
+grep -qE 'TIMEOUT: the oracle ran [0-9]+\.[0-9]s against a 2s clock \(killed before' <<< "$FX_ERR" \
+  && pass "  … and its note names the whole set's clock, 2s, which the subset ran against" \
+  || fail "  … and its note names the whole set's clock, 2s, which the subset ran against: $FX_ERR"
+to_ran="$(sed -n 's/.*the oracle ran \([0-9][0-9]*\)\.[0-9]s against a \([0-9][0-9]*\)s clock.*/\1 \2/p' <<< "$FX_ERR" | head -1)"
+[[ -n "$to_ran" ]] && (( ${to_ran% *} >= ${to_ran#* } )) \
+  && pass "  … and it ran at least that long (${to_ran% *}s vs ${to_ran#* }s)" \
+  || fail "  … and it ran at least that long (got '${to_ran:-nothing}')"
 
 # ── 11b. THE TIMEOUT FLAG MUST NAME WHO ARMED IT ──────────────────────────────
 # `out` is "$FR_OUT/w$slot.log" — one file per WORKER SLOT, reused by every
