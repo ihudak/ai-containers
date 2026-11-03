@@ -16,9 +16,10 @@
 #                           and each mutant then runs only the tests whose trace
 #                           covers its statement, on the whole set's clock. A
 #                           subset that kills with an assertion decides; one
-#                           that SURVIVES is followed by the rest of the set
-#                           (NOTE|selection-miss when that kills); anything else
-#                           by the whole set (NOTE|selection-rerun). So every
+#                           that SURVIVES or TIMES OUT is followed by the rest of
+#                           the set (NOTE|selection-miss when a survivor's rest
+#                           kills); anything else by the whole set
+#                           (NOTE|selection-rerun after either). So every
 #                           verdict is the whole set's. A test red on its own on
 #                           the pristine tree turns selection off for its
 #                           target. A line no test
@@ -89,8 +90,8 @@
 #   NOTE|selection-miss|<identity>|<detail>   a selected subset survived and the
 #              rest of the set killed: the verdict is the full set's.
 #   NOTE|selection-rerun|<identity>|<detail>   a selected subset neither killed
-#              with an assertion nor survived; the whole set ran, and its
-#              verdict is the one recorded.
+#              with an assertion nor survived: after a timeout the rest of the
+#              set ran, otherwise the whole set, and the verdict is the set's.
 #   NOTE|selection-total|-|<detail>   once, at the end of a --select-oracles
 #              run: how many mutants were misses and reruns.
 #   OPERATORS|<target>|<list>      one per target, right after RUN: the
@@ -992,6 +993,14 @@ falsify_run_oracle() {   # <tree> <oracle-set> <outfile> <timeout-seconds> [<lab
   # The group is this invocation's by construction (set -m above), and the
   # driver has already exited, so anything still in it is an orphan.
   kill -TERM -"$pid" 2>/dev/null || true
+  # THE WATCHDOG FIRED: it TERMed the group and would KILL it a second later,
+  # but it is TERMed itself just below, in that second. What is still in the
+  # group ignored TERM, and would act on the next run in this tree (re-review
+  # of bb16e15: an oracle deaf to TERM outlived its timeout).
+  if [[ -f "$flag" ]] && kill -0 -"$pid" 2>/dev/null; then
+    sleep 1
+    kill -KILL -"$pid" 2>/dev/null || true
+  fi
   if [[ -n "$FR_SCRATCH" ]]; then rm -f "$FR_SCRATCH/pg/$pid"; fi
   kill -TERM -"$dog" 2>/dev/null || kill -TERM "$dog" 2>/dev/null
   wait "$dog" 2>/dev/null
@@ -1303,19 +1312,32 @@ fr_run_mutant() {   # <slot> <target> <oracle> <seq> <lineno> <op> <sha> <text> 
   # that is fewer than the whole set. The verdict recorded is the one the
   # whole set gives:
   #   - a subset that KILLS WITH AN ASSERTION (a FAIL: line) decides: the whole
-  #     set runs that test too, and a FAIL: line is a kill whatever else runs;
+  #     set runs that test too, and its FAIL: line is a kill there as well. (The
+  #     one difference: a member outside the subset whose own setup breaks,
+  #     SCAFFOLD-FAILED, would make the whole set UNPROVEN. The assertion that
+  #     failed is real, and a broken setup says nothing about the mutant.)
   #   - a subset that SURVIVES is followed by the rest of the set, whose
   #     verdict is the recorded one (a miss, NOTE|selection-miss, if it kills);
-  #   - ANYTHING ELSE — a timeout, a signal, a broken scaffold, a kill with no
-  #     FAIL: line — depends on what else runs beside it, so the whole set runs
-  #     and decides (NOTE|selection-rerun). A kill with no assertion is the
-  #     ASSERTLESS gate's business, and the subset would hide a FAIL: line
-  #     from an oracle the map missed.
-  # Every run gets the WHOLE set's clock. The clock detects a hang; it is not a
-  # cost estimate, and a subset's own (FR_TIMEOUT × its size) timed out a slow
-  # test the whole set gives time to: an UNPROVEN where the set says KILLED,
-  # or one that excuses a survivor from the ledger (review of 229eab8).
-  local run="$oracle" sel="" rest="" o ms_sel=0 sel_verdict="" sel_signal="" foreign="" clock
+  #   - a subset that TIMES OUT is followed by the rest of the set too: the
+  #     whole set would hang on the same test, so all the rest can add is a
+  #     FAIL: line, which makes it a kill (a timeout with a FAIL: line is one).
+  #     The whole set would show that line only if its test sorts before the
+  #     one that hangs, so this can turn the set's UNPROVEN into a kill by a
+  #     real assertion; never the other way. Running the whole set instead
+  #     would pay its clock twice for every hang (re-review of bb16e15);
+  #   - ANYTHING ELSE — a signal, a broken scaffold, a kill with no FAIL: line
+  #     — depends on what else runs beside it, so the whole set runs and
+  #     decides. A kill with no assertion is the ASSERTLESS gate's business,
+  #     and the subset would hide a FAIL: line from an oracle the map missed.
+  # The last two are NOTE|selection-rerun. Every run gets the WHOLE set's
+  # clock. The clock detects a hang; it is not a cost estimate, and a subset's
+  # own (FR_TIMEOUT × its size) timed out a slow test the whole set gives time
+  # to: an UNPROVEN where the set says KILLED, or one that excuses a survivor
+  # from the ledger (review of 229eab8). The second run gets a CLEAN tree: the
+  # first may have been cut short by its clock, its cleanup never run, and
+  # what it left behind would be read as the mutant's doing.
+  local run="$oracle" sel="" rest="" o ms_sel=0 sel_verdict="" sel_signal="" clock
+  local foreign="" foreign_tok="" pre_note=""
   local -a all_o=()
   clock="$(fr_effective_timeout "$oracle")"
   if [[ -n "${FR_SEL_ON[$target]:-}" ]]; then
@@ -1329,8 +1351,8 @@ fr_run_mutant() {   # <slot> <target> <oracle> <seq> <lineno> <op> <sha> <text> 
   if [[ "$run" != "$oracle" ]] \
      && ! [[ "$FALSIFY_VERDICT" == KILLED && "$FALSIFY_SIGNAL" == *failline* ]]; then
     ms_sel="$FALSIFY_MS"; sel_verdict="$FALSIFY_VERDICT"; sel_signal="$FALSIFY_SIGNAL"
-    foreign="$FALSIFY_FOREIGN_FLAG"
-    if [[ "$sel_verdict" == SURVIVED ]]; then
+    foreign="$FALSIFY_FOREIGN_FLAG"; foreign_tok="$FALSIFY_TOKEN"
+    if [[ "$sel_verdict" == SURVIVED || ( "$sel_signal" == *timeout* && "$sel_signal" != *scaffold* ) ]]; then
       IFS=',' read -r -a all_o <<<"$oracle"
       for o in "${all_o[@]}"; do
         case ",$sel," in *",$o,"*) ;; *) rest+="${rest:+,}$o" ;; esac
@@ -1338,23 +1360,51 @@ fr_run_mutant() {   # <slot> <target> <oracle> <seq> <lineno> <op> <sha> <text> 
     else
       rest="$oracle"
     fi
+    cp -Pp "$FR_CACHE/$target" "$tree/$target"
+    if [[ "$(falsify_tree_fingerprint "$tree")" != "$(cat "$FR_OUT/w$slot.porcelain")" ]]; then
+      if fr_seed_slot "$slot"; then
+        pre_note="NOTE|reseed|$ident|the selected subset left the worker tree changed; slot $slot re-seeded before the rest of the set ran"
+      else
+        falsify_tree_fingerprint "$tree" > "$FR_OUT/w$slot.porcelain"
+        pre_note="NOTE|reseed-failed|$ident|slot $slot could NOT be re-seeded after the selected subset; the rest of the set ran against a tree that is not the repo"
+      fi
+    fi
+    if ! falsify_write_mutant "$FR_CACHE/$target" "$tree/$target" "$lineno" "$text"; then
+      printf 'NOTE|write-failed|%s|could not apply the mutant to %s again for the rest of the set\n' "$ident" "$tree/$target" > "$res"
+      if [[ -n "$pre_note" ]]; then printf '%s\n' "$pre_note" >> "$res"; fi
+      return 0
+    fi
     falsify_run_oracle "$tree" "$rest" "$out" "$clock" "s$slot.m$seq.r"
     falsify_verdict "$FALSIFY_RC" "$out" "$FALSIFY_TIMED_OUT"
+    if [[ "$sel_verdict" != SURVIVED && "$rest" != "$oracle" ]]; then
+      # The subset timed out: the whole set's verdict is the timeout, unless
+      # the rest adds a FAIL: line (or a broken scaffold, which is checked first).
+      if [[ "$FALSIFY_SIGNAL" == *scaffold* ]]; then
+        FALSIFY_VERDICT=UNPROVEN; FALSIFY_SIGNAL="$sel_signal+scaffold"
+      elif [[ "$FALSIFY_SIGNAL" == *failline* ]]; then
+        FALSIFY_VERDICT=KILLED; FALSIFY_SIGNAL="$sel_signal+failline"
+      else
+        FALSIFY_VERDICT="$sel_verdict"; FALSIFY_SIGNAL="$sel_signal"
+      fi
+    fi
     FALSIFY_MS=$(( FALSIFY_MS + ms_sel ))
-    # A foreign flag either run saw is reported: it is never silent.
-    [[ -z "$FALSIFY_FOREIGN_FLAG" ]] && FALSIFY_FOREIGN_FLAG="$foreign"
     run="$oracle"
   fi
 
   printf 'MUTANT|%s|%s|%s|%s|%s|%s|%s|%s\n' \
     "$FALSIFY_VERDICT" "$ident" "$run" "$seq" "$lineno" \
     "$FALSIFY_SIGNAL" "$FALSIFY_MS" "$text" > "$res"
+  if [[ -n "$pre_note" ]]; then printf '%s\n' "$pre_note" >> "$res"; fi
   if [[ "$sel_verdict" == SURVIVED && "$FALSIFY_VERDICT" == KILLED ]]; then
     printf 'NOTE|selection-miss|%s|selected %s survived; the rest of the set (%s) killed (%s)\n' \
       "$ident" "$sel" "$rest" "$FALSIFY_SIGNAL" >> "$res"
   elif [[ -n "$sel_verdict" && "$sel_verdict" != SURVIVED ]]; then
-    printf 'NOTE|selection-rerun|%s|selected %s gave %s (%s); the whole set gave %s (%s)\n' \
-      "$ident" "$sel" "$sel_verdict" "$sel_signal" "$FALSIFY_VERDICT" "$FALSIFY_SIGNAL" >> "$res"
+    printf 'NOTE|selection-rerun|%s|selected %s gave %s (%s); then %s ran, and the verdict is %s (%s)\n' \
+      "$ident" "$sel" "$sel_verdict" "$sel_signal" "$rest" "$FALSIFY_VERDICT" "$FALSIFY_SIGNAL" >> "$res"
+  fi
+  # A foreign flag the FIRST run saw, with that run's token: never silent.
+  if [[ -n "$foreign" ]]; then
+    fr_foreign_note "$ident" "$slot" "$foreign" "$foreign_tok" >> "$res"
   fi
 
   # A flag this invocation did not arm reached this slot. Recorded against the
@@ -2086,7 +2136,16 @@ _fr_cover_job() {   # <target> <k> <oracle> <trace|gut|plain>
   fi
 }
 
-_fr_cover_wait() { wait; FR_COV_PIDS=(); }
+# The coverage jobs only, by pid: a bare `wait` would also wait for any other
+# child of the owning shell.
+_fr_cover_wait() {
+  if (( ${#FR_COV_PIDS[@]} > 0 )); then wait "${FR_COV_PIDS[@]}" 2>/dev/null; fi
+  FR_COV_PIDS=()
+}
+
+# Every file the pass makes, so a target's stale verdict cannot be read as the
+# next one's when a job dies before writing its own.
+_fr_cover_clean() { rm -rf "$FR_SCRATCH"/cov[0-9]* "$FR_SCRATCH/cov.lines"; }
 
 fr_cover_target() {   # <target> <oracle-set> — fills FR_SEL / FR_SEL_ON, prints NOTE|selection
   local target="$1" oracle="$2" base k n
@@ -2094,8 +2153,9 @@ fr_cover_target() {   # <target> <oracle-set> — fills FR_SEL / FR_SEL_ON, prin
   IFS=',' read -r -a os <<<"$oracle"
   (( ${#os[@]} >= 2 )) || return 0
   base="${target##*/}"
+  _fr_cover_clean
   for (( k = 0; k < ${#os[@]}; k++ )); do
-    _fr_cover_job "$target" "$k" "${os[k]}" trace || { _fr_cover_wait; return 1; }
+    _fr_cover_job "$target" "$k" "${os[k]}" trace || { _fr_cover_wait; _fr_cover_clean; return 1; }
   done
   _fr_cover_wait
   # ONE FILE OF `<oracle no.>\t<line>` RECORDS, not a file per oracle. With a
@@ -2128,10 +2188,10 @@ fr_cover_target() {   # <target> <oracle-set> — fills FR_SEL / FR_SEL_ON, prin
   # The second round: each untraced oracle against the target gutted, each one
   # red under the trace once more as it is (both explained above).
   for k in "${untraced[@]}"; do
-    _fr_cover_job "$target" "$k" "${os[k]}" gut || { _fr_cover_wait; rm -f "$covall"; return 1; }
+    _fr_cover_job "$target" "$k" "${os[k]}" gut || { _fr_cover_wait; _fr_cover_clean; return 1; }
   done
   for k in "${red[@]}"; do
-    _fr_cover_job "$target" "$k" "${os[k]}" plain || { _fr_cover_wait; rm -f "$covall"; return 1; }
+    _fr_cover_job "$target" "$k" "${os[k]}" plain || { _fr_cover_wait; _fr_cover_clean; return 1; }
   done
   _fr_cover_wait
   for k in "${untraced[@]}"; do

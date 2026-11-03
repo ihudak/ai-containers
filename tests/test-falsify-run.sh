@@ -386,10 +386,8 @@ chmod +x "$FX/tests/test-fx-scaffold-and-fail.sh"
 #                       for none (NONE), where test-fx-sel-copy, which fails
 #                       gutted, stays ALL. sandbox.sh has two: 82 s of every
 #                       mutant's subset in the 2026-11-03 sample.
-# And the outcomes a subset must NOT decide alone (review of 229eab8):
-#   test-fx-sel-slow    the only test of sel_three in its set, and slower than
-#                       one share of the set's clock. On a clock of its own
-#                       size its subset timed out: UNPROVEN where the set kills.
+# And the outcomes a subset must NOT decide alone (review of 229eab8; the
+# clock and the timeout path are checked without wall time, further down):
 #   test-fx-sel-errexit runs sel_six under `set -e` and asserts nothing; with
 #                       test-fx-sel-mixed, which asserts sel_six through a
 #                       renamed copy, the set kills WITH a FAIL: line, and the
@@ -422,16 +420,6 @@ sel_five() {
 sel_six() {
   [[ "$1" == s ]]
 }
-EOF
-cat > "$FX/tests/test-fx-sel-slow.sh" <<'EOF'
-#!/usr/bin/env bash
-set -uo pipefail
-FX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# shellcheck source=/dev/null
-source "$FX_DIR/fixture-sel.sh"
-sleep 5
-if [[ "$(sel_three z)" == three-yes && "$(sel_three q)" == three-no ]]; then printf 'PASS: sel_three, slowly\n'; exit 0; fi
-printf 'FAIL: sel_three, slowly\n'; exit 1
 EOF
 cat > "$FX/tests/test-fx-sel-errexit.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -1578,12 +1566,6 @@ check "  … and a condition's first line (bash reports its last) to the oracle 
 check "  … both killed" "KILLED" \
   "$(awk -F'|' '$1 == "MUTANT" && ($6 == 14 || $6 == 18) { print $2 }' <<< "$FX_OUT" | sort -u | tr '\n' ' ' | sed 's/ $//')"
 # What a subset must not decide alone (review of 229eab8).
-CONF_SEL_SLOW="$(conf selslow 'fixture-sel.sh|EXECUTED-PARTIAL|test-fx-sel-four.sh,test-fx-sel-one.sh,test-fx-sel-slow.sh|sel_three')"
-fx_run "$RUN" "$CONF_SEL_SLOW" "$FX" "$TMP/wit-sel-slow" --jobs 4 --controls 0 --select-oracles --timeout 3
-check "  … a subset runs on the whole set's clock: a test slower than one share of it still kills (sel_three)" \
-  "KILLED" "$(awk -F'|' '$1 == "MUTANT" && $6 == 10 { print $2 }' <<< "$FX_OUT" | sort -u | tr '\n' ' ' | sed 's/ $//')"
-check "  … and is the subset that decided" "test-fx-sel-slow.sh" \
-  "$(awk -F'|' '$1 == "MUTANT" && $6 == 10 { print $4 }' <<< "$FX_OUT" | sort -u | tr '\n' ' ' | sed 's/ $//')"
 CONF_SEL_EX="$(conf selex 'fixture-sel.sh|EXECUTED-PARTIAL|test-fx-sel-errexit.sh,test-fx-sel-mixed.sh|sel_six')"
 fx_run "$RUN" "$CONF_SEL_EX" "$FX" "$TMP/wit-sel-ex" --jobs 2 --controls 0 --select-oracles
 check "  … a subset that kills with no assertion is re-run whole: sel_six's kills carry the set's FAIL: line" \
@@ -1610,6 +1592,60 @@ check "  … a line no oracle reaches selects nothing, and runs the whole set" \
   "$(awk -F'|' '$1 == "MUTANT" && $6 == 10 { print $2 "|" $4 }' <<< "$FX_OUT" | sort -u | tr '\n' ' ' | sed 's/ $//')"
 check "  … at once, not after running an empty subset first" "0" "$(grep -c '^NOTE|selection-rerun|' <<< "$FX_OUT")"
 FALSIFY_SELECT=yes fx_run "$RUN" "$CONF_A" "$FX" "$TMP/wit-sel-bad" --jobs 1 --controls 0
+# The decision rule itself, WITHOUT WALL TIME (a sleep against a clock is a
+# flaky test on a loaded host): run.sh sourced in a subshell, its oracle runs
+# stubbed to record each run's set, clock and mutated line and to answer as
+# scripted. Oracle set a,b,c at FR_TIMEOUT 5, so the whole set's clock is 15;
+# the map selects b for line 2.
+sel_decide() {   # <kill|timeout|hang|exit|debris> → the runs, then the result records
+  ( set +u
+    # shellcheck source=/dev/null
+    source "$RUN" >/dev/null 2>&1
+    sc="$1"; d="$TMP/seldecide-$1"
+    rm -rf "$d"; mkdir -p "$d/cache" "$d/work/w0" "$d/out"
+    printf 'one\ntwo\nthree\n' > "$d/cache/t.sh"; cp "$d/cache/t.sh" "$d/work/w0/t.sh"
+    FR_CACHE="$d/cache"; FR_WORK="$d/work"; FR_OUT="$d/out"; FR_TIMEOUT=5
+    : > "$FR_OUT/w0.porcelain"; : > "$d/fp"; : > "$d/calls"
+    # shellcheck disable=SC2034  # read by fr_run_mutant, sourced above
+    { FR_SEL_ON["t.sh"]=1; FR_SEL["t.sh|2"]="b.sh"; }
+    falsify_tree_fingerprint() { cat "$d/fp"; }
+    fr_seed_slot() { printf 'reseed\n' >> "$d/calls"; cp "$d/cache/t.sh" "$d/work/w0/t.sh"; : > "$d/fp"; }
+    declare -A ans=()   # <set> → "<rc> <timed-out> <output>"
+    case "$sc" in
+      kill)    ans[b.sh]="1 0 FAIL: b" ;;
+      timeout) ans[b.sh]="143 1 hung"; ans[a.sh,c.sh]="1 0 FAIL: c" ;;
+      hang)    ans[b.sh]="143 1 hung"; ans[a.sh,c.sh]="0 0 PASS: a" ;;
+      exit)    ans[b.sh]="1 0 died"; ans[a.sh,b.sh,c.sh]="1 0 FAIL: a" ;;
+      debris)  ans[b.sh]="0 0 PASS: b"; ans[a.sh,c.sh]="0 0 PASS: a" ;;
+    esac
+    # shellcheck disable=SC2034  # the FALSIFY_* it sets are read by fr_run_mutant
+    falsify_run_oracle() {
+      local a="${ans[$2]:-0 0 PASS: x}"
+      printf 'run %s %s %s\n' "$2" "$4" "$(sed -n 2p "$1/t.sh")" >> "$d/calls"
+      FALSIFY_RC="${a%% *}"; a="${a#* }"; FALSIFY_TIMED_OUT="${a%% *}"
+      printf '%s\n' "${a#* }" > "$3"
+      FALSIFY_MS=1000; FALSIFY_FOREIGN_FLAG=""; FALSIFY_TOKEN=tok
+      if [[ "$sc" == debris ]]; then printf 'dirty\n' > "$d/fp"; fi
+      return 0
+    }
+    fr_run_mutant 0 t.sh a.sh,b.sh,c.sh 1 2 cond-negate deadbeef MUTATED "$d/res"
+    cat "$d/calls"; cut -d'|' -f1-7 "$d/res"
+    rm -rf "$d" )
+}
+check "  … a subset that kills with an assertion decides alone, on the whole set's clock" \
+  "run b.sh 15 MUTATED|MUTANT|KILLED|t.sh:cond-negate:deadbeef|b.sh|1|2|exit+failline" \
+  "$(sel_decide kill | paste -sd'|' -)"
+check "  … one that times out is followed by the REST only, on the same clock, and the rest's FAIL: line makes it a kill" \
+  "run b.sh 15 MUTATED|run a.sh,c.sh 15 MUTATED|KILLED|a.sh,b.sh,c.sh|timeout+failline|NOTE|selection-rerun" \
+  "$(sel_decide timeout | awk -F'|' '/^run / { print } $1 == "MUTANT" { print $2 "|" $4 "|" $7 } $1 == "NOTE" { print $1 "|" $2 }' | paste -sd'|' -)"
+check "  … and with a green rest it stays the timeout" \
+  "UNPROVEN|timeout" "$(sel_decide hang | awk -F'|' '$1 == "MUTANT" { print $2 "|" $7 }')"
+check "  … a kill with no assertion is re-run with the WHOLE set" \
+  "run b.sh 15 MUTATED|run a.sh,b.sh,c.sh 15 MUTATED|KILLED|exit+failline" \
+  "$(sel_decide exit | awk -F'|' '/^run / { print } $1 == "MUTANT" { print $2 "|" $7 }' | paste -sd'|' -)"
+check "  … and the second run gets a clean tree: a subset that leaves debris is re-seeded, and the mutant applied again" \
+  "run b.sh 15 MUTATED|reseed|run a.sh,c.sh 15 MUTATED|reseed" \
+  "$(sel_decide debris | grep -E '^(run|reseed)' | paste -sd'|' -)"
 check "  … FALSIFY_SELECT other than 0 or 1 is refused (exit 2)" "2" "$FX_RC"
 fx_run "$RUN" "$CONF_A" "$FX" "$TMP/wit-sel1" --jobs 1 --controls 0 --select-oracles
 check "  … a single-oracle row is run as before (exit 0)" "0" "$FX_RC"
@@ -1660,6 +1696,28 @@ else
   kill -TERM "$lg_run" 2>/dev/null; wait "$lg_run" 2>/dev/null
 fi
 # Whatever the verdict, nothing of this case may outlive it.
+while IFS= read -r p; do kill -KILL "$p" 2>/dev/null; done < "$lg_pids"
+# An oracle deaf to TERM that TIMES OUT: the watchdog TERMs its group and would
+# KILL it a second later, but is itself TERMed in that second once the oracle's
+# driver has died (re-review of bb16e15). What ignored TERM must not outlive
+# the run, to act on the next one in its tree.
+lg_pids="$TMP/linger3.pids"; : > "$lg_pids"
+CONF_LINGER3="$(conf linger3 'fixture-lib.sh|EXECUTED-PARTIAL|test-fx-linger.sh|fx_never_called')"
+FALSIFY_REPO="$FX" FALSIFY_CONF="$CONF_LINGER3" FX_LINGER_HARD=1 \
+FX_LINGER_PIDS="$lg_pids" FX_LINGER_COUNT="$TMP/linger3.count" \
+  bash "$RUN" --jobs 1 --controls 0 --timeout 1 > "$TMP/linger3.out" 2>&1
+check "an oracle deaf to TERM times out (UNPROVEN, timeout)" "UNPROVEN|timeout" \
+  "$(awk -F'|' '$1 == "MUTANT" { print $2 "|" $7 }' "$TMP/linger3.out" | sort -u | tr '\n' ' ' | sed 's/ $//')"
+lg_alive=""
+for _ in $(seq 1 50); do
+  lg_alive=""
+  while IFS= read -r p; do kill -0 "$p" 2>/dev/null && lg_alive+=" $p"; done < "$lg_pids"
+  [[ -z "$lg_alive" ]] && break
+  sleep 0.1
+done
+[[ -s "$lg_pids" && -z "$lg_alive" ]] \
+  && pass "  … and it and its child are KILLed with it, not left to the next run" \
+  || fail "  … it outlived its timeout:${lg_alive:- (it never started)}"
 while IFS= read -r p; do kill -KILL "$p" 2>/dev/null; done < "$lg_pids"
 # The same with INT, during the coverage pass, against an oracle deaf to TERM:
 # the coverage jobs are the owner's too, and only the KILL sweep ends this one.
