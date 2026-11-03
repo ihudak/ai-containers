@@ -309,11 +309,40 @@ RUBY_VERSIONS="3.4.5" ldr "$h" "$d" >/dev/null 2>&1
 [[ ! -d "$d/ruby" ]] && pass "  … and a directory is not linked as a command" \
   || fail "  … /usr/local/bin/ruby leads to a directory"
 rm -rf "$h" "$d" "$v"
-# The entrypoint names the probe user.
-fn="$(sed -n '/^link_default_ruby()/,/^}/p' "$REPO_DIR/entrypoint.sh")"
-[[ "$fn" == *'link-default-ruby.sh "/home/$sandbox_user" /usr/local/bin "$sandbox_user"'* ]] \
-  && pass "entrypoint passes the sandbox user as the probe user" \
-  || fail "entrypoint's link_default_ruby does not pass the probe user: $fn"
+# The entrypoint names the probe user — run, not read: link_default_ruby is
+# extracted with its script path pointed at a fake that records its arguments,
+# and called under the entrypoint's own `set -euo pipefail`.
+ldr_dir="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
+printf '#!/usr/bin/env bash\nprintf "%%s|" "$RUBY_VERSIONS" "$@" > "%s/args"\nexit "${LDR_FAKE_RC:-0}"\n' "$ldr_dir" > "$ldr_dir/ldr.sh"
+chmod +x "$ldr_dir/ldr.sh"
+sed -n '/^link_default_ruby()/,/^}/p' "$REPO_DIR/entrypoint.sh" \
+  | sed "s#/usr/local/bin/link-default-ruby.sh#$ldr_dir/ldr.sh#g" > "$ldr_dir/fn.sh"
+sed "s#$ldr_dir/ldr.sh#$ldr_dir/absent.sh#g" "$ldr_dir/fn.sh" > "$ldr_dir/fn-absent.sh"
+ldr_run() {   # <fn file> <RUBY_VERSIONS or "-" for unset> [LDR_FAKE_RC] → "reached" when it returned
+  rm -f "$ldr_dir/args"
+  ( set -euo pipefail
+    # shellcheck source=/dev/null
+    source "$1"
+    # shellcheck disable=SC2034  # read by the extracted function
+    sandbox_user=alice
+    if [[ "$2" == - ]]; then unset RUBY_VERSIONS; else export RUBY_VERSIONS="$2"; fi
+    export LDR_FAKE_RC="${3:-0}"
+    link_default_ruby; echo reached ) 2>/dev/null
+}
+out="$(ldr_run "$ldr_dir/fn.sh" "3.4.5")"
+[[ "$out" == reached && "$(cat "$ldr_dir/args" 2>/dev/null)" == "3.4.5|/home/alice|/usr/local/bin|alice|" ]] \
+  && pass "entrypoint passes the sandbox user as the probe user, and the configured versions" \
+  || fail "entrypoint's link_default_ruby call (out: $out; args: $(cat "$ldr_dir/args" 2>/dev/null))"
+out="$(ldr_run "$ldr_dir/fn.sh" "-")"
+[[ "$out" == reached && ! -e "$ldr_dir/args" ]] && pass "no Ruby configured: nothing is linked, and the start goes on" \
+  || fail "no Ruby configured: link_default_ruby ran or ended the start (out: $out)"
+out="$(ldr_run "$ldr_dir/fn-absent.sh" "3.4.5")"
+[[ "$out" == reached ]] && pass "an image without link-default-ruby.sh: the start goes on" \
+  || fail "an image without link-default-ruby.sh ended the start (out: $out)"
+out="$(ldr_run "$ldr_dir/fn.sh" "3.4.5" 3)"
+[[ "$out" == reached ]] && pass "a link-default-ruby.sh that fails does not end the start (non-fatal)" \
+  || fail "a failing link-default-ruby.sh ended the start (out: $out)"
+rm -rf "$ldr_dir"
 
 # ── RT-9: not root and no probe user named → the probes run as the caller ───
 # The other cases name a probe user (the entrypoint's, as root) or run as root

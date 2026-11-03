@@ -180,6 +180,21 @@ else
       && pass "start still receives container.env (POSTGRES_ROLES), which it needs" \
       || fail "start still receives container.env (POSTGRES_ROLES)"
   fi
+  # Nothing to start is a SUCCESS, under the entrypoint's own `set -e`: no
+  # AI_SERVICES, or no runner in this image, returns 0 and runs nothing. A
+  # non-zero there would end every container start that asked for no server.
+  rm -f "$TMP"/env.*
+  sed "s#$rs_fake#$TMP/no-such-runner.sh#g" "$rs_fn" > "$TMP/run-services-norunner.sh"
+  for rs_case in "unset:$rs_fn" "set:$TMP/run-services-norunner.sh"; do
+    rs_out="$( set -euo pipefail
+      # shellcheck source=/dev/null
+      source "${rs_case#*:}"
+      if [[ "${rs_case%%:*}" == unset ]]; then unset AI_SERVICES; else export AI_SERVICES=postgres=ON; fi
+      run_services; echo reached )" 2>/dev/null
+    [[ "$rs_out" == reached && ! -e "$TMP/env.prepare" ]] \
+      && pass "run_services with nothing to start (AI_SERVICES ${rs_case%%:*}, runner $([[ ${rs_case%%:*} == unset ]] && echo present || echo absent)) returns 0 and runs nothing" \
+      || fail "run_services with nothing to start (${rs_case%%:*}) ended the entrypoint or ran the runner (out: $rs_out)"
+  done
 fi
 # LAST before the exec in each mode, so the ready line is the last thing printed
 # before the prompt.
@@ -213,6 +228,17 @@ out="$(env -i HOME="$TMP" PATH=/usr/bin:/bin SANDBOX_UID=' 0' SANDBOX_GID=1000 b
 [[ "$rc" != 0 && "$out" != *reached* ]] && pass "the entrypoint refuses a padded SANDBOX_UID=' 0'" || fail "padded uid (rc=$rc; out: $out)"
 out="$(env -i HOME="$TMP" PATH=/usr/bin:/bin SANDBOX_UID=1000 SANDBOX_GID=1000 bash -c ". '$fn'; refuse_root_identity; echo reached" 2>&1)"
 [[ "$out" == reached ]] && pass "the entrypoint lets a non-root identity through" || fail "entrypoint refused 1000:1000 ($out)"
+# With a user NAME, the check is on what the name resolves to: an ordinary
+# user passes, and a name that resolves to nothing is refused (it falls back to
+# 0, never to "unknown, so allowed").
+if id -u nobody >/dev/null 2>&1 && [[ "$(id -u nobody)" != 0 ]]; then
+  out="$(env -i HOME="$TMP" PATH=/usr/bin:/bin bash -c ". '$fn'; refuse_root_identity nobody; echo reached" 2>&1)"
+  [[ "$out" == reached ]] && pass "the entrypoint lets a named non-root user (nobody) through" \
+    || fail "entrypoint refused the named user nobody ($out)"
+fi
+out="$(env -i HOME="$TMP" PATH=/usr/bin:/bin bash -c ". '$fn'; refuse_root_identity no-such-user-ai-containers; echo reached" 2>&1)"; rc=$?
+[[ "$rc" != 0 && "$out" != *reached* ]] && pass "a user name that resolves to nothing is refused" \
+  || fail "an unresolvable user name was let through (rc=$rc; out: $out)"
 # And after the user is set up, whatever useradd made of the id: the user capsh
 # switches to must not resolve to uid 0.
 grep -qF 'refuse_root_identity "$sandbox_user"' "$REPO_DIR/entrypoint.sh" \

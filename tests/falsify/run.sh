@@ -183,10 +183,10 @@
 # ── WHICH TARGETS ─────────────────────────────────────────────────────────────
 # The uncommented rows of tests/falsify/targets.conf, parsed by
 # derive-targets.sh --rows (one grammar, one parser). GREPPED-ONLY rows are
-# skipped by category. An active EXECUTED-PARTIAL row is REFUSED: mutating the
-# whole file when only some functions are ever executed manufactures survivors
-# that measure a missing harness rather than a missing assertion, and the
-# generator has no per-function mutation unit yet.
+# skipped by category. An active EXECUTED-PARTIAL row mutates only the functions
+# it names (generate.sh's FALSIFY_FUNCTIONS): mutating the whole file when only
+# some functions are ever executed manufactures survivors that measure a
+# missing harness rather than a missing assertion.
 #
 # ── ENV ───────────────────────────────────────────────────────────────────────
 #   FALSIFY_REPO       repo to mutate copies of      (default: this repo)
@@ -404,6 +404,7 @@ FR_LIST_TARGETS=0
 FR_DEEP=0
 FR_DEEP_CONF="${FALSIFY_DEEP_CONF:-$FR_HERE/deep.conf}"
 FR_OPS=()      # per target: the operator list it is generated with, "" = the run's
+FR_FUNCS=()    # per target: an EXECUTED-PARTIAL row's functions, "" = the whole file
 
 # The suite driver, as a repo-relative path DERIVED from where this file lives,
 # not hardcoded: upstream keeps tests/ at the repo root, the mgd port keeps the
@@ -1752,18 +1753,23 @@ FR_TARGETS=()
 FR_ORACLES=()
 
 fr_load_targets() {
-  local kind lineno target category oracle skipped=0 excluded=0 targeted=0 in_target
-  # The 6th and 7th fields (functions, reason) belong to the DEFERRED/EXCLUDED
-  # grammar; an ACTIVE row never carries them, so they are read into `_`.
-  while IFS='|' read -r kind lineno target category oracle _; do
+  local kind lineno target category oracle funcs skipped=0 excluded=0 targeted=0 in_target
+  # The 6th field is an EXECUTED-PARTIAL row's function list (its mutation
+  # unit); the 7th, a DEFERRED/EXCLUDED reason, is never read here.
+  while IFS='|' read -r kind lineno target category oracle funcs _; do
     [[ "$kind" == "ACTIVE" ]] || continue
     [[ -n "$target" ]] || continue
     case "$category" in
       GREPPED-ONLY) skipped=$(( skipped + 1 )); continue ;;
+      # The unit is the named functions (generate.sh's FALSIFY_FUNCTIONS):
+      # mutating the whole file would manufacture survivors in code the suite
+      # never runs. An empty list is refused rather than read as "the file".
       EXECUTED-PARTIAL)
-        fr_err "$FR_CONF:$lineno: $target is an ACTIVE EXECUTED-PARTIAL row, and the generator has no per-function mutation unit — mutating the whole file would manufacture survivors in functions the suite never executes. Defer the row or slice the unit first."
-        return 2 ;;
-      EXECUTED-WHOLE) ;;
+        if [[ -z "$funcs" || "$funcs" == "-" ]]; then
+          fr_err "$FR_CONF:$lineno: $target is EXECUTED-PARTIAL with no function list — the 4th field is its mutation unit"
+          return 2
+        fi ;;
+      EXECUTED-WHOLE) funcs="" ;;
       *)
         fr_err "$FR_CONF:$lineno: $target has category '${category:-<empty>}', which this runner does not know"
         return 2 ;;
@@ -1792,6 +1798,7 @@ fr_load_targets() {
     FR_TARGETS+=("$target")
     FR_ORACLES+=("$oracle")
     FR_OPS+=("")
+    FR_FUNCS+=("$funcs")
   done < <(bash "$FR_DERIVE" --rows "$FR_CONF")
   (( FR_DEEP )) && { fr_apply_deep || return 2; }
   (( skipped > 0 )) && fr_warn "skipped $skipped GREPPED-ONLY row(s): the suite never executes them, so every mutant would survive as noise"
@@ -1823,7 +1830,7 @@ fr_load_targets() {
 fr_apply_deep() {
   local -A active=() deep=()
   local line n=0 t ops why i
-  local -a keep_t=() keep_o=() keep_ops=()
+  local -a keep_t=() keep_o=() keep_ops=() keep_f=()
   # Every active row, before --target/--exclude-target filtered them.
   while IFS='|' read -r kind _ t cat _; do
     [[ "$kind" == ACTIVE && "$cat" == EXECUTED-WHOLE ]] && active["$t"]=1
@@ -1850,9 +1857,9 @@ fr_apply_deep() {
   for (( i = 0; i < ${#FR_TARGETS[@]}; i++ )); do
     t="${FR_TARGETS[i]}"
     [[ -n "${deep[$t]:-}" ]] || continue
-    keep_t+=("$t"); keep_o+=("${FR_ORACLES[i]}"); keep_ops+=("${deep[$t]}")
+    keep_t+=("$t"); keep_o+=("${FR_ORACLES[i]}"); keep_ops+=("${deep[$t]}"); keep_f+=("${FR_FUNCS[i]}")
   done
-  FR_TARGETS=("${keep_t[@]}"); FR_ORACLES=("${keep_o[@]}"); FR_OPS=("${keep_ops[@]}")
+  FR_TARGETS=("${keep_t[@]}"); FR_ORACLES=("${keep_o[@]}"); FR_OPS=("${keep_ops[@]}"); FR_FUNCS=("${keep_f[@]}")
   if (( ${#FR_TARGETS[@]} == 0 )); then
     fr_err "--deep: no target of this selection is in $FR_DEEP_CONF"; return 2
   fi
@@ -1985,7 +1992,8 @@ falsify_main() {
   for (( i = 0; i < ${#FR_TARGETS[@]}; i++ )); do
     target="${FR_TARGETS[i]}"
     mutants="$FR_OUT/mutants.$i.tsv"
-    if ! FALSIFY_OPERATORS="$(fr_target_ops "$i")" bash "$FR_GENERATE" "$FR_CACHE/$target" > "$mutants"; then
+    if ! FALSIFY_OPERATORS="$(fr_target_ops "$i")" FALSIFY_FUNCTIONS="${FR_FUNCS[i]}" \
+         bash "$FR_GENERATE" "$FR_CACHE/$target" > "$mutants"; then
       fr_err "the generator failed on $target"
       return 1
     fi

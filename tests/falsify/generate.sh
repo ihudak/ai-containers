@@ -66,6 +66,9 @@
 #                      computed an empty list must not be answered with the full
 #                      default set. An unknown name is a hard error too, never a
 #                      silent "generated nothing".
+#   FALSIFY_FUNCTIONS  comma-separated function names: mutate only their bodies
+#                      (an EXECUTED-PARTIAL target's unit). A name the file does
+#                      not define is refused, never read as "nothing to do".
 #   FALSIFY_TMPDIR     scratch directory to use instead of a private mktemp -d.
 #                      Set it when SOURCING this file, so the caller's own trap
 #                      owns the cleanup.
@@ -522,6 +525,38 @@ falsify_generate() {   # <file>
   local -a lines=() heredoc_q=()
   mapfile -t lines < "$file" || return 2
 
+  # FALSIFY_FUNCTIONS: the per-function mutation unit of an EXECUTED-PARTIAL
+  # target (GAP-3). A function's body is its header line through the first
+  # later line that is `}` at the header's own indentation, the same span the
+  # tests' extractions take (`/^name() {/,/^}/`); a header that closes its own
+  # brace is a unit of one line. Every line is still SCANNED, so heredoc,
+  # continuation and quote state stay right; only emission is limited.
+  local -A unit=()
+  local fname h k ind found
+  if [[ -n "${FALSIFY_FUNCTIONS:-}" ]]; then
+    for fname in ${FALSIFY_FUNCTIONS//,/ }; do
+      found=0
+      for (( h = 0; h < ${#lines[@]}; h++ )); do
+        [[ "${lines[h]}" =~ ^([[:space:]]*)(function[[:space:]]+)?${fname}[[:space:]]*\(\) ]] || continue
+        ind="${BASH_REMATCH[1]}"; found=1
+        if [[ "${lines[h]}" =~ \{.*\}[[:space:]]*(#.*)?$ ]]; then unit[$h]=1; break; fi
+        for (( k = h; k < ${#lines[@]}; k++ )); do
+          unit[$k]=1
+          (( k > h )) && [[ "${lines[k]}" =~ ^${ind}\}([[:space:];\>\|]|$) ]] && break
+        done
+        if (( k == ${#lines[@]} )); then
+          printf 'falsify: %s: function %s has no closing } at its own indentation\n' "$file" "$fname" >&2
+          return 2
+        fi
+        break
+      done
+      if (( ! found )); then
+        printf 'falsify: %s: FALSIFY_FUNCTIONS names %s, which the file does not define\n' "$file" "$fname" >&2
+        return 2
+      fi
+    done
+  fi
+
   local idx lineno line trimmed sha k h dash delim cand
   local carry_depth=0
   _FALSIFY_PREV_CONT=0
@@ -574,6 +609,7 @@ falsify_generate() {   # <file>
     for h in "${SCAN_HEREDOC[@]}"; do heredoc_q+=("$h"); done
 
     (( ${#SCAN_OPS[@]} > 0 )) || continue
+    if [[ -n "${FALSIFY_FUNCTIONS:-}" && -z "${unit[$idx]:-}" ]]; then continue; fi
 
     trimmed="$(falsify_trim "$line")"
     sha="$(falsify_sha1_string "$trimmed")"

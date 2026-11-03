@@ -1247,11 +1247,13 @@ grep -q 'GREPPED-ONLY' <<< "$FX_ERR" \
   && pass "  … saying the rows were skipped by category" \
   || fail "  … saying the rows were skipped by category: $FX_ERR"
 
-fx_run "$RUN" "$CONF_PARTIAL" "$FX" "$TMP/wit-p" --jobs 1
-check "an ACTIVE EXECUTED-PARTIAL row is refused (exit 2)" "2" "$FX_RC"
-grep -q 'per-function mutation unit' <<< "$FX_ERR" \
-  && pass "  … because whole-file mutation there manufactures survivors" \
-  || fail "  … because whole-file mutation there manufactures survivors: $FX_ERR"
+# An ACTIVE EXECUTED-PARTIAL row mutates its named functions only (GAP-3):
+# fx_bigger's `if` line, never fx_never_called's `return 0`.
+fx_run "$RUN" "$CONF_PARTIAL" "$FX" "$TMP/wit-p" --jobs 1 --controls 0
+check "an ACTIVE EXECUTED-PARTIAL row runs (exit 0)" "0" "$FX_RC"
+check "  … mutating only the named function's lines" "4" \
+  "$(awk -F'|' '$1 == "MUTANT" { print $6 }' <<< "$FX_OUT" | sort -u | tr -d '\n')"
+check "  … and never the function it does not name" "0" "$(grep -c '^MUTANT|.*|  return 1$' <<< "$FX_OUT")"
 
 fx_run "$RUN" "$CONF_A" "$FX" "$TMP/wit-x" --jobs 0
 check "--jobs 0 is refused (exit 2)" "2" "$FX_RC"

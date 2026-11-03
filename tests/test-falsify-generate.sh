@@ -585,5 +585,44 @@ sd_all="$(FALSIFY_OPERATORS="$ALL_OPS,stmt-delete" gen "$TMP/sd.sh" | grep -c '^
   && pass "stmt-delete composes with the other operators (7 mutants alongside them)" \
   || fail "stmt-delete composes with the other operators — got $sd_all"
 
+# ── FALSIFY_FUNCTIONS: the per-function mutation unit (GAP-3) ────────────────
+# An EXECUTED-PARTIAL target's tests run some functions only (extracted, or
+# called), so only those functions' bodies are mutated: anything else would
+# survive as noise. The body is the header line to the first line at the
+# header's own indentation that is `}`.
+cat > "$TMP/fn.sh" <<'EOF'
+#!/usr/bin/env bash
+top() { [[ -n "$1" ]] && return 0; }
+inside() {
+  [[ -n "$1" ]] && echo yes
+  if [[ "$1" == x ]]; then
+    return 1
+  fi
+}
+  nested() {
+    [[ -z "$1" ]] || exit 1
+  }
+outside_after() {
+  [[ -z "$2" ]] && return 0
+}
+[[ -n "$TOP" ]] && echo top-level
+EOF
+fn_lines="$(FALSIFY_FUNCTIONS=inside gen "$TMP/fn.sh" | cut -f2 | sort -un | tr '\n' ' ')"
+[[ "$fn_lines" == "4 5 6 " ]] \
+  && pass "FALSIFY_FUNCTIONS=inside mutates only inside()'s body (4 5 6)" \
+  || fail "FALSIFY_FUNCTIONS=inside mutates only inside()'s body (4 5 6) — got: ${fn_lines:-none}"
+fn_lines="$(FALSIFY_FUNCTIONS=top,nested gen "$TMP/fn.sh" | cut -f2 | sort -un | tr '\n' ' ')"
+[[ "$fn_lines" == "2 10 " ]] \
+  && pass "a one-line function and an indented one are units too (2 10)" \
+  || fail "a one-line function and an indented one are units too (2 10) — got: ${fn_lines:-none}"
+all_lines="$(gen "$TMP/fn.sh" | cut -f2 | sort -un | tr '\n' ' ')"
+[[ "$all_lines" == *"13 "* && "$all_lines" == *"15 "* ]] \
+  && pass "without FALSIFY_FUNCTIONS the whole file is the unit" \
+  || fail "without FALSIFY_FUNCTIONS the whole file is the unit — got: $all_lines"
+FALSIFY_FUNCTIONS=no_such_fn bash "$GEN" "$TMP/fn.sh" >/dev/null 2>"$TMP/fn.err"; rc=$?
+[[ "$rc" -eq 2 ]] && grep -q 'no_such_fn' "$TMP/fn.err" \
+  && pass "a function the file does not define is refused (exit 2), by name" \
+  || fail "a function the file does not define is refused (exit 2), by name — rc=$rc: $(cat "$TMP/fn.err")"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

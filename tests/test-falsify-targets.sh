@@ -51,6 +51,10 @@ T_TOOLSLIB="${ENGINE_REL}tools-lib.sh"
 # cannot check any other way.
 T_LIBVERIFY="tests/lib-verify-repo.sh"
 T_ENTRYPOINT="${ENGINE_REL}entrypoint.sh"
+# The standing GREPPED-ONLY example. It was entrypoint.sh until the derivation
+# learned extraction (GAP-3, 2026-11-03), which four tests use to run its
+# functions; this fixture is only ever read, by test-integration-fixtures.sh.
+T_GREPPED="tests/integration/fixtures/capture-blocked-traffic.prefix.sh"
 T_SBCOMMON="${ENGINE_REL}sandbox-common.sh"
 T_REPOSH="${ENGINE_REL}repo.sh"
 # The empty-reason gate below needs an EXECUTED-WHOLE row that is DEFERRED and
@@ -67,13 +71,13 @@ T_DEFERWHOLE="${ENGINE_REL}bump-sandbox-version.sh"
 # into a no-op.
 T_INSTALLTOOLS="${ENGINE_REL}install-tools.sh"
 RE_TOOLSLIB="${T_TOOLSLIB//./\\.}"
-RE_ENTRYPOINT="${T_ENTRYPOINT//./\\.}"
+RE_GREPPED="${T_GREPPED//./\\.}"
 RE_SBCOMMON="${T_SBCOMMON//./\\.}"
 RE_DEFERWHOLE="${T_DEFERWHOLE//./\\.}"
 RE_INSTALLTOOLS="${T_INSTALLTOOLS//./\\.}"
 # The probe must have resolved to a path that really is in the map, or every
 # fixture below silently degrades to "no change" exactly as described above.
-for _t in "$T_TOOLSLIB" "$T_ENTRYPOINT" "$T_SBCOMMON" "$T_REPOSH" "$T_DEFERWHOLE" "$T_LIBVERIFY" "$T_INSTALLTOOLS"; do
+for _t in "$T_TOOLSLIB" "$T_ENTRYPOINT" "$T_GREPPED" "$T_SBCOMMON" "$T_REPOSH" "$T_DEFERWHOLE" "$T_LIBVERIFY" "$T_INSTALLTOOLS"; do
   grep -q "|${_t}|\|^${_t}|" "$CONF" \
     || { printf 'FAIL: %s\n' "the layout probe resolved $_t, which has no row in targets.conf — every fixture below would edit nothing"; exit 1; }
 done
@@ -138,8 +142,9 @@ grep -q '0 problem(s)' <<<"$cached_out" \
 
 # ── 2. Two real-repo facts the derivation must get right ──────────────────────
 # docker-shim.sh is reachable ONLY through `ln -sf "$SHIM" "$TMP/bin/docker"` —
-# no test names the file at a command position. entrypoint.sh is named by five
-# assertions, every one of them a grep or a `bash -n`.
+# no test names the file at a command position. The grepped fixture is named
+# only by reads; entrypoint.sh only by greps, `bash -n` and EXTRACTIONS of its
+# functions, which is execution of those functions and of nothing else.
 shim_verdict="$(awk -F'|' '$1 == "tests/integration/docker-shim.sh" { print $2 }' "$DERIVED")"
 check "docker-shim.sh is EXECUTED (resolved through the symlink, not the name)" \
   "EXECUTED" "$shim_verdict"
@@ -153,9 +158,16 @@ check "docker-shim.sh is EXECUTED (resolved through the symlink, not the name)" 
 lint_verdict="$(awk -F'|' '$1 == "tests/bash-dialect-lint.sh" { print $2 }' "$DERIVED")"
 check "bash-dialect-lint.sh is EXECUTED (seen through the p_timeout prefix, not around it)" \
   "EXECUTED" "$lint_verdict"
+gr_verdict="$(awk -F'|' -v f="$T_GREPPED" '$1 == f { print $2 }' "$DERIVED")"
+check "$T_GREPPED is NOT-EXECUTED (reading a file is not running it)" \
+  "NOT-EXECUTED" "$gr_verdict"
 ep_verdict="$(awk -F'|' -v f="$T_ENTRYPOINT" '$1 == f { print $2 }' "$DERIVED")"
-check "$T_ENTRYPOINT is NOT-EXECUTED (bash -n and grep are not execution)" \
-  "NOT-EXECUTED" "$ep_verdict"
+check "$T_ENTRYPOINT is EXECUTED, through the functions tests extract from it" \
+  "EXECUTED" "$ep_verdict"
+grep -qE "^${T_ENTRYPOINT//./\\.}\\|test-launcher-verify\\.sh\\|.*\\|extract\\|.*\\|verify_launcher_mounts\$" \
+     <(bash "$DERIVE" --evidence 2>/dev/null) \
+  && pass "  … verify_launcher_mounts by test-launcher-verify.sh, as an extraction" \
+  || fail "  … verify_launcher_mounts by test-launcher-verify.sh, as an extraction"
 
 # The two run-time shapes, asserted where they actually bite. Both were blind
 # spots until 2026-08-19 (backlog F33), and both hid the ONE test whose whole
@@ -190,15 +202,15 @@ grep -q "^ERROR: $T_TOOLSLIB is EXECUTED by the hermetic suite" <<<"$out" \
 
 # ── 4. GATE 2: a GREPPED-ONLY file registered as an active target is rejected ──
 f2="$TMP/gate2.conf"
-sed "s@^${RE_ENTRYPOINT}|GREPPED-ONLY|test-entrypoint-wiring\\.sh\$@${T_ENTRYPOINT}|EXECUTED-WHOLE|test-entrypoint-wiring.sh@" "$CONF" > "$f2"
-grep -q "^${RE_ENTRYPOINT}|EXECUTED-WHOLE|" "$f2" \
-  && pass "fixture: gate2.conf promotes $T_ENTRYPOINT to an active mutation target" \
-  || fail "fixture: gate2.conf did not promote $T_ENTRYPOINT"
+sed "s@^${RE_GREPPED}|GREPPED-ONLY|test-integration-fixtures\\.sh\$@${T_GREPPED}|EXECUTED-WHOLE|test-integration-fixtures.sh@" "$CONF" > "$f2"
+grep -q "^${RE_GREPPED}|EXECUTED-WHOLE|" "$f2" \
+  && pass "fixture: gate2.conf promotes $T_GREPPED to an active mutation target" \
+  || fail "fixture: gate2.conf did not promote $T_GREPPED"
 gate "$f2"; out="$gate_out"
 [[ "$gate_rc" -ne 0 ]] \
   && pass "gate 2: a GREPPED-ONLY file registered as a mutation target fails the gate" \
   || fail "gate 2: a GREPPED-ONLY file registered as a mutation target passed the gate"
-grep -q "$T_ENTRYPOINT is classified EXECUTED-WHOLE but the hermetic suite never EXECUTES it" <<<"$out" \
+grep -q "$T_GREPPED is classified EXECUTED-WHOLE but the hermetic suite never EXECUTES it" <<<"$out" \
   && pass "gate 2: the failure names the file and says why (never executed)" \
   || fail "gate 2: the failure did not explain the misclassification (output: $out)"
 
@@ -493,13 +505,28 @@ FIX="$TMP/fixrepo"
 mkdir -p "$FIX/tests" "$FIX/bin"
 for f in sourced.sh parsed-only.sh shellchecked.sh grepped.sh heredoc-named.sh \
          aliased.sh var-path.sh transitive.sh never-mentioned.sh \
-         printf-sourced.sh printf-prose.sh argv-sourced.sh argv-not-dragged.sh; do
+         printf-sourced.sh printf-prose.sh argv-sourced.sh argv-not-dragged.sh \
+         awk-read.sh; do
   printf '#!/usr/bin/env bash\n: %s\n' "$f" > "$FIX/$f"
 done
 cat > "$FIX/sourced.sh" <<'FIXEOF'
 #!/usr/bin/env bash
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 bash "$REPO_DIR/transitive.sh"
+FIXEOF
+# Two functions, run by extraction: test-synth.sh pulls fx_a out with awk and
+# fx_c with sed, and never touches fx_b.
+cat > "$FIX/extracted.sh" <<'FIXEOF'
+#!/usr/bin/env bash
+fx_a() {
+  echo a
+}
+fx_b() {
+  echo b
+}
+fx_c() {
+  echo c
+}
 FIXEOF
 cat > "$FIX/tests/test-synth.sh" <<'FIXEOF'
 #!/usr/bin/env bash
@@ -518,6 +545,9 @@ bash "$BIN/harness.sh"
 printf 'source %s is where it lives\n' "$REPO_DIR/printf-prose.sh" >&2
 bash -c 'src="$1"; source "$src"' _ "$REPO_DIR/argv-sourced.sh"
 bash -c 'source /nowhere/fixed.sh' _ "$REPO_DIR/argv-not-dragged.sh"
+eval "$(awk '/^fx_a\(\) \{/,/^}$/' "$REPO_DIR/extracted.sh")"
+fn="$(sed -n '/^fx_c()/,/^}/p' "$REPO_DIR/extracted.sh")"
+awk '{ print }' "$REPO_DIR/awk-read.sh" > /dev/null
 cat > "$REPO_DIR/written-stub.sh" <<'INNER'
 bash /elsewhere/heredoc-named.sh
 source /elsewhere/heredoc-named.sh
@@ -530,6 +560,8 @@ synth_want="$(cat <<'WANT'
 aliased.sh|EXECUTED
 argv-not-dragged.sh|NOT-EXECUTED
 argv-sourced.sh|EXECUTED
+awk-read.sh|NOT-EXECUTED
+extracted.sh|EXECUTED
 grepped.sh|NOT-EXECUTED
 heredoc-named.sh|NOT-EXECUTED
 never-mentioned.sh|NOT-EXECUTED
@@ -573,6 +605,48 @@ check "  an argument a bash -c body runs as \"\$1\" is executed" \
   "EXECUTED" "$(synth_verdict argv-sourced.sh)"
 check "  a bash -c body that names its target literally does not drag its arguments in" \
   "NOT-EXECUTED" "$(synth_verdict argv-not-dragged.sh)"
+# Extraction (GAP-3): an awk or sed range from `^name()` to `^}` pulls a
+# function out to run it. Keyed on the RANGE: a plain awk read of a file is text.
+check "  a function extracted by an awk or sed range is executed" \
+  "EXECUTED" "$(synth_verdict extracted.sh)"
+check "  a plain awk read of a file is not" "NOT-EXECUTED" "$(synth_verdict awk-read.sh)"
+grep -qE '^extracted\.sh\|test-synth\.sh\|tests/test-synth\.sh:[0-9]+\|extract\|.*\|fx_a$' \
+     <(FALSIFY_REPO="$FIX" FALSIFY_TESTS_DIR="$FIX/tests" bash "$DERIVE" --evidence 2>/dev/null) \
+  && pass "  … and the evidence names the extracted function" \
+  || fail "  … and the evidence names the extracted function: $(FALSIFY_REPO="$FIX" FALSIFY_TESTS_DIR="$FIX/tests" bash "$DERIVE" --evidence 2>/dev/null | grep extract)"
+# What an extracted-only target may be: EXECUTED-PARTIAL, naming only functions
+# one of its oracles extracts (or runs whole).
+synth_conf() { printf '%s\n' "$2" > "$FIX/$1.conf"
+  FALSIFY_REPO="$FIX" FALSIFY_TESTS_DIR="$FIX/tests" bash "$DERIVE" --check "$FIX/$1.conf" 2>&1; }
+synth_rows='aliased.sh|EXECUTED-WHOLE|test-synth.sh
+argv-not-dragged.sh|GREPPED-ONLY|-
+argv-sourced.sh|EXECUTED-WHOLE|test-synth.sh
+awk-read.sh|GREPPED-ONLY|-
+grepped.sh|GREPPED-ONLY|-
+heredoc-named.sh|GREPPED-ONLY|-
+never-mentioned.sh|GREPPED-ONLY|-
+parsed-only.sh|GREPPED-ONLY|-
+printf-prose.sh|GREPPED-ONLY|-
+printf-sourced.sh|EXECUTED-WHOLE|test-synth.sh
+shellchecked.sh|GREPPED-ONLY|-
+sourced.sh|EXECUTED-WHOLE|test-synth.sh
+transitive.sh|EXECUTED-WHOLE|test-synth.sh
+var-path.sh|EXECUTED-WHOLE|test-synth.sh'
+out="$(synth_conf p-ok "$synth_rows
+extracted.sh|EXECUTED-PARTIAL|test-synth.sh|fx_a,fx_c")"
+grep -q ' 0 problem(s)' <<<"$out" \
+  && pass "an EXECUTED-PARTIAL row naming the extracted functions passes the gate" \
+  || fail "an EXECUTED-PARTIAL row naming the extracted functions passes the gate: $out"
+out="$(synth_conf p-bad "$synth_rows
+extracted.sh|EXECUTED-PARTIAL|test-synth.sh|fx_a,fx_b")"
+grep -q 'names function fx_b, which none of its oracles runs' <<<"$out" \
+  && pass "a function no oracle extracts or runs is refused, by name" \
+  || fail "a function no oracle extracts or runs is refused, by name: $out"
+out="$(synth_conf p-whole "$synth_rows
+extracted.sh|EXECUTED-WHOLE|test-synth.sh")"
+grep -q 'extracted.sh is EXECUTED-WHOLE, but its oracles only extract functions from it' <<<"$out" \
+  && pass "EXECUTED-WHOLE for a file the oracles only extract from is refused" \
+  || fail "EXECUTED-WHOLE for a file the oracles only extract from is refused: $out"
 
 # ── 10. The map is the tier inventory: every in-scope candidate has a row ─────
 n_cand="$(grep -c . "$DERIVED")"

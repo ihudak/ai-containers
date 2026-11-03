@@ -86,7 +86,11 @@ out="$(run_case 1 1)"
 
 # 2) anchor matches, the mount is a different inode → refuses (the function exits
 # non-zero, so the subshell carries it; no rc=0 line is printed)
-out="$(run_case 1 0)"
+out="$(run_case 1 0)"; rc2=$?
+# The status, not only the words: the entrypoint must END, and a refusal that
+# printed the error and exited 0 would go on to start the agent.
+[[ "$rc2" -ne 0 ]] && pass "a swapped mount ends the entrypoint with a non-zero status ($rc2)" \
+  || fail "a swapped mount printed the refusal but exited 0 — the launch would go on"
 grep -q 'ERROR:.*is not the directory it was checked as' <<<"$out" \
   && grep -q 'refusing to' <<<"$out" && [[ "$out" != *"rc=0"* ]] \
   && pass "a swapped mount (different inode) refuses the launch, naming it" \

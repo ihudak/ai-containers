@@ -44,7 +44,11 @@ A gap is something a design promised that is not in the code at the reviewed com
 - Suggested approach: add `docker volume` to test-tool-config-mounts.sh's fake docker and a registered-repo fixture, kill the two named security lines, then land sandbox.sh with the remainder classified.
 
 ### GAP-3: Container-side firewall and capture scripts have no hermetic oracle; entrypoint.sh's row is stale
-- Status: PARTLY DONE (2026-11-03). tests/test-refresh-ipset.sh (fake ipset and getent) and tests/test-capture-destinations.sh (fake tcpdump and tshark) are the new oracles. Both scripts are now EXECUTED-WHOLE targets: 34/34 and 21/25 mutants killed. The 4 left are `|| true` → `&& true` under `set -e`, the same program (EQUIVALENT). Still open: entrypoint.sh's extracted functions. The derivation still cannot see a test that extracts a function and runs it, and the runner still refuses an active EXECUTED-PARTIAL row.
+- Status: DONE (2026-11-03).
+  - **The firewall and capture scripts:** tests/test-refresh-ipset.sh (fake ipset and getent) and tests/test-capture-destinations.sh (fake tcpdump and tshark) are the new oracles. Both scripts are EXECUTED-WHOLE targets: 34/34 and 21/25 mutants killed. The 4 left are `|| true` → `&& true` under `set -e`, the same program (EQUIVALENT).
+  - **entrypoint.sh as its functions:** derive-targets.sh sees an awk or sed range extraction of `^name()` as execution of those functions (kind `extract`), and its gate holds an EXECUTED-PARTIAL row to the functions an oracle really runs. generate.sh's `FALSIFY_FUNCTIONS` limits mutants to them, and run.sh runs an active EXECUTED-PARTIAL row instead of refusing it. entrypoint.sh is EXECUTED-PARTIAL over six functions, with four oracles: 63 of 65 killed, 2 EQUIVALENT.
+  - **Two security-relevant gaps the measurement found, now covered:** a launcher-mount refusal in `verify_launcher_mounts` that printed the error and exited 0 would have gone unnoticed (the test checked the words only); and `refuse_root_identity` was never tested with a user name, so a damaged fallback could refuse every real user or let an unresolvable one through.
+  - **Also found:** test-ruby-wrapper.sh only read `link_default_ruby`'s text. It now runs it.
 - Fix batch: separate track
 - Source: tests/falsify/targets.conf GREPPED-ONLY block: "Every one of them is a container-side script … that no hermetic test runs"
 - Area: tests/CI (entrypoint/firewall)

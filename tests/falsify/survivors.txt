@@ -987,3 +987,18 @@ services.d/redis.sh:stmt-delete:c439266b023d2b833980108b498c67a9ca75ea25
     the contract's "this image lacks the server". Its only readers,
     start-services.sh's `[[ -n "$(svc_installed_version)" ]]` and
     `installed="$(svc_installed_version)"`, read the output, never the status.
+
+# ── 26 ────────────────────────────────────────────────────────────────────────
+# entrypoint.sh as its functions (GAP-3, 2026-11-03): the EXECUTED-PARTIAL row
+# mutates only the functions four tests extract and run. 63 of 65 killed.
+
+GROUP: entrypoint.sh — `|| true` turned into `&& true` inside two functions
+entrypoint.sh:logic-flip:3511c5025f231c57748285f5d7ba8c346dbdd2b0
+entrypoint.sh:logic-flip:6454fff6f7154f6f4a4f8953b77697a25a762208
+    /usr/local/bin/start-services.sh prepare || true      (run_services)
+    grep -v 'outside of the UID_MIN' <<<"$err" >&2 || true   (useradd_matching_host_uid)
+  EQUIVALENT: under the entrypoint's `set -e`, bash ignores the failure of every
+    command in a `&&`/`||` list but the last, so `X && true` continues exactly
+    where `X || true` does. Neither list is the last command of its function
+    (run_services goes on to the start phase; the other is followed by
+    `return "$rc"`), so the list's status is never read either.

@@ -20,6 +20,10 @@
 #                  (tests/test-lib-verify-repo.sh builds its harness with
 #                   `printf 'source %q\n' "$REPO_DIR/tests/lib-verify-repo.sh"
 #                   >> "$h"`, which is that library's ONLY dedicated oracle)
+#                a function EXTRACTED from <file> by an awk or sed range
+#                  (`/^name() {/,/^}$/`) to be run: kind `extract`, naming the
+#                  functions; it counts for those functions, not the file's
+#                  top level, and the walk does not continue into the file
 #                a path handed to `bash -c BODY _ <path>` whose body runs it as
 #                  "$1"/"$@" (tests/test-parsers.sh and tests/test-tools-d.sh
 #                   reach sandbox.sh only this way)
@@ -99,6 +103,9 @@ declare -A D_HITS=()      # "<candidate>" → " oracle oracle "
 declare -A D_VISITED=()   # "<oracle>|<file>"
 declare -A D_BASENAME=()  # basename → candidate path (unique ones only)
 declare -A D_ISCAND=()    # candidate path → 1
+declare -A D_WHOLE=()     # "<candidate>|<oracle>" → 1: run as a file (sourced, executed)
+declare -A D_EXTRACT_FN=()  # "<candidate>|<oracle>|<function>" → 1: that function extracted and run
+D_DETAIL=0                # 1 once a live derivation filled the two maps above
 D_EVIDENCE=()
 FT_CANDIDATES=()
 
@@ -353,6 +360,34 @@ _ft_refs() {  # $1 = absolute file
           }
           cmd = 0; i++; continue
         }
+        # EXTRACTION: an awk or sed RANGE from a function header to its closing
+        # brace, `/^name\(\) \{/,/^}$/` or `/^name()/,/^}/p`, pulls a function
+        # out of a file so a test can eval or source it and run it. Keyed on
+        # the range (a `,/^` after the header), never on awk or sed alone: a
+        # plain awk or sed read of a file is text. Coarse in the safe
+        # direction, like the printf and argv rules: an extraction only ever
+        # adds an executor, and the evidence names the file, line and each
+        # function. Emitted as kind `extract` with the function names, so the
+        # gate can hold an EXECUTED-PARTIAL row to the functions really run.
+        if (t == "awk" || t == "sed") {
+          fns = ""; j = i + 1
+          while (j <= n && T[j] != ";") {
+            s2 = T[j]
+            while (match(s2, /\/\^[A-Za-z_][A-Za-z0-9_]*/)) {
+              nm = substr(s2, RSTART + 2, RLENGTH - 2)
+              rest2 = substr(s2, RSTART + RLENGTH)
+              if ((rest2 ~ /^\\\(/ || rest2 ~ /^\(/) && index(rest2, ",/^") > 0)
+                fns = fns (fns == "" ? "" : ",") nm
+              s2 = rest2
+            }
+            j++
+          }
+          if (fns != "") {
+            for (k = i + 1; k < j; k++)
+              if (ispath(T[k]) && T[k] !~ /\/\^/ && T[k] !~ /^-/) print ln "\t" "extract" "\t" T[k] "\t" fns
+          }
+          cmd = 0; i = j; continue
+        }
         if (ispath(t)) { emitref(ln, "exec", t); cmd = 0; i++; continue }
         cmd = 0; i++
       }
@@ -505,7 +540,7 @@ _ft_walk_file() {  # $1=absolute file, $2=map key, $3=oracle, $4=depth
     D_ALIAS["$key|$dest/${src##*/}"]="$src"
   done < <(_ft_refs "$f")
   while IFS=$'\t' read -r lineno kind a1 a2; do
-    case "$kind" in source|bash|exec|argv) ;; *) continue ;; esac
+    case "$kind" in source|bash|exec|argv|extract) ;; *) continue ;; esac
     exp="$(_ft_expand "$key" "$a1")"
     hit="$(_ft_match "$key" "$exp")"
     [[ -n "$hit" ]] || continue
@@ -513,6 +548,14 @@ _ft_walk_file() {  # $1=absolute file, $2=map key, $3=oracle, $4=depth
       *" $oracle "*) ;;
       *) D_HITS["$hit"]="${D_HITS[$hit]:-}${D_HITS[$hit]:+ }$oracle" ;;
     esac
+    if [[ "$kind" == extract ]]; then
+      local fn
+      for fn in ${a2//,/ }; do D_EXTRACT_FN["$hit|$oracle|$fn"]=1; done
+      D_EVIDENCE+=("$hit|$oracle|${f#"$FT_REPO"/}:$lineno|$kind|$exp|$a2")
+      # Not walked: only the extracted functions run, not the file's top level.
+      continue
+    fi
+    D_WHOLE["$hit|$oracle"]=1
     D_EVIDENCE+=("$hit|$oracle|${f#"$FT_REPO"/}:$lineno|$kind|$exp")
     if [[ "$depth" -lt "$FT_MAXDEPTH" ]] && ! _ft_is_opaque "$hit"; then
       _ft_walk_file "$FT_REPO/$hit" "$hit" "$oracle" "$((depth + 1))"
@@ -564,6 +607,7 @@ ft_derive() {
     base="${t##*/}"
     _ft_walk_file "$t" "$base" "$base" 0
   done
+  D_DETAIL=1
 }
 
 ft_print_verdicts() {  # $1 = "all" to include out-of-scope rows
@@ -796,10 +840,40 @@ ft_check() {  # $1=conf
             printf 'ERROR: %s:%s: %s is EXECUTED-PARTIAL naming function %s, which is not defined in %s\n' \
               "$conf" "$lineno" "$target" "$fn" "$target" >&2
             problems=$((problems + 1))
+            continue
+          fi
+          # ── Gate: a function in the unit must be one an oracle RUNS ─────────
+          # By extraction or by running the file whole. Otherwise its mutants
+          # are unkillable noise, as for a target nobody executes. Needs the
+          # live derivation's per-oracle detail; a cached one has none.
+          if (( D_DETAIL )); then
+            local ran=0 po
+            local -a pos=()
+            IFS=',' read -r -a pos <<<"$oracle"
+            for po in "${pos[@]}"; do
+              [[ -n "${D_WHOLE[$target|$po]:-}" || -n "${D_EXTRACT_FN[$target|$po|$fn]:-}" ]] && ran=1
+            done
+            if (( ! ran )); then
+              printf 'ERROR: %s:%s: %s is EXECUTED-PARTIAL and names function %s, which none of its oracles runs (by extracting it or running the file) — its mutants would survive as noise\n' \
+                "$conf" "$lineno" "$target" "$fn" >&2
+              problems=$((problems + 1))
+            fi
           fi
         done
       fi
-    elif [[ -n "$funcs" && "$funcs" != "-" ]]; then
+    elif [[ "$category" == "EXECUTED-WHOLE" && "$kind" == "ACTIVE" ]] && (( D_DETAIL )) && [[ -n "${D_HITS[$target]:-}" ]]; then
+      # ── Gate: WHOLE means some oracle runs the file, not only parts of it ──
+      local whole=0 wo
+      local -a wos=()
+      IFS=',' read -r -a wos <<<"$oracle"
+      for wo in "${wos[@]}"; do [[ -n "${D_WHOLE[$target|$wo]:-}" ]] && whole=1; done
+      if (( ! whole )); then
+        printf 'ERROR: %s:%s: %s is EXECUTED-WHOLE, but its oracles only extract functions from it — mutants of the rest would survive as noise; make it EXECUTED-PARTIAL naming the functions they run\n' \
+          "$conf" "$lineno" "$target" >&2
+        problems=$((problems + 1))
+      fi
+    fi
+    if [[ "$category" != "EXECUTED-PARTIAL" && -n "$funcs" && "$funcs" != "-" ]]; then
       printf 'ERROR: %s:%s: %s is %s but lists functions (%s) — only EXECUTED-PARTIAL has a mutation unit smaller than the file\n' \
         "$conf" "$lineno" "$target" "$category" "$funcs" >&2
       problems=$((problems + 1))
