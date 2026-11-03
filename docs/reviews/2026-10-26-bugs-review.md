@@ -1490,7 +1490,7 @@ A sample of sandbox.sh's mutants (174, `--jobs 10 --timeout 180`) run with `run.
 
 ### GIT-23: the 2 s read bound refuses a launch under load, and the refusal blames a FIFO
 - **Status: OPEN.**
-- Severity: LOW for the launcher (only a config of thousands of entries comes near the bound, and the refusal can be retried); it also makes `test-git-internals-ro.sh` load-sensitive, which a falsify run counts against its kills. Confidence: CONFIRMED (once, under load; not reproduced on demand)
+- Severity: LOW for the launcher (only a config of thousands of entries comes near the bound, and the refusal can be retried); it also makes `tests/test-git-internals-ro.sh` load-sensitive, which a falsify run counts against its kills. Confidence: CONFIRMED (once, under load; not reproduced on demand)
 - Location: `sandbox.sh`, `_git_file_config()` (`GIT_DIR=/dev/null "${_rd_t[@]}" git config --file "$f" "$@" || rc=$?`) and `_rd_fail()`
 - Introduced: `86427b0` (batch 10, G84/G86), which put every small git file read under a 2 s bound.
 - What's wrong: `_git_file_config()` reads a protected config with `git config --file` under `timeout 2`, and a read cut off refuses the launch through `_rd_fail()`, as it should for a FIFO. But the bound is a time, so a regular file that is only slow to parse is refused too. In the sample, one of the two control runs (the pristine set, under the run's own 10 workers) failed in G38, whose config holds 5,000 include entries: `ERROR: …/proj/many38/.git/config could not be read within its bound (a FIFO swapped in, or too big); refusing the launch.` The file was neither a FIFO nor over the size limit. The run then exited 1 ("1 of 2 control run(s) FAILED"), and a mutant scored KILLED in that run may have been killed by the machine.

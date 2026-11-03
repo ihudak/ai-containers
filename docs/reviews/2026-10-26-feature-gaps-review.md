@@ -66,12 +66,12 @@ A gap is something a design promised that is not in the code at the reviewed com
   - **Total:** 70,774 s of CPU, 8,236 s wall. Run whole, the same mutants would cost ~134,400 s (169 × the 668 s a whole-set run took under that load, plus 5 × 4,320 s): **47 % less**, 58 % less leaving the hangs out.
   - **Misses:** 2 mutants survived their subset and were killed by the rest of the set; 3 subsets timed out and the rest ran. No verdict depended on the map.
   - **The whole file:** 1,567 mutants at the sample's rate is ~20 h wall at `--jobs 10`. Selection halves the cost; it does not bring sandbox.sh near CI's 90-minute cap, or a nightly run.
-  - **Found by the run:** the TIMEOUT note named `--timeout` (180 s) instead of the set's clock (TST-26, fixed); and `test-git-internals-ro.sh` went red on the pristine tree under this load, its G38 config refused by the 2 s read bound (GIT-23, open). That failed one of the two control runs, so the run exited 1.
+  - **Found by the run:** the TIMEOUT note named `--timeout` (180 s) instead of the set's clock (TST-26, fixed); and `tests/test-git-internals-ro.sh` went red on the pristine tree under this load, its G38 config refused by the 2 s read bound (GIT-23, open). That failed one of the two control runs, so the run exited 1.
 - **Decision on placement: sandbox.sh stays DEFERRED.** The levers, by their measured share:
   1. **Hangs, 33 %.** A hang pays the whole set's clock (24 × 180 s) even when one test hangs. A per-test clock in `tests/run-all.sh` would cap it near 180 s. It changes the shared driver and what a timeout means, so it needs a design decision first.
   2. **test-git-internals-ro.sh, 25 %.** It is in most subsets for the git-internals code, at 143 s alone and ~357 s under load. Splitting it into files by area would let the map select only the part that reaches a line, and would speed up the hermetic suite as well.
   3. **Survivors, 27 %.** These run the whole set by construction. Killing them, or classifying them, is the only way to cut this share.
-  4. **Fail-fast** (stop `run-all.sh` at the first failing test) only helps the 11 % of kills by 19 or more tests. It is smaller than this entry's earlier estimate.
+  4. **Fail-fast** (stop `tests/run-all.sh` at the first failing test) only helps the 11 % of kills by 19 or more tests. It is smaller than this entry's earlier estimate.
 - **Survivors in the sample:** 29, in `_utf8_valid` (6, the byte-range checks), `_git_index_read` (11, the `commondir` and index-file checks), `_git_config_bool` (11, among them the refusal of a config over 1 MiB) and one `return 1` at line 75. The git-internals ones are security-adjacent. They are the next slice: assertions that kill them, or ledger classifications.
 
 ### GAP-3: Container-side firewall and capture scripts have no hermetic oracle; entrypoint.sh's row is stale
