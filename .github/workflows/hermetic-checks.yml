@@ -139,7 +139,12 @@ jobs:
     # `suite` above runs on whatever bash ubuntu-latest happens to ship, which
     # drifts upward with the runner image; this job pins the CLAIM. Raising the
     # floor means changing this image and bash-floor.sh together.
-    container: ubuntu:22.04
+    # --init: a container job's PID 1 is the runner's `tail -f /dev/null`, which
+    # never reaps orphans, and `kill -0` is true for a zombie — so the capture
+    # tests' "has it exited?" checks saw dead processes as still running.
+    container:
+      image: ubuntu:22.04
+      options: --init
 
     steps:
       # BEFORE checkout: actions/checkout needs git inside the container, and
