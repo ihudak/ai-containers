@@ -386,6 +386,18 @@ chmod +x "$FX/tests/test-fx-scaffold-and-fail.sh"
 #                       for none (NONE), where test-fx-sel-copy, which fails
 #                       gutted, stays ALL. sandbox.sh has two: 82 s of every
 #                       mutant's subset in the 2026-11-03 sample.
+# And the outcomes a subset must NOT decide alone (review of 229eab8):
+#   test-fx-sel-slow    the only test of sel_three in its set, and slower than
+#                       one share of the set's clock. On a clock of its own
+#                       size its subset timed out: UNPROVEN where the set kills.
+#   test-fx-sel-errexit runs sel_six under `set -e` and asserts nothing; with
+#                       test-fx-sel-mixed, which asserts sel_six through a
+#                       renamed copy, the set kills WITH a FAIL: line, and the
+#                       subset {errexit} alone without one.
+#   test-fx-sel-aaa / test-fx-sel-needy   needy passes only after aaa has left a
+#                       file behind, so it is red on its own: a subset holding
+#                       it is red whatever the mutant, and selection must turn
+#                       itself off for the target.
 cat > "$FX/fixture-sel.sh" <<'EOF'
 #!/usr/bin/env bash
 SEL_LOADED=1
@@ -407,6 +419,40 @@ sel_five() {
   if [[ "$1" == w
         || "$1" == v ]]; then echo five-yes; else echo five-no; fi
 }
+sel_six() {
+  [[ "$1" == s ]]
+}
+EOF
+cat > "$FX/tests/test-fx-sel-slow.sh" <<'EOF'
+#!/usr/bin/env bash
+set -uo pipefail
+FX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=/dev/null
+source "$FX_DIR/fixture-sel.sh"
+sleep 5
+if [[ "$(sel_three z)" == three-yes && "$(sel_three q)" == three-no ]]; then printf 'PASS: sel_three, slowly\n'; exit 0; fi
+printf 'FAIL: sel_three, slowly\n'; exit 1
+EOF
+cat > "$FX/tests/test-fx-sel-errexit.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+FX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=/dev/null
+source "$FX_DIR/fixture-sel.sh"
+sel_six s
+printf 'PASS: sel_six ran\n'
+EOF
+cat > "$FX/tests/test-fx-sel-aaa.sh" <<'EOF'
+#!/usr/bin/env bash
+FX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+: > "$FX_DIR/.sel-debris" && { printf 'PASS: left a file behind\n'; exit 0; }
+printf 'FAIL: could not leave a file behind\n'; exit 1
+EOF
+cat > "$FX/tests/test-fx-sel-needy.sh" <<'EOF'
+#!/usr/bin/env bash
+FX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ -f "$FX_DIR/.sel-debris" ]]; then printf 'PASS: found what aaa left\n'; exit 0; fi
+printf 'FAIL: nothing left behind\n'; exit 1
 EOF
 cat > "$FX/tests/test-fx-sel-bystander.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -442,10 +488,10 @@ FX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=/dev/null
 source "$FX_DIR/fixture-sel.sh"
 d="$(mktemp -d)"; cp "$FX_DIR/fixture-sel.sh" "$d/renamed-copy.sh"
-got="$(bash -c 'source "$1"; sel_two y; sel_two n' _ "$d/renamed-copy.sh" | tr '\n' ' ')"
+got="$(bash -c 'source "$1"; sel_two y; sel_two n; sel_six s && echo six-yes' _ "$d/renamed-copy.sh" | tr '\n' ' ')"
 rm -rf "$d"
-if [[ "$got" == "two-yes two-no " ]]; then printf 'PASS: sel_two\n'; exit 0; fi
-printf 'FAIL: sel_two (got %s)\n' "$got"; exit 1
+if [[ "$got" == "two-yes two-no six-yes " ]]; then printf 'PASS: sel_two, sel_six\n'; exit 0; fi
+printf 'FAIL: sel_two, sel_six (got %s)\n' "$got"; exit 1
 EOF
 cat > "$FX/tests/test-fx-sel-strict.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -486,6 +532,8 @@ cat > "$FX/tests/test-fx-linger.sh" <<'EOF'
 n=0; [[ -f "${FX_LINGER_COUNT:?}" ]] && n="$(cat "$FX_LINGER_COUNT")"
 n=$(( n + 1 )); printf '%s' "$n" > "$FX_LINGER_COUNT"
 if (( n == 1 )); then printf 'PASS: baseline\n'; exit 0; fi
+# FX_LINGER_HARD: deaf to TERM, it and its child, so only the KILL sweep ends them.
+[[ -n "${FX_LINGER_HARD:-}" ]] && trap '' TERM
 printf '%s\n' "$$" >> "${FX_LINGER_PIDS:?}"
 sleep 60 &
 printf '%s\n' "$!" >> "$FX_LINGER_PIDS"
@@ -1484,12 +1532,12 @@ check "--deep with a selection the deep map does not cover is refused (exit 2)" 
 # kill of the full set; one that survives is confirmed by the rest of the set.
 CONF_SEL="$(conf sel 'fixture-sel.sh|EXECUTED-WHOLE|test-fx-sel-one.sh,test-fx-sel-mixed.sh,test-fx-sel-strict.sh,test-fx-sel-shy.sh')"
 fx_run "$RUN" "$CONF_SEL" "$FX" "$TMP/wit-sel-full" --jobs 1 --controls 0
-full_verdicts="$(awk -F'|' '$1 == "MUTANT" { print $3 "|" $2 }' <<< "$FX_OUT" | sort)"
+full_verdicts="$(awk -F'|' '$1 == "MUTANT" { print $3 "|" $2 "|" $7 }' <<< "$FX_OUT" | sort)"
 fx_run "$RUN" "$CONF_SEL" "$FX" "$TMP/wit-sel" --jobs 1 --controls 0 --select-oracles
 check "--select-oracles runs (exit 0)" "0" "$FX_RC"
-sel_verdicts="$(awk -F'|' '$1 == "MUTANT" { print $3 "|" $2 }' <<< "$FX_OUT" | sort)"
+sel_verdicts="$(awk -F'|' '$1 == "MUTANT" { print $3 "|" $2 "|" $7 }' <<< "$FX_OUT" | sort)"
 [[ -n "$sel_verdicts" && "$sel_verdicts" == "$full_verdicts" ]] \
-  && pass "  … and every verdict is the one the full oracle set gives" \
+  && pass "  … and every verdict, and its signal, is the one the full oracle set gives" \
   || fail "  … verdicts differ from the full set's — full: $(tr '\n' ' ' <<< "$full_verdicts") selected: $(tr '\n' ' ' <<< "$sel_verdicts")"
 # shy went red under the trace, so it is ALL: always selected. strict and mixed
 # do not reach sel_one and are left out.
@@ -1529,6 +1577,40 @@ check "  … and a condition's first line (bash reports its last) to the oracle 
   "$(awk -F'|' '$1 == "MUTANT" && $6 == 18 { print $4 }' <<< "$FX_OUT" | sort -u | tr '\n' ' ' | sed 's/ $//')"
 check "  … both killed" "KILLED" \
   "$(awk -F'|' '$1 == "MUTANT" && ($6 == 14 || $6 == 18) { print $2 }' <<< "$FX_OUT" | sort -u | tr '\n' ' ' | sed 's/ $//')"
+# What a subset must not decide alone (review of 229eab8).
+CONF_SEL_SLOW="$(conf selslow 'fixture-sel.sh|EXECUTED-PARTIAL|test-fx-sel-four.sh,test-fx-sel-one.sh,test-fx-sel-slow.sh|sel_three')"
+fx_run "$RUN" "$CONF_SEL_SLOW" "$FX" "$TMP/wit-sel-slow" --jobs 4 --controls 0 --select-oracles --timeout 3
+check "  … a subset runs on the whole set's clock: a test slower than one share of it still kills (sel_three)" \
+  "KILLED" "$(awk -F'|' '$1 == "MUTANT" && $6 == 10 { print $2 }' <<< "$FX_OUT" | sort -u | tr '\n' ' ' | sed 's/ $//')"
+check "  … and is the subset that decided" "test-fx-sel-slow.sh" \
+  "$(awk -F'|' '$1 == "MUTANT" && $6 == 10 { print $4 }' <<< "$FX_OUT" | sort -u | tr '\n' ' ' | sed 's/ $//')"
+CONF_SEL_EX="$(conf selex 'fixture-sel.sh|EXECUTED-PARTIAL|test-fx-sel-errexit.sh,test-fx-sel-mixed.sh|sel_six')"
+fx_run "$RUN" "$CONF_SEL_EX" "$FX" "$TMP/wit-sel-ex" --jobs 2 --controls 0 --select-oracles
+check "  … a subset that kills with no assertion is re-run whole: sel_six's kills carry the set's FAIL: line" \
+  "exit+failline" "$(awk -F'|' '$1 == "MUTANT" && $6 == 22 { print $7 }' <<< "$FX_OUT" | sort -u | tr '\n' ' ' | sed 's/ $//')"
+check "  … so none is assertless" "0" "$(awk -F'|' '$1 == "ASSERTLESS" { print $2 }' <<< "$FX_OUT")"
+[[ "$(grep -c '^NOTE|selection-rerun|fixture-sel.sh:' <<< "$FX_OUT")" -ge 1 ]] \
+  && pass "  … and each re-run is recorded" \
+  || fail "  … no selection-rerun recorded (out: $(grep -E '^(MUTANT|NOTE)\|' <<< "$FX_OUT" | tr '\n' ' '))"
+grep -q '^NOTE|selection-total|-|0 mutant(s) missed by their subset and killed by the rest of the set; [1-9]' <<< "$FX_OUT" \
+  && pass "  … and counted at the end" \
+  || fail "  … the run's selection total is missing or wrong (got: $(grep '^NOTE|selection-total|' <<< "$FX_OUT"))"
+CONF_SEL_ALONE="$(conf selalone 'fixture-sel.sh|EXECUTED-PARTIAL|test-fx-sel-aaa.sh,test-fx-sel-needy.sh,test-fx-sel-one.sh|sel_three')"
+fx_run "$RUN" "$CONF_SEL_ALONE" "$FX" "$TMP/wit-sel-alone" --jobs 2 --controls 0 --select-oracles
+grep -q '^NOTE|selection|fixture-sel.sh|off: test-fx-sel-needy.sh ' <<< "$FX_OUT" \
+  && pass "  … an oracle red on its own on the pristine tree turns selection off for the target" \
+  || fail "  … selection stayed on beside an oracle that is red alone (got: $(grep '^NOTE|selection|' <<< "$FX_OUT"))"
+check "  … so sel_three, which no member tests, survives the whole set rather than the red one alone" \
+  "SURVIVED|test-fx-sel-aaa.sh,test-fx-sel-needy.sh,test-fx-sel-one.sh" \
+  "$(awk -F'|' '$1 == "MUTANT" && $6 == 10 { print $2 "|" $4 }' <<< "$FX_OUT" | sort -u | tr '\n' ' ' | sed 's/ $//')"
+CONF_SEL_EMPTY="$(conf selempty 'fixture-sel.sh|EXECUTED-PARTIAL|test-fx-sel-four.sh,test-fx-sel-one.sh|sel_three')"
+fx_run "$RUN" "$CONF_SEL_EMPTY" "$FX" "$TMP/wit-sel-empty" --jobs 2 --controls 0 --select-oracles
+check "  … a line no oracle reaches selects nothing, and runs the whole set" \
+  "SURVIVED|test-fx-sel-four.sh,test-fx-sel-one.sh" \
+  "$(awk -F'|' '$1 == "MUTANT" && $6 == 10 { print $2 "|" $4 }' <<< "$FX_OUT" | sort -u | tr '\n' ' ' | sed 's/ $//')"
+check "  … at once, not after running an empty subset first" "0" "$(grep -c '^NOTE|selection-rerun|' <<< "$FX_OUT")"
+FALSIFY_SELECT=yes fx_run "$RUN" "$CONF_A" "$FX" "$TMP/wit-sel-bad" --jobs 1 --controls 0
+check "  … FALSIFY_SELECT other than 0 or 1 is refused (exit 2)" "2" "$FX_RC"
 fx_run "$RUN" "$CONF_A" "$FX" "$TMP/wit-sel1" --jobs 1 --controls 0 --select-oracles
 check "  … a single-oracle row is run as before (exit 0)" "0" "$FX_RC"
 check "  … with no coverage pass for it" "0" "$(grep -c '^NOTE|selection|' <<< "$FX_OUT")"
@@ -1578,6 +1660,50 @@ else
   kill -TERM "$lg_run" 2>/dev/null; wait "$lg_run" 2>/dev/null
 fi
 # Whatever the verdict, nothing of this case may outlive it.
+while IFS= read -r p; do kill -KILL "$p" 2>/dev/null; done < "$lg_pids"
+# The same with INT, during the coverage pass, against an oracle deaf to TERM:
+# the coverage jobs are the owner's too, and only the KILL sweep ends this one.
+lg_pids="$TMP/linger2.pids"; : > "$lg_pids"
+lg_tmp="$TMP/linger2-tmp"; mkdir -p "$lg_tmp"
+CONF_LINGER2="$(conf linger2 'fixture-lib.sh|EXECUTED-WHOLE|test-fx-linger.sh,test-fx-sel-bystander.sh')"
+# Under job control: a non-interactive shell starts a background job with INT
+# ignored (SigIgn 0x6), and a signal ignored on entry cannot be trapped, so
+# the run would never see the INT this case sends.
+set -m
+FALSIFY_REPO="$FX" FALSIFY_CONF="$CONF_LINGER2" TMPDIR="$lg_tmp" FX_LINGER_HARD=1 \
+FX_LINGER_PIDS="$lg_pids" FX_LINGER_COUNT="$TMP/linger2.count" \
+  bash "$RUN" --jobs 1 --controls 0 --timeout 300 --select-oracles > "$TMP/linger2.out" 2>&1 &
+lg_run=$!
+set +m
+for _ in $(seq 1 300); do
+  [[ "$(grep -c . "$lg_pids")" -ge 2 ]] && break
+  sleep 0.1
+done
+if [[ "$(grep -c . "$lg_pids")" -ge 2 ]]; then
+  kill -INT "$lg_run"
+  for _ in $(seq 1 100); do kill -0 "$lg_run" 2>/dev/null || break; sleep 0.1; done
+  if kill -0 "$lg_run" 2>/dev/null; then
+    kill -KILL "$lg_run" 2>/dev/null; wait "$lg_run" 2>/dev/null
+    lg_rc="still running 10s after the INT"
+  else
+    wait "$lg_run"; lg_rc=$?
+  fi
+  check "a run interrupted in its coverage pass exits on the signal (128+INT)" "130" "$lg_rc"
+  lg_alive=""
+  for _ in $(seq 1 50); do
+    lg_alive=""
+    while IFS= read -r p; do kill -0 "$p" 2>/dev/null && lg_alive+=" $p"; done < "$lg_pids"
+    [[ -z "$lg_alive" ]] && break
+    sleep 0.1
+  done
+  [[ -z "$lg_alive" ]] \
+    && pass "  … and the coverage oracle, deaf to TERM, is gone with its children" \
+    || fail "  … the coverage oracle outlived the run:$lg_alive"
+  check "  … and its scratch is gone" "" "$(find "$lg_tmp" -mindepth 1 -maxdepth 1 -name 'tmp.*' 2>/dev/null)"
+else
+  fail "the lingering coverage oracle never started (out: $(tail -3 "$TMP/linger2.out" | tr '\n' ' '))"
+  kill -TERM "$lg_run" 2>/dev/null; wait "$lg_run" 2>/dev/null
+fi
 while IFS= read -r p; do kill -KILL "$p" 2>/dev/null; done < "$lg_pids"
 
 # ── 13. The REAL targets.conf is what an unfiltered run would read ────────────

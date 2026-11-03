@@ -14,11 +14,14 @@
 #                           more tests, each test is run ONCE with the target
 #                           traced (xtrace to a file, `file:line` per command),
 #                           and each mutant then runs only the tests whose trace
-#                           covers its statement. A selected subset that kills is
-#                           a kill of the full set; one that SURVIVES is re-run
-#                           against the rest of the set, and that verdict counts
-#                           (recorded as NOTE|selection-miss when it differs), so
-#                           every verdict is the full set's. A line no test
+#                           covers its statement, on the whole set's clock. A
+#                           subset that kills with an assertion decides; one
+#                           that SURVIVES is followed by the rest of the set
+#                           (NOTE|selection-miss when that kills); anything else
+#                           by the whole set (NOTE|selection-rerun). So every
+#                           verdict is the whole set's. A test red on its own on
+#                           the pristine tree turns selection off for its
+#                           target. A line no test
 #                           traced (inside a command bash reports at another of
 #                           its lines) takes the tests that traced the nearest
 #                           statement above and below it in its function. A test
@@ -80,9 +83,16 @@
 #
 #   RUN|repo=<path>|conf=<path>|jobs=<n>|timeout=<s>|operators=<list>|targets=<n>|mutants=<n>
 #   NOTE|selection|<target>|<detail>   --select-oracles: what the coverage pass
-#              traced, per oracle (a line count, or ALL).
+#              traced, per oracle (a line count, NONE, ALL or
+#              ALL(red-when-traced)), or `off: …` when an oracle is red on its
+#              own and the target's mutants run the whole set.
 #   NOTE|selection-miss|<identity>|<detail>   a selected subset survived and the
-#              rest of the set did not: the verdict is the full set's.
+#              rest of the set killed: the verdict is the full set's.
+#   NOTE|selection-rerun|<identity>|<detail>   a selected subset neither killed
+#              with an assertion nor survived; the whole set ran, and its
+#              verdict is the one recorded.
+#   NOTE|selection-total|-|<detail>   once, at the end of a --select-oracles
+#              run: how many mutants were misses and reruns.
 #   OPERATORS|<target>|<list>      one per target, right after RUN: the
 #              operators that target's mutants were generated with. The ledger
 #              gate scopes its stale/obsolete checks by them, so a deep pass and
@@ -118,7 +128,8 @@
 #              F27; check-ledger.sh's check B carries the same note). The price
 #              of that exemption is that unproven mutants leave the measured set
 #              silently, which is what --max-unproven-pct bounds.
-#   oracle     the row's oracle field verbatim, which may name SEVERAL tests
+#   oracle     the row's oracle field verbatim, which may name SEVERAL tests (under
+#              --select-oracles, the subset that decided, when one did)
 #              separated by commas. They are one invocation, not several: a
 #              target's code can be driven by more tests than the single one
 #              that is dedicated to it, and naming only that one made real kills
@@ -431,6 +442,8 @@ FR_SELECT="${FALSIFY_SELECT:-0}"
 declare -A FR_SEL=()     # "<target>|<lineno>" → the oracles whose trace covers that line's statement
 declare -A FR_SEL_ON=()  # "<target>" → 1 once its coverage pass has run
 FR_SEL_MISS=0
+FR_SEL_RERUN=0
+FR_COV_PIDS=() # the coverage pass's jobs, so an interrupt reaches them
 
 # The suite driver, as a repo-relative path DERIVED from where this file lives,
 # not hardcoded: upstream keeps tests/ at the repo root, the mgd port keeps the
@@ -1208,7 +1221,7 @@ FR_OUT=""
 
 fr_cleanup() {
   local p g signalled=0
-  for p in "${!FR_PID_SLOT[@]}"; do kill -TERM "$p" 2>/dev/null && signalled=1; done
+  for p in "${!FR_PID_SLOT[@]}" "${FR_COV_PIDS[@]}"; do kill -TERM "$p" 2>/dev/null && signalled=1; done
   # EVERY ORACLE STILL RUNNING LEADS A PROCESS GROUP OF ITS OWN (set -m in
   # falsify_run_oracle), which the TERM above does not reach: the worker dies of
   # it before its own post-wait group kill runs. Measured 2026-11-03: a TERMed
@@ -1287,36 +1300,61 @@ fr_run_mutant() {   # <slot> <target> <oracle> <seq> <lineno> <op> <sha> <text> 
   fi
 
   # --select-oracles: the tests whose trace covers this line's statement, when
-  # that is fewer than the whole set. A subset that survives is confirmed by
-  # the rest of the set, so the verdict is always the full set's.
-  local run="$oracle" sel="" rest="" o ms_sel=0 sel_verdict=""
+  # that is fewer than the whole set. The verdict recorded is the one the
+  # whole set gives:
+  #   - a subset that KILLS WITH AN ASSERTION (a FAIL: line) decides: the whole
+  #     set runs that test too, and a FAIL: line is a kill whatever else runs;
+  #   - a subset that SURVIVES is followed by the rest of the set, whose
+  #     verdict is the recorded one (a miss, NOTE|selection-miss, if it kills);
+  #   - ANYTHING ELSE — a timeout, a signal, a broken scaffold, a kill with no
+  #     FAIL: line — depends on what else runs beside it, so the whole set runs
+  #     and decides (NOTE|selection-rerun). A kill with no assertion is the
+  #     ASSERTLESS gate's business, and the subset would hide a FAIL: line
+  #     from an oracle the map missed.
+  # Every run gets the WHOLE set's clock. The clock detects a hang; it is not a
+  # cost estimate, and a subset's own (FR_TIMEOUT × its size) timed out a slow
+  # test the whole set gives time to: an UNPROVEN where the set says KILLED,
+  # or one that excuses a survivor from the ledger (review of 229eab8).
+  local run="$oracle" sel="" rest="" o ms_sel=0 sel_verdict="" sel_signal="" foreign="" clock
   local -a all_o=()
+  clock="$(fr_effective_timeout "$oracle")"
   if [[ -n "${FR_SEL_ON[$target]:-}" ]]; then
     sel="${FR_SEL[$target|$lineno]-}"
     [[ -n "$sel" && "$sel" != "$oracle" ]] && run="$sel"
   fi
 
-  falsify_run_oracle "$tree" "$run" "$out" "$(fr_effective_timeout "$run")" "s$slot.m$seq"
+  falsify_run_oracle "$tree" "$run" "$out" "$clock" "s$slot.m$seq"
   falsify_verdict "$FALSIFY_RC" "$out" "$FALSIFY_TIMED_OUT"
 
-  if [[ "$run" != "$oracle" && "$FALSIFY_VERDICT" == "SURVIVED" ]]; then
-    ms_sel="$FALSIFY_MS"; sel_verdict="$FALSIFY_VERDICT"
-    IFS=',' read -r -a all_o <<<"$oracle"
-    for o in "${all_o[@]}"; do
-      case ",$sel," in *",$o,"*) ;; *) rest+="${rest:+,}$o" ;; esac
-    done
-    falsify_run_oracle "$tree" "$rest" "$out" "$(fr_effective_timeout "$rest")" "s$slot.m$seq.r"
+  if [[ "$run" != "$oracle" ]] \
+     && ! [[ "$FALSIFY_VERDICT" == KILLED && "$FALSIFY_SIGNAL" == *failline* ]]; then
+    ms_sel="$FALSIFY_MS"; sel_verdict="$FALSIFY_VERDICT"; sel_signal="$FALSIFY_SIGNAL"
+    foreign="$FALSIFY_FOREIGN_FLAG"
+    if [[ "$sel_verdict" == SURVIVED ]]; then
+      IFS=',' read -r -a all_o <<<"$oracle"
+      for o in "${all_o[@]}"; do
+        case ",$sel," in *",$o,"*) ;; *) rest+="${rest:+,}$o" ;; esac
+      done
+    else
+      rest="$oracle"
+    fi
+    falsify_run_oracle "$tree" "$rest" "$out" "$clock" "s$slot.m$seq.r"
     falsify_verdict "$FALSIFY_RC" "$out" "$FALSIFY_TIMED_OUT"
     FALSIFY_MS=$(( FALSIFY_MS + ms_sel ))
+    # A foreign flag either run saw is reported: it is never silent.
+    [[ -z "$FALSIFY_FOREIGN_FLAG" ]] && FALSIFY_FOREIGN_FLAG="$foreign"
     run="$oracle"
   fi
 
   printf 'MUTANT|%s|%s|%s|%s|%s|%s|%s|%s\n' \
     "$FALSIFY_VERDICT" "$ident" "$run" "$seq" "$lineno" \
     "$FALSIFY_SIGNAL" "$FALSIFY_MS" "$text" > "$res"
-  if [[ -n "$sel_verdict" && "$FALSIFY_VERDICT" != "SURVIVED" ]]; then
-    printf 'NOTE|selection-miss|%s|selected %s survived; the rest of the set (%s) gave %s\n' \
-      "$ident" "$sel" "$rest" "$FALSIFY_VERDICT" >> "$res"
+  if [[ "$sel_verdict" == SURVIVED && "$FALSIFY_VERDICT" == KILLED ]]; then
+    printf 'NOTE|selection-miss|%s|selected %s survived; the rest of the set (%s) killed (%s)\n' \
+      "$ident" "$sel" "$rest" "$FALSIFY_SIGNAL" >> "$res"
+  elif [[ -n "$sel_verdict" && "$sel_verdict" != SURVIVED ]]; then
+    printf 'NOTE|selection-rerun|%s|selected %s gave %s (%s); the whole set gave %s (%s)\n' \
+      "$ident" "$sel" "$sel_verdict" "$sel_signal" "$FALSIFY_VERDICT" "$FALSIFY_SIGNAL" >> "$res"
   fi
 
   # A flag this invocation did not arm reached this slot. Recorded against the
@@ -1737,6 +1775,7 @@ fr_harvest() {   # <pid> — print that mutant's records and tally them
         fr_warn "CONTROL RETRIED — the pristine oracle could not be MEASURED on the first attempt (the host, not the code); the retry decided it: $cr_detail" ;;
       'NOTE|write-failed|'*) FR_BROKEN=$(( FR_BROKEN + 1 )) ;;
       'NOTE|selection-miss|'*) FR_SEL_MISS=$(( FR_SEL_MISS + 1 )) ;;
+      'NOTE|selection-rerun|'*) FR_SEL_RERUN=$(( FR_SEL_RERUN + 1 )) ;;
       'NOTE|reseed-failed|'*)
         # Loud where it happens, and counted, because every verdict recorded in
         # that slot afterwards came from a tree that is not this repo.
@@ -2007,40 +2046,67 @@ fr_target_ops() {   # <index>
 # `${BASH_SOURCE:+…}` expands to nothing instead.
 #
 # AND A RUN THAT WENT RED UNDER THE TRACE MAPS NOTHING: what it reached is not
-# what the test covers, so it counts as ALL, the same as no trace at all. The
-# test's verdict on the pristine tree is the baseline's, so red here can only
-# be the trace's doing.
+# what the test covers. It runs once more, untraced and on its own. Green, the
+# trace did it, and the test counts as ALL, the same as no trace at all. Red,
+# the test fails ON ITS OWN on the pristine tree — it leans on what another
+# member of the set leaves behind, which the baseline (the whole set, in one
+# tree) cannot show — and any subset holding it would be red whatever the
+# mutant, a kill nobody made. Selection is then off for the target, and every
+# mutant runs the whole set (review of 229eab8).
+# One coverage job: oracle <k> against its own copy of the pristine tree, with
+# the target TRACED, GUTTED or left as it is (PLAIN). Writes cov<k>.verdict.
+# The copy is removed when the job ends, so the copies do not all exist at
+# once (24 × the tree for sandbox.sh), and the job is registered so that an
+# interrupt reaches it. Returns 1, having started nothing, if the copy fails.
+_fr_cover_job() {   # <target> <k> <oracle> <trace|gut|plain>
+  local target="$1" k="$2" o="$3" mode="$4" tree="$FR_SCRATCH/cov$2"
+  rm -rf "$tree"
+  # cp -a first, as fr_seed_slot does: on macOS it can fail over extended
+  # attributes, and -R then copies what the oracles need.
+  if ! cp -a "$FR_CACHE" "$tree" 2>/dev/null; then
+    rm -rf "$tree"
+    cp -R "$FR_CACHE" "$tree" 2>/dev/null || { rm -rf "$tree"; return 1; }
+  fi
+  case "$mode" in
+    trace)
+      : > "$FR_SCRATCH/cov$k.trace"
+      { head -n 1 "$FR_CACHE/$target"
+        printf 'exec {__falsify_cov}>>%q && { BASH_XTRACEFD=$__falsify_cov; PS4='"'"'+${BASH_SOURCE:+${BASH_SOURCE##*/}}:${LINENO}:'"'"'; set -x; }\n' "$FR_SCRATCH/cov$k.trace"
+        tail -n +2 "$FR_CACHE/$target"; } > "$tree/$target" ;;
+    gut) { head -n 1 "$FR_CACHE/$target"; printf 'exit 97\n'; } > "$tree/$target" ;;
+  esac
+  ( falsify_run_oracle "$tree" "$o" "$FR_SCRATCH/cov$k.log" \
+      "$(( $(fr_effective_timeout "$o") * 4 ))" "cov$k.$mode"
+    falsify_verdict "$FALSIFY_RC" "$FR_SCRATCH/cov$k.log" "$FALSIFY_TIMED_OUT"
+    printf '%s\n' "$FALSIFY_VERDICT" > "$FR_SCRATCH/cov$k.verdict"
+    rm -rf "$tree" "$FR_SCRATCH/cov$k.log"* ) >/dev/null 2>&1 &
+  FR_COV_PIDS+=("$!")
+  if (( ${#FR_COV_PIDS[@]} >= FR_JOBS )); then
+    wait "${FR_COV_PIDS[0]}"; FR_COV_PIDS=("${FR_COV_PIDS[@]:1}")
+  fi
+}
+
+_fr_cover_wait() { wait; FR_COV_PIDS=(); }
+
 fr_cover_target() {   # <target> <oracle-set> — fills FR_SEL / FR_SEL_ON, prints NOTE|selection
-  local target="$1" oracle="$2" base k o tree covf
-  local -a os=() pids=()
+  local target="$1" oracle="$2" base k n
+  local -a os=() det=() red=() untraced=() alone=()
   IFS=',' read -r -a os <<<"$oracle"
   (( ${#os[@]} >= 2 )) || return 0
   base="${target##*/}"
   for (( k = 0; k < ${#os[@]}; k++ )); do
-    tree="$FR_SCRATCH/cov$k"; covf="$FR_SCRATCH/cov$k.trace"
-    rm -rf "$tree"; cp -a "$FR_CACHE" "$tree" || return 1
-    : > "$covf"
-    { head -n 1 "$FR_CACHE/$target"
-      printf 'exec {__falsify_cov}>>%q && { BASH_XTRACEFD=$__falsify_cov; PS4='"'"'+${BASH_SOURCE:+${BASH_SOURCE##*/}}:${LINENO}:'"'"'; set -x; }\n' "$covf"
-      tail -n +2 "$FR_CACHE/$target"; } > "$tree/$target"
-    ( falsify_run_oracle "$tree" "${os[k]}" "$FR_SCRATCH/cov$k.log" \
-        "$(( $(fr_effective_timeout "${os[k]}") * 4 ))" "cov$k"
-      falsify_verdict "$FALSIFY_RC" "$FR_SCRATCH/cov$k.log" "$FALSIFY_TIMED_OUT"
-      printf '%s\n' "$FALSIFY_VERDICT" > "$FR_SCRATCH/cov$k.verdict" ) >/dev/null 2>&1 &
-    pids+=("$!")
-    if (( ${#pids[@]} >= FR_JOBS )); then wait "${pids[0]}"; pids=("${pids[@]:1}"); fi
+    _fr_cover_job "$target" "$k" "${os[k]}" trace || { _fr_cover_wait; return 1; }
   done
-  wait
+  _fr_cover_wait
   # ONE FILE OF `<oracle no.>\t<line>` RECORDS, not a file per oracle. With a
   # file each, the awk below told oracles apart by `FNR == 1`, which an EMPTY
   # file (an ALL oracle) never reaches, so every oracle after one was mapped
   # with the previous oracle's lines; sandbox.sh has two ALL oracles mid-set.
-  local covall="$FR_SCRATCH/cov.lines" n
-  local -a det=() untraced=()
+  local covall="$FR_SCRATCH/cov.lines"
   : > "$covall"
   for (( k = 0; k < ${#os[@]}; k++ )); do
     if [[ "$(cat "$FR_SCRATCH/cov$k.verdict" 2>/dev/null)" != SURVIVED ]]; then
-      det[k]="ALL(red-when-traced)"
+      red+=("$k")
     else
       awk -v b="$base" '
         /^\++[^:]*:[0-9]+:/ {
@@ -2057,23 +2123,17 @@ fr_cover_target() {   # <target> <oracle-set> — fills FR_SEL / FR_SEL_ON, prin
         untraced+=("$k")
       fi
     fi
-    rm -rf "$FR_SCRATCH/cov$k" "$FR_SCRATCH/cov$k.trace" "$FR_SCRATCH/cov$k.lines" \
-      "$FR_SCRATCH/cov$k.verdict" "$FR_SCRATCH/cov$k.log"*
+    rm -f "$FR_SCRATCH/cov$k.trace" "$FR_SCRATCH/cov$k.lines" "$FR_SCRATCH/cov$k.verdict"
   done
-  # The untraced ones, against the target gutted (see above).
-  pids=()
+  # The second round: each untraced oracle against the target gutted, each one
+  # red under the trace once more as it is (both explained above).
   for k in "${untraced[@]}"; do
-    tree="$FR_SCRATCH/cov$k"
-    rm -rf "$tree"; cp -a "$FR_CACHE" "$tree" || return 1
-    { head -n 1 "$FR_CACHE/$target"; printf 'exit 97\n'; } > "$tree/$target"
-    ( falsify_run_oracle "$tree" "${os[k]}" "$FR_SCRATCH/cov$k.log" \
-        "$(( $(fr_effective_timeout "${os[k]}") * 4 ))" "gut$k"
-      falsify_verdict "$FALSIFY_RC" "$FR_SCRATCH/cov$k.log" "$FALSIFY_TIMED_OUT"
-      printf '%s\n' "$FALSIFY_VERDICT" > "$FR_SCRATCH/cov$k.verdict" ) >/dev/null 2>&1 &
-    pids+=("$!")
-    if (( ${#pids[@]} >= FR_JOBS )); then wait "${pids[0]}"; pids=("${pids[@]:1}"); fi
+    _fr_cover_job "$target" "$k" "${os[k]}" gut || { _fr_cover_wait; rm -f "$covall"; return 1; }
   done
-  wait
+  for k in "${red[@]}"; do
+    _fr_cover_job "$target" "$k" "${os[k]}" plain || { _fr_cover_wait; rm -f "$covall"; return 1; }
+  done
+  _fr_cover_wait
   for k in "${untraced[@]}"; do
     if [[ "$(cat "$FR_SCRATCH/cov$k.verdict" 2>/dev/null)" == SURVIVED ]]; then
       det[k]="NONE(passes-gutted)"
@@ -2081,8 +2141,23 @@ fr_cover_target() {   # <target> <oracle-set> — fills FR_SEL / FR_SEL_ON, prin
     else
       det[k]="ALL"
     fi
-    rm -rf "$FR_SCRATCH/cov$k" "$FR_SCRATCH/cov$k.verdict" "$FR_SCRATCH/cov$k.log"*
+    rm -f "$FR_SCRATCH/cov$k.verdict"
   done
+  for k in "${red[@]}"; do
+    if [[ "$(cat "$FR_SCRATCH/cov$k.verdict" 2>/dev/null)" == SURVIVED ]]; then
+      det[k]="ALL(red-when-traced)"
+    else
+      alone+=("${os[k]}")
+    fi
+    rm -f "$FR_SCRATCH/cov$k.verdict"
+  done
+  if (( ${#alone[@]} > 0 )); then
+    rm -f "$covall"
+    printf 'NOTE|selection|%s|off: %s fail(s) on its own on the pristine tree, so a subset holding it would be red whatever the mutant; every mutant runs the whole set\n' \
+      "$target" "$(IFS=,; printf '%s' "${alone[*]}")"
+    fr_warn "--select-oracles is off for $target: $(IFS=,; printf '%s' "${alone[*]}") is red on its own on the pristine tree"
+    return 0
+  fi
   local detail=""
   for (( k = 0; k < ${#os[@]}; k++ )); do detail+="${detail:+ }${os[k]}=${det[k]}"; done
   local ln list
@@ -2192,6 +2267,9 @@ falsify_main() {
       _why="$_why; $_perf of them are performance cores, and this tier is bound by process creation rather than by computation"
     fi
     fr_warn "--jobs auto -> $FR_JOBS (the OS reports $_host CPU(s), $_why)"
+  fi
+  if [[ "$FR_SELECT" != 0 && "$FR_SELECT" != 1 ]]; then
+    fr_err "FALSIFY_SELECT must be 0 or 1, got '${FR_SELECT}'"; return 2
   fi
   if [[ ! "$FR_JOBS" =~ ^[1-9][0-9]*$ ]]; then
     fr_err "--jobs must be a positive integer or 'auto', got '${FR_JOBS}'"; return 2
@@ -2455,6 +2533,10 @@ falsify_main() {
   # can only go up from here, and the state with nothing left to look at is the
   # state in which nobody looks.
   printf 'ASSERTLESS|%s|%s\n' "$FR_T_ASSERTLESS" "$FR_T_KILLED"
+  if (( FR_SELECT )); then
+    printf 'NOTE|selection-total|-|%s mutant(s) missed by their subset and killed by the rest of the set; %s re-run whole (a subset that neither killed with an assertion nor survived)\n' \
+      "$FR_SEL_MISS" "$FR_SEL_RERUN"
+  fi
 
   # ── HOW MUCH OF THE CORPUS WAS NEVER ATTEMPTED ──────────────────────────────
   # Always emitted, even at zero, and on its own line for the same reason
