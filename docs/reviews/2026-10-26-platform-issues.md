@@ -1,7 +1,7 @@
 # Platform-specific issues — 2026-10-26
 
 - **Opened:** 2026-10-26, during bug-fix batch 1
-- **Last reviewed commit:** `bec1c57` (the review), entries updated while fixing on `fix/batch-1-launcher-git`
+- **Last reviewed commit:** `bec1c57` (the review), entries updated while fixing on `fix/batch-1-launcher-git`; PLAT-5, PLAT-6 and the pickup table added 2026-11-03 at `d41d47a`
 - **Companions:** [2026-10-26-bugs-review.md](2026-10-26-bugs-review.md), [2026-10-26-feature-gaps-review.md](2026-10-26-feature-gaps-review.md)
 
 These are issues that can only be confirmed, and then fixed, on a platform or
@@ -21,6 +21,25 @@ and the constraints the fix must keep.
 | PLAT-2 | Windows + WSL2 | gap GAP-13 | The integration corpus and the local layer have never been run on WSL2 — **Docker Desktop half done**; native Engine open |
 | PLAT-3 | macOS (Docker Desktop, Colima) | gap GAP-11 | The mount-swap check is skipped there altogether |
 | PLAT-4 | x86-64 CPU without AVX | bug SVC-2 | `mongo=ON` reports "no mongo server, rebuild" instead of the real failure |
+| PLAT-5 | macOS (BSD userland) | bugs PRJ-10, PRJ-11 | The no-follow file writes take their non-Linux branches there, and nobody has run them |
+| PLAT-6 | Windows + WSL2 + Docker Desktop | bugs PRJ-10, PRJ-11 | Re-run the hermetic suite at current `main`: the new no-follow tests rename, open `/dev/fd/N` and `noclobber`-create on drvfs |
+
+## Who picks up what (updated 2026-11-03)
+
+Two platform agents work on this repository besides the Linux one. Each takes
+the rows marked for its platform, starting from the current `origin/main`, and
+reports by editing the entry's **Status** line (and docs/testing.md's
+"Platforms exercised" table for a run).
+
+| Agent | Its platform | Picks up | Cannot do |
+|---|---|---|---|
+| **Linux agent** (review machine) | Linux x86-64, native Docker Engine | the falsify work GAP-1 to GAP-4 | anything below |
+| **WSL agent** | Windows + WSL2 (Ubuntu distro) + **Docker Desktop** with WSL integration. **Not** a native Docker Engine in the distro | **PLAT-6** | PLAT-2's remaining half: it needs a Docker Engine installed natively in the distro. Leave that open unless one is installed |
+| **Mac agent** | macOS, Docker Desktop and/or Colima | **PLAT-3** (GAP-11), **PLAT-5** | — |
+| *nobody yet* | x86-64 CPU without AVX | PLAT-4 | — |
+
+Any change of code an agent makes follows the rule at the top: reproduce
+first, then fix test-first.
 
 ---
 
@@ -57,6 +76,7 @@ and the constraints the fix must keep.
 
 - **Status: PARTLY DONE (2026-10-26).** Docker Desktop + WSL2, from ext4 and from `/mnt/c`. Results are in docs/testing.md under "Platforms exercised". The one failure that reproduced, G28, was a real bug on every Linux, fixed in #313 and #315. Phase 7 since passed with shellcheck 0.11.0. Still open: a Docker Engine installed natively in the distro.
 
+- **Picked up by:** the Docker Desktop half was done by the **WSL agent**. The native-Engine half has **no agent**: the WSL agent runs Docker Desktop only.
 - **Platform:** Windows + WSL2, both Docker Desktop and a native Engine in the distro if available.
 - **Source:** feature-gaps review GAP-13 (the increment-3 design records WSL2 as "expected, **never exercised**").
 - **Run:** `bash ./verify-on-host.sh` and `./tests/integration/run.sh` from an ext4 checkout, then once more with the checkout under `/mnt/c` (expect the `host-preflight.sh` WSL warning). Note `ALLOW_IPV6_BYPASS` behaviour: AGENTS.md says `ip6tables` may be unavailable under WSL2/nf_tables.
@@ -64,6 +84,7 @@ and the constraints the fix must keep.
 
 ## PLAT-3: macOS — the mount-swap check is skipped on Docker Desktop and Colima
 
+- **Picked up by:** the **Mac agent**.
 - **Platform:** macOS, Docker Desktop and Colima (both file-sharing layers: virtiofs / sshfs / 9p).
 - **Source:** feature-gaps review GAP-11. This is a missing protection, not a malfunction: AGENTS.md documents the skip and the one-line `NOTE:`.
 - **Confirm first:** launch any project and check for `NOTE: this filesystem does not preserve device/inode across a bind mount; launcher mounts are not verified …`. Case 460 asserts which behaviour a host must have; run it (`./tests/integration/run.sh --cases 460-launcher-mount-verified`) and record its verdict.
@@ -73,7 +94,32 @@ and the constraints the fix must keep.
 
 - **Status: hermetic fix landed (batch 5, `657cb29`); hardware confirmation open.** On a non-AVX host the fixed image should print `WARNING: mongo failed to start — log: …` with `mongod cannot run here: --version ended with exit 132 (SIGILL) — … need a CPU with AVX on x86-64` in the log tail, and no "Rebuild". Seeing that closes PLAT-4; seeing "no mongo server. Rebuild" on an image built from `657cb29` or later reopens SVC-2.
 
+- **Picked up by:** no agent has this hardware. (An Apple Silicon Mac does not help: its containers are arm64, where AVX does not apply.)
 - **Platform:** an x86-64 machine or VM whose CPU lacks AVX — e.g. a Proxmox/KVM guest with CPU type `kvm64` or `qemu64`. Check with `grep -c avx /proc/cpuinfo` (0 = no AVX).
 - **Source:** bugs review SVC-2 (LOW, PLAUSIBLE). Hardware-specific rather than OS-specific, logged here because it equally cannot be reproduced on the review machine.
 - **Reproduce:** `mongo=ON` in `sandbox.conf`, `./build.sh`, launch. A reproduction prints `sandbox.conf has mongo=ON, but this image has no mongo server. Rebuild: ./build.sh` — and the same after a rebuild — while `docker run --rm --entrypoint mongod <image> --version` exits 132 (SIGILL).
 - **Fix direction (from SVC-2):** decide "installed" by `[[ -x "$MONGO_MONGOD" ]]` in `services.d/mongo.sh: svc_installed_version()` and report a failing `--version` as a start failure naming the exit status (and AVX), or correct docs/components/mongo.md. The hermetic part can be tested anywhere with a fake `mongod` that exits 132; only the confirmation needs the hardware.
+
+## PLAT-5: macOS — the no-follow writes of sync, init and migrate have never run on BSD userland
+
+- **Status: OPEN.**
+- **Picked up by:** the **Mac agent**.
+- **Platform:** macOS (any Docker; these tests are hermetic and need none), with the system `bash` replaced by a bash ≥ 5.1 (Homebrew), as for Phase 5.
+- **Source:** bugs review PRJ-10 and PRJ-11 (both FIXED on Linux). project-files.sh has branches that only a non-GNU system takes, and they were written without running them:
+  - `project-files.sh: _proj_replace()` tries GNU `mv -T -f` and falls back to BSD `mv -h -f` (replace a link at the destination rather than move into the directory it points at).
+  - `_proj_write()` sets the mode with `chmod … "/dev/fd/$w"`. Where chmod cannot work through `/dev/fd`, it re-checks the name and chmods the path.
+  - `_proj_read()` reads the mode with `ls -lnL "/dev/fd/$fd"`. macOS's `/dev/fd` is fdescfs, not Linux's `/proc` links.
+  - The fragment directories are copied with `rsync` into the copy (no trailing slash). macOS 15 and later ship **openrsync**, whose handling of a destination that is a link is untested.
+- **Run:** `bash tests/run-all.sh test-sync-no-follow.sh test-init-no-follow.sh test-sync-project.sh test-project-init.sh test-migrate-runme.sh`, then the whole of Phase 5 (`PHASES=5 bash ./verify-on-host.sh`). Record `rsync --version`'s first line, and the result in docs/testing.md.
+- **A defect looks like:** a `FAIL:` line in those tests. In particular, a planted link that is written through, a launcher that loses its `+x`, or a `sandbox.local.env` backup with a mode other than the original's.
+- **Fix constraints, if one reproduces:** never fall back to writing through a name. A branch that cannot do the check safely must refuse the write with the `ERROR:` the Linux path prints, not skip the check.
+
+## PLAT-6: WSL2 + Docker Desktop — re-run the hermetic suite at current `main`
+
+- **Status: OPEN.**
+- **Picked up by:** the **WSL agent**.
+- **Platform:** Windows + WSL2 + Docker Desktop, as in PLAT-1/PLAT-2.
+- **Why again:** the last WSL run was at `3581af0`. Since then, PRJ-10 and PRJ-11 added tests/test-sync-no-follow.sh and tests/test-init-no-follow.sh, and project-files.sh. Every project file is now written by a `noclobber` create, a rename (`mv -T`), and a mode set through `/dev/fd/N`. drvfs (9p, every file `0777`, no `metadata` option) may treat each of those differently from ext4. The drvfs flake recorded in docs/testing.md came from the same class of operations.
+- **Run:** from the ext4 checkout, `bash ./verify-on-host.sh` (every phase, Phase 7 included now that shellcheck is installed). Then Phase 5 again from the `/mnt/c` checkout (`PHASES=5 bash ./verify-on-host.sh`).
+- **Record:** one row per run in docs/testing.md's "Platforms exercised", with the commit. File each failure that reproduces on a second run as its own bug, with the output. A failure only on `/mnt/c` that does not repeat goes with the recorded flake, with its file names.
+

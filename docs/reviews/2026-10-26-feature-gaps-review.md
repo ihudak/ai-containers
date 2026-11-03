@@ -17,7 +17,7 @@
 | GAP-12 (part) | 1 — git internals | Only following includes inside included files (`_git_include_paths`); the rest of GAP-12 is separate. |
 | GAP-6 | 4 — lifecycle scripts (optional) | Same files as DOC-3/PRJ-3; grows the batch. |
 | GAP-1 (part) | 3 and 4 (stretch) | Activate the deferred falsify targets for the files those batches fix: `link-default-ruby.sh`, `install-agent-skills.sh`, `agent-tools-reconcile.sh` (3); `group.sh` (4). |
-| GAP-11, GAP-13 | platform log | PLAT-3 (macOS) and PLAT-2 (WSL2) in [2026-10-26-platform-issues.md](2026-10-26-platform-issues.md). |
+| GAP-11, GAP-13 | platform log | PLAT-3 (macOS, Mac agent) and PLAT-2/PLAT-6 (WSL2, WSL agent) in [2026-10-26-platform-issues.md](2026-10-26-platform-issues.md), whose "Who picks up what" table assigns each platform row to an agent. |
 | GAP-1 (rest), 2, 3, 4, 7, 10, 12 (rest) | separate track | Larger design or falsify work, or investigation/manual runs rather than code changes. |
 
 A gap is something a design promised that is not in the code at the reviewed commit. Items that no longer make sense are listed under OBSOLETE with the reason, so they can be overruled. Items verified as done are listed at the end so coverage is visible.
@@ -125,6 +125,7 @@ A gap is something a design promised that is not in the code at the reviewed com
 
 ### GAP-11: The launcher-mount swap check is skipped on macOS Docker Desktop and Colima
 - Status: PARTIAL
+- Picked up by: the **Mac agent** (macOS, Docker Desktop and/or Colima), as PLAT-3
 - Fix batch: platform log — PLAT-3 in [2026-10-26-platform-issues.md](2026-10-26-platform-issues.md) (needs that platform to run)
 - Source: AGENTS.md mount layout: "if its own `device:inode` does not survive the bind (a file-sharing layer such as macOS Docker Desktop or Colima), verification is skipped with a one-line `NOTE:`"
 - Area: launcher/mounts
@@ -144,7 +145,8 @@ A gap is something a design promised that is not in the code at the reviewed com
 - Suggested approach: walk includes recursively with a depth bound (git's own limit is 10). On exit, rescan the writable mounts for git directories that are new since launch and print a `WARNING:` naming them.
 
 ### GAP-13: WSL2 has never been run
-- Status: NOT DONE
+- Status: PARTIAL (2026-11-03 refresh). Docker Desktop + WSL2 was run on 2026-10-26 (docs/testing.md, "Platforms exercised"). A re-run at current `main` is PLAT-6. A Docker Engine installed natively in the distro has still never been run.
+- Picked up by: the **WSL agent** (Windows + WSL2 + Docker Desktop; **not** a native Engine), as PLAT-6. The native-Engine half has no agent.
 - Fix batch: platform log — PLAT-2 in [2026-10-26-platform-issues.md](2026-10-26-platform-issues.md) (needs that platform to run)
 - Source: 2026-08-10-integration-suite-increment-3-design.md: "WSL2 | expected, **never exercised** … Recorded as expected-and-unverified rather than supported"
 - Area: tests/CI
