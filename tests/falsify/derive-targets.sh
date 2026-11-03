@@ -651,6 +651,8 @@ ft_derive() {
   D_DETAIL=1
 }
 
+# Byte order (LC_ALL=C), so the output is the same under every locale: glibc's
+# en_US collation ignores punctuation and put var-path.sh before v-opnd.sh.
 ft_print_verdicts() {  # $1 = "all" to include out-of-scope rows
   local c p
   for c in "${FT_CANDIDATES[@]}"; do
@@ -659,17 +661,17 @@ ft_print_verdicts() {  # $1 = "all" to include out-of-scope rows
     else
       printf '%s|NOT-EXECUTED|\n' "$c"
     fi
-  done | sort
+  done | LC_ALL=C sort
   [[ "${1:-}" == "all" ]] || return 0
   while IFS= read -r p; do
     [[ -n "$p" ]] || continue
     _ft_out_of_scope "$p" && printf '%s|OUT-OF-SCOPE|\n' "$p"
-  done < <(_ft_all_scripts) | sort
+  done < <(_ft_all_scripts) | LC_ALL=C sort
 }
 
 ft_print_evidence() {
   [[ "${#D_EVIDENCE[@]}" -gt 0 ]] || return 0
-  printf '%s\n' "${D_EVIDENCE[@]}" | sort
+  printf '%s\n' "${D_EVIDENCE[@]}" | LC_ALL=C sort
 }
 
 # ── targets.conf ──────────────────────────────────────────────────────────────

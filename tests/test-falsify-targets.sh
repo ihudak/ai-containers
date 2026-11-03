@@ -627,7 +627,7 @@ v-opnd.sh|NOT-EXECUTED
 var-path.sh|EXECUTED
 WANT
 )"
-synth_got="$(FALSIFY_REPO="$FIX" FALSIFY_TESTS_DIR="$FIX/tests" bash "$DERIVE" 2>/dev/null | cut -d'|' -f1,2)"
+synth_got="$(FALSIFY_REPO="$FIX" FALSIFY_TESTS_DIR="$FIX/tests" bash "$DERIVE" 2>/dev/null | cut -d'|' -f1,2 | LC_ALL=C sort)"
 check "the derivation resolves variables, symlinks and transitive execution, and refuses bash -n / grep / shellcheck / heredoc bodies" \
   "$synth_want" "$synth_got"
 
