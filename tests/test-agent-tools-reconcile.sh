@@ -301,6 +301,31 @@ run_case "claude-code" "$h" >/dev/null
 [[ "$(readlink "$h/.local/bin/claude" 2>/dev/null)" == "$h/.local/share/claude/versions/9.9.100" ]] \
   && pass "the newest version wins by VERSION order, not string order" \
   || fail "the newest version wins by VERSION order, not string order (got: $(readlink "$h/.local/bin/claude" 2>/dev/null || echo none))"
+# An interrupted `claude update` leaves its partial download beside the versions,
+# executable and named <v>.tmp.<pid>.<ts>.<n> — which sort -V ranks ABOVE every
+# real version. Linking it made claude die with "… is truncated. Part of its
+# embedded program is missing." Observed on a real group, 2026-11-03.
+printf '#!/bin/sh\n' > "$h/.local/share/claude/versions/9.9.100.tmp.298.1793196190258.1"
+chmod +x "$h/.local/share/claude/versions/9.9.100.tmp.298.1793196190258.1"
+rm -f "$h/.local/bin/claude"; : > "$h/calls.log"
+run_case "claude-code" "$h" >/dev/null
+[[ "$(readlink "$h/.local/bin/claude" 2>/dev/null)" == "$h/.local/share/claude/versions/9.9.100" ]] \
+  && pass "a leftover partial download (<v>.tmp.*) is never linked as the launcher" \
+  || fail "a leftover partial download (<v>.tmp.*) is never linked as the launcher (got: $(readlink "$h/.local/bin/claude" 2>/dev/null || echo none))"
+rm -rf "$h"
+# …nor counted as a native install, which would keep the leftover npm Claude
+# from being used when the partial is the only thing in versions/.
+h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
+install -d "$h/.local/share/claude/versions" "$h/.local/state/claude" "$h/.ai-tools/npm/bin"
+printf '#!/bin/sh\n' > "$h/.local/share/claude/versions/2.1.0.tmp.1.2.1"; chmod +x "$h/.local/share/claude/versions/2.1.0.tmp.1.2.1"
+printf '#!/bin/sh\n' > "$h/.ai-tools/npm/bin/claude"; chmod +x "$h/.ai-tools/npm/bin/claude"
+bin="$(mktemp -d)"; mk_stubs "$bin" "$h"
+PATH="$bin:$PATH" HOME="$h" AI_RUNTIME_TOOLS="claude-code" CLAUDE_FAIL=1 \
+  bash "$REPO_DIR/agent-tools-reconcile.sh" >"$h/out.log" 2>&1
+rm -rf "$bin"
+[[ "$(readlink "$h/.local/bin/claude" 2>/dev/null)" == "$h/.ai-tools/npm/bin/claude" ]] \
+  && pass "a partial download alone does not count as a native install" \
+  || fail "a partial download alone does not count as a native install (got: $(readlink "$h/.local/bin/claude" 2>/dev/null || echo none))"
 rm -rf "$h"
 # An EMPTY versions directory (sandbox.sh makes and mounts its parent) holds no
 # version: the glob comes back literal, and that must not count as installed.
