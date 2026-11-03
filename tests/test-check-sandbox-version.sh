@@ -85,5 +85,42 @@ else
 fi
 rm -rf "$d"
 
+# Case 6: --help prints the header and exits 0.
+d="$(make_repo)"
+out="$(cd "$d" && bash ./check-sandbox-version.sh --help 2>&1)"; rc=$?
+if [[ $rc -eq 0 ]] && grep -q 'CI gate against a SILENT' <<<"$out"; then
+  pass "--help prints the header and exits 0"
+else
+  fail "--help prints the header and exits 0 (rc=$rc)"
+fi
+rm -rf "$d"
+
+# Case 7: a conf with no schema-version line and no key line, at the base and
+# now, is read as version 0 with no keys: nothing removed, exit 0. Both readers
+# must survive a zero-match grep under set -e/pipefail.
+d="$(make_repo)"
+printf '# no keys, no version\n' > "$d/sandbox.conf"
+git -C "$d" -c user.email=t@t -c user.name=t commit -qam empty
+out="$(cd "$d" && bash ./check-sandbox-version.sh --check 2>&1)"; rc=$?
+if [[ $rc -eq 0 ]] && grep -q 'OK (no key removed' <<<"$out"; then
+  pass "a conf with no keys and no schema-version passes"
+else
+  fail "a conf with no keys and no schema-version passes (rc=$rc, out=$out)"
+fi
+rm -rf "$d"
+
+# Case 8: a base ref with no sandbox.conf (the first commit) has nothing to
+# compare: exit 0, saying so.
+d="$(make_repo)"
+git -C "$d" rm -q --cached sandbox.conf
+git -C "$d" -c user.email=t@t -c user.name=t commit -qm 'no conf'
+out="$(cd "$d" && bash ./check-sandbox-version.sh --check 2>&1)"; rc=$?
+if [[ $rc -eq 0 ]] && grep -q 'nothing to compare' <<<"$out"; then
+  pass "a base ref with no sandbox.conf passes, saying there is nothing to compare"
+else
+  fail "a base ref with no sandbox.conf passes, saying there is nothing to compare (rc=$rc, out=$out)"
+fi
+rm -rf "$d"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
