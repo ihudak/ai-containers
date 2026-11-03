@@ -27,7 +27,8 @@ case "\$*" in
 esac
 # The registry's latest version (NPM_LATEST), and what an install records, which
 # \`npm ls\` reports back; NPM_VIEW_FAIL=1 is an unreachable registry.
-if [[ "\$1" == "view" ]]; then [[ "\${NPM_VIEW_FAIL:-0}" == 1 ]] && exit 1; echo "\${NPM_LATEST:-1.0.0}"; exit 0; fi
+# NPM_VIEW_EMPTY=1 is a registry that answers with nothing: status 0, no version.
+if [[ "\$1" == "view" ]]; then [[ "\${NPM_VIEW_FAIL:-0}" == 1 ]] && exit 1; [[ "\${NPM_VIEW_EMPTY:-0}" == 1 ]] && exit 0; echo "\${NPM_LATEST:-1.0.0}"; exit 0; fi
 if [[ "\$1" == "ls" && -n "\$b" ]]; then
   for a in "\$@"; do [[ "\$a" == @* ]] && pkg="\$a"; done
   [[ -f "$home/.ai-tools/npm/.ver-\$b" ]] && echo "└── \$pkg@\$(cat "$home/.ai-tools/npm/.ver-\$b")"
@@ -86,8 +87,8 @@ d=""; prev=""; for a in "\$@"; do [[ "\$prev" == "-C" ]] && d="\$a"; prev="\$a";
 exit 0
 EOF
   printf '#!/usr/bin/env bash\necho amd64\n' > "$bin/dpkg"
-  # The image's default Python, as `uv python find` reports it: 3.15.
-  printf '#!/usr/bin/env bash\necho "3 15"\n' > "$bin/fakepython"; chmod +x "$bin/fakepython"
+  # The image's default Python, as `uv python find` reports it: 3.15, or FAKEPY_OUT.
+  printf '#!/usr/bin/env bash\necho "${FAKEPY_OUT:-3 15}"\n' > "$bin/fakepython"; chmod +x "$bin/fakepython"
   printf '#!/usr/bin/env bash\n[ "$1" = "-m" ] && echo x86_64 || echo Linux\n' > "$bin/uname"
   chmod +x "$bin/npm" "$bin/uv" "$bin/curl" "$bin/tar" "$bin/dpkg" "$bin/uname"
 }
@@ -99,7 +100,9 @@ run_case() {
   mk_stubs "$bin" "$home"
   PATH="$bin:$PATH" HOME="$home" AI_RUNTIME_TOOLS="$want" NPM_FAIL="$npm_fail" UV_FAIL="${UV_FAIL:-}" \
     NPM_LATEST="${NPM_LATEST:-1.0.0}" NPM_VIEW_FAIL="${NPM_VIEW_FAIL:-0}" \
+    NPM_VIEW_EMPTY="${NPM_VIEW_EMPTY:-0}" FAKEPY_OUT="${FAKEPY_OUT:-3 15}" \
     bash "$REPO_DIR/agent-tools-reconcile.sh" >"$home/out.log" 2>&1
+  echo "$?" > "$home/rc"
   rm -rf "$bin"
   printf '%s' "$home"
 }
@@ -138,6 +141,14 @@ grep -q 'tar ' "$c"                                     && pass "installs vale (
 [[ ! -L "$h/.local/bin/claude" ]] && pass "claude launcher is the native one, not an npm symlink" || fail "claude launcher is the native one, not an npm symlink"
 [[ -d "$h/.local/share/claude" ]] && pass "native install dir ~/.local/share/claude created" || fail "native install dir ~/.local/share/claude created"
 [[ -f "$h/.ai-tools/.reconcile.lock" ]] && pass "reconcile lock file created" || fail "reconcile lock file created"
+# Every install succeeded, so nothing may say it failed: a FAILED line on success
+# reads as a broken container on every start (install_npm's and Vale's tar's).
+! grep -q 'FAILED' "$h/out.log" && pass "a clean install of every tool logs no FAILED" \
+  || fail "a clean install logged FAILED ($(grep FAILED "$h/out.log" | tr '\n' ';'))"
+# Nobody else holds the lock, so the reconcile must not say it is waiting for one.
+! grep -q 'another container in this group is installing' "$h/out.log" \
+  && pass "an uncontended lock is taken without announcing a wait" \
+  || fail "an uncontended lock announced a wait"
 
 # Bug 1: every npm install must target ~/.ai-tools/npm via an explicit --prefix flag,
 # NOT a baked ~/.npmrc — a baked prefix makes nvm's nvm_die_on_prefix fail `nvm use
@@ -159,6 +170,13 @@ h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; run_case
   && ! grep -q '@github/copilot' "$h/calls.log" \
   && ! grep -q 'uv tool install' "$h/calls.log"; } \
   && pass "idempotent: install-if-missing tools not reinstalled" || fail "idempotent: install-if-missing tools not reinstalled"
+rm -rf "$h"
+
+# An install that fails says so, naming the package (install_npm, not update_npm).
+h="$(run_case "copilot" "" 1)"
+grep -q 'FAILED: npm install -g --prefix .* @github/copilot' "$h/out.log" \
+  && pass "a failed copilot install logs FAILED naming the package" \
+  || fail "a failed copilot install logged no FAILED ($(tr '\n' ';' < "$h/out.log"))"
 rm -rf "$h"
 
 # ── mkdocs: installed WITH mkdocs-material, once ──
@@ -204,6 +222,16 @@ rm -rf "$h"
 h="$(run_case "graphify")"
 ! grep -q -- '--python ' "$h/calls.log" && pass "no retry when the image's Python works" || fail "no retry when the image's Python works"
 rm -rf "$h"
+# The retry needs a version to step back from: a probe that reports no numeric
+# major, or a minor of 0 (no previous minor), means no retry and a FAILED line,
+# never `--python junk.14` or `--python 3.-1`.
+for pyout in "junk 15" "3 0"; do
+  h="$(FAKEPY_OUT="$pyout" UV_FAIL=default run_case "graphify")"
+  { ! grep -q -- '--python ' "$h/calls.log" && grep -q 'FAILED: uv tool install graphifyy' "$h/out.log"; } \
+    && pass "no retry when the image's Python reports '$pyout'" \
+    || fail "a retry was attempted when the image's Python reports '$pyout' ($(grep '^uv tool' "$h/calls.log" | tr '\n' ';'))"
+  rm -rf "$h"
+done
 # RT-3: a uv tool's environment links to the interpreter it was installed with,
 # behind pyenv's shim (/opt/pyenv/versions/3.15.0/bin/python3). ~/.ai-tools
 # outlives the image, so after a rebuild onto 3.15.1 that link dangles, while
@@ -274,6 +302,15 @@ run_case "claude-code" "$h" >/dev/null
   && pass "the newest version wins by VERSION order, not string order" \
   || fail "the newest version wins by VERSION order, not string order (got: $(readlink "$h/.local/bin/claude" 2>/dev/null || echo none))"
 rm -rf "$h"
+# An EMPTY versions directory (sandbox.sh makes and mounts its parent) holds no
+# version: the glob comes back literal, and that must not count as installed.
+h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
+install -d "$h/.local/share/claude/versions" "$h/.local/state/claude"
+run_case "claude-code" "$h" >/dev/null
+{ grep -q 'claude\.ai/install\.sh' "$h/calls.log" && [[ ! -L "$h/.local/bin/claude" ]]; } \
+  && pass "an empty versions directory runs the native installer" \
+  || fail "an empty versions directory counted as installed (launcher: $(readlink "$h/.local/bin/claude" 2>/dev/null || echo none))"
+rm -rf "$h"
 
 # ── codex and gemini are kept at the registry's LATEST version ──
 # Neither can self-update in this environment — codex's own `update` shells out to a bare
@@ -296,6 +333,12 @@ NPM_LATEST=1.1.0 run_case "codex,gemini" "$h" >/dev/null
 { ! grep -q 'npm install' "$h/calls.log" && ! grep -q 'FAILED' "$h/out.log"; } \
   && pass "an unreachable registry keeps the installed codex/gemini" \
   || fail "an unreachable registry reinstalled or failed ($(tr '\n' ';' < "$h/out.log"))"
+# A registry that answers with no version is as good as unreachable: keep what is
+# installed rather than reinstall against an empty "latest".
+: > "$h/calls.log"; NPM_VIEW_EMPTY=1 run_case "codex,gemini" "$h" >/dev/null
+{ ! grep -q 'npm install' "$h/calls.log" && grep -q 'codex: the registry cannot be reached; keeping 1.1.0' "$h/out.log"; } \
+  && pass "a registry that reports no version keeps the installed codex/gemini" \
+  || fail "a registry that reports no version reinstalled ($(tr '\n' ';' < "$h/out.log"))"
 rm -rf "$h"
 
 # ── A group still carrying the pre-native npm Claude keeps working ──
@@ -313,6 +356,18 @@ PATH="$bin:$PATH" HOME="$h" AI_RUNTIME_TOOLS="claude-code" CLAUDE_FAIL=1 \
 rm -rf "$bin"
 { [[ -L "$h/.local/bin/claude" ]] && [[ "$(readlink "$h/.local/bin/claude")" == "$h/.ai-tools/npm/bin/claude" ]]; } \
   && pass "leftover npm claude is used when the native install is absent" || fail "leftover npm claude is used when the native install is absent"
+rm -rf "$h"
+# …and with an EMPTY versions directory, which holds no native install either.
+h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
+install -d "$h/.local/share/claude/versions" "$h/.local/state/claude"
+install -d "$h/.ai-tools/npm/bin"; printf '#!/bin/sh\n' > "$h/.ai-tools/npm/bin/claude"; chmod +x "$h/.ai-tools/npm/bin/claude"
+bin="$(mktemp -d)"; mk_stubs "$bin" "$h"
+PATH="$bin:$PATH" HOME="$h" AI_RUNTIME_TOOLS="claude-code" CLAUDE_FAIL=1 \
+  bash "$REPO_DIR/agent-tools-reconcile.sh" >"$h/out.log" 2>&1
+rm -rf "$bin"
+[[ "$(readlink "$h/.local/bin/claude" 2>/dev/null)" == "$h/.ai-tools/npm/bin/claude" ]] \
+  && pass "leftover npm claude is used when the versions directory is empty" \
+  || fail "an empty versions directory counted as a native install (launcher: $(readlink "$h/.local/bin/claude" 2>/dev/null || echo none))"
 rm -rf "$h"
 # …and never once a native version is there, whatever else the directory holds.
 h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
@@ -341,7 +396,7 @@ rm -rf "$bin"
 rm -rf "$h"
 
 # ── Empty AI_RUNTIME_TOOLS → no-op ──
-h="$(run_case "")"; [[ ! -s "$h/calls.log" ]] && pass "empty AI_RUNTIME_TOOLS is a no-op" || fail "empty AI_RUNTIME_TOOLS is a no-op"; rm -rf "$h"
+h="$(run_case "")"; { [[ ! -s "$h/calls.log" ]] && [[ "$(cat "$h/rc")" == 0 ]]; } && pass "empty AI_RUNTIME_TOOLS is a no-op, exit 0" || fail "empty AI_RUNTIME_TOOLS is a no-op, exit 0 (rc $(cat "$h/rc"))"; rm -rf "$h"
 
 # ── Selective: only codex requested → only codex installed ──
 h="$(run_case "codex")"; { grep -q 'npm install -g --prefix .*@openai/codex' "$h/calls.log" && ! grep -q '@google/gemini-cli' "$h/calls.log"; } && pass "installs only requested tools" || fail "installs only requested tools"; rm -rf "$h"

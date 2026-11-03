@@ -39,17 +39,35 @@ SP
   chmod +x "$1/setpriv"
 }
 mk_setpriv "$fkr"
+# A timeout that checks its bounds, records what it bounded (TIMEOUT_LOG) and runs
+# it: a probe that hangs must be cut off, and the real one would wait 10 s to show it.
+cat > "$fkr/timeout" <<'TO'
+#!/bin/sh
+[ "$1" = -k ] && [ "$2" = 2 ] && [ "$3" = 10 ] || { echo "timeout: unexpected bounds: $*" >&2; exit 2; }
+shift 3
+[ -z "${TIMEOUT_LOG:-}" ] || echo "$*" >> "$TIMEOUT_LOG"
+exec "$@"
+TO
+chmod +x "$fkr/timeout"
 ldr() { PATH="$fkr:$PATH" bash "$REPO_DIR/link-default-ruby.sh" "$1" "$2" probe; }
 
 # ── Case 1: links the first requested present version's execs into the dest dir ──
 h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; d="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 mk_rvm "$h" "3.4.5" "ruby gem bundle bundler rake irb erb"
-RUBY_VERSIONS="3.4.5" ldr "$h" "$d" >/dev/null 2>&1
+out="$(TIMEOUT_LOG="$h/timeout.log" RUBY_VERSIONS="3.4.5" ldr "$h" "$d" 2>&1)"
 ok=1
 for b in ruby gem bundle bundler rake irb erb; do
   [[ -L "$d/$b" && "$(readlink "$d/$b")" == "$h/.rvm/rubies/ruby-3.4.5/bin/$b" ]] || ok=0
 done
 [[ "$ok" == 1 ]] && pass "links all default Ruby execs into the dest dir" || fail "links all default Ruby execs into the dest dir"
+# Every probe runs under timeout, so a binstub that hangs cannot hold up the start.
+ok=1
+for b in ruby gem bundle bundler rake irb erb; do grep -qxF "$d/$b --version" "$h/timeout.log" 2>/dev/null || ok=0; done
+[[ "$ok" == 1 ]] && pass "every probe runs under timeout -k 2 10" \
+  || fail "a probe ran without timeout (log: $(tr '\n' ';' < "$h/timeout.log" 2>/dev/null))"
+# Every binstub ran, so nothing was re-pointed and nothing says it was.
+[[ "$out" != *"re-pointed"* ]] && pass "no repair is reported when every binstub runs" \
+  || fail "a repair was reported though every binstub runs ($out)"
 rm -rf "$h" "$d"
 
 # ── Case 2: prefers rvm's own rubies/default symlink when present ──
@@ -101,7 +119,8 @@ rm -rf "$h" "$d"
 h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; d="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 mk_rvm "$h" "3.4.5" "ruby gem bundle"
 ( unset RUBY_VERSIONS; ldr "$h" "$d" ) >/dev/null 2>&1
-[[ -z "$(ls -A "$d")" ]] && pass "no RUBY_VERSIONS is a no-op (dest dir stays empty)" || fail "no RUBY_VERSIONS is a no-op (dest dir stays empty)"
+rc=$?
+[[ $rc -eq 0 && -z "$(ls -A "$d")" ]] && pass "no RUBY_VERSIONS is a no-op (exit 0, dest dir stays empty)" || fail "no RUBY_VERSIONS is a no-op (exit $rc, dest: $(ls -A "$d" | tr '\n' ' '))"
 rm -rf "$h" "$d"
 
 # ── Case 5: RUBY_VERSIONS set but no ruby installed → no-op, no crash ──
@@ -191,14 +210,31 @@ printf '#!/bin/sh\n' > "$h/.rvm/wrappers/default/bundle"; chmod +x "$h/.rvm/wrap
 # ruby has a wrapper too, so "keeps its direct link" below is a choice the
 # script made, not the only link it could make (bugs review RT-9).
 printf '#!/bin/sh\n' > "$h/.rvm/wrappers/default/ruby"; chmod +x "$h/.rvm/wrappers/default/ruby"
-RUBY_VERSIONS="3.4.5" ldr "$h" "$d" >/dev/null 2>&1
+out="$(RUBY_VERSIONS="3.4.5" ldr "$h" "$d" 2>&1)"
 [[ "$(readlink "$d/bundle")" == "$h/.rvm/wrappers/default/bundle" ]] \
   && pass "a non-running binstub falls back to the rvm wrapper" \
   || fail "a non-running binstub falls back to the rvm wrapper (got: $(readlink "$d/bundle"))"
+grep -qx '\[link-default-ruby\] re-pointed at rvm wrappers (direct binstub would not run): bundle' <<<"$out" \
+  && pass "the repair is reported, naming exactly the re-pointed binstub" \
+  || fail "the repair is not reported as re-pointing bundle (got: $out)"
 # …while a binstub that DOES run keeps the direct link (wrappers cost a bash exec).
 [[ "$(readlink "$d/ruby")" == "$h/.rvm/rubies/ruby-3.4.5/bin/ruby" ]] \
   && pass "a working binstub keeps its direct link, though a wrapper for it exists" \
   || fail "a working binstub keeps its direct link (got: $(readlink "$d/ruby"))"
+rm -rf "$h" "$d"
+
+# A wrappers dir with no wrapper for the broken binstub → reported, link left direct,
+# never re-pointed at a wrapper that is not there.
+h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; d="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
+mk_rvm "$h" "3.4.5" "ruby gem"
+printf '#!/usr/bin/env definitely_not_on_path\n' > "$h/.rvm/rubies/ruby-3.4.5/bin/bundle"
+chmod +x "$h/.rvm/rubies/ruby-3.4.5/bin/bundle"
+install -d "$h/.rvm/wrappers/default"
+printf '#!/bin/sh\n' > "$h/.rvm/wrappers/default/ruby"; chmod +x "$h/.rvm/wrappers/default/ruby"
+out="$(RUBY_VERSIONS="3.4.5" ldr "$h" "$d" 2>&1)"
+[[ "$(readlink "$d/bundle")" == "$h/.rvm/rubies/ruby-3.4.5/bin/bundle" && "$out" == *"WARNING: bundle does not run"* && "$out" != *"re-pointed"* ]] \
+  && pass "a broken binstub with no wrapper of its own is reported and left direct" \
+  || fail "a broken binstub with no wrapper of its own (bundle -> $(readlink "$d/bundle"); $out)"
 rm -rf "$h" "$d"
 
 # No wrappers dir at all → the broken binstub is reported, not silently left as OK.
@@ -248,9 +284,10 @@ SETPRIV_LOG="$h/setpriv.log" PATH="$fk:$PATH" RUBY_VERSIONS="3.4.5" bash "$REPO_
 # unverified, and that is said.
 rm -f "$h/ran"
 out="$(PATH="$fk:$PATH" RUBY_VERSIONS="3.4.5" bash "$REPO_DIR/link-default-ruby.sh" "$h" "$d" 2>&1)"
-[[ ! -e "$h/ran" && -L "$d/ruby" && "$out" == *"not verified"* ]] \
-  && pass "as root with no probe user, nothing from ~/.rvm is executed" \
-  || fail "root ran a binary from ~/.rvm (ran: $(cat "$h/ran" 2>/dev/null); out: $out)"
+rc=$?
+[[ ! -e "$h/ran" && -L "$d/ruby" && "$out" == *"not verified"* && $rc -eq 0 ]] \
+  && pass "as root with no probe user, nothing from ~/.rvm is executed (exit 0)" \
+  || fail "root ran a binary from ~/.rvm, or exited $rc (ran: $(cat "$h/ran" 2>/dev/null); out: $out)"
 rm -rf "$h" "$d" "$fk"
 # Root's links never go THROUGH a link to a directory. `ln -sf src dest`, when
 # dest is a link to a directory, makes dest/<name> inside that directory: an

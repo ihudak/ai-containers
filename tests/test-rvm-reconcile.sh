@@ -51,6 +51,8 @@ case "\$1 \$2" in
   "alias list")   [[ "\${STUB_HAS_DEFAULT:-0}" == "1" ]] && echo "default => ruby-default (default)" ;;
   "install "*)
     [[ "\${STUB_INSTALL_FAILS:-0}" == "1" ]] && exit 1
+    # STUB_FAIL_ONCE=1: the first install fails (stale definitions), a retry works.
+    if [[ "\${STUB_FAIL_ONCE:-0}" == "1" && ! -f "$home/failed-once" ]]; then : > "$home/failed-once"; exit 1; fi
     for fv in \${STUB_FAIL_VERSIONS:-}; do [[ "\$2" == "\$fv" ]] && exit 1; done
     echo "ruby-\$2" >> "$home/installed" ;;
 esac
@@ -68,12 +70,14 @@ EOF
   # never declared it needed, and its absence surfaces as bash's own
   # "flock: command not found" text leaking into captured output instead of a
   # clear, attributable failure.
-  printf '#!/usr/bin/env bash\nexit 0\n' > "$bin/flock"; chmod +x "$bin/flock"
+  # FLOCK_BUSY=1: another container holds the lock, so the non-blocking try fails.
+  printf '#!/usr/bin/env bash\n[[ "$1" == -n && "${FLOCK_BUSY:-0}" == 1 ]] && exit 1\nexit 0\n' > "$bin/flock"; chmod +x "$bin/flock"
   # Fake curl (bootstrap) + a pre-existing rvm script so no bootstrap fetch runs.
   install -d "$home/.rvm/scripts"; printf 'true\n' > "$home/.rvm/scripts/rvm"
   PATH="$bin:$SANDBOX_PATH" HOME="$home" RUBY_VERSIONS="$want" \
     STUB_HAS_DEFAULT="${STUB_HAS_DEFAULT:-0}" STUB_INSTALL_FAILS="${STUB_INSTALL_FAILS:-0}" \
-    STUB_FAIL_VERSIONS="${STUB_FAIL_VERSIONS:-}" \
+    STUB_FAIL_VERSIONS="${STUB_FAIL_VERSIONS:-}" STUB_FAIL_ONCE="${STUB_FAIL_ONCE:-0}" \
+    FLOCK_BUSY="${FLOCK_BUSY:-0}" \
     bash "$REPO_DIR/rvm-reconcile.sh" >"$home/out.log" 2>&1
   # Return the requested stream: 'out' = the reconcile's own log lines; 'calls' = the rvm calls.
   if [[ "$sink" == "out" ]]; then cat "$home/out.log" 2>/dev/null; else cat "$home/calls.log" 2>/dev/null; fi
@@ -89,6 +93,20 @@ grep -qE 'rvm (--default use|use .*--default|default use)' <<<"$log" \
 # Empty RUBY_VERSIONS → no-op.
 log2="$(run_case "" "")"
 [[ -z "$log2" ]] && pass "empty RUBY_VERSIONS is a no-op" || fail "empty RUBY_VERSIONS is a no-op"
+# …that exits 0, the reconcile's status for "nothing to do".
+HOME="$PATH_SCRATCH" RUBY_VERSIONS=" " PATH="$SANDBOX_PATH" bash "$REPO_DIR/rvm-reconcile.sh" >/dev/null 2>&1
+rc=$?
+[[ $rc -eq 0 ]] && pass "empty RUBY_VERSIONS exits 0" || fail "empty RUBY_VERSIONS exits $rc"
+
+# The lock: uncontended, it is taken without a word; held by another container,
+# the reconcile says it is waiting rather than look hung.
+out_lock="$(run_case "3.4.5" "3.4.5" out)"
+[[ "$out_lock" != *"waiting for it to finish"* ]] && pass "an uncontended lock is taken without announcing a wait" \
+  || fail "an uncontended lock announced a wait ($out_lock)"
+out_busy="$(FLOCK_BUSY=1 run_case "3.4.5" "3.4.5" out)"
+[[ "$out_busy" == *"another container in this group is installing Ruby — waiting for it to finish"* ]] \
+  && pass "a lock held elsewhere is announced as a wait" \
+  || fail "a lock held elsewhere was not announced ($out_busy)"
 
 # entrypoint wires the reconcile in all three modes, before agent-skill install.
 grep -q 'run_ruby_reconcile' "$REPO_DIR/entrypoint.sh" \
@@ -108,6 +126,17 @@ rl_ln="$(grep -n 'rvm reload'     <<<"$log_fail" | head -1 | cut -d: -f1)"
 { [[ -n "$gs_ln" && -n "$rl_ln" && "$gs_ln" -lt "$rl_ln" ]]; } \
   && pass "install failure triggers get-stable BEFORE reload retry" \
   || fail "install failure triggers get-stable+reload retry (in order; gs=$gs_ln rl=$rl_ln)"
+
+# …and the retry is a real install: a version whose first install failed on stale
+# definitions is installed after `rvm get stable`, defaulted, and not reported FAILED.
+calls_once="$(STUB_FAIL_ONCE=1 run_case "" "3.4.5")"
+out_once="$(STUB_FAIL_ONCE=1 run_case "" "3.4.5" out)"
+rl_ln="$(grep -n 'rvm reload' <<<"$calls_once" | head -1 | cut -d: -f1)"
+ri_ln="$(grep -n 'rvm install 3.4.5' <<<"$calls_once" | sed -n 2p | cut -d: -f1)"
+{ [[ -n "$rl_ln" && -n "$ri_ln" && "$ri_ln" -gt "$rl_ln" ]] \
+  && grep -q 'rvm --default use 3.4.5' <<<"$calls_once" && ! grep -q 'FAILED' <<<"$out_once"; } \
+  && pass "after get-stable + reload the install is retried, and its success counts" \
+  || fail "the install was not retried after reload (calls: $(tr '\n' ';' <<<"$calls_once"); out: $(tr '\n' ';' <<<"$out_once"))"
 
 # Prefix collision: 3.4.50 present must NOT satisfy a request for 3.4.5.
 log_pfx="$(run_case "3.4.50" "3.4.5")"
@@ -195,9 +224,14 @@ EOF
   # platform — without this stub the case would silently depend on the HOST
   # having a real flock(1), which a base macOS install does not.
   printf '#!/usr/bin/env bash\nexit 0\n' > "$bin/flock"; chmod +x "$bin/flock"
+  # BOOT_NO_MKTEMP=1: no temp file can be made for the installer.
+  if [[ "${BOOT_NO_MKTEMP:-0}" == 1 ]]; then printf '#!/usr/bin/env bash\nexit 1\n' > "$bin/mktemp"; chmod +x "$bin/mktemp"; fi
+  local rc
   PATH="$bin:$SANDBOX_PATH" HOME="$home" RUBY_VERSIONS="3.4.5" \
     bash "$REPO_DIR/rvm-reconcile.sh" >"$home/out.log" 2>&1
-  printf '%s\n---CALLS---\n%s\n' "$(cat "$home/out.log" 2>/dev/null)" "$(cat "$home/calls.log" 2>/dev/null)"
+  rc=$?
+  # Every bootstrap failure is non-fatal by contract: exit 0, retried next start.
+  printf '%s\n---CALLS---\n%s\n---RC=%s---\n' "$(cat "$home/out.log" 2>/dev/null)" "$(cat "$home/calls.log" 2>/dev/null)" "$rc"
   rm -rf "$home" "$bin"
 }
 
@@ -225,6 +259,23 @@ grep -q 'FAILED: rvm bootstrap' <<<"$boot_fail" \
 # alternative considered) was rejected: the real defect's own error is in
 # that exact shape, so that filter would discard the very signal being
 # checked for, not just the noise.
+grep -q -- '---RC=0---' <<<"$boot_fail" && pass "a failed download exits 0" || fail "a failed download exits non-zero ($boot_fail)"
+# A download that "succeeds" but delivers nothing is a failed download too — not
+# an empty installer to run.
+boot_empty="$(boot_case 0 "")"
+{ grep -q 'could not download the installer' <<<"$boot_empty" && grep -q -- '---RC=0---' <<<"$boot_empty"; } \
+  && pass "an empty download is reported as a failed download (exit 0)" \
+  || fail "an empty download is not reported as a failed download (got: $boot_empty)"
+# No temp file for the installer → said so, nothing fetched, exit 0.
+boot_notmp="$(BOOT_NO_MKTEMP=1 boot_case 0 'true')"
+{ grep -q 'could not create a temp file' <<<"$boot_notmp" && ! grep -q '^curl ' <<<"$boot_notmp" && grep -q -- '---RC=0---' <<<"$boot_notmp"; } \
+  && pass "no temp file for the installer is reported, nothing fetched (exit 0)" \
+  || fail "no temp file for the installer (got: $boot_notmp)"
+# An rvm that bootstraps but cannot be sourced → said so, no rvm call, exit 0.
+boot_nosrc="$(boot_case 0 'mkdir -p "$HOME/.rvm/scripts"; printf "return 1\n" > "$HOME/.rvm/scripts/rvm"')"
+{ grep -q 'FAILED: could not source' <<<"$boot_nosrc" && ! grep -q 'installing ruby' <<<"$boot_nosrc" && grep -q -- '---RC=0---' <<<"$boot_nosrc"; } \
+  && pass "an rvm that cannot be sourced is reported and skipped (exit 0)" \
+  || fail "an rvm that cannot be sourced (got: $boot_nosrc)"
 grep -qE '(^|[[:space:]/])rvm: (command not found|No such file)' <<<"$boot_fail" \
   && fail "failed bootstrap must not fall through into not-found errors" \
   || pass "failed bootstrap exits cleanly (no not-found fallthrough)"
@@ -272,6 +323,7 @@ boot_partial="$(boot_case 0 'true')"
 grep -q 'FAILED:.*still missing after bootstrap' <<<"$boot_partial" \
   && pass "bootstrap that produces no scripts/rvm is caught" \
   || fail "bootstrap that produces no scripts/rvm is caught (got: $boot_partial)"
+grep -q -- '---RC=0---' <<<"$boot_partial" && pass "  … and exits 0" || fail "  … exits non-zero ($boot_partial)"
 
 # An installer that DOWNLOADS fine but exits non-zero (GPG failure, bad unpack,
 # unwritable target) must not be reported as a network/allowlist problem. Piping
@@ -281,6 +333,7 @@ boot_inst_fail="$(boot_case 0 'echo "gpg: Cannot check signature: No public key"
 grep -q 'installer downloaded fine but exited non-zero' <<<"$boot_inst_fail" \
   && pass "installer failure is reported as an installer failure" \
   || fail "installer failure is reported as an installer failure (got: $boot_inst_fail)"
+grep -q -- '---RC=0---' <<<"$boot_inst_fail" && pass "  … and exits 0" || fail "  … exits non-zero ($boot_inst_fail)"
 grep -q 'could not download the installer' <<<"$boot_inst_fail" \
   && fail "installer failure must NOT be reported as a download failure" \
   || pass "installer failure is not reported as a download failure"
