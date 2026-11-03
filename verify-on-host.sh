@@ -715,6 +715,30 @@ else
   grep -E '^falsify:' "$fl_run" | tail -6 | while IFS= read -r l; do sub "$l"; done
   phase_fail 6 "the falsify corpus did not complete — the ledger was not scored"
 fi
+# THE DEEP PASS (feature-gaps review GAP-4): the targets tests/falsify/deep.conf
+# names, each under only the extra operators it earned there (stmt-delete),
+# scored against the same ledger. CI runs it as the falsify job's `deep` shard;
+# check-ledger.sh scopes each run by the operators it used, so neither pass
+# calls the other's entries stale.
+fl_deep="$(mktemp)" || phase_fail 6 "mktemp failed — the deep pass has nowhere to write its run"
+if [[ -n "$fl_deep" ]]; then
+  sub "running the deep pass (run.sh --deep, jobs=$fl_jobs, timeout=$fl_timeout)"
+  if bash "$TESTS_DIR/falsify/run.sh" --deep --jobs "$fl_jobs" --timeout "$fl_timeout" > "$fl_deep" 2>&1; then
+    grep -E '^(TARGET|TOTAL|SKIPPED|UNATTEMPTED|CONTROLS)\|' "$fl_deep" | sed 's/^/  /' | while IFS= read -r l; do sub "$l"; done
+    if bash "$TESTS_DIR/falsify/check-ledger.sh" \
+         --run-output "$fl_deep" --ledger "$TESTS_DIR/falsify/survivors.txt"; then
+      sub "survivor ledger (deep pass): OK"
+    else
+      fl_keep=1
+      phase_fail 6 "the survivor-ledger ratchet rejected tests/falsify/survivors.txt for the deep pass"
+    fi
+  else
+    fl_keep=1
+    sub "deep pass exit: non-zero"
+    { grep -E '^ERROR:' "$fl_deep" || true; } | while IFS= read -r l; do sub "$l"; done
+    phase_fail 6 "the falsify deep pass did not complete — its ledger entries were not scored"
+  fi
+fi
 # THE LOG IS THIS PHASE'S EVIDENCE, NOT ITS SCRATCH. Everything above prints a
 # SUMMARY drawn out of $fl_run — a count of assertless kills, a count of unproven
 # mutants, six of however many notes — while the file itself is the only place
@@ -732,11 +756,12 @@ fi
 # asserts both directions.
 if (( fl_keep )); then
   sub "corpus run log kept at: $fl_run"
+  [[ -n "${fl_deep:-}" ]] && sub "deep pass log kept at: $fl_deep"
   sub "  One MUTANT|<verdict>|<identity>|… record per mutant, plus every falsify:"
   sub "  note — the detail the summaries above are counts of. Nothing else will"
   sub "  remove it."
 else
-  rm -f "$fl_run"
+  rm -f "$fl_run" ${fl_deep:+"$fl_deep"}
 fi
 fi
 

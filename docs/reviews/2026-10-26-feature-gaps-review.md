@@ -1,6 +1,6 @@
 # Feature-gaps review — 2026-10-26
 
-- **Review date:** 2026-10-26
+- **Review date:** 2026-10-26 (statuses updated through 2026-11-03)
 - **Last reviewed commit:** `bec1c57` (`bec1c5737acdc549143e2c55e4a4b945ae27a287`, main, 2026-10-18 — "Merge pull request #312")
 - **Scope:** every design, plan and backlog in the repository, wherever written — `docs/superpowers/specs/`, `docs/superpowers/plans/`, the follow-up and falsify backlogs, `tests/falsify/survivors.txt` / `targets.conf`, AGENTS.md, README.md, `docs/`, CHANGELOG.md, and TODO/deferred/follow-up markers in code.
 - **Companion:** [2026-10-26-bugs-review.md](2026-10-26-bugs-review.md) (defects; doc errors that mislead users are filed there as `DOC-*`).
@@ -24,7 +24,7 @@ A gap is something a design promised that is not in the code at the reviewed com
 
 
 ### GAP-1: Falsify "stage 2" — the nine named targets were never activated
-- Status: NOT DONE
+- Status: DONE (2026-11-03). All nine are active rows in tests/falsify/targets.conf (the "STAGE 2" block). Measured together first: 535 mutants, 196 survived. New assertions in each oracle killed 172, among them every survivor of migrate-runme.sh, check-sandbox-version.sh, capture-blocked-traffic.sh, group.sh, link-default-ruby.sh and rvm-reconcile.sh. The other 24 are EQUIVALENT in survivors.txt section 24: a return status nothing reads, or a `cd /` that cannot fail. No product bug was found. The two capture-blocked-traffic.sh mutants that made a read loop spin forever are now killed by a bounded wait that prints `FAIL:`, instead of timing out as UNPROVEN.
 - Fix batch: 3 and 4, stretch — only `link-default-ruby.sh`, `install-agent-skills.sh`, `agent-tools-reconcile.sh` (batch 3) and `group.sh` (batch 4); the other five targets are a separate track
 - Source: docs/superpowers/specs/2026-08-11-falsify-mutation-tier-design.md: "The nine that meet (1) and await a later stage are named in `targets.conf`: `check-sandbox-version.sh`, `group.sh`, `migrate-runme.sh`, `capture-blocked-traffic.sh`, `link-agent-tools.sh`, `link-default-ruby.sh`, `agent-tools-reconcile.sh`, `rvm-reconcile.sh`, `install-agent-skills.sh`. They are the obvious stage 2"
 - Area: tests/CI
@@ -44,7 +44,7 @@ A gap is something a design promised that is not in the code at the reviewed com
 - Suggested approach: add `docker volume` to test-tool-config-mounts.sh's fake docker and a registered-repo fixture, kill the two named security lines, then land sandbox.sh with the remainder classified.
 
 ### GAP-3: Container-side firewall and capture scripts have no hermetic oracle; entrypoint.sh's row is stale
-- Status: NOT DONE
+- Status: PARTLY DONE (2026-11-03). tests/test-refresh-ipset.sh (fake ipset and getent) and tests/test-capture-destinations.sh (fake tcpdump and tshark) are the new oracles. Both scripts are now EXECUTED-WHOLE targets: 34/34 and 21/25 mutants killed. The 4 left are `|| true` → `&& true` under `set -e`, the same program (EQUIVALENT). Still open: entrypoint.sh's extracted functions. The derivation still cannot see a test that extracts a function and runs it, and the runner still refuses an active EXECUTED-PARTIAL row.
 - Fix batch: separate track
 - Source: tests/falsify/targets.conf GREPPED-ONLY block: "Every one of them is a container-side script … that no hermetic test runs"
 - Area: tests/CI (entrypoint/firewall)
@@ -54,7 +54,11 @@ A gap is something a design promised that is not in the code at the reviewed com
 - Suggested approach: give refresh-ipset-allowlist.sh a faked-`getent`/`ipset` test, as test-blocked-capture.sh does with faked tshark, and add an "extracted function" execution form to derive-targets.sh.
 
 ### GAP-4: The `stmt-delete` operator and the per-target `stream-flip` gate were never built
-- Status: NOT DONE
+- Status: DONE (2026-11-03), with one decision recorded here.
+  - **What was built:** tests/falsify/generate.sh has `stmt-delete` (off by default): a line that is one simple statement becomes `:`. tests/falsify/deep.conf gives a target extra operators (`stmt-delete` or `stream-flip`), with the measured score as its reason. `run.sh --deep` runs only those targets under only those operators. Every run records `OPERATORS|<target>|<list>`, and check-ledger.sh scopes its stale and obsolete checks by operator, so the default and deep passes share one ledger.
+  - **Entry rule, from the first measurement:** stmt-delete alone over every active target except repo-git-reset.sh, 1,667 mutants. A target qualifies at ≥ 90 % killed with no assertless kill. Five are in: version.sh, refresh-ipset-allowlist.sh, bash-dialect-lint.sh, redis.sh, mariadb.sh.
+  - **Their survivors:** of 9, five were killed by new assertions. Two of those were a real hole: deleting the poll's `sleep` made the redis and mariadb readiness waits milliseconds long, and no test noticed. Three are EQUIVALENT (survivors.txt section 25). Most targets scored 50–80 %, so stmt-delete there would flood the ledger, as the design predicted.
+  - **The decision:** the design placed stmt-delete in a nightly-only tier. The deep pass instead runs in **every** CI run (the falsify job's `deep` shard) and in Phase 6, because the five targets that qualify cost about five minutes together. A nightly-only shard becomes worth adding when a costly target earns an operator.
 - Fix batch: separate track
 - Source: falsify-mutation-tier-design.md operator table: "`stmt-delete`, enabled per-target on a measured score | Nightly" / "full matrix, on the host | Local (Phase 6)"; and stream-flip "may return as an opt-in per-target operator gated on a measured score"
 - Area: tests/CI

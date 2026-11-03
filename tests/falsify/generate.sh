@@ -25,16 +25,20 @@
 # `<file>:<operator>:<sha1>`. Line numbers shift on every edit and are carried
 # here only as a convenience for applying the mutant; they are NOT identity.
 #
-# OPERATORS. Four are on by default; `stream-flip` exists, is reachable, and is
-# OFF unless FALSIFY_OPERATORS names it — measured at 100 % survival across the
-# candidate corpus, which is worse signal than `num-bump` ever had, so it is
-# opt-in per target rather than deleted (see the increment-5 design doc).
+# OPERATORS. Four are on by default; `stream-flip` and `stmt-delete` exist, are
+# reachable, and are OFF unless FALSIFY_OPERATORS names them. `stream-flip` was
+# measured at 100 % survival across the candidate corpus, worse signal than
+# `num-bump` ever had, so it is opt-in per target rather than deleted (see the
+# increment-5 design doc). `stmt-delete` is enabled per target once that
+# target's oracle is strong enough to make its survivors few and sharp.
 #
 #   cond-negate   `[[ x ]]` → `[[ ! x ]]`, and `if/elif/while/until cmd;` → `… ! cmd;`
 #   logic-flip    `&&` ↔ `||`
 #   return-flip   `return 0` ↔ `return 1`, `exit 0` ↔ `exit 1`
 #   cmp-flip      `-eq`↔`-ne`, `-lt`↔`-ge`, `-gt`↔`-le`, `==`↔`!=`, `<`↔`>`
 #   stream-flip   `>&2` → `>&1`                                   [off by default]
+#   stmt-delete   a line that is one simple statement → `:`        [off by default]
+#                 (opt-in per target in tests/falsify/deep.conf; GAP-4)
 #
 # ONE MUTANT PER APPLICABLE TOKEN OCCURRENCE, not per line: a line with two `&&`
 # yields two mutants, because a test may kill one and be blind to the other.
@@ -70,7 +74,7 @@
 # drive falsify_check_syntax / falsify_scan_line directly instead of asserting on
 # this file's source text.
 
-FALSIFY_ALL_OPERATORS="cond-negate logic-flip return-flip cmp-flip stream-flip"
+FALSIFY_ALL_OPERATORS="cond-negate logic-flip return-flip cmp-flip stream-flip stmt-delete"
 FALSIFY_DEFAULT_OPERATORS="cond-negate logic-flip return-flip cmp-flip"
 
 _FALSIFY_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -82,6 +86,9 @@ source "$_FALSIFY_LIB_DIR/../portability.sh"
 # more than the bash -n it exists to feed.
 _FALSIFY_TMPDIR=""
 _FALSIFY_TMPDIR_OWNED=0
+# Set by falsify_generate before each line: 1 when the previous code line
+# continues onto this one. Only stmt-delete reads it.
+_FALSIFY_PREV_CONT=0
 _FALSIFY_SYNTAX_TMP=""
 _FALSIFY_SHA_TMP=""
 
@@ -413,6 +420,36 @@ falsify_scan_line() {   # $1 = raw line text, $2 = incoming span depth (default 
       fi ;;
   esac
 
+  # ── stmt-delete: the whole statement replaced by `:` ─────────────────────────
+  # Line-level, like the reverse stream-flip: the shape of historical holes #3
+  # and #4, a behaviour silently missing. Deliberately narrow, firing only where
+  # the line IS one complete simple command, so the mutant deletes a statement
+  # and nothing else:
+  #   * not a continuation, either half (the caller says whether the previous
+  #     line continued onto this one), and not a line left inside open quotes;
+  #   * not a heredoc opener (its body would be left without its command);
+  #   * not a compound-command keyword, a brace, a case arm or `;;`, or a
+  #     function header — deleting those deletes structure, which bash -n
+  #     either refuses or turns into a different program than "one statement
+  #     missing".
+  # The indentation is kept and the trailing comment dropped with the code.
+  case "$_FALSIFY_ENABLED" in
+    *' stmt-delete '*)
+      code="${line:0:code_end}"
+      code="${code%"${code##*[![:space:]]}"}"          # rstrip
+      local lead="${code%%[![:space:]]*}" body
+      body="${code#"$lead"}"
+      if (( ! _FALSIFY_PREV_CONT && ! sq && ! dq && ${#SCAN_HEREDOC[@]} == 0 )) \
+         && [[ -n "$body" && "$body" != ':' ]] \
+         && [[ ! "$body" =~ ^(if|then|elif|else|fi|for|while|until|do|done|case|esac|in|select|function|time|\{|\}|\(|\)|!|\[\[|\(\()([[:space:]]|$) ]] \
+         && [[ ! "$body" =~ ^[^[:space:]\(\)]*\)([[:space:]]|$) ]] \
+         && [[ ! "$body" =~ ^[A-Za-z_][A-Za-z0-9_:.-]*[[:space:]]*\(\) ]] \
+         && [[ ! "$body" =~ (\\|\||&&|\{|\(|;;|[[:space:];](then|do|in))$ ]]; then
+        SCAN_OPS+=(stmt-delete)
+        SCAN_TEXTS+=("$lead:")
+      fi ;;
+  esac
+
   # The span depth this line ENDS at, for a caller continuing onto the next
   # physical line. See the continuation note at the call site.
   SCAN_DEPTH_END="$depth"
@@ -443,6 +480,7 @@ falsify_generate() {   # <file>
 
   local idx lineno line trimmed sha k h dash delim cand
   local carry_depth=0
+  _FALSIFY_PREV_CONT=0
   FALSIFY_MUTANTS=0
   FALSIFY_DISCARDED=0
 
@@ -482,6 +520,9 @@ falsify_generate() {   # <file>
     # line, so identity and line numbers are unaffected.
     falsify_scan_line "$line" "$carry_depth"
     if [[ "$line" == *\\ ]]; then carry_depth="$SCAN_DEPTH_END"; else carry_depth=0; fi
+    # For stmt-delete: whether the NEXT line continues this one. A trailing
+    # backslash, pipe or `&&`/`||` joins it to the next line as one command.
+    if [[ "$line" =~ (\\|\||&&)[[:space:]]*$ ]]; then _FALSIFY_PREV_CONT=1; else _FALSIFY_PREV_CONT=0; fi
 
     for h in "${SCAN_HEREDOC[@]}"; do heredoc_q+=("$h"); done
 

@@ -389,5 +389,20 @@ else
   fail "emit_launcher produced a launcher to inspect"
 fi
 
+# ── version_schema called on its own, as ai-containers-report.sh calls it ─────
+# Through version_report its `dir` and `conf` are also the caller's locals, so
+# bash's dynamic scoping hides a missing declaration (stmt-delete, GAP-4). A
+# direct call with no SANDBOX_CONF must read the named directory's file.
+sdir="$TMP/schema-dir"; mkdir -p "$sdir"
+printf '# schema-version: 41\n' > "$sdir/sandbox.conf"
+got="$(env -u SANDBOX_CONF bash -c "source '$REPO_DIR/version.sh'; version_schema '$sdir'" 2>&1)"
+[[ "$got" == "41" ]] \
+  && pass "version_schema DIR reads DIR's sandbox.conf when called directly" \
+  || fail "version_schema DIR reads DIR's sandbox.conf when called directly (got '$got')"
+got="$(env -u SANDBOX_CONF bash -c "source '$REPO_DIR/version.sh'; version_schema '$TMP/no-such-dir'" 2>&1)"
+[[ "$got" == "unknown" ]] \
+  && pass "version_schema of a directory with no sandbox.conf is unknown" \
+  || fail "version_schema of a directory with no sandbox.conf is unknown (got '$got')"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

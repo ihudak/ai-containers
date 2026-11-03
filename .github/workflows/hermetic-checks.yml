@@ -207,7 +207,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [repo-git-reset, rest]
+        # `deep` is not a slice of the corpus: it is the per-target deep pass
+        # (GAP-4), `run.sh --deep`, which runs only the targets
+        # tests/falsify/deep.conf names and only under the extra operators
+        # each earned there (stmt-delete). The other two shards cover the
+        # corpus once under the default operators; check-ledger.sh scopes each
+        # run by the operators it used, so all three score the one ledger.
+        shard: [repo-git-reset, rest, deep]
     env:
       FALSIFY_SPLIT_TARGET: repo-git-reset.sh
 
@@ -257,6 +263,7 @@ jobs:
           case "$SHARD" in
             repo-git-reset) select=(--target "$FALSIFY_SPLIT_TARGET") ;;
             rest) select=(--exclude-target "$FALSIFY_SPLIT_TARGET") ;;
+            deep) select=(--deep) ;;
             *) echo "unknown falsify shard: $SHARD" >&2; exit 2 ;;
           esac
           # --jobs auto, NOT $(nproc): nproc reads the affinity MASK and does

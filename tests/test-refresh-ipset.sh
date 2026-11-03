@@ -48,6 +48,7 @@ case "$1" in
   flush)   [[ -f "$s/set.$2" ]] || exit 1; head -n1 "$s/set.$2" > "$s/f" && mv "$s/f" "$s/set.$2" ;;
   add)
     [[ -f "$s/set.$2" ]] || { echo "ipset: no set $2" >&2; exit 1; }
+    [[ -n "${IPSET_FAIL_ADD:-}" && "$3" == "$IPSET_FAIL_ADD" ]] && { echo "ipset: kernel refused $3" >&2; exit 1; }
     fam="$(head -n1 "$s/set.$2")"
     if [[ "$fam" == inet && "$3" == *:* ]] || [[ "$fam" == inet6 && "$3" != *:* ]]; then
       echo "ipset: $3 is not $fam" >&2; exit 1
@@ -200,6 +201,17 @@ out="$(IPSET_STATE="$state" GETENT_TABLE="$TMP/table" PATH="$TOOLS" bash "$ENGIN
 [[ $rc -eq 0 && "$(members allowed_ipv4)" == "203.0.113.5 " ]] && grep -q '192.0.2.0/40' <<<"$out" \
   && pass "R8 an out-of-range mask in the domains file is a name that resolves to nothing" \
   || fail "R8 rc=$rc v4='$(members allowed_ipv4)': $out"
+
+# ── R9: an ipset that fails mid-reload stops it before anything is swapped ───
+# A partial allowlist swapped in would drop every address after the failure.
+state="$TMP/r9"; mkdir -p "$state"
+printf 'inet\n192.0.2.99\n' > "$state/set.allowed_ipv4"; printf 'inet6\n2001:db8::99\n' > "$state/set.allowed_ipv6"
+printf '203.0.113.5\n203.0.113.6\n203.0.113.7\n' > "$state/domains"; : > "$state/cidrs"
+out="$(IPSET_FAIL_ADD=203.0.113.6 IPSET_STATE="$state" GETENT_TABLE="$TMP/table" PATH="$TOOLS" bash "$ENGINE/refresh-ipset-allowlist.sh" "$state/domains" "$state/cidrs" 2>&1)"; rc=$?
+[[ $rc -ne 0 ]] && pass "R9 a failed ipset add fails the reload (rc $rc)" || fail "R9 a failed ipset add was ignored (rc 0): $out"
+[[ "$(members allowed_ipv4)" == "192.0.2.99 " ]] && ! grep -q '^swap' "$state/log" \
+  && pass "R9 nothing is swapped in after the failure" \
+  || fail "R9 after a failed add v4='$(members allowed_ipv4)', swaps: $(grep '^swap' "$state/log" | tr '\n' ';')"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

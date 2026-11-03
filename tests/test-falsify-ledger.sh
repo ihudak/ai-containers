@@ -228,6 +228,46 @@ err="$(bash "$CHECK" --ledger "$SCOPED" --run-output "$RUN" 2>&1 >/dev/null)"
 assert_has "an out-of-scope entry is reported as SKIPPED, never silently ignored" \
   "SKIPPED beta.sh:logic-flip:$X" "$err"
 
+# ── Scope by operator: a default pass and a deep pass share one ledger (GAP-4) ─
+# A deep pass runs stmt-delete on a few targets; the shards run the four
+# defaults on all of them. Each scores the same ledger, so each must skip the
+# other's operators for a file it did measure, and say so, while still
+# checking its own.
+SD='5555555555555555555555555555555555555555'
+OPS_LED="$(mk_ledger opscope "$ID_S
+  GAP: nothing asserts the || branch.
+
+alpha.sh:stmt-delete:$SD
+  GAP: a deep-pass survivor the default pass never generates.")"
+run_gate "$OPS_LED" "$RUN"
+check "a default run does not call a stmt-delete entry of a file it measured stale" "0" "$rc"
+err="$(bash "$CHECK" --ledger "$OPS_LED" --run-output "$RUN" 2>&1 >/dev/null)"
+assert_has "the operator it did not run is reported as SKIPPED" "SKIPPED alpha.sh:stmt-delete:$SD" "$err"
+DEEP_RUN="$TMP/deep-run.txt"
+cat > "$DEEP_RUN" <<EOF
+RUN|repo=/fix|conf=/fix/targets.conf|jobs=1|timeout=60|operators=deep|targets=1|mutants=1
+OPERATORS|alpha.sh|stmt-delete
+BASELINE|alpha.sh|test-alpha.sh|PASS|11
+MUTANT|SURVIVED|alpha.sh:stmt-delete:$SD|test-alpha.sh|1|10|none|12|  :
+TARGET|alpha.sh|test-alpha.sh|1|0|1|0|30
+TOTAL|1|1|0|1|0|100|40
+EOF
+run_gate "$OPS_LED" "$DEEP_RUN"
+check "a deep run skips the default operators' entries for its own target" "0" "$rc"
+STALE_SD="$(mk_ledger opstale "$ID_S
+  GAP: nothing asserts the || branch.
+
+alpha.sh:stmt-delete:$SD
+  GAP: a deep-pass survivor.
+
+alpha.sh:stmt-delete:$X
+  GAP: no mutant carries this.")"
+run_gate "$STALE_SD" "$DEEP_RUN"
+check "a deep run still finds its own operator's stale entry" "1" "$rc"
+only_signature "deep-stale" "$SIG_STALE"
+run_gate "$(mk_ledger opmiss '# nothing recorded')" "$DEEP_RUN"
+check "a deep-pass survivor with no entry still fails the gate" "1" "$rc"
+
 # ── Identity is not unique: one entry covers every mutant that shares it ──────
 # Two cond-negate mutants of the SAME line differ in `seq` alone. Both survive;
 # one entry answers for both, and the gate reports how many it is covering.

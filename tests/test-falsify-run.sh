@@ -1285,6 +1285,38 @@ grep -q -- '--target nosuch.sh matches no active row' <<< "$FX_ERR" \
   && pass "a --target that matches nothing is named as such beside a valid --exclude-target" \
   || fail "a --target that matches nothing is named as such beside a valid --exclude-target: $FX_ERR"
 
+# ── 12c. --deep: only deep.conf's targets, under only their extra operators ──
+# (GAP-4.) fixture-lib.sh has one simple statement, fx_never_called's
+# `return 0`, so stmt-delete gives it exactly one mutant; fixture-slow.sh is
+# not in the deep map and must not even be baselined.
+deep() { printf '%s\n' "$2" > "$TMP/$1.deep"; printf '%s' "$TMP/$1.deep"; }
+DEEP_OK="$(deep ok '# a comment, and a blank line
+
+fixture-lib.sh|stmt-delete|fixture: measured')"
+FALSIFY_DEEP_CONF="$DEEP_OK" fx_run "$RUN" "$CONF_TWO" "$FX" "$TMP/wit-deep" --jobs 1 --controls 0 --deep
+check "--deep runs the targets the deep map names (exit 0)" "0" "$FX_RC"
+check "  … announcing the pass as deep in the RUN record" "1" "$(grep -c '^RUN|.*|operators=deep|' <<< "$FX_OUT")"
+check "  … and the target's own operators in an OPERATORS record" "1" "$(grep -cx 'OPERATORS|fixture-lib.sh|stmt-delete' <<< "$FX_OUT")"
+check "  … generating its stmt-delete mutant and nothing else" \
+  "fixture-lib.sh:stmt-delete" "$(awk -F'|' '$1 == "MUTANT" { split($3, a, ":"); print a[1] ":" a[2] }' <<< "$FX_OUT" | sort -u | tr -d '\n')"
+check "  … which survives (nothing calls fx_never_called)" "SURVIVED" "$(fx_verdict "$FX_OUT" '|  :')"
+check "  … and leaves a target the map does not name unmeasured" "0" "$(grep -c '^BASELINE|fixture-slow.sh' <<< "$FX_OUT")"
+fx_run "$RUN" "$CONF_TWO" "$FX" "$TMP/wit-nodeep" --jobs 1 --controls 0 --target fixture-lib.sh
+check "a default run records each target's operators too" "1" \
+  "$(grep -cx 'OPERATORS|fixture-lib.sh|cond-negate logic-flip return-flip cmp-flip' <<< "$FX_OUT")"
+FALSIFY_DEEP_CONF="$DEEP_OK" fx_run "$RUN" "$CONF_TWO" "$FX" "$TMP/wit-deep2" --jobs 1 --deep --operators cond-negate
+check "--deep with --operators is refused (exit 2)" "2" "$FX_RC"
+FALSIFY_DEEP_CONF="$(deep inactive 'nosuch.sh|stmt-delete|why')" fx_run "$RUN" "$CONF_TWO" "$FX" "$TMP/wit-deep3" --jobs 1 --deep
+check "a deep row for a target that is not active is refused (exit 2)" "2" "$FX_RC"
+grep -q 'nosuch.sh is not an active EXECUTED-WHOLE row' <<< "$FX_ERR" \
+  && pass "  … naming it" || fail "  … naming it: $FX_ERR"
+FALSIFY_DEEP_CONF="$(deep noreason 'fixture-lib.sh|stmt-delete|  ')" fx_run "$RUN" "$CONF_TWO" "$FX" "$TMP/wit-deep4" --jobs 1 --deep
+check "a deep row with no reason is refused (exit 2)" "2" "$FX_RC"
+FALSIFY_DEEP_CONF="$(deep badop 'fixture-lib.sh|stmt-erase|why')" fx_run "$RUN" "$CONF_TWO" "$FX" "$TMP/wit-deep5" --jobs 1 --deep
+check "a deep row naming an unknown operator is refused (exit 2)" "2" "$FX_RC"
+FALSIFY_DEEP_CONF="$DEEP_OK" fx_run "$RUN" "$CONF_TWO" "$FX" "$TMP/wit-deep6" --jobs 1 --deep --target fixture-slow.sh
+check "--deep with a selection the deep map does not cover is refused (exit 2)" "2" "$FX_RC"
+
 # ── 13. The REAL targets.conf is what an unfiltered run would read ────────────
 # No mutants are run here: --target with a name no active row carries must fail
 # before any oracle does, against the real map.

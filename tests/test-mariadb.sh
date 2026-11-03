@@ -168,7 +168,13 @@ esac
 printf '%s\n' "$@" > "$FAKE_DIR/mariadbd.args"
 printf 'mariadbd\n' >> "$FAKE_DIR/calls"
 [[ "${FAKE_MODE:-ok}" == exit ]] && exit 1
-for a in "$@"; do [[ "$a" == --pid-file=* ]] && printf '%s\n' "${a#--pid-file=}" > "$FAKE_DIR/pid_file"; done
+pf=""; for a in "$@"; do [[ "$a" == --pid-file=* ]] && pf="${a#--pid-file=}"; done
+# `slow`: up at once, but answering only a second later.
+if [[ "${FAKE_MODE:-ok}" == slow ]]; then
+  ( sleep 1; printf '%s\n' "$pf" > "$FAKE_DIR/pid_file" ) >/dev/null 2>&1 </dev/null &
+else
+  printf '%s\n' "$pf" > "$FAKE_DIR/pid_file"
+fi
 printf '%s\n' "$$" >> "$FAKE_DIR/daemons"
 exec sleep 300
 EOF
@@ -250,6 +256,14 @@ sql_has "CREATE USER 'alice'@'localhost'; GRANT ALL PRIVILEGES ON *.* TO 'alice'
 # D5 — ::1 only where the container has an IPv6 loopback.
 md_reset; MD_INET6="$FAKE/inet6-yes" md svc_start "$FAKE/data" "$FAKE/log" >/dev/null
 has_arg --bind-address=127.0.0.1,::1 && pass "D5 with an IPv6 loopback, ::1 is bound too" || fail "D5 ::1"
+
+# D5b — the wait is TIME, not a try count: each try sleeps, so 20 tries wait
+# about two seconds and a server that answers after one is found. Without the
+# sleep, 20 tries take milliseconds and it is reported as not answering.
+md_reset; out="$(FAKE_MODE=slow MD_TRIES=20 md svc_start "$FAKE/data" "$FAKE/log")"; rc=$?
+[[ "$rc" -eq 0 ]] && pass "D5b a server that answers after a second is waited for (20 tries)" \
+  || fail "D5b a server that answers after a second was given up on (rc=$rc, out='$out')"
+for _ in $(seq 1 30); do [[ -f "$FAKE/pid_file" ]] && break; sleep 0.1; done
 
 # D6 — another server on the socket is never taken for this one; the wait is
 # bounded by AI_SERVICES_MARIADB_TRIES (3 tries is 0.3 s, not the 30 s default).

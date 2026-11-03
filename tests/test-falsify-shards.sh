@@ -94,6 +94,9 @@ shards_cover() {  # $1=workflow  $2=label
   printf '%s\n' "$body" > "$d/step.sh"
   : > "$d/all"
   for sh in "${shards[@]}"; do
+    # The deep shard re-runs a few targets under extra operators; it is not a
+    # slice of the corpus, so it is checked on its own below, not counted here.
+    [[ "$sh" == deep ]] && continue
     out="$( cd "$d" && RUNNER_TEMP="$d/rt" SHARD="$sh" FALSIFY_SPLIT_TARGET="$split" \
             bash --noprofile --norc -eo pipefail step.sh 2>&1 )"; rc=$?
     if (( rc != 0 )); then
@@ -117,6 +120,26 @@ shards_cover() {  # $1=workflow  $2=label
   return 0
 }
 
+# rc 0 when workflow $1's `deep` shard runs exactly the deep pass: the targets
+# `run.sh --deep` selects, which are deep.conf's.
+deep_shard_ok() {  # $1=workflow  $2=label
+  local wf="$1" label="$2" body d out rc got want
+  body="$(step_run "$wf" "$STEP")"
+  d="$TMP/$label"; mkdir -p "$d/tests/falsify" "$d/rt"
+  printf '#!/usr/bin/env bash\nexec bash %q --list-targets "$@"\n' "$REAL_RUN" > "$d/tests/falsify/run.sh"
+  printf '%s\n' "$body" > "$d/step.sh"
+  out="$( cd "$d" && RUNNER_TEMP="$d/rt" SHARD=deep FALSIFY_SPLIT_TARGET="$(split_target "$wf")" \
+          bash --noprofile --norc -eo pipefail step.sh 2>&1 )"; rc=$?
+  if (( rc != 0 )); then echo "  [$label] shard 'deep' exited $rc: $(tail -n 3 <<< "$out")"; return 1; fi
+  got="$(sort "$d/rt/falsify-run.txt" 2>/dev/null)"
+  want="$(bash "$REAL_RUN" --deep --list-targets 2>/dev/null | sort)"
+  if [[ -z "$want" || "$got" != "$want" ]]; then
+    echo "  [$label] the deep shard selected '$(tr '\n' ' ' <<< "$got")', run.sh --deep selects '$(tr '\n' ' ' <<< "$want")'"; return 1
+  fi
+  echo "  [$label] the deep shard runs the $(grep -c . <<< "$got") deep target(s)"
+  return 0
+}
+
 # Premise: the unfiltered list is the corpus, not empty.
 n_all="$(bash "$REAL_RUN" --list-targets 2>/dev/null | grep -c .)"
 if (( n_all >= 2 )); then pass "run.sh --list-targets lists the corpus ($n_all targets)"
@@ -126,6 +149,20 @@ msg="$(shards_cover "$WF" real)"
 if [[ $? -eq 0 ]]; then pass "the falsify shards in hermetic-checks.yml cover the corpus exactly once"
 else fail "the falsify shards in hermetic-checks.yml cover the corpus exactly once"; fi
 printf '%s\n' "$msg"
+
+grep -qE '^ +shard: *\[.*\bdeep\b' <(falsify_job "$WF") \
+  && pass "the matrix has the deep shard" || fail "the matrix has the deep shard"
+msg="$(deep_shard_ok "$WF" deep-real)"
+if [[ $? -eq 0 ]]; then pass "the deep shard runs run.sh --deep's targets"
+else fail "the deep shard runs run.sh --deep's targets"; fi
+printf '%s\n' "$msg"
+# Seen failing: a deep arm that runs the default pass instead.
+sed 's/deep) select=(--deep) ;;/deep) select=(--target "$FALSIFY_SPLIT_TARGET") ;;/' "$WF" > "$TMP/deepwrong.yml"
+if ! cmp -s "$WF" "$TMP/deepwrong.yml" && ! msg="$(deep_shard_ok "$TMP/deepwrong.yml" deep-wrong)"; then
+  pass "a deep arm that does not run --deep is caught"
+else
+  fail "a deep arm that does not run --deep is caught: $msg"
+fi
 
 # Seen failing: a shard dropped from the matrix leaves its half unmeasured.
 sed 's/^\( *shard: *\[\)[^,]*, */\1/' "$WF" > "$TMP/drop.yml"

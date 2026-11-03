@@ -6,9 +6,17 @@
 #
 #   bash tests/falsify/run.sh [--target <file>] [--exclude-target <file>] [--list-targets]
 #                            [--jobs N|auto] [--timeout S]
-#                            [--operators <list>] [--max-unproven-pct N]
+#                            [--operators <list> | --deep] [--max-unproven-pct N]
 #                            [--max-assertless N] [--controls N]
 #
+#   --deep                  the per-target deep pass (feature-gaps review
+#                           GAP-4): only the targets tests/falsify/deep.conf
+#                           names, each under ONLY the extra operators that
+#                           file gives it (stmt-delete, stream-flip). The four
+#                           default operators are the shards' job; this pass
+#                           adds what a target earned by a measured score, and
+#                           nothing else. Refused together with --operators.
+#                           FALSIFY_DEEP_CONF overrides the file (tests).
 #   --exclude-target <file> every active target BUT this one: the complement of
 #                           --target <file>, so a run of each covers the corpus
 #                           exactly once whatever is added to it later. That is
@@ -53,6 +61,10 @@
 # Progress, warnings and errors go to STDERR and are never part of the contract.
 #
 #   RUN|repo=<path>|conf=<path>|jobs=<n>|timeout=<s>|operators=<list>|targets=<n>|mutants=<n>
+#   OPERATORS|<target>|<list>      one per target, right after RUN: the
+#              operators that target's mutants were generated with. The ledger
+#              gate scopes its stale/obsolete checks by them, so a deep pass and
+#              a default pass can each be scored against the one ledger.
 #   BASELINE|<target>|<oracle>|PASS|<ms>
 #   MUTANT|<verdict>|<identity>|<oracle>|<seq>|<lineno>|<signal>|<ms>|<mutated-line>
 #   NOTE|<what>|<identity>|<detail>
@@ -389,6 +401,9 @@ FR_TIMEOUT="${FALSIFY_TIMEOUT:-60}"
 FR_TARGET=""
 FR_EXCLUDE=""
 FR_LIST_TARGETS=0
+FR_DEEP=0
+FR_DEEP_CONF="${FALSIFY_DEEP_CONF:-$FR_HERE/deep.conf}"
+FR_OPS=()      # per target: the operator list it is generated with, "" = the run's
 
 # The suite driver, as a repo-relative path DERIVED from where this file lives,
 # not hardcoded: upstream keeps tests/ at the repo root, the mgd port keeps the
@@ -1776,7 +1791,9 @@ fr_load_targets() {
     fi
     FR_TARGETS+=("$target")
     FR_ORACLES+=("$oracle")
+    FR_OPS+=("")
   done < <(bash "$FR_DERIVE" --rows "$FR_CONF")
+  (( FR_DEEP )) && { fr_apply_deep || return 2; }
   (( skipped > 0 )) && fr_warn "skipped $skipped GREPPED-ONLY row(s): the suite never executes them, so every mutant would survive as noise"
   if [[ -n "$FR_TARGET" ]] && (( targeted == 0 )); then
     fr_err "--target $FR_TARGET matches no active row in $FR_CONF"
@@ -1797,6 +1814,60 @@ fr_load_targets() {
   return 0
 }
 
+# ── the deep pass ─────────────────────────────────────────────────────────────
+# deep.conf grammar: `<target>|<operators>|<reason>`, `#` comments. Every row
+# must name a target the targets map makes ACTIVE (EXECUTED-WHOLE): a deep row
+# for a deferred file would measure a file no default pass measures, and a
+# typo would silently deepen nothing. The reason is required, as on every
+# classified row in this tier: it carries the measured score that earned it.
+fr_apply_deep() {
+  local -A active=() deep=()
+  local line n=0 t ops why i
+  local -a keep_t=() keep_o=() keep_ops=()
+  # Every active row, before --target/--exclude-target filtered them.
+  while IFS='|' read -r kind _ t cat _; do
+    [[ "$kind" == ACTIVE && "$cat" == EXECUTED-WHOLE ]] && active["$t"]=1
+  done < <(bash "$FR_DERIVE" --rows "$FR_CONF")
+  if [[ ! -f "$FR_DEEP_CONF" ]]; then fr_err "--deep: no deep map at $FR_DEEP_CONF"; return 2; fi
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    n=$(( n + 1 ))
+    [[ "$line" =~ ^[[:space:]]*(#|$) ]] && continue
+    IFS='|' read -r t ops why <<<"$line"
+    if [[ -z "$t" || -z "$ops" || -z "${why//[[:space:]]/}" ]]; then
+      fr_err "$FR_DEEP_CONF:$n: a row is <target>|<operators>|<reason>, all three non-empty"; return 2
+    fi
+    if [[ -z "${active[$t]:-}" ]]; then
+      fr_err "$FR_DEEP_CONF:$n: $t is not an active EXECUTED-WHOLE row of $FR_CONF"; return 2
+    fi
+    if ! FALSIFY_OPERATORS="$ops" bash -c 'source "$1"; falsify_operator_set >/dev/null' _ "$FR_GENERATE"; then
+      fr_err "$FR_DEEP_CONF:$n: $t names an operator the generator does not know: $ops"; return 2
+    fi
+    deep["$t"]="$ops"
+  done < "$FR_DEEP_CONF"
+  for (( i = 0; i < ${#FR_TARGETS[@]}; i++ )); do
+    t="${FR_TARGETS[i]}"
+    [[ -n "${deep[$t]:-}" ]] || continue
+    keep_t+=("$t"); keep_o+=("${FR_ORACLES[i]}"); keep_ops+=("${deep[$t]}")
+  done
+  FR_TARGETS=("${keep_t[@]}"); FR_ORACLES=("${keep_o[@]}"); FR_OPS=("${keep_ops[@]}")
+  if (( ${#FR_TARGETS[@]} == 0 )); then
+    fr_err "--deep: no target of this selection is in $FR_DEEP_CONF"; return 2
+  fi
+  return 0
+}
+
+# The operator list a target's mutants are generated with, as generate.sh
+# resolves it: the deep row's, else the run's, else the defaults.
+fr_target_ops() {   # <index>
+  local o="${FR_OPS[$1]:-}"
+  [[ -n "$o" ]] || o="${FALSIFY_OPERATORS-}"
+  if [[ -z "$o" ]]; then
+    # shellcheck source=./generate.sh
+    o="$(source "$FR_GENERATE"; printf '%s' "$FALSIFY_DEFAULT_OPERATORS")"
+  fi
+  printf '%s' "${o//,/ }"
+}
+
 fr_usage() { sed -n '2,/^# ── end of --help/p' "${BASH_SOURCE[0]}" | sed '$d; s/^# \{0,1\}//'; }
 
 # ── main ──────────────────────────────────────────────────────────────────────
@@ -1804,6 +1875,7 @@ falsify_main() {
   local i n target oracle mutants total=0 t_run t_target skipped_n
   local n_mut ctl_at ctl_n ci ctl_pos cslot cres
   local seq op lineno sha text slot res rc=0
+  local FR_OPERATORS_FLAG=0
 
   while (( $# > 0 )); do
     case "$1" in
@@ -1820,7 +1892,8 @@ falsify_main() {
       --max-unproven-pct) FR_MAX_UNPROVEN_PCT="${2:-}"; shift 2 || return 2 ;;
       --max-assertless) FR_MAX_ASSERTLESS="${2:-}"; shift 2 || return 2 ;;
       --timeout) FR_TIMEOUT="${2:-}"; shift 2 || return 2 ;;
-      --operators) FALSIFY_OPERATORS="${2:-}"; export FALSIFY_OPERATORS; shift 2 || return 2 ;;
+      --operators) FALSIFY_OPERATORS="${2:-}"; export FALSIFY_OPERATORS; FR_OPERATORS_FLAG=1; shift 2 || return 2 ;;
+      --deep) FR_DEEP=1; shift ;;
       -h|--help) fr_usage; return 0 ;;
       *) fr_err "unknown option: $1"; fr_usage >&2; return 2 ;;
     esac
@@ -1852,6 +1925,9 @@ falsify_main() {
   fi
   if [[ ! "$FR_JOBS" =~ ^[1-9][0-9]*$ ]]; then
     fr_err "--jobs must be a positive integer or 'auto', got '${FR_JOBS}'"; return 2
+  fi
+  if (( FR_DEEP && FR_OPERATORS_FLAG )); then
+    fr_err "--deep and --operators both choose the operators; give one"; return 2
   fi
   if [[ ! "$FR_CONTROLS" =~ ^[0-9]+$ ]]; then
     fr_err "--controls must be a non-negative integer, got '${FR_CONTROLS}'"; return 2
@@ -1902,7 +1978,7 @@ falsify_main() {
   for (( i = 0; i < ${#FR_TARGETS[@]}; i++ )); do
     target="${FR_TARGETS[i]}"
     mutants="$FR_OUT/mutants.$i.tsv"
-    if ! bash "$FR_GENERATE" "$FR_CACHE/$target" > "$mutants"; then
+    if ! FALSIFY_OPERATORS="$(fr_target_ops "$i")" bash "$FR_GENERATE" "$FR_CACHE/$target" > "$mutants"; then
       fr_err "the generator failed on $target"
       return 1
     fi
@@ -1916,7 +1992,10 @@ falsify_main() {
 
   printf 'RUN|repo=%s|conf=%s|jobs=%s|timeout=%s|operators=%s|targets=%s|mutants=%s\n' \
     "$FR_REPO" "$FR_CONF" "$FR_JOBS" "$FR_TIMEOUT" \
-    "${FALSIFY_OPERATORS-<default>}" "${#FR_TARGETS[@]}" "$total"
+    "$( (( FR_DEEP )) && printf 'deep' || printf '%s' "${FALSIFY_OPERATORS-<default>}")" "${#FR_TARGETS[@]}" "$total"
+  for (( i = 0; i < ${#FR_TARGETS[@]}; i++ )); do
+    printf 'OPERATORS|%s|%s\n' "${FR_TARGETS[i]}" "$(fr_target_ops "$i")"
+  done
 
   # Worker trees, seeded in parallel: each is a ~20 MB copy and they are
   # independent, so N of them cost about as long as one.

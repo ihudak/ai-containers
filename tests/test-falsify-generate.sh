@@ -499,5 +499,56 @@ sf="$(FALSIFY_OPERATORS='stream-flip' gen "$ENGINE_DIR/bash-floor.sh" | grep -c 
   && pass "stream-flip alone yields bash-floor.sh's 2 stderr redirections" \
   || fail "stream-flip alone yields bash-floor.sh's 2 stderr redirections — got $sf"
 
+# ── stmt-delete: one whole simple statement replaced by `:` (GAP-4) ───────────
+# The operator shaped like historical holes #3 and #4, a behaviour silently
+# missing. Off by default and opt-in per target, like stream-flip. It fires only
+# on a line that is one complete simple command: never a compound-command
+# keyword, a case arm, a brace, a function header, a continuation (either half),
+# a heredoc opener or its body.
+cat > "$TMP/sd.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+f() {
+  local a="$1"
+  mkdir -p "$a"   # make it
+  if [[ -n "$a" ]]; then
+    printf '%s\n' "$a"
+  fi
+  case "$a" in
+    x) echo x ;;
+    *) : ;;
+  esac
+  cmd --long \
+    --opt
+  echo one | sort
+  cat <<EOT
+body line
+EOT
+  return 0
+}
+f "$@"
+EOF
+sd="$(FALSIFY_OPERATORS='stmt-delete' gen "$TMP/sd.sh")"
+sd_lines="$(cut -f2 <<<"$sd" | tr '\n' ' ')"
+[[ "$sd_lines" == "2 4 5 7 15 19 21 " ]] \
+  && pass "stmt-delete fires on exactly the seven simple statements" \
+  || fail "stmt-delete fires on exactly the seven simple statements (2 4 5 7 15 19 21) — got: ${sd_lines:-none}"
+sd5="$(awk -F'\t' '$2 == 5 { print $4 }' <<<"$sd")"
+[[ "$sd5" == "  :" ]] \
+  && pass "stmt-delete keeps the indentation and drops the statement and its comment" \
+  || fail "stmt-delete keeps the indentation and drops the statement and its comment — line 5 became '$sd5'"
+[[ "$(awk -F'\t' '$2 == 5 { print $3 }' <<<"$sd")" == "$(sha_of_string 'mkdir -p "$a"   # make it')" ]] \
+  && pass "a stmt-delete identity is the sha1 of the original trimmed line" \
+  || fail "a stmt-delete identity is the sha1 of the original trimmed line"
+if grep -q '^stmt-delete' < <(gen "$TMP/sd.sh"); then
+  fail "stmt-delete is off by default"
+else
+  pass "stmt-delete is off by default"
+fi
+sd_all="$(FALSIFY_OPERATORS="$ALL_OPS,stmt-delete" gen "$TMP/sd.sh" | grep -c '^stmt-delete' || true)"
+[[ "$sd_all" == "7" ]] \
+  && pass "stmt-delete composes with the other operators (7 mutants alongside them)" \
+  || fail "stmt-delete composes with the other operators — got $sd_all"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

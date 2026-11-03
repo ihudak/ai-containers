@@ -954,3 +954,35 @@ link-agent-tools.sh:return-flip:21e0410ce21c57fa265c5359d7f539efdbe6411c
   the script runs without errexit (`set -o pipefail` only), so it cannot end the
   run either. No observer of the script's outputs, files or exit status can tell
   the two programs apart.
+
+# ── 25 ────────────────────────────────────────────────────────────────────────
+# The deep pass (GAP-4, 2026-11-03): stmt-delete on the targets
+# tests/falsify/deep.conf names. Scored by `run.sh --deep` only; the default
+# shards skip these entries by operator.
+
+GROUP: refresh-ipset-allowlist.sh — the `continue` after an unresolved name
+refresh-ipset-allowlist.sh:stmt-delete:eee0bbba4ff92adbeb038a77df0466d660f15716
+    continue      (after "Warning: no IPv4 or IPv6 addresses resolved for …")
+  EQUIVALENT: the branch is taken only when both resolved arrays are empty, so
+    without the `continue` the loop goes on to two `for ip in` loops over those
+    same empty arrays, which add nothing (bash 5.1's `set -u` accepts an empty
+    array's "${a[@]}"), and then to the end of the iteration. The two programs
+    do the same thing for every input.
+
+GROUP: tests/bash-dialect-lint.sh — its `set -uo pipefail`
+tests/bash-dialect-lint.sh:stmt-delete:15aa90d8aaf8755dcc9e8a028c79417cdda4547d
+  set -uo pipefail
+  EQUIVALENT: the script has no pipeline whose status anything reads (its
+    loops read process substitutions, whose status bash never reports), so
+    pipefail decides nothing; and every variable it expands is assigned first,
+    `files` included (an empty array expands cleanly under -u since bash 4.4).
+    Without the line it runs the same commands and exits with the same `rc`.
+
+GROUP: services.d/mariadb.sh — svc_start's `local -a cs=()`
+services.d/mariadb.sh:stmt-delete:ec4a753f8be0e70a705134e3e64ff91640866979
+  local -a cs=()
+  EQUIVALENT: without it, `mapfile -t cs` assigns a global array of the same
+    contents, and the only reader, `${cs[@]+"${cs[@]}"}` on the next command,
+    handles it set or unset. The global outlives svc_start only in the subshell
+    start-services.sh sources each adapter in, which exits after the start; no
+    later function of the adapter reads `cs`.

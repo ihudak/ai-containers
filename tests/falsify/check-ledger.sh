@@ -282,14 +282,33 @@ declare -A CL_HAS_SURV=()    # identity → 1 when at least one record was SURVI
 declare -A CL_SEEN=()        # identity → 1 when the run generated it at all
 declare -A CL_SURV_TEXT=()   # "identity|text" → 1, the F10 dedupe key
 declare -A CL_SCOPE=()       # target file → 1
+declare -A CL_SCOPE_OPS=()   # target file → " op op " from its OPERATORS| record
+CL_RUN_OPS=""                # " op op " from RUN|operators=, "" when unknown
 CL_MUTANTS=0
 
 cl_read_run() {   # <run output file or ->
   local src="$1" line rest verdict ident text target
   CL_SURVIVED=(); CL_SEEN=(); CL_SURV_TEXT=(); CL_SCOPE=(); CL_MUTANTS=0
+  CL_SCOPE_OPS=(); CL_RUN_OPS=""
   CL_UNPROVEN=(); CL_HAS_SURV=()
   while IFS= read -r line || [[ -n "$line" ]]; do
     case "$line" in
+      'RUN|'*)
+        # operators=<default> | deep | a comma list. Only a plain list or the
+        # default is a statement about every target; `deep` says each target's
+        # own OPERATORS| record is the scope.
+        rest="${line#*|operators=}"; rest="${rest%%|*}"
+        case "$rest" in
+          '<default>') CL_RUN_OPS=" $FALSIFY_DEFAULT_OPERATORS " ;;
+          deep|"$line") CL_RUN_OPS="" ;;
+          *) CL_RUN_OPS=" ${rest//,/ } " ;;
+        esac
+        ;;
+      'OPERATORS|'*)
+        rest="${line#OPERATORS|}"
+        target="${rest%%|*}"
+        [[ -n "$target" ]] && CL_SCOPE_OPS["$target"]=" ${rest#*|} "
+        ;;
       'TARGET|'*)
         rest="${line#TARGET|}"
         target="${rest%%|*}"
@@ -335,8 +354,16 @@ cl_read_run() {   # <run output file or ->
 }
 
 cl_in_scope() {   # <identity> → 0 when this run measured that identity's file
-  local file="${1%%:*}"
-  [[ -n "${CL_SCOPE[$file]:-}" ]]
+  # AND generated mutants with that identity's operator. A deep pass
+  # (stmt-delete on a few targets) and a default pass share one ledger, so
+  # each must skip the other's entries rather than call them stale. A run
+  # output that names no operators (an old one, a hand-written fixture) scopes
+  # by file alone, as before.
+  local file="${1%%:*}" rest op ops
+  [[ -n "${CL_SCOPE[$file]:-}" ]] || return 1
+  rest="${1%:*}"; op="${rest##*:}"
+  ops="${CL_SCOPE_OPS[$file]:-$CL_RUN_OPS}"
+  [[ -z "$ops" || "$ops" == *" $op "* ]]
 }
 
 # ── checks B, C, D ────────────────────────────────────────────────────────────
@@ -407,7 +434,7 @@ cl_check_run() {   # <ledger file>
       fi
     fi
   done
-  (( skipped > 0 )) && cl_note "$skipped ledger entr(y/ies) skipped: outside this run's ${#CL_SCOPE[@]} target(s)"
+  (( skipped > 0 )) && cl_note "$skipped ledger entr(y/ies) skipped: outside this run's ${#CL_SCOPE[@]} target(s) or their operators"
   return 0
 }
 
