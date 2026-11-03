@@ -37,7 +37,7 @@
 #   return-flip   `return 0` ↔ `return 1`, `exit 0` ↔ `exit 1`
 #   cmp-flip      `-eq`↔`-ne`, `-lt`↔`-ge`, `-gt`↔`-le`, `==`↔`!=`, `<`↔`>`
 #   stream-flip   `>&2` → `>&1`                                   [off by default]
-#   stmt-delete   a line that is one simple statement → `:`        [off by default]
+#   stmt-delete   a line that is one complete command → `:`        [off by default]
 #                 (opt-in per target in tests/falsify/deep.conf; GAP-4)
 #
 # ONE MUTANT PER APPLICABLE TOKEN OCCURRENCE, not per line: a line with two `&&`
@@ -89,6 +89,43 @@ _FALSIFY_TMPDIR_OWNED=0
 # Set by falsify_generate before each line: 1 when the previous code line
 # continues onto this one. Only stmt-delete reads it.
 _FALSIFY_PREV_CONT=0
+# Set by _falsify_literal_track: 1 when this line STARTS inside a literal that
+# spans lines (a quoted string, an array's elements). Only stmt-delete reads it;
+# the other operators are deliberately left as they were, so their corpus and
+# every ledger identity stay the same.
+_FALSIFY_IN_LITERAL=0
+_FALSIFY_LIT_SQ=0
+_FALSIFY_LIT_DQ=0
+_FALSIFY_LIT_ARR=0
+
+# Carries quote and array-literal state from one physical line to the next.
+# Coarse on purpose (it serves one operator's "skip this line" decision): a
+# `#` at the start of a word ends the line outside quotes, `\` escapes outside
+# single quotes, and `(` straight after `=` opens an array literal that the
+# matching `)` closes.
+_falsify_literal_track() {   # <line>
+  local line="$1" n=${#1} i=0 c prev=" "
+  _FALSIFY_IN_LITERAL=$(( _FALSIFY_LIT_SQ || _FALSIFY_LIT_DQ || _FALSIFY_LIT_ARR > 0 ))
+  while (( i < n )); do
+    c="${line:i:1}"
+    if (( _FALSIFY_LIT_SQ )); then
+      [[ "$c" == "'" ]] && _FALSIFY_LIT_SQ=0
+    elif (( _FALSIFY_LIT_DQ )); then
+      if [[ "$c" == '\' ]]; then i=$(( i + 2 )); prev=x; continue; fi
+      [[ "$c" == '"' ]] && _FALSIFY_LIT_DQ=0
+    else
+      case "$c" in
+        '\') i=$(( i + 2 )); prev=x; continue ;;
+        "'") _FALSIFY_LIT_SQ=1 ;;
+        '"') _FALSIFY_LIT_DQ=1 ;;
+        '#') [[ "$prev" == [[:space:]] ]] && break ;;
+        '(') [[ "$prev" == '=' ]] && _FALSIFY_LIT_ARR=$(( _FALSIFY_LIT_ARR + 1 )) ;;
+        ')') (( _FALSIFY_LIT_ARR > 0 )) && _FALSIFY_LIT_ARR=$(( _FALSIFY_LIT_ARR - 1 )) ;;
+      esac
+    fi
+    prev="$c"; i=$(( i + 1 ))
+  done
+}
 _FALSIFY_SYNTAX_TMP=""
 _FALSIFY_SHA_TMP=""
 
@@ -423,10 +460,12 @@ falsify_scan_line() {   # $1 = raw line text, $2 = incoming span depth (default 
   # ── stmt-delete: the whole statement replaced by `:` ─────────────────────────
   # Line-level, like the reverse stream-flip: the shape of historical holes #3
   # and #4, a behaviour silently missing. Deliberately narrow, firing only where
-  # the line IS one complete simple command, so the mutant deletes a statement
-  # and nothing else:
+  # the line IS one complete command (a simple command, or a list such as
+  # `[[ … ]] && return 1`), so the mutant deletes a statement and nothing else:
   #   * not a continuation, either half (the caller says whether the previous
-  #     line continued onto this one), and not a line left inside open quotes;
+  #     line continued onto this one), not a line that opens a quote it does
+  #     not close, and not a line INSIDE a literal spanning lines (a quoted awk
+  #     program, an array's elements), where `:` would edit data;
   #   * not a heredoc opener (its body would be left without its command);
   #   * not a compound-command keyword, a brace, a case arm or `;;`, or a
   #     function header — deleting those deletes structure, which bash -n
@@ -439,9 +478,9 @@ falsify_scan_line() {   # $1 = raw line text, $2 = incoming span depth (default 
       code="${code%"${code##*[![:space:]]}"}"          # rstrip
       local lead="${code%%[![:space:]]*}" body
       body="${code#"$lead"}"
-      if (( ! _FALSIFY_PREV_CONT && ! sq && ! dq && ${#SCAN_HEREDOC[@]} == 0 )) \
+      if (( ! _FALSIFY_PREV_CONT && ! _FALSIFY_IN_LITERAL && ! sq && ! dq && ${#SCAN_HEREDOC[@]} == 0 )) \
          && [[ -n "$body" && "$body" != ':' ]] \
-         && [[ ! "$body" =~ ^(if|then|elif|else|fi|for|while|until|do|done|case|esac|in|select|function|time|\{|\}|\(|\)|!|\[\[|\(\()([[:space:]]|$) ]] \
+         && [[ ! "$body" =~ ^(if|then|elif|else|fi|for|while|until|do|done|case|esac|in|select|function|time|\{|\}|\(|\)|!)([[:space:]]|$) ]] \
          && [[ ! "$body" =~ ^[^[:space:]\(\)]*\)([[:space:]]|$) ]] \
          && [[ ! "$body" =~ ^[A-Za-z_][A-Za-z0-9_:.-]*[[:space:]]*\(\) ]] \
          && [[ ! "$body" =~ (\\|\||&&|\{|\(|;;|[[:space:];](then|do|in))$ ]]; then
@@ -481,6 +520,7 @@ falsify_generate() {   # <file>
   local idx lineno line trimmed sha k h dash delim cand
   local carry_depth=0
   _FALSIFY_PREV_CONT=0
+  _FALSIFY_IN_LITERAL=0; _FALSIFY_LIT_SQ=0; _FALSIFY_LIT_DQ=0; _FALSIFY_LIT_ARR=0
   FALSIFY_MUTANTS=0
   FALSIFY_DISCARDED=0
 
@@ -498,6 +538,8 @@ falsify_generate() {   # <file>
       if [[ "$cand" == "$delim" ]]; then heredoc_q=("${heredoc_q[@]:1}"); fi
       continue
     fi
+
+    _falsify_literal_track "$line"
 
     # Blank lines, the shebang, and full-line comments carry no code. The
     # shebang needs no separate rule — it IS a full-line comment.

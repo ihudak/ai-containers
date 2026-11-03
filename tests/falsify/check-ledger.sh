@@ -99,6 +99,7 @@
 CL_HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CL_LEDGER="$CL_HERE/survivors.txt"
 CL_GENERATE="$CL_HERE/generate.sh"
+CL_DEEP_CONF="${FALSIFY_DEEP_CONF:-$CL_HERE/deep.conf}"
 
 # ENV-DEPENDENT is the third classification, added after Phase 6's first real
 # host run. GAP and EQUIVALENT both assert something about the CODE; this one
@@ -366,6 +367,30 @@ cl_in_scope() {   # <identity> → 0 when this run measured that identity's file
   [[ -z "$ops" || "$ops" == *" $op "* ]]
 }
 
+# ── an operator beyond the defaults needs the deep row that runs it ──────────
+# The default pass skips an entry by operator and the deep pass only runs the
+# files deep.conf names, so an entry for stmt-delete (or stream-flip) on a file
+# with no such deep row is measured by NO run: it could never be found stale or
+# obsolete, only SKIPPED. Refused in every mode, as a property of the ledger and
+# the deep map together rather than of any run.
+cl_check_deep_ops() {
+  local -A deep=()
+  local line t ops ident rest op file
+  if [[ -f "$CL_DEEP_CONF" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      [[ "$line" =~ ^[[:space:]]*(#|$) ]] && continue
+      IFS='|' read -r t ops _ <<<"$line"
+      deep["$t"]=" ${ops//,/ } "
+    done < "$CL_DEEP_CONF"
+  fi
+  for ident in "${CL_IDENTS[@]}"; do
+    file="${ident%%:*}"; rest="${ident%:*}"; op="${rest##*:}"
+    [[ " $FALSIFY_DEFAULT_OPERATORS " == *" $op "* ]] && continue
+    [[ "${deep[$file]:-}" == *" $op "* ]] && continue
+    cl_err "$ident is a ledger entry ($1:${CL_IDENT_LINE[$ident]}) for operator $op, which no row of $CL_DEEP_CONF gives $file — no run measures it, so it could never be found stale; add that deep row or delete the entry"
+  done
+}
+
 # ── checks B, C, D ────────────────────────────────────────────────────────────
 cl_check_run() {   # <ledger file>
   local ident skipped=0
@@ -480,6 +505,7 @@ cl_main() {
   fi
 
   cl_check_classification "$CL_LEDGER"
+  cl_check_deep_ops "$CL_LEDGER"
 
   if [[ "$mode" == "full" ]]; then
     cl_read_run "$run_output"

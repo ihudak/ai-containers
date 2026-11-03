@@ -550,6 +550,13 @@ if [[ -n "$f47_fail_kept" && -f "$f47_fail_kept" ]]; then
     && pass "phase 6: the kept log holds the notes the phase truncated away" \
     || fail "phase 6: the kept log holds the notes the phase truncated away -- mutant-0 is one of the fourteen that tail -6 dropped, and it is not in the file either"
   rm -f "$f47_fail_kept"
+  # The deep pass keeps its own log on the same condition; it is named, and
+  # removed here so the test leaves nothing in TMPDIR.
+  f47_fail_kept_deep="$(sed -n 's/^.*deep pass log kept at: //p' "$TMP/out.log" | head -1)"
+  [[ -n "$f47_fail_kept_deep" && -f "$f47_fail_kept_deep" ]] \
+    && pass "phase 6: the deep pass's log is kept beside it, and named" \
+    || fail "phase 6: the deep pass's log is kept beside it, and named -- '${f47_fail_kept_deep:-<no path was printed>}'"
+  rm -f "${f47_fail_kept_deep:-}"
 else
   fail "phase 6: a failed corpus keeps its run log, and says where -- '${f47_fail_kept:-<no path was printed>}' is gone"
   fail "phase 6: the kept log holds the notes the phase truncated away -- there is no file to read it from"
@@ -616,6 +623,13 @@ if [[ -n "$f47_kept" && -f "$f47_kept" ]]; then
     && pass "phase 6: the kept log holds the per-mutant records that carry the identities" \
     || fail "phase 6: the kept log holds the per-mutant records that carry the identities"
   rm -f "$f47_kept"
+  # The deep pass keeps its own log on the same condition; it is named, and
+  # removed here so the test leaves nothing in TMPDIR.
+  f47_kept_deep="$(sed -n 's/^.*deep pass log kept at: //p' "$TMP/out.log" | head -1)"
+  [[ -n "$f47_kept_deep" && -f "$f47_kept_deep" ]] \
+    && pass "phase 6: the deep pass's log is kept beside it, and named" \
+    || fail "phase 6: the deep pass's log is kept beside it, and named -- '${f47_kept_deep:-<no path was printed>}'"
+  rm -f "${f47_kept_deep:-}"
 else
   fail "phase 6: the run log still exists after the phase ends — '${f47_kept:-<no path was printed>}' is gone, so 'Grep the log' names a file nobody can open"
   fail "phase 6: the kept log holds the per-occurrence line the note names — there is no file to read it from"
@@ -665,7 +679,7 @@ grep -q 'corpus run log kept at:' "$TMP/out.log" \
 r="$(mk_repo 0)"
 cat > "$r/tests/falsify/run.sh" <<STUB
 #!/usr/bin/env bash
-printf '%s\n' "\$*" > "$TMP/falsify-argv.txt"
+printf '%s\n' "\$*" >> "$TMP/falsify-argv.txt"
 printf 'TARGET|tests/portability.sh|test-portability.sh|13|13|0|0|0|1000\n'
 printf 'TOTAL|1|13|13|0|0|0|0|1000\n'
 printf 'ASSERTLESS|0|13\n'
@@ -687,7 +701,7 @@ rm -f "$TMP/falsify-argv.txt"
 # form of this that measures the script rather than the shell.
 rc="$( export FALSIFY_JOBS=99 FALSIFY_TIMEOUT=99; run_verify "$r" 6 )"
 expect_rc "phase 6: the default corpus invocation passes" 0 "$rc"
-f48_argv="$(cat "$TMP/falsify-argv.txt" 2>/dev/null || true)"
+f48_argv="$(grep -v -e '--deep' "$TMP/falsify-argv.txt" 2>/dev/null || true)"
 case "$f48_argv" in
   (*"--jobs auto"*"--timeout 120"*)
     pass "phase 6: the defaults survive an operator who exported the knobs ($f48_argv)" ;;
@@ -700,7 +714,7 @@ esac
 rm -f "$TMP/falsify-argv.txt"
 rc="$(run_verify "$r" 6 FALSIFY_JOBS=4 FALSIFY_TIMEOUT=600)"
 expect_rc "phase 6: an overridden corpus invocation passes" 0 "$rc"
-f48_argv="$(cat "$TMP/falsify-argv.txt" 2>/dev/null || true)"
+f48_argv="$(grep -v -e '--deep' "$TMP/falsify-argv.txt" 2>/dev/null || true)"
 case "$f48_argv" in
   (*"--jobs 4"*"--timeout 600"*)
     pass "phase 6: FALSIFY_JOBS and FALSIFY_TIMEOUT reach the corpus ($f48_argv)" ;;
@@ -709,6 +723,19 @@ case "$f48_argv" in
 esac
 # Said out loud, not only obeyed: an operator who raised the clock has to be able
 # to see, in the log they paste back, which clock the run actually used.
+# Phase 6 runs the stub twice — the corpus, then the deep pass — and the stub
+# APPENDS, so each call is read on its own line: the deep pass gets the same
+# knobs, and the corpus call above is not the deep one standing in for it.
+f48_deep="$(grep -e '--deep' "$TMP/falsify-argv.txt" 2>/dev/null || true)"
+case "$f48_deep" in
+  (*"--deep"*"--jobs 4"*"--timeout 600"*)
+    pass "phase 6: the deep pass runs too, with the same knobs ($f48_deep)" ;;
+  (*)
+    fail "phase 6: the deep pass runs too, with the same knobs -- got '${f48_deep:-<no --deep call>}'" ;;
+esac
+[[ "$(grep -c . "$TMP/falsify-argv.txt" 2>/dev/null)" == 2 ]] \
+  && pass "phase 6: exactly two runs, the corpus and the deep pass" \
+  || fail "phase 6: exactly two runs, the corpus and the deep pass -- got: $(tr '\n' ';' < "$TMP/falsify-argv.txt" 2>/dev/null)"
 grep -q 'running the corpus (jobs=4, timeout=600)' "$TMP/out.log" \
   && pass "phase 6: the banner reports the values actually used" \
   || fail "phase 6: the banner reports the values actually used -- it still says jobs=auto/timeout=120 while running something else, which is worse than not printing them at all"
@@ -750,7 +777,7 @@ grep -q '1 worker on macOS' "$TMP/out.log" \
 rm -f "$TMP/falsify-argv.txt"
 rc="$( export FALSIFY_JOBS=99 FALSIFY_TIMEOUT=99; run_verify "$r" 6 FALSIFY_JOBS=4 FALSIFY_TIMEOUT=600 )"
 expect_rc "phase 6: an explicit override beats an exported one, and still passes" 0 "$rc"
-f48_argv="$(cat "$TMP/falsify-argv.txt" 2>/dev/null || true)"
+f48_argv="$(grep -v -e '--deep' "$TMP/falsify-argv.txt" 2>/dev/null || true)"
 case "$f48_argv" in
   (*"--jobs 4"*"--timeout 600"*)
     pass "phase 6: a stated knob beats an inherited one ($f48_argv)" ;;

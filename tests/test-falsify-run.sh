@@ -1314,6 +1314,13 @@ FALSIFY_DEEP_CONF="$(deep noreason 'fixture-lib.sh|stmt-delete|  ')" fx_run "$RU
 check "a deep row with no reason is refused (exit 2)" "2" "$FX_RC"
 FALSIFY_DEEP_CONF="$(deep badop 'fixture-lib.sh|stmt-erase|why')" fx_run "$RUN" "$CONF_TWO" "$FX" "$TMP/wit-deep5" --jobs 1 --deep
 check "a deep row naming an unknown operator is refused (exit 2)" "2" "$FX_RC"
+FALSIFY_DEEP_CONF="$(deep dup 'fixture-lib.sh|stmt-delete|one
+fixture-lib.sh|stream-flip|two')" fx_run "$RUN" "$CONF_TWO" "$FX" "$TMP/wit-deep7" --jobs 1 --deep
+check "two deep rows for one target are refused (exit 2), not the later one silently kept" "2" "$FX_RC"
+fx_run "$RUN" "$CONF_TWO" "$FX" "$TMP/wit-noops" --jobs 1 --controls 0 --operators ''
+[[ "$FX_RC" -ne 0 ]] && ! grep -q '^MUTANT|' <<< "$FX_OUT" \
+  && pass "--operators '' is refused, never read as the default set" \
+  || fail "--operators '' ran (rc=$FX_RC, $(grep -c '^MUTANT|' <<< "$FX_OUT") mutants) — an empty operator list must not become the defaults"
 FALSIFY_DEEP_CONF="$DEEP_OK" fx_run "$RUN" "$CONF_TWO" "$FX" "$TMP/wit-deep6" --jobs 1 --deep --target fixture-slow.sh
 check "--deep with a selection the deep map does not cover is refused (exit 2)" "2" "$FX_RC"
 

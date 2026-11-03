@@ -71,6 +71,11 @@ CLEAN="$(mk_ledger clean "$ID_S
   alpha.sh:10  a || b
   GAP: nothing in the suite asserts the || branch's effect.")"
 
+# The fixtures' deep map: alpha.sh earned stmt-delete. An entry for an operator
+# beyond the defaults needs a deep row naming it (checked below).
+FIX_DEEP="$TMP/deep.conf"
+printf 'alpha.sh|stmt-delete|fixture\n' > "$FIX_DEEP"
+
 out=""; rc=0
 run_gate() {   # $1=ledger $2=run-output → sets out/rc
   # --strict, because these demonstrations are of the REFERENCE-environment
@@ -78,7 +83,7 @@ run_gate() {   # $1=ledger $2=run-output → sets out/rc
   # and a test of "the obsolete check fires" must run where it fires. Check B
   # (a survivor with no entry) is fatal in BOTH modes, so the other
   # demonstrations are unaffected by this flag.
-  out="$(bash "$CHECK" --ledger "$1" --run-output "$2" --strict 2>/dev/null)"; rc=$?
+  out="$(FALSIFY_DEEP_CONF="$FIX_DEEP" bash "$CHECK" --ledger "$1" --run-output "$2" --strict 2>/dev/null)"; rc=$?
 }
 
 # The five signatures. Every demonstration asserts exactly one of them present
@@ -241,7 +246,7 @@ alpha.sh:stmt-delete:$SD
   GAP: a deep-pass survivor the default pass never generates.")"
 run_gate "$OPS_LED" "$RUN"
 check "a default run does not call a stmt-delete entry of a file it measured stale" "0" "$rc"
-err="$(bash "$CHECK" --ledger "$OPS_LED" --run-output "$RUN" 2>&1 >/dev/null)"
+err="$(FALSIFY_DEEP_CONF="$FIX_DEEP" bash "$CHECK" --ledger "$OPS_LED" --run-output "$RUN" 2>&1 >/dev/null)"
 assert_has "the operator it did not run is reported as SKIPPED" "SKIPPED alpha.sh:stmt-delete:$SD" "$err"
 DEEP_RUN="$TMP/deep-run.txt"
 cat > "$DEEP_RUN" <<EOF
@@ -267,6 +272,16 @@ check "a deep run still finds its own operator's stale entry" "1" "$rc"
 only_signature "deep-stale" "$SIG_STALE"
 run_gate "$(mk_ledger opmiss '# nothing recorded')" "$DEEP_RUN"
 check "a deep-pass survivor with no entry still fails the gate" "1" "$rc"
+# An entry whose operator no deep row gives its file is measured by no run:
+# the default pass skips it by operator, and the deep pass never selects the
+# file. Without this check it could only ever be SKIPPED, never stale.
+ORPHAN="$(mk_ledger orphan "beta.sh:stmt-delete:$SD
+  GAP: an operator beta.sh never earned.")"
+out="$(FALSIFY_DEEP_CONF="$FIX_DEEP" bash "$CHECK" --ledger "$ORPHAN" --lint 2>/dev/null)"; rc=$?
+check "an entry for an operator its file has no deep row for fails --lint" "1" "$rc"
+assert_has "  … naming the entry and the missing deep row" "beta.sh:stmt-delete:$SD" "$out"
+out="$(FALSIFY_DEEP_CONF="$FIX_DEEP" bash "$CHECK" --ledger "$OPS_LED" --lint 2>/dev/null)"; rc=$?
+check "an entry whose file's deep row names its operator passes --lint" "0" "$rc"
 
 # ── Identity is not unique: one entry covers every mutant that shares it ──────
 # Two cond-negate mutants of the SAME line differ in `seq` alone. Both survive;

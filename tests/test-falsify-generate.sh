@@ -545,6 +545,30 @@ if grep -q '^stmt-delete' < <(gen "$TMP/sd.sh"); then
 else
   pass "stmt-delete is off by default"
 fi
+# Never inside a literal that spans lines: a multi-line quoted string (an awk
+# program) or an array literal's elements are data, and `:` there edits the
+# data instead of deleting a statement. One-line guards and arithmetic ARE
+# statements: `[[ … ]] && return 1` missing is the commonest silent hole.
+cat > "$TMP/sd2.sh" <<'EOF'
+#!/usr/bin/env bash
+RULES=(
+  'one|two'
+  "three"
+)
+awk '
+  { print $1 }
+  END { exit 0 }
+' "$f"
+printf '%s
+' "a multi-line double-quoted string"
+[[ -z "$x" ]] && return 1
+(( n++ ))
+echo after
+EOF
+sd2_lines="$(FALSIFY_OPERATORS='stmt-delete' gen "$TMP/sd2.sh" | cut -f2 | tr '\n' ' ')"
+[[ "$sd2_lines" == "12 13 14 " ]] \
+  && pass "stmt-delete skips array literals and multi-line strings, and takes one-line guards" \
+  || fail "stmt-delete skips array literals and multi-line strings, and takes one-line guards (12 13 14) — got: ${sd2_lines:-none}"
 sd_all="$(FALSIFY_OPERATORS="$ALL_OPS,stmt-delete" gen "$TMP/sd.sh" | grep -c '^stmt-delete' || true)"
 [[ "$sd_all" == "7" ]] \
   && pass "stmt-delete composes with the other operators (7 mutants alongside them)" \

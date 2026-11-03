@@ -242,15 +242,22 @@ arg_pair --save '' && pass "D4 --save '' — no snapshots, the empty argument pa
   && pass "D4 no config file is read: every option is on the command line" \
   || fail "D4 a config file was passed: $(head -1 "$FAKE/server.args" 2>/dev/null)"
 
-# D4b — the wait is TIME, not a try count: each try sleeps, so 20 tries wait
-# about two seconds and a server that is up after one is found. Without the
-# sleep, 20 tries take milliseconds and it is reported as not answering.
-rd_reset; out="$(FAKE_MODE=slow RD_TRIES=20 rd svc_start "$FAKE/data" "$FAKE/log")"; rc=$?
-[[ "$rc" -eq 0 ]] && pass "D4b a server that answers after a second is waited for (20 tries)" \
+# D4b — the wait is TIME, not a try count: each try sleeps, so 40 tries wait
+# about four seconds and a server that is up after one is found. Without the
+# sleep, 40 tries take milliseconds and it is reported as not answering.
+rd_reset; out="$(FAKE_MODE=slow RD_TRIES=40 rd svc_start "$FAKE/data" "$FAKE/log")"; rc=$?
+[[ "$rc" -eq 0 ]] && pass "D4b a server that answers after a second is waited for (40 tries)" \
   || fail "D4b a server that answers after a second was given up on (rc=$rc, out='$out')"
 # Given up on or not, the slow daemon starts; wait for its record so the exit
 # trap reaps it rather than leaving a `sleep 300` behind.
 for _ in $(seq 1 30); do grep -q . "$FAKE/data/redis.pid" 2>/dev/null && break; sleep 0.1; done
+
+# D4c — a try count that is not a positive integer falls back to the default.
+# AI_SERVICES_REDIS_TRIES comes from container.env; unchecked, `abc` made the wait loop
+# run zero times and a server that was up was reported as never answering.
+rd_reset; out="$(RD_TRIES=abc rd svc_start "$FAKE/data" "$FAKE/log")"; rc=$?
+[[ "$rc" -eq 0 ]] && pass "D4c a non-numeric AI_SERVICES_REDIS_TRIES falls back to the default wait" \
+  || fail "D4c a non-numeric AI_SERVICES_REDIS_TRIES broke the wait (rc=$rc, out='$out')"
 
 # D5 — another Redis answering on the port is never taken for this one: its
 # pid is not the one this server wrote. Bounded by the adapter's own wait.

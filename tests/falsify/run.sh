@@ -1842,6 +1842,9 @@ fr_apply_deep() {
     if ! FALSIFY_OPERATORS="$ops" bash -c 'source "$1"; falsify_operator_set >/dev/null' _ "$FR_GENERATE"; then
       fr_err "$FR_DEEP_CONF:$n: $t names an operator the generator does not know: $ops"; return 2
     fi
+    if [[ -n "${deep[$t]:-}" ]]; then
+      fr_err "$FR_DEEP_CONF:$n: a second row for $t — one row per target, naming every operator it earned"; return 2
+    fi
     deep["$t"]="$ops"
   done < "$FR_DEEP_CONF"
   for (( i = 0; i < ${#FR_TARGETS[@]}; i++ )); do
@@ -1860,7 +1863,11 @@ fr_apply_deep() {
 # resolves it: the deep row's, else the run's, else the defaults.
 fr_target_ops() {   # <index>
   local o="${FR_OPS[$1]:-}"
-  [[ -n "$o" ]] || o="${FALSIFY_OPERATORS-}"
+  # SET, not non-empty: an explicitly empty FALSIFY_OPERATORS (`--operators ''`)
+  # is handed through so generate.sh refuses it, never read as the defaults.
+  if [[ -z "$o" && -n "${FALSIFY_OPERATORS+set}" ]]; then
+    printf '%s' "${FALSIFY_OPERATORS//,/ }"; return 0
+  fi
   if [[ -z "$o" ]]; then
     # shellcheck source=./generate.sh
     o="$(source "$FR_GENERATE"; printf '%s' "$FALSIFY_DEFAULT_OPERATORS")"

@@ -724,7 +724,7 @@ fl_deep="$(mktemp)" || phase_fail 6 "mktemp failed — the deep pass has nowhere
 if [[ -n "$fl_deep" ]]; then
   sub "running the deep pass (run.sh --deep, jobs=$fl_jobs, timeout=$fl_timeout)"
   if bash "$TESTS_DIR/falsify/run.sh" --deep --jobs "$fl_jobs" --timeout "$fl_timeout" > "$fl_deep" 2>&1; then
-    grep -E '^(TARGET|TOTAL|SKIPPED|UNATTEMPTED|CONTROLS)\|' "$fl_deep" | sed 's/^/  /' | while IFS= read -r l; do sub "$l"; done
+    grep -E '^(TARGET|TOTAL|ASSERTLESS|SKIPPED|UNATTEMPTED|CONTROLS)\|' "$fl_deep" | sed 's/^/  /' | while IFS= read -r l; do sub "$l"; done
     if bash "$TESTS_DIR/falsify/check-ledger.sh" \
          --run-output "$fl_deep" --ledger "$TESTS_DIR/falsify/survivors.txt"; then
       sub "survivor ledger (deep pass): OK"

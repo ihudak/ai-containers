@@ -19,9 +19,12 @@ fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails + 1)); }
 
 TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 # A tcpdump left running by a failed case must not outlive the test.
+# Every fake tcpdump records its own pid in <case>/started.<pid> as it starts,
+# so this reaps each one whether or not a pid file still names it (a damaged
+# script may start two, or never run `stop`).
 cleanup() {
   local f
-  for f in "$TMP"/*/tcpdump.pid "$TMP"/started.*; do
+  for f in "$TMP"/*/started.*; do
     [[ -f "$f" ]] && kill "$(cat "$f")" 2>/dev/null
   done
   rm -rf "$TMP"
