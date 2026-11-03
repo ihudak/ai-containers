@@ -619,6 +619,29 @@ all_lines="$(gen "$TMP/fn.sh" | cut -f2 | sort -un | tr '\n' ' ')"
 [[ "$all_lines" == *"13 "* && "$all_lines" == *"15 "* ]] \
   && pass "without FALSIFY_FUNCTIONS the whole file is the unit" \
   || fail "without FALSIFY_FUNCTIONS the whole file is the unit — got: $all_lines"
+# A header inside a heredoc body is text, and a brace in the header's trailing
+# comment does not make it a one-line function: the unit is the real body.
+cat > "$TMP/fn2.sh" <<'EOF'
+#!/usr/bin/env bash
+cat <<EOS
+cleanup() {
+}
+EOS
+cleanup() {  # removes ${TMP}
+  rm -f x || true
+}
+EOF
+fn2="$(FALSIFY_FUNCTIONS=cleanup bash "$GEN" "$TMP/fn2.sh" 2>"$TMP/fn2.err" | cut -f2 | sort -un | tr '\n' ' ')"
+[[ "$fn2" == "7 " ]] \
+  && pass "a header in a heredoc, and a brace in a trailing comment, do not move the unit (7)" \
+  || fail "a header in a heredoc, and a brace in a trailing comment, do not move the unit (7) — got: ${fn2:-none}"
+grep -q 'unit cleanup = lines 6-8' "$TMP/fn2.err" \
+  && pass "each function's span is printed, so a short unit can be seen" \
+  || fail "each function's span is printed — stderr: $(cat "$TMP/fn2.err")"
+FALSIFY_FUNCTIONS='fx.c' bash "$GEN" "$TMP/fn.sh" >/dev/null 2>"$TMP/fn.err"; rc=$?
+[[ "$rc" -eq 2 ]] && grep -q 'not a function name' "$TMP/fn.err" \
+  && pass "a FALSIFY_FUNCTIONS entry that is not a name is refused (exit 2)" \
+  || fail "a FALSIFY_FUNCTIONS entry that is not a name is refused — rc=$rc: $(cat "$TMP/fn.err")"
 FALSIFY_FUNCTIONS=no_such_fn bash "$GEN" "$TMP/fn.sh" >/dev/null 2>"$TMP/fn.err"; rc=$?
 [[ "$rc" -eq 2 ]] && grep -q 'no_such_fn' "$TMP/fn.err" \
   && pass "a function the file does not define is refused (exit 2), by name" \

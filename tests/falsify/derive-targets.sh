@@ -21,9 +21,11 @@
 #                   `printf 'source %q\n' "$REPO_DIR/tests/lib-verify-repo.sh"
 #                   >> "$h"`, which is that library's ONLY dedicated oracle)
 #                a function EXTRACTED from <file> by an awk or sed range
-#                  (`/^name() {/,/^}$/`) to be run: kind `extract`, naming the
-#                  functions; it counts for those functions, not the file's
-#                  top level, and the walk does not continue into the file
+#                  (`/^name() {/,/^}$/`) AND called by name in the same test:
+#                  kind `extract`, naming the functions; it counts for those
+#                  functions, not the file's top level, and the walk does not
+#                  continue into the file. An extraction only read, a range
+#                  that deletes, a redirect target: none of them count
 #                a path handed to `bash -c BODY _ <path>` whose body runs it as
 #                  "$1"/"$@" (tests/test-parsers.sh and tests/test-tools-d.sh
 #                   reach sandbox.sh only this way)
@@ -229,6 +231,7 @@ _ft_refs() {  # $1 = absolute file
     # fact the argv rule below turns on: the walker met a command whose target
     # it cannot name literally.
     function emitref(ln, kind, a) {
+      if (NOEMIT) return
       print ln "\t" kind "\t" a "\t"
       if (a ~ /\$/) DOLLARSEEN = 1
     }
@@ -246,7 +249,7 @@ _ft_refs() {  # $1 = absolute file
       for (k = from; k <= n; k++) {
         if (T[k] == ";") return
         if (T[k] ~ /^[0-9]*[<>]/ || T[k] ~ /^-/) continue
-        if (ispath(T[k])) print ln "\t" "argv" "\t" T[k] "\t"
+        if (ispath(T[k]) && !NOEMIT) print ln "\t" "argv" "\t" T[k] "\t"
       }
     }
 
@@ -302,6 +305,9 @@ _ft_refs() {  # $1 = absolute file
         if (t == ";") { cmd = 1; i++; continue }
         if (!cmd) { i++; continue }
         if (isassign(t) || iskw(t)) { i++; continue }
+        # Every word at a command position, so an EXTRACTED function counts
+        # only if this file also CALLS it (see the extraction rule below).
+        CALLED[t] = 1
         if (t == "env") {
           i++
           while (i <= n && (T[i] ~ /^-/ || isassign(T[i]))) { if (T[i] == "-u") i++; i++ }
@@ -349,7 +355,7 @@ _ft_refs() {  # $1 = absolute file
         if (t == "ln" || t == "cp" || t == "install" || t == "rsync") {
           ns = 0; j = i + 1
           while (j <= n && T[j] != ";") { if (T[j] !~ /^-/) { S[++ns] = T[j] } j++ }
-          if (ns >= 2) { for (k = 1; k < ns; k++) print ln "\t" "alias" "\t" S[ns] "\t" S[k] }
+          if (ns >= 2 && !NOEMIT) { for (k = 1; k < ns; k++) print ln "\t" "alias" "\t" S[ns] "\t" S[k] }
           delete S
           cmd = 0; i = j; continue
         }
@@ -361,14 +367,21 @@ _ft_refs() {  # $1 = absolute file
           cmd = 0; i++; continue
         }
         # EXTRACTION: an awk or sed RANGE from a function header to its closing
-        # brace, `/^name\(\) \{/,/^}$/` or `/^name()/,/^}/p`, pulls a function
-        # out of a file so a test can eval or source it and run it. Keyed on
-        # the range (a `,/^` after the header), never on awk or sed alone: a
-        # plain awk or sed read of a file is text. Coarse in the safe
-        # direction, like the printf and argv rules: an extraction only ever
-        # adds an executor, and the evidence names the file, line and each
-        # function. Emitted as kind `extract` with the function names, so the
-        # gate can hold an EXECUTED-PARTIAL row to the functions really run.
+        # brace, `/^name\\(\\) \\{/,/^}$/` or `/^name()/,/^}/p`, pulls a function
+        # out of a file so a test can eval or source it and run it. Three keys,
+        # each refusing a way the plain text would over-credit:
+        #   * the header address itself must open the range (`/^name() …/,/^`),
+        #     so a substitution or a lone `/^name()/{print}` beside another
+        #     range is text, and a range followed by `d` or `!` deletes it;
+        #   * the input file is an operand, never a redirect target or the
+        #     argument of -v, -f or -e;
+        #   * the function is credited only if this same test file CALLS it by
+        #     name at a command position somewhere (a bash -c body or a
+        #     heredoc written as a driver script counts), so an extraction
+        #     that is only read, grepped or compared is not execution.
+        # Buffered and filtered in END, against every name the file calls.
+        # Emitted as kind `extract`, naming the functions, so the gate can hold
+        # an EXECUTED-PARTIAL row to the functions an oracle really runs.
         if (t == "awk" || t == "sed") {
           fns = ""; j = i + 1
           while (j <= n && T[j] != ";") {
@@ -376,15 +389,20 @@ _ft_refs() {  # $1 = absolute file
             while (match(s2, /\/\^[A-Za-z_][A-Za-z0-9_]*/)) {
               nm = substr(s2, RSTART + 2, RLENGTH - 2)
               rest2 = substr(s2, RSTART + RLENGTH)
-              if ((rest2 ~ /^\\\(/ || rest2 ~ /^\(/) && index(rest2, ",/^") > 0)
-                fns = fns (fns == "" ? "" : ",") nm
               s2 = rest2
+              if (rest2 !~ /^(\\?\(\\?\))[^\/]*\/,\/\^/) continue
+              after = rest2; sub(/^[^\/]*\/,\/\^[^\/]*\//, "", after)
+              if (after ~ /^[ \t]*[d!]/) continue
+              fns = fns (fns == "" ? "" : ",") nm
             }
             j++
           }
-          if (fns != "") {
-            for (k = i + 1; k < j; k++)
-              if (ispath(T[k]) && T[k] !~ /\/\^/ && T[k] !~ /^-/) print ln "\t" "extract" "\t" T[k] "\t" fns
+          if (fns != "" && !NOEMIT) {
+            for (k = i + 1; k < j; k++) {
+              if (T[k] ~ /^[0-9]*>>?$/ || T[k] == "-v" || T[k] == "-f" || T[k] == "-e") { k++; continue }
+              if (T[k] ~ /^[0-9]*>/) continue
+              if (ispath(T[k]) && T[k] !~ /\/\^/ && T[k] !~ /^-/) { EXN++; EXL[EXN] = ln; EXP[EXN] = T[k]; EXF[EXN] = fns }
+            }
           }
           cmd = 0; i = j; continue
         }
@@ -400,7 +418,13 @@ _ft_refs() {  # $1 = absolute file
         if ((getline nxt) <= 0) break
         sub(/\\[ \t]*$/, " ", raw); raw = raw nxt
       }
-      if (hd != "") { if (trim(raw) == hd) hd = ""; next }
+      if (hd != "") {
+        if (trim(raw) == hd) { hd = ""; next }
+        # A heredoc body is data for every reference rule; only the names it
+        # calls are collected, for an extraction it may be the driver of.
+        NOEMIT = 1; n = tokenize(raw, T); walk(T, n, start, 0, 0); delete T; NOEMIT = 0
+        next
+      }
       # ── multi-line single-quoted strings ──────────────────────────────────
       # A single-quoted string spanning lines is one of two things, and the
       # difference decides whether its contents are executions:
@@ -451,6 +475,11 @@ _ft_refs() {  # $1 = absolute file
       delete T
     }
     END {
+      for (e = 1; e <= EXN; e++) {
+        nf = split(EXF[e], FN, ","); kept = ""
+        for (q = 1; q <= nf; q++) if (FN[q] in CALLED) kept = kept (kept == "" ? "" : ",") FN[q]
+        if (kept != "") print EXL[e] "\t" "extract" "\t" EXP[e] "\t" kept
+      }
       # Under-approximating is the dangerous direction — a target silently
       # dropped from the map — so an unterminated string is reported, never
       # swallowed.
@@ -836,6 +865,12 @@ ft_check() {  # $1=conf
         problems=$((problems + 1))
       else
         for fn in ${funcs//,/ }; do
+          if [[ ! "$fn" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+            printf 'ERROR: %s:%s: %s names "%s", which is not a function name\n' \
+              "$conf" "$lineno" "$target" "$fn" >&2
+            problems=$((problems + 1))
+            continue
+          fi
           if ! grep -qE "^[[:space:]]*(function[[:space:]]+)?${fn}[[:space:]]*\(\)" "$FT_REPO/$target"; then
             printf 'ERROR: %s:%s: %s is EXECUTED-PARTIAL naming function %s, which is not defined in %s\n' \
               "$conf" "$lineno" "$target" "$fn" "$target" >&2
@@ -860,6 +895,25 @@ ft_check() {  # $1=conf
             fi
           fi
         done
+        # ── Gate: every oracle in the set runs something the row names ──────
+        # A member that runs none of them costs its runtime on every mutant
+        # and can kill none. Running the file whole counts as running every
+        # function in it.
+        if (( D_DETAIL )); then
+          local mo mf mran
+          local -a mos=()
+          IFS=',' read -r -a mos <<<"$oracle"
+          for mo in "${mos[@]}"; do
+            mran=0
+            [[ -n "${D_WHOLE[$target|$mo]:-}" ]] && mran=1
+            for mf in ${funcs//,/ }; do [[ -n "${D_EXTRACT_FN[$target|$mo|$mf]:-}" ]] && mran=1; done
+            if (( ! mran )); then
+              printf 'ERROR: %s:%s: %s names oracle %s, which runs none of the functions the row lists — it can kill none of its mutants\n' \
+                "$conf" "$lineno" "$target" "$mo" >&2
+              problems=$((problems + 1))
+            fi
+          done
+        fi
       fi
     elif [[ "$category" == "EXECUTED-WHOLE" && "$kind" == "ACTIVE" ]] && (( D_DETAIL )) && [[ -n "${D_HITS[$target]:-}" ]]; then
       # ── Gate: WHOLE means some oracle runs the file, not only parts of it ──
@@ -897,6 +951,7 @@ ft_check() {  # $1=conf
     fi
   done
 
+  (( D_DETAIL )) || printf 'NOTE: a cached derivation (FALSIFY_DERIVED) carries no per-oracle detail, so the per-function and whole-file gates were skipped\n' >&2
   printf '%s: %s row(s) = %s active + %s grepped-only + %s deferred + %s excluded; %s of %s candidate(s) EXECUTED; %s problem(s)\n' \
     "${conf#"$FT_REPO"/}" "$rows" "$active" "$grepped" "$deferred" "$excluded" \
     "$executed" "${#FT_CANDIDATES[@]}" "$problems"

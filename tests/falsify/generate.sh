@@ -500,6 +500,9 @@ falsify_scan_line() {   # $1 = raw line text, $2 = incoming span depth (default 
   # The span depth this line ENDS at, for a caller continuing onto the next
   # physical line. See the continuation note at the call site.
   SCAN_DEPTH_END="$depth"
+  # Where the code ends and a trailing comment begins (the line's length when
+  # there is none), for a caller that needs the code alone.
+  SCAN_CODE_END="$code_end"
 }
 
 # ── the generator ─────────────────────────────────────────────────────────────
@@ -529,25 +532,52 @@ falsify_generate() {   # <file>
   # target (GAP-3). A function's body is its header line through the first
   # later line that is `}` at the header's own indentation, the same span the
   # tests' extractions take (`/^name() {/,/^}/`); a header that closes its own
-  # brace is a unit of one line. Every line is still SCANNED, so heredoc,
-  # continuation and quote state stay right; only emission is limited.
+  # brace is a unit of one line. Headers and braces are looked for in CODE
+  # only: never in a heredoc body, and never in a trailing comment (a `${x}`
+  # there is not a closing brace). Each unit's span is printed, so a unit cut
+  # short is seen rather than read as "no mutants here". Every line is still
+  # SCANNED below, so heredoc, continuation and quote state stay right; only
+  # emission is limited.
   local -A unit=()
-  local fname h k ind found
+  local -a pcode=()
+  local fname h hk ind found pi pdash pdelim pcand
   if [[ -n "${FALSIFY_FUNCTIONS:-}" ]]; then
+    local -a phq=()
+    for (( pi = 0; pi < ${#lines[@]}; pi++ )); do
+      pcode[pi]=""
+      if (( ${#phq[@]} > 0 )); then
+        pdash="${phq[0]%%|*}"; pdelim="${phq[0]#*|}"
+        if [[ "$pdash" == '-' ]]; then pcand="$(falsify_trim "${lines[pi]}")"; else pcand="${lines[pi]}"; fi
+        [[ "$pcand" == "$pdelim" ]] && phq=("${phq[@]:1}")
+        continue
+      fi
+      [[ "${lines[pi]}" =~ ^[[:space:]]*(#|$) ]] && continue
+      falsify_scan_line "${lines[pi]}" 0
+      pcode[pi]="${lines[pi]:0:SCAN_CODE_END}"
+      for h in "${SCAN_HEREDOC[@]}"; do phq+=("$h"); done
+    done
     for fname in ${FALSIFY_FUNCTIONS//,/ }; do
+      if [[ ! "$fname" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+        printf 'falsify: %s: FALSIFY_FUNCTIONS entry %s is not a function name\n' "$file" "$fname" >&2
+        return 2
+      fi
       found=0
       for (( h = 0; h < ${#lines[@]}; h++ )); do
-        [[ "${lines[h]}" =~ ^([[:space:]]*)(function[[:space:]]+)?${fname}[[:space:]]*\(\) ]] || continue
+        [[ "${pcode[h]}" =~ ^([[:space:]]*)(function[[:space:]]+)?${fname}[[:space:]]*\(\) ]] || continue
         ind="${BASH_REMATCH[1]}"; found=1
-        if [[ "${lines[h]}" =~ \{.*\}[[:space:]]*(#.*)?$ ]]; then unit[$h]=1; break; fi
-        for (( k = h; k < ${#lines[@]}; k++ )); do
-          unit[$k]=1
-          (( k > h )) && [[ "${lines[k]}" =~ ^${ind}\}([[:space:];\>\|]|$) ]] && break
-        done
-        if (( k == ${#lines[@]} )); then
-          printf 'falsify: %s: function %s has no closing } at its own indentation\n' "$file" "$fname" >&2
-          return 2
+        if [[ "${pcode[h]}" =~ \{.*\}[[:space:]]*$ ]]; then
+          unit[$h]=1; hk=$h
+        else
+          for (( hk = h; hk < ${#lines[@]}; hk++ )); do
+            unit[$hk]=1
+            (( hk > h )) && [[ "${pcode[hk]}" =~ ^${ind}\}([[:space:]\;\>\|]|$) ]] && break
+          done
+          if (( hk == ${#lines[@]} )); then
+            printf 'falsify: %s: function %s has no closing } at its own indentation\n' "$file" "$fname" >&2
+            return 2
+          fi
         fi
+        printf 'falsify: %s: unit %s = lines %d-%d\n' "$file" "$fname" "$(( h + 1 ))" "$(( hk + 1 ))" >&2
         break
       done
       if (( ! found )); then

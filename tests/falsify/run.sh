@@ -1814,7 +1814,7 @@ fr_load_targets() {
     if [[ -n "$FR_TARGET" && -n "$FR_EXCLUDE" ]]; then
       fr_err "--target $FR_TARGET with --exclude-target $FR_EXCLUDE leaves no active row in $FR_CONF"
     else
-      fr_err "$FR_CONF has no active EXECUTED-WHOLE row — there is nothing to mutate"
+      fr_err "$FR_CONF has no active EXECUTED-* row — there is nothing to mutate"
     fi
     return 2
   fi
@@ -1823,7 +1823,8 @@ fr_load_targets() {
 
 # ── the deep pass ─────────────────────────────────────────────────────────────
 # deep.conf grammar: `<target>|<operators>|<reason>`, `#` comments. Every row
-# must name a target the targets map makes ACTIVE (EXECUTED-WHOLE): a deep row
+# must name a target the targets map makes ACTIVE (EXECUTED-WHOLE, or
+# EXECUTED-PARTIAL, whose deep pass keeps its function unit): a deep row
 # for a deferred file would measure a file no default pass measures, and a
 # typo would silently deepen nothing. The reason is required, as on every
 # classified row in this tier: it carries the measured score that earned it.
@@ -1833,7 +1834,7 @@ fr_apply_deep() {
   local -a keep_t=() keep_o=() keep_ops=() keep_f=()
   # Every active row, before --target/--exclude-target filtered them.
   while IFS='|' read -r kind _ t cat _; do
-    [[ "$kind" == ACTIVE && "$cat" == EXECUTED-WHOLE ]] && active["$t"]=1
+    [[ "$kind" == ACTIVE && "$cat" == EXECUTED-* ]] && active["$t"]=1
   done < <(bash "$FR_DERIVE" --rows "$FR_CONF")
   if [[ ! -f "$FR_DEEP_CONF" ]]; then fr_err "--deep: no deep map at $FR_DEEP_CONF"; return 2; fi
   while IFS= read -r line || [[ -n "$line" ]]; do
@@ -1844,7 +1845,7 @@ fr_apply_deep() {
       fr_err "$FR_DEEP_CONF:$n: a row is <target>|<operators>|<reason>, all three non-empty"; return 2
     fi
     if [[ -z "${active[$t]:-}" ]]; then
-      fr_err "$FR_DEEP_CONF:$n: $t is not an active EXECUTED-WHOLE row of $FR_CONF"; return 2
+      fr_err "$FR_DEEP_CONF:$n: $t is not an active EXECUTED-* row of $FR_CONF"; return 2
     fi
     if ! FALSIFY_OPERATORS="$ops" bash -c 'source "$1"; falsify_operator_set >/dev/null' _ "$FR_GENERATE"; then
       fr_err "$FR_DEEP_CONF:$n: $t names an operator the generator does not know: $ops"; return 2

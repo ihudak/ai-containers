@@ -230,13 +230,22 @@ out="$(env -i HOME="$TMP" PATH=/usr/bin:/bin SANDBOX_UID=1000 SANDBOX_GID=1000 b
 [[ "$out" == reached ]] && pass "the entrypoint lets a non-root identity through" || fail "entrypoint refused 1000:1000 ($out)"
 # With a user NAME, the check is on what the name resolves to: an ordinary
 # user passes, and a name that resolves to nothing is refused (it falls back to
-# 0, never to "unknown, so allowed").
-if id -u nobody >/dev/null 2>&1 && [[ "$(id -u nobody)" != 0 ]]; then
-  out="$(env -i HOME="$TMP" PATH=/usr/bin:/bin bash -c ". '$fn'; refuse_root_identity nobody; echo reached" 2>&1)"
-  [[ "$out" == reached ]] && pass "the entrypoint lets a named non-root user (nobody) through" \
-    || fail "entrypoint refused the named user nobody ($out)"
-fi
-out="$(env -i HOME="$TMP" PATH=/usr/bin:/bin bash -c ". '$fn'; refuse_root_identity no-such-user-ai-containers; echo reached" 2>&1)"; rc=$?
+# 0, never to "unknown, so allowed"). A fake `id` answers both, so the case is
+# the same on every host: a real `nobody` is 65534 on Linux and -2 on macOS.
+idbin="$TMP/idbin"; mkdir -p "$idbin"
+cat > "$idbin/id" <<'FAKEID'
+#!/bin/sh
+case "$1 $2" in
+  "-u alice") echo 4242 ;;
+  "-g alice") echo 4343 ;;
+  *) exit 1 ;;
+esac
+FAKEID
+chmod +x "$idbin/id"
+out="$(env -i HOME="$TMP" PATH="$idbin:/usr/bin:/bin" bash -c ". '$fn'; refuse_root_identity alice; echo reached" 2>&1)"
+[[ "$out" == reached ]] && pass "the entrypoint lets a named non-root user through (alice, 4242:4343)" \
+  || fail "entrypoint refused the named user alice ($out)"
+out="$(env -i HOME="$TMP" PATH="$idbin:/usr/bin:/bin" bash -c ". '$fn'; refuse_root_identity no-such-user-ai-containers; echo reached" 2>&1)"; rc=$?
 [[ "$rc" != 0 && "$out" != *reached* ]] && pass "a user name that resolves to nothing is refused" \
   || fail "an unresolvable user name was let through (rc=$rc; out: $out)"
 # And after the user is set up, whatever useradd made of the id: the user capsh

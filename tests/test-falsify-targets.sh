@@ -132,9 +132,17 @@ gate() {  # $1=conf → sets gate_out and gate_rc from a cached --check
   gate_out="$(FALSIFY_DERIVED="$DERIVED" bash "$DERIVE" --check "$1" 2>&1)"; gate_rc=$?
 }
 
-# The cached path must agree with the uncached one, or every fixture below is
-# checking something the real gate does not.
+# The cached path must agree with the uncached one on everything it CAN check,
+# or every fixture below is checking something the real gate does not. It
+# carries no per-oracle detail, so the per-function gates are skipped there,
+# and that is said rather than passed over.
 gate "$CONF"; cached_out="$gate_out"
+grep -q '^NOTE: a cached derivation (FALSIFY_DERIVED) carries no per-oracle detail' <<<"$cached_out" \
+  && pass "a cached --check says which gates it could not run" \
+  || fail "a cached --check skipped the per-function gates in silence: $cached_out"
+# The evidence, ONCE: a derivation of the real repo costs minutes on a loaded host.
+EVIDENCE="$TMP/evidence.txt"
+bash "$DERIVE" --evidence > "$EVIDENCE" 2>/dev/null
 check "the cached derivation reaches the same verdict as the real one" "0" "$gate_rc"
 grep -q '0 problem(s)' <<<"$cached_out" \
   && pass "the cached --check reports the same 0 problem(s)" \
@@ -165,7 +173,7 @@ ep_verdict="$(awk -F'|' -v f="$T_ENTRYPOINT" '$1 == f { print $2 }' "$DERIVED")"
 check "$T_ENTRYPOINT is EXECUTED, through the functions tests extract from it" \
   "EXECUTED" "$ep_verdict"
 grep -qE "^${T_ENTRYPOINT//./\\.}\\|test-launcher-verify\\.sh\\|.*\\|extract\\|.*\\|verify_launcher_mounts\$" \
-     <(bash "$DERIVE" --evidence 2>/dev/null) \
+     "$EVIDENCE" \
   && pass "  … verify_launcher_mounts by test-launcher-verify.sh, as an extraction" \
   || fail "  … verify_launcher_mounts by test-launcher-verify.sh, as an extraction"
 
@@ -506,7 +514,7 @@ mkdir -p "$FIX/tests" "$FIX/bin"
 for f in sourced.sh parsed-only.sh shellchecked.sh grepped.sh heredoc-named.sh \
          aliased.sh var-path.sh transitive.sh never-mentioned.sh \
          printf-sourced.sh printf-prose.sh argv-sourced.sh argv-not-dragged.sh \
-         awk-read.sh; do
+         awk-read.sh redir-out.sh; do
   printf '#!/usr/bin/env bash\n: %s\n' "$f" > "$FIX/$f"
 done
 cat > "$FIX/sourced.sh" <<'FIXEOF'
@@ -514,8 +522,11 @@ cat > "$FIX/sourced.sh" <<'FIXEOF'
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 bash "$REPO_DIR/transitive.sh"
 FIXEOF
-# Two functions, run by extraction: test-synth.sh pulls fx_a out with awk and
-# fx_c with sed, and never touches fx_b.
+# Functions run by extraction, and the shapes that must NOT count: test-synth.sh
+# extracts and calls fx_a (awk) and fx_c (sed); fx_b it never touches; fx_d it
+# extracts and only compares; fx_e it extracts with a range that DELETES it;
+# fx_f's header sits beside another range without opening one. A redirect
+# target is not an extracted file. test-other.sh runs fx_b alone.
 cat > "$FIX/extracted.sh" <<'FIXEOF'
 #!/usr/bin/env bash
 fx_a() {
@@ -527,6 +538,21 @@ fx_b() {
 fx_c() {
   echo c
 }
+fx_d() {
+  echo d
+}
+fx_e() {
+  echo e
+}
+fx_f() {
+  echo f
+}
+FIXEOF
+cat > "$FIX/tests/test-other.sh" <<'FIXEOF'
+#!/usr/bin/env bash
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+eval "$(sed -n '/^fx_b()/,/^}/p' "$REPO_DIR/extracted.sh")"
+fx_b
 FIXEOF
 cat > "$FIX/tests/test-synth.sh" <<'FIXEOF'
 #!/usr/bin/env bash
@@ -546,7 +572,15 @@ printf 'source %s is where it lives\n' "$REPO_DIR/printf-prose.sh" >&2
 bash -c 'src="$1"; source "$src"' _ "$REPO_DIR/argv-sourced.sh"
 bash -c 'source /nowhere/fixed.sh' _ "$REPO_DIR/argv-not-dragged.sh"
 eval "$(awk '/^fx_a\(\) \{/,/^}$/' "$REPO_DIR/extracted.sh")"
+fx_a
 fn="$(sed -n '/^fx_c()/,/^}/p' "$REPO_DIR/extracted.sh")"
+eval "$fn"; fx_c
+[[ "$(sed -n '/^fx_d()/,/^}/p' "$REPO_DIR/extracted.sh")" == *echo* ]]
+sed '/^fx_e() {/,/^}/d' "$REPO_DIR/extracted.sh" > "$REPO_DIR/../e-gone.sh"
+fx_e
+awk '/^fx_f\(\)/{print} /^fx_a\(\) \{/,/^}$/{print}' "$REPO_DIR/extracted.sh" > /dev/null
+fx_f
+sed -n '/^fx_a()/,/^}/p' "$REPO_DIR/extracted.sh" > "$REPO_DIR/redir-out.sh"
 awk '{ print }' "$REPO_DIR/awk-read.sh" > /dev/null
 cat > "$REPO_DIR/written-stub.sh" <<'INNER'
 bash /elsewhere/heredoc-named.sh
@@ -568,6 +602,7 @@ never-mentioned.sh|NOT-EXECUTED
 parsed-only.sh|NOT-EXECUTED
 printf-prose.sh|NOT-EXECUTED
 printf-sourced.sh|EXECUTED
+redir-out.sh|NOT-EXECUTED
 shellchecked.sh|NOT-EXECUTED
 sourced.sh|EXECUTED
 transitive.sh|EXECUTED
@@ -610,10 +645,14 @@ check "  a bash -c body that names its target literally does not drag its argume
 check "  a function extracted by an awk or sed range is executed" \
   "EXECUTED" "$(synth_verdict extracted.sh)"
 check "  a plain awk read of a file is not" "NOT-EXECUTED" "$(synth_verdict awk-read.sh)"
-grep -qE '^extracted\.sh\|test-synth\.sh\|tests/test-synth\.sh:[0-9]+\|extract\|.*\|fx_a$' \
-     <(FALSIFY_REPO="$FIX" FALSIFY_TESTS_DIR="$FIX/tests" bash "$DERIVE" --evidence 2>/dev/null) \
+check "  a redirect target of an extraction is not an extracted file" "NOT-EXECUTED" "$(synth_verdict redir-out.sh)"
+synth_ev="$(FALSIFY_REPO="$FIX" FALSIFY_TESTS_DIR="$FIX/tests" bash "$DERIVE" --evidence 2>/dev/null)"
+synth_fns="$(awk -F'|' '$1 == "extracted.sh" && $2 == "test-synth.sh" && $4 == "extract" { print $6 }' <<<"$synth_ev" | tr ',' '\n' | sort -u | tr '\n' ' ')"
+check "  test-synth.sh is credited with exactly the functions it extracts AND calls (not one only read, deleted, or beside a range)" \
+  "fx_a fx_c " "$synth_fns"
+grep -qE '^extracted\.sh\|test-synth\.sh\|tests/test-synth\.sh:[0-9]+\|extract\|.*\|fx_a$' <<<"$synth_ev" \
   && pass "  … and the evidence names the extracted function" \
-  || fail "  … and the evidence names the extracted function: $(FALSIFY_REPO="$FIX" FALSIFY_TESTS_DIR="$FIX/tests" bash "$DERIVE" --evidence 2>/dev/null | grep extract)"
+  || fail "  … and the evidence names the extracted function: $(grep extract <<<"$synth_ev")"
 # What an extracted-only target may be: EXECUTED-PARTIAL, naming only functions
 # one of its oracles extracts (or runs whole).
 synth_conf() { printf '%s\n' "$2" > "$FIX/$1.conf"
@@ -628,6 +667,7 @@ never-mentioned.sh|GREPPED-ONLY|-
 parsed-only.sh|GREPPED-ONLY|-
 printf-prose.sh|GREPPED-ONLY|-
 printf-sourced.sh|EXECUTED-WHOLE|test-synth.sh
+redir-out.sh|GREPPED-ONLY|-
 shellchecked.sh|GREPPED-ONLY|-
 sourced.sh|EXECUTED-WHOLE|test-synth.sh
 transitive.sh|EXECUTED-WHOLE|test-synth.sh
@@ -647,6 +687,23 @@ extracted.sh|EXECUTED-WHOLE|test-synth.sh")"
 grep -q 'extracted.sh is EXECUTED-WHOLE, but its oracles only extract functions from it' <<<"$out" \
   && pass "EXECUTED-WHOLE for a file the oracles only extract from is refused" \
   || fail "EXECUTED-WHOLE for a file the oracles only extract from is refused: $out"
+for rd in fx_d fx_e fx_f; do
+  out="$(synth_conf "p-$rd" "$synth_rows
+extracted.sh|EXECUTED-PARTIAL|test-synth.sh|fx_a,$rd")"
+  grep -q "names function $rd, which none of its oracles runs" <<<"$out" \
+    && pass "a function only read, deleted or beside a range ($rd) is not one the oracle runs" \
+    || fail "a function only read, deleted or beside a range ($rd) passed the gate: $out"
+done
+out="$(synth_conf p-member "$synth_rows
+extracted.sh|EXECUTED-PARTIAL|test-synth.sh,test-other.sh|fx_a")"
+grep -q 'names oracle test-other.sh, which runs none of the functions the row lists' <<<"$out" \
+  && pass "an oracle in the set that runs none of the listed functions is refused" \
+  || fail "an oracle in the set that runs none of the listed functions is refused: $out"
+out="$(synth_conf p-name "$synth_rows
+extracted.sh|EXECUTED-PARTIAL|test-synth.sh|fx_a,fx.c")"
+grep -q 'names "fx.c", which is not a function name' <<<"$out" \
+  && pass "a function field that is not a name is refused" \
+  || fail "a function field that is not a name is refused: $out"
 
 # ── 10. The map is the tier inventory: every in-scope candidate has a row ─────
 n_cand="$(grep -c . "$DERIVED")"

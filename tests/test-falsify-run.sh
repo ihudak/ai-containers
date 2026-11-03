@@ -1310,7 +1310,7 @@ FALSIFY_DEEP_CONF="$DEEP_OK" fx_run "$RUN" "$CONF_TWO" "$FX" "$TMP/wit-deep2" --
 check "--deep with --operators is refused (exit 2)" "2" "$FX_RC"
 FALSIFY_DEEP_CONF="$(deep inactive 'nosuch.sh|stmt-delete|why')" fx_run "$RUN" "$CONF_TWO" "$FX" "$TMP/wit-deep3" --jobs 1 --deep
 check "a deep row for a target that is not active is refused (exit 2)" "2" "$FX_RC"
-grep -q 'nosuch.sh is not an active EXECUTED-WHOLE row' <<< "$FX_ERR" \
+grep -q 'nosuch.sh is not an active EXECUTED-\* row' <<< "$FX_ERR" \
   && pass "  … naming it" || fail "  … naming it: $FX_ERR"
 FALSIFY_DEEP_CONF="$(deep noreason 'fixture-lib.sh|stmt-delete|  ')" fx_run "$RUN" "$CONF_TWO" "$FX" "$TMP/wit-deep4" --jobs 1 --deep
 check "a deep row with no reason is refused (exit 2)" "2" "$FX_RC"
@@ -1323,6 +1323,11 @@ fx_run "$RUN" "$CONF_TWO" "$FX" "$TMP/wit-noops" --jobs 1 --controls 0 --operato
 [[ "$FX_RC" -ne 0 ]] && ! grep -q '^MUTANT|' <<< "$FX_OUT" \
   && pass "--operators '' is refused, never read as the default set" \
   || fail "--operators '' ran (rc=$FX_RC, $(grep -c '^MUTANT|' <<< "$FX_OUT") mutants) — an empty operator list must not become the defaults"
+# A deep row on an EXECUTED-PARTIAL target keeps its unit: the deep operators
+# apply to the named functions only (fx_bigger's line 4, never line 7).
+FALSIFY_DEEP_CONF="$(deep partial 'fixture-lib.sh|cond-negate|fixture')" fx_run "$RUN" "$CONF_PARTIAL" "$FX" "$TMP/wit-deep8" --jobs 1 --controls 0 --deep
+check "a deep row on an EXECUTED-PARTIAL target runs (exit 0)" "0" "$FX_RC"
+check "  … over its named functions only" "4" "$(awk -F'|' '$1 == "MUTANT" { print $6 }' <<< "$FX_OUT" | sort -u | tr -d '\n')"
 FALSIFY_DEEP_CONF="$DEEP_OK" fx_run "$RUN" "$CONF_TWO" "$FX" "$TMP/wit-deep6" --jobs 1 --deep --target fixture-slow.sh
 check "--deep with a selection the deep map does not cover is refused (exit 2)" "2" "$FX_RC"
 
