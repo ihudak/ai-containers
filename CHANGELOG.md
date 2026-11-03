@@ -320,6 +320,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- **A git repository the agent makes during a session is named when the
+  container exits.** The launch protects every repository it finds, so one the
+  agent created while the container ran was unprotected until the next launch,
+  and your host's git would run its hooks and config before then. When the
+  container exits, the launcher scans the writable mounts again and names, in
+  a `WARNING:`, each new repository whose config or hooks make git run
+  something, and each new `.git` file or link. A plain `git init` or clone is
+  not named, and the container's exit status is unchanged. A repository an
+  earlier version protected now gets the one-time list of the config keys and
+  hooks that run programs on its next launch, as a newly protected one does.
+  `~/.ai-containers/git-reported.conf` records which repositories have had it,
+  by keyed id, never by path (feature gaps review GAP-12).
+
 - **`sync-to-projects.sh` no longer writes through a link in a project.** The
   agent can write the project, and its `.ai-containers/` when that is a
   writable mount. A `.gitignore`, `sandbox.conf`, shared script or fragment

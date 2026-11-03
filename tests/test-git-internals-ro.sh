@@ -50,6 +50,9 @@ if [[ "\$1" == "run" ]]; then
     fi
     prev="\$a"
   done
+  # What the agent does during the session (G94), and how the container exits.
+  if [[ -n "\${FAKE_SESSION:-}" ]]; then bash -c "\$FAKE_SESSION"; fi
+  exit "\${FAKE_DOCKER_RC:-0}"
 fi
 exit 0
 DOCKER
@@ -1858,6 +1861,81 @@ has_mount "$w92/r/.git/hooks:/workspace/work92/r/.git/hooks:ro" \
   && pass "G92 a repository mounted from inside the group's directory is still protected" \
   || fail "G92 a repository under the group's directory was skipped ($(git_mounts | grep work92 | tr '\n' ' '))"
 rm -rf "$HOME/.ai-containers/default/work92"
+
+# ── G93: a repository an earlier launch protected is reported once too ───────
+# The first protection is the launch that makes the commondir placeholder, so a
+# repository whose placeholder was already there — made by an earlier engine,
+# or planted with a repository the agent made in a session — never had its
+# keys and hooks named. A record of what was reported, kept on the host, makes
+# it once, and once only.
+mkdir -p "$TMP/ep/r" "$TMP/ep/clean"
+"${G[@]}" -C "$TMP/ep/r" init -q && "${G[@]}" -C "$TMP/ep/clean" init -q \
+  || { printf 'SCAFFOLD-FAILED: G93\n'; exit 1; }
+"${G[@]}" -C "$TMP/ep/r" config core.sshCommand 'ssh -i sekrit93'
+printf '#!/bin/sh\n' > "$TMP/ep/r/.git/hooks/pre-commit"; chmod 755 "$TMP/ep/r/.git/hooks/pre-commit"
+for r in r clean; do printf './\n' > "$TMP/ep/$r/.git/commondir"; done
+EXTRA_MOUNTS="$TMP/ep" launch "$TMP/app"
+k93="$(grep -A1 -F 'NOTE: /workspace/ep/r/.git was protected before the launcher recorded what it reported, and its config sets' "$ERR" | tail -1)"
+h93="$(grep -A1 -F 'NOTE: /workspace/ep/r/.git was protected before the launcher recorded what it reported, and its hooks/' "$ERR" | tail -1)"
+[[ "$LAUNCH_RC" == 0 && "$k93" == *core.sshcommand* && "$h93" == *pre-commit* ]] \
+  && grep -qF "git config --file $TMP/ep/r/.git/config --list" "$ERR" && grep -qF "ls -l $TMP/ep/r/.git/hooks" "$ERR" \
+  && pass "G93 a repository protected before the record existed gets its keys and hooks named" \
+  || fail "G93 earlier-protected repository not reported (rc=$LAUNCH_RC; stderr: $(grep -A2 'NOTE' "$ERR" | tr '\n' ' '))"
+! grep -qF 'NOTE: /workspace/ep/clean' "$ERR" && ! grep -qF 'sekrit93' "$ERR" && ! grep -q 'for the first time' "$ERR" \
+  && pass "G93 nothing for a clean one, no value printed, and not called a first protection" \
+  || fail "G93 extra output (stderr: $(grep -E 'NOTE: /workspace/ep/clean|sekrit|first time' "$ERR" | tr '\n' ' '))"
+EXTRA_MOUNTS="$TMP/ep" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF 'NOTE: /workspace/ep/r/.git' "$ERR" \
+  && pass "G93 the next launch says nothing: it was reported" \
+  || fail "G93 reported twice (rc=$LAUNCH_RC; stderr: $(grep -A1 'ep/r' "$ERR" | tr '\n' ' '))"
+# The record names no path: an id keyed like the image record's.
+! grep -rqF "$TMP/ep" "$HOME/.ai-containers"/*.conf 2>/dev/null \
+  && pass "G93 the record holds no path" || fail "G93 the record holds a path ($(grep -rlF "$TMP/ep" "$HOME/.ai-containers"))"
+rm -rf "$TMP/ep"
+
+# ── G94: a repository the session made is named when the container exits ───
+# The scan runs at launch, so a git directory the agent makes during the session
+# is protected only by the next launch — and the host's git would run what it
+# holds before then. When the container exits, the writable mounts are scanned
+# again, and every new git directory that makes git run something is named, as
+# is every new .git file or link, which can send git anywhere. A plain `git
+# init` or clone is not. The container's exit status is the launcher's.
+mkdir -p "$TMP/ps/old" && "${G[@]}" -C "$TMP/ps/old" init -q || { printf 'SCAFFOLD-FAILED: G94\n'; exit 1; }
+sess94="set -e; cd '$TMP/ps'
+g() { git -c user.email=t@example.invalid -c user.name=t -c init.defaultBranch=main \"\$@\"; }
+mkdir hook cfg plain wt ln
+g -C hook init -q; printf '#!/bin/sh\n' > hook/.git/hooks/post-checkout; chmod 755 hook/.git/hooks/post-checkout
+g -C cfg init -q; g -C cfg config core.fsmonitor 'run-me-94'
+g -C plain init -q
+printf 'gitdir: /somewhere94\n' > wt/.git
+ln -s '$TMP' ln/.git
+printf '#!/bin/sh\n' > old/.git/hooks/pre-push; chmod 755 old/.git/hooks/pre-push"
+FAKE_SESSION="$sess94" FAKE_DOCKER_RC=7 EXTRA_MOUNTS="$TMP/ps" launch "$TMP/app"
+w94="$(sed -n '/WARNING: the session made git repositories/,/next launch/p' "$ERR")"
+[[ "$w94" == *"$TMP/ps/hook/.git"*post-checkout* && "$w94" == *"$TMP/ps/cfg/.git"*core.fsmonitor* ]] \
+  && pass "G94 a repository made in the session with a hook or a key that runs a program is named on exit" \
+  || fail "G94 new repositories not named (rc=$LAUNCH_RC; stderr: $(tail -12 "$ERR" | tr '\n' ' '))"
+[[ "$w94" == *"$TMP/ps/wt/.git"* && "$w94" == *"$TMP/ps/ln/.git"* ]] \
+  && pass "G94 a new .git file and a new .git link are named" \
+  || fail "G94 .git file or link not named (warning: $(tr '\n' ' ' <<<"$w94"))"
+[[ -n "$w94" && "$w94" != *ps/plain* && "$w94" != *ps/old* && "$w94" != *run-me-94* ]] \
+  && pass "G94 not a plain new repository, not one protected at launch, and no value" \
+  || fail "G94 extra names (warning: $(tr '\n' ' ' <<<"$w94"))"
+[[ "$LAUNCH_RC" == 7 ]] && pass "G94 the container's exit status is the launcher's" \
+  || fail "G94 exit status (rc=$LAUNCH_RC, want 7)"
+rm -rf "$TMP/ps"; mkdir -p "$TMP/ps/old" && "${G[@]}" -C "$TMP/ps/old" init -q
+FAKE_SESSION="cd '$TMP/ps' && git init -q plain" EXTRA_MOUNTS="$TMP/ps" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -q 'the session made' "$ERR" \
+  && pass "G94 a session that made only a plain repository says nothing" \
+  || fail "G94 noise for a plain repository (rc=$LAUNCH_RC; stderr: $(tail -5 "$ERR" | tr '\n' ' '))"
+# A search that stops past SANDBOX_GIT_MAX says so, and is not a refusal: the
+# launcher exits with the container's status.
+FAKE_SESSION="cd '$TMP/ps' && for i in 1 2 3 4 5 6; do git init -q p\$i; done" FAKE_DOCKER_RC=3 \
+  SANDBOX_GIT_MAX=3 EXTRA_MOUNTS="$TMP/ps" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 3 ]] && grep -qF 'could not all be searched for git repositories the session' "$ERR" \
+  && pass "G94 a search cut short at SANDBOX_GIT_MAX says so, and the exit status is still the container's" \
+  || fail "G94 cut-short search (rc=$LAUNCH_RC; stderr: $(tail -4 "$ERR" | tr '\n' ' '))"
+rm -rf "$TMP/ps"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
