@@ -824,3 +824,133 @@ repo-git-reset.sh:logic-flip:a805d45219901a76b7c8d1241009544ee4267789
   satisfies both forms. Added with the second review of REPO-10 (2026-10-29),
   whose M-1 fix this loop is; the two negations of the same test are KILLED
   by the "submodule's directory holds only directories" case.
+
+# ── 24 ────────────────────────────────────────────────────────────────────────
+# GAP-1 stage 2 and GAP-3, 2026-11-03: nine deferred targets and the two
+# firewall scripts made active. Everything not listed here was killed by an
+# assertion added to its oracle in the same change.
+
+GROUP: agent-tools-reconcile.sh — cd / cannot fail
+agent-tools-reconcile.sh:return-flip:348a4ed4f9b468cda20b15f57c6866b52c8ec5d5
+  original:  cd / || exit 0
+  damaged:   cd / || exit 1
+  EQUIVALENT: the damaged branch is unreachable. `/` always exists and is
+  always searchable by every user (a process whose root directory is not
+  searchable could not have exec'd this script), so `cd /` never fails and the
+  `|| exit` arm never runs, whatever status it would exit with. No fixture can
+  make `/` unenterable without making the interpreter itself unrunnable.
+
+GROUP: agent-tools-reconcile.sh — installer functions' return status is discarded
+agent-tools-reconcile.sh:return-flip:dec10116d407260d891c9d235f0150402bccc7f4
+agent-tools-reconcile.sh:return-flip:c34a6c4b303a5281eddb551086ed9674eff7e765
+agent-tools-reconcile.sh:return-flip:bc25c28a5c3fc20e1bb99aed68ec9a9cf619e217
+agent-tools-reconcile.sh:return-flip:06d3d9b2060dd51343d5f19f0e531f15c507e3d1
+agent-tools-reconcile.sh:return-flip:e14c342d9be3b9da4e0acbfd1c48c097ad139152
+agent-tools-reconcile.sh:return-flip:c2e48acd2a062b4213365f9b359b20fa45da4958
+agent-tools-reconcile.sh:return-flip:414772114f40a81b1e98f138dd3c0d561e1ccc27
+agent-tools-reconcile.sh:return-flip:7d59401decfdb2b1c01dd7ae62548b07451f947c
+agent-tools-reconcile.sh:return-flip:9bf9fb15654fe131d25a418aa550d76028f2ef70
+  originals (each `return 0` damaged to `return 1`):
+    install_npm:            if [[ -x "$npm_bin/$bin" ]]; then log "$bin already present"; return 0; fi
+    update_npm:             log "$bin: the registry cannot be reached; keeping ${cur:-the installed version}"; return 0
+    update_npm:             if [[ -n "$cur" && "$cur" == "$latest" ]]; then log "$bin is current ($cur)"; return 0; fi
+    install_claude_native:  return 0   (after "claude already present (native, …)")
+    install_uv:             log "$bin already present"; return 0
+    install_uv:             uv tool install "$pkg" "$@" --no-managed-python "${reinstall[@]}" && return 0
+    install_uv:             uv tool install "$pkg" "$@" --python "$major.$((minor - 1))" "${reinstall[@]}" && return 0
+    install_vale:           if [[ -x "$home_root/bin/vale" ]]; then log "vale already present"; return 0; fi
+    install_vale:           log "FAILED: could not resolve latest Vale version (got '${ver:-<empty>}') (skipped)"; return 0
+  EQUIVALENT: each damage changes only the status the function returns, never
+  what it does first or whether it returns: the log line, the install or the
+  skip all happen identically, and the function ends at that statement either
+  way. Nothing reads that status. Every one of these functions has exactly one
+  caller, a bare arm of the `case "$t" in` dispatch inside
+  `for t in "${want[@]}"` (agent-tools-reconcile.sh: `claude-code) install_claude_native ;;`
+  and its siblings), with no `||`, `&&`, `if` or `$?` around it. The script
+  sets `set -o pipefail` and deliberately NOT `-e` (its header: "non-fatal"),
+  has no ERR trap, and its own exit status is that of its last statement,
+  `log "done."` — a printf. So neither the next tool, nor the leftover-npm
+  Claude block, nor the script's exit code can differ; the only observer of a
+  shell function's return status is its caller, and this caller discards it.
+  (The other operators on these same lines — the `||`/`&&` flips and the
+  cond-negates — are killed by the oracle; only the status itself is inert.)
+
+GROUP: install-agent-skills.sh — the .agents mkdir status
+install-agent-skills.sh:logic-flip:94a2ffd15e3f5513b163e4ec3174aeb1cc9306a3
+  mkdir -p "$HOME/.agents" 2>/dev/null || true
+  the damage:  mkdir -p "$HOME/.agents" 2>/dev/null && true
+  EQUIVALENT: `|| true` and `&& true` differ only in the status the line yields
+  when mkdir fails, and the directory is equally absent either way. That status
+  is discarded: the script runs under `set -uo pipefail` without -e, and the line
+  is neither tested nor the last command of anything. No test could observe it.
+
+GROUP: install-agent-skills.sh — install_for_tool's early returns
+install-agent-skills.sh:return-flip:21654c7d7433c8abd62c31e0f5e0651f2d7cb3da
+install-agent-skills.sh:return-flip:54b742c6b491fcec7e7fb2b168fbe9ab713ccac3
+install-agent-skills.sh:return-flip:2ba020bd28601462ac867ace191bf5d73e3bf15e
+  tools_read_descriptor "$name" || return 0
+  [ "$TOOL_skills" = "yes" ] || return 0
+  command -v "$TOOL_binary" >/dev/null 2>&1 || return 0
+  the damage:  each `return 0` → `return 1`
+  EQUIVALENT: the function still returns at the same point, printing and
+  installing nothing, and its status has exactly one reader: main's
+  `install_for_tool "$name" "$agents" "$cross"`, the sole command of a while
+  body whose status is discarded (no -e; the next statement is `local new=...`).
+  The mutated program does the same thing; no test could tell them apart.
+
+GROUP: install-agent-skills.sh — target_stamp's no-stamp return
+install-agent-skills.sh:return-flip:36bfe8e34bc14ad19f4498b29c14b62a5f5c135a
+  [ -f "$STAMP" ] || return 0
+  the damage:  [ -f "$STAMP" ] || return 1
+  EQUIVALENT: the only caller is main's
+  `[ -f "$STAMP" ] && [ "$(target_stamp "$t")" = "$want" ] && continue`, which
+  never calls it without a stamp, and even then uses only its output: the status
+  of a command substitution inside `[ ]` arguments is discarded. The output is
+  empty either way.
+
+GROUP: install-agent-skills.sh — take_lock's returns
+install-agent-skills.sh:return-flip:06d3d9b2060dd51343d5f19f0e531f15c507e3d1
+install-agent-skills.sh:return-flip:fb68522f5c68fe793d2aa10c99373a4eb50844ed
+install-agent-skills.sh:return-flip:37f4c2022e36769bc98697b59dac20c5e25f7615
+  return 0     (after each of the two NOTE: lines: no flock, not a regular file)
+  { exec 9>>"$lock"; } 2>/dev/null || return 0
+  (( rc == 0 )) && return 0     (after the first and the waited flock)
+  the damage:  each `return 0` → `return 1`
+  EQUIVALENT: take_lock returns at the same point with the same side effects
+  (fd 9 held or not, the same NOTE printed); only its status changes, and its
+  one caller, main's bare `take_lock` statement, discards it (no -e). Every
+  path is still exercised by the RT-9 cases, which pass under either status
+  because there is nothing that reads it.
+
+GROUP: capture-agent-destinations.sh — `|| true` turned into `&& true`
+capture-agent-destinations.sh:logic-flip:88339d5b5b19b97fc7b99cc405add1c9d3b9ff55
+capture-agent-destinations.sh:logic-flip:3287f8a49337f6f9573cb67f98248a17b9e24048
+capture-agent-destinations.sh:logic-flip:3230a2600024450f65f9b0c1f2295e564ad8eb19
+capture-agent-destinations.sh:logic-flip:cbc32da4e32cf2c61e7312ab32c4badb1ed97434
+  tshark … | sort -u > "$dns_out" || true · tshark … | sort -u > "$sni_out" || true
+  disown "$tcpdump_pid" 2>/dev/null || true · wait "$tcpdump_pid" 2>/dev/null || true
+  EQUIVALENT: under `set -e`, bash ignores the failure of every command in a
+    `&&`/`||` list except the last, so `X && true` continues exactly where
+    `X || true` does, whatever X returns. None of the four lists is the last
+    command of its function or of the script, so the list's own status is
+    never read either. The two forms are the same program.
+
+GROUP: link-agent-tools.sh node_script's early returns
+link-agent-tools.sh:return-flip:b93d7356d62c3905ad5fba2f441c0803e715c346
+link-agent-tools.sh:return-flip:4dbd0c6d305ed438fd38ce0005a518df702babcf
+link-agent-tools.sh:return-flip:d12efccf238e009b7a990c287703f416c5d9ac5a
+link-agent-tools.sh:return-flip:21e0410ce21c57fa265c5359d7f539efdbe6411c
+  [[ -L "$l" ]] || return 1
+  dir="$(cd "$(dirname "$t")" 2>/dev/null && pwd -P)" || return 1
+  [[ -f "$dir/${t##*/}" ]] || return 1
+  [[ "$head1" == '#!'*node* ]] || return 1
+  damaged: each `return 1` becomes `return 0`
+  EQUIVALENT: node_script's only caller is
+  link-agent-tools.sh: `&& script="$(node_script "$path")"`, which reads what
+  the function PRINTS, never its status: the next line tests `[[ -n "$script" ]]`.
+  Every one of these returns comes before the function's only printf, so with
+  status 0 or 1 it prints nothing and `script` is empty either way. The status
+  of the assignment is the last status of an `&&` list that is not tested, and
+  the script runs without errexit (`set -o pipefail` only), so it cannot end the
+  run either. No observer of the script's outputs, files or exit status can tell
+  the two programs apart.
