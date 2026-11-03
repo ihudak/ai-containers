@@ -104,6 +104,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`claude` no longer fails with "… is truncated" after an interrupted
+  update.** An interrupted `claude update` leaves a partial download such as
+  `2.1.312.tmp.298.<ts>.1` in the group's `~/.local/share/claude/versions`.
+  `sort -V` ranked it above `2.1.312`, so the container-start reconcile linked
+  `~/.local/bin/claude` to the truncated file. Only plain `X.Y.Z` names are now
+  considered, both when choosing the launcher and when deciding whether a
+  native install exists. The partial file is left in place; delete it by hand
+  to reclaim the space.
+
 - **Images built on 2026-10-28 before the fix had a `node` that would not
   start** (bugs review BLD-10). Node 26's binary links `libatomic.so.1`, which
   the image's cleanup step removed with the build toolchain; `npm` and every
