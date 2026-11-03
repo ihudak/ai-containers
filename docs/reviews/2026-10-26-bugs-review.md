@@ -11,6 +11,7 @@
 - **Updated 2026-10-28:** batch 10, the section 10 leftovers, is merged (main `86427b0` and the commits after it). Section 15 lists what its reviews left open, reviewed up to `708742d`.
 - **Updated 2026-10-28:** batch 11 removes `SANDBOX_GIT_FIXTURES` (GIT-11, GIT-21, LNCH-16) and the `host` group, which mounted the real `$HOME` dot-directories read-write (the user's choice; see the CHANGELOG).
 - **Updated 2026-11-02:** GAP-6 (feature gaps review) is on main (`90f0417`..`1ca06cf`). Section 18 lists what its reviews left open (PRJ-10, since fixed; PRJ-11), reviewed up to `1ca06cf` and, for PRJ-10's fix, `18fb842`.
+- **Updated 2026-11-03:** section 19, found while doing GAP-1/3/4 (falsify), has TST-24, FIXED.
 - **Companion:** [2026-10-26-feature-gaps-review.md](2026-10-26-feature-gaps-review.md).
 - **Confidence:** CONFIRMED = reproduced, or unambiguous from the code. PLAUSIBLE = strong reasoning, not reproduced (usually needs hardware or a platform not available here); verify before fixing.
 - **Citations** are by snippet, per AGENTS.md "Citing code". Scratch repro paths mentioned in entries were session-local and may no longer exist; each entry describes its repro in full.
@@ -1452,6 +1453,17 @@ GAP-6's reviews (an Opus reviewer over three rounds, and an automated security r
 ---
 
 # Appendix: what each reviewer checked and cleared
+
+## 19. Found while doing GAP-1, GAP-3 and GAP-4
+
+The falsify work (2026-11-03) activated nine targets, added the `stmt-delete` operator and ran mutants of every active script on a developer host, which is how this showed.
+
+### TST-24: test-rvm-reconcile.sh hands the host's rvm environment, and in one case the real network, to the code it tests
+- **Status: FIXED** (2026-11-03). The test unsets every `rvm_*` variable and `GEM_HOME`/`GEM_PATH`/`MY_RUBY_HOME`/`IRBRC` before any case, and its fake `rvm` records any host rvm variable that reaches it, which the test refuses. Seen red on a host whose shell exports them (all four `rvm_*` names reached it). Every case now runs with a `curl` that fails and records the call first on its base `PATH` (the bootstrap cases put their own fake ahead of it), and the test refuses any recorded call: with the empty-versions exit negated it fails on "fetched … get.rvm.io" instead of downloading and running the installer, and a second run of the rvm targets' mutants started no `keyboxd` (and took 7.8 s instead of 32.8 s). The debris the runs left in the developer's `~/.rvm` (a stub "ruby-3.4.5.tar.gz" and installer, their checksums, extract logs, empty temp directories) was removed.
+- Severity: MEDIUM. Confidence: CONFIRMED (a leftover `keyboxd`, and files dated 07:24, 08:18 and 09:03 in a real `~/.rvm`).
+- Location: `tests/test-rvm-reconcile.sh`.
+- What's wrong: rvm reads `rvm_path` before `HOME`, and a developer shell with rvm installed exports it from its startup files, so overriding `HOME` did not confine rvm code: under a mutant, the reconcile worked in the real `~/.rvm`. No case stubbed `curl` except the bootstrap ones, though `run_case`'s comment said it did, and one case added the same day (`f7e6fad`, the `exit 0` assertion) ran with the host's `PATH` outright: a mutant that skipped the empty-versions exit, or the "rvm is installed" check, downloaded the rvm installer from get.rvm.io and ran it, which started a `keyboxd` that outlived the run. CI has no rvm, so only a developer host could see either.
+- Fix direction: done as above.
 
 ## GIT
 

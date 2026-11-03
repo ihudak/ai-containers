@@ -33,6 +33,22 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib-path-isolation.sh"
 PATH_SCRATCH="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 trap 'rm -rf "$PATH_SCRATCH"' EXIT
 SANDBOX_PATH="$(path_without_tool rvm "$PATH_SCRATCH")"
+# No case may reach the network. A curl that fails and records the call is
+# first on the base PATH of every case; the bootstrap cases put their own fake
+# curl ahead of it. Without it, a mutant that skipped the "rvm is installed"
+# check downloaded and ran the real rvm installer, whose gpg left a keyboxd
+# running (2026-11-03).
+nonet="$PATH_SCRATCH/nonet"; mkdir -p "$nonet"
+printf '#!/usr/bin/env bash\necho "curl reached: $*" >> "%s/curl.log"\nexit 7\n' "$nonet" > "$nonet/curl"; chmod +x "$nonet/curl"
+SANDBOX_PATH="$nonet:$SANDBOX_PATH"
+
+# A developer host with rvm installed exports rvm_path (and rvm_bin_path, …)
+# from its shell startup. rvm reads rvm_path before HOME, so inherited, it sent
+# rvm code run under a mutant into the real ~/.rvm: measured 2026-11-03, a
+# falsify run downloaded ruby-3.4.5 and rvm 1.29.12 there and left keyboxd
+# running. CI has no rvm, so only a developer host could ever see it.
+while IFS= read -r _v; do unset "$_v"; done < <(compgen -v | grep -E '^rvm_')
+unset GEM_HOME GEM_PATH MY_RUBY_HOME IRBRC
 
 bash -n "$REPO_DIR/rvm-reconcile.sh" && pass "rvm-reconcile.sh bash -n" || fail "rvm-reconcile.sh bash -n"
 
@@ -46,6 +62,9 @@ run_case() {           # $1=preinstalled  $2=RUBY_VERSIONS  [$3=out sink: calls|
   cat > "$bin/rvm" <<EOF
 #!/usr/bin/env bash
 echo "rvm \$*" >> "$home/calls.log"
+# Any host rvm variable reaching here would point real rvm code at the
+# developer's own ~/.rvm whatever HOME says: recorded so the test can refuse it.
+compgen -v | grep -E '^(rvm_|GEM_HOME\$|GEM_PATH\$|MY_RUBY_HOME\$)' | sed 's/^/LEAKED-ENV /' >> "$PATH_SCRATCH/leaked.log"
 case "\$1 \$2" in
   "list strings") for r in $pre; do echo "ruby-\$r"; done; [[ -f "$home/installed" ]] && cat "$home/installed" ;;
   "alias list")   [[ "\${STUB_HAS_DEFAULT:-0}" == "1" ]] && echo "default => ruby-default (default)" ;;
@@ -72,7 +91,8 @@ EOF
   # clear, attributable failure.
   # FLOCK_BUSY=1: another container holds the lock, so the non-blocking try fails.
   printf '#!/usr/bin/env bash\n[[ "$1" == -n && "${FLOCK_BUSY:-0}" == 1 ]] && exit 1\nexit 0\n' > "$bin/flock"; chmod +x "$bin/flock"
-  # Fake curl (bootstrap) + a pre-existing rvm script so no bootstrap fetch runs.
+  # A pre-existing rvm script so no bootstrap fetch runs (and if a damaged
+  # check fetches anyway, SANDBOX_PATH's curl fails and records it).
   install -d "$home/.rvm/scripts"; printf 'true\n' > "$home/.rvm/scripts/rvm"
   PATH="$bin:$SANDBOX_PATH" HOME="$home" RUBY_VERSIONS="$want" \
     STUB_HAS_DEFAULT="${STUB_HAS_DEFAULT:-0}" STUB_INSTALL_FAILS="${STUB_INSTALL_FAILS:-0}" \
@@ -94,8 +114,13 @@ grep -qE 'rvm (--default use|use .*--default|default use)' <<<"$log" \
 log2="$(run_case "" "")"
 [[ -z "$log2" ]] && pass "empty RUBY_VERSIONS is a no-op" || fail "empty RUBY_VERSIONS is a no-op"
 # …that exits 0, the reconcile's status for "nothing to do".
+# A damaged guard must not reach the network from this test (it did, under a
+# mutant, on 2026-11-03): SANDBOX_PATH's curl fails and records the call.
 HOME="$PATH_SCRATCH" RUBY_VERSIONS=" " PATH="$SANDBOX_PATH" bash "$REPO_DIR/rvm-reconcile.sh" >/dev/null 2>&1
 rc=$?
+[[ ! -e "$nonet/curl.log" ]] && pass "empty RUBY_VERSIONS fetches nothing" \
+  || fail "empty RUBY_VERSIONS fetched: $(cat "$nonet/curl.log")"
+rm -f "$nonet/curl.log"
 [[ $rc -eq 0 ]] && pass "empty RUBY_VERSIONS exits 0" || fail "empty RUBY_VERSIONS exits $rc"
 
 # The lock: uncontended, it is taken without a word; held by another container,
@@ -377,6 +402,20 @@ grep -q 'flock -n 9' "$REPO_DIR/rvm-reconcile.sh" \
 grep -q 'waiting for it to finish' "$REPO_DIR/rvm-reconcile.sh" \
   && pass "reconcile announces that it is waiting on another container" \
   || fail "reconcile announces that it is waiting on another container"
+
+# The base PATH's curl recorded any case that reached for the network without
+# a fake curl of its own.
+if [[ -s "$nonet/curl.log" ]]; then
+  fail "a case reached the network: $(sort -u "$nonet/curl.log" | tr '\n' ' ')"
+else
+  pass "no case reached the network"
+fi
+# Every fake rvm call above recorded any host rvm variable it inherited.
+if [[ -s "$PATH_SCRATCH/leaked.log" ]]; then
+  fail "the reconcile ran with the host's rvm environment: $(sort -u "$PATH_SCRATCH/leaked.log" | tr '\n' ' ')"
+else
+  pass "no host rvm variable reaches the reconcile's rvm"
+fi
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
