@@ -42,6 +42,16 @@ A gap is something a design promised that is not in the code at the reviewed com
 - What's missing: un-deferring sandbox.sh (the launcher, which is the security boundary on the host side), plus a minimal oracle set for sandbox-common.sh.
 - Value / priority: MEDIUM for sandbox.sh (its mode and capability lines are already all KILLED, so the residue is credential seeding and group isolation); LOW for the rest. repo.sh's stop is a recorded decision.
 - Suggested approach: add `docker volume` to test-tool-config-mounts.sh's fake docker and a registered-repo fixture, kill the two named security lines, then land sandbox.sh with the remainder classified.
+- **Re-measured 2026-11-03 — the plan above no longer fits:**
+  - **Mutants:** sandbox.sh now yields **1,567** default mutants, against 267 when the plan was written.
+  - **Oracle set:** the derivation sees **24 tests** executing it. Their summed runtime is ~313 s per mutant, without the five `services.d` tests; test-git-internals-ro.sh alone takes 140 s.
+  - **Cost:** activated whole, that is ~136 CPU-hours per measurement (~14 h at `--jobs 10`), far past CI's 90-minute falsify cap.
+  - **The per-function unit does not help much here:** most of the launch, the REPOS mode gate and the rvm branch the plan names included, is one ~940-line `run_container()`.
+- **Options, for a decision before work starts:**
+  1. **Split sandbox.sh into units, each with its own oracles:** allow several rows per target, keyed by function list, each naming only the tests that reach those functions. That would cut the per-mutant cost to the one or two relevant tests. It needs `run_container()` split into functions first, which is a product refactor of the launcher, the security boundary.
+  2. **Choose oracles per mutant:** map each mutated line to the tests that reach it, using line coverage gathered once with `BASH_XTRACEFD`/`PS4`, and run only those. This keeps sandbox.sh whole, but needs a coverage pass in the tier.
+  3. **Accept the cost off the PR gate:** a nightly-only (or weekly) sandbox.sh shard, with its own ledger section. This is the cheapest to build. At ~14 h it is still too slow for a nightly job; it needs option 1 or 2 too.
+- **Recommendation:** option 2 first. It is mechanical, changes no product code, and also speeds up every other multi-oracle target (lib-verify-repo.sh, entrypoint.sh). Then kill the security-adjacent survivors it shows, and only then decide whether sandbox.sh enters the PR gate or a scheduled shard.
 
 ### GAP-3: Container-side firewall and capture scripts have no hermetic oracle; entrypoint.sh's row is stale
 - Status: DONE (2026-11-03).
