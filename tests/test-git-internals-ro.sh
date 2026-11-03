@@ -1875,8 +1875,8 @@ mkdir -p "$TMP/ep/r" "$TMP/ep/clean"
 printf '#!/bin/sh\n' > "$TMP/ep/r/.git/hooks/pre-commit"; chmod 755 "$TMP/ep/r/.git/hooks/pre-commit"
 for r in r clean; do printf './\n' > "$TMP/ep/$r/.git/commondir"; done
 EXTRA_MOUNTS="$TMP/ep" launch "$TMP/app"
-k93="$(grep -A1 -F 'NOTE: /workspace/ep/r/.git was protected before the launcher recorded what it reported, and its config sets' "$ERR" | tail -1)"
-h93="$(grep -A1 -F 'NOTE: /workspace/ep/r/.git was protected before the launcher recorded what it reported, and its hooks/' "$ERR" | tail -1)"
+k93="$(grep -A1 -F 'NOTE: /workspace/ep/r/.git was protected by an earlier launch that did not report it, and its config sets' "$ERR" | tail -1)"
+h93="$(grep -A1 -F 'NOTE: /workspace/ep/r/.git was protected by an earlier launch that did not report it, and its hooks/' "$ERR" | tail -1)"
 [[ "$LAUNCH_RC" == 0 && "$k93" == *core.sshcommand* && "$h93" == *pre-commit* ]] \
   && grep -qF "git config --file $TMP/ep/r/.git/config --list" "$ERR" && grep -qF "ls -l $TMP/ep/r/.git/hooks" "$ERR" \
   && pass "G93 a repository protected before the record existed gets its keys and hooks named" \
@@ -1888,9 +1888,15 @@ EXTRA_MOUNTS="$TMP/ep" launch "$TMP/app"
 [[ "$LAUNCH_RC" == 0 ]] && ! grep -qF 'NOTE: /workspace/ep/r/.git' "$ERR" \
   && pass "G93 the next launch says nothing: it was reported" \
   || fail "G93 reported twice (rc=$LAUNCH_RC; stderr: $(grep -A1 'ep/r' "$ERR" | tr '\n' ' '))"
-# The record names no path: an id keyed like the image record's.
-! grep -rqF "$TMP/ep" "$HOME/.ai-containers"/*.conf 2>/dev/null \
-  && pass "G93 the record holds no path" || fail "G93 the record holds a path ($(grep -rlF "$TMP/ep" "$HOME/.ai-containers"))"
+# The record names a git directory, not a path: one made again where a reported
+# one was, placeholder and all, is reported again (by birth time where the
+# filesystem reuses the inode).
+rm -rf "$TMP/ep/r" && mkdir -p "$TMP/ep/r" && "${G[@]}" -C "$TMP/ep/r" init -q
+"${G[@]}" -C "$TMP/ep/r" config core.sshCommand 'ssh -i other93'; printf './\n' > "$TMP/ep/r/.git/commondir"
+EXTRA_MOUNTS="$TMP/ep" launch "$TMP/app"
+grep -qF 'NOTE: /workspace/ep/r/.git was protected by an earlier launch that did not report it, and its config sets' "$ERR" \
+  && pass "G93 a repository made again at a reported path is reported again" \
+  || fail "G93 re-made repository not reported (rc=$LAUNCH_RC; stderr: $(grep -A1 NOTE "$ERR" | tr '\n' ' '))"
 rm -rf "$TMP/ep"
 
 # ── G94: a repository the session made is named when the container exits ───
@@ -1900,7 +1906,10 @@ rm -rf "$TMP/ep"
 # again, and every new git directory that makes git run something is named, as
 # is every new .git file or link, which can send git anywhere. A plain `git
 # init` or clone is not. The container's exit status is the launcher's.
-mkdir -p "$TMP/ps/old" && "${G[@]}" -C "$TMP/ps/old" init -q || { printf 'SCAFFOLD-FAILED: G94\n'; exit 1; }
+mkdir -p "$TMP/ps/old" "$TMP/ps/rl" "$TMP/rl94a" "$TMP/rl94b" && "${G[@]}" -C "$TMP/ps/old" init -q \
+  && printf 'x\n' > "$TMP/ps/old/f" && "${G[@]}" -C "$TMP/ps/old" add f && "${G[@]}" -C "$TMP/ps/old" commit -qm s \
+  && "${G[@]}" -C "$TMP/rl94a" init -q && "${G[@]}" -C "$TMP/rl94b" init -q && ln -s "$TMP/rl94a/.git" "$TMP/ps/rl/.git" \
+  || { printf 'SCAFFOLD-FAILED: G94\n'; exit 1; }
 sess94="set -e; cd '$TMP/ps'
 g() { git -c user.email=t@example.invalid -c user.name=t -c init.defaultBranch=main \"\$@\"; }
 mkdir hook cfg plain wt ln
@@ -1909,21 +1918,38 @@ g -C cfg init -q; g -C cfg config core.fsmonitor 'run-me-94'
 g -C plain init -q
 printf 'gitdir: /somewhere94\n' > wt/.git
 ln -s '$TMP' ln/.git
-printf '#!/bin/sh\n' > old/.git/hooks/pre-push; chmod 755 old/.git/hooks/pre-push"
+printf '#!/bin/sh\n' > old/.git/hooks/pre-push; chmod 755 old/.git/hooks/pre-push
+rm rl/.git; ln -s '$TMP/rl94b/.git' rl/.git
+mkdir cdl; g -C cdl init -q; printf './\n' > cdl/.git/cd94; ln -s cd94 cdl/.git/commondir
+mkdir hl; g -C hl init -q; mkdir hl/githooks; rm -rf hl/.git/hooks; ln -s ../githooks hl/.git/hooks
+g -C old update-index --add --cacheinfo 160000,0123456789abcdef0123456789abcdef01234567,vendor/x
+mkdir -p old/vendor/x; g -C old/vendor/x init -q; g -C old/vendor/x config core.sshCommand 'ssh-94'"
 FAKE_SESSION="$sess94" FAKE_DOCKER_RC=7 EXTRA_MOUNTS="$TMP/ps" launch "$TMP/app"
-w94="$(sed -n '/WARNING: the session made git repositories/,/next launch/p' "$ERR")"
+w94="$(sed -n '/WARNING: the session made/,$p' "$ERR")"
 [[ "$w94" == *"$TMP/ps/hook/.git"*post-checkout* && "$w94" == *"$TMP/ps/cfg/.git"*core.fsmonitor* ]] \
   && pass "G94 a repository made in the session with a hook or a key that runs a program is named on exit" \
   || fail "G94 new repositories not named (rc=$LAUNCH_RC; stderr: $(tail -12 "$ERR" | tr '\n' ' '))"
 [[ "$w94" == *"$TMP/ps/wt/.git"* && "$w94" == *"$TMP/ps/ln/.git"* ]] \
   && pass "G94 a new .git file and a new .git link are named" \
   || fail "G94 .git file or link not named (warning: $(tr '\n' ' ' <<<"$w94"))"
-[[ -n "$w94" && "$w94" != *ps/plain* && "$w94" != *ps/old* && "$w94" != *run-me-94* ]] \
+[[ "$w94" == *"$TMP/ps/rl/.git"* ]] \
+  && pass "G94 a .git link there at launch and repointed in the session is named" \
+  || fail "G94 repointed .git link not named (warning: $(tr '\n' ' ' <<<"$w94"))"
+[[ "$w94" == *"$TMP/ps/hl/.git"*"hooks/, a link"* ]] \
+  && pass "G94 a new repository whose hooks/ is a link is named" \
+  || fail "G94 linked hooks/ not named (warning: $(tr '\n' ' ' <<<"$w94"))"
+[[ "$w94" == *"$TMP/ps/old/vendor/x/.git"*core.sshcommand* ]] \
+  && pass "G94 a repository reached only through a gitlink added in the session is named (the index is read afresh)" \
+  || fail "G94 gitlink added in the session not followed (warning: $(tr '\n' ' ' <<<"$w94"))"
+[[ "$w94" == *"$TMP/ps/cdl/.git"*commondir* ]] \
+  && pass "G94 a new repository whose commondir is a link is named: what git reads through it is not checked" \
+  || fail "G94 linked commondir not named (warning: $(tr '\n' ' ' <<<"$w94"))"
+[[ -n "$w94" && "$w94" != *ps/plain* && "$w94" != *"$TMP/ps/old/.git ("* && "$w94" != *run-me-94* ]] \
   && pass "G94 not a plain new repository, not one protected at launch, and no value" \
   || fail "G94 extra names (warning: $(tr '\n' ' ' <<<"$w94"))"
 [[ "$LAUNCH_RC" == 7 ]] && pass "G94 the container's exit status is the launcher's" \
   || fail "G94 exit status (rc=$LAUNCH_RC, want 7)"
-rm -rf "$TMP/ps"; mkdir -p "$TMP/ps/old" && "${G[@]}" -C "$TMP/ps/old" init -q
+rm -rf "$TMP/ps" "$TMP/rl94a" "$TMP/rl94b"; mkdir -p "$TMP/ps/old" && "${G[@]}" -C "$TMP/ps/old" init -q
 FAKE_SESSION="cd '$TMP/ps' && git init -q plain" EXTRA_MOUNTS="$TMP/ps" launch "$TMP/app"
 [[ "$LAUNCH_RC" == 0 ]] && ! grep -q 'the session made' "$ERR" \
   && pass "G94 a session that made only a plain repository says nothing" \
@@ -1935,6 +1961,25 @@ FAKE_SESSION="cd '$TMP/ps' && for i in 1 2 3 4 5 6; do git init -q p\$i; done" F
 [[ "$LAUNCH_RC" == 3 ]] && grep -qF 'could not all be searched for git repositories the session' "$ERR" \
   && pass "G94 a search cut short at SANDBOX_GIT_MAX says so, and the exit status is still the container's" \
   || fail "G94 cut-short search (rc=$LAUNCH_RC; stderr: $(tail -4 "$ERR" | tr '\n' ' '))"
+# A refusal inside the scan (more than twenty .git files naming one git
+# directory, which git_dirs_in refuses by exiting) cuts the search short, and
+# says so; and a scan past its time limit does too.
+rm -rf "$TMP/ps"; mkdir -p "$TMP/ps" || { printf 'SCAFFOLD-FAILED: G94b\n'; exit 1; }
+sess94b="set -e; cd '$TMP/ps'
+g() { git -c user.email=t@example.invalid -c user.name=t -c init.defaultBranch=main \"\$@\"; }
+g init -q m; g -C m commit -q --allow-empty -m s; g -C m worktree add -q ../w
+wt=\$(ls -d m/.git/worktrees/* | head -1); wt=\$(cd \"\$wt\" && pwd -P)
+for n in \$(seq 1 21); do mkdir -p dec/d\$n; printf 'gitdir: %s\n' \"\$wt\" > dec/d\$n/.git; done"
+FAKE_SESSION="$sess94b" FAKE_DOCKER_RC=5 EXTRA_MOUNTS="$TMP/ps" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 5 ]] && grep -qF 'could not all be searched for git repositories the session' "$ERR" \
+  && pass "G94 a scan that refuses by exiting is said to have cut the search short, and the exit status is kept" \
+  || fail "G94 refusal in the rescan (rc=$LAUNCH_RC; stderr: $(tail -4 "$ERR" | tr '\n' ' '))"
+rm -rf "$TMP/ps"; mkdir -p "$TMP/ps"
+FAKE_SESSION="cd '$TMP/ps' && git init -q h && printf '#!/bin/sh\n' > h/.git/hooks/pre-commit && chmod 755 h/.git/hooks/pre-commit" \
+  AI_CONTAINERS_RESCAN_SECONDS=0 EXTRA_MOUNTS="$TMP/ps" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && grep -qF 'could not all be searched for git repositories the session' "$ERR" \
+  && pass "G94 a rescan past its time limit says the search was cut short" \
+  || fail "G94 rescan deadline (rc=$LAUNCH_RC; stderr: $(tail -4 "$ERR" | tr '\n' ' '))"
 rm -rf "$TMP/ps"
 
 printf '\n%d failure(s)\n' "$fails"

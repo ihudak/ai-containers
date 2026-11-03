@@ -694,7 +694,7 @@ launcher_ro_overlay() {
     git_dirs_in gdirs gfiles glinks gunr "$src"
     _git_scan_srcs+=("$src"); _git_bsrc=(${bsrc[@]+"${bsrc[@]}"})
     for f in ${gdirs[@]+"${gdirs[@]}"} ${gfiles[@]+"${gfiles[@]}"} ${glinks[@]+"${glinks[@]}"} ${gunr[@]+"${gunr[@]}"}; do
-      _git_launch_seen[$f]=1
+      _git_launch_seen[$f]="$(_git_ident "$f")"
     done
     for f in ${glinks[@]+"${glinks[@]}"}; do
       at="$dst${f#"$src"}"; skip=""
@@ -849,9 +849,8 @@ launcher_ro_overlay() {
           # moment: it is named once too, by the record of what was reported.
           rep=""
           if [[ -n "$first" ]]; then rep="is protected for the first time"; al=" already"
-          elif ! _git_reported "$g"; then rep="was protected before the launcher recorded what it reported"; al=""; fi
+          elif ! _git_reported "$g"; then rep="was protected by an earlier launch that did not report it"; al=""; fi
           if [[ -n "$rep" ]]; then
-            _git_report_record "$g"
             _git_runs "$g" rk rh
             if [[ -n "$rk" ]]; then
               printf 'NOTE: %s %s, and its config%s sets\n' "$(_term "$at")" "$rep" "$al" >&2
@@ -869,6 +868,7 @@ launcher_ro_overlay() {
               printf '      If you did not put them there, review them on the host:\n' >&2
               printf '        ls -l %s\n' "$(_q "$g/hooks")" >&2
             fi
+            _git_report_record "$g"
           fi
         elif [[ -f "$g/commondir" ]]; then
           # Physically, as git resolves it (strbuf_add_real_path), and without the
@@ -2475,141 +2475,187 @@ _git_exec_keys() {
 # _git_runs <git dir> <keys-out> <hooks-out>: what in this git directory makes
 # the host's git run a program, names only, comma-separated: the keys its config
 # sets (_git_exec_keys; config.worktree too, as the first protection reads it),
-# and the hooks git would run — a name from githooks(5), executable, through a
-# link too — unless core.hooksPath sends git elsewhere (a key named above). A
-# commondir naming another directory sends git there for config and hooks; one
-# this launch protected was frozen, and reported, then, so only config.worktree
-# counts (a linked worktree's, from `git worktree add`), else that one's.
+# ten at most and then a count, and the hooks git would run — a name from
+# githooks(5), executable, through a link too — unless core.hooksPath sends git
+# elsewhere (a key named above). A commondir naming another directory sends git
+# there for config and hooks; one this launch protected was frozen, and
+# reported, then, so only config.worktree counts (a linked worktree's, from
+# `git worktree add`), else that one's. A commondir or hooks/ that is a link, or
+# a commondir that leads nowhere, cannot be checked here and is named as such.
 _git_runs() {
   local -n _gr_k=$2 _gr_h=$3
-  local g="$1" c="$1" cd="" e hp="" own=1
+  local g="$1" c="$1" cd="" e hp="" own=1 n=0
   local -a ek=() cf=()
   _gr_k=""; _gr_h=""
-  if [[ -f "$g/commondir" && ! -L "$g/commondir" ]]; then
+  # git reads a commondir through a link (automated security review of 7121741).
+  if [[ -L "$g/commondir" ]] || [[ -e "$g/commondir" && ! -f "$g/commondir" ]]; then
+    _gr_k="commondir, a link or not a file: what git reads through it is not checked"; return 0
+  fi
+  if [[ -f "$g/commondir" ]]; then
     IFS= read -r -d '' cd < <(_rd 4096 "$g/commondir" 2>/dev/null) || true
     while [[ "$cd" == *[$'\r\n'] ]]; do cd="${cd%?}"; done
     if [[ -n "$cd" && "$cd" != ./ ]]; then
       c="$(cd "$g" 2>/dev/null && cd -P -- "$cd" 2>/dev/null && pwd -P)" || c=""
-      if [[ -z "$c" || -n "${_git_launch_seen[$c]:-}" ]]; then own=""; fi
+      if [[ -z "$c" ]]; then _gr_k="commondir, which leads nowhere it can be checked"; return 0; fi
+      if [[ -n "${_git_launch_seen[$c]:-}" ]]; then own=""; fi
     fi
   fi
   if [[ -n "$own" ]]; then cf+=("$c/config"); fi
   cf+=("$g/config.worktree")
   mapfile -d '' -t ek < <(_git_exec_keys "${cf[@]}")
-  for e in ${ek[@]+"${ek[@]}"}; do _gr_k+="${_gr_k:+, }$e"; done
+  for e in ${ek[@]+"${ek[@]:0:10}"}; do _gr_k+="${_gr_k:+, }$e"; done
+  if (( ${#ek[@]} > 10 )); then _gr_k+=", and $(( ${#ek[@]} - 10 )) more"; fi
   [[ -n "$own" ]] || return 0
   hp="$(_git_config_get "$c/config" core.hooksPath)" || hp=""
   if [[ -z "$hp" && -f "$g/config.worktree" ]] && _git_config_bool "$c/config" extensions.worktreeConfig; then
     hp="$(_git_config_get "$g/config.worktree" core.hooksPath)" || hp=""
   fi
-  if [[ -z "$hp" && -d "$c/hooks" && ! -L "$c/hooks" ]]; then
+  [[ -z "$hp" ]] || return 0
+  # git follows a hooks/ that is a link, and runs what it finds there.
+  if [[ -L "$c/hooks" ]]; then _gr_h="hooks/, a link: what git runs through it is not checked"; return 0; fi
+  if [[ -d "$c/hooks" ]]; then
     for e in "${git_hook_names[@]}"; do
-      if [[ -f "$c/hooks/$e" && -x "$c/hooks/$e" ]]; then _gr_h+="${_gr_h:+, }$e"; fi
+      if [[ -f "$c/hooks/$e" && -x "$c/hooks/$e" ]]; then _gr_h+="${_gr_h:+, }$e"; (( ++n )); fi
     done
   fi
   return 0
 }
 
-# The repositories whose keys and hooks a launch has named, by an id keyed like
-# the image record's (ai_containers_project_id), so the file names no path. The
-# first protection — the launch that makes the commondir placeholder — names them
-# and records it. A repository whose placeholder was there already, made by an
-# earlier engine or planted with one the agent made, is named once too
-# (feature-gaps review GAP-12). Without a digest tool nothing is recorded, and
-# such a repository is named on every launch.
+# _git_ident <path>: what is at <path> — its device, inode and birth time (0
+# where the filesystem keeps none), and a link's target text: a git directory
+# made again at a path, even on a reused inode, or a .git link repointed, is
+# another one (automated security review of 7121741; review of 7121741).
+_git_ident() {
+  local i=""
+  if (( _launcher_stat_gnu )); then i="$(stat -c '%d %i %W' -- "$1" 2>/dev/null)" || i=""
+  else i="$(stat -f '%d %i %B' -- "$1" 2>/dev/null)" || i=""; fi
+  [[ -n "$i" ]] || i="?"
+  if [[ -L "$1" ]]; then i+=" -> $(readlink -- "$1" 2>/dev/null)"; fi
+  printf '%s' "$i"
+}
+
+# The repositories whose keys and hooks a launch has named, one `<identity>
+# <path>` line each (_git_ident; a path with a newline is not recorded). The
+# first protection — the launch that makes the commondir placeholder — names
+# them. A repository whose placeholder was there already, made by an earlier
+# engine or planted with one the agent made, never had that moment, and is
+# named once too (feature-gaps review GAP-12). Recorded only after the NOTE is
+# printed, so a launch refused on the way reports it again. Read once per
+# launch. Machine-local, like image-projects.conf, and never mounted.
 _git_reported_file="${ai_containers_root}/git-reported.conf"
-_git_report_id() {   # <git dir> → its id, or rc 1
-  local p
-  p="$(cd "$1" 2>/dev/null && pwd -P)" || return 1
-  [[ "$p" != *$'\n'* ]] || return 1
-  ai_containers_project_id "$p"
+declare -A _git_reported_set=()
+_git_reported_loaded=""
+_git_reported_load() {
+  local line
+  [[ -z "$_git_reported_loaded" ]] || return 0
+  _git_reported_loaded=1
+  [[ -f "$_git_reported_file" && ! -L "$_git_reported_file" && -r "$_git_reported_file" ]] || return 0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -z "$line" ]] || _git_reported_set[$line]=1
+  done < "$_git_reported_file" 2>/dev/null || true
 }
-_git_reported() {    # <git dir>: rc 0 when it is in the record
-  local id
-  id="$(_git_report_id "$1")" || return 1
-  [[ -f "$_git_reported_file" && -r "$_git_reported_file" ]] || return 1
-  grep -qxF -- "$id" "$_git_reported_file" 2>/dev/null
+_git_reported() {    # <git dir, physical>: rc 0 when it is in the record
+  [[ "$1" != *$'\n'* ]] || return 1
+  _git_reported_load
+  [[ -n "${_git_reported_set["$(_git_ident "$1") $1"]:-}" ]]
 }
-_git_report_record() {   # <git dir>: add it, once, on a line of its own; quiet
-  local id last=""
-  id="$(_git_report_id "$1")" || return 0
-  [[ ! -e "$_git_reported_file" || ( -f "$_git_reported_file" && -r "$_git_reported_file" \
-     && -w "$_git_reported_file" ) ]] || return 0
-  grep -qxF -- "$id" "$_git_reported_file" 2>/dev/null && return 0
+_git_report_record() {   # <git dir, physical>: add it, once, on a line of its own; quiet
+  local line last=""
+  [[ "$1" != *$'\n'* ]] || return 0
+  _git_reported_load
+  line="$(_git_ident "$1") $1"
+  [[ -z "${_git_reported_set[$line]:-}" ]] || return 0
+  _git_reported_set[$line]=1
+  [[ ! -L "$_git_reported_file" && ( ! -e "$_git_reported_file" || ( -f "$_git_reported_file" \
+     && -r "$_git_reported_file" && -w "$_git_reported_file" ) ) ]] || return 0
   mkdir -p "$ai_containers_root" 2>/dev/null || return 0
   if [[ -s "$_git_reported_file" ]]; then
     { last="$(tail -c 1 "$_git_reported_file")" || last=""; } 2>/dev/null
-    if [[ -n "$last" ]]; then id=$'\n'"$id"; fi
+    if [[ -n "$last" ]]; then line=$'\n'"$line"; fi
   fi
-  { printf '%s\n' "$id" >> "$_git_reported_file"; } 2>/dev/null || true
+  { printf '%s\n' "$line" >> "$_git_reported_file"; } 2>/dev/null || true
   return 0
 }
 
 # _git_after_session: the launch scan runs once, so a git directory the agent
 # makes during the session is protected only by the next launch, and the host's
 # git would run what it holds before then (GAP-12). When the container exits,
-# the writable mounts the launch scanned are scanned again, and every new git
-# directory that makes git run something is named, with every new .git file or
-# link (either can send git anywhere) and every new one that cannot be listed. A
-# plain `git init` or clone holds nothing git runs and is not named. In a
-# subshell: git_dirs_in refuses (exits) on what the agent can make it read, and
-# a bounded read that is cut off signals this process, which here only means
-# the search did not finish; it is said, never a refusal.
+# the writable mounts the launch scanned are scanned again, and named in a
+# WARNING: every new git directory that makes git run something (_git_runs) or
+# cannot be listed, and every new .git file or link, which can send git to
+# another directory. A plain `git init` or clone holds nothing git runs. "New"
+# is by identity (_git_ident), so a .git link repointed is new.
+#   Each mount is scanned in a subshell of its own, since git_dirs_in refuses by
+# exiting; that, a scan stopped past SANDBOX_GIT_MAX, a bounded read cut off
+# (which signals this process), or the deadline (AI_CONTAINERS_RESCAN_SECONDS,
+# 30 s) is said to have cut the search short — never a refusal: the container
+# has already run. Index reads start afresh: the index stays writable, and a
+# gitlink added in the session leads where the launch never looked (review of
+# 7121741). Only on a normal return from docker run.
 _git_after_session() {
   (( ${#_git_scan_srcs[@]} )) || return 0
-  local _gas_cut="" rec
-  local -a recs=()
+  local _gas_cut="" i rec
+  local -a recs=() run=() away=()
+  local -A named=()
   trap '_gas_cut=1' USR1
   mapfile -d '' -t recs < <(
     exec 2>/dev/null
-    # What git_dirs_in reads of the launch's own state: the writable binds, and
-    # the bound. A temporary index directory made here is removed here.
+    # What git_dirs_in reads of the launch's own state: the writable binds, and the bound.
     bsrc=(${_git_bsrc[@]+"${_git_bsrc[@]}"})
-    gitmax="${SANDBOX_GIT_MAX:-200}"; _rd_errfd=""; _gdi_over=()
-    [[ -n "${_gir_tmp:-}" ]] || trap 'rm -rf "${_gir_tmp:-}"' EXIT
+    gitmax="${SANDBOX_GIT_MAX:-200}"; _rd_errfd=""
+    lim="${AI_CONTAINERS_RESCAN_SECONDS:-30}"; [[ "$lim" =~ ^[0-9]{1,6}$ ]] || lim=30
+    deadline=$(( SECONDS + 10#$lim ))
     for src in "${_git_scan_srcs[@]}"; do
+      if (( SECONDS >= deadline )); then printf 'C\0\0\0'; break; fi
       [[ -d "$src" ]] || continue
-      gdirs=(); gfiles=(); glinks=(); gunr=(); _gdi_over=()
-      git_dirs_in gdirs gfiles glinks gunr "$src" || true
-      if (( ${#_gdi_over[@]} )); then printf 'CUT\0'; fi
-      for f in ${gdirs[@]+"${gdirs[@]}"}; do
-        [[ -z "${_git_launch_seen[$f]:-}" ]] || continue; _git_launch_seen[$f]=1
-        k=""; h=""; _git_runs "$f" k h || true
-        if [[ -n "$k$h" ]]; then printf '%s\n%s\0' "$f" "${k:+config: $k}${k:+${h:+; }}${h:+hooks: $h}"; fi
-      done
-      for f in ${gfiles[@]+"${gfiles[@]}"}; do
-        [[ -z "${_git_launch_seen[$f]:-}" ]] || continue; _git_launch_seen[$f]=1
-        printf '%s\n%s\0' "$f" "a .git file, which can send git anywhere"
-      done
-      for f in ${glinks[@]+"${glinks[@]}"}; do
-        [[ -z "${_git_launch_seen[$f]:-}" ]] || continue; _git_launch_seen[$f]=1
-        printf '%s\n%s\0' "$f" "a link, which can send git anywhere"
-      done
-      for f in ${gunr[@]+"${gunr[@]}"}; do
-        [[ -z "${_git_launch_seen[$f]:-}" ]] || continue; _git_launch_seen[$f]=1
-        printf '%s\n%s\0' "$f" "cannot be listed, so it was not checked"
-      done
+      (
+        _gir_cache=(); _gir_tmp=""; trap 'rm -rf "${_gir_tmp:-}"' EXIT
+        gdirs=(); gfiles=(); glinks=(); gunr=(); _gdi_over=()
+        git_dirs_in gdirs gfiles glinks gunr "$src" || true
+        if (( ${#_gdi_over[@]} )); then printf 'C\0\0\0'; fi
+        for f in ${gdirs[@]+"${gdirs[@]}"} ${gunr[@]+"${gunr[@]}"} ${gfiles[@]+"${gfiles[@]}"} ${glinks[@]+"${glinks[@]}"}; do
+          if (( SECONDS >= deadline )); then printf 'C\0\0\0'; exit 0; fi
+          [[ "${_git_launch_seen[$f]:-}" != "$(_git_ident "$f")" ]] || continue
+          if [[ -L "$f" ]]; then printf 'A\0%s\0%s\0' "$f" "a link"
+          elif [[ -f "$f" ]]; then printf 'A\0%s\0%s\0' "$f" "a .git file"
+          elif [[ ! -r "$f" || ! -x "$f" ]]; then printf 'R\0%s\0%s\0' "$f" "cannot be listed, so it was not checked"
+          else
+            k=""; h=""; _git_runs "$f" k h || true
+            if [[ -n "$k$h" ]]; then printf 'R\0%s\0%s\0' "$f" "${k:+config: $k}${k:+${h:+; }}${h:+hooks: $h}"; fi
+          fi
+        done
+        exit 0
+      ) || printf 'C\0\0\0'
     done
   ) || true
   trap 'exit 1' USR1
-  local -a named=()
-  for rec in ${recs[@]+"${recs[@]}"}; do
-    if [[ "$rec" == CUT ]]; then _gas_cut=1; else named+=("$rec"); fi
+  for (( i = 0; i + 2 < ${#recs[@]}; i += 3 )); do
+    case "${recs[i]}" in
+      C) _gas_cut=1 ;;
+      R|A)
+        [[ -z "${named[${recs[i+1]}]:-}" ]] || continue; named[${recs[i+1]}]=1
+        rec="$(_term "${recs[i+1]}") ($(_term "${recs[i+2]}"))"
+        if [[ "${recs[i]}" == R ]]; then run+=("$rec"); else away+=("$rec"); fi ;;
+    esac
   done
-  (( ${#named[@]} )) || [[ -n "$_gas_cut" ]] || return 0
-  if (( ${#named[@]} )); then
-    printf 'WARNING: the session made git repositories in a writable mount that this launch\n' >&2
-    printf '         did not protect, and your host'\''s git would run what they hold:\n' >&2
-    for rec in "${named[@]:0:20}"; do
-      printf '           %s (%s)\n' "$(_term "${rec%%$'\n'*}")" "$(_term "${rec#*$'\n'}")" >&2
-    done
-    if (( ${#named[@]} > 20 )); then printf '           … and %d more\n' "$(( ${#named[@]} - 20 ))" >&2; fi
+  if (( ${#run[@]} )); then
+    printf 'WARNING: the session made git repositories in a writable mount that this launch did\n' >&2
+    printf '         not protect, and your host'\''s git would run what they hold:\n' >&2
+    for rec in "${run[@]:0:20}"; do printf '           %s\n' "$rec" >&2; done
+    if (( ${#run[@]} > 20 )); then printf '           … and %d more\n' "$(( ${#run[@]} - 20 ))" >&2; fi
     printf '         Review them on the host before you run git there; the next launch protects them.\n' >&2
+  fi
+  if (( ${#away[@]} )); then
+    printf 'WARNING: the session made .git files or links in a writable mount; each can send your\n' >&2
+    printf '         host'\''s git to another git directory, whose config and hooks it would run:\n' >&2
+    for rec in "${away[@]:0:20}"; do printf '           %s\n' "$rec" >&2; done
+    if (( ${#away[@]} > 20 )); then printf '           … and %d more\n' "$(( ${#away[@]} - 20 ))" >&2; fi
+    printf '         Check where each leads before you run git there.\n' >&2
   fi
   if [[ -n "$_gas_cut" ]]; then
     printf 'WARNING: the writable mounts could not all be searched for git repositories the session\n' >&2
-    printf '         made (past SANDBOX_GIT_MAX, or a file not read in time). Launch again before you\n' >&2
-    printf '         run git in them: the next launch protects, or refuses, what is there.\n' >&2
+    printf '         made (past SANDBOX_GIT_MAX, a refusal, a read cut off, or the time limit). Launch\n' >&2
+    printf '         again before you run git in them: the next launch protects, or refuses, what is there.\n' >&2
   fi
   return 0
 }
