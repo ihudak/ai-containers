@@ -36,7 +36,7 @@ reports by editing the entry's **Status** line (and docs/testing.md's
 | **Linux agent** (review machine) | Linux x86-64, native Docker Engine | the falsify work GAP-1 to GAP-4 | anything below |
 | **WSL agent** | Windows + WSL2 (Ubuntu distro) + **Docker Desktop** with WSL integration. **Not** a native Docker Engine in the distro | **PLAT-6** | PLAT-2's remaining half: it needs a Docker Engine installed natively in the distro. Leave that open unless one is installed |
 | **Mac agent** | macOS, Docker Desktop and/or Colima | **PLAT-3** (GAP-11), **PLAT-5** | — |
-| *nobody yet* | x86-64 CPU without AVX | PLAT-4 | — |
+| *nobody* | x86-64 CPU without AVX | PLAT-4: closed as not supported | — |
 
 Any change of code an agent makes follows the rule at the top: reproduce
 first, then fix test-first.
@@ -92,7 +92,7 @@ first, then fix test-first.
 
 ## PLAT-4: x86-64 without AVX — mongo reports "no server, rebuild"
 
-- **Status: hermetic fix landed (batch 5, `657cb29`); hardware confirmation open.** On a non-AVX host the fixed image should print `WARNING: mongo failed to start — log: …` with `mongod cannot run here: --version ended with exit 132 (SIGILL) — … need a CPU with AVX on x86-64` in the log tail, and no "Rebuild". Seeing that closes PLAT-4; seeing "no mongo server. Rebuild" on an image built from `657cb29` or later reopens SVC-2.
+- **Status: CLOSED — NOT SUPPORTED (2026-11-03).** `mongo=` on an x86-64 CPU without AVX is not officially supported, and docs/components/mongo.md says so: no one working on this project has such a machine, and every MongoDB since 5.0 needs AVX anyway. The hermetic fix stays (batch 5, `657cb29`). What follows is what a run on such a host should show, kept in case one turns up. On a non-AVX host the fixed image should print `WARNING: mongo failed to start — log: …` with `mongod cannot run here: --version ended with exit 132 (SIGILL) — … need a CPU with AVX on x86-64` in the log tail, and no "Rebuild". Seeing that closes PLAT-4; seeing "no mongo server. Rebuild" on an image built from `657cb29` or later reopens SVC-2.
 
 - **Picked up by:** no agent has this hardware. (An Apple Silicon Mac does not help: its containers are arm64, where AVX does not apply.)
 - **Platform:** an x86-64 machine or VM whose CPU lacks AVX — e.g. a Proxmox/KVM guest with CPU type `kvm64` or `qemu64`. Check with `grep -c avx /proc/cpuinfo` (0 = no AVX).

@@ -154,7 +154,7 @@ series of a major is signed with the major's key (8.2 with `server-8.0.asc` — 
 is no `server-8.2.asc`). At start: `127.0.0.1`, and `::1` (`--ipv6`) where the
 container has an IPv6 loopback, no authentication, the WiredTiger cache capped at
 0.25 GB (`AI_SERVICES_MONGO_CACHE_GB`; the default takes 1.5 GB of a 4 GB
-container). Nothing to provision. x86-64 needs AVX. User docs:
+container). Nothing to provision. x86-64 needs AVX; a CPU without it is not supported (PLAT-4). User docs:
 `docs/components/mongo.md`.
 
 Version-list components (`node`, `python`, `ruby`) accept comma-separated version values instead of `ON`/`OFF` (e.g., `node=22,20`); `rust` and `go` take a single value, and `build.sh` refuses a list for them. `ON` and `OFF` must be written in capitals for every key: they are compared literally, so `check_config` in sandbox-common.sh, which `build.sh` and `sandbox.sh` both run, refuses a lowercase `on`/`off` rather than read it as a version. Constraints:

@@ -439,7 +439,7 @@ should be corrected — `core.fsmonitor=false` is not sufficient to make
 
 ### SVC-2: On an x86-64 CPU without AVX, mongo is reported as "this image has no mongo server. Rebuild", not as a start failure with the log
 - **Status: FIXED (batch 5, hermetic half)** — `657cb29`, `a49e562`. A `mongod` that cannot run reads as `unknown`, and its start fails before the server is launched, logging the exit status, the signal and the AVX hint; the adapter contract in AGENTS.md allows `unknown`. Test: mongo D10 (a fake that dies of SIGILL). Confirmation on real non-AVX hardware is still PLAT-4.
-- Confirmation needs non-AVX hardware: tracked as PLAT-4 in [2026-10-26-platform-issues.md](2026-10-26-platform-issues.md). The hermetic half of the fix can be done in batch 5.
+- Confirmation needs non-AVX hardware: tracked as PLAT-4 in [2026-10-26-platform-issues.md](2026-10-26-platform-issues.md), closed 2026-11-03 as not supported (no such hardware available; docs/components/mongo.md says so). The hermetic half of the fix can be done in batch 5.
 - Severity: LOW — Confidence: PLAUSIBLE (not reproduced; needs a non-AVX CPU, e.g. a Proxmox/KVM guest with the `kvm64` CPU type)
 - Location: `services.d/mongo.sh: svc_installed_version()` (`"$MONGO_MONGOD" --version 2>/dev/null | sed -n …`), together with `start-services.sh: start_one()` (`warn "sandbox.conf has $name=$value, but this image has no $name server. Rebuild: ./build.sh"`)
 - Introduced: e3c9b15
