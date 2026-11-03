@@ -1335,9 +1335,11 @@ fr_run_mutant() {   # <slot> <target> <oracle> <seq> <lineno> <op> <sha> <text> 
   # to: an UNPROVEN where the set says KILLED, or one that excuses a survivor
   # from the ledger (review of 229eab8). The second run gets a CLEAN tree: the
   # first may have been cut short by its clock, its cleanup never run, and
-  # what it left behind would be read as the mutant's doing.
+  # what it left behind would be read as the mutant's doing. Clean as the
+  # slot's debris check sees it, `git status`: a gitignored file left behind
+  # is not seen, here or between any two mutants of a slot.
   local run="$oracle" sel="" rest="" o ms_sel=0 sel_verdict="" sel_signal="" clock
-  local foreign="" foreign_tok="" pre_note=""
+  local foreign="" foreign_tok="" pre_note="" write_failed=0
   local -a all_o=()
   clock="$(fr_effective_timeout "$oracle")"
   if [[ -n "${FR_SEL_ON[$target]:-}" ]]; then
@@ -1370,32 +1372,41 @@ fr_run_mutant() {   # <slot> <target> <oracle> <seq> <lineno> <op> <sha> <text> 
       fi
     fi
     if ! falsify_write_mutant "$FR_CACHE/$target" "$tree/$target" "$lineno" "$text"; then
-      printf 'NOTE|write-failed|%s|could not apply the mutant to %s again for the rest of the set\n' "$ident" "$tree/$target" > "$res"
-      if [[ -n "$pre_note" ]]; then printf '%s\n' "$pre_note" >> "$res"; fi
-      return 0
-    fi
-    falsify_run_oracle "$tree" "$rest" "$out" "$clock" "s$slot.m$seq.r"
-    falsify_verdict "$FALSIFY_RC" "$out" "$FALSIFY_TIMED_OUT"
-    if [[ "$sel_verdict" != SURVIVED && "$rest" != "$oracle" ]]; then
-      # The subset timed out: the whole set's verdict is the timeout, unless
-      # the rest adds a FAIL: line (or a broken scaffold, which is checked first).
-      if [[ "$FALSIFY_SIGNAL" == *scaffold* ]]; then
-        FALSIFY_VERDICT=UNPROVEN; FALSIFY_SIGNAL="$sel_signal+scaffold"
-      elif [[ "$FALSIFY_SIGNAL" == *failline* ]]; then
-        FALSIFY_VERDICT=KILLED; FALSIFY_SIGNAL="$sel_signal+failline"
-      else
-        FALSIFY_VERDICT="$sel_verdict"; FALSIFY_SIGNAL="$sel_signal"
+      # No verdict, and on to the restore and debris check below like any run:
+      # a write cut short can leave the target truncated.
+      write_failed=1; FALSIFY_FOREIGN_FLAG=""
+    else
+      falsify_run_oracle "$tree" "$rest" "$out" "$clock" "s$slot.m$seq.r"
+      falsify_verdict "$FALSIFY_RC" "$out" "$FALSIFY_TIMED_OUT"
+      if [[ "$sel_verdict" != SURVIVED && "$rest" != "$oracle" ]]; then
+        # The subset timed out: the whole set's verdict is the timeout, unless
+        # the rest KILLS with a FAIL: line — or is UNPROVEN for a broken
+        # scaffold or a scratch that could not hold a file, which the whole
+        # set would be too (both are checked before a FAIL: line counts).
+        if [[ "$FALSIFY_VERDICT" == KILLED && "$FALSIFY_SIGNAL" == *failline* ]]; then
+          FALSIFY_SIGNAL="$sel_signal+failline"
+        elif [[ "$FALSIFY_VERDICT" == UNPROVEN && ( "$FALSIFY_SIGNAL" == *scaffold || "$FALSIFY_SIGNAL" == *artefact ) ]]; then
+          FALSIFY_SIGNAL="$sel_signal+${FALSIFY_SIGNAL##*+}"
+        else
+          FALSIFY_VERDICT="$sel_verdict"; FALSIFY_SIGNAL="$sel_signal"
+        fi
       fi
+      FALSIFY_MS=$(( FALSIFY_MS + ms_sel ))
+      run="$oracle"
     fi
-    FALSIFY_MS=$(( FALSIFY_MS + ms_sel ))
-    run="$oracle"
   fi
 
-  printf 'MUTANT|%s|%s|%s|%s|%s|%s|%s|%s\n' \
-    "$FALSIFY_VERDICT" "$ident" "$run" "$seq" "$lineno" \
-    "$FALSIFY_SIGNAL" "$FALSIFY_MS" "$text" > "$res"
+  if (( write_failed )); then
+    printf 'NOTE|write-failed|%s|could not apply the mutant to %s again for the rest of the set\n' "$ident" "$tree/$target" > "$res"
+  else
+    printf 'MUTANT|%s|%s|%s|%s|%s|%s|%s|%s\n' \
+      "$FALSIFY_VERDICT" "$ident" "$run" "$seq" "$lineno" \
+      "$FALSIFY_SIGNAL" "$FALSIFY_MS" "$text" > "$res"
+  fi
   if [[ -n "$pre_note" ]]; then printf '%s\n' "$pre_note" >> "$res"; fi
-  if [[ "$sel_verdict" == SURVIVED && "$FALSIFY_VERDICT" == KILLED ]]; then
+  if (( write_failed )); then
+    :
+  elif [[ "$sel_verdict" == SURVIVED && "$FALSIFY_VERDICT" == KILLED ]]; then
     printf 'NOTE|selection-miss|%s|selected %s survived; the rest of the set (%s) killed (%s)\n' \
       "$ident" "$sel" "$rest" "$FALSIFY_SIGNAL" >> "$res"
   elif [[ -n "$sel_verdict" && "$sel_verdict" != SURVIVED ]]; then
@@ -2594,7 +2605,7 @@ falsify_main() {
   # state in which nobody looks.
   printf 'ASSERTLESS|%s|%s\n' "$FR_T_ASSERTLESS" "$FR_T_KILLED"
   if (( FR_SELECT )); then
-    printf 'NOTE|selection-total|-|%s mutant(s) missed by their subset and killed by the rest of the set; %s re-run whole (a subset that neither killed with an assertion nor survived)\n' \
+    printf 'NOTE|selection-total|-|%s mutant(s) missed by their subset and killed by the rest of the set; %s re-run (a subset that neither killed with an assertion nor survived: the rest of the set after a timeout, the whole set otherwise)\n' \
       "$FR_SEL_MISS" "$FR_SEL_RERUN"
   fi
 

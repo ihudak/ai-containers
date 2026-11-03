@@ -1597,7 +1597,7 @@ FALSIFY_SELECT=yes fx_run "$RUN" "$CONF_A" "$FX" "$TMP/wit-sel-bad" --jobs 1 --c
 # stubbed to record each run's set, clock and mutated line and to answer as
 # scripted. Oracle set a,b,c at FR_TIMEOUT 5, so the whole set's clock is 15;
 # the map selects b for line 2.
-sel_decide() {   # <kill|timeout|hang|exit|debris> → the runs, then the result records
+sel_decide() {   # <scenario> → the runs, then the result records
   ( set +u
     # shellcheck source=/dev/null
     source "$RUN" >/dev/null 2>&1
@@ -1609,27 +1609,53 @@ sel_decide() {   # <kill|timeout|hang|exit|debris> → the runs, then the result
     # shellcheck disable=SC2034  # read by fr_run_mutant, sourced above
     { FR_SEL_ON["t.sh"]=1; FR_SEL["t.sh|2"]="b.sh"; }
     falsify_tree_fingerprint() { cat "$d/fp"; }
-    fr_seed_slot() { printf 'reseed\n' >> "$d/calls"; cp "$d/cache/t.sh" "$d/work/w0/t.sh"; : > "$d/fp"; }
+    fr_seed_slot() {
+      printf 'reseed\n' >> "$d/calls"
+      [[ "$sc" == reseedfail ]] && return 1
+      cp "$d/cache/t.sh" "$d/work/w0/t.sh"; : > "$d/fp"
+    }
+    # The second write fails (writefail); every other write is the real one.
+    eval "orig_$(declare -f falsify_write_mutant)"
+    nw=0
+    falsify_write_mutant() {
+      nw=$(( nw + 1 ))
+      if [[ "$sc" == writefail ]] && (( nw == 2 )); then printf 'trunc\n' > "$2"; return 1; fi
+      orig_falsify_write_mutant "$@"
+    }
+    # artefact: the scratch cannot hold a file, which falsify_verdict asks
+    # before it lets a FAIL: line count.
+    if [[ "$sc" == artefact ]]; then
+      FR_SCRATCH="$d/scratch"; mkdir -p "$FR_SCRATCH"
+      fr_scratch_intact() { return 1; }
+    fi
     declare -A ans=()   # <set> → "<rc> <timed-out> <output>"
     case "$sc" in
-      kill)    ans[b.sh]="1 0 FAIL: b" ;;
-      timeout) ans[b.sh]="143 1 hung"; ans[a.sh,c.sh]="1 0 FAIL: c" ;;
-      hang)    ans[b.sh]="143 1 hung"; ans[a.sh,c.sh]="0 0 PASS: a" ;;
-      exit)    ans[b.sh]="1 0 died"; ans[a.sh,b.sh,c.sh]="1 0 FAIL: a" ;;
-      debris)  ans[b.sh]="0 0 PASS: b"; ans[a.sh,c.sh]="0 0 PASS: a" ;;
+      kill)       ans[b.sh]="1 0 FAIL: b" ;;
+      timeout)    ans[b.sh]="143 1 hung"; ans[a.sh,c.sh]="1 0 FAIL: c" ;;
+      hang)       ans[b.sh]="143 1 hung"; ans[a.sh,c.sh]="0 0 PASS: a" ;;
+      artefact)   ans[b.sh]="143 1 hung"; ans[a.sh,c.sh]="1 0 FAIL: c" ;;
+      tscaffold)  ans[b.sh]="143 1 hung"; ans[a.sh,c.sh]="1 0 SCAFFOLD-FAILED: c" ;;
+      scafftime)  ans[b.sh]="143 1 SCAFFOLD-FAILED: b"; ans[a.sh,b.sh,c.sh]="1 0 FAIL: a" ;;
+      exit)       ans[b.sh]="1 0 died"; ans[a.sh,b.sh,c.sh]="1 0 FAIL: a" ;;
+      debris|reseedfail) ans[b.sh]="0 0 PASS: b"; ans[a.sh,c.sh]="0 0 PASS: a" ;;
+      writefail|foreign) ans[b.sh]="0 0 PASS: b"; ans[a.sh,c.sh]="0 0 PASS: a" ;;
     esac
+    nr=0
     # shellcheck disable=SC2034  # the FALSIFY_* it sets are read by fr_run_mutant
     falsify_run_oracle() {
       local a="${ans[$2]:-0 0 PASS: x}"
+      nr=$(( nr + 1 ))
       printf 'run %s %s %s\n' "$2" "$4" "$(sed -n 2p "$1/t.sh")" >> "$d/calls"
       FALSIFY_RC="${a%% *}"; a="${a#* }"; FALSIFY_TIMED_OUT="${a%% *}"
       printf '%s\n' "${a#* }" > "$3"
-      FALSIFY_MS=1000; FALSIFY_FOREIGN_FLAG=""; FALSIFY_TOKEN=tok
-      if [[ "$sc" == debris ]]; then printf 'dirty\n' > "$d/fp"; fi
+      FALSIFY_MS=1000; FALSIFY_FOREIGN_FLAG=""; FALSIFY_TOKEN="tok$nr"
+      if [[ "$sc" == foreign ]] && (( nr == 1 )); then FALSIFY_FOREIGN_FLAG=other; fi
+      if [[ "$sc" == debris || "$sc" == reseedfail ]]; then printf 'dirty\n' > "$d/fp"; fi
       return 0
     }
     fr_run_mutant 0 t.sh a.sh,b.sh,c.sh 1 2 cond-negate deadbeef MUTATED "$d/res"
     cat "$d/calls"; cut -d'|' -f1-7 "$d/res"
+    if [[ "$sc" == writefail ]]; then printf 'tree %s\n' "$(sed -n 2p "$d/work/w0/t.sh")"; fi
     rm -rf "$d" )
 }
 check "  … a subset that kills with an assertion decides alone, on the whole set's clock" \
@@ -1646,6 +1672,21 @@ check "  … a kill with no assertion is re-run with the WHOLE set" \
 check "  … and the second run gets a clean tree: a subset that leaves debris is re-seeded, and the mutant applied again" \
   "run b.sh 15 MUTATED|reseed|run a.sh,c.sh 15 MUTATED|reseed" \
   "$(sel_decide debris | grep -E '^(run|reseed)' | paste -sd'|' -)"
+check "  … after a timeout, a rest that is red only because the scratch cannot hold a file stays UNPROVEN" \
+  "UNPROVEN|timeout+artefact" "$(sel_decide artefact | awk -F'|' '$1 == "MUTANT" { print $2 "|" $7 }')"
+check "  … and so does one whose own setup broke" \
+  "UNPROVEN|timeout+scaffold" "$(sel_decide tscaffold | awk -F'|' '$1 == "MUTANT" { print $2 "|" $7 }')"
+check "  … a subset that timed out AND broke its setup is re-run with the whole set" \
+  "run b.sh 15 MUTATED|run a.sh,b.sh,c.sh 15 MUTATED|KILLED|exit+failline" \
+  "$(sel_decide scafftime | awk -F'|' '/^run / { print } $1 == "MUTANT" { print $2 "|" $7 }' | paste -sd'|' -)"
+check "  … a slot that cannot be re-seeded before the second run says so" \
+  "NOTE|reseed-failed" "$(sel_decide reseedfail | awk -F'|' '$1 == "NOTE" && $2 == "reseed-failed" { print $1 "|" $2; exit }')"
+check "  … a second write that fails records no verdict, says so, and leaves the target restored" \
+  "NOTE|write-failed|tree two" \
+  "$(sel_decide writefail | awk -F'|' '$1 == "MUTANT" { print "MUTANT" } $1 == "NOTE" { print $1 "|" $2 } /^tree / { print }' | paste -sd'|' -)"
+check "  … and a foreign flag the FIRST run saw is reported with that run's token" \
+  "NOTE|foreign-timeout-flag|t.sh:cond-negate:deadbeef|slot 0 held a timeout flag armed by other, not by this invocation, whose own token was tok1" \
+  "$(sel_decide foreign | grep '^NOTE|foreign-timeout-flag|')"
 check "  … FALSIFY_SELECT other than 0 or 1 is refused (exit 2)" "2" "$FX_RC"
 fx_run "$RUN" "$CONF_A" "$FX" "$TMP/wit-sel1" --jobs 1 --controls 0 --select-oracles
 check "  … a single-oracle row is run as before (exit 0)" "0" "$FX_RC"
