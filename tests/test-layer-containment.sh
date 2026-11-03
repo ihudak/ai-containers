@@ -367,7 +367,9 @@ fi
 # bash-floor.sh (see its comment); this asserts the workflow agrees with it.
 if [[ -z "$floor_img" ]]; then
   fail "no container image is mapped to floor $floor — suite-floor cannot test the claim"
-elif grep -qF "container: $floor_img" "$HERMETIC_YML"; then
+# Either form of the job's container: the scalar `container: <img>`, or the
+# mapping's `image: <img>`, which suite-floor needs for its `options: --init`.
+elif grep -qF "container: $floor_img" "$HERMETIC_YML" || grep -qF "image: $floor_img" "$HERMETIC_YML"; then
   pass "suite-floor runs $floor_img, matching the declared floor $floor"
 else
   fail "suite-floor does not run $floor_img — the declared floor $floor is untested"
