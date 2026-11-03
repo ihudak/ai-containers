@@ -53,7 +53,11 @@ T_LIBVERIFY="tests/lib-verify-repo.sh"
 T_ENTRYPOINT="${ENGINE_REL}entrypoint.sh"
 T_SBCOMMON="${ENGINE_REL}sandbox-common.sh"
 T_REPOSH="${ENGINE_REL}repo.sh"
-T_GROUPSH="${ENGINE_REL}group.sh"
+# The empty-reason gate below needs an EXECUTED-WHOLE row that is DEFERRED and
+# likely to stay so. It used group.sh's until falsify stage 2 activated that
+# (GAP-1, 2026-11-03). bump-sandbox-version.sh shares its oracle with the three
+# migration hooks, which is a reason about the oracle, not about coverage.
+T_DEFERWHOLE="${ENGINE_REL}bump-sandbox-version.sh"
 # gate 4c below needs a row that is DEFERRED, EXECUTED-PARTIAL, and likely to
 # STAY that way. install-tools.sh is the durable choice: its two unreached
 # functions (api_get, main) need the network and a real GitHub API, so no
@@ -65,11 +69,11 @@ T_INSTALLTOOLS="${ENGINE_REL}install-tools.sh"
 RE_TOOLSLIB="${T_TOOLSLIB//./\\.}"
 RE_ENTRYPOINT="${T_ENTRYPOINT//./\\.}"
 RE_SBCOMMON="${T_SBCOMMON//./\\.}"
-RE_GROUPSH="${T_GROUPSH//./\\.}"
+RE_DEFERWHOLE="${T_DEFERWHOLE//./\\.}"
 RE_INSTALLTOOLS="${T_INSTALLTOOLS//./\\.}"
 # The probe must have resolved to a path that really is in the map, or every
 # fixture below silently degrades to "no change" exactly as described above.
-for _t in "$T_TOOLSLIB" "$T_ENTRYPOINT" "$T_SBCOMMON" "$T_REPOSH" "$T_GROUPSH" "$T_LIBVERIFY" "$T_INSTALLTOOLS"; do
+for _t in "$T_TOOLSLIB" "$T_ENTRYPOINT" "$T_SBCOMMON" "$T_REPOSH" "$T_DEFERWHOLE" "$T_LIBVERIFY" "$T_INSTALLTOOLS"; do
   grep -q "|${_t}|\|^${_t}|" "$CONF" \
     || { printf 'FAIL: %s\n' "the layout probe resolved $_t, which has no row in targets.conf — every fixture below would edit nothing"; exit 1; }
 done
@@ -441,9 +445,10 @@ grep -qE '^ERROR: tests/run-all\.sh .*has no row' <<<"$out" \
 
 # A deferral must state why, for the same reason.
 f5b="$TMP/defer-empty.conf"
-sed "s@^#DEFERRED|${RE_GROUPSH}|EXECUTED-WHOLE|test-group-lifecycle\\.sh|-|.*\$@#DEFERRED|${T_GROUPSH}|EXECUTED-WHOLE|test-group-lifecycle.sh|-|@" "$CONF" > "$f5b"
+sed "s@^#DEFERRED|${RE_DEFERWHOLE}|EXECUTED-WHOLE|test-sandbox-schema\\.sh|-|.*\$@#DEFERRED|${T_DEFERWHOLE}|EXECUTED-WHOLE|test-sandbox-schema.sh|-|@" "$CONF" > "$f5b"
+cmp -s "$CONF" "$f5b" && fail "the empty-reason fixture edited nothing — no #DEFERRED| row for $T_DEFERWHOLE to empty"
 gate "$f5b"; out="$gate_out"
-grep -q "#DEFERRED| for $T_GROUPSH has an empty reason" <<<"$out" \
+grep -q "#DEFERRED| for $T_DEFERWHOLE has an empty reason" <<<"$out" \
   && pass "a #DEFERRED| row with an empty reason fails the gate" \
   || fail "a #DEFERRED| row with an empty reason passed the gate (output: $out)"
 

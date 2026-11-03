@@ -146,10 +146,15 @@ launch() {   # $1 = scenario dir, $2 = domains file, $3 = proxy file, [NAME=valu
   local scn="$1"
   mkdir -p "$scn/cap" "$scn/int"
   set -m
-  env PATH="$FAKE_BIN:$PATH" BLOCKED_INTERNAL_DIR="$scn/int" \
-      ALLOWLIST_DOMAINS_FILE="$2" ALLOWLIST_PROXY_DOMAINS_FILE="$3" \
-      FAKE_SCN="$scn" "${@:4}" \
-      bash "$REPO_DIR/capture-blocked-traffic.sh" "$scn/cap" >"$scn/stdout" 2>&1 &
+  # One subshell exporting the scenario, then the script on a line of its own:
+  # derive-targets.sh reads `bash <file>` at command position, and a `bash`
+  # behind an `env …` continuation is not one it can see.
+  (
+    export PATH="$FAKE_BIN:$PATH" BLOCKED_INTERNAL_DIR="$scn/int" \
+      ALLOWLIST_DOMAINS_FILE="$2" ALLOWLIST_PROXY_DOMAINS_FILE="$3" FAKE_SCN="$scn"
+    for kv in "${@:4}"; do export "${kv?}"; done
+    bash "$REPO_DIR/capture-blocked-traffic.sh" "$scn/cap"
+  ) >"$scn/stdout" 2>&1 &
   LAUNCH_PGID=$!
   set +m
   LAUNCHED+=("$LAUNCH_PGID")
