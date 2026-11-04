@@ -22,6 +22,7 @@ and the constraints the fix must keep.
 | PLAT-3 | macOS (Docker Desktop, Colima) | gap GAP-11 | The mount-swap check is skipped there altogether |
 | PLAT-4 | x86-64 CPU without AVX | bug SVC-2 | `mongo=ON` reports "no mongo server, rebuild" instead of the real failure |
 | PLAT-5 | macOS (BSD userland) | bugs PRJ-10, PRJ-11 | The no-follow file writes take their non-Linux branches there, and nobody has run them |
+| PLAT-7 | macOS without the Command Line Tools | bug GIT-24 | A launch where `/usr/bin/git` is only the installer shim must not run it, and must take the no-git branch |
 | PLAT-6 | Windows + WSL2 + Docker Desktop | bugs PRJ-10, PRJ-11 | Re-run the hermetic suite at current `main`: the new no-follow tests rename, open `/dev/fd/N` and `noclobber`-create on drvfs — **done**, passed (TST-25 found and fixed) |
 
 ## Who picks up what (updated 2026-11-03)
@@ -35,7 +36,7 @@ reports by editing the entry's **Status** line (and docs/testing.md's
 |---|---|---|---|
 | **Linux agent** (review machine) | Linux x86-64, native Docker Engine | the falsify work GAP-1 to GAP-4 | anything below |
 | **WSL agent** | Windows + WSL2 (Ubuntu distro) + **Docker Desktop** with WSL integration. **Not** a native Docker Engine in the distro | **PLAT-6** | PLAT-2's remaining half: it needs a Docker Engine installed natively in the distro. Leave that open unless one is installed |
-| **Mac agent** | macOS, Docker Desktop and/or Colima | **PLAT-3** (GAP-11), **PLAT-5** | — |
+| **Mac agent** | macOS, Docker Desktop and/or Colima | **PLAT-3** (GAP-11), **PLAT-5**, **PLAT-7** | — |
 | *nobody* | x86-64 CPU without AVX | PLAT-4: closed as not supported | — |
 
 Any change of code an agent makes follows the rule at the top: reproduce
@@ -113,6 +114,17 @@ first, then fix test-first.
 - **Run:** `bash tests/run-all.sh test-sync-no-follow.sh test-init-no-follow.sh test-sync-project.sh test-project-init.sh test-migrate-runme.sh`, then the whole of Phase 5 (`PHASES=5 bash ./verify-on-host.sh`). Record `rsync --version`'s first line, and the result in docs/testing.md.
 - **A defect looks like:** a `FAIL:` line in those tests. In particular, a planted link that is written through, a launcher that loses its `+x`, or a `sandbox.local.env` backup with a mode other than the original's.
 - **Fix constraints, if one reproduces:** never fall back to writing through a name. A branch that cannot do the check safely must refuse the write with the `ERROR:` the Linux path prints, not skip the check.
+
+## PLAT-7: macOS — a launch where `/usr/bin/git` is the Command Line Tools shim
+
+- **Status: OPEN.**
+- **Picked up by:** the **Mac agent**.
+- **Platform:** macOS with the Command Line Tools removed (`sudo rm -rf /Library/Developer/CommandLineTools`, or a fresh user account on a Mac that never had them), no other git on `PATH`, any Docker.
+- **Source:** bugs review GIT-24. `sandbox.sh: _git_usable()` decides whether git runs. When `command -v git` is `/usr/bin/git` on Darwin and the directory `xcode-select -p` names holds no executable `usr/bin/git`, it counts git as absent without running it, because running the shim opens the installer. Otherwise it runs the shim once, and one that fails counts as absent too. Written without running it.
+- **Run:** `./sandbox.sh open ..` in a project's `.ai-containers/`, launched directly, not through `runme.sh` (its `./build.sh` runs git for the image label, bugs review GIT-26), and with `VAULT_PATH`, `SPECS_PATH`, `DOCS_PATH` and `ARCHITECTURE_REPO_PATH` unset (the pointer check runs git too, GIT-25). Do it twice: on a Mac that never had the Command Line Tools, and after removing them. Record `xcode-select -p`'s output and exit status in both.
+- **Expected:** no installer dialog; one `WARNING: git is not installed on this host, or does not run`; `.git/config.worktree` made in the project's repository.
+- **A defect looks like:** the installer dialog opening (the shim was run), or no WARNING (git was taken as present). Also record whether `xcode-select -p` fails with Xcode.app installed but no Command Line Tools: then `/usr/bin/git` works, and taking it as absent would only cost the checks git makes.
+- **Fix constraints, if one reproduces:** a git that cannot be shown to run counts as absent; never fall back to a parser.
 
 ## PLAT-6: WSL2 + Docker Desktop — re-run the hermetic suite at current `main`
 
