@@ -2073,7 +2073,8 @@ fi
 # below is read by git and by the fallback with git off PATH, and the two must
 # agree; so must a missing file, and one exactly at the cap, which the fallback
 # must read, not refuse. Not every spelling git accepts is here: the fallback
-# reads a quoted value, a unit suffix and a leading + differently (GIT-24).
+# reads "true", 1k, +1, 0x1, a key on its section's header line and a
+# continued line differently, which GIT-24 records (open).
 fns97="$TMP/fns97.sh"
 for f97 in _term _timeout_prefix _rd_prep _rd _rd_fail _git_file_config _git_config_bool; do
   awk -v f="$f97() {" 'index($0, f) == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox.sh"
@@ -2093,6 +2094,11 @@ cfg97=(
   '[Extensions]\n\tWorktreeConfig = TRUE\n'
   '[extensions]\n\tworktreeConfig = true ; a comment\n'
   '[extensions]\n\tworktreeConfig = true # a comment\n'
+  '[extensions]\n\tworktreeConfig = 0k\n'
+  '[extensions]\n\tworktreeConfig = 0x0\n'
+  '[extensions]\n\tworktreeConfig = +0\n'
+  '[extensions]\n\tworktreeConfig = ""\n'
+  '[extensions]\n\tworktreeConfig =\n'
   '[core]\n\tworktreeConfig = true\n'
   '[extensions]\n\tworktreeConfigX = true\n'
   '[extensions]\n\tworktreeConfig = false\n[core]\n\tworktreeConfig = true\n'
