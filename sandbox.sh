@@ -2008,9 +2008,13 @@ _rd_left() {
   _rd_lim=0
   [[ -n "$_rd_dir" && -f "$_rd_dir/ok" ]] || return 0
   if [[ -e "$c" || -L "$c" ]]; then
-    [[ -f "$c" && ! -L "$c" ]] || return 0
+    # A count that is not a regular file, or a line in it that is not one, ends
+    # the longer bound for the launch: `ok` goes now, not only when a slow read
+    # tries to add to it (whether a read cut off at the bound counts as slow is
+    # a race; G99 failed on it at the floor).
+    [[ -f "$c" && ! -L "$c" ]] || { rm -f "$_rd_dir/ok"; return 0; }
     while IFS= read -r n; do
-      [[ "$n" =~ ^[0-9]{1,9}$ ]] || return 0
+      [[ "$n" =~ ^[0-9]{1,9}$ ]] || { rm -f "$_rd_dir/ok"; return 0; }
       spent=$(( spent + 10#$n ))
     done < "$c"
   fi
