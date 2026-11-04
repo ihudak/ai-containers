@@ -29,7 +29,11 @@ pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails+1)); }
 
 TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
-trap 'rm -rf "$TMP"' EXIT
+# GUARDED, because this file forks (GIT-28's bounded and interrupted checks): a
+# background job inherits the EXIT trap, and an unguarded one could delete the
+# fixture the script is still using (tests/test-exit-trap-ownership.sh).
+TMP_OWNER="$BASHPID"
+trap '[[ "$BASHPID" == "$TMP_OWNER" ]] && rm -rf "$TMP"' EXIT
 
 [[ -f "$REPO_DIR/version.sh" ]] \
   && pass "version.sh exists" \
@@ -403,6 +407,534 @@ got="$(env -u SANDBOX_CONF bash -c "source '$REPO_DIR/version.sh'; version_schem
 [[ "$got" == "unknown" ]] \
   && pass "version_schema of a directory with no sandbox.conf is unknown" \
   || fail "version_schema of a directory with no sandbox.conf is unknown (got '$got')"
+
+# ── GIT-28: git reads nothing of the engine checkout but its objects ─────────
+# version_engine ran `git describe --tags --dirty` in the engine checkout, whose
+# config an agent can reach through an include when a launch mounts it: --dirty
+# ran core.fsmonitor and a clean filter, a missing commit started a fetch that
+# ran the remote's uploadpack and a credential helper, a FIFO an include named
+# hung it, and copying the checkout's files for git let planted links fill
+# memory and TMPDIR. Now git runs in a directory of version.sh's own, on refs
+# read here as data, and -dirty is not reported (the user's choice).
+ver28() {  # <dir> → version_engine's stdout and stderr
+  bash -c 'source "$1/version.sh"; _ver_secs="${VER28_SECS:-10}"; version_engine "$2"' _ "$REPO_DIR" "$1" 2>&1
+}
+# ver28 in a process group of its own, KILLed whole at <seconds>: killing the
+# shell alone left the git it ran blocked on a FIFO for good.
+ver28_bounded() {  # <seconds> <dir> <out-file> → 0, or 124 when cut off
+  local secs="$1" pid waited=0
+  set -m
+  VER28_SECS=2 bash -c 'source "$1/version.sh"; _ver_secs="$VER28_SECS"; version_engine "$2"' _ "$REPO_DIR" "$2" > "$3" 2>&1 &
+  pid=$!
+  set +m
+  vb28="$pid"   # its process group, which anything it left running is still in
+  while kill -0 "$pid" 2>/dev/null && (( waited < secs * 10 )); do sleep 0.1; waited=$(( waited + 1 )); done
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -KILL -"$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null
+    return 124
+  fi
+  wait "$pid"
+}
+ran28() {  # what ran since the last call, by the markers the programs leave
+  local r=""
+  [[ -e "$TMP/ran28-fsmon" ]] && r+="core.fsmonitor "
+  [[ -e "$TMP/ran28-clean" ]] && r+="a clean filter "
+  [[ -e "$TMP/ran28-fetch" ]] && r+="a fetch"
+  rm -f "$TMP/ran28-fsmon" "$TMP/ran28-clean" "$TMP/ran28-fetch"
+  printf '%s' "$r"
+}
+gq28() { git -C "$g28" -c core.fsmonitor=false -c filter.pwn28.clean=cat "$@" >/dev/null 2>&1; }
+want28() { git -C "$1" -c core.fsmonitor=false describe --tags 2>/dev/null; }   # git's own answer
+# SIGINT reaches the check only where it is not ignored: a job started in the
+# background of a shell without job control ignores it, as the falsify tier's
+# oracles are started, and nothing undoes that but GNU env's --default-signal.
+sigpre28=()
+if env --default-signal=INT true 2>/dev/null; then sigpre28=(env --default-signal=INT); fi
+g28="$TMP/g28"; mkdir -p "$g28"
+printf '*.c filter=pwn28\n' > "$g28/.gitattributes"; printf 'int x;\n' > "$g28/a.c"; printf 'f\n' > "$g28/f"
+if mkrepo "$g28" v2.8.0; then
+  printf '#!/bin/sh\ntouch "%s"\ncat\n' "$TMP/ran28-clean" > "$TMP/clean28"
+  printf '#!/bin/sh\ntouch "%s"\n' "$TMP/ran28-fsmon" > "$TMP/fsmon28"
+  chmod +x "$TMP/clean28" "$TMP/fsmon28"
+  git -C "$g28" config filter.pwn28.clean "$TMP/clean28"
+  git -C "$g28" config core.fsmonitor "$TMP/fsmon28"
+  # A tracked file changed: the version is the tag, no -dirty, and nothing the
+  # config names runs (describe --dirty ran both programs).
+  printf 'int y;\n' > "$g28/a.c"; touch "$g28/f"; ran28 >/dev/null
+  got="$(ver28 "$g28")"; r="$(ran28)"
+  [[ "$got" == v2.8.0 && -z "$r" ]] \
+    && pass "GIT-28 a changed tree gives the tag with no -dirty, and nothing the config names runs" \
+    || fail "GIT-28 a changed tree (got '$got'; ran: ${r:-nothing})"
+  gq28 checkout -q -- a.c
+  # A commit after the tag, in loose refs and then packed: git's own answer.
+  printf 'g\n' >> "$g28/f"; gq28 commit -qam two
+  got="$(ver28 "$g28")"; w="$(want28 "$g28")"
+  [[ "$got" == v2.8.0-1-g* && "$got" == "$w" ]] && pass "GIT-28 loose refs give git's own describe" \
+    || fail "GIT-28 loose refs (got '$got', git says '$w')"
+  gq28 pack-refs --all
+  got="$(ver28 "$g28")"
+  [[ "$got" == "$w" && ! -e "$g28/.git/refs/tags/v2.8.0" ]] && pass "GIT-28 packed refs give git's own describe" \
+    || fail "GIT-28 packed refs (got '$got', git says '$w')"
+  # A loose tag over a packed one of the same name, as git reads them; and
+  # core.abbrev, carried as data.
+  gq28 tag -f -a v2.8.0 -m again
+  git -C "$g28" config core.abbrev 12
+  got="$(ver28 "$g28")"; w="$(want28 "$g28")"
+  [[ "$got" == v2.8.0 && "$got" == "$w" ]] && pass "GIT-28 a loose tag is read over the packed one" \
+    || fail "GIT-28 a loose tag over a packed one (got '$got', git says '$w')"
+  gq28 commit -qam three --allow-empty
+  got="$(ver28 "$g28")"; w="$(want28 "$g28")"
+  [[ "$got" == "$w" && "${got##*-g}" =~ ^[0-9a-f]{12}$ ]] && pass "GIT-28 core.abbrev is carried" \
+    || fail "GIT-28 core.abbrev (got '$got', git says '$w')"
+  git -C "$g28" config --unset core.abbrev
+  # A default object format other than the repository's is not taken.
+  got="$(GIT_DEFAULT_HASH=sha256 ver28 "$g28")"; w="$(want28 "$g28")"
+  [[ "$got" == "$w" ]] && pass "GIT-28 GIT_DEFAULT_HASH is not the repository's format" \
+    || fail "GIT-28 GIT_DEFAULT_HASH=sha256 (got '$got', git says '$w')"
+  # A default ref format of reftable is not the files this writes (review of the
+  # GIT-28 fix): every version came out unknown.
+  printf '[init]\n\tdefaultRefFormat = reftable\n' > "$TMP/gc28"
+  got="$(GIT_CONFIG_GLOBAL="$TMP/gc28" ver28 "$g28")"
+  [[ "$got" == "$w" ]] && pass "GIT-28 a reftable default ref format is not taken" \
+    || fail "GIT-28 init.defaultRefFormat=reftable (got '$got', git says '$w')"
+  # Links planted among the refs, the objects and the index are never read: one
+  # to /dev/zero took git to gigabytes in under a second. Memory capped where
+  # ulimit -v works, so a regression cannot take the host's.
+  ln -s /dev/zero "$g28/.git/refs/tags/zero28"
+  mkdir -p "$g28/.git/objects/info"; ln -s /dev/zero "$g28/.git/objects/info/alternates"
+  mv "$g28/.git/index" "$TMP/index28"; ln -s /dev/zero "$g28/.git/index"; t28=$SECONDS
+  got="$(bash -c 'ulimit -v 4000000 2>/dev/null; source "$1/version.sh"; version_engine "$2"' _ "$REPO_DIR" "$g28" 2>&1)"; e28=$(( SECONDS - t28 ))
+  rm -f "$g28/.git/refs/tags/zero28" "$g28/.git/objects/info/alternates" "$g28/.git/index"; mv "$TMP/index28" "$g28/.git/index"
+  [[ "$got" == "$w" ]] && (( e28 < 5 )) && pass "GIT-28 links to /dev/zero among the refs, the objects and the index are not read" \
+    || fail "GIT-28 links to /dev/zero (got '$got' in $e28 s)"
+  # The branch HEAD names, as a link: no answer, rather than reading it.
+  b28="$(git -C "$g28" symbolic-ref HEAD)"; cp "$g28/.git/$b28" "$TMP/branch28" 2>/dev/null || git -C "$g28" rev-parse HEAD > "$TMP/branch28"
+  rm -f "$g28/.git/$b28"; ln -s /dev/zero "$g28/.git/$b28"
+  got="$(bash -c 'ulimit -v 4000000 2>/dev/null; source "$1/version.sh"; version_engine "$2"' _ "$REPO_DIR" "$g28" 2>&1)"
+  rm -f "$g28/.git/$b28"; cp "$TMP/branch28" "$g28/.git/$b28"
+  [[ "$got" == unknown ]] && pass "GIT-28 a branch that is a link gives no answer" || fail "GIT-28 a branch that is a link (got '$got')"
+  # Hard links of a big file into refs/tags, in a directory you cannot write:
+  # each is read 100 bytes at most, and TMPDIR is left empty.
+  mkdir -p "$TMP/tmp28h" "$g28/.git/refs/tags/ro28"; dd if=/dev/zero of="$TMP/big28" bs=1048576 count=8 2>/dev/null
+  for i28 in 1 2 3 4; do ln "$TMP/big28" "$g28/.git/refs/tags/ro28/h$i28" 2>/dev/null; done
+  chmod 555 "$g28/.git/refs/tags/ro28"
+  got="$(TMPDIR="$TMP/tmp28h" ver28 "$g28")"
+  chmod 755 "$g28/.git/refs/tags/ro28"; rm -rf "$g28/.git/refs/tags/ro28" "$TMP/big28"
+  [[ "$got" == "$w" && -z "$(ls -A "$TMP/tmp28h")" ]] \
+    && pass "GIT-28 hard links into a read-only tags directory: not copied, TMPDIR left empty" \
+    || fail "GIT-28 hard links into a read-only tags directory (got '$got'; left: $(ls -A "$TMP/tmp28h" | head -1))"
+  # A config value with a newline in it prints a line of its own: not decided on.
+  git -C "$g28" config core.abbrev "$(printf '8\nextensions.objectformat sha256')"
+  got="$(ver28 "$g28")"
+  git -C "$g28" config --unset core.abbrev
+  [[ "$got" == unknown ]] && pass "GIT-28 a config value with a newline in it is not decided on" \
+    || fail "GIT-28 a config value with a newline (got '$got')"
+  # Interrupted while it works: its temporary directory goes with it, and the
+  # command it was running (a slow ln here).
+  mkdir -p "$TMP/slow28" "$TMP/tmpsig28"
+  printf '#!/bin/sh\necho "$$" > "%s"\nexec sleep 5\n' "$TMP/ln28.pid" > "$TMP/slow28/ln"; chmod +x "$TMP/slow28/ln"
+  for sig28 in INT TERM HUP; do
+    if [[ "$sig28" == INT && -n "$(${sigpre28[@]+"${sigpre28[@]}"} bash -c 'trap -p INT')" ]]; then
+      printf 'NOTE: SIGINT is ignored where this runs; the SIGINT check is not applicable\n'
+      continue
+    fi
+    set -m
+    TMPDIR="$TMP/tmpsig28" PATH="$TMP/slow28:$PATH" ${sigpre28[@]+"${sigpre28[@]}"} bash -c 'source "$1/version.sh"; version_engine "$2"' _ "$REPO_DIR" "$g28" >/dev/null 2>&1 &
+    p28=$!
+    set +m
+    w28=0; while [[ ! -s "$TMP/ln28.pid" ]] && kill -0 "$p28" 2>/dev/null && (( w28 < 100 )); do sleep 0.1; w28=$(( w28 + 1 )); done
+    saw28="$(ls -A "$TMP/tmpsig28")"
+    kill -"$sig28" -"$p28" 2>/dev/null; wait "$p28" 2>/dev/null
+    w28=0; while [[ -n "$(ls -A "$TMP/tmpsig28")" ]] && (( w28 < 30 )); do sleep 0.1; w28=$(( w28 + 1 )); done
+    sleep 0.3; c28="$(cat "$TMP/ln28.pid" 2>/dev/null)"
+    [[ -n "$saw28" && -z "$(ls -A "$TMP/tmpsig28")" && -n "$c28" ]] && ! kill -0 "$c28" 2>/dev/null \
+      && pass "GIT-28 a check stopped by SIG$sig28 while it works removes its temporary directory and what it ran" \
+      || fail "GIT-28 a check stopped by SIG$sig28 (made: '${saw28:-nothing}'; left: '$(ls -A "$TMP/tmpsig28")'; ln ${c28:-?} $(kill -0 "${c28:-0}" 2>/dev/null && echo running || echo gone))"
+    if [[ -n "$c28" ]]; then kill -KILL "$c28" 2>/dev/null; fi; rm -f "$TMP/ln28.pid"; rm -rf "${TMP:?}/tmpsig28/"*
+  done
+  # No temporary directory to be had: no answer.
+  got="$(TMPDIR="$TMP/no-such-tmp28" ver28 "$g28")"
+  [[ "$got" == unknown ]] && pass "GIT-28 where no temporary directory can be made, the version is unknown" \
+    || fail "GIT-28 with no temporary directory (got '$got')"
+  # A shell with no descriptor left for _ver_run's {fd}: it has started the
+  # command all the same, which wrote on into the temporary directory as it was
+  # removed and left it behind.
+  mkdir -p "$TMP/fd28"
+  if bash -c 'ulimit -n 10' 2>/dev/null; then
+    for _ in 1 2 3; do
+      got="$(TMPDIR="$TMP/fd28" bash -c 'ulimit -n 10; source "$1/version.sh"; version_engine "$2"' _ "$REPO_DIR" "$g28" 2>&1)"
+    done
+    sleep 0.5
+    [[ "$got" == unknown && -z "$(ls -A "$TMP/fd28")" ]] \
+      && pass "GIT-28 with no descriptor to spare, the version is unknown, nothing else is said, and nothing is left in TMPDIR" \
+      || fail "GIT-28 with no descriptor to spare (got '$got'; left: $(ls -A "$TMP/fd28" | tr '\n' ' '))"
+  else
+    printf 'NOTE: ulimit -n 10 is refused here; the descriptor check is not applicable\n'
+  fi
+  # A linked worktree: its own HEAD, the common refs.
+  if gq28 worktree add -q "$TMP/wt28" && git -C "$TMP/wt28" -c user.email=t@t -c user.name=t commit -q --allow-empty -m wt; then
+    got="$(ver28 "$TMP/wt28")"; w="$(want28 "$TMP/wt28")"
+    [[ "$got" == "$w" && "$got" != "$(ver28 "$g28")" ]] && pass "GIT-28 a linked worktree gives its own HEAD's describe" \
+      || fail "GIT-28 a linked worktree (got '$got', git says '$w')"
+  else
+    fail "GIT-28 scaffold: git worktree add failed"
+  fi
+  # Called in the caller's own shell, not in $(…): no variable of the caller's
+  # changes, and nothing is left in TMPDIR.
+  mkdir -p "$TMP/tmp28"; w="$(want28 "$g28")"
+  got="$(TMPDIR="$TMP/tmp28" bash -c 'source "$1/version.sh"; g=keep; version_engine "$2"; printf " %s" "$g"' _ "$REPO_DIR" "$g28" 2>&1)"
+  [[ "$got" == "$w keep" && -z "$(ls -A "$TMP/tmp28")" ]] \
+    && pass "GIT-28 a direct call leaves the caller's variables and TMPDIR as they were" \
+    || fail "GIT-28 a direct call (got '$got'; left in TMPDIR: $(ls -A "$TMP/tmp28" | head -1))"
+else
+  fail "GIT-28 scaffold: could not build a tagged repo"
+fi
+# A partial clone whose missing commit git would fetch, through config allowing
+# the file protocol by name: the config is never read, so nothing is fetched.
+p28="$TMP/p28"; mkdir -p "$p28"
+if mkrepo "$p28" v2.8.8 && printf 'p\n' > "$p28/p" && git -C "$p28" add p && git -C "$p28" commit -qm two; then
+  # HEAD's own commit missing: describe must parse it, and fetches it.
+  c1="$(git -C "$p28" rev-parse HEAD)"; git init -q --bare "$TMP/remote28.git"
+  printf '#!/bin/sh\ntouch "%s"\nexit 1\n' "$TMP/ran28-fetch" > "$TMP/up28"; chmod +x "$TMP/up28"
+  git -C "$p28" config core.repositoryformatversion 1
+  git -C "$p28" config extensions.partialClone p
+  git -C "$p28" config remote.p.promisor true
+  git -C "$p28" config remote.p.url "$TMP/remote28.git"
+  git -C "$p28" config remote.p.uploadpack "$TMP/up28"
+  git -C "$p28" config protocol.file.allow always
+  rm -f "$p28/.git/objects/${c1:0:2}/${c1:2}"
+  # The scaffold's premise: plain git, asked the same, does fetch.
+  git -C "$p28" -c core.fsmonitor=false describe --tags >/dev/null 2>&1
+  pre28="$([[ -e "$TMP/ran28-fetch" ]] && echo yes)"; rm -f "$TMP/ran28-fetch"
+  ver28 "$p28" >/dev/null
+  [[ -n "$pre28" && ! -e "$TMP/ran28-fetch" ]] \
+    && pass "GIT-28 a missing object is not fetched: the checkout's config is never read" \
+    || fail "GIT-28 a missing object (git itself fetches it: ${pre28:-no, so this check cannot tell}; version.sh ran uploadpack: $([[ -e "$TMP/ran28-fetch" ]] && echo yes || echo no))"
+else
+  fail "GIT-28 scaffold: could not build the partial-clone fixture"
+fi
+# A shallow clone: its shallow file is written for git, which otherwise looks
+# for parents the clone does not have.
+sh28="$TMP/sh28src"; mkdir -p "$sh28"
+if mkrepo "$sh28" v2.8.4 && git -C "$sh28" commit -q --allow-empty -m a && git -C "$sh28" commit -q --allow-empty -m b \
+   && git -C "$sh28" tag -a v2.8.5 -m v HEAD~1 && git -C "$sh28" commit -q --allow-empty -m c \
+   && git clone -q --depth 3 "file://$sh28" "$TMP/sh28" 2>/dev/null && [[ -f "$TMP/sh28/.git/shallow" ]]; then
+  : > "$TMP/sh28/project-init.sh"
+  got="$(ver28 "$TMP/sh28")"; w="$(want28 "$TMP/sh28")"
+  [[ -n "$w" && "$got" == "$w" ]] && pass "GIT-28 a shallow clone gives git's own describe" \
+    || fail "GIT-28 a shallow clone (got '$got', git says '$w')"
+else
+  fail "GIT-28 scaffold: could not make a shallow clone"
+fi
+# _ver_run whose exec has no descriptor left kills what it started, and only
+# that: a job of the caller's, running since before, is left alone.
+if bash -c 'ulimit -n 10' 2>/dev/null; then
+  got="$(bash -c 'source "$1/version.sh"; sleep 30 & j=$!; ulimit -n 10
+           _ver_run o sh -c "echo \$\$ > \"\$0\"; exec sleep 30" "$2"; r=$?
+           sleep 0.3; s=$(cat "$2")
+           kill -0 "$s" 2>/dev/null && a=alive || a=gone
+           kill -0 "$j" 2>/dev/null && b=alive || b=gone
+           kill "$j" "$s" 2>/dev/null; printf "%s %s %s" "$r" "$a" "$b"' _ "$REPO_DIR" "$TMP/pid28e" 2>/dev/null)"
+  [[ "$got" == "1 gone alive" ]] \
+    && pass "GIT-28 _ver_run with no descriptor kills the command it started, and not the caller's job" \
+    || fail "GIT-28 _ver_run with no descriptor (status, its command, the caller's job: '$got')"
+else
+  printf 'NOTE: ulimit -n 10 is refused here; the descriptor check is not applicable\n'
+fi
+# A packed-refs padded with newlines, and a tag whose name ends in them: read in
+# time linear in their size. A trim of trailing newlines in bash was quadratic,
+# and a planted 2 MiB file held --version for hours, SIGINT and all (sixth
+# review of the GIT-28 fix).
+n28="$TMP/n28"; mkdir -p "$n28"
+if mkrepo "$n28" v2.8.3 && git -C "$n28" pack-refs --all; then
+  w="$(want28 "$n28")"
+  awk 'BEGIN { for (i = 0; i < 200000; i++) printf "\n" }' >> "$n28/.git/packed-refs"
+  # An empty tag file must not cost the answer either.
+  nl28="$(printf 'x%0200dx' 0 | tr 0 '\n')"; nl28="${nl28#x}"; nl28="${nl28%x}"
+  : > "$n28/.git/refs/tags/nl28$nl28"; : > "$n28/.git/refs/tags/empty28"
+  t28=$SECONDS; ver28_bounded 20 "$n28" "$TMP/out28n"; rc=$?; e28=$(( SECONDS - t28 ))
+  [[ "$rc" == 0 && "$(cat "$TMP/out28n")" == "$w" ]] && (( e28 < 8 )) \
+    && pass "GIT-28 a packed-refs padded with newlines, a tag name ending in them and an empty tag are read in linear time" \
+    || fail "GIT-28 newlines in packed-refs and a tag name (rc=$rc in $e28 s; got '$(tr '\n' ';' < "$TMP/out28n")', git says '$w')"
+else
+  fail "GIT-28 scaffold: could not build the packed-refs fixture"
+fi
+# A shallow clone whose tags were fetched to a depth of their own: git stops at
+# the shallow boundary, and so must the repository written for it, or it walks
+# on to a tag git cannot reach (sixth review of the GIT-28 fix).
+sd28="$TMP/sd28src"; mkdir -p "$sd28"
+if mkrepo "$sd28" v2.8.2; then
+  for i28 in $(seq 1 20); do git -C "$sd28" commit -q --allow-empty -m "c$i28"; done
+  git -C "$sd28" tag -d v2.8.2 >/dev/null && git -C "$sd28" tag -a v2.8.2 -m v HEAD~10
+  if git clone -q --depth 10 "file://$sd28" "$TMP/sd28" 2>/dev/null && git -C "$TMP/sd28" fetch -q --depth 10 --tags 2>/dev/null; then
+    : > "$TMP/sd28/project-init.sh"
+    # No tag within it: git describes nothing, and the answer is the short commit.
+    got="$(ver28 "$TMP/sd28")"; w="$(want28 "$TMP/sd28")"
+    [[ -n "$w" ]] || w="$(git -C "$TMP/sd28" rev-parse --short HEAD)"
+    [[ "$got" == "$w" && "$got" != v* ]] && pass "GIT-28 a shallow clone stops at its shallow boundary, as git does" \
+      || fail "GIT-28 a shallow clone's boundary (got '$got', git says '$w')"
+  else
+    fail "GIT-28 scaffold: could not make the shallow clone"
+  fi
+else
+  fail "GIT-28 scaffold: could not build the shallow source"
+fi
+# git is asked with a cap on what it allocates: a forged loose object that
+# declared 1.5 GiB took git to that much memory (sixth review of the GIT-28
+# fix). Seen in the environment of the describe it runs.
+mkdir -p "$TMP/al28"; : > "$TMP/al28.log"
+printf '#!/bin/sh\nprintf "%%s %%s\\n" "${GIT_ALLOC_LIMIT:-unset}" "$*" >> "%s"\nexec %s "$@"\n' "$TMP/al28.log" "$(command -v git)" > "$TMP/al28/git"
+chmod +x "$TMP/al28/git"
+PATH="$TMP/al28:$PATH" ver28 "$gtag" >/dev/null
+# git config too, which reads a config a port's base/ mounted alone leaves
+# writable (seventh review).
+grep -q '^64m .*describe --tags' "$TMP/al28.log" && grep -q '^64m config --file' "$TMP/al28.log" \
+  && ! grep -q -e '^unset .*describe' -e '^unset config --file' "$TMP/al28.log" \
+  && pass "GIT-28 git describes, and reads the config, with GIT_ALLOC_LIMIT set" \
+  || fail "GIT-28 GIT_ALLOC_LIMIT ($(grep -e describe -e 'config --file' "$TMP/al28.log" | tr '\n' ';'))"
+# A loose tag written without its newline is read, as git reads it.
+nn28="$TMP/nn28"; mkdir -p "$nn28"
+if mkrepo "$nn28"; then
+  printf '%s' "$(git -C "$nn28" rev-parse HEAD)" > "$nn28/.git/refs/tags/v2.8.1-nonl"
+  got="$(ver28 "$nn28")"; w="$(want28 "$nn28")"
+  [[ "$got" == v2.8.1-nonl && "$got" == "$w" ]] && pass "GIT-28 a loose tag without its newline is read" \
+    || fail "GIT-28 a loose tag without its newline (got '$got', git says '$w')"
+else
+  fail "GIT-28 scaffold: could not build the no-newline fixture"
+fi
+# A recorded engine-version is its first line, whitespace dropped, as before.
+ew28="$TMP/ew28"; mkdir -p "$ew28"; printf '  v9.8.7 \t\nsecond line\n' > "$ew28/engine-version"
+got="$(ver28 "$ew28")"
+[[ "$got" == v9.8.7 ]] && pass "GIT-28 a recorded engine-version is its first line, whitespace dropped" \
+  || fail "GIT-28 a recorded engine-version's first line (got '$got')"
+# A recorded engine-version that is a sparse file of no newline: read 4096
+# bytes at most, at once (`head -1` read all of it).
+ev28="$TMP/ev28"; mkdir -p "$ev28"
+if dd if=/dev/null of="$ev28/engine-version" bs=1 count=0 seek=17179869184 2>/dev/null; then
+  ver28_bounded 15 "$ev28" "$TMP/out28e"; rc=$?
+  [[ "$rc" == 0 && "$(cat "$TMP/out28e")" == unknown ]] \
+    && pass "GIT-28 a huge engine-version with no newline is read 4096 bytes at most" \
+    || fail "GIT-28 a huge engine-version (rc=$rc; $(tr '\n' ';' < "$TMP/out28e"))"
+else
+  printf 'NOTE: could not make a sparse file here; the engine-version check is not applicable\n'
+fi
+# A port's base/: the enclosing repository's describe.
+m28="$TMP/m28"; mkdir -p "$m28/base"; : > "$m28/base/project-init.sh"
+if git -C "$m28" init -q && git -C "$m28" add -A && git -C "$m28" -c user.email=t@t -c user.name=t commit -qm m \
+   && git -C "$m28" -c user.email=t@t -c user.name=t tag -a v2.8.7 -m v; then
+  got="$(ver28 "$m28/base")"
+  [[ "$got" == v2.8.7 ]] && pass "GIT-28 a port's base/ gives its repository's describe" || fail "GIT-28 a port's base/ (got '$got')"
+else
+  fail "GIT-28 scaffold: could not build a port's base/"
+fi
+# A sha256 repository: its own format, from its config.
+g28s="$TMP/g28s"; mkdir -p "$g28s"
+if git -C "$g28s" init -q --object-format=sha256 >/dev/null 2>&1; then
+  : > "$g28s/project-init.sh"
+  git -C "$g28s" add -A && git -C "$g28s" -c user.email=t@t -c user.name=t commit -qm s \
+    && git -C "$g28s" -c user.email=t@t -c user.name=t tag -a v2.8.6 -m v
+  got="$(ver28 "$g28s")"
+  [[ "$got" == v2.8.6 ]] && pass "GIT-28 a sha256 repository is read in its own format" || fail "GIT-28 a sha256 repository (got '$got')"
+else
+  printf 'NOTE: this git cannot make a sha256 repository; that check is not applicable\n'
+fi
+# How the checkout is found, as git finds it. A .git file is a gitdir: line,
+# its CR and LF dropped; without the prefix git refuses it, and so does this.
+r28="$TMP/r28"; mkdir -p "$r28"
+if mkrepo "$r28" v2.8.9; then
+  mkdir -p "$TMP/w28"; : > "$TMP/w28/project-init.sh"
+  printf 'gitdir: %s\r\n' "$r28/.git" > "$TMP/w28/.git"
+  got="$(ver28 "$TMP/w28")"
+  [[ "$got" == v2.8.9 ]] && pass "GIT-28 a .git file ending in CRLF is followed" || fail "GIT-28 a .git file ending in CRLF (got '$got')"
+  printf '%s\n' "$r28/.git" > "$TMP/w28/.git"
+  got="$(ver28 "$TMP/w28")"
+  [[ "$got" == unknown ]] && pass "GIT-28 a .git file without its gitdir: prefix is refused, as git refuses it" \
+    || fail "GIT-28 a .git file without the prefix (got '$got')"
+  # The reftable format keeps refs in no file this can read: no answer, rather
+  # than a wrong one. The files format, written out, is read as before. Written
+  # as a file: git itself refuses a repository it takes for reftable.
+  GIT_DIR=/dev/null git config --file "$r28/.git/config" extensions.refStorage reftable
+  got="$(ver28 "$r28")"
+  [[ "$got" == unknown ]] && pass "GIT-28 a reftable repository is not read" || fail "GIT-28 a reftable repository (got '$got')"
+  GIT_DIR=/dev/null git config --file "$r28/.git/config" extensions.refStorage files
+  got="$(ver28 "$r28")"
+  [[ "$got" == v2.8.9 ]] && pass "GIT-28 extensions.refStorage=files is read" || fail "GIT-28 extensions.refStorage=files (got '$got')"
+  GIT_DIR=/dev/null git config --file "$r28/.git/config" --unset extensions.refStorage
+  # HEAD a link to a regular file, HEAD naming a branch with `..` in it, and a
+  # branch that is a link to a regular file: none is read, so no answer (git
+  # follows the links, and refuses the `..`).
+  git -C "$r28" rev-parse HEAD > "$TMP/oid28"; b28="$(git -C "$r28" symbolic-ref HEAD)"
+  mv "$r28/.git/HEAD" "$TMP/head28"; cp "$TMP/head28" "$TMP/headcopy28"; ln -s "$TMP/headcopy28" "$r28/.git/HEAD"
+  got="$(ver28 "$r28")"; rm -f "$r28/.git/HEAD"; mv "$TMP/head28" "$r28/.git/HEAD"
+  [[ "$got" == unknown ]] && pass "GIT-28 a HEAD that is a link is not read" || fail "GIT-28 a HEAD that is a link (got '$got')"
+  cp "$TMP/oid28" "$r28/.git/other28"; cp "$r28/.git/HEAD" "$TMP/head28"
+  printf 'ref: refs/heads/../../other28\n' > "$r28/.git/HEAD"
+  got="$(ver28 "$r28")"; cp "$TMP/head28" "$r28/.git/HEAD"; rm -f "$r28/.git/other28"
+  [[ "$got" == unknown ]] && pass "GIT-28 a HEAD naming a branch with .. in it is refused" || fail "GIT-28 a HEAD with .. (got '$got')"
+  mv "$r28/.git/$b28" "$TMP/branch28"; ln -s "$TMP/branch28" "$r28/.git/$b28"
+  got="$(ver28 "$r28")"; rm -f "$r28/.git/$b28"; mv "$TMP/branch28" "$r28/.git/$b28"
+  [[ "$got" == unknown ]] && pass "GIT-28 a branch that is a link to a file is not read" || fail "GIT-28 a branch that is a link to a file (got '$got')"
+  # A refs/tags that is a link to a directory of tags: not followed, so only the
+  # packed tags count (none here): the short commit.
+  mv "$r28/.git/refs/tags" "$TMP/tags28"; ln -s "$TMP/tags28" "$r28/.git/refs/tags"
+  got="$(ver28 "$r28")"; rm -f "$r28/.git/refs/tags"; mv "$TMP/tags28" "$r28/.git/refs/tags"
+  [[ "$got" == "$(git -C "$r28" rev-parse --short HEAD)" ]] && pass "GIT-28 a refs/tags that is a link is not followed" \
+    || fail "GIT-28 a refs/tags that is a link (got '$got')"
+  # A tag line without an object id, packed or loose: dropped, as git would not
+  # read it, so the refs written for git stay readable and the tag still counts.
+  printf 'not-an-oid refs/tags/junk28\n' >> "$r28/.git/packed-refs"; printf 'zz\n' > "$r28/.git/refs/tags/junk28b"
+  got="$(ver28 "$r28")"
+  sed -i.bak '/junk28/d' "$r28/.git/packed-refs"; rm -f "$r28/.git/packed-refs.bak" "$r28/.git/refs/tags/junk28b"
+  [[ "$got" == v2.8.9 ]] && pass "GIT-28 a tag with no object id, packed or loose, is dropped" \
+    || fail "GIT-28 a tag with no object id (got '$got')"
+  # HEAD with trailing whitespace, as git trims it; and a detached HEAD.
+  cp "$r28/.git/HEAD" "$TMP/head28"; printf 'ref: %s \n' "$b28" > "$r28/.git/HEAD"
+  got="$(ver28 "$r28")"; cp "$TMP/head28" "$r28/.git/HEAD"
+  [[ "$got" == v2.8.9 ]] && pass "GIT-28 a HEAD with trailing whitespace is read as git reads it" || fail "GIT-28 a HEAD with trailing whitespace (got '$got')"
+  git -C "$r28" commit -q --allow-empty -m d && git -C "$r28" checkout -q --detach HEAD
+  got="$(ver28 "$r28")"; w="$(want28 "$r28")"
+  git -C "$r28" checkout -q "${b28#refs/heads/}" && git -C "$r28" reset -q --hard HEAD~1
+  [[ "$got" == v2.8.9-1-g* && "$got" == "$w" ]] && pass "GIT-28 a detached HEAD gives git's own describe" || fail "GIT-28 a detached HEAD (got '$got', git says '$w')"
+  # A HEAD that is a FIFO is not read: no answer, at once.
+  mv "$r28/.git/HEAD" "$TMP/head28"; mkfifo "$r28/.git/HEAD"
+  got="$(VER28_SECS=2 ver28 "$r28")"
+  rm -f "$r28/.git/HEAD"; mv "$TMP/head28" "$r28/.git/HEAD"
+  [[ "$got" == unknown ]] && pass "GIT-28 a HEAD that is a FIFO gives no answer, without waiting on it" \
+    || fail "GIT-28 a HEAD that is a FIFO (got '$got')"
+  # An include naming a FIFO: the config is never read by git, so it is never
+  # opened, and the version is given.
+  git -C "$r28" config include.path "$TMP/inc28"; mkfifo "$TMP/inc28"
+  ver28_bounded 40 "$r28" "$TMP/out28"; rc=$?
+  left28="$(pgrep -g "$vb28" 2>/dev/null | head -1)"
+  ( exec 3<>"$TMP/inc28" ) 2>/dev/null; rm -f "$TMP/inc28"; git -C "$r28" config --unset include.path
+  if (( rc == 0 )) && [[ -z "$left28" ]] && grep -qx v2.8.9 "$TMP/out28"; then
+    pass "GIT-28 an include that names a FIFO is never read: the checkout's config is not git's"
+  else
+    fail "GIT-28 an include that names a FIFO (rc=$rc; reader left: ${left28:-none}; $(tr '\n' ';' < "$TMP/out28"))"
+  fi
+  # HEAD's commit a FIFO among the loose objects, which git does open: describe
+  # is cut off at the bound, and that is named.
+  c28="$(git -C "$r28" rev-parse HEAD)"; o28="$r28/.git/objects/${c28:0:2}/${c28:2}"
+  mv "$o28" "$TMP/obj28"; mkfifo "$o28"
+  ver28_bounded 40 "$r28" "$TMP/out28"; rc=$?
+  left28="$(pgrep -g "$vb28" 2>/dev/null | head -1)"
+  if (( rc == 0 )) && [[ -z "$left28" ]] && grep -qx unknown "$TMP/out28" && grep -q 'NOTE: git did not answer within 2 s' "$TMP/out28"; then
+    pass "GIT-28 an object that is a FIFO does not hold the version, and is named"
+  else
+    fail "GIT-28 an object that is a FIFO (rc=$rc; reader left: ${left28:-none}; $(tr '\n' ';' < "$TMP/out28"))"
+  fi
+  # Interrupted while git waits on that FIFO: the git it was running is gone too,
+  # though it ignores SIGINT.
+  if [[ -n "$(${sigpre28[@]+"${sigpre28[@]}"} bash -c 'trap -p INT')" ]]; then
+    printf 'NOTE: SIGINT is ignored where this runs; the interrupted-read check is not applicable\n'
+  else
+    set -m
+    ${sigpre28[@]+"${sigpre28[@]}"} bash -c 'source "$1/version.sh"; version_engine "$2"' _ "$REPO_DIR" "$r28" >/dev/null 2>&1 &
+    p28=$!
+    set +m
+    sleep 1; kill -INT -"$p28" 2>/dev/null; wait "$p28" 2>/dev/null; sleep 0.3
+    left28="$(pgrep -g "$p28" 2>/dev/null | head -1)"
+    [[ -z "$left28" ]] \
+      && pass "GIT-28 a check interrupted while git reads a FIFO leaves no git behind" \
+      || fail "GIT-28 an interrupted check left git $left28 blocked on the FIFO"
+  fi
+  ( exec 3<>"$o28" ) 2>/dev/null; rm -f "$o28"; mv "$TMP/obj28" "$o28"
+else
+  fail "GIT-28 scaffold: could not build the .git-file fixture"
+fi
+# An engine tree in no repository at all: unknown, and the search for a .git
+# ends at /.
+mkdir -p "$TMP/lone28"; : > "$TMP/lone28/project-init.sh"
+ver28_bounded 30 "$TMP/lone28" "$TMP/out28l"; rc=$?
+[[ "$rc" == 0 && "$(cat "$TMP/out28l")" == unknown ]] \
+  && pass "GIT-28 an engine tree in no repository is unknown, the search for .git ending at /" \
+  || fail "GIT-28 an engine tree in no repository (rc=$rc; $(tr '\n' ';' < "$TMP/out28l"))"
+# _ver_run on its own: a read cut off leaves nothing behind for the next one,
+# its descriptor is closed, and _ver_cur, which the traps kill, names nothing
+# once a call is over. Bounded: a _ver_run that cannot cut a read off waits on
+# the FIFO, and must fail here, not at the falsify tier's clock.
+mkfifo "$TMP/f28"; : > "$TMP/out28r"
+set -m
+bash -c 'source "$1/version.sh"; _ver_secs=1; o=""
+         _ver_run o cat -- "$2"; a=$?; c1="[$_ver_cur]"
+         n1="$(ls /dev/fd | wc -l)"; _ver_run o printf x; b=$?; n2="$(ls /dev/fd | wc -l)"
+         printf "%s %s %s %s %s %s%s" "$a" "$b" "$o" "$(( n2 - n1 ))" "${_vr_p-unset}" "$c1" "[$_ver_cur]"' _ "$REPO_DIR" "$TMP/f28" > "$TMP/out28r" 2>&1 &
+p28=$!
+set +m
+w28=0; while kill -0 "$p28" 2>/dev/null && (( w28 < 200 )); do sleep 0.1; w28=$(( w28 + 1 )); done
+if kill -0 "$p28" 2>/dev/null; then kill -KILL -"$p28" 2>/dev/null || kill -KILL "$p28" 2>/dev/null; fi
+wait "$p28" 2>/dev/null
+( exec 3<>"$TMP/f28" ) 2>/dev/null; rm -f "$TMP/f28"
+got="$(cat "$TMP/out28r")"
+[[ "$got" == "124 0 x 0 unset [][]" ]] \
+  && pass "GIT-28 _ver_run: a read cut off does not spoil the next, its descriptor is closed, its variables are its own" \
+  || fail "GIT-28 _ver_run (cut-off status, next status, next output, descriptors left, _vr_p, _ver_cur after each: '$got')"
+# The caller killed alone, while git is slow but answering: the subshell asking
+# git goes on, and died of SIGPIPE at its answer, which came before its
+# temporary directory was removed (seventh review of the GIT-28 fix).
+mkdir -p "$TMP/tmpp28" "$TMP/slowgit28"
+printf '#!/bin/sh\nsleep 1\nexec %s "$@"\n' "$(command -v git)" > "$TMP/slowgit28/git"; chmod +x "$TMP/slowgit28/git"
+set -m
+TMPDIR="$TMP/tmpp28" PATH="$TMP/slowgit28:$PATH" bash -c 'source "$1/version.sh"; version_engine "$2"' _ "$REPO_DIR" "$gtag" >/dev/null 2>&1 &
+p28=$!
+set +m
+w28=0; while [[ -z "$(ls -A "$TMP/tmpp28")" ]] && kill -0 "$p28" 2>/dev/null && (( w28 < 100 )); do sleep 0.1; w28=$(( w28 + 1 )); done
+saw28="$(ls -A "$TMP/tmpp28")"
+kill -TERM "$p28" 2>/dev/null; wait "$p28" 2>/dev/null
+w28=0; while [[ -n "$(ls -A "$TMP/tmpp28")" ]] && (( w28 < 150 )); do sleep 0.1; w28=$(( w28 + 1 )); done
+[[ -n "$saw28" && -z "$(ls -A "$TMP/tmpp28")" ]] \
+  && pass "GIT-28 a caller killed alone leaves no temporary directory behind" \
+  || fail "GIT-28 a caller killed alone (made: '${saw28:-nothing}'; left: '$(ls -A "$TMP/tmpp28")')"
+kill -KILL -"$p28" 2>/dev/null
+# macOS's /usr/bin/git with no developer directory holding a git: not run (it
+# opens the Command Line Tools' installer). Faked with uname and xcode-select.
+mkdir -p "$TMP/mac28" "$TMP/xcs28" "$TMP/brew28"
+printf '#!/bin/sh\necho Darwin\n' > "$TMP/mac28/uname"
+printf '#!/bin/sh\necho /nonexistent/CommandLineTools\n' > "$TMP/xcs28/xcode-select"
+chmod +x "$TMP/mac28/uname" "$TMP/xcs28/xcode-select"
+# Only that git: one installed elsewhere (Homebrew's) runs on such a Mac, and
+# off macOS what xcode-select says does not matter.
+printf '#!/bin/sh\nexec %s "$@"\n' "$(command -v git)" > "$TMP/brew28/git"; chmod +x "$TMP/brew28/git"
+got="$(PATH="$TMP/brew28:$TMP/mac28:$TMP/xcs28:$PATH" ver28 "$gtag")"
+[[ "$got" == v1.0.0* ]] \
+  && pass "GIT-28 a git other than /usr/bin/git runs on a Mac without the Command Line Tools" \
+  || fail "GIT-28 a Homebrew git on a Mac without the Command Line Tools (got '$got')"
+got="$(PATH="$TMP/xcs28:$PATH" ver28 "$gtag")"
+[[ "$got" == v1.0.0* ]] \
+  && pass "GIT-28 off macOS, xcode-select's answer does not stop git" \
+  || fail "GIT-28 off macOS, xcode-select stopped git (got '$got')"
+# With git on PATH not at all: nothing is started to ask it (env, here).
+mkdir -p "$TMP/nogit28"; ln -s "$(command -v bash)" "$TMP/nogit28/bash"; : > "$TMP/env28.log"
+printf '#!%s\nprintf "%%s\\n" "$*" >> "%s"\nexec %s "$@"\n' "$(command -v bash)" "$TMP/env28.log" "$(command -v env)" > "$TMP/nogit28/env"
+chmod +x "$TMP/nogit28/env"
+got="$(PATH="$TMP/nogit28" ver28 "$gtag")"
+[[ "$got" == unknown && ! -s "$TMP/env28.log" ]] \
+  && pass "GIT-28 with no git on PATH, nothing is started to ask it" \
+  || fail "GIT-28 with no git on PATH (got '$got'; started: $(head -1 "$TMP/env28.log"))"
+if [[ "$(command -v git)" == /usr/bin/git ]]; then
+  # xcode-select -p fails outright on a Mac that never had the tools: that is
+  # not a developer directory holding a git. Through PATH as /usr//bin, which is
+  # still the shim (compared with -ef).
+  mkdir -p "$TMP/xcf28"; printf '#!/bin/sh\nexit 2\n' > "$TMP/xcf28/xcode-select"; chmod +x "$TMP/xcf28/xcode-select"
+  got="$(PATH="$TMP/mac28:$TMP/xcf28:/usr//bin:$PATH" ver28 "$gtag")"
+  [[ "$got" == unknown ]] \
+    && pass "GIT-28 macOS's git shim is not run when xcode-select -p fails" \
+    || fail "GIT-28 macOS's git shim was run when xcode-select -p failed (got '$got')"
+  # A Mac with the tools: their developer directory holds a git, so it runs.
+  mkdir -p "$TMP/dev28/usr/bin" "$TMP/xcd28"; : > "$TMP/dev28/usr/bin/git"; chmod +x "$TMP/dev28/usr/bin/git"
+  printf '#!/bin/sh\necho %s\n' "$TMP/dev28" > "$TMP/xcd28/xcode-select"; chmod +x "$TMP/xcd28/xcode-select"
+  got="$(PATH="$TMP/mac28:$TMP/xcd28:$PATH" ver28 "$gtag")"
+  [[ "$got" == v1.0.0* ]] \
+    && pass "GIT-28 macOS's git runs where the Command Line Tools are installed" \
+    || fail "GIT-28 macOS's git with the Command Line Tools installed (got '$got')"
+  got="$(PATH="$TMP/mac28:$TMP/xcs28:$PATH" ver28 "$gtag")"
+  [[ "$got" == unknown ]] \
+    && pass "GIT-28 macOS's git shim with no Command Line Tools is not run" \
+    || fail "GIT-28 macOS's git shim was run (got '$got')"
+else
+  printf 'NOTE: git is not /usr/bin/git here; the macOS shim checks are not applicable\n'
+fi
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

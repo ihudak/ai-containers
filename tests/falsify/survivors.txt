@@ -373,6 +373,16 @@ version.sh:logic-flip:9afb91ee98f1cddd278a3e14a10f165bc2ed3fb7
   intent at the point of the risk, and it stops being redundant the moment a
   statement is added after it or the `return 0` moves.
 
+GROUP: version.sh GIT-28, a status discarded in a non-final AND-OR position
+version.sh:logic-flip:40d3715539c9ea29d868b8f3bee430a362241db5
+  _ver_run():   kill -KILL "$_vr_p" 2>/dev/null || true
+  the damages:  kill -KILL "$_vr_p" 2>/dev/null && true
+  EQUIVALENT: the class of the engine-version entry above, measured there:
+  bash suppresses errexit for the non-final command of an AND-OR list, so `A &&
+  true` and `A || true` both carry on to the next line whatever A returns, and
+  neither status is read (the next lines are `_ver_cur=""` and `return 124`).
+  The kill happens either way; only the discarded status of the list differs.
+
 tests/lib-layer-checks.sh:logic-flip:b6554f5a51c19c07a987509d2872c86e54d554ea
   _wf_awk():    insteps && started && /^        [A-Za-z]/ {
   _wf_it_awk(): the same text, so the same identity

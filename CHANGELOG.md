@@ -46,6 +46,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   converted, and never touches the shared `sandbox.env`.
 ### Changed
 
+- **`--version` no longer appends `-dirty` to the engine release.** Deciding
+  it meant git reading the engine checkout's index and config, and that config
+  can include a file an agent writes when the checkout is mounted: through it
+  git ran `core.fsmonitor`, a clean filter, and on a missing commit a fetch that
+  ran a remote's `uploadpack` and a credential helper. git now reads nothing of
+  the checkout but its objects, on refs read as data in a directory of its own,
+  so the release is `v0.7.0-11-g<sha>` whether or not files were edited (bugs
+  review GIT-28).
+
 - **Codex installs standalone and updates itself.** The container start used to
   install Codex through npm and reinstall it whenever the registry published a
   new version, because the npm copy's own `codex update` runs a bare `npm install

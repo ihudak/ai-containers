@@ -374,6 +374,29 @@ not a git repo, so it cannot derive anything: `project-init.sh` and
 inside some unrelated repo cannot report that repo's version. A copy that was
 never told says `unknown`.
 
+The engine checkout can be a writable mount, and its config can include a file
+the agent writes, so **git reads nothing of that checkout but its objects**
+(`_ver_git_version()`). HEAD, the branch it names and the tags are read here as
+data, from regular files never reached through a link (loose ones at most 512
+bytes, 100 of each read; `packed-refs` at most 2 MiB, filtered by `grep`), with
+`shallow` (at most 1 MiB), each line kept only with an object id, in time
+linear in their size; of the config only
+`extensions.objectFormat`, `extensions.refStorage` (a reftable repository is not
+read) and `core.abbrev`, by `git config --file`, no includes. `describe` and the
+short commit then run in a bare git directory of version.sh's own, holding
+those refs as `packed-refs` and `HEAD`, in the repository's object format and
+the files ref format, its objects reached through links to `pack/` and the
+fan-out directories only (`objects/info/alternates` is never read), with no
+transport and `GIT_ALLOC_LIMIT=64m`. Every call has a 10 s bound (`_ver_run()`), an interrupt kills what
+is running and removes the directory, and nothing runs on a Mac whose
+`/usr/bin/git` would open the Command Line Tools' installer (`_ver_git_runs()`).
+There is no `-dirty`: it needs the index and the worktree. A recorded
+`engine-version` is read the same bounded way, 4096 bytes at most. Running git in the
+checkout ran `core.fsmonitor`, a clean filter and, through a lazy fetch, a
+remote's `uploadpack` and a credential helper; copying its files for git let
+planted links fill memory and TMPDIR (bugs review GIT-28 and seven reviews of
+its fix).
+
 `nvm-version` is reported because it is **pinned rather than detected** — nvm's
 latest cannot be resolved at build time behind a rate limit, and
 `.github/workflows/update-nvm-version.yml` exists solely to keep the Dockerfile's
