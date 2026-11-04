@@ -12,7 +12,7 @@
 - **Updated 2026-10-28:** batch 11 removes `SANDBOX_GIT_FIXTURES` (GIT-11, GIT-21, LNCH-16) and the `host` group, which mounted the real `$HOME` dot-directories read-write (the user's choice; see the CHANGELOG).
 - **Updated 2026-11-02:** GAP-6 (feature gaps review) is on main (`90f0417`..`1ca06cf`). Section 18 lists what its reviews left open (PRJ-10, since fixed; PRJ-11), reviewed up to `1ca06cf` and, for PRJ-10's fix, `18fb842`.
 - **Updated 2026-11-03:** section 19, found while doing GAP-1/3/4 (falsify), has TST-24, FIXED.
-- **Updated 2026-11-03:** section 21, found while measuring GAP-2's oracle selection on sandbox.sh: TST-26, FIXED; GIT-23, open.
+- **Updated 2026-11-03:** section 21, found while measuring GAP-2's oracle selection on sandbox.sh and killing its survivors: TST-26 and TST-27, FIXED; GIT-23 and GIT-24, open.
 - **Companion:** [2026-10-26-feature-gaps-review.md](2026-10-26-feature-gaps-review.md).
 - **Confidence:** CONFIRMED = reproduced, or unambiguous from the code. PLAUSIBLE = strong reasoning, not reproduced (usually needs hardware or a platform not available here); verify before fixing.
 - **Citations** are by snippet, per AGENTS.md "Citing code". Scratch repro paths mentioned in entries were session-local and may no longer exist; each entry describes its repro in full.
@@ -1496,6 +1496,22 @@ A sample of sandbox.sh's mutants (174, `--jobs 10 --timeout 180`) run with `run.
 - What's wrong: `_git_file_config()` reads a protected config with `git config --file` under `timeout 2`, and a read cut off refuses the launch through `_rd_fail()`, as it should for a FIFO. But the bound is a time, so a regular file that is only slow to parse is refused too. In the sample, one of the two control runs (the pristine set, under the run's own 10 workers) failed in G38, whose config holds 5,000 include entries: `ERROR: …/proj/many38/.git/config could not be read within its bound (a FIFO swapped in, or too big); refusing the launch.` The file was neither a FIFO nor over the size limit. The run then exited 1 ("1 of 2 control run(s) FAILED"), and a mutant scored KILLED in that run may have been killed by the machine.
 - Failure scenario: a launch on a host busy enough that `git config --list` of a large config takes over 2 s, such as a parallel test run, or a slow filesystem (WSL drvfs, a network home). The launch is refused, and the message names a cause that did not happen.
 - Fix direction: on a cut-off read of a path that is still a regular file within the size limit, retry once with a longer bound before refusing, and say which happened ("took longer than 2 s" vs "not a regular file"). The FIFO case stays a refusal: a FIFO never becomes readable in time. G38's own 15 s threshold is load-sensitive in the same way.
+
+### TST-27: G86's no-git checks passed under run-all.sh whatever the fallback's cap check did
+- **Status: FIXED** (2026-11-03). The no-git `PATH` links the real `mktemp` (`RA_REAL_MKTEMP`, which `tests/run-all.sh` exports for this), and G86 first checks its premise: with that `PATH`, a config within the cap is read, not refused. Through `tests/run-all.sh`, the `||`→`&&` mutant of the cap check now fails both of G86's cap checks; before, it passed them.
+- Severity: MEDIUM (a security check, the fallback's refusal of a config it cannot read whole, was unguarded in CI). Confidence: CONFIRMED (the mutant SURVIVED in `tests/falsify/run.sh` and passed G86 through `tests/run-all.sh`, and was killed when the test was run directly)
+- Location: `tests/test-git-internals-ro.sh`, G86 (`nogit_path()`)
+- Introduced: with G86 (batch 10, `86427b0`).
+- What's wrong: G86 builds a `PATH` with no git from `command -v` of the tools the fallback uses, `mktemp` among them. Under `tests/run-all.sh`, `mktemp` is its shim, a script starting `#!/usr/bin/env bash`, and that `PATH` has no bash. So `mktemp` failed, `_git_config_bool()` refused at its `mktemp` line (`snap="$(mktemp …)" || { _rd_fail "$1"; return 1; }`), and G86's "refuses a config past its read cap" passed with the cap check broken or gone. Run directly, outside `tests/run-all.sh`, the test caught it, which is how it looked tested. Found because GAP-2's sandbox.sh sample scored the cap check's mutants SURVIVED.
+- Fix direction: done as above. G97, new, compares the fallback's answer with git's through the same `PATH`, over 18 configs, a missing file and one exactly at the cap.
+
+### GIT-24: with no git on the host, `_git_config_bool()` reads some spellings of true as false
+- **Status: OPEN.**
+- Severity: LOW (only a host with no git takes the fallback, and there the host's own git cannot run the config either; it matters if git is installed later, or for another git implementation). Confidence: CONFIRMED (measured: each value below in a config read by git and by the fallback with git off `PATH`)
+- Location: `sandbox.sh`, `_git_config_bool()`, the awk fallback (`r = (v == "true" || v == "yes" || v == "on" || (v ~ /^-?[0-9]+$/ && v + 0 != 0))`)
+- Introduced: with the fallback, before the window this review covers.
+- What's wrong: git reads `"true"` and `tr"ue"` (quotes removed), `1k` (a unit suffix), `+1` and `0x1` (`strtoimax` with base 0) as true, and the fallback reads each of them as false. Its comment says it reads true "as git spells true … a non-zero integer", which `1k` and `0x1` are. Every caller asks about `extensions.worktreeConfig`, and true means more protection: make `config.worktree`'s placeholder, walk it, read its `core.hooksPath`. So each of these values fails open: an agent that writes `worktreeConfig = "true"` gets `config.worktree` left unprotected by a launch on a host with no git.
+- Fix direction: fail safe, since true is the cautious answer for every caller. Read a value as false only when it is one of git's false spellings after removing quotes (`false`, `no`, `off`, empty, or an integer that is zero in any base and with any unit suffix), and as true otherwise. Add each spelling above to G97, as a case where the fallback must say true.
 
 ## GIT
 
