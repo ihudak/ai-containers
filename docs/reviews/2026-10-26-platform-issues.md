@@ -1,7 +1,7 @@
 # Platform-specific issues — 2026-10-26
 
 - **Opened:** 2026-10-26, during bug-fix batch 1
-- **Last reviewed commit:** `bec1c57` (the review), entries updated while fixing on `fix/batch-1-launcher-git`; PLAT-5, PLAT-6 and the pickup table added 2026-11-03 at `d41d47a`
+- **Last reviewed commit:** `bec1c57` (the review), entries updated while fixing on `fix/batch-1-launcher-git`; PLAT-5, PLAT-6 and the pickup table added 2026-11-03 at `d41d47a`; PLAT-5 done and PLAT-3 confirmed and designed 2026-11-04 at `f0ad913`
 - **Companions:** [2026-10-26-bugs-review.md](2026-10-26-bugs-review.md), [2026-10-26-feature-gaps-review.md](2026-10-26-feature-gaps-review.md)
 
 These are issues that can only be confirmed, and then fixed, on a platform or
@@ -19,9 +19,9 @@ and the constraints the fix must keep.
 |---|---|---|---|
 | PLAT-1 | Windows + WSL2 + Docker Desktop | bug LNCH-2 | A project under `/mnt/c` may be refused at every launch by the mount-swap check — **not reproducible**, closed |
 | PLAT-2 | Windows + WSL2 | gap GAP-13 | The integration corpus and the local layer have never been run on WSL2 — **Docker Desktop half done**; native Engine open |
-| PLAT-3 | macOS (Docker Desktop, Colima) | gap GAP-11 | The mount-swap check is skipped there altogether |
+| PLAT-3 | macOS (Docker Desktop, Colima) | gap GAP-11 | The mount-swap check is skipped there altogether — **confirmed on Colima, designed**; no code yet |
 | PLAT-4 | x86-64 CPU without AVX | bug SVC-2 | `mongo=ON` reports "no mongo server, rebuild" instead of the real failure |
-| PLAT-5 | macOS (BSD userland) | bugs PRJ-10, PRJ-11 | The no-follow file writes take their non-Linux branches there, and nobody has run them |
+| PLAT-5 | macOS (BSD userland) | bugs PRJ-10, PRJ-11 | The no-follow file writes take their non-Linux branches there, and nobody has run them — **done**, passed (GIT-25 and TST-28 found and fixed) |
 | PLAT-6 | Windows + WSL2 + Docker Desktop | bugs PRJ-10, PRJ-11 | Re-run the hermetic suite at current `main`: the new no-follow tests rename, open `/dev/fd/N` and `noclobber`-create on drvfs — **done**, passed (TST-25 found and fixed) |
 
 ## Who picks up what (updated 2026-11-03)
@@ -84,6 +84,16 @@ first, then fix test-first.
 
 ## PLAT-3: macOS — the mount-swap check is skipped on Docker Desktop and Colima
 
+- **Status: CONFIRMED ON COLIMA; DESIGNED, NOT IMPLEMENTED (2026-11-04, at `f0ad913`).** macOS 26.7.2 on arm64, Colima 0.10.3 (Virtualization.Framework, virtiofs), Docker 29.5.2. Docker Desktop was not run.
+  - **Confirm:** case `460-launcher-mount-verified` PASS (5 assertions): it found a host whose binds do not keep device:inode and saw the skip `NOTE:`. A directory under `$HOME` is `16777233:207971689` on the host and `37:424363` in a container.
+  - **The nonce does not work.** The attacker the check exists for can swap the overlay source, so it can read the nonce and copy it into the directory it swaps in. A nonce the container can read proves nothing. A nonce it cannot read cannot be compared from inside either.
+  - **The threat is real on Colima.** Colima shares all of `$HOME`. A source swapped for a symlink could make the launch bind any path under it read-only into the container, `~/.ssh` for example.
+  - **What does work, on Colima only: the VM's own inode.** `colima ssh -- stat -c '%d:%i' <path>` reports the same device:inode the containers see. It takes about 0.28 s per call, and one call can stat every path. A swap shows as a different inode, and so does a symlink. So `sandbox.sh` could record the VM-side identity of each source in the manifest, and the entrypoint could compare it as it does on Linux.
+  - **Limits of that design:**
+    - It is Colima-only. Docker Desktop has no equivalent command, and it was not measured.
+    - Right after a rename the VM briefly reported a stale inode (virtiofs caching), so a launch right after `git checkout` or a sync could be refused falsely. That needs a retry, or a measured bound.
+    - A swap, then a swap back, then a swap again, timed around the two stats, is still possible in principle.
+  - **Not done:** no code was changed. GAP-11 stays PARTIAL until the design above is picked up.
 - **Picked up by:** the **Mac agent**.
 - **Platform:** macOS, Docker Desktop and Colima (both file-sharing layers: virtiofs / sshfs / 9p).
 - **Source:** feature-gaps review GAP-11. This is a missing protection, not a malfunction: AGENTS.md documents the skip and the one-line `NOTE:`.
@@ -102,7 +112,12 @@ first, then fix test-first.
 
 ## PLAT-5: macOS — the no-follow writes of sync, init and migrate have never run on BSD userland
 
-- **Status: OPEN.**
+- **Status: DONE (2026-11-04, at `f0ad913`).** macOS 26.7.2 on arm64, Homebrew bash 5.3.20. `rsync --version`: `openrsync: protocol version 29`.
+  - **The focused run passed:** `test-sync-no-follow` 25, `test-init-no-follow` 49, `test-sync-project` 79, `test-project-init` 23, `test-migrate-runme` 47 assertions. Every BSD branch of project-files.sh (`mv -h -f`, `chmod` and `ls -lnL` through fdescfs `/dev/fd`, openrsync into the copy) behaves as on Linux.
+  - **The first whole Phase 5 failed**, and none of the failures were in the no-follow code:
+    - On the host, four test bugs, filed as bugs review TST-28 and fixed: BSD `paste -s` without `-`, no `flock` on macOS (two tests), and APFS refusing a name that is not UTF-8.
+    - At the floor (`ubuntu:22.04` on Colima), one product bug: G93 did not report a re-made repository, because overlayfs reused the inode within the same second. Filed as GIT-25 and fixed test-first: the birth time is now kept to the nanosecond.
+  - **With the fixes, Phase 5 passed:** 118/118 on the host, at the floor and with a symlinked `TMPDIR`, in 94 min.
 - **Picked up by:** the **Mac agent**.
 - **Platform:** macOS (any Docker; these tests are hermetic and need none), with the system `bash` replaced by a bash ≥ 5.1 (Homebrew), as for Phase 5.
 - **Source:** bugs review PRJ-10 and PRJ-11 (both FIXED on Linux). project-files.sh has branches that only a non-GNU system takes, and they were written without running them:

@@ -344,7 +344,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   earlier version protected now gets the one-time list of the config keys and
   hooks that run programs on its next launch, as a newly protected one does.
   `~/.ai-containers/git-reported.conf` records which repositories have had it
-  (feature gaps review GAP-12). The rescan runs only when `docker run` returns
+  (feature gaps review GAP-12), by device, inode and birth time to the
+  nanosecond, so a repository deleted and made again at the same path within a
+  second is still a new one. The rescan runs only when `docker run` returns
   normally, gives up after 30 s, and says when its search was cut short.
 
 - **`sync-to-projects.sh` no longer writes through a link in a project.** The

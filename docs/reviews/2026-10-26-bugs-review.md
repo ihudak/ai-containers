@@ -13,6 +13,7 @@
 - **Updated 2026-11-02:** GAP-6 (feature gaps review) is on main (`90f0417`..`1ca06cf`). Section 18 lists what its reviews left open (PRJ-10, since fixed; PRJ-11), reviewed up to `1ca06cf` and, for PRJ-10's fix, `18fb842`.
 - **Updated 2026-11-03:** section 19, found while doing GAP-1/3/4 (falsify), has TST-24, FIXED.
 - **Updated 2026-11-03:** section 21, found while measuring GAP-2's oracle selection on sandbox.sh and killing its survivors: TST-26 and TST-27, FIXED; GIT-23 and GIT-24, open.
+- **Updated 2026-11-04:** section 22, found while running PLAT-5 on macOS: GIT-25 and TST-28, FIXED.
 - **Companion:** [2026-10-26-feature-gaps-review.md](2026-10-26-feature-gaps-review.md).
 - **Confidence:** CONFIRMED = reproduced, or unambiguous from the code. PLAUSIBLE = strong reasoning, not reproduced (usually needs hardware or a platform not available here); verify before fixing.
 - **Citations** are by snippet, per AGENTS.md "Citing code". Scratch repro paths mentioned in entries were session-local and may no longer exist; each entry describes its repro in full.
@@ -1517,6 +1518,26 @@ A sample of sandbox.sh's mutants (174, `--jobs 10 --timeout 180`) run with `run.
 - Why no single answer is safe: the three `_git_config_bool()` callers want different defaults. Making `config.worktree`'s placeholder and walking `config.worktree` want true when unsure. `_git_runs()`, which names the hooks git would run in the first-protection report and the after-session rescan, wants false. A true answer makes it read `config.worktree`'s `core.hooksPath` and skip listing `hooks/`. With no git, `_git_exec_keys()` finds nothing, so hooks are its only signal. Measured: with the fail-safe fallback, a repository whose config says `worktreeConfig = \t0` (git: false) and whose `config.worktree` sets `core.hooksPath` had its executable `hooks/pre-commit` go unnamed, though `git commit` runs it.
 - Failure scenario: on a host with no git, an agent writes `worktreeConfig = "true"` into a repository's config, before its first protected launch or in a repository it makes. The launcher neither makes nor walks `config.worktree`, so a `core.fsmonitor` there, which git honours once the extension is on, is left writable.
 - Fix direction: no parser when there is no git. Each caller takes its own cautious branch: make `config.worktree`'s placeholder and walk it in every repository, and in `_git_runs()` list `hooks/` whatever `core.hooksPath` says. Then delete both awk fallbacks, along with G86's fallback checks and G97, which test them, and say in AGENTS.md's git-internals paragraph what a launch on a host with no git does. A third review round found parser holes the first two missed, which argues against patching the parser instead.
+
+## 22. Found while running PLAT-5
+
+`PHASES=5 bash ./verify-on-host.sh` on macOS 26.6 (Apple Silicon, Homebrew bash 5.3.20, openrsync), Colima 29.5.2 (Virtualization.Framework, virtiofs), at `8abf9a2`, 2026-11-03. 4 of 118 files failed on the host and 1 of 118 at the floor, each again when run alone.
+
+### GIT-25: a repository removed and made again within a second is not reported again
+- **Status: FIXED** (2026-11-04). `_git_ident()` takes the birth time to the nanosecond (`stat -c '%d %i %.9W'`, BSD `stat -f '%d %i %.9FB'`). G93 was red at the floor in `ubuntu:22.04` on Colima on every run before, and is green there and on macOS after. GAP-12 is unreleased, so no `git-reported.conf` in the old format has shipped.
+- Severity: LOW (a one-time `NOTE:` naming a repository's config keys and hooks is not printed). Confidence: CONFIRMED (in the floor container: `rm -rf` then `mkdir` of `/tmp/a` gave `46 4325438 1793735695` both times; `%.9W` gave `…849127350` and `…851127478`)
+- Location: `sandbox.sh`, `_git_ident()`
+- Introduced: `7121741` (GAP-12).
+- What's wrong: the record of reported repositories names one by device, inode and birth time so that one made again at a reported path is new even where the filesystem reuses the inode. The birth time was in whole seconds, and overlayfs gave the re-made directory its inode back within the same second, so it matched the record and its keys and hooks were not named. G93's last check does exactly that and failed; CI's `suite-floor` passed it, so inode reuse there is luck.
+- Fix direction: done as above. Busybox `stat` supports neither form, as it supported neither before.
+
+### TST-28: four hermetic tests failed on macOS for reasons the product does not have
+- **Status: FIXED** (2026-11-04). Each is green on macOS after the fix and unchanged on Linux.
+- Severity: LOW (tests only; they kept the local layer's Phase 5 red on every Mac). Confidence: CONFIRMED (each reproduced alone)
+- What's wrong, and the fix:
+  - `tests/test-layer-checks-parser.sh`: `paste -sd'|'` with no file operand. BSD `paste` prints its usage and exits 1 without `-`; GNU reads stdin. Now `paste -sd'|' -`, the form every other `paste -s` in `tests/` uses.
+  - `tests/test-agent-tools-reconcile.sh` ("an uncontended lock announced a wait") and `tests/test-blocked-capture.sh` (12 checks): the scripts run in the container, which has util-linux `flock`; macOS has none. `flock -n 9` failed, so the reconcile announced a wait, and every DNS-map write in `capture-blocked-traffic.sh` failed, so the map stayed empty. Where the host has no `flock`, each test now puts a stand-in on its fake `PATH` that takes no lock: `flock <file> <cmd…>` runs the command, `flock [-n] <fd>` succeeds. On Linux the real `flock` runs as before.
+  - `tests/test-launcher-dir-ro.sh`, T46's LNCH-4 check: APFS refuses a name that is not UTF-8 (`Illegal byte sequence`), so the fixture was never made and the launch had nothing to refuse. Where the filesystem refuses it, the candidate is now named with a `:` and a CR, which no form of the bind carries either. On macOS the check goes red with the LNCH-4 discount reverted (`lbuild[$la]=yes; continue 2` in place of `lbuild[$la]=no`), as does the pin check after it.
 
 ## GIT
 

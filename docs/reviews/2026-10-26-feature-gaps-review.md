@@ -163,7 +163,7 @@ A gap is something a design promised that is not in the code at the reviewed com
 - Suggested approach: when it next happens, check whether F64's `dir=n` diagnostic fires; if so, close F58 as a duplicate of F64.
 
 ### GAP-11: The launcher-mount swap check is skipped on macOS Docker Desktop and Colima
-- Status: PARTIAL
+- Status: PARTIAL. Confirmed on Colima 2026-11-04 (case 460 PASS). The nonce suggested below does not work, because the swapping container can read and copy it. A VM-side inode via `colima ssh` does work, Colima only; see PLAT-3's Status for the design and its limits. No code yet.
 - Picked up by: the **Mac agent** (macOS, Docker Desktop and/or Colima), as PLAT-3
 - Fix batch: platform log — PLAT-3 in [2026-10-26-platform-issues.md](2026-10-26-platform-issues.md) (needs that platform to run)
 - Source: AGENTS.md mount layout: "if its own `device:inode` does not survive the bind (a file-sharing layer such as macOS Docker Desktop or Colima), verification is skipped with a one-line `NOTE:`"

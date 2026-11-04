@@ -127,6 +127,18 @@ cat > "$FAKE_BIN/ipset" <<'FAKEIPSET'
 exit 0
 FAKEIPSET
 chmod +x "$FAKE_BIN/ipset"
+# The script runs in the container, which has util-linux flock; macOS has none,
+# and without it no DNS-map write ever happened. Only where the host lacks one,
+# a stand-in that takes no lock: `flock <file> <cmd…>` runs the command.
+if ! command -v flock >/dev/null 2>&1; then
+  cat > "$FAKE_BIN/flock" <<'FAKEFLOCK'
+#!/usr/bin/env bash
+while [[ "${1:-}" == -* ]]; do shift; done
+(( $# > 1 )) || exit 0
+shift; exec "$@"
+FAKEFLOCK
+  chmod +x "$FAKE_BIN/flock"
+fi
 
 # ── Running the daemon, bounded ─────────────────────────────────────────────────
 # The script backgrounds its two read loops and returns at once. Each loop must
