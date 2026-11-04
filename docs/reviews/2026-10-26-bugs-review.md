@@ -13,7 +13,9 @@
 - **Updated 2026-11-02:** GAP-6 (feature gaps review) is on main (`90f0417`..`1ca06cf`). Section 18 lists what its reviews left open (PRJ-10, since fixed; PRJ-11), reviewed up to `1ca06cf` and, for PRJ-10's fix, `18fb842`.
 - **Updated 2026-11-03:** section 19, found while doing GAP-1/3/4 (falsify), has TST-24, FIXED.
 - **Updated 2026-11-03:** section 21, found while measuring GAP-2's oracle selection on sandbox.sh and killing its survivors: TST-26 and TST-27, FIXED; GIT-23 and GIT-24, open.
-- **Updated 2026-11-04:** section 22, found while running PLAT-5 on macOS: GIT-25 and TST-28, FIXED.
+- **Updated 2026-11-04:** GIT-24 is FIXED the way the user chose: where git does not run, nothing parses a config. Section 22 lists what its reviews found outside it: GIT-25 and GIT-26, open.
+- **Updated 2026-11-04:** GIT-23 is FIXED: a regular file only slow to read gets 10 s, within 30 s per launch.
+- **Updated 2026-11-04:** section 23, found while running PLAT-5 on macOS: GIT-27 and TST-28, FIXED.
 - **Companion:** [2026-10-26-feature-gaps-review.md](2026-10-26-feature-gaps-review.md).
 - **Confidence:** CONFIRMED = reproduced, or unambiguous from the code. PLAUSIBLE = strong reasoning, not reproduced (usually needs hardware or a platform not available here); verify before fixing.
 - **Citations** are by snippet, per AGENTS.md "Citing code". Scratch repro paths mentioned in entries were session-local and may no longer exist; each entry describes its repro in full.
@@ -1045,7 +1047,7 @@ Batch 9 (`9bd3729` … `6a0b37f`) went through 19 review rounds. Every HIGH and 
 ### GIT-10: small agent-writable git files are read with no time bound after a `-f` check
 - **Status: FIXED (batch 10)** — `86427b0`: every small git file is read under a 2 s bound (`_rd()`, `_git_file_config()`), and a read cut off refuses the launch through `_rd_fail()`, saying why (G84, G86).
 - Severity: LOW. Confidence: PLAUSIBLE (from code; needs a race, not reproduced)
-- Location: sandbox.sh: `GIT_DIR=/dev/null "${_rd_t[@]}" git config --file "$f" "$@" || rc=$?`
+- Location: sandbox.sh: `GIT_DIR=/dev/null _rd_run "$f" git config --file "$f" "$@"`
 - What's wrong: only the index read is wrapped in `timeout`. Config reads (`_git_file_config` and its callers: `core.worktree`, `extensions.*`, includes, exec keys) and the `head -c 4096` reads of `.git` files, `commondir` and `gitdir` all run after a `-f` test, with no bound.
 - Failure scenario: a second container on an overlapping writable tree swaps one of these files for a FIFO between the test and the open. The launch then blocks for ever. This is a DoS only, because the launcher runs nothing it reads.
 - Fix direction: route these reads through one bounded helper (`timeout 2`, or a non-blocking open), and treat a timeout as unreadable.
@@ -1490,9 +1492,20 @@ A sample of sandbox.sh's mutants (174, `--jobs 10 --timeout 180`) run with `run.
 - Fix direction: done as above.
 
 ### GIT-23: the 2 s read bound refuses a launch under load, and the refusal blames a FIFO
-- **Status: OPEN.**
+- **Status: FIXED** (2026-11-04), with the user's numbers, by another route than the fix direction below.
+  - **What the reads get now:** a read gets 10 s while the launch's slow reads (past 2 s) have taken less than 30 s in all, and 2 s once they have.
+  - **The count:** it is kept in a file of the launcher's own, because most reads run in a subshell. With no such file, or one that cannot be written, every read gets 2 s, as before.
+  - **The refusal names its cause:** a file swapped for something else, a regular file that was slow, or a launch out of time for slow reads.
+  - **Code:** `_rd()` and `_git_file_config()` both read through `_rd_run()`.
+  - **Why not the retry:** the first fix built the retry the fix direction describes, a second try for up to 10 s with the output buffered in a file. Its review found two HIGH defects:
+    - The buffer took the pipe's backpressure away, and with it the bound on the reader. A 17 KB config with a long subsection name lists to a large output within 2 s, and the launch's byte-at-a-time readers then took 30 s to minutes, unbounded. An 816 KB config listed 3.3 GB into TMPDIR.
+    - A failed write to the buffer (a full disk) came back as an unset key instead of a refusal.
+  - **Trade-off:** a FIFO swapped in is now refused after up to 10 s instead of 2.
+  - **The redesign's review found a HIGH defect, fixed before commit:** `_rd_fail` formatted the bound with a command substitution that exits 1 for a whole number of seconds. Most reads run in `< <(…)`, which inherits errexit, so a cut-off read ended there with nothing printed and nothing refused, and read as unset. `_rd_fail` and `_rd_run` now run with `set +e`, and the bound is whole seconds. G86 and G99's unit cases call the functions as the launcher does, under `set -euo pipefail` through a process substitution, and failed on that code. G99's launch case now proves the slow read was read whole, by the `core.fsmonitor` its first protection names, and fails against a reverted bound.
+  - **Smaller fixes from the same review:** `EPOCHREALTIME` keeps only its digits, because the decimal point is the locale's. No count directory is made in a subshell. The rescan after the session gets the first bound only. The refusal says "swapped for a FIFO, or removed".
+  - **Tests:** G99 in `tests/test-git-internals-ro.sh` covers a launch with a config slow once, each bound and refusal on its own, the budget summed over several reads, and `_rd`. Each check was seen failing on the old code. G38 now compares with the same launch made with one include entry, not a fixed 15 s.
 - Severity: LOW for the launcher (only a config of thousands of entries comes near the bound, and the refusal can be retried); it also makes `tests/test-git-internals-ro.sh` load-sensitive, which a falsify run counts against its kills. Confidence: CONFIRMED (once, under load; not reproduced on demand)
-- Location: `sandbox.sh`, `_git_file_config()` (`GIT_DIR=/dev/null "${_rd_t[@]}" git config --file "$f" "$@" || rc=$?`) and `_rd_fail()`
+- Location: sandbox.sh: `_rd_run()`, `_rd_fail()`, and `_git_file_config()`, which reads through `_rd_run`
 - Introduced: `86427b0` (batch 10, G84/G86), which put every small git file read under a 2 s bound.
 - What's wrong: `_git_file_config()` reads a protected config with `git config --file` under `timeout 2`, and a read cut off refuses the launch through `_rd_fail()`, as it should for a FIFO. But the bound is a time, so a regular file that is only slow to parse is refused too. In the sample, one of the two control runs (the pristine set, under the run's own 10 workers) failed in G38, whose config holds 5,000 include entries: `ERROR: …/proj/many38/.git/config could not be read within its bound (a FIFO swapped in, or too big); refusing the launch.` The file was neither a FIFO nor over the size limit. The run then exited 1 ("1 of 2 control run(s) FAILED"), and a mutant scored KILLED in that run may have been killed by the machine.
 - Failure scenario: a launch on a host busy enough that `git config --list` of a large config takes over 2 s, such as a parallel test run, or a slow filesystem (WSL drvfs, a network home). The launch is refused, and the message names a cause that did not happen.
@@ -1507,7 +1520,7 @@ A sample of sandbox.sh's mutants (174, `--jobs 10 --timeout 180`) run with `run.
 - Fix direction: done as above. G97, new, compares the fallback's answer with git's through the same `PATH`, over 18 configs, a missing file and one exactly at the cap.
 
 ### GIT-24: with no git on the host, the launcher reads git config with a parser that misreads it both ways
-- **Status: OPEN.** A first fix (2026-11-04, not committed) made `_git_config_bool()`'s fallback fail safe: false only for git's spellings of false, true otherwise. Its review showed true is not the cautious answer for every caller, so it was withdrawn; the design below replaces it.
+- **Status: FIXED** (2026-11-04), as the fix direction below says. Where git does not run, nothing reads a config. Both awk fallbacks are gone, and so are G86's fallback checks and G97. `config.worktree` is made and mounted in every repository. `_git_runs()` lists `hooks/` whatever `core.hooksPath` says. When a git directory is protected, one `WARNING:` names what went unchecked. The review of the fix added two things. Whether git runs is now asked by running it, once per launch (`_git_usable()`), because macOS keeps a `/usr/bin/git` that, without the Command Line Tools, only offers to install them and exits 1. And a launch where git does not run no longer spends a repository's one-time report of its keys, so the launch with git that the `WARNING:` asks for still names them. G98 in `tests/test-git-internals-ro.sh` covers it. Each check was seen failing on the old code or against a mutant. Its re-review added six more. `_git_index_read()` asks `_git_usable()` itself, because a stale worktree's or an unreached submodule's index was still read through a git that does not run, five calls where one was meant. The probe expects a known answer, so a git older than 2.18 (no `--type=bool`) counts as none, and so does macOS's `/usr/bin/git` when the developer directory `xcode-select -p` names holds no `usr/bin/git`; that one is not run at all (PLAT-7). The rescan after the session names every repository the session made, its config unread. The `WARNING:` counts `.git` files too, whose git directory's index git would read. A launch where git does not run records `hooks:<path>`, so the next one does not name the hooks again under a false "did not report it", while a launch where git runs still names the keys. Each of these was seen failing on the code before it, or, for the probe's answer, the `.git`-file count and the hooks NOTE not repeated, against a mutant (a third review found those three checks vacuous at first). One case is not told apart: an engine before this fix, on a host where git did not run, recorded a repository as reported without reading a key, so its keys are not named once git is installed. Still unwarned: a subdirectory of a repository mounted alone, with nothing in it protected, whose enclosing index records a submodule there. The launch protects nothing, so it prints no `WARNING:`. An earlier fix, never committed, made the fallback fail safe instead (true unless git spells false). Its review showed true is not the cautious answer for every caller, so it was withdrawn.
 - Severity: LOW to MEDIUM. Only a host with no git takes these paths, and there git itself runs nothing. But a git client that bundles its own git or libgit2 (GitKraken and the like) does run hooks there, and a git installed later would. Confidence: CONFIRMED (each spelling below measured against git 2.56, with the fallbacks extracted and run with git off `PATH`)
 - Location: `sandbox.sh`, the awk fallbacks of `_git_config_bool()` (`r = (v == "true" || v == "yes" || v == "on" || (v ~ /^-?[0-9]+$/ && v + 0 != 0))`) and `_git_config_get()` ("the first `<name> = value` line of the key's section")
 - Introduced: with the fallbacks, before the window this review covers.
@@ -1519,11 +1532,32 @@ A sample of sandbox.sh's mutants (174, `--jobs 10 --timeout 180`) run with `run.
 - Failure scenario: on a host with no git, an agent writes `worktreeConfig = "true"` into a repository's config, before its first protected launch or in a repository it makes. The launcher neither makes nor walks `config.worktree`, so a `core.fsmonitor` there, which git honours once the extension is on, is left writable.
 - Fix direction: no parser when there is no git. Each caller takes its own cautious branch: make `config.worktree`'s placeholder and walk it in every repository, and in `_git_runs()` list `hooks/` whatever `core.hooksPath` says. Then delete both awk fallbacks, along with G86's fallback checks and G97, which test them, and say in AGENTS.md's git-internals paragraph what a launch on a host with no git does. A third review round found parser holes the first two missed, which argues against patching the parser instead.
 
-## 22. Found while running PLAT-5
+## 22. Found while fixing GIT-24
+
+Re-review of the GIT-24 fix, 2026-11-04, on the Linux developer host, at `f0ad913` plus the uncommitted fix.
+
+### GIT-25: the pointer check runs git, unbounded, on a repository the agent can write
+- **Status: OPEN.**
+- Severity: LOW (the launch hangs, nothing runs). Confidence: CONFIRMED (a config that includes a FIFO hung it; `timeout 3` gave rc=124)
+- Location: sandbox.sh: `pointer_already_mounted_as()`, `want_url="$(git -C "$want" remote get-url origin 2>/dev/null || true)"`
+- Introduced: `4dc252c` (2026-08-21), the git-sourced repo pointer check, before the bounded reads of GIT-10.
+- What's wrong: on a launch that sets `VAULT_PATH`, `SPECS_PATH`, `DOCS_PATH` or `ARCHITECTURE_REPO_PATH` to an existing directory that is not a registered path-sourced repo (and, for the last three, not the primary), the launcher asks the pointer's checkout for its `origin` URL with a plain `git -C`. That reads the repository's config, includes and all, with no time bound. The same config is read everywhere else only through `_git_file_config()`, which is bounded and refuses a read cut off. It also runs a git that does not run (macOS's shim) without asking `_git_usable()`.
+- Failure scenario: the agent runs `git init` in a vault that is not a repository, or edits one that is, and adds `[include] path = fifo` beside a FIFO. The next launch hangs before the overlay, and the message names nothing. `core.fsmonitor` was not run.
+- Fix direction: read `remote.origin.url` through `_git_file_config()` from the checkout's config, resolving a `.git` file and a linked worktree's `commondir` as `git_dirs_in` does, and only where `_git_usable()`. `url.<base>.insteadOf` rewriting, which `get-url` applies, would then need applying by hand or dropping. The call sits in `$(…)`, so `_git_usable()` must have been asked in the launcher's own shell first (move the probe to the start of `run_container`).
+
+### GIT-26: the build's provenance label runs git, unbounded, in the engine's directory
+- **Status: OPEN.**
+- Severity: LOW. Confidence: PLAUSIBLE (from code, by analogy with GIT-25, which was reproduced)
+- Location: sandbox-common.sh: `ai_containers_provenance_labels()`, `commit="$(git -C "$dir" rev-parse HEAD 2>/dev/null || true)"`
+- What's wrong: every `./build.sh` asks git for the engine directory's commit with a plain `git -C`. A project's `.ai-containers/` lies inside the project's repository, so git reads that repository's config, includes and all, with no time bound. The launch mounts that config read-only, but an include in it can name a file the agent can write (which the launch only warns about). Like GIT-25, it also runs macOS's git shim without asking whether git runs, which on a Mac without the Command Line Tools opens their installer at every build.
+- Failure scenario: an include in the project's `.git/config` names a path in the project that the agent replaces with a FIFO. The next `./build.sh` (and `./runme.sh`, which builds first) hangs, and the message names nothing.
+- Fix direction: read `HEAD` without git, as `repo-git-reset.sh` reads branch tips (a `.git` file and `commondir` resolved, `refs/heads/<branch>` or `packed-refs`), or run git with `GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null` and a bound, falling back to no label.
+
+## 23. Found while running PLAT-5
 
 `PHASES=5 bash ./verify-on-host.sh` on macOS 26.6 (Apple Silicon, Homebrew bash 5.3.20, openrsync), Colima 29.5.2 (Virtualization.Framework, virtiofs), at `8abf9a2`, 2026-11-03. 4 of 118 files failed on the host and 1 of 118 at the floor, each again when run alone.
 
-### GIT-25: a repository removed and made again within a second is not reported again
+### GIT-27: a repository removed and made again within a second is not reported again
 - **Status: FIXED** (2026-11-04). `_git_ident()` takes the birth time to the nanosecond (`stat -c '%d %i %.9W'`, BSD `stat -f '%d %i %.9FB'`). G93 was red at the floor in `ubuntu:22.04` on Colima on every run before, and is green there and on macOS after. GAP-12 is unreleased, so no `git-reported.conf` in the old format has shipped.
 - Severity: LOW (a one-time `NOTE:` naming a repository's config keys and hooks is not printed). Confidence: CONFIRMED (in the floor container: `rm -rf` then `mkdir` of `/tmp/a` gave `46 4325438 1793735695` both times; `%.9W` gave `…849127350` and `…851127478`)
 - Location: `sandbox.sh`, `_git_ident()`

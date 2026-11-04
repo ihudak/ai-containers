@@ -21,7 +21,8 @@ and the constraints the fix must keep.
 | PLAT-2 | Windows + WSL2 | gap GAP-13 | The integration corpus and the local layer have never been run on WSL2 — **Docker Desktop half done**; native Engine open |
 | PLAT-3 | macOS (Docker Desktop, Colima) | gap GAP-11 | The mount-swap check is skipped there altogether — **confirmed on Colima, designed**; no code yet |
 | PLAT-4 | x86-64 CPU without AVX | bug SVC-2 | `mongo=ON` reports "no mongo server, rebuild" instead of the real failure |
-| PLAT-5 | macOS (BSD userland) | bugs PRJ-10, PRJ-11 | The no-follow file writes take their non-Linux branches there, and nobody has run them — **done**, passed (GIT-25 and TST-28 found and fixed) |
+| PLAT-5 | macOS (BSD userland) | bugs PRJ-10, PRJ-11 | The no-follow file writes take their non-Linux branches there, and nobody has run them — **done**, passed (GIT-27 and TST-28 found and fixed) |
+| PLAT-7 | macOS without the Command Line Tools | bug GIT-24 | A launch where `/usr/bin/git` is only the installer shim must not run it, and must take the no-git branch |
 | PLAT-6 | Windows + WSL2 + Docker Desktop | bugs PRJ-10, PRJ-11 | Re-run the hermetic suite at current `main`: the new no-follow tests rename, open `/dev/fd/N` and `noclobber`-create on drvfs — **done**, passed (TST-25 found and fixed) |
 
 ## Who picks up what (updated 2026-11-03)
@@ -35,7 +36,7 @@ reports by editing the entry's **Status** line (and docs/testing.md's
 |---|---|---|---|
 | **Linux agent** (review machine) | Linux x86-64, native Docker Engine | the falsify work GAP-1 to GAP-4 | anything below |
 | **WSL agent** | Windows + WSL2 (Ubuntu distro) + **Docker Desktop** with WSL integration. **Not** a native Docker Engine in the distro | **PLAT-6** | PLAT-2's remaining half: it needs a Docker Engine installed natively in the distro. Leave that open unless one is installed |
-| **Mac agent** | macOS, Docker Desktop and/or Colima | **PLAT-3** (GAP-11), **PLAT-5** | — |
+| **Mac agent** | macOS, Docker Desktop and/or Colima | **PLAT-3** (GAP-11), **PLAT-5**, **PLAT-7** | — |
 | *nobody* | x86-64 CPU without AVX | PLAT-4: closed as not supported | — |
 
 Any change of code an agent makes follows the rule at the top: reproduce
@@ -116,7 +117,7 @@ first, then fix test-first.
   - **The focused run passed:** `test-sync-no-follow` 25, `test-init-no-follow` 49, `test-sync-project` 79, `test-project-init` 23, `test-migrate-runme` 47 assertions. Every BSD branch of project-files.sh (`mv -h -f`, `chmod` and `ls -lnL` through fdescfs `/dev/fd`, openrsync into the copy) behaves as on Linux.
   - **The first whole Phase 5 failed**, and none of the failures were in the no-follow code:
     - On the host, four test bugs, filed as bugs review TST-28 and fixed: BSD `paste -s` without `-`, no `flock` on macOS (two tests), and APFS refusing a name that is not UTF-8.
-    - At the floor (`ubuntu:22.04` on Colima), one product bug: G93 did not report a re-made repository, because overlayfs reused the inode within the same second. Filed as GIT-25 and fixed test-first: the birth time is now kept to the nanosecond.
+    - At the floor (`ubuntu:22.04` on Colima), one product bug: G93 did not report a re-made repository, because overlayfs reused the inode within the same second. Filed as GIT-27 and fixed test-first: the birth time is now kept to the nanosecond.
   - **With the fixes, Phase 5 passed:** 118/118 on the host, at the floor and with a symlinked `TMPDIR`, in 94 min.
 - **Picked up by:** the **Mac agent**.
 - **Platform:** macOS (any Docker; these tests are hermetic and need none), with the system `bash` replaced by a bash ≥ 5.1 (Homebrew), as for Phase 5.
@@ -128,6 +129,17 @@ first, then fix test-first.
 - **Run:** `bash tests/run-all.sh test-sync-no-follow.sh test-init-no-follow.sh test-sync-project.sh test-project-init.sh test-migrate-runme.sh`, then the whole of Phase 5 (`PHASES=5 bash ./verify-on-host.sh`). Record `rsync --version`'s first line, and the result in docs/testing.md.
 - **A defect looks like:** a `FAIL:` line in those tests. In particular, a planted link that is written through, a launcher that loses its `+x`, or a `sandbox.local.env` backup with a mode other than the original's.
 - **Fix constraints, if one reproduces:** never fall back to writing through a name. A branch that cannot do the check safely must refuse the write with the `ERROR:` the Linux path prints, not skip the check.
+
+## PLAT-7: macOS — a launch where `/usr/bin/git` is the Command Line Tools shim
+
+- **Status: OPEN.**
+- **Picked up by:** the **Mac agent**.
+- **Platform:** macOS with the Command Line Tools removed (`sudo rm -rf /Library/Developer/CommandLineTools`, or a fresh user account on a Mac that never had them), no other git on `PATH`, any Docker.
+- **Source:** bugs review GIT-24. `sandbox.sh: _git_usable()` decides whether git runs. When `command -v git` is `/usr/bin/git` on Darwin and the directory `xcode-select -p` names holds no executable `usr/bin/git`, it counts git as absent without running it, because running the shim opens the installer. Otherwise it runs the shim once, and one that fails counts as absent too. Written without running it.
+- **Run:** `./sandbox.sh open ..` in a project's `.ai-containers/`, launched directly, not through `runme.sh` (its `./build.sh` runs git for the image label, bugs review GIT-26), and with `VAULT_PATH`, `SPECS_PATH`, `DOCS_PATH` and `ARCHITECTURE_REPO_PATH` unset (the pointer check runs git too, GIT-25). Do it twice: on a Mac that never had the Command Line Tools, and after removing them. Record `xcode-select -p`'s output and exit status in both.
+- **Expected:** no installer dialog; one `WARNING: git is not installed on this host, or does not run`; `.git/config.worktree` made in the project's repository.
+- **A defect looks like:** the installer dialog opening (the shim was run), or no WARNING (git was taken as present). Also record whether `xcode-select -p` fails with Xcode.app installed but no Command Line Tools: then `/usr/bin/git` works, and taking it as absent would only cost the checks git makes.
+- **Fix constraints, if one reproduces:** a git that cannot be shown to run counts as absent; never fall back to a parser.
 
 ## PLAT-6: WSL2 + Docker Desktop — re-run the hermetic suite at current `main`
 

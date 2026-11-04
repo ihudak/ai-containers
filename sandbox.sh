@@ -365,6 +365,7 @@ add_file_mount_if_exists() {
 launcher_ro_overlay() {
   # shellcheck disable=SC2178  # nameref: shellcheck does not model `local -n`
   local -n _ro=$1 _vrfy=$2
+  _rd_prep; _git_usable || true
   local reached="$3" self spec src rest dst opts l at pin path part r skip i k depth max=0 d p pp kind ok mf mv
   local x f e q w c safe inner how
   local uid="${SANDBOX_UID:-$(id -u)}" gid="${SANDBOX_GID:-$(id -g)}" you
@@ -372,7 +373,7 @@ launcher_ro_overlay() {
   local -a _xm_t=() _xm_by=() _xm_j=() ro_srcs=()
   local -A gpv=()
   local -a scan links walk gdirs gfiles glinks gunr gro ug usrc udst udep ukind
-  local g base what gmax gn gitmax cfg cdir hp hpd k2 first ik ip rep al rk rh
+  local g base what gmax gn gitmax cfg cdir hp hpd k2 first ik ip rep al rk rh hk
   local -a inc pgd=() pga=() pgc=()
   local -A seen=() tried=() scanned=() pinned=()
   # Included git config files read: each once per protected config, keyed by
@@ -655,10 +656,11 @@ launcher_ro_overlay() {
   # --git-common-dir` prints the path absolute), as do libgit2 1.7 and 1.9,
   # dulwich and gitoxide; NOT `.`, which libgit2 refuses ("Repository not
   # found") — and config.worktree, made empty, where extensions.worktreeConfig
-  # is on. They stay: removing one at exit would detach it in any other
-  # container still running on that repository. A commondir that is not `./`
-  # in a repository's own git directory refuses the launch: git never writes one
-  # there, and it sends the host's git elsewhere for config and hooks.
+  # is on, and everywhere when git does not run (GIT-24). They stay: removing
+  # one at exit would detach it in any other container still running on that
+  # repository. A commondir that is not `./` in a repository's own git directory
+  # refuses the launch: git never writes one there, and it sends the host's git
+  # elsewhere for config and hooks.
   #
   # Directories from the mount root down to each, the git directory itself
   # included, are pinned, so .git cannot be renamed out from under the overlay.
@@ -847,11 +849,20 @@ launcher_ro_overlay() {
           # A repository whose placeholder was already there — made by an
           # earlier engine, or planted with one the agent made — never had this
           # moment: it is named once too, by the record of what was reported.
-          rep=""
+          # Where git does not run no key is read, so the record says only that
+          # the hooks were named (`hooks:`): the next launch where git runs names
+          # the keys, and the hooks NOTE is not repeated meanwhile (re-review of
+          # the GIT-24 fix).
+          rep=""; hk=""
           if [[ -n "$first" ]]; then rep="is protected for the first time"; al=" already"
-          elif ! _git_reported "$g"; then rep="was protected by an earlier launch that did not report it"; al=""; fi
+          elif ! _git_reported "$g"; then
+            if ! _git_reported "$g" hooks; then rep="was protected by an earlier launch that did not report it"; al=""
+            elif _git_usable; then rep="was protected by an earlier launch where git did not run"; al=""; hk=1
+            fi
+          fi
           if [[ -n "$rep" ]]; then
             _git_runs "$g" rk rh
+            if [[ -n "$hk" ]]; then rh=""; fi
             if [[ -n "$rk" ]]; then
               printf 'NOTE: %s %s, and its config%s sets\n' "$(_term "$at")" "$rep" "$al" >&2
               printf '      what makes your host'\''s git run programs: %s.\n' "$(_term "$rk")" >&2
@@ -868,7 +879,10 @@ launcher_ro_overlay() {
               printf '      If you did not put them there, review them on the host:\n' >&2
               printf '        ls -l %s\n' "$(_q "$g/hooks")" >&2
             fi
-            _git_report_record "$g"
+            # Not as reported where git does not run: no key was read, and the
+            # launch with git that its WARNING asks for must still name them
+            # (review of the GIT-24 fix, M1).
+            if _git_usable; then _git_report_record "$g"; else _git_report_record "$g" hooks; fi
           fi
         elif [[ -f "$g/commondir" ]]; then
           # Physically, as git resolves it (strbuf_add_real_path), and without the
@@ -888,8 +902,9 @@ launcher_ro_overlay() {
         fi
         # A common config that cannot be read cannot say the extension is off, so
         # the placeholder is made, and config.worktree walked below, as if it were on.
+        # Nor can one read where git does not run (GIT-24; G98).
         if [[ -n "$cfg" && ! -e "$g/config.worktree" && ! -L "$g/config.worktree" ]]; then
-          if [[ ! -f "$cfg" ]] || _git_config_bool "$cfg" extensions.worktreeConfig; then
+          if [[ ! -f "$cfg" ]] || ! _git_usable || _git_config_bool "$cfg" extensions.worktreeConfig; then
             ( set -C; : > "$g/config.worktree" ) 2>/dev/null || true
           fi
         fi
@@ -1009,6 +1024,18 @@ launcher_ro_overlay() {
   fi
   if (( _gdi_warned > 5 )); then
     printf 'WARNING: … and %d more commondirs of git directories in other mounts name what this launch cannot protect.\n' "$((_gdi_warned - 5))" >&2
+  fi
+  # Where git does not run nothing reads a config or an index (GIT-24): what that
+  # leaves unchecked is said once, rather than passed over in silence. For a .git
+  # file too: with git, the index of the git directory it names is read
+  # (re-review of the GIT-24 fix).
+  if (( gn > 0 )) && ! _git_usable; then
+    printf 'WARNING: git is not installed on this host, is older than 2.18, or does not run, so\n' >&2
+    printf '         no git config or index was read for the git directories and .git files\n' >&2
+    printf '         protected here (%d): includes, keys that make git run a program, a\n' "$gn" >&2
+    printf '         core.hooksPath that leads into a writable mount, and submodule checkouts\n' >&2
+    printf '         outside the scan are not checked. Install git 2.18 or later on the host\n' >&2
+    printf '         and launch again.\n' >&2
   fi
   if (( gn > 30 )); then
     printf 'NOTE: %d git directories were protected, each with its own bind mounts; that\n' "$gn" >&2
@@ -1782,12 +1809,13 @@ launcher_dirs_in() {
 # every `.git` FILE (a linked worktree's or a submodule's checkout, naming its git
 # directory), every `.git` symlink, and every directory you cannot list that is
 # a .git or lies inside one (an agent that owns it could `chmod 000` it in one
-# session to hide what is inside from the next scan). A submodule's checkout is
-# also found through its git directory's core.worktree, wherever it lies — a
-# vendor/ is pruned by name, and submodules commonly live in one. Git directories
-# to seven levels down, so a checkout's own .git is found to six, as launchers
-# are; dependency trees are pruned outside .git, and a .git's object store, refs
-# and logs, which hold nothing that runs. NUL-delimited; always returns 0.
+# session to hide what is inside from the next scan). Where git runs, a
+# submodule's checkout is also found through its git directory's core.worktree,
+# wherever it lies — a vendor/ is pruned by name, and submodules commonly live
+# in one. Git directories to seven levels down, so a checkout's own .git is
+# found to six, as launchers are; dependency trees are pruned outside .git, and
+# a .git's object store, refs and logs, which hold nothing that runs.
+# NUL-delimited; always returns 0.
 # _git_index_read <records-out> <gitdir> <worktree>: the index's records (`ls-files
 # -s -z`), read by the host's git WITHOUT the repository: GIT_DIR is a throwaway
 # empty repository of the launcher's own, and only GIT_INDEX_FILE is the real
@@ -1804,6 +1832,9 @@ _git_index_read() {
   local -n _gir_out=$1
   local g="$2" top="$3" fmt
   _gir_out=()
+  # Not where git does not run: a shim would be run for nothing, once per
+  # index (re-review of the GIT-24 fix).
+  _git_usable || return 1
   [[ -e "$g/index" ]] || return 0
   [[ -f "$g/index" ]] || return 1
   # A split index reads its shared part from beside it, a file the agent can
@@ -1938,27 +1969,112 @@ _timeout_prefix() {
   fi
 }
 
-# _rd <bytes> <file>: the first <bytes> of a small file the agent can write — a
-# .git file, a commondir, a gitdir, a config — read in at most 2 s. It is checked
-# as a regular file first, but a concurrent container can swap it for a FIFO
-# between the check and the open, which blocked the launch for ever (GIT-10).
-_rd_t=(); _rd_init=""
-_rd_prep() { [[ -n "$_rd_init" ]] || { read -r -a _rd_t <<< "$(_timeout_prefix 2) "; _rd_init=1; }; }
-_rd() {
-  local rc=0
+# Bounded reads (GIT-10, GIT-23). A small file the agent can write — a .git
+# file, a commondir, a gitdir, a config — is checked as a regular file and then
+# read, and a concurrent container can swap it for a FIFO in between, which
+# blocked the launch for ever (GIT-10). So every read is bounded, and one cut off
+# refuses the launch rather than reading as unset. The bound is a time, though,
+# and a regular file only slow to read — a config of thousands of entries on a
+# busy host — was refused too, blamed on a FIFO (bugs review GIT-23). So a read
+# may take _rd_long_secs while the launch's slow reads (those past _rd_secs)
+# have taken less than _rd_budget_secs in all, and _rd_secs once they have:
+# planted slow files cost the launch that much, no more. What a read takes
+# includes its reader's time, which the pipe holds the read to; buffering the
+# output to retry a read cut off lost that, and a small config whose listing is
+# large then held the launch for minutes (review of the GIT-23 fix). A refusal
+# says whether the file was swapped or only slow.
+_rd_secs=2 _rd_long_secs=10 _rd_budget_secs=30
+_rd_init=""; _rd_dir=""; _rd_tp=(); _rd_lim=0
+# _rd_prep: where the launch's subshells — most reads run in $(…) or <(…) —
+# count the time slow reads took. launcher_ro_overlay calls it first, in the
+# launcher's own shell; the EXIT trap removes it. Without it, or once a count
+# could not be written (`ok` gone), every read gets _rd_secs, as before GIT-23.
+_rd_prep() {
+  [[ -z "$_rd_init" ]] || return 0
+  _rd_init=1
+  # The timeout command without its duration, which each read sets.
+  read -r -a _rd_tp <<< "$(_timeout_prefix 1) "
+  if (( ${#_rd_tp[@]} )); then unset '_rd_tp[-1]'; fi
+  # Only in the launcher's own shell: one made in a subshell would be lost to
+  # the next read, and to the EXIT trap (re-review of the GIT-23 fix).
+  if (( BASH_SUBSHELL > 0 )); then return 0; fi
+  _rd_dir="$(mktemp -d "${TMPDIR:-/tmp}/ai-launcher-read.XXXXXX" 2>/dev/null)" || _rd_dir=""
+  if [[ -n "$_rd_dir" ]] && ! { : > "$_rd_dir/ok"; } 2>/dev/null; then _rd_dir=""; fi
+}
+# _rd_left: sets _rd_lim to the milliseconds slow reads may still take, 0 when
+# they cannot be counted. No subshell: it runs before every read.
+_rd_left() {
+  local n spent=0 c="$_rd_dir/spent"
+  _rd_lim=0
+  [[ -n "$_rd_dir" && -f "$_rd_dir/ok" ]] || return 0
+  if [[ -e "$c" || -L "$c" ]]; then
+    [[ -f "$c" && ! -L "$c" ]] || return 0
+    while IFS= read -r n; do
+      [[ "$n" =~ ^[0-9]{1,9}$ ]] || return 0
+      spent=$(( spent + 10#$n ))
+    done < "$c"
+  fi
+  _rd_lim=$(( _rd_budget_secs * 1000 > spent ? _rd_budget_secs * 1000 - spent : 0 ))
+}
+# _rd_run <file> <command>...: <command>, which reads <file>, under that bound.
+_rd_run() {
+  # Most callers read through `< <(…)`, which inherits errexit: a command that
+  # fails here unhandled would end the read with nothing refused (re-review of
+  # the GIT-23 fix, HIGH).
+  local -; set +e
+  local f="$1" rc=0 lim t0 ms c
+  local -a t=()
+  shift
   _rd_prep
-  "${_rd_t[@]}" head -c "$1" -- "$2" || rc=$?
-  if (( rc == 124 || rc == 137 )); then _rd_fail "$2"; return 1; fi
+  _rd_left; lim="$_rd_lim"
+  (( lim < _rd_long_secs * 1000 )) || lim=$(( _rd_long_secs * 1000 ))
+  (( lim > _rd_secs * 1000 )) || lim=$(( _rd_secs * 1000 ))
+  # Whole seconds, which every timeout(1) takes.
+  lim=$(( (lim + 999) / 1000 ))
+  if (( ${#_rd_tp[@]} )); then t=("${_rd_tp[@]}" "$lim"); fi
+  # Digits only: the decimal point is the locale's, and not always . or ,.
+  t0="${EPOCHREALTIME//[!0-9]/}"
+  "${t[@]}" "$@" || rc=$?
+  ms=$(( (${EPOCHREALTIME//[!0-9]/} - t0) / 1000 ))
+  if (( ms > _rd_secs * 1000 )) && [[ -n "$_rd_dir" ]]; then
+    c="$_rd_dir/spent"
+    if [[ ( -f "$c" && ! -L "$c" ) || ! ( -e "$c" || -L "$c" ) ]]; then
+      { printf '%d\n' "$ms" >> "$c"; } 2>/dev/null || rm -f "$_rd_dir/ok"
+    else
+      rm -f "$_rd_dir/ok"
+    fi
+  fi
+  if (( rc == 124 || rc == 137 )); then
+    if [[ ! -f "$f" ]]; then _rd_fail "$f" fifo "$lim"
+    elif (( lim > _rd_secs )); then _rd_fail "$f" slow "$lim"
+    else _rd_fail "$f" spent "$lim"; fi
+    return 1
+  fi
   return "$rc"
 }
-# _rd_fail <file>: a bounded read that was cut off, or a config too big to read
-# whole, is not an absent key — read as one, it failed open (automated security
-# review of 116129d). The reads run in $(…) and <(…), where exit ends only the
-# subshell, so the launcher itself is signalled; its USR1 trap refuses the launch.
+# _rd <bytes> <file>: the first <bytes> of a small file the agent can write.
+_rd() {
+  _rd_run "$2" head -c "$1" -- "$2"
+}
+# _rd_fail <file> <fifo|slow|spent> <seconds>: a bounded read that was cut off
+# is not an absent key — read as one, it failed open (automated security review
+# of 116129d). The reads run in $(…) and <(…), where exit ends only the subshell,
+# so the launcher itself is signalled; its USR1 trap refuses the launch. Nothing
+# here may stop it first: errexit is on in a <(…) (re-review of the GIT-23 fix).
 _rd_fail() {
+  local -; set +e
+  local why
+  case "${2:-}" in
+    slow) why="could not be read within ${3:-?} s, though it is a regular file" ;;
+    spent) why="could not be read within ${3:-?} s, though it is a regular file, and this launch has no more time for slow reads" ;;
+    *) why="could not be read within ${3:-its bound} s, and is not a regular file now (swapped for a FIFO, or removed)" ;;
+  esac
   # To the launcher's own stderr: every caller sends its stderr to /dev/null, and
   # the refusal was silent (review of the batch 10 branch; G86).
-  printf 'ERROR: %s could not be read within its bound (a FIFO swapped in, or too big); refusing the launch.\n' "$(_term "$1")" >&"${_rd_errfd:-2}"
+  printf 'ERROR: %s %s; refusing the launch.\n' "$(_term "$1")" "$why" >&"${_rd_errfd:-2}"
+  if [[ "${2:-}" == slow || "${2:-}" == spent ]]; then
+    printf '       The host may be busy: launch again.\n' >&"${_rd_errfd:-2}"
+  fi
   kill -s USR1 "$$" 2>/dev/null || true
 }
 
@@ -2239,7 +2355,7 @@ git_dirs_in() {
         _gdi_files+=("$top/.git"); had[$top/.git]=1
       fi
     done
-    command -v git >/dev/null 2>&1 || continue
+    _git_usable || continue
     # Read once: what ls-files lists does not depend on the worktree, and a read
     # per referrer let each planted .git file cost another (review of 8b3e0c5).
     links=()
@@ -2375,72 +2491,63 @@ git_dirs_in() {
   return 0
 }
 
-# _git_config_bool <config-file> <key>: succeeds when git would read the key as
-# true — with git's own --type=bool, or else as git spells true: a bare key, or
-# true/yes/on, or a non-zero integer.
-_git_config_bool() {
-  local v
-  if command -v git >/dev/null 2>&1; then
-    v="$(_git_file_config "$1" --type=bool --get "$2" 2>/dev/null)" || return 1
-    [[ "$v" == true ]]; return
+# _git_usable: succeeds when git runs on this host. `command -v` is not enough:
+# macOS keeps /usr/bin/git on PATH whether or not the Command Line Tools are
+# installed, and without them it only offers to install them and exits 1, so
+# every key read through it came back unset (review of the GIT-24 fix, M2).
+# Asked once, by launcher_ro_overlay in the launcher's own shell, and kept, so a
+# shim that opens an installer is not run once per read.
+_git_usable() {
+  local g
+  local -a t=()
+  if [[ -z "$_git_ok" ]]; then
+    _git_ok=0
+    if ! g="$(command -v git 2>/dev/null)"; then
+      :
+    elif [[ "$g" == /usr/bin/git && "$(uname -s 2>/dev/null)" == Darwin ]] \
+         && ! [[ -x "$(xcode-select -p 2>/dev/null)/usr/bin/git" ]]; then
+      # Without a developer directory holding a git (the Command Line Tools,
+      # or Xcode), running the shim opens the tools' installer. -p alone can
+      # name one since removed (third review of the GIT-24 fix).
+      :
+    else
+      # A known answer, not only an exit status: a git older than 2.18 has no
+      # --type=bool, which every read here uses, and would read every key as
+      # unset (re-review of the GIT-24 fix).
+      read -r -a t <<< "$(_timeout_prefix 10) "
+      if [[ "$(GIT_DIR=/dev/null "${t[@]}" git config --file /dev/null --type=bool --default true \
+              --get ai-launcher.probe 2>/dev/null)" == true ]]; then
+        _git_ok=1
+      fi
+    fi
   fi
-  [[ -f "$1" ]] || return 1
-  # Read once, whole or not at all: a config past the cap would be read in part,
-  # a second read could see another file (automated security review of
-  # 677aa12), and a shell variable drops NUL bytes, so the bytes are counted in
-  # a private snapshot and awk parses that same copy (review of 37c5ace).
-  local snap rc=0
-  snap="$(mktemp "${TMPDIR:-/tmp}/ai-launcher-cfg.XXXXXX" 2>/dev/null)" || { _rd_fail "$1"; return 1; }
-  if ! _rd 1048577 "$1" > "$snap" || (( $(wc -c < "$snap") > 1048576 )); then rm -f "$snap"; _rd_fail "$1"; return 1; fi
-  # Byte-wise, as git compares names: a UTF-8 locale's tolower folds more
-  # (automated security review of 511b5e1).
-  LC_ALL=C awk -v sec="${2%.*}" -v key="${2##*.}" '
-    /^[[:space:]]*\[/ { s = tolower($0); gsub(/[][[:space:]]/, "", s); insec = (s == tolower(sec)); next }
-    insec {
-      line = $0; sub(/^[[:space:]]+/, "", line); sub(/[[:space:]]*([#;].*)?$/, "", line)
-      n = index(line, "="); k = n ? substr(line, 1, n - 1) : line; sub(/[[:space:]]+$/, "", k)
-      if (tolower(k) != tolower(key)) next
-      if (!n) { r = 1; next }
-      v = tolower(substr(line, n + 1)); gsub(/[[:space:]]/, "", v)
-      r = (v == "true" || v == "yes" || v == "on" || (v ~ /^-?[0-9]+$/ && v + 0 != 0))
-    }
-    END { exit !r }' "$snap" 2>/dev/null || rc=$?
-  rm -f "$snap"
-  return "$rc"
+  (( _git_ok ))
 }
 
-# _git_config_get <config-file> <key>: a key's value from one git config file —
-# with git, which reads it exactly, or else the first `<name> = value` line of
-# the key's section, which covers what git itself writes. Fails when unset.
+# _git_config_bool <config-file> <key>: succeeds when git reads the key as true
+# (--type=bool). Where git does not run it fails: there is nothing to read a
+# config with. An awk parser stood in for git once and misread its syntax both
+# ways ("true" and 1k as off, \t0 as on), and no single guess is safe for every
+# caller (bugs review GIT-24; G98). A caller for which "off" is not the cautious
+# answer asks _git_usable itself; the include walk need not, since with no git
+# there are no includes to walk.
+_git_config_bool() {
+  local v
+  _git_usable || return 1
+  v="$(_git_file_config "$1" --type=bool --get "$2" 2>/dev/null)" || return 1
+  [[ "$v" == true ]]
+}
+
+# _git_config_get <config-file> <key>: a key's value from one git config file,
+# read by git. Fails when it is unset, and always where git does not run: then
+# core.hooksPath unset lists the hooks in hooks/, and a core.worktree is not
+# followed, which the launch's WARNING names when it protects a git directory
+# (GIT-24).
 _git_config_get() {
   local v
-  if command -v git >/dev/null 2>&1; then
-    v="$(_git_file_config "$1" --get "$2" 2>/dev/null)" || return 1
-    printf '%s' "$v"; return 0
-  fi
-  [[ -f "$1" ]] || return 1
-  # Read once, whole or not at all: a config past the cap would be read in part,
-  # a second read could see another file (automated security review of
-  # 677aa12), and a shell variable drops NUL bytes, so the bytes are counted in
-  # a private snapshot and awk parses that same copy (review of 37c5ace).
-  local snap rc=0
-  snap="$(mktemp "${TMPDIR:-/tmp}/ai-launcher-cfg.XXXXXX" 2>/dev/null)" || { _rd_fail "$1"; return 1; }
-  if ! _rd 1048577 "$1" > "$snap" || (( $(wc -c < "$snap") > 1048576 )); then rm -f "$snap"; _rd_fail "$1"; return 1; fi
-  # Byte-wise, as git compares names: a UTF-8 locale's tolower folds more
-  # (automated security review of 511b5e1).
-  LC_ALL=C awk -v sec="${2%.*}" -v key="${2##*.}" '
-    /^[[:space:]]*\[/ { s = tolower($0); gsub(/[][[:space:]]/, "", s); insec = (s == tolower(sec)); next }
-    insec {
-      line = $0; sub(/^[[:space:]]+/, "", line)
-      n = index(line, "="); if (!n) next
-      k = substr(line, 1, n - 1); sub(/[[:space:]]+$/, "", k)
-      if (tolower(k) != tolower(key)) next
-      v = substr(line, n + 1); sub(/^[[:space:]]+/, "", v); sub(/[[:space:]]+$/, "", v)
-      print v; found = 1; exit
-    }
-    END { exit !found }' "$snap" 2>/dev/null || rc=$?
-  rm -f "$snap"
-  return "$rc"
+  _git_usable || return 1
+  v="$(_git_file_config "$1" --get "$2" 2>/dev/null)" || return 1
+  printf '%s' "$v"
 }
 
 # _git_exec_keys <config-file>...: the keys these git config files set that make
@@ -2453,7 +2560,7 @@ _git_exec_keys() {
   local f rec k v
   local re='^(core\.(fsmonitor|hookspath|sshcommand|editor|pager|askpass|gitproxy|alternaterefscommand)|sequence\.editor|pager\..+|diff\.external|diff\..+\.(command|textconv)|merge\..+\.driver|filter\..+\.(clean|smudge|process)|credential\.(.+\.)?helper|gpg\.(.+\.)?program|remote\..+\.(uploadpack|receivepack)|(difftool|mergetool|man|browser)\..+\.(cmd|path)|web\.browser|include\.path|includeif\..+\.path|alias\..+|submodule\..+\.update|trailer\..+\.(command|cmd)|gpg\.ssh\.defaultkeycommand|sendemail\.(.+\.)?(tocmd|cccmd|headercmd|sendmailcmd|smtpserver)|protocol\.(ext\.)?allow|imap\.tunnel|instaweb\.httpd|guitool\..+\.cmd|interactive\.difffilter|tar\..+\.command)$'
   local -A had=()
-  command -v git >/dev/null 2>&1 || return 0
+  _git_usable || return 0
   for f in "$@"; do
     if [[ ! -f "$f" ]]; then continue; fi
     while IFS= read -r -d '' rec; do
@@ -2506,6 +2613,10 @@ _git_runs() {
   for e in ${ek[@]+"${ek[@]:0:10}"}; do _gr_k+="${_gr_k:+, }$e"; done
   if (( ${#ek[@]} > 10 )); then _gr_k+=", and $(( ${#ek[@]} - 10 )) more"; fi
   [[ -n "$own" ]] || return 0
+  # Where git does not run both reads fail, so hooks/ is listed whatever
+  # core.hooksPath says. That may name a hook git would not run; the ones in a
+  # core.hooksPath directory, which _git_exec_keys would name with git, go
+  # unnamed (GIT-24; G98).
   hp="$(_git_config_get "$c/config" core.hooksPath)" || hp=""
   if [[ -z "$hp" && -f "$g/config.worktree" ]] && _git_config_bool "$c/config" extensions.worktreeConfig; then
     hp="$(_git_config_get "$g/config.worktree" core.hooksPath)" || hp=""
@@ -2557,16 +2668,19 @@ _git_reported_load() {
     [[ -z "$line" ]] || _git_reported_set[$line]=1
   done < "$_git_reported_file" 2>/dev/null || true
 }
-_git_reported() {    # <git dir, physical>: rc 0 when it is in the record
+# A second argument, `hooks`, is the record of a launch where git did not run,
+# which named the hooks and read no key: `<identity> hooks:<path>`, a line no
+# physical path can make, so an older engine matches it to nothing.
+_git_reported() {    # <git dir, physical> [hooks]: rc 0 when it is in the record
   [[ "$1" != *$'\n'* ]] || return 1
   _git_reported_load
-  [[ -n "${_git_reported_set["$(_git_ident "$1") $1"]:-}" ]]
+  [[ -n "${_git_reported_set["$(_git_ident "$1") ${2:+$2:}$1"]:-}" ]]
 }
-_git_report_record() {   # <git dir, physical>: add it, once, on a line of its own; quiet
+_git_report_record() {   # <git dir, physical> [hooks]: add it, once, on a line of its own; quiet
   local line last=""
   [[ "$1" != *$'\n'* ]] || return 0
   _git_reported_load
-  line="$(_git_ident "$1") $1"
+  line="$(_git_ident "$1") ${2:+$2:}$1"
   [[ -z "${_git_reported_set[$line]:-}" ]] || return 0
   _git_reported_set[$line]=1
   [[ ! -L "$_git_reported_file" && ( ! -e "$_git_reported_file" || ( -f "$_git_reported_file" \
@@ -2606,6 +2720,9 @@ _git_after_session() {
     # What git_dirs_in reads of the launch's own state: the writable binds, and the bound.
     bsrc=(${_git_bsrc[@]+"${_git_bsrc[@]}"})
     gitmax="${SANDBOX_GIT_MAX:-200}"; _rd_errfd=""
+    # A read cut off here only says the search was cut short, so it gets the
+    # first bound: the longer one would lengthen a scan after the session.
+    _rd_long_secs="$_rd_secs"
     lim="${AI_CONTAINERS_RESCAN_SECONDS:-30}"; [[ "$lim" =~ ^[0-9]{1,6}$ ]] || lim=30
     deadline=$(( SECONDS + 10#$lim ))
     for src in "${_git_scan_srcs[@]}"; do
@@ -2624,6 +2741,9 @@ _git_after_session() {
           elif [[ ! -r "$f" || ! -x "$f" ]]; then printf 'R\0%s\0%s\0' "$f" "cannot be listed, so it was not checked"
           else
             k=""; h=""; _git_runs "$f" k h || true
+            # Where git does not run no key is read, so every new one is named
+            # (re-review of the GIT-24 fix).
+            if ! _git_usable; then k="${k:-not read, git does not run on this host}"; fi
             if [[ -n "$k$h" ]]; then printf 'R\0%s\0%s\0' "$f" "${k:+config: $k}${k:+${h:+; }}${h:+hooks: $h}"; fi
           fi
         done
@@ -2643,7 +2763,7 @@ _git_after_session() {
   done
   if (( ${#run[@]} )); then
     printf 'WARNING: the session made git repositories in a writable mount that this launch did\n' >&2
-    printf '         not protect, and your host'\''s git would run what they hold:\n' >&2
+    printf '         not protect, and your host'\''s git could run what they hold:\n' >&2
     for rec in "${run[@]:0:20}"; do printf '           %s\n' "$rec" >&2; done
     if (( ${#run[@]} > 20 )); then printf '           … and %d more\n' "$(( ${#run[@]} - 20 ))" >&2; fi
     printf '         Review them on the host before you run git there; the next launch protects them.\n' >&2
@@ -2675,18 +2795,14 @@ _git_file_config() {
   # and a directory the agent made a git directory of can hold one as its config
   # (review of 1a30bb4; G65).
   [[ -f "$f" ]] || return 1
-  _rd_prep
-  local rc=0
-  GIT_DIR=/dev/null "${_rd_t[@]}" git config --file "$f" "$@" || rc=$?
-  if (( rc == 124 || rc == 137 )); then _rd_fail "$f"; return 1; fi
-  return "$rc"
+  GIT_DIR=/dev/null _rd_run "$f" git config --file "$f" "$@"
 }
 
 # _git_include_paths <config-file>: every include.path and includeIf.*.path the
 # file sets, each as `<key>\n<value>`, NUL-separated — whatever the condition,
 # since one that does not hold today may hold tomorrow. With no git, none.
 _git_include_paths() {
-  command -v git >/dev/null 2>&1 || return 0
+  _git_usable || return 0
   _git_file_config "$1" --null --get-regexp '^include(if\..*)?\.path$' 2>/dev/null || true
 }
 
@@ -2882,6 +2998,7 @@ _launcher_verify_dir=""
 # like any other (G92). Set by run_container.
 _git_skip_root=""
 _gir_tmp="" _gir_tmp_warned=""
+_git_ok=""                  # whether git runs here, asked once (_git_usable)
 declare -A _gir_cache=()   # git directory → its read index, once per launch
 _fs_deadline=""             # the FIFO search's deadline, once per launch (_ro_fifo_search)
 # The hooks git runs, by name (githooks(5)); anything else in hooks/ is inert.
@@ -2897,7 +3014,7 @@ _gdi_over=()               # git directories past SANDBOX_GIT_MAX where a scan s
 declare -A _git_launch_seen=()
 _git_scan_srcs=()
 _git_bsrc=()               # every writable bind source of the launch (bsrc), for the rescan
-trap 'rm -rf "${_launcher_verify_dir:-}" "${_gir_tmp:-}" 2>/dev/null' EXIT
+trap 'rm -rf "${_launcher_verify_dir:-}" "${_gir_tmp:-}" "${_rd_dir:-}" 2>/dev/null' EXIT
 
 # The agent's identity: numeric, within a 32-bit id, and never root — capsh
 # switching 0 to 0 clears no capabilities (bugs review ENV-4). Checked first in

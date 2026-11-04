@@ -704,13 +704,17 @@ fi
 rm -rf "$PROJ/si37"
 
 # ── G38: many include entries in one config cannot make the launch slow ───────
+# Against the same launch with one entry, timed in the same run: a fixed 15 s
+# failed on a busy host, where every launch is slower (GIT-23).
 mkdir -p "$PROJ/many38" && "${G[@]}" -C "$PROJ/many38" init -q
-{ printf '[include]\n'; for n in $(seq 1 5000); do printf '\tpath = /nonexistent38/f%d\n' "$n"; done; } >> "$PROJ/many38/.git/config"
+printf '[include]\n\tpath = /nonexistent38/f0\n' >> "$PROJ/many38/.git/config"
+launch_timed 120; base38="$LAUNCH_S"; brc38="$LAUNCH_RC"
+{ for n in $(seq 1 5000); do printf '\tpath = /nonexistent38/f%d\n' "$n"; done; } >> "$PROJ/many38/.git/config"
 launch_timed 120
-[[ "$LAUNCH_RC" == 0 && "$LAUNCH_S" -lt 15 ]] \
+[[ "$brc38" == 0 && "$LAUNCH_RC" == 0 && "$LAUNCH_S" -lt $(( base38 + 15 )) ]] \
   && grep -qF "WARNING: not every include of /workspace/proj/many38/.git/config was followed" "$ERR" \
-  && pass "G38 5000 include entries in one config cost seconds, and are named (${LAUNCH_S}s)" \
-  || fail "G38 include entries (rc=$LAUNCH_RC; ${LAUNCH_S}s; stderr: $(grep -F many38 "$ERR" | head -2 | tr '\n' ' '))"
+  && pass "G38 5000 include entries in one config cost seconds, and are named (${LAUNCH_S}s, ${base38}s with one)" \
+  || fail "G38 include entries (rc=$LAUNCH_RC; ${LAUNCH_S}s, ${base38}s and rc=$brc38 with one; stderr: $(grep -F many38 "$ERR" | head -2 | tr '\n' ' '))"
 rm -rf "$PROJ/many38"
 
 # ── G39: a git that dies mid-record is still named ────────────────────────────
@@ -1654,13 +1658,17 @@ fi
 # .git files, commondir, gitdir and config are checked as regular files, then
 # read; a concurrent container can swap one for a FIFO in between, which blocked
 # the launch for ever. Each read is bounded (_rd, and _git_file_config) (GIT-10).
-load_fn _timeout_prefix; load_fn _rd_prep; load_fn _rd; _rd_t=(); _rd_init=""
+for f84 in _timeout_prefix _rd_prep _rd_left _rd_run _rd; do load_fn "$f84"; done
+# The longer bound (G99) at 2 s too, to keep this quick: what is asserted is that
+# the read is cut off at all.
+_rd_secs=2 _rd_long_secs=2 _rd_budget_secs=30 _rd_init="" _rd_dir="" _rd_tp=() _rd_lim=0
+TMPDIR="$TMP" _rd_prep
 # The bound alone, here in the test's own shell: _rd_fail would signal it (G86).
 _rd_fail() { :; }
 if [[ -n "$(_timeout_prefix)" ]]; then
   mkfifo "$TMP/f84"; t84=$SECONDS
   _rd 4096 "$TMP/f84" >/dev/null 2>&1; d84=$((SECONDS - t84))
-  ( exec 3<>"$TMP/f84" ) 2>/dev/null; rm -f "$TMP/f84"
+  ( exec 3<>"$TMP/f84" ) 2>/dev/null; rm -f "$TMP/f84"; rm -rf "$_rd_dir"
   (( d84 <= 6 )) && pass "G84 a read of a FIFO swapped in for a small git file is cut off (${d84}s)" \
     || fail "G84 a FIFO read took ${d84}s"
 else
@@ -1683,59 +1691,29 @@ rm -rf "$L85"
 
 # ── G86: a read cut off by its bound refuses the launch, it is not "unset" ──
 # G84's bound turned a hang into a key read as absent, which fails open for the
-# checks that read a config (automated security review of 116129d, HIGH); and
-# the awk fallback, where there is no git, read only the first MiB of a config
-# (MEDIUM). Either now signals the launcher (USR1), which refuses. Each case runs
-# as its own process, as the launcher does: the signal goes to $$.
+# checks that read a config (automated security review of 116129d, HIGH). It now
+# signals the launcher (USR1), which refuses. The case runs as its own process,
+# as the launcher does: the signal goes to $$.
 fns86="$TMP/fns86.sh"
-for f86 in _term _timeout_prefix _rd_prep _rd _rd_fail _git_file_config _git_config_bool; do
+for f86 in _term _timeout_prefix _rd_prep _rd_left _rd_run _rd _rd_fail; do
   awk -v f="$f86() {" 'index($0, f) == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox.sh"
-done > "$fns86"; printf '_rd_t=(); _rd_init=""\nexec {_rd_errfd}>&2\ntrap "exit 3" USR1\n' >> "$fns86"
+done > "$fns86"; mkdir -p "$TMP/rd86"
+printf '_rd_secs=2 _rd_long_secs=2 _rd_budget_secs=30 _rd_init="" _rd_dir="" _rd_tp=() _rd_lim=0\nexec {_rd_errfd}>&2\ntrap "exit 3" USR1\n' >> "$fns86"
 if [[ -n "$(_timeout_prefix)" ]]; then
   mkfifo "$TMP/f86"
   # 2>/dev/null, as every real caller has: the ERROR still reaches the launcher's
   # stderr (review of the batch 10 branch: it was silent).
-  bash -c 'source "$1"; _rd 4096 "$2" >/dev/null 2>/dev/null; echo continued' _ "$fns86" "$TMP/f86" >"$TMP/o86" 2>"$TMP/e86"; rc86=$?
+  # As the launcher reads: errexit on, through a process substitution, which
+  # inherits it — a refusal that failed there read as unset (re-review of the
+  # GIT-23 fix, HIGH).
+  TMPDIR="$TMP/rd86" bash -c 'set -euo pipefail; source "$1"; x=""; IFS= read -r -d "" x < <(_rd 4096 "$2" 2>/dev/null) || true; echo continued' \
+    _ "$fns86" "$TMP/f86" >"$TMP/o86" 2>"$TMP/e86"; rc86=$?
   ( exec 3<>"$TMP/f86" ) 2>/dev/null; rm -f "$TMP/f86"
   [[ "$rc86" == 3 && ! -s "$TMP/o86" ]] && grep -qF 'could not be read' "$TMP/e86" \
     && pass "G86 a small git file whose read is cut off stops the launch" \
     || fail "G86 cut-off read (rc=$rc86; $(cat "$TMP/o86" "$TMP/e86" | tr '\n' ' '))"
 fi
-# A PATH with no git: links to the few tools the fallback runs. mktemp is the
-# real one: under run-all.sh, `command -v mktemp` is its shim, a script whose
-# `#!/usr/bin/env bash` finds no bash on this PATH, so mktemp failed, and the
-# fallback refused at its mktemp line whatever the cap check said. G86's cap
-# checks passed that way under run-all.sh, CI's driver, on every mutant of it.
-nogit_path() {  # <dir>
-  local t p
-  mkdir -p "$1" || return 1
-  for t in awk head wc timeout gtimeout uname tr mktemp rm; do
-    p="$(command -v "$t" 2>/dev/null)" || continue
-    [[ "$t" == mktemp && -x "${RA_REAL_MKTEMP:-}" ]] && p="$RA_REAL_MKTEMP"
-    ln -sf "$p" "$1/$t"
-  done
-}
-nogit_path "$TMP/nogit86"
-# The premise: under this PATH a config within the cap is READ, not refused,
-# or the refusals below say nothing about the cap.
-printf '[extensions]\n\tworktreeConfig = true\n' > "$TMP/small86.config"
-PATH="$TMP/nogit86" "$BASH" -c 'source "$1"; _git_config_bool "$2" extensions.worktreeConfig && echo read-true' _ "$fns86" "$TMP/small86.config" >"$TMP/o86" 2>"$TMP/e86"
-[[ "$(cat "$TMP/o86")" == read-true ]] \
-  && pass "G86 with no git, the fallback reads a config within its cap (the premise of the next two)" \
-  || fail "G86 premise: the fallback did not read a small config ($(cat "$TMP/o86" "$TMP/e86" | tr '\n' ' '))"
-# Past the cap in plain bytes, and in NUL bytes, which a shell variable drops
-# (automated security review of 37c5ace).
-for pad86 in '#' 'NUL'; do
-  if [[ "$pad86" == NUL ]]; then
-    { printf '[extensions]\n\tworktreeConfig = false\n'; head -c 1100000 /dev/zero; printf '\n'; } > "$TMP/big86.config"
-  else
-    { printf '[extensions]\n\tworktreeConfig = false\n'; head -c 1100000 /dev/zero | tr '\0' '#'; printf '\n'; } > "$TMP/big86.config"
-  fi
-  PATH="$TMP/nogit86" "$BASH" -c 'source "$1"; _git_config_bool "$2" extensions.worktreeConfig; echo continued' _ "$fns86" "$TMP/big86.config" >"$TMP/o86" 2>"$TMP/e86"; rc86=$?
-  [[ "$rc86" == 3 && ! -s "$TMP/o86" ]] && pass "G86 the awk fallback refuses a config past its read cap ($pad86 padding)" \
-    || fail "G86 awk fallback on a big config, $pad86 padding (rc=$rc86; $(cat "$TMP/o86" "$TMP/e86" | tr '\n' ' '))"
-done
-rm -rf "$TMP/nogit86" "$TMP/big86.config" "$TMP/small86.config" "$TMP/o86" "$TMP/e86" "$fns86"
+rm -rf "$fns86" "$TMP/o86" "$TMP/e86" "$TMP/rd86"
 
 # ── G87: a bare repository git made gets its placeholders, fixture or not ───
 # A bare repository you push to — say ./remote.git in the project — is one the
@@ -2067,63 +2045,236 @@ else
   printf 'SKIP: G96 this git (%s) cannot make a sha256 repository\n' "$(git --version)"
 fi
 
-# ── G97: with no git, the fallback reads a config as git does ─────────────────
-# G86 pins the fallback's refusal past its cap; nothing pinned its answer, so
-# every comparison in its awk survived (GAP-2's sandbox.sh sample). Each config
-# below is read by git and by the fallback with git off PATH, and the two must
-# agree; so must a missing file, and one exactly at the cap, which the fallback
-# must read, not refuse. Not every spelling git accepts is here: the fallback
-# reads "true", 1k, +1, 0x1, a key on its section's header line and a
-# continued line differently, which GIT-24 records (open).
-fns97="$TMP/fns97.sh"
-for f97 in _term _timeout_prefix _rd_prep _rd _rd_fail _git_file_config _git_config_bool; do
-  awk -v f="$f97() {" 'index($0, f) == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox.sh"
-done > "$fns97"; printf '_rd_t=(); _rd_init=""\nexec {_rd_errfd}>&2\ntrap "exit 3" USR1\n' >> "$fns97"
-nogit_path "$TMP/nogit97"
-cfg97=(
-  '[extensions]\n\tworktreeConfig = true\n'
-  '[extensions]\n\tworktreeConfig = false\n'
-  '[extensions]\n\tworktreeConfig\n'
-  '[extensions]\n\tworktreeConfig = yes\n'
-  '[extensions]\n\tworktreeConfig = on\n'
-  '[extensions]\n\tworktreeConfig = 1\n'
-  '[extensions]\n\tworktreeConfig = -1\n'
-  '[extensions]\n\tworktreeConfig = no\n'
-  '[extensions]\n\tworktreeConfig = off\n'
-  '[extensions]\n\tworktreeConfig = 0\n'
-  '[Extensions]\n\tWorktreeConfig = TRUE\n'
-  '[extensions]\n\tworktreeConfig = true ; a comment\n'
-  '[extensions]\n\tworktreeConfig = true # a comment\n'
-  '[extensions]\n\tworktreeConfig = 0k\n'
-  '[extensions]\n\tworktreeConfig = 0x0\n'
-  '[extensions]\n\tworktreeConfig = +0\n'
-  '[extensions]\n\tworktreeConfig = ""\n'
-  '[extensions]\n\tworktreeConfig =\n'
-  '[core]\n\tworktreeConfig = true\n'
-  '[extensions]\n\tworktreeConfigX = true\n'
-  '[extensions]\n\tworktreeConfig = false\n[core]\n\tworktreeConfig = true\n'
-  '[core]\n\tbare = false\n[extensions]\n\tworktreeConfig = true\n'
-  '[extensions]\n\tworktreeConfig = true\n\tworktreeConfig = false\n'
-)
-bad97=""
-for i97 in "${!cfg97[@]}" cap missing; do
-  if [[ "$i97" == missing ]]; then
-    rm -f "$TMP/c97"
-  elif [[ "$i97" == cap ]]; then
-    { printf '[extensions]\n\tworktreeConfig = true\n#'; head -c 1048576 /dev/zero | tr '\0' '#'; } | head -c 1048575 > "$TMP/c97"
-    printf '\n' >> "$TMP/c97"
-    [[ "$(wc -c < "$TMP/c97" | tr -d ' ')" == 1048576 ]] || { printf 'SCAFFOLD-FAILED: G97 cap-size config\n'; exit 1; }
-  else
-    printf '%b' "${cfg97[i97]}" > "$TMP/c97"
+# ── G98: where git does not run, no config is read by guesswork ──────────────
+# The launcher once read extensions.worktreeConfig and core.hooksPath with an awk
+# parser where git was missing, and it misread git's syntax both ways: "true",
+# 1k or a key on the section's header line read as off, \t0 as on (GIT-24). No
+# single default is safe for every caller, so where git does not run each takes
+# its own cautious branch: config.worktree is made and mounted in every
+# repository, the first protection names every hook in hooks/ whatever
+# core.hooksPath says, and one WARNING says what could not be checked.
+# A PATH with no git: each directory that holds one is replaced by a copy of its
+# links without it, and every other is kept as it is.
+nogit98=""; i98=0
+IFS=: read -r -a pd98 <<<"$PATH"
+for d98 in "${pd98[@]}"; do
+  if [[ -n "$d98" && -x "$d98/git" && ! -d "$d98/git" ]]; then
+    i98=$((i98 + 1)); m98="$TMP/nogit98/$i98"; mkdir -p "$m98"
+    ln -s "$d98"/* "$m98"/ 2>/dev/null; rm -f "$m98/git"
+    d98="$m98"
   fi
-  g97="$(git config --file "$TMP/c97" --type=bool --get extensions.worktreeConfig 2>/dev/null)"; [[ "$g97" == true ]] && g97=T || g97=F
-  f97="$(PATH="$TMP/nogit97" "$BASH" -c 'source "$1"; if _git_config_bool "$2" extensions.worktreeConfig; then echo T; else echo F; fi' _ "$fns97" "$TMP/c97" 2>/dev/null)"
-  [[ "$f97" == "$g97" ]] || bad97="$bad97 [$i97: git $g97, fallback ${f97:-nothing}]"
+  nogit98="${nogit98:+$nogit98:}$d98"
 done
-[[ -z "$bad97" ]] \
-  && pass "G97 with no git, the fallback answers as git does for ${#cfg97[@]} configs, plus a missing one and one at its cap" \
-  || fail "G97 the fallback disagrees with git:$bad97"
-rm -rf "$TMP/nogit97" "$TMP/c97" "$fns97"
+PATH="$nogit98" "$BASH" -c 'command -v git' >/dev/null 2>&1 \
+  && { printf 'SCAFFOLD-FAILED: G98 git is still on the no-git PATH\n'; exit 1; }
+R98="$TMP/r98"
+for r in plain quoted hp wtp keys; do "${G[@]}" init -q "$R98/$r"; done
+# git reads this as true (it removes the quotes); the parser read it as false.
+printf '[extensions]\n\tworktreeConfig = "true"\n' >> "$R98/quoted/.git/config"
+for r in hp wtp; do printf '#!/bin/sh\n' > "$R98/$r/.git/hooks/pre-commit"; chmod 755 "$R98/$r/.git/hooks/pre-commit"; done
+"${G[@]}" -C "$R98/hp" config core.hooksPath .githooks
+"${G[@]}" -C "$R98/wtp" config extensions.worktreeConfig true
+"${G[@]}" -C "$R98/wtp" config --worktree core.hooksPath .githooks
+"${G[@]}" -C "$R98/keys" config core.sshCommand 'ssh -i /dev/null'
+printf '#!/bin/sh\n' > "$R98/keys/.git/hooks/pre-commit"; chmod 755 "$R98/keys/.git/hooks/pre-commit"
+EXTRA_MOUNTS="$R98" PATH="$nogit98" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && pass "G98 with no git on the host the launch goes ahead" \
+  || fail "G98 no-git launch (rc=$LAUNCH_RC: $(tail -3 "$ERR" | tr '\n' ' '))"
+ok98=1
+for r in plain quoted; do
+  [[ -f "$R98/$r/.git/config.worktree" && ! -s "$R98/$r/.git/config.worktree" ]] \
+    && has_mount "$R98/$r/.git/config.worktree:/workspace/r98/$r/.git/config.worktree:ro" || ok98=""
+done
+[[ -n "$ok98" ]] \
+  && pass "G98 with no git, every repository gets an empty config.worktree mounted read-only, whatever its config says" \
+  || fail "G98 no-git config.worktree (plain: $(ls "$R98/plain/.git/config.worktree" 2>&1); quoted: $(ls "$R98/quoted/.git/config.worktree" 2>&1); git mounts: $(git_mounts | grep -F config.worktree | tr '\n' ' '))"
+ok98=1
+for r in hp wtp keys; do
+  grep -qF 'pre-commit' <<<"$(grep -A1 -F "NOTE: /workspace/r98/$r/.git is protected for the first time, and its hooks/" "$ERR")" || ok98=""
+done
+[[ -n "$ok98" ]] \
+  && pass "G98 with no git, the first protection names the hooks in hooks/ whatever core.hooksPath says" \
+  || fail "G98 no-git hooks NOTE (stderr: $(grep -A1 -F 'its hooks/' "$ERR" | tr '\n' ' '))"
+[[ "$(grep -c 'WARNING: git is not installed on this host' "$ERR")" == 1 ]] \
+  && grep -qF 'protected here (5): includes' "$ERR" \
+  && grep -qF 'Install git 2.18 or later on the host' "$ERR" \
+  && pass "G98 with no git, one WARNING says what the launcher could not check" \
+  || fail "G98 no-git WARNING (stderr: $(grep -A3 -F 'not installed' "$ERR" | tr '\n' ' '))"
+# The next launch with no git does not name the hooks again, or claim that no
+# earlier launch reported them.
+EXTRA_MOUNTS="$R98" PATH="$nogit98" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qE 'r98/(hp|wtp|keys)/\.git (is|was) protected' "$ERR" \
+  && pass "G98 the next launch with no git does not report the hooks again" \
+  || fail "G98 hooks reported twice (rc=$LAUNCH_RC; stderr: $(grep -F 'protected' "$ERR" | tr '\n' ' '))"
+# The launch with git that the WARNING asks for still names the keys the
+# config already set: a launch that read none did not spend the one-time report.
+EXTRA_MOUNTS="$R98" launch "$TMP/app"
+rc98a="$LAUNCH_RC"; nw98a="$(grep -c 'git is not installed' "$ERR")"
+grep -qi 'core.sshcommand' <<<"$(grep -A1 -F 'NOTE: /workspace/r98/keys/.git was protected by an earlier launch where git did not run, and its config sets' "$ERR")" \
+  && ! grep -qF 'NOTE: /workspace/r98/keys/.git was protected by an earlier launch where git did not run, and its hooks/' "$ERR" \
+  && pass "G98 a launch with no git leaves the report of a repository's keys to the next launch with git, which does not repeat its hooks" \
+  || fail "G98 keys after a no-git launch (rc=$rc98a; stderr: $(grep -A1 -F 'earlier launch' "$ERR" | tr '\n' ' '))"
+# Not when git is there, and not when no repository is protected.
+PATH="$nogit98" launch "$TMP/app"
+nw98b="$(grep -c 'git is not installed' "$ERR")"
+[[ "$rc98a" == 0 && "$nw98a" == 0 && "$nw98b" == 0 && "$LAUNCH_RC" == 0 ]] \
+  && pass "G98 no such WARNING with git installed, or with no repository to protect" \
+  || fail "G98 WARNING out of place (with git: $nw98a, rc=$rc98a; no repository: $nw98b, rc=$LAUNCH_RC)"
+# With no git, the rescan when the container exits names every repository the
+# session made: it cannot read what their configs set.
+sess98="$(printf '%q init -q %q' "$(command -v git)" "$R98/new98")"
+FAKE_SESSION="$sess98" EXTRA_MOUNTS="$R98" PATH="$nogit98" launch "$TMP/app"
+grep -qF "$R98/new98/.git (config: not read, git does not run on this host)" "$ERR" \
+  && pass "G98 with no git, the rescan names a repository the session made, its config unread" \
+  || fail "G98 no-git rescan (rc=$LAUNCH_RC; stderr: $(sed -n '/the session made/,$p' "$ERR" | tr '\n' ' '))"
+# A git on PATH that does not run — macOS's /usr/bin/git without the Command
+# Line Tools offers to install them and exits 1 — is no git either, and is run
+# once, to ask: not again for an index (a stale linked worktree's), or in the
+# rescan.
+mkdir -p "$TMP/brokengit98"
+printf '#!/bin/sh\necho x >> "%s"\necho "xcrun: error: invalid active developer path" >&2\nexit 1\n' "$TMP/brokengit98.log" > "$TMP/brokengit98/git"
+chmod +x "$TMP/brokengit98/git"
+"${G[@]}" init -q "$TMP/r98b/plain" && "${G[@]}" -C "$TMP/r98b/plain" commit -q --allow-empty -m i \
+  && "${G[@]}" -C "$TMP/r98b/plain" worktree add -q "$TMP/r98b/wt98" && rm -rf "$TMP/r98b/wt98" \
+  || { printf 'SCAFFOLD-FAILED: G98 stale worktree\n'; exit 1; }
+rm -f "$TMP/brokengit98.log"
+EXTRA_MOUNTS="$TMP/r98b" PATH="$TMP/brokengit98:$nogit98" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 && -f "$TMP/r98b/plain/.git/config.worktree" ]] \
+  && [[ "$(grep -c 'WARNING: git is not installed on this host, is older than 2.18, or does not run' "$ERR")" == 1 ]] \
+  && pass "G98 a git that is on PATH but does not run is taken for none" \
+  || fail "G98 broken git (rc=$LAUNCH_RC; config.worktree: $(ls "$TMP/r98b/plain/.git/config.worktree" 2>&1); stderr: $(grep -A1 -F 'WARNING: git' "$ERR" | tr '\n' ' '))"
+[[ "$(wc -l < "$TMP/brokengit98.log" 2>/dev/null | tr -d ' ')" == 1 ]] \
+  && pass "G98 … and it is run once, to ask, and never again in the launch" \
+  || fail "G98 a git that does not run was run $(wc -l < "$TMP/brokengit98.log" 2>/dev/null | tr -d ' ') times"
+# One that exits 0 but does not give the probe's answer — too old for
+# --type=bool, or a stub — is none either: an exit status alone is not enough.
+mkdir -p "$TMP/mutegit98"; printf '#!/bin/sh\nexit 0\n' > "$TMP/mutegit98/git"; chmod +x "$TMP/mutegit98/git"
+"${G[@]}" init -q "$TMP/r98c/plain"
+EXTRA_MOUNTS="$TMP/r98c" PATH="$TMP/mutegit98:$nogit98" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 && -f "$TMP/r98c/plain/.git/config.worktree" ]] && grep -qF 'WARNING: git is not installed on this host' "$ERR" \
+  && pass "G98 a git that exits 0 without the probe's answer is taken for none" \
+  || fail "G98 mute git (rc=$LAUNCH_RC; config.worktree: $(ls "$TMP/r98c/plain/.git/config.worktree" 2>&1); stderr: $(grep -A1 -F 'WARNING: git' "$ERR" | tr '\n' ' '))"
+# A mount that holds only a linked worktree's checkout, its git directory
+# outside every mount: with git, that directory's index would be read.
+"${G[@]}" init -q "$TMP/out98" && "${G[@]}" -C "$TMP/out98" commit -q --allow-empty -m i \
+  && "${G[@]}" -C "$TMP/out98" worktree add -q "$TMP/r98d/wt" \
+  || { printf 'SCAFFOLD-FAILED: G98 linked worktree\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/r98d" PATH="$nogit98" launch "$TMP/app"
+grep -qF 'protected here (1): includes' "$ERR" \
+  && pass "G98 with no git, the WARNING counts a protected .git file too" \
+  || fail "G98 no WARNING for a lone .git file (rc=$LAUNCH_RC; stderr: $(grep -A2 -F 'WARNING' "$ERR" | tr '\n' ' '))"
+rm -rf "$R98" "$TMP/r98b" "$TMP/r98c" "$TMP/r98d" "$TMP/out98" "$TMP/nogit98" "$TMP/brokengit98" "$TMP/brokengit98.log" "$TMP/mutegit98"
+
+# ── G99: a file only slow to read gets longer, within a budget per launch ────
+# Every read of a small file the agent can write is bounded (G84), and one cut
+# off refused the launch, blamed on a FIFO. The bound is a time, so under load a
+# regular config was cut off too: G38's 5,000 entries, during a falsify run with
+# ten workers (GIT-23). A read now gets 10 s while the launch's slow reads (past
+# 2 s) have taken less than 30 s in all, and 2 s once they have; the time
+# includes its reader's, which the pipe holds it to; and the refusal says whether
+# the file was swapped or only slow. First through a launch, with a git that is
+# slow once for one config.
+REAL_GIT99="$(command -v git)"
+mkdir -p "$TMP/slowgit99"
+cat > "$TMP/slowgit99/git" <<'SLOWGIT'
+#!/usr/bin/env bash
+if [[ "${1:-}" == config && "${2:-}" == --file && "${3:-}" == "$SLOW99_CFG" && ! -e "$SLOW99_MARK" ]]; then
+  : > "$SLOW99_MARK"; sleep 3
+fi
+exec "$SLOW99_GIT" "$@"
+SLOWGIT
+chmod +x "$TMP/slowgit99/git"
+"${G[@]}" init -q "$PROJ/slow99" && "${G[@]}" -C "$PROJ/slow99" config core.fsmonitor 'run-me-99'
+SLOW99_CFG="$PROJ/slow99/.git/config" SLOW99_MARK="$TMP/slow99.mark" SLOW99_GIT="$REAL_GIT99" \
+  PATH="$TMP/slowgit99:$PATH" launch ..
+[[ -e "$TMP/slow99.mark" ]] || fail "G99 SCAFFOLD: the slow git was never asked for $PROJ/slow99/.git/config"
+# Read whole, not cut off and taken for empty: the first protection names its key.
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF 'could not be read' "$ERR" \
+  && grep -qF 'core.fsmonitor' <<<"$(grep -A1 -F 'NOTE: /workspace/proj/slow99/.git is protected for the first time, and its config already sets' "$ERR")" \
+  && pass "G99 a config that took 3 s to read is read whole, and the launch goes ahead" \
+  || fail "G99 slow config (rc=$LAUNCH_RC; stderr: $(grep -A1 -F 'could not be read' "$ERR" | tr '\n' ' '))"
+rm -rf "$PROJ/slow99" "$TMP/slow99.mark" "$TMP/slowgit99"
+
+# Then each outcome on its own, with bounds of 1 s and 6 s and a budget of 10 s,
+# the functions run as the launcher runs them: errexit on, read through a
+# process substitution. A refusal is the USR1 trap's exit 3.
+fns99="$TMP/fns99.sh"
+for f99 in _term _timeout_prefix _rd_prep _rd_left _rd_run _rd _rd_fail _git_file_config; do
+  awk -v f="$f99() {" 'index($0, f) == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox.sh"
+done > "$fns99"
+printf '_rd_secs=1 _rd_long_secs=6 _rd_budget_secs=10 _rd_init="" _rd_dir="" _rd_tp=() _rd_lim=0\nexec {_rd_errfd}>&2\ntrap "exit 3" USR1\n' >> "$fns99"
+# A git that counts its calls in $FG99_STATE and, by $FG99_MODE: prints a line,
+# takes 2 s, prints another; takes 8 s; or swaps the file it was asked to read
+# for a FIFO and hangs.
+mkdir -p "$TMP/fg99"
+cat > "$TMP/fg99/git" <<'FAKEGIT'
+#!/usr/bin/env bash
+n="$(cat "$FG99_STATE" 2>/dev/null)"; n="${n:-0}"; printf '%d\n' "$((n + 1))" > "$FG99_STATE"
+case "$FG99_MODE" in
+  slow2) printf 'a.b=1\n'; sleep 2; printf 'a.c=2\n' ;;
+  slow8) sleep 8 ;;
+  fifo) rm -f "$3"; mkfifo "$3"; sleep 8 ;;
+esac
+FAKEGIT
+chmod +x "$TMP/fg99/git"
+run99() {  # <mode> <spent before (printf format), or empty> [nodir|spentdir] -> rc99, out99, err99, calls99, rdd99
+  rm -rf "$TMP/rdt99" "$TMP/st99"; mkdir -p "$TMP/rdt99"
+  FG99_MODE="$1" FG99_STATE="$TMP/st99" PATH="$TMP/fg99:$PATH" TMPDIR="$TMP/rdt99" "$BASH" -c '
+    source "$1"; _rd_prep
+    case "$4" in
+      nodir) rm -rf "$_rd_dir"; _rd_dir="" ;;
+      spentdir) mkdir "$_rd_dir/spent" ;;
+    esac
+    [[ -z "$3" ]] || printf "$3" > "$_rd_dir/spent"
+    set -euo pipefail; out=""
+    IFS= read -r -d "" out < <(_git_file_config "$2" --list) || true
+    printf "%s" "$out"' _ "$fns99" "$TMP/c99" "$2" "${3:-}" >"$TMP/o99" 2>"$TMP/e99"
+  rc99=$?; out99="$(cat "$TMP/o99")"; err99="$(cat "$TMP/e99")"; calls99="$(cat "$TMP/st99" 2>/dev/null)"
+  rdd99="$(ls -d "$TMP"/rdt99/ai-launcher-read.* 2>/dev/null | head -1)"
+}
+printf '[a]\n\tb = 1\n' > "$TMP/c99"
+run99 slow2 ""
+[[ "$rc99" == 0 && "$out99" == $'a.b=1\na.c=2' && -z "$err99" && "$calls99" == 1 ]] \
+  && grep -qE '^[0-9]{4,}$' "$rdd99/spent" \
+  && pass "G99 a read that takes 2 s, past the first bound, is read whole, once, and charged to the launch" \
+  || fail "G99 slow read (rc=$rc99; calls=$calls99; out=$(tr '\n' '|' <<<"$out99"); err=$err99; spent=$(cat "$rdd99/spent" 2>/dev/null))"
+run99 fifo ""; rm -f "$TMP/c99"; printf '[a]\n\tb = 1\n' > "$TMP/c99"
+[[ "$rc99" == 3 && "$calls99" == 1 && -z "$out99" ]] \
+  && grep -qF 'could not be read within 6 s, and is not a regular file now (swapped for a FIFO, or removed)' <<<"$err99" \
+  && pass "G99 a file swapped for a FIFO while it was read is refused, and says so" \
+  || fail "G99 FIFO swapped in (rc=$rc99; calls=$calls99; err=$err99)"
+run99 slow8 ""
+[[ "$rc99" == 3 && "$calls99" == 1 ]] && grep -qF 'could not be read within 6 s, though it is a regular file;' <<<"$err99" \
+  && grep -qF 'The host may be busy: launch again.' <<<"$err99" \
+  && pass "G99 a regular file past the longer bound is refused, and the refusal says the host may be busy" \
+  || fail "G99 slow past the longer bound (rc=$rc99; calls=$calls99; err=$err99)"
+run99 slow8 '7000\n'
+grep -qF 'could not be read within 3 s, though it is a regular file;' <<<"$err99" \
+  && pass "G99 the longer bound is what is left of the budget, when that is less" \
+  || fail "G99 the bound from what is left (rc=$rc99; err=$err99)"
+run99 slow2 '5000\n5000\n'
+[[ "$rc99" == 3 ]] && grep -qF 'could not be read within 1 s, though it is a regular file, and this launch has no more time for slow reads' <<<"$err99" \
+  && pass "G99 once the launch's slow reads have taken the budget, every line counted, a read gets the first bound" \
+  || fail "G99 budget spent (rc=$rc99; calls=$calls99; err=$err99)"
+run99 slow2 "" nodir
+[[ "$rc99" == 3 ]] && grep -qF 'could not be read within 1 s' <<<"$err99" \
+  && pass "G99 with nowhere to count slow reads, every read gets the first bound, as before" \
+  || fail "G99 no count (rc=$rc99; err=$err99)"
+run99 slow2 "" spentdir
+[[ "$rc99" == 3 && ! -e "$rdd99/ok" ]] && grep -qF 'could not be read within 1 s' <<<"$err99" \
+  && pass "G99 a count that is not a regular file gives the first bound, and stops the longer one for the launch" \
+  || fail "G99 count not a file (rc=$rc99; ok: $(ls "$rdd99/ok" 2>&1); err=$err99)"
+# _rd, which reads .git files, commondir and gitdir, gets the longer bound too.
+mkdir -p "$TMP/fh99"; REAL_HEAD99="$(command -v head)"
+printf '#!/usr/bin/env bash\nsleep 2\nexec %q "$@"\n' "$REAL_HEAD99" > "$TMP/fh99/head"
+chmod +x "$TMP/fh99/head"; rm -rf "$TMP/rdt99"; mkdir -p "$TMP/rdt99"; printf 'gitdir: ../x\n' > "$TMP/f99"
+PATH="$TMP/fh99:$PATH" TMPDIR="$TMP/rdt99" "$BASH" -c 'source "$1"; _rd_prep; set -euo pipefail; x=""
+    IFS= read -r -d "" x < <(_rd 4096 "$2") || true; printf "%s" "$x"' \
+  _ "$fns99" "$TMP/f99" >"$TMP/o99" 2>"$TMP/e99"; rc99=$?
+[[ "$rc99" == 0 && "$(cat "$TMP/o99")" == 'gitdir: ../x' ]] \
+  && pass "G99 a small git file that takes 2 s to read is read whole" \
+  || fail "G99 _rd past the first bound (rc=$rc99; out=$(cat "$TMP/o99"); err=$(cat "$TMP/e99"))"
+rm -rf "$fns99" "$TMP/fg99" "$TMP/fh99" "$TMP/rdt99" "$TMP/st99" "$TMP/c99" "$TMP/f99" "$TMP/o99" "$TMP/e99"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
