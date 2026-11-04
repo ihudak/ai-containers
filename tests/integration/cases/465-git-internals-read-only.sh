@@ -9,7 +9,7 @@
 # filters) at the next commit or even `git status`. None of it shows in git
 # status or git diff. sandbox.sh mounts hooks/ and config read-only in place and
 # pins .git, so it cannot be renamed out from under them.
-# tests/test-git-internals-ro.sh checks the ARGUMENTS it builds; this checks
+# tests/test-git-internals-ro-*.sh check the ARGUMENTS it builds; this checks
 # that the container the agent gets refuses each write, and still commits.
 #
 # Paired, as in cases 400 and 450: the agent writes the project and commits to

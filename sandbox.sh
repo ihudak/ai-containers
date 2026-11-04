@@ -1099,7 +1099,7 @@ launcher_ro_overlay() {
     # git resolves a relative path from the including file's directory. An
     # included file the agent cannot reach can include one it can, so the chain
     # is followed from every file found safe, to git's own depth of 10; a file
-    # the agent can reach is named, not read (tests/test-git-internals-ro.sh G29).
+    # the agent can reach is named, not read (tests/test-git-internals-ro-config.sh G29).
     # Bounded per LAUNCH as well as per config: two configs per git directory and
     # up to SANDBOX_GIT_MAX planted git directories made 150 repos take 81 s (review
     # of the batch 1 hotfix; GIT-2). config.worktree only where git reads it.
@@ -2409,7 +2409,7 @@ git_dirs_in() {
       # The index is the agent's to write, and git reads a hand-made entry such
       # as ../../victim as is: a path that steps out (.., ., an empty or
       # absolute component), or that a link on the way sends elsewhere, is not
-      # followed (re-review of c0d48d9; tests/test-git-internals-ro.sh G36).
+      # followed (re-review of c0d48d9; tests/test-git-internals-ro-index.sh G36).
       # Named, not skipped in silence: a skipped gitlink is a checkout this launch
       # does not protect (review of the batch 1 hotfix; GIT-3).
       # Five named per index, then a count: the index is the agent's, and one with
@@ -2792,7 +2792,7 @@ _git_after_session() {
 # a repository reads its config first — includes and all — and the launcher runs
 # from inside the project, whose config can include a file the agent writes: an
 # include loop there made every such call die, silencing every check built on it
-# (tests/test-git-internals-ro.sh G30). GIT_DIR=/dev/null stops the discovery.
+# (tests/test-git-internals-ro-config.sh G30). GIT_DIR=/dev/null stops the discovery.
 _git_file_config() {
   local f="$1"; shift
   # A regular file only (-f follows a link to one): git config blocks on a FIFO,

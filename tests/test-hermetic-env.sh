@@ -49,7 +49,9 @@ code_lines() {
     }' "$1"
 }
 n=0; bad=""
-for f in "$REPO_DIR"/tests/test-*.sh; do
+# The libraries too: tests/lib-git-internals-ro.sh holds the launch its five
+# test files share.
+for f in "$REPO_DIR"/tests/test-*.sh "$REPO_DIR"/tests/lib-*.sh; do
   [[ "$f" == "${BASH_SOURCE[0]}" || "${f##*/}" == test-hermetic-env.sh ]] && continue
   # Not `code_lines | grep -q`: under pipefail, grep's early exit kills awk and
   # the match reads as a miss.
