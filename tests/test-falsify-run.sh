@@ -182,6 +182,36 @@ else
 fi
 EOF
 
+# The same test's verdict without the hang, sorted after both: a test the clock
+# of a hung one must not let run, as the set's clock never did.
+cat > "$FX/tests/test-fx-slowz-kill.sh" <<'EOF'
+#!/usr/bin/env bash
+set -uo pipefail
+FX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=/dev/null
+source "$FX_DIR/fixture-slow.sh"
+if fxs_ok; then
+  printf 'PASS: fxs_ok succeeded\n'
+else
+  printf 'FAIL: fxs_ok failed\n'
+fi
+EOF
+
+# Hangs when its target is mutated, its last write ending mid-line.
+cat > "$FX/tests/test-fx-slow-partial.sh" <<'EOF'
+#!/usr/bin/env bash
+set -uo pipefail
+FX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=/dev/null
+source "$FX_DIR/fixture-slow.sh"
+if fxs_ok; then
+  printf 'PASS: fxs_ok succeeded\n'
+else
+  printf 'waiting... '
+  sleep 300
+fi
+EOF
+
 # Oracle F — its workspace collapses when its target is mutated. Green on the
 # pristine tree (it must be: run.sh refuses to measure a target whose baseline
 # is red, correctly, so an always-failing fixture would produce no verdicts at
@@ -936,6 +966,52 @@ to_ran="$(sed -n 's/.*the oracle ran \([0-9][0-9]*\)\.[0-9]s against a \([0-9][0
 [[ -n "$to_ran" ]] && (( ${to_ran% *} >= ${to_ran#* } )) \
   && pass "  … and it ran at least that long (${to_ran% *}s vs ${to_ran#* }s)" \
   || fail "  … and it ran at least that long (got '${to_ran:-nothing}')"
+
+# ── 11c. A CLOCK PER TEST, BESIDE THE SET'S (GAP-2) ──────────────────────────
+# A mutant that hung one test paid the whole set's clock, --timeout times the
+# set's size. Each test now also runs against a clock of its own (run-all.sh's
+# RA_TEST_CLOCKS): five times its baseline time, rounded up a second, never
+# below --timeout. A test stopped by it is a timeout, and the run stops with it,
+# as under the set's clock, where the hung test held the rest back: the verdict
+# is the set's, reached sooner.
+FALSIFY_TIMEOUT=6 bash -c 'source "$1" >/dev/null 2>&1; fr_test_clocks "$2"' _ "$RUN" \
+  <(printf 'test-a.sh 0\ntest-b.sh 2\ntest-a.sh 1\nbad\ntest-c.sh x\ntest-d.sh 0\n') > "$TMP/tc.out" 2>&1
+check "each test's clock is five times its slowest baseline time, rounded up a second, and not below --timeout" \
+  "test-a.sh=10 test-b.sh=15 test-d.sh=6" "$(cat "$TMP/tc.out")"
+CONF_TC="$(conf tc 'fixture-slow.sh|EXECUTED-WHOLE|test-fx-slow.sh,test-fx-slowz-kill.sh')"
+# --timeout 8: the set's clock is 16 s, above every test's own (8, or 10 or 15 s
+# for a baseline of 1 or 2 s on a busy host), so the test's clock stops the run first.
+fx_run "$RUN" "$CONF_TC" "$FX" "$TMP/wit-tc" --jobs 1 --timeout 8
+grep -qE '^NOTE\|test-clocks\|fixture-slow.sh\|test-fx-slow.sh=(8|10|15) test-fx-slowz-kill.sh=(8|10|15)$' <<< "$FX_OUT" \
+  && pass "the run names each test's clock, from the baseline" \
+  || fail "the run names each test's clock: $(grep '^NOTE|test-clocks' <<< "$FX_OUT")"
+# timeout+exit: the driver exits 1 after the stopped test, where the set's clock
+# killed it; either way no assertion was seen.
+check "a set whose first test hangs is UNPROVEN once that test's own clock stops it, as under the set's clock" \
+  "UNPROVEN|timeout+exit" "$(fx_verdict "$FX_OUT" 'return 1')|$(fx_signal "$FX_OUT" 'return 1')"
+ms_tc="$(fx_field "$FX_OUT" 'return 1' 8)"
+grep -qE 'TIMEOUT: test-fx-slow.sh \((8|10|15)s\) ran past its own clock; the oracle ran [0-9]+\.[0-9]s in all \(UNPROVEN' <<< "$FX_ERR" \
+  && pass "  … and its note names the test and the clock that stopped it" \
+  || fail "  … and its note names the test and the clock that stopped it: $FX_ERR"
+grep -qE '^NOTE\|test-clock\|[^|]*\|test-fx-slow.sh \((8|10|15)s\)$' <<< "$FX_OUT" \
+  && pass "  … and so does a record beside the verdict" \
+  || fail "  … and so does a record beside the verdict: $(grep '^NOTE|test-clock|' <<< "$FX_OUT")"
+FALSIFY_TEST_CLOCK=0 fx_run "$RUN" "$CONF_TC" "$FX" "$TMP/wit-tc0" --jobs 1 --timeout 8
+ms_tc0="$(fx_field "$FX_OUT" 'return 1' 8)"
+check "  … the same verdict the set's clock alone gives, FALSIFY_TEST_CLOCK=0" \
+  "UNPROVEN|timeout" "$(fx_verdict "$FX_OUT" 'return 1')|$(fx_signal "$FX_OUT" 'return 1')"
+! grep -q '^NOTE|test-clock' <<< "$FX_OUT" \
+  && pass "  … which names no clocks" \
+  || fail "  … FALSIFY_TEST_CLOCK=0 named clocks: $(grep '^NOTE|test-clock' <<< "$FX_OUT")"
+[[ "$ms_tc" =~ ^[0-9]+$ && "$ms_tc0" =~ ^[0-9]+$ ]] && (( ms_tc < ms_tc0 && ms_tc0 >= 16000 )) \
+  && pass "  … and reached sooner: ${ms_tc} ms against the set's clock's ${ms_tc0} ms" \
+  || fail "  … not reached sooner: ${ms_tc:-?} ms with the test's clock, ${ms_tc0:-?} ms with the set's"
+# A test stopped in mid-line, its last write with no newline: a line glued to the
+# end of it is not what the tier reads, so it is still a timeout, not a kill.
+CONF_TCP="$(conf tcp 'fixture-slow.sh|EXECUTED-WHOLE|test-fx-sel-bystander.sh,test-fx-slow-partial.sh')"
+fx_run "$RUN" "$CONF_TCP" "$FX" "$TMP/wit-tcp" --jobs 1 --timeout 8
+check "a test stopped in mid-line is a timeout, not a kill" \
+  "UNPROVEN|timeout+exit" "$(fx_verdict "$FX_OUT" 'return 1')|$(fx_signal "$FX_OUT" 'return 1')"
 
 # ── 11b. THE TIMEOUT FLAG MUST NAME WHO ARMED IT ──────────────────────────────
 # `out` is "$FR_OUT/w$slot.log" — one file per WORKER SLOT, reused by every
@@ -1803,7 +1879,10 @@ while IFS= read -r p; do kill -KILL "$p" 2>/dev/null; done < "$lg_pids"
 # the run, to act on the next one in its tree.
 lg_pids="$TMP/linger3.pids"; : > "$lg_pids"
 CONF_LINGER3="$(conf linger3 'fixture-lib.sh|EXECUTED-PARTIAL|test-fx-linger.sh|fx_never_called')"
-FALSIFY_REPO="$FX" FALSIFY_CONF="$CONF_LINGER3" FX_LINGER_HARD=1 \
+# The set's clock, not the test's: with a test clock run-all.sh's own TERM trap
+# ends the group, and the tier's KILL this case guards would go unexercised
+# (review of the GAP-2 clock).
+FALSIFY_TEST_CLOCK=0 FALSIFY_REPO="$FX" FALSIFY_CONF="$CONF_LINGER3" FX_LINGER_HARD=1 \
 FX_LINGER_PIDS="$lg_pids" FX_LINGER_COUNT="$TMP/linger3.count" \
   bash "$RUN" --jobs 1 --controls 0 --timeout 1 > "$TMP/linger3.out" 2>&1
 check "an oracle deaf to TERM times out (UNPROVEN, timeout)" "UNPROVEN|timeout" \

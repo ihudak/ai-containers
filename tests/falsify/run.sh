@@ -97,6 +97,10 @@
 #              set ran, otherwise the whole set, and the verdict is the set's.
 #   NOTE|selection-total|-|<detail>   once, at the end of a --select-oracles
 #              run: how many mutants were misses and reruns.
+#   NOTE|test-clocks|<target>|<test>=<s> ...   each test's own clock, from
+#              the baseline (FALSIFY_TEST_CLOCK=0: none).
+#   NOTE|test-clock|<identity>|<test> (<s>s)   the test whose own clock stopped
+#              this mutant's oracle.
 #   OPERATORS|<target>|<list>      one per target, right after RUN: the
 #              operators that target's mutants were generated with. The ledger
 #              gate scopes its stale/obsolete checks by them, so a deep pass and
@@ -230,6 +234,7 @@
 #   FALSIFY_CONF       targets map                   (default: ./targets.conf)
 #   FALSIFY_JOBS       worker slots                  (default: 1)
 #   FALSIFY_TIMEOUT    per-mutant seconds            (default: 60)
+#   FALSIFY_TEST_CLOCK=0  no clock per test (below); the set's clock only
 #   FALSIFY_OPERATORS  passed through to generate.sh; name `stream-flip` to
 #                      reach the operator that is off by default
 #   FALSIFY_KEEP=1     keep the scratch trees for inspection
@@ -435,6 +440,26 @@ fr_cpu_budget() {   # workers this host can actually run: min(reported, quota, p
 
 FR_JOBS="${FALSIFY_JOBS:-1}"
 FR_TIMEOUT="${FALSIFY_TIMEOUT:-60}"
+# ── A CLOCK PER TEST, BESIDE THE SET'S ───────────────────────────────────────
+# The set's clock is --timeout times its size, and a mutant that hangs ONE test
+# paid all of it: 72 minutes for sandbox.sh's 24 tests at 180 s, a third of a
+# measured sample's CPU in five mutants (feature-gaps review GAP-2). So each test
+# also gets a clock of its own, in tests/run-all.sh (RA_TEST_CLOCKS): five times
+# what it took on the pristine baseline (rounded up a second), never less than
+# --timeout. Five, not three: under ten workers the slowest oracle took 2.5 times
+# its quiet time (test-git-internals-ro.sh, 357 s against 143 s), and a clock
+# that stops a test the load merely slowed makes an UNPROVEN that excuses a
+# survivor. A test stopped by its clock is a timeout here, as the set's clock
+# is, and the run stops with it, as it did under the set's clock, where the hung
+# test held the rest back: run on in the same tree, a later test could fail on
+# what the stopped one left, a kill the mutant never earned (review of the GAP-2
+# clock). run-all.sh names the stopped test in RA_CLOCKED_FILE, not only in the
+# output, where a test's own line could pass for one or hide it. The baseline
+# itself and --select-oracles' coverage pass run without clocks.
+FR_TEST_CLOCK="${FALSIFY_TEST_CLOCK:-1}"
+[[ "$FR_TEST_CLOCK" == 0 ]] || FR_TEST_CLOCK=1
+FR_RA_CLOCKS=""   # this target's "<test>=<seconds> ...", once its baseline is in
+FR_RA_TIMES=""    # where the baseline records each test's time
 FR_TARGET=""
 FR_EXCLUDE=""
 FR_LIST_TARGETS=0
@@ -963,7 +988,12 @@ falsify_run_oracle() {   # <tree> <oracle-set> <outfile> <timeout-seconds> [<lab
   local otmp="${FR_SCRATCH:-${TMPDIR:-/tmp}}/tmp/$token"
   mkdir -p "$otmp" 2>/dev/null || true
   set -m
-  ( cd "$tree" && export TMPDIR="$otmp" && exec bash "$FR_DRIVER_REL" -v "${onames[@]}" ) >"$out" 2>&1 &
+  rm -f "$out.clocked"
+  ( cd "$tree" && export TMPDIR="$otmp" || exit 1
+    unset RA_TEST_CLOCK RA_TEST_CLOCKS RA_TIMES_FILE RA_CLOCKED_FILE
+    if [[ -n "$FR_RA_CLOCKS" ]]; then export RA_TEST_CLOCKS="$FR_RA_CLOCKS" RA_CLOCKED_FILE="$out.clocked"; fi
+    if [[ -n "$FR_RA_TIMES" ]]; then export RA_TIMES_FILE="$FR_RA_TIMES"; fi
+    exec bash "$FR_DRIVER_REL" -v "${onames[@]}" ) >"$out" 2>&1 &
   pid=$!
   # Registered for fr_cleanup, which is the only thing that can end this group
   # if the run is interrupted: a worker killed by the TERM never reaches the
@@ -1032,6 +1062,15 @@ falsify_run_oracle() {   # <tree> <oracle-set> <outfile> <timeout-seconds> [<lab
     fi
   fi
   rm -f "$flag"
+  # A test stopped by its own clock (RA_TEST_CLOCKS) is a timeout as the set's
+  # is. run-all.sh names it in RA_CLOCKED_FILE; FALSIFY_TEST_CLOCKED carries it,
+  # with its clock, to the TIMEOUT note.
+  FALSIFY_TEST_CLOCKED=""
+  if [[ -s "$out.clocked" ]]; then
+    FALSIFY_TIMED_OUT=1
+    FALSIFY_TEST_CLOCKED="$(awk 'NF == 2 && $2 ~ /^[0-9]+$/ { printf "%s%s (%ss)", (n++ ? ", " : ""), $1, $2 }' "$out.clocked")"
+  fi
+  rm -f "$out.clocked"
   # PER INVOCATION, so a caller with no run scratch does not accumulate one
   # directory per oracle. fr_cleanup's `rm -rf "$FR_SCRATCH"` remains the
   # backstop for the case this cannot cover — a SIGKILL that stops this function
@@ -1344,7 +1383,7 @@ fr_run_mutant() {   # <slot> <target> <oracle> <seq> <lineno> <op> <sha> <text> 
   # slot's debris check sees it, `git status`: a gitignored file left behind
   # is not seen, here or between any two mutants of a slot.
   local run="$oracle" sel="" rest="" o ms_sel=0 sel_verdict="" sel_signal="" clock
-  local foreign="" foreign_tok="" pre_note="" write_failed=0
+  local foreign="" foreign_tok="" pre_note="" write_failed=0 tclock=""
   local -a all_o=()
   clock="$(fr_effective_timeout "$oracle")"
   if [[ -n "${FR_SEL_ON[$target]:-}" ]]; then
@@ -1354,6 +1393,7 @@ fr_run_mutant() {   # <slot> <target> <oracle> <seq> <lineno> <op> <sha> <text> 
 
   falsify_run_oracle "$tree" "$run" "$out" "$clock" "s$slot.m$seq"
   falsify_verdict "$FALSIFY_RC" "$out" "$FALSIFY_TIMED_OUT"
+  tclock="$FALSIFY_TEST_CLOCKED"
 
   if [[ "$run" != "$oracle" ]] \
      && ! [[ "$FALSIFY_VERDICT" == KILLED && "$FALSIFY_SIGNAL" == *failline* ]]; then
@@ -1383,6 +1423,7 @@ fr_run_mutant() {   # <slot> <target> <oracle> <seq> <lineno> <op> <sha> <text> 
     else
       falsify_run_oracle "$tree" "$rest" "$out" "$clock" "s$slot.m$seq.r"
       falsify_verdict "$FALSIFY_RC" "$out" "$FALSIFY_TIMED_OUT"
+      tclock="${tclock}${tclock:+${FALSIFY_TEST_CLOCKED:+, }}$FALSIFY_TEST_CLOCKED"
       if [[ "$sel_verdict" != SURVIVED && "$rest" != "$oracle" ]]; then
         # The subset timed out: the whole set's verdict is the timeout, unless
         # the rest KILLS with a FAIL: line — or is UNPROVEN for a broken
@@ -1411,6 +1452,9 @@ fr_run_mutant() {   # <slot> <target> <oracle> <seq> <lineno> <op> <sha> <text> 
       "$FALSIFY_SIGNAL" "$FALSIFY_MS" "$text" > "$res"
   fi
   if [[ -n "$pre_note" ]]; then printf '%s\n' "$pre_note" >> "$res"; fi
+  if (( ! write_failed )) && [[ -n "$tclock" && "$FALSIFY_SIGNAL" == *timeout* ]]; then
+    printf 'NOTE|test-clock|%s|%s\n' "$ident" "$tclock" >> "$res"
+  fi
   if (( write_failed )); then
     :
   elif [[ "$sel_verdict" == SURVIVED && "$FALSIFY_VERDICT" == KILLED ]]; then
@@ -1498,7 +1542,7 @@ _fr_slot_restore() {   # <slot> <target> <ident> <resultfile>
 # PRISTINE tree" and not one of them said what went red.
 fr_oracle_excerpt() {   # <outfile>
   awk '
-    /^(FAIL:|SCAFFOLD-FAILED:)/ { if (n++ < 6) { keep = 1; print; next } keep = 0; next }
+    /^(FAIL:|SCAFFOLD-FAILED:|TEST-TIMEOUT:)/ { if (n++ < 6) { keep = 1; print; next } keep = 0; next }
     keep && /^[[:space:]]/      { print; next }
     { keep = 0 }
   ' "$1" 2>/dev/null | head -30
@@ -1561,6 +1605,15 @@ fr_oracle_excerpt() {   # <outfile>
 # falsify_has_fail_line.)
 fr_scaffold_only() {   # <signal> → 0 when the oracle could not start and asserted nothing
   [[ "$1" == *scaffold* && "$1" != *failline* ]]
+}
+
+fr_test_clocks() {   # <times file> → "<test>=<seconds> ..." for RA_TEST_CLOCKS
+  awk -v t="$FR_TIMEOUT" '
+    $2 ~ /^[0-9]+$/ { if (!($1 in m) || $2 + 0 > m[$1]) m[$1] = $2 + 0; if (!($1 in o)) o[$1] = ++n }
+    END {
+      for (k in m) { c = 5 * (m[k] + 1); if (c < t) c = t; out[o[k]] = k "=" c }
+      for (i = 1; i <= n; i++) printf "%s%s", (i > 1 ? " " : ""), out[i]
+    }' "$1" 2>/dev/null
 }
 
 fr_run_baseline() {   # <oracle> — leaves FALSIFY_* set by the LAST attempt
@@ -1683,7 +1736,7 @@ fr_run_control() {   # <slot> <target> <oracle> <n> <resultfile>
     # An oracle that went red with no FAIL: line at all is a DIFFERENT event —
     # a bare non-zero exit — and saying nothing would read as "no output was
     # captured" rather than "there was none".
-    if ! grep -qE '^(FAIL:|SCAFFOLD-FAILED:)' "$out" 2>/dev/null; then
+    if ! grep -qE '^(FAIL:|SCAFFOLD-FAILED:|TEST-TIMEOUT:)' "$out" 2>/dev/null; then
       printf 'NOTE|control-output|%s|(no FAIL: or SCAFFOLD-FAILED: line — the oracle exited non-zero in silence; last line was: %s)\n' \
         "$target" "$(tail -1 "$out" 2>/dev/null | tr -d '|')" >> "$res"
     fi
@@ -1762,9 +1815,10 @@ fr_harvest() {   # <pid> — print that mutant's records and tally them
   cause="$(fr_exit_cause "${FR_PID_STATUS[$pid]:-}")"
   # `?` rather than --timeout when a launch site set none: falling back to
   # --timeout would bring back, in silence, the wrong clock this map replaced.
-  local clock="${FR_PID_CLOCK[$pid]:-?}"
+  local clock="${FR_PID_CLOCK[$pid]:-?}" tclock=""
   unset "FR_PID_SLOT[$pid]" "FR_PID_RESULT[$pid]" "FR_PID_STATUS[$pid]" "FR_PID_CLOCK[$pid]"
   FR_FREE_SLOTS+=("$slot")
+  tclock="$(sed -n 's/^NOTE|test-clock|[^|]*|//p' "$res" 2>/dev/null | head -1)"
   if [[ ! -s "$res" ]]; then
     fr_err "a mutant worker produced no verdict at all (slot $slot; $cause) — not counted as a kill"
     FR_BROKEN=$(( FR_BROKEN + 1 ))
@@ -1805,7 +1859,13 @@ fr_harvest() {   # <pid> — print that mutant's records and tally them
             # RELATIONSHIP that carries the meaning: a real timeout ran at least
             # as long as its clock, and anything else is the tier reporting a
             # verdict it did not observe.
-            if [[ "$f2" == "UNPROVEN" ]]; then
+            # A test stopped by its own clock: the set ran for less than its
+            # clock, and the note names the test and the clock that stopped it.
+            if [[ -n "$tclock" && "$f2" == "UNPROVEN" ]]; then
+              fr_warn "TIMEOUT: $tclock ran past its own clock; the oracle ran $(fr_secs "$f8") in all (UNPROVEN — nothing was observed asserting): $f3"
+            elif [[ -n "$tclock" ]]; then
+              fr_warn "TIMEOUT: $tclock ran past its own clock; the oracle ran $(fr_secs "$f8") in all (killed by a FAIL: line): $f3"
+            elif [[ "$f2" == "UNPROVEN" ]]; then
               fr_warn "TIMEOUT: the oracle ran $(fr_secs "$f8") against a ${clock}s clock (UNPROVEN — nothing was observed asserting): $f3"
             else
               fr_warn "TIMEOUT: the oracle ran $(fr_secs "$f8") against a ${clock}s clock (killed before the clock ran out): $f3"
@@ -2483,7 +2543,9 @@ falsify_main() {
     # An oracle that is not green on the UNMUTATED tree cannot distinguish
     # anything: every mutant would be reported KILLED. rc=2 is named for what
     # it is, because that is what a misspelled oracle looks like.
+    FR_RA_CLOCKS=""; FR_RA_TIMES="$FR_OUT/times.$i"; rm -f "$FR_RA_TIMES"
     fr_run_baseline "$oracle"
+    FR_RA_TIMES=""
     if [[ "$FALSIFY_VERDICT" != "SURVIVED" ]]; then
       if (( FALSIFY_RC == 2 )); then
         fr_err "oracle '$oracle' matched NO test (run-all.sh exit 2) — a misspelled oracle name would report every mutant of $target as KILLED. Skipping $target."
@@ -2545,6 +2607,12 @@ falsify_main() {
     if (( FR_SELECT )); then
       fr_cover_target "$target" "$oracle" || fr_warn "the coverage pass for $target failed; its mutants run the whole oracle set"
     fi
+    # After the coverage pass, whose traced runs are slower than the baseline.
+    if (( FR_TEST_CLOCK )); then
+      FR_RA_CLOCKS="$(fr_test_clocks "$FR_OUT/times.$i")"
+      printf 'NOTE|test-clocks|%s|%s\n' "$target" "$FR_RA_CLOCKS"
+    fi
+    rm -f "$FR_OUT/times.$i"
 
     # ── where the control runs go ───────────────────────────────────────────
     # Evenly through the target's sequence, so they sample the run early, in the

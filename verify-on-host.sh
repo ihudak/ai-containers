@@ -667,9 +667,10 @@ if bash "$TESTS_DIR/falsify/run.sh" --jobs "$fl_jobs" --timeout "$fl_timeout" > 
     if (( fl_unp * 100 / fl_tot >= 10 )); then
       fl_keep=1
       sub "NOTE: $fl_unp mutant(s) timed out and were not measured. FALSIFY_TIMEOUT"
-      sub "      (now $fl_timeout) raises the per-mutant clock; FALSIFY_JOBS (now $fl_jobs)"
-      sub "      lowers the load. Not a failure HERE: an unproven mutant is machine"
-      sub "      state, not a property of the code. CI gates on it."
+      sub "      (now $fl_timeout) raises the per-mutant clock and each test's own floor;"
+      sub "      FALSIFY_TEST_CLOCK=0 drops the tests' own clocks; FALSIFY_JOBS (now"
+      sub "      $fl_jobs) lowers the load. Not a failure HERE: an unproven mutant is"
+      sub "      machine state, not a property of the code. CI gates on it."
     fi
   fi
   # KILLS WITH NO ASSERTION ATTACHED. Reported here rather than gated, but for

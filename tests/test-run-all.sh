@@ -40,6 +40,7 @@ fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails + 1)); }
 [[ -f "$RUN_ALL" ]] || { printf 'SCAFFOLD-FAILED: no run-all.sh at %s\n' "$RUN_ALL"; exit 1; }
 
 TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
+# exit-trap-ok: the children it forks are run-all.sh drivers, which never return into this file
 trap 'rm -rf "$TMP"' EXIT
 
 CORPUS="$TMP/tests"
@@ -197,6 +198,188 @@ has "$out" '3 test\(s\), 2 passed, 1 failed' \
 has "$out" 'Failing: test-jj-bad.sh' \
   && pass "the summary names which test failed" \
   || fail "the summary names which test failed — got: $out"
+
+# ── 8. a clock per test, which only the mutation tier sets ───────────────────
+# tests/falsify/run.sh runs a mutant's tests as one run-all.sh under one clock of
+# --timeout times the set's size, so a mutant that hung one test paid the whole
+# set's clock (feature-gaps review GAP-2). RA_TEST_CLOCK (every test) and
+# RA_TEST_CLOCKS ("<name>=<seconds> ...") give each test its own: one past it is
+# stopped with everything it started, a TEST-TIMEOUT: line says so — not a FAIL:
+# line, since no assertion was seen failing — and so is the run, as under the
+# set's clock: a later test could fail on what the stopped one left behind.
+# RA_CLOCKED_FILE names the stopped test; RA_TIMES_FILE records how long each
+# test took, which is how the tier sets the clocks.
+rm -f "$CORPUS"/test-*.sh
+export HANG_PIDF="$TMP/hang.pid"
+mkt ll-hang 'echo "PASS: before the hang"; sleep 30 & echo $! > "$HANG_PIDF"; sleep 30'
+mkt mm-after 'echo "PASS: ran after the hang"; exit 0'
+child_dead() { local c; c="$(cat "$HANG_PIDF" 2>/dev/null)"; [[ -n "$c" ]] && ! kill -0 "$c" 2>/dev/null; }
+reap_child() { local c; c="$(cat "$HANG_PIDF" 2>/dev/null)"; [[ -z "$c" ]] || kill -KILL "$c" 2>/dev/null; rm -f "$HANG_PIDF"; }
+t0=$SECONDS
+rm -f "$TMP/clocked"
+out="$(cd "$CORPUS" && RA_TEST_CLOCK=2 RA_CLOCKED_FILE="$TMP/clocked" TMPDIR="$TMP/tmpdir" bash ./run-all.sh 2>&1)"; rc=$?
+el=$(( SECONDS - t0 ))
+if (( el < 20 )) && grep -qx 'TEST-TIMEOUT: test-ll-hang.sh ran past its 2s clock and was stopped' <<<"$out"; then
+  pass "a test past RA_TEST_CLOCK is stopped, and a TEST-TIMEOUT: line names it and its clock (${el}s)"
+else
+  fail "a test past RA_TEST_CLOCK is stopped and named (${el}s) — got: $out"
+fi
+[[ "$(cat "$TMP/clocked" 2>/dev/null)" == 'test-ll-hang.sh 2' ]] \
+  && pass "… and RA_CLOCKED_FILE names it with its clock" \
+  || fail "… RA_CLOCKED_FILE (got: $(cat "$TMP/clocked" 2>/dev/null))"
+! has "$out" 'ran after the hang' && has "$out" '^not run, after a test ran past its clock: test-mm-after.sh$' \
+  && has "$out" '1 test\(s\), 0 passed, 1 failed' && [[ "$rc" != 0 ]] \
+  && pass "… and the run stops with it: the tests after it are not run, and are named" \
+  || fail "… the run went on, or did not say what it did not run (rc=$rc) — got: $out"
+! grep -q '^FAIL:' <<<"$out" \
+  && pass "… and no FAIL: line is printed for it: a timeout is not an assertion seen failing" \
+  || fail "… a FAIL: line was printed for a timeout — got: $out"
+child_dead && pass "… and what the stopped test started is stopped with it" \
+  || fail "… the stopped test's child ($(cat "$HANG_PIDF" 2>/dev/null)) is still running"
+reap_child
+out="$(cd "$CORPUS" && RA_TEST_CLOCK=2 TMPDIR="$TMP/tmpdir" bash ./run-all.sh -v 2>&1)"
+has "$out" '^PASS: before the hang' && has "$out" '^TEST-TIMEOUT: test-ll-hang.sh ran past its 2s clock' && child_dead \
+  && pass "with -v too: the test's output is streamed, and it is stopped with its child" \
+  || fail "with -v, a clocked test — got: $out"
+reap_child
+t0=$SECONDS
+out="$(cd "$CORPUS" && RA_TEST_CLOCKS="test-nosuch.sh=60 test-ll-hang.sh=1" TMPDIR="$TMP/tmpdir" bash ./run-all.sh 2>&1)"
+el=$(( SECONDS - t0 ))
+(( el < 20 )) && has "$out" '^TEST-TIMEOUT: test-ll-hang.sh ran past its 1s clock' \
+  && pass "RA_TEST_CLOCKS gives a named test its own clock (${el}s)" \
+  || fail "RA_TEST_CLOCKS per test (${el}s) — got: $out"
+reap_child
+# A test stopped in mid-line: the TEST-TIMEOUT: line still starts a line.
+rm -f "$CORPUS"/test-*.sh
+mkt qq-partial 'printf "waiting... "; sleep 30'
+out="$(cd "$CORPUS" && RA_TEST_CLOCK=1 TMPDIR="$TMP/tmpdir" bash ./run-all.sh -v 2>&1)"
+grep -qx 'TEST-TIMEOUT: test-qq-partial.sh ran past its 1s clock and was stopped' <<<"$out" \
+  && pass "a test stopped in mid-line still gets its TEST-TIMEOUT: line at a line's start" \
+  || fail "TEST-TIMEOUT: after a partial line — got: $out"
+# What the driver reads is its own: a test that runs it again gets none of it.
+rm -f "$CORPUS"/test-*.sh
+mkt nn-env 'echo "PASS: env ${RA_TEST_CLOCK:-unset} ${RA_TEST_CLOCKS:-unset} ${RA_TIMES_FILE:-unset} ${RA_CLOCKED_FILE:-unset}"'
+mkt oo-quick 'echo "PASS: quick"'
+rm -f "$TMP/times"
+out="$(cd "$CORPUS" && RA_TEST_CLOCK=30 RA_TEST_CLOCKS="test-oo-quick.sh=30" RA_TIMES_FILE="$TMP/times" RA_CLOCKED_FILE="$TMP/clocked" TMPDIR="$TMP/tmpdir" bash ./run-all.sh -v 2>&1)"
+has "$out" '^PASS: env unset unset unset unset' \
+  && pass "the clock settings are not passed on to the tests" \
+  || fail "the clock settings leaked into a test's environment — got: $out"
+[[ "$(awk '{print $1}' "$TMP/times" 2>/dev/null | tr '\n' ' ')" == 'test-nn-env.sh test-oo-quick.sh ' ]] \
+  && awk '$2 !~ /^[0-9]+$/ { bad = 1 } END { exit bad }' "$TMP/times" \
+  && pass "RA_TIMES_FILE gets one '<name> <seconds>' line per test" \
+  || fail "RA_TIMES_FILE (got: $(cat "$TMP/times" 2>/dev/null | tr '\n' '|'))"
+! has "$out" 'TEST-TIMEOUT' && ! has "$out" 'not run' && has "$out" '2 test\(s\), 2 passed, 0 failed' \
+  && pass "tests inside their clocks are reported as they always were" \
+  || fail "a clock changed the report of tests inside it — got: $out"
+# A clocked test leads a process group of its own, which the mutation tier's
+# watchdog does not reach when it ends the driver's: the driver ends it itself,
+# on TERM (143) and INT (130) alike.
+rm -f "$CORPUS"/test-*.sh
+mkt ll-hang 'echo "PASS: before the hang"; sleep 30 & echo $! > "$HANG_PIDF"; sleep 30'
+for sig in TERM:143 INT:130; do
+  rm -f "$HANG_PIDF"
+  # In its own job, so it does not start with SIGINT ignored, as a background
+  # command of a script does (env --default-signal is GNU's only).
+  set -m
+  ( cd "$CORPUS" && RA_TEST_CLOCK=60 TMPDIR="$TMP/tmpdir" exec bash ./run-all.sh ) >/dev/null 2>&1 &
+  drv=$!
+  set +m
+  for _ in $(seq 1 100); do [[ -s "$HANG_PIDF" ]] && break; sleep 0.1; done
+  kill -"${sig%%:*}" "$drv" 2>/dev/null; wait "$drv"; drc=$?
+  sleep 0.5
+  [[ -s "$HANG_PIDF" ]] && child_dead && [[ "$drc" == "${sig#*:}" ]] \
+    && pass "a ${sig%%:*} to the driver stops the clocked test it is running, and what that test started (exit ${sig#*:})" \
+    || fail "${sig%%:*} to the driver (rc=$drc, want ${sig#*:}; child: $(cat "$HANG_PIDF" 2>/dev/null), alive: $(kill -0 "$(cat "$HANG_PIDF" 2>/dev/null)" 2>/dev/null && echo yes || echo no))"
+  reap_child
+done
+# On that path too, what the test prints as it dies stays out of the output, as
+# under the set's clock: the tier's clock, or its cleanup, TERMs the driver, and
+# a dying FAIL: line would score a kill. Twelve times, since a leak is a race:
+# the wrong order (the test before tee) leaked in about one run of four in the
+# third review of the GAP-2 clock, though in none of twelve when this was
+# written. What pins the order is the TERM-ignoring case below.
+rm -f "$CORPUS"/test-*.sh
+mkt ss-dying 'trap '"'"'echo "FAIL: printed while dying"'"'"' EXIT; echo "PASS: started"; sleep 30'
+leak=0; started=0
+for _ in $(seq 1 12); do
+  set -m
+  ( cd "$CORPUS" && RA_TEST_CLOCK=60 TMPDIR="$TMP/tmpdir" exec bash ./run-all.sh -v ) > "$TMP/dying.out" 2>&1 &
+  drv=$!
+  set +m
+  for _ in $(seq 1 100); do grep -q '^PASS: started' "$TMP/dying.out" 2>/dev/null && break; sleep 0.1; done
+  grep -q '^PASS: started' "$TMP/dying.out" && started=$((started + 1))
+  kill -TERM "$drv" 2>/dev/null; wait "$drv" 2>/dev/null
+  grep -q 'printed while dying' "$TMP/dying.out" && leak=$((leak + 1))
+done
+(( started == 12 && leak == 0 )) \
+  && pass "a TERM to the driver keeps what its clocked test prints while dying out of the output (12 of 12)" \
+  || fail "a TERM to the driver let a dying test's output through ($leak of 12; started in $started)"
+rm -f "$TMP/dying.out"
+# A test that ignores TERM is KILLed half a second later; and if the driver is
+# KILLed in that half second, the test's clock, stopped last, still ends it.
+export HANG_PIDF="$TMP/hang.pid"
+rm -f "$CORPUS"/test-*.sh
+mkt tt-deaf 'trap "" TERM; sleep 30 & echo $! > "$HANG_PIDF"; wait'
+for how in term term+kill; do
+  rm -f "$HANG_PIDF"
+  set -m
+  ( cd "$CORPUS" && RA_TEST_CLOCK=60 TMPDIR="$TMP/tmpdir" exec bash ./run-all.sh ) >/dev/null 2>&1 &
+  drv=$!
+  set +m
+  for _ in $(seq 1 100); do [[ -s "$HANG_PIDF" ]] && break; sleep 0.1; done
+  kill -TERM "$drv" 2>/dev/null
+  if [[ "$how" == term+kill ]]; then sleep 0.2; kill -KILL "$drv" 2>/dev/null; fi
+  wait "$drv" 2>/dev/null
+  for _ in $(seq 1 40); do child_dead && break; sleep 0.1; done
+  [[ -s "$HANG_PIDF" ]] && child_dead \
+    && pass "a test that ignores TERM is stopped all the same ($how to the driver)" \
+    || fail "a test that ignores TERM outlived the driver ($how; child: $(cat "$HANG_PIDF" 2>/dev/null))"
+  reap_child
+done
+# And when the driver is KILLed (the OOM killer), nothing of the test may run on
+# into the next oracle in that tree: its clock ends it within a second or two.
+rm -f "$HANG_PIDF"
+( cd "$CORPUS" && RA_TEST_CLOCK=60 TMPDIR="$TMP/tmpdir" exec bash ./run-all.sh ) >/dev/null 2>&1 &
+drv=$!
+for _ in $(seq 1 100); do [[ -s "$HANG_PIDF" ]] && break; sleep 0.1; done
+kill -KILL "$drv" 2>/dev/null; wait "$drv" 2>/dev/null
+for _ in $(seq 1 50); do child_dead && break; sleep 0.1; done
+[[ -s "$HANG_PIDF" ]] && child_dead \
+  && pass "a KILLed driver's clocked test is stopped too, by its clock, within seconds" \
+  || fail "a KILLed driver left its clocked test running (child: $(cat "$HANG_PIDF" 2>/dev/null))"
+reap_child
+unset HANG_PIDF
+# A test that kills its driver and then exits leaves no child behind either.
+rm -f "$CORPUS"/test-*.sh
+export HANG_PIDF="$TMP/hang.pid"; rm -f "$HANG_PIDF"
+mkt rr-orphan 'sleep 30 & echo $! > "$HANG_PIDF"; kill -KILL "$PPID"; exit 0'
+( cd "$CORPUS" && RA_TEST_CLOCK=60 TMPDIR="$TMP/tmpdir" exec bash ./run-all.sh ) >/dev/null 2>&1
+for _ in $(seq 1 50); do child_dead && break; sleep 0.1; done
+[[ -s "$HANG_PIDF" ]] && child_dead \
+  && pass "a test that kills its driver and exits does not leave its children running" \
+  || fail "a test that killed its driver left a child running ($(cat "$HANG_PIDF" 2>/dev/null))"
+reap_child
+unset HANG_PIDF
+# What a test prints while its clock stops it is not part of the run's output.
+rm -f "$CORPUS"/test-*.sh
+mkt ss-dying 'trap '"'"'echo "FAIL: printed while dying"'"'"' EXIT; echo "PASS: started"; sleep 30'
+out="$(cd "$CORPUS" && RA_TEST_CLOCK=1 TMPDIR="$TMP/tmpdir" bash ./run-all.sh -v 2>&1)"
+has "$out" '^PASS: started' && has "$out" '^TEST-TIMEOUT: test-ss-dying.sh' && ! has "$out" '^FAIL: printed while dying' \
+  && pass "what a test prints while its clock stops it does not reach the output, as under the set's clock" \
+  || fail "a dying test's output reached the run — got: $out"
+# And still this driver's own child: the tier's signal fixture kills its $PPID,
+# standing in for the OOM killer taking the driver, which must then die.
+rm -f "$CORPUS"/test-*.sh
+mkt pp-parent 'kill -KILL "$PPID"; echo "PASS: the driver outlived me"; exit 0'
+bad_pp=""
+for v in "" -v; do
+  ( cd "$CORPUS" && RA_TEST_CLOCK=30 TMPDIR="$TMP/tmpdir" exec bash ./run-all.sh $v ) >/dev/null 2>&1; prc=$?
+  [[ "$prc" == 137 ]] || bad_pp+="${v:-plain}=$prc "
+done
+[[ -z "$bad_pp" ]] \
+  && pass "a clocked test is the driver's own child, with and without -v: killing its parent kills the driver" \
+  || fail "a clocked test's parent is not the driver (exit statuses: $bad_pp)"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
