@@ -1701,7 +1701,28 @@ if [[ -n "$(_timeout_prefix)" ]]; then
     && pass "G86 a small git file whose read is cut off stops the launch" \
     || fail "G86 cut-off read (rc=$rc86; $(cat "$TMP/o86" "$TMP/e86" | tr '\n' ' '))"
 fi
-mkdir -p "$TMP/nogit86"; for t in awk head wc timeout gtimeout uname tr mktemp rm; do p86="$(command -v "$t" 2>/dev/null)" && ln -sf "$p86" "$TMP/nogit86/$t"; done
+# A PATH with no git: links to the few tools the fallback runs. mktemp is the
+# real one: under run-all.sh, `command -v mktemp` is its shim, a script whose
+# `#!/usr/bin/env bash` finds no bash on this PATH, so mktemp failed, and the
+# fallback refused at its mktemp line whatever the cap check said. G86's cap
+# checks passed that way under run-all.sh, CI's driver, on every mutant of it.
+nogit_path() {  # <dir>
+  local t p
+  mkdir -p "$1" || return 1
+  for t in awk head wc timeout gtimeout uname tr mktemp rm; do
+    p="$(command -v "$t" 2>/dev/null)" || continue
+    [[ "$t" == mktemp && -x "${RA_REAL_MKTEMP:-}" ]] && p="$RA_REAL_MKTEMP"
+    ln -sf "$p" "$1/$t"
+  done
+}
+nogit_path "$TMP/nogit86"
+# The premise: under this PATH a config within the cap is READ, not refused,
+# or the refusals below say nothing about the cap.
+printf '[extensions]\n\tworktreeConfig = true\n' > "$TMP/small86.config"
+PATH="$TMP/nogit86" "$BASH" -c 'source "$1"; _git_config_bool "$2" extensions.worktreeConfig && echo read-true' _ "$fns86" "$TMP/small86.config" >"$TMP/o86" 2>"$TMP/e86"
+[[ "$(cat "$TMP/o86")" == read-true ]] \
+  && pass "G86 with no git, the fallback reads a config within its cap (the premise of the next two)" \
+  || fail "G86 premise: the fallback did not read a small config ($(cat "$TMP/o86" "$TMP/e86" | tr '\n' ' '))"
 # Past the cap in plain bytes, and in NUL bytes, which a shell variable drops
 # (automated security review of 37c5ace).
 for pad86 in '#' 'NUL'; do
@@ -1714,7 +1735,7 @@ for pad86 in '#' 'NUL'; do
   [[ "$rc86" == 3 && ! -s "$TMP/o86" ]] && pass "G86 the awk fallback refuses a config past its read cap ($pad86 padding)" \
     || fail "G86 awk fallback on a big config, $pad86 padding (rc=$rc86; $(cat "$TMP/o86" "$TMP/e86" | tr '\n' ' '))"
 done
-rm -rf "$TMP/nogit86" "$TMP/big86.config" "$TMP/o86" "$TMP/e86" "$fns86"
+rm -rf "$TMP/nogit86" "$TMP/big86.config" "$TMP/small86.config" "$TMP/o86" "$TMP/e86" "$fns86"
 
 # ── G87: a bare repository git made gets its placeholders, fixture or not ───
 # A bare repository you push to — say ./remote.git in the project — is one the
@@ -1981,6 +2002,122 @@ FAKE_SESSION="cd '$TMP/ps' && git init -q h && printf '#!/bin/sh\n' > h/.git/hoo
   && pass "G94 a rescan past its time limit says the search was cut short" \
   || fail "G94 rescan deadline (rc=$LAUNCH_RC; stderr: $(tail -4 "$ERR" | tr '\n' ' '))"
 rm -rf "$TMP/ps"
+
+# ── G95: an index is named as unread only when it cannot be read ──────────────
+# A repository with no index (a fresh `git init`) records nothing and is not
+# named. One whose index is a directory, or whose config names an object format
+# git does not know, cannot be read, and is named: read as "nothing recorded",
+# its submodules would go unfollowed with nothing said, and the agent writes
+# both the index and the config (GAP-2's sandbox.sh sample: the three checks
+# survived every mutant).
+rm -rf "$TMP/ix"; mkdir -p "$TMP/ix" || { printf 'SCAFFOLD-FAILED: G95\n'; exit 1; }
+"${G[@]}" init -q "$TMP/ix/none" && "${G[@]}" init -q "$TMP/ix/dir" && mkdir "$TMP/ix/dir/.git/index" \
+  && "${G[@]}" init -q "$TMP/ix/fmt" && "${G[@]}" -C "$TMP/ix/fmt" commit -q --allow-empty -m f \
+  && : > "$TMP/ix/fmt/f" && "${G[@]}" -C "$TMP/ix/fmt" add f \
+  && printf '[extensions]\n\tobjectformat = nosuchformat95\n' >> "$TMP/ix/fmt/.git/config" \
+  && "${G[@]}" init -q "$TMP/ix/odd" && : > "$TMP/ix/odd/f" && "${G[@]}" -C "$TMP/ix/odd" add f \
+  && printf '[extensions]\n\tobjectformat = ../sha1\n' >> "$TMP/ix/odd/.git/config" \
+  || { printf 'SCAFFOLD-FAILED: G95 repositories\n'; exit 1; }
+[[ ! -e "$TMP/ix/none/.git/index" ]] || { printf 'SCAFFOLD-FAILED: G95 git init made an index\n'; exit 1; }
+rm -rf "$TMP/t95"; mkdir -p "$TMP/t95"
+TMPDIR="$TMP/t95" EXTRA_MOUNTS="$TMP/ix" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF "cannot read the index of $TMP/ix/none/.git" "$ERR" \
+  && pass "G95 a repository with no index is not named as unreadable" \
+  || fail "G95 no index (rc=$LAUNCH_RC; stderr: $(grep -F "$TMP/ix/none" "$ERR" | head -2 | tr '\n' ' '))"
+grep -qF "WARNING: cannot read the index of $TMP/ix/dir/.git" "$ERR" \
+  && pass "G95 an index that is a directory is named as unreadable" \
+  || fail "G95 directory index not named (stderr: $(grep -F "$TMP/ix/dir" "$ERR" | head -2 | tr '\n' ' '))"
+grep -qF "WARNING: cannot read the index of $TMP/ix/fmt/.git" "$ERR" \
+  && pass "G95 an index whose config names an unknown object format is named as unreadable" \
+  || fail "G95 unknown object format not named (stderr: $(grep -F "$TMP/ix/fmt" "$ERR" | head -2 | tr '\n' ' '))"
+# A format that is not even a name (it becomes a directory name below TMPDIR).
+grep -qF "WARNING: cannot read the index of $TMP/ix/odd/.git" "$ERR" \
+  && pass "G95 an object format that is not a plain name is named as unreadable" \
+  || fail "G95 object format '../sha1' not named (stderr: $(grep -F "$TMP/ix/odd" "$ERR" | head -2 | tr '\n' ' '))"
+# …and makes nothing beside the launcher's own temporary directory: the format
+# names a directory under it, and git init made `../sha1` one level up before
+# refusing the format.
+[[ ! -e "$TMP/t95/sha1" ]] \
+  && pass "G95 an object format that is a path makes no directory outside the launcher's temporary one" \
+  || fail "G95 '../sha1' made $TMP/t95/sha1"
+rm -rf "$TMP/ix" "$TMP/t95"
+
+# ── G96: a sha256 repository's linked worktree has its submodules followed ────
+# The worktree's git directory has no config; its object format is in the
+# common directory's, which its `commondir` names, relative and ending in a
+# newline as git writes it. Read as sha1, a sha256 index does not load, and the
+# submodule under the worktree's pruned vendor/ kept a writable .git file (review
+# of 3c754aa). G52 is the same shape in sha1, the default, so it cannot tell.
+if "${G[@]}" init -q --object-format=sha256 "$TMP/sha96probe" >/dev/null 2>&1; then
+  rm -rf "$TMP/sha96probe"
+  U96="$TMP/up96"; M96="$PROJ/main96"
+  "${G[@]}" init -q --object-format=sha256 "$U96" && "${G[@]}" -C "$U96" commit -q --allow-empty -m u \
+    && "${G[@]}" init -q --object-format=sha256 "$M96" \
+    && "${G[@]}" -C "$M96" -c protocol.file.allow=always submodule -q add "$U96" vendor/lib \
+    && "${G[@]}" -C "$M96" commit -q -m s && "${G[@]}" -C "$M96" worktree add -q "$PROJ/lw96" \
+    && "${G[@]}" -C "$PROJ/lw96" -c protocol.file.allow=always submodule -q update --init \
+    || { printf 'SCAFFOLD-FAILED: cannot create the G96 sha256 worktree\n'; exit 1; }
+  launch ..
+  has_mount "$PROJ/lw96/vendor/lib/.git:/workspace/proj/lw96/vendor/lib/.git:ro" \
+    && ! grep -qF "cannot read the index of $M96/.git/worktrees" "$ERR" \
+    && pass "G96 a submodule of a sha256 repository's linked worktree, under a pruned vendor/, is protected" \
+    || fail "G96 sha256 linked worktree (rc=$LAUNCH_RC; stderr: $(grep -F main96 "$ERR" | head -2 | tr '\n' ' '))"
+  rm -rf "$U96" "$M96" "$PROJ/lw96"
+else
+  printf 'SKIP: G96 this git (%s) cannot make a sha256 repository\n' "$(git --version)"
+fi
+
+# ── G97: with no git, the fallback reads a config as git does ─────────────────
+# G86 pins the fallback's refusal past its cap; nothing pinned its answer, so
+# every comparison in its awk survived (GAP-2's sandbox.sh sample). Each config
+# below is read by git and by the fallback with git off PATH, and the two must
+# agree; so must a missing file, and one exactly at the cap, which the fallback
+# must read, not refuse. Not every spelling git accepts is here: the fallback
+# reads a quoted value, a unit suffix and a leading + differently (GIT-24).
+fns97="$TMP/fns97.sh"
+for f97 in _term _timeout_prefix _rd_prep _rd _rd_fail _git_file_config _git_config_bool; do
+  awk -v f="$f97() {" 'index($0, f) == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox.sh"
+done > "$fns97"; printf '_rd_t=(); _rd_init=""\nexec {_rd_errfd}>&2\ntrap "exit 3" USR1\n' >> "$fns97"
+nogit_path "$TMP/nogit97"
+cfg97=(
+  '[extensions]\n\tworktreeConfig = true\n'
+  '[extensions]\n\tworktreeConfig = false\n'
+  '[extensions]\n\tworktreeConfig\n'
+  '[extensions]\n\tworktreeConfig = yes\n'
+  '[extensions]\n\tworktreeConfig = on\n'
+  '[extensions]\n\tworktreeConfig = 1\n'
+  '[extensions]\n\tworktreeConfig = -1\n'
+  '[extensions]\n\tworktreeConfig = no\n'
+  '[extensions]\n\tworktreeConfig = off\n'
+  '[extensions]\n\tworktreeConfig = 0\n'
+  '[Extensions]\n\tWorktreeConfig = TRUE\n'
+  '[extensions]\n\tworktreeConfig = true ; a comment\n'
+  '[extensions]\n\tworktreeConfig = true # a comment\n'
+  '[core]\n\tworktreeConfig = true\n'
+  '[extensions]\n\tworktreeConfigX = true\n'
+  '[extensions]\n\tworktreeConfig = false\n[core]\n\tworktreeConfig = true\n'
+  '[core]\n\tbare = false\n[extensions]\n\tworktreeConfig = true\n'
+  '[extensions]\n\tworktreeConfig = true\n\tworktreeConfig = false\n'
+)
+bad97=""
+for i97 in "${!cfg97[@]}" cap missing; do
+  if [[ "$i97" == missing ]]; then
+    rm -f "$TMP/c97"
+  elif [[ "$i97" == cap ]]; then
+    { printf '[extensions]\n\tworktreeConfig = true\n#'; head -c 1048576 /dev/zero | tr '\0' '#'; } | head -c 1048575 > "$TMP/c97"
+    printf '\n' >> "$TMP/c97"
+    [[ "$(wc -c < "$TMP/c97" | tr -d ' ')" == 1048576 ]] || { printf 'SCAFFOLD-FAILED: G97 cap-size config\n'; exit 1; }
+  else
+    printf '%b' "${cfg97[i97]}" > "$TMP/c97"
+  fi
+  g97="$(git config --file "$TMP/c97" --type=bool --get extensions.worktreeConfig 2>/dev/null)"; [[ "$g97" == true ]] && g97=T || g97=F
+  f97="$(PATH="$TMP/nogit97" "$BASH" -c 'source "$1"; if _git_config_bool "$2" extensions.worktreeConfig; then echo T; else echo F; fi' _ "$fns97" "$TMP/c97" 2>/dev/null)"
+  [[ "$f97" == "$g97" ]] || bad97="$bad97 [$i97: git $g97, fallback ${f97:-nothing}]"
+done
+[[ -z "$bad97" ]] \
+  && pass "G97 with no git, the fallback answers as git does for ${#cfg97[@]} configs, plus a missing one and one at its cap" \
+  || fail "G97 the fallback disagrees with git:$bad97"
+rm -rf "$TMP/nogit97" "$TMP/c97" "$fns97"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

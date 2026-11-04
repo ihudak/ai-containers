@@ -258,6 +258,39 @@ check "pointer_repo_entry: a bare existing entry (no ':mode') is treated as ro" 
 grep -q "is already mounted (ro); the pointer's :rw is ignored" "$TMP/entry2.err" \
   && pass "pointer_repo_entry: bare existing entry defaults to ro in the note" \
   || fail "pointer_repo_entry: bare existing entry defaults to ro in the note (got '$(cat "$TMP/entry2.err")')"
+# Its caller is `_entry="$(pointer_repo_entry …)"` under set -e, so a name
+# already listed must still return 0: a non-zero there ends the launch of
+# every DOCS_PATH/SPECS_PATH/ARCHITECTURE_REPO_PATH=@<name> whose repo is also
+# in REPOS, with nothing said.
+run_pointer_entry "existing" "rw" "existing:ro" >/dev/null 2>&1; rc_entry=$?
+check "pointer_repo_entry: a name already listed returns 0 (its caller runs under set -e)" "0" "$rc_entry"
+
+# ── sandbox.sh: _utf8_valid ──────────────────────────────────────────────────
+# T24 in test-launcher-dir-ro.sh drives it through launches, with a few names;
+# this table pins each branch of the byte check (RFC 3629, as Go reads it) in
+# one process. G = valid, B = not: every lead-byte class, and a sequence cut
+# short or with a bad third or fourth byte, which no launch case had.
+u8_out="$( cd "$TMP" && bash -c '
+    src="$1"; shift; u8=("$@"); set --
+    source "$src" >/dev/null
+    for (( i = 0; i < ${#u8[@]}; i += 2 )); do
+      if _utf8_valid "${u8[i+1]}"; then got=G; else got=B; fi
+      [[ "$got" == "${u8[i]}" ]] || printf "%q=%s " "${u8[i+1]}" "$got"
+    done
+  ' _ "$REPO_DIR/sandbox.sh" \
+    G 'plain ascii' \
+    G $'\xc2\xa0' G $'\xdf\xbf' \
+    G $'\xe0\xa0\x80' G $'\xe1\x80\x80' G $'\xe2\x82\xac' G $'\xec\x9c\x84' G $'\xed\x9f\xbf' \
+    G $'\xee\x80\x80' G $'\xef\xbf\xbd' \
+    G $'\xf0\x90\x80\x80' G $'\xf1\x80\x80\x80' G $'\xf3\xbf\xbf\xbf' G $'\xf4\x8f\xbf\xbf' \
+    G $'a\xe2\x82\xacb\xd0\xbf' \
+    B $'\x80' B $'\xbf' B $'\xc0\xaf' B $'\xc1\xbf' B $'\xf5\x80\x80\x80' B $'\xff' \
+    B $'\xc2' B $'\xe2' B $'\xe2\x82' B $'\xf0\x9f\x98' B $'a\xe2\x82\xac\xe2\x82' \
+    B $'\xc2A' B $'\xe2\x82A' B $'\xe2\x82\xc0' B $'\xf0\x9f\x98A' B $'\xf0\x9fA\x80' B $'\xf0\x9f\x98\xc0' \
+    B $'\xe0\x9f\xbf' B $'\xed\xa0\x80' B $'\xf0\x8f\xbf\xbf' B $'\xf4\x90\x80\x80' \
+    B $'\xf8\x88\x80\x80\x80'
+)"
+check "_utf8_valid: each lead-byte class, and every way a sequence can be cut short or broken" "" "$u8_out"
 
 # ── sandbox.sh: split_env_list (REPOS parsing) ──────────────────────────────
 # Regression this branch fixes: `IFS=' ' read -r -a repos_list <<< "$REPOS"`
