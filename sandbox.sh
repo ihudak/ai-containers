@@ -365,7 +365,7 @@ add_file_mount_if_exists() {
 launcher_ro_overlay() {
   # shellcheck disable=SC2178  # nameref: shellcheck does not model `local -n`
   local -n _ro=$1 _vrfy=$2
-  _git_usable || true
+  _rd_prep; _git_usable || true
   local reached="$3" self spec src rest dst opts l at pin path part r skip i k depth max=0 d p pp kind ok mf mv
   local x f e q w c safe inner how
   local uid="${SANDBOX_UID:-$(id -u)}" gid="${SANDBOX_GID:-$(id -g)}" you
@@ -1969,27 +1969,112 @@ _timeout_prefix() {
   fi
 }
 
-# _rd <bytes> <file>: the first <bytes> of a small file the agent can write — a
-# .git file, a commondir, a gitdir, a config — read in at most 2 s. It is checked
-# as a regular file first, but a concurrent container can swap it for a FIFO
-# between the check and the open, which blocked the launch for ever (GIT-10).
-_rd_t=(); _rd_init=""
-_rd_prep() { [[ -n "$_rd_init" ]] || { read -r -a _rd_t <<< "$(_timeout_prefix 2) "; _rd_init=1; }; }
-_rd() {
-  local rc=0
+# Bounded reads (GIT-10, GIT-23). A small file the agent can write — a .git
+# file, a commondir, a gitdir, a config — is checked as a regular file and then
+# read, and a concurrent container can swap it for a FIFO in between, which
+# blocked the launch for ever (GIT-10). So every read is bounded, and one cut off
+# refuses the launch rather than reading as unset. The bound is a time, though,
+# and a regular file only slow to read — a config of thousands of entries on a
+# busy host — was refused too, blamed on a FIFO (bugs review GIT-23). So a read
+# may take _rd_long_secs while the launch's slow reads (those past _rd_secs)
+# have taken less than _rd_budget_secs in all, and _rd_secs once they have:
+# planted slow files cost the launch that much, no more. What a read takes
+# includes its reader's time, which the pipe holds the read to; buffering the
+# output to retry a read cut off lost that, and a small config whose listing is
+# large then held the launch for minutes (review of the GIT-23 fix). A refusal
+# says whether the file was swapped or only slow.
+_rd_secs=2 _rd_long_secs=10 _rd_budget_secs=30
+_rd_init=""; _rd_dir=""; _rd_tp=(); _rd_lim=0
+# _rd_prep: where the launch's subshells — most reads run in $(…) or <(…) —
+# count the time slow reads took. launcher_ro_overlay calls it first, in the
+# launcher's own shell; the EXIT trap removes it. Without it, or once a count
+# could not be written (`ok` gone), every read gets _rd_secs, as before GIT-23.
+_rd_prep() {
+  [[ -z "$_rd_init" ]] || return 0
+  _rd_init=1
+  # The timeout command without its duration, which each read sets.
+  read -r -a _rd_tp <<< "$(_timeout_prefix 1) "
+  if (( ${#_rd_tp[@]} )); then unset '_rd_tp[-1]'; fi
+  # Only in the launcher's own shell: one made in a subshell would be lost to
+  # the next read, and to the EXIT trap (re-review of the GIT-23 fix).
+  if (( BASH_SUBSHELL > 0 )); then return 0; fi
+  _rd_dir="$(mktemp -d "${TMPDIR:-/tmp}/ai-launcher-read.XXXXXX" 2>/dev/null)" || _rd_dir=""
+  if [[ -n "$_rd_dir" ]] && ! { : > "$_rd_dir/ok"; } 2>/dev/null; then _rd_dir=""; fi
+}
+# _rd_left: sets _rd_lim to the milliseconds slow reads may still take, 0 when
+# they cannot be counted. No subshell: it runs before every read.
+_rd_left() {
+  local n spent=0 c="$_rd_dir/spent"
+  _rd_lim=0
+  [[ -n "$_rd_dir" && -f "$_rd_dir/ok" ]] || return 0
+  if [[ -e "$c" || -L "$c" ]]; then
+    [[ -f "$c" && ! -L "$c" ]] || return 0
+    while IFS= read -r n; do
+      [[ "$n" =~ ^[0-9]{1,9}$ ]] || return 0
+      spent=$(( spent + 10#$n ))
+    done < "$c"
+  fi
+  _rd_lim=$(( _rd_budget_secs * 1000 > spent ? _rd_budget_secs * 1000 - spent : 0 ))
+}
+# _rd_run <file> <command>...: <command>, which reads <file>, under that bound.
+_rd_run() {
+  # Most callers read through `< <(…)`, which inherits errexit: a command that
+  # fails here unhandled would end the read with nothing refused (re-review of
+  # the GIT-23 fix, HIGH).
+  local -; set +e
+  local f="$1" rc=0 lim t0 ms c
+  local -a t=()
+  shift
   _rd_prep
-  "${_rd_t[@]}" head -c "$1" -- "$2" || rc=$?
-  if (( rc == 124 || rc == 137 )); then _rd_fail "$2"; return 1; fi
+  _rd_left; lim="$_rd_lim"
+  (( lim < _rd_long_secs * 1000 )) || lim=$(( _rd_long_secs * 1000 ))
+  (( lim > _rd_secs * 1000 )) || lim=$(( _rd_secs * 1000 ))
+  # Whole seconds, which every timeout(1) takes.
+  lim=$(( (lim + 999) / 1000 ))
+  if (( ${#_rd_tp[@]} )); then t=("${_rd_tp[@]}" "$lim"); fi
+  # Digits only: the decimal point is the locale's, and not always . or ,.
+  t0="${EPOCHREALTIME//[!0-9]/}"
+  "${t[@]}" "$@" || rc=$?
+  ms=$(( (${EPOCHREALTIME//[!0-9]/} - t0) / 1000 ))
+  if (( ms > _rd_secs * 1000 )) && [[ -n "$_rd_dir" ]]; then
+    c="$_rd_dir/spent"
+    if [[ ( -f "$c" && ! -L "$c" ) || ! ( -e "$c" || -L "$c" ) ]]; then
+      { printf '%d\n' "$ms" >> "$c"; } 2>/dev/null || rm -f "$_rd_dir/ok"
+    else
+      rm -f "$_rd_dir/ok"
+    fi
+  fi
+  if (( rc == 124 || rc == 137 )); then
+    if [[ ! -f "$f" ]]; then _rd_fail "$f" fifo "$lim"
+    elif (( lim > _rd_secs )); then _rd_fail "$f" slow "$lim"
+    else _rd_fail "$f" spent "$lim"; fi
+    return 1
+  fi
   return "$rc"
 }
-# _rd_fail <file>: a bounded read that was cut off, or a config too big to read
-# whole, is not an absent key — read as one, it failed open (automated security
-# review of 116129d). The reads run in $(…) and <(…), where exit ends only the
-# subshell, so the launcher itself is signalled; its USR1 trap refuses the launch.
+# _rd <bytes> <file>: the first <bytes> of a small file the agent can write.
+_rd() {
+  _rd_run "$2" head -c "$1" -- "$2"
+}
+# _rd_fail <file> <fifo|slow|spent> <seconds>: a bounded read that was cut off
+# is not an absent key — read as one, it failed open (automated security review
+# of 116129d). The reads run in $(…) and <(…), where exit ends only the subshell,
+# so the launcher itself is signalled; its USR1 trap refuses the launch. Nothing
+# here may stop it first: errexit is on in a <(…) (re-review of the GIT-23 fix).
 _rd_fail() {
+  local -; set +e
+  local why
+  case "${2:-}" in
+    slow) why="could not be read within ${3:-?} s, though it is a regular file" ;;
+    spent) why="could not be read within ${3:-?} s, though it is a regular file, and this launch has no more time for slow reads" ;;
+    *) why="could not be read within ${3:-its bound} s, and is not a regular file now (swapped for a FIFO, or removed)" ;;
+  esac
   # To the launcher's own stderr: every caller sends its stderr to /dev/null, and
   # the refusal was silent (review of the batch 10 branch; G86).
-  printf 'ERROR: %s could not be read within its bound (a FIFO swapped in, or too big); refusing the launch.\n' "$(_term "$1")" >&"${_rd_errfd:-2}"
+  printf 'ERROR: %s %s; refusing the launch.\n' "$(_term "$1")" "$why" >&"${_rd_errfd:-2}"
+  if [[ "${2:-}" == slow || "${2:-}" == spent ]]; then
+    printf '       The host may be busy: launch again.\n' >&"${_rd_errfd:-2}"
+  fi
   kill -s USR1 "$$" 2>/dev/null || true
 }
 
@@ -2632,6 +2717,9 @@ _git_after_session() {
     # What git_dirs_in reads of the launch's own state: the writable binds, and the bound.
     bsrc=(${_git_bsrc[@]+"${_git_bsrc[@]}"})
     gitmax="${SANDBOX_GIT_MAX:-200}"; _rd_errfd=""
+    # A read cut off here only says the search was cut short, so it gets the
+    # first bound: the longer one would lengthen a scan after the session.
+    _rd_long_secs="$_rd_secs"
     lim="${AI_CONTAINERS_RESCAN_SECONDS:-30}"; [[ "$lim" =~ ^[0-9]{1,6}$ ]] || lim=30
     deadline=$(( SECONDS + 10#$lim ))
     for src in "${_git_scan_srcs[@]}"; do
@@ -2704,11 +2792,7 @@ _git_file_config() {
   # and a directory the agent made a git directory of can hold one as its config
   # (review of 1a30bb4; G65).
   [[ -f "$f" ]] || return 1
-  _rd_prep
-  local rc=0
-  GIT_DIR=/dev/null "${_rd_t[@]}" git config --file "$f" "$@" || rc=$?
-  if (( rc == 124 || rc == 137 )); then _rd_fail "$f"; return 1; fi
-  return "$rc"
+  GIT_DIR=/dev/null _rd_run "$f" git config --file "$f" "$@"
 }
 
 # _git_include_paths <config-file>: every include.path and includeIf.*.path the
@@ -2927,7 +3011,7 @@ _gdi_over=()               # git directories past SANDBOX_GIT_MAX where a scan s
 declare -A _git_launch_seen=()
 _git_scan_srcs=()
 _git_bsrc=()               # every writable bind source of the launch (bsrc), for the rescan
-trap 'rm -rf "${_launcher_verify_dir:-}" "${_gir_tmp:-}" 2>/dev/null' EXIT
+trap 'rm -rf "${_launcher_verify_dir:-}" "${_gir_tmp:-}" "${_rd_dir:-}" 2>/dev/null' EXIT
 
 # The agent's identity: numeric, within a 32-bit id, and never root — capsh
 # switching 0 to 0 clears no capabilities (bugs review ENV-4). Checked first in

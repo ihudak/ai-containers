@@ -704,13 +704,17 @@ fi
 rm -rf "$PROJ/si37"
 
 # ── G38: many include entries in one config cannot make the launch slow ───────
+# Against the same launch with one entry, timed in the same run: a fixed 15 s
+# failed on a busy host, where every launch is slower (GIT-23).
 mkdir -p "$PROJ/many38" && "${G[@]}" -C "$PROJ/many38" init -q
-{ printf '[include]\n'; for n in $(seq 1 5000); do printf '\tpath = /nonexistent38/f%d\n' "$n"; done; } >> "$PROJ/many38/.git/config"
+printf '[include]\n\tpath = /nonexistent38/f0\n' >> "$PROJ/many38/.git/config"
+launch_timed 120; base38="$LAUNCH_S"; brc38="$LAUNCH_RC"
+{ for n in $(seq 1 5000); do printf '\tpath = /nonexistent38/f%d\n' "$n"; done; } >> "$PROJ/many38/.git/config"
 launch_timed 120
-[[ "$LAUNCH_RC" == 0 && "$LAUNCH_S" -lt 15 ]] \
+[[ "$brc38" == 0 && "$LAUNCH_RC" == 0 && "$LAUNCH_S" -lt $(( base38 + 15 )) ]] \
   && grep -qF "WARNING: not every include of /workspace/proj/many38/.git/config was followed" "$ERR" \
-  && pass "G38 5000 include entries in one config cost seconds, and are named (${LAUNCH_S}s)" \
-  || fail "G38 include entries (rc=$LAUNCH_RC; ${LAUNCH_S}s; stderr: $(grep -F many38 "$ERR" | head -2 | tr '\n' ' '))"
+  && pass "G38 5000 include entries in one config cost seconds, and are named (${LAUNCH_S}s, ${base38}s with one)" \
+  || fail "G38 include entries (rc=$LAUNCH_RC; ${LAUNCH_S}s, ${base38}s and rc=$brc38 with one; stderr: $(grep -F many38 "$ERR" | head -2 | tr '\n' ' '))"
 rm -rf "$PROJ/many38"
 
 # ── G39: a git that dies mid-record is still named ────────────────────────────
@@ -1654,13 +1658,17 @@ fi
 # .git files, commondir, gitdir and config are checked as regular files, then
 # read; a concurrent container can swap one for a FIFO in between, which blocked
 # the launch for ever. Each read is bounded (_rd, and _git_file_config) (GIT-10).
-load_fn _timeout_prefix; load_fn _rd_prep; load_fn _rd; _rd_t=(); _rd_init=""
+for f84 in _timeout_prefix _rd_prep _rd_left _rd_run _rd; do load_fn "$f84"; done
+# The longer bound (G99) at 2 s too, to keep this quick: what is asserted is that
+# the read is cut off at all.
+_rd_secs=2 _rd_long_secs=2 _rd_budget_secs=30 _rd_init="" _rd_dir="" _rd_tp=() _rd_lim=0
+TMPDIR="$TMP" _rd_prep
 # The bound alone, here in the test's own shell: _rd_fail would signal it (G86).
 _rd_fail() { :; }
 if [[ -n "$(_timeout_prefix)" ]]; then
   mkfifo "$TMP/f84"; t84=$SECONDS
   _rd 4096 "$TMP/f84" >/dev/null 2>&1; d84=$((SECONDS - t84))
-  ( exec 3<>"$TMP/f84" ) 2>/dev/null; rm -f "$TMP/f84"
+  ( exec 3<>"$TMP/f84" ) 2>/dev/null; rm -f "$TMP/f84"; rm -rf "$_rd_dir"
   (( d84 <= 6 )) && pass "G84 a read of a FIFO swapped in for a small git file is cut off (${d84}s)" \
     || fail "G84 a FIFO read took ${d84}s"
 else
@@ -1687,20 +1695,25 @@ rm -rf "$L85"
 # signals the launcher (USR1), which refuses. The case runs as its own process,
 # as the launcher does: the signal goes to $$.
 fns86="$TMP/fns86.sh"
-for f86 in _term _timeout_prefix _rd_prep _rd _rd_fail; do
+for f86 in _term _timeout_prefix _rd_prep _rd_left _rd_run _rd _rd_fail; do
   awk -v f="$f86() {" 'index($0, f) == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox.sh"
-done > "$fns86"; printf '_rd_t=(); _rd_init=""\nexec {_rd_errfd}>&2\ntrap "exit 3" USR1\n' >> "$fns86"
+done > "$fns86"; mkdir -p "$TMP/rd86"
+printf '_rd_secs=2 _rd_long_secs=2 _rd_budget_secs=30 _rd_init="" _rd_dir="" _rd_tp=() _rd_lim=0\nexec {_rd_errfd}>&2\ntrap "exit 3" USR1\n' >> "$fns86"
 if [[ -n "$(_timeout_prefix)" ]]; then
   mkfifo "$TMP/f86"
   # 2>/dev/null, as every real caller has: the ERROR still reaches the launcher's
   # stderr (review of the batch 10 branch: it was silent).
-  bash -c 'source "$1"; _rd 4096 "$2" >/dev/null 2>/dev/null; echo continued' _ "$fns86" "$TMP/f86" >"$TMP/o86" 2>"$TMP/e86"; rc86=$?
+  # As the launcher reads: errexit on, through a process substitution, which
+  # inherits it — a refusal that failed there read as unset (re-review of the
+  # GIT-23 fix, HIGH).
+  TMPDIR="$TMP/rd86" bash -c 'set -euo pipefail; source "$1"; x=""; IFS= read -r -d "" x < <(_rd 4096 "$2" 2>/dev/null) || true; echo continued' \
+    _ "$fns86" "$TMP/f86" >"$TMP/o86" 2>"$TMP/e86"; rc86=$?
   ( exec 3<>"$TMP/f86" ) 2>/dev/null; rm -f "$TMP/f86"
   [[ "$rc86" == 3 && ! -s "$TMP/o86" ]] && grep -qF 'could not be read' "$TMP/e86" \
     && pass "G86 a small git file whose read is cut off stops the launch" \
     || fail "G86 cut-off read (rc=$rc86; $(cat "$TMP/o86" "$TMP/e86" | tr '\n' ' '))"
 fi
-rm -rf "$fns86" "$TMP/o86" "$TMP/e86"
+rm -rf "$fns86" "$TMP/o86" "$TMP/e86" "$TMP/rd86"
 
 # ── G87: a bare repository git made gets its placeholders, fixture or not ───
 # A bare repository you push to — say ./remote.git in the project — is one the
@@ -2151,6 +2164,117 @@ grep -qF 'protected here (1): includes' "$ERR" \
   && pass "G98 with no git, the WARNING counts a protected .git file too" \
   || fail "G98 no WARNING for a lone .git file (rc=$LAUNCH_RC; stderr: $(grep -A2 -F 'WARNING' "$ERR" | tr '\n' ' '))"
 rm -rf "$R98" "$TMP/r98b" "$TMP/r98c" "$TMP/r98d" "$TMP/out98" "$TMP/nogit98" "$TMP/brokengit98" "$TMP/brokengit98.log" "$TMP/mutegit98"
+
+# ── G99: a file only slow to read gets longer, within a budget per launch ────
+# Every read of a small file the agent can write is bounded (G84), and one cut
+# off refused the launch, blamed on a FIFO. The bound is a time, so under load a
+# regular config was cut off too: G38's 5,000 entries, during a falsify run with
+# ten workers (GIT-23). A read now gets 10 s while the launch's slow reads (past
+# 2 s) have taken less than 30 s in all, and 2 s once they have; the time
+# includes its reader's, which the pipe holds it to; and the refusal says whether
+# the file was swapped or only slow. First through a launch, with a git that is
+# slow once for one config.
+REAL_GIT99="$(command -v git)"
+mkdir -p "$TMP/slowgit99"
+cat > "$TMP/slowgit99/git" <<'SLOWGIT'
+#!/usr/bin/env bash
+if [[ "${1:-}" == config && "${2:-}" == --file && "${3:-}" == "$SLOW99_CFG" && ! -e "$SLOW99_MARK" ]]; then
+  : > "$SLOW99_MARK"; sleep 3
+fi
+exec "$SLOW99_GIT" "$@"
+SLOWGIT
+chmod +x "$TMP/slowgit99/git"
+"${G[@]}" init -q "$PROJ/slow99" && "${G[@]}" -C "$PROJ/slow99" config core.fsmonitor 'run-me-99'
+SLOW99_CFG="$PROJ/slow99/.git/config" SLOW99_MARK="$TMP/slow99.mark" SLOW99_GIT="$REAL_GIT99" \
+  PATH="$TMP/slowgit99:$PATH" launch ..
+[[ -e "$TMP/slow99.mark" ]] || fail "G99 SCAFFOLD: the slow git was never asked for $PROJ/slow99/.git/config"
+# Read whole, not cut off and taken for empty: the first protection names its key.
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF 'could not be read' "$ERR" \
+  && grep -qF 'core.fsmonitor' <<<"$(grep -A1 -F 'NOTE: /workspace/proj/slow99/.git is protected for the first time, and its config already sets' "$ERR")" \
+  && pass "G99 a config that took 3 s to read is read whole, and the launch goes ahead" \
+  || fail "G99 slow config (rc=$LAUNCH_RC; stderr: $(grep -A1 -F 'could not be read' "$ERR" | tr '\n' ' '))"
+rm -rf "$PROJ/slow99" "$TMP/slow99.mark" "$TMP/slowgit99"
+
+# Then each outcome on its own, with bounds of 1 s and 6 s and a budget of 10 s,
+# the functions run as the launcher runs them: errexit on, read through a
+# process substitution. A refusal is the USR1 trap's exit 3.
+fns99="$TMP/fns99.sh"
+for f99 in _term _timeout_prefix _rd_prep _rd_left _rd_run _rd _rd_fail _git_file_config; do
+  awk -v f="$f99() {" 'index($0, f) == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox.sh"
+done > "$fns99"
+printf '_rd_secs=1 _rd_long_secs=6 _rd_budget_secs=10 _rd_init="" _rd_dir="" _rd_tp=() _rd_lim=0\nexec {_rd_errfd}>&2\ntrap "exit 3" USR1\n' >> "$fns99"
+# A git that counts its calls in $FG99_STATE and, by $FG99_MODE: prints a line,
+# takes 2 s, prints another; takes 8 s; or swaps the file it was asked to read
+# for a FIFO and hangs.
+mkdir -p "$TMP/fg99"
+cat > "$TMP/fg99/git" <<'FAKEGIT'
+#!/usr/bin/env bash
+n="$(cat "$FG99_STATE" 2>/dev/null)"; n="${n:-0}"; printf '%d\n' "$((n + 1))" > "$FG99_STATE"
+case "$FG99_MODE" in
+  slow2) printf 'a.b=1\n'; sleep 2; printf 'a.c=2\n' ;;
+  slow8) sleep 8 ;;
+  fifo) rm -f "$3"; mkfifo "$3"; sleep 8 ;;
+esac
+FAKEGIT
+chmod +x "$TMP/fg99/git"
+run99() {  # <mode> <spent before (printf format), or empty> [nodir|spentdir] -> rc99, out99, err99, calls99, rdd99
+  rm -rf "$TMP/rdt99" "$TMP/st99"; mkdir -p "$TMP/rdt99"
+  FG99_MODE="$1" FG99_STATE="$TMP/st99" PATH="$TMP/fg99:$PATH" TMPDIR="$TMP/rdt99" "$BASH" -c '
+    source "$1"; _rd_prep
+    case "$4" in
+      nodir) rm -rf "$_rd_dir"; _rd_dir="" ;;
+      spentdir) mkdir "$_rd_dir/spent" ;;
+    esac
+    [[ -z "$3" ]] || printf "$3" > "$_rd_dir/spent"
+    set -euo pipefail; out=""
+    IFS= read -r -d "" out < <(_git_file_config "$2" --list) || true
+    printf "%s" "$out"' _ "$fns99" "$TMP/c99" "$2" "${3:-}" >"$TMP/o99" 2>"$TMP/e99"
+  rc99=$?; out99="$(cat "$TMP/o99")"; err99="$(cat "$TMP/e99")"; calls99="$(cat "$TMP/st99" 2>/dev/null)"
+  rdd99="$(ls -d "$TMP"/rdt99/ai-launcher-read.* 2>/dev/null | head -1)"
+}
+printf '[a]\n\tb = 1\n' > "$TMP/c99"
+run99 slow2 ""
+[[ "$rc99" == 0 && "$out99" == $'a.b=1\na.c=2' && -z "$err99" && "$calls99" == 1 ]] \
+  && grep -qE '^[0-9]{4,}$' "$rdd99/spent" \
+  && pass "G99 a read that takes 2 s, past the first bound, is read whole, once, and charged to the launch" \
+  || fail "G99 slow read (rc=$rc99; calls=$calls99; out=$(tr '\n' '|' <<<"$out99"); err=$err99; spent=$(cat "$rdd99/spent" 2>/dev/null))"
+run99 fifo ""; rm -f "$TMP/c99"; printf '[a]\n\tb = 1\n' > "$TMP/c99"
+[[ "$rc99" == 3 && "$calls99" == 1 && -z "$out99" ]] \
+  && grep -qF 'could not be read within 6 s, and is not a regular file now (swapped for a FIFO, or removed)' <<<"$err99" \
+  && pass "G99 a file swapped for a FIFO while it was read is refused, and says so" \
+  || fail "G99 FIFO swapped in (rc=$rc99; calls=$calls99; err=$err99)"
+run99 slow8 ""
+[[ "$rc99" == 3 && "$calls99" == 1 ]] && grep -qF 'could not be read within 6 s, though it is a regular file;' <<<"$err99" \
+  && grep -qF 'The host may be busy: launch again.' <<<"$err99" \
+  && pass "G99 a regular file past the longer bound is refused, and the refusal says the host may be busy" \
+  || fail "G99 slow past the longer bound (rc=$rc99; calls=$calls99; err=$err99)"
+run99 slow8 '7000\n'
+grep -qF 'could not be read within 3 s, though it is a regular file;' <<<"$err99" \
+  && pass "G99 the longer bound is what is left of the budget, when that is less" \
+  || fail "G99 the bound from what is left (rc=$rc99; err=$err99)"
+run99 slow2 '5000\n5000\n'
+[[ "$rc99" == 3 ]] && grep -qF 'could not be read within 1 s, though it is a regular file, and this launch has no more time for slow reads' <<<"$err99" \
+  && pass "G99 once the launch's slow reads have taken the budget, every line counted, a read gets the first bound" \
+  || fail "G99 budget spent (rc=$rc99; calls=$calls99; err=$err99)"
+run99 slow2 "" nodir
+[[ "$rc99" == 3 ]] && grep -qF 'could not be read within 1 s' <<<"$err99" \
+  && pass "G99 with nowhere to count slow reads, every read gets the first bound, as before" \
+  || fail "G99 no count (rc=$rc99; err=$err99)"
+run99 slow2 "" spentdir
+[[ "$rc99" == 3 && ! -e "$rdd99/ok" ]] && grep -qF 'could not be read within 1 s' <<<"$err99" \
+  && pass "G99 a count that is not a regular file gives the first bound, and stops the longer one for the launch" \
+  || fail "G99 count not a file (rc=$rc99; ok: $(ls "$rdd99/ok" 2>&1); err=$err99)"
+# _rd, which reads .git files, commondir and gitdir, gets the longer bound too.
+mkdir -p "$TMP/fh99"; REAL_HEAD99="$(command -v head)"
+printf '#!/usr/bin/env bash\nsleep 2\nexec %q "$@"\n' "$REAL_HEAD99" > "$TMP/fh99/head"
+chmod +x "$TMP/fh99/head"; rm -rf "$TMP/rdt99"; mkdir -p "$TMP/rdt99"; printf 'gitdir: ../x\n' > "$TMP/f99"
+PATH="$TMP/fh99:$PATH" TMPDIR="$TMP/rdt99" "$BASH" -c 'source "$1"; _rd_prep; set -euo pipefail; x=""
+    IFS= read -r -d "" x < <(_rd 4096 "$2") || true; printf "%s" "$x"' \
+  _ "$fns99" "$TMP/f99" >"$TMP/o99" 2>"$TMP/e99"; rc99=$?
+[[ "$rc99" == 0 && "$(cat "$TMP/o99")" == 'gitdir: ../x' ]] \
+  && pass "G99 a small git file that takes 2 s to read is read whole" \
+  || fail "G99 _rd past the first bound (rc=$rc99; out=$(cat "$TMP/o99"); err=$(cat "$TMP/e99"))"
+rm -rf "$fns99" "$TMP/fg99" "$TMP/fh99" "$TMP/rdt99" "$TMP/st99" "$TMP/c99" "$TMP/f99" "$TMP/o99" "$TMP/e99"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
