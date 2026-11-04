@@ -71,6 +71,27 @@ run_sandbox() {
   RC=$?
 }
 
+# run_sandbox under a clock (GIT-25): RC is 124 when the launch was cut off. In
+# a process group of its own, KILLed whole at the clock: killing the launcher
+# alone left the git it ran blocked on the FIFO for good.
+run_sandbox_bounded() {  # <seconds> <sandbox.sh args>...
+  local secs="$1" pid waited=0; shift
+  ERR="$TMP/stderr.txt"
+  mkdir -p "$TMP/launch"
+  set -m
+  ( cd "$TMP/launch" && exec bash "$REPO_DIR/sandbox.sh" restricted "$@" ) >"$TMP/stdout.txt" 2>"$ERR" </dev/null &
+  pid=$!
+  set +m
+  while kill -0 "$pid" 2>/dev/null && (( waited < secs * 10 )); do sleep 0.1; waited=$(( waited + 1 )); done
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -KILL -"$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null
+    RC=124
+  else
+    wait "$pid"; RC=$?
+  fi
+}
+
 # Register a GIT-sourced repo plus a local checkout whose `origin` is that URL.
 # The registry holds a URL for these, so identity cannot come from a path
 # comparison — sandbox.sh asks the pointer's own checkout what it was cloned
@@ -321,6 +342,174 @@ if [[ "$RC" -ne 0 ]] && grep -q "name 'docs' is used by" "$ERR"; then
   pass "a DIFFERENT git repository colliding on 'docs' is still refused"
 else
   fail "a DIFFERENT git repository colliding on 'docs' is still refused (rc=$RC)"
+fi
+teardown
+
+# GIT-25: the checkout's origin is read from its config FILE, bounded and with
+# no includes, never by running git there. `git remote get-url` read the
+# repository's config, includes and all, with no bound: a FIFO an include named
+# hung the launch before anything was mounted, and the message named nothing.
+setup
+mkdir -p "$TMP/app"
+register_git_repo docs ssh://git@example.org/team/docs.git "$TMP/docsco"
+git -C "$TMP/docsco" config include.path "$TMP/inc25" >/dev/null 2>&1
+mkfifo "$TMP/inc25"
+export DOCS_PATH="$TMP/docsco" REPOS="docs:rw"
+run_sandbox_bounded 30 "$TMP/app"
+( exec 3<>"$TMP/inc25" ) 2>/dev/null
+if [[ "$RC" -eq 0 ]] && grep -qx "DOCS_PATH=/workspace/docs" "$CAPTURE"; then
+  pass "GIT-25 an include in the pointer's config that names a FIFO does not hold the launch"
+else
+  fail "GIT-25 an include that names a FIFO held the launch, or the pointer did not re-point (rc=$RC; $(head -1 "$ERR"))"
+fi
+teardown
+
+# A linked worktree: its .git file's gitdir: and its commondir are followed to
+# the config that holds origin.
+setup
+mkdir -p "$TMP/app"
+register_git_repo docs ssh://git@example.org/team/docs.git "$TMP/docsco"
+( cd "$TMP/docsco" && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m s \
+    && git worktree add -q "$TMP/docswt" ) >/dev/null 2>&1
+export DOCS_PATH="$TMP/docswt" REPOS="docs:rw"
+run_sandbox "$TMP/app"
+if [[ -f "$TMP/docswt/.git" && "$RC" -eq 0 ]] && grep -qx "DOCS_PATH=/workspace/docs" "$CAPTURE"; then
+  pass "GIT-25 a linked worktree of the git-sourced repo re-points"
+else
+  fail "GIT-25 a linked worktree of the git-sourced repo did not re-point (rc=$RC; $(head -1 "$ERR"))"
+fi
+teardown
+
+# A subdirectory of the checkout: its repository is found as git finds it, the
+# nearest .git above, as before the fix.
+setup
+mkdir -p "$TMP/app"
+register_git_repo docs ssh://git@example.org/team/docs.git "$TMP/docsco"
+mkdir -p "$TMP/docsco/guide"
+export DOCS_PATH="$TMP/docsco/guide" REPOS="docs:rw"
+run_sandbox "$TMP/app"
+if [[ "$RC" -eq 0 ]] && grep -qx "DOCS_PATH=/workspace/docs" "$CAPTURE"; then
+  pass "GIT-25 a subdirectory of the checkout re-points, as git -C did"
+else
+  fail "GIT-25 a subdirectory of the checkout did not re-point (rc=$RC; $(head -1 "$ERR"))"
+fi
+teardown
+
+# With no git-sourced repo attached there is nothing to compare an origin with,
+# and the checkout's config, which the agent can write, is not read at all.
+setup
+mkdir -p "$TMP/app"
+register_git_repo docs ssh://git@example.org/team/docs.git "$TMP/docsco"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\nexec "%s" "$@"\n' "$TMP/git-calls.txt" "$(command -v git)" > "$TMP/bin/git"
+chmod +x "$TMP/bin/git"; : > "$TMP/git-calls.txt"
+export DOCS_PATH="$TMP/docsco"
+run_sandbox "$TMP/app"
+# Any git call naming the checkout counts: `git -C <checkout> remote get-url` too.
+if [[ "$RC" -eq 0 ]] && grep -q ":/workspace/docs:ro" "$CAPTURE" && ! grep -q -e docsco -e get-url "$TMP/git-calls.txt"; then
+  pass "GIT-25 with no git-sourced repo attached, the pointer's origin is not read"
+else
+  fail "GIT-25 the pointer's origin was read with nothing to compare it with (rc=$RC; $(grep -c -e docsco -e get-url "$TMP/git-calls.txt") read(s))"
+fi
+teardown
+
+# A shorthand your own config expands (url.<base>.insteadOf) is expanded, as
+# `git remote get-url` expanded it: the registry holds the URL repo.sh cloned,
+# and its seed container has no ~/.gitconfig, so a shorthand never reaches it.
+setup
+mkdir -p "$TMP/app"
+register_git_repo docs ssh://git@example.org/team/docs.git "$TMP/docsco"
+printf '[url "ssh://git@example.org/"]\n\tinsteadOf = ex:\n' >> "$HOME/.gitconfig"
+git -C "$TMP/docsco" config remote.origin.url ex:team/docs >/dev/null 2>&1
+export DOCS_PATH="$TMP/docsco" REPOS="docs:rw"
+run_sandbox "$TMP/app"
+if [[ "$RC" -eq 0 ]] && grep -qx "DOCS_PATH=/workspace/docs" "$CAPTURE"; then
+  pass "GIT-25 an origin written as an insteadOf shorthand matches the repo it expands to"
+else
+  fail "GIT-25 an origin written as an insteadOf shorthand did not match (rc=$RC; $(head -1 "$ERR"))"
+fi
+teardown
+
+# An empty `url =` empties the list, as git reads remote.<name>.url: the first
+# URL after it decides.
+setup
+mkdir -p "$TMP/app"
+register_git_repo docs ssh://git@example.org/team/docs.git "$TMP/docsco"
+git -C "$TMP/docsco" config remote.origin.url ssh://git@example.org/team/OTHER.git >/dev/null 2>&1
+git -C "$TMP/docsco" config --add remote.origin.url "" >/dev/null 2>&1
+git -C "$TMP/docsco" config --add remote.origin.url ssh://git@example.org/team/docs.git >/dev/null 2>&1
+export DOCS_PATH="$TMP/docsco" REPOS="docs:rw"
+run_sandbox "$TMP/app"
+if [[ "$RC" -eq 0 ]] && grep -qx "DOCS_PATH=/workspace/docs" "$CAPTURE"; then
+  pass "GIT-25 an empty origin URL resets the list, as in git"
+else
+  fail "GIT-25 an empty origin URL did not reset the list (rc=$RC; $(head -1 "$ERR"))"
+fi
+teardown
+
+# macOS's /usr/bin/git when xcode-select -p fails outright, as on a Mac that
+# never had the Command Line Tools: git does not run there (_git_usable), so the
+# pointer's origin is not read and the pointer is refused as any collision is.
+# Faked with uname and xcode-select (review of the GIT-28 fix, L2).
+if [[ "$(command -v git)" == /usr/bin/git ]]; then
+  setup
+  mkdir -p "$TMP/app" "$TMP/mac"
+  register_git_repo docs ssh://git@example.org/team/docs.git "$TMP/docsco"
+  printf '#!/bin/sh\necho Darwin\n' > "$TMP/mac/uname"; printf '#!/bin/sh\nexit 2\n' > "$TMP/mac/xcode-select"
+  chmod +x "$TMP/mac/uname" "$TMP/mac/xcode-select"
+  export DOCS_PATH="$TMP/docsco" REPOS="docs:rw"
+  # /usr//bin first: still the shim, which a string compare missed (-ef does not).
+  PATH="$TMP/mac:$TMP/bin:/usr//bin:$PATH" run_sandbox "$TMP/app"
+  if [[ "$RC" -ne 0 ]] && grep -q "name 'docs' is used by" "$ERR"; then
+    pass "GIT-25 macOS's git shim is not taken for git when xcode-select -p fails"
+  else
+    fail "GIT-25 macOS's git shim was taken for git when xcode-select -p failed (rc=$RC; $(head -1 "$ERR"))"
+  fi
+  teardown
+else
+  printf 'NOTE: git is not /usr/bin/git here; the macOS shim check is not applicable\n'
+fi
+
+# Two origin URLs: the first decides, as `git remote get-url` printed it.
+setup
+mkdir -p "$TMP/app"
+register_git_repo docs ssh://git@example.org/team/docs.git "$TMP/docsco"
+git -C "$TMP/docsco" config --add remote.origin.url ssh://git@example.org/team/OTHER.git >/dev/null 2>&1
+export DOCS_PATH="$TMP/docsco" REPOS="docs:rw"
+run_sandbox "$TMP/app"
+if [[ "$RC" -eq 0 ]] && grep -qx "DOCS_PATH=/workspace/docs" "$CAPTURE"; then
+  pass "GIT-25 of two origin URLs the first decides"
+else
+  fail "GIT-25 of two origin URLs the first did not decide (rc=$RC; $(head -1 "$ERR"))"
+fi
+teardown
+
+# Where git does not run (here, one that fails the probe, as git before 2.18
+# does), git is not asked about the checkout, and the pointer is refused as any
+# collision is, as when git -C found no git.
+setup
+mkdir -p "$TMP/app"
+register_git_repo docs ssh://git@example.org/team/docs.git "$TMP/docsco"
+register_git_repo lib25 ssh://git@example.org/team/lib.git "$TMP/libco"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\nexit 1\n' "$TMP/git-calls.txt" > "$TMP/bin/git"
+chmod +x "$TMP/bin/git"; : > "$TMP/git-calls.txt"
+export DOCS_PATH="$TMP/docsco" REPOS="docs:rw"
+run_sandbox "$TMP/app"
+if [[ "$RC" -ne 0 ]] && grep -q "name 'docs' is used by" "$ERR" \
+   && ! grep -q -e remote -e docsco "$TMP/git-calls.txt"; then
+  pass "GIT-25 where git does not run, the checkout is not asked, and the pointer is refused"
+else
+  fail "GIT-25 where git does not run (rc=$RC; git calls: $(grep -e remote -e docsco "$TMP/git-calls.txt" | head -2 | tr '\n' ';'))"
+fi
+# Asked once per launch, in the launcher's own shell, before the pointer checks:
+# asked first in their $(…), the answer was lost and asked again for the overlay.
+: > "$TMP/git-calls.txt"; : > "$CAPTURE"
+export REPOS="lib25:rw"
+run_sandbox "$TMP/app"
+n25="$(grep -c -e '--type=bool' "$TMP/git-calls.txt")"
+if [[ "$RC" -eq 0 && "$n25" == 1 ]] && grep -q ":/workspace/docs:ro" "$CAPTURE"; then
+  pass "GIT-25 whether git runs is asked once per launch"
+else
+  fail "GIT-25 whether git runs was asked $n25 times (rc=$RC; $(head -1 "$ERR"))"
 fi
 teardown
 

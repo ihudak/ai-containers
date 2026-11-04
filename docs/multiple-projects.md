@@ -102,7 +102,7 @@ Every build now stamps the image with three labels:
 | --- | --- |
 | `ai-containers.payload-digest` | a digest of every file that reaches the image — the engine scripts, `Dockerfile`, the allowlist fragments and `tools.d/` |
 | `ai-containers.built-at` | when the build ran, in UTC |
-| `ai-containers.source-commit` | the commit, **when the build ran from a git checkout**. A project's `.ai-containers/` is a copy with no history, so this is absent there — which is itself the answer to "was this built from the central repo or from a project copy?" |
+| `ai-containers.source-commit` | the commit, **when the build ran from the engine in a git checkout** (one holding `project-init.sh`, as this repository and a port's `base/` do). It is read from the checkout's files, not by running git, so nothing in the repository's config can hold the build. A project's `.ai-containers/` is a copy with no history, so this is absent there, even inside the project's own repository — which is itself the answer to "was this built from the central repo or from a project copy?" |
 
 Read them back with:
 

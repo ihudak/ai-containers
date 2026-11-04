@@ -127,7 +127,9 @@ check "every label is preceded by its --label flag" "3" "$(grep -cx -- '--label'
 # And the other half of that branch: when the assets ARE a checkout, the commit
 # is recorded. Untested, this is the case that silently stops working — the
 # central repo is the only place it ever fires.
-G="$TMP/gitassets"; mk_assets "$G"
+# An ENGINE tree: project-init.sh is base-repo only, the mark version_engine
+# goes by too (GIT-26).
+G="$TMP/gitassets"; mk_assets "$G"; : > "$G/project-init.sh"
 ( cd "$G" && git init -q . && git add -A >/dev/null 2>&1 \
     && git -c user.email=t@t -c user.name=t commit -qm seed >/dev/null 2>&1 ) || true
 if [[ -d "$G/.git" ]]; then
@@ -139,6 +141,152 @@ if [[ -d "$G/.git" ]]; then
   check "a git checkout carries all four labels" "4" "$(grep -cx -- '--label' <<<"$glabels")"
 else
   printf 'SKIP: git could not create a fixture repo\n'
+fi
+
+# ── GIT-26: the commit is read as files, and git never runs ─────────────────
+# build.sh ran `git -C <dir> rev-parse HEAD`, which reads the repository's
+# config, includes and all, with no bound: a FIFO an include names hung every
+# build, naming nothing. On a Mac without the Command Line Tools it ran the shim
+# that opens their installer. And git walked up from a project's .ai-containers/
+# to the PROJECT's repository, so every project image recorded the project's
+# commit as the engine's, which docs/multiple-projects.md says is absent there.
+gq() { git -c user.email=t@t -c user.name=t "$@"; }
+mk_engine() {   # <dir>: an engine tree that is its own checkout, one commit
+  mk_assets "$1"; : > "$1/project-init.sh"
+  ( cd "$1" && git init -q . && git add -A && gq commit -qm seed ) >/dev/null 2>&1
+}
+commit_label() {   # <dir> → the source-commit its labels record, or nothing
+  ai_containers_provenance_labels "$1" 2026-01-01T00:00:00Z 2>/dev/null \
+    | sed -n 's/^ai-containers\.source-commit=//p'
+}
+# commit_label in a process group of its own, KILLed whole at <seconds>: killing
+# the function's shell alone left the git it ran blocked on a FIFO for good.
+commit_label_bounded() {   # <seconds> <dir> <out-file> → 0, or 124 when cut off
+  local secs="$1" pid waited=0
+  set -m
+  commit_label "$2" > "$3" &
+  pid=$!
+  set +m
+  while kill -0 "$pid" 2>/dev/null && (( waited < secs * 10 )); do sleep 0.1; waited=$(( waited + 1 )); done
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -KILL -"$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null
+    return 124
+  fi
+  wait "$pid"
+}
+E26="$TMP/e26"; mk_engine "$E26"
+if [[ -d "$E26/.git" ]]; then
+  want26="$(git -C "$E26" rev-parse HEAD)"
+  # Git is not run at all: a git on PATH that only records its calls.
+  mkdir -p "$TMP/fakegit26"
+  printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\nexit 1\n' "$TMP/git26.log" > "$TMP/fakegit26/git"
+  chmod +x "$TMP/fakegit26/git"; : > "$TMP/git26.log"
+  got26="$(PATH="$TMP/fakegit26:$PATH" commit_label "$E26")"
+  if [[ "$got26" == "$want26" && ! -s "$TMP/git26.log" ]]; then
+    pass "GIT-26 the commit is read from the checkout's files, and git is not run"
+  else
+    fail "GIT-26 git ran, or the commit was not read (got '$got26', git calls: $(head -2 "$TMP/git26.log" | tr '\n' ';'))"
+  fi
+  # An include naming a FIFO: the config is not read at all.
+  E26i="$TMP/e26i"; mk_engine "$E26i"
+  git -C "$E26i" config include.path "$TMP/inc26" >/dev/null 2>&1; mkfifo "$TMP/inc26"
+  commit_label_bounded 20 "$E26i" "$TMP/out26i"; rc26=$?
+  ( exec 3<>"$TMP/inc26" ) 2>/dev/null; rm -f "$TMP/inc26"
+  if [[ "$rc26" == 0 && "$(cat "$TMP/out26i")" == "$(git -C "$E26i" rev-parse HEAD)" ]]; then
+    pass "GIT-26 an include that names a FIFO does not hold the build"
+  else
+    fail "GIT-26 an include that names a FIFO held the build (rc=$rc26, got '$(cat "$TMP/out26i")')"
+  fi
+  # A HEAD that is a FIFO: no commit, and no wait.
+  E26h="$TMP/e26h"; mk_engine "$E26h"; rm -f "$E26h/.git/HEAD"; mkfifo "$E26h/.git/HEAD"
+  commit_label_bounded 20 "$E26h" "$TMP/out26h"; rc26=$?
+  ( exec 3<>"$E26h/.git/HEAD" ) 2>/dev/null
+  if [[ "$rc26" == 0 && ! -s "$TMP/out26h" ]]; then
+    pass "GIT-26 a HEAD that is a FIFO records no commit, and does not hold the build"
+  else
+    fail "GIT-26 a HEAD that is a FIFO (rc=$rc26, got '$(cat "$TMP/out26h")')"
+  fi
+  # Packed refs: the branch's loose file gone, its tip in packed-refs.
+  E26p="$TMP/e26p"; mk_engine "$E26p"; git -C "$E26p" pack-refs --all >/dev/null 2>&1
+  b26="$(git -C "$E26p" symbolic-ref HEAD 2>/dev/null)"
+  if [[ -n "$b26" && ! -e "$E26p/.git/$b26" ]]; then
+    check "GIT-26 a branch in packed-refs is read" "$(git -C "$E26p" rev-parse HEAD)" "$(commit_label "$E26p")"
+  else
+    fail "GIT-26 scaffold: pack-refs left the loose ref (${b26:-no branch})"
+  fi
+  # packed-refs is read a line at a time, each cut at 4200 bytes, and within the
+  # bound: awk held a line whole, and one that was the whole file took gigabytes
+  # within it (review of the fix, L1). A long line is passed over...
+  E26b="$TMP/e26b"; mk_engine "$E26b"; git -C "$E26b" pack-refs --all >/dev/null 2>&1
+  b26="$(git -C "$E26b" symbolic-ref HEAD)"; o26="$(git -C "$E26b" rev-parse HEAD)"
+  { printf '# pack-refs with: peeled fully-peeled sorted\n'; printf '%05000d\n' 0; printf '%s %s\n' "$o26" "$b26"; } > "$E26b/.git/packed-refs"
+  check "GIT-26 a branch after a line longer than 4200 bytes in packed-refs is read" "$o26" "$(commit_label "$E26b")"
+  # ...and one that never ends (a link to /dev/zero swapped in after the -f
+  # test) is given up at the bound, its reader killed, never held whole.
+  ln -s /dev/zero "$TMP/zero26"; t26=$SECONDS
+  ( _ac_read_secs=1; _ac_packed_ref v26 "$TMP/zero26" refs/heads/main ); rc26=$?
+  sleep 0.3; left26="$(pgrep -f -- "cat -- $TMP/zero26" 2>/dev/null | head -1)"
+  if [[ "$rc26" == 2 && -z "$left26" ]] && (( SECONDS - t26 < 10 )); then
+    pass "GIT-26 a packed-refs that never ends is given up at the bound, its reader gone"
+  else
+    fail "GIT-26 a packed-refs that never ends (rc=$rc26, $((SECONDS - t26)) s, reader ${left26:-gone})"
+    if [[ -n "$left26" ]]; then kill -KILL "$left26" 2>/dev/null; fi
+  fi
+  # A detached HEAD holds the commit itself.
+  E26d="$TMP/e26d"; mk_engine "$E26d"; gq -C "$E26d" commit -q --allow-empty -m two >/dev/null 2>&1
+  git -C "$E26d" checkout -q --detach HEAD~1 >/dev/null 2>&1
+  check "GIT-26 a detached HEAD is read" "$(git -C "$E26d" rev-parse HEAD)" "$(commit_label "$E26d")"
+  # A linked worktree: its .git file and commondir followed, its own HEAD read.
+  if git -C "$E26p" worktree add -q "$TMP/wt26" -b wt26 >/dev/null 2>&1; then
+    gq -C "$TMP/wt26" commit -q --allow-empty -m wt >/dev/null 2>&1
+    w26="$(git -C "$TMP/wt26" rev-parse HEAD)"
+    if [[ "$w26" != "$(git -C "$E26p" rev-parse HEAD)" ]]; then
+      check "GIT-26 a linked worktree records its own commit" "$w26" "$(commit_label "$TMP/wt26")"
+    else
+      fail "GIT-26 scaffold: the worktree's commit is its main checkout's"
+    fi
+    # A .git file is trimmed of CR and LF only, as git reads it: `gitdir: <path> `
+    # names `<path> `, which does not exist, so git has no commit there either.
+    t26="$(cat "$TMP/wt26/.git")"; printf '%s \n' "$t26" > "$TMP/wt26/.git"
+    if ! git -C "$TMP/wt26" rev-parse HEAD >/dev/null 2>&1; then
+      check "GIT-26 a .git file is read as git reads it, trailing space and all" "" "$(commit_label "$TMP/wt26")"
+    else
+      fail "GIT-26 scaffold: git still reads the worktree with a space after its gitdir"
+    fi
+    printf '%s\n' "$t26" > "$TMP/wt26/.git"
+  else
+    fail "GIT-26 scaffold: git worktree add failed"
+  fi
+  # An engine tree inside a larger repository (a port's base/): the enclosing
+  # repository's commit, as version_engine reads its version from there.
+  M26="$TMP/m26"; mkdir -p "$M26"; mk_assets "$M26/base"; : > "$M26/base/project-init.sh"
+  ( cd "$M26" && git init -q . && git add -A && gq commit -qm m ) >/dev/null 2>&1
+  check "GIT-26 an engine tree inside a repository records that repository's commit" \
+    "$(git -C "$M26" rev-parse HEAD 2>/dev/null)" "$(commit_label "$M26/base")"
+  # A project's copy, inside the project's repository: no commit at all.
+  P26="$TMP/p26"; mkdir -p "$P26"; mk_assets "$P26/.ai-containers"
+  ( cd "$P26" && git init -q . && git add -A && gq commit -qm p ) >/dev/null 2>&1
+  check "GIT-26 a project's .ai-containers/ records no commit, not the project's" "" "$(commit_label "$P26/.ai-containers")"
+  # A read cut off says so; the image is still built, with no commit.
+  out26n="$( ( _ac_read_bounded() { return 2; }
+               ai_containers_provenance_labels "$E26" 2026-01-01T00:00:00Z ) 2>&1 >/dev/null )"
+  grep -q 'NOTE: .*records no source commit' <<<"$out26n" \
+    && pass "GIT-26 a read cut off is named" || fail "GIT-26 a read cut off is not named ('$out26n')"
+  # The bound itself: the reader is killed, not left blocked on the FIFO.
+  # The reader writes its pid, then becomes cat, blocked opening the FIFO.
+  mkfifo "$TMP/f26"; t26=$SECONDS; : > "$TMP/pid26"
+  # shellcheck disable=SC2016  # $$ is the reader's, expanded by its own sh
+  ( _ac_read_secs=1; _ac_read_bounded v26 sh -c 'echo $$ > "$1"; exec cat -- "$2"' sh "$TMP/pid26" "$TMP/f26" ); rc26=$?
+  sleep 0.2; p26="$(cat "$TMP/pid26")"
+  if [[ "$rc26" == 2 && -n "$p26" ]] && (( SECONDS - t26 < 10 )) && ! kill -0 "$p26" 2>/dev/null; then
+    pass "GIT-26 a read past its bound fails, and its reader is gone"
+  else
+    fail "GIT-26 the bounded read (rc=$rc26, $((SECONDS - t26)) s, reader ${p26:-?} $(kill -0 "${p26:-0}" 2>/dev/null && printf 'left running' || printf 'gone'))"
+  fi
+  ( exec 3<>"$TMP/f26" ) 2>/dev/null; rm -f "$TMP/f26"
+else
+  fail "GIT-26 scaffold: git could not create a fixture repo"
 fi
 
 # ── the warning ──────────────────────────────────────────────────────────────

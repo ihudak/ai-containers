@@ -1581,12 +1581,135 @@ ai_containers_provenance_labels() {   # <dir> [<iso-8601 utc>] → one --label a
     printf '         replace it: there is no sha256sum or shasum, or ~/.ai-containers/project-id.key cannot be\n' >&2
     printf '         made or read (if it is there, remove it, and the next build makes a new one).\n' >&2
   fi
-  # Only when the assets ARE a git checkout. A project's .ai-containers/ is a
-  # copy with no history, which is exactly the case this exists for: no commit
-  # recorded there is the honest answer, not a missing feature.
-  commit="$(git -C "$dir" rev-parse HEAD 2>/dev/null || true)"
-  [[ -n "$commit" ]] && printf '%s\n' "--label" "ai-containers.source-commit=$commit"
+  # Only when the assets are an engine tree in a git checkout. A project's
+  # .ai-containers/ is a copy with no history, which is exactly the case this
+  # exists for: no commit recorded there is the honest answer, not a missing
+  # feature (_ac_source_commit).
+  local rc=0
+  commit="$(_ac_source_commit "$dir")" || rc=$?
+  if [[ -n "$commit" ]]; then
+    printf '%s\n' "--label" "ai-containers.source-commit=$commit"
+  elif (( rc == 2 )); then
+    printf 'NOTE: this image records no source commit: a file of the git checkout %s is in could not\n' "$(_ac_term "$dir")" >&2
+    printf '      be read within %s s (it may have been swapped for a FIFO).\n' "$_ac_read_secs" >&2
+  fi
   return 0
+}
+
+# _ac_read_bounded <out-var> <command>...: what <command> prints, trailing CR
+# and LF removed as git removes them from a .git file or a commondir, into
+# <out-var>. Fails when it prints nothing, and returns 2 when it has not
+# finished within _ac_read_secs, killing it. For a
+# small file another process can swap for a FIFO between a -f test and the open,
+# which then blocks for ever (the launcher's GIT-10, here for build.sh; bugs
+# review GIT-26). The command is exec'd in the process substitution, so the kill
+# reaches the process blocked in open, not a shell above it.
+_ac_read_secs=3
+_ac_read_bounded() {
+  local -n _arb_out=$1
+  local _arb_fd _arb_p _arb_l="" _arb_rc=0
+  shift
+  _arb_out=""
+  exec {_arb_fd}< <(exec "$@" 2>/dev/null) || return 1
+  _arb_p=$!
+  IFS= read -r -d '' -t "$_ac_read_secs" -u "$_arb_fd" _arb_l || _arb_rc=$?
+  exec {_arb_fd}<&-
+  if (( _arb_rc > 128 )); then
+    kill -KILL "$_arb_p" 2>/dev/null || true
+    return 2
+  fi
+  while [[ "$_arb_l" == *[$'\r\n'] ]]; do _arb_l="${_arb_l%?}"; done
+  [[ -n "$_arb_l" ]] || return 1
+  _arb_out="$_arb_l"
+}
+
+# _ac_packed_ref <out-var> <packed-refs> <ref>: <ref>'s object in <packed-refs>,
+# read a line at a time, each cut at 4200 bytes as repo-git-reset.sh cuts them,
+# from a cat killed at _ac_read_secs. Not awk, which holds a line whole: a
+# packed-refs that was one line took gigabytes within the bound, and checking
+# its size first left the open after the check to race (reviews of the GIT-26
+# fix). Fails when <ref> is not there; returns 2 when the bound was reached.
+_ac_packed_ref() {
+  local -n _apr_out=$1
+  local _apr_fd _apr_p _apr_l _apr_rc=0 _apr_end=$(( SECONDS + _ac_read_secs ))
+  _apr_out=""
+  exec {_apr_fd}< <(exec cat -- "$2" 2>/dev/null) || return 1
+  _apr_p=$!
+  while (( SECONDS < _apr_end )); do
+    _apr_rc=0
+    IFS= read -r -n 4200 -t "$(( _apr_end - SECONDS ))" -u "$_apr_fd" _apr_l || _apr_rc=$?
+    (( _apr_rc <= 128 )) || break
+    if [[ "$_apr_l" == *" "* && "${_apr_l#* }" == "$3" ]]; then _apr_out="${_apr_l%% *}"; break; fi
+    (( _apr_rc == 0 )) || break
+  done
+  exec {_apr_fd}<&-
+  if [[ -z "$_apr_out" ]] && (( _apr_rc > 128 || SECONDS >= _apr_end )); then
+    kill -KILL "$_apr_p" 2>/dev/null || true
+    return 2
+  fi
+  [[ -n "$_apr_out" ]]
+}
+
+# _ac_source_commit <dir>: the commit HEAD names in the git checkout <dir> is
+# in, read as files — `<dir>/.git` or the nearest above, a directory or a file
+# naming one (a linked worktree, a submodule), its commondir followed, then
+# refs/heads/<branch> or packed-refs, as repo-git-reset.sh reads branch tips.
+# Never by running git: `git -C <dir> rev-parse HEAD` read the repository's
+# config, includes and all, with no bound, so a FIFO an include names hung the
+# build, and on a Mac without the Command Line Tools it ran the shim that opens
+# their installer (bugs review GIT-26). Only for an engine tree, which holds
+# project-init.sh (base-repo only, the mark version_engine goes by too): git
+# found a project's .ai-containers/ inside the project's repository, and every
+# project image recorded the project's commit as the engine's. Fails with
+# nothing to say for no checkout, an unborn branch, a ref that is itself
+# symbolic, or the reftable format (whose refs are not files); returns 2 when a
+# read was cut off.
+_ac_source_commit() {
+  local d="$1" gd cdir t ref oid
+  [[ -f "$d/project-init.sh" ]] || return 1
+  d="$(cd "$d" 2>/dev/null && pwd -P)" || return 1
+  # The nearest .git at or above, as git finds it.
+  while :; do
+    if [[ -d "$d/.git" ]]; then gd="$d/.git"; break; fi
+    if [[ -f "$d/.git" ]]; then
+      _ac_read_bounded t head -c 4096 -- "$d/.git" || return
+      [[ "$t" == "gitdir: "* ]] || return 1
+      t="${t#gitdir: }"; [[ "$t" == /* ]] || t="$d/$t"
+      gd="$t"; break
+    fi
+    [[ -n "$d" ]] || return 1
+    d="${d%/*}"
+  done
+  cdir="$gd"
+  if [[ -f "$gd/commondir" ]]; then
+    _ac_read_bounded t head -c 4096 -- "$gd/commondir" || return
+    [[ "$t" == /* ]] || t="$gd/$t"
+    cdir="$t"
+  fi
+  [[ -f "$gd/HEAD" ]] || return 1
+  _ac_read_bounded t head -c 4096 -- "$gd/HEAD" || return
+  # HEAD and a ref are read as git reads them: trailing whitespace dropped.
+  t="${t%"${t##*[![:space:]]}"}"
+  if [[ "$t" == ref:* ]]; then
+    ref="${t#ref:}"; ref="${ref#"${ref%%[![:space:]]*}"}"
+    # A branch, named as git allows: nothing that leads out of refs/heads, and
+    # no component starting with a dot (reftable's refs/heads/.invalid).
+    [[ "$ref" == refs/heads/?* && "$ref" != *..* && "$ref" != *//* \
+       && "$ref" != */ && "$ref" != */.* ]] || return 1
+    # The loose ref first, as git reads it, then packed-refs.
+    if [[ -f "$cdir/$ref" ]]; then
+      _ac_read_bounded oid head -c 4096 -- "$cdir/$ref" || return
+      oid="${oid%"${oid##*[![:space:]]}"}"
+    elif [[ -f "$cdir/packed-refs" ]]; then
+      _ac_packed_ref oid "$cdir/packed-refs" "$ref" || return
+    else
+      return 1
+    fi
+  else
+    oid="$t"
+  fi
+  [[ "$oid" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] || return 1
+  printf '%s' "$oid"
 }
 
 # A WARNING, never a refusal. Being wrong about this must not stop somebody

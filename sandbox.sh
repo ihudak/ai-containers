@@ -1986,8 +1986,8 @@ _timeout_prefix() {
 _rd_secs=2 _rd_long_secs=10 _rd_budget_secs=30
 _rd_init=""; _rd_dir=""; _rd_tp=(); _rd_lim=0
 # _rd_prep: where the launch's subshells — most reads run in $(…) or <(…) —
-# count the time slow reads took. launcher_ro_overlay calls it first, in the
-# launcher's own shell; the EXIT trap removes it. Without it, or once a count
+# count the time slow reads took. run_container and launcher_ro_overlay call it
+# first, in the launcher's own shell; the EXIT trap removes it. Without it, or once a count
 # could not be written (`ok` gone), every read gets _rd_secs, as before GIT-23.
 _rd_prep() {
   [[ -z "$_rd_init" ]] || return 0
@@ -2499,20 +2499,24 @@ git_dirs_in() {
 # macOS keeps /usr/bin/git on PATH whether or not the Command Line Tools are
 # installed, and without them it only offers to install them and exits 1, so
 # every key read through it came back unset (review of the GIT-24 fix, M2).
-# Asked once, by launcher_ro_overlay in the launcher's own shell, and kept, so a
-# shim that opens an installer is not run once per read.
+# Asked once, at the start of run_container (and of launcher_ro_overlay, for a
+# caller that runs it alone) in the launcher's own shell, and kept, so a shim
+# that opens an installer is not run once per read.
 _git_usable() {
-  local g
+  local g p
   local -a t=()
   if [[ -z "$_git_ok" ]]; then
     _git_ok=0
     if ! g="$(command -v git 2>/dev/null)"; then
       :
-    elif [[ "$g" == /usr/bin/git && "$(uname -s 2>/dev/null)" == Darwin ]] \
-         && ! [[ -x "$(xcode-select -p 2>/dev/null)/usr/bin/git" ]]; then
+    elif [[ "$g" -ef /usr/bin/git && "$(uname -s 2>/dev/null)" == Darwin ]] \
+         && ! { p="$(xcode-select -p 2>/dev/null)" && [[ -n "$p" && -x "$p/usr/bin/git" ]]; }; then
       # Without a developer directory holding a git (the Command Line Tools,
       # or Xcode), running the shim opens the tools' installer. -p alone can
-      # name one since removed (third review of the GIT-24 fix).
+      # name one since removed (third review of the GIT-24 fix), and fails
+      # outright on a Mac that never had them, where an empty answer made the
+      # test the shim's own /usr/bin/git (review of the GIT-28 fix, L2). -ef,
+      # not ==: through PATH it can be /usr//bin/git, or a link to it.
       :
     else
       # A known answer, not only an exit status: a git older than 2.18 has no
@@ -2879,6 +2883,56 @@ normalise_git_url() {
   printf '%s' "$u" | tr 'A-Z' 'a-z'
 }
 
+# _checkout_origin_url <dir>: the origin URL of the checkout <dir> is in, as
+# `git remote get-url origin` printed it, but read from the checkout's config
+# FILE (_git_file_config: bounded, no includes), never by running git there:
+# get-url read the repository's config, includes and all, with no bound, so a
+# FIFO an include named hung the launch, and it ran macOS's git shim without
+# asking whether git runs (bugs review GIT-25). The checkout is found as git
+# finds it, the nearest .git at or above <dir>; a .git file's gitdir: and a
+# linked worktree's commondir are followed, read bounded. Of several URLs the
+# first decides, an empty one emptying the list, as git reads them. A shorthand
+# (url.<base>.insteadOf) is expanded as get-url expanded it, by
+# `git ls-remote --get-url` outside any repository, which reads only your system
+# and global config: the registry holds the URL repo.sh cloned, and its seed
+# container has no ~/.gitconfig. Fails where git does not run (_git_usable), as
+# git -C did where there was no git.
+_checkout_origin_url() {
+  local d="$1" gd t u=""
+  local -a tp=()
+  _git_usable || return 1
+  while :; do
+    if [[ -d "$d/.git" ]]; then gd="$d/.git"; break; fi
+    if [[ -f "$d/.git" ]]; then
+      # Only CR and LF stripped, as git does (security review of e2741b1).
+      t=""; IFS= read -r -d '' t < <(_rd 4096 "$d/.git" 2>/dev/null) || true
+      while [[ "$t" == *[$'\r\n'] ]]; do t="${t%?}"; done
+      [[ "$t" == "gitdir: "* ]] || return 1
+      t="${t#gitdir: }"; [[ "$t" == /* ]] || t="$d/$t"
+      gd="$t"; break
+    fi
+    [[ -n "$d" ]] || return 1
+    d="${d%/*}"
+  done
+  if [[ -f "$gd/commondir" ]]; then
+    t=""; IFS= read -r -d '' t < <(_rd 4096 "$gd/commondir" 2>/dev/null) || true
+    while [[ "$t" == *[$'\r\n'] ]]; do t="${t%?}"; done
+    [[ -n "$t" ]] || return 1
+    [[ "$t" == /* ]] || t="$gd/$t"
+    gd="$t"
+  fi
+  while IFS= read -r -d '' t; do
+    if [[ -z "$t" ]]; then u=""; elif [[ -z "$u" ]]; then u="$t"; fi
+  done < <(_git_file_config "$gd/config" --null --get-all remote.origin.url 2>/dev/null)
+  [[ -n "$u" ]] || return 1
+  # `--`: the URL is the agent's to write, and is never read as an option.
+  read -r -a tp <<< "$(_timeout_prefix 10) "
+  if t="$(GIT_DIR=/dev/null "${tp[@]}" git ls-remote --get-url -- "$u" 2>/dev/null)" && [[ -n "$t" ]]; then
+    u="$t"
+  fi
+  printf '%s' "$u"
+}
+
 # Is this host directory already mounted in this container under some name?
 #
 # A host pointer — VAULT_PATH, SPECS_PATH, DOCS_PATH, ARCHITECTURE_REPO_PATH —
@@ -2929,9 +2983,11 @@ pointer_already_mounted_as() {
   # DUPLICATE, and two checkouts of one repository at /workspace/docs and
   # /workspace/docs is exactly that. A second checkout you genuinely want beside
   # the first belongs in REPOS or EXTRA_MOUNTS under its own name.
-  local want_url
-  want_url="$(git -C "$want" remote get-url origin 2>/dev/null || true)"
-  if [[ -n "$want_url" ]] && (( ${#repo_source_url[@]} )); then
+  # Read only with a git-sourced repo to compare it with: the agent can write
+  # the checkout's config.
+  local want_url=""
+  if (( ${#repo_source_url[@]} )); then want_url="$(_checkout_origin_url "$want" || true)"; fi
+  if [[ -n "$want_url" ]]; then
     want_url="$(normalise_git_url "$want_url")"
     for name in "${!repo_source_url[@]}"; do
       if [[ "${repo_source_url[$name]}" == "$want_url" ]]; then
@@ -3042,6 +3098,9 @@ validate_sandbox_ids() {
 run_container() {
   check_config
   validate_sandbox_ids
+  # In the launcher's own shell, before any read: the pointer checks below read
+  # a checkout's config in $(…), where neither answer would be kept (GIT-25).
+  _rd_prep; _git_usable || true
   # The group is checked before anything is made: a REPOS :rwcopy volume, the
   # output directories (review of batch 11). `host` is refused, and so is a group
   # directory that is a link: through one the container gets whatever it points
