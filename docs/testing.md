@@ -83,11 +83,18 @@ What has actually been run where, beyond CI's `ubuntu-24.04`. One row per run, n
 
 | Date | Platform | Checkout | Run | Result |
 |---|---|---|---|---|
+| 2026-11-04 | macOS 26.7.2 arm64, Homebrew bash 5.3.20, Colima 0.10.3 (VZ, virtiofs), Docker 29.5.2 | APFS (`~`), at `f0ad913` plus the fixes for TST-28 and GIT-27 | Phase 5 (PLAT-5), 94 min; case 460 (PLAT-3) | Passed: 118/118 on the host, at the floor and with a symlinked `TMPDIR`. Before the fixes, at `f0ad913`, four host test files failed on BSD userland (TST-28) and G93 failed at the floor on overlayfs (GIT-27). Case 460: PASS, the skip `NOTE:` seen. |
 | 2026-11-03 | same, Docker Desktop 29.9.2 | ext4 (`~`), at `037e64c` plus the TST-25 fix (`e3ca418`; main has the same fix as `024c9f8`) | `verify-on-host.sh` (all phases), 150 min | Passed. Phase 5: 116/116 on the host, at the floor and with a symlinked `TMPDIR`. Phase 7: 232 scripts, shellcheck 0.11.0 clean. Phase 6: 1506 mutants of 26 targets, 1461 killed, 33 survivors all in the ledger, 12 unproven (timeouts); ledger OK. Phase 4: 50/50, none skipped. |
 | 2026-11-03 | same | `/mnt/c`, a fresh clone, at `037e64c` | Phase 5 (PLAT-6), 75 min | 116/116 on the host and with a symlinked `TMPDIR`; the drvfs flake did not recur. At the floor 115/116: `tests/test-init-no-follow.sh` could not set itself up, as root, from either checkout. That is TST-25, a test bug on any Linux host run as root (CI's `suite-floor` too), fixed by `024c9f8`. |
 | 2026-10-26 | Windows + WSL2 (kernel 6.18.33.2-microsoft-standard-WSL2, Ubuntu distro), Docker Desktop 29.9.2 with WSL integration | `/mnt/c` (drvfs, 9p, no `metadata`: every file `0777`), at `41160a4` | Phase 5; `run.sh --tags fast` | Phase 5: 98/98 on the host and at the floor. Symlinked `TMPDIR`: 91/98 in the first run, then 98/98 when the same tree was run again. `fast`: 30/30. |
 | 2026-10-26 | same | ext4 (`~`), at `d46b6ad` | Phase 7 | 209 scripts parse; dialect lint and shellcheck 0.11.0 (CI runs 0.9.0) clean. |
 | 2026-10-26 | same | ext4 (`~`), at `3581af0` | `verify-on-host.sh` (all phases) | Phase 4: 48/48, none skipped (`docker sidecar netadmin launcher dns multiruby`). Phase 6: ledger OK. Phase 5: 97/98, G28 (a real bug on every Linux, fixed in #313 and #315). Phase 7: not run, no `shellcheck` in the distro yet (see the row above). |
+
+**macOS notes.**
+- **BSD userland catches what CI cannot:** `paste -s` needs `-` to read stdin, there is no `flock`, and APFS refuses a file name that is not UTF-8 (`Illegal byte sequence`). A test that relies on any of these fails only on a Mac.
+- **The floor runs on Colima's overlayfs,** which can reuse an inode within the same second. An identity of device, inode and birth time is unique there only if the birth time is to the nanosecond (GIT-27).
+- **Device:inode do not survive the bind on Colima,** so the mount-swap check is skipped (PLAT-3).
+- **Not exercised:** Docker Desktop, and Phases 4, 6 and 7.
 
 **WSL2 notes.**
 - **IPv6 is enforced:** `ip6tables` (`v1.8.10 (nf_tables)`) works in the image, so the "IPv6 unrestricted" caveat under Network enforcement did not apply on this host.

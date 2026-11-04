@@ -15,6 +15,7 @@
 - **Updated 2026-11-03:** section 21, found while measuring GAP-2's oracle selection on sandbox.sh and killing its survivors: TST-26 and TST-27, FIXED; GIT-23 and GIT-24, open.
 - **Updated 2026-11-04:** GIT-24 is FIXED the way the user chose: where git does not run, nothing parses a config. Section 22 lists what its reviews found outside it: GIT-25 and GIT-26, open.
 - **Updated 2026-11-04:** GIT-23 is FIXED: a regular file only slow to read gets 10 s, within 30 s per launch.
+- **Updated 2026-11-04:** section 23, found while running PLAT-5 on macOS: GIT-27 and TST-28, FIXED.
 - **Companion:** [2026-10-26-feature-gaps-review.md](2026-10-26-feature-gaps-review.md).
 - **Confidence:** CONFIRMED = reproduced, or unambiguous from the code. PLAUSIBLE = strong reasoning, not reproduced (usually needs hardware or a platform not available here); verify before fixing.
 - **Citations** are by snippet, per AGENTS.md "Citing code". Scratch repro paths mentioned in entries were session-local and may no longer exist; each entry describes its repro in full.
@@ -1551,6 +1552,26 @@ Re-review of the GIT-24 fix, 2026-11-04, on the Linux developer host, at `f0ad91
 - What's wrong: every `./build.sh` asks git for the engine directory's commit with a plain `git -C`. A project's `.ai-containers/` lies inside the project's repository, so git reads that repository's config, includes and all, with no time bound. The launch mounts that config read-only, but an include in it can name a file the agent can write (which the launch only warns about). Like GIT-25, it also runs macOS's git shim without asking whether git runs, which on a Mac without the Command Line Tools opens their installer at every build.
 - Failure scenario: an include in the project's `.git/config` names a path in the project that the agent replaces with a FIFO. The next `./build.sh` (and `./runme.sh`, which builds first) hangs, and the message names nothing.
 - Fix direction: read `HEAD` without git, as `repo-git-reset.sh` reads branch tips (a `.git` file and `commondir` resolved, `refs/heads/<branch>` or `packed-refs`), or run git with `GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null` and a bound, falling back to no label.
+
+## 23. Found while running PLAT-5
+
+`PHASES=5 bash ./verify-on-host.sh` on macOS 26.6 (Apple Silicon, Homebrew bash 5.3.20, openrsync), Colima 29.5.2 (Virtualization.Framework, virtiofs), at `8abf9a2`, 2026-11-03. 4 of 118 files failed on the host and 1 of 118 at the floor, each again when run alone.
+
+### GIT-27: a repository removed and made again within a second is not reported again
+- **Status: FIXED** (2026-11-04). `_git_ident()` takes the birth time to the nanosecond (`stat -c '%d %i %.9W'`, BSD `stat -f '%d %i %.9FB'`). G93 was red at the floor in `ubuntu:22.04` on Colima on every run before, and is green there and on macOS after. GAP-12 is unreleased, so no `git-reported.conf` in the old format has shipped.
+- Severity: LOW (a one-time `NOTE:` naming a repository's config keys and hooks is not printed). Confidence: CONFIRMED (in the floor container: `rm -rf` then `mkdir` of `/tmp/a` gave `46 4325438 1793735695` both times; `%.9W` gave `…849127350` and `…851127478`)
+- Location: `sandbox.sh`, `_git_ident()`
+- Introduced: `7121741` (GAP-12).
+- What's wrong: the record of reported repositories names one by device, inode and birth time so that one made again at a reported path is new even where the filesystem reuses the inode. The birth time was in whole seconds, and overlayfs gave the re-made directory its inode back within the same second, so it matched the record and its keys and hooks were not named. G93's last check does exactly that and failed; CI's `suite-floor` passed it, so inode reuse there is luck.
+- Fix direction: done as above. Busybox `stat` supports neither form, as it supported neither before.
+
+### TST-28: four hermetic tests failed on macOS for reasons the product does not have
+- **Status: FIXED** (2026-11-04). Each is green on macOS after the fix and unchanged on Linux.
+- Severity: LOW (tests only; they kept the local layer's Phase 5 red on every Mac). Confidence: CONFIRMED (each reproduced alone)
+- What's wrong, and the fix:
+  - `tests/test-layer-checks-parser.sh`: `paste -sd'|'` with no file operand. BSD `paste` prints its usage and exits 1 without `-`; GNU reads stdin. Now `paste -sd'|' -`, the form every other `paste -s` in `tests/` uses.
+  - `tests/test-agent-tools-reconcile.sh` ("an uncontended lock announced a wait") and `tests/test-blocked-capture.sh` (12 checks): the scripts run in the container, which has util-linux `flock`; macOS has none. `flock -n 9` failed, so the reconcile announced a wait, and every DNS-map write in `capture-blocked-traffic.sh` failed, so the map stayed empty. Where the host has no `flock`, each test now puts a stand-in on its fake `PATH` that takes no lock: `flock <file> <cmd…>` runs the command, `flock [-n] <fd>` succeeds. On Linux the real `flock` runs as before.
+  - `tests/test-launcher-dir-ro.sh`, T46's LNCH-4 check: APFS refuses a name that is not UTF-8 (`Illegal byte sequence`), so the fixture was never made and the launch had nothing to refuse. Where the filesystem refuses it, the candidate is now named with a `:` and a CR, which no form of the bind carries either. On macOS the check goes red with the LNCH-4 discount reverted (`lbuild[$la]=yes; continue 2` in place of `lbuild[$la]=no`), as does the pin check after it.
 
 ## GIT
 

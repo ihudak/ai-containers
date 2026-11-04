@@ -12,6 +12,12 @@ bash -n "$REPO_DIR/agent-tools-reconcile.sh" && pass "agent-tools-reconcile.sh b
 # makes npm exit 1 (simulate offline). Each fake records to $2/calls.log.
 mk_stubs() {
   local bin="$1" home="$2"
+  # The reconcile runs in the container, which has util-linux flock; macOS has
+  # none, so `flock -n 9` failed and every run announced a wait. Only where the
+  # host lacks one, a stand-in that takes the lock at once.
+  if ! command -v flock >/dev/null 2>&1; then
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$bin/flock"; chmod +x "$bin/flock"
+  fi
   cat > "$bin/npm" <<EOF
 #!/usr/bin/env bash
 echo "npm \$*" >> "$home/calls.log"

@@ -969,8 +969,11 @@ rm -rf "$FAKE"
 # so it covers nothing: what is nested in it counts toward the cap. It was
 # discounted, and 3,000 launchers under one passed SANDBOX_LAUNCHER_MAX=5 with a
 # WARNING each (review of the batch 1 hotfix; LNCH-4).
-BAD47="$TMP/bad47"; mk_launcher "$BAD47/bad"$'\xff'
-for n in $(seq 1 8); do mk_launcher "$BAD47/bad"$'\xff'"/.ai-containers/n$n"; done
+# APFS refuses a name that is not UTF-8 ("Illegal byte sequence"); there the
+# candidate is one with a ':' and a CR, which no form of the bind carries either.
+BAD47="$TMP/bad47"; b47="bad"$'\xff'
+mk_launcher "$BAD47/$b47" 2>/dev/null || { b47="bad:"$'\r'"x"; mk_launcher "$BAD47/$b47"; }
+for n in $(seq 1 8); do mk_launcher "$BAD47/$b47/.ai-containers/n$n"; done
 SANDBOX_LAUNCHER_MAX=5 EXTRA_MOUNTS="$BAD47" launch "$LAUNCHER" "$TMP/app"
 [[ "$LAUNCH_RC" != 0 ]] && grep -qF 'ERROR: the writable mounts hold more than 5 launchers' "$ERR" \
   && pass "T46 launchers nested in one that cannot be overlaid count toward the cap" \

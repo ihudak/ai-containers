@@ -2635,11 +2635,14 @@ _git_runs() {
 # _git_ident <path>: what is at <path> — its device, inode and birth time (0
 # where the filesystem keeps none), and a link's target text: a git directory
 # made again at a path, even on a reused inode, or a .git link repointed, is
-# another one (automated security review of 7121741; review of 7121741).
+# another one (automated security review of 7121741; review of 7121741). The
+# birth time is to the nanosecond: in whole seconds, overlayfs gave a directory
+# removed and made again within the second its inode and its second back, and
+# the re-made repository went unreported (G93 at the floor, on Colima).
 _git_ident() {
   local i=""
-  if (( _launcher_stat_gnu )); then i="$(stat -c '%d %i %W' -- "$1" 2>/dev/null)" || i=""
-  else i="$(stat -f '%d %i %B' -- "$1" 2>/dev/null)" || i=""; fi
+  if (( _launcher_stat_gnu )); then i="$(stat -c '%d %i %.9W' -- "$1" 2>/dev/null)" || i=""
+  else i="$(stat -f '%d %i %.9FB' -- "$1" 2>/dev/null)" || i=""; fi
   [[ -n "$i" ]] || i="?"
   if [[ -L "$1" ]]; then i+=" -> $(readlink -- "$1" 2>/dev/null)"; fi
   printf '%s' "$i"

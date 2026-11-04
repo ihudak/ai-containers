@@ -521,14 +521,14 @@ check "pr events: a quoted comma in an on: flow list" "0|x,y issue_comment" \
   "$(pr_events "on: [schedule, \"x,y\", issue_comment]")"
 printf '%s\n%s\n' "on: [schedule, 'push, pull_request']" "$J" > "$TMP/ev.yml"
 check "trigger list: a quoted comma does not split the entry" "schedule|push, pull_request" \
-  "$(_wf_triggers "$TMP/ev.yml" | paste -sd'|')"
+  "$(_wf_triggers "$TMP/ev.yml" | paste -sd'|' -)"
 printf '%s\n%s\n' "$(printf "on:\n  push:\n    branches: ['a,b', \"c\"]")" "$J" > "$TMP/ev.yml"
 check "push filters: a quoted comma does not split the entry" "branches|a,b;branches|c" \
-  "$(_wf_push_filters "$TMP/ev.yml" | paste -sd';')"
+  "$(_wf_push_filters "$TMP/ev.yml" | paste -sd';' -)"
 # A quote opens a quoted entry only as its first character.
 printf '%s\n%s\n' "$(printf "on:\n  push:\n    tags: [it's, main]")" "$J" > "$TMP/ev.yml"
 check "push filters: a quote inside a plain word is a character" "tags|it's;tags|main" \
-  "$(_wf_push_filters "$TMP/ev.yml" | paste -sd';')"
+  "$(_wf_push_filters "$TMP/ev.yml" | paste -sd';' -)"
 check "cannot tell: an unterminated quote in a push filter list" 2 \
   "$(reach_rc "$(printf "on:\n  push:\n    tags: ['v1, v2]")")"
 check "cannot tell: an unterminated quote in an on: flow list" 2 \
