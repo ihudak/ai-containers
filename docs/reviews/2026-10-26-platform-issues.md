@@ -35,7 +35,7 @@ reports by editing the entry's **Status** line (and docs/testing.md's
 | Agent | Its platform | Picks up | Cannot do |
 |---|---|---|---|
 | **Linux agent** (review machine) | Linux x86-64, native Docker Engine | the falsify work GAP-1 to GAP-4 | anything below |
-| **WSL agent** | Windows + WSL2 (Ubuntu distro) + **Docker Desktop** with WSL integration. **Not** a native Docker Engine in the distro | **PLAT-6** | PLAT-2's remaining half: it needs a Docker Engine installed natively in the distro. Leave that open unless one is installed |
+| **WSL agent** | Windows + WSL2 (Ubuntu distro) + **Docker Desktop** with WSL integration. **Not** a native Docker Engine in the distro | **PLAT-6** | PLAT-2's remaining half: it needs a Docker Engine installed natively in the distro. The user runs it on an Azure VM |
 | **Mac agent** | macOS, Docker Desktop and/or Colima | **PLAT-3** (GAP-11), **PLAT-5**, **PLAT-7** | — |
 | *nobody* | x86-64 CPU without AVX | PLAT-4: closed as not supported | — |
 
@@ -77,7 +77,8 @@ first, then fix test-first.
 
 - **Status: PARTLY DONE (2026-10-26).** Docker Desktop + WSL2, from ext4 and from `/mnt/c`. Results are in docs/testing.md under "Platforms exercised". The one failure that reproduced, G28, was a real bug on every Linux, fixed in #313 and #315. Phase 7 since passed with shellcheck 0.11.0. Still open: a Docker Engine installed natively in the distro.
 
-- **Picked up by:** the Docker Desktop half was done by the **WSL agent**. The native-Engine half has **no agent**: the WSL agent runs Docker Desktop only.
+- **Picked up by:** the Docker Desktop half was done by the **WSL agent**. The native-Engine half is **the user's** (decided 2026-11-04), on an Azure VM set up for it. The WSL agent runs Docker Desktop only.
+- **The VM:** it has to be a Windows VM for WSL2 to run at all, and its size has to support nested virtualization (WSL2 is a Hyper-V VM inside it). A Linux VM would run the corpus on native Linux, which CI already does every day, not on WSL2. Inside the WSL distro, install Docker Engine from Docker's apt repository (not Docker Desktop), with systemd enabled in `/etc/wsl.conf`, and check `docker info` reports no Desktop context.
 - **Platform:** Windows + WSL2, both Docker Desktop and a native Engine in the distro if available.
 - **Source:** feature-gaps review GAP-13 (the increment-3 design records WSL2 as "expected, **never exercised**").
 - **Run:** `bash ./verify-on-host.sh` and `./tests/integration/run.sh` from an ext4 checkout, then once more with the checkout under `/mnt/c` (expect the `host-preflight.sh` WSL warning). Note `ALLOW_IPV6_BYPASS` behaviour: AGENTS.md says `ip6tables` may be unavailable under WSL2/nf_tables.

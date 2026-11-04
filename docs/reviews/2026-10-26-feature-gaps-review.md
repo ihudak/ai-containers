@@ -185,7 +185,7 @@ A gap is something a design promised that is not in the code at the reviewed com
 
 ### GAP-13: WSL2 has never been run
 - Status: PARTIAL (2026-11-03 refresh). Docker Desktop + WSL2 was run on 2026-10-26 (docs/testing.md, "Platforms exercised"). A re-run at current `main` is PLAT-6. A Docker Engine installed natively in the distro has still never been run.
-- Picked up by: the **WSL agent** (Windows + WSL2 + Docker Desktop; **not** a native Engine), as PLAT-6. The native-Engine half has no agent.
+- Picked up by: the **WSL agent** (Windows + WSL2 + Docker Desktop; **not** a native Engine), as PLAT-6. The native-Engine half is the user's, on an Azure VM (PLAT-2 says what that VM needs).
 - Fix batch: platform log — PLAT-2 in [2026-10-26-platform-issues.md](2026-10-26-platform-issues.md) (needs that platform to run)
 - Source: 2026-08-10-integration-suite-increment-3-design.md: "WSL2 | expected, **never exercised** … Recorded as expected-and-unverified rather than supported"
 - Area: tests/CI
