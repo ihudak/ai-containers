@@ -1,6 +1,6 @@
 # Feature-gaps review — 2026-10-26
 
-- **Review date:** 2026-10-26 (statuses updated through 2026-11-03)
+- **Review date:** 2026-10-26 (statuses updated through 2026-11-05)
 - **Last reviewed commit:** `bec1c57` (`bec1c5737acdc549143e2c55e4a4b945ae27a287`, main, 2026-10-18 — "Merge pull request #312")
 - **Scope:** every design, plan and backlog in the repository, wherever written — `docs/superpowers/specs/`, `docs/superpowers/plans/`, the follow-up and falsify backlogs, `tests/falsify/survivors.txt` / `targets.conf`, AGENTS.md, README.md, `docs/`, CHANGELOG.md, and TODO/deferred/follow-up markers in code.
 - **Companion:** [2026-10-26-bugs-review.md](2026-10-26-bugs-review.md) (defects; doc errors that mislead users are filed there as `DOC-*`).
@@ -153,7 +153,7 @@ A gap is something a design promised that is not in the code at the reviewed com
 - Suggested approach: drive only the derivation step with a stubbed oracle list, so no real oracle runs.
 
 ### GAP-10: F58's trigger (an empty `git ls-files` under load) was never identified
-- Status: PARTIAL
+- Status: PARTIAL. Since 2026-11-05 `tests/run-all.sh` also shows up to five lines a test printed above its `SCAFFOLD-FAILED:` marker. For F58 that is still only the symptom: both derivations that came back empty discard git's own error (`git ls-files '*.sh' 2>/dev/null` in `tests/test-bash-floor.sh`, and `git ls-files -z 2>/dev/null` in `tests/falsify/run.sh: falsify_seed_tree()`). Keeping it is the step before the next sighting can name a cause.
 - Fix batch: separate track
 - Source: falsify backlog F58: "GUARD FIXED; the TRIGGER is still unidentified"
 - Area: tests/CI
