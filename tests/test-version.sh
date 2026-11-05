@@ -33,7 +33,27 @@ TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 # background job inherits the EXIT trap, and an unguarded one could delete the
 # fixture the script is still using (tests/test-exit-trap-ownership.sh).
 TMP_OWNER="$BASHPID"
-trap '[[ "$BASHPID" == "$TMP_OWNER" ]] && rm -rf "$TMP"' EXIT
+# The process groups GIT-28's checks start (`set -m`, job28), KILLed whole on the
+# way out: tests/run-all.sh's clock stops this file's own group, TERM and then
+# KILL, which does not reach them, and a job left behind ran on for up to 10 s
+# (version.sh's bound). bash runs this trap on the TERM (measured, 5.1 and 5.3).
+# A group found empty when the next job starts is dropped: an empty group's
+# number can lead someone else's group once pids wrap, and a sibling falsify
+# worker's test is one (review of this change, L1). A group with members cannot
+# be renumbered; one emptied and renumbered before the next job starts, a few
+# checks' time, is the window left.
+JOBS28=()
+job28() {
+  local g keep=()
+  for g in "${JOBS28[@]}"; do if kill -0 -- "-$g" 2>/dev/null; then keep+=("$g"); fi; done
+  JOBS28=("${keep[@]}" "$1")
+}
+cleanup() {
+  local g
+  for g in "${JOBS28[@]}"; do if kill -0 -- "-$g" 2>/dev/null; then kill -KILL -- "-$g" 2>/dev/null; fi; done
+  rm -rf "$TMP"
+}
+trap '[[ "$BASHPID" == "$TMP_OWNER" ]] && cleanup' EXIT
 
 [[ -f "$REPO_DIR/version.sh" ]] \
   && pass "version.sh exists" \
@@ -427,6 +447,7 @@ ver28_bounded() {  # <seconds> <dir> <out-file> → 0, or 124 when cut off
   VER28_SECS=2 bash -c 'source "$1/version.sh"; _ver_secs="$VER28_SECS"; version_engine "$2"' _ "$REPO_DIR" "$2" > "$3" 2>&1 &
   pid=$!
   set +m
+  job28 "$pid"
   vb28="$pid"   # its process group, which anything it left running is still in
   while kill -0 "$pid" 2>/dev/null && (( waited < secs * 10 )); do sleep 0.1; waited=$(( waited + 1 )); done
   if kill -0 "$pid" 2>/dev/null; then
@@ -543,6 +564,7 @@ if mkrepo "$g28" v2.8.0; then
     TMPDIR="$TMP/tmpsig28" PATH="$TMP/slow28:$PATH" ${sigpre28[@]+"${sigpre28[@]}"} bash -c 'source "$1/version.sh"; version_engine "$2"' _ "$REPO_DIR" "$g28" >/dev/null 2>&1 &
     p28=$!
     set +m
+    job28 "$p28"
     w28=0; while [[ ! -s "$TMP/ln28.pid" ]] && kill -0 "$p28" 2>/dev/null && (( w28 < 100 )); do sleep 0.1; w28=$(( w28 + 1 )); done
     saw28="$(ls -A "$TMP/tmpsig28")"
     kill -"$sig28" -"$p28" 2>/dev/null; wait "$p28" 2>/dev/null
@@ -571,6 +593,7 @@ if mkrepo "$g28" v2.8.0; then
     TMPDIR="$TMP/tmpsig28" PATH="$TMP/slow28b:$PATH" ${sigpre28[@]+"${sigpre28[@]}"} bash -c 'source "$1/version.sh"; version_engine "$2"' _ "$REPO_DIR" "$g28" >/dev/null 2>&1 &
     p28=$!
     set +m
+    job28 "$p28"
     w28=0; while [[ ! -s "$TMP/ln28b.pid" ]] && kill -0 "$p28" 2>/dev/null && (( w28 < 100 )); do sleep 0.1; w28=$(( w28 + 1 )); done
     sleep 0.2; c28="" s28=""; read -r c28 s28 2>/dev/null < "$TMP/ln28b.pid" || true
     saw28="$(ls -A "$TMP/tmpsig28")"
@@ -870,6 +893,7 @@ if mkrepo "$r28" v2.8.9; then
     ${sigpre28[@]+"${sigpre28[@]}"} bash -c 'source "$1/version.sh"; version_engine "$2"' _ "$REPO_DIR" "$r28" >/dev/null 2>&1 &
     p28=$!
     set +m
+    job28 "$p28"
     sleep 1; kill -INT -"$p28" 2>/dev/null; wait "$p28" 2>/dev/null; sleep 0.3
     left28="$(pgrep -g "$p28" 2>/dev/null | head -1)"
     [[ -z "$left28" ]] \
@@ -899,6 +923,7 @@ bash -c 'source "$1/version.sh"; _ver_secs=1; o=""
          printf "%s %s %s %s %s %s%s" "$a" "$b" "$o" "$(( n2 - n1 ))" "${_vr_p-unset}" "$c1" "[$_ver_cur]"' _ "$REPO_DIR" "$TMP/f28" > "$TMP/out28r" 2>&1 &
 p28=$!
 set +m
+job28 "$p28"
 w28=0; while kill -0 "$p28" 2>/dev/null && (( w28 < 200 )); do sleep 0.1; w28=$(( w28 + 1 )); done
 if kill -0 "$p28" 2>/dev/null; then kill -KILL -"$p28" 2>/dev/null || kill -KILL "$p28" 2>/dev/null; fi
 wait "$p28" 2>/dev/null
@@ -916,6 +941,7 @@ set -m
 TMPDIR="$TMP/tmpp28" PATH="$TMP/slowgit28:$PATH" bash -c 'source "$1/version.sh"; version_engine "$2"' _ "$REPO_DIR" "$gtag" >/dev/null 2>&1 &
 p28=$!
 set +m
+job28 "$p28"
 w28=0; while [[ -z "$(ls -A "$TMP/tmpp28")" ]] && kill -0 "$p28" 2>/dev/null && (( w28 < 100 )); do sleep 0.1; w28=$(( w28 + 1 )); done
 saw28="$(ls -A "$TMP/tmpp28")"
 kill -TERM "$p28" 2>/dev/null; wait "$p28" 2>/dev/null
