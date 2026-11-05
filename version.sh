@@ -42,10 +42,12 @@
 # _ver_run). Nothing here asks git anything on macOS without the Command Line
 # Tools (_ver_git_runs).
 _ver_secs=10 _ver_cur=""
-# _ver_stop: the INT and TERM traps of the subshells that ask git. The command
-# running in _ver_run's process substitution ignores SIGINT, as every
-# asynchronous command of a shell without job control does, so it is killed
-# here: a git blocked on a FIFO an include names outlived the interrupt.
+# _ver_stop: the INT, TERM and HUP traps of the subshells that ask git. The
+# command running in _ver_run's process substitution never gets a signal sent
+# to the subshell alone, and from bash 5.3 it ignores SIGINT, as an
+# asynchronous command of a shell without job control does (5.1 and 5.2 leave
+# it as the shell had it; measured), so it is killed here: a git blocked on a
+# FIFO an include names outlived the interrupt.
 _ver_stop() {
   if [[ -n "$_ver_cur" ]]; then kill -KILL "$_ver_cur" 2>/dev/null; fi
 }
@@ -84,7 +86,7 @@ _ver_run() {
     return 1
   fi
   _vr_p=$!
-  # The command running now, for the INT and TERM traps; cleared once it is done.
+  # The command running now, for the INT, TERM and HUP traps; cleared once it is done.
   _ver_cur="$_vr_p"
   # At most 16 MiB of it: a find over a directory the agent fills is the
   # largest output here.

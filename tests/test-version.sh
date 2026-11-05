@@ -553,6 +553,39 @@ if mkrepo "$g28" v2.8.0; then
       || fail "GIT-28 a check stopped by SIG$sig28 (made: '${saw28:-nothing}'; left: '$(ls -A "$TMP/tmpsig28")'; ln ${c28:-?} $(kill -0 "${c28:-0}" 2>/dev/null && echo running || echo gone))"
     if [[ -n "$c28" ]]; then kill -KILL "$c28" 2>/dev/null; fi; rm -f "$TMP/ln28.pid"; rm -rf "${TMP:?}/tmpsig28/"*
   done
+  # The same signals sent to the subshell that asks git alone, not to its
+  # group, as `kill <pid>` sends them: what it runs gets nothing, so only the
+  # trap's kill (_ver_stop) stops it. The check above shows that only for
+  # SIGINT, only on bash 5.3 (5.1 and 5.2 do not make a process substitution
+  # ignore it; measured), and only where GNU env can undo an ignored SIGINT:
+  # TERM and HUP sent to the group reach the command itself on any bash. The
+  # slow ln records its parent, which is that subshell.
+  mkdir -p "$TMP/slow28b"
+  printf '#!/bin/sh\necho "$$ $PPID" > "%s"\nexec sleep 5\n' "$TMP/ln28b.pid" > "$TMP/slow28b/ln"; chmod +x "$TMP/slow28b/ln"
+  for sig28 in INT TERM HUP; do
+    if [[ "$sig28" == INT && -n "$(${sigpre28[@]+"${sigpre28[@]}"} bash -c 'trap -p INT')" ]]; then
+      printf 'NOTE: SIGINT is ignored where this runs; the SIGINT check of the subshell alone is not applicable\n'
+      continue
+    fi
+    set -m
+    TMPDIR="$TMP/tmpsig28" PATH="$TMP/slow28b:$PATH" ${sigpre28[@]+"${sigpre28[@]}"} bash -c 'source "$1/version.sh"; version_engine "$2"' _ "$REPO_DIR" "$g28" >/dev/null 2>&1 &
+    p28=$!
+    set +m
+    w28=0; while [[ ! -s "$TMP/ln28b.pid" ]] && kill -0 "$p28" 2>/dev/null && (( w28 < 100 )); do sleep 0.1; w28=$(( w28 + 1 )); done
+    sleep 0.2; c28="" s28=""; read -r c28 s28 2>/dev/null < "$TMP/ln28b.pid" || true
+    saw28="$(ls -A "$TMP/tmpsig28")"
+    # Still running when signalled, so a stall that let it finish on its own
+    # cannot pass for the trap's kill.
+    ran28=""; if [[ -n "$c28" ]] && kill -0 "$c28" 2>/dev/null; then ran28=yes; fi
+    if [[ -n "$s28" && "$s28" != "$p28" ]]; then kill -"$sig28" "$s28" 2>/dev/null; fi
+    w28=0; while kill -0 "$p28" 2>/dev/null && (( w28 < 30 )); do sleep 0.1; w28=$(( w28 + 1 )); done
+    sleep 0.3
+    [[ -n "$saw28" && -n "$ran28" && -n "$s28" && "$s28" != "$p28" && -z "$(ls -A "$TMP/tmpsig28")" ]] && ! kill -0 "$c28" 2>/dev/null \
+      && pass "GIT-28 SIG$sig28 sent to the subshell that asks git alone stops what it ran and removes its temporary directory" \
+      || fail "GIT-28 SIG$sig28 sent to the subshell alone (subshell ${s28:-?} of ${p28}; made: '${saw28:-nothing}'; left: '$(ls -A "$TMP/tmpsig28")'; ln ${c28:-?} ${ran28:+running when signalled, }$( [[ -n "$c28" ]] && kill -0 "$c28" 2>/dev/null && echo running || echo gone))"
+    if [[ -n "$c28" ]]; then kill -KILL "$c28" 2>/dev/null; fi; kill -KILL -"$p28" 2>/dev/null; wait "$p28" 2>/dev/null
+    rm -f "$TMP/ln28b.pid"; rm -rf "${TMP:?}/tmpsig28/"*
+  done
   # No temporary directory to be had: no answer.
   got="$(TMPDIR="$TMP/no-such-tmp28" ver28 "$g28")"
   [[ "$got" == unknown ]] && pass "GIT-28 where no temporary directory can be made, the version is unknown" \
@@ -628,17 +661,21 @@ else
   fail "GIT-28 scaffold: could not make a shallow clone"
 fi
 # _ver_run whose exec has no descriptor left kills what it started, and only
-# that: a job of the caller's, running since before, is left alone.
+# that: a job of the caller's, running since before, is left alone. What it
+# started is $!, as _ver_run itself finds it: a pid file the command wrote is
+# not, since dash (Ubuntu's sh) writes nothing with ten descriptors, and the
+# check passed with the kill removed (CI, cd36db1).
 if bash -c 'ulimit -n 10' 2>/dev/null; then
   got="$(bash -c 'source "$1/version.sh"; sleep 30 & j=$!; ulimit -n 10
-           _ver_run o sh -c "echo \$\$ > \"\$0\"; exec sleep 30" "$2"; r=$?
-           sleep 0.3; s=$(cat "$2")
+           _ver_run o sleep 30; r=$?; s=$!
+           sleep 0.3
+           [[ "$s" != "$j" ]] && c=started || c=not-started
            kill -0 "$s" 2>/dev/null && a=alive || a=gone
            kill -0 "$j" 2>/dev/null && b=alive || b=gone
-           kill "$j" "$s" 2>/dev/null; printf "%s %s %s" "$r" "$a" "$b"' _ "$REPO_DIR" "$TMP/pid28e" 2>/dev/null)"
-  [[ "$got" == "1 gone alive" ]] \
+           kill "$j" "$s" 2>/dev/null; printf "%s %s %s %s" "$r" "$c" "$a" "$b"' _ "$REPO_DIR" 2>/dev/null)"
+  [[ "$got" == "1 started gone alive" ]] \
     && pass "GIT-28 _ver_run with no descriptor kills the command it started, and not the caller's job" \
-    || fail "GIT-28 _ver_run with no descriptor (status, its command, the caller's job: '$got')"
+    || fail "GIT-28 _ver_run with no descriptor (status, whether it started its command, that command, the caller's job: '$got')"
 else
   printf 'NOTE: ulimit -n 10 is refused here; the descriptor check is not applicable\n'
 fi
