@@ -381,5 +381,24 @@ done
   && pass "a clocked test is the driver's own child, with and without -v: killing its parent kills the driver" \
   || fail "a clocked test's parent is not the driver (exit statuses: $bad_pp)"
 
+# ── 9. a test that could not set itself up says why ──────────────────────────
+# Its SCAFFOLD-FAILED: line usually points at "the error above", and only that
+# line was shown: on 2026-11-05 test-falsify-historical.sh's seed failed in a
+# floor container, and the cause (git would not trust a copy of a .git another
+# uid owned) was seen only once these lines were. The lines just above it are
+# shown too, an assertion line excepted: the tier reads an indented FAIL: as one.
+rm -f "$CORPUS"/test-*.sh
+mkt ss-seed 'echo "PASS: before the seed"; echo "cp: cannot stat '"'"'x'"'"': No such file or directory" >&2
+echo "FAIL: an assertion, not a setup error"; echo "ERROR: /r has no tracked files — nothing to seed" >&2
+echo "SCAFFOLD-FAILED: no tree could be seeded (see the error above)"; exit 1'
+out="$(run_corpus)"
+has "$out" '^ +cp: cannot stat .x.: No such file' && has "$out" '^ +ERROR: /r has no tracked files' \
+  && has "$out" '^ +SCAFFOLD-FAILED: no tree could be seeded' \
+  && pass "a test that could not set itself up is shown with the lines above its SCAFFOLD-FAILED: line" \
+  || fail "a test that could not set itself up is shown with the lines above its SCAFFOLD-FAILED: line — got: $out"
+! has "$out" 'PASS: before the seed|FAIL: an assertion' \
+  && pass "  … but not its PASS: or FAIL: lines" \
+  || fail "  … but not its PASS: or FAIL: lines — got: $out"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

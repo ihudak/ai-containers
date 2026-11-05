@@ -443,6 +443,14 @@ for t in $selected; do
     failed=$((failed + 1))
     failed_names="${failed_names:+$failed_names }$name"
     printf '   FAIL  (could not set itself up — the environment, not the code)\n'
+    # And up to five lines above the first marker, which is where "see the
+    # error above" points: shown alone, the marker hid the line saying why. A
+    # floor run on 2026-11-05 showed test-falsify-historical.sh's marker over a
+    # git that would not trust a copied .git, which only these lines named. Not
+    # a PASS: or FAIL: line: the falsify tier reads an indented FAIL: here as an
+    # assertion's.
+    awk '/^SCAFFOLD-FAILED:/ { for (i = (n > 5 ? n - 5 : 0); i < n; i++) print b[i % 5]; exit }
+         NF && !/(^|[[:space:]])(PASS|FAIL):/ { b[n % 5] = $0; n++ }' "$log" | sed 's/^/     /'
     grep -E '^SCAFFOLD-FAILED:' "$log" | sed 's/^/     /' | head -5
   else
     failed=$((failed + 1))
