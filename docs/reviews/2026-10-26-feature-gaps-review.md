@@ -118,7 +118,7 @@ A gap is something a design promised that is not in the code at the reviewed com
     - **`exit 1` after the deadline's record** (1), where the record already says the search was cut short.
     - **`2>/dev/null` turned `2</dev/null`** (1): git's diagnostics are lost either way.
     - **`mkdir -p` of a directory** that exists by then (1).
-  - **One mutant was listed as equivalent and is not:** `[[ -n "$own" ]] || return 1` in `_git_runs()`. The review of the new tests reached it through a commondir holding `.\0/`, which the launch reads as `./`. Following that up found GIT-30 (bugs review, section 25), a HIGH. Its fix should make #136 unreachable again.
+  - **One mutant was listed as equivalent and is not:** `[[ -n "$own" ]] || return 1` in `_git_runs()`. The review of the new tests reached it through a commondir holding `.\0/`, which the launch reads as `./`. Following that up found GIT-30 (bugs review, section 25), a HIGH. Since its fix, a NUL in a commondir refuses the launch before the report runs, so the mutant is unreachable again.
   - **2 UNPROVEN:** `_git_reported_load`'s `while read` turned into loops that never end once the record exists. The per-test clock stops them.
     - A third, in `_git_exec_keys`, spun on any config file that lists no key; in the corpus that was an empty config.worktree. On one that lists keys, it named none. G98's launch is now bounded, so it ends in a FAIL line instead.
   - **What is left of sandbox.sh:** 1,365 of today's 1,768 default mutants:

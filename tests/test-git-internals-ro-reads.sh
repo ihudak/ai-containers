@@ -259,5 +259,89 @@ PATH="$TMP/fh99:$PATH" TMPDIR="$TMP/rdt99" "$BASH" -c 'source "$1"; _rd_prep; se
   || fail "G99 _rd past the first bound (rc=$rc99; out=$(cat "$TMP/o99"); err=$(cat "$TMP/e99"))"
 rm -rf "$fns99" "$TMP/fg99" "$TMP/fh99" "$TMP/rdt99" "$TMP/st99" "$TMP/c99" "$TMP/f99" "$TMP/o99" "$TMP/e99"
 
+# ── G111: a file git takes a path from is read as git reads it, or refused ───
+# git reads a commondir, a gitdir or a .git file whole, cuts its trailing CRs
+# and LFs, and stops at the first NUL. The launcher read up to the NUL and cut
+# after it (and `$(…)` dropped NULs), so `./\n\0\n` was its ./ placeholder,
+# while git used .git/<LF>/, a directory the agent can make: its config ran on
+# the host, and no launch and no rescan named it (bugs review GIT-30). A NUL, or
+# more than the 4096 bytes read, refuses the launch, naming the file; so does a
+# worktree's gitdir ending in a space or a tab, which git cuts and never writes.
+mk111() {  # $1 = repository, $2 = commondir bytes (printf format): a hidden common dir beside
+  "${G[@]}" init -q "$1" && printf "$2" > "$1/.git/commondir" && mkdir -p "$1/.git/"$'\n' \
+    && "${G[@]}" init -q --bare "$TMP/t111" && cp -R "$TMP/t111/objects" "$TMP/t111/refs" "$TMP/t111/config" "$1/.git/"$'\n'/ \
+    && printf '[core]\n\tfsmonitor = run-me-111\n' >> "$1/.git/"$'\n'/config && rm -rf "$TMP/t111"
+}
+odd111() {  # $1 = label, $2 = the file the refusal names
+  [[ "$LAUNCH_RC" != 0 ]] && grep -qF "ERROR: $2 holds what git reads otherwise than this launcher" "$ERR" \
+    && grep -qF 'git writes one path and a newline there. If you did not make it, remove it on the host.' "$ERR" \
+    && pass "G111 $1 refuses the launch, naming it" \
+    || fail "G111 $1 (rc=$LAUNCH_RC; stderr: $(grep -E 'ERROR|111' "$ERR" | head -2 | tr '\n' ' '))"
+}
+mkdir -p "$TMP/n111" && mk111 "$TMP/n111/r" './\n\0\n' || { printf 'SCAFFOLD-FAILED: G111\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/n111" launch "$TMP/app"
+odd111 "a commondir with a newline before a NUL" "$TMP/n111/r/.git/commondir"
+rm -rf "$TMP/n111"; mkdir -p "$TMP/n111" && mk111 "$TMP/n111/r" '.\0/' || { printf 'SCAFFOLD-FAILED: G111\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/n111" launch "$TMP/app"
+odd111 "a commondir that is ./ only with its NUL dropped" "$TMP/n111/r/.git/commondir"
+# A linked worktree's commondir longer than the 4096 bytes read: cut there, its
+# x/../ steps led back to the worktree's own directory, while git follows them
+# to the end.
+rm -rf "$TMP/n111"; mkdir -p "$TMP/n111" && "${G[@]}" init -q "$TMP/n111/m" && "${G[@]}" -C "$TMP/n111/m" commit -q --allow-empty -m s \
+  && "${G[@]}" -C "$TMP/n111/m" worktree add -q "$TMP/n111/w" && wt111="$(ls -d "$TMP/n111/m/.git/worktrees"/* | head -1)" \
+  && mkdir -p "$wt111/x" && { printf 'x/../%.0s' $(seq 1 900); printf '../..\n'; } > "$wt111/commondir" \
+  || { printf 'SCAFFOLD-FAILED: G111\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/n111" launch "$TMP/app"
+odd111 "a linked worktree's commondir longer than 4096 bytes" "$wt111/commondir"
+# Counted in bytes whatever the locale: 2049 two-byte characters are 4098 bytes.
+loc111="$(locale -a 2>/dev/null | grep -iE '^(c|en_us)\.utf-?8$' | head -1)"
+if [[ -n "$loc111" ]]; then
+  { printf '\303\251%.0s' $(seq 1 2049); printf '\n'; } > "$wt111/commondir"
+  LC_ALL="$loc111" EXTRA_MOUNTS="$TMP/n111" launch "$TMP/app"
+  odd111 "a commondir of 4098 bytes in 2049 characters, under $loc111" "$wt111/commondir"
+else
+  printf 'SKIP: G111 multibyte commondir: no UTF-8 locale here\n'
+fi
+# A .git file, and a linked worktree's commondir, the same.
+rm -rf "$TMP/n111"; mkdir -p "$TMP/n111/s" && "${G[@]}" init -q --bare "$TMP/n111/g" \
+  && printf 'gitdir: ../g\n\0\n' > "$TMP/n111/s/.git" || { printf 'SCAFFOLD-FAILED: G111\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/n111" launch "$TMP/app"
+odd111 "a .git file with a newline before a NUL" "$TMP/n111/s/.git"
+# With no NUL, git and the launcher read a CR or LF inside alike, and git
+# writes one for a path that holds it: read, not refused.
+rm -rf "$TMP/n111"; mkdir -p "$TMP/n111" && "${G[@]}" init -q "$TMP/n111/m" && "${G[@]}" -C "$TMP/n111/m" commit -q --allow-empty -m s \
+  && "${G[@]}" -C "$TMP/n111/m" worktree add -q "$TMP/n111/w" && wt111="$(ls -d "$TMP/n111/m/.git/worktrees"/* | head -1)" \
+  && printf '../..\r..\n' > "$wt111/commondir" || { printf 'SCAFFOLD-FAILED: G111\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/n111" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && grep -qF "$wt111/commondir names" "$ERR" && ! grep -qF 'holds what git reads otherwise' "$ERR" \
+  && pass "G111 a commondir with a CR inside it is read as git reads it, and what it names is named" \
+  || fail "G111 inner CR (rc=$LAUNCH_RC; stderr: $(grep -E 'ERROR|commondir' "$ERR" | head -2 | tr '\n' ' '))"
+# A worktree's gitdir git cuts of every trailing white space, not only CR and
+# LF (review of the GIT-30 fix): a space or tab at its end is refused too.
+printf '../..\n' > "$wt111/commondir"; printf '%s/.git \t\n' "$TMP/n111/w" > "$wt111/gitdir"
+EXTRA_MOUNTS="$TMP/n111" launch "$TMP/app"
+odd111 "a linked worktree's gitdir ending in a space and a tab" "$wt111/gitdir"
+printf '%s/.git\n' "$TMP/n111/w" > "$wt111/gitdir"
+# A trailing CR LF is cut, as git cuts it: not refused.
+printf '../..\r\n' > "$wt111/commondir"
+EXTRA_MOUNTS="$TMP/n111" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF 'holds what git reads otherwise' "$ERR" \
+  && pass "G111 a commondir ending in CR LF is read as git reads it" \
+  || fail "G111 trailing CR LF refused (rc=$LAUNCH_RC; stderr: $(grep ERROR "$ERR" | head -1))"
+# A .git file above a mount, which the walk up from it reads.
+rm -rf "$TMP/n111"; mkdir -p "$TMP/n111/sub" && printf 'gitdir: ../g\n\0\n' > "$TMP/n111/.git"
+EXTRA_MOUNTS="$TMP/n111/sub" launch "$TMP/app"
+odd111 "a .git file above a mount, with a newline before a NUL" "$TMP/n111/.git"
+# The session that makes one: the rescan, quiet about what it reads, says the
+# search was cut short, which asks for the launch that names the file; the
+# exit status is the container's.
+rm -rf "$TMP/n111"; mkdir -p "$TMP/n111"
+FAKE_SESSION="cd '$TMP/n111' && git init -q r && printf './\n\0\n' > r/.git/commondir" FAKE_DOCKER_RC=4 \
+  EXTRA_MOUNTS="$TMP/n111" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 4 ]] && grep -qF 'could not all be searched for git repositories the session' "$ERR" \
+  && pass "G111 a session that makes one is told the search was cut short" \
+  || fail "G111 rescan (rc=$LAUNCH_RC; stderr: $(tail -4 "$ERR" | tr '\n' ' '))"
+rm -rf "$TMP/n111"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

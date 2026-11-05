@@ -17,7 +17,7 @@
 - **Updated 2026-11-04:** GIT-23 is FIXED: a regular file only slow to read gets 10 s, within 30 s per launch.
 - **Updated 2026-11-04:** section 23, found while running PLAT-5 on macOS: GIT-27 and TST-28, FIXED.
 - **Updated 2026-11-04:** GIT-25 and GIT-26 are FIXED (`d942daa`). GIT-28, found while fixing them (section 22), is FIXED too, after seven reviews of its fix; `--version` no longer reports `-dirty` (the user's choice).
-- **Updated 2026-11-05:** the fix-batch table below no longer lists as open what was fixed after its batch. Every entry is FIXED except these: GIT-29 (open; section 24), GIT-30 (open, HIGH; section 25), LNCH-2 (not reproducible), GIT-12 (won't fix), GIT-13 (resolved fail-closed), LNCH-7 (documented), GIT-21 and LNCH-17 (closed), BLD-8 (its `--error-on=any` trade kept by design) and TST-21 (the same comment edit is owed to mgd-ai-containers' copy of `tests/layer-checks.conf`, which is not reachable from this machine). Section 24 holds GIT-29, found while reviewing PLAT-7's run steps; section 25 GIT-30, found by GAP-2's slice 2.
+- **Updated 2026-11-05:** the fix-batch table below no longer lists as open what was fixed after its batch. Every entry is FIXED except these: GIT-29 (open; section 24), GIT-31 (open, HIGH; section 25), GIT-32 (open, LOW; section 25), LNCH-2 (not reproducible), GIT-12 (won't fix), GIT-13 (resolved fail-closed), LNCH-7 (documented), GIT-21 and LNCH-17 (closed), BLD-8 (its `--error-on=any` trade kept by design) and TST-21 (the same comment edit is owed to mgd-ai-containers' copy of `tests/layer-checks.conf`, which is not reachable from this machine). Section 24 holds GIT-29, found while reviewing PLAT-7's run steps; section 25 GIT-30, found by GAP-2's slice 2, and GIT-31 and GIT-32, found by the review of its fix.
 - **Companion:** [2026-10-26-feature-gaps-review.md](2026-10-26-feature-gaps-review.md).
 - **Confidence:** CONFIRMED = reproduced, or unambiguous from the code. PLAUSIBLE = strong reasoning, not reproduced (usually needs hardware or a platform not available here); verify before fixing.
 - **Citations** are by snippet, per AGENTS.md "Citing code". Scratch repro paths mentioned in entries were session-local and may no longer exist; each entry describes its repro in full.
@@ -1639,7 +1639,22 @@ An Opus reviewer read the rewritten PLAT-7 steps against the code, 2026-11-05, a
 An Opus reviewer of the slice's new tests, 2026-11-05, at `fd49c3c`, reached a mutant of `_git_runs()` that the slice had called unreachable, through a `commondir` holding a NUL. Following that up found GIT-30.
 
 ### GIT-30: a commondir, gitdir or .git file is read otherwise than git reads it
-- **Status: OPEN** (2026-11-05).
+- **Status: FIXED** (2026-11-05).
+  - **The fix:** every file in sandbox.sh that git takes a path from is read by `_git_ptr_read()`, and only where git and the launcher read it alike: no NUL, and at most the 4096 bytes read. Its trailing CRs and LFs are cut, as git cuts them. A CR or LF inside it is read as git reads it; git writes one for a path that holds it.
+  - **What refuses the launch:** a NUL, a longer file, or a worktree's `gitdir` ending in a space or a tab. git cuts those off and never writes them. The refusal goes through `_rd_fail()`, naming the file and saying that git writes one path and a newline there. The rescan after the session says its search was cut short, and the next launch names the file.
+  - **Rejected:** parsing such a file the way git does, which GIT-24 and GIT-28 showed keeps failing review.
+  - **Tests:** G111 in `tests/test-git-internals-ro-reads.sh`, seen red on the code before:
+    - a commondir holding `./\n\0\n` or `.\0/`;
+    - a linked worktree's commondir longer than 4096 bytes. Cut there, its `x/../` steps led back to the worktree's own directory. It is also measured in bytes under a UTF-8 locale.
+    - a `.git` file, in a mount or above one, with a newline before a NUL;
+    - a worktree's `gitdir` ending in a space and a tab;
+    - a session that makes one;
+    - a commondir ending in CR LF, or holding a CR inside it, which is still read.
+  - **Not changed:**
+    - the data-only readers named under Location;
+    - a commondir or `.git` file the launcher cannot read (mode 000), which it reads as empty where git dies;
+    - a commondir of `-`, which `cd -P -- -` takes for the previous directory in the worktree branch of `launcher_ro_overlay()` and in `_git_runs()`. `_gdi_follow()` joins the path, so the directory git uses is still followed and protected.
+  - **Found by its review:** GIT-31 and GIT-32, below.
 - **Severity: HIGH.** Confidence: CONFIRMED. Measured with git 2.56, and on the launcher at `fd49c3c` through `tests/lib-git-internals-ro.sh`'s fake docker; a second reviewer reproduced the failure scenario with a real `<newline>` directory.
   - **The harm:** the host's git runs a program the agent chose, and nothing names it. Not the rescan after the session that made the repository, not the launch that then protects it, not any later launch.
   - **What it needs:**
@@ -1653,7 +1668,7 @@ An Opus reviewer of the slice's new tests, 2026-11-05, at `fd49c3c`, reached a m
     - sandbox.sh: `_git_index_read()`;
     - sandbox.sh: `_checkout_origin_url()`.
   - **Data only:** version.sh: `_ver_read()` and sandbox-common.sh: `_ac_source_commit()` read such files the same way. They take from them only the version and the source commit they report, and run nothing through them.
-- **Introduced:** `5793a34` (2026-10-06). It added the refusal of a `commondir` other than the placeholder, comparing `$(cat "$g/commondir")`, which drops NULs. `91fac80` made the placeholder `./` the same day.
+- **Introduced:** `5793a34` and `91fac80` (both 2026-10-06). `5793a34` named a `commondir` other than the placeholder in a WARNING, comparing `$(cat "$g/commondir")`, which drops NULs. `91fac80` made that comparison a refusal and the placeholder `./`.
   - **Releases affected:** every one from v0.10.0 to v0.10.7. Those have no rescan after the session and follow no commondir, but the harm is the same: git uses `.git/<newline>/config`, and the launch binds only `.git/config`.
   - **The other readers came later:**
     - `_git_index_read()`'s in `d6fc64f` (2026-10-27);
@@ -1675,6 +1690,37 @@ An Opus reviewer of the slice's new tests, 2026-11-05, at `fd49c3c`, reached a m
   4. The next launch binds `sub/.git/config`, `commondir` and `hooks` read-only and names nothing. `sub/.git/<newline>/config` stays writable. The one trace is bash's own `warning: command substitution: ignored null byte in input`.
   5. `git status` in `sub` on the host runs the program (measured).
 - **Fix direction:** read every such file one way, and accept only what every reader agrees on. That is at most 4096 bytes, with no NUL, and no CR or LF except at the end; for a `gitdir`, no other whitespace at the end either. Anything else is named and refuses the launch, as a FIFO there does. This replaces parsing such a file as git would, which GIT-24 and GIT-28 showed keeps failing review.
+
+### GIT-31: a hard link made before the first protection keeps a protected file writable
+- **Status: OPEN** (2026-11-05). Found by the review of the GIT-30 fix.
+- **Severity: HIGH.** Confidence: CONFIRMED. The reviewer probed it two ways:
+  - **Kernel probe** (`unshare -rm`, read-only binds of `config` and `commondir`): a direct write failed with "Read-only file system", and so did a new `ln` ("Invalid cross-device link"). A write through a link made before the bind succeeded, and the host's `git status` then ran the program.
+  - **Harness probe** (`tests/lib-git-internals-ro.sh`'s fake docker): the whole failure scenario below, with nothing named at any step.
+- **Location:** sandbox.sh: `launcher_ro_overlay()`. Every regular file it binds read-only is affected: `config`, `config.worktree`, `commondir`, what `hooks/` holds, and `.git` files.
+- **Introduced:** with the git-internals protection (`5793a34`, 2026-10-06), so in every release since v0.10.0.
+- **What's wrong:**
+  - A read-only bind protects a path, not the inode behind it. A hard link made before the bind writes the same inode through another path.
+  - `link()` into a read-only bind fails with EXDEV, so only a link made before a repository's first protection matters. Such a link exists in a repository the agent made in a session.
+  - The rescan after the session names such a repository only if its config or hooks already run something, and a plain one does not.
+  - Every later launch takes it for protected and reported.
+- **Failure scenario:**
+  1. In a session, the agent runs `git init r` and `ln r/.git/config r/notes.txt` (and the same for a hook). The rescan names nothing.
+  2. The next launch binds `r/.git/config` read-only.
+  3. In a later session the agent appends `[core] fsmonitor = <program>` through `r/notes.txt`. Nothing is named.
+  4. `git status` in `r` on the host runs the program.
+- **Fix direction:** when a repository is protected, refuse, or name, any regular file the launch binds read-only whose link count is above 1. That covers `find … -type f -links +1` over `hooks/` too. A check at launch is enough, because of EXDEV.
+
+### GIT-32: core.worktree and a gitdir's back-pointer are resolved with a logical cd
+- **Status: OPEN** (2026-11-05). Found by the review of the GIT-30 fix.
+- **Severity: LOW.** Confidence: LIKELY. The reviewer measured the difference in resolution; the consequence below is reasoned, not run.
+- **Location:** sandbox.sh: `git_dirs_in()`, in two places:
+  - the submodule's `core.worktree`: `top="$(cd "$g" 2>/dev/null && cd "$wt" 2>/dev/null && pwd -P)"`;
+  - the quiet check for a waiting git directory: `cd "$back"`.
+- **What's wrong:** git resolves `core.worktree` physically (`chdir`, then `realpath`). `cd` without `-P` takes a `..` after a link lexically. With `core.worktree = ../../../a/../node_modules/sm` and `a -> x/y`, the launcher reads `P/node_modules/sm` and git uses `P/x/node_modules/sm`.
+- **Failure scenario** (reasoned):
+  - the setup: a repository the agent made in a session, with a submodule under a pruned directory, its `core.worktree` routed through a link, and a decoy directory where the lexical path leads;
+  - the effect: the submodule's index is read against the decoy, so a nested submodule's checkout under the real worktree is not protected.
+- **Fix direction:** `cd -P --` in both places, as the other resolutions already do.
 
 ## GIT
 

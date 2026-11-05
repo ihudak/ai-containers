@@ -731,8 +731,7 @@ launcher_ro_overlay() {
     uhave[$xv2]=1
     ug+=("$xt"); ukind+=(dir); usrc+=("${bsrc[j]}"); udst+=("${bdst[j]}")
     if [[ -f "$xt/commondir" ]]; then
-      cdt=""; IFS= read -r -d '' cdt < <(_rd 4096 "$xt/commondir" 2>/dev/null) || true
-      while [[ "$cdt" == *[$'\r\n'] ]]; do cdt="${cdt%?}"; done
+      cdt=""; _git_ptr_read "$xt/commondir" cdt || true
       if [[ -n "$cdt" && "$cdt" != ./ && "$cdt" != . ]] && _gd_resolve "$xt" "$cdt" "$xt/commondir" cdt; then
         if _is_common_dir "$cdt"; then
           for jj in ${bsrc[@]+"${!bsrc[@]}"}; do
@@ -817,9 +816,11 @@ launcher_ro_overlay() {
           exit 1
         done
         # The commondir read only when it is a regular file: a FIFO there blocked it
-        # (review of 1a30bb4; G65). $(...) strips the newline, so ./ is all there is.
+        # (review of 1a30bb4; G65). Read as git reads it (_git_ptr_read): $(...)
+        # dropped a NUL, and `.\0/` passed for ./ (GIT-30).
+        cdir=""
         if [[ -d "$g/objects" ]] && { [[ -f "$g/config" ]] || [[ ! -e "$g/commondir" && ! -L "$g/commondir" ]] \
-             || { [[ -f "$g/commondir" ]] && [[ "$(_rd 16 "$g/commondir" 2>/dev/null)" == ./ ]]; }; }; then
+             || { [[ -f "$g/commondir" ]] && _git_ptr_read "$g/commondir" cdir && [[ "$cdir" == ./ ]]; }; }; then
           cfg="$g/config"
           # A repository git reads with no config of its own gets an empty one, as
           # commondir gets ./ — or the agent could add one after the launch (G49).
@@ -834,8 +835,8 @@ launcher_ro_overlay() {
           # Anything but our ./ sends the host's git elsewhere for this repository's
           # configuration and hooks, and git never writes one here: refuse, rather
           # than mount the redirect read-only and launch.
-          if [[ -f "$g/commondir" && ! -L "$g/commondir" && "$(_rd 4096 "$g/commondir" 2>/dev/null)" != "./" ]]; then
-            printf 'ERROR: %s sends git to %s for this repository'\''s\n' "$(_term "$g/commondir")" "$(_q "$(_rd 200 "$g/commondir" 2>/dev/null)")" >&2
+          if [[ -f "$g/commondir" && ! -L "$g/commondir" ]] && { _git_ptr_read "$g/commondir" cdir || true; [[ "$cdir" != "./" ]]; }; then
+            printf 'ERROR: %s sends git to %s for this repository'\''s\n' "$(_term "$g/commondir")" "$(_q "${cdir:0:200}")" >&2
             printf '       configuration and hooks, and git never writes one in a repository'\''s own git\n' >&2
             printf '       directory. If you did not make it, remove it on the host and launch again.\n' >&2
             exit 1
@@ -889,12 +890,10 @@ launcher_ro_overlay() {
           # trailing CR git strips: `cd` reads `s/..` lexically, which named the
           # worktree's own directory, with no config, while git used A/.git
           # (review of batch 9, finding 3; G45).
-          # Read as git reads it: up to the first NUL ($(...) would drop NULs and
-          # join what is around them), every trailing CR and LF stripped. One that
+          # Read as git reads it, or refused (_git_ptr_read; GIT-30). One that
           # cannot be resolved names a path that cannot exist, so both checks
           # below fail closed (security review of 99db199).
-          cdir=""; IFS= read -r -d '' cdir < <(_rd 4096 "$g/commondir" 2>/dev/null) || true
-          while [[ "$cdir" == *[$'\r\n'] ]]; do cdir="${cdir%?}"; done
+          cdir=""; _git_ptr_read "$g/commondir" cdir || true
           cfg="$(cd "$g" 2>/dev/null && cd -P -- "$cdir" 2>/dev/null && pwd -P)" || cfg=""
           # Not a path in the agent's tree, where it could plant one saying the
           # extension is off (security review of the commondir fix): a host path nothing makes.
@@ -1852,8 +1851,7 @@ _git_index_read() {
   # (review of 3c754aa).
   local fcfg="$g/config" fcd=""
   if [[ ! -f "$fcfg" && -f "$g/commondir" ]]; then
-    IFS= read -r -d '' fcd < <(_rd 4096 "$g/commondir" 2>/dev/null) || true
-    while [[ "$fcd" == *[$'\r\n'] ]]; do fcd="${fcd%?}"; done
+    _git_ptr_read "$g/commondir" fcd || true
     [[ "$fcd" == /* ]] || fcd="$g/$fcd"
     fcd="$(cd -P -- "$fcd" 2>/dev/null && pwd -P)" && fcfg="$fcd/config"
   fi
@@ -2060,7 +2058,30 @@ _rd_run() {
 _rd() {
   _rd_run "$2" head -c "$1" -- "$2"
 }
-# _rd_fail <file> <fifo|slow|spent> <seconds>: a bounded read that was cut off
+# _git_ptr_read <file> <out-var> [gitdir]: a file git takes a path from (a
+# commondir, a gitdir, a .git file), as this launcher and git both read it. git
+# reads it whole, cuts its trailing CRs and LFs, and stops at the first NUL; the
+# launcher read up to the NUL and cut after it, so `./\n\0\n` was the ./
+# placeholder here and, to git, a directory named by a newline that the agent
+# can make in .git, whose config the host's git ran (bugs review GIT-30). With
+# no NUL, and no more than the 4096 bytes read, the two read it alike, a CR or
+# LF inside included (git writes one for a path that holds it); anything else
+# is refused (_rd_fail), not parsed as git would parse it, as parsers standing
+# in for git failed review after review. A worktree's gitdir git also cuts off
+# trailing spaces and tabs, and never writes one there: with `gitdir`, one
+# there is refused too (review of the GIT-30 fix).
+_git_ptr_read() {
+  local -n _gpr_out=$2
+  local LC_ALL=C _gpr_v=""
+  _gpr_out=""
+  if IFS= read -r -d '' _gpr_v < <(_rd 4097 "$1" 2>/dev/null) || (( ${#_gpr_v} > 4096 )); then
+    _rd_fail "$1" odd; return 1
+  fi
+  while [[ "$_gpr_v" == *[$'\r\n'] ]]; do _gpr_v="${_gpr_v%?}"; done
+  if [[ "${3:-}" == gitdir && "$_gpr_v" == *[$' \t'] ]]; then _rd_fail "$1" odd; return 1; fi
+  _gpr_out="$_gpr_v"
+}
+# _rd_fail <file> <fifo|slow|spent|odd> <seconds>: a bounded read that was cut off
 # is not an absent key — read as one, it failed open (automated security review
 # of 116129d). The reads run in $(…) and <(…), where exit ends only the subshell,
 # so the launcher itself is signalled; its USR1 trap refuses the launch. Nothing
@@ -2070,6 +2091,7 @@ _rd_fail() {
   local why
   case "${2:-}" in
     slow) why="could not be read within ${3:-?} s, though it is a regular file" ;;
+    odd) why="holds what git reads otherwise than this launcher: a NUL, more than 4096 bytes, or a gitdir's space or tab at its end" ;;
     spent) why="could not be read within ${3:-?} s, though it is a regular file, and this launch has no more time for slow reads" ;;
     *) why="could not be read within ${3:-its bound} s, and is not a regular file now (swapped for a FIFO, or removed)" ;;
   esac
@@ -2078,6 +2100,8 @@ _rd_fail() {
   printf 'ERROR: %s %s; refusing the launch.\n' "$(_term "$1")" "$why" >&"${_rd_errfd:-2}"
   if [[ "${2:-}" == slow || "${2:-}" == spent ]]; then
     printf '       The host may be busy: launch again.\n' >&"${_rd_errfd:-2}"
+  elif [[ "${2:-}" == odd ]]; then
+    printf '       git writes one path and a newline there. If you did not make it, remove it on the host.\n' >&"${_rd_errfd:-2}"
   fi
   kill -s USR1 "$$" 2>/dev/null || true
 }
@@ -2245,8 +2269,7 @@ git_dirs_in() {
           _in_writable "$up/.git" || gquiet[$up/.git]=1
         fi
       else
-        tgt=""; IFS= read -r -d '' tgt < <(_rd 4096 "$up/.git" 2>/dev/null) || true
-        while [[ "$tgt" == *[$'\r\n'] ]]; do tgt="${tgt%?}"; done
+        tgt=""; _git_ptr_read "$up/.git" tgt || true
         if [[ "$tgt" == "gitdir: "* ]]; then
           _gdi_follow "$up" "${tgt#gitdir: }" "$5" "$up/.git"
           if ! _in_writable "$up/.git"; then
@@ -2279,8 +2302,7 @@ git_dirs_in() {
       f="${_gdi_files[nf]}"; nf=$((nf + 1))
       # Only CR and LF stripped, as git does: `gitdir: g ` names `g ` (security
       # review of e2741b1).
-      tgt=""; IFS= read -r -d '' tgt < <(_rd 4096 "$f" 2>/dev/null) || true
-      while [[ "$tgt" == *[$'\r\n'] ]]; do tgt="${tgt%?}"; done
+      tgt=""; _git_ptr_read "$f" tgt || true
       [[ "$tgt" == "gitdir: "* ]] || continue
       _gdi_follow "${f%/*}" "${tgt#gitdir: }" "$5" "$f"
       continue
@@ -2293,8 +2315,7 @@ git_dirs_in() {
       # A commondir that is a link is read through, as git reads it; the protection
       # step names the link itself, which the agent can repoint (security review).
       if [[ -f "$g/commondir" ]]; then
-        tgt=""; IFS= read -r -d '' tgt < <(_rd 4096 "$g/commondir" 2>/dev/null) || true
-        while [[ "$tgt" == *[$'\r\n'] ]]; do tgt="${tgt%?}"; done
+        tgt=""; _git_ptr_read "$g/commondir" tgt || true
         if [[ -n "$tgt" && "$tgt" != ./ && "$tgt" != . ]]; then _gdi_follow "$g" "$tgt" "$5" "$g/commondir"; fi
       fi
     fi
@@ -2322,8 +2343,7 @@ git_dirs_in() {
       # (gitdir): one more candidate, inside this mount — a decoy pointer adds a
       # checkout to check, no more.
       if [[ -f "$g/gitdir" ]]; then
-        tgt=""; IFS= read -r -d '' tgt < <(_rd 4096 "$g/gitdir" 2>/dev/null) || true
-        while [[ "$tgt" == *[$'\r\n'] ]]; do tgt="${tgt%?}"; done
+        tgt=""; _git_ptr_read "$g/gitdir" tgt gitdir || true
         tgt="${tgt%/.git}"
         if [[ "$tgt" == /* && -d "$tgt" ]] && tgt="$(cd -P -- "$tgt" 2>/dev/null && pwd -P)" \
            && [[ "$tgt" == "$5" || "$tgt" == "$5"/* ]]; then tseen[$tgt]=1; tops+=("$tgt"); fi
@@ -2466,8 +2486,7 @@ git_dirs_in() {
     [[ -f "$g/index" ]] || continue
     # A linked worktree checked out where the agent cannot write is not its to steer.
     if [[ -f "$g/gitdir" ]]; then
-      tgt=""; IFS= read -r -d '' tgt < <(_rd 4096 "$g/gitdir" 2>/dev/null) || true
-      while [[ "$tgt" == *[$'\r\n'] ]]; do tgt="${tgt%?}"; done
+      tgt=""; _git_ptr_read "$g/gitdir" tgt gitdir || true
       # Only a real one: the agent can rewrite gitdir, and a path that leads
       # nowhere (GIT-6), or to any existing file (automated security review of
       # 3fd28c7), silenced the worktree's submodules. Quiet only for a regular
@@ -2477,8 +2496,7 @@ git_dirs_in() {
       # writable mount pass as outside them (automated security review of efbfcc3).
       if [[ "$tgt" == /* && "${tgt##*/}" == .git && -f "$tgt" && ! -L "$tgt" ]] \
          && [[ "$(cd -P -- "${tgt%/*}" 2>/dev/null && pwd -P)/.git" == "$tgt" ]] && ! _in_writable "$tgt"; then
-        back=""; IFS= read -r -d '' back < <(_rd 4096 "$tgt" 2>/dev/null) || true
-        while [[ "$back" == *[$'\r\n'] ]]; do back="${back%?}"; done
+        back=""; _git_ptr_read "$tgt" back || true
         back="${back#gitdir: }"
         if [[ "$back" != /* ]]; then back="${tgt%/*}/$back"; fi
         if [[ "$(cd "$back" 2>/dev/null && pwd -P)" == "$g" ]]; then continue; fi
@@ -2607,8 +2625,7 @@ _git_runs() {
     _gr_k="commondir, a link or not a file: what git reads through it is not checked"; return 0
   fi
   if [[ -f "$g/commondir" ]]; then
-    IFS= read -r -d '' cd < <(_rd 4096 "$g/commondir" 2>/dev/null) || true
-    while [[ "$cd" == *[$'\r\n'] ]]; do cd="${cd%?}"; done
+    _git_ptr_read "$g/commondir" cd || true
     if [[ -n "$cd" && "$cd" != ./ ]]; then
       c="$(cd "$g" 2>/dev/null && cd -P -- "$cd" 2>/dev/null && pwd -P)" || c=""
       if [[ -z "$c" ]]; then _gr_k="commondir, which leads nowhere it can be checked"; return 0; fi
@@ -2905,8 +2922,7 @@ _checkout_origin_url() {
     if [[ -d "$d/.git" ]]; then gd="$d/.git"; break; fi
     if [[ -f "$d/.git" ]]; then
       # Only CR and LF stripped, as git does (security review of e2741b1).
-      t=""; IFS= read -r -d '' t < <(_rd 4096 "$d/.git" 2>/dev/null) || true
-      while [[ "$t" == *[$'\r\n'] ]]; do t="${t%?}"; done
+      t=""; _git_ptr_read "$d/.git" t || true
       [[ "$t" == "gitdir: "* ]] || return 1
       t="${t#gitdir: }"; [[ "$t" == /* ]] || t="$d/$t"
       gd="$t"; break
@@ -2915,8 +2931,7 @@ _checkout_origin_url() {
     d="${d%/*}"
   done
   if [[ -f "$gd/commondir" ]]; then
-    t=""; IFS= read -r -d '' t < <(_rd 4096 "$gd/commondir" 2>/dev/null) || true
-    while [[ "$t" == *[$'\r\n'] ]]; do t="${t%?}"; done
+    t=""; _git_ptr_read "$gd/commondir" t || true
     [[ -n "$t" ]] || return 1
     [[ "$t" == /* ]] || t="$gd/$t"
     gd="$t"
