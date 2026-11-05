@@ -307,7 +307,11 @@ EXTRA_MOUNTS="$R98" PATH="$nogit98" launch "$TMP/app"
   || fail "G98 hooks reported twice (rc=$LAUNCH_RC; stderr: $(grep -F 'protected' "$ERR" | tr '\n' ' '))"
 # The launch with git that the WARNING asks for still names the keys the
 # config already set: a launch that read none did not spend the one-time report.
-EXTRA_MOUNTS="$R98" launch "$TMP/app"
+# Bounded: the no-git launches made an empty config.worktree in every repository,
+# and a mutant whose key loop never ended on an empty list hung here, before
+# any FAIL line, so the tier could only call it UNPROVEN (GAP-2's slice 2;
+# sandbox.sh: `_git_exec_keys()`).
+EXTRA_MOUNTS="$R98" launch_timed 60 "$TMP/app"
 rc98a="$LAUNCH_RC"; nw98a="$(grep -c 'git is not installed' "$ERR")"
 grep -qi 'core.sshcommand' <<<"$(grep -A1 -F 'NOTE: /workspace/r98/keys/.git was protected by an earlier launch where git did not run, and its config sets' "$ERR")" \
   && ! grep -qF 'NOTE: /workspace/r98/keys/.git was protected by an earlier launch where git did not run, and its hooks/' "$ERR" \

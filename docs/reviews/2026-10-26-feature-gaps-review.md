@@ -73,6 +73,59 @@ A gap is something a design promised that is not in the code at the reviewed com
   3. **Survivors, 27 %.** These run the whole set by construction. Killing them, or classifying them, is the only way to cut this share.
   4. **Fail-fast** (stop `tests/run-all.sh` at the first failing test) only helps the 11 % of kills by 19 or more tests. It is smaller than this entry's earlier estimate.
 - **Survivors in the sample, handled 2026-11-04:** 29, in `_utf8_valid` (5), `pointer_repo_entry` (1), `_git_index_read` (11) and `_git_config_bool` (12). 25 are now killed: by a byte table for `_utf8_valid` and a return-status check in `tests/test-parsers.sh`, and by G86's repaired premise and G95–G97 in test-git-internals-ro.sh (now split: G86 in `tests/test-git-internals-ro-reads.sh`, G95 and G96 in `tests/test-git-internals-ro-index.sh`) (an index that is missing, a directory, or under an unknown or path-like object format; a sha256 repository's linked worktree; the no-git fallback against git's own answers — G97 and G86's fallback checks went with the fallback when GIT-24 was fixed). Each was seen failing against its mutant, and `tests/falsify/run.sh` over the four functions with the new tests left 4 of the 29: two flips in `_git_index_read`'s `commondir` lookup that the launcher's own `./` placeholder makes equivalent, and two `return 1`→`return 0` after `_rd_fail()`, whose USR1 trap refuses the launch whatever the function returns. Two defects turned up on the way: G86 had passed vacuously under `tests/run-all.sh` (TST-27, fixed), and the fallback reads some spellings of true as false (GIT-24, fixed 2026-11-04 by removing it). The remaining 1,393 mutants of sandbox.sh were not in the sample and are unmeasured.
+- **Slice 2, measured 2026-11-05:** the 15 git-internals helpers. They are `_is_git_dir`, `_is_common_dir`, `_gd_resolve`, `_gdi_follow`, `_git_usable`, `_git_config_get`, `_git_exec_keys`, `_git_runs`, `_git_ident`, `_git_reported_load`, `_git_reported`, `_git_report_record`, `_git_after_session`, `_git_file_config` and `_git_include_paths`.
+  - **The run:** 245 mutants, `--select-oracles --jobs 10 --timeout 180`, against the 28 tests that execute sandbox.sh, at `fd49c3c`. It took 3 h 25 min of wall time and 111,918 s of CPU.
+  - **Result:** 169 killed, 73 survived, 3 unproven.
+  - **Cost:** a kill took 365 s on average; most selected the five git-internals files. A survivor always runs the whole set, 668 s, so the survivors took 44 % of the CPU.
+  - **57 survivors and one of the 3 unproven are now killed,** each seen failing against its mutant with the final test files:
+    - **G100–G110,** plus additions to G26, G27 and G94, in `tests/test-git-internals-ro-scan.sh`, `tests/test-git-internals-ro-index.sh` and `tests/test-git-internals-ro-reports.sh`.
+    - **Two GIT-25 checks** in `tests/test-docs-path.sh`.
+    - **A bounded launch** in G98 (`tests/test-git-internals-ro-config.sh`) and a primary argument for `launch_timed`.
+  - **What the new checks cover:**
+    - **What git would not take for a git directory** (no HEAD, no `objects/`, no `refs/`) is named, and nothing is made in it.
+    - **A bare repository** whose HEAD links to a directory is protected.
+    - **`.git` files naming nothing yet** get five WARNINGs and a count.
+    - **A commondir** gives its common directory no worktree.
+    - **A commondir or `hooks/` that is a link** is reported, and the launch goes on.
+    - **An index is read once,** and read again for a referrer found only after the read.
+    - **macOS's git shim** is judged by the git under `xcode-select -p`.
+    - **`sendemail.smtpserver` given as a path** is named.
+    - **A config.worktree that sets no `core.hooksPath`** leaves the config's in force.
+    - **The record of reported repositories:**
+      - it is read whole, and never read or written through a link, nor when it is a FIFO;
+      - recording a repository already in it adds no line;
+      - a line written after a hand-edited last line goes on its own line;
+      - a path with a newline is named at every launch.
+    - **`_git_ident`** keeps a link's target. Its BSD `stat` branch is checked with a fake `stat`.
+    - **The rescan after the session:**
+      - a new linked worktree is named with its common directory's hooks;
+      - an unsearchable new `.git` is named;
+      - a quiet session says nothing was cut short;
+      - each record goes under its own WARNING.
+    - **A repository with no config** has its index read as sha1.
+  - **Five of those survivors ended the launch in silence.** Each is a `return 0` turned `return 1`:
+    - in `_git_runs()`: a commondir or `hooks/` that is a link;
+    - in `_git_report_record()`: a record that is a link or a FIFO, one that already holds the line, and a path with a newline.
+    - Both functions are called as plain commands under `set -e` in `launcher_ro_overlay()`. No test asserted the launch's exit status in those cases.
+  - **15 EQUIVALENT:**
+    - **A status no caller reads** (5):
+      - `_git_exec_keys` and `_git_include_paths` ×2: each is read through `mapfile < <(…)`;
+      - `_git_config_get` ×2: every caller is `x="$(…)" || x=""`.
+    - **`|| true` turned `&& true` on a command that returns 0 or exits** (3): `git_dirs_in`, `_git_runs` and `mapfile`.
+    - **`|| true` turned `&& true` where the failing command is not the last of its `&&` list,** so errexit does not fire, and nothing reads the status (2).
+    - **The same on a `while read` loop** (1), whose status is 0 once its file opens.
+    - **`return 1` after "commondir, which leads nowhere"** (1). Only the rescan after the session reaches it, and it calls `_git_runs … || true`.
+    - **`exit 1` after the deadline's record** (1), where the record already says the search was cut short.
+    - **`2>/dev/null` turned `2</dev/null`** (1): git's diagnostics are lost either way.
+    - **`mkdir -p` of a directory** that exists by then (1).
+  - **One mutant was listed as equivalent and is not:** `[[ -n "$own" ]] || return 1` in `_git_runs()`. The review of the new tests reached it through a commondir holding `.\0/`, which the launch reads as `./`. Following that up found GIT-30 (bugs review, section 25), a HIGH. Its fix should make #136 unreachable again.
+  - **2 UNPROVEN:** `_git_reported_load`'s `while read` turned into loops that never end once the record exists. The per-test clock stops them.
+    - A third, in `_git_exec_keys`, spun on any config file that lists no key; in the corpus that was an empty config.worktree. On one that lists keys, it named none. G98's launch is now bounded, so it ends in a FAIL line instead.
+  - **What is left of sandbox.sh:** 1,365 of today's 1,768 default mutants:
+    - `launcher_ro_overlay()`: 454;
+    - `run_container()`: 318;
+    - `git_dirs_in()`: 239;
+    - about 30 smaller helpers: 354.
 
 ### GAP-3: Container-side firewall and capture scripts have no hermetic oracle; entrypoint.sh's row is stale
 - Status: DONE (2026-11-03).

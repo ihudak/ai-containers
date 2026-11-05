@@ -123,10 +123,10 @@ git_mounts() { mounts | grep -E '/\.git(:|/)' || true; }
 
 
 # shellcheck disable=SC2034  # LAUNCH_S is read by the test files that source this
-launch_timed() {  # $1 = seconds; leaves LAUNCH_RC (124 on timeout) and LAUNCH_S
+launch_timed() {  # $1 = seconds, $2 = primary (..); leaves LAUNCH_RC (124 on timeout) and LAUNCH_S
   local t0=$SECONDS
   rm -f "$CAPTURE" "$CAPTURE.manifest"
-  p_timeout "$1" bash -c 'cd "$1" && exec bash ./sandbox.sh restricted ..' _ "$LAUNCHER" >/dev/null 2>"$ERR" </dev/null
+  p_timeout "$1" bash -c 'cd "$1" && exec bash ./sandbox.sh restricted "$2"' _ "$LAUNCHER" "${2:-..}" >/dev/null 2>"$ERR" </dev/null
   LAUNCH_RC=$?; LAUNCH_S=$((SECONDS - t0))
 }
 

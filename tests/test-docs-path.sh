@@ -465,6 +465,35 @@ if [[ "$(command -v git)" == /usr/bin/git ]]; then
     fail "GIT-25 macOS's git shim was taken for git when xcode-select -p failed (rc=$RC; $(head -1 "$ERR"))"
   fi
   teardown
+  # What -p names decides only through the git under it: a developer directory
+  # since removed, or one without git, is no git (third review of the GIT-24
+  # fix), and one with a git is. Mutants that took -p's answer alone, or
+  # refused a developer directory holding a git, survived every test (GAP-2's slice 2;
+  # sandbox.sh: `_git_usable()`).
+  for xdev in none git; do
+    setup
+    mkdir -p "$TMP/app" "$TMP/mac" "$TMP/xdev"
+    register_git_repo docs ssh://git@example.org/team/docs.git "$TMP/docsco"
+    if [[ "$xdev" == git ]]; then
+      mkdir -p "$TMP/xdev/usr/bin"; printf '#!/bin/sh\nexit 0\n' > "$TMP/xdev/usr/bin/git"; chmod +x "$TMP/xdev/usr/bin/git"
+    fi
+    printf '#!/bin/sh\necho Darwin\n' > "$TMP/mac/uname"; printf '#!/bin/sh\necho %s\n' "$TMP/xdev" > "$TMP/mac/xcode-select"
+    chmod +x "$TMP/mac/uname" "$TMP/mac/xcode-select"
+    export DOCS_PATH="$TMP/docsco" REPOS="docs:rw"
+    PATH="$TMP/mac:$TMP/bin:/usr/bin:$PATH" run_sandbox "$TMP/app"
+    if [[ "$xdev" == none ]]; then
+      if [[ "$RC" -ne 0 ]] && grep -q "name 'docs' is used by" "$ERR"; then
+        pass "GIT-25 macOS's git shim is not taken for git when xcode-select -p names a directory without git"
+      else
+        fail "GIT-25 macOS's git shim was taken for git with no git under xcode-select -p (rc=$RC; $(head -1 "$ERR"))"
+      fi
+    elif [[ "$RC" -eq 0 ]] && grep -qx "DOCS_PATH=/workspace/docs" "$CAPTURE"; then
+      pass "GIT-25 macOS's git is taken for git when xcode-select -p names a directory with git"
+    else
+      fail "GIT-25 macOS's git was refused with a git under xcode-select -p (rc=$RC; $(head -1 "$ERR"))"
+    fi
+    teardown
+  done
 else
   printf 'NOTE: git is not /usr/bin/git here; the macOS shim check is not applicable\n'
 fi

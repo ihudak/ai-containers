@@ -354,6 +354,44 @@ grep -qF "$PROJ/lnk47/.git reaches $PROJ/node_modules/x47/g through a link" "$ER
   && pass "G47 a gitdir: reached through a link is named" || fail "G47 gitdir: through a link silent ($(grep -F lnk47 "$ERR" | head -1))"
 rm -rf "$PROJ/src47" "$PROJ/node_modules" "$PROJ/wt47" "$PROJ/sp47" "$PROJ/miss47" "$PROJ/lnk47" "$PROJ/via47"
 
+# ── G101: what a .git file or a commondir names that git would refuse is named ─
+# git takes a directory for a git directory only with a HEAD, objects/ and
+# refs/, and a common directory with objects/ and refs/. Anything less is
+# named, and nothing is made in it. Every mutant that took less (no HEAD, no
+# objects/, no refs/), and protected it in silence, survived every test
+# (GAP-2's slice 2; sandbox.sh: `_is_git_dir()`; sandbox.sh: `_is_common_dir()`).
+mkdir -p "$PROJ/nh101/objects" "$PROJ/nh101/refs" "$PROJ/s101a" "$PROJ/no101/refs" "$PROJ/s101b" "$PROJ/nr101/objects"
+printf 'gitdir: ../nh101\n' > "$PROJ/s101a/.git"
+printf 'ref: refs/heads/main\n' > "$PROJ/no101/HEAD"; printf 'gitdir: ../no101\n' > "$PROJ/s101b/.git"
+M101="$PROJ/main101"; "${G[@]}" init -q "$M101" && "${G[@]}" -C "$M101" commit -q --allow-empty -m s \
+  && "${G[@]}" -C "$M101" worktree add -q "$TMP/lw101" || { printf 'SCAFFOLD-FAILED: G101\n'; exit 1; }
+wt101="$(ls -d "$M101/.git/worktrees"/* | head -1)"; printf '%s\n' "$PROJ/nr101" > "$wt101/commondir"
+launch ..
+grep -qF "$PROJ/s101a/.git names $PROJ/nh101, which is not a git directory" "$ERR" \
+  && pass "G101 a gitdir: naming objects/ and refs/ with no HEAD is named" \
+  || fail "G101 a gitdir: target with no HEAD (stderr: $(grep -F nh101 "$ERR" | head -1))"
+grep -qF "$PROJ/s101b/.git names $PROJ/no101, which is not a git directory" "$ERR" \
+  && pass "G101 a gitdir: naming a HEAD and refs/ with no objects/ is named" \
+  || fail "G101 a gitdir: target with no objects/ (stderr: $(grep -F no101 "$ERR" | head -1))"
+grep -qF "$wt101/commondir names $PROJ/nr101, which is not a git directory" "$ERR" \
+  && pass "G101 a commondir naming objects/ with no refs/ is named" \
+  || fail "G101 a common directory with no refs/ (stderr: $(grep -F nr101 "$ERR" | head -1))"
+[[ ! -e "$PROJ/nh101/commondir" && ! -e "$PROJ/no101/commondir" && ! -e "$PROJ/nr101/commondir" ]] \
+  && pass "G101 nothing is made in any of them" \
+  || fail "G101 a placeholder was made in what git would refuse ($(ls "$PROJ"/n?101/commondir 2>/dev/null | tr '\n' ' '))"
+rm -rf "$PROJ/nh101" "$PROJ/s101a" "$PROJ/no101" "$PROJ/s101b" "$PROJ/nr101" "$M101" "$TMP/lw101"
+
+# ── G102: .git files naming nothing yet are named five at a time ─────────────
+# Each is the agent's to write. A mutant that named every one, and counted none
+# toward the five, survived every test (GAP-2's slice 2; sandbox.sh: `_gd_resolve()`).
+for n in 1 2 3 4 5 6 7; do mkdir -p "$PROJ/c102/d$n"; printf 'gitdir: ../later%s\n' "$n" > "$PROJ/c102/d$n/.git"; done
+launch ..
+[[ "$(grep -c 'which does not exist; if the agent makes it' "$ERR")" == 5 ]] \
+  && grep -qF "… and 2 more .git files or commondirs in $PROJ name what this launch cannot protect." "$ERR" \
+  && pass "G102 seven .git files naming nothing give five WARNINGs and a count" \
+  || fail "G102 ($(grep -c 'which does not exist' "$ERR") named; $(grep -F 'more .git files' "$ERR"))"
+rm -rf "$PROJ/c102"
+
 # ── G48: skipped gitlinks are named a few at a time ──────────────────────────
 # Every skipped gitlink got its own WARNING, and the index is the agent's: one
 # with 100,000 entries printed 100,000 lines, burying a real WARNING (review of
@@ -486,6 +524,22 @@ launch ..
   || fail "G56 index read per referrer ($(grep -cF "cannot read the index of $wt56" "$ERR") WARNINGs)"
 rm -rf "$M56" "$PROJ/lw56" "$PROJ/dec56"
 
+# ── G103: a git directory a .git file names is read once ────────────────────
+# G56 counts a WARNING the read prints once whatever the reads, so it cannot
+# tell. A gitlink not where the index says is named on every read: five
+# mutants that queued the directory again, once found and once named, survived
+# every test (GAP-2's slice 2; sandbox.sh: `_gdi_follow()`).
+"${G[@]}" init -q --bare "$PROJ/gd103" && "${G[@]}" config --file "$PROJ/gd103/config" core.bare false
+mkdir -p "$PROJ/dec103/real" "$TMP/wt103"; ln -s real "$PROJ/dec103/s"
+printf 'gitdir: ../gd103\n' > "$PROJ/dec103/.git"
+"${G[@]}" --git-dir="$PROJ/gd103" --work-tree="$TMP/wt103" update-index --add --cacheinfo "160000,$(printf '%040d' 1),s" \
+  || { printf 'SCAFFOLD-FAILED: G103\n'; exit 1; }
+launch ..
+[[ "$(grep -c "submodule $PROJ/dec103/s of $PROJ/gd103 is not where its index says" "$ERR")" == 1 ]] \
+  && pass "G103 a git directory a .git file names is read once" \
+  || fail "G103 read more than once ($(grep -c 'dec103/s' "$ERR") WARNINGs)"
+rm -rf "$PROJ/gd103" "$PROJ/dec103" "$TMP/wt103"
+
 # ── G57: more .git files naming one git directory than are followed refuses ───
 # Past twenty the rest were skipped with a WARNING, and the agent can mint decoys
 # that sort before the real one: its checkout's submodules were then not checked
@@ -521,6 +575,23 @@ has_mount "$M58/vendor/a/vendor/b/vendor/c/.git/config:/workspace/proj/main58/ve
   && pass "G58 nested submodules without core.worktree are read until nothing new turns up" \
   || fail "G58 a nested submodule's index was dropped before its .git file turned up"
 rm -rf "$U58" "$S58" "$T58" "$M58"
+
+# ── G105: a commondir gives the common directory no worktree ────────────────
+# A linked worktree's git directory names its common directory, but is no
+# worktree of it: a bare repository's index read against it followed nothing,
+# and the WARNING that its submodules are not followed was lost. A mutant that
+# took the commondir for a referrer survived every test (GAP-2's slice 2;
+# sandbox.sh: `_gdi_follow()`).
+B105="$PROJ/b105"; "${G[@]}" init -q --bare "$B105" && "${G[@]}" init -q "$TMP/seed105" \
+  && "${G[@]}" -C "$TMP/seed105" commit -q --allow-empty -m s && "${G[@]}" -C "$TMP/seed105" push -q "$B105" main 2>/dev/null \
+  && "${G[@]}" --git-dir="$B105" worktree add -q "$TMP/bw105" main && mkdir -p "$TMP/wt105" \
+  && "${G[@]}" --git-dir="$B105" --work-tree="$TMP/wt105" update-index --add --cacheinfo "160000,$(printf '%040d' 1),sub" \
+  || { printf 'SCAFFOLD-FAILED: G105\n'; exit 1; }
+launch ..
+grep -qF "no worktree is known for $B105, so the submodules its index records are not followed." "$ERR" \
+  && pass "G105 a common directory takes no worktree from a commondir, and its unfollowed submodules are named" \
+  || fail "G105 (stderr: $(grep -F b105 "$ERR" | head -2 | tr '\n' ' '))"
+rm -rf "$B105" "$TMP/seed105" "$TMP/bw105" "$TMP/wt105"
 
 # ── G59/G60: the repository a mount sits in is read too ─────────────────────
 # G59: a submodule checkout mounted on its own: its git directory is the
@@ -583,6 +654,35 @@ has_mount "$M62/vendor/lib/vendor/sub/.git/config:/workspace/proj/main62/vendor/
   && pass "G62 a referrer found after a git directory was read is read against too" \
   || fail "G62 a late referrer was never used"
 rm -rf "$U62" "$S62" "$M62" "$PROJ/decoy62"
+
+# ── G104: a referrer found only after the read is read against, once ───────
+# G62's decoy and checkout are both found before the git directory is read
+# (.git files are followed first), so it no longer reaches the read again; two
+# mutants that never read again survived every test, and one that read a .git
+# directory again too (GAP-2's slice 2; sandbox.sh: `_gdi_follow()`). Here the late .git file
+# is found only through an index the first read leads to, whatever order the
+# scan returns: gd104's index, read against dec104, finds the repository at
+# dec104/vendor/sub, whose index records r (naming gd104) and r2 (naming
+# bad104/.git, already read).
+"${G[@]}" init -q --bare "$PROJ/gd104" && "${G[@]}" config --file "$PROJ/gd104/config" core.bare false
+mkdir -p "$TMP/wt104" "$PROJ/dec104"; printf 'gitdir: ../gd104\n' > "$PROJ/dec104/.git"
+E104="$PROJ/dec104/vendor/sub"
+"${G[@]}" --git-dir="$PROJ/gd104" --work-tree="$TMP/wt104" update-index --add --cacheinfo "160000,$(printf '%040d' 1),vendor/sub" \
+  && "${G[@]}" init -q "$E104" && mkdir -p "$E104/r" "$E104/r2" \
+  && printf 'gitdir: %s\n' "$PROJ/gd104" > "$E104/r/.git" && printf 'gitdir: %s\n' "$PROJ/bad104/.git" > "$E104/r2/.git" \
+  && "${G[@]}" -C "$E104" update-index --add --cacheinfo "160000,$(printf '%040d' 1),r" \
+  && "${G[@]}" -C "$E104" update-index --add --cacheinfo "160000,$(printf '%040d' 1),r2" \
+  && "${G[@]}" init -q "$E104/r/vendor/sub" && "${G[@]}" init -q "$PROJ/bad104" \
+  || { printf 'SCAFFOLD-FAILED: G104\n'; exit 1; }
+printf 'garbage' > "$PROJ/bad104/.git/index"
+launch ..
+has_mount "$E104/r/vendor/sub/.git/config:/workspace/proj/dec104/vendor/sub/r/vendor/sub/.git/config:ro" \
+  && pass "G104 a referrer found only after a git directory was read is read against too" \
+  || fail "G104 the late referrer's submodule was left writable"
+[[ "$(grep -cF "cannot read the index of $PROJ/bad104/.git" "$ERR")" == 1 ]] \
+  && pass "G104 a .git directory a late .git file names is not read again" \
+  || fail "G104 read again ($(grep -cF "cannot read the index of $PROJ/bad104/.git" "$ERR") WARNINGs)"
+rm -rf "$PROJ/gd104" "$PROJ/dec104" "$PROJ/bad104" "$TMP/wt104"
 
 # ── G64: a FIFO planted as .git above a mount cannot hang the walk up ───────
 # The walk read any .git that was not a directory, and a FIFO there blocked the
@@ -764,6 +864,23 @@ grep -qF "WARNING: cannot read the index of $TMP/ix/odd/.git" "$ERR" \
   && pass "G95 an object format that is a path makes no directory outside the launcher's temporary one" \
   || fail "G95 '../sha1' made $TMP/t95/sha1"
 rm -rf "$TMP/ix" "$TMP/t95"
+
+# ── G110: a repository with no config has its index read as sha1 ───────────
+# git reads one (G49 makes it an empty config at its first protection, after
+# the scan has read its index), and with no extensions.objectFormat to say
+# otherwise its objects are sha1. A mutant that took the missing config for an
+# empty format left its submodules unfollowed, and survived every test
+# (GAP-2's slice 2; sandbox.sh: `_git_file_config()`).
+S110="$TMP/us110"; "${G[@]}" init -q "$S110" && "${G[@]}" -C "$S110" commit -q --allow-empty -m s
+M110="$PROJ/main110"; "${G[@]}" init -q "$M110" && "${G[@]}" clone -q "$S110" "$M110/vendor/lib" \
+  && "${G[@]}" -C "$M110" add vendor/lib 2>/dev/null && "${G[@]}" -C "$M110" commit -q -m l \
+  && rm "$M110/.git/config" || { printf 'SCAFFOLD-FAILED: G110\n'; exit 1; }
+launch ..
+has_mount "$M110/vendor/lib/.git/config:/workspace/proj/main110/vendor/lib/.git/config:ro" \
+  && ! grep -qF "cannot read the index of $M110/.git" "$ERR" \
+  && pass "G110 a repository with no config has its index read, its submodules followed" \
+  || fail "G110 (stderr: $(grep -F main110 "$ERR" | head -2 | tr '\n' ' '))"
+rm -rf "$S110" "$M110"
 
 # ── G96: a sha256 repository's linked worktree has its submodules followed ────
 # The worktree's git directory has no config; its object format is in the

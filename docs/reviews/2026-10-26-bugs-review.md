@@ -17,7 +17,7 @@
 - **Updated 2026-11-04:** GIT-23 is FIXED: a regular file only slow to read gets 10 s, within 30 s per launch.
 - **Updated 2026-11-04:** section 23, found while running PLAT-5 on macOS: GIT-27 and TST-28, FIXED.
 - **Updated 2026-11-04:** GIT-25 and GIT-26 are FIXED (`d942daa`). GIT-28, found while fixing them (section 22), is FIXED too, after seven reviews of its fix; `--version` no longer reports `-dirty` (the user's choice).
-- **Updated 2026-11-05:** the fix-batch table below no longer lists as open what was fixed after its batch. Every entry is FIXED except these: GIT-29 (open; section 24), LNCH-2 (not reproducible), GIT-12 (won't fix), GIT-13 (resolved fail-closed), LNCH-7 (documented), GIT-21 and LNCH-17 (closed), BLD-8 (its `--error-on=any` trade kept by design) and TST-21 (the same comment edit is owed to mgd-ai-containers' copy of `tests/layer-checks.conf`, which is not reachable from this machine). Section 24 holds GIT-29, found while reviewing PLAT-7's run steps.
+- **Updated 2026-11-05:** the fix-batch table below no longer lists as open what was fixed after its batch. Every entry is FIXED except these: GIT-29 (open; section 24), GIT-30 (open, HIGH; section 25), LNCH-2 (not reproducible), GIT-12 (won't fix), GIT-13 (resolved fail-closed), LNCH-7 (documented), GIT-21 and LNCH-17 (closed), BLD-8 (its `--error-on=any` trade kept by design) and TST-21 (the same comment edit is owed to mgd-ai-containers' copy of `tests/layer-checks.conf`, which is not reachable from this machine). Section 24 holds GIT-29, found while reviewing PLAT-7's run steps; section 25 GIT-30, found by GAP-2's slice 2.
 - **Companion:** [2026-10-26-feature-gaps-review.md](2026-10-26-feature-gaps-review.md).
 - **Confidence:** CONFIRMED = reproduced, or unambiguous from the code. PLAUSIBLE = strong reasoning, not reproduced (usually needs hardware or a platform not available here); verify before fixing.
 - **Citations** are by snippet, per AGENTS.md "Citing code". Scratch repro paths mentioned in entries were session-local and may no longer exist; each entry describes its repro in full.
@@ -1634,6 +1634,48 @@ An Opus reviewer read the rewritten PLAT-7 steps against the code, 2026-11-05, a
   - **A (recommended): ask git nothing about the project's repository.** A work tree is a `.git` directory or file at the project root, read as GIT-26 reads one. "Already ignored" becomes "the root `.gitignore` already holds the line". "Tracked" is read from the index alone, with no repository, as `sandbox.sh: _git_index_read()` reads one: a throwaway `GIT_DIR`, the project's index as `GIT_INDEX_FILE`, a time bound. That still runs git, so only where git runs, which sync and init would have to ask as `_git_usable()` does (they do not source sandbox.sh). The trade-offs: a project that ignores `.ai-containers` by a broader pattern gets the line once more; a project nested in an enclosing repository (a monorepo directory) has no `.git` of its own and gets no line, so its `.ai-containers/` shows as untracked; and A needs a rule for when "tracked" cannot be read (git does not run, or the read is cut off): adding the line hides newly synced files of a project that tracks them (PRJ-4), and not adding it leaves `.ai-containers/` untracked.
   - **B: only at init.** Keep the git calls in `project-init.sh` behind a check that git runs and a time bound, and drop the backfill from `sync-to-projects.sh`, which has had five months to reach every project. A re-init of a project agents have worked in still runs an included `core.fsmonitor`, and stalls for the length of the bound on a FIFO index.
 
+## 25. Found by GAP-2's slice 2
+
+An Opus reviewer of the slice's new tests, 2026-11-05, at `fd49c3c`, reached a mutant of `_git_runs()` that the slice had called unreachable, through a `commondir` holding a NUL. Following that up found GIT-30.
+
+### GIT-30: a commondir, gitdir or .git file is read otherwise than git reads it
+- **Status: OPEN** (2026-11-05).
+- **Severity: HIGH.** Confidence: CONFIRMED. Measured with git 2.56, and on the launcher at `fd49c3c` through `tests/lib-git-internals-ro.sh`'s fake docker; a second reviewer reproduced the failure scenario with a real `<newline>` directory.
+  - **The harm:** the host's git runs a program the agent chose, and nothing names it. Not the rescan after the session that made the repository, not the launch that then protects it, not any later launch.
+  - **What it needs:**
+    - a repository the agent made in a session, or one whose `commondir` it could write before any launch protected it;
+    - the user running git in it on the host. That is the case the rescan after the session exists to warn about.
+- **Location:** every read in sandbox.sh of a file git takes a path from.
+  - **Placeholder checks:** sandbox.sh: `launcher_ro_overlay()` checks for the placeholder and refuses a `commondir` other than `./`. Both checks use `$(_rd …)`, which drops NUL bytes. The same function also reads the worktree branch's `cdir` and the cross-mount `commondir`.
+  - **The rest:**
+    - sandbox.sh: `git_dirs_in()`: a `.git` file's `gitdir:`, `commondir`, `gitdir`;
+    - sandbox.sh: `_git_runs()`;
+    - sandbox.sh: `_git_index_read()`;
+    - sandbox.sh: `_checkout_origin_url()`.
+  - **Data only:** version.sh: `_ver_read()` and sandbox-common.sh: `_ac_source_commit()` read such files the same way. They take from them only the version and the source commit they report, and run nothing through them.
+- **Introduced:** `5793a34` (2026-10-06). It added the refusal of a `commondir` other than the placeholder, comparing `$(cat "$g/commondir")`, which drops NULs. `91fac80` made the placeholder `./` the same day.
+  - **Releases affected:** every one from v0.10.0 to v0.10.7. Those have no rescan after the session and follow no commondir, but the harm is the same: git uses `.git/<newline>/config`, and the launch binds only `.git/config`.
+  - **The other readers came later:**
+    - `_git_index_read()`'s in `d6fc64f` (2026-10-27);
+    - `git_dirs_in()`'s in their present form in `56b43e8` and `86427b0` (2026-10-26, 10-28);
+    - `_git_runs()`'s in `7121741` (2026-11-03);
+    - `_checkout_origin_url()`'s in `d942daa` (2026-11-04).
+- **What's wrong:**
+  - **How git reads them:** whole (`strbuf_read_file`). It cuts every trailing CR and LF, then uses the buffer as a C string. The path therefore ends at the first NUL, with whatever CR or LF stands before it.
+  - **How the launcher reads them:**
+    - most readers read up to the first NUL, then cut trailing CRs and LFs;
+    - the `$(_rd …)` checks drop every NUL.
+  - **The result:** `./\n\0\n` is `./`, the placeholder, to the launcher. To git it is `./` and a newline: a directory inside `.git` whose name is a newline, which the agent can make.
+  - **Truncation:** `_rd 4096` reads 4096 bytes. git reads all of a longer file, and `x/../` steps in it can resolve somewhere else.
+  - **A worktree's `gitdir`:** git cuts every trailing whitespace character from it, not only CRs and LFs. The launcher reads it only to add a worktree to check, so a path it misreads is named rather than missed.
+- **Failure scenario:**
+  1. In a session, the agent runs `git init sub` and writes `./\n\0\n` to `sub/.git/commondir`.
+  2. It makes `sub/.git/<newline>/` holding `objects/`, `refs/` and a `config` that sets `core.fsmonitor`.
+  3. The rescan after the session says nothing (measured). `sub/.git`'s own config sets nothing, and the new directory has no HEAD, so no scan takes it for a git directory.
+  4. The next launch binds `sub/.git/config`, `commondir` and `hooks` read-only and names nothing. `sub/.git/<newline>/config` stays writable. The one trace is bash's own `warning: command substitution: ignored null byte in input`.
+  5. `git status` in `sub` on the host runs the program (measured).
+- **Fix direction:** read every such file one way, and accept only what every reader agrees on. That is at most 4096 bytes, with no NUL, and no CR or LF except at the end; for a `gitdir`, no other whitespace at the end either. Anything else is named and refuses the launch, as a FIFO there does. This replaces parsing such a file as git would, which GIT-24 and GIT-28 showed keeps failing review.
+
 ## GIT
 
 
@@ -1647,7 +1689,7 @@ An Opus reviewer read the rewritten PLAT-7 steps against the code, 2026-11-05, a
   (`-d objects && -f config` gated, so linked-worktree dirs that legitimately
   carry a commondir do not trip it). The earlier `.` placeholder (5793a34) was
   replaced by `./` (91fac80) the *same day, before the v0.10.0 tag* — never
-  released, so no upgrade false-refusal. Not a finding.
+  released, so no upgrade false-refusal. Not a finding. (GIT-30 later found that the refusal read the file through `$(…)`, which drops NULs.)
 - **`config.worktree` placeholder** — created empty only when
   `extensions.worktreeConfig` is on; read back via the commondir for worktrees.
 - **`_git_config_get` / `_git_config_bool`** — both prefer real `git config

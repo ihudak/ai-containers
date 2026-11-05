@@ -313,6 +313,18 @@ has_mount "$PROJ/h71/.git/config:/workspace/proj/h71/.git/config:ro" \
   && pass "G71 a git directory whose HEAD links to a directory is protected" \
   || fail "G71 HEAD -> refs/heads left the repository writable (rc=$LAUNCH_RC)"
 rm -rf "$PROJ/h71"
+# ── G100: a bare repository is still taken by its HEAD, a link included ─────
+# G68's and G71's repositories are .git directories, protected whatever
+# their HEAD holds since G77, so neither checked the HEAD rule any more: a
+# repository not named .git (a bare one) is found by its HEAD, and taken for
+# one with objects/ and refs/. A mutant that took a HEAD link to a directory
+# for no HEAD survived every test (GAP-2's slice 2; sandbox.sh: `_is_git_dir()`).
+"${G[@]}" init -q --bare "$PROJ/b100" && rm -f "$PROJ/b100/HEAD" && ln -s refs/heads "$PROJ/b100/HEAD"
+launch ..
+has_mount "$PROJ/b100/config:/workspace/proj/b100/config:ro" \
+  && pass "G100 a bare repository whose HEAD links to a directory is protected" \
+  || fail "G100 HEAD -> refs/heads left a bare repository writable (rc=$LAUNCH_RC)"
+rm -rf "$PROJ/b100"
 
 # ── G76: the unlistable hint names the right way back ────────────────────────
 # chmod for yours; the sandbox identity's for one SANDBOX_UID owns (LNCH-12); its
