@@ -29,6 +29,9 @@ TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; trap '
 # this hermetic against any future coupling and against ensure_ai_containers_ignored
 # ever consulting a global git config.
 export HOME="$TMP/home"; mkdir -p "$HOME"
+# git's global excludes file is $XDG_CONFIG_HOME/git/ignore where that is set:
+# a developer's exported one would decide what these tests see.
+unset XDG_CONFIG_HOME
 export GIT_CONFIG_GLOBAL="$TMP/home/.gitconfig"
 export GIT_CONFIG_NOSYSTEM=1
 
@@ -374,6 +377,218 @@ grep -qxF '/.ai-containers/' "$TRACKED/.gitignore" 2>/dev/null \
 [[ "$(cat "$TRACKED/.gitignore")" == '*.log' ]] \
   && pass "tracked .ai-containers/: root .gitignore left byte-identical" \
   || fail "tracked .ai-containers/: root .gitignore left byte-identical ($(cat "$TRACKED/.gitignore"))"
+
+# ── 6c. Nothing of the project's repository is run (bugs review GIT-29) ───────
+# check-ignore and ls-files read the project's config, includes and all, ran its
+# core.fsmonitor, and hung on a FIFO index; on a Mac without the Command Line
+# Tools they opened the installer. The work tree is now a .git at the project's
+# root, "already ignored" the root .gitignore's own line, and "tracked" the
+# index read with no repository, bounded, and only where git runs.
+# In a subshell of its own: its fake uname, held FIFO writer and the like must
+# not reach the sections after it (bash's command hash kept the fake uname, and a
+# later sync took this host for a Mac). Its FAIL lines count toward the total.
+c6="$TMP/6c.out"
+(
+  G6=(git -c user.email=t@example.invalid -c user.name=t -c init.defaultBranch=main)
+  # A FIFO index: not read, nothing added, and it says why. A writer is held on
+  # it meanwhile, so the code before the fix, which ran git on it, failed rather
+  # than blocked: a test that hangs a run on a regression costs every run.
+  FI="$TMP/fifo-index"; mkdir -p "$FI" && "${G6[@]}" -C "$FI" init -q && rm -f "$FI/.git/index" && mkfifo "$FI/.git/index" \
+    || { printf 'SCAFFOLD-FAILED: 6c FIFO\n'; exit 1; }
+  ( exec 3<>"$FI/.git/index"; exec sleep 30 ) & w6=$!
+  fi_out="$(ensure_ai_containers_ignored "$FI" 2>&1)" || true
+  kill "$w6" 2>/dev/null; wait "$w6" 2>/dev/null || true
+  # The NOTE names why and the way out: git, run on it, says only that it
+  # could not read it (review of the fix, M3).
+  [[ ! -e "$FI/.gitignore" ]] && grep -qF 'its index is not a regular file' <<<"$fi_out" \
+    && grep -qF 'AI_CONTAINERS_NO_GITIGNORE=1' <<<"$fi_out" \
+    && pass "6c a FIFO index is not read, gets no line added, and is named" \
+    || fail "6c FIFO index (gitignore: $(cat "$FI/.gitignore" 2>&1); out: $(tr '\n' ' ' <<<"$fi_out"))"
+  # The read is bounded: an index git takes too long over is not known, and
+  # says so; nothing waits for it.
+  rg6="$(command -v git)"; mkdir -p "$TMP/slowgit" \
+    && printf '#!/bin/sh\nfor a in "$@"; do [ "$a" = ls-files ] && exec sleep 8; done\nexec %q "$@"\n' "$rg6" > "$TMP/slowgit/git" \
+    && chmod +x "$TMP/slowgit/git" && SG="$TMP/slow-proj" && mkdir -p "$SG" && "${G6[@]}" -C "$SG" init -q \
+    && : > "$SG/f" && "${G6[@]}" -C "$SG" add f || { printf 'SCAFFOLD-FAILED: 6c slow git\n'; exit 1; }
+  t6=$SECONDS
+  sg_out="$( _ver_secs=1; PATH="$TMP/slowgit:$PATH"; ensure_ai_containers_ignored "$SG" 2>&1 )" || true
+  t6=$(( SECONDS - t6 ))
+  [[ ! -e "$SG/.gitignore" ]] && grep -qF 'within 1 s' <<<"$sg_out" && (( t6 < 6 )) \
+    && pass "6c an index read that takes too long is cut off, adds nothing, and is named" \
+    || fail "6c slow index read (${t6} s; gitignore: $(cat "$SG/.gitignore" 2>&1); out: $(tr '\n' ' ' <<<"$sg_out"))"
+  # A sparse index whose copy lies outside the cone: git, with no objects, says
+  # error: and exits 0, listing nothing. Not known, so nothing is added (M2).
+  # init, then set: git 2.34's set --sparse-index makes no sparse index.
+  mksparse() {  # DIR CONE-DIR
+    mkdir -p "$1/.ai-containers" "$1/src" && "${G6[@]}" -C "$1" init -q && : > "$1/.ai-containers/x" && : > "$1/src/y" \
+      && "${G6[@]}" -C "$1" add . && "${G6[@]}" -C "$1" commit -qm s \
+      && "${G6[@]}" -C "$1" sparse-checkout init --cone --sparse-index >/dev/null 2>&1 \
+      && "${G6[@]}" -C "$1" sparse-checkout set "$2" >/dev/null 2>&1 \
+      && [[ "$("${G6[@]}" -C "$1" config --get index.sparse)" == true ]]
+  }
+  SPI="$TMP/sparse-proj"
+  if mksparse "$SPI" src; then
+    spi_out="$(ensure_ai_containers_ignored "$SPI" 2>&1)" || true
+    [[ ! -e "$SPI/.gitignore" ]] && grep -qF 'only in part' <<<"$spi_out" \
+      && pass "6c a sparse index git cannot read in full adds nothing, and is named" \
+      || fail "6c sparse index (gitignore: $(cat "$SPI/.gitignore" 2>&1); out: $(tr '\n' ' ' <<<"$spi_out"))"
+    # Read in part, but what it lists is in the index: tracked, and nothing said.
+    SPC="$TMP/sparse-cone"
+    if mksparse "$SPC" .ai-containers; then
+      spc_out="$(ensure_ai_containers_ignored "$SPC" 2>&1)" || true
+      [[ ! -e "$SPC/.gitignore" && -z "$spc_out" ]] \
+        && pass "6c a sparse index that lists the copy counts as tracking it" \
+        || fail "6c sparse cone holding the copy (gitignore: $(cat "$SPC/.gitignore" 2>&1); out: $spc_out)"
+    else
+      fail "6c sparse cone holding the copy: no sparse index made"
+    fi
+  else
+    printf 'NOTE: this git makes no sparse index; the sparse-index check is not applicable\n'
+  fi
+  # Ignored elsewhere, as git ignores it: info/exclude, a core.excludesFile
+  # reached through a link (as dotfile managers make them), and the XDG default.
+  # No line, and no NOTE (M1).
+  IE="$TMP/info-ex"; mkdir -p "$IE" && "${G6[@]}" -C "$IE" init -q && printf '.ai-containers\n' >> "$IE/.git/info/exclude" \
+    || { printf 'SCAFFOLD-FAILED: 6c info/exclude\n'; exit 1; }
+  ie_out="$(ensure_ai_containers_ignored "$IE" 2>&1)" || true
+  [[ ! -e "$IE/.gitignore" && -z "$ie_out" ]] \
+    && pass "6c a copy info/exclude ignores gets no line" \
+    || fail "6c info/exclude (gitignore: $(cat "$IE/.gitignore" 2>&1); out: $ie_out)"
+  GX="$TMP/glob-ex"; mkdir -p "$GX" "$TMP/dotfiles" && "${G6[@]}" -C "$GX" init -q \
+    && printf '*.swp\n/.ai-containers/\n' > "$TMP/dotfiles/gitignore_global" && ln -s "$TMP/dotfiles/gitignore_global" "$TMP/gx-link" \
+    && printf '[core]\n\texcludesFile = %s\n' "$TMP/gx-link" > "$TMP/gx.cfg" || { printf 'SCAFFOLD-FAILED: 6c excludesFile\n'; exit 1; }
+  gx_out="$(GIT_CONFIG_GLOBAL="$TMP/gx.cfg" ensure_ai_containers_ignored "$GX" 2>&1)" || true
+  [[ ! -e "$GX/.gitignore" && -z "$gx_out" ]] \
+    && pass "6c a copy your core.excludesFile ignores, through a link, gets no line" \
+    || fail "6c core.excludesFile (gitignore: $(cat "$GX/.gitignore" 2>&1); out: $gx_out)"
+  XG="$TMP/xdg-ex"; mkdir -p "$XG" "$TMP/xdg/git" && "${G6[@]}" -C "$XG" init -q && : > "$TMP/empty.cfg" \
+    && printf '.ai-containers/\n' > "$TMP/xdg/git/ignore" || { printf 'SCAFFOLD-FAILED: 6c XDG\n'; exit 1; }
+  xg_out="$(GIT_CONFIG_GLOBAL="$TMP/empty.cfg" XDG_CONFIG_HOME="$TMP/xdg" ensure_ai_containers_ignored "$XG" 2>&1)" || true
+  [[ ! -e "$XG/.gitignore" && -z "$xg_out" ]] \
+    && pass "6c a copy git's default global excludes file ignores gets no line" \
+    || fail "6c XDG git/ignore (gitignore: $(cat "$XG/.gitignore" 2>&1); out: $xg_out)"
+  # A relative core.excludesFile is the work tree's, as git opens it there,
+  # wherever the sync was started from (re-review L1).
+  RX="$TMP/rel-ex"; mkdir -p "$RX" && "${G6[@]}" -C "$RX" init -q && printf '.ai-containers/\n' > "$RX/rel-ignore-6c" \
+    && printf '[core]\n\texcludesFile = rel-ignore-6c\n' > "$TMP/rx.cfg" || { printf 'SCAFFOLD-FAILED: 6c relative excludesFile\n'; exit 1; }
+  rx_out="$(cd "$TMP" && GIT_CONFIG_GLOBAL="$TMP/rx.cfg" ensure_ai_containers_ignored "$RX" 2>&1)" || true
+  [[ ! -e "$RX/.gitignore" && -z "$rx_out" ]] \
+    && pass "6c a relative core.excludesFile is read from the work tree's top" \
+    || fail "6c relative core.excludesFile (gitignore: $(cat "$RX/.gitignore" 2>&1); out: $rx_out)"
+  # A git directory the sync cannot search is not "no index" (re-review L2).
+  if [[ "$(id -u)" != 0 ]]; then
+    US="$TMP/unsearch"; mkdir -p "$US/.ai-containers" && "${G6[@]}" -C "$US" init -q && : > "$US/.ai-containers/x" \
+      && "${G6[@]}" -C "$US" add .ai-containers/x && chmod 000 "$US/.git" || { printf 'SCAFFOLD-FAILED: 6c unsearchable\n'; exit 1; }
+    us_out="$(ensure_ai_containers_ignored "$US" 2>&1)" || true
+    chmod 700 "$US/.git"
+    [[ ! -e "$US/.gitignore" ]] && grep -qF 'cannot be searched' <<<"$us_out" \
+      && pass "6c a git directory that cannot be searched adds nothing, and is named" \
+      || fail "6c unsearchable .git (gitignore: $(cat "$US/.gitignore" 2>&1); out: $us_out)"
+  fi
+  # A .git that is a link is not followed, and is named (L3).
+  LG="$TMP/link-git"; mkdir -p "$LG" "$TMP/real-git" && "${G6[@]}" -C "$TMP/real-git" init -q && ln -s "$TMP/real-git/.git" "$LG/.git" \
+    || { printf 'SCAFFOLD-FAILED: 6c .git link\n'; exit 1; }
+  lg_out="$(ensure_ai_containers_ignored "$LG" 2>&1)" || true
+  [[ ! -e "$LG/.gitignore" ]] && grep -qF 'its .git is a link' <<<"$lg_out" \
+    && pass "6c a .git that is a link is not followed, and is named" \
+    || fail "6c .git link (gitignore: $(cat "$LG/.gitignore" 2>&1); out: $lg_out)"
+  # Trailing whitespace as git trims it: one CR and spaces, never a tab (L5).
+  WS="$TMP/ws-tab"; mkdir -p "$WS" && "${G6[@]}" -C "$WS" init -q && printf '/.ai-containers/\t\n' > "$WS/.gitignore"
+  ensure_ai_containers_ignored "$WS" >/dev/null 2>&1 || true
+  grep -qxF '/.ai-containers/' "$WS/.gitignore" \
+    && pass "6c a line git does not match (a trailing tab) gets the line added" \
+    || fail "6c trailing tab ($(od -c "$WS/.gitignore" | head -3 | tr '\n' ' '))"
+  WC="$TMP/ws-cr"; mkdir -p "$WC" && "${G6[@]}" -C "$WC" init -q && printf '.ai-containers/ \r\n' > "$WC/.gitignore"
+  ensure_ai_containers_ignored "$WC" >/dev/null 2>&1 || true
+  [[ "$(wc -l < "$WC/.gitignore" | tr -d ' ')" == 1 ]] \
+    && pass "6c a CRLF line with a trailing space still counts as the line" \
+    || fail "6c CRLF line ($(od -c "$WC/.gitignore" | head -3 | tr '\n' ' '))"
+  # An included core.fsmonitor is not run, and the line is added.
+  FM="$TMP/fsmon"; mkdir -p "$FM" && "${G6[@]}" -C "$FM" init -q && : > "$FM/f" && "${G6[@]}" -C "$FM" add f \
+    && printf '#!/bin/sh\ntouch %q\n' "$TMP/fsmon-ran" > "$TMP/fsmon.sh" && chmod +x "$TMP/fsmon.sh" \
+    && printf '[core]\n\tfsmonitor = %s\n' "$TMP/fsmon.sh" > "$FM/.git/inc.cfg" && "${G6[@]}" -C "$FM" config include.path inc.cfg \
+    || { printf 'SCAFFOLD-FAILED: 6c fsmonitor\n'; exit 1; }
+  ensure_ai_containers_ignored "$FM" >/dev/null 2>&1 || true
+  [[ ! -e "$TMP/fsmon-ran" ]] && grep -qxF '/.ai-containers/' "$FM/.gitignore" 2>/dev/null \
+    && pass "6c an included core.fsmonitor is not run, and the line is added" \
+    || fail "6c fsmonitor ran ($(ls "$TMP/fsmon-ran" 2>&1)) or no line ($(cat "$FM/.gitignore" 2>&1))"
+  # macOS's git shim with no developer directory is not run: nothing is added.
+  if [[ "$(command -v git)" == /usr/bin/git ]]; then
+    MC="$TMP/mac-proj"; mkdir -p "$MC" "$TMP/mac" && "${G6[@]}" -C "$MC" init -q \
+      && printf '#!/bin/sh\necho Darwin\n' > "$TMP/mac/uname" && printf '#!/bin/sh\nexit 2\n' > "$TMP/mac/xcode-select" \
+      && chmod +x "$TMP/mac/uname" "$TMP/mac/xcode-select" || { printf 'SCAFFOLD-FAILED: 6c mac\n'; exit 1; }
+    # GIT_TRACE: a git run at all, for the global excludes as much as the
+    # index, is the installer on a real Mac (re-review M1).
+    mc_out="$(GIT_TRACE="$TMP/mac-trace" PATH="$TMP/mac:/usr/bin:$PATH" ensure_ai_containers_ignored "$MC" 2>&1)" || true
+    [[ ! -e "$MC/.gitignore" && ! -s "$TMP/mac-trace" ]] && grep -qF 'git does not run' <<<"$mc_out" \
+      && pass "6c macOS's git shim is not run: nothing is added, and it says why" \
+      || fail "6c macOS shim (gitignore: $(cat "$MC/.gitignore" 2>&1); git ran: $(head -2 "$TMP/mac-trace" 2>/dev/null | tr '\n' ' '); out: $(tr '\n' ' ' <<<"$mc_out"))"
+  else
+    printf 'NOTE: git is not /usr/bin/git here; the macOS shim check is not applicable\n'
+  fi
+  # Still read as before: a linked worktree that tracks .ai-containers/ through
+  # its .git file, a sha256 repository that does, and a plain spelling of the line.
+  WM="$TMP/wt-main"; mkdir -p "$WM/.ai-containers" && "${G6[@]}" -C "$WM" init -q && : > "$WM/.ai-containers/x" \
+    && "${G6[@]}" -C "$WM" add .ai-containers/x && "${G6[@]}" -C "$WM" commit -qm s && "${G6[@]}" -C "$WM" worktree add -q "$TMP/wt-linked" \
+    || { printf 'SCAFFOLD-FAILED: 6c worktree\n'; exit 1; }
+  # Silent: a NOTE leaves no line either (re-review M2).
+  wl_out="$(ensure_ai_containers_ignored "$TMP/wt-linked" 2>&1)" || true
+  [[ ! -e "$TMP/wt-linked/.gitignore" && -z "$wl_out" ]] \
+    && pass "6c a linked worktree that tracks .ai-containers/ gets no line" \
+    || fail "6c linked worktree ($(cat "$TMP/wt-linked/.gitignore" 2>&1); out: $wl_out)"
+  # Its counterparts: one that does not track it gets the line, and one whose
+  # main repository's info/exclude ignores it gets none, silently.
+  WU="$TMP/wtu-main"; mkdir -p "$WU" && "${G6[@]}" -C "$WU" init -q && : > "$WU/f" && "${G6[@]}" -C "$WU" add f \
+    && "${G6[@]}" -C "$WU" commit -qm s && "${G6[@]}" -C "$WU" worktree add -q "$TMP/wtu-linked" \
+    && "${G6[@]}" -C "$WU" worktree add -q "$TMP/wtx-linked" || { printf 'SCAFFOLD-FAILED: 6c untracked worktree\n'; exit 1; }
+  wu_out="$(ensure_ai_containers_ignored "$TMP/wtu-linked" 2>&1)" || true
+  grep -qxF '/.ai-containers/' "$TMP/wtu-linked/.gitignore" 2>/dev/null \
+    && pass "6c a linked worktree that does not track .ai-containers/ gets the line" \
+    || fail "6c untracked linked worktree (gitignore: $(cat "$TMP/wtu-linked/.gitignore" 2>&1); out: $wu_out)"
+  printf '/.ai-containers/\n' >> "$WU/.git/info/exclude"
+  wx_out="$(ensure_ai_containers_ignored "$TMP/wtx-linked" 2>&1)" || true
+  [[ ! -e "$TMP/wtx-linked/.gitignore" && -z "$wx_out" ]] \
+    && pass "6c a linked worktree its main repository's info/exclude ignores gets no line" \
+    || fail "6c linked worktree, common info/exclude (gitignore: $(cat "$TMP/wtx-linked/.gitignore" 2>&1); out: $wx_out)"
+  if "${G6[@]}" init -q --object-format=sha256 "$TMP/sha-proj" >/dev/null 2>&1; then
+    mkdir -p "$TMP/sha-proj/.ai-containers" && : > "$TMP/sha-proj/.ai-containers/x" && "${G6[@]}" -C "$TMP/sha-proj" add .ai-containers/x
+    sh_out="$(ensure_ai_containers_ignored "$TMP/sha-proj" 2>&1)" || true
+    [[ ! -e "$TMP/sha-proj/.gitignore" && -z "$sh_out" ]] \
+      && pass "6c a sha256 repository that tracks .ai-containers/ gets no line" \
+      || fail "6c sha256 ($(cat "$TMP/sha-proj/.gitignore" 2>&1); out: $sh_out)"
+    # Its counterparts: a sha256 repository, and a sha256 linked worktree (whose
+    # format is its common directory's), that do not track it get the line.
+    "${G6[@]}" init -q --object-format=sha256 "$TMP/shau" && : > "$TMP/shau/f" && "${G6[@]}" -C "$TMP/shau" add f \
+      && "${G6[@]}" -C "$TMP/shau" commit -qm s && "${G6[@]}" -C "$TMP/shau" worktree add -q "$TMP/shau-linked" \
+      || { printf 'SCAFFOLD-FAILED: 6c sha256 untracked\n'; exit 1; }
+    for d6 in "$TMP/shau" "$TMP/shau-linked"; do
+      su_out="$(ensure_ai_containers_ignored "$d6" 2>&1)" || true
+      grep -qxF '/.ai-containers/' "$d6/.gitignore" 2>/dev/null \
+        && pass "6c a sha256 $([[ $d6 == *linked ]] && echo 'linked worktree' || echo repository) that does not track .ai-containers/ gets the line" \
+        || fail "6c sha256 untracked $d6 (gitignore: $(cat "$d6/.gitignore" 2>&1); out: $su_out)"
+    done
+  fi
+  SP="$TMP/spelled"; mkdir -p "$SP" && "${G6[@]}" -C "$SP" init -q && printf '.ai-containers\n' > "$SP/.gitignore"
+  ensure_ai_containers_ignored "$SP" >/dev/null 2>&1 || true
+  [[ "$(cat "$SP/.gitignore")" == '.ai-containers' ]] \
+    && pass "6c a root .gitignore that already names .ai-containers gets no second line" \
+    || fail "6c plain spelling ($(cat "$SP/.gitignore"))"
+  # The trades, as documented: a broader pattern gets the line once more, and a
+  # project nested in an enclosing repository, with no .git of its own, gets none.
+  BP="$TMP/broad"; mkdir -p "$BP" && "${G6[@]}" -C "$BP" init -q && printf '.ai-*\n' > "$BP/.gitignore"
+  ensure_ai_containers_ignored "$BP" >/dev/null 2>&1 || true
+  grep -qxF '/.ai-containers/' "$BP/.gitignore" \
+    && pass "6c a broader pattern gets the line once more (documented)" \
+    || fail "6c broader pattern ($(cat "$BP/.gitignore"))"
+  NM="$TMP/mono"; mkdir -p "$NM/apps/a" && "${G6[@]}" -C "$NM" init -q
+  ensure_ai_containers_ignored "$NM/apps/a" >/dev/null 2>&1 || true
+  [[ ! -e "$NM/apps/a/.gitignore" ]] \
+    && pass "6c a project nested in an enclosing repository gets no line (documented)" \
+    || fail "6c nested project ($(cat "$NM/apps/a/.gitignore"))"
+) > "$c6" 2>&1 || true
+cat "$c6"
+# A scaffold that failed skipped the checks after it: a failure too (L9).
+fails=$((fails + $(grep -cE '^(FAIL|SCAFFOLD-FAILED):' "$c6" || true)))
 
 # ── 7. The project's .ai-containers/.gitignore is BACKFILLED, append-only ────────
 # sync_project's shared-file copy loop does not list `.gitignore`; instead

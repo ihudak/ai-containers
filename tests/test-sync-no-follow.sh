@@ -15,6 +15,9 @@ fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails+1)); }
 
 TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; trap 'rm -rf "$TMP"' EXIT
 export HOME="$TMP/home"; mkdir -p "$HOME"
+# git's global excludes file is $XDG_CONFIG_HOME/git/ignore where that is set:
+# a developer's exported one would decide what these tests see.
+unset XDG_CONFIG_HOME
 export GIT_CONFIG_GLOBAL="$TMP/home/.gitconfig" GIT_CONFIG_NOSYSTEM=1
 
 # shellcheck disable=SC1090

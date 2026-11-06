@@ -21,6 +21,9 @@ rsync -a --exclude='.git' --exclude='tests' --exclude='docs' "$REPO_DIR/"/ "$SCR
 
 # Isolated HOME so group-init prompts fire deterministically (no ~/.ai-containers).
 export HOME="$TMP/home"; mkdir -p "$HOME"
+# git's global excludes file is $XDG_CONFIG_HOME/git/ignore where that is set:
+# a developer's exported one would decide what these tests see.
+unset XDG_CONFIG_HOME
 
 # Target project (a git repo, as real projects are).
 PROJ="$TMP/proj/myproj"; mkdir -p "$PROJ"; git -C "$PROJ" init -q

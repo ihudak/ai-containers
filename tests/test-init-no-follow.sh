@@ -17,6 +17,9 @@ TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; TMP_OW
 # would inherit an unguarded trap (tests/test-exit-trap-ownership.sh).
 trap '[[ "$BASHPID" == "$TMP_OWNER" ]] && rm -rf "$TMP"' EXIT
 export HOME="$TMP/home"; mkdir -p "$HOME"
+# git's global excludes file is $XDG_CONFIG_HOME/git/ignore where that is set:
+# a developer's exported one would decide what these tests see.
+unset XDG_CONFIG_HOME
 export GIT_CONFIG_GLOBAL="$TMP/home/.gitconfig" GIT_CONFIG_NOSYSTEM=1
 unset VAULT_PATH SPECS_PATH DOCS_PATH ARCHITECTURE_REPO_PATH EXTRA_MOUNTS REPOS SANDBOX_ENV_FILE SANDBOX_WORKDIR AI_CONTAINER_GROUP
 
