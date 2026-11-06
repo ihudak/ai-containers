@@ -438,7 +438,7 @@ EXTRA_MOUNTS="$TMP/h112" launch "$TMP/app"
 # the overlay into the writable tree is named.
 rm -f "$TMP/h112/r/.git/commondir" "$TMP/h112/r/.git/config"; : > "$TMP/h112/cfg.txt"; ln -s ../../cfg.txt "$TMP/h112/r/.git/config"
 EXTRA_MOUNTS="$TMP/h112" launch "$TMP/app"
-grep -qF "it can change $TMP/h112/cfg.txt" <<<"$(grep -A1 -F 'WARNING: /workspace/h112/r/.git/config, under a read-only overlay, is a link the agent can redirect' "$ERR")" \
+grep -qF 'WARNING: /workspace/h112/r/.git/config, under a read-only overlay, is a symlink' "$ERR" \
   && pass "G112 a planted launcher's config linking into the writable tree is named" \
   || fail "G112 overlay link (rc=$LAUNCH_RC; stderr: $(grep -A1 'under a read-only overlay' "$ERR" | head -2 | tr '\n' ' '))"
 # A launcher file deduplicated with another project's copy launches: git does
@@ -460,7 +460,40 @@ EXTRA_MOUNTS="$TMP/h112" launch "$TMP/app"
 [[ "$LAUNCH_RC" == 0 ]] && ! grep -qF 'more than one hard link' "$ERR" && ! grep -qF "it can write $TMP/other112" "$ERR" \
   && pass "G112 a hook and an include leading to a file with both names outside every mount launch, unnamed" \
   || fail "G112 outside links (rc=$LAUNCH_RC; stderr: $(grep -E 'ERROR|other112' "$ERR" | head -2 | tr '\n' ' '))"
-rm -rf "$TMP/other112"
+# But where its other name lies inside one — an earlier session with a wider
+# mount made it — the agent can write it, wherever the link leads (automated
+# security review of the GIT-31 fix).
+ln "$TMP/other112/hook" "$TMP/h112/side.txt" || { printf 'SCAFFOLD-FAILED: G112 side name\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h112" launch "$TMP/app"
+hl112 "a hook linking outside every mount, to a file with a name inside one" "$TMP/h112/r/.git/hooks/pre-commit"
+# Hidden in a directory the search cannot read (the agent owns it, and can
+# chmod it back): a search that fails is not "no other name" (automated security
+# review of the GIT-36/37 fix). Not as root, which can read any directory.
+rm -f "$TMP/h112/side.txt"
+if [[ "$(id -u)" != 0 ]]; then
+  mkdir -p "$TMP/h112/node_modules/x"; ln "$TMP/other112/hook" "$TMP/h112/node_modules/x/side"
+  chmod 000 "$TMP/h112/node_modules/x"
+  EXTRA_MOUNTS="$TMP/h112" launch "$TMP/app"
+  chmod 755 "$TMP/h112/node_modules/x"
+  hl112 "a hook linking outside every mount, its other name in a directory that cannot be read" "$TMP/h112/r/.git/hooks/pre-commit"
+  rm -rf "$TMP/h112/node_modules"
+else
+  printf 'SKIP: G112 an unreadable directory: root can read any directory\n'
+fi
+# A search per writable mount, whatever the number of hooks linking to such
+# files, and once per launch: an agent's 28 hooks in each of 200 repositories
+# made a search each, twice per launch (review of the GIT-36/37 fix). A
+# stand-in find counts them, for one hook and for four.
+mkdir -p "$TMP/fs112"
+printf '#!/bin/bash\ncase " $* " in *" -samefile "*) echo x >> %q;; esac\nexec %q "$@"\n' "$TMP/fs112/log" "$(command -v find)" > "$TMP/fs112/find"
+chmod +x "$TMP/fs112/find"
+: > "$TMP/fs112/log"; PATH="$TMP/fs112:$PATH" EXTRA_MOUNTS="$TMP/h112" launch "$TMP/app"; n1_112="$(wc -l < "$TMP/fs112/log")"
+for e in pre-push post-merge post-checkout; do ln -s "$TMP/other112/hook" "$TMP/h112/r/.git/hooks/$e"; done
+: > "$TMP/fs112/log"; PATH="$TMP/fs112:$PATH" EXTRA_MOUNTS="$TMP/h112" launch "$TMP/app"; n4_112="$(wc -l < "$TMP/fs112/log")"
+[[ "$LAUNCH_RC" == 0 && "$n1_112" -ge 1 && "$n4_112" == "$n1_112" ]] \
+  && pass "G112 four hooks linking to one outside file cost the searches one does ($n1_112, one per mount on its device)" \
+  || fail "G112 searches per hook (rc=$LAUNCH_RC; $n1_112 for one hook, $n4_112 for four)"
+rm -rf "$TMP/fs112" "$TMP/other112"
 # hooks/: the names git runs, through a link too; not a .sample a deduplicating
 # tool linked to another repository's.
 rm -rf "$TMP/h112"; mkdir -p "$TMP/h112" && "${G[@]}" init -q "$TMP/h112/r" && "${G[@]}" init -q "$TMP/h112/r2" \
@@ -497,6 +530,57 @@ PATH="$TMP/fs112:$PATH" EXTRA_MOUNTS="$TMP/h112" launch "$TMP/app"
 hl112 "a config linked after the overlay pass, before docker" "$cfg112"
 rm -rf "$TMP/fs112"
 rm -rf "$TMP/h112"
+
+# ── G116: every repository under a read-only overlay is judged ─────────────
+# Only one with objects/ and a regular config was: a config that is a dangling
+# link (filled in by a later session), a repository with no config (its hook
+# links went unwalked), and a worktree-shaped one (a config.worktree including a
+# writable file, a commondir that is a link) launched in silence, and the host's
+# git ran what they led to (review of the GIT-31 fix; bugs review GIT-37). A link
+# at a name git reads is named whatever it leads to, as a protected one's is.
+mk116() {  # a planted launcher holding a repository
+  rm -rf "$TMP/o116"; mkdir -p "$TMP/o116/L" "$TMP/o116/w" && : > "$TMP/o116/L/sandbox.sh" && : > "$TMP/o116/L/sandbox-common.sh" \
+    && "${G[@]}" init -q "$TMP/o116/L" || { printf 'SCAFFOLD-FAILED: G116\n'; exit 1; }
+}
+mk116; rm -f "$TMP/o116/L/.git/config"; ln -s ../../w/c.cfg "$TMP/o116/L/.git/config"
+EXTRA_MOUNTS="$TMP/o116" launch "$TMP/app"
+grep -qF "WARNING: /workspace/o116/L/.git/config, under a read-only overlay, is a symlink" "$ERR" \
+  && pass "G116 a dangling config link under an overlay is named" \
+  || fail "G116 dangling config link (rc=$LAUNCH_RC; stderr: $(grep -F o116 "$ERR" | head -2 | tr '\n' ' '))"
+mk116; rm -f "$TMP/o116/L/.git/config"; printf '#!/bin/sh\n' > "$TMP/o116/w/run.sh"; chmod 755 "$TMP/o116/w/run.sh"
+ln -s ../../../w/run.sh "$TMP/o116/L/.git/hooks/post-commit"
+EXTRA_MOUNTS="$TMP/o116" launch "$TMP/app"
+grep -qF 'NOTE: /workspace/o116/L/.git/hooks/post-commit, a hook your host' "$ERR" \
+  && pass "G116 a hook link of a repository with no config, under an overlay, is named" \
+  || fail "G116 no-config hook link (rc=$LAUNCH_RC; stderr: $(grep -F o116 "$ERR" | head -2 | tr '\n' ' '))"
+for decoy116 in "" decoy; do
+mk116; "${G[@]}" -C "$TMP/o116/L" config extensions.worktreeConfig true && mkdir -p "$TMP/o116/L/.git/worktrees/x" \
+  && printf 'ref: refs/heads/main\n' > "$TMP/o116/L/.git/worktrees/x/HEAD" && printf '../..\n' > "$TMP/o116/L/.git/worktrees/x/commondir" \
+  && printf '[include]\n\tpath = ../../../../w/inc.cfg\n' > "$TMP/o116/L/.git/worktrees/x/config.worktree" \
+  || { printf 'SCAFFOLD-FAILED: G116 worktree\n'; exit 1; }
+# git ignores a worktree's own config: a decoy one there, saying the extension
+# is off, does not stop its config.worktree being judged (review of the
+# GIT-36/37 fix).
+if [[ -n "$decoy116" ]]; then printf '[core]\n\trepositoryformatversion = 0\n' > "$TMP/o116/L/.git/worktrees/x/config"; fi
+EXTRA_MOUNTS="$TMP/o116" launch "$TMP/app"
+grep -qF "/o116/L/.git/worktrees/x/config.worktree includes" "$ERR" \
+  && pass "G116 a worktree-shaped git directory's config.worktree under an overlay has its includes judged${decoy116:+, a decoy config beside it}" \
+  || fail "G116 worktree config.worktree include${decoy116:+ with a decoy config} (rc=$LAUNCH_RC; stderr: $(grep -F o116 "$ERR" | head -2 | tr '\n' ' '))"
+done
+rm -f "$TMP/o116/L/.git/worktrees/x/commondir"; ln -s ../../../../w/cd "$TMP/o116/L/.git/worktrees/x/commondir"; printf '../..\n' > "$TMP/o116/w/cd"
+EXTRA_MOUNTS="$TMP/o116" launch "$TMP/app"
+grep -qF "WARNING: /workspace/o116/L/.git/worktrees/x/commondir, under a read-only overlay, is a symlink" "$ERR" \
+  && pass "G116 a commondir link under an overlay is named" \
+  || fail "G116 commondir link (rc=$LAUNCH_RC; stderr: $(grep -F o116 "$ERR" | head -2 | tr '\n' ' '))"
+# The hooks' link check that runs out of time refuses, as the FIFO search does.
+mk116; "${G[@]}" init -q "$TMP/o116/r" || { printf 'SCAFFOLD-FAILED: G116 timeout\n'; exit 1; }
+mkdir -p "$TMP/fs116"; printf '#!/bin/bash\ncase " $* " in *" -maxdepth 1 "*" -links "*) exit 124;; esac\nexec %q "$@"\n' "$(command -v find)" > "$TMP/fs116/find"
+chmod +x "$TMP/fs116/find"
+PATH="$TMP/fs116:$PATH" EXTRA_MOUNTS="$TMP/o116" launch "$TMP/app"
+[[ "$LAUNCH_RC" != 0 ]] && grep -qF 'could not be checked for hard links within' "$ERR" \
+  && pass "G116 a hooks link check that runs out of time refuses the launch" \
+  || fail "G116 hooks check timeout (rc=$LAUNCH_RC; stderr: $(grep ERROR "$ERR" | head -1))"
+rm -rf "$TMP/fs116" "$TMP/o116"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

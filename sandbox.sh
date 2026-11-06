@@ -373,7 +373,7 @@ launcher_ro_overlay() {
   local -a _xm_t=() _xm_by=() _xm_j=() ro_srcs=()
   local -A gpv=()
   local -a scan links walk gdirs gfiles glinks gunr gro ug usrc udst udep ukind
-  local g base what gmax gn gitmax cfg cdir hp hpd k2 first ik ip ib rep al rk rh hk
+  local g base what gmax gn gitmax cfg cdir ocfg ocd hp hpd k2 first ik ip ib rep al rk rh hk
   local -a inc pgd=() pga=() pgc=() pgo=()
   local -A seen=() tried=() scanned=() pinned=()
   # Included git config files read: each once per protected config, keyed by
@@ -793,8 +793,18 @@ launcher_ro_overlay() {
           done
           if [[ -d "$g/hooks" ]]; then _ro_links_check[$g/hooks]="hooks"; fi
           # Its includes, hooks path and links are judged after the pass, as a
-          # protected repository's are.
-          if [[ -d "$g/objects" && -f "$g/config" ]]; then pgd+=("$g"); pga+=("$at"); pgc+=("$g/config"); pgo[${#pgd[@]}-1]=1; fi
+          # protected repository's are, every one: one with no objects/ or no
+          # config (a worktree's, whose config is its common directory's) was
+          # not, and launched in silence (GIT-37; G116).
+          # Whenever it has a commondir other than ./: git ignores a worktree's own
+          # config, and a decoy there hid its config.worktree (review of the
+          # GIT-36/37 fix).
+          ocfg="$g/config"
+          if [[ -f "$g/commondir" ]]; then
+            cdir=""; _git_ptr_read "$g/commondir" cdir || true
+            if [[ -n "$cdir" && "$cdir" != ./ ]] && _cd_phys ocd "$g" "$cdir"; then ocfg="$ocd/config"; fi
+          fi
+          pgd+=("$g"); pga+=("$at"); pgc+=("$ocfg"); pgo[${#pgd[@]}-1]=1
         fi
         continue
       fi
@@ -1077,21 +1087,15 @@ launcher_ro_overlay() {
   for k in ${pgd[@]+"${!pgd[@]}"}; do
     g="${pgd[k]}"; at="${pga[k]}"; cfg="${pgc[k]}"
     # One under a read-only overlay: a link among what git reads by name is read
-    # through, and the overlay covers the link, not where it leads.
+    # through, and the overlay covers the link, not where it leads. Named whatever
+    # it leads to, a link that leads nowhere yet included, as a protected one's
+    # is (GIT-37).
     if [[ -n "${pgo[k]:-}" ]]; then
       for f in config config.worktree commondir hooks; do
         if [[ ! -L "$g/$f" ]]; then continue; fi
-        walk=()
-        mapfile -d '' -t walk < <(_link_walk "$g/$f")
-        if ! _walk_exposed how q w "" ${walk[@]+"${walk[@]}"}; then continue; fi
-        printf 'WARNING: %s, under a read-only overlay, is a link the agent can redirect:\n' "$(_term "$at/$f")" >&2
-        case "$how" in
-          change)  printf '         it can change %s (at %s), which your host'\''s git reads.\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
-          repoint) printf '         it can repoint %s (at %s), a link on its way.\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
-          replace) printf '         it can replace %s (at %s) with a link; the way steps out of it (..).\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
-          unchecked) printf '         its way out was not followed to the end (too many steps or links), so it is not known to be safe.\n' >&2 ;;
-        esac
-        printf '         Replace the link on the host with what it names.\n' >&2
+        printf 'WARNING: %s, under a read-only overlay, is a symlink: what it leads to is what your\n' "$(_term "$at/$f")" >&2
+        printf '         host'\''s git reads, and the overlay covers the link, not that. Replace the link\n' >&2
+        printf '         on the host with what it names.\n' >&2
       done
     fi
     # Hooks run from a directory core.hooksPath names are project files the
@@ -1389,49 +1393,152 @@ _ro_fifo_search() {
   [[ -n "$fs_lc" ]] || return 0
   for e in "${git_hook_names[@]}"; do hn+=(-o -name "$e"); done
   hn=("${hn[@]:1}")
+  local -a lf=() ld=()
   for x in ${_fs_lc[@]+"${!_fs_lc[@]}"}; do
-    hits=()
     case "${_fs_lc[$x]}" in
-      file) mapfile -d '' -t hits < <(cd / && find -L "$x" -prune -type f -links +1 -print0 2>/dev/null) ;;
-      hooks)
-        [[ -d "$x" ]] || continue
-        read -r -a ft <<< "$(_timeout_prefix 30) "
-        mapfile -d '' -t hits < <(cd / && "${ft[@]}" find -L "$x" -mindepth 1 -maxdepth 1 -type f -links +1 \( "${hn[@]}" \) -print0 2>/dev/null) ;;
+      file) lf+=("$x") ;;
+      hooks) if [[ -d "$x" ]]; then ld+=("$x"); fi ;;
     esac
-    for h in ${hits[@]+"${hits[@]}"}; do
-      _fs_inwritable "$h" || continue
-      # Found, not copied over: a copy wrote through a link the agent could plant
-      # beside it, into a file of yours. The other name is most likely in the
-      # same mount, where the agent could make it; one made on the host need not be.
-      mnt="${h%/*}"
-      for i in ${_fs_rw[@]+"${!_fs_rw[@]}"}; do
-        if [[ "$h" == "${_fs_rw[i]}"/* && ${#_fs_rw[i]} -lt ${#mnt} ]]; then mnt="${_fs_rw[i]}"; fi
-      done
-      printf 'ERROR: %s has more than one hard link, and your host'\''s git reads it; refusing the launch.\n' "$(_term "$h")" >&2
-      printf '       A read-only bind protects a path, not the file: the agent can still write it through\n' >&2
-      printf '       another name. On the host,\n' >&2
-      printf '         find %s%s -xdev -samefile %s\n' "$([[ -L "$h" ]] && printf -- '-L ')" "$(_q "$mnt")" "$(_q "$h")" >&2
-      printf '       lists its names: remove each one you did not make.\n' >&2
+  done
+  # One find for the files, one for the hooks/ directories (a find each cost a
+  # launch of 150 repositories most of a second, twice), within the search's
+  # budget; one that runs out of time refuses, as the FIFO search does. Any other
+  # failure is a link that leads nowhere, which the post-pass names.
+  hits=()
+  for e in file hooks; do
+    if [[ "$e" == file ]]; then (( ${#lf[@]} )) || continue; else (( ${#ld[@]} )) || continue; fi
+    left=$((_fs_deadline - SECONDS)); (( left > 0 )) || left=1; (( left <= 30 )) || left=30
+    read -r -a ft <<< "$(_timeout_prefix "$left") "
+    frc=0; x="$(mktemp "${TMPDIR:-/tmp}/ai-launcher-links.XXXXXX" 2>/dev/null)" || {
+      printf 'ERROR: cannot make a temporary file in %s (TMPDIR); set TMPDIR to a writable directory.\n' "$(_q "${TMPDIR:-/tmp}")" >&2
       exit 1
+    }
+    if [[ "$e" == file ]]; then
+      (cd / && "${ft[@]}" find -L "${lf[@]}" -prune -type f -links +1 -print0 > "$x" 2>/dev/null) || frc=$?
+    else
+      (cd / && "${ft[@]}" find -L "${ld[@]}" -mindepth 1 -maxdepth 1 \( "${hn[@]}" \) -type f -links +1 -print0 > "$x" 2>/dev/null) || frc=$?
+    fi
+    if (( frc == 124 || frc == 137 )); then
+      rm -f "$x"
+      printf 'ERROR: the files your host'\''s git reads by name could not be checked for hard links within\n' >&2
+      printf '       %s s; refusing the launch. Something there holds very many files: mount narrower\n' "$left" >&2
+      printf '       directories, or mount them :ro.\n' >&2
+      exit 1
+    fi
+    mapfile -d '' -t -O "${#hits[@]}" hits < "$x"; rm -f "$x"
+  done
+  _fs_other_names hits
+  for h in ${hits[@]+"${hits[@]}"}; do
+    _fs_reachable "$h" || continue
+    # Found, not copied over: a copy wrote through a link the agent could plant
+    # beside it, into a file of yours. The other name is most likely in the
+    # same mount, where the agent could make it; one made on the host need not be.
+    mnt="${h%/*}"
+    for i in ${_fs_rw[@]+"${!_fs_rw[@]}"}; do
+      if [[ "$h" == "${_fs_rw[i]}"/* && ${#_fs_rw[i]} -lt ${#mnt} ]]; then mnt="${_fs_rw[i]}"; fi
     done
+    printf 'ERROR: %s has more than one hard link, and your host'\''s git reads it; refusing the launch.\n' "$(_term "$h")" >&2
+    printf '       A read-only bind protects a path, not the file: the agent can still write it through\n' >&2
+    printf '       another name. On the host,\n' >&2
+    printf '         find %s%s -xdev -samefile %s\n' "$([[ -L "$h" ]] && printf -- '-L ')" "$(_q "$mnt")" "$(_q "$h")" >&2
+    printf '       lists its names. Copy apart one that is another repository'\''s own; remove one you did not make.\n' >&2
+    exit 1
   done
 }
 
-# _fs_inwritable <path>: called from _ro_fifo_search. Succeeds unless <path> is a
-# link whose way ends outside every writable mount (_fs_rw), where the agent
-# cannot reach either name.
-_fs_inwritable() {
-  local -a w=()
-  local t i
-  [[ -L "$1" ]] || return 0
-  mapfile -d '' -t w < <(_link_walk "$1")
-  t=""
-  for i in ${w[@]+"${w[@]}"}; do [[ "$i" != =* ]] || t="${i#=}"; done
-  [[ -n "$t" ]] || return 0
+# Files with a second name reached through a link out of every writable mount,
+# by device:inode: 1 when another name of it lies in a writable mount, or could
+# not be ruled out; 0 when none does. Kept over both runs of _ro_fifo_search.
+declare -A _fs_reach_cache=()
+# _fs_other_names <hits-var>: called from _ro_fifo_search, for the files git
+# reads with a second hard link. Fills _fs_reach_cache for each one reached
+# through a link that leads out of every writable mount (_fs_rw) — the Nix store
+# links every file it holds — with one bounded find -samefile per writable mount
+# on its device (a hard link never crosses one), within the search's budget.
+# Where the target lay decided it before, and a name an earlier session made in
+# a wider mount went unseen (automated security review of the GIT-31 fix); a
+# search per hook let the agent make every launch take hours, and a search that
+# failed on a directory it cannot read was taken for "no other name" (review,
+# and automated security review, of the GIT-36/37 fix). It fails closed.
+_fs_other_names() {
+  local -n _fo_hits=$1
+  local h t i di md left frc
+  local -a w=() ft=() found=() args=()
+  local -A need=() dev_of=()
+  for h in ${_fo_hits[@]+"${_fo_hits[@]}"}; do
+    [[ -L "$h" ]] || continue
+    t="$(_fs_target "$h")"
+    [[ -n "$t" ]] || continue
+    _fs_in_rw "$t" && continue
+    di="$(_launcher_dev_ino "$t")" || continue
+    [[ -z "${_fs_reach_cache[$di]:-}" ]] || continue
+    need[$di]="$t"; dev_of[$di]="${di%% *}"
+  done
+  (( ${#need[@]} )) || return 0
+  # Past 64 distinct files, not searched: refused as reachable.
+  if (( ${#need[@]} > 64 )); then
+    for di in "${!need[@]}"; do _fs_reach_cache[$di]=1; done
+    return 0
+  fi
+  for di in "${!need[@]}"; do _fs_reach_cache[$di]=0; done
   for i in ${_fs_rw[@]+"${_fs_rw[@]}"}; do
-    if [[ "$t" == "$i" || "$t" == "$i"/* ]]; then return 0; fi
+    md="$(_launcher_dev_ino "$i")" || continue
+    args=()
+    for di in "${!need[@]}"; do
+      if [[ "${dev_of[$di]}" == "${md%% *}" ]]; then args+=(-o -samefile "${need[$di]}"); fi
+    done
+    (( ${#args[@]} )) || continue
+    left=$((_fs_deadline - SECONDS)); (( left > 0 )) || left=1; (( left <= 30 )) || left=30
+    read -r -a ft <<< "$(_timeout_prefix "$left") "
+    found=(); frc=1
+    # The status rides last, after an && || list errexit (on in a <(…)) lets
+    # through: a find that failed ended the subshell before it, and the launch.
+    mapfile -d '' -t found < <( (cd / && "${ft[@]}" find "$i" -xdev \( "${args[@]:1}" \) -print0 2>/dev/null) && frc=0 || frc=$?; printf '%s\0' "rc=$frc")
+    if (( ${#found[@]} )) && [[ "${found[${#found[@]}-1]}" == rc=* ]]; then
+      frc="${found[${#found[@]}-1]#rc=}"; unset 'found[${#found[@]}-1]'
+    else
+      frc=1
+    fi
+    if [[ "$frc" != 0 ]]; then
+      for di in "${!need[@]}"; do
+        if [[ "${dev_of[$di]}" == "${md%% *}" ]]; then _fs_reach_cache[$di]=1; fi
+      done
+      continue
+    fi
+    for h in ${found[@]+"${found[@]}"}; do
+      di="$(_launcher_dev_ino "$h")" || continue
+      if [[ -n "${need[$di]:-}" ]]; then _fs_reach_cache[$di]=1; fi
+    done
+  done
+}
+# _fs_target <link>: where a link's way ends (_link_walk), or nothing.
+_fs_target() {
+  local -a w=()
+  local i t=""
+  mapfile -d '' -t w < <(_link_walk "$1")
+  for i in ${w[@]+"${w[@]}"}; do [[ "$i" != =* ]] || t="${i#=}"; done
+  printf '%s' "$t"
+}
+# _fs_in_rw <path>: inside one of _ro_fifo_search's writable mounts.
+_fs_in_rw() {
+  local i
+  for i in ${_fs_rw[@]+"${_fs_rw[@]}"}; do
+    if [[ "$1" == "$i" || "$1" == "$i"/* ]]; then return 0; fi
   done
   return 1
+}
+# _fs_reachable <path>: called from _ro_fifo_search, for a file git reads with a
+# second hard link. Succeeds when the agent could reach a name of it: always,
+# unless <path> is a link whose way ends outside every writable mount; then as
+# _fs_other_names found, or could not rule out.
+_fs_reachable() {
+  local t di
+  [[ -L "$1" ]] || return 0
+  t="$(_fs_target "$1")"
+  [[ -n "$t" ]] || return 0
+  _fs_in_rw "$t" && return 0
+  di="$(_launcher_dev_ino "$t")" || return 0
+  [[ "${_fs_reach_cache[$di]:-1}" != 0 ]]
 }
 
 # _walk_exposed <how-var> <step-var> <at-var> <home> <step>...: called from
@@ -2282,8 +2389,8 @@ _gdi_follow() {
     gref[$t|$1]=1; gtop_g+=("$t"); gtop_d+=("$1")
     # A referrer for one already read: read it again, with this worktree too — a
     # decoy found first was otherwise the only one (review of 4e91bf3).
-    # Only one that takes its worktrees from referrers: a */.git, or a .git/modules/*
-    # with core.worktree, is read the same either way (review of 4a800a9).
+    # Every git directory takes its worktrees from referrers too: git uses a .git
+    # file's directory for a */.git it names as well (review of the GIT-36/37 fix).
     if [[ -n "${gread[$t]:-}" && -n "${greftop[$t]:-}" ]]; then unset 'gread[$t]'; _gdi_ionly+=("$t"); fi
   fi
   # A git directory outside this mount, reached from a .git file in it, that is
@@ -2293,7 +2400,7 @@ _gdi_follow() {
   # review of 8b3e0c5). It is protected by launcher_ro_overlay's queue.
   # A .git/modules/* one too: a submodule checkout mounted alone has its git
   # directory in the superproject, outside the mount (review of 3edee25).
-  if [[ "$4" == */.git && "$t" != "$3" && "$t" != "$3"/* && "$t" != */.git \
+  if [[ "$4" == */.git && "$t" != "$3" && "$t" != "$3"/* \
         && -z "${ionly_had[$t]:-}" ]] && _is_git_dir "$t"; then
     ionly_had[$t]=1; _gdi_ionly+=("$t")
   fi
@@ -2323,7 +2430,7 @@ _gdi_follow() {
 git_dirs_in() {
   # shellcheck disable=SC2178  # nameref: shellcheck does not model `local -n`
   local -n _gdi_dirs=$1 _gdi_files=$2 _gdi_links=$3 _gdi_unr=$4
-  local f g wt wcf wtp co rel back
+  local f g wt wcf wtp co rel back nref
   local -a hits=()
   local -A had=()
   mapfile -d '' -t hits < <(find "$5" -mindepth 1 -maxdepth 8 \
@@ -2464,62 +2571,59 @@ git_dirs_in() {
     # naming it — each of them, once, so a decoy adds a worktree to check and
     # cannot replace one (review of 3c754aa, HIGH; G53).
     tops=(); top=""
-    if [[ "$g" == */.git/modules/* ]]; then
-      # Physically, as git takes it (chdir, then its real path): a `..` after a link
-      # steps out of where the link leads; and a relative one through ./, or cd
-      # takes `-` for its previous directory (GIT-32; G113). From config.worktree
-      # too: git takes it there when worktreeConfig is on, and a decoy in config
-      # must not replace it (review of the GIT-31 fix).
-      top=""
-      for wcf in "$g/config" "$g/config.worktree"; do
-        _git_config_get wt "$wcf" core.worktree || continue
-        if [[ -n "$wt" ]] && _cd_phys wtp "$g" "$wt"; then
-          [[ -n "$top" ]] || top="$wtp"
-          _gdi_add_top "$wtp"
-        fi
-      done
-    elif [[ "$g" == */.git ]]; then
-      tops=("${g%/.git}")
-      # git takes its core.worktree, if set, for the worktree: read against that
-      # too, so one cannot hide the other (review of the GIT-31 fix; GIT-33).
-      for wcf in "$g/config" "$g/config.worktree"; do
-        _git_config_get wt "$wcf" core.worktree || continue
-        if [[ -n "$wt" ]] && _cd_phys wtp "$g" "$wt"; then _gdi_add_top "$wtp"; fi
-      done
-    fi
-    # Any other git directory — a linked worktree's, a separate git dir, and a
-    # submodule's with no core.worktree, where git uses the .git file's own
-    # directory (review of 8b3e0c5) — takes the directories of the .git files
-    # naming it, each once and at most twenty: a decoy adds one to check and
-    # cannot replace one (review of 3c754aa).
-    if (( ${#tops[@]} == 0 )); then
-      tseen=()
-      # A linked worktree's git directory points back at its checkout's .git file
-      # (gitdir): one more candidate, inside this mount — a decoy pointer adds a
-      # checkout to check, no more.
-      if [[ -f "$g/gitdir" ]]; then
-        tgt=""; _git_ptr_read "$g/gitdir" tgt gitdir || true
-        tgt="${tgt%/.git}"
-        if [[ "$tgt" == /* && -d "$tgt" ]] && _cd_phys tgt "$tgt" \
-           && [[ "$tgt" == "$5" || "$tgt" == "$5"/* ]]; then tseen[$tgt]=1; tops+=("$tgt"); fi
+    if [[ "$g" == */.git ]]; then tops=("${g%/.git}"); fi
+    # Its core.worktree, from config and config.worktree, for every git directory,
+    # resolved physically, as git takes it (chdir, then its real path): a `..`
+    # after a link steps out of where the link leads, and a relative one goes
+    # through ./, or cd takes `-` for its previous directory (GIT-32, GIT-33; G113).
+    for wcf in "$g/config" "$g/config.worktree"; do
+      _git_config_get wt "$wcf" core.worktree || continue
+      if [[ -n "$wt" ]] && _cd_phys wtp "$g" "$wt"; then _gdi_add_top "$wtp"; fi
+    done
+    # A linked worktree, with extensions.worktreeConfig on, takes the common
+    # config's core.worktree too, resolved from its own git directory (review of
+    # the GIT-36/37 fix).
+    if [[ -f "$g/commondir" ]]; then
+      tgt=""; _git_ptr_read "$g/commondir" tgt || true
+      if [[ -n "$tgt" && "$tgt" != ./ && "$tgt" != . ]] && _cd_phys wcf "$g" "$tgt" \
+         && _git_config_get wt "$wcf/config" core.worktree && [[ -n "$wt" ]] && _cd_phys wtp "$g" "$wt"; then
+        _gdi_add_top "$wtp"
       fi
-      for (( q = 0; q < ${#gtop_g[@]}; q++ )); do
-        [[ "${gtop_g[q]}" == "$g" && -z "${tseen[${gtop_d[q]}]:-}" ]] || continue
-        tseen[${gtop_d[q]}]=1
-        # Refused past twenty, as SANDBOX_GIT_MAX refuses: skipping the rest let
-        # decoys that sort first leave the real checkout unchecked (automated
-        # security review of 3edee25). No real tree has that many.
-        if (( ${#tops[@]} >= 20 )); then
-          printf 'ERROR: more than 20 .git files in %s name %s; refusing the launch.\n' "$(_term "$5")" "$(_term "$g")" >&2
-          printf '       Among them, in:\n' >&2
-          for (( qq = 0; qq < 5 && qq < ${#tops[@]}; qq++ )); do printf '         %s\n' "$(_term "${tops[qq]}")" >&2; done
-          printf '       Remove the .git files that are not yours.\n' >&2
-          exit 1
-        fi
-        tops+=("${gtop_d[q]}")
-      done
     fi
-    if [[ "$g" != */.git && ! ( "$g" == */.git/modules/* && -n "$top" ) ]]; then greftop[$g]=1; fi
+    # Every git directory — a .git one too, a linked worktree's, a separate git
+    # dir, a submodule's — also takes the directories of the .git files naming it
+    # (review of 8b3e0c5; git uses that directory for any it names, review of the
+    # GIT-36/37 fix), and a linked worktree's gitdir, each once and at most twenty:
+    # a decoy adds one to check and cannot replace one (review of 3c754aa). A
+    # submodule's core.worktree replaced them, and once the ./ placeholder exists
+    # git ignores one in config and uses the .git file's directory (GIT-36; G115).
+    tseen=(); nref=0
+    for wcf in ${tops[@]+"${tops[@]}"}; do tseen[$wcf]=1; done
+    # A linked worktree's git directory points back at its checkout's .git file
+    # (gitdir): one more candidate, inside this mount — a decoy pointer adds a
+    # checkout to check, no more.
+    if [[ -f "$g/gitdir" ]]; then
+      tgt=""; _git_ptr_read "$g/gitdir" tgt gitdir || true
+      tgt="${tgt%/.git}"
+      if [[ "$tgt" == /* && -d "$tgt" ]] && _cd_phys tgt "$tgt" \
+         && [[ "$tgt" == "$5" || "$tgt" == "$5"/* ]] && [[ -z "${tseen[$tgt]:-}" ]]; then tseen[$tgt]=1; tops+=("$tgt"); fi
+    fi
+    for (( q = 0; q < ${#gtop_g[@]}; q++ )); do
+      [[ "${gtop_g[q]}" == "$g" && -z "${tseen[${gtop_d[q]}]:-}" ]] || continue
+      tseen[${gtop_d[q]}]=1
+      # Refused past twenty, as SANDBOX_GIT_MAX refuses: skipping the rest let
+      # decoys that sort first leave the real checkout unchecked (automated
+      # security review of 3edee25). No real tree has that many.
+      if (( ++nref > 20 )); then
+        printf 'ERROR: more than 20 .git files in %s name %s; refusing the launch.\n' "$(_term "$5")" "$(_term "$g")" >&2
+        printf '       Among them, in:\n' >&2
+        for (( qq = 0; qq < 5 && qq < ${#tops[@]}; qq++ )); do printf '         %s\n' "$(_term "${tops[qq]}")" >&2; done
+        printf '       Remove the .git files that are not yours.\n' >&2
+        exit 1
+      fi
+      tops+=("${gtop_d[q]}")
+    done
+    greftop[$g]=1
     # None yet: the .git file naming it may turn up later (through an index read
     # later still), so it waits, and is retried until no waiting one gains one
     # (automated security review of 3edee25).

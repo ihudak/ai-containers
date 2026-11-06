@@ -17,7 +17,7 @@
 - **Updated 2026-11-04:** GIT-23 is FIXED: a regular file only slow to read gets 10 s, within 30 s per launch.
 - **Updated 2026-11-04:** section 23, found while running PLAT-5 on macOS: GIT-27 and TST-28, FIXED.
 - **Updated 2026-11-04:** GIT-25 and GIT-26 are FIXED (`d942daa`). GIT-28, found while fixing them (section 22), is FIXED too, after seven reviews of its fix; `--version` no longer reports `-dirty` (the user's choice).
-- **Updated 2026-11-05:** the fix-batch table below no longer lists as open what was fixed after its batch. Every entry is FIXED except these: GIT-29 (open; section 24; the user chose fix A, 2026-11-05), GIT-35 (open, LOW), GIT-36 and GIT-37 (open, HIGH; section 25), LNCH-2 (not reproducible), GIT-12 (won't fix), GIT-13 (resolved fail-closed), LNCH-7 (documented), GIT-21 and LNCH-17 (closed), BLD-8 (its `--error-on=any` trade kept by design) and TST-21 (the same comment edit is owed to mgd-ai-containers' copy of `tests/layer-checks.conf`, which is not reachable from this machine). Section 24 holds GIT-29, found while reviewing PLAT-7's run steps; section 25 GIT-30, found by GAP-2's slice 2, and GIT-31 to GIT-37, found by the reviews of its fix and theirs.
+- **Updated 2026-11-05:** the fix-batch table below no longer lists as open what was fixed after its batch. Every entry is FIXED except these: GIT-29 (open; section 24; the user chose fix A, 2026-11-05), GIT-35 (open, LOW), GIT-38 (open, HIGH) and GIT-39 (open, MEDIUM; section 25), LNCH-2 (not reproducible), GIT-12 (won't fix), GIT-13 (resolved fail-closed), LNCH-7 (documented), GIT-21 and LNCH-17 (closed), BLD-8 (its `--error-on=any` trade kept by design) and TST-21 (the same comment edit is owed to mgd-ai-containers' copy of `tests/layer-checks.conf`, which is not reachable from this machine). Section 24 holds GIT-29, found while reviewing PLAT-7's run steps; section 25 GIT-30, found by GAP-2's slice 2, and GIT-31 to GIT-39, found by the reviews of its fix and theirs.
 - **Companion:** [2026-10-26-feature-gaps-review.md](2026-10-26-feature-gaps-review.md).
 - **Confidence:** CONFIRMED = reproduced, or unambiguous from the code. PLAUSIBLE = strong reasoning, not reproduced (usually needs hardware or a platform not available here); verify before fixing.
 - **Citations** are by snippet, per AGENTS.md "Citing code". Scratch repro paths mentioned in entries were session-local and may no longer exist; each entry describes its repro in full.
@@ -1705,9 +1705,13 @@ An Opus reviewer of the slice's new tests, 2026-11-05, at `fd49c3c`, reached a m
   - **Not covered:**
     - **A container that has the repository writable,** a sibling launched before it was protected, can write these files directly, read-only bind or not.
     - **A repository outside every writable mount** (`:ro`, or not mounted) whose files have a second name inside one.
-    - **A link whose target lies outside every writable mount,** but whose second name lies inside one: `_fs_inwritable()` judges where the target lies, not where the other name lies.
-    - **Repositories under an overlay** that have no `objects/` or no regular `config`. That is GIT-37.
-  - **Known cost:** a deduplicating tool (util-linux `hardlink`, `jdupes -L`, `rdfind`) links identical `config` files, `./` placeholders and empty `config.worktree` files across repositories, and the launch then refuses. The other name may be another repository's own file. Copy it apart rather than remove it.
+    - **Through a link that leads out of every writable mount,** another name is searched for only on the target's device, since a hard link never crosses one. One bounded `find -xdev -samefile` runs per writable mount on that device, for every such file at once, once per launch, within the search's budget. A search that fails or runs out of time counts as a name found.
+      - **History:** fixed with GIT-37, after an automated security review: where the target lay had decided it before, and a name an earlier session made in a wider mount went unseen.
+      - **Corrected after the next review:** a search per hook let the agent make each launch take hours, and one that failed on a directory the agent made unreadable was taken for "no other name".
+      - **Still missed:** a name in a mount nested inside a writable mount, which `-xdev` does not enter, or on overlayfs, where a file's `st_dev` may differ from its directory's.
+  - **Known costs:**
+    - **Deduplicating tools:** util-linux `hardlink`, `jdupes -L` and `rdfind` link identical `config` files, `./` placeholders and empty `config.worktree` files across repositories, and the launch then refuses. The other name may be another repository's own file: copy it apart rather than remove it.
+    - **An unreadable directory:** where a writable mount holds one the launching user cannot read (another user's data directory), a hook that links into the Nix store refuses the launch, because the search for its other names fails there.
   - **A mutation pass** over the changed lines left 25 of 121 mutants alive. Most are in the checks of repositories under an overlay, which GIT-37 rewrites; about a dozen are equivalent.
   - **Tests:** G112 in `tests/test-git-internals-ro-reads.sh`, each seen red on the code before:
     - the five kinds of file with a second name;
@@ -1794,7 +1798,19 @@ An Opus reviewer of the slice's new tests, 2026-11-05, at `fd49c3c`, reached a m
 - **Fix direction:** walk the hooks git runs in a `core.hooksPath` directory, as the hooks in `hooks/` are walked, and resolve a relative path from the worktree git uses.
 
 ### GIT-36: the worktree an index is read against is not every one git may use
-- **Status: OPEN** (2026-11-06). Found by the review of the simplified GIT-31 fix. Its fix comes next (the user's choice).
+- **Status: FIXED** (2026-11-06). Found by the review of the simplified GIT-31 fix.
+  - **The fix:** every git directory's index is read against every worktree git may use, each beside the others, so a decoy can add one and never replace one:
+    - where a `.git` directory lies;
+    - its `core.worktree` from `config` and from `config.worktree`;
+    - for any but a `.git` directory, the directories of the `.git` files naming it, and a linked worktree's `gitdir`, at most twenty (`git_dirs_in()`).
+  - **After the review of that fix:**
+    - **A `.git` directory takes the directories of the `.git` files naming it too.** git uses that directory as the worktree for any git directory it names. A late `.git` file reads it again.
+    - **A linked worktree takes the common config's `core.worktree`,** resolved from its own git directory. git applies it when `extensions.worktreeConfig` is on.
+  - **Tests:** G115 in `tests/test-git-internals-ro-index.sh`, each seen red on the code before:
+    - a submodule with a decoy `core.worktree`, on the launch after its placeholder;
+    - a linked worktree's `core.worktree` in `config.worktree`;
+    - a `.git` directory named by a `.git` file elsewhere;
+    - the common config's `core.worktree` for a linked worktree.
 - **Severity: HIGH.** Confidence: CONFIRMED. The reviewer's end-to-end probes ran the agent's `core.fsmonitor` through the user's own `git status`.
 - **Location:** sandbox.sh: `git_dirs_in()`, where it chooses the worktree tops an index is read against.
 - **What's wrong:**
@@ -1811,7 +1827,15 @@ An Opus reviewer of the slice's new tests, 2026-11-05, at `fd49c3c`, reached a m
   - a linked worktree's `gitdir`.
 
 ### GIT-37: repositories under a read-only overlay are judged only with objects/ and a config
-- **Status: OPEN** (2026-11-06). Found by the review of the simplified GIT-31 fix.
+- **Status: FIXED** (2026-11-06). Found by the review of the simplified GIT-31 fix.
+  - **The fix:** every git directory under an overlay joins the post-pass. Where it has a `commondir` other than `./` it takes its common directory's config, even with a `config` of its own, which git ignores: a decoy one there hid its `config.worktree` (review of the fix). A link at any name git reads is named, whatever it leads to.
+  - **The hooks link check:** one bounded `find` per kind, within the search's budget. One that runs out of time refuses the launch, as the FIFO search does; an automated security review flagged it failing open.
+  - **Tests:** G116 in `tests/test-git-internals-ro-reads.sh`, each seen red on the code before:
+    - a dangling `config` link;
+    - a repository with no `config` and a hook link;
+    - a worktree-shaped directory whose `config.worktree` includes a writable file, with and without a decoy `config` beside it;
+    - a `commondir` link;
+    - a hooks check that runs out of time.
 - **Severity: HIGH.** Confidence: CONFIRMED. The host's git ran the agent's program through each of the cases below.
 - **Location:** sandbox.sh: `launcher_ro_overlay()`, where a git directory under an overlay joins the post-pass (`if [[ -d "$g/objects" && -f "$g/config" ]]; then pgd+=`). Also `_ro_fifo_search()`'s link pass, whose `find -L … -type f` never matches a dangling link.
 - **What's wrong:** each of these launches in silence, and in case (a) the rescan after the session is silent too:
@@ -1824,6 +1848,21 @@ An Opus reviewer of the slice's new tests, 2026-11-05, at `fd49c3c`, reached a m
   - The `hooks/` link check ignores its `find`'s exit status, so a timeout passes.
   - `-name` should come before `-links`, so `find -L` stats only the hook names.
   - The link pass spawns one `find` per entry, twice per launch: about 0.7 s for 150 repositories.
+
+### GIT-38: a case-insensitive filesystem defeats every "inside this mount" test
+- **Status: OPEN** (2026-11-06). Found by the review of the GIT-36/37 fix.
+- **Severity: HIGH** where it applies: macOS's default APFS, and a WSL path under `/mnt/<drive>`. Confidence: CONFIRMED on a casefold tmpfs (`chattr +F`) on Linux; LIKELY on macOS, which runs the same bash `cd -P` code.
+- **Location:** sandbox.sh: `_cd_phys()` and every test of whether a path lies in a mount: `_gdi_follow()`, the gitlink checks in `git_dirs_in()`, and `_in_writable()`.
+- **What's wrong:** `cd -P` keeps the spelling it was given, and each "inside this mount" test is a case-sensitive prefix match.
+  - A `.git` file's `gitdir: ../../PROJ/node_modules/gd`, spelled in another case, names a git directory the launch never protects, and the host's git ran its `core.fsmonitor`.
+  - The same happens with a `core.worktree` spelled that way.
+- **Fix direction:** take each resolved path from `getcwd` (`pwd -P`), which reports the spelling on disk, keeping the NUL framing, before any prefix test.
+
+### GIT-39: an include whose target has a second name inside a writable mount is not named
+- **Status: OPEN** (2026-11-06). Found by the review of the GIT-36/37 fix.
+- **Severity: MEDIUM.** Confidence: CONFIRMED. With `include.path=<outside>/inc.cfg` and `ln <outside>/inc.cfg <mount>/side.cfg`, the next launch was silent. Appending a `core.fsmonitor` through `side.cfg` made the host's git run it.
+- **Location:** sandbox.sh: `_walk_exposed()`, whose `=` step asks only whether the target itself lies in a writable mount.
+- **Fix direction:** judge an include's target as `_fs_other_names()` judges a hook's.
 
 ## GIT
 

@@ -971,6 +971,62 @@ grep -qxF '/config:/workspace/proj/node_modules/x113/gd' "$CAPTURE" \
   || fail "G113 gitdir:'s newline dropped (git mounts: $(git_mounts | grep -c x113))"
 rm -rf "$PROJ/s113" "$PROJ/node_modules"
 
+# ── G115: an index is read against every worktree git may use ─────────────
+# A submodule's git directory took its core.worktree in place of the .git files
+# naming it; once the launch's ./ placeholder exists git ignores a core.worktree
+# in config and uses the .git file's directory, so a decoy left the real
+# checkout's submodules unread. And a linked worktree's core.worktree in
+# config.worktree, which git honours with extensions.worktreeConfig, was never
+# read (review of the GIT-31 fix; bugs review GIT-36).
+M115="$PROJ/m115"; "${G[@]}" init -q "$M115" && mkdir -p "$M115/decoy" "$M115/new" \
+  && "${G[@]}" init -q --bare "$M115/.git/modules/new" && "${G[@]}" config --file "$M115/.git/modules/new/config" core.bare false \
+  && "${G[@]}" config --file "$M115/.git/modules/new/config" core.worktree ../../../decoy \
+  && printf 'gitdir: ../.git/modules/new\n' > "$M115/new/.git" \
+  && "${G[@]}" --git-dir="$M115/.git/modules/new" --work-tree="$M115/new" update-index --add --cacheinfo "160000,$(printf '%040d' 1),vendor/n" \
+  && "${G[@]}" init -q "$M115/new/vendor/n" || { printf 'SCAFFOLD-FAILED: G115 module\n'; exit 1; }
+launch ..
+launch ..
+has_mount "$M115/new/vendor/n/.git/config:/workspace/proj/m115/new/vendor/n/.git/config:ro" \
+  && pass "G115 a submodule's index is read against the .git file naming it, a decoy core.worktree beside it" \
+  || fail "G115 decoy core.worktree replaced the .git file's directory (git mounts: $(git_mounts | grep -c m115))"
+rm -rf "$M115"
+M115="$PROJ/m115"; "${G[@]}" init -q "$M115" && "${G[@]}" -C "$M115" commit -q --allow-empty -m s \
+  && "${G[@]}" -C "$M115" config extensions.worktreeConfig true && "${G[@]}" -C "$M115" worktree add -q "$PROJ/wt115" \
+  && mkdir -p "$PROJ/w3_115" && "${G[@]}" -C "$PROJ/wt115" config --worktree core.worktree "$PROJ/w3_115" \
+  && wt115="$(ls -d "$M115/.git/worktrees"/* | head -1)" \
+  && "${G[@]}" --git-dir="$wt115" --work-tree="$PROJ/w3_115" update-index --add --cacheinfo "160000,$(printf '%040d' 1),vendor/n" \
+  && "${G[@]}" init -q "$PROJ/w3_115/vendor/n" || { printf 'SCAFFOLD-FAILED: G115 worktree\n'; exit 1; }
+launch ..
+has_mount "$PROJ/w3_115/vendor/n/.git/config:/workspace/proj/w3_115/vendor/n/.git/config:ro" \
+  && pass "G115 a linked worktree's core.worktree in config.worktree is read" \
+  || fail "G115 a linked worktree's config.worktree core.worktree ignored (git mounts: $(git_mounts | grep -c w3_115))"
+rm -rf "$M115" "$PROJ/wt115" "$PROJ/w3_115"
+# A .git directory named by a .git file elsewhere: git uses that file's
+# directory as the worktree too (review of the GIT-36/37 fix).
+M115="$PROJ/m115"; mkdir -p "$M115/sub" && "${G[@]}" init -q "$M115/other" \
+  && printf 'gitdir: ../other/.git\n' > "$M115/sub/.git" \
+  && "${G[@]}" --git-dir="$M115/other/.git" --work-tree="$M115/sub" update-index --add --cacheinfo "160000,$(printf '%040d' 1),vendor/n" \
+  && "${G[@]}" init -q "$M115/sub/vendor/n" || { printf 'SCAFFOLD-FAILED: G115 .git referrer\n'; exit 1; }
+launch ..
+has_mount "$M115/sub/vendor/n/.git/config:/workspace/proj/m115/sub/vendor/n/.git/config:ro" \
+  && pass "G115 a .git directory's index is read against a .git file naming it, too" \
+  || fail "G115 a .git file's directory not read (git mounts: $(git_mounts | grep -c m115))"
+rm -rf "$M115"
+# A linked worktree takes the common config's core.worktree when
+# extensions.worktreeConfig is on, resolved from its own git directory (review
+# of the GIT-36/37 fix).
+M115="$PROJ/m115"; "${G[@]}" init -q "$M115" && "${G[@]}" -C "$M115" commit -q --allow-empty -m s \
+  && "${G[@]}" -C "$M115" worktree add -q "$PROJ/wt115" && "${G[@]}" -C "$M115" config extensions.worktreeConfig true \
+  && mkdir -p "$PROJ/alt115" && "${G[@]}" config --file "$M115/.git/config" core.worktree "$PROJ/alt115" \
+  && wt115="$(ls -d "$M115/.git/worktrees"/* | head -1)" \
+  && "${G[@]}" --git-dir="$wt115" --work-tree="$PROJ/alt115" update-index --add --cacheinfo "160000,$(printf '%040d' 1),vendor/n" \
+  && "${G[@]}" init -q "$PROJ/alt115/vendor/n" || { printf 'SCAFFOLD-FAILED: G115 common core.worktree\n'; exit 1; }
+launch ..
+has_mount "$PROJ/alt115/vendor/n/.git/config:/workspace/proj/alt115/vendor/n/.git/config:ro" \
+  && pass "G115 a linked worktree's index is read against the common config's core.worktree" \
+  || fail "G115 the common config's core.worktree ignored for a worktree (git mounts: $(git_mounts | grep -c alt115))"
+rm -rf "$M115" "$PROJ/wt115" "$PROJ/alt115"
+
 # ── G96: a sha256 repository's linked worktree has its submodules followed ────
 # The worktree's git directory has no config; its object format is in the
 # common directory's, which its `commondir` names, relative and ending in a
