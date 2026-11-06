@@ -765,7 +765,7 @@ grep -qF "launcher link $LAUNCHER/unrep.sh leads somewhere the agent can change"
 NLT="$TMP/nlt"; mkdir -p "$NLT/d"; : > "$NLT/d/f"$'\n'; ln -s "f"$'\n' "$NLT/d/l"
 got="$(bash -c '
   set -euo pipefail
-  for fn in _link_walk _path_walk _readlink_exact; do eval "$(awk "/^$fn\\(\\) \\{/,/^}\$/" "$1")"; done
+  for fn in _cd_phys _link_walk _path_walk _readlink_exact; do eval "$(awk "/^$fn\\(\\) \\{/,/^}\$/" "$1")"; done
   _link_walk "$2"' _ "$ENGINE/sandbox.sh" "$NLT/d/l" | tr '\0\n' '|^')"
 [[ "$got" == "$NLT/d/l|=$NLT/d/f^|" ]] \
   && pass "T37 a link target ending in a newline is followed exactly" \

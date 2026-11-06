@@ -17,7 +17,7 @@
 - **Updated 2026-11-04:** GIT-23 is FIXED: a regular file only slow to read gets 10 s, within 30 s per launch.
 - **Updated 2026-11-04:** section 23, found while running PLAT-5 on macOS: GIT-27 and TST-28, FIXED.
 - **Updated 2026-11-04:** GIT-25 and GIT-26 are FIXED (`d942daa`). GIT-28, found while fixing them (section 22), is FIXED too, after seven reviews of its fix; `--version` no longer reports `-dirty` (the user's choice).
-- **Updated 2026-11-05:** the fix-batch table below no longer lists as open what was fixed after its batch. Every entry is FIXED except these: GIT-29 (open; section 24), GIT-31 (open, HIGH; section 25), GIT-32 (open, LOW; section 25), LNCH-2 (not reproducible), GIT-12 (won't fix), GIT-13 (resolved fail-closed), LNCH-7 (documented), GIT-21 and LNCH-17 (closed), BLD-8 (its `--error-on=any` trade kept by design) and TST-21 (the same comment edit is owed to mgd-ai-containers' copy of `tests/layer-checks.conf`, which is not reachable from this machine). Section 24 holds GIT-29, found while reviewing PLAT-7's run steps; section 25 GIT-30, found by GAP-2's slice 2, and GIT-31 and GIT-32, found by the review of its fix.
+- **Updated 2026-11-05:** the fix-batch table below no longer lists as open what was fixed after its batch. Every entry is FIXED except these: GIT-29 (open; section 24; the user chose fix A, 2026-11-05), GIT-35 (open, LOW), GIT-36 and GIT-37 (open, HIGH; section 25), LNCH-2 (not reproducible), GIT-12 (won't fix), GIT-13 (resolved fail-closed), LNCH-7 (documented), GIT-21 and LNCH-17 (closed), BLD-8 (its `--error-on=any` trade kept by design) and TST-21 (the same comment edit is owed to mgd-ai-containers' copy of `tests/layer-checks.conf`, which is not reachable from this machine). Section 24 holds GIT-29, found while reviewing PLAT-7's run steps; section 25 GIT-30, found by GAP-2's slice 2, and GIT-31 to GIT-37, found by the reviews of its fix and theirs.
 - **Companion:** [2026-10-26-feature-gaps-review.md](2026-10-26-feature-gaps-review.md).
 - **Confidence:** CONFIRMED = reproduced, or unambiguous from the code. PLAUSIBLE = strong reasoning, not reproduced (usually needs hardware or a platform not available here); verify before fixing.
 - **Citations** are by snippet, per AGENTS.md "Citing code". Scratch repro paths mentioned in entries were session-local and may no longer exist; each entry describes its repro in full.
@@ -1105,7 +1105,7 @@ Batch 9 (`9bd3729` … `6a0b37f`) went through 19 review rounds. Every HIGH and 
 ### GIT-17: `CDPATH` is not cleared before `cd "$wt"` resolves a relative `core.worktree`
 - **Status: FIXED** (2026-10-28). `sandbox.sh` unsets `CDPATH` at the top, not per function: an exported `CDPATH` also makes `cd` print the directory, into every `$(cd … && pwd)` in the launcher. Hermetic G90 (and batch 10's G73) in test-git-internals-ro.sh (now `tests/test-git-internals-ro-index.sh`): a submodule whose `core.worktree` is a bare relative name, with a nested submodule under a pruned `vendor/` that only its index finds; with `CDPATH` pointing at a decoy, the nested `.git` file lost its read-only bind on the old code.
 - Severity: NIT. Confidence: PLAUSIBLE (from code)
-- Location: sandbox.sh: `cd "$wt" 2>/dev/null && pwd -P`
+- Location: sandbox.sh: `if [[ -n "$wt" ]] && _cd_phys wtp "$g" "$wt"; then`
 - What's wrong: a relative `core.worktree` that does not start with `./` or `../` is resolved through the host shell's exported `CDPATH`. `sandbox.env` refuses `CDPATH`, but the user's own shell may export it. The commondir case fails closed (r2 checked this). This one can misplace the top, and with it the gitlink paths.
 - Failure scenario: a user with `CDPATH` exported gets a submodule's gitlinks resolved under the wrong directory, so they are not followed.
 - Fix direction: `local CDPATH=` at the top of `git_dirs_in` and `launcher_ro_overlay`.
@@ -1653,7 +1653,6 @@ An Opus reviewer of the slice's new tests, 2026-11-05, at `fd49c3c`, reached a m
   - **Not changed:**
     - the data-only readers named under Location;
     - a commondir or `.git` file the launcher cannot read (mode 000), which it reads as empty where git dies;
-    - a commondir of `-`, which `cd -P -- -` takes for the previous directory in the worktree branch of `launcher_ro_overlay()` and in `_git_runs()`. `_gdi_follow()` joins the path, so the directory git uses is still followed and protected.
   - **Found by its review:** GIT-31 and GIT-32, below.
 - **Severity: HIGH.** Confidence: CONFIRMED. Measured with git 2.56, and on the launcher at `fd49c3c` through `tests/lib-git-internals-ro.sh`'s fake docker; a second reviewer reproduced the failure scenario with a real `<newline>` directory.
   - **The harm:** the host's git runs a program the agent chose, and nothing names it. Not the rescan after the session that made the repository, not the launch that then protects it, not any later launch.
@@ -1692,7 +1691,37 @@ An Opus reviewer of the slice's new tests, 2026-11-05, at `fd49c3c`, reached a m
 - **Fix direction:** read every such file one way, and accept only what every reader agrees on. That is at most 4096 bytes, with no NUL, and no CR or LF except at the end; for a `gitdir`, no other whitespace at the end either. Anything else is named and refuses the launch, as a FIFO there does. This replaces parsing such a file as git would, which GIT-24 and GIT-28 showed keeps failing review.
 
 ### GIT-31: a hard link made before the first protection keeps a protected file writable
-- **Status: OPEN** (2026-11-05). Found by the review of the GIT-30 fix.
+- **Status: FIXED** (2026-11-05). Found by the review of the GIT-30 fix.
+  - **The fix:** `_ro_fifo_search()`, which runs at the end of the overlay pass and again just before docker, now also refuses the launch on a git-internal file the launch binds read-only that has more than one hard link. That covers `config`, `config.worktree`, `commondir`, a `.git` file, and anything under `hooks/`.
+  - **After two reviews of that fix**, the design is simpler (the user's choice, 2026-11-05):
+    - **Every git directory the scan finds is checked by name,** protected or under a read-only overlay: `config`, `config.worktree`, `commondir`, a `.git` file, and in `hooks/` the names git runs, through a link too. A repository inside a planted launcher had had no check of its own, so two empty files hid its hard-linked config.
+    - **A repository under a read-only overlay is held to the rules of a protected one,** without binds. A `commondir` other than `./` refuses the launch. Its includes, hooks path and links are judged after the pass, and a linked `config` among them is named if it leads where the agent can write.
+    - **A link counts only when it leads into a writable mount.** The Nix store links every file it holds, and a hook linked there refused every launch.
+    - **A link or include whose target has a second name in a writable mount** counts as one the agent can change (`_walk_exposed()`).
+    - **The refusal names the `find <mount> -xdev -samefile <file>`** that lists the other names. Its first advice, to copy the file over itself, wrote through a link the agent could plant beside it, into a file of yours.
+    - **Tried and dropped:**
+      - Checking every file of a launcher overlay except a git directory's objects. The exemption was a path the agent could choose, and it refused a launcher file deduplicated with another project's copy.
+      - Recording the protected files before docker and naming any that changed after it. That missed hooks made during the session and saw only that window, at four process spawns per hook.
+  - **Not covered:**
+    - **A container that has the repository writable,** a sibling launched before it was protected, can write these files directly, read-only bind or not.
+    - **A repository outside every writable mount** (`:ro`, or not mounted) whose files have a second name inside one.
+    - **A link whose target lies outside every writable mount,** but whose second name lies inside one: `_fs_inwritable()` judges where the target lies, not where the other name lies.
+    - **Repositories under an overlay** that have no `objects/` or no regular `config`. That is GIT-37.
+  - **Known cost:** a deduplicating tool (util-linux `hardlink`, `jdupes -L`, `rdfind`) links identical `config` files, `./` placeholders and empty `config.worktree` files across repositories, and the launch then refuses. The other name may be another repository's own file. Copy it apart rather than remove it.
+  - **A mutation pass** over the changed lines left 25 of 121 mutants alive. Most are in the checks of repositories under an overlay, which GIT-37 rewrites; about a dozen are equivalent.
+  - **Tests:** G112 in `tests/test-git-internals-ro-reads.sh`, each seen red on the code before:
+    - the five kinds of file with a second name;
+    - a repository inside a planted launcher: its config with a second name, linking into `objects/` with a second name, or a commondir into its `objects/`;
+    - such a config linking into the writable tree;
+    - a hook that links to a `.sample` with a second name;
+    - a hook leading into a planted launcher's `objects/`;
+    - a link made between the overlay pass and docker;
+    - the controls, which launch:
+      - a launcher's git objects with two names;
+      - a deduplicated `.sample`;
+      - a launcher file deduplicated with one outside every mount;
+      - a hook and an include whose two names both lie outside every mount;
+      - a file whose other name was removed.
 - **Severity: HIGH.** Confidence: CONFIRMED. The reviewer probed it two ways:
   - **Kernel probe** (`unshare -rm`, read-only binds of `config` and `commondir`): a direct write failed with "Read-only file system", and so did a new `ln` ("Invalid cross-device link"). A write through a link made before the bind succeeded, and the host's `git status` then ran the program.
   - **Harness probe** (`tests/lib-git-internals-ro.sh`'s fake docker): the whole failure scenario below, with nothing named at any step.
@@ -1711,7 +1740,18 @@ An Opus reviewer of the slice's new tests, 2026-11-05, at `fd49c3c`, reached a m
 - **Fix direction:** when a repository is protected, refuse, or name, any regular file the launch binds read-only whose link count is above 1. That covers `find … -type f -links +1` over `hooks/` too. A check at launch is enough, because of EXDEV.
 
 ### GIT-32: core.worktree and a gitdir's back-pointer are resolved with a logical cd
-- **Status: OPEN** (2026-11-05). Found by the review of the GIT-30 fix.
+- **Status: FIXED** (2026-11-05). Found by the review of the GIT-30 fix.
+  - **The fix:** a submodule's `core.worktree` is resolved with `cd -P --`, and a relative one through `./`. Otherwise `cd` takes `-` for its previous directory, where git uses a directory named `-`.
+  - **After the review of that fix:** `core.hooksPath` and the directory a second-level include is relative to are also resolved physically (G114).
+  - **The trailing newline:** a value is read as git has it, up to its NUL (`_git_config_get()`). Every path the launcher resolves from a name the agent controls goes through `_cd_phys()`, which reads `$PWD` up to a NUL. `$(cd …; pwd -P)` dropped a trailing newline, so `core.worktree = ../wt<newline>`, or a `gitdir:` through a link to such a name, was read as a decoy without one. The paths that come from your own configuration (mount sources, `$HOME`, the group root) still use `$(…)`.
+  - **Tests:** G113 in `tests/test-git-internals-ro-index.sh` and G114 in `tests/test-git-internals-ro-config.sh`, each seen red on the code before:
+    - a `core.worktree` through a link, with a decoy where the lexical path leads;
+    - a `core.worktree` of `-`, whose nested submodule lies deeper than the scan goes;
+    - a `core.worktree` ending in a newline;
+    - a `gitdir:` through a link to such a name, under a pruned `node_modules/`;
+    - a `core.hooksPath` through a link and `..`;
+    - a second-level include beside a file reached through a link and `..`.
+  - **Left as it was:** the back-pointer's `cd "$back"`. It reads a `.git` file outside every writable mount, which the agent cannot write, and only decides whether a WARNING is quiet.
 - **Severity: LOW.** Confidence: LIKELY. The reviewer measured the difference in resolution; the consequence below is reasoned, not run.
 - **Location:** sandbox.sh: `git_dirs_in()`, in two places:
   - the submodule's `core.worktree`: `top="$(cd "$g" 2>/dev/null && cd "$wt" 2>/dev/null && pwd -P)"`;
@@ -1721,6 +1761,69 @@ An Opus reviewer of the slice's new tests, 2026-11-05, at `fd49c3c`, reached a m
   - the setup: a repository the agent made in a session, with a submodule under a pruned directory, its `core.worktree` routed through a link, and a decoy directory where the lexical path leads;
   - the effect: the submodule's index is read against the decoy, so a nested submodule's checkout under the real worktree is not protected.
 - **Fix direction:** `cd -P --` in both places, as the other resolutions already do.
+
+### GIT-33: a .git directory's own core.worktree was not read
+- **Status: FIXED** (2026-11-05). Found by the review of the GIT-31 fix.
+- **Severity: HIGH.** Confidence: CONFIRMED. The reviewer probed it end to end: nothing was mounted for the nested repository, and with `core.fsmonitor` set in its config, the host's `git -C r status` ran it.
+- **Location:** sandbox.sh: `git_dirs_in()`. It read `core.worktree` only for a submodule's git directory under `.git/modules`. For a repository's own `.git` it read the index against the directory the `.git` lies in.
+- **What's wrong:**
+  - git takes `core.worktree` for the worktree of a repository. `git -C r rev-parse --show-toplevel` printed `r/w2`. Once a `commondir` exists, the launch's `./` placeholder included, git ignores a `core.worktree` in `config` and takes only one in `config.worktree` (with `extensions.worktreeConfig` on). So past the first protection, this needs `config.worktree`, or a repository the scan reads before its placeholder exists, as the rescan after a session does (re-review of the fix).
+  - So a gitlink in `r`'s index whose checkout lies under `w2` was never followed. The nested repository there, under a pruned `vendor/`, kept its config writable.
+  - Nothing named it: `core.worktree` is not a key that runs a program.
+- **Failure scenario:**
+  1. In a session, the agent makes `r` with `core.worktree = ../w2`, a gitlink `vendor/n` in its index, and a repository at `r/w2/vendor/n`.
+  2. The next launches protect `r/.git`, but not `r/w2/vendor/n/.git`.
+  3. A later session sets `core.fsmonitor` there, and `git status` in `r` on the host runs it.
+- **The fix:** a `.git` directory's index is read against its `core.worktree` too, resolved physically, as well as against where it lies. One cannot hide the other. So is a submodule's, and from `config.worktree` too, where git takes it when `extensions.worktreeConfig` is on: a decoy in `config` beside it does not replace it (re-review of the fix). The cases with `core.worktree` in `config` protect what git uses until the placeholder is made; GIT-36 covers what it uses after.
+- **Tests:** G113 in `tests/test-git-internals-ro-index.sh`, both cases seen red on the code before.
+
+### GIT-34: a config-based hook was not named as a key that runs a program
+- **Status: FIXED** (2026-11-05). Found by the re-review of the GIT-31 fix.
+- **Severity: MEDIUM.** Confidence: CONFIRMED: `hook.x.command` with `hook.x.event=pre-commit` ran on a commit, and `_git_exec_keys()` printed nothing for it.
+- **Location:** sandbox.sh: `_git_exec_keys()`.
+- **What's wrong:** git 2.36 added config-based hooks, `hook.<name>.command`. A repository's first protection names the keys its config already sets that make git run a program, and so does the rescan after the session. Neither named this key.
+- **The fix:** `hook.<name>.command` joins the keys. **Tests:** G26 in `tests/test-git-internals-ro-reports.sh`, seen red on the code before.
+
+### GIT-35: two ways a core.hooksPath is judged otherwise than git takes it
+- **Status: OPEN** (2026-11-05). Found by the re-review of the GIT-31 fix.
+- **Severity: LOW.** Both need the config written before the repository's first protection, which names `core.hookspath` once.
+- **Location:** `sandbox.sh: launcher_ro_overlay()`, the post-pass's `core.hooksPath` NOTE.
+- **What's wrong:**
+  - **A path into a read-only overlay is taken for safe** without walking the hooks there. With `core.hooksPath=../L/node_modules/h` (`L` a planted launcher) and `h/post-checkout` a link to a writable script, every launch after the first is silent. The launcher link walk prunes `node_modules` and `.git`.
+  - **A relative path is resolved from the directory the `.git` lies in.** git takes it from `core.worktree` when one is set, and expands `~user/` and `%(prefix)/`.
+- **Fix direction:** walk the hooks git runs in a `core.hooksPath` directory, as the hooks in `hooks/` are walked, and resolve a relative path from the worktree git uses.
+
+### GIT-36: the worktree an index is read against is not every one git may use
+- **Status: OPEN** (2026-11-06). Found by the review of the simplified GIT-31 fix. Its fix comes next (the user's choice).
+- **Severity: HIGH.** Confidence: CONFIRMED. The reviewer's end-to-end probes ran the agent's `core.fsmonitor` through the user's own `git status`.
+- **Location:** sandbox.sh: `git_dirs_in()`, where it chooses the worktree tops an index is read against.
+- **What's wrong:**
+  - **A submodule's git directory under `.git/modules`** takes its `core.worktree` in place of the directories of the `.git` files that name it. Once the launch makes the `./` placeholder, git ignores a `core.worktree` in `config` and uses the `.git` file's directory. A decoy `core.worktree` therefore leaves the real checkout's submodules unread, under a pruned `vendor/` or `node_modules/`.
+  - **A linked worktree's or a separate git directory's `core.worktree`** in `config.worktree`, which git honours when `extensions.worktreeConfig` is on, is never read. git's sparse-checkout cone mode turns that extension on.
+- **Failure scenario:**
+  1. In a session, the agent makes `.git/modules/new` with `core.worktree=../../../decoy`, a `new/.git` file naming it, and a repository at `new/vendor/n` recorded as a gitlink in the module's index.
+  2. The next launch protects `.git/modules/new` and mounts nothing under `new/vendor/n`.
+  3. The agent sets `core.fsmonitor` there, and `git status` in the project on the host runs it.
+- **Fix direction:** read every git directory's index against every worktree git may use, each a decoy can add to and none can replace:
+  - where a `.git` directory lies;
+  - its `core.worktree` from `config` and from `config.worktree`;
+  - the directories of the `.git` files naming it;
+  - a linked worktree's `gitdir`.
+
+### GIT-37: repositories under a read-only overlay are judged only with objects/ and a config
+- **Status: OPEN** (2026-11-06). Found by the review of the simplified GIT-31 fix.
+- **Severity: HIGH.** Confidence: CONFIRMED. The host's git ran the agent's program through each of the cases below.
+- **Location:** sandbox.sh: `launcher_ro_overlay()`, where a git directory under an overlay joins the post-pass (`if [[ -d "$g/objects" && -f "$g/config" ]]; then pgd+=`). Also `_ro_fifo_search()`'s link pass, whose `find -L … -type f` never matches a dangling link.
+- **What's wrong:** each of these launches in silence, and in case (a) the rescan after the session is silent too:
+  - (a) a `config` that is a dangling link, which a later session fills in;
+  - (b) a repository with no `config`, whose hook links are then not walked;
+  - (c) a worktree-shaped git directory (no `objects/`), whose `config.worktree` includes a writable file, or whose `commondir` is a link to one.
+  - A protected repository in the same state gets the "is a symlink" WARNING, or the include WARNING.
+- **Fix direction:** put every git directory under an overlay through the post-pass, with no condition on `objects/` or `config`, and take its config from its `commondir` where it has one. Warn on a link at any of the names git reads, whatever it leads to, as the protected path does.
+- **Also found:**
+  - The `hooks/` link check ignores its `find`'s exit status, so a timeout passes.
+  - `-name` should come before `-links`, so `find -L` stats only the hook names.
+  - The link pass spawns one `find` per entry, twice per launch: about 0.7 s for 150 repositories.
 
 ## GIT
 

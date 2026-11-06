@@ -70,6 +70,34 @@ grep -qF "includes ../other.gitconfig (includeif.gitdir:/x/.path)" "$ERR" \
   || fail "G25 quiet includes (stderr: $(grep 'includes' "$ERR" | tr '\n' ' '))"
 "${G[@]}" -C "$PROJ" config --unset-all include.path; "${G[@]}" -C "$PROJ" config --remove-section 'includeIf.gitdir:/x/'
 
+# ── G114: paths a config names are resolved physically, as git resolves them ──
+# A `..` after a link steps out of where the link leads. core.hooksPath and the
+# directory a second-level include is relative to were taken lexically, so a
+# hooks path into the writable tree, or an include there, went unnamed (review
+# of the GIT-31 fix).
+mkdir -p "$TMP/p114/r" && "${G[@]}" -C "$TMP/p114/r" init -q && mkdir -p "$TMP/p114/r/tools/sub" "$TMP/p114/r/tools/hooks" \
+  && ln -s ../tools/sub "$TMP/p114/r/.git/x" && "${G[@]}" -C "$TMP/p114/r" config core.hooksPath .git/x/../hooks \
+  || { printf 'SCAFFOLD-FAILED: G114 hooksPath\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/p114" launch "$TMP/app"
+grep -qF "runs its git hooks from /workspace/p114/r/tools/hooks (core.hooksPath)" "$ERR" \
+  && pass "G114 a core.hooksPath through a link and .. is named where it leads" \
+  || fail "G114 hooksPath read lexically (stderr: $(grep -F 'hooks from' "$ERR" | head -1))"
+rm -rf "$TMP/p114"
+# The second level: r's config includes L/x/../a.cfg, which is L/deep/a.cfg in a
+# read-only planted launcher; that includes y.cfg beside it, a link into the
+# writable w/. Lexically y.cfg was beside L/a.cfg, which does not exist.
+mkdir -p "$TMP/p114/L/deep/sub" "$TMP/p114/w" && : > "$TMP/p114/L/sandbox.sh" && : > "$TMP/p114/L/sandbox-common.sh" \
+  && ln -s deep/sub "$TMP/p114/L/x" && printf '[include]\n\tpath = y.cfg\n' > "$TMP/p114/L/deep/a.cfg" \
+  && ln -s ../../w/y.cfg "$TMP/p114/L/deep/y.cfg" && : > "$TMP/p114/w/y.cfg" \
+  && mkdir -p "$TMP/p114/r" && "${G[@]}" -C "$TMP/p114/r" init -q \
+  && "${G[@]}" -C "$TMP/p114/r" config include.path ../../L/x/../a.cfg \
+  || { printf 'SCAFFOLD-FAILED: G114 include\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/p114" launch "$TMP/app"
+grep -qF "includes y.cfg (include.path in" "$ERR" && grep -qF "it can write $TMP/p114/w/y.cfg" "$ERR" \
+  && pass "G114 an include relative to an included file is resolved from where that file is" \
+  || fail "G114 second-level include read lexically (stderr: $(grep -A1 -F includes "$ERR" | head -2 | tr '\n' ' '))"
+rm -rf "$TMP/p114"
+
 # ── G29: an include inside an included file is followed ───────────────────────
 # A file the agent cannot reach can still include one it can: git reads the
 # whole chain as the config. Followed from every file that is itself safe, to

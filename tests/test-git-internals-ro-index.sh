@@ -882,6 +882,95 @@ has_mount "$M110/vendor/lib/.git/config:/workspace/proj/main110/vendor/lib/.git/
   || fail "G110 (stderr: $(grep -F main110 "$ERR" | head -2 | tr '\n' ' '))"
 rm -rf "$S110" "$M110"
 
+# ── G113: a submodule's core.worktree is resolved physically, as git does ───
+# git changes into core.worktree and takes its real path, so a `..` after a
+# link steps out of where the link leads. `cd` without -P took it lexically:
+# with core.worktree = ../../../a/../node_modules/sm and a -> x/y, the index was
+# read against node_modules/sm (a decoy the agent can make) instead of
+# x/node_modules/sm, and the nested submodule there, under a pruned
+# node_modules, kept its config writable (bugs review GIT-32).
+M113="$PROJ/m113"; "${G[@]}" init -q "$M113" && mkdir -p "$M113/x/y" "$M113/x/node_modules/sm" "$M113/node_modules/sm" \
+  && ln -s x/y "$M113/a" && "${G[@]}" init -q --bare "$M113/.git/modules/sm" \
+  && "${G[@]}" config --file "$M113/.git/modules/sm/config" core.bare false \
+  && "${G[@]}" config --file "$M113/.git/modules/sm/config" core.worktree ../../../a/../node_modules/sm \
+  && "${G[@]}" --git-dir="$M113/.git/modules/sm" --work-tree="$M113/x/node_modules/sm" \
+       update-index --add --cacheinfo "160000,$(printf '%040d' 1),vendor/n" \
+  && "${G[@]}" init -q "$M113/x/node_modules/sm/vendor/n" \
+  || { printf 'SCAFFOLD-FAILED: G113\n'; exit 1; }
+[[ "$(cd "$M113/.git/modules/sm" && cd -P -- ../../../a/../node_modules/sm && pwd -P)" == "$M113/x/node_modules/sm" ]] \
+  || { printf 'SCAFFOLD-FAILED: G113: the physical path is not the real worktree\n'; exit 1; }
+launch ..
+has_mount "$M113/x/node_modules/sm/vendor/n/.git/config:/workspace/proj/m113/x/node_modules/sm/vendor/n/.git/config:ro" \
+  && pass "G113 a submodule's core.worktree through a link is resolved as git resolves it" \
+  || fail "G113 core.worktree read lexically (git mounts: $(git_mounts | grep -c m113))"
+rm -rf "$M113"
+# And `-` is a directory named `-` to git, not cd's previous directory. Its
+# nested submodule lies deeper than the scan goes, so only the index finds it.
+M113="$PROJ/m113"; "${G[@]}" init -q "$M113" && "${G[@]}" init -q --bare "$M113/.git/modules/sm" \
+  && "${G[@]}" config --file "$M113/.git/modules/sm/config" core.bare false \
+  && "${G[@]}" config --file "$M113/.git/modules/sm/config" core.worktree - \
+  && mkdir -p "$M113/.git/modules/sm/-" \
+  && "${G[@]}" --git-dir="$M113/.git/modules/sm" --work-tree="$M113/.git/modules/sm/-" \
+       update-index --add --cacheinfo "160000,$(printf '%040d' 1),vendor/n" \
+  && "${G[@]}" init -q "$M113/.git/modules/sm/-/vendor/n" \
+  || { printf 'SCAFFOLD-FAILED: G113 -\n'; exit 1; }
+launch ..
+has_mount "$M113/.git/modules/sm/-/vendor/n/.git/config:/workspace/proj/m113/.git/modules/sm/-/vendor/n/.git/config:ro" \
+  && pass "G113 a core.worktree of - is the directory named -" \
+  || fail "G113 core.worktree - (git mounts: $(git_mounts | grep -c m113))"
+rm -rf "$M113"
+# A repository's own .git: git uses its core.worktree too, so its index is read
+# against that as well as against where the .git lies (review of the GIT-31 fix;
+# bugs review GIT-33).
+M113="$PROJ/m113"; "${G[@]}" init -q "$M113" && mkdir -p "$M113/w2" \
+  && "${G[@]}" config --file "$M113/.git/config" core.worktree ../w2 \
+  && "${G[@]}" --git-dir="$M113/.git" --work-tree="$M113/w2" update-index --add --cacheinfo "160000,$(printf '%040d' 1),vendor/n" \
+  && "${G[@]}" init -q "$M113/w2/vendor/n" || { printf 'SCAFFOLD-FAILED: G113 .git core.worktree\n'; exit 1; }
+launch ..
+has_mount "$M113/w2/vendor/n/.git/config:/workspace/proj/m113/w2/vendor/n/.git/config:ro" \
+  && pass "G113 a .git directory's own core.worktree is read too" \
+  || fail "G113 .git core.worktree ignored (git mounts: $(git_mounts | grep -c m113))"
+rm -rf "$M113"
+# git also takes it from config.worktree when extensions.worktreeConfig is on,
+# and a decoy in config does not replace it (re-review of the GIT-31 fix).
+M113="$PROJ/m113"; "${G[@]}" init -q "$M113" && mkdir -p "$M113/w2" "$M113/decoy" \
+  && "${G[@]}" config --file "$M113/.git/config" extensions.worktreeConfig true \
+  && "${G[@]}" config --file "$M113/.git/config" core.worktree ../decoy \
+  && "${G[@]}" config --file "$M113/.git/config.worktree" core.worktree ../w2 \
+  && "${G[@]}" --git-dir="$M113/.git" --work-tree="$M113/w2" update-index --add --cacheinfo "160000,$(printf '%040d' 1),vendor/n" \
+  && "${G[@]}" init -q "$M113/w2/vendor/n" || { printf 'SCAFFOLD-FAILED: G113 config.worktree\n'; exit 1; }
+launch ..
+has_mount "$M113/w2/vendor/n/.git/config:/workspace/proj/m113/w2/vendor/n/.git/config:ro" \
+  && pass "G113 a core.worktree in config.worktree is read, a decoy in config beside it" \
+  || fail "G113 config.worktree's core.worktree ignored (git mounts: $(git_mounts | grep -c m113))"
+rm -rf "$M113"
+# Its value is read as git reads it: a trailing newline is part of the path
+# ($(...) dropped it, and a decoy without one was read instead).
+M113="$PROJ/m113"; nl113=$'\n'; "${G[@]}" init -q "$M113" && mkdir -p "$M113/wt" "$M113/wt$nl113" \
+  && "${G[@]}" config --file "$M113/.git/config" core.worktree "../wt$nl113" \
+  && "${G[@]}" --git-dir="$M113/.git" --work-tree="$M113/wt$nl113" update-index --add --cacheinfo "160000,$(printf '%040d' 1),vendor/n" \
+  && "${G[@]}" init -q "$M113/wt$nl113/vendor/n" || { printf 'SCAFFOLD-FAILED: G113 newline core.worktree\n'; exit 1; }
+launch ..
+# The bind's source and destination hold the newline: docker's argument, one per
+# line in the capture, ends on a line of its own.
+grep -qxF '/vendor/n/.git/config:ro' "$CAPTURE" \
+  && pass "G113 a core.worktree ending in a newline is that directory" \
+  || fail "G113 core.worktree's newline dropped (git mounts: $(git_mounts | grep -c m113))"
+rm -rf "$M113"
+# So is a .git file's gitdir: through a link to a git directory whose name ends
+# in a newline, beside a decoy without one, both under a pruned node_modules/
+# where only the .git file leads: resolved by $(cd; pwd -P), the newline was
+# dropped and the decoy protected.
+N113="$PROJ/node_modules/x113"
+mkdir -p "$PROJ/s113" "$N113" && "${G[@]}" init -q --bare "$N113/gd$nl113" && "${G[@]}" init -q --bare "$N113/gd" \
+  && ln -s "gd$nl113" "$N113/lk" && printf 'gitdir: ../node_modules/x113/lk\n' > "$PROJ/s113/.git" \
+  || { printf 'SCAFFOLD-FAILED: G113 newline gitdir\n'; exit 1; }
+launch ..
+grep -qxF '/config:/workspace/proj/node_modules/x113/gd' "$CAPTURE" \
+  && pass "G113 a gitdir: through a link to a name ending in a newline is that directory" \
+  || fail "G113 gitdir:'s newline dropped (git mounts: $(git_mounts | grep -c x113))"
+rm -rf "$PROJ/s113" "$PROJ/node_modules"
+
 # ── G96: a sha256 repository's linked worktree has its submodules followed ────
 # The worktree's git directory has no config; its object format is in the
 # common directory's, which its `commondir` names, relative and ending in a

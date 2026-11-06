@@ -343,5 +343,160 @@ FAKE_SESSION="cd '$TMP/n111' && git init -q r && printf './\n\0\n' > r/.git/comm
   || fail "G111 rescan (rc=$LAUNCH_RC; stderr: $(tail -4 "$ERR" | tr '\n' ' '))"
 rm -rf "$TMP/n111"
 
+# ── G112: a read-only bind does not make a hard-linked file read-only ───────
+# A bind protects a path, not the file behind it: a hard link made before the
+# repository's first protection writes the same file through another name, and
+# link() into a read-only bind fails (EXDEV), so only one made before matters.
+# The agent made one in a session (`ln .git/config notes.txt`); the next launch
+# bound .git/config and named nothing, a later session added a core.fsmonitor
+# through notes.txt, and the host's git ran it (bugs review GIT-31). A file the
+# launch binds read-only in a git directory, or under its hooks/, with more
+# than one link refuses the launch, naming it; so does one in a repository
+# under a read-only overlay, which gets no binds of its own.
+hl112() {  # $1 = label, $2 = the file the refusal names
+  # The advice finds the other name; copying over it wrote through a link the
+  # agent planted at <file>.new, into a file of yours (review of the GIT-31 fix).
+  [[ "$LAUNCH_RC" != 0 ]] && grep -qF "ERROR: $2 has more than one hard link, and your host's git reads it" "$ERR" \
+    && grep -qF -- "-xdev -samefile $2" "$ERR" && ! grep -qF 'cp -p' "$ERR" \
+    && pass "G112 $1 refuses the launch, naming it" \
+    || fail "G112 $1 (rc=$LAUNCH_RC; stderr: $(grep -E 'ERROR' "$ERR" | head -2 | tr '\n' ' '))"
+}
+rm -rf "$TMP/h112"; mkdir -p "$TMP/h112" && "${G[@]}" init -q "$TMP/h112/r" && ln "$TMP/h112/r/.git/config" "$TMP/h112/r/notes.txt" \
+  || { printf 'SCAFFOLD-FAILED: G112\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h112" launch "$TMP/app"
+hl112 "a config with a second name" "$TMP/h112/r/.git/config"
+rm -rf "$TMP/h112"; mkdir -p "$TMP/h112" && "${G[@]}" init -q "$TMP/h112/r" && printf './\n' > "$TMP/h112/r/.git/commondir" \
+  && ln "$TMP/h112/r/.git/commondir" "$TMP/h112/r/cd.txt" || { printf 'SCAFFOLD-FAILED: G112\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h112" launch "$TMP/app"
+hl112 "a commondir with a second name" "$TMP/h112/r/.git/commondir"
+rm -rf "$TMP/h112"; mkdir -p "$TMP/h112" && "${G[@]}" init -q "$TMP/h112/r" && "${G[@]}" -C "$TMP/h112/r" config extensions.worktreeConfig true \
+  && "${G[@]}" -C "$TMP/h112/r" config --worktree user.name w112 && ln "$TMP/h112/r/.git/config.worktree" "$TMP/h112/r/cw.txt" \
+  || { printf 'SCAFFOLD-FAILED: G112\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h112" launch "$TMP/app"
+hl112 "a config.worktree with a second name" "$TMP/h112/r/.git/config.worktree"
+rm -rf "$TMP/h112"; mkdir -p "$TMP/h112" && "${G[@]}" init -q "$TMP/h112/r" && printf '#!/bin/sh\n' > "$TMP/h112/r/.git/hooks/post-checkout" \
+  && chmod 755 "$TMP/h112/r/.git/hooks/post-checkout" && ln "$TMP/h112/r/.git/hooks/post-checkout" "$TMP/h112/r/h.txt" \
+  || { printf 'SCAFFOLD-FAILED: G112\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h112" launch "$TMP/app"
+hl112 "a hook with a second name" "$TMP/h112/r/.git/hooks/post-checkout"
+rm -rf "$TMP/h112"; mkdir -p "$TMP/h112" && "${G[@]}" init -q "$TMP/h112/m" && "${G[@]}" -C "$TMP/h112/m" commit -q --allow-empty -m s \
+  && "${G[@]}" -C "$TMP/h112/m" worktree add -q "$TMP/h112/w" && ln "$TMP/h112/w/.git" "$TMP/h112/w/g.txt" \
+  || { printf 'SCAFFOLD-FAILED: G112\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h112" launch "$TMP/app"
+hl112 "a linked worktree's .git file with a second name" "$TMP/h112/w/.git"
+# A FIFO in hooks/ is still named as one, not as a file with a second name.
+rm -rf "$TMP/h112"; mkdir -p "$TMP/h112" && "${G[@]}" init -q "$TMP/h112/r" && mkfifo "$TMP/h112/r/.git/hooks/post-merge" \
+  || { printf 'SCAFFOLD-FAILED: G112 FIFO\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h112" launch_timed 60 "$TMP/app"
+[[ "$LAUNCH_RC" != 0 && "$LAUNCH_RC" != 124 ]] && grep -qF "ERROR: $TMP/h112/r/.git/hooks/post-merge is a FIFO or device" "$ERR" \
+  && pass "G112 a FIFO in hooks/ is still refused as a FIFO" \
+  || fail "G112 FIFO in hooks/ (rc=$LAUNCH_RC; stderr: $(grep ERROR "$ERR" | head -1))"
+( exec 3<>"$TMP/h112/r/.git/hooks/post-merge" ) 2>/dev/null
+rm -rf "$TMP/h112"; mkdir -p "$TMP/h112" && "${G[@]}" init -q "$TMP/h112/m" && "${G[@]}" -C "$TMP/h112/m" commit -q --allow-empty -m s \
+  && "${G[@]}" -C "$TMP/h112/m" worktree add -q "$TMP/h112/w" && ln "$TMP/h112/w/.git" "$TMP/h112/w/g.txt" \
+  || { printf 'SCAFFOLD-FAILED: G112\n'; exit 1; }
+# Nor anything else in a launcher overlay: an engine checkout cloned from a
+# local path shares its objects with the original by hard link.
+mkdir -p "$TMP/h112/eng" && : > "$TMP/h112/eng/sandbox.sh" && : > "$TMP/h112/eng/sandbox-common.sh" \
+  && "${G[@]}" init -q "$TMP/h112/eng" && : > "$TMP/h112/eng/.git/objects/pack/p" \
+  && ln "$TMP/h112/eng/.git/objects/pack/p" "$TMP/h112/eng/.git/objects/pack/p2" \
+  || { printf 'SCAFFOLD-FAILED: G112 launcher\n'; exit 1; }
+rm -f "$TMP/h112/w/g.txt"
+EXTRA_MOUNTS="$TMP/h112" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF 'more than one hard link' "$ERR" && grep -qF 'READ-ONLY: /workspace/h112/eng' "$ERR" \
+  && pass "G112 a launcher overlay whose git objects have two names launches" \
+  || fail "G112 a hard link in a launcher overlay (rc=$LAUNCH_RC; stderr: $(grep -E 'ERROR|h112/eng' "$ERR" | head -2 | tr '\n' ' '))"
+rm -rf "$TMP/h112/eng"
+# Its other name removed, as the refusal says, it has one name again.
+rm -f "$TMP/h112/w/g.txt"
+EXTRA_MOUNTS="$TMP/h112" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF 'more than one hard link' "$ERR" \
+  && pass "G112 the same file, its other name removed, launches" \
+  || fail "G112 after the copy (rc=$LAUNCH_RC; stderr: $(grep ERROR "$ERR" | head -1))"
+# A repository inside a planted launcher is overlaid read-only whole, and got no
+# check of its own: two empty files hid its hard-linked config (review of the
+# GIT-31 fix). What git reads there by name is checked as any repository's is.
+rm -rf "$TMP/h112"; mkdir -p "$TMP/h112/r" && : > "$TMP/h112/r/sandbox.sh" && : > "$TMP/h112/r/sandbox-common.sh" \
+  && "${G[@]}" init -q "$TMP/h112/r" && ln "$TMP/h112/r/.git/config" "$TMP/h112/notes.txt" \
+  || { printf 'SCAFFOLD-FAILED: G112 launcher repository\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h112" launch "$TMP/app"
+hl112 "a repository's config with a second name, inside a planted launcher" "$TMP/h112/r/.git/config"
+# Not by a pattern the agent can meet: a config under its objects/, reached
+# through a link or a commondir, which no exemption may cover (re-review).
+rm -f "$TMP/h112/notes.txt"; rm -f "$TMP/h112/r/.git/config"; : > "$TMP/h112/r/.git/objects/c"
+ln -s objects/c "$TMP/h112/r/.git/config" && ln "$TMP/h112/r/.git/objects/c" "$TMP/h112/notes.txt" \
+  || { printf 'SCAFFOLD-FAILED: G112 objects link\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h112" launch "$TMP/app"
+hl112 "a planted launcher's config linking into objects/, with a second name" "$TMP/h112/r/.git/config"
+rm -f "$TMP/h112/r/.git/config" "$TMP/h112/notes.txt"; : > "$TMP/h112/r/.git/config"
+mkdir -p "$TMP/h112/r/.git/objects/gd/objects" "$TMP/h112/r/.git/objects/gd/refs" && printf 'objects/gd\n' > "$TMP/h112/r/.git/commondir"
+EXTRA_MOUNTS="$TMP/h112" launch "$TMP/app"
+[[ "$LAUNCH_RC" != 0 ]] && grep -qF "ERROR: $TMP/h112/r/.git/commondir sends git to objects/gd" "$ERR" \
+  && pass "G112 a planted launcher's repository with a commondir other than ./ refuses the launch" \
+  || fail "G112 commondir in a planted launcher (rc=$LAUNCH_RC; stderr: $(grep ERROR "$ERR" | head -1))"
+# Its links are judged as a protected repository's are: a config leading out of
+# the overlay into the writable tree is named.
+rm -f "$TMP/h112/r/.git/commondir" "$TMP/h112/r/.git/config"; : > "$TMP/h112/cfg.txt"; ln -s ../../cfg.txt "$TMP/h112/r/.git/config"
+EXTRA_MOUNTS="$TMP/h112" launch "$TMP/app"
+grep -qF "it can change $TMP/h112/cfg.txt" <<<"$(grep -A1 -F 'WARNING: /workspace/h112/r/.git/config, under a read-only overlay, is a link the agent can redirect' "$ERR")" \
+  && pass "G112 a planted launcher's config linking into the writable tree is named" \
+  || fail "G112 overlay link (rc=$LAUNCH_RC; stderr: $(grep -A1 'under a read-only overlay' "$ERR" | head -2 | tr '\n' ' '))"
+# A launcher file deduplicated with another project's copy launches: git does
+# not read it.
+rm -rf "$TMP/h112"; mkdir -p "$TMP/h112" "$TMP/other112" && ln "$LAUNCHER/Dockerfile" "$TMP/other112/Dockerfile" \
+  || { printf 'SCAFFOLD-FAILED: G112 launcher dedup\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h112" launch ..
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF 'more than one hard link' "$ERR" \
+  && pass "G112 a launcher file with a second name outside every mount launches" \
+  || fail "G112 a deduplicated launcher file (rc=$LAUNCH_RC; stderr: $(grep ERROR "$ERR" | head -1))"
+rm -f "$TMP/other112/Dockerfile"
+# A hook linking to a file whose two names both lie outside every mount (the
+# Nix store links every file it holds) launches: the agent can reach neither.
+"${G[@]}" init -q "$TMP/h112/r" && printf '#!/bin/sh\n' > "$TMP/other112/hook" && chmod 755 "$TMP/other112/hook" \
+  && ln "$TMP/other112/hook" "$TMP/other112/.links-hook" && ln -s "$TMP/other112/hook" "$TMP/h112/r/.git/hooks/pre-commit" \
+  && "${G[@]}" -C "$TMP/h112/r" config include.path "$TMP/other112/hook" \
+  || { printf 'SCAFFOLD-FAILED: G112 outside links\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h112" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF 'more than one hard link' "$ERR" && ! grep -qF "it can write $TMP/other112" "$ERR" \
+  && pass "G112 a hook and an include leading to a file with both names outside every mount launch, unnamed" \
+  || fail "G112 outside links (rc=$LAUNCH_RC; stderr: $(grep -E 'ERROR|other112' "$ERR" | head -2 | tr '\n' ' '))"
+rm -rf "$TMP/other112"
+# hooks/: the names git runs, through a link too; not a .sample a deduplicating
+# tool linked to another repository's.
+rm -rf "$TMP/h112"; mkdir -p "$TMP/h112" && "${G[@]}" init -q "$TMP/h112/r" && "${G[@]}" init -q "$TMP/h112/r2" \
+  && rm -f "$TMP/h112/r2/.git/hooks/pre-commit.sample" && ln "$TMP/h112/r/.git/hooks/pre-commit.sample" "$TMP/h112/r2/.git/hooks/pre-commit.sample" \
+  || { printf 'SCAFFOLD-FAILED: G112 samples\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h112" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF 'more than one hard link' "$ERR" \
+  && pass "G112 a .sample hook with a second name launches: git never runs it" \
+  || fail "G112 a linked .sample refused (rc=$LAUNCH_RC; stderr: $(grep ERROR "$ERR" | head -1))"
+ln -s pre-commit.sample "$TMP/h112/r/.git/hooks/pre-commit"
+EXTRA_MOUNTS="$TMP/h112" launch "$TMP/app"
+hl112 "a hook that links to a .sample with a second name" "$TMP/h112/r/.git/hooks/pre-commit"
+# A link whose target has a second name leads somewhere the agent can change,
+# even inside a read-only overlay: a hook into a planted launcher's objects/.
+rm -rf "$TMP/h112"; mkdir -p "$TMP/h112/L" && : > "$TMP/h112/L/sandbox.sh" && : > "$TMP/h112/L/sandbox-common.sh" \
+  && "${G[@]}" init -q "$TMP/h112/L" && printf '#!/bin/sh\n' > "$TMP/h112/L/.git/objects/run" && chmod 755 "$TMP/h112/L/.git/objects/run" \
+  && ln "$TMP/h112/L/.git/objects/run" "$TMP/h112/run.txt" && "${G[@]}" init -q "$TMP/h112/p" \
+  && ln -s ../../../L/.git/objects/run "$TMP/h112/p/.git/hooks/post-checkout" \
+  || { printf 'SCAFFOLD-FAILED: G112 hook into a launcher\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h112" launch "$TMP/app"
+grep -qF "it can change $TMP/h112/L/.git/objects/run" <<<"$(grep -A1 -F 'NOTE: /workspace/h112/p/.git/hooks/post-checkout, a hook your host' "$ERR")" \
+  && pass "G112 a hook leading to a file with a second name is named as one the agent can change" \
+  || fail "G112 hook to a hard-linked file (rc=$LAUNCH_RC; stderr: $(grep -A1 'h112/p' "$ERR" | head -2 | tr '\n' ' '))"
+# Linked between the overlay pass and docker, by a concurrent container: the
+# search just before docker finds it. A stand-in find makes the link once the
+# first check of the config has run.
+rm -rf "$TMP/h112"; mkdir -p "$TMP/h112" "$TMP/fs112" && "${G[@]}" init -q "$TMP/h112/r" \
+  || { printf 'SCAFFOLD-FAILED: G112 second search\n'; exit 1; }
+cfg112="$TMP/h112/r/.git/config"
+printf '#!/bin/bash\nif [[ " $* " == *" -links "* && " $* " == *" %s "* && ! -e %q ]]; then\n  : > %q; %q "$@"; rc=$?; ln %q %q; exit $rc\nfi\nexec %q "$@"\n' \
+  "$cfg112" "$TMP/fs112/done" "$TMP/fs112/done" "$(command -v find)" "$cfg112" "$TMP/h112/side.txt" "$(command -v find)" > "$TMP/fs112/find"
+chmod +x "$TMP/fs112/find"
+PATH="$TMP/fs112:$PATH" EXTRA_MOUNTS="$TMP/h112" launch "$TMP/app"
+hl112 "a config linked after the overlay pass, before docker" "$cfg112"
+rm -rf "$TMP/fs112"
+rm -rf "$TMP/h112"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

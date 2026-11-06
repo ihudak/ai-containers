@@ -26,6 +26,7 @@ mkdir -p "$TMP/fp/r" "$TMP/fp/clean"
 "${G[@]}" -C "$TMP/fp/r" config alias.st status
 "${G[@]}" -C "$TMP/fp/clean" config core.fsmonitor true
 "${G[@]}" -C "$TMP/fp/r" config sendemail.smtpserver /usr/bin/msmtp
+"${G[@]}" -C "$TMP/fp/r" config hook.lint.command 'run-lint' && "${G[@]}" -C "$TMP/fp/r" config hook.lint.event pre-commit
 "${G[@]}" -C "$TMP/fp/clean" config sendemail.smtpserver smtp.example.org
 # A key set only in config.worktree is named, and that file is in the review.
 mkdir -p "$TMP/fp/wtc" && "${G[@]}" -C "$TMP/fp/wtc" init -q && "${G[@]}" -C "$TMP/fp/wtc" config extensions.worktreeConfig true
@@ -45,6 +46,11 @@ nl26="$(grep -A1 -F 'NOTE: /workspace/fp/r/.git is protected for the first time,
   || fail "G26 benign keys named (got: $nl26; stderr: $(grep 'first time' "$ERR" | tr '\n' ' '))"
 # Two mutants that swapped the two survived every test (GAP-2's slice 2;
 # sandbox.sh: `_git_exec_keys()`).
+# A config-based hook (hook.<name>.command, git 2.36) runs a program too: it
+# was not named (re-review of the GIT-31 fix).
+[[ "$nl26" == *hook.lint.command* ]] \
+  && pass "G26 a config-based hook is named" \
+  || fail "G26 hook.<name>.command not named (got: $nl26)"
 [[ "$nl26" == *sendemail.smtpserver* ]] \
   && pass "G26 an SMTP server given as a path is named" \
   || fail "G26 sendemail.smtpserver as a path not named (got: $nl26)"

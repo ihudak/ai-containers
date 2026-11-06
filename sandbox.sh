@@ -373,8 +373,8 @@ launcher_ro_overlay() {
   local -a _xm_t=() _xm_by=() _xm_j=() ro_srcs=()
   local -A gpv=()
   local -a scan links walk gdirs gfiles glinks gunr gro ug usrc udst udep ukind
-  local g base what gmax gn gitmax cfg cdir hp hpd k2 first ik ip rep al rk rh hk
-  local -a inc pgd=() pga=() pgc=()
+  local g base what gmax gn gitmax cfg cdir hp hpd k2 first ik ip ib rep al rk rh hk
+  local -a inc pgd=() pga=() pgc=() pgo=()
   local -A seen=() tried=() scanned=() pinned=()
   # Included git config files read: each once per protected config, keyed by
   # device:inode however it is spelled (review of b3d2362: `./config` and
@@ -771,7 +771,33 @@ launcher_ro_overlay() {
       for r in ${ro_dsts[@]+"${ro_dsts[@]}"}; do
         if [[ "$at" == "$r" || "$at" == "$r"/* ]]; then skip=1; break; fi
       done
-      if [[ -n "$skip" ]]; then continue; fi
+      if [[ -n "$skip" ]]; then
+        # Under a read-only overlay (inside a launcher, under another's hooks/): no
+        # binds of its own, but what git reads there by name is held to what any
+        # repository's is. Two empty files made a launcher whose repository had
+        # none of it: a hard-linked config, or a commondir into its objects/
+        # (reviews of the GIT-31 fix).
+        if [[ "$kind" == file ]]; then _ro_links_check[$g]="file"; fi
+        if [[ "$kind" == dir ]]; then
+          if [[ -d "$g/objects" && -f "$g/commondir" ]]; then
+            cdir=""; _git_ptr_read "$g/commondir" cdir || true
+            if [[ "$cdir" != ./ ]]; then
+              printf 'ERROR: %s sends git to %s for this repository'\''s\n' "$(_term "$g/commondir")" "$(_q "${cdir:0:200}")" >&2
+              printf '       configuration and hooks, and git never writes one in a repository'\''s own git\n' >&2
+              printf '       directory. If you did not make it, remove it on the host and launch again.\n' >&2
+              exit 1
+            fi
+          fi
+          for f in config config.worktree commondir; do
+            if [[ -e "$g/$f" || -L "$g/$f" ]]; then _ro_links_check[$g/$f]="file"; fi
+          done
+          if [[ -d "$g/hooks" ]]; then _ro_links_check[$g/hooks]="hooks"; fi
+          # Its includes, hooks path and links are judged after the pass, as a
+          # protected repository's are.
+          if [[ -d "$g/objects" && -f "$g/config" ]]; then pgd+=("$g"); pga+=("$at"); pgc+=("$g/config"); pgo[${#pgd[@]}-1]=1; fi
+        fi
+        continue
+      fi
       # Every one is protected — a cap that left some writable could be filled by
       # the agent (it can make repositories and unlistable directories) to push a
       # real one past it. Past SANDBOX_GIT_MAX (200), refuse instead: a bind mount
@@ -894,7 +920,7 @@ launcher_ro_overlay() {
           # cannot be resolved names a path that cannot exist, so both checks
           # below fail closed (security review of 99db199).
           cdir=""; _git_ptr_read "$g/commondir" cdir || true
-          cfg="$(cd "$g" 2>/dev/null && cd -P -- "$cdir" 2>/dev/null && pwd -P)" || cfg=""
+          _cd_phys cfg "$g" "$cdir" || cfg=""
           # Not a path in the agent's tree, where it could plant one saying the
           # extension is off (security review of the commondir fix): a host path nothing makes.
           cfg="${cfg:-/nonexistent/ai-launcher-unresolved-commondir}/config"
@@ -953,6 +979,9 @@ launcher_ro_overlay() {
         _bind_mount_arg mf mv "$f" "$x" ro
         _ro+=("$mf" "$mv"); _vrfy+=("$f" "$x")
         seen[$x]=1; ro_dsts+=("$x"); ro_srcs+=("$f")
+        if [[ "$kind" != unr ]]; then
+          if [[ -d "$f" ]]; then _ro_links_check[$f]="hooks"; else _ro_links_check[$f]="file"; fi
+        fi
         [[ -d "$f" ]] || launcher_ro_files+=("$f")
         if [[ "$f" != "$g" ]]; then what+="${what:+, }${f##*/}"; fi
       done
@@ -1047,11 +1076,29 @@ launcher_ro_overlay() {
   # repository handled later counts as protected.
   for k in ${pgd[@]+"${!pgd[@]}"}; do
     g="${pgd[k]}"; at="${pga[k]}"; cfg="${pgc[k]}"
+    # One under a read-only overlay: a link among what git reads by name is read
+    # through, and the overlay covers the link, not where it leads.
+    if [[ -n "${pgo[k]:-}" ]]; then
+      for f in config config.worktree commondir hooks; do
+        if [[ ! -L "$g/$f" ]]; then continue; fi
+        walk=()
+        mapfile -d '' -t walk < <(_link_walk "$g/$f")
+        if ! _walk_exposed how q w "" ${walk[@]+"${walk[@]}"}; then continue; fi
+        printf 'WARNING: %s, under a read-only overlay, is a link the agent can redirect:\n' "$(_term "$at/$f")" >&2
+        case "$how" in
+          change)  printf '         it can change %s (at %s), which your host'\''s git reads.\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
+          repoint) printf '         it can repoint %s (at %s), a link on its way.\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
+          replace) printf '         it can replace %s (at %s) with a link; the way steps out of it (..).\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
+          unchecked) printf '         its way out was not followed to the end (too many steps or links), so it is not known to be safe.\n' >&2 ;;
+        esac
+        printf '         Replace the link on the host with what it names.\n' >&2
+      done
+    fi
     # Hooks run from a directory core.hooksPath names are project files the
     # overlay leaves writable — and hook managers keep the scripts they run
     # gitignored (husky's .husky/_), so a change need not show in git status.
     hp=""
-    if [[ "$cfg" == "$g/config" ]]; then hp="$(_git_config_get "$cfg" core.hooksPath)" || hp=""; fi
+    if [[ "$cfg" == "$g/config" ]]; then _git_config_get hp "$cfg" core.hooksPath || hp=""; fi
     if [[ -n "$hp" ]]; then
       # shellcheck disable=SC2088  # '~/'* matches a LITERAL leading ~/ in the config value, expanded by hand
       case "$hp" in
@@ -1059,7 +1106,9 @@ launcher_ro_overlay() {
         '~/'*) hpd="$HOME/${hp#\~/}" ;;
         *) if [[ "$g" == */.git ]]; then hpd="${g%/.git}/$hp"; else hpd="$g/$hp"; fi ;;
       esac
-      hpd="$(cd "$hpd" 2>/dev/null && pwd -P)" || hpd=""
+      # Physically: a `..` after a link steps out of where it leads (review of the
+      # GIT-31 fix; G114).
+      _cd_phys hpd "$hpd" || hpd=""
       for i in ${bsrc[@]+"${!bsrc[@]}"}; do
         if [[ -z "$hpd" || ( "$hpd" != "${bsrc[i]}" && "$hpd" != "${bsrc[i]}"/* ) ]]; then continue; fi
         x="${bdst[i]}${hpd#"${bsrc[i]}"}"; safe=""
@@ -1138,7 +1187,8 @@ launcher_ro_overlay() {
         # shellcheck disable=SC2088  # '~/'* matches a LITERAL leading ~/ in the config value, expanded by hand
         case "$ip" in '~/'*) ip="$HOME/${ip#\~/}" ;; esac
         walk=()
-        mapfile -d '' -t walk < <(_path_walk "$(cd "${icur%/*}" 2>/dev/null && pwd -P)" "$ip")
+        _cd_phys ib "${icur%/*}" || ib=""
+        mapfile -d '' -t walk < <(_path_walk "$ib" "$ip")
         if ! _walk_exposed how q w "" ${walk[@]+"${walk[@]}"}; then
           if [[ "$ip" == /* ]]; then itgt="$ip"; else itgt="${icur%/*}/$ip"; fi
           if [[ -f "$itgt" ]] && (( idep[ii - 1] < 10 )) && ikey="$(_launcher_dev_ino "$itgt")" \
@@ -1248,11 +1298,12 @@ launcher_ro_overlay() {
   # c687370; T50).
   # Handed back for the search again just before docker runs (LNCH-11).
   launcher_ro_dirs=(${ro_srcs[@]+"${ro_srcs[@]}"}); launcher_rw_srcs=(${bsrc[@]+"${bsrc[@]}"})
-  _ro_fifo_search ro_srcs bsrc
+  _ro_fifo_search ro_srcs bsrc _ro_links_check
 }
 
-# _ro_fifo_search <read-only sources> <writable mount sources>: refuses the launch
-# if any FIFO or device is in what is bound read-only — see the end of
+# _ro_fifo_search <read-only sources> <writable mount sources> [<link-checked>]:
+# refuses the launch if any FIFO or device is in what is bound read-only, or a
+# file with a second hard link in a source the third names (GIT-31) — see the end of
 # launcher_ro_overlay. Run there, and again just before docker runs: a
 # concurrent container with one of those directories writable could make a FIFO
 # in between (LNCH-11; T57). Bounded at 30 s, past which the launch is refused
@@ -1260,8 +1311,10 @@ launcher_ro_overlay() {
 # launcher holds (LNCH-10; T56), and 90 s per launch over both runs (T59).
 _ro_fifo_search() {
   local -n _fs_src=$1 _fs_rw=$2
-  local x i fx ferr="" pat frc left
-  local -a prune ft=()
+  local x i e h fx ferr="" pat frc left fs_lc="" mnt
+  local -a prune ft=() hn=() hits=()
+  # The third, when given, names the sources also checked for a second hard link.
+  if [[ -n "${3:-}" ]]; then local -n _fs_lc=$3; fs_lc=1; fi
   # One budget per launch, over both runs: 30 s a source let planted launchers,
   # each kept just under it, make a launch take hours (review of the batch 10
   # branch; T59). Each search gets what is left, at most 30 s.
@@ -1325,6 +1378,60 @@ _ro_fifo_search() {
     rm -f "$ferr"; exit 1
   done
   rm -f "$ferr"
+  # A file git reads by name with a second name: a read-only bind protects a
+  # path, not the file behind it, so a hard link made before the first
+  # protection still writes it (GIT-31). link() into a read-only bind fails
+  # (EXDEV), so the container cannot make one later. In hooks/, only the names
+  # git runs: a deduplicating tool links .sample hooks across repositories, and
+  # git never runs one. A link is followed, and counts only when it leads into a
+  # writable mount: the Nix store links every file it holds (reviews of the
+  # GIT-31 fix).
+  [[ -n "$fs_lc" ]] || return 0
+  for e in "${git_hook_names[@]}"; do hn+=(-o -name "$e"); done
+  hn=("${hn[@]:1}")
+  for x in ${_fs_lc[@]+"${!_fs_lc[@]}"}; do
+    hits=()
+    case "${_fs_lc[$x]}" in
+      file) mapfile -d '' -t hits < <(cd / && find -L "$x" -prune -type f -links +1 -print0 2>/dev/null) ;;
+      hooks)
+        [[ -d "$x" ]] || continue
+        read -r -a ft <<< "$(_timeout_prefix 30) "
+        mapfile -d '' -t hits < <(cd / && "${ft[@]}" find -L "$x" -mindepth 1 -maxdepth 1 -type f -links +1 \( "${hn[@]}" \) -print0 2>/dev/null) ;;
+    esac
+    for h in ${hits[@]+"${hits[@]}"}; do
+      _fs_inwritable "$h" || continue
+      # Found, not copied over: a copy wrote through a link the agent could plant
+      # beside it, into a file of yours. The other name is most likely in the
+      # same mount, where the agent could make it; one made on the host need not be.
+      mnt="${h%/*}"
+      for i in ${_fs_rw[@]+"${!_fs_rw[@]}"}; do
+        if [[ "$h" == "${_fs_rw[i]}"/* && ${#_fs_rw[i]} -lt ${#mnt} ]]; then mnt="${_fs_rw[i]}"; fi
+      done
+      printf 'ERROR: %s has more than one hard link, and your host'\''s git reads it; refusing the launch.\n' "$(_term "$h")" >&2
+      printf '       A read-only bind protects a path, not the file: the agent can still write it through\n' >&2
+      printf '       another name. On the host,\n' >&2
+      printf '         find %s%s -xdev -samefile %s\n' "$([[ -L "$h" ]] && printf -- '-L ')" "$(_q "$mnt")" "$(_q "$h")" >&2
+      printf '       lists its names: remove each one you did not make.\n' >&2
+      exit 1
+    done
+  done
+}
+
+# _fs_inwritable <path>: called from _ro_fifo_search. Succeeds unless <path> is a
+# link whose way ends outside every writable mount (_fs_rw), where the agent
+# cannot reach either name.
+_fs_inwritable() {
+  local -a w=()
+  local t i
+  [[ -L "$1" ]] || return 0
+  mapfile -d '' -t w < <(_link_walk "$1")
+  t=""
+  for i in ${w[@]+"${w[@]}"}; do [[ "$i" != =* ]] || t="${i#=}"; done
+  [[ -n "$t" ]] || return 0
+  for i in ${_fs_rw[@]+"${_fs_rw[@]}"}; do
+    if [[ "$t" == "$i" || "$t" == "$i"/* ]]; then return 0; fi
+  done
+  return 1
 }
 
 # _walk_exposed <how-var> <step-var> <at-var> <home> <step>...: called from
@@ -1345,7 +1452,17 @@ _walk_exposed() {
   for _we_e in "$@"; do
     case "$_we_e" in
       \?*) _we_how=unchecked; _we_step="${_we_e#\?}"; _we_at="$_we_step"; return 0 ;;
-      =*) _we_h=change;  _we_q="${_we_e#=}" ;;
+      =*) _we_h=change;  _we_q="${_we_e#=}"
+          # With a second name it can be changed through that one, under a
+          # read-only overlay too — where the agent could make one: in a writable
+          # mount (review of the GIT-31 fix).
+          if [[ -f "$_we_q" && -n "$(cd / && find "$_we_q" -prune -type f -links +1 -print 2>/dev/null)" ]]; then
+            for _we_j in ${bsrc[@]+"${!bsrc[@]}"}; do
+              if [[ "$_we_q" == "${bsrc[_we_j]}" || "$_we_q" == "${bsrc[_we_j]}"/* ]]; then
+                _we_how=change; _we_step="$_we_q"; _we_at="${bdst[_we_j]}${_we_q#"${bsrc[_we_j]}"}"; return 0
+              fi
+            done
+          fi ;;
       ^*) _we_h=replace; _we_q="${_we_e#^}" ;;
       *)  _we_h=repoint; _we_q="$_we_e" ;;
     esac
@@ -1547,7 +1664,7 @@ _mount_representable() {
 # path, which need not exist. Stops quietly after 40 links (a loop).
 _link_walk() {
   local cur c t
-  cur="$(cd "${1%/*}/" 2>/dev/null && pwd -P)" || return 0
+  _cd_phys cur "${1%/*}/" || return 0
   c="${1##*/}"
   printf '%s\0' "$cur/$c"
   _readlink_exact t "$cur/$c" || return 0
@@ -1853,7 +1970,7 @@ _git_index_read() {
   if [[ ! -f "$fcfg" && -f "$g/commondir" ]]; then
     _git_ptr_read "$g/commondir" fcd || true
     [[ "$fcd" == /* ]] || fcd="$g/$fcd"
-    fcd="$(cd -P -- "$fcd" 2>/dev/null && pwd -P)" && fcfg="$fcd/config"
+    _cd_phys fcd "$fcd" && fcfg="$fcd/config"
   fi
   fmt="$(_git_file_config "$fcfg" extensions.objectformat 2>/dev/null)" || fmt=sha1
   [[ "$fmt" =~ ^[a-z0-9]{1,16}$ ]] || return 1
@@ -1943,7 +2060,7 @@ _gd_resolve() {
   _gr_out=""
   if [[ "$2" == /* ]]; then _gr_t="$2"; else _gr_t="$1/$2"; fi
   _gr_lex="$(_lex_norm "$_gr_t")"
-  if ! _gr_t="$(cd -P -- "$_gr_t" 2>/dev/null && pwd -P)"; then
+  if ! _cd_phys _gr_t "$_gr_t"; then
     if _in_writable "$_gr_lex" && (( ++_gdi_warned <= 5 )); then
       printf 'WARNING: %s names %s, which does not exist; if the agent makes it, your host'\''s git\n' "$(_term "$3")" "$(_term "$_gr_lex")" >&2
       printf '         reads it unprotected until the next launch.\n' >&2
@@ -2106,6 +2223,28 @@ _rd_fail() {
   kill -s USR1 "$$" 2>/dev/null || true
 }
 
+# _cd_phys <out-var> <dir> [<path>]: the physical path of <dir>, or of <path>
+# taken from <dir>, exactly — into <out-var>, never through $(...), which drops
+# the trailing newlines a directory's name can end with: a decoy without one was
+# read instead (review of the GIT-31 fix). A relative <path> goes through ./, as
+# git takes it: cd reads a bare `-` as its previous directory. Fails if either
+# cannot be entered.
+_cd_phys() {
+  local -n _cp_out=$1
+  local _cp_p="${3:-.}"
+  _cp_out=""
+  [[ "$_cp_p" == /* ]] || _cp_p="./$_cp_p"
+  IFS= read -r -d '' _cp_out < <(cd -P -- "$2" 2>/dev/null && cd -P -- "$_cp_p" 2>/dev/null && printf '%s\0' "$PWD") \
+    || { _cp_out=""; return 1; }
+}
+
+# _gdi_add_top <dir>: called from git_dirs_in; adds <dir> to its tops, once.
+_gdi_add_top() {
+  local _gat
+  for _gat in ${tops[@]+"${tops[@]}"}; do [[ "$_gat" != "$1" ]] || return 0; done
+  tops+=("$1")
+}
+
 # _lex_norm <absolute path>: the path with . and .. resolved by name alone, no link
 # followed — what it says, to compare with where it physically leads.
 _lex_norm() {
@@ -2184,7 +2323,7 @@ _gdi_follow() {
 git_dirs_in() {
   # shellcheck disable=SC2178  # nameref: shellcheck does not model `local -n`
   local -n _gdi_dirs=$1 _gdi_files=$2 _gdi_links=$3 _gdi_unr=$4
-  local f g wt co rel back
+  local f g wt wcf wtp co rel back
   local -a hits=()
   local -A had=()
   mapfile -d '' -t hits < <(find "$5" -mindepth 1 -maxdepth 8 \
@@ -2276,7 +2415,7 @@ git_dirs_in() {
             tgt="${tgt#gitdir: }"; [[ "$tgt" == /* ]] || tgt="$up/$tgt"
             # The git directory it names too: one in the agent's reach is its to make
             # unreadable (automated security review of 1a30bb4).
-            if tgt="$(cd -P -- "$tgt" 2>/dev/null && pwd -P)" && ! _in_writable "$tgt"; then gquiet[$tgt]=1; fi
+            if _cd_phys tgt "$tgt" && ! _in_writable "$tgt"; then gquiet[$tgt]=1; fi
           fi
         fi
       fi
@@ -2326,11 +2465,27 @@ git_dirs_in() {
     # cannot replace one (review of 3c754aa, HIGH; G53).
     tops=(); top=""
     if [[ "$g" == */.git/modules/* ]]; then
-      wt="$(_git_config_get "$g/config" core.worktree)" || wt=""
-      if [[ -n "$wt" ]]; then top="$(cd "$g" 2>/dev/null && cd "$wt" 2>/dev/null && pwd -P)" || top=""; fi
-      [[ -z "$top" ]] || tops=("$top")
+      # Physically, as git takes it (chdir, then its real path): a `..` after a link
+      # steps out of where the link leads; and a relative one through ./, or cd
+      # takes `-` for its previous directory (GIT-32; G113). From config.worktree
+      # too: git takes it there when worktreeConfig is on, and a decoy in config
+      # must not replace it (review of the GIT-31 fix).
+      top=""
+      for wcf in "$g/config" "$g/config.worktree"; do
+        _git_config_get wt "$wcf" core.worktree || continue
+        if [[ -n "$wt" ]] && _cd_phys wtp "$g" "$wt"; then
+          [[ -n "$top" ]] || top="$wtp"
+          _gdi_add_top "$wtp"
+        fi
+      done
     elif [[ "$g" == */.git ]]; then
       tops=("${g%/.git}")
+      # git takes its core.worktree, if set, for the worktree: read against that
+      # too, so one cannot hide the other (review of the GIT-31 fix; GIT-33).
+      for wcf in "$g/config" "$g/config.worktree"; do
+        _git_config_get wt "$wcf" core.worktree || continue
+        if [[ -n "$wt" ]] && _cd_phys wtp "$g" "$wt"; then _gdi_add_top "$wtp"; fi
+      done
     fi
     # Any other git directory — a linked worktree's, a separate git dir, and a
     # submodule's with no core.worktree, where git uses the .git file's own
@@ -2345,7 +2500,7 @@ git_dirs_in() {
       if [[ -f "$g/gitdir" ]]; then
         tgt=""; _git_ptr_read "$g/gitdir" tgt gitdir || true
         tgt="${tgt%/.git}"
-        if [[ "$tgt" == /* && -d "$tgt" ]] && tgt="$(cd -P -- "$tgt" 2>/dev/null && pwd -P)" \
+        if [[ "$tgt" == /* && -d "$tgt" ]] && _cd_phys tgt "$tgt" \
            && [[ "$tgt" == "$5" || "$tgt" == "$5"/* ]]; then tseen[$tgt]=1; tops+=("$tgt"); fi
       fi
       for (( q = 0; q < ${#gtop_g[@]}; q++ )); do
@@ -2495,7 +2650,7 @@ git_dirs_in() {
       # Physically where it says: a .. or a link on the way made a .git inside a
       # writable mount pass as outside them (automated security review of efbfcc3).
       if [[ "$tgt" == /* && "${tgt##*/}" == .git && -f "$tgt" && ! -L "$tgt" ]] \
-         && [[ "$(cd -P -- "${tgt%/*}" 2>/dev/null && pwd -P)/.git" == "$tgt" ]] && ! _in_writable "$tgt"; then
+         && _cd_phys back "${tgt%/*}" && [[ "$back/.git" == "$tgt" ]] && ! _in_writable "$tgt"; then
         back=""; _git_ptr_read "$tgt" back || true
         back="${back#gitdir: }"
         if [[ "$back" != /* ]]; then back="${tgt%/*}/$back"; fi
@@ -2564,16 +2719,18 @@ _git_config_bool() {
   [[ "$v" == true ]]
 }
 
-# _git_config_get <config-file> <key>: a key's value from one git config file,
-# read by git. Fails when it is unset, and always where git does not run: then
-# core.hooksPath unset lists the hooks in hooks/, and a core.worktree is not
-# followed, which the launch's WARNING names when it protects a git directory
-# (GIT-24).
+# _git_config_get <out-var> <config-file> <key>: a key's value from one git
+# config file, read by git, into <out-var> as git has it: up to the NUL git ends
+# it with, a trailing newline included ($(...) dropped one, and a core.worktree
+# naming `wt<newline>` was read as a decoy `wt`; review of the GIT-31 fix).
+# Fails when it is unset, and always where git does not run: then core.hooksPath
+# unset lists the hooks in hooks/, and a core.worktree is not followed, which the
+# launch's WARNING names when it protects a git directory (GIT-24).
 _git_config_get() {
-  local v
+  local -n _gcg_out=$1
+  _gcg_out=""
   _git_usable || return 1
-  v="$(_git_file_config "$1" --get "$2" 2>/dev/null)" || return 1
-  printf '%s' "$v"
+  IFS= read -r -d '' _gcg_out < <(_git_file_config "$2" --null --get "$3" 2>/dev/null) || { _gcg_out=""; return 1; }
 }
 
 # _git_exec_keys <config-file>...: the keys these git config files set that make
@@ -2584,7 +2741,7 @@ _git_config_get() {
 # when it starts with '!'. A file that does not exist sets nothing.
 _git_exec_keys() {
   local f rec k v
-  local re='^(core\.(fsmonitor|hookspath|sshcommand|editor|pager|askpass|gitproxy|alternaterefscommand)|sequence\.editor|pager\..+|diff\.external|diff\..+\.(command|textconv)|merge\..+\.driver|filter\..+\.(clean|smudge|process)|credential\.(.+\.)?helper|gpg\.(.+\.)?program|remote\..+\.(uploadpack|receivepack)|(difftool|mergetool|man|browser)\..+\.(cmd|path)|web\.browser|include\.path|includeif\..+\.path|alias\..+|submodule\..+\.update|trailer\..+\.(command|cmd)|gpg\.ssh\.defaultkeycommand|sendemail\.(.+\.)?(tocmd|cccmd|headercmd|sendmailcmd|smtpserver)|protocol\.(ext\.)?allow|imap\.tunnel|instaweb\.httpd|guitool\..+\.cmd|interactive\.difffilter|tar\..+\.command)$'
+  local re='^(core\.(fsmonitor|hookspath|sshcommand|editor|pager|askpass|gitproxy|alternaterefscommand)|sequence\.editor|pager\..+|diff\.external|diff\..+\.(command|textconv)|merge\..+\.driver|filter\..+\.(clean|smudge|process)|credential\.(.+\.)?helper|gpg\.(.+\.)?program|remote\..+\.(uploadpack|receivepack)|(difftool|mergetool|man|browser)\..+\.(cmd|path)|web\.browser|include\.path|includeif\..+\.path|alias\..+|submodule\..+\.update|trailer\..+\.(command|cmd)|gpg\.ssh\.defaultkeycommand|sendemail\.(.+\.)?(tocmd|cccmd|headercmd|sendmailcmd|smtpserver)|protocol\.(ext\.)?allow|imap\.tunnel|instaweb\.httpd|guitool\..+\.cmd|interactive\.difffilter|tar\..+\.command|hook\..+\.command)$'
   local -A had=()
   _git_usable || return 0
   for f in "$@"; do
@@ -2627,7 +2784,7 @@ _git_runs() {
   if [[ -f "$g/commondir" ]]; then
     _git_ptr_read "$g/commondir" cd || true
     if [[ -n "$cd" && "$cd" != ./ ]]; then
-      c="$(cd "$g" 2>/dev/null && cd -P -- "$cd" 2>/dev/null && pwd -P)" || c=""
+      _cd_phys c "$g" "$cd" || c=""
       if [[ -z "$c" ]]; then _gr_k="commondir, which leads nowhere it can be checked"; return 0; fi
       if [[ -n "${_git_launch_seen[$c]:-}" ]]; then own=""; fi
     fi
@@ -2642,9 +2799,9 @@ _git_runs() {
   # core.hooksPath says. That may name a hook git would not run; the ones in a
   # core.hooksPath directory, which _git_exec_keys would name with git, go
   # unnamed (GIT-24; G98).
-  hp="$(_git_config_get "$c/config" core.hooksPath)" || hp=""
+  _git_config_get hp "$c/config" core.hooksPath || hp=""
   if [[ -z "$hp" && -f "$g/config.worktree" ]] && _git_config_bool "$c/config" extensions.worktreeConfig; then
-    hp="$(_git_config_get "$g/config.worktree" core.hooksPath)" || hp=""
+    _git_config_get hp "$g/config.worktree" core.hooksPath || hp=""
   fi
   [[ -z "$hp" ]] || return 0
   # git follows a hooks/ that is a link, and runs what it finds there.
@@ -2683,6 +2840,11 @@ _git_ident() {
 # launch. Machine-local, like image-projects.conf, and never mounted.
 _git_reported_file="${ai_containers_root}/git-reported.conf"
 declare -A _git_reported_set=()
+# The files git reads by name in every git directory launcher_ro_overlay finds,
+# protected or under a read-only overlay, that _ro_fifo_search checks for a
+# second hard link (GIT-31): `file` (config, config.worktree, commondir, a .git
+# file) or `hooks` (a hooks/ directory: the names git runs, a link followed).
+declare -A _ro_links_check=()
 _git_reported_loaded=""
 _git_reported_load() {
   local line
@@ -3907,7 +4069,7 @@ run_container() {
   # skips rather than refusing every launch.
   local launcher_verify_flags=() launcher_anchor_env=()
   # Again, just before docker: a FIFO made since the overlay pass (LNCH-11).
-  _ro_fifo_search launcher_ro_dirs launcher_rw_srcs
+  _ro_fifo_search launcher_ro_dirs launcher_rw_srcs _ro_links_check
   # The output directories join the manifest: checked for a link above, they
   # could be swapped for one before docker resolves them, by a concurrent
   # container of the same project; the entrypoint refuses a swap as for any
