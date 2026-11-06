@@ -799,10 +799,18 @@ launcher_ro_overlay() {
           # Whenever it has a commondir other than ./: git ignores a worktree's own
           # config, and a decoy there hid its config.worktree (review of the
           # GIT-36/37 fix).
+          # One that cannot be resolved names a path that cannot exist, as the
+          # protected path's does: the decoy beside it is not what git reads, and
+          # what git would read once it exists cannot say the extension is off
+          # (security review of a1b7ce7). An empty one is this directory, to git
+          # and to _cd_phys alike.
           ocfg="$g/config"
           if [[ -f "$g/commondir" ]]; then
             cdir=""; _git_ptr_read "$g/commondir" cdir || true
-            if [[ -n "$cdir" && "$cdir" != ./ ]] && _cd_phys ocd "$g" "$cdir"; then ocfg="$ocd/config"; fi
+            if [[ "$cdir" != ./ ]]; then
+              if _cd_phys ocd "$g" "$cdir"; then ocfg="$ocd/config"
+              else ocfg=/nonexistent/ai-launcher-unresolved-commondir/config; fi
+            fi
           fi
           pgd+=("$g"); pga+=("$at"); pgc+=("$ocfg"); pgo[${#pgd[@]}-1]=1
         fi

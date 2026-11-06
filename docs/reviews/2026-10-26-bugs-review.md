@@ -18,7 +18,7 @@
 - **Updated 2026-11-04:** section 23, found while running PLAT-5 on macOS: GIT-27 and TST-28, FIXED.
 - **Updated 2026-11-04:** GIT-25 and GIT-26 are FIXED (`d942daa`). GIT-28, found while fixing them (section 22), is FIXED too, after seven reviews of its fix; `--version` no longer reports `-dirty` (the user's choice).
 - **Updated 2026-11-05:** the fix-batch table below no longer lists as open what was fixed after its batch. Every entry is FIXED except these: GIT-29 (open; section 24; the user chose fix A, 2026-11-05), GIT-35 (open, LOW), GIT-38 (open, HIGH) and GIT-39 (open, MEDIUM; section 25), LNCH-2 (not reproducible), GIT-12 (won't fix), GIT-13 (resolved fail-closed), LNCH-7 (documented), GIT-21 and LNCH-17 (closed), BLD-8 (its `--error-on=any` trade kept by design) and TST-21 (the same comment edit is owed to mgd-ai-containers' copy of `tests/layer-checks.conf`, which is not reachable from this machine). Section 24 holds GIT-29, found while reviewing PLAT-7's run steps; section 25 GIT-30, found by GAP-2's slice 2, and GIT-31 to GIT-39, found by the reviews of its fix and theirs.
-- **Updated 2026-11-06:** GIT-29 is FIXED by fix A, after a review and a re-review of the fix.
+- **Updated 2026-11-06:** GIT-29 is FIXED by fix A, after a review and a re-review of the fix. GIT-40, found by the automated security review of the GIT-36/37 fix (section 25), is FIXED.
 - **Companion:** [2026-10-26-feature-gaps-review.md](2026-10-26-feature-gaps-review.md).
 - **Confidence:** CONFIRMED = reproduced, or unambiguous from the code. PLAUSIBLE = strong reasoning, not reproduced (usually needs hardware or a platform not available here); verify before fixing.
 - **Citations** are by snippet, per AGENTS.md "Citing code". Scratch repro paths mentioned in entries were session-local and may no longer exist; each entry describes its repro in full.
@@ -1659,7 +1659,7 @@ An Opus reviewer read the rewritten PLAT-7 steps against the code, 2026-11-05, a
 
 ## 25. Found by GAP-2's slice 2
 
-An Opus reviewer of the slice's new tests, 2026-11-05, at `fd49c3c`, reached a mutant of `_git_runs()` that the slice had called unreachable, through a `commondir` holding a NUL. Following that up found GIT-30.
+An Opus reviewer of the slice's new tests, 2026-11-05, at `fd49c3c`, reached a mutant of `_git_runs()` that the slice had called unreachable, through a `commondir` holding a NUL. Following that up found GIT-30. The reviews of its fix and theirs found GIT-31 to GIT-39, and the automated security review of the GIT-36/37 fix (`a1b7ce7`) found GIT-40.
 
 ### GIT-30: a commondir, gitdir or .git file is read otherwise than git reads it
 - **Status: FIXED** (2026-11-05).
@@ -1886,6 +1886,19 @@ An Opus reviewer of the slice's new tests, 2026-11-05, at `fd49c3c`, reached a m
 - **Severity: MEDIUM.** Confidence: CONFIRMED. With `include.path=<outside>/inc.cfg` and `ln <outside>/inc.cfg <mount>/side.cfg`, the next launch was silent. Appending a `core.fsmonitor` through `side.cfg` made the host's git run it.
 - **Location:** sandbox.sh: `_walk_exposed()`, whose `=` step asks only whether the target itself lies in a writable mount.
 - **Fix direction:** judge an include's target as `_fs_other_names()` judges a hook's.
+
+### GIT-40: a commondir under a read-only overlay that leads nowhere keeps the decoy config
+- **Status: FIXED** (2026-11-06). Found by the automated security review of `a1b7ce7`, the GIT-36/37 fix.
+- **Severity: MEDIUM.** Confidence: CONFIRMED (G116: launched without judging `config.worktree` before the fix; with a commondir outside every mount, in silence).
+- **Location:** sandbox.sh: `launcher_ro_overlay()`, the branch for a git directory under a read-only overlay, which records the config its post-pass reads `extensions.worktreeConfig` from.
+- **What was wrong:** the commondir under a read-only overlay was handled in two cases.
+  - One that resolved: its common directory's config was used.
+  - One that did not resolve: the git directory's own `config` was kept. git never reads that config for a worktree, and the agent could plant a decoy there saying `worktreeConfig = false`.
+  - So a `config.worktree` beside it, including a file the agent writes, was never judged.
+  - git refuses the git directory while its common directory is missing, and reads that directory's config once it exists, never the decoy. One inside a writable mount was already named (`_gd_resolve()`: "does not exist"); one outside every mount, an absolute path made later on the host, was not, and the launch was silent.
+  - The protected path already failed closed here (security review of `99db199`).
+- **Fix:** such a commondir names `/nonexistent/ai-launcher-unresolved-commondir/config`, as the protected path does. What cannot be read cannot say the extension is off, so `config.worktree` is walked. An empty commondir is this directory, to git and to `_cd_phys()` alike, so its own config is read, as on the protected path.
+- **The review of the fix** found the test passed with the usual common directory's config read in place of the sentinel (the agent can set that config too), and that the first version took an empty commondir for one that does not resolve. Both fixed: the test sets that config's extension off and covers a commondir outside every mount, and an empty commondir is pinned by its own config's `core.hooksPath` being judged.
 
 ## GIT
 

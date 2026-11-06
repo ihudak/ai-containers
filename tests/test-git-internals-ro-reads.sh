@@ -567,11 +567,35 @@ grep -qF "/o116/L/.git/worktrees/x/config.worktree includes" "$ERR" \
   && pass "G116 a worktree-shaped git directory's config.worktree under an overlay has its includes judged${decoy116:+, a decoy config beside it}" \
   || fail "G116 worktree config.worktree include${decoy116:+ with a decoy config} (rc=$LAUNCH_RC; stderr: $(grep -F o116 "$ERR" | head -2 | tr '\n' ' '))"
 done
+# A commondir that leads nowhere — beside the repository, or outside every
+# mount, where nothing else warns: git's common config cannot be read, so it
+# cannot say the extension is off. Neither does the decoy beside it, nor the
+# usual common directory's config, which the agent can set to false too
+# (security review of a1b7ce7; review of the GIT-40 fix).
+"${G[@]}" -C "$TMP/o116/L" config extensions.worktreeConfig false
+printf '[extensions]\n\tworktreeConfig = false\n' > "$TMP/o116/L/.git/worktrees/x/config"
+for cd116 in ../../nowhere /nonexistent-git40/x; do
+  printf '%s\n' "$cd116" > "$TMP/o116/L/.git/worktrees/x/commondir"
+  EXTRA_MOUNTS="$TMP/o116" launch "$TMP/app"
+  grep -qF "/o116/L/.git/worktrees/x/config.worktree includes" "$ERR" \
+    && pass "G116 a commondir that leads nowhere ($cd116), under an overlay, has its config.worktree judged" \
+    || fail "G116 unresolved commondir $cd116 (rc=$LAUNCH_RC; stderr: $(grep -F o116 "$ERR" | head -2 | tr '\n' ' '))"
+done
 rm -f "$TMP/o116/L/.git/worktrees/x/commondir"; ln -s ../../../../w/cd "$TMP/o116/L/.git/worktrees/x/commondir"; printf '../..\n' > "$TMP/o116/w/cd"
 EXTRA_MOUNTS="$TMP/o116" launch "$TMP/app"
 grep -qF "WARNING: /workspace/o116/L/.git/worktrees/x/commondir, under a read-only overlay, is a symlink" "$ERR" \
   && pass "G116 a commondir link under an overlay is named" \
   || fail "G116 commondir link (rc=$LAUNCH_RC; stderr: $(grep -F o116 "$ERR" | head -2 | tr '\n' ' '))"
+# An empty commondir is no commondir to git, which reads the git directory's own
+# config, as the protected path does: its core.hooksPath is judged (review of
+# the GIT-40 fix).
+mk116; mkdir -p "$TMP/o116/L/.git/worktrees/y" "$TMP/o116/w/hk" && printf 'ref: refs/heads/main\n' > "$TMP/o116/L/.git/worktrees/y/HEAD" \
+  && : > "$TMP/o116/L/.git/worktrees/y/commondir" && printf '[core]\n\thooksPath = %s\n' "$TMP/o116/w/hk" > "$TMP/o116/L/.git/worktrees/y/config" \
+  || { printf 'SCAFFOLD-FAILED: G116 empty commondir\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/o116" launch "$TMP/app"
+grep -qF "runs its git hooks from /workspace/o116/w/hk (core.hooksPath)" "$ERR" \
+  && pass "G116 an empty commondir under an overlay is no commondir: its own config's core.hooksPath is judged" \
+  || fail "G116 empty commondir (rc=$LAUNCH_RC; stderr: $(grep -F o116 "$ERR" | head -2 | tr '\n' ' '))"
 # The hooks' link check that runs out of time refuses, as the FIFO search does.
 mk116; "${G[@]}" init -q "$TMP/o116/r" || { printf 'SCAFFOLD-FAILED: G116 timeout\n'; exit 1; }
 mkdir -p "$TMP/fs116"; printf '#!/bin/bash\ncase " $* " in *" -maxdepth 1 "*" -links "*) exit 124;; esac\nexec %q "$@"\n' "$(command -v find)" > "$TMP/fs116/find"
