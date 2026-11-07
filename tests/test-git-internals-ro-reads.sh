@@ -832,7 +832,8 @@ n4_119="$(wc -l < "$TMP/fs119/log")"; s4_119="$(wc -l < "$TMP/fs119/stat.log")";
 [[ "$s4_119" == "$s1_119" ]] \
   && pass "G119 a mount's device is read once a launch, however many files are asked about ($s1_119 reads)" \
   || fail "G119 a mount's device read per file ($s1_119 for one include, $s4_119 for three and three hooks)"
-[[ "$g1_119" == 1 && "$g4_119" == 3 ]] \
+# Numbers, not strings: BSD wc pads its count with spaces.
+(( g1_119 == 1 && g4_119 == 3 )) \
   && pass "G119 one lookup per file asked about, however often it is asked" \
   || fail "G119 lookups ($g1_119 for one include; $g4_119 for three files asked about seven times)"
 rm -rf "$TMP/fs119"
