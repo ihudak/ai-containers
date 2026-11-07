@@ -396,5 +396,225 @@ grep -qF 'protected here (1): includes' "$ERR" \
   || fail "G98 no WARNING for a lone .git file (rc=$LAUNCH_RC; stderr: $(grep -A2 -F 'WARNING' "$ERR" | tr '\n' ' '))"
 rm -rf "$R98" "$TMP/r98b" "$TMP/r98c" "$TMP/r98d" "$TMP/out98" "$TMP/nogit98" "$TMP/brokengit98" "$TMP/brokengit98.log" "$TMP/mutegit98"
 
+# ── G120: a core.hooksPath is judged as git takes it (GIT-35) ─────────────────
+# It was resolved through every link and judged by where it ended, from config
+# alone, relative to the directory the .git lies in. So the agent could silence
+# the NOTE a writable hooks directory gets by making husky's .husky/_ a link to
+# any directory of the host, and repoint it in the session (re-review of the
+# GIT-39 fix); a `..` out of a directory it can swap went unnamed; and a
+# core.hooksPath set by an include, by config.worktree, or relative to a
+# core.worktree, was not looked at. Its way is walked as an include's is.
+mk120() {
+  rm -rf "$TMP/h120" "$TMP/o120"; mkdir -p "$TMP/h120" "$TMP/o120/hooks" && "${G[@]}" init -q "$TMP/h120/r" \
+    || { printf 'SCAFFOLD-FAILED: G120\n'; exit 1; }
+}
+way120() {  # $1 = label, $2 = where the hooks are, $3 = the line naming the step
+  grep -qF "$3" <<<"$(grep -A1 -F "runs its git hooks from $2 (core.hooksPath), and the agent can change the way there:" "$ERR")" \
+    && pass "G120 $1" \
+    || fail "G120 $1 (rc=$LAUNCH_RC; stderr: $(grep -A1 -F 'git hooks from' "$ERR" | head -2 | tr '\n' ' '))"
+}
+mk120; mkdir -p "$TMP/h120/r/.husky" && ln -s "$TMP/o120/hooks" "$TMP/h120/r/.husky/_" \
+  && "${G[@]}" -C "$TMP/h120/r" config core.hooksPath .husky/_ || { printf 'SCAFFOLD-FAILED: G120 husky\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h120" launch "$TMP/app"
+way120 "a husky .husky/_ made a link to a directory of the host is named, with the link" "$TMP/o120/hooks" \
+  "it can repoint $TMP/h120/r/.husky/_ (at /workspace/h120/r/.husky/_), a link on its way."
+mk120; mkdir -p "$TMP/h120/sub" && "${G[@]}" -C "$TMP/h120/r" config core.hooksPath "$TMP/h120/sub/../../o120/hooks" \
+  || { printf 'SCAFFOLD-FAILED: G120 ..\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h120" launch "$TMP/app"
+way120 "a core.hooksPath that steps out (..) of a directory the agent can swap is named" "$TMP/o120/hooks" \
+  "it can replace $TMP/h120/sub (at /workspace/h120/sub) with a link"
+mk120; mkdir -p "$TMP/h120/hk" && printf '[core]\n\thooksPath = %s\n' "$TMP/h120/hk" > "$TMP/o120/inc.cfg" \
+  && "${G[@]}" -C "$TMP/h120/r" config include.path "$TMP/o120/inc.cfg" || { printf 'SCAFFOLD-FAILED: G120 include\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h120" launch "$TMP/app"
+grep -qF "NOTE: /workspace/h120/r/.git runs its git hooks from /workspace/h120/hk (core.hooksPath), which the agent" "$ERR" \
+  && pass "G120 a core.hooksPath set by an included file is judged" \
+  || fail "G120 hooksPath from an include (rc=$LAUNCH_RC; stderr: $(grep -F 'git hooks' "$ERR" | head -1))"
+mk120; mkdir -p "$TMP/h120/hk" && "${G[@]}" -C "$TMP/h120/r" config extensions.worktreeConfig true \
+  && "${G[@]}" -C "$TMP/h120/r" config --worktree core.hooksPath "$TMP/h120/hk" || { printf 'SCAFFOLD-FAILED: G120 config.worktree\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h120" launch "$TMP/app"
+grep -qF "NOTE: /workspace/h120/r/.git runs its git hooks from /workspace/h120/hk (core.hooksPath), which the agent" "$ERR" \
+  && pass "G120 a core.hooksPath set in config.worktree, which git reads, is judged" \
+  || fail "G120 hooksPath from config.worktree (rc=$LAUNCH_RC; stderr: $(grep -F 'git hooks' "$ERR" | head -1))"
+mk120; mkdir -p "$TMP/h120/wt" && "${G[@]}" -C "$TMP/h120/r" config core.worktree "$TMP/h120/wt" \
+  && "${G[@]}" -C "$TMP/h120/r" config core.hooksPath .husky/_ || { printf 'SCAFFOLD-FAILED: G120 core.worktree\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h120" launch "$TMP/app"
+grep -qF "runs its git hooks from /workspace/h120/wt/.husky/_ (core.hooksPath)" "$ERR" \
+  && pass "G120 a relative core.hooksPath is judged from the core.worktree git runs hooks in" \
+  || fail "G120 hooksPath from core.worktree (rc=$LAUNCH_RC; stderr: $(grep -F 'git hooks' "$ERR" | head -2 | tr '\n' ' '))"
+# Two ways to the hooks that the agent can change at the same step name it once:
+# a core.worktree that is where the .git lies.
+mk120; "${G[@]}" -C "$TMP/h120/r" config core.worktree "$TMP/h120/r" \
+  && "${G[@]}" -C "$TMP/h120/r" config core.hooksPath .husky/_ || { printf 'SCAFFOLD-FAILED: G120 once\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h120" launch "$TMP/app"
+[[ "$(grep -c 'runs its git hooks from /workspace/h120/r/.husky/_ (core.hooksPath)' "$ERR")" == 1 ]] \
+  && pass "G120 two ways to the hooks the agent can change at the same step are named once" \
+  || fail "G120 named $(grep -c 'runs its git hooks from /workspace/h120/r/.husky/_' "$ERR") times"
+# With core.hooksPath set, git does not run what hooks/ holds: a link there is
+# not named.
+mk120; printf '#!/bin/sh\n' > "$TMP/h120/w.sh" && ln -s ../../../w.sh "$TMP/h120/r/.git/hooks/pre-commit" \
+  && "${G[@]}" -C "$TMP/h120/r" config core.hooksPath "$TMP/o120/hooks" || { printf 'SCAFFOLD-FAILED: G120 hooks/\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h120" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF 'hooks/pre-commit, a hook your host' "$ERR" \
+  && pass "G120 with core.hooksPath set, a link in hooks/, which git does not run, is not named" \
+  || fail "G120 hooks/ walked with core.hooksPath set (rc=$LAUNCH_RC; stderr: $(grep -F 'pre-commit' "$ERR" | head -1))"
+mk120; "${G[@]}" -C "$TMP/h120/r" config core.hooksPath '~root/hooks' || { printf 'SCAFFOLD-FAILED: G120 ~user\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h120" launch "$TMP/app"
+grep -qF "NOTE: /workspace/h120/r/.git takes its git hooks from ~root/hooks (core.hooksPath), which the launcher does not expand" "$ERR" \
+  && pass "G120 a core.hooksPath in a form the launcher does not expand (~user/) is named as not judged" \
+  || fail "G120 ~user/ (rc=$LAUNCH_RC; stderr: $(grep -F 'git hooks' "$ERR" | head -1))"
+# The way to a core.worktree is walked too: a submodule whose checkout the agent
+# moved aside and replaced with a link to a directory of the host was silent, and
+# repointed in the session its hooks ran (review of the GIT-35 fix).
+mk120; "${G[@]}" init -q "$TMP/h120/sup" && mkdir -p "$TMP/h120/sup/.git/modules" && "${G[@]}" init -q --separate-git-dir "$TMP/h120/sup/.git/modules/sub" "$TMP/h120/sup/realsub" \
+  && "${G[@]}" config --file "$TMP/h120/sup/.git/modules/sub/config" core.worktree ../../../sub \
+  && "${G[@]}" config --file "$TMP/h120/sup/.git/modules/sub/config" core.hooksPath .husky/_ \
+  && ln -s "$TMP/o120" "$TMP/h120/sup/sub" || { printf 'SCAFFOLD-FAILED: G120 submodule\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h120" launch "$TMP/app"
+way120 "a submodule's core.worktree made a link the agent can repoint is named" "$TMP/o120/.husky/_" \
+  "it can repoint $TMP/h120/sup/sub (at /workspace/h120/sup/sub), a link on its way."
+# Every way is judged before one is skipped as named: from where the .git lies
+# the hooks are out of reach, and from the core.worktree the way steps out of a
+# directory the agent can swap, to the same place.
+mk120; mkdir -p "$TMP/h120/wt" && "${G[@]}" -C "$TMP/h120/r" config core.worktree "$TMP/h120/wt" \
+  && "${G[@]}" -C "$TMP/h120/r" config core.hooksPath ../../o120/hooks || { printf 'SCAFFOLD-FAILED: G120 every way\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h120" launch "$TMP/app"
+way120 "a way the agent can change is named though another way reaches the same hooks" "$TMP/o120/hooks" \
+  "it can replace $TMP/h120/wt (at /workspace/h120/wt) with a link"
+# A core.hooksPath git may not use — from an includeIf whose condition may not
+# hold, or :(optional), which git 2.52 and later fall back from — leaves hooks/
+# walked; a value written :(optional) is judged with it and without it.
+mk120; printf '#!/bin/sh\n' > "$TMP/h120/w.sh" && ln -s ../../../w.sh "$TMP/h120/r/.git/hooks/pre-commit" \
+  && printf '[core]\n\thooksPath = %s\n' "$TMP/o120/hooks" > "$TMP/o120/inc.cfg" \
+  && "${G[@]}" -C "$TMP/h120/r" config includeIf.onbranch:no-such-branch.path "$TMP/o120/inc.cfg" \
+  || { printf 'SCAFFOLD-FAILED: G120 includeIf\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h120" launch "$TMP/app"
+grep -qF 'NOTE: /workspace/h120/r/.git/hooks/pre-commit, a hook your host' "$ERR" \
+  && pass "G120 a core.hooksPath from an includeIf leaves the hooks in hooks/ judged" \
+  || fail "G120 includeIf hid hooks/ (rc=$LAUNCH_RC; stderr: $(grep -F 'pre-commit' "$ERR" | head -1))"
+mk120; mkdir -p "$TMP/h120/hk" && printf '#!/bin/sh\n' > "$TMP/h120/w.sh" && ln -s ../../../w.sh "$TMP/h120/r/.git/hooks/pre-commit" \
+  && "${G[@]}" -C "$TMP/h120/r" config core.hooksPath ":(optional)$TMP/h120/hk" || { printf 'SCAFFOLD-FAILED: G120 optional\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h120" launch "$TMP/app"
+grep -qF "NOTE: /workspace/h120/r/.git runs its git hooks from /workspace/h120/hk (core.hooksPath), which the agent" "$ERR" \
+  && grep -qF 'NOTE: /workspace/h120/r/.git/hooks/pre-commit, a hook your host' "$ERR" \
+  && pass "G120 a core.hooksPath written :(optional) is judged without it, as git 2.52 takes it, and hooks/ too" \
+  || fail "G120 :(optional) (rc=$LAUNCH_RC; stderr: $(grep -E 'git hooks|pre-commit' "$ERR" | head -2 | tr '\n' ' '))"
+# One read per config file: the include walk's gives core.hooksPath too. A
+# stand-in git counts reads of it alone, on a launch after the first protection
+# (which reads it once, to name the hooks already there).
+mk120; mkdir -p "$TMP/g120" && printf '[user]\n' > "$TMP/o120/inc.cfg" && "${G[@]}" -C "$TMP/h120/r" config include.path "$TMP/o120/inc.cfg" \
+  && printf '#!/bin/bash\ncase " $* " in *" core.hooksPath"*) echo x >> %q;; esac\nexec %q "$@"\n' "$TMP/g120/log" "$(command -v git)" > "$TMP/g120/git" \
+  && chmod +x "$TMP/g120/git" && : > "$TMP/g120/log" || { printf 'SCAFFOLD-FAILED: G120 reads\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h120" launch "$TMP/app"; PATH="$TMP/g120:$PATH" EXTRA_MOUNTS="$TMP/h120" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 && ! -s "$TMP/g120/log" ]] \
+  && pass "G120 core.hooksPath costs no read of its own: the include walk's read gives it" \
+  || fail "G120 $(wc -l < "$TMP/g120/log") reads of core.hooksPath alone (rc=$LAUNCH_RC)"
+rm -rf "$TMP/g120"
+# What the check costs is bounded, as the include walk's is (re-review of the
+# GIT-35 fix: values times worktrees took a planted repository's launch from
+# 0.9 s to 64 s). git takes core.worktree from the config and config.worktree
+# alone, never from a file they include, so neither does the check.
+mk120; mkdir -p "$TMP/h120/wt2" && printf '[core]\n\tworktree = %s\n' "$TMP/h120/wt2" > "$TMP/o120/inc.cfg" \
+  && "${G[@]}" -C "$TMP/h120/r" config include.path "$TMP/o120/inc.cfg" && "${G[@]}" -C "$TMP/h120/r" config core.hooksPath .husky/_ \
+  && [[ "$("${G[@]}" -C "$TMP/h120/r" rev-parse --show-toplevel)" == "$TMP/h120/r" ]] \
+  || { printf 'SCAFFOLD-FAILED: G120 included core.worktree (does this git take one from an include?)\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h120" launch "$TMP/app"
+grep -qF 'runs its git hooks from /workspace/h120/r/.husky/_' "$ERR" && ! grep -qF '/workspace/h120/wt2' "$ERR" \
+  && pass "G120 a core.worktree from an included file, which git ignores, is no base" \
+  || fail "G120 included core.worktree taken (rc=$LAUNCH_RC; stderr: $(grep -F 'git hooks' "$ERR" | head -2 | tr '\n' ' '))"
+# A value with hundreds of components is not walked, and named once, whatever
+# the number of worktrees it is judged from.
+mk120; mkdir -p "$TMP/h120/wt" && "${G[@]}" -C "$TMP/h120/r" config core.worktree "$TMP/h120/wt" \
+  && "${G[@]}" -C "$TMP/h120/r" config core.hooksPath "$(printf 'a/%.0s' $(seq 1 200))h" || { printf 'SCAFFOLD-FAILED: G120 deep\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h120" launch "$TMP/app"
+[[ "$(grep -c 'whose way has too many' "$ERR")" == 1 ]] \
+  && pass "G120 a core.hooksPath with hundreds of components is not walked, and is named once" \
+  || fail "G120 deep core.hooksPath named $(grep -c 'whose way has too many' "$ERR") times (rc=$LAUNCH_RC)"
+# One longer than git can open (PATH_MAX) runs nothing, and is not named.
+mk120; "${G[@]}" -C "$TMP/h120/r" config core.hooksPath "$(printf 'a%.0s' $(seq 1 4100))" || { printf 'SCAFFOLD-FAILED: G120 long\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h120" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF 'git hooks from' "$ERR" && ! grep -qF 'takes its git hooks' "$ERR" \
+  && pass "G120 a core.hooksPath longer than git can open is not named" \
+  || fail "G120 long value named (rc=$LAUNCH_RC; stderr: $(grep -F 'git hooks' "$ERR" | head -1 | cut -c1-120))"
+# A way not followed to the end (a link loop the agent cannot repoint, in a
+# planted launcher) is named once, whatever the number of worktrees it is
+# judged from: here the .git's directory, and a core.worktree naming it again.
+mk120; mkdir -p "$TMP/h120/L" && : > "$TMP/h120/L/sandbox.sh" && : > "$TMP/h120/L/sandbox-common.sh" && ln -s loop "$TMP/h120/L/loop" \
+  && "${G[@]}" -C "$TMP/h120/r" config core.worktree "$TMP/h120/r" && "${G[@]}" -C "$TMP/h120/r" config core.hooksPath ../L/loop/h \
+  || { printf 'SCAFFOLD-FAILED: G120 loop\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h120" launch "$TMP/app"
+[[ "$(grep -c 'its way was not followed to the end' "$ERR")" == 1 ]] \
+  && pass "G120 a way not followed to the end is named once, from however many worktrees" \
+  || fail "G120 loop named $(grep -c 'its way was not followed to the end' "$ERR") times (rc=$LAUNCH_RC)"
+# Each way counts in the launch's budget, which the include walk spends too;
+# past it, a WARNING says which repository's core.hooksPath was not judged —
+# each one whose include walk the budget cut, its core.hooksPath set past the cut.
+mk120; for n in $(seq 1 13); do
+  "${G[@]}" init -q "$TMP/h120/b$n" \
+    && { printf '[include]\n'; for m in $(seq 1 90); do printf '\tpath = /nonexistent120/f%d\n' "$m"; done; printf '[core]\n\thooksPath = .husky/_\n'; } >> "$TMP/h120/b$n/.git/config" \
+    || { printf 'SCAFFOLD-FAILED: G120 budget\n'; exit 1; }
+done
+EXTRA_MOUNTS="$TMP/h120" launch "$TMP/app"
+cut120="$(sed -n 's|^WARNING: not every include of \(/workspace/h120/b[0-9]*/.git\)/config was followed.*|\1|p' "$ERR")"; miss120=""
+for x in $cut120; do grep -qF "WARNING: not every core.hooksPath of $x was judged" "$ERR" || miss120+=" $x"; done
+[[ -n "$cut120" && -z "$miss120" ]] \
+  && pass "G120 core.hooksPath ways count in the launch's budget, and each repository past it is named" \
+  || fail "G120 hooksPath budget (rc=$LAUNCH_RC; include cuts: $(tr '\n' ' ' <<<"$cut120"); not named:${miss120:- none})"
+# A core.hooksPath after the point where a config's walk was cut is still judged,
+# and core entries count in the config's own budget.
+mk120; { printf '[include]\n'; for m in $(seq 1 101); do printf '\tpath = /nonexistent120/f%d\n' "$m"; done; printf '[core]\n\thooksPath = .husky/_\n'; } >> "$TMP/h120/r/.git/config" \
+  || { printf 'SCAFFOLD-FAILED: G120 cut\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h120" launch "$TMP/app"
+grep -qF 'not every include of /workspace/h120/r/.git/config was followed' "$ERR" && grep -qF 'runs its git hooks from /workspace/h120/r/.husky/_' "$ERR" \
+  && pass "G120 a core.hooksPath past the point where its config's walk was cut is still judged" \
+  || fail "G120 hooksPath after a cut (rc=$LAUNCH_RC; stderr: $(grep -E 'not every|git hooks' "$ERR" | head -2 | tr '\n' ' '))"
+mk120; printf '#!/bin/sh\n' > "$TMP/h120/inc.cfg" && { printf '[core]\n'; for m in $(seq 1 150); do printf '\thooksPath = .husky/_\n'; done; printf '[include]\n\tpath = %s\n' "$TMP/h120/inc.cfg"; } >> "$TMP/h120/r/.git/config" \
+  || { printf 'SCAFFOLD-FAILED: G120 core entries\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h120" launch "$TMP/app"
+grep -qF 'not every include of /workspace/h120/r/.git/config was followed' "$ERR" && grep -qF 'runs its git hooks from /workspace/h120/r/.husky/_' "$ERR" \
+  && pass "G120 core.hooksPath entries count in a config's budget, and the last is still judged" \
+  || fail "G120 core entries uncounted (rc=$LAUNCH_RC; stderr: $(grep -E 'not every|git hooks|inc.cfg' "$ERR" | head -2 | tr '\n' ' '))"
+# ... and with it: to a git older than 2.52 (Ubuntu 24.04's 2.43, Apple's) it is
+# part of a relative path, which the agent can make. Both are judged whatever
+# the git the launcher finds, since a host can hold two (third review).
+mk120; "${G[@]}" -C "$TMP/h120/r" config core.hooksPath ':(optional).hk' || { printf 'SCAFFOLD-FAILED: G120 old git\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h120" launch "$TMP/app"
+grep -qF 'runs its git hooks from /workspace/h120/r/:(optional).hk (core.hooksPath)' "$ERR" \
+  && grep -qF 'runs its git hooks from /workspace/h120/r/.hk (core.hooksPath)' "$ERR" \
+  && pass "G120 a core.hooksPath written :(optional) is judged with it too, as a git older than 2.52 takes it" \
+  || fail "G120 :(optional) one reading (rc=$LAUNCH_RC; stderr: $(grep -F 'git hooks' "$ERR" | head -2 | tr '\n' ' '))"
+# A core.hooksPath directory is walked once a launch, however many repositories
+# name it, and its walks count in the launch's budget, past which a WARNING names
+# the repository: hundreds of planted ways took a launch from 1.7 s to 161 s, in
+# silence (third review of the GIT-35 fix).
+mk120; printf '#!/bin/sh\n' > "$TMP/h120/w.sh" && ln -s "$TMP/h120/w.sh" "$TMP/o120/hooks/pre-commit" \
+  && "${G[@]}" init -q "$TMP/h120/r2" && "${G[@]}" -C "$TMP/h120/r" config core.hooksPath "$TMP/o120/hooks" \
+  && "${G[@]}" -C "$TMP/h120/r2" config core.hooksPath "$TMP/o120/hooks" || { printf 'SCAFFOLD-FAILED: G120 once a launch\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h120" launch "$TMP/app"
+[[ "$(grep -c "NOTE: $TMP/o120/hooks/pre-commit, a hook your host" "$ERR")" == 1 ]] \
+  && pass "G120 a core.hooksPath directory two repositories name is walked once" \
+  || fail "G120 walked $(grep -c "NOTE: $TMP/o120/hooks/pre-commit, a hook your host" "$ERR") times"
+mk120; for n in $(seq 1 35); do
+  "${G[@]}" init -q "$TMP/h120/k$n" && mkdir -p "$TMP/o120/k$n" \
+    && for e in pre-commit post-commit pre-push post-merge post-checkout commit-msg prepare-commit-msg pre-rebase post-rewrite \
+         applypatch-msg pre-applypatch post-applypatch pre-merge-commit pre-receive update proc-receive post-receive post-update \
+         reference-transaction push-to-checkout pre-auto-gc sendemail-validate fsmonitor-watchman p4-changelist \
+         p4-prepare-changelist p4-post-changelist p4-pre-submit post-index-change; do : > "$TMP/o120/k$n/$e"; done \
+    && "${G[@]}" -C "$TMP/h120/k$n" config core.hooksPath "$TMP/o120/k$n" || { printf 'SCAFFOLD-FAILED: G120 hook budget\n'; exit 1; }
+done
+EXTRA_MOUNTS="$TMP/h120" launch "$TMP/app"
+grep -q "WARNING: not every hook in the core.hooksPath directories of /workspace/h120/k[0-9]*/.git was checked" "$ERR" \
+  && pass "G120 hooks in core.hooksPath directories count in the launch's budget, and one past it is named" \
+  || fail "G120 hook walks unbounded (rc=$LAUNCH_RC; $(grep -c 'not every' "$ERR") cut warnings)"
+# A link on the way that the agent cannot repoint — in a planted launcher, under
+# a read-only overlay — to a directory outside every mount: nothing to name.
+mk120; mkdir -p "$TMP/h120/L" && : > "$TMP/h120/L/sandbox.sh" && : > "$TMP/h120/L/sandbox-common.sh" \
+  && ln -s "$TMP/o120/hooks" "$TMP/h120/L/hk" && "${G[@]}" -C "$TMP/h120/r" config core.hooksPath "$TMP/h120/L/hk" \
+  || { printf 'SCAFFOLD-FAILED: G120 read-only link\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h120" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF 'git hooks from' "$ERR" \
+  && pass "G120 a core.hooksPath through a link under a read-only overlay, to a directory outside every mount, is not named" \
+  || fail "G120 read-only link named (rc=$LAUNCH_RC; stderr: $(grep -A1 -F 'git hooks' "$ERR" | head -2 | tr '\n' ' '))"
+rm -rf "$TMP/h120" "$TMP/o120"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

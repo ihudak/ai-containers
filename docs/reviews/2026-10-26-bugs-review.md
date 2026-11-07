@@ -20,7 +20,8 @@
 - **Updated 2026-11-05:** the fix-batch table below no longer lists as open what was fixed after its batch. Every entry is FIXED except these: GIT-29 (open; section 24; the user chose fix A, 2026-11-05), GIT-35 (open, LOW), GIT-38 (open, HIGH) and GIT-39 (open, MEDIUM; section 25), LNCH-2 (not reproducible), GIT-12 (won't fix), GIT-13 (resolved fail-closed), LNCH-7 (documented), GIT-21 and LNCH-17 (closed), BLD-8 (its `--error-on=any` trade kept by design) and TST-21 (the same comment edit is owed to mgd-ai-containers' copy of `tests/layer-checks.conf`, which is not reachable from this machine). Section 24 holds GIT-29, found while reviewing PLAT-7's run steps; section 25 GIT-30, found by GAP-2's slice 2, and GIT-31 to GIT-39, found by the reviews of its fix and theirs.
 - **Updated 2026-11-06:** GIT-29 is FIXED by fix A, after a review and a re-review of the fix. GIT-40, found by the automated security review of the GIT-36/37 fix (section 25), is FIXED.
 - **Updated 2026-11-07:** GIT-38 is FIXED on Linux, after a review of the fix; macOS and WSL verify it (platform-issues PLAT-8). GIT-41, found by that review, is open (section 25).
-- **Updated 2026-11-07:** GIT-39 is FIXED, after a review and a re-review of the fix. GIT-42, found by the review, is open (section 25). GIT-35's first case is fixed with it, and GIT-35 is raised to MEDIUM by what the re-review found.
+- **Updated 2026-11-07:** GIT-35 is FIXED, after three reviews of the fix. GIT-44 and GIT-45, found by that review, are open (section 25).
+- **Updated 2026-11-07:** GIT-39 is FIXED, after a review and a re-review of the fix. GIT-42 and GIT-43, found by the review (GIT-43 also by the automated security review of `f90c096`), are open (section 25). GIT-35's first case is fixed with it, and GIT-35 is raised to MEDIUM by what the re-review found.
 - **Companion:** [2026-10-26-feature-gaps-review.md](2026-10-26-feature-gaps-review.md).
 - **Confidence:** CONFIRMED = reproduced, or unambiguous from the code. PLAUSIBLE = strong reasoning, not reproduced (usually needs hardware or a platform not available here); verify before fixing.
 - **Citations** are by snippet, per AGENTS.md "Citing code". Scratch repro paths mentioned in entries were session-local and may no longer exist; each entry describes its repro in full.
@@ -866,7 +867,7 @@ Each fix batch was reviewed by an independent reviewer before it was merged, and
 ### GIT-2: The include walk is bounded per config but not per launch, so planted repositories can make every launch take minutes or hours
 - **Status: FIXED (batch 9)** — `9bd3729` … `6a0b37f`: a launch-wide budget of 1000 include entries with a WARNING when it is hit; values over PATH_MAX inert; `_path_walk`/`_link_walk` bounded at 256 steps and 40 links, past which a way is reported as not followed to the end; `config.worktree` walked only where `extensions.worktreeConfig` is on, or when the common config cannot be read (test G38 and G40 on). Reviewed over 19 rounds; what those left open is GIT-6 on, in section 10.
 - Severity: MEDIUM. Confidence: CONFIRMED (measured)
-- Location: sandbox.sh: `if (( ++ient > 100 )); then icut=1; ii=${#ifile[@]}; break; fi` and `if (( ++ients > 1000 )); then icut=1; ii=${#ifile[@]}; break; fi` (as fixed; the launch-wide count was added in batch 9, and moved after the empty-value skip in batch 10), and `_path_walk()`.
+- Location: sandbox.sh: `if (( ++ient > 100 )); then icut=1; ii=${#ifile[@]};` and `if (( ++ients > 1000 )); then icut=1; ii=${#ifile[@]};` (as fixed; the launch-wide count was added in batch 9, and moved after the empty-value skip in batch 10), and `_path_walk()`.
 - What's wrong: there are three problems.
   - Each config gets 100 include entries, and each git directory has two configs. `config.worktree` is walked whenever it exists, even with `extensions.worktreeConfig` off, when the host's git never reads it. A launch can protect up to `SANDBOX_GIT_MAX` (200) git directories, and the agent can plant all of them. The 1000-files-per-launch budget limits files, not entries.
   - `_path_walk` is quadratic in the number of path components, because it strips one component per step with `rest="${rest#*/}"`.
@@ -1124,7 +1125,7 @@ Batch 9 (`9bd3729` … `6a0b37f`) went through 19 review rounds. Every HIGH and 
 ### GIT-19: the include budget counts empty and oversized entries, so planted repositories can spend it
 - **Status: FIXED (batch 10)** — `86427b0`: empty and oversized include values count per config only, not toward the launch's 1000 (G72 covers the empty ones).
 - Severity: NIT. Confidence: PLAUSIBLE (from code)
-- Location: sandbox.sh: `if (( ++ients > 1000 )); then icut=1; ii=${#ifile[@]}; break; fi`
+- Location: sandbox.sh: `if (( ++ients > 1000 )); then icut=1; ii=${#ifile[@]};`
 - What's wrong: the per-launch counter is incremented before the empty-value and over-4096-byte `continue`s. Entries that cost nothing to check use up the budget.
 - Failure scenario: the agent plants repositories with 1,000 empty `include.path` entries. Every later config, the user's own included, gets the "not every include was followed" WARNING. It is named, as designed, but the agent pays nothing for it.
 - Fix direction: count only the entries that are actually walked.
@@ -1661,7 +1662,7 @@ An Opus reviewer read the rewritten PLAT-7 steps against the code, 2026-11-05, a
 
 ## 25. Found by GAP-2's slice 2
 
-An Opus reviewer of the slice's new tests, 2026-11-05, at `fd49c3c`, reached a mutant of `_git_runs()` that the slice had called unreachable, through a `commondir` holding a NUL. Following that up found GIT-30. The reviews of its fix and theirs found GIT-31 to GIT-39, the automated security review of the GIT-36/37 fix (`a1b7ce7`) found GIT-40, the review of the GIT-38 fix found GIT-41, and the review of the GIT-39 fix found GIT-42.
+An Opus reviewer of the slice's new tests, 2026-11-05, at `fd49c3c`, reached a mutant of `_git_runs()` that the slice had called unreachable, through a `commondir` holding a NUL. Following that up found GIT-30. The reviews of its fix and theirs found GIT-31 to GIT-39, the automated security review of the GIT-36/37 fix (`a1b7ce7`) found GIT-40, the review of the GIT-38 fix found GIT-41, and the review of the GIT-39 fix found GIT-42 and GIT-43, and the review of the GIT-35 fix found GIT-44 and GIT-45.
 
 ### GIT-30: a commondir, gitdir or .git file is read otherwise than git reads it
 - **Status: FIXED** (2026-11-05).
@@ -1814,16 +1815,61 @@ An Opus reviewer of the slice's new tests, 2026-11-05, at `fd49c3c`, reached a m
 - **The fix:** `hook.<name>.command` joins the keys. **Tests:** G26 in `tests/test-git-internals-ro-reports.sh`, seen red on the code before.
 
 ### GIT-35: two ways a core.hooksPath is judged otherwise than git takes it
-- **Status: OPEN** (2026-11-05). Found by the re-review of the GIT-31 fix. The first case is FIXED (2026-11-07) with GIT-39's fix.
+- **Status: FIXED** (2026-11-07). Found by the re-review of the GIT-31 fix. The first case was fixed with GIT-39's fix, the rest after it.
 - **Severity: MEDIUM** since 2026-11-07, for the link case below; LOW before. The rest need the config written before the repository's first protection, which names `core.hookspath` once.
 - **Location:** `sandbox.sh: launcher_ro_overlay()`, the post-pass's `core.hooksPath` NOTE.
 - **What's wrong:**
   - **A path into a read-only overlay is taken for safe** without walking the hooks there. With `core.hooksPath=../L/node_modules/h` (`L` a planted launcher) and `h/post-checkout` a link to a writable script, every launch after the first is silent. The launcher link walk prunes `node_modules` and `.git`. **FIXED** with GIT-39's fix, which walks the hooks of such a directory (G119).
   - **A relative path is resolved from the directory the `.git` lies in.** git takes it from `core.worktree` when one is set, and expands `~user/` and `%(prefix)/`.
-- **Fix direction:** resolve a relative path from the worktree git uses; walk the way to the directory as an include's is walked, naming a link the agent can repoint; and read the key as git does, through includes and `config.worktree`. (Walking the hooks there is done.)
 - **Also (2026-11-07, the third review of the GIT-38 fix):** a `core.hooksPath` reached through a link the agent can repoint (`tools -> <outside>`, `core.hooksPath=tools/hooks`) is never named: `_cd_phys()` resolves through the link, while an include's path is walked with `_walk_exposed()`. Walk it the same way.
   - **Why MEDIUM (the re-review of the GIT-39 fix, reproduced):** the agent can silence the NOTE a writable hooks directory gets. It replaces husky's `.husky/_` with a link to any directory of the host, and the next launch is silent, since the path resolves outside every mount. During that session it repoints the link at scripts of its own, and the host's next commit runs them.
   - **And:** a `core.hooksPath` set by an include, or in `config.worktree` with `extensions.worktreeConfig` on, is not read at all (`_git_config_get` reads `config` alone, without includes), so neither the NOTE nor the hook walk sees it. A global `core.hooksPath` works the same way, outside the per-repository scope.
+- **Fix:** `core.hooksPath` is judged after the include walk, from the files git reads it from.
+  - **Where it is read:** the config, the files it includes that the agent cannot reach, and `config.worktree` where git reads that. The last value of each file is taken, since git takes the last of them all, from the include walk's own read of the file (`_git_walk_keys()`), which costs no read more.
+  - **A relative one** is judged from where the `.git` lies and from its `core.worktree`, which git takes from `config` and `config.worktree` alone, never from a file they include.
+  - **The whole way is walked as an include's is** (`_path_walk()`, `_walk_exposed()`), the way to a `core.worktree` too. A writable directory gets the NOTE it had. A link the agent can repoint, a directory a `..` steps out of that it can swap, or a way not followed to the end gets a NOTE naming where the hooks are and that step. Every way is judged; only the NOTEs are not repeated.
+  - **Written `~user/` or `%(prefix)/`:** named as not judged, since the launcher does not expand those forms. **`:(optional)`:** judged with it, as a git older than 2.52 reads it (part of a relative path), and without it, as 2.52 and later do.
+  - **Bounded as the include walk is:** core entries count in a config's budget of 100, each way and each hook walked in a `core.hooksPath` directory in the launch's 1000, past which a `WARNING:` names the repository, and a value of more than 128 components is named once, not walked. A config cut short still has its `core.hooksPath` read, by git. A `core.hooksPath` directory is walked once a launch, however many repositories name it.
+  - **The hooks walked:** where neither the directory nor the way is the agent's to change, its hooks are walked as `hooks/`'s are, hook files too (GIT-39). With `core.hooksPath` set, `hooks/`, which git does not run, is not, unless the value is `:(optional)`, which git falls back from, or comes from an `includeIf`, whose condition may not hold.
+- **The review of the fix** found, and these are fixed:
+  - **The way to a `core.worktree` was resolved, not walked** (MEDIUM, a regression): a submodule whose checkout the agent moved aside and replaced with a link to a directory of the host was silent, where the code before named it at the wrong path. Repointed in the session, its hooks ran on the host's next commit.
+  - **Any `core.hooksPath` stopped the walk of `hooks/`,** one from an `includeIf` whose condition does not hold included, and `:(optional)` was judged as part of the path.
+  - **A way was skipped as named before it was judged,** when another way reached the same hooks.
+  - **Two reads more per config file** cost 150 repositories of six includes 27% more.
+  - It also found GIT-44 and GIT-45, older than this fix.
+- **The re-review of the fix** found, and these are fixed:
+  - **The ways had no budget** (MEDIUM): every included file added its `core.hooksPath` and its `core.worktree`, each value was walked from every base, and none of the include walk's limits applied. A planted repository took a launch from 0.9 s to 64 s and printed 1600 NOTEs; 25 with short values, 72 s where they took 14. And git never takes `core.worktree` from an included file.
+  - **A `core.hooksPath` past the point where its config's walk was cut was lost** (a regression): the code before named it.
+  - **`:(optional)` was taken off whatever the git**: Ubuntu 24.04's 2.43 and Apple's git read it as part of a relative path, which the agent can make (a regression).
+  - **The docs claimed every worktree git may run hooks in:** a linked worktree's checkout and `config.worktree`, and a separate git directory's checkout, are not judged. GIT-44 now holds them.
+- **The third review of the fix** found, and these are fixed:
+  - **The hooks of every way judged safe were walked, with no budget and no word** (MEDIUM): a directory per way, the same one again for every repository naming it, 28 names each. Two planted repositories whose ways led to directories of long link chains took a launch from 1.7 s to 161 s, in silence.
+  - **`:(optional)` came in git 2.52, not 2.51,** and the launcher asked a version of whichever git it found: a host can hold two. Both readings are judged now, whatever the git.
+- **Not covered:**
+  - A linked worktree's or a separate git directory's checkout as a base, a linked worktree's own `config.worktree`, and a git directory outside every mount whose worktree is mounted (GIT-44).
+  - `$GIT_DIR`, where push hooks run, as a base for a relative path (GIT-45).
+  - A global `core.hooksPath`, outside the per-repository scope.
+- **Tests:** G120 in `tests/test-git-internals-ro-config.sh`, each seen red on the code before:
+  - a husky `.husky/_` made a link to a directory of the host;
+  - a `..` out of a directory the agent can swap;
+  - set by an included file, and in `config.worktree`;
+  - relative to a `core.worktree`;
+  - a `~user/` form;
+  - two ways to the hooks the agent can change at the same step, named once;
+  - a submodule's `core.worktree` made a link the agent can repoint;
+  - a way the agent can change, though another way reaches the same hooks;
+  - a value from an `includeIf`, and one written `:(optional)`, leaving `hooks/` judged;
+  - no read of `core.hooksPath` of its own;
+  - a `core.worktree` from an included file, which git ignores, no base;
+  - a value of 200 components, named once and not walked; one longer than git can open, not named; a link loop, named once;
+  - the launch's budget, and a repository past it named;
+  - a `core.hooksPath` past a config's cut, and 150 core entries counted in the config's budget;
+  - a value written `:(optional)`, judged with it and without it;
+  - a `core.hooksPath` directory two repositories name, walked once; hooks past the launch's budget, the repository named;
+  - with `core.hooksPath` set, a link in `hooks/` not named;
+  - a link under a read-only overlay to a directory outside every mount, not named.
+  - The first case is G119's "a hook link in a core.hooksPath under a read-only overlay" in `tests/test-git-internals-ro-reads.sh`.
+- **Mutants:** 39 by hand, over the fix and three reviews' fixes, all killed but one (two of them aimed at a version check since removed): reading `config` first as well as through the include walk matters only for a `config` that is a link, which is warned about by name. It is kept, as the code before read through one.
 
 ### GIT-36: the worktree an index is read against is not every one git may use
 - **Status: FIXED** (2026-11-06). Found by the review of the simplified GIT-31 fix.
@@ -1956,7 +2002,7 @@ An Opus reviewer of the slice's new tests, 2026-11-05, at `fd49c3c`, reached a m
   - **The test of the time bound** read `ps`'s program name as exactly `timeout`; macOS prints the path, and `gtimeout` is taken first.
   - It also found what GIT-35 now holds: a `core.hooksPath` reached through a link the agent can repoint, which can silence even the husky NOTE, and one set by an include or `config.worktree`. Both are older than this fix.
 - **Known limits** (LOW, from the same review, kept):
-  - **A second name on a filesystem mounted inside a writable mount** is not seen: `find -xdev` does not enter it, and docker's binds are recursive. GIT-31's search had the same limit.
+  - **A second name on a filesystem mounted inside a writable mount** is not seen: `find -xdev` does not enter it, and docker's binds are recursive. GIT-31's search had the same limit. Logged as GIT-43.
   - **Failing closed is noisy:** a directory in a writable mount that the launching user cannot read, or a file removed while the listing runs (`pnpm` working in `node_modules`), makes the whole listing count as cut short. A second name under a read-only overlay counts as one the agent can write.
   - **The lookups are not timed:** one `grep` per file asked about, over at most 64 MiB, took 6.4 s for 256 files.
 - **Tests:** G119 in `tests/test-git-internals-ro-reads.sh`, each seen red on the code before:
@@ -1979,6 +2025,31 @@ An Opus reviewer of the slice's new tests, 2026-11-05, at `fd49c3c`, reached a m
 - **Location:** `sandbox.sh: launcher_ro_overlay()`. The keys that make git run a program (`core.fsmonitor`, `credential.helper`, `diff.<driver>.command`, `filter.<driver>.clean` and the rest) are named once, at the first protection (`_git_exec_keys()`), and the programs they name are never judged.
 - **What's wrong:** such a program outside every mount, with a second hard link inside a writable mount, can be rewritten by the agent through that link, and the host's git runs it. Includes and hooks are judged for this (GIT-39); programs are not.
 - **Fix direction:** judge the program each such key names, where it is a path, as an include's target is judged (`_walk_exposed()`). A program named by a writable path is the wider case, and is the same gap.
+
+### GIT-44: a git directory outside every mount, whose worktree is mounted, is not judged
+- **Status: OPEN** (2026-11-07). Found by the review of the GIT-35 fix; widened by its re-review.
+- **Severity: MEDIUM.** Confidence: CONFIRMED. This is husky's own layout under `git worktree`, and one worktree per agent is a common setup.
+- **Location:** `sandbox.sh: launcher_ro_overlay()`. Its post-pass judges the git directories it protects or finds under a read-only overlay. A `.git` file in a writable mount is bound read-only, but the git directory it names outside every mount is never judged.
+- **What's wrong:** with only a linked worktree mounted (`git worktree add <mount>/feature`), and the repository outside every mount with `core.hooksPath=.husky/_`, the launch is silent. The agent writes `feature/.husky/_/pre-commit`, and the host's next commit there runs it. A `--separate-git-dir` checkout is the same. The repository's includes, and its hook links, are not judged either.
+- **Inside the mounts too (the re-review of the GIT-35 fix, each confirmed silent while `git rev-parse --git-path hooks/pre-commit` led into the mount):**
+  - a linked worktree whose `config.worktree` sets `core.hooksPath` to a writable directory (the main use of `extensions.worktreeConfig`; the agent can make a linked worktree itself);
+  - a linked worktree at `h/a/wt` with `core.hooksPath=../../o/hooks`, out of reach from the main worktree, `h/o/hooks` from the linked one;
+  - a `--separate-git-dir` repository whose checkout is not where its git directory lies, its relative `core.hooksPath` taken from the checkout.
+- **Fix direction:** for each `.git` file in a writable mount, judge the git directory it names, and its common directory, as one under a read-only overlay is judged — config, includes and `core.hooksPath` — with the `.git` file's directory as a base for a relative path (GIT-36 already finds them), and a linked worktree's own `config.worktree`.
+
+### GIT-45: $GIT_DIR, where push hooks run, is not a base for a relative core.hooksPath
+- **Status: OPEN** (2026-11-07). Found by the review of the GIT-35 fix.
+- **Severity: LOW.** Confidence: CONFIRMED. It needs a push into the repository from elsewhere on the host.
+- **Location:** `sandbox.sh: launcher_ro_overlay()`, the `core.hooksPath` check, which judges a relative path from the worktrees.
+- **What's wrong:** git runs the push hooks (`pre-receive`, `update`, `post-receive`, …) in `$GIT_DIR`, a non-bare repository's too. With `core.hooksPath=../../outside-hooks`, out of every mount from the worktree, but inside the mount from `.git`, a push into the repository on the host ran a hook the agent wrote.
+- **Fix direction:** judge a relative path from `$GIT_DIR` too, for the push hooks. Every husky repository would then get a NOTE about `.git/.husky/_`, which the agent can make; say it is for a push into it.
+
+### GIT-43: a second name on a filesystem mounted inside a writable mount is not looked for
+- **Status: OPEN** (2026-11-07). Found by the review of the GIT-39 fix, and raised again by the automated security review of `f90c096`, which rated it MEDIUM.
+- **Severity: LOW.** Confidence: CONFIRMED, in a user namespace. It needs a host-side mount nested inside a writable mount, on the file's device, when the writable mount's own root is on another device: say `/home` on its own partition, and a directory of the root filesystem bound into a project there. A bind of the same filesystem keeps its `st_dev`, and `-xdev` enters it.
+- **Location:** `sandbox.sh: _fs_linked_in()`, which lists only the writable mounts whose root is on the file's device, each with `find -xdev`. `_fs_other_names()`, the hard-link refusal, goes through it too.
+- **What's wrong:** docker's binds are recursive, so a filesystem mounted inside a writable mount is writable by the agent too. A second name of an included file, a hook, or a file a launcher link leads to, on such a filesystem, is not seen: the launch is silent, or not refused.
+- **Fix direction:** find the mount points below each writable mount (`/proc/self/mountinfo` on Linux, `mount` on macOS), and list a writable mount whose root or any mount below it is on the file's device, without `-xdev`. Or, cheaper: when a writable mount holds a mount point on the file's device, answer "not ruled out".
 
 ### GIT-41: on Docker Desktop, a read-only bind of one file does not cover its other spellings
 - **Status: OPEN** (2026-11-07). Found by the review of the GIT-38 fix. Not measured on a real Mac or WSL: platform-issues PLAT-8 asks for it.

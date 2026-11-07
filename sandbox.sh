@@ -367,13 +367,13 @@ launcher_ro_overlay() {
   local -n _ro=$1 _vrfy=$2
   _rd_prep; _git_usable || true
   local reached="$3" self spec src rest dst opts l at pin path part r skip i k depth max=0 d p pp kind ok mf mv
-  local x f e q w c safe inner how
+  local x f e q w c inner how
   local uid="${SANDBOX_UID:-$(id -u)}" gid="${SANDBOX_GID:-$(id -g)}" you
   local -a found unreadable cand bsrc=() bdst=() cl=() cat=() csrc=() cdst=() cdep=() ckind=() ro_dsts=() psrc pdst
   local -a _xm_t=() _xm_by=() _xm_j=() ro_srcs=()
   local -A gpv=()
   local -a scan links walk gdirs gfiles glinks gunr gro ug usrc udst udep ukind
-  local g base what gmax gn gitmax cfg cdir ocfg ocd hp hpd hpw k2 first ik ip ib rep al rk rh hk
+  local g base what gmax gn gitmax cfg cdir ocfg ocd k2 first ik ip ib rep al rk rh hk
   local -a inc pgd=() pga=() pgc=() pgo=()
   local -A seen=() tried=() scanned=() pinned=()
   # Included git config files read: each once per protected config, keyed by
@@ -383,6 +383,7 @@ launcher_ro_overlay() {
   # c0d48d9). At most 20 per config and 1000 per launch; past either, that
   # config is named in a WARNING rather than skipped in silence.
   local nl no=0 lmax ireads=0 ients=0
+  local -A hkdone=()
   local -a unchecked=()
   # The agent's identity decides what it can reach; find needs it numeric (and
   # within a 32-bit id — GNU find rejects 4294967295 and up), and a find that
@@ -1107,56 +1108,261 @@ launcher_ro_overlay() {
         printf '         on the host with what it names.\n' >&2
       done
     fi
+    # A file the config includes is read as part of it, so it can set anything
+    # the config can — core.fsmonitor, core.hooksPath — from wherever it lies.
+    # git resolves a relative path from the including file's directory. An
+    # included file the agent cannot reach can include one it can, so the chain
+    # is followed from every file found safe, to git's own depth of 10; a file
+    # the agent can reach is named, not read (tests/test-git-internals-ro-config.sh G29).
+    # Bounded per LAUNCH as well as per config: two configs per git directory and
+    # up to SANDBOX_GIT_MAX planted git directories made 150 repos take 81 s (review
+    # of the batch 1 hotfix; GIT-2). config.worktree only where git reads it.
+    local -A iseen=() hkp=() hkw=() hkr=() hkc=() icnd=()
+    local -a hcf=()
+    for f in "$g/config" "$g/config.worktree"; do
+      if [[ ! -f "$f" || -L "$f" ]]; then continue; fi
+      # From the config git reads extensions from: the common one, for a linked
+      # worktree's git directory, which has none of its own (security review of
+      # 1978dff). One that is not a readable file cannot say it is off: walked.
+      if [[ "$f" == */config.worktree && -f "$cfg" ]] && ! _git_config_bool "$cfg" extensions.worktreeConfig; then continue; fi
+      local -a ifile=("$f") idep=(0)
+      local ii=0 icur itgt ikey inr=0 ient=0 icut="" icomp
+      iseen=()
+      ikey="$(_launcher_dev_ino "$f")" && iseen[$ikey]=1
+      while (( ii < ${#ifile[@]} )); do
+      icur="${ifile[ii]}"; ii=$((ii + 1))
+      inc=()
+      mapfile -d '' -t inc < <(_git_walk_keys "$icur")
+      hkr[$icur]=1
+      for e in ${inc[@]+"${inc[@]}"}; do
+        # Entries, not only files: each costs a walk, and one config can hold
+        # thousands (re-review of c0d48d9; G38). core.hooksPath and core.worktree
+        # count too: thousands of them in a planted config cost a launch seconds
+        # (re-review of the GIT-35 fix).
+        # The launch's budget counts only what is walked: empty and oversized values
+        # cost nothing, and planted repositories spent it on them, cutting the walk
+        # of every later config (GIT-19; G72). They still count per config.
+        # Cut, the file's core keys are read for the check below by git, not lost (hkc).
+        if (( ++ient > 100 )); then icut=1; ii=${#ifile[@]}; hkc[$icur]=1; break; fi
+        ik="${e%%$'\n'*}"; ip=""
+        if [[ "$e" == *$'\n'* ]]; then ip="${e#*$'\n'}"; fi
+        # The last of each in this file, for the core.hooksPath check below.
+        case "$ik" in
+          core.hookspath) hkp[$icur]="$ip"; continue ;;
+          core.worktree) hkw[$icur]="$ip"; continue ;;
+        esac
+        if [[ -z "$ip" ]]; then continue; fi
+        # A value git cannot open (longer than PATH_MAX) includes nothing. One with
+        # hundreds of components is not walked step by step — _path_walk is
+        # quadratic in them (100 such entries took 54 s) — and is left unchecked,
+        # which the cut WARNING says.
+        if (( ${#ip} > 4096 )); then continue; fi
+        if (( ++ients > 1000 )); then icut=1; ii=${#ifile[@]}; hkc[$icur]=1; break; fi
+        icomp="${ip//[!\/]/}"
+        if (( ${#icomp} > 128 )); then icut=1; continue; fi
+        # shellcheck disable=SC2088  # '~/'* matches a LITERAL leading ~/ in the config value, expanded by hand
+        case "$ip" in '~/'*) ip="$HOME/${ip#\~/}" ;; esac
+        walk=()
+        _cd_phys ib "${icur%/*}" || ib=""
+        mapfile -d '' -t walk < <(_path_walk "$ib" "$ip")
+        if ! _walk_exposed how q w "" ${walk[@]+"${walk[@]}"}; then
+          if [[ "$ip" == /* ]]; then itgt="$ip"; else itgt="${icur%/*}/$ip"; fi
+          if [[ -f "$itgt" ]] && (( idep[ii - 1] < 10 )) && ikey="$(_launcher_dev_ino "$itgt")" \
+             && [[ -z "${iseen[$ikey]:-}" ]]; then
+            iseen[$ikey]=1
+            if (( inr >= 20 || ireads >= 1000 )); then
+              icut=1
+            else
+              inr=$((inr + 1)); ireads=$((ireads + 1))
+              ifile+=("$itgt"); idep+=("$((idep[ii - 1] + 1))")
+              # Read only when its condition holds, or reached through one that is.
+              if [[ "${ik,,}" == includeif.* || -n "${icnd[$icur]:-}" ]]; then icnd[$itgt]=1; fi
+            fi
+          fi
+          continue
+        fi
+        if [[ "$icur" == "$f" ]]; then
+          printf 'WARNING: %s includes %s (%s), which the agent can redirect:\n' "$(_q "$at/${f##*/}")" "$(_q "$ip")" "$(_term "$ik")" >&2
+        else
+          printf 'WARNING: %s includes %s (%s in %s), which the agent can redirect:\n' "$(_q "$at/${f##*/}")" "$(_q "$ip")" "$(_term "$ik")" "$(_q "$icur")" >&2
+        fi
+        case "$how" in
+          change)  printf '         it can write %s (at %s), which git reads as part of that config.\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
+          linked)  printf '         it can write %s through another name of that file, in %s\n' "$(_term "$q")" "$(_term "$w")" >&2
+                   printf '         (on the host, find %s -xdev -samefile %s lists it); git reads it as part of that config.\n' "$(_q "$w")" "$(_q "$q")" >&2 ;;
+          unsearched) printf '         %s has another name, and %s could not be searched for it in full.\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
+          repoint) printf '         it can repoint %s (at %s), a link on its way.\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
+          replace) printf '         it can replace %s (at %s) with a link; the way steps out of it (..).\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
+          unchecked) printf '         its way out was not followed to the end (too many steps or links), so it is not known to be safe.\n' >&2 ;;
+        esac
+        printf '         It can set what your host'\''s git runs. Move what it sets into %s on the host.\n' "${f##*/}" >&2
+      done
+      done
+      # What git reads core.hooksPath from, below: this file and those it
+      # includes that the agent cannot reach (one it can is named above).
+      hcf+=("${ifile[@]}")
+      if [[ -n "$icut" ]]; then
+        printf 'WARNING: not every include of %s was followed (100 entries and 20 files per config, 1000 of each per launch, 128 path components);\n' "$(_q "$at/${f##*/}")" >&2
+        printf '         what the rest set was not checked. Review them: git config --file %s --list --show-origin --includes\n' "$(_q "$f")" >&2
+      fi
+    done
+
     # Hooks run from a directory core.hooksPath names are project files the
     # overlay leaves writable — and hook managers keep the scripts they run
     # gitignored (husky's .husky/_), so a change need not show in git status.
-    hp="" hwd=""
-    if [[ "$cfg" == "$g/config" ]]; then _git_config_get hp "$cfg" core.hooksPath || hp=""; fi
-    if [[ -n "$hp" ]]; then
-      # shellcheck disable=SC2088  # '~/'* matches a LITERAL leading ~/ in the config value, expanded by hand
-      case "$hp" in
-        /*) hpd="$hp" ;;
-        '~/'*) hpd="$HOME/${hp#\~/}" ;;
-        *) if [[ "${g,,}" == */.git ]]; then hpd="${g%/*}/$hp"; else hpd="$g/$hp"; fi ;;
-      esac
-      # Physically: a `..` after a link steps out of where it leads (review of the
-      # GIT-31 fix; G114).
-      # One that does not exist yet, where it would be: the agent can make it
-      # (husky's .husky/_ is gone after a git clean; second review of the GIT-38 fix).
-      # (_cd_phys empties its out-var when it fails: the path is kept aside.)
-      hpw="$hpd"; _cd_phys hpd "$hpw" || _canon_lex hpd "$hpw"
-      # Where the agent cannot change it, its hooks are walked below, as hooks/'s are.
-      hwd="$hpd"
-      for i in ${bsrc[@]+"${!bsrc[@]}"}; do
-        if [[ -z "$hpd" || ( "$hpd" != "${bsrc[i]}" && "$hpd" != "${bsrc[i]}"/* ) ]]; then continue; fi
-        x="${bdst[i]}${hpd#"${bsrc[i]}"}"; safe=""
-        for r in ${ro_dsts[@]+"${ro_dsts[@]}"}; do
-          if [[ "$x" == "$r" || "$x" == "$r"/* ]]; then safe=1; break; fi
-        done
-        if [[ -n "$safe" ]]; then continue; fi
-        printf 'NOTE: %s runs its git hooks from %s (core.hooksPath), which the agent\n' "$(_term "$at")" "$(_term "$x")" >&2
-        printf '      can change; hook managers keep those scripts gitignored (husky'\''s .husky/_),\n' >&2
-        printf '      so a change need not show in git status. Check them before a git commit on the host.\n' >&2
-        hwd=""
-        break
+    # The key is read where git reads it: the config, the files it includes that
+    # the agent cannot reach, and config.worktree where git reads that — the
+    # files the include walk above read, which gave their keys too — the last
+    # value of each, since git takes the last of them all. A relative one is
+    # judged from each worktree git may run hooks in: where the .git lies, and
+    # its core.worktree. The whole way is walked as an include's is — the way to
+    # the core.worktree too: a link on it the agent can repoint, or a directory a
+    # `..` steps out of that it can swap, sends git to hooks of its choosing;
+    # resolved through them, a husky .husky/_ the agent had made a link to any
+    # directory of the host was silent (GIT-35), and so was a submodule's
+    # worktree made one (review of the fix). Every way is judged before any is
+    # skipped as named.
+    local b v hd hwd hcond="" hopt="" hcut="" hkcut=""
+    local -a hps=() hpx=() hwds=() hb=() hbd=() hbp=() wd=() wp=()
+    local -A hseen=()
+    if [[ "$cfg" == "$g/config" ]]; then
+      for f in "$cfg" ${hcf[@]+"${hcf[@]}"}; do
+        [[ -z "${hseen[f:$f]:-}" ]] || continue
+        hseen[f:$f]=1
+        # core.worktree from the config and config.worktree alone: git never
+        # takes it from a file they include (re-review of the GIT-35 fix).
+        x=""
+        if [[ -n "${hkr[$f]:-}" && -z "${hkc[$f]:-}" ]]; then
+          v="${hkp[$f]:-}"
+          if [[ "$f" == "$g/config" || "$f" == "$g/config.worktree" ]]; then x="${hkw[$f]:-}"; fi
+        else
+          # Not read by the walk: a config that is a link, or one past a cut.
+          _git_config_get v "$f" core.hooksPath || v=""
+          if [[ "$f" == "$g/config" || "$f" == "$g/config.worktree" ]]; then _git_config_get x "$f" core.worktree || x=""; fi
+        fi
+        if [[ -n "$v" ]]; then
+          # From an includeIf, git may not use it, and run what hooks/ holds.
+          if [[ -n "${icnd[$f]:-}" ]]; then hcond=1; fi
+          if [[ -z "${hseen[v:$v]:-}" ]]; then hseen[v:$v]=1; hps+=("$v"); fi
+        fi
+        if [[ -n "$x" && -z "${hseen[w:$x]:-}" ]]; then hseen[w:$x]=1; hb+=("$x"); fi
       done
-    elif [[ -d "$g/hooks" && ! -L "$g/hooks" ]]; then
-      hwd="$g/hooks"
+    fi
+    # Each base: a directory, and what goes before the value when walked from it.
+    if [[ "${g,,}" == */.git ]]; then hbd+=("${g%/*}"); hbp+=(""); fi
+    for x in ${hb[@]+"${hb[@]}"}; do hbd+=("$g"); hbp+=("$x/"); done
+    if (( ! ${#hbd[@]} )); then hbd=("$g"); hbp=(""); fi
+    # :(optional) is taken off by git 2.52 and later, which run hooks/ where the
+    # rest does not exist (review of the GIT-35 fix); an older git, Ubuntu
+    # 24.04's 2.43 among them, reads it as part of a relative path, which the
+    # agent can make (re-review). Both readings are judged, whatever the git:
+    # a host can hold two (macOS's /usr/bin/git beside Homebrew's), and the one
+    # the launcher asks need not be the one that runs the hooks (third review).
+    for v in ${hps[@]+"${hps[@]}"}; do
+      [[ "$v" == ':(optional)'* ]] || continue
+      hopt=1
+      x="${v#:(optional)}"
+      if [[ -n "$x" && -z "${hseen[v:$x]:-}" ]]; then hseen[v:$x]=1; hpx+=("$x"); fi
+    done
+    hps+=(${hpx[@]+"${hpx[@]}"})
+    for v in ${hps[@]+"${hps[@]}"}; do
+      [[ -n "$v" ]] || continue
+      # As for an include: one git cannot open runs nothing (longer than PATH_MAX).
+      if (( ${#v} > 4096 )); then continue; fi
+      wd=(); wp=()
+      # shellcheck disable=SC2088  # '~/'* matches a LITERAL leading ~/ in the config value, expanded by hand
+      case "$v" in
+        /*) wd=(/); wp=("$v") ;;
+        '~/'*) wd=(/); wp=("$HOME/${v#\~/}") ;;
+        '~'*|'%(prefix)/'*)
+          printf 'NOTE: %s takes its git hooks from %s (core.hooksPath), which the launcher does not expand\n' "$(_term "$at")" "$(_term "$v")" >&2
+          printf '      (~user/, %%(prefix)/), so it is not judged. Check them before a git commit on the host.\n' >&2
+          continue ;;
+        *) for i in "${!hbd[@]}"; do wd+=("${hbd[i]}"); wp+=("${hbp[i]}$v"); done ;;
+      esac
+      for i in "${!wd[@]}"; do
+        # Each walk counts in the launch's budget, which the include walk spends
+        # too: the values times the worktrees took a planted repository's launch
+        # from 0.9 s to 64 s (re-review of the GIT-35 fix). One with hundreds of
+        # components is not walked step by step, as for an include, and named once.
+        if (( ++ients > 1000 )); then hcut=1; break 2; fi
+        x="${wp[i]//[!\/]/}"
+        if (( ${#x} > 128 )); then
+          [[ -z "${hseen[u:$v]:-}" ]] || continue
+          hseen[u:$v]=1
+          printf 'NOTE: %s takes its git hooks from %s (core.hooksPath), whose way has too many\n' "$(_term "$at")" "$(_term "$v")" >&2
+          printf '      components to follow, so it is not known to be safe. Check them before a git commit on the host.\n' >&2
+          continue
+        fi
+        walk=()
+        mapfile -d '' -t walk < <(_path_walk "${wd[i]}" "${wp[i]}")
+        hd=""
+        for x in ${walk[@]+"${walk[@]}"}; do [[ "$x" != =* ]] || hd="${x#=}"; done
+        if ! _walk_exposed how q w "" ${walk[@]+"${walk[@]}"}; then
+          if [[ -n "$hd" && -z "${hseen[h:$hd]:-}" ]]; then hseen[h:$hd]=1; hwds+=("$hd"); fi
+          continue
+        fi
+        if [[ "$how" == change ]]; then
+          [[ -z "${hseen[c:$w]:-}" ]] || continue
+          hseen[c:$w]=1
+          printf 'NOTE: %s runs its git hooks from %s (core.hooksPath), which the agent\n' "$(_term "$at")" "$(_term "$w")" >&2
+          printf '      can change; hook managers keep those scripts gitignored (husky'\''s .husky/_),\n' >&2
+          printf '      so a change need not show in git status. Check them before a git commit on the host.\n' >&2
+          continue
+        fi
+        # Where they are, as the agent sees it where a mount holds it.
+        x="${hd:-${wp[i]}}"
+        for b in ${bsrc[@]+"${!bsrc[@]}"}; do
+          if [[ -n "$hd" && ( "$hd" == "${bsrc[b]}" || "$hd" == "${bsrc[b]}"/* ) ]]; then x="${bdst[b]}${hd#"${bsrc[b]}"}"; break; fi
+        done
+        # Once per value where the way was not followed to the end, whatever the base.
+        if [[ "$how" == unchecked ]]; then x="$v"; q=""; fi
+        [[ -z "${hseen[o:$how:$q:$x]:-}" ]] || continue
+        hseen[o:$how:$q:$x]=1
+        printf 'NOTE: %s runs its git hooks from %s (core.hooksPath), and the agent can change the way there:\n' "$(_term "$at")" "$(_term "$x")" >&2
+        case "$how" in
+          repoint) printf '      it can repoint %s (at %s), a link on its way.\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
+          replace) printf '      it can replace %s (at %s) with a link; the way steps out of it (..).\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
+          unchecked) printf '      its way was not followed to the end (too many steps or links), so it is not known to be safe.\n' >&2 ;;
+          *) printf '      it can change %s.\n' "$(_term "$q")" >&2 ;;
+        esac
+        printf '      Check them before a git commit on the host.\n' >&2
+      done
+    done
+    if [[ -n "$hcut" ]]; then
+      printf 'WARNING: not every core.hooksPath of %s was judged (1000 ways per launch, with its includes);\n' "$(_q "$at")" >&2
+      printf '         check its hooks before a git commit on the host: git -C %s rev-parse --git-path hooks\n' "$(_q "$g")" >&2
+    fi
+    # hooks/ where git may run it: no core.hooksPath, one an includeIf may not
+    # apply, or one git falls back from (:(optional)).
+    if (( ! ${#hps[@]} )) || [[ -n "$hcond$hopt" ]]; then
+      if [[ -d "$g/hooks" && ! -L "$g/hooks" && -z "${hseen[h:$g/hooks]:-}" ]]; then hwds+=("$g/hooks"); fi
     fi
     # A hook that is a link: hooks/ is read-only, but the link's way out need
     # not be. Pointing hooks at scripts the project tracks is a common setup,
     # hence a NOTE. Only the names git runs are looked at, so the count is
-    # bounded whatever hooks/ was filled with before it was protected. In the
-    # directory core.hooksPath names, when, resolved, it lies outside every
-    # writable mount or under a read-only overlay, a hook file is walked too: one
-    # with another name in a writable mount can be written through it (review of
-    # the GIT-39 fix). One in hooks/ with another name refuses the launch
-    # (GIT-31). A core.hooksPath reached through a link the agent can repoint,
-    # or set by an include or config.worktree, is not judged (GIT-35).
-    if [[ -n "$hwd" && -d "$hwd" ]]; then
+    # bounded whatever hooks/ was filled with before it was protected. In a
+    # directory core.hooksPath names whose way the agent cannot change, a hook
+    # file is walked too: one with another name in a writable mount can be
+    # written through it (review of the GIT-39 fix). One in hooks/ with another
+    # name refuses the launch (GIT-31).
+    # A core.hooksPath directory is walked once a launch, however many
+    # repositories name it, and each of its walks counts in the launch's budget:
+    # every way judged safe adds one, and planted repositories naming hundreds,
+    # each holding the 28 names as long link chains, took a launch from 1.7 s to
+    # 161 s, in silence (third review of the GIT-35 fix). hooks/ is a
+    # repository's own, bounded by SANDBOX_GIT_MAX, as before.
+    for hwd in ${hwds[@]+"${hwds[@]}"}; do
+      [[ -d "$hwd" ]] || continue
+      if [[ "$hwd" != "$g/hooks" ]]; then
+        x="$(_launcher_dev_ino "$hwd")" || x="$hwd"
+        [[ -z "${hkdone[$x]:-}" ]] || continue
+        hkdone[$x]=1
+      fi
       for e in "${git_hook_names[@]}"; do
         f="$hwd/$e"
         walk=()
+        if [[ "$hwd" != "$g/hooks" && ( -L "$f" || -f "$f" ) ]] && (( ++ients > 1000 )); then hkcut=1; break 2; fi
         if [[ -L "$f" ]]; then
           mapfile -d '' -t walk < <(_link_walk "$f")
         elif [[ "$hwd" != "$g/hooks" && -f "$f" ]]; then
@@ -1186,90 +1392,11 @@ launcher_ro_overlay() {
           printf '      Check it before a git commit on the host, or remove its other name.\n' >&2
         fi
       done
-    fi
-    # A file the config includes is read as part of it, so it can set anything
-    # the config can — core.fsmonitor, core.hooksPath — from wherever it lies.
-    # git resolves a relative path from the including file's directory. An
-    # included file the agent cannot reach can include one it can, so the chain
-    # is followed from every file found safe, to git's own depth of 10; a file
-    # the agent can reach is named, not read (tests/test-git-internals-ro-config.sh G29).
-    # Bounded per LAUNCH as well as per config: two configs per git directory and
-    # up to SANDBOX_GIT_MAX planted git directories made 150 repos take 81 s (review
-    # of the batch 1 hotfix; GIT-2). config.worktree only where git reads it.
-    local -A iseen=()
-    for f in "$g/config" "$g/config.worktree"; do
-      if [[ ! -f "$f" || -L "$f" ]]; then continue; fi
-      # From the config git reads extensions from: the common one, for a linked
-      # worktree's git directory, which has none of its own (security review of
-      # 1978dff). One that is not a readable file cannot say it is off: walked.
-      if [[ "$f" == */config.worktree && -f "$cfg" ]] && ! _git_config_bool "$cfg" extensions.worktreeConfig; then continue; fi
-      local -a ifile=("$f") idep=(0)
-      local ii=0 icur itgt ikey inr=0 ient=0 icut="" icomp
-      iseen=()
-      ikey="$(_launcher_dev_ino "$f")" && iseen[$ikey]=1
-      while (( ii < ${#ifile[@]} )); do
-      icur="${ifile[ii]}"; ii=$((ii + 1))
-      inc=()
-      mapfile -d '' -t inc < <(_git_include_paths "$icur")
-      for e in ${inc[@]+"${inc[@]}"}; do
-        # Entries, not only files: each costs a walk, and one config can hold
-        # thousands (re-review of c0d48d9; G38).
-        # The launch's budget counts only what is walked: empty and oversized values
-        # cost nothing, and planted repositories spent it on them, cutting the walk
-        # of every later config (GIT-19; G72). They still count per config.
-        if (( ++ient > 100 )); then icut=1; ii=${#ifile[@]}; break; fi
-        ik="${e%%$'\n'*}"; ip=""
-        if [[ "$e" == *$'\n'* ]]; then ip="${e#*$'\n'}"; fi
-        if [[ -z "$ip" ]]; then continue; fi
-        # A value git cannot open (longer than PATH_MAX) includes nothing. One with
-        # hundreds of components is not walked step by step — _path_walk is
-        # quadratic in them (100 such entries took 54 s) — and is left unchecked,
-        # which the cut WARNING says.
-        if (( ${#ip} > 4096 )); then continue; fi
-        if (( ++ients > 1000 )); then icut=1; ii=${#ifile[@]}; break; fi
-        icomp="${ip//[!\/]/}"
-        if (( ${#icomp} > 128 )); then icut=1; continue; fi
-        # shellcheck disable=SC2088  # '~/'* matches a LITERAL leading ~/ in the config value, expanded by hand
-        case "$ip" in '~/'*) ip="$HOME/${ip#\~/}" ;; esac
-        walk=()
-        _cd_phys ib "${icur%/*}" || ib=""
-        mapfile -d '' -t walk < <(_path_walk "$ib" "$ip")
-        if ! _walk_exposed how q w "" ${walk[@]+"${walk[@]}"}; then
-          if [[ "$ip" == /* ]]; then itgt="$ip"; else itgt="${icur%/*}/$ip"; fi
-          if [[ -f "$itgt" ]] && (( idep[ii - 1] < 10 )) && ikey="$(_launcher_dev_ino "$itgt")" \
-             && [[ -z "${iseen[$ikey]:-}" ]]; then
-            iseen[$ikey]=1
-            if (( inr >= 20 || ireads >= 1000 )); then
-              icut=1
-            else
-              inr=$((inr + 1)); ireads=$((ireads + 1))
-              ifile+=("$itgt"); idep+=("$((idep[ii - 1] + 1))")
-            fi
-          fi
-          continue
-        fi
-        if [[ "$icur" == "$f" ]]; then
-          printf 'WARNING: %s includes %s (%s), which the agent can redirect:\n' "$(_q "$at/${f##*/}")" "$(_q "$ip")" "$(_term "$ik")" >&2
-        else
-          printf 'WARNING: %s includes %s (%s in %s), which the agent can redirect:\n' "$(_q "$at/${f##*/}")" "$(_q "$ip")" "$(_term "$ik")" "$(_q "$icur")" >&2
-        fi
-        case "$how" in
-          change)  printf '         it can write %s (at %s), which git reads as part of that config.\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
-          linked)  printf '         it can write %s through another name of that file, in %s\n' "$(_term "$q")" "$(_term "$w")" >&2
-                   printf '         (on the host, find %s -xdev -samefile %s lists it); git reads it as part of that config.\n' "$(_q "$w")" "$(_q "$q")" >&2 ;;
-          unsearched) printf '         %s has another name, and %s could not be searched for it in full.\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
-          repoint) printf '         it can repoint %s (at %s), a link on its way.\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
-          replace) printf '         it can replace %s (at %s) with a link; the way steps out of it (..).\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
-          unchecked) printf '         its way out was not followed to the end (too many steps or links), so it is not known to be safe.\n' >&2 ;;
-        esac
-        printf '         It can set what your host'\''s git runs. Move what it sets into %s on the host.\n' "${f##*/}" >&2
-      done
-      done
-      if [[ -n "$icut" ]]; then
-        printf 'WARNING: not every include of %s was followed (100 entries and 20 files per config, 1000 of each per launch, 128 path components);\n' "$(_q "$at/${f##*/}")" >&2
-        printf '         what the rest set was not checked. Review them: git config --file %s --list --show-origin --includes\n' "$(_q "$f")" >&2
-      fi
     done
+    if [[ -n "$hkcut" ]]; then
+      printf 'WARNING: not every hook in the core.hooksPath directories of %s was checked (1000 ways per\n' "$(_q "$at")" >&2
+      printf '         launch, with its includes); check them before a git commit on the host.\n' >&2
+    fi
   done
 
   # Symlinks in a launcher whose way out leads somewhere the agent can change.
@@ -3393,12 +3520,16 @@ _git_file_config() {
   GIT_DIR=/dev/null _rd_run "$f" git config --file "$f" "$@"
 }
 
-# _git_include_paths <config-file>: every include.path and includeIf.*.path the
-# file sets, each as `<key>\n<value>`, NUL-separated — whatever the condition,
-# since one that does not hold today may hold tomorrow. With no git, none.
-_git_include_paths() {
+# _git_walk_keys <config-file>: every include.path and includeIf.*.path the file
+# sets — whatever the condition, since one that does not hold today may hold
+# tomorrow — and its core.hooksPath and core.worktree, each as `<key>\n<value>`
+# (the key as git prints it, in lower case), NUL-separated, in the file's order.
+# One read gives the include walk and the core.hooksPath check what they need
+# (a read each cost 150 repositories of six includes 27% more; review of the
+# GIT-35 fix). With no git, none.
+_git_walk_keys() {
   _git_usable || return 0
-  _git_file_config "$1" --null --get-regexp '^include(if\..*)?\.path$' 2>/dev/null || true
+  _git_file_config "$1" --null --get-regexp '^(include(if\..*)?\.path|core\.(hookspath|worktree))$' 2>/dev/null || true
 }
 
 # Seed a per-workspace writable working-copy volume from a repo's shared base
