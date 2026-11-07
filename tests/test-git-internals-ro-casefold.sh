@@ -18,13 +18,13 @@
 #
 # Where TMPDIR ignores case and the kernel does not — WSL's drvfs, where each
 # spelling is a dentry of its own — a read-only bind cannot cover the other
-# spellings of its name, and a launch that needs one there is refused (bugs
-# review GIT-41): G121 checks that, and the G117 cases, all of which need one,
-# are not run. Then, where fsutil.exe can make a case-sensitive directory, the
-# test runs again in one under TMPDIR, its parents still ignoring case, with a
-# parent written in another case instead (G121): getcwd prints there the
-# spelling a directory was reached by, so the launcher spells those parents
-# from readdir (platform-issues PLAT-8).
+# spellings of its name, nor the 8.3 short name Windows also answers to, and a
+# launch that needs one there is refused (bugs review GIT-41): G121 checks
+# that, and the G117 cases, all of which need one, are not run. G122 checks that
+# a directory there is spelled from readdir, where getcwd prints the spelling it
+# was reached by (platform-issues PLAT-8), a name with no ASCII letter under C
+# too. Then, where fsutil.exe can make a case-sensitive directory, G121 checks
+# that a launch in one is refused as well: short names hold there too.
 set -uo pipefail
 
 if [[ -z "${_CF_INNER:-}" ]]; then
@@ -68,14 +68,14 @@ fi
 source "$(dirname "${BASH_SOURCE[0]}")/lib-git-internals-ro.sh"
 
 if [[ -n "$_CF_ALIAS" ]]; then
-  # ── G121: no read-only bind where another spelling is a name of its own ──
+  # ── G121: no read-only bind where another name of it is a name of its own ──
   printf 'NOTE: TMPDIR is on %s, whose kernel does not ignore case: G121, not G117\n' \
     "$(stat -f -c %T -- "$TMP")"
   launch ..
-  [[ "$LAUNCH_RC" != 0 ]] && grep -qF 'by another name, which no' "$ERR" && grep -qF '(bugs review GIT-41)' "$ERR" \
-    && grep -qF '.AI-CONTAINERS is .ai-containers by' "$ERR" \
-    && pass "G121 a launcher overlay in a directory that ignores case, the kernel not, refuses the launch" \
-    || fail "G121 launcher overlay where another spelling is writable (rc=$LAUNCH_RC; stderr: $(grep -F ERROR "$ERR" | head -1))"
+  [[ "$LAUNCH_RC" != 0 ]] && grep -qF 'Windows looks names up' "$ERR" && grep -qF '(bugs review GIT-41)' "$ERR" \
+    && grep -qF '.ai-containers by its 8.3 short name' "$ERR" \
+    && pass "G121 a launcher overlay where Windows looks names up refuses the launch" \
+    || fail "G121 launcher overlay where another name is writable (rc=$LAUNCH_RC; stderr: $(grep -F ERROR "$ERR" | head -1))"
   # The project mounted read-only needs no overlay, and launches.
   rm -rf "$TMP/ro121" && mkdir -p "$TMP/ro121" && "${G[@]}" init -q "$TMP/ro121" \
     || { printf 'SCAFFOLD-FAILED: G121 ro\n'; exit 1; }
@@ -85,15 +85,36 @@ if [[ -n "$_CF_ALIAS" ]]; then
     || fail "G121 read-only mount (rc=$LAUNCH_RC; stderr: $(grep -F ERROR "$ERR" | head -1))"
   # A writable mount there holding a .git directory refuses too, by its git binds.
   EXTRA_MOUNTS="$TMP/ro121" launch "$TMP/app"
-  [[ "$LAUNCH_RC" != 0 ]] && grep -qF '.GIT is .git by' "$ERR" \
+  [[ "$LAUNCH_RC" != 0 ]] && grep -qF '.git by its 8.3 short name' "$ERR" \
     && pass "G121 a .git directory in a writable mount there refuses the launch" \
     || fail "G121 .git in a writable mount (rc=$LAUNCH_RC; stderr: $(grep -F ERROR "$ERR" | head -1))"
   rm -rf "$TMP/ro121"
+  # ── G122: a directory there is spelled from readdir, getcwd printing the
+  # spelling it was reached by; under C too a name with no ASCII letter is seen
+  # to ignore case and is folded (automated security review of 1ed3de8).
+  mkdir "$TMP/"$'\xd0\x94\xd0\xbe\xd0\xba' || { printf 'SCAFFOLD-FAILED: G122\n'; exit 1; }
+  spell() {
+    LC_ALL=C bash -c '
+      set -euo pipefail
+      for fn in _ci_path _case_flip _u8_locale _disk_spell _ds_readdir _ci_name _ci_alias_fs _q _term; do
+        eval "$(awk "/^$fn\\(\\) \\{/,/^}\$/" "$1")"
+      done
+      v="$2"; _disk_spell v; printf "%s/" "$v"' _ "$ENGINE/sandbox.sh" "$1"
+  }
+  got="$(spell "${PROJ%/*}/PROJ")"
+  [[ "$got" == "$PROJ/" ]] \
+    && pass "G122 a directory reached in another case is spelled as on disk" \
+    || fail "G122 spelling from readdir (got: $got)"
+  got="$(spell "$TMP/"$'\xd0\x94\xd0\x9e\xd0\x9a')"
+  [[ "$got" == "$TMP/"$'\xd0\x94\xd0\xbe\xd0\xba/' ]] \
+    && pass "G122 under C, a name with no ASCII letter reached in another case is spelled as on disk" \
+    || fail "G122 non-ASCII name under C (got: $got)"
+  rmdir "$TMP/"$'\xd0\x94\xd0\xbe\xd0\xba'
   cs="$TMP/cs121"; mkdir "$cs" || { printf 'SCAFFOLD-FAILED: G121 cs\n'; exit 1; }
   if command -v fsutil.exe >/dev/null 2>&1 && command -v wslpath >/dev/null 2>&1 \
      && fsutil.exe file setCaseSensitiveInfo "$(wslpath -w "$cs")" enable >/dev/null 2>&1 \
      && mkdir "$cs/Probe" && [[ ! -d "$cs/PROBE" ]] && rmdir "$cs/Probe"; then
-    printf 'NOTE: G121 again in a case-sensitive directory, its parents ignoring case\n'
+    printf 'NOTE: G121 again in a case-sensitive directory\n'
     _CF_INNER=aliascs TMPDIR="$cs" bash "$0" | sed '/^$/d; /failure(s)$/d'
     rc="${PIPESTATUS[0]}"; fails=$((fails + rc))
   else
@@ -104,52 +125,18 @@ if [[ -n "$_CF_ALIAS" ]]; then
 fi
 
 if [[ "$_CF_INNER" == aliascs ]]; then
-  # $PROJ with the deepest parent that ignores case written in another case.
-  UANC="" a=""; r="${PROJ#/}"
-  while [[ -n "$r" ]]; do
-    c="${r%%/*}"; if [[ "$r" == */* ]]; then r="${r#*/}"; else r=""; fi
-    if [[ "${c~~}" != "$c" && -e "$a/${c~~}" && "$a/${c~~}" -ef "$a/$c" ]]; then UANC="$a/${c~~}/$r"; fi
-    a="$a/$c"
-  done
-  UANC="${UANC%/}"; UTMP="${UANC%/proj}"
-  [[ -n "$UANC" && -d "$UANC/.ai-containers" && "$UANC" != "$PROJ" && ! -d "${PROJ%/*}/PROJ" ]] \
-    || { printf 'SCAFFOLD-FAILED: G121 no parent that ignores case above a case-sensitive TMPDIR\n'; exit 1; }
+  # A case-sensitive directory does not close it: Windows still reaches a name
+  # by its 8.3 short name there (AI-CON~1 wrote through a read-only bind on
+  # .ai-containers, measured on C:), and nothing on Linux lists those.
+  [[ ! -d "${PROJ%/*}/PROJ" ]] || { printf 'SCAFFOLD-FAILED: G121 TMPDIR is not case-sensitive\n'; exit 1; }
   launch ..
-  [[ "$LAUNCH_RC" == 0 ]] && has_mount "$PROJ/.git/config:/workspace/proj/.git/config:ro" \
-    && pass "G121 a project in case-sensitive directories launches, protected" \
+  [[ "$LAUNCH_RC" != 0 ]] && grep -qF '.ai-containers by its 8.3 short name' "$ERR" \
+    && pass "G121 a project in a case-sensitive directory there refuses the launch too" \
     || fail "G121 case-sensitive project (rc=$LAUNCH_RC; stderr: $(grep -F ERROR "$ERR" | head -1))"
-  # A gitdir: whose parent is written in another case, into a node_modules the
-  # scan prunes: the git directory is protected under the spelling on disk.
-  mkdir -p "$PROJ/src121" "$PROJ/node_modules/x121" && "${G[@]}" init -q --bare "$PROJ/node_modules/x121/g" \
-    && "${G[@]}" config --file "$PROJ/node_modules/x121/g/config" core.bare false \
-    && printf 'gitdir: %s/node_modules/x121/g\n' "$UANC" > "$PROJ/src121/.git" \
-    || { printf 'SCAFFOLD-FAILED: G121 gitdir\n'; exit 1; }
-  launch ..
-  has_mount "$PROJ/node_modules/x121/g/config:/workspace/proj/node_modules/x121/g/config:ro" \
-    && pass "G121 a gitdir: whose parent is written in another case names a git directory that is protected" \
-    || fail "G121 gitdir: with a parent in another case (rc=$LAUNCH_RC; stderr: $(grep -F x121 "$ERR" | head -2 | tr '\n' ' '))"
-  rm -rf "$PROJ/src121" "$PROJ/node_modules/x121"
-  # An include into the writable project so written is named.
-  printf '[core]\n' > "$PROJ/inc121.cfg" && "${G[@]}" -C "$PROJ" config include.path "$UANC/inc121.cfg" \
-    || { printf 'SCAFFOLD-FAILED: G121 include\n'; exit 1; }
-  launch ..
-  grep -qF "WARNING: /workspace/proj/.git/config includes $UANC/inc121.cfg (include.path)" "$ERR" \
-    && pass "G121 an include whose parent is written in another case is named" \
-    || fail "G121 include with a parent in another case (stderr: $(grep -F inc121 "$ERR" | head -2 | tr '\n' ' '))"
-  "${G[@]}" -C "$PROJ" config --unset include.path; rm -f "$PROJ/inc121.cfg"
-  # A mount whose parent is given in another case: its source is spelled as on
-  # disk, as the paths compared with it are.
-  M1="$TMP/m121"; mkdir -p "$M1/src" "$M1/node_modules/x" && "${G[@]}" init -q --bare "$M1/node_modules/x/g" \
-    && "${G[@]}" config --file "$M1/node_modules/x/g/config" core.bare false \
-    && printf 'gitdir: ../node_modules/x/g\n' > "$M1/src/.git" || { printf 'SCAFFOLD-FAILED: G121 mount\n'; exit 1; }
-  EXTRA_MOUNTS="$UTMP/m121" launch "$TMP/app"
-  has_mount "$M1/node_modules/x/g/config:/workspace/m121/node_modules/x/g/config:ro" \
-    && pass "G121 a mount whose parent is named in another case protects what is in it" \
-    || fail "G121 mount with a parent in another case (rc=$LAUNCH_RC; mounts: $(mounts | grep -c m121); stderr: $(grep -F ERROR "$ERR" | head -1))"
-  rm -rf "$M1"
   printf '\n%d failure(s)\n' "$fails"
   exit "$fails"
 fi
+
 # $PROJ as written in another case: the same directory here.
 UPROJ="${PROJ%/*}/PROJ"
 [[ -d "$UPROJ" ]] || { printf 'SCAFFOLD-FAILED: TMPDIR is not case-insensitive\n'; exit 1; }

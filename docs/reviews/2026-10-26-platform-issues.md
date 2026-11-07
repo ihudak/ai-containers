@@ -166,8 +166,9 @@ first, then fix test-first.
     - `.GIT/config` wrote through a read-only bind of the whole `.git`.
     - A pinned directory was renamed through another spelling.
     - In a case-sensitive directory every other spelling was `nonexistent`, or a new file the host's git ignores, and the host's config was untouched.
+    - But not every other name: on C:, which makes 8.3 short names (`NtfsDisable8dot3NameCreation` 2), `AI-CON~1/sandbox-common.sh` was written from an `ubuntu:22.04` container past a read-only bind of `.ai-containers`, in a case-sensitive directory too (automated security review of `1ed3de8`). `/mnt/c/PROGRA~1` resolves through drvfs. D: here made none.
     - From a container, `setfattr -n system.wsl_case_sensitive` is `Not supported`, so the agent cannot make a directory ignore case.
-  - **Fixed** by GIT-41 and the drvfs part of GIT-38 (bugs review section 25). G121 in `tests/test-git-internals-ro-casefold.sh` runs where `TMPDIR` is on such a filesystem: 5 checks red before the fix, 0 failures after.
+  - **Fixed** by GIT-41 and the drvfs part of GIT-38 (bugs review section 25): on drvfs a launch that needs a read-only bind below a writable mount is refused, case-sensitive directory or not. G121 and G122 in `tests/test-git-internals-ro-casefold.sh` run where `TMPDIR` is on such a filesystem: 5 checks red before the fix, 0 failures after.
 - **Picked up by:** the **Mac agent** (APFS) and the **WSL agent** (drvfs).
 - **Platform:** macOS with its default case-insensitive APFS. WSL2 with a directory under `/mnt/<drive>`.
 - **Source:** bugs review GIT-38, fixed and measured on Linux only, and GIT-41, modelled only. `sandbox.sh: _disk_spell()` respells, from `getcwd` (an external `pwd -P`), each path that crosses a directory ignoring case, so every path compared with a mount is spelled one way. On Linux that holds because a directory has one dentry. Whether macOS's `getcwd` and WSL's drvfs spell a directory one way, however it was reached, has not been measured. GIT-41: Docker Desktop's file sharing may open `.git/CONFIG` as the host's `.git/config`, past the read-only bind of `config`.

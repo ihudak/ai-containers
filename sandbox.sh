@@ -1630,8 +1630,13 @@ launcher_ro_overlay() {
   # own that no mount covers, and writable: from a container, .git/CONFIG wrote
   # the host's .git/config, .AI-CONTAINERS/sandbox.sh the launcher, and a pinned
   # directory renamed away (measured on Docker Desktop, platform-issues PLAT-8).
+  # Where Windows looks the names up (_win_fs), its 8.3 short names are names of
+  # their own as well, in a case-sensitive directory too (AI-CON~1/sandbox.sh
+  # wrote through a read-only .ai-containers; automated security review of
+  # 1ed3de8), and nothing on Linux lists them, so any name there counts.
   # No bind can close that, so every overlay, pin and file bind is checked, and
   # one that can be reached so refuses the launch (bugs review GIT-41).
+  local _gw_why _gw_flip
   for ((k = 0; k < ${#_vrfy[@]}; k += 2)); do
     f="${_vrfy[k]}"
     for i in ${bsrc[@]+"${!bsrc[@]}"}; do
@@ -1640,14 +1645,23 @@ launcher_ro_overlay() {
       while [[ -n "$rest" ]]; do
         part="${rest%%/*}"
         if [[ "$rest" == */* ]]; then rest="${rest#*/}"; else rest=""; fi
-        if _ci_name "$p" "$part" && _ci_alias_fs "$p"; then
+        _gw_why=""
+        if _win_fs "$p"; then _gw_why=win
+        elif _ci_name "$p" "$part" && _ci_alias_fs "$p"; then _gw_why=case; fi
+        if [[ "$_gw_why" == win ]]; then
+          printf 'ERROR: %s is mounted read-only, but %s is on a filesystem where\n' "$(_term "${_vrfy[k+1]}")" "$(_term "$p")" >&2
+          printf '       Windows looks names up (WSL'"'"'s drvfs under /mnt/<drive>, or SMB): it also reaches\n' >&2
+          printf '       %s by its 8.3 short name, and by any other case where the directory ignores\n' "$(_q "$part")" >&2
+          printf '       case, names no mount covers, so the agent could write it (bugs review GIT-41).\n' >&2
+          printf '       A case-sensitive directory does not close it. Refusing the launch. Keep the project\n' >&2
+          printf '       on a Linux filesystem (in WSL, the distro'"'"'s own, such as ~/dev), or mount it :ro.\n' >&2
+          exit 1
+        elif [[ "$_gw_why" == case ]]; then
+          _case_flip _gw_flip "$part"
           printf 'ERROR: %s is mounted read-only, but %s ignores case\n' "$(_term "${_vrfy[k+1]}")" "$(_term "$p")" >&2
-          printf '       and the kernel does not: in it, %s is %s by another name, which no\n' "$(_q "${part~~}")" "$(_q "$part")" >&2
+          printf '       and the kernel does not: in it, %s is %s by another name, which no\n' "$(_q "$_gw_flip")" "$(_q "$part")" >&2
           printf '       mount covers, so the agent could write it (bugs review GIT-41). Refusing the launch.\n' >&2
-          printf '       Keep the project on a case-sensitive filesystem (in WSL, the distro'"'"'s own, such\n' >&2
-          printf '       as ~/dev, not /mnt/<drive>), mount it :ro, or make each directory from %s\n' "$(_term "${bsrc[i]}")" >&2
-          printf '       down case-sensitive: fsutil.exe file setCaseSensitiveInfo <dir> enable (from an elevated\n' >&2
-          printf '       prompt if refused). It applies to that directory and the ones made in it later.\n' >&2
+          printf '       Keep the project on a case-sensitive filesystem, or mount it :ro.\n' >&2
           exit 1
         fi
         p="$p/$part"
@@ -2844,7 +2858,7 @@ _ci_path() {
     _ci_c="${_ci_r%%/*}"
     if [[ "$_ci_r" == */* ]]; then _ci_r="${_ci_r#*/}"; else _ci_r=""; fi
     [[ -n "$_ci_c" ]] || continue
-    _ci_f="${_ci_c~~}"
+    _case_flip _ci_f "$_ci_c"
     if [[ "$_ci_f" != "$_ci_c" && ! -L "$_ci_p/$_ci_f" && "$_ci_p/$_ci_f" -ef "$_ci_p/$_ci_c" ]]; then
       _ci_memo[$_ci_p/$_ci_c]=1; return 0
     fi
@@ -2859,10 +2873,11 @@ _ci_path() {
 # asked once per shell (_ds_cache); at most AI_CONTAINERS_SPELL_MAX (5000, a test
 # knob) are asked per launch, then the launch is refused, named, as past
 # SANDBOX_GIT_MAX: the agent can make directories (review of the GIT-38 fix).
-# Unchanged where there is no pwd with an absolute path.
+# Unchanged where there is no pwd with an absolute path. Where readdir must
+# spell it (_ds_readdir) and names nothing that is it, the launch is refused.
 _disk_spell() {
   local -n _ds_v=$1
-  local _ds_k="$_ds_v" _ds_r="" _ds_a
+  local _ds_k="$_ds_v" _ds_r="" _ds_a _ds_rc=0
   [[ -n "$_ds_k" ]] && _ci_path "$_ds_k" || return 0
   [[ -n "${_ds_cache_made:-}" ]] || { declare -gA _ds_cache=(); _ds_cache_made=1; }
   if [[ -n "${_ds_cache[$_ds_k]+x}" ]]; then _ds_v="${_ds_cache[$_ds_k]}"; return 0; fi
@@ -2882,7 +2897,16 @@ _disk_spell() {
   # from readdir first (PLAT-8). getcwd is asked only if a directory that
   # ignores case on a filesystem whose kernel does too is left on the way.
   _ds_a="$_ds_k"
-  if _ds_readdir _ds_a; then _ds_cache[$_ds_k]="$_ds_a"; _ds_v="$_ds_a"; return 0; fi
+  _ds_readdir _ds_a || _ds_rc=$?
+  if (( _ds_rc == 0 )); then _ds_cache[$_ds_k]="$_ds_a"; _ds_v="$_ds_a"; return 0; fi
+  if (( _ds_rc == 2 )); then
+    printf 'ERROR: %s ignores case, and nothing its listing names is %s (it cannot be\n' "$(_term "${_ds_a%/*}")" "$(_q "${_ds_a##*/}")" >&"${_rd_errfd:-2}"
+    printf '       listed, or its case is not one this launcher folds), so %s cannot be spelled\n' "$(_q "$_ds_k")" >&"${_rd_errfd:-2}"
+    printf '       as on disk to be compared with the mounts; refusing the launch. Make it listable, or\n' >&"${_rd_errfd:-2}"
+    printf '       mount narrower directories, or :ro.\n' >&"${_rd_errfd:-2}"
+    kill -s USR1 "$$" 2>/dev/null || true
+    exit 1
+  fi
   _ds_v="$_ds_a"
   [[ "$_cd_phys_pwd" != - ]] || return 0
   IFS= read -r -d '' _ds_r < <(cd -- "$_ds_a" 2>/dev/null && "$_cd_phys_pwd" -P 2>/dev/null && printf '\0') || return 0
@@ -2913,24 +2937,130 @@ _ci_alias_fs() {
   [[ "${_caf[$1]}" == 1 ]]
 }
 
-# _ci_name <dir> <name>: <name>'s ASCII case turned over names, in <dir>, the
-# same file (a link at the other spelling is not taken for one): <dir> ignores
-# case. A name with no ASCII letter cannot be tried, and is not seen (the limit
-# _ci_path has).
+# _ci_name <dir> <name>: <name>, its case turned over (_case_flip), names in
+# <dir> the same file (a link at the other spelling is not taken for one):
+# <dir> ignores case.
 _ci_name() {
-  local _cn_f="${2~~}"
+  local _cn_f
+  _case_flip _cn_f "$2"
   [[ "$_cn_f" != "$2" && ! -L "$1/$_cn_f" && "$1/$_cn_f" -ef "$1/$2" ]]
+}
+
+# _u8_locale: a UTF-8 locale bash turns Cyrillic over in, into _u8_loc, or -
+# where there is none; asked once, in a subshell, so the launcher's own locale
+# is never changed.
+_u8_locale() {
+  [[ -z "${_u8_loc:-}" ]] || return 0
+  _u8_loc="$(for _ul in C.UTF-8 C.utf8 en_US.UTF-8; do
+    LC_ALL="$_ul"; _ut=$'\xd0\xb6'
+    if [[ "${_ut~~}" == $'\xd0\x96' ]]; then printf '%s' "$_ul"; exit 0; fi
+  done 2>/dev/null; printf -)"
+}
+
+# _case_flip <var> <name>: <name> with its case turned over, into <var>. bash
+# turns over the letters of the current locale only, so under C a name with no
+# ASCII letter (Док) came back as it was, and a directory by such a name was
+# never seen to ignore case (automated security review of 1ed3de8). Such a name
+# is turned over under a UTF-8 locale (_u8_locale), in a subshell, once per
+# name; where there is none it stays as it was, and a WARNING says so, once.
+_case_flip() {
+  local -n _cf_v=$1
+  _cf_v="${2~~}"
+  [[ "$_cf_v" == "$2" && "$2" == *[![:ascii:]]* ]] || return 0
+  [[ -n "${_cfl_made:-}" ]] || { declare -gA _cfl=(); _cfl_made=1; }
+  if [[ -z "${_cfl[$2]+x}" ]]; then
+    _u8_locale
+    if [[ "$_u8_loc" != - ]]; then
+      _cfl[$2]="$(LC_ALL="$_u8_loc"; printf '%s/' "${2~~}")"; _cfl[$2]="${_cfl[$2]%/}"
+    else
+      _cfl[$2]="$2"
+      if [[ -z "${_cf_warned:-}" ]]; then
+        _cf_warned=1
+        printf 'WARNING: no UTF-8 locale here (C.UTF-8 or en_US.UTF-8), so a name with no ASCII letter,\n' >&"${_rd_errfd:-2}"
+        printf '         such as %s, was not tried in another case: a directory by such a name that\n' "$(_q "$2")" >&"${_rd_errfd:-2}"
+        printf '         ignores case is not seen. Install one, or keep such names out of the mounts.\n' >&"${_rd_errfd:-2}"
+      fi
+    fi
+  fi
+  _cf_v="${_cfl[$2]}"
+}
+
+# _win_fs <dir>: whether <dir> is on a filesystem where Windows looks names up:
+# WSL's drvfs (9p, aname=drvfs) or SMB. Windows also reaches a name by its 8.3
+# short name, on a volume that makes them (C:, by default), in a case-sensitive
+# directory too: from a container, a read-only bind on .ai-containers did not
+# cover AI-CON~1 (measured on Docker Desktop; automated security review of
+# 1ed3de8). Nothing on Linux lists short names, so every name there counts as
+# having one. SMB counts by the protocol (Windows and Samba both answer to 8.3
+# names by default), not measured. Decided by the mount <dir> lies on, from
+# /proc/self/mountinfo read once (_win_mounts); where that cannot be read, by
+# the filesystem's type, a 9p one counting as drvfs. Linux only; cached.
+_win_fs() {
+  [[ "$OSTYPE" == linux* ]] || return 1
+  [[ -n "${_wf_made:-}" ]] || { declare -gA _wf=(); _wf_made=1; }
+  if [[ -z "${_wf[$1]+x}" ]]; then
+    _win_mounts
+    local _wf_i _wf_n=-1 _wf_r=0
+    if [[ "$_wm_ok" == 1 ]]; then
+      # Under no Windows mount: the common case, and no further look.
+      for _wf_i in ${_wm_win[@]+"${!_wm_win[@]}"}; do
+        [[ "${_wm_win[_wf_i]}" == / || "$1" == "${_wm_win[_wf_i]}" || "$1" == "${_wm_win[_wf_i]}"/* ]] && _wf_r=1
+      done
+      if [[ "$_wf_r" == 1 ]]; then
+        for _wf_i in "${!_wm_mp[@]}"; do
+          [[ "${_wm_mp[_wf_i]}" == / || "$1" == "${_wm_mp[_wf_i]}" || "$1" == "${_wm_mp[_wf_i]}"/* ]] || continue
+          (( ${#_wm_mp[_wf_i]} >= _wf_n )) || continue
+          _wf_n="${#_wm_mp[_wf_i]}"; _wf_r="${_wm_is[_wf_i]}"
+        done
+      fi
+    else
+      case "$(stat -f -c %T -- "$1" 2>/dev/null)" in v9fs|cifs|smb|smb2|smb3) _wf_r=1 ;; esac
+    fi
+    _wf[$1]="$_wf_r"
+  fi
+  [[ "${_wf[$1]}" == 1 ]]
+}
+
+# _win_mounts: /proc/self/mountinfo, once: every mount point (_wm_mp), whether
+# it is drvfs or SMB (_wm_is), and those that are (_wm_win); _wm_ok=1 if read.
+# Mount points are unescaped as the kernel escapes them (\040, \011, \012, \134).
+_win_mounts() {
+  [[ -z "${_wm_ok:-}" ]] || return 0
+  _wm_ok=0; _wm_mp=(); _wm_is=(); _wm_win=()
+  [[ -r /proc/self/mountinfo ]] || return 0
+  local _wm_l _wm_p _wm_t _wm_o _wm_j
+  local -a _wm_f
+  while IFS= read -r _wm_l; do
+    IFS=' ' read -r -a _wm_f <<< "$_wm_l"
+    _wm_p="${_wm_f[4]:-}"; _wm_p="${_wm_p//\\040/ }"; _wm_p="${_wm_p//\\011/$'\t'}"
+    _wm_p="${_wm_p//\\012/$'\n'}"; _wm_p="${_wm_p//\\134/\\}"
+    for ((_wm_j = 6; _wm_j < ${#_wm_f[@]}; _wm_j++)); do [[ "${_wm_f[_wm_j]}" != - ]] || break; done
+    _wm_t="${_wm_f[_wm_j+1]:-}"; _wm_o=",${_wm_f[_wm_j+3]:-},"
+    _wm_mp+=("$_wm_p")
+    case "$_wm_t" in
+      cifs|smb3|drvfs) _wm_is+=(1) ;;
+      9p) if [[ "$_wm_o" == *,aname=drvfs[,\;]* ]]; then _wm_is+=(1); else _wm_is+=(0); fi ;;
+      *) _wm_is+=(0) ;;
+    esac
+    [[ "${_wm_is[-1]}" == 0 ]] || _wm_win+=("$_wm_p")
+  done < /proc/self/mountinfo
+  _wm_ok=1
 }
 
 # _ds_readdir <var>: the physical path in <var>, each name in a directory that
 # ignores case on a filesystem whose kernel does not (_ci_alias_fs) spelled as
 # readdir lists it. Fails, with the rest respelled, if a directory that ignores
 # case on another filesystem is on the way, for getcwd to spell. Each prefix
-# once per shell (_dr_cache). The glob reads the directory once; the agent
-# decides how many entries it holds, as for the scan.
+# once per shell (_dr_cache). The glob reads the directory once, in a subshell
+# under a UTF-8 locale (_u8_locale), so a case bash folds only there is folded;
+# the agent decides how many entries it holds, as for the scan. A directory
+# whose listing names nothing that is the name — it cannot be read, or folds a
+# case bash does not — returns 2, with the path to it in <var>, and nothing is
+# cached: getcwd would print the spelling given (automated security review of
+# 1ed3de8).
 _ds_readdir() {
   local -n _dr_v=$1
-  local _dr_p="" _dr_r="${_dr_v#/}" _dr_c _dr_k _dr_m _dr_rc=0 _dr_o1="" _dr_o2="" _dr_o3="" _dr_o4=""
+  local _dr_p="" _dr_r="${_dr_v#/}" _dr_c _dr_k _dr_m _dr_hit _dr_rc=0
   local -a _dr_g
   [[ -n "${_dr_cache_made:-}" ]] || { declare -gA _dr_cache=(); _dr_cache_made=1; }
   while [[ -n "$_dr_r" ]]; do
@@ -2943,15 +3073,19 @@ _ds_readdir() {
     fi
     if _ci_name "${_dr_p:-/}" "$_dr_c"; then
       if _ci_alias_fs "${_dr_p:-/}"; then
-        shopt -q nocaseglob || _dr_o1=1; shopt -q dotglob || _dr_o2=1
-        shopt -q nullglob || _dr_o3=1; ! shopt -q failglob || _dr_o4=1
-        shopt -s nocaseglob dotglob nullglob; shopt -u failglob
-        _dr_g=("$_dr_p"/["${_dr_c:0:1}"]"${_dr_c:1}")
-        [[ -z "$_dr_o1" ]] || shopt -u nocaseglob; [[ -z "$_dr_o2" ]] || shopt -u dotglob
-        [[ -z "$_dr_o3" ]] || shopt -u nullglob; [[ -z "$_dr_o4" ]] || shopt -s failglob
+        _u8_locale
+        _dr_g=()
+        mapfile -d '' _dr_g < <(
+          [[ "$_u8_loc" == - ]] || LC_ALL="$_u8_loc"
+          shopt -s nocaseglob dotglob nullglob; shopt -u failglob
+          _dr_l=("$_dr_p"/["${_dr_c:0:1}"]"${_dr_c:1}")
+          (( ${#_dr_l[@]} == 0 )) || printf '%s\0' "${_dr_l[@]}")
+        _dr_hit=""
         for _dr_m in ${_dr_g[@]+"${_dr_g[@]}"}; do
-          if [[ ! -L "$_dr_m" && "$_dr_m" -ef "$_dr_p/$_dr_c" ]]; then _dr_c="${_dr_m##*/}"; break; fi
+          if [[ ! -L "$_dr_m" && "$_dr_m" -ef "$_dr_p/$_dr_c" ]]; then _dr_hit="${_dr_m##*/}"; break; fi
         done
+        if [[ -z "$_dr_hit" ]]; then _dr_v="$_dr_p/$_dr_c"; return 2; fi
+        _dr_c="$_dr_hit"
       else
         _dr_rc=1
       fi
@@ -4089,6 +4223,7 @@ _fs_deadline=""             # the FIFO search's deadline, once per launch (_ro_f
 # _ci_path's and _disk_spell's state, never from the environment: _cd_phys_pwd is
 # the program run as pwd.
 _ci_memo_made="" _ds_cache_made="" _ds_n=0 _cd_phys_pwd="" _caf_made="" _dr_cache_made=""
+_u8_loc="" _cfl_made="" _cf_warned="" _wf_made="" _wm_ok=""
 # The hooks git runs, by name (githooks(5)); anything else in hooks/ is inert.
 git_hook_names=(applypatch-msg pre-applypatch post-applypatch pre-commit
   pre-merge-commit prepare-commit-msg commit-msg post-commit pre-rebase post-checkout

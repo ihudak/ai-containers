@@ -765,11 +765,31 @@ grep -qF "launcher link $LAUNCHER/unrep.sh leads somewhere the agent can change"
 NLT="$TMP/nlt"; mkdir -p "$NLT/d"; : > "$NLT/d/f"$'\n'; ln -s "f"$'\n' "$NLT/d/l"
 got="$(bash -c '
   set -euo pipefail
-  for fn in _cd_phys _cd_bash _ci_path _disk_spell _link_walk _path_walk _readlink_exact; do eval "$(awk "/^$fn\\(\\) \\{/,/^}\$/" "$1")"; done
+  for fn in _cd_phys _cd_bash _ci_path _case_flip _u8_locale _disk_spell _link_walk _path_walk _readlink_exact; do eval "$(awk "/^$fn\\(\\) \\{/,/^}\$/" "$1")"; done
   _link_walk "$2"' _ "$ENGINE/sandbox.sh" "$NLT/d/l" | tr '\0\n' '|^')"
 [[ "$got" == "$NLT/d/l|=$NLT/d/f^|" ]] \
   && pass "T37 a link target ending in a newline is followed exactly" \
   || fail "T37 trailing newline in a target (got: $got)"
+
+# ── T62: where readdir must spell a directory (one that ignores case on a
+# filesystem whose kernel does not: WSL's drvfs) and its listing names nothing
+# that is it, the launch is refused; the path as given was kept (automated
+# security review of 1ed3de8). Here a directory that cannot be listed, the
+# filesystem's case taken as drvfs's.
+UNL="$TMP/unl"; mkdir -p "$UNL/d/sub" && UNLP="$(cd "$UNL/d/sub" && pwd -P)" && chmod 311 "$UNL/d"
+if ls "$UNL/d" >/dev/null 2>&1; then
+  printf 'NOTE: T62 not run: a mode-311 directory can be listed here (root)\n'
+else
+  out="$(bash -c '
+    set -euo pipefail
+    for fn in _ci_path _case_flip _u8_locale _disk_spell _ds_readdir _ci_name _q _term; do eval "$(awk "/^$fn\\(\\) \\{/,/^}\$/" "$1")"; done
+    _ci_path() { return 0; }; _ci_name() { return 0; }; _ci_alias_fs() { return 0; }
+    v="$2"; _disk_spell v; printf "SPELLED:%s\n" "$v"' _ "$ENGINE/sandbox.sh" "$UNLP" 2>&1)"; rc=$?
+  [[ "$rc" != 0 && "$out" == *"nothing its listing names is sub"*"refusing the launch"* && "$out" != *SPELLED:* ]] \
+    && pass "T62 a directory readdir must spell and cannot is refused" \
+    || fail "T62 unlistable directory on a case-aliasing filesystem (rc=$rc; out: $out)"
+fi
+chmod 755 "$UNL/d"; rm -rf "$UNL"
 
 # ── T38: what the agent can write cannot make the link check noisy or slow.
 # Links planted in the launcher's own output directory are not walked; a
