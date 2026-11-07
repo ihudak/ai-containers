@@ -371,10 +371,10 @@ launcher_ro_overlay() {
   local uid="${SANDBOX_UID:-$(id -u)}" gid="${SANDBOX_GID:-$(id -g)}" you
   local -a found unreadable cand bsrc=() bdst=() cl=() cat=() csrc=() cdst=() cdep=() ckind=() ro_dsts=() psrc pdst
   local -a _xm_t=() _xm_by=() _xm_j=() ro_srcs=()
-  local -A gpv=()
+  local -A gpv=() gfprot=()
   local -a scan links walk gdirs gfiles glinks gunr gro ug usrc udst udep ukind
   local g base what gmax gn gitmax cfg cdir ocfg ocd k2 first ik ip ib rep al rk rh hk
-  local -a inc pgd=() pga=() pgc=() pgo=()
+  local -a inc pgd=() pga=() pgc=() pgo=() pgx=()
   local -A seen=() tried=() scanned=() pinned=()
   # Included git config files read: each once per protected config, keyed by
   # device:inode however it is spelled (review of b3d2362: `./config` and
@@ -1024,6 +1024,7 @@ launcher_ro_overlay() {
         _unlistable_hint "$g" '         ' "$uid"
       elif [[ "$kind" == file ]]; then
         printf 'READ-ONLY: %s  (names the git directory your host'\''s git uses here)\n' "$(_term "$at")" >&2
+        gfprot[$g]=1
       else
         printf 'READ-ONLY: %s: %s  (what your host'\''s git runs; change them on the host)\n' "$(_term "$at")" "$(_term "$what")" >&2
         pgd+=("$g"); pga+=("$at"); pgc+=("$cfg"); gpv[$at]=1
@@ -1091,10 +1092,72 @@ launcher_ro_overlay() {
     printf '      directories, or mount the ones you will not change :ro.\n' >&2
   fi
 
+  # A git directory that a .git file in a writable mount names outside every
+  # writable mount — a linked worktree's, or a separate git directory, whose
+  # checkout alone is mounted — is judged too, and so is its common directory,
+  # with no binds of their own: the host's git reads their config, includes and
+  # hooks for a command run in the checkout the agent can write. Only those the
+  # launch protects, or found under a read-only overlay, were, and with husky's
+  # layout under `git worktree` the agent wrote the hooks the host then ran
+  # (GIT-44).
+  # Git directories only, as git takes them: a planted .git file naming any
+  # directory of the host had a file there read as its config. And at most
+  # SANDBOX_GIT_MAX: .git files under a read-only overlay count toward nothing
+  # else, and the agent can plant thousands (review of the GIT-44 fix).
+  # The cap only for those named by .git files the launch did not protect —
+  # under a read-only overlay, a planted launcher's — taken in the order found:
+  # a protected .git file counts toward SANDBOX_GIT_MAX already, and the
+  # repository a mount lies in is one per mount. Taken in hash order, a real
+  # repository was cut while planted ones were judged (re-review of the GIT-44
+  # fix).
+  local -A pgk=()
+  local t pass ncap=0
+  local -a pgxo=()
+  for k in ${pgd[@]+"${!pgd[@]}"}; do pgk[${pgd[k]}]=1; done
+  for pass in 1 2; do
+  for i in ${_gref_t[@]+"${!_gref_t[@]}"}; do
+    t="${_gref_t[i]}"
+    if [[ -n "${gfprot[${_gref_d[i]}/.git]:-}" ]] || ! _in_writable "${_gref_d[i]}"; then x=1; else x=2; fi
+    [[ "$x" == "$pass" && -z "${pgk[$t]:-}" ]] || continue
+    if _in_writable "$t" || ! _is_git_dir "$t"; then continue; fi
+    pgk[$t]=1
+    if (( pass == 2 )); then
+      if (( ${#pgxo[@]} || ncap >= gitmax )); then pgxo+=("$t"); continue; fi
+      ncap=$((ncap + 1))
+    fi
+    ocfg="$t/config"
+    if [[ -f "$t/commondir" ]]; then
+      cdir=""; _git_ptr_read "$t/commondir" cdir || true
+      if [[ -n "$cdir" && "$cdir" != ./ ]]; then
+        if _cd_phys ocd "$t" "$cdir"; then
+          ocfg="$ocd/config"
+          if [[ -z "${pgk[$ocd]:-}" ]] && ! _in_writable "$ocd" && _is_common_dir "$ocd"; then
+            pgk[$ocd]=1; pgd+=("$ocd"); pga+=("$ocd"); pgc+=("$ocd/config"); pgx[${#pgd[@]}-1]=1
+          fi
+        else
+          ocfg=/nonexistent/ai-launcher-unresolved-commondir/config
+        fi
+      fi
+    fi
+    pgd+=("$t"); pga+=("$t"); pgc+=("$ocfg"); pgx[${#pgd[@]}-1]=1
+  done
+  done
+  if (( ${#pgxo[@]} )); then
+    printf 'WARNING: .git files under read-only overlays here name more than %d git directories outside\n' "$gitmax" >&2
+    printf '         every writable mount (SANDBOX_GIT_MAX); what these hold was not judged:\n' >&2
+    for x in "${pgxo[@]:0:5}"; do printf '           %s\n' "$(_term "$x")" >&2; done
+    if (( ${#pgxo[@]} > 5 )); then printf '         … and %d more.\n' "$(( ${#pgxo[@]} - 5 ))" >&2; fi
+    printf '         Remove the .git files you did not make, or raise SANDBOX_GIT_MAX.\n' >&2
+  fi
+
   # What a protected repository's git runs or reads from OUTSIDE its read-only
   # mounts — judged now that every overlay is decided, so a step into a
-  # repository handled later counts as protected.
-  for k in ${pgd[@]+"${!pgd[@]}"}; do
+  # repository handled later counts as protected. A common directory's before
+  # its linked worktrees', whose core.hooksPath its config sets (GIT-44).
+  local -a kord=() _hpv_g=() _hpv_v=()
+  for k in ${pgd[@]+"${!pgd[@]}"}; do [[ "${pgc[k]}" != "${pgd[k]}/config" ]] || kord+=("$k"); done
+  for k in ${pgd[@]+"${!pgd[@]}"}; do [[ "${pgc[k]}" == "${pgd[k]}/config" ]] || kord+=("$k"); done
+  for k in ${kord[@]+"${kord[@]}"}; do
     g="${pgd[k]}"; at="${pga[k]}"; cfg="${pgc[k]}"
     # One under a read-only overlay: a link among what git reads by name is read
     # through, and the overlay covers the link, not where it leads. Named whatever
@@ -1108,6 +1171,28 @@ launcher_ro_overlay() {
         printf '         on the host with what it names.\n' >&2
       done
     fi
+    # One outside every writable mount: a link among them is named where its way
+    # out is the agent's to change (GIT-44).
+    if [[ -n "${pgx[k]:-}" ]]; then
+      for f in config config.worktree commondir hooks; do
+        if [[ ! -L "$g/$f" ]]; then continue; fi
+        walk=()
+        mapfile -d '' -t walk < <(_link_walk "$g/$f")
+        if ! _walk_exposed how q w "" ${walk[@]+"${walk[@]}"}; then continue; fi
+        printf 'WARNING: %s, outside every writable mount, leads somewhere the agent can change:\n' "$(_term "$g/$f")" >&2
+        case "$how" in
+          change)  printf '         it can change %s (at %s), which your host'\''s git reads or runs through it.\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
+          linked)  printf '         it can write %s through another name of that file, in %s\n' "$(_term "$q")" "$(_term "$w")" >&2
+                   printf '         (on the host, find %s -xdev -samefile %s lists it).\n' "$(_q "$w")" "$(_q "$q")" >&2 ;;
+          unsearched) printf '         %s has another name, and %s could not be searched for it in full.\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
+          repoint) printf '         it can repoint %s (at %s), a link on its way.\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
+          replace) printf '         it can replace %s (at %s) with a link; the way steps out of it (..).\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
+          unchecked) printf '         its way out was not followed to the end (too many steps or links), so it is not known to be safe.\n' >&2 ;;
+        esac
+        printf '         Your host'\''s git reads it for the checkout mounted here. Replace the link on the host\n' >&2
+        printf '         with what it names.\n' >&2
+      done
+    fi
     # A file the config includes is read as part of it, so it can set anything
     # the config can — core.fsmonitor, core.hooksPath — from wherever it lies.
     # git resolves a relative path from the including file's directory. An
@@ -1118,9 +1203,12 @@ launcher_ro_overlay() {
     # up to SANDBOX_GIT_MAX planted git directories made 150 repos take 81 s (review
     # of the batch 1 hotfix; GIT-2). config.worktree only where git reads it.
     local -A iseen=() hkp=() hkw=() hkr=() hkc=() icnd=()
-    local -a hcf=()
+    local -a hcf=() hcfw=()
     for f in "$g/config" "$g/config.worktree"; do
-      if [[ ! -f "$f" || -L "$f" ]]; then continue; fi
+      # Through a link, for one outside every writable mount: its way out was
+      # judged above, and what it leads to is what git reads (review of the
+      # GIT-44 fix).
+      if [[ ! -f "$f" ]] || { [[ -L "$f" ]] && [[ -z "${pgx[k]:-}" ]]; }; then continue; fi
       # From the config git reads extensions from: the common one, for a linked
       # worktree's git directory, which has none of its own (security review of
       # 1978dff). One that is not a readable file cannot say it is off: walked.
@@ -1201,6 +1289,7 @@ launcher_ro_overlay() {
       # What git reads core.hooksPath from, below: this file and those it
       # includes that the agent cannot reach (one it can is named above).
       hcf+=("${ifile[@]}")
+      if [[ "$f" == "$g/config.worktree" ]]; then hcfw+=("${ifile[@]}"); fi
       if [[ -n "$icut" ]]; then
         printf 'WARNING: not every include of %s was followed (100 entries and 20 files per config, 1000 of each per launch, 128 path components);\n' "$(_q "$at/${f##*/}")" >&2
         printf '         what the rest set was not checked. Review them: git config --file %s --list --show-origin --includes\n' "$(_q "$f")" >&2
@@ -1222,11 +1311,32 @@ launcher_ro_overlay() {
     # directory of the host was silent (GIT-35), and so was a submodule's
     # worktree made one (review of the fix). Every way is judged before any is
     # skipped as named.
-    local b v hd hwd hcond="" hopt="" hcut="" hkcut=""
+    local b v hd hwd hx hcond="" hopt="" hcut="" hkcut=""
     local -a hps=() hpx=() hwds=() hb=() hbd=() hbp=() wd=() wp=()
     local -A hseen=()
+    local -a hfl=()
     if [[ "$cfg" == "$g/config" ]]; then
-      for f in "$cfg" ${hcf[@]+"${hcf[@]}"}; do
+      hfl=("$cfg" ${hcf[@]+"${hcf[@]}"})
+    else
+      # A linked worktree's git directory: git takes core.hooksPath from the
+      # common config, whose own judging collected what it and its includes
+      # set (and judged it from the common config's core.worktree, and walked
+      # the common hooks/ it runs), and from this one's config.worktree where
+      # git reads that — never from a config of its own (GIT-44).
+      hfl=(${hcfw[@]+"${hcfw[@]}"})
+      for i in ${_hpv_g[@]+"${!_hpv_g[@]}"}; do
+        [[ "${_hpv_g[i]}" == "${cfg%/config}" ]] || continue
+        v="${_hpv_v[i]}"
+        # Only one relative to a checkout: an absolute one, or one not judged, is
+        # the same from every worktree, and was named once per worktree
+        # (re-review of the GIT-44 fix).
+        # (A :(optional) one stays: to a git older than 2.52 it is relative.)
+        case "$v" in /*|'~'*|'%(prefix)/'*) continue ;; esac
+        if [[ -z "${hseen[v:$v]:-}" ]]; then hseen[v:$v]=1; hps+=("$v"); fi
+      done
+    fi
+    if (( ${#hfl[@]} )); then
+      for f in "${hfl[@]}"; do
         [[ -z "${hseen[f:$f]:-}" ]] || continue
         hseen[f:$f]=1
         # core.worktree from the config and config.worktree alone: git never
@@ -1248,10 +1358,30 @@ launcher_ro_overlay() {
         if [[ -n "$x" && -z "${hseen[w:$x]:-}" ]]; then hseen[w:$x]=1; hb+=("$x"); fi
       done
     fi
+    # For its linked worktrees, which take them from this config.
+    if [[ "$cfg" == "$g/config" ]]; then
+      for v in ${hps[@]+"${hps[@]}"}; do _hpv_g+=("$g"); _hpv_v+=("$v"); done
+    fi
     # Each base: a directory, and what goes before the value when walked from it.
-    if [[ "${g,,}" == */.git ]]; then hbd+=("${g%/*}"); hbp+=(""); fi
+    # Where the .git lies, each checkout whose .git file names this git
+    # directory, a linked worktree's own (gitdir), and each core.worktree.
+    if [[ "${g,,}" == */.git ]]; then hbd+=("${g%/*}"); hbp+=(""); hseen[r:${g%/*}]=1; fi
+    for i in ${_gref_i[$g]:-}; do
+      [[ -z "${hseen[r:${_gref_d[i]}]:-}" ]] || continue
+      hseen[r:${_gref_d[i]}]=1; hbd+=("${_gref_d[i]}"); hbp+=("")
+    done
+    # Relative too, as git 2.48 and later can write it (worktree.useRelativePaths):
+    # from this directory (review of the GIT-44 fix).
+    if [[ "$cfg" != "$g/config" && -f "$g/gitdir" ]]; then
+      x=""; _git_ptr_read "$g/gitdir" x gitdir || x=""
+      if [[ "${x,,}" == */.git ]]; then x="${x%/*}"; fi
+      if [[ -n "$x" ]] && _cd_phys x "$g" "$x" && [[ -z "${hseen[r:$x]:-}" ]]; then hseen[r:$x]=1; hbd+=("$x"); hbp+=(""); fi
+    fi
     for x in ${hb[@]+"${hb[@]}"}; do hbd+=("$g"); hbp+=("$x/"); done
-    if (( ! ${#hbd[@]} )); then hbd=("$g"); hbp=(""); fi
+    # None: a bare repository, run in itself. Not a linked worktree's, whose
+    # checkout is not known here: from its git directory the NOTE named a place
+    # git never runs hooks in.
+    if (( ! ${#hbd[@]} )) && [[ "$cfg" == "$g/config" ]]; then hbd=("$g"); hbp=(""); fi
     # :(optional) is taken off by git 2.52 and later, which run hooks/ where the
     # rest does not exist (review of the GIT-35 fix); an older git, Ubuntu
     # 24.04's 2.43 among them, reads it as part of a relative path, which the
@@ -1336,7 +1466,7 @@ launcher_ro_overlay() {
     # hooks/ where git may run it: no core.hooksPath, one an includeIf may not
     # apply, or one git falls back from (:(optional)).
     if (( ! ${#hps[@]} )) || [[ -n "$hcond$hopt" ]]; then
-      if [[ -d "$g/hooks" && ! -L "$g/hooks" && -z "${hseen[h:$g/hooks]:-}" ]]; then hwds+=("$g/hooks"); fi
+      if [[ -d "$g/hooks" && -z "${hseen[h:$g/hooks]:-}" ]] && { [[ ! -L "$g/hooks" ]] || [[ -n "${pgx[k]:-}" ]]; }; then hwds+=("$g/hooks"); fi
     fi
     # A hook that is a link: hooks/ is read-only, but the link's way out need
     # not be. Pointing hooks at scripts the project tracks is a common setup,
@@ -1354,7 +1484,10 @@ launcher_ro_overlay() {
     # repository's own, bounded by SANDBOX_GIT_MAX, as before.
     for hwd in ${hwds[@]+"${hwds[@]}"}; do
       [[ -d "$hwd" ]] || continue
-      if [[ "$hwd" != "$g/hooks" ]]; then
+      # hooks/ of one outside every writable mount, bound by nothing, is walked as
+      # a core.hooksPath directory is: files too, once, counted.
+      hx=""; if [[ "$hwd" != "$g/hooks" || -n "${pgx[k]:-}" ]]; then hx=1; fi
+      if [[ -n "$hx" ]]; then
         x="$(_launcher_dev_ino "$hwd")" || x="$hwd"
         [[ -z "${hkdone[$x]:-}" ]] || continue
         hkdone[$x]=1
@@ -1362,10 +1495,12 @@ launcher_ro_overlay() {
       for e in "${git_hook_names[@]}"; do
         f="$hwd/$e"
         walk=()
-        if [[ "$hwd" != "$g/hooks" && ( -L "$f" || -f "$f" ) ]] && (( ++ients > 1000 )); then hkcut=1; break 2; fi
+        # Past the budget, only these are skipped: hooks/ is the repository's own,
+        # and is walked still (automated security review of fe955c3).
+        if [[ -n "$hx" && ( -L "$f" || -f "$f" ) ]] && (( ++ients > 1000 )); then hkcut=1; continue 2; fi
         if [[ -L "$f" ]]; then
           mapfile -d '' -t walk < <(_link_walk "$f")
-        elif [[ "$hwd" != "$g/hooks" && -f "$f" ]]; then
+        elif [[ -n "$hx" && -f "$f" ]]; then
           walk=("=$f")
         else
           continue
@@ -1394,7 +1529,7 @@ launcher_ro_overlay() {
       done
     done
     if [[ -n "$hkcut" ]]; then
-      printf 'WARNING: not every hook in the core.hooksPath directories of %s was checked (1000 ways per\n' "$(_q "$at")" >&2
+      printf 'WARNING: not every hook in the hook directories of %s was checked (1000 ways per\n' "$(_q "$at")" >&2
       printf '         launch, with its includes); check them before a git commit on the host.\n' >&2
     fi
   done
@@ -2898,7 +3033,7 @@ _gdi_follow() {
   # Every referrer is kept: one .git file must not choose the worktree a git
   # directory's index is read against (review of 3c754aa, HIGH).
   if [[ "${4,,}" == */.git && -z "${gref[$t|$1]:-}" ]]; then
-    gref[$t|$1]=1; gtop_g+=("$t"); gtop_d+=("$1")
+    gref[$t|$1]=1; gtop_g+=("$t"); gtop_d+=("$1"); _gref_add "$t" "$1"
     # A referrer for one already read: read it again, with this worktree too — a
     # decoy found first was otherwise the only one (review of 4e91bf3).
     # Every git directory takes its worktrees from referrers too: git uses a .git
@@ -3020,6 +3155,7 @@ git_dirs_in() {
   # agent's to write (re-review of batch 9).
   local n=0 nf=0 top rec mode path tgt _gdi_warned=0
   local -a gtop_g=() gtop_d=() tops=() _gdi_ionly=()
+  local _j
   local qq
   local -A ionly_had=() gpend=() gquiet=() gread=() gref=() greftop=() gwarned=()
   local gchanged up=""
@@ -3040,7 +3176,19 @@ git_dirs_in() {
       if [[ -d "$up/.git" ]]; then
         if _is_git_dir "$up/.git" && [[ -z "${ionly_had[$up/.git]:-}" ]]; then
           ionly_had[$up/.git]=1; _gdi_ionly+=("$up/.git")
-          _in_writable "$up/.git" || gquiet[$up/.git]=1
+          # Judged too, when out of every writable bind: husky's layout for a
+          # project not at the git root has its hooks in the mounted directory
+          # (review of the GIT-44 fix). In ANOTHER writable bind, past what its
+          # scan reached, it is protected in that bind's view, as a .git file's
+          # target is (re-review of the GIT-44 fix).
+          if ! _in_writable "$up/.git"; then
+            gquiet[$up/.git]=1; _gref_add "$up/.git" "$up"
+          else
+            for _j in ${bsrc[@]+"${!bsrc[@]}"}; do
+              [[ "${bsrc[_j]}" != "$5" ]] || continue
+              if [[ "$up/.git" == "${bsrc[_j]}"/* ]]; then _xm_t+=("$up/.git"); _xm_by+=("$5"); _xm_j+=("$_j"); fi
+            done
+          fi
         fi
       else
         tgt=""; _git_ptr_read "$up/.git" tgt || true
@@ -3052,6 +3200,27 @@ git_dirs_in() {
             # unreadable (automated security review of 1a30bb4).
             if _cd_phys tgt "$tgt" && ! _in_writable "$tgt"; then gquiet[$tgt]=1; fi
           fi
+        fi
+      fi
+      _in_writable "$up" || break
+    elif [[ -L "$up/.git" && -d "$up/.git" ]] && ! _in_writable "$up/.git"; then
+      # A link out of every writable bind is the user's: git follows it, as
+      # `repo` checkouts have it, and so does this; skipped, the next repository
+      # up was judged instead (re-review of the GIT-44 fix).
+      if _cd_phys tgt "$up/.git" && _is_git_dir "$tgt" && [[ -z "${ionly_had[$tgt]:-}" ]]; then
+        ionly_had[$tgt]=1; _gdi_ionly+=("$tgt")
+        # Its checkout is where the link lies: the worktree its index is read
+        # against, as a .git file's directory is; and a target in ANOTHER
+        # writable bind is protected there, as a .git directory is (final review
+        # of the GIT-44 fix).
+        if [[ -z "${gref[$tgt|$up]:-}" ]]; then gref[$tgt|$up]=1; gtop_g+=("$tgt"); gtop_d+=("$up"); fi
+        if ! _in_writable "$tgt"; then
+          gquiet[$tgt]=1; _gref_add "$tgt" "$up"
+        else
+          for _j in ${bsrc[@]+"${!bsrc[@]}"}; do
+            [[ "${bsrc[_j]}" != "$5" ]] || continue
+            if [[ "$tgt" == "${bsrc[_j]}"/* ]]; then _xm_t+=("$tgt"); _xm_by+=("$up/.git"); _xm_j+=("$_j"); fi
+          done
         fi
       fi
       _in_writable "$up" || break
@@ -3901,6 +4070,14 @@ _gdi_over=()               # git directories past SANDBOX_GIT_MAX where a scan s
 # scanned: _git_after_session scans them again when the container exits.
 declare -A _git_launch_seen=()
 _git_scan_srcs=()
+# Each .git a scan follows, a file or the directory a mount lies in: the git
+# directory, and the checkout git runs hooks in for it (GIT-44), with the
+# indices of each git directory's checkouts (a list searched per git directory
+# made a launch with 2000 planted .git files quadratic; review of the GIT-44 fix).
+_gref_t=() _gref_d=()
+declare -A _gref_i=()
+# _gref_add <git directory> <checkout>
+_gref_add() { _gref_t+=("$1"); _gref_d+=("$2"); _gref_i[$1]+="$(( ${#_gref_t[@]} - 1 )) "; }
 _git_bsrc=()               # every writable bind source of the launch (bsrc), for the rescan
 trap 'rm -rf "${_launcher_verify_dir:-}" "${_gir_tmp:-}" "${_rd_dir:-}" "${_fs_ml_dir:-}" 2>/dev/null' EXIT
 
