@@ -22,7 +22,8 @@ and the constraints the fix must keep.
 | PLAT-3 | macOS (Docker Desktop, Colima) | gap GAP-11 | The mount-swap check is skipped there altogether — **confirmed on Colima, designed**; no code yet |
 | PLAT-4 | x86-64 CPU without AVX | bug SVC-2 | `mongo=ON` reports "no mongo server, rebuild" instead of the real failure |
 | PLAT-5 | macOS (BSD userland) | bugs PRJ-10, PRJ-11 | The no-follow file writes take their non-Linux branches there, and nobody has run them — **done**, passed (GIT-27 and TST-28 found and fixed) |
-| PLAT-7 | macOS without the Command Line Tools | bug GIT-24 | A launch where `/usr/bin/git` is only the installer shim must not run it, and must take the no-git branch |
+| PLAT-7 | macOS without the Command Line Tools | bug GIT-24 | A launch where `/usr/bin/git` is only the installer shim must not run it, and must take the no-git branch — **not run**; git documented as a requirement |
+| PLAT-8 | macOS (APFS), WSL2 (drvfs) | bugs GIT-38, GIT-41 | Paths spelled in another case on a filesystem that ignores case — **APFS passed**; GIT-41 reproduced on Colima and mitigated; drvfs not run |
 | PLAT-6 | Windows + WSL2 + Docker Desktop | bugs PRJ-10, PRJ-11 | Re-run the hermetic suite at current `main`: the new no-follow tests rename, open `/dev/fd/N` and `noclobber`-create on drvfs — **done**, passed (TST-25 found and fixed) |
 
 ## Who picks up what (updated 2026-11-03)
@@ -140,7 +141,7 @@ first, then fix test-first.
 
 ## PLAT-7: macOS — a launch where `/usr/bin/git` is the Command Line Tools shim
 
-- **Status: OPEN.**
+- **Status: OPEN** (2026-11-07). Not run: the Mac agent's machine has the Command Line Tools, and the user chose not to remove them. What the project needs from them was checked instead, at `15682eb`. On the host it needs git and nothing else they provide: no host script runs `make`, `cc` or `python3`; every host call of git asks `_git_usable()` or `_ver_git_runs()` first, or is project-files.sh's, which does too; `repo.sh`'s `git clone` runs in the seed container. Homebrew, which the documented macOS setup uses for bash 5, installs the Command Line Tools itself. So docs/getting-started.md now lists git as a requirement, from the Command Line Tools or Homebrew, and says what a launch skips without it. A Mac without them stays unmeasured.
 - **Picked up by:** the **Mac agent**.
 - **Platform:** macOS with the Command Line Tools removed (`sudo rm -rf /Library/Developer/CommandLineTools`, or a fresh user account on a Mac that never had them), no other git on `PATH`, any Docker.
 - **Source:** bugs review GIT-24, and GIT-28 for `--version`. `sandbox.sh: _git_usable()` decides whether git runs for a launch. When `command -v git` is `/usr/bin/git` on Darwin and the directory `xcode-select -p` names holds no executable `usr/bin/git`, it counts git as absent without running it, because running the shim opens the installer. Otherwise it runs the shim once, and one that fails counts as absent too. `version.sh: _ver_git_runs()` makes the same decision for `--version` and for the version `project-init.sh` and `sync-to-projects.sh` record, without running git at all. Both were written without running them. Those two scripts also read the project's git index, through git, to keep `/.ai-containers/` in its `.gitignore`; since GIT-29's fix (2026-11-06) they ask `_ver_git_runs()` first and run git in no repository of the project's.
@@ -151,7 +152,10 @@ first, then fix test-first.
 
 ## PLAT-8: macOS and WSL — paths spelled in another case on a filesystem that ignores case
 
-- **Status: OPEN** (2026-11-06).
+- **Status: APFS half DONE** (2026-11-07, at `15682eb`, macOS 26.7.2 arm64, Homebrew bash 5.3.20). drvfs half OPEN.
+  - `tests/test-git-internals-ro-casefold.sh` said `NOTE: TMPDIR ignores case here; the cases run in it`, then 21 `PASS: G117` and `0 failure(s)`.
+  - `mkdir Proj; cd proj; /bin/pwd -P; cd ../PROJ; /bin/pwd -P` printed `…/Proj` both times, and so did Homebrew's GNU `gpwd -P`: macOS's `getcwd` spells a directory one way. Bash's builtin `pwd -P` prints the spelling it was reached by (`proJ`); `_disk_spell()` runs the external one (`type -P pwd`), which is why it holds.
+  - **GIT-41** on Colima 0.10.3 (virtiofs) instead of Docker Desktop, which this Mac does not have: it **reproduced**. `.git/CONFIG`, `.git/Config.Worktree`, `.git/COMMONDIR` and a worktree's `.GIT` were written past their read-only binds; `config`, `hooks/` and `.git` under every spelling held. Mitigated by putting the files back when the container exits (bugs review GIT-41). Docker Desktop on macOS, and either engine on WSL, are still unmeasured.
 - **Picked up by:** the **Mac agent** (APFS) and the **WSL agent** (drvfs).
 - **Platform:** macOS with its default case-insensitive APFS. WSL2 with a directory under `/mnt/<drive>`.
 - **Source:** bugs review GIT-38, fixed and measured on Linux only, and GIT-41, modelled only. `sandbox.sh: _disk_spell()` respells, from `getcwd` (an external `pwd -P`), each path that crosses a directory ignoring case, so every path compared with a mount is spelled one way. On Linux that holds because a directory has one dentry. Whether macOS's `getcwd` and WSL's drvfs spell a directory one way, however it was reached, has not been measured. GIT-41: Docker Desktop's file sharing may open `.git/CONFIG` as the host's `.git/config`, past the read-only bind of `config`.
