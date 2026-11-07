@@ -466,6 +466,9 @@ EXTRA_MOUNTS="$TMP/h112" launch "$TMP/app"
 ln "$TMP/other112/hook" "$TMP/h112/side.txt" || { printf 'SCAFFOLD-FAILED: G112 side name\n'; exit 1; }
 EXTRA_MOUNTS="$TMP/h112" launch "$TMP/app"
 hl112 "a hook linking outside every mount, to a file with a name inside one" "$TMP/h112/r/.git/hooks/pre-commit"
+grep -qF "it can write $TMP/other112/hook through another name of that file, in $TMP/h112" <<<"$(grep -A1 -F 'NOTE: /workspace/h112/r/.git/hooks/pre-commit, a hook your host' "$ERR")" \
+  && pass "G112 such a hook is also named as a link the agent can redirect, with where the other name lies" \
+  || fail "G112 hook NOTE (stderr: $(grep -A1 -F 'hooks/pre-commit, a hook' "$ERR" | head -2 | tr '\n' ' '))"
 # Hidden in a directory the search cannot read (the agent owns it, and can
 # chmod it back): a search that fails is not "no other name" (automated security
 # review of the GIT-36/37 fix). Not as root, which can read any directory.
@@ -482,10 +485,11 @@ else
 fi
 # A search per writable mount, whatever the number of hooks linking to such
 # files, and once per launch: an agent's 28 hooks in each of 200 repositories
-# made a search each, twice per launch (review of the GIT-36/37 fix). A
-# stand-in find counts them, for one hook and for four.
+# made a search each, twice per launch (review of the GIT-36/37 fix). Each
+# search lists a mount's files with a second name (GIT-39). A stand-in find
+# counts them, for one hook and for four.
 mkdir -p "$TMP/fs112"
-printf '#!/bin/bash\ncase " $* " in *" -samefile "*) echo x >> %q;; esac\nexec %q "$@"\n' "$TMP/fs112/log" "$(command -v find)" > "$TMP/fs112/find"
+printf '#!/bin/bash\ncase " $* " in *" -links "*" -exec "*) echo x >> %q;; esac\nexec %q "$@"\n' "$TMP/fs112/log" "$(command -v find)" > "$TMP/fs112/find"
 chmod +x "$TMP/fs112/find"
 : > "$TMP/fs112/log"; PATH="$TMP/fs112:$PATH" EXTRA_MOUNTS="$TMP/h112" launch "$TMP/app"; n1_112="$(wc -l < "$TMP/fs112/log")"
 for e in pre-push post-merge post-checkout; do ln -s "$TMP/other112/hook" "$TMP/h112/r/.git/hooks/$e"; done
@@ -668,6 +672,214 @@ if ! { mkdir "$TMP/Probe118b" && [[ -d "$TMP/PROBE118B" ]]; }; then
   rm -rf "$PROJ/c118"
 fi
 rmdir "$TMP/Probe118b" 2>/dev/null
+
+# ── G119: an include whose file has another name in a writable mount ───────
+# A read-only bind protects a path; an include names a file. One outside every
+# mount was out of the agent's reach, but a second name of it in a writable
+# mount — made by an earlier session with a wider mount, or by a tool that
+# deduplicates files — writes the same file. With include.path=<outside>/inc.cfg
+# and `ln <outside>/inc.cfg <mount>/side.cfg` the launch was silent, and a
+# core.fsmonitor appended through side.cfg ran on the host (bugs review GIT-39).
+# The same holds for a launcher link. A hook's is refused (G112).
+mk119() {
+  rm -rf "$TMP/h119" "$TMP/o119"; mkdir -p "$TMP/h119" "$TMP/o119" && "${G[@]}" init -q "$TMP/h119/r" \
+    && printf '[user]\n\tname = x\n' > "$TMP/o119/inc.cfg" || { printf 'SCAFFOLD-FAILED: G119\n'; exit 1; }
+}
+mk119; ln "$TMP/o119/inc.cfg" "$TMP/o119/.dedup" && "${G[@]}" -C "$TMP/h119/r" config include.path "$TMP/o119/inc.cfg" \
+  || { printf 'SCAFFOLD-FAILED: G119 outside\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h119" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF 'o119' "$ERR" \
+  && pass "G119 an include of a file whose other name lies outside every mount is not named" \
+  || fail "G119 both names outside (rc=$LAUNCH_RC; stderr: $(grep -F o119 "$ERR" | head -2 | tr '\n' ' '))"
+ln "$TMP/o119/inc.cfg" "$TMP/h119/side.cfg" || { printf 'SCAFFOLD-FAILED: G119 side\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h119" launch "$TMP/app"
+w119="$(grep -A2 -F "WARNING: /workspace/h119/r/.git/config includes $TMP/o119/inc.cfg (include.path), which the agent can redirect" "$ERR")"
+[[ "$LAUNCH_RC" == 0 ]] && grep -qF "it can write $TMP/o119/inc.cfg through another name of that file, in $TMP/h119" <<<"$w119" \
+  && grep -qF "find $TMP/h119 -xdev -samefile $TMP/o119/inc.cfg" <<<"$w119" \
+  && pass "G119 an include of a file outside every mount, with a name inside one, is named with the find that lists it" \
+  || fail "G119 include with a second name in a mount (rc=$LAUNCH_RC; stderr: $(grep -A2 -F o119 "$ERR" | head -3 | tr '\n' ' '))"
+# Through a file it includes that the agent cannot reach: the chain is followed.
+"${G[@]}" -C "$TMP/h119/r" config include.path "$TMP/o119/a.cfg" && printf '[include]\n\tpath = inc.cfg\n' > "$TMP/o119/a.cfg" \
+  || { printf 'SCAFFOLD-FAILED: G119 chain\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h119" launch "$TMP/app"
+grep -qF "it can write $TMP/o119/inc.cfg through another name of that file" <<<"$(grep -A1 -F "includes inc.cfg (include.path in $TMP/o119/a.cfg)" "$ERR")" \
+  && pass "G119 such a file included by an included file is named" \
+  || fail "G119 second-level include (rc=$LAUNCH_RC; stderr: $(grep -A1 -F o119 "$ERR" | head -2 | tr '\n' ' '))"
+# Hidden in a directory the search cannot read: not ruled out, so named. Not as
+# root, which can read any directory.
+if [[ "$(id -u)" != 0 ]]; then
+  mk119; mkdir -p "$TMP/h119/node_modules/x" && ln "$TMP/o119/inc.cfg" "$TMP/h119/node_modules/x/side" \
+    && "${G[@]}" -C "$TMP/h119/r" config include.path "$TMP/o119/inc.cfg" && chmod 000 "$TMP/h119/node_modules/x" \
+    || { printf 'SCAFFOLD-FAILED: G119 unreadable\n'; exit 1; }
+  EXTRA_MOUNTS="$TMP/h119" launch "$TMP/app"
+  chmod 755 "$TMP/h119/node_modules/x"
+  grep -qF "$TMP/o119/inc.cfg has another name, and $TMP/h119 could not be searched for it in full" "$ERR" \
+    && pass "G119 such an include whose other name may lie in a directory that cannot be read is named" \
+    || fail "G119 unreadable directory (rc=$LAUNCH_RC; stderr: $(grep -A1 -F o119 "$ERR" | head -2 | tr '\n' ' '))"
+else
+  printf 'SKIP: G119 an unreadable directory: root can read any directory\n'
+fi
+# A launcher link to such a file: the host reads it through the link.
+mk119; mkdir -p "$TMP/h119/L" && : > "$TMP/h119/L/sandbox.sh" && : > "$TMP/h119/L/sandbox-common.sh" \
+  && ln -s "$TMP/o119/inc.cfg" "$TMP/h119/L/x.cfg" && ln "$TMP/o119/inc.cfg" "$TMP/h119/side.cfg" \
+  || { printf 'SCAFFOLD-FAILED: G119 launcher link\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h119" launch "$TMP/app"
+grep -qF "it can write $TMP/o119/inc.cfg through another name of that file, in $TMP/h119" <<<"$(grep -A1 -F "WARNING: launcher link $TMP/h119/L/x.cfg leads somewhere the agent can change" "$ERR")" \
+  && pass "G119 a launcher link to a file outside every mount, with a name inside one, is named" \
+  || fail "G119 launcher link (rc=$LAUNCH_RC; stderr: $(grep -A1 -F h119/L "$ERR" | head -2 | tr '\n' ' '))"
+# A listing is bounded in time, and one cut off cannot rule a name out. A
+# stand-in find answers for the listing as one that ran out of time, saying what
+# started it.
+mk119; mkdir -p "$TMP/fs119" && ln "$TMP/o119/inc.cfg" "$TMP/o119/.dedup" \
+  && "${G[@]}" -C "$TMP/h119/r" config include.path "$TMP/o119/inc.cfg" \
+  && printf '#!/bin/bash\ncase " $* " in *" -links "*" -exec "*) ps -o comm= -p "$PPID" >> %q; exit 124;; esac\nexec %q "$@"\n' "$TMP/fs119/by" "$(command -v find)" > "$TMP/fs119/find" \
+  && chmod +x "$TMP/fs119/find" || { printf 'SCAFFOLD-FAILED: G119 bound\n'; exit 1; }
+PATH="$TMP/fs119:$PATH" EXTRA_MOUNTS="$TMP/h119" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && grep -qF "$TMP/o119/inc.cfg has another name, and " "$ERR" && grep -qF "could not be searched for it in full" "$ERR" \
+  && pass "G119 a listing cut off by its time bound does not rule the other name out" \
+  || fail "G119 listing cut off (rc=$LAUNCH_RC; stderr: $(grep -A1 -F o119 "$ERR" | head -2 | tr '\n' ' '))"
+# ps on macOS prints the program's path, and gtimeout is taken before timeout.
+if command -v timeout >/dev/null 2>&1 || command -v gtimeout >/dev/null 2>&1; then
+  [[ -s "$TMP/fs119/by" ]] && ! grep -qvE 'timeout$' "$TMP/fs119/by" \
+    && pass "G119 each listing runs under timeout" \
+    || fail "G119 a listing not under timeout (started by: $(sort -u "$TMP/fs119/by" 2>/dev/null | tr '\n' ' '))"
+fi
+rm -rf "$TMP/fs119"
+# A file whose device cannot be read is not ruled out, as the hard-link refusal
+# takes one (re-review of the GIT-39 fix). A stand-in stat fails for it alone.
+mk119; mkdir -p "$TMP/fs119" && ln "$TMP/o119/inc.cfg" "$TMP/o119/.dedup" \
+  && "${G[@]}" -C "$TMP/h119/r" config include.path "$TMP/o119/inc.cfg" \
+  && printf '#!/bin/bash\n[[ "${!#}" == %q ]] && exit 1\nexec %q "$@"\n' "$TMP/o119/inc.cfg" "$(command -v stat)" > "$TMP/fs119/stat" \
+  && chmod +x "$TMP/fs119/stat" || { printf 'SCAFFOLD-FAILED: G119 stat\n'; exit 1; }
+PATH="$TMP/fs119:$PATH" EXTRA_MOUNTS="$TMP/h119" launch "$TMP/app"
+grep -qF "$TMP/o119/inc.cfg has another name, and its writable mounts could not be searched for it in full" "$ERR" \
+  && pass "G119 an include of such a file whose device cannot be read is named" \
+  || fail "G119 device not read (rc=$LAUNCH_RC; stderr: $(grep -A1 -F o119 "$ERR" | head -2 | tr '\n' ' '))"
+rm -rf "$TMP/fs119"
+# The listings are removed before docker runs: the agent can fill them with names,
+# in a TMPDIR that is often memory (re-review of the GIT-39 fix). Nothing of the
+# launcher's is left in TMPDIR once it exits.
+mk119; mkdir -p "$TMP/td119" && ln "$TMP/o119/inc.cfg" "$TMP/h119/side.cfg" \
+  && "${G[@]}" -C "$TMP/h119/r" config include.path "$TMP/o119/inc.cfg" || { printf 'SCAFFOLD-FAILED: G119 TMPDIR\n'; exit 1; }
+TMPDIR="$TMP/td119" FAKE_SESSION="ls -A '$TMP/td119' > '$TMP/td119.during'" EXTRA_MOUNTS="$TMP/h119" launch "$TMP/app"
+grep -qF "it can write $TMP/o119/inc.cfg through another name" "$ERR" && [[ -f "$TMP/td119.during" ]] && ! grep -q 'ai-launcher-names' "$TMP/td119.during" \
+  && pass "G119 the listings are removed before docker runs" \
+  || fail "G119 listings kept for the session (during it: $(tr '\n' ' ' < "$TMP/td119.during" 2>/dev/null))"
+[[ -z "$(ls -A "$TMP/td119")" ]] \
+  && pass "G119 nothing of the launcher's is left in TMPDIR after it exits" \
+  || fail "G119 left in TMPDIR: $(ls -A "$TMP/td119" | tr '\n' ' ')"
+rm -rf "$TMP/td119" "$TMP/td119.during"
+# GIT-35's first case: a core.hooksPath into a read-only overlay (a planted
+# launcher's node_modules, which the launcher link walk prunes), whose hook links
+# to a writable script, was silent after the first launch. Its hooks are walked.
+mk119; mkdir -p "$TMP/h119/L/node_modules/h" && : > "$TMP/h119/L/sandbox.sh" && : > "$TMP/h119/L/sandbox-common.sh" \
+  && printf '#!/bin/sh\n' > "$TMP/h119/w.sh" && ln -s ../../../w.sh "$TMP/h119/L/node_modules/h/post-checkout" \
+  && "${G[@]}" -C "$TMP/h119/r" config core.hooksPath ../L/node_modules/h || { printf 'SCAFFOLD-FAILED: G119 overlay hooksPath\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h119" launch "$TMP/app"; EXTRA_MOUNTS="$TMP/h119" launch "$TMP/app"
+grep -qF "it can change $TMP/h119/w.sh" <<<"$(grep -A2 -F "NOTE: $TMP/h119/L/node_modules/h/post-checkout, a hook your host's git runs" "$ERR")" \
+  && pass "G119 a hook link in a core.hooksPath under a read-only overlay, into a writable script, is named on every launch" \
+  || fail "G119 overlay hooksPath (rc=$LAUNCH_RC; stderr: $(grep -A2 -F node_modules/h "$ERR" | head -3 | tr '\n' ' '))"
+# A core.hooksPath outside every mount: its hooks are walked, as hooks/'s are.
+# A hook file there with another name in a writable mount, and a hook link there
+# leading into one, were silent (review of the GIT-39 fix).
+mk119; mkdir -p "$TMP/o119/hooks" && printf '#!/bin/sh\n' > "$TMP/o119/hooks/pre-commit" && chmod 755 "$TMP/o119/hooks/pre-commit" \
+  && printf '#!/bin/sh\n' > "$TMP/o119/hooks/pre-push" && chmod 755 "$TMP/o119/hooks/pre-push" \
+  && "${G[@]}" -C "$TMP/h119/r" config core.hooksPath "$TMP/o119/hooks" || { printf 'SCAFFOLD-FAILED: G119 hooksPath\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h119" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF "$TMP/o119/hooks" "$ERR" \
+  && pass "G119 hooks in a core.hooksPath outside every mount, with no other name, are not named" \
+  || fail "G119 plain hooksPath named (rc=$LAUNCH_RC; stderr: $(grep -F o119 "$ERR" | head -2 | tr '\n' ' '))"
+ln "$TMP/o119/hooks/pre-commit" "$TMP/h119/side" && printf '#!/bin/sh\n' > "$TMP/h119/script" && rm -f "$TMP/o119/hooks/pre-push" \
+  && ln -s "$TMP/h119/script" "$TMP/o119/hooks/pre-push" || { printf 'SCAFFOLD-FAILED: G119 hooksPath 2\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h119" launch "$TMP/app"
+grep -qF "it can write $TMP/o119/hooks/pre-commit through another name of that file, in $TMP/h119" <<<"$(grep -A2 -F "NOTE: $TMP/o119/hooks/pre-commit, a hook your host's git runs for /workspace/h119/r/.git (core.hooksPath)" "$ERR")" \
+  && pass "G119 a hook file in a core.hooksPath outside every mount, with a name inside one, is named" \
+  || fail "G119 hooksPath hook with a second name (rc=$LAUNCH_RC; stderr: $(grep -A2 -F o119/hooks "$ERR" | head -3 | tr '\n' ' '))"
+grep -qF "it can change $TMP/h119/script" <<<"$(grep -A2 -F "NOTE: $TMP/o119/hooks/pre-push, a hook your host's git runs" "$ERR")" \
+  && pass "G119 a hook link in a core.hooksPath outside every mount, into a writable one, is named" \
+  || fail "G119 hooksPath hook link (rc=$LAUNCH_RC; stderr: $(grep -A2 -F o119/hooks/pre-push "$ERR" | head -3 | tr '\n' ' '))"
+# A core.hooksPath the agent can change is named once, as a whole: its hooks are
+# not walked one by one as well.
+mk119; mkdir -p "$TMP/h119/hk" && ln -s ../script "$TMP/h119/hk/pre-push" && printf '#!/bin/sh\n' > "$TMP/h119/script" \
+  && "${G[@]}" -C "$TMP/h119/r" config core.hooksPath "$TMP/h119/hk" || { printf 'SCAFFOLD-FAILED: G119 writable hooksPath\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h119" launch "$TMP/app"
+grep -qF 'runs its git hooks from /workspace/h119/hk (core.hooksPath)' "$ERR" && ! grep -qF "NOTE: $TMP/h119/hk/pre-push" "$ERR" \
+  && pass "G119 a core.hooksPath the agent can change is named once, its hooks not walked as well" \
+  || fail "G119 writable hooksPath (rc=$LAUNCH_RC; stderr: $(grep -F h119/hk "$ERR" | head -2 | tr '\n' ' '))"
+# What the checks cost, counted by stand-ins: one listing per writable mount on
+# the file's device, whatever the number of includes and hooks leading to such
+# files, shared by the include check and the hook check (a search per file let
+# planted configs make a launch take hours); each mount's device read once (read
+# per call, 20 repositories of 28 such hooks took 54 s where they took 22;
+# review of the GIT-39 fix); and one lookup per file, however often it is asked.
+mk119; mkdir -p "$TMP/fs119" && for e in 1 2 3; do printf '[user]\n' > "$TMP/o119/i$e.cfg" && ln "$TMP/o119/i$e.cfg" "$TMP/o119/.i$e"; done \
+  && "${G[@]}" -C "$TMP/h119/r" config include.path "$TMP/o119/i1.cfg" \
+  && printf '#!/bin/bash\ncase " $* " in *" -links "*" -exec "*) echo x >> %q;; esac\nexec %q "$@"\n' "$TMP/fs119/log" "$(command -v find)" > "$TMP/fs119/find" \
+  && printf '#!/bin/bash\ncase " $* " in *" "%q" "*) echo x >> %q;; esac\nexec %q "$@"\n' "$TMP/h119" "$TMP/fs119/stat.log" "$(command -v stat)" > "$TMP/fs119/stat" \
+  && printf '#!/bin/bash\ncase " $* " in *" -l -x -F "*) echo x >> %q;; esac\nexec %q "$@"\n' "$TMP/fs119/grep.log" "$(command -v grep)" > "$TMP/fs119/grep" \
+  && chmod +x "$TMP/fs119/find" "$TMP/fs119/stat" "$TMP/fs119/grep" || { printf 'SCAFFOLD-FAILED: G119 cost\n'; exit 1; }
+: > "$TMP/fs119/log"; : > "$TMP/fs119/stat.log"; : > "$TMP/fs119/grep.log"
+PATH="$TMP/fs119:$PATH" EXTRA_MOUNTS="$TMP/h119" launch "$TMP/app"
+n1_119="$(wc -l < "$TMP/fs119/log")"; s1_119="$(wc -l < "$TMP/fs119/stat.log")"; g1_119="$(wc -l < "$TMP/fs119/grep.log")"
+"${G[@]}" -C "$TMP/h119/r" config --add include.path "$TMP/o119/i2.cfg" && "${G[@]}" -C "$TMP/h119/r" config --add include.path "$TMP/o119/i3.cfg" \
+  && for e in pre-push post-merge post-checkout; do ln -s "$TMP/o119/i1.cfg" "$TMP/h119/r/.git/hooks/$e"; done || { printf 'SCAFFOLD-FAILED: G119 cost 2\n'; exit 1; }
+: > "$TMP/fs119/log"; : > "$TMP/fs119/stat.log"; : > "$TMP/fs119/grep.log"
+PATH="$TMP/fs119:$PATH" EXTRA_MOUNTS="$TMP/h119" launch "$TMP/app"
+n4_119="$(wc -l < "$TMP/fs119/log")"; s4_119="$(wc -l < "$TMP/fs119/stat.log")"; g4_119="$(wc -l < "$TMP/fs119/grep.log")"
+[[ "$LAUNCH_RC" == 0 && "$n1_119" -ge 1 && "$n4_119" == "$n1_119" ]] \
+  && pass "G119 three includes and three hooks leading to such files cost the listings one include does ($n1_119)" \
+  || fail "G119 listings per file (rc=$LAUNCH_RC; $n1_119 for one include, $n4_119 for three and three hooks)"
+[[ "$s4_119" == "$s1_119" ]] \
+  && pass "G119 a mount's device is read once a launch, however many files are asked about ($s1_119 reads)" \
+  || fail "G119 a mount's device read per file ($s1_119 for one include, $s4_119 for three and three hooks)"
+[[ "$g1_119" == 1 && "$g4_119" == 3 ]] \
+  && pass "G119 one lookup per file asked about, however often it is asked" \
+  || fail "G119 lookups ($g1_119 for one include; $g4_119 for three files asked about seven times)"
+rm -rf "$TMP/fs119"
+# Bounded, in the launcher's own shell (the functions alone): the listings'
+# time before the FIFO search starts is all the search's clock counts — a walk
+# between them does not; past 64 MiB of listing, and past 256 files asked about,
+# nothing is ruled out. A stand-in find takes 2 s per listing. The files asked
+# about are made-up inodes on the mount's device.
+fns119="$TMP/fns119.sh"
+for f119 in _term _q _timeout_prefix _launcher_dev_ino _fs_linked_in _ro_fifo_search; do
+  awk -v f="$f119() {" 'index($0, f) == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox.sh"
+done > "$fns119"
+grep -E '^(declare -A _fs_ml_|_fs_ml_dir=|if stat -c )' "$ENGINE/sandbox.sh" >> "$fns119"
+mkdir -p "$TMP/u119/m" "$TMP/fs119" && printf 'x\n' > "$TMP/u119/m/a" && ln "$TMP/u119/m/a" "$TMP/u119/m/b" \
+  && printf 'x\n' > "$TMP/u119/m/c" && ln "$TMP/u119/m/c" "$TMP/u119/m/d" \
+  && printf '#!/bin/bash\ncase " $* " in *" -links "*" -exec "*) sleep 2;; esac\nexec %q "$@"\n' "$(command -v find)" > "$TMP/fs119/find" \
+  && chmod +x "$TMP/fs119/find" || { printf 'SCAFFOLD-FAILED: G119 bounds\n'; exit 1; }
+u119() {  # $1 = script run with the functions, the mount as m, its device as $dev
+  ( cd "$TMP/u119" && TMPDIR="$TMP/u119" bash -c 'set -euo pipefail; source "$1"; _fs_deadline=""; m=("$2"); dev="$(_launcher_dev_ino "$2")"; dev="${dev%% *}"; eval "$3"; rm -rf "$_fs_ml_dir"' _ "$fns119" "$TMP/u119/m" "$1" ) 2>/dev/null
+}
+b119="$(PATH="$TMP/fs119:$PATH" u119 '_fs_linked_in "$dev 9999999999901" m r || true; sleep 3; s=(); _ro_fifo_search s m; echo "$((_fs_deadline - SECONDS))"')"
+[[ "$b119" =~ ^[0-9]+$ ]] && (( b119 >= 86 && b119 <= 89 )) \
+  && pass "G119 the FIFO search's clock counts the listings' time, not the walk after them ($b119 s left of 90)" \
+  || fail "G119 FIFO clock after a listing (${b119:-nothing} s left of 90; 88 expected)"
+c119="$(u119 'r1=0; _fs_linked_in "$dev 9999999999901" m r || r1=$?; _fs_ml_ans=(); _fs_ml_file=(); _fs_ml_cut=(); _fs_ml_bytes=8; r2=0; _fs_linked_in "$dev 9999999999902" m r || r2=$?; echo "$r1 $r2"')"
+[[ "$c119" == "1 2" ]] \
+  && pass "G119 a listing past its space cannot rule a name out" \
+  || fail "G119 listing space (${c119:-nothing}; 1 2 expected)"
+t119="$(u119 '_fs_ml_spent=60; r1=0; _fs_linked_in "$dev 9999999999901" m r || r1=$?; echo "$r1 ${#_fs_ml_file[@]}"')"
+[[ "$t119" == "2 1" ]] \
+  && pass "G119 with the listings' 60 s spent before the FIFO search, a listing is not run and rules nothing out" \
+  || fail "G119 listings past their 60 s (${t119:-nothing}; 2 1 expected)"
+d119="$(u119 '_fs_deadline=$((SECONDS - 1)); r1=0; _fs_linked_in "$dev 9999999999901" m r || r1=$?; echo "$r1"')"
+[[ "$d119" == 1 ]] \
+  && pass "G119 past the FIFO search's deadline, a listing still gets its second, as the search's own do" \
+  || fail "G119 listing past the deadline (${d119:-nothing}; 1 expected)"
+mkdir -p "$TMP/u119/m2" && printf 'x\n' > "$TMP/u119/m2/a" && ln "$TMP/u119/m2/a" "$TMP/u119/m2/b" || { printf 'SCAFFOLD-FAILED: G119 m2\n'; exit 1; }
+p119="$( cd "$TMP/u119" && TMPDIR="$TMP/u119" bash -c 'set -euo pipefail; source "$1"; _fs_deadline=""; m=("$2"); l="$(_launcher_dev_ino "$2/a")"; _fs_ml_bytes=$(( ${#l} - 1 )); r=0; _fs_linked_in "${l%?}" m o || r=$?; echo "$r"; rm -rf "$_fs_ml_dir"' _ "$fns119" "$TMP/u119/m2" 2>/dev/null)"
+[[ "$p119" == 2 ]] \
+  && pass "G119 a line a listing cut short does not match a shorter inode number" \
+  || fail "G119 partial line (${p119:-nothing}; 2 expected)"
+q119="$(u119 'for i in $(seq 1 257); do r=0; _fs_linked_in "$dev 99999999999$((i + 1000))" m o || r=$?; printf "%s" "$r"; done')"
+[[ "${q119:0:256}" == "$(printf '1%.0s' $(seq 1 256))" && "${q119:256}" == 2 ]] \
+  && pass "G119 past 256 files asked about, nothing is ruled out" \
+  || fail "G119 files asked about (${q119:250} at the end of ${#q119})"
+rm -rf "$fns119" "$TMP/u119"
+rm -rf "$TMP/fs119" "$TMP/h119" "$TMP/o119"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

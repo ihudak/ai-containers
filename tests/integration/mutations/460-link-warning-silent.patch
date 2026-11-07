@@ -9,10 +9,9 @@
 #       writability control still PASS.
 #
 diff --git a/sandbox.sh b/sandbox.sh
-index 4f21cb3..422f82f 100755
 --- a/sandbox.sh
 +++ b/sandbox.sh
-@@ -993,7 +993,7 @@ launcher_ro_overlay() {
+@@ -1294,7 +1294,7 @@
        # directory, say) stays home — read-only with the launcher, or the working
        # dir someone is deliberately editing.
        if ! _walk_exposed how q w "$x" ${walk[@]+"${walk[@]}"}; then continue; fi
@@ -20,4 +19,4 @@ index 4f21cb3..422f82f 100755
 +      continue
        case "$how" in
          change)  printf '         it can change %s (at %s), which the host reads through it.\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
-         repoint) printf '         it can repoint %s (at %s), a link on its way.\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
+         linked)  printf '         it can write %s through another name of that file, in %s\n' "$(_term "$q")" "$(_term "$w")" >&2

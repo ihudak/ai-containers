@@ -1110,7 +1110,7 @@ launcher_ro_overlay() {
     # Hooks run from a directory core.hooksPath names are project files the
     # overlay leaves writable — and hook managers keep the scripts they run
     # gitignored (husky's .husky/_), so a change need not show in git status.
-    hp=""
+    hp="" hwd=""
     if [[ "$cfg" == "$g/config" ]]; then _git_config_get hp "$cfg" core.hooksPath || hp=""; fi
     if [[ -n "$hp" ]]; then
       # shellcheck disable=SC2088  # '~/'* matches a LITERAL leading ~/ in the config value, expanded by hand
@@ -1125,6 +1125,8 @@ launcher_ro_overlay() {
       # (husky's .husky/_ is gone after a git clean; second review of the GIT-38 fix).
       # (_cd_phys empties its out-var when it fails: the path is kept aside.)
       hpw="$hpd"; _cd_phys hpd "$hpw" || _canon_lex hpd "$hpw"
+      # Where the agent cannot change it, its hooks are walked below, as hooks/'s are.
+      hwd="$hpd"
       for i in ${bsrc[@]+"${!bsrc[@]}"}; do
         if [[ -z "$hpd" || ( "$hpd" != "${bsrc[i]}" && "$hpd" != "${bsrc[i]}"/* ) ]]; then continue; fi
         x="${bdst[i]}${hpd#"${bsrc[i]}"}"; safe=""
@@ -1135,27 +1137,54 @@ launcher_ro_overlay() {
         printf 'NOTE: %s runs its git hooks from %s (core.hooksPath), which the agent\n' "$(_term "$at")" "$(_term "$x")" >&2
         printf '      can change; hook managers keep those scripts gitignored (husky'\''s .husky/_),\n' >&2
         printf '      so a change need not show in git status. Check them before a git commit on the host.\n' >&2
+        hwd=""
         break
       done
     elif [[ -d "$g/hooks" && ! -L "$g/hooks" ]]; then
-      # A hook that is a link: hooks/ is read-only, but the link's way out need
-      # not be. Pointing hooks at scripts the project tracks is a common setup,
-      # hence a NOTE. Only the names git runs are looked at, so the count is
-      # bounded whatever hooks/ was filled with before it was protected.
+      hwd="$g/hooks"
+    fi
+    # A hook that is a link: hooks/ is read-only, but the link's way out need
+    # not be. Pointing hooks at scripts the project tracks is a common setup,
+    # hence a NOTE. Only the names git runs are looked at, so the count is
+    # bounded whatever hooks/ was filled with before it was protected. In the
+    # directory core.hooksPath names, when, resolved, it lies outside every
+    # writable mount or under a read-only overlay, a hook file is walked too: one
+    # with another name in a writable mount can be written through it (review of
+    # the GIT-39 fix). One in hooks/ with another name refuses the launch
+    # (GIT-31). A core.hooksPath reached through a link the agent can repoint,
+    # or set by an include or config.worktree, is not judged (GIT-35).
+    if [[ -n "$hwd" && -d "$hwd" ]]; then
       for e in "${git_hook_names[@]}"; do
-        f="$g/hooks/$e"
-        if [[ ! -L "$f" ]]; then continue; fi
+        f="$hwd/$e"
         walk=()
-        mapfile -d '' -t walk < <(_link_walk "$f")
+        if [[ -L "$f" ]]; then
+          mapfile -d '' -t walk < <(_link_walk "$f")
+        elif [[ "$hwd" != "$g/hooks" && -f "$f" ]]; then
+          walk=("=$f")
+        else
+          continue
+        fi
         if ! _walk_exposed how q w "" ${walk[@]+"${walk[@]}"}; then continue; fi
-        printf 'NOTE: %s/hooks/%s, a hook your host'\''s git runs, is a link the agent can redirect:\n' "$(_term "$at")" "$(_term "$e")" >&2
+        if [[ "$hwd" == "$g/hooks" ]]; then
+          printf 'NOTE: %s/hooks/%s, a hook your host'\''s git runs, is a link the agent can redirect:\n' "$(_term "$at")" "$(_term "$e")" >&2
+        else
+          printf 'NOTE: %s, a hook your host'\''s git runs for %s (core.hooksPath),\n' "$(_term "$f")" "$(_term "$at")" >&2
+          printf '      leads somewhere the agent can change:\n' >&2
+        fi
         case "$how" in
           change)  printf '      it can change %s (at %s), which the hook runs.\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
+          linked)  printf '      it can write %s through another name of that file, in %s\n' "$(_term "$q")" "$(_term "$w")" >&2
+                   printf '      (on the host, find %s -xdev -samefile %s lists it); the hook runs it.\n' "$(_q "$w")" "$(_q "$q")" >&2 ;;
+          unsearched) printf '      %s has another name, and %s could not be searched for it in full.\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
           repoint) printf '      it can repoint %s (at %s), a link on its way.\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
           replace) printf '      it can replace %s (at %s) with a link; the way steps out of it (..).\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
           unchecked) printf '      its way out was not followed to the end (too many steps or links), so it is not known to be safe.\n' >&2 ;;
         esac
-        printf '      Check it before a git commit on the host, or replace the link with what it names.\n' >&2
+        if [[ -L "$f" ]]; then
+          printf '      Check it before a git commit on the host, or replace the link with what it names.\n' >&2
+        else
+          printf '      Check it before a git commit on the host, or remove its other name.\n' >&2
+        fi
       done
     fi
     # A file the config includes is read as part of it, so it can set anything
@@ -1226,6 +1255,9 @@ launcher_ro_overlay() {
         fi
         case "$how" in
           change)  printf '         it can write %s (at %s), which git reads as part of that config.\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
+          linked)  printf '         it can write %s through another name of that file, in %s\n' "$(_term "$q")" "$(_term "$w")" >&2
+                   printf '         (on the host, find %s -xdev -samefile %s lists it); git reads it as part of that config.\n' "$(_q "$w")" "$(_q "$q")" >&2 ;;
+          unsearched) printf '         %s has another name, and %s could not be searched for it in full.\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
           repoint) printf '         it can repoint %s (at %s), a link on its way.\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
           replace) printf '         it can replace %s (at %s) with a link; the way steps out of it (..).\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
           unchecked) printf '         its way out was not followed to the end (too many steps or links), so it is not known to be safe.\n' >&2 ;;
@@ -1291,6 +1323,9 @@ launcher_ro_overlay() {
       printf 'WARNING: launcher link %s leads somewhere the agent can change:\n' "$(_term "$f")" >&2
       case "$how" in
         change)  printf '         it can change %s (at %s), which the host reads through it.\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
+        linked)  printf '         it can write %s through another name of that file, in %s\n' "$(_term "$q")" "$(_term "$w")" >&2
+                 printf '         (on the host, find %s -xdev -samefile %s lists it); the host reads it through the link.\n' "$(_q "$w")" "$(_q "$q")" >&2 ;;
+        unsearched) printf '         %s has another name, and %s could not be searched for it in full.\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
         repoint) printf '         it can repoint %s (at %s), a link on its way.\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
         replace) printf '         it can replace %s (at %s) with a link; the way steps out of it (..).\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
         unchecked) printf '         its way out was not followed to the end (too many steps or links), so it is not known to be safe.\n' >&2 ;;
@@ -1334,7 +1369,8 @@ _ro_fifo_search() {
   # One budget per launch, over both runs: 30 s a source let planted launchers,
   # each kept just under it, make a launch take hours (review of the batch 10
   # branch; T59). Each search gets what is left, at most 30 s.
-  [[ -n "${_fs_deadline:-}" ]] || _fs_deadline=$((SECONDS + 90))
+  # Less what _fs_linked_in's listings took before it started.
+  [[ -n "${_fs_deadline:-}" ]] || _fs_deadline=$((SECONDS + 90 - _fs_ml_spent))
   # Made only when there is something to search, and its error names TMPDIR: a
   # stale one in your shell stopped every launch, unnamed (LNCH-14; T53).
   if (( ${#_fs_src[@]} )); then
@@ -1467,18 +1503,16 @@ declare -A _fs_reach_cache=()
 # _fs_other_names <hits-var>: called from _ro_fifo_search, for the files git
 # reads with a second hard link. Fills _fs_reach_cache for each one reached
 # through a link that leads out of every writable mount (_fs_rw) — the Nix store
-# links every file it holds — with one bounded find -samefile per writable mount
-# on its device (a hard link never crosses one), within the search's budget.
-# Where the target lay decided it before, and a name an earlier session made in
-# a wider mount went unseen (automated security review of the GIT-31 fix); a
-# search per hook let the agent make every launch take hours, and a search that
-# failed on a directory it cannot read was taken for "no other name" (review,
-# and automated security review, of the GIT-36/37 fix). It fails closed.
+# links every file it holds — from _fs_linked_in's listing of each writable
+# mount on its device. Where the target lay decided it before, and a name an
+# earlier session made in a wider mount went unseen (automated security review
+# of the GIT-31 fix); a search per hook let the agent make every launch take
+# hours, and a search that failed on a directory it cannot read was taken for
+# "no other name" (review, and automated security review, of the GIT-36/37
+# fix). It fails closed.
 _fs_other_names() {
   local -n _fo_hits=$1
-  local h t i di md left frc
-  local -a w=() ft=() found=() args=()
-  local -A need=() dev_of=()
+  local h t di r rc
   for h in ${_fo_hits[@]+"${_fo_hits[@]}"}; do
     [[ -L "$h" ]] || continue
     t="$(_fs_target "$h")"
@@ -1486,44 +1520,116 @@ _fs_other_names() {
     _fs_in_rw "$t" && continue
     di="$(_launcher_dev_ino "$t")" || continue
     [[ -z "${_fs_reach_cache[$di]:-}" ]] || continue
-    need[$di]="$t"; dev_of[$di]="${di%% *}"
+    rc=0; _fs_linked_in "$di" _fs_rw r || rc=$?
+    if (( rc == 1 )); then _fs_reach_cache[$di]=0; else _fs_reach_cache[$di]=1; fi
   done
-  (( ${#need[@]} )) || return 0
-  # Past 64 distinct files, not searched: refused as reachable.
-  if (( ${#need[@]} > 64 )); then
-    for di in "${!need[@]}"; do _fs_reach_cache[$di]=1; done
-    return 0
+}
+# For _fs_linked_in, kept for the launch: each writable mount's device; the file
+# listing its files with a second hard link, one "<dev> <ino>" line each, and
+# whether that listing was cut short; and the answer for each file asked about
+# ("<rc> <mount>", by "<dev> <ino>"). The listings take at most 60 s before the
+# FIFO search starts its 90 s clock, which then counts only the time they took
+# (review of the GIT-39 fix: started at the first listing, the clock counted the
+# walks between them, and refused launches that had passed). They hold at most
+# 64 MiB in all, and at most 256 files are asked about.
+declare -A _fs_ml_dev=() _fs_ml_file=() _fs_ml_cut=() _fs_ml_ans=()
+_fs_ml_dir="" _fs_ml_spent=0 _fs_ml_bytes=67108864 _fs_ml_asked=0
+# _fs_linked_in <dev ino> <mounts-var> <out-var>: for a file with a second hard
+# link that lies in no writable mount — one git reads or runs, or a launcher
+# link leads to. Returns 0 when another name of it lies in one of <mounts>,
+# setting <out-var> to that mount; 2 when that cannot be ruled out (a listing
+# failed, ran out of time or space, or too many files were asked about),
+# setting <out-var> to a mount it may lie in; 1 when none holds one. A hard link
+# never leaves its device, so only the mounts on its device are listed: each
+# once per launch, whatever number of files is asked about (a search per file
+# let planted configs make a launch take hours; review of the GIT-36/37 fix),
+# and looked up with one grep, not loaded into the shell, whose memory and time
+# the agent could fill with names. Shared by the hook, include and launcher link
+# checks (_walk_exposed) and the hard-link refusal (_fs_other_names).
+_fs_linked_in() {
+  local -n _fl_m=$2 _fl_o=$3
+  local _fl_di="$1" _fl_k _fl_x _fl_f _fl_left _fl_rc _fl_t0 _fl_sz _fl_hit="" _fl_bad=""
+  local -a _fl_t=() _fl_s=() _fl_on=() _fl_fs=() _fl_p=()
+  _fl_o=""
+  _fl_x="${_fs_ml_ans[$_fl_di]:-}"
+  if [[ -n "$_fl_x" ]]; then _fl_o="${_fl_x#* }"; return "${_fl_x%% *}"; fi
+  for _fl_k in ${_fl_m[@]+"${_fl_m[@]}"}; do
+    if [[ -z "${_fs_ml_dev[$_fl_k]+x}" ]]; then
+      _fl_x="$(_launcher_dev_ino "$_fl_k")" || _fl_x=""
+      _fs_ml_dev[$_fl_k]="${_fl_x%% *}"
+    fi
+    if [[ -n "${_fs_ml_dev[$_fl_k]}" && "${_fs_ml_dev[$_fl_k]}" == "${_fl_di%% *}" ]]; then _fl_on+=("$_fl_k"); fi
+  done
+  if (( ! ${#_fl_on[@]} )); then _fs_ml_ans[$_fl_di]="1 "; return 1; fi
+  if (( ++_fs_ml_asked > 256 )); then
+    _fl_o="${_fl_on[0]}"; _fs_ml_ans[$_fl_di]="2 $_fl_o"; return 2
   fi
-  for di in "${!need[@]}"; do _fs_reach_cache[$di]=0; done
-  for i in ${_fs_rw[@]+"${_fs_rw[@]}"}; do
-    md="$(_launcher_dev_ino "$i")" || continue
-    args=()
-    for di in "${!need[@]}"; do
-      if [[ "${dev_of[$di]}" == "${md%% *}" ]]; then args+=(-o -samefile "${need[$di]}"); fi
-    done
-    (( ${#args[@]} )) || continue
-    left=$((_fs_deadline - SECONDS)); (( left > 0 )) || left=1; (( left <= 30 )) || left=30
-    read -r -a ft <<< "$(_timeout_prefix "$left") "
-    found=(); frc=1
-    # The status rides last, after an && || list errexit (on in a <(…)) lets
-    # through: a find that failed ended the subshell before it, and the launch.
-    mapfile -d '' -t found < <( (cd / && "${ft[@]}" find "$i" -xdev \( "${args[@]:1}" \) -print0 2>/dev/null) && frc=0 || frc=$?; printf '%s\0' "rc=$frc")
-    if (( ${#found[@]} )) && [[ "${found[${#found[@]}-1]}" == rc=* ]]; then
-      frc="${found[${#found[@]}-1]#rc=}"; unset 'found[${#found[@]}-1]'
-    else
-      frc=1
+  if (( _launcher_stat_gnu )); then _fl_s=(-c '%d %i'); else _fl_s=(-f '%d %i'); fi
+  for _fl_k in "${_fl_on[@]}"; do
+    if [[ -z "${_fs_ml_file[$_fl_k]:-}" ]]; then
+      if [[ -z "$_fs_ml_dir" ]]; then
+        _fs_ml_dir="$(mktemp -d "${TMPDIR:-/tmp}/ai-launcher-names.XXXXXX" 2>/dev/null)" || {
+          _fs_ml_dir=""
+          printf 'ERROR: cannot make a temporary directory in %s (TMPDIR); set TMPDIR to a writable directory.\n' "$(_q "${TMPDIR:-/tmp}")" >&2
+          exit 1
+        }
+      fi
+      _fl_f="$_fs_ml_dir/${#_fs_ml_file[@]}"
+      # Once the FIFO search's clock runs, at least 1 s, as its own searches get.
+      if [[ -n "${_fs_deadline:-}" ]]; then
+        _fl_left=$((_fs_deadline - SECONDS)); (( _fl_left > 0 )) || _fl_left=1
+      else
+        _fl_left=$((60 - _fs_ml_spent))
+      fi
+      _fl_rc=0
+      if (( _fl_left <= 0 )); then
+        # The 60 s are spent: not listed, so nothing in it is ruled out.
+        { : > "$_fl_f"; } 2>/dev/null || true
+        _fl_rc=1
+      else
+        (( _fl_left <= 30 )) || _fl_left=30
+        read -r -a _fl_t <<< "$(_timeout_prefix "$_fl_left") "
+        _fl_t0=$SECONDS
+        # Each side's status, whether or not pipefail is on: a find that failed
+        # or ran out of time, or a head that ran out of space, cuts it short.
+        (cd / || exit 1
+         "${_fl_t[@]}" find "$_fl_k" -xdev -type f -links +1 -exec stat "${_fl_s[@]}" {} + 2>/dev/null | head -c "$_fs_ml_bytes" > "$_fl_f"
+         _fl_p=("${PIPESTATUS[@]}"); (( _fl_p[0] == 0 && _fl_p[1] == 0 ))) || _fl_rc=$?
+        [[ -n "${_fs_deadline:-}" ]] || _fs_ml_spent=$((_fs_ml_spent + SECONDS - _fl_t0))
+      fi
+      _fl_sz="$(wc -c < "$_fl_f" 2>/dev/null)" || _fl_sz=""
+      [[ "$_fl_sz" =~ ^[[:space:]]*[0-9]+[[:space:]]*$ ]] || { _fl_sz=0; _fl_rc=1; }
+      _fs_ml_bytes=$((_fs_ml_bytes - _fl_sz))
+      if (( _fs_ml_bytes <= 0 )); then _fs_ml_bytes=0; _fl_rc=1; fi
+      # A last line cut short is no file's: it could match a shorter inode number.
+      if (( _fl_rc != 0 )) && [[ -s "$_fl_f" && -n "$(tail -c 1 "$_fl_f" 2>/dev/null)" ]]; then
+        { sed '$d' "$_fl_f" > "$_fl_f.t" && mv -f "$_fl_f.t" "$_fl_f"; } 2>/dev/null || { : > "$_fl_f"; } 2>/dev/null || true
+      fi
+      _fs_ml_file[$_fl_k]="$_fl_f"
+      if (( _fl_rc != 0 )); then _fs_ml_cut[$_fl_k]=1; fi
     fi
-    if [[ "$frc" != 0 ]]; then
-      for di in "${!need[@]}"; do
-        if [[ "${dev_of[$di]}" == "${md%% *}" ]]; then _fs_reach_cache[$di]=1; fi
-      done
-      continue
-    fi
-    for h in ${found[@]+"${found[@]}"}; do
-      di="$(_launcher_dev_ino "$h")" || continue
-      if [[ -n "${need[$di]:-}" ]]; then _fs_reach_cache[$di]=1; fi
-    done
+    _fl_fs+=("${_fs_ml_file[$_fl_k]}")
+    if [[ -n "${_fs_ml_cut[$_fl_k]:-}" && -z "$_fl_bad" ]]; then _fl_bad="$_fl_k"; fi
   done
+  # One grep over every listing on the device; the first file it names is the mount.
+  _fl_x="$(grep -l -x -F -- "$_fl_di" "${_fl_fs[@]}" 2>/dev/null | head -n 1)" || true
+  if [[ -n "$_fl_x" ]]; then
+    for _fl_k in "${_fl_on[@]}"; do
+      if [[ "${_fs_ml_file[$_fl_k]}" == "$_fl_x" ]]; then _fl_hit="$_fl_k"; break; fi
+    done
+  fi
+  if [[ -n "$_fl_hit" ]]; then _fl_o="$_fl_hit"; _fs_ml_ans[$_fl_di]="0 $_fl_o"; return 0; fi
+  if [[ -n "$_fl_bad" ]]; then _fl_o="$_fl_bad"; _fs_ml_ans[$_fl_di]="2 $_fl_o"; return 2; fi
+  _fs_ml_ans[$_fl_di]="1 "
+  return 1
+}
+# _fs_ml_drop: the listings, done with once the FIFO search has run before
+# docker, are not kept in TMPDIR (often memory) for the session: the agent can
+# fill them with up to 64 MiB of names (re-review of the GIT-39 fix). A later
+# question lists again, past the deadline, so it fails closed.
+_fs_ml_drop() {
+  if [[ -n "$_fs_ml_dir" ]]; then rm -rf "$_fs_ml_dir" 2>/dev/null || true; fi
+  _fs_ml_dir=""; _fs_ml_file=(); _fs_ml_cut=()
 }
 # _fs_target <link>: where a link's way ends (_link_walk), or nothing.
 _fs_target() {
@@ -1563,12 +1669,14 @@ _fs_reachable() {
 # them puts it under a read-only overlay or — for a directory a `..` steps out
 # of — makes it a mount point (a mount root, a pin, an overlay root), which
 # cannot be swapped for a link. Sets how (change, repoint or replace), the
-# step's host path, and where the agent sees it. A step inside <home> and in no
+# step's host path, and where the agent sees it; or, for a file in no writable
+# mount with another name in one (linked) or one not ruled out (unsearched),
+# the host path of that mount (_fs_linked_in). A step inside <home> and in no
 # writable bind of <home>'s own is not judged. Its own names are prefixed, so
 # none can shadow a variable the caller names.
 _walk_exposed() {
   local -n _we_how=$1 _we_step=$2 _we_at=$3
-  local _we_home="$4" _we_e _we_h _we_q _we_c _we_r _we_safe _we_in _we_j
+  local _we_home="$4" _we_e _we_h _we_q _we_c _we_r _we_safe _we_in _we_j _we_d _we_rc
   shift 4
   for _we_e in "$@"; do
     case "$_we_e" in
@@ -1586,6 +1694,19 @@ _walk_exposed() {
                 _we_how=change; _we_step="$_we_q"; _we_at="${bdst[_we_j]}${_we_q#"${bsrc[_we_j]}"}"; return 0
               fi
             done
+            # In no writable mount, through a name that lies in one: made by an
+            # earlier session with a wider mount, or by a tool that deduplicates
+            # files. One not ruled out counts (bugs review GIT-39).
+            # One whose device cannot be read is not ruled out either, as
+            # _fs_reachable takes it (re-review of the GIT-39 fix).
+            _we_rc=2; _we_j="its writable mounts"
+            if _we_d="$(_launcher_dev_ino "$_we_q")"; then
+              _we_rc=0; _fs_linked_in "$_we_d" bsrc _we_j || _we_rc=$?
+            fi
+            if (( _we_rc != 1 )); then
+              if (( _we_rc == 0 )); then _we_how=linked; else _we_how=unsearched; fi
+              _we_step="$_we_q"; _we_at="$_we_j"; return 0
+            fi
           fi ;;
       ^*) _we_h=replace; _we_q="${_we_e#^}"; _spell_rec _we_q ;;
       *)  _we_h=repoint; _we_q="$_we_e"; _spell_rec _we_q ;;
@@ -3541,7 +3662,7 @@ _gdi_over=()               # git directories past SANDBOX_GIT_MAX where a scan s
 declare -A _git_launch_seen=()
 _git_scan_srcs=()
 _git_bsrc=()               # every writable bind source of the launch (bsrc), for the rescan
-trap 'rm -rf "${_launcher_verify_dir:-}" "${_gir_tmp:-}" "${_rd_dir:-}" 2>/dev/null' EXIT
+trap 'rm -rf "${_launcher_verify_dir:-}" "${_gir_tmp:-}" "${_rd_dir:-}" "${_fs_ml_dir:-}" 2>/dev/null' EXIT
 
 # The agent's identity: numeric, within a 32-bit id, and never root — capsh
 # switching 0 to 0 clears no capabilities (bugs review ENV-4). Checked first in
@@ -4360,6 +4481,7 @@ run_container() {
   local launcher_verify_flags=() launcher_anchor_env=()
   # Again, just before docker: a FIFO made since the overlay pass (LNCH-11).
   _ro_fifo_search launcher_ro_dirs launcher_rw_srcs _ro_links_check
+  _fs_ml_drop
   # The output directories join the manifest: checked for a link above, they
   # could be swapped for one before docker resolves them, by a concurrent
   # container of the same project; the entrypoint refuses a swap as for any

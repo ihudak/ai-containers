@@ -20,6 +20,7 @@
 - **Updated 2026-11-05:** the fix-batch table below no longer lists as open what was fixed after its batch. Every entry is FIXED except these: GIT-29 (open; section 24; the user chose fix A, 2026-11-05), GIT-35 (open, LOW), GIT-38 (open, HIGH) and GIT-39 (open, MEDIUM; section 25), LNCH-2 (not reproducible), GIT-12 (won't fix), GIT-13 (resolved fail-closed), LNCH-7 (documented), GIT-21 and LNCH-17 (closed), BLD-8 (its `--error-on=any` trade kept by design) and TST-21 (the same comment edit is owed to mgd-ai-containers' copy of `tests/layer-checks.conf`, which is not reachable from this machine). Section 24 holds GIT-29, found while reviewing PLAT-7's run steps; section 25 GIT-30, found by GAP-2's slice 2, and GIT-31 to GIT-39, found by the reviews of its fix and theirs.
 - **Updated 2026-11-06:** GIT-29 is FIXED by fix A, after a review and a re-review of the fix. GIT-40, found by the automated security review of the GIT-36/37 fix (section 25), is FIXED.
 - **Updated 2026-11-07:** GIT-38 is FIXED on Linux, after a review of the fix; macOS and WSL verify it (platform-issues PLAT-8). GIT-41, found by that review, is open (section 25).
+- **Updated 2026-11-07:** GIT-39 is FIXED, after a review and a re-review of the fix. GIT-42, found by the review, is open (section 25). GIT-35's first case is fixed with it, and GIT-35 is raised to MEDIUM by what the re-review found.
 - **Companion:** [2026-10-26-feature-gaps-review.md](2026-10-26-feature-gaps-review.md).
 - **Confidence:** CONFIRMED = reproduced, or unambiguous from the code. PLAUSIBLE = strong reasoning, not reproduced (usually needs hardware or a platform not available here); verify before fixing.
 - **Citations** are by snippet, per AGENTS.md "Citing code". Scratch repro paths mentioned in entries were session-local and may no longer exist; each entry describes its repro in full.
@@ -1660,7 +1661,7 @@ An Opus reviewer read the rewritten PLAT-7 steps against the code, 2026-11-05, a
 
 ## 25. Found by GAP-2's slice 2
 
-An Opus reviewer of the slice's new tests, 2026-11-05, at `fd49c3c`, reached a mutant of `_git_runs()` that the slice had called unreachable, through a `commondir` holding a NUL. Following that up found GIT-30. The reviews of its fix and theirs found GIT-31 to GIT-39, the automated security review of the GIT-36/37 fix (`a1b7ce7`) found GIT-40, and the review of the GIT-38 fix found GIT-41.
+An Opus reviewer of the slice's new tests, 2026-11-05, at `fd49c3c`, reached a mutant of `_git_runs()` that the slice had called unreachable, through a `commondir` holding a NUL. Following that up found GIT-30. The reviews of its fix and theirs found GIT-31 to GIT-39, the automated security review of the GIT-36/37 fix (`a1b7ce7`) found GIT-40, the review of the GIT-38 fix found GIT-41, and the review of the GIT-39 fix found GIT-42.
 
 ### GIT-30: a commondir, gitdir or .git file is read otherwise than git reads it
 - **Status: FIXED** (2026-11-05).
@@ -1729,7 +1730,7 @@ An Opus reviewer of the slice's new tests, 2026-11-05, at `fd49c3c`, reached a m
   - **Not covered:**
     - **A container that has the repository writable,** a sibling launched before it was protected, can write these files directly, read-only bind or not.
     - **A repository outside every writable mount** (`:ro`, or not mounted) whose files have a second name inside one.
-    - **Through a link that leads out of every writable mount,** another name is searched for only on the target's device, since a hard link never crosses one. One bounded `find -xdev -samefile` runs per writable mount on that device, for every such file at once, once per launch, within the search's budget. A search that fails or runs out of time counts as a name found.
+    - **Through a link that leads out of every writable mount,** another name is searched for only on the target's device, since a hard link never crosses one. One bounded `find -xdev` lists each writable mount on that device's files with a second name, once per launch, within the search's budget, and every such file is looked up in it (a `find -samefile` per mount until GIT-39's fix, which shares the listing with the include check). A listing that fails or runs out of time counts as a name found.
       - **History:** fixed with GIT-37, after an automated security review: where the target lay had decided it before, and a name an earlier session made in a wider mount went unseen.
       - **Corrected after the next review:** a search per hook let the agent make each launch take hours, and one that failed on a directory the agent made unreadable was taken for "no other name".
       - **Still missed:** a name in a mount nested inside a writable mount, which `-xdev` does not enter, or on overlayfs, where a file's `st_dev` may differ from its directory's.
@@ -1813,14 +1814,16 @@ An Opus reviewer of the slice's new tests, 2026-11-05, at `fd49c3c`, reached a m
 - **The fix:** `hook.<name>.command` joins the keys. **Tests:** G26 in `tests/test-git-internals-ro-reports.sh`, seen red on the code before.
 
 ### GIT-35: two ways a core.hooksPath is judged otherwise than git takes it
-- **Status: OPEN** (2026-11-05). Found by the re-review of the GIT-31 fix.
-- **Severity: LOW.** Both need the config written before the repository's first protection, which names `core.hookspath` once.
+- **Status: OPEN** (2026-11-05). Found by the re-review of the GIT-31 fix. The first case is FIXED (2026-11-07) with GIT-39's fix.
+- **Severity: MEDIUM** since 2026-11-07, for the link case below; LOW before. The rest need the config written before the repository's first protection, which names `core.hookspath` once.
 - **Location:** `sandbox.sh: launcher_ro_overlay()`, the post-pass's `core.hooksPath` NOTE.
 - **What's wrong:**
-  - **A path into a read-only overlay is taken for safe** without walking the hooks there. With `core.hooksPath=../L/node_modules/h` (`L` a planted launcher) and `h/post-checkout` a link to a writable script, every launch after the first is silent. The launcher link walk prunes `node_modules` and `.git`.
+  - **A path into a read-only overlay is taken for safe** without walking the hooks there. With `core.hooksPath=../L/node_modules/h` (`L` a planted launcher) and `h/post-checkout` a link to a writable script, every launch after the first is silent. The launcher link walk prunes `node_modules` and `.git`. **FIXED** with GIT-39's fix, which walks the hooks of such a directory (G119).
   - **A relative path is resolved from the directory the `.git` lies in.** git takes it from `core.worktree` when one is set, and expands `~user/` and `%(prefix)/`.
-- **Fix direction:** walk the hooks git runs in a `core.hooksPath` directory, as the hooks in `hooks/` are walked, and resolve a relative path from the worktree git uses.
-- **Also (2026-11-07, the third review of the GIT-38 fix):** a `core.hooksPath` reached through a link the agent can repoint (`tools -> <outside>`, `core.hooksPath=tools/hooks`) is never named: `_cd_phys()` resolves through the link, while an include's path is walked with `_walk_exposed()`. Same severity; walk it the same way.
+- **Fix direction:** resolve a relative path from the worktree git uses; walk the way to the directory as an include's is walked, naming a link the agent can repoint; and read the key as git does, through includes and `config.worktree`. (Walking the hooks there is done.)
+- **Also (2026-11-07, the third review of the GIT-38 fix):** a `core.hooksPath` reached through a link the agent can repoint (`tools -> <outside>`, `core.hooksPath=tools/hooks`) is never named: `_cd_phys()` resolves through the link, while an include's path is walked with `_walk_exposed()`. Walk it the same way.
+  - **Why MEDIUM (the re-review of the GIT-39 fix, reproduced):** the agent can silence the NOTE a writable hooks directory gets. It replaces husky's `.husky/_` with a link to any directory of the host, and the next launch is silent, since the path resolves outside every mount. During that session it repoints the link at scripts of its own, and the host's next commit runs them.
+  - **And:** a `core.hooksPath` set by an include, or in `config.worktree` with `extensions.worktreeConfig` on, is not read at all (`_git_config_get` reads `config` alone, without includes), so neither the NOTE nor the hook walk sees it. A global `core.hooksPath` works the same way, outside the per-repository scope.
 
 ### GIT-36: the worktree an index is read against is not every one git may use
 - **Status: FIXED** (2026-11-06). Found by the review of the simplified GIT-31 fix.
@@ -1932,10 +1935,50 @@ An Opus reviewer of the slice's new tests, 2026-11-05, at `fd49c3c`, reached a m
 - **Fix direction:** take each resolved path from `getcwd` (`pwd -P`), which reports the spelling on disk, keeping the NUL framing, before any prefix test.
 
 ### GIT-39: an include whose target has a second name inside a writable mount is not named
-- **Status: OPEN** (2026-11-06). Found by the review of the GIT-36/37 fix.
+- **Status: FIXED** (2026-11-07). Found by the review of the GIT-36/37 fix.
 - **Severity: MEDIUM.** Confidence: CONFIRMED. With `include.path=<outside>/inc.cfg` and `ln <outside>/inc.cfg <mount>/side.cfg`, the next launch was silent. Appending a `core.fsmonitor` through `side.cfg` made the host's git run it.
-- **Location:** sandbox.sh: `_walk_exposed()`, whose `=` step asks only whether the target itself lies in a writable mount.
-- **Fix direction:** judge an include's target as `_fs_other_names()` judges a hook's.
+- **Location:** sandbox.sh: `_walk_exposed()`, whose `=` step asked only whether the target itself lies in a writable mount.
+- **What was wrong:** a read-only bind protects a path, and an include names a file. A file outside every mount was taken as out of the agent's reach, but a second name of it in a writable mount writes the same file. An earlier session with a wider mount can make one, and so can a tool that deduplicates files. A launcher link to such a file was missed the same way. A hook's was already refused (GIT-31, G112).
+- **Fix:** `_fs_linked_in()` lists, once per launch, the files with a second name in each writable mount on the file's device, and `_walk_exposed()` asks it about a file with a second name that lies in no writable mount.
+  - Found: the include, or the launcher link, is named, with the mount and the `find <mount> -xdev -samefile <file>` that lists the other name.
+  - A listing that fails, or runs out of the FIFO search's budget, cannot rule one out: the file is named as one the mount could not be searched for in full.
+  - The hard-link refusal for a link out of every writable mount (`_fs_other_names()`) uses the same listing instead of a `find -samefile` of its own, so a launch lists each mount once, however many files and checks ask. Its cap of 64 files, which failed closed, is gone with the per-file search terms it bounded.
+- **The review of the fix** found three MEDIUM defects, all fixed:
+  - **The FIFO search's clock started at the first listing,** so the walks after it counted against the search's 90 s, and launches that had passed were refused, blamed on "very many files". The listings now take at most 60 s, and the search's clock counts only the time they took.
+  - **Hooks in a `core.hooksPath` outside every mount were never walked:** a hook file there with another name in a writable mount, or a hook link there leading into one, launched in silence. They are walked as `hooks/`'s are, a hook file too, when the directory, resolved, lies outside every writable mount or under a read-only overlay. That also fixes GIT-35's first case.
+  - **Each lookup read every mount's device again:** 20 repositories of 28 such hooks took 54 s, where they took 22 before the fix. Each mount's device, and each file's answer, is now kept for the launch.
+  - And one LOW: the listing was loaded into the shell, whose time and memory the agent could fill with names (about 11 µs and 270 bytes a line). Listings now go to files, at most 64 MiB in all, and one `grep` per file asked about reads them; at most 256 files are asked about. Past either, nothing is ruled out.
+- **The re-review of the fix** found no fail-open in the listing, and fixed:
+  - **Listings past the FIFO search's deadline** get at least 1 s again, as its own searches do; skipped, a hook link into the Nix store was refused.
+  - **A file whose device cannot be read** is not ruled out, as the hard-link refusal takes one; the include check skipped it in silence.
+  - **The listings are removed before docker runs,** not kept in TMPDIR, often memory, for the whole session.
+  - **A last line `head -c` cut short is dropped:** it could match a shorter inode number and claim a name that `find -samefile` cannot find.
+  - **The test of the time bound** read `ps`'s program name as exactly `timeout`; macOS prints the path, and `gtimeout` is taken first.
+  - It also found what GIT-35 now holds: a `core.hooksPath` reached through a link the agent can repoint, which can silence even the husky NOTE, and one set by an include or `config.worktree`. Both are older than this fix.
+- **Known limits** (LOW, from the same review, kept):
+  - **A second name on a filesystem mounted inside a writable mount** is not seen: `find -xdev` does not enter it, and docker's binds are recursive. GIT-31's search had the same limit.
+  - **Failing closed is noisy:** a directory in a writable mount that the launching user cannot read, or a file removed while the listing runs (`pnpm` working in `node_modules`), makes the whole listing count as cut short. A second name under a read-only overlay counts as one the agent can write.
+  - **The lookups are not timed:** one `grep` per file asked about, over at most 64 MiB, took 6.4 s for 256 files.
+- **Tests:** G119 in `tests/test-git-internals-ro-reads.sh`, each seen red on the code before:
+  - an include of such a file, directly and through an included file;
+  - its other name in a directory the listing cannot read;
+  - a listing cut off by its time bound, and each listing run under `timeout`;
+  - a launcher link to such a file;
+  - a hook file and a hook link in a `core.hooksPath` outside every mount, a hook link in one under a read-only overlay (GIT-35's first case), and one the agent can change named once, its hooks not walked as well;
+  - an include of such a file whose device cannot be read;
+  - the listings gone while docker runs, and nothing of the launcher's left in TMPDIR after it;
+  - one listing per mount, one read of each mount's device and one lookup per file, for three includes and three hooks;
+  - on the functions alone: the FIFO search's clock after a listing and a walk, a listing after the 60 s and after the deadline, a listing past its space, a line it cut short, and the 257th file asked about;
+  - an include whose other name lies outside every mount, and hooks in such a `core.hooksPath` with no other name, not named.
+  - G112's cost check now counts the listings, and also checks the hook's NOTE.
+- **Mutants:** 28 by hand, over the fix and both reviews' fixes, all killed except dropping the same-device filter, which only costs time, since every mount in the tests is on one device.
+
+### GIT-42: a program a config names by path, outside every mount, with a second name in one
+- **Status: OPEN** (2026-11-07). Found by the review of the GIT-39 fix. Not reproduced.
+- **Severity: LOW.** Confidence: PLAUSIBLE.
+- **Location:** `sandbox.sh: launcher_ro_overlay()`. The keys that make git run a program (`core.fsmonitor`, `credential.helper`, `diff.<driver>.command`, `filter.<driver>.clean` and the rest) are named once, at the first protection (`_git_exec_keys()`), and the programs they name are never judged.
+- **What's wrong:** such a program outside every mount, with a second hard link inside a writable mount, can be rewritten by the agent through that link, and the host's git runs it. Includes and hooks are judged for this (GIT-39); programs are not.
+- **Fix direction:** judge the program each such key names, where it is a path, as an include's target is judged (`_walk_exposed()`). A program named by a writable path is the wider case, and is the same gap.
 
 ### GIT-41: on Docker Desktop, a read-only bind of one file does not cover its other spellings
 - **Status: OPEN** (2026-11-07). Found by the review of the GIT-38 fix. Not measured on a real Mac or WSL: platform-issues PLAT-8 asks for it.
