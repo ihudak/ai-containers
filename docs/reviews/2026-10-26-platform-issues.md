@@ -38,7 +38,7 @@ reports by editing the entry's **Status** line (and docs/testing.md's
 |---|---|---|---|
 | **Linux agent** (review machine) | Linux x86-64, native Docker Engine | the falsify work GAP-1 to GAP-4 | anything below |
 | **WSL agent** | Windows + WSL2 (Ubuntu distro) + **Docker Desktop** with WSL integration. **Not** a native Docker Engine in the distro | **PLAT-9** (Docker Desktop); PLAT-6, and PLAT-8's drvfs half (GIT-41 there), done | a native Engine's runs: the WSL native agent's |
-| **WSL native agent** | Windows + WSL2 (Ubuntu distro) + a **Docker Engine installed natively in the distro** (not Docker Desktop) | **PLAT-9** (native Engine); PLAT-2's native-Engine half done | GIT-41, which is Docker Desktop's |
+| **WSL native agent** | Windows + WSL2 (Ubuntu distro) + a **Docker Engine installed natively in the distro** (not Docker Desktop) | **PLAT-9** (native Engine), and PLAT-8's drvfs steps on a native Engine: a bind of `/mnt/<drive>` is drvfs there too, so GIT-41's refusal applies; PLAT-2's native-Engine half done | — |
 | **Mac agent** | macOS, Docker Desktop and/or Colima | **PLAT-7**, **PLAT-8** (its APFS half, and GIT-41 on Docker Desktop for Mac), **PLAT-9**, **PLAT-3** (GAP-11, designed); PLAT-5 done | — |
 | *nobody* | x86-64 CPU without AVX | PLAT-4: closed as not supported | — |
 

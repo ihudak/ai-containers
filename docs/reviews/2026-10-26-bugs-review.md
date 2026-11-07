@@ -21,7 +21,8 @@
 - **Updated 2026-11-06:** GIT-29 is FIXED by fix A, after a review and a re-review of the fix. GIT-40, found by the automated security review of the GIT-36/37 fix (section 25), is FIXED.
 - **Updated 2026-11-07:** GIT-38 is FIXED on Linux, after a review of the fix; macOS and WSL verify it (platform-issues PLAT-8). GIT-41, found by that review, is open (section 25).
 - **Updated 2026-11-07:** GIT-35 is FIXED, after three reviews of the fix. GIT-45, found by the first, is open (section 25).
-- **Updated 2026-11-07:** GIT-44, found by that review too, is FIXED, after three reviews of the fix and a final one; with it, a defect the automated security review of `fe955c3` found in the GIT-35 fix (see that entry).
+- **Updated 2026-11-07:** GIT-44, found by that review too, is FIXED, after three reviews of the fix and two final ones; with it, a defect the automated security review of `fe955c3` found in the GIT-35 fix (see that entry).
+- **Updated 2026-11-07:** GIT-46, found by the automated security review of the GIT-44 fix (`c6316af`) and its second final review, is FIXED.
 - **Updated 2026-11-07:** GIT-39 is FIXED, after a review and a re-review of the fix. GIT-42 and GIT-43, found by the review (GIT-43 also by the automated security review of `f90c096`), are open (section 25). GIT-35's first case is fixed with it, and GIT-35 is raised to MEDIUM by what the re-review found.
 - **Updated 2026-11-07:** GIT-41 is FIXED on WSL, measured there by PLAT-8's drvfs half, which also showed it wider than modelled: every read-only overlay, the launcher's included. GIT-38's drvfs part is fixed with it. Both stay open on macOS until PLAT-8's APFS half is measured (section 25).
 - **Companion:** [2026-10-26-feature-gaps-review.md](2026-10-26-feature-gaps-review.md).
@@ -1664,7 +1665,7 @@ An Opus reviewer read the rewritten PLAT-7 steps against the code, 2026-11-05, a
 
 ## 25. Found by GAP-2's slice 2
 
-An Opus reviewer of the slice's new tests, 2026-11-05, at `fd49c3c`, reached a mutant of `_git_runs()` that the slice had called unreachable, through a `commondir` holding a NUL. Following that up found GIT-30. The reviews of its fix and theirs found GIT-31 to GIT-39, the automated security review of the GIT-36/37 fix (`a1b7ce7`) found GIT-40, the review of the GIT-38 fix found GIT-41, and the review of the GIT-39 fix found GIT-42 and GIT-43, and the review of the GIT-35 fix found GIT-44 and GIT-45.
+An Opus reviewer of the slice's new tests, 2026-11-05, at `fd49c3c`, reached a mutant of `_git_runs()` that the slice had called unreachable, through a `commondir` holding a NUL. Following that up found GIT-30. The reviews of its fix and theirs found GIT-31 to GIT-39, the automated security review of the GIT-36/37 fix (`a1b7ce7`) found GIT-40, the review of the GIT-38 fix found GIT-41, and the review of the GIT-39 fix found GIT-42 and GIT-43, the review of the GIT-35 fix found GIT-44 and GIT-45, and the automated security review of the GIT-44 fix found GIT-46.
 
 ### GIT-30: a commondir, gitdir or .git file is read otherwise than git reads it
 - **Status: FIXED** (2026-11-05).
@@ -2069,6 +2070,19 @@ An Opus reviewer of the slice's new tests, 2026-11-05, at `fd49c3c`, reached a m
   - after the re-review: the repository a mount lies in through a `.git` link, and inside another writable mount past its scan; past `SANDBOX_GIT_MAX`, a mounted worktree's repository still judged, also when a planted `.git` file names it, and three repositories mounts lie in judged with the cap at two; an absolute `core.hooksPath` named once;
   - after the final review: through a `.git` link, the repository's index read against the checkout (a submodule under a pruned `vendor/` protected), and a target inside another writable mount protected there.
 - **Mutants:** 29 by hand, over the fix and all three reviews' fixes, all killed but one: judging common directories before their linked worktrees changes nothing in any layout git makes, where a linked worktree's git directory lies inside its common one. (Taking the capped git directories before the uncapped ones does change something, the final review found: one named from both was cut. A test now holds that order.)
+
+### GIT-46: a linked worktree's gitdir the agent writes chose where a relative core.hooksPath was judged
+- **Status: FIXED** (2026-11-07). Found by the automated security review of `c6316af` (the GIT-44 fix, rated MEDIUM), with two LOW findings of its second final review.
+- **Severity: LOW to MEDIUM.** Confidence: CONFIRMED. Not a regression: before GIT-44 no relative `core.hooksPath` of a linked worktree was judged at all.
+- **Location:** `sandbox.sh: launcher_ro_overlay()`, the bases of the `core.hooksPath` check, and `git_dirs_in()`'s up-loop.
+- **What was wrong:**
+  - **A linked worktree's `gitdir`,** which names its checkout, lay in a writable mount and was not bound, so the agent could rewrite it, and choose where a relative `core.hooksPath` was judged from: a decoy where the hooks git really runs from would be named. With no checkout known, such a value was judged from nowhere, in silence.
+  - **A `.git` link whose target lies in the same mount, past what its scan reaches** (`vendor/` is pruned), was neither protected nor judged; a `.git` file there is (`_gdi_follow()`).
+  - **A `.git` link's target inside a writable mount** was judged from the git directory, not from the link's checkout, so the NOTE named a place git never runs hooks in.
+- **Fix:** a linked worktree's `gitdir` is bound `:ro` with `config` and `commondir`, and held to the hard-link refusal under a read-only overlay too; one naming a checkout that does not exist (deleted and never pruned, or made in a container with `/workspace` paths) is judged from where it would be, silent outside every mount; a relative `core.hooksPath` with no `gitdir` to read is named as not judged; the `.git` link branch records its checkout whatever the target's writability (`_gref_add()`), and protects a target in the same mount there.
+- **The final review of the fix** found the not-judged NOTE printed on every launch for a worktree whose checkout is gone, and a hard-linked `gitdir` under a read-only overlay not refused; both fixed.
+- **Tests:** in G122 (`tests/test-git-internals-ro-config.sh`), each seen red on the code before: `gitdir` bound read-only; no `gitdir`, named as not judged; checkouts that are gone, judged from where they would be; a hard-linked `gitdir` under an overlay, refused; a `.git` link's target in the same mount past its scan, protected and judged from the checkout; one in another writable mount, judged from the checkout.
+- **Mutants:** 6 by hand, all killed.
 
 ### GIT-45: $GIT_DIR, where push hooks run, is not a base for a relative core.hooksPath
 - **Status: OPEN** (2026-11-07). Found by the review of the GIT-35 fix.

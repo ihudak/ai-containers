@@ -781,7 +781,8 @@ grep -qF "NOTE: /workspace/h121/m/.git/worktrees/wt runs its git hooks from /wor
 rm -f "$TMP/h121/m/.git/worktrees/wt/gitdir"
 EXTRA_MOUNTS="$TMP/h121" launch "$TMP/app"
 [[ "$LAUNCH_RC" == 0 ]] && ! grep -qF 'git hooks from /workspace/h121/m/h121/x' "$ERR" \
-  && pass "G122 a linked worktree with no checkout known has nothing judged from its git directory" \
+  && grep -qF "NOTE: /workspace/h121/m/.git/worktrees/wt takes its git hooks from ../../../h121/x (core.hooksPath) relative to a checkout" "$ERR" \
+  && pass "G122 a linked worktree with no checkout known: nothing judged from its git directory, and its relative core.hooksPath named as not judged" \
   || fail "G122 git directory taken as a base (rc=$LAUNCH_RC; stderr: $(grep -F 'git hooks' "$ERR" | head -1))"
 # The re-review of the GIT-44 fix: the repository a mount lies in through a
 # .git link (as `repo` checkouts have it), which git follows, was skipped and the
@@ -859,6 +860,58 @@ EXTRA_MOUNTS="$TMP/h121" launch "$TMP/app"
 [[ "$(grep -c 'runs its git hooks from /workspace/h121/hk (core.hooksPath)' "$ERR")" == 1 ]] \
   && pass "G122 an absolute core.hooksPath shared by linked worktrees is named once" \
   || fail "G122 named $(grep -c 'runs its git hooks from /workspace/h121/hk (core.hooksPath)' "$ERR") times (rc=$LAUNCH_RC)"
+# GIT-46. A linked worktree's gitdir, which names its checkout, is bound
+# read-only, as its commondir is: written by the agent, it chose where a relative
+# core.hooksPath was judged from (automated security review of c6316af).
+mk121; "${G[@]}" init -q "$TMP/h121/m" && "${G[@]}" -C "$TMP/h121/m" commit -q --allow-empty -m i \
+  && "${G[@]}" -C "$TMP/h121/m" worktree add -q "$TMP/h121/wt" || { printf 'SCAFFOLD-FAILED: G122 gitdir bind\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h121" launch "$TMP/app"
+has_mount "$TMP/h121/m/.git/worktrees/wt/gitdir:/workspace/h121/m/.git/worktrees/wt/gitdir:ro" \
+  && pass "G122 a linked worktree's gitdir is bound read-only" \
+  || fail "G122 gitdir writable (rc=$LAUNCH_RC; mounts: $(grep -c 'worktrees/wt/' <<<"$(mounts)"))"
+# A gitdir naming a checkout that does not exist — deleted and never pruned, or
+# made inside a container with /workspace paths — is judged from where it would
+# be: silent outside every mount, named where the agent could make it; never the
+# "does not know" NOTE, every launch (final review of the GIT-46 fix).
+mk121; "${G[@]}" init -q "$TMP/h121/m" && "${G[@]}" -C "$TMP/h121/m" commit -q --allow-empty -m i \
+  && "${G[@]}" -C "$TMP/h121/m" worktree add -q "$TMP/o121/gone" && "${G[@]}" -C "$TMP/h121/m" worktree add -q "$TMP/h121/wt2" \
+  && "${G[@]}" -C "$TMP/h121/m" config core.hooksPath .husky/_ && rm -rf "$TMP/o121/gone" "$TMP/h121/wt2" \
+  || { printf 'SCAFFOLD-FAILED: G122 gone\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h121" launch "$TMP/app"
+! grep -qF 'relative to a checkout this launch' "$ERR" && ! grep -qF 'o121/gone' "$ERR" \
+  && grep -qF "NOTE: /workspace/h121/m/.git/worktrees/wt2 runs its git hooks from /workspace/h121/wt2/.husky/_ (core.hooksPath)" "$ERR" \
+  && pass "G122 a gitdir naming a checkout that is gone is judged from where it would be, and only that is named" \
+  || fail "G122 deleted checkouts (rc=$LAUNCH_RC; stderr: $(grep -E 'git hooks|relative to a checkout' "$ERR" | head -3 | tr '\n' ' '))"
+# Under a read-only overlay, a hard-linked gitdir refuses the launch, as a
+# hard-linked commondir does there.
+mk121; mkdir -p "$TMP/h121/pl" "$TMP/h121/vendor" && : > "$TMP/h121/pl/sandbox.sh" && : > "$TMP/h121/pl/sandbox-common.sh" \
+  && "${G[@]}" init -q "$TMP/h121/pl/r" && "${G[@]}" -C "$TMP/h121/pl/r" commit -q --allow-empty -m i \
+  && "${G[@]}" -C "$TMP/h121/pl/r" worktree add -q "$TMP/h121/vendor/co" && ln "$TMP/h121/pl/r/.git/worktrees/co/gitdir" "$TMP/h121/alias" \
+  || { printf 'SCAFFOLD-FAILED: G122 overlay gitdir\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h121" launch "$TMP/app"
+[[ "$LAUNCH_RC" != 0 ]] && grep -qF "ERROR: $TMP/h121/pl/r/.git/worktrees/co/gitdir has more than one hard link" "$ERR" \
+  && pass "G122 under a read-only overlay, a linked worktree's gitdir with a second name refuses the launch" \
+  || fail "G122 hard-linked gitdir under an overlay (rc=$LAUNCH_RC; stderr: $(grep -F ERROR "$ERR" | head -1))"
+# A .git link whose target lies in the same mount, past what its scan reaches
+# (vendor/ is pruned), is protected there, and its core.hooksPath judged from
+# the link's checkout; and one in another writable mount is judged from the
+# link's checkout too, not from the git directory (final review of c6316af).
+mk121; "${G[@]}" init -q "$TMP/o121/tmp" && mkdir -p "$TMP/h121/proj/fe/vendor" && mv "$TMP/o121/tmp/.git" "$TMP/h121/proj/fe/vendor/proj.git" \
+  && ln -s fe/vendor/proj.git "$TMP/h121/proj/.git" && "${G[@]}" -C "$TMP/h121/proj" config core.hooksPath fe/.husky/_ \
+  || { printf 'SCAFFOLD-FAILED: G122 link same mount\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h121/proj/fe" launch "$TMP/app"
+has_mount "$TMP/h121/proj/fe/vendor/proj.git/config:/workspace/fe/vendor/proj.git/config:ro" \
+  && grep -qF "runs its git hooks from /workspace/fe/.husky/_ (core.hooksPath), which the agent" "$ERR" \
+  && pass "G122 a .git link's target in the same mount, past its scan, is protected and judged from the checkout" \
+  || fail "G122 link target in the same mount (rc=$LAUNCH_RC; mounts: $(grep -c 'proj.git' <<<"$(mounts)"); stderr: $(grep -F 'git hooks' "$ERR" | head -1))"
+mk121; "${G[@]}" init -q "$TMP/o121/tmp" && mkdir -p "$TMP/h121/x/vendor" "$TMP/h121/y/fe" && mv "$TMP/o121/tmp/.git" "$TMP/h121/x/vendor/proj.git" \
+  && ln -s "$TMP/h121/x/vendor/proj.git" "$TMP/h121/y/.git" && "${G[@]}" config --file "$TMP/h121/x/vendor/proj.git/config" core.hooksPath fe/.husky/_ \
+  || { printf 'SCAFFOLD-FAILED: G122 link other mount base\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h121/x $TMP/h121/y/fe" launch "$TMP/app"
+grep -qF "runs its git hooks from /workspace/fe/.husky/_ (core.hooksPath), which the agent" "$ERR" \
+  && ! grep -qF '/workspace/x/vendor/proj.git/fe/.husky/_' "$ERR" \
+  && pass "G122 a .git link's target in another writable mount is judged from the link's checkout" \
+  || fail "G122 link target judged from its git directory (rc=$LAUNCH_RC; stderr: $(grep -F 'git hooks' "$ERR" | head -2 | tr '\n' ' '))"
 rm -rf "$TMP/h121" "$TMP/o121"
 
 printf '\n%d failure(s)\n' "$fails"

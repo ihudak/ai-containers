@@ -790,7 +790,9 @@ launcher_ro_overlay() {
               exit 1
             fi
           fi
-          for f in config config.worktree commondir; do
+          # gitdir too, which names a linked worktree's checkout (final review of
+          # the GIT-46 fix).
+          for f in config config.worktree commondir gitdir; do
             if [[ -e "$g/$f" || -L "$g/$f" ]]; then _ro_links_check[$g/$f]="file"; fi
           done
           if [[ -d "$g/hooks" ]]; then _ro_links_check[$g/hooks]="hooks"; fi
@@ -953,7 +955,10 @@ launcher_ro_overlay() {
             ( set -C; : > "$g/config.worktree" ) 2>/dev/null || true
           fi
         fi
-        for f in config config.worktree commondir hooks; do
+        # gitdir too, a linked worktree's: it names the checkout a relative
+        # core.hooksPath is judged from, and written by the agent it chose that
+        # (automated security review of c6316af; GIT-46).
+        for f in config config.worktree commondir hooks gitdir; do
           if [[ -L "$g/$f" ]]; then
             printf 'WARNING: %s is a symlink, which cannot be mounted read-only in place;\n' "$(_term "$g/$f")" >&2
             printf '         what it leads to is what your host'\''s git reads. Replace the link with it.\n' >&2
@@ -1311,7 +1316,7 @@ launcher_ro_overlay() {
     # directory of the host was silent (GIT-35), and so was a submodule's
     # worktree made one (review of the fix). Every way is judged before any is
     # skipped as named.
-    local b v hd hwd hx hcond="" hopt="" hcut="" hkcut=""
+    local b v y hd hwd hx hcond="" hopt="" hcut="" hkcut=""
     local -a hps=() hpx=() hwds=() hb=() hbd=() hbp=() wd=() wp=()
     local -A hseen=()
     local -a hfl=()
@@ -1375,7 +1380,18 @@ launcher_ro_overlay() {
     if [[ "$cfg" != "$g/config" && -f "$g/gitdir" ]]; then
       x=""; _git_ptr_read "$g/gitdir" x gitdir || x=""
       if [[ "${x,,}" == */.git ]]; then x="${x%/*}"; fi
-      if [[ -n "$x" ]] && _cd_phys x "$g" "$x" && [[ -z "${hseen[r:$x]:-}" ]]; then hseen[r:$x]=1; hbd+=("$x"); hbp+=(""); fi
+      # One that does not exist — deleted and never pruned, or made in a container
+      # with /workspace paths — is judged from where it would be: in a writable
+      # mount the agent can make it; elsewhere git runs nothing there. Not named
+      # as unknown on every launch (final review of the GIT-46 fix).
+      if [[ -n "$x" ]]; then
+        y="$x"
+        if ! _cd_phys x "$g" "$y"; then
+          [[ "$y" == /* ]] || y="$g/$y"
+          y="$(_lex_norm "$y")"; _canon_lex x "$y"
+        fi
+        if [[ -n "$x" && -z "${hseen[r:$x]:-}" ]]; then hseen[r:$x]=1; hbd+=("$x"); hbp+=(""); fi
+      fi
     fi
     for x in ${hb[@]+"${hb[@]}"}; do hbd+=("$g"); hbp+=("$x/"); done
     # None: a bare repository, run in itself. Not a linked worktree's, whose
@@ -1408,7 +1424,15 @@ launcher_ro_overlay() {
           printf 'NOTE: %s takes its git hooks from %s (core.hooksPath), which the launcher does not expand\n' "$(_term "$at")" "$(_term "$v")" >&2
           printf '      (~user/, %%(prefix)/), so it is not judged. Check them before a git commit on the host.\n' >&2
           continue ;;
-        *) for i in "${!hbd[@]}"; do wd+=("${hbd[i]}"); wp+=("${hbp[i]}$v"); done ;;
+        *)
+          # A linked worktree whose checkout this launch does not know: not judged,
+          # and said so (automated security review of c6316af; GIT-46).
+          if (( ! ${#hbd[@]} )); then
+            printf 'NOTE: %s takes its git hooks from %s (core.hooksPath) relative to a checkout this launch\n' "$(_term "$at")" "$(_term "$v")" >&2
+            printf '      does not know, so they are not judged. Check them before a git commit there.\n' >&2
+            continue
+          fi
+          for i in "${!hbd[@]}"; do wd+=("${hbd[i]}"); wp+=("${hbp[i]}$v"); done ;;
       esac
       for i in "${!wd[@]}"; do
         # Each walk counts in the launch's budget, which the include walk spends
@@ -3214,8 +3238,15 @@ git_dirs_in() {
         # writable bind is protected there, as a .git directory is (final review
         # of the GIT-44 fix).
         if [[ -z "${gref[$tgt|$up]:-}" ]]; then gref[$tgt|$up]=1; gtop_g+=("$tgt"); gtop_d+=("$up"); fi
+        # The checkout a relative core.hooksPath is judged from, wherever the
+        # target lies (second final review of the GIT-44 fix; GIT-46).
+        _gref_add "$tgt" "$up"
         if ! _in_writable "$tgt"; then
-          gquiet[$tgt]=1; _gref_add "$tgt" "$up"
+          gquiet[$tgt]=1
+        elif [[ "$tgt" == "$5" || "$tgt" == "$5"/* ]]; then
+          # In this mount, past what its scan reached: protected here, as a .git
+          # file's target is (_gdi_follow; GIT-46).
+          if [[ -z "${had[$tgt]:-}" ]]; then had[$tgt]=1; _gdi_dirs+=("$tgt"); fi
         else
           for _j in ${bsrc[@]+"${!bsrc[@]}"}; do
             [[ "${bsrc[_j]}" != "$5" ]] || continue
