@@ -270,20 +270,23 @@ AI_CONTAINERS_SPELL_MAX=2 launch ..
 # dentry in the guest, so hooks/ and .git hold. Modelled here by the fake
 # docker's session writing the host's files under the other spelling.
 cfg0="$(cat "$PROJ/.git/config")"
-asides() { find "$PROJ/.git" "$PROJ/wt121" -maxdepth 1 -name '*.changed-*' 2>/dev/null; }
+# What stood there is kept where only the launcher writes, never beside the file,
+# whose directory a sibling container can still write (security review of the fix).
+asides() { find "$HOME/.ai-containers/restored" -type f 2>/dev/null; }
+leftovers() { find "$PROJ/.git" "$PROJ/wt121" -maxdepth 1 \( -name '*.changed-*' -o -name '.*.restore-*' \) 2>/dev/null; }
 FAKE_SESSION="printf '[core]\n\tfsmonitor = touch $TMP/pwned121\n' >> '$PROJ/.git/CONFIG'" launch ..
-a121="$(asides | grep -F '/.git/config.changed-' | head -1)"
-[[ "$(cat "$PROJ/.git/config")" == "$cfg0" && -n "$a121" ]] && grep -qF fsmonitor "$a121" \
+a121="$(asides | grep -E '/[0-9]+-config$' | head -1)"
+[[ "$(cat "$PROJ/.git/config")" == "$cfg0" && -n "$a121" && -z "$(leftovers)" ]] && grep -qF fsmonitor "$a121" \
   && grep -qF "WARNING: $PROJ/.git/config changed while the container ran" "$ERR" \
   && pass "G121 a config written as .git/CONFIG is put back, and what it held is kept and named" \
-  || fail "G121 .git/CONFIG (config now: $(grep -c fsmonitor "$PROJ/.git/config") fsmonitor line(s); aside: ${a121:-none}; stderr: $(grep -F 'container ran' "$ERR" | head -1))"
-rm -f "$PROJ"/.git/config.changed-*
+  || fail "G121 .git/CONFIG (config now: $(grep -c fsmonitor "$PROJ/.git/config") fsmonitor line(s); kept: ${a121:-none}; left in .git: $(leftovers); stderr: $(grep -F 'container ran' "$ERR" | head -1))"
+rm -rf "$HOME/.ai-containers/restored"
 
 FAKE_SESSION="printf '../planted\n' > '$PROJ/.git/COMMONDIR'" launch ..
 [[ "$(cat "$PROJ/.git/commondir")" == ./ ]] \
   && pass "G121 a commondir written as .git/COMMONDIR is put back" \
   || fail "G121 .git/COMMONDIR (commondir now: $(cat "$PROJ/.git/commondir"))"
-rm -f "$PROJ"/.git/commondir.changed-*
+rm -rf "$HOME/.ai-containers/restored"
 
 # Removed, or replaced by a link or a FIFO: put back as a regular file, and the
 # FIFO neither hangs the launcher nor is read.
@@ -297,7 +300,7 @@ for what121 in removes "replaces with a link" "replaces with a FIFO"; do
   [[ "$LAUNCH_RC" == 0 && -f "$PROJ/.git/config" && ! -L "$PROJ/.git/config" && "$(cat "$PROJ/.git/config")" == "$cfg0" ]] \
     && pass "G121 a config the session $what121 is put back as it was" \
     || fail "G121 a config the session $what121 (rc=$LAUNCH_RC in ${LAUNCH_S}s; stderr: $(grep -F -e WARNING -e ERROR "$ERR" | tail -2 | tr '\n' ' '))"
-  rm -f "$PROJ"/.git/config.changed-*
+  rm -rf "$HOME/.ai-containers/restored"
 done
 
 # A linked worktree's .git file, written as .GIT.
@@ -308,11 +311,13 @@ FAKE_SESSION="printf 'gitdir: $TMP/evil121\n' > '$PROJ/wt121/.GIT'" launch ..
   && pass "G121 a worktree's .git file written as .GIT is put back" \
   || fail "G121 wt/.GIT (now: $(cat "$PROJ/wt121/.git"))"
 "${G[@]}" -C "$PROJ" worktree remove --force "$PROJ/wt121" 2>/dev/null; rm -rf "$PROJ/wt121"; "${G[@]}" -C "$PROJ" worktree prune
+rm -rf "$HOME/.ai-containers/restored"
 
 # Nothing changed: nothing is said or left behind, and the container's exit
 # status is still the launcher's.
+rm -rf "$HOME/.ai-containers/restored"
 FAKE_DOCKER_RC=3 FAKE_SESSION=":" launch ..
-[[ "$LAUNCH_RC" == 3 && -z "$(asides)" ]] && ! grep -qF 'changed while the container ran' "$ERR" \
+[[ "$LAUNCH_RC" == 3 && -z "$(asides)" && -z "$(leftovers)" ]] && ! grep -qF 'changed while the container ran' "$ERR" \
   && pass "G121 a session that changes nothing puts nothing back, and keeps its exit status" \
   || fail "G121 no change (rc=$LAUNCH_RC; asides: $(asides | tr '\n' ' '); stderr: $(grep -F 'container ran' "$ERR" | head -1))"
 

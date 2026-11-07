@@ -3458,47 +3458,65 @@ _ro_files_snapshot() {
 # _ro_files_restore: when the container exits, each file _ro_files_snapshot kept
 # that no longer holds what it did — changed, removed, or replaced by a link or a
 # FIFO (not read: the type is checked first, and the compare is bounded) — is put
-# back by a rename, which replaces a link rather than writing through it, and
-# named in a WARNING. What stood there is renamed aside, <file>.changed-<time>-<pid>,
-# beside it: the change may be the user's own, made on the host while the
-# container ran (git push -u, git remote add). Not covered: the host's git reads
-# the changed file until the container exits, and a launcher killed before then
-# puts nothing back. Never a refusal, and the container's exit status stays the
-# launcher's.
+# back, and named in a WARNING. Its directory is still writable from a sibling
+# container, so nothing there is opened or moved by a name another process could
+# plant: the copy is made by an exclusive create under a random name, with its
+# mode from the umask (no chmod, which follows a link), and renamed over the file
+# without following a link at the destination. What stood there is never moved:
+# a regular file's content, or a link's target, is copied into a directory of the
+# launcher's own, ~/.ai-containers/restored/<time>-<pid>, which the WARNING names
+# (the change may be the user's own, made on the host while the container ran:
+# git push -u, git remote add). Not covered: the host's git reads the changed
+# file until the container exits, and a launcher killed before then puts nothing
+# back. Never a refusal, and the container's exit status stays the launcher's.
 _ro_files_restore() {
-  local i f k a tmp ts
+  local i f k tmp m rd="" keep msg gone
   local -a t=()
   (( ${#_ro_snap_src[@]} )) || return 0
   read -r -a t <<< "$(_timeout_prefix 2) "
-  ts="$(date +%Y%m%d%H%M%S)"
   for i in "${!_ro_snap_src[@]}"; do
     f="${_ro_snap_src[i]}"; k="$_ro_snap_dir/$i"
     if [[ -f "$f" && ! -L "$f" ]] && "${t[@]}" cmp -s "$k" "$f" 2>/dev/null; then continue; fi
-    a=""
-    if [[ -e "$f" || -L "$f" ]]; then
-      a="$f.changed-$ts-$$"
-      if ! mv -f -- "$f" "$a" 2>/dev/null; then
-        printf 'WARNING: %s changed while the container ran, and could not be put back\n' "$(_term "$f")" >&2
-        printf '         (it could not be moved aside). Check it before running git there.\n' >&2
-        continue
+    # What stood there, kept where only the launcher writes.
+    keep=""; gone=""
+    [[ -e "$f" || -L "$f" ]] || gone=1
+    if [[ -z "$rd" ]]; then
+      rd="$ai_containers_root/restored/$(date +%Y%m%d%H%M%S)-$$"
+      if ! { mkdir -p "$ai_containers_root" && { mkdir -m 700 "$ai_containers_root/restored" \
+                 || [[ -d "$ai_containers_root/restored" && ! -L "$ai_containers_root/restored" ]]; } \
+             && mkdir -m 700 "$rd"; } 2>/dev/null || [[ -L "$rd" || ! -d "$rd" ]]; then rd=-; fi
+    fi
+    if [[ "$rd" != - ]]; then
+      keep="$rd/$i-${f##*/}"
+      if [[ -L "$f" ]]; then
+        { printf 'a link to: %s\n' "$(readlink -- "$f")" > "$keep"; } 2>/dev/null || keep=""
+      elif [[ -f "$f" ]]; then
+        "${t[@]}" head -c 1048576 -- "$f" > "$keep" 2>/dev/null || keep=""
+      elif [[ -e "$f" ]]; then
+        { printf 'not a regular file (a FIFO, a device or a directory)\n' > "$keep"; } 2>/dev/null || keep=""
+      else
+        keep=""
       fi
     fi
-    tmp="${f%/*}/.${f##*/}.restore-$$-$RANDOM"
-    if ( umask 077; set -C; cat -- "$k" > "$tmp" ) 2>/dev/null && chmod "${_ro_snap_mode[i]}" "$tmp" 2>/dev/null \
+    m="${_ro_snap_mode[i]}"; m="${m: -3}"
+    tmp="${f%/*}/.${f##*/}.restore-$$-$RANDOM$RANDOM"
+    if ( umask "$(printf '%03o' $(( 0777 & ~8#$m )))"; set -C; cat -- "$k" > "$tmp" ) 2>/dev/null \
+       && [[ -f "$tmp" && ! -L "$tmp" ]] \
        && { mv -T -f -- "$tmp" "$f" 2>/dev/null || { [[ ! -d "$f" || -L "$f" ]] && mv -h -f -- "$tmp" "$f" 2>/dev/null; }; }; then
-      printf 'WARNING: %s changed while the container ran: on this host the container can write\n' "$(_term "$f")" >&2
-      printf '         it under a name spelled in another case, past its read-only mount. It is put back\n' >&2
-      if [[ -n "$a" ]]; then
-        printf '         as it was at launch; what it held is kept in %s.\n' "$(_term "$a")" >&2
-        printf '         If you changed it on the host yourself meanwhile: diff %s %s\n' "$(_q "$f")" "$(_q "$a")" >&2
-      else
-        printf '         as it was at launch (it had been removed).\n' >&2
-      fi
+      msg="put back as it was at launch"
     else
       rm -f -- "$tmp" 2>/dev/null
-      printf 'WARNING: %s changed while the container ran, and could not be put back%s.\n' \
-        "$(_term "$f")" "${a:+; what it held is in $(_term "$a")}" >&2
-      printf '         Check it before running git there.\n' >&2
+      msg="could NOT be put back; check it before running git there"
+    fi
+    printf 'WARNING: %s changed while the container ran: on this host the container can write\n' "$(_term "$f")" >&2
+    printf '         it under a name spelled in another case, past its read-only mount. It is %s.\n' "$msg" >&2
+    if [[ -n "$keep" ]]; then
+      printf '         What it held is kept in %s;\n' "$(_term "$keep")" >&2
+      printf '         if you changed it on the host yourself meanwhile: diff %s %s\n' "$(_q "$f")" "$(_q "$keep")" >&2
+    elif [[ -n "$gone" ]]; then
+      printf '         (It had been removed.)\n' >&2
+    else
+      printf '         What it held could not be kept.\n' >&2
     fi
   done
 }

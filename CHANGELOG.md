@@ -350,8 +350,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   elsewhere, and rewrote a worktree's `.git` file. Directories such as
   `hooks/` held. The launcher now keeps each read-only git file whose name
   ignores case at launch and, when `docker run` returns, puts back any that
-  changed. The changed one is renamed aside, `<file>.changed-<time>-<pid>`, and
-  a `WARNING:` names it with the `diff` to compare, in case the change was
+  changed. What it held is copied to `~/.ai-containers/restored/`, and a
+  `WARNING:` names the copy with the `diff` to compare, in case the change was
   yours. Your host's git still reads the changed file until the container
   exits. Where names are case-sensitive (Linux), nothing changes (bugs review
   GIT-41).
