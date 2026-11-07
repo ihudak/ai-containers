@@ -261,5 +261,60 @@ AI_CONTAINERS_SPELL_MAX=2 launch ..
   && pass "G117 past its budget of directories to spell, the launch is refused" \
   || fail "G117 spell budget (rc=$LAUNCH_RC; stderr: $(grep ERROR "$ERR" | head -1))"
 
+# ── G121: a file bound read-only on its own is put back when the session ends
+# (bugs review GIT-41) ───────────────────────────────────────────────────────
+# A container's kernel compares names case-sensitively, so .git/CONFIG is not
+# the mount point of .git/config's read-only bind; a host share that ignores
+# case (Colima's and Docker Desktop's virtiofs on macOS, measured on Colima)
+# opens it as config all the same, and the write lands. A directory has one
+# dentry in the guest, so hooks/ and .git hold. Modelled here by the fake
+# docker's session writing the host's files under the other spelling.
+cfg0="$(cat "$PROJ/.git/config")"
+asides() { find "$PROJ/.git" "$PROJ/wt121" -maxdepth 1 -name '*.changed-*' 2>/dev/null; }
+FAKE_SESSION="printf '[core]\n\tfsmonitor = touch $TMP/pwned121\n' >> '$PROJ/.git/CONFIG'" launch ..
+a121="$(asides | grep -F '/.git/config.changed-' | head -1)"
+[[ "$(cat "$PROJ/.git/config")" == "$cfg0" && -n "$a121" ]] && grep -qF fsmonitor "$a121" \
+  && grep -qF "WARNING: $PROJ/.git/config changed while the container ran" "$ERR" \
+  && pass "G121 a config written as .git/CONFIG is put back, and what it held is kept and named" \
+  || fail "G121 .git/CONFIG (config now: $(grep -c fsmonitor "$PROJ/.git/config") fsmonitor line(s); aside: ${a121:-none}; stderr: $(grep -F 'container ran' "$ERR" | head -1))"
+rm -f "$PROJ"/.git/config.changed-*
+
+FAKE_SESSION="printf '../planted\n' > '$PROJ/.git/COMMONDIR'" launch ..
+[[ "$(cat "$PROJ/.git/commondir")" == ./ ]] \
+  && pass "G121 a commondir written as .git/COMMONDIR is put back" \
+  || fail "G121 .git/COMMONDIR (commondir now: $(cat "$PROJ/.git/commondir"))"
+rm -f "$PROJ"/.git/commondir.changed-*
+
+# Removed, or replaced by a link or a FIFO: put back as a regular file, and the
+# FIFO neither hangs the launcher nor is read.
+for what121 in removes "replaces with a link" "replaces with a FIFO"; do
+  how121="rm -f '$PROJ/.git/CONFIG'"
+  case "$what121" in
+    *link) how121+=" && ln -s '$TMP/elsewhere121' '$PROJ/.git/CONFIG'" ;;
+    *FIFO) how121+=" && mkfifo '$PROJ/.git/CONFIG'" ;;
+  esac
+  FAKE_SESSION="$how121" launch_timed 60 ..
+  [[ "$LAUNCH_RC" == 0 && -f "$PROJ/.git/config" && ! -L "$PROJ/.git/config" && "$(cat "$PROJ/.git/config")" == "$cfg0" ]] \
+    && pass "G121 a config the session $what121 is put back as it was" \
+    || fail "G121 a config the session $what121 (rc=$LAUNCH_RC in ${LAUNCH_S}s; stderr: $(grep -F -e WARNING -e ERROR "$ERR" | tail -2 | tr '\n' ' '))"
+  rm -f "$PROJ"/.git/config.changed-*
+done
+
+# A linked worktree's .git file, written as .GIT.
+"${G[@]}" -C "$PROJ" worktree add -q "$PROJ/wt121" 2>/dev/null || { printf 'SCAFFOLD-FAILED: G121 worktree\n'; exit 1; }
+wt0="$(cat "$PROJ/wt121/.git")"
+FAKE_SESSION="printf 'gitdir: $TMP/evil121\n' > '$PROJ/wt121/.GIT'" launch ..
+[[ "$(cat "$PROJ/wt121/.git")" == "$wt0" ]] \
+  && pass "G121 a worktree's .git file written as .GIT is put back" \
+  || fail "G121 wt/.GIT (now: $(cat "$PROJ/wt121/.git"))"
+"${G[@]}" -C "$PROJ" worktree remove --force "$PROJ/wt121" 2>/dev/null; rm -rf "$PROJ/wt121"; "${G[@]}" -C "$PROJ" worktree prune
+
+# Nothing changed: nothing is said or left behind, and the container's exit
+# status is still the launcher's.
+FAKE_DOCKER_RC=3 FAKE_SESSION=":" launch ..
+[[ "$LAUNCH_RC" == 3 && -z "$(asides)" ]] && ! grep -qF 'changed while the container ran' "$ERR" \
+  && pass "G121 a session that changes nothing puts nothing back, and keeps its exit status" \
+  || fail "G121 no change (rc=$LAUNCH_RC; asides: $(asides | tr '\n' ' '); stderr: $(grep -F 'container ran' "$ERR" | head -1))"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

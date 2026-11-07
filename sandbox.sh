@@ -3416,6 +3416,93 @@ _git_report_record() {   # <git dir, physical> [hooks]: add it, once, on a line 
   return 0
 }
 
+# _ro_files_snapshot <file>...: what each file bound read-only on its own holds
+# at launch, kept for _ro_files_restore (bugs review GIT-41). A container's
+# kernel compares names case-sensitively, so .git/CONFIG is not the mount point
+# of config's read-only bind; a host share that ignores case (virtiofs on macOS,
+# measured on Colima) opens it as config, and the write lands. A directory has
+# one dentry in the guest, so a directory bind holds under any spelling, and only
+# these files need it. Only a file whose own name ignores case here is kept:
+# elsewhere the container cannot reach it, and a change while the container ran
+# was made on the host, which putting it back would undo. Read under the bound
+# every read of a file the agent can write gets (_rd_run); one over 1 MiB is
+# named and not kept.
+_ro_files_snapshot() {
+  local f n o m k
+  (( $# )) || return 0
+  for f; do
+    n="${f##*/}"; o="${f%/*}/${n~~}"
+    [[ "$o" != "$f" && ! -L "$o" && "$o" -ef "$f" ]] || continue
+    if [[ -z "$_ro_snap_dir" ]]; then
+      _ro_snap_dir="$(mktemp -d "${TMPDIR:-/tmp}/ai-containers-ro.XXXXXX" 2>/dev/null)" || {
+        _ro_snap_dir=""
+        printf 'WARNING: could not make a directory to keep the read-only git files in, so one the\n' >&2
+        printf '         container writes under a name spelled in another case is not put back.\n' >&2
+        return 0
+      }
+    fi
+    k="$_ro_snap_dir/${#_ro_snap_src[@]}"
+    if [[ -f "$f" && ! -L "$f" ]] && _rd_run "$f" head -c 1048577 -- "$f" > "$k" 2>/dev/null \
+       && (( $(wc -c < "$k") <= 1048576 )); then
+      if (( _launcher_stat_gnu )); then m="$(stat -c '%a' -- "$f" 2>/dev/null)"; else m="$(stat -f '%Lp' "$f" 2>/dev/null)"; fi
+      [[ "$m" =~ ^[0-7]{3,4}$ ]] || m=644
+      _ro_snap_src+=("$f"); _ro_snap_mode+=("$m")
+    else
+      rm -f "$k"
+      printf 'WARNING: %s could not be kept as it is (over 1 MiB, or not a regular file), so if\n' "$(_term "$f")" >&2
+      printf '         the container writes it under a name spelled in another case, it is not put back.\n' >&2
+    fi
+  done
+}
+
+# _ro_files_restore: when the container exits, each file _ro_files_snapshot kept
+# that no longer holds what it did — changed, removed, or replaced by a link or a
+# FIFO (not read: the type is checked first, and the compare is bounded) — is put
+# back by a rename, which replaces a link rather than writing through it, and
+# named in a WARNING. What stood there is renamed aside, <file>.changed-<time>-<pid>,
+# beside it: the change may be the user's own, made on the host while the
+# container ran (git push -u, git remote add). Not covered: the host's git reads
+# the changed file until the container exits, and a launcher killed before then
+# puts nothing back. Never a refusal, and the container's exit status stays the
+# launcher's.
+_ro_files_restore() {
+  local i f k a tmp ts
+  local -a t=()
+  (( ${#_ro_snap_src[@]} )) || return 0
+  read -r -a t <<< "$(_timeout_prefix 2) "
+  ts="$(date +%Y%m%d%H%M%S)"
+  for i in "${!_ro_snap_src[@]}"; do
+    f="${_ro_snap_src[i]}"; k="$_ro_snap_dir/$i"
+    if [[ -f "$f" && ! -L "$f" ]] && "${t[@]}" cmp -s "$k" "$f" 2>/dev/null; then continue; fi
+    a=""
+    if [[ -e "$f" || -L "$f" ]]; then
+      a="$f.changed-$ts-$$"
+      if ! mv -f -- "$f" "$a" 2>/dev/null; then
+        printf 'WARNING: %s changed while the container ran, and could not be put back\n' "$(_term "$f")" >&2
+        printf '         (it could not be moved aside). Check it before running git there.\n' >&2
+        continue
+      fi
+    fi
+    tmp="${f%/*}/.${f##*/}.restore-$$-$RANDOM"
+    if ( umask 077; set -C; cat -- "$k" > "$tmp" ) 2>/dev/null && chmod "${_ro_snap_mode[i]}" "$tmp" 2>/dev/null \
+       && { mv -T -f -- "$tmp" "$f" 2>/dev/null || { [[ ! -d "$f" || -L "$f" ]] && mv -h -f -- "$tmp" "$f" 2>/dev/null; }; }; then
+      printf 'WARNING: %s changed while the container ran: on this host the container can write\n' "$(_term "$f")" >&2
+      printf '         it under a name spelled in another case, past its read-only mount. It is put back\n' >&2
+      if [[ -n "$a" ]]; then
+        printf '         as it was at launch; what it held is kept in %s.\n' "$(_term "$a")" >&2
+        printf '         If you changed it on the host yourself meanwhile: diff %s %s\n' "$(_q "$f")" "$(_q "$a")" >&2
+      else
+        printf '         as it was at launch (it had been removed).\n' >&2
+      fi
+    else
+      rm -f -- "$tmp" 2>/dev/null
+      printf 'WARNING: %s changed while the container ran, and could not be put back%s.\n' \
+        "$(_term "$f")" "${a:+; what it held is in $(_term "$a")}" >&2
+      printf '         Check it before running git there.\n' >&2
+    fi
+  done
+}
+
 # _git_after_session: the launch scan runs once, so a git directory the agent
 # makes during the session is protected only by the next launch, and the host's
 # git would run what it holds before then (GAP-12). When the container exits,
@@ -3768,6 +3855,10 @@ _launcher_dev_ino() {
 # the EXIT trap below. A global, not a run_container local, so the trap can see
 # it, and guarded with :- so `set -u` is satisfied when no dir was made.
 _launcher_verify_dir=""
+# Where _ro_files_snapshot keeps the read-only git files as they were at launch,
+# and which it kept (GIT-41); the directory is removed by the EXIT trap below.
+_ro_snap_dir=""
+_ro_snap_src=() _ro_snap_mode=()
 # The group's directory, physical: launcher_ro_overlay does not scan the group's
 # own mounts (those outside /workspace) for git repositories, since the host's git
 # never runs there; a directory mounted into /workspace from inside it is scanned
@@ -3793,7 +3884,7 @@ _gdi_over=()               # git directories past SANDBOX_GIT_MAX where a scan s
 declare -A _git_launch_seen=()
 _git_scan_srcs=()
 _git_bsrc=()               # every writable bind source of the launch (bsrc), for the rescan
-trap 'rm -rf "${_launcher_verify_dir:-}" "${_gir_tmp:-}" "${_rd_dir:-}" "${_fs_ml_dir:-}" 2>/dev/null' EXIT
+trap 'rm -rf "${_launcher_verify_dir:-}" "${_gir_tmp:-}" "${_rd_dir:-}" "${_fs_ml_dir:-}" "${_ro_snap_dir:-}" 2>/dev/null' EXIT
 
 # The agent's identity: numeric, within a 32-bit id, and never root — capsh
 # switching 0 to 0 clears no capabilities (bugs review ENV-4). Checked first in
@@ -4664,6 +4755,10 @@ run_container() {
     fi
   fi
 
+  # What each file bound read-only on its own holds now, put back if the container
+  # writes it under another spelling (GIT-41).
+  _ro_files_snapshot ${launcher_ro_files[@]+"${launcher_ro_files[@]}"}
+
   local repos_path_ctr
   repos_path_ctr="$(repos_path_in_container "${REPOS_PATH:-}" \
     ${extra_mount_flags[@]+"${extra_mount_flags[@]}"} \
@@ -4761,6 +4856,7 @@ run_container() {
     ${launcher_verify_flags[@]+"${launcher_verify_flags[@]}"} \
     -w "$workdir" \
     "$image_name" || _run_rc=$?
+  _ro_files_restore
   _git_after_session
   return "$_run_rc"
 }
