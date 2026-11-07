@@ -8,7 +8,7 @@
   |----------|---------------------|-------|
   | **Linux** | [Docker Engine](https://docs.docker.com/engine/install/) | Socket at `/var/run/docker.sock` by default. |
   | **macOS** | [Docker Desktop](https://www.docker.com/products/docker-desktop/), [Colima](https://github.com/abiosoft/colima) or [Rancher Desktop](https://rancherdesktop.io/) | See the macOS notes below. |
-  | **Windows** | [Docker Desktop](https://www.docker.com/products/docker-desktop/) + WSL2 backend, or [Rancher Desktop](https://rancherdesktop.io/) | Run the scripts from inside a WSL2 shell. See the Rancher Desktop notes below. |
+  | **Windows** | [Docker Desktop](https://www.docker.com/products/docker-desktop/) + WSL2 backend, [Rancher Desktop](https://rancherdesktop.io/), or [Docker Engine](https://docs.docker.com/engine/install/ubuntu/) installed inside the WSL2 distro | Run the scripts from inside a WSL2 shell. See the Rancher Desktop notes and the Docker Engine in WSL2 note below. |
 
   **macOS with Colima:** Colima is a lightweight, open-source alternative to Docker Desktop. Install it with Homebrew, then follow these one-time setup steps:
 
@@ -39,6 +39,8 @@
   On **macOS**, also **size the VM** (Preferences → Virtual Machine → Hardware): it defaults to 2 CPUs and 2 GB of memory, which is not enough to build this image — size it for the build and the container resources you plan to use (see [Resource limits](resources.md)). `DOCKER_HOST` normally needs nothing there: granted administrative access, Rancher Desktop points `/var/run/docker.sock` at its own socket; without it, it creates a `rancher-desktop` docker context and makes that current instead. If you exported `DOCKER_HOST` for Colima earlier, unset it — or point it at `unix://${HOME}/.rd/docker.sock`.
 
   On **Windows**, also enable **WSL integration** for the distribution you run the scripts in (Preferences → WSL → Integrations); without it the `docker` CLI is not on that distribution's `PATH`. There is no VM pane to size — a WSL2 backend takes its CPU and memory limits from `%UserProfile%\.wslconfig`, the same as Docker Desktop's.
+
+  **Docker Engine in WSL2, without Docker Desktop:** install it in the distro from Docker's apt repository, as on Linux, with systemd turned on in `/etc/wsl.conf` (`[boot]` `systemd=true`) so `dockerd` starts with the distro. Add yourself to the `docker` group, then open a **new** WSL terminal: the group only reaches sessions started after it. `docker context ls` should show only `default`, on `/var/run/docker.sock`. The VM's CPUs and memory come from `%UserProfile%\.wslconfig`. This setup has passed the whole test suite, firewall and IPv6 included ([Platforms exercised](testing.md#platforms-exercised)).
 
 - **On Windows: clone and run everything inside WSL, on WSL's own filesystem.** Put the clone in your WSL home (e.g. `~/dev/ai-containers`), use WSL's `git`, and run the scripts from a WSL shell. Do **not** clone with native Windows git (Git Bash, IntelliJ, GitHub Desktop), and do not clone under `/mnt/c/...`. Either one breaks the checkout in ways that look fine:
 

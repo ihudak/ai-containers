@@ -1,7 +1,7 @@
 # Platform-specific issues — 2026-10-26
 
 - **Opened:** 2026-10-26, during bug-fix batch 1
-- **Last reviewed commit:** `bec1c57` (the review), entries updated while fixing on `fix/batch-1-launcher-git`; PLAT-5, PLAT-6 and the pickup table added 2026-11-03 at `d41d47a`; PLAT-5 done and PLAT-3 confirmed and designed 2026-11-04 at `f0ad913`
+- **Last reviewed commit:** `bec1c57` (the review), entries updated while fixing on `fix/batch-1-launcher-git`; PLAT-5, PLAT-6 and the pickup table added 2026-11-03 at `d41d47a`; PLAT-5 done and PLAT-3 confirmed and designed 2026-11-04 at `f0ad913`; PLAT-2 done 2026-11-04, run at `f0ad913`
 - **Companions:** [2026-10-26-bugs-review.md](2026-10-26-bugs-review.md), [2026-10-26-feature-gaps-review.md](2026-10-26-feature-gaps-review.md)
 
 These are issues that can only be confirmed, and then fixed, on a platform or
@@ -18,7 +18,7 @@ and the constraints the fix must keep.
 | ID | Platform | Source | What |
 |---|---|---|---|
 | PLAT-1 | Windows + WSL2 + Docker Desktop | bug LNCH-2 | A project under `/mnt/c` may be refused at every launch by the mount-swap check — **not reproducible**, closed |
-| PLAT-2 | Windows + WSL2 | gap GAP-13 | The integration corpus and the local layer have never been run on WSL2 — **Docker Desktop half done**; native Engine open |
+| PLAT-2 | Windows + WSL2 | gap GAP-13 | The integration corpus and the local layer had never been run on WSL2 — **done**, Docker Desktop and a native Engine, both passed |
 | PLAT-3 | macOS (Docker Desktop, Colima) | gap GAP-11 | The mount-swap check is skipped there altogether — **confirmed on Colima, designed**; no code yet |
 | PLAT-4 | x86-64 CPU without AVX | bug SVC-2 | `mongo=ON` reports "no mongo server, rebuild" instead of the real failure |
 | PLAT-5 | macOS (BSD userland) | bugs PRJ-10, PRJ-11 | The no-follow file writes take their non-Linux branches there, and nobody has run them — **done**, passed (GIT-27 and TST-28 found and fixed) |
@@ -35,7 +35,7 @@ reports by editing the entry's **Status** line (and docs/testing.md's
 | Agent | Its platform | Picks up | Cannot do |
 |---|---|---|---|
 | **Linux agent** (review machine) | Linux x86-64, native Docker Engine | the falsify work GAP-1 to GAP-4 | anything below |
-| **WSL agent** | Windows + WSL2 (Ubuntu distro) + **Docker Desktop** with WSL integration. **Not** a native Docker Engine in the distro | **PLAT-6**, **PLAT-8** (its drvfs half) | PLAT-2's remaining half: it needs a Docker Engine installed natively in the distro. The user runs it on an Azure VM |
+| **WSL agent** | Windows + WSL2 (Ubuntu distro) + **Docker Desktop** with WSL integration. **Not** a native Docker Engine in the distro | **PLAT-6**, **PLAT-8** (its drvfs half) | PLAT-2's native-Engine half, which needed a Docker Engine installed natively in the distro. The user ran it on an Azure VM (done) |
 | **Mac agent** | macOS, Docker Desktop and/or Colima | **PLAT-3** (GAP-11), **PLAT-5**, **PLAT-7**, **PLAT-8** (its APFS half) | — |
 | *nobody* | x86-64 CPU without AVX | PLAT-4: closed as not supported | — |
 
@@ -51,7 +51,8 @@ first, then fix test-first.
   - **Step 3** (`/mnt/c/tmp/plat1`, `./sandbox.sh restricted ..`): started. No `ERROR`, and no `does not preserve device/inode` NOTE, so verification ran. The manifest read back from `/run/ai-launcher/manifest` held drvfs entries (`70 43065671436781336 /workspace/plat1/.ai-containers`, the repo's `.git`, `config`, `commondir`, `hooks`) beside ext4 ones (the vault's and specs' `.git` internals, device `2096`); every one matched. Host `stat` of the launcher: `70:43065671436781336`; in the container: the same.
   - **Step 4** (control under `~/plat1-control`): started, every entry on `2096` matched.
   - **The check still bites on drvfs:** a directory renamed away and recreated under `/mnt/c` gets a new inode, and the container sees the new one (`70:44473046320591098` recorded, `70:24206847997423872` after the swap), so a swap there is detected rather than masked.
-  - **Not covered:** a native Docker Engine installed inside the distro (the different case named below), and a setup where a launcher source reaches the daemon through a file-sharing layer while `$HOME` does not. LNCH-2's reasoning stays sound for such a host, but none has been seen; reopen with the `expected`/`got` pairs if one is.
+  - **Native Engine, 2026-11-04 (PLAT-2's run, image built from `f0ad913`):** not reproducible either. A native Engine in the distro sees drvfs directly: the container's mountinfo shows the binds on `0:70`, the distro's own 9p superblock. Step 3 (`/mnt/c/tmp/plat1`, `./sandbox.sh restricted ..`) started with no `ERROR` and no skip `NOTE`. Its manifest held `70 1125899906943491 /workspace/plat1/.ai-containers`, `.git`, `config`, `commondir`, `hooks` and `.agent-blocked`, all on device `70`, and every one matched; the launcher is `70:1125899906943491` on the host and in the container. Step 4 (`~/plat1-control`): started, every entry on `2096` matched. A directory renamed away and recreated under `/mnt/c` got a new inode (`70:1688849860421936`, then `70:1688849860422076`), seen the same in a container, so a swap is detected there too.
+  - **Not covered:** a setup where a launcher source reaches the daemon through a file-sharing layer while `$HOME` does not. LNCH-2's reasoning stays sound for such a host, but none has been seen; reopen with the `expected`/`got` pairs if one is.
 
 - **Platform:** Windows 10/11, WSL2 distro (Ubuntu), Docker Desktop with WSL integration. Not a native Docker Engine installed inside the distro — that one sees drvfs directly and is a different case worth recording too.
 - **Source:** bugs review LNCH-2 (MEDIUM, PLAUSIBLE). Deferred from batch 1 by decision: no fix without a reproduction, because every candidate fix weakens the concurrent-swap check.
@@ -75,7 +76,13 @@ first, then fix test-first.
 
 ## PLAT-2: WSL2 — the corpus and the local layer have never been run
 
-- **Status: PARTLY DONE (2026-10-26).** Docker Desktop + WSL2, from ext4 and from `/mnt/c`. Results are in docs/testing.md under "Platforms exercised". The one failure that reproduced, G28, was a real bug on every Linux, fixed in #313 and #315. Phase 7 since passed with shellcheck 0.11.0. Still open: a Docker Engine installed natively in the distro.
+- **Status: DONE (2026-11-04).** Both halves, results in docs/testing.md under "Platforms exercised". No code changed.
+  - **Docker Desktop (2026-10-26):** from ext4 and from `/mnt/c`. The one failure that reproduced, G28, was a real bug on every Linux, fixed in #313 and #315. Phase 7 since passed with shellcheck 0.11.0.
+  - **Native Engine (2026-11-04, at `f0ad913`):** an Azure Windows VM, WSL2 kernel 6.18.54.1-microsoft-standard-WSL2, Ubuntu 26.04.1 distro with systemd, Docker Engine 29.9.3 from Docker's apt packages (`docker context ls` shows only `default`, on `/var/run/docker.sock`), 2 CPUs and 5.8 GiB. From ext4, `bash ./verify-on-host.sh`, every phase: passed in 9 h 29 min. Phase 4 ran 50/50 with no case skipped, `netadmin` and `launcher` detected. From a fresh clone under `/mnt/c`, Phases 5, 7 and 4: passed in 4 h 16 min, and the drvfs flake did not recur. Nothing failed, so no bug was filed.
+  - **`/mnt/c` warning:** `verify-on-host.sh` reaches no `host-preflight.sh` call, so it prints none. A launch from a project on `/mnt/c` did print it (`WARNING: … is on the Windows filesystem (/mnt/c)`).
+  - **IPv6:** enforced. A restricted container's `ip6tables -S OUTPUT` is `-P OUTPUT DROP` with the `allowed_ipv6` set and the NFLOG rule, and no launch printed the `ip6tables`-unavailable warning, so `ALLOW_IPV6_BYPASS` is not needed here.
+  - **PLAT-1's scenario** ran on this engine as well, and did not reproduce either (see PLAT-1).
+  - **Not run:** Phase 6 from `/mnt/c`, with either engine (it took most of the 9.5 h from ext4). The 11 commits merged to `main` while it ran (`f0ad913..cd36db1`, among them the split of test-git-internals-ro.sh and GIT-23 to GIT-28) were not run on WSL2.
 
 - **Picked up by:** the Docker Desktop half was done by the **WSL agent**. The native-Engine half is **the user's** (decided 2026-11-04), on an Azure VM set up for it. The WSL agent runs Docker Desktop only.
 - **The VM:** it has to be a Windows VM for WSL2 to run at all, and its size has to support nested virtualization (WSL2 is a Hyper-V VM inside it). A Linux VM would run the corpus on native Linux, which CI already does every day, not on WSL2. Inside the WSL distro, install Docker Engine from Docker's apt repository (not Docker Desktop), with systemd enabled in `/etc/wsl.conf`, and check `docker info` reports no Desktop context.
