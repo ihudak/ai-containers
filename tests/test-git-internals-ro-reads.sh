@@ -606,5 +606,68 @@ PATH="$TMP/fs116:$PATH" EXTRA_MOUNTS="$TMP/o116" launch "$TMP/app"
   || fail "G116 hooks check timeout (rc=$LAUNCH_RC; stderr: $(grep ERROR "$ERR" | head -1))"
 rm -rf "$TMP/fs116" "$TMP/o116"
 
+# ── G118: what GIT-38's fix costs and keeps on a case-sensitive filesystem ──
+# No process per path: a case-sensitive filesystem needs no getcwd, and one per
+# walk step let an agent's tree stretch a launch tenfold (review of the GIT-38
+# fix). A pwd on PATH that logs each run is the witness.
+mkdir -p "$TMP/pwd118" "$PROJ/w118" && printf '#!/bin/sh\nprintf x >> %q\nexec %q "$@"\n' "$TMP/pwd118.calls" "$(type -P pwd)" > "$TMP/pwd118/pwd" \
+  && chmod +x "$TMP/pwd118/pwd" && ln -s ../w118/../w118/../README "$PROJ/.git/hooks/pre-push" \
+  && "${G[@]}" -C "$PROJ" config include.path ../w118/../w118/inc.cfg || { printf 'SCAFFOLD-FAILED: G118 pwd\n'; exit 1; }
+# Only where TMPDIR is case-sensitive: macOS's is not (third review).
+if mkdir "$TMP/Probe118" && [[ -d "$TMP/PROBE118" ]]; then
+  printf 'NOTE: TMPDIR ignores case here; G118'\''s pwd count does not apply\n'
+else
+  PATH="$TMP/pwd118:$PATH" launch ..
+  [[ "$LAUNCH_RC" == 0 && ! -s "$TMP/pwd118.calls" ]] \
+    && pass "G118 a launch on a case-sensitive filesystem runs no pwd process" \
+    || fail "G118 pwd ran $(wc -c < "$TMP/pwd118.calls" 2>/dev/null || echo 0) times (rc=$LAUNCH_RC)"
+fi
+rmdir "$TMP/Probe118" 2>/dev/null
+"${G[@]}" -C "$PROJ" config --unset include.path; rm -rf "$TMP/pwd118" "$TMP/pwd118.calls" "$PROJ/w118" "$PROJ/.git/hooks/pre-push"
+# A gitdir: through a link and then .. out of where it leads: still named as a
+# link the agent can repoint; the path as written, not normalised, is searched
+# for one (review of the GIT-38 fix).
+mkdir -p "$PROJ/src118" "$PROJ/node_modules/a118/b" && "${G[@]}" init -q --bare "$PROJ/node_modules/a118/real" \
+  && "${G[@]}" config --file "$PROJ/node_modules/a118/real/config" core.bare false \
+  && ln -s node_modules/a118/b "$PROJ/lnk118" && printf 'gitdir: ../lnk118/../real\n' > "$PROJ/src118/.git" \
+  || { printf 'SCAFFOLD-FAILED: G118 link\n'; exit 1; }
+launch ..
+grep -qF 'a118/real through a link inside the mount' "$ERR" \
+  && pass "G118 a gitdir: through a link and .. is named as a link the agent can repoint" \
+  || fail "G118 link then .. (stderr: $(grep -F a118 "$ERR" | head -1))"
+rm -rf "$PROJ/src118" "$PROJ/node_modules/a118" "$PROJ/lnk118"
+# A gitdir: written with a leading //: bash's cd -P keeps it, and no mount's
+# prefix matched, so its git directory went unprotected (second review of the
+# GIT-38 fix).
+mkdir -p "$PROJ/src118b" "$PROJ/node_modules/x118b" && "${G[@]}" init -q --bare "$PROJ/node_modules/x118b/g" \
+  && "${G[@]}" config --file "$PROJ/node_modules/x118b/g/config" core.bare false \
+  && printf 'gitdir: /%s\n' "$PROJ/node_modules/x118b/g" > "$PROJ/src118b/.git" || { printf 'SCAFFOLD-FAILED: G118 //\n'; exit 1; }
+launch ..
+has_mount "$PROJ/node_modules/x118b/g/config:/workspace/proj/node_modules/x118b/g/config:ro" \
+  && pass "G118 a gitdir: written with a leading // is protected" \
+  || fail "G118 // gitdir (mounts: $(grep -c x118b <<<"$(mounts)"); stderr: $(grep -F x118b "$ERR" | head -1))"
+rm -rf "$PROJ/src118b" "$PROJ/node_modules/x118b"
+# A core.hooksPath into the writable project that does not exist yet: the agent
+# can make it, and it is named, as one that exists is (second review of the
+# GIT-38 fix).
+"${G[@]}" -C "$PROJ" config core.hooksPath .later118/hooks || { printf 'SCAFFOLD-FAILED: G118 hooksPath\n'; exit 1; }
+launch ..
+grep -qF "runs its git hooks from /workspace/proj/.later118/hooks (core.hooksPath)" "$ERR" \
+  && pass "G118 a core.hooksPath into the project that does not exist yet is named" \
+  || fail "G118 missing hooksPath (stderr: $(grep -F hooksPath "$ERR" | head -1))"
+"${G[@]}" -C "$PROJ" config --unset core.hooksPath
+# A .Git directory on a case-sensitive filesystem is not git's: left alone, as
+# before the scan matched git's names in any case (third review of the GIT-38
+# fix). Where TMPDIR ignores case it is git's, and the casefold test has it.
+if ! { mkdir "$TMP/Probe118b" && [[ -d "$TMP/PROBE118B" ]]; }; then
+  mkdir -p "$PROJ/c118/.Git/objects" "$PROJ/c118/.Git/refs" || { printf 'SCAFFOLD-FAILED: G118 .Git\n'; exit 1; }
+  launch ..
+  [[ ! -e "$PROJ/c118/.Git/commondir" ]] && ! grep -qF 'c118' "$ERR" && ! grep -qF 'c118' <<<"$(mounts)" \
+    && pass "G118 a .Git directory on a case-sensitive filesystem is left alone" \
+    || fail "G118 .Git touched ($(ls -A "$PROJ/c118/.Git" | tr '\n' ' '); stderr: $(grep -F c118 "$ERR" | head -1))"
+  rm -rf "$PROJ/c118"
+fi
+rmdir "$TMP/Probe118b" 2>/dev/null
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

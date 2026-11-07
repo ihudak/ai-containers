@@ -35,8 +35,8 @@ reports by editing the entry's **Status** line (and docs/testing.md's
 | Agent | Its platform | Picks up | Cannot do |
 |---|---|---|---|
 | **Linux agent** (review machine) | Linux x86-64, native Docker Engine | the falsify work GAP-1 to GAP-4 | anything below |
-| **WSL agent** | Windows + WSL2 (Ubuntu distro) + **Docker Desktop** with WSL integration. **Not** a native Docker Engine in the distro | **PLAT-6** | PLAT-2's remaining half: it needs a Docker Engine installed natively in the distro. The user runs it on an Azure VM |
-| **Mac agent** | macOS, Docker Desktop and/or Colima | **PLAT-3** (GAP-11), **PLAT-5**, **PLAT-7** | — |
+| **WSL agent** | Windows + WSL2 (Ubuntu distro) + **Docker Desktop** with WSL integration. **Not** a native Docker Engine in the distro | **PLAT-6**, **PLAT-8** (its drvfs half) | PLAT-2's remaining half: it needs a Docker Engine installed natively in the distro. The user runs it on an Azure VM |
+| **Mac agent** | macOS, Docker Desktop and/or Colima | **PLAT-3** (GAP-11), **PLAT-5**, **PLAT-7**, **PLAT-8** (its APFS half) | — |
 | *nobody* | x86-64 CPU without AVX | PLAT-4: closed as not supported | — |
 
 Any change of code an agent makes follows the rule at the top: reproduce
@@ -141,6 +141,20 @@ first, then fix test-first.
 - **Expected:** no installer dialog at any step. Each launch prints one `WARNING: git is not installed on this host, is older than 2.18, or does not run, so …`. `.git/config.worktree` is made in the project's repository. `--version` in the engine checkout reports the engine release as `unknown`, and init and sync record none: the project's `.ai-containers/` gets no `engine-version`, so `--version` there says `unknown` too. Init and sync add no `/.ai-containers/` line and print a `NOTE:` that git does not run on this host, unless the project's `.gitignore`, its `.git/info/exclude` or `~/.config/git/ignore` already names the copy, in which case they print nothing.
 - **A defect looks like:** the installer dialog opening (the shim was run), or no WARNING (git was taken as present). Also record whether `xcode-select -p` fails with Xcode.app installed but no Command Line Tools: then `/usr/bin/git` works, and taking it as absent would only cost the checks git makes.
 - **Fix constraints, if one reproduces:** a git that cannot be shown to run counts as absent; never fall back to a parser.
+
+## PLAT-8: macOS and WSL — paths spelled in another case on a filesystem that ignores case
+
+- **Status: OPEN** (2026-11-06).
+- **Picked up by:** the **Mac agent** (APFS) and the **WSL agent** (drvfs).
+- **Platform:** macOS with its default case-insensitive APFS. WSL2 with a directory under `/mnt/<drive>`.
+- **Source:** bugs review GIT-38, fixed and measured on Linux only, and GIT-41, modelled only. `sandbox.sh: _disk_spell()` respells, from `getcwd` (an external `pwd -P`), each path that crosses a directory ignoring case, so every path compared with a mount is spelled one way. On Linux that holds because a directory has one dentry. Whether macOS's `getcwd` and WSL's drvfs spell a directory one way, however it was reached, has not been measured. GIT-41: Docker Desktop's file sharing may open `.git/CONFIG` as the host's `.git/config`, past the read-only bind of `config`.
+- **Run:**
+  - Mac: `bash tests/test-git-internals-ro-casefold.sh` at current `main`. `TMPDIR` is on APFS, so the cases run there directly.
+  - WSL: `TMPDIR=/mnt/c/<a directory of yours> bash tests/test-git-internals-ro-casefold.sh`. Then the same with `TMPDIR` in a directory made case-sensitive (`fsutil.exe file setCaseSensitiveInfo <dir> enable`); there it should say `SKIP:`, or, on a kernel of 6.13 or later, run the cases on its own casefold tmpfs, which its first line says.
+  - Both: the test's first line says which way it ran (`NOTE: TMPDIR ignores case here`); record it. Record the output of `cd <dir>; mkdir Proj; cd proj; /bin/pwd -P; cd ../PROJ; /bin/pwd -P` in that place.
+  - GIT-41, both, on Docker Desktop: `./sandbox.sh restricted <a git checkout>`, then in the container `printf '[core]\n\tfsmonitor = touch /tmp/x\n' >> .git/CONFIG`. Exit, and on the host run `git config --file <checkout>/.git/config --get core.fsmonitor`.
+- **Expected:** every `G117` line a `PASS`, and `0 failure(s)`. Both `pwd` lines print `Proj`. GIT-41: the write in the container fails (`Read-only file system`), and the host's config has no `core.fsmonitor`.
+- **A defect looks like:** a `FAIL: G117 …`, or `pwd` printing the spelling it was reached by. Then `getcwd` does not spell a directory one way there, and "inside this mount" has to compare directories by identity (`[[ a -ef b ]]` on each ancestor), not by prefix. GIT-41: the write going through, and `touch /tmp/x` in the host's config.
 
 ## PLAT-6: WSL2 + Docker Desktop — re-run the hermetic suite at current `main`
 

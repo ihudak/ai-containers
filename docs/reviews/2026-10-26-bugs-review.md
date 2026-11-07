@@ -19,6 +19,7 @@
 - **Updated 2026-11-04:** GIT-25 and GIT-26 are FIXED (`d942daa`). GIT-28, found while fixing them (section 22), is FIXED too, after seven reviews of its fix; `--version` no longer reports `-dirty` (the user's choice).
 - **Updated 2026-11-05:** the fix-batch table below no longer lists as open what was fixed after its batch. Every entry is FIXED except these: GIT-29 (open; section 24; the user chose fix A, 2026-11-05), GIT-35 (open, LOW), GIT-38 (open, HIGH) and GIT-39 (open, MEDIUM; section 25), LNCH-2 (not reproducible), GIT-12 (won't fix), GIT-13 (resolved fail-closed), LNCH-7 (documented), GIT-21 and LNCH-17 (closed), BLD-8 (its `--error-on=any` trade kept by design) and TST-21 (the same comment edit is owed to mgd-ai-containers' copy of `tests/layer-checks.conf`, which is not reachable from this machine). Section 24 holds GIT-29, found while reviewing PLAT-7's run steps; section 25 GIT-30, found by GAP-2's slice 2, and GIT-31 to GIT-39, found by the reviews of its fix and theirs.
 - **Updated 2026-11-06:** GIT-29 is FIXED by fix A, after a review and a re-review of the fix. GIT-40, found by the automated security review of the GIT-36/37 fix (section 25), is FIXED.
+- **Updated 2026-11-07:** GIT-38 is FIXED on Linux, after a review of the fix; macOS and WSL verify it (platform-issues PLAT-8). GIT-41, found by that review, is open (section 25).
 - **Companion:** [2026-10-26-feature-gaps-review.md](2026-10-26-feature-gaps-review.md).
 - **Confidence:** CONFIRMED = reproduced, or unambiguous from the code. PLAUSIBLE = strong reasoning, not reproduced (usually needs hardware or a platform not available here); verify before fixing.
 - **Citations** are by snippet, per AGENTS.md "Citing code". Scratch repro paths mentioned in entries were session-local and may no longer exist; each entry describes its repro in full.
@@ -1659,7 +1660,7 @@ An Opus reviewer read the rewritten PLAT-7 steps against the code, 2026-11-05, a
 
 ## 25. Found by GAP-2's slice 2
 
-An Opus reviewer of the slice's new tests, 2026-11-05, at `fd49c3c`, reached a mutant of `_git_runs()` that the slice had called unreachable, through a `commondir` holding a NUL. Following that up found GIT-30. The reviews of its fix and theirs found GIT-31 to GIT-39, and the automated security review of the GIT-36/37 fix (`a1b7ce7`) found GIT-40.
+An Opus reviewer of the slice's new tests, 2026-11-05, at `fd49c3c`, reached a mutant of `_git_runs()` that the slice had called unreachable, through a `commondir` holding a NUL. Following that up found GIT-30. The reviews of its fix and theirs found GIT-31 to GIT-39, the automated security review of the GIT-36/37 fix (`a1b7ce7`) found GIT-40, and the review of the GIT-38 fix found GIT-41.
 
 ### GIT-30: a commondir, gitdir or .git file is read otherwise than git reads it
 - **Status: FIXED** (2026-11-05).
@@ -1819,6 +1820,7 @@ An Opus reviewer of the slice's new tests, 2026-11-05, at `fd49c3c`, reached a m
   - **A path into a read-only overlay is taken for safe** without walking the hooks there. With `core.hooksPath=../L/node_modules/h` (`L` a planted launcher) and `h/post-checkout` a link to a writable script, every launch after the first is silent. The launcher link walk prunes `node_modules` and `.git`.
   - **A relative path is resolved from the directory the `.git` lies in.** git takes it from `core.worktree` when one is set, and expands `~user/` and `%(prefix)/`.
 - **Fix direction:** walk the hooks git runs in a `core.hooksPath` directory, as the hooks in `hooks/` are walked, and resolve a relative path from the worktree git uses.
+- **Also (2026-11-07, the third review of the GIT-38 fix):** a `core.hooksPath` reached through a link the agent can repoint (`tools -> <outside>`, `core.hooksPath=tools/hooks`) is never named: `_cd_phys()` resolves through the link, while an include's path is walked with `_walk_exposed()`. Same severity; walk it the same way.
 
 ### GIT-36: the worktree an index is read against is not every one git may use
 - **Status: FIXED** (2026-11-06). Found by the review of the simplified GIT-31 fix.
@@ -1873,7 +1875,55 @@ An Opus reviewer of the slice's new tests, 2026-11-05, at `fd49c3c`, reached a m
   - The link pass spawns one `find` per entry, twice per launch: about 0.7 s for 150 repositories.
 
 ### GIT-38: a case-insensitive filesystem defeats every "inside this mount" test
-- **Status: OPEN** (2026-11-06). Found by the review of the GIT-36/37 fix.
+- **Status: FIXED on Linux** (2026-11-07), after three reviews of the fix; macOS and WSL verify it (platform-issues PLAT-8). Found by the review of the GIT-36/37 fix.
+  - **The fix:** every path compared with a mount is spelled as on disk where it can be spelled otherwise.
+    - `_cd_phys()` resolves as before, with bash's `cd -P`, and then `_disk_spell()` respells the result, which reaches `_gd_resolve()` (a `gitdir:`, a `commondir`), `core.worktree`, `core.hooksPath`, an include's directory, the writable mounts' sources (`bsrc`) and the group's own root (`_git_skip_root`).
+    - `_disk_spell()` asks `getcwd` (an external `pwd -P`, found once, with an absolute path) only for a path that crosses a directory ignoring case. `_ci_path()` decides that with builtin tests: a component whose case, turned over, names the same file. So a case-sensitive filesystem costs no process (G118 counts them).
+    - Each directory is asked once (a cache). At most `AI_CONTAINERS_SPELL_MAX` (5000, a test knob) per launch, past which the launch is refused, naming it, as past `SANDBOX_GIT_MAX`: the agent can make directories.
+    - Link walks follow links in bash's spelling (`_cd_bash()`), and `_walk_exposed()` respells each record (a link, a `..` step, where the walk ends) before it judges it, in the launcher's own shell, where the cache lasts.
+    - `_gd_resolve()` judges one that does not exist by its spelling on disk too (`_canon_lex()`). It names one reached "through a link" only when a link is on the way as written, `..` and all (`_lex_link_dir()`): a case or Unicode difference is not one.
+    - A submodule's checkout is respelled after the batch that resolves them, so one its index records in another case is named as "not where its index says" and not followed.
+  - **The review of the fix** found three HIGH and three MEDIUM issues, all fixed here:
+    - The new test failed the suite where it cannot run; it now says `SKIP:`.
+    - A submodule recorded in another case got a writable pin over a launcher's read-only overlay, so the agent could rewrite `sandbox.sh`. This was there before the fix; the gitlink check compared bash's spelling with itself.
+    - A `getcwd` process per walk step let an agent's tree stretch a launch from 18 s to 180 s on plain Linux.
+    - Looking for a link on the normalised path dropped the warning for `lnk/..`.
+    - The test left most of the fix unpinned. Every part is now pinned by a check, and each check was seen red on a mutant of its part.
+    - LOW ones fixed: `_git_skip_root` used bash's spelling, and a `pwd` found through a relative `PATH` entry was used.
+    - Its third HIGH issue is GIT-41, below.
+  - **The second review** found three HIGH and two MEDIUM issues, all fixed here (the user's choice). Two were older than the fix:
+    - A `gitdir:` written `//<path>` kept bash's leading `//`, which no mount's prefix matched. It was unprotected before the fix too, but the fix had silenced the warning it drew. `_cd_bash()` now takes `//` as `/`.
+    - git opens its own names in any case where case is ignored, but the scan matched them case-sensitively. A repository the agent spelled `.GIT`, `head`, `CONFIG` and so on was never found, protected or named after the session. The scan now uses `-iname`/`-ipath` for git's names, and each test on them compares in lower case. A name that matches only in another case counts only where its directory ignores case (`_ci_path()`), so a case-sensitive filesystem sees what it saw before. Pre-existing.
+    - A hook link's or include's target in a directory that did not exist yet kept bash's spelling. `_spell_rec()` now respells the longest existing directory.
+    - On a case-sensitive filesystem an agent's tree still made a launch 2.3 times as long: `_ci_path()` was asked about the same directories over and over. It now remembers each prefix (`_ci_memo`), and `_spell_rec()` forks nothing. Measured with 5 repositories × 24 hook links of 120 `..` steps each, second launch: 14.5 s at `c69c356`, 16.1 s now.
+    - A `core.hooksPath` into a directory that did not exist yet was never named. It is now judged where it would be. Pre-existing; husky's `.husky/_` is gone after a `git clean`.
+  - **The third review** found one HIGH and two MEDIUM issues, all fixed here, and LOW ones:
+    - The hard-link check of GIT-31 matched hook names with `-name`, so `hooks/PRE-COMMIT` hard-linked to a project file launched, and git ran it. It is `-iname` now. Pre-existing.
+    - G118's count of `pwd` processes failed wherever `TMPDIR` ignores case (macOS); it is not applied there.
+    - The case-insensitive scan's seven `-ipath` prunes ran on every entry. They now run only after a name test, which makes the scan faster than before the fix: 0.17 s against 0.36 s on `/usr/share`.
+    - LOW ones fixed:
+      - A `.Git` on a case-sensitive filesystem was taken for git's.
+      - `_gd_resolve()` ran `_canon_lex()` for targets that exist.
+      - A linked worktree outside every mount, whose `gitdir` is written in another case, drew "no worktree is known".
+      - `_ci_path()` looped on a relative path, and `_spell_rec()` turned `/` into nothing.
+      - The helpers' state could come from the environment, `_cd_phys_pwd` being the program run as `pwd`.
+    - On ext4 casefold, `getcwd` may spell a directory as the lookup that made its dentry, while the scan spells it as `readdir` does. A difference makes a gitlink skipped with its WARNING. Not measured.
+    - With no `pwd` reachable by an absolute path on `PATH`, `_disk_spell()` respells nothing, silently.
+    - `${c~~}` turns over ASCII only under `LC_ALL=C`, so a case-ignoring directory reached only through names without ASCII letters is not seen.
+    - Two others predate the fix. A gitlink recorded in another case is now skipped and named, and its `.git` file stays writable. The agent renaming `.agent-blocked` in case, with an unlistable directory in it, makes later launches refuse.
+    - A submodule's `.git` file spelled `.GIT` on disk is bound twice, under both spellings: `had[]` is keyed by spelling.
+    - Several of the lower-case comparisons are reached only in combinations no check builds, and are not pinned: the NOTE for a mount inside a `.git`, a relative `core.hooksPath` from a `.GIT`, `*/worktrees`, the `-ipath` prunes, `_gdi_follow()`'s second test, a worktree's `gitdir` back-pointer, and the `.git/modules` `.git` file.
+  - **Why `getcwd` is enough on Linux:** a directory has one dentry, so however it was reached, `getcwd` spells it one way while it is cached. On a casefold tmpfs that is the spelling it was made with; on ext4 it may be the spelling of the lookup that made the dentry, which is still one spelling.
+  - **Not measured:** macOS's `getcwd`, and WSL's drvfs. drvfs compares names case-sensitively, so a directory reached by another spelling may move its one dentry to that spelling. PLAT-8 asks for both runs; a failure there calls for comparing by `-ef` instead.
+  - **Cost:** no `pwd` process on a case-sensitive filesystem, and builtin tests on each new directory. The scan is faster than before the fix. Where case is ignored, one process per directory, at most 5000 a launch (about 1.6 ms each on Linux).
+  - **Tests:**
+    - `tests/test-git-internals-ro-casefold.sh`, G117, has 21 checks.
+      - Seen red on the code before: a `gitdir:`, a `core.worktree`, an include and a hook link's target, each written in another case; the second review's hook link and include into a missing directory; a `.GIT` repository, its submodule, a `.GIT` file and the git directory's worktree, and one made in the session; the third review's hard-linked `PRE-COMMIT`.
+      - Seen red on the fix before the third review: a linked worktree whose `gitdir` is written in another case.
+      - Seen red on mutants of the parts they pin: a submodule recorded in another case, a mount named in another case, a `..` step and a link step written so, a missing `gitdir:`, the group's root, and the budget.
+      - The `.GIT` directory with no `head` is protected through its `commondir` placeholder, as G77's is.
+    - It runs where `TMPDIR` ignores case, and otherwise in a user namespace with a casefold tmpfs, saying which. Elsewhere (CI's Ubuntu 24.04, the floor container) it says `SKIP:`.
+    - G118 in `tests/test-git-internals-ro-reads.sh` runs on every filesystem: `lnk/..` still named, a `//` gitdir protected, and a missing `core.hooksPath` named. Where `TMPDIR` is case-sensitive it also checks that no `pwd` process runs and that a `.Git` directory is left alone.
 - **Severity: HIGH** where it applies: macOS's default APFS, and a WSL path under `/mnt/<drive>`. Confidence: CONFIRMED on a casefold tmpfs (`chattr +F`) on Linux; LIKELY on macOS, which runs the same bash `cd -P` code.
 - **Location:** sandbox.sh: `_cd_phys()` and every test of whether a path lies in a mount: `_gdi_follow()`, the gitlink checks in `git_dirs_in()`, and `_in_writable()`.
 - **What's wrong:** `cd -P` keeps the spelling it was given, and each "inside this mount" test is a case-sensitive prefix match.
@@ -1886,6 +1936,16 @@ An Opus reviewer of the slice's new tests, 2026-11-05, at `fd49c3c`, reached a m
 - **Severity: MEDIUM.** Confidence: CONFIRMED. With `include.path=<outside>/inc.cfg` and `ln <outside>/inc.cfg <mount>/side.cfg`, the next launch was silent. Appending a `core.fsmonitor` through `side.cfg` made the host's git run it.
 - **Location:** sandbox.sh: `_walk_exposed()`, whose `=` step asks only whether the target itself lies in a writable mount.
 - **Fix direction:** judge an include's target as `_fs_other_names()` judges a hook's.
+
+### GIT-41: on Docker Desktop, a read-only bind of one file does not cover its other spellings
+- **Status: OPEN** (2026-11-07). Found by the review of the GIT-38 fix. Not measured on a real Mac or WSL: platform-issues PLAT-8 asks for it.
+- **Severity: HIGH** where it applies: Docker Desktop on macOS and on Windows, whose containers reach a host directory through virtiofs or 9p. Confidence: PLAUSIBLE, modelled with a passthrough FUSE server over a casefold tmpfs on Linux.
+- **Location:** `sandbox.sh: launcher_ro_overlay()`, which binds `config`, `config.worktree`, `commondir` and each `.git` file read-only one file at a time.
+- **What's wrong:** the guest kernel compares names case-sensitively, so `.git/CONFIG` is a name of its own, not a mount point. The host server opens it case-insensitively, which is the same file as `config`.
+  - In the model: a write to `.git/config` was refused, while a write to `.git/CONFIG` went through and put a `core.fsmonitor` into the host's config.
+  - Directory binds held: `.git/HOOKS/post-commit` and `hooks/POST-COMMIT` were refused.
+  - On a native casefold filesystem, every spelling was refused.
+- **Fix direction:** measure it first: from a restricted container on Docker Desktop, write `.git/CONFIG` and read the host's `.git/config`. If it goes through, a single file cannot be made read-only there by its name. That would mean binding a directory that holds it (a read-only `.git` with writable `objects/`, `refs/`, `logs/` and the index binds inside it), or refusing such hosts.
 
 ### GIT-40: a commondir under a read-only overlay that leads nowhere keeps the decoy config
 - **Status: FIXED** (2026-11-06). Found by the automated security review of `a1b7ce7`, the GIT-36/37 fix.

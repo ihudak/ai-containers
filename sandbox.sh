@@ -373,7 +373,7 @@ launcher_ro_overlay() {
   local -a _xm_t=() _xm_by=() _xm_j=() ro_srcs=()
   local -A gpv=()
   local -a scan links walk gdirs gfiles glinks gunr gro ug usrc udst udep ukind
-  local g base what gmax gn gitmax cfg cdir ocfg ocd hp hpd k2 first ik ip ib rep al rk rh hk
+  local g base what gmax gn gitmax cfg cdir ocfg ocd hp hpd hpw k2 first ik ip ib rep al rk rh hk
   local -a inc pgd=() pga=() pgc=() pgo=()
   local -A seen=() tried=() scanned=() pinned=()
   # Included git config files read: each once per protected config, keyed by
@@ -403,7 +403,7 @@ launcher_ro_overlay() {
   fi
   you="$(id -u)"
   shift 3
-  self="$(cd "$reached" 2>/dev/null && pwd -P)" || self="$reached"
+  _cd_phys self "$reached" || self="$reached"
   while (( $# )); do
     if [[ "$1" != -v || $# -lt 2 ]]; then shift; continue; fi
     spec="$2"; shift 2
@@ -421,7 +421,8 @@ launcher_ro_overlay() {
       printf '       Make it listable (chmod u+rx, if it is yours), or mount it :ro.\n' >&2
       exit 1
     fi
-    src="$(cd "$src" 2>/dev/null && pwd -P)" || continue
+    # Spelled as on disk, as every path compared with it is (GIT-38).
+    _cd_phys src "$src" || continue
     bsrc+=("$src"); bdst+=("$dst")
   done
 
@@ -435,7 +436,7 @@ launcher_ro_overlay() {
     if [[ -z "$part" ]]; then continue; fi
     p="$p/$part"
     if [[ ! -L "$p" ]]; then continue; fi
-    pp="$(cd "${p%/*}/" 2>/dev/null && pwd -P)" || continue
+    _cd_phys pp "${p%/*}/" || continue
     for i in ${bsrc[@]+"${!bsrc[@]}"}; do
       if [[ "$pp" == "${bsrc[i]}" || "$pp" == "${bsrc[i]}"/* ]]; then
         printf 'WARNING: %s is a symlink inside a writable mount (%s); the agent can\n' "$(_term "$p")" "$(_term "${bdst[i]}")" >&2
@@ -688,7 +689,7 @@ launcher_ro_overlay() {
     # the group's directory is the agent's to write like any other (G92).
     if [[ -n "${_git_skip_root:-}" && ( "$src" == "$_git_skip_root" || "$src" == "$_git_skip_root"/* ) \
           && "$dst" != /workspace && "$dst" != /workspace/* ]]; then continue; fi
-    if [[ "$src" == */.git/* ]]; then
+    if [[ "${src,,}" == */.git/* ]]; then
       printf 'NOTE: %s lies inside a git directory and is mounted writable at %s;\n' "$(_term "$src")" "$(_term "$dst")" >&2
       printf '      your host'\''s git may run what changes there.\n' >&2
     fi
@@ -1116,11 +1117,14 @@ launcher_ro_overlay() {
       case "$hp" in
         /*) hpd="$hp" ;;
         '~/'*) hpd="$HOME/${hp#\~/}" ;;
-        *) if [[ "$g" == */.git ]]; then hpd="${g%/.git}/$hp"; else hpd="$g/$hp"; fi ;;
+        *) if [[ "${g,,}" == */.git ]]; then hpd="${g%/*}/$hp"; else hpd="$g/$hp"; fi ;;
       esac
       # Physically: a `..` after a link steps out of where it leads (review of the
       # GIT-31 fix; G114).
-      _cd_phys hpd "$hpd" || hpd=""
+      # One that does not exist yet, where it would be: the agent can make it
+      # (husky's .husky/_ is gone after a git clean; second review of the GIT-38 fix).
+      # (_cd_phys empties its out-var when it fails: the path is kept aside.)
+      hpw="$hpd"; _cd_phys hpd "$hpw" || _canon_lex hpd "$hpw"
       for i in ${bsrc[@]+"${!bsrc[@]}"}; do
         if [[ -z "$hpd" || ( "$hpd" != "${bsrc[i]}" && "$hpd" != "${bsrc[i]}"/* ) ]]; then continue; fi
         x="${bdst[i]}${hpd#"${bsrc[i]}"}"; safe=""
@@ -1399,7 +1403,9 @@ _ro_fifo_search() {
   # writable mount: the Nix store links every file it holds (reviews of the
   # GIT-31 fix).
   [[ -n "$fs_lc" ]] || return 0
-  for e in "${git_hook_names[@]}"; do hn+=(-o -name "$e"); done
+  # -iname: where case is ignored git runs hooks/PRE-COMMIT as pre-commit (third
+  # review of the GIT-38 fix).
+  for e in "${git_hook_names[@]}"; do hn+=(-o -iname "$e"); done
   hn=("${hn[@]:1}")
   local -a lf=() ld=()
   for x in ${_fs_lc[@]+"${!_fs_lc[@]}"}; do
@@ -1567,7 +1573,10 @@ _walk_exposed() {
   for _we_e in "$@"; do
     case "$_we_e" in
       \?*) _we_how=unchecked; _we_step="${_we_e#\?}"; _we_at="$_we_step"; return 0 ;;
-      =*) _we_h=change;  _we_q="${_we_e#=}"
+      # Spelled as on disk, here in the launcher's own shell, where each directory
+      # is read once: a link's target written in another case leads to the same
+      # place, and is judged against mounts by its prefix (GIT-38).
+      =*) _we_h=change;  _we_q="${_we_e#=}"; _spell_rec _we_q
           # With a second name it can be changed through that one, under a
           # read-only overlay too — where the agent could make one: in a writable
           # mount (review of the GIT-31 fix).
@@ -1578,8 +1587,8 @@ _walk_exposed() {
               fi
             done
           fi ;;
-      ^*) _we_h=replace; _we_q="${_we_e#^}" ;;
-      *)  _we_h=repoint; _we_q="$_we_e" ;;
+      ^*) _we_h=replace; _we_q="${_we_e#^}"; _spell_rec _we_q ;;
+      *)  _we_h=repoint; _we_q="$_we_e"; _spell_rec _we_q ;;
     esac
     if [[ -n "$_we_home" && ( "$_we_q" == "$_we_home" || "$_we_q" == "$_we_home"/* ) ]]; then
       _we_in=""
@@ -1779,7 +1788,7 @@ _mount_representable() {
 # path, which need not exist. Stops quietly after 40 links (a loop).
 _link_walk() {
   local cur c t
-  _cd_phys cur "${1%/*}/" || return 0
+  _cd_bash cur "${1%/*}/" || return 0
   c="${1##*/}"
   printf '%s\0' "$cur/$c"
   _readlink_exact t "$cur/$c" || return 0
@@ -2171,18 +2180,25 @@ _in_writable() {
 # bind, is named (capped by the caller's _gdi_warned). Fails if nothing resolves.
 _gd_resolve() {
   local -n _gr_out=$4
-  local _gr_t _gr_lex
+  local _gr_t _gr_lex _gr_c _gr_ld="" _gr_raw
   _gr_out=""
   if [[ "$2" == /* ]]; then _gr_t="$2"; else _gr_t="$1/$2"; fi
+  _gr_raw="$_gr_t"
   _gr_lex="$(_lex_norm "$_gr_t")"
   if ! _cd_phys _gr_t "$_gr_t"; then
-    if _in_writable "$_gr_lex" && (( ++_gdi_warned <= 5 )); then
+    # Where it would be, spelled as on disk, as well as how it is written: in
+    # another case it names the same place (GIT-38). Only here: a subshell more
+    # for every target that exists cost every launch (third review).
+    _canon_lex _gr_c "$_gr_lex"
+    if { _in_writable "$_gr_lex" || _in_writable "$_gr_c"; } && (( ++_gdi_warned <= 5 )); then
       printf 'WARNING: %s names %s, which does not exist; if the agent makes it, your host'\''s git\n' "$(_term "$3")" "$(_term "$_gr_lex")" >&2
       printf '         reads it unprotected until the next launch.\n' >&2
     fi
     return 1
   fi
-  if [[ "$_gr_lex" != "$_gr_t" ]] && _in_writable "$_gr_lex" && (( ++_gdi_warned <= 5 )); then
+  # Through a link: not a case difference, which leads where it is written.
+  if [[ "$_gr_lex" != "$_gr_t" ]] && _lex_link_dir _gr_ld "$_gr_raw" \
+     && { _in_writable "$_gr_lex" || _in_writable "$_gr_ld"; } && (( ++_gdi_warned <= 5 )); then
     printf 'WARNING: %s reaches %s through a link inside the mount, which the agent can repoint\n' "$(_term "$3")" "$(_term "$_gr_t")" >&2
     printf '         to a git directory this launch did not protect. Name the real path in it instead.\n' >&2
   fi
@@ -2344,13 +2360,144 @@ _rd_fail() {
 # read instead (review of the GIT-31 fix). A relative <path> goes through ./, as
 # git takes it: cd reads a bare `-` as its previous directory. Fails if either
 # cannot be entered.
+#   Spelled as on disk (_disk_spell): bash's $PWD keeps the spelling it was
+# given, and on a filesystem that ignores case (macOS's APFS, a WSL drive) a
+# gitdir: or core.worktree spelled in another case names the same directory,
+# while every "inside this mount" test is a prefix match: the git directory it
+# named was never protected (bugs review GIT-38).
 _cd_phys() {
-  local -n _cp_out=$1
-  local _cp_p="${3:-.}"
-  _cp_out=""
-  [[ "$_cp_p" == /* ]] || _cp_p="./$_cp_p"
-  IFS= read -r -d '' _cp_out < <(cd -P -- "$2" 2>/dev/null && cd -P -- "$_cp_p" 2>/dev/null && printf '%s\0' "$PWD") \
-    || { _cp_out=""; return 1; }
+  _cd_bash "$@" || return 1
+  _disk_spell "$1"
+}
+
+# _cd_bash: _cd_phys as bash spells it, for a walk that only follows links;
+# _walk_exposed spells its records before it judges them.
+_cd_bash() {
+  local -n _cb_out=$1
+  local _cb_p="${3:-.}"
+  _cb_out=""
+  [[ "$_cb_p" == /* ]] || _cb_p="./$_cb_p"
+  IFS= read -r -d '' _cb_out < <(cd -P -- "$2" 2>/dev/null && cd -P -- "$_cb_p" 2>/dev/null && printf '%s\0' "$PWD") \
+    || { _cb_out=""; return 1; }
+  # bash keeps a leading //, which no mount's prefix matches: a gitdir: written
+  # //<path> named a git directory never protected (second review of the GIT-38
+  # fix). On Linux and macOS it is /.
+  while [[ "$_cb_out" == //* ]]; do _cb_out="${_cb_out#/}"; done
+}
+
+# _ci_path <path>: whether a physical <path> crosses a directory that ignores
+# case: some component, its case turned over, names the same file. Builtin
+# tests only, so a case-sensitive filesystem costs no process (review of the
+# GIT-38 fix: a process per step let an agent's tree stretch a launch tenfold).
+# A link at the other spelling is not taken for one. Each prefix is checked
+# once per shell (_ci_memo): walks and gitlinks ask about the same directories
+# over and over, and a launch on a case-sensitive filesystem still took 2.5
+# times as long (second review).
+_ci_path() {
+  [[ "$1" == /* ]] || return 1
+  # Made once, by a flag: declare -p prints the whole table on every call.
+  [[ -n "${_ci_memo_made:-}" ]] || { declare -gA _ci_memo=(); _ci_memo_made=1; }
+  local _ci_p="${1%/}" _ci_s="" _ci_r _ci_c _ci_f
+  while [[ -n "$_ci_p" && -z "${_ci_memo[$_ci_p]+x}" ]]; do
+    _ci_s="/${_ci_p##*/}$_ci_s"; _ci_p="${_ci_p%/*}"
+  done
+  if [[ -n "$_ci_p" && "${_ci_memo[$_ci_p]}" == 1 ]]; then return 0; fi
+  _ci_r="${_ci_s#/}"
+  while [[ -n "$_ci_r" ]]; do
+    _ci_c="${_ci_r%%/*}"
+    if [[ "$_ci_r" == */* ]]; then _ci_r="${_ci_r#*/}"; else _ci_r=""; fi
+    [[ -n "$_ci_c" ]] || continue
+    _ci_f="${_ci_c~~}"
+    if [[ "$_ci_f" != "$_ci_c" && ! -L "$_ci_p/$_ci_f" && "$_ci_p/$_ci_f" -ef "$_ci_p/$_ci_c" ]]; then
+      _ci_memo[$_ci_p/$_ci_c]=1; return 0
+    fi
+    _ci_p="$_ci_p/$_ci_c"; _ci_memo[$_ci_p]=0
+  done
+  return 1
+}
+
+# _disk_spell <var>: the existing physical directory path in <var>, spelled as
+# on disk where it crosses a directory that ignores case: from getcwd (an
+# external pwd -P), one newline after it taken off exactly. Each directory is
+# asked once per shell (_ds_cache); at most AI_CONTAINERS_SPELL_MAX (5000, a test
+# knob) are asked per launch, then the launch is refused, named, as past
+# SANDBOX_GIT_MAX: the agent can make directories (review of the GIT-38 fix).
+# Unchanged where there is no pwd with an absolute path.
+_disk_spell() {
+  local -n _ds_v=$1
+  local _ds_k="$_ds_v" _ds_r=""
+  [[ -n "$_ds_k" ]] && _ci_path "$_ds_k" || return 0
+  [[ -n "${_ds_cache_made:-}" ]] || { declare -gA _ds_cache=(); _ds_cache_made=1; }
+  if [[ -n "${_ds_cache[$_ds_k]+x}" ]]; then _ds_v="${_ds_cache[$_ds_k]}"; return 0; fi
+  _ds_n=$(( ${_ds_n:-0} + 1 ))
+  if (( _ds_n > ${AI_CONTAINERS_SPELL_MAX:-5000} )); then
+    printf 'ERROR: more than %s directories on a filesystem that ignores case had to be read as\n' "${AI_CONTAINERS_SPELL_MAX:-5000}" >&2
+    printf '       spelled on disk, the last %s; refusing the launch. Mount narrower directories, or :ro.\n' "$(_q "$_ds_k")" >&2
+    kill -s USR1 "$$" 2>/dev/null || true
+    exit 1
+  fi
+  if [[ -z "${_cd_phys_pwd:-}" ]]; then
+    _cd_phys_pwd="$(type -P pwd 2>/dev/null)" || _cd_phys_pwd=""
+    [[ "$_cd_phys_pwd" == /* ]] || _cd_phys_pwd=-
+  fi
+  [[ "$_cd_phys_pwd" != - ]] || return 0
+  IFS= read -r -d '' _ds_r < <(cd -- "$_ds_k" 2>/dev/null && "$_cd_phys_pwd" -P 2>/dev/null && printf '\0') || return 0
+  _ds_r="${_ds_r%$'\n'}"
+  [[ "$_ds_r" == /* ]] || return 0
+  _ds_cache[$_ds_k]="$_ds_r"; _ds_v="$_ds_r"
+}
+
+# _spell_rec <var>: a path a walk reports spelled as on disk: a link by the
+# directory it is in and its own name, anything else by its longest existing
+# directory and the rest — a walk can end where nothing exists yet, which the
+# agent can make (second review of the GIT-38 fix). A walk's records are
+# physical already, so no cd: a subshell per record doubled a launch over an
+# agent's links (second review).
+_spell_rec() {
+  local -n _sr_v=$1
+  local _sr_d="$_sr_v" _sr_rest=""
+  if [[ -L "$_sr_d" ]]; then _sr_rest="/${_sr_d##*/}"; _sr_d="${_sr_d%/*}"; fi
+  while [[ "$_sr_d" == /?* && ! -d "$_sr_d" ]]; do
+    _sr_rest="/${_sr_d##*/}$_sr_rest"; _sr_d="${_sr_d%/*}"
+  done
+  _disk_spell _sr_d
+  _sr_v="${_sr_d%/}$_sr_rest"
+  [[ -n "$_sr_v" ]] || _sr_v=/
+}
+
+# _canon_lex <out-var> <path>: an absolute, lexically normal <path> that need not
+# exist, its longest existing directory taken by _cd_phys (spelled as on disk,
+# links resolved) and the rest as written: where it would be, for a test of
+# whether it lies in a mount (GIT-38).
+_canon_lex() {
+  local -n _cl_out=$1
+  local _cl_d="$2" _cl_rest="" _cl_p
+  while [[ "$_cl_d" == /?* && ! -d "$_cl_d" ]]; do
+    _cl_rest="/${_cl_d##*/}$_cl_rest"; _cl_d="${_cl_d%/*}"
+  done
+  if _cd_phys _cl_p "${_cl_d:-/}"; then _cl_out="${_cl_p%/}$_cl_rest"; else _cl_out="$2"; fi
+}
+
+# _lex_link_dir <out-var> <path>: the directory, by _cd_phys, of the first
+# symlink on the way of an absolute <path> as written; fails if there is none.
+# Before it, a `..` steps where it is written to. A difference between how a
+# path is written and where it is can be a link, or only its case or Unicode
+# form (GIT-38). Not on the normalised path: `lnk/..` drops the link (review of
+# the GIT-38 fix).
+_lex_link_dir() {
+  local -n _ll_out=$1
+  local _ll_p="" _ll_rest="${2#/}" _ll_c
+  while [[ -n "$_ll_rest" ]]; do
+    _ll_c="${_ll_rest%%/*}"
+    if [[ "$_ll_rest" == */* ]]; then _ll_rest="${_ll_rest#*/}"; else _ll_rest=""; fi
+    case "$_ll_c" in
+      ''|.) continue ;;
+      ..) _ll_p="${_ll_p%/*}"; continue ;;
+    esac
+    if [[ -L "$_ll_p/$_ll_c" ]]; then _cd_phys _ll_out "${_ll_p:-/}"; return; fi
+    _ll_p="$_ll_p/$_ll_c"
+  done
+  return 1
 }
 
 # _gdi_add_top <dir>: called from git_dirs_in; adds <dir> to its tops, once.
@@ -2393,7 +2540,7 @@ _gdi_follow() {
   # were never read; review of 236d347).
   # Every referrer is kept: one .git file must not choose the worktree a git
   # directory's index is read against (review of 3c754aa, HIGH).
-  if [[ "$4" == */.git && -z "${gref[$t|$1]:-}" ]]; then
+  if [[ "${4,,}" == */.git && -z "${gref[$t|$1]:-}" ]]; then
     gref[$t|$1]=1; gtop_g+=("$t"); gtop_d+=("$1")
     # A referrer for one already read: read it again, with this worktree too — a
     # decoy found first was otherwise the only one (review of 4e91bf3).
@@ -2408,7 +2555,7 @@ _gdi_follow() {
   # review of 8b3e0c5). It is protected by launcher_ro_overlay's queue.
   # A .git/modules/* one too: a submodule checkout mounted alone has its git
   # directory in the superproject, outside the mount (review of 3edee25).
-  if [[ "$4" == */.git && "$t" != "$3" && "$t" != "$3"/* \
+  if [[ "${4,,}" == */.git && "$t" != "$3" && "$t" != "$3"/* \
         && -z "${ionly_had[$t]:-}" ]] && _is_git_dir "$t"; then
     ionly_had[$t]=1; _gdi_ionly+=("$t")
   fi
@@ -2438,19 +2585,35 @@ _gdi_follow() {
 git_dirs_in() {
   # shellcheck disable=SC2178  # nameref: shellcheck does not model `local -n`
   local -n _gdi_dirs=$1 _gdi_files=$2 _gdi_links=$3 _gdi_unr=$4
-  local f g wt wcf wtp co rel back nref
+  local f lf g wt wcf wtp co rel back nref
   local -a hits=()
   local -A had=()
+  # git's own names however they are spelled: where case is ignored git opens
+  # .GIT/head and .GIT/CONFIG as its own, and a repository the agent spelled so
+  # was never found (second review of the GIT-38 fix). Elsewhere this finds a
+  # few more names that the content checks below turn down.
+  # The path patterns only for an entry whose name could match: seven -ipath
+  # tests on every entry made every launch's scan half as slow again (third
+  # review of the GIT-38 fix).
   mapfile -d '' -t hits < <(find "$5" -mindepth 1 -maxdepth 8 \
-      \( \( \( -name node_modules -o -name vendor -o -name .venv -o -name target \) ! -path '*/.git/*' \) \
-         -o -path '*/.git/objects' -o -path '*/.git/refs' -o -path '*/.git/logs' \
-         -o -path '*/.git/modules/*/objects' -o -path '*/.git/modules/*/refs' -o -path '*/.git/modules/*/logs' \) -prune \
-      -o -name HEAD ! -type d -print0 \
-      -o -name commondir -type f -print0 \
-      -o -name .git \( -type f -o -type l -o -type d \) -print0 \
-      -o -type d -path '*/.git/*' -print0 2>/dev/null)
+      \( \( \( -name node_modules -o -name vendor -o -name .venv -o -name target \) ! -ipath '*/.git/*' \) \
+         -o \( \( -iname objects -o -iname refs -o -iname logs \) \
+              \( -ipath '*/.git/objects' -o -ipath '*/.git/refs' -o -ipath '*/.git/logs' \
+                 -o -ipath '*/.git/modules/*/objects' -o -ipath '*/.git/modules/*/refs' -o -ipath '*/.git/modules/*/logs' \) \) \) -prune \
+      -o -iname HEAD ! -type d -print0 \
+      -o -iname commondir -type f -print0 \
+      -o -iname .git \( -type f -o -type l -o -type d \) -print0 \
+      -o -type d -ipath '*/.git/*' -print0 2>/dev/null)
   for f in ${hits[@]+"${hits[@]}"}; do
-    if [[ "${f##*/}" == .git ]]; then
+    lf="${f,,}"
+    # Matched only in another case: git's only where its directory ignores case.
+    # On a case-sensitive filesystem a .Git is not git's, and was left alone
+    # before (third review).
+    case "$f" in
+      */.git|*/HEAD|*/commondir|*/.git/*) ;;
+      *) _ci_path "$f" || continue ;;
+    esac
+    if [[ "${lf##*/}" == .git ]]; then
       if [[ -L "$f" ]]; then _gdi_links+=("$f")
       elif [[ -f "$f" ]]; then _gdi_files+=("$f"); had[$f]=1
       elif [[ -d "$f" && ( ! -r "$f" || ! -x "$f" ) ]]; then _gdi_unr+=("$f")
@@ -2476,9 +2639,9 @@ git_dirs_in() {
       # A worktree's under any git directory (a bare repository's too) has a
       # commondir or a gitdir; a submodule's has any of what git keeps there.
       elif [[ -z "${had[$f]:-}" ]]; then
-        if [[ "${f%/*}" == */worktrees ]] && [[ -f "$f/commondir" || -f "$f/gitdir" ]]; then
+        if [[ "${lf%/*}" == */worktrees ]] && [[ -f "$f/commondir" || -f "$f/gitdir" ]]; then
           _gdi_dirs+=("$f"); had[$f]=1
-        elif [[ "$f" == */.git/modules/* ]] && [[ -d "$f/objects" || -d "$f/refs" || -f "$f/config" \
+        elif [[ "$lf" == */.git/modules/* ]] && [[ -d "$f/objects" || -d "$f/refs" || -f "$f/config" \
                || -d "$f/hooks" || -f "$f/index" || -f "$f/commondir" ]]; then
           _gdi_dirs+=("$f"); had[$f]=1
         fi
@@ -2579,7 +2742,7 @@ git_dirs_in() {
     # naming it — each of them, once, so a decoy adds a worktree to check and
     # cannot replace one (review of 3c754aa, HIGH; G53).
     tops=(); top=""
-    if [[ "$g" == */.git ]]; then tops=("${g%/.git}"); fi
+    if [[ "${g,,}" == */.git ]]; then tops=("${g%/*}"); fi
     # Its core.worktree, from config and config.worktree, for every git directory,
     # resolved physically, as git takes it (chdir, then its real path): a `..`
     # after a link steps out of where the link leads, and a relative one goes
@@ -2612,7 +2775,7 @@ git_dirs_in() {
     # checkout to check, no more.
     if [[ -f "$g/gitdir" ]]; then
       tgt=""; _git_ptr_read "$g/gitdir" tgt gitdir || true
-      tgt="${tgt%/.git}"
+      if [[ "${tgt,,}" == */.git ]]; then tgt="${tgt%/*}"; fi
       if [[ "$tgt" == /* && -d "$tgt" ]] && _cd_phys tgt "$tgt" \
          && [[ "$tgt" == "$5" || "$tgt" == "$5"/* ]] && [[ -z "${tseen[$tgt]:-}" ]]; then tseen[$tgt]=1; tops+=("$tgt"); fi
     fi
@@ -2641,7 +2804,7 @@ git_dirs_in() {
     fi
     unset 'gpend[$g]'
     for top in "${tops[@]}"; do
-      if [[ "$g" == */.git/modules/* && -f "$top/.git" && ! -L "$top/.git" && -z "${had[$top/.git]:-}" ]] \
+      if [[ "${g,,}" == */.git/modules/* && -f "$top/.git" && ! -L "$top/.git" && -z "${had[$top/.git]:-}" ]] \
          && [[ "$top" == "$5" || "$top" == "$5"/* ]]; then
         _gdi_files+=("$top/.git"); had[$top/.git]=1
       fi
@@ -2660,7 +2823,7 @@ git_dirs_in() {
         printf '         so a checkout of one that the scan does not reach is not protected.\n' >&2
       fi
     fi
-    local gskip=0 gnl=0 r
+    local gskip=0 gnl=0 r dsp
     local -a gco=() gphys=()
     local -A gres=()
     # Where each existing checkout physically is, resolved in ONE subshell per
@@ -2687,6 +2850,14 @@ git_dirs_in() {
       mapfile -d '' -t gphys < <(cd / && for r in "${gco[@]}"; do
         if cd -P -- "$r" 2>/dev/null; then printf '%s\0' "$PWD"; else printf '\0'; fi; done)
       for (( r = 0; r < ${#gco[@]}; r++ )); do gres[${gco[r]}]="${gphys[r]:-}"; done
+      # bash keeps the spelling it was given: one in another case, on a
+      # filesystem that ignores case, is a case difference, and named below. Left
+      # as written, it was a writable pin over a launcher's read-only overlay
+      # (review of the GIT-38 fix).
+      for (( r = 0; r < ${#gco[@]}; r++ )); do
+        [[ "${gres[${gco[r]}]}" == "${gco[r]}" ]] || continue
+        dsp="${gco[r]}"; _disk_spell dsp; gres[${gco[r]}]="$dsp"
+      done
     fi
     gnl=0
     for rec in ${links[@]+"${links[@]}"}; do
@@ -2761,8 +2932,12 @@ git_dirs_in() {
       # directory back (G80).
       # Physically where it says: a .. or a link on the way made a .git inside a
       # writable mount pass as outside them (automated security review of efbfcc3).
-      if [[ "$tgt" == /* && "${tgt##*/}" == .git && -f "$tgt" && ! -L "$tgt" ]] \
-         && _cd_phys back "${tgt%/*}" && [[ "$back/.git" == "$tgt" ]] && ! _in_writable "$tgt"; then
+      # bash's spelling for "no link on the way", the one on disk for "outside
+      # every mount": in another case on a filesystem that ignores case it is the
+      # same .git file (third review of the GIT-38 fix).
+      if [[ "$tgt" == /* && "${tgt,,}" == */.git && -f "$tgt" && ! -L "$tgt" ]] \
+         && _cd_bash back "${tgt%/*}" && [[ "$back/${tgt##*/}" == "$tgt" ]] \
+         && _canon_lex back "$tgt" && ! _in_writable "$back"; then
         back=""; _git_ptr_read "$tgt" back || true
         back="${back#gitdir: }"
         if [[ "$back" != /* ]]; then back="${tgt%/*}/$back"; fi
@@ -3350,6 +3525,9 @@ _gir_tmp="" _gir_tmp_warned=""
 _git_ok=""                  # whether git runs here, asked once (_git_usable)
 declare -A _gir_cache=()   # git directory → its read index, once per launch
 _fs_deadline=""             # the FIFO search's deadline, once per launch (_ro_fifo_search)
+# _ci_path's and _disk_spell's state, never from the environment: _cd_phys_pwd is
+# the program run as pwd.
+_ci_memo_made="" _ds_cache_made="" _ds_n=0 _cd_phys_pwd=""
 # The hooks git runs, by name (githooks(5)); anything else in hooks/ is inert.
 git_hook_names=(applypatch-msg pre-applypatch post-applypatch pre-commit
   pre-merge-commit prepare-commit-msg commit-msg post-commit pre-rebase post-checkout
@@ -3898,7 +4076,7 @@ run_container() {
   _group_guard_root="$group_root"
   ensure_group_exists "$group" "$group_root"
   ensure_group_scaffold "$group_root"
-  _git_skip_root="$(cd "$group_root" 2>/dev/null && pwd -P)" || _git_skip_root=""
+  _cd_phys _git_skip_root "$group_root" || _git_skip_root=""
 
   # ── Credential mounts (enabled components only) ──────────────────────────────
   # Stage git config files into the group directory before mounting. Docker Desktop
