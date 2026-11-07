@@ -342,6 +342,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- **A writable project under WSL's `/mnt/<drive>`, in directories that ignore
+  case, is refused.** There each spelling of a name is a name of its own to the
+  kernel, and a read-only bind covers only one. Measured from a Docker Desktop
+  container on drvfs: `.git/CONFIG` wrote the host's `.git/config`,
+  `sandbox.sh` through `.AI-CONTAINERS` wrote the launcher the host runs next, and a
+  pinned directory could be renamed away. No bind closes that, so a launch that
+  needs a read-only bind there now stops with an `ERROR:` naming the directory
+  (bugs review GIT-41). Keep the project on the distro's own filesystem
+  (`~/dev`, which is also faster), mount it `:ro`, or make its directories
+  case-sensitive with `fsutil.exe file setCaseSensitiveInfo <dir> enable`,
+  where the binds hold. On those filesystems the launcher now spells paths
+  from the directory listing, because `getcwd` there prints whatever spelling
+  a directory was reached by, so a `gitdir:` or include whose parent is written
+  in another case is matched to its mount (platform-issues PLAT-8). macOS is
+  covered by the next entry.
 - **A git config written under another spelling is put back when the
   container exits.** On macOS, a container reaches the project through a file
   share that ignores case, and its kernel takes `.git/CONFIG` for a file of its

@@ -387,7 +387,7 @@ FAKE_SESSION="cd '$TMP/ps' && git init -q h && printf '#!/bin/sh\n' > h/.git/hoo
   || fail "G94 rescan deadline (rc=$LAUNCH_RC; stderr: $(tail -4 "$ERR" | tr '\n' ' '))"
 rm -rf "$TMP/ps"
 
-# ── G121 (GIT-41): where names are compared case-sensitively, the container
+# ── G123 (GIT-41): where names are compared case-sensitively, the container
 # cannot write a read-only git file under another spelling, so a change while
 # it ran is the host's own (git push -u, git remote add), and is kept. Where
 # TMPDIR ignores case (macOS), test-git-internals-ro-casefold.sh has the cases.
@@ -395,8 +395,8 @@ mkdir "$TMP/Cs121" && if [[ ! -d "$TMP/CS121" ]]; then
   FAKE_SESSION="git config --file '$PROJ/.git/config' branch.main.remote origin" launch ..
   [[ "$LAUNCH_RC" == 0 && "$(git config --file "$PROJ/.git/config" branch.main.remote)" == origin ]] \
     && [[ -z "$(find "$PROJ/.git" -maxdepth 1 -name 'config.changed-*')" ]] && ! grep -qF 'changed while the container ran' "$ERR" \
-    && pass "G121 a config changed on the host while the container ran is kept where names are case-sensitive" \
-    || fail "G121 case-sensitive host change (rc=$LAUNCH_RC; stderr: $(grep -F 'container ran' "$ERR" | head -1))"
+    && pass "G123 a config changed on the host while the container ran is kept where names are case-sensitive" \
+    || fail "G123 case-sensitive host change (rc=$LAUNCH_RC; stderr: $(grep -F 'container ran' "$ERR" | head -1))"
   git config --file "$PROJ/.git/config" --unset branch.main.remote
 fi
 rmdir "$TMP/Cs121"

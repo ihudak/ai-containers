@@ -1,7 +1,7 @@
 # Platform-specific issues — 2026-10-26
 
 - **Opened:** 2026-10-26, during bug-fix batch 1
-- **Last reviewed commit:** `bec1c57` (the review), entries updated while fixing on `fix/batch-1-launcher-git`; PLAT-5, PLAT-6 and the pickup table added 2026-11-03 at `d41d47a`; PLAT-5 done and PLAT-3 confirmed and designed 2026-11-04 at `f0ad913`; PLAT-2 done 2026-11-04, run at `f0ad913`
+- **Last reviewed commit:** `bec1c57` (the review), entries updated while fixing on `fix/batch-1-launcher-git`; PLAT-5, PLAT-6 and the pickup table added 2026-11-03 at `d41d47a`; PLAT-5 done and PLAT-3 confirmed and designed 2026-11-04 at `f0ad913`; PLAT-2 done 2026-11-04, run at `f0ad913`; PLAT-9 and the WSL native agent added 2026-11-07
 - **Companions:** [2026-10-26-bugs-review.md](2026-10-26-bugs-review.md), [2026-10-26-feature-gaps-review.md](2026-10-26-feature-gaps-review.md)
 
 These are issues that can only be confirmed, and then fixed, on a platform or
@@ -23,12 +23,13 @@ and the constraints the fix must keep.
 | PLAT-4 | x86-64 CPU without AVX | bug SVC-2 | `mongo=ON` reports "no mongo server, rebuild" instead of the real failure |
 | PLAT-5 | macOS (BSD userland) | bugs PRJ-10, PRJ-11 | The no-follow file writes take their non-Linux branches there, and nobody has run them — **done**, passed (GIT-27 and TST-28 found and fixed) |
 | PLAT-7 | macOS without the Command Line Tools | bug GIT-24 | A launch where `/usr/bin/git` is only the installer shim must not run it, and must take the no-git branch — **not run**; git documented as a requirement |
-| PLAT-8 | macOS (APFS), WSL2 (drvfs) | bugs GIT-38, GIT-41 | Paths spelled in another case on a filesystem that ignores case — **APFS passed**; GIT-41 reproduced on Colima and mitigated; drvfs not run |
 | PLAT-6 | Windows + WSL2 + Docker Desktop | bugs PRJ-10, PRJ-11 | Re-run the hermetic suite at current `main`: the new no-follow tests rename, open `/dev/fd/N` and `noclobber`-create on drvfs — **done**, passed (TST-25 found and fixed) |
+| PLAT-8 | macOS (APFS), WSL2 (drvfs), Docker Desktop | bugs GIT-38, GIT-41 | Paths spelled in another case where case is ignored, and whether a read-only bind of one file covers its other spellings — **done**: both halves passed; GIT-41 refused on drvfs, and on macOS reproduced on Colima and mitigated (Docker Desktop for Mac unmeasured) |
+| PLAT-9 | macOS, WSL2 (Docker Desktop and a native Engine) | bugs GIT-29 to GIT-45 | The launcher's git checks and `project-files.sh` gained code since the last run on each, which has only ever run on Linux — **open** |
 
-## Who picks up what (updated 2026-11-03)
+## Who picks up what (updated 2026-11-07)
 
-Two platform agents work on this repository besides the Linux one. Each takes
+Three platform agents work on this repository besides the Linux one. Each takes
 the rows marked for its platform, starting from the current `origin/main`, and
 reports by editing the entry's **Status** line (and docs/testing.md's
 "Platforms exercised" table for a run).
@@ -36,8 +37,9 @@ reports by editing the entry's **Status** line (and docs/testing.md's
 | Agent | Its platform | Picks up | Cannot do |
 |---|---|---|---|
 | **Linux agent** (review machine) | Linux x86-64, native Docker Engine | the falsify work GAP-1 to GAP-4 | anything below |
-| **WSL agent** | Windows + WSL2 (Ubuntu distro) + **Docker Desktop** with WSL integration. **Not** a native Docker Engine in the distro | **PLAT-6**, **PLAT-8** (its drvfs half) | PLAT-2's native-Engine half, which needed a Docker Engine installed natively in the distro. The user ran it on an Azure VM (done) |
-| **Mac agent** | macOS, Docker Desktop and/or Colima | **PLAT-3** (GAP-11), **PLAT-5**, **PLAT-7**, **PLAT-8** (its APFS half) | — |
+| **WSL agent** | Windows + WSL2 (Ubuntu distro) + **Docker Desktop** with WSL integration. **Not** a native Docker Engine in the distro | **PLAT-9** (Docker Desktop); PLAT-6, and PLAT-8's drvfs half (GIT-41 there), done | a native Engine's runs: the WSL native agent's |
+| **WSL native agent** | Windows + WSL2 (Ubuntu distro) + a **Docker Engine installed natively in the distro** (not Docker Desktop) | **PLAT-9** (native Engine); PLAT-2's native-Engine half done | GIT-41, which is Docker Desktop's |
+| **Mac agent** | macOS, Docker Desktop and/or Colima | **PLAT-7** (git documented as a requirement; not run), GIT-41 on Docker Desktop for Mac, **PLAT-9**, **PLAT-3** (GAP-11, designed); PLAT-5 and PLAT-8's APFS half (GIT-41 on Colima) done | — |
 | *nobody* | x86-64 CPU without AVX | PLAT-4: closed as not supported | — |
 
 Any change of code an agent makes follows the rule at the top: reproduce
@@ -152,10 +154,26 @@ first, then fix test-first.
 
 ## PLAT-8: macOS and WSL — paths spelled in another case on a filesystem that ignores case
 
-- **Status: APFS half DONE** (2026-11-07, at `15682eb`, macOS 26.7.2 arm64, Homebrew bash 5.3.20). drvfs half OPEN.
-  - `tests/test-git-internals-ro-casefold.sh` said `NOTE: TMPDIR ignores case here; the cases run in it`, then 21 `PASS: G117` and `0 failure(s)`.
-  - `mkdir Proj; cd proj; /bin/pwd -P; cd ../PROJ; /bin/pwd -P` printed `…/Proj` both times, and so did Homebrew's GNU `gpwd -P`: macOS's `getcwd` spells a directory one way. Bash's builtin `pwd -P` prints the spelling it was reached by (`proJ`); `_disk_spell()` runs the external one (`type -P pwd`), which is why it holds.
-  - **GIT-41** on Colima 0.10.3 (virtiofs) instead of Docker Desktop, which this Mac does not have: it **reproduced**. `.git/CONFIG`, `.git/Config.Worktree`, `.git/COMMONDIR` and a worktree's `.GIT` were written past their read-only binds; `config`, `hooks/` and `.git` under every spelling held. Mitigated by putting the files back when the container exits (bugs review GIT-41). Docker Desktop on macOS, and either engine on WSL, are still unmeasured.
+- **Status: DONE** (2026-11-07): the drvfs half by the WSL agent, the APFS half on macOS.
+  - **drvfs (WSL):**
+    - **Host:** Windows + WSL2 (kernel 6.18.33.2-microsoft-standard-WSL2, Ubuntu distro), Docker Desktop 29.9.2. `TMPDIR` under `/mnt/d` (drvfs, `9p`, `aname=drvfs`, `stat -f` type `v9fs`).
+    - **getcwd:** a defect. In a directory where Windows ignores case, `mkdir Proj; cd proj; /bin/pwd -P; cd ../PROJ; /bin/pwd -P` printed `…/proj`, then `…/PROJ`. All three spellings are one file (`-ef`, one device:inode).
+    - **Test, ignoring case, at `15682eb`:** the first line said `NOTE: TMPDIR ignores case here; the cases run in it`. 11 failures, every G117 check that resolves a path written in another case.
+    - **Test, case-sensitive directory** (`fsutil.exe file setCaseSensitiveInfo … enable`, which worked without elevation): `SKIP: no casefold tmpfs here`. The WSL kernel is 6.18 but has no `CONFIG_UNICODE`, so `mount -t tmpfs -o casefold` fails.
+    - **GIT-41:** measured with `alpine:3.20` containers binding a drvfs directory as the launcher does, not through `./sandbox.sh`. It reproduces, and wider than modelled:
+      - `.git/CONFIG` wrote the host's `.git/config`. A `mv` of it renamed the real file away.
+      - `.git/HOOKS/post-commit` wrote into the read-only `hooks/`.
+      - `sandbox.sh` through `.AI-CONTAINERS` wrote the launcher, past its read-only overlay.
+      - `.GIT/config` wrote through a read-only bind of the whole `.git`.
+      - A pinned directory was renamed through another spelling.
+      - In a case-sensitive directory every other spelling was `nonexistent`, or a new file the host's git ignores, and the host's config was untouched.
+      - From a container, `setfattr -n system.wsl_case_sensitive` is `Not supported`, so the agent cannot make a directory ignore case.
+    - **Fixed** by GIT-41 and the drvfs part of GIT-38 (bugs review section 25). G121 in `tests/test-git-internals-ro-casefold.sh` runs where `TMPDIR` is on such a filesystem: 5 checks red before the fix, 0 failures after.
+
+  - **APFS (macOS),** at `15682eb`, macOS 26.7.2 arm64, Homebrew bash 5.3.20:
+    - `tests/test-git-internals-ro-casefold.sh` said `NOTE: TMPDIR ignores case here; the cases run in it`, then 21 `PASS: G117` and `0 failure(s)`.
+    - `mkdir Proj; cd proj; /bin/pwd -P; cd ../PROJ; /bin/pwd -P` printed `…/Proj` both times, and so did Homebrew's GNU `gpwd -P`: macOS's `getcwd` spells a directory one way. Bash's builtin `pwd -P` prints the spelling it was reached by (`proJ`); `_disk_spell()` runs the external one (`type -P pwd`), which is why it holds.
+    - **GIT-41** on Colima 0.10.3 (virtiofs) instead of Docker Desktop, which this Mac does not have: it **reproduced**. `.git/CONFIG`, `.git/Config.Worktree`, `.git/COMMONDIR` and a worktree's `.GIT` were written past their read-only binds; `config`, `hooks/` and `.git` under every spelling held. Mitigated by putting the files back when the container exits (bugs review GIT-41). Docker Desktop on macOS is still unmeasured.
 - **Picked up by:** the **Mac agent** (APFS) and the **WSL agent** (drvfs).
 - **Platform:** macOS with its default case-insensitive APFS. WSL2 with a directory under `/mnt/<drive>`.
 - **Source:** bugs review GIT-38, fixed and measured on Linux only, and GIT-41, modelled only. `sandbox.sh: _disk_spell()` respells, from `getcwd` (an external `pwd -P`), each path that crosses a directory ignoring case, so every path compared with a mount is spelled one way. On Linux that holds because a directory has one dentry. Whether macOS's `getcwd` and WSL's drvfs spell a directory one way, however it was reached, has not been measured. GIT-41: Docker Desktop's file sharing may open `.git/CONFIG` as the host's `.git/config`, past the read-only bind of `config`.
@@ -166,6 +184,24 @@ first, then fix test-first.
   - GIT-41, both, on Docker Desktop: `./sandbox.sh restricted <a git checkout>`, then in the container `printf '[core]\n\tfsmonitor = touch /tmp/x\n' >> .git/CONFIG`. Exit, and on the host run `git config --file <checkout>/.git/config --get core.fsmonitor`.
 - **Expected:** every `G117` line a `PASS`, and `0 failure(s)`. Both `pwd` lines print `Proj`. GIT-41: the write in the container fails (`Read-only file system`), and the host's config has no `core.fsmonitor`.
 - **A defect looks like:** a `FAIL: G117 …`, or `pwd` printing the spelling it was reached by. Then `getcwd` does not spell a directory one way there, and "inside this mount" has to compare directories by identity (`[[ a -ef b ]]` on each ancestor), not by prefix. GIT-41: the write going through, and `touch /tmp/x` in the host's config.
+
+## PLAT-9: macOS and WSL2 — re-run the hermetic suite at current `main`
+
+- **Status: OPEN** (2026-11-07).
+- **Picked up by:** the **Mac agent**, the **WSL agent** (Docker Desktop) and the **WSL native agent** (a native Engine), each on its platform.
+- **Platform:** macOS with its BSD userland and APFS; Windows + WSL2 from ext4 and from `/mnt/c`, with each engine.
+- **Source:** bugs GIT-29 to GIT-45. The last runs were PLAT-5 (Mac, `f0ad913`), PLAT-6 (WSL with Docker Desktop, `037e64c`) and PLAT-2 (WSL with a native Engine, `f0ad913`). Since then the launcher's git checks gained code that has only run on Linux:
+  - **GIT-29** (`project-files.sh`): the project's `.gitignore` decided without running git in it;
+  - **GIT-38**: paths respelled from `getcwd` where a directory ignores case (`_ci_path()`, `_disk_spell()`, an external `pwd -P`);
+  - **GIT-39**: each writable mount's files with a second hard link listed with `find … -type f -links +1 -exec stat -f '%d %i' {} +` on BSD, `head -c`, `wc -c` (padded on BSD) and `grep -l -x -F`; the test reads `ps -o comm=`, which macOS prints as a path;
+  - **GIT-35** and **GIT-44**: `core.hooksPath` walked, and the repositories that `git worktree add`, `git init --separate-git-dir` and a mount inside a repository make, judged outside every mount too.
+- **Run:** at the `origin/main` of the day, from a clean clone:
+  - Mac: `bash tests/run-all.sh` under Homebrew bash 5, or `PHASES=5 bash ./verify-on-host.sh`. Record `bash --version`, `git --version`, and which `find`, `stat` and `ps` are first on `PATH`.
+  - WSL (each engine): from the ext4 checkout, `PHASES=5 bash ./verify-on-host.sh`; then the same from a clone under `/mnt/c`.
+  - Watch above all: `tests/test-git-internals-ro-config.sh` (G114, G120, G122), `tests/test-git-internals-ro-reads.sh` (G112, G119), `tests/test-git-internals-ro-index.sh`, `tests/test-git-internals-ro-casefold.sh`, `tests/test-project-init.sh` and `tests/test-sync-project.sh`.
+- **Expected:** `0 failure(s)` everywhere. The casefold test prints `SKIP:` where `TMPDIR` is case-sensitive and no case-folding filesystem can be made.
+- **A defect looks like:** a `FAIL:` in those files. Re-run that file alone, and find whether the launcher or the test assumes GNU behaviour (`stat -c`, `find -printf`, `ps -o comm=` printing a bare name, `head -c` on a pipe). A launcher defect is a GIT- bug, a test-only one a TST- bug, each filed with its output, then fixed test-first, per the rule at the top.
+- **Record:** one row per run in docs/testing.md's "Platforms exercised", with the commit.
 
 ## PLAT-6: WSL2 + Docker Desktop — re-run the hermetic suite at current `main`
 

@@ -593,18 +593,26 @@ EXTRA_MOUNTS="$TMP/h120" launch "$TMP/app"
 [[ "$(grep -c "NOTE: $TMP/o120/hooks/pre-commit, a hook your host" "$ERR")" == 1 ]] \
   && pass "G120 a core.hooksPath directory two repositories name is walked once" \
   || fail "G120 walked $(grep -c "NOTE: $TMP/o120/hooks/pre-commit, a hook your host" "$ERR") times"
-mk120; for n in $(seq 1 35); do
-  "${G[@]}" init -q "$TMP/h120/k$n" && mkdir -p "$TMP/o120/k$n" \
+# Each value written :(optional), so git may run hooks/ too, which is still
+# walked past the budget: it is the repository's own, and was skipped with the
+# rest (automated security review of fe955c3).
+mk120; printf '#!/bin/sh\n' > "$TMP/h120/w.sh"; for n in $(seq 1 35); do
+  "${G[@]}" init -q "$TMP/h120/k$n" && mkdir -p "$TMP/o120/k$n" && ln -s ../../../w.sh "$TMP/h120/k$n/.git/hooks/pre-commit" \
     && for e in pre-commit post-commit pre-push post-merge post-checkout commit-msg prepare-commit-msg pre-rebase post-rewrite \
          applypatch-msg pre-applypatch post-applypatch pre-merge-commit pre-receive update proc-receive post-receive post-update \
          reference-transaction push-to-checkout pre-auto-gc sendemail-validate fsmonitor-watchman p4-changelist \
          p4-prepare-changelist p4-post-changelist p4-pre-submit post-index-change; do : > "$TMP/o120/k$n/$e"; done \
-    && "${G[@]}" -C "$TMP/h120/k$n" config core.hooksPath "$TMP/o120/k$n" || { printf 'SCAFFOLD-FAILED: G120 hook budget\n'; exit 1; }
+    && "${G[@]}" -C "$TMP/h120/k$n" config core.hooksPath ":(optional)$TMP/o120/k$n" || { printf 'SCAFFOLD-FAILED: G120 hook budget\n'; exit 1; }
 done
 EXTRA_MOUNTS="$TMP/h120" launch "$TMP/app"
-grep -q "WARNING: not every hook in the core.hooksPath directories of /workspace/h120/k[0-9]*/.git was checked" "$ERR" \
+grep -q "WARNING: not every hook in the hook directories of /workspace/h120/k[0-9]*/.git was checked" "$ERR" \
   && pass "G120 hooks in core.hooksPath directories count in the launch's budget, and one past it is named" \
   || fail "G120 hook walks unbounded (rc=$LAUNCH_RC; $(grep -c 'not every' "$ERR") cut warnings)"
+cut120="$(sed -n 's|^WARNING: not every hook in the hook directories of \(/workspace/h120/k[0-9]*/.git\) was checked.*|\1|p' "$ERR")"; miss120=""
+for x in $cut120; do grep -qF "NOTE: $x/hooks/pre-commit, a hook your host's git runs, is a link the agent can redirect" "$ERR" || miss120+=" $x"; done
+[[ -n "$cut120" && -z "$miss120" ]] \
+  && pass "G120 past the budget, the repository's own hooks/ is still walked where git may run it" \
+  || fail "G120 hooks/ skipped past the budget (cut: $(tr '\n' ' ' <<<"$cut120"); hooks/ not walked:${miss120:- none})"
 # A link on the way that the agent cannot repoint — in a planted launcher, under
 # a read-only overlay — to a directory outside every mount: nothing to name.
 mk120; mkdir -p "$TMP/h120/L" && : > "$TMP/h120/L/sandbox.sh" && : > "$TMP/h120/L/sandbox-common.sh" \
@@ -615,6 +623,243 @@ EXTRA_MOUNTS="$TMP/h120" launch "$TMP/app"
   && pass "G120 a core.hooksPath through a link under a read-only overlay, to a directory outside every mount, is not named" \
   || fail "G120 read-only link named (rc=$LAUNCH_RC; stderr: $(grep -A1 -F 'git hooks' "$ERR" | head -2 | tr '\n' ' '))"
 rm -rf "$TMP/h120" "$TMP/o120"
+
+# ── G122: a git directory whose worktree lies elsewhere is judged (GIT-44) ─────
+# Only the git directories a launch protects, or finds under a read-only overlay,
+# had their config judged, and a linked worktree's core.hooksPath not even then.
+# So with only a linked worktree mounted (husky's layout under `git worktree`),
+# its repository outside every mount with core.hooksPath=.husky/_, the agent
+# wrote feature/.husky/_/pre-commit and the host's next commit there ran it. A
+# --separate-git-dir checkout was the same, and inside the mounts a linked
+# worktree's config.worktree, and a relative path from a linked worktree or from
+# a separate git directory's checkout, went unjudged (reviews of the GIT-35 fix).
+mk121() {
+  rm -rf "$TMP/h121" "$TMP/o121"; mkdir -p "$TMP/h121" "$TMP/o121" \
+    && "${G[@]}" init -q "$TMP/o121/main" && "${G[@]}" -C "$TMP/o121/main" commit -q --allow-empty -m i \
+    || { printf 'SCAFFOLD-FAILED: G122\n'; exit 1; }
+}
+mk121; "${G[@]}" -C "$TMP/o121/main" worktree add -q "$TMP/h121/feature" || { printf 'SCAFFOLD-FAILED: G122 quiet\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h121" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF "$TMP/o121" "$ERR" && ! grep -qF 'git hooks from' "$ERR" \
+  && pass "G122 a linked worktree mounted alone, its repository setting nothing, is quiet" \
+  || fail "G122 noise (rc=$LAUNCH_RC; stderr: $(grep -E 'o121|git hooks' "$ERR" | head -2 | tr '\n' ' '))"
+"${G[@]}" -C "$TMP/o121/main" config core.hooksPath .husky/_ || { printf 'SCAFFOLD-FAILED: G122 husky\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h121" launch "$TMP/app"
+grep -qF "runs its git hooks from /workspace/h121/feature/.husky/_ (core.hooksPath), which the agent" "$ERR" \
+  && pass "G122 a linked worktree mounted alone: its repository's core.hooksPath is judged from the worktree" \
+  || fail "G122 linked worktree, repository outside (rc=$LAUNCH_RC; stderr: $(grep -F 'git hooks' "$ERR" | head -1))"
+printf '#!/bin/sh\n' > "$TMP/h121/w.sh" && ln -s "$TMP/h121/w.sh" "$TMP/o121/main/.git/hooks/pre-commit" \
+  && "${G[@]}" -C "$TMP/o121/main" config --unset core.hooksPath && printf '[user]\n' > "$TMP/h121/inc.cfg" \
+  && "${G[@]}" -C "$TMP/o121/main" config include.path "$TMP/h121/inc.cfg" || { printf 'SCAFFOLD-FAILED: G122 hooks, include\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h121" launch "$TMP/app"
+grep -qF "NOTE: $TMP/o121/main/.git/hooks/pre-commit, a hook your host's git runs, is a link the agent can redirect" "$ERR" \
+  && pass "G122 that repository's hook linking into a writable mount is named" \
+  || fail "G122 hook link of the repository outside (rc=$LAUNCH_RC; stderr: $(grep -F 'pre-commit' "$ERR" | head -1))"
+grep -qF "WARNING: $TMP/o121/main/.git/config includes $TMP/h121/inc.cfg (include.path), which the agent can redirect" "$ERR" \
+  && pass "G122 that repository's include of a writable file is named" \
+  || fail "G122 include of the repository outside (rc=$LAUNCH_RC; stderr: $(grep -F 'includes' "$ERR" | head -1))"
+mk121; "${G[@]}" -C "$TMP/o121/main" worktree add -q "$TMP/h121/feature" && printf '[user]\n' > "$TMP/h121/cfg" \
+  && mv "$TMP/o121/main/.git/config" "$TMP/h121/cfg" && ln -s "$TMP/h121/cfg" "$TMP/o121/main/.git/config" \
+  || { printf 'SCAFFOLD-FAILED: G122 config link\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h121" launch "$TMP/app"
+grep -qF "WARNING: $TMP/o121/main/.git/config, outside every writable mount, leads somewhere the agent can change" "$ERR" \
+  && pass "G122 that repository's config, a link into a writable mount, is named" \
+  || fail "G122 config link of the repository outside (rc=$LAUNCH_RC; stderr: $(grep -F 'o121' "$ERR" | head -1))"
+mk121; "${G[@]}" init -q --separate-git-dir "$TMP/o121/sep.git" "$TMP/h121/sep" && "${G[@]}" -C "$TMP/h121/sep" config core.hooksPath .husky/_ \
+  || { printf 'SCAFFOLD-FAILED: G122 separate outside\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h121" launch "$TMP/app"
+grep -qF "runs its git hooks from /workspace/h121/sep/.husky/_ (core.hooksPath), which the agent" "$ERR" \
+  && pass "G122 a --separate-git-dir checkout mounted alone: its core.hooksPath is judged from the checkout" \
+  || fail "G122 separate git dir outside (rc=$LAUNCH_RC; stderr: $(grep -F 'git hooks' "$ERR" | head -1))"
+# Inside the mounts.
+mk121; mkdir -p "$TMP/h121/hk" && "${G[@]}" init -q "$TMP/h121/m" && "${G[@]}" -C "$TMP/h121/m" commit -q --allow-empty -m i \
+  && "${G[@]}" -C "$TMP/h121/m" worktree add -q "$TMP/h121/wt" && "${G[@]}" -C "$TMP/h121/m" config extensions.worktreeConfig true \
+  && "${G[@]}" -C "$TMP/h121/wt" config --worktree core.hooksPath "$TMP/h121/hk" || { printf 'SCAFFOLD-FAILED: G122 config.worktree\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h121" launch "$TMP/app"
+grep -qF "NOTE: /workspace/h121/m/.git/worktrees/wt runs its git hooks from /workspace/h121/hk (core.hooksPath), which the agent" "$ERR" \
+  && pass "G122 a linked worktree's own config.worktree core.hooksPath is judged" \
+  || fail "G122 linked worktree's config.worktree (rc=$LAUNCH_RC; stderr: $(grep -F 'git hooks' "$ERR" | head -1))"
+# A config of a linked worktree's own, which git never reads, is not judged.
+mk121; mkdir -p "$TMP/h121/hk" && "${G[@]}" init -q "$TMP/h121/m" && "${G[@]}" -C "$TMP/h121/m" commit -q --allow-empty -m i \
+  && "${G[@]}" -C "$TMP/h121/m" worktree add -q "$TMP/h121/wt" \
+  && printf '[core]\n\thooksPath = %s\n' "$TMP/h121/hk" > "$TMP/h121/m/.git/worktrees/wt/config" || { printf 'SCAFFOLD-FAILED: G122 decoy\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h121" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF 'git hooks from /workspace/h121/hk' "$ERR" \
+  && pass "G122 a config in a linked worktree's git directory, which git ignores, is not judged" \
+  || fail "G122 decoy config judged (rc=$LAUNCH_RC; stderr: $(grep -F 'git hooks' "$ERR" | head -1))"
+mk121; mkdir -p "$TMP/o121/hooks" && "${G[@]}" init -q "$TMP/h121/m" && "${G[@]}" -C "$TMP/h121/m" commit -q --allow-empty -m i \
+  && mkdir -p "$TMP/h121/a" && "${G[@]}" -C "$TMP/h121/m" worktree add -q "$TMP/h121/a/wt" \
+  && "${G[@]}" -C "$TMP/h121/m" config core.hooksPath ../../o121/hooks || { printf 'SCAFFOLD-FAILED: G122 relative\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h121" launch "$TMP/app"
+grep -qF "NOTE: /workspace/h121/m/.git/worktrees/wt runs its git hooks from /workspace/h121/o121/hooks (core.hooksPath), which the agent" "$ERR" \
+  && pass "G122 a relative core.hooksPath is judged from a linked worktree's checkout" \
+  || fail "G122 relative from a linked worktree (rc=$LAUNCH_RC; stderr: $(grep -F 'git hooks' "$ERR" | head -2 | tr '\n' ' '))"
+# A linked worktree whose checkout lies outside every mount, its git directory
+# inside one: judged from that checkout, which its gitdir names.
+mk121; mkdir -p "$TMP/o121/a" && "${G[@]}" init -q "$TMP/h121/m" && "${G[@]}" -C "$TMP/h121/m" commit -q --allow-empty -m i \
+  && "${G[@]}" -C "$TMP/h121/m" worktree add -q "$TMP/o121/a/wt" && "${G[@]}" -C "$TMP/h121/m" config core.hooksPath ../../../h121/x \
+  || { printf 'SCAFFOLD-FAILED: G122 gitdir\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h121" launch "$TMP/app"
+grep -qF "NOTE: /workspace/h121/m/.git/worktrees/wt runs its git hooks from /workspace/h121/x (core.hooksPath), which the agent" "$ERR" \
+  && pass "G122 a relative core.hooksPath is judged from a linked worktree's checkout outside every mount" \
+  || fail "G122 linked worktree's checkout outside (rc=$LAUNCH_RC; stderr: $(grep -F 'git hooks' "$ERR" | head -2 | tr '\n' ' '))"
+mk121; mkdir -p "$TMP/h121/a/b" && "${G[@]}" init -q --separate-git-dir "$TMP/h121/r.git" "$TMP/h121/a/b/r" \
+  && "${G[@]}" -C "$TMP/h121/a/b/r" config core.hooksPath ../../hooks || { printf 'SCAFFOLD-FAILED: G122 separate inside\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h121" launch "$TMP/app"
+grep -qF "runs its git hooks from /workspace/h121/a/hooks (core.hooksPath), which the agent" "$ERR" \
+  && pass "G122 a relative core.hooksPath is judged from a separate git directory's checkout" \
+  || fail "G122 separate git dir inside (rc=$LAUNCH_RC; stderr: $(grep -F 'git hooks' "$ERR" | head -2 | tr '\n' ' '))"
+# The repository a mount lies in, when the mount is a subdirectory of one:
+# husky's layout for a project not at the git root keeps its hooks there
+# (review of the GIT-44 fix).
+mk121; mkdir -p "$TMP/o121/proj/frontend" && "${G[@]}" init -q "$TMP/o121/proj" \
+  && "${G[@]}" -C "$TMP/o121/proj" config core.hooksPath frontend/.husky/_ || { printf 'SCAFFOLD-FAILED: G122 enclosing\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/o121/proj/frontend" launch "$TMP/app"
+grep -qF "runs its git hooks from /workspace/frontend/.husky/_ (core.hooksPath), which the agent" "$ERR" \
+  && pass "G122 the repository a mount lies in: its core.hooksPath into the mount is judged" \
+  || fail "G122 enclosing repository (rc=$LAUNCH_RC; stderr: $(grep -F 'git hooks' "$ERR" | head -1))"
+# Through a link whose own way out is safe: what it leads to is what git reads.
+mk121; "${G[@]}" -C "$TMP/o121/main" worktree add -q "$TMP/h121/feature" && printf '[user]\n' > "$TMP/h121/feature/inc.cfg" \
+  && mv "$TMP/o121/main/.git/config" "$TMP/o121/cfg2" && ln -s "$TMP/o121/cfg2" "$TMP/o121/main/.git/config" \
+  && "${G[@]}" config --file "$TMP/o121/cfg2" include.path "$TMP/h121/feature/inc.cfg" \
+  && mkdir -p "$TMP/o121/hk2" && printf '#!/bin/sh\n' > "$TMP/h121/w.sh" && ln -s "$TMP/h121/w.sh" "$TMP/o121/hk2/pre-commit" \
+  && rm -rf "$TMP/o121/main/.git/hooks" && ln -s "$TMP/o121/hk2" "$TMP/o121/main/.git/hooks" || { printf 'SCAFFOLD-FAILED: G122 through links\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h121" launch "$TMP/app"
+grep -qF "WARNING: $TMP/o121/main/.git/config includes $TMP/h121/feature/inc.cfg (include.path), which the agent can redirect" "$ERR" \
+  && pass "G122 a repository outside every mount: an include in a config reached through a link is judged" \
+  || fail "G122 config through a link (rc=$LAUNCH_RC; stderr: $(grep -F 'includes' "$ERR" | head -1))"
+grep -qF "NOTE: $TMP/o121/main/.git/hooks/pre-commit, a hook your host's git runs, is a link the agent can redirect" "$ERR" \
+  && pass "G122 a repository outside every mount: a hook in hooks/ reached through a link is judged" \
+  || fail "G122 hooks through a link (rc=$LAUNCH_RC; stderr: $(grep -F 'pre-commit' "$ERR" | head -1))"
+# Its hooks/, bound by nothing, is walked as a core.hooksPath directory is: a
+# hook file there with another name in a writable mount is named.
+mk121; "${G[@]}" -C "$TMP/o121/main" worktree add -q "$TMP/h121/feature" && printf '#!/bin/sh\n' > "$TMP/o121/main/.git/hooks/pre-commit" \
+  && ln "$TMP/o121/main/.git/hooks/pre-commit" "$TMP/h121/side" || { printf 'SCAFFOLD-FAILED: G122 hook file\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h121" launch "$TMP/app"
+grep -qF "it can write $TMP/o121/main/.git/hooks/pre-commit through another name of that file, in $TMP/h121" "$ERR" \
+  && pass "G122 a repository outside every mount: a hook file with another name in a writable mount is named" \
+  || fail "G122 hook file with a second name (rc=$LAUNCH_RC; stderr: $(grep -A1 -F 'pre-commit' "$ERR" | head -2 | tr '\n' ' '))"
+# Only git directories, as git takes them; at most SANDBOX_GIT_MAX, the rest
+# named. The .git files lie in a planted launcher, where they count toward
+# nothing else.
+mk121; mkdir -p "$TMP/h121/L" "$TMP/o121/plain" && : > "$TMP/h121/L/sandbox.sh" && : > "$TMP/h121/L/sandbox-common.sh" \
+  && printf '[core]\n\thooksPath = x\n' > "$TMP/o121/plain/config" && mkdir -p "$TMP/h121/p0" \
+  && printf 'gitdir: %s\n' "$TMP/o121/plain" > "$TMP/h121/p0/.git" || { printf 'SCAFFOLD-FAILED: G122 plain\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h121" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF "$TMP/o121/plain" "$ERR" && ! grep -qF 'git hooks from' "$ERR" \
+  && pass "G122 a .git file naming a directory that is not a git directory has nothing judged there" \
+  || fail "G122 plain directory judged (rc=$LAUNCH_RC; stderr: $(grep -E 'o121/plain|git hooks' "$ERR" | head -1))"
+# Nor a common directory that is not one: a planted .git file naming a
+# worktree-shaped directory whose commondir names a plain directory.
+mkdir -p "$TMP/o121/fake" "$TMP/o121/plain2" "$TMP/h121/p9" && printf '../plain2\n' > "$TMP/o121/fake/commondir" \
+  && printf '[core]\n\thooksPath = y\n' > "$TMP/o121/plain2/config" && printf 'gitdir: %s\n' "$TMP/o121/fake" > "$TMP/h121/p9/.git" \
+  || { printf 'SCAFFOLD-FAILED: G122 plain common\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h121" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF "$TMP/o121/plain2" "$ERR" && ! grep -qF 'git hooks from /workspace/h121/p9/y' "$ERR" \
+  && pass "G122 a commondir naming a directory that is not a common directory has nothing judged there" \
+  || fail "G122 plain common directory judged (rc=$LAUNCH_RC; stderr: $(grep -E 'plain2|git hooks' "$ERR" | head -1))"
+rm -rf "$TMP/h121/p9"
+for n in 1 2 3 4 5; do
+  "${G[@]}" init -q "$TMP/o121/g$n" && mkdir -p "$TMP/h121/L/p$n" && printf 'gitdir: %s\n' "$TMP/o121/g$n/.git" > "$TMP/h121/L/p$n/.git" \
+    || { printf 'SCAFFOLD-FAILED: G122 cap\n'; exit 1; }
+done
+SANDBOX_GIT_MAX=3 EXTRA_MOUNTS="$TMP/h121" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && grep -qF 'WARNING: .git files under read-only overlays here name more than 3 git directories outside' "$ERR" \
+  && pass "G122 git directories outside every mount past SANDBOX_GIT_MAX are named, not judged" \
+  || fail "G122 cap (rc=$LAUNCH_RC; stderr: $(grep -E 'ERROR|WARNING' "$ERR" | head -2 | tr '\n' ' '))"
+# A relative gitdir (git 2.48 and later, worktree.useRelativePaths) is resolved
+# from the linked worktree's git directory; with no checkout known, nothing is
+# judged from that directory itself, where git never runs hooks.
+mk121; mkdir -p "$TMP/o121/a" && "${G[@]}" init -q "$TMP/h121/m" && "${G[@]}" -C "$TMP/h121/m" commit -q --allow-empty -m i \
+  && "${G[@]}" -C "$TMP/h121/m" worktree add -q "$TMP/o121/a/wt" && "${G[@]}" -C "$TMP/h121/m" config core.hooksPath ../../../h121/x \
+  && printf '../../../../../o121/a/wt/.git\n' > "$TMP/h121/m/.git/worktrees/wt/gitdir" || { printf 'SCAFFOLD-FAILED: G122 relative gitdir\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h121" launch "$TMP/app"
+grep -qF "NOTE: /workspace/h121/m/.git/worktrees/wt runs its git hooks from /workspace/h121/x (core.hooksPath), which the agent" "$ERR" \
+  && ! grep -qF '/workspace/h121/m/h121/x' "$ERR" \
+  && pass "G122 a relative gitdir is resolved from the linked worktree's git directory, and that directory is no base" \
+  || fail "G122 relative gitdir (rc=$LAUNCH_RC; stderr: $(grep -F 'git hooks' "$ERR" | head -2 | tr '\n' ' '))"
+rm -f "$TMP/h121/m/.git/worktrees/wt/gitdir"
+EXTRA_MOUNTS="$TMP/h121" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF 'git hooks from /workspace/h121/m/h121/x' "$ERR" \
+  && pass "G122 a linked worktree with no checkout known has nothing judged from its git directory" \
+  || fail "G122 git directory taken as a base (rc=$LAUNCH_RC; stderr: $(grep -F 'git hooks' "$ERR" | head -1))"
+# The re-review of the GIT-44 fix: the repository a mount lies in through a
+# .git link (as `repo` checkouts have it), which git follows, was skipped and the
+# next repository up judged instead.
+mk121; "${G[@]}" init -q "$TMP/o121/repo" && mv "$TMP/o121/repo/.git" "$TMP/o121/proj.git" && mkdir -p "$TMP/o121/proj/frontend" \
+  && ln -s ../proj.git "$TMP/o121/proj/.git" && "${G[@]}" -C "$TMP/o121/proj" config core.hooksPath frontend/.husky/_ \
+  || { printf 'SCAFFOLD-FAILED: G122 .git link\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/o121/proj/frontend" launch "$TMP/app"
+grep -qF "runs its git hooks from /workspace/frontend/.husky/_ (core.hooksPath), which the agent" "$ERR" \
+  && pass "G122 the repository a mount lies in, through a .git link, is judged" \
+  || fail "G122 enclosing .git link (rc=$LAUNCH_RC; stderr: $(grep -F 'git hooks' "$ERR" | head -1))"
+# Through the .git link, its checkout is the worktree its index is read against:
+# a submodule under a pruned vendor/ is protected, and no "no worktree is known".
+mk121; "${G[@]}" init -q "$TMP/o121/s" && "${G[@]}" -C "$TMP/o121/s" commit -q --allow-empty -m s \
+  && "${G[@]}" init -q "$TMP/o121/lp" && "${G[@]}" clone -q "$TMP/o121/s" "$TMP/o121/lp/fe/vendor/lib" \
+  && "${G[@]}" -C "$TMP/o121/lp" add fe/vendor/lib 2>/dev/null && "${G[@]}" -C "$TMP/o121/lp" commit -q -m l \
+  && mv "$TMP/o121/lp/.git" "$TMP/o121/lp.git" && ln -s ../lp.git "$TMP/o121/lp/.git" || { printf 'SCAFFOLD-FAILED: G122 link index\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/o121/lp/fe" launch "$TMP/app"
+has_mount "$TMP/o121/lp/fe/vendor/lib/.git/config:/workspace/fe/vendor/lib/.git/config:ro" && ! grep -qF 'no worktree is known' "$ERR" \
+  && pass "G122 through a .git link, the repository's index is read against the checkout: its submodule is protected" \
+  || fail "G122 .git link's index (rc=$LAUNCH_RC; stderr: $(grep -F 'no worktree' "$ERR" | head -1))"
+# ... and a .git link's target inside another writable mount, past its scan, is
+# protected there.
+mk121; "${G[@]}" init -q "$TMP/o121/tmp" && mkdir -p "$TMP/h121/x/vendor" "$TMP/h121/y/fe" && mv "$TMP/o121/tmp/.git" "$TMP/h121/x/vendor/proj.git" \
+  && ln -s "$TMP/h121/x/vendor/proj.git" "$TMP/h121/y/.git" || { printf 'SCAFFOLD-FAILED: G122 link other mount\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h121/x $TMP/h121/y/fe" launch "$TMP/app"
+has_mount "$TMP/h121/x/vendor/proj.git/config:/workspace/x/vendor/proj.git/config:ro" \
+  && pass "G122 a .git link's target inside another writable mount, past its scan, is protected there" \
+  || fail "G122 .git link to another mount (rc=$LAUNCH_RC; mounts: $(grep -c 'proj.git' <<<"$(mounts)"))"
+# ... and one inside ANOTHER writable mount, past what its scan reaches (vendor/
+# is pruned), is protected in that mount's view.
+mk121; "${G[@]}" init -q "$TMP/h121/proj" && "${G[@]}" init -q "$TMP/h121/proj/vendor/lib" && mkdir -p "$TMP/h121/proj/vendor/lib/sub" \
+  || { printf 'SCAFFOLD-FAILED: G122 other mount\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h121/proj $TMP/h121/proj/vendor/lib/sub" launch "$TMP/app"
+has_mount "$TMP/h121/proj/vendor/lib/.git/config:/workspace/proj/vendor/lib/.git/config:ro" \
+  && pass "G122 the repository a mount lies in, inside another writable mount past its scan, is protected there" \
+  || fail "G122 enclosing repository in another mount (rc=$LAUNCH_RC; mounts: $(grep -c 'vendor/lib/.git' <<<"$(mounts)"))"
+# Past SANDBOX_GIT_MAX, only those named from under a read-only overlay are cut,
+# in the order found: a mounted worktree's repository is judged whatever a
+# planted launcher names.
+# The planted launcher's mount is scanned first.
+mk121; mkdir -p "$TMP/h121/a/L" "$TMP/h121/b" && : > "$TMP/h121/a/L/sandbox.sh" && : > "$TMP/h121/a/L/sandbox-common.sh" \
+  || { printf 'SCAFFOLD-FAILED: G122 order\n'; exit 1; }
+for n in $(seq 1 12); do
+  "${G[@]}" init -q "$TMP/o121/q$n" && mkdir -p "$TMP/h121/a/L/q$n" && printf 'gitdir: %s\n' "$TMP/o121/q$n/.git" > "$TMP/h121/a/L/q$n/.git" \
+    || { printf 'SCAFFOLD-FAILED: G122 order\n'; exit 1; }
+done
+"${G[@]}" -C "$TMP/o121/main" worktree add -q "$TMP/h121/b/feature" && "${G[@]}" -C "$TMP/o121/main" config core.hooksPath .husky/_ \
+  || { printf 'SCAFFOLD-FAILED: G122 order worktree\n'; exit 1; }
+# ... and named from under an overlay too, in a mount scanned last: the capped
+# ones are taken after the others, so it is not cut (final review of the GIT-44
+# fix).
+mkdir -p "$TMP/h121/c/L2/z1" && : > "$TMP/h121/c/L2/sandbox.sh" && : > "$TMP/h121/c/L2/sandbox-common.sh" \
+  && printf 'gitdir: %s\n' "$TMP/o121/main/.git/worktrees/feature" > "$TMP/h121/c/L2/z1/.git" || { printf 'SCAFFOLD-FAILED: G122 order z1\n'; exit 1; }
+SANDBOX_GIT_MAX=3 EXTRA_MOUNTS="$TMP/h121/a $TMP/h121/b $TMP/h121/c" launch "$TMP/app"
+grep -qF 'WARNING: .git files under read-only overlays here name more than 3 git directories outside' "$ERR" \
+  && grep -qF "runs its git hooks from /workspace/b/feature/.husky/_ (core.hooksPath), which the agent" "$ERR" \
+  && pass "G122 past SANDBOX_GIT_MAX a mounted worktree's repository is still judged; planted ones are cut" \
+  || fail "G122 cap order (rc=$LAUNCH_RC; stderr: $(grep -E 'WARNING: .git files|git hooks' "$ERR" | head -2 | tr '\n' ' '))"
+# Nor are the repositories mounts lie in, one per mount, whatever their number.
+mk121; for n in 1 2 3; do
+  "${G[@]}" init -q "$TMP/o121/r$n" && mkdir -p "$TMP/o121/r$n/s$n" && "${G[@]}" -C "$TMP/o121/r$n" config core.hooksPath "s$n/.husky/_" \
+    || { printf 'SCAFFOLD-FAILED: G122 enclosing cap\n'; exit 1; }
+done
+SANDBOX_GIT_MAX=2 EXTRA_MOUNTS="$TMP/o121/r1/s1 $TMP/o121/r2/s2 $TMP/o121/r3/s3" launch "$TMP/app"
+n121=0; for n in 1 2 3; do grep -qF "runs its git hooks from /workspace/s$n/.husky/_ (core.hooksPath)" "$ERR" && n121=$((n121 + 1)); done
+[[ "$LAUNCH_RC" == 0 && "$n121" == 3 ]] \
+  && pass "G122 the repositories mounts lie in are judged past SANDBOX_GIT_MAX: they are one per mount" \
+  || fail "G122 enclosing repositories cut ($n121 of 3 judged; rc=$LAUNCH_RC)"
+# An absolute core.hooksPath is the same from every worktree, and named once.
+mk121; mkdir -p "$TMP/h121/hk" && "${G[@]}" init -q "$TMP/h121/m" && "${G[@]}" -C "$TMP/h121/m" commit -q --allow-empty -m i \
+  && for n in 1 2 3; do "${G[@]}" -C "$TMP/h121/m" worktree add -q "$TMP/h121/w$n"; done \
+  && "${G[@]}" -C "$TMP/h121/m" config core.hooksPath "$TMP/h121/hk" || { printf 'SCAFFOLD-FAILED: G122 absolute\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h121" launch "$TMP/app"
+[[ "$(grep -c 'runs its git hooks from /workspace/h121/hk (core.hooksPath)' "$ERR")" == 1 ]] \
+  && pass "G122 an absolute core.hooksPath shared by linked worktrees is named once" \
+  || fail "G122 named $(grep -c 'runs its git hooks from /workspace/h121/hk (core.hooksPath)' "$ERR") times (rc=$LAUNCH_RC)"
+rm -rf "$TMP/h121" "$TMP/o121"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
