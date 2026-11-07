@@ -22,6 +22,7 @@
 - **Updated 2026-11-07:** GIT-38 is FIXED on Linux, after a review of the fix; macOS and WSL verify it (platform-issues PLAT-8). GIT-41, found by that review, is open (section 25).
 - **Updated 2026-11-07:** GIT-35 is FIXED, after three reviews of the fix. GIT-44 and GIT-45, found by that review, are open (section 25).
 - **Updated 2026-11-07:** GIT-39 is FIXED, after a review and a re-review of the fix. GIT-42 and GIT-43, found by the review (GIT-43 also by the automated security review of `f90c096`), are open (section 25). GIT-35's first case is fixed with it, and GIT-35 is raised to MEDIUM by what the re-review found.
+- **Updated 2026-11-07:** GIT-41 is FIXED on WSL, measured there by PLAT-8's drvfs half, which also showed it wider than modelled: every read-only overlay, the launcher's included. GIT-38's drvfs part is fixed with it. Both stay open on macOS until PLAT-8's APFS half is measured (section 25).
 - **Companion:** [2026-10-26-feature-gaps-review.md](2026-10-26-feature-gaps-review.md).
 - **Confidence:** CONFIRMED = reproduced, or unambiguous from the code. PLAUSIBLE = strong reasoning, not reproduced (usually needs hardware or a platform not available here); verify before fixing.
 - **Citations** are by snippet, per AGENTS.md "Citing code". Scratch repro paths mentioned in entries were session-local and may no longer exist; each entry describes its repro in full.
@@ -1924,7 +1925,7 @@ An Opus reviewer of the slice's new tests, 2026-11-05, at `fd49c3c`, reached a m
   - The link pass spawns one `find` per entry, twice per launch: about 0.7 s for 150 repositories.
 
 ### GIT-38: a case-insensitive filesystem defeats every "inside this mount" test
-- **Status: FIXED on Linux** (2026-11-07), after three reviews of the fix; macOS and WSL verify it (platform-issues PLAT-8). Found by the review of the GIT-36/37 fix.
+- **Status: FIXED on Linux** (2026-11-07), after three reviews of the fix, **and on WSL's drvfs** (2026-11-07, platform-issues PLAT-8, below); macOS verifies it (PLAT-8's APFS half). Found by the review of the GIT-36/37 fix.
   - **The fix:** every path compared with a mount is spelled as on disk where it can be spelled otherwise.
     - `_cd_phys()` resolves as before, with bash's `cd -P`, and then `_disk_spell()` respells the result, which reaches `_gd_resolve()` (a `gitdir:`, a `commondir`), `core.worktree`, `core.hooksPath`, an include's directory, the writable mounts' sources (`bsrc`) and the group's own root (`_git_skip_root`).
     - `_disk_spell()` asks `getcwd` (an external `pwd -P`, found once, with an absolute path) only for a path that crosses a directory ignoring case. `_ci_path()` decides that with builtin tests: a component whose case, turned over, names the same file. So a case-sensitive filesystem costs no process (G118 counts them).
@@ -1963,7 +1964,12 @@ An Opus reviewer of the slice's new tests, 2026-11-05, at `fd49c3c`, reached a m
     - A submodule's `.git` file spelled `.GIT` on disk is bound twice, under both spellings: `had[]` is keyed by spelling.
     - Several of the lower-case comparisons are reached only in combinations no check builds, and are not pinned: the NOTE for a mount inside a `.git`, a relative `core.hooksPath` from a `.GIT`, `*/worktrees`, the `-ipath` prunes, `_gdi_follow()`'s second test, a worktree's `gitdir` back-pointer, and the `.git/modules` `.git` file.
   - **Why `getcwd` is enough on Linux:** a directory has one dentry, so however it was reached, `getcwd` spells it one way while it is cached. On a casefold tmpfs that is the spelling it was made with; on ext4 it may be the spelling of the lookup that made the dentry, which is still one spelling.
-  - **Not measured:** macOS's `getcwd`, and WSL's drvfs. drvfs compares names case-sensitively, so a directory reached by another spelling may move its one dentry to that spelling. PLAT-8 asks for both runs; a failure there calls for comparing by `-ef` instead.
+  - **Not measured:** macOS's `getcwd`. PLAT-8's APFS half asks for it.
+  - **Measured on WSL's drvfs** (PLAT-8, 2026-11-07): `getcwd` prints the spelling a directory was reached by, and 11 G117 checks failed.
+    - Every G117 case needs a read-only bind in a directory that ignores case, which GIT-41 now refuses there, so they no longer run on such a filesystem.
+    - What is left is a path whose parent above a case-sensitive mount is written in another case: a `gitdir:`, an include, or a mount.
+    - **Fixed:** `_disk_spell()` spells a directory on a filesystem whose kernel does not ignore case (`_ci_alias_fs()`) from readdir (`_ds_readdir()`: a case-folding glob of its name, the entry that is the same file), and asks `getcwd` only where the kernel does.
+    - Pinned by G121's case-sensitive run: a `gitdir:`, an include and an `EXTRA_MOUNTS` path, each with a parent in another case. All three were red before the fix.
   - **Cost:** no `pwd` process on a case-sensitive filesystem, and builtin tests on each new directory. The scan is faster than before the fix. Where case is ignored, one process per directory, at most 5000 a launch (about 1.6 ms each on Linux).
   - **Tests:**
     - `tests/test-git-internals-ro-casefold.sh`, G117, has 21 checks.
@@ -2052,8 +2058,20 @@ An Opus reviewer of the slice's new tests, 2026-11-05, at `fd49c3c`, reached a m
 - **Fix direction:** find the mount points below each writable mount (`/proc/self/mountinfo` on Linux, `mount` on macOS), and list a writable mount whose root or any mount below it is on the file's device, without `-xdev`. Or, cheaper: when a writable mount holds a mount point on the file's device, answer "not ruled out".
 
 ### GIT-41: on Docker Desktop, a read-only bind of one file does not cover its other spellings
-- **Status: OPEN** (2026-11-07). Found by the review of the GIT-38 fix. Not measured on a real Mac or WSL: platform-issues PLAT-8 asks for it.
-- **Severity: HIGH** where it applies: Docker Desktop on macOS and on Windows, whose containers reach a host directory through virtiofs or 9p. Confidence: PLAUSIBLE, modelled with a passthrough FUSE server over a casefold tmpfs on Linux.
+- **Status: FIXED on WSL** (2026-11-07); **open on macOS**, pending PLAT-8's APFS half. Found by the review of the GIT-38 fix.
+- **Severity: HIGH** where it applies: Docker Desktop on macOS and on Windows, whose containers reach a host directory through virtiofs or 9p. Confidence: CONFIRMED on WSL's drvfs (platform-issues PLAT-8); PLAUSIBLE on macOS, modelled with a passthrough FUSE server over a casefold tmpfs on Linux.
+- **Measured on WSL** (Docker Desktop 29.9.2, a drvfs directory that ignores case), and wider than the model:
+  - `.git/CONFIG` wrote the host's `.git/config`.
+  - Directory binds did not hold either. `.git/HOOKS/post-commit` was written past the read-only `hooks/`, `.GIT/config` past a read-only bind of the whole `.git`, and `sandbox.sh` through `.AI-CONTAINERS` past the launcher overlay: the agent could rewrite what the host runs at the next launch.
+  - A pinned directory was renamed through another spelling.
+  - drvfs makes a dentry per spelling, and a bind is a mount on one dentry, so no arrangement of binds closes this there.
+  - In a case-sensitive directory every bind held.
+- **Fix (WSL):** after the overlay pass, every overlay, pin and file bind is checked along its way below the writable mount root it lies in (`launcher_ro_overlay()`). One reachable by another spelling refuses the launch, naming the directory and the remedies: the distro's own filesystem, `:ro`, or `fsutil.exe file setCaseSensitiveInfo`.
+  - That is a directory that ignores case (`_ci_name()`) on a filesystem whose kernel does not.
+  - `_ci_alias_fs()` says which filesystems those are: on Linux, any type but ext4, f2fs and tmpfs, whose kernels casefold themselves, so a name there has one dentry and binds held (the model). A type that cannot be read counts as such a filesystem.
+  - Not applied on macOS.
+  - Limit, as `_ci_path()`'s: a name with no ASCII letter cannot be tried in another case.
+  - Tests: G121 in `tests/test-git-internals-ro-casefold.sh`. Where `TMPDIR` is on such a filesystem, a launcher overlay and a `.git` in a writable mount refuse, a read-only mount does not, and the run is repeated in a case-sensitive directory, which launches protected. The two refusals were red before the fix.
 - **Location:** `sandbox.sh: launcher_ro_overlay()`, which binds `config`, `config.worktree`, `commondir` and each `.git` file read-only one file at a time.
 - **What's wrong:** the guest kernel compares names case-sensitively, so `.git/CONFIG` is a name of its own, not a mount point. The host server opens it case-insensitively, which is the same file as `config`.
   - In the model: a write to `.git/config` was refused, while a write to `.git/CONFIG` went through and put a `core.fsmonitor` into the host's config.

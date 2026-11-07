@@ -35,7 +35,7 @@ reports by editing the entry's **Status** line (and docs/testing.md's
 | Agent | Its platform | Picks up | Cannot do |
 |---|---|---|---|
 | **Linux agent** (review machine) | Linux x86-64, native Docker Engine | the falsify work GAP-1 to GAP-4 | anything below |
-| **WSL agent** | Windows + WSL2 (Ubuntu distro) + **Docker Desktop** with WSL integration. **Not** a native Docker Engine in the distro | **PLAT-6**, **PLAT-8** (its drvfs half) | PLAT-2's native-Engine half, which needed a Docker Engine installed natively in the distro. The user ran it on an Azure VM (done) |
+| **WSL agent** | Windows + WSL2 (Ubuntu distro) + **Docker Desktop** with WSL integration. **Not** a native Docker Engine in the distro | **PLAT-6**, **PLAT-8** (its drvfs half; done) | PLAT-2's native-Engine half, which needed a Docker Engine installed natively in the distro. The user ran it on an Azure VM (done) |
 | **Mac agent** | macOS, Docker Desktop and/or Colima | **PLAT-3** (GAP-11), **PLAT-5**, **PLAT-7**, **PLAT-8** (its APFS half) | — |
 | *nobody* | x86-64 CPU without AVX | PLAT-4: closed as not supported | — |
 
@@ -151,7 +151,20 @@ first, then fix test-first.
 
 ## PLAT-8: macOS and WSL — paths spelled in another case on a filesystem that ignores case
 
-- **Status: OPEN** (2026-11-06).
+- **Status: drvfs half DONE** (2026-11-07, WSL agent); **APFS half OPEN.**
+  - **Host:** Windows + WSL2 (kernel 6.18.33.2-microsoft-standard-WSL2, Ubuntu distro), Docker Desktop 29.9.2. `TMPDIR` under `/mnt/d` (drvfs, `9p`, `aname=drvfs`, `stat -f` type `v9fs`).
+  - **getcwd:** a defect. In a directory where Windows ignores case, `mkdir Proj; cd proj; /bin/pwd -P; cd ../PROJ; /bin/pwd -P` printed `…/proj`, then `…/PROJ`. All three spellings are one file (`-ef`, one device:inode).
+  - **Test, ignoring case, at `15682eb`:** the first line said `NOTE: TMPDIR ignores case here; the cases run in it`. 11 failures, every G117 check that resolves a path written in another case.
+  - **Test, case-sensitive directory** (`fsutil.exe file setCaseSensitiveInfo … enable`, which worked without elevation): `SKIP: no casefold tmpfs here`. The WSL kernel is 6.18 but has no `CONFIG_UNICODE`, so `mount -t tmpfs -o casefold` fails.
+  - **GIT-41:** measured with `alpine:3.20` containers binding a drvfs directory as the launcher does, not through `./sandbox.sh`. It reproduces, and wider than modelled:
+    - `.git/CONFIG` wrote the host's `.git/config`. A `mv` of it renamed the real file away.
+    - `.git/HOOKS/post-commit` wrote into the read-only `hooks/`.
+    - `sandbox.sh` through `.AI-CONTAINERS` wrote the launcher, past its read-only overlay.
+    - `.GIT/config` wrote through a read-only bind of the whole `.git`.
+    - A pinned directory was renamed through another spelling.
+    - In a case-sensitive directory every other spelling was `nonexistent`, or a new file the host's git ignores, and the host's config was untouched.
+    - From a container, `setfattr -n system.wsl_case_sensitive` is `Not supported`, so the agent cannot make a directory ignore case.
+  - **Fixed** by GIT-41 and the drvfs part of GIT-38 (bugs review section 25). G121 in `tests/test-git-internals-ro-casefold.sh` runs where `TMPDIR` is on such a filesystem: 5 checks red before the fix, 0 failures after.
 - **Picked up by:** the **Mac agent** (APFS) and the **WSL agent** (drvfs).
 - **Platform:** macOS with its default case-insensitive APFS. WSL2 with a directory under `/mnt/<drive>`.
 - **Source:** bugs review GIT-38, fixed and measured on Linux only, and GIT-41, modelled only. `sandbox.sh: _disk_spell()` respells, from `getcwd` (an external `pwd -P`), each path that crosses a directory ignoring case, so every path compared with a mount is spelled one way. On Linux that holds because a directory has one dentry. Whether macOS's `getcwd` and WSL's drvfs spell a directory one way, however it was reached, has not been measured. GIT-41: Docker Desktop's file sharing may open `.git/CONFIG` as the host's `.git/config`, past the read-only bind of `config`.

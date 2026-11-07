@@ -1465,6 +1465,36 @@ launcher_ro_overlay() {
     printf '      not all the links of these were checked:\n' >&2
     for x in "${unchecked[@]}"; do printf '        %s\n' "$(_q "$x")" >&2; done
   fi
+  # A read-only bind is a mount on one name. Where a directory ignores case but
+  # the kernel does not (WSL's drvfs: _ci_alias_fs), another spelling of that
+  # name, or of any directory on its way below the mount root, is a name of its
+  # own that no mount covers, and writable: from a container, .git/CONFIG wrote
+  # the host's .git/config, .AI-CONTAINERS/sandbox.sh the launcher, and a pinned
+  # directory renamed away (measured on Docker Desktop, platform-issues PLAT-8).
+  # No bind can close that, so every overlay, pin and file bind is checked, and
+  # one that can be reached so refuses the launch (bugs review GIT-41).
+  for ((k = 0; k < ${#_vrfy[@]}; k += 2)); do
+    f="${_vrfy[k]}"
+    for i in ${bsrc[@]+"${!bsrc[@]}"}; do
+      [[ "$f" == "${bsrc[i]}"/* ]] || continue
+      p="${bsrc[i]}"; rest="${f#"${bsrc[i]}"/}"
+      while [[ -n "$rest" ]]; do
+        part="${rest%%/*}"
+        if [[ "$rest" == */* ]]; then rest="${rest#*/}"; else rest=""; fi
+        if _ci_name "$p" "$part" && _ci_alias_fs "$p"; then
+          printf 'ERROR: %s is mounted read-only, but %s ignores case\n' "$(_term "${_vrfy[k+1]}")" "$(_term "$p")" >&2
+          printf '       and the kernel does not: in it, %s is %s by another name, which no\n' "$(_q "${part~~}")" "$(_q "$part")" >&2
+          printf '       mount covers, so the agent could write it (bugs review GIT-41). Refusing the launch.\n' >&2
+          printf '       Keep the project on a case-sensitive filesystem (in WSL, the distro'"'"'s own, such\n' >&2
+          printf '       as ~/dev, not /mnt/<drive>), mount it :ro, or make each directory from %s\n' "$(_term "${bsrc[i]}")" >&2
+          printf '       down case-sensitive: fsutil.exe file setCaseSensitiveInfo <dir> enable (from an elevated\n' >&2
+          printf '       prompt if refused). It applies to that directory and the ones made in it later.\n' >&2
+          exit 1
+        fi
+        p="$p/$part"
+      done
+    done
+  done
   # A read-only bind does not make a FIFO read-only: the agent can still open one
   # for writing through it, and feed the host's git, or a launcher the host runs,
   # whatever it reads there — reproduced (reviews of 455fa85 and 56c91c4, HIGH;
@@ -2673,7 +2703,7 @@ _ci_path() {
 # Unchanged where there is no pwd with an absolute path.
 _disk_spell() {
   local -n _ds_v=$1
-  local _ds_k="$_ds_v" _ds_r=""
+  local _ds_k="$_ds_v" _ds_r="" _ds_a
   [[ -n "$_ds_k" ]] && _ci_path "$_ds_k" || return 0
   [[ -n "${_ds_cache_made:-}" ]] || { declare -gA _ds_cache=(); _ds_cache_made=1; }
   if [[ -n "${_ds_cache[$_ds_k]+x}" ]]; then _ds_v="${_ds_cache[$_ds_k]}"; return 0; fi
@@ -2688,11 +2718,90 @@ _disk_spell() {
     _cd_phys_pwd="$(type -P pwd 2>/dev/null)" || _cd_phys_pwd=""
     [[ "$_cd_phys_pwd" == /* ]] || _cd_phys_pwd=-
   fi
+  # Where the kernel makes a dentry per spelling (WSL's drvfs), getcwd prints
+  # the spelling a directory was reached by, so those directories are spelled
+  # from readdir first (PLAT-8). getcwd is asked only if a directory that
+  # ignores case on a filesystem whose kernel does too is left on the way.
+  _ds_a="$_ds_k"
+  if _ds_readdir _ds_a; then _ds_cache[$_ds_k]="$_ds_a"; _ds_v="$_ds_a"; return 0; fi
+  _ds_v="$_ds_a"
   [[ "$_cd_phys_pwd" != - ]] || return 0
-  IFS= read -r -d '' _ds_r < <(cd -- "$_ds_k" 2>/dev/null && "$_cd_phys_pwd" -P 2>/dev/null && printf '\0') || return 0
+  IFS= read -r -d '' _ds_r < <(cd -- "$_ds_a" 2>/dev/null && "$_cd_phys_pwd" -P 2>/dev/null && printf '\0') || return 0
   _ds_r="${_ds_r%$'\n'}"
   [[ "$_ds_r" == /* ]] || return 0
   _ds_cache[$_ds_k]="$_ds_r"; _ds_v="$_ds_r"
+}
+
+# _ci_alias_fs <dir>: whether <dir>, a directory that ignores case, is on a
+# filesystem whose kernel does not: one where each spelling of a name is a
+# dentry of its own. WSL's drvfs (9p) is one, measured (platform-issues PLAT-8):
+# a directory reached as PROJ is PROJ to getcwd, and a read-only bind, a mount
+# on one dentry, does not cover the others (bugs review GIT-41). Where the
+# kernel ignores case itself — ext4 and f2fs with casefold, a casefold tmpfs —
+# a name has one dentry, and binds held for every spelling (the GIT-38 model).
+# Linux only: the Mac half of PLAT-8 measures what Docker Desktop's file sharing
+# does there. A filesystem whose type cannot be read counts as one. One stat
+# per directory, cached; asked only of a directory that ignores case.
+_ci_alias_fs() {
+  [[ "$OSTYPE" == linux* ]] || return 1
+  [[ -n "${_caf_made:-}" ]] || { declare -gA _caf=(); _caf_made=1; }
+  if [[ -z "${_caf[$1]+x}" ]]; then
+    case "$(stat -f -c %T -- "$1" 2>/dev/null)" in
+      ext2/ext3|f2fs|tmpfs) _caf[$1]=0 ;;
+      *) _caf[$1]=1 ;;
+    esac
+  fi
+  [[ "${_caf[$1]}" == 1 ]]
+}
+
+# _ci_name <dir> <name>: <name>'s ASCII case turned over names, in <dir>, the
+# same file (a link at the other spelling is not taken for one): <dir> ignores
+# case. A name with no ASCII letter cannot be tried, and is not seen (the limit
+# _ci_path has).
+_ci_name() {
+  local _cn_f="${2~~}"
+  [[ "$_cn_f" != "$2" && ! -L "$1/$_cn_f" && "$1/$_cn_f" -ef "$1/$2" ]]
+}
+
+# _ds_readdir <var>: the physical path in <var>, each name in a directory that
+# ignores case on a filesystem whose kernel does not (_ci_alias_fs) spelled as
+# readdir lists it. Fails, with the rest respelled, if a directory that ignores
+# case on another filesystem is on the way, for getcwd to spell. Each prefix
+# once per shell (_dr_cache). The glob reads the directory once; the agent
+# decides how many entries it holds, as for the scan.
+_ds_readdir() {
+  local -n _dr_v=$1
+  local _dr_p="" _dr_r="${_dr_v#/}" _dr_c _dr_k _dr_m _dr_rc=0 _dr_o1="" _dr_o2="" _dr_o3="" _dr_o4=""
+  local -a _dr_g
+  [[ -n "${_dr_cache_made:-}" ]] || { declare -gA _dr_cache=(); _dr_cache_made=1; }
+  while [[ -n "$_dr_r" ]]; do
+    _dr_c="${_dr_r%%/*}"
+    if [[ "$_dr_r" == */* ]]; then _dr_r="${_dr_r#*/}"; else _dr_r=""; fi
+    [[ -n "$_dr_c" ]] || continue
+    _dr_k="$_dr_p/$_dr_c"
+    if [[ -n "${_dr_cache[$_dr_k]+x}" ]]; then
+      _dr_p="${_dr_cache[$_dr_k]% *}"; [[ "${_dr_cache[$_dr_k]##* }" == 0 ]] || _dr_rc=1; continue
+    fi
+    if _ci_name "${_dr_p:-/}" "$_dr_c"; then
+      if _ci_alias_fs "${_dr_p:-/}"; then
+        shopt -q nocaseglob || _dr_o1=1; shopt -q dotglob || _dr_o2=1
+        shopt -q nullglob || _dr_o3=1; ! shopt -q failglob || _dr_o4=1
+        shopt -s nocaseglob dotglob nullglob; shopt -u failglob
+        _dr_g=("$_dr_p"/["${_dr_c:0:1}"]"${_dr_c:1}")
+        [[ -z "$_dr_o1" ]] || shopt -u nocaseglob; [[ -z "$_dr_o2" ]] || shopt -u dotglob
+        [[ -z "$_dr_o3" ]] || shopt -u nullglob; [[ -z "$_dr_o4" ]] || shopt -s failglob
+        for _dr_m in ${_dr_g[@]+"${_dr_g[@]}"}; do
+          if [[ ! -L "$_dr_m" && "$_dr_m" -ef "$_dr_p/$_dr_c" ]]; then _dr_c="${_dr_m##*/}"; break; fi
+        done
+      else
+        _dr_rc=1
+      fi
+    fi
+    _dr_p="$_dr_p/$_dr_c"
+    _dr_cache[$_dr_k]="$_dr_p $_dr_rc"
+  done
+  _dr_v="${_dr_p:-/}"
+  return "$_dr_rc"
 }
 
 # _spell_rec <var>: a path a walk reports spelled as on disk: a link by the
@@ -3779,7 +3888,7 @@ declare -A _gir_cache=()   # git directory → its read index, once per launch
 _fs_deadline=""             # the FIFO search's deadline, once per launch (_ro_fifo_search)
 # _ci_path's and _disk_spell's state, never from the environment: _cd_phys_pwd is
 # the program run as pwd.
-_ci_memo_made="" _ds_cache_made="" _ds_n=0 _cd_phys_pwd=""
+_ci_memo_made="" _ds_cache_made="" _ds_n=0 _cd_phys_pwd="" _caf_made="" _dr_cache_made=""
 # The hooks git runs, by name (githooks(5)); anything else in hooks/ is inert.
 git_hook_names=(applypatch-msg pre-applypatch post-applypatch pre-commit
   pre-merge-commit prepare-commit-msg commit-msg post-commit pre-rebase post-checkout
