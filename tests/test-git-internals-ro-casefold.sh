@@ -67,6 +67,36 @@ fi
 # shellcheck source=tests/lib-git-internals-ro.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib-git-internals-ro.sh"
 
+# spell <path>: _disk_spell's answer for <path>, under LC_ALL=C, with a / after.
+spell() {
+  LC_ALL=C bash -c '
+    set -euo pipefail
+    for fn in _ci_path _case_flip _u8_locale _win_path _win_fs _win_mounts _disk_spell _ds_readdir _ci_name _ci_alias_fs _q _term; do
+      eval "$(awk "/^$fn\\(\\) \\{/,/^}\$/" "$1")"
+    done
+    v="$2"; _disk_spell v; printf "%s/" "$v"' _ "$ENGINE/sandbox.sh" "$1"
+}
+# ── G123: where Windows looks names up, a path naming a directory by its 8.3
+# short name, which readdir never lists, is refused: compared as written, it
+# was outside the mount it lies in (automated security review of 0e0ea9a).
+# Only where the drive makes short names (C: by default).
+g123() {
+  local n short="" got
+  mkdir "$TMP/longdirectoryname123" || { printf 'SCAFFOLD-FAILED: G123\n'; exit 1; }
+  for n in LONGDI~1 LONGDI~2 LONGDI~3 LONGDI~4; do
+    if [[ -d "$TMP/$n" && "$TMP/$n" -ef "$TMP/longdirectoryname123" ]]; then short="$n"; break; fi
+  done
+  if [[ -z "$short" ]]; then
+    printf 'NOTE: G123 not run: this drive makes no 8.3 short names (%s)\n' "$1"
+  else
+    got="$(spell "$TMP/$short/" 2>&1)"
+    [[ "$got" == *"cannot be listed, it is"*"refusing the launch"* && "$got" != "$TMP/"* ]] \
+      && pass "G123 a path through an 8.3 short name is refused, $1" \
+      || fail "G123 short name $short, $1 (got: $got)"
+  fi
+  rmdir "$TMP/longdirectoryname123"
+}
+
 if [[ -n "$_CF_ALIAS" ]]; then
   # ── G121: no read-only bind where another name of it is a name of its own ──
   printf 'NOTE: TMPDIR is on %s, whose kernel does not ignore case: G121, not G117\n' \
@@ -93,14 +123,6 @@ if [[ -n "$_CF_ALIAS" ]]; then
   # spelling it was reached by; under C too a name with no ASCII letter is seen
   # to ignore case and is folded (automated security review of 1ed3de8).
   mkdir "$TMP/"$'\xd0\x94\xd0\xbe\xd0\xba' || { printf 'SCAFFOLD-FAILED: G122\n'; exit 1; }
-  spell() {
-    LC_ALL=C bash -c '
-      set -euo pipefail
-      for fn in _ci_path _case_flip _u8_locale _disk_spell _ds_readdir _ci_name _ci_alias_fs _q _term; do
-        eval "$(awk "/^$fn\\(\\) \\{/,/^}\$/" "$1")"
-      done
-      v="$2"; _disk_spell v; printf "%s/" "$v"' _ "$ENGINE/sandbox.sh" "$1"
-  }
   got="$(spell "${PROJ%/*}/PROJ")"
   [[ "$got" == "$PROJ/" ]] \
     && pass "G122 a directory reached in another case is spelled as on disk" \
@@ -110,6 +132,7 @@ if [[ -n "$_CF_ALIAS" ]]; then
     && pass "G122 under C, a name with no ASCII letter reached in another case is spelled as on disk" \
     || fail "G122 non-ASCII name under C (got: $got)"
   rmdir "$TMP/"$'\xd0\x94\xd0\xbe\xd0\xba'
+  g123 "in a directory that ignores case"
   cs="$TMP/cs121"; mkdir "$cs" || { printf 'SCAFFOLD-FAILED: G121 cs\n'; exit 1; }
   if command -v fsutil.exe >/dev/null 2>&1 && command -v wslpath >/dev/null 2>&1 \
      && fsutil.exe file setCaseSensitiveInfo "$(wslpath -w "$cs")" enable >/dev/null 2>&1 \
@@ -133,6 +156,7 @@ if [[ "$_CF_INNER" == aliascs ]]; then
   [[ "$LAUNCH_RC" != 0 ]] && grep -qF '.ai-containers by its 8.3 short name' "$ERR" \
     && pass "G121 a project in a case-sensitive directory there refuses the launch too" \
     || fail "G121 case-sensitive project (rc=$LAUNCH_RC; stderr: $(grep -F ERROR "$ERR" | head -1))"
+  g123 "in a case-sensitive directory"
   printf '\n%d failure(s)\n' "$fails"
   exit "$fails"
 fi

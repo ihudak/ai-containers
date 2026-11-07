@@ -2878,7 +2878,8 @@ _ci_path() {
 _disk_spell() {
   local -n _ds_v=$1
   local _ds_k="$_ds_v" _ds_r="" _ds_a _ds_rc=0
-  [[ -n "$_ds_k" ]] && _ci_path "$_ds_k" || return 0
+  [[ -n "$_ds_k" ]] || return 0
+  _ci_path "$_ds_k" || _win_path "$_ds_k" || return 0
   [[ -n "${_ds_cache_made:-}" ]] || { declare -gA _ds_cache=(); _ds_cache_made=1; }
   if [[ -n "${_ds_cache[$_ds_k]+x}" ]]; then _ds_v="${_ds_cache[$_ds_k]}"; return 0; fi
   _ds_n=$(( ${_ds_n:-0} + 1 ))
@@ -2900,10 +2901,10 @@ _disk_spell() {
   _ds_readdir _ds_a || _ds_rc=$?
   if (( _ds_rc == 0 )); then _ds_cache[$_ds_k]="$_ds_a"; _ds_v="$_ds_a"; return 0; fi
   if (( _ds_rc == 2 )); then
-    printf 'ERROR: %s ignores case, and nothing its listing names is %s (it cannot be\n' "$(_term "${_ds_a%/*}")" "$(_q "${_ds_a##*/}")" >&"${_rd_errfd:-2}"
-    printf '       listed, or its case is not one this launcher folds), so %s cannot be spelled\n' "$(_q "$_ds_k")" >&"${_rd_errfd:-2}"
-    printf '       as on disk to be compared with the mounts; refusing the launch. Make it listable, or\n' >&"${_rd_errfd:-2}"
-    printf '       mount narrower directories, or :ro.\n' >&"${_rd_errfd:-2}"
+    printf 'ERROR: nothing the listing of %s names is %s (it cannot be listed, it is\n' "$(_term "${_ds_a%/*}")" "$(_q "${_ds_a##*/}")" >&"${_rd_errfd:-2}"
+    printf '       an 8.3 short name, or its case is not one this launcher folds), so %s cannot be spelled\n' "$(_q "$_ds_k")" >&"${_rd_errfd:-2}"
+    printf '       as on disk to be compared with the mounts; refusing the launch. Write the path with\n' >&"${_rd_errfd:-2}"
+    printf '       its long names, make the directory listable, mount narrower directories, or :ro.\n' >&"${_rd_errfd:-2}"
     kill -s USR1 "$$" 2>/dev/null || true
     exit 1
   fi
@@ -2985,14 +2986,19 @@ _case_flip() {
   _cf_v="${_cfl[$2]}"
 }
 
-# _win_fs <dir>: whether <dir> is on a filesystem where Windows looks names up:
-# WSL's drvfs (9p, aname=drvfs) or SMB. Windows also reaches a name by its 8.3
+# _win_fs <dir>: whether <dir> is on a filesystem where Windows looks names up,
+# or that holds NTFS's names: WSL's drvfs (9p with aname=drvfs; virtiofs on a
+# WSL kernel), SMB (cifs, and the FUSE clients smbnetfs and gvfs), and NTFS
+# mounted from Linux (ntfs3, ntfs-3g as fuseblk). Windows also reaches a name by its 8.3
 # short name, on a volume that makes them (C:, by default), in a case-sensitive
 # directory too: from a container, a read-only bind on .ai-containers did not
 # cover AI-CON~1 (measured on Docker Desktop; automated security review of
 # 1ed3de8). Nothing on Linux lists short names, so every name there counts as
-# having one. SMB counts by the protocol (Windows and Samba both answer to 8.3
-# names by default), not measured. Decided by the mount <dir> lies on, from
+# having one. Only drvfs over 9p is measured; SMB counts by the protocol
+# (Windows and Samba both answer to 8.3 names by default), NTFS because its
+# directories index the short names, virtiofs because WSL can serve drvfs over
+# it (automated security review of 0e0ea9a). Not every type unknown here: an
+# NFS home would be refused. Decided by the mount <dir> lies on, from
 # /proc/self/mountinfo read once (_win_mounts); where that cannot be read, by
 # the filesystem's type, a 9p one counting as drvfs. Linux only; cached.
 _win_fs() {
@@ -3014,11 +3020,27 @@ _win_fs() {
         done
       fi
     else
-      case "$(stat -f -c %T -- "$1" 2>/dev/null)" in v9fs|cifs|smb|smb2|smb3) _wf_r=1 ;; esac
+      case "$(stat -f -c %T -- "$1" 2>/dev/null)" in
+        v9fs|cifs|smb|smb2|smb3|ntfs|fuseblk|fuse) _wf_r=1 ;;
+        virtiofs) [[ "$_wm_wsl" == 0 ]] || _wf_r=1 ;;
+      esac
     fi
     _wf[$1]="$_wf_r"
   fi
   [[ "${_wf[$1]}" == 1 ]]
+}
+
+# _win_path <path>: whether a physical <path> lies on, or crosses, such a
+# filesystem (_win_fs): then each of its names there is spelled from readdir,
+# which lists no short name (_ds_readdir).
+_win_path() {
+  local _wp_p="$1"
+  [[ "$_wp_p" == /* ]] || return 1
+  while :; do
+    _win_fs "${_wp_p:-/}" && return 0
+    [[ -n "$_wp_p" ]] || return 1
+    _wp_p="${_wp_p%/*}"
+  done
 }
 
 # _win_mounts: /proc/self/mountinfo, once: every mount point (_wm_mp), whether
@@ -3026,7 +3048,8 @@ _win_fs() {
 # Mount points are unescaped as the kernel escapes them (\040, \011, \012, \134).
 _win_mounts() {
   [[ -z "${_wm_ok:-}" ]] || return 0
-  _wm_ok=0; _wm_mp=(); _wm_is=(); _wm_win=()
+  _wm_ok=0; _wm_mp=(); _wm_is=(); _wm_win=(); _wm_wsl=0
+  case "$(cat /proc/sys/kernel/osrelease 2>/dev/null)" in *[Mm]icrosoft*|*WSL*) _wm_wsl=1 ;; esac
   [[ -r /proc/self/mountinfo ]] || return 0
   local _wm_l _wm_p _wm_t _wm_o _wm_j
   local -a _wm_f
@@ -3038,7 +3061,8 @@ _win_mounts() {
     _wm_t="${_wm_f[_wm_j+1]:-}"; _wm_o=",${_wm_f[_wm_j+3]:-},"
     _wm_mp+=("$_wm_p")
     case "$_wm_t" in
-      cifs|smb3|drvfs) _wm_is+=(1) ;;
+      cifs|smb3|smb2|smbfs|drvfs|ntfs|ntfs3|fuseblk|fuse.smbnetfs|fuse.gvfsd-fuse) _wm_is+=(1) ;;
+      virtiofs) _wm_is+=("$_wm_wsl") ;;
       9p) if [[ "$_wm_o" == *,aname=drvfs[,\;]* ]]; then _wm_is+=(1); else _wm_is+=(0); fi ;;
       *) _wm_is+=(0) ;;
     esac
@@ -3048,14 +3072,17 @@ _win_mounts() {
 }
 
 # _ds_readdir <var>: the physical path in <var>, each name in a directory that
-# ignores case on a filesystem whose kernel does not (_ci_alias_fs) spelled as
-# readdir lists it. Fails, with the rest respelled, if a directory that ignores
+# ignores case on a filesystem whose kernel does not (_ci_alias_fs), and every
+# name where Windows looks names up (_win_fs), spelled as readdir lists it:
+# there an 8.3 short name (LONGNA~1) is the directory too, in a case-sensitive
+# one as well, and readdir never lists it (automated security review of
+# 0e0ea9a). Fails, with the rest respelled, if a directory that ignores
 # case on another filesystem is on the way, for getcwd to spell. Each prefix
 # once per shell (_dr_cache). The glob reads the directory once, in a subshell
 # under a UTF-8 locale (_u8_locale), so a case bash folds only there is folded;
 # the agent decides how many entries it holds, as for the scan. A directory
-# whose listing names nothing that is the name — it cannot be read, or folds a
-# case bash does not — returns 2, with the path to it in <var>, and nothing is
+# whose listing names nothing that is the name — it cannot be read, folds a
+# case bash does not, or the name is a short name — returns 2, with the path to it in <var>, and nothing is
 # cached: getcwd would print the spelling given (automated security review of
 # 1ed3de8).
 _ds_readdir() {
@@ -3071,24 +3098,22 @@ _ds_readdir() {
     if [[ -n "${_dr_cache[$_dr_k]+x}" ]]; then
       _dr_p="${_dr_cache[$_dr_k]% *}"; [[ "${_dr_cache[$_dr_k]##* }" == 0 ]] || _dr_rc=1; continue
     fi
-    if _ci_name "${_dr_p:-/}" "$_dr_c"; then
-      if _ci_alias_fs "${_dr_p:-/}"; then
-        _u8_locale
-        _dr_g=()
-        mapfile -d '' _dr_g < <(
-          [[ "$_u8_loc" == - ]] || LC_ALL="$_u8_loc"
-          shopt -s nocaseglob dotglob nullglob; shopt -u failglob
-          _dr_l=("$_dr_p"/["${_dr_c:0:1}"]"${_dr_c:1}")
-          (( ${#_dr_l[@]} == 0 )) || printf '%s\0' "${_dr_l[@]}")
-        _dr_hit=""
-        for _dr_m in ${_dr_g[@]+"${_dr_g[@]}"}; do
-          if [[ ! -L "$_dr_m" && "$_dr_m" -ef "$_dr_p/$_dr_c" ]]; then _dr_hit="${_dr_m##*/}"; break; fi
-        done
-        if [[ -z "$_dr_hit" ]]; then _dr_v="$_dr_p/$_dr_c"; return 2; fi
-        _dr_c="$_dr_hit"
-      else
-        _dr_rc=1
-      fi
+    if _win_fs "${_dr_p:-/}" || { _ci_name "${_dr_p:-/}" "$_dr_c" && _ci_alias_fs "${_dr_p:-/}"; }; then
+      _u8_locale
+      _dr_g=()
+      mapfile -d '' _dr_g < <(
+        [[ "$_u8_loc" == - ]] || LC_ALL="$_u8_loc"
+        shopt -s nocaseglob dotglob nullglob; shopt -u failglob
+        _dr_l=("$_dr_p"/["${_dr_c:0:1}"]"${_dr_c:1}")
+        (( ${#_dr_l[@]} == 0 )) || printf '%s\0' "${_dr_l[@]}")
+      _dr_hit=""
+      for _dr_m in ${_dr_g[@]+"${_dr_g[@]}"}; do
+        if [[ ! -L "$_dr_m" && "$_dr_m" -ef "$_dr_p/$_dr_c" ]]; then _dr_hit="${_dr_m##*/}"; break; fi
+      done
+      if [[ -z "$_dr_hit" ]]; then _dr_v="$_dr_p/$_dr_c"; return 2; fi
+      _dr_c="$_dr_hit"
+    elif _ci_name "${_dr_p:-/}" "$_dr_c"; then
+      _dr_rc=1
     fi
     _dr_p="$_dr_p/$_dr_c"
     _dr_cache[$_dr_k]="$_dr_p $_dr_rc"

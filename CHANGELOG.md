@@ -351,14 +351,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   short name (`.ai-containers` as `AI-CON~1`) on a drive that makes them, C: by
   default, and does so in a case-sensitive directory too: a write through it
   passed a read-only bind there. No bind closes either, and nothing on Linux
-  lists short names, so a launch that needs a read-only bind on drvfs, or on an
-  SMB mount, now stops with an `ERROR:` naming the directory (bugs review
+  lists short names, so a launch that needs a read-only bind on drvfs, on an
+  SMB mount or on NTFS mounted from Linux, now stops with an `ERROR:` naming the directory (bugs review
   GIT-41). Keep the project on the distro's own filesystem (`~/dev`, which is
   also faster), or mount it `:ro`. Elsewhere, a directory that ignores case on a
   filesystem whose kernel does not is refused the same way. On those
   filesystems the launcher now spells paths from the directory listing,
   because `getcwd` there prints whatever spelling a directory was reached by,
-  and refuses the launch when the listing does not name one; a name with no
+  and refuses the launch when the listing does not name one (on a Windows
+  filesystem every name is checked so, which turns away a path written with
+  a short name, such as `PROGRA~1`); a name with no
   ASCII letter is turned over in a UTF-8 locale, so it is seen to ignore case
   under `LC_ALL=C` too (platform-issues PLAT-8). macOS is unchanged until
   PLAT-8's APFS half is measured.

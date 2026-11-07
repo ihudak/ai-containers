@@ -765,7 +765,7 @@ grep -qF "launcher link $LAUNCHER/unrep.sh leads somewhere the agent can change"
 NLT="$TMP/nlt"; mkdir -p "$NLT/d"; : > "$NLT/d/f"$'\n'; ln -s "f"$'\n' "$NLT/d/l"
 got="$(bash -c '
   set -euo pipefail
-  for fn in _cd_phys _cd_bash _ci_path _case_flip _u8_locale _disk_spell _link_walk _path_walk _readlink_exact; do eval "$(awk "/^$fn\\(\\) \\{/,/^}\$/" "$1")"; done
+  for fn in _cd_phys _cd_bash _ci_path _case_flip _u8_locale _win_path _win_fs _win_mounts _disk_spell _link_walk _path_walk _readlink_exact; do eval "$(awk "/^$fn\\(\\) \\{/,/^}\$/" "$1")"; done
   _link_walk "$2"' _ "$ENGINE/sandbox.sh" "$NLT/d/l" | tr '\0\n' '|^')"
 [[ "$got" == "$NLT/d/l|=$NLT/d/f^|" ]] \
   && pass "T37 a link target ending in a newline is followed exactly" \
@@ -778,16 +778,29 @@ got="$(bash -c '
 # filesystem's case taken as drvfs's.
 UNL="$TMP/unl"; mkdir -p "$UNL/d/sub" && UNLP="$(cd "$UNL/d/sub" && pwd -P)" && chmod 311 "$UNL/d"
 if ls "$UNL/d" >/dev/null 2>&1; then
-  printf 'NOTE: T62 not run: a mode-311 directory can be listed here (root)\n'
+  printf 'NOTE: T62, T63 not run: a mode-311 directory can be listed here (root)\n'
 else
   out="$(bash -c '
     set -euo pipefail
-    for fn in _ci_path _case_flip _u8_locale _disk_spell _ds_readdir _ci_name _q _term; do eval "$(awk "/^$fn\\(\\) \\{/,/^}\$/" "$1")"; done
+    for fn in _ci_path _case_flip _u8_locale _win_path _win_fs _win_mounts _disk_spell _ds_readdir _ci_name _q _term; do eval "$(awk "/^$fn\\(\\) \\{/,/^}\$/" "$1")"; done
     _ci_path() { return 0; }; _ci_name() { return 0; }; _ci_alias_fs() { return 0; }
     v="$2"; _disk_spell v; printf "SPELLED:%s\n" "$v"' _ "$ENGINE/sandbox.sh" "$UNLP" 2>&1)"; rc=$?
-  [[ "$rc" != 0 && "$out" == *"nothing its listing names is sub"*"refusing the launch"* && "$out" != *SPELLED:* ]] \
+  [[ "$rc" != 0 && "$out" == *"names is sub"*"refusing the launch"* && "$out" != *SPELLED:* ]] \
     && pass "T62 a directory readdir must spell and cannot is refused" \
     || fail "T62 unlistable directory on a case-aliasing filesystem (rc=$rc; out: $out)"
+  # ── T63: where Windows looks names up (_win_fs), every name is spelled from
+  # readdir even where no directory on the way ignores case (ntfs3 is
+  # case-sensitive): an 8.3 short name is never listed (automated security
+  # review of 0e0ea9a). Here the same unlistable directory, the filesystem's
+  # kind taken as Windows's and nothing else overridden.
+  out="$(bash -c '
+    set -euo pipefail
+    for fn in _ci_path _case_flip _u8_locale _win_path _win_fs _win_mounts _disk_spell _ds_readdir _ci_name _ci_alias_fs _q _term; do eval "$(awk "/^$fn\\(\\) \\{/,/^}\$/" "$1")"; done
+    _win_fs() { return 0; }
+    v="$2"; _disk_spell v; printf "SPELLED:%s\n" "$v"' _ "$ENGINE/sandbox.sh" "$UNLP" 2>&1)"; rc=$?
+  [[ "$rc" != 0 && "$out" == *"names is sub"*"refusing the launch"* && "$out" != *SPELLED:* ]] \
+    && pass "T63 where Windows looks names up, a name readdir cannot list is refused, case-sensitive too" \
+    || fail "T63 Windows filesystem, no directory ignoring case (rc=$rc; out: $out)"
 fi
 chmod 755 "$UNL/d"; rm -rf "$UNL"
 
