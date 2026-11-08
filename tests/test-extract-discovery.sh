@@ -119,6 +119,8 @@ esac
 src=""; prev=""
 for a in "$@"; do
   [[ "$prev" == "-v" ]] && src="${a%%:*}"
+  # A --mount record, as a capture directory holding ':' is handed over.
+  if [[ "$prev" == "--mount" ]]; then src="${a#*\"source=}"; src="${src%%\",\"destination=*}"; src="${src//\"\"/\"}"; fi
   prev="$a"
 done
 [[ -d "$src" ]] || { echo "stub: no host dir in -v" >&2; exit 4; }
@@ -709,6 +711,32 @@ if [[ "$fb_rc" -eq 0 && "$fb_out" == 0 ]]; then
   pass "file_bytes on a file it cannot read prints 0 and returns 0"
 else
   fail "file_bytes on a file it cannot read prints 0 and returns 0 (rc=$fb_rc, out='$fb_out')"
+fi
+
+# ── A capture directory holding ':' ─────────────────────────────────────────
+# docker's -v splits at every ':', so it is handed over as a --mount record
+# (sandbox-common.sh: docker_bind(); bugs review LNCH-23).
+T="$(fresh)"; reset_run_env
+mkdir -p "$T/la:unch" && cp -R "$T/launch/.agent-discovery" "$T/la:unch/" || { printf 'SCAFFOLD-FAILED: colon launch\n'; exit 1; }
+: > "$T/docker-argv.log"
+run_in "$T" "$T/la:unch"
+if [[ "$RC" == 0 ]] && grep -qF -- "--mount type=bind,\"source=$T/la:unch/.agent-discovery\",\"destination=/workspace/.agent-discovery\"" "$T/docker-argv.log" \
+   && [[ -f "$T/la:unch/.agent-discovery/agent-dns.txt" ]]; then
+  pass "a capture directory holding ':' reaches the extract as a --mount"
+else
+  fail "a capture directory holding ':' (rc=$RC; argv: $(grep -F 'agent-discovery' "$T/docker-argv.log" | tail -1); out: $(tr '\n' ' ' <<<"$OUT" | cut -c1-300))"
+fi
+
+# One holding ':' and ending in a space, which --mount refuses too: refused
+# before any container runs (a name docker would not be handed intact).
+T="$(fresh)"; reset_run_env
+mkdir -p "$T/c:ap " && cp "$T/launch/.agent-discovery/"* "$T/c:ap /" || { printf 'SCAFFOLD-FAILED: colon space\n'; exit 1; }
+: > "$T/docker-argv.log"
+run_in "$T" "$T/launch" "$T/c:ap "
+if [[ "$RC" != 0 ]] && ! grep -q '^docker run' "$T/docker-argv.log" && grep -qF 'cannot be bound into the container' <<<"$OUT"; then
+  pass "a capture directory docker cannot be handed intact is refused before the extract runs"
+else
+  fail "capture directory ':' and a trailing space (rc=$RC; runs: $(grep -c '^docker run' "$T/docker-argv.log"); out: $(tr '\n' ' ' <<<"$OUT" | cut -c1-300))"
 fi
 
 printf '\n%s\n' "----------------------------------------"

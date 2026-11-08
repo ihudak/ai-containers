@@ -167,6 +167,18 @@ fi
   && pass "migration leaves the legacy directory in place" \
   || fail "migration leaves the legacy directory in place"
 
+# A group under a path holding ':' (a HOME with one): docker's -v splits there,
+# so the old ~/.rvm is handed over as a --mount record (sandbox-common.sh:
+# docker_bind(); bugs review LNCH-23).
+rm -f "$FAKE_VOLUMES_DIR"/*; : > "$FAKE_RUN_LOG"
+colon="$TMP/gr:oup"; mkdir -p "$colon/.rvm/scripts" && printf 'rvm\n' > "$colon/.rvm/scripts/rvm"
+rvm_volume_ensure "colon" "$colon" "ai-sandbox" >/dev/null 2>&1
+if grep -qF -- "--mount type=bind,\"source=$colon/.rvm\",\"destination=/src\",readonly" "$FAKE_RUN_LOG"; then
+  pass "a legacy ~/.rvm under a path holding ':' is migrated through a read-only --mount"
+else
+  fail "a legacy ~/.rvm under a path holding ':' (run log: $(cat "$FAKE_RUN_LOG"))"
+fi
+
 # ── sandbox.sh / entrypoint.sh wiring ───────────────────────────────────────────
 bash -n "$REPO_DIR/sandbox.sh"  && pass "sandbox.sh bash -n"  || fail "sandbox.sh bash -n"
 bash -n "$REPO_DIR/group.sh"    && pass "group.sh bash -n"    || fail "group.sh bash -n"

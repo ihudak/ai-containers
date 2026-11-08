@@ -134,6 +134,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`repo.sh`, `extract-discovery.sh`, the rvm migration and `verify-on-host.sh`
+  bind a host path holding `:` too.** Each handed docker its host path with
+  `-v`, which splits at every `:`, so `repo.sh add` of such a directory, a git
+  seed under a `$HOME` holding one, or an extract from a launch directory
+  named with one failed at docker; a path that is not valid UTF-8, which the
+  CLI rewrites, is refused instead of seeding an empty volume. The launch's
+  verify directory now lies under the physical `~/.ai-containers` (bugs review
+  LNCH-23).
+- **A registered repo whose source path is not UTF-8 is read back whole.**
+  GNU grep took its registry line for binary, so the lookup came back empty:
+  a `sync` or `reset` copied the current directory into its volume, and a
+  registry rewrite for another repo dropped the line. An empty source is now
+  refused, never the current directory (bugs review REPO-18).
 - **A relative `core.hooksPath` is protected where push hooks run, too.**
   git runs the push hooks (`pre-receive`, `update`, `post-receive`, …) in
   the repository's git directory, a non-bare one's and a linked worktree's

@@ -2181,26 +2181,6 @@ _walk_exposed() {
   return 1
 }
 
-# _bind_mount_arg <flag-var> <value-var> <source> <destination> <mode>: how to
-# hand docker one bind. `-v` carries any name docker accepts except one with a
-# ':' (its separator) — trailing whitespace, tabs, newlines, commas and quotes
-# included; a name with a ':' goes through `--mount` instead, whose value docker
-# reads as a CSV record, so each field is quoted and any '"' doubled. <mode> is
-# `-v`'s option list (ro, rw, or one such as ro,z), or empty, which gives `-v`
-# no third field; through `--mount` only ro means anything (readonly), which is
-# why _bind_add refuses a mode other than ro or rw for a name with a ':'.
-_bind_mount_arg() {
-  local s="source=$3" d="destination=$4" o=""
-  if [[ "$3$4" != *:* ]]; then
-    printf -v "$1" '%s' -v
-    printf -v "$2" '%s:%s%s' "$3" "$4" "${5:+:$5}"
-  else
-    if [[ "$5" == ro ]]; then o=",readonly"; fi
-    printf -v "$1" '%s' --mount
-    printf -v "$2" 'type=bind,"%s","%s"%s' "${s//\"/\"\"}" "${d//\"/\"\"}" "$o"
-  fi
-}
-
 # _bind_add <array> <source> <destination> <mode> <what>: append one host bind
 # of the launch to <array>, in the form _bind_mount_arg picks. One docker cannot
 # be handed intact (_mount_representable) refuses the launch, naming <what>:
@@ -2294,13 +2274,6 @@ _bind_read() {
   return 0
 }
 
-# _mount_representable <source> <destination>: can _bind_mount_arg hand docker
-# this pair so that it arrives byte for byte? Not when a name is not valid UTF-8
-# (_utf8_valid): the CLI rewrites it to U+FFFD, the bind then names a path that
-# does not exist, and Docker Desktop CREATES that path, root-owned, inside the
-# host directory. And not, through `--mount`, a value ending in whitespace
-# (docker refuses it — Go's unicode.IsSpace, so NBSP and U+3000 too) or holding
-# a CR (its CSV reader folds CRLF to LF).
 # _overlay_buildable <launcher> <its destination> <mount source> <mount destination>:
 # can docker be handed the overlay and every pin between the mount root and it,
 # intact? One test for the overlay loop and for SANDBOX_LAUNCHER_MAX's count, so
@@ -2420,24 +2393,6 @@ _overlay_buildable() {
   return 0
 }
 
-_mount_representable() {
-  local v w
-  for v in "$1" "$2"; do
-    if ! _utf8_valid "$v"; then return 1; fi
-  done
-  if [[ "$1$2" != *:* ]]; then return 0; fi
-  for v in "$1" "$2"; do
-    if [[ "$v" == *$'\r'* || "$v" == *[[:space:]] ]]; then return 1; fi
-    for w in $'\xc2\x85' $'\xc2\xa0' $'\xe1\x9a\x80' $'\xe2\x80\x80' $'\xe2\x80\x81' $'\xe2\x80\x82' \
-             $'\xe2\x80\x83' $'\xe2\x80\x84' $'\xe2\x80\x85' $'\xe2\x80\x86' $'\xe2\x80\x87' $'\xe2\x80\x88' \
-             $'\xe2\x80\x89' $'\xe2\x80\x8a' $'\xe2\x80\xa8' $'\xe2\x80\xa9' $'\xe2\x80\xaf' $'\xe2\x81\x9f' \
-             $'\xe3\x80\x80'; do
-      if [[ "$v" == *"$w" ]]; then return 1; fi
-    done
-  done
-  return 0
-}
-
 # _link_walk <link>: resolves <link> the way the kernel does — one component at
 # a time, from a physical directory, so `..` steps out of where a link really
 # led rather than where its text pointed — and prints, NUL-separated, every
@@ -2492,40 +2447,6 @@ _readlink_exact() {
   local out
   out="$(readlink -n -- "$2" && printf x)" || return 1
   printf -v "$1" '%s' "${out%x}"
-}
-
-# _utf8_valid <string>: is it UTF-8 as RFC 3629 — and Go, whose JSON encoding of
-# the request is what rewrites anything else — defines it? No overlongs, no
-# surrogates, nothing above U+10FFFF. Not iconv: glibc's accepts both F4 90 80 80
-# (above U+10FFFF) and five-byte forms, which Go rejects. Bytes are read as
-# decimal numbers, so neither the locale nor the awk in use can change the answer.
-_utf8_valid() {
-  # ASCII is valid UTF-8, decided in bash: the pipeline below costs two processes,
-  # and the launcher asks this of every launcher it counts (review of batch 9).
-  local LC_ALL=C
-  [[ "$1" != *[$'\x80'-$'\xff']* ]] && return 0
-  printf '%s' "$1" | od -An -v -tu1 | awk '
-    { for (i = 1; i <= NF; i++) b[n++] = $i + 0 }
-    END {
-      i = 0
-      while (i < n) {
-        c = b[i]
-        if (c < 128) { i++; continue }
-        if (c >= 194 && c <= 223)                              { k = 1; lo = 128; hi = 191 }
-        else if (c == 224)                                     { k = 2; lo = 160; hi = 191 }
-        else if (c >= 225 && c <= 236 || c == 238 || c == 239) { k = 2; lo = 128; hi = 191 }
-        else if (c == 237)                                     { k = 2; lo = 128; hi = 159 }
-        else if (c == 240)                                     { k = 3; lo = 144; hi = 191 }
-        else if (c >= 241 && c <= 243)                         { k = 3; lo = 128; hi = 191 }
-        else if (c == 244)                                     { k = 3; lo = 128; hi = 143 }
-        else exit 1
-        if (i + k >= n) exit 1
-        if (b[i + 1] < lo || b[i + 1] > hi) exit 1
-        for (j = 2; j <= k; j++) if (b[i + j] < 128 || b[i + j] > 191) exit 1
-        i += k + 1
-      }
-      exit 0
-    }'
 }
 
 # container_env_filter <file> <lines-out> <keys-out> <docker run args>...: the lines of
@@ -5556,7 +5477,13 @@ run_container() {
   # overlay (review of the batch 10 branch, reproduced; T61).
   for _od in ${output_dirs[@]+"${output_dirs[@]}"}; do launcher_verify+=("$launch_dir/$_od" "/workspace/$_od"); done
   if (( ${#launcher_verify[@]} )); then
-    _launcher_verify_dir="$HOME/.ai-containers/.verify-$$-$RANDOM"
+    # Under the physical ~/.ai-containers, as the group's mounts are
+    # (resolve_path): a $HOME that is not UTF-8, with ~/.ai-containers a link
+    # to a directory that is, refused the launch at this one bind (final review
+    # of the LNCH-22 fix).
+    local _vroot
+    _vroot="$(cd "$HOME/.ai-containers" 2>/dev/null && pwd -P)" || _vroot="$HOME/.ai-containers"
+    _launcher_verify_dir="$_vroot/.verify-$$-$RANDOM"
     local _vdir="$_launcher_verify_dir"
     if mkdir -p "$_vdir" 2>/dev/null; then
       # Best-effort sweep of verify dirs a crashed launch left behind: older than
@@ -5570,7 +5497,7 @@ run_container() {
         if [[ "$_opid" =~ ^[0-9]+$ ]] && ! kill -0 "$_opid" 2>/dev/null; then
           rm -rf "$_old" 2>/dev/null || true
         fi
-      done < <(find "$HOME/.ai-containers" -mindepth 1 -maxdepth 1 -type d -name '.verify-*' -mmin +60 -print0 2>/dev/null)
+      done < <(find "$_vroot" -mindepth 1 -maxdepth 1 -type d -name '.verify-*' -mmin +60 -print0 2>/dev/null)
       local _i _vsrc _vdst _vdev _vino
       # The read-only FILE binds the git-internals pass made, checked again where
       # their inodes are recorded: a concurrent container could swap one for a

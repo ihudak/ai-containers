@@ -304,6 +304,12 @@ else
     phase_fail 5 "bash-floor.sh maps no container image to the declared floor — the floor suite did not run"
   elif ! selinux_opt="$(source "$REPO/sandbox-common.sh" && selinux_security_opt)"; then
     phase_fail 5 "could not decide the floor container's SELinux option (SELINUX_LABEL, sandbox-common.sh) — the floor suite did not run"
+  # The checkout's bind, in the form docker carries intact: a checkout path
+  # holding ':' is handed over as --mount (sandbox-common.sh: docker_bind();
+  # LNCH-23), from the same kind of subshell.
+  elif ! mapfile -d '' -t floor_bind < <(source "$REPO/sandbox-common.sh" && b=() \
+         && docker_bind b "$REPO_ROOT" /w ro "The checkout" && printf '%s\0' "${b[@]}") || (( ${#floor_bind[@]} != 2 )); then
+    phase_fail 5 "the checkout cannot be bound into the floor container (see the ERROR above) — the floor suite did not run"
   else
     sub "running the suite at the declared floor ($floor_img, bash 5.1)"
     # This container runs as root (the image's default user) against a repo
@@ -364,7 +370,7 @@ else
     # --init, as CI's suite-floor job: without it PID 1 is the bash below, which
     # never reaps orphans, and `kill -0` is true for a zombie, so the capture
     # tests saw fakes that had exited as still running (bd0901f).
-    docker run --rm --init ${selinux_opt:+"$selinux_opt"} -v "$REPO_ROOT:/w:ro" -w /w "$floor_img" bash -c \
+    docker run --rm --init ${selinux_opt:+"$selinux_opt"} "${floor_bind[@]}" -w /w "$floor_img" bash -c \
       'apt-get update -qq && apt-get install -y -qq git rsync >/dev/null 2>&1 && \
        git config --global --add safe.directory /w && \
        git config --global --add safe.directory "*" && \

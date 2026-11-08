@@ -9,11 +9,10 @@
 #       "invalid field ... must be a key=value pair" in the launch log — and the
 #       case ends there.
 #
-diff --git a/sandbox.sh b/sandbox.sh
-index 7261e57..28619d1 100755
---- a/sandbox.sh
-+++ b/sandbox.sh
-@@ -442,7 +442,7 @@ _bind_mount_arg() {
+diff --git a/sandbox-common.sh b/sandbox-common.sh
+--- a/sandbox-common.sh
++++ b/sandbox-common.sh
+@@ -1782,7 +1782,7 @@
    else
      if [[ "$5" == ro ]]; then o=",readonly"; fi
      printf -v "$1" '%s' --mount

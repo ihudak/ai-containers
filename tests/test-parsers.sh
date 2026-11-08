@@ -265,7 +265,7 @@ grep -q "is already mounted (ro); the pointer's :rw is ignored" "$TMP/entry2.err
 run_pointer_entry "existing" "rw" "existing:ro" >/dev/null 2>&1; rc_entry=$?
 check "pointer_repo_entry: a name already listed returns 0 (its caller runs under set -e)" "0" "$rc_entry"
 
-# ── sandbox.sh: _utf8_valid ──────────────────────────────────────────────────
+# ── sandbox-common.sh: _utf8_valid (sourced through sandbox.sh) ─────────────
 # T24 in test-launcher-dir-ro.sh drives it through launches, with a few names;
 # this table pins each branch of the byte check (RFC 3629, as Go reads it) in
 # one process. G = valid, B = not: every lead-byte class, and a sequence cut

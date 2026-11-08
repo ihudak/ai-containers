@@ -883,8 +883,9 @@ rvm_volume_ensure() {
   if [[ -s "$legacy/scripts/rvm" ]]; then
     printf 'Migrating this group'"'"'s ~/.rvm into docker volume %s (one time)…\n' "$vol" >&2
     local selinux_opt
-    if selinux_opt="$(selinux_security_opt)" \
-       && docker run --rm --pull=never ${selinux_opt:+"$selinux_opt"} -v "$legacy:/src:ro" -v "$vol:/dst" \
+    local -a lbind=()
+    if selinux_opt="$(selinux_security_opt)" && docker_bind lbind "$(resolve_path "$legacy")" /src ro "The group's old ~/.rvm" \
+       && docker run --rm --pull=never ${selinux_opt:+"$selinux_opt"} "${lbind[@]}" -v "$vol:/dst" \
          --entrypoint bash "$image" -c 'cp -a /src/. /dst/' >/dev/null 2>&1; then
       printf 'Migrated. The old directory is now unused; remove it when satisfied:\n  rm -rf %s\n' "$legacy" >&2
     else
@@ -937,7 +938,10 @@ repo_registry_ensure() {
 repo_registry_lookup() {
   local name="$1"
   [[ -f "$repo_registry_file" ]] || return 1
-  grep -E "^${name}\|" "$repo_registry_file" 2>/dev/null | head -1
+  # -a: a line holding a byte that is not UTF-8 is still a line. GNU grep
+  # suppresses such a match as "binary", which read back an empty record: no
+  # source, so a re-seed copied the current directory (bugs review REPO-18).
+  grep -aE "^${name}\|" "$repo_registry_file" 2>/dev/null | head -1
 }
 
 repo_is_registered() {
@@ -967,7 +971,7 @@ repo_registry_upsert() {
   local name="$1" type="$2" source="$3" added="$4" synced="$5" backend="${6:-}"
   repo_registry_ensure
   local tmp; tmp="$(mktemp)" || { printf 'ERROR: mktemp failed — registry record for %s not written\n' "$name" >&2; return 1; }
-  grep -vE "^${name}\|" "$repo_registry_file" > "$tmp" 2>/dev/null || true
+  grep -avE "^${name}\|" "$repo_registry_file" > "$tmp" 2>/dev/null || true
   # Guard against a carried-over final line that lacks a trailing newline (older
   # writer, hand-edit, or partial/interrupted write). On GNU coreutils (Linux),
   # grep preserves the missing newline, so appending the new record straight onto
@@ -981,7 +985,7 @@ repo_registry_remove() {
   local name="$1"
   [[ -f "$repo_registry_file" ]] || return 0
   local tmp; tmp="$(mktemp)" || { printf 'ERROR: mktemp failed — registry record for %s not removed\n' "$name" >&2; return 1; }
-  grep -vE "^${name}\|" "$repo_registry_file" > "$tmp" 2>/dev/null || true
+  grep -avE "^${name}\|" "$repo_registry_file" > "$tmp" 2>/dev/null || true
   mv "$tmp" "$repo_registry_file"
 }
 
@@ -1756,4 +1760,112 @@ ai_containers_provenance_warn() {   # <image> <asset-dir>
   printf '         Rebuild before trusting it:  ./build.sh    (or ./runme.sh, which builds first)\n' >&2
   printf '         Right after a sync from the central repo, that is exactly what this means.\n' >&2
   return 0
+}
+
+# ── Host binds handed to docker intact ──────────────────────────────────────
+# Shared by sandbox.sh's launch and by every other entry point that binds a
+# host path into a container (repo.sh's seed containers, extract-discovery.sh,
+# the rvm migration, verify-on-host.sh's floor container): docker's `-v` splits
+# at every ':', and the CLI rewrites a name that is not UTF-8 (bugs review
+# LNCH-22, LNCH-23).
+
+# _bind_mount_arg <flag-var> <value-var> <source> <destination> <mode>: how to
+# hand docker one bind. `-v` carries any name docker accepts except one with a
+# ':' (its separator) — trailing whitespace, tabs, newlines, commas and quotes
+# included; a name with a ':' goes through `--mount` instead, whose value docker
+# reads as a CSV record, so each field is quoted and any '"' doubled. <mode> is
+# `-v`'s option list (ro, rw, or one such as ro,z), or empty, which gives `-v`
+# no third field; through `--mount` only ro means anything (readonly), which is
+# why _bind_add refuses a mode other than ro or rw for a name with a ':'.
+_bind_mount_arg() {
+  local s="source=$3" d="destination=$4" o=""
+  if [[ "$3$4" != *:* ]]; then
+    printf -v "$1" '%s' -v
+    printf -v "$2" '%s:%s%s' "$3" "$4" "${5:+:$5}"
+  else
+    if [[ "$5" == ro ]]; then o=",readonly"; fi
+    printf -v "$1" '%s' --mount
+    printf -v "$2" 'type=bind,"%s","%s"%s' "${s//\"/\"\"}" "${d//\"/\"\"}" "$o"
+  fi
+}
+
+# _mount_representable <source> <destination>: can _bind_mount_arg hand docker
+# this pair so that it arrives byte for byte? Not when a name is not valid UTF-8
+# (_utf8_valid): the CLI rewrites it to U+FFFD, the bind then names a path that
+# does not exist, and Docker Desktop CREATES that path, root-owned, inside the
+# host directory. And not, through `--mount`, a value ending in whitespace
+# (docker refuses it — Go's unicode.IsSpace, so NBSP and U+3000 too) or holding
+# a CR (its CSV reader folds CRLF to LF).
+_mount_representable() {
+  local v w
+  for v in "$1" "$2"; do
+    if ! _utf8_valid "$v"; then return 1; fi
+  done
+  if [[ "$1$2" != *:* ]]; then return 0; fi
+  for v in "$1" "$2"; do
+    if [[ "$v" == *$'\r'* || "$v" == *[[:space:]] ]]; then return 1; fi
+    for w in $'\xc2\x85' $'\xc2\xa0' $'\xe1\x9a\x80' $'\xe2\x80\x80' $'\xe2\x80\x81' $'\xe2\x80\x82' \
+             $'\xe2\x80\x83' $'\xe2\x80\x84' $'\xe2\x80\x85' $'\xe2\x80\x86' $'\xe2\x80\x87' $'\xe2\x80\x88' \
+             $'\xe2\x80\x89' $'\xe2\x80\x8a' $'\xe2\x80\xa8' $'\xe2\x80\xa9' $'\xe2\x80\xaf' $'\xe2\x81\x9f' \
+             $'\xe3\x80\x80'; do
+      if [[ "$v" == *"$w" ]]; then return 1; fi
+    done
+  done
+  return 0
+}
+
+# _utf8_valid <string>: is it UTF-8 as RFC 3629 — and Go, whose JSON encoding of
+# the request is what rewrites anything else — defines it? No overlongs, no
+# surrogates, nothing above U+10FFFF. Not iconv: glibc's accepts both F4 90 80 80
+# (above U+10FFFF) and five-byte forms, which Go rejects. Bytes are read as
+# decimal numbers, so neither the locale nor the awk in use can change the answer.
+_utf8_valid() {
+  # ASCII is valid UTF-8, decided in bash: the pipeline below costs two processes,
+  # and the launcher asks this of every launcher it counts (review of batch 9).
+  local LC_ALL=C
+  [[ "$1" != *[$'\x80'-$'\xff']* ]] && return 0
+  printf '%s' "$1" | od -An -v -tu1 | awk '
+    { for (i = 1; i <= NF; i++) b[n++] = $i + 0 }
+    END {
+      i = 0
+      while (i < n) {
+        c = b[i]
+        if (c < 128) { i++; continue }
+        if (c >= 194 && c <= 223)                              { k = 1; lo = 128; hi = 191 }
+        else if (c == 224)                                     { k = 2; lo = 160; hi = 191 }
+        else if (c >= 225 && c <= 236 || c == 238 || c == 239) { k = 2; lo = 128; hi = 191 }
+        else if (c == 237)                                     { k = 2; lo = 128; hi = 159 }
+        else if (c == 240)                                     { k = 3; lo = 144; hi = 191 }
+        else if (c >= 241 && c <= 243)                         { k = 3; lo = 128; hi = 191 }
+        else if (c == 244)                                     { k = 3; lo = 128; hi = 143 }
+        else exit 1
+        if (i + k >= n) exit 1
+        if (b[i + 1] < lo || b[i + 1] > hi) exit 1
+        for (j = 2; j <= k; j++) if (b[i + j] < 128 || b[i + j] > 191) exit 1
+        i += k + 1
+      }
+      exit 0
+    }'
+}
+
+# docker_bind <array> <source> <destination> <mode> <what>: append one host bind
+# to <array>, in the form _bind_mount_arg picks. One neither form can hand
+# docker intact (_mount_representable) is not appended: an ERROR names <what>
+# and the name, and it returns 1, for the caller to stop (bugs review LNCH-23).
+# <mode> is ro, rw or empty.
+docker_bind() {
+  local mf mv
+  # shellcheck disable=SC2178  # nameref: shellcheck does not model `local -n`
+  local -n _db_arr=$1
+  # --mount, as _bind_mount_arg writes it, carries ro alone: an option list
+  # would be dropped there, and the bind left writable.
+  case "$4" in ''|ro|rw) ;; *) printf 'ERROR: docker_bind: mode %q is not ro, rw or empty.\n' "$4" >&2; return 1 ;; esac
+  if ! _mount_representable "$2" "$3"; then
+    printf 'ERROR: %s %q cannot be bound into the container: docker would not be handed\n' "$5" "$2" >&2
+    printf '       that name intact (it is not valid UTF-8, or holds a ":" and ends in\n' >&2
+    printf '       whitespace or holds a carriage return). Rename it.\n' >&2
+    return 1
+  fi
+  _bind_mount_arg mf mv "$2" "$3" "$4"
+  _db_arr+=("$mf" "$mv")
 }

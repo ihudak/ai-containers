@@ -1533,6 +1533,22 @@ else
   fail "T67 HOME with ':' (rc=$LAUNCH_RC; stderr: $(grep -a 'ERROR' "$ERR" | head -2 | tr '\n' ' '); args: $(grep -F 'h:67' "$CAPTURE" | head -3 | tr '\n' ' '))"
 fi
 rm -rf "$H67"
+# A HOME that is not UTF-8 whose ~/.ai-containers links to a directory that is:
+# the verify directory lies under the link's target, as the group's mounts do,
+# and the launch goes on (final review of the LNCH-22 fix: it was refused).
+H67u="$TMP/hu67"$'\xff'; G67u="$TMP/g67u"
+if mkdir "$H67u" 2>/dev/null; then
+  mkdir -p "$G67u" && ln -s "$G67u" "$H67u/.ai-containers"
+  HOME="$H67u" launch "$LAUNCHER" "$TMP/app"
+  if [[ "$LAUNCH_RC" == 0 ]] && grep -qaF -- "$G67u/.verify-" "$CAPTURE"; then
+    pass "T67 a HOME that is not UTF-8, with ~/.ai-containers linked to one that is, launches, its verify directory under the link's target"
+  else
+    fail "T67 non-UTF-8 HOME, linked group root (rc=$LAUNCH_RC; stderr: $(grep -a 'ERROR' "$ERR" | head -2 | tr '\n' ' '))"
+  fi
+  rm -rf "$H67u" "$G67u"
+else
+  printf 'SKIP: T67 a HOME that is not UTF-8 \xe2\x80\x94 this filesystem refuses the name\n'
+fi
 
 # Launched from a directory holding ':': the output directory and this
 # launcher's own overlay.

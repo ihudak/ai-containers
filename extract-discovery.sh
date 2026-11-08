@@ -255,9 +255,12 @@ printf 'capture: %s\n\n' "$capture_dir"
 # directory it reads. On an SELinux daemon that bind mount is denied to a
 # labelled container (sandbox-common.sh: selinux_security_opt()).
 selinux_opt="$(selinux_security_opt)" || exit 1
+# A directory docker cannot be handed intact is refused, not mounted from
+# somewhere else (sandbox-common.sh: docker_bind(); LNCH-23).
+cbind=(); docker_bind cbind "$capture_dir" /workspace/.agent-discovery "" "The capture directory" || exit 1
 if ! docker run --rm --pull=never --entrypoint capture-agent-destinations.sh \
      ${selinux_opt:+"$selinux_opt"} \
-     -v "$capture_dir:/workspace/.agent-discovery" \
+     "${cbind[@]}" \
      "$image" extract /workspace/.agent-discovery; then
   die "the extract failed inside $image. The pcap is untouched at $pcap."
 fi

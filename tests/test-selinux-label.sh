@@ -41,7 +41,8 @@ fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails + 1)); }
 TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; REAL_HOME="$HOME"
 trap 'rm -rf "$TMP"; export HOME="$REAL_HOME"' EXIT
 
-export HOME="$TMP/home"; mkdir -p "$HOME"
+# ~/.ssh too: repo.sh binds it only where it exists.
+export HOME="$TMP/home"; mkdir -p "$HOME/.ssh"
 export AI_CONTAINER_GROUP=default AI_CONTAINER_GROUP_INIT=clean
 export SANDBOX_USER=tester
 

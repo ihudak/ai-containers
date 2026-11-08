@@ -510,6 +510,18 @@ if [[ -n "$floor_run" && "$floor_run" != *label=disable* ]]; then
 else
   fail "phase 5: the floor container keeps its label on a daemon without SELinux (rc=$rc, run: ${floor_run:-none})"
 fi
+# A checkout whose path holds ':': docker's -v splits there, so the checkout is
+# handed over as a --mount record (sandbox-common.sh: docker_bind(); LNCH-23).
+rm -rf "$TMP/re:po"; mv "$r" "$TMP/re:po" || { printf 'SCAFFOLD-FAILED: colon repo\n'; exit 1; }
+: > "$WITNESS_LOG"
+rc="$(run_verify "$TMP/re:po" 5)"
+floor_run="$(grep '^STUB:docker-run ' "$WITNESS_LOG")"
+if [[ "$floor_run" == *" --mount type=bind,\"source=$TMP/re:po\",\"destination=/w\",readonly "* ]]; then
+  pass "phase 5: a checkout path holding ':' reaches the floor container as a read-only --mount"
+else
+  fail "phase 5: a checkout path holding ':' (rc=$rc, run: ${floor_run:-none}; $(tail -3 "$TMP/out.log" | tr '\n' ' '))"
+fi
+mv "$TMP/re:po" "$r"
 rc="$(run_verify "$r" 5 SELINUX_LABEL=bogus)"
 expect_rc "phase 5: an unknown SELINUX_LABEL fails the phase" 1 "$rc"
 grep -q 'SELINUX_LABEL' "$TMP/out.log" \

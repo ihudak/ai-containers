@@ -8,10 +8,10 @@
 #       "value should not have whitespace" (or equivalent) in the launch log —
 #       and the case ends there.
 #
-diff --git a/sandbox.sh b/sandbox.sh
---- a/sandbox.sh
-+++ b/sandbox.sh
-@@ -2080,7 +2080,7 @@
+diff --git a/sandbox-common.sh b/sandbox-common.sh
+--- a/sandbox-common.sh
++++ b/sandbox-common.sh
+@@ -1776,7 +1776,7 @@
  # why _bind_add refuses a mode other than ro or rw for a name with a ':'.
  _bind_mount_arg() {
    local s="source=$3" d="destination=$4" o=""

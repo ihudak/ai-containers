@@ -843,7 +843,8 @@ fi
 # `-v $HOME/.ssh:/root/.ssh-host:ro`. This is the developer's actual SSH
 # identity. The helper copies it to a writable location inside the container on
 # purpose (accept-new has to record); the HOST side must never be writable.
-setup_world
+# Bound only where it exists (repo.sh: seed_binds_check()), so the fixture has one.
+setup_world; mkdir -p "$HOME/.ssh"
 run_repo add gitrepo 'git@example.com:acme/thing.git'
 check "add <git-url> exits 0" "0" "$RC"
 if run_has "-v $HOME/.ssh:/root/.ssh-host:ro"; then
@@ -892,7 +893,7 @@ setup_world; run_repo add onlyname
 [[ "$RC" -ne 0 ]] && pass "add with no source is a usage error (rc=$RC)"                  || fail "add with no source was accepted (rc=$RC)"
 
 # ── 22. sync mounts the source read-only too, and skips what it must ─────────
-setup_world
+setup_world; mkdir -p "$HOME/.ssh"
 run_repo sync docs
 check "sync <git repo> exits 0" "0" "$RC"
 if run_has "-v $HOME/.ssh:/root/.ssh-host:ro"; then

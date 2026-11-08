@@ -11,11 +11,10 @@
 #       launcher_up FAILs (docker refuses the missing bind source) and the case
 #       ends there. Either way the case is red.
 #
-diff --git a/sandbox.sh b/sandbox.sh
-index f3a6208..1a7cd59 100755
---- a/sandbox.sh
-+++ b/sandbox.sh
-@@ -464,7 +464,7 @@ _bind_mount_arg() {
+diff --git a/sandbox-common.sh b/sandbox-common.sh
+--- a/sandbox-common.sh
++++ b/sandbox-common.sh
+@@ -1796,7 +1796,7 @@
  _mount_representable() {
    local v w
    for v in "$1" "$2"; do

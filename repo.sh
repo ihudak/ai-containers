@@ -127,17 +127,39 @@ is_git_url() {
   esac
 }
 
+# seed_binds_check <type> <source>: the host path a seed binds — the source
+# directory, or your ~/.ssh for a git source — refused before any volume is
+# made, so a refusal leaves no empty volume behind (review of the LNCH-23 fix).
+seed_binds_check() {
+  local -a t=()
+  # An empty source is no path: resolve_path "" is the current directory, which
+  # a re-seed would copy into the volume (bugs review REPO-18).
+  [[ -n "$2" ]] || { printf 'ERROR: no source is recorded for this repo; refusing to seed it.\n' >&2; exit 1; }
+  if [[ "$1" == git ]]; then
+    if [[ -d "$HOME/.ssh" ]]; then docker_bind t "$HOME/.ssh" /root/.ssh-host ro "Your ~/.ssh" || exit 1; fi
+  else
+    local real; real="$(resolve_path "$2")"
+    # A source gone since it was registered: said now, not after its volume is made.
+    [[ -d "$real" ]] || { printf 'ERROR: source path does not exist or is not a directory: %s\n' "$2" >&2; exit 1; }
+    docker_bind t "$real" /src ro "The source path" || exit 1
+  fi
+}
+
 # Seed a fresh volume from a local host path (one-time copy through virtiofs).
 seed_from_path() {
   local vol="$1" src="$2"
+  [[ -n "$src" ]] || { printf 'ERROR: no source path is recorded for this repo; refusing to seed it.\n' >&2; exit 1; }
   local real; real="$(resolve_path "$src")"
   if [[ ! -d "$real" ]]; then
     printf 'ERROR: source path does not exist or is not a directory: %s\n' "$src" >&2
     exit 1
   fi
+  # A path docker cannot be handed intact (a ':' through -v, a name that is
+  # not UTF-8) is refused rather than copied from somewhere else (LNCH-23).
+  local -a hb=(); docker_bind hb "$real" /src ro "The source path" || exit 1
   printf 'Seeding volume "%s" from host path %s ...\n' "$vol" "$real"
   docker run --rm --entrypoint bash ${seed_selinux_opt:+"$seed_selinux_opt"} \
-    -v "$real":/src:ro \
+    "${hb[@]}" \
     -v "$vol":/dst \
     "$seed_image" -c 'cp -a /src/. /dst/ && chown -R "$1" /dst' _ "${host_uid}:${host_gid}"
 }
@@ -145,15 +167,17 @@ seed_from_path() {
 # Refresh a volume from its local host path source.
 sync_from_path() {
   local vol="$1" src="$2"
+  [[ -n "$src" ]] || { printf 'ERROR: no source path is recorded for this repo; refusing to sync it.\n' >&2; exit 1; }
   local real; real="$(resolve_path "$src")"
   if [[ ! -d "$real" ]]; then
     printf 'ERROR: source path no longer exists: %s\n' "$src" >&2
     exit 1
   fi
+  local -a hb=(); docker_bind hb "$real" /src ro "The source path" || exit 1
   printf 'Syncing volume "%s" from host path %s ...\n' "$vol" "$real"
   # Prefer rsync (mirror with deletes) if available in the image; fall back to cp.
   docker run --rm --entrypoint bash ${seed_selinux_opt:+"$seed_selinux_opt"} \
-    -v "$real":/src:ro \
+    "${hb[@]}" \
     -v "$vol":/dst \
     "$seed_image" -c '
       if command -v rsync >/dev/null 2>&1; then
@@ -168,9 +192,13 @@ sync_from_path() {
 # Clone a git URL into a fresh volume, authenticating with the host ~/.ssh.
 seed_from_git() {
   local vol="$1" url="$2"
+  # Only one that exists: -v made a missing ~/.ssh, root-owned, and --mount (a
+  # HOME holding ':') refuses one (final review of the LNCH-23 fix).
+  local -a hb=()
+  if [[ -d "$HOME/.ssh" ]]; then docker_bind hb "$HOME/.ssh" /root/.ssh-host ro "Your ~/.ssh" || exit 1; fi
   printf 'Cloning %s into volume "%s" (auth via host ~/.ssh) ...\n' "$url" "$vol"
   docker run --rm --entrypoint bash ${seed_selinux_opt:+"$seed_selinux_opt"} \
-    -v "$HOME/.ssh":/root/.ssh-host:ro \
+    "${hb[@]}" \
     -v "$vol":/dst \
     "$seed_image" -c '
       set -e
@@ -243,10 +271,12 @@ git_helper_run() {   # $1 = volume  $2... = repo-git-reset.sh arguments
     printf "ERROR: REPO_HELPER_MEMORY=%q is not a size such as 4g or 8192m.\n" "$mem" >&2
     return 1
   fi
+  local -a hb=()
+  if [[ -d "$HOME/.ssh" ]]; then docker_bind hb "$HOME/.ssh" /root/.ssh-host ro "Your ~/.ssh" || return 1; fi
+  docker_bind hb "${script_dir}/repo-git-reset.sh" /repo-git-reset.sh ro "The helper" || return 1
   docker run --rm --memory "$mem" --memory-swap "$mem" --pids-limit 512 --entrypoint bash ${seed_selinux_opt:+"$seed_selinux_opt"} \
     -e AI_REPO_URL="$url" \
-    -v "$HOME/.ssh":/root/.ssh-host:ro \
-    -v "${script_dir}/repo-git-reset.sh":/repo-git-reset.sh:ro \
+    "${hb[@]}" \
     -v "$vol":/dst \
     "$seed_image" -c '
       mkdir -p /root/.ssh && cp -a /root/.ssh-host/. /root/.ssh/ 2>/dev/null || true
@@ -369,6 +399,7 @@ cmd_add() {
     exit 1
   fi
 
+  seed_binds_check "$type" "$source"
   repo_base_volume_create "$name" "$type" "$source"
   if [[ "$type" == "git" ]]; then
     seed_from_git "$vol" "$source"
@@ -411,6 +442,7 @@ sync_one() {
   ensure_seed_image
   if ! docker volume inspect "$vol" >/dev/null 2>&1; then
     printf "  %s: base volume missing — re-seeding from source.\n" "$name" >&2
+    seed_binds_check "$type" "$source"
     repo_base_volume_create "$name" "$type" "$source"
     if [[ "$type" == "git" ]]; then seed_from_git "$vol" "$source"; else seed_from_path "$vol" "$source"; fi
   else
@@ -678,6 +710,7 @@ reset_one() {
 
   if ! docker volume inspect "$vol" >/dev/null 2>&1; then
     printf '  %s: base volume missing — re-seeding clean from source.\n' "$name"
+    seed_binds_check "$type" "$source"
     repo_base_volume_create "$name" "$type" "$source"
     if [[ "$type" == "git" ]]; then seed_from_git "$vol" "$source"; else seed_from_path "$vol" "$source"; fi
   else
