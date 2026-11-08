@@ -3128,7 +3128,10 @@ _case_flip() {
 # it (automated security review of 0e0ea9a). Not every type unknown here: an
 # NFS home would be refused. Decided by the mount <dir> lies on, from
 # /proc/self/mountinfo read once (_win_mounts); where that cannot be read, by
-# the filesystem's type, a 9p one counting as drvfs. Linux only; cached.
+# statfs's type, a 9p one counting as drvfs. statfs names every FUSE filesystem
+# fuse (virtiofs, smbnetfs, ntfs-3g, sshfs alike: GNU stat has no virtiofs), so
+# there each counts, on any kernel: it fails closed (bugs review GIT-47).
+# Linux only; cached.
 _win_fs() {
   [[ "$OSTYPE" == linux* ]] || return 1
   [[ -n "${_wf_made:-}" ]] || { declare -gA _wf=(); _wf_made=1; }
@@ -3150,7 +3153,6 @@ _win_fs() {
     else
       case "$(stat -f -c %T -- "$1" 2>/dev/null)" in
         v9fs|cifs|smb|smb2|smb3|ntfs|fuseblk|fuse) _wf_r=1 ;;
-        virtiofs) [[ "$_wm_wsl" == 0 ]] || _wf_r=1 ;;
       esac
     fi
     _wf[$1]="$_wf_r"

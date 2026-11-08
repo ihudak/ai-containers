@@ -822,6 +822,25 @@ else
 fi
 chmod 755 "$UNL/d"; rm -rf "$UNL"
 
+# ── T71: where /proc/self/mountinfo cannot be read, _win_fs decides by statfs's
+# type, and statfs names every FUSE filesystem fuse (virtiofs, smbnetfs,
+# ntfs-3g and sshfs alike), so each counts as Windows on any kernel: the
+# launch fails closed (bugs review GIT-47). 9p counts as drvfs, SMB and NTFS as
+# themselves; ext4 and tmpfs do not.
+out="$(bash -c '
+  for fn in _win_fs; do eval "$(awk "/^$fn\\(\\) \\{/,/^}\$/" "$1")"; done
+  OSTYPE=linux-gnu
+  for c in fuse:0 fuse:1 fuseblk:0 v9fs:0 smb2:0 cifs:0 ntfs:0 ext2/ext3:1 tmpfs:1; do
+    unset _wf_made; T="${c%:*}"
+    _win_mounts() { _wm_ok=0; _wm_wsl="${c#*:}"; }
+    stat() { printf "%s\n" "$T"; }
+    if _win_fs /d; then r=1; else r=0; fi
+    printf "%s=%s " "$c" "$r"
+  done' _ "$ENGINE/sandbox.sh" 2>&1)"
+[[ "$out" == "fuse:0=1 fuse:1=1 fuseblk:0=1 v9fs:0=1 smb2:0=1 cifs:0=1 ntfs:0=1 ext2/ext3:1=0 tmpfs:1=0 " ]] \
+  && pass "T71 without mountinfo, every FUSE filesystem counts as Windows on any kernel, 9p, SMB and NTFS too, ext4 not" \
+  || fail "T71 stat fallback (got '$out')"
+
 # ── T38: what the agent can write cannot make the link check noisy or slow.
 # Links planted in the launcher's own output directory are not walked; a
 # launcher that is itself the working dir (writable by design, with a NOTE) is
