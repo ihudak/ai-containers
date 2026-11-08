@@ -284,6 +284,7 @@ declare -A CL_SEEN=()        # identity → 1 when the run generated it at all
 declare -A CL_SURV_TEXT=()   # "identity|text" → 1, the F10 dedupe key
 declare -A CL_SCOPE=()       # target file → 1
 declare -A CL_SCOPE_OPS=()   # target file → " op op " from its OPERATORS| record
+declare -A CL_FAILLINE=()    # identity → what killed its mutants, from NOTE|failline (TST-29)
 CL_RUN_OPS=""                # " op op " from RUN|operators=, "" when unknown
 CL_MUTANTS=0
 
@@ -291,7 +292,7 @@ cl_read_run() {   # <run output file or ->
   local src="$1" line rest verdict ident text target
   CL_SURVIVED=(); CL_SEEN=(); CL_SURV_TEXT=(); CL_SCOPE=(); CL_MUTANTS=0
   CL_SCOPE_OPS=(); CL_RUN_OPS=""
-  CL_UNPROVEN=(); CL_HAS_SURV=()
+  CL_UNPROVEN=(); CL_HAS_SURV=(); CL_FAILLINE=()
   while IFS= read -r line || [[ -n "$line" ]]; do
     case "$line" in
       'RUN|'*)
@@ -314,6 +315,15 @@ cl_read_run() {   # <run output file or ->
         rest="${line#TARGET|}"
         target="${rest%%|*}"
         [[ -n "$target" ]] && CL_SCOPE["$target"]=1
+        ;;
+      'NOTE|failline|'*)
+        # NOTE|failline|<identity>|L<line> seq <n>: <first FAIL: line> — what
+        # killed a mutant, quoted by check D so an unexpected kill can be traced
+        # to its assertion after the runner is gone (TST-29).
+        rest="${line#NOTE|failline|}"
+        ident="${rest%%|*}"
+        [[ -n "$ident" && "$rest" == *'|'* ]] || continue
+        CL_FAILLINE["$ident"]+="${CL_FAILLINE[$ident]:+; }${rest#*|}"
         ;;
       'MUTANT|'*)
         # The mutated line is the LAST field and may itself contain `|`, so the
@@ -452,9 +462,9 @@ cl_check_run() {   # <ledger file>
       if [[ "${CL_ENTRY_CLASS[$(( ${CL_IDENT_ENTRY[$ident]} - 1 ))]:-}" == "ENV-DEPENDENT" ]]; then
         cl_note "ENV-DEPENDENT, killed in this environment and expected to survive elsewhere: $ident"
       elif (( CL_STRICT )); then
-        cl_err "$ident is a ledger entry ($1:${CL_IDENT_LINE[$ident]}) for a mutant that is now KILLED — obsolete amnesty, delete it"
+        cl_err "$ident is a ledger entry ($1:${CL_IDENT_LINE[$ident]}) for a mutant that is now KILLED — obsolete amnesty, delete it${CL_FAILLINE[$ident]:+ (killed by: ${CL_FAILLINE[$ident]})}"
       else
-        cl_note "obsolete here (killed in this environment), not fatal without --strict: $ident"
+        cl_note "obsolete here (killed in this environment), not fatal without --strict: $ident${CL_FAILLINE[$ident]:+ (killed by: ${CL_FAILLINE[$ident]})}"
         CL_OBSOLETE_SOFT=$(( CL_OBSOLETE_SOFT + 1 ))
       fi
     fi

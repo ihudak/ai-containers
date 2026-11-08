@@ -108,6 +108,8 @@
 #   BASELINE|<target>|<oracle>|PASS|<ms>
 #   MUTANT|<verdict>|<identity>|<oracle>|<seq>|<lineno>|<signal>|<ms>|<mutated-line>
 #   NOTE|<what>|<identity>|<detail>
+#   NOTE|failline|<identity>|L<lineno> seq <seq>: <the oracle's first FAIL: line,
+#              cut to 300 bytes>   after each KILLED mutant that printed one.
 #   TARGET|<target>|<oracle>|<total>|<killed>|<survived>|<unproven>|<timeouts>|<ms>
 #   TOTAL|<targets>|<total>|<killed>|<survived>|<unproven>|<timeouts>|<unresolved-pct>|<ms>
 #   ASSERTLESS|<kills-with-no-failline>|<killed>
@@ -1450,6 +1452,19 @@ fr_run_mutant() {   # <slot> <target> <oracle> <seq> <lineno> <op> <sha> <text> 
     printf 'MUTANT|%s|%s|%s|%s|%s|%s|%s|%s\n' \
       "$FALSIFY_VERDICT" "$ident" "$run" "$seq" "$lineno" \
       "$FALSIFY_SIGNAL" "$FALSIFY_MS" "$text" > "$res"
+  fi
+  # What killed it: the oracle's output goes with the run, and a kill that
+  # should not have happened (a ledger entry found KILLED in CI on a slow
+  # runner) could not be traced to the assertion that fired (bugs review
+  # TST-29). The first FAIL: line of the run that decided, from the FAIL: the
+  # kill test matched, cut to 300 bytes; read as bytes, its CRs and NULs dropped.
+  if (( ! write_failed )) && [[ "$FALSIFY_VERDICT" == KILLED && "$FALSIFY_SIGNAL" == *failline* ]]; then
+    local fl
+    fl="$(LC_ALL=C grep -m1 -aoE '(^|[[:space:]])FAIL:.*' "$out" 2>/dev/null | LC_ALL=C tr -d '\r\000' \
+          | LC_ALL=C sed 's/^[[:space:]]//' | LC_ALL=C head -c 300)"
+    if [[ -n "$fl" ]]; then
+      printf 'NOTE|failline|%s|L%s seq %s: %s\n' "$ident" "$lineno" "$seq" "$fl" >> "$res"
+    fi
   fi
   if [[ -n "$pre_note" ]]; then printf '%s\n' "$pre_note" >> "$res"; fi
   if (( ! write_failed )) && [[ -n "$tclock" && "$FALSIFY_SIGNAL" == *timeout* ]]; then
