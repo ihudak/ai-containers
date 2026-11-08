@@ -1067,6 +1067,38 @@ if command -v unshare >/dev/null 2>&1 && unshare --user --map-current-user --mou
   fi
   chmod 700 "$M131/w2/a" 2>/dev/null
   rm -rf "$fns131" "$M131" "$TMP/o131" "$TMP/e131"
+elif [[ "$(uname -s)" == Darwin ]] && command -v hdiutil >/dev/null 2>&1; then
+  # macOS has no bind mount: a disk image attached inside the writable mount,
+  # its mount points read from mount(8). That names them by the physical path,
+  # as pwd -P does (/private/var/…, not /var/…), so a TMPDIR reached through a
+  # link is matched too (platform-issues, the Mac agent's half of GIT-43).
+  fns131="$TMP/fns131.sh"
+  for f131 in _term _q _timeout_prefix _launcher_dev_ino _win_mounts _fs_mounts_in _fs_ml_devof _fs_linked_in; do
+    awk -v f="$f131() {" 'index($0, f) == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox.sh"
+  done > "$fns131"
+  grep -E '^(declare -A _fs_ml_|_fs_ml_dir=|_fs_mp=|if stat -c )' "$ENGINE/sandbox.sh" >> "$fns131"
+  M131="$TMP/m131"; mkdir -p "$M131/w/a/mnt" "$M131/t" \
+    && hdiutil create -quiet -size 8m -fs APFS -volname g131 -o "$M131/img.dmg" >/dev/null 2>&1 \
+    && hdiutil attach -quiet -nobrowse -mountpoint "$M131/w/a/mnt" "$M131/img.dmg" >/dev/null 2>&1; rc131=$?
+  if (( rc131 != 0 )); then
+    printf 'SKIP: G131 a filesystem mounted inside a writable mount — hdiutil could not make or attach an image here\n'
+  else
+    : > "$M131/w/a/mnt/f" && ln "$M131/w/a/mnt/f" "$M131/w/a/mnt/g" || { hdiutil detach -quiet -force "$M131/w/a/mnt"; printf 'SCAFFOLD-FAILED: G131\n'; exit 1; }
+    di131="$(stat -f '%d %i' "$M131/w/a/mnt/f")"
+    q131='source "$1"; m=("$2"); rc=0; TMPDIR="$3" _fs_linked_in "$4" m o 2>/dev/null || rc=$?; printf "%s %s\n" "$rc" "$o"'
+    bash -c "$q131" _ "$fns131" "$M131/w" "$M131/t" "$di131" >"$TMP/o131" 2>"$TMP/e131"
+    chmod 000 "$M131/w/a"
+    bash -c "$q131" _ "$fns131" "$M131/w" "$M131/t" "$di131" >>"$TMP/o131" 2>>"$TMP/e131"
+    chmod 700 "$M131/w/a"
+    hdiutil detach -quiet -force "$M131/w/a/mnt" >/dev/null 2>&1
+    [[ "$(head -n 1 "$TMP/o131")" == "0 $M131/w/a/mnt" ]] \
+      && pass "G131 a second name on a disk image attached inside a writable mount is found there" \
+      || fail "G131 attached image (want '0 $M131/w/a/mnt', got '$(head -n 1 "$TMP/o131")'; $(tr '\n' ' ' < "$TMP/e131"))"
+    [[ "$(sed -n 2p "$TMP/o131")" == "2 $M131/w/a/mnt" ]] \
+      && pass "G131 an attached image under a directory that cannot be searched rules nothing out" \
+      || fail "G131 attached image, unsearchable (want '2 $M131/w/a/mnt', got '$(sed -n 2p "$TMP/o131")'; $(tr '\n' ' ' < "$TMP/e131"))"
+  fi
+  rm -rf "$fns131" "$M131" "$TMP/o131" "$TMP/e131"
 else
   printf 'SKIP: G131 a filesystem mounted inside a writable mount — no unprivileged user namespace here\n'
 fi
