@@ -374,7 +374,7 @@ launcher_ro_overlay() {
   local -a _xm_t=() _xm_by=() _xm_j=() ro_srcs=()
   local -A gpv=() gfprot=()
   local -a scan links walk gdirs gfiles glinks gunr gro ug usrc udst udep ukind
-  local g base what gmax gn gitmax cfg cdir ocfg ocd k2 first ik ip ib rep al rk rh hk
+  local g base what gmax gn gitmax cfg cdir gown gmade gp ocfg ocd k2 first ik ip ib rep al rk rh hk
   local -a hgro=() hgpre=() wkc=() hgv=()
   # The include walk's read of a config (_git_walk_keys), kept from the binding
   # pass, which takes core.hooksPath from it: one read a file (G120).
@@ -870,19 +870,39 @@ launcher_ro_overlay() {
         # The commondir read only when it is a regular file: a FIFO there blocked it
         # (review of 1a30bb4; G65). Read as git reads it (_git_ptr_read): $(...)
         # dropped a NUL, and `.\0/` passed for ./ (GIT-30).
-        cdir=""
-        if [[ -d "$g/objects" ]] && { [[ -f "$g/config" ]] || [[ ! -e "$g/commondir" && ! -L "$g/commondir" ]] \
+        # A repository's own git directory, whose objects/ the agent decides:
+        # moved aside, or never made (an empty .git), it had nothing made or
+        # bound, and moved back, or the repository made, in the next session,
+        # git ran what it then wrote there (review of the GIT-48 fix). So a .git,
+        # and a git directory under .git/modules, count whatever they hold; a
+        # linked worktree's names its common one in a commondir, and is left out
+        # below — unless it has none, which git never leaves, and which the agent
+        # could write back with a config.worktree git then reads (re-review).
+        # A worktree's directory (one in a directory named worktrees, never a
+        # .git) with a commondir of its own is still left out, under .git/modules
+        # too: one repaired after it got placeholders was refused for its ../..
+        # (third review). Our ./ is no redirect. Placeholders in one that holds no
+        # repository are inert to git.
+        cdir=""; gown=""; gmade=""; gp="${g%/*}"
+        if [[ "${gp,,}" == */worktrees && "${g,,}" != */.git ]]; then
+          if [[ -d "$g/objects" || ( ! -e "$g/commondir" && ! -L "$g/commondir" ) ]] \
+             || { [[ -f "$g/commondir" && ! -L "$g/commondir" ]] && _git_ptr_read "$g/commondir" cdir && [[ "$cdir" == ./ ]]; }; then gown=1; fi
+          cdir=""
+        elif [[ -d "$g/objects" || "${g,,}" == */.git || "${g,,}" == */.git/modules/* ]]; then
+          gown=1
+        fi
+        if [[ -n "$gown" ]] && { [[ -f "$g/config" ]] || [[ ! -e "$g/commondir" && ! -L "$g/commondir" ]] \
              || { [[ -f "$g/commondir" ]] && _git_ptr_read "$g/commondir" cdir && [[ "$cdir" == ./ ]]; }; }; then
-          cfg="$g/config"
+          cfg="$g/config"; gmade=1
           # A repository git reads with no config of its own gets an empty one, as
           # commondir gets ./ — or the agent could add one after the launch (G49).
-          if [[ ! -e "$g/config" && ! -L "$g/config" ]]; then ( set -C; : > "$g/config" ) 2>/dev/null || true; fi
+          if [[ ! -e "$g/config" && ! -L "$g/config" ]]; then ( set -C; : > "$g/config" ) 2>/dev/null || _git_cant_make "$g" config; fi
           # git makes hooks/ at init, but a repository can lack it — and then the
           # agent could make it.
-          if [[ ! -e "$g/hooks" && ! -L "$g/hooks" ]]; then mkdir "$g/hooks" 2>/dev/null || true; fi
+          if [[ ! -e "$g/hooks" && ! -L "$g/hooks" ]]; then mkdir "$g/hooks" 2>/dev/null || _git_cant_make "$g" hooks; fi
           first=""
           if [[ ! -e "$g/commondir" && ! -L "$g/commondir" ]]; then
-            if ( set -C; printf './\n' > "$g/commondir" ) 2>/dev/null; then first=1; fi
+            if ( set -C; printf './\n' > "$g/commondir" ) 2>/dev/null; then first=1; else _git_cant_make "$g" commondir; fi
           fi
           # Anything but our ./ sends the host's git elsewhere for this repository's
           # configuration and hooks, and git never writes one here: refuse, rather
@@ -956,7 +976,7 @@ launcher_ro_overlay() {
         # Nor can one read where git does not run (GIT-24; G98).
         if [[ -n "$cfg" && ! -e "$g/config.worktree" && ! -L "$g/config.worktree" ]]; then
           if [[ ! -f "$cfg" ]] || ! _git_usable || _git_config_bool "$cfg" extensions.worktreeConfig; then
-            ( set -C; : > "$g/config.worktree" ) 2>/dev/null || true
+            ( set -C; : > "$g/config.worktree" ) 2>/dev/null || _git_cant_make "$g" config.worktree
           fi
         fi
         # Where a relative core.hooksPath has git look for the hooks a push runs:
@@ -1005,7 +1025,7 @@ launcher_ro_overlay() {
             printf '         what it leads to is what your host'\''s git reads. Replace the link with it.\n' >&2
           elif [[ -e "$g/$f" ]]; then
             gro+=("$g/$f")
-          elif [[ "$f" == hooks || "$f" == commondir ]] && [[ -d "$g/objects" ]]; then
+          elif [[ "$f" == hooks || "$f" == commondir ]] && [[ ( -n "$gmade" || -d "$g/objects" ) && -z "${_gcm_seen[$g/$f]:-}" ]]; then
             printf 'WARNING: %s has no %s and one could not be made; the agent could make it.\n' "$(_term "$g")" "$(_term "$f")" >&2
           fi
         done
@@ -3850,6 +3870,39 @@ _git_config_bool() {
   _git_usable || return 1
   v="$(_git_file_config "$1" --type=bool --get "$2" 2>/dev/null)" || return 1
   [[ "$v" == true ]]
+}
+
+# _git_cant_make <git-dir> <name>: <name> is something the launch makes in a
+# git directory so there is something to bind read-only (config, hooks/, the ./
+# commondir, config.worktree), and it could not be made. Refused where the agent
+# could write the git directory: one of yours, which the agent, running as you,
+# could have made read-only in an earlier session, to make it writable again in
+# the next and write one your host's git reads (bugs review GIT-48), and one
+# the agent's own uid, group or an ACL lets it write (_agent_could_write, which
+# reads launcher_ro_overlay's uid and gid). Any other only warns: the agent
+# cannot write it either. One that appeared meanwhile is left to the checks
+# that judge what is there.
+declare -A _gcm_seen=()
+_git_cant_make() {
+  [[ ! -e "$1/$2" && ! -L "$1/$2" ]] || return 0
+  _gcm_seen["$1/$2"]=1
+  if _agent_could_write "$1" "$uid" "$gid"; then
+    printf 'ERROR: cannot make %s, which the launch holds read-only so the agent\n' "$(_term "$1/$2")" >&2
+    printf '       cannot write one your host'\''s git reads; refusing the launch.\n' >&2
+    # Advice that can be followed, as _unlistable_hint gives it.
+    if [[ -O "$1" ]]; then
+      printf '       Make it writable for you (chmod u+w %s), or, on a read-only filesystem,\n' "$(_q "$1")" >&2
+      printf '       mount the repository :ro.\n' >&2
+    elif [[ -n "$(cd / && find "$1" -maxdepth 0 -user "$uid" -print 2>/dev/null)" ]]; then
+      printf '       It belongs to the sandbox identity (SANDBOX_UID=%s): sudo chmod u+w %s,\n' "$uid" "$(_q "$1")" >&2
+      printf '       or chown it back.\n' >&2
+    else
+      printf '       The agent can write into it (its group, the other bits or an ACL), and you\n' >&2
+      printf '       cannot: take that away, or leave the repository out of the writable mounts.\n' >&2
+    fi
+    exit 1
+  fi
+  printf 'WARNING: %s has no %s and one could not be made; the agent could make it.\n' "$(_term "$1")" "$(_term "$2")" >&2
 }
 
 # _git_push_hooks <git-dir> <at> <ro-var> <pre-var> [<config> <value>]...: git

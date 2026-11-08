@@ -401,6 +401,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- **A launch refuses a git directory of yours where it cannot make what it
+  binds read-only.** The launch makes `config`, `hooks/`, the `./` commondir
+  and, where the extension is on, `config.worktree` in a repository that
+  lacks them, so there is something to bind. The agent, running as you,
+  could make `.git` read-only in one session so none could be made at the
+  next launch, which then warned (or said nothing, for `config` and
+  `config.worktree`), and make it writable again in that session to write a
+  hook or a `core.fsmonitor`. Such a launch is now refused, naming the
+  `chmod u+w` that undoes it; a git directory the agent cannot write still
+  only warns. And they are made in every `.git` whatever it holds: one whose
+  `objects/` the agent moved aside, an empty one it made, or a linked
+  worktree's whose `commondir` it removed got nothing, and in the next session
+  could take a hook or a `core.fsmonitor` the host's git ran (bugs review
+  GIT-48).
+
 - **A writable project under WSL's `/mnt/<drive>` that needs a read-only bind
   is refused.** There each spelling of a name is a name of its own to the
   kernel, and a read-only bind covers only one. Measured from a Docker Desktop

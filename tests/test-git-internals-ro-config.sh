@@ -1113,5 +1113,122 @@ launch "$R132"
   || fail "G132 through a submodule (rc=$LAUNCH_RC; twice: $(dup132 | tr '\n' ' '); $(grep -aF 'ERROR' "$ERR" | head -1))"
 rm -rf "$R132" "$TMP/e132"
 
+# ── G133: what the launch must make in a git directory of yours, and cannot ──
+# The launch makes what git would honour but a repository lacks — config,
+# hooks/, the ./ commondir, config.worktree where the extension is on — so
+# there is something to bind read-only. The agent, running as you, can make
+# .git read-only in one session, so none of them can be made at the next
+# launch, and make it writable again in that session to write one. So one that
+# cannot be made in a git directory of yours refuses the launch, naming the
+# chmod that undoes it (bugs review GIT-48); another user's gets a WARNING.
+R133="$TMP/p133"
+mk133() {  # a fresh repository in the writable mount, launched once
+  rm -rf "$R133"; mkdir -p "$R133" && "${G[@]}" init -q "$R133/r" || { printf 'SCAFFOLD-FAILED: G133\n'; exit 1; }
+  launch "$R133"
+  [[ "$LAUNCH_RC" == 0 && -f "$R133/r/.git/commondir" ]] || { printf 'SCAFFOLD-FAILED: G133 first launch (rc=%s)\n' "$LAUNCH_RC"; exit 1; }
+}
+refused133() {  # <name> <label>: the launch refused, naming it, with docker never run
+  chmod a-w "$R133/r/.git"; launch "$R133"; chmod u+w "$R133/r/.git"
+  if [[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && grep -qF "cannot make $R133/r/.git/$1," "$ERR" \
+     && grep -qF "chmod u+w $R133/r/.git" "$ERR"; then
+    pass "G133 $2 that cannot be made in a git directory of yours refuses the launch"
+  else
+    fail "G133 $2 (rc=$LAUNCH_RC; docker ran: $([[ -s "$CAPTURE" ]] && echo yes || echo no); $(grep -aF -A2 'ERROR' "$ERR" | head -3 | tr '\n' ' '))"
+  fi
+}
+if (( EUID != 0 )); then
+  mk133; rm -rf "$R133/r/.git/hooks"; refused133 hooks "a hooks/"
+  rm -rf "$R133"; mkdir -p "$R133" && "${G[@]}" init -q "$R133/r" || { printf 'SCAFFOLD-FAILED: G133\n'; exit 1; }
+  refused133 commondir "the ./ commondir of a repository launched for the first time"
+  mk133; "${G[@]}" -C "$R133/r" config extensions.worktreeConfig true; refused133 config.worktree "a config.worktree, where the extension is on,"
+  mk133; rm -f "$R133/r/.git/config"; refused133 config "a config"
+  # objects/ moved aside: the .git still counts (review of the GIT-48 fix).
+  rm -rf "$R133"; mkdir -p "$R133" && "${G[@]}" init -q "$R133/r" && mv "$R133/r/.git/objects" "$R133/r/.git/o" \
+    || { printf 'SCAFFOLD-FAILED: G133 objects\n'; exit 1; }
+  refused133 commondir "the ./ commondir of a .git whose objects/ was moved aside"
+  # Nothing to make: a read-only .git launches as before.
+  mk133; chmod a-w "$R133/r/.git"; launch "$R133"; chmod u+w "$R133/r/.git"
+  [[ "$LAUNCH_RC" == 0 ]] && has_mount "$R133/r/.git/config:/workspace/p133/r/.git/config:ro" \
+    && pass "G133 a read-only git directory that holds all of them launches" \
+    || fail "G133 read-only, nothing to make (rc=$LAUNCH_RC; $(grep -aF 'ERROR' "$ERR" | head -1))"
+else
+  printf 'SKIP: G133 what cannot be made in a git directory of yours — root writes it anyway\n'
+fi
+# A .git whose objects/ is moved aside, and an empty .git the agent planted, get
+# what the launch makes, bound read-only: with objects/ back, or a repository
+# made there, in the next session, git ran a hook the agent wrote (review of
+# the GIT-48 fix).
+rm -rf "$R133"; mkdir -p "$R133/e/.git" && "${G[@]}" init -q "$R133/r" && rm -rf "$R133/r/.git/hooks" \
+  && mv "$R133/r/.git/objects" "$R133/r/.git/o" || { printf 'SCAFFOLD-FAILED: G133 no objects\n'; exit 1; }
+launch "$R133"
+if [[ "$LAUNCH_RC" == 0 ]] && has_mount "$R133/r/.git/hooks:/workspace/p133/r/.git/hooks:ro" \
+   && has_mount "$R133/r/.git/commondir:/workspace/p133/r/.git/commondir:ro" \
+   && has_mount "$R133/e/.git/hooks:/workspace/p133/e/.git/hooks:ro" \
+   && has_mount "$R133/e/.git/config:/workspace/p133/e/.git/config:ro"; then
+  pass "G133 a .git whose objects/ is moved aside, and an empty .git, have hooks/, config and commondir made and bound"
+else
+  fail "G133 no objects (rc=$LAUNCH_RC; git mounts: $(git_mounts | grep -F p133 | tr '\n' ' '))"
+fi
+# A linked worktree's directory with its commondir removed: git never writes
+# one without, and the agent could write it back in the next session, with a
+# config.worktree git then reads (core.fsmonitor ran on the host; re-review of
+# the GIT-48 fix). It gets them too, a ./ commondir among them, inert to git.
+rm -rf "$R133"; mkdir -p "$R133" && "${G[@]}" init -q "$R133/r" && "${G[@]}" -C "$R133/r" config extensions.worktreeConfig true \
+  && "${G[@]}" -C "$R133/r" commit -q --allow-empty -m init && "${G[@]}" -C "$R133/r" worktree add -q "$R133/wt" \
+  && rm -f "$R133/r/.git/worktrees/wt/commondir" "$R133/r/.git/worktrees/wt/config.worktree" \
+  || { printf 'SCAFFOLD-FAILED: G133 worktree\n'; exit 1; }
+launch "$R133"
+[[ "$LAUNCH_RC" == 0 ]] && has_mount "$R133/r/.git/worktrees/wt/commondir:/workspace/p133/r/.git/worktrees/wt/commondir:ro" \
+  && has_mount "$R133/r/.git/worktrees/wt/config:/workspace/p133/r/.git/worktrees/wt/config:ro" \
+  && pass "G133 a linked worktree's directory with no commondir has one made and bound, and a config" \
+  || fail "G133 worktree without commondir (rc=$LAUNCH_RC; git mounts: $(git_mounts | grep -F worktrees/wt | tr '\n' ' '))"
+# A submodule's linked worktree names its common directory, and is given
+# nothing: no warning that nothing could be made there (re-review of the fix).
+rm -rf "$R133"; mkdir -p "$R133/libwt" && "${G[@]}" init -q "$R133/r" && "${G[@]}" init -q --bare "$R133/r/.git/modules/lib" \
+  && mkdir -p "$R133/r/.git/modules/lib/worktrees/libwt" && printf '../..\n' > "$R133/r/.git/modules/lib/worktrees/libwt/commondir" \
+  && printf '%s/libwt/.git\n' "$R133" > "$R133/r/.git/modules/lib/worktrees/libwt/gitdir" \
+  && printf 'ref: refs/heads/main\n' > "$R133/r/.git/modules/lib/worktrees/libwt/HEAD" \
+  && printf 'gitdir: %s/r/.git/modules/lib/worktrees/libwt\n' "$R133" > "$R133/libwt/.git" \
+  || { printf 'SCAFFOLD-FAILED: G133 submodule worktree\n'; exit 1; }
+launch "$R133"
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF "worktrees/libwt has no" "$ERR" \
+  && pass "G133 a submodule's linked worktree draws no warning that nothing could be made there" \
+  || fail "G133 submodule worktree (rc=$LAUNCH_RC; $(grep -F 'has no' "$ERR" | head -2 | tr '\n' ' '))"
+# One that lost its commondir gets them; repaired on the host, it launches
+# again, the placeholder config left there inert (third review of the fix).
+rm -f "$R133/r/.git/modules/lib/worktrees/libwt/commondir"; launch "$R133"
+r1="$LAUNCH_RC"; printf '../..\n' > "$R133/r/.git/modules/lib/worktrees/libwt/commondir" 2>/dev/null \
+  || { chmod u+w "$R133/r/.git/modules/lib/worktrees/libwt"; printf '../..\n' > "$R133/r/.git/modules/lib/worktrees/libwt/commondir"; }
+launch "$R133"
+[[ "$r1" == 0 && -f "$R133/r/.git/modules/lib/worktrees/libwt/config" && "$LAUNCH_RC" == 0 ]] \
+  && pass "G133 a submodule's linked worktree given placeholders launches again once its commondir is repaired" \
+  || fail "G133 repaired submodule worktree (first rc=$r1, then rc=$LAUNCH_RC; $(grep -F 'ERROR' "$ERR" | head -1))"
+# A repository kept under a directory named worktrees is not a linked
+# worktree's: protected once (its ./ commondir made), objects/ moved aside, it
+# still gets hooks/ made and bound.
+rm -rf "$R133"; mkdir -p "$R133/worktrees" && "${G[@]}" init -q "$R133/worktrees/r" || { printf 'SCAFFOLD-FAILED: G133 under worktrees\n'; exit 1; }
+launch "$R133"; rm -rf "$R133/worktrees/r/.git/hooks"; mv "$R133/worktrees/r/.git/objects" "$R133/worktrees/r/.git/o"
+launch "$R133"
+[[ "$LAUNCH_RC" == 0 ]] && has_mount "$R133/worktrees/r/.git/hooks:/workspace/p133/worktrees/r/.git/hooks:ro" \
+  && pass "G133 a repository under a directory named worktrees, objects/ moved aside, still has hooks/ made and bound" \
+  || fail "G133 under worktrees (rc=$LAUNCH_RC; git mounts: $(git_mounts | grep -F worktrees/r | tr '\n' ' '))"
+# Refused where the agent could write the git directory, whoever owns it: its
+# uid, group or an ACL (_agent_could_write, asked with the agent's identity);
+# another only warns. Another user's directory cannot be made here, so the
+# question is answered by a stand-in.
+fns133="$TMP/fns133.sh"
+for f133 in _term _q _git_cant_make; do
+  awk -v f="$f133() {" 'index($0, f) == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox.sh"
+done > "$fns133"
+mkdir -p "$TMP/d133" || { printf 'SCAFFOLD-FAILED: G133 d133\n'; exit 1; }
+o133="$(bash -c 'source "$1"; declare -A _gcm_seen=(); uid=4242 gid=4343
+  _agent_could_write() { [[ "$2:$3" == 4242:4343 ]]; }
+  ( _git_cant_make "$2" no-such-g133 ); printf "rc=%s|" "$?"
+  uid=1; ( _git_cant_make "$2" no-such-g133 ); printf "rc=%s|" "$?"' _ "$fns133" "$TMP/d133" 2>&1)"
+[[ "$o133" == *"ERROR: cannot make $TMP/d133/no-such-g133,"*"rc=1|"*"WARNING: $TMP/d133 has no no-such-g133"*"rc=0|" ]] \
+  && pass "G133 refused where the agent, by its own uid and gid, could write the git directory; another only warns" \
+  || fail "G133 the agent's identity (got: $(tr '\n' ' ' <<< "$o133"))"
+rm -rf "$R133" "$fns133" "$TMP/d133"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
