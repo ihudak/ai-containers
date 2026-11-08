@@ -681,15 +681,24 @@ cat > "$r/tests/falsify/run.sh" <<'STUB'
 printf 'TARGET|tests/portability.sh|test-portability.sh|13|13|0|0|0|1000\n'
 printf 'NOTE|control-clock|tests/portability.sh|the watchdog fired 900ms past its 120s ceiling\n'
 printf 'NOTE|failline|tests/portability.sh:cmp-flip:%s|L3 seq 1: FAIL: a kill\n' "$(printf '%040d' 0)"
+# Cut at 600 bytes inside a character: read as text in a UTF-8 locale, grep
+# said "binary file matches" for it.
+printf 'NOTE|failline|tests/portability.sh:cmp-flip:%s|L3 seq 1: FAIL: a kill // \342\200\n' "$(printf '%040d' 1)"
 printf 'TOTAL|1|13|13|0|0|0|0|1000\n'
 printf 'ASSERTLESS|0|13\n'
 exit 0
 STUB
-rc="$(run_verify "$r" 6)"
-if [[ "$rc" == 0 ]] && grep -q 'NOTE|control-clock|' "$TMP/out.log" && ! grep -q 'NOTE|failline|' "$TMP/out.log"; then
-  pass "phase 6: a kill's failline note is not re-printed; the other notes are"
+# In a UTF-8 locale, where GNU grep reads text that is not UTF-8 as binary.
+u8=""; locs="$(locale -a 2>/dev/null)" || locs=""
+for l in C.UTF-8 C.utf8 en_US.UTF-8 en_US.utf8; do
+  if grep -qxF "$l" <<< "$locs"; then u8="$l"; break; fi
+done
+rc="$(LC_ALL="${u8:-${LC_ALL:-}}" run_verify "$r" 6)"
+if [[ "$rc" == 0 ]] && grep -q 'NOTE|control-clock|' "$TMP/out.log" && ! grep -aq 'NOTE|failline|' "$TMP/out.log" \
+   && ! grep -aq 'binary file matches' "$TMP/out.log"; then
+  pass "phase 6: a kill's failline note is not re-printed, nor read as text; the other notes are"
 else
-  fail "phase 6: the failline notes (rc=$rc; control-clock $(grep -c 'NOTE|control-clock|' "$TMP/out.log"), failline $(grep -c 'NOTE|failline|' "$TMP/out.log"))"
+  fail "phase 6: the failline notes (rc=$rc; control-clock $(grep -c 'NOTE|control-clock|' "$TMP/out.log"), failline $(grep -ac 'NOTE|failline|' "$TMP/out.log"), binary $(grep -ac 'binary file matches' "$TMP/out.log"))"
 fi
 
 # ── PHASE 6'S ADVICE MUST NAME A KNOB THAT EXISTS (backlog F48) ───────────────

@@ -317,7 +317,7 @@ cl_read_run() {   # <run output file or ->
         [[ -n "$target" ]] && CL_SCOPE["$target"]=1
         ;;
       'NOTE|failline|'*)
-        # NOTE|failline|<identity>|L<line> seq <n>: <first FAIL: line> — what
+        # NOTE|failline|<identity>|L<line> seq <n>: <first FAIL: line // …> — what
         # killed a mutant, quoted by check D so an unexpected kill can be traced
         # to its assertion after the runner is gone (TST-29).
         rest="${line#NOTE|failline|}"

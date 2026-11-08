@@ -108,8 +108,10 @@
 #   BASELINE|<target>|<oracle>|PASS|<ms>
 #   MUTANT|<verdict>|<identity>|<oracle>|<seq>|<lineno>|<signal>|<ms>|<mutated-line>
 #   NOTE|<what>|<identity>|<detail>
-#   NOTE|failline|<identity>|L<lineno> seq <seq>: <the oracle's first FAIL: line,
-#              cut to 300 bytes>   after each KILLED mutant that printed one.
+#   NOTE|failline|<identity>|L<lineno> seq <seq>: <the oracle's first FAIL: line
+#              and up to six non-blank lines it printed under it, joined with
+#              ` // `, cut to 600 bytes (falsify_fail_note)>   after each KILLED
+#              mutant that printed one.
 #   TARGET|<target>|<oracle>|<total>|<killed>|<survived>|<unproven>|<timeouts>|<ms>
 #   TOTAL|<targets>|<total>|<killed>|<survived>|<unproven>|<timeouts>|<unresolved-pct>|<ms>
 #   ASSERTLESS|<kills-with-no-failline>|<killed>
@@ -583,6 +585,34 @@ falsify_died_of_signal() {   # <oracle exit status> → 0 when a signal ended it
 
 falsify_has_fail_line() {   # <oracle output file> → 0 when it carries a FAIL: line
   grep -qE '(^|[[:space:]])FAIL:' "$1"
+}
+
+# falsify_fail_note <oracle output file>: the text of a kill's NOTE|failline
+# (bugs review TST-29) — the first FAIL: line, from the FAIL: the kill test
+# above matched, then what the test printed under it, where a test shows what it
+# got: up to six non-blank lines, to its next PASS:/FAIL: line, run-all.sh's
+# own line for it (`   FAIL  (exit 1)`, which lands on the test's last line
+# when that has no newline) or the next test's `── ` header. Indentation
+# dropped, joined with ` // `, cut to 600 bytes by awk itself, so nothing it
+# writes to is closed early. Read as bytes: NULs dropped, CRs dropped from the
+# text, a CR still counting as the space before FAIL:, as it does above.
+falsify_fail_note() {
+  LC_ALL=C tr -d '\000' < "$1" 2>/dev/null | LC_ALL=C awk '
+    function add(t) { if (length(o) < 600) o = o t }
+    !on {
+      if ($0 ~ /^FAIL:/) s = $0
+      else if (match($0, /[[:space:]]FAIL:/)) s = substr($0, RSTART + 1)
+      else next
+      gsub(/\r/, "", s); on = 1; add(s); next
+    }
+    /^(PASS|FAIL):/ || /[[:space:]](PASS|FAIL):/ || /^── / || n >= 6 { exit }
+    {
+      d = sub(/   (PASS|FAIL|SKIP)  \(.*/, "")
+      gsub(/\r/, ""); sub(/^[[:space:]]+/, "")
+      if ($0 != "") { add(" // " $0); n++ }
+      if (d) exit
+    }
+    END { printf "%s", substr(o, 1, 600) }'
 }
 
 # THE ORACLE'S OWN SCAFFOLDING BROKE, which is not the same event as an
@@ -1456,12 +1486,13 @@ fr_run_mutant() {   # <slot> <target> <oracle> <seq> <lineno> <op> <sha> <text> 
   # What killed it: the oracle's output goes with the run, and a kill that
   # should not have happened (a ledger entry found KILLED in CI on a slow
   # runner) could not be traced to the assertion that fired (bugs review
-  # TST-29). The first FAIL: line of the run that decided, from the FAIL: the
-  # kill test matched, cut to 300 bytes; read as bytes, its CRs and NULs dropped.
+  # TST-29). The first FAIL: line of the run that decided, and what the test
+  # printed under it (falsify_fail_note): a kill in CI that read only "a valid
+  # owner is applied without complaint (rc=1)" could not say why the helper had
+  # exited 1.
   if (( ! write_failed )) && [[ "$FALSIFY_VERDICT" == KILLED && "$FALSIFY_SIGNAL" == *failline* ]]; then
     local fl
-    fl="$(LC_ALL=C grep -m1 -aoE '(^|[[:space:]])FAIL:.*' "$out" 2>/dev/null | LC_ALL=C tr -d '\r\000' \
-          | LC_ALL=C sed 's/^[[:space:]]//' | LC_ALL=C head -c 300)"
+    fl="$(falsify_fail_note "$out")"
     if [[ -n "$fl" ]]; then
       printf 'NOTE|failline|%s|L%s seq %s: %s\n' "$ident" "$lineno" "$seq" "$fl" >> "$res"
     fi

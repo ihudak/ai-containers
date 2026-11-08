@@ -656,7 +656,7 @@ if bash "$TESTS_DIR/falsify/run.sh" --jobs "$fl_jobs" --timeout "$fl_timeout" > 
   # went with it (backlog F47, in a place the F47 fix did not reach). Not the
   # failline note every kill carries (bugs review TST-29): two thousand of them
   # would bury the rest, and a red ratchet quotes the ones it needs.
-  grep -E '^(BASELINE|TARGET|TOTAL|ASSERTLESS|SKIPPED|UNATTEMPTED|CONTROL|CONTROLS|NOTE)\|' "$fl_run" | grep -v '^NOTE|failline|' | sed 's/^/  /' | while IFS= read -r l; do sub "$l"; done
+  LC_ALL=C grep -aE '^(BASELINE|TARGET|TOTAL|ASSERTLESS|SKIPPED|UNATTEMPTED|CONTROL|CONTROLS|NOTE)\|' "$fl_run" | LC_ALL=C grep -av '^NOTE|failline|' | sed 's/^/  /' | while IFS= read -r l; do sub "$l"; done
   # HOW MUCH WAS ACTUALLY MEASURED. An UNPROVEN mutant produced no verdict at
   # all, so a run with many of them is measuring less than its pass suggests —
   # and the pass is honest only if that is said out loud rather than left in

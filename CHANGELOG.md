@@ -76,6 +76,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   no standalone install is present. docs/agent-tools.md has the `rm -rf` that
   reclaims it. Gemini has no such install and is still updated at start
   (feature-gaps review GAP-7).
+- **A falsify kill says what the test printed under its `FAIL:` line.** The
+  `NOTE|failline` record after a KILLED mutant quoted only the first `FAIL:`
+  line, so a ledger entry found KILLED in CI read "a valid owner is applied
+  without complaint (rc=1)" and could not say why the helper had exited 1. It
+  now adds up to six non-blank lines the test printed under it, to its next
+  `PASS:`/`FAIL:` line, joined with ` // ` and cut to 600 bytes (bugs review
+  TST-29, still open).
 - **CI runs the falsify mutation tier in two jobs.** The single job reached
   its 90-minute cap and was cancelled on 5 of 12 runs, with no verdict;
   `repo-git-reset.sh` alone took 45 of its 77 minutes. It now runs in one job

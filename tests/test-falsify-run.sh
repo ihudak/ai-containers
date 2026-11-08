@@ -101,7 +101,7 @@ EOF
 # shellcheck source=/dev/null
 source "$FX_DIR/fixture-lib.sh"
 if [[ "$(fx_bigger 5 3)" == "yes" ]]; then printf 'PASS: 5 beats 3\n'
-else printf 'FAIL: 5 beats 3\n'; fails=$((fails + 1)); fi
+else printf 'FAIL: 5 beats 3\n\n  fx_bigger said: %s\n' "$(fx_bigger 5 3)"; fails=$((fails + 1)); fi
 if [[ "$(fx_bigger 3 5)" == "no" ]]; then printf 'PASS: 3 does not beat 5\n'
 else printf 'FAIL: 3 does not beat 5\n'; fails=$((fails + 1)); fi
 exit "$fails"
@@ -743,13 +743,40 @@ check "a real test kills through BOTH signals at once" "exit+failline" "$(fx_sig
 # The oracle's output goes with the runner, so a kill that should not have
 # happened — a ledger entry found KILLED in CI on a slow runner — could not be
 # traced to the assertion that fired (bugs review TST-29). Each KILLED mutant
-# that printed a FAIL: line is followed by a NOTE quoting the first one.
+# that printed a FAIL: line is followed by a NOTE quoting the first one, and the
+# lines the test printed under it up to its next PASS:/FAIL: line, where a test
+# shows what it got: a kill in CI that read only "a valid owner is applied
+# without complaint (rc=1)" could not say why the helper had exited 1. Blank
+# lines are skipped, indentation dropped.
 kid="$(fx_ident "$FX_OUT" "$KILLABLE")"; kseq="$(fx_field "$FX_OUT" "$KILLABLE" 5)"; kln="$(fx_field "$FX_OUT" "$KILLABLE" 6)"
-check "a kill's first FAIL: line is recorded after it" "1" \
-  "$(grep -cxF "NOTE|failline|$kid|L$kln seq $kseq: FAIL: 5 beats 3" <<< "$FX_OUT")"
+check "a kill's first FAIL: line is recorded after it, with what the test printed under it" "1" \
+  "$(grep -cxF "NOTE|failline|$kid|L$kln seq $kseq: FAIL: 5 beats 3 // fx_bigger said: no" <<< "$FX_OUT")"
 check "every kill with a FAIL: line has its note" \
   "$(grep -c '^MUTANT|KILLED|.*failline' <<< "$FX_OUT")" "$(grep -c '^NOTE|failline|' <<< "$FX_OUT")"
 check "a survivor has none" "0" "$(grep -c "^NOTE|failline|$(fx_ident "$FX_OUT" "$SURVIVOR")|" <<< "$FX_OUT")"
+# The note's text, from crafted oracle outputs (run.sh: falsify_fail_note()).
+fail_note() {   # <printf format> — the oracle output; prints the note's text
+  printf "$1" > "$TMP/fnote.out"
+  ( set +u
+    # shellcheck source=/dev/null
+    source "$RUN" >/dev/null 2>&1
+    falsify_fail_note "$TMP/fnote.out" )
+}
+check "the note stops at six non-blank lines under the FAIL: line" \
+  "FAIL: a // 1 // 2 // 3 // 4 // 5 // 6" "$(fail_note 'PASS: z\nFAIL: a\n1\n\n2\n3\n4\n5\n6\n7\n')"
+check "the note stops at the driver's own line, even one on the test's last line" \
+  "FAIL: a // got b" "$(fail_note 'FAIL: a\ngot b   FAIL  (exit 1)\n── test-next.sh\nsetup\n')"
+check "the note stops at the driver's own line, the walk ending there" \
+  "FAIL: a // got b" "$(fail_note 'FAIL: a\ngot b   FAIL  (exit 1)\nmore\n')"
+check "the note stops at the driver's SKIP line too" \
+  "FAIL: a // got b" "$(fail_note 'FAIL: a\ngot b\n   SKIP  (no tool)\nmore\n')"
+check "the note stops at the next test's header" \
+  "FAIL: a // got b" "$(fail_note 'FAIL: a\ngot b\n── test-next.sh\nsetup\n')"
+check "a FAIL: after a CR is quoted, the CRs dropped" \
+  "FAIL: a // got b" "$(fail_note 'progress\rFAIL: a\r\ngot b\r\nPASS: c\n')"
+check "the note is cut at 600 bytes" "600" \
+  "$(fail_note "FAIL: a\n$(printf 'x%.0s' $(seq 1 700))\n" | LC_ALL=C wc -c | tr -d ' ')"
+check "no FAIL: line, no note" "" "$(fail_note 'PASS: a\nFAILED: b\n')"
 
 # ── 5. The oracle is `run-all.sh <name>`, not the test file ───────────────────
 # test-fx-silent.sh exits 0 having asserted nothing. Run directly that is a pass;
