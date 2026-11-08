@@ -141,6 +141,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A long git config key no longer stalls a launch.** Each entry the
+  launcher reads from a protected repository's config was split from its key
+  by a pattern quadratic in the key's length: three planted `includeIf`
+  conditions of 64 KB took a launch from 2 s to 19 s, or had it refused. The
+  split now looks at no more than 257 characters, and a key over 256 is not
+  split, its include not followed, with the walk's `WARNING:` (bugs review
+  GIT-49).
+
 - **`repo.sh`, `extract-discovery.sh`, the rvm migration and `verify-on-host.sh`
   bind a host path holding `:` too.** Each handed docker its host path with
   `-v`, which splits at every `:`, so `repo.sh add` of such a directory, a git

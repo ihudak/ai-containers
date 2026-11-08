@@ -1230,5 +1230,42 @@ o133="$(bash -c 'source "$1"; declare -A _gcm_seen=(); uid=4242 gid=4343
   || fail "G133 the agent's identity (got: $(tr '\n' ' ' <<< "$o133"))"
 rm -rf "$R133" "$fns133" "$TMP/d133"
 
+# ── G135: a config entry is split in time linear in its key ────────────────
+# git prints a key of any length (an includeIf condition, an alias name), and
+# splitting `<key>\n<value>` by pattern was quadratic in it: three planted keys
+# of 64 KB took a launch from 2 s to 19 s, in silence (final review of the
+# GIT-42 fix; bugs review GIT-49). A key over 256 bytes is not split: the walk
+# is cut there, and says so.
+fns135="$TMP/fns135.sh"
+awk 'index($0, "_git_kv() {") == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox.sh" > "$fns135"
+o135="$(bash -c 'source "$1"; set -u
+  k=""; v=""; _git_kv $'"'"'core.hookspath\n.husky/_'"'"' k v; printf "%s|%s|" "$k" "$v"
+  k=x; v=x; _git_kv "alias.st" k v; printf "%s|%s|" "$k" "$v"
+  s=$SECONDS; e="includeif.gitdir:$(printf "%65536s" "" | tr " " a).path"$'"'"'\n/x'"'"'
+  if _git_kv "$e" k v; then printf "split|"; else printf "refused|"; fi; printf "%s" "$(( SECONDS - s ))"' _ "$fns135" 2>&1)"
+[[ "$o135" == "core.hookspath|.husky/_|alias.st||refused|0" ]] \
+  && pass "G135 an entry is split at its newline, one with no value too, and a 64 KB key is refused at once" \
+  || fail "G135 the split (got: $o135)"
+rm -rf "$TMP/h135"; mkdir -p "$TMP/h135" && "${G[@]}" init -q "$TMP/h135/r" || { printf 'SCAFFOLD-FAILED: G135\n'; exit 1; }
+{ for i in 1 2 3; do printf '[includeIf "gitdir:%s%d"]\n\tpath = x\n' "$(printf '%65536s' '' | tr ' ' a)" "$i"; done; } >> "$TMP/h135/r/.git/config"
+s135=$SECONDS; EXTRA_MOUNTS="$TMP/h135" launch "$TMP/app"; t135=$(( SECONDS - s135 ))
+[[ "$LAUNCH_RC" == 0 && "$t135" -le 10 ]] && grep -qF "WARNING: not every include of /workspace/h135/r/.git/config was followed" "$ERR" \
+   && grep -qF "(a key of more than 256 characters)" "$ERR" && ! grep -qF "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" "$ERR" \
+  && pass "G135 a config of 64 KB keys is cut, said so, named by size, and the launch stays fast" \
+  || fail "G135 long keys (rc=$LAUNCH_RC; ${t135}s; $(grep -cF 'WARNING: not every include' "$ERR") cut warnings)"
+# And cheaply: every entry is split, and a bounded regex, compiled on each
+# call, made 5000 include entries cost 9 s more than one (review of the fix;
+# G38 allows 15). Against the same launch with one, timed in the same run.
+mkdir -p "$PROJ/many135" && "${G[@]}" -C "$PROJ/many135" init -q || { printf 'SCAFFOLD-FAILED: G135 many\n'; exit 1; }
+printf '[include]\n\tpath = /nonexistent135/f0\n' >> "$PROJ/many135/.git/config"
+launch_timed 120; base135="$LAUNCH_S"
+{ for n in $(seq 1 5000); do printf '\tpath = /nonexistent135/f%d\n' "$n"; done; } >> "$PROJ/many135/.git/config"
+launch_timed 120
+[[ "$LAUNCH_RC" == 0 && "$LAUNCH_S" -lt $(( base135 + 6 )) ]] \
+  && pass "G135 5000 entries are split in seconds (${LAUNCH_S}s, ${base135}s with one)" \
+  || fail "G135 5000 entries (rc=$LAUNCH_RC; ${LAUNCH_S}s, ${base135}s with one)"
+rm -rf "$PROJ/many135"
+rm -rf "$TMP/h135" "$fns135"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

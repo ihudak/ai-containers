@@ -996,7 +996,8 @@ launcher_ro_overlay() {
             fi
             x=""
             for e in ${wkc[@]+"${wkc[@]:${wkc_at[$f]}:${wkc_n[$f]}}"}; do
-              if [[ "${e%%$'\n'*}" == core.hookspath ]]; then x="${e#*$'\n'}"; fi
+              # A fixed prefix, not a split: every entry passes here (GIT-49).
+              if [[ "$e" == core.hookspath$'\n'* ]]; then x="${e#core.hookspath$'\n'}"; fi
             done
             if [[ -n "$x" ]]; then hgv+=("$f" "$x"); fi
           done
@@ -1308,8 +1309,9 @@ launcher_ro_overlay() {
         # of every later config (GIT-19; G72). They still count per config.
         # Cut, the file's core keys are read for the check below by git, not lost (hkc).
         if (( ++ient > 100 )); then icut=1; ii=${#ifile[@]}; hkc[$icur]=1; break; fi
-        ik="${e%%$'\n'*}"; ip=""
-        if [[ "$e" == *$'\n'* ]]; then ip="${e#*$'\n'}"; fi
+        # A key over 256 bytes (an includeIf condition) is not split: its include
+        # is not followed, and the cut WARNING says so (GIT-49).
+        if ! _git_kv "$e" ik ip; then icut=1; continue; fi
         # The last of each in this file, for the core.hooksPath check below.
         case "$ik" in
           core.hookspath) hkp[$icur]="$ip"; continue ;;
@@ -4019,6 +4021,29 @@ _git_config_get() {
   IFS= read -r -d '' _gcg_out < <(_git_file_config "$2" --null --get "$3" 2>/dev/null) || { _gcg_out=""; return 1; }
 }
 
+# _git_kv <entry> <key-var> <value-var>: a `<key>\n<value>` entry git config
+# printed (--null), split at its first newline — one with none is a key with no
+# value — looking at no more than its first 257 characters: git prints a key
+# of any length (an includeIf condition, an alias name), and splitting by
+# pattern (${e%%$'\n'*}, ${e#*$'\n'}) was quadratic in it, three planted keys
+# of 64 KB taking a launch from 2 s to 19 s (final review of the GIT-42 fix;
+# bugs review GIT-49). Fails for a key over 256 characters, which no key the
+# launcher acts on needs; the caller says what it then skipped. No regex and
+# no locale switch: a bounded regex, compiled on every call, cost 2 ms a call,
+# and 5000 planted keys took a launch from 2 s to 15 s (review of the fix).
+_git_kv() {
+  local -n _kv_k=$2 _kv_v=$3
+  local _kv_h="${1:0:257}"
+  _kv_k=""; _kv_v=""
+  if [[ "$_kv_h" == *$'\n'* ]]; then
+    _kv_k="${_kv_h%%$'\n'*}"; _kv_v="${1:${#_kv_k}+1}"
+  else
+    (( ${#1} <= 256 )) || return 1
+    _kv_k="$1"
+  fi
+  [[ -n "$_kv_k" ]]
+}
+
 # _git_exec_keys <config-file>...: the keys these git config files set that make
 # git run a program, or read another file of keys (an include), NUL-separated,
 # each once, values never printed. Read with git, which runs nothing from a
@@ -4033,8 +4058,11 @@ _git_exec_keys() {
   for f in "$@"; do
     if [[ ! -f "$f" ]]; then continue; fi
     while IFS= read -r -d '' rec; do
-      k="${rec%%$'\n'*}"; v=""
-      if [[ "$rec" == *$'\n'* ]]; then v="${rec#*$'\n'}"; fi
+      # A key over 256 bytes is named by its size, once (GIT-49).
+      if ! _git_kv "$rec" k v; then
+        if [[ -z "${had[long]:-}" ]]; then had[long]=1; printf '%s\0' "(a key of more than 256 characters)"; fi
+        continue
+      fi
       if [[ ! "$k" =~ $re || -n "${had[$k]:-}" ]]; then continue; fi
       case "$k" in
         core.fsmonitor) if [[ "${v,,}" =~ ^(true|false|yes|no|on|off|-?[0-9]+)?$ ]]; then continue; fi ;;
