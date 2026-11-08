@@ -1,7 +1,7 @@
 # Platform-specific issues — 2026-10-26
 
 - **Opened:** 2026-10-26, during bug-fix batch 1
-- **Last reviewed commit:** `bec1c57` (the review), entries updated while fixing on `fix/batch-1-launcher-git`; PLAT-5, PLAT-6 and the pickup table added 2026-11-03 at `d41d47a`; PLAT-5 done and PLAT-3 confirmed and designed 2026-11-04 at `f0ad913`; PLAT-2 done 2026-11-04, run at `f0ad913`; PLAT-9 and the WSL native agent added 2026-11-07
+- **Last reviewed commit:** `bec1c57` (the review), entries updated while fixing on `fix/batch-1-launcher-git`; PLAT-5, PLAT-6 and the pickup table added 2026-11-03 at `d41d47a`; PLAT-5 done and PLAT-3 confirmed and designed 2026-11-04 at `f0ad913`; PLAT-2 done 2026-11-04, run at `f0ad913`; PLAT-9 and the WSL native agent added 2026-11-07; the pickup table covers all three reviews' open items 2026-11-08, at `3b98ecd`
 - **Companions:** [2026-10-26-bugs-review.md](2026-10-26-bugs-review.md), [2026-10-26-feature-gaps-review.md](2026-10-26-feature-gaps-review.md)
 
 These are issues that can only be confirmed, and then fixed, on a platform or
@@ -27,20 +27,27 @@ and the constraints the fix must keep.
 | PLAT-8 | macOS (APFS), WSL2 (drvfs), Docker Desktop | bugs GIT-38, GIT-41 | Paths spelled in another case where case is ignored, and whether a read-only bind of one file covers its other spellings — **done**: both halves passed; GIT-41 refused on drvfs, and on macOS reproduced on Colima and mitigated (Docker Desktop for Mac unmeasured) |
 | PLAT-9 | macOS, WSL2 (Docker Desktop and a native Engine) | bugs GIT-29 to GIT-45 | The launcher's git checks and `project-files.sh` gained code since the last run on each, which has only ever run on Linux — **open** |
 
-## Who picks up what (updated 2026-11-07)
+## Who picks up what (updated 2026-11-08, at `3b98ecd`)
 
-Three platform agents work on this repository besides the Linux one. Each takes
-the rows marked for its platform, starting from the current `origin/main`, and
-reports by editing the entry's **Status** line (and docs/testing.md's
-"Platforms exercised" table for a run).
+Four agents work on this repository. Each takes the rows marked for it,
+starting from the current `origin/main`, and reports by editing the entry's
+**Status** line (and docs/testing.md's "Platforms exercised" table for a run).
+This table covers every item still open in all three reviews: this file, the
+[bugs review](2026-10-26-bugs-review.md) (BLD-, GIT-, LNCH-, TST-) and the
+[feature-gaps review](2026-10-26-feature-gaps-review.md) (GAP-). An ID's entry
+in its own file says what to run and what the fix must keep.
 
-| Agent | Its platform | Picks up | Cannot do |
-|---|---|---|---|
-| **Linux agent** (review machine) | Linux x86-64, native Docker Engine | the falsify work GAP-1 to GAP-4 | anything below |
-| **WSL agent** | Windows + WSL2 (Ubuntu distro) + **Docker Desktop** with WSL integration. **Not** a native Docker Engine in the distro | **PLAT-9** (Docker Desktop); PLAT-6, and PLAT-8's drvfs half (GIT-41 there), done | a native Engine's runs: the WSL native agent's |
-| **WSL native agent** | Windows + WSL2 (Ubuntu distro) + a **Docker Engine installed natively in the distro** (not Docker Desktop) | **PLAT-9** (native Engine), and PLAT-8's drvfs steps on a native Engine: a bind of `/mnt/<drive>` is drvfs there too, so GIT-41's refusal applies; PLAT-2's native-Engine half done | — |
-| **Mac agent** | macOS, Docker Desktop and/or Colima | **PLAT-7** (git documented as a requirement; not run), GIT-41 on Docker Desktop for Mac, **PLAT-9**, **PLAT-3** (GAP-11, designed); PLAT-5 and PLAT-8's APFS half (GIT-41 on Colima) done | — |
-| *nobody* | x86-64 CPU without AVX | PLAT-4: closed as not supported | — |
+| Agent | Its platform | Picks up |
+|---|---|---|
+| **Linux agent** | Linux x86-64, native Docker Engine | **GIT-42**, **GIT-43** (its Linux half: the mount points from `/proc/self/mountinfo`), **GIT-45**; **LNCH-22** (a host path with `:` or bytes that are not UTF-8); **TST-29** (two EQUIVALENT mutants of repo-git-reset.sh scored KILLED in CI); **GAP-2** (sandbox.sh and the other deferred falsify targets, after slice 3); **GAP-10** (F58, when it next happens). It also scores what the other agents' fixes add to the falsify tier. |
+| **WSL agent** | Windows + WSL2 (Ubuntu distro) + **Docker Desktop** with WSL integration. **Not** a native Docker Engine in the distro | **PLAT-9** (Docker Desktop): Phase 5 at current `main` from ext4 (last run at `2880376`, before `main` moved) and from a clone under `/mnt/c` (never run); GIT-41 on drvfs again at current `main`, now that macOS's `_ro_files_restore()` sits beside the drvfs refusal (G121 to G123 on C:, which makes 8.3 short names); LNCH-22 checked on Docker Desktop once the Linux agent's fix lands. PLAT-6 and PLAT-8's drvfs half done. |
+| **WSL native agent** | Windows + WSL2 (Ubuntu distro) + a **Docker Engine installed natively in the distro** (not Docker Desktop) | **PLAT-9** (native Engine), from ext4 and from a clone under `/mnt/c`; GIT-41's refusal under a native Engine (a bind of `/mnt/<drive>` is drvfs there too, so a launch from `/mnt/c` that needs a read-only bind must refuse as under Docker Desktop); the integration corpus at current `main` (last run at `f0ad913`). With capacity left, it takes Linux items off the Linux agent's list by agreement (LNCH-22, say). PLAT-2's native-Engine half done. |
+| **Mac agent** | macOS, Docker Desktop and/or Colima | **PLAT-9** (macOS); **PLAT-3** (GAP-11): build the Colima design or record why not; GIT-41 on Docker Desktop for Mac, where it is installed (mitigated and measured on Colima only); GIT-43's macOS half (mount points from `mount`) once the Linux half lands; **PLAT-7** only if the user allows removing the Command Line Tools, or a fresh account. PLAT-5 and PLAT-8's APFS half done. |
+| *any agent with an mgd-ai-containers checkout* | — | **TST-21**'s last step: the `tests/layer-checks.conf` comment edit of `c761628` in mgd-ai-containers' copy, which must stay byte-identical. Not reachable from the agents above so far. |
+| *nobody* | x86-64 CPU without AVX | PLAT-4: closed as not supported |
+
+Closed in effect, nothing to pick up: BLD-8 (what is left is the
+`--error-on=any` trade, kept by design) and GIT-12 (won't fix).
 
 Any change of code an agent makes follows the rule at the top: reproduce
 first, then fix test-first.
