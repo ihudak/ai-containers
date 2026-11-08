@@ -768,21 +768,23 @@ SANDBOX_GIT_MAX=3 EXTRA_MOUNTS="$TMP/h121" launch "$TMP/app"
   && pass "G126 git directories outside every mount past SANDBOX_GIT_MAX are named, not judged" \
   || fail "G126 cap (rc=$LAUNCH_RC; stderr: $(grep -E 'ERROR|WARNING' "$ERR" | head -2 | tr '\n' ' '))"
 # A relative gitdir (git 2.48 and later, worktree.useRelativePaths) is resolved
-# from the linked worktree's git directory; with no checkout known, nothing is
-# judged from that directory itself, where git never runs hooks.
+# from the linked worktree's git directory. That directory is judged too, where
+# git runs the hooks of a push into the worktree's checkout (GIT-45; measured,
+# git 2.56: it was taken for a place git never runs hooks), and so is it with no
+# checkout known, whose own relative core.hooksPath is named as not judged.
 mk121; mkdir -p "$TMP/o121/a" && "${G[@]}" init -q "$TMP/h121/m" && "${G[@]}" -C "$TMP/h121/m" commit -q --allow-empty -m i \
   && "${G[@]}" -C "$TMP/h121/m" worktree add -q "$TMP/o121/a/wt" && "${G[@]}" -C "$TMP/h121/m" config core.hooksPath ../../../h121/x \
   && printf '../../../../../o121/a/wt/.git\n' > "$TMP/h121/m/.git/worktrees/wt/gitdir" || { printf 'SCAFFOLD-FAILED: G126 relative gitdir\n'; exit 1; }
 EXTRA_MOUNTS="$TMP/h121" launch "$TMP/app"
 grep -qF "NOTE: /workspace/h121/m/.git/worktrees/wt runs its git hooks from /workspace/h121/x (core.hooksPath), which the agent" "$ERR" \
-  && ! grep -qF '/workspace/h121/m/h121/x' "$ERR" \
-  && pass "G126 a relative gitdir is resolved from the linked worktree's git directory, and that directory is no base" \
+  && [[ "$(grep -F -A3 'git hooks from /workspace/h121/m/h121/x' "$ERR")" == *'git runs them for a push into the repository'* ]] \
+  && pass "G126 a relative gitdir is resolved from the linked worktree's git directory, which is judged too, for a push" \
   || fail "G126 relative gitdir (rc=$LAUNCH_RC; stderr: $(grep -F 'git hooks' "$ERR" | head -2 | tr '\n' ' '))"
 rm -f "$TMP/h121/m/.git/worktrees/wt/gitdir"
 EXTRA_MOUNTS="$TMP/h121" launch "$TMP/app"
-[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF 'git hooks from /workspace/h121/m/h121/x' "$ERR" \
+[[ "$LAUNCH_RC" == 0 ]] && grep -qF 'git hooks from /workspace/h121/m/h121/x' "$ERR" \
   && grep -qF "NOTE: /workspace/h121/m/.git/worktrees/wt takes its git hooks from ../../../h121/x (core.hooksPath) relative to a checkout" "$ERR" \
-  && pass "G126 a linked worktree with no checkout known: nothing judged from its git directory, and its relative core.hooksPath named as not judged" \
+  && pass "G126 a linked worktree with no checkout known: its relative core.hooksPath named as not judged there, and judged from its git directory, for a push" \
   || fail "G126 git directory taken as a base (rc=$LAUNCH_RC; stderr: $(grep -F 'git hooks' "$ERR" | head -1))"
 # The re-review of the GIT-44 fix: the repository a mount lies in through a
 # .git link (as `repo` checkouts have it), which git follows, was skipped and the
@@ -913,6 +915,203 @@ grep -qF "runs its git hooks from /workspace/fe/.husky/_ (core.hooksPath), which
   && pass "G126 a .git link's target in another writable mount is judged from the link's checkout" \
   || fail "G126 link target judged from its git directory (rc=$LAUNCH_RC; stderr: $(grep -F 'git hooks' "$ERR" | head -2 | tr '\n' ' '))"
 rm -rf "$TMP/h121" "$TMP/o121"
+
+# ── G132: a relative core.hooksPath from $GIT_DIR, where push hooks run ──────
+# git runs the push hooks (pre-receive, update, post-receive, …) in the git
+# directory, a non-bare repository's and a linked worktree's too, and a
+# relative core.hooksPath is relative to where hooks run (bugs review GIT-45).
+# One that stays inside the git directory (no `..`) has its first directory
+# there bound read-only, made as you where there is none, so nothing below it
+# can be made or changed. One starting with a name git itself keeps there (a
+# directory, objects/, logs/, …, or a file, config, HEAD, locked, …) is never
+# made or bound, only named. A file or a link on the way refuses the launch;
+# hooks already there are named once. One that climbs out of .git is judged
+# from it, and named as a push's.
+R132="$TMP/p132"
+mk132() {  # <hooksPath> — a fresh repository in the writable mount
+  rm -rf "$R132"; mkdir -p "$R132" && "${G[@]}" init -q "$R132/r" && "${G[@]}" -C "$R132/r" config core.hooksPath "$1" \
+    || { printf 'SCAFFOLD-FAILED: G132\n'; exit 1; }
+}
+dup132() { mounts | awk -F: '{print $2}' | sort | uniq -d; }
+# husky: .git/.husky, made and bound read-only whole; nothing under it bound.
+mk132 .husky/_; mkdir -p "$R132/r/.husky/_"
+launch "$R132"
+if [[ "$LAUNCH_RC" == 0 && -d "$R132/r/.git/.husky" && ! -L "$R132/r/.git/.husky" && -z "$(dup132)" ]] \
+   && has_mount "$R132/r/.git/.husky:/workspace/p132/r/.git/.husky:ro" \
+   && ! mounts | grep -qF ":/workspace/p132/r/.git/.husky/"; then
+  pass "G132 a relative core.hooksPath inside the git directory has its first directory there made and bound read-only"
+else
+  fail "G132 hooksPath in .git (rc=$LAUNCH_RC; made: $([[ -d "$R132/r/.git/.husky" ]] && echo yes || echo no); git mounts: $(git_mounts | grep -F husky | tr '\n' ' '); $(grep -E 'ERROR|WARNING' "$ERR" | head -2 | tr '\n' ' '))"
+fi
+grep -qF "runs its git hooks from /workspace/p132/r/.husky/_ (core.hooksPath)" "$ERR" \
+  && pass "G132 … and the checkout's .husky/_ is still named, as before" \
+  || fail "G132 the worktree's NOTE (stderr: $(grep -F 'hooks from' "$ERR" | tr '\n' ' '))"
+# husky's monorepo layout (husky frontend/.husky): .git/frontend.
+mk132 frontend/.husky/_
+launch "$R132"
+[[ "$LAUNCH_RC" == 0 ]] && has_mount "$R132/r/.git/frontend:/workspace/p132/r/.git/frontend:ro" \
+  && ! mounts | grep -qF ":/workspace/p132/r/.git/frontend/" \
+  && pass "G132 a deeper one (frontend/.husky/_) has .git/frontend bound read-only, so nothing on its way can be swapped" \
+  || fail "G132 frontend/.husky/_ (rc=$LAUNCH_RC; git mounts: $(git_mounts | grep -F frontend | tr '\n' ' '))"
+# .git/hooks, the default spelled from the checkout: from .git, .git/.git,
+# bound read-only, and bound once at the next launch too, where the scan finds
+# a directory named .git under it.
+mk132 .git/hooks
+launch "$R132"; launch "$R132"
+[[ "$LAUNCH_RC" == 0 && -z "$(dup132)" && ! -e "$R132/r/.git/.git/commondir" ]] \
+  && has_mount "$R132/r/.git/.git:/workspace/p132/r/.git/.git:ro" \
+  && pass "G132 core.hooksPath=.git/hooks has .git/.git bound read-only, once, launch after launch" \
+  || fail "G132 .git/hooks (rc=$LAUNCH_RC; twice: $(dup132 | tr '\n' ' '); git mounts: $(git_mounts | grep -F '.git/.git' | tr '\n' ' '))"
+# Under one of git's own directories, or through one of its files: nothing is
+# made or bound there, which would break the repository (a .git/logs/HEAD made
+# a directory fails every commit; a linked worktree's locked one, git worktree
+# list), and it is named.
+mk132 info/x
+launch "$R132"
+[[ "$LAUNCH_RC" == 0 && ! -e "$R132/r/.git/info/x" ]] && ! mounts | grep -qF ":/workspace/p132/r/.git/info" \
+  && grep -qF "runs its git hooks from /workspace/p132/r/.git/info/x (core.hooksPath)" "$ERR" \
+  && pass "G132 one under .git/info is not made or bound, and is named" \
+  || fail "G132 info/x (rc=$LAUNCH_RC; made: $([[ -e "$R132/r/.git/info/x" ]] && echo yes || echo no); git mounts: $(git_mounts | grep -F '/info' | tr '\n' ' '))"
+mk132 logs/HEAD/x
+launch "$R132"
+[[ "$LAUNCH_RC" == 0 && ! -d "$R132/r/.git/logs/HEAD" ]] \
+  && pass "G132 logs/HEAD/x in a repository with no commits does not make .git/logs/HEAD a directory" \
+  || fail "G132 logs/HEAD/x (rc=$LAUNCH_RC; dir: $([[ -d "$R132/r/.git/logs/HEAD" ]] && echo yes || echo no))"
+# HOOKS is not hooks/ where names are compared case-sensitively.
+mkdir -p "$TMP/cs132/Ab"
+if [[ ! -e "$TMP/cs132/AB" ]]; then
+  mk132 HOOKS
+  launch "$R132"
+  [[ "$LAUNCH_RC" == 0 ]] && has_mount "$R132/r/.git/HOOKS:/workspace/p132/r/.git/HOOKS:ro" \
+    && pass "G132 core.hooksPath=HOOKS is bound read-only where names are case-sensitive, not taken for hooks/" \
+    || fail "G132 HOOKS (rc=$LAUNCH_RC; git mounts: $(git_mounts | grep -iF '/hooks' | tr '\n' ' '))"
+else
+  printf 'SKIP: G132 HOOKS — this filesystem ignores case\n'
+fi
+rm -rf "$TMP/cs132"
+# Through one of git's own files (a Rails-style config/git-hooks): nothing is
+# made or bound there, and the launch goes on; config.worktree/x, where the
+# extension is off and git keeps no such file, is not made a directory either.
+mk132 config/git-hooks
+launch "$R132"
+[[ "$LAUNCH_RC" == 0 && -f "$R132/r/.git/config" ]] && ! mounts | grep -qF ":/workspace/p132/r/.git/config/" \
+  && pass "G132 one through .git/config launches, with nothing made or bound there" \
+  || fail "G132 config/git-hooks (rc=$LAUNCH_RC; $(grep -aF 'ERROR' "$ERR" | head -1))"
+mk132 config.worktree/x
+launch "$R132"
+[[ "$LAUNCH_RC" == 0 && ! -d "$R132/r/.git/config.worktree" ]] \
+  && pass "G132 one through config.worktree, where git keeps no such file, makes nothing there" \
+  || fail "G132 config.worktree/x (rc=$LAUNCH_RC; dir: $([[ -d "$R132/r/.git/config.worktree" ]] && echo yes || echo no); $(grep -aF 'ERROR' "$ERR" | head -1))"
+# The git directory itself (.) cannot be bound: it is named, for a push.
+mk132 .
+launch "$R132"
+[[ "$LAUNCH_RC" == 0 ]] && grep -qF "runs its git hooks from /workspace/p132/r/.git (core.hooksPath)" "$ERR" \
+  && grep -qF "git runs them for a push into the repository" "$ERR" \
+  && pass "G132 core.hooksPath=. is named as a push's, the git directory itself not being bindable" \
+  || fail "G132 . (rc=$LAUNCH_RC; stderr: $(grep -F -A2 'hooks from' "$ERR" | tr '\n' ' '))"
+# One that cannot be made (the agent made .git read-only in an earlier
+# session, to make it writable in the next): refused.
+if (( EUID != 0 )); then
+  mk132 .husky/_; launch "$R132"; rm -rf "$R132/r/.git/.husky"; chmod a-w "$R132/r/.git"
+  launch "$R132"; chmod u+w "$R132/r/.git"
+  [[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && grep -qF "cannot make $R132/r/.git/.husky" "$ERR" \
+    && pass "G132 a directory that cannot be made refuses the launch" \
+    || fail "G132 unmakeable (rc=$LAUNCH_RC; docker ran: $([[ -s "$CAPTURE" ]] && echo yes || echo no); $(grep -aF -A1 'ERROR' "$ERR" | head -2 | tr '\n' ' '))"
+else
+  printf 'SKIP: G132 a directory that cannot be made — root writes it anyway\n'
+fi
+# A commondir planted in .git/.husky does not turn the bind off.
+mk132 .husky/_; mkdir -p "$R132/r/.git/.husky/_" && printf './\n' > "$R132/r/.git/.husky/commondir"
+launch "$R132"
+[[ "$LAUNCH_RC" == 0 ]] && has_mount "$R132/r/.git/.husky:/workspace/p132/r/.git/.husky:ro" \
+  && pass "G132 a commondir planted in that directory does not turn its bind off" \
+  || fail "G132 planted commondir (rc=$LAUNCH_RC; git mounts: $(git_mounts | grep -F husky | tr '\n' ' '); $(grep -aF 'ERROR' "$ERR" | head -1))"
+# A linked worktree's git directory: a push into its checkout runs hooks there.
+mk132 .husky/_; "${G[@]}" -C "$R132/r" commit -q --allow-empty -m init && "${G[@]}" -C "$R132/r" worktree add -q "$R132/wt" \
+  || { printf 'SCAFFOLD-FAILED: G132 worktree\n'; exit 1; }
+launch "$R132"
+[[ "$LAUNCH_RC" == 0 && -z "$(dup132)" ]] && has_mount "$R132/r/.git/worktrees/wt/.husky:/workspace/p132/r/.git/worktrees/wt/.husky:ro" \
+  && pass "G132 a linked worktree's git directory gets the same, for a push into its checkout" \
+  || fail "G132 linked worktree (rc=$LAUNCH_RC; git mounts: $(git_mounts | grep -F husky | tr '\n' ' '))"
+# A linked worktree's locked/x, with no lock there: not made.
+"${G[@]}" -C "$R132/r" config --worktree core.hooksPath locked/x 2>/dev/null || "${G[@]}" -C "$R132/r" config core.hooksPath locked/x
+launch "$R132"
+[[ "$LAUNCH_RC" == 0 && ! -e "$R132/r/.git/worktrees/wt/locked" ]] \
+  && pass "G132 locked/x does not make a linked worktree's locked" \
+  || fail "G132 locked/x (rc=$LAUNCH_RC; made: $([[ -e "$R132/r/.git/worktrees/wt/locked" ]] && echo yes || echo no))"
+# A value docker cannot be handed (not UTF-8): left to the NOTE, the
+# repository keeping all of its own binds.
+mk132 $'\xff'/x
+launch "$R132"
+[[ "$LAUNCH_RC" == 0 && ! -e "$R132/r/.git/"$'\xff' ]] && has_mount "$R132/r/.git/config:/workspace/p132/r/.git/config:ro" \
+  && grep -qaF "runs its git hooks from /workspace/p132/r/.git/"$'\xff'"/x" "$ERR" \
+  && pass "G132 a value docker cannot be handed is named, and the repository keeps its own binds" \
+  || fail "G132 unrepresentable (rc=$LAUNCH_RC; git mounts: $(git_mounts | grep -F '/r/.git/config' | tr '\n' ' '); $(grep -aE 'WARNING|ERROR' "$ERR" | head -2 | tr '\n' ' '))"
+# Hooks already there are named, once: at the first protection, and where an
+# earlier engine protected the repository and left the directory writable.
+mk132 .husky/_; mkdir -p "$R132/r/.git/.husky/_" && printf '#!/bin/sh\n' > "$R132/r/.git/.husky/_/pre-receive" && chmod +x "$R132/r/.git/.husky/_/pre-receive"
+launch "$R132"
+[[ "$LAUNCH_RC" == 0 ]] && grep -qF "holds hooks your host's git runs: pre-receive" "$ERR" && grep -qF "$R132/r/.git/.husky/_" "$ERR" \
+  && pass "G132 hooks already in that directory are named" \
+  || fail "G132 hooks named (rc=$LAUNCH_RC; stderr: $(grep -F 'NOTE' "$ERR" | tr '\n' ' '))"
+launch "$R132"
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF "holds hooks your host's git runs: pre-receive" "$ERR" \
+  && pass "G132 … once" \
+  || fail "G132 hooks named again (rc=$LAUNCH_RC; stderr: $(grep -F 'NOTE' "$ERR" | tr '\n' ' '))"
+rm -rf "$R132"; mkdir -p "$R132" && "${G[@]}" init -q "$R132/r" || { printf 'SCAFFOLD-FAILED: G132 upgrade\n'; exit 1; }
+launch "$R132"
+"${G[@]}" -C "$R132/r" config core.hooksPath .husky/_ && mkdir -p "$R132/r/.git/.husky/_" \
+  && printf '#!/bin/sh\n' > "$R132/r/.git/.husky/_/update" && chmod +x "$R132/r/.git/.husky/_/update"
+launch "$R132"
+[[ "$LAUNCH_RC" == 0 ]] && grep -qF "holds hooks your host's git runs: update" "$ERR" \
+  && pass "G132 hooks put there while an earlier launch left it writable are named at the next" \
+  || fail "G132 upgrade (rc=$LAUNCH_RC; stderr: $(grep -F 'NOTE' "$ERR" | tr '\n' ' '))"
+# A file there, or a link on the way: refused, before docker runs, saying how
+# to drop the value.
+for kind132 in file link; do
+  mk132 .husky/_; mkdir -p "$R132/elsewhere"
+  if [[ "$kind132" == file ]]; then mkdir -p "$R132/r/.git/.husky" && : > "$R132/r/.git/.husky/_"; at132="$R132/r/.git/.husky/_"
+  else ln -s "$R132/elsewhere" "$R132/r/.git/.husky"; at132="$R132/r/.git/.husky"; fi
+  launch "$R132"
+  [[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && grep -aF "ERROR:" "$ERR" > "$TMP/e132" && grep -qF "$at132" "$TMP/e132" \
+    && grep -qF "git config --file $R132/r/.git/config --unset core.hooksPath" "$ERR" \
+    && pass "G132 a $kind132 where that directory would be refuses the launch, naming it and the value" \
+    || fail "G132 $kind132 there (rc=$LAUNCH_RC; docker ran: $([[ -s "$CAPTURE" ]] && echo yes || echo no); stderr: $(grep -aF -A3 'ERROR' "$ERR" | head -4 | tr '\n' ' '))"
+done
+# A link to hooks/ there is refused too, not taken for hooks/: the agent could
+# plant it before the value is set, and swap it for a directory of hooks in the
+# session after.
+mk132 .husky/_; ln -s hooks "$R132/r/.git/.husky"
+launch "$R132"
+[[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && grep -aF "ERROR:" "$ERR" > "$TMP/e132" && grep -qF "$R132/r/.git/.husky is a symlink" "$TMP/e132" \
+  && pass "G132 a link to hooks/ where that directory would be refuses the launch too" \
+  || fail "G132 link to hooks/ (rc=$LAUNCH_RC; docker ran: $([[ -s "$CAPTURE" ]] && echo yes || echo no); $(grep -aF 'ERROR' "$ERR" | head -1))"
+# One that climbs out of .git, into the writable mount: named, for a push. From
+# the checkout, the mount's root, it leads out of every mount.
+mk132 ../outside132
+launch "$R132/r"
+[[ "$LAUNCH_RC" == 0 ]] && grep -qF "runs its git hooks from /workspace/r/outside132 (core.hooksPath)" "$ERR" \
+  && grep -qF "git runs them for a push into the repository" "$ERR" \
+  && pass "G132 a relative core.hooksPath that climbs out of .git is judged from it, and named as a push's" \
+  || fail "G132 climbing out of .git (rc=$LAUNCH_RC; stderr: $(grep -F -A2 'hooks from' "$ERR" | tr '\n' ' '))"
+# A value and one below it (config.worktree's a, config's a/b): .git/a bound
+# read-only once, nothing else at or under it; one through a submodule's git
+# directory to its hooks/ adds nothing to that directory's own binds.
+mk132 a/b; "${G[@]}" -C "$R132/r" config extensions.worktreeConfig true && "${G[@]}" -C "$R132/r" config --worktree core.hooksPath a \
+  && "${G[@]}" init -q --bare "$R132/r/.git/modules/sub" || { printf 'SCAFFOLD-FAILED: G132 overlap\n'; exit 1; }
+launch "$R132"
+if [[ "$LAUNCH_RC" == 0 && -z "$(dup132)" ]] && has_mount "$R132/r/.git/a:/workspace/p132/r/.git/a:ro" \
+   && ! mounts | grep -qF ":/workspace/p132/r/.git/a/"; then
+  pass "G132 a core.hooksPath below another is bound once, read-only, and nothing is bound twice"
+else
+  fail "G132 overlap (rc=$LAUNCH_RC; twice: $(dup132 | tr '\n' ' '); under a: $(mounts | grep -F '/.git/a' | tr '\n' ' '))"
+fi
+"${G[@]}" -C "$R132/r" config --worktree core.hooksPath modules/sub/hooks
+launch "$R132"
+[[ "$LAUNCH_RC" == 0 && -z "$(dup132)" ]] && has_mount "$R132/r/.git/modules/sub/hooks:/workspace/p132/r/.git/modules/sub/hooks:ro" \
+  && pass "G132 one through a submodule's git directory to its hooks/ is left to that directory's own binds" \
+  || fail "G132 through a submodule (rc=$LAUNCH_RC; twice: $(dup132 | tr '\n' ' '); $(grep -aF 'ERROR' "$ERR" | head -1))"
+rm -rf "$R132" "$TMP/e132"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

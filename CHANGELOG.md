@@ -134,6 +134,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A relative `core.hooksPath` is protected where push hooks run, too.**
+  git runs the push hooks (`pre-receive`, `update`, `post-receive`, …) in
+  the repository's git directory, a non-bare one's and a linked worktree's
+  too, and a relative `core.hooksPath` is relative to where hooks run. So a
+  husky `core.hooksPath=.husky/_` meant `.git/.husky/_` for a push into the
+  repository on the host, which the agent could make and fill. The launcher
+  now binds the path's first directory inside `.git` read-only, made where
+  there is none (`.git/.husky`); a file or a link there refuses the launch,
+  hooks already there are named once, and a path that climbs out of `.git`
+  is judged from it and named where the agent can change it (bugs review
+  GIT-45).
 - **A second name on a filesystem mounted inside a writable mount is looked
   for.** A hard link to a file git reads (an include, a hook) or a launcher
   link leads to, made where the agent can write it, is what the launcher

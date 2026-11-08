@@ -375,6 +375,10 @@ launcher_ro_overlay() {
   local -A gpv=() gfprot=()
   local -a scan links walk gdirs gfiles glinks gunr gro ug usrc udst udep ukind
   local g base what gmax gn gitmax cfg cdir ocfg ocd k2 first ik ip ib rep al rk rh hk
+  local -a hgro=() hgpre=() wkc=() hgv=()
+  # The include walk's read of a config (_git_walk_keys), kept from the binding
+  # pass, which takes core.hooksPath from it: one read a file (G120).
+  local -A wkc_at=() wkc_n=() rodone=()
   local -a inc pgd=() pga=() pgc=() pgo=() pgx=()
   local -A seen=() tried=() scanned=() pinned=()
   # Included git config files read: each once per protected config, keyed by
@@ -840,7 +844,7 @@ launcher_ro_overlay() {
         printf '       if every one of them is yours.\n' >&2
         exit 1
       fi
-      gro=(); cfg=""
+      gro=(); cfg=""; hgro=(); hgpre=()
       if [[ "$kind" != dir ]]; then
         base="${g%/*}"; gro=("$g")      # a .git file, or read-only whole: pin what is above it
       else
@@ -955,6 +959,43 @@ launcher_ro_overlay() {
             ( set -C; : > "$g/config.worktree" ) 2>/dev/null || true
           fi
         fi
+        # Where a relative core.hooksPath has git look for the hooks a push runs:
+        # here, a linked worktree's directory too (_git_push_hooks; GIT-45). The
+        # last value of each file, from the read the include walk below then
+        # uses; config.worktree's where git reads it. Hooks already there are
+        # named once, by the record of reported repositories (`push:`), which an
+        # earlier engine, that left the directory writable, did not make.
+        if [[ -n "$cfg" ]]; then
+          hgv=()
+          for f in "$cfg" "$g/config.worktree"; do
+            [[ -f "$f" ]] || continue
+            if [[ "$f" == "$g/config.worktree" ]] && ! _git_config_bool "$cfg" extensions.worktreeConfig; then continue; fi
+            if [[ -z "${wkc_at[$f]+x}" ]]; then
+              inc=(); mapfile -d '' -t inc < <(_git_walk_keys "$f")
+              wkc_at[$f]=${#wkc[@]}; wkc_n[$f]=${#inc[@]}; wkc+=(${inc[@]+"${inc[@]}"})
+            fi
+            x=""
+            for e in ${wkc[@]+"${wkc[@]:${wkc_at[$f]}:${wkc_n[$f]}}"}; do
+              if [[ "${e%%$'\n'*}" == core.hookspath ]]; then x="${e#*$'\n'}"; fi
+            done
+            if [[ -n "$x" ]]; then hgv+=("$f" "$x"); fi
+          done
+          _git_push_hooks "$g" "$at" hgro hgpre ${hgv[@]+"${hgv[@]}"}
+          for x in ${hgpre[@]+"${hgpre[@]}"}; do
+            ! _git_reported "$x" push || continue
+            rh=""
+            for f in "${git_hook_names[@]}"; do
+              if [[ -f "$x/$f" && -x "$x/$f" ]]; then rh+="${rh:+, }$f"; fi
+            done
+            if [[ -n "$rh" ]]; then
+              printf 'NOTE: %s, where the core.hooksPath of %s has git look for the hooks\n' "$(_term "$x")" "$(_term "$at")" >&2
+              printf '      a push into the repository runs, holds hooks your host'\''s git runs: %s.\n' "$(_term "$rh")" >&2
+              printf '      If you did not put them there, review them on the host:\n' >&2
+              printf '        ls -l %s\n' "$(_q "$x")" >&2
+            fi
+            _git_report_record "$x" push
+          done
+        fi
         # gitdir too, a linked worktree's: it names the checkout a relative
         # core.hooksPath is judged from, and written by the agent it chose that
         # (automated security review of c6316af; GIT-46).
@@ -968,6 +1009,7 @@ launcher_ro_overlay() {
             printf 'WARNING: %s has no %s and one could not be made; the agent could make it.\n' "$(_term "$g")" "$(_term "$f")" >&2
           fi
         done
+        gro+=(${hgro[@]+"${hgro[@]}"})
       fi
       if (( ${#gro[@]} == 0 )); then continue; fi
       psrc=(); pdst=()
@@ -1001,6 +1043,11 @@ launcher_ro_overlay() {
       what=""
       for f in "${gro[@]}"; do
         x="$dst${f#"$src"}"
+        # Once: a place bound read-only already (a nested repository's own, as a
+        # push hooks' directory) is not bound again, which docker refuses as a
+        # --mount.
+        if [[ -n "${rodone[$x]:-}" ]]; then continue; fi
+        rodone[$x]=1
         _bind_mount_arg mf mv "$f" "$x" ro
         _ro+=("$mf" "$mv"); _vrfy+=("$f" "$x")
         seen[$x]=1; ro_dsts+=("$x"); ro_srcs+=("$f")
@@ -1225,7 +1272,11 @@ launcher_ro_overlay() {
       while (( ii < ${#ifile[@]} )); do
       icur="${ifile[ii]}"; ii=$((ii + 1))
       inc=()
-      mapfile -d '' -t inc < <(_git_walk_keys "$icur")
+      if [[ -n "${wkc_at[$icur]+x}" ]]; then
+        inc=(${wkc[@]+"${wkc[@]:${wkc_at[$icur]}:${wkc_n[$icur]}}"})
+      else
+        mapfile -d '' -t inc < <(_git_walk_keys "$icur")
+      fi
       hkr[$icur]=1
       for e in ${inc[@]+"${inc[@]}"}; do
         # Entries, not only files: each costs a walk, and one config can hold
@@ -1317,7 +1368,7 @@ launcher_ro_overlay() {
     # worktree made one (review of the fix). Every way is judged before any is
     # skipped as named.
     local b v y hd hwd hx hcond="" hopt="" hcut="" hkcut=""
-    local -a hps=() hpx=() hwds=() hb=() hbd=() hbp=() wd=() wp=()
+    local -a hps=() hpx=() hwds=() hb=() hbd=() hbp=() wd=() wp=() wk=()
     local -A hseen=()
     local -a hfl=()
     if [[ "$cfg" == "$g/config" ]]; then
@@ -1394,10 +1445,15 @@ launcher_ro_overlay() {
       fi
     fi
     for x in ${hb[@]+"${hb[@]}"}; do hbd+=("$g"); hbp+=("$x/"); done
-    # None: a bare repository, run in itself. Not a linked worktree's, whose
-    # checkout is not known here: from its git directory the NOTE named a place
-    # git never runs hooks in.
-    if (( ! ${#hbd[@]} )) && [[ "$cfg" == "$g/config" ]]; then hbd=("$g"); hbp=(""); fi
+    # And the git directory itself, where git runs every hook of a bare
+    # repository and the push hooks (pre-receive, update, post-receive, …) of a
+    # non-bare one and of a linked worktree (measured, git 2.56): one inside it
+    # was made and bound read-only above, one that climbs out is judged here,
+    # and its NOTE says it is for a push (GIT-45). A linked worktree whose
+    # checkout this launch does not know is still named as such.
+    local hnowt="" hpush=-1 ck
+    if (( ! ${#hbd[@]} )) && [[ "$cfg" != "$g/config" ]]; then hnowt=1; fi
+    if [[ -z "${hseen[r:$g]:-}" ]]; then hseen[r:$g]=1; hpush=${#hbd[@]}; hbd+=("$g"); hbp+=(""); fi
     # :(optional) is taken off by git 2.52 and later, which run hooks/ where the
     # rest does not exist (review of the GIT-35 fix); an older git, Ubuntu
     # 24.04's 2.43 among them, reads it as part of a relative path, which the
@@ -1415,11 +1471,11 @@ launcher_ro_overlay() {
       [[ -n "$v" ]] || continue
       # As for an include: one git cannot open runs nothing (longer than PATH_MAX).
       if (( ${#v} > 4096 )); then continue; fi
-      wd=(); wp=()
+      wd=(); wp=(); wk=()
       # shellcheck disable=SC2088  # '~/'* matches a LITERAL leading ~/ in the config value, expanded by hand
       case "$v" in
-        /*) wd=(/); wp=("$v") ;;
-        '~/'*) wd=(/); wp=("$HOME/${v#\~/}") ;;
+        /*) wd=(/); wp=("$v"); wk=("") ;;
+        '~/'*) wd=(/); wp=("$HOME/${v#\~/}"); wk=("") ;;
         '~'*|'%(prefix)/'*)
           printf 'NOTE: %s takes its git hooks from %s (core.hooksPath), which the launcher does not expand\n' "$(_term "$at")" "$(_term "$v")" >&2
           printf '      (~user/, %%(prefix)/), so it is not judged. Check them before a git commit on the host.\n' >&2
@@ -1427,12 +1483,14 @@ launcher_ro_overlay() {
         *)
           # A linked worktree whose checkout this launch does not know: not judged,
           # and said so (automated security review of c6316af; GIT-46).
-          if (( ! ${#hbd[@]} )); then
+          if [[ -n "$hnowt" ]]; then
             printf 'NOTE: %s takes its git hooks from %s (core.hooksPath) relative to a checkout this launch\n' "$(_term "$at")" "$(_term "$v")" >&2
             printf '      does not know, so they are not judged. Check them before a git commit there.\n' >&2
-            continue
           fi
-          for i in "${!hbd[@]}"; do wd+=("${hbd[i]}"); wp+=("${hbp[i]}$v"); done ;;
+          for i in "${!hbd[@]}"; do
+            wd+=("${hbd[i]}"); wp+=("${hbp[i]}$v")
+            if (( i == hpush )); then wk+=(push); else wk+=(""); fi
+          done ;;
       esac
       for i in "${!wd[@]}"; do
         # Each walk counts in the launch's budget, which the include walk spends
@@ -1440,6 +1498,8 @@ launcher_ro_overlay() {
         # from 0.9 s to 64 s (re-review of the GIT-35 fix). One with hundreds of
         # components is not walked step by step, as for an include, and named once.
         if (( ++ients > 1000 )); then hcut=1; break 2; fi
+        ck='Check them before a git commit on the host.'
+        if [[ "${wk[i]:-}" == push ]]; then ck='git runs them for a push into the repository: check them before one on the host.'; fi
         x="${wp[i]//[!\/]/}"
         if (( ${#x} > 128 )); then
           [[ -z "${hseen[u:$v]:-}" ]] || continue
@@ -1461,7 +1521,7 @@ launcher_ro_overlay() {
           hseen[c:$w]=1
           printf 'NOTE: %s runs its git hooks from %s (core.hooksPath), which the agent\n' "$(_term "$at")" "$(_term "$w")" >&2
           printf '      can change; hook managers keep those scripts gitignored (husky'\''s .husky/_),\n' >&2
-          printf '      so a change need not show in git status. Check them before a git commit on the host.\n' >&2
+          printf '      so a change need not show in git status. %s\n' "$ck" >&2
           continue
         fi
         # Where they are, as the agent sees it where a mount holds it.
@@ -1480,7 +1540,7 @@ launcher_ro_overlay() {
           unchecked) printf '      its way was not followed to the end (too many steps or links), so it is not known to be safe.\n' >&2 ;;
           *) printf '      it can change %s.\n' "$(_term "$q")" >&2 ;;
         esac
-        printf '      Check them before a git commit on the host.\n' >&2
+        printf '      %s\n' "$ck" >&2
       done
     done
     if [[ -n "$hcut" ]]; then
@@ -3869,6 +3929,106 @@ _git_config_bool() {
   [[ "$v" == true ]]
 }
 
+# _git_push_hooks <git-dir> <at> <ro-var> <pre-var> [<config> <value>]...: git
+# runs the push hooks (pre-receive, update, post-receive, …) in the git
+# directory, a non-bare repository's and a linked worktree's too (measured, git
+# 2.56), and a relative core.hooksPath is relative to where hooks run, so the
+# agent could write the hooks a push into the repository runs on the host (bugs
+# review GIT-45). Each <value> is a core.hooksPath that <config> sets: the
+# config git reads for this directory, and the config.worktree it reads with
+# it. For a relative one that stays inside the git directory (no `..`), its
+# first directory there is set in <ro-var>, to be bound read-only, and is made,
+# as you, where there is none: nothing below it can then be made or changed
+# (husky's .husky/_ gets .git/.husky). One whose first component is a name git
+# itself keeps there — a directory that must stay writable (objects/, refs/,
+# logs/, …) or one of its files (config, HEAD, index, a worktree's locked, …),
+# which must never become a directory — is left to the judging, and so is one
+# docker cannot be handed (_mount_representable), whose bind would cost the
+# repository all of its own (review of the fix). <pre-var> gets the
+# directories the values name that were there already, whose hooks are named
+# once. A file or a link on the way refuses the launch. One that climbs out of
+# the git directory, one an include sets, and the git directory itself (`.`)
+# are judged from it with the rest.
+_git_push_hooks() {
+  local g="$1" at="$2" f v r c cur rest i dir
+  local -n _gph_ro=$3 _gph_pre=$4
+  local -a rs=() cs=()
+  _gph_ro=(); _gph_pre=()
+  shift 4
+  while (( $# >= 2 )); do
+    f="$1"; v="$2"; shift 2
+    # Both readings of :(optional), as the judging takes them.
+    rs=("$v"); if [[ "$v" == ':(optional)'* ]]; then rs+=("${v#:(optional)}"); fi
+    for r in "${rs[@]}"; do
+      case "$r" in ''|/*|'~'*|'%(prefix)/'*) continue ;; esac
+      (( ${#r} <= 4096 )) || continue
+      cs=(); rest="$r"
+      while [[ -n "$rest" ]]; do
+        c="${rest%%/*}"
+        if [[ "$rest" == */* ]]; then rest="${rest#*/}"; else rest=""; fi
+        case "$c" in ''|.) ;; ..) cs=(..); break ;; *) cs+=("$c") ;; esac
+      done
+      if (( ! ${#cs[@]} )) || [[ "${cs[0]}" == .. ]]; then continue; fi
+      cur="$g/${cs[0]}"
+      # hooks/ by what it is, not its name: HOOKS is another directory where
+      # names are compared case-sensitively. Never through a link: .git/.husky
+      # made a link to hooks/ turned the bind off, to be swapped for a directory
+      # of hooks in that session (final review of the fix).
+      if [[ ! -L "$cur" && -d "$cur" && ! -L "$g/hooks" && "$cur" -ef "$g/hooks" ]]; then continue; fi
+      case "${cs[0],,}" in
+        objects|refs|logs|info|worktrees|modules|lfs|rr-cache|svn|rebase-merge|rebase-apply|sequencer|\
+        head|orig_head|fetch_head|merge_head|cherry_pick_head|revert_head|rebase_head|auto_merge|bisect_*|\
+        *_editmsg|*_msg|merge_mode|merge_rr|config|config.worktree|commondir|gitdir|index|sharedindex.*|\
+        packed-refs|shallow|description|locked|*.lock|reftable|gc.log|gc.pid|fsmonitor--daemon*|\
+        notes_merge_*|merge_autostash|edit_description|branches|remotes) continue ;;
+      esac
+      _mount_representable "$cur" "$cur" || continue
+      # What is there already, as far as it goes: a link or a non-directory refuses.
+      dir="$g"
+      for (( i = 0; i < ${#cs[@]}; i++ )); do
+        dir="$dir/${cs[i]}"
+        if [[ -L "$dir" ]] || { [[ -e "$dir" ]] && [[ ! -d "$dir" ]]; }; then
+          printf 'ERROR: %s is %s, where the core.hooksPath of %s (%s)\n' "$(_term "$dir")" "$([[ -L "$dir" ]] && printf 'a symlink' || printf 'not a directory')" "$(_term "$at")" "$(_term "$v")" >&2
+          printf '       has your host'\''s git look for the hooks a push into the repository runs,\n' >&2
+          printf '       so it cannot be held read-only; refusing the launch. If you did not make it,\n' >&2
+          printf '       remove it on the host (rm %s); if you did not set that value, remove that:\n' "$(_q "$dir")" >&2
+          printf '         git config --file %s --unset core.hooksPath\n' "$(_q "$f")" >&2
+          exit 1
+        fi
+        [[ -d "$dir" ]] || break
+      done
+      dir="$g"; for c in "${cs[@]}"; do dir="$dir/$c"; done
+      if [[ -d "$dir" ]]; then _gph_pre+=("$dir"); fi
+      if [[ ! -e "$cur" ]] && ! mkdir "$cur" 2>/dev/null; then
+        # Refused where the git directory is yours, which the agent, running as
+        # you, could have made read-only in an earlier session to fill this in
+        # the next (review of the fix); another user's it cannot change either.
+        # One of yours on a read-only filesystem is refused too, the message
+        # saying how to mount it instead.
+        if [[ -O "$g" ]]; then
+          printf 'ERROR: cannot make %s, where the core.hooksPath of %s (%s) has your\n' "$(_term "$cur")" "$(_term "$at")" "$(_term "$v")" >&2
+          printf '       host'\''s git look for the hooks a push into the repository runs, to hold it\n' >&2
+          printf '       read-only; refusing the launch. Make %s writable for you (chmod u+w),\n' "$(_q "$g")" >&2
+          printf '       or, on a read-only filesystem, mount the repository :ro;\n' >&2
+          printf '       or, if you did not set that value, remove it: git config --file %s --unset core.hooksPath\n' "$(_q "$f")" >&2
+          exit 1
+        fi
+        printf 'WARNING: cannot make %s, where the core.hooksPath of %s has git look for\n' "$(_term "$cur")" "$(_term "$at")" >&2
+        printf '         push hooks; it is judged as the agent could make it.\n' >&2
+        continue
+      fi
+      for c in ${_gph_ro[@]+"${_gph_ro[@]}"}; do [[ "$c" != "$cur" ]] || continue 2; done
+      _gph_ro+=("$cur")
+    done
+  done
+  # Each once.
+  local -a pre=(${_gph_pre[@]+"${_gph_pre[@]}"})
+  _gph_pre=()
+  for cur in ${pre[@]+"${pre[@]}"}; do
+    for c in ${_gph_pre[@]+"${_gph_pre[@]}"}; do [[ "$cur" != "$c" ]] || continue 2; done
+    _gph_pre+=("$cur")
+  done
+}
 # _git_config_get <out-var> <config-file> <key>: a key's value from one git
 # config file, read by git, into <out-var> as git has it: up to the NUL git ends
 # it with, a trailing newline included ($(...) dropped one, and a core.worktree
