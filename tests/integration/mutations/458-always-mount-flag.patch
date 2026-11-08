@@ -11,8 +11,8 @@
 diff --git a/sandbox.sh b/sandbox.sh
 --- a/sandbox.sh
 +++ b/sandbox.sh
-@@ -2076,7 +2076,7 @@
- # mode gives `-v` no third field.
+@@ -2080,7 +2080,7 @@
+ # why _bind_add refuses a mode other than ro or rw for a name with a ':'.
  _bind_mount_arg() {
    local s="source=$3" d="destination=$4" o=""
 -  if [[ "$3$4" != *:* ]]; then

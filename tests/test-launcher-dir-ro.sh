@@ -1520,13 +1520,15 @@ grep -qxF -- "type=bind,\"source=$TMP/r:67src\",\"destination=/workspace/r67\"" 
   || fail "T67 REPOS bind with ':' (rc=$LAUNCH_RC; stderr: $(grep -a 'ERROR' "$ERR" | head -2 | tr '\n' ' '); args: $(grep -F 'r67' "$CAPTURE" | tr '\n' ' '))"
 if [[ -f "$TMP/repos67.bak" ]]; then mv "$TMP/repos67.bak" "$HOME/.ai-containers/repos.conf"; else rm -f "$HOME/.ai-containers/repos.conf"; fi
 rm -rf "$TMP/r:67src"
-# A HOME holding ':': the group's mounts and the verify directory.
-H67="$TMP/h:67"; mkdir -p "$H67"
+# A HOME holding ':': the group's directories, its files (.gitconfig, read-only)
+# and the verify directory.
+H67="$TMP/h:67"; mkdir -p "$H67"; printf '[user]\n' > "$H67/.gitconfig"
 HOME="$H67" launch "$LAUNCHER" "$TMP/app"
 if [[ "$LAUNCH_RC" == 0 ]] \
    && grep -qxF -- "type=bind,\"source=$H67/.ai-containers/default/.ssh\",\"destination=/home/tester/.ssh\"" "$CAPTURE" \
+   && grep -qxF -- "type=bind,\"source=$H67/.ai-containers/default/.gitconfig\",\"destination=/home/tester/.gitconfig\",readonly" "$CAPTURE" \
    && grep -qF -- '"destination=/run/ai-launcher",readonly' "$CAPTURE"; then
-  pass "T67 under a HOME holding ':', the group's mounts and the verify directory reach docker through --mount"
+  pass "T67 under a HOME holding ':', the group's directories and files and the verify directory reach docker through --mount"
 else
   fail "T67 HOME with ':' (rc=$LAUNCH_RC; stderr: $(grep -a 'ERROR' "$ERR" | head -2 | tr '\n' ' '); args: $(grep -F 'h:67' "$CAPTURE" | head -3 | tr '\n' ' '))"
 fi
@@ -1606,6 +1608,107 @@ if mkdir "$W67" 2>/dev/null; then
 else
   printf 'SKIP: T67 a name holding a colon — this filesystem refuses it\n'
 fi
+
+# ── T68: a read-only source that is itself a FIFO or a device ───────────────
+# A file the launch binds read-only (a git config, a .git file) that a
+# concurrent container swaps for a FIFO between the scan and the search before
+# docker (LNCH-11) is refused by name, as one inside a bound directory is; so is
+# a device. Driven directly, as T59 is (GAP-2 slice 4: dropping either test
+# survived).
+fns68="$TMP/fns68.sh"
+for f68 in _term _q _timeout_prefix _ro_fifo_search; do
+  awk -v f="$f68() {" 'index($0, f) == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox.sh"
+done > "$fns68"
+mkfifo "$TMP/fifo68"
+for src68 in "$TMP/fifo68" /dev/null; do
+  bash -c 'source "$1"; srcs=("$2"); rw=(); _ro_fifo_search srcs rw; echo continued' _ "$fns68" "$src68" >"$TMP/o68" 2>"$TMP/e68"; rc68=$?
+  [[ "$rc68" != 0 && ! -s "$TMP/o68" ]] && grep -qF "$src68 is a FIFO or device inside what this launch binds read-only" "$TMP/e68" \
+    && pass "T68 a read-only source that is itself a FIFO or device ($src68) refuses the launch" \
+    || fail "T68 FIFO or device source $src68 (rc=$rc68; $(cat "$TMP/o68" "$TMP/e68" | tr '\n' ' '))"
+done
+rm -f "$fns68" "$TMP/fifo68" "$TMP/o68" "$TMP/e68"
+
+# ── T69: each FIFO search gets at most 30 s, and a failed one refuses ───────
+# One search may take what is left of the launch's 90 s, but never more than
+# 30 s, so a planted launcher cannot hold one search for the whole budget; and a
+# find that fails or runs out of time where no writable mount lies inside the
+# source refuses the launch, as it does where one does (T56). Driven directly,
+# as T59 is, with stand-ins for timeout and find (GAP-2 slice 4: the cap and
+# the failure check, damaged, survived).
+fns69="$TMP/fns69.sh"
+for f69 in _term _q _timeout_prefix _ro_fifo_search; do
+  awk -v f="$f69() {" 'index($0, f) == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox.sh"
+done > "$fns69"
+sh69="$TMP/sh69"; mkdir -p "$sh69" "$TMP/src69"
+# timeout -k 2 <seconds> <command…>: records the seconds, runs the command.
+printf '#!/bin/bash\nprintf "%%s\\n" "$3" >> %q\nshift 3\nexec "$@"\n' "$TMP/to69.log" > "$sh69/timeout"
+cp "$sh69/timeout" "$sh69/gtimeout"; chmod +x "$sh69/timeout" "$sh69/gtimeout"
+for case69 in fresh:30 spent:10; do
+  : > "$TMP/to69.log"
+  PATH="$sh69:$PATH" bash -c 'source "$1"; srcs=("$2"); rw=()
+    [[ "$3" == spent ]] && _fs_deadline=$((SECONDS + 10))
+    _ro_fifo_search srcs rw' _ "$fns69" "$TMP/src69" "${case69%%:*}" >/dev/null 2>&1
+  got69="$(head -1 "$TMP/to69.log")"
+  [[ -n "$got69" ]] && (( got69 <= ${case69#*:} && got69 >= ${case69#*:} - 2 )) \
+    && pass "T69 a FIFO search with the budget ${case69%%:*} gets ${got69} s (at most 30, at most what is left)" \
+    || fail "T69 FIFO search bound, budget ${case69%%:*} (want ${case69#*:} s, got '${got69}')"
+done
+# find fails (exit 124: out of time) where nothing inside the source is a
+# writable mount to prune.
+printf '#!/bin/bash\ncase " $* " in *" -quit "*) exit 124;; esac\nexec %q "$@"\n' "$(command -v find)" > "$sh69/find"; chmod +x "$sh69/find"
+PATH="$sh69:$PATH" bash -c 'source "$1"; srcs=("$2"); rw=(); _ro_fifo_search srcs rw; echo continued' _ "$fns69" "$TMP/src69" >"$TMP/o69" 2>"$TMP/e69"; rc69=$?
+[[ "$rc69" != 0 && ! -s "$TMP/o69" ]] && grep -qF "could not be searched for FIFOs within" "$TMP/e69" \
+  && pass "T69 a FIFO search that runs out of time, with nothing to prune, refuses the launch" \
+  || fail "T69 failed search with nothing to prune (rc=$rc69; $(cat "$TMP/o69" "$TMP/e69" | tr '\n' ' '))"
+rm -rf "$fns69" "$sh69" "$TMP/src69" "$TMP/to69.log" "$TMP/o69" "$TMP/e69"
+
+# ── T70: the hard-link check of what git reads by name, driven directly ─────
+# Its file list alone (no hooks/ directory to search) still refuses a config
+# with a second name, and the `find` it gives searches the widest writable mount
+# that holds the file (not another, shorter one beside it). Its search gets at
+# most 30 s, and at least 1 once the launch's budget is spent; one that runs
+# out of time, or a temporary file that cannot be made, refuses the launch
+# (GAP-2 slice 4: with both lists always given, swapping them survived, and so
+# did each of the others).
+fns70="$TMP/fns70.sh"
+for f70 in _term _q _timeout_prefix _ro_fifo_search _fs_other_names _fs_reachable; do
+  awk -v f="$f70() {" 'index($0, f) == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox.sh"
+done > "$fns70"
+M70="$TMP/m70"; mkdir -p "$M70/g" && : > "$M70/g/config" && ln "$M70/g/config" "$M70/x70"
+sh70="$TMP/sh70"; mkdir -p "$sh70"
+printf '#!/bin/bash\nprintf "%%s\\n" "$3" >> %q\nshift 3\nexec "$@"\n' "$TMP/to70.log" > "$sh70/timeout"
+cp "$sh70/timeout" "$sh70/gtimeout"; chmod +x "$sh70/timeout" "$sh70/gtimeout"
+# run70 <spent|fresh>: the check over $M70/g/config alone, $M70 writable and,
+# beside it, $TMP/o6, whose name is shorter.
+run70() {
+  bash -c 'source "$1"; declare -A _fs_reach_cache=(); git_hook_names=(pre-commit)
+    srcs=(); rw=("$2" "${2%/*}/o6"); declare -A lc=(["$3"]=file)
+    [[ "$4" == spent ]] && _fs_deadline=$((SECONDS - 5))
+    _ro_fifo_search srcs rw lc; echo continued' _ "$fns70" "$M70" "$M70/g/config" "$1" >"$TMP/o70" 2>"$TMP/e70"
+}
+for case70 in fresh:30 spent:1; do
+  : > "$TMP/to70.log"; PATH="$sh70:$PATH" run70 "${case70%%:*}"; rc70=$?
+  got70="$(head -1 "$TMP/to70.log")"
+  if [[ "$rc70" != 0 && ! -s "$TMP/o70" ]] && grep -qF "$M70/g/config has more than one hard link" "$TMP/e70" \
+     && grep -qF "find $M70 -xdev -samefile $M70/g/config" "$TMP/e70" && [[ "$got70" == "${case70#*:}" ]]; then
+    pass "T70 the file list alone refuses a config with a second name; its search, budget ${case70%%:*}, gets ${got70} s"
+  else
+    fail "T70 hard-link check, budget ${case70%%:*} (rc=$rc70; bound '${got70}', want ${case70#*:}; $(cat "$TMP/o70" "$TMP/e70" | tr '\n' ' '))"
+  fi
+done
+# Out of time: refused.
+printf '#!/bin/bash\ncase " $* " in *" -links "*) exit 124;; esac\nexec %q "$@"\n' "$(command -v find)" > "$sh70/find"; chmod +x "$sh70/find"
+PATH="$sh70:$PATH" run70 fresh; rc70=$?
+[[ "$rc70" != 0 && ! -s "$TMP/o70" ]] && grep -qF "could not be checked for hard links within" "$TMP/e70" \
+  && pass "T70 a hard-link search that runs out of time refuses the launch" \
+  || fail "T70 hard-link search out of time (rc=$rc70; $(cat "$TMP/o70" "$TMP/e70" | tr '\n' ' '))"
+rm -f "$sh70/find"
+# No temporary file: refused.
+TMPDIR="$TMP/none70" run70 fresh; rc70=$?
+[[ "$rc70" != 0 && ! -s "$TMP/o70" ]] && grep -qF "cannot make a temporary file in" "$TMP/e70" \
+  && pass "T70 a hard-link search with no temporary file refuses the launch" \
+  || fail "T70 hard-link search, no temporary file (rc=$rc70; $(cat "$TMP/o70" "$TMP/e70" | tr '\n' ' '))"
+rm -rf "$fns70" "$M70" "$sh70" "$TMP/to70.log" "$TMP/o70" "$TMP/e70"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

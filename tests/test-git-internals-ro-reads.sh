@@ -196,17 +196,24 @@ n="$(cat "$FG99_STATE" 2>/dev/null)"; n="${n:-0}"; printf '%d\n' "$((n + 1))" > 
 case "$FG99_MODE" in
   slow2) printf 'a.b=1\n'; sleep 2; printf 'a.c=2\n' ;;
   slow8) sleep 8 ;;
+  # A count that becomes a link while the read runs, with the longer bound.
+  slow2plant) printf 'a.b=1\n'; ln -s "$FG99_PLANT" "$FG99_SPENT"; sleep 2; printf 'a.c=2\n' ;;
   fifo) rm -f "$3"; mkfifo "$3"; sleep 8 ;;
 esac
 FAKEGIT
 chmod +x "$TMP/fg99/git"
-run99() {  # <mode> <spent before (printf format), or empty> [nodir|spentdir] -> rc99, out99, err99, calls99, rdd99
+run99() {  # <mode> <spent before (printf format), or empty> [nodir|spentdir|nook|spentlink|spentdangling|plantlink|plantdangling] -> rc99, out99, err99, calls99, rdd99
   rm -rf "$TMP/rdt99" "$TMP/st99"; mkdir -p "$TMP/rdt99"
   FG99_MODE="$1" FG99_STATE="$TMP/st99" PATH="$TMP/fg99:$PATH" TMPDIR="$TMP/rdt99" "$BASH" -c '
     source "$1"; _rd_prep
     case "$4" in
       nodir) rm -rf "$_rd_dir"; _rd_dir="" ;;
       spentdir) mkdir "$_rd_dir/spent" ;;
+      nook) rm -f "$_rd_dir/ok" ;;
+      spentlink) : > "$TMPDIR/other"; ln -s "$TMPDIR/other" "$_rd_dir/spent" ;;
+      spentdangling) ln -s "$TMPDIR/other" "$_rd_dir/spent" ;;
+      plantlink) : > "$TMPDIR/other"; export FG99_SPENT="$_rd_dir/spent" FG99_PLANT="$TMPDIR/other" ;;
+      plantdangling) export FG99_SPENT="$_rd_dir/spent" FG99_PLANT="$TMPDIR/other" ;;
     esac
     [[ -z "$3" ]] || printf "$3" > "$_rd_dir/spent"
     set -euo pipefail; out=""
@@ -217,10 +224,10 @@ run99() {  # <mode> <spent before (printf format), or empty> [nodir|spentdir] ->
 }
 printf '[a]\n\tb = 1\n' > "$TMP/c99"
 run99 slow2 ""
-[[ "$rc99" == 0 && "$out99" == $'a.b=1\na.c=2' && -z "$err99" && "$calls99" == 1 ]] \
+[[ "$rc99" == 0 && "$out99" == $'a.b=1\na.c=2' && -z "$err99" && "$calls99" == 1 && -f "$rdd99/ok" ]] \
   && grep -qE '^[0-9]{4,}$' "$rdd99/spent" \
-  && pass "G99 a read that takes 2 s, past the first bound, is read whole, once, and charged to the launch" \
-  || fail "G99 slow read (rc=$rc99; calls=$calls99; out=$(tr '\n' '|' <<<"$out99"); err=$err99; spent=$(cat "$rdd99/spent" 2>/dev/null))"
+  && pass "G99 a read that takes 2 s, past the first bound, is read whole, once, and charged to the launch, which keeps the longer bound" \
+  || fail "G99 slow read (rc=$rc99; calls=$calls99; out=$(tr '\n' '|' <<<"$out99"); err=$err99; spent=$(cat "$rdd99/spent" 2>/dev/null); ok: $(ls "$rdd99/ok" 2>&1))"
 run99 fifo ""; rm -f "$TMP/c99"; printf '[a]\n\tb = 1\n' > "$TMP/c99"
 [[ "$rc99" == 3 && "$calls99" == 1 && -z "$out99" ]] \
   && grep -qF 'could not be read within 6 s, and is not a regular file now (swapped for a FIFO, or removed)' <<<"$err99" \
@@ -247,6 +254,31 @@ run99 slow2 "" spentdir
 [[ "$rc99" == 3 && ! -e "$rdd99/ok" ]] && grep -qF 'could not be read within 1 s' <<<"$err99" \
   && pass "G99 a count that is not a regular file gives the first bound, and stops the longer one for the launch" \
   || fail "G99 count not a file (rc=$rc99; ok: $(ls "$rdd99/ok" 2>&1); err=$err99)"
+run99 slow2 "" nook
+[[ "$rc99" == 3 ]] && grep -qF 'could not be read within 1 s' <<<"$err99" \
+  && pass "G99 once the count may not be kept (ok gone), every read gets the first bound" \
+  || fail "G99 ok gone (rc=$rc99; err=$err99)"
+# A count that is a link, to a file or to nothing, is never written through:
+# the longer bound ends, and the file it names stays as it was, or unmade.
+for m99 in spentlink spentdangling; do
+  run99 slow2 "" "$m99"
+  if [[ "$m99" == spentlink ]]; then o99="$([[ -f "$TMP/rdt99/other" && ! -s "$TMP/rdt99/other" ]] && echo kept)"
+  else o99="$([[ ! -e "$TMP/rdt99/other" ]] && echo kept)"; fi
+  [[ "$rc99" == 3 && "$o99" == kept && ! -e "$rdd99/ok" ]] \
+    && pass "G99 a count that is a link ($m99) is not written through, and the longer bound ends" \
+    || fail "G99 count a link, $m99 (rc=$rc99; other: $(ls -l "$TMP/rdt99/other" 2>&1); ok: $(ls "$rdd99/ok" 2>&1))"
+done
+# The same where it becomes a link during a read that takes 2 s under the longer
+# bound: the write of the count is then reached, seconds past the first bound,
+# and refused (a read cut off at the first bound reaches it by a millisecond).
+for m99 in plantlink plantdangling; do
+  run99 slow2plant "" "$m99"
+  if [[ "$m99" == plantlink ]]; then o99="$([[ -f "$TMP/rdt99/other" && ! -s "$TMP/rdt99/other" ]] && echo kept)"
+  else o99="$([[ ! -e "$TMP/rdt99/other" ]] && echo kept)"; fi
+  [[ "$rc99" == 0 && "$out99" == $'a.b=1\na.c=2' && "$o99" == kept && ! -e "$rdd99/ok" ]] \
+    && pass "G99 a count made a link during a slow read ($m99) is not written through, and the longer bound ends" \
+    || fail "G99 count made a link, $m99 (rc=$rc99; out=$(tr '\n' '|' <<<"$out99"); other: $(ls -l "$TMP/rdt99/other" 2>&1); ok: $(ls "$rdd99/ok" 2>&1))"
+done
 # _rd, which reads .git files, commondir and gitdir, gets the longer bound too.
 mkdir -p "$TMP/fh99"; REAL_HEAD99="$(command -v head)"
 printf '#!/usr/bin/env bash\nsleep 2\nexec %q "$@"\n' "$REAL_HEAD99" > "$TMP/fh99/head"
@@ -881,6 +913,118 @@ q119="$(u119 'for i in $(seq 1 257); do r=0; _fs_linked_in "$dev 99999999999$((i
   || fail "G119 files asked about (${q119:250} at the end of ${#q119})"
 rm -rf "$fns119" "$TMP/u119"
 rm -rf "$TMP/fs119" "$TMP/h119" "$TMP/o119"
+
+# ── G128: the listing of a writable mount's linked files, driven directly ────
+# _fs_linked_in lists only the writable mounts on the file's own device (a hard
+# link never leaves it), each search at most 30 s and at most what the FIFO
+# search's budget has left; a listing cut short keeps every whole line it got
+# and drops only a line cut in two, so a file it did list is still found there;
+# and a temporary directory that cannot be made refuses the launch (GAP-2 slice
+# 4: each of those, damaged, survived).
+fns128="$TMP/fns128.sh"
+for f128 in _term _q _timeout_prefix _launcher_dev_ino _fs_linked_in; do
+  awk -v f="$f128() {" 'index($0, f) == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox.sh"
+done > "$fns128"
+# What it keeps for the launch, as sandbox.sh declares it.
+grep -E '^(declare -A _fs_ml_|_fs_ml_dir=|if stat -c )' "$ENGINE/sandbox.sh" >> "$fns128"
+M128="$TMP/m128"; mkdir -p "$M128/a" "$M128/b" && : > "$M128/a/f" && ln "$M128/a/f" "$M128/x128"
+sh128="$TMP/sh128"; mkdir -p "$sh128"
+# timeout -k 2 <seconds> find <mount> …: records the seconds and the mount.
+printf '#!/bin/bash\nprintf "%%s %%s\\n" "$3" "$5" >> %q\nshift 3\nexec "$@"\n' "$TMP/to128.log" > "$sh128/timeout"
+cp "$sh128/timeout" "$sh128/gtimeout"; chmod +x "$sh128/timeout" "$sh128/gtimeout"
+# run128 <fresh|short>: asks about $M128/a/f, with $M128/a and $M128/b writable and
+# $M128/b on another device. Prints "<status> <mount>".
+run128() {
+  bash -c 'source "$1"; A="$2" B="$3" f="$4"
+    eval "$(declare -f _launcher_dev_ino | sed "1s/^_launcher_dev_ino/_ldi128/")"
+    _launcher_dev_ino() { if [[ "$1" == "$B" ]]; then echo "999999 1"; else _ldi128 "$1"; fi; }
+    [[ "$5" == short ]] && _fs_deadline=$((SECONDS + 5))
+    m=("$A" "$B"); di="$(_launcher_dev_ino "$f")"; rc=0; _fs_linked_in "$di" m o || rc=$?
+    printf "%s %s\n" "$rc" "$o"; rm -rf "$_fs_ml_dir"' _ "$fns128" "$M128/a" "$M128/b" "$M128/a/f" "$1" >"$TMP/o128" 2>"$TMP/e128"
+}
+for case128 in fresh:30 short:5; do
+  : > "$TMP/to128.log"; PATH="$sh128:$PATH" run128 "${case128%%:*}"
+  got128="$(cut -d' ' -f1 "$TMP/to128.log" | tr '\n' ' ')"
+  if [[ "$(cat "$TMP/o128")" == "0 $M128/a" ]] && ! grep -qF " $M128/b" "$TMP/to128.log" \
+     && [[ "$got128" == "${case128#*:} " || "$got128" == "$(( ${case128#*:} - 1 )) " ]]; then
+    pass "G128 a file's second name is found by listing only the mount on its device, the listing given ${got128% } s (budget ${case128%%:*})"
+  else
+    fail "G128 listing, budget ${case128%%:*} (want '0 $M128/a', ${case128#*:} s, $M128/b not listed; got '$(cat "$TMP/o128")', listed: $(tr '\n' ' ' < "$TMP/to128.log"); $(tr '\n' ' ' < "$TMP/e128"))"
+  fi
+done
+# Cut short (out of time) after its last whole line, or in the middle of a
+# line: the file named on a whole line is found either way.
+for cut128 in "whole::" "mid-line:printf 9"; do
+  printf '#!/bin/bash\n%q "$@"; %s; exit 124\n' "$(command -v find)" "${cut128#*:}" > "$sh128/find"; chmod +x "$sh128/find"
+  PATH="$sh128:$PATH" run128 fresh
+  [[ "$(cat "$TMP/o128")" == "0 $M128/a" ]] \
+    && pass "G128 a listing cut short (${cut128%%:*}) keeps every whole line, and the file one names is found" \
+    || fail "G128 listing cut short, ${cut128%%:*} (want '0 $M128/a', got '$(cat "$TMP/o128")'; $(tr '\n' ' ' < "$TMP/e128"))"
+done
+rm -f "$sh128/find"
+# No temporary directory: refused.
+TMPDIR="$TMP/none128" run128 fresh; rc128=$?
+[[ "$rc128" != 0 && ! -s "$TMP/o128" ]] && grep -qF "cannot make a temporary directory in" "$TMP/e128" \
+  && pass "G128 a listing with no temporary directory refuses the launch" \
+  || fail "G128 listing, no temporary directory (rc=$rc128; $(cat "$TMP/o128" "$TMP/e128" | tr '\n' ' '))"
+rm -rf "$fns128" "$M128" "$sh128" "$TMP/to128.log" "$TMP/o128" "$TMP/e128"
+
+# ── G129: a hard-linked file reached through a link, driven directly ─────────
+# _fs_reachable fails closed: the file counts as one the agent can reach when
+# the link leads into a writable mount, whatever device the file is on there (a
+# filesystem mounted inside the mount), when the link's way cannot be followed
+# to its end, and when the file cannot be stat'ed (GAP-2 slice 4: each, damaged,
+# survived).
+fns129="$TMP/fns129.sh"
+for f129 in _term _q _timeout_prefix _launcher_dev_ino _fs_linked_in _fs_other_names _fs_in_rw _fs_reachable; do
+  awk -v f="$f129() {" 'index($0, f) == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox.sh"
+done > "$fns129"
+grep -E '^(declare -A _fs_reach_cache=|declare -A _fs_ml_|_fs_ml_dir=|if stat -c )' "$ENGINE/sandbox.sh" >> "$fns129"
+M129="$TMP/m129"; mkdir -p "$M129/m" "$M129/w" && : > "$M129/m/t" && ln "$M129/m/t" "$M129/m/t2" && ln -s "$M129/m/t" "$M129/h"
+# run129 <nested|nowalk|nostat>: is $M129/h, a link to $M129/m/t, reachable? For
+# nested, $M129/m is the writable mount; for the others, $M129/w beside it is,
+# so the way out of every writable mount has to be judged.
+run129() {
+  bash -c 'source "$1"; M="$2"; tgt129="$M/m/t"; how="$3"
+    eval "$(declare -f _launcher_dev_ino | sed "1s/^_launcher_dev_ino/_ldi129/")"
+    _launcher_dev_ino() {
+      if [[ "$1" == "$tgt129" && "$how" == nested ]]; then echo "999999 7"
+      elif [[ "$1" == "$tgt129" && "$how" == nostat ]]; then return 1
+      else _ldi129 "$1"; fi
+    }
+    _fs_target() { [[ "$how" == nowalk ]] || printf "%s" "$tgt129"; }
+    if [[ "$how" == nested ]]; then _fs_rw=("$M/m"); else _fs_rw=("$M/w"); fi
+    hits=("$M/h"); _fs_other_names hits
+    if _fs_reachable "$M/h"; then echo reachable; else echo unreachable; fi
+    rm -rf "$_fs_ml_dir"' _ "$fns129" "$M129" "$1" >"$TMP/o129" 2>"$TMP/e129"
+}
+for case129 in "nested:on another device inside the writable mount" "nowalk:whose way cannot be followed to its end" "nostat:that cannot be stat'ed"; do
+  run129 "${case129%%:*}"
+  [[ "$(cat "$TMP/o129")" == reachable ]] \
+    && pass "G129 a hard-linked file reached through a link, ${case129#*:}, counts as reachable" \
+    || fail "G129 ${case129%%:*} (want reachable, got '$(cat "$TMP/o129")'; $(tr '\n' ' ' < "$TMP/e129"))"
+done
+rm -rf "$fns129" "$M129" "$TMP/o129" "$TMP/e129"
+
+# ── G130: the count of slow reads is made only in the launcher's own shell ──
+# _rd_prep, first called in a subshell (a read reached before run_container's
+# own call, as a function driven on its own is), makes no directory, which would
+# be lost to the next read and to the EXIT trap, and still succeeds under
+# errexit; in the shell itself it makes one (GAP-2 slice 4: the guard, damaged
+# either way, survived).
+fns130="$TMP/fns130.sh"
+for f130 in _timeout_prefix _rd_prep; do
+  awk -v f="$f130() {" 'index($0, f) == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox.sh"
+done > "$fns130"
+printf '_rd_init="" _rd_dir="" _rd_tp=() _rd_lim=0\n' >> "$fns130"
+rm -rf "$TMP/rdt130"; mkdir -p "$TMP/rdt130"
+TMPDIR="$TMP/rdt130" bash -c 'set -euo pipefail; source "$1"
+  ( _rd_prep; printf "subshell:%s\n" "${_rd_dir:-none}" )
+  ls -A "$TMPDIR"; _rd_prep; printf "shell:%s\n" "${_rd_dir:+made}"; rm -rf "$_rd_dir"' _ "$fns130" >"$TMP/o130" 2>&1; rc130=$?
+[[ "$rc130" == 0 && "$(cat "$TMP/o130")" == $'subshell:none\nshell:made' ]] \
+  && pass "G130 the count of slow reads is made in the launcher's own shell, never in a subshell" \
+  || fail "G130 _rd_prep in a subshell (rc=$rc130; $(tr '\n' '|' < "$TMP/o130"))"
+rm -rf "$fns130" "$TMP/rdt130" "$TMP/o130"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

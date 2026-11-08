@@ -2070,12 +2070,14 @@ _walk_exposed() {
   return 1
 }
 
-# _bind_mount_arg <flag-var> <value-var> <source> <destination> <rw|ro>: how to
+# _bind_mount_arg <flag-var> <value-var> <source> <destination> <mode>: how to
 # hand docker one bind. `-v` carries any name docker accepts except one with a
 # ':' (its separator) — trailing whitespace, tabs, newlines, commas and quotes
 # included; a name with a ':' goes through `--mount` instead, whose value docker
-# reads as a CSV record, so each field is quoted and any '"' doubled. An empty
-# mode gives `-v` no third field.
+# reads as a CSV record, so each field is quoted and any '"' doubled. <mode> is
+# `-v`'s option list (ro, rw, or one such as ro,z), or empty, which gives `-v`
+# no third field; through `--mount` only ro means anything (readonly), which is
+# why _bind_add refuses a mode other than ro or rw for a name with a ':'.
 _bind_mount_arg() {
   local s="source=$3" d="destination=$4" o=""
   if [[ "$3$4" != *:* ]]; then

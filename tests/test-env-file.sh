@@ -88,17 +88,18 @@ nwarnings() { grep -c '^WARNING: .* not passed to the container' "$ERR"; }
 # ── E1: parsed as docker parses an env-file ──────────────────────────────────
 # Each rule measured against the docker CLI: a BOM dropped from line 1 only,
 # leading Unicode whitespace (NBSP here), one trailing CR; a value literal, quotes,
-# `#` and trailing spaces kept; a bare NAME passed bare, for docker to look up in
-# this environment; duplicates passed in order, so docker keeps the last.
+# `#` and trailing spaces kept, and so is one in UTF-8 that is not ASCII; a bare
+# NAME passed bare, for docker to look up in this environment; duplicates passed
+# in order, so docker keeps the last.
 ENVF="$AENV"
-printf '\xef\xbb\xbfFIRST=1\n# a comment\n\n  \xc2\xa0INDENT=nbsp\nCRLF=x\r\nQUOTED="5"\nHASH=a # b\nTRAIL=a b  \nBARE_SET\nBARE_UNSET\nDUP=1\nDUP=2\nLAST=end' > "$AENV"
+printf '\xef\xbb\xbfFIRST=1\n# a comment\n\n  \xc2\xa0INDENT=nbsp\nCRLF=x\r\nQUOTED="5"\nHASH=a # b\nTRAIL=a b  \nUTF8=h\xc3\xa9llo\nBARE_SET\nBARE_UNSET\nDUP=1\nDUP=2\nLAST=end' > "$AENV"
 BARE_SET=hostval SANDBOX_ENV_PASSTHROUGH="BARE_SET BARE_UNSET" SANDBOX_ENV_FILE="$AENV" launch
-want=$'FIRST=1\nINDENT=nbsp\nCRLF=x\nQUOTED="5"\nHASH=a # b\nTRAIL=a b  \nBARE_SET\nBARE_UNSET\nDUP=1\nDUP=2\nLAST=end'
+want=$'FIRST=1\nINDENT=nbsp\nCRLF=x\nQUOTED="5"\nHASH=a # b\nTRAIL=a b  \nUTF8=h\xc3\xa9llo\nBARE_SET\nBARE_UNSET\nDUP=1\nDUP=2\nLAST=end'
 [[ "$LAUNCH_RC" == 0 ]] && ran && pass "E1 a well-formed container.env launches" \
   || fail "E1 a well-formed container.env launches (rc=$LAUNCH_RC; $(tr '\n' ' ' <"$ERR"))"
 [[ "$(envfile)" == "$want" ]] && pass "E1 docker gets the lines as docker itself would read them" \
   || fail "E1 docker gets the lines as docker itself would read them — got: $(envfile | cat -v | tr '\n' '|')"
-[[ "$(keys_arg)" == "FIRST INDENT CRLF QUOTED HASH TRAIL BARE_SET BARE_UNSET DUP LAST" ]] \
+[[ "$(keys_arg)" == "FIRST INDENT CRLF QUOTED HASH TRAIL UTF8 BARE_SET BARE_UNSET DUP LAST" ]] \
   && pass "E1 AI_CONTAINER_ENV_KEYS names each key once, in order" \
   || fail "E1 AI_CONTAINER_ENV_KEYS names each key once — got '$(keys_arg)'"
 grep -qE '^/dev/fd/[0-9]+$' < <(sed -n '/^--env-file$/{n;p;}' "$CAPTURE") \
