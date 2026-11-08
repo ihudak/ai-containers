@@ -27,6 +27,7 @@
 - **Updated 2026-11-07:** GIT-39 is FIXED, after a review and a re-review of the fix. GIT-42 and GIT-43, found by the review (GIT-43 also by the automated security review of `f90c096`), are open (section 25). GIT-35's first case is fixed with it, and GIT-35 is raised to MEDIUM by what the re-review found.
 - **Updated 2026-11-07:** GIT-41 is FIXED on WSL, measured there by PLAT-8's drvfs half, which also showed it wider than modelled: every read-only overlay, the launcher's included. GIT-38's drvfs part is fixed with it. Both stay open on macOS until PLAT-8's APFS half is measured (section 25).
 - **Updated 2026-11-08:** section 26, found while doing GAP-2's slice 3 and in its CI run: LNCH-22 (open, LOW) and TST-29 (a falsify flake in CI, cause open; the diagnostic that names it next time is FIXED). GIT-47 (open, LOW), from the final review of that slice, is there too. LNCH-22 is FIXED; LNCH-23 (open, LOW), found while fixing it, is there too. GIT-43 is FIXED (section 25).
+- **Updated 2026-11-08:** section 27, found while running PLAT-9 on macOS: TST-31 (test only), FIXED.
 - **Companion:** [2026-10-26-feature-gaps-review.md](2026-10-26-feature-gaps-review.md).
 - **Confidence:** CONFIRMED = reproduced, or unambiguous from the code. PLAUSIBLE = strong reasoning, not reproduced (usually needs hardware or a platform not available here); verify before fixing.
 - **Citations** are by snippet, per AGENTS.md "Citing code". Scratch repro paths mentioned in entries were session-local and may no longer exist; each entry describes its repro in full.
@@ -2226,6 +2227,15 @@ Found 2026-11-08, at `7d959f8`, while killing the slice's survivors, and in its 
 - **set -e hazards** — `git_dirs_in` ends `return 0`; the `mapfile < <(git …)`
   and `$(cat commondir)` substitutions are failure-tolerant; no unguarded
   failing command in the git loop that would abort the launch.
+
+## 27. Found while running PLAT-9
+
+`PHASES=5 bash ./verify-on-host.sh` on macOS 26.7.2 (arm64, Homebrew bash 5.3.20, `LANG=en_US.UTF-8`), Colima 0.10.3, from a fresh clone at `f57fb0f`, 2026-11-08. 122 of 123 files passed on the host, and 123 of 123 at the floor.
+
+### TST-31: a falsify check failed on macOS, BSD `cut` refusing a byte that is not UTF-8
+- **Status: FIXED** (2026-11-08).
+- Severity: LOW (test only). Confidence: CONFIRMED.
+- What's wrong, and the fix: `tests/test-falsify-run.sh`'s check that a kill's note keeps an invalid byte (TST-29's diagnostic) read the result file with `cut -d'|' -f1-7`. In a UTF-8 locale BSD `cut` stops at the byte with `Illegal byte sequence` and drops the line, so the check got nothing; GNU `cut`, on Linux and at the floor, passes bytes through. The product is right: `tests/falsify/run.sh` already reads that line under `LC_ALL=C`. Now the test runs its `cut` under `LC_ALL=C` too. Red under `LANG=en_US.UTF-8` before, green after; it passed under `LC_ALL=C` either way.
 
 ## LNCH
 

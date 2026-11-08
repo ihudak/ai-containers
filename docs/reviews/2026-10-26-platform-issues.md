@@ -25,7 +25,7 @@ and the constraints the fix must keep.
 | PLAT-7 | macOS without the Command Line Tools | bug GIT-24 | A launch where `/usr/bin/git` is only the installer shim must not run it, and must take the no-git branch — **not run**; git documented as a requirement |
 | PLAT-6 | Windows + WSL2 + Docker Desktop | bugs PRJ-10, PRJ-11 | Re-run the hermetic suite at current `main`: the new no-follow tests rename, open `/dev/fd/N` and `noclobber`-create on drvfs — **done**, passed (TST-25 found and fixed) |
 | PLAT-8 | macOS (APFS), WSL2 (drvfs), Docker Desktop | bugs GIT-38, GIT-41 | Paths spelled in another case where case is ignored, and whether a read-only bind of one file covers its other spellings — **done**: both halves passed; GIT-41 refused on drvfs, and on macOS reproduced on Colima and mitigated (Docker Desktop for Mac unmeasured) |
-| PLAT-9 | macOS, WSL2 (Docker Desktop and a native Engine) | bugs GIT-29 to GIT-45 | The launcher's git checks and `project-files.sh` gained code since the last run on each, which has only ever run on Linux — **open** |
+| PLAT-9 | macOS, WSL2 (Docker Desktop and a native Engine) | bugs GIT-29 to GIT-45 | The launcher's git checks and `project-files.sh` gained code since the last run on each, which has only ever run on Linux — **macOS done** (one test bug, TST-31); WSL **open** |
 
 ## Who picks up what (updated 2026-11-08, at `3b98ecd`)
 
@@ -200,7 +200,8 @@ first, then fix test-first.
 
 ## PLAT-9: macOS and WSL2 — re-run the hermetic suite at current `main`
 
-- **Status: OPEN** (2026-11-07).
+- **Status: macOS DONE (2026-11-08); WSL OPEN.**
+  - **macOS,** at `f57fb0f`, from a fresh clone: macOS 26.7.2 arm64, Homebrew bash 5.3.20, git 2.56.0, the system's BSD `find`, `stat`, `ps`, `head` and `wc` first on `PATH`, Colima 0.10.3. `PHASES=5 bash ./verify-on-host.sh`, 62 min: 123/123 at the floor, and 122/123 on the host. The one failure was a test bug, TST-31 (BSD `cut` refusing a byte that is not UTF-8 under `LANG=en_US.UTF-8`), now fixed. Every file listed under "Watch above all" passed on the host. Recorded in docs/testing.md.
 - **Picked up by:** the **Mac agent**, the **WSL agent** (Docker Desktop) and the **WSL native agent** (a native Engine), each on its platform.
 - **Platform:** macOS with its BSD userland and APFS; Windows + WSL2 from ext4 and from `/mnt/c`, with each engine.
 - **Source:** bugs GIT-29 to GIT-45. The last runs were PLAT-5 (Mac, `f0ad913`), PLAT-6 (WSL with Docker Desktop, `037e64c`) and PLAT-2 (WSL with a native Engine, `f0ad913`). Since then the launcher's git checks gained code that has only run on Linux:

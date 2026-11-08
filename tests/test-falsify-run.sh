@@ -1794,7 +1794,9 @@ sel_decide() {   # <scenario> → the runs, then the result records
       return 0
     }
     fr_run_mutant 0 t.sh a.sh,b.sh,c.sh 1 2 cond-negate deadbeef MUTATED "$d/res"
-    cat "$d/calls"; cut -d'|' -f1-7 "$d/res"
+    # As bytes: the killodd note holds a byte that is not UTF-8, and BSD cut in a
+    # UTF-8 locale drops its line with "Illegal byte sequence" (bugs review TST-31).
+    cat "$d/calls"; LC_ALL=C cut -d'|' -f1-7 "$d/res"
     if [[ "$sc" == writefail* ]]; then printf 'tree %s\n' "$(sed -n 2p "$d/work/w0/t.sh")"; fi
     rm -rf "$d" )
 }
