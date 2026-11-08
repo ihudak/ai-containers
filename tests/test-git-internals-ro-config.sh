@@ -1267,6 +1267,241 @@ launch_timed 120
   || fail "G135 5000 entries (rc=$LAUNCH_RC; ${LAUNCH_S}s, ${base135}s with one)"
 rm -rf "$PROJ/many135"
 rm -rf "$TMP/h135" "$fns135"
+# ── G134: a program a config has git run, named by a path the agent can change
+# The keys that make the host's git run a program (core.fsmonitor, a filter, a
+# diff driver, a credential helper, a `!` alias, …) were named once, at the
+# first protection, and the programs they name never judged: one in a writable
+# mount, one reached through a link there, or one outside every mount with a
+# second name in one, could be rewritten by the agent and run by the host's git
+# (bugs review GIT-42). The program is the value's first word, after a `!`,
+# where it holds a `/`; a relative one is judged from the checkout. Its way is
+# walked as a core.hooksPath's is.
+mk134() {
+  rm -rf "$TMP/h134" "$TMP/o134"; mkdir -p "$TMP/h134" "$TMP/o134" && "${G[@]}" init -q "$TMP/h134/r" \
+    || { printf 'SCAFFOLD-FAILED: G134\n'; exit 1; }
+}
+cfg134() { "${G[@]}" -C "$TMP/h134/r" config "$@" || { printf 'SCAFFOLD-FAILED: G134 config %s\n' "$1"; exit 1; }; }
+prog134() {  # $1 = label, $2 = the program as named, $3 = the key, $4 = the line naming the step
+  grep -qF "$4" <<<"$(grep -A2 -F "has your host's git run $2 ($3), which leads somewhere the agent can change:" "$ERR")" \
+    && pass "G134 $1" \
+    || fail "G134 $1 (rc=$LAUNCH_RC; stderr: $(grep -A2 -F "has your host's git run" "$ERR" | head -3 | tr '\n' ' '))"
+}
+mk134; cfg134 diff.x.textconv ./tools/conv.sh
+EXTRA_MOUNTS="$TMP/h134" launch "$TMP/app"
+prog134 "a relative program in the checkout is named" /workspace/h134/r/tools/conv.sh diff.x.textconv \
+  "it can change $TMP/h134/r/tools/conv.sh (at /workspace/h134/r/tools/conv.sh)."
+mk134; cfg134 credential.helper "!$TMP/h134/helper.sh --store"; cfg134 alias.st '!./scripts/st.sh status'
+EXTRA_MOUNTS="$TMP/h134" launch "$TMP/app"
+prog134 "a credential helper run through the shell (!) is judged by its first word" /workspace/h134/helper.sh credential.helper \
+  "it can change $TMP/h134/helper.sh (at /workspace/h134/helper.sh)."
+prog134 "a ! alias is judged" /workspace/h134/r/scripts/st.sh alias.st \
+  "it can change $TMP/h134/r/scripts/st.sh (at /workspace/h134/r/scripts/st.sh)."
+mk134; printf '#!/bin/sh\n' > "$TMP/o134/fsm" && chmod +x "$TMP/o134/fsm" && ln "$TMP/o134/fsm" "$TMP/h134/fsm2" \
+  || { printf 'SCAFFOLD-FAILED: G134 link\n'; exit 1; }
+cfg134 core.fsmonitor "$TMP/o134/fsm"
+EXTRA_MOUNTS="$TMP/h134" launch "$TMP/app"
+prog134 "one outside every mount with a second name in one is named, with where" "$TMP/o134/fsm" core.fsmonitor \
+  "it can write $TMP/o134/fsm through another name of that file, in $TMP/h134"
+mk134; ln -s "$TMP/o134" "$TMP/h134/lnk" && cfg134 core.sshCommand "$TMP/h134/lnk/ssh -v"
+EXTRA_MOUNTS="$TMP/h134" launch "$TMP/app"
+prog134 "one reached through a link the agent can repoint is named, with the link" "$TMP/o134/ssh" core.sshcommand \
+  "it can repoint $TMP/h134/lnk (at /workspace/h134/lnk), a link on its way."
+mk134; printf '[filter "x"]\n\tclean = %s/r/clean.sh %%f\n' "$TMP/h134" > "$TMP/o134/inc.cfg" && cfg134 include.path "$TMP/o134/inc.cfg"
+EXTRA_MOUNTS="$TMP/h134" launch "$TMP/app"
+prog134 "one an included file sets is judged" /workspace/h134/r/clean.sh filter.x.clean \
+  "it can change $TMP/h134/r/clean.sh (at /workspace/h134/r/clean.sh)."
+# Silent: a program found on PATH, a boolean core.fsmonitor, an alias that is
+# not a shell command, and one outside every mount with no other name.
+mk134; printf '#!/bin/sh\n' > "$TMP/o134/plain" && chmod +x "$TMP/o134/plain" || { printf 'SCAFFOLD-FAILED: G134 plain\n'; exit 1; }
+cfg134 filter.lfs.process "git-lfs filter-process"; cfg134 core.fsmonitor true; cfg134 alias.co checkout
+cfg134 credential.helper "$TMP/o134/plain"
+EXTRA_MOUNTS="$TMP/h134" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF "has your host's git run" "$ERR" \
+  && pass "G134 a program on PATH, a boolean, a plain alias and a program no one else can write are not named" \
+  || fail "G134 silent (rc=$LAUNCH_RC; stderr: $(grep -F -A1 "has your host's git run" "$ERR" | head -2 | tr '\n' ' '))"
+# A linked worktree runs the common config's relative program from its own
+# checkout: judged from there too.
+mk134; cfg134 diff.x.textconv ./tools/conv.sh; "${G[@]}" -C "$TMP/h134/r" commit -q --allow-empty -m init \
+  && "${G[@]}" -C "$TMP/h134/r" worktree add -q "$TMP/h134/wt" || { printf 'SCAFFOLD-FAILED: G134 worktree\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h134" launch "$TMP/app"
+prog134 "a linked worktree's relative program is judged from its checkout" /workspace/h134/wt/tools/conv.sh diff.x.textconv \
+  "it can change $TMP/h134/wt/tools/conv.sh (at /workspace/h134/wt/tools/conv.sh)."
+# Named once, however many ways lead there.
+[[ "$(grep -cF "has your host's git run /workspace/h134/r/tools/conv.sh (diff.x.textconv)" "$ERR")" == 1 ]] \
+  && pass "G134 one program is named once" \
+  || fail "G134 named $(grep -cF "has your host's git run /workspace/h134/r/tools/conv.sh (diff.x.textconv)" "$ERR") times"
+# The program behind an interpreter, an assignment or exec is judged; one a
+# shell expansion or command names is named as not judged rather than judged
+# where it is not; a key whose value is a whole path is not split at a space;
+# ~user/ is named (review of the GIT-42 fix).
+mk134; mkdir -p "$TMP/h134/my tools" || { printf 'SCAFFOLD-FAILED: G134 my tools\n'; exit 1; }
+cfg134 filter.x.clean "python3 tools/c.py --x"; cfg134 diff.y.textconv "sh ./tools/t.sh"
+cfg134 alias.e '!FOO=1 exec ./scripts/e.sh'; cfg134 alias.h '!$HOME/bin/x'
+cfg134 mergetool.m.path "$TMP/h134/my tools/merge"; cfg134 core.editor '~someone/bin/ed'
+EXTRA_MOUNTS="$TMP/h134" launch "$TMP/app"
+prog134 "an interpreter's script is judged" /workspace/h134/r/tools/c.py filter.x.clean \
+  "it can change $TMP/h134/r/tools/c.py (at /workspace/h134/r/tools/c.py)."
+prog134 "sh's script is judged" /workspace/h134/r/tools/t.sh diff.y.textconv \
+  "it can change $TMP/h134/r/tools/t.sh (at /workspace/h134/r/tools/t.sh)."
+prog134 "one after an assignment and exec is judged" /workspace/h134/r/scripts/e.sh alias.e \
+  "it can change $TMP/h134/r/scripts/e.sh (at /workspace/h134/r/scripts/e.sh)."
+prog134 "a whole path is not split at a space" "/workspace/h134/my tools/merge" mergetool.m.path \
+  "it can change $TMP/h134/my tools/merge (at /workspace/h134/my tools/merge)."
+if grep -qF "has your host's git run a command (alias.h) the launcher does not follow" "$ERR" \
+   && grep -qF "has your host's git run ~someone/bin/ed (core.editor), which the launcher does not expand" "$ERR" \
+   && ! grep -qF 'r/$HOME' "$ERR" && ! grep -qF '$HOME/bin/x' "$ERR"; then
+  pass "G134 a shell expansion and ~user/ are named as not judged, never judged where they are not"
+else
+  fail "G134 not judged (stderr: $(grep -F -A1 "has your host's git run" "$ERR" | grep -F -e HOME -e someone | tr '\n' ' '))"
+fi
+# Read as a shell reads it, and in time linear in its length: a value is the
+# agent's to make, and one with 64000 leading spaces took 17 s a call, stalling
+# every launch in silence (second review of the fix). An option's argument is
+# not taken for the script, `-m mod` runs ./mod.py first, inline code and
+# functions are named by the command, never by `-c` or `f()`.
+fns134="$TMP/fns134.sh"
+awk 'index($0, "_git_prog() {") == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox.sh" > "$fns134"
+o134="$(bash -c 'source "$1"; for kv in "alias.p|!python3 -W ignore -m nbstripout --x" "alias.q|!perl -I lib t.pl" \
+  "alias.r|!node -pe 1" "alias.s|!nice -n 10 ./n.sh" "alias.t|!timeout 10 ./t.sh" "alias.u|!env -u FOO -C /tmp ./e.sh" \
+  "diff.d.textconv|sh -c '"'"'pdftotext \$1 -'"'"' -" "alias.f|!f() { ./x; }; f"; do
+    o=(); if _git_prog "${kv%%|*}" "${kv#*|}" o; then printf "%s;" "${o[@]}"; else printf "none;"; fi; printf "|"; done' _ "$fns134" 2>&1)"
+want134="p:nbstripout.py;|p:t.pl;|u:inline code;|p:./n.sh;|p:./t.sh;|p:./e.sh;|u:inline code;|u:a shell expansion, quoting or an operator;|"
+[[ "$o134" == "$want134" ]] \
+  && pass "G134 options and their arguments, -m, inline code and functions are read as a shell reads them" \
+  || fail "G134 reading (got: $o134)"
+o134="$(bash -c 'source "$1"; for kv in "alias.a|!bash -e ./x.sh" "alias.b|!python3 -E x.py" "alias.c|!python3 -mpkg.mod" \
+  "alias.d|!exec -a name ./x" "alias.e|!bash -o pipefail ./p.sh" "alias.f|!node --experimental-vm-modules x.js" \
+  "alias.g|!perl -Mfeature=say t.pl" "alias.h|!ruby -rset x.rb" "alias.i|!python3 -Wonce y.py" "alias.j|!node --eval 1"; do
+    o=(); if _git_prog "${kv%%|*}" "${kv#*|}" o; then printf "%s;" "${o[@]}"; else printf "none;"; fi; printf "|"; done' _ "$fns134" 2>&1)"
+[[ "$o134" == "p:./x.sh;|p:x.py;|p:pkg/mod.py;|p:./x;|p:./p.sh;|p:x.js;|p:t.pl;|p:x.rb;|p:y.py;|u:inline code;|" ]] \
+  && pass "G134 an interpreter's own options decide what is inline code and what takes an argument" \
+  || fail "G134 interpreter options (got: $o134)"
+# Fail closed (automated security review of the fix): another command after
+# the program, words that run out before it, and a glob are not followed; a
+# wrapper's own arguments are not taken for the program.
+o134="$(bash -c 'source "$1"; for kv in "alias.a|!git status; ./evil.sh" "alias.b|!git fetch && git rebase" \
+  "alias.c|!A=1 B=2 C=3 D=4 E=5 F=6 G=7 H=8 ./x" "alias.d|!./tools/*.sh" "alias.e|!taskset 0x3 ./x" "alias.f|!sudo -u root ./y" \
+  "alias.g|!./a \$(./b)"; do
+    o=(); if _git_prog "${kv%%|*}" "${kv#*|}" o; then printf "%s;" "${o[@]}"; else printf "none;"; fi; printf "|"; done' _ "$fns134" 2>&1)"
+[[ "$o134" == "u:another command after it;|u:another command after it;|u:more than eight words before the program;|u:a shell expansion, quoting or an operator;|p:./x;|p:./y;|p:./a;u:another command after it;|" ]] \
+  && pass "G134 another command after the program, too many words and a glob are not followed; a wrapper's arguments are skipped" \
+  || fail "G134 fail closed (got: $o134)"
+# After a wrapper, a word with no / is the program found on PATH, its path
+# arguments never taken for the program; only taskset's and chrt's positional
+# arguments are skipped. Words that run out after an interpreter, before its
+# script, are not followed (final review of the fix).
+o134="$(bash -c 'source "$1"; for kv in "alias.a|!env GIT_PAGER=cat git log -- ./src" "alias.b|!nice git diff ./file" \
+  "alias.c|!sudo -D /srv ./y" "alias.d|!chrt 10 ./c" "alias.e|!/usr/bin/python3 -u -O -B -s -E -I -q x.py" "alias.f|!sudo -n ./x"; do
+    o=(); if _git_prog "${kv%%|*}" "${kv#*|}" o; then printf "%s;" "${o[@]}"; else printf "none;"; fi; printf "|"; done' _ "$fns134" 2>&1)"
+[[ "$o134" == "none;|none;|p:./y;|p:./c;|p:/usr/bin/python3;u:more than eight words before the program;|u:a wrapper whose program was not found;|" ]] \
+  && pass "G134 a wrapper's PATH program ends the reading; interpreter words that run out are not followed" \
+  || fail "G134 wrappers (got: $o134)"
+t134="$(bash -c 'source "$1"; v="!$(printf "%64000s" "")./x"; s=$SECONDS; o=(); _git_prog alias.x "$v" o; printf "%s|%s" "$(( SECONDS - s ))" "${o[*]}"' _ "$fns134" 2>&1)"
+[[ "${t134%%|*}" -le 1 && "${t134#*|}" == "u:a value of 64004 bytes" ]] \
+  && pass "G134 a value of 64000 bytes is named, not read, in no time" \
+  || fail "G134 a long value (seconds|result: $t134)"
+s134=$SECONDS
+bash -c 'source "$1"; v="!python3 $(printf "%4000s" "")./x.py"; for i in $(seq 1 200); do o=(); _git_prog alias.x "$v" o; done' _ "$fns134"
+[[ $(( SECONDS - s134 )) -le 5 ]] \
+  && pass "G134 200 values of 4000 bytes of spaces are read in seconds" \
+  || fail "G134 200 long values took $(( SECONDS - s134 )) s"
+rm -f "$fns134"
+# A command not followed is named by its key and why, never by its value: a
+# credential helper's can hold a token, and stderr reaches logs (final review
+# of the fix).
+mk134; cfg134 credential.helper '!f() { echo username=x; echo password=G134SECRETTOKEN; }; f'
+EXTRA_MOUNTS="$TMP/h134" launch "$TMP/app"
+grep -qF "has your host's git run a command (credential.helper) the launcher does not follow" "$ERR" \
+  && ! grep -qF G134SECRETTOKEN "$ERR" \
+  && pass "G134 a credential helper not followed is named by its key, its value never printed" \
+  || fail "G134 secret (named: $(grep -cF 'credential.helper' "$ERR"); printed: $(grep -cF G134SECRETTOKEN "$ERR"))"
+# A config is read to 1200 entries at most, past every budget a file has: read
+# whole, a planted config of keys that run a program filled memory before any
+# budget counted them (automated security review of the fix). Its last
+# core.hooksPath, past the cut, is still judged and bound, asked of git.
+mk134; { printf '[alias]\n'; for i in $(seq 1 1500); do printf '\ta%d = !x%d\n' "$i" "$i"; done; printf '[core]\n\thooksPath = .husky/_\n'; } >> "$TMP/h134/r/.git/config"
+EXTRA_MOUNTS="$TMP/h134" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && has_mount "$TMP/h134/r/.git/.husky:/workspace/h134/r/.git/.husky:ro" \
+  && grep -qF "runs its git hooks from /workspace/h134/r/.husky/_ (core.hooksPath), which the agent" "$ERR" \
+  && grep -qF "WARNING: not every include of /workspace/h134/r/.git/config was followed" "$ERR" \
+  && pass "G134 a config read in part is cut, and its core.hooksPath past the cut still judged and bound" \
+  || fail "G134 read cap (rc=$LAUNCH_RC; husky mounts: $(mounts | grep -cF '.git/.husky'); $(grep -F 'core.hooksPath' "$ERR" | head -1))"
+# A credential.<url> key is named with its user and password blanked: the
+# NOTE is printed on every launch (final review of the fix).
+mk134; cfg134 'credential.https://u:G134URLTOKEN@host.example.helper' '!f() { echo x; }; f'
+EXTRA_MOUNTS="$TMP/h134" launch "$TMP/app"
+grep -qF "has your host's git run a command (credential.https://***@host.example.helper)" "$ERR" && ! grep -qF G134URLTOKEN "$ERR" \
+  && pass "G134 a credential URL's user and password are never printed" \
+  || fail "G134 credential URL (printed: $(grep -cF G134URLTOKEN "$ERR"); $(grep -F 'credential.' "$ERR" | head -1))"
+# And cheaply, against the same launch with one, timed in the same run: 5000
+# keys that run a program, and 3000 whose names pass 256 characters, cost 13 s
+# and 43 s more (final review of the fix).
+mk134; cfg134 alias.a0 '!x0'; EXTRA_MOUNTS="$TMP/h134" launch_timed 120 "$TMP/app"; base134="$LAUNCH_S"
+{ printf '[alias]\n'; for i in $(seq 1 5000); do printf '\ta%d = !x%d\n' "$i" "$i"; done; } >> "$TMP/h134/r/.git/config"
+EXTRA_MOUNTS="$TMP/h134" launch_timed 120 "$TMP/app"
+[[ "$LAUNCH_RC" == 0 && "$LAUNCH_S" -lt $(( base134 + 6 )) ]] \
+  && pass "G134 5000 keys that run a program cost seconds (${LAUNCH_S}s, ${base134}s with one)" \
+  || fail "G134 5000 keys (rc=$LAUNCH_RC; ${LAUNCH_S}s, ${base134}s with one)"
+mk134; { printf '[alias]\n'; for i in $(seq 1 3000); do printf '\t%s%d = !x\n' "$(printf '%300s' '' | tr ' ' a)" "$i"; done; } >> "$TMP/h134/r/.git/config"
+EXTRA_MOUNTS="$TMP/h134" launch_timed 120 "$TMP/app"
+[[ "$LAUNCH_RC" == 0 && "$LAUNCH_S" -lt $(( base134 + 6 )) ]] && grep -qF "WARNING: not every include of /workspace/h134/r/.git/config was followed" "$ERR" \
+   && grep -qF "WARNING: not every program the git config of /workspace/h134/r/.git has git run was judged" "$ERR" \
+  && pass "G134 3000 keys of 300 characters count among those that run a program, are cut, said so, in seconds (${LAUNCH_S}s)" \
+  || fail "G134 long keys (rc=$LAUNCH_RC; ${LAUNCH_S}s, ${base134}s with one; $(grep -cF 'WARNING: not every include' "$ERR") cut warnings)"
+# A linked worktree whose checkout this launch does not know: its relative
+# programs are named as not judged, never judged from its git directory.
+mk134; cfg134 diff.x.textconv ./tools/conv.sh; "${G[@]}" -C "$TMP/h134/r" commit -q --allow-empty -m init \
+  && "${G[@]}" -C "$TMP/h134/r" worktree add -q "$TMP/o134/wt" && rm -f "$TMP/h134/r/.git/worktrees/wt/gitdir" \
+  || { printf 'SCAFFOLD-FAILED: G134 unknown checkout\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h134" launch "$TMP/app"
+grep -qF "NOTE: /workspace/h134/r/.git/worktrees/wt has your host's git run ./tools/conv.sh (diff.x.textconv) relative to a checkout this launch" "$ERR" \
+  && ! grep -qF "worktrees/wt/tools/conv.sh" "$ERR" \
+  && pass "G134 a linked worktree's relative program, its checkout unknown, is named as not judged" \
+  || fail "G134 unknown checkout (stderr: $(grep -F -A1 'worktrees/wt' "$ERR" | head -3 | tr '\n' ' '))"
+# One the main worktree's config.worktree sets is not a linked worktree's. Set
+# after the worktree is added: git 2.36 and later copy config.worktree into a
+# new worktree's own, where it is that worktree's too.
+mk134; cfg134 extensions.worktreeConfig true; "${G[@]}" -C "$TMP/h134/r" commit -q --allow-empty -m init \
+  && "${G[@]}" -C "$TMP/h134/r" worktree add -q "$TMP/h134/wt" \
+  && "${G[@]}" -C "$TMP/h134/r" config --worktree diff.x.textconv ./tools/main.sh \
+  || { printf 'SCAFFOLD-FAILED: G134 config.worktree\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h134" launch "$TMP/app"
+grep -qF "has your host's git run /workspace/h134/r/tools/main.sh (diff.x.textconv)" "$ERR" \
+  && ! grep -qF "/workspace/h134/wt/tools/main.sh" "$ERR" \
+  && pass "G134 one the main worktree's config.worktree sets is judged for it alone" \
+  || fail "G134 config.worktree (stderr: $(grep -F 'main.sh' "$ERR" | head -2 | tr '\n' ' '))"
+# Across a launch: 21 repositories of 999 such keys each pass the launch's
+# budget of 20000, past which the walk is cut and said so (review of the fix:
+# planted repositories doubled a launch's time, in silence).
+rm -rf "$TMP/h134" "$TMP/o134"; mkdir -p "$TMP/h134" && { printf '[alias]\n'; for i in $(seq 1 999); do printf '\ta%d = !x%d\n' "$i" "$i"; done; } > "$TMP/al134" \
+  || { printf 'SCAFFOLD-FAILED: G134 budget\n'; exit 1; }
+for i in $(seq 1 21); do "${G[@]}" init -q "$TMP/h134/r$i" && cat "$TMP/al134" >> "$TMP/h134/r$i/.git/config" || { printf 'SCAFFOLD-FAILED: G134 budget %s\n' "$i"; exit 1; }; done
+EXTRA_MOUNTS="$TMP/h134" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && grep -qF "WARNING: not every include of /workspace/h134/r" "$ERR" \
+  && pass "G134 past 20000 keys that run a program a launch, the walk is cut, and said so" \
+  || fail "G134 launch budget (rc=$LAUNCH_RC; $(grep -cF 'WARNING: not every include' "$ERR") cut warnings)"
+rm -f "$TMP/al134"
+# And by bytes: 70 values of 4000 bytes pass the launch's 256 KB, past which the
+# walk is cut too (final review of the fix: the budget counted calls only).
+rm -rf "$TMP/h134"; mkdir -p "$TMP/h134" && "${G[@]}" init -q "$TMP/h134/r" \
+  && { printf '[alias]\n'; for i in $(seq 1 70); do printf '\tb%d = "!x%s"\n' "$i" "$(printf '%4000s' '')"; done; } >> "$TMP/h134/r/.git/config" \
+  || { printf 'SCAFFOLD-FAILED: G134 bytes\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h134" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && grep -qF "WARNING: not every include of /workspace/h134/r/.git/config was followed" "$ERR" \
+  && pass "G134 past 256 KB of keys that run a program a launch, the walk is cut, and said so" \
+  || fail "G134 byte budget (rc=$LAUNCH_RC; $(grep -cF 'WARNING: not every include' "$ERR") cut warnings)"
+# Bounded, and said so: a config of thousands of keys that run a program cuts
+# its walk past 1000, and at most 50 programs a git directory are judged.
+mk134; { printf '[alias]\n'; for i in $(seq 1 1100); do printf '\ta%d = !./s%d.sh\n' "$i" "$i"; done; } >> "$TMP/h134/r/.git/config" \
+  || { printf 'SCAFFOLD-FAILED: G134 many\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h134" launch "$TMP/app"
+n134="$(grep -cF "has your host's git run" "$ERR")"
+[[ "$LAUNCH_RC" == 0 && "$n134" -ge 1 && "$n134" -le 50 ]] \
+  && grep -qF "WARNING: not every include of /workspace/h134/r/.git/config was followed (100 entries, 1000 keys that run a program" "$ERR" \
+  && grep -qF "WARNING: not every program the git config of /workspace/h134/r/.git has git run was judged" "$ERR" \
+  && pass "G134 thousands of keys that run a program are bounded, and the cut is named" \
+  || fail "G134 many (rc=$LAUNCH_RC; named $n134; $(grep -F 'WARNING: not every' "$ERR" | tr '\n' ' '))"
+rm -rf "$TMP/h134" "$TMP/o134"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

@@ -409,6 +409,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- **A program a git config has the host's git run is judged where it lies.**
+  The keys that make git run a program (`core.fsmonitor`, a filter, a diff
+  driver, a credential helper, a `!` alias, …) were named once, at a
+  repository's first protection, and the programs they name never judged. One
+  named by a path the agent can change — in a writable mount, through a link
+  there, or outside every mount with a second name in one — could be
+  rewritten in a session and run by the host's git at the next commit. On
+  every launch, each such program named by a path — after a `!`, an
+  assignment, `exec` or `env`, or the script an interpreter runs — is now
+  judged as a `core.hooksPath` is and named in a `NOTE:`; one the launcher
+  cannot follow (a shell expansion, `~user/`) is named as not judged, by its
+  key, never its value (bugs review GIT-42).
+
 - **A launch refuses a git directory of yours where it cannot make what it
   binds read-only.** The launch makes `config`, `hooks/`, the `./` commondir
   and, where the extension is on, `config.worktree` in a repository that
