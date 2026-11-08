@@ -53,6 +53,8 @@
 
 - **Bash ≥ 5.1** on the host (for `sandbox.sh`). Linux distributions from Ubuntu 22.04 / Debian 11 / RHEL 9 onward ship this. macOS ships bash 3.2 — install a newer one via `brew install bash`.
 
+- **git 2.18 or later** on the host. On macOS that is the Command Line Tools' (`xcode-select --install`; Homebrew's installer adds them anyway) or Homebrew's (`brew install git`). Without a git that runs, launches still work, but each prints a `WARNING:` and leaves unchecked what only git can read: includes in a repository's config, the keys that make git run a program, a `core.hooksPath` leading into a writable mount, and submodules the scan does not reach. `--version` reports the engine release as `unknown`, and `project-init.sh` and `sync-to-projects.sh` add no `/.ai-containers/` line to your `.gitignore`. On a Mac without the Command Line Tools, `/usr/bin/git` only offers to install them; the scripts check for that and never run it.
+
 ## Before you initialise
 
 `project-init.sh` asks questions, and two of them are much easier to answer if you have already decided. Ten minutes here saves you from tearing a working setup apart later.

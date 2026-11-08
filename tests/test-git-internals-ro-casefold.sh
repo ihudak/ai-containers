@@ -411,5 +411,65 @@ want=":0:/sp124/Dir|:0:/sp124/Dir|-:0:/sp124/DIR|-:0:/sp124/DIR|pwdfail:0:/sp124
   || fail "G124 spelling's status (got: $got)"
 rm -rf "$TMP/sp124" "$TMP/bin124"
 
+# ── G127: a file bound read-only on its own is put back when the session ends
+# (bugs review GIT-41) ───────────────────────────────────────────────────────
+# A container's kernel compares names case-sensitively, so .git/CONFIG is not
+# the mount point of .git/config's read-only bind; a host share that ignores
+# case (Colima's and Docker Desktop's virtiofs on macOS, measured on Colima)
+# opens it as config all the same, and the write lands. A directory has one
+# dentry in the guest, so hooks/ and .git hold. Modelled here by the fake
+# docker's session writing the host's files under the other spelling.
+cfg0="$(cat "$PROJ/.git/config")"
+# What stood there is kept where only the launcher writes, never beside the file,
+# whose directory a sibling container can still write (security review of the fix).
+asides() { find "$HOME/.ai-containers/restored" -type f 2>/dev/null; }
+leftovers() { find "$PROJ/.git" "$PROJ/wt121" -maxdepth 1 \( -name '*.changed-*' -o -name '.*.restore-*' \) 2>/dev/null; }
+FAKE_SESSION="printf '[core]\n\tfsmonitor = touch $TMP/pwned121\n' >> '$PROJ/.git/CONFIG'" launch ..
+a121="$(asides | grep -E '/[0-9]+-config$' | head -1)"
+[[ "$(cat "$PROJ/.git/config")" == "$cfg0" && -n "$a121" && -z "$(leftovers)" ]] && grep -qF fsmonitor "$a121" \
+  && grep -qF "WARNING: $PROJ/.git/config changed while the container ran" "$ERR" \
+  && pass "G127 a config written as .git/CONFIG is put back, and what it held is kept and named" \
+  || fail "G127 .git/CONFIG (config now: $(grep -c fsmonitor "$PROJ/.git/config") fsmonitor line(s); kept: ${a121:-none}; left in .git: $(leftovers); stderr: $(grep -F 'container ran' "$ERR" | head -1))"
+rm -rf "$HOME/.ai-containers/restored"
+
+FAKE_SESSION="printf '../planted\n' > '$PROJ/.git/COMMONDIR'" launch ..
+[[ "$(cat "$PROJ/.git/commondir")" == ./ ]] \
+  && pass "G127 a commondir written as .git/COMMONDIR is put back" \
+  || fail "G127 .git/COMMONDIR (commondir now: $(cat "$PROJ/.git/commondir"))"
+rm -rf "$HOME/.ai-containers/restored"
+
+# Removed, or replaced by a link or a FIFO: put back as a regular file, and the
+# FIFO neither hangs the launcher nor is read.
+for what121 in removes "replaces with a link" "replaces with a FIFO"; do
+  how121="rm -f '$PROJ/.git/CONFIG'"
+  case "$what121" in
+    *link) how121+=" && ln -s '$TMP/elsewhere121' '$PROJ/.git/CONFIG'" ;;
+    *FIFO) how121+=" && mkfifo '$PROJ/.git/CONFIG'" ;;
+  esac
+  FAKE_SESSION="$how121" launch_timed 60 ..
+  [[ "$LAUNCH_RC" == 0 && -f "$PROJ/.git/config" && ! -L "$PROJ/.git/config" && "$(cat "$PROJ/.git/config")" == "$cfg0" ]] \
+    && pass "G127 a config the session $what121 is put back as it was" \
+    || fail "G127 a config the session $what121 (rc=$LAUNCH_RC in ${LAUNCH_S}s; stderr: $(grep -F -e WARNING -e ERROR "$ERR" | tail -2 | tr '\n' ' '))"
+  rm -rf "$HOME/.ai-containers/restored"
+done
+
+# A linked worktree's .git file, written as .GIT.
+"${G[@]}" -C "$PROJ" worktree add -q "$PROJ/wt121" 2>/dev/null || { printf 'SCAFFOLD-FAILED: G127 worktree\n'; exit 1; }
+wt0="$(cat "$PROJ/wt121/.git")"
+FAKE_SESSION="printf 'gitdir: $TMP/evil121\n' > '$PROJ/wt121/.GIT'" launch ..
+[[ "$(cat "$PROJ/wt121/.git")" == "$wt0" ]] \
+  && pass "G127 a worktree's .git file written as .GIT is put back" \
+  || fail "G127 wt/.GIT (now: $(cat "$PROJ/wt121/.git"))"
+"${G[@]}" -C "$PROJ" worktree remove --force "$PROJ/wt121" 2>/dev/null; rm -rf "$PROJ/wt121"; "${G[@]}" -C "$PROJ" worktree prune
+rm -rf "$HOME/.ai-containers/restored"
+
+# Nothing changed: nothing is said or left behind, and the container's exit
+# status is still the launcher's.
+rm -rf "$HOME/.ai-containers/restored"
+FAKE_DOCKER_RC=3 FAKE_SESSION=":" launch ..
+[[ "$LAUNCH_RC" == 3 && -z "$(asides)" && -z "$(leftovers)" ]] && ! grep -qF 'changed while the container ran' "$ERR" \
+  && pass "G127 a session that changes nothing puts nothing back, and keeps its exit status" \
+  || fail "G127 no change (rc=$LAUNCH_RC; asides: $(asides | tr '\n' ' '); stderr: $(grep -F 'container ran' "$ERR" | head -1))"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

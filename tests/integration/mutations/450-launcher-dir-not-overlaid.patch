@@ -29,4 +29,4 @@ index f58cd5a..4604bad 100755
 -    ${launcher_verify_flags[@]+"${launcher_verify_flags[@]}"} \
      -w "$workdir" \
      "$image_name" || _run_rc=$?
-   _git_after_session
+   _ro_files_restore

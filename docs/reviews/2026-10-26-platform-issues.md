@@ -22,9 +22,9 @@ and the constraints the fix must keep.
 | PLAT-3 | macOS (Docker Desktop, Colima) | gap GAP-11 | The mount-swap check is skipped there altogether — **confirmed on Colima, designed**; no code yet |
 | PLAT-4 | x86-64 CPU without AVX | bug SVC-2 | `mongo=ON` reports "no mongo server, rebuild" instead of the real failure |
 | PLAT-5 | macOS (BSD userland) | bugs PRJ-10, PRJ-11 | The no-follow file writes take their non-Linux branches there, and nobody has run them — **done**, passed (GIT-27 and TST-28 found and fixed) |
-| PLAT-7 | macOS without the Command Line Tools | bug GIT-24 | A launch where `/usr/bin/git` is only the installer shim must not run it, and must take the no-git branch |
+| PLAT-7 | macOS without the Command Line Tools | bug GIT-24 | A launch where `/usr/bin/git` is only the installer shim must not run it, and must take the no-git branch — **not run**; git documented as a requirement |
 | PLAT-6 | Windows + WSL2 + Docker Desktop | bugs PRJ-10, PRJ-11 | Re-run the hermetic suite at current `main`: the new no-follow tests rename, open `/dev/fd/N` and `noclobber`-create on drvfs — **done**, passed (TST-25 found and fixed) |
-| PLAT-8 | macOS (APFS), WSL2 (drvfs), Docker Desktop | bugs GIT-38, GIT-41 | Paths spelled in another case where case is ignored, and whether a read-only bind of one file covers its other spellings — **drvfs half done** (GIT-41 fixed there); APFS half open |
+| PLAT-8 | macOS (APFS), WSL2 (drvfs), Docker Desktop | bugs GIT-38, GIT-41 | Paths spelled in another case where case is ignored, and whether a read-only bind of one file covers its other spellings — **done**: both halves passed; GIT-41 refused on drvfs, and on macOS reproduced on Colima and mitigated (Docker Desktop for Mac unmeasured) |
 | PLAT-9 | macOS, WSL2 (Docker Desktop and a native Engine) | bugs GIT-29 to GIT-45 | The launcher's git checks and `project-files.sh` gained code since the last run on each, which has only ever run on Linux — **open** |
 
 ## Who picks up what (updated 2026-11-07)
@@ -39,7 +39,7 @@ reports by editing the entry's **Status** line (and docs/testing.md's
 | **Linux agent** (review machine) | Linux x86-64, native Docker Engine | the falsify work GAP-1 to GAP-4 | anything below |
 | **WSL agent** | Windows + WSL2 (Ubuntu distro) + **Docker Desktop** with WSL integration. **Not** a native Docker Engine in the distro | **PLAT-9** (Docker Desktop); PLAT-6, and PLAT-8's drvfs half (GIT-41 there), done | a native Engine's runs: the WSL native agent's |
 | **WSL native agent** | Windows + WSL2 (Ubuntu distro) + a **Docker Engine installed natively in the distro** (not Docker Desktop) | **PLAT-9** (native Engine), and PLAT-8's drvfs steps on a native Engine: a bind of `/mnt/<drive>` is drvfs there too, so GIT-41's refusal applies; PLAT-2's native-Engine half done | — |
-| **Mac agent** | macOS, Docker Desktop and/or Colima | **PLAT-7**, **PLAT-8** (its APFS half, and GIT-41 on Docker Desktop for Mac), **PLAT-9**, **PLAT-3** (GAP-11, designed); PLAT-5 done | — |
+| **Mac agent** | macOS, Docker Desktop and/or Colima | **PLAT-7** (git documented as a requirement; not run), GIT-41 on Docker Desktop for Mac, **PLAT-9**, **PLAT-3** (GAP-11, designed); PLAT-5 and PLAT-8's APFS half (GIT-41 on Colima) done | — |
 | *nobody* | x86-64 CPU without AVX | PLAT-4: closed as not supported | — |
 
 Any change of code an agent makes follows the rule at the top: reproduce
@@ -143,7 +143,7 @@ first, then fix test-first.
 
 ## PLAT-7: macOS — a launch where `/usr/bin/git` is the Command Line Tools shim
 
-- **Status: OPEN.**
+- **Status: OPEN** (2026-11-07). Not run: the Mac agent's machine has the Command Line Tools, and the user chose not to remove them. What the project needs from them was checked instead, at `15682eb`. On the host it needs git and nothing else they provide: no host script runs `make`, `cc` or `python3`; every host call of git asks `_git_usable()` or `_ver_git_runs()` first, or is project-files.sh's, which does too; `repo.sh`'s `git clone` runs in the seed container. Homebrew, which the documented macOS setup uses for bash 5, installs the Command Line Tools itself. So docs/getting-started.md now lists git as a requirement, from the Command Line Tools or Homebrew, and says what a launch skips without it. A Mac without them stays unmeasured.
 - **Picked up by:** the **Mac agent**.
 - **Platform:** macOS with the Command Line Tools removed (`sudo rm -rf /Library/Developer/CommandLineTools`, or a fresh user account on a Mac that never had them), no other git on `PATH`, any Docker.
 - **Source:** bugs review GIT-24, and GIT-28 for `--version`. `sandbox.sh: _git_usable()` decides whether git runs for a launch. When `command -v git` is `/usr/bin/git` on Darwin and the directory `xcode-select -p` names holds no executable `usr/bin/git`, it counts git as absent without running it, because running the shim opens the installer. Otherwise it runs the shim once, and one that fails counts as absent too. `version.sh: _ver_git_runs()` makes the same decision for `--version` and for the version `project-init.sh` and `sync-to-projects.sh` record, without running git at all. Both were written without running them. Those two scripts also read the project's git index, through git, to keep `/.ai-containers/` in its `.gitignore`; since GIT-29's fix (2026-11-06) they ask `_ver_git_runs()` first and run git in no repository of the project's.
@@ -154,21 +154,27 @@ first, then fix test-first.
 
 ## PLAT-8: macOS and WSL — paths spelled in another case on a filesystem that ignores case
 
-- **Status: drvfs half DONE** (2026-11-07, WSL agent); **APFS half OPEN.**
-  - **Host:** Windows + WSL2 (kernel 6.18.33.2-microsoft-standard-WSL2, Ubuntu distro), Docker Desktop 29.9.2. `TMPDIR` under `/mnt/d` (drvfs, `9p`, `aname=drvfs`, `stat -f` type `v9fs`).
-  - **getcwd:** a defect. In a directory where Windows ignores case, `mkdir Proj; cd proj; /bin/pwd -P; cd ../PROJ; /bin/pwd -P` printed `…/proj`, then `…/PROJ`. All three spellings are one file (`-ef`, one device:inode).
-  - **Test, ignoring case, at `15682eb`:** the first line said `NOTE: TMPDIR ignores case here; the cases run in it`. 11 failures, every G117 check that resolves a path written in another case.
-  - **Test, case-sensitive directory** (`fsutil.exe file setCaseSensitiveInfo … enable`, which worked without elevation): `SKIP: no casefold tmpfs here`. The WSL kernel is 6.18 but has no `CONFIG_UNICODE`, so `mount -t tmpfs -o casefold` fails.
-  - **GIT-41:** measured with `alpine:3.20` containers binding a drvfs directory as the launcher does, not through `./sandbox.sh`. It reproduces, and wider than modelled:
-    - `.git/CONFIG` wrote the host's `.git/config`. A `mv` of it renamed the real file away.
-    - `.git/HOOKS/post-commit` wrote into the read-only `hooks/`.
-    - `sandbox.sh` through `.AI-CONTAINERS` wrote the launcher, past its read-only overlay.
-    - `.GIT/config` wrote through a read-only bind of the whole `.git`.
-    - A pinned directory was renamed through another spelling.
-    - In a case-sensitive directory every other spelling was `nonexistent`, or a new file the host's git ignores, and the host's config was untouched.
-    - But not every other name: on C:, which makes 8.3 short names (`NtfsDisable8dot3NameCreation` 2), `AI-CON~1/sandbox-common.sh` was written from an `ubuntu:22.04` container past a read-only bind of `.ai-containers`, in a case-sensitive directory too (automated security review of `1ed3de8`). `/mnt/c/PROGRA~1` resolves through drvfs. D: here made none.
-    - From a container, `setfattr -n system.wsl_case_sensitive` is `Not supported`, so the agent cannot make a directory ignore case.
-  - **Fixed** by GIT-41 and the drvfs part of GIT-38 (bugs review section 25): on drvfs a launch that needs a read-only bind below a writable mount is refused, case-sensitive directory or not. G121 and G122 in `tests/test-git-internals-ro-casefold.sh` run where `TMPDIR` is on such a filesystem: 5 checks red before the fix, 0 failures after.
+- **Status: DONE** (2026-11-07): the drvfs half by the WSL agent, the APFS half on macOS.
+  - **drvfs (WSL):**
+    - **Host:** Windows + WSL2 (kernel 6.18.33.2-microsoft-standard-WSL2, Ubuntu distro), Docker Desktop 29.9.2. `TMPDIR` under `/mnt/d` (drvfs, `9p`, `aname=drvfs`, `stat -f` type `v9fs`).
+    - **getcwd:** a defect. In a directory where Windows ignores case, `mkdir Proj; cd proj; /bin/pwd -P; cd ../PROJ; /bin/pwd -P` printed `…/proj`, then `…/PROJ`. All three spellings are one file (`-ef`, one device:inode).
+    - **Test, ignoring case, at `15682eb`:** the first line said `NOTE: TMPDIR ignores case here; the cases run in it`. 11 failures, every G117 check that resolves a path written in another case.
+    - **Test, case-sensitive directory** (`fsutil.exe file setCaseSensitiveInfo … enable`, which worked without elevation): `SKIP: no casefold tmpfs here`. The WSL kernel is 6.18 but has no `CONFIG_UNICODE`, so `mount -t tmpfs -o casefold` fails.
+    - **GIT-41:** measured with `alpine:3.20` containers binding a drvfs directory as the launcher does, not through `./sandbox.sh`. It reproduces, and wider than modelled:
+      - `.git/CONFIG` wrote the host's `.git/config`. A `mv` of it renamed the real file away.
+      - `.git/HOOKS/post-commit` wrote into the read-only `hooks/`.
+      - `sandbox.sh` through `.AI-CONTAINERS` wrote the launcher, past its read-only overlay.
+      - `.GIT/config` wrote through a read-only bind of the whole `.git`.
+      - A pinned directory was renamed through another spelling.
+      - In a case-sensitive directory every other spelling was `nonexistent`, or a new file the host's git ignores, and the host's config was untouched.
+      - But not every other name: on C:, which makes 8.3 short names (`NtfsDisable8dot3NameCreation` 2), `AI-CON~1/sandbox-common.sh` was written from an `ubuntu:22.04` container past a read-only bind of `.ai-containers`, in a case-sensitive directory too (automated security review of `1ed3de8`). `/mnt/c/PROGRA~1` resolves through drvfs. D: here made none.
+      - From a container, `setfattr -n system.wsl_case_sensitive` is `Not supported`, so the agent cannot make a directory ignore case.
+    - **Fixed** by GIT-41 and the drvfs part of GIT-38 (bugs review section 25): on drvfs a launch that needs a read-only bind below a writable mount is refused, case-sensitive directory or not. G121 and G122 in `tests/test-git-internals-ro-casefold.sh` run where `TMPDIR` is on such a filesystem: 5 checks red before the fix, 0 failures after.
+
+  - **APFS (macOS),** at `15682eb`, macOS 26.7.2 arm64, Homebrew bash 5.3.20:
+    - `tests/test-git-internals-ro-casefold.sh` said `NOTE: TMPDIR ignores case here; the cases run in it`, then 21 `PASS: G117` and `0 failure(s)`.
+    - `mkdir Proj; cd proj; /bin/pwd -P; cd ../PROJ; /bin/pwd -P` printed `…/Proj` both times, and so did Homebrew's GNU `gpwd -P`: macOS's `getcwd` spells a directory one way. Bash's builtin `pwd -P` prints the spelling it was reached by (`proJ`); `_disk_spell()` runs the external one (`type -P pwd`), which is why it holds.
+    - **GIT-41** on Colima 0.10.3 (virtiofs) instead of Docker Desktop, which this Mac does not have: it **reproduced**. `.git/CONFIG`, `.git/Config.Worktree`, `.git/COMMONDIR` and a worktree's `.GIT` were written past their read-only binds; `config`, `hooks/` and `.git` under every spelling held. Mitigated by putting the files back when the container exits (bugs review GIT-41). Docker Desktop on macOS is still unmeasured.
 - **Picked up by:** the **Mac agent** (APFS) and the **WSL agent** (drvfs).
 - **Platform:** macOS with its default case-insensitive APFS. WSL2 with a directory under `/mnt/<drive>`.
 - **Source:** bugs review GIT-38, fixed and measured on Linux only, and GIT-41, modelled only. `sandbox.sh: _disk_spell()` respells, from `getcwd` (an external `pwd -P`), each path that crosses a directory ignoring case, so every path compared with a mount is spelled one way. On Linux that holds because a directory has one dentry. Whether macOS's `getcwd` and WSL's drvfs spell a directory one way, however it was reached, has not been measured. GIT-41: Docker Desktop's file sharing may open `.git/CONFIG` as the host's `.git/config`, past the read-only bind of `config`.

@@ -362,8 +362,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   filesystem every name is checked so, which turns away a path written with
   a short name, such as `PROGRA~1`); a name with no
   ASCII letter is turned over in a UTF-8 locale, so it is seen to ignore case
-  under `LC_ALL=C` too (platform-issues PLAT-8). macOS is unchanged until
-  PLAT-8's APFS half is measured.
+  under `LC_ALL=C` too (platform-issues PLAT-8). macOS is covered by the
+  next entry.
+- **A git config written under another spelling is put back when the
+  container exits.** On macOS, a container reaches the project through a file
+  share that ignores case, and its kernel takes `.git/CONFIG` for a file of its
+  own, not the read-only `.git/config`. Measured on Colima: the agent wrote
+  `core.fsmonitor` into the host's config that way, pointed `commondir`
+  elsewhere, and rewrote a worktree's `.git` file. Directories such as
+  `hooks/` held. The launcher now keeps each read-only git file whose name
+  ignores case at launch and, when `docker run` returns, puts back any that
+  changed. What it held is copied to `~/.ai-containers/restored/`, and a
+  `WARNING:` names the copy with the `diff` to compare, in case the change was
+  yours. Your host's git still reads the changed file until the container
+  exits. Where names are case-sensitive (Linux), nothing changes (bugs review
+  GIT-41).
 
 - **A git repository the agent makes during a session is named when the
   container exits.** The launch protects every repository it finds, so one the
