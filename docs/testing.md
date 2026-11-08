@@ -101,7 +101,7 @@ What has actually been run where, beyond CI's `ubuntu-24.04`. One row per run, n
 **macOS notes.**
 - **BSD userland catches what CI cannot:** `paste -s` needs `-` to read stdin, there is no `flock`, and APFS refuses a file name that is not UTF-8 (`Illegal byte sequence`). A test that relies on any of these fails only on a Mac.
 - **The floor runs on Colima's overlayfs,** which can reuse an inode within the same second. An identity of device, inode and birth time is unique there only if the birth time is to the nanosecond (GIT-27).
-- **Device:inode do not survive the bind on Colima,** so the mount-swap check is skipped (PLAT-3).
+- **Device:inode do not survive the bind on Colima,** so the launcher takes them from Colima's VM (`colima ssh`), and the mount-swap check runs there as on Linux (PLAT-3). Case 460 says which kind of host it found.
 - **Colima's virtiofs ignores case, and the container's kernel does not:** a read-only bind of `.git/config` does not cover `.git/CONFIG` (GIT-41). Directory binds hold. `mktemp -d` ignores `TMPDIR` on macOS, so a test needing a case-sensitive `TMPDIR` there needs a `mktemp` that honours it.
 - **Not exercised:** Docker Desktop, and Phases 4, 6 and 7.
 

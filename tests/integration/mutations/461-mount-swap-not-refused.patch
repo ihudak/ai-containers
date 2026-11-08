@@ -9,10 +9,11 @@
 #       assertions still PASS.
 #
 # NOTE: entrypoint.sh is COPYed into the image, so this patch needs a rebuild to
-# take effect — never --reuse-image. And it needs an engine that preserves
-# device:inode across a bind (a Linux engine): on one that does not (macOS
-# Docker Desktop, Colima) case 460 takes its non-preserving branch, where no
-# refusal is expected, and this mutant cannot be told apart.
+# take effect — never --reuse-image. And it needs an engine where the launcher
+# knows the device:inode a container sees: a Linux engine, or Colima, whose VM
+# reports them (PLAT-3). On macOS Docker Desktop case 460 takes its
+# non-preserving branch, where no refusal is expected, and this mutant cannot be
+# told apart.
 diff --git a/entrypoint.sh b/entrypoint.sh
 index aae4c1d..7bad87d 100755
 --- a/entrypoint.sh

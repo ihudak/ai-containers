@@ -4337,6 +4337,45 @@ _launcher_dev_ino() {
   printf '%s\n' "$out"
 }
 
+# Colima's file sharing does not keep device:inode across a bind, so the host's
+# stat is no use to the entrypoint's check there; Colima's VM's is. It reports
+# the device:inode every container of that VM sees, a swap made by a concurrent
+# container included, since that one is made in the VM (PLAT-3, GAP-11; measured
+# on Colima 0.10.3 with virtiofs). A change made on the Mac shows in the VM about
+# a second late, but the containers see it through the same cache, so the two
+# never disagree. Nothing here decides that the check runs: the entrypoint still
+# compares the verify directory's own device:inode first, and skips with its
+# NOTE: unless the VM asked is the one the container runs in.
+#
+# _colima_profile: the Colima profile whose socket docker uses, or non-zero.
+_colima_profile() {
+  command -v colima >/dev/null 2>&1 || return 1
+  local ep="${DOCKER_HOST:-}" base="${COLIMA_HOME:-$HOME/.colima}" p
+  [[ -n "$ep" ]] || ep="$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null)" || return 1
+  [[ "$ep" == "unix://$base/"*/docker.sock ]] || return 1
+  p="${ep#"unix://$base/"}"; p="${p%/docker.sock}"
+  [[ "$p" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return 1
+  printf '%s\n' "$p"
+}
+# _vm_dev_ino_load <map> <path>...: fills the associative array <map> with
+# path → "dev ino" as Colima's VM sees each path, in one `colima ssh` (~0.3 s).
+# The paths go to a fixed command on stdin, NUL-separated, never through the VM's
+# shell: the agent names the directories. stat prints each name back, so a path
+# the VM cannot stat is simply absent. Returns non-zero off Colima.
+_vm_dev_ino_load() {
+  # shellcheck disable=SC2178  # a nameref to the caller's associative array
+  local -n _vl_map="$1"; shift
+  local prof rec rest dev ino tp=()
+  prof="$(_colima_profile)" || return 1
+  read -r -a tp <<<"$(_timeout_prefix 20)"
+  while IFS= read -r -d '' rec; do
+    dev="${rec%%:*}"; rest="${rec#*:}"; ino="${rest%%:*}"
+    [[ "$dev" =~ ^[0-9]+$ && "$ino" =~ ^[0-9]+$ ]] || continue
+    _vl_map["${rest#*:}"]="$dev $ino"
+  done < <(printf '%s\0' "$@" | ${tp[@]+"${tp[@]}"} colima ssh -p "$prof" -- xargs -0 stat '--printf=%d:%i:%n\0' -- 2>/dev/null)
+  return 0
+}
+
 # Set by run_container when it creates a launcher-mount verify dir; removed by
 # the EXIT trap below. A global, not a run_container local, so the trap can see
 # it, and guarded with :- so `set -u` is satisfied when no dir was made.
@@ -5228,6 +5267,14 @@ run_container() {
       local -A _vrof=()
       for _vsrc in ${launcher_ro_files[@]+"${launcher_ro_files[@]}"}; do _vrof[$_vsrc]=1; done
       : > "$_vdir/manifest"
+      # On Colima, every device:inode comes from its VM, the verify directory's
+      # included, or none does: the entrypoint then checks there as on Linux. A
+      # source the VM cannot stat is recorded as 0:0, which refuses the launch, as
+      # a host stat that fails does (PLAT-3).
+      local -A _vm_di=()
+      local _vm_on=0 _vpaths=("$_vdir")
+      for (( _i = 0; _i < ${#launcher_verify[@]}; _i += 2 )); do _vpaths+=("${launcher_verify[_i]}"); done
+      if _vm_dev_ino_load _vm_di "${_vpaths[@]}" && [[ -n "${_vm_di[$_vdir]:-}" ]]; then _vm_on=1; fi
       for (( _i = 0; _i < ${#launcher_verify[@]}; _i += 2 )); do
         _vsrc="${launcher_verify[_i]}"; _vdst="${launcher_verify[_i+1]}"
         # Checked again where the inode is recorded: a concurrent container could
@@ -5237,12 +5284,15 @@ run_container() {
           printf 'ERROR: %s is no longer what was checked; refusing the launch.\n' "$(_term "$_vsrc")" >&2
           exit 1
         fi
-        if read -r _vdev _vino < <(_launcher_dev_ino "$_vsrc"); then :; else _vdev=0; _vino=0; fi
+        if (( _vm_on )); then
+          if [[ -n "${_vm_di[$_vsrc]:-}" ]]; then read -r _vdev _vino <<<"${_vm_di[$_vsrc]}"; else _vdev=0; _vino=0; fi
+        elif read -r _vdev _vino < <(_launcher_dev_ino "$_vsrc"); then :; else _vdev=0; _vino=0; fi
         printf '%s\0%s\0%s\0' "$_vdev" "$_vino" "$_vdst" >> "$_vdir/manifest"
       done
       launcher_verify_flags=(-v "$_vdir:/run/ai-launcher:ro")
       local _adev="" _aino=""
-      read -r _adev _aino < <(_launcher_dev_ino "$_vdir") || true
+      if (( _vm_on )); then read -r _adev _aino <<<"${_vm_di[$_vdir]}"
+      else read -r _adev _aino < <(_launcher_dev_ino "$_vdir") || true; fi
       launcher_anchor_env=(-e "AI_LAUNCHER_ANCHOR=${_adev}:${_aino}")
     else
       printf 'WARNING: could not create %s; launcher mounts will not be verified against\n' "$_vdir" >&2

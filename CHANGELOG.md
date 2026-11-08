@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **On Colima, launcher mounts are now verified against a concurrent-container
+  swap.** Colima's file sharing does not keep device:inode across a bind, so the
+  entrypoint skipped the check on every launch with a `NOTE:`. Colima's VM
+  reports the device:inode its containers see, so `sandbox.sh` now records each
+  mount source as the VM sees it, in one `colima ssh`, and the check runs as on
+  Linux: a swapped source refuses the launch. Docker Desktop for Mac still skips
+  it (feature-gaps review GAP-11, platform log PLAT-3).
+
 - **`sync-to-projects.sh` regenerates an unedited `runme.sh`.** A fix to the
   generated launcher never reached a project initialised before it: a launcher
   from before `--version` built an image to answer `./runme.sh --version`. Sync
