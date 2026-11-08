@@ -45,11 +45,13 @@ trap 'chmod -R u+rwx "$TMP" 2>/dev/null; rm -rf "$TMP"; export HOME="$REAL_HOME"
 export HOME="$TMP/home"; mkdir -p "$HOME"
 export AI_CONTAINER_GROUP=default AI_CONTAINER_GROUP_INIT=clean SANDBOX_USER=tester
 unset CONTAINER_NAME EXTRA_MOUNTS REPOS VAULT_PATH SPECS_PATH DOCS_PATH ARCHITECTURE_REPO_PATH \
-      SANDBOX_MODE SANDBOX_WORKDIR SANDBOX_ENV_FILE SANDBOX_LAUNCHER_MAX
+      SANDBOX_MODE SANDBOX_WORKDIR SANDBOX_ENV_FILE SANDBOX_LAUNCHER_MAX DOCKER_HOST COLIMA_HOME
 CAPTURE="$TMP/docker-args.txt"
 mkdir -p "$TMP/bin"
 cat > "$TMP/bin/docker" <<DOCKER
 #!/usr/bin/env bash
+# The endpoint sandbox.sh asks for to tell Colima's socket (T66); none otherwise.
+if [[ "\$1" == context ]]; then [[ -z "\${FAKE_DOCKER_ENDPOINT:-}" ]] || printf '%s\n' "\$FAKE_DOCKER_ENDPOINT"; exit 0; fi
 if [[ "\$1" == "run" ]]; then
   shift; printf '%s\n' "\$@" > "$CAPTURE"
   # Before sandbox.sh's EXIT trap removes it, copy out the verify dir's manifest
@@ -59,6 +61,7 @@ if [[ "\$1" == "run" ]]; then
     if [[ "\$prev" == -v && "\$a" == *:/run/ai-launcher:ro ]]; then
       vsrc="\${a%:/run/ai-launcher:ro}"
       cp "\$vsrc/manifest" "$CAPTURE.manifest" 2>/dev/null
+      printf '%s' "\$vsrc" > "$CAPTURE.vdir"
       if [[ "$_P_STAT_GNU" == 1 ]]; then stat -c '%d:%i' "\$vsrc"; else stat -f '%d:%i' "\$vsrc"; fi > "$CAPTURE.anchor" 2>/dev/null
     fi
     prev="\$a"
@@ -1359,6 +1362,70 @@ grep -qF "it can change $TMP/app (at /workspace/app)" \
      <<<"$(grep -A1 -F "launcher link $LAUNCHER/approot65 leads" "$ERR")" \
   && pass "T65 a launcher link to a writable mount's root is warned about" \
   || fail "T65 link to a mount root (rc=$LAUNCH_RC; stderr: $(grep -A1 -F 'approot65' "$ERR" | tr '\n' ' '))"
+
+# ── T66: on Colima the manifest holds the VM's device:inode ──────────────────
+# Colima's file sharing does not keep device:inode across a bind, so the host's
+# stat let the entrypoint skip the check on every launch (PLAT-3, GAP-11). Its VM
+# reports what the containers see; every recorded source and the anchor come from
+# there, through one `colima ssh` whose argv holds no path (the agent names the
+# directories). A fake `colima` stands in for the VM: device 77, the inode a
+# checksum of the path, so a record mapped to the wrong path shows.
+T66="$TMP/t66"; odd66=$'a:b\nc'
+mkdir -p "$T66/$odd66" && cp -R "$LAUNCHER" "$T66/$odd66/"
+cat > "$TMP/bin/colima" <<COLIMA
+#!/usr/bin/env bash
+printf '%s\n' "\$@" > "$CAPTURE.colima"
+[[ -z "\${FAKE_COLIMA_FAIL:-}" ]] || exit 1
+while IFS= read -r -d '' p; do
+  [[ -n "\${FAKE_COLIMA_MISS:-}" && "\$p" == "\$FAKE_COLIMA_MISS" ]] && continue
+  printf '77:%s:%s\0' "\$(printf '%s' "\$p" | cksum | cut -d' ' -f1)" "\$p"
+done
+COLIMA
+chmod +x "$TMP/bin/colima"
+vm66() { printf '77 %s' "$(printf '%s' "$1" | cksum | cut -d' ' -f1)"; }
+# man66 <dst>: what the manifest records for that destination.
+man66() {
+  local -a m; local i
+  mapfile -d '' -t m < "$CAPTURE.manifest" 2>/dev/null || m=()
+  for (( i = 0; i + 2 < ${#m[@]}; i += 3 )); do [[ "${m[i+2]}" == "$1" ]] && printf '%s %s' "${m[i]}" "${m[i+1]}"; done
+}
+src66="$T66/$odd66/.ai-containers"; dst66="/workspace/t66/$odd66/.ai-containers"
+colima66="unix://$HOME/.colima/default/docker.sock"
+rm -f "$CAPTURE.colima" "$CAPTURE.manifest"
+FAKE_DOCKER_ENDPOINT="$colima66" EXTRA_MOUNTS="$T66" launch "$LAUNCHER" "$TMP/app"
+aenv66="$(awk 'prev=="-e"{print} {prev=$0}' "$CAPTURE" | sed -n 's/^AI_LAUNCHER_ANCHOR=//p')"
+vdir66="$(cat "$CAPTURE.vdir" 2>/dev/null)"
+if [[ "$(man66 "$dst66")" == "$(vm66 "$src66")" && "$(man66 "/workspace/t66/$odd66")" == "$(vm66 "$T66/$odd66")" \
+      && "$(man66 /workspace/.agent-blocked)" == "$(vm66 "$LAUNCHER/.agent-blocked")" \
+      && -n "$vdir66" && "$aenv66" == "$(vm66 "$vdir66" | tr ' ' ':')" ]]; then
+  pass "T66 on Colima the manifest and the anchor hold the VM's device:inode, each for its own path"
+else
+  fail "T66 VM ids (rc=$LAUNCH_RC; $dst66 -> '$(man66 "$dst66")' want '$(vm66 "$src66")'; anchor '$aenv66'; stderr: $(tail -3 "$ERR" | tr '\n' ' '))"
+fi
+# Only fixed arguments reach the VM: the paths go on stdin.
+[[ "$(cat "$CAPTURE.colima" 2>/dev/null)" == "$(printf '%s\n' ssh -p default -- xargs -0 stat '--printf=%d:%i:%n\0' --)" ]] \
+  && pass "T66 colima ssh gets the profile and a fixed command, no path" \
+  || fail "T66 colima argv: $(tr '\n' ' ' < "$CAPTURE.colima" 2>/dev/null)"
+# A source the VM cannot stat is recorded 0:0, which the entrypoint refuses, not
+# the host's device:inode, which would pass for nothing there.
+FAKE_COLIMA_MISS="$src66" FAKE_DOCKER_ENDPOINT="$colima66" EXTRA_MOUNTS="$T66" launch "$LAUNCHER" "$TMP/app"
+[[ "$(man66 "$dst66")" == "0 0" && "$(man66 /workspace/.agent-blocked)" == "$(vm66 "$LAUNCHER/.agent-blocked")" ]] \
+  && pass "T66 a source the VM cannot stat is recorded as 0:0" \
+  || fail "T66 VM miss: $dst66 -> '$(man66 "$dst66")'"
+# No answer from the VM, or a socket that is not Colima's: the host's, as before
+# (the entrypoint then skips with its NOTE: where they do not survive the bind).
+FAKE_COLIMA_FAIL=1 FAKE_DOCKER_ENDPOINT="$colima66" EXTRA_MOUNTS="$T66" launch "$LAUNCHER" "$TMP/app"
+[[ "$(man66 "$dst66")" == "$(p_dev_ino "$src66")" ]] \
+  && pass "T66 when the VM does not answer, the host's device:inode is recorded" \
+  || fail "T66 VM failure: $dst66 -> '$(man66 "$dst66")' want '$(p_dev_ino "$src66")'"
+for ep66 in unix:///var/run/docker.sock "unix://$HOME/.colima/../x/docker.sock"; do
+  rm -f "$CAPTURE.colima"
+  FAKE_DOCKER_ENDPOINT="$ep66" EXTRA_MOUNTS="$T66" launch "$LAUNCHER" "$TMP/app"
+  [[ ! -e "$CAPTURE.colima" && "$(man66 "$dst66")" == "$(p_dev_ino "$src66")" ]] \
+    && pass "T66 docker at $ep66 is not Colima's: colima is not asked" \
+    || fail "T66 $ep66: colima asked ($(tr '\n' ' ' < "$CAPTURE.colima" 2>/dev/null)), $dst66 -> '$(man66 "$dst66")'"
+done
+rm -f "$TMP/bin/colima"; rm -rf "$T66"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

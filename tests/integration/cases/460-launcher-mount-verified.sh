@@ -10,24 +10,39 @@
 # destination in /run/ai-launcher/manifest (mounted read-only, the anchor), and
 # the entrypoint re-checks every mount as root before the agent shell exists.
 #
-# The check rests on the daemon preserving device:inode across a bind mount.
-# Linux engines do; file-sharing layers (macOS Docker Desktop, Colima) do not,
-# and there the guard is designed to step aside with a one-line NOTE rather than
-# refuse every launch. So the case first PROBES which kind of host this is and
-# asserts the behaviour that host must have — both branches are real
-# assertions, neither a skip:
+# The check rests on the launcher knowing the device:inode a container sees.
+# Linux engines keep the host's across a bind mount; file-sharing layers (macOS
+# Docker Desktop, Colima) do not. On Colima the launcher asks Colima's VM, which
+# reports what the containers see (PLAT-3); where nothing does, the guard is
+# designed to step aside with a one-line NOTE rather than refuse every launch. So
+# the case first PROBES which kind of host this is and asserts the behaviour that
+# host must have — every branch is a real assertion, none a skip:
 #
-#   preserving:  a real launch verifies (no NOTE); a crafted mismatch REFUSES;
+#   verifiable:  the host's ids survive the bind, or Colima's VM reports them.
+#                A real launch verifies (no NOTE); a crafted mismatch REFUSES;
 #                a wrong anchor notes and proceeds.
 #   not:         a real launch comes up and NOTEs; a crafted mismatch is NOT
 #                refused (nothing here can be verified, and a launch must not be
 #                blocked for it).
-#   both:        an anchor with no manifest to read NOTEs and proceeds.
+#   all:         an anchor with no manifest to read NOTEs and proceeds.
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 # shellcheck source=tests/portability.sh
 . "$(dirname "${BASH_SOURCE[0]}")/../../portability.sh"
 
 host_id() { p_dev_ino "$1" | tr ' ' ':'; }
+# What Colima's VM reports for a path, when docker is Colima's (the same test as
+# sandbox.sh: `_colima_profile()`); nothing elsewhere.
+colima_prof=""
+if command -v colima >/dev/null 2>&1; then
+  cbase="${COLIMA_HOME:-$HOME/.colima}"
+  if [[ "${IT_DOCKER_HOST:-}" == "unix://$cbase/"*/docker.sock ]]; then
+    colima_prof="${IT_DOCKER_HOST#"unix://$cbase/"}"; colima_prof="${colima_prof%/docker.sock}"
+  fi
+fi
+vm_id() {
+  [[ -n "$colima_prof" ]] || return 0
+  printf '%s\0' "$1" | colima ssh -p "$colima_prof" -- xargs -0 stat '--printf=%d:%i' -- 2>/dev/null
+}
 
 # ── which kind of host is this? ───────────────────────────────────────────────
 # IT_SELINUX_OPT here and in entry_run, as sandbox.sh passes it: an SELinux
@@ -36,9 +51,13 @@ host_id() { p_dev_ino "$1" | tr ' ' ':'; }
 # (tests/integration/run.sh: `resolve_selinux_opt()`).
 probe="$(it_scratch)/probe"; mkdir -p "$probe"
 ctr="$(docker run --rm --label "$IT_LABEL" ${IT_SELINUX_OPT:+"$IT_SELINUX_OPT"} -v "$probe:/p:ro" --entrypoint stat "$IT_IMAGE" -c '%d:%i' /p 2>/dev/null)"
-if [[ -n "$ctr" && "$ctr" == "$(host_id "$probe")" ]]; then preserving=1; else preserving=0; fi
-printf '     (this daemon %s device:inode across a bind mount)\n' \
-  "$([[ "$preserving" == 1 ]] && echo preserves || echo does NOT preserve)"
+# id_of: the device:inode the launcher records for a path on this host.
+if [[ -n "$ctr" && "$ctr" == "$(host_id "$probe")" ]]; then preserving=1; id_of() { host_id "$1"; }
+elif [[ -n "$ctr" && "$ctr" == "$(vm_id "$probe")" ]]; then preserving=1; id_of() { vm_id "$1"; }
+else preserving=0; id_of() { host_id "$1"; }; fi
+printf '     (this daemon %s device:inode across a bind mount%s)\n' \
+  "$([[ "$ctr" == "$(host_id "$probe")" ]] && echo preserves || echo does NOT preserve)" \
+  "$([[ "$preserving" == 1 && "$ctr" != "$(host_id "$probe")" ]] && echo "; Colima's VM reports them")"
 
 # ── a real launch with launcher mounts ───────────────────────────────────────
 grp="$(it_scratch)/grp"
@@ -70,10 +89,10 @@ d="$(it_scratch)"
 entry_run() {
   local vr dd dev ino manino anchor out rc
   vr="$d/vr$RANDOM"; dd="$d/dd$RANDOM"; mkdir -p "$vr" "$dd"
-  read -r dev ino < <(p_dev_ino "$dd")
+  IFS=: read -r dev ino < <(id_of "$dd"; echo)
   manino="$ino"; [[ "$2" == 0 ]] && manino=$((ino + 4096))
   printf '%s\0%s\0%s\0' "$dev" "$manino" "/workspace/dd" > "$vr/manifest"
-  anchor="$(host_id "$vr")"; [[ "$1" == 0 ]] && anchor="999999:999999"
+  anchor="$(id_of "$vr")"; [[ "$1" == 0 ]] && anchor="999999:999999"
   out="$(docker run --rm --label "$IT_LABEL" ${IT_SELINUX_OPT:+"$IT_SELINUX_OPT"} \
     -e DEV_CONTAINER_MODE=open -e SANDBOX_UID="$IT_LAUNCH_UID" -e SANDBOX_GID="$IT_LAUNCH_GID" \
     -e SANDBOX_USER=tester -e SANDBOX_GROUP=tester \

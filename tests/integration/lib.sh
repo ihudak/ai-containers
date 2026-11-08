@@ -414,6 +414,11 @@ if [[ -z "${IT_DOCKER_HOST+x}" ]]; then
     case "$IT_DOCKER_HOST" in *'<no value>'*) IT_DOCKER_HOST="" ;; esac
   fi
 fi
+# Colima keeps its profiles in ~/.colima, which the scratch HOME a launch runs
+# under hides. The launcher asks Colima's VM for the device:inode it records
+# (sandbox.sh: `_colima_profile()`, PLAT-3), so a launch is told where they are,
+# as a user's own launch finds them. Read before any HOME is redirected.
+IT_COLIMA_HOME="${COLIMA_HOME:-$HOME/.colima}"
 
 IT_LAUNCH_HOME=""; IT_LAUNCH_DIR=""; IT_SHIM_DIR=""
 IT_LAUNCH_NAME=""; IT_LAUNCH_RC=0; IT_LAUNCH_OUT=""; IT_LAUNCH_ERR=""
@@ -510,7 +515,7 @@ launcher_run() {  # $1=mode [$2=primary]
   (
     cd "$IT_LAUNCH_DIR" || exit 1
     export PATH="$IT_SHIM_DIR:$PATH"
-    export HOME="$IT_LAUNCH_HOME"
+    export HOME="$IT_LAUNCH_HOME" COLIMA_HOME="$IT_COLIMA_HOME"
     # See the IT_DOCKER_HOST comment above (by IT_REAL_DOCKER) for the full
     # reasoning. Conditional on purpose: an empty IT_DOCKER_HOST means
     # resolution failed or found nothing to say, and exporting DOCKER_HOST=""
