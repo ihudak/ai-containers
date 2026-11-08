@@ -618,10 +618,13 @@ rm -rf "$HOME/.ai-containers/default/work92"
 # cost a process per directory and, past the budget, refused an ordinary launch
 # (GAP-2 slice 3: the guard, damaged, survived). Skipped where TMP needs
 # spelling: a directory above it ignores case (macOS's APFS, a case-sensitive
-# directory on a Windows drive), or it lies on a Windows filesystem. Decided
+# directory on a Windows drive), or it may lie on a Windows filesystem. Decided
 # here, not by the launcher's own _ci_path/_win_path: a falsify run mutates
 # those, and one that says "spell" everywhere would skip the check that kills
-# it (final review of slice 3).
+# it (final review of slice 3). stat -f cannot tell one FUSE filesystem from
+# another (smbnetfs, ntfs-3g, sshfs and virtiofs all report FUSE's magic, which
+# current GNU stat prints as fuse and older ones as fuseblk), so any of them
+# skips.
 needs_spell125() {   # <absolute path>
   local p="" r="${1#/}" c f
   while [[ -n "$r" ]]; do
@@ -631,12 +634,12 @@ needs_spell125() {   # <absolute path>
     p="$p/$c"
   done
   [[ "$OSTYPE" == linux* ]] || return 1
-  case "$(stat -f -c %T -- "$1" 2>/dev/null)" in v9fs|cifs|smb|smb2|smb3|ntfs|fuseblk|fuse|virtiofs) return 0 ;; esac
+  case "$(stat -f -c %T -- "$1" 2>/dev/null)" in v9fs|cifs|smb|smb2|smb3|ntfs|fuseblk|fuse) return 0 ;; esac
   return 1
 }
 mkdir "$TMP/Probe125" || { printf 'SCAFFOLD-FAILED: G125\n'; exit 1; }
 if needs_spell125 "$TMP/Probe125"; then
-  printf 'SKIP: G125 — a directory above TMPDIR ignores case, or is on a Windows filesystem\n'
+  printf 'SKIP: G125 — a directory above TMPDIR ignores case, or is on a Windows or FUSE filesystem\n'
 else
   mkdir -p "$PROJ/lib125" && "${G[@]}" init -q "$PROJ/lib125" || { printf 'SCAFFOLD-FAILED: G125 repo\n'; exit 1; }
   AI_CONTAINERS_SPELL_MAX=0 launch ..

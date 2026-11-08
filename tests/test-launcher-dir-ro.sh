@@ -93,6 +93,9 @@ launch() {
   ( cd "$1" && bash ./sandbox.sh restricted "$2" ) >/dev/null 2>"$ERR" </dev/null
   LAUNCH_RC=$?
 }
+# Whether an ERROR: line of the last launch names $1. Captured first: under
+# pipefail `grep | grep -q` can report the opposite of what it saw.
+err_names() { grep -aF "ERROR:" "$ERR" > "$TMP/err-lines.txt"; grep -aqF -- "$1" "$TMP/err-lines.txt"; }
 # Every mount, rendered `src:dst[:opts]`, one per line — both the `-v` pairs the
 # rest of sandbox.sh emits and the `--mount` values the launcher overlay emits.
 # docker parses a --mount value as one CSV record, so this does too: quoted
@@ -1327,18 +1330,18 @@ if grep -aqF "WARNING: cannot protect $L64" "$ERR" \
 else
   fail "T64 a writable launcher's own links (rc=$LAUNCH_RC; stderr: $(grep -aF 'ur64' "$ERR" | tr '\n' ' '))"
 fi
-# One with a writable bind of its own inside it (an EXTRA_MOUNTS of a directory
+# One with a writable bind of its own inside it (here the primary, a directory
 # there, which gets a NOTE): a step inside the launcher is judged only where it
-# lies in that bind. A name that is not UTF-8, since with one holding ':' docker
-# refuses the launch; it is the launcher's judgement that is tested, before
-# docker runs (docker would mount a new directory in its place: LNCH-22).
-# Skipped where the filesystem refuses the name, as T24's are.
-B64="$TMP/b64"; L64b="$B64/bad"$'\xff'"/.ai-containers"
-if mk_launcher "$B64/bad"$'\xff' 2>/dev/null; then
+# lies in that bind. The launcher's name, a ':' and a trailing space, is one
+# docker cannot carry; the bind's, which holds the ':' but does not end in the
+# space, goes through --mount (LNCH-22). Skipped where the filesystem refuses
+# the name, as T24's are.
+B64="$TMP/b64"; L64b="$B64/c:o /.ai-containers"
+if mk_launcher "$B64/c:o " 2>/dev/null; then
   mkdir -p "$L64b/inner64"; : > "$L64b/inner64/x64"
   ln -s sandbox.sh "$L64b/home64.sh"; ln -s inner64/x64 "$L64b/in64.sh"
-  EXTRA_MOUNTS="$B64 $L64b/inner64" launch "$LAUNCHER" "$TMP/app"
-  if grep -aqF "WARNING: cannot protect $B64/bad" "$ERR" \
+  EXTRA_MOUNTS="$B64" launch "$LAUNCHER" "$L64b/inner64"
+  if [[ "$LAUNCH_RC" == 0 ]] && grep -aqF "WARNING: cannot protect $B64/c:o " "$ERR" \
      && grep -aqF "/in64.sh leads somewhere the agent can change" "$ERR" \
      && ! grep -aqF "home64.sh" "$ERR"; then
     pass "T64 in a launcher that could not be overlaid, with a writable bind inside it, a link that stays out of that bind is not warned about"
@@ -1346,7 +1349,7 @@ if mk_launcher "$B64/bad"$'\xff' 2>/dev/null; then
     fail "T64 a writable launcher with a bind inside it (rc=$LAUNCH_RC; stderr: $(grep -aF 'b64' "$ERR" | tr '\n' ' '))"
   fi
 else
-  printf 'SKIP: T64 a launcher whose name is not UTF-8 — this filesystem refuses it\n'
+  printf 'SKIP: T64 a launcher whose name holds a colon — this filesystem refuses it\n'
 fi
 rm -rf "$B64"
 
@@ -1426,6 +1429,183 @@ for ep66 in unix:///var/run/docker.sock "unix://$HOME/.colima/../x/docker.sock";
     || fail "T66 $ep66: colima asked ($(tr '\n' ' ' < "$CAPTURE.colima" 2>/dev/null)), $dst66 -> '$(man66 "$dst66")'"
 done
 rm -f "$TMP/bin/colima"; rm -rf "$T66"
+
+# ── T67: a host path holding ':', or bytes that are not UTF-8 ──────────────
+# docker splits a `-v` value at every ':', and refused the whole launch over a
+# primary, an EXTRA_MOUNTS entry, a pointer or a launch directory named with
+# one; the overlay scan, splitting the same way, searched a directory of
+# another name in its place. Every bind now goes through _bind_mount_arg, which
+# hands such a name to --mount, and the scan reads that form too (bugs review
+# LNCH-22).
+P67="$TMP/p:67"; mk_launcher "$P67"; mk_launcher "$TMP/f:67"; mkdir -p "$TMP/e:67" "$TMP/v:67"
+EXTRA_MOUNTS="$TMP/e:67 $TMP/f:67:ro" VAULT_PATH="$TMP/v:67" launch "$LAUNCHER" "$P67"
+m67="$(mounts)"
+if [[ "$LAUNCH_RC" == 0 ]] \
+   && grep -qxF -- "type=bind,\"source=$P67\",\"destination=/workspace/p:67\"" "$CAPTURE"; then
+  pass "T67 a primary whose name holds ':' reaches docker through --mount"
+else
+  fail "T67 primary with ':' (rc=$LAUNCH_RC; stderr: $(grep -a 'ERROR' "$ERR" | head -2 | tr '\n' ' '); args: $(grep -F 'p:67' "$CAPTURE" | tr '\n' ' '))"
+fi
+grep -qxF -- "$P67/.ai-containers:/workspace/p:67/.ai-containers:ro" <<<"$m67" \
+  && pass "T67 a launcher inside a mount whose name holds ':' is overlaid read-only (the scan read the --mount form)" \
+  || fail "T67 launcher inside a ':' mount not overlaid (mounts: $(grep -F 'p:67' <<<"$m67" | tr '\n' ' '))"
+grep -qxF -- "type=bind,\"source=$TMP/e:67\",\"destination=/workspace/e:67\"" "$CAPTURE" \
+  && grep -qxF -- "type=bind,\"source=$TMP/f:67\",\"destination=/workspace/f:67\",readonly" "$CAPTURE" \
+  && pass "T67 an EXTRA_MOUNTS entry holding ':' is mounted, a trailing :ro read as its mode" \
+  || fail "T67 EXTRA_MOUNTS with ':' (rc=$LAUNCH_RC; stderr: $(grep -a 'ERROR' "$ERR" | head -2 | tr '\n' ' '); args: $(grep -F ':67' "$CAPTURE" | tr '\n' ' '))"
+grep -qxF -- "type=bind,\"source=$TMP/v:67\",\"destination=/workspace/vault\"" "$CAPTURE" \
+  && pass "T67 a VAULT_PATH holding ':' is mounted through --mount" \
+  || fail "T67 VAULT_PATH with ':' (args: $(grep -F 'v:67' "$CAPTURE" | tr '\n' ' '))"
+# Read-only (--mount's `readonly`) is read back as such: nothing in it is
+# overlaid, as nothing in a `-v …:ro` is.
+! grep -qF -- "$TMP/f:67/.ai-containers:" <<<"$m67" && grep -qxF -- "$TMP/f:67:/workspace/f:67:ro" <<<"$m67" \
+  && pass "T67 a launcher inside a read-only mount whose name holds ':' gets no overlay" \
+  || fail "T67 read-only ':' mount scanned as writable (mounts: $(grep -F 'f:67' <<<"$m67" | tr '\n' ' '))"
+rm -rf "$P67" "$TMP/e:67" "$TMP/f:67" "$TMP/v:67"
+# The --mount record is CSV: a name holding ',' and '"' (doubled) is read back
+# whole, so a launcher in it is overlaid (review of the LNCH-22 fix: splitting at
+# a quoted comma, or not taking "" for one quote, switched the overlay off).
+Q67="$TMP/q:r,\"s67"; mk_launcher "$Q67"
+launch "$LAUNCHER" "$Q67"
+grep -qxF -- "$Q67/.ai-containers:/workspace/q:r,\"s67/.ai-containers:ro" <<<"$(mounts)" \
+  && pass "T67 a launcher inside a mount named with ':', ',' and '\"' is overlaid read-only" \
+  || fail "T67 CSV-quoted mount name (rc=$LAUNCH_RC; stderr: $(grep -a 'ERROR' "$ERR" | head -2 | tr '\n' ' '); mounts: $(mounts | grep -F 's67' | tr '\n' ' '))"
+rm -rf "$Q67"
+# A suffix of options `-v` takes is still the mode, passed through as before;
+# a path holding ':' whose mode is more than ro or rw, which --mount as written
+# cannot carry, refuses the launch rather than lose the option.
+mkdir -p "$TMP/c67" "$TMP/d:67"
+EXTRA_MOUNTS="$TMP/c67:ro,z" launch "$LAUNCHER" "$TMP/app"
+grep -qxF -- "$TMP/c67:/workspace/c67:ro,z" "$CAPTURE" \
+  && pass "T67 an EXTRA_MOUNTS entry's option list (:ro,z) still reaches -v as its mode" \
+  || fail "T67 EXTRA_MOUNTS :ro,z (rc=$LAUNCH_RC; stderr: $(grep -a 'ERROR' "$ERR" | head -2 | tr '\n' ' '); args: $(grep -F 'c67' "$CAPTURE" | tr '\n' ' '))"
+EXTRA_MOUNTS="$TMP/d:67:ro,z" launch "$LAUNCHER" "$TMP/app"
+if [[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && err_names "$TMP/d:67"; then
+  pass "T67 a path holding ':' with an option --mount is not given refuses the launch, naming it"
+else
+  fail "T67 ':' with ro,z (rc=$LAUNCH_RC; docker ran: $([[ -s "$CAPTURE" ]] && echo yes || echo no); stderr: $(grep -a 'ERROR' "$ERR" | head -2 | tr '\n' ' '))"
+fi
+# A trailing comma is no option list: the entry is read as a path, which does
+# not exist.
+EXTRA_MOUNTS="$TMP/c67:ro," launch "$LAUNCHER" "$TMP/app"
+[[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && grep -aqF "EXTRA_MOUNTS path does not exist: $TMP/c67:ro," "$ERR" \
+  && pass "T67 an EXTRA_MOUNTS suffix ending in a comma is not read as a mode" \
+  || fail "T67 EXTRA_MOUNTS :ro, (rc=$LAUNCH_RC; stderr: $(grep -a 'ERROR' "$ERR" | head -2 | tr '\n' ' '))"
+# The mode refusal names the name holding the ':': here the destination, a
+# link's own name, not the directory it leads to.
+ln -s "$TMP/c67" "$TMP/a:b67"
+EXTRA_MOUNTS="$TMP/a:b67:ro,z" launch "$LAUNCHER" "$TMP/app"
+[[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && grep -aqF "/workspace/a:b67 holds a \":\"" "$ERR" \
+  && pass "T67 the mode refusal names the destination when the ':' is there" \
+  || fail "T67 mode refusal at the destination (rc=$LAUNCH_RC; stderr: $(grep -a -A1 'ERROR' "$ERR" | head -3 | tr '\n' ' '))"
+rm -f "$TMP/a:b67"
+rm -rf "$TMP/c67" "$TMP/d:67"
+# SPECS_PATH, and DOCS_PATH and ARCHITECTURE_REPO_PATH asked for :rw: each
+# reaches docker through --mount (review of the LNCH-22 fix: these call sites,
+# reverted to a raw -v, survived).
+mkdir -p "$TMP/s:67" "$TMP/d:67" "$TMP/a:67"
+SPECS_PATH="$TMP/s:67" DOCS_PATH="$TMP/d:67:rw" ARCHITECTURE_REPO_PATH="$TMP/a:67:rw" launch "$LAUNCHER" "$TMP/app"
+grep -qxF -- "type=bind,\"source=$TMP/s:67\",\"destination=/workspace/specs\"" "$CAPTURE" \
+  && grep -qxF -- "type=bind,\"source=$TMP/d:67\",\"destination=/workspace/docs\"" "$CAPTURE" \
+  && grep -qxF -- "type=bind,\"source=$TMP/a:67\",\"destination=/workspace/architecture\"" "$CAPTURE" \
+  && pass "T67 SPECS_PATH, DOCS_PATH and ARCHITECTURE_REPO_PATH holding ':' reach docker through --mount" \
+  || fail "T67 pointers with ':' (rc=$LAUNCH_RC; stderr: $(grep -a 'ERROR' "$ERR" | head -2 | tr '\n' ' '); args: $(grep -F ':67' "$CAPTURE" | tr '\n' ' '))"
+rm -rf "$TMP/s:67" "$TMP/d:67" "$TMP/a:67"
+# A REPOS entry this host bind-mounts (the Linux bind backend).
+mkdir -p "$TMP/r:67src" "$HOME/.ai-containers"; cp -p "$HOME/.ai-containers/repos.conf" "$TMP/repos67.bak" 2>/dev/null
+printf 'r67|path|%s|2026-11-08|2026-11-08|bind\n' "$TMP/r:67src" >> "$HOME/.ai-containers/repos.conf"
+REPOS="r67:rw" launch "$LAUNCHER" "$TMP/app"
+grep -qxF -- "type=bind,\"source=$TMP/r:67src\",\"destination=/workspace/r67\"" "$CAPTURE" \
+  && pass "T67 a REPOS bind whose source holds ':' reaches docker through --mount" \
+  || fail "T67 REPOS bind with ':' (rc=$LAUNCH_RC; stderr: $(grep -a 'ERROR' "$ERR" | head -2 | tr '\n' ' '); args: $(grep -F 'r67' "$CAPTURE" | tr '\n' ' '))"
+if [[ -f "$TMP/repos67.bak" ]]; then mv "$TMP/repos67.bak" "$HOME/.ai-containers/repos.conf"; else rm -f "$HOME/.ai-containers/repos.conf"; fi
+rm -rf "$TMP/r:67src"
+# A HOME holding ':': the group's mounts and the verify directory.
+H67="$TMP/h:67"; mkdir -p "$H67"
+HOME="$H67" launch "$LAUNCHER" "$TMP/app"
+if [[ "$LAUNCH_RC" == 0 ]] \
+   && grep -qxF -- "type=bind,\"source=$H67/.ai-containers/default/.ssh\",\"destination=/home/tester/.ssh\"" "$CAPTURE" \
+   && grep -qF -- '"destination=/run/ai-launcher",readonly' "$CAPTURE"; then
+  pass "T67 under a HOME holding ':', the group's mounts and the verify directory reach docker through --mount"
+else
+  fail "T67 HOME with ':' (rc=$LAUNCH_RC; stderr: $(grep -a 'ERROR' "$ERR" | head -2 | tr '\n' ' '); args: $(grep -F 'h:67' "$CAPTURE" | head -3 | tr '\n' ' '))"
+fi
+rm -rf "$H67"
+
+# Launched from a directory holding ':': the output directory and this
+# launcher's own overlay.
+L67="$TMP/l:67/.ai-containers"; mkdir -p "$TMP/l:67"; cp -R "$LAUNCHER" "$L67"; rm -rf "$L67/.agent-blocked"
+launch "$L67" ..
+if [[ "$LAUNCH_RC" == 0 ]] \
+   && grep -qxF -- "type=bind,\"source=$L67/.agent-blocked\",\"destination=/workspace/.agent-blocked\"" "$CAPTURE" \
+   && grep -qxF -- "$L67:/workspace/l:67/.ai-containers:ro" <<<"$(mounts)"; then
+  pass "T67 launched from a directory holding ':', its output directory is mounted and the launcher overlaid"
+else
+  fail "T67 launch dir with ':' (rc=$LAUNCH_RC; stderr: $(grep -a 'ERROR' "$ERR" | head -2 | tr '\n' ' '); args: $(grep -F 'l:67' "$CAPTURE" | tr '\n' ' '))"
+fi
+rm -rf "$TMP/l:67"
+
+# What no form carries is refused before docker runs, naming it: a name that is
+# not UTF-8 (the CLI rewrites it to U+FFFD, and docker mounts, or makes, the
+# directory of that name instead: unscanned), and one holding ':' that ends in
+# whitespace (--mount refuses it). Skipped where the filesystem refuses a name.
+U67="$TMP/u67"$'\xff'; W67="$TMP/w:67 "
+if mkdir "$U67" 2>/dev/null; then
+  launch "$LAUNCHER" "$U67"
+  if [[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && err_names "$U67"; then
+    pass "T67 a primary whose name is not UTF-8 refuses the launch, naming it, before docker runs"
+  else
+    fail "T67 non-UTF-8 primary (rc=$LAUNCH_RC; docker ran: $([[ -s "$CAPTURE" ]] && echo yes || echo no); stderr: $(grep -a 'ERROR' "$ERR" | head -2 | tr '\n' ' '))"
+  fi
+  mkdir -p "$U67/inner"
+  EXTRA_MOUNTS="$U67/inner" launch "$LAUNCHER" "$TMP/app"
+  if [[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && err_names "$U67/inner"; then
+    pass "T67 an EXTRA_MOUNTS entry that is not UTF-8 refuses the launch, naming it, before docker runs"
+  else
+    fail "T67 non-UTF-8 EXTRA_MOUNTS (rc=$LAUNCH_RC; docker ran: $([[ -s "$CAPTURE" ]] && echo yes || echo no); stderr: $(grep -a 'ERROR' "$ERR" | head -2 | tr '\n' ' '))"
+  fi
+  rm -rf "$U67"
+  # A link whose own name is not UTF-8: the source it leads to is fine, the
+  # destination named after the link is not, and the refusal names that.
+  ln -s "$TMP/app" "$TMP/ln67"$'\xff'
+  EXTRA_MOUNTS="$TMP/ln67"$'\xff' launch "$LAUNCHER" "$TMP/app"
+  if [[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && err_names "at /workspace/ln67"$'\xff'; then
+    pass "T67 an EXTRA_MOUNTS link whose name is not UTF-8 refuses the launch, naming the destination at fault"
+  else
+    fail "T67 non-UTF-8 destination (rc=$LAUNCH_RC; stderr: $(grep -a 'ERROR' "$ERR" | head -2 | tr '\n' ' '))"
+  fi
+  rm -f "$TMP/ln67"$'\xff'
+  # Not UTF-8 in the destination, with a source that ends in a space: the
+  # destination is named, as the name at fault.
+  mkdir -p "$TMP/tgt67 "; ln -s "$TMP/tgt67 " "$TMP/lm67"$'\xff'
+  EXTRA_MOUNTS="$TMP/lm67"$'\xff' launch "$LAUNCHER" "$TMP/app"
+  if [[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && grep -aqF "/workspace/lm67"$'\xff'" is not valid UTF-8" "$ERR"; then
+    pass "T67 a destination that is not UTF-8 is named even when the source ends in a space"
+  else
+    fail "T67 non-UTF-8 destination, spaced source (rc=$LAUNCH_RC; stderr: $(grep -a -A1 'ERROR' "$ERR" | head -3 | tr '\n' ' '))"
+  fi
+  rm -f "$TMP/lm67"$'\xff'; rm -rf "$TMP/tgt67 "
+  # SPECS_PATH not UTF-8: refused, as the primary is.
+  mkdir "$U67"; SPECS_PATH="$U67" launch "$LAUNCHER" "$TMP/app"; rmdir "$U67"
+  if [[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && err_names "SPECS_PATH $U67"; then
+    pass "T67 a SPECS_PATH that is not UTF-8 refuses the launch, naming it, before docker runs"
+  else
+    fail "T67 non-UTF-8 SPECS_PATH (rc=$LAUNCH_RC; docker ran: $([[ -s "$CAPTURE" ]] && echo yes || echo no); stderr: $(grep -a 'ERROR' "$ERR" | head -2 | tr '\n' ' '))"
+  fi
+else
+  printf 'SKIP: T67 a name that is not UTF-8 — this filesystem refuses it\n'
+fi
+if mkdir "$W67" 2>/dev/null; then
+  launch "$LAUNCHER" "$W67"
+  if [[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && err_names "$W67"; then
+    pass "T67 a primary holding ':' and ending in a space refuses the launch, naming it, before docker runs"
+  else
+    fail "T67 ':' and trailing space (rc=$LAUNCH_RC; docker ran: $([[ -s "$CAPTURE" ]] && echo yes || echo no); stderr: $(grep -a 'ERROR' "$ERR" | head -2 | tr '\n' ' '))"
+  fi
+  rm -rf "$W67"
+else
+  printf 'SKIP: T67 a name holding a colon — this filesystem refuses it\n'
+fi
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

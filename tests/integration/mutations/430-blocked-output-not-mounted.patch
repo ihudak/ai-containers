@@ -4,11 +4,11 @@
 diff --git a/sandbox.sh b/sandbox.sh
 --- a/sandbox.sh
 +++ b/sandbox.sh
-@@ -2772,6 +2772,7 @@
+@@ -4584,6 +4584,7 @@
        exit 1
      fi
      mkdir -p "$launch_dir/$_od"
 +    [[ "$_od" == .agent-blocked ]] && continue # MUTATION: host bind for .agent-blocked removed
-     output_mount_flags+=(-v "$launch_dir/$_od:/workspace/$_od"); output_dirs+=("$_od")
+     _bind_add output_mount_flags "$launch_dir/$_od" "/workspace/$_od" "" "the output directory"; output_dirs+=("$_od")
    done
    [[ "$mode" != discovery ]] || capture_enabled="1"

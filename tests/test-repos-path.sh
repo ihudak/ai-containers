@@ -172,5 +172,22 @@ run_sandbox "$TMP/app"
 expect_repos_path /workspace "/workspaces is a host path, not one under /workspace"
 teardown
 
+# ── Case 8: a mount whose name holds ':' ─────────────────────────────────────
+# Such a bind reaches docker through --mount, a CSV record, since `-v` splits at
+# every ':' (bugs review LNCH-22); the translation reads that form too.
+setup
+mkdir -p "$TMP/r:8/sub"
+export REPOS_PATH="$TMP/r:8/sub"
+run_sandbox "$TMP/r:8"
+expect_repos_path "/workspace/r:8/sub" "a directory inside a mount whose name holds ':' → the same place under it"
+teardown
+# Its record is CSV: ',' and '"' (doubled) in the name are read back whole.
+setup
+mkdir -p "$TMP/r:8,\"q/sub"
+export REPOS_PATH="$TMP/r:8,\"q/sub"
+run_sandbox "$TMP/r:8,\"q"
+expect_repos_path "/workspace/r:8,\"q/sub" "a directory inside a mount named with ':', ',' and '\"' → the same place under it"
+teardown
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

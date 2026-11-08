@@ -2,7 +2,7 @@
 
 ## Mounting additional repositories
 
-Set `EXTRA_MOUNTS` to a space-separated list of host paths. Append `:ro` or `:rw` to control per-directory access. The default is read-write. **Paths with spaces are not supported** (the variable is split on whitespace).
+Set `EXTRA_MOUNTS` to a space-separated list of host paths. Append `:ro` or `:rw` to control per-directory access. The default is read-write. **Paths with spaces are not supported** (the variable is split on whitespace). A path may hold a `:`: only a trailing `:ro` or `:rw` (or another option list docker's `-v` takes, such as `:ro,z`) is read as the mode, and a path holding a `:` takes only `:ro` or `:rw`. A path whose name is not valid UTF-8 refuses the launch, naming it, because docker would mount a directory of another name.
 
 ```bash
 # backend is the primary workspace; ui is read-write, reference-docs is read-only

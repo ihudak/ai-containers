@@ -152,7 +152,9 @@ Environment variables:
                       the host source; with volume it writes to the shared in-VM base.
   EXTRA_MOUNTS        Space-separated list of extra HOST directories to bind-mount under
                       /workspace/<basename> (virtiofs; slower, but live-visible on the host
-                      and needs no registration). Append :ro or :rw (default: rw).
+                      and needs no registration). Append :ro or :rw (default: rw), or
+                      another -v option list such as :ro,z. Any other ':' is part of the
+                      path, and a path holding one takes only :ro or :rw.
                       A name appearing in both EXTRA_MOUNTS and REPOS is an error.
   VAULT_PATH          Host personal knowledge base (Obsidian vault or any markdown KB) mounted
                       at /workspace/vault (also re-exported as VAULT_PATH=/workspace/vault).
@@ -277,27 +279,24 @@ _warn_group_link_out() {
 }
 
 add_mount_if_exists() {
-  local -n _flags=$1
   local original_src="$2" dst="$3" opts="${4:-rw}"
   local src
   src="$(resolve_path "$original_src")"
   _warn_group_link_out "$original_src" "$src"
   if [[ -d "$src" ]]; then
-    _flags+=(-v "$src:$dst:$opts")
+    _bind_add "$1" "$src" "$dst" "$opts" "the group directory"
   else
     printf 'WARNING: skipping mount — directory not found: %s\n' "$original_src" >&2
   fi
 }
 
 add_file_mount_if_exists() {
-  # shellcheck disable=SC2178,SC2128  # nameref: shellcheck does not model `local -n`
-  local -n _flags=$1
   local original_src="$2" dst="$3" opts="${4:-rw}"
   local src
   src="$(resolve_path "$original_src")"
   [[ -f "$src" ]] && _warn_group_link_out "$original_src" "$src"
   if [[ -f "$src" ]]; then
-    _flags+=(-v "$src:$dst:$opts")
+    _bind_add "$1" "$src" "$dst" "$opts" "the group file"
   fi
 }
 
@@ -341,7 +340,8 @@ add_file_mount_if_exists() {
 # inside its own launcher is not reported.
 #
 # launcher_ro_overlay <ro-flags-out> <verify-pairs-out> <this launcher's dir, as reached> <docker flag>...
-# Reads the `-v <src>:<dst>[:<opts>]` pairs among the flags. Only a writable bind
+# Reads the binds among the flags, `-v <src>:<dst>[:<opts>]` or a `--mount` record
+# (_bind_read). Only a writable bind
 # of a directory can expose a launcher: a named volume's source is a name and
 # holds a copy, a file mount holds no directory, and a :ro bind is read-only
 # already. Sources are canonicalised physically (`pwd -P`) and compared by path
@@ -366,7 +366,8 @@ launcher_ro_overlay() {
   # shellcheck disable=SC2178  # nameref: shellcheck does not model `local -n`
   local -n _ro=$1 _vrfy=$2
   _rd_prep; _git_usable || true
-  local reached="$3" self spec src rest dst opts l at pin path part r skip i k depth max=0 d p pp kind ok mf mv
+  local reached="$3" self src rest dst opts l at pin path part r skip i k depth max=0 d p pp kind ok mf mv
+  local _br_src _br_dst _br_opts
   local x f e q w c inner how
   local uid="${SANDBOX_UID:-$(id -u)}" gid="${SANDBOX_GID:-$(id -g)}" you
   local -a found unreadable cand bsrc=() bdst=() cl=() cat=() csrc=() cdst=() cdep=() ckind=() ro_dsts=() psrc pdst
@@ -406,11 +407,10 @@ launcher_ro_overlay() {
   shift 3
   _cd_phys self "$reached" || self="$reached"
   while (( $# )); do
-    if [[ "$1" != -v || $# -lt 2 ]]; then shift; continue; fi
-    spec="$2"; shift 2
-    src="${spec%%:*}"; rest="${spec#*:}"
-    dst="${rest%%:*}"; opts=""
-    if [[ "$rest" == *:* ]]; then opts="${rest#*:}"; fi
+    # `-v`, or `--mount` for a name holding ':' (_bind_add; LNCH-22).
+    if [[ ( "$1" != -v && "$1" != --mount ) || $# -lt 2 ]]; then shift; continue; fi
+    _bind_read "$1" "$2"; shift 2
+    src="$_br_src"; dst="$_br_dst"; opts="$_br_opts"
     if [[ ",$opts," == *,ro,* ]]; then continue; fi
     if [[ "$src" != /* || ! -d "$src" ]]; then continue; fi
     # A mount root this launch cannot list cannot be searched for launchers,
@@ -2074,17 +2074,111 @@ _walk_exposed() {
 # hand docker one bind. `-v` carries any name docker accepts except one with a
 # ':' (its separator) — trailing whitespace, tabs, newlines, commas and quotes
 # included; a name with a ':' goes through `--mount` instead, whose value docker
-# reads as a CSV record, so each field is quoted and any '"' doubled.
+# reads as a CSV record, so each field is quoted and any '"' doubled. An empty
+# mode gives `-v` no third field.
 _bind_mount_arg() {
   local s="source=$3" d="destination=$4" o=""
   if [[ "$3$4" != *:* ]]; then
     printf -v "$1" '%s' -v
-    printf -v "$2" '%s:%s:%s' "$3" "$4" "$5"
+    printf -v "$2" '%s:%s%s' "$3" "$4" "${5:+:$5}"
   else
     if [[ "$5" == ro ]]; then o=",readonly"; fi
     printf -v "$1" '%s' --mount
     printf -v "$2" 'type=bind,"%s","%s"%s' "${s//\"/\"\"}" "${d//\"/\"\"}" "$o"
   fi
+}
+
+# _bind_add <array> <source> <destination> <mode> <what>: append one host bind
+# of the launch to <array>, in the form _bind_mount_arg picks. One docker cannot
+# be handed intact (_mount_representable) refuses the launch, naming <what>:
+# docker would refuse it, or mount another directory than the one the launcher
+# checked (a name that is not UTF-8; bugs review LNCH-22). So does a name with a
+# ':' whose mode is more than ro or rw, which --mount, as written here, cannot
+# carry.
+_bind_add() {
+  local mf mv bad="$2" at=""
+  if ! _mount_representable "$2" "$3"; then
+    # The name at fault: the destination when the source is UTF-8 and either the
+    # destination is not, or the source alone would pass (an EXTRA_MOUNTS link
+    # whose own name, the destination's, is the bad one).
+    if ! _utf8_valid "$2"; then :
+    elif ! _utf8_valid "$3" || _mount_representable "$2" :; then bad="$3"; at=" at $(_term "$3")"; fi
+    printf 'ERROR: %s %s cannot be mounted%s:\n' "$5" "$(_term "$2")" "$at" >&2
+    if _utf8_valid "$bad"; then
+      printf '       %s holds or meets a ":", so it reaches docker through --mount,\n' "$(_term "$bad")" >&2
+      printf '       which refuses a name that ends in whitespace or holds a carriage return.\n' >&2
+    else
+      printf '       %s is not valid UTF-8, which docker rewrites, so the bind\n' "$(_term "$bad")" >&2
+      printf '       would not be the one the launcher checked.\n' >&2
+    fi
+    printf '       Rename it, or leave it out; refusing the launch.\n' >&2
+    exit 1
+  fi
+  if [[ "$2$3" == *:* && -n "$4" && "$4" != ro && "$4" != rw ]]; then
+    bad="$2"; at=""
+    if [[ "$2" != *:* ]]; then bad="$3"; at=" at $(_term "$3")"; fi
+    printf 'ERROR: %s %s cannot be mounted%s:\n' "$5" "$(_term "$2")" "$at" >&2
+    printf '       %s holds a ":", so it reaches docker through --mount,\n' "$(_term "$bad")" >&2
+    printf '       which takes ro or rw here, not %s; refusing the launch.\n' "$(_term "$4")" >&2
+    exit 1
+  fi
+  _bind_mount_arg mf mv "$2" "$3" "$4"
+  local -n _ba_arr=$1
+  _ba_arr+=("$mf" "$mv")
+}
+
+# _bind_opts_ok <text>: is it a list of options `-v` takes after a bind's
+# destination? Read by EXTRA_MOUNTS, whose entries may end in one.
+_bind_opts_ok() {
+  local o
+  local -a os
+  [[ -n "$1" ]] || return 1
+  IFS=, read -r -a os <<<"$1"
+  for o in "${os[@]}"; do
+    case "$o" in
+      ro|rw|z|Z|cached|delegated|consistent|nocopy|shared|slave|private|rshared|rslave|rprivate) ;;
+      *) return 1 ;;
+    esac
+  done
+  [[ "$1" != *, && "$1" != ,* && "$1" != *,,* ]]
+}
+
+# _bind_read <flag> <value>: one bind of the launch read back as docker reads
+# it, into the caller's _br_src, _br_dst and _br_opts (empty where `-v` names
+# no mode; "ro" for a read-only --mount). A `-v` value _bind_add wrote holds a
+# ':' only as its separators; a --mount value is a CSV record. Returns 1 for
+# any other flag.
+_bind_read() {
+  local s="$2" c f cur="" q=0 i
+  local -a fs=()
+  _br_src=""; _br_dst=""; _br_opts=""
+  case "$1" in
+    -v)
+      _br_src="${s%%:*}"; s="${s#*:}"; _br_dst="${s%%:*}"
+      if [[ "$s" == *:* ]]; then _br_opts="${s#*:}"; fi
+      return 0 ;;
+    --mount) ;;
+    *) return 1 ;;
+  esac
+  for ((i = 0; i < ${#s}; i++)); do
+    c="${s:i:1}"
+    if (( q )); then
+      if [[ "$c" != '"' ]]; then cur+="$c"
+      elif [[ "${s:i+1:1}" == '"' ]]; then cur+='"'; i=$((i + 1))
+      else q=0; fi
+    elif [[ "$c" == '"' ]]; then q=1
+    elif [[ "$c" == , ]]; then fs+=("$cur"); cur=""
+    else cur+="$c"; fi
+  done
+  fs+=("$cur")
+  for f in "${fs[@]}"; do
+    case "$f" in
+      source=*|src=*) _br_src="${f#*=}" ;;
+      destination=*|dst=*|target=*) _br_dst="${f#*=}" ;;
+      readonly|ro|readonly=true|ro=true|readonly=1|ro=1) _br_opts=ro ;;
+    esac
+  done
+  return 0
 }
 
 # _mount_representable <source> <destination>: can _bind_mount_arg hand docker
@@ -4305,18 +4399,19 @@ repos_path_in_container() {
     "") printf '/workspace'; return 0 ;;
     /workspace|/workspace/*) printf '%s' "$val"; return 0 ;;
   esac
-  local host arg src dst
+  local host arg prev="" _br_src _br_dst _br_opts
   host="$(resolve_path "${val/#\~/$HOME}")"
   for arg in "$@"; do
-    # A host bind's value is `/src:/workspace/<name>[:mode]`; a volume's source
-    # does not start with `/`, and holds no host directory to map.
-    [[ "$arg" == /*:/workspace* ]] || continue
-    src="${arg%%:/workspace*}"
-    dst="${arg#"$src:"}"; dst="${dst%%:*}"
-    if [[ "$host" == "$src" || "$host" == "$src"/* ]]; then
-      printf '%s%s' "$dst" "${host#"$src"}"
+    # A host bind is `-v /src:/workspace/<name>[:mode]`, or `--mount` for a name
+    # holding ':' (_bind_add; LNCH-22); a volume's source does not start with
+    # `/`, and holds no host directory to map.
+    if [[ "$prev" == -v || "$prev" == --mount ]] && _bind_read "$prev" "$arg" \
+       && [[ "$_br_src" == /* && "$_br_dst" == /workspace* ]] \
+       && [[ "$host" == "$_br_src" || "$host" == "$_br_src"/* ]]; then
+      printf '%s%s' "$_br_dst" "${host#"$_br_src"}"
       return 0
     fi
+    prev="$arg"
   done
   printf '/workspace'
 }
@@ -4538,7 +4633,7 @@ run_container() {
       exit 1
     fi
     mkdir -p "$launch_dir/$_od"
-    output_mount_flags+=(-v "$launch_dir/$_od:/workspace/$_od"); output_dirs+=("$_od")
+    _bind_add output_mount_flags "$launch_dir/$_od" "/workspace/$_od" "" "the output directory"; output_dirs+=("$_od")
   done
   [[ "$mode" != discovery ]] || capture_enabled="1"
   # open: no firewall capture, no output mounts.
@@ -4588,9 +4683,13 @@ run_container() {
   if [[ -n "${EXTRA_MOUNTS:-}" ]]; then
     while IFS= read -r entry; do
       local dir opt real_dir base
-      dir="${entry%%:*}"
-      opt="${entry##*:}"
-      [[ "$opt" == "$dir" ]] && opt="rw"
+      # A trailing `:<options>` is the mode, as `-v` reads it (`:ro`, `:rw`,
+      # `:ro,z`, …); anything else after a ':' is part of the path, a directory
+      # named `a:b` say (bugs review LNCH-22).
+      dir="$entry"; opt="rw"
+      if [[ "$entry" == *:* ]] && _bind_opts_ok "${entry##*:}"; then
+        dir="${entry%:*}"; opt="${entry##*:}"
+      fi
       real_dir="$(resolve_path "${dir/#\~/$HOME}")"
       if [[ ! -d "$real_dir" ]]; then
         printf 'ERROR: EXTRA_MOUNTS path does not exist: %s\n' "$dir" >&2
@@ -4602,7 +4701,7 @@ run_container() {
         exit 1
       fi
       repos_used["$base"]="EXTRA_MOUNTS"
-      extra_mount_flags+=(-v "$real_dir:/workspace/$base:$opt")
+      _bind_add extra_mount_flags "$real_dir" "/workspace/$base" "$opt" "EXTRA_MOUNTS entry"
     done < <(split_env_list "$EXTRA_MOUNTS")
   fi
 
@@ -4614,7 +4713,7 @@ run_container() {
       exit 1
     fi
     repos_used["$pbase"]="primary"
-    extra_mount_flags+=(-v "$primary_path:/workspace/$pbase:rw")
+    _bind_add extra_mount_flags "$primary_path" "/workspace/$pbase" rw "the primary"
   fi
 
   # ── REPOS: attach registered repo volumes at /workspace/<name> ───────────────
@@ -4740,7 +4839,7 @@ run_container() {
           printf "       Re-point it: ./repo.sh rm %s && ./repo.sh add %s <host-path>\n" "$rname" "$rname" >&2
           exit 1
         fi
-        repo_mount_flags+=(-v "$rreal:/workspace/$rname:$rmode")
+        _bind_add repo_mount_flags "$rreal" "/workspace/$rname" "$rmode" "repo '$rname' bind source"
         printf 'REPO: /workspace/%s  (%s, bind %s)\n' "$rname" "$rmode" "$rreal" >&2
       else
         if ! repo_volume_exists "$rname"; then
@@ -4809,7 +4908,7 @@ run_container() {
         printf "       They are different directories; rename the repo or point VAULT_PATH elsewhere.\n" >&2
         exit 1
       else
-        vault_mount_flags+=(-v "$vault_real:/workspace/vault:rw")
+        _bind_add vault_mount_flags "$vault_real" /workspace/vault rw VAULT_PATH
         vault_env_args+=(-e VAULT_PATH=/workspace/vault)
         qmd_corpora+=("VAULT_PATH")
       fi
@@ -4842,7 +4941,7 @@ run_container() {
           printf "       They are different directories; rename the repo or point SPECS_PATH elsewhere.\n" >&2
           exit 1
         else
-          specs_mount_flags+=(-v "$specs_real:/workspace/specs:rw")
+          _bind_add specs_mount_flags "$specs_real" /workspace/specs rw SPECS_PATH
           specs_env_args+=(-e SPECS_PATH=/workspace/specs)
           qmd_corpora+=("SPECS_PATH")
         fi
@@ -4883,7 +4982,7 @@ run_container() {
           printf "       They are different directories; rename the repo or point DOCS_PATH elsewhere.\n" >&2
           exit 1
         else
-          docs_mount_flags+=(-v "$docs_real:/workspace/docs:$docs_mode")
+          _bind_add docs_mount_flags "$docs_real" /workspace/docs "$docs_mode" DOCS_PATH
           docs_env_args+=(-e DOCS_PATH=/workspace/docs)
           qmd_corpora+=("DOCS_PATH")
         fi
@@ -4924,7 +5023,7 @@ run_container() {
           printf "       They are different directories; rename the repo or point ARCHITECTURE_REPO_PATH elsewhere.\n" >&2
           exit 1
         else
-          arch_mount_flags+=(-v "$arch_real:/workspace/architecture:$arch_mode")
+          _bind_add arch_mount_flags "$arch_real" /workspace/architecture "$arch_mode" ARCHITECTURE_REPO_PATH
           arch_env_args+=(-e ARCHITECTURE_REPO_PATH=/workspace/architecture)
           qmd_corpora+=("ARCHITECTURE_REPO_PATH")
         fi
@@ -5289,7 +5388,7 @@ run_container() {
         elif read -r _vdev _vino < <(_launcher_dev_ino "$_vsrc"); then :; else _vdev=0; _vino=0; fi
         printf '%s\0%s\0%s\0' "$_vdev" "$_vino" "$_vdst" >> "$_vdir/manifest"
       done
-      launcher_verify_flags=(-v "$_vdir:/run/ai-launcher:ro")
+      launcher_verify_flags=(); _bind_add launcher_verify_flags "$_vdir" /run/ai-launcher ro "the verify directory"
       local _adev="" _aino=""
       if (( _vm_on )); then read -r _adev _aino <<<"${_vm_di[$_vdir]}"
       else read -r _adev _aino < <(_launcher_dev_ino "$_vdir") || true; fi

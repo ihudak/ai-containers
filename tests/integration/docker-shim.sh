@@ -97,7 +97,10 @@ case "${1:-}" in
       for a in "$@"; do
         if [[ "$skip_next" -eq 1 ]]; then skip_next=0; continue; fi
         if [[ "$a" == "--name" ]]; then skip_next=1; continue; fi
-        [[ "$a" == *:/run/ai-launcher || "$a" == *:/run/ai-launcher:* ]] && verify=1
+        # `-v <dir>:/run/ai-launcher:ro`, or the `--mount` record sandbox.sh
+        # hands docker when the directory's path holds a ':' (_bind_add; LNCH-22).
+        [[ "$a" == *:/run/ai-launcher || "$a" == *:/run/ai-launcher:* \
+           || "$a" == *'"destination=/run/ai-launcher"'* ]] && verify=1
         if [[ "$a" == "-it" || "$a" == "-ti" ]]; then args+=(-d -i); else args+=("$a"); fi
       done
       # Nothing to wait for: exec, as before. With the self-reference guard

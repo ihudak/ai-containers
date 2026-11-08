@@ -134,6 +134,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A host path holding `:` can be mounted, and one that is not UTF-8 is
+  refused.** docker splits a `-v` value at every `:`, so a primary, an
+  `EXTRA_MOUNTS` entry, a pointer or a launch directory named with one failed
+  the launch with `invalid mode`. Such a bind now reaches docker through
+  `--mount`, as the launcher overlays already did, and the overlay scan reads it
+  there. A name that is not valid UTF-8, which docker rewrote to name a
+  directory other than the one the launcher had checked, now refuses the launch,
+  naming it. In `EXTRA_MOUNTS` a trailing `:ro`, `:rw` or other `-v` option list
+  is still the mode; any other `:` is part of the path, and a path holding one
+  takes only `:ro` or `:rw` (bugs review LNCH-22).
+
 - **`claude` no longer fails with "… is truncated" after an interrupted
   update.** An interrupted `claude update` leaves a partial download such as
   `2.1.312.tmp.298.<ts>.1` in the group's `~/.local/share/claude/versions`.

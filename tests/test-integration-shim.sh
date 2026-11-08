@@ -263,6 +263,11 @@ FAKE_RUNNING=false FAKE_ROOT_POLLS=99 wait_case "verify mount: a container that 
   "inspect" 0 run -it --rm "${VMOUNT[@]}" ai-sandbox
 FAKE_ROOT_POLLS=99 wait_case "no verify mount: no wait" \
   "" 0 run -it --rm -v /a:/run/ai-launcher-not:ro ai-sandbox
+# A $HOME holding ':' puts the verify directory in a --mount record (LNCH-22).
+FAKE_ROOT_POLLS=0 wait_case "verify mount as a --mount record is recognised too" \
+  "inspect exec" 0 run -it --rm --mount 'type=bind,"source=/h:1/.ai-containers/.verify-1-2","destination=/run/ai-launcher",readonly' ai-sandbox
+FAKE_ROOT_POLLS=99 wait_case "a --mount record for another destination: no wait" \
+  "" 0 run -it --rm --mount 'type=bind,"source=/a:1","destination=/run/ai-launcher-not",readonly' ai-sandbox
 FAKE_RUN_RC=125 FAKE_ROOT_POLLS=99 wait_case "a failed run: no wait, and its status is the shim's" \
   "" 125 run -it --rm "${VMOUNT[@]}" ai-sandbox
 FAKE_RUN_RC=3 wait_case "no verify mount: the run's status is the shim's" \
@@ -411,10 +416,11 @@ if [[ "$hit_file" != "sandbox.sh" || "$hits" == *" "* ]]; then
 fi
 
 # The handover wait keys on the verify mount's destination. Passed in any other
-# form (--mount, another path), the shim would stop waiting without a word, and
+# form than the two _bind_add makes (-v, or a --mount record for a path holding
+# ':'), or at another path, the shim would stop waiting without a word, and
 # cases 450-465 would go back to failing one run in four.
-vm="$(grep -c -E -- '-v "[^"]*:/run/ai-launcher(:[a-z]+)?"' "$ENGINE_DIR/sandbox.sh")"
-check "sandbox.sh mounts its verify directory as -v <dir>:/run/ai-launcher, the form the shim waits on" "1" "$vm"
+vm="$(grep -c -F -- '_bind_add launcher_verify_flags "$_vdir" /run/ai-launcher ro' "$ENGINE_DIR/sandbox.sh")"
+check "sandbox.sh mounts its verify directory at /run/ai-launcher through _bind_add, whose forms the shim waits on" "1" "$vm"
 
 # The scan must be capable of finding a violation, or it is decorative. Prove it
 # against a file that has one, rather than trusting a clean result.
