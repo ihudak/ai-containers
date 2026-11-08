@@ -2260,6 +2260,12 @@ Found 2026-11-08, at `7d959f8`, while killing the slice's survivors, and in its 
 - Severity: LOW (test only). Confidence: CONFIRMED: each of the ten test files that run `tests/integration/run.sh` was run alone, and this one alone added a directory.
 - What's wrong: the test's interrupt check sends the demonstrator a SIGINT while `tests/integration/run.sh` waits on a stand-in build. An interrupted run keeps its scratch, as it keeps a failed run's, and that scratch is `$HOME/.cache/ai-containers-it/<run id>` whatever `TMPDIR` is. The test shimmed `docker` but left `HOME` the real one.
 - The fix: the test exports a `HOME` inside its own temporary directory once the scratch copy is committed, and checks at the end that the real `~/.cache/ai-containers-it` gained nothing. That check was red without the `HOME` export (`new: 20261108175524-927537`).
+
+### TST-33: three tests of LNCH-23's binds failed with a symlinked `TMPDIR`
+- **Status: FIXED** (2026-11-08, WSL agent). CI's symlinked-`TMPDIR` job was red on `3c9e3bb` (LNCH-23) and on every push after it.
+- Severity: LOW (test only). Confidence: CONFIRMED, reproduced with `tests/run-all.sh` under a symlinked `TMPDIR`.
+- What's wrong: `tests/test-host-binds.sh`, `tests/test-rvm-volume.sh` and `tests/test-selinux-label.sh` expected docker's bind source as the test spelled it, through `TMPDIR`. `repo.sh` hands docker the resolved source, and since LNCH-23 so does the rvm migration (`resolve_path`), so under a symlinked `TMPDIR` the source is the physical path and the five assertions failed. The product is right.
+- The fix: each expectation is the physical path, taken with `cd` and `pwd -P` (not the `readlink -f` the code uses), as `tests/test-selinux-label.sh` already did for `repo.sh`. Green in both arms.
 ## LNCH
 
 - `-v` parsing in `launcher_ro_overlay`:

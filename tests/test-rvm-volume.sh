@@ -157,7 +157,8 @@ rm -f "$FAKE_VOLUMES_DIR"/*; : > "$FAKE_RUN_LOG"
 healthy="$TMP/group-healthy"; mkdir -p "$healthy/.rvm/scripts"
 printf 'rvm\n' > "$healthy/.rvm/scripts/rvm"                          # non-empty = healthy
 rvm_volume_ensure "healthy" "$healthy" "ai-sandbox" >/dev/null 2>&1
-if grep -q -- "$healthy/.rvm:/src:ro" "$FAKE_RUN_LOG" && grep -q 'ai-containers-rvm-healthy:/dst' "$FAKE_RUN_LOG"; then
+# The migration binds the resolved path (resolve_path); TMPDIR may be a symlink.
+if grep -q -- "$(cd "$healthy" && pwd -P)/.rvm:/src:ro" "$FAKE_RUN_LOG" && grep -q 'ai-containers-rvm-healthy:/dst' "$FAKE_RUN_LOG"; then
   pass "a healthy legacy ~/.rvm IS migrated into the volume"
 else
   fail "a healthy legacy ~/.rvm IS migrated into the volume (run log: $(cat "$FAKE_RUN_LOG"))"
@@ -173,7 +174,7 @@ fi
 rm -f "$FAKE_VOLUMES_DIR"/*; : > "$FAKE_RUN_LOG"
 colon="$TMP/gr:oup"; mkdir -p "$colon/.rvm/scripts" && printf 'rvm\n' > "$colon/.rvm/scripts/rvm"
 rvm_volume_ensure "colon" "$colon" "ai-sandbox" >/dev/null 2>&1
-if grep -qF -- "--mount type=bind,\"source=$colon/.rvm\",\"destination=/src\",readonly" "$FAKE_RUN_LOG"; then
+if grep -qF -- "--mount type=bind,\"source=$(cd "$colon" && pwd -P)/.rvm\",\"destination=/src\",readonly" "$FAKE_RUN_LOG"; then
   pass "a legacy ~/.rvm under a path holding ':' is migrated through a read-only --mount"
 else
   fail "a legacy ~/.rvm under a path holding ':' (run log: $(cat "$FAKE_RUN_LOG"))"

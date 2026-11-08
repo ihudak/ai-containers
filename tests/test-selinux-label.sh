@@ -225,15 +225,17 @@ migrate() {  # $1=daemon → RUNS
   RUNS="$(cat "$FAKE_RUN_LOG")"
 }
 mkdir -p "$TMP/group-old/.rvm/scripts"; printf 'rvm\n' > "$TMP/group-old/.rvm/scripts/rvm"
+# The migration binds the resolved path (resolve_path); TMPDIR may be a symlink.
+OLD_REAL="$(cd "$TMP/group-old" && pwd -P)"
 
 migrate "$SELINUX_DAEMON"
-if [[ "$RUNS" == *"$TMP/group-old/.rvm:/src:ro"* ]] && has_label_disable "$RUNS"; then
+if [[ "$RUNS" == *"$OLD_REAL/.rvm:/src:ro"* ]] && has_label_disable "$RUNS"; then
   pass "the rvm migration copies from the host with label=disable on an SELinux daemon"
 else
   fail "the rvm migration copies from the host with label=disable on an SELinux daemon (argv: ${RUNS:-none})"
 fi
 migrate "$APPARMOR_DAEMON"
-if [[ "$RUNS" == *"$TMP/group-old/.rvm:/src:ro"* && "$RUNS" != *label=disable* ]]; then
+if [[ "$RUNS" == *"$OLD_REAL/.rvm:/src:ro"* && "$RUNS" != *label=disable* ]]; then
   pass "the rvm migration keeps its label on an AppArmor daemon"
 else
   fail "the rvm migration keeps its label on an AppArmor daemon (argv: ${RUNS:-none})"

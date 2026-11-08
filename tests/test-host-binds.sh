@@ -61,13 +61,15 @@ has_arg() { grep -qxF -- "$1" "$DOCKER_ARGV"; }
 export HOME="$TMP/home"; mkdir -p "$HOME"
 # ── A path source holding ':' — seeded, then synced ─────────────────────────
 SRC="$TMP/s:rc"; mkdir -p "$SRC" && printf 'x\n' > "$SRC/file"
+# repo.sh hands docker the resolved source; TMPDIR may be a symlink.
+SRC_REAL="$(cd "$SRC" && pwd -P)"
 repo add colon "$SRC"
-[[ "$RC" == 0 ]] && has_arg --mount && has_arg "type=bind,\"source=$SRC\",\"destination=/src\",readonly" \
-  && ! grep -qF -- "$SRC:/src" "$DOCKER_ARGV" \
+[[ "$RC" == 0 ]] && has_arg --mount && has_arg "type=bind,\"source=$SRC_REAL\",\"destination=/src\",readonly" \
+  && ! grep -qF -- "$SRC_REAL:/src" "$DOCKER_ARGV" \
   && pass "repo.sh add: a source path holding ':' reaches the seed container as a read-only --mount" \
   || fail "add, ':' source (rc=$RC; argv: $(grep -F 's:rc' "$DOCKER_ARGV" | tr '\n' ' '); out: $(tr '\n' ' ' < "$TMP/out"))"
 FAKE_VOL=1 FAKE_VOL_REPO=colon repo sync colon
-[[ "$RC" == 0 ]] && has_arg "type=bind,\"source=$SRC\",\"destination=/src\",readonly" && ! grep -qF 're-seeding' "$TMP/out" \
+[[ "$RC" == 0 ]] && has_arg "type=bind,\"source=$SRC_REAL\",\"destination=/src\",readonly" && ! grep -qF 're-seeding' "$TMP/out" \
   && pass "repo.sh sync: so does it when the volume is refreshed" \
   || fail "sync, ':' source (rc=$RC; argv: $(grep -F 's:rc' "$DOCKER_ARGV" | tr '\n' ' '); out: $(tr '\n' ' ' < "$TMP/out"))"
 # ── A path source that is not UTF-8: refused before any container runs ──────
