@@ -1362,7 +1362,7 @@ Batch 10 went through seven review rounds, a review of its merge with main and o
 - The index read's TMPDIR WARNING renders its path with `_term`, the FIFO refusal with `_q` (merge review).
 - G90 and G91 keep their old numbers inside, in variable and path names (`U72`, `M72`, `real73`) (merge review).
 - The line that opens `_rd_errfd` at the top of `sandbox.sh` has no test of its own; `_rd_fail()`'s tests reach it only through a launch.
-- Where the verify directory's inode does not survive the bind (macOS Docker Desktop, Colima), the NOTE that verification is skipped prints on every launch, so the output directories batch 10 added to the manifest are not verified there either.
+- Where the verify directory's inode does not survive the bind (macOS Docker Desktop; Colima until PLAT-3, 2026-11-08, which takes them from its VM), the NOTE that verification is skipped prints on every launch, so the output directories batch 10 added to the manifest are not verified there either.
 
 ### LNCH-18: with no `getfacl`, refusing an `ls` that is neither GNU's nor BSD's is not tested
 - **Status: FIXED** (batch 13, `837daef`): T25g has an arm with no `getfacl` and a busybox `ls` on a `PATH` of its own, so the refusal is reached on every host.
