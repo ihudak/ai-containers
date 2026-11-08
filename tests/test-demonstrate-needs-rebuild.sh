@@ -40,6 +40,15 @@ mkdir -p "$COPY/tests" "$COPY$rel_engine" \
     && git add -A && git -c user.email=t@example -c user.name=t commit -q -m copy ) >/dev/null 2>&1 \
   || { printf 'SCAFFOLD-FAILED: could not commit the scratch copy (the demonstrator refuses a dirty tree)\n'; exit 1; }
 
+# run.sh keeps its scratch under $HOME/.cache/ai-containers-it whenever a run
+# fails, and the interrupt below is one: with the real HOME every suite run
+# left a directory there, outside TMPDIR, where run-all.sh's leak check does
+# not look (bugs review TST-32). The demonstrator runs with a HOME of its own.
+REAL_IT_CACHE="$HOME/.cache/ai-containers-it"
+it_cache_before="$(ls -A "$REAL_IT_CACHE" 2>/dev/null)"
+export HOME="$TMP/home"
+mkdir -p "$HOME" || { printf 'SCAFFOLD-FAILED: mkdir %s\n' "$HOME"; exit 1; }
+
 mkdir -p "$TMP/bin"
 DOCKER_LOG="$TMP/docker.log"
 printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\n' "$DOCKER_LOG" > "$TMP/bin/docker"
@@ -139,5 +148,12 @@ else
   rmi="$(grep -E '^rmi ' "$DOCKER_LOG")"
   [[ -n "$rmi" ]] && pass "an interrupt still runs the cleanup" || fail "an interrupt still runs the cleanup (no rmi)"
 fi
+
+# Nothing of run.sh's is left in the real HOME (TST-32). An integration run of
+# your own started meanwhile would add a directory there too.
+it_cache_after="$(ls -A "$REAL_IT_CACHE" 2>/dev/null)"
+[[ "$it_cache_after" == "$it_cache_before" ]] \
+  && pass "no scratch is left in the real ~/.cache/ai-containers-it" \
+  || fail "no scratch is left in the real ~/.cache/ai-containers-it (new: $(comm -13 <(printf '%s\n' "$it_cache_before") <(printf '%s\n' "$it_cache_after") | tr '\n' ' '))"
 
 printf '\n%d failure(s)\n' "$fails"; exit "$fails"

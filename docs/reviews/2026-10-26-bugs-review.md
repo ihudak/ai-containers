@@ -2253,6 +2253,12 @@ Found 2026-11-08, at `7d959f8`, while killing the slice's survivors, and in its 
 - Severity: LOW (test only). Confidence: CONFIRMED.
 - What's wrong, and the fix: `tests/test-falsify-run.sh`'s check that a kill's note keeps an invalid byte (TST-29's diagnostic) read the result file with `cut -d'|' -f1-7`. In a UTF-8 locale BSD `cut` stops at the byte with `Illegal byte sequence` and drops the line, so the check got nothing; GNU `cut`, on Linux and at the floor, passes bytes through. The product is right: `tests/falsify/run.sh` already reads that line under `LC_ALL=C`. Now the test runs its `cut` under `LC_ALL=C` too. Red under `LANG=en_US.UTF-8` before, green after; it passed under `LC_ALL=C` either way.
 
+
+### TST-32: `tests/test-demonstrate-needs-rebuild.sh` left a directory in the real `~/.cache/ai-containers-it` on every run
+- **Status: FIXED** (2026-11-08, WSL agent). Found while running PLAT-9 on WSL with Docker Desktop: `~/.cache/ai-containers-it` held one directory per hermetic suite run on the host (16 since 2026-11-07, each `logs/` and `saved-allowlists/`, empty), outside `TMPDIR`, where `tests/run-all.sh`'s leak check does not look. The floor arm ran with another `HOME` and left none.
+- Severity: LOW (test only). Confidence: CONFIRMED: each of the ten test files that run `tests/integration/run.sh` was run alone, and this one alone added a directory.
+- What's wrong: the test's interrupt check sends the demonstrator a SIGINT while `tests/integration/run.sh` waits on a stand-in build. An interrupted run keeps its scratch, as it keeps a failed run's, and that scratch is `$HOME/.cache/ai-containers-it/<run id>` whatever `TMPDIR` is. The test shimmed `docker` but left `HOME` the real one.
+- The fix: the test exports a `HOME` inside its own temporary directory once the scratch copy is committed, and checks at the end that the real `~/.cache/ai-containers-it` gained nothing. That check was red without the `HOME` export (`new: 20261108175524-927537`).
 ## LNCH
 
 - `-v` parsing in `launcher_ro_overlay`:
