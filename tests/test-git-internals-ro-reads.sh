@@ -875,10 +875,10 @@ rm -rf "$TMP/fs119"
 # nothing is ruled out. A stand-in find takes 2 s per listing. The files asked
 # about are made-up inodes on the mount's device.
 fns119="$TMP/fns119.sh"
-for f119 in _term _q _timeout_prefix _launcher_dev_ino _fs_linked_in _ro_fifo_search; do
+for f119 in _term _q _timeout_prefix _launcher_dev_ino _win_mounts _fs_mounts_in _fs_ml_devof _fs_linked_in _ro_fifo_search; do
   awk -v f="$f119() {" 'index($0, f) == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox.sh"
 done > "$fns119"
-grep -E '^(declare -A _fs_ml_|_fs_ml_dir=|if stat -c )' "$ENGINE/sandbox.sh" >> "$fns119"
+grep -E '^(declare -A _fs_ml_|_fs_ml_dir=|_fs_mp=|if stat -c )' "$ENGINE/sandbox.sh" >> "$fns119"
 mkdir -p "$TMP/u119/m" "$TMP/fs119" && printf 'x\n' > "$TMP/u119/m/a" && ln "$TMP/u119/m/a" "$TMP/u119/m/b" \
   && printf 'x\n' > "$TMP/u119/m/c" && ln "$TMP/u119/m/c" "$TMP/u119/m/d" \
   && printf '#!/bin/bash\ncase " $* " in *" -links "*" -exec "*) sleep 2;; esac\nexec %q "$@"\n' "$(command -v find)" > "$TMP/fs119/find" \
@@ -922,11 +922,11 @@ rm -rf "$TMP/fs119" "$TMP/h119" "$TMP/o119"
 # and a temporary directory that cannot be made refuses the launch (GAP-2 slice
 # 4: each of those, damaged, survived).
 fns128="$TMP/fns128.sh"
-for f128 in _term _q _timeout_prefix _launcher_dev_ino _fs_linked_in; do
+for f128 in _term _q _timeout_prefix _launcher_dev_ino _win_mounts _fs_mounts_in _fs_ml_devof _fs_linked_in; do
   awk -v f="$f128() {" 'index($0, f) == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox.sh"
 done > "$fns128"
 # What it keeps for the launch, as sandbox.sh declares it.
-grep -E '^(declare -A _fs_ml_|_fs_ml_dir=|if stat -c )' "$ENGINE/sandbox.sh" >> "$fns128"
+grep -E '^(declare -A _fs_ml_|_fs_ml_dir=|_fs_mp=|if stat -c )' "$ENGINE/sandbox.sh" >> "$fns128"
 M128="$TMP/m128"; mkdir -p "$M128/a" "$M128/b" && : > "$M128/a/f" && ln "$M128/a/f" "$M128/x128"
 sh128="$TMP/sh128"; mkdir -p "$sh128"
 # timeout -k 2 <seconds> find <mount> …: records the seconds and the mount.
@@ -976,10 +976,10 @@ rm -rf "$fns128" "$M128" "$sh128" "$TMP/to128.log" "$TMP/o128" "$TMP/e128"
 # to its end, and when the file cannot be stat'ed (GAP-2 slice 4: each, damaged,
 # survived).
 fns129="$TMP/fns129.sh"
-for f129 in _term _q _timeout_prefix _launcher_dev_ino _fs_linked_in _fs_other_names _fs_in_rw _fs_reachable; do
+for f129 in _term _q _timeout_prefix _launcher_dev_ino _win_mounts _fs_mounts_in _fs_ml_devof _fs_linked_in _fs_other_names _fs_in_rw _fs_reachable; do
   awk -v f="$f129() {" 'index($0, f) == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox.sh"
 done > "$fns129"
-grep -E '^(declare -A _fs_reach_cache=|declare -A _fs_ml_|_fs_ml_dir=|if stat -c )' "$ENGINE/sandbox.sh" >> "$fns129"
+grep -E '^(declare -A _fs_reach_cache=|declare -A _fs_ml_|_fs_ml_dir=|_fs_mp=|if stat -c )' "$ENGINE/sandbox.sh" >> "$fns129"
 M129="$TMP/m129"; mkdir -p "$M129/m" "$M129/w" && : > "$M129/m/t" && ln "$M129/m/t" "$M129/m/t2" && ln -s "$M129/m/t" "$M129/h"
 # run129 <nested|nowalk|nostat>: is $M129/h, a link to $M129/m/t, reachable? For
 # nested, $M129/m is the writable mount; for the others, $M129/w beside it is,
@@ -1025,6 +1025,84 @@ TMPDIR="$TMP/rdt130" bash -c 'set -euo pipefail; source "$1"
   && pass "G130 the count of slow reads is made in the launcher's own shell, never in a subshell" \
   || fail "G130 _rd_prep in a subshell (rc=$rc130; $(tr '\n' '|' < "$TMP/o130"))"
 rm -rf "$fns130" "$TMP/rdt130" "$TMP/o130"
+
+# ── G131: a second name on a filesystem mounted inside a writable mount ─────
+# docker's binds are recursive, so a filesystem mounted inside a writable mount
+# is the agent's to write too. A file outside every mount whose second name lies
+# on such a filesystem — its device the file's, the writable mount's root on
+# another — went unseen: only the mounts whose root is on the file's device were
+# listed (bugs review GIT-43). Here the writable mount is a tmpfs and a directory
+# of TMPDIR's filesystem is bound inside it, in a user namespace.
+if command -v unshare >/dev/null 2>&1 && unshare --user --map-current-user --mount --keep-caps true 2>/dev/null; then
+  fns131="$TMP/fns131.sh"
+  for f131 in _term _q _timeout_prefix _launcher_dev_ino _win_mounts _fs_mounts_in _fs_ml_devof _fs_linked_in; do
+    awk -v f="$f131() {" 'index($0, f) == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox.sh"
+  done > "$fns131"
+  grep -E '^(declare -A _fs_ml_|_fs_ml_dir=|_fs_mp=|if stat -c )' "$ENGINE/sandbox.sh" >> "$fns131"
+  M131="$TMP/m131"; mkdir -p "$M131/w" "$M131/w2" "$M131/real" "$M131/out" && : > "$M131/out/f" && ln "$M131/out/f" "$M131/real/x" \
+    || { printf 'SCAFFOLD-FAILED: G131\n'; exit 1; }
+  # A second writable mount, w2, holds the same bind under a directory the
+  # agent made unsearchable: its device cannot be read, so nothing is ruled
+  # out. Run without the namespace's capabilities, which would search it anyway.
+  unshare --user --map-current-user --mount --keep-caps bash -c '
+    M="$2"; mount -t tmpfs tmpfs "$M/w" && mkdir "$M/w/sub" && mount --bind "$M/real" "$M/w/sub" || exit 77
+    mount -t tmpfs tmpfs "$M/w2" && mkdir -p "$M/w2/a/sub" && mount --bind "$M/real" "$M/w2/a/sub" && chmod 000 "$M/w2/a" || exit 77
+    command -v setpriv >/dev/null 2>&1 || exit 77
+    exec setpriv --inh-caps=-all --ambient-caps=-all --bounding-set=-all -- bash -c '\''
+      M="$2"; source "$1"; di="$(_launcher_dev_ino "$M/out/f")"
+      m=("$M/w"); rc=0; TMPDIR="$M" _fs_linked_in "$di" m o || rc=$?
+      printf "%s %s\n" "$rc" "$o"; rm -rf "$_fs_ml_dir"
+      _fs_ml_ans=(); _fs_ml_file=(); _fs_ml_dir=""
+      m=("$M/w2"); rc=0; TMPDIR="$M" _fs_linked_in "$di" m o 2>/dev/null || rc=$?
+      printf "%s\n" "$rc"; rm -rf "$_fs_ml_dir"'\'' _ "$1" "$M"' _ "$fns131" "$M131" >"$TMP/o131" 2>"$TMP/e131"; rc131=$?
+  if (( rc131 == 77 )); then
+    printf 'SKIP: G131 a filesystem mounted inside a writable mount — no tmpfs, bind mount or setpriv in a user namespace here\n'
+  else
+    [[ "$(head -n 1 "$TMP/o131")" == "0 $M131/w/sub" ]] \
+      && pass "G131 a second name on a filesystem mounted inside a writable mount is found there" \
+      || fail "G131 nested mount on the file's device (want '0 $M131/w/sub', got '$(head -n 1 "$TMP/o131")'; $(tr '\n' ' ' < "$TMP/e131"))"
+    [[ "$(sed -n 2p "$TMP/o131")" == 2 ]] \
+      && pass "G131 a mount point inside a writable mount that cannot be stat'ed rules nothing out" \
+      || fail "G131 unsearchable nested mount (want 2, got '$(sed -n 2p "$TMP/o131")'; $(tr '\n' ' ' < "$TMP/e131"))"
+  fi
+  chmod 700 "$M131/w2/a" 2>/dev/null
+  rm -rf "$fns131" "$M131" "$TMP/o131" "$TMP/e131"
+else
+  printf 'SKIP: G131 a filesystem mounted inside a writable mount — no unprivileged user namespace here\n'
+fi
+# Where there is no /proc/self/mountinfo (macOS), mount(8)'s table: a mount
+# point may hold " on " and " (", which the parse keeps.
+fns131="$TMP/fns131.sh"
+for f131 in _win_mounts _fs_mounts_in; do
+  awk -v f="$f131() {" 'index($0, f) == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox.sh"
+done > "$fns131"
+grep -E '^_fs_mp=' "$ENGINE/sandbox.sh" >> "$fns131"
+bash -c 'source "$1"; _wm_ok=0
+  mount() { printf "%s\n" "/dev/disk3s1 on / (apfs, local, journaled)" \
+    "/dev/disk4s1 on /p/w/a on b (x (apfs, local, nodev)" "map auto_home on /p/w (autofs, automounted)" \
+    "/dev/disk5 on /p/wx (hfs, local)" "//u@srv/s on /p/w/c (smbfs, nodev, nosuid)"; }
+  _fs_mounts_in /p/w o; for i in "${o[@]}"; do printf "%s|" "${_fs_mp[i]}"; done' _ "$fns131" >"$TMP/o131" 2>"$TMP/e131"
+[[ "$(cat "$TMP/o131")" == "/p/w/a on b (x|/p/w/c|" ]] \
+  && pass "G131 without /proc/self/mountinfo, mount(8)'s table names the mount points below a writable mount" \
+  || fail "G131 mount(8) parse (got '$(cat "$TMP/o131")'; $(tr '\n' ' ' < "$TMP/e131"))"
+# The mount points below each writable mount are found once a launch, however
+# many files are asked about: matched again for each, a launch of planted links
+# to thousands of linked files took minutes (review of the GIT-43 fix).
+for f131 in _term _q _timeout_prefix _launcher_dev_ino _fs_ml_devof _fs_linked_in; do
+  awk -v f="$f131() {" 'index($0, f) == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox.sh"
+done >> "$fns131"
+grep -E '^(declare -A _fs_ml_|_fs_ml_dir=|if stat -c )' "$ENGINE/sandbox.sh" >> "$fns131"
+mkdir -p "$TMP/m131/a" "$TMP/m131/b" || { printf 'SCAFFOLD-FAILED: G131 cache\n'; exit 1; }
+TMPDIR="$TMP/m131" bash -c 'source "$1"; n=0
+  eval "$(declare -f _fs_mounts_in | sed "1s/^_fs_mounts_in/_fmi131/")"
+  _fs_mounts_in() { n=$((n + 1)); _fmi131 "$@"; }
+  m=("$2/a" "$2/b"); d="$(_launcher_dev_ino "$2/a")"; d="${d%% *}"
+  for i in $(seq 1 40); do _fs_linked_in "$d 9999999$i" m o || true; done
+  echo "$n"; rm -rf "$_fs_ml_dir"' _ "$fns131" "$TMP/m131" >"$TMP/o131" 2>"$TMP/e131"
+[[ "$(cat "$TMP/o131")" == 2 ]] \
+  && pass "G131 the mount points below each writable mount are found once, for 40 files asked about" \
+  || fail "G131 found per file (want 2 searches, got '$(cat "$TMP/o131")'; $(tr '\n' ' ' < "$TMP/e131"))"
+rm -rf "$fns131" "$TMP/m131" "$TMP/o131" "$TMP/e131"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

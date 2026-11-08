@@ -1854,7 +1854,11 @@ _fs_other_names() {
     if (( rc == 1 )); then _fs_reach_cache[$di]=0; else _fs_reach_cache[$di]=1; fi
   done
 }
-# For _fs_linked_in, kept for the launch: each writable mount's device; the file
+# For _fs_linked_in, kept for the launch: the device of each writable mount, of
+# each mount point below one and of its parent directory; the mount points
+# below each writable mount, as indices into _fs_mp, found once a launch however
+# many files are asked about (review of the GIT-43 fix: matched again for every
+# file, a launch of planted links to thousands took minutes); the file
 # listing its files with a second hard link, one "<dev> <ino>" line each, and
 # whether that listing was cut short; and the answer for each file asked about
 # ("<rc> <mount>", by "<dev> <ino>"). The listings take at most 60 s before the
@@ -1862,33 +1866,80 @@ _fs_other_names() {
 # (review of the GIT-39 fix: started at the first listing, the clock counted the
 # walks between them, and refused launches that had passed). They hold at most
 # 64 MiB in all, and at most 256 files are asked about.
-declare -A _fs_ml_dev=() _fs_ml_file=() _fs_ml_cut=() _fs_ml_ans=()
+declare -A _fs_ml_dev=() _fs_ml_file=() _fs_ml_cut=() _fs_ml_ans=() _fs_ml_nest=()
 _fs_ml_dir="" _fs_ml_spent=0 _fs_ml_bytes=67108864 _fs_ml_asked=0
+# _fs_ml_devof <path>: its device in _fs_ml_dev, stat'ed once a launch; empty
+# when it cannot be.
+_fs_ml_devof() {
+  local x
+  [[ -z "${_fs_ml_dev[$1]+x}" ]] || return 0
+  x="$(_launcher_dev_ino "$1")" || x=""
+  _fs_ml_dev[$1]="${x%% *}"
+}
+# _fs_mounts_in <dir> <out-var>: the mount points below <dir>, as indices into
+# _fs_mp: from /proc/self/mountinfo (_win_mounts), or from mount(8) where there
+# is none (macOS); the table is read once a launch.
+_fs_mp=(); _fs_mp_read=""
+_fs_mounts_in() {
+  local -n _fm_o=$2
+  local _fm_i _fm_l
+  _fm_o=()
+  if [[ -z "$_fs_mp_read" ]]; then
+    _fs_mp_read=1
+    _win_mounts
+    if [[ "$_wm_ok" == 1 ]]; then
+      _fs_mp=(${_wm_mp[@]+"${_wm_mp[@]}"})
+    else
+      # "<what> on <mount point> (<type>, <options>)": the mount point may hold
+      # " on " or " (", the options do not.
+      while IFS= read -r _fm_l; do
+        [[ "$_fm_l" == *" on /"*" ("* ]] || continue
+        _fm_l="${_fm_l#* on /}"; _fs_mp+=("/${_fm_l% (*}")
+      done < <(mount 2>/dev/null)
+    fi
+  fi
+  for _fm_i in ${_fs_mp[@]+"${!_fs_mp[@]}"}; do
+    if [[ "${_fs_mp[_fm_i]}" == "${1%/}"/?* ]]; then _fm_o+=("$_fm_i"); fi
+  done
+}
 # _fs_linked_in <dev ino> <mounts-var> <out-var>: for a file with a second hard
 # link that lies in no writable mount — one git reads or runs, or a launcher
 # link leads to. Returns 0 when another name of it lies in one of <mounts>,
 # setting <out-var> to that mount; 2 when that cannot be ruled out (a listing
 # failed, ran out of time or space, or too many files were asked about),
 # setting <out-var> to a mount it may lie in; 1 when none holds one. A hard link
-# never leaves its device, so only the mounts on its device are listed: each
-# once per launch, whatever number of files is asked about (a search per file
+# never leaves its device, so only the mounts on its device are listed, and the
+# filesystems mounted inside them on it, which docker's recursive binds hand the
+# agent too (bugs review GIT-43): each once per launch, whatever number of files is asked about (a search per file
 # let planted configs make a launch take hours; review of the GIT-36/37 fix),
 # and looked up with one grep, not loaded into the shell, whose memory and time
 # the agent could fill with names. Shared by the hook, include and launcher link
 # checks (_walk_exposed) and the hard-link refusal (_fs_other_names).
 _fs_linked_in() {
   local -n _fl_m=$2 _fl_o=$3
-  local _fl_di="$1" _fl_k _fl_x _fl_f _fl_left _fl_rc _fl_t0 _fl_sz _fl_hit="" _fl_bad=""
-  local -a _fl_t=() _fl_s=() _fl_on=() _fl_fs=() _fl_p=()
+  local _fl_di="$1" _fl_k _fl_x _fl_f _fl_left _fl_rc _fl_t0 _fl_sz _fl_hit="" _fl_bad="" _fl_q _fl_pp
+  local -a _fl_t=() _fl_s=() _fl_on=() _fl_fs=() _fl_p=() _fl_n=()
   _fl_o=""
   _fl_x="${_fs_ml_ans[$_fl_di]:-}"
   if [[ -n "$_fl_x" ]]; then _fl_o="${_fl_x#* }"; return "${_fl_x%% *}"; fi
   for _fl_k in ${_fl_m[@]+"${_fl_m[@]}"}; do
-    if [[ -z "${_fs_ml_dev[$_fl_k]+x}" ]]; then
-      _fl_x="$(_launcher_dev_ino "$_fl_k")" || _fl_x=""
-      _fs_ml_dev[$_fl_k]="${_fl_x%% *}"
-    fi
+    _fs_ml_devof "$_fl_k"
     if [[ -n "${_fs_ml_dev[$_fl_k]}" && "${_fs_ml_dev[$_fl_k]}" == "${_fl_di%% *}" ]]; then _fl_on+=("$_fl_k"); fi
+    # -xdev does not enter a filesystem mounted inside it: one on the file's
+    # device is listed on its own, unless its parent directory is on that
+    # device too, and so in a listing already. One that cannot be stat'ed (a
+    # directory on the way the agent made unsearchable) is listed too, which
+    # fails, so nothing is ruled out (review of the GIT-43 fix).
+    if [[ -z "${_fs_ml_nest[$_fl_k]+x}" ]]; then
+      _fs_mounts_in "$_fl_k" _fl_n
+      _fs_ml_nest[$_fl_k]="$(IFS=' '; printf '%s' "${_fl_n[*]}")"
+    fi
+    IFS=' ' read -r -a _fl_n <<< "${_fs_ml_nest[$_fl_k]}"
+    for _fl_q in ${_fl_n[@]+"${_fl_n[@]}"}; do
+      _fl_q="${_fs_mp[_fl_q]}"; _fl_pp="${_fl_q%/*}"; _fs_ml_devof "$_fl_q"; _fs_ml_devof "${_fl_pp:-/}"
+      if [[ -z "${_fs_ml_dev[$_fl_q]}" ]] || [[ "${_fs_ml_dev[$_fl_q]}" == "${_fl_di%% *}" \
+            && "${_fs_ml_dev[${_fl_pp:-/}]}" != "${_fl_di%% *}" ]]; then _fl_on+=("$_fl_q"); fi
+    done
   done
   if (( ! ${#_fl_on[@]} )); then _fs_ml_ans[$_fl_di]="1 "; return 1; fi
   if (( ++_fs_ml_asked > 256 )); then

@@ -134,6 +134,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A second name on a filesystem mounted inside a writable mount is looked
+  for.** A hard link to a file git reads (an include, a hook) or a launcher
+  link leads to, made where the agent can write it, is what the launcher
+  searches each writable mount for, and it searched only the mounts whose
+  root is on the file's device. docker's binds are recursive, so a directory
+  of that filesystem mounted inside a writable mount on another (`/home` on
+  its own partition, a directory of `/` bound into a project there) was the
+  agent's too, and unseen. Such a mount is now listed on its own, read from
+  `/proc/self/mountinfo`, or `mount` on macOS (bugs review GIT-43).
 - **A host path holding `:` can be mounted, and one that is not UTF-8 is
   refused.** docker splits a `-v` value at every `:`, so a primary, an
   `EXTRA_MOUNTS` entry, a pointer or a launch directory named with one failed
