@@ -659,6 +659,27 @@ grep -q 'corpus run log kept at:' "$TMP/out.log" \
   && fail "phase 6: a run with nothing to chase deletes its log — it was kept instead, so every clean verification leaves a full corpus log behind in TMPDIR" \
   || pass "phase 6: a run with nothing to chase deletes its log"
 
+# ── …but not the note each kill carries ──────────────────────────────────────
+# run.sh follows every kill with NOTE|failline (bugs review TST-29): about two
+# thousand of them over the corpus, which would bury the control-clock and
+# reseed notes this re-print exists for. A red ratchet quotes the ones it needs.
+r="$(mk_repo 0)"
+cat > "$r/tests/falsify/run.sh" <<'STUB'
+#!/usr/bin/env bash
+printf 'TARGET|tests/portability.sh|test-portability.sh|13|13|0|0|0|1000\n'
+printf 'NOTE|control-clock|tests/portability.sh|the watchdog fired 900ms past its 120s ceiling\n'
+printf 'NOTE|failline|tests/portability.sh:cmp-flip:%s|L3 seq 1: FAIL: a kill\n' "$(printf '%040d' 0)"
+printf 'TOTAL|1|13|13|0|0|0|0|1000\n'
+printf 'ASSERTLESS|0|13\n'
+exit 0
+STUB
+rc="$(run_verify "$r" 6)"
+if [[ "$rc" == 0 ]] && grep -q 'NOTE|control-clock|' "$TMP/out.log" && ! grep -q 'NOTE|failline|' "$TMP/out.log"; then
+  pass "phase 6: a kill's failline note is not re-printed; the other notes are"
+else
+  fail "phase 6: the failline notes (rc=$rc; control-clock $(grep -c 'NOTE|control-clock|' "$TMP/out.log"), failline $(grep -c 'NOTE|failline|' "$TMP/out.log"))"
+fi
+
 # ── PHASE 6'S ADVICE MUST NAME A KNOB THAT EXISTS (backlog F48) ───────────────
 # The sibling of F47, in the same twenty lines and of the same species: an
 # instruction the reader cannot act on. When more than a tenth of the corpus goes

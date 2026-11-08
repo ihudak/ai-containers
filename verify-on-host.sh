@@ -647,8 +647,10 @@ if bash "$TESTS_DIR/falsify/run.sh" --jobs "$fl_jobs" --timeout "$fl_timeout" > 
   # late the watchdog NOTICED as distinct from how long the oracle ran. Both
   # were being computed and then discarded: the corpus log is a mktemp that is
   # deleted whenever the run is clean, so on a green run the only copy of them
-  # went with it (backlog F47, in a place the F47 fix did not reach).
-  grep -E '^(BASELINE|TARGET|TOTAL|ASSERTLESS|SKIPPED|UNATTEMPTED|CONTROL|CONTROLS|NOTE)\|' "$fl_run" | sed 's/^/  /' | while IFS= read -r l; do sub "$l"; done
+  # went with it (backlog F47, in a place the F47 fix did not reach). Not the
+  # failline note every kill carries (bugs review TST-29): two thousand of them
+  # would bury the rest, and a red ratchet quotes the ones it needs.
+  grep -E '^(BASELINE|TARGET|TOTAL|ASSERTLESS|SKIPPED|UNATTEMPTED|CONTROL|CONTROLS|NOTE)\|' "$fl_run" | grep -v '^NOTE|failline|' | sed 's/^/  /' | while IFS= read -r l; do sub "$l"; done
   # HOW MUCH WAS ACTUALLY MEASURED. An UNPROVEN mutant produced no verdict at
   # all, so a run with many of them is measuring less than its pass suggests —
   # and the pass is honest only if that is said out loud rather than left in

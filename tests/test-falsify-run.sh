@@ -739,6 +739,18 @@ check "the mutant in the never-called function SURVIVES" "SURVIVED" "$(fx_verdic
 check "a survivor's signal field is 'none'" "none" "$(fx_signal "$FX_OUT" "$SURVIVOR")"
 check "a real test kills through BOTH signals at once" "exit+failline" "$(fx_signal "$FX_OUT" "$KILLABLE")"
 
+# ── 4b. A KILL SAYS WHAT KILLED IT ───────────────────────────────────────────
+# The oracle's output goes with the runner, so a kill that should not have
+# happened — a ledger entry found KILLED in CI on a slow runner — could not be
+# traced to the assertion that fired (bugs review TST-29). Each KILLED mutant
+# that printed a FAIL: line is followed by a NOTE quoting the first one.
+kid="$(fx_ident "$FX_OUT" "$KILLABLE")"; kseq="$(fx_field "$FX_OUT" "$KILLABLE" 5)"; kln="$(fx_field "$FX_OUT" "$KILLABLE" 6)"
+check "a kill's first FAIL: line is recorded after it" "1" \
+  "$(grep -cxF "NOTE|failline|$kid|L$kln seq $kseq: FAIL: 5 beats 3" <<< "$FX_OUT")"
+check "every kill with a FAIL: line has its note" \
+  "$(grep -c '^MUTANT|KILLED|.*failline' <<< "$FX_OUT")" "$(grep -c '^NOTE|failline|' <<< "$FX_OUT")"
+check "a survivor has none" "0" "$(grep -c "^NOTE|failline|$(fx_ident "$FX_OUT" "$SURVIVOR")|" <<< "$FX_OUT")"
+
 # ── 5. The oracle is `run-all.sh <name>`, not the test file ───────────────────
 # test-fx-silent.sh exits 0 having asserted nothing. Run directly that is a pass;
 # run through the driver it is a failure, by the driver's own gate. So a refusal
@@ -1758,6 +1770,7 @@ sel_decide() {   # <scenario> → the runs, then the result records
     declare -A ans=()   # <set> → "<rc> <timed-out> <output>"
     case "$sc" in
       kill)       ans[b.sh]="1 0 FAIL: b" ;;
+      killodd)    ans[b.sh]="1 0 xFAIL: a FAIL: b"$'\xff\r' ;;
       timeout)    ans[b.sh]="143 1 hung"; ans[a.sh,c.sh]="1 0 FAIL: c" ;;
       hang)       ans[b.sh]="143 1 hung"; ans[a.sh,c.sh]="0 0 PASS: a" ;;
       artefact)   ans[b.sh]="143 1 hung"; ans[a.sh,c.sh]="1 0 FAIL: c" ;;
@@ -1786,11 +1799,15 @@ sel_decide() {   # <scenario> → the runs, then the result records
     rm -rf "$d" )
 }
 check "  … a subset that kills with an assertion decides alone, on the whole set's clock" \
-  "run b.sh 15 MUTATED|MUTANT|KILLED|t.sh:cond-negate:deadbeef|b.sh|1|2|exit+failline" \
+  "run b.sh 15 MUTATED|MUTANT|KILLED|t.sh:cond-negate:deadbeef|b.sh|1|2|exit+failline|NOTE|failline|t.sh:cond-negate:deadbeef|L2 seq 1: FAIL: b" \
   "$(sel_decide kill | paste -sd'|' -)"
 check "  … one that times out is followed by the REST only, on the same clock, and the rest's FAIL: line makes it a kill" \
-  "run b.sh 15 MUTATED|run a.sh,c.sh 15 MUTATED|KILLED|a.sh,b.sh,c.sh|timeout+failline|NOTE|selection-rerun" \
+  "run b.sh 15 MUTATED|run a.sh,c.sh 15 MUTATED|KILLED|a.sh,b.sh,c.sh|timeout+failline|NOTE|failline|NOTE|selection-rerun" \
   "$(sel_decide timeout | awk -F'|' '/^run / { print } $1 == "MUTANT" { print $2 "|" $4 "|" $7 } $1 == "NOTE" { print $1 "|" $2 }' | paste -sd'|' -)"
+check "  … the note quotes the FAIL: line as matched, an invalid byte kept and a CR dropped" \
+  "NOTE|failline|t.sh:cond-negate:deadbeef|L2 seq 1: FAIL: b"$'\xff' "$(sel_decide killodd | grep -a '^NOTE|failline|')"
+check "  … and the kill's note quotes the run that decided it, the rest's" \
+  "NOTE|failline|t.sh:cond-negate:deadbeef|L2 seq 1: FAIL: c" "$(sel_decide timeout | grep '^NOTE|failline|')"
 check "  … and with a green rest it stays the timeout" \
   "UNPROVEN|timeout" "$(sel_decide hang | awk -F'|' '$1 == "MUTANT" { print $2 "|" $7 }')"
 check "  … a kill with no assertion is re-run with the WHOLE set" \

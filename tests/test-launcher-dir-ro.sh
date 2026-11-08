@@ -765,11 +765,56 @@ grep -qF "launcher link $LAUNCHER/unrep.sh leads somewhere the agent can change"
 NLT="$TMP/nlt"; mkdir -p "$NLT/d"; : > "$NLT/d/f"$'\n'; ln -s "f"$'\n' "$NLT/d/l"
 got="$(bash -c '
   set -euo pipefail
-  for fn in _cd_phys _cd_bash _ci_path _disk_spell _link_walk _path_walk _readlink_exact; do eval "$(awk "/^$fn\\(\\) \\{/,/^}\$/" "$1")"; done
+  for fn in _cd_phys _cd_bash _ci_path _case_flip _u8_locale _win_path _win_fs _win_mounts _disk_spell _link_walk _path_walk _readlink_exact; do eval "$(awk "/^$fn\\(\\) \\{/,/^}\$/" "$1")"; done
   _link_walk "$2"' _ "$ENGINE/sandbox.sh" "$NLT/d/l" | tr '\0\n' '|^')"
 [[ "$got" == "$NLT/d/l|=$NLT/d/f^|" ]] \
   && pass "T37 a link target ending in a newline is followed exactly" \
   || fail "T37 trailing newline in a target (got: $got)"
+# A link whose target cannot be read (removed between the scan and the read; a
+# readlink that fails stands in) ends the walk at the link: nothing is taken for
+# its target, and the read says it failed (GAP-2 slice 3).
+mkdir -p "$TMP/rlfail"; printf '#!/bin/sh\nexit 1\n' > "$TMP/rlfail/readlink"; chmod +x "$TMP/rlfail/readlink"
+got="$(PATH="$TMP/rlfail:$PATH" bash -c '
+  set -uo pipefail
+  for fn in _cd_phys _cd_bash _ci_path _disk_spell _link_walk _path_walk _readlink_exact; do eval "$(awk "/^$fn\\(\\) \\{/,/^}\$/" "$1")"; done
+  v=kept; rc=0; _readlink_exact v "$2" || rc=$?; printf "rc=%s v=%s|" "$rc" "$v"
+  _link_walk "$2"' _ "$ENGINE/sandbox.sh" "$NLT/d/l" | tr '\0\n' '|^')"
+[[ "$got" == "rc=1 v=kept|$NLT/d/l|" ]] \
+  && pass "T37 a link whose target cannot be read ends the walk there" \
+  || fail "T37 an unreadable link target (got: $got)"
+
+# ── T62: where readdir must spell a directory (one that ignores case on a
+# filesystem whose kernel does not: WSL's drvfs) and its listing names nothing
+# that is it, the launch is refused; the path as given was kept (automated
+# security review of 1ed3de8). Here a directory that cannot be listed, the
+# filesystem's case taken as drvfs's.
+UNL="$TMP/unl"; mkdir -p "$UNL/d/sub" && UNLP="$(cd "$UNL/d/sub" && pwd -P)" && chmod 311 "$UNL/d"
+if ls "$UNL/d" >/dev/null 2>&1; then
+  printf 'NOTE: T62, T63 not run: a mode-311 directory can be listed here (root)\n'
+else
+  out="$(bash -c '
+    set -euo pipefail
+    for fn in _ci_path _case_flip _u8_locale _win_path _win_fs _win_mounts _disk_spell _ds_readdir _ci_name _q _term; do eval "$(awk "/^$fn\\(\\) \\{/,/^}\$/" "$1")"; done
+    _ci_path() { return 0; }; _ci_name() { return 0; }; _ci_alias_fs() { return 0; }
+    v="$2"; _disk_spell v; printf "SPELLED:%s\n" "$v"' _ "$ENGINE/sandbox.sh" "$UNLP" 2>&1)"; rc=$?
+  [[ "$rc" != 0 && "$out" == *"names is sub"*"refusing the launch"* && "$out" != *SPELLED:* ]] \
+    && pass "T62 a directory readdir must spell and cannot is refused" \
+    || fail "T62 unlistable directory on a case-aliasing filesystem (rc=$rc; out: $out)"
+  # ── T63: where Windows looks names up (_win_fs), every name is spelled from
+  # readdir even where no directory on the way ignores case (ntfs3 is
+  # case-sensitive): an 8.3 short name is never listed (automated security
+  # review of 0e0ea9a). Here the same unlistable directory, the filesystem's
+  # kind taken as Windows's and nothing else overridden.
+  out="$(bash -c '
+    set -euo pipefail
+    for fn in _ci_path _case_flip _u8_locale _win_path _win_fs _win_mounts _disk_spell _ds_readdir _ci_name _ci_alias_fs _q _term; do eval "$(awk "/^$fn\\(\\) \\{/,/^}\$/" "$1")"; done
+    _win_fs() { return 0; }
+    v="$2"; _disk_spell v; printf "SPELLED:%s\n" "$v"' _ "$ENGINE/sandbox.sh" "$UNLP" 2>&1)"; rc=$?
+  [[ "$rc" != 0 && "$out" == *"names is sub"*"refusing the launch"* && "$out" != *SPELLED:* ]] \
+    && pass "T63 where Windows looks names up, a name readdir cannot list is refused, case-sensitive too" \
+    || fail "T63 Windows filesystem, no directory ignoring case (rc=$rc; out: $out)"
+fi
+chmod 755 "$UNL/d"; rm -rf "$UNL"
 
 # ── T38: what the agent can write cannot make the link check noisy or slow.
 # Links planted in the launcher's own output directory are not walked; a
@@ -1258,6 +1303,62 @@ done
 rm -rf "$PROJ/.agent-blocked" "$PROJ/.agent-discovery"
 [[ "$ok61" == " restricted discovery" ]] && pass "T61 each output directory is recorded in the verify manifest, in both modes" \
   || fail "T61 output directories in the manifest (recorded for:$ok61)"
+
+# ── T64: a launcher left writable stays home ────────────────────────────────
+# A launcher whose name docker cannot carry gets no overlay (T24), so the agent
+# can change all of it and was told so once, by name. A link inside it that
+# stays inside it is not warned about again, once per link: the step is in no
+# writable bind of the launcher's own (sandbox.sh: `_walk_exposed()`, its
+# <home>). One that leads out of it into a writable mount still is, which shows
+# its links were walked at all (GAP-2 slice 3: every damage to the <home> test
+# survived, because a launcher with an overlay is read-only either way).
+UR64="$TMP/ur64"; mk_launcher "$UR64/c:o "; L64="$UR64/c:o /.ai-containers"
+: > "$TMP/app/x64"
+ln -s sandbox.sh "$L64/home64.sh"; ln -s "$TMP/app/x64" "$L64/out64.sh"
+EXTRA_MOUNTS="$UR64" launch "$LAUNCHER" "$TMP/app"
+rm -f "$TMP/app/x64"; rm -rf "$UR64"
+if grep -aqF "WARNING: cannot protect $L64" "$ERR" \
+   && grep -aqF "launcher link $L64/out64.sh leads somewhere the agent can change" "$ERR" \
+   && ! grep -aqF "launcher link $L64/home64.sh" "$ERR"; then
+  pass "T64 in a launcher that could not be overlaid, a link that stays inside it is not warned about again"
+else
+  fail "T64 a writable launcher's own links (rc=$LAUNCH_RC; stderr: $(grep -aF 'ur64' "$ERR" | tr '\n' ' '))"
+fi
+# One with a writable bind of its own inside it (an EXTRA_MOUNTS of a directory
+# there, which gets a NOTE): a step inside the launcher is judged only where it
+# lies in that bind. A name that is not UTF-8, since with one holding ':' docker
+# refuses the launch; it is the launcher's judgement that is tested, before
+# docker runs (docker would mount a new directory in its place: LNCH-22).
+# Skipped where the filesystem refuses the name, as T24's are.
+B64="$TMP/b64"; L64b="$B64/bad"$'\xff'"/.ai-containers"
+if mk_launcher "$B64/bad"$'\xff' 2>/dev/null; then
+  mkdir -p "$L64b/inner64"; : > "$L64b/inner64/x64"
+  ln -s sandbox.sh "$L64b/home64.sh"; ln -s inner64/x64 "$L64b/in64.sh"
+  EXTRA_MOUNTS="$B64 $L64b/inner64" launch "$LAUNCHER" "$TMP/app"
+  if grep -aqF "WARNING: cannot protect $B64/bad" "$ERR" \
+     && grep -aqF "/in64.sh leads somewhere the agent can change" "$ERR" \
+     && ! grep -aqF "home64.sh" "$ERR"; then
+    pass "T64 in a launcher that could not be overlaid, with a writable bind inside it, a link that stays out of that bind is not warned about"
+  else
+    fail "T64 a writable launcher with a bind inside it (rc=$LAUNCH_RC; stderr: $(grep -aF 'b64' "$ERR" | tr '\n' ' '))"
+  fi
+else
+  printf 'SKIP: T64 a launcher whose name is not UTF-8 — this filesystem refuses it\n'
+fi
+rm -rf "$B64"
+
+# ── T65: a link to a writable mount's root ──────────────────────────────────
+# A mount point cannot be swapped for a link, so a way that steps OUT of one
+# (`..`) is safe there; what lies in it can still be changed. A launcher link to
+# the root of the working dir is warned about (GAP-2 slice 3: taking every step
+# at a mount root as safe survived).
+ln -s "$TMP/app" "$LAUNCHER/approot65"
+launch "$LAUNCHER" "$TMP/app"
+rm -f "$LAUNCHER/approot65"
+grep -qF "it can change $TMP/app (at /workspace/app)" \
+     <<<"$(grep -A1 -F "launcher link $LAUNCHER/approot65 leads" "$ERR")" \
+  && pass "T65 a launcher link to a writable mount's root is warned about" \
+  || fail "T65 link to a mount root (rc=$LAUNCH_RC; stderr: $(grep -A1 -F 'approot65' "$ERR" | tr '\n' ' '))"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

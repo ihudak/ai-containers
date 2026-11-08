@@ -38,7 +38,7 @@ reports by editing the entry's **Status** line (and docs/testing.md's
 |---|---|---|---|
 | **Linux agent** (review machine) | Linux x86-64, native Docker Engine | the falsify work GAP-1 to GAP-4 | anything below |
 | **WSL agent** | Windows + WSL2 (Ubuntu distro) + **Docker Desktop** with WSL integration. **Not** a native Docker Engine in the distro | **PLAT-9** (Docker Desktop); PLAT-6, and PLAT-8's drvfs half (GIT-41 there), done | a native Engine's runs: the WSL native agent's |
-| **WSL native agent** | Windows + WSL2 (Ubuntu distro) + a **Docker Engine installed natively in the distro** (not Docker Desktop) | **PLAT-9** (native Engine); PLAT-2's native-Engine half done | GIT-41, which is Docker Desktop's |
+| **WSL native agent** | Windows + WSL2 (Ubuntu distro) + a **Docker Engine installed natively in the distro** (not Docker Desktop) | **PLAT-9** (native Engine), and PLAT-8's drvfs steps on a native Engine: a bind of `/mnt/<drive>` is drvfs there too, so GIT-41's refusal applies; PLAT-2's native-Engine half done | — |
 | **Mac agent** | macOS, Docker Desktop and/or Colima | **PLAT-7** (git documented as a requirement; not run), GIT-41 on Docker Desktop for Mac, **PLAT-9**, **PLAT-3** (GAP-11, designed); PLAT-5 and PLAT-8's APFS half (GIT-41 on Colima) done | — |
 | *nobody* | x86-64 CPU without AVX | PLAT-4: closed as not supported | — |
 
@@ -167,8 +167,9 @@ first, then fix test-first.
       - `.GIT/config` wrote through a read-only bind of the whole `.git`.
       - A pinned directory was renamed through another spelling.
       - In a case-sensitive directory every other spelling was `nonexistent`, or a new file the host's git ignores, and the host's config was untouched.
+      - But not every other name: on C:, which makes 8.3 short names (`NtfsDisable8dot3NameCreation` 2), `AI-CON~1/sandbox-common.sh` was written from an `ubuntu:22.04` container past a read-only bind of `.ai-containers`, in a case-sensitive directory too (automated security review of `1ed3de8`). `/mnt/c/PROGRA~1` resolves through drvfs. D: here made none.
       - From a container, `setfattr -n system.wsl_case_sensitive` is `Not supported`, so the agent cannot make a directory ignore case.
-    - **Fixed** by GIT-41 and the drvfs part of GIT-38 (bugs review section 25). G121 in `tests/test-git-internals-ro-casefold.sh` runs where `TMPDIR` is on such a filesystem: 5 checks red before the fix, 0 failures after.
+    - **Fixed** by GIT-41 and the drvfs part of GIT-38 (bugs review section 25): on drvfs a launch that needs a read-only bind below a writable mount is refused, case-sensitive directory or not. G121 and G122 in `tests/test-git-internals-ro-casefold.sh` run where `TMPDIR` is on such a filesystem: 5 checks red before the fix, 0 failures after.
 
   - **APFS (macOS),** at `15682eb`, macOS 26.7.2 arm64, Homebrew bash 5.3.20:
     - `tests/test-git-internals-ro-casefold.sh` said `NOTE: TMPDIR ignores case here; the cases run in it`, then 21 `PASS: G117` and `0 failure(s)`.
@@ -198,7 +199,7 @@ first, then fix test-first.
 - **Run:** at the `origin/main` of the day, from a clean clone:
   - Mac: `bash tests/run-all.sh` under Homebrew bash 5, or `PHASES=5 bash ./verify-on-host.sh`. Record `bash --version`, `git --version`, and which `find`, `stat` and `ps` are first on `PATH`.
   - WSL (each engine): from the ext4 checkout, `PHASES=5 bash ./verify-on-host.sh`; then the same from a clone under `/mnt/c`.
-  - Watch above all: `tests/test-git-internals-ro-config.sh` (G114, G120, G122), `tests/test-git-internals-ro-reads.sh` (G112, G119), `tests/test-git-internals-ro-index.sh`, `tests/test-git-internals-ro-casefold.sh`, `tests/test-project-init.sh` and `tests/test-sync-project.sh`.
+  - Watch above all: `tests/test-git-internals-ro-config.sh` (G114, G120, G126), `tests/test-git-internals-ro-reads.sh` (G112, G119), `tests/test-git-internals-ro-index.sh`, `tests/test-git-internals-ro-casefold.sh`, `tests/test-project-init.sh` and `tests/test-sync-project.sh`.
 - **Expected:** `0 failure(s)` everywhere. The casefold test prints `SKIP:` where `TMPDIR` is case-sensitive and no case-folding filesystem can be made.
 - **A defect looks like:** a `FAIL:` in those files. Re-run that file alone, and find whether the launcher or the test assumes GNU behaviour (`stat -c`, `find -printf`, `ps -o comm=` printing a bare name, `head -c` on a pipe). A launcher defect is a GIT- bug, a test-only one a TST- bug, each filed with its output, then fixed test-first, per the rule at the top.
 - **Record:** one row per run in docs/testing.md's "Platforms exercised", with the commit.

@@ -18,13 +18,13 @@
 #
 # Where TMPDIR ignores case and the kernel does not — WSL's drvfs, where each
 # spelling is a dentry of its own — a read-only bind cannot cover the other
-# spellings of its name, and a launch that needs one there is refused (bugs
-# review GIT-41): G121 checks that, and the G117 cases, all of which need one,
-# are not run. Then, where fsutil.exe can make a case-sensitive directory, the
-# test runs again in one under TMPDIR, its parents still ignoring case, with a
-# parent written in another case instead (G121): getcwd prints there the
-# spelling a directory was reached by, so the launcher spells those parents
-# from readdir (platform-issues PLAT-8).
+# spellings of its name, nor the 8.3 short name Windows also answers to, and a
+# launch that needs one there is refused (bugs review GIT-41): G121 checks
+# that, and the G117 cases, all of which need one, are not run. G122 checks that
+# a directory there is spelled from readdir, where getcwd prints the spelling it
+# was reached by (platform-issues PLAT-8), a name with no ASCII letter under C
+# too. Then, where fsutil.exe can make a case-sensitive directory, G121 checks
+# that a launch in one is refused as well: short names hold there too.
 set -uo pipefail
 
 if [[ -z "${_CF_INNER:-}" ]]; then
@@ -67,15 +67,45 @@ fi
 # shellcheck source=tests/lib-git-internals-ro.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib-git-internals-ro.sh"
 
+# spell <path>: _disk_spell's answer for <path>, under LC_ALL=C, with a / after.
+spell() {
+  LC_ALL=C bash -c '
+    set -euo pipefail
+    for fn in _ci_path _case_flip _u8_locale _win_path _win_fs _win_mounts _disk_spell _ds_readdir _ci_name _ci_alias_fs _q _term; do
+      eval "$(awk "/^$fn\\(\\) \\{/,/^}\$/" "$1")"
+    done
+    v="$2"; _disk_spell v; printf "%s/" "$v"' _ "$ENGINE/sandbox.sh" "$1"
+}
+# ── G123: where Windows looks names up, a path naming a directory by its 8.3
+# short name, which readdir never lists, is refused: compared as written, it
+# was outside the mount it lies in (automated security review of 0e0ea9a).
+# Only where the drive makes short names (C: by default).
+g123() {
+  local n short="" got
+  mkdir "$TMP/longdirectoryname123" || { printf 'SCAFFOLD-FAILED: G123\n'; exit 1; }
+  for n in LONGDI~1 LONGDI~2 LONGDI~3 LONGDI~4; do
+    if [[ -d "$TMP/$n" && "$TMP/$n" -ef "$TMP/longdirectoryname123" ]]; then short="$n"; break; fi
+  done
+  if [[ -z "$short" ]]; then
+    printf 'NOTE: G123 not run: this drive makes no 8.3 short names (%s)\n' "$1"
+  else
+    got="$(spell "$TMP/$short/" 2>&1)"
+    [[ "$got" == *"cannot be listed, it is"*"refusing the launch"* && "$got" != "$TMP/"* ]] \
+      && pass "G123 a path through an 8.3 short name is refused, $1" \
+      || fail "G123 short name $short, $1 (got: $got)"
+  fi
+  rmdir "$TMP/longdirectoryname123"
+}
+
 if [[ -n "$_CF_ALIAS" ]]; then
-  # ── G121: no read-only bind where another spelling is a name of its own ──
+  # ── G121: no read-only bind where another name of it is a name of its own ──
   printf 'NOTE: TMPDIR is on %s, whose kernel does not ignore case: G121, not G117\n' \
     "$(stat -f -c %T -- "$TMP")"
   launch ..
-  [[ "$LAUNCH_RC" != 0 ]] && grep -qF 'by another name, which no' "$ERR" && grep -qF '(bugs review GIT-41)' "$ERR" \
-    && grep -qF '.AI-CONTAINERS is .ai-containers by' "$ERR" \
-    && pass "G121 a launcher overlay in a directory that ignores case, the kernel not, refuses the launch" \
-    || fail "G121 launcher overlay where another spelling is writable (rc=$LAUNCH_RC; stderr: $(grep -F ERROR "$ERR" | head -1))"
+  [[ "$LAUNCH_RC" != 0 ]] && grep -qF 'Windows looks names up' "$ERR" && grep -qF '(bugs review GIT-41)' "$ERR" \
+    && grep -qF '.ai-containers by its 8.3 short name' "$ERR" \
+    && pass "G121 a launcher overlay where Windows looks names up refuses the launch" \
+    || fail "G121 launcher overlay where another name is writable (rc=$LAUNCH_RC; stderr: $(grep -F ERROR "$ERR" | head -1))"
   # The project mounted read-only needs no overlay, and launches.
   rm -rf "$TMP/ro121" && mkdir -p "$TMP/ro121" && "${G[@]}" init -q "$TMP/ro121" \
     || { printf 'SCAFFOLD-FAILED: G121 ro\n'; exit 1; }
@@ -85,15 +115,29 @@ if [[ -n "$_CF_ALIAS" ]]; then
     || fail "G121 read-only mount (rc=$LAUNCH_RC; stderr: $(grep -F ERROR "$ERR" | head -1))"
   # A writable mount there holding a .git directory refuses too, by its git binds.
   EXTRA_MOUNTS="$TMP/ro121" launch "$TMP/app"
-  [[ "$LAUNCH_RC" != 0 ]] && grep -qF '.GIT is .git by' "$ERR" \
+  [[ "$LAUNCH_RC" != 0 ]] && grep -qF '.git by its 8.3 short name' "$ERR" \
     && pass "G121 a .git directory in a writable mount there refuses the launch" \
     || fail "G121 .git in a writable mount (rc=$LAUNCH_RC; stderr: $(grep -F ERROR "$ERR" | head -1))"
   rm -rf "$TMP/ro121"
+  # ── G122: a directory there is spelled from readdir, getcwd printing the
+  # spelling it was reached by; under C too a name with no ASCII letter is seen
+  # to ignore case and is folded (automated security review of 1ed3de8).
+  mkdir "$TMP/"$'\xd0\x94\xd0\xbe\xd0\xba' || { printf 'SCAFFOLD-FAILED: G122\n'; exit 1; }
+  got="$(spell "${PROJ%/*}/PROJ")"
+  [[ "$got" == "$PROJ/" ]] \
+    && pass "G122 a directory reached in another case is spelled as on disk" \
+    || fail "G122 spelling from readdir (got: $got)"
+  got="$(spell "$TMP/"$'\xd0\x94\xd0\x9e\xd0\x9a')"
+  [[ "$got" == "$TMP/"$'\xd0\x94\xd0\xbe\xd0\xba/' ]] \
+    && pass "G122 under C, a name with no ASCII letter reached in another case is spelled as on disk" \
+    || fail "G122 non-ASCII name under C (got: $got)"
+  rmdir "$TMP/"$'\xd0\x94\xd0\xbe\xd0\xba'
+  g123 "in a directory that ignores case"
   cs="$TMP/cs121"; mkdir "$cs" || { printf 'SCAFFOLD-FAILED: G121 cs\n'; exit 1; }
   if command -v fsutil.exe >/dev/null 2>&1 && command -v wslpath >/dev/null 2>&1 \
      && fsutil.exe file setCaseSensitiveInfo "$(wslpath -w "$cs")" enable >/dev/null 2>&1 \
      && mkdir "$cs/Probe" && [[ ! -d "$cs/PROBE" ]] && rmdir "$cs/Probe"; then
-    printf 'NOTE: G121 again in a case-sensitive directory, its parents ignoring case\n'
+    printf 'NOTE: G121 again in a case-sensitive directory\n'
     _CF_INNER=aliascs TMPDIR="$cs" bash "$0" | sed '/^$/d; /failure(s)$/d'
     rc="${PIPESTATUS[0]}"; fails=$((fails + rc))
   else
@@ -104,52 +148,19 @@ if [[ -n "$_CF_ALIAS" ]]; then
 fi
 
 if [[ "$_CF_INNER" == aliascs ]]; then
-  # $PROJ with the deepest parent that ignores case written in another case.
-  UANC="" a=""; r="${PROJ#/}"
-  while [[ -n "$r" ]]; do
-    c="${r%%/*}"; if [[ "$r" == */* ]]; then r="${r#*/}"; else r=""; fi
-    if [[ "${c~~}" != "$c" && -e "$a/${c~~}" && "$a/${c~~}" -ef "$a/$c" ]]; then UANC="$a/${c~~}/$r"; fi
-    a="$a/$c"
-  done
-  UANC="${UANC%/}"; UTMP="${UANC%/proj}"
-  [[ -n "$UANC" && -d "$UANC/.ai-containers" && "$UANC" != "$PROJ" && ! -d "${PROJ%/*}/PROJ" ]] \
-    || { printf 'SCAFFOLD-FAILED: G121 no parent that ignores case above a case-sensitive TMPDIR\n'; exit 1; }
+  # A case-sensitive directory does not close it: Windows still reaches a name
+  # by its 8.3 short name there (AI-CON~1 wrote through a read-only bind on
+  # .ai-containers, measured on C:), and nothing on Linux lists those.
+  [[ ! -d "${PROJ%/*}/PROJ" ]] || { printf 'SCAFFOLD-FAILED: G121 TMPDIR is not case-sensitive\n'; exit 1; }
   launch ..
-  [[ "$LAUNCH_RC" == 0 ]] && has_mount "$PROJ/.git/config:/workspace/proj/.git/config:ro" \
-    && pass "G121 a project in case-sensitive directories launches, protected" \
+  [[ "$LAUNCH_RC" != 0 ]] && grep -qF '.ai-containers by its 8.3 short name' "$ERR" \
+    && pass "G121 a project in a case-sensitive directory there refuses the launch too" \
     || fail "G121 case-sensitive project (rc=$LAUNCH_RC; stderr: $(grep -F ERROR "$ERR" | head -1))"
-  # A gitdir: whose parent is written in another case, into a node_modules the
-  # scan prunes: the git directory is protected under the spelling on disk.
-  mkdir -p "$PROJ/src121" "$PROJ/node_modules/x121" && "${G[@]}" init -q --bare "$PROJ/node_modules/x121/g" \
-    && "${G[@]}" config --file "$PROJ/node_modules/x121/g/config" core.bare false \
-    && printf 'gitdir: %s/node_modules/x121/g\n' "$UANC" > "$PROJ/src121/.git" \
-    || { printf 'SCAFFOLD-FAILED: G121 gitdir\n'; exit 1; }
-  launch ..
-  has_mount "$PROJ/node_modules/x121/g/config:/workspace/proj/node_modules/x121/g/config:ro" \
-    && pass "G121 a gitdir: whose parent is written in another case names a git directory that is protected" \
-    || fail "G121 gitdir: with a parent in another case (rc=$LAUNCH_RC; stderr: $(grep -F x121 "$ERR" | head -2 | tr '\n' ' '))"
-  rm -rf "$PROJ/src121" "$PROJ/node_modules/x121"
-  # An include into the writable project so written is named.
-  printf '[core]\n' > "$PROJ/inc121.cfg" && "${G[@]}" -C "$PROJ" config include.path "$UANC/inc121.cfg" \
-    || { printf 'SCAFFOLD-FAILED: G121 include\n'; exit 1; }
-  launch ..
-  grep -qF "WARNING: /workspace/proj/.git/config includes $UANC/inc121.cfg (include.path)" "$ERR" \
-    && pass "G121 an include whose parent is written in another case is named" \
-    || fail "G121 include with a parent in another case (stderr: $(grep -F inc121 "$ERR" | head -2 | tr '\n' ' '))"
-  "${G[@]}" -C "$PROJ" config --unset include.path; rm -f "$PROJ/inc121.cfg"
-  # A mount whose parent is given in another case: its source is spelled as on
-  # disk, as the paths compared with it are.
-  M1="$TMP/m121"; mkdir -p "$M1/src" "$M1/node_modules/x" && "${G[@]}" init -q --bare "$M1/node_modules/x/g" \
-    && "${G[@]}" config --file "$M1/node_modules/x/g/config" core.bare false \
-    && printf 'gitdir: ../node_modules/x/g\n' > "$M1/src/.git" || { printf 'SCAFFOLD-FAILED: G121 mount\n'; exit 1; }
-  EXTRA_MOUNTS="$UTMP/m121" launch "$TMP/app"
-  has_mount "$M1/node_modules/x/g/config:/workspace/m121/node_modules/x/g/config:ro" \
-    && pass "G121 a mount whose parent is named in another case protects what is in it" \
-    || fail "G121 mount with a parent in another case (rc=$LAUNCH_RC; mounts: $(mounts | grep -c m121); stderr: $(grep -F ERROR "$ERR" | head -1))"
-  rm -rf "$M1"
+  g123 "in a case-sensitive directory"
   printf '\n%d failure(s)\n' "$fails"
   exit "$fails"
 fi
+
 # $PROJ as written in another case: the same directory here.
 UPROJ="${PROJ%/*}/PROJ"
 [[ -d "$UPROJ" ]] || { printf 'SCAFFOLD-FAILED: TMPDIR is not case-insensitive\n'; exit 1; }
@@ -166,6 +177,20 @@ launch ..
 has_mount "$PROJ/node_modules/x117/g/config:/workspace/proj/node_modules/x117/g/config:ro" \
   && pass "G117 a gitdir: spelled in another case names a git directory that is protected" \
   || fail "G117 gitdir: in another case left the git directory writable (git mounts: $(git_mounts | grep -c x117); stderr: $(grep -F x117 "$ERR" | head -2 | tr '\n' ' '))"
+rm -rf "$PROJ/src117" "$PROJ/node_modules/x117"
+# Spelled in another case inside the project, with no link on the way: that is
+# a case difference, not a link the agent can repoint, and is not warned about
+# as one (sandbox.sh: `_lex_link_dir()`; GAP-2 slice 3: taking every way for a
+# link survived).
+mkdir -p "$PROJ/src117" "$PROJ/node_modules/x117" && "${G[@]}" init -q --bare "$PROJ/node_modules/x117/g" \
+  && "${G[@]}" config --file "$PROJ/node_modules/x117/g/config" core.bare false \
+  && printf 'gitdir: ../node_modules/X117/g\n' > "$PROJ/src117/.git" \
+  || { printf 'SCAFFOLD-FAILED: G117 gitdir in the project\n'; exit 1; }
+launch ..
+has_mount "$PROJ/node_modules/x117/g/config:/workspace/proj/node_modules/x117/g/config:ro" \
+  && ! grep -qF 'through a link inside the mount' "$ERR" \
+  && pass "G117 a gitdir: in another case inside the project is protected, and not taken for a link" \
+  || fail "G117 gitdir: in another case inside the project (git mounts: $(git_mounts | grep -c x117); stderr: $(grep -F x117 "$ERR" | head -2 | tr '\n' ' '))"
 rm -rf "$PROJ/src117" "$PROJ/node_modules/x117"
 
 # A submodule's core.worktree spelled so: the index is read against the
@@ -361,7 +386,32 @@ AI_CONTAINERS_SPELL_MAX=2 launch ..
   && pass "G117 past its budget of directories to spell, the launch is refused" \
   || fail "G117 spell budget (rc=$LAUNCH_RC; stderr: $(grep ERROR "$ERR" | head -1))"
 
-# ── G123: a file bound read-only on its own is put back when the session ends
+# ── G124: spelling never fails the path it spells ──────────────────────────
+# _cd_phys's status is _disk_spell's, and a caller acts on it: `_cd_phys src
+# "$src" || continue` drops a writable mount from the scan. So a directory that
+# cannot be spelled from getcwd (no pwd, one that fails, one that prints no
+# absolute path) keeps the spelling it was given, and one asked about again gets
+# the cached answer, and both succeed (GAP-2 slice 3: each of those `return 0`,
+# turned to `return 1`, survived).
+mkdir -p "$TMP/sp124/Dir" "$TMP/bin124" \
+  && printf '#!/bin/sh\nexit 1\n' > "$TMP/bin124/pwdfail" && printf '#!/bin/sh\necho relative\n' > "$TMP/bin124/pwdrel" \
+  && chmod +x "$TMP/bin124/pwdfail" "$TMP/bin124/pwdrel" || { printf 'SCAFFOLD-FAILED: G124\n'; exit 1; }
+got="$(LC_ALL=C bash -c '
+  set -uo pipefail
+  for fn in _cd_phys _cd_bash _ci_path _case_flip _u8_locale _win_path _win_fs _win_mounts _disk_spell _ds_readdir _ci_name _ci_alias_fs _q _term; do
+    eval "$(awk "/^$fn\\(\\) \\{/,/^}\$/" "$1")"
+  done
+  for pw in "" - "$3/pwdfail" "$3/pwdrel"; do
+    unset _ds_cache _ds_cache_made _ds_n; _cd_phys_pwd="$pw"
+    for _ in 1 2; do v=""; rc=0; _cd_phys v "$2/sp124/DIR" || rc=$?; printf "%s:%s:%s|" "${pw##*/}" "$rc" "${v#"$2"}"; done
+  done' _ "$ENGINE/sandbox.sh" "$TMP" "$TMP/bin124" 2>&1)"
+want=":0:/sp124/Dir|:0:/sp124/Dir|-:0:/sp124/DIR|-:0:/sp124/DIR|pwdfail:0:/sp124/DIR|pwdfail:0:/sp124/DIR|pwdrel:0:/sp124/DIR|pwdrel:0:/sp124/DIR|"
+[[ "$got" == "$want" ]] \
+  && pass "G124 a directory spelled from the cache, or that getcwd cannot spell, is still resolved" \
+  || fail "G124 spelling's status (got: $got)"
+rm -rf "$TMP/sp124" "$TMP/bin124"
+
+# ── G127: a file bound read-only on its own is put back when the session ends
 # (bugs review GIT-41) ───────────────────────────────────────────────────────
 # A container's kernel compares names case-sensitively, so .git/CONFIG is not
 # the mount point of .git/config's read-only bind; a host share that ignores
@@ -378,14 +428,14 @@ FAKE_SESSION="printf '[core]\n\tfsmonitor = touch $TMP/pwned121\n' >> '$PROJ/.gi
 a121="$(asides | grep -E '/[0-9]+-config$' | head -1)"
 [[ "$(cat "$PROJ/.git/config")" == "$cfg0" && -n "$a121" && -z "$(leftovers)" ]] && grep -qF fsmonitor "$a121" \
   && grep -qF "WARNING: $PROJ/.git/config changed while the container ran" "$ERR" \
-  && pass "G123 a config written as .git/CONFIG is put back, and what it held is kept and named" \
-  || fail "G123 .git/CONFIG (config now: $(grep -c fsmonitor "$PROJ/.git/config") fsmonitor line(s); kept: ${a121:-none}; left in .git: $(leftovers); stderr: $(grep -F 'container ran' "$ERR" | head -1))"
+  && pass "G127 a config written as .git/CONFIG is put back, and what it held is kept and named" \
+  || fail "G127 .git/CONFIG (config now: $(grep -c fsmonitor "$PROJ/.git/config") fsmonitor line(s); kept: ${a121:-none}; left in .git: $(leftovers); stderr: $(grep -F 'container ran' "$ERR" | head -1))"
 rm -rf "$HOME/.ai-containers/restored"
 
 FAKE_SESSION="printf '../planted\n' > '$PROJ/.git/COMMONDIR'" launch ..
 [[ "$(cat "$PROJ/.git/commondir")" == ./ ]] \
-  && pass "G123 a commondir written as .git/COMMONDIR is put back" \
-  || fail "G123 .git/COMMONDIR (commondir now: $(cat "$PROJ/.git/commondir"))"
+  && pass "G127 a commondir written as .git/COMMONDIR is put back" \
+  || fail "G127 .git/COMMONDIR (commondir now: $(cat "$PROJ/.git/commondir"))"
 rm -rf "$HOME/.ai-containers/restored"
 
 # Removed, or replaced by a link or a FIFO: put back as a regular file, and the
@@ -398,18 +448,18 @@ for what121 in removes "replaces with a link" "replaces with a FIFO"; do
   esac
   FAKE_SESSION="$how121" launch_timed 60 ..
   [[ "$LAUNCH_RC" == 0 && -f "$PROJ/.git/config" && ! -L "$PROJ/.git/config" && "$(cat "$PROJ/.git/config")" == "$cfg0" ]] \
-    && pass "G123 a config the session $what121 is put back as it was" \
-    || fail "G123 a config the session $what121 (rc=$LAUNCH_RC in ${LAUNCH_S}s; stderr: $(grep -F -e WARNING -e ERROR "$ERR" | tail -2 | tr '\n' ' '))"
+    && pass "G127 a config the session $what121 is put back as it was" \
+    || fail "G127 a config the session $what121 (rc=$LAUNCH_RC in ${LAUNCH_S}s; stderr: $(grep -F -e WARNING -e ERROR "$ERR" | tail -2 | tr '\n' ' '))"
   rm -rf "$HOME/.ai-containers/restored"
 done
 
 # A linked worktree's .git file, written as .GIT.
-"${G[@]}" -C "$PROJ" worktree add -q "$PROJ/wt121" 2>/dev/null || { printf 'SCAFFOLD-FAILED: G123 worktree\n'; exit 1; }
+"${G[@]}" -C "$PROJ" worktree add -q "$PROJ/wt121" 2>/dev/null || { printf 'SCAFFOLD-FAILED: G127 worktree\n'; exit 1; }
 wt0="$(cat "$PROJ/wt121/.git")"
 FAKE_SESSION="printf 'gitdir: $TMP/evil121\n' > '$PROJ/wt121/.GIT'" launch ..
 [[ "$(cat "$PROJ/wt121/.git")" == "$wt0" ]] \
-  && pass "G123 a worktree's .git file written as .GIT is put back" \
-  || fail "G123 wt/.GIT (now: $(cat "$PROJ/wt121/.git"))"
+  && pass "G127 a worktree's .git file written as .GIT is put back" \
+  || fail "G127 wt/.GIT (now: $(cat "$PROJ/wt121/.git"))"
 "${G[@]}" -C "$PROJ" worktree remove --force "$PROJ/wt121" 2>/dev/null; rm -rf "$PROJ/wt121"; "${G[@]}" -C "$PROJ" worktree prune
 rm -rf "$HOME/.ai-containers/restored"
 
@@ -418,8 +468,8 @@ rm -rf "$HOME/.ai-containers/restored"
 rm -rf "$HOME/.ai-containers/restored"
 FAKE_DOCKER_RC=3 FAKE_SESSION=":" launch ..
 [[ "$LAUNCH_RC" == 3 && -z "$(asides)" && -z "$(leftovers)" ]] && ! grep -qF 'changed while the container ran' "$ERR" \
-  && pass "G123 a session that changes nothing puts nothing back, and keeps its exit status" \
-  || fail "G123 no change (rc=$LAUNCH_RC; asides: $(asides | tr '\n' ' '); stderr: $(grep -F 'container ran' "$ERR" | head -1))"
+  && pass "G127 a session that changes nothing puts nothing back, and keeps its exit status" \
+  || fail "G127 no change (rc=$LAUNCH_RC; asides: $(asides | tr '\n' ' '); stderr: $(grep -F 'container ran' "$ERR" | head -1))"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

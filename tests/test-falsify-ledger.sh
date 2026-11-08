@@ -168,6 +168,25 @@ check "4: an entry for a now-killed mutant fails the gate" "1" "$rc"
 assert_has "4: exactly one finding" '1 problem(s)' "$out"
 assert_has "4: the failure names the obsolete identity" "$ID_K" "$out"
 only_signature "4" "$SIG_OBSOLETE"
+# 4b. …quoting what killed it where the run recorded that: in CI the oracle's
+# output is gone with the runner, so a kill that should not have happened (a
+# slow runner, an EQUIVALENT entry) could not be traced to its assertion
+# (bugs review TST-29). Every kill of the identity, so the unexpected one shows.
+RUN_F="$TMP/run-failline.txt"
+{ cat "$RUN"
+  printf 'NOTE|failline|%s|L11 seq 2: FAIL: the return was read\n' "$ID_K"
+  printf 'NOTE|failline|%s|L40 seq 7: FAIL: a slow step\n' "$ID_K"; } > "$RUN_F"
+run_gate "$D4" "$RUN_F"
+check "4b: a failline note changes no verdict" "1" "$rc"
+assert_has "4b: still exactly one finding" '1 problem(s)' "$out"
+only_signature "4b" "$SIG_OBSOLETE"
+assert_has "4b: the finding quotes each kill's FAIL: line" \
+  'killed by: L11 seq 2: FAIL: the return was read; L40 seq 7: FAIL: a slow step' "$out"
+# Without --strict, as Phase 6 runs it on a developer host, the note says so too.
+out="$(FALSIFY_DEEP_CONF="$FIX_DEEP" bash "$CHECK" --ledger "$D4" --run-output "$RUN_F" 2>&1)"; rc=$?
+check "4b: without --strict an obsolete entry is not fatal" "0" "$rc"
+assert_has "4b: …and its note quotes each kill's FAIL: line" \
+  "obsolete here (killed in this environment), not fatal without --strict: $ID_K (killed by: L11 seq 2: FAIL: the return was read; L40 seq 7: FAIL: a slow step)" "$out"
 
 # ── DEMONSTRATION 5: UNPROVEN excuses only an identity with no survivor ───────
 # An identity is file:operator:sha1(line), so one identity can carry several

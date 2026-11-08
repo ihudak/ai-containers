@@ -342,21 +342,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
-- **A writable project under WSL's `/mnt/<drive>`, in directories that ignore
-  case, is refused.** There each spelling of a name is a name of its own to the
+- **A writable project under WSL's `/mnt/<drive>` that needs a read-only bind
+  is refused.** There each spelling of a name is a name of its own to the
   kernel, and a read-only bind covers only one. Measured from a Docker Desktop
   container on drvfs: `.git/CONFIG` wrote the host's `.git/config`,
   `sandbox.sh` through `.AI-CONTAINERS` wrote the launcher the host runs next, and a
-  pinned directory could be renamed away. No bind closes that, so a launch that
-  needs a read-only bind there now stops with an `ERROR:` naming the directory
-  (bugs review GIT-41). Keep the project on the distro's own filesystem
-  (`~/dev`, which is also faster), mount it `:ro`, or make its directories
-  case-sensitive with `fsutil.exe file setCaseSensitiveInfo <dir> enable`,
-  where the binds hold. On those filesystems the launcher now spells paths
-  from the directory listing, because `getcwd` there prints whatever spelling
-  a directory was reached by, so a `gitdir:` or include whose parent is written
-  in another case is matched to its mount (platform-issues PLAT-8). macOS is
-  covered by the next entry.
+  pinned directory could be renamed away. Windows also answers to a name's 8.3
+  short name (`.ai-containers` as `AI-CON~1`) on a drive that makes them, C: by
+  default, and does so in a case-sensitive directory too: a write through it
+  passed a read-only bind there. No bind closes either, and nothing on Linux
+  lists short names, so a launch that needs a read-only bind on drvfs, on an
+  SMB mount or on NTFS mounted from Linux, now stops with an `ERROR:` naming the directory (bugs review
+  GIT-41). Keep the project on the distro's own filesystem (`~/dev`, which is
+  also faster), or mount it `:ro`. Elsewhere, a directory that ignores case on a
+  filesystem whose kernel does not is refused the same way. On those
+  filesystems the launcher now spells paths from the directory listing,
+  because `getcwd` there prints whatever spelling a directory was reached by,
+  and refuses the launch when the listing does not name one (on a Windows
+  filesystem every name is checked so, which turns away a path written with
+  a short name, such as `PROGRA~1`); a name with no
+  ASCII letter is turned over in a UTF-8 locale, so it is seen to ignore case
+  under `LC_ALL=C` too (platform-issues PLAT-8). macOS is covered by the
+  next entry.
 - **A git config written under another spelling is put back when the
   container exits.** On macOS, a container reaches the project through a file
   share that ignores case, and its kernel takes `.git/CONFIG` for a file of its
