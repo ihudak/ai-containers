@@ -193,7 +193,7 @@ first, then fix test-first.
 - **Run:** at the `origin/main` of the day, from a clean clone:
   - Mac: `bash tests/run-all.sh` under Homebrew bash 5, or `PHASES=5 bash ./verify-on-host.sh`. Record `bash --version`, `git --version`, and which `find`, `stat` and `ps` are first on `PATH`.
   - WSL (each engine): from the ext4 checkout, `PHASES=5 bash ./verify-on-host.sh`; then the same from a clone under `/mnt/c`.
-  - Watch above all: `tests/test-git-internals-ro-config.sh` (G114, G120, G122), `tests/test-git-internals-ro-reads.sh` (G112, G119), `tests/test-git-internals-ro-index.sh`, `tests/test-git-internals-ro-casefold.sh`, `tests/test-project-init.sh` and `tests/test-sync-project.sh`.
+  - Watch above all: `tests/test-git-internals-ro-config.sh` (G114, G120, G126), `tests/test-git-internals-ro-reads.sh` (G112, G119), `tests/test-git-internals-ro-index.sh`, `tests/test-git-internals-ro-casefold.sh`, `tests/test-project-init.sh` and `tests/test-sync-project.sh`.
 - **Expected:** `0 failure(s)` everywhere. The casefold test prints `SKIP:` where `TMPDIR` is case-sensitive and no case-folding filesystem can be made.
 - **A defect looks like:** a `FAIL:` in those files. Re-run that file alone, and find whether the launcher or the test assumes GNU behaviour (`stat -c`, `find -printf`, `ps -o comm=` printing a bare name, `head -c` on a pipe). A launcher defect is a GIT- bug, a test-only one a TST- bug, each filed with its output, then fixed test-first, per the rule at the top.
 - **Record:** one row per run in docs/testing.md's "Platforms exercised", with the commit.

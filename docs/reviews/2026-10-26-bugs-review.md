@@ -25,6 +25,7 @@
 - **Updated 2026-11-07:** GIT-46, found by the automated security review of the GIT-44 fix (`c6316af`) and its second final review, is FIXED.
 - **Updated 2026-11-07:** GIT-39 is FIXED, after a review and a re-review of the fix. GIT-42 and GIT-43, found by the review (GIT-43 also by the automated security review of `f90c096`), are open (section 25). GIT-35's first case is fixed with it, and GIT-35 is raised to MEDIUM by what the re-review found.
 - **Updated 2026-11-07:** GIT-41 is FIXED on WSL, measured there by PLAT-8's drvfs half, which also showed it wider than modelled: every read-only overlay, the launcher's included. GIT-38's drvfs part is fixed with it. Both stay open on macOS until PLAT-8's APFS half is measured (section 25).
+- **Updated 2026-11-08:** section 26, found while doing GAP-2's slice 3 and in its CI run: LNCH-22 (open, LOW) and TST-29 (a falsify flake in CI, cause open; the diagnostic that names it next time is FIXED).
 - **Companion:** [2026-10-26-feature-gaps-review.md](2026-10-26-feature-gaps-review.md).
 - **Confidence:** CONFIRMED = reproduced, or unambiguous from the code. PLAUSIBLE = strong reasoning, not reproduced (usually needs hardware or a platform not available here); verify before fixing.
 - **Citations** are by snippet, per AGENTS.md "Citing code". Scratch repro paths mentioned in entries were session-local and may no longer exist; each entry describes its repro in full.
@@ -2061,7 +2062,7 @@ An Opus reviewer of the slice's new tests, 2026-11-05, at `fd49c3c`, reached a m
   - **An absolute `core.hooksPath` was named once per linked worktree:** they take only relative values from their common directory.
   - **Wording:** the cap `WARNING:`, the budget `WARNING:` for a `hooks/` that is no `core.hooksPath` directory, and a hook link's "reads".
 - **The final review of the fix** found, and these are fixed: a mutant taken for equivalent was not (the order of the cap's two passes), and the `.git` link branch registered no worktree for its target, so a submodule under a pruned `vendor/` was not followed and a `WARNING:` said so; a target in another writable mount was not queued there.
-- **Tests:** G122 in `tests/test-git-internals-ro-config.sh`, each seen red on the code before:
+- **Tests:** G126 (first numbered G122, which GIT-41's casefold test also took) in `tests/test-git-internals-ro-config.sh`, each seen red on the code before:
   - a linked worktree mounted alone: its repository's `core.hooksPath`, hook link into the mount, include of a file in it, and `config` made a link into it;
   - a `--separate-git-dir` checkout mounted alone;
   - inside the mounts: a linked worktree's `config.worktree`, a relative value from a linked worktree's checkout, from one outside every mount (its `gitdir`), and from a separate git directory's checkout;
@@ -2081,7 +2082,7 @@ An Opus reviewer of the slice's new tests, 2026-11-05, at `fd49c3c`, reached a m
   - **A `.git` link's target inside a writable mount** was judged from the git directory, not from the link's checkout, so the NOTE named a place git never runs hooks in.
 - **Fix:** a linked worktree's `gitdir` is bound `:ro` with `config` and `commondir`, and held to the hard-link refusal under a read-only overlay too; one naming a checkout that does not exist (deleted and never pruned, or made in a container with `/workspace` paths) is judged from where it would be, silent outside every mount; a relative `core.hooksPath` with no `gitdir` to read is named as not judged; the `.git` link branch records its checkout whatever the target's writability (`_gref_add()`), and protects a target in the same mount there.
 - **The final review of the fix** found the not-judged NOTE printed on every launch for a worktree whose checkout is gone, and a hard-linked `gitdir` under a read-only overlay not refused; both fixed.
-- **Tests:** in G122 (`tests/test-git-internals-ro-config.sh`), each seen red on the code before: `gitdir` bound read-only; no `gitdir`, named as not judged; checkouts that are gone, judged from where they would be; a hard-linked `gitdir` under an overlay, refused; a `.git` link's target in the same mount past its scan, protected and judged from the checkout; one in another writable mount, judged from the checkout.
+- **Tests:** in G126 (`tests/test-git-internals-ro-config.sh`), each seen red on the code before: `gitdir` bound read-only; no `gitdir`, named as not judged; checkouts that are gone, judged from where they would be; a hard-linked `gitdir` under an overlay, refused; a `.git` link's target in the same mount past its scan, protected and judged from the checkout; one in another writable mount, judged from the checkout.
 - **Mutants:** 6 by hand, all killed.
 
 ### GIT-45: $GIT_DIR, where push hooks run, is not a base for a relative core.hooksPath
@@ -2134,6 +2135,27 @@ An Opus reviewer of the slice's new tests, 2026-11-05, at `fd49c3c`, reached a m
   - The protected path already failed closed here (security review of `99db199`).
 - **Fix:** such a commondir names `/nonexistent/ai-launcher-unresolved-commondir/config`, as the protected path does. What cannot be read cannot say the extension is off, so `config.worktree` is walked. An empty commondir is this directory, to git and to `_cd_phys()` alike, so its own config is read, as on the protected path.
 - **The review of the fix** found the test passed with the usual common directory's config read in place of the sentinel (the agent can set that config too), and that the first version took an empty commondir for one that does not resolve. Both fixed: the test sets that config's extension off and covers a commondir outside every mount, and an empty commondir is pinned by its own config's `core.hooksPath` being judged.
+
+## 26. Found while doing GAP-2's slice 3
+
+Found 2026-11-08, at `7d959f8`, while killing the slice's survivors, and in its CI run.
+
+### LNCH-22: a host path holding ':', or bytes that are not UTF-8, cannot be mounted
+- **Status: OPEN** (2026-11-08).
+- **Severity: LOW.** Confidence: CONFIRMED with docker 29 on Linux. A `:`: `invalid mode: /workspace/.agent-blocked`, exit 125, and the launch fails. A name that is not UTF-8: the CLI rewrites it to U+FFFD, and the daemon mounts the directory of that name beside it, making it empty and root-owned where there is none (measured by the second review of GAP-2's slice 3). Where one exists, made through an earlier writable mount of the parent say, docker mounts it writable, unscanned (measured by the final review): no launcher in it is overlaid and no git directory in it protected.
+- **Location:** `sandbox.sh: run_container()`, every `-v` it builds: the primary, `EXTRA_MOUNTS`, a `REPOS` bind, the four pointers and the output directories; and `launcher_ro_overlay()`, which reads the mount list back by splitting each `-v` at its first `:`.
+- **What's wrong:** docker splits a `-v` value at every `:`, so a source path holding one (a launch directory or a primary named `a:b`) makes too many fields, and docker refuses the whole launch. The launcher overlays and pins already go through `_bind_mount_arg()`, which hands such a name to `--mount`, CSV-quoted. The scan takes the part before the first `:` for the source: one that does not exist is skipped, one that does (`/x/a` beside `/x/a:b`) is searched in its place. Harmless only because docker then refuses the launch.
+- **The second form:** the scan examines the directory named, and docker mounts another. The overlays already refuse such a name (`_mount_representable()`); the primary, `EXTRA_MOUNTS` and the four pointers do not.
+- **Fix direction:** route every bind through `_bind_mount_arg()` and have `launcher_ro_overlay()` read `--mount` values too; refuse a name that is not UTF-8 before docker, naming it, as the overlays are.
+
+### TST-29: two EQUIVALENT mutants of repo-git-reset.sh were scored KILLED in CI, and nothing said what killed them
+- **Status: OPEN** (2026-11-08): the cause is not found. The diagnostic that would find it is FIXED.
+- **Severity: LOW.** Confidence: CONFIRMED that it happened, on `7d959f8`'s run (`42424960341`, attempt 1): the `repo-git-reset` shard's ratchet failed `--strict` on two ledger entries now KILLED.
+- **Location:** `tests/test-repo-git-reset.sh`, the shard's oracle, on a slow runner; and `tests/falsify/run.sh`, which kept no trace of what a kill printed.
+- **What happened:** `repo-git-reset.sh:logic-flip:a5150090…` (`update-index … || true` made `&& true`) and the `return-flip` of `volume_head`'s last `return 0` were KILLED. Both change only a status that nothing reads (survivors.txt entry 16), so the oracle failed for some other reason. The same tree's previous run, on the same runner image and git 2.56, had them SURVIVED. This one took 3,685 s against 2,748 s, with three timeouts; rerun on the same tree (attempt 2), it took 3,662 s and both survived again, so slowness alone is not the trigger. Locally the oracle passes under load, and its deadline-bound steps take 0 s against limits of 15 and 20 s.
+- **Why it could not be traced:** the oracle's output went with the runner. A kill's record carries only its signal (`exit+failline`), never the line that fired.
+- **Fix (the diagnostic):** run.sh writes `NOTE|failline|<identity>|L<line> seq <n>: <first FAIL: line>` after every KILLED mutant that printed one, from the run that decided it. check-ledger's obsolete-amnesty finding quotes each such line for the identity (`(killed by: …)`), so the next occurrence names its assertion in the CI log. The line is quoted from the `FAIL:` the kill test matched, read as bytes, CRs and NULs dropped. Phase 6 of `verify-on-host.sh`, which re-prints the run's notes, leaves these out: about two thousand would bury the rest. Tests, each seen red first: `tests/test-falsify-run.sh` 4b and the `--select-oracles` sequences, `tests/test-falsify-ledger.sh` 4b (with and without `--strict`), and `tests/test-verify-exit-code.sh`.
+- **Next:** when the ratchet next reports an EQUIVALENT entry KILLED, the quoted line is the flaky assertion.
 
 ## GIT
 

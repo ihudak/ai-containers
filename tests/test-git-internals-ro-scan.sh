@@ -611,5 +611,41 @@ has_mount "$w92/r/.git/hooks:/workspace/work92/r/.git/hooks:ro" \
   || fail "G92 a repository under the group's directory was skipped ($(git_mounts | grep work92 | tr '\n' ' '))"
 rm -rf "$HOME/.ai-containers/default/work92"
 
+# ── G125: on a filesystem that heeds case, nothing is spelled ───────────────
+# Only a path that crosses a directory ignoring case, or lies on a Windows
+# filesystem, is spelled as on disk (from readdir or getcwd), and only those
+# count toward the budget of 5000 (AI_CONTAINERS_SPELL_MAX). Spelling every path
+# cost a process per directory and, past the budget, refused an ordinary launch
+# (GAP-2 slice 3: the guard, damaged, survived). Skipped where TMP needs
+# spelling: a directory above it ignores case (macOS's APFS, a case-sensitive
+# directory on a Windows drive), or it lies on a Windows filesystem. Decided
+# here, not by the launcher's own _ci_path/_win_path: a falsify run mutates
+# those, and one that says "spell" everywhere would skip the check that kills
+# it (final review of slice 3).
+needs_spell125() {   # <absolute path>
+  local p="" r="${1#/}" c f
+  while [[ -n "$r" ]]; do
+    c="${r%%/*}"; if [[ "$r" == */* ]]; then r="${r#*/}"; else r=""; fi
+    f="$(printf '%s' "$c" | LC_ALL=C tr 'A-Za-z' 'a-zA-Z')"
+    if [[ "$f" != "$c" && ! -L "$p/$f" && "$p/$f" -ef "$p/$c" ]]; then return 0; fi
+    p="$p/$c"
+  done
+  [[ "$OSTYPE" == linux* ]] || return 1
+  case "$(stat -f -c %T -- "$1" 2>/dev/null)" in v9fs|cifs|smb|smb2|smb3|ntfs|fuseblk|fuse|virtiofs) return 0 ;; esac
+  return 1
+}
+mkdir "$TMP/Probe125" || { printf 'SCAFFOLD-FAILED: G125\n'; exit 1; }
+if needs_spell125 "$TMP/Probe125"; then
+  printf 'SKIP: G125 — a directory above TMPDIR ignores case, or is on a Windows filesystem\n'
+else
+  mkdir -p "$PROJ/lib125" && "${G[@]}" init -q "$PROJ/lib125" || { printf 'SCAFFOLD-FAILED: G125 repo\n'; exit 1; }
+  AI_CONTAINERS_SPELL_MAX=0 launch ..
+  [[ "$LAUNCH_RC" == 0 ]] && has_mount "$PROJ/lib125/.git/config:/workspace/proj/lib125/.git/config:ro" \
+    && pass "G125 where every directory heeds case, no directory is spelled, and none counts toward the budget" \
+    || fail "G125 spell budget on a case-sensitive tree (rc=$LAUNCH_RC; stderr: $(grep ERROR "$ERR" | head -1))"
+  rm -rf "$PROJ/lib125"
+fi
+rmdir "$TMP/Probe125"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

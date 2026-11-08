@@ -178,6 +178,20 @@ has_mount "$PROJ/node_modules/x117/g/config:/workspace/proj/node_modules/x117/g/
   && pass "G117 a gitdir: spelled in another case names a git directory that is protected" \
   || fail "G117 gitdir: in another case left the git directory writable (git mounts: $(git_mounts | grep -c x117); stderr: $(grep -F x117 "$ERR" | head -2 | tr '\n' ' '))"
 rm -rf "$PROJ/src117" "$PROJ/node_modules/x117"
+# Spelled in another case inside the project, with no link on the way: that is
+# a case difference, not a link the agent can repoint, and is not warned about
+# as one (sandbox.sh: `_lex_link_dir()`; GAP-2 slice 3: taking every way for a
+# link survived).
+mkdir -p "$PROJ/src117" "$PROJ/node_modules/x117" && "${G[@]}" init -q --bare "$PROJ/node_modules/x117/g" \
+  && "${G[@]}" config --file "$PROJ/node_modules/x117/g/config" core.bare false \
+  && printf 'gitdir: ../node_modules/X117/g\n' > "$PROJ/src117/.git" \
+  || { printf 'SCAFFOLD-FAILED: G117 gitdir in the project\n'; exit 1; }
+launch ..
+has_mount "$PROJ/node_modules/x117/g/config:/workspace/proj/node_modules/x117/g/config:ro" \
+  && ! grep -qF 'through a link inside the mount' "$ERR" \
+  && pass "G117 a gitdir: in another case inside the project is protected, and not taken for a link" \
+  || fail "G117 gitdir: in another case inside the project (git mounts: $(git_mounts | grep -c x117); stderr: $(grep -F x117 "$ERR" | head -2 | tr '\n' ' '))"
+rm -rf "$PROJ/src117" "$PROJ/node_modules/x117"
 
 # A submodule's core.worktree spelled so: the index is read against the
 # worktree, and the nested submodule it records, under a pruned node_modules,
@@ -371,6 +385,31 @@ AI_CONTAINERS_SPELL_MAX=2 launch ..
 [[ "$LAUNCH_RC" != 0 ]] && grep -qF 'ERROR: more than 2 directories on a filesystem that ignores case' "$ERR" \
   && pass "G117 past its budget of directories to spell, the launch is refused" \
   || fail "G117 spell budget (rc=$LAUNCH_RC; stderr: $(grep ERROR "$ERR" | head -1))"
+
+# ── G124: spelling never fails the path it spells ──────────────────────────
+# _cd_phys's status is _disk_spell's, and a caller acts on it: `_cd_phys src
+# "$src" || continue` drops a writable mount from the scan. So a directory that
+# cannot be spelled from getcwd (no pwd, one that fails, one that prints no
+# absolute path) keeps the spelling it was given, and one asked about again gets
+# the cached answer, and both succeed (GAP-2 slice 3: each of those `return 0`,
+# turned to `return 1`, survived).
+mkdir -p "$TMP/sp124/Dir" "$TMP/bin124" \
+  && printf '#!/bin/sh\nexit 1\n' > "$TMP/bin124/pwdfail" && printf '#!/bin/sh\necho relative\n' > "$TMP/bin124/pwdrel" \
+  && chmod +x "$TMP/bin124/pwdfail" "$TMP/bin124/pwdrel" || { printf 'SCAFFOLD-FAILED: G124\n'; exit 1; }
+got="$(LC_ALL=C bash -c '
+  set -uo pipefail
+  for fn in _cd_phys _cd_bash _ci_path _case_flip _u8_locale _win_path _win_fs _win_mounts _disk_spell _ds_readdir _ci_name _ci_alias_fs _q _term; do
+    eval "$(awk "/^$fn\\(\\) \\{/,/^}\$/" "$1")"
+  done
+  for pw in "" - "$3/pwdfail" "$3/pwdrel"; do
+    unset _ds_cache _ds_cache_made _ds_n; _cd_phys_pwd="$pw"
+    for _ in 1 2; do v=""; rc=0; _cd_phys v "$2/sp124/DIR" || rc=$?; printf "%s:%s:%s|" "${pw##*/}" "$rc" "${v#"$2"}"; done
+  done' _ "$ENGINE/sandbox.sh" "$TMP" "$TMP/bin124" 2>&1)"
+want=":0:/sp124/Dir|:0:/sp124/Dir|-:0:/sp124/DIR|-:0:/sp124/DIR|pwdfail:0:/sp124/DIR|pwdfail:0:/sp124/DIR|pwdrel:0:/sp124/DIR|pwdrel:0:/sp124/DIR|"
+[[ "$got" == "$want" ]] \
+  && pass "G124 a directory spelled from the cache, or that getcwd cannot spell, is still resolved" \
+  || fail "G124 spelling's status (got: $got)"
+rm -rf "$TMP/sp124" "$TMP/bin124"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

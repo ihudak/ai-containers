@@ -1,6 +1,6 @@
 # Feature-gaps review — 2026-10-26
 
-- **Review date:** 2026-10-26 (statuses updated through 2026-11-05)
+- **Review date:** 2026-10-26 (statuses updated through 2026-11-08)
 - **Last reviewed commit:** `bec1c57` (`bec1c5737acdc549143e2c55e4a4b945ae27a287`, main, 2026-10-18 — "Merge pull request #312")
 - **Scope:** every design, plan and backlog in the repository, wherever written — `docs/superpowers/specs/`, `docs/superpowers/plans/`, the follow-up and falsify backlogs, `tests/falsify/survivors.txt` / `targets.conf`, AGENTS.md, README.md, `docs/`, CHANGELOG.md, and TODO/deferred/follow-up markers in code.
 - **Companion:** [2026-10-26-bugs-review.md](2026-10-26-bugs-review.md) (defects; doc errors that mislead users are filed there as `DOC-*`).
@@ -126,6 +126,26 @@ A gap is something a design promised that is not in the code at the reviewed com
     - `run_container()`: 318;
     - `git_dirs_in()`: 239;
     - about 30 smaller helpers: 354.
+- **Slice 3, measured 2026-11-08:** the path and link walkers and the spelling helpers. They are `_walk_exposed`, `_path_walk`, `_link_walk`, `_readlink_exact`, `_cd_bash`, `_cd_phys`, `_ci_path`, `_disk_spell`, `_spell_rec`, `_canon_lex`, `_lex_link_dir`, `_lex_norm` and `_gref_add`. GIT-41's `_ci_alias_fs` and `_ds_readdir` were left out: they act only on drvfs.
+  - **The run:** 182 mutants, `--select-oracles --jobs 10 --timeout 180`, against the 29 tests that execute sandbox.sh (slice 2's 28 and `tests/test-git-internals-ro-casefold.sh`, which ran on a casefold tmpfs in a user namespace), at `7d959f8`. It took 3 h 17 min of wall time. Both controls passed; every kill printed a `FAIL:` line.
+  - **Result:** 147 killed, 26 survived, 9 unproven. A survivor ran the whole set, about 1,000 s under that load.
+  - **17 survivors are now killed,** each seen failing against its mutant on the final test files, rebased onto `2880376` (GIT-41's last commit) by the line's text:
+    - **The `<home>` rule of `_walk_exposed()`** (7): a step inside the launcher whose links are walked, and in none of its own writable binds, is not judged. A launcher with an overlay is read-only either way, so only one left writable shows it: T64 in `tests/test-launcher-dir-ro.sh`, a launcher whose name docker cannot carry, with and without an `EXTRA_MOUNTS` bind inside it.
+    - **The mount-root rule** (1): only a `..` step out of a mount root or a pin is safe there. T65: a launcher link to the working dir's root is warned about.
+    - **`_readlink_exact()`'s failure** (1): T37, with a `readlink` that fails, as for a link removed between the scan and the read.
+    - **`_disk_spell()`'s status** (4), which is `_cd_phys`'s, and a caller drops a mount when it fails: G124 in `tests/test-git-internals-ro-casefold.sh` asks twice, with no `pwd`, a failing one and one printing a relative path.
+    - **`_lex_link_dir()`** (3): a `gitdir:` in another case inside the project was warned about as reached through a link. G117 now asserts it is not.
+    - **Spelling every path** (1): GIT-41 rewrote the line since; its counterpart in the new line is killed by G125 in `tests/test-git-internals-ro-scan.sh`: on a filesystem that heeds case, `AI_CONTAINERS_SPELL_MAX=0` refuses nothing.
+  - **8 EQUIVALENT:**
+    - **A status no caller reads** (5): `_link_walk` ×2 and `_path_walk` ×3. Every caller reads them through `mapfile < <(…)`, or as `_link_walk`'s last command.
+    - **`_ci_path`'s check for a relative path** (1): every caller passes an absolute one (`$PWD`, a walk's records, `find` under a mount root).
+    - **The spell budget's refusal** (2):
+      - `kill -s USR1 "$$" … && true`: kill's status is read by nothing, and `exit` follows.
+      - `exit 1` made `exit 0`: at launch, the kill makes the launcher's `trap 'exit 1' USR1` end it with 1 whatever the subshell exits with. In the rescan after the session, whose trap is `_gas_cut=1`, the kill alone marks the search cut short, and the mount's subshell ends either way.
+  - **1 ENV-DEPENDENT:** `_disk_spell`'s return after `_ds_readdir` spelled the path. At `7d959f8` that happened only where a directory ignores case and its kernel does not: drvfs, and Linux filesystems other than ext4, f2fs and tmpfs (vfat, exfat, …). GIT-41 rewrote the line since.
+  - **9 UNPROVEN, all loops that never end:** `_cd_bash`'s `//` loop (3), `_ci_path`'s component loop (3), `_spell_rec`'s (2) and `_canon_lex`'s (1). Any test that reaches them hangs, and the per-test clock stops it.
+  - **Found on the way:** LNCH-22 (bugs review, section 26): a host path holding `:` cannot be mounted, and the launch fails at docker.
+  - **What is left of sandbox.sh:** it now yields 2,373 default mutants. The largest units are `launcher_ro_overlay()` (655), `run_container()` (314) and `git_dirs_in()` (268); the smaller helpers not yet measured come next (`_ro_fifo_search`, the `_fs_*` and `_rd_*` helpers, `container_env_filter`, …).
 
 ### GAP-3: Container-side firewall and capture scripts have no hermetic oracle; entrypoint.sh's row is stale
 - Status: DONE (2026-11-03).
