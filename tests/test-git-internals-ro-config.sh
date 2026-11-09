@@ -1514,5 +1514,25 @@ n134="$(grep -cF "has your host's git run" "$ERR")"
   || fail "G134 many (rc=$LAUNCH_RC; named $n134; $(grep -F 'WARNING: not every' "$ERR" | tr '\n' ' '))"
 rm -rf "$TMP/h134" "$TMP/o134"
 
+# ── G140: where push hooks run, each directory once, both readings ─────────
+# _git_push_hooks on its own: values sharing a first directory bind it once;
+# two directories are both bound; a :(optional) value is taken both as git
+# older than 2.52 reads it and as 2.52 does; a directory that already holds
+# what a value names is named once (GAP-2 slice 5: these conditions, turned,
+# survived every test).
+fns140="$TMP/fns140.sh"
+{ for f140 in _utf8_valid _mount_representable; do awk -v f="$f140() {" 'index($0, f) == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox-common.sh"; done
+  for f140 in _term _q _git_push_hooks; do awk -v f="$f140() {" 'index($0, f) == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox.sh"; done; } > "$fns140"
+mkdir -p "$TMP/g140/.git/hooks" "$TMP/g140/.git/.hooks/x" "$TMP/g140/.git/.pre2/y" || { printf 'SCAFFOLD-FAILED: G140\n'; exit 1; }
+# (Arrays named as the launcher's caller names them: the function keeps a local
+# `pre`, which a caller's array of that name would resolve to.)
+o140="$(bash -c 'set -euo pipefail; source "$1"; g="$2"; hgro=(); hgpre=()
+  _git_push_hooks "$g" AT hgro hgpre c .husky/_ c .hooks/x c .husky/y c .hooks/x c .pre2/y c ":(optional).opt/_"
+  printf "ro:"; for x in "${hgro[@]}"; do printf "%s " "${x#"$g"/}"; done; printf "|pre:"; for x in "${hgpre[@]}"; do printf "%s " "${x#"$g"/}"; done' _ "$fns140" "$TMP/g140/.git" 2>&1)"
+[[ "$o140" == "ro:.husky .hooks .pre2 :(optional).opt .opt |pre:.hooks/x .pre2/y " ]] \
+  && pass "G140 each push-hooks directory once, both readings of :(optional), and what is there named once" \
+  || fail "G140 push hooks (got: $o140)"
+rm -rf "$TMP/g140" "$fns140"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

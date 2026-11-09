@@ -1745,5 +1745,109 @@ TMPDIR="$TMP/none70" run70 fresh; rc70=$?
   || fail "T70 hard-link search, no temporary file (rc=$rc70; $(cat "$TMP/o70" "$TMP/e70" | tr '\n' ' '))"
 rm -rf "$fns70" "$M70" "$sh70" "$TMP/to70.log" "$TMP/o70" "$TMP/e70"
 
+# ── T72: small launcher helpers, on their own, under the launcher's options ──
+# GAP-2 slice 5: a condition or a return of each, turned, survived every test.
+fns72="$TMP/fns72.sh"
+{ awk -v f="resolve_path() {" 'index($0, f) == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox-common.sh"
+  for f72 in _term _q _repo_volume_foreign _warn_group_link_out add_file_mount_if_exists validate_sandbox_ids split_env_list \
+             _fs_ml_devof _bind_opts_ok _bind_read _ci_alias_fs; do
+    awk -v f="$f72() {" 'index($0, f) == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox.sh"
+  done; } > "$fns72"
+t72() { bash -c 'set -euo pipefail; source "$1"; shift; eval "$1"' _ "$fns72" "$1" 2>&1; }
+# A volume labelled for another repo: the line naming the prefix it collides
+# under appears only where the names do collide.
+o72="$(t72 'docker_volume_label() { printf app; }; ( _repo_volume_foreign ui ai-containers-repo-app ) || true; echo ==; ( _repo_volume_foreign ui somevol ) || true')"
+[[ "${o72%%==*}" == *"REPO_VOLUME_PREFIX=ai-containers"* && "${o72#*==}" != *REPO_VOLUME_PREFIX* ]] \
+  && pass "T72 a foreign repo volume names the prefix it collides under only when it does" \
+  || fail "T72 _repo_volume_foreign (got: $o72)"
+# The group's files: one that is a link out of the group warns; one inside does
+# not; one outside the guard is not judged; none ends the launch under set -e.
+mkdir -p "$TMP/g72/grp" "$TMP/g72/out" && printf x > "$TMP/g72/out/f" && printf x > "$TMP/g72/grp/in" \
+  && ln -s ../out/f "$TMP/g72/grp/link" || { printf 'SCAFFOLD-FAILED: T72 group\n'; exit 1; }
+o72="$(t72 "_group_guard_root='$TMP/g72/grp'; _bind_add() { :; }; a=()
+  add_file_mount_if_exists a '$TMP/g72/grp/link' /d; echo L; add_file_mount_if_exists a '$TMP/g72/grp/in' /d; echo I
+  add_file_mount_if_exists a '$TMP/g72/out/f' /d; echo O; _group_guard_root=''; add_file_mount_if_exists a '$TMP/g72/grp/link' /d; echo E")"
+[[ "$o72" == *"WARNING: $TMP/g72/grp/link is a link out of the group"*$'\nL\nI\nO\nE' && "$(grep -c WARNING <<< "$o72")" == 1 ]] \
+  && pass "T72 a group file that links out of the group warns, one inside or unguarded does not, and none ends the launch" \
+  || fail "T72 group files (got: $o72)"
+rm -rf "$TMP/g72"
+# Ids: either one not a number, either one too large, and the refusal's status.
+bad72=""
+for c72 in "abc 1000" "1000 abc" "4294967295 1000" "1000 4294967295"; do
+  o72="$(t72 "SANDBOX_UID=${c72% *} SANDBOX_GID=${c72#* }; ( validate_sandbox_ids ) || echo rc=\$?")" || true
+  [[ "$o72" == *"must be numeric ids"*"rc=1" ]] || bad72+="[$c72: $o72] "
+done
+for c72 in "0 1000" "1000 0"; do
+  o72="$(t72 "SANDBOX_UID=${c72% *} SANDBOX_GID=${c72#* }; ( validate_sandbox_ids ) || echo rc=\$?")" || true
+  [[ "$o72" == *"must not run as root"*"rc=1" ]] || bad72+="[$c72: $o72] "
+done
+o72="$(t72 'SANDBOX_UID=1000 SANDBOX_GID=1000; validate_sandbox_ids; echo ok')"
+[[ -z "$bad72" && "$o72" == ok ]] && pass "T72 an id not numeric, too large or root, either one, is refused with status 1; a good one passes" \
+  || fail "T72 validate_sandbox_ids (${bad72}good: $o72)"
+# split_env_list leaves the caller's globbing as it was.
+o72="$(t72 'set +f; split_env_list "a b" >/dev/null; echo "[$-]"')"
+[[ "$o72" != *f* ]] && pass "T72 split_env_list leaves globbing on where it was on" || fail "T72 split_env_list (got: $o72)"
+# Cached, asked twice; an empty option list; a flag that is no bind.
+o72="$(C72="$TMP/c72" t72 'declare -A _fs_ml_dev=(); : > "$C72"; _launcher_dev_ino() { printf x >> "$C72"; printf "5 6"; }; _fs_ml_devof /x; _fs_ml_devof /x; printf "%s:%s|" "${_fs_ml_dev[/x]}" "$(wc -c < "$C72" | tr -d " ")"
+  _bind_opts_ok "" && printf "empty-ok|" || printf "empty-no|"; _bind_read -x foo && printf "x-ok" || printf "x-no"')"
+[[ "$o72" == "5:1|empty-no|x-no" ]] \
+  && pass "T72 a device asked twice is stat'ed once, an empty option list is no bind's, nor is another flag" \
+  || fail "T72 small helpers (got: $o72)"
+# Where a directory ignores case, whether the filesystem aliases names: Linux
+# only; ext4, f2fs and tmpfs do not.
+o72="$(t72 'stat() { printf "%s\n" "${*: -1}"; }; for t in ext2/ext3 tmpfs cifs; do OSTYPE=linux-gnu; _caf_made=""; _ci_alias_fs "$t" && printf "%s=1 " "$t" || printf "%s=0 " "$t"; done
+  OSTYPE=darwin21; _ci_alias_fs cifs && printf "mac=1" || printf "mac=0"')"
+[[ "$o72" == "ext2/ext3=0 tmpfs=0 cifs=1 mac=0" ]] \
+  && pass "T72 a filesystem aliases names unless its kernel ignores case, on Linux only" \
+  || fail "T72 _ci_alias_fs (got: $o72)"
+rm -f "$fns72"
+
+# ── T73: working copies, Colima, a pointer's path, a name quoted, launchers ──
+# GAP-2 slice 5: a condition or a return of each, turned, survived every test.
+fns73="$TMP/fns73.sh"
+{ awk -v f="resolve_path() {" 'index($0, f) == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox-common.sh"
+  for f73 in _term _q _timeout_prefix seed_workcopy_volume _colima_profile _vm_dev_ino_load _bind_read repos_path_in_container launcher_dirs_in; do
+    awk -v f="$f73() {" 'index($0, f) == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox.sh"
+  done; } > "$fns73"
+t73() { bash -c 'set -euo pipefail; source "$1"; shift; eval "$1"' _ "$fns73" "$1" 2>&1; }
+# A working copy: made once, with the labels it has a value for, and copied;
+# an existing one is left alone.
+o73="$(T73L="$TMP/t73.log" t73 'image_name=img; L="$T73L"; : > "$L"; docker() { printf "%s\n" "$*" >> "$L"; case "$1 $2" in "volume inspect") return "${INSPECT:-1}" ;; esac; }
+  seed_workcopy_volume base wc app /launch 2>/dev/null; echo == >> "$L"; seed_workcopy_volume base wc2 "" "" 2>/dev/null; echo == >> "$L"
+  INSPECT=0 seed_workcopy_volume base wc3 app /l; echo done >> "$L"; cat "$L"')"
+w1="${o73%%==*}"; r73="${o73#*==}"; w2="${r73%%==*}"; w3="${r73#*==}"
+if [[ "$w1" == *"volume create --label ai-containers.workcopy=1 --label ai-containers.repo=app --label ai-containers.launch-dir=/launch wc"* \
+      && "$w1" == *"run --rm --pull=never"*"base:/src:ro"*"wc:/dst"* \
+      && "$w2" == *"volume create --label ai-containers.workcopy=1 wc2"* && "$w2" != *"ai-containers.repo="* \
+      && "$w3" == *"volume inspect wc3"* && "$w3" != *"volume create"* && "$w3" == *done ]]; then
+  pass "T73 a working copy is made once, labelled for what it has, and copied; an existing one is left alone"
+else
+  fail "T73 seed_workcopy_volume (got: $(tr '\n' ' ' <<< "$o73"))"
+fi
+# Colima: no colima, or no docker endpoint, is no profile, and nothing is
+# loaded (a load with no profile recorded every source 0:0, refusing every
+# launch); a record without numeric ids is dropped.
+o73="$(t73 '( PATH=/nonexistent73; _colima_profile ) && printf "p0|" || printf "n0|"; declare -A m=(); ( PATH=/nonexistent73; _vm_dev_ino_load m /a ) && printf "l0|" || printf "nl0|"
+  _timeout_prefix() { :; }; colima() { if [[ "$1" == ssh ]]; then cat >/dev/null; printf "12:34:/a\0x:5:/b\0007:y:/c\0"; fi; }
+  docker() { return 1; }; DOCKER_HOST=""; _colima_profile && printf "p1|" || printf "n1|"
+  DOCKER_HOST="unix://$HOME/.colima/default/docker.sock"; COLIMA_HOME="$HOME/.colima"; printf "%s|" "$(_colima_profile)"
+  declare -A m=(); _vm_dev_ino_load m /a /b /c; printf "%s=%s " "${!m[@]}" "${m[@]}"')"
+[[ "$o73" == "n0|nl0|n1|default|/a=12 34 " ]] \
+  && pass "T73 with no colima or no endpoint there is no profile and nothing loaded; records without numeric ids are dropped" \
+  || fail "T73 Colima (got: $o73)"
+# A pointer's host path, translated only through a host bind into /workspace.
+o73="$(t73 'repos_path_in_container /h/sub -v /h:/elsewhere; printf "|"; repos_path_in_container /h/sub -v /h:/workspace/h')"
+[[ "$o73" == "/workspace|/workspace/h/sub" ]] \
+  && pass "T73 a host path is translated only through a bind into /workspace" || fail "T73 repos_path_in_container (got: $o73)"
+# A launcher is a directory holding both files: a sandbox.sh alone, or a link
+# to nothing beside sandbox-common.sh, is not one.
+mkdir -p "$TMP/t73/a" "$TMP/t73/b" "$TMP/t73/c" && : > "$TMP/t73/a/sandbox.sh" && : > "$TMP/t73/a/sandbox-common.sh" \
+  && : > "$TMP/t73/b/sandbox.sh" && ln -s nowhere "$TMP/t73/c/sandbox.sh" && : > "$TMP/t73/c/sandbox-common.sh" \
+  || { printf 'SCAFFOLD-FAILED: T73 launchers\n'; exit 1; }
+o73="$(t73 "o=(); u=(); launcher_dirs_in o u '$TMP/t73' \$(id -u) \$(id -g) \$(id -u); printf '%s ' \"\${o[@]#$TMP/t73/}\"")"
+[[ "$o73" == "a " ]] && pass "T73 a launcher holds both its files; a sandbox.sh alone, or one that leads nowhere, is none" \
+  || fail "T73 launcher_dirs_in (got: $o73)"
+rm -rf "$TMP/t73" "$TMP/t73.log" "$fns73"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

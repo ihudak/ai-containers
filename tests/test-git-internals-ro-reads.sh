@@ -1136,5 +1136,252 @@ TMPDIR="$TMP/m131" bash -c 'source "$1"; n=0
   || fail "G131 found per file (want 2 searches, got '$(cat "$TMP/o131")'; $(tr '\n' ' ' < "$TMP/e131"))"
 rm -rf "$fns131" "$TMP/m131" "$TMP/o131" "$TMP/e131"
 
+# Whether TMPDIR ignores case (macOS's APFS by default): G139 and G141 build
+# their cases on a directory that does not, and G127 covers one that does.
+mkdir -p "$TMP/ciprobe/P" || { printf 'SCAFFOLD-FAILED: case probe\n'; exit 1; }
+if [[ -d "$TMP/ciprobe/p" ]]; then tmp_ci=1; else tmp_ci=""; fi
+rm -rf "$TMP/ciprobe"
+
+# ── G136: a file bound read-only on its own is put back as it should be ──────
+# _ro_files_restore, called on its own, where G127 needs a filesystem that
+# ignores case: what it puts back, what it keeps of what stood there, and what
+# it says, for each way the file can have changed (GAP-2 slice 5: these
+# branches' conditions, turned, survived every test).
+fns136="$TMP/fns136.sh"
+for f136 in _term _q _timeout_prefix _ro_files_restore; do
+  awk -v f="$f136() {" 'index($0, f) == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox.sh"
+done > "$fns136"
+r136() {  # <case> <setup> [<after>] — a kept file f, changed by <setup>, then put back; <after> cleans up
+  rm -rf "$TMP/r136" && mkdir -p "$TMP/r136/d" "$TMP/r136/snap" "$TMP/r136/root" \
+    && printf 'kept\n' > "$TMP/r136/snap/0" && printf 'kept\n' > "$TMP/r136/d/f" || { printf 'SCAFFOLD-FAILED: G136\n'; exit 1; }
+  bash -c 'source "$1"; set -u; cd "$2"; eval "$3"
+    _ro_snap_src=("$2/d/f"); _ro_snap_mode=(644); _ro_snap_dir="$2/snap"; ai_containers_root="$2/root"
+    _ro_files_restore; eval "$4"' _ "$fns136" "$TMP/r136" "$2" "${3:-}" 2> "$TMP/r136.err"
+  # By its type first: a FIFO left in place would block a read (and a test that
+  # hangs scores as a timeout, never a kill).
+  if [[ -L "$TMP/r136/d/f" ]]; then r136f="link:$(readlink "$TMP/r136/d/f")"
+  elif [[ -p "$TMP/r136/d/f" ]]; then r136f=fifo
+  elif [[ -d "$TMP/r136/d/f" ]]; then r136f=dir
+  elif [[ -f "$TMP/r136/d/f" ]]; then r136f="$(cat "$TMP/r136/d/f")"
+  else r136f=""; fi
+  r136k="$(cat "$TMP/r136/root/restored"/*/0-f 2>/dev/null)"
+}
+r136 same ':'
+[[ ! -s "$TMP/r136.err" && "$r136f" == kept && ! -e "$TMP/r136/root/restored" ]] \
+  && pass "G136 a file that holds what it did is left alone, and nothing is said" \
+  || fail "G136 unchanged (file '$r136f'; $(head -c 200 "$TMP/r136.err"))"
+r136 changed 'printf "the agent\n" > d/f'
+[[ "$r136f" == kept && "$r136k" == "the agent" ]] && grep -qF "It is put back as it was at launch." "$TMP/r136.err" \
+   && grep -qF "What it held is kept in $TMP/r136/root/restored/" "$TMP/r136.err" \
+  && pass "G136 a changed file is put back, and what it held kept and named" \
+  || fail "G136 changed (file '$r136f', kept '$r136k'; $(tr '\n' ' ' < "$TMP/r136.err"))"
+r136 removed 'rm -f d/f'
+[[ "$r136f" == kept ]] && grep -qF "(It had been removed.)" "$TMP/r136.err" && ! grep -qF "What it held" "$TMP/r136.err" \
+  && pass "G136 a removed file is put back, and said to have been removed" \
+  || fail "G136 removed (file '$r136f'; $(tr '\n' ' ' < "$TMP/r136.err"))"
+r136 link 'printf "kept\n" > other && rm -f d/f && ln -s ../other d/f'
+[[ "$r136f" == kept && "$r136k" == "a link to: ../other" ]] && grep -qF "What it held is kept in" "$TMP/r136.err" \
+  && pass "G136 a link, even to a file that holds the same, is replaced, and its target kept" \
+  || fail "G136 link (file '$r136f', kept '$r136k'; $(tr '\n' ' ' < "$TMP/r136.err"))"
+r136 fifo 'rm -f d/f && mkfifo d/f'
+[[ "$r136f" == kept && "$r136k" == "not a regular file (a FIFO, a device or a directory)" ]] && grep -qF "What it held is kept in" "$TMP/r136.err" \
+  && pass "G136 a FIFO is replaced, unread, and said not to have been a regular file" \
+  || fail "G136 FIFO (file '$r136f', kept '$r136k'; $(tr '\n' ' ' < "$TMP/r136.err"))"
+r136 dir 'rm -f d/f && mkdir d/f'
+[[ -d "$TMP/r136/d/f" ]] && grep -qF "could NOT be put back" "$TMP/r136.err" \
+  && pass "G136 a directory in its place is not replaced, and said so" \
+  || fail "G136 directory ($(tr '\n' ' ' < "$TMP/r136.err"))"
+r136 again 'mkdir -m 700 root/restored && printf "the agent\n" > d/f'
+[[ "$r136f" == kept && "$r136k" == "the agent" ]] && grep -qF "What it held is kept in" "$TMP/r136.err" \
+  && pass "G136 the restored directory of an earlier launch is used again" \
+  || fail "G136 restored exists (kept '$r136k'; $(tr '\n' ' ' < "$TMP/r136.err"))"
+r136 linked 'mkdir -p elsewhere && ln -s ../elsewhere root/restored && printf "the agent\n" > d/f'
+[[ "$r136f" == kept && -z "$(ls -A "$TMP/r136/elsewhere")" ]] && grep -qF "What it held could not be kept." "$TMP/r136.err" \
+  && pass "G136 a restored directory that is a link is not written through" \
+  || fail "G136 restored is a link (written: $(ls -A "$TMP/r136/elsewhere" | tr '\n' ' '); $(tr '\n' ' ' < "$TMP/r136.err"))"
+r136 unmakeable 'printf x > root/restored && printf "the agent\n" > d/f'
+[[ "$r136f" == kept ]] && grep -qF "What it held could not be kept." "$TMP/r136.err" && ! grep -qF "(It had been removed.)" "$TMP/r136.err" \
+  && pass "G136 where nothing can be kept, a changed file is said not to be kept, not removed" \
+  || fail "G136 nothing kept (file '$r136f'; $(tr '\n' ' ' < "$TMP/r136.err"))"
+# The copy kept at launch gone (a TMPDIR cleaner, a long session): nothing is
+# put back, and an empty file created for it is never moved over the git file.
+r136 nosnap 'rm -f snap/0 && printf "the agent\n" > d/f'
+[[ "$r136f" == "the agent" ]] && grep -qF "could NOT be put back" "$TMP/r136.err" \
+  && pass "G136 with the copy kept at launch gone, the file is left as it is and said not to be put back" \
+  || fail "G136 copy gone (file '$r136f'; $(tr '\n' ' ' < "$TMP/r136.err"))"
+# The directory for this restore already there: it is not written into, since
+# whoever made it chose what is in it.
+r136 rdthere 'date() { printf 20260101000000; }; mkdir -p "root/restored/20260101000000-$$" && printf "the agent\n" > d/f'
+[[ "$r136f" == kept && -z "$(ls -A "$TMP/r136/root/restored/"*)" ]] && grep -qF "What it held could not be kept." "$TMP/r136.err" \
+  && pass "G136 a restore directory already there is not written into" \
+  || fail "G136 restore directory there (written: $(ls -A "$TMP/r136/root/restored/"* | tr '\n' ' '); $(tr '\n' ' ' < "$TMP/r136.err"))"
+# Made, and swapped for a link before it is used (a stand-in mkdir does it):
+# not written through.
+r136 rdswap 'mkdir -p elsewhere; mkdir() { command mkdir "$@" || return; if [[ "${*: -1}" == */restored/*-* ]]; then rmdir "${*: -1}" && ln -s "$PWD/elsewhere" "${*: -1}"; fi; }
+  printf "the agent\n" > d/f'
+[[ "$r136f" == kept && -z "$(ls -A "$TMP/r136/elsewhere")" ]] && grep -qF "What it held could not be kept." "$TMP/r136.err" \
+  && pass "G136 a restore directory swapped for a link once made is not written through" \
+  || fail "G136 swapped (written: $(ls -A "$TMP/r136/elsewhere" | tr '\n' ' '); $(tr '\n' ' ' < "$TMP/r136.err"))"
+# A FIFO planted at the name the copy is written to (RANDOM seeded, so the name
+# is known): it is not moved over the git file.
+r136 tmpfifo 'printf "the agent\n" > d/f; RANDOM=7; n="$RANDOM$RANDOM"; mkfifo "d/.f.restore-$$-$n"; cat "d/.f.restore-$$-$n" > /dev/null & rp=$!; RANDOM=7' \
+  'kill "$rp" 2>/dev/null; wait "$rp" 2>/dev/null; true'
+[[ "$r136f" == "the agent" ]] && grep -qF "could NOT be put back" "$TMP/r136.err" \
+  && pass "G136 a FIFO planted where the copy is written is not moved over the git file" \
+  || fail "G136 FIFO at the copy (file '$r136f'; $(tr '\n' ' ' < "$TMP/r136.err"))"
+rm -rf "$TMP/r136" "$TMP/r136.err" "$fns136"
+
+# ── G137: a name is turned over in case under the launcher's own options ───
+# _case_flip and _u8_locale, under the launcher's set -euo pipefail and LC_ALL=C:
+# an ASCII name in place, a name with no ASCII letter through a UTF-8 locale,
+# each once, then from the cache; where there is no UTF-8 locale, the name as it
+# was and one WARNING however many names (GAP-2 slice 5: their conditions,
+# turned, and their returns, survived every test).
+fns137="$TMP/fns137.sh"
+for f137 in _term _q _u8_locale _case_flip; do
+  awk -v f="$f137() {" 'index($0, f) == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox.sh"
+done > "$fns137"
+if [[ "$(bash -c 'for l in C.UTF-8 C.utf8 en_US.UTF-8; do LC_ALL=$l; t=$'"'"'\xd0\xb6'"'"'; [[ "${t~~}" == $'"'"'\xd0\x96'"'"' ]] && { echo y; exit; }; done' 2>/dev/null)" == y ]]; then
+  o137="$(LC_ALL=C bash -c 'set -euo pipefail; source "$1"; _u8_loc=""; _cfl_made=""; _cf_warned=""
+    for n in Abc $'"'"'\xd0\x94\xd0\xbe\xd0\xba'"'"' $'"'"'\xd0\x81\xd0\xb6'"'"' $'"'"'\xd0\x94\xd0\xbe\xd0\xba'"'"'; do v=""; _case_flip v "$n"; printf "%s|" "$v"; done' _ "$fns137" 2>"$TMP/e137")" || o137="rc=$?:$o137"
+  [[ "$o137" == "aBC|"$'\xd0\xb4\xd0\x9e\xd0\x9a'"|"$'\xd1\x91\xd0\x96'"|"$'\xd0\xb4\xd0\x9e\xd0\x9a'"|" && ! -s "$TMP/e137" ]] \
+    && pass "G137 a name is turned over in case, through a UTF-8 locale where it has no ASCII letter, each once" \
+    || fail "G137 turned over (got: $(printf '%q' "$o137"); $(head -c 200 "$TMP/e137"))"
+else
+  printf 'SKIP: G137 turned over through a UTF-8 locale — none here\n'
+fi
+o137="$(LC_ALL=C bash -c 'set -euo pipefail; source "$1"; _u8_loc=-; _cfl_made=""; _cf_warned=""
+  for n in A$'"'"'\xd0\xb4'"'"' $'"'"'\xd0\x94\xd0\xbe\xd0\xba'"'"' $'"'"'\xd0\x81\xd0\xb6'"'"'; do v=""; _case_flip v "$n"; printf "%s|" "$v"; done' _ "$fns137" 2>"$TMP/e137")" || o137="rc=$?:$o137"
+[[ "$o137" == a$'\xd0\xb4'"|"$'\xd0\x94\xd0\xbe\xd0\xba'"|"$'\xd0\x81\xd0\xb6'"|" && "$(grep -c 'WARNING: no UTF-8 locale here' "$TMP/e137")" == 1 ]] \
+  && pass "G137 with no UTF-8 locale, a name with an ASCII letter is turned over in it, the others stay as they were, and one WARNING says so" \
+  || fail "G137 no UTF-8 locale (got: $(printf '%q' "$o137"); warnings: $(grep -c 'WARNING' "$TMP/e137"))"
+rm -f "$fns137" "$TMP/e137"
+
+# ── G138: which mounts are Windows's, from mountinfo ─────────────────────────
+# _win_mounts, _win_fs and _win_path on a mountinfo of the test's own (its path
+# swapped into a copy of the functions; the launcher reads the kernel's): the
+# optional fields before `-`, 9p as drvfs or not, a mount point with a space,
+# a Linux mount nested in a Windows one, virtiofs on and off a WSL kernel, and
+# the statfs fallback where mountinfo cannot be read; under the launcher's set
+# -euo pipefail, each read once (GAP-2 slice 5: their conditions, turned,
+# survived every test, the kernel's mountinfo holding none of these).
+mkdir -p "$TMP/g138" || { printf 'SCAFFOLD-FAILED: G138\n'; exit 1; }
+cat > "$TMP/g138/mi" <<'MI'
+1 0 0:1 / / rw - ext4 /dev/root rw
+2 1 0:2 / /mnt/c rw,noatime shared:1 - 9p drvfs rw,aname=drvfs;path=C:\;uid=1000
+3 2 0:3 / /mnt/c/linux rw - ext4 /dev/sdb rw
+4 1 0:4 / /mnt/s rw master:2 propagate_from:1 - cifs //srv/s rw
+5 1 0:5 / /mnt/p rw - 9p other rw,aname=plain
+6 1 0:6 / /mnt/sp\040ace rw - cifs //x rw
+7 1 0:7 / /mnt/v rw - virtiofs v rw
+MI
+printf '6.18.0-generic\n' > "$TMP/g138/rel"; printf '5.15.0-microsoft-standard-WSL2\n' > "$TMP/g138/relwsl"
+printf '1 0 0:1 / / rw - 9p drvfs rw,aname=drvfs\n' > "$TMP/g138/miroot"
+printf '1 0 0:1 / / rw - ext4 /dev/root rw\n2 1 0:2 / /mnt/c rw - 9p drvfs rw,aname=drvfs\n' > "$TMP/g138/mione"
+g138() {  # <mountinfo> <osrelease> <OSTYPE> <path>... — "path=0/1" for _win_fs, then "@path=0/1" for _win_path
+  { for f138 in _win_mounts _win_fs _win_path; do
+      awk -v f="$f138() {" 'index($0, f) == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox.sh"
+    done; } | sed -e "s#/proc/self/mountinfo#$1#g" -e "s#/proc/sys/kernel/osrelease#$2#g" > "$TMP/g138/fns"
+  bash -c 'set -euo pipefail; source "$1"; OSTYPE="$2"; shift 2
+    stat() { printf "%s\n" "${G138_STAT:-ext2}"; }
+    _wm_ok=""; _wf_made=""
+    _win_mounts; _win_mounts
+    for p in "$@"; do
+      if [[ "$p" == @* ]]; then if _win_path "${p#@}"; then printf "%s=1 " "$p"; else printf "%s=0 " "$p"; fi
+      elif _win_fs "$p"; then printf "%s=1 " "$p"; else printf "%s=0 " "$p"; fi
+    done' _ "$TMP/g138/fns" "$3" "${@:4}" 2>&1
+}
+# (@/mnt/c/linux/x: a Linux mount nested in a Windows one, which _win_path
+# finds by its parents, the leaf not being Windows's.)
+o138="$(g138 "$TMP/g138/mi" "$TMP/g138/rel" linux-gnu /mnt/c /mnt/c/x /mnt/cx /mnt/c/linux /mnt/c/linux/x /mnt/s/a /mnt/p/a "/mnt/sp ace/a" /etc /mnt/v @/mnt/c/a/b @/mnt/c/linux/x @/etc/x @a/b)"
+[[ "$o138" == "/mnt/c=1 /mnt/c/x=1 /mnt/cx=0 /mnt/c/linux=0 /mnt/c/linux/x=0 /mnt/s/a=1 /mnt/p/a=0 /mnt/sp ace/a=1 /etc=0 /mnt/v=0 @/mnt/c/a/b=1 @/mnt/c/linux/x=1 @/etc/x=0 @a/b=0 " ]] \
+  && pass "G138 Windows's mounts are read from mountinfo, the deepest mount deciding, and a path by its parents" \
+  || fail "G138 mountinfo (got: $o138)"
+# One Windows mount alone: the first pass must match the path itself, with no
+# other Windows mount to let it through (review of slice 5).
+o138="$(g138 "$TMP/g138/mione" "$TMP/g138/rel" linux-gnu /mnt/c /mnt/c/x /etc)"
+[[ "$o138" == "/mnt/c=1 /mnt/c/x=1 /etc=0 " ]] && pass "G138 one Windows mount alone covers itself and what is below it" || fail "G138 one mount (got: $o138)"
+o138="$(g138 "$TMP/g138/mi" "$TMP/g138/relwsl" linux-gnu /mnt/v /mnt/p/a)"
+[[ "$o138" == "/mnt/v=1 /mnt/p/a=0 " ]] \
+  && pass "G138 virtiofs counts on a WSL kernel" || fail "G138 WSL kernel (got: $o138)"
+o138="$(g138 "$TMP/g138/miroot" "$TMP/g138/rel" linux-gnu / /etc)"
+[[ "$o138" == "/=1 /etc=1 " ]] && pass "G138 a Windows mount at / covers every path" || fail "G138 root (got: $o138)"
+o138="$(g138 "$TMP/g138/mi" "$TMP/g138/rel" darwin21 /mnt/c /mnt/s/a)"
+[[ "$o138" == "/mnt/c=0 /mnt/s/a=0 " ]] && pass "G138 off Linux nothing counts" || fail "G138 off Linux (got: $o138)"
+o138="$(G138_STAT=cifs g138 "$TMP/g138/none" "$TMP/g138/rel" linux-gnu /mnt/c/x /etc)"
+[[ "$o138" == "/mnt/c/x=1 /etc=1 " ]] \
+  && pass "G138 where mountinfo cannot be read, statfs decides, once read" || fail "G138 unreadable (got: $o138)"
+rm -rf "$TMP/g138"
+
+# ── G139: a name spelled as readdir lists it ────────────────────────────────
+# _ds_readdir on a case-sensitive directory, Windows's lookup stood in for: the
+# entry chosen is the directory itself, never a link nor another spelling; a
+# name with no ASCII letter is matched under a UTF-8 locale; a prefix read once
+# keeps its status (GAP-2 slice 5: these conditions, turned, survived).
+if [[ -n "$tmp_ci" ]]; then
+  printf 'SKIP: G139 spelling as readdir lists it — TMPDIR ignores case here (G127 covers that)\n'
+else
+fns139="$TMP/fns139.sh"
+for f139 in _u8_locale _ds_readdir; do
+  awk -v f="$f139() {" 'index($0, f) == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox.sh"
+done > "$fns139"
+mkdir -p "$TMP/g139/ABc" "$TMP/g139/abC" "$TMP/g139/plain/x" "$TMP/g139/CI/y" || { printf 'SCAFFOLD-FAILED: G139\n'; exit 1; }
+g139="$(cd "$TMP/g139" && pwd -P)"
+o139="$(LC_ALL=C bash -c 'set -uo pipefail; source "$1"; g="$2"; _u8_loc=""; _dr_cache_made=""
+  _win_fs() { [[ -n "$G" && "$1" == "$G" ]]; }
+  _ci_name() { [[ "$2" == CI ]]; }; _ci_alias_fs() { return 1; }
+  G="$g"; v="$g/abC"; _ds_readdir v; printf "%s:%s|" "${v#"$g"/}" "$?"
+  G=""; v="$g/plain/x"; _ds_readdir v; printf "%s:%s|" "${v#"$g"/}" "$?"; v="$g/plain/x"; _ds_readdir v; printf "%s:%s|" "${v#"$g"/}" "$?"
+  v="$g/CI/y"; _ds_readdir v; printf "%s:%s|" "${v#"$g"/}" "$?"; v="$g/CI/y"; _ds_readdir v; printf "%s:%s|" "${v#"$g"/}" "$?"' _ "$fns139" "$g139" 2>&1)"
+[[ "$o139" == "abC:0|plain/x:0|plain/x:0|CI/y:1|CI/y:1|" ]] \
+  && pass "G139 readdir's spelling is the directory itself, and a prefix read once keeps its status" \
+  || fail "G139 spelling (got: $o139)"
+if [[ "$(bash -c 'for l in C.UTF-8 C.utf8 en_US.UTF-8; do LC_ALL=$l; t=$'"'"'\xd0\xb6'"'"'; [[ "${t~~}" == $'"'"'\xd0\x96'"'"' ]] && { echo y; exit; }; done' 2>/dev/null)" == y ]] \
+   && mkdir -p "$TMP/g139/u/"$'\xd0\x94\xd0\xbe\xd0\xba' && ln -s $'\xd0\x94\xd0\xbe\xd0\xba' "$TMP/g139/u/"$'\xd0\xb4\xd0\x9e\xd0\x9a'; then
+  o139="$(LC_ALL=C bash -c 'set -uo pipefail; source "$1"; g="$2"; _u8_loc=""; _dr_cache_made=""
+    _win_fs() { [[ "$1" == "$g/u" ]]; }; _ci_name() { return 1; }; _ci_alias_fs() { return 1; }
+    v="$g/u/"$'"'"'\xd0\xb4\xd0\x9e\xd0\x9a'"'"'; _ds_readdir v; printf "%s:%s" "${v#"$g"/}" "$?"' _ "$fns139" "$g139" 2>&1)"
+  [[ "$o139" == "u/"$'\xd0\x94\xd0\xbe\xd0\xba'":0" ]] \
+    && pass "G139 a name with no ASCII letter is matched in another case under a UTF-8 locale, the launcher's C" \
+    || fail "G139 UTF-8 match (got: $(printf '%q' "$o139"))"
+else
+  printf 'SKIP: G139 a name with no ASCII letter — no UTF-8 locale here\n'
+fi
+rm -rf "$TMP/g139" "$fns139"
+fi
+
+# ── G141: what is kept of a file bound read-only on its own ─────────────────
+# _ro_files_snapshot on a case-sensitive directory, the other spelling made a
+# hard link so it is the same file, as on one that ignores case: a regular
+# file is kept with its mode; a link to one, or one over 1 MiB, is named and
+# not kept; a TMPDIR it cannot write in is named, and the launch goes on (GAP-2
+# slice 5: these conditions, and that return, turned, survived every test).
+if [[ -n "$tmp_ci" ]]; then
+  printf 'SKIP: G141 what is kept at launch — TMPDIR ignores case here (G127 covers that)\n'
+else
+fns141="$TMP/fns141.sh"
+for f141 in _term _ro_files_snapshot; do
+  awk -v f="$f141() {" 'index($0, f) == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox.sh"
+done > "$fns141"
+mkdir -p "$TMP/g141/d" "$TMP/g141/t" && printf 'cfg\n' > "$TMP/g141/d/config" && chmod 600 "$TMP/g141/d/config" \
+  && ln "$TMP/g141/d/config" "$TMP/g141/d/CONFIG" && printf 'x\n' > "$TMP/g141/real" && ln -s ../real "$TMP/g141/d/hooks" \
+  && ln "$TMP/g141/real" "$TMP/g141/d/HOOKS" && head -c 1048577 /dev/zero > "$TMP/g141/d/big" && ln "$TMP/g141/d/big" "$TMP/g141/d/BIG" \
+  || { printf 'SCAFFOLD-FAILED: G141\n'; exit 1; }
+o141="$(TMPDIR="$TMP/g141/t" bash -c 'set -euo pipefail; source "$1"; d="$2"
+  _rd_run() { shift; "$@"; }; _launcher_stat_gnu=0; [[ "$(stat -c %a / 2>/dev/null)" =~ ^[0-7]+$ ]] && _launcher_stat_gnu=1
+  _ro_snap_dir=""; _ro_snap_src=(); _ro_snap_mode=()
+  _ro_files_snapshot "$d/config" "$d/hooks" "$d/big"
+  printf "%s=%s " "${_ro_snap_src[@]#"$d"/}" "${_ro_snap_mode[@]}"; printf "|%s" "$(cat "$_ro_snap_dir/0")"' _ "$fns141" "$TMP/g141/d" 2>"$TMP/g141/err")"
+[[ "$o141" == "config=600 |cfg" && "$(grep -c 'could not be kept as it is' "$TMP/g141/err")" == 2 ]] \
+  && pass "G141 a regular file is kept with its mode; a link, and one over 1 MiB, are named and not kept" \
+  || fail "G141 snapshot (got: $o141; $(grep -c 'could not be kept' "$TMP/g141/err") named)"
+o141="$(TMPDIR="$TMP/g141/t/no" bash -c 'set -euo pipefail; source "$1"; _rd_run() { shift; "$@"; }; _launcher_stat_gnu=1
+  _ro_snap_dir=""; _ro_snap_src=(); _ro_snap_mode=(); _ro_files_snapshot "$2/config"; echo "goes on ${#_ro_snap_src[@]}"' _ "$fns141" "$TMP/g141/d" 2>&1)"
+[[ "$o141" == *"could not make a directory to keep the read-only git files in"*"goes on 0" ]] \
+  && pass "G141 a TMPDIR it cannot write in is named, and the launch goes on" \
+  || fail "G141 no TMPDIR (got: $o141)"
+rm -rf "$TMP/g141" "$fns141"
+fi
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
