@@ -2125,7 +2125,7 @@ An Opus reviewer of the slice's new tests, 2026-11-05, at `fd49c3c`, reached a m
 
 ### GIT-41: on Docker Desktop, a read-only bind of one file does not cover its other spellings
 - **Status: FIXED on WSL, MITIGATED on macOS** (2026-11-07): refused on WSL's drvfs, put back when the container exits on macOS. Found by the review of the GIT-38 fix.
-- **Severity: HIGH** where it applies: Docker Desktop on macOS and on Windows, whose containers reach a host directory through virtiofs or 9p. Confidence: CONFIRMED on WSL's drvfs with Docker Desktop and on macOS with Colima's virtiofs (platform-issues PLAT-8); Docker Desktop on macOS is unmeasured.
+- **Severity: HIGH** where it applies: Docker Desktop on macOS and on Windows, whose containers reach a host directory through virtiofs or 9p. Confidence: CONFIRMED on WSL's drvfs with Docker Desktop and on macOS with Colima's virtiofs (platform-issues PLAT-8), and on WSL's drvfs with a native Docker Engine in the distro, where the launch is refused too (PLAT-9, 2026-11-08); Docker Desktop on macOS is unmeasured.
 - **Measured on WSL** (Docker Desktop 29.9.2, a drvfs directory that ignores case), and wider than the model:
   - `.git/CONFIG` wrote the host's `.git/config`.
   - Directory binds did not hold either. `.git/HOOKS/post-commit` was written past the read-only `hooks/`, `.GIT/config` past a read-only bind of the whole `.git`, and `sandbox.sh` through `.AI-CONTAINERS` past the launcher overlay: the agent could rewrite what the host runs at the next launch.
