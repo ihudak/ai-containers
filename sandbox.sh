@@ -378,7 +378,7 @@ launcher_ro_overlay() {
   local -a hgro=() hgpre=() wkc=() hgv=()
   # The include walk's read of a config (_git_walk_keys), kept from the binding
   # pass, which takes core.hooksPath from it: one read a file (G120).
-  local -A wkc_at=() wkc_n=() rodone=()
+  local -A wkc_at=() wkc_n=() wkc_cut=() rodone=()
   local -a inc pgd=() pga=() pgc=() pgo=() pgx=()
   local -A seen=() tried=() scanned=() pinned=()
   # Included git config files read: each once per protected config, keyed by
@@ -387,7 +387,7 @@ launcher_ro_overlay() {
   # repository's walk never marks a file read for another's (security review of
   # c0d48d9). At most 20 per config and 1000 per launch; past either, that
   # config is named in a WARNING rather than skipped in silence.
-  local nl no=0 lmax ireads=0 ients=0
+  local nl no=0 lmax ireads=0 ients=0 ipk=0 ipb=0
   local -A hkdone=()
   local -a unchecked=()
   # The agent's identity decides what it can reach; find needs it numeric (and
@@ -990,15 +990,22 @@ launcher_ro_overlay() {
           for f in "$cfg" "$g/config.worktree"; do
             [[ -f "$f" ]] || continue
             if [[ "$f" == "$g/config.worktree" ]] && ! _git_config_bool "$cfg" extensions.worktreeConfig; then continue; fi
+            # At most 1200 entries are read, past every budget below a file has:
+            # read whole, a planted config of keys that run a program filled
+            # memory before any budget counted them (automated security review
+            # of the GIT-42 fix). A file read in part is cut, and its last
+            # core.hooksPath asked of git.
             if [[ -z "${wkc_at[$f]+x}" ]]; then
-              inc=(); mapfile -d '' -t inc < <(_git_walk_keys "$f")
+              inc=(); mapfile -d '' -n 1200 -t inc < <(_git_walk_keys "$f")
               wkc_at[$f]=${#wkc[@]}; wkc_n[$f]=${#inc[@]}; wkc+=(${inc[@]+"${inc[@]}"})
+              if (( ${#inc[@]} >= 1200 )); then wkc_cut[$f]=1; fi
             fi
             x=""
             for e in ${wkc[@]+"${wkc[@]:${wkc_at[$f]}:${wkc_n[$f]}}"}; do
               # A fixed prefix, not a split: every entry passes here (GIT-49).
               if [[ "$e" == core.hookspath$'\n'* ]]; then x="${e#core.hookspath$'\n'}"; fi
             done
+            if [[ -n "${wkc_cut[$f]:-}" ]]; then _git_config_get x "$f" core.hooksPath || x=""; fi
             if [[ -n "$x" ]]; then hgv+=("$f" "$x"); fi
           done
           _git_push_hooks "$g" "$at" hgro hgpre ${hgv[@]+"${hgv[@]}"}
@@ -1227,7 +1234,7 @@ launcher_ro_overlay() {
   # mounts — judged now that every overlay is decided, so a step into a
   # repository handled later counts as protected. A common directory's before
   # its linked worktrees', whose core.hooksPath its config sets (GIT-44).
-  local -a kord=() _hpv_g=() _hpv_v=()
+  local -a kord=() _hpv_g=() _hpv_v=() _hxv_g=() _hxv_k=() _hxv_v=()
   for k in ${pgd[@]+"${!pgd[@]}"}; do [[ "${pgc[k]}" != "${pgd[k]}/config" ]] || kord+=("$k"); done
   for k in ${pgd[@]+"${!pgd[@]}"}; do [[ "${pgc[k]}" == "${pgd[k]}/config" ]] || kord+=("$k"); done
   for k in ${kord[@]+"${kord[@]}"}; do
@@ -1275,8 +1282,9 @@ launcher_ro_overlay() {
     # Bounded per LAUNCH as well as per config: two configs per git directory and
     # up to SANDBOX_GIT_MAX planted git directories made 150 repos take 81 s (review
     # of the batch 1 hotfix; GIT-2). config.worktree only where git reads it.
-    local -A iseen=() hkp=() hkw=() hkr=() hkc=() icnd=()
-    local -a hcf=() hcfw=()
+    local -A iseen=() hkp=() hkw=() hkr=() hkc=() icnd=() hxr=()
+    local -a hcf=() hcfw=() hxf=() hxk=() hxv=() gpo=()
+    local hxcut="" hxnew="" hxn=0 e2
     for f in "$g/config" "$g/config.worktree"; do
       # Through a link, for one outside every writable mount: its way out was
       # judged above, and what it leads to is what git reads (review of the
@@ -1293,13 +1301,47 @@ launcher_ro_overlay() {
       while (( ii < ${#ifile[@]} )); do
       icur="${ifile[ii]}"; ii=$((ii + 1))
       inc=()
+      # At most 1200 entries, as above: a file read in part is cut.
       if [[ -n "${wkc_at[$icur]+x}" ]]; then
         inc=(${wkc[@]+"${wkc[@]:${wkc_at[$icur]}:${wkc_n[$icur]}}"})
+        if [[ -n "${wkc_cut[$icur]:-}" ]]; then icut=1; hxcut=1; hkc[$icur]=1; fi
       else
-        mapfile -d '' -t inc < <(_git_walk_keys "$icur")
+        mapfile -d '' -n 1200 -t inc < <(_git_walk_keys "$icur")
+        if (( ${#inc[@]} >= 1200 )); then icut=1; hxcut=1; hkc[$icur]=1; fi
       fi
       hkr[$icur]=1
+      hxnew=""; hxn=0; if [[ -z "${hxr[$icur]:-}" ]]; then hxnew=1; hxr[$icur]=1; fi
       for e in ${inc[@]+"${inc[@]}"}; do
+        # A key over 256 bytes (an includeIf condition, an alias name) is not
+        # split: what it sets is not followed, and the cut WARNING says so (GIT-49).
+        # Counted as a key that runs a program, or a planted file of them would
+        # be read with no bound (review of the fix).
+        if ! _git_kv "$e" ik ip; then
+          icut=1
+          if (( ++hxn > 1000 || ++ipk > 5000 )); then hxcut=1; ii=${#ifile[@]}; hkc[$icur]=1; break; fi
+          continue
+        fi
+        # A key that runs a program: its value is kept for the check below, once
+        # per file, where it names the program by a path (_git_prog; GIT-42). Not
+        # counted as an include entry, where each costs a walk: a team's shared
+        # config of aliases would cut the include walk. Bounded on their own, a
+        # planted config of thousands making every launch slow: past 1000 in a
+        # file, or 5000 or 256 K characters of them in a launch, the walk is cut as past
+        # 100 include entries (planted repositories doubled a launch's time, in
+        # silence; reviews of the fix); at most 50 are kept a git directory,
+        # past which the check below says so.
+        case "$ik" in
+          include.path|includeif.*.path|core.hookspath|core.worktree) ;;
+          *)
+            if (( ++hxn > 1000 || ++ipk > 5000 || (ipb += ${#ip}) > 262144 )); then icut=1; hxcut=1; ii=${#ifile[@]}; hkc[$icur]=1; break; fi
+            if [[ -n "$hxnew" ]] && _git_prog "$ik" "$ip" gpo; then
+              for e2 in "${gpo[@]}"; do
+                if (( ${#hxv[@]} >= 50 )); then hxcut=1; break; fi
+                hxf+=("$icur"); hxk+=("$ik"); hxv+=("$e2")
+              done
+            fi
+            continue ;;
+        esac
         # Entries, not only files: each costs a walk, and one config can hold
         # thousands (re-review of c0d48d9; G38). core.hooksPath and core.worktree
         # count too: thousands of them in a planted config cost a launch seconds
@@ -1309,9 +1351,6 @@ launcher_ro_overlay() {
         # of every later config (GIT-19; G72). They still count per config.
         # Cut, the file's core keys are read for the check below by git, not lost (hkc).
         if (( ++ient > 100 )); then icut=1; ii=${#ifile[@]}; hkc[$icur]=1; break; fi
-        # A key over 256 bytes (an includeIf condition) is not split: its include
-        # is not followed, and the cut WARNING says so (GIT-49).
-        if ! _git_kv "$e" ik ip; then icut=1; continue; fi
         # The last of each in this file, for the core.hooksPath check below.
         case "$ik" in
           core.hookspath) hkp[$icur]="$ip"; continue ;;
@@ -1369,7 +1408,7 @@ launcher_ro_overlay() {
       hcf+=("${ifile[@]}")
       if [[ "$f" == "$g/config.worktree" ]]; then hcfw+=("${ifile[@]}"); fi
       if [[ -n "$icut" ]]; then
-        printf 'WARNING: not every include of %s was followed (100 entries and 20 files per config, 1000 of each per launch, 128 path components);\n' "$(_q "$at/${f##*/}")" >&2
+        printf 'WARNING: not every include of %s was followed (100 entries, 1000 keys that run a program and 20 files per config; 1000 entries and files, and 5000 such keys of 256 K characters in all, per launch; keys of 256 characters; 128 path components);\n' "$(_q "$at/${f##*/}")" >&2
         printf '         what the rest set was not checked. Review them: git config --file %s --list --show-origin --includes\n' "$(_q "$f")" >&2
       fi
     done
@@ -1568,6 +1607,113 @@ launcher_ro_overlay() {
     if [[ -n "$hcut" ]]; then
       printf 'WARNING: not every core.hooksPath of %s was judged (1000 ways per launch, with its includes);\n' "$(_q "$at")" >&2
       printf '         check its hooks before a git commit on the host: git -C %s rev-parse --git-path hooks\n' "$(_q "$g")" >&2
+    fi
+    # A program a key in these files has the host's git run (core.fsmonitor, a
+    # filter, a diff driver, a credential helper, a `!` alias, …), named by a
+    # path (_git_prog): one the agent can change, or reach by a way it can
+    # change, is named, as a core.hooksPath is (bugs review GIT-42). The files
+    # are those core.hooksPath is read from, and a linked worktree's takes the
+    # common config's relative ones from its own checkout, since git runs them
+    # from the worktree's top. A relative one is judged from each checkout, and
+    # from the git directory itself only in a bare repository, where git runs
+    # them. Every way counts in the launch's budget.
+    # Entries are typed (_git_prog): p: a path, u: one not followed. A linked
+    # worktree takes the common config's relative paths, never what the main
+    # worktree's config.worktree sets, which git applies to it alone (review).
+    local -a hxq=() hxp=()
+    local -A hxwt=()
+    for f in ${hcfw[@]+"${hcfw[@]}"}; do hxwt[$f]=1; done
+    for f in ${hfl[@]+"${hfl[@]}"}; do
+      for i in ${hxf[@]+"${!hxf[@]}"}; do
+        [[ "${hxf[i]}" == "$f" && -z "${hseen[p:${hxk[i]}:${hxv[i]}]:-}" ]] || continue
+        hseen[p:${hxk[i]}:${hxv[i]}]=1; hxq+=("${hxk[i]}"); hxp+=("${hxv[i]}")
+        if [[ "$cfg" == "$g/config" && -z "${hxwt[$f]:-}" ]]; then
+          case "${hxv[i]}" in p:/*|'p:~'*|u:*) ;; *) _hxv_g+=("$g"); _hxv_k+=("${hxk[i]}"); _hxv_v+=("${hxv[i]}") ;; esac
+        fi
+      done
+    done
+    if [[ "$cfg" != "$g/config" ]]; then
+      for i in ${_hxv_g[@]+"${!_hxv_g[@]}"}; do
+        [[ "${_hxv_g[i]}" == "${cfg%/config}" ]] || continue
+        [[ -z "${hseen[p:${_hxv_k[i]}:${_hxv_v[i]}]:-}" ]] || continue
+        hseen[p:${_hxv_k[i]}:${_hxv_v[i]}]=1; hxq+=("${_hxv_k[i]}"); hxp+=("${_hxv_v[i]}")
+      done
+    fi
+    for i in ${hxp[@]+"${!hxp[@]}"}; do
+      v="${hxp[i]#?:}"
+      if (( ${#v} > 4096 )); then continue; fi
+      wd=(); wp=()
+      # One the launcher cannot follow — a shell expansion or command, ~user/ —
+      # is named so, once, never judged where it is not (review of the fix).
+      # So is a relative one where this launch knows no checkout (as for a
+      # core.hooksPath; GIT-46): git never runs it from the git directory.
+      # shellcheck disable=SC2088  # '~/'* matches a LITERAL leading ~/ in the config value, expanded by hand
+      case "${hxp[i]}" in
+        # The key and why, never the value: a credential helper's can hold a
+        # token (review of the fix).
+        u:*)
+          [[ -z "${hseen[n:${hxq[i]}:$v]:-}" ]] || continue
+          hseen[n:${hxq[i]}:$v]=1
+          printf 'NOTE: %s has your host'\''s git run a command (%s) the launcher does not follow\n' "$(_term "$at")" "$(_term "$(_git_key_shown "${hxq[i]}")")" >&2
+          printf '      (%s), so it is not judged. Check it before a git command on the host runs it.\n' "$(_term "$v")" >&2
+          continue ;;
+        'p:~'[!/]*)
+          [[ -z "${hseen[n:${hxq[i]}:$v]:-}" ]] || continue
+          hseen[n:${hxq[i]}:$v]=1
+          printf 'NOTE: %s has your host'\''s git run %s (%s), which the launcher does not expand\n' "$(_term "$at")" "$(_term "$v")" "$(_term "$(_git_key_shown "${hxq[i]}")")" >&2
+          printf '      (~user/), so it is not judged. Check it before a git command on the host runs it.\n' >&2
+          continue ;;
+        p:/*) wd=(/); wp=("$v") ;;
+        'p:~/'*) wd=(/); wp=("$HOME/${v#\~/}") ;;
+        *)
+          if [[ -n "$hnowt" ]]; then
+            [[ -z "${hseen[n:${hxq[i]}:$v]:-}" ]] || continue
+            hseen[n:${hxq[i]}:$v]=1
+            printf 'NOTE: %s has your host'\''s git run %s (%s) relative to a checkout this launch\n' "$(_term "$at")" "$(_term "$v")" "$(_term "$(_git_key_shown "${hxq[i]}")")" >&2
+            printf '      does not know, so it is not judged. Check it before a git command there runs it.\n' >&2
+            continue
+          fi
+          for j in "${!hbd[@]}"; do
+            if (( j == hpush && ${#hbd[@]} > 1 )); then continue; fi
+            wd+=("${hbd[j]}"); wp+=("${hbp[j]}$v")
+          done ;;
+      esac
+      for j in "${!wd[@]}"; do
+        if (( ++ients > 1000 )); then hxcut=1; break 2; fi
+        x="${wp[j]//[!\/]/}"
+        if (( ${#x} > 128 )); then how=unchecked; q=""; w=""; hd=""
+        else
+          walk=()
+          mapfile -d '' -t walk < <(_path_walk "${wd[j]}" "${wp[j]}")
+          hd=""
+          for x in ${walk[@]+"${walk[@]}"}; do [[ "$x" != =* ]] || hd="${x#=}"; done
+          _walk_exposed how q w "" ${walk[@]+"${walk[@]}"} || continue
+        fi
+        # The program, as the agent sees it where a mount holds it.
+        x="${hd:-$v}"
+        for b in ${bsrc[@]+"${!bsrc[@]}"}; do
+          if [[ -n "$hd" && ( "$hd" == "${bsrc[b]}" || "$hd" == "${bsrc[b]}"/* ) ]]; then x="${bdst[b]}${hd#"${bsrc[b]}"}"; break; fi
+        done
+        if [[ "$how" == unchecked ]]; then x="$v"; q=""; fi
+        [[ -z "${hseen[x:${hxq[i]}:$how:$q:$x]:-}" ]] || continue
+        hseen[x:${hxq[i]}:$how:$q:$x]=1
+        printf 'NOTE: %s has your host'\''s git run %s (%s), which leads somewhere the agent can change:\n' "$(_term "$at")" "$(_term "$x")" "$(_term "$(_git_key_shown "${hxq[i]}")")" >&2
+        case "$how" in
+          change)  printf '      it can change %s (at %s).\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
+          linked)  printf '      it can write %s through another name of that file, in %s\n' "$(_term "$q")" "$(_term "$w")" >&2
+                   printf '      (on the host, find %s -xdev -samefile %s lists it).\n' "$(_q "$w")" "$(_q "$q")" >&2 ;;
+          unsearched) printf '      %s has another name, and %s could not be searched for it in full.\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
+          repoint) printf '      it can repoint %s (at %s), a link on its way.\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
+          replace) printf '      it can replace %s (at %s) with a link; the way steps out of it (..).\n' "$(_term "$q")" "$(_term "$w")" >&2 ;;
+          unchecked) printf '      its way was not followed to the end (too many steps, links or components), so it is not known to be safe.\n' >&2 ;;
+        esac
+        printf '      Check it before a git command on the host runs it.\n' >&2
+      done
+    done
+    if [[ -n "$hxcut" ]]; then
+      printf 'WARNING: not every program the git config of %s has git run was judged (50 a git\n' "$(_q "$at")" >&2
+      printf '         directory, 1000 ways per launch with its includes and hooks). Review them:\n' >&2
+      printf '         git config --file %s --list --includes\n' "$(_q "$cfg")" >&2
     fi
     # hooks/ where git may run it: no core.hooksPath, one an includeIf may not
     # apply, or one git falls back from (:(optional)).
@@ -4044,6 +4190,139 @@ _git_kv() {
   [[ -n "$_kv_k" ]]
 }
 
+# The keys whose value is a program git runs, or a command line a shell runs
+# (section and name in lower case, as git prints them). With core.hooksPath,
+# the includes and protocol.allow, they are the keys _git_exec_keys names.
+_git_prog_keys='core\.(fsmonitor|sshcommand|editor|pager|askpass|gitproxy|alternaterefscommand)|sequence\.editor|pager\..+|diff\.external|diff\..+\.(command|textconv)|merge\..+\.driver|filter\..+\.(clean|smudge|process)|credential\.(.+\.)?helper|gpg\.(.+\.)?program|remote\..+\.(uploadpack|receivepack)|(difftool|mergetool|man|browser)\..+\.(cmd|path)|web\.browser|alias\..+|submodule\..+\.update|trailer\..+\.(command|cmd)|gpg\.ssh\.defaultkeycommand|sendemail\.(.+\.)?(tocmd|cccmd|headercmd|sendmailcmd|smtpserver)|imap\.tunnel|instaweb\.httpd|guitool\..+\.cmd|interactive\.difffilter|tar\..+\.command|hook\..+\.command'
+
+# _git_key_shown <key>: a config key as it may be printed: a credential.<url>
+# key's user and password (`https://user:token@host`) blanked, since a NOTE
+# printed on every launch would show them (review of the GIT-42 fix).
+_git_key_shown() {
+  local k="$1"
+  if [[ "$k" == credential.*://*@* ]]; then k="${k/:\/\/*@/://***@}"; fi
+  printf '%s' "$k"
+}
+
+# _git_prog <key> <value> <out-array>: what a key that runs a program has git
+# run, as entries `p:<path>` to judge where it lies and `u:<why>` for a command
+# that cannot be followed, which says why and never what the value holds (a
+# credential helper's can hold a token; review of the fix); fails when there
+# is neither (GIT-42). A key whose value is a whole path, run with no shell
+# (*.path, gpg.program), gives that path. Any other is read as the shell reads
+# a command line, up to its eighth word: past a `!` (an alias, a credential
+# helper), assignments (FOO=1), and the wrappers exec, command, nohup, env,
+# nice and timeout, with their options and their arguments; an interpreter
+# (sh, python3, node, …) gives the script it runs, any word, as a path from
+# where git runs it, past its own options and their arguments, python's
+# `-m mod` as mod.py (it runs from the checkout first), and itself where named
+# by a path; any other program counts where named by a path, one found on PATH
+# (git-lfs, ssh) does not. A word holding a shell expansion, quoting or an
+# operator (`$HOME/x`, `"$(git rev-parse --git-dir)"/x`, a function), inline
+# code (sh -c, perl -e, node -pe, …), env -S, or a value over 4096 bytes, is not
+# followed. Not: a boolean core.fsmonitor, an alias or submodule update that is
+# not a shell command. Bytes, in the C locale, and every step linear in the
+# value, which the agent writes: a strip by pattern took 17 s for one with
+# 64000 leading spaces (review of the fix).
+_git_prog() {
+  local -n _gp_o=$3
+  local LC_ALL=C _gp_v="$2" _gp_w _gp_b _gp_s="" _gp_e="" _gp_a="" _gp_d="" _gp_m="" _gp_n=0
+  local _gp_rq='^"([^"]*)"' _gp_rs="^'([^']*)'" _gp_rm='[$`(){};|&<>\"'"'"'*?[]' _gp_ro=$'[;&|`\n]|\\$\\('
+  local _gp_ex="" _gp_k="" _gp_t=""
+  local _gp_x='a shell expansion, quoting or an operator'
+  _gp_o=()
+  if (( ${#_gp_v} > 4096 )); then _gp_o=("u:a value of ${#_gp_v} bytes"); return 0; fi
+  case "$1" in
+    core.fsmonitor) [[ ! "${_gp_v,,}" =~ ^(true|false|yes|no|on|off|-?[0-9]+)?$ ]] || return 1 ;;
+    alias.*|submodule.*.update) [[ "$_gp_v" == '!'* ]] || return 1 ;;
+    mergetool.*.path|difftool.*.path|man.*.path|browser.*.path|gpg.program|gpg.*.program)
+      [[ "$_gp_v" =~ / ]] || return 1
+      _gp_o=("p:$_gp_v"); return 0 ;;
+  esac
+  [[ "$_gp_v" =~ ^[[:space:]]* ]]; _gp_v="${_gp_v:${#BASH_REMATCH[0]}}"
+  if [[ "$_gp_v" == '!'* ]]; then _gp_v="${_gp_v:1}"; fi
+  while :; do
+    [[ "$_gp_v" =~ ^[[:space:]]* ]]; _gp_v="${_gp_v:${#BASH_REMATCH[0]}}"
+    [[ -n "$_gp_v" ]] || break
+    if (( _gp_n++ >= 8 )); then _gp_ex=1; break; fi
+    case "$_gp_v" in
+      \"*|\'*)
+        if [[ "$_gp_v" == \"* ]]; then [[ "$_gp_v" =~ $_gp_rq ]]; else [[ "$_gp_v" =~ $_gp_rs ]]; fi \
+          || { _gp_o+=("u:$_gp_x"); return 0; }
+        _gp_w="${BASH_REMATCH[1]}"; _gp_v="${_gp_v:${#BASH_REMATCH[0]}}"
+        # A quoted word with more of it after the quote: not followed.
+        if [[ -n "$_gp_v" && "$_gp_v" != [[:space:]]* ]]; then _gp_o+=("u:$_gp_x"); return 0; fi ;;
+      *) [[ "$_gp_v" =~ ^[^[:space:]]* ]]; _gp_w="${BASH_REMATCH[0]}"; _gp_v="${_gp_v:${#_gp_w}}" ;;
+    esac
+    if [[ "$_gp_w" =~ $_gp_rm ]]; then _gp_o+=("u:$_gp_x"); return 0; fi
+    # An option's argument, timeout's duration: skipped.
+    if [[ -n "$_gp_a" ]]; then _gp_a=""; continue; fi
+    if [[ -n "$_gp_m" ]]; then _gp_o+=("p:${_gp_w//.//}.py"); _gp_t=1; break; fi
+    if [[ -z "$_gp_s" && "$_gp_w" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then continue; fi
+    # An interpreter's own options: which run inline code, and which take an
+    # argument, are its own (sh -e is no code, perl -e is).
+    if [[ -n "$_gp_s" && "$_gp_w" == -* ]]; then
+      case "$_gp_s:$_gp_w" in
+        sh:-o|sh:-O|python:-W|python:-X|perl:-I|perl:-M|perl:-m|ruby:-I|ruby:-r|node:-r|node:--require|node:--import|php:-d|lua:-l) _gp_a=1 ;;
+        python:-m) _gp_m=1 ;;
+        python:-m?*) _gp_w="${_gp_w:2}"; _gp_o+=("p:${_gp_w//.//}.py"); _gp_t=1; break ;;
+        node:--eval*|node:--print*) _gp_o+=("u:inline code"); return 0 ;;
+        sh:--*|python:--*|perl:--*|ruby:--*|lua:--*|node:--*) ;;
+        perl:-[IMm]?*|ruby:-[Ir]?*|python:-[WX]?*) ;;
+        sh:-*c*|python:-*c*|perl:-*[eE]*|ruby:-*e*|node:-*[ep]*|php:-r|lua:-e|pwsh:-[cC]*|other:-*[ce]*)
+          _gp_o+=("u:inline code"); return 0 ;;
+        php:-f) ;;
+      esac
+      continue
+    fi
+    if [[ -n "$_gp_e" && -z "$_gp_s" && "$_gp_w" == -* ]]; then
+      case "$_gp_w" in
+        -S|--split-string|--split-string=*) _gp_o+=("u:env -S"); return 0 ;;
+        -a|-n|-u|-C|-s|-k|-g|-D|-p|-r|-t|-T|-U|-h|--unset|--chdir|--signal|--kill-after|--adjustment|--user|--group) _gp_a=1 ;;
+      esac
+      continue
+    fi
+    if [[ -n "$_gp_d" && -z "$_gp_s" ]]; then _gp_d=""; continue; fi
+    _gp_b=""; if (( ${#_gp_w} <= 256 )); then _gp_b="${_gp_w##*/}"; fi
+    if [[ -z "$_gp_s" ]]; then
+      case "$_gp_b" in
+        exec|env|command|nohup|nice|timeout|sudo|doas|setsid|stdbuf|ionice|chrt|taskset|xargs|watch|unbuffer)
+          _gp_e=1; if [[ "$_gp_b" == timeout ]]; then _gp_d=1; fi
+          if [[ "$_gp_b" == taskset || "$_gp_b" == chrt ]]; then _gp_k=1; fi
+          continue ;;
+        sh|bash|dash|zsh|ksh|mksh) _gp_s='sh' ;;
+        python|python[23]|python[23].[0-9]*) _gp_s=python ;;
+        perl|ruby|node|php|lua) _gp_s="$_gp_b" ;;
+        nodejs) _gp_s=node ;;
+        pwsh) _gp_s=pwsh ;;
+        tclsh) _gp_s=other ;;
+      esac
+      if [[ -n "$_gp_s" ]]; then
+        if [[ "$_gp_w" =~ / ]]; then _gp_o+=("p:$_gp_w"); fi
+        continue
+      fi
+    fi
+    if [[ -n "$_gp_s" ]]; then _gp_o+=("p:$_gp_w"); _gp_t=1; break; fi
+    if [[ "$_gp_w" =~ / ]]; then _gp_o+=("p:$_gp_w"); _gp_t=1; break; fi
+    # Words with no / that taskset (its mask) and chrt (its priority) take
+    # before the program; after any other wrapper such a word is the program,
+    # found on PATH, and its path arguments are not taken for it (final review
+    # of the fix: `nice git diff ./file` judged ./file).
+    if [[ -n "$_gp_k" ]]; then continue; fi
+    _gp_t=1
+    break
+  done
+  # Fail closed (automated security review of the fix): the words ran out
+  # before the program did, or what follows it runs another command
+  # (`git status; ./x`, `git log | ./x`), which is not followed.
+  if [[ -n "$_gp_ex" && -z "$_gp_t" ]]; then _gp_o+=("u:more than eight words before the program"); return 0; fi
+  # A wrapper and no program: an option of its that takes no argument was read
+  # as taking one (`sudo -n ./x`), so the program went unseen.
+  if [[ -n "$_gp_e" && -z "$_gp_t" ]]; then _gp_o+=("u:a wrapper whose program was not found"); return 0; fi
+  if [[ "$_gp_v" =~ $_gp_ro ]]; then _gp_o+=("u:another command after it"); fi
+  (( ${#_gp_o[@]} ))
+}
+
 # _git_exec_keys <config-file>...: the keys these git config files set that make
 # git run a program, or read another file of keys (an include), NUL-separated,
 # each once, values never printed. Read with git, which runs nothing from a
@@ -4052,7 +4331,7 @@ _git_kv() {
 # when it starts with '!'. A file that does not exist sets nothing.
 _git_exec_keys() {
   local f rec k v
-  local re='^(core\.(fsmonitor|hookspath|sshcommand|editor|pager|askpass|gitproxy|alternaterefscommand)|sequence\.editor|pager\..+|diff\.external|diff\..+\.(command|textconv)|merge\..+\.driver|filter\..+\.(clean|smudge|process)|credential\.(.+\.)?helper|gpg\.(.+\.)?program|remote\..+\.(uploadpack|receivepack)|(difftool|mergetool|man|browser)\..+\.(cmd|path)|web\.browser|include\.path|includeif\..+\.path|alias\..+|submodule\..+\.update|trailer\..+\.(command|cmd)|gpg\.ssh\.defaultkeycommand|sendemail\.(.+\.)?(tocmd|cccmd|headercmd|sendmailcmd|smtpserver)|protocol\.(ext\.)?allow|imap\.tunnel|instaweb\.httpd|guitool\..+\.cmd|interactive\.difffilter|tar\..+\.command|hook\..+\.command)$'
+  local re="^(core\\.hookspath|include\\.path|includeif\\..+\\.path|protocol\\.(ext\\.)?allow|${_git_prog_keys})\$"
   local -A had=()
   _git_usable || return 0
   for f in "$@"; do
@@ -4071,7 +4350,7 @@ _git_exec_keys() {
         sendemail.smtpserver|sendemail.*.smtpserver) if [[ "$v" != /* ]]; then continue; fi ;;
       esac
       had[$k]=1
-      printf '%s\0' "$k"
+      _git_key_shown "$k"; printf '\0'
     done < <(_git_file_config "$f" --null --list 2>/dev/null)
   done
 }
@@ -4406,14 +4685,15 @@ _git_file_config() {
 
 # _git_walk_keys <config-file>: every include.path and includeIf.*.path the file
 # sets — whatever the condition, since one that does not hold today may hold
-# tomorrow — and its core.hooksPath and core.worktree, each as `<key>\n<value>`
-# (the key as git prints it, in lower case), NUL-separated, in the file's order.
-# One read gives the include walk and the core.hooksPath check what they need
-# (a read each cost 150 repositories of six includes 27% more; review of the
-# GIT-35 fix). With no git, none.
+# tomorrow — its core.hooksPath and core.worktree, and every key that makes git
+# run a program (_git_exec_keys), each as `<key>\n<value>` (section and name in
+# lower case, as git prints them), NUL-separated, in the file's order. One read
+# gives the include walk, the core.hooksPath check and the program check what
+# they need (a read each cost 150 repositories of six includes 27% more; review
+# of the GIT-35 fix). With no git, none.
 _git_walk_keys() {
   _git_usable || return 0
-  _git_file_config "$1" --null --get-regexp '^(include(if\..*)?\.path|core\.(hookspath|worktree))$' 2>/dev/null || true
+  _git_file_config "$1" --null --get-regexp "^(include(if\\..*)?\\.path|core\\.(hookspath|worktree)|${_git_prog_keys})\$" 2>/dev/null || true
 }
 
 # Seed a per-workspace writable working-copy volume from a repo's shared base
