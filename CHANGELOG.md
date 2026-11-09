@@ -141,6 +141,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`kiro=ON` builds again with Kiro CLI 3.x.** Since 3.1.0 (2026-11-05) the
+  Linux packages ship `kiro-cli` alone, without `kiro-cli-chat` and
+  `kiro-cli-term`. The layer copied the three in a loop whose `[ -f ] && cp`
+  returned 1 for the last, missing one, so a successful install failed the
+  build with `ERROR: kiro-cli not found after install`. The two extra binaries
+  are now optional. The integration suite's `agents` image now builds with
+  `kiro=ON`, the only agent it left out, so CI catches the next such change.
 - **A long git config key no longer stalls a launch.** Each entry the
   launcher reads from a protected repository's config was split from its key
   by a pattern quadratic in the key's length: three planted `includeIf`
