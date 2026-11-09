@@ -1020,8 +1020,10 @@ RUN if [ "$INSTALL_KIRO" = "1" ]; then \
       if [ -z "$install_dir" ] || [ "$install_dir" = "." ]; then \
         echo "ERROR: kiro-cli install location not found"; exit 1; \
       fi && \
+      # kiro-cli-chat / kiro-cli-term are optional: Kiro 3.x standalone builds
+      # ship kiro-cli alone, so a missing one must not fail the loop.
       for bin in kiro-cli kiro-cli-chat kiro-cli-term; do \
-        [ -f "$install_dir/$bin" ] && cp "$install_dir/$bin" /usr/local/bin/; \
+        if [ -f "$install_dir/$bin" ]; then cp "$install_dir/$bin" /usr/local/bin/; fi; \
       done && \
       # Verify the install succeeded
       command -v kiro-cli >/dev/null || { echo "ERROR: kiro-cli not found after install"; exit 1; }; \
