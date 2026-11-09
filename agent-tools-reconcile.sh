@@ -242,6 +242,17 @@ install_uv() {    # $1=binary  $2=package  $3..=extra `uv tool install` args
   [[ -n "$py" ]] && read -r major minor < <("$py" -c 'import sys; print(*sys.version_info[:2])' 2>/dev/null)
   if [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ ]] && (( minor > 0 )); then
     log "retrying $pkg on Python $major.$((minor - 1)): a dependency may have no wheel for $major.$minor yet…"
+    # Where neither the image nor an earlier container of the group has that Python,
+    # uv downloads it from GitHub (python-build-standalone), and uv's default 3 retries
+    # give up in ~10 s: a GitHub outage of a few minutes failed the install
+    # (2026-11-08). So that download runs on its own, retried for ~3 min (12 retries,
+    # measured 169 s against a server answering 503); the tool install keeps uv's
+    # default, so a blocked registry does not hold up every start. A UV_HTTP_RETRIES
+    # the user set wins.
+    if ! uv python find "$major.$((minor - 1))" >/dev/null 2>&1; then
+      UV_HTTP_RETRIES="${UV_HTTP_RETRIES:-12}" uv python install "$major.$((minor - 1))" \
+        || log "could not download Python $major.$((minor - 1)); trying the install anyway…"
+    fi
     uv tool install "$pkg" "$@" --python "$major.$((minor - 1))" "${reinstall[@]}" && return 0
   fi
   log "FAILED: uv tool install $pkg $* (skipped)"

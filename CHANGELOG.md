@@ -141,6 +141,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A GitHub outage of a few minutes no longer fails graphify's install or the
+  wkhtmltopdf layer.** While a dependency has no wheel for the image's Python,
+  graphify installs on the previous minor, which uv downloads from GitHub, and
+  uv gave up after 3 retries (~10 s); the build's wkhtmltopdf `.deb` gave up
+  after 10 s too. Both failed the nightly on 2026-11-08. The Python download now
+  runs on its own, retried for ~3 min (a `UV_HTTP_RETRIES` you set wins), and the
+  `.deb` for 256 s with exponential backoff. The wkhtmltopdf change makes the next
+  `./build.sh` rebuild from that layer on.
+
 - **`kiro=ON` builds again with Kiro CLI 3.x.** Since 3.1.0 (2026-11-05) the
   Linux packages ship `kiro-cli` alone, without `kiro-cli-chat` and
   `kiro-cli-term`. The layer copied the three in a loop whose `[ -f ] && cp`

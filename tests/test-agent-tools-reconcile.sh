@@ -51,7 +51,12 @@ EOF
 echo "uv \$*" >> "$home/calls.log"
 echo "uv-saw-UV_PYTHON_INSTALL_DIR=\${UV_PYTHON_INSTALL_DIR:-}" >> "$home/calls.log"
 echo "uv-cwd=\$PWD" >> "$home/calls.log"
+echo "uv-saw-UV_HTTP_RETRIES=\${UV_HTTP_RETRIES:-}" >> "$home/calls.log"
+# A version asked for by number is missing with UV_PY_MISSING=1: neither the image
+# nor the group has the previous minor, so the fallback must download it.
+if [[ "\$1 \$2" == "python find" && "\${3:-}" == [0-9]* && "\${UV_PY_MISSING:-0}" == 1 ]]; then exit 2; fi
 if [[ "\$1 \$2" == "python find" ]]; then echo "$bin/fakepython"; exit 0; fi
+if [[ "\$1 \$2" == "python install" ]]; then [[ "\${UV_PYINST_FAIL:-0}" == 1 ]] && exit 1; exit 0; fi
 if [[ "\$1 \$2" == "tool install" ]]; then
   # UV_FAIL=default fails an install that names no --python, as the image's newest
   # Python does when a dependency has no wheel for it yet; UV_FAIL=all fails every one.
@@ -122,7 +127,7 @@ run_case() {
   local bin; bin="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
   mk_stubs "$bin" "$home"
   PATH="$bin:$PATH" HOME="$home" AI_RUNTIME_TOOLS="$want" NPM_FAIL="$npm_fail" UV_FAIL="${UV_FAIL:-}" \
-    CODEX_FAIL="${CODEX_FAIL:-}" \
+    CODEX_FAIL="${CODEX_FAIL:-}" UV_PY_MISSING="${UV_PY_MISSING:-0}" UV_PYINST_FAIL="${UV_PYINST_FAIL:-0}" \
     NPM_LATEST="${NPM_LATEST:-1.0.0}" NPM_VIEW_FAIL="${NPM_VIEW_FAIL:-0}" \
     NPM_VIEW_EMPTY="${NPM_VIEW_EMPTY:-0}" FAKEPY_OUT="${FAKEPY_OUT:-3 15}" \
     bash "$REPO_DIR/agent-tools-reconcile.sh" >"$home/out.log" 2>&1
@@ -255,6 +260,35 @@ grep -qx "uv-saw-UV_PYTHON_INSTALL_DIR=$h/.ai-tools/uv/python" "$h/calls.log" \
 rm -rf "$h"
 h="$(run_case "graphify")"
 ! grep -q -- '--python ' "$h/calls.log" && pass "no retry when the image's Python works" || fail "no retry when the image's Python works"
+rm -rf "$h"
+# The previous minor, where neither the image nor the group has it, comes from
+# GitHub, and uv's default 3 retries gave up in ~10 s during an outage of a few
+# minutes (the nightly of 2026-11-08). That download runs on its own, retried
+# for ~3 min; the tool install keeps uv's default retries.
+retries_of() { grep -A3 -x "uv $2" "$1/calls.log" | sed -n 's/^uv-saw-UV_HTTP_RETRIES=//p' | head -1; }
+h="$(UV_PY_MISSING=1 UV_FAIL=default run_case "graphify")"
+{ grep -qx 'uv python install 3.14' "$h/calls.log" && [[ "$(retries_of "$h" 'python install 3.14')" == 12 ]]; } \
+  && pass "a previous minor the image lacks is downloaded on its own, retried 12 times" \
+  || fail "previous minor download (calls: $(grep -E '^uv (python|tool)|RETRIES' "$h/calls.log" | tr '\n' ';'))"
+{ [[ "$(retries_of "$h" 'tool install graphifyy --python 3.14')" == "" ]] && [[ -x "$h/.ai-tools/uv/bin/graphify" ]]; } \
+  && pass "  … and the tool install keeps uv's default retries, and installs" \
+  || fail "  … tool install retries '$(retries_of "$h" 'tool install graphifyy --python 3.14')'"
+rm -rf "$h"
+h="$(UV_FAIL=default run_case "graphify")"
+! grep -q '^uv python install' "$h/calls.log" \
+  && pass "a previous minor the image has is not downloaded" \
+  || fail "a previous minor the image has was downloaded"
+rm -rf "$h"
+h="$(UV_HTTP_RETRIES=5 UV_PY_MISSING=1 UV_FAIL=default run_case "graphify")"
+[[ "$(retries_of "$h" 'python install 3.14')" == 5 ]] \
+  && pass "a UV_HTTP_RETRIES of the user's wins for that download" \
+  || fail "the user's UV_HTTP_RETRIES was replaced ('$(retries_of "$h" 'python install 3.14')')"
+rm -rf "$h"
+h="$(UV_PYINST_FAIL=1 UV_PY_MISSING=1 UV_FAIL=default run_case "graphify")"
+{ grep -q 'could not download Python 3.14' "$h/out.log" && grep -qx 'uv tool install graphifyy --python 3.14' "$h/calls.log" \
+  && [[ "$(cat "$h/rc")" == 0 ]]; } \
+  && pass "a failed download is named, the install still tried, and the start goes on" \
+  || fail "failed download (rc=$(cat "$h/rc"); out: $(tr '\n' ';' < "$h/out.log"))"
 rm -rf "$h"
 # The retry needs a version to step back from: a probe that reports no numeric
 # major, or a minor of 0 (no previous minor), means no retry and a FAILED line,

@@ -634,5 +634,19 @@ if [[ -n "$pyenv_run" ]]; then
     || pass "every pyenv install goes through -f, so a retry reinstalls over a partial version"
 fi
 
+# ── a GitHub release download rides out an outage of minutes ────────────────
+# wkhtmltopdf's .deb comes from GitHub releases. `--retry 5 --retry-delay 2`
+# gave up in 10 s, and a GitHub outage of a few minutes (504s) failed the
+# nightly's native image (2026-11-08). With no --retry-delay curl backs off
+# exponentially, and --retry 8 keeps trying for 256 s (measured).
+wk="$(tr -d '\\\n' < "$REPO_DIR/Dockerfile" | grep -o 'curl [^&]*wkhtmltox[^&]*' | head -1)"
+if [[ -z "$wk" ]]; then
+  fail "the wkhtmltopdf download is found in the Dockerfile"
+elif [[ "$wk" =~ --retry\ ([0-9]+) ]] && (( BASH_REMATCH[1] >= 8 )) && [[ "$wk" != *--retry-delay* ]]; then
+  pass "the wkhtmltopdf download from GitHub retries for minutes: --retry ${BASH_REMATCH[1]}, exponential backoff"
+else
+  fail "the wkhtmltopdf download from GitHub retries for minutes (needs --retry 8 or more and no --retry-delay; got: $wk)"
+fi
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

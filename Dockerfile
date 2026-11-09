@@ -585,13 +585,17 @@ RUN if [ "$INSTALL_IMAGEMAGICK" = "1" ]; then \
 # gem-vendored binary can run) AND the official standalone binary (so non-Ruby
 # projects get a working wkhtmltopdf). No conflict: wicked_pdf points at its own
 # gem binary; a system binary on PATH does not override it.
+# The .deb comes from GitHub releases, and `--retry 5 --retry-delay 2` gave up in
+# 10 s: a GitHub outage of a few minutes (504s) failed the nightly's native image
+# on 2026-11-08. Without --retry-delay curl backs off 1 s, 2 s, 4 s ...: --retry 8
+# keeps trying for 256 s (measured against a server answering 503).
 ARG INSTALL_WKHTMLTOPDF=0
 RUN if [ "$INSTALL_WKHTMLTOPDF" = "1" ]; then \
       apt-get update && apt-get install -y --no-install-recommends \
         libxrender1 libxext6 libx11-6 libfontconfig1 libjpeg-turbo8 \
         fontconfig xfonts-base xfonts-75dpi && \
       ARCH="$(dpkg --print-architecture)" && \
-      curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors -o /tmp/wkhtmltox.deb \
+      curl -fsSL --retry 8 --retry-all-errors -o /tmp/wkhtmltox.deb \
         "https://github.com/wkhtmltopdf/packaging/releases/download/0.12.6.1-3/wkhtmltox_0.12.6.1-3.jammy_${ARCH}.deb" && \
       apt-get install -y --no-install-recommends /tmp/wkhtmltox.deb && \
       rm -f /tmp/wkhtmltox.deb && rm -rf /var/lib/apt/lists/*; \
