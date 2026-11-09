@@ -400,5 +400,22 @@ has "$out" '^ +cp: cannot stat .x.: No such file' && has "$out" '^ +ERROR: /r ha
   && pass "  … but not its PASS: or FAIL: lines" \
   || fail "  … but not its PASS: or FAIL: lines — got: $out"
 
+# ── 10. each test starts in the runner's directory looked up afresh ─────────
+# From a WSL checkout under /mnt/c, the directory every test inherited from the
+# runner went stale partway through a two-hour run, while the path itself
+# stayed good: git "Unable to read current working directory", rsync's
+# getcwd() and a new bash's shell-init all failed with ENOENT, 16 test files at
+# once (the drvfs flake, docs/testing.md; GAP-10). Deleting the starting
+# directory and making it again at the same path is the same state on any
+# filesystem: the inherited directory is gone, a fresh cd by path works.
+rm -f "$CORPUS"/test-*.sh
+START="$TMP/start"; mkdir -p "$START"
+mkt aa-stale 'rm -rf "$RA10_START" && mkdir "$RA10_START" && echo "PASS: the start directory was made again"'
+mkt bb-cwd 'if p="$(/bin/pwd 2>&1)" && [[ "$p" == "$RA10_PHYS" ]] && [[ "$(bash -c "echo ok" 2>&1)" == ok ]]; then echo "PASS: cwd resolves"; else echo "FAIL: cwd does not resolve: $p"; exit 1; fi'
+out="$(cd "$START" && RA10_START="$START" RA10_PHYS="$(cd "$START" && pwd -P)" TMPDIR="$TMP/tmpdir" bash "$CORPUS/run-all.sh" 2>&1)"; rc=$?
+[[ "$rc" == 0 ]] && has "$out" '2 test\(s\), 2 passed, 0 failed' \
+  && pass "a test starts in the runner's directory looked up again, not one gone stale under it" \
+  || fail "a test starts in the runner's directory looked up again (rc=$rc) — got: $out"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

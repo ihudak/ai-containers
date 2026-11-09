@@ -22,6 +22,11 @@
 set -uo pipefail
 
 tests_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Each test starts here, looked up again by path (the loop below): from a WSL
+# checkout under /mnt/c the directory every test inherited went stale partway
+# through a long run, while the path stayed good, and git, rsync and bash then
+# failed with ENOENT from getcwd (the drvfs flake, docs/testing.md; GAP-10).
+ra_cwd="$PWD"
 
 verbose=0
 filters=""
@@ -279,6 +284,7 @@ for t in $selected; do
   name="$(basename "$t")"
   total=$((total + 1))
   printf '── %s\n' "$name"
+  cd -- "$ra_cwd" 2>/dev/null || true
   # ONE DIRECTORY PER TEST, all under the root the EXIT trap removes. Not
   # removed at the bottom of this loop: the body `continue`s from several
   # branches, so a per-iteration removal would be skipped by exactly the runs

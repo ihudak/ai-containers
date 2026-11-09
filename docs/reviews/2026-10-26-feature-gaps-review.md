@@ -253,6 +253,7 @@ A gap is something a design promised that is not in the code at the reviewed com
 - What's missing: confirming or ruling out the F64 mechanism for F58.
 - Value / priority: LOW. The harm is contained.
 - Suggested approach: when it next happens, check whether F64's `dir=n` diagnostic fires; if so, close F58 as a duplicate of F64.
+- **2026-11-09 (WSL agent):** one cause of the same symptom class found, not F58's own: from a WSL checkout under `/mnt/c`, the directory the tests inherit from `tests/run-all.sh` went stale during a long run, and a git that cannot read its working directory prints nothing on stdout, so `git ls-files 2>/dev/null` comes back empty (docs/testing.md, the drvfs flake). The runner now enters its directory again before each test. F58's sightings were in CI, on ext4, where that mechanism has not been seen, so this stays PARTIAL.
 
 ### GAP-11: The launcher-mount swap check is skipped on macOS Docker Desktop and Colima
 - Status: DONE ON COLIMA (2026-11-08); Docker Desktop for Mac stays unprotected and unmeasured. The nonce suggested below does not work, because the swapping container can read and copy it. On Colima, `sandbox.sh` now records each source's device:inode as Colima's VM reports it, and the entrypoint checks as on Linux; see PLAT-3's Status.
