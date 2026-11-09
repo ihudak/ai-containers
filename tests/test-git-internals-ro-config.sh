@@ -1396,6 +1396,17 @@ o134="$(bash -c 'source "$1"; for kv in "alias.a|!env GIT_PAGER=cat git log -- .
 [[ "$o134" == "none;|none;|p:./y;|p:./c;|p:/usr/bin/python3;u:more than eight words before the program;|u:a wrapper whose program was not found;|" ]] \
   && pass "G134 a wrapper's PATH program ends the reading; interpreter words that run out are not followed" \
   || fail "G134 wrappers (got: $o134)"
+# Words split where the shell splits them, on space and tab, a newline ending
+# the command:
+# split on any [[:space:]], `!git<VT>./evil` read as git, found on PATH, where
+# the shell runs ./git<VT>./evil, a path the agent can make (automated security
+# review of the pushed fix). Another control character is not followed.
+o134="$(bash -c 'source "$1"; for kv in "alias.a|!git"$'"'"'\v'"'"'"./evil" "alias.b|!./x"$'"'"'\f'"'"'"y" "alias.c|!./t.sh"$'"'"'\t'"'"'"arg" \
+  "alias.d|!git"$'"'"'\n'"'"'"./evil" "alias.e|!A=1"$'"'"'\n'"'"'"./x" "alias.f|!sudo"$'"'"'\n'"'"'"./y"; do
+    o=(); if _git_prog "${kv%%|*}" "${kv#*|}" o; then printf "%s;" "${o[@]}"; else printf "none;"; fi; printf "|"; done' _ "$fns134" 2>&1)"
+[[ "$o134" == "u:a control character;|u:a control character;|p:./t.sh;|u:another command after it;|u:another command after it;|u:another command after it;|" ]] \
+  && pass "G134 words split where the shell splits them, a newline ending a command; another control character is not followed" \
+  || fail "G134 word splitting (got: $(printf '%q' "$o134"))"
 t134="$(bash -c 'source "$1"; v="!$(printf "%64000s" "")./x"; s=$SECONDS; o=(); _git_prog alias.x "$v" o; printf "%s|%s" "$(( SECONDS - s ))" "${o[*]}"' _ "$fns134" 2>&1)"
 [[ "${t134%%|*}" -le 1 && "${t134#*|}" == "u:a value of 64004 bytes" ]] \
   && pass "G134 a value of 64000 bytes is named, not read, in no time" \

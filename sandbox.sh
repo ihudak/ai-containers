@@ -4229,6 +4229,11 @@ _git_prog() {
   local LC_ALL=C _gp_v="$2" _gp_w _gp_b _gp_s="" _gp_e="" _gp_a="" _gp_d="" _gp_m="" _gp_n=0
   local _gp_rq='^"([^"]*)"' _gp_rs="^'([^']*)'" _gp_rm='[$`(){};|&<>\"'"'"'*?[]' _gp_ro=$'[;&|`\n]|\\$\\('
   local _gp_ex="" _gp_k="" _gp_t=""
+  # The shell splits words on space and tab, and ends a command at a newline:
+  # split on any [[:space:]], `!git<VT>./evil` was read as git, found on PATH,
+  # where the shell runs ./git<VT>./evil, and a newline before the program
+  # passed for a space (automated security reviews of the pushed fix).
+  local _gp_ws=$' \t' _gp_rw=$'^[ \t]*' _gp_rn=$'^[^ \t]*'
   local _gp_x='a shell expansion, quoting or an operator'
   _gp_o=()
   if (( ${#_gp_v} > 4096 )); then _gp_o=("u:a value of ${#_gp_v} bytes"); return 0; fi
@@ -4239,10 +4244,10 @@ _git_prog() {
       [[ "$_gp_v" =~ / ]] || return 1
       _gp_o=("p:$_gp_v"); return 0 ;;
   esac
-  [[ "$_gp_v" =~ ^[[:space:]]* ]]; _gp_v="${_gp_v:${#BASH_REMATCH[0]}}"
+  [[ "$_gp_v" =~ $_gp_rw ]]; _gp_v="${_gp_v:${#BASH_REMATCH[0]}}"
   if [[ "$_gp_v" == '!'* ]]; then _gp_v="${_gp_v:1}"; fi
   while :; do
-    [[ "$_gp_v" =~ ^[[:space:]]* ]]; _gp_v="${_gp_v:${#BASH_REMATCH[0]}}"
+    [[ "$_gp_v" =~ $_gp_rw ]]; _gp_v="${_gp_v:${#BASH_REMATCH[0]}}"
     [[ -n "$_gp_v" ]] || break
     if (( _gp_n++ >= 8 )); then _gp_ex=1; break; fi
     case "$_gp_v" in
@@ -4251,9 +4256,11 @@ _git_prog() {
           || { _gp_o+=("u:$_gp_x"); return 0; }
         _gp_w="${BASH_REMATCH[1]}"; _gp_v="${_gp_v:${#BASH_REMATCH[0]}}"
         # A quoted word with more of it after the quote: not followed.
-        if [[ -n "$_gp_v" && "$_gp_v" != [[:space:]]* ]]; then _gp_o+=("u:$_gp_x"); return 0; fi ;;
-      *) [[ "$_gp_v" =~ ^[^[:space:]]* ]]; _gp_w="${BASH_REMATCH[0]}"; _gp_v="${_gp_v:${#_gp_w}}" ;;
+        if [[ -n "$_gp_v" && "${_gp_v:0:1}" != [$_gp_ws] ]]; then _gp_o+=("u:$_gp_x"); return 0; fi ;;
+      *) [[ "$_gp_v" =~ $_gp_rn ]]; _gp_w="${BASH_REMATCH[0]}"; _gp_v="${_gp_v:${#_gp_w}}" ;;
     esac
+    if [[ "$_gp_w" == *$'\n'* ]]; then _gp_o+=("u:another command after it"); return 0; fi
+    if [[ "$_gp_w" =~ [[:cntrl:]] ]]; then _gp_o+=("u:a control character"); return 0; fi
     if [[ "$_gp_w" =~ $_gp_rm ]]; then _gp_o+=("u:$_gp_x"); return 0; fi
     # An option's argument, timeout's duration: skipped.
     if [[ -n "$_gp_a" ]]; then _gp_a=""; continue; fi
