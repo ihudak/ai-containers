@@ -1241,9 +1241,10 @@ awk 'index($0, "_git_kv() {") == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/
 o135="$(bash -c 'source "$1"; set -u
   k=""; v=""; _git_kv $'"'"'core.hookspath\n.husky/_'"'"' k v; printf "%s|%s|" "$k" "$v"
   k=x; v=x; _git_kv "alias.st" k v; printf "%s|%s|" "$k" "$v"
-  s=$SECONDS; e="includeif.gitdir:$(printf "%65536s" "" | tr " " a).path"$'"'"'\n/x'"'"'
-  if _git_kv "$e" k v; then printf "split|"; else printf "refused|"; fi; printf "%s" "$(( SECONDS - s ))"' _ "$fns135" 2>&1)"
-[[ "$o135" == "core.hookspath|.husky/_|alias.st||refused|0" ]] \
+  e="includeif.gitdir:$(printf "%65536s" "" | tr " " a).path"$'"'"'\n/x'"'"'
+  s=$SECONDS; if _git_kv "$e" k v; then printf "split|"; else printf "refused|"; fi
+  if (( SECONDS - s <= 1 )); then printf "fast"; else printf "%ss" "$(( SECONDS - s ))"; fi' _ "$fns135" 2>&1)"
+[[ "$o135" == "core.hookspath|.husky/_|alias.st||refused|fast" ]] \
   && pass "G135 an entry is split at its newline, one with no value too, and a 64 KB key is refused at once" \
   || fail "G135 the split (got: $o135)"
 rm -rf "$TMP/h135"; mkdir -p "$TMP/h135" && "${G[@]}" init -q "$TMP/h135/r" || { printf 'SCAFFOLD-FAILED: G135\n'; exit 1; }
