@@ -41,13 +41,13 @@
 # reported at all (the user's choice). Every call is bounded (_ver_secs,
 # _ver_run). Nothing here asks git anything on macOS without the Command Line
 # Tools (_ver_git_runs).
-_ver_secs=10 _ver_cur=""
+_ver_secs=10 _ver_cur="" _ver_cur_dir="" _ver_dir="" _ver_n=0
 # _ver_stop: the INT, TERM and HUP traps of the subshells that ask git. The
-# command running in _ver_run's process substitution never gets a signal sent
-# to the subshell alone, and from bash 5.3 it ignores SIGINT, as an
-# asynchronous command of a shell without job control does (5.1 and 5.2 leave
-# it as the shell had it; measured), so it is killed here: a git blocked on a
-# FIFO an include names outlived the interrupt.
+# command _ver_run runs as a background job never gets a signal sent to the
+# subshell alone, and it ignores SIGINT, as an asynchronous command of a shell
+# without job control does, so it is killed here: a git blocked on a FIFO an
+# include names outlived the interrupt. Its FIFO is in _ver_dir, which the
+# trap removes.
 _ver_stop() {
   if [[ -n "$_ver_cur" ]]; then kill -KILL "$_ver_cur" 2>/dev/null; fi
 }
@@ -70,37 +70,61 @@ _ver_git_runs() {
 # all of it read within _ver_secs (not trimmed here: a trim of trailing newlines
 # in bash is quadratic in their number, and a planted packed-refs of them held
 # --version for hours, SIGINT and all; sixth review of the GIT-28 fix); returns <command>'s status, or
-# 124 when it was killed at the bound (bash reaps it). <out-var> is not to be
-# trusted when it fails. Exec'd in the process substitution, so
-# the kill reaches the command itself, not a shell above it.
+# 124 when it was killed at the bound. <out-var> is not to be trusted when it
+# fails. <command> runs as a background job writing into a FIFO of this call's
+# own, so the kill reaches the command itself, not a shell above it, and its
+# status comes from a wait on a job. Not from a wait on a process substitution:
+# once one has finished, bash 5.1 to 5.3 report that wait failed now and then
+# under load (7 of 48,000 in bash 5.2.21), and the version came out unknown
+# (bugs review GIT-50, TST-29). The FIFO is made in _ver_dir, a directory the
+# caller removes, where it set one, and otherwise in a directory made and
+# removed here: one fewer program for each of _ver_git_version's calls. No
+# directory, no answer.
 _ver_run() {
   local -n _vr_out=$1
-  local _vr_fd _vr_p _vr_rc=0 _vr_was="${!:-}"
+  local _vr_fd _vr_p _vr_f _vr_rc=0 _vr_was="${!:-}"
   shift
-  # A shell with no descriptor left for {fd} says why on stderr, silenced; the
-  # caller says unknown. It has started the command all the same, which wrote on
-  # into the temporary directory as that was removed, and left it behind: killed
-  # and reaped here, if $! names a process this call started.
-  if ! { exec {_vr_fd}< <(exec "$@" 2>/dev/null); } 2>/dev/null; then
-    if [[ "${!:-}" != "$_vr_was" ]]; then kill -KILL "$!" 2>/dev/null; wait "$!" 2>/dev/null; fi
-    return 1
+  if [[ -n "$_ver_dir" ]]; then
+    _ver_n=$(( _ver_n + 1 ))
+    _vr_f="$_ver_dir/fifo.$_ver_n"
+  else
+    _ver_cur_dir="$(mktemp -d "${TMPDIR:-/tmp}/ai-version-run.XXXXXX" 2>/dev/null)" || { _ver_cur_dir=""; return 1; }
+    _vr_f="$_ver_cur_dir/fifo"
   fi
+  if ! mkfifo -m 600 "$_vr_f" 2>/dev/null; then _ver_run_done; return 1; fi
+  # The job opens the FIFO to write, which waits for this end to open it to read.
+  "$@" > "$_vr_f" 2>/dev/null &
+  # A shell that could not start it leaves $! as it was, naming no job of this call's.
+  if [[ "${!:-}" == "$_vr_was" ]]; then _ver_run_done; return 1; fi
   _vr_p=$!
   # The command running now, for the INT, TERM and HUP traps; cleared once it is done.
   _ver_cur="$_vr_p"
+  # A shell with no descriptor left for {fd} says why on stderr, silenced; the
+  # caller says unknown. The command it started is killed and reaped.
+  if ! { exec {_vr_fd}< "$_vr_f"; } 2>/dev/null; then
+    kill -KILL "$_vr_p" 2>/dev/null; wait "$_vr_p" 2>/dev/null
+    _ver_run_done
+    return 1
+  fi
   # At most 16 MiB of it: a find over a directory the agent fills is the
   # largest output here.
   IFS= read -r -N 16777216 -t "$_ver_secs" -u "$_vr_fd" _vr_out || _vr_rc=$?
   exec {_vr_fd}<&-
   if (( _vr_rc > 128 )); then
-    kill -KILL "$_vr_p" 2>/dev/null || true
-    _ver_cur=""
+    kill -KILL "$_vr_p" 2>/dev/null; wait "$_vr_p" 2>/dev/null
+    _ver_run_done
     return 124
   fi
   _vr_rc=0
   wait "$_vr_p" 2>/dev/null || _vr_rc=$?
-  _ver_cur=""
+  _ver_run_done
   return "$_vr_rc"
+}
+# _ver_run_done: the end of a _ver_run, its command done: nothing left for the
+# traps, and the directory it made removed.
+_ver_run_done() {
+  _ver_cur=""
+  if [[ -n "$_ver_cur_dir" ]]; then rm -rf "$_ver_cur_dir"; _ver_cur_dir=""; fi
 }
 
 # _ver_read <out-var> <file>: a small file the agent can write, read bounded,
@@ -138,6 +162,12 @@ _ver_git_version() (
   trap '_ver_stop; rm -rf "$tmp"; exit 130' INT
   trap '_ver_stop; rm -rf "$tmp"; exit 143' TERM
   trap '_ver_stop; rm -rf "$tmp"; exit 129' HUP
+  # Made first, so that every _ver_run has its FIFO there (_ver_dir), and
+  # removed on every way out of this subshell, a SIGPIPE at the answer's printf
+  # included; git runs in it too, further down.
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/ai-version.XXXXXX" 2>/dev/null)" || exit
+  trap 'rm -rf "$tmp"' EXIT
+  _ver_dir="$tmp"
   d="$(cd "$dir" 2>/dev/null && pwd -P)" || exit
   while [[ ! -e "$d/.git" ]]; do
     [[ -n "$d" ]] || exit
@@ -221,7 +251,6 @@ _ver_git_version() (
       done
     fi
   fi
-  tmp="$(mktemp -d "${TMPDIR:-/tmp}/ai-version.XXXXXX" 2>/dev/null)" || exit
   if _ver_run out env GIT_DEFAULT_REF_FORMAT=files GIT_TERMINAL_PROMPT=0 \
        git init -q --bare --template= --object-format="$fmt" "$tmp/g" \
      && mkdir "$tmp/objects" \
@@ -253,9 +282,9 @@ _ver_git_version() (
       fi
     fi
   fi
-  # Removed before the answer is printed: a caller killed alone leaves this
-  # subshell to die of SIGPIPE at the printf (seventh review of the GIT-28 fix).
-  rm -rf "$tmp"
+  # $tmp goes with the EXIT trap, which bash runs when the printf meets a caller
+  # killed alone, its pipe closed (seventh review of the GIT-28 fix; measured,
+  # bash 5.1 and 5.3).
   printf '%s' "$v"
 )
 

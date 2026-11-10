@@ -190,6 +190,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   status now travels in the search's own output. It showed first in CI's
   falsify runs (bugs review TST-29).
 
+- **`--version` no longer reports an unknown engine at random.** It reads the
+  checkout's refs and asks git through a bounded helper that took each
+  command's status from a `wait` on a process substitution, the same `wait`
+  that bash 5.1 to 5.3 report failed now and then under load (TST-29). So
+  `--version` could say `unknown`, and a sync could drop a project's recorded
+  version until the next one. Each command now runs as a background job writing
+  into a FIFO of its own (bugs review GIT-50).
+
 - **`kiro=ON` builds again with Kiro CLI 3.x.** Since 3.1.0 (2026-11-05) the
   Linux packages ship `kiro-cli` alone, without `kiro-cli-chat` and
   `kiro-cli-term`. The layer copied the three in a loop whose `[ -f ] && cp`
