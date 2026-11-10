@@ -513,8 +513,8 @@ launcher_ro_overlay() {
     printf 'ERROR: SANDBOX_LAUNCHER_MAX must be a whole number from 1 to 999999 (got %q).\n' "$lmax" >&2
     exit 1
   fi
-  # Counted as overlays, not as finds: each distinct directory once, however many
-  # mounts expose it, and none nested in another candidate that IS overlaid — its
+  # Counted as overlays, not as finds: each place once, however many scans find
+  # it, and none nested in another candidate that IS overlaid — its
   # overlay covers it (review of 643d9bd). A mount root that holds a launcher is
   # not overlaid (it stays writable, with a NOTE), so it covers nothing: the
   # agent can write those two files there (security review of c0d48d9).
@@ -599,8 +599,15 @@ launcher_ro_overlay() {
       if [[ -n "$skip" ]]; then continue; fi
       if [[ "$l" == "$src" ]]; then
         seen[$at]=1
-        printf 'NOTE: %s holds a launcher and stays writable at %s;\n' "$(_term "$l")" "$(_term "$dst")" >&2
-        printf '      what changes there runs on the host at the next launch.\n' >&2
+        # Not for one of the agent's output directories: the host reads what is
+        # there as data and never launches from it, so the NOTE would be false,
+        # and the agent's to print (review of the GIT-51 fix; T74).
+        inout=""
+        for ox in ${outsrc[@]+"${outsrc[@]}"}; do [[ "$ox" != "$src" ]] || inout=1; done
+        if [[ -z "$inout" ]]; then
+          printf 'NOTE: %s holds a launcher and stays writable at %s;\n' "$(_term "$l")" "$(_term "$dst")" >&2
+          printf '      what changes there runs on the host at the next launch.\n' >&2
+        fi
         continue
       fi
       # Searchable but not listable: what is inside can still be opened by name — a
@@ -799,7 +806,8 @@ launcher_ro_overlay() {
   # unfollowed must not go ahead (automated security review of 630f5b0, HIGH; G83).
   if (( ${#_gdi_over[@]} )); then
     printf 'ERROR: the writable mounts hold more than %d git directories to protect, and\n' "$gitmax" >&2
-    printf '       each adds bind mounts to every container start. Among those past the limit:\n' >&2
+    printf '       each adds bind mounts to every container start, in each mount that exposes it.\n' >&2
+    printf '       Among those past the limit:\n' >&2
     for x in "${_gdi_over[@]:0:5}"; do printf '         %s\n' "$(_q "$x")" >&2; done
     printf '       Mount narrower directories, or mount them :ro, or raise SANDBOX_GIT_MAX\n' >&2
     printf '       if every one of them is yours.\n' >&2
@@ -867,12 +875,20 @@ launcher_ro_overlay() {
       # could have planted it, and a big tree (an AOSP-style checkout) can raise it.
       if (( gn >= gitmax )); then
         printf 'ERROR: the writable mounts hold more than %d git directories to protect, and\n' "$gitmax" >&2
-        printf '       each adds bind mounts to every container start. Among those past the limit:\n' >&2
+        printf '       each adds bind mounts to every container start, in each mount that exposes it.\n' >&2
+        printf '       Among those past the limit:\n' >&2
         x=0
+        local -A capnamed=()
         for (( d = depth; d <= gmax && x < 5; d++ )); do
           for k2 in "${!ug[@]}"; do
             if (( udep[k2] == d && x < 5 )) && { (( d > depth )) || (( k2 >= k )); }; then
-              printf '         %s\n' "$(_q "${ug[k2]}")" >&2; x=$((x + 1))
+              # One a second mount exposes says where, or the list repeats itself.
+              if [[ -n "${capnamed[${ug[k2]}]:-}" ]]; then
+                printf '         %s (at %s)\n' "$(_q "${ug[k2]}")" "$(_q "${udst[k2]}${ug[k2]#"${usrc[k2]}"}")" >&2
+              else
+                printf '         %s\n' "$(_q "${ug[k2]}")" >&2
+              fi
+              capnamed[${ug[k2]}]=1; x=$((x + 1))
             fi
           done
         done
@@ -1271,18 +1287,38 @@ launcher_ro_overlay() {
   # repository handled later counts as protected. A common directory's before
   # its linked worktrees', whose core.hooksPath its config sets (GIT-44).
   local -a kord=() _hpv_g=() _hpv_v=() _hxv_g=() _hxv_k=() _hxv_v=()
-  for k in ${pgd[@]+"${!pgd[@]}"}; do [[ "${pgc[k]}" != "${pgd[k]}/config" ]] || kord+=("$k"); done
-  for k in ${pgd[@]+"${!pgd[@]}"}; do [[ "${pgc[k]}" == "${pgd[k]}/config" ]] || kord+=("$k"); done
+  # Each git directory once, however many mounts' views it was protected in: its
+  # walks judge every view anyway, and a second pass spent the launch's budgets
+  # again and repeated every NOTE (review of the GIT-51 fix). One under a
+  # read-only overlay in any view keeps that view's check of its links, named
+  # where it is under the overlay (final review of the GIT-51 fix).
+  local -A kseen=() kovr=()
+  local kkey
+  for k in ${pgd[@]+"${!pgd[@]}"}; do
+    kkey="${pgd[k]}|${pgc[k]}|${pgx[k]:-}"
+    if [[ -n "${pgo[k]:-}" && -z "${kovr[$kkey]:-}" ]]; then kovr[$kkey]="${pga[k]}"; fi
+  done
+  for k in ${pgd[@]+"${!pgd[@]}"}; do
+    [[ "${pgc[k]}" == "${pgd[k]}/config" ]] || continue
+    kkey="${pgd[k]}|${pgc[k]}|${pgx[k]:-}"; [[ -z "${kseen[$kkey]:-}" ]] || continue
+    kseen[$kkey]=1; kord+=("$k")
+  done
+  for k in ${pgd[@]+"${!pgd[@]}"}; do
+    [[ "${pgc[k]}" != "${pgd[k]}/config" ]] || continue
+    kkey="${pgd[k]}|${pgc[k]}|${pgx[k]:-}"; [[ -z "${kseen[$kkey]:-}" ]] || continue
+    kseen[$kkey]=1; kord+=("$k")
+  done
   for k in ${kord[@]+"${kord[@]}"}; do
     g="${pgd[k]}"; at="${pga[k]}"; cfg="${pgc[k]}"
+    kkey="${pgd[k]}|${pgc[k]}|${pgx[k]:-}"
     # One under a read-only overlay: a link among what git reads by name is read
     # through, and the overlay covers the link, not where it leads. Named whatever
     # it leads to, a link that leads nowhere yet included, as a protected one's
     # is (GIT-37).
-    if [[ -n "${pgo[k]:-}" ]]; then
+    if [[ -n "${kovr[$kkey]:-}" ]]; then
       for f in config config.worktree commondir hooks; do
         if [[ ! -L "$g/$f" ]]; then continue; fi
-        printf 'WARNING: %s, under a read-only overlay, is a symlink: what it leads to is what your\n' "$(_term "$at/$f")" >&2
+        printf 'WARNING: %s, under a read-only overlay, is a symlink: what it leads to is what your\n' "$(_term "${kovr[$kkey]}/$f")" >&2
         printf '         host'\''s git reads, and the overlay covers the link, not that. Replace the link\n' >&2
         printf '         on the host with what it names.\n' >&2
       done
@@ -1942,6 +1978,16 @@ launcher_ro_overlay() {
   # directory the agent left there refused every later launch (review of
   # c687370; T50).
   # Handed back for the search again just before docker runs (LNCH-11).
+  # Each source once: one overlaid in two mounts' views (GIT-51) was searched
+  # twice, both times, out of one time budget (review of the GIT-51 fix).
+  local -a ro_once=()
+  local -A ro_had=()
+  local ro_s
+  for ro_s in ${ro_srcs[@]+"${ro_srcs[@]}"}; do
+    [[ -z "${ro_had[$ro_s]:-}" ]] || continue
+    ro_had[$ro_s]=1; ro_once+=("$ro_s")
+  done
+  ro_srcs=(${ro_once[@]+"${ro_once[@]}"})
   launcher_ro_dirs=(${ro_srcs[@]+"${ro_srcs[@]}"}); launcher_rw_srcs=(${bsrc[@]+"${bsrc[@]}"})
   _ro_fifo_search ro_srcs bsrc _ro_links_check
 }
@@ -3990,8 +4036,9 @@ git_dirs_in() {
       # bash's spelling for "no link on the way", the one on disk for "outside
       # every mount": in another case on a filesystem that ignores case it is the
       # same .git file (third review of the GIT-38 fix).
-      # A relative one from this git directory, resolved physically first, so
-      # the checks below see where it leads (bugs review GIT-53; G143).
+      # A relative one from this git directory, resolved physically first, as
+      # git resolves it: judged where it leads, so the no-link check below holds
+      # for it by construction (bugs review GIT-53; G143).
       if [[ -n "$tgt" && "$tgt" != /* && "$tgt" == */* ]]; then
         if _cd_bash back "$g" "${tgt%/*}"; then tgt="$back/${tgt##*/}"; else tgt=""; fi
       fi

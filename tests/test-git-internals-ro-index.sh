@@ -550,7 +550,8 @@ wt57="$(ls -d "$M57/.git/worktrees"/* | head -1)"
 for n in $(seq 1 21); do mkdir -p "$PROJ/dec57/d$n"; printf 'gitdir: %s\n' "$wt57" > "$PROJ/dec57/d$n/.git"; done
 launch ..
 [[ "$LAUNCH_RC" != 0 ]] && grep -qF "ERROR: more than 20 .git files in $PROJ name $wt57" "$ERR" \
-  && pass "G57 more than twenty .git files naming one git directory refuse the launch" \
+  && [[ "$(awk '/Among them, in:/ {p = 1; next} /Remove the .git files/ {p = 0} p' "$ERR" | grep -c '^         ')" == 5 ]] \
+  && pass "G57 more than twenty .git files naming one git directory refuse the launch, naming five of them" \
   || fail "G57 decoy referrers past the cap did not refuse (rc=$LAUNCH_RC; $(grep -F 'more than 20' "$ERR" | head -1))"
 rm -rf "$M57" "$PROJ/lw57" "$PROJ/dec57"
 
@@ -1071,11 +1072,11 @@ launch ..
   && ! grep -qF "no worktree is known for $PROJ/.git/worktrees/rw143" "$ERR" \
   && pass "G143 a linked worktree's relative gitdir leads to its checkout, whose submodule is protected" \
   || fail "G143 relative gitdir (rc=$LAUNCH_RC; stderr: $(grep -F rw143 "$ERR" | head -2 | tr '\n' ' '))"
-# Its checkout outside every writable mount, pointing back: quiet, as with
-# absolute pointers.
+# Its checkout outside every writable mount, pointing back, both pointers
+# relative as git writes them: quiet, as with absolute pointers.
 mv "$PROJ/node_modules/rw143" "$TMP/rw143" \
   && printf '../../../../rw143/.git\n' > "$PROJ/.git/worktrees/rw143/gitdir" \
-  && printf 'gitdir: %s\n' "$(cd "$PROJ/.git/worktrees/rw143" && pwd -P)" > "$TMP/rw143/.git" \
+  && printf 'gitdir: ../proj/.git/worktrees/rw143\n' > "$TMP/rw143/.git" \
   || { printf 'SCAFFOLD-FAILED: G143 outside\n'; exit 1; }
 launch ..
 [[ "$LAUNCH_RC" == 0 ]] && ! grep -qF "no worktree is known for $PROJ/.git/worktrees/rw143" "$ERR" \
@@ -1083,6 +1084,168 @@ launch ..
   || fail "G143 relative gitdir, outside (rc=$LAUNCH_RC; stderr: $(grep -F rw143 "$ERR" | head -2 | tr '\n' ' '))"
 rm -rf "$TMP/rw143" "$U143" "$PROJ/.git/worktrees/rw143"
 "${G[@]}" -C "$PROJ" branch -q -D rw143
+
+# GAP-2 slice 6: G145 to G147 hold conditions of git_dirs_in that, turned,
+# survived every test.
+U14x="$TMP/up14x"; "${G[@]}" init -q "$U14x" && "${G[@]}" -C "$U14x" commit -q --allow-empty -m u \
+  || { printf 'SCAFFOLD-FAILED: G145\n'; exit 1; }
+# ── G145: the walk up from a mount to the repository it lies in ─────────────
+# A .git above the mount that git does not take for a repository gets nothing
+# made in it, in another writable mount past that mount's scan too.
+mkdir -p "$TMP/n145/node_modules/y/.git" "$TMP/n145/node_modules/y/z"
+EXTRA_MOUNTS="$TMP/n145" launch "$TMP/n145/node_modules/y/z"
+[[ "$LAUNCH_RC" == 0 && ! -e "$TMP/n145/node_modules/y/.git/commondir" ]] && ! mounts | grep -qF "node_modules/y/.git" \
+  && pass "G145 a .git above the mount that is no repository gets nothing made in it" \
+  || fail "G145 non-git .git above (rc=$LAUNCH_RC; in it: $(ls -A "$TMP/n145/node_modules/y/.git" | tr '\n' ' '))"
+rm -rf "$TMP/n145"
+# A .git FILE above the mount is followed: the git directory it names has its
+# index read, and a submodule in the mount under a pruned vendor/ is protected.
+"${G[@]}" init -q --separate-git-dir "$TMP/gd145" "$TMP/f145/w" && mkdir -p "$TMP/f145/w/sub/vendor" \
+  && "${G[@]}" clone -q "$U14x" "$TMP/f145/w/sub/vendor/sm" && "${G[@]}" -C "$TMP/f145/w" add sub/vendor/sm 2>/dev/null \
+  || { printf 'SCAFFOLD-FAILED: G145 .git file\n'; exit 1; }
+launch "$TMP/f145/w/sub"
+has_mount "$TMP/f145/w/sub/vendor/sm/.git/config:/workspace/sub/vendor/sm/.git/config:ro" \
+  && pass "G145 a .git file above the mount is followed to the index of the git directory it names" \
+  || fail "G145 .git file above (rc=$LAUNCH_RC; git mounts: $(git_mounts | tr '\n' ' '))"
+# That index unreadable: quiet where the git directory is outside every writable
+# mount (yours), named where the agent can write it.
+cp "$TMP/gd145/index" "$TMP/gd145.idx" && printf 'garbage' > "$TMP/gd145/index"
+launch "$TMP/f145/w/sub"
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF "cannot read the index of $TMP/gd145" "$ERR" \
+  && pass "G145 its unreadable index, outside every writable mount, is not named" \
+  || fail "G145 quiet outside (rc=$LAUNCH_RC; $(grep -F gd145 "$ERR" | head -1))"
+EXTRA_MOUNTS="$TMP/gd145" launch "$TMP/f145/w/sub"
+grep -qF "cannot read the index of $TMP/gd145" "$ERR" \
+  && pass "G145 its unreadable index, in a writable mount, is named" \
+  || fail "G145 named in a writable mount (rc=$LAUNCH_RC; $(grep -F WARNING "$ERR" | head -2 | tr '\n' ' '))"
+rm -rf "$TMP/f145" "$TMP/gd145" "$TMP/gd145.idx"
+# The repository two levels above the mount is reached, past a dangling .git
+# link between, which git passes over too.
+"${G[@]}" init -q "$TMP/r145" && mkdir -p "$TMP/r145/a/b/vendor" && "${G[@]}" clone -q "$U14x" "$TMP/r145/a/b/vendor/sm" \
+  && "${G[@]}" -C "$TMP/r145" add a/b/vendor/sm 2>/dev/null || { printf 'SCAFFOLD-FAILED: G145 two up\n'; exit 1; }
+launch "$TMP/r145/a/b"
+has_mount "$TMP/r145/a/b/vendor/sm/.git/config:/workspace/b/vendor/sm/.git/config:ro" \
+  && pass "G145 the repository two levels above the mount is read" \
+  || fail "G145 two levels up (rc=$LAUNCH_RC; git mounts: $(git_mounts | tr '\n' ' '))"
+ln -s "$TMP/nothing145" "$TMP/r145/a/.git"
+launch "$TMP/r145/a/b"
+has_mount "$TMP/r145/a/b/vendor/sm/.git/config:/workspace/b/vendor/sm/.git/config:ro" \
+  && pass "G145 ... and past a dangling .git link between" \
+  || fail "G145 past a dangling link (rc=$LAUNCH_RC; git mounts: $(git_mounts | tr '\n' ' '))"
+rm -rf "$TMP/r145"
+# A .git link above the mount, outside every writable mount, to a directory in
+# the mount that is no git directory: nothing made there, and its index-named
+# file not read.
+mkdir -p "$TMP/l145/m/plain" && printf x > "$TMP/l145/m/plain/f" && printf garbage > "$TMP/l145/m/plain/index" \
+  && ln -s "$TMP/l145/m/plain" "$TMP/l145/.git"
+launch "$TMP/l145/m"
+[[ "$LAUNCH_RC" == 0 && ! -e "$TMP/l145/m/plain/commondir" ]] && ! mounts | grep -qF "/workspace/m/plain" \
+  && ! grep -qF "l145/m/plain" "$ERR" \
+  && pass "G145 a .git link above the mount to a directory that is no repository is passed over" \
+  || fail "G145 link to a non-git directory (rc=$LAUNCH_RC; in it: $(ls "$TMP/l145/m/plain" | tr '\n' ' '); $(grep -F plain "$ERR" | head -1))"
+rm -rf "$TMP/l145"
+# The walk stops at a .git link it followed: the repository above is not judged,
+# and its core.hooksPath into the mount is not named.
+"${G[@]}" init -q "$TMP/o145" && "${G[@]}" -C "$TMP/o145" config core.hooksPath i/sub/hooks \
+  && "${G[@]}" init -q --bare "$TMP/gl145" && mkdir -p "$TMP/o145/i/sub/hooks" && ln -s "$TMP/gl145" "$TMP/o145/i/.git" \
+  || { printf 'SCAFFOLD-FAILED: G145 link\n'; exit 1; }
+launch "$TMP/o145/i/sub"
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF "$TMP/o145/.git" "$ERR" \
+  && pass "G145 the repository above a .git link the walk followed is not judged" \
+  || fail "G145 above a link (rc=$LAUNCH_RC; $(grep -F "$TMP/o145/.git" "$ERR" | head -2 | tr '\n' ' '))"
+rm -rf "$TMP/o145" "$TMP/gl145"
+
+# ── G146: a linked worktree's checkout, found through its gitdir ─────────────
+# Under a pruned node_modules the gitdir alone reaches the checkout, whose
+# submodule is protected.
+"${G[@]}" -C "$PROJ" worktree add -q "$PROJ/node_modules/aw146" -b aw146 \
+  && "${G[@]}" clone -q "$U14x" "$PROJ/node_modules/aw146/sub" && "${G[@]}" -C "$PROJ/node_modules/aw146" add sub 2>/dev/null \
+  && "${G[@]}" -C "$PROJ/node_modules/aw146" commit -q -m n || { printf 'SCAFFOLD-FAILED: G146\n'; exit 1; }
+launch ..
+has_mount "$PROJ/node_modules/aw146/sub/.git/config:/workspace/proj/node_modules/aw146/sub/.git/config:ro" \
+  && ! grep -qF "no worktree is known for $PROJ/.git/worktrees/aw146" "$ERR" \
+  && pass "G146 a linked worktree's checkout under a pruned directory is reached through gitdir" \
+  || fail "G146 checkout through gitdir (rc=$LAUNCH_RC; $(grep -F aw146 "$ERR" | head -2 | tr '\n' ' '))"
+"${G[@]}" -C "$PROJ" worktree remove --force "$PROJ/node_modules/aw146"; "${G[@]}" -C "$PROJ" branch -q -D aw146
+# A checkout deleted and never pruned, inside the mount, is no worktree to read
+# against: its index is not read there, so no "cannot read the index". (Its index
+# recording no submodule, nothing else is said either; with one, the launch says
+# "no worktree is known", a false warning, bugs review GIT-54.)
+"${G[@]}" -C "$PROJ" worktree add -q "$PROJ/gone146" -b gone146 && rm -rf "$PROJ/gone146" || { printf 'SCAFFOLD-FAILED: G146 gone\n'; exit 1; }
+launch ..
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF "$PROJ/.git/worktrees/gone146" "$ERR" \
+  && pass "G146 a worktree whose checkout was deleted is not read against it, so not warned about" \
+  || fail "G146 prunable (rc=$LAUNCH_RC; $(grep -F gone146 "$ERR" | head -2 | tr '\n' ' '))"
+"${G[@]}" -C "$PROJ" worktree prune; "${G[@]}" -C "$PROJ" branch -q -D gone146
+# A gitdir naming a checkout outside every mount whose .git does not name it
+# back (rewritten, or a decoy) does not make the worktree quiet.
+"${G[@]}" -C "$PROJ" worktree add -q "$TMP/wt146" -b wt146 && "${G[@]}" clone -q "$U14x" "$TMP/wt146/sub" \
+  && "${G[@]}" -C "$TMP/wt146" add sub 2>/dev/null && "${G[@]}" -C "$TMP/wt146" commit -q -m n \
+  && printf 'gitdir: %s\n' "$TMP/elsewhere146" > "$TMP/wt146/.git" || { printf 'SCAFFOLD-FAILED: G146 decoy\n'; exit 1; }
+launch ..
+grep -qF "no worktree is known for $PROJ/.git/worktrees/wt146" "$ERR" \
+  && pass "G146 a checkout outside every mount that does not point back leaves the worktree named" \
+  || fail "G146 decoy outside (rc=$LAUNCH_RC; $(grep -F WARNING "$ERR" | head -2 | tr '\n' ' '))"
+rm -rf "$TMP/wt146" "$PROJ/.git/worktrees/wt146"; "${G[@]}" -C "$PROJ" branch -q -D wt146
+
+# ── G147: an absorbed submodule's checkout, found through its core.worktree ──
+# Its .git file, under a pruned vendor/ and recorded in no index, is read-only.
+"${G[@]}" -C "$PROJ" -c protocol.file.allow=always submodule add -q "$U14x" vendor/sm147 >/dev/null 2>&1 \
+  && [[ -f "$PROJ/vendor/sm147/.git" ]] && "${G[@]}" -C "$PROJ" rm -q --cached vendor/sm147 >/dev/null \
+  || { printf 'SCAFFOLD-FAILED: G147\n'; exit 1; }
+launch ..
+has_mount "$PROJ/vendor/sm147/.git:/workspace/proj/vendor/sm147/.git:ro" \
+  && pass "G147 an absorbed submodule's .git file, reached only through its core.worktree, is read-only" \
+  || fail "G147 absorbed .git file (rc=$LAUNCH_RC; $(mounts | grep -F sm147 | tr '\n' ' '))"
+# One whose core.worktree leads out of the mount: the .git file there is not
+# bound, under any name.
+mkdir -p "$TMP/out147" && printf 'gitdir: %s\n' "$PROJ/.git/modules/vendor/sm147" > "$TMP/out147/.git" \
+  && "${G[@]}" config --file "$PROJ/.git/modules/vendor/sm147/config" core.worktree "$TMP/out147"
+launch ..
+[[ "$LAUNCH_RC" == 0 ]] && ! mounts | grep -qF "$TMP/out147" \
+  && pass "G147 a submodule checkout core.worktree puts outside the mount is not bound" \
+  || fail "G147 outside checkout bound (rc=$LAUNCH_RC; $(mounts | grep -F out147 | tr '\n' ' '))"
+"${G[@]}" -C "$PROJ" rm -q --cached .gitmodules >/dev/null 2>&1
+rm -rf "$TMP/out147" "$PROJ/vendor/sm147" "$PROJ/.git/modules/vendor/sm147" "$PROJ/.gitmodules" "$U14x"
+
+# GAP-2 slice 6, continued: G148 and G149.
+U148="$TMP/up148"; "${G[@]}" init -q "$U148" && "${G[@]}" -C "$U148" commit -q --allow-empty -m u \
+  && h148="$("${G[@]}" -C "$U148" rev-parse HEAD)" || { printf 'SCAFFOLD-FAILED: G148\n'; exit 1; }
+# ── G148: a submodule an index records is taken once, a link named ─────────
+# Under a pruned vendor/, a submodule whose .git is a link is found only
+# through the index, and named as the scan names one.
+"${G[@]}" clone -q "$U148" "$TMP/real148" && mkdir -p "$PROJ/vendor/l148" && ln -s "$TMP/real148/.git" "$PROJ/vendor/l148/.git" \
+  && "${G[@]}" -C "$PROJ" update-index --add --cacheinfo "160000,$h148,vendor/l148" || { printf 'SCAFFOLD-FAILED: G148 link\n'; exit 1; }
+launch ..
+grep -qF "WARNING: $PROJ/vendor/l148/.git is a symlink inside a writable mount" "$ERR" \
+  && pass "G148 an index-recorded submodule under a pruned directory whose .git is a link is named" \
+  || fail "G148 linked .git (rc=$LAUNCH_RC; $(grep -F l148 "$ERR" | head -2 | tr '\n' ' '))"
+"${G[@]}" -C "$PROJ" rm -q --cached vendor/l148 >/dev/null; rm -rf "$PROJ/vendor" "$TMP/real148"
+# One the scan finds and the index records too is protected, and said so, once.
+"${G[@]}" clone -q "$U148" "$PROJ/s148" && "${G[@]}" -C "$PROJ" add s148 2>/dev/null || { printf 'SCAFFOLD-FAILED: G148 twice\n'; exit 1; }
+launch ..
+[[ "$LAUNCH_RC" == 0 && -z "$(mounts | cut -d: -f2 | sort | uniq -d)" ]] \
+  && [[ "$(grep -c "^READ-ONLY: /workspace/proj/s148/.git: " "$ERR")" == 1 ]] \
+  && pass "G148 a submodule both the scan and the index find is protected once" \
+  || fail "G148 once (rc=$LAUNCH_RC; READ-ONLY lines: $(grep -c '/workspace/proj/s148/.git: ' "$ERR"))"
+"${G[@]}" -C "$PROJ" rm -q --cached s148 >/dev/null; rm -rf "$PROJ/s148"
+# ── G149: a git directory is read once the .git file naming it turns up ─────
+# The scan finds the git directory first; the .git file naming it is recorded
+# only in the index of the repository the mount lies in, read after every git
+# directory the scan found. It waits, and is read then: its submodule is
+# protected, and it is not named as having no worktree.
+O149="$TMP/o149"; "${G[@]}" init -q "$O149" && "${G[@]}" init -q --bare "$O149/m/gd" && mkdir -p "$O149/m/vendor/x" \
+  && printf 'gitdir: ../../gd\n' > "$O149/m/vendor/x/.git" \
+  && "${G[@]}" -C "$O149" update-index --add --cacheinfo "160000,$h148,m/vendor/x" \
+  && "${G[@]}" clone -q "$U148" "$O149/m/vendor/x/sub" \
+  && "${G[@]}" --git-dir="$O149/m/gd" --work-tree="$O149/m/vendor/x" update-index --add --cacheinfo "160000,$h148,sub" \
+  || { printf 'SCAFFOLD-FAILED: G149\n'; exit 1; }
+launch "$O149/m"
+has_mount "$O149/m/vendor/x/sub/.git/config:/workspace/m/vendor/x/sub/.git/config:ro" \
+  && ! grep -qF "no worktree is known for $O149/m/gd" "$ERR" \
+  && pass "G149 a git directory found before the .git file naming it is read once that file turns up" \
+  || fail "G149 retry (rc=$LAUNCH_RC; $(grep -F WARNING "$ERR" | head -2 | tr '\n' ' '))"
+rm -rf "$O149" "$U148"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

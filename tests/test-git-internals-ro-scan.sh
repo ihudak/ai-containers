@@ -680,6 +680,7 @@ rm -rf "$D142"
 EXTRA_MOUNTS="$O142" launch "$O142/node_modules/x"
 [[ "$LAUNCH_RC" == 0 ]] && has_mount "$O142/node_modules/x/wt/.git:/workspace/x/wt/.git:ro" \
   && has_mount "$O142/node_modules/x/wt/.git:/workspace/o142/node_modules/x/wt/.git:ro" \
+  && has_mount "$O142/node_modules/x/wt:/workspace/o142/node_modules/x/wt:rw" \
   && pass "G142 a .git file only the inner mount's scan reaches is read-only in the outer mount's view too" \
   || fail "G142 .git file (rc=$LAUNCH_RC; mounts: $(mounts | grep -F 'wt/.git' | sed "s#$TMP#T#g" | tr '\n' ' '))"
 "${G[@]}" -C "$O142/node_modules/x" worktree remove --force "$O142/node_modules/x/wt"
@@ -691,10 +692,100 @@ else
   EXTRA_MOUNTS="$O142" launch "$O142/node_modules/x"
   [[ "$LAUNCH_RC" == 0 ]] && has_mount "$O142/node_modules/x/u/.git:/workspace/x/u/.git:ro" \
     && has_mount "$O142/node_modules/x/u/.git:/workspace/o142/node_modules/x/u/.git:ro" \
+    && has_mount "$O142/node_modules/x/u:/workspace/o142/node_modules/x/u:rw" \
     && pass "G142 a .git you cannot list, only the inner mount's scan reaches, is read-only whole in the outer mount's view too" \
     || fail "G142 unlistable (rc=$LAUNCH_RC; mounts: $(mounts | grep -F 'u/.git' | sed "s#$TMP#T#g" | tr '\n' ' '))"
 fi
 chmod 755 "$O142/node_modules/x/u/.git"; rm -rf "$O142"
+# One both mounts' scans reach is protected once in each view, and its config is
+# judged once: a core.hooksPath into the mount is named once, not per view.
+N142="$TMP/n142"; mkdir -p "$N142/a/.husky" && "${G[@]}" init -q "$N142/a" && "${G[@]}" -C "$N142/a" config core.hooksPath .husky \
+  || { printf 'SCAFFOLD-FAILED: G142 both\n'; exit 1; }
+EXTRA_MOUNTS="$N142" launch "$N142/a"
+[[ "$LAUNCH_RC" == 0 ]] && has_mount "$N142/a/.git/config:/workspace/a/.git/config:ro" \
+  && has_mount "$N142/a/.git/config:/workspace/n142/a/.git/config:ro" \
+  && [[ -z "$(mounts | cut -d: -f2 | sort | uniq -d)" ]] \
+  && [[ "$(grep -c '(core.hooksPath), which the agent' "$ERR")" == 1 ]] \
+  && pass "G142 one both scans reach is bound once in each view, and judged once" \
+  || fail "G142 both (rc=$LAUNCH_RC; duplicate destinations: $(mounts | cut -d: -f2 | sort | uniq -d | tr '\n' ' '); hooksPath NOTEs: $(grep -c '(core.hooksPath), which the agent' "$ERR"))"
+rm -rf "$N142/a"
+# ... and once when one view puts it under a read-only overlay and the other
+# protects it: the primary a launcher, overlaid only in the outer view.
+mkdir -p "$N142/node_modules/x/r/.husky" && : > "$N142/node_modules/x/sandbox.sh" && : > "$N142/node_modules/x/sandbox-common.sh" \
+  && "${G[@]}" init -q "$N142/node_modules/x/r" && "${G[@]}" -C "$N142/node_modules/x/r" config core.hooksPath .husky \
+  || { printf 'SCAFFOLD-FAILED: G142 overlay\n'; exit 1; }
+EXTRA_MOUNTS="$N142" launch "$N142/node_modules/x"
+[[ "$LAUNCH_RC" == 0 && "$(grep -c '(core.hooksPath), which the agent' "$ERR")" == 1 ]] \
+  && pass "G142 one protected in one view and under a read-only overlay in another is judged once" \
+  || fail "G142 overlay and protected (rc=$LAUNCH_RC; hooksPath NOTEs: $(grep -c '(core.hooksPath), which the agent' "$ERR"))"
+rm -rf "$N142"
+# Past SANDBOX_GIT_MAX, where every place counts, a repository the listing names
+# twice is named the second time with where it lands.
+C142="$TMP/c142"; for r142 in "$C142/a1" "$C142/a2" "$C142/node_modules/x/r1" "$C142/node_modules/x/r2" "$C142/node_modules/x/r3" "$C142/node_modules/x/r4"; do
+  mkdir -p "$r142" && "${G[@]}" init -q "$r142" || { printf 'SCAFFOLD-FAILED: G142 cap\n'; exit 1; }
+done
+SANDBOX_GIT_MAX=4 EXTRA_MOUNTS="$C142" launch "$C142/node_modules/x"
+[[ "$LAUNCH_RC" != 0 ]] && grep -qF 'in each mount that exposes it' "$ERR" \
+  && grep -qE "^         $C142/node_modules/x/r[1-4]/\.git \(at /workspace/c142/node_modules/x/r[1-4]/\.git\)$" "$ERR" \
+  && pass "G142 past SANDBOX_GIT_MAX a name listed twice says where the second one lands" \
+  || fail "G142 cap listing (rc=$LAUNCH_RC; $(grep -E 'ERROR|^         ' "$ERR" | head -7 | tr '\n' ' '))"
+rm -rf "$C142"
+
+# ── G144: what the scan takes for a git directory inside a .git ──────────────
+# GAP-2 slice 6: each condition here, turned, survived every test.
+# A .git, or a directory inside one, that you can read but not search is as
+# unlistable as one you can do neither with (G10, G16): read-only whole, named.
+mkdir -p "$TMP/probe144"; chmod 000 "$TMP/probe144"
+if [[ -r "$TMP/probe144" ]]; then
+  printf 'SKIP: G144 unsearchable — chmod does not constrain root\n'
+else
+  mkdir -p "$TMP/u144/r" && "${G[@]}" init -q "$TMP/u144/r" && chmod 0600 "$TMP/u144/r/.git"
+  EXTRA_MOUNTS="$TMP/u144" launch "$TMP/app"
+  has_mount "$TMP/u144/r/.git:/workspace/u144/r/.git:ro" && grep -qF "WARNING: $TMP/u144/r/.git cannot be listed by you" "$ERR" \
+    && pass "G144 a .git you can read but not search is read-only whole, and named" \
+    || fail "G144 .git 0600 (rc=$LAUNCH_RC; $(mounts | grep -F /u144/ | tr '\n' ' '); $(grep -E 'WARNING|ERROR' "$ERR" | head -2 | tr '\n' ' '))"
+  chmod 755 "$TMP/u144/r/.git"; mkdir -p "$TMP/u144/r/.git/modules/m" && chmod 0600 "$TMP/u144/r/.git/modules/m"
+  EXTRA_MOUNTS="$TMP/u144" launch "$TMP/app"
+  has_mount "$TMP/u144/r/.git/modules/m:/workspace/u144/r/.git/modules/m:ro" \
+    && grep -qF "WARNING: $TMP/u144/r/.git/modules/m cannot be listed by you" "$ERR" \
+    && pass "G144 a directory inside a .git you can read but not search is read-only whole, and named" \
+    || fail "G144 dir in .git 0600 (rc=$LAUNCH_RC; $(mounts | grep -F /u144/ | tr '\n' ' '); $(grep -E 'WARNING|ERROR' "$ERR" | head -2 | tr '\n' ' '))"
+  chmod 755 "$TMP/u144/r/.git/modules/m"; rm -rf "$TMP/u144"
+fi
+chmod 755 "$TMP/probe144"; rmdir "$TMP/probe144"
+# A directory in .git/worktrees with neither commondir nor gitdir is no linked
+# worktree's, and one elsewhere in .git holding a gitdir is not either: nothing is
+# made in them.
+mkdir -p "$PROJ/.git/worktrees/e144" "$PROJ/.git/f144" && printf 'ref: refs/heads/main\n' > "$PROJ/.git/worktrees/e144/HEAD" \
+  && printf 'x\n' > "$PROJ/.git/f144/gitdir" || { printf 'SCAFFOLD-FAILED: G144 worktrees\n'; exit 1; }
+launch ..
+[[ "$LAUNCH_RC" == 0 && ! -e "$PROJ/.git/worktrees/e144/commondir" && ! -e "$PROJ/.git/f144/commondir" ]] \
+  && ! git_mounts | grep -qE '/\.git/(worktrees/e144|f144)' \
+  && pass "G144 a directory in .git that is no linked worktree's gets nothing made in it" \
+  || fail "G144 not a worktree (rc=$LAUNCH_RC; $(ls "$PROJ/.git/worktrees/e144" "$PROJ/.git/f144" | tr '\n' ' '))"
+rm -rf "$PROJ/.git/worktrees/e144" "$PROJ/.git/f144"
+# One whose commondir is a link (to a regular file), with no HEAD and no gitdir,
+# is a linked worktree's still: the scan's find skips the link, so only the
+# directory's own check finds it, and the link is named.
+mkdir -p "$PROJ/.git/worktrees/l144" && printf '../..\n' > "$PROJ/.git/cd144" && ln -s ../../cd144 "$PROJ/.git/worktrees/l144/commondir"
+launch ..
+grep -qF "WARNING: $PROJ/.git/worktrees/l144/commondir is a symlink, which cannot be mounted read-only in place" "$ERR" \
+  && pass "G144 a linked worktree's directory whose commondir is a link is found, and the link named" \
+  || fail "G144 linked commondir (rc=$LAUNCH_RC; $(grep -F l144 "$ERR" | head -2 | tr '\n' ' '))"
+rm -rf "$PROJ/.git/worktrees/l144" "$PROJ/.git/cd144"; rmdir "$PROJ/.git/worktrees" 2>/dev/null
+# A submodule's git directory with no HEAD is protected holding any one of
+# objects/, refs/, config, hooks/ or index; a plain directory inside one is not.
+for x144 in objects refs config hooks index; do
+  mkdir -p "$PROJ/.git/modules/m$x144"
+  case "$x144" in objects|refs|hooks) mkdir -p "$PROJ/.git/modules/m$x144/$x144" ;; *) : > "$PROJ/.git/modules/m$x144/$x144" ;; esac
+done
+mkdir -p "$PROJ/.git/modules/mconfig/plain"
+launch ..
+m144=""; for x144 in objects refs config hooks index; do has_mount "$PROJ/.git/modules/m$x144/config:/workspace/proj/.git/modules/m$x144/config:ro" || m144+=" $x144"; done
+[[ "$LAUNCH_RC" == 0 && -z "$m144" && ! -e "$PROJ/.git/modules/mconfig/plain/commondir" ]] \
+  && pass "G144 a submodule's git directory with no HEAD is protected holding any one of what git keeps there" \
+  || fail "G144 module directories (rc=$LAUNCH_RC; not protected:$m144; in plain: $(ls "$PROJ/.git/modules/mconfig/plain" | tr '\n' ' '))"
+rm -rf "$PROJ/.git/modules"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

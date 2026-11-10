@@ -1884,6 +1884,16 @@ else
     || fail "T74 unlistable (rc=$LAUNCH_RC; got: $(grep -F hid <<<"$m74" | tr '\n' ' '); stderr: $(grep -F hid "$ERR" | head -2 | tr '\n' ' '))"
 fi
 chmod 0755 "$O74/node_modules/x/hid"; rm -rf "$O74"
+# A launcher the agent planted as the root of its own output directory gets no
+# NOTE there: the host reads what is there as data and never launches from it,
+# so "runs on the host at the next launch" was false, and the agent's to print
+# (review of the GIT-51 fix).
+mkdir -p "$LAUNCHER/.agent-blocked" && : > "$LAUNCHER/.agent-blocked/sandbox.sh" && : > "$LAUNCHER/.agent-blocked/sandbox-common.sh"
+launch "$LAUNCHER" ..
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF "holds a launcher and stays writable at /workspace/.agent-blocked" "$ERR" \
+  && pass "T74 a launcher planted as the root of an output directory gets no NOTE there" \
+  || fail "T74 output root (rc=$LAUNCH_RC; $(grep -F '.agent-blocked' "$ERR" | head -2 | tr '\n' ' '))"
+rm -f "$LAUNCHER/.agent-blocked/sandbox.sh" "$LAUNCHER/.agent-blocked/sandbox-common.sh"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

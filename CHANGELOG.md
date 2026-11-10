@@ -148,7 +148,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `.git/config` and `hooks/` stayed writable at the outer mount's path, while
   the launch said they were read-only. So did a `.git` file there and another
   project's launcher. Whatever one mount's scan finds is now protected in
-  every other writable mount that exposes it (bugs review GIT-51).
+  every other writable mount that exposes it (bugs review GIT-51). Each place
+  counts toward `SANDBOX_GIT_MAX` and `SANDBOX_LAUNCHER_MAX`, so a launch close
+  to either limit may now need it raised.
 
 - **A linked worktree made with `git worktree add --relative-paths` is
   followed to its checkout.** Git 2.48 and later can write a worktree's
