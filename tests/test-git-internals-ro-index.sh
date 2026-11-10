@@ -1271,6 +1271,222 @@ grep -qF "no worktree is known for $PROJ/.git/worktrees/wl146" "$ERR" \
   || fail "G146 linked .git outside (rc=$LAUNCH_RC; $(grep -F WARNING "$ERR" | head -2 | tr '\n' ' '))"
 rm -rf "$TMP/wl146" "$TMP/gf146" "$PROJ/.git/worktrees/wl146"; "${G[@]}" -C "$PROJ" branch -q -D wl146
 
+# ── G152: a linked worktree's checkout in another writable mount ─────────────
+# A worktree of the primary's repository checked out in an EXTRA_MOUNTS
+# directory, under its pruned node_modules: no scan reaches the checkout, and
+# only the worktree's gitdir names it. Its .git was left writable in that
+# mount's view, for the agent to point at a repository of its own, whose hooks
+# your host's git would then run there (GIT-59).
+O152="$TMP/o152"; mkdir -p "$O152/node_modules" \
+  && "${G[@]}" -C "$PROJ" worktree add -q "$O152/node_modules/aw152" -b aw152 \
+  || { printf 'SCAFFOLD-FAILED: G152\n'; exit 1; }
+v152=/workspace/o152/node_modules
+EXTRA_MOUNTS="$O152" launch ..
+[[ "$LAUNCH_RC" == 0 ]] && has_mount "$O152/node_modules/aw152/.git:$v152/aw152/.git:ro" \
+  && pass "G152 a linked worktree's checkout in another writable mount has its .git read-only there" \
+  || fail "G152 checkout in another mount (rc=$LAUNCH_RC; $(mounts | grep -F 'aw152' | tr '\n' ' '))"
+# Its .git rewritten, in an earlier session, to name a repository of the agent's
+# in that mount: read-only, and that repository protected there too.
+cp "$O152/node_modules/aw152/.git" "$TMP/dotgit152" && "${G[@]}" init -q --bare "$O152/node_modules/evil152" \
+  && printf 'gitdir: %s\n' "$O152/node_modules/evil152" > "$O152/node_modules/aw152/.git" \
+  || { printf 'SCAFFOLD-FAILED: G152 rewritten\n'; exit 1; }
+EXTRA_MOUNTS="$O152" launch ..
+[[ "$LAUNCH_RC" == 0 ]] && has_mount "$O152/node_modules/aw152/.git:$v152/aw152/.git:ro" \
+  && has_mount "$O152/node_modules/evil152/hooks:$v152/evil152/hooks:ro" \
+  && pass "G152 that .git naming another repository is read-only, and the repository protected" \
+  || fail "G152 rewritten .git (rc=$LAUNCH_RC; $(mounts | grep -E 'aw152/.git|evil152' | tr '\n' ' '))"
+rm -rf "$O152/node_modules/evil152"
+# ... made a link: named.
+mv "$O152/node_modules/aw152/.git" "$O152/node_modules/aw152/.gitfile" && ln -s .gitfile "$O152/node_modules/aw152/.git"
+EXTRA_MOUNTS="$O152" launch ..
+grep -qF "WARNING: $O152/node_modules/aw152/.git is a symlink inside a writable mount" "$ERR" \
+  && pass "G152 that .git made a link is named" \
+  || fail "G152 linked .git (rc=$LAUNCH_RC; $(grep -F 'aw152/.git' "$ERR" | head -2 | tr '\n' ' '))"
+rm -f "$O152/node_modules/aw152/.git" "$O152/node_modules/aw152/.gitfile"
+# ... and replaced by a repository: protected as one, in that mount's view.
+"${G[@]}" init -q "$O152/node_modules/aw152" >/dev/null 2>&1 && [[ -d "$O152/node_modules/aw152/.git" ]] \
+  || { printf 'SCAFFOLD-FAILED: G152 .git directory\n'; exit 1; }
+EXTRA_MOUNTS="$O152" launch ..
+[[ "$LAUNCH_RC" == 0 ]] && has_mount "$O152/node_modules/aw152/.git/config:$v152/aw152/.git/config:ro" \
+  && has_mount "$O152/node_modules/aw152/.git/hooks:$v152/aw152/.git/hooks:ro" \
+  && pass "G152 that .git replaced by a repository is protected as one" \
+  || fail "G152 .git directory (rc=$LAUNCH_RC; $(mounts | grep -F 'aw152/.git' | tr '\n' ' '))"
+rm -rf "$O152/node_modules/aw152/.git"; cp "$TMP/dotgit152" "$O152/node_modules/aw152/.git"; rm -f "$TMP/dotgit152"
+"${G[@]}" -C "$PROJ" worktree remove --force "$O152/node_modules/aw152" 2>/dev/null
+rm -rf "$O152" "$PROJ/.git/worktrees/aw152"; "${G[@]}" -C "$PROJ" branch -q -D aw152 2>/dev/null
+
+# ── G153: a directory the agent made unsearchable on the way to a checkout ───
+# The agent owns the directories it can write and can `chmod 000` one in a
+# session. Where the scan looks for unlistable directories it finds that one and
+# binds it read-only whole; under a pruned name it does not look, and a checkout
+# reached only through a pointer (a worktree's gitdir, an index's gitlink, a
+# submodule's core.worktree) behind it was neither bound nor named. In the next
+# session the agent could restore the mode and point that checkout's .git at a
+# repository of its own (GIT-60). The first directory on the way that you cannot
+# search is now bound read-only whole, with the chmod that restores it named.
+if [[ "$(id -u)" != 0 ]]; then
+  mkdir -p "$PROJ/node_modules" && "${G[@]}" -C "$PROJ" worktree add -q "$PROJ/node_modules/aw153" -b aw153 \
+    || { printf 'SCAFFOLD-FAILED: G153\n'; exit 1; }
+  chmod 000 "$PROJ/node_modules"; launch ..; chmod 755 "$PROJ/node_modules"
+  [[ "$LAUNCH_RC" == 0 ]] && has_mount "$PROJ/node_modules:/workspace/proj/node_modules:ro" \
+    && grep -qF "WARNING: $PROJ/node_modules cannot be listed by you" "$ERR" \
+    && pass "G153 a pruned directory made unsearchable before a worktree's checkout is read-only whole, and named" \
+    || fail "G153 unsearchable node_modules (rc=$LAUNCH_RC; $(mounts | grep -F node_modules | tr '\n' ' '); $(grep -F node_modules "$ERR" | head -2 | tr '\n' ' '))"
+  # ... and the checkout itself made unsearchable.
+  chmod 000 "$PROJ/node_modules/aw153"; launch ..; chmod 755 "$PROJ/node_modules/aw153"
+  [[ "$LAUNCH_RC" == 0 ]] && has_mount "$PROJ/node_modules/aw153:/workspace/proj/node_modules/aw153:ro" \
+    && pass "G153 a worktree's checkout made unsearchable is read-only whole" \
+    || fail "G153 unsearchable checkout (rc=$LAUNCH_RC; $(mounts | grep -F aw153 | tr '\n' ' '); $(grep -F aw153 "$ERR" | head -2 | tr '\n' ' '))"
+  # A directory the agent could not enter either hides nothing it can touch, and
+  # is left alone, as the scan leaves one: here an agent of another uid and gid,
+  # and a directory of yours with no bits for anyone.
+  chmod 000 "$PROJ/node_modules"; SANDBOX_UID=4242 SANDBOX_GID=4242 launch ..; chmod 755 "$PROJ/node_modules"
+  [[ "$LAUNCH_RC" == 0 ]] && ! has_mount "$PROJ/node_modules:/workspace/proj/node_modules:ro" \
+    && pass "G153 a directory the agent could not enter either is not bound" \
+    || fail "G153 a directory out of the agent's reach (rc=$LAUNCH_RC; $(mounts | grep -F node_modules | tr '\n' ' '))"
+  "${G[@]}" -C "$PROJ" worktree remove --force "$PROJ/node_modules/aw153" 2>/dev/null
+  rm -rf "$PROJ/node_modules/aw153" "$PROJ/.git/worktrees/aw153"; "${G[@]}" -C "$PROJ" branch -q -D aw153 2>/dev/null
+  # G22's embedded submodule, which only the index records, with vendor/ made
+  # unsearchable: GIT-3's WARNING fired only for the checkout itself.
+  [[ -d "$PROJ/vendor/emb/.git" ]] || { printf 'SCAFFOLD-FAILED: G153 needs G22'\''s vendor/emb\n'; exit 1; }
+  chmod 000 "$PROJ/vendor"; launch ..; chmod 755 "$PROJ/vendor"
+  [[ "$LAUNCH_RC" == 0 ]] && has_mount "$PROJ/vendor:/workspace/proj/vendor:ro" \
+    && pass "G153 a pruned directory made unsearchable before a submodule the index records is read-only whole" \
+    || fail "G153 unsearchable vendor (rc=$LAUNCH_RC; $(mounts | grep -F vendor | tr '\n' ' '); $(grep -F vendor "$ERR" | head -2 | tr '\n' ' '))"
+  # ... and that submodule's checkout itself made unsearchable: read-only whole,
+  # where GIT-3's WARNING said it was not protected.
+  chmod 000 "$PROJ/vendor/emb"; launch ..; chmod 755 "$PROJ/vendor/emb"
+  [[ "$LAUNCH_RC" == 0 ]] && has_mount "$PROJ/vendor/emb:/workspace/proj/vendor/emb:ro" \
+    && ! grep -qF "submodule $PROJ/vendor/emb of $PROJ/.git is not where its index says" "$ERR" \
+    && pass "G153 a submodule's checkout made unsearchable is read-only whole" \
+    || fail "G153 unsearchable submodule checkout (rc=$LAUNCH_RC; $(mounts | grep -F vendor/emb | tr '\n' ' '); $(grep -F vendor/emb "$ERR" | head -2 | tr '\n' ' '))"
+  # An absorbed submodule under a pruned target/, recorded in no index, reached
+  # only through its core.worktree, with target/ made unsearchable.
+  U153="$TMP/up153"; "${G[@]}" init -q "$U153" && "${G[@]}" -C "$U153" commit -q --allow-empty -m u \
+    && "${G[@]}" -C "$PROJ" -c protocol.file.allow=always submodule add -q "$U153" target/sm153 >/dev/null 2>&1 \
+    && [[ -f "$PROJ/target/sm153/.git" ]] && "${G[@]}" -C "$PROJ" rm -q --cached target/sm153 >/dev/null \
+    || { printf 'SCAFFOLD-FAILED: G153 absorbed\n'; exit 1; }
+  chmod 000 "$PROJ/target"; launch ..; chmod 755 "$PROJ/target"
+  [[ "$LAUNCH_RC" == 0 ]] && has_mount "$PROJ/target:/workspace/proj/target:ro" \
+    && pass "G153 a pruned directory made unsearchable before an absorbed submodule's checkout is read-only whole" \
+    || fail "G153 unsearchable target (rc=$LAUNCH_RC; $(mounts | grep -F target | tr '\n' ' '); $(grep -F target "$ERR" | head -2 | tr '\n' ' '))"
+  "${G[@]}" -C "$PROJ" rm -q --cached .gitmodules >/dev/null 2>&1
+  rm -rf "$PROJ/target" "$PROJ/.git/modules/target" "$PROJ/.gitmodules" "$U153"
+else
+  printf 'NOTE: run as root, which searches any directory; G153 is not applicable\n'
+fi
+
+# ── G154: a decoy names a checkout's .git directory first ────────────────────
+# A linked worktree's checkout under a pruned node_modules whose .git an earlier
+# session replaced by a directory, its HEAD moved aside so that it is no git
+# directory, never protected. A decoy .git file in the scan's reach naming it
+# marked it seen with a warning that it is not a git directory, and the
+# worktree's gitdir then skipped it, where the scan protects any .git directory
+# whatever it holds (GIT-61). So does a planted .git/worktrees/<x>/commondir
+# naming it, its objects/ moved aside.
+"${G[@]}" -C "$PROJ" worktree add -q "$PROJ/node_modules/aw154" -b aw154 \
+  && cp "$PROJ/node_modules/aw154/.git" "$TMP/dotgit154" && rm -f "$PROJ/node_modules/aw154/.git" \
+  && "${G[@]}" init -q "$PROJ/node_modules/aw154" >/dev/null 2>&1 \
+  && mv "$PROJ/node_modules/aw154/.git/HEAD" "$PROJ/node_modules/aw154/.git/HEAD.aside" \
+  && mkdir -p "$PROJ/dec154" && printf 'gitdir: %s\n' "$PROJ/node_modules/aw154/.git" > "$PROJ/dec154/.git" \
+  || { printf 'SCAFFOLD-FAILED: G154\n'; exit 1; }
+launch ..
+[[ "$LAUNCH_RC" == 0 ]] && has_mount "$PROJ/node_modules/aw154/.git/config:/workspace/proj/node_modules/aw154/.git/config:ro" \
+  && has_mount "$PROJ/node_modules/aw154/.git/hooks:/workspace/proj/node_modules/aw154/.git/hooks:ro" \
+  && pass "G154 a checkout's .git directory a decoy .git file names first is protected all the same" \
+  || fail "G154 decoy .git file first (rc=$LAUNCH_RC; $(mounts | grep -F 'aw154/.git' | tr '\n' ' '); $(grep -F aw154 "$ERR" | head -2 | tr '\n' ' '))"
+rm -rf "$PROJ/dec154"
+# ... and one a planted worktree's commondir names, its objects/ moved aside: as
+# a common directory, it needs only objects/ and refs/.
+rm -rf "$PROJ/node_modules/aw154/.git"; "${G[@]}" init -q "$PROJ/node_modules/aw154" >/dev/null 2>&1 \
+  && mv "$PROJ/node_modules/aw154/.git/objects" "$PROJ/node_modules/aw154/.git/objects.aside" \
+  && mkdir -p "$PROJ/.git/worktrees/x154" && printf '%s\n' "$PROJ/node_modules/aw154/.git" > "$PROJ/.git/worktrees/x154/commondir" \
+  && printf 'ref: refs/heads/x154\n' > "$PROJ/.git/worktrees/x154/HEAD" \
+  || { printf 'SCAFFOLD-FAILED: G154 commondir\n'; exit 1; }
+launch ..
+[[ "$LAUNCH_RC" == 0 ]] && has_mount "$PROJ/node_modules/aw154/.git/config:/workspace/proj/node_modules/aw154/.git/config:ro" \
+  && pass "G154 a checkout's .git directory a planted commondir names first is protected all the same" \
+  || fail "G154 decoy commondir first (rc=$LAUNCH_RC; $(mounts | grep -F 'aw154/.git' | tr '\n' ' '); $(grep -F aw154 "$ERR" | head -2 | tr '\n' ' '))"
+rm -rf "$PROJ/.git/worktrees/x154" "$PROJ/node_modules/aw154/.git"; cp "$TMP/dotgit154" "$PROJ/node_modules/aw154/.git"; rm -f "$TMP/dotgit154"
+"${G[@]}" -C "$PROJ" worktree remove --force "$PROJ/node_modules/aw154" 2>/dev/null
+rm -rf "$PROJ/node_modules/aw154" "$PROJ/.git/worktrees/aw154"; "${G[@]}" -C "$PROJ" branch -q -D aw154 2>/dev/null
+# An embedded submodule's .git directory the index records, its HEAD moved
+# aside: protected as the scan protects any .git directory, not skipped for
+# being no git directory.
+U154="$TMP/up154"; "${G[@]}" init -q "$U154" && "${G[@]}" -C "$U154" commit -q --allow-empty -m u \
+  && "${G[@]}" clone -q "$U154" "$PROJ/vendor/em154" && "${G[@]}" -C "$PROJ" add vendor/em154 2>/dev/null \
+  && mv "$PROJ/vendor/em154/.git/HEAD" "$PROJ/vendor/em154/.git/HEAD.aside" \
+  || { printf 'SCAFFOLD-FAILED: G154 embedded\n'; exit 1; }
+launch ..
+[[ "$LAUNCH_RC" == 0 ]] && has_mount "$PROJ/vendor/em154/.git/config:/workspace/proj/vendor/em154/.git/config:ro" \
+  && pass "G154 an embedded submodule's .git directory with no HEAD is protected" \
+  || fail "G154 embedded .git with no HEAD (rc=$LAUNCH_RC; $(mounts | grep -F 'em154' | tr '\n' ' '))"
+mv "$PROJ/vendor/em154/.git/HEAD.aside" "$PROJ/vendor/em154/.git/HEAD"
+"${G[@]}" -C "$PROJ" rm -q --cached vendor/em154 >/dev/null 2>&1; rm -rf "$PROJ/vendor/em154" "$U154"
+
+# ── G155: the walk up from a mount, as git walks it ──────────────────────────
+# Outside every writable mount, so a layout of your own: a .git that is a link
+# to a regular file is a .git file to git, and a .git directory that is no git
+# directory is passed over, git going on up (GIT-52). The walk took neither: it
+# passed over the link, and stopped at the directory, judging the wrong
+# repository or none.
+U155="$TMP/up155"; "${G[@]}" init -q "$U155" && "${G[@]}" -C "$U155" commit -q --allow-empty -m u \
+  || { printf 'SCAFFOLD-FAILED: G155\n'; exit 1; }
+# A .git directory that is no git directory between the mount and the repository.
+"${G[@]}" init -q "$TMP/r155" && mkdir -p "$TMP/r155/a/b/vendor" "$TMP/r155/a/.git" \
+  && "${G[@]}" clone -q "$U155" "$TMP/r155/a/b/vendor/sm" && "${G[@]}" -C "$TMP/r155" add a/b/vendor/sm 2>/dev/null \
+  || { printf 'SCAFFOLD-FAILED: G155 two up\n'; exit 1; }
+# The premise: git takes $TMP/r155's repository there.
+[[ "$("${G[@]}" -C "$TMP/r155/a/b" rev-parse --absolute-git-dir 2>/dev/null)" == "$TMP/r155/.git" ]] \
+  || { printf 'SCAFFOLD-FAILED: G155 git does not pass over the empty .git\n'; exit 1; }
+launch "$TMP/r155/a/b"
+[[ "$LAUNCH_RC" == 0 ]] && has_mount "$TMP/r155/a/b/vendor/sm/.git/config:/workspace/b/vendor/sm/.git/config:ro" \
+  && [[ -z "$(ls -A "$TMP/r155/a/.git")" ]] \
+  && pass "G155 a .git directory that is no git directory is passed over, as git passes over it" \
+  || fail "G155 non-git .git between (rc=$LAUNCH_RC; git mounts: $(git_mounts | tr '\n' ' '))"
+rm -rf "$TMP/r155"
+# A .git that is a link to a regular file, which names the git directory.
+"${G[@]}" init -q --separate-git-dir "$TMP/gd155" "$TMP/l155/w" && mkdir -p "$TMP/l155/w/sub/vendor" \
+  && "${G[@]}" clone -q "$U155" "$TMP/l155/w/sub/vendor/sm" && "${G[@]}" -C "$TMP/l155/w" add sub/vendor/sm 2>/dev/null \
+  && mv "$TMP/l155/w/.git" "$TMP/gf155" && ln -s "$TMP/gf155" "$TMP/l155/w/.git" \
+  || { printf 'SCAFFOLD-FAILED: G155 link to a file\n'; exit 1; }
+[[ "$("${G[@]}" -C "$TMP/l155/w/sub" rev-parse --absolute-git-dir 2>/dev/null)" == "$TMP/gd155" ]] \
+  || { printf 'SCAFFOLD-FAILED: G155 git does not read the linked .git file\n'; exit 1; }
+launch "$TMP/l155/w/sub"
+[[ "$LAUNCH_RC" == 0 ]] && has_mount "$TMP/l155/w/sub/vendor/sm/.git/config:/workspace/sub/vendor/sm/.git/config:ro" \
+  && pass "G155 a .git above the mount that links to a .git file is followed, as git follows it" \
+  || fail "G155 link to a .git file (rc=$LAUNCH_RC; git mounts: $(git_mounts | tr '\n' ' '))"
+rm -rf "$TMP/l155" "$TMP/gd155" "$TMP/gf155" "$U155"
+
+# ── G156: "no worktree is known", only where none is ─────────────────────────
+# Each mount is scanned alone. A linked worktree's git directory in one mount
+# (G55's layout: its main repository in EXTRA_MOUNTS, its checkout in the
+# primary) waited there for a worktree, and the launch warned that its
+# submodules were not followed, though the checkout's mount had read its index
+# and protected them. And a worktree whose checkout was deleted and never pruned
+# was warned about on every launch, with no checkout to protect (GIT-54).
+U156="$TMP/up156"; "${G[@]}" init -q "$U156" && "${G[@]}" -C "$U156" commit -q --allow-empty -m u
+M156="$TMP/main156"; "${G[@]}" init -q "$M156" && "${G[@]}" -C "$M156" commit -q --allow-empty -m s \
+  && "${G[@]}" -C "$M156" worktree add -q "$PROJ/lw156" \
+  && "${G[@]}" clone -q "$U156" "$PROJ/lw156/vendor/lib" && "${G[@]}" -C "$PROJ/lw156" add vendor/lib 2>/dev/null \
+  && "${G[@]}" -C "$PROJ/lw156" commit -q -m n || { printf 'SCAFFOLD-FAILED: G156\n'; exit 1; }
+EXTRA_MOUNTS="$M156" launch ..
+[[ "$LAUNCH_RC" == 0 ]] && has_mount "$PROJ/lw156/vendor/lib/.git/config:/workspace/proj/lw156/vendor/lib/.git/config:ro" \
+  && ! grep -qF "no worktree is known for $M156/.git/worktrees/lw156" "$ERR" \
+  && pass "G156 a worktree whose checkout another mount's scan reads is not said to have none" \
+  || fail "G156 cross-mount worktree (rc=$LAUNCH_RC; $(grep -F 'no worktree' "$ERR" | head -1))"
+# The checkout deleted, the worktree never pruned: still said, since a gitdir
+# the agent rewrote to a path that is not there looks the same (G80), but with
+# the prune that stops it.
+rm -rf "$PROJ/lw156"
+EXTRA_MOUNTS="$M156" launch ..
+[[ "$LAUNCH_RC" == 0 ]] && grep -qF "no worktree is known for $M156/.git/worktrees/lw156" "$ERR" \
+  && grep -qF "Its gitdir names $PROJ/lw156, which is not there." "$ERR" \
+  && grep -qF "git --git-dir=$M156/.git worktree prune stops this" "$ERR" \
+  && pass "G156 a worktree whose checkout is gone is said, with the prune that stops it" \
+  || fail "G156 checkout gone (rc=$LAUNCH_RC; $(grep -A2 -F 'no worktree' "$ERR" | head -3 | tr '\n' ' '))"
+rm -rf "$U156" "$M156"
+
 # ── G147: an absorbed submodule's checkout, found through its core.worktree ──
 # Its .git file, under a pruned vendor/ and recorded in no index, is read-only.
 "${G[@]}" -C "$PROJ" -c protocol.file.allow=always submodule add -q "$U14x" vendor/sm147 >/dev/null 2>&1 \

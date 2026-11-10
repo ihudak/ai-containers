@@ -775,6 +775,26 @@ SANDBOX_GIT_MAX=4 EXTRA_MOUNTS="$C142" launch "$C142/node_modules/x"
   || fail "G142 cap listing (rc=$LAUNCH_RC; $(grep -E 'ERROR|^         ' "$ERR" | head -7 | tr '\n' ' '))"
 rm -rf "$C142"
 
+# ── G157: a repository mounted read-only inside a writable mount ─────────────
+# A read-only mount was not scanned, since nothing can be written through it.
+# But one inside a writable mount whose scan does not reach it (an EXTRA_MOUNTS
+# directory, its node_modules pruned) is writable through that mount, and its
+# .git config and hooks stayed writable there (GIT-56). It is now scanned for
+# what to protect in the writable mount's view.
+O157="$TMP/o157"; mkdir -p "$O157/node_modules/x" && "${G[@]}" init -q "$O157/node_modules/x" \
+  || { printf 'SCAFFOLD-FAILED: G157\n'; exit 1; }
+v157=/workspace/o157/node_modules/x/.git
+EXTRA_MOUNTS="$O157" DOCS_PATH="$O157/node_modules/x" launch ..
+[[ "$LAUNCH_RC" == 0 ]] && has_mount "$O157/node_modules/x:/workspace/docs:ro" \
+  && has_mount "$O157/node_modules/x/.git/config:$v157/config:ro" && has_mount "$O157/node_modules/x/.git/hooks:$v157/hooks:ro" \
+  && pass "G157 a repository mounted read-only inside a writable mount is read-only through that mount too" \
+  || fail "G157 read-only inside writable (rc=$LAUNCH_RC; git mounts: $(git_mounts | sed "s#$TMP#T#g" | tr '\n' ' '))"
+# Nothing is bound in the read-only mount's own view: it is read-only whole.
+! mounts | grep -qF ":/workspace/docs/.git" \
+  && pass "G157 nothing is bound in the read-only mount's own view" \
+  || fail "G157 binds in the read-only view ($(mounts | grep -F ':/workspace/docs/' | tr '\n' ' '))"
+rm -rf "$O157"
+
 # ── G144: what the scan takes for a git directory inside a .git ──────────────
 # GAP-2 slice 6: each condition here, turned, survived every test.
 # A .git, or a directory inside one, that you can read but not search is as

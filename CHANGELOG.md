@@ -162,8 +162,55 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   read-only, and the repository it names protected, whatever it names; a link
   named; a directory protected as a repository. A `gitdir`
   whose checkout does not name the worktree back no longer silences "no
-  worktree is known" (bugs review GIT-55, GIT-57, GIT-58; GIT-59, GIT-60 and
-  GIT-61, the cases left, are still open).
+  worktree is known" (bugs review GIT-55, GIT-57, GIT-58).
+
+- **A linked worktree checked out in another writable mount has its `.git`
+  read-only there.** A worktree of the primary's repository checked out in an
+  `EXTRA_MOUNTS` directory, past that mount's scan (under its `node_modules`,
+  say), was reached only through the worktree's `gitdir`, which was followed
+  only inside the primary's mount. Its `.git` stayed writable, for the agent
+  to point at a repository of its own, whose hooks your host's git would run
+  there. It is now taken in that mount's view as one there is: a file bound
+  read-only and followed, a link named, a directory protected as a repository
+  (bugs review GIT-59).
+
+- **A checkout behind a directory the agent made unsearchable is protected.**
+  The agent owns the directories it can write and can `chmod 000` one. Under a
+  pruned `node_modules`, `vendor` or `target`, where the scan does not look for
+  unlistable directories, a linked worktree's checkout, a submodule the index
+  records or one its `core.worktree` names behind such a directory was neither
+  bound nor named, and in the next session the agent could restore the mode
+  and point its `.git` at a repository of its own. The first directory on the
+  way that you cannot search is now mounted read-only whole, with a `WARNING:`
+  naming the `chmod` that restores it, as the scan does for one it finds (bugs
+  review GIT-60).
+
+- **A checkout's `.git` directory a decoy names first is protected.** A `.git`
+  file, or a planted worktree `commondir`, naming a checkout's `.git` directory
+  whose `HEAD` or `objects/` an earlier session moved aside marked it seen with
+  a warning that it is no git directory, and the worktree's `gitdir` then
+  skipped it. A `.git` directory now counts as one whatever it holds, as the
+  scan counts it, and so does a submodule's embedded one (bugs review GIT-61).
+
+- **The repository above a mount is the one git uses.** Walking up from a
+  mount, the launcher stopped at a `.git` directory that is no git directory,
+  which git passes over, and passed over a `.git` link to a `.git` file, which
+  git reads, so it judged the wrong repository or none (bugs review GIT-52).
+  Both need the `.git` outside every writable mount, a layout of your own.
+
+- **A repository mounted read-only inside a writable mount is protected
+  there.** A `DOCS_PATH` or `ARCHITECTURE_REPO_PATH` under a writable mount's
+  `node_modules`, say, is writable through that mount, and was not scanned
+  because its own mount is read-only: its `.git` config and hooks stayed
+  writable at the outer mount's path (bugs review GIT-56). So did a launcher
+  there, its `sandbox.sh` the host runs next (bugs review LNCH-24).
+
+- **Fewer false "no worktree is known" warnings.** It was said for a linked
+  worktree whose checkout is in another writable mount, though that mount's
+  scan read its index and protected its submodules. For one whose checkout was
+  deleted and never pruned it is still said, since a `gitdir` the agent
+  rewrote looks the same, but now with the `git worktree prune` that stops it
+  (bugs review GIT-54).
 
 - **A linked worktree made with `git worktree add --relative-paths` is
   followed to its checkout.** Git 2.48 and later can write a worktree's

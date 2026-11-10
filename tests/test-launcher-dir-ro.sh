@@ -1895,5 +1895,23 @@ launch "$LAUNCHER" ..
   || fail "T74 output root (rc=$LAUNCH_RC; $(grep -F '.agent-blocked' "$ERR" | head -2 | tr '\n' ' '))"
 rm -f "$LAUNCHER/.agent-blocked/sandbox.sh" "$LAUNCHER/.agent-blocked/sandbox-common.sh"
 
+# ── T75: a launcher in a read-only mount inside a writable mount (LNCH-24) ────
+# A read-only mount was not scanned for launchers, since nothing can be written
+# through it. But one inside a writable mount whose scan does not reach it (an
+# EXTRA_MOUNTS directory, its node_modules pruned) is writable through that
+# mount, and a launcher there stayed so. It is now overlaid in that mount's view
+# only: the read-only mount's own view gets nothing, a :rw pin least of all.
+O75="$TMP/o75"; mk_launcher "$O75/node_modules/x"
+EXTRA_MOUNTS="$O75" DOCS_PATH="$O75/node_modules/x" launch "$LAUNCHER" ..
+m75="$(mounts)"
+[[ "$LAUNCH_RC" == 0 ]] && grep -qxF -- "$O75/node_modules/x/.ai-containers:/workspace/o75/node_modules/x/.ai-containers:ro" <<<"$m75" \
+  && grep -qxF -- "$O75/node_modules/x:/workspace/o75/node_modules/x:rw" <<<"$m75" \
+  && pass "T75 a launcher in a read-only mount inside a writable one is read-only, its parents pinned, in the writable mount's view" \
+  || fail "T75 read-only inside writable (rc=$LAUNCH_RC; got: $(grep -F /o75/ <<<"$m75" | tr '\n' ' '))"
+! grep -qF ":/workspace/docs/" <<<"$m75" \
+  && pass "T75 nothing is bound in the read-only mount's own view" \
+  || fail "T75 binds in the read-only view ($(grep -F ':/workspace/docs/' <<<"$m75" | tr '\n' ' '))"
+rm -rf "$O75"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
