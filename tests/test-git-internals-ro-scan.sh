@@ -745,6 +745,16 @@ EXTRA_MOUNTS="$W142" launch "$W142/node_modules/q/sub"
   && has_mount "$W142/node_modules/.evil/config:/workspace/w142/node_modules/.evil/config:ro" \
   && pass "G142 a .git link above the primary, past the outer scan, is named once and what it leads to protected" \
   || fail "G142 .git link above (rc=$LAUNCH_RC; $(grep -F 'q/.git' "$ERR" | head -2 | tr '\n' ' '); $(mounts | grep -F '.evil' | tr '\n' ' '))"
+# A .git link to a FILE there, which git reads as a .git file, is followed to the
+# git directory that file names, protected in the outer view too.
+rm -rf "$W142"; mkdir -p "$W142/node_modules/q/sub" && "${G[@]}" init -q --bare "$W142/node_modules/.evil" \
+  && printf 'gitdir: ../.evil\n' > "$W142/node_modules/q/.gitfile" && ln -s .gitfile "$W142/node_modules/q/.git" \
+  || { printf 'SCAFFOLD-FAILED: G142 link to a file\n'; exit 1; }
+EXTRA_MOUNTS="$W142" launch "$W142/node_modules/q/sub"
+[[ "$LAUNCH_RC" == 0 ]] && grep -qF "WARNING: $W142/node_modules/q/.git is a symlink inside a writable mount" "$ERR" \
+  && has_mount "$W142/node_modules/.evil/config:/workspace/w142/node_modules/.evil/config:ro" \
+  && pass "G142 a .git link to a file above the primary is named, and the git directory the file names protected" \
+  || fail "G142 .git link to a file (rc=$LAUNCH_RC; $(grep -F 'q/.git' "$ERR" | head -1); $(mounts | grep -F '.evil' | tr '\n' ' '))"
 # Reached by the outer mount's scan too, it is named once.
 rm -rf "$W142"; mkdir -p "$W142/q/sub" && "${G[@]}" init -q --bare "$W142/.evil" && ln -s ../.evil "$W142/q/.git" \
   || { printf 'SCAFFOLD-FAILED: G142 link reached\n'; exit 1; }

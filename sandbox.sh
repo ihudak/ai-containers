@@ -3678,7 +3678,7 @@ _gdi_follow() {
 git_dirs_in() {
   # shellcheck disable=SC2178  # nameref: shellcheck does not model `local -n`
   local -n _gdi_dirs=$1 _gdi_files=$2 _gdi_links=$3 _gdi_unr=$4
-  local f lf g wt wcf wtp co rel back nref
+  local f lf g wt wcf wtp co rel back nref pb
   local -a hits=()
   local -A had=()
   # git's own names however they are spelled: where case is ignored git opens
@@ -3844,6 +3844,11 @@ git_dirs_in() {
             if [[ "$tgt" == "${bsrc[_j]}"/* ]]; then _xm_t+=("$tgt"); _xm_by+=("$up/.git"); _xm_j+=("$_j"); fi
           done
         fi
+      elif [[ -f "$up/.git" ]] && _in_writable "$up/.git"; then
+        # One in a writable mount that leads to a file, which git reads as a .git
+        # file: followed as one (review of the GIT-55 fix; G142).
+        tgt=""; _git_ptr_read "$up/.git" tgt || true
+        if [[ "$tgt" == "gitdir: "* ]]; then _gdi_follow "$up" "${tgt#gitdir: }" "$5" "$up/.git"; fi
       fi
       _in_writable "$up" || break
     fi
@@ -3934,15 +3939,28 @@ git_dirs_in() {
       # in the mount silenced "no worktree is known" while the real checkout,
       # under a pruned directory, went unread (bugs review GIT-57).
       if [[ "$tgt" == /* && -d "$tgt" ]] && _cd_phys tgt "$tgt" \
-         && [[ "$tgt" == "$5" || "$tgt" == "$5"/* ]] && [[ -z "${tseen[$tgt]:-}" ]] \
-         && _gdi_points_back "$tgt/.git" "$g"; then
-        tseen[$tgt]=1; tops+=("$tgt")
-        # Its .git file is bound read-only like one the scan finds, which under a
-        # pruned directory it does not: writable, the agent could point it at a
-        # repository of its own (bugs review GIT-58; G146). A known referrer, so
-        # following it does not read this git directory again.
-        if [[ -f "$tgt/.git" && ! -L "$tgt/.git" && -z "${had[$tgt/.git]:-}" ]]; then
-          _gdi_files+=("$tgt/.git"); had[$tgt/.git]=1; gref[$g|$tgt]=1
+         && [[ "$tgt" == "$5" || "$tgt" == "$5"/* ]]; then
+        pb=""
+        if _gdi_points_back "$tgt/.git" "$g"; then
+          pb=1; if [[ -z "${tseen[$tgt]:-}" ]]; then tseen[$tgt]=1; tops+=("$tgt"); fi
+        fi
+        # Its .git is taken like one the scan finds, which under a pruned
+        # directory it does not, whatever it is and names, and whatever else
+        # names the checkout (a core.worktree the agent writes here, where git
+        # never reads one, named it first and the bind stopped): a file is bound
+        # read-only and followed, so one an earlier session pointed at a
+        # repository of the agent's protects that repository too; a link is
+        # named; a directory, a repository the agent made there, is protected as
+        # one (bugs review GIT-58; G146). Pointing back, it is a known referrer,
+        # so following it does not read this git directory again.
+        if [[ -L "$tgt/.git" ]]; then
+          if [[ -z "${had[$tgt/.git]:-}" ]]; then _gdi_links+=("$tgt/.git"); had[$tgt/.git]=1; fi
+        elif [[ -f "$tgt/.git" ]]; then
+          if [[ -z "${had[$tgt/.git]:-}" ]]; then _gdi_files+=("$tgt/.git"); had[$tgt/.git]=1; fi
+          if [[ -n "$pb" ]]; then gref[$g|$tgt]=1; fi
+        elif [[ -d "$tgt/.git" && -z "${had[$tgt/.git]:-}" ]]; then
+          if [[ ! -r "$tgt/.git" || ! -x "$tgt/.git" ]]; then _gdi_unr+=("$tgt/.git"); else _gdi_dirs+=("$tgt/.git"); fi
+          had[$tgt/.git]=1
         fi
       fi
     fi

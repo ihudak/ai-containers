@@ -480,14 +480,32 @@ FAKE_DOCKER_RC=3 FAKE_SESSION=":" launch ..
 U150="$TMP/up150"; "${G[@]}" init -q "$U150" && "${G[@]}" -C "$U150" commit -q --allow-empty -m u \
   && h150="$("${G[@]}" -C "$U150" rev-parse HEAD)" && "${G[@]}" init -q "$TMP/r150" && mkdir -p "$TMP/r150/m" \
   || { printf 'SCAFFOLD-FAILED: G150\n'; exit 1; }
-for i150 in $(seq 1 20); do
-  mkdir -p "$TMP/r150/out/s$i150" && "${G[@]}" -C "$TMP/r150" update-index --add --cacheinfo "160000,$h150,out/s$i150" \
-    || { printf 'SCAFFOLD-FAILED: G150 gitlinks\n'; exit 1; }
+# The budget this launch needs, measured with no gitlink recorded (it depends on
+# how much of TMPDIR ignores case: six on a casefold tmpfs), then ten more: the
+# twenty outside, spelled, would need twenty more.
+n150=""; for b150 in 2 4 8 16 32 64; do
+  AI_CONTAINERS_SPELL_MAX=$b150 launch "$TMP/r150/m"; [[ "$LAUNCH_RC" == 0 ]] && { n150=$b150; break; }
 done
-AI_CONTAINERS_SPELL_MAX=10 launch "$TMP/r150/m"
-[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF 'had to be read as' "$ERR" \
-  && pass "G150 submodules recorded outside the mount are not spelled" \
-  || fail "G150 spelled outside the mount (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
+# The launch is the code under test: one that needs more than 64 is a FAIL, never
+# a scaffold failure, which the mutation tier would score as unproven.
+if [[ -z "$n150" ]]; then
+  fail "G150 a launch with no gitlink recorded needs more than 64 spellings ($(grep -F ERROR "$ERR" | head -1))"
+else
+  lo150=$((n150 / 2))
+  while (( n150 - lo150 > 1 )); do
+    b150=$(( (lo150 + n150) / 2 ))
+    AI_CONTAINERS_SPELL_MAX=$b150 launch "$TMP/r150/m"
+    if [[ "$LAUNCH_RC" == 0 ]]; then n150=$b150; else lo150=$b150; fi
+  done
+  for i150 in $(seq 1 20); do
+    mkdir -p "$TMP/r150/out/s$i150" && "${G[@]}" -C "$TMP/r150" update-index --add --cacheinfo "160000,$h150,out/s$i150" \
+      || { printf 'SCAFFOLD-FAILED: G150 gitlinks\n'; exit 1; }
+  done
+  AI_CONTAINERS_SPELL_MAX=$((n150 + 10)) launch "$TMP/r150/m"
+  [[ "$LAUNCH_RC" == 0 ]] && ! grep -qF 'had to be read as' "$ERR" \
+    && pass "G150 submodules recorded outside the mount are not spelled" \
+    || fail "G150 spelled outside the mount (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
+fi
 rm -rf "$TMP/r150" "$U150"
 
 printf '\n%d failure(s)\n' "$fails"

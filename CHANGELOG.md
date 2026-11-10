@@ -159,8 +159,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   link was not named. The file is now read-only in the outer mount's view, and
   the link named. A linked worktree's checkout reached only through its
   `gitdir` (under `node_modules`, say) now has its `.git` file read-only too,
-  and a `gitdir` whose checkout does not name the worktree back no longer
-  silences "no worktree is known" (bugs review GIT-55, GIT-57, GIT-58).
+  and the repository that file names protected, whatever it names; a `gitdir`
+  whose checkout does not name the worktree back no longer silences "no
+  worktree is known" (bugs review GIT-55, GIT-57, GIT-58).
 
 - **A linked worktree made with `git worktree add --relative-paths` is
   followed to its checkout.** Git 2.48 and later can write a worktree's

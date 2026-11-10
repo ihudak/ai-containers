@@ -1179,6 +1179,54 @@ grep -qF "no worktree is known for $PROJ/.git/worktrees/aw146" "$ERR" \
   && pass "G146 a gitdir naming a directory that does not point back silences nothing" \
   || fail "G146 decoy gitdir in the mount (rc=$LAUNCH_RC; $(grep -F WARNING "$ERR" | head -2 | tr '\n' ' '))"
 cp "$TMP/gitdir146" "$PROJ/.git/worktrees/aw146/gitdir"; rm -f "$TMP/gitdir146"
+# A submodule recorded at a path that is a link: named once, though the checkout
+# is reached through gitdir and its .git file is followed too (it is the same
+# referrer, and the index is read once).
+mkdir -p "$PROJ/node_modules/aw146/real146" && ln -s real146 "$PROJ/node_modules/aw146/s146" \
+  && "${G[@]}" -C "$PROJ/node_modules/aw146" update-index --add --cacheinfo "160000,$(printf '%040d' 1),s146" \
+  || { printf 'SCAFFOLD-FAILED: G146 link gitlink\n'; exit 1; }
+launch ..
+[[ "$(grep -c "submodule $PROJ/node_modules/aw146/s146 of $PROJ/.git/worktrees/aw146 is not where its index says" "$ERR")" == 1 ]] \
+  && pass "G146 its index is read once, the checkout reached through gitdir and its .git file alike" \
+  || fail "G146 read twice ($(grep -c 'aw146/s146' "$ERR") WARNINGs)"
+"${G[@]}" -C "$PROJ/node_modules/aw146" rm -q --cached s146 >/dev/null 2>&1; rm -rf "$PROJ/node_modules/aw146/s146" "$PROJ/node_modules/aw146/real146"
+# Its .git rewritten, in an earlier session, to name a repository of the agent's:
+# no longer a checkout of this worktree, but bound read-only and followed all the
+# same, so the repository it names is protected too.
+cp "$PROJ/node_modules/aw146/.git" "$TMP/dotgit146" && "${G[@]}" init -q --bare "$PROJ/node_modules/evil146" \
+  && printf 'gitdir: %s\n' "$PROJ/node_modules/evil146" > "$PROJ/node_modules/aw146/.git" \
+  || { printf 'SCAFFOLD-FAILED: G146 rewritten\n'; exit 1; }
+launch ..
+has_mount "$PROJ/node_modules/aw146/.git:/workspace/proj/node_modules/aw146/.git:ro" \
+  && has_mount "$PROJ/node_modules/evil146/hooks:/workspace/proj/node_modules/evil146/hooks:ro" \
+  && pass "G146 a checkout's .git that names another repository is read-only, and that repository protected" \
+  || fail "G146 rewritten .git (rc=$LAUNCH_RC; $(mounts | grep -E 'aw146/.git|evil146' | tr '\n' ' '))"
+# ... and one made a link is named.
+mv "$PROJ/node_modules/aw146/.git" "$PROJ/node_modules/aw146/.gitfile" && ln -s .gitfile "$PROJ/node_modules/aw146/.git"
+launch ..
+grep -qF "WARNING: $PROJ/node_modules/aw146/.git is a symlink inside a writable mount" "$ERR" \
+  && pass "G146 a checkout's .git made a link is named" \
+  || fail "G146 linked .git (rc=$LAUNCH_RC; $(grep -F 'aw146/.git' "$ERR" | head -2 | tr '\n' ' '))"
+rm -f "$PROJ/node_modules/aw146/.git" "$PROJ/node_modules/aw146/.gitfile"
+# ... and one replaced by a repository of the agent's is protected as a .git
+# directory the scan finds.
+"${G[@]}" init -q "$PROJ/node_modules/aw146" >/dev/null 2>&1 && [[ -d "$PROJ/node_modules/aw146/.git" ]] \
+  || { printf 'SCAFFOLD-FAILED: G146 .git directory\n'; exit 1; }
+launch ..
+has_mount "$PROJ/node_modules/aw146/.git/config:/workspace/proj/node_modules/aw146/.git/config:ro" \
+  && has_mount "$PROJ/node_modules/aw146/.git/hooks:/workspace/proj/node_modules/aw146/.git/hooks:ro" \
+  && pass "G146 a checkout's .git replaced by a repository is protected as one" \
+  || fail "G146 .git directory (rc=$LAUNCH_RC; $(mounts | grep -F 'aw146/.git' | tr '\n' ' '))"
+rm -rf "$PROJ/node_modules/aw146/.git"; cp "$TMP/dotgit146" "$PROJ/node_modules/aw146/.git"
+# A core.worktree the agent writes in the worktree's git directory, where git
+# never reads one, names the checkout too: its .git is taken all the same.
+printf '[core]\n\tworktree = %s\n' "$PROJ/node_modules/aw146" > "$PROJ/.git/worktrees/aw146/config"
+launch ..
+has_mount "$PROJ/node_modules/aw146/.git:/workspace/proj/node_modules/aw146/.git:ro" \
+  && pass "G146 a checkout a planted core.worktree also names keeps its .git read-only" \
+  || fail "G146 core.worktree pre-claims the checkout (rc=$LAUNCH_RC; $(mounts | grep -F 'aw146/.git' | tr '\n' ' '))"
+rm -f "$PROJ/.git/worktrees/aw146/config"
+rm -rf "$TMP/dotgit146" "$PROJ/node_modules/evil146"
 "${G[@]}" -C "$PROJ" worktree remove --force "$PROJ/node_modules/aw146"; "${G[@]}" -C "$PROJ" branch -q -D aw146
 # A checkout deleted and never pruned, inside the mount, is no worktree to read
 # against: its index is not read there, so no "cannot read the index". (Its index
