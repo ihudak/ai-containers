@@ -158,8 +158,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   uses there; the agent could rewrite the file or plant the link, and the
   link was not named. The file is now read-only in the outer mount's view, and
   the link named. A linked worktree's checkout reached only through its
-  `gitdir` (under `node_modules`, say) now has its `.git` file read-only too,
-  and the repository that file names protected, whatever it names; a `gitdir`
+  `gitdir` (under `node_modules`, say) now has its `.git` taken too: a file
+  read-only, and the repository it names protected, whatever it names; a link
+  named; a directory protected as a repository. A `gitdir`
   whose checkout does not name the worktree back no longer silences "no
   worktree is known" (bugs review GIT-55, GIT-57, GIT-58).
 
