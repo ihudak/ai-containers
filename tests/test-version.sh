@@ -643,6 +643,49 @@ if mkrepo "$g28" v2.8.0; then
   [[ "$got" == "$w keep" && -z "$(ls -A "$TMP/tmp28")" ]] \
     && pass "GIT-28 a direct call leaves the caller's variables and TMPDIR as they were" \
     || fail "GIT-28 a direct call (got '$got'; left in TMPDIR: $(ls -A "$TMP/tmp28" | head -1))"
+  # GIT-50: _ver_run's status does not come from a wait on a process
+  # substitution. Once one has finished, bash 5.1 to 5.3 report that wait failed
+  # now and then under load (7 of 48,000 in _ver_run's form, bash 5.2.21; TST-29),
+  # and the version came out unknown. A wait that fails for every process that
+  # is not one of the shell's jobs stands in for that, through BASH_ENV, which
+  # the shell reads before its first line: `jobs -p` lists a running background
+  # job, and never a process substitution. The command closes its output and
+  # runs on a little, so its job is still running when it is waited for: bash
+  # 5.1 drops a finished job from `jobs -p` once a process substitution has run.
+  printf '%s\n' "wait() {" \
+    "  local p j f='$TMP/jobs50.'\"\$BASHPID\"" \
+    "  jobs -p > \"\$f\" 2>/dev/null; j=\" \$(tr '\\n' ' ' < \"\$f\") \"; rm -f \"\$f\"" \
+    "  for p; do [[ \"\$p\" == -* || \"\$j\" == *\" \$p \"* ]] || return 127; done" \
+    "  builtin wait \"\$@\"" \
+    "}" > "$TMP/wait50.bash"
+  mkdir -p "$TMP/tmp50"
+  got="$(TMPDIR="$TMP/tmp50" BASH_ENV="$TMP/wait50.bash" bash -c 'source "$1/version.sh"
+           _ver_run o sh -c "printf x; exec >&-; sleep 0.5; exit 3"; printf "%s %s" "$?" "$o"' _ "$REPO_DIR" 2>&1)"
+  [[ "$got" == "3 x" && -z "$(ls -A "$TMP/tmp50")" ]] \
+    && pass "GIT-50 _ver_run's status comes from no wait on a process substitution, and TMPDIR is left as it was" \
+    || fail "GIT-50 _ver_run with a wait on a process substitution that fails (status and output: '$got'; left in TMPDIR: $(ls -A "$TMP/tmp50" | head -1))"
+  # The fake's premise: it passes a wait on a running background job, and fails
+  # one on a process substitution.
+  got="$(BASH_ENV="$TMP/wait50.bash" bash -c 'sleep 0.5 & q=$!; wait "$q"; a=$?; exec {f}< <(exit 0); p=$!; sleep 0.2; wait "$p"; printf "%s %s" "$a" "$?"' 2>/dev/null)"
+  [[ "$got" == "0 127" ]] && pass "GIT-50 scaffold: the fake wait passes a background job and fails a process substitution" \
+    || fail "GIT-50 scaffold: the fake wait (background job, process substitution: '$got')"
+  # No directory for a call's FIFO: a TMPDIR that cannot hold one, or a _ver_dir
+  # that is not there. No answer either way, and TMPDIR left as it was.
+  got="$(TMPDIR="$TMP/no-such-tmp50" bash -c 'source "$1/version.sh"; _ver_run o printf x; printf "%s [%s]" "$?" "$o"' _ "$REPO_DIR" 2>&1)"
+  [[ "$got" == "1 []" ]] && pass "GIT-50 _ver_run with no temporary directory to be had fails, starting nothing" \
+    || fail "GIT-50 _ver_run with no temporary directory (status and output: '$got')"
+  got="$(TMPDIR="$TMP/tmp50" bash -c 'source "$1/version.sh"; _ver_dir="$2/no-such-dir50"; _ver_run o printf x; printf "%s [%s]" "$?" "$o"' _ "$REPO_DIR" "$TMP" 2>&1)"
+  [[ "$got" == "1 []" && -z "$(ls -A "$TMP/tmp50")" ]] && pass "GIT-50 _ver_run with no FIFO to be made fails, starting nothing" \
+    || fail "GIT-50 _ver_run with no FIFO (status and output: '$got'; left in TMPDIR: $(ls -A "$TMP/tmp50" | head -1))"
+  # One temporary directory for the whole of a version_engine that asks git:
+  # every _ver_run of _ver_git_version makes its FIFO there, not a directory of
+  # its own each.
+  mkdir -p "$TMP/mkt50"; : > "$TMP/mkt50.log"
+  printf '#!/bin/sh\necho x >> "%s"\nexec %s "$@"\n' "$TMP/mkt50.log" "$(command -v mktemp)" > "$TMP/mkt50/mktemp"; chmod +x "$TMP/mkt50/mktemp"
+  w="$(want28 "$g28")"; got="$(PATH="$TMP/mkt50:$PATH" ver28 "$g28")"
+  [[ -n "$w" && "$got" == "$w" && "$(wc -l < "$TMP/mkt50.log")" -eq 1 ]] \
+    && pass "GIT-50 a version_engine that asks git makes one temporary directory" \
+    || fail "GIT-50 temporary directories made (got '$got', git says '$w'; mktemp ran $(wc -l < "$TMP/mkt50.log") times)"
 else
   fail "GIT-28 scaffold: could not build a tagged repo"
 fi
@@ -689,16 +732,18 @@ fi
 # not, since dash (Ubuntu's sh) writes nothing with ten descriptors, and the
 # check passed with the kill removed (CI, cd36db1).
 if bash -c 'ulimit -n 10' 2>/dev/null; then
-  got="$(bash -c 'source "$1/version.sh"; sleep 30 & j=$!; ulimit -n 10
+  mkdir -p "$TMP/fdr50"
+  got="$(TMPDIR="$TMP/fdr50" bash -c 'source "$1/version.sh"; sleep 30 & j=$!; ulimit -n 10
            _ver_run o sleep 30; r=$?; s=$!
            sleep 0.3
            [[ "$s" != "$j" ]] && c=started || c=not-started
            kill -0 "$s" 2>/dev/null && a=alive || a=gone
            kill -0 "$j" 2>/dev/null && b=alive || b=gone
-           kill "$j" "$s" 2>/dev/null; printf "%s %s %s %s" "$r" "$c" "$a" "$b"' _ "$REPO_DIR" 2>/dev/null)"
-  [[ "$got" == "1 started gone alive" ]] \
-    && pass "GIT-28 _ver_run with no descriptor kills the command it started, and not the caller's job" \
-    || fail "GIT-28 _ver_run with no descriptor (status, whether it started its command, that command, the caller's job: '$got')"
+           [[ -z "$_ver_cur" ]] && u=clear || u=set
+           kill "$j" "$s" 2>/dev/null; printf "%s %s %s %s %s" "$r" "$c" "$a" "$b" "$u"' _ "$REPO_DIR" 2>/dev/null)"
+  [[ "$got" == "1 started gone alive clear" && -z "$(ls -A "$TMP/fdr50")" ]] \
+    && pass "GIT-28 _ver_run with no descriptor kills the command it started, and not the caller's job, and leaves nothing behind" \
+    || fail "GIT-28 _ver_run with no descriptor (status, whether it started its command, that command, the caller's job, _ver_cur: '$got'; left in TMPDIR: $(ls -A "$TMP/fdr50" | head -1))"
 else
   printf 'NOTE: ulimit -n 10 is refused here; the descriptor check is not applicable\n'
 fi
@@ -967,8 +1012,10 @@ got="$(PATH="$TMP/xcs28:$PATH" ver28 "$gtag")"
 [[ "$got" == v1.0.0* ]] \
   && pass "GIT-28 off macOS, xcode-select's answer does not stop git" \
   || fail "GIT-28 off macOS, xcode-select stopped git (got '$got')"
-# With git on PATH not at all: nothing is started to ask it (env, here).
-mkdir -p "$TMP/nogit28"; ln -s "$(command -v bash)" "$TMP/nogit28/bash"; : > "$TMP/env28.log"
+# With git on PATH not at all: nothing is started to ask it (env, here). What
+# _ver_run itself runs is there (mktemp, mkfifo, head, rm), so only git is missing.
+mkdir -p "$TMP/nogit28"; : > "$TMP/env28.log"
+for c in bash mktemp mkfifo head rm; do ln -s "$(command -v "$c")" "$TMP/nogit28/$c"; done
 printf '#!%s\nprintf "%%s\\n" "$*" >> "%s"\nexec %s "$@"\n' "$(command -v bash)" "$TMP/env28.log" "$(command -v env)" > "$TMP/nogit28/env"
 chmod +x "$TMP/nogit28/env"
 got="$(PATH="$TMP/nogit28" ver28 "$gtag")"

@@ -373,15 +373,18 @@ version.sh:logic-flip:9afb91ee98f1cddd278a3e14a10f165bc2ed3fb7
   intent at the point of the risk, and it stops being redundant the moment a
   statement is added after it or the `return 0` moves.
 
-GROUP: version.sh GIT-28, a status discarded in a non-final AND-OR position
-version.sh:logic-flip:40d3715539c9ea29d868b8f3bee430a362241db5
-  _ver_run():   kill -KILL "$_vr_p" 2>/dev/null || true
-  the damages:  kill -KILL "$_vr_p" 2>/dev/null && true
-  EQUIVALENT: the class of the engine-version entry above, measured there:
-  bash suppresses errexit for the non-final command of an AND-OR list, so `A &&
-  true` and `A || true` both carry on to the next line whatever A returns, and
-  neither status is read (the next lines are `_ver_cur=""` and `return 124`).
-  The kill happens either way; only the discarded status of the list differs.
+GROUP: version.sh GIT-50, a background job bash could not start
+version.sh:return-flip:08e4e732b232c1723ce287026e119532b34913d0
+  _ver_run():   if [[ "${!:-}" == "$_vr_was" ]]; then _ver_run_done; return 1; fi
+  the damages:  if [[ "${!:-}" == "$_vr_was" ]]; then _ver_run_done; return 0; fi
+  GAP: the branch runs only when bash could not fork the background job, after
+  the mktemp and mkfifo before it forked fine; damaged, that call reports
+  success with no output, and the callers take it for an empty answer (a version
+  `unknown` either way, or a NOTE-less empty describe). A test could reach it: a
+  BASH_ENV mkfifo that lowers `ulimit -u` once it has made the FIFO, as a user
+  other than root (the floor runs as root, whom RLIMIT_NPROC does not stop). It
+  is not written because bash retries a failed fork for about 15 s before it
+  gives up, which every mutant of this target would pay in its oracle's time.
 
 tests/lib-layer-checks.sh:logic-flip:b6554f5a51c19c07a987509d2872c86e54d554ea
   _wf_awk():    insteps && started && /^        [A-Za-z]/ {
